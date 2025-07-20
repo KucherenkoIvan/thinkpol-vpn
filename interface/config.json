@@ -1,0 +1,16 @@
+{
+  "interface": {
+    "name": "tun0",
+    "address": "10.0.0.1",
+    "netmask": "255.255.255.0",
+    "mtu": 1500
+  },
+  "server": {
+    "port": 8080,
+    "host": "localhost"
+  },
+  "logging": {
+    "level": "info",
+    "file": "vpn-interface.log"
+  }
+} 
