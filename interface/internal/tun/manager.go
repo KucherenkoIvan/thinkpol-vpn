@@ -12,7 +12,6 @@ import (
 	"syscall"
 
 	"github.com/songgao/water"
-	"golang.org/x/sys/execabs"
 )
 
 // InterfaceManager handles TUN/TAP interface operations
@@ -91,30 +90,6 @@ func (interfaceManager *InterfaceManager) InterceptAllTraffic() error {
 	return nil
 }
 
-// getDefaultGateway gets the current default gateway
-func (interfaceManager *InterfaceManager) getDefaultGateway() (string, error) {
-	cmd := execabs.Command("route", "-n", "get", "default")
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		log.Fatalf("failed to get default gateway: %s, %w", string(output), err)
-		return "", err
-	}
-
-	// Parse the output to find the gateway
-	lines := strings.Split(string(output), "\n")
-	for _, line := range lines {
-		if strings.Contains(line, "gateway:") {
-			parts := strings.Fields(line)
-			if len(parts) >= 2 {
-				return parts[1], nil
-			}
-		}
-	}
-
-	log.Fatalln("could not find default gateway in route output")
-	return "", err
-}
-
 // CreateRouteFor10Subnet creates a route for the 10.0.0.0/24 subnet through the TUN interface
 func (interfaceManager *InterfaceManager) CreateRouteFor10Subnet() error {
 	// Get the actual interface name from the water interface
@@ -122,7 +97,7 @@ func (interfaceManager *InterfaceManager) CreateRouteFor10Subnet() error {
 	log.Printf("Creating route for 10.0.0.0/24 subnet through interface %s (actual: %s)", interfaceManager.name, actualName)
 
 	// Get the default gateway
-	gateway, err := interfaceManager.getDefaultGateway()
+	gateway, err := interfaceManager.systemManager.getDefaultGateway()
 	if err != nil {
 		log.Fatalf("failed to get default gateway: %w", err)
 		return err
@@ -152,7 +127,7 @@ func (interfaceManager *InterfaceManager) RemoveRouteFor10Subnet() error {
 	if err := interfaceManager.systemManager.DeleteRoute(actualName, "10.0.0.0/24", ""); err != nil {
 		// If that fails, try with gateway
 		log.Printf("First delete attempt failed, trying with gateway: %v", err)
-		gateway, gatewayErr := interfaceManager.getDefaultGateway()
+		gateway, gatewayErr := interfaceManager.systemManager.getDefaultGateway()
 		if gatewayErr == nil {
 			if err := interfaceManager.systemManager.DeleteRoute(actualName, "10.0.0.0/24", gateway); err != nil {
 				log.Printf("Warning: could not delete route for 10.0.0.0/24: %v", err)
@@ -256,7 +231,6 @@ func (interfaceManager *InterfaceManager) processPackets() {
 
 		// Use a timeout to make the read interruptible
 		// This allows the goroutine to exit when stopChan is closed
-		// FIXME: split into recievePackets and processPackets routines tied with channels, rename current method to beginPacketsProcessing
 		done := make(chan struct{})
 		var n int
 		var err error

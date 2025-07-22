@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+
+	"golang.org/x/sys/execabs"
 )
 
 // SystemManager handles system-level operations for TUN interfaces
@@ -17,27 +19,51 @@ func NewSystemManager() *SystemManager {
 }
 
 // ConfigureInterface configures a TUN interface with IP address, netmask, and MTU
-func (sm *SystemManager) ConfigureInterface(name string, addr, netmask string, mtu int) error {
+func (systemManager *SystemManager) ConfigureInterface(name string, addr, netmask string, mtu int) error {
 	// Set IP address and netmask
-	if err := sm.setIPAddress(name, addr, netmask); err != nil {
+	if err := systemManager.setIPAddress(name, addr, netmask); err != nil {
 		return fmt.Errorf("failed to set IP address: %w", err)
 	}
 
 	// Set MTU
-	if err := sm.setMTU(name, mtu); err != nil {
+	if err := systemManager.setMTU(name, mtu); err != nil {
 		return fmt.Errorf("failed to set MTU: %w", err)
 	}
 
 	// Bring interface up
-	if err := sm.bringUp(name); err != nil {
+	if err := systemManager.bringUp(name); err != nil {
 		return fmt.Errorf("failed to bring interface up: %w", err)
 	}
 
 	return nil
 }
 
+// getDefaultGateway gets the current default gateway
+func (systemManager *SystemManager) getDefaultGateway() (string, error) {
+	cmd := execabs.Command("route", "-n", "get", "default")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		log.Fatalf("failed to get default gateway: %s, %w", string(output), err)
+		return "", err
+	}
+
+	// Parse the output to find the gateway
+	lines := strings.Split(string(output), "\n")
+	for _, line := range lines {
+		if strings.Contains(line, "gateway:") {
+			parts := strings.Fields(line)
+			if len(parts) >= 2 {
+				return parts[1], nil
+			}
+		}
+	}
+
+	log.Fatalln("could not find default gateway in route output")
+	return "", err
+}
+
 // calculateBroadcast calculates the broadcast address from IP and netmask
-func (sm *SystemManager) calculateBroadcast(ip, netmask string) string {
+func (systemManager *SystemManager) calculateBroadcast(ip, netmask string) string {
 	// Parse IP and netmask
 	ipParts := strings.Split(ip, ".")
 	netmaskParts := strings.Split(netmask, ".")
@@ -46,7 +72,7 @@ func (sm *SystemManager) calculateBroadcast(ip, netmask string) string {
 		return "10.0.0.255" // Fallback
 	}
 
-	// Calculate broadcast address
+	// Calculate broadcast address via binary wizardry
 	broadcast := make([]string, 4)
 	for i := 0; i < 4; i++ {
 		ipByte := 0
@@ -63,7 +89,7 @@ func (sm *SystemManager) calculateBroadcast(ip, netmask string) string {
 }
 
 // setIPAddress sets the IP address and netmask for the interface
-func (sm *SystemManager) setIPAddress(name, addr, netmask string) error {
+func (systemManager *SystemManager) setIPAddress(name, addr, netmask string) error {
 	var cmd *exec.Cmd
 	var args []string
 
@@ -74,7 +100,7 @@ func (sm *SystemManager) setIPAddress(name, addr, netmask string) error {
 		upCmd.CombinedOutput() // Ignore errors, interface might already be up
 
 		// Calculate broadcast address dynamically
-		broadcast := sm.calculateBroadcast(addr, netmask)
+		broadcast := systemManager.calculateBroadcast(addr, netmask)
 
 		// Use broadcast to make it non-P2P
 		args = []string{name, "inet", addr, "netmask", netmask, "broadcast", broadcast}
@@ -93,7 +119,7 @@ func (sm *SystemManager) setIPAddress(name, addr, netmask string) error {
 }
 
 // setMTU sets the MTU for the interface
-func (sm *SystemManager) setMTU(name string, mtu int) error {
+func (systemManager *SystemManager) setMTU(name string, mtu int) error {
 	cmd := exec.Command("ifconfig", name, "mtu", fmt.Sprintf("%d", mtu))
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -103,7 +129,7 @@ func (sm *SystemManager) setMTU(name string, mtu int) error {
 }
 
 // bringUp brings the interface up
-func (sm *SystemManager) bringUp(name string) error {
+func (systemManager *SystemManager) bringUp(name string) error {
 	cmd := exec.Command("ifconfig", name, "up")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -113,7 +139,7 @@ func (sm *SystemManager) bringUp(name string) error {
 }
 
 // bringDown brings the interface down
-func (sm *SystemManager) bringDown(name string) error {
+func (systemManager *SystemManager) bringDown(name string) error {
 	cmd := exec.Command("ifconfig", name, "down")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -123,9 +149,9 @@ func (sm *SystemManager) bringDown(name string) error {
 }
 
 // DeleteInterface removes the interface
-func (sm *SystemManager) DeleteInterface(name string) error {
+func (systemManager *SystemManager) DeleteInterface(name string) error {
 	// First bring it down
-	if err := sm.bringDown(name); err != nil {
+	if err := systemManager.bringDown(name); err != nil {
 		return fmt.Errorf("failed to bring interface down: %w", err)
 	}
 
@@ -143,7 +169,7 @@ func (sm *SystemManager) DeleteInterface(name string) error {
 }
 
 // GetInterfaceStatus returns the status of an interface
-func (sm *SystemManager) GetInterfaceStatus(name string) (map[string]string, error) {
+func (systemManager *SystemManager) GetInterfaceStatus(name string) (map[string]string, error) {
 	cmd := exec.Command("ifconfig", name)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -151,11 +177,11 @@ func (sm *SystemManager) GetInterfaceStatus(name string) (map[string]string, err
 	}
 
 	// Parse the ifconfig output
-	return sm.parseIfconfigOutput(string(output)), nil
+	return systemManager.parseIfconfigOutput(string(output)), nil
 }
 
 // parseIfconfigOutput parses the output of ifconfig command
-func (sm *SystemManager) parseIfconfigOutput(output string) map[string]string {
+func (systemManager *SystemManager) parseIfconfigOutput(output string) map[string]string {
 	result := make(map[string]string)
 	lines := strings.Split(output, "\n")
 
@@ -190,7 +216,7 @@ func (sm *SystemManager) parseIfconfigOutput(output string) map[string]string {
 }
 
 // AddRoute adds a route for the interface
-func (sm *SystemManager) AddRoute(interfaceName, destination, gateway string) error {
+func (systemManager *SystemManager) AddRoute(interfaceName, destination, gateway string) error {
 	args := []string{"add", destination}
 	if gateway != "" {
 		args = append(args, gateway)
@@ -206,7 +232,7 @@ func (sm *SystemManager) AddRoute(interfaceName, destination, gateway string) er
 }
 
 // DeleteRoute removes a route for the interface
-func (sm *SystemManager) DeleteRoute(interfaceName, destination, gateway string) error {
+func (systemManager *SystemManager) DeleteRoute(interfaceName, destination, gateway string) error {
 	args := []string{"delete", destination}
 	if gateway != "" {
 		args = append(args, gateway)
