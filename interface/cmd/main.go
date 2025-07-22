@@ -8,7 +8,6 @@ import (
 	"syscall"
 
 	"thinkpol-vpn/interface/internal/api"
-	"thinkpol-vpn/interface/internal/logger"
 )
 
 func main() {
@@ -19,32 +18,27 @@ func main() {
 	flag.Parse()
 
 	// Initialize logger
-	appLogger, err := logger.NewLogger(*logFile)
-	if err != nil {
-		log.Fatal("Failed to initialize logger:", err)
-	}
-	defer appLogger.Close()
 
-	appLogger.Info("ThinkPol VPN Interface starting...")
+	log.Println("ThinkPol VPN Interface starting...")
 
 	// Create and start the API server
 	server := api.NewServer(*port, *unsafe)
 
-	appLogger.Info("Starting ThinkPol VPN Interface on port %d", *port)
-	appLogger.Info("Available endpoints:")
-	appLogger.Info("  POST   /api/interface/create     - Create the TUN interface")
-	appLogger.Info("  GET    /api/interface/status     - Get interface status")
-	appLogger.Info("  POST   /api/interface/start      - Start packet processing")
-	appLogger.Info("  POST   /api/interface/stop       - Stop packet processing")
-	appLogger.Info("  DELETE /api/interface/delete     - Delete the interface")
+	log.Printf("Starting ThinkPol VPN Interface on port %d", *port)
+	log.Println("Available endpoints:")
+	log.Println("  POST   /api/interface/create     - Create the TUN interface")
+	log.Println("  GET    /api/interface/status     - Get interface status")
+	log.Println("  POST   /api/interface/start      - Start packet processing")
+	log.Println("  POST   /api/interface/stop       - Stop packet processing")
+	log.Println("  DELETE /api/interface/delete     - Delete the interface")
 	if *unsafe {
-		appLogger.Warn("  POST   /api/interface/intercept  - Intercept ALL internet traffic (UNSAFE)")
+		log.Println("  POST   /api/interface/intercept  - Intercept ALL internet traffic (UNSAFE)")
 	}
-	appLogger.Info("  GET    /health                   - Health check")
-	appLogger.Info("")
-	appLogger.Info("Interface configuration: %s/%s (MTU: %d)", api.InterfaceIP, api.InterfaceMask, api.InterfaceMTU)
-	appLogger.Info("Press Ctrl+C to stop gracefully")
-	appLogger.Info("Logs are being written to: %s", *logFile)
+	log.Println("  GET    /health                   - Health check")
+	log.Println("")
+	log.Printf("Interface configuration: %s/%s (MTU: %d)", api.InterfaceIP, api.InterfaceMask, api.InterfaceMTU)
+	log.Println("Press Ctrl+C to stop gracefully")
+	log.Printf("Logs are being written to: %s", *logFile)
 
 	// Set up signal handling for graceful shutdown
 	sigChan := make(chan os.Signal, 1)
@@ -53,19 +47,19 @@ func main() {
 	// Start server in a goroutine
 	go func() {
 		if err := server.Start(); err != nil {
-			appLogger.Error("Failed to start server: %v", err)
+			log.Fatalf("Failed to start server: %v", err)
 			os.Exit(1)
 		}
 	}()
 
 	// Wait for shutdown signal
 	sig := <-sigChan
-	appLogger.Info("Received signal %v, shutting down gracefully...", sig)
+	log.Printf("Received signal %v, shutting down gracefully...", sig)
 
 	// Perform cleanup
 	if err := server.Cleanup(); err != nil {
-		appLogger.Error("Cleanup error: %v", err)
+		log.Fatalf("Cleanup error: %v", err)
 	}
 
-	appLogger.Info("Shutdown complete")
+	log.Println("Shutdown complete")
 }
