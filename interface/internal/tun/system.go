@@ -43,7 +43,7 @@ func (systemManager *SystemManager) getDefaultGateway() (string, error) {
 	cmd := execabs.Command("route", "-n", "get", "default")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		log.Fatalf("failed to get default gateway: %s, %w", string(output), err)
+		log.Fatalf("    [SYSTEM] failed to get default gateway: %s, %w", string(output), err)
 		return "", err
 	}
 
@@ -58,7 +58,7 @@ func (systemManager *SystemManager) getDefaultGateway() (string, error) {
 		}
 	}
 
-	log.Fatalln("could not find default gateway in route output")
+	log.Fatalln("    [SYSTEM] could not find default gateway in route output")
 	return "", err
 }
 
@@ -162,7 +162,7 @@ func (systemManager *SystemManager) DeleteInterface(name string) error {
 		// On some systems, the interface is automatically removed when closed
 		// So we'll just log this as a warning and return nil
 		// This prevents the error from propagating up and causing issues
-		log.Printf("Warning: could not destroy interface %s: %s", name, string(output))
+		log.Printf("    [SYSTEM] Warning: could not destroy interface %s: %s", name, string(output))
 		return nil // Don't treat this as a fatal error
 	}
 	return nil
