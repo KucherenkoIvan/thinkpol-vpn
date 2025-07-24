@@ -64,7 +64,7 @@ func (interfaceManager *InterfaceManager) Create() error {
 	// Create the interface
 	iface, err := water.New(*interfaceManager.config)
 	if err != nil {
-		log.Fatalf("failed to create TUN interface: %w", err)
+		log.Fatalf("    [MANAGER] failed to create TUN interface: %w", err)
 		return err
 	}
 
@@ -73,7 +73,7 @@ func (interfaceManager *InterfaceManager) Create() error {
 	// Configure the interface
 	if err := interfaceManager.configure(); err != nil {
 		interfaceManager.iface.Close()
-		log.Fatalf("failed to configure interface: %w", err)
+		log.Fatalf("    [MANAGER] failed to configure interface: %w", err)
 		return err
 	}
 
@@ -86,7 +86,7 @@ func (interfaceManager *InterfaceManager) Create() error {
 // InterceptAllTraffic sets up routing to intercept all internet traffic
 // TODO: refactor
 func (interfaceManager *InterfaceManager) InterceptAllTraffic() error {
-	log.Fatalf("`InterceptAllTraffic` is not implemented (yet)")
+	log.Fatalf("    [MANAGER] `InterceptAllTraffic` is not implemented (yet)")
 	return nil
 }
 
@@ -94,26 +94,26 @@ func (interfaceManager *InterfaceManager) InterceptAllTraffic() error {
 func (interfaceManager *InterfaceManager) CreateRouteFor10Subnet() error {
 	// Get the actual interface name from the water interface
 	actualName := interfaceManager.iface.Name()
-	log.Printf("Creating route for 10.0.0.0/24 subnet through interface %s (actual: %s)", interfaceManager.name, actualName)
+	log.Printf("    [MANAGER] Creating route for 10.0.0.0/24 subnet through interface %s (actual: %s)", interfaceManager.name, actualName)
 
 	// Get the default gateway
 	gateway, err := interfaceManager.systemManager.getDefaultGateway()
 	if err != nil {
-		log.Fatalf("failed to get default gateway: %w", err)
+		log.Fatalf("    [MANAGER] failed to get default gateway: %w", err)
 		return err
 	}
 
 	// Try to add the route using the actual interface name
 	if err := interfaceManager.systemManager.AddRoute(actualName, "10.0.0.0/24", gateway); err != nil {
 		// If that fails, try without gateway (some systems don't need it for interface routes)
-		log.Printf("First route attempt failed, trying without gateway: %v", err)
+		log.Printf("    [MANAGER] First route attempt failed, trying without gateway: %v", err)
 		if err := interfaceManager.systemManager.AddRoute(actualName, "10.0.0.0/24", ""); err != nil {
-			log.Fatalf("failed to add route for 10.0.0.0/24: %w", err)
+			log.Fatalf("    [MANAGER] failed to add route for 10.0.0.0/24: %w", err)
 			return err
 		}
 	}
 
-	log.Printf("Successfully created route for 10.0.0.0/24 subnet through %s", actualName)
+	log.Printf("    [MANAGER] Successfully created route for 10.0.0.0/24 subnet through %s", actualName)
 	return nil
 }
 
@@ -121,25 +121,25 @@ func (interfaceManager *InterfaceManager) CreateRouteFor10Subnet() error {
 func (interfaceManager *InterfaceManager) RemoveRouteFor10Subnet() error {
 	// Get the actual interface name from the water interface
 	actualName := interfaceManager.iface.Name()
-	log.Printf("Removing route for 10.0.0.0/24 subnet from interface %s", actualName)
+	log.Printf("    [MANAGER] Removing route for 10.0.0.0/24 subnet from interface %s", actualName)
 
 	// Try to delete the route using the system manager
 	if err := interfaceManager.systemManager.DeleteRoute(actualName, "10.0.0.0/24", ""); err != nil {
 		// If that fails, try with gateway
-		log.Printf("First delete attempt failed, trying with gateway: %v", err)
+		log.Printf("    [MANAGER] First delete attempt failed, trying with gateway: %v", err)
 		gateway, gatewayErr := interfaceManager.systemManager.getDefaultGateway()
 		if gatewayErr == nil {
 			if err := interfaceManager.systemManager.DeleteRoute(actualName, "10.0.0.0/24", gateway); err != nil {
-				log.Printf("Warning: could not delete route for 10.0.0.0/24: %v", err)
+				log.Printf("    [MANAGER] Warning: could not delete route for 10.0.0.0/24: %v", err)
 				return nil // Don't treat route deletion failure as fatal
 			}
 		} else {
-			log.Printf("Warning: could not delete route for 10.0.0.0/24: %v", err)
+			log.Printf("    [MANAGER] Warning: could not delete route for 10.0.0.0/24: %v", err)
 			return nil // Don't treat route deletion failure as fatal
 		}
 	}
 
-	log.Printf("Successfully removed route for 10.0.0.0/24 subnet")
+	log.Printf("    [MANAGER] Successfully removed route for 10.0.0.0/24 subnet")
 	return nil
 }
 
@@ -150,7 +150,7 @@ func (interfaceManager *InterfaceManager) setupSignalHandling() {
 
 	go func() {
 		sig := <-sigChan
-		log.Printf("Received signal %v, shutting down gracefully...", sig)
+		log.Printf("    [MANAGER] Received signal %v, shutting down gracefully...", sig)
 		interfaceManager.Cleanup()
 		os.Exit(0)
 	}()
@@ -165,7 +165,7 @@ func (interfaceManager *InterfaceManager) configure() error {
 		interfaceManager.netmask.String(),
 		interfaceManager.mtu); err != nil {
 
-		log.Fatalf("failed to configure interface: %w", err)
+		log.Fatalf("    [MANAGER] failed to configure interface: %w", err)
 
 		return err
 	}
@@ -192,7 +192,7 @@ func (interfaceManager *InterfaceManager) Start() error {
 		return fmt.Errorf("interface is already running")
 	}
 
-	log.Printf("Starting packet processing on interface %s", interfaceManager.name)
+	log.Printf("    [MANAGER] Starting packet processing on interface %s", interfaceManager.name)
 
 	// Create route for 10.0.0.0/24 subnet
 	if err := interfaceManager.CreateRouteFor10Subnet(); err != nil {
@@ -217,7 +217,7 @@ func (interfaceManager *InterfaceManager) processPackets() {
 	for {
 		select {
 		case <-interfaceManager.stopChan:
-			log.Printf("Stopping packet processing on interface %s", interfaceManager.name)
+			log.Printf("    [MANAGER] Stopping packet processing on interface %s", interfaceManager.name)
 			return
 		default:
 			// Continue processing
@@ -225,7 +225,7 @@ func (interfaceManager *InterfaceManager) processPackets() {
 
 		// Check if interface is still valid
 		if interfaceManager.iface == nil {
-			log.Printf("Interface is nil, stopping packet processing")
+			log.Printf("    [MANAGER] Interface is nil, stopping packet processing")
 			return
 		}
 
@@ -244,22 +244,22 @@ func (interfaceManager *InterfaceManager) processPackets() {
 		case <-done:
 			// Read completed, process the packet
 		case <-interfaceManager.stopChan:
-			log.Printf("Stopping packet processing on interface %s", interfaceManager.name)
+			log.Printf("    [MANAGER] Stopping packet processing on interface %s", interfaceManager.name)
 			return
 		}
 
 		if err != nil {
 			if err == io.EOF {
-				log.Println("Interface closed")
+				log.Println("    [MANAGER] Interface closed")
 				break
 			}
 			// Check if the error is due to the interface being closed
 			if strings.Contains(err.Error(), "file already closed") ||
 				strings.Contains(err.Error(), "bad file descriptor") {
-				log.Printf("Interface was closed, stopping packet processing")
+				log.Printf("    [MANAGER] Interface was closed, stopping packet processing")
 				break
 			}
-			log.Printf("Error reading from interface: %v", err)
+			log.Printf("    [MANAGER] Error reading from interface: %v", err)
 			continue
 		}
 
@@ -298,7 +298,7 @@ func (interfaceManager *InterfaceManager) logIPv4Packet(packet []byte) {
 
 	// Log packet information with protocol details
 	protocolName := getProtocolName(protocol)
-	log.Printf("[PACKET] IPv4: %s -> %s (%s)", srcIP, dstIP, protocolName)
+	log.Printf("    [MANAGER] [PACKET] IPv4: %s -> %s (%s)", srcIP, dstIP, protocolName)
 }
 
 // logIPv6Packet logs IPv6 packet information
@@ -314,7 +314,7 @@ func (interfaceManager *InterfaceManager) logIPv6Packet(packet []byte) {
 
 	// Log packet information with protocol details
 	protocolName := getProtocolName(nextHeader)
-	log.Printf("[PACKET] IPv6: %s -> %s (%s)", srcIP, dstIP, protocolName)
+	log.Printf("    [MANAGER] [PACKET] IPv6: %s -> %s (%s)", srcIP, dstIP, protocolName)
 }
 
 // getProtocolName returns the name of the protocol
@@ -342,11 +342,11 @@ func (interfaceManager *InterfaceManager) Stop() error {
 		return fmt.Errorf("interface is not running")
 	}
 
-	log.Printf("Stopping packet processing on interface %s", interfaceManager.name)
+	log.Printf("    [MANAGER] Stopping packet processing on interface %s", interfaceManager.name)
 
 	// Remove route for 10.0.0.0/24 subnet
 	if err := interfaceManager.RemoveRouteFor10Subnet(); err != nil {
-		log.Printf("Warning: failed to remove route for 10 subnet: %v", err)
+		log.Printf("    [MANAGER] Warning: failed to remove route for 10 subnet: %v", err)
 	}
 
 	// Signal the packet processing goroutine to stop
@@ -369,12 +369,12 @@ func (interfaceManager *InterfaceManager) Close() error {
 	interfaceManager.controlMutex.Lock()
 	defer interfaceManager.controlMutex.Unlock()
 
-	log.Printf("Closing interface %s", interfaceManager.name)
+	log.Printf("    [MANAGER] Closing interface %s", interfaceManager.name)
 
 	// Close the interface
 	if interfaceManager.iface != nil {
 		if err := interfaceManager.iface.Close(); err != nil {
-			log.Printf("Error closing interface: %v", err)
+			log.Printf("    [MANAGER] Error closing interface: %v", err)
 		}
 		interfaceManager.iface = nil
 	}
@@ -384,19 +384,19 @@ func (interfaceManager *InterfaceManager) Close() error {
 
 // Cleanup performs complete cleanup including system-level cleanup
 func (interfaceManager *InterfaceManager) Cleanup() error {
-	log.Printf("Performing complete cleanup for interface %s", interfaceManager.name)
+	log.Printf("    [MANAGER] Performing complete cleanup for interface %s", interfaceManager.name)
 
 	// Close the interface
 	if err := interfaceManager.Close(); err != nil {
-		log.Printf("Error during interface close: %v", err)
+		log.Printf("    [MANAGER] Error during interface close: %v", err)
 	}
 
 	// Clean up system resources
 	if err := interfaceManager.systemManager.DeleteInterface(interfaceManager.name); err != nil {
-		log.Printf("Warning: failed to delete system interface: %v", err)
+		log.Printf("    [MANAGER] Warning: failed to delete system interface: %v", err)
 	}
 
-	log.Printf("Cleanup completed for interface %s", interfaceManager.name)
+	log.Printf("    [MANAGER] Cleanup completed for interface %s", interfaceManager.name)
 	return nil
 }
 
