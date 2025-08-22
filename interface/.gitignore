@@ -37,4 +37,8 @@ bin/
 dist/ 
 logs/
 
+# Generated protobuf files
+*.pb.go
+api/protobuf/*.pb.go
+
 vpn-interface

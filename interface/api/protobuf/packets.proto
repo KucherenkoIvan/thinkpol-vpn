@@ -1,0 +1,9 @@
+option go_package = "thinkpol-vpn/interface/api/protobuf";
+
+package packets;
+
+message PacketV4 {
+	required int32 length = 1;
+	required bytes buffer = 2;
+}
+

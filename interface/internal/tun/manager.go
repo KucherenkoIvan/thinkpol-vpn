@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"thinkpol-vpn/interface/internal/proxy"
 
 	"github.com/songgao/water"
 )
@@ -23,6 +24,7 @@ type InterfaceManager struct {
 	address       net.IP
 	netmask       net.IP
 	systemManager *SystemManager
+	transport     *proxy.RawWebSocketVpnProxy
 
 	// Cleanup management
 	stopChan     chan struct{}
@@ -32,7 +34,10 @@ type InterfaceManager struct {
 }
 
 // NewInterfaceManager creates a new TUN interface manager
-func NewInterfaceManager(name string, mtu int, addr, netmask net.IP) *InterfaceManager {
+func NewInterfaceManager(name string, mtu int, addr, netmask string, transport *proxy.RawWebSocketVpnProxy) *InterfaceManager {
+	ipAddress := net.ParseIP(addr)
+	ipMask := net.ParseIP(addr)
+
 	// Use a custom prefix to avoid conflicts with system interfaces
 	if name == "" {
 		name = "utun9" // Default name with custom prefix
@@ -41,10 +46,11 @@ func NewInterfaceManager(name string, mtu int, addr, netmask net.IP) *InterfaceM
 	return &InterfaceManager{
 		name:          name,
 		mtu:           mtu,
-		address:       addr,
-		netmask:       netmask,
+		address:       ipAddress,
+		netmask:       ipMask,
 		systemManager: NewSystemManager(),
 		stopChan:      make(chan struct{}),
+		transport:     transport,
 	}
 }
 
@@ -212,7 +218,7 @@ func (interfaceManager *InterfaceManager) Start() error {
 func (interfaceManager *InterfaceManager) processPackets() {
 	defer interfaceManager.wg.Done()
 
-	buffer := make([]byte, 2048)
+	buffer := make([]byte, interfaceManager.mtu)
 
 	for {
 		select {
@@ -242,7 +248,7 @@ func (interfaceManager *InterfaceManager) processPackets() {
 
 		select {
 		case <-done:
-			// Read completed, process the packet
+			// Read completed, process the packet below
 		case <-interfaceManager.stopChan:
 			log.Printf("    [MANAGER] Stopping packet processing on interface %s", interfaceManager.name)
 			return
@@ -266,6 +272,7 @@ func (interfaceManager *InterfaceManager) processPackets() {
 		// Log packet info but don't echo back to prevent routing loops
 		if n > 0 {
 			interfaceManager.logPacketInfo(buffer[:n])
+			interfaceManager.transport.SendToTransport(n, buffer)
 		}
 	}
 }
