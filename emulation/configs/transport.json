@@ -1,0 +1,7 @@
+{
+  "transport": {
+    "service_address": "localhost:50052",
+    "gateway_address": "gateway-emulation:50052"
+  }
+}
+
