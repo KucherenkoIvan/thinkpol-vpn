@@ -2,14 +2,12 @@ package udp
 
 import (
 	"context"
-	"crypto/cipher"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 )
@@ -35,14 +33,13 @@ type Listener struct {
 	scratch []byte // packets are opened here, so camouflage sees datagrams intact
 }
 
-// flow is the listener's state for one credential. It outlives the links of
-// that credential, so a replayed old session can't come back once a newer
-// one was seen.
+// flow is the listener's state for one credential. Its replay windows
+// outlive the credential's links, so closing a link doesn't reopen the
+// window to replays.
 type flow struct {
-	entry *peerEntry
-	link  *serverLink // the current session's link, nil if none
-	epoch uint64      // newest session epoch accepted
-	seen  time.Time   // last datagram accepted in that session
+	entry   *peerEntry
+	link    *serverLink // nil until a datagram opens one
+	senders senderWindows
 }
 
 // Listen opens a udp socket on address ("host:port") and listens on it.
@@ -66,7 +63,7 @@ func NewListener(pc net.PacketConn, peers transport.Peers, camouflage transport.
 		accept:  make(chan *serverLink, acceptQueue),
 		done:    make(chan struct{}),
 		flows:   make(map[ConnID]*flow),
-		scratch: make([]byte, 0, maxDatagram),
+		scratch: make([]byte, 0, innerSize+transport.MaxPacketSize),
 	}
 	links, changed := peers.Snapshot()
 	l.reindex(links)
@@ -76,27 +73,28 @@ func NewListener(pc net.PacketConn, peers transport.Peers, camouflage transport.
 }
 
 // Accept implements transport.Listener. A link is accepted when the first
-// datagram of its session arrives.
+// datagram of its credential arrives.
 func (l *Listener) Accept(ctx context.Context) (transport.Link, transport.Identity, error) {
-	select {
-	case <-l.done:
+	if l.closed() {
 		return nil, transport.Identity{}, transport.ClosedError(nil)
-	default:
 	}
 	select {
 	case <-l.done:
-		return nil, transport.Identity{}, transport.ClosedError(nil)
 	case <-ctx.Done():
 		return nil, transport.Identity{}, ctx.Err()
 	case sl := <-l.accept:
-		return sl, sl.peer, nil
+		if !l.closed() {
+			return sl, sl.peer, nil
+		}
 	}
+	return nil, transport.Identity{}, transport.ClosedError(nil)
 }
 
 // Addr implements transport.Listener.
 func (l *Listener) Addr() net.Addr { return l.pc.LocalAddr() }
 
-// Close implements transport.Listener.
+// Close implements transport.Listener. Dialers' links outlive it: they
+// carry on with a listener restarted on the same address.
 func (l *Listener) Close() error {
 	var err error
 	l.closeOnce.Do(func() {
@@ -143,7 +141,7 @@ func (l *Listener) reindex(links []transport.PeerLink) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	for id, f := range l.flows {
-		if e := index[id]; !f.entry.sameAs(e) {
+		if !f.entry.sameAs(index[id]) {
 			if f.link != nil {
 				f.link.shut(transport.ErrRevoked)
 			}
@@ -176,71 +174,53 @@ func (l *Listener) readLoop() {
 	}
 }
 
-// receive delivers an authenticated, fresh datagram to its link and reports
-// whether it did.
+// receive delivers an authenticated, fresh datagram to its credential's
+// link, opening the link if there is none, and reports whether it did.
 func (l *Listener) receive(d []byte, from net.Addr) bool {
-	h, ok := parseHeader(d)
+	id, ok := connIDOf(d)
 	if !ok {
 		return false
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	f := l.flows[h.id]
-	if f == nil {
+	f := l.flows[id]
+	if f == nil || l.closed() {
 		return false
 	}
-	now := time.Now()
-	link := f.link
-	if link == nil || link.sess != h.sess {
-		if !f.admits(h.sess, now) {
-			return false
-		}
-		recv := f.entry.aead(h.sess, toListener)
-		packet, err := open(l.scratch[:0], recv, h, d)
-		if err != nil {
-			return false
-		}
-		link = newServerLink(l, f.entry, h.sess, recv, f.entry.aead(h.sess, toDialer), from)
-		link.window.accept(h.counter)
-		link.deliver(packet)
+	sender, counter, packet, err := open(l.scratch[:0], f.entry.recv, d)
+	if err != nil {
+		return false
+	}
+	fresh, newest := f.senders.accept(sender, counter)
+	if !fresh {
+		return false
+	}
+	if f.link == nil {
+		link := newServerLink(l, f, from)
 		select {
 		case l.accept <- link:
+			f.link = link
 		default:
-			return true // nobody is accepting; the dialer will keep trying
+			return true // nobody is accepting: dropped, as the network would
 		}
-		if f.link != nil {
-			f.link.shut(transport.ErrSuperseded)
-		}
-		f.link, f.epoch, f.seen = link, h.sess.epoch(), now
-		return true
+	} else if newest {
+		// Follows a dialer that moved (NAT rebinding, redial). Only the
+		// newest counter of a sender moves it; an on-path attacker can still
+		// race a captured datagram ahead of the original, as with WireGuard's
+		// own roaming.
+		f.link.remote.Store(&from)
 	}
-	packet, err := open(l.scratch[:0], link.recv, h, d)
-	if err != nil || !link.window.accept(h.counter) {
-		return false
-	}
-	f.seen = now
-	link.remote.Store(&from)
-	link.deliver(packet)
+	f.link.deliver(packet)
 	return true
 }
 
-// admits reports whether a new session may start: it must be newer than the
-// last one, unless that one has gone quiet.
-func (f *flow) admits(s session, now time.Time) bool {
-	return f.seen.IsZero() || s.epoch() > f.epoch || now.Sub(f.seen) > sessionIdleTimeout
-}
-
-// serverLink is the listener's end of one session.
+// serverLink is the listener's end of one credential's link.
 type serverLink struct {
-	l     *Listener
-	peer  transport.Identity
-	inID  ConnID
-	outID ConnID
-	sess  session
-	recv  cipher.AEAD
-	send  cipher.AEAD
+	l      *Listener
+	flow   *flow
+	peer   transport.Identity
+	sender senderID
 
-	window  replayWindow // guarded by l.mu
 	counter atomic.Uint64
 	remote  atomic.Pointer[net.Addr]
 
@@ -250,9 +230,9 @@ type serverLink struct {
 	closeErr  error
 }
 
-func newServerLink(l *Listener, e *peerEntry, s session, recv, send cipher.AEAD, from net.Addr) *serverLink {
+func newServerLink(l *Listener, f *flow, from net.Addr) *serverLink {
 	sl := &serverLink{
-		l: l, peer: e.link.Peer, inID: e.inID, outID: e.outID, sess: s, recv: recv, send: send,
+		l: l, flow: f, peer: f.entry.link.Peer, sender: newSenderID(),
 		in:   make(chan []byte, linkQueue),
 		done: make(chan struct{}),
 	}
@@ -296,23 +276,28 @@ func (sl *serverLink) WritePacket(p []byte) error {
 	}
 	c := sl.counter.Add(1) - 1
 	if c >= rejectAfterMessages {
-		return transport.ClosedError(errors.New("udp: session exhausted, redial"))
+		return transport.ClosedError(errors.New("udp: counter exhausted"))
 	}
 	bp := datagramPool.Get().(*[]byte)
 	defer datagramPool.Put(bp)
-	*bp = seal((*bp)[:0], sl.send, header{id: sl.outID, sess: sl.sess, counter: c}, p)
+	*bp = seal((*bp)[:0], sl.flow.entry.send, sl.flow.entry.outID, sl.sender, c, p)
 	if _, err := sl.l.pc.WriteTo(*bp, *sl.remote.Load()); err != nil {
+		select {
+		case <-sl.done:
+			return sl.closeErr
+		default:
+		}
 		return fmt.Errorf("udp: write: %w", err)
 	}
 	return nil
 }
 
-// Close closes this link only; the dialer's session is dead from then on and
-// it has to redial.
+// Close closes this link only. If the dialer keeps sending, its datagrams
+// open a new link.
 func (sl *serverLink) Close() error {
 	sl.l.mu.Lock()
-	if f := sl.l.flows[sl.inID]; f != nil && f.link == sl {
-		f.link = nil
+	if sl.flow.link == sl {
+		sl.flow.link = nil
 	}
 	sl.l.mu.Unlock()
 	sl.shut(nil)

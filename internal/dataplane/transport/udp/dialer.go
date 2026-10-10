@@ -22,7 +22,8 @@ type Dialer struct {
 }
 
 // Dial implements transport.Dialer. There is no handshake: Dial only opens
-// the socket, and the listener learns of the link from its first packet.
+// the socket, and the listener learns of the link from its first packet. A
+// redial with the same credential carries on the listener's existing link.
 func (d *Dialer) Dial(ctx context.Context, endpoint string, cfg transport.LinkConfig) (transport.Link, error) {
 	if err := cfg.Credential.Validate(); err != nil {
 		return nil, err
@@ -33,33 +34,32 @@ func (d *Dialer) Dial(ctx context.Context, endpoint string, cfg transport.LinkCo
 		return nil, fmt.Errorf("udp: dial: %w", err)
 	}
 	secret := cfg.Credential.Secret
-	s := newSession()
 	return &dialLink{
-		conn:  conn,
-		outID: connIDFor(secret, toListener),
-		inID:  connIDFor(secret, toDialer),
-		sess:  s,
-		send:  newAEAD(secret, s, toListener),
-		recv:  newAEAD(secret, s, toDialer),
-		rbuf:  make([]byte, maxDatagram+1),
+		conn:   conn,
+		outID:  connIDFor(secret, toListener),
+		inID:   connIDFor(secret, toDialer),
+		sender: newSenderID(),
+		send:   newAEAD(secret, toListener),
+		recv:   newAEAD(secret, toDialer),
+		rbuf:   make([]byte, maxDatagram+1),
 	}, nil
 }
 
-// dialLink is the dialer's end of one session.
+// dialLink is the dialer's end of a link.
 type dialLink struct {
-	conn  net.Conn
-	outID ConnID
-	inID  ConnID
-	sess  session
-	send  cipher.AEAD
-	recv  cipher.AEAD
+	conn   net.Conn
+	outID  ConnID
+	inID   ConnID
+	sender senderID
+	send   cipher.AEAD
+	recv   cipher.AEAD
 
 	counter atomic.Uint64
 	closed  atomic.Bool
 
-	readMu sync.Mutex
-	rbuf   []byte
-	window replayWindow
+	readMu  sync.Mutex
+	rbuf    []byte
+	senders senderWindows // a restarted listener is a new sender
 }
 
 func (dl *dialLink) ReadPacket(p []byte) (int, error) {
@@ -71,16 +71,22 @@ func (dl *dialLink) ReadPacket(p []byte) (int, error) {
 			if dl.closed.Load() || errors.Is(err, net.ErrClosed) {
 				return 0, transport.ClosedError(nil)
 			}
-			continue // e.g. ECONNREFUSED from an ICMP error: the listener may come back
+			var netErr net.Error
+			if errors.As(err, &netErr) {
+				continue // e.g. ECONNREFUSED from an ICMP error: the listener may come back
+			}
+			return 0, fmt.Errorf("udp: read: %w", err)
 		}
 		d := dl.rbuf[:n]
-		h, ok := parseHeader(d)
-		if !ok || h.id != dl.inID || h.sess != dl.sess {
+		if id, ok := connIDOf(d); !ok || id != dl.inID {
 			continue
 		}
 		// Opened in place: nothing else needs the datagram.
-		packet, err := open(d[headerSize:headerSize], dl.recv, h, d)
-		if err != nil || !dl.window.accept(h.counter) {
+		sender, counter, packet, err := open(d[clearSize:clearSize], dl.recv, d)
+		if err != nil {
+			continue
+		}
+		if fresh, _ := dl.senders.accept(sender, counter); !fresh {
 			continue
 		}
 		if len(packet) > len(p) {
@@ -99,11 +105,11 @@ func (dl *dialLink) WritePacket(p []byte) error {
 	}
 	c := dl.counter.Add(1) - 1
 	if c >= rejectAfterMessages {
-		return transport.ClosedError(errors.New("udp: session exhausted, redial"))
+		return transport.ClosedError(errors.New("udp: counter exhausted, redial"))
 	}
 	bp := datagramPool.Get().(*[]byte)
 	defer datagramPool.Put(bp)
-	*bp = seal((*bp)[:0], dl.send, header{id: dl.outID, sess: dl.sess, counter: c}, p)
+	*bp = seal((*bp)[:0], dl.send, dl.outID, dl.sender, c, p)
 	if _, err := dl.conn.Write(*bp); err != nil {
 		if dl.closed.Load() {
 			return transport.ClosedError(nil)

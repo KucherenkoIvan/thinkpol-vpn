@@ -41,3 +41,44 @@ func (w *replayWindow) accept(counter uint64) bool {
 	w.ring[word] |= bit
 	return true
 }
+
+// senderWindows keeps a replay window for each of the last few senders seen
+// on a link: a dialer that redials, or a listener that restarted, is a new
+// sender with counters from zero. A replay of a sender evicted from here
+// passes once more; that is acceptable for a pre-filter.
+type senderWindows struct {
+	tick    uint64
+	entries [maxSenders]senderWindow
+}
+
+const maxSenders = 8
+
+type senderWindow struct {
+	id     senderID
+	used   uint64 // tick of last use; 0 = empty
+	window replayWindow
+}
+
+// accept reports whether counter is fresh for sender, and whether it is the
+// newest counter seen from that sender.
+func (s *senderWindows) accept(sender senderID, counter uint64) (fresh, newest bool) {
+	s.tick++
+	var w *senderWindow
+	for i := range s.entries {
+		e := &s.entries[i]
+		if e.used != 0 && e.id == sender {
+			w = e
+			break
+		}
+		if w == nil || e.used < w.used {
+			w = e // the least recently used, unless the sender turns up
+		}
+	}
+	if w.used == 0 || w.id != sender {
+		*w = senderWindow{id: sender}
+	}
+	w.used = s.tick
+	newest = !w.window.started || counter > w.window.highest
+	fresh = w.window.accept(counter)
+	return fresh, fresh && newest
+}

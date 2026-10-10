@@ -24,8 +24,8 @@ type supervisor struct {
 	workers map[string]*forwardedConn // by space; "" takes every space
 }
 
-func newSupervisor(t *testing.T, peers transport.Peers, camo transport.Camouflage) *supervisor {
-	public, err := net.ListenPacket("udp", "127.0.0.1:0")
+func newSupervisor(t *testing.T, address string, peers transport.Peers, camo transport.Camouflage) *supervisor {
+	public, err := net.ListenPacket("udp", address)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,6 +76,7 @@ type forwardedConn struct {
 	in        chan forwarded
 	done      chan struct{}
 	closeOnce sync.Once
+	onClose   func()
 	received  [][]byte
 	mu        sync.Mutex
 }
@@ -104,7 +105,12 @@ func (fc *forwardedConn) WriteTo(p []byte, addr net.Addr) (int, error) {
 }
 
 func (fc *forwardedConn) Close() error {
-	fc.closeOnce.Do(func() { close(fc.done) })
+	fc.closeOnce.Do(func() {
+		close(fc.done)
+		if fc.onClose != nil {
+			fc.onClose()
+		}
+	})
 	return nil
 }
 
@@ -134,12 +140,19 @@ func (sp spacePeers) Snapshot() ([]transport.PeerLink, <-chan struct{}) {
 // Listener fed by a supervisor's Demux, as on a server node.
 func TestConformanceBehindSharedListener(t *testing.T) {
 	transporttest.Run(t, transporttest.Harness{
-		Listen: func(t *testing.T, peers transport.Peers, camouflage transport.Camouflage) (transport.Listener, string) {
-			s := newSupervisor(t, peers, camouflage)
-			t.Cleanup(func() { _ = s.public.Close() })
-			return s.worker("", peers, camouflage), s.public.LocalAddr().String()
+		Listen: func(t *testing.T, endpoint string, peers transport.Peers, camouflage transport.Camouflage) (transport.Listener, string) {
+			if endpoint == "" {
+				endpoint = "127.0.0.1:0"
+			}
+			s := newSupervisor(t, endpoint, peers, camouflage)
+			// One worker serves every space here, so the node is down
+			// when it is.
+			w := s.worker("", peers, camouflage)
+			w.pc.(*forwardedConn).onClose = func() { _ = s.public.Close() }
+			return w, s.public.LocalAddr().String()
 		},
-		Dialer: &Dialer{},
+		Dialer:    &Dialer{},
+		Interpose: interpose,
 	})
 }
 
@@ -147,7 +160,7 @@ func TestWorkersGetOnlyTheirOwnLinks(t *testing.T) {
 	a, b := transporttest.RandomPeerLink("space-a", "node-1"), transporttest.RandomPeerLink("space-b", "node-1")
 	table := transport.NewPeerTable(a, b)
 	camo := &transporttest.Recorder{}
-	s := newSupervisor(t, table, camo)
+	s := newSupervisor(t, "127.0.0.1:0", table, camo)
 	defer func() { _ = s.public.Close() }()
 	workers := map[string]*Listener{}
 	for _, space := range []string{"space-a", "space-b"} {
@@ -213,23 +226,23 @@ func TestDemuxRoutesAndRejects(t *testing.T) {
 	}
 	table := transport.NewPeerTable(peers...)
 	dm := NewDemux(table)
-	datagram := func(pl transport.PeerLink, s session, dir direction, counter uint64) []byte {
+	datagram := func(pl transport.PeerLink, dir direction, counter uint64) []byte {
 		secret := pl.Config.Credential.Secret
-		return seal(nil, newAEAD(secret, s, dir), header{id: connIDFor(secret, dir), sess: s, counter: counter}, []byte("packet"))
+		return seal(nil, newAEAD(secret, dir), connIDFor(secret, dir), newSenderID(), counter, []byte("packet"))
 	}
 	for _, pl := range peers {
-		for i, s := range []session{newSession(), newSession()} {
-			if id, ok := dm.Route(datagram(pl, s, toListener, uint64(i))); !ok || id != pl.Peer {
+		for i := range 2 {
+			if id, ok := dm.Route(datagram(pl, toListener, uint64(i))); !ok || id != pl.Peer {
 				t.Fatalf("routed %s's datagram to %v (%v)", pl.Peer, id, ok)
 			}
 		}
 	}
-	forged := datagram(peers[0], newSession(), toListener, 0)
-	forged[headerSize] ^= 1
+	forged := datagram(peers[0], toListener, 0)
+	forged[clearSize] ^= 1
 	for name, d := range map[string][]byte{
 		"forged":          forged,
-		"unknown":         datagram(transporttest.RandomPeerLink("space-a", "node-1"), newSession(), toListener, 0),
-		"wrong direction": datagram(peers[0], newSession(), toDialer, 0),
+		"unknown":         datagram(transporttest.RandomPeerLink("space-a", "node-1"), toListener, 0),
+		"wrong direction": datagram(peers[0], toDialer, 0),
 		"short":           {1, 2, 3},
 	} {
 		if id, ok := dm.Route(d); ok {
@@ -237,10 +250,10 @@ func TestDemuxRoutesAndRejects(t *testing.T) {
 		}
 	}
 	table.Set(peers[1:])
-	if _, ok := dm.Route(datagram(peers[0], newSession(), toListener, 0)); ok {
+	if _, ok := dm.Route(datagram(peers[0], toListener, 0)); ok {
 		t.Error("routed a revoked credential")
 	}
-	if id, ok := dm.Route(datagram(peers[1], newSession(), toListener, 0)); !ok || id != peers[1].Peer {
+	if id, ok := dm.Route(datagram(peers[1], toListener, 0)); !ok || id != peers[1].Peer {
 		t.Error("lost a kept credential on a table change")
 	}
 }

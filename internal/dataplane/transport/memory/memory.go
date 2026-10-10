@@ -96,15 +96,22 @@ type Listener struct {
 
 func (l *Listener) connect(ctx context.Context, local Addr, cred transport.Credential) (transport.Link, error) {
 	client := newEnd(local, l.addr)
+	server := newEnd(l.addr, local)
 	l.mu.Lock()
+	if l.closed() {
+		l.mu.Unlock()
+		return nil, fmt.Errorf("memory: dial %s: %w", l.addr, transport.ClosedError(nil))
+	}
+	// Looked up and registered under one lock, so a table change either
+	// sees the new end or happened before the lookup.
 	pl, ok := lookup(l.links, cred)
-	l.mu.Unlock()
 	if !ok {
+		l.mu.Unlock()
 		client.toPeer = func(p []byte) { l.camo.Datagram(p, local) }
 		return client, nil
 	}
-	server := newEnd(l.addr, local)
 	server.peer = pl.Peer
+	server.dialer = client
 	client.toPeer = server.deliver
 	server.toPeer = client.deliver
 	server.onClose = func() {
@@ -112,24 +119,38 @@ func (l *Listener) connect(ctx context.Context, local Addr, cred transport.Crede
 		delete(l.live, server)
 		l.mu.Unlock()
 	}
-	l.mu.Lock()
-	for e, other := range l.live {
-		if same(other, pl) {
-			e.shut(transport.ErrSuperseded)
-			delete(l.live, e)
-		}
-	}
 	l.live[server] = pl
 	l.mu.Unlock()
+
 	select {
 	case <-l.done:
-		_ = server.Close()
-		return nil, fmt.Errorf("memory: dial %s: %w", l.addr, transport.ClosedError(nil))
 	case <-ctx.Done():
 		_ = server.Close()
 		return nil, ctx.Err()
 	case l.accept <- server:
-		return client, nil
+		// The older link goes only once the newer one is in.
+		l.mu.Lock()
+		for e, other := range l.live {
+			if e != server && same(other, pl) {
+				e.shut(transport.ErrSuperseded)
+				delete(l.live, e)
+			}
+		}
+		l.mu.Unlock()
+		if !l.closed() {
+			return client, nil
+		}
+	}
+	_ = server.Close()
+	return nil, fmt.Errorf("memory: dial %s: %w", l.addr, transport.ClosedError(nil))
+}
+
+func (l *Listener) closed() bool {
+	select {
+	case <-l.done:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -170,45 +191,40 @@ func (l *Listener) watchPeers(changed <-chan struct{}) {
 
 // Accept implements transport.Listener.
 func (l *Listener) Accept(ctx context.Context) (transport.Link, transport.Identity, error) {
-	select {
-	case <-l.done:
+	if l.closed() {
 		return nil, transport.Identity{}, transport.ClosedError(nil)
-	default:
 	}
 	select {
 	case <-l.done:
-		return nil, transport.Identity{}, transport.ClosedError(nil)
 	case <-ctx.Done():
 		return nil, transport.Identity{}, ctx.Err()
 	case e := <-l.accept:
-		return e, e.peer, nil
+		if !l.closed() {
+			return e, e.peer, nil
+		}
 	}
+	return nil, transport.Identity{}, transport.ClosedError(nil)
 }
 
 // Addr implements transport.Listener.
 func (l *Listener) Addr() net.Addr { return l.addr }
 
-// Close implements transport.Listener and frees the endpoint.
+// Close implements transport.Listener and frees the endpoint. Unlike udp,
+// the dialers' ends close too, as a stream would: there is no wire for a
+// restarted listener to pick them up from.
 func (l *Listener) Close() error {
 	l.closeOnce.Do(func() {
-		close(l.done)
-		l.net.mu.Lock()
-		delete(l.net.listeners, string(l.addr))
-		l.net.mu.Unlock()
 		l.mu.Lock()
+		close(l.done)
 		for e := range l.live {
 			e.shut(nil)
+			e.dialer.shut(nil)
 		}
 		clear(l.live)
 		l.mu.Unlock()
-		for {
-			select {
-			case e := <-l.accept:
-				e.shut(nil)
-			default:
-				return
-			}
-		}
+		l.net.mu.Lock()
+		delete(l.net.listeners, string(l.addr))
+		l.net.mu.Unlock()
 	})
 	return nil
 }
@@ -217,6 +233,7 @@ func (l *Listener) Close() error {
 type end struct {
 	local, remote Addr
 	peer          transport.Identity
+	dialer        *end // a server end's dialer end
 	toPeer        func([]byte)
 	onClose       func()
 

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"crypto/rand"
 	"testing"
-	"time"
 )
 
 func randomSecret(t *testing.T) []byte {
@@ -33,67 +32,54 @@ func TestConnIDsAreKeyedAndPerDirection(t *testing.T) {
 	}
 }
 
-func TestSessionsOnlyGrow(t *testing.T) {
-	prev := newSession()
-	for range 1000 {
-		s := newSession()
-		if s.epoch() <= prev.epoch() {
-			t.Fatalf("epoch %d after %d", s.epoch(), prev.epoch())
-		}
-		prev = s
-	}
-}
-
 func TestSealOpenAndTamper(t *testing.T) {
 	secret := randomSecret(t)
-	s := newSession()
-	h := header{id: connIDFor(secret, toListener), sess: s, counter: 7}
+	id, sender := connIDFor(secret, toListener), newSenderID()
 	packet := []byte("a packet that must not be visible on the wire")
-	d := seal(nil, newAEAD(secret, s, toListener), h, packet)
+	d := seal(nil, newAEAD(secret, toListener), id, sender, 7, packet)
 	if len(d) != len(packet)+Overhead {
 		t.Fatalf("datagram is %d bytes, want %d", len(d), len(packet)+Overhead)
 	}
 	if bytes.Contains(d, packet[:8]) {
 		t.Fatal("the packet shows through")
 	}
-	parsed, ok := parseHeader(d)
-	if !ok || parsed != h {
-		t.Fatalf("parsed %+v, want %+v", parsed, h)
+	if got, ok := connIDOf(d); !ok || got != id {
+		t.Fatalf("connection id %x, want %x", got, id)
 	}
-	got, err := open(nil, newAEAD(secret, s, toListener), parsed, d)
-	if err != nil || !bytes.Equal(got, packet) {
-		t.Fatalf("open: %q, %v", got, err)
+	gotSender, counter, got, err := open(nil, newAEAD(secret, toListener), d)
+	if err != nil || gotSender != sender || counter != 7 || !bytes.Equal(got, packet) {
+		t.Fatalf("open: %x %d %q %v", gotSender, counter, got, err)
+	}
+	again := seal(nil, newAEAD(secret, toListener), id, sender, 7, packet)
+	if bytes.Equal(again[connIDSize:clearSize], d[connIDSize:clearSize]) {
+		t.Fatal("two datagrams share a nonce")
 	}
 	for _, wrong := range []struct {
 		name   string
 		secret []byte
 		dir    direction
 	}{{"other secret", randomSecret(t), toListener}, {"other direction", secret, toDialer}} {
-		if _, err := open(nil, newAEAD(wrong.secret, s, wrong.dir), parsed, d); err == nil {
+		if _, _, _, err := open(nil, newAEAD(wrong.secret, wrong.dir), d); err == nil {
 			t.Errorf("opened with %s", wrong.name)
 		}
 	}
 	for i := range d {
 		bad := bytes.Clone(d)
 		bad[i] ^= 0x01
-		ph, ok := parseHeader(bad)
-		if !ok {
-			continue
-		}
-		if _, err := open(nil, newAEAD(secret, ph.sess, toListener), ph, bad); err == nil {
+		if _, _, _, err := open(nil, newAEAD(secret, toListener), bad); err == nil {
 			t.Fatalf("flipping a bit of byte %d went unnoticed", i)
 		}
 	}
 }
 
-func TestParseHeaderBounds(t *testing.T) {
-	for _, n := range []int{0, 1, headerSize, Overhead, maxDatagram + 1} {
-		if _, ok := parseHeader(make([]byte, n)); ok {
+func TestConnIDOfBounds(t *testing.T) {
+	for _, n := range []int{0, 1, clearSize, Overhead, maxDatagram + 1} {
+		if _, ok := connIDOf(make([]byte, n)); ok {
 			t.Errorf("accepted a %d-byte datagram", n)
 		}
 	}
 	for _, n := range []int{Overhead + 1, maxDatagram} {
-		if _, ok := parseHeader(make([]byte, n)); !ok {
+		if _, ok := connIDOf(make([]byte, n)); !ok {
 			t.Errorf("rejected a %d-byte datagram", n)
 		}
 	}
@@ -145,25 +131,23 @@ func TestReplayWindowAgainstAModel(t *testing.T) {
 	}
 }
 
-func TestSessionAdmission(t *testing.T) {
-	now := time.Now()
-	sessionAt := func(epoch uint64) session {
-		var s session
-		s[7] = byte(epoch)
-		return s
+func TestSenderWindows(t *testing.T) {
+	var s senderWindows
+	accept := func(sender senderID, counter uint64, wantFresh, wantNewest bool) {
+		t.Helper()
+		if fresh, newest := s.accept(sender, counter); fresh != wantFresh || newest != wantNewest {
+			t.Fatalf("accept(%x, %d) = %v, %v; want %v, %v", sender[:2], counter, fresh, newest, wantFresh, wantNewest)
+		}
 	}
-	var f flow
-	if !f.admits(sessionAt(5), now) {
-		t.Fatal("a fresh flow refused its first session")
+	a, b := newSenderID(), newSenderID()
+	accept(a, 10, true, true)
+	accept(a, 10, false, false)
+	accept(a, 5, true, false) // reordered: fresh, not the newest
+	accept(b, 0, true, true)  // a redial starts again at zero
+	accept(a, 11, true, true) // and doesn't disturb the old sender
+	accept(b, 0, false, false)
+	for range maxSenders {
+		accept(newSenderID(), 0, true, true)
 	}
-	f.epoch, f.seen = 5, now
-	if f.admits(sessionAt(5), now) || f.admits(sessionAt(4), now) {
-		t.Fatal("admitted a session that isn't newer")
-	}
-	if !f.admits(sessionAt(6), now) {
-		t.Fatal("refused a newer session")
-	}
-	if !f.admits(sessionAt(4), now.Add(sessionIdleTimeout+time.Second)) {
-		t.Fatal("an idle session blocks a dialer whose clock went back")
-	}
+	accept(a, 10, true, true) // evicted: a pre-filter forgets
 }

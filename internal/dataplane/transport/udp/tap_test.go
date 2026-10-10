@@ -3,7 +3,6 @@ package udp
 import (
 	"bytes"
 	"context"
-	"errors"
 	"net"
 	"sync"
 	"testing"
@@ -35,7 +34,7 @@ type tap struct {
 }
 
 func newTap(t *testing.T, listener net.Addr) *tap {
-	front, err := net.ListenPacket("udp", "127.0.0.1:0")
+	front, err := net.ListenPacket("udp", loopbackLike(listener))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,8 +64,16 @@ func newTap(t *testing.T, listener net.Addr) *tap {
 }
 
 // rebind moves the tap to a new source port toward the listener.
+// loopbackLike is a loopback address of the same family as a.
+func loopbackLike(a net.Addr) string {
+	if ua, ok := a.(*net.UDPAddr); ok && ua.IP.To4() == nil {
+		return "[::1]:0"
+	}
+	return "127.0.0.1:0"
+}
+
 func (tp *tap) rebind() {
-	back, err := net.ListenPacket("udp", "127.0.0.1:0")
+	back, err := net.ListenPacket("udp", loopbackLike(tp.listener))
 	if err != nil {
 		tp.t.Fatal(err)
 	}
@@ -209,18 +216,17 @@ func expectNoPacket(t *testing.T, ch <-chan []byte) {
 func TestProbesGetNoAnswer(t *testing.T) {
 	f := newFixture(t)
 	secret := f.peer.Config.Credential.Secret
-	valid := seal(nil, newAEAD(secret, newSession(), toListener), header{id: connIDFor(secret, toListener), sess: newSession()}, []byte("hi"))
-	forged := bytes.Clone(valid)
+	inID := connIDFor(secret, toListener)
+	forged := seal(nil, newAEAD(secret, toListener), inID, newSenderID(), 0, []byte("hi"))
 	forged[len(forged)-1] ^= 1
-	wrongDirection := seal(nil, newAEAD(secret, newSession(), toDialer), header{id: connIDFor(secret, toDialer), sess: newSession()}, []byte("hi"))
 	probes := map[string][]byte{
 		"empty":                     {},
 		"one byte":                  {1},
 		"WireGuard initiation":      append([]byte{1, 0, 0, 0}, make([]byte, 144)...),
 		"zeros":                     make([]byte, 1200),
 		"right conn id, bad tag":    forged,
-		"right conn id, wrong key":  valid, // sealed under one session, labelled with another
-		"other direction's conn id": wrongDirection,
+		"right conn id, wrong key":  seal(nil, newAEAD(randomSecret(t), toListener), inID, newSenderID(), 0, []byte("hi")),
+		"other direction's conn id": seal(nil, newAEAD(secret, toDialer), connIDFor(secret, toDialer), newSenderID(), 0, []byte("hi")),
 		"oversized":                 make([]byte, maxDatagram+1),
 	}
 	prober, err := net.ListenPacket("udp", "127.0.0.1:0")
@@ -277,43 +283,77 @@ func TestReplaysAreDropped(t *testing.T) {
 	}
 }
 
-func TestOldSessionCannotComeBack(t *testing.T) {
+// TestReplayFromElsewhereDoesNotMoveTheLink replays a captured datagram from
+// another address: it is not the newest of its sender, so the link stays.
+func TestReplayFromElsewhereDoesNotMoveTheLink(t *testing.T) {
 	f := newFixture(t)
-	first := f.dial()
-	if err := first.WritePacket([]byte("first session")); err != nil {
-		t.Fatal(err)
-	}
-	oldServer := f.accept()
-	oldUp, _ := f.tap.captured()
-
-	second := f.dial()
-	if err := second.WritePacket([]byte("second session")); err != nil {
-		t.Fatal(err)
+	client := f.dial()
+	fromServer := reads(client)
+	for _, p := range []string{"one", "two"} {
+		if err := client.WritePacket([]byte(p)); err != nil {
+			t.Fatal(err)
+		}
 	}
 	server := f.accept()
-	got := reads(server)
-	expectPacket(t, got, []byte("second session"))
-	if _, err := oldServer.ReadPacket(make([]byte, transport.MaxPacketSize)); !errors.Is(err, transport.ErrSuperseded) {
-		t.Fatalf("old link: %v, want ErrSuperseded", err)
+	fromClient := reads(server)
+	expectPacket(t, fromClient, []byte("one"))
+	expectPacket(t, fromClient, []byte("two"))
+	before := server.RemoteAddr().String()
+	up, _ := f.tap.captured()
+	f.tap.rebind()
+	f.tap.inject(up[0])
+	expectNoPacket(t, fromClient)
+	if after := server.RemoteAddr().String(); after != before {
+		t.Fatalf("a replay moved the link from %s to %s", before, after)
 	}
+	if err := server.WritePacket([]byte("still here")); err != nil {
+		t.Fatal(err)
+	}
+	expectPacket(t, fromServer, []byte("still here"))
+}
 
-	for _, d := range oldUp {
-		f.tap.inject(d)
+// TestNoncesNeverRepeat checks the wire across everything that resets a
+// sender: a redial, a listener restart, a server-side close.
+func TestNoncesNeverRepeat(t *testing.T) {
+	f := newFixture(t)
+	addr := f.listener.Addr().String()
+	exchange := func(client transport.Link) {
+		t.Helper()
+		if err := client.WritePacket([]byte("ping")); err != nil {
+			t.Fatal(err)
+		}
+		server := f.accept()
+		expectPacket(t, reads(server), []byte("ping"))
+		for range 10 {
+			if err := server.WritePacket([]byte("pong")); err != nil {
+				t.Fatal(err)
+			}
+		}
+		_ = server.Close()
 	}
-	if err := first.WritePacket([]byte("first again")); err != nil {
+	exchange(f.dial())
+	exchange(f.dial())
+	_ = f.listener.Close()
+	l, err := Listen(addr, transport.NewPeerTable(f.peer), f.camo)
+	if err != nil {
 		t.Fatal(err)
 	}
-	f.expectNoAccept()
-	expectNoPacket(t, got)
-	// The tap follows whoever spoke last; let the second dialer speak.
-	if err := second.WritePacket([]byte("back")); err != nil {
-		t.Fatal(err)
+	t.Cleanup(func() { _ = l.Close() })
+	f.listener = l
+	exchange(f.dial())
+	time.Sleep(quiet)
+	up, down := f.tap.captured()
+	seen := map[string]bool{}
+	for _, d := range append(up, down...) {
+		n := string(d[connIDSize:clearSize])
+		if seen[n] {
+			t.Fatalf("nonce %x used twice", n)
+		}
+		seen[n] = true
 	}
-	expectPacket(t, got, []byte("back"))
-	if err := server.WritePacket([]byte("still the second")); err != nil {
-		t.Fatal(err)
+	if len(seen) < 30 {
+		t.Fatalf("only %d datagrams captured", len(seen))
 	}
-	expectPacket(t, reads(second), []byte("still the second"))
 }
 
 func TestListenerFollowsARebindingDialer(t *testing.T) {
