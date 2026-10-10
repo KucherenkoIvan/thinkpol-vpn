@@ -43,14 +43,14 @@ Two planes. The **data plane** moves packets on every node; the **control plane*
 | **TUN** | Virtual interface on macOS (utun), Linux, Windows (Wintun) | `wireguard-go/tun` |
 | **Router** | Classifies each packet by destination: overlay peer, a chain, or `direct`. Holds the rule table (longest-prefix match on IPs) | in-process |
 | **WireGuard** | End-to-end sessions with peers (devices, exits). Fed by the router through virtual `tun.Device`s — **one WireGuard device per egress**, because WireGuard routes by `AllowedIPs` and two exits would both claim `0.0.0.0/0` | `wireguard-go/device` |
-| **Path layer** | A `conn.Bind`: WireGuard sees one stable peer; underneath, each peer has **candidate paths** (via relay N, via relays A→B, later direct UDP) and the layer picks and switches between them | relay paths only |
+| **Path layer** | A `conn.Bind`: WireGuard sees one stable peer; underneath, each peer has **candidate paths**, named by their first hop (relay N, or the peer itself; later direct UDP), and the layer picks and switches between them; relays route the rest of the way by destination | relay paths only |
 | **Transport** | One link between two adjacent nodes; authenticates, frames packets, disguises the stream | plain UDP (the baseline the lab must catch) |
 
 **Every server node relays; ingress and egress are opt-in.** Two node settings, both off by default: **allow ingress** (devices may connect, so the node can be a chain's first hop) and **allow egress** (internet traffic may leave from it, so it can be a chain's last hop). A node with both off accepts only other nodes and only relays. There are no fixed roles: what a node does in a chain comes from its position there, so the same VPS can start one chain, sit in the middle of another and end a third. Device-to-device relaying needs a relay devices can reach, so it uses nodes that allow ingress.
 
-**Relays, chains and device-to-device are one mechanism.** A path is a list of relays ending at a peer. Device-to-device through a relay is a one-relay path; a chain `ru-entry → nl-exit` is a path to the exit peer via `ru-entry`. A relay forwards opaque WireGuard packets addressed by destination node id; it never decrypts them.
+**Relays, chains and device-to-device are one mechanism: destination routing.** A relay forwards opaque WireGuard packets addressed by destination node id (plus a hop limit); it never decrypts them. Each relay's map section holds a **forwarding table**: per destination, the adjacent next hops (several for a hop group in the middle of a chain). A sender knows only its **candidate first hops** per peer (adjacent entries, or the peer itself for a direct link), and each relay only its next hop, so no node holds a whole path. Device-to-device through a relay is a first hop whose route delivers to the device; a chain `ru-entry → nl-exit` is the exit peer reached with `ru-entry` as first hop, which routes to `nl-exit`. Candidate first hops and next hops are listed in **priority order**, which is what `failover` follows.
 
-**Hop groups make failover a path-layer decision.** A chain hop can be a group (`ru-entries`) with a selection policy: `failover` (priority order), `lowest-latency`, or `spread` (each device sticks to one member, devices are distributed). The group expands into one candidate path per member; the path layer scores them (handshake success, loss, latency) and switches with hysteresis. WireGuard's session is with the exit, not the entry, so **switching entries keeps the exit and open connections survive**. No per-packet balancing across entries: packets would arrive out of order, which TCP handles badly. `spread` is the useful kind of balancing, and it also keeps any single entry IP's volume low against volume-based throttling.
+**Hop groups make failover a path-layer decision.** A chain hop can be a group (`ru-entries`) with a selection policy: `failover` (priority order), `lowest-latency`, or `spread` (each device sticks to one member, devices are distributed). At the start of a chain the group becomes the device's candidate first hops, one per member; in the middle, a relay's next hops toward the exit. The path layer scores them (handshake success, loss, latency) and switches with hysteresis. WireGuard's session is with the exit, not the entry, so **switching entries keeps the exit and open connections survive**. No per-packet balancing across entries: packets would arrive out of order, which TCP handles badly. `spread` is the useful kind of balancing, and it also keeps any single entry IP's volume low against volume-based throttling.
 
 **Transports** (roughly in order of how hard they are to catch):
 
@@ -85,11 +85,13 @@ An ordered rule list; first match wins:
 ```
 domain-suffix:example.ru  → direct
 geoip:ru                  → direct
-geosite:youtube           → chain:nl
+geosite:youtube           → chain:de
 default                   → chain:ru-nl
 ```
 
 Actions: `direct`, `chain:<name>`, `block`. The space's default list lives in the signed map; each device can override it locally (the "what goes through the tunnel" switch).
+
+**Chains in use at the same time end at different exits** (here `de` and `nl`). WireGuard holds one session per exit and the path layer sends each exit's packets along one path at a time, so two chains to the same exit can't both carry traffic: they are alternatives, which a hop group expresses better. The map builder rejects a rule set that uses two chains ending at the same exit.
 
 Two ways to enforce the same rules:
 
@@ -102,7 +104,7 @@ GeoIP alone misroutes CDNs (foreign services on domestic IPs and vice versa), so
 
 **DNS is routing.** A resolver on the node's overlay address answers overlay names (`<device>.<space>.internal`; `.internal` is reserved for private use, so a space name can never shadow a real domain), sends `direct` domains to a domestic upstream, and everything else through the tunnel to a resolver at the exit. No DNS leaks, and GeoIP isn't fed CDN answers from the wrong country.
 
-**Lists**: v2fly geoip/geosite or DB-IP Lite. The map references them by content hash; nodes fetch and cache them from peers.
+**Lists**: v2fly geoip/geosite or DB-IP Lite. The map references them by content hash: the header lists every blob the space uses, the set relays cache and pass on, and each section names only the blobs its node uses. Nodes fetch and cache them from peers. The hashes of public lists are visible to every node holding the envelope, which only tells a node that the space uses, say, a Russian GeoIP list: an accepted leak.
 
 ### IPv6
 
@@ -168,18 +170,22 @@ Events (`NodeJoined`, `NodeRemoved`, `MemberRemoved`, `GrantAccepted`, `GrantRev
 
 **Admin panel.** Server-rendered with go-kernel's `webui` (htmx) for lists, forms and dashboards. The **canvas** (nodes, links, transports, chains as paths, live health and traffic on top, editing by dragging) is a JavaScript island on its page, a graph-editor library fed by a JSON endpoint and a live-update stream. Shared nodes appear on a guest's canvas as read-only, labelled `owned by <space>`. Whether islands like this belong in `webui` itself is a kernel question this project answers.
 
-**The signed map.** One per space: a signed envelope with a header (space id, version, hashes of list files) and **one sealed section per node**, encrypted to that node's key. Each section holds only what its node needs:
-- an entry gets the device ids it accepts, their transport credentials and where it may relay to
+**The signed map.** One per space: a signed envelope with a header (space id, key epoch, version, the space's signing and recovery public keys, hashes of list files) and **one sealed section per node**, an anonymous sealed box to that node's map key (its own X25519 key, separate from its WireGuard key). Sections carry no recipient id: a node finds its own by trying to open each one, so nothing in the envelope links a section to a node, or a node's sections across versions. Each section holds only what its node needs:
+- an entry gets the device ids it accepts, the transport's verifier for each one's credential (a hash or public key where the transport allows, the shared secret for a symmetric transport), per-link transport settings, and its forwarding table
 - an exit gets the WireGuard keys and overlay addresses of devices allowed to use it
-- a device gets rules, chains, reachable peers and entry endpoints
+- a device gets rules, chains, reachable peers with their candidate first hops, and entry endpoints
 
-Versions only go up, and the envelope is signed by the space's **signing key**. Nodes accept a valid envelope with a higher version from anyone, including other nodes, so it spreads by gossip, but each can open only its own section. Rollback is impossible, and there is no expiry, so offline networks keep working. Revocation is a new version without the node.
+Endpoints and listener addresses in the map are IP literals: the controller resolves names, so nodes never ask DNS at dial time, past the tunnel.
 
-**The section count is padded** to a fixed size (8, 16, 32, …) with dummy sections, so the envelope doesn't reveal how many nodes a space has.
+Versions only go up, and the envelope is signed by the space's **signing key**. Maps are ordered by **(key epoch, version)**; the epoch changes only through a recovery record (below), so a stolen signing key can't freeze the space by signing the highest possible version. Nodes accept a valid envelope with a higher version from anyone, including other nodes, so it spreads by gossip, but each can open only its own section. Rollback is impossible, and there is no expiry, so offline networks keep working. Revocation is a new version without the node.
 
-**Recovery key.** Created with the space and kept offline by the admin (printed phrase or QR code); never on the controller. The header carries its public key, and it can sign exactly one kind of record: "the signing key is now X". Nodes accept that record over the current signing key, so a lost or stolen controller is recovered by rotating to a new key instead of re-creating the space. Controller database backups are encrypted to the same key, so one thing kept offline restores everything.
+**The section count is padded** to a fixed size (8, 16, 32, …) with dummy sections, so the envelope doesn't reveal how many nodes a space has. Every section of an envelope is padded to the same length (at least 8 KiB, a power of two) and the sections are shuffled, so neither length nor position tells a real section from a dummy, or a relay's section from a device's. 8 KiB holds every section of a space at the PRD's scale with room to spare; a much larger space moves to a bigger bucket, and that bucket is what remains visible.
 
-**Shared nodes and maps.** The node owner's map tells the node which guest spaces it serves: each guest's public key and cap. The node then accepts the guest space's envelopes as well, but only for that guest's worker. To the guest's controller, the shared node is an endpoint plus the grant, with nothing to provision.
+**Format changes.** Every format keeps the format number and the header, with its layout, where format 1 has them, so any node can tell which space and version a newer envelope is even when it can't read the rest. New fields are added without a bump and ignored by older nodes. Fields older nodes must not ignore are rolled out per section first: each section names the lowest reader that understands it, and a node with an older reader doesn't use it. **The format number is bumped only after the release that reads the new format has rolled out through format-1 maps**, so no node is left unable to read its space's maps.
+
+**Recovery key.** Created with the space and kept offline by the admin (printed phrase or QR code); never on the controller. The header carries its public key, and it can sign exactly one kind of record: "from key epoch N, the signing key is X". Nodes accept that record over the current signing key and move to the new epoch, so a lost or stolen controller is recovered by rotating to a new key instead of re-creating the space. Controller database backups are encrypted to the same key, so one thing kept offline restores everything.
+
+**Shared nodes and maps.** The node owner's map tells the node which guest spaces it serves: each guest's space id, signing and recovery keys, cap, and the ingress and egress granted. The node then accepts the guest space's envelopes as well, but only for that guest's worker. Only the owner space's listeners are honored on a shared node; the supervisor reads each guest's inbound links from that guest's map to authenticate its connections. To the guest's controller, the shared node is an endpoint plus the grant, with nothing to provision.
 
 **Joining.**
 - Server: `thinkpol node add root@1.2.3.4` installs the binary and a systemd unit, hardens logging, enables forwarding, configures nftables, has the node **generate its own keys**, adds it to the map with ingress and egress off, and publishes; `thinkpol node set <node> --ingress --egress` opens it up. Every step is idempotent, so re-running is how you repair a node.
