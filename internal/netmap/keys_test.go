@@ -62,3 +62,47 @@ func TestPrivateKeyIsRedacted(t *testing.T) {
 		t.Errorf("a struct holding the key prints it: %s", out)
 	}
 }
+
+func TestNodePublicKeyCheck(t *testing.T) {
+	// The canonical low-order points of Curve25519 (as in libsodium's
+	// blocklist), the same with the top bit set, and values at or above p.
+	bad := map[string]string{
+		"u = 0":                    "0000000000000000000000000000000000000000000000000000000000000000",
+		"u = 1":                    "0100000000000000000000000000000000000000000000000000000000000000",
+		"order 8 (a)":              "e0eb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b800",
+		"order 8 (b)":              "5f9c95bca3508c24b1d0b1559c83ef5b04445cc4581c8e86d8224eddd09f1157",
+		"u = p - 1":                "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+		"u = p":                    "edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+		"u = p + 1":                "eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+		"u = 2^255 - 1":            "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+		"u = 0, top bit set":       "0000000000000000000000000000000000000000000000000000000000000080",
+		"u = 1, top bit set":       "0100000000000000000000000000000000000000000000000000000000000080",
+		"order 8 (b), top bit set": "5f9c95bca3508c24b1d0b1559c83ef5b04445cc4581c8e86d8224eddd09f11d7",
+	}
+	for name, s := range bad {
+		if _, err := ParseNodePublicKey(s); err == nil {
+			t.Errorf("%s: ParseNodePublicKey accepted %s", name, s)
+		}
+	}
+	// A valid key with the top bit set is still refused: honest keys never
+	// have it, and accepting it would give one point two encodings.
+	valid := GenerateNodeKey().Public()
+	topBit := valid
+	topBit[31] |= 0x80
+	if err := topBit.Check(); err == nil {
+		t.Error("a key with the top bit set passed Check")
+	}
+	for range 100 {
+		k := GenerateNodeKey().Public()
+		if err := k.Check(); err != nil {
+			t.Fatalf("a generated key failed Check: %v", err)
+		}
+		if _, err := ParseNodePublicKey(k.String()); err != nil {
+			t.Fatalf("ParseNodePublicKey(%v): %v", k, err)
+		}
+	}
+	// u = p - 2 is reduced and not low-order: the bound is exact.
+	if _, err := ParseNodePublicKey("ebffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f"); err != nil {
+		t.Errorf("u = p - 2 refused: %v", err)
+	}
+}

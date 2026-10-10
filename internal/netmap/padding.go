@@ -9,10 +9,17 @@ import (
 // count is a power of two, at least minSections, and every section of an
 // envelope has the same padded length, a power of two of at least
 // minSectionSize bytes.
+//
+// minSectionSize covers the PRD's scale (10 servers, 20 devices) with room
+// to spare, so such spaces all look alike; a much larger space moves to a
+// bigger bucket, which is the residual leak. The section limits allow more
+// than MaxEnvelopeSize: the envelope cap is the one that binds (32 sections
+// of up to 512 KiB, or 1024 of up to 16 KiB), and Build checks it before
+// sealing.
 const (
 	minSections    = 8
 	maxSections    = 1024
-	minSectionSize = 1 << 10
+	minSectionSize = 8 << 10
 	maxSectionSize = 1 << 20
 )
 

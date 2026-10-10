@@ -7,18 +7,31 @@ import (
 	"testing"
 )
 
-// fixture is a space with servers and devices wired like an M0 overlay:
-// every device links to every server, servers relay between devices.
+// fixture is a space wired the way maps will be:
+//   - servers form a mesh: each dials every later server;
+//   - with two or more servers the last one is an exit that devices can't
+//     reach (ingress off) and the others are entries; one server is just an
+//     entry;
+//   - every device dials every entry over udp and tls (two endpoints) and
+//     has a direct path to it; other devices and the exit are reached with
+//     the entries as candidate first hops;
+//   - entries route to devices directly and to the exit, the first entry
+//     through a hop group of the next two when there are four servers or
+//     more;
+//   - the first device listens for direct paths, and devices use a named
+//     GeoIP blob.
 type fixture struct {
 	signing  ed25519.PrivateKey
 	recovery ed25519.PrivateKey
-	keys     []NodePrivateKey // keys[i] opens contents.Sections[i]
+	keys     []NodePrivateKey // keys[i] opens contents.Recipients[i]
 	contents Contents
 }
 
 var (
 	testIPv4Net = netip.MustParsePrefix("100.100.0.0/16")
 	testIPv6Net = netip.MustParsePrefix("fd12:3456:789a::/48")
+	testGeoIP   = BlobRef{Kind: BlobGeoIP, SHA256: [32]byte{1, 2, 3}, Size: 4096}
+	testGeoSite = BlobRef{Kind: BlobGeoSite, SHA256: [32]byte{4, 5, 6}, Size: 2048}
 )
 
 func newKeyPair(t testing.TB) ed25519.PrivateKey {
@@ -35,9 +48,10 @@ func newFixture(t testing.TB, servers, devices int) *fixture {
 	f := &fixture{signing: newKeyPair(t), recovery: newKeyPair(t)}
 	f.contents = Contents{
 		SpaceID:     NewSpaceID(),
+		KeyEpoch:    0,
 		Version:     1,
 		RecoveryKey: f.recovery.Public().(ed25519.PublicKey),
-		Blobs:       []BlobRef{{SHA256: [32]byte{1, 2, 3}, Size: 4096}},
+		Blobs:       []BlobRef{testGeoIP, testGeoSite},
 	}
 	n := servers + devices
 	ids := make([]NodeID, n)
@@ -46,53 +60,116 @@ func newFixture(t testing.TB, servers, devices int) *fixture {
 		ids[i] = NewNodeID()
 		wg[i] = WireGuardKey(GenerateNodeKey().Public()) // any 32 non-zero bytes
 	}
-	addrs := func(i int) (netip.Addr, netip.Addr) {
+	addrs := func(i int) []netip.Addr {
 		v4 := testIPv4Net.Addr().As4()
 		v4[2], v4[3] = byte((i+1)>>8), byte(i+1)
 		v6 := testIPv6Net.Addr().As16()
 		v6[14], v6[15] = byte((i+1)>>8), byte(i+1)
-		return netip.AddrFrom4(v4), netip.AddrFrom16(v6)
+		return []netip.Addr{netip.AddrFrom4(v4), netip.AddrFrom16(v6)}
 	}
-	cred := func(a, b int) []byte {
-		return []byte(fmt.Sprintf("link-key-%d-%d-0123456789abcdef", min(a, b), max(a, b)))
+	cred := func(a, b int, transport string) []byte {
+		return []byte(fmt.Sprintf("%s-link-key-%d-%d-0123456789abcdef", transport, min(a, b), max(a, b)))
 	}
-	isServer := func(i int) bool { return i < servers }
+	exit := -1
+	if servers >= 2 {
+		exit = servers - 1
+	}
+	var entries []int
+	for i := range servers {
+		if i != exit {
+			entries = append(entries, i)
+		}
+	}
+	isDevice := func(i int) bool { return i >= servers }
+	viaEntries := func() []Path {
+		var p []Path
+		for _, e := range entries {
+			p = append(p, Path{FirstHop: ids[e]})
+		}
+		return p
+	}
 
+	sections := make([]Section, n)
 	for i := range n {
-		v4, v6 := addrs(i)
-		s := Section{Node: NodeSettings{
-			ID: ids[i], IPv4: v4, IPv6: v6,
+		a := addrs(i)
+		sections[i].Node = NodeSettings{
+			ID: ids[i], IPv4: a[0], IPv6: a[1],
 			IPv4Network: testIPv4Net, IPv6Network: testIPv6Net,
-		}}
-		if isServer(i) {
-			s.Node.Kind = NodeServer
-			s.Node.Listeners = []Listener{{Transport: "udp", Address: ":4500"}}
-			for d := servers; d < n; d++ {
-				s.Inbound = append(s.Inbound, InboundLink{Peer: ids[d], Transport: "udp", Credential: cred(i, d)})
-				s.RelayTo = append(s.RelayTo, ids[d])
+		}
+	}
+	peer := func(i int, paths []Path) Peer {
+		return Peer{ID: ids[i], WireGuardKey: wg[i], Addresses: addrs(i), Paths: paths}
+	}
+
+	for i := range servers {
+		s := &sections[i]
+		s.Node.Kind = NodeServer
+		s.Node.Listeners = []Listener{
+			{Transport: "udp", Address: ":4500"},
+			{Transport: "tls", Address: "[::]:443", Settings: []byte("camouflage=www.example.org")},
+		}
+		for j := i + 1; j < servers; j++ {
+			s.Links = append(s.Links, Link{Peer: ids[j], Endpoints: []Endpoint{
+				{Transport: "udp", Address: fmt.Sprintf("198.51.100.%d:4500", j+1), Credential: cred(i, j, "udp")},
+			}})
+			sections[j].Inbound = append(sections[j].Inbound, InboundLink{
+				Peer: ids[i], PeerKind: NodeServer, Transport: "udp", Credential: cred(i, j, "udp"),
+			})
+		}
+	}
+	for _, e := range entries {
+		s := &sections[e]
+		for d := servers; d < n; d++ {
+			for _, tr := range []string{"udp", "tls"} {
+				s.Inbound = append(s.Inbound, InboundLink{Peer: ids[d], PeerKind: NodeDevice, Transport: tr, Credential: cred(e, d, tr)})
 			}
-		} else {
-			s.Node.Kind = NodeDevice
-			for srv := range servers {
-				s.Links = append(s.Links, Link{Peer: ids[srv], Endpoints: []Endpoint{
-					{Transport: "udp", Address: fmt.Sprintf("203.0.113.%d:4500", srv+1), Credential: cred(i, srv)},
-				}})
+			s.Peers = append(s.Peers, peer(d, []Path{{FirstHop: ids[d]}}))
+			s.Routes = append(s.Routes, Route{Destination: ids[d], NextHops: []NodeID{ids[d]}})
+		}
+		if exit >= 0 {
+			hops := []NodeID{ids[exit]}
+			if e == 0 && servers >= 4 {
+				hops = []NodeID{ids[1], ids[2]} // a hop group in the middle
 			}
-			for d := servers; d < n; d++ {
-				if d == i || servers == 0 {
-					continue
-				}
-				pv4, pv6 := addrs(d)
-				p := Peer{ID: ids[d], WireGuardKey: wg[d], Addresses: []netip.Addr{pv4, pv6}}
-				for srv := range servers {
-					p.Paths = append(p.Paths, Path{Via: []NodeID{ids[srv]}})
-				}
-				s.Peers = append(s.Peers, p)
+			s.Routes = append(s.Routes, Route{Destination: ids[exit], NextHops: hops})
+		}
+	}
+	if exit >= 0 {
+		for d := servers; d < n; d++ {
+			sections[exit].Peers = append(sections[exit].Peers, peer(d, viaEntries()))
+		}
+	}
+	for d := servers; d < n; d++ {
+		s := &sections[d]
+		s.Node.Kind = NodeDevice
+		if d == servers {
+			s.Node.Listeners = []Listener{{Transport: "udp", Address: ":51820"}}
+		}
+		s.Blobs = []BlobRef{{Kind: BlobGeoIP, SHA256: testGeoIP.SHA256, Size: testGeoIP.Size, Name: "ru"}}
+		for _, e := range entries {
+			s.Links = append(s.Links, Link{Peer: ids[e], Endpoints: []Endpoint{
+				{Transport: "udp", Address: fmt.Sprintf("203.0.113.%d:4500", e+1), Credential: cred(e, d, "udp")},
+				{Transport: "tls", Address: fmt.Sprintf("entry-%d.example.net:443", e), Credential: cred(e, d, "tls"), Settings: []byte("pin=sha256:abcd")},
+			}})
+			s.Peers = append(s.Peers, peer(e, []Path{{FirstHop: ids[e]}}))
+		}
+		if len(entries) == 0 {
+			continue
+		}
+		if exit >= 0 {
+			s.Peers = append(s.Peers, peer(exit, viaEntries()))
+		}
+		for o := servers; o < n; o++ {
+			if o != d && isDevice(o) {
+				s.Peers = append(s.Peers, peer(o, viaEntries()))
 			}
 		}
+	}
+
+	for i := range n {
 		key := GenerateNodeKey()
 		f.keys = append(f.keys, key)
-		f.contents.Sections = append(f.contents.Sections, Recipient{Key: key.Public(), Section: s})
+		f.contents.Recipients = append(f.contents.Recipients, Recipient{Key: key.Public(), Section: sections[i]})
 	}
 	return f
 }
@@ -110,9 +187,13 @@ func (f *fixture) signingPublic() ed25519.PublicKey {
 	return f.signing.Public().(ed25519.PublicKey)
 }
 
+func (f *fixture) trust() Trust {
+	return Trust{SpaceID: f.contents.SpaceID, SigningKey: f.signingPublic(), RecoveryKey: f.contents.RecoveryKey}
+}
+
 func (f *fixture) verify(t testing.TB, env []byte) *Map {
 	t.Helper()
-	m, err := Verify(env, f.signingPublic())
+	m, err := Verify(env, f.trust())
 	if err != nil {
 		t.Fatal(err)
 	}

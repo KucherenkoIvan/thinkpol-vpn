@@ -1,5 +1,5 @@
-// The signed network map (DESIGN.md "The signed map"). Go code reads and
-// writes it only through internal/netmap, which owns the invariants below.
+// The signed network map (DESIGN.md "The signed map"). Only internal/netmap
+// reads or writes it (depguard enforces this); it owns the invariants below.
 syntax = "proto3";
 
 package thinkpol.netmap.v1;
@@ -8,24 +8,26 @@ package thinkpol.netmap.v1;
 // (RFC 8032) by the space's signing key, context "thinkpol-vpn netmap v1",
 // over the exact bytes of `body`: verifiers never re-encode Body.
 //
-// An envelope is canonical: exactly these fields, in this order, no unknown
-// fields. Anything else is rejected.
+// An envelope is canonical: field 1, then field 2 with a 64-byte signature,
+// minimal varints, then only recovery records. Anything else is rejected.
 message Envelope {
   // A serialized Body.
   bytes body = 1;
   bytes signature = 2;
-
-  // Recovery records (repeated SignedRecoveryRecord) travel here once
-  // signing-key rotation exists (TP-036).
-  reserved 3;
+  // Signing-key rotations by the recovery key (TP-036). Format-1 readers
+  // can't follow a rotation and treat an envelope carrying them as a format
+  // they don't support.
+  repeated SignedRecoveryRecord recovery_records = 3;
 }
 
 // Body is the signed content of an envelope.
+//
+// Frozen across formats: field 1 is always the format and field 2 always a
+// Header with this layout, so any reader can tell which space and version a
+// newer envelope is, even when it can't read the rest. Bump the format only
+// after the release that reads the new one has rolled out through format-1
+// maps.
 message Body {
-  // The envelope format. Field 1 stays the format in every version, so an
-  // older node can tell that it can't read a newer envelope. Bumped for any
-  // change an older node must not silently ignore; additive fields don't
-  // bump it.
   uint32 format = 1;
   Header header = 2;
   // Padded to a power of two (at least 8) with dummy sections, all of the
@@ -38,20 +40,35 @@ message Body {
 message Header {
   // 16 random bytes, fixed for the life of the space.
   bytes space_id = 1;
-  // Strictly increasing; nodes reject anything not higher than what they run.
-  uint64 version = 2;
+  // Maps are ordered by (key_epoch, version). The epoch counts signing-key
+  // rotations by the recovery key and changes only through a recovery
+  // record, so a stolen signing key can't freeze the space by signing the
+  // highest version.
+  uint64 key_epoch = 2;
+  uint64 version = 3;
   // Ed25519 public key that signs this envelope.
-  bytes signing_public_key = 3;
+  bytes signing_public_key = 4;
   // Ed25519 public key of the space's offline recovery key (PRD A11).
-  bytes recovery_public_key = 4;
-  // Content-addressed blobs the space uses (GeoIP lists, later releases).
-  repeated BlobRef blobs = 5;
+  bytes recovery_public_key = 5;
+  // Every blob the space uses: the set relays cache and pass on. Hashes of
+  // public lists are visible to every node holding the envelope (accepted).
+  repeated BlobRef blobs = 6;
+}
+
+enum BlobKind {
+  BLOB_KIND_UNSPECIFIED = 0;
+  BLOB_KIND_GEOIP = 1;
+  BLOB_KIND_GEOSITE = 2;
 }
 
 // BlobRef names a blob by content (TP-016, TP-017).
 message BlobRef {
-  bytes sha256 = 1;
-  uint64 size = 2;
+  BlobKind kind = 1;
+  bytes sha256 = 2;
+  uint64 size = 3;
+  // How rules refer to the blob (e.g. a country code). Empty in the header:
+  // names are need-to-know and live in sections.
+  string name = 4;
 }
 
 // SealedSection is an anonymous NaCl sealed box (X25519, XSalsa20-Poly1305,
@@ -67,21 +84,28 @@ message SealedSection {
 // Before sealing it is padded ISO/IEC 7816-4 style (0x80, then zeros) to the
 // length shared by every section of the envelope.
 message Section {
+  // The lowest section reader that understands this section. A node whose
+  // reader is older doesn't use it: features roll out per node without a
+  // format bump.
+  uint32 min_reader = 1;
   // Bind the section to its envelope: a section is sealed afresh for every
-  // version and can't be replayed into another space or version.
-  bytes space_id = 1;
-  uint64 map_version = 2;
+  // map and can't be replayed into another space, epoch or version.
+  bytes space_id = 2;
+  uint64 key_epoch = 3;
+  uint64 map_version = 4;
 
   // The recipient's own settings.
-  NodeSettings node = 3;
+  NodeSettings node = 5;
   // End-to-end WireGuard peers.
-  repeated Peer peers = 4;
+  repeated Peer peers = 6;
   // Adjacent nodes this node dials.
-  repeated Link links = 5;
+  repeated Link links = 7;
   // Adjacent nodes allowed to connect to this node's listeners.
-  repeated InboundLink inbound = 6;
-  // Node ids this node may forward relayed packets to.
-  repeated bytes relay_to = 7;
+  repeated InboundLink inbound = 8;
+  // Forwarding table: where this node sends relayed packets, by destination.
+  repeated Route routes = 9;
+  // The blobs this node uses, named; each is in the header.
+  repeated BlobRef blobs = 10;
 }
 
 enum NodeKind {
@@ -101,35 +125,39 @@ message NodeSettings {
   // ULA /48, canonical text form.
   string ipv4_network = 5;
   string ipv6_network = 6;
-  // Transports this node listens on (servers).
+  // Transports this node listens on.
   repeated Listener listeners = 7;
 }
 
 message Listener {
   string transport = 1;
-  // host:port to bind; the host may be empty for every address.
+  // ip:port to bind; an empty host binds every address.
   string address = 2;
+  // Transport-owned settings (camouflage target, certificate source, …),
+  // encoded by the transport.
+  bytes settings = 3;
 }
 
 message Peer {
   bytes id = 1;
   // WireGuard (Curve25519) public key, 32 bytes.
   bytes wireguard_public_key = 2;
-  // Overlay addresses, canonical text form: the peer's WireGuard allowed IPs.
+  // The peer's overlay addresses, canonical text form.
   repeated string addresses = 3;
-  // Candidate paths to the peer.
+  // Candidate paths to the peer, in priority order (failover follows it).
   repeated Path paths = 4;
 }
 
-// Path is the relays a packet crosses to reach a peer, in order. An empty
-// path is a direct link to the peer.
+// Path is a candidate way to reach a peer, named by its first hop: an
+// adjacent node, or the peer itself for a direct link. The rest of the way
+// is up to each relay's routes; no node holds a whole path.
 message Path {
-  repeated bytes via = 1;
+  bytes first_hop = 1;
 }
 
 message Link {
   bytes peer = 1;
-  // Ways to reach the peer, in order of preference.
+  // Ways to reach the peer, in priority order.
   repeated Endpoint endpoints = 2;
 }
 
@@ -139,28 +167,43 @@ message Endpoint {
   string address = 2;
   // Transport-specific credential for this link.
   bytes credential = 3;
+  // Transport-owned settings (certificate pin, SNI, WebSocket path, …),
+  // encoded by the transport.
+  bytes settings = 4;
 }
 
 message InboundLink {
   bytes peer = 1;
-  string transport = 2;
-  bytes credential = 3;
+  // What the peer is, so a listener can tell devices from other nodes.
+  NodeKind peer_kind = 2;
+  string transport = 3;
+  // What the listener checks the peer's credential against: where the
+  // transport allows, a verifier (a hash or public key) rather than the
+  // secret itself, so a seized node can't impersonate its peers (PRD S1).
+  bytes credential = 4;
+}
+
+// Route sends relayed packets for one destination to adjacent next hops.
+message Route {
+  bytes destination = 1;
+  // In priority order; several for a hop group in the middle of a chain. A
+  // next hop equal to the destination delivers directly.
+  repeated bytes next_hops = 2;
 }
 
 // SignedRecoveryRecord is signed by the space's recovery key, Ed25519ctx with
 // context "thinkpol-vpn recovery v1", over the exact bytes of `record`.
-// Reserved here; built and accepted by TP-036.
+// Defined here; built and followed by TP-036.
 message SignedRecoveryRecord {
   // A serialized RecoveryRecord.
   bytes record = 1;
   bytes signature = 2;
 }
 
-// RecoveryRecord is the one statement a recovery key can make: "the signing
-// key of this space is now X".
+// RecoveryRecord is the one statement a recovery key can make: "from key
+// epoch N, the signing key of this space is X".
 message RecoveryRecord {
   bytes space_id = 1;
-  // Strictly increasing per space, so an old rotation can't be replayed.
-  uint64 sequence = 2;
+  uint64 key_epoch = 2;
   bytes signing_public_key = 3;
 }

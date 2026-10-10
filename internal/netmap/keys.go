@@ -82,9 +82,45 @@ func ParseSpaceID(s string) (SpaceID, error) { return parseHex[SpaceID]("space i
 // ParseNodeID parses a hex node id.
 func ParseNodeID(s string) (NodeID, error) { return parseHex[NodeID]("node id", s) }
 
-// ParseNodePublicKey parses a hex node public key.
+// ParseNodePublicKey parses a hex node public key and rejects keys no
+// honest node has (see [NodePublicKey.Check]).
 func ParseNodePublicKey(s string) (NodePublicKey, error) {
-	return parseHex[NodePublicKey]("node public key", s)
+	k, err := parseHex[NodePublicKey]("node public key", s)
+	if err != nil {
+		return k, err
+	}
+	return k, k.Check()
+}
+
+// probeScalar is any fixed non-zero scalar: X25519 with it fails exactly
+// for the low-order points, whose product with every clamped scalar is zero.
+var probeScalar = [32]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
+
+// Check rejects public keys an honest node never has: non-canonical
+// encodings (top bit set, or a value of at least 2^255 - 19) and low-order
+// points, which would let a section be sealed to a key whose shared
+// secret is predictable.
+func (k NodePublicKey) Check() error {
+	if k[31]&0x80 != 0 {
+		return fmt.Errorf("netmap: node public key %v: top bit set", k)
+	}
+	// p = 2^255 - 19, little-endian: ed ff … ff 7f.
+	if k[31] == 0x7f && k[0] >= 0xed && allFF(k[1:31]) {
+		return fmt.Errorf("netmap: node public key %v: not reduced modulo 2^255-19", k)
+	}
+	if _, err := curve25519.X25519(probeScalar[:], k[:]); err != nil {
+		return fmt.Errorf("netmap: node public key %v: low-order point", k)
+	}
+	return nil
+}
+
+func allFF(b []byte) bool {
+	for _, c := range b {
+		if c != 0xff {
+			return false
+		}
+	}
+	return true
 }
 
 // ParseWireGuardKey parses a hex WireGuard public key.

@@ -10,6 +10,12 @@ import (
 	netmapv1 "github.com/KucherenkoIvan/thinkpol-vpn/proto/gen/thinkpol/netmap/v1"
 )
 
+// SectionReader is the section reader this package implements. Build marks
+// every section with the lowest reader that understands it, and Open
+// refuses sections that need a newer one. Raise it, and mark the sections
+// that use a new field, when older nodes must not silently ignore the field.
+const SectionReader = 1
+
 // Section is one node's need-to-know part of the map: its own settings and
 // the nodes it talks to, every one known by an opaque id. New needs (ingress
 // and egress settings, rules, guest spaces, telemetry) are new fields here
@@ -22,8 +28,10 @@ type Section struct {
 	Links []Link
 	// Inbound are adjacent nodes allowed to connect to this node's listeners.
 	Inbound []InboundLink
-	// RelayTo are the node ids this node may forward relayed packets to.
-	RelayTo []NodeID
+	// Routes are the forwarding table for relayed packets.
+	Routes []Route
+	// Blobs are the blobs this node uses, named; each is in the header.
+	Blobs []BlobRef
 }
 
 // NodeKind is what a node is: a server (a VPS that relays) or a device.
@@ -33,6 +41,8 @@ const (
 	NodeServer NodeKind = iota + 1
 	NodeDevice
 )
+
+func (k NodeKind) known() bool { return k == NodeServer || k == NodeDevice }
 
 func (k NodeKind) String() string {
 	switch k {
@@ -50,8 +60,7 @@ type NodeSettings struct {
 	Kind NodeKind
 	// The node's overlay addresses.
 	IPv4, IPv6 netip.Addr
-	// The space's overlay ranges: inside 100.64.0.0/10 and inside the ULA
-	// range fc00::/7.
+	// The space's overlay ranges: inside 100.64.0.0/10, and a ULA /48.
 	IPv4Network, IPv6Network netip.Prefix
 	// Listeners are the transports this node listens on.
 	Listeners []Listener
@@ -60,30 +69,35 @@ type NodeSettings struct {
 // Listener is a transport a node listens on.
 type Listener struct {
 	Transport string
-	// Address is host:port to bind; an empty host binds every address.
+	// Address is ip:port to bind; an empty host binds every address.
 	Address string
+	// Settings are transport-owned (camouflage target, certificate source),
+	// encoded by the transport.
+	Settings []byte
 }
 
 // Peer is an end-to-end WireGuard peer.
 type Peer struct {
 	ID           NodeID
 	WireGuardKey WireGuardKey
-	// Addresses are the peer's overlay addresses, its WireGuard allowed IPs.
+	// Addresses are the peer's overlay addresses.
 	Addresses []netip.Addr
-	// Paths are the candidate paths to the peer; at least one.
+	// Paths are the candidate paths to the peer in priority order, which is
+	// the order failover follows.
 	Paths []Path
 }
 
-// Path is the relays a packet crosses to reach a peer, in order. No relays
-// means a direct link to the peer.
+// Path is a candidate way to reach a peer, named by its first hop: an
+// adjacent node, or the peer itself for a direct link. Relays route the
+// rest of the way by destination; no node holds a whole path.
 type Path struct {
-	Via []NodeID
+	FirstHop NodeID
 }
 
 // Link is an adjacent node this node dials.
 type Link struct {
 	Peer NodeID
-	// Endpoints are the ways to reach the peer, in order of preference.
+	// Endpoints are the ways to reach the peer, in priority order.
 	Endpoints []Endpoint
 }
 
@@ -94,62 +108,68 @@ type Endpoint struct {
 	Address string
 	// Credential is the transport-specific credential for this link.
 	Credential []byte
+	// Settings are transport-owned (certificate pin, SNI, WebSocket path),
+	// encoded by the transport.
+	Settings []byte
 }
 
 // InboundLink lets an adjacent node connect to this node's listener for a
-// transport, with a credential.
+// transport.
 type InboundLink struct {
-	Peer       NodeID
-	Transport  string
+	Peer     NodeID
+	PeerKind NodeKind
+	// Transport names the listener.
+	Transport string
+	// Credential is what the listener checks the peer's credential against:
+	// where the transport allows, a verifier (a hash or a public key) rather
+	// than the secret itself, so a seized node can't impersonate its peers.
 	Credential []byte
+}
+
+// Route sends relayed packets for Destination to an adjacent next hop.
+type Route struct {
+	Destination NodeID
+	// NextHops are adjacent nodes in priority order; several for a hop group
+	// in the middle of a chain. A next hop equal to Destination delivers
+	// directly.
+	NextHops []NodeID
 }
 
 const (
 	maxTransportName = 32
 	maxCredential    = 1024
+	maxSettings      = 4096
 )
 
 var (
 	cgnat = netip.MustParsePrefix("100.64.0.0/10")
-	ula   = netip.MustParsePrefix("fc00::/7")
+	ula   = netip.MustParsePrefix("fd00::/8") // RFC 4193, locally assigned
 )
 
-// validate checks that s is well formed. Policy (which node may know what)
-// is the map builder's job, not the format's.
-func (s *Section) validate() error {
-	n := &s.Node
-	if n.ID.IsZero() {
+// errUnknownKind makes Open report a section for a node kind this reader
+// doesn't know as a format it doesn't support.
+var errUnknownKind = fmt.Errorf("%w: unknown node kind", ErrUnsupportedFormat)
+
+// wellFormed is what every reader checks: a section a node can use without
+// tripping over itself. Ids are set, nothing names the node itself where it
+// can't, and keyed lists have no repeated keys. Lengths and canonical
+// encodings are checked when decoding. Policy is Build's (see validate).
+func (s *Section) wellFormed() error {
+	self := s.Node.ID
+	if self.IsZero() {
 		return errors.New("node id is zero")
 	}
-	if n.Kind != NodeServer && n.Kind != NodeDevice {
-		return fmt.Errorf("node kind %v", n.Kind)
+	switch {
+	case s.Node.Kind == 0:
+		return errors.New("node kind unspecified")
+	case !s.Node.Kind.known():
+		return fmt.Errorf("%w %d", errUnknownKind, s.Node.Kind)
 	}
-	if !n.IPv4Network.IsValid() || !n.IPv4Network.Addr().Is4() || n.IPv4Network != n.IPv4Network.Masked() ||
-		!cgnat.Contains(n.IPv4Network.Addr()) || n.IPv4Network.Bits() < cgnat.Bits() {
-		return fmt.Errorf("IPv4 network %v is not a prefix inside %v", n.IPv4Network, cgnat)
-	}
-	if !n.IPv6Network.IsValid() || !n.IPv6Network.Addr().Is6() || n.IPv6Network.Addr().Is4In6() ||
-		n.IPv6Network != n.IPv6Network.Masked() || !ula.Contains(n.IPv6Network.Addr()) || n.IPv6Network.Bits() < ula.Bits() {
-		return fmt.Errorf("IPv6 network %v is not a prefix inside %v", n.IPv6Network, ula)
-	}
-	if !n.IPv4Network.Contains(n.IPv4) || !n.IPv6Network.Contains(n.IPv6) {
-		return fmt.Errorf("node addresses %v, %v are outside the overlay networks", n.IPv4, n.IPv6)
-	}
-	inOverlay := func(a netip.Addr) bool { return n.IPv4Network.Contains(a) || n.IPv6Network.Contains(a) }
-	for _, l := range n.Listeners {
-		if err := checkTransport(l.Transport); err != nil {
-			return fmt.Errorf("listener: %w", err)
-		}
-		if err := checkHostPort(l.Address, true); err != nil {
-			return fmt.Errorf("listener: %w", err)
-		}
-	}
-
-	notSelf := func(what string, id NodeID) error {
+	other := func(what string, id NodeID) error {
 		if id.IsZero() {
 			return fmt.Errorf("%s: node id is zero", what)
 		}
-		if id == n.ID {
+		if id == self {
 			return fmt.Errorf("%s: names the node itself", what)
 		}
 		return nil
@@ -157,13 +177,171 @@ func (s *Section) validate() error {
 
 	peers := make(map[NodeID]bool, len(s.Peers))
 	for _, p := range s.Peers {
-		if err := notSelf("peer", p.ID); err != nil {
+		if err := other("peer", p.ID); err != nil {
 			return err
 		}
 		if peers[p.ID] {
 			return fmt.Errorf("peer %v listed twice", p.ID)
 		}
 		peers[p.ID] = true
+		for _, path := range p.Paths {
+			if err := other("path", path.FirstHop); err != nil {
+				return fmt.Errorf("peer %v: %w", p.ID, err)
+			}
+		}
+	}
+	links := make(map[NodeID]bool, len(s.Links))
+	for _, l := range s.Links {
+		if err := other("link", l.Peer); err != nil {
+			return err
+		}
+		if links[l.Peer] {
+			return fmt.Errorf("link to %v listed twice", l.Peer)
+		}
+		links[l.Peer] = true
+	}
+	type inboundKey struct {
+		peer      NodeID
+		transport string
+	}
+	inbound := make(map[inboundKey]bool, len(s.Inbound))
+	for _, in := range s.Inbound {
+		if err := other("inbound link", in.Peer); err != nil {
+			return err
+		}
+		k := inboundKey{in.Peer, in.Transport}
+		if inbound[k] {
+			return fmt.Errorf("inbound link from %v over %q listed twice", in.Peer, in.Transport)
+		}
+		inbound[k] = true
+	}
+	routes := make(map[NodeID]bool, len(s.Routes))
+	for _, r := range s.Routes {
+		if err := other("route", r.Destination); err != nil {
+			return err
+		}
+		if routes[r.Destination] {
+			return fmt.Errorf("route to %v listed twice", r.Destination)
+		}
+		routes[r.Destination] = true
+		hops := make(map[NodeID]bool, len(r.NextHops))
+		for _, h := range r.NextHops {
+			if err := other("next hop", h); err != nil {
+				return fmt.Errorf("route to %v: %w", r.Destination, err)
+			}
+			if hops[h] {
+				return fmt.Errorf("route to %v: next hop %v listed twice", r.Destination, h)
+			}
+			hops[h] = true
+		}
+	}
+	return blobsWellFormed(s.Blobs)
+}
+
+func blobsWellFormed(blobs []BlobRef) error {
+	seen := make(map[[32]byte]bool, len(blobs))
+	for _, b := range blobs {
+		if b.SHA256 == ([32]byte{}) || seen[b.SHA256] {
+			return fmt.Errorf("blob %x zero or repeated", b.SHA256)
+		}
+		if b.Size == 0 {
+			return fmt.Errorf("blob %x of size 0", b.SHA256)
+		}
+		seen[b.SHA256] = true
+	}
+	return nil
+}
+
+// validate is Build's check: well-formed, plus the policy and consistency a
+// map builder must keep. Readers don't repeat it, so it can tighten without
+// breaking maps already out there.
+func (s *Section) validate(headerBlobs []BlobRef) error {
+	if err := s.wellFormed(); err != nil {
+		return err
+	}
+	n := &s.Node
+	if !n.IPv4Network.IsValid() || !n.IPv4Network.Addr().Is4() || n.IPv4Network != n.IPv4Network.Masked() ||
+		!cgnat.Contains(n.IPv4Network.Addr()) || n.IPv4Network.Bits() < cgnat.Bits() {
+		return fmt.Errorf("IPv4 network %v is not a prefix inside %v", n.IPv4Network, cgnat)
+	}
+	if !n.IPv6Network.IsValid() || !n.IPv6Network.Addr().Is6() || n.IPv6Network.Addr().Is4In6() ||
+		n.IPv6Network != n.IPv6Network.Masked() || !ula.Contains(n.IPv6Network.Addr()) || n.IPv6Network.Bits() != 48 {
+		return fmt.Errorf("IPv6 network %v is not a /48 inside %v", n.IPv6Network, ula)
+	}
+	if !n.IPv4Network.Contains(n.IPv4) || !n.IPv6Network.Contains(n.IPv6) {
+		return fmt.Errorf("node addresses %v, %v are outside the overlay networks", n.IPv4, n.IPv6)
+	}
+	inOverlay := func(a netip.Addr) bool { return n.IPv4Network.Contains(a) || n.IPv6Network.Contains(a) }
+
+	type transportAddr struct{ transport, address string }
+	listeners := make(map[transportAddr]bool, len(n.Listeners))
+	for _, l := range n.Listeners {
+		if err := checkTransport(l.Transport); err != nil {
+			return fmt.Errorf("listener: %w", err)
+		}
+		if err := checkListenAddress(l.Address); err != nil {
+			return fmt.Errorf("listener: %w", err)
+		}
+		if err := checkSettings(l.Settings); err != nil {
+			return fmt.Errorf("listener: %w", err)
+		}
+		k := transportAddr{l.Transport, l.Address}
+		if listeners[k] {
+			return fmt.Errorf("listener %s %s listed twice", l.Transport, l.Address)
+		}
+		listeners[k] = true
+	}
+
+	adjacent := make(map[NodeID]bool, len(s.Links)+len(s.Inbound))
+	for _, l := range s.Links {
+		adjacent[l.Peer] = true
+		if len(l.Endpoints) == 0 {
+			return fmt.Errorf("link to %v: no endpoints", l.Peer)
+		}
+		endpoints := make(map[transportAddr]bool, len(l.Endpoints))
+		for _, e := range l.Endpoints {
+			if err := checkTransport(e.Transport); err != nil {
+				return fmt.Errorf("link to %v: %w", l.Peer, err)
+			}
+			if err := checkDialAddress(e.Address); err != nil {
+				return fmt.Errorf("link to %v: %w", l.Peer, err)
+			}
+			if err := checkCredential(e.Credential); err != nil {
+				return fmt.Errorf("link to %v: %w", l.Peer, err)
+			}
+			if err := checkSettings(e.Settings); err != nil {
+				return fmt.Errorf("link to %v: %w", l.Peer, err)
+			}
+			k := transportAddr{e.Transport, e.Address}
+			if endpoints[k] {
+				return fmt.Errorf("link to %v: endpoint %s %s listed twice", l.Peer, e.Transport, e.Address)
+			}
+			endpoints[k] = true
+		}
+	}
+	// A listener maps a credential to a peer; two peers with one credential
+	// on one transport would be indistinguishable.
+	credentials := make(map[transportAddr]bool, len(s.Inbound))
+	for _, in := range s.Inbound {
+		adjacent[in.Peer] = true
+		if !in.PeerKind.known() {
+			return fmt.Errorf("inbound link from %v: peer kind %v", in.Peer, in.PeerKind)
+		}
+		if err := checkTransport(in.Transport); err != nil {
+			return fmt.Errorf("inbound link from %v: %w", in.Peer, err)
+		}
+		if err := checkCredential(in.Credential); err != nil {
+			return fmt.Errorf("inbound link from %v: %w", in.Peer, err)
+		}
+		k := transportAddr{in.Transport, string(in.Credential)}
+		if credentials[k] {
+			return fmt.Errorf("inbound link from %v: credential shared with another peer on %s", in.Peer, in.Transport)
+		}
+		credentials[k] = true
+	}
+
+	addresses := map[netip.Addr]bool{n.IPv4: true, n.IPv6: true}
+	for _, p := range s.Peers {
 		if p.WireGuardKey.IsZero() {
 			return fmt.Errorf("peer %v: WireGuard key is zero", p.ID)
 		}
@@ -174,80 +352,45 @@ func (s *Section) validate() error {
 			if !inOverlay(a) {
 				return fmt.Errorf("peer %v: address %v is outside the overlay networks", p.ID, a)
 			}
+			if addresses[a] {
+				return fmt.Errorf("peer %v: address %v is taken", p.ID, a)
+			}
+			addresses[a] = true
 		}
 		if len(p.Paths) == 0 {
 			return fmt.Errorf("peer %v: no paths", p.ID)
 		}
+		hops := make(map[NodeID]bool, len(p.Paths))
 		for _, path := range p.Paths {
-			seen := make(map[NodeID]bool, len(path.Via))
-			for _, hop := range path.Via {
-				if err := notSelf("path", hop); err != nil {
-					return fmt.Errorf("peer %v: %w", p.ID, err)
-				}
-				if hop == p.ID || seen[hop] {
-					return fmt.Errorf("peer %v: path crosses %v twice", p.ID, hop)
-				}
-				seen[hop] = true
+			if !adjacent[path.FirstHop] {
+				return fmt.Errorf("peer %v: first hop %v is not adjacent", p.ID, path.FirstHop)
+			}
+			if hops[path.FirstHop] {
+				return fmt.Errorf("peer %v: first hop %v listed twice", p.ID, path.FirstHop)
+			}
+			hops[path.FirstHop] = true
+		}
+	}
+	for _, r := range s.Routes {
+		if len(r.NextHops) == 0 {
+			return fmt.Errorf("route to %v: no next hops", r.Destination)
+		}
+		for _, h := range r.NextHops {
+			if !adjacent[h] {
+				return fmt.Errorf("route to %v: next hop %v is not adjacent", r.Destination, h)
 			}
 		}
 	}
 
-	links := make(map[NodeID]bool, len(s.Links))
-	for _, l := range s.Links {
-		if err := notSelf("link", l.Peer); err != nil {
-			return err
-		}
-		if links[l.Peer] {
-			return fmt.Errorf("link to %v listed twice", l.Peer)
-		}
-		links[l.Peer] = true
-		if len(l.Endpoints) == 0 {
-			return fmt.Errorf("link to %v: no endpoints", l.Peer)
-		}
-		for _, e := range l.Endpoints {
-			if err := checkTransport(e.Transport); err != nil {
-				return fmt.Errorf("link to %v: %w", l.Peer, err)
-			}
-			if err := checkHostPort(e.Address, false); err != nil {
-				return fmt.Errorf("link to %v: %w", l.Peer, err)
-			}
-			if err := checkCredential(e.Credential); err != nil {
-				return fmt.Errorf("link to %v: %w", l.Peer, err)
-			}
-		}
+	available := make(map[[32]byte]BlobRef, len(headerBlobs))
+	for _, b := range headerBlobs {
+		available[b.SHA256] = b
 	}
-
-	type inboundKey struct {
-		peer      NodeID
-		transport string
-	}
-	inbound := make(map[inboundKey]bool, len(s.Inbound))
-	for _, a := range s.Inbound {
-		if err := notSelf("inbound link", a.Peer); err != nil {
-			return err
+	for _, b := range s.Blobs {
+		h, ok := available[b.SHA256]
+		if !ok || h.Kind != b.Kind || h.Size != b.Size {
+			return fmt.Errorf("blob %x is not in the header", b.SHA256)
 		}
-		if err := checkTransport(a.Transport); err != nil {
-			return fmt.Errorf("inbound link from %v: %w", a.Peer, err)
-		}
-		if err := checkCredential(a.Credential); err != nil {
-			return fmt.Errorf("inbound link from %v: %w", a.Peer, err)
-		}
-		k := inboundKey{a.Peer, a.Transport}
-		if inbound[k] {
-			return fmt.Errorf("inbound link from %v over %s listed twice", a.Peer, a.Transport)
-		}
-		inbound[k] = true
-	}
-
-	relay := make(map[NodeID]bool, len(s.RelayTo))
-	for _, id := range s.RelayTo {
-		if err := notSelf("relay destination", id); err != nil {
-			return err
-		}
-		if relay[id] {
-			return fmt.Errorf("relay destination %v listed twice", id)
-		}
-		relay[id] = true
 	}
 	return nil
 }
@@ -265,19 +408,42 @@ func checkTransport(name string) error {
 	return nil
 }
 
-func checkHostPort(addr string, hostOptional bool) error {
+// checkListenAddress accepts ip:port or :port.
+func checkListenAddress(addr string) error {
+	host, err := checkHostPort(addr)
+	if err != nil {
+		return err
+	}
+	if host != "" {
+		if a, err := netip.ParseAddr(host); err != nil || a.Zone() != "" || a.String() != host {
+			return fmt.Errorf("address %q: host is not an IP literal", addr)
+		}
+	}
+	return nil
+}
+
+// checkDialAddress accepts host:port with a host.
+func checkDialAddress(addr string) error {
+	host, err := checkHostPort(addr)
+	if err != nil {
+		return err
+	}
+	if host == "" {
+		return fmt.Errorf("address %q has no host", addr)
+	}
+	return nil
+}
+
+func checkHostPort(addr string) (string, error) {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
-		return fmt.Errorf("address %q: %w", addr, err)
-	}
-	if host == "" && !hostOptional {
-		return fmt.Errorf("address %q has no host", addr)
+		return "", fmt.Errorf("address %q: %w", addr, err)
 	}
 	p, err := strconv.ParseUint(port, 10, 16)
 	if err != nil || p == 0 || strconv.FormatUint(p, 10) != port {
-		return fmt.Errorf("address %q: bad port", addr)
+		return "", fmt.Errorf("address %q: bad port", addr)
 	}
-	return nil
+	return host, nil
 }
 
 func checkCredential(c []byte) error {
@@ -287,49 +453,65 @@ func checkCredential(c []byte) error {
 	return nil
 }
 
-func sectionToProto(s *Section, space SpaceID, version uint64) *netmapv1.Section {
+func checkSettings(b []byte) error {
+	if len(b) > maxSettings {
+		return fmt.Errorf("transport settings of %d bytes", len(b))
+	}
+	return nil
+}
+
+func sectionToProto(s *Section, h *Header) *netmapv1.Section {
 	pb := &netmapv1.Section{
-		SpaceId:    space[:],
-		MapVersion: version,
+		MinReader:  SectionReader,
+		SpaceId:    h.SpaceID[:],
+		KeyEpoch:   h.KeyEpoch,
+		MapVersion: h.Version,
 		Node: &netmapv1.NodeSettings{
 			Id:          idBytes(s.Node.ID),
 			Kind:        netmapv1.NodeKind(s.Node.Kind),
-			Ipv4:        s.Node.IPv4.String(),
-			Ipv6:        s.Node.IPv6.String(),
-			Ipv4Network: s.Node.IPv4Network.String(),
-			Ipv6Network: s.Node.IPv6Network.String(),
+			Ipv4:        addrString(s.Node.IPv4),
+			Ipv6:        addrString(s.Node.IPv6),
+			Ipv4Network: prefixString(s.Node.IPv4Network),
+			Ipv6Network: prefixString(s.Node.IPv6Network),
 		},
+		Blobs: blobsToProto(s.Blobs),
 	}
 	for _, l := range s.Node.Listeners {
-		pb.Node.Listeners = append(pb.Node.Listeners, &netmapv1.Listener{Transport: l.Transport, Address: l.Address})
+		pb.Node.Listeners = append(pb.Node.Listeners, &netmapv1.Listener{Transport: l.Transport, Address: l.Address, Settings: l.Settings})
 	}
 	for _, p := range s.Peers {
 		pp := &netmapv1.Peer{Id: idBytes(p.ID), WireguardPublicKey: p.WireGuardKey[:]}
 		for _, a := range p.Addresses {
-			pp.Addresses = append(pp.Addresses, a.String())
+			pp.Addresses = append(pp.Addresses, addrString(a))
 		}
 		for _, path := range p.Paths {
-			pp.Paths = append(pp.Paths, &netmapv1.Path{Via: idsBytes(path.Via)})
+			pp.Paths = append(pp.Paths, &netmapv1.Path{FirstHop: idBytes(path.FirstHop)})
 		}
 		pb.Peers = append(pb.Peers, pp)
 	}
 	for _, l := range s.Links {
 		pl := &netmapv1.Link{Peer: idBytes(l.Peer)}
 		for _, e := range l.Endpoints {
-			pl.Endpoints = append(pl.Endpoints, &netmapv1.Endpoint{Transport: e.Transport, Address: e.Address, Credential: e.Credential})
+			pl.Endpoints = append(pl.Endpoints, &netmapv1.Endpoint{
+				Transport: e.Transport, Address: e.Address, Credential: e.Credential, Settings: e.Settings,
+			})
 		}
 		pb.Links = append(pb.Links, pl)
 	}
-	for _, a := range s.Inbound {
-		pb.Inbound = append(pb.Inbound, &netmapv1.InboundLink{Peer: idBytes(a.Peer), Transport: a.Transport, Credential: a.Credential})
+	for _, in := range s.Inbound {
+		pb.Inbound = append(pb.Inbound, &netmapv1.InboundLink{
+			Peer: idBytes(in.Peer), PeerKind: netmapv1.NodeKind(in.PeerKind), Transport: in.Transport, Credential: in.Credential,
+		})
 	}
-	pb.RelayTo = idsBytes(s.RelayTo)
+	for _, r := range s.Routes {
+		pb.Routes = append(pb.Routes, &netmapv1.Route{Destination: idBytes(r.Destination), NextHops: idsBytes(r.NextHops)})
+	}
 	return pb
 }
 
-// sectionFromProto converts a decoded section strictly: every id and key has
-// its exact length and every address its canonical text form, so a section
-// has one encoding. It doesn't validate; the caller does.
+// sectionFromProto decodes strictly: every id and key has its exact length
+// and every address its canonical text form, so a section has one encoding.
+// The caller checks wellFormed.
 func sectionFromProto(pb *netmapv1.Section) (Section, error) {
 	var s Section
 	n := pb.GetNode()
@@ -337,12 +519,11 @@ func sectionFromProto(pb *netmapv1.Section) (Section, error) {
 		return s, errors.New("no node settings")
 	}
 	var err error
-	if s.Node.ID, err = toID[NodeID]("node id", n.GetId()); err != nil {
+	if s.Node.ID, err = toArray[NodeID]("node id", n.GetId()); err != nil {
 		return s, err
 	}
-	s.Node.Kind = NodeKind(n.GetKind())
-	if int32(s.Node.Kind) != int32(n.GetKind()) {
-		return s, fmt.Errorf("node kind %d", n.GetKind())
+	if s.Node.Kind, err = kindFromProto(n.GetKind()); err != nil {
+		return s, err
 	}
 	if s.Node.IPv4, err = parseAddr(n.GetIpv4()); err != nil {
 		return s, err
@@ -357,53 +538,95 @@ func sectionFromProto(pb *netmapv1.Section) (Section, error) {
 		return s, err
 	}
 	for _, l := range n.GetListeners() {
-		s.Node.Listeners = append(s.Node.Listeners, Listener{Transport: l.GetTransport(), Address: l.GetAddress()})
+		s.Node.Listeners = append(s.Node.Listeners, Listener{Transport: l.GetTransport(), Address: l.GetAddress(), Settings: l.GetSettings()})
 	}
 	for _, pp := range pb.GetPeers() {
 		var p Peer
-		if p.ID, err = toID[NodeID]("peer id", pp.GetId()); err != nil {
+		if p.ID, err = toArray[NodeID]("peer id", pp.GetId()); err != nil {
 			return s, err
 		}
-		if p.WireGuardKey, err = toID[WireGuardKey]("WireGuard key", pp.GetWireguardPublicKey()); err != nil {
+		if p.WireGuardKey, err = toArray[WireGuardKey]("WireGuard key", pp.GetWireguardPublicKey()); err != nil {
 			return s, err
 		}
 		for _, a := range pp.GetAddresses() {
 			addr, err := parseAddr(a)
-			if err != nil {
-				return s, err
+			if err != nil || !addr.IsValid() {
+				return s, fmt.Errorf("peer %v: address %q", p.ID, a)
 			}
 			p.Addresses = append(p.Addresses, addr)
 		}
 		for _, path := range pp.GetPaths() {
-			via, err := toIDs(path.GetVia())
+			hop, err := toArray[NodeID]("first hop", path.GetFirstHop())
 			if err != nil {
 				return s, err
 			}
-			p.Paths = append(p.Paths, Path{Via: via})
+			p.Paths = append(p.Paths, Path{FirstHop: hop})
 		}
 		s.Peers = append(s.Peers, p)
 	}
 	for _, pl := range pb.GetLinks() {
 		var l Link
-		if l.Peer, err = toID[NodeID]("link peer", pl.GetPeer()); err != nil {
+		if l.Peer, err = toArray[NodeID]("link peer", pl.GetPeer()); err != nil {
 			return s, err
 		}
 		for _, e := range pl.GetEndpoints() {
-			l.Endpoints = append(l.Endpoints, Endpoint{Transport: e.GetTransport(), Address: e.GetAddress(), Credential: e.GetCredential()})
+			l.Endpoints = append(l.Endpoints, Endpoint{
+				Transport: e.GetTransport(), Address: e.GetAddress(), Credential: e.GetCredential(), Settings: e.GetSettings(),
+			})
 		}
 		s.Links = append(s.Links, l)
 	}
-	for _, pa := range pb.GetInbound() {
-		a := InboundLink{Transport: pa.GetTransport(), Credential: pa.GetCredential()}
-		if a.Peer, err = toID[NodeID]("inbound peer", pa.GetPeer()); err != nil {
+	for _, pin := range pb.GetInbound() {
+		in := InboundLink{Transport: pin.GetTransport(), Credential: pin.GetCredential()}
+		if in.Peer, err = toArray[NodeID]("inbound peer", pin.GetPeer()); err != nil {
 			return s, err
 		}
-		s.Inbound = append(s.Inbound, a)
+		// An unknown peer kind is the builder's concern; a reader keeps it.
+		in.PeerKind = NodeKind(min(uint32(pin.GetPeerKind()), 255))
+		s.Inbound = append(s.Inbound, in)
 	}
-	if s.RelayTo, err = toIDs(pb.GetRelayTo()); err != nil {
+	for _, pr := range pb.GetRoutes() {
+		var r Route
+		if r.Destination, err = toArray[NodeID]("route destination", pr.GetDestination()); err != nil {
+			return s, err
+		}
+		if r.NextHops, err = toIDs(pr.GetNextHops()); err != nil {
+			return s, err
+		}
+		s.Routes = append(s.Routes, r)
+	}
+	if s.Blobs, err = blobsFromProto(pb.GetBlobs()); err != nil {
 		return s, err
 	}
 	return s, nil
+}
+
+func kindFromProto(k netmapv1.NodeKind) (NodeKind, error) {
+	if k < 0 || k > 255 {
+		return 0, fmt.Errorf("%w %d", errUnknownKind, k)
+	}
+	return NodeKind(k), nil
+}
+
+func blobsToProto(blobs []BlobRef) []*netmapv1.BlobRef {
+	var out []*netmapv1.BlobRef
+	for _, b := range blobs {
+		out = append(out, &netmapv1.BlobRef{Kind: netmapv1.BlobKind(b.Kind), Sha256: b.SHA256[:], Size: b.Size, Name: b.Name})
+	}
+	return out
+}
+
+func blobsFromProto(pbs []*netmapv1.BlobRef) ([]BlobRef, error) {
+	var out []BlobRef
+	for _, pb := range pbs {
+		sum, err := toArray[[32]byte]("blob hash", pb.GetSha256())
+		if err != nil {
+			return nil, err
+		}
+		// An unknown blob kind is kept: relays cache blobs of any kind.
+		out = append(out, BlobRef{Kind: BlobKind(min(uint32(pb.GetKind()), 255)), SHA256: sum, Size: pb.GetSize(), Name: pb.GetName()})
+	}
+	return out, nil
 }
 
 func idBytes(id NodeID) []byte { return id[:] }
@@ -416,7 +639,7 @@ func idsBytes(ids []NodeID) [][]byte {
 	return out
 }
 
-func toID[T ~[8]byte | ~[16]byte | ~[32]byte](what string, b []byte) (T, error) {
+func toArray[T ~[8]byte | ~[16]byte | ~[32]byte](what string, b []byte) (T, error) {
 	var v T
 	if len(b) != len(v) {
 		return v, fmt.Errorf("%s of %d bytes, want %d", what, len(b), len(v))
@@ -427,7 +650,7 @@ func toID[T ~[8]byte | ~[16]byte | ~[32]byte](what string, b []byte) (T, error) 
 func toIDs(bs [][]byte) ([]NodeID, error) {
 	var out []NodeID
 	for _, b := range bs {
-		id, err := toID[NodeID]("node id", b)
+		id, err := toArray[NodeID]("node id", b)
 		if err != nil {
 			return nil, err
 		}
@@ -436,7 +659,26 @@ func toIDs(bs [][]byte) ([]NodeID, error) {
 	return out, nil
 }
 
+// An invalid address or prefix is encoded as the empty string and decodes
+// back to the zero value; Build's policy rejects it where it is required.
+func addrString(a netip.Addr) string {
+	if !a.IsValid() {
+		return ""
+	}
+	return a.String()
+}
+
+func prefixString(p netip.Prefix) string {
+	if !p.IsValid() {
+		return ""
+	}
+	return p.String()
+}
+
 func parseAddr(s string) (netip.Addr, error) {
+	if s == "" {
+		return netip.Addr{}, nil
+	}
 	a, err := netip.ParseAddr(s)
 	if err != nil || a.String() != s || a.Zone() != "" {
 		return netip.Addr{}, fmt.Errorf("address %q is not in canonical form", s)
@@ -445,6 +687,9 @@ func parseAddr(s string) (netip.Addr, error) {
 }
 
 func parsePrefix(s string) (netip.Prefix, error) {
+	if s == "" {
+		return netip.Prefix{}, nil
+	}
 	p, err := netip.ParsePrefix(s)
 	if err != nil || p.String() != s {
 		return netip.Prefix{}, fmt.Errorf("prefix %q is not in canonical form", s)

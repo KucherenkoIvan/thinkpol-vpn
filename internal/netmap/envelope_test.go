@@ -6,7 +6,6 @@ import (
 	"errors"
 	"math"
 	mrand "math/rand/v2"
-	"net/netip"
 	"reflect"
 	"testing"
 
@@ -25,11 +24,7 @@ func signEnvelope(t testing.TB, priv ed25519.PrivateKey, body []byte) []byte {
 	if err != nil {
 		t.Fatal(err)
 	}
-	env, err := proto.MarshalOptions{Deterministic: true}.Marshal(&netmapv1.Envelope{Body: body, Signature: sig})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return env
+	return marshal(t, &netmapv1.Envelope{Body: body, Signature: sig})
 }
 
 func marshal(t testing.TB, m proto.Message) []byte {
@@ -41,16 +36,21 @@ func marshal(t testing.TB, m proto.Message) []byte {
 	return b
 }
 
+func decodeEnvelope(t testing.TB, env []byte) *netmapv1.Envelope {
+	t.Helper()
+	var e netmapv1.Envelope
+	if err := proto.Unmarshal(env, &e); err != nil {
+		t.Fatal(err)
+	}
+	return &e
+}
+
 // decodeBody returns the decoded body of a valid envelope, for tests that
 // tamper with it and re-sign.
 func decodeBody(t testing.TB, env []byte) *netmapv1.Body {
 	t.Helper()
-	var e netmapv1.Envelope
 	var b netmapv1.Body
-	if err := proto.Unmarshal(env, &e); err != nil {
-		t.Fatal(err)
-	}
-	if err := proto.Unmarshal(e.GetBody(), &b); err != nil {
+	if err := proto.Unmarshal(decodeEnvelope(t, env).GetBody(), &b); err != nil {
 		t.Fatal(err)
 	}
 	return &b
@@ -65,6 +65,16 @@ func seal(t testing.TB, to NodePublicKey, plain []byte) []byte {
 	return s
 }
 
+func opens(sealed []byte, key NodePrivateKey) bool {
+	pub := key.Public()
+	_, ok := box.OpenAnonymous(nil, sealed, (*[32]byte)(&pub), (*[32]byte)(&key))
+	return ok
+}
+
+func appendUnknownField(b []byte) []byte {
+	return protowire.AppendBytes(protowire.AppendTag(b, 99, protowire.BytesType), []byte("from a newer builder"))
+}
+
 func TestRoundTrip(t *testing.T) {
 	tests := []struct {
 		name             string
@@ -73,10 +83,12 @@ func TestRoundTrip(t *testing.T) {
 	}{
 		{"empty space", 0, 0, 8},
 		{"one server", 1, 0, 8},
+		{"devices without servers", 0, 2, 8},
 		{"M0 lab", 1, 2, 8},
-		{"exactly eight", 2, 6, 8},
-		{"nine pads to sixteen", 2, 7, 16},
-		{"thirty", 10, 20, 32},
+		{"entry and exit", 2, 3, 8},
+		{"hop group in the middle", 4, 4, 8},
+		{"nine pads to sixteen", 4, 5, 16},
+		{"PRD scale", 10, 20, 32},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -87,19 +99,21 @@ func TestRoundTrip(t *testing.T) {
 			if got := m.SectionCount(); got != tt.wantSections {
 				t.Errorf("SectionCount() = %d, want %d", got, tt.wantSections)
 			}
-			h := m.Header()
 			want := Header{
-				SpaceID: f.contents.SpaceID, Version: f.contents.Version,
+				SpaceID: f.contents.SpaceID, KeyEpoch: f.contents.KeyEpoch, Version: f.contents.Version,
 				SigningKey: f.signingPublic(), RecoveryKey: f.contents.RecoveryKey, Blobs: f.contents.Blobs,
 			}
-			if !reflect.DeepEqual(h, want) {
+			if h := m.Header(); !reflect.DeepEqual(h, want) {
 				t.Errorf("Header() = %+v, want %+v", h, want)
+			}
+			if tr := m.Trust(); !reflect.DeepEqual(tr, f.trust()) {
+				t.Errorf("Trust() = %+v, want %+v", tr, f.trust())
 			}
 			if !bytes.Equal(m.Bytes(), env) {
 				t.Error("Bytes() differs from the verified envelope")
 			}
-			for i, r := range f.contents.Sections {
-				got, err := Open(m, f.keys[i])
+			for i, r := range f.contents.Recipients {
+				got, err := m.Open(f.keys[i])
 				if err != nil {
 					t.Fatalf("node %d: Open: %v", i, err)
 				}
@@ -120,129 +134,208 @@ func TestMapIsImmutable(t *testing.T) {
 	h := m.Header()
 	h.SigningKey[0] ^= 0xff
 	h.Blobs[0].Size = 0
+	tr := m.Trust()
+	tr.RecoveryKey[0] ^= 0xff
 	b := m.Bytes()
 	b[1] ^= 0xff
 
-	if _, err := Verify(m.Bytes(), f.signingPublic()); err != nil {
+	if _, err := Verify(m.Bytes(), f.trust()); err != nil {
 		t.Fatalf("map changed through a returned or passed slice: %v", err)
 	}
-	if got := m.Header(); !bytes.Equal(got.SigningKey, f.signingPublic()) || got.Blobs[0].Size != 4096 {
+	if got := m.Header(); !bytes.Equal(got.SigningKey, f.signingPublic()) || got.Blobs[0].Size != testGeoIP.Size {
 		t.Fatal("header changed through a returned slice")
 	}
 	for i, key := range f.keys {
-		if _, err := Open(m, key); err != nil {
+		if _, err := m.Open(key); err != nil {
 			t.Fatalf("node %d: sections changed through the caller's buffer: %v", i, err)
 		}
 	}
 }
 
-func TestVerifyRejectsAnyChangedByte(t *testing.T) {
+func TestUnverifiedMapIsUseless(t *testing.T) {
+	f := newFixture(t, 1, 1)
+	good := f.verify(t, f.build(t))
+	for name, m := range map[string]*Map{"nil": nil, "zero": {}, "hand-made": {raw: good.raw, header: good.header, sections: good.sections}} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := m.Open(f.keys[0]); !errors.Is(err, ErrUnverified) {
+				t.Errorf("Open: err = %v, want ErrUnverified", err)
+			}
+			if _, err := m.Next(f.build(t)); !errors.Is(err, ErrUnverified) {
+				t.Errorf("Next: err = %v, want ErrUnverified", err)
+			}
+			if m != nil {
+				// A nil current map means "no map yet" and accepts good.
+				if err := Accept(m, good); !errors.Is(err, ErrUnverified) {
+					t.Errorf("Accept(m, good): err = %v, want ErrUnverified", err)
+				}
+			}
+			if err := Accept(good, m); !errors.Is(err, ErrUnverified) {
+				t.Errorf("Accept(good, m): err = %v, want ErrUnverified", err)
+			}
+			if !reflect.DeepEqual(m.Header(), Header{}) || !reflect.DeepEqual(m.Trust(), Trust{}) || m.Bytes() != nil || m.SectionCount() != 0 {
+				t.Error("an unverified map gives out its content")
+			}
+		})
+	}
+}
+
+// TestVerifyRejectsChangedBytes flips every byte outside the sealed
+// sections (framing, header, signature) with three masks, every byte of one
+// sealed section, and a random sample of the others. The bytes of all
+// sealed sections play the same part (signed body bytes inside a length-
+// delimited field), so one section stands for all; FuzzVerify covers the
+// rest at random.
+func TestVerifyRejectsChangedBytes(t *testing.T) {
 	f := newFixture(t, 1, 2)
 	env := f.build(t)
-	pub := f.signingPublic()
-	for i := range env {
-		for _, x := range []byte{0x01, 0x80, 0xff} {
-			tampered := bytes.Clone(env)
-			tampered[i] ^= x
-			if _, err := Verify(tampered, pub); err == nil {
-				t.Fatalf("byte %d xor %#x: Verify accepted a tampered envelope", i, x)
-			}
+	m := f.verify(t, env)
+	inSection := make([]int, len(env)) // section index + 1, or 0
+	for i, s := range m.sections {
+		at := bytes.Index(env, s)
+		for j := range s {
+			inSection[at+j] = i + 1
 		}
 	}
+	rng := mrand.New(mrand.NewPCG(3, 4))
+	checked := 0
+	for i := range env {
+		masks := []byte{0x01, 0x80, 0xff}
+		switch {
+		case inSection[i] == 1:
+			masks = masks[:1]
+		case inSection[i] > 1 && rng.IntN(32) != 0:
+			continue
+		case inSection[i] > 1:
+			masks = []byte{byte(1 + rng.IntN(255))}
+		}
+		for _, x := range masks {
+			tampered := bytes.Clone(env)
+			tampered[i] ^= x
+			if _, err := Verify(tampered, f.trust()); err == nil {
+				t.Fatalf("byte %d xor %#x: Verify accepted a tampered envelope", i, x)
+			}
+			checked++
+		}
+	}
+	t.Logf("%d tampered envelopes of %d bytes rejected", checked, len(env))
 }
 
 func TestVerifyRejectsTruncatedOrExtended(t *testing.T) {
 	f := newFixture(t, 1, 2)
 	env := f.build(t)
-	pub := f.signingPublic()
 	for n := range len(env) {
-		if _, err := Verify(env[:n], pub); err == nil {
+		if _, err := Verify(env[:n], f.trust()); err == nil {
 			t.Fatalf("Verify accepted the envelope truncated to %d of %d bytes", n, len(env))
 		}
 	}
-	suffixes := map[string][]byte{
-		"zero byte":            {0},
-		"unknown varint field": protowire.AppendVarint(protowire.AppendTag(nil, 15, protowire.VarintType), 1),
-		"reserved field 3":     protowire.AppendBytes(protowire.AppendTag(nil, 3, protowire.BytesType), []byte("record")),
-		"repeated signature":   protowire.AppendBytes(protowire.AppendTag(nil, 2, protowire.BytesType), make([]byte, 64)),
-		"repeated body":        protowire.AppendBytes(protowire.AppendTag(nil, 1, protowire.BytesType), nil),
+	tests := []struct {
+		name   string
+		suffix []byte
+		want   error
+	}{
+		{"zero byte", []byte{0}, ErrMalformed},
+		{"unknown varint field", protowire.AppendVarint(protowire.AppendTag(nil, 15, protowire.VarintType), 1), ErrMalformed},
+		{"repeated signature", protowire.AppendBytes(protowire.AppendTag(nil, 2, protowire.BytesType), make([]byte, 64)), ErrMalformed},
+		{"repeated body", protowire.AppendBytes(protowire.AppendTag(nil, 1, protowire.BytesType), nil), ErrMalformed},
+		{"recovery record", protowire.AppendBytes(protowire.AppendTag(nil, 3, protowire.BytesType), []byte("record")), ErrUnsupportedFormat},
 	}
-	for name, suffix := range suffixes {
-		if _, err := Verify(append(bytes.Clone(env), suffix...), pub); !errors.Is(err, ErrMalformed) {
-			t.Errorf("%s appended: err = %v, want ErrMalformed", name, err)
+	for _, tt := range tests {
+		if _, err := Verify(append(bytes.Clone(env), tt.suffix...), f.trust()); !errors.Is(err, tt.want) {
+			t.Errorf("%s appended: err = %v, want %v", tt.name, err, tt.want)
 		}
 	}
 }
 
 func TestVerifyRejectsNonCanonicalEnvelope(t *testing.T) {
 	f := newFixture(t, 1, 1)
-	env := f.build(t)
-	var e netmapv1.Envelope
-	if err := proto.Unmarshal(env, &e); err != nil {
-		t.Fatal(err)
+	e := decodeEnvelope(t, f.build(t))
+	body, sig := e.GetBody(), e.GetSignature()
+	field := func(b []byte, num protowire.Number, v []byte) []byte {
+		return protowire.AppendBytes(protowire.AppendTag(b, num, protowire.BytesType), v)
 	}
-	// The same two fields, signature first: decodes to the same message.
-	swapped := protowire.AppendBytes(protowire.AppendTag(nil, 2, protowire.BytesType), e.GetSignature())
-	swapped = protowire.AppendBytes(protowire.AppendTag(swapped, 1, protowire.BytesType), e.GetBody())
-	// The body's length as a needlessly long varint.
-	l := len(e.GetBody())
-	padded := protowire.AppendTag(nil, 1, protowire.BytesType)
-	padded = append(padded, byte(l&0x7f|0x80), byte(l>>7&0x7f|0x80), byte(l>>14&0x7f|0x80), 0x00)
-	padded = append(padded, e.GetBody()...)
-	padded = protowire.AppendBytes(protowire.AppendTag(padded, 2, protowire.BytesType), e.GetSignature())
+	l := len(body)
 
-	for name, b := range map[string][]byte{"fields swapped": swapped, "padded varint length": padded} {
-		var check netmapv1.Envelope
-		if err := proto.Unmarshal(b, &check); err != nil || !proto.Equal(&check, &e) {
-			t.Fatalf("%s: test input doesn't decode to the original envelope: %v", name, err)
-		}
-		if _, err := Verify(b, f.signingPublic()); !errors.Is(err, ErrMalformed) {
-			t.Errorf("%s: err = %v, want ErrMalformed", name, err)
-		}
-	}
-}
-
-func TestVerifyRejectsWrongKeys(t *testing.T) {
-	f := newFixture(t, 1, 1)
-	env := f.build(t)
-	body := decodeBody(t, env)
-
-	// Signed with the recovery key, which the header names as the signing key.
-	byRecovery, err := Build(f.recovery, Contents{
-		SpaceID: f.contents.SpaceID, Version: 2, RecoveryKey: f.signingPublic(), Sections: f.contents.Sections,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// The real signing key over the real body, without the map context.
-	plainSig := ed25519.Sign(f.signing, marshal(t, body))
-	noContext := marshal(t, &netmapv1.Envelope{Body: marshal(t, body), Signature: plainSig})
-	// A body naming another signing key, signed by the trusted one.
-	other := newKeyPair(t)
-	body.Header.SigningPublicKey = other.Public().(ed25519.PublicKey)
-	namesOther := signEnvelope(t, f.signing, marshal(t, body))
+	swapped := field(field(nil, 2, sig), 1, body)
+	paddedLength := append([]byte{0x0a}, byte(l&0x7f|0x80), byte(l>>7&0x7f|0x80), byte(l>>14&0x7f|0x80), 0x00)
+	paddedLength = field(append(paddedLength, body...), 2, sig)
+	paddedTag := append(append([]byte{0x8a, 0x00}, protowire.AppendVarint(nil, uint64(l))...), body...)
+	paddedTag = field(paddedTag, 2, sig)
+	recoveryBefore := field(field(field(nil, 1, body), 3, []byte("record")), 2, sig)
 
 	tests := []struct {
 		name string
 		env  []byte
-		key  ed25519.PublicKey
 		want error
 	}{
-		{"another signing key", env, other.Public().(ed25519.PublicKey), ErrBadSignature},
-		{"the recovery key", env, f.contents.RecoveryKey, ErrBadSignature},
-		{"signed by the recovery key", byRecovery, f.signingPublic(), ErrBadSignature},
-		{"signature without context", noContext, f.signingPublic(), ErrBadSignature},
-		{"header names another key", namesOther, f.signingPublic(), ErrMalformed},
+		{"fields swapped", swapped, ErrMalformed},
+		{"padded varint length", paddedLength, ErrMalformed},
+		{"padded tag", paddedTag, ErrMalformed},
+		{"short signature", field(field(nil, 1, body), 2, sig[:63]), ErrMalformed},
+		{"long signature", field(field(nil, 1, body), 2, append(bytes.Clone(sig), 0)), ErrMalformed},
+		{"no signature", field(nil, 1, body), ErrMalformed},
+		{"recovery records before the signature", recoveryBefore, ErrMalformed},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if _, err := Verify(tt.env, tt.key); !errors.Is(err, tt.want) {
+			if _, err := Verify(tt.env, f.trust()); !errors.Is(err, tt.want) {
+				t.Errorf("err = %v, want %v", err, tt.want)
+			}
+		})
+	}
+	// The first three decode to the same message as the original: only the
+	// canonical check rejects them.
+	for _, b := range [][]byte{swapped, paddedLength, paddedTag} {
+		var check netmapv1.Envelope
+		if err := proto.Unmarshal(b, &check); err != nil || !proto.Equal(&check, e) {
+			t.Fatalf("test input doesn't decode to the original envelope: %v", err)
+		}
+	}
+}
+
+func TestVerifyChecksTrust(t *testing.T) {
+	f := newFixture(t, 1, 1)
+	env := f.build(t)
+	body := decodeBody(t, env)
+	other := newKeyPair(t)
+	otherPub := other.Public().(ed25519.PublicKey)
+
+	byRecovery, err := Build(f.recovery, Contents{
+		SpaceID: f.contents.SpaceID, Version: 2, RecoveryKey: f.signingPublic(), Recipients: f.contents.Recipients, Blobs: f.contents.Blobs,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	noContext := marshal(t, &netmapv1.Envelope{Body: marshal(t, body), Signature: ed25519.Sign(f.signing, marshal(t, body))})
+	body.Header.SigningPublicKey = otherPub
+	namesOther := signEnvelope(t, f.signing, marshal(t, body))
+
+	trust := func(change func(*Trust)) Trust { tr := f.trust(); change(&tr); return tr }
+	tests := []struct {
+		name  string
+		env   []byte
+		trust Trust
+		want  error
+	}{
+		{"trusted", env, f.trust(), nil},
+		{"any space", env, trust(func(tr *Trust) { tr.SpaceID = SpaceID{} }), nil},
+		{"any recovery key", env, trust(func(tr *Trust) { tr.RecoveryKey = nil }), nil},
+		{"another space", env, trust(func(tr *Trust) { tr.SpaceID = NewSpaceID() }), ErrOtherSpace},
+		{"another recovery key", env, trust(func(tr *Trust) { tr.RecoveryKey = otherPub }), ErrKeysChanged},
+		{"another signing key", env, trust(func(tr *Trust) { tr.SigningKey = otherPub }), ErrBadSignature},
+		{"the recovery key as signing key", env, trust(func(tr *Trust) { tr.SigningKey = f.contents.RecoveryKey }), ErrBadSignature},
+		{"signed by the recovery key", byRecovery, f.trust(), ErrBadSignature},
+		{"signature without context", noContext, f.trust(), ErrBadSignature},
+		{"header names another key", namesOther, f.trust(), ErrMalformed},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := Verify(tt.env, tt.trust); !errors.Is(err, tt.want) {
 				t.Errorf("err = %v, want %v", err, tt.want)
 			}
 		})
 	}
 	for _, key := range []ed25519.PublicKey{nil, make([]byte, 31)} {
-		if _, err := Verify(env, key); err == nil {
+		if _, err := Verify(env, Trust{SigningKey: key}); err == nil {
 			t.Errorf("Verify accepted a signing key of %d bytes", len(key))
 		}
 	}
@@ -263,9 +356,8 @@ func TestVerifyRejectsBadSignedBodies(t *testing.T) {
 			return protowire.AppendVarint(protowire.AppendTag(marshal(t, b), 1, protowire.VarintType), 2)
 		}, ErrMalformed},
 		{"future layout", func(b *netmapv1.Body) []byte {
-			// format 2 with field 2 as a varint: unreadable as a v1 body
 			out := protowire.AppendVarint(protowire.AppendTag(nil, 1, protowire.VarintType), 2)
-			return protowire.AppendVarint(protowire.AppendTag(out, 2, protowire.VarintType), 7)
+			return protowire.AppendVarint(protowire.AppendTag(out, 3, protowire.VarintType), 7)
 		}, ErrUnsupportedFormat},
 		{"not protobuf", func(*netmapv1.Body) []byte { return []byte{0xff, 0xff, 0xff} }, ErrMalformed},
 		{"no header", func(b *netmapv1.Body) []byte { b.Header = nil; return marshal(t, b) }, ErrMalformed},
@@ -278,6 +370,7 @@ func TestVerifyRejectsBadSignedBodies(t *testing.T) {
 			return marshal(t, b)
 		}, ErrMalformed},
 		{"short blob hash", func(b *netmapv1.Body) []byte { b.Header.Blobs[0].Sha256 = []byte{1}; return marshal(t, b) }, ErrMalformed},
+		{"blob of size 0", func(b *netmapv1.Body) []byte { b.Header.Blobs[0].Size = 0; return marshal(t, b) }, ErrMalformed},
 		{"repeated blob", func(b *netmapv1.Body) []byte {
 			b.Header.Blobs = append(b.Header.Blobs, b.Header.Blobs[0])
 			return marshal(t, b)
@@ -294,7 +387,7 @@ func TestVerifyRejectsBadSignedBodies(t *testing.T) {
 		}, ErrMalformed},
 		{"sections below the minimum size", func(b *netmapv1.Body) []byte {
 			for _, s := range b.Sections {
-				s.Sealed = s.Sealed[:box.AnonymousOverhead+512]
+				s.Sealed = s.Sealed[:box.AnonymousOverhead+minSectionSize/2]
 			}
 			return marshal(t, b)
 		}, ErrMalformed},
@@ -308,7 +401,7 @@ func TestVerifyRejectsBadSignedBodies(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			tampered := signEnvelope(t, f.signing, tt.mutate(decodeBody(t, env)))
-			if _, err := Verify(tampered, f.signingPublic()); !errors.Is(err, tt.want) {
+			if _, err := Verify(tampered, f.trust()); !errors.Is(err, tt.want) {
 				t.Errorf("err = %v, want %v", err, tt.want)
 			}
 		})
@@ -317,9 +410,54 @@ func TestVerifyRejectsBadSignedBodies(t *testing.T) {
 
 func TestVerifyRejectsOversizedEnvelope(t *testing.T) {
 	f := newFixture(t, 0, 1)
-	big := make([]byte, MaxEnvelopeSize+1)
-	if _, err := Verify(big, f.signingPublic()); !errors.Is(err, ErrMalformed) {
+	if _, err := Verify(make([]byte, MaxEnvelopeSize+1), f.trust()); !errors.Is(err, ErrMalformed) {
 		t.Errorf("err = %v, want ErrMalformed", err)
+	}
+}
+
+// replaceSections re-signs env with every section that opens for key
+// replaced by a dummy, then crafted sealed sections laid at the start.
+func (f *fixture) replaceSections(t testing.TB, env []byte, key NodePrivateKey, crafted ...[]byte) *Map {
+	t.Helper()
+	b := decodeBody(t, env)
+	size := len(b.Sections[0].GetSealed()) - box.AnonymousOverhead
+	for _, s := range b.Sections {
+		if opens(s.GetSealed(), key) {
+			s.Sealed = seal(t, GenerateNodeKey().Public(), make([]byte, size))
+		}
+	}
+	for i, c := range crafted {
+		b.Sections[i].Sealed = c
+	}
+	return f.verify(t, signEnvelope(t, f.signing, marshal(t, b)))
+}
+
+func TestReadersIgnoreUnknownFields(t *testing.T) {
+	f := newFixture(t, 1, 1)
+	env := f.build(t)
+	key := f.keys[1]
+	sec := f.contents.Recipients[1].Section
+	h := f.verify(t, env).Header()
+
+	b := decodeBody(t, env)
+	b.Header.ProtoReflect().SetUnknown(appendUnknownField(nil))
+	plain := appendUnknownField(marshal(t, sectionToProto(&sec, &h)))
+	b.Sections[0].Sealed = seal(t, key.Public(), pad(plain, minSectionSize))
+	for _, s := range b.Sections[1:] {
+		if opens(s.GetSealed(), key) {
+			s.Sealed = seal(t, GenerateNodeKey().Public(), make([]byte, minSectionSize))
+		}
+	}
+	m, err := Verify(signEnvelope(t, f.signing, appendUnknownField(marshal(t, b))), f.trust())
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	got, err := m.Open(key)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if !reflect.DeepEqual(got, sec) {
+		t.Errorf("Open() = %+v, want %+v", got, sec)
 	}
 }
 
@@ -330,10 +468,9 @@ func TestOpenOnlyOwnSection(t *testing.T) {
 	// Each key opens exactly one sealed box, its own; nobody opens a dummy.
 	opened := make([]int, len(m.sections))
 	for i, key := range f.keys {
-		pub := key.Public()
 		count := 0
 		for j, s := range m.sections {
-			if _, ok := box.OpenAnonymous(nil, s, (*[32]byte)(&pub), (*[32]byte)(&key)); ok {
+			if opens(s, key) {
 				count++
 				opened[j]++
 			}
@@ -341,11 +478,11 @@ func TestOpenOnlyOwnSection(t *testing.T) {
 		if count != 1 {
 			t.Errorf("node %d opens %d sections, want 1", i, count)
 		}
-		got, err := Open(m, key)
+		got, err := m.Open(key)
 		if err != nil {
 			t.Fatalf("node %d: %v", i, err)
 		}
-		if got.Node.ID != f.contents.Sections[i].Section.Node.ID {
+		if got.Node.ID != f.contents.Recipients[i].Section.Node.ID {
 			t.Errorf("node %d opened the section of node %v", i, got.Node.ID)
 		}
 	}
@@ -362,12 +499,10 @@ func TestOpenOnlyOwnSection(t *testing.T) {
 		t.Errorf("%d sections open for nobody, want %d dummies", dummies, want)
 	}
 
-	// A node using another node's public key with its own private key, or a
-	// stranger's key, gets nothing.
-	stranger := GenerateNodeKey()
-	if _, err := Open(m, stranger); !errors.Is(err, ErrNotRecipient) {
+	if _, err := m.Open(GenerateNodeKey()); !errors.Is(err, ErrNotRecipient) {
 		t.Errorf("stranger: err = %v, want ErrNotRecipient", err)
 	}
+	// Node 0's private key with node 1's public key opens nothing.
 	pub1 := f.keys[1].Public()
 	for _, s := range m.sections {
 		if _, ok := box.OpenAnonymous(nil, s, (*[32]byte)(&pub1), (*[32]byte)(&f.keys[0])); ok {
@@ -376,69 +511,58 @@ func TestOpenOnlyOwnSection(t *testing.T) {
 	}
 }
 
-func TestOpenRejectsBadSections(t *testing.T) {
+func TestOpenChecksOnlyWellFormedness(t *testing.T) {
 	f := newFixture(t, 1, 1)
 	env := f.build(t)
 	key := f.keys[1]
 	pub := key.Public()
-	sec := f.contents.Sections[1].Section
-	space, version := f.contents.SpaceID, f.contents.Version
+	h := f.verify(t, env).Header()
+	device := f.contents.Recipients[1].Section
 
-	plainFor := func(pb *netmapv1.Section) []byte { return pad(marshal(t, pb), minSectionSize) }
-	// replace re-signs the envelope with section 0 replaced (and, if extra
-	// is set, section 1 too).
-	replace := func(first []byte, extra []byte) *Map {
-		b := decodeBody(t, env)
-		b.Sections[0].Sealed = first
-		if extra != nil {
-			b.Sections[1].Sealed = extra
-		}
-		// Drop the real section of key so only the crafted one opens.
-		real := -1
-		for i, s := range b.Sections {
-			if _, ok := box.OpenAnonymous(nil, s.GetSealed(), (*[32]byte)(&pub), (*[32]byte)(&key)); ok && i > 1 {
-				real = i
-			}
-		}
-		if real > 0 {
-			b.Sections[real].Sealed = seal(t, GenerateNodeKey().Public(), make([]byte, minSectionSize))
-		}
-		return f.verify(t, signEnvelope(t, f.signing, marshal(t, b)))
+	sealedWith := func(change func(pb *netmapv1.Section)) []byte {
+		pb := sectionToProto(&device, &h)
+		change(pb)
+		return seal(t, pub, pad(marshal(t, pb), minSectionSize))
 	}
-
-	otherSpace := sectionToProto(&sec, NewSpaceID(), version)
-	oldVersion := sectionToProto(&sec, space, version-1)
-	badAddr := sectionToProto(&sec, space, version)
-	badAddr.Node.Ipv6 = "FD12:3456:789A::2"
-	invalid := sectionToProto(&sec, space, version)
-	invalid.Node.Ipv4Network = "10.0.0.0/8"
-	unpadded := marshal(t, sectionToProto(&sec, space, version))
+	unpadded := marshal(t, sectionToProto(&device, &h))
 	unpadded = append(unpadded, make([]byte, minSectionSize-len(unpadded))...)
-	good := seal(t, pub, plainFor(sectionToProto(&sec, space, version)))
+	good := sealedWith(func(*netmapv1.Section) {})
 
 	tests := []struct {
-		name string
-		m    *Map
+		name    string
+		crafted [][]byte
+		want    error
 	}{
-		{"another space", replace(seal(t, pub, plainFor(otherSpace)), nil)},
-		{"older version replayed", replace(seal(t, pub, plainFor(oldVersion)), nil)},
-		{"non-canonical address", replace(seal(t, pub, plainFor(badAddr)), nil)},
-		{"invalid section", replace(seal(t, pub, plainFor(invalid)), nil)},
-		{"no padding marker", replace(seal(t, pub, unpadded), nil)},
-		{"not protobuf", replace(seal(t, pub, pad([]byte{0xff, 0xff}, minSectionSize)), nil)},
-		{"two sections for one key", replace(good, good)},
+		{"control", [][]byte{good}, nil},
+		{"builder policy is not the reader's", [][]byte{sealedWith(func(pb *netmapv1.Section) {
+			pb.Node.Ipv4Network = "10.0.0.0/8"
+			pb.Peers[0].Paths = nil
+			pb.Links[0].Endpoints = nil
+		})}, nil},
+		{"another space", [][]byte{sealedWith(func(pb *netmapv1.Section) { pb.SpaceId = make([]byte, 16) })}, ErrMalformed},
+		{"older version replayed", [][]byte{sealedWith(func(pb *netmapv1.Section) { pb.MapVersion-- })}, ErrMalformed},
+		{"another key epoch", [][]byte{sealedWith(func(pb *netmapv1.Section) { pb.KeyEpoch++ })}, ErrMalformed},
+		{"no reader version", [][]byte{sealedWith(func(pb *netmapv1.Section) { pb.MinReader = 0 })}, ErrMalformed},
+		{"newer reader needed", [][]byte{sealedWith(func(pb *netmapv1.Section) { pb.MinReader = SectionReader + 1 })}, ErrUnsupportedFormat},
+		{"unknown own node kind", [][]byte{sealedWith(func(pb *netmapv1.Section) { pb.Node.Kind = 7 })}, ErrUnsupportedFormat},
+		{"own node kind out of range", [][]byte{sealedWith(func(pb *netmapv1.Section) { pb.Node.Kind = 300 })}, ErrUnsupportedFormat},
+		{"unspecified own node kind", [][]byte{sealedWith(func(pb *netmapv1.Section) { pb.Node.Kind = 0 })}, ErrMalformed},
+		{"peer is the node itself", [][]byte{sealedWith(func(pb *netmapv1.Section) { pb.Peers[0].Id = pb.Node.Id })}, ErrMalformed},
+		{"route repeated", [][]byte{sealedWith(func(pb *netmapv1.Section) {
+			pb.Routes = []*netmapv1.Route{{Destination: pb.Peers[0].Id}, {Destination: pb.Peers[0].Id}}
+		})}, ErrMalformed},
+		{"non-canonical address", [][]byte{sealedWith(func(pb *netmapv1.Section) { pb.Node.Ipv6 = "FD12:3456:789A::2" })}, ErrMalformed},
+		{"no padding marker", [][]byte{seal(t, pub, unpadded)}, ErrMalformed},
+		{"not protobuf", [][]byte{seal(t, pub, pad([]byte{0xff, 0xff}, minSectionSize))}, ErrMalformed},
+		{"two sections for one key", [][]byte{good, good}, ErrMalformed},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if _, err := Open(tt.m, key); !errors.Is(err, ErrMalformed) {
-				t.Errorf("err = %v, want ErrMalformed", err)
+			m := f.replaceSections(t, env, key, tt.crafted...)
+			if _, err := m.Open(key); !errors.Is(err, tt.want) {
+				t.Errorf("err = %v, want %v", err, tt.want)
 			}
 		})
-	}
-	// The crafted section on its own does open: the cases above fail for
-	// their own reason.
-	if _, err := Open(replace(good, nil), key); err != nil {
-		t.Fatalf("control: %v", err)
 	}
 }
 
@@ -448,10 +572,10 @@ func TestOpenRejectsBadSections(t *testing.T) {
 // sealed boxes, and real sections land in uniformly random positions.
 func TestPaddingHidesSections(t *testing.T) {
 	rng := mrand.New(mrand.NewPCG(1, 2))
-	for range 100 {
-		f := newFixture(t, rng.IntN(4), rng.IntN(14))
+	for range 60 {
+		f := newFixture(t, rng.IntN(5), rng.IntN(14))
 		m := f.verify(t, f.build(t))
-		n := len(f.contents.Sections)
+		n := len(f.contents.Recipients)
 		if got, want := m.SectionCount(), sectionCount(n); got != want {
 			t.Fatalf("%d nodes: %d sections, want %d", n, got, want)
 		}
@@ -468,15 +592,14 @@ func TestPaddingHidesSections(t *testing.T) {
 	}
 
 	// Positions: three real sections among eight, over many maps.
-	const maps = 400
+	const maps = 300
 	var hits [minSections]int
 	f := newFixture(t, 1, 2)
 	for range maps {
 		m := f.verify(t, f.build(t))
 		for _, key := range f.keys {
-			pub := key.Public()
 			for j, s := range m.sections {
-				if _, ok := box.OpenAnonymous(nil, s, (*[32]byte)(&pub), (*[32]byte)(&key)); ok {
+				if opens(s, key) {
 					hits[j]++
 				}
 			}
@@ -487,26 +610,48 @@ func TestPaddingHidesSections(t *testing.T) {
 	for _, h := range hits {
 		chi2 += math.Pow(float64(h)-expected, 2) / expected
 	}
-	// 7 degrees of freedom: p = 0.0001 at 29.88.
-	if chi2 > 29.88 {
-		t.Errorf("real sections are not uniformly placed: hits %v, chi² %.1f", hits, chi2)
+	// χ² with 7 degrees of freedom exceeds 50 with probability 1.4e-8 for a
+	// uniform shuffle, so this fails spuriously about once in 70 million
+	// runs; a missing or broken shuffle scores in the hundreds.
+	if chi2 > 50 {
+		t.Errorf("real sections are not uniformly placed: hits %v, χ² %.1f", hits, chi2)
 	}
 }
 
 func TestSectionLengthHidesRole(t *testing.T) {
-	// A server's small section and a device's larger one are padded to the
-	// same length, and the length depends only on the largest section.
-	f := newFixture(t, 2, 5)
-	m := f.verify(t, f.build(t))
-	if got := len(m.sections[0]) - box.AnonymousOverhead; !isPowerOfTwo(got) || got < minSectionSize {
-		t.Fatalf("padded section of %d bytes", got)
+	sealedSize := func(m *Map) int { return len(m.sections[0]) - box.AnonymousOverhead }
+
+	// The PRD's scale fits the smallest bucket, servers and devices alike.
+	prd := newFixture(t, 10, 20)
+	if got := sealedSize(prd.verify(t, prd.build(t))); got != minSectionSize {
+		t.Errorf("a PRD-scale space uses %d-byte sections, want %d", got, minSectionSize)
 	}
-	g := newFixture(t, 2, 5)
-	g.contents.Sections = g.contents.Sections[2:] // devices only
-	gm := g.verify(t, g.build(t))
-	if len(gm.sections[0]) != len(m.sections[0]) || len(gm.Bytes()) != len(m.Bytes()) {
-		t.Errorf("dropping the servers changed the section or envelope length: %d/%d vs %d/%d",
-			len(gm.sections[0]), len(gm.Bytes()), len(m.sections[0]), len(m.Bytes()))
+
+	// One device section outgrowing the bucket moves every section, the
+	// server's small one included, to the next bucket.
+	f := newFixture(t, 1, 2)
+	server := f.contents.Recipients[0].Section
+	h := Header{SpaceID: f.contents.SpaceID, Version: f.contents.Version}
+	if n := len(marshal(t, sectionToProto(&server, &h))); n >= minSectionSize/4 {
+		t.Fatalf("the server's section is %d bytes, not a small one", n)
+	}
+	if got := sealedSize(f.verify(t, f.build(t))); got != minSectionSize {
+		t.Fatalf("before: %d-byte sections, want %d", got, minSectionSize)
+	}
+	device := &f.contents.Recipients[1].Section
+	for i := range 10 {
+		device.Links = append(device.Links, Link{Peer: NodeID{byte(i + 1), 0xee}, Endpoints: []Endpoint{
+			{Transport: "udp", Address: "192.0.2.1:4500", Credential: make([]byte, maxCredential)},
+		}})
+	}
+	m := f.verify(t, f.build(t))
+	if got := sealedSize(m); got != 2*minSectionSize {
+		t.Fatalf("after: %d-byte sections, want %d", got, 2*minSectionSize)
+	}
+	for _, s := range m.sections {
+		if opens(s, f.keys[0]) && len(s) != len(m.sections[0]) {
+			t.Error("the server's section is not padded to the new bucket")
+		}
 	}
 }
 
@@ -523,160 +668,95 @@ func TestBuildSealsAfresh(t *testing.T) {
 	}
 }
 
-func TestAccept(t *testing.T) {
+func TestAcceptAndNext(t *testing.T) {
 	f := newFixture(t, 1, 1)
-	at := func(t *testing.T, c Contents, signing ed25519.PrivateKey) *Map {
+	envAt := func(t *testing.T, change func(c *Contents), signing ed25519.PrivateKey) []byte {
 		t.Helper()
+		c := f.contents
+		change(&c)
 		env, err := Build(signing, c)
 		if err != nil {
 			t.Fatal(err)
 		}
-		m, err := Verify(env, signing.Public().(ed25519.PublicKey))
+		return env
+	}
+	version := func(v uint64) func(c *Contents) { return func(c *Contents) { c.Version = v } }
+	verifyAs := func(t *testing.T, env []byte, signing ed25519.PrivateKey) *Map {
+		t.Helper()
+		m, err := Verify(env, Trust{SigningKey: signing.Public().(ed25519.PublicKey)})
 		if err != nil {
 			t.Fatal(err)
 		}
 		return m
 	}
-	withVersion := func(v uint64) Contents { c := f.contents; c.Version = v; return c }
-	current := at(t, withVersion(5), f.signing)
-
-	otherSpace := withVersion(6)
-	otherSpace.SpaceID = NewSpaceID()
-	otherRecovery := withVersion(6)
-	otherRecovery.RecoveryKey = newKeyPair(t).Public().(ed25519.PublicKey)
+	current := f.verify(t, envAt(t, version(5), f.signing))
+	otherSigning := newKeyPair(t)
 
 	tests := []struct {
-		name      string
-		current   *Map
-		candidate *Map
-		want      error
+		name    string
+		env     []byte
+		signing ed25519.PrivateKey
+		want    error // from Accept
+		wantErr error // from Next, when it differs
 	}{
-		{"first map", nil, at(t, withVersion(1), f.signing), nil},
-		{"next version", current, at(t, withVersion(6), f.signing), nil},
-		{"version jump", current, at(t, withVersion(math.MaxUint64), f.signing), nil},
-		{"same version", current, at(t, withVersion(5), f.signing), ErrNotNewer},
-		{"same map", current, current, ErrNotNewer},
-		{"rollback", current, at(t, withVersion(4), f.signing), ErrNotNewer},
-		{"rollback to first", current, at(t, withVersion(1), f.signing), ErrNotNewer},
-		{"another space", current, at(t, otherSpace, f.signing), ErrOtherSpace},
-		{"another signing key", current, at(t, withVersion(6), newKeyPair(t)), ErrKeysChanged},
-		{"another recovery key", current, at(t, otherRecovery, f.signing), ErrKeysChanged},
+		{"next version", envAt(t, version(6), f.signing), f.signing, nil, nil},
+		{"highest version", envAt(t, version(MaxVersion), f.signing), f.signing, nil, nil},
+		{"same version", envAt(t, version(5), f.signing), f.signing, ErrNotNewer, nil},
+		{"rollback", envAt(t, version(4), f.signing), f.signing, ErrNotNewer, nil},
+		{"rollback to first", envAt(t, version(1), f.signing), f.signing, ErrNotNewer, nil},
+		{"another space", envAt(t, func(c *Contents) { c.Version = 6; c.SpaceID = NewSpaceID() }, f.signing), f.signing, ErrOtherSpace, nil},
+		{"another recovery key", envAt(t, func(c *Contents) {
+			c.Version = 6
+			c.RecoveryKey = newKeyPair(t).Public().(ed25519.PublicKey)
+		}, f.signing), f.signing, ErrKeysChanged, nil},
+		{"another signing key", envAt(t, version(6), otherSigning), otherSigning, ErrKeysChanged, ErrBadSignature},
+		{"next key epoch", envAt(t, func(c *Contents) { c.KeyEpoch = 1; c.Version = 1 }, f.signing), f.signing, ErrKeysChanged, nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if err := Accept(tt.current, tt.candidate); !errors.Is(err, tt.want) {
-				t.Errorf("err = %v, want %v", err, tt.want)
+			if err := Accept(current, verifyAs(t, tt.env, tt.signing)); !errors.Is(err, tt.want) {
+				t.Errorf("Accept: err = %v, want %v", err, tt.want)
+			}
+			wantNext := tt.want
+			if tt.wantErr != nil {
+				wantNext = tt.wantErr
+			}
+			next, err := current.Next(tt.env)
+			if !errors.Is(err, wantNext) {
+				t.Errorf("Next: err = %v, want %v", err, wantNext)
+			}
+			if err == nil {
+				if !bytes.Equal(next.Bytes(), tt.env) || next.Header().Version <= current.Header().Version {
+					t.Error("Next returned another map")
+				}
+				if _, err := next.Open(f.keys[0]); err != nil {
+					t.Errorf("Open on the next map: %v", err)
+				}
 			}
 		})
 	}
-	if err := Accept(current, nil); err == nil {
-		t.Error("Accept accepted a nil candidate")
+	if err := Accept(nil, current); err != nil {
+		t.Errorf("first map: %v", err)
+	}
+	// A map at a later epoch can't go back either.
+	later := verifyAs(t, envAt(t, func(c *Contents) { c.KeyEpoch = 1; c.Version = 9 }, f.signing), f.signing)
+	if err := Accept(later, current); !errors.Is(err, ErrKeysChanged) {
+		t.Errorf("back to an older epoch: err = %v, want ErrKeysChanged", err)
 	}
 }
 
-func TestBuildRejectsInvalidContents(t *testing.T) {
-	f := newFixture(t, 1, 2)
-	type mutation func(c *Contents)
-	section := func(i int, m func(s *Section)) mutation {
-		return func(c *Contents) {
-			secs := append([]Recipient(nil), c.Sections...)
-			s := secs[i].Section
-			s.Node.Listeners = append([]Listener(nil), s.Node.Listeners...)
-			s.Peers = append([]Peer(nil), s.Peers...)
-			s.Links = append([]Link(nil), s.Links...)
-			s.Inbound = append([]InboundLink(nil), s.Inbound...)
-			s.RelayTo = append([]NodeID(nil), s.RelayTo...)
-			m(&s)
-			secs[i].Section = s
-			c.Sections = secs
-		}
+func TestBuildChecksEnvelopeSizeBeforeSealing(t *testing.T) {
+	// 17 recipients pad to 32 sections; one 600 KB section puts them all in
+	// the 1 MiB bucket, 32 MiB in all.
+	f := newFixture(t, 0, 17)
+	s := &f.contents.Recipients[0].Section
+	for i := range 560 {
+		s.Links = append(s.Links, Link{Peer: NodeID{byte(i), byte(i >> 8), 1}, Endpoints: []Endpoint{
+			{Transport: "udp", Address: "192.0.2.1:1", Credential: make([]byte, maxCredential)},
+		}})
 	}
-	server := func(m func(s *Section)) mutation { return section(0, m) }
-	device := func(m func(s *Section)) mutation { return section(1, m) }
-	serverID := f.contents.Sections[0].Section.Node.ID
-
-	tests := []struct {
-		name   string
-		mutate mutation
-	}{
-		{"zero space id", func(c *Contents) { c.SpaceID = SpaceID{} }},
-		{"zero version", func(c *Contents) { c.Version = 0 }},
-		{"no recovery key", func(c *Contents) { c.RecoveryKey = nil }},
-		{"recovery key is the signing key", func(c *Contents) { c.RecoveryKey = f.signingPublic() }},
-		{"zero blob hash", func(c *Contents) { c.Blobs = []BlobRef{{}} }},
-		{"repeated blob", func(c *Contents) { c.Blobs = []BlobRef{{SHA256: [32]byte{9}}, {SHA256: [32]byte{9}}} }},
-		{"zero recipient key", func(c *Contents) {
-			c.Sections = append([]Recipient(nil), c.Sections...)
-			c.Sections[0].Key = NodePublicKey{}
-		}},
-		{"repeated recipient key", func(c *Contents) {
-			c.Sections = append([]Recipient(nil), c.Sections...)
-			c.Sections[1].Key = c.Sections[0].Key
-		}},
-		{"two sections for one node", func(c *Contents) {
-			c.Sections = append([]Recipient(nil), c.Sections...)
-			c.Sections[1].Section = c.Sections[0].Section
-		}},
-		{"zero node id", server(func(s *Section) { s.Node.ID = NodeID{} })},
-		{"unknown kind", server(func(s *Section) { s.Node.Kind = 7 })},
-		{"IPv4 network outside CGNAT", server(func(s *Section) { s.Node.IPv4Network = netip.MustParsePrefix("10.0.0.0/8") })},
-		{"IPv4 network wider than CGNAT", server(func(s *Section) { s.Node.IPv4Network = netip.MustParsePrefix("100.0.0.0/8") })},
-		{"IPv4 network not masked", server(func(s *Section) { s.Node.IPv4Network = netip.MustParsePrefix("100.100.0.1/16") })},
-		{"IPv6 network not ULA", server(func(s *Section) { s.Node.IPv6Network = netip.MustParsePrefix("2001:db8::/48") })},
-		{"IPv6 network is IPv4", server(func(s *Section) { s.Node.IPv6Network = netip.MustParsePrefix("100.100.0.0/16") })},
-		{"no IPv6 network", server(func(s *Section) { s.Node.IPv6Network = netip.Prefix{} })},
-		{"address outside network", server(func(s *Section) { s.Node.IPv4 = netip.MustParseAddr("100.101.0.1") })},
-		{"no IPv6 address", server(func(s *Section) { s.Node.IPv6 = netip.Addr{} })},
-		{"bad transport name", server(func(s *Section) { s.Node.Listeners[0].Transport = "UDP" })},
-		{"transport name starts with a digit", server(func(s *Section) { s.Node.Listeners[0].Transport = "4udp" })},
-		{"long transport name", server(func(s *Section) { s.Node.Listeners[0].Transport = string(bytes.Repeat([]byte("a"), 33)) })},
-		{"listener without port", server(func(s *Section) { s.Node.Listeners[0].Address = "0.0.0.0" })},
-		{"listener port zero", server(func(s *Section) { s.Node.Listeners[0].Address = ":0" })},
-		{"listener port too big", server(func(s *Section) { s.Node.Listeners[0].Address = ":65536" })},
-		{"listener port with leading zero", server(func(s *Section) { s.Node.Listeners[0].Address = ":04500" })},
-		{"inbound from self", server(func(s *Section) { s.Inbound[0].Peer = serverID })},
-		{"inbound repeated", server(func(s *Section) { s.Inbound = append(s.Inbound, s.Inbound[0]) })},
-		{"inbound without credential", server(func(s *Section) { s.Inbound[0].Credential = nil })},
-		{"inbound credential too long", server(func(s *Section) { s.Inbound[0].Credential = make([]byte, maxCredential+1) })},
-		{"relay to self", server(func(s *Section) { s.RelayTo = append(s.RelayTo, serverID) })},
-		{"relay to zero", server(func(s *Section) { s.RelayTo = append(s.RelayTo, NodeID{}) })},
-		{"relay repeated", server(func(s *Section) { s.RelayTo = append(s.RelayTo, s.RelayTo[0]) })},
-		{"link repeated", device(func(s *Section) { s.Links = append(s.Links, s.Links[0]) })},
-		{"link without endpoints", device(func(s *Section) { s.Links[0] = Link{Peer: s.Links[0].Peer} })},
-		{"endpoint without host", device(func(s *Section) {
-			s.Links[0] = Link{Peer: s.Links[0].Peer, Endpoints: []Endpoint{{Transport: "udp", Address: ":4500", Credential: []byte{1}}}}
-		})},
-		{"peer is self", device(func(s *Section) { s.Peers[0].ID = s.Node.ID })},
-		{"peer repeated", device(func(s *Section) { s.Peers = append(s.Peers, s.Peers[0]) })},
-		{"peer without WireGuard key", device(func(s *Section) { s.Peers[0].WireGuardKey = WireGuardKey{} })},
-		{"peer without addresses", device(func(s *Section) { s.Peers[0].Addresses = nil })},
-		{"peer address outside overlay", device(func(s *Section) { s.Peers[0].Addresses = []netip.Addr{netip.MustParseAddr("192.0.2.1")} })},
-		{"peer without paths", device(func(s *Section) { s.Peers[0].Paths = nil })},
-		{"path through the peer itself", device(func(s *Section) { s.Peers[0].Paths = []Path{{Via: []NodeID{s.Peers[0].ID}}} })},
-		{"path through self", device(func(s *Section) { s.Peers[0].Paths = []Path{{Via: []NodeID{s.Node.ID}}} })},
-		{"path loops", device(func(s *Section) { s.Peers[0].Paths = []Path{{Via: []NodeID{serverID, serverID}}} })},
-		{"too many sections", func(c *Contents) { c.Sections = make([]Recipient, maxSections+1) }},
-		{"section too large", device(func(s *Section) {
-			for i := range 1100 {
-				id := NodeID{byte(i), byte(i >> 8), 1}
-				s.Links = append(s.Links, Link{Peer: id, Endpoints: []Endpoint{{Transport: "udp", Address: "192.0.2.1:1", Credential: make([]byte, maxCredential)}}})
-			}
-		})},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			c := f.contents
-			tt.mutate(&c)
-			if _, err := Build(f.signing, c); !errors.Is(err, ErrInvalidContents) {
-				t.Errorf("err = %v, want ErrInvalidContents", err)
-			}
-		})
-	}
-	if _, err := Build(f.signing[:10], f.contents); !errors.Is(err, ErrInvalidContents) {
-		t.Errorf("short signing key: err = %v, want ErrInvalidContents", err)
-	}
-	if _, err := Build(f.signing, f.contents); err != nil {
-		t.Fatalf("control: the unmodified contents fail: %v", err)
+	if _, err := Build(f.signing, f.contents); !errors.Is(err, ErrInvalidContents) {
+		t.Fatalf("err = %v, want ErrInvalidContents", err)
 	}
 }
 
@@ -689,9 +769,8 @@ func FuzzVerify(f *testing.F) {
 	f.Add(env[:len(env)/2])
 	f.Add([]byte{})
 	f.Add([]byte{0x0a, 0x00, 0x12, 0x00})
-	pub := fx.signingPublic()
 	f.Fuzz(func(t *testing.T, data []byte) {
-		m, err := Verify(data, pub)
+		m, err := Verify(data, fx.trust())
 		if err != nil {
 			return
 		}
@@ -699,7 +778,7 @@ func FuzzVerify(f *testing.F) {
 			t.Fatal("an envelope other than the signed one verified")
 		}
 		for _, k := range fx.keys {
-			if _, err := Open(m, k); err != nil {
+			if _, err := m.Open(k); err != nil {
 				t.Fatal(err)
 			}
 		}

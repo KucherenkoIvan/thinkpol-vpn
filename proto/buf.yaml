@@ -7,5 +7,7 @@ lint:
   use:
     - STANDARD
 breaking:
+  # wire compatibility is what matters: the schemas are wire formats between
+  # thinkpol's own binaries, and nothing uses their JSON or generated names
   use:
-    - FILE
+    - WIRE

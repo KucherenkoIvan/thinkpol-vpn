@@ -19,7 +19,7 @@ func TestSectionCount(t *testing.T) {
 
 func TestSectionSize(t *testing.T) {
 	tests := []struct{ largest, want int }{
-		{0, 1024}, {1, 1024}, {1023, 1024}, {1024, 2048}, {2047, 2048}, {2048, 4096}, {100_000, 131072},
+		{0, 8192}, {1, 8192}, {8191, 8192}, {8192, 16384}, {16383, 16384}, {16384, 32768}, {100_000, 131072},
 	}
 	for _, tt := range tests {
 		if got := sectionSize(tt.largest); got != tt.want {
@@ -29,9 +29,9 @@ func TestSectionSize(t *testing.T) {
 }
 
 func TestPadUnpad(t *testing.T) {
-	for _, content := range [][]byte{nil, {0}, {0x80}, {1, 0, 0}, bytes.Repeat([]byte{0x80}, 1023)} {
-		padded := pad(content, 1024)
-		if len(padded) != 1024 {
+	for _, content := range [][]byte{nil, {0}, {0x80}, {1, 0, 0}, bytes.Repeat([]byte{0x80}, minSectionSize-1)} {
+		padded := pad(content, minSectionSize)
+		if len(padded) != minSectionSize {
 			t.Fatalf("pad(%d bytes) = %d bytes", len(content), len(padded))
 		}
 		got, err := unpad(padded)
