@@ -21,7 +21,7 @@ thinkpol's local service API runs gRPC over a Unix socket (a named pipe on Windo
 
 ## Acceptance
 - [x] go-kernel `make lint`, `make test`, `make integration` pass
-- [ ] released tag recorded in Notes; thinkpol-vpn's `go.mod` bumped to it
+- [x] released tag recorded in Notes; thinkpol-vpn's `go.mod` bumped to it
 
 ## Notes
 - go-kernel branch `krn-001-grpckit-any-listener` (cut from `origin/master`; go-kernel's default branch is `master`, not `main`), final head `e53e68f` (first pass, review fixes, delta-review docs fixes):
@@ -40,7 +40,7 @@ thinkpol's local service API runs gRPC over a Unix socket (a named pipe on Windo
   - Shutdown wording: after the grace period, Serve still waits for handlers. Verified in grpc-go v1.82 (`GracefulStop` → `handlersWG.Wait()`) and with a throwaway probe test.
   - The recipe was compiled and exercised in a scratch module.
 - Integration evidence accepted for this release: the full `make integration` passed on `b3233bc`. On the final head `e53e68f`, `CGO_ENABLED=0 INTEGRATION=1 go test` passes for all 13 other packages together (grpckit included), and for postgres and outbox run individually. In the full run, the shared Docker VM disk is full and postgres initdb fails; the owner is deciding on cleanup. `make lint` 0 issues and `CGO_ENABLED=0 make test` 15/15 ok on `e53e68f`. Commit bodies (`git log --format=%B origin/master..HEAD`) and the full diff were checked for private names; none found.
-- The second acceptance box stays open: the tag is released and recorded above, but the `go.mod` bump in thinkpol-vpn waits for TP-001, which creates `go.mod`, and will be done at merge time.
+- `go.mod` bumped to go-kernel v0.17.0 after TP-001 landed. `origin/rewrite` (`d538f22`) was merged into the ticket branch, then `go get github.com/KucherenkoIvan/go-kernel@v0.17.0 && go mod tidy`. The go-kernel requirement stays pinned by the blank import in `internal/shared/kernel.go`. thinkpol-vpn `make lint` and `make test` pass.
 - Host gotcha: on this Mac, `make test` / `make integration` fail to link the cgo-using test binaries (cache, kafka, outbox, postgres, via testcontainers). The CommandLineTools linker can't read the macOS 27 SDK `.tbd` files. This is unrelated to the change. With `CGO_ENABLED=0` everything passes: `make lint` 0 issues, `make test` 15/15 ok, `make integration` 15/15 ok (kafka takes about 600s). `go test -race ./grpckit/...` passes with cgo.
 
 ## Review findings
