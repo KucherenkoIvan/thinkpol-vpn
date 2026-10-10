@@ -11,12 +11,18 @@ import (
 // Ring is a bounded in-memory log. It is an io.Writer that splits what is
 // written into lines, so slog handlers and a child process's output can
 // write to it directly. Safe for concurrent use.
+//
+// Lines are kept in a slice used as a ring: head is the oldest live line,
+// and dropping the oldest only advances head, so a flood of lines is
+// amortised O(1) per line; the backing slice is compacted only when the
+// dead prefix grows past the live part.
 type Ring struct {
 	mu      sync.Mutex
-	max     int      // bytes of lines kept, newlines included
-	lines   []string // oldest first
-	size    int
-	partial []byte // an unfinished last line
+	max     int      // bytes of live lines kept, newlines included
+	lines   []string // ring; live range is [head:]
+	head    int
+	size    int    // bytes of the live lines
+	partial []byte // an unfinished last line, not yet counted in size
 	dropped uint64
 }
 
@@ -69,15 +75,17 @@ func (r *Ring) flushPartial() {
 func (r *Ring) push(line string) {
 	r.lines = append(r.lines, line)
 	r.size += len(line) + 1
-	drop := 0
-	for r.size > r.max {
-		r.size -= len(r.lines[drop]) + 1
-		drop++
+	for r.size > r.max && r.head < len(r.lines)-1 {
+		r.size -= len(r.lines[r.head]) + 1
+		r.lines[r.head] = "" // let the string be collected
+		r.head++
+		r.dropped++
 	}
-	if drop > 0 {
-		r.dropped += uint64(drop)
-		// Copy the survivors down so the dropped lines can be collected.
-		r.lines = append(r.lines[:0], r.lines[drop:]...)
+	// Compact once the dead prefix is at least as large as what is live, so
+	// the backing slice can't grow without bound.
+	if r.head > len(r.lines)-r.head {
+		r.lines = append(r.lines[:0], r.lines[r.head:]...)
+		r.head = 0
 	}
 }
 
@@ -86,8 +94,9 @@ func (r *Ring) push(line string) {
 func (r *Ring) Lines() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	out := make([]string, len(r.lines), len(r.lines)+1)
-	copy(out, r.lines)
+	live := r.lines[r.head:]
+	out := make([]string, len(live), len(live)+1)
+	copy(out, live)
 	if len(r.partial) > 0 {
 		out = append(out, string(r.partial))
 	}

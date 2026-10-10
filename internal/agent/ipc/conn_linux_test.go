@@ -13,20 +13,24 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/ipc"
 )
 
+// pair makes a control socket pair and returns the supervisor and worker
+// ends of it.
 func pair(t *testing.T) (*ipc.Conn, *ipc.Conn) {
 	t.Helper()
-	sup, f, err := ipc.Pair()
+	ends, child, err := ipc.NewPair()
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = sup.Close() })
-	w, err := ipc.FromFile(f)
-	_ = f.Close()
+	t.Cleanup(func() { _ = ends.Control.Close(); _ = ends.Data.Close() })
+	w, err := ipc.FromFile(child[0])
+	for _, f := range child {
+		_ = f.Close()
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = w.Close() })
-	return sup, w
+	return ends.Control, w
 }
 
 func TestMessagesKeepTheirBoundaries(t *testing.T) {
@@ -62,6 +66,20 @@ func TestMessagesKeepTheirBoundaries(t *testing.T) {
 	}
 }
 
+func TestInitCarriesTheProtocolVersion(t *testing.T) {
+	sup, w := pair(t)
+	if err := sup.Send(ipc.Message{Kind: ipc.KindInit, Payload: []byte(`{"version":999,"space":"x"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := w.Receive()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ipc.DecodeInit(got); err == nil {
+		t.Fatal("a mismatched protocol version was accepted")
+	}
+}
+
 func TestOversizedMessagesAreRefused(t *testing.T) {
 	sup, _ := pair(t)
 	if err := sup.Send(ipc.Message{Kind: ipc.KindStop, Payload: make([]byte, ipc.MaxMessageSize)}); err == nil {
@@ -85,7 +103,7 @@ func TestPassesFileDescriptors(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = r.Close() }()
-	if err := sup.Send(ipc.Message{Kind: 9, Payload: []byte("consumed"), Files: []*os.File{wr}}); err != nil {
+	if err := sup.Send(ipc.Message{Kind: ipc.KindStream, Payload: []byte("consumed"), Files: []*os.File{wr}}); err != nil {
 		t.Fatal(err)
 	}
 	_ = wr.Close() // the sender's copy; the receiver's stays open
@@ -103,6 +121,43 @@ func TestPassesFileDescriptors(t *testing.T) {
 	b, err := io.ReadAll(r)
 	if err != nil || string(b) != "through" {
 		t.Fatalf("read %q, %v", b, err)
+	}
+}
+
+// TrySend never blocks: when the worker stops reading the data socket, it
+// fills, and further sends drop instead of blocking, counted in Drops.
+func TestTrySendDropsWhenFull(t *testing.T) {
+	ends, child, err := ipc.NewPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ends.Control.Close(); _ = ends.Data.Close() }()
+	// Keep the worker's data end open but never read it.
+	w, err := ipc.FromFile(child[1])
+	for _, f := range child {
+		_ = f.Close()
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = w.Close() }()
+
+	full := false
+	for range 100000 {
+		err := ends.Data.TrySend(ipc.Message{Kind: ipc.KindDatagram, Payload: bytes.Repeat([]byte{1}, 1024)})
+		if errors.Is(err, ipc.ErrFull) {
+			full = true
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !full {
+		t.Fatal("TrySend never reported the buffer full")
+	}
+	if ends.Data.Drops() == 0 {
+		t.Fatal("a full-buffer drop was not counted")
 	}
 }
 

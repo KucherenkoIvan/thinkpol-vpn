@@ -452,7 +452,12 @@ func (l *Lab) configureNode(ctx context.Context, spec NodeSpec) error {
 	}
 	script.WriteString("printf 'nameserver 127.0.0.1\\noptions timeout:1 attempts:1\\n' > /etc/resolv.conf\n")
 	fmt.Fprintf(&script, "cat > /etc/hosts <<'EOF'\n%sEOF\n", l.hostsFor(spec))
-	script.WriteString("mount --bind /proc/sys/net /proc/sys/net && mount -o remount,bind,rw /proc/sys/net\n")
+	// Make /proc/sys/net writable only when /proc/sys is read-only: with
+	// systempaths=unconfined (set on the nodes) /proc/sys is already
+	// writable, and this extra bind would be a submount that stops a process
+	// in a child user namespace (a server agent's per-space worker) from
+	// mounting its own /proc.
+	script.WriteString("grep -q '/proc/sys proc ro,' /proc/mounts && { mount --bind /proc/sys/net /proc/sys/net && mount -o remount,bind,rw /proc/sys/net; } || true\n")
 	fmt.Fprintf(&script, "mkdir -p %s && touch %s\n", path.Dir(sealedMarker), sealedMarker)
 	_, err = n.Exec(ctx, "sh", "-ec", script.String())
 	return err

@@ -132,7 +132,13 @@ func renderCompose(project string, topo Topology, img image, root string, subnet
 			CapAdd: []string{"NET_ADMIN", "NET_RAW", "SYS_ADMIN"},
 			// Docker's AppArmor profile, where the host has AppArmor, denies
 			// the mounts that network namespaces need, even with SYS_ADMIN.
-			SecurityOpt: []string{"apparmor=unconfined"},
+			// systempaths=unconfined removes Docker's masked and read-only
+			// /proc and /sys submounts: those are locked, so a process in a
+			// child user namespace (a server agent's per-space worker) can't
+			// clear them to mount its own /proc. A real server's /proc is
+			// unmasked, so this only matches production in the throwaway lab
+			// nodes; it grants no host access (the nodes stay unprivileged).
+			SecurityOpt: []string{"apparmor=unconfined", "systempaths=unconfined"},
 			Devices:     []string{"/dev/net/tun"},
 			Environment: env,
 			Labels:      labels,

@@ -11,12 +11,12 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
 
-// The sandbox mounts over /proc, /sys and /run, so a worker started
-// anywhere but in the supervisor's fresh namespaces refuses before touching
-// anything. Workers themselves are tested through the supervisor.
-func TestRefusesOutsideItsNamespaces(t *testing.T) {
+// Run needs the supervisor's sockets at ipc.ControlFD and ipc.DataFD; started
+// by hand (no such sockets) it fails before touching anything. Workers
+// themselves are tested through the supervisor, which sets up the namespaces.
+func TestRefusesWithoutItsSockets(t *testing.T) {
 	err := worker.Run(context.Background(), netmap.NewSpaceID(), worker.Idle)
-	if err == nil || !strings.Contains(err.Error(), "not started by a supervisor") {
-		t.Fatalf("Run outside a supervisor: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "socket") {
+		t.Fatalf("Run without the supervisor's sockets: %v", err)
 	}
 }

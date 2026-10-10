@@ -13,7 +13,7 @@ func TestInitRoundTrip(t *testing.T) {
 		Interface: "veth0",
 		Addrs:     []netip.Prefix{netip.MustParsePrefix("169.254.100.2/30"), netip.MustParsePrefix("fd74:7470::2/64")},
 		Gateways:  []netip.Addr{netip.MustParseAddr("169.254.100.1"), netip.MustParseAddr("fd74:7470::1")},
-		UID:       1000, GID: 1001,
+		Version:   1, UID: 1000, GID: 1001,
 	}
 	m, err := ipc.InitMessage(in)
 	if err != nil {

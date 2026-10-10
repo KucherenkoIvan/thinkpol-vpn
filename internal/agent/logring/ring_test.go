@@ -78,3 +78,23 @@ func TestConcurrentSlogWriters(t *testing.T) {
 		}
 	}
 }
+
+func TestNewlineFloodStaysBounded(t *testing.T) {
+	r := logring.New(logring.MaxLine)
+	// Many empty lines: the ring must not grow its backing storage without
+	// bound, and the byte size must stay within the limit.
+	for range 1 << 20 {
+		_, _ = r.Write([]byte("\n"))
+	}
+	lines := r.Lines()
+	size := 0
+	for _, l := range lines {
+		size += len(l) + 1
+	}
+	if size > logring.MaxLine {
+		t.Fatalf("ring holds %d bytes, more than its %d", size, logring.MaxLine)
+	}
+	if r.Dropped() == 0 {
+		t.Fatal("nothing counted as dropped under a flood")
+	}
+}

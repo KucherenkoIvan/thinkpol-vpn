@@ -10,24 +10,32 @@ import (
 	"os"
 	"runtime"
 	"sync"
+	"sync/atomic"
+	"syscall"
 
 	"golang.org/x/sys/unix"
 )
 
-// Conn is one end of a supervisor–worker socket. Send is safe for
-// concurrent use; Receive is for one reader at a time.
+// ErrFull is returned by TrySend when the socket's send buffer is full, so
+// the message was not sent; the caller drops it.
+var ErrFull = errors.New("ipc: send buffer full")
+
+// Conn is one end of a supervisor–worker socket. Send and TrySend are safe
+// for concurrent use; Receive is for one reader at a time.
 type Conn struct {
-	c *net.UnixConn
+	c     *net.UnixConn
+	raw   syscall.RawConn
+	drops atomic.Uint64
 
 	rmu sync.Mutex
 	buf []byte
 	oob []byte
 }
 
-// Pair returns a new socket pair: the supervisor's Conn, and the worker's
-// end as a file to pass to the worker (exec.Cmd.ExtraFiles, so it lands at
-// WorkerFD). The caller closes the file once the worker has it.
-func Pair() (*Conn, *os.File, error) {
+// pairFor makes a socket pair and returns the supervisor's Conn and the
+// worker's end as a file (for exec.Cmd.ExtraFiles). The caller closes the
+// file once the worker has it.
+func pairFor() (*Conn, *os.File, error) {
 	fds, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_SEQPACKET|unix.SOCK_CLOEXEC, 0)
 	if err != nil {
 		return nil, nil, fmt.Errorf("ipc: socketpair: %w", err)
@@ -43,8 +51,31 @@ func Pair() (*Conn, *os.File, error) {
 	return c, remote, nil
 }
 
-// FromFile makes a Conn of a SOCK_SEQPACKET Unix socket, e.g. the worker's
-// inherited WorkerFD. It duplicates the descriptor; the caller closes f.
+// Ends is a supervisor's two Conns to one worker.
+type Ends struct {
+	Control, Data *Conn
+}
+
+// NewPair makes a worker's control and data socket pairs. child[0] is the
+// worker's control end (ControlFD), child[1] its data end (DataFD); pass
+// them as exec.Cmd.ExtraFiles in that order and close them once started.
+func NewPair() (Ends, [2]*os.File, error) {
+	ctrl, ctrlChild, err := pairFor()
+	if err != nil {
+		return Ends{}, [2]*os.File{}, err
+	}
+	data, dataChild, err := pairFor()
+	if err != nil {
+		_ = ctrl.Close()
+		_ = ctrlChild.Close()
+		return Ends{}, [2]*os.File{}, err
+	}
+	return Ends{Control: ctrl, Data: data}, [2]*os.File{ctrlChild, dataChild}, nil
+}
+
+// FromFile makes a Conn of a SOCK_SEQPACKET Unix socket, e.g. a worker's
+// inherited ControlFD or DataFD. It duplicates the descriptor; the caller
+// closes f.
 func FromFile(f *os.File) (*Conn, error) {
 	typ, err := unix.GetsockoptInt(int(f.Fd()), unix.SOL_SOCKET, unix.SO_TYPE)
 	if err != nil {
@@ -62,20 +93,25 @@ func FromFile(f *os.File) (*Conn, error) {
 		_ = nc.Close()
 		return nil, fmt.Errorf("ipc: %s is not a Unix socket", f.Name())
 	}
+	raw, err := uc.SyscallConn()
+	if err != nil {
+		_ = uc.Close()
+		return nil, fmt.Errorf("ipc: %w", err)
+	}
 	return &Conn{
 		c:   uc,
+		raw: raw,
 		buf: make([]byte, MaxMessageSize+1), // +1 tells a full message from a truncated one
 		oob: make([]byte, unix.CmsgSpace(4*MaxFiles)),
 	}, nil
 }
 
-// Send sends m as one packet.
-func (c *Conn) Send(m Message) error {
+func (m Message) marshal() ([]byte, []byte, error) {
 	if 1+len(m.Payload) > MaxMessageSize {
-		return fmt.Errorf("ipc: %v message of %d bytes is over %d", m.Kind, 1+len(m.Payload), MaxMessageSize)
+		return nil, nil, fmt.Errorf("ipc: %v message of %d bytes is over %d", m.Kind, 1+len(m.Payload), MaxMessageSize)
 	}
 	if len(m.Files) > MaxFiles {
-		return fmt.Errorf("ipc: %d files attached, at most %d", len(m.Files), MaxFiles)
+		return nil, nil, fmt.Errorf("ipc: %d files attached, at most %d", len(m.Files), MaxFiles)
 	}
 	b := make([]byte, 1+len(m.Payload))
 	b[0] = byte(m.Kind)
@@ -88,13 +124,53 @@ func (c *Conn) Send(m Message) error {
 		}
 		oob = unix.UnixRights(fds...)
 	}
-	_, _, err := c.c.WriteMsgUnix(b, oob, nil)
+	return b, oob, nil
+}
+
+// Send sends m as one packet, blocking for backpressure.
+func (c *Conn) Send(m Message) error {
+	b, oob, err := m.marshal()
+	if err != nil {
+		return err
+	}
+	_, _, err = c.c.WriteMsgUnix(b, oob, nil)
 	runtime.KeepAlive(m.Files)
 	if err != nil {
 		return fmt.Errorf("ipc: send %v: %w", m.Kind, err)
 	}
 	return nil
 }
+
+// TrySend sends m without blocking: if the send buffer is full it returns
+// ErrFull and counts a drop. For the data socket, where a stuck worker must
+// not block the supervisor.
+func (c *Conn) TrySend(m Message) error {
+	b, oob, err := m.marshal()
+	if err != nil {
+		return err
+	}
+	var sendErr error
+	ctrlErr := c.raw.Write(func(fd uintptr) bool {
+		sendErr = unix.Sendmsg(int(fd), b, oob, nil, unix.MSG_DONTWAIT)
+		// Return true unconditionally: never wait for writability.
+		return true
+	})
+	runtime.KeepAlive(m.Files)
+	if ctrlErr != nil {
+		return fmt.Errorf("ipc: send %v: %w", m.Kind, ctrlErr)
+	}
+	if errors.Is(sendErr, unix.EAGAIN) || errors.Is(sendErr, unix.EWOULDBLOCK) {
+		c.drops.Add(1)
+		return ErrFull
+	}
+	if sendErr != nil {
+		return fmt.Errorf("ipc: send %v: %w", m.Kind, sendErr)
+	}
+	return nil
+}
+
+// Drops is how many messages TrySend dropped because the buffer was full.
+func (c *Conn) Drops() uint64 { return c.drops.Load() }
 
 // Receive blocks for the next message. io.EOF means the other end is gone.
 func (c *Conn) Receive() (Message, error) {

@@ -29,18 +29,27 @@ import (
 
 const selfExe = "/proc/self/exe"
 
-// Supervisor runs one worker per space, each in its own network, mount and
-// PID namespaces, wired to the root namespace by a veth pair. Its methods
-// are safe for concurrent use.
+// workerAmbientCaps are the capabilities a worker carries across exec, all
+// confined to its own namespaces: SYS_ADMIN for mounts and pivot_root,
+// NET_ADMIN for its TUN, routes and nftables, NET_RAW for the data plane and
+// NET_BIND_SERVICE for its DNS resolver on port 53.
+var workerAmbientCaps = []uintptr{
+	unix.CAP_SYS_ADMIN, unix.CAP_NET_ADMIN, unix.CAP_NET_RAW, unix.CAP_NET_BIND_SERVICE,
+}
+
+// Supervisor runs one worker per space, each in its own user, network, mount,
+// PID, IPC, UTS and cgroup namespaces, wired to the root namespace by a veth
+// pair. Its methods are safe for concurrent use.
 type Supervisor struct {
-	opts Options
-	log  *slog.Logger
+	opts    Options
+	log     *slog.Logger
+	cgroups *cgroupParent // nil when cgroup v2 isn't usable (rlimits only)
 	// root is held for the supervisor's life: one supervisor per node
 	// (netcfg.ErrBusy for a second), and where root-namespace routes go
 	// when one is needed.
 	root netcfg.Configurator
 
-	setMu sync.Mutex // one SetSpaces at a time
+	setMu sync.Mutex // one SetSpaces (or Close teardown) at a time
 
 	mu      sync.Mutex
 	workers map[netmap.SpaceID]*worker
@@ -49,8 +58,8 @@ type Supervisor struct {
 }
 
 // New starts a supervisor with no spaces: it takes the node's supervisor
-// role, removes what a dead predecessor left (veths, its nftables table)
-// and installs the table that keeps spaces apart in the root namespace.
+// role, removes what a dead predecessor left (veths, its nftables tables)
+// and installs the tables that keep spaces apart in the root namespace.
 func New(opts Options) (*Supervisor, error) {
 	opts, err := opts.withDefaults()
 	if err != nil {
@@ -58,8 +67,8 @@ func New(opts Options) (*Supervisor, error) {
 	}
 	if len(opts.Command) == 0 {
 		// The running binary itself, even once an update replaced the file:
-		// a worker is always the supervisor's own build, which the socket
-		// protocol relies on.
+		// a worker is always the supervisor's own build, which the IPC
+		// version check confirms.
 		opts.Command = []string{selfExe, "worker"}
 	}
 	root, err := netcfg.New(netcfg.OwnerSupervisor)
@@ -79,8 +88,15 @@ func New(opts Options) (*Supervisor, error) {
 	if err := removeStaleLinks(s.log); err != nil {
 		return fail(err)
 	}
-	if err := installIsolation(); err != nil {
+	if err := s.installIsolation(); err != nil {
 		return fail(err)
+	}
+	// Resource limits are best-effort: where cgroup v2 can't be delegated
+	// the worker falls back to its own rlimits.
+	if cg, err := newCgroupParent(); err != nil {
+		s.log.Warn("cgroup v2 unavailable, workers limited by rlimits only", "err", err)
+	} else {
+		s.cgroups = cg
 	}
 	return s, nil
 }
@@ -93,10 +109,10 @@ func removeStaleLinks(log *slog.Logger) error {
 		return fmt.Errorf("list links: %w", err)
 	}
 	for _, l := range links {
-		if _, ok := l.(*netlink.Veth); !ok || !strings.HasPrefix(l.Attrs().Name, LinkPrefix) {
+		if !strings.HasPrefix(l.Attrs().Name, LinkPrefix) {
 			continue
 		}
-		log.Warn("removing a dead supervisor's veth", "link", l.Attrs().Name)
+		log.Warn("removing a dead supervisor's leftover link", "link", l.Attrs().Name)
 		if err := netlink.LinkDel(l); err != nil && !errors.Is(err, unix.ENODEV) {
 			return fmt.Errorf("remove stale %s: %w", l.Attrs().Name, err)
 		}
@@ -119,18 +135,18 @@ func linkList() ([]netlink.Link, error) {
 
 // SetSpaces makes the supervisor serve exactly spaces: workers of spaces no
 // longer listed are stopped and their namespaces removed (SetSpaces waits
-// for that), workers of new ones started. Workers of spaces that stay are
-// left alone.
-func (s *Supervisor) SetSpaces(spaces []netmap.SpaceID) error {
-	want := make(map[netmap.SpaceID]bool, len(spaces))
-	for _, id := range spaces {
-		if id.IsZero() {
+// for that), workers of new ones started. A space already served keeps its
+// worker; its configuration is updated and pushed to the running worker.
+func (s *Supervisor) SetSpaces(spaces []Space) error {
+	want := make(map[netmap.SpaceID]Space, len(spaces))
+	for _, sp := range spaces {
+		if sp.ID.IsZero() {
 			return errors.New("supervisor: zero space id")
 		}
-		if want[id] {
-			return fmt.Errorf("supervisor: space %s listed twice", id)
+		if _, dup := want[sp.ID]; dup {
+			return fmt.Errorf("supervisor: space %s listed twice", sp.ID)
 		}
-		want[id] = true
+		want[sp.ID] = sp
 	}
 	s.setMu.Lock()
 	defer s.setMu.Unlock()
@@ -145,7 +161,7 @@ func (s *Supervisor) SetSpaces(spaces []netmap.SpaceID) error {
 	}
 	var stopping []*worker
 	for id, w := range s.workers {
-		if !want[id] {
+		if _, ok := want[id]; !ok {
 			stopping = append(stopping, w)
 			delete(s.workers, id)
 		}
@@ -155,12 +171,14 @@ func (s *Supervisor) SetSpaces(spaces []netmap.SpaceID) error {
 	s.stopAll(stopping)
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.closed {
+		s.mu.Unlock()
 		return errors.New("supervisor: closed")
 	}
-	for _, id := range spaces {
-		if _, ok := s.workers[id]; ok {
+	var started []*worker
+	for _, sp := range spaces {
+		if w, ok := s.workers[sp.ID]; ok {
+			w.setConfig(sp.Config) // an existing worker: push the new config
 			continue
 		}
 		slot := 0
@@ -168,8 +186,23 @@ func (s *Supervisor) SetSpaces(spaces []netmap.SpaceID) error {
 			slot++
 		}
 		s.slots[slot] = true
-		w := s.newWorker(id, slot)
-		s.workers[id] = w
+		w := s.newWorker(sp, slot)
+		s.workers[sp.ID] = w
+		started = append(started, w)
+	}
+	active := make([]int, 0, len(s.workers))
+	for _, w := range s.workers {
+		active = append(active, w.slot)
+	}
+	s.mu.Unlock()
+
+	// Rebuild the isolation tables for the current slots before any new
+	// worker's veth carries a packet. A slot is stable across a worker's
+	// restarts, so this is a no-op unless the set changed.
+	if err := s.applyIsolation(active); err != nil {
+		return err
+	}
+	for _, w := range started {
 		go s.supervise(w)
 	}
 	return nil
@@ -184,6 +217,11 @@ func (s *Supervisor) stopAll(ws []*worker) {
 		s.mu.Lock()
 		delete(s.slots, w.slot)
 		s.mu.Unlock()
+		if w.cg != nil {
+			if err := w.cg.remove(); err != nil {
+				s.log.Warn("removing a worker's cgroup", "space", w.space.String(), "err", err)
+			}
+		}
 	}
 }
 
@@ -215,8 +253,9 @@ func (s *Supervisor) Output(space netmap.SpaceID) []string {
 	return w.output.Lines()
 }
 
-// Close stops every worker, removes every namespace, veth and the nftables
-// table, and gives up the node's supervisor role.
+// Close stops every worker, removes every namespace, veth and nftables
+// table, and gives up the node's supervisor role. It waits for any in-flight
+// SetSpaces first, so nothing is half-started when the tables and lock go.
 func (s *Supervisor) Close() error {
 	s.mu.Lock()
 	if s.closed {
@@ -224,6 +263,12 @@ func (s *Supervisor) Close() error {
 		return nil
 	}
 	s.closed = true
+	s.mu.Unlock()
+
+	s.setMu.Lock() // wait for an in-flight SetSpaces to finish
+	defer s.setMu.Unlock()
+
+	s.mu.Lock()
 	ws := make([]*worker, 0, len(s.workers))
 	for _, w := range s.workers {
 		ws = append(ws, w)
@@ -235,6 +280,11 @@ func (s *Supervisor) Close() error {
 	var errs []error
 	if err := removeIsolation(); err != nil {
 		errs = append(errs, err)
+	}
+	if s.cgroups != nil {
+		if err := s.cgroups.remove(); err != nil {
+			errs = append(errs, err)
+		}
 	}
 	if err := s.root.Close(); err != nil {
 		errs = append(errs, err)
@@ -252,46 +302,90 @@ type worker struct {
 	link    string
 	transit transit
 	uid     uint32
+	egress  Egress
 	output  *logring.Ring
+	cg      *cgroup // nil when cgroups are unavailable
 	ctx     context.Context
 	cancel  context.CancelFunc
 	done    chan struct{} // closed once stopped and cleaned up
+	notify  chan struct{} // config changed; coalesced
 
-	mu       sync.Mutex
-	pid      int
-	ready    bool
-	starts   int
-	lastExit string
+	mu        sync.Mutex
+	config    []byte
+	pid       int
+	ready     bool
+	starts    int
+	startedAt time.Time
+	readyAt   time.Time
+	nextStart time.Time
+	lastExit  string
 }
 
-func (s *Supervisor) newWorker(id netmap.SpaceID, slot int) *worker {
+func (s *Supervisor) newWorker(sp Space, slot int) *worker {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &worker{
-		space:   id,
+	w := &worker{
+		space:   sp.ID,
 		slot:    slot,
 		link:    linkName(slot),
 		transit: s.opts.transit(slot),
 		uid:     s.opts.UIDBase + uint32(slot),
+		egress:  sp.Egress,
+		config:  sp.Config,
 		output:  logring.New(s.opts.OutputBytes),
 		ctx:     ctx,
 		cancel:  cancel,
 		done:    make(chan struct{}),
+		notify:  make(chan struct{}, 1),
 	}
+	if s.cgroups != nil {
+		cg, err := s.cgroups.child(w.link, s.opts.MemoryMax, s.opts.PidsMax)
+		if err != nil {
+			s.log.Warn("creating a worker's cgroup", "space", w.space.String(), "err", err)
+		} else {
+			w.cg = cg
+		}
+	}
+	return w
+}
+
+// setConfig stores a new config and signals the running worker to send it.
+func (w *worker) setConfig(config []byte) {
+	w.mu.Lock()
+	same := string(w.config) == string(config)
+	w.config = config
+	w.mu.Unlock()
+	if same {
+		return
+	}
+	select {
+	case w.notify <- struct{}{}:
+	default:
+	}
+}
+
+func (w *worker) currentConfig() []byte {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.config
 }
 
 func (w *worker) info() WorkerInfo {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return WorkerInfo{
-		Space:      w.space,
-		Link:       w.link,
-		RootAddrs:  slices.Clone(w.transit.root[:]),
-		SpaceAddrs: slices.Clone(w.transit.space[:]),
-		UID:        w.uid,
-		PID:        w.pid,
-		Ready:      w.ready,
-		Starts:     w.starts,
-		LastExit:   w.lastExit,
+		Space:         w.space,
+		Link:          w.link,
+		RootAddrs:     slices.Clone(w.transit.root[:]),
+		SpaceAddrs:    slices.Clone(w.transit.space[:]),
+		UID:           w.uid,
+		PID:           w.pid,
+		Ready:         w.ready,
+		Starts:        w.starts,
+		StartedAt:     w.startedAt,
+		ReadyAt:       w.readyAt,
+		NextStart:     w.nextStart,
+		LastExit:      w.lastExit,
+		OutputDropped: w.output.Dropped(),
 	}
 }
 
@@ -302,7 +396,7 @@ func (s *Supervisor) supervise(w *worker) {
 	log := s.log.With("space", w.space.String(), "link", w.link)
 	var delay time.Duration
 	for {
-		started := time.Now()
+		started := s.opts.now()
 		err := s.run(w, log)
 		w.mu.Lock()
 		w.pid, w.ready = 0, false
@@ -314,7 +408,10 @@ func (s *Supervisor) supervise(w *worker) {
 			log.Info("worker stopped", "err", err)
 			return
 		}
-		delay = s.opts.Backoff.next(delay, time.Since(started))
+		delay = s.opts.Backoff.next(delay, s.opts.now().Sub(started))
+		w.mu.Lock()
+		w.nextStart = s.opts.now().Add(delay)
+		w.mu.Unlock()
 		log.Warn("worker exited, restarting", "err", err, "in", delay)
 		select {
 		case <-w.ctx.Done():
@@ -327,56 +424,78 @@ func (s *Supervisor) supervise(w *worker) {
 // run is one worker process, from exec to cleanup. It returns why the
 // process ended: nil only when it exited cleanly after Stop.
 func (s *Supervisor) run(w *worker, log *slog.Logger) error {
-	conn, child, err := ipc.Pair()
+	ends, child, err := ipc.NewPair()
 	if err != nil {
 		return err
 	}
-	defer func() { _ = conn.Close() }()
+	defer func() { _ = ends.Control.Close(); _ = ends.Data.Close() }()
 
 	cmd := exec.Command(s.opts.Command[0], append(slices.Clone(s.opts.Command[1:]), "-space", w.space.String())...)
 	if cmd.Path == selfExe {
 		cmd.Args[0] = "thinkpol"
 	}
 	cmd.Env = s.opts.Env
+	cmd.Dir = "/"
 	cmd.Stdout, cmd.Stderr = w.output, w.output
-	cmd.ExtraFiles = []*os.File{child} // ipc.WorkerFD
+	cmd.ExtraFiles = child[:] // ControlFD, DataFD
 	cmd.WaitDelay = time.Second
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Cloneflags: syscall.CLONE_NEWPID,
-		// The runtime remounts / private for an unshared mount namespace,
-		// so the worker's mounts stay its own.
-		Unshareflags: syscall.CLONE_NEWNET | syscall.CLONE_NEWNS,
-		Pdeathsig:    syscall.SIGKILL,
+		// A new user namespace first, with every other namespace created
+		// inside it, so the worker's capabilities (NET_ADMIN and the rest)
+		// apply only to its own namespaces: it maps to an unprivileged host
+		// uid and has no power over the root namespace's links.
+		Cloneflags: syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS | syscall.CLONE_NEWPID |
+			syscall.CLONE_NEWNET | syscall.CLONE_NEWIPC | syscall.CLONE_NEWUTS | unix.CLONE_NEWCGROUP,
+		UidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: int(w.uid), Size: 1}},
+		GidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: int(w.uid), Size: 1}},
+		GidMappingsEnableSetgroups: false,
+		// The child inherits host uid 0, which the map above doesn't cover, so
+		// without this it would be the overflow "nobody" uid inside its
+		// namespace. Becoming uid 0 there (host w.uid) makes it the namespace
+		// root that owns its mounts and interfaces.
+		Credential: &syscall.Credential{Uid: 0, Gid: 0, NoSetGroups: true},
+		// Ambient capabilities survive the exec; a process that is uid 0 in a
+		// new user namespace (mapped to an unprivileged host uid) would
+		// otherwise lose all capabilities, because the kernel's "root keeps
+		// caps across exec" shortcut checks the global root uid. These apply
+		// only inside the worker's own namespaces.
+		AmbientCaps: workerAmbientCaps,
+		Setsid:      true,
+		Pdeathsig:   syscall.SIGKILL,
+	}
+	if w.cg != nil {
+		cmd.SysProcAttr.UseCgroupFD = true
+		cmd.SysProcAttr.CgroupFD = w.cg.fd()
 	}
 	p, err := start(cmd)
-	_ = child.Close()
+	for _, f := range child {
+		_ = f.Close()
+	}
 	if err != nil {
 		return fmt.Errorf("start: %w", err)
 	}
+	// The namespace fd was opened before Wait could reap the process, so the
+	// pid can't have been recycled under it.
+	defer func() {
+		p.kill()
+		_ = p.netns.Close()
+	}()
 	w.mu.Lock()
 	w.pid = p.pid
 	w.starts++
+	w.startedAt = s.opts.now()
+	w.nextStart = time.Time{}
 	w.mu.Unlock()
 	log = log.With("pid", p.pid)
 	log.Info("worker started")
 
-	// The process is gone before its namespace is unwired; holding the
-	// namespace keeps it, and the veth in it, until then.
-	var ns *os.File
-	var wired *wiring
+	wired, err := s.wire(w, p.netns)
 	defer func() {
-		p.kill()
 		if err := wired.unwire(); err != nil {
 			log.Error("unwiring the worker's namespace", "err", err)
 		}
-		if ns != nil {
-			_ = ns.Close()
-		}
 	}()
-	if ns, err = os.Open(fmt.Sprintf("/proc/%d/ns/net", p.pid)); err != nil {
-		return fmt.Errorf("worker's namespace: %w", err)
-	}
-	if wired, err = s.wire(w, ns); err != nil {
+	if err != nil {
 		return fmt.Errorf("wire the namespace: %w", err)
 	}
 
@@ -387,16 +506,17 @@ func (s *Supervisor) run(w *worker, log *slog.Logger) error {
 		Gateways:  []netip.Addr{w.transit.root[0].Addr(), w.transit.root[1].Addr()},
 		UID:       w.uid,
 		GID:       w.uid,
+		PidsMax:   s.opts.PidsMax,
 	})
 	if err != nil {
 		return err
 	}
-	if err := conn.Send(init); err != nil {
+	if err := ends.Control.Send(init); err != nil {
 		return err
 	}
 
 	ready, gone := make(chan error, 1), make(chan error, 1)
-	go read(conn, ready, gone)
+	go readControl(ends.Control, ready, gone)
 	timer := time.NewTimer(s.opts.ReadyTimeout)
 	defer timer.Stop()
 	select {
@@ -413,31 +533,61 @@ func (s *Supervisor) run(w *worker, log *slog.Logger) error {
 	}
 	w.mu.Lock()
 	w.ready = true
+	w.readyAt = s.opts.now()
 	w.mu.Unlock()
 	log.Info("worker ready")
 
-	select {
-	case <-p.gone:
-		return p.exit()
-	case err := <-gone:
-		// The worker closed its socket or broke the protocol: it gets
-		// StopTimeout to exit on its own, and how it exited says more.
-		if s.awaitExit(p) {
+	// Send the current config once, then whenever it changes.
+	if err := s.sendConfig(ends.Control, w); err != nil {
+		log.Warn("sending config", "err", err)
+	}
+	for {
+		select {
+		case <-p.gone:
 			return p.exit()
+		case err := <-gone:
+			// The worker closed its socket or broke the protocol: close our
+			// end, give it StopTimeout, and report how it exited.
+			_ = ends.Control.Close()
+			if s.awaitExit(p) {
+				return p.exit()
+			}
+			return fmt.Errorf("socket: %w; killed", err)
+		case <-w.notify:
+			if err := s.sendConfig(ends.Control, w); err != nil {
+				log.Warn("sending config", "err", err)
+			}
+		case <-w.ctx.Done():
+			if err := ends.Control.Send(ipc.Message{Kind: ipc.KindStop}); err != nil {
+				log.Warn("sending stop", "err", err)
+			}
+			if !s.awaitExit(p) {
+				return fmt.Errorf("killed: still running %v after stop", s.opts.StopTimeout)
+			}
+			if p.err != nil {
+				return p.err
+			}
+			return nil
 		}
-		return fmt.Errorf("socket: %w; killed", err)
-	case <-w.ctx.Done():
-		if err := conn.Send(ipc.Message{Kind: ipc.KindStop}); err != nil {
-			log.Warn("sending stop", "err", err)
-		}
-		if !s.awaitExit(p) {
-			return fmt.Errorf("killed: still running %v after stop", s.opts.StopTimeout)
-		}
-		if p.err != nil {
-			return p.err
-		}
+	}
+}
+
+// sendConfig sends the worker's current configuration, as a sealed memfd when
+// it is too large for one packet.
+func (s *Supervisor) sendConfig(conn *ipc.Conn, w *worker) error {
+	config := w.currentConfig()
+	if len(config) == 0 {
 		return nil
 	}
+	if 1+len(config) <= ipc.MaxMessageSize {
+		return conn.Send(ipc.ConfigMessage(config))
+	}
+	f, err := sealedMemfd("thinkpol-config", config)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	return conn.Send(ipc.Message{Kind: ipc.KindConfig, Files: []*os.File{f}})
 }
 
 // awaitExit gives the process StopTimeout to exit, then kills it; false if
@@ -454,9 +604,9 @@ func (s *Supervisor) awaitExit(p *process) bool {
 	}
 }
 
-// read reports the worker's Ready on ready, then anything after it on gone
-// (for now every further message is a protocol error, EOF included).
-func read(conn *ipc.Conn, ready, gone chan<- error) {
+// readControl reports the worker's Ready on ready, then anything after it on
+// gone (for now every further message is a protocol error, EOF included).
+func readControl(conn *ipc.Conn, ready, gone chan<- error) {
 	m, err := conn.Receive()
 	if err == nil && m.Kind != ipc.KindReady {
 		m.CloseFiles()
@@ -477,18 +627,20 @@ func read(conn *ipc.Conn, ready, gone chan<- error) {
 	gone <- err
 }
 
-// process is a started worker process.
+// process is a started worker process with its network namespace held open.
 type process struct {
-	cmd  *exec.Cmd
-	pid  int
-	gone chan struct{} // closed once reaped
-	err  error         // Wait's result, set before gone closes
+	cmd   *exec.Cmd
+	pid   int
+	netns *os.File
+	gone  chan struct{} // closed once reaped
+	err   error         // Wait's result, set before gone closes
 }
 
 // start starts cmd from a goroutine locked to its OS thread for the
-// process's whole life: the parent-death signal fires when the thread that
+// process's whole life (the parent-death signal fires when the thread that
 // forked the child exits, and Go ends a thread whose goroutine exits while
-// locked.
+// locked), and opens the child's network namespace before Wait can reap it,
+// so the pid can't be recycled under the open.
 func start(cmd *exec.Cmd) (*process, error) {
 	p := &process{cmd: cmd, gone: make(chan struct{})}
 	started := make(chan error, 1)
@@ -500,12 +652,17 @@ func start(cmd *exec.Cmd) (*process, error) {
 			return
 		}
 		p.pid = cmd.Process.Pid
-		started <- nil
+		p.netns, p.err = os.Open(fmt.Sprintf("/proc/%d/ns/net", p.pid))
+		started <- p.err
+		if p.err != nil {
+			_ = cmd.Process.Kill()
+		}
 		p.err = cmd.Wait()
 		runtime.UnlockOSThread()
 		close(p.gone)
 	}()
 	if err := <-started; err != nil {
+		<-p.gone // let Wait reap it
 		return nil, err
 	}
 	return p, nil

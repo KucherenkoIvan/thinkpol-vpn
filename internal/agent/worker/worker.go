@@ -21,6 +21,10 @@ type Session struct {
 	Interface string
 	Addrs     []netip.Prefix
 	Gateways  []netip.Addr
+	// Config delivers the space's opaque configuration from the supervisor:
+	// the current one first, then each change, latest-wins (an older pending
+	// one is dropped). nil in Idle mode.
+	Config <-chan []byte
 }
 
 // Serve runs a space's data plane until ctx ends. Returning early, with or

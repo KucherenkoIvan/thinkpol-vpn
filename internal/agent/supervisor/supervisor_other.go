@@ -10,7 +10,7 @@ type Supervisor struct{}
 // New returns ErrUnsupported.
 func New(Options) (*Supervisor, error) { return nil, ErrUnsupported }
 
-func (*Supervisor) SetSpaces([]netmap.SpaceID) error { return ErrUnsupported }
-func (*Supervisor) Workers() []WorkerInfo            { return nil }
-func (*Supervisor) Output(netmap.SpaceID) []string   { return nil }
-func (*Supervisor) Close() error                     { return nil }
+func (*Supervisor) SetSpaces([]Space) error        { return ErrUnsupported }
+func (*Supervisor) Workers() []WorkerInfo          { return nil }
+func (*Supervisor) Output(netmap.SpaceID) []string { return nil }
+func (*Supervisor) Close() error                   { return nil }
