@@ -2,7 +2,7 @@
 id: TP-047
 title: "Windows data plane"
 milestone: M5
-area: platform/windows
+area: dataplane
 repo: thinkpol-vpn
 size: epic
 depends_on: [TP-019, TP-021]

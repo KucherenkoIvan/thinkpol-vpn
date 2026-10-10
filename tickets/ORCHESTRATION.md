@@ -6,7 +6,7 @@ Suggestions for running several tickets at once, written down while the board wa
 
 `python3 tickets/board.py --waves` groups unfinished tickets by dependency depth: everything in one wave can run in parallel once the earlier waves are done. When the board was created there were 14 waves, 3–6 tickets wide. Parallelism shortens each wave, but the waves still come one after another.
 
-The board's WIP limit (3) is conservative. The machine the board was set up on (8 CPUs, 11 GB for Docker) could probably take 4–5 agents at once. The lab is the likelier bottleneck (see below).
+The board's WIP limit (3) is conservative: a typical dev machine could probably take 4–5 agents at once. The lab is the likelier bottleneck (see below).
 
 ## A possible loop
 
@@ -48,7 +48,7 @@ Now recorded as `needs_human` on the tickets themselves; `board.py` lists them.
 
 ## Environment notes
 
-- Local Go was 1.24 with `GOTOOLCHAIN=auto`; `go 1.25` in `go.mod` downloads the right toolchain automatically.
+- With `GOTOOLCHAIN=auto`, an older local Go downloads the toolchain `go.mod` asks for (1.25) automatically.
 - go-kernel is public, so no `GOPRIVATE` or SSH setup is needed to fetch it.
 - Linux-only code (network namespaces, netlink, nftables, NFQUEUE) can't be tested on the macOS host; its tests run inside lab containers.
 
@@ -57,7 +57,7 @@ Now recorded as `needs_human` on the tickets themselves; `board.py` lists them.
 Made by the project owner and the orchestrator. These are rules for running this board.
 
 - **Push everything.** The `rewrite` branch and every ticket branch are pushed to origin. Ticket moves and agent notes are history worth keeping.
-- **One worktree per ticket.** Each ticket is worked in its own git worktree at `../.worktrees/<repo>/<branch>`. Ticket moves (`git mv` + Log line) happen on the ticket branch; the branch's first commit is the backlog → in-progress move. The main checkout on `rewrite` is reserved for board ops and serial merges.
+- **One worktree per ticket.** Each ticket is worked in its own git worktree at `../.worktrees/<repo>/<branch>`, relative to the main checkout. Ticket moves (`git mv` + Log line) happen on the ticket branch; the branch's first commit is the backlog → in-progress move. The main checkout on `rewrite` is reserved for board ops and serial merges.
 - **Flow.** Implementer → `review/` → two reviewer agents (one adversarial, for correctness; one for architecture and style) → either `has-errors/` with the findings written into the ticket, or a merge into `rewrite` that moves the ticket to `done/` in the merge commit.
 - **go-kernel tags.** Minor tags for `KRN-` tickets may be pushed without asking, after review passes.
 - **TP-028 certificate.** The owner has no domain and no valid certificate. The `tls` server certificate comes from a pluggable certificate source port; the first adapter is self-signed and pinned by the client, used in the lab and tests. A prober sees a self-signed certificate: a known weakness that the lab matrix shows honestly. ACME with a real domain is TP-052, blocked until the owner has a domain and a registrar.
