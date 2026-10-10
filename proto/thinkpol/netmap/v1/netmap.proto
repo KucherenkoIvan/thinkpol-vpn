@@ -1,0 +1,214 @@
+// The signed network map (DESIGN.md "The signed map"). Only internal/netmap
+// reads or writes it (depguard enforces this); it owns the invariants below.
+syntax = "proto3";
+
+package thinkpol.netmap.v1;
+
+// Envelope is what is stored and gossiped. The signature is Ed25519ctx
+// (RFC 8032) by the space's signing key, context "thinkpol-vpn netmap v1",
+// over the exact bytes of `body`: verifiers never re-encode Body.
+//
+// An envelope is canonical: field 1, then field 2 with a 64-byte signature,
+// minimal varints, then only recovery records. Anything else is rejected.
+message Envelope {
+  // A serialized Body.
+  bytes body = 1;
+  bytes signature = 2;
+  // Signing-key rotations by the recovery key (TP-036). Format-1 readers
+  // can't follow a rotation and treat an envelope carrying them as a format
+  // they don't support.
+  repeated SignedRecoveryRecord recovery_records = 3;
+}
+
+// Body is the signed content of an envelope.
+//
+// Frozen across formats: field 1 is always the format and field 2 always a
+// Header with this layout, so any reader can tell which space and version a
+// newer envelope is, even when it can't read the rest. Bump the format only
+// after the release that reads the new one has rolled out through format-1
+// maps.
+message Body {
+  uint32 format = 1;
+  Header header = 2;
+  // Padded to a power of two (at least 8) with dummy sections, all of the
+  // same length and in random order.
+  repeated SealedSection sections = 3;
+}
+
+// Header is readable by anyone holding the envelope, including every node
+// that relays it by gossip: it holds nothing about nodes or members.
+message Header {
+  // 16 random bytes, fixed for the life of the space.
+  bytes space_id = 1;
+  // Maps are ordered by (key_epoch, version). The epoch counts signing-key
+  // rotations by the recovery key and changes only through a recovery
+  // record, so a stolen signing key can't freeze the space by signing the
+  // highest version.
+  uint64 key_epoch = 2;
+  uint64 version = 3;
+  // Ed25519 public key that signs this envelope.
+  bytes signing_public_key = 4;
+  // Ed25519 public key of the space's offline recovery key (PRD A11).
+  bytes recovery_public_key = 5;
+  // Every blob the space uses: the set relays cache and pass on. Hashes of
+  // public lists are visible to every node holding the envelope (accepted).
+  repeated BlobRef blobs = 6;
+}
+
+enum BlobKind {
+  BLOB_KIND_UNSPECIFIED = 0;
+  BLOB_KIND_GEOIP = 1;
+  BLOB_KIND_GEOSITE = 2;
+}
+
+// BlobRef names a blob by content (TP-016, TP-017).
+message BlobRef {
+  BlobKind kind = 1;
+  bytes sha256 = 2;
+  uint64 size = 3;
+  // How rules refer to the blob (e.g. a country code). Empty in the header:
+  // names are need-to-know and live in sections.
+  string name = 4;
+}
+
+// SealedSection is an anonymous NaCl sealed box (X25519, XSalsa20-Poly1305,
+// as libsodium's crypto_box_seal) holding a padded serialized Section. There
+// is no recipient id: a node finds its section by trying to open each one,
+// so nothing links a section to a node, or a node's sections across versions.
+message SealedSection {
+  bytes sealed = 1;
+}
+
+// Section is one node's need-to-know part of the map (DESIGN.md "Node
+// safety"): only what that node uses, with every node known by an opaque id.
+// Before sealing it is padded ISO/IEC 7816-4 style (0x80, then zeros) to the
+// length shared by every section of the envelope.
+message Section {
+  // The lowest section reader that understands this section. A node whose
+  // reader is older doesn't use it: features roll out per node without a
+  // format bump.
+  uint32 min_reader = 1;
+  // Bind the section to its envelope: a section is sealed afresh for every
+  // map and can't be replayed into another space, epoch or version.
+  bytes space_id = 2;
+  uint64 key_epoch = 3;
+  uint64 map_version = 4;
+
+  // The recipient's own settings.
+  NodeSettings node = 5;
+  // End-to-end WireGuard peers.
+  repeated Peer peers = 6;
+  // Adjacent nodes this node dials.
+  repeated Link links = 7;
+  // Adjacent nodes allowed to connect to this node's listeners.
+  repeated InboundLink inbound = 8;
+  // Forwarding table: where this node sends relayed packets, by destination.
+  repeated Route routes = 9;
+  // The blobs this node uses, named; each is in the header.
+  repeated BlobRef blobs = 10;
+}
+
+enum NodeKind {
+  NODE_KIND_UNSPECIFIED = 0;
+  NODE_KIND_SERVER = 1;
+  NODE_KIND_DEVICE = 2;
+}
+
+message NodeSettings {
+  // 8 random bytes, unique within the space.
+  bytes id = 1;
+  NodeKind kind = 2;
+  // The node's overlay addresses: one IPv4, one IPv6, canonical text form.
+  string ipv4 = 3;
+  string ipv6 = 4;
+  // The space's overlay ranges: an IPv4 prefix inside 100.64.0.0/10 and a
+  // ULA /48, canonical text form.
+  string ipv4_network = 5;
+  string ipv6_network = 6;
+  // Transports this node listens on.
+  repeated Listener listeners = 7;
+}
+
+message Listener {
+  string transport = 1;
+  // ip:port to bind, canonical text form; an unspecified IP (0.0.0.0, ::)
+  // binds every address of that family.
+  string address = 2;
+  // Transport-owned settings (camouflage target, certificate source, …),
+  // encoded by the transport.
+  bytes settings = 3;
+}
+
+message Peer {
+  bytes id = 1;
+  // WireGuard (Curve25519) public key, 32 bytes.
+  bytes wireguard_public_key = 2;
+  // The peer's overlay addresses, canonical text form.
+  repeated string addresses = 3;
+  // Candidate paths to the peer, in priority order (failover follows it).
+  repeated Path paths = 4;
+}
+
+// Path is a candidate way to reach a peer, named by its first hop: an
+// adjacent node, or the peer itself for a direct link. The rest of the way
+// is up to each relay's routes; no node holds a whole path.
+message Path {
+  bytes first_hop = 1;
+}
+
+message Link {
+  bytes peer = 1;
+  // Ways to reach the peer, in priority order.
+  repeated Endpoint endpoints = 2;
+}
+
+message Endpoint {
+  string transport = 1;
+  // ip:port to dial, canonical text form. Never a host name: the controller
+  // resolves names, so nodes never ask DNS at dial time, past the tunnel.
+  string address = 2;
+  // Transport-specific credential for this link.
+  bytes credential = 3;
+  // Transport-owned settings (certificate pin, SNI, WebSocket path, …),
+  // encoded by the transport.
+  bytes settings = 4;
+}
+
+message InboundLink {
+  bytes peer = 1;
+  // What the peer is, so a listener can tell devices from other nodes.
+  NodeKind peer_kind = 2;
+  string transport = 3;
+  // The transport's verifier for the peer's credential: a hash or public
+  // key where the transport allows, so a seized node can't impersonate its
+  // peers (PRD S1); for a symmetric transport, the shared secret itself.
+  bytes credential = 4;
+  // Transport-owned settings for this link (how the listener side shapes
+  // and configures what it sends, TP-027), encoded by the transport.
+  bytes settings = 5;
+}
+
+// Route sends relayed packets for one destination to adjacent next hops.
+message Route {
+  bytes destination = 1;
+  // In priority order; several for a hop group in the middle of a chain. A
+  // next hop equal to the destination delivers directly.
+  repeated bytes next_hops = 2;
+}
+
+// SignedRecoveryRecord is signed by the space's recovery key, Ed25519ctx with
+// context "thinkpol-vpn recovery v1", over the exact bytes of `record`.
+// Defined here; built and followed by TP-036.
+message SignedRecoveryRecord {
+  // A serialized RecoveryRecord.
+  bytes record = 1;
+  bytes signature = 2;
+}
+
+// RecoveryRecord is the one statement a recovery key can make: "from key
+// epoch N, the signing key of this space is X".
+message RecoveryRecord {
+  bytes space_id = 1;
+  uint64 key_epoch = 2;
+  bytes signing_public_key = 3;
+}

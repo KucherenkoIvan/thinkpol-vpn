@@ -24,5 +24,9 @@ Packets written to the overlay interface reach the right peer through WireGuard 
 - [ ] two nodes in separate namespaces ping each other over overlay IPv4 and IPv6
 - [ ] the router is ready for several WireGuard devices (test with two dummy egress devices)
 
+## Notes
+- From TP-003's review: `netmap`'s reader (`(*Map).Open`) checks only that a section is well formed. It accepts what only `netmap.Build` rejects: repeated or overlapping overlay addresses, addresses outside the overlay, empty `Paths`, `NextHops` or `Endpoints`, invalid (zero) `netip.AddrPort`s, and routing loops across several nodes. Don't assume them away: never configure overlapping WireGuard allowed IPs (refuse a peer whose addresses collide with another peer's or the node's own, or fall outside the overlay), and tolerate peers without usable paths.
+
 ## Log
 - 2026-10-10 created in backlog
+- 2026-10-10 docs (TP-003 review): notes on what the map reader does not guarantee
