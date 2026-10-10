@@ -88,6 +88,11 @@ Should-fix:
 Nits:
 - [x] backoff on persistent read errors; rejectAfterMessages path removed or fixed; ConnID unexported; camouflage doc (datagram-only camouflage closes streams); port doc forbids one secret for both directions of a link pair and says Accept may return an already-revoked link.
 
+Round 2 (delta review):
+- [ ] R2.1 Quiet-sender takeover by replay. (a) On dropStale, record the refused sender in a non-current slot with its counter marked seen (not delivered), so a later replay of it is a replay. (b) Remember the ids of senders evicted from the 8 slots for 5 minutes and refuse them. (c) On reindex, keep removed flows' sender history for 5 minutes. Tests: "nine redials, quiet 30 s, inject oldest" and "held datagram refused as stale, quiet 30 s, inject" leave RemoteAddr unchanged, with nothing delivered or accepted.
+- [ ] R2.2 Doc: conn id rotation doesn't prevent linking by 5-tuple; the Router forwards in-window replays (the worker drops them). TP-010 note: replays are unpriced against fair share; the supervisor may need a small replay filter.
+- [ ] R2.3 Verify the deletions in 2c926fa have equivalents; restore anything lost; record in Notes.
+
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-10 backlog → in-progress — owner: agent-tp-005, branch: tp-005-udp-transport
@@ -97,3 +102,4 @@ Nits:
 - 2026-10-10 has-errors → in-progress — owner: agent-tp-005, picking up the review findings
 - 2026-10-10 merged origin/rewrite (go-kernel v0.18.0); review findings fixed
 - 2026-10-10 in-progress → review
+- 2026-10-10 review → has-errors — delta review: 3 findings (round 2)
