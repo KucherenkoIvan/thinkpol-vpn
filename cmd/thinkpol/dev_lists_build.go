@@ -16,7 +16,7 @@ func init() {
 	register(command{
 		path:    "dev lists build",
 		args:    "[-format v2fly|dbip] [-only ru,by] [-out dir] <source>",
-		summary: "build GeoIP list blobs (<out>/<name>.geoip) from a local v2fly geoip.dat or DB-IP Lite country CSV; prints the source's attribution",
+		summary: "development tooling: build GeoIP list blobs (<out>/<name>.geoip) from a local v2fly geoip.dat or DB-IP Lite CSV; prints the source's attribution",
 		run:     runDevListsBuild,
 	})
 }
