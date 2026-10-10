@@ -44,7 +44,9 @@ Censor modules (TP-024 onwards).
 - **Subnets and capacity:** /24s from `172.16.0.0/16` (below Docker's default pools) plus a random ULA /48 per lab, checked against every daemon network under a host-wide lock file, retried on overlap; at most 12 labs from tests at once host-wide (`THINKPOL_LAB_MAX_LABS`); `labctl down -stale` (run first by `make lab-test`) removes labs whose checkout is gone, checked by removing a probe worktree with a lab up.
 - **Image:** Debian bookworm-slim pinned by digest; wireguard-tools, openssl (`s_server`), nginx-light and netcat added for TP-012/024 (+3 MB, 177 MB total).
 - **Gotchas:** Docker `internal: true` networks drop forwarded IPv4 between them (bridge netfilter), so lab networks are ordinary ones, sealed as above. The router sees each forwarded packet twice (in and out). Capture uses `--immediate-mode`, or the last packets before `Stop` are lost. `getent hosts` prefers IPv6 (use `ahostsv4`).
-- **For downstream tickets:** TP-012/TP-010/TP-014/TP-018 add `//go:build lab` tests in `lab/` declaring their topology (servers already have forwarding on; `internet` sits on the servers side, so traffic to it from a device crosses the router in plaintext unless tunneled). TP-024 puts the censor on the `router` node (`Command`, or `Start` a process) and makes `make lab` run the matrix. TP-045 reads a node's disk with `ExportFS`. A depguard rule keeps `cmd/` and `internal/` from importing `lab`.
+- **Delta review fixes (`28d3d2f`):** ownership is `org.thinkpol.lab.root` == the checkout path, exactly, in every tear-down and before Up replaces a lab (`TestLabsBelongToTheirCheckout`: a second checkout with the same override can neither remove nor replace the lab). Docker's bridge answered on its link-local address from inside a node before the fix (ping replied; a TCP connect to a closed port of its own, 12345, got "connection refused"); now an nftables `netdev` table per interface (`tplab_<if>`) drops frames to and from the bridge's MAC, and `TestSmoke/hermetic` checks ping, TCP (must time out, not be refused) and the neighbour entry on every node and network. A node's Command waits for `/run/lab/sealed` (`TestCommandStartsSealed`). `compose down` runs from an empty temp dir without `COMPOSE_*`. All labs of one top-level test share a slot of the cap. Warm `make lab-test`: ~29 s.
+- **API changes since `6952f76`:** new `Lab.DockerBridge(network) Bridge` (IPv4, IPv6, LinkLocal, MAC), `Node.Interface(network)`; a node's `Command` now runs under a `sh -c` wrapper that waits for the seal (it is exec'd, same PID semantics); nothing removed or changed in signature.
+- **For downstream tickets:** never `nft flush ruleset` in a node (it removes the seal): flush your own tables. TP-012/TP-010/TP-014/TP-018 add `//go:build lab` tests in `lab/` declaring their topology (servers already have forwarding on; `internet` sits on the servers side, so traffic to it from a device crosses the router in plaintext unless tunneled). TP-024 puts the censor on the `router` node (`Command`, or `Start` a process) and makes `make lab` run the matrix. TP-045 reads a node's disk with `ExportFS`. A depguard rule keeps `cmd/` and `internal/` from importing `lab`.
 
 ## Review findings
 Accepted by the orchestrator, 2026-10-10.
@@ -64,13 +66,13 @@ Accepted by the orchestrator, 2026-10-10.
 - [x] Image additions for TP-012/024 (wireguard-tools, an HTTP/TLS server) if cheap, otherwise listed in Notes.
 
 ### Second round (delta review), 2026-10-10
-- [ ] R2-1 Lab ownership by exact label, not name prefix: tear-down and Up's pre-teardown match `org.thinkpol.lab.root` exactly; two checkouts with the same `THINKPOL_LAB_PROJECT` can't delete each other's labs (documented and tested).
-- [ ] R2-2 IPv6 link-local escape: Docker's bridge answers on its fe80:: address, in the Docker VM's namespace where published ports listen; block it on every node including the router, and extend the hermetic subtest (ping and TCP connect to the bridge's link-local fail).
-- [ ] R2-3 Startup window: a node's Command must not run before the node is sealed; the entrypoint waits for a marker written by configure (tested).
-- [ ] R2-4 `compose down` runs with `--project-directory` set to an empty temporary directory and no `COMPOSE_*` variables in its environment.
-- [ ] R2-5 README: `:ro` mounts don't stop root in a node (SYS_ADMIN); tests must not write to /src.
-- [ ] R2-7 Cap: document that it is per TMPDIR; a test starting a second lab reuses its slot instead of deadlocking.
-- [ ] R2-6 (orchestrator checked: no change) document the choice of 172.16.0.0/16 and its override.
+- [x] R2-1 Lab ownership by exact label, not name prefix: tear-down and Up's pre-teardown match `org.thinkpol.lab.root` exactly; two checkouts with the same `THINKPOL_LAB_PROJECT` can't delete each other's labs (documented and tested).
+- [x] R2-2 IPv6 link-local escape: Docker's bridge answers on its fe80:: address, in the Docker VM's namespace where published ports listen; block it on every node including the router, and extend the hermetic subtest (ping and TCP connect to the bridge's link-local fail).
+- [x] R2-3 Startup window: a node's Command must not run before the node is sealed; the entrypoint waits for a marker written by configure (tested).
+- [x] R2-4 `compose down` runs with `--project-directory` set to an empty temporary directory and no `COMPOSE_*` variables in its environment.
+- [x] R2-5 README: `:ro` mounts don't stop root in a node (SYS_ADMIN); tests must not write to /src.
+- [x] R2-7 Cap: document that it is per TMPDIR; a test starting a second lab reuses its slot instead of deadlocking.
+- [x] R2-6 (orchestrator checked: no change) document the choice of 172.16.0.0/16 and its override.
 
 ## Log
 - 2026-10-10 created in backlog
@@ -81,3 +83,4 @@ Accepted by the orchestrator, 2026-10-10.
 - 2026-10-10 in-progress → review — review findings fixed (be20e07); make lint, make test, make lab-test green; concurrent lab-test from two worktrees green again
 - 2026-10-10 review → has-errors — delta review: lab ownership by exact label, IPv6 link-local escape, startup window, compose down hygiene, docs, slot reuse
 - 2026-10-10 has-errors → in-progress — owner: agent-tp-002, fixing the delta review findings
+- 2026-10-10 in-progress → review — delta review findings fixed (28d3d2f); make lint, make test, make lab-test green
