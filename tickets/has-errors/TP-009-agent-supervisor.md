@@ -54,7 +54,35 @@ A server node runs a supervisor and one worker process per space, each worker in
 - **Gotcha found:** vishvananda/netlink 1.3 returns `ErrDumpInterrupted` when a dump races a change; netcfg already retries, and so do the supervisor's stale-link sweep and the tests (one flake in ~30 runs, a link dump during a dead supervisor's veths going away). Any new list call near namespaces being destroyed needs the same.
 - Lab note: tests inspect workers from outside only through `/proc/<pid>/status` (lab nodes lack CAP_SYS_PTRACE, so `/proc/<pid>/ns/*` of a dropped worker is closed to root); the test binary doubles as worker in probe mode, reporting its view on stdout/stderr, which the supervisor's ring captures.
 
+## Review findings
+Two reviewers; accepted by the orchestrator as decided.
+
+Blockers:
+- [ ] B1 netnsid escape: the worker keeps CAP_NET_ADMIN in the initial user namespace and can act on root-namespace links through the veth's link-netnsid. Start the worker in a new user namespace (uid/gid maps; net, mount, pid, ipc, uts, cgroup namespaces created inside it) so NET_ADMIN applies only there. Verify in the lab: before the fix a target-netnsid operation succeeds, after it fails; keep that as a permanent probe. If the lab blocks user namespaces, adjust only the lab node spec for agent tests (documented), never the product.
+- [ ] B2 Conntrack bypass: per-space anti-spoof (drop from tp-spaceN unless the source is that slot's transit address, v4/v6), before any accept; per-space conntrack zones (raw prerouting/output `ct zone set`). Test: a spoofed source matching a root flow is not delivered; forged ICMP "related" errors are dropped.
+- [ ] B3 Close vs SetSpaces race: Close marks closed, then takes setMu and waits for in-flight stops before removing the table and releasing the lock. Tested.
+
+Should-fix:
+- [ ] 4 Neighbour-table flood: permanent neighbour entries on both ends; drop ARP/ND from spaces except what's needed (or restrict source + rate limit). Test an ND flood doesn't fill the root table.
+- [ ] 5 logring: a real ring (head index, amortised compaction); test with a "\n" flood.
+- [ ] 6 Filesystem/IPC: pivot_root into a minimal tmpfs root (dev/null, zero, urandom, net/tun; fresh proc, ro sys, tmpfs run/tmp); new IPC, UTS, cgroup namespaces; probe asserts `/` contents and that SysV shm isn't shared. Fix DESIGN.md wording (uid per slot, not per space, or uids per space if cheap).
+- [ ] 7 Setsid; cmd.Dir "/"; the worker closes every descriptor above its sockets first thing.
+- [ ] 8 Resources: a cgroup v2 per worker (pids.max, memory.max; configurable defaults) via UseCgroupFD where available; rlimits as fallback; documented.
+- [ ] 9 Open the worker's netns before Wait can reap it.
+- [ ] 10 Backoff validation (ResetAfter > 0); unwire/EEXIST self-heal: delete a stale tp-spaceN of any link type, then add; stale non-veth links handled.
+- [ ] 11 IPC split: fd 3 control, fd 4 data; non-blocking `TrySend` with ErrFull and a drop counter for data; control never queued behind data. TP-010 note: recvmmsg/sendmmsg batching and pooled buffers first; acceptance ≥ 50 Mbit/s through the shared listener on a lab node pinned to one CPU; fast paths later.
+- [ ] 12 `SetSpaces([]Space{ID, Config, Egress, ...})`: the supervisor holds per-space config and sends it to every incarnation after Init (KindConfig; sealed memfd for large payloads) and to the running worker on change. Init carries a protocol version; refuse on mismatch.
+- [ ] 13 Egress design in the supervisor (owner of the table): `Egress{Uplink, IPv4, IPv6}` per space; forward accepts after anti-spoof, replies back by zone, root masquerade only of transit ranges; the worker SNATs overlay → its transit address. Implement the table generation if small, otherwise precise TP-014 Notes (other tables' drops still win; IPv6 forwarding needs accept_ra=2 on RA-configured uplinks). Fix DESIGN.md "masqueraded once".
+- [ ] 14 TP-040 notes: caps = token bucket at the supervisor's forwarding point (TP-010) + veth limits for egress; per-worker cgroups.
+- [ ] 15 Observability: WorkerInfo StartedAt, ReadyAt, NextStart, OutputDropped; renderers (TP-022/TP-042) must sanitize worker output.
+- [ ] 16 Device mode (TP-011 notes): compose the data plane in internal/agent (e.g. agent.RunDataPlane(ctx, SpaceConfig, Inbound)); worker.Run adapts IPC; device mode passes real dialers; depguard: internal/dataplane must not import internal/agent.
+- [ ] 17 Tests: automated nftables negative control; unknown kind → worker killed and restarted; StopTimeout → SIGKILL; ReadyTimeout; worker exits on socket EOF alone; bounded dump retries in tests.
+
+Nits:
+- [ ] close the socket before awaitExit on a protocol error; uid base outside SSSD's default range (picked, documented); close received fds asynchronously; address arithmetic without math/big; DESIGN layout lists agent/ipc, agent/logring; remove own netcfg lock file on Close (if netcfg allows); TP-044 note: a self-update re-exec restarts every worker, health = every worker Ready.
+
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-10 backlog → in-progress — owner: agent-tp-009, branch: tp-009-agent-supervisor
 - 2026-10-10 in-progress → review — make lint, make test green; lab-gotest (internal/agent/...) green 5 runs in a row; labctl gotest ./... green
+- 2026-10-11 review → has-errors — two reviews: 3 blockers (netnsid escape, conntrack bypass, Close race), should-fixes 4–17, nits
