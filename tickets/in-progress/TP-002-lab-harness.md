@@ -80,3 +80,4 @@ Accepted by the orchestrator, 2026-10-10.
 - 2026-10-10 has-errors → in-progress — owner: agent-tp-002, fixing the review findings
 - 2026-10-10 in-progress → review — review findings fixed (be20e07); make lint, make test, make lab-test green; concurrent lab-test from two worktrees green again
 - 2026-10-10 review → has-errors — delta review: lab ownership by exact label, IPv6 link-local escape, startup window, compose down hygiene, docs, slot reuse
+- 2026-10-10 has-errors → in-progress — owner: agent-tp-002, fixing the delta review findings
