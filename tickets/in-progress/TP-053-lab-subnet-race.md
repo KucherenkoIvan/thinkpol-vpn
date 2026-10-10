@@ -45,3 +45,4 @@ Review by the coordinator, 2026-10-11.
 - 2026-10-11 created in in-progress — owner: agent-lab-race, branch: tp-053-lab-subnet-race (bug from TP-009's lab-test run)
 - 2026-10-11 in-progress → review — fix in 8cffb99; make lint, make test, make lab-test green
 - 2026-10-11 review → has-errors — review findings R1–R4, see Review findings
+- 2026-10-11 has-errors → in-progress — owner: agent-lab-race, fixing the review findings
