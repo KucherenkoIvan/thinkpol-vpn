@@ -63,8 +63,35 @@ Gossip (TP-037), building maps from controller state (TP-036).
 - TP-036: `SignedRecoveryRecord`/`RecoveryRecord` are defined in the schema and `Envelope` field 3 is reserved for carrying them. Until then, v1 rejects envelopes that carry any (they would be unknown fields).
 - TP-037: store and forward `Map.Bytes()` as is; a node runs `Verify` with its trusted key, then `Accept`.
 
+## Review findings
+Two reviewers (security, architecture); decisions by the orchestrator.
+
+Architecture:
+- [ ] D1. Destination routing: `relay_to` becomes `repeated Route routes` {destination node id, next hops (adjacent; several for a hop group in the middle)}; `Peer.Paths` become candidate first hops (adjacent nodes, or the peer itself for direct). DESIGN data-plane text, TP-006 (relay header {destination, hop limit} + forwarding table) and TP-030 updated
+- [ ] D2. Chains active at the same time end at different exits; DESIGN's rule example uses a second exit and explains why; TP-030 acceptance fixed; path order documented as priority (failover)
+- [ ] D3. `Open` runs only `wellFormed()` (lengths, canonical encodings, no zero ids, no self-references, duplicates); builder policy (overlay ranges, ≥1 path, consistency) only in Build's `validate()`; unknown own NodeKind → `ErrUnsupportedFormat`
+- [ ] D4. Per-section `min_reader` + `SectionReader` const; header layout frozen across formats; DESIGN: bump `Body.format` only after the release that reads it has rolled out through a format-1 map
+- [ ] D5. `Trust{SpaceID, SigningKey, RecoveryKey}`; `Verify(envelope, Trust)` (checks the space id when set); `(*Map).Trust()`; `(*Map).Next(envelope)` as the only gossip path; `(*Map).Open(key)`; unexported verified flag checked by Open/Next/Accept; nil-safe
+- [ ] D6. Header `key_epoch`; maps ordered by (key_epoch, version); `Accept` requires an equal epoch until TP-036; Build rejects versions > 2^53; note for TP-036
+- [ ] D7. Envelope field 3 defined as `repeated SignedRecoveryRecord recovery_records`; format-1 readers return `ErrUnsupportedFormat` when present
+- [ ] D8. Canonical outer check by parsing with protowire (minimal varints, tag 1 then tag 2, 64-byte signature, nothing after) without re-marshalling; Build checks count × (size + overhead) against `MaxEnvelopeSize` before sealing
+- [ ] D9. Section size floor 8 KiB; DESIGN records the residual leak (very large spaces move to bigger buckets); `TestSectionLengthHidesRole` crosses a bucket and shows servers' sections grow with it
+- [ ] D10. `Listener.settings`, `Endpoint.settings` (transport-owned bytes); `InboundLink.peer_kind`; `InboundLink.credential` documented as a verifier where the transport allows; `BlobRef` gains a kind (and name); header blobs = availability set, sections reference the blobs the node uses; accepted leak documented; TP-040 Notes get the HostedSpace shape and listener/inbound rules for shared nodes
+
+Security:
+- [ ] S1. Low-order and non-canonical X25519 public keys rejected in Build and `ParseNodePublicKey` (top bit, < p, X25519 with a fixed scalar must not fail); tests with u = 0, 1, p−1, the other known low-order points and a top-bit-set key
+- [ ] S2. `TestOpenRejectsBadSections` flake fixed (drop every section that opens for the key before laying crafted ones); netmap tests pass with `-count=200`
+
+Also:
+- [ ] A1. depguard: only `internal/netmap` imports `proto/gen/thinkpol/netmap`
+- [ ] A2. `make lint` runs `buf lint`, a stale-generated-code check, and `buf breaking` (category WIRE) against `rewrite`, skipped while `rewrite` has no schema
+- [ ] A3. Builder consistency: duplicate overlay addresses across peers; inbound links sharing (transport, credential); paths whose first hop isn't adjacent; duplicate listeners, endpoints, paths, addresses; listener host an IP literal or empty
+- [ ] A4. Tests: readers ignore unknown header and section fields; fixture covers direct paths, multi-hop route tables, multi-endpoint links, a device listener
+- [ ] A5. Nits: "overlay addresses" not "allowed IPs"; ULA fd00::/8 and /48 in builder policy; `Contents.Sections` → `Recipients`; `toID` → `toArray`; comment on the cap interplay; χ² flake-rate comment; `SectionCount` comment; reject `BlobRef` size 0
+
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-10 backlog → in-progress — owner: agent-tp-003, branch: tp-003-netmap-envelope
 - 2026-10-10 docs: Scope corrected to the standard NaCl sealed box (XSalsa20-Poly1305) and to sections without a recipient key id; DESIGN.md "The signed map" now names the header keys, the absent recipient id and equal-length shuffled sections
 - 2026-10-10 in-progress → review — all acceptance checked; `make lint` and `make test` pass
+- 2026-10-10 review → has-errors — 10 architecture, 2 security and 5 further findings from review
