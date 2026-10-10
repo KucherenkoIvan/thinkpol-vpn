@@ -4,14 +4,25 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
-// ProjectEnv overrides the checkout's project prefix, e.g. to run two labs
-// from one checkout at once.
+// ProjectPrefix starts every lab's Compose project name. Nothing can remove
+// it, and the harness never tears down a project without it: projects that
+// aren't the lab's are out of reach.
+const ProjectPrefix = "tplab-"
+
+// ProjectEnv overrides the checkout's part of the project name, e.g. to run
+// two labs from one checkout at once. It is validated, and ProjectPrefix is
+// still prepended.
 const ProjectEnv = "THINKPOL_LAB_PROJECT"
+
+// overridePattern is what ProjectEnv may hold.
+var overridePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,39}$`)
 
 // Root finds the checkout: the nearest directory at or above the working
 // directory that holds go.mod.
@@ -33,13 +44,21 @@ func Root() (string, error) {
 }
 
 // CheckoutProject is the prefix of every Compose project started from the
-// checkout at root: the checkout directory's name (a worktree is named after
-// its branch) and a hash of its path, so two checkouts never share a name.
-func CheckoutProject(root string) string {
-	if p := slug(os.Getenv(ProjectEnv), 48); p != "" {
-		return p
+// checkout at root: ProjectPrefix, then the checkout directory's name (a
+// worktree is named after its branch) and a hash of its path, so two
+// checkouts never share a name; or ProjectPrefix and ProjectEnv.
+func CheckoutProject(root string) (string, error) {
+	if v := os.Getenv(ProjectEnv); v != "" {
+		if !overridePattern.MatchString(v) {
+			return "", fmt.Errorf("lab: %s=%q: want %s", ProjectEnv, v, overridePattern)
+		}
+		return ProjectPrefix + v, nil
 	}
-	return slug(filepath.Base(root), 32) + "-" + shortHash(root)
+	name := slug(filepath.Base(root), 32)
+	if name == "" {
+		name = "checkout"
+	}
+	return ProjectPrefix + name + "-" + shortHash(root), nil
 }
 
 // testProject is the Compose project of one test's lab. The package
@@ -49,10 +68,20 @@ func testProject(checkout, pkgDir, testName string) string {
 	return checkout + "-t-" + slug(testName, 24) + "-" + shortHash(pkgDir+"\x00"+testName)
 }
 
+// GoTestProject is the Compose project prefix of the labs that run packages'
+// tests in a node (labctl gotest).
+func GoTestProject(checkout string) string { return checkout + "-gotest" }
+
 // belongsTo reports whether a Compose project was started from the checkout
 // whose prefix is checkout.
 func belongsTo(project, checkout string) bool {
 	return project == checkout || strings.HasPrefix(project, checkout+"-")
+}
+
+// startedByTests reports whether a checkout's project is one that tests or
+// labctl gotest started, as opposed to make lab-up's.
+func startedByTests(project, checkout string) bool {
+	return strings.HasPrefix(project, checkout+"-t-") || belongsTo(project, GoTestProject(checkout))
 }
 
 // slug lowercases s and keeps [a-z0-9-], as Compose project names require.

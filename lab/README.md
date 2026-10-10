@@ -12,10 +12,10 @@ make lab-down     # remove every lab this checkout started
 
 ## How it is built
 
-- **One image**, `lab/Dockerfile`: Debian slim with iproute2, nftables, iputils, tcpdump, curl. It is tagged with a hash of the Dockerfile, so checkouts share it and a changed Dockerfile builds a new tag (the first build takes about a minute).
+- **One image**, `lab/Dockerfile`: Debian slim, pinned by digest, with iproute2, nftables, iputils, tcpdump, curl, wireguard-tools (`wg`), openssl (`s_server` as a TLS target), nginx-light and netcat. It is tagged with a hash of the Dockerfile and the platform, so checkouts share it and a changed Dockerfile builds a new tag (the first build takes about a minute).
 - **No Go inside.** `thinkpol` is cross-compiled on the host (`GOOS=linux CGO_ENABLED=0`, `GOARCH` of the Docker server, override with `THINKPOL_LAB_GOARCH`) into `lab/bin`, which every node mounts read-only at `/opt/thinkpol/bin` (on `PATH`). The checkout is mounted read-only at `/src` for test data.
-- **Every node** is privileged, has `/dev/net/tun`, `THINKPOL_LAB=1` and `LAB_NODE=<name>` in its environment, and runs `sleep infinity` under an init unless the topology says otherwise.
-- **Routes are the lab's, not Docker's.** After start the harness deletes Docker's default routes in every node and, for a node with a `Gateway`, routes IPv4 and IPv6 through it. Nothing has a route out of the lab, so tests are hermetic.
+- **Every node** runs as root with `NET_ADMIN`, `NET_RAW` and `SYS_ADMIN`, `/dev/net/tun`, and AppArmor off (its Docker profile blocks the mounts network namespaces need). That covers namespaces, TUN, nftables (queue rules included) and network sysctls: `/proc/sys/net` is writable, the rest of `/proc/sys` is not. Nodes are **not privileged**; `NodeSpec.Privileged` exists for a need these can't meet, with the reason written next to it. Each node has `THINKPOL_LAB=1` and `LAB_NODE=<name>` in its environment and runs `sleep infinity` under an init unless the topology says otherwise.
+- **The lab is sealed.** After start the harness, in every node: deletes Docker's default routes (a node with a `Gateway` routes IPv4 and IPv6 through it instead); blackholes the Docker bridges' own addresses, the only way out; points `/etc/resolv.conf` at nothing, so Docker's resolver never forwards a lookup out (lab names resolve through `/etc/hosts`, which lists every node); and the networks don't masquerade. A lab node can reach other lab nodes and nothing else, which `TestSmoke/hermetic` checks.
 - **Topologies are declared in Go** and rendered to a Compose file under `lab/.run/<project>/` (ignored by git). There is no shared `compose.yaml` to edit: a test that needs another node declares it.
 
 ## The standard topology
@@ -46,7 +46,8 @@ func TestRelayPing(t *testing.T) {
 }
 ```
 
-- **Nodes:** `l.Node(name)` gives `IPv4(network)`, `IPv6(network)`, `Exec(ctx, args...)` (a non-zero exit is an error, `Result` has stdout, stderr and the code), `MustExec(t, args...)` (returns stdout), `WriteFile(t, path, data)`, and `Start(t, args...)` for background processes (`Stop`, `Done`, `Output`; their output goes to the test log on failure).
+- **Nodes:** `l.Node(name)` gives `IPv4(network)`, `IPv6(network)`, `Exec(ctx, args...)` (a non-zero exit is an error, `Result` has stdout, stderr and the code), `MustExec(t, args...)` (returns stdout), `WriteFile(t, path, data)`, `Start(t, args...)` for background processes (`Stop`, `Done`, `Output`; their output goes to the test log on failure), and `ExportFS(ctx, w)`, the node's filesystem as a tar stream (what a node leaves on disk).
+- **Files and disks:** tests read and write nodes' files through these helpers only. They never touch block devices or the Docker VM's disks.
 - **Waiting:** `lab.Eventually(t, timeout, func() error)` polls until nil.
 - **Failing tests** print the containers' logs. With `THINKPOL_LAB_KEEP=1` a failed test's lab stays up for inspection (`docker compose -p <project> exec <node> bash`, the project is in the log); `make lab-down` removes it.
 
@@ -90,15 +91,32 @@ if os.Getenv("THINKPOL_LAB") == "" {
 }
 ```
 
-`make lab-test` compiles **every** package's tests for Linux and runs them, as root, inside a lab node with `THINKPOL_LAB=1` (working directory: the package's directory under `/src`), so these tests run there and skip everywhere else. The node is alone on one dual-stack network with no default route: tests create the namespaces, veths and TUNs they need, and must clean them up (packages run one after another in the same node). For one package: `make lab-gotest PKG=./internal/... RUN=regexp`. From a lab test, `node.RunGoTests(t, "./internal/agent/...", "-test.run", "X")` does the same inside any node of a topology.
+`make lab-test` compiles **every** package's tests for Linux and runs each package, as root, in a fresh lab node of its own with `THINKPOL_LAB=1` (working directory: the package's directory under `/src`), so these tests run there and skip everywhere else. The node is alone on one dual-stack network with no route out: tests create the namespaces, veths and TUNs they need. Packages run four at a time (`labctl gotest -p`), each binary with `-test.timeout=10m` unless given its own. For one package: `make lab-gotest PKG=./internal/... RUN=regexp`. From a lab test, `node.RunGoTests(t, "./internal/agent/...", "-test.run", "X")` runs packages inside any node of a topology (that node, not a fresh one).
 
-## Isolation
+## Isolation and safety
 
-Every lab is a Compose project of its own: `<checkout>-<hash of its path>` for `make lab-up`, plus `-t-<test>-<hash>` for a test's lab and `-gotest` for in-node tests (`go run ./lab/labctl project` prints the prefix; `THINKPOL_LAB_PROJECT` overrides it). There are no fixed container names and no fixed subnets: Compose names containers after the project, and Docker allocates each network's IPv4 subnet and IPv6 /64, so labs never collide with each other or with any other Docker network. Several checkouts can run `make lab-test` at once, and `make lab-down` only removes its own checkout's projects.
+- **Names.** Every lab is a Compose project named `tplab-<checkout>-<hash of its path>` for `make lab-up`, plus `-t-<test>-<hash>` for a test's lab and `-gotest-<hash>` for in-node tests (`go run ./lab/labctl project` prints the prefix). `THINKPOL_LAB_PROJECT` replaces the checkout part (`[a-z0-9][a-z0-9-]*`, at most 40 characters), never the `tplab-` prefix. No container names are fixed.
+- **Tear-down touches only the lab's own.** Every lab container and network is labelled `org.thinkpol.lab=1` and `org.thinkpol.lab.root=<checkout>`. `make lab-down` and the clean-ups find labs by that label, and refuse to remove a project unless its name starts with `tplab-` and every container and network in it carries the label. Volumes are never removed (the lab has none). A lab started under a name that is already taken replaces the old lab, under the same rules.
+- **Subnets.** Each lab network gets a /24 from `172.16.0.0/16` (just below Docker's default pools, so the lab doesn't use up the addresses other projects on the daemon allocate from; `THINKPOL_LAB_SUBNET_POOL` changes it) and a /64 from a random unique-local /48. The choice is checked against every network on the daemon, serialized host-wide by a lock file, and retried if Docker still reports an overlap.
+- **A cap on labs.** At most `THINKPOL_LAB_MAX_LABS` (default 12) labs from tests and in-node runs exist at once on the host, across checkouts; more wait. `make lab-up`'s lab doesn't count once `labctl` has exited.
+- **Leftovers.** `make lab-test` first removes labs whose checkout no longer exists (`labctl down -stale`), then, at the end, this checkout's test labs (unless `THINKPOL_LAB_KEEP` is set).
+
+Several checkouts can run `make lab-test` at once, and `make lab-down` only removes its own checkout's labs.
+
+## Environment
+
+| Variable | Effect |
+|---|---|
+| `THINKPOL_LAB_PROJECT` | replaces the checkout part of project names (e.g. two runs from one checkout) |
+| `THINKPOL_LAB_KEEP` | a failed test's lab stays up; `make lab-test` skips its final clean-up |
+| `THINKPOL_LAB_MAX_LABS` | labs at once on the host (default 12) |
+| `THINKPOL_LAB_SUBNET_POOL` | IPv4 range for lab networks (default `172.16.0.0/16`) |
+| `THINKPOL_LAB_GOARCH` | architecture to build for (default: the Docker server's) |
 
 ## Gotchas
 
-- Docker allocates subnets from its default pools (about 30 networks on a stock daemon, shared with everything else running). The standard topology uses two networks; with many labs running at once, `docker compose up` can fail with "all predefined address pools have been fully subnetted". Fewer parallel tests, or `make lab-down` in idle checkouts, fixes it.
 - Two `make lab-test` runs in the *same* checkout clean up each other's test labs at the end; give one a different `THINKPOL_LAB_PROJECT`.
-- Lab networks are not Docker `internal` networks on purpose: Docker drops forwarded IPv4 between internal networks, which would break the router. The lab is still closed, because no node has a route out.
+- Lab networks are not Docker `internal` networks on purpose: Docker drops forwarded IPv4 between internal networks, which would break the router. The sealing above keeps the lab closed instead.
+- `getent hosts <node>` prefers IPv6; use `getent ahostsv4` for the IPv4 address.
+- A test that starts two labs holds two slots; with the cap reached by such tests it waits until others finish.
 - The image's tags accumulate as the Dockerfile changes; remove old ones with `docker image rm thinkpol-lab:<tag>`.

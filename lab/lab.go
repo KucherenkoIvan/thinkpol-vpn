@@ -3,6 +3,7 @@ package lab
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/netip"
 	"os"
@@ -25,6 +26,8 @@ type Lab struct {
 	root     string
 	runDir   string
 	nodes    map[string]*Node
+	gateways map[string][]netip.Addr // Docker's bridge addresses, by network
+	release  func()                  // the host-wide lab slot
 }
 
 // Start brings up a lab for the test and tears it down when the test ends.
@@ -35,8 +38,12 @@ func Start(t testing.TB, topo Topology) *Lab {
 	if err != nil {
 		t.Fatal(err)
 	}
+	checkout, err := CheckoutProject(root)
+	if err != nil {
+		t.Fatal(err)
+	}
 	cwd, _ := os.Getwd()
-	project := claimProject(testProject(CheckoutProject(root), cwd, t.Name()))
+	project := claimProject(testProject(checkout, cwd, t.Name()))
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	l, err := Up(ctx, root, project, topo)
@@ -73,7 +80,8 @@ func (l *Lab) cleanup(t testing.TB) {
 			t.Logf("lab %s logs:\n%s", l.Project, res.Stdout)
 		}
 		if os.Getenv(KeepEnv) != "" {
-			t.Logf("lab %s kept: docker compose -p %s exec <node> sh; make lab-down removes it", l.Project, l.Project)
+			t.Logf("lab %s kept: docker compose -p %s exec <node> bash; make lab-down removes it", l.Project, l.Project)
+			l.releaseSlot()
 			return
 		}
 	}
@@ -82,15 +90,22 @@ func (l *Lab) cleanup(t testing.TB) {
 	}
 }
 
-// Up brings up a topology as the Compose project named project, and returns
-// once every node is running with its routes set. On error the returned Lab,
-// if any, still needs Down.
+// Up brings up a topology as the Compose project named project (which must
+// start with ProjectPrefix), and returns once every node is running with its
+// routes set. A lab left over under the same name is removed first. On error
+// the returned Lab, if any, still needs Down.
 func Up(ctx context.Context, root, project string, topo Topology) (*Lab, error) {
-	image, err := Prepare(ctx, root)
+	if !strings.HasPrefix(project, ProjectPrefix) {
+		return nil, fmt.Errorf("lab: project %q doesn't start with %q", project, ProjectPrefix)
+	}
+	if err := topo.Validate(); err != nil {
+		return nil, err
+	}
+	img, err := prepare(ctx, root)
 	if err != nil {
 		return nil, err
 	}
-	file, err := renderCompose(project, topo, image, root)
+	release, err := acquireSlot(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -100,15 +115,18 @@ func Up(ctx context.Context, root, project string, topo Topology) (*Lab, error) 
 		root:     root,
 		runDir:   filepath.Join(root, "lab", ".run", project),
 		nodes:    map[string]*Node{},
+		release:  release,
+	}
+	if err := downProject(ctx, project); err != nil {
+		l.releaseSlot()
+		return nil, err
 	}
 	if err := os.MkdirAll(l.runDir, 0o755); err != nil {
+		l.releaseSlot()
 		return nil, err
 	}
-	if err := os.WriteFile(l.ComposeFile(), file, 0o644); err != nil {
-		return nil, err
-	}
-	if _, err := docker(ctx, "compose", "-f", l.ComposeFile(), "-p", project, "up", "-d", "--wait"); err != nil {
-		return l, fmt.Errorf("lab %s: up: %w", project, err)
+	if err := l.create(ctx, img); err != nil {
+		return l, err
 	}
 	if err := l.inspect(ctx); err != nil {
 		return l, err
@@ -119,15 +137,65 @@ func Up(ctx context.Context, root, project string, topo Topology) (*Lab, error) 
 	return l, nil
 }
 
+// create allocates the lab's subnets and starts it. Allocation and network
+// creation are serialized host-wide; a subnet another daemon user took in
+// the meantime means another try.
+func (l *Lab) create(ctx context.Context, img image) error {
+	pool, err := subnetPool()
+	if err != nil {
+		return err
+	}
+	unlock, err := lockAllocation(ctx)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	for attempt := 1; ; attempt++ {
+		used, err := usedSubnets(ctx)
+		if err != nil {
+			return err
+		}
+		subnets, err := allocateSubnets(l.Topology.Networks, pool, used)
+		if err != nil {
+			return err
+		}
+		file, err := renderCompose(l.Project, l.Topology, img, l.root, subnets)
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(l.ComposeFile(), file, 0o644); err != nil {
+			return err
+		}
+		_, err = docker(ctx, "compose", "-f", l.ComposeFile(), "-p", l.Project, "up", "-d", "--wait")
+		if err == nil {
+			return nil
+		}
+		if !isOverlap(err) || attempt == 5 {
+			return fmt.Errorf("lab %s: up: %w", l.Project, err)
+		}
+		if err := downProject(ctx, l.Project); err != nil {
+			return err
+		}
+	}
+}
+
 // ComposeFile is the generated Compose file, under lab/.run.
 func (l *Lab) ComposeFile() string { return filepath.Join(l.runDir, "compose.json") }
 
 // Down removes the lab's containers and networks.
 func (l *Lab) Down(ctx context.Context) error {
+	defer l.releaseSlot()
 	if err := downProject(ctx, l.Project); err != nil {
 		return err
 	}
 	return os.RemoveAll(l.runDir)
+}
+
+func (l *Lab) releaseSlot() {
+	if l.release != nil {
+		l.release()
+		l.release = nil
+	}
 }
 
 // Node returns a node of the lab's topology; an unknown name is a bug in the
@@ -140,6 +208,10 @@ func (l *Lab) Node(name string) *Node {
 	return n
 }
 
+// DockerGateways are the addresses Docker gave its own bridge on a lab
+// network. Every node has them blackholed: they are the way out of the lab.
+func (l *Lab) DockerGateways(network string) []netip.Addr { return l.gateways[network] }
+
 // Nodes lists the lab's nodes by name.
 func (l *Lab) Nodes() []*Node {
 	out := make([]*Node, 0, len(l.nodes))
@@ -150,7 +222,7 @@ func (l *Lab) Nodes() []*Node {
 	return out
 }
 
-type inspected struct {
+type inspectedContainer struct {
 	ID     string
 	Config struct {
 		Labels map[string]string
@@ -164,7 +236,8 @@ type inspected struct {
 	}
 }
 
-// inspect learns each node's container and its addresses on each network.
+// inspect learns each node's container and addresses, and each network's
+// Docker gateway.
 func (l *Lab) inspect(ctx context.Context) error {
 	res, err := docker(ctx, "compose", "-p", l.Project, "ps", "-q")
 	if err != nil {
@@ -178,7 +251,7 @@ func (l *Lab) inspect(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	var containers []inspected
+	var containers []inspectedContainer
 	if err := json.Unmarshal([]byte(res.Stdout), &containers); err != nil {
 		return fmt.Errorf("lab %s: docker inspect: %w", l.Project, err)
 	}
@@ -200,42 +273,75 @@ func (l *Lab) inspect(ctx context.Context) error {
 			return fmt.Errorf("lab %s: node %q has no container", l.Project, n.Name)
 		}
 	}
+
+	l.gateways = map[string][]netip.Addr{}
+	for _, net := range l.Topology.Networks {
+		res, err := docker(ctx, "network", "inspect", "--format", "{{range .IPAM.Config}}{{.Gateway}} {{end}}", l.Project+"_"+net.Name)
+		if err != nil {
+			return err
+		}
+		for _, s := range strings.Fields(res.Stdout) {
+			s, _, _ = strings.Cut(s, "/")
+			if a, err := netip.ParseAddr(s); err == nil {
+				l.gateways[net.Name] = append(l.gateways[net.Name], a)
+			}
+		}
+	}
 	return nil
 }
 
-// configure replaces Docker's default routes: a node routes through its
-// gateway or nowhere, so lab traffic never leaves the lab.
+// configure seals every node into the lab (see configureNode), all at once.
 func (l *Lab) configure(ctx context.Context) error {
 	var wg sync.WaitGroup
-	errs := make(chan error, len(l.Topology.Nodes))
-	for _, spec := range l.Topology.Nodes {
+	errs := make([]error, len(l.Topology.Nodes))
+	for i, spec := range l.Topology.Nodes {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			if err := l.configureNode(ctx, spec); err != nil {
-				errs <- fmt.Errorf("lab %s: node %s: %w", l.Project, spec.Name, err)
+				errs[i] = fmt.Errorf("lab %s: node %s: %w", l.Project, spec.Name, err)
 			}
 		}()
 	}
 	wg.Wait()
-	close(errs)
-	return <-errs
+	return errors.Join(errs...)
 }
 
+// configureNode replaces what Docker set up to connect a container to the
+// outside: the default routes go (a gateway node's take their place), the
+// Docker bridges' own addresses become unroutable, and DNS points at
+// nothing, so Docker's resolver never forwards a lookup out. Lab nodes find
+// each other through /etc/hosts. /proc/sys/net becomes writable, so tests
+// and thinkpol can set network sysctls in the node and its namespaces
+// without the rest of /proc/sys.
 func (l *Lab) configureNode(ctx context.Context, spec NodeSpec) error {
 	n := l.nodes[spec.Name]
-	script := "while ip -4 route del default 2>/dev/null; do :; done\n" +
-		"while ip -6 route del default 2>/dev/null; do :; done\n"
+	var script strings.Builder
+	script.WriteString("while ip -4 route del default 2>/dev/null; do :; done\n")
+	script.WriteString("while ip -6 route del default 2>/dev/null; do :; done\n")
+	for _, net := range spec.Networks {
+		for _, gw := range l.gateways[net] {
+			if gw.Is4() {
+				fmt.Fprintf(&script, "ip -4 route add blackhole %s/32\n", gw)
+			} else {
+				fmt.Fprintf(&script, "ip -6 route add blackhole %s/128\n", gw)
+			}
+		}
+	}
 	if spec.Gateway != "" {
 		gw := l.Topology.Nodes[l.Topology.nodeIndex(spec.Gateway)]
 		addr := l.nodes[gw.Name].addrs[sharedNetwork(spec, gw)]
-		script += "ip -4 route add default via " + addr.IPv4.String() + "\n"
+		fmt.Fprintf(&script, "ip -4 route add default via %s\n", addr.IPv4)
 		if addr.IPv6.IsValid() {
-			script += "ip -6 route add default via " + addr.IPv6.String() + "\n"
+			fmt.Fprintf(&script, "ip -6 route add default via %s\n", addr.IPv6)
 		}
 	}
-	script += "ip -j link show\n"
-	res, err := n.Exec(ctx, "sh", "-ec", script)
+	script.WriteString("printf 'nameserver 127.0.0.1\\noptions timeout:1 attempts:1\\n' > /etc/resolv.conf\n")
+	fmt.Fprintf(&script, "cat > /etc/hosts <<'EOF'\n%sEOF\n", l.hostsFor(spec))
+	script.WriteString("mount --bind /proc/sys/net /proc/sys/net && mount -o remount,bind,rw /proc/sys/net\n")
+	script.WriteString("ip -j link show\n")
+
+	res, err := n.Exec(ctx, "sh", "-ec", script.String())
 	if err != nil {
 		return err
 	}
@@ -257,45 +363,22 @@ func (l *Lab) configureNode(ctx context.Context, spec NodeSpec) error {
 	return nil
 }
 
-// downProject removes a Compose project's containers and networks. It works
-// from the project name alone, so it also cleans up after a killed run.
-func downProject(ctx context.Context, project string) error {
-	_, err := docker(ctx, "compose", "-p", project, "down", "--volumes", "--remove-orphans", "--timeout", "0")
-	return err
-}
-
-// DownCheckout removes every lab started from the checkout whose project
-// prefix is checkout (see CheckoutProject), or with onlyTests just the labs
-// tests and GoTest started. It returns the projects it removed.
-func DownCheckout(ctx context.Context, root, checkout string, onlyTests bool) ([]string, error) {
-	projects := map[string]bool{}
-	for _, kind := range [][]string{
-		{"ps", "-a"},
-		{"network", "ls"},
-	} {
-		args := append(kind, "--filter", "label=com.docker.compose.project", "--format", `{{.Label "com.docker.compose.project"}}`)
-		res, err := docker(ctx, args...)
-		if err != nil {
-			return nil, err
+// hostsFor is reader's /etc/hosts: every node by name, at its address on the
+// first network it shares with reader, or else on its first network.
+func (l *Lab) hostsFor(reader NodeSpec) string {
+	var b strings.Builder
+	b.WriteString("127.0.0.1\tlocalhost\n::1\tlocalhost ip6-localhost ip6-loopback\n")
+	for _, other := range l.Topology.Nodes {
+		net := sharedNetwork(other, reader)
+		if net == "" {
+			net = other.Networks[0]
 		}
-		for _, p := range strings.Fields(res.Stdout) {
-			if !belongsTo(p, checkout) {
-				continue
+		a := l.nodes[other.Name].addrs[net]
+		for _, ip := range []netip.Addr{a.IPv4, a.IPv6} {
+			if ip.IsValid() {
+				fmt.Fprintf(&b, "%s\t%s\n", ip, other.Name)
 			}
-			if onlyTests && !strings.HasPrefix(p, checkout+"-t-") && p != GoTestProject(checkout) {
-				continue
-			}
-			projects[p] = true
 		}
 	}
-	var removed []string
-	for p := range projects {
-		if err := downProject(ctx, p); err != nil {
-			return removed, err
-		}
-		_ = os.RemoveAll(filepath.Join(root, "lab", ".run", p))
-		removed = append(removed, p)
-	}
-	sort.Strings(removed)
-	return removed, nil
+	return b.String()
 }

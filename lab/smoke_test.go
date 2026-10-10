@@ -70,11 +70,48 @@ func TestSmoke(t *testing.T) {
 	}
 
 	t.Run("hermetic", func(t *testing.T) {
-		if out := router.MustExec(t, "ip", "route", "show", "default"); out != "" {
-			t.Errorf("router has a default route: %s", out)
+		for _, n := range []*lab.Node{router, device, internet} {
+			for _, family := range []string{"-4", "-6"} {
+				if out := n.MustExec(t, "ip", family, "route", "show", "default"); n == router && out != "" {
+					t.Errorf("router has a default route: %s", out)
+				}
+			}
 		}
 		if _, err := device.Exec(t.Context(), "ping", "-c", "1", "-W", "1", "192.0.2.1"); err == nil {
 			t.Error("a device reached an address outside the lab")
+		}
+		var gateways []string
+		for _, net := range []string{lab.NetDevices, lab.NetServers} {
+			gws := l.DockerGateways(net)
+			if len(gws) != 2 {
+				t.Fatalf("network %s: Docker gateways %v, want IPv4 and IPv6", net, gws)
+			}
+			for _, gw := range gws {
+				gateways = append(gateways, gw.String())
+			}
+		}
+		pingAll := `for gw; do (ping -c 1 -W 1 "$gw" >/dev/null 2>&1 && echo "reached $gw") & done; wait`
+		for _, n := range []*lab.Node{router, device, internet} {
+			if out := n.MustExec(t, append([]string{"sh", "-c", pingAll, "sh"}, gateways...)...); out != "" {
+				t.Errorf("%s reached Docker's gateways:\n%s", n.Name, out)
+			}
+		}
+		// Names: lab nodes resolve through /etc/hosts, nothing else does,
+		// not even through Docker's own resolver at 127.0.0.11, which would
+		// forward the lookup out of the lab.
+		if out := device.MustExec(t, "getent", "ahostsv4", lab.Internet); !strings.HasPrefix(out, internet.IPv4(lab.NetServers).String()) {
+			t.Errorf("internet resolves to %q", out)
+		}
+		if _, err := device.Exec(t.Context(), "getent", "hosts", "example.com"); err == nil {
+			t.Error("a device resolved an outside name")
+		}
+		viaDocker := `printf 'nameserver 127.0.0.11\noptions timeout:2 attempts:1\n' > /tmp/docker-dns && ` +
+			`exec unshare -m sh -c 'mount --bind /tmp/docker-dns /etc/resolv.conf && getent hosts "$0"' `
+		if _, err := device.Exec(t.Context(), "sh", "-c", viaDocker+lab.Router); err != nil {
+			t.Fatalf("Docker's resolver doesn't answer for lab names, so the next check proves nothing: %v", err)
+		}
+		if _, err := device.Exec(t.Context(), "sh", "-c", viaDocker+"example.com"); err == nil {
+			t.Error("Docker's resolver forwarded an outside name")
 		}
 	})
 
