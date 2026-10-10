@@ -63,3 +63,4 @@ Accepted by the orchestrator, 2026-10-10.
 - 2026-10-10 backlog → in-progress — owner: agent-tp-002, branch: tp-002-lab-harness
 - 2026-10-10 in-progress → review — make lint, make test, make lab-test green; concurrent lab-test from two worktrees green
 - 2026-10-10 review → has-errors — two blockers (B1 owner-stack safety, B2 hermeticity) and should-fixes, see Review findings
+- 2026-10-10 has-errors → in-progress — owner: agent-tp-002, fixing the review findings
