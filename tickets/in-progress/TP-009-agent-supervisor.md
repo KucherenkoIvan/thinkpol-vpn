@@ -86,3 +86,4 @@ Nits:
 - 2026-10-10 backlog → in-progress — owner: agent-tp-009, branch: tp-009-agent-supervisor
 - 2026-10-10 in-progress → review — make lint, make test green; lab-gotest (internal/agent/...) green 5 runs in a row; labctl gotest ./... green
 - 2026-10-11 review → has-errors — two reviews: 3 blockers (netnsid escape, conntrack bypass, Close race), should-fixes 4–17, nits
+- 2026-10-11 has-errors → in-progress — owner: agent-tp-009, fixing the review findings
