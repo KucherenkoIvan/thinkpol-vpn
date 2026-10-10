@@ -90,3 +90,4 @@ Nits:
 - 2026-10-10 reworked udp crypto to a stateless design after the pre-review findings (nonce reuse, epoch rollback); suite extended
 - 2026-10-10 in-progress → review
 - 2026-10-10 review → has-errors — formal review: 1 blocker, 12 should-fix, nits (see Review findings)
+- 2026-10-10 has-errors → in-progress — owner: agent-tp-005, picking up the review findings
