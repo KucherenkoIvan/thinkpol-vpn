@@ -30,5 +30,8 @@ A `tls` node can serve a real, publicly trusted certificate for an ordinary-look
 ## Blocked by
 The author has no domain. Needs a domain (or several, for rotation) and a registrar to buy them from; only the author can provide them.
 
+## Notes
+- **Optional now (TP-005 review, 2026-10-10):** probes are proxied whole to the camouflage target and see the real site's certificate (DESIGN.md), so the node's own certificate is only ever seen by authenticated clients that pin it. An ACME certificate no longer fixes a prober-visible weakness; keep this only if a real certificate is wanted for other reasons.
+
 ## Log
 - 2026-10-10 created in blocked
