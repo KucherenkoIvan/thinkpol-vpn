@@ -23,12 +23,12 @@ func TestUsedSubnetsSurvivesANetworkRemovedMidway(t *testing.T) {
 	subnetOf, idOf := map[string]netip.Prefix{}, map[string]string{}
 	for _, role := range []string{"gone", "kept"} {
 		name := ProjectPrefix + "subnet-race-" + role + "-" + hex.EncodeToString(suffix)
+		t.Cleanup(func() { _, _ = docker(context.Background(), "network", "rm", name) })
 		res, err := docker(ctx, "network", "create", name)
 		if err != nil {
 			t.Fatal(err)
 		}
 		idOf[role] = strings.TrimSpace(res.Stdout)
-		t.Cleanup(func() { _, _ = docker(context.Background(), "network", "rm", name) })
 		res, err = docker(ctx, "network", "inspect", "--format", "{{range .IPAM.Config}}{{.Subnet}}{{end}}", name)
 		if err != nil {
 			t.Fatal(err)
@@ -42,8 +42,8 @@ func TestUsedSubnetsSurvivesANetworkRemovedMidway(t *testing.T) {
 	removed := false
 	racing := func(ctx context.Context, args ...string) (Result, error) {
 		res, err := docker(ctx, args...)
-		if err == nil && !removed && slices.Equal(args, []string{"network", "ls", "-q"}) {
-			if !slices.ContainsFunc(strings.Fields(res.Stdout), func(id string) bool { return strings.HasPrefix(idOf["gone"], id) }) {
+		if err == nil && !removed && slices.Equal(args, []string{"network", "ls", "-q", "--no-trunc"}) {
+			if !slices.Contains(strings.Fields(res.Stdout), idOf["gone"]) {
 				t.Fatal("the throwaway network isn't listed")
 			}
 			if _, err := docker(ctx, "network", "rm", idOf["gone"]); err != nil {

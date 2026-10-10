@@ -22,7 +22,7 @@ type fakeNetworks struct {
 
 func (f *fakeNetworks) docker(_ context.Context, args ...string) (Result, error) {
 	switch {
-	case slices.Equal(args, []string{"network", "ls", "-q"}):
+	case slices.Equal(args, []string{"network", "ls", "-q", "--no-trunc"}):
 		var ids []string
 		for id := range f.subnets {
 			ids = append(ids, id)
@@ -89,33 +89,68 @@ func TestUsedSubnetsSkipsNetworksRemovedAfterTheList(t *testing.T) {
 	}
 }
 
-func TestUsedSubnetsFailsOnOtherInspectErrors(t *testing.T) {
-	f := &fakeNetworks{
-		subnets:    map[string]string{"a": "172.16.1.0/24"},
-		inspectErr: errors.New("permission denied while trying to connect to the Docker daemon socket"),
+func TestUsedSubnetsFailsClosed(t *testing.T) {
+	for name, f := range map[string]*fakeNetworks{
+		// A daemon going away mid-read must not read as "no subnets used".
+		"daemon gone": {
+			subnets:    map[string]string{"a": "172.16.1.0/24"},
+			inspectErr: errors.New("Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?"),
+		},
+		"socket gone": {
+			subnets:    map[string]string{"a": "172.16.1.0/24"},
+			inspectErr: errors.New("error during connect: Get \"http://docker/v1.47/networks/a\": dial unix /var/run/docker.sock: connect: no such file or directory"),
+		},
+		"cli gone": {
+			subnets:    map[string]string{"a": "172.16.1.0/24"},
+			inspectErr: errors.New("sh: docker: command not found"),
+		},
+		"permission": {
+			subnets:    map[string]string{"a": "172.16.1.0/24"},
+			inspectErr: errors.New("permission denied while trying to connect to the Docker daemon socket"),
+		},
+		"garbage subnet": {
+			subnets: map[string]string{"a": "172.16.1.0/24", "b": "<no value>"},
+		},
+	} {
+		if used, err := usedSubnetsVia(t.Context(), f.docker); err == nil {
+			t.Errorf("%s: no error, used %v", name, used)
+		}
 	}
-	if _, err := usedSubnetsVia(t.Context(), f.docker); err == nil {
-		t.Fatal("an inspect failure other than not found was ignored")
+
+	// Every listed network vanishing at once is not believable: the daemon's
+	// own networks always exist.
+	f := &fakeNetworks{subnets: map[string]string{"a": "172.16.1.0/24", "b": "172.16.2.0/24"}, notFound: "Error response from daemon: network %s not found"}
+	f.afterList = func() { clear(f.subnets) }
+	if used, err := usedSubnetsVia(t.Context(), f.docker); err == nil {
+		t.Errorf("every network gone: no error, used %v", used)
 	}
 }
 
-func TestIsNotFound(t *testing.T) {
+func TestNetworkNotFound(t *testing.T) {
+	const id = "3486a0cbe058aa"
 	fail := errors.New("exit 1")
 	for _, c := range []struct {
-		res  Result
-		err  error
-		want bool
+		stderr string
+		exit   int
+		err    error
+		want   bool
 	}{
-		{Result{Stderr: "Error response from daemon: network abc not found", ExitCode: 1}, fail, true},
-		{Result{Stderr: "Error: No such network: abc", ExitCode: 1}, fail, true},
-		{Result{Stderr: "Error: No such object: abc", ExitCode: 1}, fail, true},
-		{Result{Stderr: "permission denied", ExitCode: 1}, fail, false},
-		// The docker binary itself missing is not a missing network.
-		{Result{}, errors.New(`docker network inspect: exec: "docker": executable file not found in $PATH`), false},
-		{Result{Stderr: "network abc not found"}, nil, false},
+		{"Error response from daemon: network 3486a0cbe058aa not found", 1, fail, true},
+		{"Error: No such network: 3486a0cbe058aa", 1, fail, true},
+		{"Error: No such object: 3486a0cbe058aa\n", 1, fail, true},
+		// Another network missing, or one whose id merely starts with id.
+		{"Error response from daemon: network 0000 not found", 1, fail, false},
+		{"Error: No such network: 3486a0cbe058aabb", 1, fail, false},
+		{"error during connect: dial unix /var/run/docker.sock: connect: no such file or directory", 1, fail, false},
+		{"Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?", 1, fail, false},
+		{"sh: docker: command not found", 127, fail, false},
+		{"permission denied", 1, fail, false},
+		// The docker binary itself missing: no exit, no stderr.
+		{"", 0, errors.New(`exec: "docker": executable file not found in $PATH`), false},
+		{"Error response from daemon: network 3486a0cbe058aa not found", 0, nil, false},
 	} {
-		if got := isNotFound(c.res, c.err); got != c.want {
-			t.Errorf("isNotFound(%q, %v) = %v", c.res.Stderr, c.err, got)
+		if got := networkNotFound(Result{Stderr: c.stderr, ExitCode: c.exit}, c.err, id); got != c.want {
+			t.Errorf("networkNotFound(%q) = %v", c.stderr, got)
 		}
 	}
 }
