@@ -89,3 +89,4 @@ const RouteProtocol = 84                               // linux: rtnetlink proto
 - 2026-10-10 has-errors → in-progress — owner: agent-tp-007, fixing review findings
 - 2026-10-10 in-progress → review — findings 1–12 fixed; make lint, make test green; lab-gotest (netcfg) green 3 runs in a row
 - 2026-10-10 review → has-errors — delta review (round 3): takeover defects, metric overflow, per-owner liveness
+- 2026-10-10 has-errors → in-progress — owner: agent-tp-007, fixing round 3
