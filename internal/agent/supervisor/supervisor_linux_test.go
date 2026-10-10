@@ -89,7 +89,7 @@ func probe(ctx context.Context, s worker.Session) error {
 	say := func(format string, args ...any) { fmt.Fprintf(os.Stderr, "probe "+format+"\n", args...) }
 
 	var links []string
-	if ls, err := netlink.LinkList(); err == nil {
+	if ls, err := dump(netlink.LinkList); err == nil {
 		for _, l := range ls {
 			links = append(links, l.Attrs().Name)
 		}
@@ -365,11 +365,22 @@ func status(t *testing.T, pid int) map[string]string {
 	return out
 }
 
+// dump runs a netlink dump again while a concurrent change interrupts it,
+// as when namespaces and their veths are going away.
+func dump[T any](list func() ([]T, error)) ([]T, error) {
+	for {
+		out, err := list()
+		if !errors.Is(err, netlink.ErrDumpInterrupted) {
+			return out, err
+		}
+	}
+}
+
 func alive(pid int) bool { return unix.Kill(pid, 0) == nil }
 
 func spaceLinks(t *testing.T) []string {
 	t.Helper()
-	links, err := netlink.LinkList()
+	links, err := dump(netlink.LinkList)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -535,7 +546,7 @@ func waitGot(t *testing.T, s *supervisor.Supervisor, w supervisor.WorkerInfo, pa
 
 func nodeAddrs(t *testing.T) []netip.Addr {
 	t.Helper()
-	addrs, err := netlink.AddrList(nil, netlink.FAMILY_ALL)
+	addrs, err := dump(func() ([]netlink.Addr, error) { return netlink.AddrList(nil, netlink.FAMILY_ALL) })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -736,7 +747,7 @@ func netNamespaces(t *testing.T) map[string]bool {
 
 func TestCloseRemovesEverything(t *testing.T) {
 	needsLab(t)
-	linksBefore, err := netlink.LinkList()
+	linksBefore, err := dump(netlink.LinkList)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -768,7 +779,7 @@ func TestCloseRemovesEverything(t *testing.T) {
 			t.Errorf("namespace %s is still held", ns)
 		}
 	}
-	linksAfter, err := netlink.LinkList()
+	linksAfter, err := dump(netlink.LinkList)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -786,7 +797,9 @@ func TestCloseRemovesEverything(t *testing.T) {
 	if hasTable(t) {
 		t.Error("nftables table left behind")
 	}
-	routes, err := netlink.RouteListFiltered(netlink.FAMILY_ALL, &netlink.Route{Protocol: netcfg.OwnerSupervisor.RouteProtocol()}, netlink.RT_FILTER_PROTOCOL)
+	routes, err := dump(func() ([]netlink.Route, error) {
+		return netlink.RouteListFiltered(netlink.FAMILY_ALL, &netlink.Route{Protocol: netcfg.OwnerSupervisor.RouteProtocol()}, netlink.RT_FILTER_PROTOCOL)
+	})
 	if err != nil || len(routes) > 0 {
 		t.Errorf("supervisor routes left in the root namespace: %v, %v", routes, err)
 	}

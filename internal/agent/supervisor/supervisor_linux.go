@@ -88,7 +88,7 @@ func New(opts Options) (*Supervisor, error) {
 // removeStaleLinks deletes veths named like a space's: only a dead
 // supervisor can have left them, since this one holds the node's role.
 func removeStaleLinks(log *slog.Logger) error {
-	links, err := netlink.LinkList()
+	links, err := linkList()
 	if err != nil {
 		return fmt.Errorf("list links: %w", err)
 	}
@@ -102,6 +102,19 @@ func removeStaleLinks(log *slog.Logger) error {
 		}
 	}
 	return nil
+}
+
+// linkList lists the root namespace's links, again when a change raced the
+// dump (netlink.ErrDumpInterrupted: the list may be inconsistent), as when
+// a dead supervisor's veths are still going away with their namespaces.
+func linkList() ([]netlink.Link, error) {
+	for range 10 {
+		links, err := netlink.LinkList()
+		if !errors.Is(err, netlink.ErrDumpInterrupted) {
+			return links, err
+		}
+	}
+	return nil, fmt.Errorf("links kept changing: %w", netlink.ErrDumpInterrupted)
 }
 
 // SetSpaces makes the supervisor serve exactly spaces: workers of spaces no
@@ -272,8 +285,8 @@ func (w *worker) info() WorkerInfo {
 	return WorkerInfo{
 		Space:      w.space,
 		Link:       w.link,
-		RootAddrs:  w.transit.root[:],
-		SpaceAddrs: w.transit.space[:],
+		RootAddrs:  slices.Clone(w.transit.root[:]),
+		SpaceAddrs: slices.Clone(w.transit.space[:]),
 		UID:        w.uid,
 		PID:        w.pid,
 		Ready:      w.ready,
