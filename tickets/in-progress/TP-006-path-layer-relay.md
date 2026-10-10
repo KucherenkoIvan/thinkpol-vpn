@@ -100,3 +100,4 @@ Tests / nits:
 - 2026-10-10 docs: DESIGN.md "Data plane" — the relay header also carries the source node id (WireGuard must know which peer a packet came from); links are probed for liveness and the far end follows a path switch
 - 2026-10-10 in-progress → review — all acceptance checked; `make lint`, `make test` and `go test -race -count=30` on the path packages pass
 - 2026-10-10 review → has-errors — two reviewers: 20 findings (see Review findings)
+- 2026-10-10 has-errors → in-progress — owner: agent-tp-006, picking up the review findings
