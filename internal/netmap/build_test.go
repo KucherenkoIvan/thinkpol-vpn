@@ -84,12 +84,10 @@ func TestBuildRejectsInvalidContents(t *testing.T) {
 		{"bad transport name", entry(func(s *Section) { s.Node.Listeners[0].Transport = "UDP" })},
 		{"transport name starts with a digit", entry(func(s *Section) { s.Node.Listeners[0].Transport = "4udp" })},
 		{"long transport name", entry(func(s *Section) { s.Node.Listeners[0].Transport = string(bytes.Repeat([]byte("a"), 33)) })},
-		{"listener without port", entry(func(s *Section) { s.Node.Listeners[0].Address = "0.0.0.0" })},
-		{"listener port zero", entry(func(s *Section) { s.Node.Listeners[0].Address = ":0" })},
-		{"listener port too big", entry(func(s *Section) { s.Node.Listeners[0].Address = ":65536" })},
-		{"listener port with leading zero", entry(func(s *Section) { s.Node.Listeners[0].Address = ":04500" })},
-		{"listener on a host name", entry(func(s *Section) { s.Node.Listeners[0].Address = "localhost:4500" })},
-		{"listener with a zone", entry(func(s *Section) { s.Node.Listeners[0].Address = "[fe80::1%eth0]:4500" })},
+		{"listener without address", entry(func(s *Section) { s.Node.Listeners[0].Address = netip.AddrPort{} })},
+		{"listener port zero", entry(func(s *Section) { s.Node.Listeners[0].Address = netip.MustParseAddrPort("0.0.0.0:0") })},
+		{"listener with a zone", entry(func(s *Section) { s.Node.Listeners[0].Address = netip.MustParseAddrPort("[fe80::1%eth0]:4500") })},
+		{"listener on IPv4-mapped IPv6", entry(func(s *Section) { s.Node.Listeners[0].Address = netip.MustParseAddrPort("[::ffff:192.0.2.1]:4500") })},
 		{"listener repeated", entry(func(s *Section) { s.Node.Listeners = append(s.Node.Listeners, s.Node.Listeners[0]) })},
 		{"listener settings too long", entry(func(s *Section) { s.Node.Listeners[0].Settings = make([]byte, maxSettings+1) })},
 		// inbound links
@@ -98,6 +96,7 @@ func TestBuildRejectsInvalidContents(t *testing.T) {
 		{"inbound without credential", entry(func(s *Section) { s.Inbound[0].Credential = nil })},
 		{"inbound credential too long", entry(func(s *Section) { s.Inbound[0].Credential = make([]byte, maxCredential+1) })},
 		{"inbound peer kind unknown", entry(func(s *Section) { s.Inbound[0].PeerKind = 0 })},
+		{"inbound settings too long", entry(func(s *Section) { s.Inbound[0].Settings = make([]byte, maxSettings+1) })},
 		{"inbound credential shared", entry(func(s *Section) { s.Inbound[3].Credential = s.Inbound[1].Credential })},
 		// routes
 		{"route to self", entry(func(s *Section) { s.Routes = append(s.Routes, Route{Destination: entryID, NextHops: []NodeID{exitID}}) })},
@@ -110,8 +109,14 @@ func TestBuildRejectsInvalidContents(t *testing.T) {
 		// links
 		{"link repeated", device(func(s *Section) { s.Links = append(s.Links, s.Links[0]) })},
 		{"link without endpoints", device(func(s *Section) { s.Links[0] = Link{Peer: s.Links[0].Peer} })},
-		{"endpoint without host", device(func(s *Section) {
-			s.Links[0] = Link{Peer: s.Links[0].Peer, Endpoints: []Endpoint{{Transport: "udp", Address: ":4500", Credential: []byte{1}}}}
+		{"endpoint without address", device(func(s *Section) {
+			s.Links[0] = Link{Peer: s.Links[0].Peer, Endpoints: []Endpoint{{Transport: "udp", Credential: []byte{1}}}}
+		})},
+		{"endpoint to an unspecified address", device(func(s *Section) {
+			s.Links[0] = Link{Peer: s.Links[0].Peer, Endpoints: []Endpoint{{Transport: "udp", Address: netip.MustParseAddrPort("0.0.0.0:4500"), Credential: []byte{1}}}}
+		})},
+		{"endpoint port zero", device(func(s *Section) {
+			s.Links[0] = Link{Peer: s.Links[0].Peer, Endpoints: []Endpoint{{Transport: "udp", Address: netip.MustParseAddrPort("192.0.2.1:0"), Credential: []byte{1}}}}
 		})},
 		{"endpoint repeated", device(func(s *Section) {
 			s.Links[0] = Link{Peer: s.Links[0].Peer, Endpoints: append(s.Links[0].Endpoints, s.Links[0].Endpoints[0])}
@@ -146,7 +151,7 @@ func TestBuildRejectsInvalidContents(t *testing.T) {
 		{"section too large", device(func(s *Section) {
 			for i := range 1100 {
 				id := NodeID{byte(i), byte(i >> 8), 1}
-				s.Links = append(s.Links, Link{Peer: id, Endpoints: []Endpoint{{Transport: "udp", Address: "192.0.2.1:1", Credential: make([]byte, maxCredential)}}})
+				s.Links = append(s.Links, Link{Peer: id, Endpoints: []Endpoint{{Transport: "udp", Address: netip.MustParseAddrPort("192.0.2.1:1"), Credential: make([]byte, maxCredential)}}})
 			}
 		})},
 	}

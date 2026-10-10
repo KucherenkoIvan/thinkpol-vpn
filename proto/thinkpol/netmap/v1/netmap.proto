@@ -131,7 +131,8 @@ message NodeSettings {
 
 message Listener {
   string transport = 1;
-  // ip:port to bind; an empty host binds every address.
+  // ip:port to bind, canonical text form; an unspecified IP (0.0.0.0, ::)
+  // binds every address of that family.
   string address = 2;
   // Transport-owned settings (camouflage target, certificate source, …),
   // encoded by the transport.
@@ -163,7 +164,8 @@ message Link {
 
 message Endpoint {
   string transport = 1;
-  // host:port to dial.
+  // ip:port to dial, canonical text form. Never a host name: the controller
+  // resolves names, so nodes never ask DNS at dial time, past the tunnel.
   string address = 2;
   // Transport-specific credential for this link.
   bytes credential = 3;
@@ -177,10 +179,13 @@ message InboundLink {
   // What the peer is, so a listener can tell devices from other nodes.
   NodeKind peer_kind = 2;
   string transport = 3;
-  // What the listener checks the peer's credential against: where the
-  // transport allows, a verifier (a hash or public key) rather than the
-  // secret itself, so a seized node can't impersonate its peers (PRD S1).
+  // The transport's verifier for the peer's credential: a hash or public
+  // key where the transport allows, so a seized node can't impersonate its
+  // peers (PRD S1); for a symmetric transport, the shared secret itself.
   bytes credential = 4;
+  // Transport-owned settings for this link (how the listener side shapes
+  // and configures what it sends, TP-027), encoded by the transport.
+  bytes settings = 5;
 }
 
 // Route sends relayed packets for one destination to adjacent next hops.

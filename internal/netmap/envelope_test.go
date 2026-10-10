@@ -6,6 +6,7 @@ import (
 	"errors"
 	"math"
 	mrand "math/rand/v2"
+	"net/netip"
 	"reflect"
 	"testing"
 
@@ -641,7 +642,7 @@ func TestSectionLengthHidesRole(t *testing.T) {
 	device := &f.contents.Recipients[1].Section
 	for i := range 10 {
 		device.Links = append(device.Links, Link{Peer: NodeID{byte(i + 1), 0xee}, Endpoints: []Endpoint{
-			{Transport: "udp", Address: "192.0.2.1:4500", Credential: make([]byte, maxCredential)},
+			{Transport: "udp", Address: netip.MustParseAddrPort("192.0.2.1:4500"), Credential: make([]byte, maxCredential)},
 		}})
 	}
 	m := f.verify(t, f.build(t))
@@ -752,7 +753,7 @@ func TestBuildChecksEnvelopeSizeBeforeSealing(t *testing.T) {
 	s := &f.contents.Recipients[0].Section
 	for i := range 560 {
 		s.Links = append(s.Links, Link{Peer: NodeID{byte(i), byte(i >> 8), 1}, Endpoints: []Endpoint{
-			{Transport: "udp", Address: "192.0.2.1:1", Credential: make([]byte, maxCredential)},
+			{Transport: "udp", Address: netip.MustParseAddrPort("192.0.2.1:1"), Credential: make([]byte, maxCredential)},
 		}})
 	}
 	if _, err := Build(f.signing, f.contents); !errors.Is(err, ErrInvalidContents) {

@@ -706,7 +706,8 @@ func (x *NodeSettings) GetListeners() []*Listener {
 type Listener struct {
 	state     protoimpl.MessageState `protogen:"open.v1"`
 	Transport string                 `protobuf:"bytes,1,opt,name=transport,proto3" json:"transport,omitempty"`
-	// ip:port to bind; an empty host binds every address.
+	// ip:port to bind, canonical text form; an unspecified IP (0.0.0.0, ::)
+	// binds every address of that family.
 	Address string `protobuf:"bytes,2,opt,name=address,proto3" json:"address,omitempty"`
 	// Transport-owned settings (camouflage target, certificate source, …),
 	// encoded by the transport.
@@ -940,7 +941,8 @@ func (x *Link) GetEndpoints() []*Endpoint {
 type Endpoint struct {
 	state     protoimpl.MessageState `protogen:"open.v1"`
 	Transport string                 `protobuf:"bytes,1,opt,name=transport,proto3" json:"transport,omitempty"`
-	// host:port to dial.
+	// ip:port to dial, canonical text form. Never a host name: the controller
+	// resolves names, so nodes never ask DNS at dial time, past the tunnel.
 	Address string `protobuf:"bytes,2,opt,name=address,proto3" json:"address,omitempty"`
 	// Transport-specific credential for this link.
 	Credential []byte `protobuf:"bytes,3,opt,name=credential,proto3" json:"credential,omitempty"`
@@ -1015,10 +1017,13 @@ type InboundLink struct {
 	// What the peer is, so a listener can tell devices from other nodes.
 	PeerKind  NodeKind `protobuf:"varint,2,opt,name=peer_kind,json=peerKind,proto3,enum=thinkpol.netmap.v1.NodeKind" json:"peer_kind,omitempty"`
 	Transport string   `protobuf:"bytes,3,opt,name=transport,proto3" json:"transport,omitempty"`
-	// What the listener checks the peer's credential against: where the
-	// transport allows, a verifier (a hash or public key) rather than the
-	// secret itself, so a seized node can't impersonate its peers (PRD S1).
-	Credential    []byte `protobuf:"bytes,4,opt,name=credential,proto3" json:"credential,omitempty"`
+	// The transport's verifier for the peer's credential: a hash or public
+	// key where the transport allows, so a seized node can't impersonate its
+	// peers (PRD S1); for a symmetric transport, the shared secret itself.
+	Credential []byte `protobuf:"bytes,4,opt,name=credential,proto3" json:"credential,omitempty"`
+	// Transport-owned settings for this link (how the listener side shapes
+	// and configures what it sends, TP-027), encoded by the transport.
+	Settings      []byte `protobuf:"bytes,5,opt,name=settings,proto3" json:"settings,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1077,6 +1082,13 @@ func (x *InboundLink) GetTransport() string {
 func (x *InboundLink) GetCredential() []byte {
 	if x != nil {
 		return x.Credential
+	}
+	return nil
+}
+
+func (x *InboundLink) GetSettings() []byte {
+	if x != nil {
+		return x.Settings
 	}
 	return nil
 }
@@ -1323,14 +1335,15 @@ const file_thinkpol_netmap_v1_netmap_proto_rawDesc = "" +
 	"\n" +
 	"credential\x18\x03 \x01(\fR\n" +
 	"credential\x12\x1a\n" +
-	"\bsettings\x18\x04 \x01(\fR\bsettings\"\x9a\x01\n" +
+	"\bsettings\x18\x04 \x01(\fR\bsettings\"\xb6\x01\n" +
 	"\vInboundLink\x12\x12\n" +
 	"\x04peer\x18\x01 \x01(\fR\x04peer\x129\n" +
 	"\tpeer_kind\x18\x02 \x01(\x0e2\x1c.thinkpol.netmap.v1.NodeKindR\bpeerKind\x12\x1c\n" +
 	"\ttransport\x18\x03 \x01(\tR\ttransport\x12\x1e\n" +
 	"\n" +
 	"credential\x18\x04 \x01(\fR\n" +
-	"credential\"F\n" +
+	"credential\x12\x1a\n" +
+	"\bsettings\x18\x05 \x01(\fR\bsettings\"F\n" +
 	"\x05Route\x12 \n" +
 	"\vdestination\x18\x01 \x01(\fR\vdestination\x12\x1b\n" +
 	"\tnext_hops\x18\x02 \x03(\fR\bnextHops\"L\n" +

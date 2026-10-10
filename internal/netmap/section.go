@@ -3,7 +3,6 @@ package netmap
 import (
 	"errors"
 	"fmt"
-	"net"
 	"net/netip"
 	"strconv"
 
@@ -69,8 +68,9 @@ type NodeSettings struct {
 // Listener is a transport a node listens on.
 type Listener struct {
 	Transport string
-	// Address is ip:port to bind; an empty host binds every address.
-	Address string
+	// Address is the IP and port to bind; an unspecified IP (0.0.0.0, ::)
+	// binds every address of its family.
+	Address netip.AddrPort
 	// Settings are transport-owned (camouflage target, certificate source),
 	// encoded by the transport.
 	Settings []byte
@@ -104,8 +104,9 @@ type Link struct {
 // Endpoint is one way to reach an adjacent node.
 type Endpoint struct {
 	Transport string
-	// Address is host:port to dial.
-	Address string
+	// Address is the IP and port to dial. Never a host name: the controller
+	// resolves names, so nodes never ask DNS at dial time, past the tunnel.
+	Address netip.AddrPort
 	// Credential is the transport-specific credential for this link.
 	Credential []byte
 	// Settings are transport-owned (certificate pin, SNI, WebSocket path),
@@ -120,10 +121,13 @@ type InboundLink struct {
 	PeerKind NodeKind
 	// Transport names the listener.
 	Transport string
-	// Credential is what the listener checks the peer's credential against:
-	// where the transport allows, a verifier (a hash or a public key) rather
-	// than the secret itself, so a seized node can't impersonate its peers.
+	// Credential is the transport's verifier for the peer's credential: a
+	// hash or public key where the transport allows, so a seized node can't
+	// impersonate its peers; for a symmetric transport, the shared secret.
 	Credential []byte
+	// Settings are transport-owned settings for this link (how the listener
+	// side shapes and configures what it sends), encoded by the transport.
+	Settings []byte
 }
 
 // Route sends relayed packets for Destination to an adjacent next hop.
@@ -273,13 +277,16 @@ func (s *Section) validate(headerBlobs []BlobRef) error {
 	}
 	inOverlay := func(a netip.Addr) bool { return n.IPv4Network.Contains(a) || n.IPv6Network.Contains(a) }
 
-	type transportAddr struct{ transport, address string }
+	type transportAddr struct {
+		transport string
+		address   netip.AddrPort
+	}
 	listeners := make(map[transportAddr]bool, len(n.Listeners))
 	for _, l := range n.Listeners {
 		if err := checkTransport(l.Transport); err != nil {
 			return fmt.Errorf("listener: %w", err)
 		}
-		if err := checkListenAddress(l.Address); err != nil {
+		if err := checkAddrPort(l.Address); err != nil {
 			return fmt.Errorf("listener: %w", err)
 		}
 		if err := checkSettings(l.Settings); err != nil {
@@ -303,8 +310,11 @@ func (s *Section) validate(headerBlobs []BlobRef) error {
 			if err := checkTransport(e.Transport); err != nil {
 				return fmt.Errorf("link to %v: %w", l.Peer, err)
 			}
-			if err := checkDialAddress(e.Address); err != nil {
+			if err := checkAddrPort(e.Address); err != nil {
 				return fmt.Errorf("link to %v: %w", l.Peer, err)
+			}
+			if e.Address.Addr().IsUnspecified() {
+				return fmt.Errorf("link to %v: endpoint %v has no address to dial", l.Peer, e.Address)
 			}
 			if err := checkCredential(e.Credential); err != nil {
 				return fmt.Errorf("link to %v: %w", l.Peer, err)
@@ -321,7 +331,8 @@ func (s *Section) validate(headerBlobs []BlobRef) error {
 	}
 	// A listener maps a credential to a peer; two peers with one credential
 	// on one transport would be indistinguishable.
-	credentials := make(map[transportAddr]bool, len(s.Inbound))
+	type transportCredential struct{ transport, credential string }
+	credentials := make(map[transportCredential]bool, len(s.Inbound))
 	for _, in := range s.Inbound {
 		adjacent[in.Peer] = true
 		if !in.PeerKind.known() {
@@ -333,7 +344,10 @@ func (s *Section) validate(headerBlobs []BlobRef) error {
 		if err := checkCredential(in.Credential); err != nil {
 			return fmt.Errorf("inbound link from %v: %w", in.Peer, err)
 		}
-		k := transportAddr{in.Transport, string(in.Credential)}
+		if err := checkSettings(in.Settings); err != nil {
+			return fmt.Errorf("inbound link from %v: %w", in.Peer, err)
+		}
+		k := transportCredential{in.Transport, string(in.Credential)}
 		if credentials[k] {
 			return fmt.Errorf("inbound link from %v: credential shared with another peer on %s", in.Peer, in.Transport)
 		}
@@ -408,42 +422,14 @@ func checkTransport(name string) error {
 	return nil
 }
 
-// checkListenAddress accepts ip:port or :port.
-func checkListenAddress(addr string) error {
-	host, err := checkHostPort(addr)
-	if err != nil {
-		return err
-	}
-	if host != "" {
-		if a, err := netip.ParseAddr(host); err != nil || a.Zone() != "" || a.String() != host {
-			return fmt.Errorf("address %q: host is not an IP literal", addr)
-		}
+// checkAddrPort is the builder's rule for addresses: an IP literal (no
+// zone, no IPv4-mapped IPv6) and a non-zero port.
+func checkAddrPort(a netip.AddrPort) error {
+	ip := a.Addr()
+	if !ip.IsValid() || ip.Zone() != "" || ip.Is4In6() || a.Port() == 0 {
+		return fmt.Errorf("address %v is not an IP and a port", a)
 	}
 	return nil
-}
-
-// checkDialAddress accepts host:port with a host.
-func checkDialAddress(addr string) error {
-	host, err := checkHostPort(addr)
-	if err != nil {
-		return err
-	}
-	if host == "" {
-		return fmt.Errorf("address %q has no host", addr)
-	}
-	return nil
-}
-
-func checkHostPort(addr string) (string, error) {
-	host, port, err := net.SplitHostPort(addr)
-	if err != nil {
-		return "", fmt.Errorf("address %q: %w", addr, err)
-	}
-	p, err := strconv.ParseUint(port, 10, 16)
-	if err != nil || p == 0 || strconv.FormatUint(p, 10) != port {
-		return "", fmt.Errorf("address %q: bad port", addr)
-	}
-	return host, nil
 }
 
 func checkCredential(c []byte) error {
@@ -477,7 +463,7 @@ func sectionToProto(s *Section, h *Header) *netmapv1.Section {
 		Blobs: blobsToProto(s.Blobs),
 	}
 	for _, l := range s.Node.Listeners {
-		pb.Node.Listeners = append(pb.Node.Listeners, &netmapv1.Listener{Transport: l.Transport, Address: l.Address, Settings: l.Settings})
+		pb.Node.Listeners = append(pb.Node.Listeners, &netmapv1.Listener{Transport: l.Transport, Address: addrPortString(l.Address), Settings: l.Settings})
 	}
 	for _, p := range s.Peers {
 		pp := &netmapv1.Peer{Id: idBytes(p.ID), WireguardPublicKey: p.WireGuardKey[:]}
@@ -493,14 +479,15 @@ func sectionToProto(s *Section, h *Header) *netmapv1.Section {
 		pl := &netmapv1.Link{Peer: idBytes(l.Peer)}
 		for _, e := range l.Endpoints {
 			pl.Endpoints = append(pl.Endpoints, &netmapv1.Endpoint{
-				Transport: e.Transport, Address: e.Address, Credential: e.Credential, Settings: e.Settings,
+				Transport: e.Transport, Address: addrPortString(e.Address), Credential: e.Credential, Settings: e.Settings,
 			})
 		}
 		pb.Links = append(pb.Links, pl)
 	}
 	for _, in := range s.Inbound {
 		pb.Inbound = append(pb.Inbound, &netmapv1.InboundLink{
-			Peer: idBytes(in.Peer), PeerKind: netmapv1.NodeKind(in.PeerKind), Transport: in.Transport, Credential: in.Credential,
+			Peer: idBytes(in.Peer), PeerKind: netmapv1.NodeKind(in.PeerKind), Transport: in.Transport,
+			Credential: in.Credential, Settings: in.Settings,
 		})
 	}
 	for _, r := range s.Routes {
@@ -538,7 +525,11 @@ func sectionFromProto(pb *netmapv1.Section) (Section, error) {
 		return s, err
 	}
 	for _, l := range n.GetListeners() {
-		s.Node.Listeners = append(s.Node.Listeners, Listener{Transport: l.GetTransport(), Address: l.GetAddress(), Settings: l.GetSettings()})
+		addr, err := parseAddrPort(l.GetAddress())
+		if err != nil {
+			return s, fmt.Errorf("listener: %w", err)
+		}
+		s.Node.Listeners = append(s.Node.Listeners, Listener{Transport: l.GetTransport(), Address: addr, Settings: l.GetSettings()})
 	}
 	for _, pp := range pb.GetPeers() {
 		var p Peer
@@ -570,14 +561,18 @@ func sectionFromProto(pb *netmapv1.Section) (Section, error) {
 			return s, err
 		}
 		for _, e := range pl.GetEndpoints() {
+			addr, err := parseAddrPort(e.GetAddress())
+			if err != nil {
+				return s, fmt.Errorf("link to %v: %w", l.Peer, err)
+			}
 			l.Endpoints = append(l.Endpoints, Endpoint{
-				Transport: e.GetTransport(), Address: e.GetAddress(), Credential: e.GetCredential(), Settings: e.GetSettings(),
+				Transport: e.GetTransport(), Address: addr, Credential: e.GetCredential(), Settings: e.GetSettings(),
 			})
 		}
 		s.Links = append(s.Links, l)
 	}
 	for _, pin := range pb.GetInbound() {
-		in := InboundLink{Transport: pin.GetTransport(), Credential: pin.GetCredential()}
+		in := InboundLink{Transport: pin.GetTransport(), Credential: pin.GetCredential(), Settings: pin.GetSettings()}
 		if in.Peer, err = toArray[NodeID]("inbound peer", pin.GetPeer()); err != nil {
 			return s, err
 		}
@@ -682,6 +677,26 @@ func parseAddr(s string) (netip.Addr, error) {
 	a, err := netip.ParseAddr(s)
 	if err != nil || a.String() != s || a.Zone() != "" {
 		return netip.Addr{}, fmt.Errorf("address %q is not in canonical form", s)
+	}
+	return a, nil
+}
+
+func addrPortString(a netip.AddrPort) string {
+	if !a.IsValid() {
+		return ""
+	}
+	return a.String()
+}
+
+// parseAddrPort accepts only ip:port in canonical text form, so a host name
+// can't reach a node through its map.
+func parseAddrPort(s string) (netip.AddrPort, error) {
+	if s == "" {
+		return netip.AddrPort{}, nil
+	}
+	a, err := netip.ParseAddrPort(s)
+	if err != nil || a.String() != s || a.Addr().Zone() != "" {
+		return netip.AddrPort{}, fmt.Errorf("address %q is not an IP and port in canonical form", s)
 	}
 	return a, nil
 }

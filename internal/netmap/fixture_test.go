@@ -105,12 +105,12 @@ func newFixture(t testing.TB, servers, devices int) *fixture {
 		s := &sections[i]
 		s.Node.Kind = NodeServer
 		s.Node.Listeners = []Listener{
-			{Transport: "udp", Address: ":4500"},
-			{Transport: "tls", Address: "[::]:443", Settings: []byte("camouflage=www.example.org")},
+			{Transport: "udp", Address: netip.MustParseAddrPort("0.0.0.0:4500")},
+			{Transport: "tls", Address: netip.MustParseAddrPort("[::]:443"), Settings: []byte("camouflage=www.example.org")},
 		}
 		for j := i + 1; j < servers; j++ {
 			s.Links = append(s.Links, Link{Peer: ids[j], Endpoints: []Endpoint{
-				{Transport: "udp", Address: fmt.Sprintf("198.51.100.%d:4500", j+1), Credential: cred(i, j, "udp")},
+				{Transport: "udp", Address: netip.MustParseAddrPort(fmt.Sprintf("198.51.100.%d:4500", j+1)), Credential: cred(i, j, "udp")},
 			}})
 			sections[j].Inbound = append(sections[j].Inbound, InboundLink{
 				Peer: ids[i], PeerKind: NodeServer, Transport: "udp", Credential: cred(i, j, "udp"),
@@ -120,9 +120,10 @@ func newFixture(t testing.TB, servers, devices int) *fixture {
 	for _, e := range entries {
 		s := &sections[e]
 		for d := servers; d < n; d++ {
-			for _, tr := range []string{"udp", "tls"} {
-				s.Inbound = append(s.Inbound, InboundLink{Peer: ids[d], PeerKind: NodeDevice, Transport: tr, Credential: cred(e, d, tr)})
-			}
+			s.Inbound = append(s.Inbound,
+				InboundLink{Peer: ids[d], PeerKind: NodeDevice, Transport: "udp", Credential: cred(e, d, "udp")},
+				InboundLink{Peer: ids[d], PeerKind: NodeDevice, Transport: "tls", Credential: cred(e, d, "tls"), Settings: []byte("shape=bulk")},
+			)
 			s.Peers = append(s.Peers, peer(d, []Path{{FirstHop: ids[d]}}))
 			s.Routes = append(s.Routes, Route{Destination: ids[d], NextHops: []NodeID{ids[d]}})
 		}
@@ -143,13 +144,13 @@ func newFixture(t testing.TB, servers, devices int) *fixture {
 		s := &sections[d]
 		s.Node.Kind = NodeDevice
 		if d == servers {
-			s.Node.Listeners = []Listener{{Transport: "udp", Address: ":51820"}}
+			s.Node.Listeners = []Listener{{Transport: "udp", Address: netip.MustParseAddrPort("[::]:51820")}}
 		}
 		s.Blobs = []BlobRef{{Kind: BlobGeoIP, SHA256: testGeoIP.SHA256, Size: testGeoIP.Size, Name: "ru"}}
 		for _, e := range entries {
 			s.Links = append(s.Links, Link{Peer: ids[e], Endpoints: []Endpoint{
-				{Transport: "udp", Address: fmt.Sprintf("203.0.113.%d:4500", e+1), Credential: cred(e, d, "udp")},
-				{Transport: "tls", Address: fmt.Sprintf("entry-%d.example.net:443", e), Credential: cred(e, d, "tls"), Settings: []byte("pin=sha256:abcd")},
+				{Transport: "udp", Address: netip.MustParseAddrPort(fmt.Sprintf("203.0.113.%d:4500", e+1)), Credential: cred(e, d, "udp")},
+				{Transport: "tls", Address: netip.MustParseAddrPort(fmt.Sprintf("[2001:db8::%x]:443", e+1)), Credential: cred(e, d, "tls"), Settings: []byte("pin=sha256:abcd")},
 			}})
 			s.Peers = append(s.Peers, peer(e, []Path{{FirstHop: ids[e]}}))
 		}

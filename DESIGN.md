@@ -171,9 +171,11 @@ Events (`NodeJoined`, `NodeRemoved`, `MemberRemoved`, `GrantAccepted`, `GrantRev
 **Admin panel.** Server-rendered with go-kernel's `webui` (htmx) for lists, forms and dashboards. The **canvas** (nodes, links, transports, chains as paths, live health and traffic on top, editing by dragging) is a JavaScript island on its page, a graph-editor library fed by a JSON endpoint and a live-update stream. Shared nodes appear on a guest's canvas as read-only, labelled `owned by <space>`. Whether islands like this belong in `webui` itself is a kernel question this project answers.
 
 **The signed map.** One per space: a signed envelope with a header (space id, key epoch, version, the space's signing and recovery public keys, hashes of list files) and **one sealed section per node**, an anonymous sealed box to that node's map key (its own X25519 key, separate from its WireGuard key). Sections carry no recipient id: a node finds its own by trying to open each one, so nothing in the envelope links a section to a node, or a node's sections across versions. Each section holds only what its node needs:
-- an entry gets the device ids it accepts, what it checks their transport credentials against (a verifier where the transport allows, not the secret), and its forwarding table
+- an entry gets the device ids it accepts, the transport's verifier for each one's credential (a hash or public key where the transport allows, the shared secret for a symmetric transport), per-link transport settings, and its forwarding table
 - an exit gets the WireGuard keys and overlay addresses of devices allowed to use it
 - a device gets rules, chains, reachable peers with their candidate first hops, and entry endpoints
+
+Endpoints and listener addresses in the map are IP literals: the controller resolves names, so nodes never ask DNS at dial time, past the tunnel.
 
 Versions only go up, and the envelope is signed by the space's **signing key**. Maps are ordered by **(key epoch, version)**; the epoch changes only through a recovery record (below), so a stolen signing key can't freeze the space by signing the highest possible version. Nodes accept a valid envelope with a higher version from anyone, including other nodes, so it spreads by gossip, but each can open only its own section. Rollback is impossible, and there is no expiry, so offline networks keep working. Revocation is a new version without the node.
 
