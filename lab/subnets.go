@@ -40,7 +40,17 @@ func subnetPool() (netip.Prefix, error) {
 // usedSubnets lists the subnets of every network on the daemon, the lab's
 // and everyone else's.
 func usedSubnets(ctx context.Context) ([]netip.Prefix, error) {
-	res, err := docker(ctx, "network", "ls", "-q")
+	return usedSubnetsVia(ctx, docker)
+}
+
+// dockerFunc runs a docker CLI command, as docker does.
+type dockerFunc func(ctx context.Context, args ...string) (Result, error)
+
+// usedSubnetsVia is usedSubnets through run. Other daemon users remove
+// networks at any time, also between the list and the inspect: a network
+// that is gone by then no longer holds a subnet and is skipped.
+func usedSubnetsVia(ctx context.Context, run dockerFunc) ([]netip.Prefix, error) {
+	res, err := run(ctx, "network", "ls", "-q")
 	if err != nil {
 		return nil, err
 	}
@@ -48,7 +58,26 @@ func usedSubnets(ctx context.Context) ([]netip.Prefix, error) {
 	if len(ids) == 0 {
 		return nil, nil
 	}
-	res, err = docker(ctx, append([]string{"network", "inspect", "--format", "{{range .IPAM.Config}}{{.Subnet}} {{end}}"}, ids...)...)
+	inspect := func(ids ...string) (Result, error) {
+		return run(ctx, append([]string{"network", "inspect", "--format", "{{range .IPAM.Config}}{{.Subnet}} {{end}}"}, ids...)...)
+	}
+	res, err = inspect(ids...)
+	if isNotFound(res, err) {
+		// Some network vanished; which one, only inspecting them one by one
+		// tells.
+		var out strings.Builder
+		for _, id := range ids {
+			res, err := inspect(id)
+			if isNotFound(res, err) {
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+			out.WriteString(res.Stdout + " ")
+		}
+		res, err = Result{Stdout: out.String()}, nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -59,6 +88,18 @@ func usedSubnets(ctx context.Context) ([]netip.Prefix, error) {
 		}
 	}
 	return used, nil
+}
+
+// isNotFound recognizes the docker CLI failing because an object it was
+// asked about doesn't exist (any more): "Error response from daemon:
+// network x not found" from the daemon, "No such network: x" from newer
+// clients.
+func isNotFound(res Result, err error) bool {
+	if err == nil || res.ExitCode == 0 {
+		return false
+	}
+	msg := strings.ToLower(res.Stderr)
+	return strings.Contains(msg, "no such ") || strings.Contains(msg, " not found")
 }
 
 // allocateSubnets picks, for each network, a free /24 from pool and a /64
