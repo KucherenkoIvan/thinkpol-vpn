@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: M
 depends_on: [TP-001]
 refs: [C1, C3, C6, DESIGN#transports]
-owner: ""
-branch: ""
+owner: "agent-tp-005"
+branch: "tp-005-udp-transport"
 ---
 
 ## Goal
@@ -28,3 +28,4 @@ The contract every transport implements, and the plain `udp` baseline that the l
 
 ## Log
 - 2026-10-10 created in backlog
+- 2026-10-10 backlog → in-progress — owner: agent-tp-005, branch: tp-005-udp-transport
