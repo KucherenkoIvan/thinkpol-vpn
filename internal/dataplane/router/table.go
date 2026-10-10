@@ -25,15 +25,27 @@ type Table struct {
 	Peers []Route
 	// Rules route every other destination (TP-015's rule table).
 	Rules []Route
+	// Local are the node's own overlay addresses: the only destinations
+	// an egress writes to the TUN. Whatever a WireGuard device decrypts
+	// for anything else is dropped, so a peer can't use the node as a
+	// router into its other networks.
+	Local []netip.Addr
 }
 
 // compiled is a Table ready for lookups.
 type compiled struct {
 	overlay, peers, rules lpm
+	local                 map[netip.Addr]bool
 }
 
 func (r *Router) compile(t Table) (*compiled, error) {
-	c := &compiled{}
+	c := &compiled{local: make(map[netip.Addr]bool, len(t.Local))}
+	for _, a := range t.Local {
+		if !a.IsValid() || a.Zone() != "" || a.Is4In6() {
+			return nil, fmt.Errorf("router: local address %s", a)
+		}
+		c.local[a] = true
+	}
 	for _, p := range t.Overlay {
 		if err := c.overlay.add(p, nil); err != nil {
 			return nil, fmt.Errorf("router: overlay network: %w", err)

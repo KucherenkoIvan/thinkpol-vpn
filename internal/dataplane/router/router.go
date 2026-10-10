@@ -6,6 +6,8 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -13,9 +15,10 @@ import (
 	"golang.zx2c4.com/wireguard/tun"
 )
 
-// MaxPacket is the longest packet the router moves. Nothing longer fits
-// in a WireGuard message the path layer carries (8192 bytes less its own
-// header and WireGuard's), so a TUN MTU above it is useless.
+// MaxPacket is the longest packet the router reads from the TUN and the
+// largest MTU an egress takes. The overlay's MTU is always below it: a
+// WireGuard message the path layer carries is at most path.MaxMessageSize,
+// less WireGuard's own 32 bytes.
 const MaxPacket = 8192
 
 // readOffset is the headroom left in front of each packet read from the
@@ -49,7 +52,8 @@ type Router struct {
 type Counters struct {
 	Routed     uint64 // read from the TUN and queued on an egress
 	Delivered  uint64 // written to the TUN by egresses
-	NoRoute    uint64 // nothing routes the destination, or an overlay address no peer has
+	NotLocal   uint64 // decrypted by a WireGuard device for a destination not the node's own
+	NoRoute    uint64 // nothing routes the destination, an overlay address no peer has, or a closed egress
 	Blocked    uint64 // routed by a route without an egress
 	Malformed  uint64 // not an IPv4 or IPv6 packet
 	TooLarge   uint64 // longer than MaxPacket, or than the WireGuard device's buffer
@@ -58,7 +62,7 @@ type Counters struct {
 }
 
 type counters struct {
-	routed, delivered, noRoute, blocked, malformed, tooLarge, queueFull, readErrors atomic.Uint64
+	routed, delivered, notLocal, noRoute, blocked, malformed, tooLarge, queueFull, readErrors atomic.Uint64
 }
 
 // New starts a router reading t, with an empty table: every packet is
@@ -98,6 +102,7 @@ func (r *Router) Counters() Counters {
 	return Counters{
 		Routed:     r.c.routed.Load(),
 		Delivered:  r.c.delivered.Load(),
+		NotLocal:   r.c.notLocal.Load(),
 		NoRoute:    r.c.noRoute.Load(),
 		Blocked:    r.c.blocked.Load(),
 		Malformed:  r.c.malformed.Load(),
@@ -190,6 +195,18 @@ func (r *Router) route(p []byte) {
 	}
 }
 
+// Egresses reports on every egress, by name.
+func (r *Router) Egresses() []EgressStatus {
+	r.mu.Lock()
+	out := make([]EgressStatus, 0, len(r.egresses))
+	for e := range r.egresses {
+		out = append(out, e.Status())
+	}
+	r.mu.Unlock()
+	slices.SortFunc(out, func(a, b EgressStatus) int { return strings.Compare(a.Name, b.Name) })
+	return out
+}
+
 // destination reads the destination address of an IPv4 or IPv6 packet.
 func destination(p []byte) (netip.Addr, bool) {
 	if len(p) == 0 {
@@ -207,8 +224,3 @@ func destination(p []byte) (netip.Addr, bool) {
 	}
 	return netip.Addr{}, false
 }
-
-var packets = sync.Pool{New: func() any {
-	b := make([]byte, 0, MaxPacket)
-	return &b
-}}

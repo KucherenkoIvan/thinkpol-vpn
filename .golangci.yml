@@ -38,6 +38,17 @@ linters:
               desc: the node side must not import the control plane
             - pkg: github.com/KucherenkoIvan/thinkpol-vpn/internal/shared
               desc: shared is the control plane's; the node side must not import it
+        # the agent drives the data plane, never the other way round
+        planes-without-agent:
+          list-mode: lax
+          files:
+            - "**/internal/dataplane/**"
+            - "**/internal/netmap/**"
+            - "**/internal/lists/**"
+            - "**/internal/shaping/**"
+          deny:
+            - pkg: github.com/KucherenkoIvan/thinkpol-vpn/internal/agent
+              desc: the agent drives the data plane; the data plane, the map and the lists never import it
         # pure Go packages that also build for Android
         mobile-without-kernel:
           list-mode: lax

@@ -64,9 +64,12 @@ func (nd *labNode) start(t *testing.T, reg *transport.Registry, tr *udp.Transpor
 		t.Fatal(err)
 	}
 	e, err := dataplane.NewEngine(dataplane.EngineConfig{
-		ID: nd.id, WireGuardKey: nd.key, Registry: reg, TUN: dev, Interface: cfg, Path: fastPaths,
+		ID: nd.id, Space: testSpace, WireGuardKey: nd.key, Registry: reg, TUN: dev, Interface: cfg, Path: fastPaths,
 	})
 	if err != nil {
+		// Still the caller's.
+		_ = cfg.Close()
+		_ = dev.Close()
 		t.Fatal(err)
 	}
 	nd.engine = e
@@ -170,6 +173,38 @@ func TestNamespacesPingOverTheOverlay(t *testing.T) {
 	if c := nodes[s].engine.Status().Path; c.Forwarded == 0 {
 		t.Fatalf("server-1 relayed nothing: %+v", c)
 	}
+
+	// Links shaped down to less than IPv6's minimum turn IPv6 off on
+	// device-a, and back on when the shaping goes. Linux drops an
+	// interface's IPv6 addresses below 1280; Apply puts them back.
+	shaped, err := transport.Shaping{Padding: transport.Buckets(1000, 8000)}.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	unshaped := a.section.Links[0].Endpoints[0]
+	a.section.Links[0].Endpoints[0].Shaping = shaped
+	if err := nodes[a].engine.Apply(context.Background(), a.section); err != nil {
+		t.Fatal(err)
+	}
+	if st := nodes[a].engine.Status(); st.IPv6 || st.MTU != 1000-74-18-32 {
+		t.Fatalf("shaped: status %+v, want IPv4 only", st)
+	}
+	if out, err := inNamespace(nodes[a].ns, "ip", "-o", "addr", "show", "dev", tun.DefaultName); err != nil || strings.Contains(string(out), a.v6.String()) || !strings.Contains(string(out), a.v4.String()) {
+		t.Fatalf("shaped: TUN addresses %v\n%s", err, out)
+	}
+	nodes[a].ping(t, b.v4)
+	if out, err := inNamespace(nodes[a].ns, "ping", "-c", "1", "-W", "1", b.v6.String()); err == nil {
+		t.Fatalf("IPv6 ping crossed an IPv4-only overlay:\n%s", out)
+	}
+	a.section.Links[0].Endpoints[0] = unshaped
+	if err := nodes[a].engine.Apply(context.Background(), a.section); err != nil {
+		t.Fatal(err)
+	}
+	if st := nodes[a].engine.Status(); !st.IPv6 || st.MTU != 1328 {
+		t.Fatalf("unshaped again: status %+v", st)
+	}
+	nodes[a].ping(t, b.v6)
+	nodes[b].ping(t, a.v6)
 
 	// Closing an engine takes its interface with it.
 	if err := nodes[b].engine.Close(); err != nil {

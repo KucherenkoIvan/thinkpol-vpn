@@ -3,8 +3,8 @@
 // WireGuard devices only ever see the router's virtual TUNs. Addresses, MTU
 // and routes are netcfg's (OwnerOverlay).
 //
-// Linux (desktop and server) is implemented; macOS's utun is TP-019 and
-// Windows's Wintun TP-047, which return ErrUnsupported until then. Android
-// gets its TUN from VpnService, so this package is desktop-only and never
-// in the Android build.
+// Desktop and server Linux (linux && !android) is implemented. macOS's
+// utun is TP-019 and Windows's Wintun TP-047; until then, and on Android,
+// whose TUN comes from VpnService, Create returns ErrUnsupported. The
+// package is desktop-only: the Android build check leaves it out.
 package tun

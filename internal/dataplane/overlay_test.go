@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net/netip"
 	"slices"
-	"strings"
 	"testing"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
@@ -42,7 +41,8 @@ func TestOverlayMTU(t *testing.T) {
 		}
 	}
 	mtu := func(s netmap.Section, linkMTU int) int {
-		return dataplane.OverlayMTU(dataplane.PathConfigFrom(s, reg), dataplane.InboundFrom(s, reg, transport.SpaceID{}), reg, linkMTU)
+		pc, in := dataplane.PathConfigFrom(s, reg), dataplane.InboundFrom(s, reg, transport.SpaceID{9})
+		return dataplane.OverlayMTU(&pc, &in, reg, linkMTU)
 	}
 	// TP-006 and TP-027's figure: 1500 − 48 − 74 (udp) − 18 (path) − 32.
 	if got := mtu(section(nil, nil), 0); got != 1328 {
@@ -61,6 +61,22 @@ func TestOverlayMTU(t *testing.T) {
 	}
 	if got := mtu(netmap.Section{Node: netmap.NodeSettings{ID: nid(1)}}, 0); got != 1328 {
 		t.Fatalf("no links: %d, want udp's 1328", got)
+	}
+
+	// A link that leaves less than the minimum is dropped, not the section.
+	tiny, err := transport.Shaping{Padding: transport.Buckets(400, 8000)}.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, s := range map[string]netmap.Section{"dialed": section(tiny, nil), "accepted": section(nil, tiny)} {
+		pc, in := dataplane.PathConfigFrom(s, reg), dataplane.InboundFrom(s, reg, transport.SpaceID{9})
+		if got := dataplane.OverlayMTU(&pc, &in, reg, 0); got != 1328 {
+			t.Fatalf("%s link too small: MTU %d, want the other link's 1328", name, got)
+		}
+		skipped := append(pc.Skipped, in.Skipped...)
+		if len(pc.Table.Links)+len(in.Links["udp"]) != 1 || len(skipped) == 0 || skipped[0].Reason != dataplane.ReasonMTUTooSmall {
+			t.Fatalf("%s link too small: links %d + %d, skipped %v", name, len(pc.Table.Links), len(in.Links["udp"]), skipped)
+		}
 	}
 }
 
@@ -118,14 +134,29 @@ func TestOverlayConfigSkipsPeersItCannotConfigureSafely(t *testing.T) {
 	if !slices.Equal(ids, []byte{2, 3}) {
 		t.Fatalf("peers %v, want 2 and 3", ids)
 	}
-	if len(c.Skipped) != 13 {
-		t.Fatalf("skipped %d, want 13:\n%v", len(c.Skipped), errors.Join(c.Skipped...))
+	want := map[byte]dataplane.Reason{
+		4: dataplane.ReasonAddressClaimed, 5: dataplane.ReasonAddressClaimed,
+		6: dataplane.ReasonKeyClaimed, 7: dataplane.ReasonKeyClaimed,
+		8: dataplane.ReasonOwnKey, 9: dataplane.ReasonZeroKey, 10: dataplane.ReasonOwnAddress,
+		11: dataplane.ReasonOutsideOverlay, 12: dataplane.ReasonOutsideOverlay, 13: dataplane.ReasonOutsideOverlay,
+		14: dataplane.ReasonNoAddress, 1: dataplane.ReasonNotANode, 16: dataplane.ReasonOutsideOverlay,
+	}
+	if len(c.Skipped) != len(want) {
+		t.Fatalf("skipped %d, want %d: %v", len(c.Skipped), len(want), c.Skipped)
+	}
+	for _, d := range c.Skipped {
+		if d.What != dataplane.ItemPeer || want[d.Node[0]] != d.Reason {
+			t.Errorf("skip %v, want %v for peer %d", d.Skip, want[d.Node[0]], d.Node[0])
+		}
 	}
 	if c.IPv6Off != nil || len(c.Addrs) != 2 || c.Addrs[0] != netip.MustParsePrefix("100.64.0.1/16") || c.Addrs[1] != netip.MustParsePrefix("fd00:1:2::1/48") {
 		t.Fatalf("addresses %v, IPv6 off: %v", c.Addrs, c.IPv6Off)
 	}
 	if !slices.Equal(c.Networks, []netip.Prefix{netip.MustParsePrefix("100.64.0.0/16"), netip.MustParsePrefix("fd00:1:2::/48")}) {
 		t.Fatalf("networks %v", c.Networks)
+	}
+	if !slices.Equal(c.Local, addrs("100.64.0.1", "fd00:1:2::1")) {
+		t.Fatalf("local %v", c.Local)
 	}
 }
 
@@ -136,26 +167,30 @@ func TestOverlayConfigTurnsIPv6Off(t *testing.T) {
 		{ID: nid(2), WireGuardKey: netmap.GenerateWireGuardKey().Public(), Addresses: addrs("100.64.0.2", "fd00:1:2::2")},
 		{ID: nid(3), WireGuardKey: netmap.GenerateWireGuardKey().Public(), Addresses: addrs("fd00:1:2::3")},
 	}
-	check := func(name string, s netmap.Section, mtu int, why string) {
+	check := func(name string, s netmap.Section, mtu int, why error) {
 		t.Helper()
 		c, err := dataplane.OverlayConfigFrom(s, own, mtu)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if c.IPv6Off == nil || !strings.Contains(c.IPv6Off.Error(), why) {
-			t.Fatalf("%s: IPv6 off: %v, want it off for %q", name, c.IPv6Off, why)
+		if !errors.Is(c.IPv6Off, why) {
+			t.Fatalf("%s: IPv6 off: %v, want %v", name, c.IPv6Off, why)
 		}
-		if len(c.Addrs) != 1 || len(c.Networks) != 1 || len(c.Peers) != 1 || !slices.Equal(c.Peers[0].Addresses, addrs("100.64.0.2")) {
+		if len(c.Addrs) != 1 || len(c.Local) != 1 || len(c.Peers) != 1 || !slices.Equal(c.Peers[0].Addresses, addrs("100.64.0.2")) {
 			t.Fatalf("%s: %+v, want IPv4 only, without the IPv6-only peer", name, c)
 		}
+		// The router still decides the IPv6 network by peers: none.
+		if len(c.Networks) != 2 {
+			t.Fatalf("%s: networks %v, want both, carried or not", name, c.Networks)
+		}
 	}
-	check("small MTU", s, 1279, "1280")
+	check("small MTU", s, 1279, dataplane.ErrIPv6MTU)
 	noV6 := s
 	noV6.Node.IPv6 = netip.Addr{}
-	check("no address", noV6, 1328, "no usable overlay IPv6")
+	check("no address", noV6, 1328, dataplane.ErrNoIPv6Address)
 	outside := s
 	outside.Node.IPv6 = netip.MustParseAddr("fd00:9::1")
-	check("address outside", outside, 1328, "no usable overlay IPv6")
+	check("address outside", outside, 1328, dataplane.ErrNoIPv6Address)
 }
 
 func TestOverlayConfigRefusesWhatItCannotRunWith(t *testing.T) {

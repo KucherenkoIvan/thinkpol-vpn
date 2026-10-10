@@ -18,6 +18,10 @@ var (
 	// ErrPacketSize is returned by WritePacket for an empty packet or one
 	// larger than MaxPacketSize.
 	ErrPacketSize = errors.New("transport: packet size out of range")
+	// ErrPacketTooLong is returned (wrapped) by WritePacket when the
+	// network under the link refuses a packet as too long for its path
+	// (EMSGSIZE): the overlay's MTU is above what this link carries.
+	ErrPacketTooLong = errors.New("transport: packet too long for the network path")
 	// ErrRevoked marks a link closed because its credential left the
 	// listener's peer table.
 	ErrRevoked = errors.New("transport: credential revoked")

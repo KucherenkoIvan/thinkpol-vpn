@@ -3,8 +3,10 @@ package wg_test
 import (
 	"bytes"
 	"context"
+	"log/slog"
 	"net/netip"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -92,7 +94,7 @@ type end struct {
 func newEnd(t *testing.T, n *pnode) *end {
 	e := &end{key: netmap.GenerateWireGuardKey(), tun: tuntest.NewChannelTUN()}
 	e.dev = wg.New(n.name, e.tun.TUN(), n.NewBind(), nil)
-	t.Cleanup(e.dev.Close)
+	t.Cleanup(func() { _ = e.dev.Close() })
 	return e
 }
 
@@ -150,8 +152,8 @@ func TestTwoDevicesBehindOneRouter(t *testing.T) {
 	aKey := netmap.GenerateWireGuardKey()
 	overlay := wg.New("overlay", overlayEgress, a.NewBind(), nil)
 	exit := wg.New("exit", exitEgress, a.NewBind(), nil)
-	t.Cleanup(overlay.Close)
-	t.Cleanup(exit.Close)
+	t.Cleanup(func() { _ = overlay.Close() })
+	t.Cleanup(func() { _ = exit.Close() })
 	// A peer key lives in one device: all of A's Binds are set at once.
 	setPeers(t, a, map[*path.Bind][]path.Peer{
 		overlay.Bind(): {{ID: id("B"), FirstHops: []path.NodeID{id("B")}}},
@@ -174,6 +176,7 @@ func TestTwoDevicesBehindOneRouter(t *testing.T) {
 			{Prefix: prefix("fd00:1::2/128"), Egress: overlayEgress},
 		},
 		Rules: []router.Route{{Prefix: prefix("0.0.0.0/0"), Egress: exitEgress}, {Prefix: prefix("::/0"), Egress: exitEgress}},
+		Local: []netip.Addr{aV4, aV6},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -209,6 +212,78 @@ func TestTwoDevicesBehindOneRouter(t *testing.T) {
 			return ok && p.Src == c.dst && p.Dst == c.src && bytes.Equal(data, []byte("back"))
 		})
 	}
+
+	// A peer that lets itself send A anything can't use A as a router: B,
+	// from its own overlay address, to a LAN address behind A.
+	configure(t, bEnd.dev, bEnd.key, wg.Peer{Key: aKey.Public(), Node: id("A"), AllowedIPs: []netip.Prefix{prefix("0.0.0.0/0")}})
+	before := r.Counters().NotLocal
+	bEnd.tun.Outbound <- packettest.UDPDatagram(netip.MustParseAddrPort("100.64.0.2:4000"), netip.MustParseAddrPort("192.168.1.5:53"), []byte("in"))
+	deadline := time.Now().Add(wait)
+	for r.Counters().NotLocal == before {
+		if time.Now().After(deadline) {
+			t.Fatalf("router %+v: the packet for 192.168.1.5 wasn't dropped as not local", r.Counters())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	select {
+	case b := <-aTUN.Inbound:
+		t.Fatalf("A's TUN got %x", b)
+	default:
+	}
+}
+
+// A peer without a path fails every send; that is counted, not logged as
+// an error over and over.
+func TestPathlessPeersDoNotFloodTheLog(t *testing.T) {
+	net := memory.NewNetwork(memory.Datagram)
+	a := newNode(t, net, "A")
+	var log recorder
+	ch := tuntest.NewChannelTUN()
+	key := netmap.GenerateWireGuardKey()
+	dev := wg.New("overlay", ch.TUN(), a.NewBind(), slog.New(&log))
+	t.Cleanup(func() { _ = dev.Close() })
+	setPeers(t, a, map[*path.Bind][]path.Peer{dev.Bind(): {{ID: id("Z")}}})
+	configure(t, dev, key, wg.Peer{Key: netmap.GenerateWireGuardKey().Public(), Node: id("Z"), AllowedIPs: []netip.Prefix{prefix("100.64.0.9/32")}})
+	for range 3 {
+		ch.Outbound <- packettest.Echo(addr("100.64.0.1"), addr("100.64.0.9"), 1, 1, nil)
+	}
+	deadline := time.Now().Add(wait)
+	for a.Counters().NoPath == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("nothing tried the pathless peer")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if errs := log.errors(); len(errs) != 0 {
+		t.Fatalf("logged as errors: %q", errs)
+	}
+}
+
+type recorder struct {
+	mu   sync.Mutex
+	recs []slog.Record
+}
+
+func (r *recorder) Enabled(context.Context, slog.Level) bool { return true }
+func (r *recorder) Handle(_ context.Context, rec slog.Record) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.recs = append(r.recs, rec)
+	return nil
+}
+func (r *recorder) WithAttrs([]slog.Attr) slog.Handler { return r }
+func (r *recorder) WithGroup(string) slog.Handler      { return r }
+
+func (r *recorder) errors() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []string
+	for _, rec := range r.recs {
+		if rec.Level >= slog.LevelError {
+			out = append(out, rec.Message)
+		}
+	}
+	return out
 }
 
 func TestConfigureKeepsSessionsAndRefusesBadPeers(t *testing.T) {

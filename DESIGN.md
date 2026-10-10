@@ -123,7 +123,7 @@ GeoIP alone misroutes CDNs (foreign services on domestic IPs and vice versa), so
 
 The risk is leaking: if the local network has IPv6 and the tunnel doesn't carry it, apps connect around the tunnel, past the rules and in view of the censor.
 
-- **Overlay:** dual-stack. IPv4 from `100.64.0.0/10`, plus a **random ULA /48 per space** (RFC 4193). Spaces are isolated in their own namespaces, so overlapping IPv4 ranges on a shared node are harmless. The overlay's MTU is what the node's links leave after transport, path header and WireGuard (1328 for unshaped `udp` over 1500); where that is below IPv6's minimum of 1280, the overlay carries IPv4 only and the node's status says so.
+- **Overlay:** dual-stack. IPv4 from `100.64.0.0/10`, plus a **random ULA /48 per space** (RFC 4193). Spaces are isolated in their own namespaces, so overlapping IPv4 ranges on a shared node are harmless. The overlay's MTU is what links leave after transport, path header and WireGuard, budgeted as IPv6 whatever a link's family (1328 for unshaped `udp` over 1500). It is meant to be space-wide, computed by the map builder from every link's budget (TP-030); until then each node uses the floor of its own links, and a relay drops and counts packets too long for its next link. Where the MTU is below IPv6's minimum of 1280, the overlay carries IPv4 only and the node's status says so.
 - **Egress:** exits with IPv6 do NAT66; without it, IPv6 is blocked while connected. Never leaked either way.
 - **Everything is dual-stack:** route-table rules (GeoIP lists carry IPv6 ranges), DNS (`AAAA`), and the kill switch.
 - **Entries reachable over IPv6** are extra candidate paths. Censors sometimes treat IPv6 differently, which deserves a lab module.
@@ -244,7 +244,8 @@ lab/                      # censor lab (below)
 
 - **OS specifics** are per-OS files (`_linux.go`, `_darwin.go`, `_windows.go`) inside the package they belong to; there is no separate platform tree.
 - **Lists** are built offline (`thinkpol dev lists build`, later the controller), distributed by `dataplane/blobs`, and read by the router. `lists` sits outside `dataplane` because both planes use it.
-- **Dependency direction**: `dataplane`, `netmap`, `lists` and `agent` never import `features` or `shared`; `dataplane`, `netmap` and `lists` don't import go-kernel; `features` never import `dataplane` or `agent`, nor each other (cross-feature calls go through `shared/ports`); `shared` never imports `features`. The planes meet only through the signed map.
+- **Engine and agent**: the data-plane engine (`dataplane.Engine`) is in-process wiring, configured by one call per map. Everything around it is the agent's: creating the TUN and its configurator, building the transport registry (with socket marking), watching for maps and applying each, and opening, serving and closing the listeners.
+- **Dependency direction**: `dataplane`, `netmap`, `lists` and `agent` never import `features` or `shared`; `dataplane`, `netmap` and `lists` never import `agent`; `dataplane`, `netmap` and `lists` don't import go-kernel; `features` never import `dataplane` or `agent`, nor each other (cross-feature calls go through `shared/ports`); `shared` never imports `features`. The planes meet only through the signed map.
 - **Mobile**: everything under `dataplane`, `netmap` and `lists` is pure Go; all of it except `tun`, `egress` and `firewall` builds for Android.
 
 ## Censor lab

@@ -139,6 +139,9 @@ func TestRoutesEachDestinationToItsEgress(t *testing.T) {
 func TestEgressWritesGoToTheTUN(t *testing.T) {
 	r, ch := newRouter(t)
 	a, b := egress(t, r, "a"), egress(t, r, "b")
+	if err := r.SetTable(router.Table{Local: []netip.Addr{addr("100.64.0.1"), addr("fd00:1::1")}}); err != nil {
+		t.Fatal(err)
+	}
 	for _, e := range []*router.Egress{a, b} {
 		pkt := ping("100.64.0.2", "100.64.0.1")
 		buf := append(make([]byte, 16), pkt...)
@@ -161,6 +164,51 @@ func TestEgressWritesGoToTheTUN(t *testing.T) {
 	}
 	if c := r.Counters(); c.Delivered != 2 {
 		t.Fatalf("delivered %d, want 2", c.Delivered)
+	}
+}
+
+// What a WireGuard device decrypts reaches the TUN only for the node's own
+// addresses: a peer can't route through the node into its other networks.
+func TestEgressWritesOnlyLocalDestinations(t *testing.T) {
+	r, ch := newRouter(t)
+	e := egress(t, r, "overlay")
+	if err := r.SetTable(router.Table{Local: []netip.Addr{addr("100.64.0.1"), addr("fd00:1::1")}}); err != nil {
+		t.Fatal(err)
+	}
+	local := ping("100.64.0.2", "100.64.0.1")
+	batch := [][]byte{
+		append(make([]byte, 16), ping("100.64.0.2", "192.168.1.5")...), // the peer's own source, a LAN destination
+		append(make([]byte, 16), local...),
+		append(make([]byte, 16), ping("fd00:1::2", "fd00:1::3")...), // another overlay node
+		append(make([]byte, 16), 0x45),                              // no header
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if n, err := e.Write(batch, 16); n != len(batch) || err != nil {
+			t.Errorf("Write: %d, %v; want every packet taken", n, err)
+		}
+	}()
+	select {
+	case got := <-ch.Inbound:
+		if !bytes.Equal(got, local) {
+			t.Fatalf("TUN got %x, want only the local packet", got)
+		}
+	case <-time.After(wait):
+		t.Fatal("the local packet didn't reach the TUN")
+	}
+	<-done
+	select {
+	case got := <-ch.Inbound:
+		t.Fatalf("TUN got a non-local packet %x", got)
+	default:
+	}
+	if c, s := r.Counters(), e.Status(); c.NotLocal != 3 || s.NotLocal != 3 || s.Delivered != 1 {
+		t.Fatalf("router %+v, egress %+v", c, s)
+	}
+	// Nothing local at all: nothing written, still all taken.
+	if n, err := e.Write(batch[:1], 16); n != 1 || err != nil {
+		t.Fatalf("Write: %d, %v", n, err)
 	}
 }
 
@@ -216,6 +264,10 @@ func TestAFullQueueDropsInsteadOfBlocking(t *testing.T) {
 	if c := r.Counters(); c.QueueFull != 10 || c.Routed != router.QueueLen+1 {
 		t.Fatalf("counters %+v", c)
 	}
+	st := r.Egresses()
+	if len(st) != 2 || st[1].Name != "slow" || st[1].Queued != router.QueueLen || st[1].QueueFull != 10 || st[0].Routed != 1 {
+		t.Fatalf("egresses %+v", st)
+	}
 }
 
 func TestSetTableRefusesBadTables(t *testing.T) {
@@ -227,6 +279,7 @@ func TestSetTableRefusesBadTables(t *testing.T) {
 		"another router": {Rules: []router.Route{{Prefix: prefix("0.0.0.0/0"), Egress: foreign}}},
 		"invalid prefix": {Overlay: []netip.Prefix{{}}},
 		"IPv4-mapped":    {Rules: []router.Route{{Prefix: prefix("::ffff:10.0.0.0/104"), Egress: e}}},
+		"invalid local":  {Local: []netip.Addr{{}}},
 	} {
 		if err := r.SetTable(table); err == nil {
 			t.Errorf("%s: accepted", name)
@@ -287,5 +340,37 @@ func TestCloseUnblocksEgresses(t *testing.T) {
 	}
 	if _, open := <-e.Events(); open {
 		t.Fatal("events still open")
+	}
+}
+
+func TestEgressNamesAreUnique(t *testing.T) {
+	r, _ := newRouter(t)
+	e := egress(t, r, "overlay")
+	if _, err := r.NewEgress("overlay", 1400); err == nil {
+		t.Fatal("a second egress named overlay")
+	}
+	_ = e.Close()
+	egress(t, r, "overlay") // the name is free again
+}
+
+// A packet routed to an egress that closed meanwhile has no route.
+func TestAClosedEgressGetsNothing(t *testing.T) {
+	r, ch := newRouter(t)
+	e := egress(t, r, "overlay")
+	if err := r.SetTable(router.Table{Rules: []router.Route{{Prefix: prefix("0.0.0.0/0"), Egress: e}}}); err != nil {
+		t.Fatal(err)
+	}
+	_ = e.Close()
+	ch.Outbound <- ping("100.64.0.1", "192.0.2.1")
+	ch.Outbound <- []byte{0} // malformed: a marker
+	deadline := time.Now().Add(wait)
+	for r.Counters().Malformed == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the router didn't read")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if c := r.Counters(); c.NoRoute != 1 || c.Routed != 0 {
+		t.Fatalf("counters %+v", c)
 	}
 }

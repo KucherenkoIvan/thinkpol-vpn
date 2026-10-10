@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -30,8 +31,9 @@ var fastPaths = path.Options{
 }
 
 var (
-	space4 = netip.MustParsePrefix("100.64.0.0/16")
-	space6 = netip.MustParsePrefix("fd00:1:2::/48")
+	testSpace = transport.SpaceID{0x5a}
+	space4    = netip.MustParsePrefix("100.64.0.0/16")
+	space6    = netip.MustParsePrefix("fd00:1:2::/48")
 )
 
 // node is one node of a test space: its keys, its overlay addresses and,
@@ -100,7 +102,7 @@ func (nd *node) start(t *testing.T, net *memory.Network) {
 	}
 	ch := tuntest.NewChannelTUN()
 	e, err := dataplane.NewEngine(dataplane.EngineConfig{
-		ID: nd.id, WireGuardKey: nd.key, Registry: reg, TUN: ch.TUN(), Path: fastPaths,
+		ID: nd.id, Space: testSpace, WireGuardKey: nd.key, Registry: reg, TUN: ch.TUN(), Path: fastPaths,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -340,8 +342,16 @@ func TestIPv6IsOffBelowItsMinimumMTU(t *testing.T) {
 		t.Fatalf("status %+v, want MTU %d without IPv6", st, want)
 	}
 	ping(t, a, s.v4)
+	// Even with a rule sending all IPv6 to the overlay device, the
+	// space's IPv6 network goes by peers, and no peer has an address there.
+	dataplane.RouteDefaultsToOverlayForTest(a.engine)
+	a.apply(t)
+	before := a.engine.Status().Router
 	if tryPing(a, s.v6, 300*time.Millisecond) {
 		t.Fatal("IPv6 crossed an overlay that doesn't carry it")
+	}
+	if after := a.engine.Status().Router; after.NoRoute == before.NoRoute || after.Routed != before.Routed {
+		t.Fatalf("router %+v, was %+v: the pings should have had no route", after, before)
 	}
 	for _, p := range st.Peers {
 		for _, addr := range p.Addresses {
@@ -359,4 +369,134 @@ func TestApplyRefusesAnotherNodesSection(t *testing.T) {
 	if err := a.engine.Apply(context.Background(), s.section); err == nil {
 		t.Fatal("applied server-1's section on device-a")
 	}
+}
+
+// Status quotes nothing from the map: no endpoint addresses, no
+// credentials, whatever was skipped.
+func TestStatusQuotesNothingFromTheMap(t *testing.T) {
+	net := memory.NewNetwork(memory.Datagram)
+	a, s, b := m0()
+	a.section.Links[0].Endpoints = append(a.section.Links[0].Endpoints,
+		netmap.Endpoint{Transport: memory.Name, Address: netip.MustParseAddrPort("192.0.2.7:0"), Credential: []byte("secret-7")},
+		netmap.Endpoint{Transport: "carrier-pigeon", Address: netip.MustParseAddrPort("192.0.2.8:4500"), Credential: []byte("secret-8")})
+	a.section.Inbound = append(a.section.Inbound, netmap.InboundLink{Peer: b.id, Transport: "carrier-pigeon", Credential: []byte("secret-9")})
+	for _, nd := range []*node{s, a, b} {
+		nd.start(t, net)
+	}
+	ping(t, a, b.v4)
+	st := a.engine.Status()
+	if len(st.Skipped) != 3 || len(st.Neighbors) == 0 || len(st.Egresses) != 1 || st.Peers[1].TxBytes == 0 {
+		t.Fatalf("status %+v", st)
+	}
+	text := fmt.Sprintf("%v %+v %#v", st, st, st)
+	for _, secret := range []string{"192.0.2.", "carrier-pigeon", "secret-", "device-a>"} {
+		if strings.Contains(text, secret) {
+			t.Fatalf("status quotes %q from the map:\n%s", secret, text)
+		}
+	}
+}
+
+// A section that drops a peer takes it out of WireGuard, even when the same
+// section holds a link the node can't use: device-b's handshakes no longer
+// reach device-a's stack.
+func TestRevocationIsNotHeldBackByABadLink(t *testing.T) {
+	net := memory.NewNetwork(memory.Datagram, memory.AcceptShaping())
+	a, s, b := m0()
+	for _, nd := range []*node{s, a, b} {
+		nd.start(t, net)
+	}
+	ping(t, b, a.v4)
+
+	tiny, err := transport.Shaping{Padding: transport.Buckets(400, 8000)}.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.section.Peers = a.section.Peers[:1] // server-1 only
+	a.section.Links = append(a.section.Links, netmap.Link{Peer: b.id, Endpoints: []netmap.Endpoint{{
+		Transport: memory.Name, Address: netip.MustParseAddrPort("192.0.2.3:4500"), Credential: []byte("tiny"), Shaping: tiny,
+	}}})
+	a.apply(t)
+	st := a.engine.Status()
+	if len(st.Peers) != 1 || st.Peers[0].ID != s.id || st.MTU != 1402 {
+		t.Fatalf("status %+v, want server-1 alone, at the good link's MTU", st)
+	}
+	if !slices.Contains(st.Skipped, dataplane.Skip{Node: b.id, What: dataplane.ItemLink, Reason: dataplane.ReasonMTUTooSmall}) {
+		t.Fatalf("skipped %v, want the tiny link", st.Skipped)
+	}
+	assertCutOff(t, b, a)
+}
+
+// A section that can't run at all (no IPv4 address) still takes away the
+// peers it drops, and says which step failed.
+func TestASectionThatCannotRunStillRevokes(t *testing.T) {
+	net := memory.NewNetwork(memory.Datagram)
+	a, s, b := m0()
+	for _, nd := range []*node{s, a, b} {
+		nd.start(t, net)
+	}
+	ping(t, b, a.v4)
+	broken := a.section
+	broken.Node.IPv4 = netip.Addr{}
+	broken.Peers = broken.Peers[:1]
+	if err := a.engine.Apply(context.Background(), broken); err == nil {
+		t.Fatal("applied a section without an IPv4 address")
+	}
+	if st := a.engine.Status(); st.LastApplyError != dataplane.StepSection || len(st.Peers) != 1 || st.MTU != 1402 {
+		t.Fatalf("status %+v", st)
+	}
+	assertCutOff(t, b, a)
+	ping(t, a, s.v4) // what stays keeps working
+	a.apply(t)       // the good section again
+	if st := a.engine.Status(); st.LastApplyError != "" || len(st.Peers) != 2 {
+		t.Fatalf("status after re-applying %+v", st)
+	}
+	// device-b still holds its old session, which device-a forgot; a
+	// handshake from device-a renews it (device-b's own comes after
+	// WireGuard's 15 s).
+	ping(t, a, b.v4)
+	ping(t, b, a.v4)
+}
+
+// assertCutOff checks that from's pings no longer reach to's stack at all:
+// to's WireGuard drops them, not just its router the replies.
+func assertCutOff(t *testing.T, from, to *node) {
+	t.Helper()
+	before := to.engine.Status().Router.Delivered
+	if tryPing(from, to.v4, time.Second) {
+		t.Fatalf("%s still answers %s", to.name, from.name)
+	}
+	if after := to.engine.Status().Router.Delivered; after != before {
+		t.Fatalf("%s's WireGuard delivered %d packets from %s after it was removed", to.name, after-before, from.name)
+	}
+}
+
+// A peer moves between WireGuard devices in one Apply, as an exit moving
+// into a chain's device will, and keeps working; a device without peers
+// goes away.
+func TestAPeerMovesBetweenDevices(t *testing.T) {
+	net := memory.NewNetwork(memory.Datagram)
+	a, s, b := m0()
+	for _, nd := range []*node{s, a, b} {
+		nd.start(t, net)
+	}
+	ping(t, a, b.v4)
+	dataplane.PutPeerOnDeviceForTest(a.engine, b.id, "chain-x")
+	a.apply(t)
+	st := a.engine.Status()
+	if len(st.Egresses) != 2 || len(st.Peers) != 2 || st.Peers[1].Device != "chain-x" || st.Peers[0].Device != dataplane.OverlayDevice {
+		t.Fatalf("status %+v", st)
+	}
+	ping(t, a, b.v4)
+	ping(t, b, a.v6)
+	ping(t, a, s.v6)
+	if eg := a.engine.Status().Egresses; eg[0].Name != "chain-x" || eg[0].Routed == 0 {
+		t.Fatalf("egresses %+v: nothing went through chain-x", eg)
+	}
+
+	dataplane.PutPeerOnDeviceForTest(a.engine, netmap.NodeID{}, "")
+	a.apply(t)
+	if st := a.engine.Status(); len(st.Egresses) != 1 || st.Peers[1].Device != dataplane.OverlayDevice {
+		t.Fatalf("status %+v", st)
+	}
+	ping(t, a, b.v4)
 }

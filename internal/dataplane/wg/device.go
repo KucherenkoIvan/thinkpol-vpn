@@ -67,11 +67,21 @@ type Device struct {
 // New starts a device named name (for logs) on t and b; it comes up with
 // its first Configure. The device owns both: Close closes t and b, and
 // releases b from its node. A nil log discards WireGuard's messages.
+//
+// WireGuard logs every failed send as an error, and a peer without a path
+// (path.ErrNoPath, counted by the path layer as NoPath) fails every
+// packet and every handshake retry: those go to the debug level.
 func New(name string, t tun.Device, b *path.Bind, log *slog.Logger) *Device {
 	logger := &device.Logger{Verbosef: device.DiscardLogf, Errorf: device.DiscardLogf}
 	if log != nil {
 		log = log.With("wireguard", name)
-		logger.Errorf = func(format string, args ...any) { log.Error(fmt.Sprintf(format, args...)) }
+		logger.Errorf = func(format string, args ...any) {
+			level := slog.LevelError
+			if noPath(args) {
+				level = slog.LevelDebug
+			}
+			log.Log(context.Background(), level, fmt.Sprintf(format, args...))
+		}
 		if log.Enabled(context.Background(), slog.LevelDebug) {
 			logger.Verbosef = func(format string, args ...any) { log.Debug(fmt.Sprintf(format, args...)) }
 		}
@@ -83,6 +93,15 @@ func New(name string, t tun.Device, b *path.Bind, log *slog.Logger) *Device {
 		peers:  make(map[netmap.WireGuardKey]Peer),
 		synced: true,
 	}
+}
+
+func noPath(args []any) bool {
+	for _, a := range args {
+		if err, ok := a.(error); ok && errors.Is(err, path.ErrNoPath) {
+			return true
+		}
+	}
+	return false
 }
 
 // Name returns the device's name.
@@ -226,6 +245,7 @@ func (d *Device) Peers() ([]PeerStatus, error) {
 		sec, nsec = 0, 0
 	}
 	sc := bufio.NewScanner(strings.NewReader(s))
+	err = nil
 	for sc.Scan() {
 		k, v, ok := strings.Cut(sc.Text(), "=")
 		if !ok {
@@ -240,18 +260,24 @@ func (d *Device) Peers() ([]PeerStatus, error) {
 			}
 			out = append(out, PeerStatus{Key: key, Node: d.peers[key].Node})
 		case "last_handshake_time_sec":
-			sec, _ = strconv.ParseInt(v, 10, 64)
+			sec, err = strconv.ParseInt(v, 10, 64)
 		case "last_handshake_time_nsec":
-			nsec, _ = strconv.ParseInt(v, 10, 64)
+			nsec, err = strconv.ParseInt(v, 10, 64)
 		case "rx_bytes":
 			if len(out) > 0 {
-				out[len(out)-1].RxBytes, _ = strconv.ParseUint(v, 10, 64)
+				out[len(out)-1].RxBytes, err = strconv.ParseUint(v, 10, 64)
 			}
 		case "tx_bytes":
 			if len(out) > 0 {
-				out[len(out)-1].TxBytes, _ = strconv.ParseUint(v, 10, 64)
+				out[len(out)-1].TxBytes, err = strconv.ParseUint(v, 10, 64)
 			}
 		}
+		if err != nil {
+			return nil, fmt.Errorf("wg: device %s: status %s: %w", d.name, k, err)
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return nil, fmt.Errorf("wg: device %s: status: %w", d.name, err)
 	}
 	flush()
 	slices.SortFunc(out, func(a, b PeerStatus) int { return strings.Compare(string(a.Key[:]), string(b.Key[:])) })
@@ -259,17 +285,18 @@ func (d *Device) Peers() ([]PeerStatus, error) {
 }
 
 // Close closes the device, its TUN and its Bind, and releases the Bind
-// from its node.
-func (d *Device) Close() {
+// from its node. Closing twice is a no-op.
+func (d *Device) Close() error {
 	d.mu.Lock()
 	if d.closed {
 		d.mu.Unlock()
-		return
+		return nil
 	}
 	d.closed = true
 	d.mu.Unlock()
 	d.dev.Close()
 	d.bind.Release()
+	return nil
 }
 
 func comparePrefixes(a, b netip.Prefix) int {

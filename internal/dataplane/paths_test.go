@@ -82,16 +82,36 @@ func TestPathConfigSkipsWhatItCannotUse(t *testing.T) {
 		c.Peers[1].ID != pid(stranger) || len(c.Peers[1].FirstHops) != 0 {
 		t.Fatalf("peers %+v, want the device through the relay and the entry, and the stranger with no path", c.Peers)
 	}
-	var reasons strings.Builder
-	for _, err := range c.Skipped {
-		reasons.WriteString(err.Error() + "\n")
+	var details strings.Builder
+	got := make(map[dataplane.Skip]bool)
+	for _, d := range c.Skipped {
+		details.WriteString(d.Error() + "\n")
+		got[d.Skip] = true
 	}
-	for _, want := range []string{
-		`unknown transport "carrier-pigeon"`, "unusable address", "credential", "shaping:", "no usable endpoint",
-		"not an adjacent node", "no next hop", "not a destination", "no usable path", "not a peer",
+	for _, want := range []dataplane.Skip{
+		{Node: nid(relay), What: dataplane.ItemEndpoint, Reason: dataplane.ReasonUnknownTransport},
+		{Node: nid(relay), What: dataplane.ItemEndpoint, Reason: dataplane.ReasonUnusableAddress},
+		{Node: nid(relay), What: dataplane.ItemEndpoint, Reason: dataplane.ReasonRefused},
+		{Node: nid(relay), What: dataplane.ItemEndpoint, Reason: dataplane.ReasonBadShaping},
+		{Node: nid(nowhere), What: dataplane.ItemLink, Reason: dataplane.ReasonNoEndpoint},
+		{Node: nid(self), What: dataplane.ItemLink, Reason: dataplane.ReasonNotANode},
+		{Node: nid(device), What: dataplane.ItemHop, Reason: dataplane.ReasonNotAdjacent},
+		{Node: nid(stranger), What: dataplane.ItemRoute, Reason: dataplane.ReasonNoNextHop},
+		{Node: nid(self), What: dataplane.ItemRoute, Reason: dataplane.ReasonNotANode},
+		{Node: nid(stranger), What: dataplane.ItemPeer, Reason: dataplane.ReasonNoPath},
+		{Node: nid(self), What: dataplane.ItemPeer, Reason: dataplane.ReasonNotANode},
 	} {
-		if !strings.Contains(reasons.String(), want) {
-			t.Errorf("skipped entries don't mention %q:\n%s", want, reasons.String())
+		if !got[want] {
+			t.Errorf("no skip %v among:\n%s", want, details.String())
+		}
+	}
+	// The details quote the map; the skips never do.
+	if !strings.Contains(details.String(), "carrier-pigeon") {
+		t.Errorf("details don't say which transport:\n%s", details.String())
+	}
+	for s := range got {
+		if strings.Contains(s.String(), "192.0.2") || strings.Contains(s.String(), "carrier-pigeon") {
+			t.Errorf("skip %q quotes the map", s)
 		}
 	}
 }
