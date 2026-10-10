@@ -99,6 +99,17 @@ Tests / nits:
 - [x] 19 Prune neighbours no longer referenced after Update; `send()` checks `l.done`; Options validation (DeadAfter > ProbeInterval, RedialMax ≥ RedialMin); Dialer comparison safe for non-comparable types; Bind counters (over-long → Malformed, count at dequeue, deliver/Close race drained)
 - [x] 20 Document that endpoint priority applies on redial only (TP-031 may add return-to-primary)
 
+Round 3 (delta review; orchestrator decision: shrink failover to what is robust, end-to-end liveness goes to TP-031):
+- [ ] D1 Remove the E2EDead demotion machinery (and the 10 s data rule) from the Bind; liveness is link liveness only. Notes, DESIGN and TP-031 Notes: in M0–M2 failover covers failures of a node's own first-hop link; failures beyond the first hop are detected by TP-031's end-to-end probes
+- [ ] D2 Leader/follower simplified: the leader (lower id) never follows; the follower follows the hop the peer's latest authenticated traffic came through and, while that hop is up, never returns to its primary on its own. Keep the convergence test; add tests for a follower idle past FollowFor not switching back, and one-way flows
+- [ ] D3 Mid-chain relays: no following; plain Selector failover with hysteresis on link liveness, per destination (no src/dst leader rule). Residual (failures beyond the next hop) noted for TP-031
+- [ ] D4 Loose reverse-path check: relays drop a packet whose source this node doesn't know (no route to it and not adjacent); the destination Bind delivers from any adjacent in-space neighbour but follows / counts "heard via" only when via is one of the peer's first hops; Spoofed counts the loose check. Test with devmap's reference topology (or an equivalent table with the asymmetric case) delivering both ways. TP-030 note: the builder makes routes symmetric so strict RPF can come back
+- [ ] D5 A link is up only on two-way evidence (a matched probe reply, or data both ways, within DeadAfter); the accepting end probes too when it hasn't had a reply-capable exchange. Test: one-way outbound loss on an accepted link is detected within about DeadAfter
+- [ ] D6 Fix the prune/accept race (look up and add under nmu, or re-check in addLink)
+- [ ] D7 Document that Options.Now must be monotonic; widen the fake-clock tests' wall slack so race-detector stalls can't kill healthy links
+- [ ] D8 Notes/DESIGN failover numbers accurate for the simplified model (first hop: switch within about DeadAfter plus probe jitter; how fast the follower follows a leader that moved)
+- [ ] D9 Integrate TP-027: merge origin/rewrite; PathConfigFrom fills Shaping via transport.ParseShaping; budget with the transport's Overhead (udp 74) and transport.MaxPacket; probes and replies go through transport.WriteControl, their RTTs are upper bounds; memory.AcceptShaping where tests need shaped maps
+
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-10 docs (TP-003 review): destination routing — candidate first hops on the sender, a forwarding table per relay
@@ -110,3 +121,4 @@ Tests / nits:
 - 2026-10-10 has-errors → in-progress — owner: agent-tp-006, picking up the review findings
 - 2026-10-10 merged origin/rewrite (TP-002, TP-007); review findings 1–20 fixed; DESIGN.md "Data plane": source id checked by reverse path, first-hop vs end-to-end liveness, one end of a pair follows; notes for TP-008, TP-011, TP-018, TP-030 and TP-031 written into their tickets
 - 2026-10-10 in-progress → review — every finding checked; `make lint`, `make test` and `go test -race -count=30` on the path packages pass
+- 2026-10-10 review → has-errors — delta review: round 3 (9 findings)
