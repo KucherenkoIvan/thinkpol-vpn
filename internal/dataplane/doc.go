@@ -1,7 +1,8 @@
-// Package dataplane moves packets on every node: tun, router, wg, path,
-// transport/<name>, egress, dns and telemetry live in subpackages, as plain
-// ports and adapters with no DDD aggregates.
+// Package dataplane is the engine that wires the data plane together: tun,
+// router, wg, path, transport, netcfg, firewall, egress, dns, blobs and
+// telemetry are its subpackages, as plain ports and adapters with no DDD
+// aggregates. This package does the wiring and nothing else.
 //
-// No cgo here and no imports from internal/features: the data plane has to
-// stay buildable for mobile and must not depend on the control plane.
+// OS specifics are per-OS files inside each subpackage. Everything here is
+// pure Go, and everything but tun, egress and firewall builds for Android.
 package dataplane

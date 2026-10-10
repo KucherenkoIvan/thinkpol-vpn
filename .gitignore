@@ -1,9 +1,12 @@
 # binaries & build artifacts
 /bin/
 /lab/bin/
+/thinkpol
+/thinkpol-tray
+*.exe
 *.test
-*.out
-coverage.*
+/coverage.out
+*.coverprofile
 
 # tooling caches
 __pycache__/

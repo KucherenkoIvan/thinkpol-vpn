@@ -8,28 +8,65 @@ linters:
     - depguard
   settings:
     depguard:
+      # Dependency direction from DESIGN.md "Repository layout". Deny entries
+      # are prefix matches, so they cover every subpackage.
       rules:
-        # the data plane and the map run on every node without the controller,
-        # so they never depend on the control plane
-        dataplane-netmap-without-features:
+        # the planes run on every node without the controller
+        planes-without-control-plane:
           list-mode: lax
           files:
             - "**/internal/dataplane/**"
             - "**/internal/netmap/**"
+            - "**/internal/lists/**"
+            - "**/internal/agent/**"
           deny:
             - pkg: github.com/KucherenkoIvan/thinkpol-vpn/internal/features
-              desc: the data plane and the map must not import the control plane
-        # the control plane talks to the data plane only through the map
-        features-without-dataplane:
+              desc: the node side must not import the control plane
+            - pkg: github.com/KucherenkoIvan/thinkpol-vpn/internal/shared
+              desc: shared is the control plane's; the node side must not import it
+        # pure Go packages that also build for Android
+        mobile-without-kernel:
+          list-mode: lax
+          files:
+            - "**/internal/dataplane/**"
+            - "**/internal/netmap/**"
+            - "**/internal/lists/**"
+          deny:
+            - pkg: github.com/KucherenkoIvan/go-kernel
+              desc: the data plane, the map and the lists stay free of go-kernel
+        # the control plane reaches nodes only through the signed map
+        features-without-node-side:
           list-mode: lax
           files:
             - "**/internal/features/**"
           deny:
             - pkg: github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane
               desc: control plane features must not import the data plane
+            - pkg: github.com/KucherenkoIvan/thinkpol-vpn/internal/agent
+              desc: control plane features must not import the node agent
+        shared-without-features:
+          list-mode: lax
+          files:
+            - "**/internal/shared/**"
+          deny:
+            - pkg: github.com/KucherenkoIvan/thinkpol-vpn/internal/features
+              desc: shared code must not depend on a feature
+        # Each feature adds a rule denying the other features, e.g.:
+        # feature-spaces:
+        #   list-mode: lax
+        #   files: ["**/internal/features/spaces/**"]
+        #   allow: [github.com/KucherenkoIvan/thinkpol-vpn/internal/features/spaces]
+        #   deny:
+        #     - pkg: github.com/KucherenkoIvan/thinkpol-vpn/internal/features
+        #       desc: features talk to each other only through shared/ports
   exclusions:
     generated: lax
+    paths:
+      - proto/gen
 
 formatters:
   enable:
     - gofmt
+  exclusions:
+    paths:
+      - proto/gen

@@ -1,12 +1,29 @@
 # thinkpol-vpn development targets. `make help` lists them.
 
-GOBIN := $(shell go env GOPATH)/bin
+# Dev tools, pinned, installed per checkout into bin/tools (lint and proto
+# install them on first use). Bumping a version reinstalls them all.
+GOLANGCI_LINT_VERSION := v2.14.0
+BUF_VERSION := v1.73.0
+PROTOC_GEN_GO_VERSION := v1.36.12
+PROTOC_GEN_GO_GRPC_VERSION := v1.6.2
+
+TOOLS := $(CURDIR)/bin/tools
+TOOLS_STAMP := $(TOOLS)/.installed-$(GOLANGCI_LINT_VERSION)-$(BUF_VERSION)-$(PROTOC_GEN_GO_VERSION)-$(PROTOC_GEN_GO_GRPC_VERSION)
+
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
-# No cgo anywhere: the data plane has to stay buildable for mobile.
+# The OSes the binary ships for: lint vets each, so OS-specific files are
+# checked on any host.
+LINT_GOOS := darwin linux windows
+# Pure Go, no cgo (DESIGN.md "Repository layout").
+NOCGO_PKGS := ./internal/dataplane/... ./internal/netmap/... ./internal/lists/...
+# What must build for Android: the above minus the desktop-only packages.
+MOBILE_PKGS = $(shell go list $(NOCGO_PKGS) | grep -vE '/internal/dataplane/(tun|egress|firewall)(/|$$)')
+
+# cgo is off unless a target turns it on (test-race).
 export CGO_ENABLED := 0
 
-.PHONY: help build test lint fmt tools lab-up lab-test lab-down
+.PHONY: help build test test-race lint nocgo fmt proto tools lab lab-up lab-test lab-down
 
 help: ## list targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -14,25 +31,56 @@ help: ## list targets
 build: ## build bin/thinkpol for this machine
 	go build -trimpath -ldflags "-X main.version=$(VERSION)" -o bin/thinkpol ./cmd/thinkpol
 
-test: ## unit tests
+test: ## unit tests (lab tests skip outside the lab)
 	go test ./...
 
-lint: ## gofmt check + go vet + golangci-lint
-	@fmtout=$$(gofmt -l .); if [ -n "$$fmtout" ]; then echo "gofmt needed:"; echo "$$fmtout"; exit 1; fi
-	go vet ./...
-	$(GOBIN)/golangci-lint run --allow-serial-runners ./...
+test-race: ## unit tests with the race detector (needs cgo)
+	CGO_ENABLED=1 go test -race ./...
+
+lint: $(TOOLS_STAMP) ## gofmt, then go vet + golangci-lint per OS, the Android build and the no-cgo check
+	@out=$$(gofmt -l . 2>&1) || { echo "$$out"; exit 1; }; \
+	if [ -n "$$out" ]; then echo "gofmt needed:"; echo "$$out"; exit 1; fi
+	@for os in $(LINT_GOOS); do \
+		echo "go vet + golangci-lint, GOOS=$$os"; \
+		GOOS=$$os go vet ./... || exit 1; \
+		GOOS=$$os $(TOOLS)/golangci-lint run --allow-serial-runners ./... || exit 1; \
+	done
+	@echo "build for android/arm64"
+	@GOOS=android GOARCH=arm64 go build $(MOBILE_PKGS)
+	@$(MAKE) --no-print-directory nocgo
+
+nocgo: ## fail if the data plane, the map or the lists depend on cgo
+	@for os in $(LINT_GOOS) android; do \
+		out=$$(CGO_ENABLED=1 GOOS=$$os go list -deps -f '{{if and (not .Standard) .CgoFiles}}{{.ImportPath}}{{end}}' $(NOCGO_PKGS)) || exit 1; \
+		if [ -n "$$out" ]; then echo "cgo in pure Go packages (GOOS=$$os):"; echo "$$out"; exit 1; fi; \
+	done
+	@echo "no cgo in $(NOCGO_PKGS)"
 
 fmt: ## format everything
 	gofmt -w .
 
-tools: ## install dev tools into GOPATH/bin
-	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+proto: $(TOOLS_STAMP) ## lint the protobuf schemas and regenerate proto/gen
+	@if [ -z "$$(find proto -name '*.proto' -not -path 'proto/gen/*')" ]; then echo "proto: no .proto files yet"; exit 0; fi; \
+	cd proto && $(TOOLS)/buf lint && PATH="$(TOOLS):$$PATH" $(TOOLS)/buf generate
 
-lab-up: ## start the censor lab (placeholder until TP-002)
+tools: $(TOOLS_STAMP) ## install the pinned dev tools into bin/tools
+
+$(TOOLS_STAMP):
+	rm -rf $(TOOLS) && mkdir -p $(TOOLS)
+	GOBIN=$(TOOLS) go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+	GOBIN=$(TOOLS) go install github.com/bufbuild/buf/cmd/buf@$(BUF_VERSION)
+	GOBIN=$(TOOLS) go install google.golang.org/protobuf/cmd/protoc-gen-go@$(PROTOC_GEN_GO_VERSION)
+	GOBIN=$(TOOLS) go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@$(PROTOC_GEN_GO_GRPC_VERSION)
+	touch $@
+
+lab: ## run every transport against every censor module (placeholder until TP-002/TP-024)
+	@echo "lab: the lab doesn't exist yet (TP-002)"; exit 1
+
+lab-up: ## start the lab (placeholder until TP-002)
 	@echo "lab-up: the lab doesn't exist yet (TP-002)"; exit 1
 
-lab-test: ## run the lab checks (placeholder until TP-002)
+lab-test: ## run the lab tests (placeholder until TP-002)
 	@echo "lab-test: the lab doesn't exist yet (TP-002)"; exit 1
 
-lab-down: ## stop the censor lab (placeholder until TP-002)
+lab-down: ## stop the lab (placeholder until TP-002)
 	@echo "lab-down: the lab doesn't exist yet (TP-002)"; exit 1

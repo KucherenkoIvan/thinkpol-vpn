@@ -1,7 +1,8 @@
-// Package features holds the control plane's bounded contexts (spaces,
-// members, nodes, hosting, topology, policy, invites, provisioning,
-// publishing, telemetry), one subpackage each, built on go-kernel.
+// Package features holds no code: each control plane bounded context
+// (spaces, members, nodes, hosting, topology, policy, invites, provisioning,
+// publishing, telemetry) is a subpackage following go-kernel's service
+// structure, with its admin panel pages in <feature>/adapters/http.
 //
-// Features never import internal/dataplane: the controller is not a runtime
-// dependency of the data plane, and the two meet only through the map.
+// Features never import dataplane, agent or each other; cross-feature calls
+// go through shared/ports. Each feature adds a depguard rule saying so.
 package features

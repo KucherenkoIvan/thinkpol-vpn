@@ -1,6 +1,6 @@
-// Package shared is code reused across the control plane features, split as
-// in go-kernel's service structure: shared/domain (value objects and events
-// several features use), shared/ports (interfaces between features) and
-// shared/infra (reusable infrastructure). Anything the data plane also needs
-// belongs in netmap or dataplane instead.
+// Package shared holds no code: what the control plane features share lives
+// in shared/domain (value objects and events), shared/ports (interfaces
+// between features) and shared/infra (reusable infrastructure, including
+// the admin panel's page shell in shared/infra/webui), as in go-kernel's
+// service structure. shared never imports features.
 package shared
