@@ -63,10 +63,10 @@ type EngineConfig struct {
 // composition root opens the listeners and serves them with Serve, each
 // with the peer table Inbound keeps for its transport.
 type Engine struct {
-	cfg    EngineConfig
-	tunDev string
-	node   *path.Node
-	router *router.Router
+	cfg     EngineConfig
+	tunName string
+	node    *path.Node
+	router  *router.Router
 
 	mu      sync.Mutex
 	closed  bool
@@ -110,7 +110,7 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 	}
 	return &Engine{
 		cfg:     cfg,
-		tunDev:  name,
+		tunName: name,
 		node:    node,
 		router:  router.New(cfg.TUN),
 		devices: make(map[string]*egressDevice),
@@ -144,7 +144,7 @@ func (e *Engine) Apply(ctx context.Context, s netmap.Section) error {
 	}
 	if e.cfg.Interface != nil {
 		err := e.cfg.Interface.Apply(ctx, netcfg.Config{Interfaces: []netcfg.Interface{{
-			Name: e.tunDev, Addrs: oc.Addrs, MTU: oc.MTU, Up: true,
+			Name: e.tunName, Addrs: oc.Addrs, MTU: oc.MTU, Up: true,
 		}}})
 		if err != nil {
 			return fmt.Errorf("dataplane: overlay interface: %w", err)

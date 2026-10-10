@@ -123,7 +123,7 @@ GeoIP alone misroutes CDNs (foreign services on domestic IPs and vice versa), so
 
 The risk is leaking: if the local network has IPv6 and the tunnel doesn't carry it, apps connect around the tunnel, past the rules and in view of the censor.
 
-- **Overlay:** dual-stack. IPv4 from `100.64.0.0/10`, plus a **random ULA /48 per space** (RFC 4193). Spaces are isolated in their own namespaces, so overlapping IPv4 ranges on a shared node are harmless.
+- **Overlay:** dual-stack. IPv4 from `100.64.0.0/10`, plus a **random ULA /48 per space** (RFC 4193). Spaces are isolated in their own namespaces, so overlapping IPv4 ranges on a shared node are harmless. The overlay's MTU is what the node's links leave after transport, path header and WireGuard (1328 for unshaped `udp` over 1500); where that is below IPv6's minimum of 1280, the overlay carries IPv4 only and the node's status says so.
 - **Egress:** exits with IPv6 do NAT66; without it, IPv6 is blocked while connected. Never leaked either way.
 - **Everything is dual-stack:** route-table rules (GeoIP lists carry IPv6 ranges), DNS (`AAAA`), and the kill switch.
 - **Entries reachable over IPv6** are extra candidate paths. Censors sometimes treat IPv6 differently, which deserves a lab module.
