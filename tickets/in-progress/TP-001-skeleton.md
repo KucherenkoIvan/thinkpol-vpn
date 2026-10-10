@@ -69,3 +69,4 @@ Should fix:
 - 2026-10-10 backlog → in-progress — owner: agent-tp-001, branch: tp-001-skeleton
 - 2026-10-10 in-progress → review — all acceptance checked; `make lint` and `make test` pass
 - 2026-10-10 review → has-errors — 2 blocking and 11 should-fix findings from review
+- 2026-10-10 has-errors → in-progress — owner: agent-tp-001, branch: tp-001-skeleton
