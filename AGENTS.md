@@ -13,7 +13,7 @@ thinkpol-vpn is a self-hosted virtual network that survives a censor: one Go bin
 
 ## Workflow
 
-- **Tickets.** Work comes from the board in [tickets/](tickets/README.md); follow its rules for moving tickets exactly. One ticket, one branch (`<id-lowercase>-<slug>`), cut from `rewrite` and merged back into it only after review.
+- **Tickets.** Work comes from the board in [tickets/](tickets/README.md); follow its rules for moving tickets exactly, and the rules for running the board in [ORCHESTRATION.md](tickets/ORCHESTRATION.md#decisions-2026-10-10). One ticket, one branch (`<id-lowercase>-<slug>`), cut from `rewrite` and merged back into it only after review.
 - **Worktrees.** Never work in the main checkout. Each branch gets its own worktree at `../.worktrees/<repo>/<branch>`.
 - **Push.** Ticket branches and `rewrite` live on `origin`; push a ticket branch as soon as it exists and after every commit.
 - **Commits.** Conventional commits (`feat:`, `fix:`, `chore:`, `docs:`, `test:`, `refactor:`).
