@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: L
 depends_on: [TP-006, TP-007]
 refs: [N1, N2, C1, DESIGN#data-plane]
-owner: ""
-branch: ""
+owner: agent-tp-008
+branch: tp-008-tun-wireguard-router
 ---
 
 ## Goal
@@ -35,3 +35,4 @@ Packets written to the overlay interface reach the right peer through WireGuard 
 - 2026-10-10 created in backlog
 - 2026-10-10 docs (TP-003 review): notes on what the map reader does not guarantee
 - 2026-10-10 docs (TP-006 review): notes from the path layer
+- 2026-10-11 backlog → in-progress — owner: agent-tp-008, branch: tp-008-tun-wireguard-router
