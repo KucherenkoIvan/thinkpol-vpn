@@ -74,6 +74,13 @@ Should fix:
 - [x] S10. Second Ctrl-C falls through to the default; version test checks the prefix and trailing GOOS/GOARCH and covers the `dev` fallback; `slices.Sorted(maps.Keys(...))`; consistent write-error style; kernel.go names TP-034
 - [x] S11. TP-002 Scope notes a `make lab` target (DESIGN and TP-024 refer to it)
 
+Round 2 (delta review):
+- [ ] R2-1. AGENTS.md OS bullet: Android counts as linux for build tags; desktop-only Linux code needs `//go:build linux && !android`
+- [ ] R2-2. Makefile lists the mobile packages with `GOOS=android GOARCH=arm64 go list`, and an empty or failing list fails loudly
+- [ ] R2-3. `register` panics when a path is a group prefix of another path or the other way round; AGENTS.md says a group prefix is never itself a command
+- [ ] R2-4. `version` uses `parseFlags` (`-h` exits 0) and checks `NArg`
+- [ ] R2-5. `synopsis` panics on an unknown path
+
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-10 backlog → in-progress — owner: agent-tp-001, branch: tp-001-skeleton
@@ -82,3 +89,4 @@ Should fix:
 - 2026-10-10 has-errors → in-progress — owner: agent-tp-001, branch: tp-001-skeleton
 - 2026-10-10 docs win: fixed `area:` of TP-004, TP-019, TP-042, TP-043, TP-046, TP-047, TP-048, TP-049, TP-050 to match DESIGN.md's layout; TP-003 and TP-022 use `proto/`; TP-016 names `internal/lists`; TP-043 places the canvas island; TP-002 adds `make lab`; ORCHESTRATION.md loses host specs and absolute paths
 - 2026-10-10 in-progress → review — every review finding checked; `make lint` and `make test` pass
+- 2026-10-10 review → has-errors — 5 findings from the delta review (round 2)
