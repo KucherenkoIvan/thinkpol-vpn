@@ -97,3 +97,4 @@ Nits:
 - 2026-10-10 docs: DESIGN.md repository layout lists `internal/devmap` (development tooling until the controller)
 - 2026-10-10 in-progress → review — all acceptance checked; `make lint` and `make test` pass
 - 2026-10-10 review → has-errors — 2 blockers, 8 should-fix, nits (see Review findings)
+- 2026-10-10 has-errors → in-progress — owner: agent-tp-004, branch: tp-004-dev-map-tooling; merged origin/rewrite (TP-002, TP-005)
