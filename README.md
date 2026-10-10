@@ -13,7 +13,7 @@ Work in progress: the project is being rewritten from scratch.
 Needs Go 1.25 (with `GOTOOLCHAIN=auto`, an older Go downloads it) and `make`. [go-kernel](https://github.com/KucherenkoIvan/go-kernel) is public, so no `GOPRIVATE` or SSH setup is needed.
 
 ```sh
-make tools                     # one-time: golangci-lint
+make tools                     # pinned dev tools into bin/tools (lint does it on first use)
 make lint test                 # before every commit
 go run ./cmd/thinkpol version
 ```

@@ -2,7 +2,7 @@
 id: TP-004
 title: "Dev tooling for hand-made maps"
 milestone: M0
-area: cli
+area: cmd
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-003]

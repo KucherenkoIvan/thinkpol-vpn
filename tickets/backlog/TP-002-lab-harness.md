@@ -19,7 +19,8 @@ A reproducible Docker environment where several thinkpol nodes run on separate n
 - Binaries are cross-compiled on the host (`GOOS=linux CGO_ENABLED=0`) into `lab/bin` and mounted read-only: no Go toolchain and no private-module access inside images.
 - Base image: small Debian with iproute2, nftables, iputils, tcpdump, curl.
 - Go test package `lab/` behind the `lab` build tag: helpers to exec in a container, wait for conditions, capture packets on the router for assertions.
-- `make lab-up` / `lab-test` / `lab-down`; `lab-test` brings the lab up, runs the tests, tears it down.
+- `make lab-up` / `lab-test` / `lab-down`; `lab-test` brings the lab up, runs the tests, tears it down. They replace the placeholders TP-001 left in the Makefile.
+- `make lab`, which DESIGN.md "Censor lab" and TP-024 refer to: an alias of `lab-test` for now; TP-024 makes it run the full matrix and regenerate `lab/RESULTS.md`.
 - A smoke test proving the harness: `device-a` reaches the `internet` target through the router (no thinkpol yet).
 - Lab runs are isolated per worktree, so several agents can run `make lab-test` at the same time: the Compose project name is derived from the worktree/branch, no fixed `container_name`s, and no fixed subnets (let Docker allocate them, or allocate them per project without collisions). Helpers address containers through the project, never by a hard-coded name.
 

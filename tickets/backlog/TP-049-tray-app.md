@@ -2,7 +2,7 @@
 id: TP-049
 title: "Tray app"
 milestone: M5
-area: client/tray
+area: cmd/thinkpol-tray
 repo: thinkpol-vpn
 size: epic
 depends_on: [TP-046]
