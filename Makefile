@@ -16,7 +16,7 @@ VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 # checked on any host.
 LINT_GOOS := darwin linux windows
 # Pure Go, no cgo (DESIGN.md "Repository layout").
-NOCGO_PKGS := ./internal/dataplane/... ./internal/netmap/... ./internal/lists/...
+NOCGO_PKGS := ./internal/dataplane/... ./internal/netmap/... ./internal/lists/... ./internal/shaping/...
 # What must build for Android: the above minus the desktop-only packages.
 DESKTOP_ONLY_RE := /internal/dataplane/(tun|egress|firewall)(/|$$)
 

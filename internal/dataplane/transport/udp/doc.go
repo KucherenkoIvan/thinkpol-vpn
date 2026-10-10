@@ -1,12 +1,13 @@
 // Package udp is the baseline transport: one datagram per packet, sealed
 // with keys derived from the link secret. WireGuard's headers never appear on
-// the wire (C1), but packet sizes and timing show through untouched, and a
-// link's datagrams all start with the same connection id for an hour: this
-// is the transport the censor lab is supposed to catch.
+// the wire (C1), but timing shows through untouched, packet sizes do unless
+// the link pads, and a link's datagrams all start with the same connection
+// id for an hour: this is the transport the censor lab is supposed to catch.
 //
 // # Wire format
 //
-//	conn id [8] | nonce [24] | XChaCha20-Poly1305(sender [12] | sent [4] | counter [8] | packet)
+//	conn id [8] | nonce [24] | XChaCha20-Poly1305(sender [12] | sent [4] | counter [8] | frames | padding)
+//	frame: length [2] | packet [length]
 //
 // The connection id is HKDF-SHA256 of the link secret, the direction and the
 // hour (Unix time / 3600), in clear and authenticated as the AEAD's
@@ -21,8 +22,29 @@
 //
 // Inside the seal: the sender (its creation time in nanoseconds, strictly
 // increasing per process, and 4 random bytes; a new one per dial and per
-// listener-side link), the time the datagram was sent (Unix seconds), and a
-// counter per sender.
+// listener-side link), the time the datagram was sent (Unix seconds), a
+// counter per sender, and the packets, each behind its length. A zero
+// length, or fewer than two bytes left, ends the packets; the rest is
+// padding, zeros sealed with everything else. A sender puts one packet in
+// each datagram today. Receivers take any number, none included (a cover
+// datagram: it passes every check below and keeps the link's address
+// current, but opens no link), so batching and cover traffic can come
+// later without changing what receivers accept.
+//
+// # Shaping
+//
+// Each end pads what it sends as its transport.Shaping says (the dialer's
+// DialConfig, the listener's PeerLink), to buckets or at random (at most
+// MaxRandomPadding bytes); bucket sizes are datagram sizes, up to 8778
+// bytes. Padding sits inside the AEAD: it is authenticated and its length
+// is visible only as the datagram's. The receiver needs no setting to undo
+// it, and a table change re-pads a live link's next reply. udp refuses
+// batching, timing jitter and cover traffic (transport.ErrUnsupportedShaping)
+// rather than ignore them. Overhead is 74 bytes, plus the largest random
+// padding; transport.MaxPacket gives the MTU budget under buckets.
+// The Listener and dial links are transport.SendReporters: what padding
+// costs. A table change to shaping udp refuses closes the live link with
+// transport.ErrSettingsRefused.
 //
 // # What a receiver accepts
 //

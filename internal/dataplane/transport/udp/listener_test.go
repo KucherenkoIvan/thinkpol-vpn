@@ -17,7 +17,7 @@ func TestProbesGetNoAnswer(t *testing.T) {
 	secret := f.peer.Credential
 	now := time.Now()
 	inID := connIDFor(secret, toListener, epochOf(now))
-	forged := seal(nil, newAEAD(secret, toListener), inID, newSenderID(now), now, 0, []byte("hi"))
+	forged := seal(nil, newAEAD(secret, toListener), inID, newSenderID(now), now, 0, []byte("hi"), transport.Padding{})
 	forged[len(forged)-1] ^= 1
 	other := transporttest.SymmetricPeer().Credential
 	probes := map[string][]byte{
@@ -26,9 +26,9 @@ func TestProbesGetNoAnswer(t *testing.T) {
 		"WireGuard initiation":      append([]byte{1, 0, 0, 0}, make([]byte, 144)...),
 		"zeros":                     make([]byte, 1200),
 		"right conn id, bad tag":    forged,
-		"right conn id, wrong key":  seal(nil, newAEAD(other, toListener), inID, newSenderID(now), now, 0, []byte("hi")),
-		"other direction's conn id": seal(nil, newAEAD(secret, toDialer), connIDFor(secret, toDialer, epochOf(now)), newSenderID(now), now, 0, []byte("hi")),
-		"conn id of two hours ago":  seal(nil, newAEAD(secret, toListener), connIDFor(secret, toListener, epochOf(now)-2), newSenderID(now), now, 0, []byte("hi")),
+		"right conn id, wrong key":  seal(nil, newAEAD(other, toListener), inID, newSenderID(now), now, 0, []byte("hi"), transport.Padding{}),
+		"other direction's conn id": seal(nil, newAEAD(secret, toDialer), connIDFor(secret, toDialer, epochOf(now)), newSenderID(now), now, 0, []byte("hi"), transport.Padding{}),
+		"conn id of two hours ago":  seal(nil, newAEAD(secret, toListener), connIDFor(secret, toListener, epochOf(now)-2), newSenderID(now), now, 0, []byte("hi"), transport.Padding{}),
 		"oversized":                 make([]byte, maxDatagram+1),
 	}
 	prober, err := net.ListenPacket("udp", "127.0.0.1:0")

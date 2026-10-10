@@ -21,5 +21,8 @@ Nodes update themselves from signed releases distributed through the network (sh
 ## Acceptance
 - [ ] a bad release rolls back automatically in the lab
 
+## Notes
+- **Shaping rollout (TP-027):** the controller puts shaping, or a new shaping field or value, into a link only when both ends' nodes reported supporting it (DESIGN "Transports own traffic shape"). After an update the agent reports its new version and capabilities; the controller turns on newer shaping for a link only once both ends have updated and reported.
+
 ## Log
 - 2026-10-10 created in backlog

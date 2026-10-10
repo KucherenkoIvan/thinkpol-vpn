@@ -229,7 +229,7 @@ func TestRouterRoutesAndRejects(t *testing.T) {
 	table := transport.NewPeerTable(peers[0].PeerLink, peers[1].PeerLink, peers[2].PeerLink, twin.PeerLink)
 	r := tr.Router(table).(*Router)
 	datagram := func(p transporttest.Peer, dir direction, at time.Time) []byte {
-		return seal(nil, newAEAD(p.Credential, dir), connIDFor(p.Credential, dir, epochOf(at)), newSenderID(at), at, 0, []byte("packet"))
+		return seal(nil, newAEAD(p.Credential, dir), connIDFor(p.Credential, dir, epochOf(at)), newSenderID(at), at, 0, []byte("packet"), transport.Padding{})
 	}
 	now := c.now()
 	for _, p := range peers[:2] {

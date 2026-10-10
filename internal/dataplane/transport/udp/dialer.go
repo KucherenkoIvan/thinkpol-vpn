@@ -31,36 +31,43 @@ func (t *Transport) Dial(ctx context.Context, endpoint string, cfg transport.Dia
 	}
 	secret := cfg.Credential
 	return &dialLink{
-		t:      t,
-		conn:   conn,
-		secret: secret,
-		out:    &rotatingID{secret: secret, dir: toListener},
-		sender: newSenderID(t.now()),
-		send:   newAEAD(secret, toListener),
-		recv:   newAEAD(secret, toDialer),
-		rbuf:   make([]byte, maxDatagram+1),
+		t:       t,
+		conn:    conn,
+		secret:  secret,
+		out:     &rotatingID{secret: secret, dir: toListener},
+		sender:  newSenderID(t.now()),
+		send:    newAEAD(secret, toListener),
+		recv:    newAEAD(secret, toDialer),
+		padding: cfg.Shaping.Padding,
+		rbuf:    make([]byte, maxDatagram+1),
 	}, nil
 }
 
 // dialLink is the dialer's end of a link.
 type dialLink struct {
-	t      *Transport
-	conn   net.Conn
-	secret []byte
-	out    *rotatingID
-	sender senderID
-	send   cipher.AEAD
-	recv   cipher.AEAD
+	t       *Transport
+	conn    net.Conn
+	secret  []byte
+	out     *rotatingID
+	sender  senderID
+	send    cipher.AEAD
+	recv    cipher.AEAD
+	padding transport.Padding
 
 	counter  atomic.Uint64
 	closed   atomic.Bool
 	counters counters
+	meter    transport.SendMeter
 
 	readMu  sync.Mutex
 	rbuf    []byte
+	pending []byte  // frames of the last datagram not yet read, in rbuf
 	senders senders // a restarted listener is a new sender
 	in      idWindow
 }
+
+// Sent reports what the link sent and what its padding cost.
+func (dl *dialLink) Sent() transport.SendStats { return dl.meter.Stats() }
 
 // Counters reports what the link dropped and why.
 func (dl *dialLink) Counters() Counters { return dl.counters.snapshot() }
@@ -70,6 +77,13 @@ func (dl *dialLink) ReadPacket(p []byte) (int, error) {
 	defer dl.readMu.Unlock()
 	var b backoff
 	for {
+		if packet, rest := nextFrame(dl.pending); packet != nil {
+			dl.pending = rest
+			if len(packet) > len(p) {
+				return 0, io.ErrShortBuffer
+			}
+			return copy(p, packet), nil
+		}
 		n, err := dl.conn.Read(dl.rbuf)
 		if err != nil {
 			if dl.closed.Load() || errors.Is(err, net.ErrClosed) {
@@ -84,42 +98,38 @@ func (dl *dialLink) ReadPacket(p []byte) (int, error) {
 			return 0, transport.ClosedError(fmt.Errorf("udp: read: %w", err))
 		}
 		b.reset()
-		if packet, ok := dl.receive(dl.rbuf[:n]); ok {
-			if len(packet) > len(p) {
-				return 0, io.ErrShortBuffer
-			}
-			return copy(p, packet), nil
-		}
+		dl.pending = dl.receive(dl.rbuf[:n])
 	}
 }
 
-func (dl *dialLink) receive(d []byte) ([]byte, bool) {
+// receive returns the frames of an authenticated datagram, or nil.
+func (dl *dialLink) receive(d []byte) []byte {
 	now := dl.t.now()
 	id, ok := idOf(d)
 	if !ok || !dl.in.recognises(dl.secret, toDialer, epochOf(now), id) {
 		dl.counters.unauthenticated.Add(1)
-		return nil, false
+		return nil
 	}
 	// Opened in place: nothing else needs the datagram.
 	o, err := open(d[clearSize:clearSize], dl.recv, d)
 	switch {
 	case err != nil:
 		dl.counters.unauthenticated.Add(1)
-		return nil, false
+		return nil
 	case !o.fresh(now):
 		dl.counters.staleTimestamp.Add(1)
-		return nil, false
+		return nil
 	}
 	switch dl.senders.admit(o.sender, o.counter, now) {
 	case dropReplay:
 		dl.counters.replayed.Add(1)
-		return nil, false
+		return nil
 	case dropStale:
 		dl.counters.staleSender.Add(1)
-		return nil, false
+		return nil
 	}
-	dl.counters.delivered.Add(1)
-	return o.packet, true
+	dl.counters.received(o.packets)
+	return o.frames
 }
 
 func (dl *dialLink) WritePacket(p []byte) error {
@@ -132,13 +142,14 @@ func (dl *dialLink) WritePacket(p []byte) error {
 	now := dl.t.now()
 	bp := datagramPool.Get().(*[]byte)
 	defer datagramPool.Put(bp)
-	*bp = seal((*bp)[:0], dl.send, dl.out.at(epochOf(now)), dl.sender, now, dl.counter.Add(1)-1, p)
+	*bp = seal((*bp)[:0], dl.send, dl.out.at(epochOf(now)), dl.sender, now, dl.counter.Add(1)-1, p, dl.padding)
 	if _, err := dl.conn.Write(*bp); err != nil {
 		if dl.closed.Load() {
 			return transport.ClosedError(nil)
 		}
 		return fmt.Errorf("udp: write: %w", err)
 	}
+	dl.meter.Sent(1, len(p), len(*bp)-Overhead-len(p), len(*bp))
 	return nil
 }
 

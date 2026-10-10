@@ -24,6 +24,9 @@ A chain hop can be a group of nodes; the client picks a healthy one and switches
 - [ ] killing the active entry moves traffic within 15 s and an open TCP connection survives
 - [ ] no flapping under injected jitter
 
+## Notes
+- **From TP-027:** probes and probe replies go through `transport.WriteControl`, which may hold them up to `transport.MaxControlHold` (500 ms) at each end: a probe round trip is an upper bound, good for liveness, not for `lowest-latency`. Compare latency on unheld traffic: WireGuard's handshake round trip (initiation → response through the Bind) or `WritePacket` probes on links without batching or jitter, or only beyond `2 × MaxControlHold` plus both ends' `Shaping.MaxDelay()`. Allow `2 × MaxControlHold` in probe timeouts; jitter the probe interval, skip probes on links that carried data recently, probe warm backups less often.
+
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-10 docs (TP-003 review): hop groups map onto first hops and route next hops

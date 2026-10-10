@@ -18,6 +18,7 @@ linters:
             - "**/internal/dataplane/**"
             - "**/internal/netmap/**"
             - "**/internal/lists/**"
+            - "**/internal/shaping/**"
             - "**/internal/agent/**"
           deny:
             - pkg: github.com/KucherenkoIvan/thinkpol-vpn/internal/features
@@ -31,6 +32,7 @@ linters:
             - "**/internal/dataplane/**"
             - "**/internal/netmap/**"
             - "**/internal/lists/**"
+            - "**/internal/shaping/**"
           deny:
             - pkg: github.com/KucherenkoIvan/go-kernel
               desc: the data plane, the map and the lists stay free of go-kernel
