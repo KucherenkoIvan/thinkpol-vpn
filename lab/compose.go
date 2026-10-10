@@ -117,6 +117,8 @@ func renderCompose(project string, topo Topology, img image, root string, subnet
 		if len(cmd) == 0 {
 			cmd = []string{"sleep", "infinity"}
 		}
+		// Nothing of the node's own runs before Up has sealed it.
+		cmd = append([]string{"sh", "-c", `while [ ! -e ` + sealedMarker + ` ]; do sleep 0.1; done; exec "$@"`, "wait-for-seal"}, cmd...)
 		svc := composeService{
 			Image:      img.ref,
 			Platform:   img.platform,

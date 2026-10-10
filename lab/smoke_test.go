@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/netip"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -96,6 +97,48 @@ func TestSmoke(t *testing.T) {
 				t.Errorf("%s reached Docker's gateways:\n%s", n.Name, out)
 			}
 		}
+		// Docker's bridge also has a link-local address, which no route
+		// covers; frames to and from its MAC are dropped. "Connection
+		// refused" would mean the bridge answered.
+		probeLinkLocal := `ll=$0; for ifname; do
+			ping -6 -c 1 -W 1 "$ll%$ifname" >/dev/null 2>&1 && echo "ping reached $ll%$ifname"
+			nc -6 -v -z -w 2 "$ll%$ifname" 12345 2>&1 | grep -v "timed out" | sed "s/^/tcp: /"
+			ip -6 neigh show "$ll" dev "$ifname" | grep lladdr | sed "s/^/neighbour: /"
+		done; true`
+		type probe struct {
+			node *lab.Node
+			net  string
+			out  string
+			err  error
+		}
+		var probes []*probe
+		for _, net := range []string{lab.NetDevices, lab.NetServers} {
+			b := l.DockerBridge(net)
+			if !b.LinkLocal.IsValid() || b.MAC == "" {
+				t.Fatalf("network %s: bridge %+v", net, b)
+			}
+			for _, n := range []*lab.Node{router, device, internet} {
+				if n.Interface(net) != "" {
+					probes = append(probes, &probe{node: n, net: net})
+				}
+			}
+		}
+		var wg sync.WaitGroup
+		for _, p := range probes {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				res, err := p.node.Exec(t.Context(), "sh", "-c", probeLinkLocal, l.DockerBridge(p.net).LinkLocal.String(), p.node.Interface(p.net))
+				p.out, p.err = res.Stdout, err
+			}()
+		}
+		wg.Wait()
+		for _, p := range probes {
+			if p.err != nil || p.out != "" {
+				t.Errorf("%s reached Docker's bridge on %s: %v\n%s", p.node.Name, p.net, p.err, p.out)
+			}
+		}
+
 		// Names: lab nodes resolve through /etc/hosts, nothing else does,
 		// not even through Docker's own resolver at 127.0.0.11, which would
 		// forward the lookup out of the lab.
@@ -183,5 +226,30 @@ func TestIPv4OnlyNetwork(t *testing.T) {
 	}
 	if got, want := n.MustExec(t, "ip", "-4", "route", "show", "default"), "default via "+l.Node("gw").IPv4("v4").String(); !strings.HasPrefix(got, want) {
 		t.Errorf("default route %q, want %q", got, want)
+	}
+}
+
+// A node's own Command starts only once the node is sealed into the lab.
+func TestCommandStartsSealed(t *testing.T) {
+	t.Parallel()
+	record := `{ cat /etc/resolv.conf; ip -4 route show default; nft list tables; } > /tmp/at-start; sleep infinity`
+	l := lab.Start(t, lab.Topology{
+		Networks: []lab.Network{{Name: "net"}},
+		Nodes: []lab.NodeSpec{
+			{Name: "gw", Networks: []string{"net"}},
+			{Name: "node", Networks: []string{"net"}, Gateway: "gw", Command: []string{"sh", "-c", record}},
+		},
+	})
+	n := l.Node("node")
+	var atStart string
+	lab.Eventually(t, 10*time.Second, func() error {
+		res, err := n.Exec(t.Context(), "cat", "/tmp/at-start")
+		atStart = res.Stdout
+		return err
+	})
+	for _, want := range []string{"nameserver 127.0.0.1", "default via " + l.Node("gw").IPv4("net").String(), "table netdev tplab_"} {
+		if !strings.Contains(atStart, want) {
+			t.Errorf("at start the node had no %q:\n%s", want, atStart)
+		}
 	}
 }

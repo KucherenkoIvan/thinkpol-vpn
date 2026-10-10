@@ -185,9 +185,16 @@ func TestProjectNames(t *testing.T) {
 	}
 }
 
+func TestLinkLocalFromMAC(t *testing.T) {
+	got, err := linkLocalFromMAC("02:42:fc:f9:a9:69")
+	if err != nil || got != netip.MustParseAddr("fe80::42:fcff:fef9:a969") {
+		t.Errorf("got %v, %v", got, err)
+	}
+}
+
 func TestDownRefusesProjectsWithoutThePrefix(t *testing.T) {
 	for _, p := range []string{"infra", "docker", "", "tplab"} {
-		err := downProject(t.Context(), p)
+		err := downProject(t.Context(), p, "/x")
 		if err == nil || !strings.Contains(err.Error(), "refusing") {
 			t.Errorf("down %q: %v", p, err)
 		}
