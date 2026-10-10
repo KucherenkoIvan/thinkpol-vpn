@@ -7,6 +7,7 @@ repo: thinkpol-vpn
 size: epic
 depends_on: [TP-046]
 refs: [D2, D3, D9, D10]
+needs_human: decision
 owner: ""
 branch: ""
 ---

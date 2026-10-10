@@ -7,6 +7,7 @@ repo: thinkpol-vpn
 size: L
 depends_on: [TP-046, TP-047]
 refs: [D4]
+needs_human: windows
 owner: ""
 branch: ""
 ---

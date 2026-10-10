@@ -12,7 +12,7 @@ tickets/
   done/          reviewed and merged into the `rewrite` branch
 ```
 
-`python3 tickets/board.py` prints the board and the tickets that are ready to start. `--next-id` prints the next free id; `--check` validates frontmatter and dependencies; `--waves` groups unfinished tickets by what can run in parallel. Suggestions for running several tickets at once are in [ORCHESTRATION.md](ORCHESTRATION.md).
+`python3 tickets/board.py` prints the board, the tickets that need a human, and the tickets that are ready to start. `--next-id` prints the next free id; `--check` validates frontmatter and dependencies; `--waves` groups unfinished tickets by what can run in parallel. Suggestions for running several tickets at once are in [ORCHESTRATION.md](ORCHESTRATION.md).
 
 ## Ticket files
 
@@ -28,6 +28,7 @@ repo: thinkpol-vpn        # or go-kernel
 size: M                   # S | M | L | epic
 depends_on: [TP-001]
 refs: [C1, C6]            # PRD requirement ids and DESIGN.md sections
+needs_human: macos        # optional: decision | macos | windows | person
 owner: ""                 # set when moved to in-progress
 branch: ""                # set when moved to in-progress
 ---
@@ -41,6 +42,17 @@ branch: ""                # set when moved to in-progress
 ```
 
 **Sizes.** `S`: a small change. `M`: one focused branch. `L`: several days of work but still one coherent change. `epic`: too big to start; split it first (see below).
+
+**`needs_human`** (optional) marks a ticket that can't be finished by agents alone. `board.py` lists such unfinished tickets in a separate NEEDS HUMAN section and marks them with `!` in `--waves`; `--check` rejects other values.
+
+| Value | What the author has to do |
+|---|---|
+| `decision` | Pick between options (e.g. a library or framework). Agents prepare a short comparison with a recommendation; the author picks. |
+| `macos` | Run something on a real Mac (`sudo`, a real network). |
+| `windows` | Run something on a real Windows machine or VM. |
+| `person` | Something only a real person can do (e.g. a hand-off test with a non-technical member). |
+
+For `macos`, `windows` and `person`, the policy is: agents build and test everything they can in the lab, then hand the author a short checklist of what is left to run by hand. Acceptance boxes that depend on the checklist are checked once the author has run it and the results are recorded in `## Notes`. A `needs_human` ticket is not `blocked`: it stays in its normal column, and the field only says that a human is needed somewhere along the way.
 
 ## Moving a ticket
 
