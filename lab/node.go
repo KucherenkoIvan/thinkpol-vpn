@@ -96,6 +96,20 @@ func (n *Node) WriteFile(t testing.TB, path string, data []byte) {
 	}
 }
 
+// ExportFS writes the node's whole filesystem to w as a tar stream (docker
+// export), for checks on what a node leaves on disk. Mounted volumes such as
+// BinDir and SrcDir are not included. Tests read nodes' files this way or
+// through Exec, never through block devices.
+func (n *Node) ExportFS(ctx context.Context, w io.Writer) error {
+	cmd := exec.CommandContext(ctx, "docker", "export", n.Container)
+	var stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = w, &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("%s: docker export: %w: %s", n.Name, err, strings.TrimSpace(stderr.String()))
+	}
+	return nil
+}
+
 var processSeq atomic.Uint64
 
 // Process is a command running in a node in the background.

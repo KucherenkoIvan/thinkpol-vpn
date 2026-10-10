@@ -87,14 +87,16 @@ lab-up: ## start the standard topology for this checkout, for poking around
 	$(LABCTL) up
 
 lab-test: ## lab tests (each starts its own lab) + every package's tests inside a lab node; tears down after
+	@$(LABCTL) down -stale
 	@status=0; \
 	go test -tags lab -count=1 -timeout $(LAB_TIMEOUT) ./lab/... || status=1; \
 	$(LABCTL) gotest ./... || status=1; \
-	$(LABCTL) down -tests; \
+	if [ -z "$$THINKPOL_LAB_KEEP" ]; then $(LABCTL) down -tests; fi; \
 	exit $$status
 
+lab-gotest: export LAB_RUN = $(RUN)
 lab-gotest: ## run PKG's tests inside a lab node with THINKPOL_LAB=1 (PKG=./internal/... RUN=regexp)
-	$(LABCTL) gotest -v $(if $(RUN),-run '$(RUN)') $(or $(PKG),./...)
+	$(LABCTL) gotest -v -run "$$LAB_RUN" $(or $(PKG),./...)
 
 lab-down: ## remove every lab this checkout started
 	$(LABCTL) down

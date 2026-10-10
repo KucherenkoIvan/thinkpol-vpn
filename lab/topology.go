@@ -21,8 +21,9 @@ type Network struct {
 	IPv4Only bool
 }
 
-// NodeSpec declares one container. Every node runs the lab image privileged, with
-// /dev/net/tun, and the cross-compiled binaries from lab/bin on its PATH.
+// NodeSpec declares one container. Every node runs the lab image as root
+// with NET_ADMIN, NET_RAW and SYS_ADMIN, /dev/net/tun, and the
+// cross-compiled binaries from lab/bin on its PATH.
 type NodeSpec struct {
 	Name     string
 	Networks []string // the topology networks the node is attached to
@@ -32,6 +33,11 @@ type NodeSpec struct {
 	Gateway string
 	// Forward turns on IPv4 and IPv6 forwarding (routers, relays, exits).
 	Forward bool
+	// Privileged runs the node as a privileged container. Nodes don't need it
+	// for namespaces, TUN, nftables or net sysctls; set it only for something
+	// the default capabilities can't do, and say why next to it. A privileged
+	// node can change the Docker VM's own kernel settings and devices.
+	Privileged bool
 	// Command is the container's main process; the default sleeps forever,
 	// and tests start their own processes with Node.Start.
 	Command []string

@@ -1,6 +1,5 @@
 // Command labctl drives the lab from make: lab-up, lab-down, lab-gotest and
 // the in-node half of lab-test.
-// Tests don't need it; they start their own labs through package lab.
 package main
 
 import (
@@ -14,16 +13,18 @@ import (
 	"strings"
 	"syscall"
 	"text/tabwriter"
+	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/lab"
 )
 
 const usage = `usage: labctl <command>
 
-  up                             start the standard topology for this checkout
-  down [-tests]                  remove this checkout's labs (-tests: only the ones tests started)
-  gotest [-v] [-run re] pkgs...  run the packages' tests in a lab node with THINKPOL_LAB=1
-  project                        print this checkout's project prefix
+  up                                  start the standard topology for this checkout
+  down [-tests | -stale]              remove this checkout's labs (-tests: only the ones tests
+                                      started; -stale: every lab whose checkout is gone)
+  gotest [-v] [-run re] [-p n] pkgs...  run each package's tests in a fresh lab node with THINKPOL_LAB=1
+  project                             print this checkout's project prefix
 `
 
 func main() {
@@ -45,17 +46,26 @@ func run(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	checkout := lab.CheckoutProject(root)
 	switch args[0] {
 	case "up":
-		return up(ctx, root, checkout)
+		ctx, cancel := context.WithTimeout(ctx, 15*time.Minute)
+		defer cancel()
+		return up(ctx, root)
 	case "down":
 		fs := flag.NewFlagSet("down", flag.ContinueOnError)
 		onlyTests := fs.Bool("tests", false, "only remove labs started by tests")
+		stale := fs.Bool("stale", false, "remove every lab whose checkout no longer exists")
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
-		removed, err := lab.DownCheckout(ctx, root, checkout, *onlyTests)
+		ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+		defer cancel()
+		var removed []string
+		if *stale {
+			removed, err = lab.DownStale(ctx)
+		} else {
+			removed, err = lab.DownCheckout(ctx, root, *onlyTests)
+		}
 		for _, p := range removed {
 			fmt.Println("removed", p)
 		}
@@ -64,11 +74,18 @@ func run(ctx context.Context, args []string) error {
 		fs := flag.NewFlagSet("gotest", flag.ContinueOnError)
 		runRe := fs.String("run", "", "run only tests matching the regexp")
 		verbose := fs.Bool("v", false, "verbose test output")
+		parallel := fs.Int("p", 4, "packages tested at once")
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
-		return gotest(ctx, root, checkout, *runRe, *verbose, fs.Args())
+		ctx, cancel := context.WithTimeout(ctx, 60*time.Minute)
+		defer cancel()
+		return gotest(ctx, root, *runRe, *verbose, *parallel, fs.Args())
 	case "project":
+		checkout, err := lab.CheckoutProject(root)
+		if err != nil {
+			return err
+		}
 		fmt.Println(checkout)
 		return nil
 	default:
@@ -77,22 +94,24 @@ func run(ctx context.Context, args []string) error {
 	}
 }
 
-func up(ctx context.Context, root, checkout string) error {
+func up(ctx context.Context, root string) error {
+	checkout, err := lab.CheckoutProject(root)
+	if err != nil {
+		return err
+	}
 	l, err := lab.Up(ctx, root, checkout, lab.Standard())
 	if err != nil {
+		if l != nil {
+			err = errors.Join(err, l.Down(context.WithoutCancel(ctx)))
+		}
 		return err
 	}
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 	_, _ = fmt.Fprintln(w, "NODE\tNETWORK\tIPV4\tIPV6")
-	for _, n := range l.Nodes() {
-		for _, spec := range l.Topology.Nodes {
-			if spec.Name != n.Name {
-				continue
-			}
-			for _, net := range spec.Networks {
-				a := n.Addr(net)
-				_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", n.Name, net, a.IPv4, a.IPv6)
-			}
+	for _, spec := range l.Topology.Nodes {
+		for _, net := range spec.Networks {
+			a := l.Node(spec.Name).Addr(net)
+			_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", spec.Name, net, a.IPv4, a.IPv6)
 		}
 	}
 	if err := w.Flush(); err != nil {
@@ -107,7 +126,7 @@ func up(ctx context.Context, root, checkout string) error {
 	return nil
 }
 
-func gotest(ctx context.Context, root, checkout, runRe string, verbose bool, patterns []string) error {
+func gotest(ctx context.Context, root, runRe string, verbose bool, parallel int, patterns []string) error {
 	if len(patterns) == 0 {
 		return errors.New("gotest: no packages")
 	}
@@ -119,14 +138,6 @@ func gotest(ctx context.Context, root, checkout, runRe string, verbose bool, pat
 		fmt.Println("gotest: no packages with tests")
 		return nil
 	}
-	l, err := lab.Up(ctx, root, lab.GoTestProject(checkout), lab.GoTestTopology())
-	if l != nil {
-		defer func() { _ = l.Down(context.WithoutCancel(ctx)) }()
-	}
-	if err != nil {
-		return err
-	}
-	node := l.Node("gotest")
 	var args []string
 	if verbose {
 		args = append(args, "-test.v")
@@ -134,13 +145,9 @@ func gotest(ctx context.Context, root, checkout, runRe string, verbose bool, pat
 	if runRe != "" {
 		args = append(args, "-test.run", runRe)
 	}
-	var failed []string
-	for _, pkg := range pkgs {
-		fmt.Printf("=== lab gotest %s\n", pkg.ImportPath)
-		if err := node.GoTest(ctx, os.Stdout, pkg, args...); err != nil {
-			fmt.Println(err)
-			failed = append(failed, pkg.ImportPath)
-		}
+	failed, err := lab.GoTestEach(ctx, root, pkgs, parallel, os.Stdout, args...)
+	if err != nil {
+		return err
 	}
 	if len(failed) > 0 {
 		return fmt.Errorf("gotest: failed: %s", strings.Join(failed, " "))
