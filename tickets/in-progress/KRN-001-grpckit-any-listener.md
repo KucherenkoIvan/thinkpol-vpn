@@ -49,3 +49,4 @@ Two reviewers (adversarial; architecture/style), accepted by the orchestrator. N
 - 2026-10-10 backlog → in-progress — owner: agent-krn-001, branch: krn-001-grpckit-any-listener
 - 2026-10-10 in-progress → review — go-kernel branch krn-001-grpckit-any-listener @ b3233bc, planned tag v0.17.0; tag and go.mod bump pending merge
 - 2026-10-10 review → has-errors — 10 findings from two reviewers, see Review findings
+- 2026-10-10 has-errors → in-progress — owner: agent-krn-001, fixing review findings
