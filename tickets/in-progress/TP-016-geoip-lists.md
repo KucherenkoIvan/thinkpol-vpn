@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: M
 depends_on: [TP-003]
 refs: [R9]
-owner: ""
-branch: ""
+owner: agent-tp-016
+branch: tp-016-geoip-lists
 ---
 
 ## Goal
@@ -27,3 +27,4 @@ Country prefix lists in a compact, content-addressed form the map can reference.
 
 ## Log
 - 2026-10-10 created in backlog
+- 2026-10-10 backlog → in-progress — owner: agent-tp-016, branch: tp-016-geoip-lists
