@@ -1,6 +1,7 @@
 # binaries & build artifacts
 /bin/
 /lab/bin/
+/lab/.run/
 /thinkpol
 /thinkpol-tray
 *.exe
