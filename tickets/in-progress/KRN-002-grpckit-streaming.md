@@ -7,8 +7,8 @@ repo: go-kernel
 size: M
 depends_on: []
 refs: [DESIGN#control-plane-the-controller-on-go-kernel]
-owner: ""
-branch: ""
+owner: "agent-krn-002"
+branch: "krn-002-grpckit-streaming"
 ---
 
 ## Goal
@@ -26,3 +26,4 @@ grpckit's standard chain covers streaming RPCs, which the controller's push chan
 
 ## Log
 - 2026-10-10 created in backlog
+- 2026-10-10 backlog → in-progress — owner: agent-krn-002, branch: krn-002-grpckit-streaming
