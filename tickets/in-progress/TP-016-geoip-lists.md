@@ -73,3 +73,4 @@ No blockers; orchestrator decisions.
 - 2026-10-10 docs: DESIGN "Lists" says what a GeoIP blob is (canonical minimal prefix set), that sources are operator-downloaded files (DB-IP Lite by default) and that no third-party data is in the repo
 - 2026-10-10 in-progress → review — all acceptance checked; `make lint` and `make test` pass
 - 2026-10-10 review → has-errors — 6 findings and a nit from review, none blocking
+- 2026-10-10 has-errors → in-progress — owner: agent-tp-016, branch: tp-016-geoip-lists
