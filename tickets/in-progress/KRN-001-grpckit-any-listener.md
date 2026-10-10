@@ -7,8 +7,8 @@ repo: go-kernel
 size: S
 depends_on: []
 refs: [DESIGN#desktop-client]
-owner: ""
-branch: ""
+owner: agent-krn-001
+branch: krn-001-grpckit-any-listener
 ---
 
 ## Goal
@@ -25,3 +25,4 @@ thinkpol's local service API runs gRPC over a Unix socket (a named pipe on Windo
 
 ## Log
 - 2026-10-10 created in backlog
+- 2026-10-10 backlog → in-progress — owner: agent-krn-001, branch: krn-001-grpckit-any-listener
