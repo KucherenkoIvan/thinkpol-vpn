@@ -90,3 +90,4 @@ Round 2 (delta review):
 - 2026-10-10 docs win: fixed `area:` of TP-004, TP-019, TP-042, TP-043, TP-046, TP-047, TP-048, TP-049, TP-050 to match DESIGN.md's layout; TP-003 and TP-022 use `proto/`; TP-016 names `internal/lists`; TP-043 places the canvas island; TP-002 adds `make lab`; ORCHESTRATION.md loses host specs and absolute paths
 - 2026-10-10 in-progress → review — every review finding checked; `make lint` and `make test` pass
 - 2026-10-10 review → has-errors — 5 findings from the delta review (round 2)
+- 2026-10-10 has-errors → in-progress — owner: agent-tp-001, branch: tp-001-skeleton
