@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: M
 depends_on: [TP-005]
 refs: [C6, DESIGN#transports]
-owner: ""
-branch: ""
+owner: "agent-tp-027"
+branch: "tp-027-transport-shaping"
 ---
 
 ## Goal
@@ -25,3 +25,4 @@ Transports own traffic shape: padding, batching and timing are part of the trans
 
 ## Log
 - 2026-10-10 created in backlog
+- 2026-10-10 backlog → in-progress — owner: agent-tp-027, branch: tp-027-transport-shaping
