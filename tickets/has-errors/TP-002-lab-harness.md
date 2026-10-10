@@ -41,7 +41,25 @@ Censor modules (TP-024 onwards).
 - **Gotchas:** Docker `internal: true` networks drop forwarded IPv4 between them (bridge netfilter), so lab networks are ordinary ones and the harness deletes Docker's default routes instead: no node can reach outside the lab. The router sees each forwarded packet twice (in and out). Capture needs `--immediate-mode` (already set) or the last packets before `Stop` are lost. Docker's default address pools hold ~30 networks daemon-wide; the standard topology takes two.
 - **For downstream tickets:** TP-012/TP-010/TP-014/TP-018 add `//go:build lab` tests in `lab/` declaring their topology (servers already have forwarding on; `internet` sits on the servers side, so traffic to it from a device crosses the router in plaintext unless tunneled). TP-024 puts the censor on the `router` node (`Command`, or `Start` a process) and makes `make lab` run the matrix. A depguard rule keeps `cmd/` and `internal/` from importing `lab`.
 
+## Review findings
+Accepted by the orchestrator, 2026-10-10.
+
+- [ ] B1 Owner-stack safety: `THINKPOL_LAB_PROJECT=infra make lab-down` would `compose down --volumes` a foreign project. Every lab project gets a fixed `tplab-` prefix no override can remove; every service and network is labelled `org.thinkpol.lab=1` and `org.thinkpol.lab.root=<checkout>`; DownCheckout lists candidates only by that label; downProject refuses unless every container and network of the project carries it; no `--volumes`; overrides validated. The refusal path is tested against a throwaway unlabelled project.
+- [ ] B2 Hermeticity: overwrite each node's resolv.conf (no upstream forwarding by Docker's DNS); blackhole routes to each lab network's Docker gateway (v4 and v6) on every node including the router; `enable_ip_masquerade: "false"` on lab networks; the hermetic subtest checks no external DNS, unreachable gateways (v4/v6), no default route out. README and Notes corrected.
+- [ ] S1 Explicit subnets from a dedicated range outside Docker's default pools, checked against the daemon's networks, retried on overlap; a host-wide limit on concurrent labs (configurable); `labctl down --stale` removes labelled labs whose checkout is gone, run at the start of lab-test.
+- [ ] S2 Tear down an existing lab of the same project before `up`.
+- [ ] S3 No `privileged` by default: NET_ADMIN, NET_RAW, SYS_ADMIN and /dev/net/tun (other relaxations only if needed); privileged only as an explicit per-node opt-in. An export helper for TP-045 (a node's filesystem); README rule: tests never touch block devices.
+- [ ] S4 Default `-test.timeout=10m` for in-node test binaries; labctl contexts with deadlines.
+- [ ] S5 Each package's in-node tests run in a fresh node.
+- [ ] S6 Test binaries built via os.CreateTemp, one build per package at a time, unique binary names.
+- [ ] S7 `make lab-test` skips the final down when THINKPOL_LAB_KEEP is set.
+- [ ] S8 `labctl up` tears down on configure failure; configure errors are joined.
+- [ ] S9 Base image pinned by digest.
+- [ ] Nits: `--platform` passed consistently (GOARM on arm); RUN passed quote-safely to labctl; project names never start with `-`.
+- [ ] Image additions for TP-012/024 (wireguard-tools, an HTTP/TLS server) if cheap, otherwise listed in Notes.
+
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-10 backlog → in-progress — owner: agent-tp-002, branch: tp-002-lab-harness
 - 2026-10-10 in-progress → review — make lint, make test, make lab-test green; concurrent lab-test from two worktrees green
+- 2026-10-10 review → has-errors — two blockers (B1 owner-stack safety, B2 hermeticity) and should-fixes, see Review findings
