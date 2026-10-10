@@ -189,6 +189,8 @@ Versions only go up, and the envelope is signed by the space's **signing key**. 
 
 **Kernel usage.** `config`, `app`, `observability`, `sqlite` and `webui` for the controller; `grpckit` for the push channel to nodes, which needs **streaming RPCs** (missing in grpckit today: add server and client stream interceptors there first). The data plane uses plain ports and adapters with no DDD aggregates: packets aren't domain events.
 
+**Protobuf contracts live in this repo**, buf-managed (the map format, the local service API, the controller's node API), never in go-kernel's `contracts/`. This is a deliberate thinkpol-only exception to the kernel convention of hosting consumers' contracts: these schemas are wire formats between thinkpol's own binaries, not contracts between separate services.
+
 ## Repository layout
 
 Follows go-kernel's service structure for the control plane; the data plane is its own tree of ports and adapters.

@@ -1,0 +1,24 @@
+---
+id: TP-029
+title: "M2 acceptance"
+milestone: M2
+area: lab
+repo: thinkpol-vpn
+size: S
+depends_on: [TP-025, TP-026, TP-028]
+refs: [C1, C2, C4]
+owner: ""
+branch: ""
+---
+
+## Goal
+M2's "done when": the matrix shows `udp` getting caught and `tls` passing.
+
+## Scope
+- Run the full matrix; `tls` passes every M2 module; `udp`'s failures recorded (expected: the fully-encrypted heuristics).
+
+## Acceptance
+- [ ] `lab/RESULTS.md` committed with the M2 matrix
+
+## Log
+- 2026-10-10 created in backlog

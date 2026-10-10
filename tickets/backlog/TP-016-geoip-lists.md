@@ -1,0 +1,28 @@
+---
+id: TP-016
+title: "GeoIP lists"
+milestone: M1
+area: lists
+repo: thinkpol-vpn
+size: M
+depends_on: [TP-003]
+refs: [R9]
+owner: ""
+branch: ""
+---
+
+## Goal
+Country prefix lists in a compact, content-addressed form the map can reference.
+
+## Scope
+- Importers for v2fly `geoip.dat` and DB-IP Lite CSV into normalized per-country prefix sets.
+- CIDR aggregation (merge adjacent and overlapping prefixes) with size stats.
+- Content-addressed blob format (sha256 of canonical bytes) referenced from the map header.
+- `thinkpol dev lists build`.
+
+## Acceptance
+- [ ] building the same input twice gives the same hash
+- [ ] aggregation stats for the RU list recorded in Notes (prefix count before/after)
+
+## Log
+- 2026-10-10 created in backlog
