@@ -63,6 +63,15 @@ The contract every transport implements, and the plain `udp` baseline that the l
 - **For TP-010:** see its Notes. In short: `Router.RouteDatagram`, then forward untouched to the worker running `udp.Transport.ListenOn(pc, …)`; stamp the Space from the source map; charge fair share after the worker accepts. `udp/router_test.go` is a working sketch.
 - **For TP-027:** add fields to `Shaping`. `Overhead(Shaping)` must account for them, and adapters refuse settings they can't honour. udp has no padding field yet; its wire format can still change freely.
 - **For TP-028:** see its Notes. Use a ClientHello token, `RouteStream`, `HandoffListener`, and the tls settings proto.
+- **Round 2:**
+  - A refused older sender keeps a slot with its counters recorded. Evicted senders are refused for 5 minutes. A credential removed from the table keeps its sender history for 5 minutes.
+  - The remaining takeover path is a datagram the listener never saw, held back and shown once the current sender has been quiet for 30 s. That is indistinguishable from a dialer whose clock went back, and is documented as a residual in `udp/doc.go`.
+- **Commit 2c926fa check (R2.3):** that commit accidentally carried three already-staged deletions (`udp/demux.go`, `udp/demux_test.go`, `udp/tap_test.go`). Every deleted test has an equivalent in the tree:
+  - `TestDemuxRoutesAndRejects` became `TestRouterRoutesAndRejects`.
+  - `TestConformanceBehindSharedListener` and `TestWorkersGetOnlyTheirOwnLinks` are in `router_test.go`.
+  - `TestProbesGetNoAnswer`, `TestReplaysAreDropped`, `TestReplayFromElsewhereDoesNotMoveTheLink`, `TestNoncesNeverRepeat`, `TestListenerFollowsARebindingDialer` and `TestWireCarriesNoPlaintext` are in `listener_test.go`.
+  - The tap helper moved to `fixture_test.go`.
+  - Nothing was lost; nothing needed restoring.
 - Tests use in-process loopback sockets only; nothing needs root or the lab.
 
 ## Review findings
@@ -89,9 +98,9 @@ Nits:
 - [x] backoff on persistent read errors; rejectAfterMessages path removed or fixed; ConnID unexported; camouflage doc (datagram-only camouflage closes streams); port doc forbids one secret for both directions of a link pair and says Accept may return an already-revoked link.
 
 Round 2 (delta review):
-- [ ] R2.1 Quiet-sender takeover by replay. (a) On dropStale, record the refused sender in a non-current slot with its counter marked seen (not delivered), so a later replay of it is a replay. (b) Remember the ids of senders evicted from the 8 slots for 5 minutes and refuse them. (c) On reindex, keep removed flows' sender history for 5 minutes. Tests: "nine redials, quiet 30 s, inject oldest" and "held datagram refused as stale, quiet 30 s, inject" leave RemoteAddr unchanged, with nothing delivered or accepted.
-- [ ] R2.2 Doc: conn id rotation doesn't prevent linking by 5-tuple; the Router forwards in-window replays (the worker drops them). TP-010 note: replays are unpriced against fair share; the supervisor may need a small replay filter.
-- [ ] R2.3 Verify the deletions in 2c926fa have equivalents; restore anything lost; record in Notes.
+- [x] R2.1 Quiet-sender takeover by replay. (a) On dropStale, record the refused sender in a non-current slot with its counter marked seen (not delivered), so a later replay of it is a replay. (b) Remember the ids of senders evicted from the 8 slots for 5 minutes and refuse them. (c) On reindex, keep removed flows' sender history for 5 minutes. Tests: "nine redials, quiet 30 s, inject oldest" and "held datagram refused as stale, quiet 30 s, inject" leave RemoteAddr unchanged, with nothing delivered or accepted.
+- [x] R2.2 Doc: conn id rotation doesn't prevent linking by 5-tuple; the Router forwards in-window replays (the worker drops them). TP-010 note: replays are unpriced against fair share; the supervisor may need a small replay filter.
+- [x] R2.3 Verify the deletions in 2c926fa have equivalents; restore anything lost; record in Notes.
 
 ## Log
 - 2026-10-10 created in backlog
@@ -104,3 +113,5 @@ Round 2 (delta review):
 - 2026-10-10 in-progress → review
 - 2026-10-10 review → has-errors — delta review: 3 findings (round 2)
 - 2026-10-10 has-errors → in-progress — owner: agent-tp-005, round 2 findings
+- 2026-10-10 round 2 findings fixed
+- 2026-10-10 in-progress → review
