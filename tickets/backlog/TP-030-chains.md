@@ -25,7 +25,7 @@ Internet traffic can leave through ordered chains of hops, with several egress n
 - [ ] a middle relay sees only transport ciphertext (capture)
 
 ## Notes
-- From TP-006: multi-relay chains work by `Routes` already (path layer). Every relay needs a route back to each source it carries: relays check a packet's source by reverse path (it must come from its source or from a next hop of the route back to it). First and next hops must be adjacent, or the engine drops them. The builder computes a space-wide overlay MTU from the links' budgets (`path.MessageBudget`), so every device uses one TUN MTU.
+- From TP-006: multi-relay chains work by `Routes` already (path layer). Relays check sources loosely (a source they have no route to and aren't adjacent to is dropped), because maps needn't route both ways alike; make the builder's routes symmetric (each relay routes back to every source it carries through the hop that source's traffic arrives from) so a strict reverse-path check can come back. First and next hops must be adjacent, or the engine drops them. The builder computes a space-wide overlay MTU from the links' budgets (`path.MessageBudget`), so every device uses one TUN MTU.
 
 ## Log
 - 2026-10-10 created in backlog
