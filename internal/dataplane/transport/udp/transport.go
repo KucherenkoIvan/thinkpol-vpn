@@ -177,3 +177,12 @@ func (b *backoff) wait() {
 }
 
 func (b *backoff) reset() { b.d = 0 }
+
+// writeError wraps a socket's write error, marking a datagram too long for
+// the path.
+func writeError(err error) error {
+	if isMessageSize(err) {
+		return fmt.Errorf("udp: write: %w: %w", transport.ErrPacketTooLong, err)
+	}
+	return fmt.Errorf("udp: write: %w", err)
+}

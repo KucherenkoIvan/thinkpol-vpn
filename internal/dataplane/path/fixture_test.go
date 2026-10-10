@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net"
 	"sync"
 	"testing"
@@ -97,6 +98,7 @@ type fabric struct {
 
 	mu       sync.Mutex
 	silenced map[string]bool // "from>to" for what from sends, "from<to" for what it receives
+	limits   map[string]int  // "from>to": the longest packet from's links to to carry
 	nodes    map[string]*fnode
 }
 
@@ -109,7 +111,7 @@ type fnode struct {
 }
 
 func newFabric(t *testing.T, sem memory.Semantics) *fabric {
-	return &fabric{t: t, tr: memory.NewNetwork(sem), opts: fastOptions, silenced: map[string]bool{}, nodes: map[string]*fnode{}}
+	return &fabric{t: t, tr: memory.NewNetwork(sem), opts: fastOptions, silenced: map[string]bool{}, limits: map[string]int{}, nodes: map[string]*fnode{}}
 }
 
 func newFakeFabric(t *testing.T, sem memory.Semantics) *fabric {
@@ -376,22 +378,41 @@ func (d silenceable) Dial(ctx context.Context, endpoint string, cfg transport.Di
 		return nil, err
 	}
 	return &silenceableLink{
-		Link: l,
-		out:  func() bool { return d.f.isSilenced(d.from + ">" + d.to) },
-		in:   func() bool { return d.f.isSilenced(d.from + "<" + d.to) },
+		Link:  l,
+		out:   func() bool { return d.f.isSilenced(d.from + ">" + d.to) },
+		in:    func() bool { return d.f.isSilenced(d.from + "<" + d.to) },
+		limit: func() int { return d.f.limit(d.from + ">" + d.to) },
 	}, nil
 }
 
 type silenceableLink struct {
 	transport.Link
 	out, in func() bool
+	limit   func() int
 }
 
 func (l *silenceableLink) WritePacket(p []byte) error {
+	if max := l.limit(); max > 0 && len(p) > max {
+		return fmt.Errorf("fabric: %w", transport.ErrPacketTooLong)
+	}
 	if l.out() {
 		return transport.CheckPacketSize(p)
 	}
 	return l.Link.WritePacket(p)
+}
+
+// limitPath makes the links from dials to refuse packets longer than max,
+// as a network path with a small MTU would.
+func (f *fabric) limitPath(from, to string, max int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.limits[from+">"+to] = max
+}
+
+func (f *fabric) limit(key string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.limits[key]
 }
 
 func (l *silenceableLink) ReadPacket(p []byte) (int, error) {

@@ -249,6 +249,10 @@ func (l *link) writeLoop() {
 		case errors.Is(err, net.ErrClosed):
 			l.close()
 			return
+		case errors.Is(err, transport.ErrPacketTooLong) || errors.Is(err, transport.ErrPacketSize):
+			l.node.counters.tooLarge.Add(1)
+		default:
+			l.node.counters.writeFailed.Add(1)
 		}
 	}
 }

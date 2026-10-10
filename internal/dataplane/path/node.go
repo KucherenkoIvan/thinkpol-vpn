@@ -577,12 +577,18 @@ type Counters struct {
 	QueueFull   uint64 // a link's send queue or a Bind's receive queue was full
 	Malformed   uint64 // not a frame this node understands, or too long for WireGuard
 	OtherSpace  uint64 // links refused: their listener put them in another space
+	// TooLarge: longer than a WireGuard message may be, or than the
+	// network under a link carries (its transport said so), sent or
+	// relayed. Overlay MTUs above what the links carry show up here.
+	TooLarge    uint64
+	WriteFailed uint64 // a link's transport failed to write a packet for another reason
 }
 
 type counters struct {
 	sent, delivered, forwarded                      atomic.Uint64
 	noRoute, spoofed, hopLimit, noPath, unknownPeer atomic.Uint64
 	queueFull, malformed, otherSpace                atomic.Uint64
+	tooLarge, writeFailed                           atomic.Uint64
 }
 
 // Counters returns the node's counters.
@@ -592,7 +598,7 @@ func (n *Node) Counters() Counters {
 		Sent: c.sent.Load(), Delivered: c.delivered.Load(), Forwarded: c.forwarded.Load(),
 		NoRoute: c.noRoute.Load(), Spoofed: c.spoofed.Load(), HopLimit: c.hopLimit.Load(), NoPath: c.noPath.Load(),
 		UnknownPeer: c.unknownPeer.Load(), QueueFull: c.queueFull.Load(), Malformed: c.malformed.Load(),
-		OtherSpace: c.otherSpace.Load(),
+		OtherSpace: c.otherSpace.Load(), TooLarge: c.tooLarge.Load(), WriteFailed: c.writeFailed.Load(),
 	}
 }
 

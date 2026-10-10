@@ -14,7 +14,7 @@ type PathConfig struct {
 	Table path.Table
 	Peers []path.Peer
 	// Skipped says what was left out of the section, and why.
-	Skipped []error
+	Skipped []SkipDetail
 }
 
 // PathConfigFrom converts a node's section for the path layer. The map's
@@ -28,7 +28,9 @@ type PathConfig struct {
 func PathConfigFrom(s netmap.Section, reg *transport.Registry) PathConfig {
 	var c PathConfig
 	self := s.Node.ID
-	skip := func(format string, args ...any) { c.Skipped = append(c.Skipped, fmt.Errorf(format, args...)) }
+	skip := func(node netmap.NodeID, what Item, reason Reason, err error) {
+		c.Skipped = append(c.Skipped, skipOf(node, what, reason, err))
+	}
 
 	adjacent := make(map[netmap.NodeID]bool)
 	for _, in := range s.Inbound {
@@ -36,31 +38,31 @@ func PathConfigFrom(s netmap.Section, reg *transport.Registry) PathConfig {
 	}
 	for _, l := range s.Links {
 		if l.Peer.IsZero() || l.Peer == self {
-			skip("link to %s: not an adjacent node", l.Peer)
+			skip(l.Peer, ItemLink, ReasonNotANode, nil)
 			continue
 		}
 		link := path.Link{Node: path.NodeID(l.Peer)}
 		for i, e := range l.Endpoints {
-			ep, err := pathEndpoint(e, reg)
+			ep, reason, err := pathEndpoint(e, reg)
 			if err != nil {
-				skip("link to %s, endpoint %d: %w", l.Peer, i, err)
+				skip(l.Peer, ItemEndpoint, reason, fmt.Errorf("endpoint %d: %w", i, err))
 				continue
 			}
 			link.Endpoints = append(link.Endpoints, ep)
 		}
 		if len(link.Endpoints) == 0 {
-			skip("link to %s: no usable endpoint", l.Peer)
+			skip(l.Peer, ItemLink, ReasonNoEndpoint, nil)
 			continue
 		}
 		adjacent[l.Peer] = true
 		c.Table.Links = append(c.Table.Links, link)
 	}
 
-	hops := func(what string, ids []netmap.NodeID) []path.NodeID {
+	hops := func(of netmap.NodeID, ids []netmap.NodeID) []path.NodeID {
 		var out []path.NodeID
 		for _, h := range ids {
 			if h == self || !adjacent[h] {
-				skip("%s: hop %s is not an adjacent node", what, h)
+				skip(of, ItemHop, ReasonNotAdjacent, fmt.Errorf("hop %s", h))
 				continue
 			}
 			out = append(out, path.NodeID(h))
@@ -68,48 +70,46 @@ func PathConfigFrom(s netmap.Section, reg *transport.Registry) PathConfig {
 		return out
 	}
 	for _, r := range s.Routes {
-		what := fmt.Sprintf("route to %s", r.Destination)
 		if r.Destination.IsZero() || r.Destination == self {
-			skip("%s: not a destination to relay to", what)
+			skip(r.Destination, ItemRoute, ReasonNotANode, nil)
 			continue
 		}
-		next := hops(what, r.NextHops)
+		next := hops(r.Destination, r.NextHops)
 		if len(next) == 0 {
-			skip("%s: no next hop", what)
+			skip(r.Destination, ItemRoute, ReasonNoNextHop, nil)
 			continue
 		}
 		c.Table.Routes = append(c.Table.Routes, path.Route{Destination: path.NodeID(r.Destination), NextHops: next})
 	}
 	for _, p := range s.Peers {
-		what := fmt.Sprintf("peer %s", p.ID)
 		if p.ID.IsZero() || p.ID == self {
-			skip("%s: not a peer", what)
+			skip(p.ID, ItemPeer, ReasonNotANode, nil)
 			continue
 		}
 		first := make([]netmap.NodeID, 0, len(p.Paths))
 		for _, pp := range p.Paths {
 			first = append(first, pp.FirstHop)
 		}
-		peer := path.Peer{ID: path.NodeID(p.ID), FirstHops: hops(what, first)}
+		peer := path.Peer{ID: path.NodeID(p.ID), FirstHops: hops(p.ID, first)}
 		if len(peer.FirstHops) == 0 {
-			skip("%s: no usable path", what)
+			skip(p.ID, ItemPeer, ReasonNoPath, nil)
 		}
 		c.Peers = append(c.Peers, peer)
 	}
 	return c
 }
 
-func pathEndpoint(e netmap.Endpoint, reg *transport.Registry) (path.Endpoint, error) {
+func pathEndpoint(e netmap.Endpoint, reg *transport.Registry) (path.Endpoint, Reason, error) {
 	tr, ok := reg.Get(e.Transport)
 	if !ok {
-		return path.Endpoint{}, fmt.Errorf("unknown transport %q", e.Transport)
+		return path.Endpoint{}, ReasonUnknownTransport, fmt.Errorf("unknown transport %q", e.Transport)
 	}
 	if !e.Address.IsValid() || e.Address.Port() == 0 || e.Address.Addr().IsUnspecified() {
-		return path.Endpoint{}, fmt.Errorf("unusable address %q", e.Address)
+		return path.Endpoint{}, ReasonUnusableAddress, fmt.Errorf("unusable address %q", e.Address)
 	}
 	shaping, err := transport.ParseShaping(e.Shaping)
 	if err != nil {
-		return path.Endpoint{}, fmt.Errorf("shaping: %w", err)
+		return path.Endpoint{}, ReasonBadShaping, fmt.Errorf("shaping: %w", err)
 	}
 	ep := path.Endpoint{
 		Transport: e.Transport,
@@ -118,7 +118,7 @@ func pathEndpoint(e netmap.Endpoint, reg *transport.Registry) (path.Endpoint, er
 		Config:    transport.DialConfig{Credential: e.Credential, Settings: e.Settings, Shaping: shaping},
 	}
 	if err := tr.CheckEndpoint(ep.Address, ep.Config); err != nil {
-		return path.Endpoint{}, err
+		return path.Endpoint{}, ReasonRefused, err
 	}
-	return ep, nil
+	return ep, 0, nil
 }

@@ -353,7 +353,7 @@ func (sl *serverLink) WritePacket(p []byte) error {
 			return sl.closeErr
 		default:
 		}
-		return fmt.Errorf("udp: write: %w", err)
+		return writeError(err)
 	}
 	sl.l.meter.Sent(1, len(p), len(*bp)-Overhead-len(p), len(*bp))
 	return nil

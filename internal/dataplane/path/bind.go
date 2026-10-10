@@ -319,6 +319,7 @@ func (b *Bind) Send(bufs [][]byte, ep conn.Endpoint) error {
 	var err error
 	for _, m := range bufs {
 		if len(m) == 0 || len(m) > MaxMessageSize {
+			n.counters.tooLarge.Add(1)
 			err = fmt.Errorf("%w: %d bytes", ErrMessageSize, len(m))
 			continue
 		}
