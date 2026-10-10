@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"os"
+	"path"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -27,7 +30,16 @@ type Lab struct {
 	runDir   string
 	nodes    map[string]*Node
 	gateways map[string][]netip.Addr // Docker's bridge addresses, by network
+	bridges  map[string]Bridge       // by network
 	release  func()                  // the host-wide lab slot
+}
+
+// Bridge is Docker's own end of a lab network: the bridge in the Docker VM.
+// It is the way out of the lab, so every node is cut off from it.
+type Bridge struct {
+	IPv4, IPv6 netip.Addr // the network's gateway addresses (IPv6 invalid on IPv4Only)
+	LinkLocal  netip.Addr // its fe80:: address, derived from MAC
+	MAC        string
 }
 
 // Start brings up a lab for the test and tears it down when the test ends.
@@ -46,7 +58,9 @@ func Start(t testing.TB, topo Topology) *Lab {
 	project := claimProject(testProject(checkout, cwd, t.Name()))
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
-	l, err := Up(ctx, root, project, topo)
+	// All the labs of one top-level test share a slot of the host-wide cap.
+	slotKey := "test:" + strings.SplitN(t.Name(), "/", 2)[0]
+	l, err := up(ctx, root, project, topo, slotKey)
 	if l != nil {
 		t.Cleanup(func() { l.cleanup(t) })
 	}
@@ -76,7 +90,7 @@ func (l *Lab) cleanup(t testing.TB) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	if t.Failed() {
-		if res, err := docker(ctx, "compose", "-p", l.Project, "logs", "--no-color", "--timestamps"); err == nil {
+		if res, err := runEnv(ctx, nil, environWithoutCompose(), "docker", "compose", "-f", l.ComposeFile(), "-p", l.Project, "logs", "--no-color", "--timestamps"); err == nil {
 			t.Logf("lab %s logs:\n%s", l.Project, res.Stdout)
 		}
 		if os.Getenv(KeepEnv) != "" {
@@ -91,21 +105,29 @@ func (l *Lab) cleanup(t testing.TB) {
 }
 
 // Up brings up a topology as the Compose project named project (which must
-// start with ProjectPrefix), and returns once every node is running with its
-// routes set. A lab left over under the same name is removed first. On error
-// the returned Lab, if any, still needs Down.
+// start with ProjectPrefix), and returns once every node is running and
+// sealed into the lab. A lab of this checkout left over under the same name
+// is removed first; another checkout's lab under that name is an error. On
+// error the returned Lab, if any, still needs Down.
 func Up(ctx context.Context, root, project string, topo Topology) (*Lab, error) {
+	return up(ctx, root, project, topo, "")
+}
+
+func up(ctx context.Context, root, project string, topo Topology, slotKey string) (*Lab, error) {
 	if !strings.HasPrefix(project, ProjectPrefix) {
 		return nil, fmt.Errorf("lab: project %q doesn't start with %q", project, ProjectPrefix)
 	}
 	if err := topo.Validate(); err != nil {
 		return nil, err
 	}
+	if err := downProject(ctx, project, root); err != nil {
+		return nil, err
+	}
 	img, err := prepare(ctx, root)
 	if err != nil {
 		return nil, err
 	}
-	release, err := acquireSlot(ctx)
+	release, err := acquireSlot(ctx, slotKey)
 	if err != nil {
 		return nil, err
 	}
@@ -117,10 +139,6 @@ func Up(ctx context.Context, root, project string, topo Topology) (*Lab, error) 
 		nodes:    map[string]*Node{},
 		release:  release,
 	}
-	if err := downProject(ctx, project); err != nil {
-		l.releaseSlot()
-		return nil, err
-	}
 	if err := os.MkdirAll(l.runDir, 0o755); err != nil {
 		l.releaseSlot()
 		return nil, err
@@ -129,6 +147,9 @@ func Up(ctx context.Context, root, project string, topo Topology) (*Lab, error) 
 		return l, err
 	}
 	if err := l.inspect(ctx); err != nil {
+		return l, err
+	}
+	if err := l.learnBridges(ctx); err != nil {
 		return l, err
 	}
 	if err := l.configure(ctx); err != nil {
@@ -166,14 +187,14 @@ func (l *Lab) create(ctx context.Context, img image) error {
 		if err := os.WriteFile(l.ComposeFile(), file, 0o644); err != nil {
 			return err
 		}
-		_, err = docker(ctx, "compose", "-f", l.ComposeFile(), "-p", l.Project, "up", "-d", "--wait")
+		_, err = runEnv(ctx, nil, environWithoutCompose(), "docker", "compose", "-f", l.ComposeFile(), "-p", l.Project, "up", "-d", "--wait")
 		if err == nil {
 			return nil
 		}
 		if !isOverlap(err) || attempt == 5 {
 			return fmt.Errorf("lab %s: up: %w", l.Project, err)
 		}
-		if err := downProject(ctx, l.Project); err != nil {
+		if err := downProject(ctx, l.Project, l.root); err != nil {
 			return err
 		}
 	}
@@ -185,7 +206,7 @@ func (l *Lab) ComposeFile() string { return filepath.Join(l.runDir, "compose.jso
 // Down removes the lab's containers and networks.
 func (l *Lab) Down(ctx context.Context) error {
 	defer l.releaseSlot()
-	if err := downProject(ctx, l.Project); err != nil {
+	if err := downProject(ctx, l.Project, l.root); err != nil {
 		return err
 	}
 	return os.RemoveAll(l.runDir)
@@ -211,6 +232,10 @@ func (l *Lab) Node(name string) *Node {
 // DockerGateways are the addresses Docker gave its own bridge on a lab
 // network. Every node has them blackholed: they are the way out of the lab.
 func (l *Lab) DockerGateways(network string) []netip.Addr { return l.gateways[network] }
+
+// DockerBridge is Docker's own end of a lab network, which every node is
+// cut off from.
+func (l *Lab) DockerBridge(network string) Bridge { return l.bridges[network] }
 
 // Nodes lists the lab's nodes by name.
 func (l *Lab) Nodes() []*Node {
@@ -239,7 +264,7 @@ type inspectedContainer struct {
 // inspect learns each node's container and addresses, and each network's
 // Docker gateway.
 func (l *Lab) inspect(ctx context.Context) error {
-	res, err := docker(ctx, "compose", "-p", l.Project, "ps", "-q")
+	res, err := docker(ctx, "ps", "-a", "-q", "--filter", "label=com.docker.compose.project="+l.Project)
 	if err != nil {
 		return err
 	}
@@ -290,6 +315,64 @@ func (l *Lab) inspect(ctx context.Context) error {
 	return nil
 }
 
+// learnBridges finds each network's bridge MAC from a node on it, before
+// any node is sealed: the bridge answers ARP for the network's gateway
+// address. The MAC also gives the bridge's link-local address.
+func (l *Lab) learnBridges(ctx context.Context) error {
+	l.bridges = map[string]Bridge{}
+	for _, net := range l.Topology.Networks {
+		var b Bridge
+		for _, gw := range l.gateways[net.Name] {
+			if gw.Is4() {
+				b.IPv4 = gw
+			} else {
+				b.IPv6 = gw
+			}
+		}
+		if !b.IPv4.IsValid() {
+			return fmt.Errorf("lab %s: network %s has no IPv4 gateway", l.Project, net.Name)
+		}
+		i := slices.IndexFunc(l.Topology.Nodes, func(n NodeSpec) bool { return slices.Contains(n.Networks, net.Name) })
+		if i < 0 {
+			l.bridges[net.Name] = b
+			continue
+		}
+		n := l.nodes[l.Topology.Nodes[i].Name]
+		res, err := n.Exec(ctx, "sh", "-c", `ping -c 1 -W 1 "$0" >/dev/null 2>&1; ip -j neigh show "$0"`, b.IPv4.String())
+		if err != nil {
+			return fmt.Errorf("lab %s: network %s: %w", l.Project, net.Name, err)
+		}
+		var neigh []struct {
+			LLAddr string `json:"lladdr"`
+		}
+		if err := json.Unmarshal([]byte(res.Stdout), &neigh); err != nil || len(neigh) == 0 || neigh[0].LLAddr == "" {
+			return fmt.Errorf("lab %s: network %s: no MAC for the bridge at %s: %q", l.Project, net.Name, b.IPv4, res.Stdout)
+		}
+		b.MAC = strings.ToLower(neigh[0].LLAddr)
+		if b.LinkLocal, err = linkLocalFromMAC(b.MAC); err != nil {
+			return err
+		}
+		l.bridges[net.Name] = b
+	}
+	return nil
+}
+
+// linkLocalFromMAC is the EUI-64 link-local address Linux gives an
+// interface with this MAC.
+func linkLocalFromMAC(mac string) (netip.Addr, error) {
+	hw, err := net.ParseMAC(mac)
+	if err != nil || len(hw) != 6 {
+		return netip.Addr{}, fmt.Errorf("lab: bad MAC %q", mac)
+	}
+	a := [16]byte{0: 0xfe, 1: 0x80}
+	copy(a[8:], []byte{hw[0] ^ 2, hw[1], hw[2], 0xff, 0xfe, hw[3], hw[4], hw[5]})
+	return netip.AddrFrom16(a), nil
+}
+
+// sealedMarker is written once a node is sealed; a node's Command waits for
+// it (see renderCompose).
+const sealedMarker = "/run/lab/sealed"
+
 // configure seals every node into the lab (see configureNode), all at once.
 func (l *Lab) configure(ctx context.Context) error {
 	var wg sync.WaitGroup
@@ -307,26 +390,57 @@ func (l *Lab) configure(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-// configureNode replaces what Docker set up to connect a container to the
-// outside: the default routes go (a gateway node's take their place), the
-// Docker bridges' own addresses become unroutable, and DNS points at
-// nothing, so Docker's resolver never forwards a lookup out. Lab nodes find
-// each other through /etc/hosts. /proc/sys/net becomes writable, so tests
-// and thinkpol can set network sysctls in the node and its namespaces
-// without the rest of /proc/sys.
+// configureNode seals a node into the lab, replacing what Docker set up to
+// connect a container to the outside. The default routes go (a gateway
+// node's take their place). Docker's bridge, the Docker VM's end of every
+// lab network, becomes unreachable: its addresses are blackholed, and
+// nftables drops every frame to or from its MAC, which also covers its
+// link-local address. DNS points at nothing, so Docker's resolver never
+// forwards a lookup out; lab nodes find each other through /etc/hosts.
+// /proc/sys/net becomes writable, so tests and thinkpol can set network
+// sysctls in the node and its namespaces without the rest of /proc/sys.
+// Last, the marker that lets the node's Command start.
 func (l *Lab) configureNode(ctx context.Context, spec NodeSpec) error {
 	n := l.nodes[spec.Name]
+	res, err := n.Exec(ctx, "ip", "-j", "link", "show")
+	if err != nil {
+		return err
+	}
+	var links []struct {
+		Index   int    `json:"ifindex"`
+		Name    string `json:"ifname"`
+		Address string `json:"address"`
+	}
+	if err := json.Unmarshal([]byte(res.Stdout), &links); err != nil {
+		return fmt.Errorf("ip -j link: %w", err)
+	}
+	n.ifaces = map[int]string{}
+	n.ifnames = map[string]string{}
+	for network, a := range n.addrs {
+		for _, link := range links {
+			if a.mac != "" && strings.EqualFold(link.Address, a.mac) {
+				n.ifaces[link.Index] = network
+				n.ifnames[network] = link.Name
+			}
+		}
+	}
+
 	var script strings.Builder
 	script.WriteString("while ip -4 route del default 2>/dev/null; do :; done\n")
 	script.WriteString("while ip -6 route del default 2>/dev/null; do :; done\n")
 	for _, net := range spec.Networks {
-		for _, gw := range l.gateways[net] {
-			if gw.Is4() {
-				fmt.Fprintf(&script, "ip -4 route add blackhole %s/32\n", gw)
-			} else {
-				fmt.Fprintf(&script, "ip -6 route add blackhole %s/128\n", gw)
-			}
+		b, ifname := l.bridges[net], n.ifnames[net]
+		if ifname == "" {
+			return fmt.Errorf("no interface for network %s", net)
 		}
+		fmt.Fprintf(&script, "ip -4 route add blackhole %s/32\n", b.IPv4)
+		if b.IPv6.IsValid() {
+			fmt.Fprintf(&script, "ip -6 route add blackhole %s/128\n", b.IPv6)
+		}
+		fmt.Fprintf(&script, "nft -f - <<'EOF'\ntable netdev tplab_%[1]s {\n"+
+			"  chain in { type filter hook ingress device %[1]q priority -500; ether saddr %[2]s drop; }\n"+
+			"  chain out { type filter hook egress device %[1]q priority -500; ether daddr %[2]s drop; }\n"+
+			"}\nEOF\n", ifname, b.MAC)
 	}
 	if spec.Gateway != "" {
 		gw := l.Topology.Nodes[l.Topology.nodeIndex(spec.Gateway)]
@@ -339,28 +453,9 @@ func (l *Lab) configureNode(ctx context.Context, spec NodeSpec) error {
 	script.WriteString("printf 'nameserver 127.0.0.1\\noptions timeout:1 attempts:1\\n' > /etc/resolv.conf\n")
 	fmt.Fprintf(&script, "cat > /etc/hosts <<'EOF'\n%sEOF\n", l.hostsFor(spec))
 	script.WriteString("mount --bind /proc/sys/net /proc/sys/net && mount -o remount,bind,rw /proc/sys/net\n")
-	script.WriteString("ip -j link show\n")
-
-	res, err := n.Exec(ctx, "sh", "-ec", script.String())
-	if err != nil {
-		return err
-	}
-	var links []struct {
-		Index   int    `json:"ifindex"`
-		Address string `json:"address"`
-	}
-	if err := json.Unmarshal([]byte(res.Stdout), &links); err != nil {
-		return fmt.Errorf("ip -j link: %w", err)
-	}
-	n.ifaces = map[int]string{}
-	for network, a := range n.addrs {
-		for _, link := range links {
-			if a.mac != "" && strings.EqualFold(link.Address, a.mac) {
-				n.ifaces[link.Index] = network
-			}
-		}
-	}
-	return nil
+	fmt.Fprintf(&script, "mkdir -p %s && touch %s\n", path.Dir(sealedMarker), sealedMarker)
+	_, err = n.Exec(ctx, "sh", "-ec", script.String())
+	return err
 }
 
 // hostsFor is reader's /etc/hosts: every node by name, at its address on the

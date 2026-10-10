@@ -49,7 +49,7 @@ func TestDownRefusesUnlabelledResources(t *testing.T) {
 		_, _ = docker(context.Background(), "compose", "-f", file, "-p", foreign, "down", "--timeout", "0")
 	})
 
-	if err := downProject(ctx, foreign); err == nil || !strings.Contains(err.Error(), "refusing") {
+	if err := downProject(ctx, foreign, root); err == nil || !strings.Contains(err.Error(), "refusing") {
 		t.Errorf("down of an unlabelled project: %v", err)
 	}
 	// Listing finds labs by label, so the look-alike isn't even a candidate.
@@ -79,4 +79,27 @@ func TestDownRefusesUnlabelledResources(t *testing.T) {
 		t.Fatal(err)
 	}
 	// with the intruder gone the lab's own cleanup goes through
+}
+
+// Two checkouts using the same THINKPOL_LAB_PROJECT get the same project
+// names, but neither can take down or replace the other's labs: ownership is
+// the exact checkout path in the labels, not the name.
+func TestLabsBelongToTheirCheckout(t *testing.T) {
+	t.Setenv(ProjectEnv, "shared-"+shortHash(t.Name()+os.Getenv("HOME")))
+	l := Start(t, GoTestTopology())
+	ctx := t.Context()
+	other := t.TempDir() // another checkout with the same override
+
+	if removed, err := DownCheckout(ctx, other, false); err != nil || len(removed) > 0 {
+		t.Errorf("the other checkout's lab-down removed %v: %v", removed, err)
+	}
+	if err := downProject(ctx, l.Project, other); err == nil || !strings.Contains(err.Error(), "belongs to") {
+		t.Errorf("tear-down from the other checkout: %v", err)
+	}
+	if _, err := Up(ctx, other, l.Project, GoTestTopology()); err == nil || !strings.Contains(err.Error(), "belongs to") {
+		t.Errorf("the other checkout started a lab under the same name: %v", err)
+	}
+	if got := l.Node("gotest").MustExec(t, "echo", "alive"); got != "alive\n" {
+		t.Errorf("the lab after the other checkout's attempts: %q", got)
+	}
 }

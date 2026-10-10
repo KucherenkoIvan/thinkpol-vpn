@@ -21,7 +21,11 @@ type Node struct {
 	lab       *Lab
 	addrs     map[string]NodeAddr // by network
 	ifaces    map[int]string      // interface index → network
+	ifnames   map[string]string   // network → interface name
 }
+
+// Interface is the name of the node's interface on a network (eth0, …).
+func (n *Node) Interface(network string) string { return n.ifnames[network] }
 
 // NodeAddr is a node's addresses on one network. IPv6 is invalid on an
 // IPv4Only network.
