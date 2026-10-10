@@ -61,6 +61,37 @@ probe reply: kind=3 | 0 [1] | token [8]
 
 - From TP-003's review: `netmap`'s reader (`(*Map).Open`) checks only that a section is well formed. It accepts what only `netmap.Build` rejects: repeated or overlapping overlay addresses, addresses outside the overlay, empty `Paths`, `NextHops` or `Endpoints`, invalid (zero) `netip.AddrPort`s, and routing loops across several nodes. Don't assume them away: give relayed packets a hop limit and drop at zero (loops across nodes are possible), skip paths and routes with no usable hop, and check an endpoint's `AddrPort` is valid before dialing.
 
+## Review findings
+Two reviewers; orchestrator decisions to implement as stated.
+
+Liveness / failover:
+- [ ] 1 Beyond-first-hop black hole: end-to-end stopgap in the Bind. Sending to a peer through hop H for longer than E2EDead (default ~6 s, tuned to WireGuard's 5 s handshake retry) with nothing from that peer delivered through any hop demotes H for that peer (treated as down) and the next first hop is tried; recovery per hold-down. Data-plane delivery counts as liveness, not only probes (size-selective drops). Correct Notes/DESIGN: the detection bound applies to first-hop failures, e2e here is a stopgap; full e2e probing goes to TP-031 as an explicit acceptance item
+- [ ] 2 Pair flapping: exactly one end of a pair follows: the lower node id leads (never follows), the higher follows. Test: ends starting on different hops converge without oscillation
+- [ ] 3 Mid-chain: per-destination route state with the same Selector machinery (hysteresis, following via heard-from), `Route{Destination, NextHops, Selector}`; split horizon kept. TP-031 note: `spread` in the middle needs per-(src, dst) state the Selector signature doesn't express yet
+- [ ] 4 Sticky link per neighbour: no per-packet alternation between two up links; prefer the active one while up
+- [ ] 5 `Candidate.HeardVia` (how long ago the peer's last packet came through Hop); document that stateful selectors must be reused across SetPeers; test pinning the TP-006 policy "a failed-over pair stays on the backup" (TP-031 decides the final policy)
+
+Security:
+- [ ] 6 A relay caps the incoming hop limit at its own HopLimit; test with hops = 255 in a loop
+- [ ] 7 Reverse-path source check on relays and at the destination (`src == from || from ∈ routes[src]`; deliver drops when via isn't one of the peer's hops); `Spoofed` counter; fix the Candidate.Followed / "authenticated" wording
+- [ ] 8 Don't follow or update current from WireGuard cookie replies (type 3); refresh lastSeen only in ways unauthenticated junk can't drive, as far as practical; document the residual
+- [ ] 9 Random probe tokens, an outstanding-probe table, unmatched replies ignored
+- [ ] 10 `Options.Space`: Serve closes (and counts) accepted links whose identity is another space
+
+Lifecycle / API:
+- [ ] 11 `Bind.Release()` (peers freed, Bind removed from the node), atomic peer moves between Binds if cheap; TP-008 note: one peer key per WireGuard device, chain exits live in the chain's device
+- [ ] 12 `SetMark` returns `ErrNoSocket` for non-zero marks; notes for TP-018 (socket marks via `udp.Options.Control`: Linux SO_MARK + ip rule, Darwin IP_BOUND_IF/IPV6_BOUND_IF, Windows IP_UNICAST_IF; never fwmark on the WireGuard device) and TP-011 (the composition root builds the Registry with that Control)
+- [ ] 13 Observability: `Endpoint.Transport` (registry name, filled by PathConfigFrom); per-link `LinkStatus` (dialed, transport, endpoint index, up, upFor, RTT, packets/bytes in/out, queue full) under NeighborStatus; `Bind.Current` returns (hop, since, ok). No addresses in status meant for telemetry
+- [ ] 14 MTU: `path.MessageBudget` helper; TP-008 note (TUN MTU = min over links; refuse IPv6 below 1280 and surface it in status); TP-030 note (the builder computes a space-wide overlay MTU)
+- [ ] 15 DESIGN wording for the source id: it selects the device/peer for the path layer and gives WireGuard an answerable endpoint; relays check it by reverse path
+
+Tests / nits:
+- [ ] 16 `Options.Now` injectable clock; time-based tests assert ordering with the fake clock (keep one wall-clock NFR test); larger timeouts where wall clock remains
+- [ ] 17 `TestFailoverDoesNotFlap` can fail (primary sometimes stays up past the hold-down; assert timing)
+- [ ] 18 A forbidigo rule (or extended AST check) banning net.Dialer/ListenConfig/UDPConn/TCPConn/IPConn/UnixConn in internal/dataplane/path
+- [ ] 19 Prune neighbours no longer referenced after Update; `send()` checks `l.done`; Options validation (DeadAfter > ProbeInterval, RedialMax ≥ RedialMin); Dialer comparison safe for non-comparable types; Bind counters (over-long → Malformed, count at dequeue, deliver/Close race drained)
+- [ ] 20 Document that endpoint priority applies on redial only (TP-031 may add return-to-primary)
+
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-10 docs (TP-003 review): destination routing — candidate first hops on the sender, a forwarding table per relay
@@ -68,3 +99,4 @@ probe reply: kind=3 | 0 [1] | token [8]
 - 2026-10-10 backlog → in-progress — owner: agent-tp-006, branch: tp-006-path-layer-relay
 - 2026-10-10 docs: DESIGN.md "Data plane" — the relay header also carries the source node id (WireGuard must know which peer a packet came from); links are probed for liveness and the far end follows a path switch
 - 2026-10-10 in-progress → review — all acceptance checked; `make lint`, `make test` and `go test -race -count=30` on the path packages pass
+- 2026-10-10 review → has-errors — two reviewers: 20 findings (see Review findings)
