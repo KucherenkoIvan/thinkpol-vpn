@@ -1,0 +1,35 @@
+version: "2"
+
+linters:
+  # standard set: errcheck, govet, ineffassign, staticcheck, unused
+  default: standard
+  enable:
+    - misspell
+    - depguard
+  settings:
+    depguard:
+      rules:
+        # the data plane and the map run on every node without the controller,
+        # so they never depend on the control plane
+        dataplane-netmap-without-features:
+          list-mode: lax
+          files:
+            - "**/internal/dataplane/**"
+            - "**/internal/netmap/**"
+          deny:
+            - pkg: github.com/KucherenkoIvan/thinkpol-vpn/internal/features
+              desc: the data plane and the map must not import the control plane
+        # the control plane talks to the data plane only through the map
+        features-without-dataplane:
+          list-mode: lax
+          files:
+            - "**/internal/features/**"
+          deny:
+            - pkg: github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane
+              desc: control plane features must not import the data plane
+  exclusions:
+    generated: lax
+
+formatters:
+  enable:
+    - gofmt

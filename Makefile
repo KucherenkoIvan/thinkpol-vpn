@@ -1,97 +1,38 @@
-.PHONY: all build clean gateway encoding-service transport-service client services test run-gateway run-encoding run-transport run-client
+# thinkpol-vpn development targets. `make help` lists them.
 
-# Build all binaries
-all: gateway encoding-service transport-service client
+GOBIN := $(shell go env GOPATH)/bin
+VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
-# Individual service builds
-gateway:
-	@echo "Building gateway server..."
-	@go build -o bin/gateway cmd/gateway/main.go
-	@echo "✅ Gateway built: bin/gateway"
+# No cgo anywhere: the data plane has to stay buildable for mobile.
+export CGO_ENABLED := 0
 
-encoding-service:
-	@echo "Building encoding service..."
-	@go build -o bin/encoding-service cmd/encoding-service/main.go
-	@echo "✅ Encoding service built: bin/encoding-service"
+.PHONY: help build test lint fmt tools lab-up lab-test lab-down
 
-transport-service:
-	@echo "Building transport service..."
-	@go build -o bin/transport-service cmd/transport-service/main.go
-	@echo "✅ Transport service built: bin/transport-service"
+help: ## list targets
+	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
 
-client:
-	@echo "Building VPN client..."
-	@go build -o bin/client cmd/client/main.go
-	@echo "✅ Client built: bin/client"
+build: ## build bin/thinkpol for this machine
+	go build -trimpath -ldflags "-X main.version=$(VERSION)" -o bin/thinkpol ./cmd/thinkpol
 
-# Build all services (excluding client which needs special permissions)
-services: gateway encoding-service transport-service
+test: ## unit tests
+	go test ./...
 
-# Build everything
-build: all
+lint: ## gofmt check + go vet + golangci-lint
+	@fmtout=$$(gofmt -l .); if [ -n "$$fmtout" ]; then echo "gofmt needed:"; echo "$$fmtout"; exit 1; fi
+	go vet ./...
+	$(GOBIN)/golangci-lint run --allow-serial-runners ./...
 
-# Clean binaries
-clean:
-	@echo "Cleaning binaries..."
-	@rm -rf bin/
-	@echo "✅ Cleaned"
+fmt: ## format everything
+	gofmt -w .
 
-# Run targets (for development)
-run-gateway: gateway
-	@echo "Starting gateway server..."
-	@./bin/gateway
+tools: ## install dev tools into GOPATH/bin
+	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
 
-run-encoding: encoding-service
-	@echo "Starting encoding service..."
-	@./bin/encoding-service
+lab-up: ## start the censor lab (placeholder until TP-002)
+	@echo "lab-up: the lab doesn't exist yet (TP-002)"; exit 1
 
-run-transport: transport-service
-	@echo "Starting transport service..."
-	@./bin/transport-service
+lab-test: ## run the lab checks (placeholder until TP-002)
+	@echo "lab-test: the lab doesn't exist yet (TP-002)"; exit 1
 
-run-client: client
-	@echo "Starting VPN client (requires sudo)..."
-	@sudo ./bin/client
-
-# Test targets
-test:
-	@echo "Running tests..."
-	@go test ./...
-
-# Format code
-fmt:
-	@echo "Formatting code..."
-	@go fmt ./...
-
-# Lint code (requires golangci-lint)
-lint:
-	@echo "Linting code..."
-	@golangci-lint run ./... || echo "Install golangci-lint for linting"
-
-# Install dependencies
-deps:
-	@echo "Installing dependencies..."
-	@go mod download
-	@go mod tidy
-	@echo "✅ Dependencies installed"
-
-# Help
-help:
-	@echo "Available targets:"
-	@echo "  make all              - Build all binaries (gateway, encoding-service, transport-service, client)"
-	@echo "  make services         - Build all services (excluding client)"
-	@echo "  make gateway          - Build gateway server only"
-	@echo "  make encoding-service - Build encoding service only"
-	@echo "  make transport-service - Build transport service only"
-	@echo "  make client           - Build client only"
-	@echo "  make clean            - Remove all built binaries"
-	@echo "  make test             - Run tests"
-	@echo "  make fmt              - Format code"
-	@echo "  make deps             - Install/update dependencies"
-	@echo ""
-	@echo "Run targets (development):"
-	@echo "  make run-gateway      - Build and run gateway"
-	@echo "  make run-encoding     - Build and run encoding service"
-	@echo "  make run-transport    - Build and run transport service"
-	@echo "  make run-client       - Build and run client (requires sudo)"
-
+lab-down: ## stop the censor lab (placeholder until TP-002)
+	@echo "lab-down: the lab doesn't exist yet (TP-002)"; exit 1

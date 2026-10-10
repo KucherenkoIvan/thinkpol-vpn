@@ -1,58 +1,14 @@
-# Binaries
-bin/
-*.exe
-*.exe~
-*.dll
-*.so
-*.dylib
+# binaries & build artifacts
+/bin/
+/lab/bin/
 *.test
+*.out
+coverage.*
 
-# Test coverage
-*.coverprofile
-coverage.out
+# tooling caches
+__pycache__/
 
-# Logs
-*.log
-debug.log
-logs/
-
-# IDE and Editor files
+# editors & OS
+.DS_Store
 .idea/
 .vscode/
-.vscode-server/
-*.swp
-*.swo
-*~
-.project
-.classpath
-.settings/
-
-# OS files
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-Thumbs.db
-ehthumbs.db
-Desktop.ini
-
-# Go workspace file (if using Go workspaces)
-go.work
-go.work.sum
-
-# Dependency directories (if using vendoring)
-vendor/
-
-# Temporary files
-*.tmp
-*.temp
-*.bak
-*.backup
-
-# Local configuration overrides (if any)
-config.local.json
-*.local.json
-
-# Python bytecode
-__pycache__/
