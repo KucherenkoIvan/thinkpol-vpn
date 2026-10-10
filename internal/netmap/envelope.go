@@ -54,6 +54,9 @@ var (
 	ErrInvalidContents = errors.New("netmap: invalid map contents")
 	// ErrUnverified: a *Map that didn't come from Verify or Next.
 	ErrUnverified = errors.New("netmap: map not verified")
+
+	// errSectionsExceedEnvelope is Build's refusal before sealing.
+	errSectionsExceedEnvelope = errors.New("the sections alone exceed the envelope size limit")
 )
 
 // Trust is what a node trusts for a space: the keys a map must be signed
@@ -257,10 +260,13 @@ func Build(signingKey ed25519.PrivateKey, c Contents) ([]byte, error) {
 	if size > maxSectionSize {
 		return nil, fmt.Errorf("%w: a section of %d bytes, at most %d", ErrInvalidContents, largest, maxSectionSize-1)
 	}
-	// Each sealed section costs at most 1 tag byte and two 3-byte lengths
-	// (SealedSection in Body) besides its box.
-	if total := count * (size + box.AnonymousOverhead + 7); total > MaxEnvelopeSize {
-		return nil, fmt.Errorf("%w: %d sections of %d bytes exceed %d bytes", ErrInvalidContents, count, size, MaxEnvelopeSize)
+	// The sealed sections alone, with their exact framing (a SealedSection
+	// field inside a Body field), are a lower bound of the envelope's size:
+	// refuse before sealing anything when even they don't fit. The check
+	// after signing covers the header and the outer framing.
+	sealedField := protowire.SizeTag(1) + protowire.SizeBytes(size+box.AnonymousOverhead)
+	if total := count * (protowire.SizeTag(3) + protowire.SizeBytes(sealedField)); total > MaxEnvelopeSize {
+		return nil, fmt.Errorf("%w: %w: %d sections of %d bytes take %d bytes", ErrInvalidContents, errSectionsExceedEnvelope, count, size, total)
 	}
 
 	sealed := make([][]byte, 0, count)
@@ -317,6 +323,8 @@ func Verify(envelope []byte, trust Trust) (*Map, error) {
 	if len(envelope) > MaxEnvelopeSize {
 		return nil, fmt.Errorf("%w: envelope of %d bytes, at most %d", ErrMalformed, len(envelope), MaxEnvelopeSize)
 	}
+	// One copy, read once: the caller may change its buffer at any time.
+	envelope = bytes.Clone(envelope)
 	body, sig, err := parseEnvelope(envelope)
 	if err != nil {
 		return nil, err
@@ -365,7 +373,7 @@ func Verify(envelope []byte, trust Trust) (*Map, error) {
 	if size := len(sections[0]) - box.AnonymousOverhead; !isPowerOfTwo(size) || size < minSectionSize || size > maxSectionSize {
 		return nil, fmt.Errorf("%w: sections of %d bytes", ErrMalformed, len(sections[0]))
 	}
-	return &Map{verified: true, raw: bytes.Clone(envelope), header: header, sections: sections}, nil
+	return &Map{verified: true, raw: envelope, header: header, sections: sections}, nil
 }
 
 // parseEnvelope splits a canonical envelope into its body and signature

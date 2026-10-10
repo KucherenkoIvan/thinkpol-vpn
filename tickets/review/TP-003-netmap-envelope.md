@@ -114,3 +114,4 @@ Also:
 - 2026-10-10 has-errors → in-progress — owner: agent-tp-003, branch: tp-003-netmap-envelope
 - 2026-10-10 TP-005 review additions: `InboundLink.settings` (transport-owned, per-link shaping), credential documented as the transport's verifier (the secret for symmetric transports), listener and endpoint addresses are IP literals (`netip.AddrPort`, enforced by readers and Build); DESIGN "The signed map" says so
 - 2026-10-10 in-progress → review — every review finding checked; `make lint`, `make test`, `go test -count=200` on netmap and a 60 s fuzz run pass
+- 2026-10-10 delta review fixes: Verify copies the envelope once and reads only the copy (L1); Build's pre-sealing size check uses the exact section framing as a lower bound, and its test proves it fires before sealing (N1); notes for TP-006, TP-008 and TP-039

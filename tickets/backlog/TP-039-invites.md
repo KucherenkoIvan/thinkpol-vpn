@@ -22,5 +22,9 @@ Members join with a single-use, expiring invite.
 ## Acceptance
 - [ ] an invite works once, and not after it expires
 
+## Notes
+- From TP-003's review: an invite must carry the space id along with the signing key (and the recovery key), so the joining node's first-contact `netmap.Trust` includes `SpaceID` and `netmap.Verify` refuses another space's maps from the start.
+
 ## Log
 - 2026-10-10 created in backlog
+- 2026-10-10 docs (TP-003 review): invites carry the space id for first-contact trust

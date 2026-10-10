@@ -748,7 +748,8 @@ func TestAcceptAndNext(t *testing.T) {
 
 func TestBuildChecksEnvelopeSizeBeforeSealing(t *testing.T) {
 	// 17 recipients pad to 32 sections; one 600 KB section puts them all in
-	// the 1 MiB bucket, 32 MiB in all.
+	// the 1 MiB bucket, 32 MiB in all. errSectionsExceedEnvelope comes only
+	// from the check that runs before anything is sealed.
 	f := newFixture(t, 0, 17)
 	s := &f.contents.Recipients[0].Section
 	for i := range 560 {
@@ -756,8 +757,17 @@ func TestBuildChecksEnvelopeSizeBeforeSealing(t *testing.T) {
 			{Transport: "udp", Address: netip.MustParseAddrPort("192.0.2.1:1"), Credential: make([]byte, maxCredential)},
 		}})
 	}
-	if _, err := Build(f.signing, f.contents); !errors.Is(err, ErrInvalidContents) {
-		t.Fatalf("err = %v, want ErrInvalidContents", err)
+	_, err := Build(f.signing, f.contents)
+	if !errors.Is(err, ErrInvalidContents) || !errors.Is(err, errSectionsExceedEnvelope) {
+		t.Fatalf("err = %v, want ErrInvalidContents from the check before sealing", err)
+	}
+
+	// The bound counts only the sections, so a real envelope is longer.
+	g := newFixture(t, 10, 20)
+	m := g.verify(t, g.build(t))
+	sealedField := protowire.SizeTag(1) + protowire.SizeBytes(len(m.sections[0]))
+	if bound := m.SectionCount() * (protowire.SizeTag(3) + protowire.SizeBytes(sealedField)); bound >= len(m.raw) {
+		t.Errorf("bound %d is not below the envelope's %d bytes", bound, len(m.raw))
 	}
 }
 

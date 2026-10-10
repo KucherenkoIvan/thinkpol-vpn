@@ -28,6 +28,10 @@ Multi-relay chains and hop groups (TP-030, TP-031), direct paths (later).
 - [ ] a relay refuses destinations its section doesn't list
 - [ ] no packet is ever sent through a WireGuard-owned UDP socket
 
+## Notes
+- From TP-003's review: `netmap`'s reader (`(*Map).Open`) checks only that a section is well formed. It accepts what only `netmap.Build` rejects: repeated or overlapping overlay addresses, addresses outside the overlay, empty `Paths`, `NextHops` or `Endpoints`, invalid (zero) `netip.AddrPort`s, and routing loops across several nodes. Don't assume them away: give relayed packets a hop limit and drop at zero (loops across nodes are possible), skip paths and routes with no usable hop, and check an endpoint's `AddrPort` is valid before dialing.
+
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-10 docs (TP-003 review): destination routing — candidate first hops on the sender, a forwarding table per relay
+- 2026-10-10 docs (TP-003 review): notes on what the map reader does not guarantee
