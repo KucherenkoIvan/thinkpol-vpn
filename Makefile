@@ -20,10 +20,13 @@ NOCGO_PKGS := ./internal/dataplane/... ./internal/netmap/... ./internal/lists/..
 # What must build for Android: the above minus the desktop-only packages.
 DESKTOP_ONLY_RE := /internal/dataplane/(tun|egress|firewall)(/|$$)
 
+# The branch the protobuf schemas must stay wire-compatible with.
+BUF_BREAKING_AGAINST ?= rewrite
+
 # cgo is off unless a target turns it on (test-race).
 export CGO_ENABLED := 0
 
-.PHONY: help build test test-race lint nocgo fmt proto tools lab lab-up lab-test lab-down
+.PHONY: help build test test-race lint nocgo proto-check fmt proto tools lab lab-up lab-test lab-down
 
 help: ## list targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -51,6 +54,7 @@ lint: $(TOOLS_STAMP) ## gofmt, then go vet + golangci-lint per OS, the Android b
 	if [ -z "$$pkgs" ]; then echo "no packages to build for android"; exit 1; fi; \
 	GOOS=android GOARCH=arm64 go build $$pkgs
 	@$(MAKE) --no-print-directory nocgo
+	@$(MAKE) --no-print-directory proto-check
 
 nocgo: ## fail if the data plane, the map or the lists depend on cgo
 	@for os in $(LINT_GOOS) android; do \
@@ -61,6 +65,17 @@ nocgo: ## fail if the data plane, the map or the lists depend on cgo
 
 fmt: ## format everything
 	gofmt -w .
+
+proto-check: $(TOOLS_STAMP) ## buf lint, proto/gen up to date, no wire-breaking change against $(BUF_BREAKING_AGAINST)
+	@if [ -z "$$(find proto -name '*.proto' -not -path 'proto/gen/*')" ]; then echo "proto: no .proto files yet"; exit 0; fi; \
+	(cd proto && $(TOOLS)/buf lint) || exit 1; \
+	tmp=$$(mktemp -d) || exit 1; trap 'rm -rf "$$tmp"' EXIT; \
+	(cd proto && PATH="$(TOOLS):$$PATH" $(TOOLS)/buf generate -o "$$tmp") || exit 1; \
+	if ! diff -r "$$tmp/gen" proto/gen >/dev/null; then echo "proto/gen is stale, run make proto:"; diff -r "$$tmp/gen" proto/gen | head -20; exit 1; fi; \
+	if git ls-tree -r --name-only "$(BUF_BREAKING_AGAINST)" -- proto 2>/dev/null | grep -v '^proto/gen/' | grep -q '\.proto$$'; then \
+		echo "buf breaking against $(BUF_BREAKING_AGAINST)"; \
+		(cd proto && $(TOOLS)/buf breaking --against "$$(git rev-parse --path-format=absolute --git-common-dir)#ref=$(BUF_BREAKING_AGAINST),subdir=proto") || exit 1; \
+	else echo "buf breaking: $(BUF_BREAKING_AGAINST) has no schemas yet, skipped"; fi
 
 proto: $(TOOLS_STAMP) ## lint the protobuf schemas and regenerate proto/gen
 	@if [ -z "$$(find proto -name '*.proto' -not -path 'proto/gen/*')" ]; then echo "proto: no .proto files yet"; exit 0; fi; \
