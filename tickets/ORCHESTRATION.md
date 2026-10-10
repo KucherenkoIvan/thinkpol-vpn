@@ -1,6 +1,6 @@
 # Orchestration notes
 
-Suggestions for running several tickets at once, written down while the board was set up (2026-10-10). **None of this is a rule**: the rules are in [README.md](README.md). Treat these as a starting point, and change or drop anything that doesn't hold up in practice.
+Suggestions for running several tickets at once, written down while the board was set up (2026-10-10). **None of this is a rule**, except the [Decisions](#decisions-2026-10-10) section at the end: the board's rules are in [README.md](README.md), and the decisions below are rules for how the board is run. Treat the rest as a starting point, and change or drop anything that doesn't hold up in practice.
 
 ## Parallelism
 
@@ -10,6 +10,8 @@ The board's WIP limit (3) is conservative. The machine the board was set up on (
 
 ## A possible loop
 
+Superseded by the flow in [Decisions](#decisions-2026-10-10); kept for context.
+
 1. Pick ready tickets (`board.py` lists them), up to the WIP limit.
 2. One agent per ticket, each in its own git worktree on the ticket's branch.
 3. When an agent moves its ticket to `review/`, an adversarial reviewer agent tries to break the change; findings send it to `has-errors/`.
@@ -17,21 +19,23 @@ The board's WIP limit (3) is conservative. The machine the board was set up on (
 
 ## Suggested changes to tickets
 
-Not applied yet; worth considering before wave 1:
+Both applied on 2026-10-10:
 
-- **Lab isolation per worktree (TP-002).** As written, two lab runs at once would collide on container names and networks. Adding "lab runs are isolated per worktree" to TP-002's acceptance (a Compose project name per worktree, no fixed subnets) would let every agent run its own lab.
-- **A `needs_human:` frontmatter field** (`decision`, `macos`, `windows`, `person`), shown separately by `board.py`, so tickets waiting on the author are visible at a glance.
+- **Applied: lab isolation per worktree (TP-002).** As written, two lab runs at once would collide on container names and networks. Adding "lab runs are isolated per worktree" to TP-002's acceptance (a Compose project name per worktree, no fixed subnets) would let every agent run its own lab.
+- **Applied: a `needs_human:` frontmatter field** (`decision`, `macos`, `windows`, `person`), shown separately by `board.py`, so tickets waiting on the author are visible at a glance.
 
 ## Tickets that probably need the author
 
+Now recorded as `needs_human` on the tickets themselves; `board.py` lists them.
+
 | Ticket | Why | Possible split of work |
 |---|---|---|
-| TP-028 | Certificate decision (in `blocked/`) | Decide when ready |
+| TP-028 | Certificate decision | Resolved 2026-10-10 (see Decisions); the ACME source is TP-052, blocked until there is a domain |
 | TP-043, TP-049 | Library/framework choice is a matter of taste | Agents prepare a comparison, the author picks |
 | TP-019, TP-021, TP-023, TP-046 | Need `sudo` on a real Mac and a real network | Agents build and test in the lab; the author runs a short checklist |
 | TP-047, TP-048 (Windows part) | No Windows machine available when this was written | Code and cross-compile by agents; testing needs a Windows VM or PC |
 | TP-051 | A real person joins without help | The hand-off test is the author's |
-| KRN-001, KRN-002 | Releasing go-kernel means pushing a tag | Ask before each push |
+| KRN-001, KRN-002 | Releasing go-kernel means pushing a tag | Minor tags may be pushed without asking once review passes (see Decisions) |
 
 ## Likely merge-conflict hotspots
 
@@ -47,3 +51,15 @@ Not applied yet; worth considering before wave 1:
 - Local Go was 1.24 with `GOTOOLCHAIN=auto`; `go 1.25` in `go.mod` downloads the right toolchain automatically.
 - go-kernel is public, so no `GOPRIVATE` or SSH setup is needed to fetch it.
 - Linux-only code (network namespaces, netlink, nftables, NFQUEUE) can't be tested on the macOS host; its tests run inside lab containers.
+
+## Decisions (2026-10-10)
+
+Made by the project owner and the orchestrator. These are rules for running this board.
+
+- **Push everything.** The `rewrite` branch and every ticket branch are pushed to origin. Ticket moves and agent notes are history worth keeping.
+- **One worktree per ticket.** Each ticket is worked in its own git worktree at `../.worktrees/<repo>/<branch>`. Ticket moves (`git mv` + Log line) happen on the ticket branch; the branch's first commit is the backlog → in-progress move. The main checkout on `rewrite` is reserved for board ops and serial merges.
+- **Flow.** Implementer → `review/` → two reviewer agents (one adversarial, for correctness; one for architecture and style) → either `has-errors/` with the findings written into the ticket, or a merge into `rewrite` that moves the ticket to `done/` in the merge commit.
+- **go-kernel tags.** Minor tags for `KRN-` tickets may be pushed without asking, after review passes.
+- **TP-028 certificate.** The owner has no domain and no valid certificate. The `tls` server certificate comes from a pluggable certificate source port; the first adapter is self-signed and pinned by the client, used in the lab and tests. A prober sees a self-signed certificate: a known weakness that the lab matrix shows honestly. ACME with a real domain is TP-052, blocked until the owner has a domain and a registrar.
+- **Host safety.** Never change the macOS host's network stack (routes, interfaces, DNS, pf, sysctls). Linux networking code runs only inside lab containers.
+- **`needs_human`.** Tickets that need the author carry `needs_human: decision | macos | windows | person` (see [README.md](README.md#ticket-files)). For `decision`, agents prepare a comparison and the author picks. For `macos`, `windows` and `person`, agents build and test everything possible in the lab, then hand the author a short checklist.
