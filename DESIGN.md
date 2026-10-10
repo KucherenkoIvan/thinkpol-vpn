@@ -108,7 +108,7 @@ GeoIP alone misroutes CDNs (foreign services on domestic IPs and vice versa), so
 
 **DNS is routing.** A resolver on the node's overlay address answers overlay names (`<device>.<space>.internal`; `.internal` is reserved for private use, so a space name can never shadow a real domain), sends `direct` domains to a domestic upstream, and everything else through the tunnel to a resolver at the exit. No DNS leaks, and GeoIP isn't fed CDN answers from the wrong country.
 
-**Lists**: v2fly geoip/geosite or DB-IP Lite. The map references them by content hash: the header lists every blob the space uses, the set relays cache and pass on, and each section names only the blobs its node uses. Nodes fetch and cache them from peers. The hashes of public lists are visible to every node holding the envelope, which only tells a node that the space uses, say, a Russian GeoIP list: an accepted leak.
+**Lists**: v2fly geoip/geosite or DB-IP Lite. The map references them by content hash: the header lists every blob the space uses, the set relays cache and pass on, and each section names only the blobs its node uses. A GeoIP blob is one list (a country) as its minimal set of IPv4 and IPv6 prefixes in a canonical encoding, so the same addresses always give the same hash, whatever the source or its order. Lists are built from files the operator downloads (DB-IP Lite, CC BY 4.0, by default); no third-party data lives in the repo and nodes never fetch from outside the network. Nodes fetch and cache them from peers. The hashes of public lists are visible to every node holding the envelope, which only tells a node that the space uses, say, a Russian GeoIP list: an accepted leak.
 
 ### IPv6
 
