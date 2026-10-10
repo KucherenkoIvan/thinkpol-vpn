@@ -22,7 +22,7 @@ grpckit's standard chain covers streaming RPCs, which the controller's push chan
 
 ## Acceptance
 - [x] go-kernel `make lint`, `make test`, `make integration` pass
-- [ ] released tag recorded in Notes
+- [x] released tag recorded in Notes
 
 ## Notes
 - go-kernel branch `krn-002-grpckit-streaming` (cut from `origin/master` @ `e53e68f` = v0.17.0), head `4cd0d74`, pushed; not merged, not tagged (review first):
@@ -41,6 +41,9 @@ grpckit's standard chain covers streaming RPCs, which the controller's push chan
   - `cf4db30 docs(grpckit): ...` (finding 6): the error-mapping table follows the code's order (domain first; ctx-ended rule with levels and "Since v0.18.0 this applies to unary RPCs too"; status errors pass through unchanged, wrapped ones with the wrapping text, verified against grpc-go `status.FromError`; anything else Internal). Also covered: a keepalive example (server params + enforcement policy, client params), WithGRPCOptions for TLS (Limitations corrected: a later `WithTransportCredentials` overrides Connect's default, verified in grpc-go), panic recovery covering only the handler goroutine, and client-streaming `CloseAndRecv` decoding through the same RecvMsg path (stated, no client-streaming RPC in the example contract). Three new anti-patterns; README bullets consistent.
 - Test evidence on `cf4db30`: `make lint` 0 issues; `CGO_ENABLED=0 make test` all ok; `go test -race -count=10 ./grpckit/...` ok; `CGO_ENABLED=0 go test -count=30 ./grpckit/...` ok; each of the three new commits passed lint and grpckit tests on its own. Integration per package (`CGO_ENABLED=0 INTEGRATION=1 go test -p 1`, Docker free space checked between packages, 292–295 MB, nothing pruned): grpckit, sqlite, cache, postgres, outbox, events, health, httpapi, app, kafka all ok. Commit bodies and diff scanned for private names: none.
 
+- **Released: `v0.18.0`** (annotated tag object `01cab9c`, pointing at `cf4db30`), authorized by the orchestrator after review. go-kernel `master` was fast-forwarded from `e53e68f` to `cf4db30` (linear history, no merge commit). `GOPROXY=https://proxy.golang.org go list -m github.com/KucherenkoIvan/go-kernel@v0.18.0` resolves (origin hash `cf4db30`). The tag message lists the new API (WithStreamInterceptor, StreamWithContext, WithGRPCOptions, the stream chain), the behaviour change (ctx-ended RPCs: Canceled at debug, deadline/Unavailable at warn, client codes Canceled/DeadlineExceeded instead of Internal, history 026718e → d8dbc62) and the example `EchoServiceClient` interface change (hand-written fakes need the two new methods).
+- `go.mod` bumped to go-kernel v0.18.0 after merging `origin/rewrite` (`8752db9`) into the ticket branch: `go get github.com/KucherenkoIvan/go-kernel@v0.18.0 && go mod tidy`. thinkpol-vpn `make lint` (0 issues, all OS targets, android build, no-cgo check) and `make test` pass.
+
 ## Review findings
 Two reviewers, accepted by the orchestrator. Nothing blocking in the runtime code; one fix pass, then release v0.18.0. The unary behaviour change itself is accepted.
 - [x] 1. Logging levels for ctx-ended RPCs: Canceled → debug; DeadlineExceeded → WARN "rpc deadline exceeded" with the original error; Unavailable while the RPC ctx is done → WARN with the original error (may be a real dependency outage racing the cancel). Comment that a downstream Unavailable racing the cancel is folded into the client-facing code because nobody is left to receive it.
@@ -58,3 +61,4 @@ Two reviewers, accepted by the orchestrator. Nothing blocking in the runtime cod
 - 2026-10-10 review → has-errors — 7 findings from two reviewers, see Review findings
 - 2026-10-10 has-errors → in-progress — owner: agent-krn-002, fixing review findings
 - 2026-10-10 in-progress → review — review findings 1–7 fixed, go-kernel head cf4db30; integration ok per package
+- 2026-10-10 released go-kernel v0.18.0 (master fast-forwarded to cf4db30); go.mod bumped
