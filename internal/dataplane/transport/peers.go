@@ -1,20 +1,37 @@
 package transport
 
 import (
+	"fmt"
 	"slices"
 	"sync"
 )
 
-// PeerLink is one link a listener accepts: who the peer is and the link's
-// settings from the map.
+// PeerLink is what the map gives the listening end of one link: who may
+// dial, how to check them, and the link's settings.
 type PeerLink struct {
-	Peer   Identity
-	Config LinkConfig
+	Peer Identity
+	// Verifier is what the listener checks the dialer's credential against:
+	// for a symmetric transport, the shared secret itself.
+	Verifier []byte
+	// Settings is the transport's own settings message for the link.
+	Settings []byte
+	Shaping  Shaping
 }
 
+// PeerError is a peer link a listener couldn't use, and why.
+type PeerError struct {
+	Peer Identity
+	Err  error
+}
+
+func (e PeerError) Error() string { return fmt.Sprintf("peer %s: %v", e.Peer, e.Err) }
+
+func (e PeerError) Unwrap() error { return e.Err }
+
 // Peers is a listener's table of the links it accepts. It changes when a new
-// map arrives; a supervisor serving several spaces can merge their tables
-// into one, since Identity carries the space.
+// map arrives. A supervisor serving several spaces merges their tables into
+// one, stamping each link's Space from the map it came from, never from the
+// map's contents.
 type Peers interface {
 	// Snapshot returns the links accepted right now, and a channel closed
 	// once that changes. Callers must not modify the returned slice.

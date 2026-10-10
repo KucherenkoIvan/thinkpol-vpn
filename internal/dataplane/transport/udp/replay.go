@@ -1,5 +1,7 @@
 package udp
 
+import "time"
+
 // replayWindow accepts each counter at most once, and none older than the
 // window behind the highest seen (a bitmap ring, as in RFC 6479). Only
 // authenticated counters may be offered, or a forger could slide it.
@@ -17,9 +19,6 @@ const (
 )
 
 func (w *replayWindow) accept(counter uint64) bool {
-	if counter >= rejectAfterMessages {
-		return false
-	}
 	switch {
 	case !w.started:
 		w.started = true
@@ -42,43 +41,76 @@ func (w *replayWindow) accept(counter uint64) bool {
 	return true
 }
 
-// senderWindows keeps a replay window for each of the last few senders seen
-// on a link: a dialer that redials, or a listener that restarted, is a new
-// sender with counters from zero. A replay of a sender evicted from here
-// passes once more; that is acceptable for a pre-filter.
-type senderWindows struct {
+// senders is a receiver's view of the senders of one credential: a replay
+// window for each of the last few, and which one is current. A dialer that
+// redials, or a listener that restarts, is a new sender with counters from
+// zero and a later creation time.
+type senders struct {
 	tick    uint64
-	entries [maxSenders]senderWindow
+	entries [maxSenders]senderEntry
+	current *senderEntry
+	seen    time.Time // last datagram accepted from current
 }
 
-const maxSenders = 8
+const (
+	maxSenders = 8
+	// senderTakeover is how long the current sender must be silent before
+	// an older one may take over (a dialer whose clock went back).
+	senderTakeover = 30 * time.Second
+)
 
-type senderWindow struct {
+type senderEntry struct {
 	id     senderID
 	used   uint64 // tick of last use; 0 = empty
 	window replayWindow
 }
 
-// accept reports whether counter is fresh for sender, and whether it is the
-// newest counter seen from that sender.
-func (s *senderWindows) accept(sender senderID, counter uint64) (fresh, newest bool) {
+// verdict is what a receiver does with an authenticated, fresh datagram.
+type verdict int
+
+const (
+	dropReplay    verdict = iota // a counter seen before or behind the window
+	dropStale                    // an unknown sender older than the current one
+	deliver                      // deliver, but don't move the reply address
+	deliverNewest                // deliver; the current sender's newest counter
+)
+
+func (s *senders) admit(id senderID, counter uint64, now time.Time) verdict {
 	s.tick++
-	var w *senderWindow
+	var e, victim *senderEntry
 	for i := range s.entries {
-		e := &s.entries[i]
-		if e.used != 0 && e.id == sender {
-			w = e
+		c := &s.entries[i]
+		if c.used != 0 && c.id == id {
+			e = c
 			break
 		}
-		if w == nil || e.used < w.used {
-			w = e // the least recently used, unless the sender turns up
+		if c != s.current && (victim == nil || c.used < victim.used) {
+			victim = c
 		}
 	}
-	if w.used == 0 || w.id != sender {
-		*w = senderWindow{id: sender}
+	quiet := s.current == nil || now.Sub(s.seen) > senderTakeover
+	takesOver := s.current == nil || id.created() > s.current.id.created() || quiet
+	if e == nil {
+		if !takesOver {
+			return dropStale
+		}
+		*victim = senderEntry{id: id}
+		e = victim
 	}
-	w.used = s.tick
-	newest = !w.window.started || counter > w.window.highest
-	fresh = w.window.accept(counter)
-	return fresh, fresh && newest
+	newest := !e.window.started || counter > e.window.highest
+	if !e.window.accept(counter) {
+		return dropReplay
+	}
+	e.used = s.tick
+	if e != s.current && takesOver {
+		s.current = e
+	}
+	if e != s.current {
+		return deliver
+	}
+	s.seen = now
+	if newest {
+		return deliverNewest
+	}
+	return deliver
 }

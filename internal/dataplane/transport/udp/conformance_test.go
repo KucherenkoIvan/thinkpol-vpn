@@ -1,6 +1,7 @@
 package udp
 
 import (
+	"context"
 	"net"
 	"testing"
 
@@ -9,29 +10,30 @@ import (
 )
 
 func TestConformance(t *testing.T) {
+	tr := New(Options{})
 	for _, address := range []string{"127.0.0.1:0", "[::1]:0"} {
 		t.Run(address, func(t *testing.T) {
 			transporttest.Run(t, transporttest.Harness{
-				Listen: func(t *testing.T, endpoint string, peers transport.Peers, camouflage transport.Camouflage) (transport.Listener, string) {
-					if endpoint == "" {
-						endpoint = address
+				Listen: func(t *testing.T, addr string, peers transport.Peers, camouflage transport.Camouflage) (transport.Listener, transporttest.Endpoint) {
+					if addr == "" {
+						addr = address
 					}
-					l, err := Listen(endpoint, peers, camouflage)
+					l, err := tr.Listen(context.Background(), transport.ListenConfig{Address: addr, Peers: peers, Camouflage: camouflage})
 					if err != nil {
 						t.Fatal(err)
 					}
-					return l, l.Addr().String()
+					return l, transporttest.Endpoint{Address: l.Addr().String()}
 				},
-				Dialer:    &Dialer{},
+				Dialer:    tr.Dialer(),
 				Interpose: interpose,
 			})
 		})
 	}
 }
 
-// interpose puts a tap in front of endpoint for the suite's Replay test.
-func interpose(t *testing.T, endpoint string) (string, func()) {
-	addr, err := net.ResolveUDPAddr("udp", endpoint)
+// interpose puts a tap in front of address for the suite's Replay test.
+func interpose(t *testing.T, address string) (string, func()) {
+	addr, err := net.ResolveUDPAddr("udp", address)
 	if err != nil {
 		t.Fatal(err)
 	}

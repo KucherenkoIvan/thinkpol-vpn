@@ -7,7 +7,10 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
+	"strconv"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"golang.org/x/crypto/chacha20poly1305"
 
@@ -16,41 +19,33 @@ import (
 
 // Wire format, one datagram per packet:
 //
-//	conn id [8] | nonce [24] | XChaCha20-Poly1305(sender [8] | counter [8] | packet) [16+n+16]
+//	conn id [8] | nonce [24] | XChaCha20-Poly1305(sender [12] | sent [4] | counter [8] | packet) [24+n+16]
 //
-// The connection id is derived from the link secret and the direction, so a
-// shared listener finds the link without decrypting anything, and nobody
-// without the secret can produce it; it is the AEAD's associated data. Each
-// direction of a credential has one key (HKDF-SHA256 from the secret) and
-// every datagram a fresh random 192-bit nonce, so no state is needed to keep
-// nonces unique: not across restarts, redials or table changes.
-//
-// Inside, a random sender id per link end and a counter feed the receiver's
-// replay filter. That filter is a cheap pre-filter, reset by restarts;
-// WireGuard's own replay protection is the guarantee.
+// See the package documentation for what each part is for.
 const (
 	connIDSize  = 8
 	nonceSize   = chacha20poly1305.NonceSizeX
-	senderSize  = 8
+	senderSize  = 12 // creation time in Unix nanoseconds [8] | random [4]
+	sentSize    = 4  // Unix seconds, uint32
 	counterSize = 8
 	tagSize     = chacha20poly1305.Overhead
 
 	clearSize = connIDSize + nonceSize
-	innerSize = senderSize + counterSize
+	innerSize = senderSize + sentSize + counterSize
 
 	// Overhead is what udp adds to each packet, before IP and UDP headers.
 	Overhead = clearSize + innerSize + tagSize
 
 	maxDatagram = Overhead + transport.MaxPacketSize
 
-	// rejectAfterMessages bounds counters far below where they could wrap.
-	rejectAfterMessages = 1 << 60
+	// maxClockSkew is how far a datagram's sealed send time may be from the
+	// receiver's clock.
+	maxClockSkew = 5 * time.Minute
+	// connIDPeriod is how often connection ids change.
+	connIDPeriod = time.Hour
 )
 
-// ConnID is the keyed connection id at the front of every datagram.
-type ConnID [connIDSize]byte
-
-type senderID [senderSize]byte
+type connID [connIDSize]byte
 
 type direction string
 
@@ -69,10 +64,51 @@ func derive(secret []byte, label string, n int) []byte {
 	return k
 }
 
-func connIDFor(secret []byte, dir direction) ConnID {
-	var id ConnID
-	copy(id[:], derive(secret, "conn id "+string(dir), connIDSize))
+func epochOf(t time.Time) int64 { return t.Unix() / int64(connIDPeriod/time.Second) }
+
+func connIDFor(secret []byte, dir direction, epoch int64) connID {
+	var id connID
+	copy(id[:], derive(secret, "conn id "+string(dir)+" "+strconv.FormatInt(epoch, 10), connIDSize))
 	return id
+}
+
+// rotatingID is a sender's connection id, rederived when the hour turns.
+type rotatingID struct {
+	secret []byte
+	dir    direction
+	cur    atomic.Pointer[epochID]
+}
+
+type epochID struct {
+	epoch int64
+	id    connID
+}
+
+func (r *rotatingID) at(epoch int64) connID {
+	if c := r.cur.Load(); c != nil && c.epoch == epoch {
+		return c.id
+	}
+	c := &epochID{epoch: epoch, id: connIDFor(r.secret, r.dir, epoch)}
+	r.cur.Store(c)
+	return c.id
+}
+
+// idWindow is a receiver's connection ids for the epochs around the current
+// one, so clocks a little apart still agree. Not safe for concurrent use.
+type idWindow struct {
+	valid bool
+	epoch int64
+	ids   [3]connID
+}
+
+func (w *idWindow) recognises(secret []byte, dir direction, epoch int64, id connID) bool {
+	if !w.valid || w.epoch != epoch {
+		for i := range w.ids {
+			w.ids[i] = connIDFor(secret, dir, epoch-1+int64(i))
+		}
+		w.valid, w.epoch = true, epoch
+	}
+	return id == w.ids[0] || id == w.ids[1] || id == w.ids[2]
 }
 
 func newAEAD(secret []byte, dir direction) cipher.AEAD {
@@ -83,15 +119,31 @@ func newAEAD(secret []byte, dir direction) cipher.AEAD {
 	return aead
 }
 
-func newSenderID() senderID {
+// senderID names one end of a link for the receiver's replay filter. Its
+// creation time orders senders of the same credential.
+type senderID [senderSize]byte
+
+func (s senderID) created() int64 { return int64(binary.BigEndian.Uint64(s[:8])) }
+
+var lastCreated atomic.Int64
+
+func newSenderID(now time.Time) senderID {
 	var s senderID
-	_, _ = rand.Read(s[:])
+	for {
+		last := lastCreated.Load()
+		c := max(now.UnixNano(), last+1)
+		if lastCreated.CompareAndSwap(last, c) {
+			binary.BigEndian.PutUint64(s[:8], uint64(c))
+			break
+		}
+	}
+	_, _ = rand.Read(s[8:])
 	return s
 }
 
-// connIDOf accepts only datagrams that could hold a packet.
-func connIDOf(d []byte) (ConnID, bool) {
-	var id ConnID
+// idOf accepts only datagrams that could hold a packet.
+func idOf(d []byte) (connID, bool) {
+	var id connID
 	if len(d) <= Overhead || len(d) > maxDatagram {
 		return id, false
 	}
@@ -102,7 +154,7 @@ func connIDOf(d []byte) (ConnID, bool) {
 var plainPool = sync.Pool{New: func() any { b := make([]byte, 0, innerSize+transport.MaxPacketSize); return &b }}
 
 // seal appends the datagram carrying packet to dst.
-func seal(dst []byte, aead cipher.AEAD, id ConnID, sender senderID, counter uint64, packet []byte) []byte {
+func seal(dst []byte, aead cipher.AEAD, id connID, sender senderID, now time.Time, counter uint64, packet []byte) []byte {
 	dst = append(dst, id[:]...)
 	start := len(dst)
 	dst = append(dst, make([]byte, nonceSize)...)
@@ -110,28 +162,46 @@ func seal(dst []byte, aead cipher.AEAD, id ConnID, sender senderID, counter uint
 	pp := plainPool.Get().(*[]byte)
 	defer plainPool.Put(pp)
 	plain := append((*pp)[:0], sender[:]...)
+	plain = binary.BigEndian.AppendUint32(plain, uint32(now.Unix()))
 	plain = binary.BigEndian.AppendUint64(plain, counter)
 	plain = append(plain, packet...)
 	*pp = plain
 	return aead.Seal(dst, dst[start:], plain, dst[:connIDSize])
 }
 
-var errShortPlaintext = errors.New("udp: datagram too short")
+var errShort = errors.New("udp: datagram too short")
 
-// open authenticates datagram d and appends its plaintext to dst, returning
-// the sender, counter and packet. dst must not overlap d unless it is exactly
-// d's ciphertext: on failure Open may scribble over dst's capacity.
-func open(dst []byte, aead cipher.AEAD, d []byte) (senderID, uint64, []byte, error) {
-	var s senderID
+// opened is an authenticated datagram.
+type opened struct {
+	sender  senderID
+	sent    time.Time
+	counter uint64
+	packet  []byte
+}
+
+// fresh reports whether the datagram was sent within maxClockSkew of now.
+func (o opened) fresh(now time.Time) bool {
+	d := now.Sub(o.sent)
+	return d <= maxClockSkew && d >= -maxClockSkew
+}
+
+// open authenticates datagram d and appends its plaintext to dst. dst must
+// not overlap d unless it is exactly d's ciphertext: on failure Open may
+// scribble over dst's capacity.
+func open(dst []byte, aead cipher.AEAD, d []byte) (opened, error) {
 	plain, err := aead.Open(dst, d[connIDSize:clearSize], d[clearSize:], d[:connIDSize])
 	if err != nil {
-		return s, 0, nil, err
+		return opened{}, err
 	}
 	if len(plain) <= innerSize {
-		return s, 0, nil, errShortPlaintext
+		return opened{}, errShort
 	}
-	copy(s[:], plain)
-	return s, binary.BigEndian.Uint64(plain[senderSize:innerSize]), plain[innerSize:], nil
+	var o opened
+	copy(o.sender[:], plain)
+	o.sent = time.Unix(int64(binary.BigEndian.Uint32(plain[senderSize:])), 0)
+	o.counter = binary.BigEndian.Uint64(plain[senderSize+sentSize : innerSize])
+	o.packet = plain[innerSize:]
+	return o, nil
 }
 
 var datagramPool = sync.Pool{New: func() any { b := make([]byte, 0, maxDatagram); return &b }}

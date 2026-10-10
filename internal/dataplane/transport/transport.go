@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -11,9 +12,6 @@ import (
 // the path layer's header around a WireGuard packet of any sane MTU, and
 // keeps datagram transports under common UDP send limits.
 const MaxPacketSize = 8192
-
-// MinSecretSize is the shortest link secret adapters accept.
-const MinSecretSize = 32
 
 var (
 	// ErrPacketSize is returned by WritePacket for an empty packet or one
@@ -28,73 +26,88 @@ var (
 )
 
 // ClosedError is the error a closed link returns: it matches net.ErrClosed,
-// and reason (ErrRevoked, ErrSuperseded) when there is one.
-func ClosedError(reason error) error {
-	if reason == nil {
+// and cause (ErrRevoked, ErrSuperseded, an adapter's fatal error) when there
+// is one.
+func ClosedError(cause error) error {
+	if cause == nil {
 		return net.ErrClosed
 	}
-	return fmt.Errorf("%w: %w", net.ErrClosed, reason)
+	return fmt.Errorf("%w: %w", net.ErrClosed, cause)
 }
 
+// CheckPacketSize returns ErrPacketSize unless p is a valid packet length.
+func CheckPacketSize(p []byte) error {
+	if len(p) == 0 || len(p) > MaxPacketSize {
+		return fmt.Errorf("%w: %d bytes", ErrPacketSize, len(p))
+	}
+	return nil
+}
+
+// SpaceID and NodeID are the map's opaque ids; their sizes match netmap's,
+// so converting is free, without this package importing netmap.
+type (
+	SpaceID [16]byte
+	NodeID  [8]byte
+)
+
+func (id SpaceID) String() string { return hex.EncodeToString(id[:]) }
+func (id NodeID) String() string  { return hex.EncodeToString(id[:]) }
+
+// Identity is who is at the other end of an accepted link.
+type Identity struct {
+	Space SpaceID
+	Node  NodeID
+}
+
+func (id Identity) String() string { return id.Space.String() + "/" + id.Node.String() }
+
 // Link is one authenticated link between two adjacent nodes. See the package
-// documentation for the delivery contract.
+// documentation for the contract.
 type Link interface {
 	// ReadPacket blocks until a packet arrives and copies it into p. A packet
 	// that doesn't fit is dropped and io.ErrShortBuffer returned; a buffer of
 	// MaxPacketSize bytes always fits.
 	ReadPacket(p []byte) (int, error)
-	// WritePacket sends p as one packet. It doesn't retain p.
+	// WritePacket sends p as one packet; it may block for backpressure. It
+	// doesn't retain p.
 	WritePacket(p []byte) error
-	// Close closes the link and unblocks pending reads.
+	// Close closes the link and unblocks pending reads and writes.
 	Close() error
 	// LocalAddr is this end's network address.
 	LocalAddr() net.Addr
 	// RemoteAddr is the peer's network address as last seen; datagram
-	// transports follow a peer whose address changes (NAT rebinding).
+	// transports may follow a peer whose address changes.
 	RemoteAddr() net.Addr
+}
+
+// DialConfig is what the map gives the dialing end of one link.
+type DialConfig struct {
+	// Credential is what the dialer proves itself with.
+	Credential []byte
+	// Settings is the transport's own settings message for the link,
+	// encoded by the controller and decoded by the adapter.
+	Settings []byte
+	Shaping  Shaping
 }
 
 // Dialer opens links. One dialer serves every link of its transport.
 type Dialer interface {
-	// Dial opens a link to endpoint (host:port, as in the map).
-	Dial(ctx context.Context, endpoint string, cfg LinkConfig) (Link, error)
+	// Dial opens a link to endpoint (an IP literal and port, as in the
+	// map).
+	Dial(ctx context.Context, endpoint string, cfg DialConfig) (Link, error)
 }
 
 // Listener accepts links from the peers in its table.
 type Listener interface {
 	// Accept waits for the next authenticated link and returns it with the
-	// peer's identity from the table.
+	// peer's identity from the table. The link may already be closed, e.g.
+	// revoked between its first packet and Accept.
 	Accept(ctx context.Context) (Link, Identity, error)
 	// Addr is the address the listener receives on.
 	Addr() net.Addr
 	// Close stops the listener and closes every link it accepted. Pending
 	// and later Accept calls return an error matching net.ErrClosed.
 	Close() error
-}
-
-// Identity is who is at the other end of an accepted link. Both ids are
-// opaque, as in the map.
-type Identity struct {
-	Space string
-	Node  string
-}
-
-func (id Identity) String() string { return id.Space + "/" + id.Node }
-
-// Credential authenticates one link. Both ends hold the same credential, from
-// their sections of the map.
-type Credential struct {
-	// Secret is at least MinSecretSize random bytes. Adapters derive their
-	// keys from it with a KDF and never use it directly as a key.
-	Secret []byte
-}
-
-// Validate reports whether the credential is usable.
-func (c Credential) Validate() error {
-	if len(c.Secret) < MinSecretSize {
-		return fmt.Errorf("transport: link secret is %d bytes, need at least %d", len(c.Secret), MinSecretSize)
-	}
-	return nil
 }
 
 // Shaping is how a link hides the size and rhythm of the packets it carries
@@ -106,12 +119,6 @@ func (c Credential) Validate() error {
 // honour a setting refuses the link instead of ignoring it.
 type Shaping struct{}
 
-// LinkConfig is everything the map says about one link, for either end.
-type LinkConfig struct {
-	Credential Credential
-	Shaping    Shaping
-}
-
 // Camouflage is what an unauthenticated peer gets: anything that fails a
 // listener's authentication is handed here instead of being answered.
 // Implementations must not block the listener for long.
@@ -121,7 +128,8 @@ type Camouflage interface {
 	Datagram(p []byte, from net.Addr)
 	// Stream takes over a stream connection that failed authentication;
 	// consumed holds the bytes the transport already read from it. The
-	// camouflage owns conn from then on.
+	// camouflage owns conn from then on; one meant only for datagrams
+	// closes it.
 	Stream(conn net.Conn, consumed []byte)
 }
 
@@ -138,12 +146,4 @@ func OrDrop(c Camouflage) Camouflage {
 		return Drop{}
 	}
 	return c
-}
-
-// CheckPacketSize returns ErrPacketSize unless p is a valid packet length.
-func CheckPacketSize(p []byte) error {
-	if len(p) == 0 || len(p) > MaxPacketSize {
-		return fmt.Errorf("%w: %d bytes", ErrPacketSize, len(p))
-	}
-	return nil
 }

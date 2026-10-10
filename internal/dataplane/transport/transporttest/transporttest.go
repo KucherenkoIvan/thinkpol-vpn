@@ -1,8 +1,11 @@
 // Package transporttest is the conformance suite every transport passes:
-// delivery both ways, packet sizes, bad credentials, many concurrent links,
-// superseded and revoked credentials, and closing. An adapter's test calls
-// Run with a Harness; adapter-specific behaviour (wire format, probes) is
-// tested next to the adapter.
+// delivery both ways, packet sizes, bad credentials, dial deadlines, many
+// concurrent links, concurrent writes, redials, replays (with a man in the
+// middle the harness provides), table changes and revocations (also racing
+// a dial), closing links and listeners (also racing traffic, without leaking
+// goroutines), writes unblocked by Close, and listener restarts. An
+// adapter's test calls Run with a Harness; adapter-specific behaviour (wire
+// format, probes, clocks) is tested next to the adapter.
 package transporttest
 
 import (
@@ -33,16 +36,25 @@ const (
 type Harness struct {
 	// Listen starts a listener accepting peers and sending what fails
 	// authentication to camouflage, and returns it with the endpoint dialers
-	// use. endpoint is "" for a fresh one, or one whose listener the suite
-	// closed (a restart). The suite closes the listener.
-	Listen func(t *testing.T, endpoint string, peers transport.Peers, camouflage transport.Camouflage) (transport.Listener, string)
+	// use. address is "" for a fresh endpoint, or the Address of one whose
+	// listener the suite closed (a restart). The suite closes the listener.
+	Listen func(t *testing.T, address string, peers transport.Peers, camouflage transport.Camouflage) (transport.Listener, Endpoint)
 	// Dialer dials the listeners Listen starts.
 	Dialer transport.Dialer
-	// Interpose, if set, puts a man in the middle in front of endpoint. It
-	// returns the endpoint to dial instead, and replay, which sends the
+	// Credentials, if set, makes a dialer's credential and the listener's
+	// verifier for it; otherwise both are the same random 32-byte secret.
+	Credentials func() (credential, verifier []byte)
+	// Interpose, if set, puts a man in the middle in front of address. It
+	// returns the address to dial instead, and replay, which sends the
 	// listener again everything dialers sent through it so far. Transports
 	// with a wire set it; without it the Replay test is skipped.
-	Interpose func(t *testing.T, endpoint string) (front string, replay func())
+	Interpose func(t *testing.T, address string) (front string, replay func())
+}
+
+// Endpoint is where and how dialers reach a listener the harness started.
+type Endpoint struct {
+	Address  string
+	Settings []byte // the transport's dial settings
 }
 
 // Run runs the conformance suite.
@@ -56,13 +68,16 @@ func Run(t *testing.T, h Harness) {
 		{"PacketSizeLimits", testPacketSizeLimits},
 		{"ShortReadBuffer", testShortReadBuffer},
 		{"BadCredential", testBadCredential},
+		{"DialDeadline", testDialDeadline},
 		{"ManyConcurrentLinks", testManyConcurrentLinks},
 		{"ConcurrentWrites", testConcurrentWrites},
 		{"Redial", testRedial},
 		{"Replay", testReplay},
+		{"TableChangeKeepsLinks", testTableChangeKeepsLinks},
 		{"Revoked", testRevoked},
 		{"RevocationRacingDial", testRevocationRacingDial},
 		{"CloseLink", testCloseLink},
+		{"WriteUnblocksOnClose", testWriteUnblocksOnClose},
 		{"CloseListener", testCloseListener},
 		{"ListenerRestart", testListenerRestart},
 		{"CloseRacesLeakNothing", testCloseRacesLeakNothing},
@@ -73,14 +88,43 @@ func Run(t *testing.T, h Harness) {
 	}
 }
 
-// RandomPeerLink returns a peer link with a fresh random secret.
-func RandomPeerLink(space, node string) transport.PeerLink {
-	secret := make([]byte, transport.MinSecretSize)
+// Peer is a dialer as the suite sees it: the listener's entry for it and
+// the credential it dials with.
+type Peer struct {
+	transport.PeerLink
+	Credential []byte
+}
+
+// RandomIdentity returns random space and node ids.
+func RandomIdentity() transport.Identity {
+	var id transport.Identity
+	_, _ = rand.Read(id.Space[:])
+	_, _ = rand.Read(id.Node[:])
+	return id
+}
+
+// SymmetricPeer returns a peer with a random identity whose credential and
+// verifier are the same random 32-byte secret.
+func SymmetricPeer() Peer {
+	secret := make([]byte, 32)
 	_, _ = rand.Read(secret)
-	return transport.PeerLink{
-		Peer:   transport.Identity{Space: space, Node: node},
-		Config: transport.LinkConfig{Credential: transport.Credential{Secret: secret}},
+	return Peer{PeerLink: transport.PeerLink{Peer: RandomIdentity(), Verifier: secret}, Credential: secret}
+}
+
+func (h Harness) peer() Peer {
+	if h.Credentials == nil {
+		return SymmetricPeer()
 	}
+	cred, verifier := h.Credentials()
+	return Peer{PeerLink: transport.PeerLink{Peer: RandomIdentity(), Verifier: verifier}, Credential: cred}
+}
+
+func links(peers ...Peer) []transport.PeerLink {
+	out := make([]transport.PeerLink, len(peers))
+	for i, p := range peers {
+		out[i] = p.PeerLink
+	}
+	return out
 }
 
 // Recorder is a camouflage that drops everything and counts what it got.
@@ -105,19 +149,23 @@ type env struct {
 	table    *transport.PeerTable
 	camo     *Recorder
 	listener transport.Listener
-	endpoint string // where the listener is
-	dialTo   string // where dialers go: the endpoint, or a man in the middle
+	endpoint Endpoint // where the listener is
+	dialTo   string   // where dialers go: the endpoint, or a man in the middle
 }
 
-func newEnv(t *testing.T, h Harness, peers ...transport.PeerLink) *env {
-	e := &env{t: t, h: h, table: transport.NewPeerTable(peers...), camo: &Recorder{}}
+func newEnv(t *testing.T, h Harness, peers ...Peer) *env {
+	e := &env{t: t, h: h, table: transport.NewPeerTable(links(peers...)...), camo: &Recorder{}}
 	e.listen("")
-	e.dialTo = e.endpoint
+	e.dialTo = e.endpoint.Address
 	return e
 }
 
-func (e *env) listen(endpoint string) {
-	e.listener, e.endpoint = e.h.Listen(e.t, endpoint, e.table, e.camo)
+func (e *env) dialConfig(p Peer) transport.DialConfig {
+	return transport.DialConfig{Credential: p.Credential, Settings: e.endpoint.Settings}
+}
+
+func (e *env) listen(address string) {
+	e.listener, e.endpoint = e.h.Listen(e.t, address, e.table, e.camo)
 	l := e.listener
 	e.t.Cleanup(func() { _ = l.Close() })
 }
@@ -128,14 +176,14 @@ func (e *env) restart() {
 	if err := e.listener.Close(); err != nil {
 		e.t.Fatalf("close: %v", err)
 	}
-	e.listen(e.endpoint)
+	e.listen(e.endpoint.Address)
 }
 
-func (e *env) dial(pl transport.PeerLink) *link {
+func (e *env) dial(pl Peer) *link {
 	e.t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), wait)
 	defer cancel()
-	l, err := e.h.Dialer.Dial(ctx, e.dialTo, pl.Config)
+	l, err := e.h.Dialer.Dial(ctx, e.dialTo, e.dialConfig(pl))
 	if err != nil {
 		e.t.Fatalf("dial %s: %v", pl.Peer, err)
 	}
@@ -168,7 +216,7 @@ func (e *env) expectNoAccept() {
 }
 
 // connect dials pl, sends a first packet and accepts the link it opens.
-func (e *env) connect(pl transport.PeerLink) (client, server *link) {
+func (e *env) connect(pl Peer) (client, server *link) {
 	e.t.Helper()
 	client = e.dial(pl)
 	client.write([]byte("hello"))
@@ -286,7 +334,7 @@ func randomPacket(size int) []byte {
 }
 
 func testDelivery(t *testing.T, h Harness) {
-	pl := RandomPeerLink("space-a", "node-1")
+	pl := h.peer()
 	e := newEnv(t, h, pl)
 	client, server := e.connect(pl)
 	server.write([]byte("hello back"))
@@ -309,7 +357,7 @@ func testDelivery(t *testing.T, h Harness) {
 }
 
 func testPacketSizes(t *testing.T, h Harness) {
-	pl := RandomPeerLink("space-a", "node-1")
+	pl := h.peer()
 	e := newEnv(t, h, pl)
 	client, server := e.connect(pl)
 	max := transport.MaxPacketSize
@@ -323,7 +371,7 @@ func testPacketSizes(t *testing.T, h Harness) {
 }
 
 func testPacketSizeLimits(t *testing.T, h Harness) {
-	pl := RandomPeerLink("space-a", "node-1")
+	pl := h.peer()
 	e := newEnv(t, h, pl)
 	client, server := e.connect(pl)
 	for name, l := range map[string]*link{"client": client, "server": server} {
@@ -338,7 +386,7 @@ func testPacketSizeLimits(t *testing.T, h Harness) {
 }
 
 func testShortReadBuffer(t *testing.T, h Harness) {
-	pl := RandomPeerLink("space-a", "node-1")
+	pl := h.peer()
 	e := newEnv(t, h, pl)
 	client := e.dial(pl)
 	client.write(randomPacket(100))
@@ -377,21 +425,16 @@ func testShortReadBuffer(t *testing.T, h Harness) {
 }
 
 func testBadCredential(t *testing.T, h Harness) {
-	good := RandomPeerLink("space-a", "node-1")
+	good := h.peer()
 	e := newEnv(t, h, good)
-
-	short := transport.LinkConfig{Credential: transport.Credential{Secret: make([]byte, transport.MinSecretSize-1)}}
-	if l, err := h.Dialer.Dial(context.Background(), e.dialTo, short); err == nil {
-		_ = l.Close()
-		t.Errorf("dialing with a %d-byte secret succeeded", transport.MinSecretSize-1)
-	}
 
 	// Right identity, wrong secret: what a prober who knows everything but
 	// the secret would send.
-	bad := RandomPeerLink(good.Peer.Space, good.Peer.Node)
+	bad := h.peer()
+	bad.Peer = good.Peer
 	ctx, cancel := context.WithTimeout(context.Background(), wait)
 	defer cancel()
-	if l, err := h.Dialer.Dial(ctx, e.dialTo, bad.Config); err == nil {
+	if l, err := h.Dialer.Dial(ctx, e.dialTo, e.dialConfig(bad)); err == nil {
 		probe := watch(t, l)
 		deadline := time.Now().Add(wait)
 		for e.camo.Calls() == 0 && time.Now().Before(deadline) {
@@ -412,9 +455,9 @@ func testBadCredential(t *testing.T, h Harness) {
 
 func testManyConcurrentLinks(t *testing.T, h Harness) {
 	const links, rounds = 32, 16
-	peers := make([]transport.PeerLink, links)
+	peers := make([]Peer, links)
 	for i := range peers {
-		peers[i] = RandomPeerLink(fmt.Sprintf("space-%d", i%2), fmt.Sprintf("node-%d", i))
+		peers[i] = h.peer()
 	}
 	e := newEnv(t, h, peers...)
 
@@ -464,10 +507,10 @@ func testManyConcurrentLinks(t *testing.T, h Harness) {
 }
 
 // pingPong is one client of testManyConcurrentLinks.
-func pingPong(e *env, pl transport.PeerLink, i, rounds int) error {
+func pingPong(e *env, pl Peer, i, rounds int) error {
 	ctx, cancel := context.WithTimeout(context.Background(), wait)
 	defer cancel()
-	l, err := e.h.Dialer.Dial(ctx, e.dialTo, pl.Config)
+	l, err := e.h.Dialer.Dial(ctx, e.dialTo, e.dialConfig(pl))
 	if err != nil {
 		return err
 	}
@@ -494,7 +537,7 @@ func pingPong(e *env, pl transport.PeerLink, i, rounds int) error {
 
 func testConcurrentWrites(t *testing.T, h Harness) {
 	const writers, each = 4, 16
-	pl := RandomPeerLink("space-a", "node-1")
+	pl := h.peer()
 	e := newEnv(t, h, pl)
 	client, server := e.connect(pl)
 	for _, dir := range []struct {
@@ -526,7 +569,7 @@ func testConcurrentWrites(t *testing.T, h Harness) {
 }
 
 func testRedial(t *testing.T, h Harness) {
-	pl := RandomPeerLink("space-a", "node-1")
+	pl := h.peer()
 	e := newEnv(t, h, pl)
 	_, oldServer := e.connect(pl)
 	client := e.dial(pl)
@@ -576,10 +619,10 @@ func testReplay(t *testing.T, h Harness) {
 	if h.Interpose == nil {
 		t.Skip("the transport has no wire to replay")
 	}
-	pl := RandomPeerLink("space-a", "node-1")
+	pl := h.peer()
 	e := newEnv(t, h, pl)
 	var replay func()
-	e.dialTo, replay = h.Interpose(t, e.endpoint)
+	e.dialTo, replay = h.Interpose(t, e.endpoint.Address)
 	client, server := e.connect(pl)
 	for i := range 5 {
 		p := []byte(fmt.Sprintf("packet %d", i))
@@ -594,12 +637,12 @@ func testReplay(t *testing.T, h Harness) {
 }
 
 func testRevoked(t *testing.T, h Harness) {
-	revoked, kept := RandomPeerLink("space-a", "node-1"), RandomPeerLink("space-a", "node-2")
+	revoked, kept := h.peer(), h.peer()
 	e := newEnv(t, h, revoked, kept)
 	revokedClient, revokedServer := e.connect(revoked)
 	keptClient, keptServer := e.connect(kept)
 
-	e.table.Set([]transport.PeerLink{kept})
+	e.table.Set(links(kept))
 	revokedServer.expectClosed(transport.ErrRevoked)
 	_ = revokedClient.WritePacket([]byte("still here?"))
 	e.expectNoAccept()
@@ -608,14 +651,14 @@ func testRevoked(t *testing.T, h Harness) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), wait)
 	defer cancel()
-	if l, err := h.Dialer.Dial(ctx, e.dialTo, revoked.Config); err == nil {
+	if l, err := h.Dialer.Dial(ctx, e.dialTo, e.dialConfig(revoked)); err == nil {
 		_ = watch(t, l).WritePacket([]byte("again"))
 	}
 	e.expectNoAccept()
 }
 
 func testCloseLink(t *testing.T, h Harness) {
-	pl := RandomPeerLink("space-a", "node-1")
+	pl := h.peer()
 	e := newEnv(t, h, pl)
 	client, server := e.connect(pl)
 	for name, l := range map[string]*link{"client": client, "server": server} {
@@ -636,7 +679,7 @@ func testCloseLink(t *testing.T, h Harness) {
 }
 
 func testCloseListener(t *testing.T, h Harness) {
-	pl := RandomPeerLink("space-a", "node-1")
+	pl := h.peer()
 	e := newEnv(t, h, pl)
 	_, server := e.connect(pl)
 	accepted := make(chan error, 1)
@@ -663,7 +706,7 @@ func testCloseListener(t *testing.T, h Harness) {
 }
 
 func testListenerRestart(t *testing.T, h Harness) {
-	pl := RandomPeerLink("space-a", "node-1")
+	pl := h.peer()
 	e := newEnv(t, h, pl)
 	client, _ := e.connect(pl)
 	e.restart()
@@ -691,17 +734,17 @@ func testListenerRestart(t *testing.T, h Harness) {
 // testRevocationRacingDial revokes a credential while it is dialing and
 // sending: whatever link it got must close, and no new one may open.
 func testRevocationRacingDial(t *testing.T, h Harness) {
-	kept := RandomPeerLink("space-a", "kept")
+	kept := h.peer()
 	e := newEnv(t, h, kept)
 	for i := range 10 {
-		pl := RandomPeerLink("space-a", fmt.Sprintf("node-%d", i))
-		e.table.Set([]transport.PeerLink{kept, pl})
+		pl := h.peer()
+		e.table.Set(links(kept, pl))
 		stop := make(chan struct{})
 		var wg sync.WaitGroup
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			l, err := h.Dialer.Dial(context.Background(), e.dialTo, pl.Config)
+			l, err := h.Dialer.Dial(context.Background(), e.dialTo, e.dialConfig(pl))
 			if err != nil {
 				return
 			}
@@ -716,7 +759,7 @@ func testRevocationRacingDial(t *testing.T, h Harness) {
 			}
 		}()
 		time.Sleep(time.Duration(i%5) * time.Millisecond)
-		e.table.Set([]transport.PeerLink{kept})
+		e.table.Set(links(kept))
 		for {
 			ctx, cancel := context.WithTimeout(context.Background(), quiet)
 			l, id, err := e.listener.Accept(ctx)
@@ -747,7 +790,7 @@ func testRevocationRacingDial(t *testing.T, h Harness) {
 func testCloseRacesLeakNothing(t *testing.T, h Harness) {
 	base := settledGoroutines()
 	for i := range 10 {
-		pl := RandomPeerLink("space-a", "node-1")
+		pl := h.peer()
 		e := newEnv(t, h, pl)
 		client, server := e.connect(pl)
 		var wg sync.WaitGroup
@@ -805,10 +848,86 @@ func settledGoroutines() int {
 }
 
 func testAcceptContext(t *testing.T, h Harness) {
-	e := newEnv(t, h, RandomPeerLink("space-a", "node-1"))
+	e := newEnv(t, h, h.peer())
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 	if _, _, err := e.listener.Accept(ctx); !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("accept with an expiring context: %v, want context.DeadlineExceeded", err)
+	}
+}
+
+func testDialDeadline(t *testing.T, h Harness) {
+	pl := h.peer()
+	e := newEnv(t, h, pl)
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	start := time.Now()
+	l, err := h.Dialer.Dial(ctx, e.dialTo, e.dialConfig(pl))
+	if err == nil {
+		_ = l.Close()
+		t.Fatal("dialing with an expired context succeeded")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("dial with an expired context: %v, want context.DeadlineExceeded", err)
+	}
+	if time.Since(start) > wait {
+		t.Errorf("dial with an expired context took %v", time.Since(start))
+	}
+}
+
+// testTableChangeKeepsLinks replaces the table with one that still holds a
+// link's credential: the link stays open and keeps working.
+func testTableChangeKeepsLinks(t *testing.T, h Harness) {
+	pl := h.peer()
+	e := newEnv(t, h, pl)
+	client, server := e.connect(pl)
+	e.table.Set(links(h.peer(), pl, h.peer()))
+	time.Sleep(20 * time.Millisecond)
+	client.write([]byte("still here"))
+	server.expect([]byte("still here"))
+	server.write([]byte("me too"))
+	client.expect([]byte("me too"))
+	select {
+	case err := <-server.err:
+		t.Fatalf("the link closed on a table change that kept it: %v", err)
+	default:
+	}
+}
+
+// testWriteUnblocksOnClose writes as fast as possible with nobody reading,
+// which blocks transports with backpressure, then closes the writing end:
+// the writer must stop with net.ErrClosed. Transports whose writes never
+// block pass trivially.
+func testWriteUnblocksOnClose(t *testing.T, h Harness) {
+	pl := h.peer()
+	e := newEnv(t, h, pl)
+	client := e.dial(pl)
+	client.write([]byte("hello"))
+	ctx, cancel := context.WithTimeout(context.Background(), wait)
+	defer cancel()
+	server, _, err := e.listener.Accept(ctx) // accepted, never read
+	if err != nil {
+		t.Fatalf("accept: %v", err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	stopped := make(chan error, 1)
+	go func() {
+		p := make([]byte, 1024)
+		for {
+			if err := client.WritePacket(p); err != nil {
+				stopped <- err
+				return
+			}
+		}
+	}()
+	time.Sleep(50 * time.Millisecond)
+	_ = client.Close()
+	select {
+	case err := <-stopped:
+		if !errors.Is(err, net.ErrClosed) {
+			t.Fatalf("writer stopped with %v, want net.ErrClosed", err)
+		}
+	case <-time.After(wait):
+		t.Fatal("a write still blocked after Close")
 	}
 }

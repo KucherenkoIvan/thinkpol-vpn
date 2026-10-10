@@ -20,6 +20,7 @@ const (
 // Listener accepts udp links on one packet socket. It never answers a
 // datagram that fails authentication; those go to the camouflage.
 type Listener struct {
+	t     *Transport
 	pc    net.PacketConn
 	peers transport.Peers
 	camo  transport.Camouflage
@@ -27,42 +28,32 @@ type Listener struct {
 	accept    chan *serverLink
 	done      chan struct{}
 	closeOnce sync.Once
+	counters  counters
 
 	mu      sync.Mutex
-	flows   map[ConnID]*flow
-	scratch []byte // packets are opened here, so camouflage sees datagrams intact
+	set     *peerSet
+	flows   map[string]*flow // by secret
+	scratch []byte           // packets are opened here, so camouflage sees datagrams intact
 }
 
-// flow is the listener's state for one credential. Its replay windows
-// outlive the credential's links, so closing a link doesn't reopen the
-// window to replays.
+// flow is the listener's state for one credential. Its senders outlive the
+// credential's links and settings changes, so neither reopens the replay
+// filter.
 type flow struct {
-	entry   *peerEntry
+	entry   atomic.Pointer[peerEntry]
 	link    *serverLink // nil until a datagram opens one
-	senders senderWindows
+	senders senders
 }
 
-// Listen opens a udp socket on address ("host:port") and listens on it.
-// A nil camouflage drops everything unauthenticated.
-func Listen(address string, peers transport.Peers, camouflage transport.Camouflage) (*Listener, error) {
-	pc, err := net.ListenPacket("udp", address)
-	if err != nil {
-		return nil, fmt.Errorf("udp: listen: %w", err)
-	}
-	return NewListener(pc, peers, camouflage), nil
-}
-
-// NewListener listens on pc, which it owns from now on. pc need not be a
-// socket: a worker behind a shared listener reads the datagrams the
-// supervisor routed to it (see Demux) and writes replies back the same way.
-func NewListener(pc net.PacketConn, peers transport.Peers, camouflage transport.Camouflage) *Listener {
+func newListener(t *Transport, pc net.PacketConn, peers transport.Peers, camouflage transport.Camouflage) *Listener {
 	l := &Listener{
+		t:       t,
 		pc:      pc,
 		peers:   peers,
 		camo:    transport.OrDrop(camouflage),
 		accept:  make(chan *serverLink, acceptQueue),
 		done:    make(chan struct{}),
-		flows:   make(map[ConnID]*flow),
+		flows:   make(map[string]*flow),
 		scratch: make([]byte, 0, innerSize+transport.MaxPacketSize),
 	}
 	links, changed := peers.Snapshot()
@@ -92,6 +83,16 @@ func (l *Listener) Accept(ctx context.Context) (transport.Link, transport.Identi
 
 // Addr implements transport.Listener.
 func (l *Listener) Addr() net.Addr { return l.pc.LocalAddr() }
+
+// Counters reports what the listener dropped and why.
+func (l *Listener) Counters() Counters { return l.counters.snapshot() }
+
+// Rejected lists the peer links of the table the listener can't use.
+func (l *Listener) Rejected() []transport.PeerError {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.set.problems()
+}
 
 // Close implements transport.Listener. Dialers' links outlive it: they
 // carry on with a listener restarted on the same address.
@@ -134,40 +135,48 @@ func (l *Listener) watchPeers(changed <-chan struct{}) {
 	}
 }
 
-// reindex swaps in a new peer table and closes the links of credentials
-// that left it.
+// reindex swaps in a new peer table. Links whose secret left it, or now
+// names someone else, close; the others pick up their new settings.
 func (l *Listener) reindex(links []transport.PeerLink) {
-	index := indexPeers(links)
+	set := indexPeers(links, epochOf(l.t.now()))
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	for id, f := range l.flows {
-		if !f.entry.sameAs(index[id]) {
-			if f.link != nil {
-				f.link.shut(transport.ErrRevoked)
-			}
-			delete(l.flows, id)
+	for key, f := range l.flows {
+		if e := set.bySecret[key]; e != nil && e.link.Peer == f.entry.Load().link.Peer {
+			f.entry.Store(e)
+			continue
+		}
+		if f.link != nil {
+			f.link.shut(transport.ErrRevoked)
+		}
+		delete(l.flows, key)
+	}
+	for key, e := range set.bySecret {
+		if _, ok := l.flows[key]; !ok {
+			f := &flow{}
+			f.entry.Store(e)
+			l.flows[key] = f
 		}
 	}
-	for id, e := range index {
-		if _, ok := l.flows[id]; !ok {
-			l.flows[id] = &flow{entry: e}
-		}
-	}
+	l.set = set
 }
 
 func (l *Listener) readLoop() {
 	buf := make([]byte, maxDatagram+1)
+	var b backoff
 	for {
 		n, from, err := l.pc.ReadFrom(buf)
 		if err != nil {
 			var netErr net.Error
 			if !l.closed() && !errors.Is(err, net.ErrClosed) && errors.As(err, &netErr) {
-				continue // transient, e.g. an ICMP error surfacing on the socket
+				b.wait() // e.g. an ICMP error surfacing on the socket
+				continue
 			}
 			// Closed, or a PacketConn that isn't a socket gave up (io.EOF).
 			_ = l.Close()
 			return
 		}
+		b.reset()
 		if !l.receive(buf[:n], from) {
 			l.camo.Datagram(buf[:n], from)
 		}
@@ -177,22 +186,39 @@ func (l *Listener) readLoop() {
 // receive delivers an authenticated, fresh datagram to its credential's
 // link, opening the link if there is none, and reports whether it did.
 func (l *Listener) receive(d []byte, from net.Addr) bool {
-	id, ok := connIDOf(d)
+	id, ok := idOf(d)
 	if !ok {
+		l.counters.unauthenticated.Add(1)
 		return false
 	}
+	now := l.t.now()
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	f := l.flows[id]
-	if f == nil || l.closed() {
+	if l.closed() {
 		return false
 	}
-	sender, counter, packet, err := open(l.scratch[:0], f.entry.recv, d)
+	e := l.set.lookup(id, epochOf(now))
+	if e == nil {
+		l.counters.unauthenticated.Add(1)
+		return false
+	}
+	f := l.flows[string(e.link.Verifier)]
+	o, err := open(l.scratch[:0], e.recv, d)
 	if err != nil {
+		l.counters.unauthenticated.Add(1)
 		return false
 	}
-	fresh, newest := f.senders.accept(sender, counter)
-	if !fresh {
+	if !o.fresh(now) {
+		l.counters.staleTimestamp.Add(1)
+		return false
+	}
+	v := f.senders.admit(o.sender, o.counter, now)
+	switch v {
+	case dropReplay:
+		l.counters.replayed.Add(1)
+		return false
+	case dropStale:
+		l.counters.staleSender.Add(1)
 		return false
 	}
 	if f.link == nil {
@@ -203,14 +229,14 @@ func (l *Listener) receive(d []byte, from net.Addr) bool {
 		default:
 			return true // nobody is accepting: dropped, as the network would
 		}
-	} else if newest {
-		// Follows a dialer that moved (NAT rebinding, redial). Only the
-		// newest counter of a sender moves it; an on-path attacker can still
-		// race a captured datagram ahead of the original, as with WireGuard's
-		// own roaming.
+	} else if v == deliverNewest {
+		// Only the current sender's newest counter moves the link: an
+		// on-path attacker can still race a datagram it holds ahead of the
+		// original, as with WireGuard's own roaming.
 		f.link.remote.Store(&from)
 	}
-	f.link.deliver(packet)
+	f.link.deliver(o.packet)
+	l.counters.delivered.Add(1)
 	return true
 }
 
@@ -232,7 +258,7 @@ type serverLink struct {
 
 func newServerLink(l *Listener, f *flow, from net.Addr) *serverLink {
 	sl := &serverLink{
-		l: l, flow: f, peer: f.entry.link.Peer, sender: newSenderID(),
+		l: l, flow: f, peer: f.entry.Load().link.Peer, sender: newSenderID(l.t.now()),
 		in:   make(chan []byte, linkQueue),
 		done: make(chan struct{}),
 	}
@@ -274,13 +300,11 @@ func (sl *serverLink) WritePacket(p []byte) error {
 		return sl.closeErr
 	default:
 	}
-	c := sl.counter.Add(1) - 1
-	if c >= rejectAfterMessages {
-		return transport.ClosedError(errors.New("udp: counter exhausted"))
-	}
+	e := sl.flow.entry.Load()
+	now := sl.l.t.now()
 	bp := datagramPool.Get().(*[]byte)
 	defer datagramPool.Put(bp)
-	*bp = seal((*bp)[:0], sl.flow.entry.send, sl.flow.entry.outID, sl.sender, c, p)
+	*bp = seal((*bp)[:0], e.send, e.out.at(epochOf(now)), sl.sender, now, sl.counter.Add(1)-1, p)
 	if _, err := sl.l.pc.WriteTo(*bp, *sl.remote.Load()); err != nil {
 		select {
 		case <-sl.done:
