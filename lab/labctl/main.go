@@ -1,0 +1,157 @@
+// Command labctl drives the lab from make: lab-up, lab-down, lab-gotest and
+// the in-node half of lab-test.
+package main
+
+import (
+	"context"
+	"errors"
+	"flag"
+	"fmt"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"strings"
+	"syscall"
+	"text/tabwriter"
+	"time"
+
+	"github.com/KucherenkoIvan/thinkpol-vpn/lab"
+)
+
+const usage = `usage: labctl <command>
+
+  up                                  start the standard topology for this checkout
+  down [-tests | -stale]              remove this checkout's labs (-tests: only the ones tests
+                                      started; -stale: every lab whose checkout is gone)
+  gotest [-v] [-run re] [-p n] pkgs...  run each package's tests in a fresh lab node with THINKPOL_LAB=1
+  project                             print this checkout's project prefix
+`
+
+func main() {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	err := run(ctx, os.Args[1:])
+	stop()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "labctl:", err)
+		os.Exit(1)
+	}
+}
+
+func run(ctx context.Context, args []string) error {
+	if len(args) == 0 {
+		fmt.Fprint(os.Stderr, usage)
+		return errors.New("no command")
+	}
+	root, err := lab.Root()
+	if err != nil {
+		return err
+	}
+	switch args[0] {
+	case "up":
+		ctx, cancel := context.WithTimeout(ctx, 15*time.Minute)
+		defer cancel()
+		return up(ctx, root)
+	case "down":
+		fs := flag.NewFlagSet("down", flag.ContinueOnError)
+		onlyTests := fs.Bool("tests", false, "only remove labs started by tests")
+		stale := fs.Bool("stale", false, "remove every lab whose checkout no longer exists")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+		defer cancel()
+		var removed []string
+		if *stale {
+			removed, err = lab.DownStale(ctx)
+		} else {
+			removed, err = lab.DownCheckout(ctx, root, *onlyTests)
+		}
+		for _, p := range removed {
+			fmt.Println("removed", p)
+		}
+		return err
+	case "gotest":
+		fs := flag.NewFlagSet("gotest", flag.ContinueOnError)
+		runRe := fs.String("run", "", "run only tests matching the regexp")
+		verbose := fs.Bool("v", false, "verbose test output")
+		parallel := fs.Int("p", 4, "packages tested at once")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		ctx, cancel := context.WithTimeout(ctx, 60*time.Minute)
+		defer cancel()
+		return gotest(ctx, root, *runRe, *verbose, *parallel, fs.Args())
+	case "project":
+		checkout, err := lab.CheckoutProject(root)
+		if err != nil {
+			return err
+		}
+		fmt.Println(checkout)
+		return nil
+	default:
+		fmt.Fprint(os.Stderr, usage)
+		return fmt.Errorf("unknown command %q", args[0])
+	}
+}
+
+func up(ctx context.Context, root string) error {
+	checkout, err := lab.CheckoutProject(root)
+	if err != nil {
+		return err
+	}
+	l, err := lab.Up(ctx, root, checkout, lab.Standard())
+	if err != nil {
+		if l != nil {
+			err = errors.Join(err, l.Down(context.WithoutCancel(ctx)))
+		}
+		return err
+	}
+	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	_, _ = fmt.Fprintln(w, "NODE\tNETWORK\tIPV4\tIPV6")
+	for _, spec := range l.Topology.Nodes {
+		for _, net := range spec.Networks {
+			a := l.Node(spec.Name).Addr(net)
+			_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", spec.Name, net, a.IPv4, a.IPv6)
+		}
+	}
+	if err := w.Flush(); err != nil {
+		return err
+	}
+	file, err := filepath.Rel(root, l.ComposeFile())
+	if err != nil {
+		return err
+	}
+	fmt.Printf("\nlab %s is up (compose file %s)\n", l.Project, file)
+	fmt.Printf("shell: docker compose -p %s exec %s bash; make lab-down removes it\n", l.Project, lab.DeviceA)
+	return nil
+}
+
+func gotest(ctx context.Context, root, runRe string, verbose bool, parallel int, patterns []string) error {
+	if len(patterns) == 0 {
+		return errors.New("gotest: no packages")
+	}
+	pkgs, err := lab.ListGoPackages(ctx, root, patterns...)
+	if err != nil {
+		return err
+	}
+	if len(pkgs) == 0 {
+		fmt.Println("gotest: no packages with tests")
+		return nil
+	}
+	var args []string
+	if verbose {
+		args = append(args, "-test.v")
+	}
+	if runRe != "" {
+		args = append(args, "-test.run", runRe)
+	}
+	failed, err := lab.GoTestEach(ctx, root, pkgs, parallel, os.Stdout, args...)
+	if err != nil {
+		return err
+	}
+	if len(failed) > 0 {
+		return fmt.Errorf("gotest: failed: %s", strings.Join(failed, " "))
+	}
+	fmt.Printf("gotest: ok, %d packages\n", len(pkgs))
+	return nil
+}
