@@ -24,5 +24,9 @@ Every server node has allow-ingress and allow-egress settings, both off by defau
 - [ ] in the lab, a device can't connect to an ingress-off node even when it knows the address
 - [ ] `map inspect` of a device section shows no address of an ingress-off node
 
+## Notes
+- From TP-003: `netmap.InboundLink.PeerKind` tells the listener whether a peer is a device or a server, so an ingress-off node can treat device credentials as unauthenticated. Add `allow_ingress`/`allow_egress` to `NodeSettings` (schema, Go type, both conversions, Build policy, the test fixture).
+
 ## Log
 - 2026-10-10 created in backlog
+- 2026-10-10 docs (TP-003 review): notes on inbound peer kinds and adding the settings

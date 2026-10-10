@@ -60,6 +60,15 @@ linters:
           deny:
             - pkg: github.com/KucherenkoIvan/thinkpol-vpn/lab
               desc: the lab harness is for tests driving nodes from outside
+        # the map's wire format has one reader and writer
+        netmap-schema-only-in-netmap:
+          list-mode: lax
+          files:
+            - $all
+            - "!**/internal/netmap/**"
+          deny:
+            - pkg: github.com/KucherenkoIvan/thinkpol-vpn/proto/gen/thinkpol/netmap
+              desc: only internal/netmap encodes or decodes the map; use its types
         # Each feature adds a rule denying the other features, e.g.:
         # feature-spaces:
         #   list-mode: lax

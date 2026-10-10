@@ -6,7 +6,7 @@ Suggestions for running several tickets at once, written down while the board wa
 
 `python3 tickets/board.py --waves` groups unfinished tickets by dependency depth: everything in one wave can run in parallel once the earlier waves are done. When the board was created there were 14 waves, 3–6 tickets wide. Parallelism shortens each wave, but the waves still come one after another.
 
-The board's WIP limit (3) is conservative: a typical dev machine could probably take 4–5 agents at once. The lab is the likelier bottleneck (see below).
+The board's WIP limit (4) is conservative: a typical dev machine could probably take 4–5 agents at once. The lab is the likelier bottleneck (see below).
 
 ## A possible loop
 
@@ -63,3 +63,4 @@ Made by the project owner and the orchestrator. These are rules for running this
 - **TP-028 certificate.** The owner has no domain and no valid certificate. The `tls` server certificate comes from a pluggable certificate source port; the first adapter is self-signed and pinned by the client, used in the lab and tests. A prober sees a self-signed certificate: a known weakness that the lab matrix shows honestly. ACME with a real domain is TP-052, blocked until the owner has a domain and a registrar.
 - **Host safety.** Never change the macOS host's network stack (routes, interfaces, DNS, pf, sysctls). Linux networking code runs only inside lab containers.
 - **`needs_human`.** Tickets that need the author carry `needs_human: decision | macos | windows | person` (see [README.md](README.md#ticket-files)). For `decision`, agents prepare a comparison and the author picks. For `macos`, `windows` and `person`, agents build and test everything possible in the lab, then hand the author a short checklist.
+- **WIP limit raised to 4 (2026-10-10).** Lab runs are isolated per worktree, so the lab is no longer the bottleneck; tickets in `review/` or `has-errors/` don't count.
