@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+// Transport-owned settings: the map carries them as opaque bytes, the
+// controller encodes them and the transport's adapter decodes them.
+package thinkpol.transport.v1;
+
+// Settings of a udp listener. None yet.
+message UdpListenSettings {}
+
+// Settings of the dialing end of a udp link. None yet.
+message UdpDialSettings {}
+
+// Settings of the listening end of a udp link. None yet.
+message UdpInboundSettings {}

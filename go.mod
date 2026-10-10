@@ -6,6 +6,7 @@ require (
 	github.com/KucherenkoIvan/go-kernel v0.18.0
 	golang.org/x/crypto v0.51.0
 	golang.zx2c4.com/wireguard v0.0.0-20261006164505-2631ce99a06f
+	google.golang.org/protobuf v1.36.12
 )
 
 require (
