@@ -108,9 +108,10 @@ func pathEndpoint(e netmap.Endpoint, reg *transport.Registry) (path.Endpoint, er
 		return path.Endpoint{}, fmt.Errorf("unusable address %q", e.Address)
 	}
 	ep := path.Endpoint{
-		Dialer:  tr.Dialer(),
-		Address: e.Address.String(),
-		Config:  transport.DialConfig{Credential: e.Credential, Settings: e.Settings},
+		Transport: e.Transport,
+		Dialer:    tr.Dialer(),
+		Address:   e.Address.String(),
+		Config:    transport.DialConfig{Credential: e.Credential, Settings: e.Settings},
 	}
 	if err := tr.CheckEndpoint(ep.Address, ep.Config); err != nil {
 		return path.Endpoint{}, err

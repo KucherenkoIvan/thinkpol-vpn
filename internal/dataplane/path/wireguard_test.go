@@ -137,18 +137,18 @@ func TestWireGuardSessionSurvivesAPathSwitch(t *testing.T) {
 		ping(t, a, b)
 		ping(t, b, a)
 		handshake := a.get(t, "last_handshake_time_nsec") + "/" + a.get(t, "last_handshake_time_sec")
-		if hop, _ := a.bind.Current(id("B")); hop != id("R1") {
+		if hop, _, _ := a.bind.Current(id("B")); hop != id("R1") {
 			t.Fatalf("A starts on %s, want R1", hop)
 		}
 
-		f.silence("A", "R1")
-		f.silence("B", "R1")
+		f.silence("A", "R1", true)
+		f.silence("B", "R1", true)
 		ping(t, a, b)
 		ping(t, b, a)
-		if hop, _ := a.bind.Current(id("B")); hop != id("R2") {
+		if hop, _, _ := a.bind.Current(id("B")); hop != id("R2") {
 			t.Fatalf("A sends through %s, want R2", hop)
 		}
-		if hop, _ := b.bind.Current(id("A")); hop != id("R2") {
+		if hop, _, _ := b.bind.Current(id("A")); hop != id("R2") {
 			t.Fatalf("B sends through %s, want R2", hop)
 		}
 		if now := a.get(t, "last_handshake_time_nsec") + "/" + a.get(t, "last_handshake_time_sec"); now != handshake {

@@ -77,3 +77,39 @@ func getBuf() *[]byte {
 }
 
 func putBuf(b *[]byte) { bufPool.Put(b) }
+
+// WireGuard message types, read only to tell what a message is for: the
+// path layer never looks further into one.
+const (
+	wgInitiation = 1
+	wgResponse   = 2
+	wgCookie     = 3
+	wgData       = 4
+)
+
+// wgType returns the type of a message shaped like a WireGuard message
+// (its type, three zero bytes, and its type's size), or 0. The shape is no
+// proof: anything can be shaped so. It keeps plainly malformed junk from
+// counting as a sign of life.
+func wgType(m []byte) byte {
+	if len(m) < 4 || m[1] != 0 || m[2] != 0 || m[3] != 0 {
+		return 0
+	}
+	switch t := m[0]; {
+	case t == wgInitiation && len(m) == 148,
+		t == wgResponse && len(m) == 92,
+		t == wgCookie && len(m) == 64,
+		t == wgData && len(m) >= 32 && len(m)%16 == 0:
+		return t
+	}
+	return 0
+}
+
+// MessageBudget is the largest WireGuard message a link carries in one
+// outer packet of mtu bytes: mtu minus the outer IP and UDP or TCP headers
+// (ipHeaders: 28 for IPv4 and UDP, 48 for IPv6 and UDP), the transport's
+// Overhead and HeaderSize; never more than MaxMessageSize, never negative.
+// WireGuard's own data overhead (32 bytes) comes off it for the TUN's MTU.
+func MessageBudget(mtu, ipHeaders, transportOverhead int) int {
+	return max(min(mtu-ipHeaders-transportOverhead-HeaderSize, MaxMessageSize), 0)
+}

@@ -2,6 +2,7 @@ package path
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/binary"
 	"errors"
 	"net"
@@ -16,9 +17,10 @@ import (
 // neighbor is an adjacent node and its open links: the one this node dials,
 // and any it accepted.
 type neighbor struct {
-	id    NodeID
-	mu    sync.Mutex
-	links []*link
+	id     NodeID
+	mu     sync.Mutex
+	links  []*link
+	active *link // sticky: traffic stays on it while it is up
 }
 
 func (nb *neighbor) all() []*link {
@@ -37,13 +39,20 @@ func (nb *neighbor) remove(l *link) {
 	nb.mu.Lock()
 	defer nb.mu.Unlock()
 	nb.links = slices.DeleteFunc(nb.links, func(x *link) bool { return x == l })
+	if nb.active == l {
+		nb.active = nil
+	}
 }
 
-// pick returns the link to send on: the up link heard from last, or else
-// any link, and whether it is up.
+// pick returns the link to send on, and whether it is up: the active link
+// while it is up; else the up link heard from last, which becomes active;
+// else any link.
 func (nb *neighbor) pick(now int64) (*link, bool) {
 	nb.mu.Lock()
 	defer nb.mu.Unlock()
+	if a := nb.active; a != nil && a.up(now) {
+		return a, true
+	}
 	var best *link
 	var bestRecv int64
 	for _, l := range nb.links {
@@ -52,7 +61,11 @@ func (nb *neighbor) pick(now int64) (*link, bool) {
 		}
 	}
 	if best != nil {
+		nb.active = best
 		return best, true
+	}
+	if nb.active != nil {
+		return nb.active, false
 	}
 	if len(nb.links) > 0 {
 		return nb.links[len(nb.links)-1], false
@@ -60,47 +73,77 @@ func (nb *neighbor) pick(now int64) (*link, bool) {
 	return nil, false
 }
 
-// candidate describes the neighbor as a first hop, from its best link.
-func (nb *neighbor) candidate(now int64) Candidate {
+// describe fills in c from the link nb sends on.
+func (nb *neighbor) describe(c *Candidate, now int64) {
 	l, up := nb.pick(now)
-	c := Candidate{Hop: nb.id, Up: up, Linked: l != nil}
+	c.Up, c.Linked = up, l != nil
 	if l != nil {
 		c.RTT = time.Duration(l.rtt.Load())
 		if up {
 			c.UpFor = time.Duration(now - l.upSince.Load())
 		}
 	}
-	return c
 }
+
+func (nb *neighbor) status(now int64) []LinkStatus {
+	nb.mu.Lock()
+	defer nb.mu.Unlock()
+	out := make([]LinkStatus, 0, len(nb.links))
+	for _, l := range nb.links {
+		s := LinkStatus{
+			Dialed: l.dialed, Transport: l.transport, Endpoint: l.endpoint, Active: l == nb.active,
+			Up: l.up(now), RTT: time.Duration(l.rtt.Load()),
+			PacketsIn: l.packetsIn.Load(), PacketsOut: l.packetsOut.Load(),
+			BytesIn: l.bytesIn.Load(), BytesOut: l.bytesOut.Load(), QueueFull: l.queueFull.Load(),
+		}
+		if s.Up {
+			s.UpFor = time.Duration(now - l.upSince.Load())
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+// maxProbes is how many probes of one link may await a reply; older ones
+// are forgotten, and their late replies ignored.
+const maxProbes = 8
 
 // link is one transport link to an adjacent node, with its send queue.
 type link struct {
-	node   *Node
-	nb     *neighbor
-	tl     transport.Link
-	dialed bool
-	queue  chan *[]byte
+	node      *Node
+	nb        *neighbor
+	tl        transport.Link
+	dialed    bool
+	transport string
+	endpoint  int
+	queue     chan *[]byte
 
 	done      chan struct{}
 	closeOnce sync.Once
 
-	// Monotonic node times in nanoseconds; zero is never.
+	// Node times in nanoseconds; zero is never.
 	created   int64
 	lastRecv  atomic.Int64
 	lastSent  atomic.Int64
 	lastProbe atomic.Int64
 	upSince   atomic.Int64
 	rtt       atomic.Int64
+
+	pmu    sync.Mutex
+	probes map[uint64]int64 // token → when sent
+
+	packetsIn, packetsOut, bytesIn, bytesOut, queueFull atomic.Uint64
 }
 
 // addLink starts reading and writing tl for nb. An accepted link counts as
 // heard from: its listener authenticated it.
-func (n *Node) addLink(nb *neighbor, tl transport.Link, dialed bool) *link {
+func (n *Node) addLink(nb *neighbor, tl transport.Link, dialed bool, transportName string, endpoint int) *link {
 	now := n.now()
 	l := &link{
-		node: n, nb: nb, tl: tl, dialed: dialed,
+		node: n, nb: nb, tl: tl, dialed: dialed, transport: transportName, endpoint: endpoint,
 		queue: make(chan *[]byte, n.opts.QueueLen),
 		done:  make(chan struct{}), created: now,
+		probes: make(map[uint64]int64),
 	}
 	if !dialed {
 		l.upSince.Store(now)
@@ -127,6 +170,15 @@ func (l *link) received(now int64) {
 	l.lastRecv.Store(now)
 }
 
+func (l *link) closed() bool {
+	select {
+	case <-l.done:
+		return true
+	default:
+		return false
+	}
+}
+
 func (l *link) close() {
 	l.closeOnce.Do(func() {
 		close(l.done)
@@ -135,16 +187,20 @@ func (l *link) close() {
 	})
 }
 
-// send queues a frame and owns b from then on. A full queue drops it.
+// send queues a frame and owns b from then on. A closed link or a full
+// queue drops it.
 func (l *link) send(b *[]byte) bool {
-	select {
-	case l.queue <- b:
-		return true
-	default:
-		l.node.counters.queueFull.Add(1)
-		putBuf(b)
-		return false
+	if !l.closed() {
+		select {
+		case l.queue <- b:
+			return true
+		default:
+			l.queueFull.Add(1)
+			l.node.counters.queueFull.Add(1)
+		}
 	}
+	putBuf(b)
+	return false
 }
 
 func (l *link) writeLoop() {
@@ -153,11 +209,14 @@ func (l *link) writeLoop() {
 		case <-l.done:
 			return
 		case b := <-l.queue:
+			size := len(*b)
 			err := l.tl.WritePacket(*b)
 			putBuf(b)
 			switch {
 			case err == nil:
 				l.lastSent.Store(l.node.now())
+				l.packetsOut.Add(1)
+				l.bytesOut.Add(uint64(size))
 			case errors.Is(err, net.ErrClosed):
 				l.close()
 				return
@@ -193,6 +252,8 @@ func (l *link) readLoop() {
 			continue
 		}
 		l.received(l.node.now())
+		l.packetsIn.Add(1)
+		l.bytesIn.Add(uint64(n))
 		*b = (*b)[:n]
 		l.node.handle(l, b)
 	}
@@ -201,7 +262,8 @@ func (l *link) readLoop() {
 // tick closes the link once it has been silent for DeadAfter, and probes a
 // dialed link that hasn't both sent and received within ProbeInterval. Only
 // the dialing end probes; the other end answers, and hears from the dialer
-// at least every ProbeInterval while it is alive.
+// at least every ProbeInterval while it is alive. Every frame received
+// counts, data as much as probe replies.
 func (l *link) tick(now int64) {
 	o := l.node.opts
 	heard := l.lastRecv.Load()
@@ -220,23 +282,45 @@ func (l *link) tick(now int64) {
 	}
 }
 
+// probe sends a probe with a random token, remembered until its reply
+// comes back or it is one of more than maxProbes waiting.
 func (l *link) probe(now int64) {
+	var token [8]byte
+	_, _ = rand.Read(token[:])
+	l.pmu.Lock()
+	if len(l.probes) >= maxProbes {
+		var oldest uint64
+		first := true
+		for t, at := range l.probes {
+			if first || at < l.probes[oldest] {
+				oldest, first = t, false
+			}
+		}
+		delete(l.probes, oldest)
+	}
+	l.probes[binary.BigEndian.Uint64(token[:])] = now
+	l.pmu.Unlock()
 	l.lastProbe.Store(now)
 	b := getBuf()
 	f := (*b)[:probeSize]
 	f[0], f[1] = kindProbe, 0
-	binary.BigEndian.PutUint64(f[2:], uint64(now))
+	copy(f[2:], token[:])
 	*b = f
 	l.send(b)
 }
 
-// probeReply measures the round trip of one of this link's probes.
+// probeReply measures the round trip of one of this link's probes; a reply
+// to no probe it is waiting for is ignored.
 func (l *link) probeReply(f []byte, now int64) {
-	sent := int64(binary.BigEndian.Uint64(f[2:]))
-	rtt := now - sent
-	if !l.dialed || sent <= 0 || rtt < 0 || rtt > int64(l.node.opts.DeadAfter) {
+	token := binary.BigEndian.Uint64(f[2:])
+	l.pmu.Lock()
+	sent, ok := l.probes[token]
+	delete(l.probes, token)
+	l.pmu.Unlock()
+	if !ok {
 		return
 	}
+	rtt := now - sent
 	if old := l.rtt.Load(); old != 0 {
 		rtt = (7*old + rtt) / 8
 	}
@@ -252,9 +336,9 @@ type dialLoop struct {
 func (d *dialLoop) stop() { d.cancel() }
 
 // startDial dials nb's endpoints in priority order until one gives a link,
-// keeps that link until it dies, and starts over. A link that never heard
-// back counts as a failed dial: the next attempt tries the next endpoint,
-// after a backoff.
+// keeps that link until it dies, and starts over from the first endpoint.
+// A link that never heard back counts as a failed dial: the next attempt
+// tries the next endpoint, after a backoff.
 func (n *Node) startDial(nb *neighbor, eps []Endpoint) *dialLoop {
 	ctx, cancel := context.WithCancel(n.ctx)
 	d := &dialLoop{endpoints: eps, cancel: cancel}
@@ -267,7 +351,7 @@ func (n *Node) startDial(nb *neighbor, eps []Endpoint) *dialLoop {
 			dcancel()
 			heard := false
 			if err == nil {
-				l := n.addLink(nb, tl, true)
+				l := n.addLink(nb, tl, true, ep.Transport, next)
 				l.probe(n.now())
 				select {
 				case <-l.done:

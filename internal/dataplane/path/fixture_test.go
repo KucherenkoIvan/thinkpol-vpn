@@ -17,18 +17,32 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport/memory"
 )
 
-// Fast timings: a silent link is down after 150 ms.
+// Wall-clock timings: a silent link is down after 150 ms.
 var fastOptions = path.Options{
 	ProbeInterval: 30 * time.Millisecond,
 	DeadAfter:     150 * time.Millisecond,
 	FollowFor:     150 * time.Millisecond,
+	E2EDead:       300 * time.Millisecond,
 	RedialMin:     10 * time.Millisecond,
 	RedialMax:     100 * time.Millisecond,
 	Selector:      path.Failover{HoldDown: 500 * time.Millisecond},
 }
 
-// wait bounds every wait for something that should happen.
-const wait = 5 * time.Second
+// Timings for a fake clock, which tests step by fakeStep.
+var fakeOptions = path.Options{
+	ProbeInterval: time.Second,
+	DeadAfter:     3 * time.Second,
+	FollowFor:     3 * time.Second,
+	E2EDead:       5 * time.Second,
+	RedialMin:     5 * time.Millisecond, // wall clock
+	RedialMax:     20 * time.Millisecond,
+	Selector:      path.Failover{HoldDown: 10 * time.Second},
+}
+
+const fakeStep = 100 * time.Millisecond
+
+// wait bounds every wall-clock wait for something that should happen.
+const wait = 10 * time.Second
 
 // eachSemantics runs a test over a datagram and a stream memory transport.
 func eachSemantics(t *testing.T, test func(t *testing.T, f *fabric)) {
@@ -40,12 +54,41 @@ func eachSemantics(t *testing.T, test func(t *testing.T, f *fabric)) {
 	}
 }
 
+// eachSemanticsFake is eachSemantics with a fake clock.
+func eachSemanticsFake(t *testing.T, test func(t *testing.T, f *fabric)) {
+	for _, sem := range []memory.Semantics{memory.Datagram, memory.Stream} {
+		t.Run(sem.String(), func(t *testing.T) {
+			t.Parallel()
+			test(t, newFakeFabric(t, sem))
+		})
+	}
+}
+
+type fakeClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (c *fakeClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *fakeClock) add(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(d)
+}
+
 // fabric is a set of nodes on one memory network. Links can be silenced:
 // their packets vanish in both directions without an error, as on a
 // datagram transport whose far end died or a censor started dropping.
 type fabric struct {
-	t  *testing.T
-	tr *memory.Network
+	t     *testing.T
+	tr    *memory.Network
+	opts  path.Options
+	clock *fakeClock // nil on the wall clock
 
 	mu       sync.Mutex
 	silenced map[string]bool // "from>to"
@@ -54,13 +97,34 @@ type fabric struct {
 
 type fnode struct {
 	*path.Node
+	name    string
 	peers   *transport.PeerTable
 	inbound []transport.PeerLink
 	table   path.Table
 }
 
 func newFabric(t *testing.T, sem memory.Semantics) *fabric {
-	return &fabric{t: t, tr: memory.NewNetwork(sem), silenced: map[string]bool{}, nodes: map[string]*fnode{}}
+	return &fabric{t: t, tr: memory.NewNetwork(sem), opts: fastOptions, silenced: map[string]bool{}, nodes: map[string]*fnode{}}
+}
+
+func newFakeFabric(t *testing.T, sem memory.Semantics) *fabric {
+	f := newFabric(t, sem)
+	f.clock = &fakeClock{now: time.Unix(1_000_000, 0)}
+	f.opts = path.WatchEvery(fakeOptions, time.Millisecond)
+	f.opts.Now = f.clock.Now
+	return f
+}
+
+// advance steps the fake clock by d, giving the nodes time to probe and
+// answer at every step, and calls each (if any) after every step.
+func (f *fabric) advance(d time.Duration, each func()) {
+	for done := time.Duration(0); done < d; done += fakeStep {
+		f.clock.add(fakeStep)
+		time.Sleep(2 * time.Millisecond)
+		if each != nil {
+			each()
+		}
+	}
 }
 
 func id(name string) path.NodeID {
@@ -78,7 +142,11 @@ func hexID(name string) string {
 func (f *fabric) add(names ...string) {
 	f.t.Helper()
 	for _, name := range names {
-		n := &fnode{Node: path.NewNode(id(name), fastOptions), peers: transport.NewPeerTable()}
+		node, err := path.NewNode(id(name), f.opts)
+		if err != nil {
+			f.t.Fatal(err)
+		}
+		n := &fnode{Node: node, name: name, peers: transport.NewPeerTable()}
 		l, err := f.tr.Listen(context.Background(), transport.ListenConfig{Address: name, Peers: n.peers})
 		if err != nil {
 			f.t.Fatal(err)
@@ -86,7 +154,7 @@ func (f *fabric) add(names ...string) {
 		served := make(chan struct{})
 		go func() {
 			defer close(served)
-			_ = n.Serve(l)
+			_ = n.Serve(memory.Name, l)
 		}()
 		f.t.Cleanup(func() {
 			_ = n.Close()
@@ -109,17 +177,25 @@ func (f *fabric) node(name string) *fnode {
 	return n
 }
 
+// accept lets from dial to with a secret, and returns the secret.
+func (f *fabric) accept(to, from string, space transport.SpaceID) []byte {
+	b := f.node(to)
+	secret := []byte("secret " + from + ">" + to)
+	b.inbound = append(b.inbound, transport.PeerLink{Peer: transport.Identity{Space: space, Node: id(from)}, Verifier: secret})
+	b.peers.Set(b.inbound)
+	return secret
+}
+
 // dial makes from keep a link to to, and waits until it is up.
 func (f *fabric) dial(from, to string) {
 	f.t.Helper()
-	a, b := f.node(from), f.node(to)
-	secret := []byte("secret " + from + ">" + to)
-	b.inbound = append(b.inbound, transport.PeerLink{Peer: transport.Identity{Node: id(from)}, Verifier: secret})
-	b.peers.Set(b.inbound)
+	secret := f.accept(to, from, transport.SpaceID{})
+	a := f.node(from)
 	a.table.Links = append(a.table.Links, path.Link{Node: id(to), Endpoints: []path.Endpoint{{
-		Dialer:  silenceable{f: f, key: from + ">" + to},
-		Address: to,
-		Config:  transport.DialConfig{Credential: secret},
+		Transport: memory.Name,
+		Dialer:    silenceable{f: f, key: from + ">" + to},
+		Address:   to,
+		Config:    transport.DialConfig{Credential: secret},
 	}}})
 	a.Update(a.table)
 	f.waitUp(from, to)
@@ -136,10 +212,10 @@ func (f *fabric) route(at, dst string, next ...string) {
 	n.Update(n.table)
 }
 
-func (f *fabric) silence(from, to string) {
+func (f *fabric) silence(from, to string, on bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.silenced[from+">"+to] = true
+	f.silenced[from+">"+to] = on
 }
 
 func (f *fabric) isSilenced(key string) bool {
@@ -157,12 +233,85 @@ func (f *fabric) neighbor(at, of string) (path.NeighborStatus, bool) {
 	return path.NeighborStatus{}, false
 }
 
+func (f *fabric) isUp(at, of string) bool {
+	s, ok := f.neighbor(at, of)
+	return ok && s.Up
+}
+
+// waitUp waits until at's link to of is up. On a fake clock it steps the
+// clock meanwhile: a first dial can race the listener's table update and
+// open a link that never hears back, which goes only when DeadAfter passes.
 func (f *fabric) waitUp(at, of string) {
 	f.t.Helper()
 	eventually(f.t, at+" sees "+of+" up", func() bool {
-		s, ok := f.neighbor(at, of)
-		return ok && s.Up
+		if f.clock != nil {
+			f.clock.add(fakeStep)
+		}
+		return f.isUp(at, of)
 	})
+}
+
+// rawLink dials to as from, outside any node, and returns the link once
+// to answers a probe on it.
+func (f *fabric) rawLink(from, to string) transport.Link {
+	f.t.Helper()
+	secret := f.accept(to, from, transport.SpaceID{})
+	probe := []byte{2, 0, 1, 2, 3, 4, 5, 6, 7, 8}
+	var l transport.Link
+	// The listener takes up a table change on its own time: redial until
+	// a probe is answered, as the path layer does.
+	eventually(f.t, to+" answers a probe", func() bool {
+		try, err := f.tr.Dial(context.Background(), to, transport.DialConfig{Credential: secret})
+		if err != nil {
+			f.t.Fatal(err)
+		}
+		if err := try.WritePacket(probe); err != nil {
+			f.t.Fatal(err)
+		}
+		reply := make(chan []byte, 1)
+		go func() {
+			buf := make([]byte, transport.MaxPacketSize)
+			n, _ := try.ReadPacket(buf)
+			reply <- buf[:n]
+		}()
+		select {
+		case got := <-reply:
+			if want := append([]byte{3}, probe[1:]...); !bytes.Equal(got, want) {
+				f.t.Fatalf("probe answered with %x, want %x", got, want)
+			}
+			l = try
+			return true
+		case <-time.After(50 * time.Millisecond):
+			_ = try.Close()
+			return false
+		}
+	})
+	f.t.Cleanup(func() { _ = l.Close() })
+	return l
+}
+
+// packet is a packet frame spoken by hand.
+func packet(hops byte, dst, src string, msg []byte) []byte {
+	d, s := id(dst), id(src)
+	return append(append(append([]byte{1, hops}, d[:]...), s[:]...), msg...)
+}
+
+// WireGuard-shaped messages: what the path layer counts as signs of life.
+func wgInitiation() []byte { m := make([]byte, 148); m[0] = 1; return m }
+
+// wgMsg is a WireGuard-shaped data message carrying a tag (≤ 32 bytes).
+func wgMsg(tag string) []byte {
+	m := make([]byte, 48)
+	m[0] = 4
+	copy(m[16:], tag)
+	return m
+}
+
+func tagOf(m []byte) string {
+	if len(m) != 48 {
+		return string(m)
+	}
+	return string(bytes.TrimRight(m[16:], "\x00"))
 }
 
 func eventually(t *testing.T, what string, cond func() bool) {
@@ -172,12 +321,24 @@ func eventually(t *testing.T, what string, cond func() bool) {
 		if time.Now().After(deadline) {
 			t.Fatalf("timed out waiting until %s", what)
 		}
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(2 * time.Millisecond)
 	}
 }
 
+// exchange is one round of traffic that tolerates loss: A sends, B answers
+// whatever reached it to the endpoint it came with, as WireGuard does, and
+// A takes what came back. It returns the hops each end is on.
+func exchange(a, b *rawBind, toB conn.Endpoint, msg []byte) (aHop, bHop string) {
+	_ = a.Send([][]byte{msg}, toB)
+	if r, ok := b.drain(); ok {
+		_ = b.Send([][]byte{wgMsg("answer")}, r.ep)
+	}
+	a.drain()
+	return a.current("B"), b.current("A")
+}
+
 // silenceable dials over the fabric's network; the links it opens go quiet
-// once the fabric silences them.
+// while the fabric silences them.
 type silenceable struct {
 	f   *fabric
 	key string
@@ -225,7 +386,7 @@ type received struct {
 
 func (f *fabric) bind(at string, peers ...path.Peer) *rawBind {
 	f.t.Helper()
-	b := &rawBind{Bind: f.node(at).NewBind(), got: make(chan received, 64)}
+	b := &rawBind{Bind: f.node(at).NewBind(), got: make(chan received, 1024)}
 	if err := b.SetPeers(peers); err != nil {
 		f.t.Fatal(err)
 	}
@@ -281,17 +442,25 @@ func (b *rawBind) endpoint(t *testing.T, name string) conn.Endpoint {
 
 func (b *rawBind) send(t *testing.T, ep conn.Endpoint, msg string) {
 	t.Helper()
-	if err := b.Send([][]byte{[]byte(msg)}, ep); err != nil {
+	if err := b.Send([][]byte{wgMsg(msg)}, ep); err != nil {
 		t.Fatalf("send %q: %v", msg, err)
 	}
+}
+
+func (b *rawBind) current(peer string) string {
+	hop, _, ok := b.Current(id(peer))
+	if !ok {
+		return ""
+	}
+	return string(bytes.TrimRight(hop[:], "\x00"))
 }
 
 func (b *rawBind) expect(t *testing.T, msg string) received {
 	t.Helper()
 	select {
 	case r := <-b.got:
-		if string(r.msg) != msg {
-			t.Fatalf("got %q, want %q", r.msg, msg)
+		if tagOf(r.msg) != msg {
+			t.Fatalf("got %q, want %q", tagOf(r.msg), msg)
 		}
 		return r
 	case <-time.After(wait):
@@ -300,12 +469,42 @@ func (b *rawBind) expect(t *testing.T, msg string) received {
 	return received{}
 }
 
+// await waits for msg, passing over anything else still in flight.
+func (b *rawBind) await(t *testing.T, msg string) received {
+	t.Helper()
+	deadline := time.After(wait)
+	for {
+		select {
+		case r := <-b.got:
+			if tagOf(r.msg) == msg {
+				return r
+			}
+		case <-deadline:
+			t.Fatalf("%q never arrived", msg)
+		}
+	}
+}
+
 func (b *rawBind) expectNothing(t *testing.T, within time.Duration) {
 	t.Helper()
 	select {
 	case r := <-b.got:
-		t.Fatalf("got %q, want nothing", r.msg)
+		t.Fatalf("got %q, want nothing", tagOf(r.msg))
 	case <-time.After(within):
+	}
+}
+
+// drain empties what arrived so far and returns the last of it.
+func (b *rawBind) drain() (received, bool) {
+	var last received
+	got := false
+	for {
+		select {
+		case r := <-b.got:
+			last, got = r, true
+		default:
+			return last, got
+		}
 	}
 }
 
@@ -314,10 +513,10 @@ func keepSending(t *testing.T, from, to *rawBind, ep conn.Endpoint, msg string) 
 	t.Helper()
 	deadline := time.Now().Add(wait)
 	for time.Now().Before(deadline) {
-		_ = from.Send([][]byte{[]byte(msg)}, ep)
+		_ = from.Send([][]byte{wgMsg(msg)}, ep)
 		select {
 		case r := <-to.got:
-			if string(r.msg) == msg {
+			if tagOf(r.msg) == msg {
 				return r
 			}
 		case <-time.After(20 * time.Millisecond):

@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net"
+	"reflect"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -20,27 +22,48 @@ type Options struct {
 	// both sent and received within it (default 2 s).
 	ProbeInterval time.Duration
 	// DeadAfter is how long a link may stay silent before it counts as
-	// down and is closed; a dialed link is then redialed (default 6 s,
-	// three probes).
+	// down and is closed; a dialed link is then redialed (default three
+	// probe intervals). It must exceed ProbeInterval.
 	DeadAfter time.Duration
-	// FollowFor is how long a peer's latest path stays worth following
-	// after its last packet (default DeadAfter).
+	// FollowFor is how long the far end's latest path stays worth
+	// following after its last packet (default DeadAfter).
 	FollowFor time.Duration
+	// E2EDead is how long a Bind keeps sending a peer handshake
+	// initiations through one first hop, with nothing coming back, before
+	// it demotes that hop for the peer (default 5 s: WireGuard retries an
+	// unanswered initiation after 5 to 5.33 s, and the retry takes the
+	// next hop). Data alone gets WireGuard's 10 s keepalive timeout on
+	// top, since a peer that only receives answers no sooner, unless the
+	// peer is plainly talking through another hop. What counts as coming
+	// back: for the end of the pair that follows, anything from the peer;
+	// for the leading end, what comes through the hop it sends on. A demoted hop counts as down for that peer for E2EDead,
+	// twice as long each time it is demoted again within ten minutes;
+	// after that it must stay up for the selector's hold-down before a
+	// Failover leader returns to it.
+	E2EDead time.Duration
 	// RedialMin and RedialMax bound the backoff between dials of one
-	// adjacent node (defaults 250 ms and 5 s).
+	// adjacent node (defaults 250 ms and 5 s); RedialMax ≥ RedialMin.
 	RedialMin, RedialMax time.Duration
-	// HopLimit is what this node's packets start with (default
-	// DefaultHopLimit).
+	// HopLimit is what this node's packets start with and the most a
+	// packet it relays may keep (default DefaultHopLimit).
 	HopLimit uint8
 	// QueueLen is each link's send queue, in packets (default 256). A full
 	// queue drops.
 	QueueLen int
-	// Selector picks first hops for peers that don't bring their own
-	// (default Failover with a 20 s hold-down).
+	// Selector picks first hops for peers and next hops for routes that
+	// don't bring their own (default Failover with a 20 s hold-down).
 	Selector Selector
+	// Space is the node's space: Serve refuses links whose listener says
+	// they belong to another.
+	Space transport.SpaceID
+	// Now is the clock (default time.Now); timers that only pace the work
+	// (the liveness check, dial backoff) stay on the wall clock.
+	Now func() time.Time
+
+	watchEvery time.Duration // how often links are checked (tests)
 }
 
-func (o Options) withDefaults() Options {
+func (o Options) withDefaults() (Options, error) {
 	def := func(d *time.Duration, v time.Duration) {
 		if *d <= 0 {
 			*d = v
@@ -49,8 +72,10 @@ func (o Options) withDefaults() Options {
 	def(&o.ProbeInterval, 2*time.Second)
 	def(&o.DeadAfter, 3*o.ProbeInterval)
 	def(&o.FollowFor, o.DeadAfter)
+	def(&o.E2EDead, 5*time.Second)
 	def(&o.RedialMin, 250*time.Millisecond)
-	def(&o.RedialMax, 5*time.Second)
+	def(&o.RedialMax, max(5*time.Second, o.RedialMin))
+	def(&o.watchEvery, max(o.ProbeInterval/4, 5*time.Millisecond))
 	if o.HopLimit == 0 {
 		o.HopLimit = DefaultHopLimit
 	}
@@ -60,7 +85,16 @@ func (o Options) withDefaults() Options {
 	if o.Selector == nil {
 		o.Selector = Failover{HoldDown: 20 * time.Second}
 	}
-	return o
+	if o.Now == nil {
+		o.Now = time.Now
+	}
+	switch {
+	case o.DeadAfter <= o.ProbeInterval:
+		return o, fmt.Errorf("path: DeadAfter %v must exceed ProbeInterval %v", o.DeadAfter, o.ProbeInterval)
+	case o.RedialMax < o.RedialMin:
+		return o, fmt.Errorf("path: RedialMax %v is below RedialMin %v", o.RedialMax, o.RedialMin)
+	}
+	return o, nil
 }
 
 // Table is what a node's map section says about adjacency and forwarding.
@@ -69,36 +103,40 @@ type Table struct {
 	// Links are the adjacent nodes this node dials. Adjacent nodes that
 	// dial this node arrive through Serve instead.
 	Links []Link
-	// Routes are the forwarding table. A node forwards a packet that isn't
-	// addressed to it only along a route for its destination; nothing else
-	// is relayed.
+	// Routes are the forwarding table. A node relays a packet only along
+	// a route for its destination, and only if it came from its source or
+	// from a next hop of a route back to its source.
 	Routes []Route
 }
 
 // Link is an adjacent node this node keeps a link to.
 type Link struct {
 	Node NodeID
-	// Endpoints are the ways to reach it, in priority order.
+	// Endpoints are the ways to reach it, in priority order. The order
+	// applies when dialing: a link carries on through the endpoint it got,
+	// and the first endpoint is tried again only once that link dies.
 	Endpoints []Endpoint
 }
 
 // Endpoint is one way to dial an adjacent node: a transport's dialer, the
 // address, and what the map says about the link.
 type Endpoint struct {
-	Dialer  transport.Dialer
-	Address string
-	Config  transport.DialConfig
+	// Transport is the transport's name in the registry, for status.
+	Transport string
+	Dialer    transport.Dialer
+	Address   string
+	Config    transport.DialConfig
 }
 
 // Route sends packets for Destination through one of NextHops, adjacent
-// nodes in priority order; the next hop may be the destination itself.
+// nodes in priority order; a next hop may be the destination itself.
 type Route struct {
 	Destination NodeID
 	NextHops    []NodeID
+	// Selector picks among NextHops; nil means the node's. Its state, if
+	// any, is its own: pass the same value again to keep it.
+	Selector Selector
 }
-
-// ErrClosed is returned once the node is closed.
-var ErrClosed = errors.New("path: node closed")
 
 // Node is one node's path layer: its links to adjacent nodes, its
 // forwarding table, and the Binds of its WireGuard devices. It relays
@@ -115,14 +153,14 @@ type Node struct {
 	life   sync.Mutex // orders spawn against Close
 	wg     sync.WaitGroup
 
-	mu    sync.Mutex
+	mu    sync.Mutex // the table, the dials and the Binds' peers
 	dials map[NodeID]*dialLoop
 	binds map[*Bind]struct{}
 
 	nmu       sync.RWMutex
 	neighbors map[NodeID]*neighbor
 
-	routes atomic.Pointer[map[NodeID][]NodeID]
+	routes atomic.Pointer[map[NodeID]*routeState]
 	peers  atomic.Pointer[map[NodeID]*peerState] // every Bind's peers
 
 	counters counters
@@ -130,20 +168,36 @@ type Node struct {
 
 // NewNode starts the path layer of node id. Give it a Table with Update and
 // its listeners with Serve.
-func NewNode(id NodeID, opts Options) *Node {
+func NewNode(id NodeID, opts Options) (*Node, error) {
+	if id == (NodeID{}) {
+		return nil, errors.New("path: zero node id")
+	}
+	opts, err := opts.withDefaults()
+	if err != nil {
+		return nil, err
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	n := &Node{
-		id: id, opts: opts.withDefaults(), start: time.Now(),
+		id: id, opts: opts, start: opts.Now(),
 		ctx: ctx, cancel: cancel,
 		dials:     make(map[NodeID]*dialLoop),
 		binds:     make(map[*Bind]struct{}),
 		neighbors: make(map[NodeID]*neighbor),
 	}
-	n.routes.Store(&map[NodeID][]NodeID{})
+	n.routes.Store(&map[NodeID]*routeState{})
 	n.peers.Store(&map[NodeID]*peerState{})
 	n.spawn(n.watch)
-	return n
+	return n, nil
 }
+
+// ID is the node's id.
+func (n *Node) ID() NodeID { return n.id }
+
+// now is nanoseconds on the node's clock since it started, never zero,
+// which means "never" in the timestamps below.
+func (n *Node) now() int64 { return max(int64(n.opts.Now().Sub(n.start)), 0) + 1 }
+
+func (n *Node) wall(t int64) time.Time { return n.start.Add(time.Duration(t - 1)) }
 
 // spawn runs f on a goroutine Close waits for, unless the node is closed.
 func (n *Node) spawn(f func()) bool {
@@ -160,35 +214,12 @@ func (n *Node) spawn(f func()) bool {
 	return true
 }
 
-// ID is the node's id.
-func (n *Node) ID() NodeID { return n.id }
-
-// now is monotonic nanoseconds since the node started, never zero, which
-// means "never" in the timestamps below.
-func (n *Node) now() int64 { return int64(time.Since(n.start)) + 1 }
-
 // Update replaces the node's table. Links whose endpoints didn't change
-// carry on; the rest are closed and dialed anew. Entries naming no node,
-// the node itself, or nowhere to go are skipped: the map's reader doesn't
-// rule them out.
+// carry on, the rest are closed and dialed anew; routes that stay keep
+// their state. Entries naming no node, the node itself, or nowhere to go
+// are skipped: the map's reader doesn't rule them out. Adjacent nodes
+// nothing refers to any more, and with no link left, are forgotten.
 func (n *Node) Update(t Table) {
-	routes := make(map[NodeID][]NodeID, len(t.Routes))
-	for _, r := range t.Routes {
-		if r.Destination == (NodeID{}) || r.Destination == n.id {
-			continue
-		}
-		var hops []NodeID
-		for _, h := range r.NextHops {
-			if h != (NodeID{}) && h != n.id && !slices.Contains(hops, h) {
-				hops = append(hops, h)
-			}
-		}
-		if len(hops) > 0 && routes[r.Destination] == nil {
-			routes[r.Destination] = hops
-		}
-	}
-	n.routes.Store(&routes)
-
 	want := make(map[NodeID][]Endpoint, len(t.Links))
 	for _, l := range t.Links {
 		if l.Node == (NodeID{}) || l.Node == n.id || want[l.Node] != nil {
@@ -204,11 +235,33 @@ func (n *Node) Update(t Table) {
 			want[l.Node] = eps
 		}
 	}
+
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if n.ctx.Err() != nil {
 		return
 	}
+	old := *n.routes.Load()
+	routes := make(map[NodeID]*routeState, len(t.Routes))
+	for _, r := range t.Routes {
+		if r.Destination == (NodeID{}) || r.Destination == n.id || routes[r.Destination] != nil {
+			continue
+		}
+		hops := n.cleanHops(r.NextHops)
+		if len(hops) == 0 {
+			continue
+		}
+		rs := old[r.Destination]
+		if rs == nil {
+			rs = &routeState{dst: r.Destination}
+		}
+		rs.mu.Lock()
+		rs.hops, rs.selector = hops, r.Selector
+		rs.mu.Unlock()
+		routes[r.Destination] = rs
+	}
+	n.routes.Store(&routes)
+
 	for id, d := range n.dials {
 		if eps, ok := want[id]; !ok || !sameEndpoints(d.endpoints, eps) {
 			d.stop()
@@ -220,21 +273,66 @@ func (n *Node) Update(t Table) {
 			n.dials[id] = n.startDial(n.neighbor(id), eps)
 		}
 	}
+	n.pruneLocked()
+}
+
+func (n *Node) cleanHops(in []NodeID) []NodeID {
+	var hops []NodeID
+	for _, h := range in {
+		if h != (NodeID{}) && h != n.id && !slices.Contains(hops, h) {
+			hops = append(hops, h)
+		}
+	}
+	return hops
+}
+
+// pruneLocked forgets adjacent nodes with no link that neither the table
+// nor a Bind refers to. Callers hold n.mu.
+func (n *Node) pruneLocked() {
+	used := make(map[NodeID]bool)
+	for id := range n.dials {
+		used[id] = true
+	}
+	for _, rs := range *n.routes.Load() {
+		for _, h := range rs.hops {
+			used[h] = true
+		}
+	}
+	for _, ps := range *n.peers.Load() {
+		for _, h := range *ps.hops.Load() {
+			used[h] = true
+		}
+	}
+	n.nmu.Lock()
+	defer n.nmu.Unlock()
+	for id, nb := range n.neighbors {
+		if !used[id] && len(nb.all()) == 0 {
+			delete(n.neighbors, id)
+		}
+	}
 }
 
 func sameEndpoints(a, b []Endpoint) bool {
 	return slices.EqualFunc(a, b, func(x, y Endpoint) bool {
-		return x.Dialer == y.Dialer && x.Address == y.Address &&
+		return x.Transport == y.Transport && sameDialer(x.Dialer, y.Dialer) && x.Address == y.Address &&
 			bytes.Equal(x.Config.Credential, y.Config.Credential) &&
 			bytes.Equal(x.Config.Settings, y.Config.Settings) &&
 			x.Config.Shaping == y.Config.Shaping
 	})
 }
 
-// Serve accepts links from l until l or the node is closed, and returns
-// nil when the node closed first. Each accepted link belongs to the
-// adjacent node the listener authenticated.
-func (n *Node) Serve(l transport.Listener) error {
+// sameDialer compares dialers without panicking on types == can't compare;
+// such dialers are never the same, so their links are redialed.
+func sameDialer(a, b transport.Dialer) bool {
+	ta, tb := reflect.TypeOf(a), reflect.TypeOf(b)
+	return ta == tb && (ta == nil || ta.Comparable() && a == b)
+}
+
+// Serve accepts links from l, a listener of the named transport, until l
+// or the node is closed, and returns nil when the node closed first. Each
+// accepted link belongs to the adjacent node the listener authenticated;
+// links of another space are closed.
+func (n *Node) Serve(transportName string, l transport.Listener) error {
 	n.life.Lock()
 	if n.ctx.Err() != nil {
 		n.life.Unlock()
@@ -260,11 +358,15 @@ func (n *Node) Serve(l transport.Listener) error {
 			}
 			continue
 		}
-		if peer.Node == (NodeID{}) || peer.Node == n.id {
+		switch {
+		case peer.Space != n.opts.Space:
+			n.counters.otherSpace.Add(1)
 			_ = tl.Close()
-			continue
+		case peer.Node == (NodeID{}) || peer.Node == n.id:
+			_ = tl.Close()
+		default:
+			n.addLink(n.neighbor(peer.Node), tl, false, transportName, -1)
 		}
-		n.addLink(n.neighbor(peer.Node), tl, false)
 	}
 }
 
@@ -292,15 +394,13 @@ func (n *Node) Close() error {
 }
 
 func (n *Node) neighbor(id NodeID) *neighbor {
-	n.nmu.RLock()
-	nb := n.neighbors[id]
-	n.nmu.RUnlock()
-	if nb != nil {
+	if nb := n.lookupNeighbor(id); nb != nil {
 		return nb
 	}
 	n.nmu.Lock()
 	defer n.nmu.Unlock()
-	if nb = n.neighbors[id]; nb == nil {
+	nb := n.neighbors[id]
+	if nb == nil {
 		nb = &neighbor{id: id}
 		n.neighbors[id] = nb
 	}
@@ -313,10 +413,21 @@ func (n *Node) lookupNeighbor(id NodeID) *neighbor {
 	return n.neighbors[id]
 }
 
-// watch closes links that went silent and probes dialed links.
+// candidate describes hop h from this node's links to it.
+func (n *Node) candidate(h NodeID, now int64) Candidate {
+	c := Candidate{Hop: h, HeardVia: -1}
+	if nb := n.lookupNeighbor(h); nb != nil {
+		nb.describe(&c, now)
+	}
+	return c
+}
+
+// watch closes links that went silent, probes dialed links, and now and
+// then forgets adjacent nodes no longer used.
 func (n *Node) watch() {
-	tick := time.NewTicker(max(n.opts.ProbeInterval/4, 5*time.Millisecond))
+	tick := time.NewTicker(n.opts.watchEvery)
 	defer tick.Stop()
+	var pruned int64
 	for {
 		select {
 		case <-n.ctx.Done():
@@ -324,6 +435,12 @@ func (n *Node) watch() {
 		case <-tick.C:
 		}
 		now := n.now()
+		if now-pruned >= int64(n.opts.DeadAfter) {
+			n.mu.Lock()
+			n.pruneLocked()
+			n.mu.Unlock()
+			pruned = now
+		}
 		n.nmu.RLock()
 		nbs := make([]*neighbor, 0, len(n.neighbors))
 		for _, nb := range n.neighbors {
@@ -351,6 +468,8 @@ func (n *Node) handle(l *link, b *[]byte) {
 	case kindProbeReply:
 		if len(f) == probeSize {
 			l.probeReply(f, n.now())
+			putBuf(b)
+			return
 		}
 	case kindPacket:
 		h, ok := parsePacket(f)
@@ -375,43 +494,40 @@ func (n *Node) deliver(src, via NodeID, b *[]byte) {
 		putBuf(b)
 		return
 	}
-	ps.bind.deliver(ps, via, b, n.now())
+	ps.bind.Load().deliver(ps, via, b, n.now())
 }
 
-// forward relays a packet along this node's route for its destination,
-// never back to the neighbor it came from.
+// forward relays a packet along this node's route for its destination.
+// The packet must come from its source or from a next hop of the route
+// back to its source (a reverse-path check), and never goes back to the
+// neighbor it came from.
 func (n *Node) forward(from *link, h header, b *[]byte) {
-	hops := (*n.routes.Load())[h.dst]
+	routes := *n.routes.Load()
+	rs := routes[h.dst]
+	back := routes[h.src]
+	hops := min(h.hopLimit, n.opts.HopLimit)
 	switch {
-	case hops == nil:
+	case rs == nil:
 		n.counters.noRoute.Add(1)
-	case h.hopLimit <= 1:
+	case h.src != from.nb.id && (back == nil || !back.hasHop(from.nb.id)):
+		n.counters.spoofed.Add(1)
+	case hops <= 1:
 		n.counters.hopLimit.Add(1)
 	default:
 		now := n.now()
-		var to, fallback *link
-		for _, id := range hops {
-			nb := n.lookupNeighbor(id)
-			if id == from.nb.id || nb == nil {
-				continue
-			}
-			best, up := nb.pick(now)
-			if up {
-				to = best
-				break
-			}
-			if fallback == nil {
-				fallback = best
+		if back != nil {
+			if t := wgType((*b)[HeaderSize:]); t != 0 && t != wgCookie {
+				back.heardFrom(from.nb.id, now)
 			}
 		}
-		if to == nil {
-			to = fallback
-		}
+		// The end with the lower id leads; follow the destination's path
+		// only if it is the leader.
+		to := rs.pick(n, from.nb.id, bytes.Compare(h.dst[:], h.src[:]) < 0, now)
 		if to == nil {
 			n.counters.noPath.Add(1)
 			break
 		}
-		(*b)[1] = h.hopLimit - 1
+		(*b)[1] = hops - 1
 		if to.send(b) {
 			n.counters.forwarded.Add(1)
 		}
@@ -420,47 +536,154 @@ func (n *Node) forward(from *link, h header, b *[]byte) {
 	putBuf(b)
 }
 
+// routeState is one route and what it has learnt: the next hop in use and
+// the next hops the destination's own packets arrive through.
+type routeState struct {
+	dst NodeID
+
+	mu        sync.Mutex
+	hops      []NodeID
+	selector  Selector
+	current   NodeID
+	since     int64
+	heard     map[NodeID]int64 // next hop → last packet from dst through it
+	lastVia   NodeID
+	lastHeard int64
+	cands     []Candidate
+}
+
+func (rs *routeState) hasHop(h NodeID) bool {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	return slices.Contains(rs.hops, h)
+}
+
+func (rs *routeState) heardFrom(via NodeID, now int64) {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	if rs.heard == nil {
+		rs.heard = make(map[NodeID]int64)
+	}
+	rs.heard[via] = now
+	rs.lastVia, rs.lastHeard = via, now
+}
+
+// pick chooses the next hop's link, never exclude (split horizon).
+func (rs *routeState) pick(n *Node, exclude NodeID, follow bool, now int64) *link {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	cands := rs.cands[:0]
+	for _, h := range rs.hops {
+		c := n.candidate(h, now)
+		if h == exclude {
+			c = Candidate{Hop: h, HeardVia: -1}
+		}
+		if at, ok := rs.heard[h]; ok {
+			c.HeardVia = time.Duration(now - at)
+		}
+		c.Followed = follow && h == rs.lastVia && now-rs.lastHeard < int64(n.opts.FollowFor)
+		cands = append(cands, c)
+	}
+	rs.cands = cands
+	sel := rs.selector
+	if sel == nil {
+		sel = n.opts.Selector
+	}
+	hop, ok := sel.Select(rs.current, cands)
+	if !ok || hop == exclude || !slices.Contains(rs.hops, hop) {
+		return nil
+	}
+	if hop != rs.current {
+		rs.current, rs.since = hop, now
+	}
+	nb := n.lookupNeighbor(hop)
+	if nb == nil {
+		return nil
+	}
+	l, _ := nb.pick(now)
+	return l
+}
+
+// Route reports the next hop the node last relayed packets for dst
+// through, and since when.
+func (n *Node) Route(dst NodeID) (hop NodeID, since time.Time, ok bool) {
+	rs := (*n.routes.Load())[dst]
+	if rs == nil {
+		return NodeID{}, time.Time{}, false
+	}
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	if rs.current == (NodeID{}) {
+		return NodeID{}, time.Time{}, false
+	}
+	return rs.current, n.wall(rs.since), true
+}
+
 // Counters are what a node did with packets since it started.
 type Counters struct {
-	Sent      uint64 // packets this node's Binds sent
-	Delivered uint64 // packets handed to a Bind
+	Sent      uint64 // packets this node's Binds queued on a link
+	Delivered uint64 // packets a WireGuard device took from a Bind
 	Forwarded uint64 // packets relayed toward their destination
+	Demotions uint64 // first hops a Bind demoted for a peer (E2EDead)
 	// Dropped, by reason.
 	NoRoute     uint64 // not for this node, and no route for the destination
+	Spoofed     uint64 // from a neighbor that isn't on a path from the source
 	HopLimit    uint64 // would have reached the next node with no hops left
 	NoPath      uint64 // no link to any next or first hop
 	UnknownPeer uint64 // for this node, from a node no Bind has as a peer
 	QueueFull   uint64 // a link's send queue or a Bind's receive queue was full
-	Malformed   uint64 // not a frame this node understands
+	Malformed   uint64 // not a frame this node understands, or too long for WireGuard
+	OtherSpace  uint64 // links refused: their listener put them in another space
 }
 
 type counters struct {
-	sent, delivered, forwarded                        atomic.Uint64
-	noRoute, hopLimit, noPath, unknownPeer, queueFull atomic.Uint64
-	malformed                                         atomic.Uint64
+	sent, delivered, forwarded, demotions           atomic.Uint64
+	noRoute, spoofed, hopLimit, noPath, unknownPeer atomic.Uint64
+	queueFull, malformed, otherSpace                atomic.Uint64
 }
 
 // Counters returns the node's counters.
 func (n *Node) Counters() Counters {
 	c := &n.counters
 	return Counters{
-		Sent: c.sent.Load(), Delivered: c.delivered.Load(), Forwarded: c.forwarded.Load(),
-		NoRoute: c.noRoute.Load(), HopLimit: c.hopLimit.Load(), NoPath: c.noPath.Load(),
+		Sent: c.sent.Load(), Delivered: c.delivered.Load(), Forwarded: c.forwarded.Load(), Demotions: c.demotions.Load(),
+		NoRoute: c.noRoute.Load(), Spoofed: c.spoofed.Load(), HopLimit: c.hopLimit.Load(), NoPath: c.noPath.Load(),
 		UnknownPeer: c.unknownPeer.Load(), QueueFull: c.queueFull.Load(), Malformed: c.malformed.Load(),
+		OtherSpace: c.otherSpace.Load(),
 	}
 }
 
-// NeighborStatus is the state of the links to one adjacent node.
+// NeighborStatus is the state of the links to one adjacent node. Status
+// holds no network addresses, so it may go into telemetry.
 type NeighborStatus struct {
 	Node   NodeID
-	Links  int
 	Up     bool
 	UpFor  time.Duration
 	RTT    time.Duration
 	Dialed bool // this node dials it (it is in the table's Links)
+	Links  []LinkStatus
 }
 
-// Neighbors reports every adjacent node the node has heard of.
+// LinkStatus is one link to an adjacent node.
+type LinkStatus struct {
+	Dialed    bool
+	Transport string
+	// Endpoint is the index of the dialed endpoint in the table's Link;
+	// -1 for a link the neighbor dialed.
+	Endpoint int
+	// Active: the link the neighbor's traffic goes out on.
+	Active     bool
+	Up         bool
+	UpFor      time.Duration
+	RTT        time.Duration
+	PacketsIn  uint64
+	PacketsOut uint64
+	BytesIn    uint64
+	BytesOut   uint64
+	QueueFull  uint64
+}
+
+// Neighbors reports every adjacent node the node knows of.
 func (n *Node) Neighbors() []NeighborStatus {
 	now := n.now()
 	n.mu.Lock()
@@ -470,12 +693,17 @@ func (n *Node) Neighbors() []NeighborStatus {
 	}
 	n.mu.Unlock()
 	n.nmu.RLock()
-	defer n.nmu.RUnlock()
-	out := make([]NeighborStatus, 0, len(n.neighbors))
-	for id, nb := range n.neighbors {
-		c := nb.candidate(now)
+	nbs := make([]*neighbor, 0, len(n.neighbors))
+	for _, nb := range n.neighbors {
+		nbs = append(nbs, nb)
+	}
+	n.nmu.RUnlock()
+	out := make([]NeighborStatus, 0, len(nbs))
+	for _, nb := range nbs {
+		c := Candidate{Hop: nb.id}
+		nb.describe(&c, now)
 		out = append(out, NeighborStatus{
-			Node: id, Links: len(nb.all()), Up: c.Up, UpFor: c.UpFor, RTT: c.RTT, Dialed: dialed[id],
+			Node: nb.id, Up: c.Up, UpFor: c.UpFor, RTT: c.RTT, Dialed: dialed[nb.id], Links: nb.status(now),
 		})
 	}
 	slices.SortFunc(out, func(a, b NeighborStatus) int { return bytes.Compare(a.Node[:], b.Node[:]) })

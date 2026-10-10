@@ -47,38 +47,53 @@ func TestFailover(t *testing.T) {
 	}
 }
 
-// A primary that flaps faster than the hold-down never takes traffic back.
-func TestFailoverDoesNotFlap(t *testing.T) {
+// A primary that comes and goes: traffic returns to it only once it has
+// been up for the hold-down, then and not later, and leaves it only when it
+// goes down.
+func TestFailoverHysteresis(t *testing.T) {
 	const hold = 10 * time.Second
 	sel := path.Failover{HoldDown: hold}
 	rng := rand.New(rand.NewPCG(1, 2))
+	backup := path.Candidate{Hop: id("R2"), Up: true, UpFor: time.Hour, Linked: true}
 	current := id("R2")
-	var primaryUpFor time.Duration
-	switches := 0
-	for range 10000 {
-		step := time.Duration(rng.IntN(3000)) * time.Millisecond
-		primary := path.Candidate{Hop: id("R1"), Linked: true}
-		if rng.IntN(4) > 0 { // up three steps in four, never 10 s in a row
-			primaryUpFor += step
-			primary.Up, primary.UpFor = true, primaryUpFor
-		} else {
-			primaryUpFor = 0
+	primary := path.Candidate{Hop: id("R1"), Linked: true}
+	returns, leaves := 0, 0
+	for step := range 20000 {
+		// Runs of up and down average 10 s in 500 ms steps: some outlast
+		// the hold-down, most don't.
+		if rng.IntN(20) == 0 {
+			primary.Up = !primary.Up
+			primary.UpFor = 0
+		} else if primary.Up {
+			primary.UpFor += 500 * time.Millisecond
 		}
-		if primary.UpFor >= hold {
-			primaryUpFor = 0 // a jittery primary: drops before the hold-down
-			primary.Up, primary.UpFor = false, 0
-		}
-		backup := path.Candidate{Hop: id("R2"), Up: true, UpFor: time.Hour, Linked: true}
 		got, ok := sel.Select(current, []path.Candidate{primary, backup})
 		if !ok {
 			t.Fatal("no hop picked")
 		}
-		if got != current {
-			switches++
-			current = got
+		switch {
+		case got == current:
+			if current == id("R2") && primary.Up && primary.UpFor >= hold {
+				t.Fatalf("step %d: stayed on the backup with the primary up for %v", step, primary.UpFor)
+			}
+			if current == id("R1") && !primary.Up {
+				t.Fatalf("step %d: stayed on a primary that is down", step)
+			}
+		case got == id("R1"):
+			if !primary.Up || primary.UpFor < hold {
+				t.Fatalf("step %d: returned to the primary after %v up", step, primary.UpFor)
+			}
+			returns++
+		default:
+			if primary.Up {
+				t.Fatalf("step %d: left the primary while it was up", step)
+			}
+			leaves++
 		}
+		current = got
 	}
-	if switches != 0 {
-		t.Fatalf("switched %d times between a flapping primary and a steady backup", switches)
+	if returns == 0 || leaves == 0 {
+		t.Fatalf("%d returns and %d departures: the run tested nothing", returns, leaves)
 	}
+	t.Logf("%d returns to the primary, %d departures", returns, leaves)
 }

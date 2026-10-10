@@ -61,7 +61,7 @@ func TestPathConfigSkipsWhatItCannotUse(t *testing.T) {
 	if len(c.Table.Links) != 1 || c.Table.Links[0].Node != pid(relay) || len(c.Table.Links[0].Endpoints) != 1 {
 		t.Fatalf("links %+v, want the relay with its one good endpoint", c.Table.Links)
 	}
-	if ep := c.Table.Links[0].Endpoints[0]; ep.Address != "192.0.2.1:4500" || !bytes.Equal(ep.Config.Credential, secret) || ep.Dialer == nil {
+	if ep := c.Table.Links[0].Endpoints[0]; ep.Address != "192.0.2.1:4500" || ep.Transport != "udp" || !bytes.Equal(ep.Config.Credential, secret) || ep.Dialer == nil {
 		t.Fatalf("endpoint %+v", ep)
 	}
 	want := []path.Route{{Destination: pid(device), NextHops: []path.NodeID{pid(device)}}}
