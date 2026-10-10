@@ -75,6 +75,12 @@ const RouteProtocol = 84                               // linux: rtnetlink proto
 - [x] 12 Notes updated for TP-019 (metrics) and TP-018 (WatchDefaultRoute later, delete-then-add).
 - [x] Tests for the gaps: interface recreate, outside removal, IPv6 takeover (gateway change over a leftover), ctx cancellation midway (`TestCancelledApplyLeavesNothing`), third-party MTU change, IPv4/IPv6 different prefix, normalized duplicate keys, two configurators in one namespace.
 
+### Round 3 (delta review)
+- [ ] R3.1 Per-owner identity: the constructor takes an owner role (documented enum), each with its own route protocol number; liveness is an exclusive flock per (namespace inode, owner) held for the configurator's life (O_CLOEXEC); a second configurator of the same owner in the same namespace fails at construction with ErrBusy; different owners never adopt each other's routes (another owner's or a foreign route at the same key → ErrConflict). Replaces the namespace-wide `alone` heuristic, which let a configurator created before another take the other's routes.
+- [ ] R3.2 Takeover: every route with our protocol is ours (the lock guarantees leftovers are a dead predecessor's): adopt those the config wants, delete those it doesn't (undo re-adds them if the Apply fails); leftovers outside the new config no longer linger and cause ErrConflict later.
+- [ ] R3.3 Validate rejects Metric > math.MaxUint32.
+- [ ] R3.4 Tests: reversed-order creation (different owners → ErrConflict, same owner → ErrBusy), crash config differs from the new config, two owners crash/restart independently, metric bound. Port doc and Notes for TP-008/009/018/019 updated.
+
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-10 backlog → in-progress — owner: agent-tp-007, branch: tp-007-netcfg-linux
@@ -82,3 +88,4 @@ const RouteProtocol = 84                               // linux: rtnetlink proto
 - 2026-10-10 review → has-errors — review findings 1–12
 - 2026-10-10 has-errors → in-progress — owner: agent-tp-007, fixing review findings
 - 2026-10-10 in-progress → review — findings 1–12 fixed; make lint, make test green; lab-gotest (netcfg) green 3 runs in a row
+- 2026-10-10 review → has-errors — delta review (round 3): takeover defects, metric overflow, per-owner liveness
