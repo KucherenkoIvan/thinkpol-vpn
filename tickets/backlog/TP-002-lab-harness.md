@@ -21,6 +21,7 @@ A reproducible Docker environment where several thinkpol nodes run on separate n
 - Go test package `lab/` behind the `lab` build tag: helpers to exec in a container, wait for conditions, capture packets on the router for assertions.
 - `make lab-up` / `lab-test` / `lab-down`; `lab-test` brings the lab up, runs the tests, tears it down.
 - A smoke test proving the harness: `device-a` reaches the `internet` target through the router (no thinkpol yet).
+- Lab runs are isolated per worktree, so several agents can run `make lab-test` at the same time: the Compose project name is derived from the worktree/branch, no fixed `container_name`s, and no fixed subnets (let Docker allocate them, or allocate them per project without collisions). Helpers address containers through the project, never by a hard-coded name.
 
 ## Out of scope
 Censor modules (TP-024 onwards).
@@ -29,6 +30,7 @@ Censor modules (TP-024 onwards).
 - [ ] `make lab-test` passes from a clean checkout with only Docker and Go installed
 - [ ] tests can capture and inspect packets at the router
 - [ ] `lab/README.md` explains how to add a node and a test
+- [ ] two lab runs from two worktrees run concurrently without interfering (no shared container names, networks or subnets; tearing one down leaves the other running)
 
 ## Log
 - 2026-10-10 created in backlog
