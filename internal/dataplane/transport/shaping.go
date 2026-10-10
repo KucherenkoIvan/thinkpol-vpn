@@ -8,18 +8,22 @@ import (
 	"time"
 
 	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/reflect/protoreflect"
 
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/shaping"
 	transportv1 "github.com/KucherenkoIvan/thinkpol-vpn/proto/gen/thinkpol/transport/v1"
 )
 
 var (
 	// ErrInvalidShaping marks shaping settings that make no sense on any
 	// transport.
-	ErrInvalidShaping = errors.New("transport: invalid shaping")
+	ErrInvalidShaping = shaping.ErrInvalid
 	// ErrUnsupportedShaping marks shaping settings a transport can't honour.
 	// It refuses the link rather than shaping less than asked.
-	ErrUnsupportedShaping = errors.New("transport: shaping not supported")
+	ErrUnsupportedShaping = shaping.ErrUnsupported
+	// ErrSettingsRefused marks a live link closed because the table changed
+	// its settings or shaping to something the transport refuses (the
+	// cause wraps why); its credential is still in the table.
+	ErrSettingsRefused = errors.New("transport: new link settings refused")
 )
 
 // Shaping is how one end of a link shapes what it sends (C6): the sizes and
@@ -28,13 +32,18 @@ var (
 // listening end's with its [PeerLink]. Receivers undo any shaping from the
 // wire format alone, so the ends never negotiate and need not agree. The
 // zero value is no shaping; the map encodes it as the protobuf message
-// thinkpol.transport.v1.Shaping ([ParseShaping]).
+// thinkpol.transport.v1.Shaping ([ParseShaping], [Shaping.Marshal]), whose
+// rules live in package internal/shaping.
 //
 // An adapter honours every setting it accepts and refuses, with
 // [ErrUnsupportedShaping], a link that asks for one it doesn't implement
 // ([ShapingSupport]). Padding and cover units are inside the transport's
 // encryption, so shaping never weakens its authentication or replay
 // protection.
+//
+// Batching, jitter and held control packets delay what a link carries, so
+// a round trip measured through a shaped link is an upper bound: see
+// [Shaping.MaxDelay] and [ControlWriter].
 type Shaping struct {
 	Padding Padding
 	// BatchWindow is how long the sender may hold a packet to send it
@@ -62,17 +71,16 @@ const (
 	PadRandom
 )
 
-// MaxBuckets is the most bucket sizes a padding has.
-const MaxBuckets = 16
-
 // Shaping limits that hold for every transport; adapters may be stricter.
 const (
+	// MaxBuckets is the most bucket sizes a padding has.
+	MaxBuckets = shaping.MaxBuckets
 	// MaxShapingDelay bounds BatchWindow and Jitter: more would stall the
 	// TCP connections inside the tunnel.
-	MaxShapingDelay = time.Second
+	MaxShapingDelay = shaping.MaxDelay
 	// MinCoverInterval and MaxCoverInterval bound CoverInterval.
-	MinCoverInterval = 10 * time.Millisecond
-	MaxCoverInterval = time.Hour
+	MinCoverInterval = shaping.MinCoverInterval
+	MaxCoverInterval = shaping.MaxCoverInterval
 )
 
 // Padding is how a sender grows the units it sends, inside their
@@ -100,7 +108,10 @@ func (p Padding) Size(size int) int {
 			}
 		}
 	case PadRandom:
-		return size + int(p.Min) + rand.IntN(int(p.Max-p.Min)+1) //nolint:gosec // sizes, not secrets: the unit is encrypted either way
+		// math/rand/v2's global source is ChaCha8, seeded by the runtime from
+		// the OS: an observer can't predict it, which is all a padding length
+		// needs, and it costs no system call per packet.
+		return size + int(p.Min) + rand.IntN(int(p.Max-p.Min)+1) //nolint:gosec // see above
 	}
 	return size
 }
@@ -148,59 +159,86 @@ func MaxPacket(t Transport, s Shaping, maxUnit int) int {
 	return min(max(s.Padding.ceiling(maxUnit)-t.Overhead(s), 0), MaxPacketSize)
 }
 
+// MaxDelay is the most this end's shaping delays a packet before it leaves:
+// BatchWindow plus Jitter. A control packet ([ControlWriter]) may wait up to
+// MaxControlHold more. A round trip measured through shaped links is an
+// upper bound, off by up to both ends' MaxDelay.
+func (s Shaping) MaxDelay() time.Duration { return s.BatchWindow + s.Jitter }
+
 // IsZero reports whether s is no shaping.
 func (s Shaping) IsZero() bool { return s == Shaping{} }
 
 // Validate checks s against the rules every transport shares; errors match
 // ErrInvalidShaping.
 func (s Shaping) Validate() error {
+	_, err := s.message()
+	return err
+}
+
+// message is s as the map's message, checked.
+func (s Shaping) message() (*transportv1.Shaping, error) {
 	invalid := func(format string, args ...any) error {
 		return fmt.Errorf("%w: %s", ErrInvalidShaping, fmt.Sprintf(format, args...))
 	}
+	pb := &transportv1.Shaping{}
 	p := s.Padding
 	switch p.Mode {
 	case PadNone:
 		if p != (Padding{}) {
-			return invalid("padding sizes without a padding mode")
+			return nil, invalid("padding sizes without a padding mode")
 		}
 	case PadToBuckets:
 		if p.Min != 0 || p.Max != 0 {
-			return invalid("random bounds on bucket padding")
+			return nil, invalid("random bounds on bucket padding")
 		}
-		if p.Buckets[0] == 0 {
-			return invalid("bucket padding without buckets")
-		}
-		for i := 1; i < MaxBuckets; i++ {
-			b, prev := p.Buckets[i], p.Buckets[i-1]
-			if b != 0 && (prev == 0 || b <= prev) {
-				return invalid("buckets not strictly ascending: %d after %d", b, prev)
+		var sizes []uint32
+		for i, b := range p.Buckets {
+			if b == 0 {
+				if i+1 < MaxBuckets && p.Buckets[i+1] != 0 {
+					return nil, invalid("a zero bucket before %d", p.Buckets[i+1])
+				}
+				continue
 			}
+			sizes = append(sizes, uint32(b))
 		}
+		pb.Padding = &transportv1.Shaping_Buckets{Buckets: &transportv1.PadToBuckets{Sizes: sizes}}
 	case PadRandom:
 		if p.Buckets != ([MaxBuckets]uint16{}) {
-			return invalid("buckets on random padding")
+			return nil, invalid("buckets on random padding")
 		}
-		if p.Max == 0 || p.Min > p.Max {
-			return invalid("random padding of [%d, %d] bytes", p.Min, p.Max)
-		}
+		pb.Padding = &transportv1.Shaping_Random{Random: &transportv1.PadRandom{Min: uint32(p.Min), Max: uint32(p.Max)}}
 	default:
-		return invalid("padding mode %d", p.Mode)
+		return nil, invalid("padding mode %d", p.Mode)
 	}
-	for name, d := range map[string]time.Duration{"batch window": s.BatchWindow, "jitter": s.Jitter} {
-		if d < 0 || d > MaxShapingDelay || d%time.Microsecond != 0 {
-			return invalid("%s of %v (whole microseconds up to %v)", name, d, MaxShapingDelay)
+	us := func(name string, d, limit time.Duration) (uint32, error) {
+		if d < 0 || d > limit || d%time.Microsecond != 0 {
+			return 0, invalid("%s of %v (whole microseconds up to %v)", name, d, limit)
 		}
+		return uint32(d / time.Microsecond), nil
 	}
-	if c := s.CoverInterval; c != 0 && (c < MinCoverInterval || c > MaxCoverInterval || c%time.Microsecond != 0) {
-		return invalid("cover interval of %v (whole microseconds, %v to %v)", c, MinCoverInterval, MaxCoverInterval)
+	var err error
+	if pb.BatchWindowUs, err = us("batch window", s.BatchWindow, MaxShapingDelay); err != nil {
+		return nil, err
 	}
-	return nil
+	if pb.JitterUs, err = us("jitter", s.Jitter, MaxShapingDelay); err != nil {
+		return nil, err
+	}
+	if pb.CoverIntervalUs, err = us("cover interval", s.CoverInterval, MaxCoverInterval); err != nil {
+		return nil, err
+	}
+	if err := shaping.Check(pb); err != nil {
+		return nil, err
+	}
+	return pb, nil
 }
 
 // ShapingSupport is what an adapter's shaping implements.
 type ShapingSupport struct {
 	Padding, Batching, Jitter, Cover bool
 }
+
+// AllShaping supports every setting.
+var AllShaping = ShapingSupport{Padding: true, Batching: true, Jitter: true, Cover: true}
 
 // Check returns an error unless s is valid and asks only for what the
 // adapter implements; unsupported settings match ErrUnsupportedShaping.
@@ -225,91 +263,45 @@ func (sup ShapingSupport) Check(s Shaping) error {
 }
 
 // ParseShaping decodes the map's thinkpol.transport.v1.Shaping; empty
-// bytes are no shaping. It rejects fields it doesn't know, so a node too old
-// for a setting refuses the link instead of ignoring the setting.
+// bytes are no shaping. It rejects fields it doesn't know
+// (ErrUnsupportedShaping), so a node too old for a setting refuses the link
+// instead of ignoring the setting.
 func ParseShaping(b []byte) (Shaping, error) {
 	var s Shaping
 	if len(b) == 0 {
 		return s, nil
 	}
-	var pb transportv1.Shaping
-	if err := proto.Unmarshal(b, &pb); err != nil {
-		return s, fmt.Errorf("%w: %w", ErrInvalidShaping, err)
-	}
-	if hasUnknown(pb.ProtoReflect()) {
-		return s, fmt.Errorf("%w: settings this node doesn't know", ErrUnsupportedShaping)
+	pb, err := shaping.Decode(b)
+	if err != nil {
+		return s, err
 	}
 	switch p := pb.GetPadding().(type) {
 	case *transportv1.Shaping_Buckets:
-		sizes := p.Buckets.GetSizes()
-		if len(sizes) > MaxBuckets {
-			return s, fmt.Errorf("%w: %d buckets, at most %d", ErrInvalidShaping, len(sizes), MaxBuckets)
-		}
 		s.Padding.Mode = PadToBuckets
-		for i, size := range sizes {
-			if size == 0 || size > 0xffff {
-				return s, fmt.Errorf("%w: bucket of %d bytes", ErrInvalidShaping, size)
-			}
+		for i, size := range p.Buckets.GetSizes() {
 			s.Padding.Buckets[i] = uint16(size)
 		}
 	case *transportv1.Shaping_Random:
-		lo, hi := p.Random.GetMin(), p.Random.GetMax()
-		if lo > 0xffff || hi > 0xffff {
-			return s, fmt.Errorf("%w: random padding of [%d, %d] bytes", ErrInvalidShaping, lo, hi)
-		}
-		s.Padding = Padding{Mode: PadRandom, Min: uint16(lo), Max: uint16(hi)}
+		s.Padding = Padding{Mode: PadRandom, Min: uint16(p.Random.GetMin()), Max: uint16(p.Random.GetMax())}
 	}
 	s.BatchWindow = time.Duration(pb.GetBatchWindowUs()) * time.Microsecond
 	s.Jitter = time.Duration(pb.GetJitterUs()) * time.Microsecond
 	s.CoverInterval = time.Duration(pb.GetCoverIntervalUs()) * time.Microsecond
-	if err := s.Validate(); err != nil {
-		return Shaping{}, err
-	}
 	return s, nil
 }
 
-func hasUnknown(m protoreflect.Message) bool {
-	if len(m.GetUnknown()) > 0 {
-		return true
-	}
-	unknown := false
-	m.Range(func(fd protoreflect.FieldDescriptor, v protoreflect.Value) bool {
-		if fd.Message() != nil && !fd.IsList() && !fd.IsMap() {
-			unknown = hasUnknown(v.Message())
-		}
-		return !unknown
-	})
-	return unknown
-}
-
-// Marshal encodes s as the map carries it: what the controller writes and
-// ParseShaping reads. No shaping is empty.
-func (s Shaping) Marshal() []byte {
-	if s.IsZero() {
-		return nil
-	}
-	pb := &transportv1.Shaping{
-		BatchWindowUs:   uint32(s.BatchWindow / time.Microsecond),
-		JitterUs:        uint32(s.Jitter / time.Microsecond),
-		CoverIntervalUs: uint32(s.CoverInterval / time.Microsecond),
-	}
-	switch s.Padding.Mode {
-	case PadToBuckets:
-		var sizes []uint32
-		for _, b := range s.Padding.Buckets {
-			if b != 0 {
-				sizes = append(sizes, uint32(b))
-			}
-		}
-		pb.Padding = &transportv1.Shaping_Buckets{Buckets: &transportv1.PadToBuckets{Sizes: sizes}}
-	case PadRandom:
-		pb.Padding = &transportv1.Shaping_Random{Random: &transportv1.PadRandom{Min: uint32(s.Padding.Min), Max: uint32(s.Padding.Max)}}
+// Marshal encodes s as the map carries it, what the controller writes and
+// ParseShaping reads, or says why s is invalid. No shaping is empty.
+func (s Shaping) Marshal() ([]byte, error) {
+	pb, err := s.message()
+	if err != nil || s.IsZero() {
+		return nil, err
 	}
 	b, err := proto.MarshalOptions{Deterministic: true}.Marshal(pb)
 	if err != nil {
-		panic(err) // a message of scalars always encodes
+		return nil, fmt.Errorf("transport: encode shaping: %w", err)
 	}
-	return b
+	return b, nil
 }
 
 // Buckets returns bucket padding to sizes, for tests and tools; it panics
@@ -337,6 +329,13 @@ type SendStats struct {
 	PacketBytes  uint64
 	PaddingBytes uint64
 	WireBytes    uint64 // whole units, before IP and UDP or TCP headers
+}
+
+// SendReporter is a Link or Listener that reports what it sent. The engine
+// and telemetry find it by type assertion; adapters that shape implement
+// it.
+type SendReporter interface {
+	Sent() SendStats
 }
 
 // Overhead is the wire bytes per packet byte, less one: 0.25 means a

@@ -1042,8 +1042,10 @@ func invalidShapings() []transport.Shaping {
 }
 
 // testShapingRefused asks for shaping the adapter can't honour, at either
-// end: the dial fails, the listener skips the peer link, and the Check
-// methods say so. Nothing is ever shaped less than asked.
+// end: the dial fails, the listener skips the peer link (and accepts it
+// once its shaping is fixed), the Check methods say so, and a live link
+// changed to it closes with ErrSettingsRefused. Nothing is ever shaped
+// less than asked.
 func testShapingRefused(t *testing.T, h Harness) {
 	for i, s := range append(invalidShapings(), h.Refused...) {
 		t.Run(fmt.Sprint(i), func(t *testing.T) {
@@ -1085,6 +1087,25 @@ func testShapingRefused(t *testing.T, h Harness) {
 			client, server := e.connect(good)
 			server.write([]byte("still serving"))
 			client.expect([]byte("still serving"))
+
+			// Positive control: the same peer link with shaping the
+			// adapter takes is accepted, so the shaping was the reason.
+			fixed := bad
+			fixed.Shaping = h.Shaping
+			e.table.Set(links(good, fixed))
+			time.Sleep(20 * time.Millisecond)
+			fixedClient, fixedServer := e.connect(fixed)
+			fixedServer.write([]byte("accepted"))
+			fixedClient.expect([]byte("accepted"))
+
+			// A live link whose shaping changes to s closes, saying why,
+			// while its credential stays in the table.
+			refusedNow := fixed
+			refusedNow.Shaping = s
+			e.table.Set(links(good, refusedNow))
+			fixedServer.expectClosed(transport.ErrSettingsRefused)
+			client.write([]byte("unaffected"))
+			server.expect([]byte("unaffected"))
 		})
 	}
 }

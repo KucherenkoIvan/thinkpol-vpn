@@ -168,7 +168,11 @@ func (l *Listener) reindex(links []transport.PeerLink) {
 			continue
 		}
 		if f.link != nil {
-			f.link.shut(transport.ErrRevoked)
+			reason := transport.ErrRevoked
+			if r, ok := set.refused[key]; ok && r.peer == f.entry.Load().link.Peer {
+				reason = fmt.Errorf("%w: %w", transport.ErrSettingsRefused, r.err)
+			}
+			f.link.shut(reason)
 		}
 		l.retired[key] = retiree{senders: f.senders, at: now}
 		delete(l.flows, key)

@@ -20,7 +20,10 @@ func TestShapingRoundTrip(t *testing.T) {
 		{Padding: transport.Padding{Mode: transport.PadRandom, Min: 7, Max: 7}},
 		{BatchWindow: 1500 * time.Microsecond, Jitter: time.Second, CoverInterval: time.Hour},
 	} {
-		b := s.Marshal()
+		b, err := s.Marshal()
+		if err != nil {
+			t.Fatalf("%+v: %v", s, err)
+		}
 		if s.IsZero() != (len(b) == 0) {
 			t.Errorf("%+v encodes to %d bytes", s, len(b))
 		}
@@ -32,7 +35,10 @@ func TestShapingRoundTrip(t *testing.T) {
 }
 
 func TestParseShapingRefusesWhatItDoesNotKnow(t *testing.T) {
-	buckets := transport.Shaping{Padding: transport.Buckets(256)}.Marshal()
+	buckets, err := transport.Shaping{Padding: transport.Buckets(256)}.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
 	unknownTop := protowire.AppendVarint(protowire.AppendTag(append([]byte(nil), buckets...), 99, protowire.VarintType), 1)
 	var inner []byte
 	inner = protowire.AppendTag(inner, 1, protowire.VarintType)
@@ -77,6 +83,33 @@ func TestParseShapingRefusesWhatItDoesNotKnow(t *testing.T) {
 		if _, err := transport.ParseShaping(b); !errors.Is(err, transport.ErrInvalidShaping) {
 			t.Errorf("%s: %v, want ErrInvalidShaping", name, err)
 		}
+	}
+}
+
+func TestMarshalRefusesInvalidShaping(t *testing.T) {
+	gap := transport.Buckets(100, 200)
+	gap.Buckets[1], gap.Buckets[2] = 0, 200
+	for name, s := range map[string]transport.Shaping{
+		"descending buckets":   {Padding: transport.Buckets(200, 100)},
+		"a gap in the buckets": {Padding: gap},
+		"buckets without mode": {Padding: transport.Padding{Buckets: transport.Buckets(1).Buckets}},
+		"random of nothing":    {Padding: transport.Padding{Mode: transport.PadRandom}},
+		"unknown mode":         {Padding: transport.Padding{Mode: 7}},
+		"negative jitter":      {Jitter: -time.Microsecond},
+		"nanosecond batching":  {BatchWindow: time.Nanosecond},
+		"cover every 1 ms":     {CoverInterval: time.Millisecond},
+		"cover every 2 h":      {CoverInterval: 2 * time.Hour},
+	} {
+		if b, err := s.Marshal(); !errors.Is(err, transport.ErrInvalidShaping) || b != nil {
+			t.Errorf("%s: %d bytes, %v; want ErrInvalidShaping", name, len(b), err)
+		}
+	}
+}
+
+func TestMaxDelay(t *testing.T) {
+	s := transport.Shaping{BatchWindow: 2 * time.Millisecond, Jitter: 3 * time.Millisecond}
+	if s.MaxDelay() != 5*time.Millisecond || (transport.Shaping{}).MaxDelay() != 0 {
+		t.Errorf("MaxDelay %v", s.MaxDelay())
 	}
 }
 

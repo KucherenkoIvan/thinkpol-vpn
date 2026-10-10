@@ -26,6 +26,7 @@ Packets written to the overlay interface reach the right peer through WireGuard 
 
 ## Notes
 - From TP-003's review: `netmap`'s reader (`(*Map).Open`) checks only that a section is well formed. It accepts what only `netmap.Build` rejects: repeated or overlapping overlay addresses, addresses outside the overlay, empty `Paths`, `NextHops` or `Endpoints`, invalid (zero) `netip.AddrPort`s, and routing loops across several nodes. Don't assume them away: never configure overlapping WireGuard allowed IPs (refuse a peer whose addresses collide with another peer's or the node's own, or fall outside the overlay), and tolerate peers without usable paths.
+- **From TP-027:** fill `DialConfig.Shaping` / `PeerLink.Shaping` with `transport.ParseShaping(endpoint.Shaping)` / `(inbound.Shaping)` before `CheckEndpoint` / `CheckInbound`. udp's overhead is now 74 bytes (not 72): TUN MTU on a 1500-byte IPv6 path over unshaped udp is 1328; with shaping budget from `transport.MaxPacket(t, s, 1452)` (minus the path header and WireGuard's 32). `memory.NewNetwork(sem, memory.AcceptShaping())` runs shaped maps in-process. Links and listeners that shape are `transport.SendReporter`s for telemetry.
 
 ## Log
 - 2026-10-10 created in backlog

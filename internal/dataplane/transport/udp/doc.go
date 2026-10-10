@@ -42,7 +42,9 @@
 // batching, timing jitter and cover traffic (transport.ErrUnsupportedShaping)
 // rather than ignore them. Overhead is 74 bytes, plus the largest random
 // padding; transport.MaxPacket gives the MTU budget under buckets.
-// Listener.Sent and the dial link's Sent report what padding cost.
+// The Listener and dial links are transport.SendReporters: what padding
+// costs. A table change to shaping udp refuses closes the live link with
+// transport.ErrSettingsRefused.
 //
 // # What a receiver accepts
 //

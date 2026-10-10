@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -200,7 +201,11 @@ func seal(dst []byte, aead cipher.AEAD, id connID, sender senderID, now time.Tim
 	plain = binary.BigEndian.AppendUint16(plain, uint16(len(packet)))
 	plain = append(plain, packet...)
 	if pad := padding.Size(Overhead+len(packet)) - Overhead - len(packet); pad > 0 {
-		plain = append(plain, make([]byte, pad)...) // zeros: a zero length ends the frames
+		// zeros: a zero length ends the frames. The pool's buffers hold
+		// maxDatagram, so this never allocates.
+		n := len(plain)
+		plain = slices.Grow(plain, pad)[:n+pad]
+		clear(plain[n:])
 	}
 	*pp = plain
 	return aead.Seal(dst, dst[start:], plain, dst[:connIDSize])

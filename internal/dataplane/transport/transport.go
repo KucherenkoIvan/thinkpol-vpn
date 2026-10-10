@@ -88,6 +88,15 @@ type Link interface {
 // to MaxControlHold to ride with the next data or cover unit, or send it as
 // the cover unit it would have sent anyway. The far end reads them as
 // ordinary packets. Delivery is as for WritePacket.
+//
+// Only the layer above's own control packets go this way: WireGuard's
+// handshakes, keepalives and data are always WritePacket. And because a
+// control packet may be held at each end, a round trip timed with control
+// packets is an upper bound, off by up to 2 × MaxControlHold plus both
+// ends' Shaping.MaxDelay: liveness can rest on it, latency comparisons
+// must not. Latency is measured on traffic that isn't held (WritePacket
+// on both ends, e.g. WireGuard's handshake round trip), on links whose
+// shaping has no batching or jitter, or compared only beyond that bound.
 type ControlWriter interface {
 	WriteControl(p []byte) error
 }

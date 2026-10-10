@@ -2,9 +2,12 @@ package udp
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
+	"net"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport/transporttest"
@@ -180,5 +183,83 @@ func TestListenerRejectsUnsupportedShaping(t *testing.T) {
 	waitFor(t, "the rejection", func() bool { return len(f.listener.Rejected()) == 1 })
 	if r := f.listener.Rejected()[0]; r.Peer != bad.Peer {
 		t.Errorf("rejected %s, want %s", r.Peer, bad.Peer)
+	}
+}
+
+// sendFrom sends d to the listener from a socket of its own, as an
+// attacker on the path or a roaming dialer would, and returns the socket's
+// address.
+func sendFrom(t *testing.T, to net.Addr, d []byte) net.Addr {
+	t.Helper()
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = pc.Close() })
+	if _, err := pc.WriteTo(d, to); err != nil {
+		t.Fatal(err)
+	}
+	return pc.LocalAddr()
+}
+
+// A cover datagram ahead of any data opens no link and leaves nothing for
+// the link data opens later.
+func TestCoverBeforeDataOpensNoLink(t *testing.T) {
+	f := newFixture(t)
+	now := f.clock.now()
+	for i, frames := range [][]byte{nil, make([]byte, 300)} {
+		sendFrom(t, f.listener.Addr(), sealFrames(f.peer.Credential, toListener, newSenderID(now), now, uint64(i), frames))
+	}
+	waitFor(t, "two cover datagrams counted", func() bool { return f.listener.Counters().Cover == 2 })
+	f.expectNoAccept()
+	if f.camo.Calls() != 0 {
+		t.Errorf("cover reached the camouflage")
+	}
+	client := f.dial()
+	write(t, client, "data")
+	server := reads(f.accept())
+	expectPacket(t, server, []byte("data"))
+	expectNoPacket(t, server)
+	if c := f.listener.Counters(); c.Delivered != 1 || c.Cover != 2 {
+		t.Errorf("counters %+v, want 1 packet delivered and 2 cover", c)
+	}
+}
+
+// Cover moves a link's reply address only as data would: the current
+// sender's newest counter. An older counter, a replay or an older sender
+// leave it where it is.
+func TestCoverMovesTheLinkOnlyAsDataWould(t *testing.T) {
+	f := newFixture(t)
+	client := f.dial()
+	write(t, client, "hello")
+	server := f.accept()
+	sender, secret := client.(*dialLink).sender, f.peer.Credential
+	cover := func(s senderID, counter uint64) []byte {
+		return sealFrames(secret, toListener, s, f.clock.now(), counter, nil)
+	}
+	counted := func(field func(Counters) uint64, want uint64) func() bool {
+		return func() bool { return field(f.listener.Counters()) == want }
+	}
+
+	moved := sendFrom(t, f.listener.Addr(), cover(sender, 100))
+	waitFor(t, "newest cover counted", counted(func(c Counters) uint64 { return c.Cover }, 1))
+	if server.RemoteAddr().String() != moved.String() {
+		t.Fatalf("newest cover left the link at %v, want %v", server.RemoteAddr(), moved)
+	}
+
+	sendFrom(t, f.listener.Addr(), cover(sender, 50))
+	waitFor(t, "older cover counted", counted(func(c Counters) uint64 { return c.Cover }, 2))
+	sendFrom(t, f.listener.Addr(), cover(sender, 100))
+	waitFor(t, "replayed cover dropped", counted(func(c Counters) uint64 { return c.Replayed }, 1))
+	var older senderID
+	binary.BigEndian.PutUint64(older[:8], uint64(sender.created()-int64(time.Second)))
+	sendFrom(t, f.listener.Addr(), cover(older, 200))
+	waitFor(t, "an older sender's cover dropped", counted(func(c Counters) uint64 { return c.StaleSender }, 1))
+
+	if server.RemoteAddr().String() != moved.String() {
+		t.Errorf("the link moved to %v on cover that isn't the newest", server.RemoteAddr())
+	}
+	if c := f.listener.Counters(); c.Cover != 2 || c.Delivered != 1 {
+		t.Errorf("counters %+v, want 2 cover and 1 packet", c)
 	}
 }

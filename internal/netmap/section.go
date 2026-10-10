@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"strconv"
 
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/shaping"
 	netmapv1 "github.com/KucherenkoIvan/thinkpol-vpn/proto/gen/thinkpol/netmap/v1"
 )
 
@@ -447,14 +448,22 @@ func checkCredential(c []byte) error {
 }
 
 // checkSettings bounds transport-owned bytes: settings, and shaping where
-// there is one.
-func checkSettings(settings []byte, shaping ...[]byte) error {
+// there is one. Shaping must also decode under internal/shaping's rules
+// (the same the transport port applies), so the builder never publishes
+// shaping that every node would refuse.
+func checkSettings(settings []byte, shapingBytes ...[]byte) error {
 	if len(settings) > maxSettings {
 		return fmt.Errorf("transport settings of %d bytes", len(settings))
 	}
-	for _, b := range shaping {
+	for _, b := range shapingBytes {
 		if len(b) > maxSettings {
 			return fmt.Errorf("shaping of %d bytes", len(b))
+		}
+		if len(b) == 0 {
+			continue
+		}
+		if _, err := shaping.Decode(b); err != nil {
+			return fmt.Errorf("shaping: %w", err)
 		}
 	}
 	return nil

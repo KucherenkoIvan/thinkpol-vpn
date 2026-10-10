@@ -18,13 +18,12 @@ func firstFrame(o opened) []byte {
 
 // sealFrames seals frames as they are, the way a sender that batches or
 // sends cover would: each packet framed, then padding bytes of zeros.
-func sealFrames(secret []byte, dir direction, now time.Time, counter uint64, frames []byte) []byte {
+func sealFrames(secret []byte, dir direction, sender senderID, now time.Time, counter uint64, frames []byte) []byte {
 	id := connIDFor(secret, dir, epochOf(now))
 	d := append([]byte(nil), id[:]...)
 	nonce := make([]byte, nonceSize)
 	_, _ = rand.Read(nonce)
 	d = append(d, nonce...)
-	sender := newSenderID(now)
 	plain := append([]byte(nil), sender[:]...)
 	plain = binary.BigEndian.AppendUint32(plain, uint32(now.Unix()))
 	plain = binary.BigEndian.AppendUint64(plain, counter)
@@ -95,7 +94,7 @@ func TestFramesAndCover(t *testing.T) {
 		{"one trailing byte", append(frames([]byte("a")), 0), [][]byte{[]byte("a")}},
 		{"batch", append(frames([]byte("one"), []byte("two"), big), make([]byte, 33)...), [][]byte{[]byte("one"), []byte("two"), big}},
 	} {
-		o, err := open(nil, aead, sealFrames(secret, toListener, now, 1, tc.frames))
+		o, err := open(nil, aead, sealFrames(secret, toListener, newSenderID(now), now, 1, tc.frames))
 		if err != nil || o.packets != len(tc.want) {
 			t.Fatalf("%s: %+v, %v", tc.name, o, err)
 		}
@@ -117,7 +116,7 @@ func TestFramesAndCover(t *testing.T) {
 		"packet over the max":  frames(append(big, 1)),
 		"truncated last frame": frames([]byte("abcd"))[:4],
 	} {
-		if _, err := open(nil, aead, sealFrames(secret, toListener, now, 1, body)); !errors.Is(err, errMalformed) {
+		if _, err := open(nil, aead, sealFrames(secret, toListener, newSenderID(now), now, 1, body)); !errors.Is(err, errMalformed) {
 			t.Errorf("%s: %v, want errMalformed", name, err)
 		}
 	}

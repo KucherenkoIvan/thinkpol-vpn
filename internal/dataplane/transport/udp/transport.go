@@ -38,8 +38,10 @@ type Transport struct {
 }
 
 var (
-	_ transport.Transport = (*Transport)(nil)
-	_ transport.Routable  = (*Transport)(nil)
+	_ transport.Transport    = (*Transport)(nil)
+	_ transport.Routable     = (*Transport)(nil)
+	_ transport.SendReporter = (*Listener)(nil)
+	_ transport.SendReporter = (*dialLink)(nil)
 )
 
 // New returns the udp adapter.

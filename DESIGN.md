@@ -70,9 +70,10 @@ Stream transports carry TCP inside TCP and degrade under loss; datagram transpor
 
 - **What can be asked:** padding of each wire unit (datagram or record) to size buckets or by a random amount in a range, a batching window, timing jitter, idle cover traffic. Sizes are what a capture sees.
 - **Per end, from the map:** each end of a link shapes what *it* sends: the map's endpoint carries the dialing end's shaping, its inbound link the listening end's, in a `shaping` field next to the transport's settings; the engine decodes it and the adapter checks it. Receivers undo shaping from the wire format alone, so nothing is negotiated and the two ends needn't agree.
-- **Refuse, never weaken:** an adapter refuses a link whose shaping it can't honour, and a node refuses shaping fields it doesn't know, rather than shape less than the map asks. Padding and cover sit inside the transport's encryption, so they never touch its authentication or replay protection.
+- **Refuse, never weaken:** an adapter refuses a link whose shaping it can't honour, and a node refuses shaping fields it doesn't know, rather than shape less than the map asks. Padding and cover sit inside the transport's encryption, so they never touch its authentication or replay protection. The message's rules live in `internal/shaping`, which both the map's builder (it never publishes shaping no node could read) and the transport port use.
+- **Rollout:** refusing is safe only if the controller never asks a node for what it can't do. So the controller puts shaping (or a new shaping field or value) into a link only when both ends' nodes reported supporting it: agents report their version and transport/shaping capabilities when they register and when they update, and the controller keeps the newest report per node. A link whose ends don't both support a shaping goes unshaped (or keeps the old shaping) until they do.
 - **MTU:** `Overhead(shaping)` is the fixed per-packet cost plus the most random padding adds; under bucket padding a packet that fits the path can still round up past it, so the path layer budgets WireGuard's MTU with `transport.MaxPacket(transport, shaping, unit)`.
-- **Control packets:** the layers above mark packets that only keep a link warm or measure it (probes, keepalives) with `transport.WriteControl`, so a transport can fold their rhythm into its own (pad and jitter them like data, hold one briefly to ride with data or cover, or send it as cover).
+- **Control packets:** the layers above mark packets that only keep a link warm or measure it (probes, keepalives) with `transport.WriteControl`, so a transport can fold their rhythm into its own (pad and jitter them like data, hold one up to 500 ms to ride with data or cover, or send it as cover). WireGuard's handshakes and data never go that way. A round trip timed with control packets, or through batching or jitter, is an upper bound: liveness can rest on it, latency comparisons are made on unheld traffic (e.g. WireGuard's handshake round trip).
 
 `udp` implements padding and refuses the rest; the lab measures how much is enough per transport and tunes the defaults (none, until it says otherwise).
 
@@ -230,6 +231,7 @@ internal/
     telemetry/
   netmap/                 # the signed map: envelope, sealed sections, signing, verification, gossip
   lists/                  # GeoIP/geosite lists: importers, CIDR aggregation, the content-addressed blob format
+  shaping/                # the rules of the map's shaping message, shared by netmap's builder and the transport port
   devmap/                 # development tooling until the controller: maps from a hand-written YAML spec, dev key files (`dev keygen`, `dev map`)
   features/               # control plane bounded contexts (spaces, members, nodes, hosting, topology, policy, invites, provisioning, publishing, telemetry); no code in the root
     <feature>/adapters/http/   # that feature's admin panel pages

@@ -59,6 +59,7 @@ func (a Addr) String() string { return string(a) }
 // them.
 type Network struct {
 	sem       Semantics
+	shaping   transport.ShapingSupport
 	mu        sync.Mutex
 	listeners map[string]*Listener
 	dials     atomic.Uint64
@@ -66,9 +67,24 @@ type Network struct {
 
 var _ transport.Transport = (*Network)(nil)
 
+// Option configures a Network.
+type Option func(*Network)
+
+// AcceptShaping makes a network accept any valid shaping instead of
+// refusing it, so maps whose links are shaped can be tested in-process.
+// There is no wire, so accepted shaping changes nothing and Overhead stays
+// 0.
+func AcceptShaping() Option {
+	return func(n *Network) { n.shaping = transport.AllShaping }
+}
+
 // NewNetwork returns an empty network whose links behave as sem says.
-func NewNetwork(sem Semantics) *Network {
-	return &Network{sem: sem, listeners: make(map[string]*Listener)}
+func NewNetwork(sem Semantics, opts ...Option) *Network {
+	n := &Network{sem: sem, listeners: make(map[string]*Listener)}
+	for _, o := range opts {
+		o(n)
+	}
+	return n
 }
 
 func (n *Network) Name() string                   { return Name }
@@ -77,12 +93,11 @@ func (n *Network) Overhead(transport.Shaping) int { return 0 }
 
 var errEmpty = errors.New("memory: empty credential")
 
-// noShaping is what memory implements: it has no wire to shape, so it
-// refuses any shaping rather than pretend.
-var noShaping transport.ShapingSupport
-
-func checkShaping(s transport.Shaping) error {
-	if err := noShaping.Check(s); err != nil {
+// checkShaping refuses shaping unless the network was made with
+// AcceptShaping: there is no wire to shape, so by default memory refuses
+// rather than pretend.
+func (n *Network) checkShaping(s transport.Shaping) error {
+	if err := n.shaping.Check(s); err != nil {
 		return fmt.Errorf("memory: %w", err)
 	}
 	return nil
@@ -95,14 +110,14 @@ func (n *Network) CheckEndpoint(endpoint string, cfg transport.DialConfig) error
 	if len(cfg.Credential) == 0 {
 		return errEmpty
 	}
-	return checkShaping(cfg.Shaping)
+	return n.checkShaping(cfg.Shaping)
 }
 
 func (n *Network) CheckInbound(pl transport.PeerLink) error {
 	if len(pl.Verifier) == 0 {
 		return errEmpty
 	}
-	return checkShaping(pl.Shaping)
+	return n.checkShaping(pl.Shaping)
 }
 
 // Listen implements transport.Transport: cfg.Address is any free name.
@@ -171,8 +186,8 @@ func (l *Listener) connect(ctx context.Context, local Addr, cred []byte) (transp
 	}
 	// Looked up and registered under one lock, so a table change either
 	// sees the new end or happened before the lookup.
-	pl, ok := lookup(l.links, cred)
-	if !ok {
+	pl, refused, ok := l.net.lookup(l.links, cred)
+	if !ok || refused != nil {
 		l.mu.Unlock()
 		client.camo = func(p []byte) { l.camo.Datagram(p, local) }
 		return client, nil
@@ -224,15 +239,15 @@ func (l *Listener) closed() bool {
 	}
 }
 
-// lookup finds the usable peer link for cred; links CheckInbound rejects
-// are skipped.
-func lookup(links []transport.PeerLink, cred []byte) (transport.PeerLink, bool) {
+// lookup finds the peer link for cred and whether CheckInbound refuses
+// it; ok is false when the table has none.
+func (n *Network) lookup(links []transport.PeerLink, cred []byte) (pl transport.PeerLink, refused error, ok bool) {
 	for _, pl := range links {
-		if checkShaping(pl.Shaping) == nil && len(pl.Verifier) > 0 && subtle.ConstantTimeCompare(pl.Verifier, cred) == 1 {
-			return pl, true
+		if len(pl.Verifier) > 0 && subtle.ConstantTimeCompare(pl.Verifier, cred) == 1 {
+			return pl, n.CheckInbound(pl), true
 		}
 	}
-	return transport.PeerLink{}, false
+	return transport.PeerLink{}, nil, false
 }
 
 func same(a, b transport.PeerLink) bool {
@@ -251,11 +266,16 @@ func (l *Listener) watchPeers(changed <-chan struct{}) {
 		l.mu.Lock()
 		l.links = links
 		for e, pl := range l.live {
-			if cur, ok := lookup(links, pl.Verifier); ok && same(cur, pl) {
+			cur, refused, ok := l.net.lookup(links, pl.Verifier)
+			switch {
+			case ok && same(cur, pl) && refused == nil:
 				l.live[e] = cur // same credential: new settings apply
 				continue
+			case ok && same(cur, pl):
+				e.shut(fmt.Errorf("%w: %w", transport.ErrSettingsRefused, refused))
+			default:
+				e.shut(transport.ErrRevoked)
 			}
-			e.shut(transport.ErrRevoked)
 			delete(l.live, e)
 		}
 		l.mu.Unlock()

@@ -57,7 +57,7 @@ func (r *Router) RouteDatagram(d []byte) (transport.Identity, bool) {
 		r.counters.staleTimestamp.Add(1)
 		return transport.Identity{}, false
 	}
-	r.counters.delivered.Add(1)
+	r.counters.received(o.packets)
 	return e.link.Peer, true
 }
 
@@ -66,8 +66,8 @@ func (r *Router) RouteStream(net.Conn) (transport.Identity, []byte, bool) {
 	return transport.Identity{}, nil, false
 }
 
-// Counters reports what the router turned away and why ("delivered" counts
-// datagrams routed).
+// Counters reports what the router routed (Delivered and Cover, as a
+// listener counts them) and what it turned away and why.
 func (r *Router) Counters() Counters { return r.counters.snapshot() }
 
 // Rejected lists the peer links of the table the router can't use.

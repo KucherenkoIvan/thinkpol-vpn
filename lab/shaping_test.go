@@ -20,6 +20,8 @@ import (
 func TestShapingCapture(t *testing.T) {
 	t.Parallel()
 	const unshapedPort, shapedPort = 4500, 4501
+	// udp's wireguardLikeSizes (87) times labRepeats (3), on each port.
+	const perPort = 261
 	// labBuckets in udp's tests.
 	buckets := []int{128, 256, 512, 1024, 1452}
 
@@ -46,8 +48,8 @@ func TestShapingCapture(t *testing.T) {
 				sizes[p.DstPort][len(p.Payload)]++
 			}
 		}
-		if total(sizes[unshapedPort]) == 0 || total(sizes[unshapedPort]) != total(sizes[shapedPort]) {
-			return fmt.Errorf("captured %d unshaped and %d shaped datagrams", total(sizes[unshapedPort]), total(sizes[shapedPort]))
+		if total(sizes[unshapedPort]) != perPort || total(sizes[shapedPort]) != perPort {
+			return fmt.Errorf("captured %d unshaped and %d shaped datagrams, want %d each", total(sizes[unshapedPort]), total(sizes[shapedPort]), perPort)
 		}
 		return nil
 	})
