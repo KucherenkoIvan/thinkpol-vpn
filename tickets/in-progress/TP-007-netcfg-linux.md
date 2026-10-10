@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: M
 depends_on: [TP-001]
 refs: [N1, DESIGN#ipv6]
-owner: ""
-branch: ""
+owner: "agent-tp-007"
+branch: "tp-007-netcfg-linux"
 ---
 
 ## Goal
@@ -29,3 +29,4 @@ macOS (TP-019), Windows (TP-047), rule-driven route tables (TP-018).
 
 ## Log
 - 2026-10-10 created in backlog
+- 2026-10-10 backlog → in-progress — owner: agent-tp-007, branch: tp-007-netcfg-linux
