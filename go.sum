@@ -1,5 +1,5 @@
-github.com/KucherenkoIvan/go-kernel v0.16.0 h1:jNbyRDU+A2ENK0MnzCAfx/9xGWGXM3vuh9CKurs+xqc=
-github.com/KucherenkoIvan/go-kernel v0.16.0/go.mod h1:SAZ/FjI4Dho77kZEeZ9l116GAulbypzjEWkeDc18afM=
+github.com/KucherenkoIvan/go-kernel v0.18.0 h1:oKKBKPQ6Pu7S+/EiWxpXosn1pQrvoPFvfHEKY3CLqRE=
+github.com/KucherenkoIvan/go-kernel v0.18.0/go.mod h1:SAZ/FjI4Dho77kZEeZ9l116GAulbypzjEWkeDc18afM=
 github.com/google/btree v1.1.2 h1:xf4v41cLI2Z6FxbKm+8Bu+m8ifhj15JuZ9sa0jZCMUU=
 github.com/google/btree v1.1.2/go.mod h1:qOPhT0dTNdNzV6Z/lhRX0YXUafgPLFUh+gZMl761Gm4=
 golang.org/x/crypto v0.51.0 h1:IBPXwPfKxY7cWQZ38ZCIRPI50YLeevDLlLnyC5wRGTI=
