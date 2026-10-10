@@ -33,6 +33,15 @@ Anything that writes (create, tear-down), and the allocation's overlap retry, wh
 - **Other read paths, checked:** `labProjects` and `downProject`'s listings are single `ps -a` / `network ls` calls that read labels from the list itself, with no follow-up inspect, so nothing can vanish in between. `Lab.inspect` reads only the lab's own containers and networks; those vanishing means the lab is broken, so it keeps failing loudly. `prepare`'s `image inspect` already treats any failure as "build the image". `Node.Exec`/`GoTest`/`ExportFS` act on the lab's own containers. So the subnet listing was the only list-then-inspect over other daemon users' resources.
 - `make lint`, `make test` green; `make lab-test` green (~1.5 min, 10 in-node packages).
 
+## Review findings
+Review by the coordinator, 2026-10-11.
+
+- [ ] R1 `isNotFound` is too loose: a daemon restart ("dial unix …: no such file or directory") or "command not found" reads as "every network vanished" and yields an empty used list. Anchor matches to the object (`network <id> not found`, `no such network: <id>`, `no such object: <id>`), require the message to name that id in the per-network fallback, and fail closed if ls listed ids but none could be read. Unit test with the connect-error text.
+- [ ] R2 `network ls -q --no-trunc` (full ids; no name/prefix confusion).
+- [ ] R3 Unparseable subnets fail loudly instead of being dropped silently.
+- [ ] R4 Lab test: register the cleanup (by name) before creating the network.
+
 ## Log
 - 2026-10-11 created in in-progress — owner: agent-lab-race, branch: tp-053-lab-subnet-race (bug from TP-009's lab-test run)
 - 2026-10-11 in-progress → review — fix in 8cffb99; make lint, make test, make lab-test green
+- 2026-10-11 review → has-errors — review findings R1–R4, see Review findings
