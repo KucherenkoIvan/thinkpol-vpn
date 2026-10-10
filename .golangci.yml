@@ -69,6 +69,17 @@ linters:
           deny:
             - pkg: github.com/KucherenkoIvan/thinkpol-vpn/proto/gen/thinkpol/netmap
               desc: only internal/netmap encodes or decodes the map; use its types
+        # development tooling: hand-made maps are cmd/thinkpol's `dev`
+        # commands only; nodes read keys and maps with their own code
+        devmap-only-in-cmd:
+          list-mode: lax
+          files:
+            - $all
+            - "!**/cmd/thinkpol/**"
+            - "!**/internal/devmap/**"
+          deny:
+            - pkg: github.com/KucherenkoIvan/thinkpol-vpn/internal/devmap
+              desc: development tooling, used only by cmd/thinkpol's dev commands
         # Each feature adds a rule denying the other features, e.g.:
         # feature-spaces:
         #   list-mode: lax

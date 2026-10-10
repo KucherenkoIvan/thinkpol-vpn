@@ -96,18 +96,29 @@ func parseEndpoint(endpoint string) (netip.AddrPort, error) {
 
 // Listen implements transport.Transport.
 func (t *Transport) Listen(ctx context.Context, cfg transport.ListenConfig) (transport.Listener, error) {
-	if _, err := parseEndpoint(cfg.Address); err != nil {
+	ap, err := parseEndpoint(cfg.Address)
+	if err != nil {
 		return nil, err
 	}
 	if err := proto.Unmarshal(cfg.Settings, &transportv1.UdpListenSettings{}); err != nil {
 		return nil, fmt.Errorf("udp: listener settings: %w", err)
 	}
 	lc := net.ListenConfig{Control: t.control}
-	pc, err := lc.ListenPacket(ctx, "udp", cfg.Address)
+	pc, err := lc.ListenPacket(ctx, listenNetwork(ap), cfg.Address)
 	if err != nil {
 		return nil, fmt.Errorf("udp: listen: %w", err)
 	}
 	return t.ListenOn(pc, cfg), nil
+}
+
+// listenNetwork binds one address family, as the map's listeners mean it:
+// on plain "udp", Go makes a wildcard address one dual-stack socket, so
+// 0.0.0.0:p and [::]:p would collide.
+func listenNetwork(ap netip.AddrPort) string {
+	if ap.Addr().Is4() || ap.Addr().Is4In6() {
+		return "udp4"
+	}
+	return "udp6"
 }
 
 // ListenOn listens on pc, which it owns from now on; cfg.Address is

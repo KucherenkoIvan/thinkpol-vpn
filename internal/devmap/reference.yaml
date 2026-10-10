@@ -1,0 +1,77 @@
+# thinkpol development tooling: the map spec format.
+#
+# A spec lists a space's nodes and the paths between them; everything else
+# in the map is derived from them.
+#
+#   thinkpol dev keygen space -out keys -recovery-out /media/offline
+#   thinkpol dev keygen node -out keys server-1 server-2 server-3 device-a device-b
+#   thinkpol dev map build -keys keys -out map.bin spec.yaml
+#   thinkpol dev map inspect -keys keys -node-key keys/device-a.key map.bin
+#
+# Values may use ${NAME}, filled from the environment by `dev map build`, for
+# addresses known only at run time. Quote a value that YAML could misread
+# (e.g. one starting with ':').
+
+space:                        # optional
+  # The overlay IPv4 network: 100.64.0.0/10 or a network inside it.
+  ipv4: 100.64.0.0/10
+  # The overlay IPv6 network: a ULA /48 (inside fd00::/8). Without it, the
+  # random /48 `dev keygen space` made (in space.key) is used.
+  ipv6: fd12:3456:789a::/48
+
+nodes:
+  - name: server-1            # lowercase letters, digits, dashes; also names
+                              # the node's key files (server-1.key, .pub)
+    kind: server              # server (relays, has endpoints) or device
+                              # (dials servers: no endpoints, no listen)
+    # Overlay addresses: optional. Nodes without one get the lowest free host
+    # address of the network, in the order nodes are listed. A fixed ipv6
+    # needs space.ipv6.
+    ipv4: 100.64.0.1
+    ipv6: fd12:3456:789a::1
+    # Endpoints: where other nodes dial this one, transport://ip:port. IP
+    # literals only: nodes never resolve names. Transports: udp.
+    endpoints:
+      - udp://192.0.2.1:4500
+      - udp://[2001:db8::1]:4500
+    # Listeners: optional. Without them, one per transport, port and address
+    # family of the endpoints, on every address of the family; here that is
+    # what is written out.
+    listen:
+      - udp://0.0.0.0:4500
+      - udp://[::]:4500
+
+  - name: server-2
+    kind: server
+    endpoints:
+      - udp://198.51.100.2:4500
+
+  - name: server-3
+    kind: server
+    endpoints:
+      - udp://203.0.113.3:4500
+
+  - name: device-a
+    kind: device
+
+  - name: device-b
+    kind: device
+
+# Paths: [one end, the relays in between, the other end]. The ends become
+# WireGuard peers of each other, each with its neighbour on the path as a
+# candidate first hop. Several paths between the same two ends are
+# alternatives in the order written, the order failover follows. Every node
+# inside a path must be a server; it routes to both ends through its
+# neighbours.
+#
+# Neighbours on a path are linked: a device dials the server; of two servers,
+# the one listed first in nodes dials. Each link gets a fresh random secret
+# on every build. Paths that would let a packet go round in circles (two
+# paths crossing the same relays in opposite directions) are refused.
+paths:
+  - [device-a, server-1]                # device-a and server-1, directly
+  - [device-b, server-1]
+  - [device-a, server-1, device-b]      # device to device through a relay
+  - [device-a, server-2, device-b]      # the same peers' second choice
+  - [device-a, server-1, server-2]      # server-2 reached through server-1
+  - [device-a, server-1, server-2, server-3]   # three hops: two relays

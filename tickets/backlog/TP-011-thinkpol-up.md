@@ -26,5 +26,9 @@ One command starts a node from its keys and map: device mode on a device, superv
 - [ ] SIGTERM leaves no interfaces, routes or namespaces behind
 - [ ] the state dir contains nothing but keys and the map
 
+## Notes
+- Keys and maps (from TP-004's review): `thinkpol up` defines its own state-dir and key-file format in `internal/agent`. It may reuse the on-disk layout of TP-004's dev key files (`<name>.key` with quoted hex `node-id`, `map-key`, `wireguard-key`; `space.pub` with `space-id`, `signing-key`, `recovery-key`; private files 0600, refused when others can read them), but the reader lives outside `internal/devmap`, which depguard keeps to `cmd/thinkpol`'s dev commands. The runtime key types are in `internal/netmap`: `NodePrivateKey`, `WireGuardPrivateKey` (`ParseNodePrivateKey`, `ParseWireGuardPrivateKey`, redacted `String`), and `netmap.Trust`. Load with `netmap.Verify(env, trust)` then `(*Map).Open(mapKey)`; the node's id is `Section.Node.ID`.
+- Listeners: a dual-stack server's map has `udp 0.0.0.0:p` and `udp [::]:p`; the udp adapter binds each to its own family (fixed in TP-004), so open both.
+
 ## Log
 - 2026-10-10 created in backlog
