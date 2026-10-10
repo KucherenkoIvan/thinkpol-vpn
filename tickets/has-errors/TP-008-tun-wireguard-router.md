@@ -54,6 +54,29 @@ Packets written to the overlay interface reach the right peer through WireGuard 
 - **TP-021 (IPv6 leaks):** while the overlay is IPv4-only (`Status.IPv6Off`), the kernel has no IPv6 route into the TUN (Linux disables IPv6 on an interface below 1280), so overlay IPv6 destinations would follow the physical default route: block them, and IPv6 generally (D6).
 - **TP-030 (chains):** add a device per chain to the `want` map in `Engine.Apply` (its exit as the only peer, allowed IPs `0.0.0.0/0` + `::/0`; a key in one device only, which `Node.SetPeers` enforces), and rules → that device's egress. `wg.TestTwoDevicesBehindOneRouter` is the working shape. The builder's space-wide MTU should equal `OverlayMTU` of every node.
 
+## Review findings
+Two reviewers; orchestrator decisions to implement as stated.
+
+Blockers / security:
+- [ ] B1 Status never contains map-derived free text (endpoint IPs leaked through `Skipped` error strings): typed `Skip{Peer, What, Reason}` with a fixed reason vocabulary in PathConfig/InboundConfig/OverlayConfig/Status; detailed errors only to the local debug log. Test: a bad endpoint 192.0.2.7:0 → `fmt.Sprint(e.Status())` doesn't contain it
+- [ ] B2 Router `Overlay` = every overlay network of the space (IPv4 + ULA /48), carried or not; carried-ness via Addrs and the peer filter. overlay_test expects 2 networks; the IPv6-off test made non-vacuous (a `::/0` rule through an internal hook, or the NoRoute counter rising)
+- [ ] B3 Destination check on decrypted packets: `Egress.Write` (WireGuard → TUN) drops and counts (`NotLocal`) packets whose destination isn't one of the node's own overlay addresses; the engine passes them via SetTable. TP-030 note: exits relax it per egress. Test: a peer sends src = its overlay address, dst = 192.168.1.5 → dropped and counted
+- [ ] B4 Revocation is never blocked: Apply doesn't refuse a whole section for one bad link (links whose budget is below MinOverlayMTU are skipped, typed), and removals (WireGuard peers, inbound tables, path table) are applied even if a later step fails. Document what a refused or partial Apply leaves. Test: a section that removes peer X and has an unusable link → X loses access
+
+Should-fix:
+- [ ] S1 Router peer routes split from WireGuard AllowedIPs (`devicePeer{OverlayPeer, AllowedIPs}`) so chain exits fit; TP-030 note fixed
+- [ ] S2 Apply partial-failure semantics: `Status.LastApplyError`; `e.applied` reflects what actually runs; doc "re-Apply converges"
+- [ ] S3 NewEngine error path: the caller keeps ownership of TUN and Interface on error (documented); non-zero Space required; lab test leak fixed
+- [ ] S4 Status for TP-022/TP-041: `Neighbors []path.NeighborStatus`, PeerStatus Rx/TxBytes, per-egress counters (`EgressStatus{Name, Queued, QueueFull, …}`)
+- [ ] S5 Engine/agent split written down (engine = in-process wiring; agent = TUN/configurator creation, registry with Control, map watch/Apply loop, listener lifecycle and reconciliation); TP-011 note: this is `agent.RunDataPlane`'s body; depguard: dataplane/netmap/lists must not import internal/agent
+- [ ] S6 MTU: the path layer counts oversize sends (TooLarge counter; the error no longer swallowed silently); DESIGN "IPv6": the overlay MTU is meant to be space-wide (builder, TP-030), OverlayMTU is a local floor until then, relays drop and count oversize, budgeted as IPv6 whatever the family. TP-021 note: the IPv6-off-on-a-running-node retransmit leak
+- [ ] S7 Closed egress: enqueue to a closed egress counts NoRoute; Apply installs a table without departing egresses before closing their devices
+- [ ] S8 Pathless peers don't flood logs: Bind.Send returns nil on ErrNoPath (counted), or the wg logger demotes those to Debug — pick one
+- [ ] S9 Tests: engine-level two-device peer move; lab test IPv6 on → off → on across Apply (Linux wipes IPv6 addresses below 1280; netcfg must re-add); Status-has-no-addresses test; removal test proving WireGuard-level removal, not just a router drop
+
+Nits:
+- [ ] N1 tun doc vs build tags; drop or clarify the MaxPacket cap and its comment; nil Interface doc mentions VpnService/NetworkExtension modes; NewEgress rejects duplicate names; pooled buffers sized by egress MTU; `wg.Device.Close` returns an error; `Peers()` reports parse errors
+
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-10 docs (TP-003 review): notes on what the map reader does not guarantee
@@ -61,3 +84,4 @@ Packets written to the overlay interface reach the right peer through WireGuard 
 - 2026-10-11 backlog → in-progress — owner: agent-tp-008, branch: tp-008-tun-wireguard-router
 - 2026-10-11 docs: DESIGN.md "IPv6" — the overlay carries IPv4 only when its MTU is below 1280, and status says so
 - 2026-10-11 in-progress → review — both acceptance boxes checked; `make lint`, `make test`, `go test -race` on dataplane, router, wg and packettest, and `make lab-gotest PKG=./internal/dataplane/...` (10 packages) pass
+- 2026-10-11 review → has-errors — two reviewers: 4 blockers, 9 should-fix, nits (see Review findings)
