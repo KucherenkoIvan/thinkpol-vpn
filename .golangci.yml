@@ -51,6 +51,15 @@ linters:
           deny:
             - pkg: github.com/KucherenkoIvan/thinkpol-vpn/internal/features
               desc: shared code must not depend on a feature
+        # the lab drives the product from outside; the product never needs it
+        product-without-lab:
+          list-mode: lax
+          files:
+            - "**/cmd/**"
+            - "**/internal/**"
+          deny:
+            - pkg: github.com/KucherenkoIvan/thinkpol-vpn/lab
+              desc: the lab harness is for tests driving nodes from outside
         # the map's wire format has one reader and writer
         netmap-schema-only-in-netmap:
           list-mode: lax
