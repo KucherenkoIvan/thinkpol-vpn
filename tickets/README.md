@@ -74,7 +74,7 @@ Always `git mv`, and append a line to `## Log` in the same commit:
 
 Waiting for a dependency is **not** blocked: such tickets stay in `backlog/` and simply aren't ready yet.
 
-**Work in progress:** at most 3 tickets in `in-progress/` at once, each on its own branch (and its own git worktree when worked in parallel).
+**Work in progress:** at most 4 tickets in `in-progress/` at once, each on its own branch (and its own git worktree when worked in parallel).
 
 ## Branches
 
