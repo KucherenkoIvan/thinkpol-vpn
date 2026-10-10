@@ -63,6 +63,15 @@ Accepted by the orchestrator, 2026-10-10.
 - [x] Nits: `--platform` passed consistently (GOARM on arm); RUN passed quote-safely to labctl; project names never start with `-`.
 - [x] Image additions for TP-012/024 (wireguard-tools, an HTTP/TLS server) if cheap, otherwise listed in Notes.
 
+### Second round (delta review), 2026-10-10
+- [ ] R2-1 Lab ownership by exact label, not name prefix: tear-down and Up's pre-teardown match `org.thinkpol.lab.root` exactly; two checkouts with the same `THINKPOL_LAB_PROJECT` can't delete each other's labs (documented and tested).
+- [ ] R2-2 IPv6 link-local escape: Docker's bridge answers on its fe80:: address, in the Docker VM's namespace where published ports listen; block it on every node including the router, and extend the hermetic subtest (ping and TCP connect to the bridge's link-local fail).
+- [ ] R2-3 Startup window: a node's Command must not run before the node is sealed; the entrypoint waits for a marker written by configure (tested).
+- [ ] R2-4 `compose down` runs with `--project-directory` set to an empty temporary directory and no `COMPOSE_*` variables in its environment.
+- [ ] R2-5 README: `:ro` mounts don't stop root in a node (SYS_ADMIN); tests must not write to /src.
+- [ ] R2-7 Cap: document that it is per TMPDIR; a test starting a second lab reuses its slot instead of deadlocking.
+- [ ] R2-6 (orchestrator checked: no change) document the choice of 172.16.0.0/16 and its override.
+
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-10 backlog → in-progress — owner: agent-tp-002, branch: tp-002-lab-harness
@@ -70,3 +79,4 @@ Accepted by the orchestrator, 2026-10-10.
 - 2026-10-10 review → has-errors — two blockers (B1 owner-stack safety, B2 hermeticity) and should-fixes, see Review findings
 - 2026-10-10 has-errors → in-progress — owner: agent-tp-002, fixing the review findings
 - 2026-10-10 in-progress → review — review findings fixed (be20e07); make lint, make test, make lab-test green; concurrent lab-test from two worktrees green again
+- 2026-10-10 review → has-errors — delta review: lab ownership by exact label, IPv6 link-local escape, startup window, compose down hygiene, docs, slot reuse
