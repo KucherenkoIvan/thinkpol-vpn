@@ -16,15 +16,15 @@ func init() {
 	register(command{
 		path:    "dev lists build",
 		args:    "[-format v2fly|dbip] [-only ru,by] [-out dir] <source>",
-		summary: "build GeoIP list blobs (<out>/<name>.geoip) from a local v2fly geoip.dat or DB-IP Lite country CSV",
+		summary: "build GeoIP list blobs (<out>/<name>.geoip) from a local v2fly geoip.dat or DB-IP Lite country CSV; prints the source's attribution",
 		run:     runDevListsBuild,
 	})
 }
 
 // runDevListsBuild never downloads: the source is a file the operator fetched
-// and whose license they keep (DB-IP Lite is CC BY 4.0: "IP Geolocation by
-// DB-IP"). The table it prints is the evidence for a list's blob: SHA-256,
-// size, and entries in (prefixes, or DB-IP's ranges) against prefixes out.
+// and whose license they keep; the attribution it asks for is printed under
+// the table. The table is the evidence for a list's blob: SHA-256, size, and
+// entries in (prefixes, or DB-IP's ranges) against prefixes out.
 func runDevListsBuild(_ context.Context, e env, args []string) error {
 	fs := flag.NewFlagSet("dev lists build", flag.ContinueOnError)
 	format := fs.String("format", "", "source format, v2fly or dbip (default: from the file name, *.dat or *.csv, optionally .gz)")
@@ -72,6 +72,13 @@ func runDevListsBuild(_ context.Context, e env, args []string) error {
 		}
 		st := l.Stats
 		_, _ = fmt.Fprintf(tw, "%s\t%x\t%d\t%d\t%d\t%d\t%d\t\n", l.Name, l.SHA256, len(l.Blob), st.Added4, st.Prefixes4, st.Added6, st.Prefixes6)
+		if st.Skipped > 0 {
+			_, _ = fmt.Fprintf(e.stderr, "warning: %s: left out %d IPv6 entries overlapping the IPv4-mapped range ::ffff:0:0/96\n", l.Name, st.Skipped)
+		}
 	}
-	return tw.Flush()
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(e.stdout, "\n%s\n", f.Attribution())
+	return err
 }

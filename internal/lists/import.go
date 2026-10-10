@@ -29,6 +29,18 @@ const (
 	FormatDBIPCSV Format = "dbip"
 )
 
+// Attribution is what a source's license asks to show with lists built
+// from it, wherever they're shown or passed on.
+func (f Format) Attribution() string {
+	switch f {
+	case FormatDBIPCSV:
+		return "IP Geolocation by DB-IP (CC BY 4.0): https://db-ip.com"
+	case FormatV2flyGeoIP:
+		return "v2fly geoip.dat (CC BY-SA 4.0): https://github.com/v2fly/geoip; its upstream data may carry its own terms (DB-IP Lite: CC BY 4.0; MaxMind GeoLite2: MaxMind's GeoLite2 EULA)"
+	}
+	return ""
+}
+
 // FormatFromPath guesses a source's format from its file name: *.dat is
 // v2fly, *.csv is DB-IP, either optionally gzipped (*.gz).
 func FormatFromPath(path string) (Format, error) {
@@ -41,15 +53,26 @@ func FormatFromPath(path string) (Format, error) {
 	return "", fmt.Errorf("lists: can't tell the format of %q from its name", path)
 }
 
-// maxSourceSize caps how much an importer reads, after decompression.
-var maxSourceSize int64 = 1 << 30
+// maxSourceSize caps how much an importer reads, after decompression, and
+// maxEntries how many entries (CSV rows, CIDRs of the v2fly lists kept). The
+// largest real sources are a few tens of MB and 1.4 million entries (all of
+// v2fly's geoip.dat).
+var (
+	maxSourceSize int64 = 256 << 20
+	maxEntries          = 1 << 22
+)
+
+var errTooManyEntries = errors.New("lists: too many entries in the source")
 
 // ErrUnknownName is a requested list the source doesn't have.
 var ErrUnknownName = errors.New("lists: no such list in the source")
 
 // Import reads a source in format f, gzipped or not, into one Builder per
 // list name (a country code, lowercase; v2fly sources also have names such as
-// "private"). Entries with the same name merge. With only non-empty, it keeps
+// "private"). Entries with the same name merge. IPv6 entries stay IPv6, also
+// in IPv4-mapped notation; one overlapping ::ffff:0:0/96 is left out and
+// counted in [Stats.Skipped] ([ErrMappedIPv6]): DB-IP's reserved ZZ range
+// ::–1fff:… is one. With only non-empty, it keeps
 // just those names and fails with [ErrUnknownName] if one is missing; other
 // entries are skipped unchecked. Without it, a name [CheckName] rejects fails
 // the import.
@@ -153,11 +176,12 @@ func importV2fly(r io.Reader, keep func(string) bool) (map[string]*Builder, erro
 		return nil, fmt.Errorf("lists: %w", err)
 	}
 	out := map[string]*Builder{}
+	entries := 0
 	err = eachField(data, func(num protowire.Number, typ protowire.Type, v []byte) error {
 		if num != 1 || typ != protowire.BytesType {
 			return nil
 		}
-		return v2flyEntry(v, keep, out)
+		return v2flyEntry(v, keep, out, &entries)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("lists: v2fly: %w", err)
@@ -165,7 +189,7 @@ func importV2fly(r io.Reader, keep func(string) bool) (map[string]*Builder, erro
 	return out, nil
 }
 
-func v2flyEntry(entry []byte, keep func(string) bool, out map[string]*Builder) error {
+func v2flyEntry(entry []byte, keep func(string) bool, out map[string]*Builder, entries *int) error {
 	var code string
 	var cidrs [][]byte
 	reverse := false
@@ -196,16 +220,17 @@ func v2flyEntry(entry []byte, keep func(string) bool, out map[string]*Builder) e
 	}
 	b := builderFor(out, name)
 	for _, c := range cidrs {
+		if *entries++; *entries > maxEntries {
+			return errTooManyEntries
+		}
 		var ip []byte
-		var bits uint64
-		hasBits := false
+		var bits uint64 // proto3: absent is 0
 		err := eachField(c, func(num protowire.Number, typ protowire.Type, v []byte) error {
 			switch {
 			case num == 1 && typ == protowire.BytesType:
 				ip = v
 			case num == 2 && typ == protowire.VarintType:
 				bits, _ = protowire.ConsumeVarint(v)
-				hasBits = true
 			}
 			return nil
 		})
@@ -213,10 +238,10 @@ func v2flyEntry(entry []byte, keep func(string) bool, out map[string]*Builder) e
 			return err
 		}
 		addr, ok := netip.AddrFromSlice(ip)
-		if !ok || !hasBits || bits > uint64(addr.BitLen()) {
+		if !ok || bits > uint64(addr.BitLen()) {
 			return fmt.Errorf("entry %q: bad CIDR %x/%d", name, ip, bits)
 		}
-		if err := b.AddPrefix(netip.PrefixFrom(addr, int(bits))); err != nil {
+		if err := skipMapped(b, b.AddPrefix(netip.PrefixFrom(addr, int(bits)))); err != nil {
 			return fmt.Errorf("entry %q: %w", name, err)
 		}
 	}
@@ -259,13 +284,16 @@ func importDBIP(r io.Reader, keep func(string) bool) (map[string]*Builder, error
 	cr.FieldsPerRecord = 3
 	cr.ReuseRecord = true
 	out := map[string]*Builder{}
-	for {
+	for rows := 1; ; rows++ {
 		rec, err := cr.Read()
 		if errors.Is(err, io.EOF) {
 			return out, nil
 		}
 		if err != nil {
 			return nil, fmt.Errorf("lists: dbip: %w", err)
+		}
+		if rows > maxEntries {
+			return nil, errTooManyEntries
 		}
 		line, _ := cr.FieldPos(0)
 		name := strings.ToLower(rec[2])
@@ -280,10 +308,21 @@ func importDBIP(r io.Reader, keep func(string) bool) (map[string]*Builder, error
 		if err := errors.Join(err1, err2); err != nil {
 			return nil, fmt.Errorf("lists: dbip line %d: %w", line, err)
 		}
-		if err := builderFor(out, name).AddRange(first, last); err != nil {
+		b := builderFor(out, name)
+		if err := skipMapped(b, b.AddRange(first, last)); err != nil {
 			return nil, fmt.Errorf("lists: dbip line %d: %w", line, err)
 		}
 	}
+}
+
+// skipMapped counts an entry refused with [ErrMappedIPv6] in [Stats.Skipped]
+// instead of failing the import.
+func skipMapped(b *Builder, err error) error {
+	if errors.Is(err, ErrMappedIPv6) {
+		b.skipped++
+		return nil
+	}
+	return err
 }
 
 var errSourceTooLarge = errors.New("lists: source too large")

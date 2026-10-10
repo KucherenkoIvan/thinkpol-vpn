@@ -14,6 +14,7 @@ import (
 const dbipFixture = "5.3.0.0,5.3.255.255,RU\n" +
 	"37.17.0.0,37.17.127.255,BY\n" +
 	"77.88.8.0,77.88.8.255,RU\n" +
+	"::,1fff:ffff:ffff:ffff:ffff:ffff:ffff:ffff,ZZ\n" +
 	"2a02:6b8::,2a02:6b8:ffff:ffff:ffff:ffff:ffff:ffff,RU\n"
 
 func TestDevListsBuild(t *testing.T) {
@@ -42,8 +43,12 @@ func TestDevListsBuild(t *testing.T) {
 		// two RU ranges for IPv4, one for IPv6.
 		row := fmt.Sprintf("ru %x %d 2 2 1 1", sha256.Sum256(blob), len(blob))
 		lines := strings.Split(strings.TrimSpace(stdout), "\n")
-		if len(lines) != 2 || strings.Join(strings.Fields(lines[1]), " ") != row {
-			t.Fatalf("stdout %q, want a row %q", stdout, row)
+		if len(lines) != 4 || strings.Join(strings.Fields(lines[1]), " ") != row ||
+			lines[2] != "" || !strings.HasPrefix(lines[3], "IP Geolocation by DB-IP (CC BY 4.0)") {
+			t.Fatalf("stdout %q, want a row %q and the attribution", stdout, row)
+		}
+		if stderr != "" {
+			t.Fatalf("stderr %q", stderr)
 		}
 		if first != nil && string(first) != string(blob) {
 			t.Fatal("second build differs")
@@ -54,8 +59,9 @@ func TestDevListsBuild(t *testing.T) {
 		t.Fatalf("by.geoip written without being asked for: %v", err)
 	}
 
-	if code, _, _ := runCLI(t, "dev", "lists", "build", "-out", out, src); code != 0 {
-		t.Fatalf("all lists: exit %d", code)
+	code, _, stderr := runCLI(t, "dev", "lists", "build", "-out", out, src)
+	if code != 0 || !strings.Contains(stderr, "warning: zz: left out 1 IPv6 entries overlapping the IPv4-mapped range") {
+		t.Fatalf("all lists: exit %d, stderr %q", code, stderr)
 	}
 	if _, err := os.Stat(filepath.Join(out, "by.geoip")); err != nil {
 		t.Fatal(err)

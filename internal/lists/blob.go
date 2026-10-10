@@ -18,9 +18,10 @@ import (
 //
 // A prefix is its length in bits (one byte) followed by the first
 // ceil(bits/8) bytes of its address, host bits zero. Prefixes are the set's
-// minimal list ([Set.Prefixes]): ascending, disjoint, no two mergeable. Not
-// compressed: compressors' output can change between versions, the hash
-// must not.
+// minimal list ([Set.Prefixes]): ascending, disjoint, no two mergeable. No
+// IPv6 prefix overlaps ::ffff:0:0/96: IPv4 is only ever in the IPv4 section
+// ([ErrMappedIPv6]). Not compressed: compressors' output can change between
+// versions, the hash must not.
 const (
 	blobMagic   = "TPIP"
 	blobVersion = 1
@@ -81,12 +82,13 @@ func Decode(blob []byte) (*Set, error) {
 	var b Builder
 	for f := range b.spans {
 		n, k := binary.Uvarint(rest)
-		// Every prefix takes at least one byte, which bounds the allocation.
-		if k <= 0 || n > uint64(len(rest)-k) {
+		// Every prefix but a /0 takes two bytes or more, and a /0 can only
+		// be alone, which bounds the count and the allocation.
+		if k <= 0 || n > uint64(len(rest)-k)/2+1 {
 			return nil, fmt.Errorf("%w: bad prefix count", ErrMalformedBlob)
 		}
 		rest = rest[k:]
-		b.spans[f] = make([]span, 0, min(n, 1<<16))
+		b.spans[f] = make([]span, 0, n)
 		w := family(f).width()
 		for range n {
 			if len(rest) == 0 || int(rest[0]) > w {
@@ -110,6 +112,9 @@ func Decode(blob []byte) (*Set, error) {
 			// prefixes that could be part of a canonical set.
 			if k := len(b.spans[f]); k > 0 && !b.spans[f][k-1].last.less(sp.first) {
 				return nil, fmt.Errorf("%w: prefixes not ascending", ErrMalformedBlob)
+			}
+			if family(f) == fam6 && overlapsMapped(sp) {
+				return nil, fmt.Errorf("%w: IPv6 prefix in ::ffff:0:0/96", ErrMalformedBlob)
 			}
 			b.spans[f] = append(b.spans[f], sp)
 		}

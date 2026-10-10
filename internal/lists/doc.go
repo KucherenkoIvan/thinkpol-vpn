@@ -11,10 +11,17 @@
 // it was ordered, overlapped or split. The map names the blob with the
 // list's name and kind geoip; rules say `geoip:<name>`.
 //
+// IPv4 lives only in the IPv4 family. No list holds IPv6 overlapping
+// ::ffff:0:0/96, the IPv4-mapped addresses: builders refuse it
+// ([ErrMappedIPv6]), importers leave it out and count it, [Decode] rejects
+// it. So no IPv6 entry (::/0, ::ffff:0:0/96) can put all of IPv4 into a
+// list, and [Set.Contains] looks a mapped address up as IPv4.
+//
 //	importers: Import(r, format, only) → map[name]*Builder
 //	aggregate: Builder.Build() → *Set, Stats (prefix counts before/after)
 //	encode:    Set.Blob() → bytes; sha256 of those names the blob
 //	read:      Decode(blob) → *Set (canonical only); Set.Contains, Set.Prefixes
+//	combine:   Builder.AddSet (union), Set.Minus (difference)
 //
 // Nothing here touches the network: sources are files an operator fetched.
 package lists

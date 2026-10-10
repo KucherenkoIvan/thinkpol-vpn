@@ -65,15 +65,19 @@ func lowMask(k int) u128 {
 	}
 }
 
-// fromAddr splits a valid address without a zone into its family and value;
-// IPv4-mapped IPv6 addresses count as IPv4.
-func fromAddr(a netip.Addr) (family, u128) {
-	a = a.Unmap()
+// split is a valid address's family and value as written: an IPv4-mapped
+// IPv6 address stays IPv6.
+func split(a netip.Addr) (family, u128) {
 	if a.Is4() {
 		b := a.As4()
 		return fam4, u128{0, uint64(binary.BigEndian.Uint32(b[:]))}
 	}
 	return fam6, from16(a)
+}
+
+// fromAddr is split for lookups: IPv4-mapped IPv6 addresses count as IPv4.
+func fromAddr(a netip.Addr) (family, u128) {
+	return split(a.Unmap())
 }
 
 func from16(a netip.Addr) u128 {

@@ -89,14 +89,15 @@ var (
 	fixtureV2fly = []v2flyFixture{
 		{code: "RU", cidrs: []string{"5.3.0.0/17", "5.3.128.0/17", "77.88.8.0/24", "2a02:6b8::/32"}},
 		{code: "BY", cidrs: []string{"37.17.0.0/17"}, extra: true},
-		{code: "ru", cidrs: []string{"77.88.8.8/32", "2a02:6b8:8000::/33"}}, // merges into RU
-		{code: "PRIVATE", cidrs: []string{"10.0.0.0/8", "fc00::/7"}},
+		{code: "ru", cidrs: []string{"77.88.8.8/32", "2a02:6b8:8000::/33"}},                    // merges into RU
+		{code: "PRIVATE", cidrs: []string{"10.0.0.0/8", "fc00::/7", "::ffff:192.168.0.0/112"}}, // the mapped one is left out
 	}
 	fixtureDBIP = strings.Join([]string{
 		"0.0.0.0,0.255.255.255,ZZ",
 		"5.3.0.0,5.3.255.255,RU",
 		"37.17.0.0,37.17.127.255,BY",
 		"77.88.8.0,77.88.8.255,RU",
+		"::,1fff:ffff:ffff:ffff:ffff:ffff:ffff:ffff,ZZ", // as in DB-IP: covers ::ffff:0:0/96
 		"2a02:6b8::,2a02:6b8:ffff:ffff:ffff:ffff:ffff:ffff,RU",
 	}, "\n") + "\n"
 	wantRU = []string{"5.3.0.0/16", "77.88.8.0/24", "2a02:6b8::/32"}
@@ -165,7 +166,7 @@ func TestImportErrors(t *testing.T) {
 		{"truncated protobuf", v2flyDat(fixtureV2fly...)[:20], FormatV2flyGeoIP, nil, nil},
 		{"5-byte ip", v2flyCIDR("RU", []byte{1, 2, 3, 4, 5}, 8), FormatV2flyGeoIP, nil, nil},
 		{"prefix too long", v2flyCIDR("RU", []byte{1, 2, 3, 4}, 33), FormatV2flyGeoIP, nil, nil},
-		{"no prefix length", v2flyCIDR("RU", []byte{1, 2, 3, 4}, -1), FormatV2flyGeoIP, nil, nil},
+		{"no address", v2flyCIDR("RU", nil, 8), FormatV2flyGeoIP, nil, nil},
 		{"dbip mixed families", []byte("1.0.0.0,::1,RU\n"), FormatDBIPCSV, nil, ErrInvalidPrefix},
 		{"dbip reversed", []byte("1.0.0.9,1.0.0.0,RU\n"), FormatDBIPCSV, nil, ErrInvalidPrefix},
 		{"dbip bad address", []byte("1.0.0,1.0.0.9,RU\n"), FormatDBIPCSV, nil, nil},
@@ -273,4 +274,69 @@ func FuzzImportV2fly(f *testing.F) {
 			}
 		}
 	})
+}
+
+// TestImportLeavesOutMappedIPv6: IPv6 entries are never unmapped into IPv4;
+// those overlapping ::ffff:0:0/96 are counted and left out.
+func TestImportLeavesOutMappedIPv6(t *testing.T) {
+	check := func(lists map[string]*Builder, name string, want []string) {
+		t.Helper()
+		set, st := lists[name].Build()
+		if got := strs(set.Prefixes()); !slices.Equal(got, want) || st.Skipped != 1 {
+			t.Fatalf("%s: %v, stats %+v", name, got, st)
+		}
+		if set.Contains(addr("192.168.1.1")) || set.Contains(addr("1.2.3.4")) {
+			t.Fatalf("%s: a mapped entry leaked into IPv4", name)
+		}
+	}
+	v2, err := Import(bytes.NewReader(v2flyDat(fixtureV2fly...)), FormatV2flyGeoIP, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check(v2, "private", []string{"10.0.0.0/8", "fc00::/7"})
+	db, err := Import(strings.NewReader(fixtureDBIP), FormatDBIPCSV, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check(db, "zz", []string{"0.0.0.0/8"})
+}
+
+// TestV2flyMissingPrefixIsZero: proto3 omits a zero prefix length.
+func TestV2flyMissingPrefixIsZero(t *testing.T) {
+	got := importOK(t, v2flyCIDR("RU", []byte{1, 2, 3, 4}, -1), FormatV2flyGeoIP)
+	if !slices.Equal(got["ru"], []string{"0.0.0.0/0"}) {
+		t.Fatalf("got %v", got)
+	}
+}
+
+func TestImportStopsAtEntryCap(t *testing.T) {
+	defer func(n int) { maxEntries = n }(maxEntries)
+	maxEntries = 3
+	csv3 := "1.0.0.0,1.0.0.255,RU\n2.0.0.0,2.0.0.255,DE\n3.0.0.0,3.0.0.255,RU\n"
+	if _, err := Import(strings.NewReader(csv3), FormatDBIPCSV, nil); err != nil {
+		t.Fatalf("at the cap: %v", err)
+	}
+	// Rows of lists not kept count too.
+	if _, err := Import(strings.NewReader(csv3+"4.0.0.0,4.0.0.255,DE\n"), FormatDBIPCSV, []string{"ru"}); !errors.Is(err, errTooManyEntries) {
+		t.Fatalf("over the cap: %v", err)
+	}
+	dat := v2flyDat(v2flyFixture{code: "RU", cidrs: []string{"1.0.0.0/8", "2.0.0.0/8"}}, v2flyFixture{code: "BY", cidrs: []string{"3.0.0.0/8", "4.0.0.0/8"}})
+	if _, err := Import(bytes.NewReader(dat), FormatV2flyGeoIP, []string{"ru"}); err != nil {
+		t.Fatalf("under the cap: %v", err)
+	}
+	if _, err := Import(bytes.NewReader(dat), FormatV2flyGeoIP, nil); !errors.Is(err, errTooManyEntries) {
+		t.Fatalf("over the cap: %v", err)
+	}
+}
+
+func TestAttribution(t *testing.T) {
+	if a := FormatDBIPCSV.Attribution(); !strings.Contains(a, "IP Geolocation by DB-IP (CC BY 4.0)") {
+		t.Errorf("dbip: %q", a)
+	}
+	if a := FormatV2flyGeoIP.Attribution(); !strings.Contains(a, "CC BY-SA 4.0") || !strings.Contains(a, "GeoLite2") {
+		t.Errorf("v2fly: %q", a)
+	}
+	if Format("x").Attribution() != "" {
+		t.Error("unknown format attributed")
+	}
 }

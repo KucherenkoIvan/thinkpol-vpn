@@ -90,24 +90,28 @@ func TestBlobDeterministic(t *testing.T) {
 func TestDecodeRejectsNonCanonical(t *testing.T) {
 	const head = "5450495001"
 	cases := map[string]string{
-		"empty":                  "",
-		"bad magic":              "5450495801" + "0000",
-		"no version":             "54504950",
-		"truncated count":        head,
-		"truncated v6 count":     head + "00",
-		"trailing byte":          head + "000000",
-		"count beyond the end":   head + "05" + "080a" + "00",
-		"truncated prefix":       head + "01" + "18c0a8" + "00",
-		"v4 prefix too long":     head + "01" + "2101020304ff" + "00",
-		"v6 prefix too long":     head + "00" + "01" + "81" + "00000000000000000000000000000000" + "00",
-		"host bits set":          head + "01" + "090aff" + "00",
-		"host bits in last byte": head + "01" + "0c0a01" + "00",
-		"unsorted":               head + "02" + "080b" + "080a" + "00",
-		"overlapping":            head + "02" + "080a" + "100a01" + "00",
-		"duplicate":              head + "02" + "080a" + "080a" + "00",
-		"mergeable halves":       head + "02" + "080a" + "080b" + "00",
-		"mergeable /9 halves":    head + "02" + "090a00" + "090a80" + "00",
-		"overlong count varint":  head + "8000" + "00",
+		"empty":                   "",
+		"bad magic":               "5450495801" + "0000",
+		"no version":              "54504950",
+		"truncated count":         head,
+		"truncated v6 count":      head + "00",
+		"trailing byte":           head + "000000",
+		"count beyond the end":    head + "05" + "080a" + "00",
+		"truncated prefix":        head + "01" + "18c0a8" + "00",
+		"v4 prefix too long":      head + "01" + "2101020304ff" + "00",
+		"v6 prefix too long":      head + "00" + "01" + "81" + "00000000000000000000000000000000" + "00",
+		"host bits set":           head + "01" + "090aff" + "00",
+		"host bits in last byte":  head + "01" + "0c0a01" + "00",
+		"unsorted":                head + "02" + "080b" + "080a" + "00",
+		"overlapping":             head + "02" + "080a" + "100a01" + "00",
+		"duplicate":               head + "02" + "080a" + "080a" + "00",
+		"mergeable halves":        head + "02" + "080a" + "080b" + "00",
+		"mergeable /9 halves":     head + "02" + "090a00" + "090a80" + "00",
+		"overlong count varint":   head + "8000" + "00",
+		"v6 inside ::ffff:0:0/96": head + "00" + "01" + mappedPrefix,
+		"v6 /0":                   head + "00" + "01" + "00",
+		"v6 covering mapped":      head + "00" + "01" + "40" + "0000000000000000",
+		"count over the bound":    head + "03" + "0000" + "00",
 	}
 	for name, h := range cases {
 		if _, err := Decode(unhex(t, h)); !errors.Is(err, ErrMalformedBlob) {
@@ -125,10 +129,15 @@ func TestDecodeRejectsNonCanonical(t *testing.T) {
 	}
 }
 
+// mappedPrefix is ::ffff:1.2.0.0/112 in the blob's prefix encoding.
+const mappedPrefix = "70" + "00000000000000000000ffff0102"
+
 func FuzzDecode(f *testing.F) {
 	f.Add(build(f, "192.168.1.0/24", "fe80::/10", "10.0.0.0/8", "2001:db8::/32", "1.2.3.4/32").Blob())
 	f.Add((&Set{}).Blob())
-	f.Add(build(f, "0.0.0.0/0", "::/0").Blob())
+	f.Add(build(f, "0.0.0.0/0", "8000::/1").Blob())
+	f.Add(unhex(f, "5450495001"+"00"+"01"+mappedPrefix))
+	f.Add(unhex(f, "5450495001"+"01"+"00"+"01"+"00"))
 	f.Fuzz(func(t *testing.T, blob []byte) {
 		s, err := Decode(blob)
 		if err != nil {
@@ -140,6 +149,9 @@ func FuzzDecode(f *testing.F) {
 		for _, p := range s.Prefixes() {
 			if !s.Contains(p.Addr()) {
 				t.Fatalf("%v not contained", p)
+			}
+			if p.Addr().Is6() && p.Overlaps(netip.MustParsePrefix("::ffff:0:0/96")) {
+				t.Fatalf("accepted %v, inside the IPv4-mapped range", p)
 			}
 		}
 	})
