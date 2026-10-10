@@ -70,3 +70,4 @@ Review verdict: merge after these (orchestrator decisions).
 - 2026-10-10 the map carries shaping in a new `shaping` field next to `settings` (not inside `InboundLink.settings` as TP-003's note said); netmap.proto comment and DESIGN.md "Transports own traffic shape" updated
 - 2026-10-10 in-progress → review
 - 2026-10-10 review → has-errors — review: 5 findings, 8 nits (see Review findings)
+- 2026-10-10 has-errors → in-progress — owner: agent-tp-027, picking up the review findings
