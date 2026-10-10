@@ -79,3 +79,4 @@ const RouteProtocol = 84                               // linux: rtnetlink proto
 - 2026-10-10 backlog → in-progress — owner: agent-tp-007, branch: tp-007-netcfg-linux
 - 2026-10-10 in-progress → review — make lint, make test, make lab-gotest (netcfg) green
 - 2026-10-10 review → has-errors — review findings 1–12
+- 2026-10-10 has-errors → in-progress — owner: agent-tp-007, fixing review findings
