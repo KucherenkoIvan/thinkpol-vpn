@@ -26,6 +26,8 @@ On Linux devices, `direct` destinations go straight out and everything else ente
 
 ## Notes
 - netcfg (TP-007) manages the main table only: per-space namespaces each have their own. If enforcement needs policy routing (ip rules + extra tables), add `Table` and rules to the netcfg port here. See TP-007's Notes for `DefaultRoute`, split defaults and delete-then-add on route changes.
+- From TP-006: links' sockets are marked by the transport adapter (`udp.Options.Control`), never by WireGuard (no `fwmark` on any WireGuard device; the path layer's Bind refuses marks). Linux: `SO_MARK` plus an `ip rule` sending marked traffic to the main table. Darwin: `IP_BOUND_IF`/`IPV6_BOUND_IF` to the physical interface. Windows: `IP_UNICAST_IF`. TP-011 builds the Registry with that Control.
 
 ## Log
 - 2026-10-10 created in backlog
+- 2026-10-10 docs (TP-006 review): notes from the path layer
