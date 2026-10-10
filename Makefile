@@ -26,7 +26,7 @@ BUF_BREAKING_AGAINST ?= rewrite
 # cgo is off unless a target turns it on (test-race).
 export CGO_ENABLED := 0
 
-.PHONY: help build test test-race lint nocgo proto-check fmt proto tools lab lab-up lab-test lab-down
+.PHONY: help build test test-race lint nocgo proto-check fmt proto tools lab lab-up lab-test lab-gotest lab-down
 
 help: ## list targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -40,13 +40,13 @@ test: ## unit tests (lab tests skip outside the lab)
 test-race: ## unit tests with the race detector (needs cgo)
 	CGO_ENABLED=1 go test -race ./...
 
-lint: $(TOOLS_STAMP) ## gofmt, then go vet + golangci-lint per OS, the Android build and the no-cgo check
+lint: $(TOOLS_STAMP) ## gofmt, then go vet + golangci-lint per OS (lab tests included), the Android build and the no-cgo check
 	@out=$$(gofmt -l . 2>&1) || { echo "$$out"; exit 1; }; \
 	if [ -n "$$out" ]; then echo "gofmt needed:"; echo "$$out"; exit 1; fi
 	@for os in $(LINT_GOOS); do \
 		echo "go vet + golangci-lint, GOOS=$$os"; \
-		GOOS=$$os go vet ./... || exit 1; \
-		GOOS=$$os $(TOOLS)/golangci-lint run --allow-serial-runners ./... || exit 1; \
+		GOOS=$$os go vet -tags lab ./... || exit 1; \
+		GOOS=$$os $(TOOLS)/golangci-lint run --build-tags lab --allow-serial-runners ./... || exit 1; \
 	done
 	@echo "build for android/arm64"
 	@pkgs=$$(GOOS=android GOARCH=arm64 go list $(NOCGO_PKGS)) || exit 1; \
@@ -91,14 +91,27 @@ $(TOOLS_STAMP):
 	GOBIN=$(TOOLS) go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@$(PROTOC_GEN_GO_GRPC_VERSION)
 	touch $@
 
-lab: ## run every transport against every censor module (placeholder until TP-002/TP-024)
-	@echo "lab: the lab doesn't exist yet (TP-002)"; exit 1
+# The lab (lab/README.md): Docker only, every lab a Compose project of its
+# own, named after this checkout, so several checkouts can run labs at once.
+LABCTL := go run ./lab/labctl
+LAB_TIMEOUT ?= 20m
 
-lab-up: ## start the lab (placeholder until TP-002)
-	@echo "lab-up: the lab doesn't exist yet (TP-002)"; exit 1
+lab: lab-test ## the lab suite (TP-024 makes it run the censor matrix)
 
-lab-test: ## run the lab tests (placeholder until TP-002)
-	@echo "lab-test: the lab doesn't exist yet (TP-002)"; exit 1
+lab-up: ## start the standard topology for this checkout, for poking around
+	$(LABCTL) up
 
-lab-down: ## stop the lab (placeholder until TP-002)
-	@echo "lab-down: the lab doesn't exist yet (TP-002)"; exit 1
+lab-test: ## lab tests (each starts its own lab) + every package's tests inside a lab node; tears down after
+	@$(LABCTL) down -stale
+	@status=0; \
+	go test -tags lab -count=1 -timeout $(LAB_TIMEOUT) ./lab/... || status=1; \
+	$(LABCTL) gotest ./... || status=1; \
+	if [ -z "$$THINKPOL_LAB_KEEP" ]; then $(LABCTL) down -tests; fi; \
+	exit $$status
+
+lab-gotest: export LAB_RUN = $(RUN)
+lab-gotest: ## run PKG's tests inside a lab node with THINKPOL_LAB=1 (PKG=./internal/... RUN=regexp)
+	$(LABCTL) gotest -v -run "$$LAB_RUN" $(or $(PKG),./...)
+
+lab-down: ## remove every lab this checkout started
+	$(LABCTL) down
