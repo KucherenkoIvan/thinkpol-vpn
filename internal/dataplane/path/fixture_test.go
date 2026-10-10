@@ -22,24 +22,29 @@ var fastOptions = path.Options{
 	ProbeInterval: 30 * time.Millisecond,
 	DeadAfter:     150 * time.Millisecond,
 	FollowFor:     150 * time.Millisecond,
-	E2EDead:       300 * time.Millisecond,
 	RedialMin:     10 * time.Millisecond,
 	RedialMax:     100 * time.Millisecond,
 	Selector:      path.Failover{HoldDown: 500 * time.Millisecond},
 }
 
-// Timings for a fake clock, which tests step by fakeStep.
+// Timings for a fake clock, which tests step by fakeStep, giving the nodes
+// fakeSlack of wall time per step. A link probed every ProbeInterval has
+// (DeadAfter - ProbeInterval) / fakeStep steps, 200 ms of wall time, for a
+// reply to come back: room for a race-detector stall.
 var fakeOptions = path.Options{
 	ProbeInterval: time.Second,
-	DeadAfter:     3 * time.Second,
-	FollowFor:     3 * time.Second,
-	E2EDead:       5 * time.Second,
+	DeadAfter:     5 * time.Second,
+	FollowFor:     5 * time.Second,
 	RedialMin:     5 * time.Millisecond, // wall clock
 	RedialMax:     20 * time.Millisecond,
 	Selector:      path.Failover{HoldDown: 10 * time.Second},
 }
 
-const fakeStep = 100 * time.Millisecond
+const (
+	fakeStep  = 100 * time.Millisecond
+	fakeSlack = 5 * time.Millisecond
+	fakeHold  = 10 * time.Second // fakeOptions' hold-down
+)
 
 // wait bounds every wall-clock wait for something that should happen.
 const wait = 10 * time.Second
@@ -91,7 +96,7 @@ type fabric struct {
 	clock *fakeClock // nil on the wall clock
 
 	mu       sync.Mutex
-	silenced map[string]bool // "from>to"
+	silenced map[string]bool // "from>to" for what from sends, "from<to" for what it receives
 	nodes    map[string]*fnode
 }
 
@@ -120,7 +125,7 @@ func newFakeFabric(t *testing.T, sem memory.Semantics) *fabric {
 func (f *fabric) advance(d time.Duration, each func()) {
 	for done := time.Duration(0); done < d; done += fakeStep {
 		f.clock.add(fakeStep)
-		time.Sleep(2 * time.Millisecond)
+		time.Sleep(fakeSlack)
 		if each != nil {
 			each()
 		}
@@ -193,7 +198,7 @@ func (f *fabric) dial(from, to string) {
 	a := f.node(from)
 	a.table.Links = append(a.table.Links, path.Link{Node: id(to), Endpoints: []path.Endpoint{{
 		Transport: memory.Name,
-		Dialer:    silenceable{f: f, key: from + ">" + to},
+		Dialer:    silenceable{f: f, from: from, to: to},
 		Address:   to,
 		Config:    transport.DialConfig{Credential: secret},
 	}}})
@@ -212,10 +217,19 @@ func (f *fabric) route(at, dst string, next ...string) {
 	n.Update(n.table)
 }
 
+// silence makes the links from dials to go quiet both ways, or stops it.
 func (f *fabric) silence(from, to string, on bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.silenced[from+">"+to] = on
+	f.silenced[from+"<"+to] = on
+}
+
+// silenceInbound loses only what to sends to from, on the links from dials.
+func (f *fabric) silenceInbound(from, to string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.silenced[from+"<"+to] = true
 }
 
 func (f *fabric) isSilenced(key string) bool {
@@ -252,7 +266,8 @@ func (f *fabric) waitUp(at, of string) {
 }
 
 // rawLink dials to as from, outside any node, and returns the link once
-// to answers a probe on it.
+// to answers a probe on it. Like any adjacent node it answers to's probes,
+// so to keeps counting the link as up.
 func (f *fabric) rawLink(from, to string) transport.Link {
 	f.t.Helper()
 	secret := f.accept(to, from, transport.SpaceID{})
@@ -265,17 +280,30 @@ func (f *fabric) rawLink(from, to string) transport.Link {
 		if err != nil {
 			f.t.Fatal(err)
 		}
+		replies := make(chan []byte, 1)
+		go func() {
+			buf := make([]byte, transport.MaxPacketSize)
+			for {
+				n, err := try.ReadPacket(buf)
+				if err != nil {
+					return
+				}
+				switch buf[0] {
+				case 2:
+					_ = try.WritePacket(append([]byte{3}, buf[1:n]...))
+				case 3:
+					select {
+					case replies <- append([]byte(nil), buf[:n]...):
+					default:
+					}
+				}
+			}
+		}()
 		if err := try.WritePacket(probe); err != nil {
 			f.t.Fatal(err)
 		}
-		reply := make(chan []byte, 1)
-		go func() {
-			buf := make([]byte, transport.MaxPacketSize)
-			n, _ := try.ReadPacket(buf)
-			reply <- buf[:n]
-		}()
 		select {
-		case got := <-reply:
+		case got := <-replies:
 			if want := append([]byte{3}, probe[1:]...); !bytes.Equal(got, want) {
 				f.t.Fatalf("probe answered with %x, want %x", got, want)
 			}
@@ -297,8 +325,6 @@ func packet(hops byte, dst, src string, msg []byte) []byte {
 }
 
 // WireGuard-shaped messages: what the path layer counts as signs of life.
-func wgInitiation() []byte { m := make([]byte, 148); m[0] = 1; return m }
-
 // wgMsg is a WireGuard-shaped data message carrying a tag (≤ 32 bytes).
 func wgMsg(tag string) []byte {
 	m := make([]byte, 48)
@@ -340,8 +366,8 @@ func exchange(a, b *rawBind, toB conn.Endpoint, msg []byte) (aHop, bHop string) 
 // silenceable dials over the fabric's network; the links it opens go quiet
 // while the fabric silences them.
 type silenceable struct {
-	f   *fabric
-	key string
+	f        *fabric
+	from, to string
 }
 
 func (d silenceable) Dial(ctx context.Context, endpoint string, cfg transport.DialConfig) (transport.Link, error) {
@@ -349,16 +375,20 @@ func (d silenceable) Dial(ctx context.Context, endpoint string, cfg transport.Di
 	if err != nil {
 		return nil, err
 	}
-	return &silenceableLink{Link: l, silenced: func() bool { return d.f.isSilenced(d.key) }}, nil
+	return &silenceableLink{
+		Link: l,
+		out:  func() bool { return d.f.isSilenced(d.from + ">" + d.to) },
+		in:   func() bool { return d.f.isSilenced(d.from + "<" + d.to) },
+	}, nil
 }
 
 type silenceableLink struct {
 	transport.Link
-	silenced func() bool
+	out, in func() bool
 }
 
 func (l *silenceableLink) WritePacket(p []byte) error {
-	if l.silenced() {
+	if l.out() {
 		return transport.CheckPacketSize(p)
 	}
 	return l.Link.WritePacket(p)
@@ -367,7 +397,7 @@ func (l *silenceableLink) WritePacket(p []byte) error {
 func (l *silenceableLink) ReadPacket(p []byte) (int, error) {
 	for {
 		n, err := l.Link.ReadPacket(p)
-		if err != nil || !l.silenced() {
+		if err != nil || !l.in() {
 			return n, err
 		}
 	}
@@ -452,8 +482,10 @@ func (b *rawBind) current(peer string) string {
 	if !ok {
 		return ""
 	}
-	return string(bytes.TrimRight(hop[:], "\x00"))
+	return string(trimID(hop))
 }
+
+func trimID(id path.NodeID) []byte { return bytes.TrimRight(id[:], "\x00") }
 
 func (b *rawBind) expect(t *testing.T, msg string) received {
 	t.Helper()

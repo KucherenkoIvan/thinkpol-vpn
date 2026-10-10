@@ -16,27 +16,32 @@ func TestFailover(t *testing.T) {
 	down := func(name string) path.Candidate { return path.Candidate{Hop: id(name), Linked: true} }
 	followed := func(c path.Candidate) path.Candidate { c.Followed = true; return c }
 
+	const lead, follow = false, true
 	for _, tc := range []struct {
 		name    string
+		follows bool
 		current string
 		cands   []path.Candidate
 		want    string // "" for none
 	}{
-		{"first up in priority order", "", []path.Candidate{down("R1"), up("R2", 0), up("R3", hold)}, "R2"},
-		{"keeps the current hop while it is up", "R2", []path.Candidate{up("R1", hold-1), up("R2", 0)}, "R2"},
-		{"returns to an earlier hop after the hold-down", "R3", []path.Candidate{up("R1", hold), up("R2", hold), up("R3", hold)}, "R1"},
-		{"leaves a current hop that went down", "R1", []path.Candidate{down("R1"), up("R2", 0)}, "R2"},
-		{"follows the peer's path", "R1", []path.Candidate{up("R1", hold), followed(up("R2", 0))}, "R2"},
-		{"doesn't follow onto a hop that is down here", "R1", []path.Candidate{up("R1", hold), followed(down("R2"))}, "R1"},
-		{"tries a link not heard from yet", "", []path.Candidate{{Hop: id("R1")}, down("R2")}, "R2"},
-		{"nothing usable", "R1", []path.Candidate{{Hop: id("R1")}}, ""},
+		{"first up in priority order", lead, "", []path.Candidate{down("R1"), up("R2", 0), up("R3", hold)}, "R2"},
+		{"keeps the current hop while it is up", lead, "R2", []path.Candidate{up("R1", hold-1), up("R2", 0)}, "R2"},
+		{"returns to an earlier hop after the hold-down", lead, "R3", []path.Candidate{up("R1", hold), up("R2", hold), up("R3", hold)}, "R1"},
+		{"leaves a current hop that went down", lead, "R1", []path.Candidate{down("R1"), up("R2", 0)}, "R2"},
+		{"a leader never follows", lead, "R1", []path.Candidate{up("R1", hold), followed(up("R2", 0))}, "R1"},
+		{"a follower follows", follow, "R1", []path.Candidate{up("R1", hold), followed(up("R2", 0))}, "R2"},
+		{"not onto a hop that is down here", follow, "R1", []path.Candidate{up("R1", hold), followed(down("R2"))}, "R1"},
+		{"a follower never returns on its own", follow, "R2", []path.Candidate{up("R1", time.Hour), up("R2", 0)}, "R2"},
+		{"a follower leaves a hop that went down", follow, "R2", []path.Candidate{up("R1", 0), down("R2")}, "R1"},
+		{"tries a link not proven yet", lead, "", []path.Candidate{{Hop: id("R1")}, down("R2")}, "R2"},
+		{"nothing usable", lead, "R1", []path.Candidate{{Hop: id("R1")}}, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var current path.NodeID
 			if tc.current != "" {
 				current = id(tc.current)
 			}
-			got, ok := path.Failover{HoldDown: hold}.Select(current, tc.cands)
+			got, ok := path.Failover{HoldDown: hold}.Select(path.Choice{Current: current, Follows: tc.follows, Candidates: tc.cands})
 			switch {
 			case tc.want == "" && ok:
 				t.Fatalf("picked %s, want none", got)
@@ -67,7 +72,7 @@ func TestFailoverHysteresis(t *testing.T) {
 		} else if primary.Up {
 			primary.UpFor += 500 * time.Millisecond
 		}
-		got, ok := sel.Select(current, []path.Candidate{primary, backup})
+		got, ok := sel.Select(path.Choice{Current: current, Candidates: []path.Candidate{primary, backup}})
 		if !ok {
 			t.Fatal("no hop picked")
 		}

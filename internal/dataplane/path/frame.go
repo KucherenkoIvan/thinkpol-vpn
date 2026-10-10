@@ -105,11 +105,11 @@ func wgType(m []byte) byte {
 	return 0
 }
 
-// MessageBudget is the largest WireGuard message a link carries in one
-// outer packet of mtu bytes: mtu minus the outer IP and UDP or TCP headers
-// (ipHeaders: 28 for IPv4 and UDP, 48 for IPv6 and UDP), the transport's
-// Overhead and HeaderSize; never more than MaxMessageSize, never negative.
-// WireGuard's own data overhead (32 bytes) comes off it for the TUN's MTU.
-func MessageBudget(mtu, ipHeaders, transportOverhead int) int {
-	return max(min(mtu-ipHeaders-transportOverhead-HeaderSize, MaxMessageSize), 0)
+// MessageBudget is the largest WireGuard message a link of t with shaping
+// s carries in units of at most maxUnit bytes (for a datagram transport,
+// the path MTU less the IP and UDP headers): transport.MaxPacket less
+// HeaderSize, never more than MaxMessageSize, never negative. WireGuard's
+// own data overhead (32 bytes) comes off it for the TUN's MTU.
+func MessageBudget(t transport.Transport, s transport.Shaping, maxUnit int) int {
+	return max(min(transport.MaxPacket(t, s, maxUnit)-HeaderSize, MaxMessageSize), 0)
 }

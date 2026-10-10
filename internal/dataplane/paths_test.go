@@ -28,6 +28,12 @@ func TestPathConfigSkipsWhatItCannotUse(t *testing.T) {
 	secret := bytes.Repeat([]byte{7}, udp.MinSecretSize)
 	good := netmap.Endpoint{Transport: "udp", Address: netip.MustParseAddrPort("192.0.2.1:4500"), Credential: secret}
 	with := func(f func(*netmap.Endpoint)) netmap.Endpoint { e := good; f(&e); return e }
+	buckets := transport.Shaping{Padding: transport.Buckets(256, 1280)}
+	encoded, err := buckets.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	shaped := with(func(e *netmap.Endpoint) { e.Shaping = encoded })
 
 	const self, relay, entry, device, stranger, nowhere = 1, 2, 3, 4, 5, 6
 	s := netmap.Section{
@@ -38,7 +44,8 @@ func TestPathConfigSkipsWhatItCannotUse(t *testing.T) {
 				with(func(e *netmap.Endpoint) { e.Address = netip.AddrPort{} }),
 				with(func(e *netmap.Endpoint) { e.Address = netip.MustParseAddrPort("0.0.0.0:4500") }),
 				with(func(e *netmap.Endpoint) { e.Credential = []byte("short") }),
-				good,
+				with(func(e *netmap.Endpoint) { e.Shaping = []byte{0xff, 0xff} }),
+				shaped,
 			}},
 			{Peer: nid(nowhere), Endpoints: []netmap.Endpoint{with(func(e *netmap.Endpoint) { e.Transport = "tls" })}},
 			{Peer: nid(self), Endpoints: []netmap.Endpoint{good}},
@@ -61,7 +68,7 @@ func TestPathConfigSkipsWhatItCannotUse(t *testing.T) {
 	if len(c.Table.Links) != 1 || c.Table.Links[0].Node != pid(relay) || len(c.Table.Links[0].Endpoints) != 1 {
 		t.Fatalf("links %+v, want the relay with its one good endpoint", c.Table.Links)
 	}
-	if ep := c.Table.Links[0].Endpoints[0]; ep.Address != "192.0.2.1:4500" || ep.Transport != "udp" || !bytes.Equal(ep.Config.Credential, secret) || ep.Dialer == nil {
+	if ep := c.Table.Links[0].Endpoints[0]; ep.Address != "192.0.2.1:4500" || ep.Transport != "udp" || !bytes.Equal(ep.Config.Credential, secret) || ep.Dialer == nil || ep.Config.Shaping != buckets {
 		t.Fatalf("endpoint %+v", ep)
 	}
 	want := []path.Route{{Destination: pid(device), NextHops: []path.NodeID{pid(device)}}}
@@ -80,7 +87,7 @@ func TestPathConfigSkipsWhatItCannotUse(t *testing.T) {
 		reasons.WriteString(err.Error() + "\n")
 	}
 	for _, want := range []string{
-		`unknown transport "carrier-pigeon"`, "unusable address", "credential", "no usable endpoint",
+		`unknown transport "carrier-pigeon"`, "unusable address", "credential", "shaping:", "no usable endpoint",
 		"not an adjacent node", "no next hop", "not a destination", "no usable path", "not a peer",
 	} {
 		if !strings.Contains(reasons.String(), want) {

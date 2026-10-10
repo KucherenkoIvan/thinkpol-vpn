@@ -218,146 +218,130 @@ func TestAFailedOverPairReturnsAfterTheHoldDown(t *testing.T) {
 	})
 }
 
-// A first hop whose own links are fine but that can't reach the peer: the
-// Bind demotes it after E2EDead of unanswered handshakes, tries it again
-// after the hold-down, and demotes it for twice as long the second time.
-func TestUnansweredHandshakesDemoteAFirstHop(t *testing.T) {
+// The follower never returns to its primary on its own: after the pair
+// failed over and the primary came back, a follower that hears nothing from
+// the leader for longer than FollowFor and then talks stays on the backup.
+func TestAnIdleFollowerDoesNotSwitchBack(t *testing.T) {
 	eachSemanticsFake(t, func(t *testing.T, f *fabric) {
 		a, b := twoRelays(t, f, r1r2, r1r2)
-		toB := a.endpoint(t, "B")
-		pingPong(t, a, b, toB, "before")
-		// R1 loses B; A's links to R1 stay up.
+		toB, toA := a.endpoint(t, "B"), b.endpoint(t, "A")
+		f.silence("A", "R1", true)
 		f.silence("B", "R1", true)
-		f.advance(f.opts.DeadAfter+f.opts.ProbeInterval, nil)
-		b.drain()
-		if !f.isUp("A", "R1") {
-			t.Fatal("A's link to R1 went down; the test needs it up")
+		f.advance(f.opts.DeadAfter+f.opts.ProbeInterval, func() { exchange(a, b, toB, wgMsg("traffic")) })
+		if aHop, bHop := pingPong(t, a, b, toB, "failed over"); aHop != "R2" || bHop != "R2" {
+			t.Fatalf("after R1 died: A on %q, B on %q, want R2", aHop, bHop)
 		}
+		f.silence("A", "R1", false)
+		f.silence("B", "R1", false)
+		f.waitUp("B", "R1")
 
-		var elapsed time.Duration
-		var switches []time.Duration
-		hop := a.current("B")
-		f.advance(30*time.Second, func() {
-			elapsed += fakeStep
-			if now, _ := exchange(a, b, toB, wgInitiation()); now != hop {
-				hop = now
-				switches = append(switches, elapsed)
-			}
-		})
-		e2e, hold := f.opts.E2EDead, 10*time.Second
-		want := []time.Duration{e2e, 2*e2e + hold, 3*e2e + hold}
-		if len(switches) != len(want) {
-			t.Fatalf("switched at %v, want about %v", switches, want)
-		}
-		for i := range want {
-			if switches[i] < want[i] || switches[i] > want[i]+4*fakeStep {
-				t.Fatalf("switch %d at %v, want just after %v (all: %v)", i, switches[i], want[i], switches)
-			}
-		}
-		if hop != "R2" || f.node("A").Counters().Demotions != 2 {
-			t.Fatalf("ends on %q with %d demotions, want R2 and 2", hop, f.node("A").Counters().Demotions)
+		f.advance(fakeHold+f.opts.FollowFor+time.Second, nil) // nothing from A
+		b.send(t, toA, "B talks first")
+		a.await(t, "B talks first")
+		if hop := b.current("A"); hop != "R2" {
+			t.Fatalf("idle follower went back to %q on its own, want R2", hop)
 		}
 	})
 }
 
-// Data alone waits for WireGuard's keepalive too: a peer that only
-// receives answers within 10 s.
-func TestUnansweredDataDemotesAFirstHopLater(t *testing.T) {
-	eachSemanticsFake(t, func(t *testing.T, f *fabric) {
-		a, b := twoRelays(t, f, r1r2, r1r2)
-		toB := a.endpoint(t, "B")
-		pingPong(t, a, b, toB, "before")
-		f.silence("B", "R1", true)
-		f.advance(f.opts.DeadAfter+f.opts.ProbeInterval, nil)
-
-		var elapsed, switched time.Duration
-		f.advance(f.opts.E2EDead+12*time.Second, func() {
-			elapsed += fakeStep
-			_ = a.Send([][]byte{wgMsg("data")}, toB)
-			if switched == 0 && a.current("B") == "R2" {
-				switched = elapsed
-			}
-		})
-		want := f.opts.E2EDead + 10*time.Second
-		if switched < want || switched > want+4*fakeStep {
-			t.Fatalf("switched after %v of unanswered data, want just after %v", switched, want)
-		}
-	})
-}
-
-// In the middle of a chain a relay follows the path the destination's
-// packets come through when the destination leads the pair, and picks by
-// its own order when the source leads.
-func TestMidChainRelayFollowsTheLeadingEnd(t *testing.T) {
-	for _, tc := range []struct {
-		exit, want string
-	}{
-		{exit: "C", want: "M2"}, // C < D: the exit leads with its own order, M2 first
-		{exit: "Z", want: "M1"}, // D < Z: the device's side leads; N keeps its own order
-	} {
-		t.Run(tc.exit, func(t *testing.T) {
+// Traffic one way only, either way, survives losing the first hop: the
+// sender fails over on its own links, and the receiver needs nothing.
+func TestOneWayFlowsFailOver(t *testing.T) {
+	for _, dir := range []struct{ name, from, to string }{{"leader to follower", "A", "B"}, {"follower to leader", "B", "A"}} {
+		t.Run(dir.name, func(t *testing.T) {
 			f := newFakeFabric(t, 0)
-			x := tc.exit
-			f.add("D", "N", "M1", "M2", x)
-			f.dial("D", "N")
-			for _, m := range []string{"M1", "M2"} {
-				f.dial("N", m)
-				f.dial(m, x)
-				f.route(m, x, x)
-				f.route(m, "D", "N")
+			a, b := twoRelays(t, f, r1r2, r1r2)
+			from, to := a, b
+			if dir.from == "B" {
+				from, to = b, a
 			}
-			f.route("N", x, "M1", "M2")
-			f.route("N", "D", "D")
-			d := f.bind("D", peer(x, "N"))
-			e := f.bind(x, peer("D", "M2", "M1"))
-			toX := d.endpoint(t, x)
-			for i := range 20 {
-				f.clock.add(fakeStep)
-				d.send(t, toX, "to the exit")
-				got := e.expect(t, "to the exit")
-				e.send(t, got.ep, "back")
-				d.expect(t, "back")
-				if i < 2 {
-					continue
-				}
-				hop, _, _ := f.node("N").Route(id(x))
-				if hop != id(tc.want) {
-					t.Fatalf("round %d: N relays to %s through %s, want %s", i, x, hop, tc.want)
-				}
+			ep := from.endpoint(t, dir.to)
+			from.send(t, ep, "before")
+			to.await(t, "before")
+			f.silence("A", "R1", true)
+			f.silence("B", "R1", true)
+			f.advance(f.opts.DeadAfter+f.opts.ProbeInterval, func() { _ = from.Send([][]byte{wgMsg("lost")}, ep) })
+			from.send(t, ep, "after")
+			to.await(t, "after")
+			if hop := from.current(dir.to); hop != "R2" {
+				t.Fatalf("%s sends through %q, want R2", dir.from, hop)
 			}
 		})
 	}
 }
 
-// B, the follower, loses R1 while A's link to R1 stays up: A keeps
-// sending into R1, which can't reach B, while B talks through R2. A must
-// notice within E2EDead and move to R2.
-func TestTheLeaderLeavesAHopTheFollowerCantUse(t *testing.T) {
+// A link that delivers only one way is down for both ends: here the
+// accepting end's packets are lost on the way, and its probes go
+// unanswered.
+func TestOneWayLossOnAnAcceptedLinkIsDetected(t *testing.T) {
 	eachSemanticsFake(t, func(t *testing.T, f *fabric) {
-		a, b := twoRelays(t, f, r1r2, r1r2)
-		toB, toA := a.endpoint(t, "B"), b.endpoint(t, "A")
-		pingPong(t, a, b, toB, "before")
-		f.silence("B", "R1", true)
-		var elapsed, switched time.Duration
-		f.advance(f.opts.DeadAfter+3*f.opts.E2EDead, func() {
+		f.add("A", "R")
+		f.dial("A", "R")
+		f.waitUp("R", "A")
+		f.silenceInbound("A", "R") // what R sends to A is lost
+		var elapsed, down time.Duration
+		f.advance(f.opts.DeadAfter+time.Second, func() {
 			elapsed += fakeStep
-			_ = b.Send([][]byte{wgMsg("B's own traffic")}, toA)
-			exchange(a, b, toB, wgMsg("A's traffic"))
-			if switched == 0 && a.current("B") == "R2" {
-				switched = elapsed
+			if down == 0 && !f.isUp("R", "A") {
+				down = elapsed
 			}
 		})
-		if !f.isUp("A", "R1") {
-			t.Fatal("A's link to R1 went down; the test needs it up")
-		}
-		// B's own link to R1 dies after DeadAfter; from then on B talks
-		// through R2 and A should be gone from R1 within E2EDead.
-		limit := f.opts.DeadAfter + f.opts.E2EDead + f.opts.ProbeInterval
-		if switched == 0 || switched > limit {
-			t.Fatalf("A moved to R2 after %v, want within %v", switched, limit)
-		}
-		if aHop, bHop := pingPong(t, a, b, toB, "after"); aHop != "R2" || bHop != "R2" {
-			t.Fatalf("A on %q, B on %q, want R2", aHop, bHop)
+		o := f.opts
+		if down == 0 || down < o.DeadAfter-o.ProbeInterval-2*fakeStep || down > o.DeadAfter+2*fakeStep {
+			t.Fatalf("R saw its link to A down %v after the loss began, want about DeadAfter (%v)", down, o.DeadAfter)
 		}
 	})
+}
+
+// In the middle of a chain a relay keeps one next hop per destination,
+// whatever the ends choose, and fails over on its own links with the
+// hold-down: no following, no alternation.
+func TestMidChainRelayFailsOverOnItsOwnLinks(t *testing.T) {
+	f := newFakeFabric(t, 0)
+	f.add("D", "N", "M1", "M2", "C")
+	f.dial("D", "N")
+	for _, m := range []string{"M1", "M2"} {
+		f.dial("N", m)
+		f.dial(m, "C")
+		f.route(m, "C", "C")
+		f.route(m, "D", "N")
+	}
+	f.route("N", "C", "M1", "M2")
+	f.route("N", "D", "D")
+	d := f.bind("D", peer("C", "N"))
+	c := f.bind("C", peer("D", "M2", "M1")) // the exit prefers the other middle
+	toC := d.endpoint(t, "C")
+	round := func(tag string) string {
+		t.Helper()
+		d.send(t, toC, tag)
+		got := c.await(t, tag)
+		c.send(t, got.ep, tag+" back")
+		d.await(t, tag+" back")
+		hop, _, _ := f.node("N").Route(id("C"))
+		return string(trimID(hop))
+	}
+	for i := range 20 {
+		if hop := round("steady"); hop != "M1" {
+			t.Fatalf("round %d: N relays to C through %s, want M1 throughout", i, hop)
+		}
+	}
+	if m2 := f.node("M2").Counters().Forwarded; m2 != 20 {
+		t.Fatalf("M2 forwarded %d, want only C's 20 replies", m2)
+	}
+
+	f.silence("N", "M1", true)
+	f.advance(f.opts.DeadAfter+f.opts.ProbeInterval, func() { _ = d.Send([][]byte{wgMsg("lost")}, toC) })
+	if hop := round("failed over"); hop != "M2" {
+		t.Fatalf("after N lost M1: through %s, want M2", hop)
+	}
+	f.silence("N", "M1", false)
+	f.waitUp("N", "M1")
+	f.advance(fakeHold-time.Second, func() { round("held") })
+	if hop := round("held"); hop != "M2" {
+		t.Fatalf("N went back to %s before the hold-down", hop)
+	}
+	f.advance(2*time.Second, func() { round("back") })
+	if hop := round("back"); hop != "M1" {
+		t.Fatalf("after the hold-down N relays through %s, want M1", hop)
+	}
 }

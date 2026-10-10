@@ -136,25 +136,71 @@ func TestHopLimitEndsRoutingLoops(t *testing.T) {
 	})
 }
 
-func TestRelaysCheckTheSourceByReversePath(t *testing.T) {
+// The reverse-path check is loose: a relay drops a packet whose source it
+// doesn't know (no route to it, not adjacent); a destination delivers what
+// any adjacent node brings, since routes needn't be symmetric.
+func TestRelaysDropSourcesTheyDontKnow(t *testing.T) {
 	eachSemantics(t, func(t *testing.T, f *fabric) {
 		a, b := relayed(t, f)
-		// X is adjacent to the relay and to B, and claims to be A.
 		toR := f.rawLink("X", "R")
-		if err := toR.WritePacket(packet(8, "B", "A", wgMsg("forged at R"))); err != nil {
+		if err := toR.WritePacket(packet(8, "B", "Q", wgMsg("from nowhere"))); err != nil {
 			t.Fatal(err)
 		}
 		eventually(t, "the relay drops it", func() bool { return f.node("R").Counters().Spoofed == 1 })
-
-		toB := f.rawLink("X", "B")
-		if err := toB.WritePacket(packet(8, "B", "A", wgMsg("forged at B"))); err != nil {
+		if err := toR.WritePacket(packet(8, "B", "A", wgMsg("A, says X"))); err != nil {
 			t.Fatal(err)
 		}
-		eventually(t, "B drops it", func() bool { return f.node("B").Counters().Spoofed == 1 })
-		b.expectNothing(t, 50*time.Millisecond)
-
+		b.await(t, "A, says X") // WireGuard drops what isn't really A's
 		a.send(t, a.endpoint(t, "B"), "the real A")
-		b.expect(t, "the real A")
+		b.await(t, "the real A")
+	})
+}
+
+// The asymmetric case in devmap's reference map (internal/devmap/
+// reference.yaml): device-a reaches server-3 through server-1 and server-2,
+// but server-2 routes back to device-a directly, so server-3's replies
+// arrive through a hop that isn't one of device-a's first hops for it.
+// Both directions deliver, and device-a keeps its own first hop.
+func TestAsymmetricRoutesDeliverBothWays(t *testing.T) {
+	eachSemantics(t, func(t *testing.T, f *fabric) {
+		f.add("a", "b", "s1", "s2", "s3")
+		f.dial("a", "s1")
+		f.dial("a", "s2")
+		f.dial("b", "s1")
+		f.dial("b", "s2")
+		f.dial("s1", "s2")
+		f.dial("s2", "s3")
+		f.route("s1", "b", "b")
+		f.route("s1", "a", "a")
+		f.route("s1", "s2", "s2")
+		f.route("s1", "s3", "s2")
+		f.route("s2", "b", "b")
+		f.route("s2", "a", "a", "s1")
+		f.route("s2", "s3", "s3")
+		a := f.bind("a", peer("s1", "s1"), peer("b", "s1", "s2"), peer("s2", "s1"), peer("s3", "s1"))
+		b := f.bind("b", peer("a", "s1", "s2"))
+		s2 := f.bind("s2", peer("a", "s1"))
+		s3 := f.bind("s3", peer("a", "s2"))
+
+		for _, far := range []struct {
+			name string
+			bind *rawBind
+		}{{"s3", s3}, {"s2", s2}, {"b", b}} {
+			a.send(t, a.endpoint(t, far.name), "to "+far.name)
+			got := far.bind.await(t, "to "+far.name)
+			far.bind.send(t, got.ep, "from "+far.name)
+			back := a.await(t, "from "+far.name)
+			a.send(t, back.ep, "again "+far.name)
+			far.bind.await(t, "again "+far.name)
+		}
+		if hop := a.current("s3"); hop != "s1" {
+			t.Fatalf("a sends to s3 through %q, want its first hop s1", hop)
+		}
+		for _, n := range []string{"s1", "s2"} {
+			if c := f.node(n).Counters(); c.Spoofed != 0 || c.NoRoute != 0 {
+				t.Fatalf("%s dropped traffic: %+v", n, c)
+			}
+		}
 	})
 }
 

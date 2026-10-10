@@ -12,6 +12,7 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/path"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport/memory"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport/udp"
 )
 
 func TestBindContract(t *testing.T) {
@@ -196,7 +197,8 @@ func TestTrafficSticksToOneLinkPerNeighbour(t *testing.T) {
 	}
 }
 
-// A probe reply counts only if it answers a probe the link is waiting for.
+// A probe reply counts, for liveness and the round trip, only if it answers
+// a probe the link is waiting for, and only once.
 func TestProbeRepliesMustMatch(t *testing.T) {
 	f := newFakeFabric(t, 0)
 	f.add("A")
@@ -234,13 +236,13 @@ func TestProbeRepliesMustMatch(t *testing.T) {
 	wrong := append([]byte(nil), probe[2:]...)
 	wrong[0] ^= 0xff
 	reply(wrong)
-	eventually(t, "Z counts as heard from", func() bool { up, _ := rtt(); return up })
-	if _, d := rtt(); d != 0 {
-		t.Fatalf("a reply to no probe set the RTT to %v", d)
+	time.Sleep(20 * time.Millisecond)
+	if up, d := rtt(); up || d != 0 {
+		t.Fatalf("a reply to no probe counted: up %v, RTT %v", up, d)
 	}
 	f.clock.add(40 * time.Millisecond)
 	reply(probe[2:])
-	eventually(t, "the RTT is measured", func() bool { _, d := rtt(); return d != 0 })
+	eventually(t, "the reply proves the link", func() bool { up, _ := rtt(); return up })
 	if _, d := rtt(); d != 40*time.Millisecond {
 		t.Fatalf("RTT %v, want 40ms", d)
 	}
@@ -265,14 +267,20 @@ func TestNeighboursNoLongerUsedAreForgotten(t *testing.T) {
 }
 
 func TestMessageBudget(t *testing.T) {
-	// 1500-byte IPv6 path over udp (72 bytes of overhead).
-	if got := path.MessageBudget(1500, 48, 72); got != 1500-48-72-path.HeaderSize {
-		t.Fatalf("budget %d", got)
+	// A 1500-byte IPv6 path: 1452 bytes for the transport's units.
+	unshaped := transport.Shaping{}
+	if got, want := path.MessageBudget(udp.New(udp.Options{}), unshaped, 1452), 1452-74-path.HeaderSize; got != want {
+		t.Fatalf("udp budget %d, want %d", got, want)
 	}
-	if got := path.MessageBudget(100_000, 28, 0); got != path.MaxMessageSize {
+	if got := path.MessageBudget(memory.NewNetwork(memory.Datagram), unshaped, 100_000); got != path.MaxMessageSize {
 		t.Fatalf("budget %d, want the cap", got)
 	}
-	if got := path.MessageBudget(60, 48, 72); got != 0 {
+	if got := path.MessageBudget(udp.New(udp.Options{}), unshaped, 80); got != 0 {
 		t.Fatalf("budget %d, want 0", got)
+	}
+	// Bucket padding: the largest bucket that fits the unit sets the budget.
+	shaped := transport.Shaping{Padding: transport.Buckets(256, 1024, 1500)}
+	if got := path.MessageBudget(memory.NewNetwork(memory.Datagram, memory.AcceptShaping()), shaped, 1452); got != 1024-path.HeaderSize {
+		t.Fatalf("shaped budget %d, want %d", got, 1024-path.HeaderSize)
 	}
 }

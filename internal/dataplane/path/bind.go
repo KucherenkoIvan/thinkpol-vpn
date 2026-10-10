@@ -47,10 +47,6 @@ var (
 // keeps a buffer of 64 KiB per message of a batch, per receive routine.
 const bindBatch = 16
 
-// wireguardKeepalive is WireGuard's keepalive timeout: a peer that only
-// receives data answers with a keepalive this long after.
-const wireguardKeepalive = 10 * time.Second
-
 // Bind is a WireGuard device's conn.Bind on top of a Node. WireGuard sees
 // one stable endpoint per peer, named by the peer's node id
 // (ParseEndpoint takes it in hex); underneath, each batch leaves through
@@ -64,12 +60,9 @@ const wireguardKeepalive = 10 * time.Second
 // which path the peer is using; the end of a pair with the higher node id
 // follows it.
 //
-// A first hop whose links are up can still lead nowhere further on. As a
-// stopgap until paths are probed end to end, a Bind that keeps sending a
-// peer through one first hop with nothing coming back demotes that hop for
-// the peer (Options.E2EDead). For the leading end of a pair, only what
-// comes back through that hop counts: a follower that talks through
-// another hop can't be reached through this one.
+// Failover reacts to this node's own links: a first hop whose links are up
+// but that can't reach the peer further on goes unnoticed until paths are
+// probed end to end (TP-031).
 type Bind struct {
 	node  *Node
 	in    chan inbound
@@ -274,15 +267,12 @@ func (b *Bind) receiveFunc(open chan struct{}) conn.ReceiveFunc {
 	}
 }
 
-// deliver queues a packet from ps that arrived through via, a neighbor that
-// must be one of the peer's first hops (a reverse-path check).
+// deliver queues a packet from ps that arrived through via, any adjacent
+// node: maps need not route both ways alike, so a reply may come through a
+// hop that isn't one of the peer's first hops. Only one that is counts as
+// a sign of the peer's path, for following and HeardVia.
 func (b *Bind) deliver(ps *peerState, via NodeID, buf *[]byte, now int64) {
 	c := &b.node.counters
-	if !slices.Contains(*ps.hops.Load(), via) {
-		c.spoofed.Add(1)
-		putBuf(buf)
-		return
-	}
 	b.rmu.RLock()
 	defer b.rmu.RUnlock()
 	if b.open == nil { // the device is down
@@ -290,10 +280,9 @@ func (b *Bind) deliver(ps *peerState, via NodeID, buf *[]byte, now int64) {
 		return
 	}
 	ep := ps.endpoint(via)
-	// Cookie replies and junk don't count as a sign of the peer's life.
-	if t := wgType((*buf)[HeaderSize:]); t != 0 && t != wgCookie {
+	// Nor do cookie replies and junk.
+	if t := wgType((*buf)[HeaderSize:]); t != 0 && t != wgCookie && slices.Contains(*ps.hops.Load(), via) {
 		ep.lastSeen.Store(now)
-		ps.heard(via)
 	}
 	select {
 	case b.in <- inbound{buf: buf, ep: ep}:
@@ -315,17 +304,13 @@ func (b *Bind) Send(bufs [][]byte, ep conn.Endpoint) error {
 	if ps == nil {
 		return fmt.Errorf("%w: %s", ErrUnknownPeer, pe.peer)
 	}
-	initiation, cookies := false, true
+	cookies := true
 	for _, m := range bufs {
-		switch wgType(m) {
-		case wgInitiation:
-			initiation, cookies = true, false
-		case wgCookie:
-		default:
+		if wgType(m) != wgCookie {
 			cookies = false
 		}
 	}
-	l := ps.route(n, pe, initiation, cookies)
+	l := ps.route(n, pe, cookies)
 	if l == nil {
 		n.counters.noPath.Add(uint64(len(bufs)))
 		return fmt.Errorf("%w: %s", ErrNoPath, pe.peer)
@@ -387,19 +372,9 @@ type peerState struct {
 	selector Selector
 	current  NodeID
 	since    int64
-	// Sending through current with nothing delivered from the peer since:
-	// anything, and handshake initiations.
-	sendingSince, initiationSince int64
-	demoted                       map[NodeID]demotion
-	cands                         []Candidate // scratch for route
+	cands    []Candidate // scratch for route
 
 	eps sync.Map // via NodeID → *peerEndpoint
-}
-
-// demotion is a first hop the Bind found leads nowhere for the peer.
-type demotion struct {
-	at, until int64
-	count     int
 }
 
 func (ps *peerState) endpoint(via NodeID) *peerEndpoint {
@@ -410,64 +385,19 @@ func (ps *peerState) endpoint(via NodeID) *peerEndpoint {
 	return ep.(*peerEndpoint)
 }
 
-// heard records that something came from the peer through via. It answers
-// what this end sent if this end follows (it sends the way the peer's
-// packets come), or if it came through the hop this end sends on: a leader
-// whose follower talks through another hop isn't getting through its own.
-func (ps *peerState) heard(via NodeID) {
-	ps.mu.Lock()
-	defer ps.mu.Unlock()
-	if ps.follows || via == ps.current {
-		ps.sendingSince, ps.initiationSince = 0, 0
-	}
-}
-
-// talkingElsewhere: the peer's packets came through a hop other than
-// current within d.
-func (ps *peerState) talkingElsewhere(current NodeID, now int64, d time.Duration) bool {
-	elsewhere := false
-	ps.eps.Range(func(k, v any) bool {
-		seen := v.(*peerEndpoint).lastSeen.Load()
-		if k.(NodeID) != current && seen != 0 && now-seen < int64(d) {
-			elsewhere = true
-		}
-		return !elsewhere
-	})
-	return elsewhere
-}
-
-const demotionMemory = int64(10 * time.Minute)
-
 // route picks the peer's first hop and the link to send on. Cookie replies
-// go out without touching the peer's state: WireGuard sends them to the
-// endpoint of a packet it couldn't yet authenticate.
-func (ps *peerState) route(n *Node, pe *peerEndpoint, initiation, cookies bool) *link {
+// go out without following or moving current: WireGuard sends them to the
+// endpoint of a packet it hasn't authenticated.
+func (ps *peerState) route(n *Node, pe *peerEndpoint, cookies bool) *link {
 	now := n.now()
 	o := &n.opts
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
-	if cur := ps.current; cur != (NodeID{}) && !cookies {
-		unanswered := func(since int64, d time.Duration) bool { return since != 0 && now-since > int64(d) }
-		if unanswered(ps.initiationSince, o.E2EDead) ||
-			unanswered(ps.sendingSince, o.E2EDead+wireguardKeepalive) ||
-			!ps.follows && unanswered(ps.sendingSince, o.E2EDead) && ps.talkingElsewhere(cur, now, o.E2EDead) {
-			ps.demote(cur, now, o.E2EDead)
-			n.counters.demotions.Add(1)
-		}
-	}
 	hops := *ps.hops.Load()
 	follow := ps.follows && !cookies && pe.via != (NodeID{}) && now-pe.lastSeen.Load() < int64(o.FollowFor)
 	cands := ps.cands[:0]
 	for _, h := range hops {
 		c := n.candidate(h, now)
-		if d, ok := ps.demoted[h]; ok {
-			switch {
-			case now < d.until:
-				c.Up, c.UpFor = false, 0
-			case c.Up:
-				c.UpFor = min(c.UpFor, time.Duration(now-d.until))
-			}
-		}
 		if v, ok := ps.eps.Load(h); ok {
 			if seen := v.(*peerEndpoint).lastSeen.Load(); seen != 0 {
 				c.HeardVia = time.Duration(now - seen)
@@ -481,21 +411,12 @@ func (ps *peerState) route(n *Node, pe *peerEndpoint, initiation, cookies bool) 
 	if sel == nil {
 		sel = o.Selector
 	}
-	hop, ok := sel.Select(ps.current, cands)
+	hop, ok := sel.Select(Choice{Current: ps.current, Follows: ps.follows, Candidates: cands})
 	if !ok || !slices.Contains(hops, hop) {
 		return nil
 	}
-	if !cookies {
-		if hop != ps.current {
-			ps.current, ps.since = hop, now
-			ps.sendingSince, ps.initiationSince = 0, 0
-		}
-		if ps.sendingSince == 0 {
-			ps.sendingSince = now
-		}
-		if initiation && ps.initiationSince == 0 {
-			ps.initiationSince = now
-		}
+	if !cookies && hop != ps.current {
+		ps.current, ps.since = hop, now
 	}
 	nb := n.lookupNeighbor(hop)
 	if nb == nil {
@@ -505,24 +426,6 @@ func (ps *peerState) route(n *Node, pe *peerEndpoint, initiation, cookies bool) 
 	return l
 }
 
-// demote treats hop as down for the peer for e2eDead, twice as long each
-// time it is demoted again within demotionMemory.
-func (ps *peerState) demote(hop NodeID, now int64, e2eDead time.Duration) {
-	if ps.demoted == nil {
-		ps.demoted = make(map[NodeID]demotion)
-	}
-	d := ps.demoted[hop]
-	if d.count > 0 && now-d.at < demotionMemory {
-		d.count++
-	} else {
-		d.count = 1
-	}
-	d.at = now
-	d.until = now + int64(e2eDead)<<min(d.count-1, 6)
-	ps.demoted[hop] = d
-	ps.sendingSince, ps.initiationSince = 0, 0
-}
-
 // peerEndpoint is what WireGuard holds for a peer: the peer's node id, and
 // the first hop the packet it came with arrived through (zero for an
 // endpoint from ParseEndpoint). WireGuard sees the same address for every
@@ -530,7 +433,8 @@ func (ps *peerState) demote(hop NodeID, now int64, e2eDead time.Duration) {
 type peerEndpoint struct {
 	peer, via NodeID
 	// lastSeen is the node time of the last WireGuard-shaped message, not
-	// a cookie reply, from the peer through via.
+	// a cookie reply, from the peer through via, if via is one of its
+	// first hops.
 	lastSeen atomic.Int64
 }
 

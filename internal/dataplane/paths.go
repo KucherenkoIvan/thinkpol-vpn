@@ -20,11 +20,11 @@ type PathConfig struct {
 // PathConfigFrom converts a node's section for the path layer. The map's
 // reader checks only that a section is well formed, so this skips what
 // only the map builder rules out: endpoints of unknown transports, with no
-// usable address or that the transport refuses; first and next hops that
-// are not adjacent (neither dialed nor allowed to connect) or name the node
-// itself; routes left with no next hop. A peer whose first hops are all
-// skipped stays, with none: its packets are dropped until a map gives it a
-// path.
+// usable address, with shaping that doesn't decode, or that the transport
+// refuses (shaping included); first and next hops that are not adjacent
+// (neither dialed nor allowed to connect) or name the node itself; routes
+// left with no next hop. A peer whose first hops are all skipped stays,
+// with none: its packets are dropped until a map gives it a path.
 func PathConfigFrom(s netmap.Section, reg *transport.Registry) PathConfig {
 	var c PathConfig
 	self := s.Node.ID
@@ -107,11 +107,15 @@ func pathEndpoint(e netmap.Endpoint, reg *transport.Registry) (path.Endpoint, er
 	if !e.Address.IsValid() || e.Address.Port() == 0 || e.Address.Addr().IsUnspecified() {
 		return path.Endpoint{}, fmt.Errorf("unusable address %q", e.Address)
 	}
+	shaping, err := transport.ParseShaping(e.Shaping)
+	if err != nil {
+		return path.Endpoint{}, fmt.Errorf("shaping: %w", err)
+	}
 	ep := path.Endpoint{
 		Transport: e.Transport,
 		Dialer:    tr.Dialer(),
 		Address:   e.Address.String(),
-		Config:    transport.DialConfig{Credential: e.Credential, Settings: e.Settings},
+		Config:    transport.DialConfig{Credential: e.Credential, Settings: e.Settings, Shaping: shaping},
 	}
 	if err := tr.CheckEndpoint(ep.Address, ep.Config); err != nil {
 		return path.Endpoint{}, err

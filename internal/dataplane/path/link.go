@@ -45,8 +45,8 @@ func (nb *neighbor) remove(l *link) {
 }
 
 // pick returns the link to send on, and whether it is up: the active link
-// while it is up; else the up link heard from last, which becomes active;
-// else any link.
+// while it is up; else the up link proven last, which becomes active; else
+// any link.
 func (nb *neighbor) pick(now int64) (*link, bool) {
 	nb.mu.Lock()
 	defer nb.mu.Unlock()
@@ -54,10 +54,10 @@ func (nb *neighbor) pick(now int64) (*link, bool) {
 		return a, true
 	}
 	var best *link
-	var bestRecv int64
+	var bestProof int64
 	for _, l := range nb.links {
-		if r := l.lastRecv.Load(); l.up(now) && r > bestRecv {
-			best, bestRecv = l, r
+		if p := l.lastProof.Load(); l.up(now) && p > bestProof {
+			best, bestProof = l, p
 		}
 	}
 	if best != nil {
@@ -116,15 +116,17 @@ type link struct {
 	dialed    bool
 	transport string
 	endpoint  int
-	queue     chan *[]byte
+	queue     chan *[]byte // packets
+	control   chan *[]byte // probes and replies, sent first
 
 	done      chan struct{}
 	closeOnce sync.Once
 
-	// Node times in nanoseconds; zero is never.
+	// Node times in nanoseconds; zero is never. A link is up while a reply
+	// to one of its own probes came back within DeadAfter: proof that both
+	// directions work.
 	created   int64
-	lastRecv  atomic.Int64
-	lastSent  atomic.Int64
+	lastProof atomic.Int64
 	lastProbe atomic.Int64
 	upSince   atomic.Int64
 	rtt       atomic.Int64
@@ -135,39 +137,47 @@ type link struct {
 	packetsIn, packetsOut, bytesIn, bytesOut, queueFull atomic.Uint64
 }
 
-// addLink starts reading and writing tl for nb. An accepted link counts as
-// heard from: its listener authenticated it.
-func (n *Node) addLink(nb *neighbor, tl transport.Link, dialed bool, transportName string, endpoint int) *link {
+// addLink starts reading and writing tl, a link to the adjacent node id,
+// and probes it at once: neither end counts a link as up before a reply.
+func (n *Node) addLink(id NodeID, tl transport.Link, dialed bool, transportName string, endpoint int) *link {
 	now := n.now()
 	l := &link{
-		node: n, nb: nb, tl: tl, dialed: dialed, transport: transportName, endpoint: endpoint,
-		queue: make(chan *[]byte, n.opts.QueueLen),
-		done:  make(chan struct{}), created: now,
+		tl: tl, node: n, dialed: dialed, transport: transportName, endpoint: endpoint,
+		queue:   make(chan *[]byte, n.opts.QueueLen),
+		control: make(chan *[]byte, maxProbes),
+		done:    make(chan struct{}), created: now,
 		probes: make(map[uint64]int64),
 	}
-	if !dialed {
-		l.upSince.Store(now)
-		l.lastRecv.Store(now)
+	// Found and joined under one lock, so pruning can't drop the neighbor
+	// in between; joined before its goroutines start, so Close (which
+	// cancels, then closes every link it finds) can't miss it, and spawning
+	// fails once it has cancelled.
+	n.nmu.Lock()
+	l.nb = n.neighbors[id]
+	if l.nb == nil {
+		l.nb = &neighbor{id: id}
+		n.neighbors[id] = l.nb
 	}
-	// Added before its goroutines start: Close cancels, then closes every
-	// link it finds, and spawning fails once it has cancelled.
-	nb.add(l)
+	l.nb.add(l)
+	n.nmu.Unlock()
 	if !n.spawn(l.readLoop) || !n.spawn(l.writeLoop) {
 		l.close()
+		return l
 	}
+	l.probe(now)
 	return l
 }
 
 func (l *link) up(now int64) bool {
-	r := l.lastRecv.Load()
-	return r != 0 && now-r < int64(l.node.opts.DeadAfter)
+	p := l.lastProof.Load()
+	return p != 0 && now-p < int64(l.node.opts.DeadAfter)
 }
 
-func (l *link) received(now int64) {
+func (l *link) proven(now int64) {
 	if !l.up(now) {
 		l.upSince.Store(now)
 	}
-	l.lastRecv.Store(now)
+	l.lastProof.Store(now)
 }
 
 func (l *link) closed() bool {
@@ -187,12 +197,18 @@ func (l *link) close() {
 	})
 }
 
-// send queues a frame and owns b from then on. A closed link or a full
-// queue drops it.
-func (l *link) send(b *[]byte) bool {
+// send queues a packet frame and owns b from then on. A closed link or a
+// full queue drops it.
+func (l *link) send(b *[]byte) bool { return l.enqueue(l.queue, b) }
+
+// sendControl queues a probe or a reply ahead of packets, so a busy link
+// still proves itself.
+func (l *link) sendControl(b *[]byte) bool { return l.enqueue(l.control, b) }
+
+func (l *link) enqueue(q chan *[]byte, b *[]byte) bool {
 	if !l.closed() {
 		select {
-		case l.queue <- b:
+		case q <- b:
 			return true
 		default:
 			l.queueFull.Add(1)
@@ -205,22 +221,34 @@ func (l *link) send(b *[]byte) bool {
 
 func (l *link) writeLoop() {
 	for {
+		var b *[]byte
 		select {
-		case <-l.done:
-			return
-		case b := <-l.queue:
-			size := len(*b)
-			err := l.tl.WritePacket(*b)
-			putBuf(b)
-			switch {
-			case err == nil:
-				l.lastSent.Store(l.node.now())
-				l.packetsOut.Add(1)
-				l.bytesOut.Add(uint64(size))
-			case errors.Is(err, net.ErrClosed):
-				l.close()
+		case b = <-l.control:
+		default:
+			select {
+			case <-l.done:
 				return
+			case b = <-l.control:
+			case b = <-l.queue:
 			}
+		}
+		size := len(*b)
+		var err error
+		if k := (*b)[0]; k == kindProbe || k == kindProbeReply {
+			// A transport that shapes may hold these a while; round trips
+			// measured with them are upper bounds.
+			err = transport.WriteControl(l.tl, *b)
+		} else {
+			err = l.tl.WritePacket(*b)
+		}
+		putBuf(b)
+		switch {
+		case err == nil:
+			l.packetsOut.Add(1)
+			l.bytesOut.Add(uint64(size))
+		case errors.Is(err, net.ErrClosed):
+			l.close()
+			return
 		}
 	}
 }
@@ -251,7 +279,6 @@ func (l *link) readLoop() {
 			putBuf(b)
 			continue
 		}
-		l.received(l.node.now())
 		l.packetsIn.Add(1)
 		l.bytesIn.Add(uint64(n))
 		*b = (*b)[:n]
@@ -259,25 +286,17 @@ func (l *link) readLoop() {
 	}
 }
 
-// tick closes the link once it has been silent for DeadAfter, and probes a
-// dialed link that hasn't both sent and received within ProbeInterval. Only
-// the dialing end probes; the other end answers, and hears from the dialer
-// at least every ProbeInterval while it is alive. Every frame received
-// counts, data as much as probe replies.
+// tick closes the link once it has gone DeadAfter without proof that both
+// directions work, and probes it when its last proof is older than
+// ProbeInterval. Both ends probe: a link that only delivers one way is down
+// for both.
 func (l *link) tick(now int64) {
 	o := l.node.opts
-	heard := l.lastRecv.Load()
-	if heard == 0 {
-		heard = l.created
-	}
-	if now-heard >= int64(o.DeadAfter) {
+	if now-max(l.lastProof.Load(), l.created) >= int64(o.DeadAfter) {
 		l.close()
 		return
 	}
-	if !l.dialed || now-l.lastProbe.Load() < int64(o.ProbeInterval) {
-		return
-	}
-	if now-l.lastRecv.Load() >= int64(o.ProbeInterval) || now-l.lastSent.Load() >= int64(o.ProbeInterval) {
+	if now-l.lastProbe.Load() >= int64(o.ProbeInterval) && now-l.lastProof.Load() >= int64(o.ProbeInterval) {
 		l.probe(now)
 	}
 }
@@ -306,11 +325,11 @@ func (l *link) probe(now int64) {
 	f[0], f[1] = kindProbe, 0
 	copy(f[2:], token[:])
 	*b = f
-	l.send(b)
+	l.sendControl(b)
 }
 
-// probeReply measures the round trip of one of this link's probes; a reply
-// to no probe it is waiting for is ignored.
+// probeReply proves the link and measures the round trip of one of its
+// probes; a reply to no probe it is waiting for is ignored.
 func (l *link) probeReply(f []byte, now int64) {
 	token := binary.BigEndian.Uint64(f[2:])
 	l.pmu.Lock()
@@ -320,6 +339,7 @@ func (l *link) probeReply(f []byte, now int64) {
 	if !ok {
 		return
 	}
+	l.proven(now)
 	rtt := now - sent
 	if old := l.rtt.Load(); old != 0 {
 		rtt = (7*old + rtt) / 8
@@ -335,11 +355,11 @@ type dialLoop struct {
 
 func (d *dialLoop) stop() { d.cancel() }
 
-// startDial dials nb's endpoints in priority order until one gives a link,
+// startDial dials id's endpoints in priority order until one gives a link,
 // keeps that link until it dies, and starts over from the first endpoint.
-// A link that never heard back counts as a failed dial: the next attempt
+// A link that was never proven counts as a failed dial: the next attempt
 // tries the next endpoint, after a backoff.
-func (n *Node) startDial(nb *neighbor, eps []Endpoint) *dialLoop {
+func (n *Node) startDial(id NodeID, eps []Endpoint) *dialLoop {
 	ctx, cancel := context.WithCancel(n.ctx)
 	d := &dialLoop{endpoints: eps, cancel: cancel}
 	n.spawn(func() {
@@ -351,8 +371,7 @@ func (n *Node) startDial(nb *neighbor, eps []Endpoint) *dialLoop {
 			dcancel()
 			heard := false
 			if err == nil {
-				l := n.addLink(nb, tl, true, ep.Transport, next)
-				l.probe(n.now())
+				l := n.addLink(id, tl, true, ep.Transport, next)
 				select {
 				case <-l.done:
 				case <-ctx.Done():

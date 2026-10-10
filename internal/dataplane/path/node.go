@@ -18,29 +18,18 @@ import (
 // Options tune liveness, failover and queues. The zero value of a field
 // means its default.
 type Options struct {
-	// ProbeInterval is how often a dialed link is probed when it hasn't
-	// both sent and received within it (default 2 s).
+	// ProbeInterval is how often each end probes a link whose last proof
+	// is older than that (default 2 s).
 	ProbeInterval time.Duration
-	// DeadAfter is how long a link may stay silent before it counts as
-	// down and is closed; a dialed link is then redialed (default three
-	// probe intervals). It must exceed ProbeInterval.
+	// DeadAfter is how long a link may go without a reply to its probes
+	// before it counts as down and is closed; a dialed link is then
+	// redialed (default three probe intervals). It must exceed
+	// ProbeInterval, and should leave room for both ends' shaping delays
+	// and twice transport.MaxControlHold on links that shape.
 	DeadAfter time.Duration
-	// FollowFor is how long the far end's latest path stays worth
-	// following after its last packet (default DeadAfter).
+	// FollowFor is how long the leader's latest path stays worth following
+	// after its last packet (default DeadAfter).
 	FollowFor time.Duration
-	// E2EDead is how long a Bind keeps sending a peer handshake
-	// initiations through one first hop, with nothing coming back, before
-	// it demotes that hop for the peer (default 5 s: WireGuard retries an
-	// unanswered initiation after 5 to 5.33 s, and the retry takes the
-	// next hop). Data alone gets WireGuard's 10 s keepalive timeout on
-	// top, since a peer that only receives answers no sooner, unless the
-	// peer is plainly talking through another hop. What counts as coming
-	// back: for the end of the pair that follows, anything from the peer;
-	// for the leading end, what comes through the hop it sends on. A demoted hop counts as down for that peer for E2EDead,
-	// twice as long each time it is demoted again within ten minutes;
-	// after that it must stay up for the selector's hold-down before a
-	// Failover leader returns to it.
-	E2EDead time.Duration
 	// RedialMin and RedialMax bound the backoff between dials of one
 	// adjacent node (defaults 250 ms and 5 s); RedialMax ≥ RedialMin.
 	RedialMin, RedialMax time.Duration
@@ -56,8 +45,9 @@ type Options struct {
 	// Space is the node's space: Serve refuses links whose listener says
 	// they belong to another.
 	Space transport.SpaceID
-	// Now is the clock (default time.Now); timers that only pace the work
-	// (the liveness check, dial backoff) stay on the wall clock.
+	// Now is the clock (default time.Now). It must be monotonic: the node
+	// only ever subtracts its readings. Timers that only pace the work (the
+	// liveness check, dial backoff) stay on the wall clock.
 	Now func() time.Time
 
 	watchEvery time.Duration // how often links are checked (tests)
@@ -72,7 +62,6 @@ func (o Options) withDefaults() (Options, error) {
 	def(&o.ProbeInterval, 2*time.Second)
 	def(&o.DeadAfter, 3*o.ProbeInterval)
 	def(&o.FollowFor, o.DeadAfter)
-	def(&o.E2EDead, 5*time.Second)
 	def(&o.RedialMin, 250*time.Millisecond)
 	def(&o.RedialMax, max(5*time.Second, o.RedialMin))
 	def(&o.watchEvery, max(o.ProbeInterval/4, 5*time.Millisecond))
@@ -104,8 +93,8 @@ type Table struct {
 	// dial this node arrive through Serve instead.
 	Links []Link
 	// Routes are the forwarding table. A node relays a packet only along
-	// a route for its destination, and only if it came from its source or
-	// from a next hop of a route back to its source.
+	// a route for its destination, and only from a source it knows: one it
+	// has a route to, or an adjacent node.
 	Routes []Route
 }
 
@@ -270,7 +259,7 @@ func (n *Node) Update(t Table) {
 	}
 	for id, eps := range want {
 		if _, ok := n.dials[id]; !ok {
-			n.dials[id] = n.startDial(n.neighbor(id), eps)
+			n.dials[id] = n.startDial(id, eps)
 		}
 	}
 	n.pruneLocked()
@@ -365,7 +354,7 @@ func (n *Node) Serve(transportName string, l transport.Listener) error {
 		case peer.Node == (NodeID{}) || peer.Node == n.id:
 			_ = tl.Close()
 		default:
-			n.addLink(n.neighbor(peer.Node), tl, false, transportName, -1)
+			n.addLink(peer.Node, tl, false, transportName, -1)
 		}
 	}
 }
@@ -391,20 +380,6 @@ func (n *Node) Close() error {
 	n.nmu.RUnlock()
 	n.wg.Wait()
 	return nil
-}
-
-func (n *Node) neighbor(id NodeID) *neighbor {
-	if nb := n.lookupNeighbor(id); nb != nil {
-		return nb
-	}
-	n.nmu.Lock()
-	defer n.nmu.Unlock()
-	nb := n.neighbors[id]
-	if nb == nil {
-		nb = &neighbor{id: id}
-		n.neighbors[id] = nb
-	}
-	return nb
 }
 
 func (n *Node) lookupNeighbor(id NodeID) *neighbor {
@@ -462,7 +437,7 @@ func (n *Node) handle(l *link, b *[]byte) {
 	case kindProbe:
 		if len(f) == probeSize {
 			f[0] = kindProbeReply
-			l.send(b)
+			l.sendControl(b)
 			return
 		}
 	case kindProbeReply:
@@ -497,32 +472,24 @@ func (n *Node) deliver(src, via NodeID, b *[]byte) {
 	ps.bind.Load().deliver(ps, via, b, n.now())
 }
 
-// forward relays a packet along this node's route for its destination.
-// The packet must come from its source or from a next hop of the route
-// back to its source (a reverse-path check), and never goes back to the
-// neighbor it came from.
+// forward relays a packet along this node's route for its destination,
+// never back to the neighbor it came from. Its source must be a node this
+// node knows (a loose reverse-path check): one it has a route to, or an
+// adjacent node. A strict check would drop legitimate traffic on maps whose
+// routes aren't symmetric.
 func (n *Node) forward(from *link, h header, b *[]byte) {
 	routes := *n.routes.Load()
 	rs := routes[h.dst]
-	back := routes[h.src]
 	hops := min(h.hopLimit, n.opts.HopLimit)
 	switch {
 	case rs == nil:
 		n.counters.noRoute.Add(1)
-	case h.src != from.nb.id && (back == nil || !back.hasHop(from.nb.id)):
+	case h.src != from.nb.id && routes[h.src] == nil && n.lookupNeighbor(h.src) == nil:
 		n.counters.spoofed.Add(1)
 	case hops <= 1:
 		n.counters.hopLimit.Add(1)
 	default:
-		now := n.now()
-		if back != nil {
-			if t := wgType((*b)[HeaderSize:]); t != 0 && t != wgCookie {
-				back.heardFrom(from.nb.id, now)
-			}
-		}
-		// The end with the lower id leads; follow the destination's path
-		// only if it is the leader.
-		to := rs.pick(n, from.nb.id, bytes.Compare(h.dst[:], h.src[:]) < 0, now)
+		to := rs.pick(n, from.nb.id, n.now())
 		if to == nil {
 			n.counters.noPath.Add(1)
 			break
@@ -536,52 +503,29 @@ func (n *Node) forward(from *link, h header, b *[]byte) {
 	putBuf(b)
 }
 
-// routeState is one route and what it has learnt: the next hop in use and
-// the next hops the destination's own packets arrive through.
+// routeState is one route and the next hop in use.
 type routeState struct {
 	dst NodeID
 
-	mu        sync.Mutex
-	hops      []NodeID
-	selector  Selector
-	current   NodeID
-	since     int64
-	heard     map[NodeID]int64 // next hop → last packet from dst through it
-	lastVia   NodeID
-	lastHeard int64
-	cands     []Candidate
+	mu       sync.Mutex
+	hops     []NodeID
+	selector Selector
+	current  NodeID
+	since    int64
+	cands    []Candidate
 }
 
-func (rs *routeState) hasHop(h NodeID) bool {
-	rs.mu.Lock()
-	defer rs.mu.Unlock()
-	return slices.Contains(rs.hops, h)
-}
-
-func (rs *routeState) heardFrom(via NodeID, now int64) {
-	rs.mu.Lock()
-	defer rs.mu.Unlock()
-	if rs.heard == nil {
-		rs.heard = make(map[NodeID]int64)
-	}
-	rs.heard[via] = now
-	rs.lastVia, rs.lastHeard = via, now
-}
-
-// pick chooses the next hop's link, never exclude (split horizon).
-func (rs *routeState) pick(n *Node, exclude NodeID, follow bool, now int64) *link {
+// pick chooses the next hop's link, never exclude (split horizon), by the
+// route's selector on link liveness alone: relays don't follow.
+func (rs *routeState) pick(n *Node, exclude NodeID, now int64) *link {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
 	cands := rs.cands[:0]
 	for _, h := range rs.hops {
-		c := n.candidate(h, now)
-		if h == exclude {
-			c = Candidate{Hop: h, HeardVia: -1}
+		c := Candidate{Hop: h, HeardVia: -1}
+		if h != exclude {
+			c = n.candidate(h, now)
 		}
-		if at, ok := rs.heard[h]; ok {
-			c.HeardVia = time.Duration(now - at)
-		}
-		c.Followed = follow && h == rs.lastVia && now-rs.lastHeard < int64(n.opts.FollowFor)
 		cands = append(cands, c)
 	}
 	rs.cands = cands
@@ -589,7 +533,7 @@ func (rs *routeState) pick(n *Node, exclude NodeID, follow bool, now int64) *lin
 	if sel == nil {
 		sel = n.opts.Selector
 	}
-	hop, ok := sel.Select(rs.current, cands)
+	hop, ok := sel.Select(Choice{Current: rs.current, Candidates: cands})
 	if !ok || hop == exclude || !slices.Contains(rs.hops, hop) {
 		return nil
 	}
@@ -624,10 +568,9 @@ type Counters struct {
 	Sent      uint64 // packets this node's Binds queued on a link
 	Delivered uint64 // packets a WireGuard device took from a Bind
 	Forwarded uint64 // packets relayed toward their destination
-	Demotions uint64 // first hops a Bind demoted for a peer (E2EDead)
 	// Dropped, by reason.
 	NoRoute     uint64 // not for this node, and no route for the destination
-	Spoofed     uint64 // from a neighbor that isn't on a path from the source
+	Spoofed     uint64 // relayed for a source this node doesn't know
 	HopLimit    uint64 // would have reached the next node with no hops left
 	NoPath      uint64 // no link to any next or first hop
 	UnknownPeer uint64 // for this node, from a node no Bind has as a peer
@@ -637,7 +580,7 @@ type Counters struct {
 }
 
 type counters struct {
-	sent, delivered, forwarded, demotions           atomic.Uint64
+	sent, delivered, forwarded                      atomic.Uint64
 	noRoute, spoofed, hopLimit, noPath, unknownPeer atomic.Uint64
 	queueFull, malformed, otherSpace                atomic.Uint64
 }
@@ -646,7 +589,7 @@ type counters struct {
 func (n *Node) Counters() Counters {
 	c := &n.counters
 	return Counters{
-		Sent: c.sent.Load(), Delivered: c.delivered.Load(), Forwarded: c.forwarded.Load(), Demotions: c.demotions.Load(),
+		Sent: c.sent.Load(), Delivered: c.delivered.Load(), Forwarded: c.forwarded.Load(),
 		NoRoute: c.noRoute.Load(), Spoofed: c.spoofed.Load(), HopLimit: c.hopLimit.Load(), NoPath: c.noPath.Load(),
 		UnknownPeer: c.unknownPeer.Load(), QueueFull: c.queueFull.Load(), Malformed: c.malformed.Load(),
 		OtherSpace: c.otherSpace.Load(),
