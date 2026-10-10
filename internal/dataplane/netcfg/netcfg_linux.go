@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"sync"
 
 	"github.com/vishvananda/netlink"
@@ -15,76 +17,111 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// RouteProtocol is the rtnetlink protocol number on every route netcfg adds
-// (`ip route show proto 84`); unassigned in iproute2's rt_protos. It is how
-// routes are told apart from everyone else's, also after a crash.
-const RouteProtocol netlink.RouteProtocol = 84
+// RouteProtocol returns the rtnetlink protocol number on every route the
+// owner's configurators add (`ip route show proto 84`): 84 overlay, 85
+// supervisor, 86 route-table, all unassigned in iproute2's rt_protos. It is
+// how routes are told apart from everyone else's, also after a crash.
+func (o Owner) RouteProtocol() netlink.RouteProtocol { return netlink.RouteProtocol(83 + int(o)) }
+
+func (o Owner) valid() bool { return o >= OwnerOverlay && o <= OwnerRouteTable }
+
+// isOwnerProtocol reports whether p is any owner's route protocol.
+func isOwnerProtocol(p netlink.RouteProtocol) bool {
+	for _, o := range Owners {
+		if p == o.RouteProtocol() {
+			return true
+		}
+	}
+	return false
+}
+
+// LockDir holds the lock files that keep one configurator per owner and
+// namespace; they are empty and outlive their configurators harmlessly.
+const LockDir = "/run/thinkpol/netcfg"
 
 // The kernel stores IPv6 routes added with metric 0 under this metric.
 const ipv6DefaultMetric = 1024
 
-// New returns a configurator for the network namespace of the calling
-// thread.
-func New() (Configurator, error) {
+// New returns a configurator for owner in the network namespace of the
+// calling thread.
+func New(owner Owner) (Configurator, error) {
 	ns, err := netns.Get()
 	if err != nil {
 		return nil, fmt.Errorf("netcfg: current namespace: %w", err)
 	}
-	return newLinux(ns, "the current namespace")
+	return newLinux(ns, "the current namespace", owner)
 }
 
-// NewInNamespace returns a configurator for the network namespace at path
-// (e.g. /run/netns/<name> or /proc/<pid>/ns/net), without the caller
-// entering it.
-func NewInNamespace(path string) (Configurator, error) {
+// NewInNamespace returns a configurator for owner in the network namespace
+// at path (e.g. /run/netns/<name> or /proc/<pid>/ns/net), without the
+// caller entering it.
+func NewInNamespace(path string, owner Owner) (Configurator, error) {
 	ns, err := netns.GetFromPath(path)
 	if err != nil {
 		return nil, fmt.Errorf("netcfg: namespace %s: %w", path, err)
 	}
-	return newLinux(ns, path)
+	return newLinux(ns, path, owner)
 }
 
-// newLinux takes ownership of ns. A configurator holds a shared flock on the
-// namespace file for its lifetime: if it can take the lock exclusively
-// first, no other configurator is alive in the namespace, and proto-84
-// routes there are a crashed one's leftovers it may take over.
-func newLinux(ns netns.NsHandle, name string) (Configurator, error) {
-	alone := true
-	if err := unix.Flock(int(ns), unix.LOCK_EX|unix.LOCK_NB); errors.Is(err, unix.EWOULDBLOCK) {
-		alone = false
-	} else if err != nil {
-		_ = ns.Close()
-		return nil, fmt.Errorf("netcfg: lock %s: %w", name, err)
+func newLinux(ns netns.NsHandle, name string, owner Owner) (Configurator, error) {
+	defer func() { _ = ns.Close() }()
+	if !owner.valid() {
+		return nil, fmt.Errorf("netcfg: unknown owner %v", owner)
 	}
-	if err := unix.Flock(int(ns), unix.LOCK_SH); err != nil {
-		_ = ns.Close()
-		return nil, fmt.Errorf("netcfg: lock %s: %w", name, err)
+	lock, err := lockOwner(ns, owner)
+	if err != nil {
+		return nil, fmt.Errorf("netcfg: %v in %s: %w", owner, name, err)
 	}
 	h, err := netlink.NewHandleAt(ns, unix.NETLINK_ROUTE)
 	if err != nil {
-		_ = ns.Close()
+		_ = unix.Close(lock)
 		return nil, fmt.Errorf("netcfg: netlink in %s: %w", name, err)
 	}
 	return &linuxConfigurator{
-		h:        h,
-		ns:       ns,
-		takeover: alone,
-		links:    make(map[string]linkChange),
-		addrs:    make(map[addrKey]int),
-		routes:   make(map[routeKey]ownedRoute),
+		h:     h,
+		lock:  lock,
+		proto: owner.RouteProtocol(),
+		links: make(map[string]linkChange),
+		addrs: make(map[addrKey]int),
 	}, nil
 }
 
-type linuxConfigurator struct {
-	mu       sync.Mutex
-	h        *netlink.Handle
-	ns       netns.NsHandle // holds the namespace lock
-	takeover bool           // until the first successful Apply
-	closed   bool
+// lockOwner takes the exclusive flock for (namespace, owner), held until
+// the configurator closes or its process dies. Namespaces are told apart by
+// their nsfs inode, the same for every path to one namespace.
+func lockOwner(ns netns.NsHandle, owner Owner) (int, error) {
+	var st unix.Stat_t
+	if err := unix.Fstat(int(ns), &st); err != nil {
+		return -1, err
+	}
+	if err := os.MkdirAll(LockDir, 0o700); err != nil {
+		return -1, err
+	}
+	path := filepath.Join(LockDir, fmt.Sprintf("%d-%d.%s.lock", st.Dev, st.Ino, owner))
+	fd, err := unix.Open(path, unix.O_RDWR|unix.O_CREAT|unix.O_CLOEXEC, 0o600)
+	if err != nil {
+		return -1, err
+	}
+	if err := unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		_ = unix.Close(fd)
+		if errors.Is(err, unix.EWOULDBLOCK) {
+			return -1, ErrBusy
+		}
+		return -1, err
+	}
+	return fd, nil
+}
 
-	links  map[string]linkChange // interfaces whose MTU or state we changed
-	addrs  map[addrKey]int       // owned addresses → ifindex they were added to
-	routes map[routeKey]ownedRoute
+type linuxConfigurator struct {
+	mu     sync.Mutex
+	h      *netlink.Handle
+	lock   int // the owner's lock file, flocked
+	proto  netlink.RouteProtocol
+	closed bool
+
+	// Every route with proto is ours, so routes need no records.
+	links map[string]linkChange // interfaces whose MTU or state we changed
+	addrs map[addrKey]int       // owned addresses → ifindex they were added to
 }
 
 type linkChange struct {
@@ -104,11 +141,6 @@ type addrKey struct {
 type routeKey struct {
 	metric int
 	dst    netip.Prefix
-}
-
-type ownedRoute struct {
-	spec Route
-	nl   netlink.Route // as sent to the kernel
 }
 
 func keyOf(r Route) routeKey { return routeKey{metric: kernelMetric(r), dst: r.Dst} }
@@ -163,7 +195,6 @@ func (c *linuxConfigurator) Apply(ctx context.Context, cfg Config) error {
 		}
 		return err
 	}
-	c.takeover = false
 	return nil
 }
 
@@ -241,41 +272,31 @@ func (c *linuxConfigurator) apply(ctx context.Context, cfg Config, u *undoLog) e
 		}
 		k := keyOf(r)
 		wantRoutes[k] = true
-		nr := toNetlinkRoute(r, idx)
-		kr, inKernel := kroutes[k]
-		cur, owned := c.routes[k]
-		if inKernel && !owned && !c.takeover {
-			return fmt.Errorf("%w: route %v: another live configurator in this namespace has it", ErrConflict, r)
-		}
-		if inKernel && sameRoute(kr, nr) {
-			if !owned || cur.spec != r {
-				c.setRouteRecord(k, ownedRoute{spec: r, nl: nr}, u)
+		nr := c.toNetlinkRoute(r, idx)
+		if kr, ours := kroutes[k]; ours {
+			if sameRoute(kr, nr) {
+				continue
 			}
-			continue
-		}
-		if inKernel {
 			if err := c.delKernelRoute(k, kr, u); err != nil {
 				return err
 			}
 		}
-		if err := c.addKernelRoute(k, r, nr, u); err != nil {
+		if err := c.addKernelRoute(r, nr, u); err != nil {
 			return err
 		}
 	}
-
-	for k := range c.routes {
+	// Ours but not wanted: dropped from the config, or a dead
+	// predecessor's leftovers.
+	for k, kr := range kroutes {
 		if wantRoutes[k] {
 			continue
 		}
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if kr, ok := kroutes[k]; ok {
-			if err := c.delKernelRoute(k, kr, u); err != nil {
-				return err
-			}
+		if err := c.delKernelRoute(k, kr, u); err != nil {
+			return err
 		}
-		c.dropRouteRecord(k, u)
 	}
 	for k, idx := range c.addrs {
 		if wantAddrs[k] {
@@ -451,22 +472,19 @@ func (c *linuxConfigurator) restoreAddrRecord(k addrKey, index int, had bool) {
 	}
 }
 
-// addKernelRoute adds a route with EXCL (an existing route with the same
-// identity is someone else's: ours were in the dump) and owns it.
-func (c *linuxConfigurator) addKernelRoute(k routeKey, r Route, nr netlink.Route, u *undoLog) error {
+// addKernelRoute adds a route with EXCL: an existing route with the same
+// identity is someone else's (ours were in the dump), so that's a conflict.
+func (c *linuxConfigurator) addKernelRoute(r Route, nr netlink.Route, u *undoLog) error {
 	if err := c.h.RouteAdd(&nr); err != nil {
 		if errors.Is(err, unix.EEXIST) {
-			return fmt.Errorf("%w: route %v: another route has the same destination and metric", ErrConflict, r)
+			return fmt.Errorf("%w: route %v: another owner's or a foreign route has the same destination and metric", ErrConflict, r)
 		}
 		return fmt.Errorf("netcfg: add route %v: %w", r, err)
 	}
-	prev, had := c.routes[k]
-	c.routes[k] = ownedRoute{spec: r, nl: nr}
 	u.push(func() error {
 		if err := c.h.RouteDel(&nr); err != nil && !gone(err) {
-			return fmt.Errorf("netcfg: remove route %v: %w", r, err) // still there: keep owning it
+			return fmt.Errorf("netcfg: remove route %v: %w", r, err)
 		}
-		c.restoreRouteRecord(k, prev, had)
 		return nil
 	})
 	return nil
@@ -487,32 +505,13 @@ func (c *linuxConfigurator) delKernelRoute(k routeKey, kr netlink.Route, u *undo
 	return nil
 }
 
-func (c *linuxConfigurator) setRouteRecord(k routeKey, o ownedRoute, u *undoLog) {
-	prev, had := c.routes[k]
-	c.routes[k] = o
-	u.push(func() error { c.restoreRouteRecord(k, prev, had); return nil })
-}
-
-func (c *linuxConfigurator) dropRouteRecord(k routeKey, u *undoLog) {
-	prev, had := c.routes[k]
-	delete(c.routes, k)
-	u.push(func() error { c.restoreRouteRecord(k, prev, had); return nil })
-}
-
-func (c *linuxConfigurator) restoreRouteRecord(k routeKey, o ownedRoute, had bool) {
-	if had {
-		c.routes[k] = o
-	} else {
-		delete(c.routes, k)
-	}
-}
-
-// ownKernelRoutes dumps the main table's proto-84 routes once per Apply or
-// Close: every decision is made against it, so a reconcile is O(routes).
+// ownKernelRoutes dumps the main table's routes with our protocol once per
+// Apply or Close: every decision is made against it, so a reconcile is
+// O(routes).
 func (c *linuxConfigurator) ownKernelRoutes() (map[routeKey]netlink.Route, error) {
 	out := make(map[routeKey]netlink.Route)
 	for _, fam := range []int{netlink.FAMILY_V4, netlink.FAMILY_V6} {
-		routes, err := c.listRoutes(fam, &netlink.Route{Table: unix.RT_TABLE_MAIN, Protocol: RouteProtocol},
+		routes, err := c.listRoutes(fam, &netlink.Route{Table: unix.RT_TABLE_MAIN, Protocol: c.proto},
 			netlink.RT_FILTER_TABLE|netlink.RT_FILTER_PROTOCOL)
 		if err != nil {
 			return nil, err
@@ -575,7 +574,7 @@ func (c *linuxConfigurator) DefaultRoute(ctx context.Context, f Family) (Route, 
 	var gw net.IP
 	var index int
 	for i, r := range routes {
-		if r.Protocol == RouteProtocol || r.Type != unix.RTN_UNICAST || dstOf(r, fam).Bits() != 0 || r.Flags&unusable != 0 {
+		if isOwnerProtocol(r.Protocol) || r.Type != unix.RTN_UNICAST || dstOf(r, fam).Bits() != 0 || r.Flags&unusable != 0 {
 			continue
 		}
 		g, idx, ok := r.Gw, r.LinkIndex, true
@@ -631,14 +630,10 @@ func (c *linuxConfigurator) Close() error {
 		return err
 	}
 	var errs []error
-	for k := range c.routes {
-		if kr, ok := kroutes[k]; ok {
-			if err := c.delKernelRoute(k, kr, nil); err != nil {
-				errs = append(errs, err)
-				continue
-			}
+	for k, kr := range kroutes {
+		if err := c.delKernelRoute(k, kr, nil); err != nil {
+			errs = append(errs, err)
 		}
-		delete(c.routes, k)
 	}
 	for k, idx := range c.addrs {
 		if present, _ := findAddr(kaddrs[idx], k.prefix); present {
@@ -659,7 +654,7 @@ func (c *linuxConfigurator) Close() error {
 	}
 	c.h.Close()
 	c.h = nil
-	return c.ns.Close() // releases the namespace lock
+	return unix.Close(c.lock) // frees the owner's place in the namespace
 }
 
 // listRoutes retries dumps the kernel interrupted because the table changed
@@ -705,13 +700,13 @@ func toNetlinkAddr(p netip.Prefix) *netlink.Addr {
 	return a
 }
 
-func toNetlinkRoute(r Route, linkIndex int) netlink.Route {
+func (c *linuxConfigurator) toNetlinkRoute(r Route, linkIndex int) netlink.Route {
 	nr := netlink.Route{
 		Dst:       ipNet(r.Dst),
 		LinkIndex: linkIndex,
 		Table:     unix.RT_TABLE_MAIN,
 		Priority:  kernelMetric(r),
-		Protocol:  RouteProtocol,
+		Protocol:  c.proto,
 	}
 	if r.Gateway.IsValid() {
 		nr.Gw = r.Gateway.AsSlice()

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net/netip"
 )
 
@@ -17,7 +18,45 @@ var (
 	ErrNoDefaultRoute = errors.New("netcfg: no default route")
 	// ErrClosed is returned by a configurator after Close.
 	ErrClosed = errors.New("netcfg: configurator closed")
+	// ErrBusy is returned by a constructor when a configurator of the same
+	// owner is alive in the same network namespace.
+	ErrBusy = errors.New("netcfg: a configurator of this owner is already alive in the namespace")
 )
+
+// Owner is who a configurator configures for. Each owner has its own
+// identity on the OS (on Linux, its own route protocol number) and at most
+// one live configurator per network namespace, so owners never touch each
+// other's routes and a new configurator knows the routes with its identity
+// are its dead predecessor's.
+type Owner int
+
+const (
+	// OwnerOverlay is the data plane's overlay: the TUN's addresses and the
+	// overlay routes (TP-008), on a device or in a space worker's namespace.
+	OwnerOverlay Owner = iota + 1
+	// OwnerSupervisor is a server supervisor's plumbing: the veth ends and
+	// their routes (TP-009), in the root namespace and in each space's.
+	OwnerSupervisor
+	// OwnerRouteTable is route-table enforcement of routing rules (TP-018):
+	// direct prefixes and entry endpoints via the physical gateway, split
+	// defaults into the TUN.
+	OwnerRouteTable
+)
+
+// Owners lists every owner.
+var Owners = []Owner{OwnerOverlay, OwnerSupervisor, OwnerRouteTable}
+
+func (o Owner) String() string {
+	switch o {
+	case OwnerOverlay:
+		return "overlay"
+	case OwnerSupervisor:
+		return "supervisor"
+	case OwnerRouteTable:
+		return "route-table"
+	}
+	return fmt.Sprintf("Owner(%d)", int(o))
+}
 
 // Family is an IP address family.
 type Family int
@@ -163,8 +202,8 @@ func (c Config) Validate() error {
 		} else if r.Interface == "" {
 			return fmt.Errorf("netcfg: route %v: needs a gateway or an interface", r)
 		}
-		if r.Metric < 0 {
-			return fmt.Errorf("netcfg: route %v: negative metric", r)
+		if r.Metric < 0 || uint64(r.Metric) > math.MaxUint32 {
+			return fmt.Errorf("netcfg: route %v: metric out of range", r)
 		}
 		k := key{r.Metric, r.Dst}
 		if routes[k] {
@@ -175,31 +214,33 @@ func (c Config) Validate() error {
 	return nil
 }
 
-// Configurator applies a Config to the OS and owns what it adds.
+// Configurator applies a Config to the OS for one Owner and owns what it
+// adds.
 //
 // The contract, on every OS:
+//   - At most one configurator per owner is alive in a network namespace;
+//     constructing a second fails with ErrBusy. Routes are tagged with the
+//     owner's identity, so every route carrying it is this configurator's:
+//     added by it, or left by a predecessor that died without Close.
 //   - Apply converges the OS to cfg, comparing against what is actually
 //     there, not against what it did before: it adds what is missing
 //     (including owned state someone else removed, or that went with a
-//     recreated interface), changes what differs and removes what it added
-//     earlier that cfg no longer has. Re-applying the same config changes
-//     nothing.
+//     recreated interface), changes what differs, and removes owned state
+//     cfg doesn't have, a dead predecessor's leftovers included. Re-applying
+//     the same config changes nothing.
 //   - Apply is all or nothing: when it fails (or ctx ends), everything it
 //     changed is undone, so the system is as before the call (a failed
-//     first Apply leaves nothing behind).
+//     first Apply leaves nothing behind but the leftovers it found).
 //   - Only owned state is ever changed or removed. An address that already
 //     exists is used but not owned; the same address with another prefix
-//     length, or a route with the identity of someone else's, fails with
-//     ErrConflict. MTU and link state changes are restored, unless someone
-//     changed them again since.
-//   - Routes added by a configurator that died without Close (a crash) are
-//     taken over by the first Apply of a new one, if no other configurator
-//     is alive in the same network namespace. Two live configurators in one
-//     namespace must not claim the same route: the second gets ErrConflict.
+//     length, or a route with the identity of someone else's (another
+//     owner's included), fails with ErrConflict. MTU and link state changes
+//     are restored, unless someone changed them again since.
 //   - Close removes every owned address and route and restores every
 //     interface it changed; something already gone (an interface deleted by
 //     its owner) counts as removed. Close is idempotent; if it fails, what's
-//     left stays recorded and calling Close again retries it.
+//     left stays recorded and calling Close again retries it. Only a
+//     successful Close frees the owner's place in the namespace.
 //
 // Methods are safe for concurrent use.
 type Configurator interface {

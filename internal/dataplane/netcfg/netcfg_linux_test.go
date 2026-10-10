@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -78,7 +79,12 @@ func (n *testNS) dummy(t *testing.T, name string) netlink.Link {
 
 func (n *testNS) configurator(t *testing.T) netcfg.Configurator {
 	t.Helper()
-	c, err := netcfg.NewInNamespace(n.path)
+	return n.configuratorFor(t, netcfg.OwnerOverlay)
+}
+
+func (n *testNS) configuratorFor(t *testing.T, owner netcfg.Owner) netcfg.Configurator {
+	t.Helper()
+	c, err := netcfg.NewInNamespace(n.path, owner)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,15 +142,34 @@ func routeLine(r netlink.Route, names map[int]string) string {
 	return s + fmt.Sprintf(" dev %s metric %d proto %d type %d", names[r.LinkIndex], r.Priority, r.Protocol, r.Type)
 }
 
-// ownRoutes lists the routes carrying netcfg's protocol, in a compact form.
+func isOwnerProtocol(p netlink.RouteProtocol) bool {
+	return slices.ContainsFunc(netcfg.Owners, func(o netcfg.Owner) bool { return o.RouteProtocol() == p })
+}
+
+// ownRoutes lists the routes carrying any owner's protocol, in a compact
+// form.
 func ownRoutes(t *testing.T, h *netlink.Handle) []string {
 	t.Helper()
-	routes, err := h.RouteListFiltered(netlink.FAMILY_ALL, &netlink.Route{Table: unix.RT_TABLE_UNSPEC, Protocol: netcfg.RouteProtocol}, netlink.RT_FILTER_TABLE|netlink.RT_FILTER_PROTOCOL)
+	return routesWith(t, h, isOwnerProtocol)
+}
+
+// ownerRoutes lists one owner's routes.
+func ownerRoutes(t *testing.T, h *netlink.Handle, o netcfg.Owner) []string {
+	t.Helper()
+	return routesWith(t, h, func(p netlink.RouteProtocol) bool { return p == o.RouteProtocol() })
+}
+
+func routesWith(t *testing.T, h *netlink.Handle, match func(netlink.RouteProtocol) bool) []string {
+	t.Helper()
+	routes, err := h.RouteListFiltered(netlink.FAMILY_ALL, &netlink.Route{Table: unix.RT_TABLE_UNSPEC}, netlink.RT_FILTER_TABLE)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var out []string
 	for _, r := range routes {
+		if !match(r.Protocol) {
+			continue
+		}
 		l, err := h.LinkByIndex(r.LinkIndex)
 		if err != nil {
 			t.Fatal(err)
@@ -210,7 +235,7 @@ func (n *testNS) changes(t *testing.T, f func()) int {
 	for {
 		select {
 		case u := <-routes:
-			if u.Protocol == netcfg.RouteProtocol {
+			if isOwnerProtocol(u.Protocol) {
 				count++
 			}
 		case u := <-addrs:
@@ -390,6 +415,13 @@ func updatedConfig() netcfg.Config {
 	}
 }
 
+var updatedConfigRoutes = []string{
+	"254 10.78.0.0/16 dev ovl0 metric 0",
+	"254 10.79.0.0/16 via 100.64.0.2 dev ovl0 metric 0",
+	"254 default via fd12:3456:789a::1 dev ovl0 metric 1024",
+	"254 10.81.0.0/16 dev ovl0 metric 5",
+}
+
 func TestApplyConverges(t *testing.T) {
 	n := newTestNS(t)
 	n.dummy(t, "ovl0")
@@ -401,12 +433,7 @@ func TestApplyConverges(t *testing.T) {
 	if err := c.Apply(context.Background(), updatedConfig()); err != nil {
 		t.Fatal(err)
 	}
-	requireSame(t, "routes after the update", []string{
-		"254 10.78.0.0/16 dev ovl0 metric 0",
-		"254 10.79.0.0/16 via 100.64.0.2 dev ovl0 metric 0",
-		"254 default via fd12:3456:789a::1 dev ovl0 metric 1024",
-		"254 10.81.0.0/16 dev ovl0 metric 5",
-	}, ownRoutes(t, n.h))
+	requireSame(t, "routes after the update", updatedConfigRoutes, ownRoutes(t, n.h))
 	got := snapshot(t, n.h)
 	for _, want := range []string{"addr ovl0 100.64.0.7/10", "addr ovl0 fd12:3456:789a::8/48", "link ovl0 mtu 1420 up=true"} {
 		if !slices.Contains(got, want) {
@@ -483,7 +510,8 @@ func TestForeignStateIsNeverTouched(t *testing.T) {
 // Close, for the crash tests.
 func TestMain(m *testing.M) {
 	if path := os.Getenv("NETCFG_CRASH_NS"); path != "" {
-		c, err := netcfg.NewInNamespace(path)
+		owner, _ := strconv.Atoi(os.Getenv("NETCFG_CRASH_OWNER"))
+		c, err := netcfg.NewInNamespace(path, netcfg.Owner(owner))
 		if err == nil {
 			err = c.Apply(context.Background(), crashConfigs[os.Getenv("NETCFG_CRASH_CONFIG")]())
 		}
@@ -497,15 +525,36 @@ func TestMain(m *testing.M) {
 }
 
 var crashConfigs = map[string]func() netcfg.Config{
-	"full": fullConfig,
-	"many": func() netcfg.Config { return manyRoutes(manyRoutesCount) },
+	"full":  fullConfig,
+	"many":  func() netcfg.Config { return manyRoutes(manyRoutesCount) },
+	"table": tableConfig,
 }
 
-// crash applies a config from another process that exits without Close.
+// tableConfig is a route-table owner's: routes only, on the overlay's
+// interface.
+func tableConfig() netcfg.Config {
+	return netcfg.Config{Routes: []netcfg.Route{
+		{Dst: pfx("10.60.0.0/16"), Interface: "ovl0"},
+		{Dst: pfx("fd60::/48"), Interface: "ovl0"},
+	}}
+}
+
+var tableConfigRoutes = []string{
+	"254 10.60.0.0/16 dev ovl0 metric 0",
+	"254 fd60::/48 dev ovl0 metric 1024",
+}
+
+// crash applies a config as the overlay owner from another process that
+// exits without Close.
 func (n *testNS) crash(t *testing.T, config string) {
 	t.Helper()
+	n.crashAs(t, netcfg.OwnerOverlay, config)
+}
+
+func (n *testNS) crashAs(t *testing.T, owner netcfg.Owner, config string) {
+	t.Helper()
 	cmd := exec.Command(os.Args[0])
-	cmd.Env = append(os.Environ(), "NETCFG_CRASH_NS="+n.path, "NETCFG_CRASH_CONFIG="+config)
+	cmd.Env = append(os.Environ(), "NETCFG_CRASH_NS="+n.path, "NETCFG_CRASH_CONFIG="+config, "NETCFG_CRASH_OWNER="+strconv.Itoa(int(owner)))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("crashing process: %v: %s", err, out)
 	}
@@ -539,9 +588,11 @@ func TestTakesOverRoutesLeftByACrash(t *testing.T) {
 	leftovers := snapshot(t, n.h)
 	requireSame(t, "routes left by the crash", fullConfigRoutes, ownRoutes(t, n.h))
 
-	// The new run moves an IPv6 route to another gateway. Its first try
-	// fails: undoing it puts the leftovers back as they were.
+	// The new run's config differs: an IPv6 route moves to another gateway
+	// and 10.78.0.0/16 is no longer wanted. Its first try fails: undoing it
+	// puts the leftovers back as they were.
 	cfg := fullConfig()
+	cfg.Routes = slices.DeleteFunc(cfg.Routes, func(r netcfg.Route) bool { return r.Dst == pfx("10.78.0.0/16") })
 	for i, r := range cfg.Routes {
 		if r.Dst == pfx("fd79::/48") {
 			cfg.Routes[i].Gateway = addr("fd12:3456:789a::2")
@@ -560,7 +611,8 @@ func TestTakesOverRoutesLeftByACrash(t *testing.T) {
 	}
 	want := slices.Clone(fullConfigRoutes)
 	want[slices.Index(want, "254 fd79::/48 via fd12:3456:789a::1 dev ovl0 metric 1024")] = "254 fd79::/48 via fd12:3456:789a::2 dev ovl0 metric 1024"
-	requireSame(t, "routes after the takeover", want, ownRoutes(t, n.h))
+	want = slices.DeleteFunc(want, func(s string) bool { return s == "254 10.78.0.0/16 dev ovl0 metric 0" })
+	requireSame(t, "routes after the takeover (the unwanted leftover removed)", want, ownRoutes(t, n.h))
 	if err := c.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -723,36 +775,90 @@ func TestSameRouteTwiceIsRejectedBeforeAnyChange(t *testing.T) {
 	requireSame(t, "namespace", before, snapshot(t, n.h))
 }
 
-func TestTwoConfiguratorsInOneNamespace(t *testing.T) {
+func TestOneConfiguratorPerOwnerAndNamespace(t *testing.T) {
+	n := newTestNS(t)
+	first := n.configurator(t)
+	if _, err := netcfg.NewInNamespace(n.path, netcfg.OwnerOverlay); !errors.Is(err, netcfg.ErrBusy) {
+		t.Fatalf("second overlay configurator: %v, want ErrBusy", err)
+	}
+	other := newTestNS(t)
+	other.configurator(t) // another namespace is another place
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	n.configurator(t) // the place is free again
+}
+
+func TestOwnersNeverTouchEachOther(t *testing.T) {
 	n := newTestNS(t)
 	n.dummy(t, "ovl0")
 	before := snapshot(t, n.h)
 	ctx := context.Background()
-	first := n.configurator(t)
-	if err := first.Apply(ctx, netcfg.Config{
+	// Created first, applies last: it must not take the route-table
+	// owner's route, whatever the order.
+	overlay := n.configurator(t)
+	table := n.configuratorFor(t, netcfg.OwnerRouteTable)
+	if err := overlay.Apply(ctx, netcfg.Config{
 		Interfaces: []netcfg.Interface{{Name: "ovl0", Addrs: []netip.Prefix{pfx("100.64.0.7/10")}, Up: true}},
-		Routes:     []netcfg.Route{{Dst: pfx("10.78.0.0/16"), Interface: "ovl0"}},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	// The first is alive, so its routes are not leftovers to take over.
-	second := n.configurator(t)
-	if err := second.Apply(ctx, netcfg.Config{Routes: []netcfg.Route{{Dst: pfx("10.78.0.0/16"), Interface: "ovl0"}}}); !errors.Is(err, netcfg.ErrConflict) {
-		t.Errorf("second configurator claiming the first's route: %v, want ErrConflict", err)
-	}
-	requireSame(t, "routes", []string{"254 10.78.0.0/16 dev ovl0 metric 0"}, ownRoutes(t, n.h))
-	if err := second.Apply(ctx, netcfg.Config{Routes: []netcfg.Route{{Dst: pfx("10.85.0.0/16"), Interface: "ovl0"}}}); err != nil {
+	if err := table.Apply(ctx, netcfg.Config{Routes: []netcfg.Route{{Dst: pfx("10.78.0.0/16"), Interface: "ovl0"}}}); err != nil {
 		t.Fatal(err)
 	}
-	requireSame(t, "routes", []string{"254 10.78.0.0/16 dev ovl0 metric 0", "254 10.85.0.0/16 dev ovl0 metric 0"}, ownRoutes(t, n.h))
-	if err := second.Close(); err != nil {
+	withRoute := netcfg.Config{
+		Interfaces: []netcfg.Interface{{Name: "ovl0", Addrs: []netip.Prefix{pfx("100.64.0.7/10")}, Up: true}},
+		Routes:     []netcfg.Route{{Dst: pfx("10.78.0.0/16"), Interface: "ovl0"}, {Dst: pfx("10.85.0.0/16"), Interface: "ovl0"}},
+	}
+	if err := overlay.Apply(ctx, withRoute); !errors.Is(err, netcfg.ErrConflict) {
+		t.Errorf("overlay claiming the route-table owner's route: %v, want ErrConflict", err)
+	}
+	requireSame(t, "route-table routes", []string{"254 10.78.0.0/16 dev ovl0 metric 0"}, ownerRoutes(t, n.h, netcfg.OwnerRouteTable))
+	requireSame(t, "overlay routes", nil, ownerRoutes(t, n.h, netcfg.OwnerOverlay))
+
+	withRoute.Routes = withRoute.Routes[1:]
+	if err := overlay.Apply(ctx, withRoute); err != nil {
 		t.Fatal(err)
 	}
-	requireSame(t, "routes after the second closed", []string{"254 10.78.0.0/16 dev ovl0 metric 0"}, ownRoutes(t, n.h))
-	if err := first.Close(); err != nil {
+	if err := table.Close(); err != nil {
+		t.Fatal(err)
+	}
+	requireSame(t, "routes after the route-table owner closed", []string{"254 10.85.0.0/16 dev ovl0 metric 0"}, ownRoutes(t, n.h))
+	if err := overlay.Close(); err != nil {
 		t.Fatal(err)
 	}
 	requireSame(t, "namespace after both closed", before, snapshot(t, n.h))
+}
+
+func TestOwnersCrashAndRestartIndependently(t *testing.T) {
+	n := newTestNS(t)
+	n.dummy(t, "ovl0")
+	n.crashAs(t, netcfg.OwnerOverlay, "full")
+	n.crashAs(t, netcfg.OwnerRouteTable, "table")
+	requireSame(t, "route-table routes left by its crash", tableConfigRoutes, ownerRoutes(t, n.h, netcfg.OwnerRouteTable))
+
+	// The overlay restarts with another config: its leftovers converge,
+	// the route-table owner's stay as they are.
+	ctx := context.Background()
+	overlay := n.configurator(t)
+	if err := overlay.Apply(ctx, updatedConfig()); err != nil {
+		t.Fatal(err)
+	}
+	requireSame(t, "overlay routes", updatedConfigRoutes, ownerRoutes(t, n.h, netcfg.OwnerOverlay))
+	requireSame(t, "route-table routes", tableConfigRoutes, ownerRoutes(t, n.h, netcfg.OwnerRouteTable))
+	if err := overlay.Close(); err != nil {
+		t.Fatal(err)
+	}
+	requireSame(t, "routes after the overlay closed", tableConfigRoutes, ownRoutes(t, n.h))
+
+	table := n.configuratorFor(t, netcfg.OwnerRouteTable)
+	if err := table.Apply(ctx, tableConfig()); err != nil {
+		t.Fatal(err)
+	}
+	if err := table.Close(); err != nil {
+		t.Fatal(err)
+	}
+	requireSame(t, "routes after both closed", nil, ownRoutes(t, n.h))
 }
 
 func TestCloseAfterTheInterfaceIsGone(t *testing.T) {

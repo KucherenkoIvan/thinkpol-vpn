@@ -10,7 +10,7 @@ import (
 )
 
 func TestNewRefusesUnsupportedHosts(t *testing.T) {
-	c, err := netcfg.New()
+	c, err := netcfg.New(netcfg.OwnerOverlay)
 	if !errors.Is(err, errors.ErrUnsupported) || c != nil {
 		t.Fatalf("New() = %v, %v; want nil, ErrUnsupported", c, err)
 	}

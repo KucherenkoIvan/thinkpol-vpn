@@ -1,6 +1,7 @@
 package netcfg_test
 
 import (
+	"math"
 	"net/netip"
 	"testing"
 
@@ -44,6 +45,7 @@ func TestValidate(t *testing.T) {
 		"mixed families":                       route(netcfg.Route{Dst: pfx("10.0.0.0/8"), Gateway: addr("fd00::1")}),
 		"unspecified gw":                       route(netcfg.Route{Dst: pfx("10.0.0.0/8"), Gateway: addr("0.0.0.0")}),
 		"negative metric":                      route(netcfg.Route{Dst: pfx("10.0.0.0/8"), Interface: "ovl0", Metric: -1}),
+		"metric above 32 bits":                 route(netcfg.Route{Dst: pfx("10.0.0.0/8"), Interface: "ovl0", Metric: int(uint64(math.MaxUint32) + 1)}),
 		"zoned gateway":                        route(netcfg.Route{Dst: pfx("::/0"), Gateway: addr("fe80::1%eth0"), Interface: "eth0"}),
 		"link-local gateway without interface": route(netcfg.Route{Dst: pfx("::/0"), Gateway: addr("fe80::1")}),
 		"duplicate identity": {Routes: []netcfg.Route{
