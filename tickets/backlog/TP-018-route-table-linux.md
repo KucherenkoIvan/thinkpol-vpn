@@ -24,5 +24,8 @@ On Linux devices, `direct` destinations go straight out and everything else ente
 - [ ] in the lab, a destination in a `direct` range is reached outside the tunnel (visible in plaintext at the router), others only through it
 - [ ] changing the device's gateway re-applies routes without a reconnect
 
+## Notes
+- netcfg (TP-007) manages the main table only: per-space namespaces each have their own. If enforcement needs policy routing (ip rules + extra tables), add `Table` and rules to the netcfg port here. See TP-007's Notes for `DefaultRoute`, split defaults and delete-then-add on route changes.
+
 ## Log
 - 2026-10-10 created in backlog
