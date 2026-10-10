@@ -30,9 +30,13 @@ type Transport interface {
 	// CheckInbound reports whether an inbound entry of the map is usable.
 	// Listeners skip, and report, the peer links it rejects.
 	CheckInbound(pl PeerLink) error
+	// CheckEndpoint and CheckInbound refuse shaping the adapter can't
+	// honour (ErrUnsupportedShaping) or that is invalid.
+	//
 	// Overhead is the most bytes the transport adds to a packet with
-	// shaping s, before IP and UDP or TCP headers: the path layer's MTU
-	// budget.
+	// shaping s, before IP and UDP or TCP headers, apart from padding up to
+	// a bucket. The path layer's MTU budget is MaxPacket, which accounts
+	// for buckets too.
 	Overhead(s Shaping) int
 }
 

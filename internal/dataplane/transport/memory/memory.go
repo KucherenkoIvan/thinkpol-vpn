@@ -2,7 +2,7 @@
 // dialers of one Network, with no sockets. A network behaves like a datagram
 // transport or like a stream transport (Semantics), so the layers above can
 // be tested against both; either way it passes the conformance suite and
-// nothing answers a bad credential.
+// nothing answers a bad credential. It refuses any shaping.
 //
 // Datagram: packets are dropped when a reader falls behind, a redial with
 // the same credential replaces the old link at the listener, and closing one
@@ -77,6 +77,17 @@ func (n *Network) Overhead(transport.Shaping) int { return 0 }
 
 var errEmpty = errors.New("memory: empty credential")
 
+// noShaping is what memory implements: it has no wire to shape, so it
+// refuses any shaping rather than pretend.
+var noShaping transport.ShapingSupport
+
+func checkShaping(s transport.Shaping) error {
+	if err := noShaping.Check(s); err != nil {
+		return fmt.Errorf("memory: %w", err)
+	}
+	return nil
+}
+
 func (n *Network) CheckEndpoint(endpoint string, cfg transport.DialConfig) error {
 	if endpoint == "" {
 		return errors.New("memory: empty endpoint")
@@ -84,14 +95,14 @@ func (n *Network) CheckEndpoint(endpoint string, cfg transport.DialConfig) error
 	if len(cfg.Credential) == 0 {
 		return errEmpty
 	}
-	return nil
+	return checkShaping(cfg.Shaping)
 }
 
 func (n *Network) CheckInbound(pl transport.PeerLink) error {
 	if len(pl.Verifier) == 0 {
 		return errEmpty
 	}
-	return nil
+	return checkShaping(pl.Shaping)
 }
 
 // Listen implements transport.Transport: cfg.Address is any free name.
@@ -213,9 +224,11 @@ func (l *Listener) closed() bool {
 	}
 }
 
+// lookup finds the usable peer link for cred; links CheckInbound rejects
+// are skipped.
 func lookup(links []transport.PeerLink, cred []byte) (transport.PeerLink, bool) {
 	for _, pl := range links {
-		if len(pl.Verifier) > 0 && subtle.ConstantTimeCompare(pl.Verifier, cred) == 1 {
+		if checkShaping(pl.Shaping) == nil && len(pl.Verifier) > 0 && subtle.ConstantTimeCompare(pl.Verifier, cred) == 1 {
 			return pl, true
 		}
 	}

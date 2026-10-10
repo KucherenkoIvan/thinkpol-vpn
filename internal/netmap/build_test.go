@@ -97,6 +97,7 @@ func TestBuildRejectsInvalidContents(t *testing.T) {
 		{"inbound credential too long", entry(func(s *Section) { s.Inbound[0].Credential = make([]byte, maxCredential+1) })},
 		{"inbound peer kind unknown", entry(func(s *Section) { s.Inbound[0].PeerKind = 0 })},
 		{"inbound settings too long", entry(func(s *Section) { s.Inbound[0].Settings = make([]byte, maxSettings+1) })},
+		{"inbound shaping too long", entry(func(s *Section) { s.Inbound[0].Shaping = make([]byte, maxSettings+1) })},
 		{"inbound credential shared", entry(func(s *Section) { s.Inbound[3].Credential = s.Inbound[1].Credential })},
 		// routes
 		{"route to self", entry(func(s *Section) { s.Routes = append(s.Routes, Route{Destination: entryID, NextHops: []NodeID{exitID}}) })},
@@ -124,6 +125,11 @@ func TestBuildRejectsInvalidContents(t *testing.T) {
 		{"endpoint settings too long", device(func(s *Section) {
 			e := s.Links[0].Endpoints[0]
 			e.Settings = make([]byte, maxSettings+1)
+			s.Links[0] = Link{Peer: s.Links[0].Peer, Endpoints: []Endpoint{e}}
+		})},
+		{"endpoint shaping too long", device(func(s *Section) {
+			e := s.Links[0].Endpoints[0]
+			e.Shaping = make([]byte, maxSettings+1)
 			s.Links[0] = Link{Peer: s.Links[0].Peer, Endpoints: []Endpoint{e}}
 		})},
 		// peers

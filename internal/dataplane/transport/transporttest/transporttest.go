@@ -3,9 +3,13 @@
 // concurrent links, concurrent writes, redials, replays (with a man in the
 // middle the harness provides), table changes and revocations (also racing
 // a dial), closing links and listeners (also racing traffic, without leaking
-// goroutines), writes unblocked by Close, and listener restarts. An
-// adapter's test calls Run with a Harness; adapter-specific behaviour (wire
-// format, probes, clocks) is tested next to the adapter.
+// goroutines), writes unblocked by Close, listener restarts, control
+// packets, and shaping: links shaped at one end only, shaping changed on a
+// live link, and shaping the adapter can't honour refused everywhere. An
+// adapter's test calls Run with a Harness, once without shaping and once
+// per kind of shaping it implements; adapter-specific behaviour (wire
+// format, what shaping looks like on it, probes, clocks) is tested next to
+// the adapter.
 package transporttest
 
 import (
@@ -49,6 +53,14 @@ type Harness struct {
 	// listener again everything dialers sent through it so far. Transports
 	// with a wire set it; without it the Replay test is skipped.
 	Interpose func(t *testing.T, address string) (front string, replay func())
+	// Shaping is applied at both ends of every link the suite opens.
+	Shaping transport.Shaping
+	// Refused are shapings the adapter can't honour: dials and peer links
+	// asking for them must be refused. Invalid shapings are always tried.
+	Refused []transport.Shaping
+	// Transport, if set, is the adapter: the suite checks its
+	// CheckEndpoint, CheckInbound and Overhead too.
+	Transport transport.Transport
 }
 
 // Endpoint is where and how dialers reach a listener the harness started.
@@ -82,6 +94,11 @@ func Run(t *testing.T, h Harness) {
 		{"ListenerRestart", testListenerRestart},
 		{"CloseRacesLeakNothing", testCloseRacesLeakNothing},
 		{"AcceptContext", testAcceptContext},
+		{"ControlPackets", testControlPackets},
+		{"ShapingOneSided", testShapingOneSided},
+		{"ShapingChange", testShapingChange},
+		{"ShapingRefused", testShapingRefused},
+		{"Overhead", testOverhead},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) { tc.run(t, h) })
@@ -112,11 +129,13 @@ func SymmetricPeer() Peer {
 }
 
 func (h Harness) peer() Peer {
-	if h.Credentials == nil {
-		return SymmetricPeer()
+	p := SymmetricPeer()
+	if h.Credentials != nil {
+		cred, verifier := h.Credentials()
+		p = Peer{PeerLink: transport.PeerLink{Peer: RandomIdentity(), Verifier: verifier}, Credential: cred}
 	}
-	cred, verifier := h.Credentials()
-	return Peer{PeerLink: transport.PeerLink{Peer: RandomIdentity(), Verifier: verifier}, Credential: cred}
+	p.Shaping = h.Shaping
+	return p
 }
 
 func links(peers ...Peer) []transport.PeerLink {
@@ -161,7 +180,7 @@ func newEnv(t *testing.T, h Harness, peers ...Peer) *env {
 }
 
 func (e *env) dialConfig(p Peer) transport.DialConfig {
-	return transport.DialConfig{Credential: p.Credential, Settings: e.endpoint.Settings}
+	return transport.DialConfig{Credential: p.Credential, Settings: e.endpoint.Settings, Shaping: e.h.Shaping}
 }
 
 func (e *env) listen(address string) {
@@ -929,5 +948,164 @@ func testWriteUnblocksOnClose(t *testing.T, h Harness) {
 		}
 	case <-time.After(wait):
 		t.Fatal("a write still blocked after Close")
+	}
+}
+
+// testControlPackets sends packets marked as control both ways: whatever
+// the transport does with their rhythm, they arrive as ordinary packets.
+func testControlPackets(t *testing.T, h Harness) {
+	pl := h.peer()
+	e := newEnv(t, h, pl)
+	client, server := e.connect(pl)
+	for i := range 3 {
+		p := []byte(fmt.Sprintf("probe %d", i))
+		if err := transport.WriteControl(client, p); err != nil {
+			t.Fatalf("client: %v", err)
+		}
+		server.expect(p)
+		if err := transport.WriteControl(server, p); err != nil {
+			t.Fatalf("server: %v", err)
+		}
+		client.expect(p)
+	}
+}
+
+// exchangeSizes sends packets of every interesting size both ways.
+func exchangeSizes(client, server *link) {
+	for _, size := range []int{1, 31, 32, 33, 148, 255, 1280, 1420, transport.MaxPacketSize} {
+		up, down := randomPacket(size), randomPacket(size)
+		client.write(up)
+		server.expect(up)
+		server.write(down)
+		client.expect(down)
+	}
+}
+
+// testShapingOneSided shapes one end of a link only: receivers undo
+// shaping from the wire alone, so the ends need not agree.
+func testShapingOneSided(t *testing.T, h Harness) {
+	if h.Shaping.IsZero() {
+		t.Skip("no shaping to apply")
+	}
+	t.Run("dialer", func(t *testing.T) {
+		pl := h.peer()
+		pl.Shaping = transport.Shaping{}
+		e := newEnv(t, h, pl)
+		client, server := e.connect(pl)
+		exchangeSizes(client, server)
+	})
+	t.Run("listener", func(t *testing.T) {
+		hz := h
+		hz.Shaping = transport.Shaping{}
+		pl := hz.peer()
+		pl.Shaping = h.Shaping
+		e := newEnv(t, hz, pl)
+		client, server := e.connect(pl)
+		exchangeSizes(client, server)
+	})
+}
+
+// testShapingChange changes the listening end's shaping in its table: the
+// link stays open and carries on, shaped anew.
+func testShapingChange(t *testing.T, h Harness) {
+	if h.Shaping.IsZero() {
+		t.Skip("no shaping to apply")
+	}
+	pl := h.peer()
+	e := newEnv(t, h, pl)
+	client, server := e.connect(pl)
+	for _, s := range []transport.Shaping{{}, h.Shaping} {
+		changed := pl
+		changed.Shaping = s
+		e.table.Set(links(changed))
+		time.Sleep(20 * time.Millisecond)
+		exchangeSizes(client, server)
+	}
+	select {
+	case err := <-server.err:
+		t.Fatalf("the link closed on a shaping change: %v", err)
+	default:
+	}
+	e.expectNoAccept()
+}
+
+// invalidShapings make no sense on any transport.
+func invalidShapings() []transport.Shaping {
+	return []transport.Shaping{
+		{Padding: transport.Buckets(512, 256)},
+		{Padding: transport.Padding{Mode: transport.PadRandom, Min: 9, Max: 3}},
+		{Padding: transport.Padding{Mode: 99}},
+		{Jitter: -time.Millisecond},
+		{BatchWindow: 2 * transport.MaxShapingDelay},
+		{CoverInterval: time.Microsecond},
+	}
+}
+
+// testShapingRefused asks for shaping the adapter can't honour, at either
+// end: the dial fails, the listener skips the peer link, and the Check
+// methods say so. Nothing is ever shaped less than asked.
+func testShapingRefused(t *testing.T, h Harness) {
+	for i, s := range append(invalidShapings(), h.Refused...) {
+		t.Run(fmt.Sprint(i), func(t *testing.T) {
+			refused := func(err error) bool {
+				return errors.Is(err, transport.ErrInvalidShaping) || errors.Is(err, transport.ErrUnsupportedShaping)
+			}
+			good := h.peer()
+			e := newEnv(t, h, good)
+			cfg := e.dialConfig(good)
+			cfg.Shaping = s
+			ctx, cancel := context.WithTimeout(context.Background(), wait)
+			defer cancel()
+			if l, err := h.Dialer.Dial(ctx, e.dialTo, cfg); !refused(err) {
+				if l != nil {
+					_ = l.Close()
+				}
+				t.Fatalf("dial with shaping %+v: %v, want it refused", s, err)
+			}
+			if h.Transport != nil {
+				if err := h.Transport.CheckEndpoint(e.dialTo, cfg); !refused(err) {
+					t.Errorf("CheckEndpoint with shaping %+v: %v, want it refused", s, err)
+				}
+				bad := good.PeerLink
+				bad.Shaping = s
+				if err := h.Transport.CheckInbound(bad); !refused(err) {
+					t.Errorf("CheckInbound with shaping %+v: %v, want it refused", s, err)
+				}
+			}
+
+			// The listening end asked for it: the peer link is skipped.
+			bad := h.peer()
+			bad.Shaping = s
+			e.table.Set(links(good, bad))
+			time.Sleep(20 * time.Millisecond)
+			if l, err := h.Dialer.Dial(ctx, e.dialTo, e.dialConfig(bad)); err == nil {
+				_ = watch(t, l).WritePacket([]byte("shape me"))
+			}
+			e.expectNoAccept()
+			client, server := e.connect(good)
+			server.write([]byte("still serving"))
+			client.expect([]byte("still serving"))
+		})
+	}
+}
+
+// testOverhead checks the MTU budget: shaping never lowers Overhead, and
+// MaxPacket keeps padded packets within the unit size.
+func testOverhead(t *testing.T, h Harness) {
+	if h.Transport == nil {
+		t.Skip("no Transport in the harness")
+	}
+	base, shaped := h.Transport.Overhead(transport.Shaping{}), h.Transport.Overhead(h.Shaping)
+	if base < 0 || shaped < base {
+		t.Fatalf("Overhead %d unshaped, %d shaped", base, shaped)
+	}
+	for _, unit := range []int{576, 1232, 1452, 1472} {
+		got := transport.MaxPacket(h.Transport, h.Shaping, unit)
+		if got < 0 || got > max(unit-shaped, 0) {
+			t.Errorf("MaxPacket for %d-byte units: %d, Overhead %d", unit, got, shaped)
+		}
+		if p := h.Shaping.Padding; got > 0 && p.Mode == transport.PadToBuckets && p.Size(got+shaped) > unit {
+			t.Errorf("MaxPacket for %d-byte units: %d, which pads to %d", unit, got, p.Size(got+shaped))
+		}
 	}
 }

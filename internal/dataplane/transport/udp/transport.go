@@ -55,8 +55,9 @@ func (t *Transport) Name() string { return Name }
 
 func (t *Transport) Dialer() transport.Dialer { return t }
 
-// Overhead implements transport.Transport; udp doesn't shape yet.
-func (t *Transport) Overhead(transport.Shaping) int { return Overhead }
+// Overhead implements transport.Transport: the fixed Overhead plus the most
+// random padding adds.
+func (t *Transport) Overhead(s transport.Shaping) int { return Overhead + s.Padding.Growth() }
 
 // CheckEndpoint implements transport.Transport.
 func (t *Transport) CheckEndpoint(endpoint string, cfg transport.DialConfig) error {
@@ -65,6 +66,9 @@ func (t *Transport) CheckEndpoint(endpoint string, cfg transport.DialConfig) err
 	}
 	if len(cfg.Credential) < MinSecretSize {
 		return fmt.Errorf("udp: credential is %d bytes, need at least %d", len(cfg.Credential), MinSecretSize)
+	}
+	if err := checkShaping(cfg.Shaping); err != nil {
+		return err
 	}
 	return proto.Unmarshal(cfg.Settings, &transportv1.UdpDialSettings{})
 }
@@ -75,6 +79,9 @@ func (t *Transport) CheckInbound(pl transport.PeerLink) error { return checkInbo
 func checkInbound(pl transport.PeerLink) error {
 	if len(pl.Verifier) < MinSecretSize {
 		return fmt.Errorf("udp: verifier is %d bytes, need at least %d", len(pl.Verifier), MinSecretSize)
+	}
+	if err := checkShaping(pl.Shaping); err != nil {
+		return err
 	}
 	return proto.Unmarshal(pl.Settings, &transportv1.UdpInboundSettings{})
 }
@@ -114,10 +121,11 @@ func (t *Transport) ListenOn(pc net.PacketConn, cfg transport.ListenConfig) *Lis
 // Router implements transport.Routable.
 func (t *Transport) Router(peers transport.Peers) transport.Router { return newRouter(t, peers) }
 
-// Counters are what a udp receiver dropped and why. Stale timestamps are
-// counted apart because they point at a clock that is off.
+// Counters are what a udp receiver took in, dropped and why. Stale
+// timestamps are counted apart because they point at a clock that is off.
 type Counters struct {
-	Delivered       uint64
+	Delivered       uint64 // packets
+	Cover           uint64 // authenticated datagrams that carried no packet
 	Unauthenticated uint64 // unknown connection id, bad tag, malformed
 	StaleTimestamp  uint64 // sent more than five minutes from our clock
 	StaleSender     uint64 // an older sender while a newer one is active
@@ -125,12 +133,21 @@ type Counters struct {
 }
 
 type counters struct {
-	delivered, unauthenticated, staleTimestamp, staleSender, replayed atomic.Uint64
+	delivered, cover, unauthenticated, staleTimestamp, staleSender, replayed atomic.Uint64
+}
+
+// received counts an authenticated datagram that passed every check.
+func (c *counters) received(packets int) {
+	if packets == 0 {
+		c.cover.Add(1)
+	}
+	c.delivered.Add(uint64(packets))
 }
 
 func (c *counters) snapshot() Counters {
 	return Counters{
 		Delivered:       c.delivered.Load(),
+		Cover:           c.cover.Load(),
 		Unauthenticated: c.unauthenticated.Load(),
 		StaleTimestamp:  c.staleTimestamp.Load(),
 		StaleSender:     c.staleSender.Load(),

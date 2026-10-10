@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport/memory"
@@ -27,7 +28,15 @@ func TestConformance(t *testing.T) {
 					}
 					return l, transporttest.Endpoint{Address: address}
 				},
-				Dialer: network.Dialer(),
+				Dialer:    network.Dialer(),
+				Transport: network,
+				Refused: []transport.Shaping{
+					{Padding: transport.Buckets(1280)},
+					{Padding: transport.Padding{Mode: transport.PadRandom, Max: 16}},
+					{BatchWindow: time.Millisecond},
+					{Jitter: time.Millisecond},
+					{CoverInterval: time.Second},
+				},
 			})
 		})
 	}

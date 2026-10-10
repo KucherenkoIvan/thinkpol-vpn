@@ -122,7 +122,7 @@ func newFixture(t testing.TB, servers, devices int) *fixture {
 		for d := servers; d < n; d++ {
 			s.Inbound = append(s.Inbound,
 				InboundLink{Peer: ids[d], PeerKind: NodeDevice, Transport: "udp", Credential: cred(e, d, "udp")},
-				InboundLink{Peer: ids[d], PeerKind: NodeDevice, Transport: "tls", Credential: cred(e, d, "tls"), Settings: []byte("shape=bulk")},
+				InboundLink{Peer: ids[d], PeerKind: NodeDevice, Transport: "tls", Credential: cred(e, d, "tls"), Settings: []byte("sni=www.example.org"), Shaping: []byte("pad=buckets")},
 			)
 			s.Peers = append(s.Peers, peer(d, []Path{{FirstHop: ids[d]}}))
 			s.Routes = append(s.Routes, Route{Destination: ids[d], NextHops: []NodeID{ids[d]}})
@@ -150,7 +150,7 @@ func newFixture(t testing.TB, servers, devices int) *fixture {
 		for _, e := range entries {
 			s.Links = append(s.Links, Link{Peer: ids[e], Endpoints: []Endpoint{
 				{Transport: "udp", Address: netip.MustParseAddrPort(fmt.Sprintf("203.0.113.%d:4500", e+1)), Credential: cred(e, d, "udp")},
-				{Transport: "tls", Address: netip.MustParseAddrPort(fmt.Sprintf("[2001:db8::%x]:443", e+1)), Credential: cred(e, d, "tls"), Settings: []byte("pin=sha256:abcd")},
+				{Transport: "tls", Address: netip.MustParseAddrPort(fmt.Sprintf("[2001:db8::%x]:443", e+1)), Credential: cred(e, d, "tls"), Settings: []byte("pin=sha256:abcd"), Shaping: []byte("pad=random")},
 			}})
 			s.Peers = append(s.Peers, peer(e, []Path{{FirstHop: ids[e]}}))
 		}

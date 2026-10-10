@@ -29,7 +29,7 @@ type Router struct {
 var _ transport.Router = (*Router)(nil)
 
 func newRouter(t *Transport, peers transport.Peers) *Router {
-	return &Router{t: t, peers: peers, scratch: make([]byte, 0, innerSize+transport.MaxPacketSize)}
+	return &Router{t: t, peers: peers, scratch: make([]byte, 0, maxDatagram)}
 }
 
 // RouteDatagram implements transport.Router.

@@ -30,6 +30,7 @@ type Listener struct {
 	done      chan struct{}
 	closeOnce sync.Once
 	counters  counters
+	meter     transport.SendMeter
 
 	mu      sync.Mutex
 	set     *peerSet
@@ -65,7 +66,7 @@ func newListener(t *Transport, pc net.PacketConn, peers transport.Peers, camoufl
 		done:    make(chan struct{}),
 		flows:   make(map[string]*flow),
 		retired: make(map[string]retiree),
-		scratch: make([]byte, 0, innerSize+transport.MaxPacketSize),
+		scratch: make([]byte, 0, maxDatagram),
 	}
 	links, changed := peers.Snapshot()
 	l.reindex(links)
@@ -97,6 +98,9 @@ func (l *Listener) Addr() net.Addr { return l.pc.LocalAddr() }
 
 // Counters reports what the listener dropped and why.
 func (l *Listener) Counters() Counters { return l.counters.snapshot() }
+
+// Sent reports what the listener's links sent and what their padding cost.
+func (l *Listener) Sent() transport.SendStats { return l.meter.Stats() }
 
 // Rejected lists the peer links of the table the listener can't use.
 func (l *Listener) Rejected() []transport.PeerError {
@@ -244,6 +248,15 @@ func (l *Listener) receive(d []byte, from net.Addr) bool {
 		l.counters.staleSender.Add(1)
 		return false
 	}
+	if o.packets == 0 {
+		// Cover: it keeps a link's address current, as data does, but
+		// carries nothing to open one for.
+		if f.link != nil && v == deliverNewest {
+			f.link.remote.Store(&from)
+		}
+		l.counters.received(0)
+		return true
+	}
 	if f.link == nil {
 		link := newServerLink(l, f, from)
 		select {
@@ -258,8 +271,10 @@ func (l *Listener) receive(d []byte, from net.Addr) bool {
 		// original, as with WireGuard's own roaming.
 		f.link.remote.Store(&from)
 	}
-	f.link.deliver(o.packet)
-	l.counters.delivered.Add(1)
+	for packet, rest := nextFrame(o.frames); packet != nil; packet, rest = nextFrame(rest) {
+		f.link.deliver(packet)
+	}
+	l.counters.received(o.packets)
 	return true
 }
 
@@ -327,7 +342,7 @@ func (sl *serverLink) WritePacket(p []byte) error {
 	now := sl.l.t.now()
 	bp := datagramPool.Get().(*[]byte)
 	defer datagramPool.Put(bp)
-	*bp = seal((*bp)[:0], e.send, e.out.at(epochOf(now)), sl.sender, now, sl.counter.Add(1)-1, p)
+	*bp = seal((*bp)[:0], e.send, e.out.at(epochOf(now)), sl.sender, now, sl.counter.Add(1)-1, p, e.link.Shaping.Padding)
 	if _, err := sl.l.pc.WriteTo(*bp, *sl.remote.Load()); err != nil {
 		select {
 		case <-sl.done:
@@ -336,6 +351,7 @@ func (sl *serverLink) WritePacket(p []byte) error {
 		}
 		return fmt.Errorf("udp: write: %w", err)
 	}
+	sl.l.meter.Sent(1, len(p), len(*bp)-Overhead-len(p), len(*bp))
 	return nil
 }
 

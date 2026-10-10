@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -17,9 +18,10 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 )
 
-// Wire format, one datagram per packet:
+// Wire format:
 //
-//	conn id [8] | nonce [24] | XChaCha20-Poly1305(sender [12] | sent [4] | counter [8] | packet) [24+n+16]
+//	conn id [8] | nonce [24] | XChaCha20-Poly1305(sender [12] | sent [4] | counter [8] | frames | padding)
+//	frame: length [2] | packet [length]
 //
 // See the package documentation for what each part is for.
 const (
@@ -29,14 +31,23 @@ const (
 	sentSize    = 4  // Unix seconds, uint32
 	counterSize = 8
 	tagSize     = chacha20poly1305.Overhead
+	frameHeader = 2 // packet length, big endian
 
 	clearSize = connIDSize + nonceSize
 	innerSize = senderSize + sentSize + counterSize
 
-	// Overhead is what udp adds to each packet, before IP and UDP headers.
-	Overhead = clearSize + innerSize + tagSize
+	// Overhead is what udp adds to a packet sent alone and unpadded,
+	// before IP and UDP headers.
+	Overhead = clearSize + innerSize + frameHeader + tagSize
 
-	maxDatagram = Overhead + transport.MaxPacketSize
+	// MaxRandomPadding is the most random padding udp adds. It keeps the
+	// largest datagram under macOS's default limit of 9216 bytes.
+	MaxRandomPadding = 512
+
+	// minDatagram carries no packet (cover); maxDatagram is the largest
+	// datagram udp sends or accepts, and the largest bucket it pads to.
+	minDatagram = clearSize + innerSize + tagSize
+	maxDatagram = Overhead + transport.MaxPacketSize + MaxRandomPadding
 
 	// maxClockSkew is how far a datagram's sealed send time may be from the
 	// receiver's clock.
@@ -141,20 +152,42 @@ func newSenderID(now time.Time) senderID {
 	return s
 }
 
-// idOf accepts only datagrams that could hold a packet.
+// idOf accepts only datagrams of a size udp sends.
 func idOf(d []byte) (connID, bool) {
 	var id connID
-	if len(d) <= Overhead || len(d) > maxDatagram {
+	if len(d) < minDatagram || len(d) > maxDatagram {
 		return id, false
 	}
 	copy(id[:], d)
 	return id, true
 }
 
-var plainPool = sync.Pool{New: func() any { b := make([]byte, 0, innerSize+transport.MaxPacketSize); return &b }}
+var plainPool = sync.Pool{New: func() any { b := make([]byte, 0, maxDatagram); return &b }}
 
-// seal appends the datagram carrying packet to dst.
-func seal(dst []byte, aead cipher.AEAD, id connID, sender senderID, now time.Time, counter uint64, packet []byte) []byte {
+// support is the shaping udp implements: padding. Batching, jitter and
+// cover traffic it refuses; receivers already take several packets, or
+// none, per datagram.
+var support = transport.ShapingSupport{Padding: true}
+
+func checkShaping(s transport.Shaping) error {
+	if err := support.Check(s); err != nil {
+		return fmt.Errorf("udp: %w", err)
+	}
+	p := s.Padding
+	if int(p.Max) > MaxRandomPadding {
+		return fmt.Errorf("udp: %w: random padding up to %d bytes, udp adds at most %d", transport.ErrUnsupportedShaping, p.Max, MaxRandomPadding)
+	}
+	for _, b := range p.Buckets {
+		if int(b) > maxDatagram {
+			return fmt.Errorf("udp: %w: a bucket of %d bytes, udp sends at most %d", transport.ErrUnsupportedShaping, b, maxDatagram)
+		}
+	}
+	return nil
+}
+
+// seal appends the datagram carrying packet, padded as padding says, to
+// dst.
+func seal(dst []byte, aead cipher.AEAD, id connID, sender senderID, now time.Time, counter uint64, packet []byte, padding transport.Padding) []byte {
 	dst = append(dst, id[:]...)
 	start := len(dst)
 	dst = append(dst, make([]byte, nonceSize)...)
@@ -164,19 +197,27 @@ func seal(dst []byte, aead cipher.AEAD, id connID, sender senderID, now time.Tim
 	plain := append((*pp)[:0], sender[:]...)
 	plain = binary.BigEndian.AppendUint32(plain, uint32(now.Unix()))
 	plain = binary.BigEndian.AppendUint64(plain, counter)
+	plain = binary.BigEndian.AppendUint16(plain, uint16(len(packet)))
 	plain = append(plain, packet...)
+	if pad := padding.Size(Overhead+len(packet)) - Overhead - len(packet); pad > 0 {
+		plain = append(plain, make([]byte, pad)...) // zeros: a zero length ends the frames
+	}
 	*pp = plain
 	return aead.Seal(dst, dst[start:], plain, dst[:connIDSize])
 }
 
-var errShort = errors.New("udp: datagram too short")
+var (
+	errShort     = errors.New("udp: datagram too short")
+	errMalformed = errors.New("udp: malformed frames")
+)
 
 // opened is an authenticated datagram.
 type opened struct {
 	sender  senderID
 	sent    time.Time
 	counter uint64
-	packet  []byte
+	frames  []byte // checked: nextFrame splits it without failing
+	packets int    // in frames; none is a cover datagram
 }
 
 // fresh reports whether the datagram was sent within maxClockSkew of now.
@@ -193,15 +234,45 @@ func open(dst []byte, aead cipher.AEAD, d []byte) (opened, error) {
 	if err != nil {
 		return opened{}, err
 	}
-	if len(plain) <= innerSize {
+	if len(plain) < innerSize {
 		return opened{}, errShort
 	}
 	var o opened
 	copy(o.sender[:], plain)
 	o.sent = time.Unix(int64(binary.BigEndian.Uint32(plain[senderSize:])), 0)
 	o.counter = binary.BigEndian.Uint64(plain[senderSize+sentSize : innerSize])
-	o.packet = plain[innerSize:]
+	o.frames = plain[innerSize:]
+	for rest := o.frames; ; o.packets++ {
+		n, ok := frameLen(rest)
+		if !ok {
+			break
+		}
+		if n > transport.MaxPacketSize || n > len(rest)-frameHeader {
+			return opened{}, errMalformed
+		}
+		rest = rest[frameHeader+n:]
+	}
 	return o, nil
+}
+
+// frameLen reads the length of the next frame. The frames end at a zero
+// length or with fewer than two bytes left; what follows is padding.
+func frameLen(frames []byte) (int, bool) {
+	if len(frames) < frameHeader {
+		return 0, false
+	}
+	n := int(binary.BigEndian.Uint16(frames))
+	return n, n != 0
+}
+
+// nextFrame splits the next packet off frames that open checked; packet is
+// nil once they end.
+func nextFrame(frames []byte) (packet, rest []byte) {
+	n, ok := frameLen(frames)
+	if !ok {
+		return nil, nil
+	}
+	return frames[frameHeader : frameHeader+n], frames[frameHeader+n:]
 }
 
 var datagramPool = sync.Pool{New: func() any { b := make([]byte, 0, maxDatagram); return &b }}

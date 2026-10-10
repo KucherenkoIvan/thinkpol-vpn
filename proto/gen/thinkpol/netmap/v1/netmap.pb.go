@@ -948,7 +948,10 @@ type Endpoint struct {
 	Credential []byte `protobuf:"bytes,3,opt,name=credential,proto3" json:"credential,omitempty"`
 	// Transport-owned settings (certificate pin, SNI, WebSocket path, …),
 	// encoded by the transport.
-	Settings      []byte `protobuf:"bytes,4,opt,name=settings,proto3" json:"settings,omitempty"`
+	Settings []byte `protobuf:"bytes,4,opt,name=settings,proto3" json:"settings,omitempty"`
+	// How this node shapes what it sends on the link: an encoded
+	// thinkpol.transport.v1.Shaping; empty for none.
+	Shaping       []byte `protobuf:"bytes,5,opt,name=shaping,proto3" json:"shaping,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1011,6 +1014,13 @@ func (x *Endpoint) GetSettings() []byte {
 	return nil
 }
 
+func (x *Endpoint) GetShaping() []byte {
+	if x != nil {
+		return x.Shaping
+	}
+	return nil
+}
+
 type InboundLink struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Peer  []byte                 `protobuf:"bytes,1,opt,name=peer,proto3" json:"peer,omitempty"`
@@ -1021,9 +1031,11 @@ type InboundLink struct {
 	// key where the transport allows, so a seized node can't impersonate its
 	// peers (PRD S1); for a symmetric transport, the shared secret itself.
 	Credential []byte `protobuf:"bytes,4,opt,name=credential,proto3" json:"credential,omitempty"`
-	// Transport-owned settings for this link (how the listener side shapes
-	// and configures what it sends, TP-027), encoded by the transport.
-	Settings      []byte `protobuf:"bytes,5,opt,name=settings,proto3" json:"settings,omitempty"`
+	// Transport-owned settings for this link, encoded by the transport.
+	Settings []byte `protobuf:"bytes,5,opt,name=settings,proto3" json:"settings,omitempty"`
+	// How this node shapes what it sends on the link: an encoded
+	// thinkpol.transport.v1.Shaping; empty for none.
+	Shaping       []byte `protobuf:"bytes,6,opt,name=shaping,proto3" json:"shaping,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1089,6 +1101,13 @@ func (x *InboundLink) GetCredential() []byte {
 func (x *InboundLink) GetSettings() []byte {
 	if x != nil {
 		return x.Settings
+	}
+	return nil
+}
+
+func (x *InboundLink) GetShaping() []byte {
+	if x != nil {
+		return x.Shaping
 	}
 	return nil
 }
@@ -1328,14 +1347,15 @@ const file_thinkpol_netmap_v1_netmap_proto_rawDesc = "" +
 	"\tfirst_hop\x18\x01 \x01(\fR\bfirstHop\"V\n" +
 	"\x04Link\x12\x12\n" +
 	"\x04peer\x18\x01 \x01(\fR\x04peer\x12:\n" +
-	"\tendpoints\x18\x02 \x03(\v2\x1c.thinkpol.netmap.v1.EndpointR\tendpoints\"~\n" +
+	"\tendpoints\x18\x02 \x03(\v2\x1c.thinkpol.netmap.v1.EndpointR\tendpoints\"\x98\x01\n" +
 	"\bEndpoint\x12\x1c\n" +
 	"\ttransport\x18\x01 \x01(\tR\ttransport\x12\x18\n" +
 	"\aaddress\x18\x02 \x01(\tR\aaddress\x12\x1e\n" +
 	"\n" +
 	"credential\x18\x03 \x01(\fR\n" +
 	"credential\x12\x1a\n" +
-	"\bsettings\x18\x04 \x01(\fR\bsettings\"\xb6\x01\n" +
+	"\bsettings\x18\x04 \x01(\fR\bsettings\x12\x18\n" +
+	"\ashaping\x18\x05 \x01(\fR\ashaping\"\xd0\x01\n" +
 	"\vInboundLink\x12\x12\n" +
 	"\x04peer\x18\x01 \x01(\fR\x04peer\x129\n" +
 	"\tpeer_kind\x18\x02 \x01(\x0e2\x1c.thinkpol.netmap.v1.NodeKindR\bpeerKind\x12\x1c\n" +
@@ -1343,7 +1363,8 @@ const file_thinkpol_netmap_v1_netmap_proto_rawDesc = "" +
 	"\n" +
 	"credential\x18\x04 \x01(\fR\n" +
 	"credential\x12\x1a\n" +
-	"\bsettings\x18\x05 \x01(\fR\bsettings\"F\n" +
+	"\bsettings\x18\x05 \x01(\fR\bsettings\x12\x18\n" +
+	"\ashaping\x18\x06 \x01(\fR\ashaping\"F\n" +
 	"\x05Route\x12 \n" +
 	"\vdestination\x18\x01 \x01(\fR\vdestination\x12\x1b\n" +
 	"\tnext_hops\x18\x02 \x03(\fR\bnextHops\"L\n" +

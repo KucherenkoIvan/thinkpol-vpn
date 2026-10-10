@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"time"
 )
 
 // MaxPacketSize is the largest packet every link carries. It leaves room for
@@ -80,6 +81,31 @@ type Link interface {
 	RemoteAddr() net.Addr
 }
 
+// ControlWriter is a Link that knows which packets keep the link warm or
+// measure it (the path layer's probes and their replies, keepalives) rather
+// than carry data. Their own rhythm is a fingerprint, so the transport may
+// fit them into its shaping: pad and jitter them like data, hold one for up
+// to MaxControlHold to ride with the next data or cover unit, or send it as
+// the cover unit it would have sent anyway. The far end reads them as
+// ordinary packets. Delivery is as for WritePacket.
+type ControlWriter interface {
+	WriteControl(p []byte) error
+}
+
+// MaxControlHold is the longest a ControlWriter holds a control packet.
+// Probe timeouts above the transport must allow for it twice (probe and
+// reply).
+const MaxControlHold = 500 * time.Millisecond
+
+// WriteControl sends a control packet on l: with WriteControl if l is a
+// ControlWriter, otherwise as an ordinary packet.
+func WriteControl(l Link, p []byte) error {
+	if cw, ok := l.(ControlWriter); ok {
+		return cw.WriteControl(p)
+	}
+	return l.WritePacket(p)
+}
+
 // DialConfig is what the map gives the dialing end of one link.
 type DialConfig struct {
 	// Credential is what the dialer proves itself with.
@@ -87,7 +113,8 @@ type DialConfig struct {
 	// Settings is the transport's own settings message for the link,
 	// encoded by the controller and decoded by the adapter.
 	Settings []byte
-	Shaping  Shaping
+	// Shaping is how this end shapes what it sends.
+	Shaping Shaping
 }
 
 // Dialer opens links. One dialer serves every link of its transport.
@@ -109,15 +136,6 @@ type Listener interface {
 	// and later Accept calls return an error matching net.ErrClosed.
 	Close() error
 }
-
-// Shaping is how a link hides the size and rhythm of the packets it carries
-// (C6): padding, batching, timing jitter, idle cover traffic. The sender
-// applies it; receivers undo it from the wire format alone.
-//
-// Placeholder: the settings arrive with the shaping contract (TP-027). Until
-// then the zero value, no shaping, is the only one. An adapter that can't
-// honour a setting refuses the link instead of ignoring it.
-type Shaping struct{}
 
 // Camouflage is what an unauthenticated peer gets: anything that fails a
 // listener's authentication is handed here instead of being answered.

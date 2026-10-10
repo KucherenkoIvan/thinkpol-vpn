@@ -62,8 +62,19 @@
 // CheckEndpoint and CheckInbound and finds transports by name in a
 // [Registry] built in the composition root.
 //
-// Traffic shape (padding, batching, timing) belongs to the transport, never
-// to the layers above (C6); [Shaping] is where its settings go.
+// # Traffic shape
+//
+// Traffic shape (padding, batching, timing, cover traffic) belongs to the
+// transport, never to the layers above (C6). Each end of a link shapes
+// what it sends as its [Shaping] says; the map carries it per end, encoded
+// as thinkpol.transport.v1.Shaping, and the engine decodes it with
+// [ParseShaping]. Receivers undo shaping from the wire format alone, so
+// there is nothing to negotiate. An adapter refuses a link whose shaping it
+// can't honour ([ShapingSupport], [ErrUnsupportedShaping]) instead of
+// shaping less than the map asks. [MaxPacket] is the path layer's MTU
+// budget under a shaping. The layers above never pad, but they mark the
+// packets that only keep a link warm ([WriteControl]), so a transport can
+// fold their rhythm into its own.
 //
 // # Shared listeners
 //

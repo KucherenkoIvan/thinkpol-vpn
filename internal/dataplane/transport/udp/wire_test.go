@@ -3,9 +3,125 @@ package udp
 import (
 	"bytes"
 	"crypto/rand"
+	"encoding/binary"
+	"errors"
 	"testing"
 	"time"
+
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 )
+
+func firstFrame(o opened) []byte {
+	p, _ := nextFrame(o.frames)
+	return p
+}
+
+// sealFrames seals frames as they are, the way a sender that batches or
+// sends cover would: each packet framed, then padding bytes of zeros.
+func sealFrames(secret []byte, dir direction, now time.Time, counter uint64, frames []byte) []byte {
+	id := connIDFor(secret, dir, epochOf(now))
+	d := append([]byte(nil), id[:]...)
+	nonce := make([]byte, nonceSize)
+	_, _ = rand.Read(nonce)
+	d = append(d, nonce...)
+	sender := newSenderID(now)
+	plain := append([]byte(nil), sender[:]...)
+	plain = binary.BigEndian.AppendUint32(plain, uint32(now.Unix()))
+	plain = binary.BigEndian.AppendUint64(plain, counter)
+	plain = append(plain, frames...)
+	return newAEAD(secret, dir).Seal(d, nonce, plain, id[:])
+}
+
+func frames(packets ...[]byte) []byte {
+	var b []byte
+	for _, p := range packets {
+		b = binary.BigEndian.AppendUint16(b, uint16(len(p)))
+		b = append(b, p...)
+	}
+	return b
+}
+
+func TestPaddingStaysInsideTheSeal(t *testing.T) {
+	secret := randomSecret(t)
+	now := time.Now()
+	id, sender := connIDFor(secret, toListener, epochOf(now)), newSenderID(now)
+	aead := newAEAD(secret, toListener)
+	buckets := transport.Buckets(128, 256, 1280)
+	for _, n := range []int{1, 50, 54, 55, 182, 183, 1206, 1207, 4000} {
+		packet := bytes.Repeat([]byte{0xab}, n)
+		d := seal(nil, aead, id, sender, now, 1, packet, buckets)
+		want := buckets.Size(Overhead + n)
+		if len(d) != want {
+			t.Errorf("%d-byte packet: %d-byte datagram, want %d", n, len(d), want)
+		}
+		o, err := open(nil, aead, d)
+		if err != nil || o.packets != 1 || !bytes.Equal(firstFrame(o), packet) {
+			t.Fatalf("%d-byte packet: open %+v, %v", n, o, err)
+		}
+		for i := clearSize; i < len(d)-tagSize; i++ {
+			bad := bytes.Clone(d)
+			bad[i] ^= 0x80
+			if _, err := open(nil, aead, bad); err == nil {
+				t.Fatalf("%d-byte packet: flipping byte %d (padding included) went unnoticed", n, i)
+			}
+		}
+	}
+	random := transport.Padding{Mode: transport.PadRandom, Min: 10, Max: 20}
+	for range 200 {
+		d := seal(nil, aead, id, sender, now, 1, []byte("x"), random)
+		if pad := len(d) - Overhead - 1; pad < 10 || pad > 20 {
+			t.Fatalf("random padding of %d bytes, want 10 to 20", pad)
+		}
+		if o, err := open(nil, aead, d); err != nil || !bytes.Equal(firstFrame(o), []byte("x")) {
+			t.Fatalf("open: %+v, %v", o, err)
+		}
+	}
+}
+
+// Receivers take what a sender that batches or sends cover would send,
+// though udp's own senders don't yet: the format is the contract.
+func TestFramesAndCover(t *testing.T) {
+	secret := randomSecret(t)
+	now := time.Now()
+	aead := newAEAD(secret, toListener)
+	big := bytes.Repeat([]byte{7}, transport.MaxPacketSize)
+	for _, tc := range []struct {
+		name   string
+		frames []byte
+		want   [][]byte
+	}{
+		{"cover", nil, nil},
+		{"padded cover", make([]byte, 100), nil},
+		{"one trailing byte", append(frames([]byte("a")), 0), [][]byte{[]byte("a")}},
+		{"batch", append(frames([]byte("one"), []byte("two"), big), make([]byte, 33)...), [][]byte{[]byte("one"), []byte("two"), big}},
+	} {
+		o, err := open(nil, aead, sealFrames(secret, toListener, now, 1, tc.frames))
+		if err != nil || o.packets != len(tc.want) {
+			t.Fatalf("%s: %+v, %v", tc.name, o, err)
+		}
+		var got [][]byte
+		for p, rest := nextFrame(o.frames); p != nil; p, rest = nextFrame(rest) {
+			got = append(got, p)
+		}
+		if len(got) != len(tc.want) {
+			t.Fatalf("%s: %d packets, want %d", tc.name, len(got), len(tc.want))
+		}
+		for i := range got {
+			if !bytes.Equal(got[i], tc.want[i]) {
+				t.Errorf("%s: packet %d differs", tc.name, i)
+			}
+		}
+	}
+	for name, body := range map[string][]byte{
+		"length past the end":  append(frames([]byte("abc")), 0, 9, 1),
+		"packet over the max":  frames(append(big, 1)),
+		"truncated last frame": frames([]byte("abcd"))[:4],
+	} {
+		if _, err := open(nil, aead, sealFrames(secret, toListener, now, 1, body)); !errors.Is(err, errMalformed) {
+			t.Errorf("%s: %v, want errMalformed", name, err)
+		}
+	}
+}
 
 func randomSecret(t *testing.T) []byte {
 	t.Helper()
@@ -57,7 +173,7 @@ func TestSealOpenAndTamper(t *testing.T) {
 	now := time.Now().Truncate(time.Second) // what the seal carries
 	id, sender := connIDFor(secret, toListener, epochOf(now)), newSenderID(now)
 	packet := []byte("a packet that must not be visible on the wire")
-	d := seal(nil, newAEAD(secret, toListener), id, sender, now, 7, packet)
+	d := seal(nil, newAEAD(secret, toListener), id, sender, now, 7, packet, transport.Padding{})
 	if len(d) != len(packet)+Overhead {
 		t.Fatalf("datagram is %d bytes, want %d", len(d), len(packet)+Overhead)
 	}
@@ -68,13 +184,13 @@ func TestSealOpenAndTamper(t *testing.T) {
 		t.Fatalf("connection id %x, want %x", got, id)
 	}
 	o, err := open(nil, newAEAD(secret, toListener), d)
-	if err != nil || o.sender != sender || o.counter != 7 || !bytes.Equal(o.packet, packet) || o.sent.Unix() != now.Unix() {
+	if err != nil || o.sender != sender || o.counter != 7 || o.packets != 1 || !bytes.Equal(firstFrame(o), packet) || o.sent.Unix() != now.Unix() {
 		t.Fatalf("open: %+v %v", o, err)
 	}
 	if !o.fresh(now.Add(maxClockSkew)) || o.fresh(now.Add(maxClockSkew+2*time.Second)) || o.fresh(now.Add(-maxClockSkew-2*time.Second)) {
 		t.Error("freshness doesn't follow the five-minute bound")
 	}
-	again := seal(nil, newAEAD(secret, toListener), id, sender, now, 7, packet)
+	again := seal(nil, newAEAD(secret, toListener), id, sender, now, 7, packet, transport.Padding{})
 	if bytes.Equal(again[connIDSize:clearSize], d[connIDSize:clearSize]) {
 		t.Fatal("two datagrams share a nonce")
 	}
@@ -97,12 +213,12 @@ func TestSealOpenAndTamper(t *testing.T) {
 }
 
 func TestIDOfBounds(t *testing.T) {
-	for _, n := range []int{0, 1, clearSize, Overhead, maxDatagram + 1} {
+	for _, n := range []int{0, 1, clearSize, minDatagram - 1, maxDatagram + 1} {
 		if _, ok := idOf(make([]byte, n)); ok {
 			t.Errorf("accepted a %d-byte datagram", n)
 		}
 	}
-	for _, n := range []int{Overhead + 1, maxDatagram} {
+	for _, n := range []int{minDatagram, Overhead + 1, maxDatagram} {
 		if _, ok := idOf(make([]byte, n)); !ok {
 			t.Errorf("rejected a %d-byte datagram", n)
 		}
