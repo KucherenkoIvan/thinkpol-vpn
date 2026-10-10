@@ -56,8 +56,20 @@ Both upstreams already merge adjacent same-country blocks, so aggregation remove
 - **TP-020 (DNS) / geosite:** `BlobKind` geosite is reserved in the map but there is no geosite importer or format here (domains are R8, later). A geosite blob would need its own magic (not `TPIP`) and canonical form (sorted, deduplicated, lowercased domain rules).
 - **TP-004 / controller:** `netmap.BlobRef{Kind: netmap.BlobGeoIP, SHA256: l.SHA256, Size: uint64(len(l.Blob)), Name: l.Name}` from a `lists.List`; header refs unnamed.
 
+## Review findings
+No blockers; orchestrator decisions.
+
+- [ ] R1. `Decode` rejects IPv6 prefixes inside `::ffff:0:0/96` (bits > 96 there decoded as IPv6 while `Contains` looks mapped addresses up as IPv4); such a blob is a `FuzzDecode` seed and a `TestDecodeRejectsNonCanonical` case
+- [ ] R2. IPv4-mapped rule (a list must never swallow all of IPv4 into `direct`): importers keep IPv6-notation entries as IPv6 (no unmapping); `Builder` and importers reject any IPv6 entry overlapping `::ffff:0:0/96` with a clear error (the dev command may count and skip with a warning if a real source has one; the built set never contains it); `Contains` on a mapped address documented; the rule stated in the format doc
+- [ ] R3. v2fly importer: a missing field 2 is prefix length 0 (proto3 default); test fixed
+- [ ] R4. Attribution: `dev lists build` prints "IP Geolocation by DB-IP (CC BY 4.0)" for dbip and a license hint for v2fly (CC BY-SA 4.0; upstream may carry GeoLite2 terms), and its summary says so; TP-042 Notes: the admin panel shows list provenance and attribution
+- [ ] R5. Import cap lowered to 256 MiB; row/entry counts capped
+- [ ] R6. Handoffs copied into downstream Notes: TP-015 (set difference, added in `internal/lists` if small; the built-in LAN/private list and which ranges go direct in "all but domestic"), TP-018 (~23k RU prefixes; coarsening for Windows may only shrink the direct set)
+- [ ] N1. Tighter preallocation in `Decode`
+
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-10 backlog → in-progress — owner: agent-tp-016, branch: tp-016-geoip-lists
 - 2026-10-10 docs: DESIGN "Lists" says what a GeoIP blob is (canonical minimal prefix set), that sources are operator-downloaded files (DB-IP Lite by default) and that no third-party data is in the repo
 - 2026-10-10 in-progress → review — all acceptance checked; `make lint` and `make test` pass
+- 2026-10-10 review → has-errors — 6 findings and a nit from review, none blocking
