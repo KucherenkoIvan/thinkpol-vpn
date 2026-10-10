@@ -103,3 +103,4 @@ Round 2 (delta review):
 - 2026-10-10 merged origin/rewrite (go-kernel v0.18.0); review findings fixed
 - 2026-10-10 in-progress → review
 - 2026-10-10 review → has-errors — delta review: 3 findings (round 2)
+- 2026-10-10 has-errors → in-progress — owner: agent-tp-005, round 2 findings
