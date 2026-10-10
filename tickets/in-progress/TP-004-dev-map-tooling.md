@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: M
 depends_on: [TP-003]
 refs: [DESIGN#joining]
-owner: ""
-branch: ""
+owner: agent-tp-004
+branch: tp-004-dev-map-tooling
 ---
 
 ## Goal
@@ -30,3 +30,4 @@ The admin CLI and controller (TP-034 decides whether these commands stay).
 
 ## Log
 - 2026-10-10 created in backlog
+- 2026-10-10 backlog → in-progress — owner: agent-tp-004, branch: tp-004-dev-map-tooling
