@@ -59,7 +59,23 @@ const RouteProtocol = 84                               // linux: rtnetlink proto
 - **TP-021 / TP-048** (leaks, kill switch) and **TP-014** (egress): nftables lives in `firewall`/`egress`, not here; own a dedicated table (e.g. `inet thinkpol`) and delete exactly that table, the same ownership rule as protocol 84.
 - **TP-047** (Windows): `winipcfg` (LUID `AddIPAddress`/`AddRoute`/`SetMTU`); tag routes via `MIB_IPFORWARD_ROW2.Protocol` if feasible, else in-memory ownership only.
 
+## Review findings
+- [ ] 1 (blocker) Apply diffs against the kernel, not memory: one dump of our proto-84 routes per family at the start of Apply, keyed by the normalized route key; owned-but-missing → add; takeover/conflict checks use the same map; addresses checked against `existing` before the owned shortcut. Tests: interface deleted and recreated under the same name (gateway-only routes come back), outside address removal flushing routes, outside route delete. The single dump also removes the O(n²) EEXIST dumps (#3): a test/benchmark with a few thousand routes shows re-Apply after a crash is O(n).
+- [ ] 2 Takeover only on a configurator's first Apply (crash recovery); later, a proto-84 route with the same key that isn't ours → ErrConflict. Document: two configurators in one namespace must not claim the same route key; the second gets ErrConflict.
+- [ ] 3 O(n²) dumps on EEXIST (fixed by 1).
+- [ ] 4 Reject two routes with the same normalized key (IPv6 metric 0 ≡ 1024) before any change.
+- [ ] 5 Restore MTU/up only if the current value still equals what we applied.
+- [ ] 6 Same IP with a different prefix length → ErrConflict for both families; fix the comment.
+- [ ] 7 Drop `Route.Table` (per-space namespaces have their own main table; macOS has none); TP-018 adds rules+tables if needed (TP-018 Notes). Port doc: `block` is the firewall's job, not routes.
+- [ ] 8 Validate rejects zoned gateways and link-local IPv6 gateways without Interface; Apply on a closed configurator returns ErrClosed before validation.
+- [ ] 9 Deletes target exactly our route, using the kernel dump's entry (incl. metric).
+- [ ] 10 DefaultRoute skips linkdown/dead routes and errors when neither gateway nor interface is set (nexthop objects).
+- [ ] 11 Undo exactness: undoing a takeover restores the leftover; undoing a delete of an already-gone route doesn't re-add; a failed MTU undo keeps its record. Document IPv4 primary-address deletion side effects (promote_secondaries).
+- [ ] 12 Notes: TP-019 Metric != 0 unsupported on macOS too; TP-018 WatchDefaultRoute welcome in the port when needed (not now); route change is delete-then-add (brief fallback).
+- [ ] Tests: interface recreate, outside removal, IPv6 takeover, ctx cancellation midway, third-party MTU change, IPv4 different prefix, normalized duplicate keys, two configurators in one namespace.
+
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-10 backlog → in-progress — owner: agent-tp-007, branch: tp-007-netcfg-linux
 - 2026-10-10 in-progress → review — make lint, make test, make lab-gotest (netcfg) green
+- 2026-10-10 review → has-errors — review findings 1–12
