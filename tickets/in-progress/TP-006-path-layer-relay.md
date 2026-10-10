@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: L
 depends_on: [TP-003, TP-005]
 refs: [N2, DESIGN#data-plane]
-owner: ""
-branch: ""
+owner: "agent-tp-006"
+branch: "tp-006-path-layer-relay"
 ---
 
 ## Goal
@@ -35,3 +35,4 @@ Multi-relay chains and hop groups (TP-030, TP-031), direct paths (later).
 - 2026-10-10 created in backlog
 - 2026-10-10 docs (TP-003 review): destination routing — candidate first hops on the sender, a forwarding table per relay
 - 2026-10-10 docs (TP-003 review): notes on what the map reader does not guarantee
+- 2026-10-10 backlog → in-progress — owner: agent-tp-006, branch: tp-006-path-layer-relay
