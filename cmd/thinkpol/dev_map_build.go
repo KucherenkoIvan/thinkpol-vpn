@@ -1,0 +1,57 @@
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"os"
+	"time"
+
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/devmap"
+)
+
+func init() {
+	register(command{
+		path:    "dev map build",
+		args:    "[-keys dir] [-out file] [-version n] <spec.yaml>",
+		summary: "development tooling: build and sign a map from a spec (format: dev map spec)",
+		run:     runDevMapBuild,
+	})
+}
+
+func runDevMapBuild(_ context.Context, e env, args []string) error {
+	fs := flag.NewFlagSet("dev map build", flag.ContinueOnError)
+	dir := fs.String("keys", "keys", "key directory: space.key, space.pub and <name>.pub for every node")
+	out := fs.String("out", "map.bin", "file to write the signed map to")
+	version := fs.Uint64("version", 0, "map version (default: the current Unix time, so later builds are newer)")
+	if err := parseFlags(fs, e, args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return errUsage
+	}
+	if *version == 0 {
+		*version = uint64(time.Now().Unix())
+	}
+	data, err := os.ReadFile(fs.Arg(0))
+	if err != nil {
+		return err
+	}
+	spec, err := devmap.ParseSpec(fs.Arg(0), data, os.LookupEnv)
+	if err != nil {
+		return err
+	}
+	keys, err := devmap.LoadKeys(*dir, spec)
+	if err != nil {
+		return err
+	}
+	env, err := devmap.Build(spec, keys, *version, nil)
+	if err != nil {
+		return err
+	}
+	if err := devmap.WriteMap(*out, env); err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(e.stdout, "map version %d of space %v: %d nodes, %d bytes, written to %s\n", *version, keys.Space, len(spec.Nodes), len(env), *out)
+	return err
+}

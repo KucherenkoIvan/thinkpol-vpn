@@ -4,6 +4,7 @@ go 1.25.0
 
 require (
 	github.com/KucherenkoIvan/go-kernel v0.18.0
+	github.com/goccy/go-yaml v1.19.2
 	golang.org/x/crypto v0.55.0
 	golang.zx2c4.com/wireguard v0.0.0-20261006164505-2631ce99a06f
 	google.golang.org/protobuf v1.36.12
