@@ -101,3 +101,4 @@ Resolution (50975cf; Notes above describe the result):
 - 2026-10-11 review → has-errors — two reviewers: 4 blockers, 9 should-fix, nits (see Review findings)
 - 2026-10-11 has-errors → in-progress — owner: agent-tp-008, picking up the review findings
 - 2026-10-11 merged origin/rewrite (TP-053); review findings fixed; DESIGN.md "IPv6" (space-wide MTU, local floor, relays count oversize) and "Repository layout" (engine and agent, dependency direction); netcfg treats ENXIO as gone
+- 2026-10-11 in-progress → review — every finding checked; `make lint`, `make test`, `go test -race` on dataplane, router, wg, packettest, path and udp, and `make lab-gotest PKG=./internal/dataplane/...` (10 packages) pass
