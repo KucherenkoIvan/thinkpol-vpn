@@ -57,7 +57,7 @@ Two planes. The **data plane** moves packets on every node; the **control plane*
 | Transport | Shape | Notes |
 |---|---|---|
 | `udp` | raw datagrams | baseline; WireGuard-sized packets, trivially profiled |
-| `tls` | TLS 1.3 with a browser fingerprint (uTLS), probe fallback to a real site | the workhorse for client → entry |
+| `tls` | TLS 1.3 with a browser fingerprint (uTLS), probe fallback to a real site | the workhorse for client → entry; the server certificate comes from a pluggable certificate source (self-signed and pinned by the client first, ACME with a real domain later) |
 | `ws` | WebSocket over TLS | can sit behind a CDN, which hides the node's IP |
 | `reality`-style | borrows a real site's TLS handshake, no certificate of our own | later |
 | `obfs-udp` | obfuscated datagrams | for direct device-to-device paths, where TCP hole punching is impractical |
