@@ -44,7 +44,28 @@ Build everything with `CGO_ENABLED=0`.
 - No-cgo in `dataplane`/`netmap` is a rule in AGENTS.md and enforced only by building with `CGO_ENABLED=0`, not by a linter.
 - Rebased onto `rewrite` at 59dd3a6 (board-ops commits). The `.gitignore` conflict was resolved in favour of the new, shorter file, which already ignores `__pycache__/`.
 
+## Review findings
+Two reviewers (correctness, architecture); accepted by the orchestrator.
+
+Blocking:
+- [ ] B1. Command registry supports groups: space-separated command paths, longest-prefix dispatch, per-command argument synopsis, `hidden` flag, group usage when only a prefix is given (exit 2), `errUsage` prints the command's own synopsis; a test registers `t a` and `t b` from two files; AGENTS.md says a group is just a shared prefix
+- [ ] B2. `make lint` covers every OS: gofmt (failing if gofmt itself errors), then `go vet` + golangci-lint for GOOS darwin, linux, windows, plus an `android/arm64` build of dataplane and netmap minus the desktop-only packages; AGENTS.md conventions for `_linux.go` files and lab-only tests (`THINKPOL_LAB`)
+
+Should fix:
+- [ ] S1. Layout: DESIGN.md and the doc.go files give every ticket `area:` a home (dataplane subpackages, agent/supervisor and agent/worker, no code in the `shared` and `features` roots, admin panel handlers and page shell, GeoIP list tooling); tickets naming non-existent areas are fixed
+- [ ] S2. depguard: dataplane, netmap and agent never import features or shared; dataplane and netmap never import go-kernel; features never import dataplane or agent; shared never imports features; AGENTS.md: a new feature adds a rule denying other features; negative checks re-run and recorded in Notes
+- [ ] S3. Real no-cgo check (`make nocgo`, run by lint) over dataplane and netmap; `test-race` target; AGENTS.md rule scoped as in DESIGN (`cmd/thinkpol-tray` may use cgo); ticket Note no longer overstates enforcement
+- [ ] S4. Commands get an env {stdin, stdout, stderr}; `parseFlags` helper (FlagSet output to stderr, `-h` exits 0, parse errors are usage errors)
+- [ ] S5. AGENTS.md: cmd files are composition roots; features follow go-kernel's service structure (linked) with `ddd.DomainError`; the data plane is plain ports and adapters
+- [ ] S6. Protobuf home: `proto/` buf module, `proto/gen/` generated; DESIGN layout, AGENTS.md, `make proto`, pinned buf and protoc plugins in `make tools`, golangci exclusion; TP-003 and TP-022 don't invent `contracts/`
+- [ ] S7. Every tool pinned to an explicit version in the Makefile
+- [ ] S8. Privacy: no absolute local paths or host specs in AGENTS.md and tickets/ORCHESTRATION.md; worktrees at `../.worktrees/<repo>/<branch>`; AGENTS.md allows board ops and serial merges in the main checkout
+- [ ] S9. `.gitignore`: `/thinkpol`, `/thinkpol-tray`, `*.exe`; coverage narrowed to `/coverage.out` and `*.coverprofile`
+- [ ] S10. Second Ctrl-C falls through to the default; version test checks the prefix and trailing GOOS/GOARCH and covers the `dev` fallback; `slices.Sorted(maps.Keys(...))`; consistent write-error style; kernel.go names TP-034
+- [ ] S11. TP-002 Scope notes a `make lab` target (DESIGN and TP-024 refer to it)
+
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-10 backlog → in-progress — owner: agent-tp-001, branch: tp-001-skeleton
 - 2026-10-10 in-progress → review — all acceptance checked; `make lint` and `make test` pass
+- 2026-10-10 review → has-errors — 2 blocking and 11 should-fix findings from review
