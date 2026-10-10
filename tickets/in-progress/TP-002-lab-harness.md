@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: M
 depends_on: [TP-001]
 refs: [DESIGN#censor-lab]
-owner: ""
-branch: ""
+owner: "agent-tp-002"
+branch: "tp-002-lab-harness"
 ---
 
 ## Goal
@@ -35,3 +35,4 @@ Censor modules (TP-024 onwards).
 
 ## Log
 - 2026-10-10 created in backlog
+- 2026-10-10 backlog → in-progress — owner: agent-tp-002, branch: tp-002-lab-harness
