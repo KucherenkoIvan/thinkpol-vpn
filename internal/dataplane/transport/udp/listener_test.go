@@ -423,3 +423,103 @@ func TestNoncesNeverRepeat(t *testing.T) {
 		t.Fatalf("only %d datagrams captured", len(seen))
 	}
 }
+
+// TestNineRedialsThenQuietThenOldest replays every redial's first datagram
+// once the current sender has gone quiet: the oldest was evicted from the
+// slots, the others are remembered, and none gets back in.
+func TestNineRedialsThenQuietThenOldest(t *testing.T) {
+	f := newFixture(t)
+	var server transport.Link
+	var got <-chan []byte
+	for i := range 9 {
+		d := f.dial()
+		p := fmt.Sprint("dial ", i)
+		write(t, d, p)
+		if i == 0 {
+			server = f.accept()
+			got = reads(server)
+		}
+		expectPacket(t, got, []byte(p))
+	}
+	up, _ := f.tap.captured()
+	addr := server.RemoteAddr().String()
+
+	f.clock.advance(senderTakeover + time.Second)
+	f.tap.rebind()
+	before := f.listener.Counters()
+	for _, d := range up {
+		f.tap.inject(d)
+	}
+	waitFor(t, "every replay turned away", func() bool {
+		c := f.listener.Counters()
+		return c.StaleSender+c.Replayed-before.StaleSender-before.Replayed == uint64(len(up))
+	})
+	if c := f.listener.Counters(); c.StaleSender == before.StaleSender {
+		t.Error("the evicted oldest sender wasn't refused as stale")
+	}
+	expectNoPacket(t, got)
+	f.expectNoAccept()
+	if a := server.RemoteAddr().String(); a != addr {
+		t.Fatalf("a replay moved the link from %s to %s", addr, a)
+	}
+}
+
+// TestRefusedSenderStaysRefused shows a held datagram of an older sender
+// while the current one is active, then again once it has gone quiet: the
+// second time it is a replay.
+func TestRefusedSenderStaysRefused(t *testing.T) {
+	f := newFixture(t)
+	f.tap.hold(true)
+	older := f.dial()
+	write(t, older, "older")
+	waitFor(t, "the tap holding a datagram", func() bool { f.tap.mu.Lock(); defer f.tap.mu.Unlock(); return len(f.tap.held) == 1 })
+	held := f.tap.takeHeld()[0]
+	f.tap.hold(false)
+	newer := f.dial()
+	write(t, newer, "newer")
+	server := f.accept()
+	got := reads(server)
+	expectPacket(t, got, []byte("newer"))
+	addr := server.RemoteAddr().String()
+
+	f.tap.rebind()
+	f.tap.inject(held)
+	waitFor(t, "the older sender refused", func() bool { return f.listener.Counters().StaleSender == 1 })
+	f.clock.advance(senderTakeover + time.Second)
+	f.tap.inject(held)
+	waitFor(t, "the held datagram treated as a replay", func() bool { return f.listener.Counters().Replayed == 1 })
+	expectNoPacket(t, got)
+	f.expectNoAccept()
+	if a := server.RemoteAddr().String(); a != addr {
+		t.Fatalf("the held datagram moved the link from %s to %s", addr, a)
+	}
+}
+
+// TestRemovedSecretKeepsItsHistory takes a credential out of the table and
+// puts it back: what was captured before is still a replay.
+func TestRemovedSecretKeepsItsHistory(t *testing.T) {
+	f := newFixture(t)
+	client := f.dial()
+	write(t, client, "hello")
+	server := f.accept()
+	expectPacket(t, reads(server), []byte("hello"))
+	up, _ := f.tap.captured()
+
+	f.table.Set(nil)
+	waitFor(t, "the link revoked", func() bool { return errors.Is(server.WritePacket([]byte("x")), transport.ErrRevoked) })
+	f.table.Set([]transport.PeerLink{f.peer.PeerLink})
+	waitFor(t, "the credential back", func() bool {
+		f.listener.mu.Lock()
+		defer f.listener.mu.Unlock()
+		return f.listener.flows[string(f.peer.Verifier)] != nil
+	})
+	f.tap.rebind()
+	for _, d := range up {
+		f.tap.inject(d)
+	}
+	waitFor(t, "the replays recognised", func() bool { return f.listener.Counters().Replayed == uint64(len(up)) })
+	f.expectNoAccept()
+
+	write(t, client, "fresh")
+	expectPacket(t, reads(f.accept()), []byte("fresh"))
+}

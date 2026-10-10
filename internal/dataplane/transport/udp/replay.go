@@ -45,11 +45,18 @@ func (w *replayWindow) accept(counter uint64) bool {
 // window for each of the last few, and which one is current. A dialer that
 // redials, or a listener that restarts, is a new sender with counters from
 // zero and a later creation time.
+//
+// Every sender that ever showed up is remembered for as long as its
+// datagrams stay fresh (maxClockSkew): in a slot, with the counters seen,
+// even when it was refused; or, once evicted from the slots, by id alone,
+// refused outright. So a replay can't come back later as a "new" sender
+// once the current one goes quiet.
 type senders struct {
 	tick    uint64
 	entries [maxSenders]senderEntry
 	current *senderEntry
-	seen    time.Time // last datagram accepted from current
+	seen    time.Time              // last datagram accepted from current
+	evicted map[senderID]time.Time // when; refused for maxClockSkew
 }
 
 const (
@@ -60,9 +67,10 @@ const (
 )
 
 type senderEntry struct {
-	id     senderID
-	used   uint64 // tick of last use; 0 = empty
-	window replayWindow
+	id      senderID
+	used    uint64 // tick of last use; 0 = empty
+	refused bool   // turned away as older than the current sender
+	window  replayWindow
 }
 
 // verdict is what a receiver does with an authenticated, fresh datagram.
@@ -70,7 +78,7 @@ type verdict int
 
 const (
 	dropReplay    verdict = iota // a counter seen before or behind the window
-	dropStale                    // an unknown sender older than the current one
+	dropStale                    // a sender older than the current one, or forgotten
 	deliver                      // deliver, but don't move the reply address
 	deliverNewest                // deliver; the current sender's newest counter
 )
@@ -88,24 +96,31 @@ func (s *senders) admit(id senderID, counter uint64, now time.Time) verdict {
 			victim = c
 		}
 	}
-	quiet := s.current == nil || now.Sub(s.seen) > senderTakeover
-	takesOver := s.current == nil || id.created() > s.current.id.created() || quiet
 	if e == nil {
-		if !takesOver {
+		if s.wasEvicted(id, now) {
 			return dropStale
 		}
-		*victim = senderEntry{id: id}
+		if victim.used != 0 {
+			s.remember(victim.id, now)
+		}
+		*victim = senderEntry{id: id, refused: true}
 		e = victim
 	}
+	quiet := s.current == nil || now.Sub(s.seen) > senderTakeover
+	takesOver := s.current == nil || id.created() > s.current.id.created() || quiet
 	newest := !e.window.started || counter > e.window.highest
-	if !e.window.accept(counter) {
+	fresh := e.window.accept(counter) // recorded even if refused below
+	e.used = s.tick
+	if !fresh {
 		return dropReplay
 	}
-	e.used = s.tick
 	if e != s.current && takesOver {
-		s.current = e
+		s.current, e.refused = e, false
 	}
 	if e != s.current {
+		if e.refused {
+			return dropStale
+		}
 		return deliver
 	}
 	s.seen = now
@@ -113,4 +128,25 @@ func (s *senders) admit(id senderID, counter uint64, now time.Time) verdict {
 		return deliverNewest
 	}
 	return deliver
+}
+
+func (s *senders) wasEvicted(id senderID, now time.Time) bool {
+	at, ok := s.evicted[id]
+	if ok && now.Sub(at) > maxClockSkew {
+		delete(s.evicted, id)
+		return false
+	}
+	return ok
+}
+
+func (s *senders) remember(id senderID, now time.Time) {
+	if s.evicted == nil {
+		s.evicted = make(map[senderID]time.Time)
+	}
+	for old, at := range s.evicted {
+		if now.Sub(at) > maxClockSkew {
+			delete(s.evicted, old)
+		}
+	}
+	s.evicted[id] = now
 }

@@ -8,6 +8,7 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 )
@@ -32,8 +33,17 @@ type Listener struct {
 
 	mu      sync.Mutex
 	set     *peerSet
-	flows   map[string]*flow // by secret
-	scratch []byte           // packets are opened here, so camouflage sees datagrams intact
+	flows   map[string]*flow   // by secret
+	retired map[string]retiree // senders of flows gone from the table, by secret
+	scratch []byte             // packets are opened here, so camouflage sees datagrams intact
+}
+
+// retiree is a removed flow's sender history, kept while its datagrams can
+// still be fresh, so taking a secret out of the table and putting it back
+// doesn't reopen it to replays.
+type retiree struct {
+	senders *senders
+	at      time.Time
 }
 
 // flow is the listener's state for one credential. Its senders outlive the
@@ -42,7 +52,7 @@ type Listener struct {
 type flow struct {
 	entry   atomic.Pointer[peerEntry]
 	link    *serverLink // nil until a datagram opens one
-	senders senders
+	senders *senders
 }
 
 func newListener(t *Transport, pc net.PacketConn, peers transport.Peers, camouflage transport.Camouflage) *Listener {
@@ -54,6 +64,7 @@ func newListener(t *Transport, pc net.PacketConn, peers transport.Peers, camoufl
 		accept:  make(chan *serverLink, acceptQueue),
 		done:    make(chan struct{}),
 		flows:   make(map[string]*flow),
+		retired: make(map[string]retiree),
 		scratch: make([]byte, 0, innerSize+transport.MaxPacketSize),
 	}
 	links, changed := peers.Snapshot()
@@ -138,9 +149,15 @@ func (l *Listener) watchPeers(changed <-chan struct{}) {
 // reindex swaps in a new peer table. Links whose secret left it, or now
 // names someone else, close; the others pick up their new settings.
 func (l *Listener) reindex(links []transport.PeerLink) {
-	set := indexPeers(links, epochOf(l.t.now()))
+	now := l.t.now()
+	set := indexPeers(links, epochOf(now))
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	for key, r := range l.retired {
+		if now.Sub(r.at) > maxClockSkew {
+			delete(l.retired, key)
+		}
+	}
 	for key, f := range l.flows {
 		if e := set.bySecret[key]; e != nil && e.link.Peer == f.entry.Load().link.Peer {
 			f.entry.Store(e)
@@ -149,14 +166,20 @@ func (l *Listener) reindex(links []transport.PeerLink) {
 		if f.link != nil {
 			f.link.shut(transport.ErrRevoked)
 		}
+		l.retired[key] = retiree{senders: f.senders, at: now}
 		delete(l.flows, key)
 	}
 	for key, e := range set.bySecret {
-		if _, ok := l.flows[key]; !ok {
-			f := &flow{}
-			f.entry.Store(e)
-			l.flows[key] = f
+		if _, ok := l.flows[key]; ok {
+			continue
 		}
+		f := &flow{senders: &senders{}}
+		if r, ok := l.retired[key]; ok {
+			f.senders = r.senders
+			delete(l.retired, key)
+		}
+		f.entry.Store(e)
+		l.flows[key] = f
 	}
 	l.set = set
 }

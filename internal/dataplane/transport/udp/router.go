@@ -12,7 +12,9 @@ import (
 // authenticates the datagram and checks its timestamp, then the supervisor
 // forwards it untouched to the worker of the space it belongs to. The
 // worker's Listener decrypts again and filters replays; at our packet rates
-// the second decryption costs nothing worth saving.
+// the second decryption costs nothing worth saving. The Router keeps no
+// replay state: replays of the last five minutes reach the worker, which
+// drops them.
 type Router struct {
 	t     *Transport
 	peers transport.Peers

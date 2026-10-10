@@ -12,7 +12,9 @@
 // hour (Unix time / 3600), in clear and authenticated as the AEAD's
 // associated data; receivers accept the ids of the current hour and the two
 // next to it. It tells a shared listener which credential to check, and it
-// changes hourly so a link isn't one constant tag forever. Each direction of
+// changes hourly so a link isn't one constant tag forever. Rotation doesn't
+// unlink anything an observer can link by addresses and ports: a link's
+// datagrams share their 5-tuple across the change. Each direction of
 // a credential has one key (HKDF-SHA256) and every datagram a fresh random
 // 192-bit nonce: no session, epoch or nonce counter exists that a restart, a
 // redial or a table change could reuse.
@@ -32,7 +34,11 @@
 //     accepted once, and not if it is too far behind the newest;
 //   - an unknown sender older than the current one is dropped, unless the
 //     current one has been silent for 30 seconds (a dialer whose clock went
-//     back);
+//     back); a refused sender keeps its slot, with its counters recorded,
+//     so showing its datagrams again later is a replay;
+//   - a sender evicted from the slots is refused for five minutes, after
+//     which its datagrams are stale anyway; a credential taken out of the
+//     table keeps its senders for as long, should it come back;
 //   - only the current sender's newest counter moves the link's reply
 //     address.
 //
@@ -41,13 +47,19 @@
 // clocks must agree within five minutes.
 //
 // The guarantee: a datagram captured more than five minutes ago is dead
-// everywhere, and while a dialer is active no replay delivers a packet
-// twice or moves its link. What remains: the receiver's memory is per
-// process, so after a listener restart, a replay of datagrams sent in the
-// last five minutes opens a link (to the replayer's address, until the real
-// dialer's next datagram moves it back) and delivers each of their packets
-// once more; WireGuard drops them. An on-path attacker can also race a
-// datagram it holds ahead of the original, as with WireGuard's own roaming.
+// everywhere, and within one listener's lifetime a datagram it has seen,
+// or a sender it has seen, never delivers twice or moves a link. What
+// remains:
+//   - the receiver's memory is per process: after a listener restart, a
+//     replay of datagrams sent in the last five minutes opens a link (to
+//     the replayer's address, until the real dialer's next datagram moves
+//     it back) and delivers each of their packets once more; WireGuard
+//     drops them;
+//   - an on-path attacker can hold back a datagram the listener never saw
+//     and show it later: ahead of the original, or, from an older sender,
+//     once the current sender has been quiet for 30 seconds (that is what
+//     a dialer whose clock went back looks like); as with WireGuard's own
+//     roaming, it moves the link until the real dialer's next datagram.
 //
 // # Links
 //
@@ -60,5 +72,6 @@
 // authenticates it (tag and timestamp) and names its space; the supervisor
 // forwards it as is to that space's worker, whose Listener
 // (Transport.ListenOn over a net.PacketConn fed by the supervisor) does the
-// rest.
+// rest. The Router keeps no replay state, so it forwards replays of the last
+// five minutes; the worker drops them.
 package udp
