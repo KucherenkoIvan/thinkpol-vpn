@@ -2,13 +2,16 @@ package devmap
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"flag"
 	"fmt"
 	"maps"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
@@ -128,7 +131,11 @@ func TestSectionsHoldOnlyWhatTheirNodeNeeds(t *testing.T) {
 				t.Errorf("a link secret is held by %v, want exactly the link's two ends", h)
 			}
 		}
-		if want := len(f.spec.Links); len(holders) != want {
+		links, err := Links(f.spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := len(links); len(holders) != want {
 			t.Errorf("%d link secrets, want one per link: %d", len(holders), want)
 		}
 	}
@@ -219,6 +226,13 @@ func TestPlanNeedsEveryNodesKeys(t *testing.T) {
 	if _, _, err := Plan(f.spec, f.keys, 1, nil); err == nil || err.Error() != fmt.Sprintf("m0.yaml:%d:%d: device-b: has the same keys as device-a", pos.Line, pos.Col) {
 		t.Fatalf("err %v", err)
 	}
+	f = labFixture(t)
+	b := f.keys.Nodes["device-b"]
+	b.ID = f.keys.Nodes["device-a"].ID
+	f.keys.Nodes["device-b"] = b
+	if _, _, err := Plan(f.spec, f.keys, 1, nil); err == nil || err.Error() != fmt.Sprintf("m0.yaml:%d:%d: device-b: has the same node id as device-a", pos.Line, pos.Col) {
+		t.Fatalf("err %v", err)
+	}
 }
 
 func TestReferenceIsTheFormat(t *testing.T) {
@@ -227,5 +241,94 @@ func TestReferenceIsTheFormat(t *testing.T) {
 		if !bytes.Contains([]byte(Reference), []byte("\n"+field)) && !bytes.Contains([]byte(Reference), []byte(" "+field)) {
 			t.Errorf("reference spec lacks %s", field)
 		}
+	}
+}
+
+const fourServers = `nodes:
+  - {name: a, kind: device}
+  - {name: b, kind: device}
+  - {name: c, kind: device}
+  - name: s1
+    kind: server
+    endpoints: [udp://192.0.2.1:4500]
+  - name: s2
+    kind: server
+    endpoints: [udp://192.0.2.2:4500]
+`
+
+// Two paths crossing the same relays in opposite directions would let s1
+// and s2 hand a packet for b back and forth.
+func TestForwardingLoopsAreRefused(t *testing.T) {
+	spec := fourServers + "paths:\n  - [a, s1, s2, b]\n  - [c, s2, s1, b]\n"
+	f := newFixture(t, "spec.yaml", []byte(spec), nil)
+	_, _, err := Plan(f.spec, f.keys, 1, nil)
+	if err == nil || !strings.Contains(err.Error(), "spec.yaml:13:5: the paths on lines 12 and 13 make a forwarding loop toward b: s1 → s2 → s1") {
+		t.Fatalf("err %v", err)
+	}
+
+	// The same relays in the same direction, or toward different
+	// destinations, are fine.
+	for _, paths := range []string{
+		"  - [a, s1, s2, b]\n  - [c, s1, s2, b]\n",
+		"  - [a, s1, s2, b]\n  - [c, s2, s1, a]\n",
+		"  - [a, s1, s2, b]\n  - [a, s2, b]\n  - [c, s2, s1, a]\n",
+	} {
+		f := newFixture(t, "spec.yaml", []byte(fourServers+"paths:\n"+paths), nil)
+		if _, _, err := Plan(f.spec, f.keys, 1, nil); err != nil {
+			t.Errorf("%q: %v", paths, err)
+		}
+	}
+}
+
+func TestDevicesCantBeLinked(t *testing.T) {
+	f := newFixture(t, "spec.yaml", []byte(fourServers+"paths:\n  - [a, b]\n"), nil)
+	if _, _, err := Plan(f.spec, f.keys, 1, nil); err == nil || err.Error() != "spec.yaml:12:9: neither a nor b has endpoints, so neither can dial the other" {
+		t.Fatalf("err %v", err)
+	}
+}
+
+func TestVersions(t *testing.T) {
+	f := labFixture(t)
+	for _, v := range []uint64{0, netmap.MaxVersion + 1} {
+		if _, err := Build(f.spec, f.keys, v, nil); err == nil || !strings.Contains(err.Error(), fmt.Sprintf("map version %d: must be from 1 to %d", v, uint64(netmap.MaxVersion))) {
+			t.Errorf("version %d: %v", v, err)
+		}
+	}
+	if _, err := Build(f.spec, f.keys, netmap.MaxVersion, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Unix(1_800_000_000, 0)
+	future, err := Build(f.spec, f.keys, 1_900_000_000, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	past, err := Build(f.spec, f.keys, 5, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreign := labFixture(t)
+	foreign.keys.Signing = ed25519.NewKeyFromSeed(make([]byte, 32))
+	other, err := Build(foreign.spec, foreign.keys, 1_900_000_000, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trust := f.keys.Trust()
+	for name, tt := range map[string]struct {
+		previous []byte
+		want     uint64
+	}{
+		"no map":          {nil, 1_800_000_000},
+		"older map":       {past, 1_800_000_000},
+		"newer map":       {future, 1_900_000_001},
+		"another space's": {other, 1_800_000_000},
+		"not a map":       {[]byte("junk"), 1_800_000_000},
+	} {
+		if got := NextVersion(now, tt.previous, trust); got != tt.want {
+			t.Errorf("%s: %d, want %d", name, got, tt.want)
+		}
+	}
+	if !bytes.Equal(trust.SigningKey, f.space.Trust().SigningKey) || !bytes.Equal(trust.RecoveryKey, f.space.Trust().RecoveryKey) || trust.SpaceID != f.space.ID {
+		t.Fatal("Keys.Trust differs from the space's")
 	}
 }

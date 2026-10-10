@@ -1,12 +1,15 @@
 package main
 
 import (
+	"encoding/base64"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/devmap"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
 
 func mustRunCLI(t *testing.T, args ...string) string {
@@ -121,6 +124,9 @@ func TestDevKeygenNeverReplacesKeys(t *testing.T) {
 	if code, _, stderr := runCLI(t, "dev", "keygen", "node", "-out", keys, "b", "a"); code != 1 || !strings.Contains(stderr, "never replaced") {
 		t.Errorf("node again: exit %d, %s", code, stderr)
 	}
+	if code, _, stderr := runCLI(t, "dev", "keygen", "node", "-out", keys, "c", "c"); code != 1 || !strings.Contains(stderr, "named twice") {
+		t.Errorf("duplicate name: exit %d, %s", code, stderr)
+	}
 	if code, _, stderr := runCLI(t, "dev", "keygen", "node", "-out", keys, "c", "../d"); code != 1 || !strings.Contains(stderr, "node name") {
 		t.Errorf("bad name: exit %d, %s", code, stderr)
 	}
@@ -149,5 +155,107 @@ func TestDevCommandsAreLabelledAsDevelopmentTooling(t *testing.T) {
 		if !strings.Contains(stdout, path+"  ") {
 			t.Errorf("dev -h doesn't list %s:\n%s", path, stdout)
 		}
+	}
+}
+
+// No command prints a private key or a link secret, whatever it does,
+// errors included.
+func TestDevCommandsNeverPrintSecrets(t *testing.T) {
+	dir := t.TempDir()
+	keys, offline, mapFile := filepath.Join(dir, "keys"), filepath.Join(dir, "offline"), filepath.Join(dir, "map.bin")
+	t.Setenv("SERVER_1_IPV4", "192.0.2.10")
+	t.Setenv("SERVER_1_IPV6", "2001:db8::10")
+	var outputs []string
+	runAll := func(args ...string) {
+		_, stdout, stderr := runCLI(t, args...)
+		outputs = append(outputs, stdout, stderr)
+	}
+	nodes := []string{"server-1", "device-a", "device-b"}
+	runAll("dev", "keygen", "space", "-out", keys, "-recovery-out", offline)
+	runAll(append([]string{"dev", "keygen", "node", "-out", keys}, nodes...)...)
+	runAll("dev", "keygen", "space", "-out", keys)            // refused: exists
+	runAll("dev", "keygen", "node", "-out", keys, "device-a") // refused: exists
+	runAll("dev", "map", "build", "-keys", keys, "-out", mapFile, "../../lab/maps/m0.yaml")
+	runAll("dev", "map", "build", "-keys", keys, "-out", mapFile, "-version", "99999999999999999", "../../lab/maps/m0.yaml")
+	runAll("dev", "map", "inspect", "-keys", keys, mapFile)
+	for _, n := range nodes {
+		runAll("dev", "map", "inspect", "-keys", keys, "-node-key", filepath.Join(keys, n+".key"), mapFile)
+	}
+	runAll("dev", "map", "inspect", "-keys", keys, "-node-key", filepath.Join(keys, "server-1.pub"), mapFile) // a public file as a key
+	runAll("dev", "map", "spec")
+
+	space, err := devmap.ReadSpaceKeys(filepath.Join(keys, devmap.SpaceKeyFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, err := os.ReadFile(filepath.Join(offline, devmap.RecoveryKeyFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	recoverySeed := strings.Trim(strings.TrimSpace(string(rec[strings.LastIndex(string(rec), ":")+1:])), `"`)
+	secrets := map[string][]byte{"signing key": space.Signing.Seed()}
+	if secrets["recovery key"], err = hex.DecodeString(recoverySeed); err != nil {
+		t.Fatal(err)
+	}
+	m, err := netmap.Verify(readTestFile(t, mapFile), devmapTrust(t, keys))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range nodes {
+		k, err := devmap.ReadNodeKey(filepath.Join(keys, n+".key"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		secrets[n+" map key"], secrets[n+" WireGuard key"] = k.Map[:], k.WireGuard[:]
+		sec, err := m.Open(k.Map)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, in := range sec.Inbound {
+			secrets[n+" link secret from "+in.Peer.String()] = in.Credential
+		}
+	}
+	all := strings.ToLower(strings.Join(outputs, "\n"))
+	for what, b := range secrets {
+		h := hex.EncodeToString(b)
+		if strings.Contains(all, h[:16]) || strings.Contains(all, base64.StdEncoding.EncodeToString(b)[:16]) {
+			t.Errorf("an output shows the %s", what)
+		}
+	}
+}
+
+func readTestFile(t *testing.T, path string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func devmapTrust(t *testing.T, keys string) netmap.Trust {
+	t.Helper()
+	trust, err := devmap.ReadTrust(filepath.Join(keys, devmap.TrustFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return trust
+}
+
+func TestDevMapBuildVersions(t *testing.T) {
+	dir := t.TempDir()
+	keys, mapFile := filepath.Join(dir, "keys"), filepath.Join(dir, "map.bin")
+	t.Setenv("SERVER_1_IPV4", "192.0.2.10")
+	t.Setenv("SERVER_1_IPV6", "2001:db8::10")
+	mustRunCLI(t, "dev", "keygen", "space", "-out", keys)
+	mustRunCLI(t, "dev", "keygen", "node", "-out", keys, "server-1", "device-a", "device-b")
+	if code, _, stderr := runCLI(t, "dev", "map", "build", "-keys", keys, "-out", mapFile, "-version", "9007199254740993", "../../lab/maps/m0.yaml"); code != 1 || !strings.Contains(stderr, "map version 9007199254740993: must be from 1 to 9007199254740992") {
+		t.Fatalf("too high a version: exit %d, %s", code, stderr)
+	}
+	// A map from the future (another clock, a hand-set version) is followed
+	// by one past it, so nodes take the rebuild.
+	mustRunCLI(t, "dev", "map", "build", "-keys", keys, "-out", mapFile, "-version", "9000000000000", "../../lab/maps/m0.yaml")
+	if out := mustRunCLI(t, "dev", "map", "build", "-keys", keys, "-out", mapFile, "../../lab/maps/m0.yaml"); !strings.Contains(out, "map version 9000000000001 ") {
+		t.Fatalf("rebuild: %s", out)
 	}
 }

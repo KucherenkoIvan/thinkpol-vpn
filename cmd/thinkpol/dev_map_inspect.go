@@ -59,7 +59,7 @@ func runDevMapInspect(_ context.Context, e env, args []string) error {
 	if err != nil {
 		return fmt.Errorf("%s: %w", *nodeKey, err)
 	}
-	names, err := devmap.ReadNames(*dir, trust.SpaceID)
+	names, err := devmap.ReadNames(*dir)
 	if err != nil {
 		return err
 	}

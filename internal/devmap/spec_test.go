@@ -40,7 +40,10 @@ func TestSpecErrorsNameTheirLocation(t *testing.T) {
 		{"endpoint mapped", "nodes:\n  - name: a\n    kind: server\n    endpoints: ['udp://[::ffff:192.0.2.1]:4500']\n", []string{"not IPv4-mapped IPv6"}},
 		{"endpoint port 0", "nodes:\n  - name: a\n    kind: server\n    endpoints: [udp://192.0.2.1:0]\n", []string{"port 0"}},
 		{"endpoint twice", "nodes:\n  - name: a\n    kind: server\n    endpoints:\n      - udp://192.0.2.1:4500\n      - udp://192.0.2.1:4500\n", []string{"spec.yaml:6:9: a: endpoint udp://192.0.2.1:4500 is listed twice"}},
-		{"endpoint without listener", "nodes:\n  - name: a\n    kind: server\n    endpoints: [udp://192.0.2.1:4500]\n    listen: []\n", []string{"spec.yaml:2:5: a: endpoint udp://192.0.2.1:4500 has no udp listener"}},
+		{"endpoint without listener", "nodes:\n  - name: a\n    kind: server\n    endpoints: [udp://192.0.2.1:4500]\n    listen: []\n", []string{"spec.yaml:2:5: a: endpoint udp://192.0.2.1:4500 has no udp listener of its address family"}},
+		{"endpoint without listener of its family", "nodes:\n  - name: a\n    kind: server\n    endpoints: ['udp://[2001:db8::1]:4500']\n    listen: [udp://0.0.0.0:4500]\n", []string{"spec.yaml:5:14: a: endpoint udp://[2001:db8::1]:4500 has no udp listener of its address family"}},
+		{"device with endpoints", "nodes:\n  - name: a\n    kind: device\n    endpoints: [udp://192.0.2.1:4500]\n", []string{"spec.yaml:4:17: a: a device has no endpoints or listeners: it dials servers"}},
+		{"device with listen", "nodes:\n  - name: a\n    kind: device\n    listen: [udp://0.0.0.0:4500]\n", []string{"spec.yaml:4:14: a: a device has no endpoints"}},
 		{"unset variable", "nodes:\n  - name: a\n    kind: server\n    endpoints: ['udp://${NOPE}:4500']\n", []string{"spec.yaml:4:17: ${NOPE} is not set"}},
 		{"malformed variable", "nodes:\n  - name: a\n    kind: server\n    endpoints: ['udp://${1X}:4500']\n", []string{"spec.yaml:4:17: malformed variable"}},
 		{"path of one", nodes + "paths:\n  - [d]\n", []string{"spec.yaml:8:5: a path needs at least two nodes"}},
@@ -50,7 +53,6 @@ func TestSpecErrorsNameTheirLocation(t *testing.T) {
 		{"device relays", nodes + "  - name: e\n    kind: device\npaths:\n  - [s, d, e]\n", []string{"spec.yaml:10:9: d is a device and can't relay"}},
 		{"same path twice", nodes + "paths:\n  - [d, s]\n  - [d, s]\n", []string{"spec.yaml:9:5: same path as line 8"}},
 		{"same path reversed", nodes + "paths:\n  - [d, s]\n  - [s, d]\n", []string{"spec.yaml:9:5: same path as line 8, reversed"}},
-		{"nobody can dial", nodes + "  - name: e\n    kind: device\npaths:\n  - [d, e]\n", []string{"spec.yaml:10:9: neither d nor e has endpoints"}},
 		{"several errors at once", "nodes:\n  - name: a\n    kind: phone\n  - name: b\n", []string{"spec.yaml:3:11: a: kind", "spec.yaml:4:5: b: kind is missing"}},
 	}
 	for _, tt := range tests {
@@ -65,6 +67,14 @@ func TestSpecErrorsNameTheirLocation(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// An unset variable is one error, not one more for the value it leaves.
+func TestUnsetVariableIsOneError(t *testing.T) {
+	_, err := ParseSpec("spec.yaml", []byte("nodes:\n  - name: a\n    kind: ${KIND}\n"), nil)
+	if err == nil || err.Error() != "spec.yaml:3:11: ${KIND} is not set" {
+		t.Fatalf("err %v", err)
 	}
 }
 
@@ -134,9 +144,10 @@ paths:
 	}
 	// dev has no endpoints and dials both servers; of the two servers, the
 	// one declared first (s2) dials.
+	links, err := Links(s)
 	want := []Link{{From: 0, To: 2}, {From: 0, To: 1}, {From: 1, To: 2}}
-	if !slices.Equal(s.Links, want) {
-		t.Fatalf("links %v, want %v", s.Links, want)
+	if err != nil || !slices.Equal(links, want) {
+		t.Fatalf("links %v, %v; want %v", links, err, want)
 	}
 }
 
@@ -169,19 +180,16 @@ nodes:
 	}
 }
 
-func TestDefaultIPv6NetworkIsStablePerSpace(t *testing.T) {
+// Without space.ipv6 the map uses the space's own random /48.
+func TestIPv6NetworkComesFromTheSpaceKeys(t *testing.T) {
 	f := labFixture(t)
-	_, a, _ := f.sections(t, 1)
-	_, b, _ := f.sections(t, 2)
-	p := DefaultIPv6Network(f.space.ID)
-	if a["server-1"].Node.IPv6Network != p || b["server-1"].Node.IPv6Network != p || !ula.Contains(p.Addr()) || p.Bits() != 48 {
-		t.Fatalf("networks %v and %v, want %v", a["server-1"].Node.IPv6Network, b["server-1"].Node.IPv6Network, p)
+	_, secs, _ := f.sections(t, 1)
+	if got := secs["server-1"].Node.IPv6Network; got != f.space.IPv6Network || !f.space.IPv6Network.Contains(secs["device-a"].Node.IPv6) {
+		t.Fatalf("network %v, want %v", got, f.space.IPv6Network)
 	}
-	other, err := NewSpaceKeys(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if DefaultIPv6Network(other.ID) == p {
-		t.Fatal("two spaces share a /48")
+	f = referenceFixture(t)
+	_, secs, _ = f.sections(t, 1)
+	if got := secs["server-1"].Node.IPv6Network; got != netip.MustParsePrefix("fd12:3456:789a::/48") {
+		t.Fatalf("the spec's network is %v", got)
 	}
 }

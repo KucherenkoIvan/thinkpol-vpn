@@ -141,3 +141,38 @@ func parseHex[T ~[8]byte | ~[16]byte | ~[32]byte](what, s string) (T, error) {
 func ParseNodePrivateKey(s string) (NodePrivateKey, error) {
 	return parseHex[NodePrivateKey]("node private key", s)
 }
+
+// WireGuardPrivateKey is a node's WireGuard (Curve25519) private key. Like
+// its map key, it is generated on the node and never copied off it.
+type WireGuardPrivateKey [32]byte
+
+// GenerateWireGuardKey returns a new random WireGuard private key, clamped
+// as `wg genkey` does.
+func GenerateWireGuardKey() WireGuardPrivateKey {
+	var k WireGuardPrivateKey
+	_, _ = rand.Read(k[:])
+	k[0] &= 248
+	k[31] = k[31]&127 | 64
+	return k
+}
+
+// Public returns the WireGuard public key of k.
+func (k WireGuardPrivateKey) Public() WireGuardKey {
+	pub, err := curve25519.X25519(k[:], curve25519.Basepoint)
+	if err != nil {
+		// X25519 with the base point never yields the all-zero output.
+		panic(fmt.Sprintf("netmap: deriving a WireGuard public key: %v", err))
+	}
+	return WireGuardKey(pub)
+}
+
+// String keeps the key out of logs and error messages.
+func (WireGuardPrivateKey) String() string { return "WireGuardPrivateKey(redacted)" }
+
+// GoString keeps the key out of %#v.
+func (k WireGuardPrivateKey) GoString() string { return k.String() }
+
+// ParseWireGuardPrivateKey parses a hex WireGuard private key.
+func ParseWireGuardPrivateKey(s string) (WireGuardPrivateKey, error) {
+	return parseHex[WireGuardPrivateKey]("WireGuard private key", s)
+}

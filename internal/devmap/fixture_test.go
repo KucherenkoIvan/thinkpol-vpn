@@ -12,7 +12,7 @@ import (
 type fixture struct {
 	spec  *Spec
 	space SpaceKeys
-	nodes map[string]NodeKey
+	nodes map[string]NodeKeys
 	keys  Keys
 }
 
@@ -27,10 +27,10 @@ func newFixture(t *testing.T, file string, data []byte, vars map[string]string) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := fixture{spec: s, space: space, nodes: map[string]NodeKey{}}
-	f.keys = Keys{Space: space.ID, Signing: space.Signing, RecoveryKey: space.Trust().RecoveryKey, Nodes: map[string]NodePublic{}}
+	f := fixture{spec: s, space: space, nodes: map[string]NodeKeys{}}
+	f.keys = Keys{Space: space.ID, IPv6Network: space.IPv6Network, Signing: space.Signing, RecoveryKey: space.Trust().RecoveryKey, Nodes: map[string]NodePublic{}}
 	for _, n := range s.Nodes {
-		k, err := NewNodeKey(random)
+		k, err := NewNodeKeys(random)
 		if err != nil {
 			t.Fatal(err)
 		}

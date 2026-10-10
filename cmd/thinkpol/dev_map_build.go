@@ -23,15 +23,12 @@ func runDevMapBuild(_ context.Context, e env, args []string) error {
 	fs := flag.NewFlagSet("dev map build", flag.ContinueOnError)
 	dir := fs.String("keys", "keys", "key directory: space.key, space.pub and <name>.pub for every node")
 	out := fs.String("out", "map.bin", "file to write the signed map to")
-	version := fs.Uint64("version", 0, "map version (default: the current Unix time, so later builds are newer)")
+	version := fs.Uint64("version", 0, "map version (default: the current Unix time, or one past the map in -out if that is higher)")
 	if err := parseFlags(fs, e, args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
 		return errUsage
-	}
-	if *version == 0 {
-		*version = uint64(time.Now().Unix())
 	}
 	data, err := os.ReadFile(fs.Arg(0))
 	if err != nil {
@@ -44,6 +41,10 @@ func runDevMapBuild(_ context.Context, e env, args []string) error {
 	keys, err := devmap.LoadKeys(*dir, spec)
 	if err != nil {
 		return err
+	}
+	if *version == 0 {
+		previous, _ := os.ReadFile(*out) // a missing or foreign map just doesn't count
+		*version = devmap.NextVersion(time.Now(), previous, keys.Trust())
 	}
 	env, err := devmap.Build(spec, keys, *version, nil)
 	if err != nil {

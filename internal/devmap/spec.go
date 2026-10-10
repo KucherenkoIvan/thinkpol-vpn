@@ -31,8 +31,6 @@ type Spec struct {
 	IPv6Network netip.Prefix
 	Nodes       []Node
 	Paths       []Path
-	// Links are the adjacent pairs the paths need, in order of first use.
-	Links []Link
 }
 
 // Node is one node of the spec.
@@ -61,13 +59,12 @@ func (a Address) String() string { return a.Transport + "://" + a.AddrPort.Strin
 // Path is a way between two nodes: its ends are WireGuard peers of each
 // other, and the nodes in between relay.
 type Path struct {
-	// Nodes are indexes into Spec.Nodes, from one end to the other.
+	// Nodes are indexes into Spec.Nodes, from one end to the other; Hops
+	// are where each was written.
 	Nodes []int
+	Hops  []Pos
 	Pos   Pos
 }
-
-// Link is a pair of adjacent nodes: From dials To.
-type Link struct{ From, To int }
 
 // Pos is a 1-based line and column in a spec; zero when unknown.
 type Pos struct{ Line, Col int }
@@ -330,9 +327,10 @@ func (c *checker) node(s *Spec, rn rawNode, ipv4s, ipv6s map[netip.Addr]string) 
 		}
 	}
 
-	switch kind, _ := c.value(rn.Kind); {
+	switch kind, ok := c.value(rn.Kind); {
 	case !rn.Kind.set():
 		c.errorf(rn.pos, "%s: kind is missing (server or device)", label)
+	case !ok:
 	case kind == "server":
 		n.Kind = netmap.NodeServer
 	case kind == "device":
@@ -376,19 +374,35 @@ func (c *checker) node(s *Spec, rn rawNode, ipv4s, ipv6s map[netip.Addr]string) 
 		}
 	}
 
-	n.Endpoints = c.addresses(label, "endpoint", rn.Endpoints, true)
-	if rn.Listen != nil {
-		n.Listeners = c.addresses(label, "listener", rn.Listen, false)
-		for _, e := range n.Endpoints {
-			if !slices.ContainsFunc(n.Listeners, func(l Address) bool { return l.Transport == e.Transport }) {
-				c.errorf(rn.pos, "%s: endpoint %v has no %s listener", label, e, e.Transport)
-			}
+	if n.Kind == netmap.NodeDevice && (rn.Endpoints != nil || rn.Listen != nil) {
+		at := rn.pos
+		if len(rn.Endpoints) > 0 {
+			at = rn.Endpoints[0].pos
+		} else if len(rn.Listen) > 0 {
+			at = rn.Listen[0].pos
 		}
-	} else {
+		c.errorf(at, "%s: a device has no endpoints or listeners: it dials servers", label)
+		return n
+	}
+	n.Endpoints = c.addresses(label, "endpoint", rn.Endpoints, true)
+	if rn.Listen == nil {
 		n.Listeners = listenersFor(n.Endpoints)
+		return n
+	}
+	n.Listeners = c.addresses(label, "listener", rn.Listen, false)
+	at := rn.pos
+	if len(rn.Listen) > 0 {
+		at = rn.Listen[0].pos
+	}
+	for _, e := range n.Endpoints {
+		if !slices.ContainsFunc(n.Listeners, func(l Address) bool { return l.Transport == e.Transport && is6(l) == is6(e) }) {
+			c.errorf(at, "%s: endpoint %v has no %s listener of its address family", label, e, e.Transport)
+		}
 	}
 	return n
 }
+
+func is6(a Address) bool { return a.AddrPort.Addr().Is6() }
 
 // listenersFor derives a node's listeners from its endpoints: one per
 // transport, port and address family, bound to every address of the family.
@@ -396,7 +410,7 @@ func listenersFor(endpoints []Address) []Address {
 	var ls []Address
 	for _, e := range endpoints {
 		every := netip.IPv4Unspecified()
-		if e.AddrPort.Addr().Is6() {
+		if is6(e) {
 			every = netip.IPv6Unspecified()
 		}
 		l := Address{e.Transport, netip.AddrPortFrom(every, e.AddrPort.Port())}
@@ -453,7 +467,6 @@ func parseAddress(text string) (Address, error) {
 
 func (c *checker) paths(s *Spec, raw []rawPath, byName map[string]int) {
 	seen := map[string]Pos{}
-	linked := map[[2]int]bool{}
 	for _, rp := range raw {
 		if len(rp.hops) < 2 {
 			c.errorf(rp.pos, "a path needs at least two nodes, its two ends")
@@ -475,6 +488,7 @@ func (c *checker) paths(s *Spec, raw []rawPath, byName map[string]int) {
 				ok = false
 			default:
 				p.Nodes = append(p.Nodes, i)
+				p.Hops = append(p.Hops, h.pos)
 			}
 		}
 		if !ok {
@@ -500,33 +514,6 @@ func (c *checker) paths(s *Spec, raw []rawPath, byName map[string]int) {
 			continue
 		}
 		seen[key] = rp.pos
-		for k := 1; k < len(p.Nodes); k++ {
-			x, y := p.Nodes[k-1], p.Nodes[k]
-			if linked[[2]int{x, y}] || linked[[2]int{y, x}] {
-				continue
-			}
-			l, err := dialer(s.Nodes, x, y)
-			if err != nil {
-				c.errorf(rp.hops[k].pos, "%v", err)
-				continue
-			}
-			linked[[2]int{x, y}] = true
-			s.Links = append(s.Links, l)
-		}
 		s.Paths = append(s.Paths, p)
 	}
-}
-
-// dialer decides which of two adjacent nodes dials the other: the one
-// without endpoints dials the one with; when both have endpoints, the one
-// declared first dials.
-func dialer(nodes []Node, x, y int) (Link, error) {
-	xe, ye := len(nodes[x].Endpoints) > 0, len(nodes[y].Endpoints) > 0
-	switch {
-	case ye && (!xe || x < y):
-		return Link{From: x, To: y}, nil
-	case xe:
-		return Link{From: y, To: x}, nil
-	}
-	return Link{}, fmt.Errorf("neither %s nor %s has endpoints, so neither can dial the other", nodes[x].Name, nodes[y].Name)
 }
