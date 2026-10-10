@@ -57,7 +57,11 @@ type Config struct {
 type Interface struct {
 	Name string
 	// Addrs are the interface's addresses with their on-link prefix
-	// length, e.g. 100.64.0.7/10 and fd12:3456:789a::7/48.
+	// length, e.g. 100.64.0.7/10 and fd12:3456:789a::7/48. On Linux,
+	// removing an IPv4 address that is the primary one of its subnet also
+	// removes the subnet's secondary addresses, unless the interface has
+	// promote_secondaries set; netcfg only adds addresses to interfaces
+	// it is given, so keep foreign addresses out of an owned subnet.
 	Addrs []netip.Prefix
 	// MTU is set when non-zero; zero leaves the interface's MTU alone.
 	MTU int
@@ -65,8 +69,10 @@ type Interface struct {
 	Up bool
 }
 
-// Route is one route. Its identity, within a table, is its destination and
-// metric (as in the OS routing table); its gateway and interface are values.
+// Route is one route in the main routing table. Its identity is its
+// destination and metric (as in the OS routing table); its gateway and
+// interface are values. Blocking traffic is the firewall's job, not a route
+// type's.
 type Route struct {
 	// Dst is the destination prefix, masked: 0.0.0.0/0 and ::/0 are the
 	// default routes of each family.
@@ -77,9 +83,8 @@ type Route struct {
 	// Interface is the outgoing interface. Required for an on-link route;
 	// optional with a Gateway (the OS picks the interface that reaches it).
 	Interface string
-	// Table is the routing table, 0 for the main one. Only Linux has others.
-	Table int
-	// Metric orders routes to the same Dst, lower first; 0 is the OS default.
+	// Metric orders routes to the same Dst, lower first; 0 is the OS
+	// default (1024 for IPv6 on Linux, so 0 and 1024 are the same route).
 	Metric int
 }
 
@@ -93,9 +98,6 @@ func (r Route) String() string {
 	}
 	if r.Interface != "" {
 		s += " dev " + r.Interface
-	}
-	if r.Table != 0 {
-		s += fmt.Sprintf(" table %d", r.Table)
 	}
 	if r.Metric != 0 {
 		s += fmt.Sprintf(" metric %d", r.Metric)
@@ -140,8 +142,8 @@ func (c Config) Validate() error {
 		}
 	}
 	type key struct {
-		table, metric int
-		dst           netip.Prefix
+		metric int
+		dst    netip.Prefix
 	}
 	routes := make(map[key]bool, len(c.Routes))
 	for _, r := range c.Routes {
@@ -152,16 +154,19 @@ func (c Config) Validate() error {
 			if FamilyOf(r.Gateway) != r.Family() || r.Gateway.Is4In6() {
 				return fmt.Errorf("netcfg: route %v: gateway is not in the destination's family", r)
 			}
-			if r.Gateway.IsUnspecified() {
-				return fmt.Errorf("netcfg: route %v: unspecified gateway", r)
+			if r.Gateway.IsUnspecified() || r.Gateway.Zone() != "" {
+				return fmt.Errorf("netcfg: route %v: unspecified or zoned gateway", r)
+			}
+			if r.Gateway.Is6() && r.Gateway.IsLinkLocalUnicast() && r.Interface == "" {
+				return fmt.Errorf("netcfg: route %v: a link-local gateway needs an interface", r)
 			}
 		} else if r.Interface == "" {
 			return fmt.Errorf("netcfg: route %v: needs a gateway or an interface", r)
 		}
-		if r.Table < 0 || r.Metric < 0 {
-			return fmt.Errorf("netcfg: route %v: negative table or metric", r)
+		if r.Metric < 0 {
+			return fmt.Errorf("netcfg: route %v: negative metric", r)
 		}
-		k := key{r.Table, r.Metric, r.Dst}
+		k := key{r.Metric, r.Dst}
 		if routes[k] {
 			return fmt.Errorf("netcfg: route %v listed twice", r)
 		}
@@ -173,30 +178,35 @@ func (c Config) Validate() error {
 // Configurator applies a Config to the OS and owns what it adds.
 //
 // The contract, on every OS:
-//   - Apply converges to cfg: it adds what is missing, changes what differs
-//     and removes what it added earlier that cfg no longer has. Re-applying
-//     the same config changes nothing.
-//   - Apply is all or nothing: when it fails, everything it changed is
-//     undone, so the system is as before the call (a failed first Apply
-//     leaves nothing behind).
+//   - Apply converges the OS to cfg, comparing against what is actually
+//     there, not against what it did before: it adds what is missing
+//     (including owned state someone else removed, or that went with a
+//     recreated interface), changes what differs and removes what it added
+//     earlier that cfg no longer has. Re-applying the same config changes
+//     nothing.
+//   - Apply is all or nothing: when it fails (or ctx ends), everything it
+//     changed is undone, so the system is as before the call (a failed
+//     first Apply leaves nothing behind).
 //   - Only owned state is ever changed or removed. An address that already
-//     existed is used but not owned; a route that would replace a foreign
-//     one fails with ErrConflict. MTU and link state changes are recorded
-//     and restored.
+//     exists is used but not owned; the same address with another prefix
+//     length, or a route with the identity of someone else's, fails with
+//     ErrConflict. MTU and link state changes are restored, unless someone
+//     changed them again since.
+//   - Routes added by a configurator that died without Close (a crash) are
+//     taken over by the first Apply of a new one, if no other configurator
+//     is alive in the same network namespace. Two live configurators in one
+//     namespace must not claim the same route: the second gets ErrConflict.
 //   - Close removes every owned address and route and restores every
-//     interface it changed; something already gone (an interface deleted
-//     by its owner) counts as removed. Close is idempotent; if it fails,
-//     what's left stays recorded and calling Close again retries it.
-//   - A route that is already there and was added by netcfg (left by a
-//     process that crashed) is taken over. So two live configurators in one
-//     network namespace must never claim the same route (table, Dst, Metric).
+//     interface it changed; something already gone (an interface deleted by
+//     its owner) counts as removed. Close is idempotent; if it fails, what's
+//     left stays recorded and calling Close again retries it.
 //
 // Methods are safe for concurrent use.
 type Configurator interface {
 	Apply(ctx context.Context, cfg Config) error
-	// DefaultRoute returns the default route of the family that this
-	// configurator doesn't own, preferring the lowest metric: the physical
-	// gateway that direct traffic and entry endpoints are routed through.
+	// DefaultRoute returns the usable default route of the family that no
+	// configurator owns, preferring the lowest metric: the physical gateway
+	// that direct traffic and entry endpoints are routed through.
 	DefaultRoute(ctx context.Context, f Family) (Route, error)
 	Close() error
 }

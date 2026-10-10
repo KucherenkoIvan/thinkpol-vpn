@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -223,7 +224,8 @@ func (n *testNS) changes(t *testing.T, f func()) int {
 	}
 }
 
-// fullConfig exercises everything the port has, dual-stack.
+// fullConfig exercises everything the port has, dual-stack. Routes print
+// with their table so a route outside the main one would show.
 func fullConfig() netcfg.Config {
 	return netcfg.Config{
 		Interfaces: []netcfg.Interface{{
@@ -239,8 +241,8 @@ func fullConfig() netcfg.Config {
 			{Dst: pfx("fd79::/48"), Gateway: addr("fd12:3456:789a::1"), Interface: "ovl0"},
 			{Dst: pfx("0.0.0.0/0"), Gateway: addr("100.64.0.1"), Interface: "ovl0"},
 			{Dst: pfx("::/0"), Gateway: addr("fd12:3456:789a::1")},
-			{Dst: pfx("10.80.0.0/16"), Gateway: addr("100.64.0.1"), Table: 100},
-			{Dst: pfx("fd80::/48"), Interface: "ovl0", Table: 100, Metric: 7},
+			{Dst: pfx("10.80.0.0/16"), Gateway: addr("100.64.0.1"), Metric: 7},
+			{Dst: pfx("fd80::/48"), Interface: "ovl0", Metric: 7},
 		},
 	}
 }
@@ -252,8 +254,8 @@ var fullConfigRoutes = []string{
 	"254 fd79::/48 via fd12:3456:789a::1 dev ovl0 metric 1024",
 	"254 default via 100.64.0.1 dev ovl0 metric 0",
 	"254 default via fd12:3456:789a::1 dev ovl0 metric 1024",
-	"100 10.80.0.0/16 via 100.64.0.1 dev ovl0 metric 0",
-	"100 fd80::/48 dev ovl0 metric 7",
+	"254 10.80.0.0/16 via 100.64.0.1 dev ovl0 metric 7",
+	"254 fd80::/48 dev ovl0 metric 7",
 }
 
 func TestApplyThenCloseRestoresEverything(t *testing.T) {
@@ -305,8 +307,8 @@ func TestApplyThenCloseRestoresEverything(t *testing.T) {
 	if err := c.Close(); err != nil {
 		t.Errorf("second Close: %v", err)
 	}
-	if err := c.Apply(context.Background(), fullConfig()); !errors.Is(err, netcfg.ErrClosed) {
-		t.Errorf("Apply after Close: %v, want ErrClosed", err)
+	if err := c.Apply(context.Background(), netcfg.Config{Interfaces: []netcfg.Interface{{}}}); !errors.Is(err, netcfg.ErrClosed) {
+		t.Errorf("Apply after Close: %v, want ErrClosed (before validation)", err)
 	}
 }
 
@@ -451,11 +453,22 @@ func TestForeignStateIsNeverTouched(t *testing.T) {
 	for _, r := range []netcfg.Route{
 		{Dst: pfx("10.91.0.0/16"), Gateway: addr("100.64.0.1")},
 		{Dst: pfx("fd91::/48"), Interface: "ovl0"},
+		{Dst: pfx("fd91::/48"), Gateway: addr("fd12:3456:789a::1")},
 	} {
 		bad := cfg
 		bad.Routes = append(slices.Clone(cfg.Routes), r)
 		if err := c.Apply(context.Background(), bad); !errors.Is(err, netcfg.ErrConflict) {
 			t.Errorf("Apply over a foreign %v: %v, want ErrConflict", r, err)
+		}
+		requireSame(t, "namespace after the conflict", applied, snapshot(t, n.h))
+	}
+	// The kernel holds one prefix length per address: wanting another one
+	// would mean changing someone else's address.
+	for _, p := range []netip.Prefix{pfx("100.64.0.7/24"), pfx("fd12:3456:789a::99/64")} {
+		bad := cfg
+		bad.Interfaces = []netcfg.Interface{{Name: "ovl0", Addrs: []netip.Prefix{p}}}
+		if err := c.Apply(context.Background(), bad); !errors.Is(err, netcfg.ErrConflict) {
+			t.Errorf("Apply with %v over a foreign address: %v, want ErrConflict", p, err)
 		}
 		requireSame(t, "namespace after the conflict", applied, snapshot(t, n.h))
 	}
@@ -466,31 +479,280 @@ func TestForeignStateIsNeverTouched(t *testing.T) {
 	requireSame(t, "namespace after Close", before, snapshot(t, n.h))
 }
 
+// TestMain doubles as a process that applies a config and dies without
+// Close, for the crash tests.
+func TestMain(m *testing.M) {
+	if path := os.Getenv("NETCFG_CRASH_NS"); path != "" {
+		c, err := netcfg.NewInNamespace(path)
+		if err == nil {
+			err = c.Apply(context.Background(), crashConfigs[os.Getenv("NETCFG_CRASH_CONFIG")]())
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
+
+var crashConfigs = map[string]func() netcfg.Config{
+	"full": fullConfig,
+	"many": func() netcfg.Config { return manyRoutes(manyRoutesCount) },
+}
+
+// crash applies a config from another process that exits without Close.
+func (n *testNS) crash(t *testing.T, config string) {
+	t.Helper()
+	cmd := exec.Command(os.Args[0])
+	cmd.Env = append(os.Environ(), "NETCFG_CRASH_NS="+n.path, "NETCFG_CRASH_CONFIG="+config)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("crashing process: %v: %s", err, out)
+	}
+}
+
+const manyRoutesCount = 4000
+
+// manyRoutes is a route-table-sized config: half IPv4 on-link /32s, half
+// IPv6 /128s via a gateway.
+func manyRoutes(count int) netcfg.Config {
+	cfg := netcfg.Config{Interfaces: []netcfg.Interface{{
+		Name:  "ovl0",
+		Addrs: []netip.Prefix{pfx("100.64.0.7/10"), pfx("fd12:3456:789a::7/48")},
+		Up:    true,
+	}}}
+	for i := range count / 2 {
+		v4 := netip.AddrFrom4([4]byte{10, 200, byte(i >> 8), byte(i)})
+		v6 := netip.AddrFrom16([16]byte{0xfd, 0x99, 14: byte(i >> 8), 15: byte(i)})
+		cfg.Routes = append(cfg.Routes,
+			netcfg.Route{Dst: netip.PrefixFrom(v4, 32), Interface: "ovl0"},
+			netcfg.Route{Dst: netip.PrefixFrom(v6, 128), Gateway: addr("fd12:3456:789a::1")},
+		)
+	}
+	return cfg
+}
+
 func TestTakesOverRoutesLeftByACrash(t *testing.T) {
 	n := newTestNS(t)
 	n.dummy(t, "ovl0")
-	crashed := n.configurator(t)
-	if err := crashed.Apply(context.Background(), fullConfig()); err != nil {
-		t.Fatal(err)
+	n.crash(t, "full")
+	leftovers := snapshot(t, n.h)
+	requireSame(t, "routes left by the crash", fullConfigRoutes, ownRoutes(t, n.h))
+
+	// The new run moves an IPv6 route to another gateway. Its first try
+	// fails: undoing it puts the leftovers back as they were.
+	cfg := fullConfig()
+	for i, r := range cfg.Routes {
+		if r.Dst == pfx("fd79::/48") {
+			cfg.Routes[i].Gateway = addr("fd12:3456:789a::2")
+		}
 	}
-	// The process died: its configurator never closes. A new one applies
-	// the same config over the leftovers: the routes carry our protocol, so
-	// it takes them over and removes them on Close. The addresses can't be
-	// told from someone else's, so they are used but left alone (a TUN takes
-	// them along when it goes; routes via a physical interface stay, which
-	// is why routes are tagged).
 	c := n.configurator(t)
-	if err := c.Apply(context.Background(), fullConfig()); err != nil {
+	bad := cfg
+	bad.Routes = append(slices.Clone(cfg.Routes), badRoute)
+	if err := c.Apply(context.Background(), bad); err == nil {
+		t.Fatal("Apply with an unreachable gateway succeeded")
+	}
+	requireSame(t, "namespace after the failed takeover", leftovers, snapshot(t, n.h))
+
+	if err := c.Apply(context.Background(), cfg); err != nil {
 		t.Fatal(err)
 	}
-	requireSame(t, "routes", fullConfigRoutes, ownRoutes(t, n.h))
+	want := slices.Clone(fullConfigRoutes)
+	want[slices.Index(want, "254 fd79::/48 via fd12:3456:789a::1 dev ovl0 metric 1024")] = "254 fd79::/48 via fd12:3456:789a::2 dev ovl0 metric 1024"
+	requireSame(t, "routes after the takeover", want, ownRoutes(t, n.h))
 	if err := c.Close(); err != nil {
 		t.Fatal(err)
 	}
 	requireSame(t, "routes after Close", nil, ownRoutes(t, n.h))
+	// The addresses can't be told from someone else's: used, not owned,
+	// so they stay (a TUN takes its addresses along when it goes).
 	if got := snapshot(t, n.h); !slices.Contains(got, "addr ovl0 100.64.0.7/10") {
 		t.Error("Close removed an address it didn't add")
 	}
+}
+
+func TestReApplyAfterACrashIsLinear(t *testing.T) {
+	n := newTestNS(t)
+	n.dummy(t, "ovl0")
+	start := time.Now()
+	n.crash(t, "many")
+	t.Logf("first Apply of %d routes (in a child process): %v", manyRoutesCount, time.Since(start))
+
+	c := n.configurator(t)
+	var err error
+	var took time.Duration
+	if ch := n.changes(t, func() {
+		start := time.Now()
+		err = c.Apply(context.Background(), manyRoutes(manyRoutesCount))
+		took = time.Since(start)
+	}); ch != 0 {
+		t.Errorf("taking over %d identical routes made %d changes, want none", manyRoutesCount, ch)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("takeover Apply: %v", took)
+	// One dump, then map lookups: well under a second. A dump per route
+	// (quadratic) takes minutes at this size.
+	if took > 3*time.Second {
+		t.Errorf("takeover Apply of %d routes took %v", manyRoutesCount, took)
+	}
+	start = time.Now()
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("Close: %v", time.Since(start))
+	requireSame(t, "routes after Close", nil, ownRoutes(t, n.h))
+}
+
+func TestReApplyRepairsOutsideChanges(t *testing.T) {
+	n := newTestNS(t)
+	n.dummy(t, "ovl0")
+	before := snapshot(t, n.h)
+	c := n.configurator(t)
+	ctx := context.Background()
+	if err := c.Apply(ctx, fullConfig()); err != nil {
+		t.Fatal(err)
+	}
+	applied := snapshot(t, n.h)
+
+	for _, outside := range [][]string{
+		{"route", "del", "10.79.0.0/16"},
+		{"-6", "route", "del", "fd79::/48"},
+		{"addr", "del", "100.64.0.7/10", "dev", "ovl0"},
+		{"addr", "del", "fd12:3456:789a::7/48", "dev", "ovl0"},
+		{"link", "set", "ovl0", "mtu", "1500"},
+	} {
+		n.ip(t, outside...)
+		if err := c.Apply(ctx, fullConfig()); err != nil {
+			t.Fatalf("Apply after ip %v: %v", outside, err)
+		}
+		requireSame(t, fmt.Sprintf("namespace after ip %v and Apply", outside), applied, snapshot(t, n.h))
+	}
+
+	// The owner recreates the interface: everything that went with the old
+	// one, gateway-only routes included, comes back on the new one.
+	l, err := n.h.LinkByName("ovl0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := n.h.LinkDel(l); err != nil {
+		t.Fatal(err)
+	}
+	n.dummy(t, "ovl0")
+	if err := c.Apply(ctx, fullConfig()); err != nil {
+		t.Fatal(err)
+	}
+	requireSame(t, "routes on the recreated interface", fullConfigRoutes, ownRoutes(t, n.h))
+	// A new interface has a new MAC address, so a new link-local address.
+	requireSame(t, "namespace on the recreated interface", withoutLinkLocal(applied), withoutLinkLocal(snapshot(t, n.h)))
+
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	requireSame(t, "namespace after Close", before, snapshot(t, n.h))
+}
+
+// cancelAfter is a context that ends after a number of Err checks, to stop
+// Apply at a known point halfway through.
+type cancelAfter struct {
+	context.Context
+	left *atomic.Int32
+}
+
+func (c cancelAfter) Err() error {
+	if c.left.Add(-1) < 0 {
+		return context.Canceled
+	}
+	return nil
+}
+
+func TestCancelledApplyLeavesNothing(t *testing.T) {
+	n := newTestNS(t)
+	n.dummy(t, "ovl0")
+	before := snapshot(t, n.h)
+	c := n.configurator(t)
+	left := &atomic.Int32{}
+	left.Store(5) // the interface, then four routes
+	var err error
+	if ch := n.changes(t, func() { err = c.Apply(cancelAfter{context.Background(), left}, fullConfig()) }); ch == 0 {
+		t.Error("Apply stopped before changing anything; the test wants it stopped halfway")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Apply with a cancelled context: %v, want context.Canceled", err)
+	}
+	requireSame(t, "namespace after the cancelled Apply", before, snapshot(t, n.h))
+}
+
+func TestMTUChangedSinceIsKept(t *testing.T) {
+	n := newTestNS(t)
+	n.dummy(t, "ovl0")
+	c := n.configurator(t)
+	if err := c.Apply(context.Background(), fullConfig()); err != nil {
+		t.Fatal(err)
+	}
+	n.ip(t, "link", "set", "ovl0", "mtu", "1400")
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	l, err := n.h.LinkByName("ovl0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l.Attrs().MTU != 1400 || l.Attrs().Flags&net.FlagUp != 0 {
+		t.Errorf("ovl0 after Close: mtu %d, flags %v; want someone else's 1400 kept, and down", l.Attrs().MTU, l.Attrs().Flags)
+	}
+}
+
+func TestSameRouteTwiceIsRejectedBeforeAnyChange(t *testing.T) {
+	n := newTestNS(t)
+	n.dummy(t, "ovl0")
+	before := snapshot(t, n.h)
+	c := n.configurator(t)
+	cfg := fullConfig()
+	// Metric 0 is 1024 for IPv6 in the kernel: the same route as fd78::/48.
+	cfg.Routes = append(cfg.Routes, netcfg.Route{Dst: pfx("fd78::/48"), Gateway: addr("fd12:3456:789a::1"), Metric: 1024})
+	var err error
+	if ch := n.changes(t, func() { err = c.Apply(context.Background(), cfg) }); ch != 0 {
+		t.Errorf("rejected Apply made %d changes", ch)
+	}
+	if err == nil {
+		t.Fatal("Apply with the same route twice succeeded")
+	}
+	requireSame(t, "namespace", before, snapshot(t, n.h))
+}
+
+func TestTwoConfiguratorsInOneNamespace(t *testing.T) {
+	n := newTestNS(t)
+	n.dummy(t, "ovl0")
+	before := snapshot(t, n.h)
+	ctx := context.Background()
+	first := n.configurator(t)
+	if err := first.Apply(ctx, netcfg.Config{
+		Interfaces: []netcfg.Interface{{Name: "ovl0", Addrs: []netip.Prefix{pfx("100.64.0.7/10")}, Up: true}},
+		Routes:     []netcfg.Route{{Dst: pfx("10.78.0.0/16"), Interface: "ovl0"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// The first is alive, so its routes are not leftovers to take over.
+	second := n.configurator(t)
+	if err := second.Apply(ctx, netcfg.Config{Routes: []netcfg.Route{{Dst: pfx("10.78.0.0/16"), Interface: "ovl0"}}}); !errors.Is(err, netcfg.ErrConflict) {
+		t.Errorf("second configurator claiming the first's route: %v, want ErrConflict", err)
+	}
+	requireSame(t, "routes", []string{"254 10.78.0.0/16 dev ovl0 metric 0"}, ownRoutes(t, n.h))
+	if err := second.Apply(ctx, netcfg.Config{Routes: []netcfg.Route{{Dst: pfx("10.85.0.0/16"), Interface: "ovl0"}}}); err != nil {
+		t.Fatal(err)
+	}
+	requireSame(t, "routes", []string{"254 10.78.0.0/16 dev ovl0 metric 0", "254 10.85.0.0/16 dev ovl0 metric 0"}, ownRoutes(t, n.h))
+	if err := second.Close(); err != nil {
+		t.Fatal(err)
+	}
+	requireSame(t, "routes after the second closed", []string{"254 10.78.0.0/16 dev ovl0 metric 0"}, ownRoutes(t, n.h))
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	requireSame(t, "namespace after both closed", before, snapshot(t, n.h))
 }
 
 func TestCloseAfterTheInterfaceIsGone(t *testing.T) {
@@ -516,11 +778,20 @@ func TestDefaultRoute(t *testing.T) {
 	n.ip(t, "addr", "add", "192.0.2.10/24", "dev", "eth9")
 	n.ip(t, "route", "add", "default", "via", "192.0.2.1", "metric", "100")
 	n.ip(t, "route", "add", "default", "via", "192.0.2.2", "metric", "50")
+	// A better default route on a link without carrier is not usable.
+	n.ip(t, "link", "add", "veth9", "type", "veth", "peer", "name", "veth9p")
+	n.ip(t, "link", "set", "veth9", "up")
+	n.ip(t, "addr", "add", "198.51.100.10/24", "dev", "veth9")
+	n.ip(t, "addr", "add", "2001:db8:1::10/64", "dev", "veth9", "nodad")
+	n.ip(t, "link", "set", "veth9p", "up")
+	n.ip(t, "route", "add", "default", "via", "198.51.100.1", "metric", "10")
+	n.ip(t, "-6", "route", "add", "default", "via", "2001:db8:1::1", "dev", "veth9", "metric", "10")
+	n.ip(t, "link", "set", "veth9p", "down")
 
 	c := n.configurator(t)
 	ctx := context.Background()
 	if _, err := c.DefaultRoute(ctx, netcfg.IPv6); !errors.Is(err, netcfg.ErrNoDefaultRoute) {
-		t.Errorf("IPv6 default route: %v, want ErrNoDefaultRoute", err)
+		t.Errorf("IPv6 default route without carrier: %v, want ErrNoDefaultRoute", err)
 	}
 	// Our own default route, even a better one, is not the physical gateway.
 	cfg := netcfg.Config{
