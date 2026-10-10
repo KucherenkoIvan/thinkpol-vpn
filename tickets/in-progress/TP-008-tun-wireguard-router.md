@@ -85,3 +85,4 @@ Nits:
 - 2026-10-11 docs: DESIGN.md "IPv6" — the overlay carries IPv4 only when its MTU is below 1280, and status says so
 - 2026-10-11 in-progress → review — both acceptance boxes checked; `make lint`, `make test`, `go test -race` on dataplane, router, wg and packettest, and `make lab-gotest PKG=./internal/dataplane/...` (10 packages) pass
 - 2026-10-11 review → has-errors — two reviewers: 4 blockers, 9 should-fix, nits (see Review findings)
+- 2026-10-11 has-errors → in-progress — owner: agent-tp-008, picking up the review findings
