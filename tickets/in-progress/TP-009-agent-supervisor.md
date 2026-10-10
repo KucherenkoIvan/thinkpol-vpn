@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: L
 depends_on: [TP-001, TP-007]
 refs: [N5, DESIGN#server-agent-one-worker-per-space]
-owner: ""
-branch: ""
+owner: "agent-tp-009"
+branch: "tp-009-agent-supervisor"
 ---
 
 ## Goal
@@ -27,3 +27,4 @@ A server node runs a supervisor and one worker process per space, each worker in
 
 ## Log
 - 2026-10-10 created in backlog
+- 2026-10-10 backlog → in-progress — owner: agent-tp-009, branch: tp-009-agent-supervisor
