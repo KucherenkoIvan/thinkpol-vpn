@@ -61,8 +61,32 @@ The contract every transport implements, and the plain `udp` baseline that the l
   - Handing an fd over after a TLS handshake can't carry the TLS state, so TP-010/TP-028 will need either the supervisor to keep proxying, or the worker to terminate TLS.
 - **Tests stay on the host:** loopback sockets in-process only. Nothing needs root or the lab.
 
+## Review findings
+Formal review (two reviewers), orchestrator decisions to implement as stated.
+
+Blocker:
+- [ ] B1 Replay filter defeatable (8-slot LRU cycling, restart/reindex wipes windows, withheld newest datagram) and it controls the reply address. Fix: (a) sealed coarse timestamp, ±5 min of receiver clock, else dropped and counted as "stale timestamp"; clock requirement documented; (b) ordered senders: sender id carries creation time; an unknown sender older than the newest known is dropped unless the newest has been silent > 30 s; only the newest sender moves the reply address, only on its newest counter; (c) tests: restart then replay (no link, no address move), withheld newest datagram older than the window, 9-sender cycle (RemoteAddr never changes, Accept yields nothing), skewed clock rejected; udp/doc.go and Notes state the real guarantee and the residual.
+
+Should-fix:
+- [ ] 1 Conn id rotates hourly (HKDF with epoch = floor(t/1h)); listener and demux accept current and adjacent epochs; documented.
+- [ ] 2 Demux verifies tag and timestamp, then routes; "without decrypting" wording fixed in doc and DESIGN.md; TP-010 note: fair-share charged after the worker accepts; duplicate conn ids drop both and are reported; supervisor stamps Space from the source map.
+- [ ] 3 Typed ids: `SpaceID [16]byte`, `NodeID [8]byte`, `Identity{Space, Node}` with String(); no netmap import; tests use random ids.
+- [ ] 4 Split configs: `DialConfig{Credential, Settings, Shaping}`, `PeerLink{Peer, Verifier, Settings, Shaping}`; min-length validation in the adapter.
+- [ ] 5 `Transport` interface {Name, Dialer, Listen(ctx, ListenConfig{Address, Settings, Peers, Camouflage}), CheckEndpoint, CheckInbound, Overhead(Shaping)} and an explicit `Registry`; socket Control as an adapter option (`udp.New(udp.Options{Control})`).
+- [ ] 6 Conversion ownership in DESIGN.md and Notes: per-transport settings are protobuf in `proto/thinkpol/transport/v1/` (only what udp needs); netmap → transport conversion lives in `internal/dataplane`; endpoints in the map are IP literals.
+- [ ] 7 DESIGN decision for tls + shared listener (auth token in the ClientHello, supervisor peeks without terminating, fd + consumed bytes to the worker, otherwise whole connection proxied to camouflage); written into DESIGN.md and TP-010/TP-028/TP-052 Notes; port seams `Router` and `HandoffListener`; udp implements the datagram side.
+- [ ] 8 Link contract: WritePacket may block; Close unblocks reads and writes; net.ErrClosed final; other errors lose one packet; unrecoverable adapters close themselves with ClosedError(cause); conformance case WriteUnblocksOnClose.
+- [ ] 9 Config changes with the same credential apply to live links (swap entry, keep windows).
+- [ ] 10 indexPeers returns what it skipped; listener reports it; CheckInbound used by the conversion layer.
+- [ ] 11 memory adapter gets Semantics {Stream, Datagram}; doc says which; TP-006 note: test in both.
+- [ ] 12 Suite: Listen returns `Endpoint{Address, Settings}`; DialConfig built from it; DialContext-deadline case.
+
+Nits:
+- [ ] backoff on persistent read errors; rejectAfterMessages path removed or fixed; ConnID unexported; camouflage doc (datagram-only camouflage closes streams); port doc forbids one secret for both directions of a link pair and says Accept may return an already-revoked link.
+
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-10 backlog → in-progress — owner: agent-tp-005, branch: tp-005-udp-transport
 - 2026-10-10 reworked udp crypto to a stateless design after the pre-review findings (nonce reuse, epoch rollback); suite extended
 - 2026-10-10 in-progress → review
+- 2026-10-10 review → has-errors — formal review: 1 blocker, 12 should-fix, nits (see Review findings)
