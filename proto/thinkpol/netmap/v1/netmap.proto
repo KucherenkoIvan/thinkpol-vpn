@@ -172,6 +172,9 @@ message Endpoint {
   // Transport-owned settings (certificate pin, SNI, WebSocket path, …),
   // encoded by the transport.
   bytes settings = 4;
+  // How this node shapes what it sends on the link: an encoded
+  // thinkpol.transport.v1.Shaping; empty for none.
+  bytes shaping = 5;
 }
 
 message InboundLink {
@@ -183,9 +186,11 @@ message InboundLink {
   // key where the transport allows, so a seized node can't impersonate its
   // peers (PRD S1); for a symmetric transport, the shared secret itself.
   bytes credential = 4;
-  // Transport-owned settings for this link (how the listener side shapes
-  // and configures what it sends, TP-027), encoded by the transport.
+  // Transport-owned settings for this link, encoded by the transport.
   bytes settings = 5;
+  // How this node shapes what it sends on the link: an encoded
+  // thinkpol.transport.v1.Shaping; empty for none.
+  bytes shaping = 6;
 }
 
 // Route sends relayed packets for one destination to adjacent next hops.

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net/netip"
 	"testing"
+
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/shaping"
 )
 
 // TestBuildRejectsInvalidContents covers Build's policy and consistency
@@ -97,6 +99,9 @@ func TestBuildRejectsInvalidContents(t *testing.T) {
 		{"inbound credential too long", entry(func(s *Section) { s.Inbound[0].Credential = make([]byte, maxCredential+1) })},
 		{"inbound peer kind unknown", entry(func(s *Section) { s.Inbound[0].PeerKind = 0 })},
 		{"inbound settings too long", entry(func(s *Section) { s.Inbound[0].Settings = make([]byte, maxSettings+1) })},
+		{"inbound shaping too long", entry(func(s *Section) { s.Inbound[0].Shaping = make([]byte, maxSettings+1) })},
+		{"inbound shaping undecodable", entry(func(s *Section) { s.Inbound[0].Shaping = []byte("pad=buckets") })},
+		{"inbound shaping with an unknown field", entry(func(s *Section) { s.Inbound[0].Shaping = append(bytes.Clone(bucketShaping), 0xf8, 0x06, 0x01) })},
 		{"inbound credential shared", entry(func(s *Section) { s.Inbound[3].Credential = s.Inbound[1].Credential })},
 		// routes
 		{"route to self", entry(func(s *Section) { s.Routes = append(s.Routes, Route{Destination: entryID, NextHops: []NodeID{exitID}}) })},
@@ -124,6 +129,16 @@ func TestBuildRejectsInvalidContents(t *testing.T) {
 		{"endpoint settings too long", device(func(s *Section) {
 			e := s.Links[0].Endpoints[0]
 			e.Settings = make([]byte, maxSettings+1)
+			s.Links[0] = Link{Peer: s.Links[0].Peer, Endpoints: []Endpoint{e}}
+		})},
+		{"endpoint shaping too long", device(func(s *Section) {
+			e := s.Links[0].Endpoints[0]
+			e.Shaping = make([]byte, maxSettings+1)
+			s.Links[0] = Link{Peer: s.Links[0].Peer, Endpoints: []Endpoint{e}}
+		})},
+		{"endpoint shaping invalid", device(func(s *Section) {
+			e := s.Links[0].Endpoints[0]
+			e.Shaping = []byte{0x0a, 0x04, 0x08, 0x80, 0x02, 0x08} // buckets: 256, then a truncated size
 			s.Links[0] = Link{Peer: s.Links[0].Peer, Endpoints: []Endpoint{e}}
 		})},
 		// peers
@@ -179,4 +194,26 @@ func mustKey(t testing.TB, s string) NodePublicKey {
 		t.Fatal(err)
 	}
 	return k
+}
+
+// The builder applies the same shaping rules as the transport port.
+func TestCheckSettingsDecodesShaping(t *testing.T) {
+	for _, b := range [][]byte{nil, bucketShaping, randomShaping} {
+		if err := checkSettings(nil, b); err != nil {
+			t.Errorf("real shaping refused: %v", err)
+		}
+	}
+	for name, tc := range map[string]struct {
+		b    []byte
+		want error
+	}{
+		"garbage":       {[]byte("pad=buckets"), shaping.ErrInvalid},
+		"truncated":     {[]byte{0x0a, 0x04, 0x08, 0x80, 0x02, 0x08}, shaping.ErrInvalid},
+		"descending":    {[]byte{0x0a, 0x05, 0x08, 0x80, 0x02, 0x08, 0x10}, shaping.ErrInvalid},
+		"unknown field": {append(bytes.Clone(bucketShaping), 0xf8, 0x06, 0x01), shaping.ErrUnsupported},
+	} {
+		if err := checkSettings(nil, tc.b); !errors.Is(err, tc.want) {
+			t.Errorf("%s: %v, want %v", name, err, tc.want)
+		}
+	}
 }

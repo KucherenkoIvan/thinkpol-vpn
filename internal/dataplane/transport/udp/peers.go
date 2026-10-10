@@ -36,7 +36,14 @@ type peerSet struct {
 	epoch    int64
 	byID     map[connID]*peerEntry
 	rejected []transport.PeerError // by indexPeers
+	refused  map[string]refusal    // by secret: links checkInbound refused
 	collided []transport.PeerError // by the latest reindex
+}
+
+// refusal is a peer link the table holds but udp can't use as it says.
+type refusal struct {
+	peer transport.Identity
+	err  error
 }
 
 func (ps *peerSet) problems() []transport.PeerError {
@@ -46,11 +53,12 @@ func (ps *peerSet) problems() []transport.PeerError {
 // indexPeers checks every link, and drops (and reports) both links of a
 // duplicate secret rather than guessing which one is meant.
 func indexPeers(links []transport.PeerLink, epoch int64) *peerSet {
-	ps := &peerSet{bySecret: make(map[string]*peerEntry, len(links))}
+	ps := &peerSet{bySecret: make(map[string]*peerEntry, len(links)), refused: map[string]refusal{}}
 	dup := map[string]bool{}
 	for _, pl := range links {
 		if err := checkInbound(pl); err != nil {
 			ps.rejected = append(ps.rejected, transport.PeerError{Peer: pl.Peer, Err: err})
+			ps.refused[string(pl.Verifier)] = refusal{pl.Peer, err}
 			continue
 		}
 		key := string(pl.Verifier)

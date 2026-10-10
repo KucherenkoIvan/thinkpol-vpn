@@ -5,7 +5,24 @@ import (
 	"fmt"
 	"net/netip"
 	"testing"
+
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 )
+
+// Shaping as the controller encodes it: entries pad what they send to
+// devices to buckets, devices pad at random.
+var (
+	bucketShaping = mustMarshal(transport.Shaping{Padding: transport.Buckets(128, 256, 512, 1024, 1452)})
+	randomShaping = mustMarshal(transport.Shaping{Padding: transport.Padding{Mode: transport.PadRandom, Max: 64}})
+)
+
+func mustMarshal(s transport.Shaping) []byte {
+	b, err := s.Marshal()
+	if err != nil {
+		panic(err)
+	}
+	return b
+}
 
 // fixture is a space wired the way maps will be:
 //   - servers form a mesh: each dials every later server;
@@ -122,7 +139,7 @@ func newFixture(t testing.TB, servers, devices int) *fixture {
 		for d := servers; d < n; d++ {
 			s.Inbound = append(s.Inbound,
 				InboundLink{Peer: ids[d], PeerKind: NodeDevice, Transport: "udp", Credential: cred(e, d, "udp")},
-				InboundLink{Peer: ids[d], PeerKind: NodeDevice, Transport: "tls", Credential: cred(e, d, "tls"), Settings: []byte("shape=bulk")},
+				InboundLink{Peer: ids[d], PeerKind: NodeDevice, Transport: "tls", Credential: cred(e, d, "tls"), Settings: []byte("sni=www.example.org"), Shaping: bucketShaping},
 			)
 			s.Peers = append(s.Peers, peer(d, []Path{{FirstHop: ids[d]}}))
 			s.Routes = append(s.Routes, Route{Destination: ids[d], NextHops: []NodeID{ids[d]}})
@@ -150,7 +167,7 @@ func newFixture(t testing.TB, servers, devices int) *fixture {
 		for _, e := range entries {
 			s.Links = append(s.Links, Link{Peer: ids[e], Endpoints: []Endpoint{
 				{Transport: "udp", Address: netip.MustParseAddrPort(fmt.Sprintf("203.0.113.%d:4500", e+1)), Credential: cred(e, d, "udp")},
-				{Transport: "tls", Address: netip.MustParseAddrPort(fmt.Sprintf("[2001:db8::%x]:443", e+1)), Credential: cred(e, d, "tls"), Settings: []byte("pin=sha256:abcd")},
+				{Transport: "tls", Address: netip.MustParseAddrPort(fmt.Sprintf("[2001:db8::%x]:443", e+1)), Credential: cred(e, d, "tls"), Settings: []byte("pin=sha256:abcd"), Shaping: randomShaping},
 			}})
 			s.Peers = append(s.Peers, peer(e, []Path{{FirstHop: ids[e]}}))
 		}

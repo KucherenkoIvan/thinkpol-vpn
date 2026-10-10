@@ -22,5 +22,8 @@ branch: ""
 ## Acceptance
 - [ ] a fresh lab container becomes a working node with one command; running it again changes nothing
 
+## Notes
+- **Shaping rollout (TP-027):** the controller puts shaping, or a new shaping field or value, into a link only when both ends' nodes reported supporting it (DESIGN "Transports own traffic shape"). Provisioning registers the node with its agent version and capabilities, so the first map it gets carries only shaping it supports.
+
 ## Log
 - 2026-10-10 created in backlog

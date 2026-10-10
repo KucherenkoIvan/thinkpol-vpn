@@ -30,6 +30,9 @@ A chain hop can be a group of nodes; the client picks a healthy one and switches
 - TP-006's end-to-end liveness is a stopgap: a Bind demotes a first hop after `E2EDead` (5 s) of unanswered handshakes, or E2EDead + 10 s of unanswered data, or E2EDead while the peer talks through another hop (leader). End-to-end probes over each path (a new frame kind; older nodes drop unknown kinds) should replace it; see the acceptance item. The TP-006 policy pinned by `TestAFailedOverPairReturnsAfterTheHoldDown`: a failed-over pair stays on the backup for the hold-down, then the leader returns to the primary and the follower comes along; this ticket decides the final policy (and whether a dialed link returns to its first endpoint).
 - `Bind.Current` and `Node.Route` give the current entry and next hop, with since when, for the local API status.
 
+## Notes
+- **From TP-027:** probes and probe replies go through `transport.WriteControl`, which may hold them up to `transport.MaxControlHold` (500 ms) at each end: a probe round trip is an upper bound, good for liveness, not for `lowest-latency`. Compare latency on unheld traffic: WireGuard's handshake round trip (initiation → response through the Bind) or `WritePacket` probes on links without batching or jitter, or only beyond `2 × MaxControlHold` plus both ends' `Shaping.MaxDelay()`. Allow `2 × MaxControlHold` in probe timeouts; jitter the probe interval, skip probes on links that carried data recently, probe warm backups less often.
+
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-10 docs (TP-003 review): hop groups map onto first hops and route next hops

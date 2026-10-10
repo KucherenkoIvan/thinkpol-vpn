@@ -1,0 +1,47 @@
+syntax = "proto3";
+
+package thinkpol.transport.v1;
+
+// Shaping is how one end of a link shapes what it sends: the size and
+// rhythm a censor sees (PRD C6). The map carries it per link and per end,
+// next to the transport's own settings: on an endpoint for the dialing end,
+// on an inbound link for the listening end. Receivers undo any shaping from
+// the wire format alone, so the two ends never negotiate and need not
+// agree.
+//
+// A node refuses a link whose shaping it can't honour, never shapes less
+// than asked: an unknown field or enum value here, or a setting its
+// transport doesn't implement, rejects the link. New settings are new
+// fields; empty bytes or an empty message mean no shaping.
+message Shaping {
+  // Padding grows each unit the transport puts on the wire (a datagram, a
+  // record), inside its encryption.
+  oneof padding {
+    PadToBuckets buckets = 1;
+    PadRandom random = 2;
+  }
+  // How long the sender may hold a packet to send it together with the
+  // next ones in one unit, in microseconds. 0: never.
+  uint32 batch_window_us = 3;
+  // The most a unit is delayed, uniformly at random per unit, in
+  // microseconds. 0: never.
+  uint32 jitter_us = 4;
+  // While the link is idle, a unit carrying no packet is sent about this
+  // often, in microseconds. 0: no cover traffic.
+  uint32 cover_interval_us = 5;
+}
+
+// PadToBuckets grows each unit to the smallest of sizes that holds it.
+// Units larger than every size go as they are.
+message PadToBuckets {
+  // Unit sizes on the wire in bytes (for a datagram transport, the UDP
+  // payload), strictly ascending, at most 16.
+  repeated uint32 sizes = 1;
+}
+
+// PadRandom grows each unit by a uniformly random number of bytes in
+// [min, max].
+message PadRandom {
+  uint32 min = 1;
+  uint32 max = 2;
+}
