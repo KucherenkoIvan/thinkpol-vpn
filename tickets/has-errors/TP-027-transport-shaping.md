@@ -48,8 +48,25 @@ Transports own traffic shape: padding, batching and timing are part of the trans
 
 **For devmap (TP-004, merged):** its spec can't express shaping yet; adding it is a `shaping:` key per endpoint/inbound encoded with `Shaping.Marshal`, checked in `plan.go` with `ParseShaping` before `CheckEndpoint`/`CheckInbound`.
 
+## Review findings
+Review verdict: merge after these (orchestrator decisions).
+- [ ] 1. netmap Build rejects undecodable shaping; fixtures use real `Shaping.Marshal()` output (layering: say where the shared validation lives)
+- [ ] 2. Rollout policy in DESIGN ("Transports own traffic shape") and here: the controller emits shaping only to nodes that report supporting it, from the agent version/capabilities reported at registration; notes for TP-034/TP-038/TP-044; log that not raising min_reader is OK only because nothing is deployed
+- [ ] 3. Contract: RTT samples via WriteControl are upper bounds: the transport reports the hold, or latency is measured on unheld traffic; WireGuard handshakes and data never go through WriteControl; note for TP-031
+- [ ] 4. memory adapter: opt-in `AcceptShaping` (reports support, Overhead 0) so shaped maps are testable in-process; note for TP-006/TP-008
+- [ ] 5. Listener-level cover tests: cover before data opens no link and queues nothing; old-counter / non-current-sender cover doesn't move RemoteAddr; `Counters.Cover` counts it
+- [ ] N1. `Marshal` validates
+- [ ] N2. Distinct close reason for a link whose new shaping is refused (not ErrRevoked)
+- [ ] N3. Router's "delivered" vs `Counters.Delivered` naming consistent
+- [ ] N4. Positive control in the conformance case where the listener refuses a peer link
+- [ ] N5. Lab test asserts exactly 261 datagrams per port
+- [ ] N6. Padding appends zeros without a per-send allocation
+- [ ] N7. Optional `interface{ Sent() SendStats }` for the engine
+- [ ] N8. Fix the "sizes, not secrets" comment
+
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-10 backlog → in-progress — owner: agent-tp-027, branch: tp-027-transport-shaping
 - 2026-10-10 the map carries shaping in a new `shaping` field next to `settings` (not inside `InboundLink.settings` as TP-003's note said); netmap.proto comment and DESIGN.md "Transports own traffic shape" updated
 - 2026-10-10 in-progress → review
+- 2026-10-10 review → has-errors — review: 5 findings, 8 nits (see Review findings)
