@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: L
 depends_on: [TP-001]
 refs: [S1, S6, A5, A11, DESIGN#the-signed-map]
-owner: ""
-branch: ""
+owner: agent-tp-003
+branch: tp-003-netmap-envelope
 ---
 
 ## Goal
@@ -34,3 +34,4 @@ Gossip (TP-037), building maps from controller state (TP-036).
 
 ## Log
 - 2026-10-10 created in backlog
+- 2026-10-10 backlog → in-progress — owner: agent-tp-003, branch: tp-003-netmap-envelope
