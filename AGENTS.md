@@ -25,7 +25,7 @@ thinkpol-vpn is a self-hosted virtual network that survives a censor: one Go bin
 - **Commands.** `cmd/thinkpol` has one file per command, registered from `init` with a space-separated path. A command group is just a shared prefix: adding `dev lists build` is one new file. A group prefix is never itself a command (`register` panics). Command files are composition roots: they parse flags (`parseFlags`), build adapters and call into `internal/`, with no logic of their own. Internal commands (e.g. `worker`) are `hidden`.
 - **Control plane** features follow go-kernel's [service structure](https://github.com/KucherenkoIvan/go-kernel/blob/main/docs/architecture/1-service-structure.md), with `ddd.DomainError` values for expected failures. The **data plane** is plain ports and adapters, no DDD aggregates.
 - **OS-specific code** goes in per-OS files (`_linux.go`, `_darwin.go`, `_windows.go`) inside the package it belongs to; there is no platform tree. Android counts as linux for build tags: `_linux.go` files are in the Android build; desktop-only Linux code needs `//go:build linux && !android`.
-- **Tests** assert behavior, not call sequences, and prefer real components over mocks. A test that needs root or network namespaces starts with `if os.Getenv("THINKPOL_LAB") == "" { t.Skip("needs the lab") }` and runs inside lab containers.
+- **Tests** assert behavior, not call sequences, and prefer real components over mocks. A test that needs root or network namespaces starts with `if os.Getenv("THINKPOL_LAB") == "" { t.Skip("needs the lab") }` and runs inside lab containers (`make lab-test` runs every package's tests in a lab node). Tests that drive several nodes live in `lab/` behind the `lab` build tag and declare the topology they need; see [lab/README.md](lab/README.md).
 - Comments state non-obvious constraints only.
 
 ```sh
@@ -36,5 +36,7 @@ make test-race  # unit tests with the race detector (cgo on)
 make build      # bin/thinkpol
 make proto      # regenerate proto/gen
 make tools      # pinned dev tools into bin/tools (lint and proto do it on first use)
+make lab-test   # lab tests in Docker + every package's tests inside a lab node (needs Docker)
+make lab-gotest PKG=./internal/x/...   # one package's tests inside a lab node
 python3 tickets/board.py   # the board and what's ready to start
 ```

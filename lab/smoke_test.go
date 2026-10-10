@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"fmt"
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 
@@ -126,5 +127,24 @@ func TestLabsAreIsolated(t *testing.T) {
 	}
 	if got := b.MustExec(t, "echo", "alive"); got != "alive\n" {
 		t.Errorf("second lab after the first went down: %q", got)
+	}
+}
+
+// An IPv4Only network gives its nodes no IPv6 address and no IPv6 route.
+func TestIPv4OnlyNetwork(t *testing.T) {
+	t.Parallel()
+	l := lab.Start(t, lab.Topology{
+		Networks: []lab.Network{{Name: "v4", IPv4Only: true}},
+		Nodes:    []lab.NodeSpec{{Name: "gw", Networks: []string{"v4"}, Forward: true}, {Name: "node", Networks: []string{"v4"}, Gateway: "gw"}},
+	})
+	n := l.Node("node")
+	if n.IPv6("v4").IsValid() || !n.IPv4("v4").IsValid() {
+		t.Fatalf("addresses %+v", n.Addr("v4"))
+	}
+	if out := n.MustExec(t, "ip", "-6", "addr", "show", "scope", "global"); out != "" {
+		t.Errorf("global IPv6 address on an IPv4-only network: %s", out)
+	}
+	if got, want := n.MustExec(t, "ip", "-4", "route", "show", "default"), "default via "+l.Node("gw").IPv4("v4").String(); !strings.HasPrefix(got, want) {
+		t.Errorf("default route %q, want %q", got, want)
 	}
 }
