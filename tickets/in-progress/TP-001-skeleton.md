@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: M
 depends_on: []
 refs: [DESIGN#repository-layout]
-owner: ""
-branch: ""
+owner: agent-tp-001
+branch: tp-001-skeleton
 ---
 
 ## Goal
@@ -38,3 +38,4 @@ Build everything with `CGO_ENABLED=0`.
 
 ## Log
 - 2026-10-10 created in backlog
+- 2026-10-10 backlog → in-progress — owner: agent-tp-001, branch: tp-001-skeleton
