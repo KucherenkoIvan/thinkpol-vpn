@@ -122,3 +122,4 @@ Round 3 (delta review; orchestrator decision: shrink failover to what is robust,
 - 2026-10-10 merged origin/rewrite (TP-002, TP-007); review findings 1–20 fixed; DESIGN.md "Data plane": source id checked by reverse path, first-hop vs end-to-end liveness, one end of a pair follows; notes for TP-008, TP-011, TP-018, TP-030 and TP-031 written into their tickets
 - 2026-10-10 in-progress → review — every finding checked; `make lint`, `make test` and `go test -race -count=30` on the path packages pass
 - 2026-10-10 review → has-errors — delta review: round 3 (9 findings)
+- 2026-10-10 has-errors → in-progress — owner: agent-tp-006, round 3
