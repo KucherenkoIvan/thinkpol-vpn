@@ -2,11 +2,12 @@
 id: TP-046
 title: "Service install and connect-on-boot"
 milestone: M5
-area: platform
+area: agent
 repo: thinkpol-vpn
 size: L
 depends_on: [TP-022]
 refs: [D2, D5]
+needs_human: macos
 owner: ""
 branch: ""
 ---

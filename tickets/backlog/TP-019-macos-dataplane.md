@@ -2,11 +2,12 @@
 id: TP-019
 title: "macOS data plane"
 milestone: M1
-area: platform/macos
+area: dataplane
 repo: thinkpol-vpn
 size: L
 depends_on: [TP-008, TP-018]
 refs: [D1]
+needs_human: macos
 owner: ""
 branch: ""
 ---

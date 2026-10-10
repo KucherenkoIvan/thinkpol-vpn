@@ -57,7 +57,7 @@ Two planes. The **data plane** moves packets on every node; the **control plane*
 | Transport | Shape | Notes |
 |---|---|---|
 | `udp` | raw datagrams | baseline; WireGuard-sized packets, trivially profiled |
-| `tls` | TLS 1.3 with a browser fingerprint (uTLS), probe fallback to a real site | the workhorse for client → entry |
+| `tls` | TLS 1.3 with a browser fingerprint (uTLS), probe fallback to a real site | the workhorse for client → entry; the server certificate comes from a pluggable certificate source (self-signed and pinned by the client first, ACME with a real domain later) |
 | `ws` | WebSocket over TLS | can sit behind a CDN, which hides the node's IP |
 | `reality`-style | borrows a real site's TLS handshake, no certificate of our own | later |
 | `obfs-udp` | obfuscated datagrams | for direct device-to-device paths, where TCP hole punching is impractical |
@@ -189,24 +189,42 @@ Versions only go up, and the envelope is signed by the space's **signing key**. 
 
 **Kernel usage.** `config`, `app`, `observability`, `sqlite` and `webui` for the controller; `grpckit` for the push channel to nodes, which needs **streaming RPCs** (missing in grpckit today: add server and client stream interceptors there first). The data plane uses plain ports and adapters with no DDD aggregates: packets aren't domain events.
 
-**Protobuf contracts live in this repo**, buf-managed (the map format, the local service API, the controller's node API), never in go-kernel's `contracts/`. This is a deliberate thinkpol-only exception to the kernel convention of hosting consumers' contracts: these schemas are wire formats between thinkpol's own binaries, not contracts between separate services.
+**Protobuf contracts live in this repo** under `proto/`, buf-managed (the map format, the local service API, the controller's node API), never in go-kernel's `contracts/`. This is a deliberate thinkpol-only exception to the kernel convention of hosting consumers' contracts: these schemas are wire formats between thinkpol's own binaries, not contracts between separate services.
 
 ## Repository layout
 
 Follows go-kernel's service structure for the control plane; the data plane is its own tree of ports and adapters.
 
 ```
-cmd/thinkpol/             # one binary: node agent / client service (`up`), CLI, `admin serve`
+cmd/thinkpol/             # one binary: node agent / client service (`up`), CLI, `admin serve`, dev tools; one file per command
 cmd/thinkpol-tray/        # unprivileged tray app, a client of the local service API
 internal/
-  features/               # control plane bounded contexts (spaces, members, nodes, hosting, topology, policy, invites, provisioning, publishing, telemetry)
-  agent/                  # server supervisor, per-space workers, network namespaces, shared listener
-  dataplane/
-    tun/ router/ wg/ path/ transport/<name>/ egress/ dns/ telemetry/
+  agent/                  # the node agent on servers and devices: applies maps, runs the data plane, local API, service install, self-update
+    supervisor/           # servers: owns the public address and the shared listener, starts one worker per space
+    worker/               # servers: one space's data plane inside its own network namespace
+  dataplane/              # the engine that wires the subpackages below, nothing else
+    tun/ router/ wg/ path/
+    transport/            # the transport port; adapters in transport/<name>/
+    netcfg/               # interface addresses, MTU, routes (route-table rule enforcement)
+    firewall/             # kill switch (pf, nftables, WFP)
+    egress/ dns/
+    blobs/                # fetch-by-hash distribution of list files and releases between peers
+    telemetry/
   netmap/                 # the signed map: envelope, sealed sections, signing, verification, gossip
-  shared/
+  lists/                  # GeoIP/geosite lists: importers, CIDR aggregation, the content-addressed blob format
+  features/               # control plane bounded contexts (spaces, members, nodes, hosting, topology, policy, invites, provisioning, publishing, telemetry); no code in the root
+    <feature>/adapters/http/   # that feature's admin panel pages
+  shared/                 # shared/domain, shared/ports, shared/infra as in go-kernel; no code in the root
+    infra/webui/          # the admin panel's page shell: layout, navigation, assets, the canvas island
+proto/                    # buf module: the map format, the local service API, the controller's node API
+  gen/                    # generated Go code, never hand-edited
 lab/                      # censor lab (below)
 ```
+
+- **OS specifics** are per-OS files (`_linux.go`, `_darwin.go`, `_windows.go`) inside the package they belong to; there is no separate platform tree.
+- **Lists** are built offline (`thinkpol dev lists build`, later the controller), distributed by `dataplane/blobs`, and read by the router. `lists` sits outside `dataplane` because both planes use it.
+- **Dependency direction**: `dataplane`, `netmap`, `lists` and `agent` never import `features` or `shared`; `dataplane`, `netmap` and `lists` don't import go-kernel; `features` never import `dataplane` or `agent`, nor each other (cross-feature calls go through `shared/ports`); `shared` never imports `features`. The planes meet only through the signed map.
+- **Mobile**: everything under `dataplane`, `netmap` and `lists` is pure Go; all of it except `tun`, `egress` and `firewall` builds for Android.
 
 ## Censor lab
 

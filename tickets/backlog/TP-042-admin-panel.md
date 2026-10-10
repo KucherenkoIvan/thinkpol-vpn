@@ -2,7 +2,7 @@
 id: TP-042
 title: "Admin panel and dashboards"
 milestone: M4
-area: features/webui
+area: features
 repo: thinkpol-vpn
 size: L
 depends_on: [TP-035, TP-041]

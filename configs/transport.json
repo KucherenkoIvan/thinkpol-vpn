@@ -1,6 +1,0 @@
-{
-  "transport": {
-    "service_address": "localhost:50052",
-    "gateway_address": "localhost:8080"
-  }
-}

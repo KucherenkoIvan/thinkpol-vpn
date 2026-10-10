@@ -16,7 +16,7 @@ A running device node is controlled through a local API, and the CLI is its firs
 
 ## Scope
 - gRPC API on a root-owned Unix socket, group-accessible (`thinkpol` group): connect, disconnect, status (space, chain, entry, health), switch rule preset, list enrolled spaces.
-- Contracts in-repo (buf); unary calls only (streaming status waits for KRN-002).
+- API schema in the `proto/` buf module (`make proto`); unary calls only (streaming status waits for KRN-002).
 - CLI: `thinkpol connect | disconnect | status | rules preset <name>`.
 
 ## Acceptance

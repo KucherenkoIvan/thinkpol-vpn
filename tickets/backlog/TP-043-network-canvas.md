@@ -2,11 +2,12 @@
 id: TP-043
 title: "Network canvas"
 milestone: M4
-area: features/webui
+area: features/topology
 repo: thinkpol-vpn
 size: epic
 depends_on: [TP-042]
 refs: [A7]
+needs_human: decision
 owner: ""
 branch: ""
 ---
@@ -15,6 +16,7 @@ branch: ""
 The network drawn like Packet Tracer: nodes, links, transports and chains, with live state, and later editing.
 
 ## Scope (split before starting)
+- The island's assets go in `shared/infra/webui`; its JSON endpoint and live stream in the features' `adapters/http`.
 - Choose the graph-editor library (React Flow, Svelte Flow, Cytoscape.js, …) for a JavaScript island inside a `webui` page.
 - JSON endpoint and a live-update stream.
 - View with live state (must); editing by dragging (should).

@@ -1,97 +1,89 @@
-.PHONY: all build clean gateway encoding-service transport-service client services test run-gateway run-encoding run-transport run-client
+# thinkpol-vpn development targets. `make help` lists them.
 
-# Build all binaries
-all: gateway encoding-service transport-service client
+# Dev tools, pinned, installed per checkout into bin/tools (lint and proto
+# install them on first use). Bumping a version reinstalls them all.
+GOLANGCI_LINT_VERSION := v2.14.0
+BUF_VERSION := v1.73.0
+PROTOC_GEN_GO_VERSION := v1.36.12
+PROTOC_GEN_GO_GRPC_VERSION := v1.6.2
 
-# Individual service builds
-gateway:
-	@echo "Building gateway server..."
-	@go build -o bin/gateway cmd/gateway/main.go
-	@echo "✅ Gateway built: bin/gateway"
+TOOLS := $(CURDIR)/bin/tools
+TOOLS_STAMP := $(TOOLS)/.installed-$(GOLANGCI_LINT_VERSION)-$(BUF_VERSION)-$(PROTOC_GEN_GO_VERSION)-$(PROTOC_GEN_GO_GRPC_VERSION)
 
-encoding-service:
-	@echo "Building encoding service..."
-	@go build -o bin/encoding-service cmd/encoding-service/main.go
-	@echo "✅ Encoding service built: bin/encoding-service"
+VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
-transport-service:
-	@echo "Building transport service..."
-	@go build -o bin/transport-service cmd/transport-service/main.go
-	@echo "✅ Transport service built: bin/transport-service"
+# The OSes the binary ships for: lint vets each, so OS-specific files are
+# checked on any host.
+LINT_GOOS := darwin linux windows
+# Pure Go, no cgo (DESIGN.md "Repository layout").
+NOCGO_PKGS := ./internal/dataplane/... ./internal/netmap/... ./internal/lists/...
+# What must build for Android: the above minus the desktop-only packages.
+DESKTOP_ONLY_RE := /internal/dataplane/(tun|egress|firewall)(/|$$)
 
-client:
-	@echo "Building VPN client..."
-	@go build -o bin/client cmd/client/main.go
-	@echo "✅ Client built: bin/client"
+# cgo is off unless a target turns it on (test-race).
+export CGO_ENABLED := 0
 
-# Build all services (excluding client which needs special permissions)
-services: gateway encoding-service transport-service
+.PHONY: help build test test-race lint nocgo fmt proto tools lab lab-up lab-test lab-down
 
-# Build everything
-build: all
+help: ## list targets
+	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
 
-# Clean binaries
-clean:
-	@echo "Cleaning binaries..."
-	@rm -rf bin/
-	@echo "✅ Cleaned"
+build: ## build bin/thinkpol for this machine
+	go build -trimpath -ldflags "-X main.version=$(VERSION)" -o bin/thinkpol ./cmd/thinkpol
 
-# Run targets (for development)
-run-gateway: gateway
-	@echo "Starting gateway server..."
-	@./bin/gateway
+test: ## unit tests (lab tests skip outside the lab)
+	go test ./...
 
-run-encoding: encoding-service
-	@echo "Starting encoding service..."
-	@./bin/encoding-service
+test-race: ## unit tests with the race detector (needs cgo)
+	CGO_ENABLED=1 go test -race ./...
 
-run-transport: transport-service
-	@echo "Starting transport service..."
-	@./bin/transport-service
+lint: $(TOOLS_STAMP) ## gofmt, then go vet + golangci-lint per OS, the Android build and the no-cgo check
+	@out=$$(gofmt -l . 2>&1) || { echo "$$out"; exit 1; }; \
+	if [ -n "$$out" ]; then echo "gofmt needed:"; echo "$$out"; exit 1; fi
+	@for os in $(LINT_GOOS); do \
+		echo "go vet + golangci-lint, GOOS=$$os"; \
+		GOOS=$$os go vet ./... || exit 1; \
+		GOOS=$$os $(TOOLS)/golangci-lint run --allow-serial-runners ./... || exit 1; \
+	done
+	@echo "build for android/arm64"
+	@pkgs=$$(GOOS=android GOARCH=arm64 go list $(NOCGO_PKGS)) || exit 1; \
+	pkgs=$$(echo "$$pkgs" | grep -vE '$(DESKTOP_ONLY_RE)'); \
+	if [ -z "$$pkgs" ]; then echo "no packages to build for android"; exit 1; fi; \
+	GOOS=android GOARCH=arm64 go build $$pkgs
+	@$(MAKE) --no-print-directory nocgo
 
-run-client: client
-	@echo "Starting VPN client (requires sudo)..."
-	@sudo ./bin/client
+nocgo: ## fail if the data plane, the map or the lists depend on cgo
+	@for os in $(LINT_GOOS) android; do \
+		out=$$(CGO_ENABLED=1 GOOS=$$os go list -deps -f '{{if and (not .Standard) .CgoFiles}}{{.ImportPath}}{{end}}' $(NOCGO_PKGS)) || exit 1; \
+		if [ -n "$$out" ]; then echo "cgo in pure Go packages (GOOS=$$os):"; echo "$$out"; exit 1; fi; \
+	done
+	@echo "no cgo in $(NOCGO_PKGS)"
 
-# Test targets
-test:
-	@echo "Running tests..."
-	@go test ./...
+fmt: ## format everything
+	gofmt -w .
 
-# Format code
-fmt:
-	@echo "Formatting code..."
-	@go fmt ./...
+proto: $(TOOLS_STAMP) ## lint the protobuf schemas and regenerate proto/gen
+	@if [ -z "$$(find proto -name '*.proto' -not -path 'proto/gen/*')" ]; then echo "proto: no .proto files yet"; exit 0; fi; \
+	cd proto && $(TOOLS)/buf lint && PATH="$(TOOLS):$$PATH" $(TOOLS)/buf generate
 
-# Lint code (requires golangci-lint)
-lint:
-	@echo "Linting code..."
-	@golangci-lint run ./... || echo "Install golangci-lint for linting"
+tools: $(TOOLS_STAMP) ## install the pinned dev tools into bin/tools
 
-# Install dependencies
-deps:
-	@echo "Installing dependencies..."
-	@go mod download
-	@go mod tidy
-	@echo "✅ Dependencies installed"
+$(TOOLS_STAMP):
+	rm -rf $(TOOLS) && mkdir -p $(TOOLS)
+	GOBIN=$(TOOLS) go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+	GOBIN=$(TOOLS) go install github.com/bufbuild/buf/cmd/buf@$(BUF_VERSION)
+	GOBIN=$(TOOLS) go install google.golang.org/protobuf/cmd/protoc-gen-go@$(PROTOC_GEN_GO_VERSION)
+	GOBIN=$(TOOLS) go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@$(PROTOC_GEN_GO_GRPC_VERSION)
+	touch $@
 
-# Help
-help:
-	@echo "Available targets:"
-	@echo "  make all              - Build all binaries (gateway, encoding-service, transport-service, client)"
-	@echo "  make services         - Build all services (excluding client)"
-	@echo "  make gateway          - Build gateway server only"
-	@echo "  make encoding-service - Build encoding service only"
-	@echo "  make transport-service - Build transport service only"
-	@echo "  make client           - Build client only"
-	@echo "  make clean            - Remove all built binaries"
-	@echo "  make test             - Run tests"
-	@echo "  make fmt              - Format code"
-	@echo "  make deps             - Install/update dependencies"
-	@echo ""
-	@echo "Run targets (development):"
-	@echo "  make run-gateway      - Build and run gateway"
-	@echo "  make run-encoding     - Build and run encoding service"
-	@echo "  make run-transport    - Build and run transport service"
-	@echo "  make run-client       - Build and run client (requires sudo)"
+lab: ## run every transport against every censor module (placeholder until TP-002/TP-024)
+	@echo "lab: the lab doesn't exist yet (TP-002)"; exit 1
 
+lab-up: ## start the lab (placeholder until TP-002)
+	@echo "lab-up: the lab doesn't exist yet (TP-002)"; exit 1
+
+lab-test: ## run the lab tests (placeholder until TP-002)
+	@echo "lab-test: the lab doesn't exist yet (TP-002)"; exit 1
+
+lab-down: ## stop the lab (placeholder until TP-002)
+	@echo "lab-down: the lab doesn't exist yet (TP-002)"; exit 1

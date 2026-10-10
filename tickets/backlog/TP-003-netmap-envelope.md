@@ -15,7 +15,7 @@ branch: ""
 The format every node trusts: a versioned envelope signed by the space key, with one sealed section per node that only that node can open.
 
 ## Scope
-- Schema in protobuf, buf-managed inside this repo (like go-kernel's `contracts/`): header {space id, version, signing public key, recovery public key, hashes of list blobs}, sections [{recipient key id, sealed bytes}], signature.
+- Schema in protobuf in the `proto/` buf module, generated into `proto/gen/` by `make proto` (no `contracts/` tree): header {space id, version, signing public key, recovery public key, hashes of list blobs}, sections [{recipient key id, sealed bytes}], signature.
 - Section payload v1: the node's own settings and the peers it talks to (node ids, WireGuard public keys, overlay addresses, endpoints, transport credentials). Only what M0 needs, extensible.
 - Crypto from `golang.org/x/crypto` only: ed25519 over the exact serialized bytes (never re-encode to verify); sections sealed with X25519 + XChaCha20-Poly1305 (anonymous sealed box). No custom primitives.
 - Padding: section count padded to 8/16/32/… with dummy sections indistinguishable from real ones; section sizes padded to buckets so lengths don't reveal what a node does.

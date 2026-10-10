@@ -19,6 +19,7 @@ Country prefix lists in a compact, content-addressed form the map can reference.
 - CIDR aggregation (merge adjacent and overlapping prefixes) with size stats.
 - Content-addressed blob format (sha256 of canonical bytes) referenced from the map header.
 - `thinkpol dev lists build`.
+- Code lives in `internal/lists` (outside `dataplane`, since the controller builds lists too); distribution is TP-017's `dataplane/blobs`.
 
 ## Acceptance
 - [ ] building the same input twice gives the same hash

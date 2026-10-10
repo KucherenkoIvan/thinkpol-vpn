@@ -2,11 +2,12 @@
 id: TP-048
 title: "Kill switch"
 milestone: M5
-area: platform
+area: dataplane/firewall
 repo: thinkpol-vpn
 size: L
 depends_on: [TP-046, TP-047]
 refs: [D4]
+needs_human: windows
 owner: ""
 branch: ""
 ---

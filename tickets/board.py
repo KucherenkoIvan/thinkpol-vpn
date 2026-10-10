@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Print the ticket board, the tickets ready to start, and validate tickets.
 
-  python3 tickets/board.py            board + ready list
+  python3 tickets/board.py            board + tickets needing a human + ready list
   python3 tickets/board.py -m M0      only one milestone
   python3 tickets/board.py --next-id  next free TP- id
   python3 tickets/board.py --check    validate frontmatter and dependencies
@@ -17,6 +17,7 @@ ROOT = pathlib.Path(__file__).resolve().parent
 COLUMNS = ["backlog", "in-progress", "blocked", "review", "has-errors", "done"]
 REQUIRED = ["id", "title", "milestone", "area", "repo", "size", "depends_on"]
 SIZES = {"S", "M", "L", "epic"}
+NEEDS_HUMAN = {"decision", "macos", "windows", "person"}
 
 
 def parse(path):
@@ -67,6 +68,8 @@ def check(tickets):
                 problems.append(f"{t['id']}: missing {key}")
         if t.get("size") not in SIZES:
             problems.append(f"{t['id']}: size must be one of {sorted(SIZES)}")
+        if "needs_human" in t and t["needs_human"] not in NEEDS_HUMAN:
+            problems.append(f"{t['id']}: needs_human must be one of {sorted(NEEDS_HUMAN)}")
         if not t["path"].name.startswith(t["id"] + "-"):
             problems.append(f"{t['id']}: file name {t['path'].name} doesn't start with its id")
         for dep in t.get("depends_on", []):
@@ -127,9 +130,9 @@ def main():
     if args.waves:
         for n, wave in enumerate(waves(tickets)):
             print(f"wave {n}: " + ", ".join(
-                f"{t['id']}{'*' if t['column'] == 'blocked' else ''}"
+                f"{t['id']}{'*' if t['column'] == 'blocked' else ''}{'!' if t.get('needs_human') else ''}"
                 for t in sorted(wave, key=lambda t: t["id"])))
-        print("(* = blocked)")
+        print("(* = blocked, ! = needs a human)")
         return 0
 
     if args.next_id:
@@ -148,12 +151,17 @@ def main():
         print(f"\n{column.upper()} ({len(items)})")
         for t in items:
             extra = f"  [{t['owner']}]" if t.get("owner") else ""
-            print(f"  {t['id']:8} {t['milestone']:3} {t['size']:5} {t['title']}{extra}")
+            print(f"  {t['id']:8} {t['milestone']:5} {t['size']:5} {t['title']}{extra}")
+
+    print("\nNEEDS HUMAN")
+    for t in sorted(shown, key=lambda t: t["id"]):
+        if t.get("needs_human") and t["column"] != "done":
+            print(f"  {t['id']:8} {t['milestone']:5} {t['needs_human']:8} {t['title']}")
 
     print("\nREADY")
     for t in ready(tickets):
         if not args.milestone or t["milestone"] == args.milestone:
-            print(f"  {t['id']:8} {t['milestone']:3} {t['size']:5} {t['title']}")
+            print(f"  {t['id']:8} {t['milestone']:5} {t['size']:5} {t['title']}")
     return 0
 
 

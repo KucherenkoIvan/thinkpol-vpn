@@ -7,6 +7,7 @@ repo: thinkpol-vpn
 size: M
 depends_on: [TP-018, TP-019]
 refs: [D6, DESIGN#ipv6]
+needs_human: macos
 owner: ""
 branch: ""
 ---
