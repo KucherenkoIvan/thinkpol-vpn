@@ -29,7 +29,7 @@ var ErrEngineClosed = errors.New("dataplane: engine closed")
 
 // The steps of Apply, as Status.LastApplyError names a failed one.
 const (
-	StepSection   = "section"   // the section can't run here: another node's, no IPv4 address, MTU
+	StepSection   = "section"   // the section can't run here: another node's (nothing changed), no IPv4 address, MTU
 	StepRemovals  = "removals"  // taking away peers the section no longer allows
 	StepInterface = "interface" // the TUN's addresses and MTU (netcfg)
 	StepDevices   = "devices"   // WireGuard devices and their Binds' peers
@@ -176,10 +176,11 @@ func hostPrefixes(addrs []netip.Addr) []netip.Prefix {
 // addresses and MTU. What the section holds that can't be used safely is
 // skipped, entry by entry (Status.Skipped), never the whole section.
 //
-// Revocation never waits: the path table, the listeners' tables and the
-// removal of every peer (or peer address) the section no longer allows go
-// first, even when the section can't run here (another node's, no usable
-// IPv4 address) or a later step fails. After a failed step (named by
+// A section of another node changes nothing. Otherwise revocation never
+// waits: the path table, the listeners' tables and the removal of every
+// peer (or peer address) the section no longer allows go first, even when
+// the section can't run here (no usable IPv4 address, MTU) or a later
+// step fails. After a failed step (named by
 // Status.LastApplyError) the engine runs the earlier steps of the new
 // section and the rest of the previous one; peers it added are those both
 // allow. Applying the same section again, or a newer one, converges.
