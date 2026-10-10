@@ -95,3 +95,4 @@ Also:
 - 2026-10-10 docs: Scope corrected to the standard NaCl sealed box (XSalsa20-Poly1305) and to sections without a recipient key id; DESIGN.md "The signed map" now names the header keys, the absent recipient id and equal-length shuffled sections
 - 2026-10-10 in-progress → review — all acceptance checked; `make lint` and `make test` pass
 - 2026-10-10 review → has-errors — 10 architecture, 2 security and 5 further findings from review
+- 2026-10-10 has-errors → in-progress — owner: agent-tp-003, branch: tp-003-netmap-envelope
