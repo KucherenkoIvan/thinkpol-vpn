@@ -12,7 +12,7 @@ The censor this is built against, and the feature that answers each technique:
 |---|---|
 | **DPI** — protocol fingerprints (WireGuard, OpenVPN), SNI and IP blocklists | WireGuard is never on the wire; links between nodes use **transports** that look like ordinary traffic |
 | **Active probing** — connecting to a suspected server to see what answers | Transports authenticate before revealing anything; unauthenticated connections are forwarded to a real site (camouflage target) |
-| **Profiling** — traffic shape, packet sizes and timing, TLS-in-TLS patterns, TLS fingerprints (JA3/JA4) | Browser-grade TLS fingerprints (uTLS); padding and batching in the transport (later) |
+| **Profiling** — traffic shape, packet sizes and timing, TLS-in-TLS patterns, TLS fingerprints (JA3/JA4) | Browser-grade TLS fingerprints (uTLS); padding, batching and timing in the transport (the shaping contract; tuned by the lab) |
 | **Whitelists** — only approved destinations reachable | **Chains**: the first hop is a whitelisted (typically domestic) VPS, which relays to a foreign exit. Disguise alone can't pass a whitelist. Whitelisted addresses are scarce, so **one entry serves several spaces** |
 | **Seizure or inspection of a node** — in-country entries sit in the censor's jurisdiction | **Nodes know only what they need**: their own part of the map, opaque ids, no logs on disk, telemetry only in memory and sealed (see Node safety) |
 
@@ -56,7 +56,7 @@ Two planes. The **data plane** moves packets on every node; the **control plane*
 
 | Transport | Shape | Notes |
 |---|---|---|
-| `udp` | sealed datagrams | baseline; WireGuard-sized packets and an hourly connection id, trivially profiled |
+| `udp` | sealed datagrams | baseline; an hourly connection id and WireGuard's rhythm, trivially profiled; pads to buckets or at random if the link asks |
 | `tls` | TLS 1.3 with a browser fingerprint (uTLS), probe fallback to a real site | the workhorse for client → entry. The client's auth token rides in the ClientHello, so a server can tell its clients from probes before answering anything: probes are proxied whole to the real site and see its certificate. The node's own certificate comes from a pluggable certificate source (self-signed and pinned by the client first; ACME with a real domain is optional, since probes never see it) |
 | `ws` | WebSocket over TLS | can sit behind a CDN, which hides the node's IP |
 | `reality`-style | borrows a real site's TLS handshake, no certificate of our own | later |
@@ -66,7 +66,16 @@ Stream transports carry TCP inside TCP and degrade under loss; datagram transpor
 
 **The map says, the engine converts, the transport decides.** Each transport's settings (listener, dial side, inbound side) are its own protobuf messages in `proto/thinkpol/transport/v1/`: the controller encodes them, the transport's adapter decodes them, and the map and everything between carry them as opaque bytes. The conversion from the map to the transport port's types lives in the data-plane engine (`internal/dataplane`), not in `netmap` or the adapters; it checks each entry with the transport before using it. Endpoints in the map are IP literals: the controller resolves names, nodes never resolve them at dial time. Transports may rely on clocks: nodes' clocks must agree within five minutes (`udp` drops datagrams sealed further from its own clock).
 
-**Transports own traffic shape.** WireGuard's fixed packet sizes and its rhythm (rekey every 2 minutes, keepalives) would show through any wrapper, and only the transport knows what traffic it's imitating. So padding, batching and timing are part of the transport contract, each with its own settings; the layers above never pad. The lab measures how much is enough per transport.
+**Transports own traffic shape.** WireGuard's fixed packet sizes and its rhythm (rekey every 2 minutes, keepalives) would show through any wrapper, and only the transport knows what traffic it's imitating. So padding, batching and timing are part of the transport contract; the layers above never pad. The contract (`transport.Shaping`, encoded as `thinkpol.transport.v1.Shaping`):
+
+- **What can be asked:** padding of each wire unit (datagram or record) to size buckets or by a random amount in a range, a batching window, timing jitter, idle cover traffic. Sizes are what a capture sees.
+- **Per end, from the map:** each end of a link shapes what *it* sends: the map's endpoint carries the dialing end's shaping, its inbound link the listening end's, in a `shaping` field next to the transport's settings; the engine decodes it and the adapter checks it. Receivers undo shaping from the wire format alone, so nothing is negotiated and the two ends needn't agree.
+- **Refuse, never weaken:** an adapter refuses a link whose shaping it can't honour, and a node refuses shaping fields it doesn't know, rather than shape less than the map asks. Padding and cover sit inside the transport's encryption, so they never touch its authentication or replay protection. The message's rules live in `internal/shaping`, which both the map's builder (it never publishes shaping no node could read) and the transport port use.
+- **Rollout:** refusing is safe only if the controller never asks a node for what it can't do. So the controller puts shaping (or a new shaping field or value) into a link only when both ends' nodes reported supporting it: agents report their version and transport/shaping capabilities when they register and when they update, and the controller keeps the newest report per node. A link whose ends don't both support a shaping goes unshaped (or keeps the old shaping) until they do.
+- **MTU:** `Overhead(shaping)` is the fixed per-packet cost plus the most random padding adds; under bucket padding a packet that fits the path can still round up past it, so the path layer budgets WireGuard's MTU with `transport.MaxPacket(transport, shaping, unit)`.
+- **Control packets:** the layers above mark packets that only keep a link warm or measure it (probes, keepalives) with `transport.WriteControl`, so a transport can fold their rhythm into its own (pad and jitter them like data, hold one up to 500 ms to ride with data or cover, or send it as cover). WireGuard's handshakes and data never go that way. A round trip timed with control packets, or through batching or jitter, is an upper bound: liveness can rest on it, latency comparisons are made on unheld traffic (e.g. WireGuard's handshake round trip).
+
+`udp` implements padding and refuses the rest; the lab measures how much is enough per transport and tunes the defaults (none, until it says otherwise).
 
 **Egress** (nodes that allow egress, Linux): IP forwarding + nftables masquerade for the overlay range. A userspace TCP/IP stack is a later alternative.
 
@@ -110,7 +119,7 @@ GeoIP alone misroutes CDNs (foreign services on domestic IPs and vice versa), so
 
 **DNS is routing.** A resolver on the node's overlay address answers overlay names (`<device>.<space>.internal`; `.internal` is reserved for private use, so a space name can never shadow a real domain), sends `direct` domains to a domestic upstream, and everything else through the tunnel to a resolver at the exit. No DNS leaks, and GeoIP isn't fed CDN answers from the wrong country.
 
-**Lists**: v2fly geoip/geosite or DB-IP Lite. The map references them by content hash: the header lists every blob the space uses, the set relays cache and pass on, and each section names only the blobs its node uses. Nodes fetch and cache them from peers. The hashes of public lists are visible to every node holding the envelope, which only tells a node that the space uses, say, a Russian GeoIP list: an accepted leak.
+**Lists**: v2fly geoip/geosite or DB-IP Lite. The map references them by content hash: the header lists every blob the space uses, the set relays cache and pass on, and each section names only the blobs its node uses. A GeoIP blob is one list (a country) as its minimal set of IPv4 and IPv6 prefixes in a canonical encoding, so the same addresses always give the same hash, whatever the source or its order. Lists are built from files the operator downloads (DB-IP Lite, CC BY 4.0, by default); no third-party data lives in the repo and nodes never fetch from outside the network. Nodes fetch and cache them from peers. The hashes of public lists are visible to every node holding the envelope, which only tells a node that the space uses, say, a Russian GeoIP list: an accepted leak.
 
 ### IPv6
 
@@ -224,6 +233,8 @@ internal/
     telemetry/
   netmap/                 # the signed map: envelope, sealed sections, signing, verification, gossip
   lists/                  # GeoIP/geosite lists: importers, CIDR aggregation, the content-addressed blob format
+  shaping/                # the rules of the map's shaping message, shared by netmap's builder and the transport port
+  devmap/                 # development tooling until the controller: maps from a hand-written YAML spec, dev key files (`dev keygen`, `dev map`)
   features/               # control plane bounded contexts (spaces, members, nodes, hosting, topology, policy, invites, provisioning, publishing, telemetry); no code in the root
     <feature>/adapters/http/   # that feature's admin panel pages
   shared/                 # shared/domain, shared/ports, shared/infra as in go-kernel; no code in the root
@@ -269,7 +280,7 @@ Scope per milestone is in [PRD.md](PRD.md#release-plan); these are the technical
 | M4 | Controller on go-kernel: spaces, members, invites, SSH provisioning with hardening, map gossip, hosting grants and shared nodes, telemetry, admin panel with canvas | a fresh box joins with one command and shows up on the canvas; a second space shares the entry and the isolation and seizure checks pass |
 | M5 | Desktop client: service + tray app on macOS, Linux, Windows; kill switch; connect-on-boot; invite links; space switcher | a non-technical member joins from an invite without a terminal |
 
-After the MVP: Android, userspace enforcement (domain rules), direct paths, traffic shaping, `ws` behind a CDN, ephemeral nodes.
+After the MVP: Android, userspace enforcement (domain rules), direct paths, tuned traffic shaping, `ws` behind a CDN, ephemeral nodes.
 
 ## Out of scope (for now)
 

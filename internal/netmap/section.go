@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"strconv"
 
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/shaping"
 	netmapv1 "github.com/KucherenkoIvan/thinkpol-vpn/proto/gen/thinkpol/netmap/v1"
 )
 
@@ -112,6 +113,10 @@ type Endpoint struct {
 	// Settings are transport-owned (certificate pin, SNI, WebSocket path),
 	// encoded by the transport.
 	Settings []byte
+	// Shaping is how this node shapes what it sends on the link, an
+	// encoded thinkpol.transport.v1.Shaping (empty for none) that the
+	// data-plane engine decodes.
+	Shaping []byte
 }
 
 // InboundLink lets an adjacent node connect to this node's listener for a
@@ -125,9 +130,12 @@ type InboundLink struct {
 	// hash or public key where the transport allows, so a seized node can't
 	// impersonate its peers; for a symmetric transport, the shared secret.
 	Credential []byte
-	// Settings are transport-owned settings for this link (how the listener
-	// side shapes and configures what it sends), encoded by the transport.
+	// Settings are transport-owned settings for this link, encoded by the
+	// transport.
 	Settings []byte
+	// Shaping is how this node shapes what it sends on the link, as on an
+	// Endpoint.
+	Shaping []byte
 }
 
 // Route sends relayed packets for Destination to an adjacent next hop.
@@ -319,7 +327,7 @@ func (s *Section) validate(headerBlobs []BlobRef) error {
 			if err := checkCredential(e.Credential); err != nil {
 				return fmt.Errorf("link to %v: %w", l.Peer, err)
 			}
-			if err := checkSettings(e.Settings); err != nil {
+			if err := checkSettings(e.Settings, e.Shaping); err != nil {
 				return fmt.Errorf("link to %v: %w", l.Peer, err)
 			}
 			k := transportAddr{e.Transport, e.Address}
@@ -344,7 +352,7 @@ func (s *Section) validate(headerBlobs []BlobRef) error {
 		if err := checkCredential(in.Credential); err != nil {
 			return fmt.Errorf("inbound link from %v: %w", in.Peer, err)
 		}
-		if err := checkSettings(in.Settings); err != nil {
+		if err := checkSettings(in.Settings, in.Shaping); err != nil {
 			return fmt.Errorf("inbound link from %v: %w", in.Peer, err)
 		}
 		k := transportCredential{in.Transport, string(in.Credential)}
@@ -439,9 +447,24 @@ func checkCredential(c []byte) error {
 	return nil
 }
 
-func checkSettings(b []byte) error {
-	if len(b) > maxSettings {
-		return fmt.Errorf("transport settings of %d bytes", len(b))
+// checkSettings bounds transport-owned bytes: settings, and shaping where
+// there is one. Shaping must also decode under internal/shaping's rules
+// (the same the transport port applies), so the builder never publishes
+// shaping that every node would refuse.
+func checkSettings(settings []byte, shapingBytes ...[]byte) error {
+	if len(settings) > maxSettings {
+		return fmt.Errorf("transport settings of %d bytes", len(settings))
+	}
+	for _, b := range shapingBytes {
+		if len(b) > maxSettings {
+			return fmt.Errorf("shaping of %d bytes", len(b))
+		}
+		if len(b) == 0 {
+			continue
+		}
+		if _, err := shaping.Decode(b); err != nil {
+			return fmt.Errorf("shaping: %w", err)
+		}
 	}
 	return nil
 }
@@ -479,7 +502,7 @@ func sectionToProto(s *Section, h *Header) *netmapv1.Section {
 		pl := &netmapv1.Link{Peer: idBytes(l.Peer)}
 		for _, e := range l.Endpoints {
 			pl.Endpoints = append(pl.Endpoints, &netmapv1.Endpoint{
-				Transport: e.Transport, Address: addrPortString(e.Address), Credential: e.Credential, Settings: e.Settings,
+				Transport: e.Transport, Address: addrPortString(e.Address), Credential: e.Credential, Settings: e.Settings, Shaping: e.Shaping,
 			})
 		}
 		pb.Links = append(pb.Links, pl)
@@ -487,7 +510,7 @@ func sectionToProto(s *Section, h *Header) *netmapv1.Section {
 	for _, in := range s.Inbound {
 		pb.Inbound = append(pb.Inbound, &netmapv1.InboundLink{
 			Peer: idBytes(in.Peer), PeerKind: netmapv1.NodeKind(in.PeerKind), Transport: in.Transport,
-			Credential: in.Credential, Settings: in.Settings,
+			Credential: in.Credential, Settings: in.Settings, Shaping: in.Shaping,
 		})
 	}
 	for _, r := range s.Routes {
@@ -566,13 +589,13 @@ func sectionFromProto(pb *netmapv1.Section) (Section, error) {
 				return s, fmt.Errorf("link to %v: %w", l.Peer, err)
 			}
 			l.Endpoints = append(l.Endpoints, Endpoint{
-				Transport: e.GetTransport(), Address: addr, Credential: e.GetCredential(), Settings: e.GetSettings(),
+				Transport: e.GetTransport(), Address: addr, Credential: e.GetCredential(), Settings: e.GetSettings(), Shaping: e.GetShaping(),
 			})
 		}
 		s.Links = append(s.Links, l)
 	}
 	for _, pin := range pb.GetInbound() {
-		in := InboundLink{Transport: pin.GetTransport(), Credential: pin.GetCredential(), Settings: pin.GetSettings()}
+		in := InboundLink{Transport: pin.GetTransport(), Credential: pin.GetCredential(), Settings: pin.GetSettings(), Shaping: pin.GetShaping()}
 		if in.Peer, err = toArray[NodeID]("inbound peer", pin.GetPeer()); err != nil {
 			return s, err
 		}

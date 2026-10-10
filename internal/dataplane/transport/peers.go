@@ -15,7 +15,8 @@ type PeerLink struct {
 	Verifier []byte
 	// Settings is the transport's own settings message for the link.
 	Settings []byte
-	Shaping  Shaping
+	// Shaping is how the listening end shapes what it sends on this link.
+	Shaping Shaping
 }
 
 // PeerError is a peer link a listener couldn't use, and why.

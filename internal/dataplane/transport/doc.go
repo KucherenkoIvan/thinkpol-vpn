@@ -16,9 +16,10 @@
 //
 // WritePacket may block for backpressure. Close unblocks pending reads and
 // writes. An error matching [net.ErrClosed] is final: the link is closed,
-// locally, by its listener (with [ErrRevoked] or [ErrSuperseded] as the
-// cause), or by the adapter itself when it hit an error it can't recover
-// from ([ClosedError] with that error as the cause). Any other error loses
+// locally, by its listener (with [ErrRevoked], [ErrSuperseded] or
+// [ErrSettingsRefused] as the cause), or by the adapter itself when it hit
+// an error it can't recover from ([ClosedError] with that error as the
+// cause). Any other error loses
 // only the packet at hand. Liveness is not the transport's business: a
 // datagram link whose peer went away simply stops delivering, and the path
 // layer above notices and redials.
@@ -42,7 +43,8 @@
 // [ErrSuperseded] (stream transports), or the existing link carries on and
 // follows the dialer (datagram transports without a handshake). When the
 // table changes, links whose credential is gone are closed ([ErrRevoked]);
-// links whose credential stays pick up their new settings. Accept may
+// links whose credential stays pick up their new settings, or close with
+// [ErrSettingsRefused] if the transport refuses them. Accept may
 // return a link that is already closed. Closing a listener closes every link
 // it accepted; a dialer's link either carries on with a listener restarted
 // at the same endpoint or closes, so the layer above redials.
@@ -62,8 +64,19 @@
 // CheckEndpoint and CheckInbound and finds transports by name in a
 // [Registry] built in the composition root.
 //
-// Traffic shape (padding, batching, timing) belongs to the transport, never
-// to the layers above (C6); [Shaping] is where its settings go.
+// # Traffic shape
+//
+// Traffic shape (padding, batching, timing, cover traffic) belongs to the
+// transport, never to the layers above (C6). Each end of a link shapes
+// what it sends as its [Shaping] says; the map carries it per end, encoded
+// as thinkpol.transport.v1.Shaping, and the engine decodes it with
+// [ParseShaping]. Receivers undo shaping from the wire format alone, so
+// there is nothing to negotiate. An adapter refuses a link whose shaping it
+// can't honour ([ShapingSupport], [ErrUnsupportedShaping]) instead of
+// shaping less than the map asks. [MaxPacket] is the path layer's MTU
+// budget under a shaping. The layers above never pad, but they mark the
+// packets that only keep a link warm ([WriteControl]), so a transport can
+// fold their rhythm into its own.
 //
 // # Shared listeners
 //
