@@ -1,0 +1,166 @@
+// The signed network map (DESIGN.md "The signed map"). Go code reads and
+// writes it only through internal/netmap, which owns the invariants below.
+syntax = "proto3";
+
+package thinkpol.netmap.v1;
+
+// Envelope is what is stored and gossiped. The signature is Ed25519ctx
+// (RFC 8032) by the space's signing key, context "thinkpol-vpn netmap v1",
+// over the exact bytes of `body`: verifiers never re-encode Body.
+//
+// An envelope is canonical: exactly these fields, in this order, no unknown
+// fields. Anything else is rejected.
+message Envelope {
+  // A serialized Body.
+  bytes body = 1;
+  bytes signature = 2;
+
+  // Recovery records (repeated SignedRecoveryRecord) travel here once
+  // signing-key rotation exists (TP-036).
+  reserved 3;
+}
+
+// Body is the signed content of an envelope.
+message Body {
+  // The envelope format. Field 1 stays the format in every version, so an
+  // older node can tell that it can't read a newer envelope. Bumped for any
+  // change an older node must not silently ignore; additive fields don't
+  // bump it.
+  uint32 format = 1;
+  Header header = 2;
+  // Padded to a power of two (at least 8) with dummy sections, all of the
+  // same length and in random order.
+  repeated SealedSection sections = 3;
+}
+
+// Header is readable by anyone holding the envelope, including every node
+// that relays it by gossip: it holds nothing about nodes or members.
+message Header {
+  // 16 random bytes, fixed for the life of the space.
+  bytes space_id = 1;
+  // Strictly increasing; nodes reject anything not higher than what they run.
+  uint64 version = 2;
+  // Ed25519 public key that signs this envelope.
+  bytes signing_public_key = 3;
+  // Ed25519 public key of the space's offline recovery key (PRD A11).
+  bytes recovery_public_key = 4;
+  // Content-addressed blobs the space uses (GeoIP lists, later releases).
+  repeated BlobRef blobs = 5;
+}
+
+// BlobRef names a blob by content (TP-016, TP-017).
+message BlobRef {
+  bytes sha256 = 1;
+  uint64 size = 2;
+}
+
+// SealedSection is an anonymous NaCl sealed box (X25519, XSalsa20-Poly1305,
+// as libsodium's crypto_box_seal) holding a padded serialized Section. There
+// is no recipient id: a node finds its section by trying to open each one,
+// so nothing links a section to a node, or a node's sections across versions.
+message SealedSection {
+  bytes sealed = 1;
+}
+
+// Section is one node's need-to-know part of the map (DESIGN.md "Node
+// safety"): only what that node uses, with every node known by an opaque id.
+// Before sealing it is padded ISO/IEC 7816-4 style (0x80, then zeros) to the
+// length shared by every section of the envelope.
+message Section {
+  // Bind the section to its envelope: a section is sealed afresh for every
+  // version and can't be replayed into another space or version.
+  bytes space_id = 1;
+  uint64 map_version = 2;
+
+  // The recipient's own settings.
+  NodeSettings node = 3;
+  // End-to-end WireGuard peers.
+  repeated Peer peers = 4;
+  // Adjacent nodes this node dials.
+  repeated Link links = 5;
+  // Adjacent nodes allowed to connect to this node's listeners.
+  repeated InboundLink inbound = 6;
+  // Node ids this node may forward relayed packets to.
+  repeated bytes relay_to = 7;
+}
+
+enum NodeKind {
+  NODE_KIND_UNSPECIFIED = 0;
+  NODE_KIND_SERVER = 1;
+  NODE_KIND_DEVICE = 2;
+}
+
+message NodeSettings {
+  // 8 random bytes, unique within the space.
+  bytes id = 1;
+  NodeKind kind = 2;
+  // The node's overlay addresses: one IPv4, one IPv6, canonical text form.
+  string ipv4 = 3;
+  string ipv6 = 4;
+  // The space's overlay ranges: an IPv4 prefix inside 100.64.0.0/10 and a
+  // ULA /48, canonical text form.
+  string ipv4_network = 5;
+  string ipv6_network = 6;
+  // Transports this node listens on (servers).
+  repeated Listener listeners = 7;
+}
+
+message Listener {
+  string transport = 1;
+  // host:port to bind; the host may be empty for every address.
+  string address = 2;
+}
+
+message Peer {
+  bytes id = 1;
+  // WireGuard (Curve25519) public key, 32 bytes.
+  bytes wireguard_public_key = 2;
+  // Overlay addresses, canonical text form: the peer's WireGuard allowed IPs.
+  repeated string addresses = 3;
+  // Candidate paths to the peer.
+  repeated Path paths = 4;
+}
+
+// Path is the relays a packet crosses to reach a peer, in order. An empty
+// path is a direct link to the peer.
+message Path {
+  repeated bytes via = 1;
+}
+
+message Link {
+  bytes peer = 1;
+  // Ways to reach the peer, in order of preference.
+  repeated Endpoint endpoints = 2;
+}
+
+message Endpoint {
+  string transport = 1;
+  // host:port to dial.
+  string address = 2;
+  // Transport-specific credential for this link.
+  bytes credential = 3;
+}
+
+message InboundLink {
+  bytes peer = 1;
+  string transport = 2;
+  bytes credential = 3;
+}
+
+// SignedRecoveryRecord is signed by the space's recovery key, Ed25519ctx with
+// context "thinkpol-vpn recovery v1", over the exact bytes of `record`.
+// Reserved here; built and accepted by TP-036.
+message SignedRecoveryRecord {
+  // A serialized RecoveryRecord.
+  bytes record = 1;
+  bytes signature = 2;
+}
+
+// RecoveryRecord is the one statement a recovery key can make: "the signing
+// key of this space is now X".
+message RecoveryRecord {
+  bytes space_id = 1;
+  // Strictly increasing per space, so an old rotation can't be replayed.
+  uint64 sequence = 2;
+  bytes signing_public_key = 3;
+}
