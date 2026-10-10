@@ -50,16 +50,39 @@ func TestKeysAndIDsRoundTrip(t *testing.T) {
 }
 
 func TestPrivateKeyIsRedacted(t *testing.T) {
-	key := GenerateNodeKey()
-	secret := hex.EncodeToString(key[:])
-	for _, format := range []string{"%v", "%s", "%x", "%#v", "%+v"} {
-		out := fmt.Sprintf(format, key)
-		if strings.Contains(out, secret) || strings.Contains(out, fmt.Sprint(key[0], " ", key[1])) {
-			t.Errorf("%s prints the key: %s", format, out)
+	node, wg := GenerateNodeKey(), GenerateWireGuardKey()
+	for _, tt := range []struct {
+		key    any
+		secret [32]byte
+	}{{node, node}, {wg, wg}, {struct{ K NodePrivateKey }{node}, node}, {struct{ K WireGuardPrivateKey }{wg}, wg}} {
+		secret := hex.EncodeToString(tt.secret[:])
+		for _, format := range []string{"%v", "%s", "%x", "%#v", "%+v"} {
+			out := fmt.Sprintf(format, tt.key)
+			if strings.Contains(out, secret) || strings.Contains(out, fmt.Sprint(tt.secret[0], " ", tt.secret[1])) {
+				t.Errorf("%s prints the key: %s", format, out)
+			}
 		}
 	}
-	if out := fmt.Sprintf("%+v", struct{ K NodePrivateKey }{key}); strings.Contains(out, secret) {
-		t.Errorf("a struct holding the key prints it: %s", out)
+}
+
+func TestWireGuardPrivateKey(t *testing.T) {
+	// RFC 7748, section 6.1: Bob's X25519 key pair.
+	bob, err := ParseWireGuardPrivateKey("5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := bob.Public().String(); got != "de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f" {
+		t.Fatalf("Public() = %s, not the X25519 public key", got)
+	}
+	k := GenerateWireGuardKey()
+	if k[0]&7 != 0 || k[31]&0x80 != 0 || k[31]&0x40 == 0 {
+		t.Fatal("generated key not clamped")
+	}
+	if got, err := ParseWireGuardPrivateKey(hex.EncodeToString(k[:])); err != nil || got != k {
+		t.Fatalf("round trip: %v", err)
+	}
+	if _, err := ParseWireGuardPrivateKey("00"); err == nil {
+		t.Fatal("short key accepted")
 	}
 }
 

@@ -1,0 +1,94 @@
+space: 6ae6783f4fbde91b6eb88b73a48ed247
+key epoch: 0
+version: 7
+signing key: 8ce7d8094f97d521e69366f3a7ed8af70d18e9ed8a648043d97467de3cbd028e
+recovery key: 38a6c51887ea98cc241b3af8bbcd090b13435dc9026831b2661dec7aac9dbf39
+blobs: none
+sections: 8
+size: 66130 bytes
+
+# section of server-1
+node: a1e2d7676663f3d4 (server-1)
+kind: server
+ipv4: 100.64.0.1 in 100.64.0.0/10
+ipv6: fddb:e588:2e25::1 in fddb:e588:2e25::/48
+listeners:
+  - udp://0.0.0.0:4500
+  - udp://[::]:4500
+peers:
+  - id: f2b29856eb44337c (device-a)
+    wireguard key: d0bf1e89f6df2db9b5a012432cd7f3c6870b50f0e1cad83c6f48ae45c954014c
+    addresses: 100.64.0.2, fddb:e588:2e25::2
+    first hops:
+      - f2b29856eb44337c (device-a)
+  - id: 982fe5e68ec4fe9d (device-b)
+    wireguard key: f99b18e47cf083e58beb84372451720eb343e7ede820dcaef0db9928da4a4868
+    addresses: 100.64.0.3, fddb:e588:2e25::3
+    first hops:
+      - 982fe5e68ec4fe9d (device-b)
+links: none
+inbound:
+  - peer: f2b29856eb44337c (device-a), device
+    udp, credential 32 bytes, sha256 0811569a…
+  - peer: 982fe5e68ec4fe9d (device-b), device
+    udp, credential 32 bytes, sha256 e65c5ff4…
+routes:
+  - to: 982fe5e68ec4fe9d (device-b)
+    next hops:
+      - 982fe5e68ec4fe9d (device-b)
+  - to: f2b29856eb44337c (device-a)
+    next hops:
+      - f2b29856eb44337c (device-a)
+blobs: none
+
+# section of device-a
+node: f2b29856eb44337c (device-a)
+kind: device
+ipv4: 100.64.0.2 in 100.64.0.0/10
+ipv6: fddb:e588:2e25::2 in fddb:e588:2e25::/48
+listeners: none
+peers:
+  - id: a1e2d7676663f3d4 (server-1)
+    wireguard key: 8f357fe0d1907d7e77a128e319570f40029d94d9035225d3b175f644a0229336
+    addresses: 100.64.0.1, fddb:e588:2e25::1
+    first hops:
+      - a1e2d7676663f3d4 (server-1)
+  - id: 982fe5e68ec4fe9d (device-b)
+    wireguard key: f99b18e47cf083e58beb84372451720eb343e7ede820dcaef0db9928da4a4868
+    addresses: 100.64.0.3, fddb:e588:2e25::3
+    first hops:
+      - a1e2d7676663f3d4 (server-1)
+links:
+  - peer: a1e2d7676663f3d4 (server-1)
+    endpoints:
+      - udp://192.0.2.10:4500, credential 32 bytes, sha256 0811569a…
+      - udp://[2001:db8::10]:4500, credential 32 bytes, sha256 0811569a…
+inbound: none
+routes: none
+blobs: none
+
+# section of device-b
+node: 982fe5e68ec4fe9d (device-b)
+kind: device
+ipv4: 100.64.0.3 in 100.64.0.0/10
+ipv6: fddb:e588:2e25::3 in fddb:e588:2e25::/48
+listeners: none
+peers:
+  - id: a1e2d7676663f3d4 (server-1)
+    wireguard key: 8f357fe0d1907d7e77a128e319570f40029d94d9035225d3b175f644a0229336
+    addresses: 100.64.0.1, fddb:e588:2e25::1
+    first hops:
+      - a1e2d7676663f3d4 (server-1)
+  - id: f2b29856eb44337c (device-a)
+    wireguard key: d0bf1e89f6df2db9b5a012432cd7f3c6870b50f0e1cad83c6f48ae45c954014c
+    addresses: 100.64.0.2, fddb:e588:2e25::2
+    first hops:
+      - a1e2d7676663f3d4 (server-1)
+links:
+  - peer: a1e2d7676663f3d4 (server-1)
+    endpoints:
+      - udp://192.0.2.10:4500, credential 32 bytes, sha256 e65c5ff4…
+      - udp://[2001:db8::10]:4500, credential 32 bytes, sha256 e65c5ff4…
+inbound: none
+routes: none
+blobs: none

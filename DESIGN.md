@@ -222,6 +222,7 @@ internal/
     telemetry/
   netmap/                 # the signed map: envelope, sealed sections, signing, verification, gossip
   lists/                  # GeoIP/geosite lists: importers, CIDR aggregation, the content-addressed blob format
+  devmap/                 # development tooling until the controller: maps from a hand-written YAML spec, dev key files (`dev keygen`, `dev map`)
   features/               # control plane bounded contexts (spaces, members, nodes, hosting, topology, policy, invites, provisioning, publishing, telemetry); no code in the root
     <feature>/adapters/http/   # that feature's admin panel pages
   shared/                 # shared/domain, shared/ports, shared/infra as in go-kernel; no code in the root
