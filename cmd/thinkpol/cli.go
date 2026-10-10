@@ -39,6 +39,13 @@ func register(c command) {
 	if _, dup := commands[c.path]; dup {
 		panic("thinkpol: command registered twice: " + c.path)
 	}
+	// A group prefix is never itself a command, so `thinkpol dev` always
+	// lists the group instead of running something.
+	for path := range commands {
+		if strings.HasPrefix(path, c.path+" ") || strings.HasPrefix(c.path, path+" ") {
+			panic(fmt.Sprintf("thinkpol: command %q and command %q: a group prefix can't be a command", c.path, path))
+		}
+	}
 	commands[c.path] = c
 }
 
@@ -141,7 +148,10 @@ func isGroup(prefix string) bool {
 
 // synopsis prints one command's usage line and summary.
 func synopsis(w io.Writer, path string) {
-	c := commands[path]
+	c, ok := commands[path]
+	if !ok {
+		panic(fmt.Sprintf("thinkpol: no command %q (a FlagSet passed to parseFlags must be named after its command)", path))
+	}
 	line := "usage: thinkpol " + path
 	if c.args != "" {
 		line += " " + c.args

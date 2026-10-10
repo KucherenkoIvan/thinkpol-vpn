@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"runtime"
 	"runtime/debug"
@@ -16,7 +17,11 @@ func init() {
 }
 
 func runVersion(_ context.Context, e env, args []string) error {
-	if len(args) > 0 {
+	fs := flag.NewFlagSet("version", flag.ContinueOnError)
+	if err := parseFlags(fs, e, args); err != nil {
+		return err
+	}
+	if fs.NArg() > 0 {
 		return errUsage
 	}
 	_, err := fmt.Fprintf(e.stdout, "thinkpol %s %s %s/%s\n", resolveVersion(), runtime.Version(), runtime.GOOS, runtime.GOARCH)

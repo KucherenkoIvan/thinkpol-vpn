@@ -22,9 +22,9 @@ thinkpol-vpn is a self-hosted virtual network that survives a censor: one Go bin
 ## Conventions
 
 - English everywhere. Name things for what they are; the mechanism should be readable from the name.
-- **Commands.** `cmd/thinkpol` has one file per command, registered from `init` with a space-separated path. A command group is just a shared prefix: adding `dev lists build` is one new file. Command files are composition roots: they parse flags (`parseFlags`), build adapters and call into `internal/`, with no logic of their own. Internal commands (e.g. `worker`) are `hidden`.
+- **Commands.** `cmd/thinkpol` has one file per command, registered from `init` with a space-separated path. A command group is just a shared prefix: adding `dev lists build` is one new file. A group prefix is never itself a command (`register` panics). Command files are composition roots: they parse flags (`parseFlags`), build adapters and call into `internal/`, with no logic of their own. Internal commands (e.g. `worker`) are `hidden`.
 - **Control plane** features follow go-kernel's [service structure](https://github.com/KucherenkoIvan/go-kernel/blob/main/docs/architecture/1-service-structure.md), with `ddd.DomainError` values for expected failures. The **data plane** is plain ports and adapters, no DDD aggregates.
-- **OS-specific code** goes in per-OS files (`_linux.go`, `_darwin.go`, `_windows.go`) inside the package it belongs to; there is no platform tree.
+- **OS-specific code** goes in per-OS files (`_linux.go`, `_darwin.go`, `_windows.go`) inside the package it belongs to; there is no platform tree. Android counts as linux for build tags: `_linux.go` files are in the Android build; desktop-only Linux code needs `//go:build linux && !android`.
 - **Tests** assert behavior, not call sequences, and prefer real components over mocks. A test that needs root or network namespaces starts with `if os.Getenv("THINKPOL_LAB") == "" { t.Skip("needs the lab") }` and runs inside lab containers.
 - Comments state non-obvious constraints only.
 

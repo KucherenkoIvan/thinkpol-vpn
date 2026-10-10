@@ -18,7 +18,7 @@ LINT_GOOS := darwin linux windows
 # Pure Go, no cgo (DESIGN.md "Repository layout").
 NOCGO_PKGS := ./internal/dataplane/... ./internal/netmap/... ./internal/lists/...
 # What must build for Android: the above minus the desktop-only packages.
-MOBILE_PKGS = $(shell go list $(NOCGO_PKGS) | grep -vE '/internal/dataplane/(tun|egress|firewall)(/|$$)')
+DESKTOP_ONLY_RE := /internal/dataplane/(tun|egress|firewall)(/|$$)
 
 # cgo is off unless a target turns it on (test-race).
 export CGO_ENABLED := 0
@@ -46,7 +46,10 @@ lint: $(TOOLS_STAMP) ## gofmt, then go vet + golangci-lint per OS, the Android b
 		GOOS=$$os $(TOOLS)/golangci-lint run --allow-serial-runners ./... || exit 1; \
 	done
 	@echo "build for android/arm64"
-	@GOOS=android GOARCH=arm64 go build $(MOBILE_PKGS)
+	@pkgs=$$(GOOS=android GOARCH=arm64 go list $(NOCGO_PKGS)) || exit 1; \
+	pkgs=$$(echo "$$pkgs" | grep -vE '$(DESKTOP_ONLY_RE)'); \
+	if [ -z "$$pkgs" ]; then echo "no packages to build for android"; exit 1; fi; \
+	GOOS=android GOARCH=arm64 go build $$pkgs
 	@$(MAKE) --no-print-directory nocgo
 
 nocgo: ## fail if the data plane, the map or the lists depend on cgo

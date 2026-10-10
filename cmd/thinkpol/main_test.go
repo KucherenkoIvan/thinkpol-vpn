@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"io"
 	"runtime"
 	"strings"
 	"testing"
@@ -71,4 +72,36 @@ func TestHelpListsVisibleCommands(t *testing.T) {
 	if strings.Contains(stdout, "t hidden") {
 		t.Fatalf("hidden command listed: %q", stdout)
 	}
+}
+
+func TestVersionHelpExitsZero(t *testing.T) {
+	code, _, stderr := runCLI(t, "version", "-h")
+	if code != 0 || !strings.HasPrefix(stderr, "usage: thinkpol version\n") {
+		t.Fatalf("exit %d, stderr %q", code, stderr)
+	}
+}
+
+func TestRegisterRejectsCommandThatIsAGroupPrefix(t *testing.T) {
+	for _, path := range []string{"t", "t a x", "version x"} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("register(%q) did not panic", path)
+				}
+			}()
+			register(command{path: path, run: runTA})
+		}()
+		if _, ok := commands[path]; ok {
+			t.Errorf("register(%q) panicked but kept the command", path)
+		}
+	}
+}
+
+func TestSynopsisPanicsOnUnknownCommand(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Error("synopsis of an unknown command did not panic")
+		}
+	}()
+	synopsis(io.Discard, "no such command")
 }
