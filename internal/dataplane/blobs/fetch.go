@@ -20,6 +20,9 @@ var (
 	errNotHere  = errors.New("blobs: the peer doesn't hold it")
 	errBusy     = errors.New("blobs: the peer is busy")
 	errNoSource = errors.New("blobs: no overlay address of the peer's family")
+	// errTooSlow is a transfer that didn't finish within its time: dial
+	// timeout plus its size at the minimum rate.
+	errTooSlow = errors.New("blobs: the transfer was too slow")
 )
 
 // resumes bounds how often a transfer that broke after making progress is
@@ -33,7 +36,7 @@ func (s *Service) fetchFrom(ctx context.Context, p Plan, peer Peer, ref netmap.B
 	var buf []byte
 	err := errNoSource
 	for _, addr := range peer.Addrs {
-		local, ok := sourceFor(p.Listen, addr)
+		local, ok := sourceFor(p.Local, addr)
 		if !ok {
 			continue
 		}
@@ -43,7 +46,7 @@ func (s *Service) fetchFrom(ctx context.Context, p Plan, peer Peer, ref netmap.B
 			if err == nil {
 				return buf, nil
 			}
-			if errors.Is(err, errNotHere) || errors.Is(err, errBusy) || errors.Is(err, errProtocol) || ctx.Err() != nil {
+			if errors.Is(err, errNotHere) || errors.Is(err, errBusy) || errors.Is(err, errProtocol) || errors.Is(err, errTooSlow) || ctx.Err() != nil {
 				return nil, err
 			}
 			if len(buf) == before || attempt == resumes {
@@ -68,8 +71,17 @@ func sourceFor(own []netip.Addr, addr netip.Addr) (netip.Addr, bool) {
 }
 
 // fetchOnce makes one request for ref from len(*buf) on, appending what
-// arrives to *buf.
-func (s *Service) fetchOnce(ctx context.Context, iface string, local netip.Addr, remote netip.AddrPort, ref netmap.BlobRef, buf *[]byte) error {
+// arrives to *buf, within DialTimeout plus what is left at MinRate: a peer
+// that trickles can't hold the fetch loop up for longer.
+func (s *Service) fetchOnce(ctx context.Context, iface string, local netip.Addr, remote netip.AddrPort, ref netmap.BlobRef, buf *[]byte) (err error) {
+	parent := ctx
+	ctx, stopAll := context.WithTimeout(ctx, s.limits.transferTimeout(ref.Size-uint64(len(*buf)), s.limits.MinRate))
+	defer stopAll()
+	defer func() {
+		if err != nil && parent.Err() == nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			err = errTooSlow
+		}
+	}()
 	dctx, cancel := context.WithTimeout(ctx, s.limits.DialTimeout)
 	conn, err := s.dial(dctx, iface, local, remote)
 	cancel()

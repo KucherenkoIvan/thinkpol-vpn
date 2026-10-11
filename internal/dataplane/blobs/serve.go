@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -163,6 +164,8 @@ func (s *Service) accept(ctx context.Context, l *listener, conns *sync.WaitGroup
 			if errors.As(err, &ne) && ne.Timeout() {
 				continue
 			}
+			// Closed before done, so a retry can bind the address again.
+			_ = l.l.Close()
 			close(l.done)
 			if !l.closed.Load() {
 				s.log.Warn("blob service: a listener stopped, reopening", "address", l.l.Addr(), "in", s.limits.ListenRetry, "err", err)
@@ -193,25 +196,37 @@ func remoteAddr(c net.Conn) netip.Addr {
 	return netip.Addr{}
 }
 
-// admit takes a connection slot for remote, or says the service is busy.
-func (s *Service) admit(remote netip.Addr) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.nconns >= s.limits.MaxConns || s.conns[remote] >= s.limits.MaxConnsPerPeer {
-		s.st.Busy++
-		return false
+// peerKey is who a connection counts against: the plan's peer with that
+// overlay address (a peer has several), else the address.
+func (s *Service) peerKeyLocked(remote netip.Addr) string {
+	for _, p := range s.plan.Peers {
+		if slices.Contains(p.Addrs, remote) {
+			return "peer " + p.ID.String()
+		}
 	}
-	s.nconns++
-	s.conns[remote]++
-	return true
+	return "address " + remote.String()
 }
 
-func (s *Service) release(remote netip.Addr) {
+// admit takes a connection slot for remote, or says the service is busy.
+func (s *Service) admit(remote netip.Addr) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := s.peerKeyLocked(remote)
+	if s.nconns >= s.limits.MaxConns || s.conns[key] >= s.limits.MaxConnsPerPeer {
+		s.st.Busy++
+		return "", false
+	}
+	s.nconns++
+	s.conns[key]++
+	return key, true
+}
+
+func (s *Service) release(key string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.nconns--
-	if s.conns[remote]--; s.conns[remote] <= 0 {
-		delete(s.conns, remote)
+	if s.conns[key]--; s.conns[key] <= 0 {
+		delete(s.conns, key)
 	}
 }
 
@@ -220,11 +235,12 @@ func (s *Service) serveConn(ctx context.Context, c net.Conn) {
 	remote := remoteAddr(c)
 	idle := func() { _ = c.SetDeadline(time.Now().Add(s.limits.IdleTimeout)) }
 	idle()
-	if !s.admit(remote) {
+	key, ok := s.admit(remote)
+	if !ok {
 		_, _ = c.Write([]byte{byte(statusBusy)})
 		return
 	}
-	defer s.release(remote)
+	defer s.release(key)
 
 	var b [requestSize]byte
 	if _, err := io.ReadFull(c, b[:]); err != nil {
@@ -250,6 +266,14 @@ func (s *Service) serveConn(ctx context.Context, c net.Conn) {
 		return
 	}
 	rest := data[req.offset:]
+	// A peer that reads slowly holds its slot no longer than a transfer
+	// at the minimum rate (or its share of the serving rate) takes.
+	rate := min(s.limits.MinRate, max(1, s.limits.ServeRate/int64(s.limits.MaxConns)))
+	tctx, cancel := context.WithTimeout(ctx, s.limits.transferTimeout(uint64(len(rest)), rate))
+	defer cancel()
+	ctx = tctx
+	stop := context.AfterFunc(ctx, func() { _ = c.Close() })
+	defer stop()
 	var head [responseHeaderSize]byte
 	head[0] = byte(statusOK)
 	binary.BigEndian.PutUint64(head[1:], uint64(len(rest)))

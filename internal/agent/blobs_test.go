@@ -58,43 +58,51 @@ func (o *loopbackOverlay) service(store blobs.Store, log *slog.Logger) *blobs.Se
 	return blobs.New(blobs.Options{Store: store, Log: log, Listen: o.listen, Dial: o.dial, Limits: fastBlobs})
 }
 
-// Device b keeps its list in its state directory; server a, whose map lists
-// it in the header, gets it from b through the data plane's peers. When b
-// is removed from the space, it drops the list, on disk too.
-func TestTheDataPlaneFetchesKeepsAndPassesOnBlobs(t *testing.T) {
+// Server a holds the list from its seed; device b, whose section names it,
+// fetches it through the data plane's peers and keeps it in its state
+// directory. The device serves nothing. When b is removed from the space
+// it drops the list, on disk too.
+func TestTheDataPlaneFetchesAndKeepsBlobs(t *testing.T) {
 	s := newTestSpace(t)
 	data, ref := s.withList(t, "ru", "192.0.2.0/24", "2001:db8::/32")
 	_, reg := memoryRegistry(t)
 	var ov loopbackOverlay
 
-	stateB := s.stateDir(t, s.b, 1)
-	diskB := diskBlobs{dir: stateB, log: slog.New(slog.DiscardHandler)}
-	if err := diskB.Save(ref, data); err != nil {
-		t.Fatal(err)
-	}
-	b := newRunningNode()
-	dpB := b.dataPlane(reg, s.b, s.verified(t, 1))
-	dpB.Blobs = ov.service(diskB, dpB.Log)
-	b.run(t, dpB)
-
+	seeds := &seedStore{}
+	seeds.set([][]byte{data})
 	a := newRunningNode()
 	dpA := a.dataPlane(reg, s.a, s.verified(t, 1))
-	dpA.Blobs = ov.service(nil, dpA.Log)
+	dpA.Blobs = ov.service(seeds, dpA.Log)
 	a.run(t, dpA)
 
-	eventually(t, func() bool { _, ok := dpA.Blobs.Get(ref.SHA256); return ok })
-	if got, _ := dpA.Blobs.Get(ref.SHA256); !bytes.Equal(got, data) {
-		t.Fatal("the server holds other bytes")
-	}
-	if st := dpA.Blobs.Status(); st.Fetched != 1 || st.Wanted != 1 {
-		t.Errorf("server: %+v", st)
-	}
-	if r, _, ok := dpB.Blobs.Latest(netmap.BlobGeoIP, "ru"); !ok || r != ref {
+	stateB := s.stateDir(t, s.b, 1)
+	b := newRunningNode()
+	dpB := b.dataPlane(reg, s.b, s.verified(t, 1))
+	dpB.Blobs = ov.service(diskBlobs{dir: stateB, log: dpB.Log}, dpB.Log)
+	b.run(t, dpB)
+
+	eventually(t, func() bool { _, ok := dpB.Blobs.Get(ref.SHA256); return ok })
+	if r, got, ok := dpB.Blobs.Latest(netmap.BlobGeoIP, "ru"); !ok || r != ref || !bytes.Equal(got, data) {
 		t.Errorf("device: Latest(geoip, ru) = %v, %v", r, ok)
 	}
-	if st := dpB.Blobs.Status(); st.Loaded != 1 || st.Fetched != 0 {
+	if st := dpB.Blobs.Status(); st.Fetched != 1 || st.Wanted != 1 {
 		t.Errorf("device: %+v", st)
 	}
+	if st := dpA.Blobs.Status(); st.Loaded != 1 || st.Served != 1 {
+		t.Errorf("server: %+v", st)
+	}
+	eventually(t, func() bool {
+		_, err := os.Stat(filepath.Join(stateB, BlobDir, blobFileName(ref.SHA256)))
+		return err == nil
+	})
+	b4, b6 := overlay(2)
+	ov.mu.Lock()
+	for addr := range ov.addrs {
+		if addr.Addr() == b4 || addr.Addr() == b6 {
+			t.Errorf("the device listens on %v", addr)
+		}
+	}
+	ov.mu.Unlock()
 
 	without := s.buildWithout(t, 2, s.b)
 	b.maps <- without
@@ -143,7 +151,7 @@ func TestDiskBlobs(t *testing.T) {
 	if err := d.Prune([]netmap.BlobRef{ruRef}); err != nil {
 		t.Fatal(err)
 	}
-	if got := names(t, bd); !slices.Equal(got, []string{blobFileName(ruRef.SHA256), "README"}) {
+	if got := names(t, bd); !slices.Equal(got, []string{blobFileName(ruRef.SHA256), "README", blobIndexFile}) {
 		t.Errorf("after pruning: %v", got)
 	}
 	_ = os.Remove(filepath.Join(bd, "README"))
@@ -244,4 +252,40 @@ func TestServerSeedsItsWorker(t *testing.T) {
 	eventually(t, func() bool { _, ok := dpB.Blobs.Get(ref.SHA256); return ok })
 	w.waitLog(t, `msg="blob loaded"`)
 	_ = r
+}
+
+// Map v1 named ru = A, which the device stored; v2 names ru = B. Restarted
+// without peers, the device uses A until B is verified.
+func TestAStoredListOutlivesARestartUntilItsSuccessorArrives(t *testing.T) {
+	s := newTestSpace(t)
+	a, refA := s.withList(t, "ru", "192.0.2.0/24")
+	_, refB := s.withList(t, "ru-next", "198.51.100.0/24")
+	refB.Name = "ru"
+	dir := s.stateDir(t, s.b, 1)
+	d := diskBlobs{dir: dir, log: slog.New(slog.DiscardHandler)}
+	if err := d.Save(refA, a); err != nil {
+		t.Fatal(err)
+	}
+	if got := d.Index(); len(got) != 1 || got[0] != refA {
+		t.Fatalf("index %+v", got)
+	}
+
+	var ov loopbackOverlay
+	svc := ov.service(d, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); svc.Run(ctx) }()
+	defer func() { cancel(); <-done }()
+	svc.Update(blobs.Plan{Want: []netmap.BlobRef{refB}})
+	eventually(t, func() bool { r, _, ok := svc.Latest(netmap.BlobGeoIP, "ru"); return ok && r == refA })
+	time.Sleep(100 * time.Millisecond)
+	if got := d.Load(refA); !bytes.Equal(got, a) {
+		t.Fatal("A pruned before B arrived")
+	}
+
+	// A torn index line costs that line only.
+	writeFile(t, filepath.Join(dir, BlobDir, blobIndexFile), append([]byte("junk\n1 bad name 00 1\n"), encodeBlobIndex([]netmap.BlobRef{refA})...), 0o600)
+	if got := d.Index(); len(got) != 1 || got[0] != refA {
+		t.Fatalf("index %+v", got)
+	}
 }

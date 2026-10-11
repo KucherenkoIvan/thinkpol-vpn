@@ -17,11 +17,18 @@ import (
 const (
 	// MaxBlobSize bounds one blob: lists are a few hundred KB (TP-016).
 	MaxBlobSize = 16 << 20
-	// MaxHeldSize bounds the current map's blobs together.
+	// MaxHeldSize bounds a device's blobs of the current map together.
 	MaxHeldSize = 64 << 20
+	// ServerMaxHeldSize bounds a server's: the header's whole set, held in
+	// a worker's memory per space it serves. A map builder keeps the
+	// header within it.
+	ServerMaxHeldSize = 16 << 20
 	// DefaultServeRate is what a node serves to all its peers together,
 	// in bytes per second.
 	DefaultServeRate = 2 << 20
+	// DefaultMinRate is the slowest a transfer may go, on average, before
+	// it is given up.
+	DefaultMinRate = 16 << 10
 )
 
 // Limits bound what a Service holds, serves and how hard it tries; zero
@@ -32,11 +39,13 @@ type Limits struct {
 	// in the map's order, are skipped.
 	MaxBlob, MaxHeld int64
 	// ServeRate is bytes per second served to all peers together
-	// (DefaultServeRate).
-	ServeRate int64
+	// (DefaultServeRate). MinRate is the average rate below which a
+	// transfer is abandoned, either way (DefaultMinRate): a transfer of n
+	// bytes gets DialTimeout + n/MinRate in all.
+	ServeRate, MinRate int64
 	// MaxConns bounds the connections served at once (16),
-	// MaxConnsPerPeer those from one peer address (2). Past either, a
-	// request is answered busy.
+	// MaxConnsPerPeer those from one peer (2). Past either, a request is
+	// answered busy.
 	MaxConns, MaxConnsPerPeer int
 	// RetryMin and RetryMax pace the rounds of fetching while a blob is
 	// missing: 2 s doubling to 1 min. ListenRetry is how soon a listener
@@ -57,6 +66,7 @@ func (l Limits) withDefaults() Limits {
 	def(&l.MaxBlob, MaxBlobSize)
 	def(&l.MaxHeld, MaxHeldSize)
 	def(&l.ServeRate, DefaultServeRate)
+	def(&l.MinRate, DefaultMinRate)
 	defInt := func(v *int, d int) {
 		if *v <= 0 {
 			*v = d
@@ -78,16 +88,26 @@ func (l Limits) withDefaults() Limits {
 	return l
 }
 
-// Store keeps blobs across a node's restarts. The Service checks whatever
-// Load returns against the map before using it, and calls the Store from
-// one goroutine at a time.
+// transferTimeout is how long moving n bytes may take in all.
+func (l Limits) transferTimeout(n uint64, rate int64) time.Duration {
+	return l.DialTimeout + time.Duration(float64(n)/float64(rate)*float64(time.Second))
+}
+
+// Store keeps the blobs a node uses (named in its section) across its
+// restarts; the set a server only passes on stays in memory. The Service
+// checks whatever the store returns against the map before using it, and
+// calls the store from one goroutine at a time.
 type Store interface {
 	// Load returns what the store has for ref, nil if nothing.
 	Load(ref netmap.BlobRef) []byte
-	// Save keeps a checked blob.
+	// Save keeps a checked, named blob.
 	Save(ref netmap.BlobRef, data []byte) error
 	// Prune drops every blob but keep's.
 	Prune(keep []netmap.BlobRef) error
+	// Index is what the store holds, as named when saved: where the
+	// previous version of a list comes from after a restart, while the
+	// current map's isn't held yet.
+	Index() []netmap.BlobRef
 }
 
 // Options configure a Service.
@@ -125,25 +145,38 @@ type Plan struct {
 	Want []netmap.BlobRef
 	// Peers are where to fetch from, in order.
 	Peers []Peer
-	// Listen are the node's own overlay addresses: served on Port, and
-	// the source addresses of fetches.
+	// Local are the node's own overlay addresses, the sources of fetches.
+	Local []netip.Addr
+	// Listen are the addresses served on Port: a server's overlay
+	// addresses; none on a device, which only fetches.
 	Listen []netip.Addr
 	// Interface is the overlay's TUN, to which every socket is bound.
 	Interface string
+	// Skipped are the section's blobs PlanFrom left out, and why: for the
+	// log.
+	Skipped []Skipped
+}
+
+// Skipped is a blob of the section a plan leaves out.
+type Skipped struct {
+	Ref    netmap.BlobRef
+	Reason string
 }
 
 // Status is what a service holds and did: counts only, nothing from the
 // map or about peers, so it may go into telemetry.
 type Status struct {
 	// Wanted is how many blobs the map asks for (within the limits),
-	// Held how many of them the node holds, Skipped how many it won't
-	// (over a limit), Failed how many the map names wrongly (they match
-	// their reference but don't decode).
-	Wanted, Held, Skipped, Failed int
+	// Held how many of them the node holds, StandIns how many previous
+	// versions it holds while their successors aren't, Skipped how many
+	// it won't (over a limit), Failed how many the map names wrongly
+	// (they match their reference but don't decode).
+	Wanted, Held, StandIns, Skipped, Failed int
 	// Fetched counts blobs fetched from peers, Loaded those taken from
 	// the store, Rejected what peers sent that didn't check, and
-	// StoreRejected what the store had that didn't.
-	Fetched, Loaded, Rejected, StoreRejected uint64
+	// StoreRejected what the store had that didn't. Abandoned counts
+	// transfers given up as too slow or overtaken by a new map.
+	Fetched, Loaded, Rejected, StoreRejected, Abandoned uint64
 	// Served counts blobs (ServedBytes their bytes) sent to peers,
 	// NotHere requests for what the node doesn't hold, Busy requests
 	// refused for lack of room.
@@ -164,19 +197,25 @@ type Service struct {
 	gen     uint64
 	want    map[[32]byte]netmap.BlobRef
 	skipped int
-	held    map[[32]byte]netmap.BlobRef
-	data    map[[32]byte][]byte
+	// held are checked blobs: the current plan's, and stand-ins (blobs no
+	// longer wanted, kept until their successor is held).
+	held map[[32]byte]netmap.BlobRef
+	data map[[32]byte][]byte
 	// failed are wanted blobs that match their reference and don't
 	// decode: not fetched again for this plan.
 	failed map[[32]byte]bool
 	// stored are wanted blobs already looked for in the store under this
-	// plan: the store is asked once per plan.
-	stored map[[32]byte]bool
-	conns  map[netip.Addr]int
-	nconns int
-	st     Status
+	// plan, standIns whether its index was searched: once per plan.
+	stored   map[[32]byte]bool
+	standIns uint64 // the generation whose stand-ins were looked for
+	// cancelFetch ends the transfer under way when the plan changes.
+	cancelFetch context.CancelFunc
+	conns       map[string]int
+	nconns      int
+	st          Status
+	subscribers []chan struct{}
 
-	wakeFetch, wakeListen, changed chan struct{}
+	wakeFetch, wakeListen chan struct{}
 }
 
 // New makes a service holding nothing; Update gives it a plan, Run runs it.
@@ -192,10 +231,9 @@ func New(o Options) *Service {
 		data:       map[[32]byte][]byte{},
 		failed:     map[[32]byte]bool{},
 		stored:     map[[32]byte]bool{},
-		conns:      map[netip.Addr]int{},
+		conns:      map[string]int{},
 		wakeFetch:  make(chan struct{}, 1),
 		wakeListen: make(chan struct{}, 1),
-		changed:    make(chan struct{}, 1),
 	}
 	if s.log == nil {
 		s.log = slog.New(slog.DiscardHandler)
@@ -217,14 +255,50 @@ func signal(ch chan struct{}) {
 	}
 }
 
+// Subscribe returns a channel of its own, signalled (coalescing) whenever
+// what Get or Latest return changes: a blob held or dropped, or a held
+// blob renamed by a new map.
+func (s *Service) Subscribe() <-chan struct{} {
+	ch := make(chan struct{}, 1)
+	s.mu.Lock()
+	s.subscribers = append(s.subscribers, ch)
+	s.mu.Unlock()
+	return ch
+}
+
+func (s *Service) changedLocked() {
+	for _, ch := range s.subscribers {
+		signal(ch)
+	}
+}
+
+func (s *Service) dropLocked(sha [32]byte) {
+	delete(s.held, sha)
+	delete(s.data, sha)
+	s.changedLocked()
+}
+
 // Update replaces the plan: what to hold, where to fetch it, where to
 // serve. Blobs the previous plan held stay held, and served, until every
-// blob of the new one is held.
+// blob of the new one is held. A transfer under way is abandoned.
 func (s *Service) Update(p Plan) {
 	p.Want = slices.Clone(p.Want)
 	p.Peers = slices.Clone(p.Peers)
+	p.Local = slices.Clone(p.Local)
 	p.Listen = slices.Clone(p.Listen)
+	for _, sk := range p.Skipped {
+		s.log.Warn("blob left out of the plan", "blob", short(sk.Ref), "kind", sk.Ref.Kind, "name", sk.Ref.Name, "reason", sk.Reason)
+	}
 	s.mu.Lock()
+	defer func() {
+		s.mu.Unlock()
+		signal(s.wakeFetch)
+		signal(s.wakeListen)
+	}()
+	if s.cancelFetch != nil {
+		s.cancelFetch()
+		s.cancelFetch = nil
+	}
 	s.plan = p
 	s.gen++
 	previous := s.want
@@ -242,15 +316,23 @@ func (s *Service) Update(p Plan) {
 		case size > s.limits.MaxBlob:
 			s.skipped++
 			s.log.Warn("blob skipped: larger than a node holds", "blob", short(ref), "kind", ref.Kind, "size", ref.Size, "limit", s.limits.MaxBlob)
+			continue
 		case total+size > s.limits.MaxHeld:
 			s.skipped++
-			s.log.Warn("blob skipped: the map's blobs together are more than a node holds", "blob", short(ref), "kind", ref.Kind, "size", ref.Size, "limit", s.limits.MaxHeld)
+			s.log.Warn("blob skipped: the map's blobs together are more than this node holds", "blob", short(ref), "kind", ref.Kind, "size", ref.Size, "limit", s.limits.MaxHeld)
+			continue
+		}
+		total += size
+		s.want[ref.SHA256] = ref
+		old, ok := s.held[ref.SHA256]
+		switch {
+		case !ok || old == ref:
+		case old.Kind != ref.Kind && Check(ref, s.data[ref.SHA256]) != nil:
+			// The same bytes under another kind are checked as that kind.
+			s.dropLocked(ref.SHA256)
 		default:
-			total += size
-			s.want[ref.SHA256] = ref
-			if _, ok := s.held[ref.SHA256]; ok {
-				s.held[ref.SHA256] = ref // the current name
-			}
+			s.held[ref.SHA256] = ref // the current kind and name
+			s.changedLocked()
 		}
 	}
 	// What the new plan doesn't want stays only as a stand-in: a named
@@ -264,13 +346,8 @@ func (s *Service) Update(p Plan) {
 		if ref.Name != "" && s.wantsNameLocked(ref.Kind, ref.Name) || ref.Name == "" && wasWanted {
 			continue
 		}
-		delete(s.held, sha)
-		delete(s.data, sha)
-		signal(s.changed)
+		s.dropLocked(sha)
 	}
-	s.mu.Unlock()
-	signal(s.wakeFetch)
-	signal(s.wakeListen)
 }
 
 // Run fetches, keeps and serves blobs until ctx ends, then closes its
@@ -293,9 +370,9 @@ func (s *Service) Get(sha [32]byte) ([]byte, bool) {
 }
 
 // Latest returns the blob the current plan names name, of that kind, or,
-// while that one isn't held yet, the one of the same kind and name the
-// previous plan held: a list in use is replaced only once its successor
-// is verified.
+// while that one isn't held yet, the one of the same kind and name held
+// before (from the previous map, or from the store's index after a
+// restart): a list in use is replaced only once its successor is verified.
 func (s *Service) Latest(kind netmap.BlobKind, name string) (netmap.BlobRef, []byte, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -316,18 +393,17 @@ func (s *Service) Latest(kind netmap.BlobKind, name string) (netmap.BlobRef, []b
 	return fallback, s.data[fallback.SHA256], true
 }
 
-// Changed is signalled whenever the set of held blobs changes.
-func (s *Service) Changed() <-chan struct{} { return s.changed }
-
 // Status is what the service holds and did.
 func (s *Service) Status() Status {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	st := s.st
 	st.Wanted, st.Skipped, st.Failed = len(s.want), s.skipped, len(s.failed)
-	for sha := range s.want {
-		if _, ok := s.held[sha]; ok {
+	for sha := range s.held {
+		if _, ok := s.want[sha]; ok {
 			st.Held++
+		} else {
+			st.StandIns++
 		}
 	}
 	return st
@@ -368,7 +444,7 @@ func (s *Service) hold(ref netmap.BlobRef, data []byte) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	w, ok := s.want[ref.SHA256]
-	if !ok {
+	if !ok || w.Kind != ref.Kind {
 		return false
 	}
 	s.held[ref.SHA256], s.data[ref.SHA256] = w, data
@@ -379,7 +455,29 @@ func (s *Service) hold(ref netmap.BlobRef, data []byte) bool {
 			delete(s.data, sha)
 		}
 	}
-	signal(s.changed)
+	s.changedLocked()
+	return true
+}
+
+// holdStandIn adds a checked blob from the store's index as the stand-in
+// for a named blob the plan of generation gen wants and doesn't hold yet,
+// unless something of that kind and name is held already.
+func (s *Service) holdStandIn(gen uint64, ref netmap.BlobRef, data []byte) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.gen != gen || !s.wantsNameLocked(ref.Kind, ref.Name) {
+		return false
+	}
+	if _, wanted := s.want[ref.SHA256]; wanted {
+		return false // the store is asked for wanted blobs directly
+	}
+	for _, h := range s.held {
+		if h.Kind == ref.Kind && h.Name == ref.Name {
+			return false
+		}
+	}
+	s.held[ref.SHA256], s.data[ref.SHA256] = ref, data
+	s.changedLocked()
 	return true
 }
 
@@ -413,8 +511,8 @@ func (s *Service) fail(gen uint64, ref netmap.BlobRef) {
 }
 
 // complete drops what the previous plans left once the plan of generation
-// gen holds everything, and returns what is kept (false: the plan changed
-// meanwhile).
+// gen holds everything, and returns what is kept and named, what the
+// store keeps (false: the plan changed meanwhile).
 func (s *Service) complete(gen uint64) ([]netmap.BlobRef, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -422,18 +520,12 @@ func (s *Service) complete(gen uint64) ([]netmap.BlobRef, bool) {
 		return nil, false
 	}
 	var keep []netmap.BlobRef
-	dropped := false
 	for sha, ref := range s.held {
-		if _, ok := s.want[sha]; ok {
+		if _, ok := s.want[sha]; !ok {
+			s.dropLocked(sha)
+		} else if ref.Name != "" {
 			keep = append(keep, ref)
-			continue
 		}
-		delete(s.held, sha)
-		delete(s.data, sha)
-		dropped = true
-	}
-	if dropped {
-		signal(s.changed)
 	}
 	return keep, true
 }
@@ -450,7 +542,21 @@ func (s *Service) count(f func(st *Status)) {
 	s.mu.Unlock()
 }
 
-// fetchLoop gets what the plan lacks, a round at a time: from the store,
+// fetchContext is ctx, ended also when the plan of generation gen is
+// replaced (false: it already was).
+func (s *Service) fetchContext(ctx context.Context, gen uint64) (context.Context, context.CancelFunc, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.gen != gen {
+		return nil, nil, false
+	}
+	fctx, cancel := context.WithCancel(ctx)
+	s.cancelFetch = cancel
+	return fctx, cancel, true
+}
+
+// fetchLoop gets what the plan lacks, a round at a time: stand-ins from
+// the store's index once per plan, then each missing blob from the store,
 // else from the peers in order. Rounds that leave something missing are
 // repeated with backoff; a new plan starts one at once.
 func (s *Service) fetchLoop(ctx context.Context) {
@@ -468,11 +574,19 @@ func (s *Service) fetchLoop(ctx context.Context) {
 		case <-timer.C:
 		}
 		refs, gen, _ := s.missing()
+		if len(refs) > 0 {
+			s.loadStandIns(gen)
+		}
 		for _, ref := range refs {
 			if ctx.Err() != nil || !s.current(gen) {
 				break
 			}
-			s.obtain(ctx, gen, ref)
+			fctx, cancel, ok := s.fetchContext(ctx, gen)
+			if !ok {
+				break
+			}
+			s.obtain(fctx, gen, ref)
+			cancel()
 		}
 		if ctx.Err() != nil {
 			return
@@ -502,6 +616,38 @@ func (s *Service) fetchLoop(ctx context.Context) {
 		backoff = min(max(2*backoff, s.limits.RetryMin), s.limits.RetryMax)
 		timer.Reset(backoff)
 		s.log.Debug("blobs missing, retrying", "missing", len(refs), "in", backoff)
+	}
+}
+
+// loadStandIns holds, once per plan, the previous versions the store's
+// index has of the named blobs the plan wants and doesn't hold: after a
+// restart they stand in until their successors are verified.
+func (s *Service) loadStandIns(gen uint64) {
+	s.mu.Lock()
+	first := s.standIns != gen
+	s.standIns = gen
+	s.mu.Unlock()
+	if !first || s.o.Store == nil {
+		return
+	}
+	for _, ref := range s.o.Store.Index() {
+		if ref.Name == "" || !s.current(gen) {
+			continue
+		}
+		s.mu.Lock()
+		_, wanted := s.want[ref.SHA256]
+		needed := !wanted && s.wantsNameLocked(ref.Kind, ref.Name)
+		s.mu.Unlock()
+		if !needed {
+			continue
+		}
+		data := s.o.Store.Load(ref)
+		if data == nil || Check(ref, data) != nil {
+			continue
+		}
+		if s.holdStandIn(gen, ref, data) {
+			s.log.Info("previous blob in use until its successor is verified", "blob", short(ref), "kind", ref.Kind, "name", ref.Name)
+		}
 	}
 }
 
@@ -544,7 +690,7 @@ func (s *Service) obtain(ctx context.Context, gen uint64, ref netmap.BlobRef) {
 			}
 			s.count(func(st *Status) { st.Fetched++ })
 			s.log.Info("blob fetched", "blob", short(ref), "kind", ref.Kind, "name", ref.Name, "size", ref.Size, "peer", peer.ID)
-			if s.o.Store != nil {
+			if s.o.Store != nil && ref.Name != "" {
 				if err := s.o.Store.Save(ref, data); err != nil {
 					s.log.Warn("storing a blob", "blob", short(ref), "err", err)
 				}
@@ -557,6 +703,9 @@ func (s *Service) obtain(ctx context.Context, gen uint64, ref netmap.BlobRef) {
 		case errors.Is(err, ErrMismatch), errors.Is(err, errProtocol):
 			s.count(func(st *Status) { st.Rejected++ })
 			s.log.Warn("blob rejected: the peer sent something else; trying another peer", "blob", short(ref), "kind", ref.Kind, "name", ref.Name, "peer", peer.ID, "err", err)
+		case errors.Is(err, errTooSlow) || ctx.Err() != nil:
+			s.count(func(st *Status) { st.Abandoned++ })
+			s.log.Info("blob transfer abandoned", "blob", short(ref), "peer", peer.ID, "err", err)
 		default:
 			s.log.Debug("blob not fetched from peer", "blob", short(ref), "peer", peer.ID, "err", err)
 		}

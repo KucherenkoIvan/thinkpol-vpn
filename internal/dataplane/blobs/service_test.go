@@ -76,16 +76,29 @@ func (n *testNet) dial(ctx context.Context, _ netip.Addr, remote netip.AddrPort)
 type memStore struct {
 	mu     sync.Mutex
 	blobs  map[[32]byte][]byte
+	index  map[[32]byte]netmap.BlobRef
 	saves  int
 	prunes int
 }
 
 func newMemStore(blobs ...[]byte) *memStore {
-	s := &memStore{blobs: map[[32]byte][]byte{}}
+	s := &memStore{blobs: map[[32]byte][]byte{}, index: map[[32]byte]netmap.BlobRef{}}
 	for _, b := range blobs {
 		s.blobs[sha256.Sum256(b)] = b
 	}
 	return s
+}
+
+func (s *memStore) Index() []netmap.BlobRef {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []netmap.BlobRef
+	for sha, ref := range s.index {
+		if _, ok := s.blobs[sha]; ok {
+			out = append(out, ref)
+		}
+	}
+	return out
 }
 
 func (s *memStore) Load(ref netmap.BlobRef) []byte {
@@ -98,6 +111,10 @@ func (s *memStore) Save(ref netmap.BlobRef, data []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.blobs[ref.SHA256] = data
+	if s.index == nil {
+		s.index = map[[32]byte]netmap.BlobRef{}
+	}
+	s.index[ref.SHA256] = ref
 	s.saves++
 	return nil
 }
@@ -107,12 +124,14 @@ func (s *memStore) Prune(keep []netmap.BlobRef) error {
 	defer s.mu.Unlock()
 	s.prunes++
 	kept := map[[32]byte][]byte{}
+	index := map[[32]byte]netmap.BlobRef{}
 	for _, r := range keep {
 		if b, ok := s.blobs[r.SHA256]; ok {
 			kept[r.SHA256] = b
+			index[r.SHA256] = r
 		}
 	}
-	s.blobs = kept
+	s.blobs, s.index = kept, index
 	return nil
 }
 
@@ -190,8 +209,9 @@ func startNode(t *testing.T, tn *testNet, n byte, store Store, limits Limits) no
 	return node{Service: s, addr: overlay(n), log: logs}
 }
 
+// plan is a server's plan: it listens. device drops the listener.
 func (n node) plan(want []netmap.BlobRef, peers ...node) Plan {
-	p := Plan{Want: want, Listen: []netip.Addr{n.addr}}
+	p := Plan{Want: want, Local: []netip.Addr{n.addr}, Listen: []netip.Addr{n.addr}}
 	for i, peer := range peers {
 		p.Peers = append(p.Peers, Peer{ID: netmap.NodeID{byte(i + 1)}, Addrs: []netip.Addr{peer.addr}})
 	}
@@ -597,7 +617,7 @@ func TestCheck(t *testing.T) {
 func TestStatusQuotesNothing(t *testing.T) {
 	_, ref := geoip(t, "ru", "192.0.2.0/24")
 	s := New(Options{})
-	s.Update(Plan{Want: []netmap.BlobRef{ref}, Listen: []netip.Addr{overlay(1)}, Peers: []Peer{{Addrs: []netip.Addr{overlay(2)}}}})
+	s.Update(Plan{Want: []netmap.BlobRef{ref}, Local: []netip.Addr{overlay(1)}, Listen: []netip.Addr{overlay(1)}, Peers: []Peer{{Addrs: []netip.Addr{overlay(2)}}}})
 	out := fmt.Sprintf("%+v", s.Status())
 	for _, leak := range []string{"100.64", "ru", fmt.Sprintf("%x", ref.SHA256[:4])} {
 		if strings.Contains(out, leak) {
