@@ -55,6 +55,7 @@ type Counters struct {
 	NotLocal   uint64 // decrypted by a WireGuard device for a destination not the node's own
 	NoRoute    uint64 // nothing routes the destination, an overlay address no peer has, or a closed egress
 	Blocked    uint64 // routed by a route without an egress
+	Direct     uint64 // routed by a Direct route: a destination meant to go around the tunnel
 	Malformed  uint64 // not an IPv4 or IPv6 packet
 	TooLarge   uint64 // longer than MaxPacket, or than the WireGuard device's buffer
 	QueueFull  uint64 // the egress's queue was full
@@ -62,7 +63,7 @@ type Counters struct {
 }
 
 type counters struct {
-	routed, delivered, notLocal, noRoute, blocked, malformed, tooLarge, queueFull, readErrors atomic.Uint64
+	routed, delivered, notLocal, noRoute, blocked, direct, malformed, tooLarge, queueFull, readErrors atomic.Uint64
 }
 
 // New starts a router reading t, with an empty table: every packet is
@@ -105,6 +106,7 @@ func (r *Router) Counters() Counters {
 		NotLocal:   r.c.notLocal.Load(),
 		NoRoute:    r.c.noRoute.Load(),
 		Blocked:    r.c.blocked.Load(),
+		Direct:     r.c.direct.Load(),
 		Malformed:  r.c.malformed.Load(),
 		TooLarge:   r.c.tooLarge.Load(),
 		QueueFull:  r.c.queueFull.Load(),
@@ -188,6 +190,8 @@ func (r *Router) route(p []byte) {
 		r.c.noRoute.Add(1)
 	case e == nil:
 		r.c.blocked.Add(1)
+	case e == direct:
+		r.c.direct.Add(1)
 	case len(p) > MaxPacket:
 		r.c.tooLarge.Add(1)
 	default:

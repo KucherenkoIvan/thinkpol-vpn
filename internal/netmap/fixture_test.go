@@ -36,7 +36,9 @@ func mustMarshal(s transport.Shaping) []byte {
 //     through a hop group of the next two when there are four servers or
 //     more;
 //   - devices use a named GeoIP blob (and don't listen: no direct paths
-//     between devices yet).
+//     between devices yet);
+//   - with an exit, devices have routing rules sending all but local and
+//     domestic destinations through a chain to it.
 type fixture struct {
 	signing  ed25519.PrivateKey
 	recovery ed25519.PrivateKey
@@ -177,6 +179,15 @@ func newFixture(t testing.TB, servers, devices int) *fixture {
 		}
 		if exit >= 0 {
 			s.Peers = append(s.Peers, peer(exit, viaEntries()))
+			s.Chains = []Chain{{Name: "nl", Exit: ids[exit]}}
+			s.Rules = []Rule{
+				{Match{Kind: MatchLocal}, Direct},
+				{Match{Kind: MatchDomainSuffix, Value: "example.ru"}, Direct},
+				{Match{Kind: MatchGeoIP, Value: "ru"}, Direct},
+				{Match{Kind: MatchCIDR, Prefix: netip.MustParsePrefix("2001:db8::/32")}, Block},
+				{Match{Kind: MatchDefault}, ToChain("nl")},
+			}
+			s.Presets = RulePresets{Domestic: "ru", Chain: "nl"}
 		}
 		for o := servers; o < n; o++ {
 			if o != d && isDevice(o) {

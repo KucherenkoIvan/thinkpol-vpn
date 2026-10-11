@@ -73,6 +73,129 @@ func (BlobKind) EnumDescriptor() ([]byte, []int) {
 	return file_thinkpol_netmap_v1_netmap_proto_rawDescGZIP(), []int{0}
 }
 
+type MatchKind int32
+
+const (
+	MatchKind_MATCH_KIND_UNSPECIFIED MatchKind = 0
+	// Every destination.
+	MatchKind_MATCH_KIND_DEFAULT MatchKind = 1
+	// The built-in local ranges (LANs, link-local, multicast), fixed in code.
+	MatchKind_MATCH_KIND_LOCAL MatchKind = 2
+	// A prefix: `value` in canonical text form.
+	MatchKind_MATCH_KIND_CIDR MatchKind = 3
+	// The GeoIP list the section's geoip blob named `value` holds.
+	MatchKind_MATCH_KIND_GEOIP MatchKind = 4
+	// Domain matchers are kept but not enforced in route-table mode.
+	MatchKind_MATCH_KIND_DOMAIN        MatchKind = 5
+	MatchKind_MATCH_KIND_DOMAIN_SUFFIX MatchKind = 6
+	MatchKind_MATCH_KIND_GEOSITE       MatchKind = 7
+)
+
+// Enum value maps for MatchKind.
+var (
+	MatchKind_name = map[int32]string{
+		0: "MATCH_KIND_UNSPECIFIED",
+		1: "MATCH_KIND_DEFAULT",
+		2: "MATCH_KIND_LOCAL",
+		3: "MATCH_KIND_CIDR",
+		4: "MATCH_KIND_GEOIP",
+		5: "MATCH_KIND_DOMAIN",
+		6: "MATCH_KIND_DOMAIN_SUFFIX",
+		7: "MATCH_KIND_GEOSITE",
+	}
+	MatchKind_value = map[string]int32{
+		"MATCH_KIND_UNSPECIFIED":   0,
+		"MATCH_KIND_DEFAULT":       1,
+		"MATCH_KIND_LOCAL":         2,
+		"MATCH_KIND_CIDR":          3,
+		"MATCH_KIND_GEOIP":         4,
+		"MATCH_KIND_DOMAIN":        5,
+		"MATCH_KIND_DOMAIN_SUFFIX": 6,
+		"MATCH_KIND_GEOSITE":       7,
+	}
+)
+
+func (x MatchKind) Enum() *MatchKind {
+	p := new(MatchKind)
+	*p = x
+	return p
+}
+
+func (x MatchKind) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (MatchKind) Descriptor() protoreflect.EnumDescriptor {
+	return file_thinkpol_netmap_v1_netmap_proto_enumTypes[1].Descriptor()
+}
+
+func (MatchKind) Type() protoreflect.EnumType {
+	return &file_thinkpol_netmap_v1_netmap_proto_enumTypes[1]
+}
+
+func (x MatchKind) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use MatchKind.Descriptor instead.
+func (MatchKind) EnumDescriptor() ([]byte, []int) {
+	return file_thinkpol_netmap_v1_netmap_proto_rawDescGZIP(), []int{1}
+}
+
+type ActionKind int32
+
+const (
+	ActionKind_ACTION_KIND_UNSPECIFIED ActionKind = 0
+	// Around the tunnel, through the physical network.
+	ActionKind_ACTION_KIND_DIRECT ActionKind = 1
+	// Through the chain named `chain`.
+	ActionKind_ACTION_KIND_CHAIN ActionKind = 2
+	ActionKind_ACTION_KIND_BLOCK ActionKind = 3
+)
+
+// Enum value maps for ActionKind.
+var (
+	ActionKind_name = map[int32]string{
+		0: "ACTION_KIND_UNSPECIFIED",
+		1: "ACTION_KIND_DIRECT",
+		2: "ACTION_KIND_CHAIN",
+		3: "ACTION_KIND_BLOCK",
+	}
+	ActionKind_value = map[string]int32{
+		"ACTION_KIND_UNSPECIFIED": 0,
+		"ACTION_KIND_DIRECT":      1,
+		"ACTION_KIND_CHAIN":       2,
+		"ACTION_KIND_BLOCK":       3,
+	}
+)
+
+func (x ActionKind) Enum() *ActionKind {
+	p := new(ActionKind)
+	*p = x
+	return p
+}
+
+func (x ActionKind) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (ActionKind) Descriptor() protoreflect.EnumDescriptor {
+	return file_thinkpol_netmap_v1_netmap_proto_enumTypes[2].Descriptor()
+}
+
+func (ActionKind) Type() protoreflect.EnumType {
+	return &file_thinkpol_netmap_v1_netmap_proto_enumTypes[2]
+}
+
+func (x ActionKind) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use ActionKind.Descriptor instead.
+func (ActionKind) EnumDescriptor() ([]byte, []int) {
+	return file_thinkpol_netmap_v1_netmap_proto_rawDescGZIP(), []int{2}
+}
+
 type NodeKind int32
 
 const (
@@ -106,11 +229,11 @@ func (x NodeKind) String() string {
 }
 
 func (NodeKind) Descriptor() protoreflect.EnumDescriptor {
-	return file_thinkpol_netmap_v1_netmap_proto_enumTypes[1].Descriptor()
+	return file_thinkpol_netmap_v1_netmap_proto_enumTypes[3].Descriptor()
 }
 
 func (NodeKind) Type() protoreflect.EnumType {
-	return &file_thinkpol_netmap_v1_netmap_proto_enumTypes[1]
+	return &file_thinkpol_netmap_v1_netmap_proto_enumTypes[3]
 }
 
 func (x NodeKind) Number() protoreflect.EnumNumber {
@@ -119,7 +242,7 @@ func (x NodeKind) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use NodeKind.Descriptor instead.
 func (NodeKind) EnumDescriptor() ([]byte, []int) {
-	return file_thinkpol_netmap_v1_netmap_proto_rawDescGZIP(), []int{1}
+	return file_thinkpol_netmap_v1_netmap_proto_rawDescGZIP(), []int{3}
 }
 
 // Envelope is what is stored and gossiped. The signature is Ed25519ctx
@@ -501,7 +624,16 @@ type Section struct {
 	// Forwarding table: where this node sends relayed packets, by destination.
 	Routes []*Route `protobuf:"bytes,9,rep,name=routes,proto3" json:"routes,omitempty"`
 	// The blobs this node uses, named; each is in the header.
-	Blobs         []*BlobRef `protobuf:"bytes,10,rep,name=blobs,proto3" json:"blobs,omitempty"`
+	Blobs []*BlobRef `protobuf:"bytes,10,rep,name=blobs,proto3" json:"blobs,omitempty"`
+	// The space's default routing rules, in order: the first that matches a
+	// destination decides it (DESIGN.md "Routing rules and DNS"). A device
+	// may override them locally. Older readers ignore rules, chains and
+	// presets, and route nothing outside the overlay through the tunnel.
+	Rules []*Rule `protobuf:"bytes,11,rep,name=rules,proto3" json:"rules,omitempty"`
+	// The chains rules send traffic through.
+	Chains []*Chain `protobuf:"bytes,12,rep,name=chains,proto3" json:"chains,omitempty"`
+	// What a device's rule presets are built from.
+	Presets       *RulePresets `protobuf:"bytes,13,opt,name=presets,proto3" json:"presets,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -606,6 +738,210 @@ func (x *Section) GetBlobs() []*BlobRef {
 	return nil
 }
 
+func (x *Section) GetRules() []*Rule {
+	if x != nil {
+		return x.Rules
+	}
+	return nil
+}
+
+func (x *Section) GetChains() []*Chain {
+	if x != nil {
+		return x.Chains
+	}
+	return nil
+}
+
+func (x *Section) GetPresets() *RulePresets {
+	if x != nil {
+		return x.Presets
+	}
+	return nil
+}
+
+// Rule is `match → action`, e.g. `geoip:ru → direct`.
+type Rule struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Match MatchKind              `protobuf:"varint,1,opt,name=match,proto3,enum=thinkpol.netmap.v1.MatchKind" json:"match,omitempty"`
+	// The matcher's argument: a prefix (cidr), a list name (geoip, geosite)
+	// or a domain (domain, domain-suffix); empty for default and local.
+	Value  string     `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
+	Action ActionKind `protobuf:"varint,3,opt,name=action,proto3,enum=thinkpol.netmap.v1.ActionKind" json:"action,omitempty"`
+	// The chain, for ACTION_KIND_CHAIN.
+	Chain         string `protobuf:"bytes,4,opt,name=chain,proto3" json:"chain,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Rule) Reset() {
+	*x = Rule{}
+	mi := &file_thinkpol_netmap_v1_netmap_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Rule) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Rule) ProtoMessage() {}
+
+func (x *Rule) ProtoReflect() protoreflect.Message {
+	mi := &file_thinkpol_netmap_v1_netmap_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Rule.ProtoReflect.Descriptor instead.
+func (*Rule) Descriptor() ([]byte, []int) {
+	return file_thinkpol_netmap_v1_netmap_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *Rule) GetMatch() MatchKind {
+	if x != nil {
+		return x.Match
+	}
+	return MatchKind_MATCH_KIND_UNSPECIFIED
+}
+
+func (x *Rule) GetValue() string {
+	if x != nil {
+		return x.Value
+	}
+	return ""
+}
+
+func (x *Rule) GetAction() ActionKind {
+	if x != nil {
+		return x.Action
+	}
+	return ActionKind_ACTION_KIND_UNSPECIFIED
+}
+
+func (x *Rule) GetChain() string {
+	if x != nil {
+		return x.Chain
+	}
+	return ""
+}
+
+// Chain is a named way out to the internet, as the node sees it: the exit,
+// a WireGuard peer reached through its candidate first hops (the relays
+// route the rest of the way).
+type Chain struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Exit          []byte                 `protobuf:"bytes,2,opt,name=exit,proto3" json:"exit,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Chain) Reset() {
+	*x = Chain{}
+	mi := &file_thinkpol_netmap_v1_netmap_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Chain) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Chain) ProtoMessage() {}
+
+func (x *Chain) ProtoReflect() protoreflect.Message {
+	mi := &file_thinkpol_netmap_v1_netmap_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Chain.ProtoReflect.Descriptor instead.
+func (*Chain) Descriptor() ([]byte, []int) {
+	return file_thinkpol_netmap_v1_netmap_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *Chain) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *Chain) GetExit() []byte {
+	if x != nil {
+		return x.Exit
+	}
+	return nil
+}
+
+// RulePresets are what the presets a device can switch to are built from:
+// "everything" sends all but local ranges through `chain`; "all but
+// domestic" also keeps the GeoIP list `domestic` out of the tunnel.
+type RulePresets struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// A geoip blob name, e.g. a country code.
+	Domestic      string `protobuf:"bytes,1,opt,name=domestic,proto3" json:"domestic,omitempty"`
+	Chain         string `protobuf:"bytes,2,opt,name=chain,proto3" json:"chain,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RulePresets) Reset() {
+	*x = RulePresets{}
+	mi := &file_thinkpol_netmap_v1_netmap_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RulePresets) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RulePresets) ProtoMessage() {}
+
+func (x *RulePresets) ProtoReflect() protoreflect.Message {
+	mi := &file_thinkpol_netmap_v1_netmap_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RulePresets.ProtoReflect.Descriptor instead.
+func (*RulePresets) Descriptor() ([]byte, []int) {
+	return file_thinkpol_netmap_v1_netmap_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *RulePresets) GetDomestic() string {
+	if x != nil {
+		return x.Domestic
+	}
+	return ""
+}
+
+func (x *RulePresets) GetChain() string {
+	if x != nil {
+		return x.Chain
+	}
+	return ""
+}
+
 type NodeSettings struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// 8 random bytes, unique within the space.
@@ -632,7 +968,7 @@ type NodeSettings struct {
 
 func (x *NodeSettings) Reset() {
 	*x = NodeSettings{}
-	mi := &file_thinkpol_netmap_v1_netmap_proto_msgTypes[6]
+	mi := &file_thinkpol_netmap_v1_netmap_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -644,7 +980,7 @@ func (x *NodeSettings) String() string {
 func (*NodeSettings) ProtoMessage() {}
 
 func (x *NodeSettings) ProtoReflect() protoreflect.Message {
-	mi := &file_thinkpol_netmap_v1_netmap_proto_msgTypes[6]
+	mi := &file_thinkpol_netmap_v1_netmap_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -657,7 +993,7 @@ func (x *NodeSettings) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NodeSettings.ProtoReflect.Descriptor instead.
 func (*NodeSettings) Descriptor() ([]byte, []int) {
-	return file_thinkpol_netmap_v1_netmap_proto_rawDescGZIP(), []int{6}
+	return file_thinkpol_netmap_v1_netmap_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *NodeSettings) GetId() []byte {
@@ -738,7 +1074,7 @@ type Listener struct {
 
 func (x *Listener) Reset() {
 	*x = Listener{}
-	mi := &file_thinkpol_netmap_v1_netmap_proto_msgTypes[7]
+	mi := &file_thinkpol_netmap_v1_netmap_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -750,7 +1086,7 @@ func (x *Listener) String() string {
 func (*Listener) ProtoMessage() {}
 
 func (x *Listener) ProtoReflect() protoreflect.Message {
-	mi := &file_thinkpol_netmap_v1_netmap_proto_msgTypes[7]
+	mi := &file_thinkpol_netmap_v1_netmap_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -763,7 +1099,7 @@ func (x *Listener) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Listener.ProtoReflect.Descriptor instead.
 func (*Listener) Descriptor() ([]byte, []int) {
-	return file_thinkpol_netmap_v1_netmap_proto_rawDescGZIP(), []int{7}
+	return file_thinkpol_netmap_v1_netmap_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *Listener) GetTransport() string {
@@ -802,7 +1138,7 @@ type Peer struct {
 
 func (x *Peer) Reset() {
 	*x = Peer{}
-	mi := &file_thinkpol_netmap_v1_netmap_proto_msgTypes[8]
+	mi := &file_thinkpol_netmap_v1_netmap_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -814,7 +1150,7 @@ func (x *Peer) String() string {
 func (*Peer) ProtoMessage() {}
 
 func (x *Peer) ProtoReflect() protoreflect.Message {
-	mi := &file_thinkpol_netmap_v1_netmap_proto_msgTypes[8]
+	mi := &file_thinkpol_netmap_v1_netmap_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -827,7 +1163,7 @@ func (x *Peer) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Peer.ProtoReflect.Descriptor instead.
 func (*Peer) Descriptor() ([]byte, []int) {
-	return file_thinkpol_netmap_v1_netmap_proto_rawDescGZIP(), []int{8}
+	return file_thinkpol_netmap_v1_netmap_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *Peer) GetId() []byte {
@@ -870,7 +1206,7 @@ type Path struct {
 
 func (x *Path) Reset() {
 	*x = Path{}
-	mi := &file_thinkpol_netmap_v1_netmap_proto_msgTypes[9]
+	mi := &file_thinkpol_netmap_v1_netmap_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -882,7 +1218,7 @@ func (x *Path) String() string {
 func (*Path) ProtoMessage() {}
 
 func (x *Path) ProtoReflect() protoreflect.Message {
-	mi := &file_thinkpol_netmap_v1_netmap_proto_msgTypes[9]
+	mi := &file_thinkpol_netmap_v1_netmap_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -895,7 +1231,7 @@ func (x *Path) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Path.ProtoReflect.Descriptor instead.
 func (*Path) Descriptor() ([]byte, []int) {
-	return file_thinkpol_netmap_v1_netmap_proto_rawDescGZIP(), []int{9}
+	return file_thinkpol_netmap_v1_netmap_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *Path) GetFirstHop() []byte {
@@ -916,7 +1252,7 @@ type Link struct {
 
 func (x *Link) Reset() {
 	*x = Link{}
-	mi := &file_thinkpol_netmap_v1_netmap_proto_msgTypes[10]
+	mi := &file_thinkpol_netmap_v1_netmap_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -928,7 +1264,7 @@ func (x *Link) String() string {
 func (*Link) ProtoMessage() {}
 
 func (x *Link) ProtoReflect() protoreflect.Message {
-	mi := &file_thinkpol_netmap_v1_netmap_proto_msgTypes[10]
+	mi := &file_thinkpol_netmap_v1_netmap_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -941,7 +1277,7 @@ func (x *Link) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Link.ProtoReflect.Descriptor instead.
 func (*Link) Descriptor() ([]byte, []int) {
-	return file_thinkpol_netmap_v1_netmap_proto_rawDescGZIP(), []int{10}
+	return file_thinkpol_netmap_v1_netmap_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *Link) GetPeer() []byte {
@@ -978,7 +1314,7 @@ type Endpoint struct {
 
 func (x *Endpoint) Reset() {
 	*x = Endpoint{}
-	mi := &file_thinkpol_netmap_v1_netmap_proto_msgTypes[11]
+	mi := &file_thinkpol_netmap_v1_netmap_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -990,7 +1326,7 @@ func (x *Endpoint) String() string {
 func (*Endpoint) ProtoMessage() {}
 
 func (x *Endpoint) ProtoReflect() protoreflect.Message {
-	mi := &file_thinkpol_netmap_v1_netmap_proto_msgTypes[11]
+	mi := &file_thinkpol_netmap_v1_netmap_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1003,7 +1339,7 @@ func (x *Endpoint) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Endpoint.ProtoReflect.Descriptor instead.
 func (*Endpoint) Descriptor() ([]byte, []int) {
-	return file_thinkpol_netmap_v1_netmap_proto_rawDescGZIP(), []int{11}
+	return file_thinkpol_netmap_v1_netmap_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *Endpoint) GetTransport() string {
@@ -1062,7 +1398,7 @@ type InboundLink struct {
 
 func (x *InboundLink) Reset() {
 	*x = InboundLink{}
-	mi := &file_thinkpol_netmap_v1_netmap_proto_msgTypes[12]
+	mi := &file_thinkpol_netmap_v1_netmap_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1074,7 +1410,7 @@ func (x *InboundLink) String() string {
 func (*InboundLink) ProtoMessage() {}
 
 func (x *InboundLink) ProtoReflect() protoreflect.Message {
-	mi := &file_thinkpol_netmap_v1_netmap_proto_msgTypes[12]
+	mi := &file_thinkpol_netmap_v1_netmap_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1087,7 +1423,7 @@ func (x *InboundLink) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InboundLink.ProtoReflect.Descriptor instead.
 func (*InboundLink) Descriptor() ([]byte, []int) {
-	return file_thinkpol_netmap_v1_netmap_proto_rawDescGZIP(), []int{12}
+	return file_thinkpol_netmap_v1_netmap_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *InboundLink) GetPeer() []byte {
@@ -1145,7 +1481,7 @@ type Route struct {
 
 func (x *Route) Reset() {
 	*x = Route{}
-	mi := &file_thinkpol_netmap_v1_netmap_proto_msgTypes[13]
+	mi := &file_thinkpol_netmap_v1_netmap_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1157,7 +1493,7 @@ func (x *Route) String() string {
 func (*Route) ProtoMessage() {}
 
 func (x *Route) ProtoReflect() protoreflect.Message {
-	mi := &file_thinkpol_netmap_v1_netmap_proto_msgTypes[13]
+	mi := &file_thinkpol_netmap_v1_netmap_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1170,7 +1506,7 @@ func (x *Route) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Route.ProtoReflect.Descriptor instead.
 func (*Route) Descriptor() ([]byte, []int) {
-	return file_thinkpol_netmap_v1_netmap_proto_rawDescGZIP(), []int{13}
+	return file_thinkpol_netmap_v1_netmap_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *Route) GetDestination() []byte {
@@ -1201,7 +1537,7 @@ type SignedRecoveryRecord struct {
 
 func (x *SignedRecoveryRecord) Reset() {
 	*x = SignedRecoveryRecord{}
-	mi := &file_thinkpol_netmap_v1_netmap_proto_msgTypes[14]
+	mi := &file_thinkpol_netmap_v1_netmap_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1213,7 +1549,7 @@ func (x *SignedRecoveryRecord) String() string {
 func (*SignedRecoveryRecord) ProtoMessage() {}
 
 func (x *SignedRecoveryRecord) ProtoReflect() protoreflect.Message {
-	mi := &file_thinkpol_netmap_v1_netmap_proto_msgTypes[14]
+	mi := &file_thinkpol_netmap_v1_netmap_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1226,7 +1562,7 @@ func (x *SignedRecoveryRecord) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SignedRecoveryRecord.ProtoReflect.Descriptor instead.
 func (*SignedRecoveryRecord) Descriptor() ([]byte, []int) {
-	return file_thinkpol_netmap_v1_netmap_proto_rawDescGZIP(), []int{14}
+	return file_thinkpol_netmap_v1_netmap_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *SignedRecoveryRecord) GetRecord() []byte {
@@ -1256,7 +1592,7 @@ type RecoveryRecord struct {
 
 func (x *RecoveryRecord) Reset() {
 	*x = RecoveryRecord{}
-	mi := &file_thinkpol_netmap_v1_netmap_proto_msgTypes[15]
+	mi := &file_thinkpol_netmap_v1_netmap_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1268,7 +1604,7 @@ func (x *RecoveryRecord) String() string {
 func (*RecoveryRecord) ProtoMessage() {}
 
 func (x *RecoveryRecord) ProtoReflect() protoreflect.Message {
-	mi := &file_thinkpol_netmap_v1_netmap_proto_msgTypes[15]
+	mi := &file_thinkpol_netmap_v1_netmap_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1281,7 +1617,7 @@ func (x *RecoveryRecord) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RecoveryRecord.ProtoReflect.Descriptor instead.
 func (*RecoveryRecord) Descriptor() ([]byte, []int) {
-	return file_thinkpol_netmap_v1_netmap_proto_rawDescGZIP(), []int{15}
+	return file_thinkpol_netmap_v1_netmap_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *RecoveryRecord) GetSpaceId() []byte {
@@ -1331,7 +1667,7 @@ const file_thinkpol_netmap_v1_netmap_proto_rawDesc = "" +
 	"\x04size\x18\x03 \x01(\x04R\x04size\x12\x12\n" +
 	"\x04name\x18\x04 \x01(\tR\x04name\"'\n" +
 	"\rSealedSection\x12\x16\n" +
-	"\x06sealed\x18\x01 \x01(\fR\x06sealed\"\xb8\x03\n" +
+	"\x06sealed\x18\x01 \x01(\fR\x06sealed\"\xd6\x04\n" +
 	"\aSection\x12\x1d\n" +
 	"\n" +
 	"min_reader\x18\x01 \x01(\rR\tminReader\x12\x19\n" +
@@ -1345,7 +1681,21 @@ const file_thinkpol_netmap_v1_netmap_proto_rawDesc = "" +
 	"\ainbound\x18\b \x03(\v2\x1f.thinkpol.netmap.v1.InboundLinkR\ainbound\x121\n" +
 	"\x06routes\x18\t \x03(\v2\x19.thinkpol.netmap.v1.RouteR\x06routes\x121\n" +
 	"\x05blobs\x18\n" +
-	" \x03(\v2\x1b.thinkpol.netmap.v1.BlobRefR\x05blobs\"\xc2\x02\n" +
+	" \x03(\v2\x1b.thinkpol.netmap.v1.BlobRefR\x05blobs\x12.\n" +
+	"\x05rules\x18\v \x03(\v2\x18.thinkpol.netmap.v1.RuleR\x05rules\x121\n" +
+	"\x06chains\x18\f \x03(\v2\x19.thinkpol.netmap.v1.ChainR\x06chains\x129\n" +
+	"\apresets\x18\r \x01(\v2\x1f.thinkpol.netmap.v1.RulePresetsR\apresets\"\x9f\x01\n" +
+	"\x04Rule\x123\n" +
+	"\x05match\x18\x01 \x01(\x0e2\x1d.thinkpol.netmap.v1.MatchKindR\x05match\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value\x126\n" +
+	"\x06action\x18\x03 \x01(\x0e2\x1e.thinkpol.netmap.v1.ActionKindR\x06action\x12\x14\n" +
+	"\x05chain\x18\x04 \x01(\tR\x05chain\"/\n" +
+	"\x05Chain\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
+	"\x04exit\x18\x02 \x01(\fR\x04exit\"?\n" +
+	"\vRulePresets\x12\x1a\n" +
+	"\bdomestic\x18\x01 \x01(\tR\bdomestic\x12\x14\n" +
+	"\x05chain\x18\x02 \x01(\tR\x05chain\"\xc2\x02\n" +
 	"\fNodeSettings\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\fR\x02id\x120\n" +
 	"\x04kind\x18\x02 \x01(\x0e2\x1c.thinkpol.netmap.v1.NodeKindR\x04kind\x12\x12\n" +
@@ -1400,7 +1750,22 @@ const file_thinkpol_netmap_v1_netmap_proto_rawDesc = "" +
 	"\bBlobKind\x12\x19\n" +
 	"\x15BLOB_KIND_UNSPECIFIED\x10\x00\x12\x13\n" +
 	"\x0fBLOB_KIND_GEOIP\x10\x01\x12\x15\n" +
-	"\x11BLOB_KIND_GEOSITE\x10\x02*Q\n" +
+	"\x11BLOB_KIND_GEOSITE\x10\x02*\xcd\x01\n" +
+	"\tMatchKind\x12\x1a\n" +
+	"\x16MATCH_KIND_UNSPECIFIED\x10\x00\x12\x16\n" +
+	"\x12MATCH_KIND_DEFAULT\x10\x01\x12\x14\n" +
+	"\x10MATCH_KIND_LOCAL\x10\x02\x12\x13\n" +
+	"\x0fMATCH_KIND_CIDR\x10\x03\x12\x14\n" +
+	"\x10MATCH_KIND_GEOIP\x10\x04\x12\x15\n" +
+	"\x11MATCH_KIND_DOMAIN\x10\x05\x12\x1c\n" +
+	"\x18MATCH_KIND_DOMAIN_SUFFIX\x10\x06\x12\x16\n" +
+	"\x12MATCH_KIND_GEOSITE\x10\a*o\n" +
+	"\n" +
+	"ActionKind\x12\x1b\n" +
+	"\x17ACTION_KIND_UNSPECIFIED\x10\x00\x12\x16\n" +
+	"\x12ACTION_KIND_DIRECT\x10\x01\x12\x15\n" +
+	"\x11ACTION_KIND_CHAIN\x10\x02\x12\x15\n" +
+	"\x11ACTION_KIND_BLOCK\x10\x03*Q\n" +
 	"\bNodeKind\x12\x19\n" +
 	"\x15NODE_KIND_UNSPECIFIED\x10\x00\x12\x14\n" +
 	"\x10NODE_KIND_SERVER\x10\x01\x12\x14\n" +
@@ -1419,50 +1784,60 @@ func file_thinkpol_netmap_v1_netmap_proto_rawDescGZIP() []byte {
 	return file_thinkpol_netmap_v1_netmap_proto_rawDescData
 }
 
-var file_thinkpol_netmap_v1_netmap_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_thinkpol_netmap_v1_netmap_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
+var file_thinkpol_netmap_v1_netmap_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
+var file_thinkpol_netmap_v1_netmap_proto_msgTypes = make([]protoimpl.MessageInfo, 19)
 var file_thinkpol_netmap_v1_netmap_proto_goTypes = []any{
 	(BlobKind)(0),                // 0: thinkpol.netmap.v1.BlobKind
-	(NodeKind)(0),                // 1: thinkpol.netmap.v1.NodeKind
-	(*Envelope)(nil),             // 2: thinkpol.netmap.v1.Envelope
-	(*Body)(nil),                 // 3: thinkpol.netmap.v1.Body
-	(*Header)(nil),               // 4: thinkpol.netmap.v1.Header
-	(*BlobRef)(nil),              // 5: thinkpol.netmap.v1.BlobRef
-	(*SealedSection)(nil),        // 6: thinkpol.netmap.v1.SealedSection
-	(*Section)(nil),              // 7: thinkpol.netmap.v1.Section
-	(*NodeSettings)(nil),         // 8: thinkpol.netmap.v1.NodeSettings
-	(*Listener)(nil),             // 9: thinkpol.netmap.v1.Listener
-	(*Peer)(nil),                 // 10: thinkpol.netmap.v1.Peer
-	(*Path)(nil),                 // 11: thinkpol.netmap.v1.Path
-	(*Link)(nil),                 // 12: thinkpol.netmap.v1.Link
-	(*Endpoint)(nil),             // 13: thinkpol.netmap.v1.Endpoint
-	(*InboundLink)(nil),          // 14: thinkpol.netmap.v1.InboundLink
-	(*Route)(nil),                // 15: thinkpol.netmap.v1.Route
-	(*SignedRecoveryRecord)(nil), // 16: thinkpol.netmap.v1.SignedRecoveryRecord
-	(*RecoveryRecord)(nil),       // 17: thinkpol.netmap.v1.RecoveryRecord
+	(MatchKind)(0),               // 1: thinkpol.netmap.v1.MatchKind
+	(ActionKind)(0),              // 2: thinkpol.netmap.v1.ActionKind
+	(NodeKind)(0),                // 3: thinkpol.netmap.v1.NodeKind
+	(*Envelope)(nil),             // 4: thinkpol.netmap.v1.Envelope
+	(*Body)(nil),                 // 5: thinkpol.netmap.v1.Body
+	(*Header)(nil),               // 6: thinkpol.netmap.v1.Header
+	(*BlobRef)(nil),              // 7: thinkpol.netmap.v1.BlobRef
+	(*SealedSection)(nil),        // 8: thinkpol.netmap.v1.SealedSection
+	(*Section)(nil),              // 9: thinkpol.netmap.v1.Section
+	(*Rule)(nil),                 // 10: thinkpol.netmap.v1.Rule
+	(*Chain)(nil),                // 11: thinkpol.netmap.v1.Chain
+	(*RulePresets)(nil),          // 12: thinkpol.netmap.v1.RulePresets
+	(*NodeSettings)(nil),         // 13: thinkpol.netmap.v1.NodeSettings
+	(*Listener)(nil),             // 14: thinkpol.netmap.v1.Listener
+	(*Peer)(nil),                 // 15: thinkpol.netmap.v1.Peer
+	(*Path)(nil),                 // 16: thinkpol.netmap.v1.Path
+	(*Link)(nil),                 // 17: thinkpol.netmap.v1.Link
+	(*Endpoint)(nil),             // 18: thinkpol.netmap.v1.Endpoint
+	(*InboundLink)(nil),          // 19: thinkpol.netmap.v1.InboundLink
+	(*Route)(nil),                // 20: thinkpol.netmap.v1.Route
+	(*SignedRecoveryRecord)(nil), // 21: thinkpol.netmap.v1.SignedRecoveryRecord
+	(*RecoveryRecord)(nil),       // 22: thinkpol.netmap.v1.RecoveryRecord
 }
 var file_thinkpol_netmap_v1_netmap_proto_depIdxs = []int32{
-	16, // 0: thinkpol.netmap.v1.Envelope.recovery_records:type_name -> thinkpol.netmap.v1.SignedRecoveryRecord
-	4,  // 1: thinkpol.netmap.v1.Body.header:type_name -> thinkpol.netmap.v1.Header
-	6,  // 2: thinkpol.netmap.v1.Body.sections:type_name -> thinkpol.netmap.v1.SealedSection
-	5,  // 3: thinkpol.netmap.v1.Header.blobs:type_name -> thinkpol.netmap.v1.BlobRef
+	21, // 0: thinkpol.netmap.v1.Envelope.recovery_records:type_name -> thinkpol.netmap.v1.SignedRecoveryRecord
+	6,  // 1: thinkpol.netmap.v1.Body.header:type_name -> thinkpol.netmap.v1.Header
+	8,  // 2: thinkpol.netmap.v1.Body.sections:type_name -> thinkpol.netmap.v1.SealedSection
+	7,  // 3: thinkpol.netmap.v1.Header.blobs:type_name -> thinkpol.netmap.v1.BlobRef
 	0,  // 4: thinkpol.netmap.v1.BlobRef.kind:type_name -> thinkpol.netmap.v1.BlobKind
-	8,  // 5: thinkpol.netmap.v1.Section.node:type_name -> thinkpol.netmap.v1.NodeSettings
-	10, // 6: thinkpol.netmap.v1.Section.peers:type_name -> thinkpol.netmap.v1.Peer
-	12, // 7: thinkpol.netmap.v1.Section.links:type_name -> thinkpol.netmap.v1.Link
-	14, // 8: thinkpol.netmap.v1.Section.inbound:type_name -> thinkpol.netmap.v1.InboundLink
-	15, // 9: thinkpol.netmap.v1.Section.routes:type_name -> thinkpol.netmap.v1.Route
-	5,  // 10: thinkpol.netmap.v1.Section.blobs:type_name -> thinkpol.netmap.v1.BlobRef
-	1,  // 11: thinkpol.netmap.v1.NodeSettings.kind:type_name -> thinkpol.netmap.v1.NodeKind
-	9,  // 12: thinkpol.netmap.v1.NodeSettings.listeners:type_name -> thinkpol.netmap.v1.Listener
-	11, // 13: thinkpol.netmap.v1.Peer.paths:type_name -> thinkpol.netmap.v1.Path
-	13, // 14: thinkpol.netmap.v1.Link.endpoints:type_name -> thinkpol.netmap.v1.Endpoint
-	1,  // 15: thinkpol.netmap.v1.InboundLink.peer_kind:type_name -> thinkpol.netmap.v1.NodeKind
-	16, // [16:16] is the sub-list for method output_type
-	16, // [16:16] is the sub-list for method input_type
-	16, // [16:16] is the sub-list for extension type_name
-	16, // [16:16] is the sub-list for extension extendee
-	0,  // [0:16] is the sub-list for field type_name
+	13, // 5: thinkpol.netmap.v1.Section.node:type_name -> thinkpol.netmap.v1.NodeSettings
+	15, // 6: thinkpol.netmap.v1.Section.peers:type_name -> thinkpol.netmap.v1.Peer
+	17, // 7: thinkpol.netmap.v1.Section.links:type_name -> thinkpol.netmap.v1.Link
+	19, // 8: thinkpol.netmap.v1.Section.inbound:type_name -> thinkpol.netmap.v1.InboundLink
+	20, // 9: thinkpol.netmap.v1.Section.routes:type_name -> thinkpol.netmap.v1.Route
+	7,  // 10: thinkpol.netmap.v1.Section.blobs:type_name -> thinkpol.netmap.v1.BlobRef
+	10, // 11: thinkpol.netmap.v1.Section.rules:type_name -> thinkpol.netmap.v1.Rule
+	11, // 12: thinkpol.netmap.v1.Section.chains:type_name -> thinkpol.netmap.v1.Chain
+	12, // 13: thinkpol.netmap.v1.Section.presets:type_name -> thinkpol.netmap.v1.RulePresets
+	1,  // 14: thinkpol.netmap.v1.Rule.match:type_name -> thinkpol.netmap.v1.MatchKind
+	2,  // 15: thinkpol.netmap.v1.Rule.action:type_name -> thinkpol.netmap.v1.ActionKind
+	3,  // 16: thinkpol.netmap.v1.NodeSettings.kind:type_name -> thinkpol.netmap.v1.NodeKind
+	14, // 17: thinkpol.netmap.v1.NodeSettings.listeners:type_name -> thinkpol.netmap.v1.Listener
+	16, // 18: thinkpol.netmap.v1.Peer.paths:type_name -> thinkpol.netmap.v1.Path
+	18, // 19: thinkpol.netmap.v1.Link.endpoints:type_name -> thinkpol.netmap.v1.Endpoint
+	3,  // 20: thinkpol.netmap.v1.InboundLink.peer_kind:type_name -> thinkpol.netmap.v1.NodeKind
+	21, // [21:21] is the sub-list for method output_type
+	21, // [21:21] is the sub-list for method input_type
+	21, // [21:21] is the sub-list for extension type_name
+	21, // [21:21] is the sub-list for extension extendee
+	0,  // [0:21] is the sub-list for field type_name
 }
 
 func init() { file_thinkpol_netmap_v1_netmap_proto_init() }
@@ -1475,8 +1850,8 @@ func file_thinkpol_netmap_v1_netmap_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_thinkpol_netmap_v1_netmap_proto_rawDesc), len(file_thinkpol_netmap_v1_netmap_proto_rawDesc)),
-			NumEnums:      2,
-			NumMessages:   16,
+			NumEnums:      4,
+			NumMessages:   19,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

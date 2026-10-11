@@ -30,6 +30,9 @@ A running device node is controlled through a local API, and the CLI is its firs
   - **Server mode:** the API needs the `*supervisor.Supervisor` (`Workers()`, `Listeners()`, `Output(space)`), which `runServer` keeps local; worker output is space-controlled bytes, so sanitize it when rendering (TP-009 note), and serve a guest space's output only to its own admin (DESIGN rule 6).
   - `Logs.Ring` (`agent.NewLogs`) is the agent's in-memory log for the API to serve.
 
+- **From TP-015's review (the local rules file):** a device's rule choice is `rules.Local` (`internal/dataplane/rules`) in its text form (`MarshalText`/`UnmarshalText`: an optional `preset <space|everything|all-but-domestic>` line, then one `match -> action` rule per line). The file is owned by the service, in its state dir, and written only through the privileged API (`rules preset <name>` and any rule edits go through it, never a user-writable file). The service hands it to the engine with `EngineConfig.Rules` at start and `Engine.SetRules` on change (persist, then apply). On a parse error keep the last good `Local` or fail closed; never run with a zero `Local`, which silently means "the space's rules". `SetRules` returns `rules.ErrPresetUnavailable` when the map can't build the preset (it is then enforced failing closed): say so in the CLI. `Status.Rules` gives the preset, whether it is unavailable, direct prefix counts and skipped rules by origin, index and reason only.
+
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-11 docs (TP-011 review): notes on the composition, a status handle and the supervisor for the local API
+- 2026-10-12 docs (TP-015 review): notes on the local rules file
