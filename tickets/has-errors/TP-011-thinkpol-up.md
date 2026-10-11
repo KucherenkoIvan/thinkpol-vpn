@@ -55,6 +55,24 @@ One command starts a node from its keys and map: device mode on a device, superv
 - **For TP-040 (guests):** `serverSpaces.apply` builds the one `[]supervisor.Space`; guest spaces need their own key set and trust per space (DESIGN "Node safety"), e.g. `/var/lib/thinkpol/guests/<space-id>/{node.key,space.pub,map.bin}`, and `LoadState` would list that directory as expected.
 - **For TP-041 (telemetry):** worker side, `Session.SharedCounters`/`SharedDrops` are collected in `agent.Worker` (now only logged at debug).
 
+## Review findings
+Two reviewers; decisions by the orchestrator.
+
+Fix now:
+- [ ] B1 Listener restart: a listener whose Serve returns on its own is retried after RetryAfter (not lost, not tight-looped): decide, then close, then signal, with a backoff set. Unit test with a memory listener whose Serve fails once (reopened after RetryAfter, not before)
+- [ ] S1 Server mode: a first-apply listener error (errListeners) is not fatal: warn and arm the retry; only other errors are fatal. Unit test
+- [ ] SEC-1 State dir: dir, node.key, space.pub owned by the euid (or root); symlinks refused; files opened with O_NOFOLLOW|O_NONBLOCK, type/owner/mode checked with fstat on the open fd, bounded reads (no stat/read TOCTOU, no FIFO hang). A test per refusal
+- [ ] SEC-2 Map path: the same owner/not-writable-by-others checks on the map file and its parent directory, O_NONBLOCK + fstat regular-file check, in the watcher too (a FIFO never blocks shutdown). Documented why (rollback through an older signed map at restart)
+- [ ] SEC-3 Worker output copied to the node log: control bytes (< 0x20 but \t, and 0x7f) sanitized; `supervisor.Options.Output` is `func(space) io.Writer`, nil for spaces whose output isn't copied; the agent copies only the owner space's worker output (never a guest's, DESIGN rule 6). Test
+- [ ] D1 Removed node: a valid newer map (passes Next) without a section for the node stops the data plane (device mode) / the space's worker (server mode); the process stays up, idle, logs "removed from space" once, and resumes when a later map includes it again. DESIGN "Engine and agent". Test
+- [ ] S9 DESIGN "Node safety": node.key written once at provisioning on the node; map.bin replaced atomically when the node takes a newer map (TP-037); nothing else. Notes in TP-037/TP-038: first boot without a map
+- [ ] S10 `Space.Inbound` doc names AcceptedInbound
+- [ ] S11 Defaults: interface "" = the platform default (tun.DefaultName), LinkMTU 0 = dataplane.DefaultLinkMTU
+- [ ] Nits: the worker logs with a plain stderr logger (no unused ring); `MapFile` const → `MapFileName`; `agent.Worker` → `agent.ServeSpace`; `DataPlane.Status` → `StatusAttrs`; a closed Maps channel doesn't tight-loop; worker config decoding disallows unknown fields; stale `Idle` comment; SIGTERM during the first Apply exits 0; the thread stays locked across SIOCGSKNS and the netlink handle; warn on a kind change in server mode too; say so when -map points elsewhere and the state dir also has a map.bin
+- [ ] Tests: an Apply failure then a successful retry; serverSpaces retries after a failed SetSpaces; ServeSpace with a fake session (wrong keys/space refused, later configs reach Maps); SharedInbound: a closed Done is never reopened, a new set signals Changed
+
+Deferred (Notes written into the tickets): TP-022 (app.Run out of internal/agent, a read-only status handle out of RunDataPlane, the supervisor in server mode), TP-037 (MapSource seam, `follower.take` shared by both modes), TP-038 (shared key-file codec, node.key written on the node).
+
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-10 docs (TP-006 review): notes from the path layer
@@ -62,3 +80,4 @@ One command starts a node from its keys and map: device mode on a device, superv
 - 2026-10-11 backlog → in-progress — owner: agent-tp-011, branch: tp-011-thinkpol-up (based on tp-010-shared-listener while TP-010 merges)
 - 2026-10-11 merged origin/rewrite (TP-010 done); `thinkpol up` in device and server mode (`internal/agent`), `thinkpol worker` runs the data plane; netcfg.New works without /proc (SIOCGSKNS), supervisor.Options.Output; DESIGN.md "Node safety" and "Engine and agent" updated
 - 2026-10-11 in-progress → review — all acceptance checked; `make lint`, `make test`, `go test -race` on internal/agent/..., cmd/thinkpol and netcfg, `make lab-test` (incl. `TestUpRunsTheM0Space`) pass
+- 2026-10-11 review → has-errors — two reviewers: B1, S1, SEC-1–3, D1, S9–S11, nits, tests (see Review findings); TP-022/037/038 deferred
