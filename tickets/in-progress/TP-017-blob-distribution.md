@@ -70,3 +70,4 @@ Review: fix first (cache integrity held up). Orchestrator decisions:
 - 2026-10-12 backlog → in-progress — owner: agent-tp-017, branch: tp-017-blob-distribution
 - 2026-10-12 in-progress → review — make lint, make test, make test-race and make lab-test pass (TestBlobDistribution); DESIGN.md "Lists" and "Node safety" updated (blob protocol; blobs/ in the state directory: written by devices, read-only seeds on servers)
 - 2026-10-12 review → has-errors — review findings B1, B2, S1–S5, N1–N6, I1, I2
+- 2026-10-12 has-errors → in-progress — owner: agent-tp-017
