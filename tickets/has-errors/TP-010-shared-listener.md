@@ -84,6 +84,11 @@ Should-fix:
 Nits:
 - [x] rollback re-syncs the shared tables; SetListeners documents that a settings change reopens the socket (the port can be lost if the reopen fails); `reply()` unmaps IPv4-mapped destinations and keeps zones; TestWorkersOnlyAnswer without its race and not vacuous; expiry and full-table tests; `bytes.Compare` inline.
 
+Round 2 (delta review, 2026-10-11):
+- [ ] R2.1 The replay filter is per credential across listeners: one udp Router per transport table, shared by every listener of that transport and kept across listener reopens. router.go's doc no longer says a reopen resets history. Test: a datagram captured on listener A and sent to listener B is counted Replayed, forwards nothing, adds no remote. The TP-040 note fixed to match.
+- [ ] R2.2 The paced loss test also asserts loss at the worker (delivered bytes over the window, or SharedDrops.QueueFull), not only the supervisor's handoff.
+- [ ] R2.3 replay.go says the ring's residual in one sentence: a sender evicted beyond 1024 evictions within 5 minutes can take over after 30 s of silence from the current one, which requires the credential.
+
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-11 backlog → in-progress — owner: agent-tp-010, branch: tp-010-shared-listener
@@ -93,3 +98,4 @@ Nits:
 - 2026-10-11 has-errors → in-progress — owner: agent-tp-010, picking up the review findings
 - 2026-10-11 review findings fixed (B1, 2–12, nits); DESIGN.md "Server agent" reply rule and stream caps reworded; udp's evicted-sender history bounded (a churning dialer could stall a shared Router, found by the new flood test); notes copied into TP-011, TP-013, TP-014, TP-028, TP-040, TP-041
 - 2026-10-11 in-progress → review
+- 2026-10-11 review → has-errors — delta review: 3 findings (round 2)
