@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -22,25 +24,43 @@ type Capture struct {
 	changed chan struct{} // closed and replaced on every new packet
 	readErr error
 	read    chan struct{} // closed when the stream ends
+	// truncated counts frames captured short of their length.
+	truncated int
+
+	stderr     []string      // tcpdump's last lines on stderr
+	stderrDone chan struct{} // closed when tcpdump's stderr ends
 }
+
+// stderrLines bounds what is kept of tcpdump's stderr: its statistics come
+// last.
+const stderrLines = 20
 
 // Capture starts capturing on the node and returns once tcpdump is
 // listening. filter is a tcpdump (pcap-filter) expression, "" for all. The
-// capture stops when the test ends.
+// capture stops when the test ends, and the test fails if tcpdump dropped
+// packets (see Dropped).
 func (n *Node) Capture(t testing.TB, filter string) *Capture {
 	t.Helper()
 	c, err := n.startCapture(filter)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { c.Stop() })
+	t.Cleanup(func() {
+		if err := c.Complete(); err != nil {
+			t.Error(err)
+		}
+	})
 	return c
 }
 
 func (n *Node) startCapture(filter string) (*Capture, error) {
 	stdout, stdoutW := io.Pipe()
 	stderr, stderrW := io.Pipe()
-	args := []string{"tcpdump", "--immediate-mode", "-U", "-n", "-i", "any", "-s", "0", "-w", "-"}
+	// In immediate mode libpcap's ring has one frame per snapshot length:
+	// with the default 256 KiB snapshot and 2 MiB buffer, a burst of eight
+	// packets overflows it. A snapshot just above the largest IP packet and
+	// a 32 MiB buffer give it about 500.
+	args := []string{"tcpdump", "--immediate-mode", "-U", "-n", "-i", "any", "-s", "65600", "-B", "32768", "-w", "-"}
 	if filter != "" {
 		args = append(args, filter)
 	}
@@ -53,22 +73,31 @@ func (n *Node) startCapture(filter string) (*Capture, error) {
 		_ = stdoutW.Close()
 		_ = stderrW.Close()
 	}()
-	c := &Capture{node: n, proc: proc, changed: make(chan struct{}), read: make(chan struct{})}
+	c := &Capture{node: n, proc: proc, changed: make(chan struct{}), read: make(chan struct{}), stderrDone: make(chan struct{})}
 
-	// tcpdump reports on stderr when it is listening, or why it isn't.
+	// tcpdump reports on stderr when it is listening, or why it isn't, and
+	// what it dropped when it stops.
 	listening := make(chan error, 1)
 	go func() {
-		var log strings.Builder
+		defer close(c.stderrDone)
+		heard := false
 		sc := bufio.NewScanner(stderr)
 		for sc.Scan() {
-			log.WriteString(sc.Text() + "\n")
-			if strings.HasPrefix(sc.Text(), "tcpdump: listening on") {
+			c.mu.Lock()
+			c.stderr = append(c.stderr, sc.Text())
+			if len(c.stderr) > stderrLines {
+				c.stderr = c.stderr[1:]
+			}
+			c.mu.Unlock()
+			if !heard && strings.HasPrefix(sc.Text(), "tcpdump: listening on") {
+				heard = true
 				listening <- nil
-				_, _ = io.Copy(io.Discard, stderr)
-				return
 			}
 		}
-		listening <- fmt.Errorf("%s: tcpdump %q: %s", n.Name, filter, strings.TrimSpace(log.String()))
+		_, _ = io.Copy(io.Discard, stderr)
+		if !heard {
+			listening <- fmt.Errorf("%s: tcpdump %q: %s", n.Name, filter, c.stderrText())
+		}
 	}()
 	go c.readStream(stdout)
 
@@ -93,6 +122,11 @@ func (c *Capture) readStream(r io.Reader) {
 		c.setErr(err)
 		return
 	}
+	defer func() {
+		c.mu.Lock()
+		c.truncated = pr.truncated
+		c.mu.Unlock()
+	}()
 	for {
 		pkt, err := pr.next()
 		if errors.Is(err, io.EOF) {
@@ -125,11 +159,69 @@ func (c *Capture) Packets() []Packet {
 }
 
 // Stop stops tcpdump and returns every packet it captured. Calling it again
-// returns the same packets.
+// returns the same packets. Check Complete before trusting what is missing
+// from them.
 func (c *Capture) Stop() []Packet {
 	_ = c.proc.Stop() // tcpdump exits non-zero on SIGTERM; the stream is complete anyway
 	<-c.read
+	<-c.stderrDone
 	return c.Packets()
+}
+
+var droppedLine = regexp.MustCompile(`^(\d+) packets? dropped by (kernel|interface)$`)
+
+// Dropped is how many packets tcpdump reported dropped (by the kernel's
+// capture buffer or the interface) once stopped. It is an error before
+// Stop, or if tcpdump reported no statistics (it was killed).
+func (c *Capture) Dropped() (int, error) {
+	select {
+	case <-c.stderrDone:
+	default:
+		return 0, fmt.Errorf("%s: capture still running", c.node.Name)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	dropped, seen := 0, false
+	for _, l := range c.stderr {
+		if m := droppedLine.FindStringSubmatch(strings.TrimSpace(l)); m != nil {
+			n, _ := strconv.Atoi(m[1])
+			dropped += n
+			seen = seen || m[2] == "kernel"
+		}
+	}
+	if !seen {
+		return 0, fmt.Errorf("%s: tcpdump reported no statistics: %s", c.node.Name, strings.Join(c.stderr, "; "))
+	}
+	return dropped, nil
+}
+
+// Complete stops the capture and reports an error unless tcpdump saw every
+// packet whole and the stream decoded: a check that something is absent from a
+// capture is only as good as this.
+func (c *Capture) Complete() error {
+	c.Stop()
+	if err := c.Err(); err != nil {
+		return err
+	}
+	n, err := c.Dropped()
+	if err != nil {
+		return err
+	}
+	if n > 0 {
+		return fmt.Errorf("%s: tcpdump dropped %d packets: %s", c.node.Name, n, c.stderrText())
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.truncated > 0 {
+		return fmt.Errorf("%s: %d packets captured short of their length", c.node.Name, c.truncated)
+	}
+	return nil
+}
+
+func (c *Capture) stderrText() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return strings.TrimSpace(strings.Join(c.stderr, "\n"))
 }
 
 // Err reports a capture stream that could not be decoded.

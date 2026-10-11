@@ -96,8 +96,8 @@ func testM0(t *testing.T, ipv6 bool) {
 		// nothing on to device-b.
 		for _, to := range []netip.Addr{s4, s6} {
 			c := burst(t, server, devA, to, serverU, map[string]netip.Addr{"device-a": devAU, "device-b": devBU})
-			if c.in["device-a"] < burstCount || c.out["device-a"] < burstCount {
-				t.Errorf("ping %s: server-1 got %d and sent %d datagrams of the burst with device-a, want %d each way", to, c.in["device-a"], c.out["device-a"], burstCount)
+			if c.in["device-a"] < c.received || c.out["device-a"] < c.received {
+				t.Errorf("ping %s: server-1 got %d and sent %d datagrams of the burst with device-a, want at least %d each way (the replies device-a got)", to, c.in["device-a"], c.out["device-a"], c.received)
 			}
 			if c.in["device-b"] != 0 || c.out["device-b"] != 0 {
 				t.Errorf("ping %s: server-1 exchanged %d/%d datagrams of the burst with device-b", to, c.in["device-b"], c.out["device-b"])
@@ -118,8 +118,8 @@ func testM0(t *testing.T, ipv6 bool) {
 		for _, to := range []netip.Addr{b4, b6} {
 			c := burst(t, server, devA, to, serverU, map[string]netip.Addr{"device-a": devAU, "device-b": devBU})
 			for _, n := range []string{"device-a", "device-b"} {
-				if c.in[n] < burstCount || c.out[n] < burstCount {
-					t.Errorf("ping %s: server-1 got %d and sent %d datagrams of the burst with %s, want %d each way", to, c.in[n], c.out[n], n, burstCount)
+				if c.in[n] < c.received || c.out[n] < c.received {
+					t.Errorf("ping %s: server-1 got %d and sent %d datagrams of the burst with %s, want at least %d each way (the replies device-a got)", to, c.in[n], c.out[n], n, c.received)
 				}
 			}
 			t.Logf("ping %s from device-a, at server-1: %s", to, c)
@@ -129,12 +129,12 @@ func testM0(t *testing.T, ipv6 bool) {
 	// The devices share a network: had anything gone straight from one to
 	// the other, it would show in their own captures, not at the router.
 	t.Run("no traffic between the devices but through server-1", func(t *testing.T) {
-		checkNoDirect(t, devACap.Stop(), devA, devB, serverU)
-		checkNoDirect(t, devBCap.Stop(), devB, devA, serverU)
+		checkNoDirect(t, complete(t, devACap), devA, devB, serverU)
+		checkNoDirect(t, complete(t, devBCap), devB, devA, serverU)
 	})
 
 	t.Run("no WireGuard on the wire at the router (C1)", func(t *testing.T) {
-		checkNoWireGuard(t, routerCap.Stop(), serverU)
+		checkNoWireGuard(t, complete(t, routerCap), serverU)
 	})
 }
 
@@ -193,9 +193,12 @@ func checkWorker(t *testing.T, server *lab.Node, overlay ...netip.Addr) string {
 		}
 	}
 	status := server.MustExec(t, "cat", "/proc/"+worker+"/status")
-	uid := regexp.MustCompile(`(?m)^Uid:\s+(\d+)`).FindStringSubmatch(status)
-	if uid == nil || uid[1] == "0" {
-		t.Errorf("the worker runs as root (in the node's namespace):\n%s", status)
+	uid := regexp.MustCompile(`(?m)^Uid:\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)$`).FindStringSubmatch(status)
+	if uid == nil {
+		t.Fatalf("no Uid line in the worker's status:\n%s", status)
+	}
+	if slices.Contains(uid[1:], "0") {
+		t.Errorf("the worker has root among its real, effective, saved and filesystem uids (in the node's namespace): %s", uid[0])
 	}
 	inWorker := server.MustExec(t, "nsenter", "--net=/proc/"+worker+"/ns/net", "ip", "-o", "addr", "show")
 	inRoot := server.MustExec(t, "ip", "-o", "addr", "show")
@@ -234,8 +237,12 @@ func pingWith(t *testing.T, n *lab.Node, to netip.Addr, prefix ...string) {
 }
 
 // datagramCounts are the large udp datagrams server-1 exchanged on its
-// listener port with each node during a burst.
-type datagramCounts struct{ in, out map[string]int }
+// listener port with each node during a burst, and how many replies the
+// burst got.
+type datagramCounts struct {
+	in, out  map[string]int
+	received int
+}
 
 func (c datagramCounts) String() string {
 	var names []string
@@ -251,20 +258,38 @@ func (c datagramCounts) String() string {
 	for _, n := range names {
 		parts = append(parts, fmt.Sprintf("%s: %d in, %d out", n, c.in[n], c.out[n]))
 	}
-	return strings.Join(parts, "; ")
+	return fmt.Sprintf("%d replies; %s", c.received, strings.Join(parts, "; "))
 }
 
-// burst pings to from a node burstCount times with burstSize payloads,
-// all answered, and counts the large datagrams captured at server-1.
+// burst pings to from a node burstCount times with burstSize payloads and
+// counts the large datagrams captured at server-1. A burst that loses a
+// reply is tried once more.
 func burst(t *testing.T, server, from *lab.Node, to, serverU netip.Addr, nodes map[string]netip.Addr) datagramCounts {
 	t.Helper()
-	c := server.Capture(t, "udp port 4500")
-	out := from.MustExec(t, "ping", "-c", strconv.Itoa(burstCount), "-i", "0.2", "-W", "2", "-s", strconv.Itoa(burstSize), to.String())
-	if !strings.Contains(out, fmt.Sprintf(" %d received", burstCount)) {
-		t.Errorf("ping %s lost replies:\n%s", to, out)
+	c := burstOnce(t, server, from, to, serverU, nodes)
+	if c.received < burstCount {
+		t.Logf("ping %s: %d of %d replies, once more", to, c.received, burstCount)
+		c = burstOnce(t, server, from, to, serverU, nodes)
 	}
+	if c.received < burstCount {
+		t.Errorf("ping %s: %d of %d replies", to, c.received, burstCount)
+	}
+	return c
+}
+
+func burstOnce(t *testing.T, server, from *lab.Node, to, serverU netip.Addr, nodes map[string]netip.Addr) datagramCounts {
+	t.Helper()
+	capture := server.Capture(t, "udp port 4500")
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	res, _ := from.Exec(ctx, "ping", "-c", strconv.Itoa(burstCount), "-i", "0.2", "-W", "2", "-s", strconv.Itoa(burstSize), to.String())
 	counts := datagramCounts{in: map[string]int{}, out: map[string]int{}}
-	for _, p := range c.Stop() {
+	m := regexp.MustCompile(`(\d+) received`).FindStringSubmatch(res.Stdout)
+	if m == nil {
+		t.Fatalf("ping %s:\n%s%s", to, res.Stdout, res.Stderr)
+	}
+	counts.received, _ = strconv.Atoi(m[1])
+	for _, p := range complete(t, capture) {
 		if p.Network != lab.NetServers || len(p.Payload) < burstSize {
 			continue
 		}
@@ -288,9 +313,10 @@ func checkNoDirect(t *testing.T, pkts []lab.Packet, self, other *lab.Node, serve
 	otherAddrs := linkAddrs(t, other, lab.NetDevices)
 	sent, direct := 0, 0
 	for _, p := range pkts {
-		// Multicast (router solicitations, neighbour discovery) reaches
-		// every node on the network; it is not traffic between the two.
-		if p.Network != lab.NetDevices || p.Dst.IsMulticast() {
+		// Multicast neighbour discovery, router solicitations and group
+		// membership reach every node on the network: not traffic between
+		// the two. Multicast of any other protocol is checked like the rest.
+		if p.Network != lab.NetDevices || p.Dst.IsMulticast() && (p.Proto == lab.ProtoICMPv6 || p.Proto == lab.ProtoIGMP) {
 			continue
 		}
 		if slices.Contains(otherAddrs, p.Src) || slices.Contains(otherAddrs, p.Dst) {
@@ -308,7 +334,7 @@ func checkNoDirect(t *testing.T, pkts []lab.Packet, self, other *lab.Node, serve
 	if sent < 2*burstCount {
 		t.Errorf("%s sent only %d datagrams to server-1; the capture proves nothing", self.Name, sent)
 	}
-	t.Logf("%s: %d datagrams sent to server-1 at %s; %d unicast packets to or from %s's addresses %v", self.Name, sent, serverU, direct, other.Name, otherAddrs)
+	t.Logf("%s: %d datagrams sent to server-1 at %s; %d packets to or from %s's addresses %v (multicast ICMPv6 and IGMP aside)", self.Name, sent, serverU, direct, other.Name, otherAddrs)
 }
 
 // linkAddrs are every address a node has on a lab network, link-local
@@ -327,40 +353,49 @@ func linkAddrs(t *testing.T, n *lab.Node, network string) []netip.Addr {
 
 // checkNoWireGuard checks every udp payload that crossed the router during
 // the whole run, the data plane's own and anything else, against the
-// WireGuard signature (lab.WireGuardHeader, the loosest part of it; see
-// TestCaptureFlagsRawWireGuard for the classifier on raw WireGuard).
+// WireGuard signature: no WireGuard header at its start (lab.WireGuardHeader,
+// the loosest part of the signature) and no whole WireGuard message behind
+// some other header (lab.WireGuardOffset). TestCaptureFlagsRawWireGuard
+// checks the classifier on raw WireGuard.
 func checkNoWireGuard(t *testing.T, pkts []lab.Packet, serverU netip.Addr) {
 	t.Helper()
-	udp, ours, wrongFamily, flagged := 0, 0, 0, 0
+	udp, ours, burstSized, flagged := 0, 0, 0, 0
 	first := -1
 	for i, p := range pkts {
 		if p.Proto != lab.ProtoUDP {
 			continue
 		}
 		udp++
-		if lab.WireGuardHeader(p.Payload) || lab.LooksLikeWireGuard(p.Payload) {
+		if at := lab.WireGuardOffset(p.Payload); lab.WireGuardHeader(p.Payload) || at >= 0 {
 			flagged++
-			t.Errorf("a datagram %s:%d → %s:%d looks like WireGuard: %x", p.Src, p.SrcPort, p.Dst, p.DstPort, p.Payload[:min(len(p.Payload), 32)])
+			t.Errorf("a datagram %s:%d → %s:%d looks like WireGuard (message at offset %d): %x", p.Src, p.SrcPort, p.Dst, p.DstPort, at, p.Payload[:min(len(p.Payload), 32)])
 		}
-		if p.SrcPort == 4500 || p.DstPort == 4500 {
-			ours++
-			if first < 0 {
-				first = i
-			}
-			if p.Src.Is4() != serverU.Is4() {
-				wrongFamily++
-			}
+		if serverU.Is6() && p.Src.Is4() {
+			t.Errorf("a datagram %s:%d → %s:%d over IPv4 in the IPv6-only run", p.Src, p.SrcPort, p.Dst, p.DstPort)
+		}
+		if p.SrcPort != 4500 && p.DstPort != 4500 {
+			continue
+		}
+		ours++
+		if first < 0 {
+			first = i
+		}
+		if p.Src.Is4() != serverU.Is4() {
+			t.Errorf("a datagram of the data plane %s:%d → %s:%d isn't over %s", p.Src, p.SrcPort, p.Dst, p.DstPort, family(serverU))
+		}
+		if len(p.Payload) >= burstSize {
+			burstSized++
 		}
 	}
-	switch {
-	case ours < 8*burstCount:
-		t.Fatalf("the router saw only %d datagrams of the data plane; the capture proves nothing", ours)
-	case pkts[first].Dst != serverU || pkts[first].Outgoing:
+	// The router sees each datagram twice. The bursts alone: 2 direct ones
+	// (request and reply cross once each) and 2 relayed ones (twice each).
+	if want := 2 * (2*2 + 2*4) * burstCount; burstSized < want {
+		t.Fatalf("the router saw %d burst-sized datagrams of the data plane, want at least %d: the capture proves nothing", burstSized, want)
+	}
+	if pkts[first].Dst != serverU || pkts[first].Outgoing {
 		t.Errorf("the first datagram the router saw goes %s → %s, not from a device dialing server-1: the capture missed the start", pkts[first].Src, pkts[first].Dst)
-	case wrongFamily > 0:
-		t.Errorf("%d datagrams of the data plane weren't over the underlay under test", wrongFamily)
 	}
-	t.Logf("router: %d udp datagrams over the whole run (%d of the data plane, from the first handshake on, over %s), %d with a WireGuard header", udp, ours, family(serverU), flagged)
+	t.Logf("router: %d udp datagrams over the whole run (%d of the data plane, from the first handshake on, over %s; %d of them burst-sized), %d with a WireGuard header or message", udp, ours, family(serverU), burstSized, flagged)
 }
 
 func family(a netip.Addr) string {
@@ -398,12 +433,12 @@ func TestCaptureFlagsRawWireGuard(t *testing.T) {
 
 	types := map[byte]int{}
 	n := 0
-	for _, p := range c.Stop() {
+	for _, p := range complete(t, c) {
 		if !p.Outgoing {
 			continue // each datagram once, as it leaves the router
 		}
 		n++
-		if !lab.LooksLikeWireGuard(p.Payload) {
+		if !lab.LooksLikeWireGuard(p.Payload) || lab.WireGuardOffset(p.Payload) != 0 {
 			t.Errorf("not flagged: %s:%d → %s:%d, %d bytes: %x", p.Src, p.SrcPort, p.Dst, p.DstPort, len(p.Payload), p.Payload[:min(len(p.Payload), 32)])
 		}
 		types[p.Payload[0]]++
@@ -414,4 +449,13 @@ func TestCaptureFlagsRawWireGuard(t *testing.T) {
 		}
 	}
 	t.Logf("router: %d raw WireGuard datagrams (by type: %v), all flagged", n, types)
+}
+
+// complete stops a capture and fails the test unless it saw every packet.
+func complete(t *testing.T, c *lab.Capture) []lab.Packet {
+	t.Helper()
+	if err := c.Complete(); err != nil {
+		t.Fatal(err)
+	}
+	return c.Packets()
 }

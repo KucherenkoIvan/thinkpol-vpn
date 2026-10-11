@@ -38,3 +38,20 @@ func TestLooksLikeWireGuard(t *testing.T) {
 		}
 	}
 }
+
+func TestWireGuardOffset(t *testing.T) {
+	initiation := append([]byte{1, 0, 0, 0}, bytes.Repeat([]byte{0xa5}, 144)...)
+	wrapped := append(bytes.Repeat([]byte{0x5a}, 18), initiation...)
+	if got := WireGuardOffset(wrapped); got != 18 {
+		t.Errorf("an initiation behind 18 bytes found at %d", got)
+	}
+	if got := WireGuardOffset(initiation); got != 0 {
+		t.Errorf("a bare initiation found at %d", got)
+	}
+	if got := WireGuardOffset(append(wrapped, 0x5a)); got != -1 {
+		t.Errorf("an initiation followed by a byte (not to the end) found at %d", got)
+	}
+	if got := WireGuardOffset(bytes.Repeat([]byte{0x5a}, 1400)); got != -1 {
+		t.Errorf("found WireGuard at %d in filler", got)
+	}
+}

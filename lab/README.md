@@ -8,6 +8,7 @@ make lab          # the same for now; TP-024 turns it into the censor matrix
 make lab-gotest PKG=./internal/dataplane/netcfg/... RUN=TestRoutes   # one package, in a node
 make lab-up       # the standard topology for poking around (prints addresses)
 make lab-down     # remove every lab this checkout started
+make lab-perf     # performance gates, alone on the host (see "Performance gates")
 ```
 
 **M0 acceptance** (device ↔ server and relayed device ↔ device pings, the relay proof, no WireGuard at the router) is `TestM0`; what it runs and proves is in [M0.md](M0.md).
@@ -79,7 +80,7 @@ p := c.WaitFor(t, 5*time.Second, func(p lab.Packet) bool { return p.DstPort == 5
 all := c.Stop()                                      // every packet; also stopped at the end
 ```
 
-A `Packet` has `Src`, `Dst`, `Proto`, `SrcPort`, `DstPort`, `Payload` (after the TCP/UDP header; the whole message for ICMP), the whole `IP` packet, and where it was seen: `Network` (the lab network of the interface, "" for one the lab didn't create, e.g. a TUN) and `Outgoing`. Capture returns once tcpdump is listening, so nothing sent after it is missed.
+A `Packet` has `Src`, `Dst`, `Proto`, `SrcPort`, `DstPort`, `Payload` (after the TCP/UDP header; the whole message for ICMP), the whole `IP` packet, and where it was seen: `Network` (the lab network of the interface, "" for one the lab didn't create, e.g. a TUN) and `Outgoing`. Capture returns once tcpdump is listening, so nothing sent after it is missed. `Complete()` stops the capture and errors if tcpdump reported packets dropped by the kernel or interface (or no statistics at all); a capture's clean-up fails the test the same way, and a check that something is *absent* from a capture should call `Complete` first.
 
 The router sees each forwarded packet **twice**: arriving (`Network: "devices", Outgoing: false`) and leaving (`"servers"`, `Outgoing: true`); filter on one side when counting. Capture works on any node, not only the router.
 
@@ -94,6 +95,12 @@ if os.Getenv("THINKPOL_LAB") == "" {
 ```
 
 `make lab-test` compiles **every** package's tests for Linux and runs each package, as root, in a fresh lab node of its own with `THINKPOL_LAB=1` (working directory: the package's directory under `/src`), so these tests run there and skip everywhere else. The node is alone on one dual-stack network with no route out: tests create the namespaces, veths and TUNs they need. Packages run four at a time (`labctl gotest -p`), each binary with `-test.timeout=10m` unless given its own. For one package: `make lab-gotest PKG=./internal/... RUN=regexp`. From a lab test, `node.RunGoTests(t, "./internal/agent/...", "-test.run", "X")` runs packages inside any node of a topology (that node, not a fresh one).
+
+## Performance gates
+
+Throughput targets (PRD Performance) depend on what else the Docker VM is doing, so `make lab-test` doesn't gate on them: a perf test there checks only that the path works and logs its figures. `make lab-perf` runs the gates: `labctl gotest -perf` waits until no other lab of any run sharing this `TMPDIR` holds a slot, keeps new ones from starting while it runs (every lab slot holds `perf.lock` shared, a perf run holds it exclusively; its own labs don't wait), and sets `THINKPOL_LAB_PERF=1` in the node. A gated test measures once and, if it misses a target, twice more, and fails on the median of the three.
+
+A perf test checks `THINKPOL_LAB_PERF` itself (packages under `internal/` can't import `lab`), is named `Test…Throughput`, and its package is listed in the Makefile's `LAB_PERF_PKGS`. Today that is `TestSharedListenerThroughput` (`internal/agent/supervisor`): under 0.5% loss at 100 Mbit/s and at least 50 Mbit/s one way and echoed, all on one CPU; in `make lab-test` it fails only on a broken handoff (20% loss, or nothing through). The lock doesn't see labs from `make lab-up` once `labctl` has exited, runs with another `TMPDIR`, or other projects on the Docker VM; a busy host can also keep a perf run waiting.
 
 ## Isolation and safety
 
@@ -114,6 +121,7 @@ Several checkouts can run `make lab-test` at once, and `make lab-down` only remo
 | `THINKPOL_LAB_KEEP` | a failed test's lab stays up; `make lab-test` skips its final clean-up |
 | `THINKPOL_LAB_MAX_LABS` | lab slots at once per `TMPDIR` (default 12; one per top-level test) |
 | `THINKPOL_LAB_SUBNET_POOL` | IPv4 range for lab networks (default `172.16.0.0/16`) |
+| `THINKPOL_LAB_PERF` | set to 1 in the nodes by `make lab-perf`; tests check their performance targets only then |
 | `THINKPOL_LAB_GOARCH` | architecture to build for (default: the Docker server's) |
 
 ## Gotchas

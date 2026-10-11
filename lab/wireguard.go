@@ -30,3 +30,16 @@ func LooksLikeWireGuard(payload []byte) bool {
 		return len(payload) >= device.MessageTransportSize && len(payload)%16 == 0
 	}
 }
+
+// WireGuardOffset is where in a UDP payload a WireGuard message starts
+// that runs to the payload's end (LooksLikeWireGuard on the rest), or -1:
+// WireGuard behind a header of some other protocol, the way a DPI box that
+// scans past a wrapper would find it.
+func WireGuardOffset(payload []byte) int {
+	for k := range payload {
+		if LooksLikeWireGuard(payload[k:]) {
+			return k
+		}
+	}
+	return -1
+}

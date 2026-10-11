@@ -8,15 +8,20 @@ import (
 	"syscall"
 )
 
-// tryLock takes an exclusive advisory lock on path without waiting. The
-// kernel drops it when the process dies, so a killed run never leaves a
-// stale lock.
-func tryLock(path string) (*os.File, bool, error) {
+// tryLockMode takes an advisory lock on path without waiting: exclusive,
+// or shared (any number of holders at once, never together with an
+// exclusive one). The kernel drops it when the process dies, so a killed
+// run never leaves a stale lock.
+func tryLockMode(path string, exclusive bool) (*os.File, bool, error) {
+	how := syscall.LOCK_SH
+	if exclusive {
+		how = syscall.LOCK_EX
+	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, false, err
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	if err := syscall.Flock(int(f.Fd()), how|syscall.LOCK_NB); err != nil {
 		_ = f.Close()
 		if errors.Is(err, syscall.EWOULDBLOCK) {
 			return nil, false, nil

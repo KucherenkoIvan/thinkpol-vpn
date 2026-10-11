@@ -65,6 +65,11 @@ const DefaultTestTimeout = "10m"
 // skipping. args go to the test binary (e.g. -test.run, -test.v). Output is
 // streamed to w; the error is non-nil when the tests fail.
 func (n *Node) GoTest(ctx context.Context, w io.Writer, pkg GoPackage, args ...string) error {
+	return n.goTest(ctx, w, pkg, nil, args)
+}
+
+// goTest is GoTest with more environment (NAME=value) for the test binary.
+func (n *Node) goTest(ctx context.Context, w io.Writer, pkg GoPackage, env, args []string) error {
 	t, err := dockerTarget(ctx)
 	if err != nil {
 		return err
@@ -79,10 +84,12 @@ func (n *Node) GoTest(ctx context.Context, w io.Writer, pkg GoPackage, args ...s
 	if !slices.ContainsFunc(args, func(a string) bool { return strings.HasPrefix(strings.TrimLeft(a, "-"), "test.timeout") }) {
 		args = append([]string{"-test.timeout=" + DefaultTestTimeout}, args...)
 	}
-	cmd := exec.CommandContext(ctx, "docker", append([]string{
-		"exec", "-w", path.Join(SrcDir, pkg.Dir), "-e", "THINKPOL_LAB=1", n.Container,
-		path.Join(BinDir, "tests", name),
-	}, args...)...)
+	dockerArgs := []string{"exec", "-w", path.Join(SrcDir, pkg.Dir), "-e", "THINKPOL_LAB=1"}
+	for _, e := range env {
+		dockerArgs = append(dockerArgs, "-e", e)
+	}
+	dockerArgs = append(dockerArgs, n.Container, path.Join(BinDir, "tests", name))
+	cmd := exec.CommandContext(ctx, "docker", append(dockerArgs, args...)...)
 	cmd.Stdout, cmd.Stderr = w, w
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("%s: tests in %s: %w", n.Name, pkg.ImportPath, err)
@@ -113,9 +120,10 @@ func (n *Node) RunGoTests(t testing.TB, pkgPattern string, args ...string) {
 // GoTestEach runs each package's tests in a fresh lab of its own
 // (GoTestTopology), up to parallel at a time, so no package sees what
 // another left behind. Each package's output goes to w in one piece, in the
-// order the packages finish. It returns the packages that failed; err is
-// for the lab itself failing.
-func GoTestEach(ctx context.Context, root string, pkgs []GoPackage, parallel int, w io.Writer, args ...string) (failed []string, err error) {
+// order the packages finish. env (NAME=value) is added to the test
+// binaries' environment. It returns the packages that failed; err is for
+// the lab itself failing.
+func GoTestEach(ctx context.Context, root string, pkgs []GoPackage, parallel int, w io.Writer, env []string, args ...string) (failed []string, err error) {
 	checkout, err := CheckoutProject(root)
 	if err != nil {
 		return nil, err
@@ -134,7 +142,7 @@ func GoTestEach(ctx context.Context, root string, pkgs []GoPackage, parallel int
 			defer func() { <-sem }()
 			var out bytes.Buffer
 			fmt.Fprintf(&out, "=== lab gotest %s\n", pkg.ImportPath)
-			labErr, testErr := goTestFresh(ctx, root, GoTestProject(checkout)+"-"+shortHash(pkg.ImportPath), pkg, &out, args)
+			labErr, testErr := goTestFresh(ctx, root, GoTestProject(checkout)+"-"+shortHash(pkg.ImportPath), pkg, &out, env, args)
 			mu.Lock()
 			defer mu.Unlock()
 			if testErr != nil {
@@ -152,7 +160,7 @@ func GoTestEach(ctx context.Context, root string, pkgs []GoPackage, parallel int
 	return failed, errors.Join(errs...)
 }
 
-func goTestFresh(ctx context.Context, root, project string, pkg GoPackage, w io.Writer, args []string) (labErr, testErr error) {
+func goTestFresh(ctx context.Context, root, project string, pkg GoPackage, w io.Writer, env, args []string) (labErr, testErr error) {
 	l, err := Up(ctx, root, project, GoTestTopology())
 	if l != nil {
 		defer func() {
@@ -164,7 +172,7 @@ func goTestFresh(ctx context.Context, root, project string, pkg GoPackage, w io.
 	if err != nil {
 		return err, nil
 	}
-	return nil, l.Node("gotest").GoTest(ctx, w, pkg, args...)
+	return nil, l.Node("gotest").goTest(ctx, w, pkg, env, args)
 }
 
 // GoTestTopology is the lab GoTest runs packages in when no topology is

@@ -13,6 +13,7 @@ import (
 // IP protocol numbers, for Packet.Proto.
 const (
 	ProtoICMP   = 1
+	ProtoIGMP   = 2
 	ProtoTCP    = 6
 	ProtoUDP    = 17
 	ProtoICMPv6 = 58
@@ -54,6 +55,9 @@ type pcapReader struct {
 	order    binary.ByteOrder
 	nano     bool
 	linkType uint32
+	// truncated counts records cut short of the frame on the wire, which
+	// next can't decode and skips.
+	truncated int
 }
 
 func newPcapReader(r io.Reader) (*pcapReader, error) {
@@ -91,7 +95,10 @@ func (p *pcapReader) next() (Packet, error) {
 			return Packet{}, err
 		}
 		sec, frac := p.order.Uint32(rec[0:]), p.order.Uint32(rec[4:])
-		n := p.order.Uint32(rec[8:])
+		n, orig := p.order.Uint32(rec[8:]), p.order.Uint32(rec[12:])
+		if orig > n {
+			p.truncated++
+		}
 		if n > 1<<20 {
 			return Packet{}, fmt.Errorf("pcap: record of %d bytes", n)
 		}

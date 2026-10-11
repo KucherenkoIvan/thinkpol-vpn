@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -18,7 +19,7 @@ const MaxLabsEnv = "THINKPOL_LAB_MAX_LABS"
 const defaultMaxLabs = 12
 
 // lockDir holds the host-wide locks: one for allocating subnets, one per lab
-// slot.
+// slot, and the perf lock.
 func lockDir() (string, error) {
 	dir := filepath.Join(os.TempDir(), "thinkpol-lab-locks")
 	return dir, os.MkdirAll(dir, 0o700)
@@ -26,9 +27,14 @@ func lockDir() (string, error) {
 
 // waitLock takes the first free lock among paths, polling until ctx ends.
 func waitLock(ctx context.Context, what string, paths ...string) (release func(), err error) {
+	return waitLockMode(ctx, what, true, paths...)
+}
+
+// waitLockMode is waitLock for an exclusive or a shared lock.
+func waitLockMode(ctx context.Context, what string, exclusive bool, paths ...string) (release func(), err error) {
 	for {
 		for _, p := range paths {
-			f, ok, err := tryLock(p)
+			f, ok, err := tryLockMode(p, exclusive)
 			if err != nil {
 				return nil, err
 			}
@@ -103,11 +109,60 @@ func releaseSlot(key string, h *heldSlot) {
 	}
 }
 
+// PerfEnv, set to 1 in the nodes of a perf run (make lab-perf), turns on
+// tests' performance gates.
+const PerfEnv = "THINKPOL_LAB_PERF"
+
+// perfHeld is set while this process holds the perf lock: its own labs
+// don't wait for it.
+var perfHeld atomic.Bool
+
+// AcquirePerfLock waits until no lab of any run sharing this TMPDIR holds a
+// slot, then keeps new ones from starting until released: every lab slot
+// holds the perf lock shared, a perf run holds it exclusively. Labs this
+// process starts meanwhile don't wait for it. Labs started with make lab-up
+// hold no slot once labctl has exited, and runs with another TMPDIR aren't
+// seen at all.
+func AcquirePerfLock(ctx context.Context) (func(), error) {
+	dir, err := lockDir()
+	if err != nil {
+		return nil, err
+	}
+	release, err := waitLockMode(ctx, "every other lab to finish (a perf run has the host to itself)", true, filepath.Join(dir, "perf.lock"))
+	if err != nil {
+		return nil, err
+	}
+	perfHeld.Store(true)
+	return func() {
+		perfHeld.Store(false)
+		release()
+	}, nil
+}
+
 func acquireHostSlot(ctx context.Context) (func(), error) {
 	dir, err := lockDir()
 	if err != nil {
 		return nil, err
 	}
+	shared := func() {}
+	if !perfHeld.Load() {
+		if shared, err = waitLockMode(ctx, "a perf run to finish", false, filepath.Join(dir, "perf.lock")); err != nil {
+			return nil, err
+		}
+	}
+	release, err := acquireSlotLock(ctx, dir)
+	if err != nil {
+		shared()
+		return nil, err
+	}
+	return func() {
+		release()
+		shared()
+	}, nil
+}
+
+func acquireSlotLock(ctx context.Context, dir string) (func(), error) {
+	var err error
 	n := defaultMaxLabs
 	if v := os.Getenv(MaxLabsEnv); v != "" {
 		if n, err = strconv.Atoi(v); err != nil || n < 1 {
