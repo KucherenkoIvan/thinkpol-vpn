@@ -63,9 +63,23 @@ Ordered routing rules decide per destination whether traffic goes direct, throug
 - **TP-017 (blobs):** feed `EngineConfig.Blobs` from the store and call `Engine.ReloadRules()` when a blob the section names arrives.
 - **TP-004 / lab tickets:** the dev spec has no rules, chains, presets or blob refs yet; whoever first needs them in the lab (TP-018/TP-023) adds them (rules as `netmap.ParseRule` text, chains naming an exit node, `.geoip` files → named `BlobRef`s).
 
+## Review findings
+Two reviewers; orchestrator decisions. The compiler held; one blocker.
+
+- [ ] B1. An unavailable preset fails closed, never falls back to the space's rules: "all but domestic" without a domestic list → "everything"; no usable chain → `local -> direct`, `default -> block`; `PresetUnavailable` stays in status; `SetRules` returns `ErrPresetUnavailable` so the CLI can say so. Rewrite the fallback case in compile_test.go; add "everything on a rule-less map"
+- [ ] D2. No section reader 2 for rules: M0 nodes don't enforce routes anyway, so the marking prevents no leak but freezes old nodes on their last map, revocations included (as TP-013, which stays reader 1). Remove or adjust `TestOnlySectionsWithRulesNeedTheNewReader`; document what an M0 node does with rules
+- [ ] F3. An IPv6 cidr strictly containing `::ffff:0:0/96` is clipped (the prefix minus the mapped range), not refused; tests incl. `cidr:::/0 -> block`
+- [ ] F4. After merging TP-013 (it merges first), the builder requires a chain's exit to be a server with AllowEgress; Section/MinReader conflicts resolved keeping reader 1 everywhere
+- [ ] F5. TP-022's Notes: the local rules file is owned by the service in its state dir, written only through the privileged API; on a parse error keep the last good `Local` or fail closed, never a zero `Local`
+- [ ] N1. Status flags a tunnel-bound name rule shadowed by a later direct rule
+- [ ] N2. Exit devices only for chains some effective rule uses
+- [ ] N3. Status reflects the router's actual table if `StepDevices` fails
+- [ ] N4. The router unmaps IPv4-mapped destinations in classify
+
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-10 notes from TP-016 review: set difference in `internal/lists`, the built-in local list and what goes direct in "all but domestic"
 - 2026-10-12 backlog → in-progress — owner: agent-tp-015, branch: tp-015-rule-engine
 - 2026-10-12 docs: DESIGN.md "Routing rules and DNS" (matchers incl. `local`, where rules and presets live, section reader 2, compilation and fail-closed semantics, a device per exit) and "Repository layout" (`dataplane/rules`; lists read by the rules)
 - 2026-10-12 in-progress → review — acceptance checked; `make lint`, `make test` and `go test -race` on dataplane, rules, router and lists pass
+- 2026-10-12 review → has-errors — one blocker (B1), D2, F3–F5 and four nits from review
