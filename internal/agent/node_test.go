@@ -61,6 +61,7 @@ func TestPrepareChecksTheConfig(t *testing.T) {
 		{func(c *Config) { c.LinkMTU = 100 }, "link MTU 100"},
 		{func(c *Config) { c.MapPoll = 0 }, "map poll interval"},
 		{func(c *Config) { c.StateDir = "" }, "no state directory"},
+		{func(c *Config) { c.APISocket = "api.sock" }, "absolute path"},
 		{func(c *Config) { c.MapFile = filepath.Join(dir, "none") }, "none"},
 	} {
 		cfg := testConfig(dir)
@@ -72,7 +73,7 @@ func TestPrepareChecksTheConfig(t *testing.T) {
 }
 
 func TestLoadConfig(t *testing.T) {
-	vars := []string{"THINKPOL_STATE_DIR", "THINKPOL_MAP", "THINKPOL_MODE", "THINKPOL_LOG_LEVEL", "THINKPOL_INTERFACE", "THINKPOL_LINK_MTU", "THINKPOL_MAP_POLL"}
+	vars := []string{"THINKPOL_STATE_DIR", "THINKPOL_MAP", "THINKPOL_MODE", "THINKPOL_LOG_LEVEL", "THINKPOL_INTERFACE", "THINKPOL_LINK_MTU", "THINKPOL_MAP_POLL", "THINKPOL_CONNECT", "THINKPOL_API_SOCKET", "THINKPOL_API_GROUP"}
 	for _, k := range vars {
 		if v, ok := os.LookupEnv(k); ok {
 			t.Cleanup(func() { _ = os.Setenv(k, v) })
@@ -83,7 +84,8 @@ func TestLoadConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := Config{StateDir: DefaultStateDir, Mode: ModeAuto, LogLevel: "info", MapPoll: 5 * time.Second}
+	want := Config{StateDir: DefaultStateDir, Mode: ModeAuto, LogLevel: "info", MapPoll: 5 * time.Second,
+		Connect: true, APISocket: DefaultAPISocket(), APIGroup: "thinkpol"}
 	if cfg != want || cfg.MapPath() != filepath.Join(DefaultStateDir, MapFileName) {
 		t.Fatalf("defaults %+v", cfg)
 	}
@@ -93,10 +95,12 @@ func TestLoadConfig(t *testing.T) {
 	t.Setenv("THINKPOL_MODE", "device")
 	t.Setenv("THINKPOL_MAP", "/x/m.bin")
 	t.Setenv("THINKPOL_MAP_POLL", "2s")
+	t.Setenv("THINKPOL_CONNECT", "false")
+	t.Setenv("THINKPOL_API_SOCKET", "")
 	if cfg, err = LoadConfig(); err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Mode != ModeDevice || cfg.MapPath() != "/x/m.bin" || cfg.MapPoll != 2*time.Second {
+	if cfg.Mode != ModeDevice || cfg.MapPath() != "/x/m.bin" || cfg.MapPoll != 2*time.Second || cfg.Connect || cfg.APISocket != "" {
 		t.Fatalf("from the environment %+v", cfg)
 	}
 }
@@ -178,5 +182,19 @@ func TestARemovedNodeWaitsForAMapWithIt(t *testing.T) {
 	cancel()
 	if n.awaitSection(ctx, maps) {
 		t.Fatal("went on after the stop")
+	}
+}
+
+func TestSanitizeDisarmsTerminalControls(t *testing.T) {
+	for in, want := range map[string]string{
+		"plain text, tabs\tand ünïcode": "plain text, tabs\tand ünïcode",
+		"\x1b[2J\x1b]0;title\x07":       `\x1b[2J\x1b]0;title\x07`,
+		"line\nbreak\r":                 `line\x0abreak\x0d`,
+		"del\x7f bad\xff":               `del\x7f bad\xff`,
+		"c1 \u009b bidi \u202e x":       `c1 \u009b bidi \u202e x`,
+	} {
+		if got := Sanitize(in); got != want {
+			t.Errorf("Sanitize(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

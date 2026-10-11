@@ -1,0 +1,259 @@
+syntax = "proto3";
+
+// The local service API: how the CLI and the tray app control the node
+// agent on the same machine, over a Unix socket in a directory of its own
+// (DESIGN.md "Desktop client"). Nothing in it is a public address, a key
+// or a secret (PRD S1, S4): nodes and spaces are opaque ids (hex),
+// addresses are the overlay's, and what failed is named from fixed
+// vocabularies.
+//
+// Who may call what is the service's: the socket's directory admits root
+// and the `thinkpol` group; every call checks the caller's credentials
+// again, and TailLogs is root's only.
+package thinkpol.localapi.v1;
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+
+service LocalService {
+  // GetStatus reports the node's state.
+  rpc GetStatus(GetStatusRequest) returns (GetStatusResponse);
+  // WatchStatus sends the status at once, then every interval, until the
+  // client goes away or the service stops (the stream then ends cleanly).
+  rpc WatchStatus(WatchStatusRequest) returns (stream WatchStatusResponse);
+  // Connect brings a device's data plane up on its latest map and returns
+  // once it is up. A device removed from its space connects once a map
+  // includes it again. Fails with FAILED_PRECONDITION "server_mode" on a
+  // server, UNAVAILABLE when the start failed (the message names the
+  // step).
+  rpc Connect(ConnectRequest) returns (ConnectResponse);
+  // Disconnect takes a device's data plane down and returns once it is
+  // down; the device goes on following its space's maps.
+  rpc Disconnect(DisconnectRequest) returns (DisconnectResponse);
+  // ListSpaces lists the spaces the node is enrolled in; one is active.
+  rpc ListSpaces(ListSpacesRequest) returns (ListSpacesResponse);
+  // SetRulePreset switches the device's routing rules to a preset
+  // ("everything", "all-but-domestic"). UNIMPLEMENTED
+  // "rule_presets_unavailable" until the node has a rule engine (TP-015).
+  rpc SetRulePreset(SetRulePresetRequest) returns (SetRulePresetResponse);
+  // TailLogs sends the agent's in-memory log: the last lines, then, when
+  // following, every new line until the client goes away or the service
+  // stops. Root only: debug lines may quote the map.
+  rpc TailLogs(TailLogsRequest) returns (stream TailLogsResponse);
+}
+
+message GetStatusRequest {}
+
+message GetStatusResponse {
+  Status status = 1;
+}
+
+message WatchStatusRequest {
+  // Between two statuses; at least 250ms, 1s when unset.
+  google.protobuf.Duration interval = 1;
+}
+
+message WatchStatusResponse {
+  Status status = 1;
+}
+
+message ConnectRequest {}
+
+message ConnectResponse {
+  Status status = 1;
+}
+
+message DisconnectRequest {}
+
+message DisconnectResponse {
+  Status status = 1;
+}
+
+message ListSpacesRequest {}
+
+message ListSpacesResponse {
+  repeated Space spaces = 1;
+}
+
+message SetRulePresetRequest {
+  string preset = 1;
+}
+
+message SetRulePresetResponse {}
+
+message TailLogsRequest {
+  // The last lines to send first; 0 sends 100.
+  uint32 lines = 1;
+  // Keep sending new lines.
+  bool follow = 2;
+}
+
+message TailLogsResponse {
+  // Lines as the agent wrote them; render them sanitized all the same.
+  repeated string lines = 1;
+  // Lines dropped from the ring before they could be sent.
+  uint64 missed = 2;
+}
+
+// A space the node is enrolled in. Names are the controller's: a node
+// knows its spaces by id.
+message Space {
+  string id = 1;
+  bool active = 2;
+}
+
+message Status {
+  Mode mode = 1;
+  // The active space.
+  string space_id = 2;
+  // The version of the map the node follows.
+  uint64 map_version = 3;
+  // The map has no section for the node: it was removed from the space.
+  bool removed = 4;
+  Connection connection = 5;
+  // A start, an Apply or serving the map failed and is retried.
+  bool retrying = 6;
+  Health health = 7;
+  // A device's data plane, while it is up.
+  DataPlane data_plane = 8;
+  // A server's workers, one per space, and its public listeners.
+  repeated Worker workers = 9;
+  repeated PublicListener public_listeners = 10;
+}
+
+enum Mode {
+  MODE_UNSPECIFIED = 0; // removed from its space, kind unknown
+  MODE_DEVICE = 1;
+  MODE_SERVER = 2;
+}
+
+enum Connection {
+  CONNECTION_UNSPECIFIED = 0;
+  CONNECTION_DISCONNECTED = 1;
+  // Meant to be connected, data plane not up (removed, or retrying).
+  CONNECTION_CONNECTING = 2;
+  CONNECTION_CONNECTED = 3;
+  // A server, which serves its spaces whenever it runs.
+  CONNECTION_SERVING = 4;
+}
+
+message Health {
+  HealthLevel level = 1;
+  // What is wrong, worst first, from a fixed vocabulary (e.g.
+  // "disconnected", "no_link_up", "apply_failed", "worker_down").
+  repeated string problems = 2;
+}
+
+enum HealthLevel {
+  HEALTH_LEVEL_UNSPECIFIED = 0;
+  HEALTH_LEVEL_OK = 1;
+  HEALTH_LEVEL_DEGRADED = 2;
+  HEALTH_LEVEL_DOWN = 3;
+}
+
+message DataPlane {
+  // The overlay's MTU.
+  uint32 mtu = 1;
+  // Whether the overlay carries IPv6, and if not, why.
+  bool ipv6 = 2;
+  string ipv6_off = 3;
+  // The step the last Apply failed at ("section", "removals",
+  // "interface", "devices", "router"), empty if it succeeded.
+  string last_apply_error = 4;
+  repeated Peer peers = 5;
+  repeated Neighbor neighbors = 6;
+  // One per WireGuard device: "overlay", and a chain's name per chain
+  // (TP-030).
+  repeated Egress egresses = 7;
+  // What the map held that the node left out, and why.
+  repeated Skip skipped = 8;
+  // The listeners the device serves.
+  uint32 listeners = 9;
+  // The router's and the path layer's counters by name ("router.no_route",
+  // "path.no_path", ...).
+  map<string, uint64> counters = 10;
+}
+
+// A WireGuard peer.
+message Peer {
+  string node_id = 1;
+  // The WireGuard device (egress) it is on.
+  string device = 2;
+  // Its overlay addresses.
+  repeated string addresses = 3;
+  // The node its packets leave through now (the entry in use, or the
+  // peer itself); empty before the first packet or without a path.
+  string first_hop = 4;
+  google.protobuf.Timestamp last_handshake = 5;
+  uint64 rx_bytes = 6;
+  uint64 tx_bytes = 7;
+}
+
+// An adjacent node and the links to it.
+message Neighbor {
+  string node_id = 1;
+  bool up = 2;
+  google.protobuf.Duration up_for = 3;
+  google.protobuf.Duration rtt = 4;
+  // This node dials it.
+  bool dialed = 5;
+  repeated Link links = 6;
+}
+
+message Link {
+  string transport = 1;
+  bool dialed = 2;
+  // Which of the map's endpoints of the link was dialed; -1 for a link
+  // the neighbor dialed.
+  int32 endpoint = 3;
+  // The link the neighbor's traffic goes out on.
+  bool active = 4;
+  bool up = 5;
+  google.protobuf.Duration up_for = 6;
+  google.protobuf.Duration rtt = 7;
+  uint64 packets_in = 8;
+  uint64 packets_out = 9;
+  uint64 bytes_in = 10;
+  uint64 bytes_out = 11;
+  uint64 queue_full = 12;
+}
+
+message Egress {
+  string name = 1;
+  uint32 mtu = 2;
+  uint32 queued = 3;
+  uint64 routed = 4;
+  uint64 delivered = 5;
+  uint64 not_local = 6;
+  uint64 queue_full = 7;
+  uint64 too_large = 8;
+}
+
+message Skip {
+  string node_id = 1;
+  // "link", "endpoint", "inbound link", "route", "hop", "peer".
+  string item = 2;
+  string reason = 3;
+}
+
+// One space's worker on a server.
+message Worker {
+  string space_id = 1;
+  bool ready = 2;
+  // Processes so far; more than one means it was restarted.
+  uint32 starts = 3;
+  google.protobuf.Timestamp ready_since = 4;
+  // When a restart after a crash is due.
+  google.protobuf.Timestamp restart_at = 5;
+}
+
+// One of a server's public listeners, without its address.
+message PublicListener {
+  string transport = 1;
+  uint64 routed = 2;
+  uint64 unauthenticated = 3;
+  uint64 no_space = 4;
+  uint64 streams_overloaded = 5;
+  // Peer links the transport refused to route.
+  uint32 rejected = 6;
+}

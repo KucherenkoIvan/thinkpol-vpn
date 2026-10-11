@@ -112,3 +112,23 @@ func (r *Ring) Dropped() uint64 {
 	defer r.mu.Unlock()
 	return r.dropped
 }
+
+// Since returns the finished lines from the seq'th line ever written on
+// (seq 0 is the first), oldest first, and the seq of the line after the
+// last one returned, to pass to the next call: a reader following the log
+// gets every line once. Lines already dropped are skipped; missed says how
+// many. The unfinished last line is left for a later call.
+func (r *Ring) Since(seq uint64) (lines []string, next, missed uint64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	oldest := r.dropped
+	end := oldest + uint64(len(r.lines)-r.head)
+	if seq < oldest {
+		missed, seq = oldest-seq, oldest
+	}
+	if seq >= end {
+		return nil, end, missed
+	}
+	live := r.lines[r.head+int(seq-oldest):]
+	return append([]string(nil), live...), end, missed
+}
