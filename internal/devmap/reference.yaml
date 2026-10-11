@@ -40,16 +40,23 @@ nodes:
     listen:
       - udp://0.0.0.0:4500
       - udp://[::]:4500
+    # Server settings, both off unless written. ingress: devices may connect
+    # to this server; with it off the server accepts only other servers, and
+    # no device's section gets its address. egress: internet traffic may
+    # leave the space from it. With both off it only relays.
+    ingress: true
 
   - name: server-2
     kind: server
     endpoints:
       - udp://198.51.100.2:4500
+    ingress: true
 
-  - name: server-3
+  - name: server-3            # hidden from devices: reached through relays
     kind: server
     endpoints:
       - udp://203.0.113.3:4500
+    egress: true
 
   - name: device-a
     kind: device
@@ -64,8 +71,8 @@ nodes:
 # inside a path must be a server; it routes to both ends through its
 # neighbours.
 #
-# Neighbours on a path are linked: a device dials the server; of two servers,
-# the one listed first in nodes dials. Each link gets a fresh random secret
+# Neighbours on a path are linked: a device dials the server, which must have
+# ingress on; of two servers, the one listed first in nodes dials. Each link gets a fresh random secret
 # on every build. Paths that would let a packet go round in circles (two
 # paths crossing the same relays in opposite directions) are refused.
 paths:

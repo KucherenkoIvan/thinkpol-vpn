@@ -42,7 +42,7 @@ Scale is small on purpose: a handful of servers, up to ~20 devices per space, a 
 | Term | Meaning |
 |---|---|
 | **Space** | An isolated network ("tailnet", "organization") with its own admin, members, nodes, rules, address ranges and signing key. A device is active in one space at a time; a server node can serve several. |
-| **Node** | Anything running the agent. **Server** nodes are Linux VPS; **devices** are member desktops (later phones). Every server node relays; two settings decide what else it may do: **allow ingress** (devices may connect to it, so it can start a chain) and **allow egress** (internet traffic may leave from it, so it can end a chain). With both off, the node accepts only traffic from other nodes and only relays. |
+| **Node** | Anything running the agent. **Server** nodes are Linux VPS; **devices** are member desktops (later phones). Every server node relays; two settings decide what else it may do: **allow ingress** (devices may connect to it, so it can start a chain) and **allow egress** (internet traffic may leave from it, so it can end a chain). With both off, the node accepts only traffic from other server nodes and only relays. |
 | **Hosting grant** | A node owner's permission for another space (the guest space) to use one of its server nodes: a bandwidth cap and which of the node's ingress and egress the guest may use; revocable. |
 | **Hop group** | A set of server nodes plus a selection policy (`failover`, `lowest-latency`, `spread`). |
 | **Chain** | An ordered list of hops (nodes or hop groups), e.g. `ru-entries → nl-exit`. The first hop must allow ingress and the last must allow egress. A node's part in a chain comes from its position, not from the node: the same VPS can start one chain, sit in the middle of another and end a third. |
@@ -98,7 +98,7 @@ Milestones as in [Release plan](#release-plan). Priority: **must** for the MVP, 
 | N5 | A server node serves several spaces; each gets its own isolated network stack on the node (addresses, routes, firewall, NAT, keys); no traffic or route crosses spaces | must | M4; the agent is structured for it from M0 |
 | N6 | Spaces sharing a node share its public address and port; the transport's authentication decides which space a connection belongs to | must | M4 |
 | N7 | Bandwidth cap per guest space, set by the node owner; fair share between spaces under load | must | M4 |
-| N8 | Per-node **allow ingress** and **allow egress** settings, both off by default and changeable without reinstalling. With ingress off, the node accepts only other nodes and its address is never given to devices; with both off, it only relays | must | M1 |
+| N8 | Per-node **allow ingress** and **allow egress** settings, both off by default and changeable without reinstalling. With ingress off, the node accepts only other server nodes and its address is never given to devices; with both off, it only relays | must | M1 |
 | N9 | Chains are valid only if the first hop allows ingress and the last allows egress (for a guest space: as granted); for a hop group, every member | must | M3 |
 
 ### Egress and routing

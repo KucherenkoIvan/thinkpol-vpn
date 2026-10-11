@@ -422,6 +422,25 @@ func (s *Section) validateRules() error {
 	return nil
 }
 
+// chainsEndAtExits is Build's check across sections that every chain ends
+// at a server that allows egress. As in hiddenFromDevices, a node outside
+// the map (a shared node) is checked by the builder of the map that has it.
+func chainsEndAtExits(recipients []Recipient) error {
+	nodes := make(map[NodeID]*NodeSettings, len(recipients))
+	for i := range recipients {
+		n := &recipients[i].Section.Node
+		nodes[n.ID] = n
+	}
+	for i, r := range recipients {
+		for _, c := range r.Section.Chains {
+			if exit, ok := nodes[c.Exit]; ok && (exit.Kind != NodeServer || !exit.AllowEgress) {
+				return fmt.Errorf("recipient %d: chain %s ends at %v, not a server that allows egress", i, c.Name, c.Exit)
+			}
+		}
+	}
+	return nil
+}
+
 func rulesToProto(s *Section, pb *netmapv1.Section) {
 	for _, r := range s.Rules {
 		value := r.Match.Value

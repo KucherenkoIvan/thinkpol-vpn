@@ -33,9 +33,12 @@ func TestBuildRejectsInvalidContents(t *testing.T) {
 		}
 	}
 	entry := func(m func(s *Section)) mutation { return section(0, m) }
+	exit := func(m func(s *Section)) mutation { return section(1, m) }
 	device := func(m func(s *Section)) mutation { return section(2, m) }
 	entryID := f.contents.Recipients[0].Section.Node.ID
 	exitID := f.contents.Recipients[1].Section.Node.ID
+	deviceID := f.contents.Recipients[2].Section.Node.ID
+	exitDialed := f.contents.Recipients[0].Section.Links[0].Endpoints[0].Address // the entry dials the exit there
 	lowOrder := mustKey(t, "e0eb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b800")
 
 	tests := []struct {
@@ -84,6 +87,53 @@ func TestBuildRejectsInvalidContents(t *testing.T) {
 		{"no IPv6 network", entry(func(s *Section) { s.Node.IPv6Network = netip.Prefix{} })},
 		{"address outside network", entry(func(s *Section) { s.Node.IPv4 = netip.MustParseAddr("100.101.0.1") })},
 		{"no IPv6 address", entry(func(s *Section) { s.Node.IPv6 = netip.Addr{} })},
+		{"device allows ingress", device(func(s *Section) { s.Node.AllowIngress = true })},
+		{"device allows egress", device(func(s *Section) { s.Node.AllowEgress = true })},
+		{"device listens", device(func(s *Section) {
+			s.Node.Listeners = []Listener{{Transport: "udp", Address: netip.MustParseAddrPort("[::]:51820")}}
+		})},
+		// a server with ingress off: no link with a device either way, no
+		// spoofed peer kind, its address under no other id
+		{"device links to a server with ingress off", entry(func(s *Section) { s.Node.AllowIngress = false })},
+		{"device dials a server with ingress off", device(func(s *Section) {
+			s.Links = append(s.Links, Link{Peer: exitID, Endpoints: []Endpoint{
+				{Transport: "udp", Address: netip.MustParseAddrPort("192.0.2.99:4500"), Credential: []byte("the exit's secret")},
+			}})
+		})},
+		{"server with ingress off lists a device's inbound link", exit(func(s *Section) {
+			s.Inbound = append(s.Inbound, InboundLink{Peer: deviceID, PeerKind: NodeDevice, Transport: "udp", Credential: []byte("a device's secret")})
+		})},
+		{"server with ingress off dials a device", exit(func(s *Section) {
+			s.Links = append(s.Links, Link{Peer: deviceID, Endpoints: []Endpoint{
+				{Transport: "udp", Address: netip.MustParseAddrPort("192.0.2.30:51820"), Credential: []byte("a device's secret")},
+			}})
+		})},
+		{"device accepts a server with ingress off", device(func(s *Section) {
+			s.Inbound = append(s.Inbound, InboundLink{Peer: exitID, PeerKind: NodeServer, Transport: "udp", Credential: []byte("the exit's secret")})
+		})},
+		{"device passes for a server", exit(func(s *Section) {
+			s.Inbound = append(s.Inbound, InboundLink{Peer: deviceID, PeerKind: NodeServer, Transport: "udp", Credential: []byte("a device's secret")})
+		})},
+		{"server passes for a device", entry(func(s *Section) {
+			s.Inbound = append(s.Inbound, InboundLink{
+				Peer: exitID, PeerKind: NodeDevice, Transport: "tls", Credential: []byte("the exit's tls secret"),
+			})
+		})},
+		{"device dials where others dial a server with ingress off", device(func(s *Section) {
+			e := s.Links[0].Endpoints[0]
+			e.Address = netip.AddrPortFrom(exitDialed.Addr(), 9999) // the IP, under the entry's id
+			s.Links[0] = Link{Peer: s.Links[0].Peer, Endpoints: []Endpoint{e}}
+		})},
+		{"device dials where a server with ingress off listens", func(c *Contents) {
+			exit(func(s *Section) {
+				s.Node.Listeners[0].Address = netip.MustParseAddrPort("198.51.100.77:4500")
+			})(c)
+			device(func(s *Section) {
+				e := s.Links[0].Endpoints[0]
+				e.Address = netip.MustParseAddrPort("198.51.100.77:4500")
+				s.Links[0] = Link{Peer: s.Links[0].Peer, Endpoints: []Endpoint{e}}
+			})(c)
+		}},
 		// listeners
 		{"bad transport name", entry(func(s *Section) { s.Node.Listeners[0].Transport = "UDP" })},
 		{"transport name starts with a digit", entry(func(s *Section) { s.Node.Listeners[0].Transport = "4udp" })},
@@ -183,6 +233,11 @@ func TestBuildRejectsInvalidContents(t *testing.T) {
 		{"chain repeated", device(func(s *Section) { s.Chains = append(s.Chains, s.Chains[0]) })},
 		{"chain exit not a peer", device(func(s *Section) { s.Chains[0].Exit = NodeID{7, 7, 7} })},
 		{"chain exit is the node", device(func(s *Section) { s.Chains[0].Exit = s.Node.ID })},
+		{"chain exit without egress", func(c *Contents) {
+			c.Recipients = append([]Recipient(nil), c.Recipients...)
+			c.Recipients[1].Section.Node.AllowEgress = false
+		}},
+		{"chain exit is a device", device(func(s *Section) { s.Chains[0].Exit = f.contents.Recipients[3].Section.Node.ID })},
 		{"two chains to one exit", device(func(s *Section) { s.Chains = append(s.Chains, Chain{Name: "nl2", Exit: exitID}) })},
 		{"preset domestic without a blob", device(func(s *Section) { s.Presets.Domestic = "de" })},
 		{"preset chain unknown", device(func(s *Section) { s.Presets.Chain = "de" })},
@@ -241,6 +296,42 @@ func TestCheckSettingsDecodesShaping(t *testing.T) {
 	} {
 		if err := checkSettings(nil, tc.b); !errors.Is(err, tc.want) {
 			t.Errorf("%s: %v, want %v", name, err, tc.want)
+		}
+	}
+}
+
+// A server with ingress off accepts only servers: Build keeps devices'
+// links out of its section, and the node checks anyway (for maps it
+// can't trust that far, a guest space's). The settings survive the trip.
+func TestIngressOffAcceptsOnlyServers(t *testing.T) {
+	server := InboundLink{Peer: NodeID{2}, PeerKind: NodeServer}
+	device := InboundLink{Peer: NodeID{3}, PeerKind: NodeDevice}
+	for _, tc := range []struct {
+		node NodeSettings
+		in   InboundLink
+		want bool
+	}{
+		{NodeSettings{Kind: NodeServer}, server, true},
+		{NodeSettings{Kind: NodeServer}, device, false},
+		{NodeSettings{Kind: NodeServer}, InboundLink{PeerKind: 9}, false},
+		{NodeSettings{Kind: NodeServer, AllowIngress: true}, device, true},
+		{NodeSettings{Kind: NodeDevice}, device, true},
+	} {
+		if got := tc.node.AcceptsInbound(tc.in); got != tc.want {
+			t.Errorf("%v (ingress %v) accepts a link from a %v: %v, want %v", tc.node.Kind, tc.node.AllowIngress, tc.in.PeerKind, got, tc.want)
+		}
+	}
+
+	f := newFixture(t, 2, 2) // 0 entry (ingress on), 1 exit (egress on), 2 and 3 devices
+	m := f.verify(t, f.build(t))
+	for i, key := range f.keys {
+		got, err := m.Open(key)
+		if err != nil {
+			t.Fatalf("recipient %d: %v", i, err)
+		}
+		want := f.contents.Recipients[i].Section.Node
+		if got.Node.AllowIngress != want.AllowIngress || got.Node.AllowEgress != want.AllowEgress || got.MinReader != 1 {
+			t.Errorf("recipient %d: settings %+v, reader %d; want %+v, reader 1", i, got.Node, got.MinReader, want)
 		}
 	}
 }

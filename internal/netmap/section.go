@@ -14,6 +14,11 @@ import (
 // every section with the lowest reader that understands it, and Open
 // refuses sections that need a newer one. Raise it, and mark the sections
 // that use a new field, when older nodes must not silently ignore the field.
+// A node that refuses its section keeps its last map and stops taking newer
+// ones (revocations included), so a field whose absence fails open (a node
+// admitting what it shouldn't) is better kept out of the map by Build than
+// left to newer readers: ingress is (devices' links to a server with
+// ingress off are never written).
 //
 // Routing rules, chains and rule presets don't raise it: a node too old to
 // know them ignores them and routes nothing outside the overlay, so its
@@ -23,10 +28,14 @@ import (
 const SectionReader = 1
 
 // Section is one node's need-to-know part of the map: its own settings and
-// the nodes it talks to, every one known by an opaque id. New needs (ingress
-// and egress settings, rules, guest spaces, telemetry) are new fields here
-// and in the schema.
+// the nodes it talks to, every one known by an opaque id. New needs (rules,
+// guest spaces, telemetry) are new fields here and in the schema.
 type Section struct {
+	// MinReader is the reader level the section was marked with, as Open
+	// read it (for inspection). Build ignores it: it marks every section
+	// itself.
+	MinReader uint32
+
 	Node NodeSettings
 	// Peers are end-to-end WireGuard peers.
 	Peers []Peer
@@ -78,6 +87,22 @@ type NodeSettings struct {
 	IPv4Network, IPv6Network netip.Prefix
 	// Listeners are the transports this node listens on.
 	Listeners []Listener
+	// AllowIngress lets devices connect to this server, so it can start a
+	// chain. With it off, Build keeps every link between it and devices out
+	// of the map, its address out of devices' sections, and the node itself
+	// accepts only other servers' inbound links (AcceptsInbound).
+	// AllowEgress lets internet traffic leave the space from this server,
+	// so it can end a chain. Both are server settings, off by default.
+	AllowIngress, AllowEgress bool
+}
+
+// AcceptsInbound reports whether a node with these settings accepts the
+// inbound link in: a server with ingress off accepts only other servers,
+// whatever its section lists (Build never lists devices there; readers
+// check anyway, and a guest space's map is not the node owner's to trust).
+// Devices have no ingress setting.
+func (n *NodeSettings) AcceptsInbound(in InboundLink) bool {
+	return n.Kind != NodeServer || n.AllowIngress || in.PeerKind == NodeServer
 }
 
 // Listener is a transport a node listens on.
@@ -301,6 +326,14 @@ func (s *Section) validate(headerBlobs []BlobRef) error {
 		return fmt.Errorf("node addresses %v, %v are outside the overlay networks", n.IPv4, n.IPv6)
 	}
 	inOverlay := func(a netip.Addr) bool { return n.IPv4Network.Contains(a) || n.IPv6Network.Contains(a) }
+	if n.Kind != NodeServer && (n.AllowIngress || n.AllowEgress) {
+		return errors.New("ingress and egress are server settings")
+	}
+	// Devices don't listen until direct paths between devices exist: a
+	// device's listener would take links the ingress rules don't cover.
+	if n.Kind == NodeDevice && len(n.Listeners) > 0 {
+		return errors.New("a device has no listeners")
+	}
 
 	type transportAddr struct {
 		transport string
@@ -362,6 +395,9 @@ func (s *Section) validate(headerBlobs []BlobRef) error {
 		adjacent[in.Peer] = true
 		if !in.PeerKind.known() {
 			return fmt.Errorf("inbound link from %v: peer kind %v", in.Peer, in.PeerKind)
+		}
+		if !n.AcceptsInbound(in) {
+			return fmt.Errorf("inbound link from %v: a %v's, on a server with ingress off", in.Peer, in.PeerKind)
 		}
 		if err := checkTransport(in.Transport); err != nil {
 			return fmt.Errorf("inbound link from %v: %w", in.Peer, err)
@@ -493,12 +529,14 @@ func sectionToProto(s *Section, h *Header) *netmapv1.Section {
 		KeyEpoch:   h.KeyEpoch,
 		MapVersion: h.Version,
 		Node: &netmapv1.NodeSettings{
-			Id:          idBytes(s.Node.ID),
-			Kind:        netmapv1.NodeKind(s.Node.Kind),
-			Ipv4:        addrString(s.Node.IPv4),
-			Ipv6:        addrString(s.Node.IPv6),
-			Ipv4Network: prefixString(s.Node.IPv4Network),
-			Ipv6Network: prefixString(s.Node.IPv6Network),
+			Id:           idBytes(s.Node.ID),
+			Kind:         netmapv1.NodeKind(s.Node.Kind),
+			Ipv4:         addrString(s.Node.IPv4),
+			Ipv6:         addrString(s.Node.IPv6),
+			Ipv4Network:  prefixString(s.Node.IPv4Network),
+			Ipv6Network:  prefixString(s.Node.IPv6Network),
+			AllowIngress: s.Node.AllowIngress,
+			AllowEgress:  s.Node.AllowEgress,
 		},
 		Blobs: blobsToProto(s.Blobs),
 	}
@@ -565,6 +603,7 @@ func sectionFromProto(pb *netmapv1.Section) (Section, error) {
 	if s.Node.IPv6Network, err = parsePrefix(n.GetIpv6Network()); err != nil {
 		return s, err
 	}
+	s.Node.AllowIngress, s.Node.AllowEgress = n.GetAllowIngress(), n.GetAllowEgress()
 	for _, l := range n.GetListeners() {
 		addr, err := parseAddrPort(l.GetAddress())
 		if err != nil {

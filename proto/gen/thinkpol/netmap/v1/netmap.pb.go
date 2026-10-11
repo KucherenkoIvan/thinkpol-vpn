@@ -955,7 +955,13 @@ type NodeSettings struct {
 	Ipv4Network string `protobuf:"bytes,5,opt,name=ipv4_network,json=ipv4Network,proto3" json:"ipv4_network,omitempty"`
 	Ipv6Network string `protobuf:"bytes,6,opt,name=ipv6_network,json=ipv6Network,proto3" json:"ipv6_network,omitempty"`
 	// Transports this node listens on.
-	Listeners     []*Listener `protobuf:"bytes,7,rep,name=listeners,proto3" json:"listeners,omitempty"`
+	Listeners []*Listener `protobuf:"bytes,7,rep,name=listeners,proto3" json:"listeners,omitempty"`
+	// Server settings, both off by default (devices have neither). With
+	// ingress off, the node's listeners accept only other servers and no
+	// device's section has its address; with egress off, no internet traffic
+	// leaves the space from it. With both off the node only relays.
+	AllowIngress  bool `protobuf:"varint,8,opt,name=allow_ingress,json=allowIngress,proto3" json:"allow_ingress,omitempty"`
+	AllowEgress   bool `protobuf:"varint,9,opt,name=allow_egress,json=allowEgress,proto3" json:"allow_egress,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1037,6 +1043,20 @@ func (x *NodeSettings) GetListeners() []*Listener {
 		return x.Listeners
 	}
 	return nil
+}
+
+func (x *NodeSettings) GetAllowIngress() bool {
+	if x != nil {
+		return x.AllowIngress
+	}
+	return false
+}
+
+func (x *NodeSettings) GetAllowEgress() bool {
+	if x != nil {
+		return x.AllowEgress
+	}
+	return false
 }
 
 type Listener struct {
@@ -1675,7 +1695,7 @@ const file_thinkpol_netmap_v1_netmap_proto_rawDesc = "" +
 	"\x04exit\x18\x02 \x01(\fR\x04exit\"?\n" +
 	"\vRulePresets\x12\x1a\n" +
 	"\bdomestic\x18\x01 \x01(\tR\bdomestic\x12\x14\n" +
-	"\x05chain\x18\x02 \x01(\tR\x05chain\"\xfa\x01\n" +
+	"\x05chain\x18\x02 \x01(\tR\x05chain\"\xc2\x02\n" +
 	"\fNodeSettings\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\fR\x02id\x120\n" +
 	"\x04kind\x18\x02 \x01(\x0e2\x1c.thinkpol.netmap.v1.NodeKindR\x04kind\x12\x12\n" +
@@ -1683,7 +1703,9 @@ const file_thinkpol_netmap_v1_netmap_proto_rawDesc = "" +
 	"\x04ipv6\x18\x04 \x01(\tR\x04ipv6\x12!\n" +
 	"\fipv4_network\x18\x05 \x01(\tR\vipv4Network\x12!\n" +
 	"\fipv6_network\x18\x06 \x01(\tR\vipv6Network\x12:\n" +
-	"\tlisteners\x18\a \x03(\v2\x1c.thinkpol.netmap.v1.ListenerR\tlisteners\"^\n" +
+	"\tlisteners\x18\a \x03(\v2\x1c.thinkpol.netmap.v1.ListenerR\tlisteners\x12#\n" +
+	"\rallow_ingress\x18\b \x01(\bR\fallowIngress\x12!\n" +
+	"\fallow_egress\x18\t \x01(\bR\vallowEgress\"^\n" +
 	"\bListener\x12\x1c\n" +
 	"\ttransport\x18\x01 \x01(\tR\ttransport\x12\x18\n" +
 	"\aaddress\x18\x02 \x01(\tR\aaddress\x12\x1a\n" +

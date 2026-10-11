@@ -501,3 +501,52 @@ func TestAPeerMovesBetweenDevices(t *testing.T) {
 	}
 	ping(t, a, b.v4)
 }
+
+// A server with ingress off serves other servers only: a device holding a
+// valid credential for it is refused, while the server still takes relayed
+// traffic from another server. Turning ingress on lets the same device in.
+func TestIngressOffServesOnlyServers(t *testing.T) {
+	net := memory.NewNetwork(memory.Datagram)
+	a := newSpaceNode("device-a", 1, "")
+	entry := newSpaceNode("entry", 2, "192.0.2.2:4500")
+	exit := newSpaceNode("exit", 3, "192.0.2.3:4500")
+	b := newSpaceNode("device-b", 4, "")
+	kinds := map[*node]netmap.NodeKind{a: netmap.NodeDevice, b: netmap.NodeDevice, entry: netmap.NodeServer, exit: netmap.NodeServer}
+	linkKinds := func(from, to *node) {
+		link(from, to)
+		to.section.Inbound[len(to.section.Inbound)-1].PeerKind = kinds[from]
+	}
+	for nd, k := range kinds {
+		nd.section.Node.Kind = k
+	}
+	entry.section.Node.AllowIngress = true
+
+	linkKinds(a, exit) // what a map builder must never write, with a credential that works
+	peer(a, exit, exit)
+	peer(exit, a, a)
+	route(exit, a, a)
+
+	linkKinds(b, entry)
+	linkKinds(entry, exit)
+	peer(b, exit, entry)
+	peer(exit, b, entry)
+	route(entry, exit, exit)
+	route(entry, b, b)
+	route(exit, b, entry)
+
+	for _, nd := range []*node{exit, entry, a, b} {
+		nd.start(t, net)
+	}
+	ping(t, b, exit.v4)
+	if tryPing(a, exit.v4, time.Second) {
+		t.Fatal("device-a reached the ingress-off server directly")
+	}
+	want := dataplane.Skip{Node: a.id, What: dataplane.ItemInbound, Reason: dataplane.ReasonIngressOff}
+	if st := exit.engine.Status(); !slices.Contains(st.Skipped, want) {
+		t.Fatalf("exit skipped %v, want %v", st.Skipped, want)
+	}
+
+	exit.section.Node.AllowIngress = true
+	exit.apply(t)
+	ping(t, a, exit.v4)
+}
