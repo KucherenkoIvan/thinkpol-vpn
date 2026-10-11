@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: M
 depends_on: [TP-011, TP-016]
 refs: [R9, A9]
-owner: ""
-branch: ""
+owner: agent-tp-017
+branch: tp-017-blob-distribution
 ---
 
 ## Goal
@@ -25,3 +25,4 @@ Nodes get the list files (and later releases) referenced by their map from peers
 
 ## Log
 - 2026-10-10 created in backlog
+- 2026-10-12 backlog → in-progress — owner: agent-tp-017, branch: tp-017-blob-distribution
