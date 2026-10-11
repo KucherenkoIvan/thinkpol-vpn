@@ -117,12 +117,13 @@ func (e *Engine) compileRules(s *ruleInput, networks []netip.Prefix) error {
 	if _, ok := e.chainExit[s.presets.Chain]; err == nil && e.ownRules.Preset != rules.PresetSpace && !ok {
 		err = fmt.Errorf("%w: chain unavailable", rules.ErrPresetUnavailable)
 	}
+	standIns := make(map[[32]byte]bool)
 	t := rules.Compile(entries, rules.Options{
 		Overlay: networks,
-		GeoIP:   e.geoip(s.blobs),
+		GeoIP:   e.geoip(s.blobs, standIns),
 		Chain:   func(name string) bool { _, ok := e.chainExit[name]; return ok },
 	})
-	inUse := make(map[[32]byte]bool, len(s.blobs))
+	inUse := standIns
 	for _, b := range s.blobs {
 		inUse[b.SHA256] = true
 	}
@@ -150,10 +151,11 @@ func (e *Engine) compileRules(s *ruleInput, networks []netip.Prefix) error {
 }
 
 // geoip resolves a list name to the section's geoip blob of that name, as
-// cfg.Blobs has it, checked and decoded once per hash. A name two blobs
-// claim, a blob the node doesn't have or one that doesn't check out
+// cfg.Blobs has it, or while it hasn't, the previous version cfg.StandIn
+// has (noted in standIns), checked and decoded once per hash. A name two
+// blobs claim, a blob the node doesn't have or one that doesn't check out
 // resolves to nothing.
-func (e *Engine) geoip(blobs []netmap.BlobRef) func(string) (*lists.Set, bool) {
+func (e *Engine) geoip(blobs []netmap.BlobRef, standIns map[[32]byte]bool) func(string) (*lists.Set, bool) {
 	named := make(map[string][]netmap.BlobRef)
 	for _, b := range blobs {
 		if b.Kind == netmap.BlobGeoIP && b.Name != "" {
@@ -169,10 +171,23 @@ func (e *Engine) geoip(blobs []netmap.BlobRef) func(string) (*lists.Set, bool) {
 		if s, ok := e.geoipSets[ref.SHA256]; ok {
 			return s, true
 		}
-		if e.cfg.Blobs == nil {
-			return nil, false
+		var b []byte
+		ok := false
+		if e.cfg.Blobs != nil {
+			b, ok = e.cfg.Blobs(ref)
 		}
-		b, ok := e.cfg.Blobs(ref)
+		if !ok && e.cfg.StandIn != nil {
+			var prev netmap.BlobRef
+			if prev, b, ok = e.cfg.StandIn(ref.Kind, ref.Name); ok && prev.Kind == ref.Kind && prev.Name == ref.Name {
+				ref = prev
+				standIns[ref.SHA256] = true
+				if s, cached := e.geoipSets[ref.SHA256]; cached {
+					return s, true
+				}
+			} else {
+				ok = false
+			}
+		}
 		if !ok {
 			return nil, false
 		}

@@ -27,6 +27,8 @@ type testSpace struct {
 	secret []byte
 	// blobs are the header's blobs; b's section names deviceBlobs.
 	blobs, deviceBlobs []netmap.BlobRef
+	// deviceRules are b's routing rules.
+	deviceRules []netmap.Rule
 }
 
 var (
@@ -75,6 +77,7 @@ func (s *testSpace) sections() (a, b netmap.Section) {
 	a.Peers = []netmap.Peer{{ID: s.b.ID, WireGuardKey: s.b.WireGuard.Public(), Addresses: []netip.Addr{b4, b6}, Paths: []netmap.Path{{FirstHop: s.b.ID}}}}
 	b.Peers = []netmap.Peer{{ID: s.a.ID, WireGuardKey: s.a.WireGuard.Public(), Addresses: []netip.Addr{a4, a6}, Paths: []netmap.Path{{FirstHop: s.a.ID}}}}
 	b.Blobs = s.deviceBlobs
+	b.Rules = s.deviceRules
 	return a, b
 }
 

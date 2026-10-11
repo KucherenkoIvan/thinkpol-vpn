@@ -14,6 +14,7 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/blobs"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/path"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/rules"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/tun"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
@@ -61,6 +62,8 @@ type DataPlane struct {
 	// blobOptions are the network functions and limits of the blob
 	// service a worker makes (serveSpace).
 	blobOptions blobs.Options
+	// onEngine sees each engine the data plane starts.
+	onEngine func(*dataplane.Engine)
 }
 
 // RetryAfter is how long a data plane waits before retrying an Apply, a
@@ -94,6 +97,9 @@ func RunDataPlane(ctx context.Context, dp DataPlane) error {
 		return err
 	}
 	r := &runner{dp: dp, cur: dp.Map, section: section, maps: dp.Maps}
+	if dp.Blobs != nil {
+		r.blobsChanged = dp.Blobs.Subscribe()
+	}
 	// The first map must run: a node that can't carry it shouldn't look
 	// up. A shutdown meanwhile is no failure.
 	if err := r.start(ctx); err != nil {
@@ -141,7 +147,9 @@ type runner struct {
 	// or starting again failed.
 	engine    *dataplane.Engine
 	listeners *listenerSet
-	removed   bool
+	// blobsChanged is signalled when the blob service's lists change.
+	blobsChanged <-chan struct{}
+	removed      bool
 	// retryAt is when to retry a failed Apply or start (zero: nothing to
 	// retry).
 	retryAt time.Time
@@ -153,7 +161,7 @@ func (r *runner) start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	engine, err := dataplane.NewEngine(dataplane.EngineConfig{
+	cfg := dataplane.EngineConfig{
 		ID:           r.dp.Keys.ID,
 		Space:        transport.SpaceID(r.cur.Header().SpaceID),
 		WireGuardKey: r.dp.Keys.WireGuard,
@@ -163,7 +171,14 @@ func (r *runner) start(ctx context.Context) error {
 		LinkMTU:      r.dp.LinkMTU,
 		Path:         r.dp.path,
 		Log:          r.dp.Log,
-	})
+	}
+	if b := r.dp.Blobs; b != nil {
+		// The rules' lists: the current map's once held, the previous
+		// version until then. ReloadRules follows the service's changes.
+		cfg.Blobs = func(ref netmap.BlobRef) ([]byte, bool) { return b.Get(ref.SHA256) }
+		cfg.StandIn = b.Latest
+	}
+	engine, err := dataplane.NewEngine(cfg)
 	if err != nil {
 		if ifc != nil {
 			_ = ifc.Close()
@@ -176,6 +191,9 @@ func (r *runner) start(ctx context.Context) error {
 		return fmt.Errorf("applying map version %d: %w", r.cur.Header().Version, err)
 	}
 	r.engine = engine
+	if r.dp.onEngine != nil {
+		r.dp.onEngine(engine)
+	}
 	r.listeners = newListenerSet(engine, r.dp.Log, r.dp.retryAfter)
 	r.retryAt = time.Time{}
 	r.applied()
@@ -226,6 +244,8 @@ func (r *runner) loop(ctx context.Context) error {
 		case <-ended:
 		case <-retry.C:
 			r.retry(ctx)
+		case <-r.blobsChanged:
+			r.reloadRules()
 		case <-status.C:
 			r.logStatus()
 		}
@@ -317,6 +337,16 @@ func (r *runner) apply(ctx context.Context) {
 	}
 	r.retryAt = time.Time{}
 	r.applied()
+}
+
+// reloadRules compiles the rules again with the lists held now.
+func (r *runner) reloadRules() {
+	if r.engine == nil {
+		return
+	}
+	if err := r.engine.ReloadRules(); err != nil && !errors.Is(err, rules.ErrPresetUnavailable) {
+		r.dp.Log.Warn("recompiling the rules with new lists", "err", err)
+	}
 }
 
 // updateBlobs gives the blob service what the current map asks of it:

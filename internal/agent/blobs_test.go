@@ -11,11 +11,13 @@ import (
 	"path/filepath"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/worker"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/blobs"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
@@ -67,6 +69,13 @@ func (o *loopbackOverlay) service(store blobs.Store, log *slog.Logger) *blobs.Se
 func TestTheDataPlaneFetchesAndKeepsBlobs(t *testing.T) {
 	s := newTestSpace(t)
 	data, ref := s.withList(t, "ru", "192.0.2.0/24", "2001:db8::/32")
+	for _, text := range []string{"geoip:ru -> direct", "default -> block"} {
+		r, err := netmap.ParseRule(text)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.deviceRules = append(s.deviceRules, r)
+	}
 	_, reg := memoryRegistry(t)
 	var ov loopbackOverlay
 
@@ -81,9 +90,16 @@ func TestTheDataPlaneFetchesAndKeepsBlobs(t *testing.T) {
 	b := newRunningNode()
 	dpB := b.dataPlane(reg, s.b, s.verified(t, 1))
 	dpB.Blobs = ov.service(diskBlobs{dir: stateB, log: dpB.Log}, dpB.Log)
+	var engineB atomic.Pointer[dataplane.Engine]
+	dpB.onEngine = func(e *dataplane.Engine) { engineB.Store(e) }
 	b.run(t, dpB)
 
 	eventually(t, func() bool { _, ok := dpB.Blobs.Get(ref.SHA256); return ok })
+	// The rules take the list as it arrives.
+	eventually(t, func() bool {
+		e := engineB.Load()
+		return e != nil && e.Status().Rules.Direct4 == 1 && e.Status().Rules.Direct6 == 1
+	})
 	if r, got, ok := dpB.Blobs.Latest(netmap.BlobGeoIP, "ru"); !ok || r != ref || !bytes.Equal(got, data) {
 		t.Errorf("device: Latest(geoip, ru) = %v, %v", r, ok)
 	}
