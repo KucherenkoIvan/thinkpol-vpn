@@ -103,3 +103,35 @@ type HandoffListener interface {
 	Listener
 	ServeStream(conn net.Conn, consumed []byte)
 }
+
+// PacketRoutable is a datagram transport behind a shared listener. The
+// supervisor opens the public socket with ListenPacket, routes every datagram
+// it reads with the Router and forwards it untouched to its space's worker;
+// the worker serves what it is forwarded with ListenForwarded, whose replies
+// go back out through the supervisor's socket.
+type PacketRoutable interface {
+	Routable
+	// ListenPacket opens the public socket a listener of the map describes
+	// (cfg.Address and cfg.Settings; Peers and Camouflage are unused),
+	// checking its settings as Listen would.
+	ListenPacket(ctx context.Context, cfg ListenConfig) (net.PacketConn, error)
+	// ListenForwarded listens on pc, which it owns from then on:
+	// datagrams the supervisor routed to this worker in, replies out.
+	// cfg.Address and cfg.Settings are unused.
+	ListenForwarded(pc net.PacketConn, cfg ListenConfig) Listener
+}
+
+// StreamRoutable is a stream transport behind a shared listener. The
+// supervisor accepts connections on the public listener ListenStream opens,
+// routes each with the Router (which reads the start of the connection) and
+// passes the connection, with the bytes the router consumed, to its space's
+// worker, whose Handoff listener takes it from there.
+type StreamRoutable interface {
+	Routable
+	// ListenStream opens the public listener a listener of the map
+	// describes (cfg.Address and cfg.Settings).
+	ListenStream(ctx context.Context, cfg ListenConfig) (net.Listener, error)
+	// Handoff is a worker's listener for the connections the supervisor
+	// passes on. cfg.Address is unused.
+	Handoff(cfg ListenConfig) (HandoffListener, error)
+}

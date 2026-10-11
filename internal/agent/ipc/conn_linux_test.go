@@ -179,3 +179,67 @@ func TestOnlySeqpacketSockets(t *testing.T) {
 		t.Fatal("a pipe was taken for the socket")
 	}
 }
+
+func dataPair(t *testing.T) (*ipc.Conn, *ipc.Conn) {
+	t.Helper()
+	ends, child, err := ipc.NewPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ends.Control.Close(); _ = ends.Data.Close() })
+	w, err := ipc.FromFile(child[1])
+	for _, f := range child {
+		_ = f.Close()
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+	return ends.Data, w
+}
+
+func TestDatagramsCrossBothWays(t *testing.T) {
+	sup, w := dataPair(t)
+	h := ipc.DatagramHeader{Listener: 3, Remote: netip.MustParseAddrPort("[2001:db8::7]:51820")}
+	big := bytes.Repeat([]byte{0x5a}, ipc.MaxDatagramSize)
+	if err := sup.TrySendDatagram(h, []byte("in")); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.SendDatagram(h, big); err != nil {
+		t.Fatal(err)
+	}
+	if err := sup.TrySendDatagram(h, append(big, 0)); err == nil {
+		t.Fatal("sent a datagram over the limit")
+	}
+	for _, c := range []struct {
+		from *ipc.Conn
+		want []byte
+	}{{w, []byte("in")}, {sup, big}} {
+		m, err := c.from.Receive()
+		if err != nil || m.Kind != ipc.KindDatagram {
+			t.Fatalf("%v, %v", m.Kind, err)
+		}
+		got, d, err := ipc.ParseDatagram(m.Payload)
+		if err != nil || got != h || !bytes.Equal(d, c.want) {
+			t.Fatalf("got %+v, %d bytes, %v", got, len(d), err)
+		}
+	}
+}
+
+func TestTrySendDatagramDropsWhenFull(t *testing.T) {
+	sup, _ := dataPair(t)
+	h := ipc.DatagramHeader{Listener: 1, Remote: netip.MustParseAddrPort("192.0.2.1:1")}
+	for range 100000 {
+		err := sup.TrySendDatagram(h, make([]byte, 1400))
+		if errors.Is(err, ipc.ErrFull) {
+			if sup.Drops() != 1 {
+				t.Fatalf("%d drops counted, want 1", sup.Drops())
+			}
+			return
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Fatal("TrySendDatagram never reported the buffer full")
+}

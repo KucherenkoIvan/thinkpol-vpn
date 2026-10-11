@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"time"
 
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
 
@@ -58,6 +59,11 @@ type Space struct {
 	// Egress describes how the space reaches the internet, for the egress
 	// rules in the supervisor's table (TP-014). The zero value is no egress.
 	Egress Egress
+	// Inbound is, per transport name, the links the space's own map says
+	// to accept (dataplane.InboundFrom of its section). The supervisor
+	// authenticates the shared listeners' traffic against every space's
+	// links, and stamps each link's Space with ID, whatever it said.
+	Inbound map[string][]transport.PeerLink
 }
 
 // Egress is a space's internet egress, enforced in the root namespace, the
@@ -101,6 +107,12 @@ type Options struct {
 	// Log gets the supervisor's own events (default: discarded). The node
 	// agent points it at an in-memory ring.
 	Log *slog.Logger
+	// Transports are the transports the shared listeners may use
+	// (SetListeners).
+	Transports *transport.Registry
+	// FairShare, if set, meters and caps each space's use of the shared
+	// listeners; nil leaves them unmetered.
+	FairShare FairShare
 	// now is an injectable clock for the backoff schedule in tests.
 	now func() time.Time
 }
@@ -253,4 +265,7 @@ type WorkerInfo struct {
 	LastExit string
 	// OutputDropped counts lines dropped from the worker's output ring.
 	OutputDropped uint64
+	// Shared is what the shared listeners forwarded to the space's workers
+	// and sent for them, and what they dropped.
+	Shared SharedCounters
 }

@@ -16,10 +16,6 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// ErrFull is returned by TrySend when the socket's send buffer is full, so
-// the message was not sent; the caller drops it.
-var ErrFull = errors.New("ipc: send buffer full")
-
 // Conn is one end of a supervisor–worker socket. Send and TrySend are safe
 // for concurrent use; Receive is for one reader at a time.
 type Conn struct {
@@ -165,6 +161,44 @@ func (c *Conn) TrySend(m Message) error {
 	}
 	if sendErr != nil {
 		return fmt.Errorf("ipc: send %v: %w", m.Kind, sendErr)
+	}
+	return nil
+}
+
+// TrySendDatagram sends a Datagram message without blocking or copying d:
+// ErrFull, counted as a drop, when the send buffer is full.
+func (c *Conn) TrySendDatagram(h DatagramHeader, d []byte) error {
+	return c.sendDatagram(h, d, false)
+}
+
+// SendDatagram sends a Datagram message, blocking for backpressure.
+func (c *Conn) SendDatagram(h DatagramHeader, d []byte) error {
+	return c.sendDatagram(h, d, true)
+}
+
+func (c *Conn) sendDatagram(h DatagramHeader, d []byte, block bool) error {
+	if len(d) > MaxDatagramSize {
+		return fmt.Errorf("ipc: datagram of %d bytes is over %d", len(d), MaxDatagramSize)
+	}
+	var head [1 + DatagramHeaderSize]byte
+	head[0] = byte(KindDatagram)
+	h.Put(head[1:])
+	bufs := [][]byte{head[:], d}
+	var sendErr error
+	ctrlErr := c.raw.Write(func(fd uintptr) bool {
+		_, sendErr = unix.SendmsgBuffers(int(fd), bufs, nil, nil, unix.MSG_DONTWAIT)
+		// Returning false waits for writability and calls again.
+		return !block || !errors.Is(sendErr, unix.EAGAIN)
+	})
+	if ctrlErr != nil {
+		return fmt.Errorf("ipc: send %v: %w", KindDatagram, ctrlErr)
+	}
+	if errors.Is(sendErr, unix.EAGAIN) {
+		c.drops.Add(1)
+		return ErrFull
+	}
+	if sendErr != nil {
+		return fmt.Errorf("ipc: send %v: %w", KindDatagram, sendErr)
 	}
 	return nil
 }

@@ -25,6 +25,11 @@ type Session struct {
 	// the current one first, then each change, latest-wins (an older pending
 	// one is dropped). nil in Idle mode.
 	Config <-chan []byte
+	// Listeners delivers the supervisor's shared listeners the worker is
+	// served by: the current set first, then each change, latest-wins. A
+	// listener keeps its SharedListener (and its Packets or Streams) for as
+	// long as it is listed.
+	Listeners <-chan []SharedListener
 }
 
 // Serve runs a space's data plane until ctx ends. Returning early, with or
