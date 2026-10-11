@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: [TP-002, TP-011]
 refs: [C1, DESIGN#milestones]
-owner: ""
-branch: ""
+owner: "agent-tp-012"
+branch: "tp-012-m0-acceptance"
 ---
 
 ## Goal
@@ -24,3 +24,4 @@ M0's "done when" as automated lab tests.
 
 ## Log
 - 2026-10-10 created in backlog
+- 2026-10-11 backlog → in-progress — owner: agent-tp-012, branch: tp-012-m0-acceptance (based on tp-011-thinkpol-up while TP-011 is in review)
