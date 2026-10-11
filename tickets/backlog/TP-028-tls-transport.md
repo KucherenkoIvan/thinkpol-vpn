@@ -36,7 +36,12 @@ The workhorse transport: looks like a browser talking to a website, and is a web
 - **Port (TP-005):** implement `transport.Transport` and `transport.Routable` (`RouteStream` peeks the ClientHello and returns the consumed bytes). The worker side is a `transport.HandoffListener`. Settings go in `proto/thinkpol/transport/v1/` as tls messages; the pin can travel there or in the credential. Run `transporttest.Run` with restart support, and with `Interpose` if you can replay a TCP stream.
 - **Blocker resolved (2026-10-10):** the author has no domain and no valid TLS certificate. Decision: the certificate comes from a pluggable certificate source port; the first adapter is self-signed and pinned by the client (option (c) of the original blocker). ACME with a real domain (option (a)) is TP-052, blocked until a domain and registrar exist; the `reality`-style transport (option (b)) stays a later transport.
 - **Known weakness:** a prober that completes the handshake sees a self-signed certificate, which is suspicious on its own. The lab matrix (`lab/RESULTS.md`) must show this honestly, not hide it: if the active prober flags self-signed certificates, `tls` with this adapter fails that row until the ACME adapter exists. PRD's success criterion ("`tls` passes everything except whitelist mode") may not hold with this adapter alone.
+- **From TP-010 (tls):**
+  - Implement `transport.StreamRoutable`. `ListenStream` opens the public TCP listener. `Router(peers).RouteStream` peeks at the ClientHello and must return **every** byte it read: they go to the worker, or to the camouflage, which proxies them first. `Router.Rejected` reports unusable links. `Handoff(cfg)` is the worker's `HandoffListener`; `SharedListener.Listen` feeds it the handed-over connections.
+  - The supervisor's routing deadline is 10 s, with at most 1024 connections being routed per listener. The camouflage proxy is the listener's `Camouflage.Stream`; it must not block, so it starts its own goroutine.
+  - Add the lab test of a handoff through real workers that TP-010 couldn't.
 
 ## Log
 - 2026-10-10 created in blocked
 - 2026-10-10 blocked → backlog — certificate source decided: pluggable port, self-signed pinned adapter first (see Notes)
+- 2026-10-11 docs (TP-010 review): notes from the shared listener

@@ -171,7 +171,7 @@ func handMadeSpace(t testing.TB, dialers ...dialer) sharedSpace {
 	if err != nil {
 		t.Fatal(err)
 	}
-	in := dataplane.InboundFrom(section, reg, transport.SpaceID(sp.ID))
+	in := dataplane.AcceptedInbound(section, reg, transport.SpaceID(sp.ID), 0)
 	if len(in.Skipped) > 0 {
 		t.Fatalf("skipped %v", in.Skipped)
 	}
