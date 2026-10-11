@@ -62,7 +62,7 @@ type Space struct {
 	// worker starts and when the config changes, and each seed the worker
 	// hasn't had yet goes to it as a sealed memfd before the config: the
 	// supervisor keeps no copy, and none rides in the config.
-	Seeds func() [][]byte
+	Seeds func() [][]byte `json:"-"`
 	// Egress describes how the space reaches the internet, for the egress
 	// rules in the supervisor's table (TP-014). The zero value is no egress.
 	Egress Egress
