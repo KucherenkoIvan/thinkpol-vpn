@@ -65,3 +65,4 @@ Review verdict: merge after these.
 - 2026-10-12 backlog → in-progress — owner: agent-tp-022, branch: tp-022-local-api
 - 2026-10-12 in-progress → review — local API, auth model and CLI done; make lint, make test, make test-race and make lab-test green
 - 2026-10-12 review → has-errors — review: six findings and seven nits
+- 2026-10-12 has-errors → in-progress — owner: agent-tp-022, picking up the review findings
