@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: M
 depends_on: [TP-005, TP-009]
 refs: [N6, DESIGN#server-agent-one-worker-per-space]
-owner: ""
-branch: ""
+owner: "agent-tp-010"
+branch: "tp-010-shared-listener"
 ---
 
 ## Goal
@@ -32,3 +32,4 @@ The node's public address belongs to the supervisor, which authenticates every c
 
 ## Log
 - 2026-10-10 created in backlog
+- 2026-10-11 backlog → in-progress — owner: agent-tp-010, branch: tp-010-shared-listener
