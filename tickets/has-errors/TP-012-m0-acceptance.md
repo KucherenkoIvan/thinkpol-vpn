@@ -39,7 +39,16 @@ M0's "done when" as automated lab tests.
 - **Seen once, not ours:** the first `make lab-test` (before any change here) failed `TestSharedListenerThroughput` (internal/agent/supervisor, TP-010): "lost 0.820% at the handoff … at 100 Mbit/s, want under 0.5%", with other labs running on the same Docker VM; it passed in the next full run. A load-sensitive threshold.
 - **For TP-024 (censor/RESULTS.md):** reuse `lab.LooksLikeWireGuard`/`lab.WireGuardHeader` and `TestCaptureFlagsRawWireGuard`'s kernel-WireGuard positive control; lab/M0.md is the M0 part of what RESULTS.md will summarise.
 
+## Review findings
+Review verdict: merge after these. The DESIGN.md M0 rewording is accepted by the orchestrator.
+
+- [ ] R1 `lab/capture.go`: keep tcpdump's stderr tail, parse "N packets dropped by kernel" in Stop, and fail (or expose `Dropped()` and make the M0 checks fail) when non-zero
+- [ ] R2 m0_test.go multicast exemption: exempt only ICMPv6 (ND/RS/MLD) and IGMP; multicast UDP falls through to the direct-traffic and "sent only to server-1" checks
+- [ ] R3 Nits: compare burst counts to the replies actually received (or retry a burst once) to avoid single-loss flakes; check all four Uid fields; guard a nil uid; in the IPv6-only run fail on any IPv4 UDP between lab nodes at the router; optional C1 hardening (LooksLikeWireGuard at any offset); M0.md wording matches the asserts (≥ 20, non-multicast UDP, ≥ 160 floor); confirm the "686" numbers
+- [ ] R4 Perf tests out of acceptance runs (decision): `TestSharedListenerThroughput`'s threshold gate behind a `make lab-perf` target (build tag or `THINKPOL_LAB_PERF=1`) that takes an exclusive host lock (normal labs take slot locks shared) and re-measures up to 3 times (median) before failing; `make lab-test` keeps a functional check of the handoff and logs the loss figure. Documented in lab/README.md and this ticket's Notes (not TP-010's)
+
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-11 backlog → in-progress — owner: agent-tp-012, branch: tp-012-m0-acceptance (based on tp-011-thinkpol-up while TP-011 is in review)
 - 2026-10-11 in-progress → review — `TestM0` (underlay ipv4/ipv6), `TestCaptureFlagsRawWireGuard`, `TestLooksLikeWireGuard`; lab/M0.md; DESIGN.md M0 "done when" reworded (devices have no direct paths in the MVP); `make lint`, `make test`, `make lab-test` pass
+- 2026-10-11 review → has-errors — review findings R1–R4
