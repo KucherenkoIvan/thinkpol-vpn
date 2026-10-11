@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 
 	"github.com/vishvananda/netlink"
@@ -45,11 +46,36 @@ const ipv6DefaultMetric = 1024
 // New returns a configurator for owner in the network namespace of the
 // calling thread.
 func New(owner Owner) (Configurator, error) {
-	ns, err := netns.Get()
+	// The namespace handle and the netlink socket must come from one
+	// thread's namespace.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	ns, err := currentNamespace()
 	if err != nil {
 		return nil, fmt.Errorf("netcfg: current namespace: %w", err)
 	}
-	return newLinux(ns, "the current namespace", owner)
+	return newLinux(ns, "the current namespace", true, owner)
+}
+
+// currentNamespace opens the calling (locked) thread's network namespace. Without
+// /proc (a sandboxed server worker has none) it asks a socket of this
+// thread for its namespace (SIOCGSKNS, which needs CAP_NET_ADMIN there).
+func currentNamespace() (netns.NsHandle, error) {
+	ns, err := netns.Get()
+	if err == nil {
+		return ns, nil
+	}
+	sock, serr := unix.Socket(unix.AF_UNIX, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0)
+	if serr != nil {
+		return netns.None(), errors.Join(err, serr)
+	}
+	defer func() { _ = unix.Close(sock) }()
+	fd, ierr := unix.IoctlRetInt(sock, unix.SIOCGSKNS)
+	if ierr != nil {
+		return netns.None(), errors.Join(err, fmt.Errorf("SIOCGSKNS: %w", ierr))
+	}
+	unix.CloseOnExec(fd)
+	return netns.NsHandle(fd), nil
 }
 
 // NewInNamespace returns a configurator for owner in the network namespace
@@ -60,10 +86,13 @@ func NewInNamespace(path string, owner Owner) (Configurator, error) {
 	if err != nil {
 		return nil, fmt.Errorf("netcfg: namespace %s: %w", path, err)
 	}
-	return newLinux(ns, path, owner)
+	return newLinux(ns, path, false, owner)
 }
 
-func newLinux(ns netns.NsHandle, name string, owner Owner) (Configurator, error) {
+// newLinux makes owner's configurator for ns; current says ns is the calling
+// thread's, where the netlink socket is opened without switching
+// namespaces (netlink's switch needs /proc to find its way back).
+func newLinux(ns netns.NsHandle, name string, current bool, owner Owner) (Configurator, error) {
 	defer func() { _ = ns.Close() }()
 	if !owner.valid() {
 		return nil, fmt.Errorf("netcfg: unknown owner %v", owner)
@@ -72,7 +101,12 @@ func newLinux(ns netns.NsHandle, name string, owner Owner) (Configurator, error)
 	if err != nil {
 		return nil, fmt.Errorf("netcfg: %v in %s: %w", owner, name, err)
 	}
-	h, err := netlink.NewHandleAt(ns, unix.NETLINK_ROUTE)
+	var h *netlink.Handle
+	if current {
+		h, err = netlink.NewHandle(unix.NETLINK_ROUTE)
+	} else {
+		h, err = netlink.NewHandleAt(ns, unix.NETLINK_ROUTE)
+	}
 	if err != nil {
 		_ = unix.Close(lock)
 		return nil, fmt.Errorf("netcfg: netlink in %s: %w", name, err)

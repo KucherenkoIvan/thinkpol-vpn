@@ -1,0 +1,122 @@
+package agent
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"sync/atomic"
+
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/ipc"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/worker"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
+)
+
+// ServeSpace is a server's data plane for one space, as `thinkpol worker`
+// serves it inside its sandbox (worker.Run): it waits for the supervisor's
+// WorkerConfig, then runs RunDataPlane on its own TUN in its namespace,
+// with the supervisor's shared listeners as its inbound, applying each
+// newer map the supervisor sends.
+func ServeSpace(log *slog.Logger) worker.Serve { return serveSpace(log, DataPlane{}) }
+
+// serveSpace is ServeSpace with what tests swap in base (registry, TUN,
+// timing).
+func serveSpace(log *slog.Logger, base DataPlane) worker.Serve {
+	return func(ctx context.Context, s worker.Session) error {
+		var first WorkerConfig
+		select {
+		case <-ctx.Done():
+			return nil
+		case b, ok := <-s.Config:
+			if !ok {
+				return errors.New("the supervisor sent no config")
+			}
+			c, err := DecodeWorkerConfig(b)
+			if err != nil {
+				return err
+			}
+			first = c
+		}
+		if first.Trust.SpaceID != s.Space {
+			return fmt.Errorf("config for space %v sent to the worker of space %v", first.Trust.SpaceID, s.Space)
+		}
+		m, err := netmap.Verify(first.Map, first.Trust)
+		if err != nil {
+			return fmt.Errorf("the supervisor's map: %w", err)
+		}
+		reg := base.Registry
+		if reg == nil {
+			if reg, err = Transports(); err != nil {
+				return err
+			}
+		}
+
+		ctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		var badConfig atomic.Pointer[error]
+		maps := make(chan []byte, 1)
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case b, ok := <-s.Config:
+					if !ok {
+						return
+					}
+					c, err := DecodeWorkerConfig(b)
+					if err == nil && !c.sameNode(first) {
+						err = errors.New("the supervisor changed the worker's keys or trust")
+					}
+					if err != nil {
+						badConfig.Store(&err)
+						cancel()
+						return
+					}
+					select {
+					case <-maps:
+					default:
+					}
+					maps <- c.Map
+				}
+			}
+		}()
+		var counters atomic.Pointer[ipc.SharedCounters]
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case c, ok := <-s.SharedCounters:
+					if !ok {
+						return
+					}
+					counters.Store(&c)
+				}
+			}
+		}()
+
+		dp := base
+		dp.Keys, dp.Map, dp.Maps, dp.Registry = first.Keys, m, maps, reg
+		dp.Inbound = SharedInbound(ctx, reg, s.Listeners)
+		dp.Interface, dp.LinkMTU, dp.Log = first.Interface, first.LinkMTU, log
+		// The space's own figures only (TP-041 seals them into its
+		// telemetry).
+		dp.StatusAttrs = func() []any {
+			var attrs []any
+			if s.SharedDrops != nil {
+				d := s.SharedDrops()
+				attrs = append(attrs, "shared_queue_full", d.QueueFull, "shared_unknown_listener", d.UnknownListener)
+			}
+			if c := counters.Load(); c != nil {
+				attrs = append(attrs, "shared", *c)
+			}
+			return attrs
+		}
+		err = RunDataPlane(ctx, dp)
+		if bad := badConfig.Load(); bad != nil {
+			return *bad
+		}
+		return err
+	}
+}
