@@ -92,3 +92,4 @@ Nits:
 - 2026-10-11 review → has-errors — two reviewers: 1 blocker, 11 should-fix, nits (see Review findings); also recorded: checkpoint commit ca5dc21 was committed with failing tests, against AGENTS.md rule 3 (pushed at the coordinator's request after an interruption; the next commit was green)
 - 2026-10-11 has-errors → in-progress — owner: agent-tp-010, picking up the review findings
 - 2026-10-11 review findings fixed (B1, 2–12, nits); DESIGN.md "Server agent" reply rule and stream caps reworded; udp's evicted-sender history bounded (a churning dialer could stall a shared Router, found by the new flood test); notes copied into TP-011, TP-013, TP-014, TP-028, TP-040, TP-041
+- 2026-10-11 in-progress → review
