@@ -101,3 +101,4 @@ Round 2 (delta review, 2026-10-11):
 - 2026-10-11 review → has-errors — delta review: 3 findings (round 2)
 - 2026-10-11 has-errors → in-progress — owner: agent-tp-010, round 2 findings
 - 2026-10-11 round 2 fixed: one udp Router per transport across listeners and reopens, worker-side loss asserted in the paced run, ring residual documented; ipc `Receive` reports a peer reset (closed with messages unread) as EOF, which the always-sent Listeners message made visible in TestCrashingWorkerBacksOff
+- 2026-10-11 in-progress → review
