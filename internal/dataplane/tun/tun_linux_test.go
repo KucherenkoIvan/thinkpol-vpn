@@ -5,16 +5,37 @@ package tun_test
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"net/netip"
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/nsthread/nsthreadtest"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/packettest"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/tun"
 )
+
+func needsLab(t *testing.T) {
+	t.Helper()
+	if os.Getenv("THINKPOL_LAB") == "" {
+		t.Skip("needs the lab")
+	}
+}
+
+func throwawayNetns(t *testing.T) string {
+	t.Helper()
+	b := make([]byte, 3)
+	_, _ = rand.Read(b)
+	ns := "tuntest-" + hex.EncodeToString(b)
+	ip(t, "netns", "add", ns)
+	t.Cleanup(func() { _ = exec.Command("ip", "netns", "del", ns).Run() })
+	return ns
+}
 
 func ip(t *testing.T, args ...string) string {
 	t.Helper()
@@ -28,14 +49,8 @@ func ip(t *testing.T, args ...string) string {
 // A TUN created in another namespace lives there only, and moves packets
 // both ways with the headroom the router and WireGuard leave.
 func TestCreateInNamespace(t *testing.T) {
-	if os.Getenv("THINKPOL_LAB") == "" {
-		t.Skip("needs the lab")
-	}
-	b := make([]byte, 3)
-	_, _ = rand.Read(b)
-	ns := "tuntest-" + hex.EncodeToString(b)
-	ip(t, "netns", "add", ns)
-	t.Cleanup(func() { _ = exec.Command("ip", "netns", "del", ns).Run() })
+	needsLab(t)
+	ns := throwawayNetns(t)
 
 	dev, err := tun.CreateInNamespace("/run/netns/"+ns, tun.DefaultName, 1400)
 	if err != nil {
@@ -103,4 +118,56 @@ func TestCreateInNamespace(t *testing.T) {
 	if err := exec.Command("ip", "-n", ns, "link", "show", "dev", tun.DefaultName).Run(); err == nil {
 		t.Fatal("the TUN outlived Close")
 	}
+}
+
+// Creating TUNs in another namespace many times, one after another and then
+// at once, leaves every thread of the process, the main one included, in its
+// own namespace.
+func TestCreateInNamespaceLeavesNoThreadBehind(t *testing.T) {
+	needsLab(t)
+	// A fresh name each time: the kernel may still hold the last one for a
+	// moment after Close. Close's own error isn't checked: wireguard-go's
+	// Close races its netlink listener and can report a broken pipe, with
+	// the device gone all the same.
+	var made atomic.Int32
+	createAndClose := func(ns string) error {
+		dev, err := tun.CreateInNamespace("/run/netns/"+ns, fmt.Sprintf("tpleak%d", made.Add(1)), 1400)
+		if err != nil {
+			return err
+		}
+		go func() {
+			for range dev.Events() {
+			}
+		}()
+		_ = dev.Close()
+		return nil
+	}
+	ns := throwawayNetns(t)
+	for range 100 {
+		if err := createAndClose(ns); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const workers = 4
+	var wg sync.WaitGroup
+	errs := make(chan error, workers)
+	for w := range workers {
+		ns := throwawayNetns(t)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 100 / workers {
+				if err := createAndClose(ns); err != nil {
+					errs <- fmt.Errorf("worker %d: %w", w, err)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+	nsthreadtest.CheckThreadsHome(t)
 }
