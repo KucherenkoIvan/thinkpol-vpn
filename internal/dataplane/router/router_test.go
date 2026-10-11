@@ -101,6 +101,7 @@ func TestRoutesEachDestinationToItsEgress(t *testing.T) {
 		{"10.1.2.3", nil},
 		{"10.1.5.5", nil}, // direct: dropped, never to the exit's default
 		{"2001:db8:d::1", nil},
+		{"::ffff:10.1.5.5", nil}, // IPv4-mapped: by its IPv4 address, direct, not ::/0's exit
 		{"192.0.2.1", toExit},
 		{"2001:db8::1", toExit},
 	}
@@ -135,7 +136,7 @@ func TestRoutesEachDestinationToItsEgress(t *testing.T) {
 	default:
 	}
 	c := r.Counters()
-	if c.Routed != 7 || c.NoRoute != 2 || c.Blocked != 1 || c.Direct != 2 || c.Malformed != 2 {
+	if c.Routed != 7 || c.NoRoute != 2 || c.Blocked != 1 || c.Direct != 3 || c.Malformed != 2 {
 		t.Fatalf("counters %+v", c)
 	}
 }

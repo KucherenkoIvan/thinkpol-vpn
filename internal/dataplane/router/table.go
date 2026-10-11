@@ -85,6 +85,9 @@ func (r *Router) compile(t Table) (*compiled, error) {
 // classify returns the egress for a destination; ok is false when nothing
 // routes it. A nil egress with ok blocks it; direct is a Direct route's.
 func (c *compiled) classify(dst netip.Addr) (e *Egress, ok bool) {
+	// An IPv4-mapped destination goes by its IPv4 address: tables hold
+	// IPv4 only as IPv4, so ::/0 never swallows it.
+	dst = dst.Unmap()
 	if _, inOverlay := c.overlay.lookup(dst); inOverlay {
 		return c.peers.lookup(dst)
 	}
