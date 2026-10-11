@@ -93,3 +93,19 @@ Nits:
 - 2026-10-11 has-errors → in-progress — owner: agent-tp-009, fixing the review findings
 - 2026-10-11 review fixes done (B1-B3, 4-17, nits); make lint, make test green; lab-gotest (internal/agent/...) green 3x; lab-test green 3x — staying in in-progress at owner's request (end of day)
 - 2026-10-11 in-progress → review — review findings fixed (e00612d); merged origin/rewrite (TP-008, TP-053); make lint, make test, lab-gotest (internal/agent/...) green
+
+### Round 2 (delta review, 2026-10-11)
+Orchestrator decisions; core B1–B3 hold.
+
+Blocker:
+- [ ] R2.1 Revert `systempaths=unconfined` on lab nodes (and the conditional /proc/sys/net bind if it only existed for it): a node with SYS_ADMIN + AppArmor off + unmasked /proc could write VM-wide `kernel.*`/`vm.*` sysctls (core_pattern/modprobe → escape) or /proc/sysrq-trigger on the Docker VM. The worker no longer mounts its own /proc; the supervisor sets the space's network sysctls by entering the space's netns. Document what the worker still needs from /proc (nothing). Lab test: a node can't write /proc/sys/kernel/core_pattern.
+
+Should-fix:
+- [ ] R2.2 Sealed-memfd config read from offset 0 (worker `SectionReader` with `Fstat` size; supervisor rewinds); `TestConfigReachesTheWorker` compares a hash of what the worker received, incl. a >64 KiB config.
+- [ ] R2.3 SetSpaces: on isolation-table rebuild failure, unregister the started workers, free slots, remove cgroups; test an injected failure and that Close doesn't hang.
+- [ ] R2.4 Netnsid escape test: `RTM_NEWLINK` with `IFLA_TARGET_NETNSID` (create a dummy in root); EPERM from the worker, success from an actually-run positive control.
+- [ ] R2.5 Anti-spoof test exercises the rules (rp_filter=0 node, off-link spoof, IPv6 spoof, negative control deleting only the anti-spoof chains) plus a conntrack-zone test (root UDP flow to A; forged reply from B not accepted as established).
+- [ ] R2.6 Real unknown-message-kind test (test-worker sends an unexpected kind after Ready → killed and restarted).
+- [ ] R2.7 Clear supplementary groups (`GidMappingsEnableSetgroups: true`, `Credential.Groups: []`).
+- [ ] R2.8 Drop CAP_SYS_ADMIN (all sets incl. bounding/ambient) at the end of sandbox(); keep the network caps.
+- 2026-10-11 review → has-errors — delta review round 2 (R2.1 blocker + R2.2–R2.8)
