@@ -127,6 +127,12 @@ message NodeSettings {
   string ipv6_network = 6;
   // Transports this node listens on.
   repeated Listener listeners = 7;
+  // Server settings, both off by default (devices have neither). With
+  // ingress off, the node's listeners accept only other servers and no
+  // device's section has its address; with egress off, no internet traffic
+  // leaves the space from it. With both off the node only relays.
+  bool allow_ingress = 8;
+  bool allow_egress = 9;
 }
 
 message Listener {

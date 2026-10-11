@@ -26,7 +26,9 @@ Nodes that allow egress forward a space's internet traffic, IPv4 and IPv6, and n
 
 ## Notes
 - **From TP-010 (egress), decided in the TP-010 review:** a worker's outgoing dials to endpoints listed in its own section are allowed through the root namespace (masqueraded) whatever the egress setting; egress off still blocks everything else. M3's entry → exit hops need it.
+- **From TP-013 (egress setting):** the setting is `section.Node.AllowEgress` (servers only, off by default): in `serverSpaces.apply` (`internal/agent/node.go`) fill `supervisor.Space.Egress` from it, and the worker reads its own section (`runner.section`) for its SNAT. Drop "(not enforced until TP-014)" from `serverSettings` (`internal/agent/dataplane.go`, the `map applied` log line) and `DescribeSection` (`internal/devmap/describe.go`, inspect). `lab/ingress_test.go` runs its dialing server-1 with `-mode device` because a worker can't dial another server through the root namespace yet; once this ticket opens that, it can run in server mode.
 
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-11 docs (TP-010 review): notes from the shared listener
+- 2026-10-12 docs (TP-013 review): notes from the ingress and egress settings

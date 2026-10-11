@@ -44,7 +44,10 @@ type Node struct {
 	Endpoints []Address
 	// Listeners are as written, or derived from Endpoints.
 	Listeners []Address
-	Pos       Pos
+	// Ingress lets devices dial this server; Egress lets internet traffic
+	// leave from it. Server settings, off unless written.
+	Ingress, Egress bool
+	Pos             Pos
 }
 
 // Address is a transport and an IP literal with a port, written
@@ -156,6 +159,8 @@ type rawNode struct {
 	IPv6      scalar   `yaml:"ipv6"`
 	Endpoints []scalar `yaml:"endpoints"`
 	Listen    []scalar `yaml:"listen"`
+	Ingress   scalar   `yaml:"ingress"`
+	Egress    scalar   `yaml:"egress"`
 }
 
 func (n *rawNode) UnmarshalYAML(node ast.Node) error {
@@ -374,6 +379,9 @@ func (c *checker) node(s *Spec, rn rawNode, ipv4s, ipv6s map[netip.Addr]string) 
 		}
 	}
 
+	n.Ingress = c.setting(label, "ingress", rn.Ingress, n.Kind)
+	n.Egress = c.setting(label, "egress", rn.Egress, n.Kind)
+
 	if n.Kind == netmap.NodeDevice && (rn.Endpoints != nil || rn.Listen != nil) {
 		at := rn.pos
 		if len(rn.Endpoints) > 0 {
@@ -400,6 +408,31 @@ func (c *checker) node(s *Spec, rn rawNode, ipv4s, ipv6s map[netip.Addr]string) 
 		}
 	}
 	return n
+}
+
+// setting reads a server's on/off setting: true or false, off when absent.
+func (c *checker) setting(label, what string, v scalar, kind netmap.NodeKind) bool {
+	if !v.set() {
+		return false
+	}
+	text, ok := c.value(v)
+	if !ok {
+		return false
+	}
+	var on bool
+	switch text {
+	case "true":
+		on = true
+	case "false":
+	default:
+		c.errorf(v.pos, "%s: %s %q is neither true nor false", label, what, text)
+		return false
+	}
+	if kind == netmap.NodeDevice {
+		c.errorf(v.pos, "%s: a device has no %s setting: it is a server's", label, what)
+		return false
+	}
+	return on
 }
 
 func is6(a Address) bool { return a.AddrPort.Addr().Is6() }
@@ -497,6 +530,14 @@ func (c *checker) paths(s *Spec, raw []rawPath, byName map[string]int) {
 		for k, i := range p.Nodes[1 : len(p.Nodes)-1] {
 			if s.Nodes[i].Kind != netmap.NodeServer {
 				c.errorf(rp.hops[k+1].pos, "%s is a device and can't relay: only servers sit inside a path", s.Nodes[i].Name)
+				ok = false
+			}
+		}
+		// A device dials its neighbour on the path, and gets its address.
+		for _, end := range [][2]int{{0, 1}, {len(p.Nodes) - 1, len(p.Nodes) - 2}} {
+			dev, next := s.Nodes[p.Nodes[end[0]]], s.Nodes[p.Nodes[end[1]]]
+			if dev.Kind == netmap.NodeDevice && next.Kind == netmap.NodeServer && !next.Ingress {
+				c.errorf(rp.hops[end[1]].pos, "%s has ingress off, so %s can't connect to it (ingress: true lets devices in)", next.Name, dev.Name)
 				ok = false
 			}
 		}

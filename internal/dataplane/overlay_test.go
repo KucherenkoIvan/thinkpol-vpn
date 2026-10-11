@@ -264,3 +264,45 @@ func TestInboundFromStampsTheSpaceAndSkipsWhatItCannotUse(t *testing.T) {
 		t.Fatalf("udp link %+v", pl)
 	}
 }
+
+// On a server with ingress off, the one inbound table keeps only other
+// servers' links, and a device is no first hop or next hop there either.
+func TestAcceptedInboundHonoursIngress(t *testing.T) {
+	reg := udpRegistry(t)
+	secret := func(b byte) []byte { return bytes.Repeat([]byte{b}, udp.MinSecretSize) }
+	s := netmap.Section{
+		Node: netmap.NodeSettings{ID: nid(1), Kind: netmap.NodeServer},
+		Inbound: []netmap.InboundLink{
+			{Peer: nid(2), PeerKind: netmap.NodeServer, Transport: "udp", Credential: secret(2)},
+			{Peer: nid(3), PeerKind: netmap.NodeDevice, Transport: "udp", Credential: secret(3)},
+			{Peer: nid(4), PeerKind: 9, Transport: "udp", Credential: secret(4)},
+		},
+		Routes: []netmap.Route{{Destination: nid(3), NextHops: []netmap.NodeID{nid(3)}}},
+	}
+	accepted := func() []transport.NodeID {
+		var ids []transport.NodeID
+		for _, l := range dataplane.AcceptedInbound(s, reg, transport.SpaceID{9}, 0).Links["udp"] {
+			ids = append(ids, l.Peer.Node)
+		}
+		return ids
+	}
+
+	if got := accepted(); !slices.Equal(got, []transport.NodeID{transport.NodeID(nid(2))}) {
+		t.Fatalf("ingress off accepts %v, want only the server", got)
+	}
+	in := dataplane.AcceptedInbound(s, reg, transport.SpaceID{9}, 0)
+	if len(in.Skipped) != 2 || in.Skipped[0].Reason != dataplane.ReasonIngressOff || in.Skipped[1].Reason != dataplane.ReasonIngressOff {
+		t.Fatalf("skipped %v", in.Skipped)
+	}
+	if pc := dataplane.PathConfigFrom(s, reg); len(pc.Table.Routes) != 0 {
+		t.Fatalf("routes through a refused device: %+v", pc.Table.Routes)
+	}
+
+	s.Node.AllowIngress = true
+	if got := accepted(); len(got) != 3 {
+		t.Fatalf("ingress on accepts %v, want all three", got)
+	}
+	if pc := dataplane.PathConfigFrom(s, reg); len(pc.Table.Routes) != 1 {
+		t.Fatalf("routes %+v, want the one to the device", pc.Table.Routes)
+	}
+}

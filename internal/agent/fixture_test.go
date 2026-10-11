@@ -13,8 +13,8 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
 
-// testSpace is a two-node space: server a listens, device b dials it, and
-// each is the other's WireGuard peer.
+// testSpace is a two-node space: server a (ingress on) listens, device b
+// dials it, and each is the other's WireGuard peer.
 type testSpace struct {
 	signing  ed25519.PrivateKey
 	recovery ed25519.PublicKey
@@ -64,7 +64,7 @@ func (s *testSpace) sections() (a, b netmap.Section) {
 	a4, a6 := overlay(1)
 	b4, b6 := overlay(2)
 	a.Node = netmap.NodeSettings{ID: s.a.ID, Kind: netmap.NodeServer, IPv4: a4, IPv6: a6, IPv4Network: testV4, IPv6Network: testV6,
-		Listeners: []netmap.Listener{{Transport: memory.Name, Address: s.listen}}}
+		Listeners: []netmap.Listener{{Transport: memory.Name, Address: s.listen}}, AllowIngress: true}
 	b.Node = netmap.NodeSettings{ID: s.b.ID, Kind: netmap.NodeDevice, IPv4: b4, IPv6: b6, IPv4Network: testV4, IPv6Network: testV6}
 	a.Inbound = []netmap.InboundLink{{Peer: s.b.ID, PeerKind: netmap.NodeDevice, Transport: memory.Name, Credential: s.secret}}
 	b.Links = []netmap.Link{{Peer: s.a.ID, Endpoints: []netmap.Endpoint{{Transport: memory.Name, Address: s.listen, Credential: s.secret}}}}
