@@ -113,6 +113,9 @@ type Options struct {
 	// FairShare, if set, meters and caps each space's use of the shared
 	// listeners; nil leaves them unmetered.
 	FairShare FairShare
+	// CountersInterval is how often each worker is sent its space's
+	// SharedCounters, for its telemetry (10 s).
+	CountersInterval time.Duration
 	// now is an injectable clock for the backoff schedule in tests.
 	now func() time.Time
 }
@@ -153,6 +156,9 @@ func (o Options) withDefaults() (Options, error) {
 	}
 	if o.StopTimeout == 0 {
 		o.StopTimeout = 5 * time.Second
+	}
+	if o.CountersInterval == 0 {
+		o.CountersInterval = 10 * time.Second
 	}
 	if o.OutputBytes == 0 {
 		o.OutputBytes = 64 << 10
@@ -266,6 +272,7 @@ type WorkerInfo struct {
 	// OutputDropped counts lines dropped from the worker's output ring.
 	OutputDropped uint64
 	// Shared is what the shared listeners forwarded to the space's workers
-	// and sent for them, and what they dropped.
+	// and sent for them, and what they dropped; the worker gets the same
+	// figures for its telemetry.
 	Shared SharedCounters
 }

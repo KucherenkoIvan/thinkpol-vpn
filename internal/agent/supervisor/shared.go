@@ -1,6 +1,7 @@
 package supervisor
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"errors"
@@ -33,9 +34,9 @@ type Listener struct {
 	Address string
 	// Settings is the transport's own settings message for the listener.
 	Settings []byte
-	// Camouflage gets whatever fails authentication; nil drops it. It must
-	// not block for long: a datagram listener reads on only after it
-	// returns.
+	// Camouflage gets whatever fails authentication, or is too old or
+	// replayed; nil drops it. It must not block for long: a datagram
+	// listener reads on only after it returns.
 	Camouflage transport.Camouflage
 }
 
@@ -44,7 +45,8 @@ type Listener struct {
 // asks Allow before it forwards a datagram to a worker or sends a worker's
 // reply, and charges what the worker's socket accepted or what went out.
 // Both are called from several goroutines and on every datagram, so they
-// must be cheap and never block.
+// must be cheap and never block. Handed-over streams never pass through
+// here (DESIGN.md "Fair share").
 type FairShare interface {
 	// Allow reports whether space may move n more bytes now.
 	Allow(space transport.SpaceID, n int) bool
@@ -52,47 +54,52 @@ type FairShare interface {
 	Charge(space transport.SpaceID, n int)
 }
 
-// ListenerInfo is one public listener as the supervisor sees it.
+// ListenerInfo is one public listener as the node owner sees it. It is the
+// node's own business: none of it (the address, the rejected links of
+// every space) goes into any space's telemetry.
 type ListenerInfo struct {
 	ID        uint32
 	Transport string
 	Address   string
-	// Routed counts datagrams or connections that authenticated as one of
-	// a served space's links; Unauthenticated those that went to the
-	// camouflage.
-	Routed, Unauthenticated uint64
+	// Routed counts datagrams or connections that authenticated as a link
+	// of a served space; Unauthenticated those that didn't (to the
+	// camouflage); NoSpace those that authenticated as a link of a space
+	// not served any more (to the camouflage too).
+	Routed, Unauthenticated, NoSpace uint64
+	// StreamsOverloaded counts connections that arrived while
+	// maxRoutingStreams were being routed: they went to the camouflage.
+	StreamsOverloaded uint64
 	// Rejected lists the peer links the transport's router can't use, e.g.
 	// two links (of the same space or of two) sharing a secret: both are
 	// dropped rather than one guessed.
 	Rejected []transport.PeerError
 }
 
-// SharedCounters are what the shared listeners did for one space.
-type SharedCounters struct {
-	// Forwarded counts the datagrams (ForwardedBytes their bytes) the
-	// worker's socket accepted, and Streams the connections handed over.
-	Forwarded, ForwardedBytes, Streams uint64
-	// NoWorker counts datagrams and connections dropped while the space
-	// had no running worker, WorkerFull those its socket had no room for,
-	// OverShare those its fair share refused.
-	NoWorker, WorkerFull, OverShare uint64
-	// Replies counts datagrams (ReplyBytes their bytes) the worker sent
-	// out; RepliesRefused those it addressed to a remote end none of its
-	// own authenticated datagrams came from lately, or through a listener
-	// that is gone, or past its fair share.
-	Replies, ReplyBytes, RepliesRefused uint64
-}
+// SharedCounters are what the shared listeners did for one space; the
+// supervisor sends them to the space's worker for its telemetry.
+type SharedCounters = ipc.SharedCounters
 
 const (
-	// replyWindow is how long a remote end an authenticated datagram came
-	// from stays a valid destination for the worker's replies: as long as
-	// a datagram stays fresh for the udp transport.
-	replyWindow = 5 * time.Minute
-	// maxReplyPeers bounds a space's remembered remote ends.
-	maxReplyPeers = 1 << 14
+	// replyWindow is how long a remote end a link's live datagram came from
+	// stays a destination for the worker's replies. It is refreshed by
+	// every authenticated, fresh, non-replayed datagram, so an active link
+	// never loses it: WireGuard sends at least every 2 minutes on a live
+	// session (rekeys, and keepalives when configured), and the path
+	// layer probes each link every 2 s. NAT mappings expire on a similar
+	// scale, so an address quiet for longer is likely gone anyway.
+	replyWindow = 2 * time.Minute
+	// replyPeersPerLink bounds the remote ends one link keeps; a new one
+	// evicts that link's oldest, never another link's.
+	replyPeersPerLink = 8
+	// replySweep is how often, at most, a space's expired remote ends are
+	// swept: expiry is exact to within this.
+	replySweep = 10 * time.Second
 	// streamRouteTimeout bounds how long a new connection may take to show
 	// the router who it is.
 	streamRouteTimeout = 10 * time.Second
+	// maxRoutingStreams bounds the connections one listener routes at
+	// once; more go straight to the camouflage.
+	maxRoutingStreams = 1024
 	// maxDatagramRead is a public socket's read buffer: anything longer
 	// than the transport's largest datagram fails authentication anyway.
 	maxDatagramRead = ipc.MaxDatagramSize
@@ -118,7 +125,10 @@ type shared struct {
 	log  *slog.Logger
 	now  func() time.Time
 
-	mu        sync.Mutex // SetSpaces and SetListeners
+	// routingLimit is maxRoutingStreams, smaller in tests.
+	routingLimit int
+
+	mu        sync.Mutex // setSpaces and setListeners
 	nextID    uint32
 	listeners map[string]*publicListener // by transport and address
 	tables    map[string]*transport.PeerTable
@@ -130,58 +140,90 @@ type shared struct {
 }
 
 func newShared(reg *transport.Registry, fair FairShare, log *slog.Logger, now func() time.Time) *shared {
-	s := &shared{reg: reg, fair: fair, log: log, now: now, listeners: map[string]*publicListener{}, tables: map[string]*transport.PeerTable{}}
+	s := &shared{
+		reg: reg, fair: fair, log: log, now: now, routingLimit: maxRoutingStreams,
+		listeners: map[string]*publicListener{}, tables: map[string]*transport.PeerTable{},
+	}
 	s.routes.Store(&map[transport.SpaceID]*route{})
 	s.byID.Store(&map[uint32]*publicListener{})
 	return s
 }
 
 // route is one space's way to its current worker, across the worker's
-// restarts.
+// restarts, and the remote ends the worker may answer.
 type route struct {
 	space    transport.SpaceID
 	end      atomic.Pointer[workerSockets] // nil while no worker runs
-	counters sharedCounters
+	counters counters
 
-	mu    sync.Mutex
-	peers map[replyPeer]time.Time // remote ends of the space's authenticated datagrams
+	mu      sync.Mutex
+	links   map[transport.NodeID]*linkRemotes
+	remotes map[replyKey]*remote
+	swept   time.Time
 }
 
-type replyPeer struct {
+// replyKey is a remote end as the worker names it: the listener, and the
+// address unmapped and without a zone (the IPC header carries neither).
+type replyKey struct {
 	listener uint32
-	remote   netip.AddrPort
+	addr     netip.AddrPort
 }
 
-type sharedCounters struct {
-	forwarded, forwardedBytes, streams, noWorker, workerFull, overShare,
-	replies, replyBytes, repliesRefused atomic.Uint64
+func keyOf(listener uint32, a netip.AddrPort) replyKey {
+	return replyKey{listener, netip.AddrPortFrom(a.Addr().Unmap().WithZone(""), a.Port())}
 }
 
-func (c *sharedCounters) snapshot() SharedCounters {
+// remote is a remote end some of the space's links came from.
+type remote struct {
+	holders int            // links holding it
+	at      time.Time      // its latest refresh by any of them
+	to      netip.AddrPort // as received, zone included: where replies go
+}
+
+// linkRemotes are one link's latest remote ends.
+type linkRemotes struct {
+	n       int
+	entries [replyPeersPerLink]struct {
+		key replyKey
+		at  time.Time
+	}
+}
+
+type counters struct {
+	forwarded, forwardedBytes, streams, stale, replayed, noWorker, workerFull, overShare,
+	streamsRefused, replies, replyBytes, repliesNotAllowed, repliesNoListener, repliesOverShare,
+	replyErrors, replyPeersEvicted atomic.Uint64
+}
+
+func (c *counters) snapshot() SharedCounters {
 	return SharedCounters{
 		Forwarded: c.forwarded.Load(), ForwardedBytes: c.forwardedBytes.Load(), Streams: c.streams.Load(),
+		Stale: c.stale.Load(), Replayed: c.replayed.Load(),
 		NoWorker: c.noWorker.Load(), WorkerFull: c.workerFull.Load(), OverShare: c.overShare.Load(),
-		Replies: c.replies.Load(), ReplyBytes: c.replyBytes.Load(), RepliesRefused: c.repliesRefused.Load(),
+		StreamsRefused: c.streamsRefused.Load(),
+		Replies:        c.replies.Load(), ReplyBytes: c.replyBytes.Load(),
+		RepliesNotAllowed: c.repliesNotAllowed.Load(), RepliesNoListener: c.repliesNoListener.Load(),
+		RepliesOverShare: c.repliesOverShare.Load(), ReplyErrors: c.replyErrors.Load(),
+		ReplyPeersEvicted: c.replyPeersEvicted.Load(),
 	}
 }
 
 // publicListener is one public socket or stream listener.
 type publicListener struct {
 	id       uint32
-	key      string
 	cfg      Listener
 	settings string
-	pc       net.PacketConn // a datagram transport's
-	udp      *net.UDPConn   // pc, when it is one: no allocation per datagram
-	ln       net.Listener   // a stream transport's
+	udp      *net.UDPConn // a datagram transport's
+	ln       net.Listener // a stream transport's
 	router   transport.Router
 	camo     atomic.Pointer[transport.Camouflage]
 	ctx      context.Context // ends when the listener closes
 	cancel   context.CancelFunc
 	closing  sync.Once
 	wg       sync.WaitGroup
+	routing  chan struct{} // a token per stream being routed
 
-	routed, unauthenticated atomic.Uint64
+	routed, unauthenticated, noSpace, streamsOverloaded atomic.Uint64
 }
 
 func listenerKey(l Listener) string { return l.Transport + " " + l.Address }
@@ -199,13 +241,13 @@ func (s *shared) setSpaces(inbound map[transport.SpaceID]map[string][]transport.
 	for space := range inbound {
 		r := old[space]
 		if r == nil {
-			r = &route{space: space, peers: map[replyPeer]time.Time{}}
+			r = &route{space: space, links: map[transport.NodeID]*linkRemotes{}, remotes: map[replyKey]*remote{}}
 		}
 		routes[space] = r
 	}
 	s.routes.Store(&routes)
 	merged := map[string][]transport.PeerLink{}
-	for _, space := range slices.SortedFunc(maps.Keys(inbound), func(a, b transport.SpaceID) int { return compareIDs(a[:], b[:]) }) {
+	for _, space := range slices.SortedFunc(maps.Keys(inbound), func(a, b transport.SpaceID) int { return bytes.Compare(a[:], b[:]) }) {
 		for name, links := range inbound[space] {
 			for _, pl := range links {
 				pl.Peer.Space = space
@@ -223,8 +265,6 @@ func (s *shared) setSpaces(inbound map[transport.SpaceID]map[string][]transport.
 	}
 }
 
-func compareIDs(a, b []byte) int { return slices.Compare(a, b) }
-
 // table is a transport's merged credential table; s.mu held.
 func (s *shared) table(name string) *transport.PeerTable {
 	t := s.tables[name]
@@ -236,9 +276,11 @@ func (s *shared) table(name string) *transport.PeerTable {
 }
 
 // setListeners opens, keeps and closes public listeners so the node listens
-// on exactly ls. A listener whose transport and address stay keeps its
-// socket (and its id); a settings change reopens it. It reports whether
-// the set changed, for the workers' Listeners message.
+// on exactly ls. A listener whose transport, address and settings stay
+// keeps its socket (and its id). One whose settings changed is closed and
+// opened again, under a new id: its port is free in between, and lost if
+// the reopen fails (reported, the others served). It reports whether the
+// set changed, for the workers' Listeners message.
 func (s *shared) setListeners(ctx context.Context, ls []Listener) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -294,36 +336,35 @@ func (s *shared) open(ctx context.Context, l Listener) (*publicListener, error) 
 	if !ok {
 		return nil, errors.New("unknown transport")
 	}
-	s.nextID++
-	pl := &publicListener{id: s.nextID, key: listenerKey(l), cfg: l, settings: string(l.Settings)}
-	pl.ctx, pl.cancel = context.WithCancel(context.Background())
+	pl := &publicListener{cfg: l, settings: string(l.Settings), routing: make(chan struct{}, s.routingLimit)}
 	pl.setCamouflage(l.Camouflage)
 	cfg := transport.ListenConfig{Address: l.Address, Settings: l.Settings}
 	switch t := t.(type) {
 	case transport.PacketRoutable:
 		pc, err := t.ListenPacket(ctx, cfg)
 		if err != nil {
-			pl.cancel()
 			return nil, err
 		}
-		pl.pc = pc
-		pl.udp, _ = pc.(*net.UDPConn)
+		pl.udp = pc
 		pl.router = t.Router(s.table(l.Transport))
-		pl.wg.Add(1)
-		go s.serveDatagrams(pl)
 	case transport.StreamRoutable:
 		ln, err := t.ListenStream(ctx, cfg)
 		if err != nil {
-			pl.cancel()
 			return nil, err
 		}
 		pl.ln = ln
 		pl.router = t.Router(s.table(l.Transport))
-		pl.wg.Add(1)
-		go s.serveStreams(pl)
 	default:
-		pl.cancel()
 		return nil, errors.New("the transport can't sit behind a shared listener")
+	}
+	s.nextID++
+	pl.id = s.nextID
+	pl.ctx, pl.cancel = context.WithCancel(context.Background())
+	pl.wg.Add(1)
+	if pl.udp != nil {
+		go s.serveDatagrams(pl)
+	} else {
+		go s.serveStreams(pl)
 	}
 	return pl, nil
 }
@@ -339,8 +380,8 @@ func (pl *publicListener) camouflage() transport.Camouflage { return *pl.camo.Lo
 func (pl *publicListener) close() {
 	pl.closing.Do(func() {
 		pl.cancel()
-		if pl.pc != nil {
-			_ = pl.pc.Close()
+		if pl.udp != nil {
+			_ = pl.udp.Close()
 		}
 		if pl.ln != nil {
 			_ = pl.ln.Close()
@@ -352,14 +393,12 @@ func (pl *publicListener) close() {
 func (pl *publicListener) closed() bool { return pl.ctx.Err() != nil }
 
 func (pl *publicListener) info() ListenerInfo {
-	li := ListenerInfo{
+	return ListenerInfo{
 		ID: pl.id, Transport: pl.cfg.Transport, Address: pl.cfg.Address,
-		Routed: pl.routed.Load(), Unauthenticated: pl.unauthenticated.Load(),
+		Routed: pl.routed.Load(), Unauthenticated: pl.unauthenticated.Load(), NoSpace: pl.noSpace.Load(),
+		StreamsOverloaded: pl.streamsOverloaded.Load(),
+		Rejected:          pl.router.Rejected(),
 	}
-	if r, ok := pl.router.(interface{ Rejected() []transport.PeerError }); ok {
-		li.Rejected = r.Rejected()
-	}
-	return li
 }
 
 // ipcListeners is what the workers are told about the listeners.
@@ -424,7 +463,7 @@ func (s *shared) serveDatagrams(pl *publicListener) {
 	buf := make([]byte, maxDatagramRead)
 	var pause time.Duration
 	for {
-		n, from, err := pl.read(buf)
+		n, from, err := pl.udp.ReadFromUDPAddrPort(buf)
 		if err != nil {
 			if pl.closed() || errors.Is(err, net.ErrClosed) {
 				return
@@ -436,41 +475,32 @@ func (s *shared) serveDatagrams(pl *publicListener) {
 		}
 		pause = 0
 		d := buf[:n]
-		peer, ok := pl.router.RouteDatagram(d)
+		peer, verdict := pl.router.RouteDatagram(d)
 		var r *route
-		if ok {
+		if verdict != transport.Unknown {
 			r = (*s.routes.Load())[peer.Space]
 		}
-		if r == nil {
+		switch {
+		case verdict == transport.Unknown:
 			pl.unauthenticated.Add(1)
-			pl.camouflage().Datagram(d, net.UDPAddrFromAddrPort(from))
+		case r == nil:
+			pl.noSpace.Add(1)
+		case verdict == transport.Stale:
+			r.counters.stale.Add(1)
+		case verdict == transport.Replayed:
+			r.counters.replayed.Add(1)
+		case verdict == transport.Routed:
+			pl.routed.Add(1)
+			s.forward(r, pl.id, peer.Node, from, d)
 			continue
 		}
-		pl.routed.Add(1)
-		s.forward(r, pl.id, from, d)
+		pl.camouflage().Datagram(d, net.UDPAddrFromAddrPort(from))
 	}
 }
 
-func (pl *publicListener) read(buf []byte) (int, netip.AddrPort, error) {
-	if pl.udp != nil {
-		n, from, err := pl.udp.ReadFromUDPAddrPort(buf)
-		return n, netip.AddrPortFrom(from.Addr().Unmap(), from.Port()), err
-	}
-	n, addr, err := pl.pc.ReadFrom(buf)
-	if err != nil {
-		return 0, netip.AddrPort{}, err
-	}
-	ua, ok := addr.(*net.UDPAddr)
-	if !ok {
-		return 0, netip.AddrPort{}, fmt.Errorf("supervisor: a %T remote address", addr)
-	}
-	ap := ua.AddrPort()
-	return n, netip.AddrPortFrom(ap.Addr().Unmap(), ap.Port()), nil
-}
-
-// forward hands one authenticated datagram to r's worker, without blocking,
-// and charges r's fair share once the worker's socket took it.
-func (s *shared) forward(r *route, listener uint32, from netip.AddrPort, d []byte) {
+// forward hands one live datagram of link node to r's worker, without
+// blocking, and charges r's fair share once the worker's socket took it.
+func (s *shared) forward(r *route, listener uint32, node transport.NodeID, from netip.AddrPort, d []byte) {
 	ws := r.end.Load()
 	if ws == nil {
 		r.counters.noWorker.Add(1)
@@ -480,72 +510,137 @@ func (s *shared) forward(r *route, listener uint32, from netip.AddrPort, d []byt
 		r.counters.overShare.Add(1)
 		return
 	}
-	if err := ws.data.TrySendDatagram(ipc.DatagramHeader{Listener: listener, Remote: from}, d); err != nil {
-		// ErrFull, or the worker is going away.
-		r.counters.workerFull.Add(1)
+	key := keyOf(listener, from)
+	if err := ws.data.TrySendDatagram(ipc.DatagramHeader{Listener: listener, Remote: key.addr}, d); err != nil {
+		if errors.Is(err, ipc.ErrFull) {
+			r.counters.workerFull.Add(1)
+		} else {
+			r.counters.noWorker.Add(1) // its socket is going away
+		}
 		return
 	}
 	r.counters.forwarded.Add(1)
 	r.counters.forwardedBytes.Add(uint64(len(d)))
-	r.remember(replyPeer{listener, from}, s.now())
+	r.remember(node, key, from, s.now())
 	if s.fair != nil {
 		s.fair.Charge(r.space, len(d))
 	}
 }
 
-// remember makes p a valid destination for the space's replies for
-// replyWindow.
-func (r *route) remember(p replyPeer, now time.Time) {
+// remember makes the remote end of a live datagram of link node a
+// destination for the space's replies for replyWindow. The link keeps its
+// latest replyPeersPerLink remote ends; a new one evicts the link's oldest.
+func (r *route) remember(node transport.NodeID, key replyKey, to netip.AddrPort, now time.Time) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if _, ok := r.peers[p]; !ok && len(r.peers) >= maxReplyPeers {
-		for k, at := range r.peers {
-			if now.Sub(at) > replyWindow {
-				delete(r.peers, k)
+	r.sweep(now)
+	lr := r.links[node]
+	if lr == nil {
+		lr = &linkRemotes{}
+		r.links[node] = lr
+	}
+	if rm := r.remotes[key]; rm != nil {
+		for i := range lr.n {
+			if lr.entries[i].key == key {
+				lr.entries[i].at = now
+				rm.at, rm.to = now, to
+				return
 			}
 		}
-		if len(r.peers) >= maxReplyPeers {
-			return
-		}
 	}
-	r.peers[p] = now
+	if lr.n == replyPeersPerLink {
+		oldest := 0
+		for i := 1; i < lr.n; i++ {
+			if lr.entries[i].at.Before(lr.entries[oldest].at) {
+				oldest = i
+			}
+		}
+		r.release(lr.entries[oldest].key)
+		lr.n--
+		lr.entries[oldest] = lr.entries[lr.n]
+		r.counters.replyPeersEvicted.Add(1)
+	}
+	lr.entries[lr.n].key, lr.entries[lr.n].at = key, now
+	lr.n++
+	rm := r.remotes[key]
+	if rm == nil {
+		rm = &remote{}
+		r.remotes[key] = rm
+	}
+	rm.holders++
+	rm.at, rm.to = now, to
 }
 
-func (r *route) mayReplyTo(p replyPeer, now time.Time) bool {
+// release drops one link's hold on a remote end; r.mu held.
+func (r *route) release(key replyKey) {
+	if rm := r.remotes[key]; rm != nil {
+		if rm.holders--; rm.holders <= 0 {
+			delete(r.remotes, key)
+		}
+	}
+}
+
+// sweep drops expired remote ends, at most once per replySweep; r.mu held.
+func (r *route) sweep(now time.Time) {
+	if now.Sub(r.swept) < replySweep {
+		return
+	}
+	r.swept = now
+	for node, lr := range r.links {
+		for i := 0; i < lr.n; {
+			if now.Sub(lr.entries[i].at) <= replyWindow {
+				i++
+				continue
+			}
+			r.release(lr.entries[i].key)
+			lr.n--
+			lr.entries[i] = lr.entries[lr.n]
+		}
+		if lr.n == 0 {
+			delete(r.links, node)
+		}
+	}
+}
+
+// replyTo is where a reply to key goes, if the worker may send one.
+func (r *route) replyTo(key replyKey, now time.Time) (netip.AddrPort, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	at, ok := r.peers[p]
-	if ok && now.Sub(at) > replyWindow {
-		delete(r.peers, p)
-		return false
+	rm := r.remotes[key]
+	if rm == nil || now.Sub(rm.at) > replyWindow {
+		return netip.AddrPort{}, false
 	}
-	return ok
+	return rm.to, true
 }
 
 // reply sends a datagram a space's worker wrote out through the public
 // socket it names. A worker may only answer: the destination must be a
-// remote end one of its space's authenticated datagrams came from, through
-// that listener, within replyWindow. So a worker can't use the node's
-// public address to reach anyone else, whatever egress its space has.
+// remote end one of its own links' live (authenticated, fresh, not
+// replayed) datagrams came from, through that listener, within
+// replyWindow. So a worker can't use the node's public address to reach
+// anyone else, whatever egress its space has.
 func (s *shared) reply(space transport.SpaceID, h ipc.DatagramHeader, d []byte) {
 	r := (*s.routes.Load())[space]
 	if r == nil {
 		return
 	}
 	pl := (*s.byID.Load())[h.Listener]
-	if pl == nil || pl.pc == nil || !r.mayReplyTo(replyPeer{h.Listener, h.Remote}, s.now()) ||
-		(s.fair != nil && !s.fair.Allow(space, len(d))) {
-		r.counters.repliesRefused.Add(1)
+	if pl == nil || pl.udp == nil {
+		r.counters.repliesNoListener.Add(1)
 		return
 	}
-	var err error
-	if pl.udp != nil {
-		_, err = pl.udp.WriteToUDPAddrPort(d, h.Remote)
-	} else {
-		_, err = pl.pc.WriteTo(d, net.UDPAddrFromAddrPort(h.Remote))
+	to, ok := r.replyTo(keyOf(h.Listener, h.Remote), s.now())
+	if !ok {
+		r.counters.repliesNotAllowed.Add(1)
+		return
 	}
-	if err != nil {
-		return // lost, as a datagram may be
+	if s.fair != nil && !s.fair.Allow(space, len(d)) {
+		r.counters.repliesOverShare.Add(1)
+		return
+	}
+	if _, err := pl.udp.WriteToUDPAddrPort(d, to); err != nil {
+		r.counters.replyErrors.Add(1)
+		return
 	}
 	r.counters.replies.Add(1)
 	r.counters.replyBytes.Add(uint64(len(d)))
@@ -555,8 +650,8 @@ func (s *shared) reply(space transport.SpaceID, h ipc.DatagramHeader, d []byte) 
 }
 
 // serveStreams accepts connections on a public stream listener until it
-// closes; each is routed on its own goroutine, so a slow one holds up no
-// other.
+// closes; each is routed on its own goroutine, at most maxRoutingStreams at
+// once, so a slow one holds up no other.
 func (s *shared) serveStreams(pl *publicListener) {
 	defer pl.wg.Done()
 	var pause time.Duration
@@ -571,9 +666,17 @@ func (s *shared) serveStreams(pl *publicListener) {
 			continue
 		}
 		pause = 0
+		select {
+		case pl.routing <- struct{}{}:
+		default:
+			pl.streamsOverloaded.Add(1)
+			pl.camouflage().Stream(conn, nil)
+			continue
+		}
 		pl.wg.Add(1)
 		go func() {
 			defer pl.wg.Done()
+			defer func() { <-pl.routing }()
 			s.routeStream(pl, conn)
 		}()
 	}
@@ -592,8 +695,13 @@ func (s *shared) routeStream(pl *publicListener, conn net.Conn) {
 	if ok {
 		r = (*s.routes.Load())[peer.Space]
 	}
-	if r == nil {
+	switch {
+	case !ok:
 		pl.unauthenticated.Add(1)
+	case r == nil:
+		pl.noSpace.Add(1)
+	}
+	if r == nil {
 		pl.camouflage().Stream(conn, consumed)
 		return
 	}
@@ -601,17 +709,18 @@ func (s *shared) routeStream(pl *publicListener, conn net.Conn) {
 	defer func() { _ = conn.Close() }() // the worker has its own descriptor
 	ws := r.end.Load()
 	if ws == nil {
-		r.counters.noWorker.Add(1)
+		r.counters.streamsRefused.Add(1)
 		return
 	}
 	f, err := fileOf(conn)
 	if err != nil {
+		r.counters.streamsRefused.Add(1)
 		s.log.Warn("handing over a connection", "err", err)
 		return
 	}
 	defer func() { _ = f.Close() }()
 	if err := ws.control.TrySend(ipc.StreamMessage(pl.id, f, consumed)); err != nil {
-		r.counters.workerFull.Add(1)
+		r.counters.streamsRefused.Add(1)
 		return
 	}
 	r.counters.streams.Add(1)

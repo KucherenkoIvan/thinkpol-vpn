@@ -57,3 +57,16 @@ func peerLink(in netmap.InboundLink, reg *transport.Registry, space transport.Sp
 	}
 	return pl, 0, nil
 }
+
+// AcceptedInbound is the one source of every inbound table: what a node's
+// listeners accept, per transport, for space. The engine serves it, and a
+// server's supervisor authenticates its shared listeners against each
+// space's AcceptedInbound, so the two can't disagree. It is InboundFrom
+// less the links too small for the overlay over linkMTU (OverlayMTU's
+// rule; 0 means DefaultLinkMTU). Node settings that restrict who may
+// connect (TP-013's ingress) belong here too.
+func AcceptedInbound(s netmap.Section, reg *transport.Registry, space transport.SpaceID, linkMTU int) InboundConfig {
+	in := InboundFrom(s, reg, space)
+	OverlayMTU(&PathConfig{}, &in, reg, linkMTU)
+	return in
+}

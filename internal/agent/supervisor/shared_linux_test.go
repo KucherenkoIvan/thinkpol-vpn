@@ -47,7 +47,10 @@ type sharedConfig struct {
 func sharedServe(ctx context.Context, s worker.Session) error {
 	say := func(format string, args ...any) { fmt.Fprintf(os.Stderr, "probe "+format+"\n", args...) }
 	peers := transport.NewPeerTable()
-	tr := udp.New(udp.Options{})
+	reg, err := transport.NewRegistry(udp.New(udp.Options{}))
+	if err != nil {
+		return err
+	}
 	var bulk atomic.Uint64
 	var listeners []*udp.Listener
 	serving := map[uint32]bool{}
@@ -75,11 +78,17 @@ func sharedServe(ctx context.Context, s worker.Session) error {
 					continue
 				}
 				serving[l.ID] = true
-				ul := tr.ListenForwarded(l.Packets, transport.ListenConfig{Peers: peers}).(*udp.Listener)
+				tl, err := l.Listen(reg, transport.ListenConfig{Peers: peers})
+				if err != nil {
+					return err
+				}
+				ul := tl.(*udp.Listener)
 				listeners = append(listeners, ul)
 				go acceptLinks(ctx, ul, say, &bulk)
 			}
 			say("listeners %d", len(serving))
+		case c := <-s.SharedCounters:
+			say("shared forwarded=%d replies=%d replayed=%d", c.Forwarded, c.Replies, c.Replayed)
 		case <-tick.C:
 			var c udp.Counters
 			for _, l := range listeners {
@@ -90,6 +99,7 @@ func sharedServe(ctx context.Context, s worker.Session) error {
 			}
 			say("counters delivered=%d unauthenticated=%d replayed=%d", c.Delivered, c.Unauthenticated, c.Replayed)
 			say("bytes %d at %d", bulk.Load(), time.Now().UnixNano())
+			say("drops %+v", s.SharedDrops())
 		}
 	}
 }
@@ -177,6 +187,7 @@ func sharedOptions() supervisor.Options {
 	o := options([]string{envShared + "=1"})
 	reg, _ := transport.NewRegistry(udp.New(udp.Options{}))
 	o.Transports = reg
+	o.CountersInterval = 200 * time.Millisecond
 	return o
 }
 
@@ -329,8 +340,16 @@ func TestTwoSpacesShareAListener(t *testing.T) {
 			}
 			return nil
 		})
+		// The worker gets its space's counters for its telemetry.
+		eventually(t, 5*time.Second, "the counters at the worker", func() error {
+			want := fmt.Sprintf("shared forwarded=%d replies=%d replayed=0", len(sp.Dialers), len(sp.Dialers))
+			if got := lastLine(s, sp.ID, "shared "); got != want {
+				return fmt.Errorf("%q, want %q", got, want)
+			}
+			return nil
+		})
 		w, _ := info(s, sp.ID)
-		if w.Shared.Forwarded != uint64(len(sp.Dialers)) || w.Shared.Replies != uint64(len(sp.Dialers)) || w.Shared.RepliesRefused != 0 {
+		if w.Shared.Forwarded != uint64(len(sp.Dialers)) || w.Shared.Replies != uint64(len(sp.Dialers)) || w.Shared.RepliesNotAllowed != 0 {
 			t.Errorf("space %s: %+v", sp.ID, w.Shared)
 		}
 	}
@@ -404,6 +423,14 @@ func runSharedSupervisor() int {
 				fmt.Println(sp.ID.String(), l)
 			}
 		}
+		for _, w := range s.Workers() {
+			if b, err := json.Marshal(w.Shared); err == nil {
+				fmt.Printf("%s counters %s\n", w.Space, b)
+			}
+		}
+		for _, l := range s.Listeners() {
+			fmt.Printf("listener routed=%d unauthenticated=%d\n", l.Routed, l.Unauthenticated)
+		}
 	}
 }
 
@@ -454,6 +481,8 @@ func TestSharedListenerThroughput(t *testing.T) {
 	var mu sync.Mutex
 	var lastBytes uint64
 	var lastAt int64
+	var counters supervisor.SharedCounters
+	var routed uint64
 	ready := make(chan []string, 1)
 	finished := make(chan []string, 1)
 	go func() {
@@ -470,6 +499,20 @@ func TestSharedListenerThroughput(t *testing.T) {
 				if _, err := fmt.Sscanf(strings.TrimPrefix(line, busy.ID.String()+" "), "bytes %d at %d", &n, &at); err == nil {
 					mu.Lock()
 					lastBytes, lastAt = n, at
+					mu.Unlock()
+				}
+			case strings.HasPrefix(line, busy.ID.String()+" counters "):
+				var c supervisor.SharedCounters
+				if json.Unmarshal([]byte(strings.TrimPrefix(line, busy.ID.String()+" counters ")), &c) == nil {
+					mu.Lock()
+					counters = c
+					mu.Unlock()
+				}
+			case strings.HasPrefix(line, "listener routed="):
+				var r, u uint64
+				if _, err := fmt.Sscanf(line, "listener routed=%d unauthenticated=%d", &r, &u); err == nil {
+					mu.Lock()
+					routed = r
 					mu.Unlock()
 				}
 			case strings.Contains(line, " shared "):
@@ -513,6 +556,36 @@ func TestSharedListenerThroughput(t *testing.T) {
 		p := make([]byte, size)
 		copy(p, prefix)
 		return p
+	}
+	snapshot := func() (supervisor.SharedCounters, uint64) {
+		time.Sleep(300 * time.Millisecond) // the next report
+		mu.Lock()
+		defer mu.Unlock()
+		return counters, routed
+	}
+
+	// Paced: 100 Mbit/s in 1 ms bursts for 4 s, a realistic load at twice
+	// the target, which should lose (almost) nothing.
+	const rate = 100e6 / 8 / size // packets per second
+	c0, r0 := snapshot()
+	var paced uint64
+	tick := time.NewTicker(time.Millisecond)
+	for begin := time.Now(); time.Since(begin) < 4*time.Second; {
+		<-tick.C
+		for due := uint64(time.Since(begin).Seconds() * rate); paced < due; paced++ {
+			if err := link.WritePacket(packet("bulk")); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	tick.Stop()
+	c1, r1 := snapshot()
+	forwarded := c1.Forwarded - c0.Forwarded
+	loss := 1 - float64(forwarded)/float64(paced)
+	t.Logf("paced 100 Mbit/s: %d sent, %d routed, %d forwarded to the worker (%d worker full): loss %.3f%%",
+		paced, r1-r0, forwarded, c1.WorkerFull-c0.WorkerFull, 100*loss)
+	if loss >= 0.005 {
+		t.Errorf("lost %.3f%% at 100 Mbit/s, want under 0.5%%", 100*loss)
 	}
 	// One-way: the worker counts what it gets.
 	bulk := packet("bulk")

@@ -59,17 +59,19 @@ func Run(ctx context.Context, space netmap.SpaceID, serve Serve) error {
 	defer cancel(nil)
 	shared := newSharedListeners(data)
 	defer shared.update(nil) // every listener done
-	ch := channels{config: make(chan []byte, 1), listeners: make(chan []SharedListener, 1)}
+	ch := channels{config: make(chan []byte, 1), listeners: make(chan []SharedListener, 1), counters: make(chan ipc.SharedCounters, 1)}
 	go readControl(control, shared, ch, cancel)
 	go readData(data, shared, cancel)
 
 	err = serve(ctx, Session{
-		Space:     space,
-		Interface: init.Interface,
-		Addrs:     init.Addrs,
-		Gateways:  init.Gateways,
-		Config:    ch.config,
-		Listeners: ch.listeners,
+		Space:          space,
+		Interface:      init.Interface,
+		Addrs:          init.Addrs,
+		Gateways:       init.Gateways,
+		Config:         ch.config,
+		Listeners:      ch.listeners,
+		SharedDrops:    shared.drops,
+		SharedCounters: ch.counters,
 	})
 	switch cause := context.Cause(ctx); {
 	case errors.Is(cause, errStopped):
@@ -99,6 +101,7 @@ func connFromFD(fd int, name string) (*ipc.Conn, error) {
 type channels struct {
 	config    chan []byte
 	listeners chan []SharedListener
+	counters  chan ipc.SharedCounters
 }
 
 // latest replaces a pending value the serve loop hasn't taken; only the
@@ -168,6 +171,13 @@ func readControl(control *ipc.Conn, shared *sharedListeners, ch channels, cancel
 				return
 			}
 			latest(ch.listeners, shared.update(ls))
+		case ipc.KindCounters:
+			c, err := ipc.DecodeCounters(m)
+			if err != nil {
+				cancel(fmt.Errorf("worker: %w", err))
+				return
+			}
+			latest(ch.counters, c)
 		case ipc.KindStream:
 			id, f, consumed, err := ipc.DecodeStream(m)
 			if err != nil {

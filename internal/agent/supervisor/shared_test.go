@@ -5,10 +5,13 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net"
 	"net/netip"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -168,7 +171,7 @@ func listenUDP(t *testing.T, s *shared, camo transport.Camouflage) string {
 		t.Fatal(err)
 	}
 	for _, pl := range *s.byID.Load() {
-		return pl.pc.LocalAddr().String()
+		return pl.udp.LocalAddr().String()
 	}
 	t.Fatal("no listener")
 	return ""
@@ -183,7 +186,10 @@ func randomSpace() transport.SpaceID {
 // serve runs a worker's udp listener on w for space's links.
 func serve(t *testing.T, w *fakeWorker, links ...transport.PeerLink) transport.Listener {
 	t.Helper()
-	l := udp.New(udp.Options{}).ListenForwarded(w, transport.ListenConfig{Peers: transport.NewPeerTable(links...)})
+	l, err := udp.New(udp.Options{}).ListenForwarded(w, transport.ListenConfig{Peers: transport.NewPeerTable(links...)})
+	if err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() { _ = l.Close() })
 	return l
 }
@@ -311,7 +317,7 @@ func TestWorkersGetOnlyTheirOwnLinks(t *testing.T) {
 		if got := w.got.Load(); got != 1 {
 			t.Errorf("worker of %s was forwarded %d datagrams, want 1", space, got)
 		}
-		if c := s.counters(space); c.Forwarded != 1 || c.Replies != 1 || c.RepliesRefused != 0 {
+		if c := s.counters(space); c.Forwarded != 1 || c.Replies != 1 || c.RepliesNotAllowed != 0 {
 			t.Errorf("space %s: %+v", space, c)
 		}
 	}
@@ -509,9 +515,10 @@ func TestFairShareChargedAfterTheWorkerAccepts(t *testing.T) {
 	}
 }
 
-// A worker may only answer: a datagram to anyone its space's authenticated
-// datagrams didn't come from, or through a listener it wasn't forwarded
-// from, never leaves the public socket.
+// A worker may only answer: a datagram to anyone its own links' live
+// datagrams didn't come from (a stranger, another space's dialer), or
+// through a listener that isn't there, never leaves the public socket; a
+// reply to its own dialer does.
 func TestWorkersOnlyAnswer(t *testing.T) {
 	s := newTestShared(t, nil)
 	address := listenUDP(t, s, nil)
@@ -521,41 +528,303 @@ func TestWorkersOnlyAnswer(t *testing.T) {
 	w := newFakeWorker(s, space)
 	s.attach(space, w.sockets())
 	s.attach(other, newFakeWorker(s, other).sockets())
-	l := serve(t, w, p.PeerLink)
 
 	victim, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = victim.Close() }()
-	// The other space's dialer: authenticated, but not this space's.
 	if err := dial(t, address, q).WritePacket([]byte("other")); err != nil {
 		t.Fatal(err)
 	}
-	if err := dial(t, address, p).WritePacket([]byte("mine")); err != nil {
+	mine := dial(t, address, p)
+	if err := mine.WritePacket([]byte("mine")); err != nil {
 		t.Fatal(err)
 	}
-	accept(t, l)
-	eventually(t, "the other space's datagram", func() bool { return s.counters(other).Forwarded == 1 })
-	listener := s.ipcListeners()[0].ID
-	to := netip.MustParseAddrPort(victim.LocalAddr().String())
-	var otherDialer netip.AddrPort
-	for peer := range (*s.routes.Load())[other].peers {
-		otherDialer = peer.remote
+	var fromMine, fromOther ipc.DatagramHeader
+	select {
+	case f := <-w.in:
+		fromMine = f.h
+	case <-time.After(wait):
+		t.Fatal("nothing forwarded")
 	}
+	eventually(t, "the other space's datagram", func() bool { return s.counters(other).Forwarded == 1 })
+	for key := range (*s.routes.Load())[other].remotesForTest() {
+		fromOther = ipc.DatagramHeader{Listener: key.listener, Remote: key.addr}
+	}
+	if !fromOther.Remote.IsValid() || fromOther.Remote == fromMine.Remote {
+		t.Fatalf("the other dialer's address %v, mine %v", fromOther.Remote, fromMine.Remote)
+	}
+	to := netip.MustParseAddrPort(victim.LocalAddr().String())
 	for _, h := range []ipc.DatagramHeader{
-		{Listener: listener, Remote: to},              // a stranger
-		{Listener: listener, Remote: otherDialer},     // another space's peer
-		{Listener: listener + 1, Remote: otherDialer}, // a listener that doesn't exist
+		{Listener: fromMine.Listener, Remote: to},               // a stranger
+		{Listener: fromMine.Listener, Remote: fromOther.Remote}, // another space's peer
 	} {
 		s.reply(space, h, []byte("spam"))
 	}
-	if got := s.counters(space).RepliesRefused; got != 3 {
-		t.Fatalf("%d replies refused, want 3", got)
+	s.reply(space, ipc.DatagramHeader{Listener: fromMine.Listener + 1, Remote: fromMine.Remote}, []byte("spam"))
+	c := s.counters(space)
+	if c.RepliesNotAllowed != 2 || c.RepliesNoListener != 1 || c.Replies != 0 {
+		t.Fatalf("counters %+v, want 2 not allowed and 1 without a listener", c)
 	}
 	_ = victim.SetReadDeadline(time.Now().Add(quiet))
 	if _, _, err := victim.ReadFrom(make([]byte, 64)); err == nil {
 		t.Fatal("a worker reached someone who never wrote to it")
+	}
+	// The same call, to its own dialer, goes out (named IPv4-mapped, too).
+	mapped := netip.AddrPortFrom(netip.AddrFrom16(fromMine.Remote.Addr().As16()), fromMine.Remote.Port())
+	s.reply(space, ipc.DatagramHeader{Listener: fromMine.Listener, Remote: mapped}, []byte("not a valid datagram"))
+	if c := s.counters(space); c.Replies != 1 {
+		t.Fatalf("a reply to the worker's own dialer: %+v", c)
+	}
+}
+
+// A replay of a link's genuine datagram, from anywhere, is dropped before
+// it reaches the worker, costs its space nothing and gives the worker no
+// new address to send to.
+func TestReplaysCostNothing(t *testing.T) {
+	m := &meter{allow: true, charged: map[transport.SpaceID]int{}}
+	s := newTestShared(t, m)
+	address := listenUDP(t, s, nil)
+	space := randomSpace()
+	p := transporttest.SymmetricPeer()
+	s.setSpaces(map[transport.SpaceID]map[string][]transport.PeerLink{space: {udp.Name: {p.PeerLink}}})
+	w := newFakeWorker(s, space)
+	s.attach(space, w.sockets())
+
+	// A passive tap's copy of a genuine datagram.
+	capture, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = capture.Close() }()
+	if err := dial(t, capture.LocalAddr().String(), p).WritePacket(make([]byte, 1000)); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 2048)
+	_ = capture.SetReadDeadline(time.Now().Add(wait))
+	n, _, err := capture.ReadFrom(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	genuine := buf[:n]
+	var senders []net.Conn
+	for range 3 {
+		c, err := net.Dial("udp", address)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = c.Close() }()
+		if _, err := c.Write(genuine); err != nil {
+			t.Fatal(err)
+		}
+		senders = append(senders, c)
+		time.Sleep(20 * time.Millisecond)
+	}
+	eventually(t, "the replays counted", func() bool { return s.counters(space).Replayed == 2 })
+	if w.got.Load() != 1 || m.of(space) != n {
+		t.Fatalf("forwarded %d, charged %d: want the first only", w.got.Load(), m.of(space))
+	}
+	if remotes := (*s.routes.Load())[space].remotesForTest(); len(remotes) != 1 {
+		t.Fatalf("remembered %v, want the first sender only", remotes)
+	}
+	listener := s.ipcListeners()[0].ID
+	for _, c := range senders[1:] {
+		s.reply(space, ipc.DatagramHeader{Listener: listener, Remote: netip.MustParseAddrPort(c.LocalAddr().String())}, []byte("x"))
+	}
+	if c := s.counters(space); c.RepliesNotAllowed != 2 {
+		t.Fatalf("replies to the replayers: %+v", c)
+	}
+}
+
+// remotesForTest lists the remote ends the space may answer.
+func (r *route) remotesForTest() map[replyKey]netip.AddrPort {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := map[replyKey]netip.AddrPort{}
+	for k, rm := range r.remotes {
+		out[k] = rm.to
+	}
+	return out
+}
+
+// A link keeps its latest few remote ends; more evict its own oldest,
+// never another link's; ends expire with the window.
+func TestReplyPeersPerLink(t *testing.T) {
+	r := &route{links: map[transport.NodeID]*linkRemotes{}, remotes: map[replyKey]*remote{}}
+	at := time.Unix(1_000_000, 0)
+	addr := func(i int) netip.AddrPort {
+		return netip.AddrPortFrom(netip.AddrFrom4([4]byte{192, 0, 2, byte(i)}), uint16(1000+i))
+	}
+	quietLink, busyLink := transport.NodeID{1}, transport.NodeID{2}
+	r.remember(quietLink, keyOf(1, addr(0)), addr(0), at)
+	for i := 1; i <= 100; i++ {
+		r.remember(busyLink, keyOf(1, addr(i)), addr(i), at.Add(time.Duration(i)*time.Millisecond))
+	}
+	now := at.Add(time.Second)
+	if _, ok := r.replyTo(keyOf(1, addr(0)), now); !ok {
+		t.Fatal("a busy link displaced another link's remote end")
+	}
+	for i := 1; i <= 100; i++ {
+		if _, ok := r.replyTo(keyOf(1, addr(i)), now); ok != (i > 100-replyPeersPerLink) {
+			t.Fatalf("remote %d: allowed %v", i, ok)
+		}
+	}
+	if got := r.counters.replyPeersEvicted.Load(); got != 100-replyPeersPerLink {
+		t.Fatalf("%d evictions counted, want %d", got, 100-replyPeersPerLink)
+	}
+	// Held by both links: kept until both let go.
+	r.remember(quietLink, keyOf(1, addr(100)), addr(100), now)
+	for i := 200; i < 200+replyPeersPerLink; i++ {
+		r.remember(busyLink, keyOf(1, addr(i)), addr(i), now)
+	}
+	if _, ok := r.replyTo(keyOf(1, addr(100)), now); !ok {
+		t.Fatal("a remote end two links hold went with one of them")
+	}
+	// Expiry: refreshed ends stay, the rest go once the window passes.
+	later := now.Add(replyWindow + replySweep)
+	r.remember(quietLink, keyOf(1, addr(0)), addr(0), later)
+	if _, ok := r.replyTo(keyOf(1, addr(0)), later); !ok {
+		t.Fatal("a refreshed end expired")
+	}
+	if _, ok := r.replyTo(keyOf(1, addr(200)), later); ok {
+		t.Fatal("an end past the window still allowed")
+	}
+	if len(r.links[busyLink].entriesForTest()) != 0 || len(r.remotes) != 1 {
+		t.Fatalf("after the sweep: %d remote ends left, want 1", len(r.remotes))
+	}
+	// A link-local remote's zone is kept for the reply.
+	zoned := netip.MustParseAddrPort("[fe80::1%eth0]:51820")
+	r.remember(quietLink, keyOf(1, zoned), zoned, later)
+	if to, ok := r.replyTo(keyOf(1, netip.MustParseAddrPort("[fe80::1]:51820")), later); !ok || to != zoned {
+		t.Fatalf("a reply to a zoned remote goes to %v (%v)", to, ok)
+	}
+}
+
+func (lr *linkRemotes) entriesForTest() []replyKey {
+	if lr == nil {
+		return nil
+	}
+	var out []replyKey
+	for i := range lr.n {
+		out = append(out, lr.entries[i].key)
+	}
+	return out
+}
+
+// One space's link churning through new source addresses as fast as it can
+// (each a fresh, authenticated sender) doesn't hold up another space's
+// traffic on the same socket; the churn stays within its own link's cap.
+func TestASourceFloodStallsNoOtherSpace(t *testing.T) {
+	s := newTestShared(t, nil)
+	address := listenUDP(t, s, nil)
+	noisy, calm := randomSpace(), randomSpace()
+	pn, pc := transporttest.SymmetricPeer(), transporttest.SymmetricPeer()
+	s.setSpaces(map[transport.SpaceID]map[string][]transport.PeerLink{noisy: {udp.Name: {pn.PeerLink}}, calm: {udp.Name: {pc.PeerLink}}})
+	wn, wc := newFakeWorker(s, noisy), newFakeWorker(s, calm)
+	s.attach(noisy, wn.sockets())
+	s.attach(calm, wc.sockets())
+	go func() { // the noisy worker drains, so its socket never fills
+		for {
+			select {
+			case <-wn.in:
+			case <-wn.done:
+				return
+			}
+		}
+	}()
+	defer func() { _ = wn.Close() }()
+	l := serve(t, wc, pc.PeerLink)
+	d := dial(t, address, pc)
+	_ = d.WritePacket([]byte("ping"))
+	link, _ := accept(t, l)
+	read(t, link)
+
+	stop := make(chan struct{})
+	var sources atomic.Int64
+	var wg sync.WaitGroup
+	for range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			tr := udp.New(udp.Options{})
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				l, err := tr.Dial(context.Background(), address, transport.DialConfig{Credential: pn.Credential})
+				if err != nil {
+					continue
+				}
+				_ = l.WritePacket([]byte("new source"))
+				_ = l.Close()
+				sources.Add(1)
+			}
+		}()
+	}
+	// Ping-pong: the worker answers every ping it gets. Datagrams lost to
+	// the flood (the shared socket's buffer overflowing is the network's
+	// business, not the reply table's) are sent again after 50 ms.
+	go func() {
+		buf := make([]byte, 64)
+		for {
+			n, err := link.ReadPacket(buf)
+			if err != nil {
+				return
+			}
+			_ = link.WritePacket(buf[:n])
+		}
+	}()
+	pongs := make(chan string, 16)
+	go func() {
+		buf := make([]byte, 64)
+		for {
+			n, err := d.ReadPacket(buf)
+			if err != nil {
+				return
+			}
+			pongs <- string(buf[:n])
+		}
+	}()
+	var rtts []time.Duration
+	lost := 0
+	for i, begin := 0, time.Now(); time.Since(begin) < 2*time.Second; i++ {
+		ping := fmt.Sprintf("ping %d", i)
+		start := time.Now()
+		for got := ""; got != ping; {
+			if time.Since(start) > wait {
+				t.Fatalf("%s never came back", ping)
+			}
+			if err := d.WritePacket([]byte(ping)); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case got = <-pongs:
+			case <-time.After(50 * time.Millisecond):
+				lost++
+			}
+		}
+		rtts = append(rtts, time.Since(start))
+	}
+	close(stop)
+	wg.Wait()
+	slices.Sort(rtts)
+	c := s.counters(noisy)
+	p99 := rtts[len(rtts)*99/100]
+	t.Logf("calm space round trips during a flood of %d new sources: median %v, p99 %v, max %v, %d of %d resent; the noisy link evicted %d of its own",
+		sources.Load(), rtts[len(rtts)/2], p99, rtts[len(rtts)-1], lost, len(rtts), c.ReplyPeersEvicted)
+	if n := len((*s.routes.Load())[noisy].remotesForTest()); n > replyPeersPerLink {
+		t.Fatalf("the noisy link holds %d remote ends", n)
+	}
+	if sources.Load() > 2*replyPeersPerLink && c.ReplyPeersEvicted == 0 {
+		t.Fatal("no eviction counted")
+	}
+	// Every ping came back (or the loop failed); a stall would show in the
+	// median, not only in the resent tail.
+	if median := rtts[len(rtts)/2]; median > 10*time.Millisecond {
+		t.Fatalf("the calm space's median round trip was %v", median)
 	}
 }
 
@@ -669,23 +938,29 @@ func TestConformanceBehindTheSupervisor(t *testing.T) {
 			w := newFakeWorker(s, transport.SpaceID{})
 			// The suite's peers each have a space of their own; the one
 			// worker serves them all, and follows the table's changes.
+			prev := map[transport.SpaceID]map[string][]transport.PeerLink{}
 			follow := func(links []transport.PeerLink) {
 				bySpace := map[transport.SpaceID]map[string][]transport.PeerLink{}
-				routesOnly := map[transport.SpaceID]map[string][]transport.PeerLink{}
 				for _, pl := range links {
 					if bySpace[pl.Peer.Space] == nil {
 						bySpace[pl.Peer.Space] = map[string][]transport.PeerLink{}
-						routesOnly[pl.Peer.Space] = nil
 					}
 					bySpace[pl.Peer.Space][udp.Name] = append(bySpace[pl.Peer.Space][udp.Name], pl)
 				}
 				// As the supervisor does: a new space's worker is attached
-				// before its links authenticate.
-				s.setSpaces(routesOnly)
-				for space := range routesOnly {
+				// before its links authenticate; the others keep theirs.
+				first := maps.Clone(prev)
+				for space := range bySpace {
+					if _, ok := first[space]; !ok {
+						first[space] = nil
+					}
+				}
+				s.setSpaces(first)
+				for space := range bySpace {
 					s.attach(space, w.socketsOf(space))
 				}
 				s.setSpaces(bySpace)
+				prev = bySpace
 			}
 			links, changed := peers.Snapshot()
 			follow(links)
@@ -700,10 +975,13 @@ func TestConformanceBehindTheSupervisor(t *testing.T) {
 					follow(links)
 				}
 			}()
-			l := tr.ListenForwarded(&closingWorker{fakeWorker: w, s: s}, transport.ListenConfig{Peers: peers, Camouflage: camouflage})
+			l, err := tr.ListenForwarded(&closingWorker{fakeWorker: w, s: s}, transport.ListenConfig{Peers: peers, Camouflage: camouflage})
+			if err != nil {
+				t.Fatal(err)
+			}
 			var public string
 			for _, pl := range *s.byID.Load() {
-				public = pl.pc.LocalAddr().String()
+				public = pl.udp.LocalAddr().String()
 			}
 			return l, transporttest.Endpoint{Address: public}
 		},
@@ -747,9 +1025,11 @@ func (lineTransport) Router(peers transport.Peers) transport.Router { return lin
 
 type lineRouter struct{ peers transport.Peers }
 
-func (lineRouter) RouteDatagram([]byte) (transport.Identity, bool) {
-	return transport.Identity{}, false
+func (lineRouter) RouteDatagram([]byte) (transport.Identity, transport.Verdict) {
+	return transport.Identity{}, transport.Unknown
 }
+
+func (lineRouter) Rejected() []transport.PeerError { return nil }
 
 func (r lineRouter) RouteStream(conn net.Conn) (transport.Identity, []byte, bool) {
 	// Byte by byte: whatever is read is consumed and must be reported.
@@ -862,5 +1142,38 @@ func TestStreamsAreHandedOver(t *testing.T) {
 	case <-wb.streams:
 		t.Fatal("a probe reached a worker")
 	case <-time.After(quiet):
+	}
+}
+
+// A listener routes at most so many connections at once; the rest go
+// straight to the camouflage, counted.
+func TestStreamRoutingIsBounded(t *testing.T) {
+	s := newTestShared(t, nil, lineTransport{})
+	s.routingLimit = 2
+	camo := streamCamouflage{got: make(chan []byte, 4)}
+	if _, err := s.setListeners(context.Background(), []Listener{{Transport: "line", Address: "127.0.0.1:0", Camouflage: camo}}); err != nil {
+		t.Fatal(err)
+	}
+	var address string
+	for _, pl := range *s.byID.Load() {
+		address = pl.ln.Addr().String()
+	}
+	for range 3 { // silent: they hold their routing slots
+		c, err := net.Dial("tcp", address)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = c.Close() }()
+	}
+	select {
+	case got := <-camo.got:
+		if len(got) != 0 {
+			t.Fatalf("an overload went to the camouflage with %q consumed", got)
+		}
+	case <-time.After(wait):
+		t.Fatal("the third connection wasn't turned away")
+	}
+	if li := s.infos(); li[0].StreamsOverloaded != 1 {
+		t.Fatalf("listener %+v", li[0])
 	}
 }

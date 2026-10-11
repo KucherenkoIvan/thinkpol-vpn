@@ -80,6 +80,32 @@ func TestOverlayMTU(t *testing.T) {
 	}
 }
 
+// AcceptedInbound is what a listener accepts, the engine's and the
+// supervisor's alike: the space stamped, and links too small for the
+// overlay left out as the engine leaves them out.
+func TestAcceptedInbound(t *testing.T) {
+	reg := udpRegistry(t)
+	tiny, err := transport.Shaping{Padding: transport.Buckets(400, 8000)}.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret := func(b byte) []byte { return bytes.Repeat([]byte{b}, udp.MinSecretSize) }
+	s := netmap.Section{
+		Node: netmap.NodeSettings{ID: nid(1)},
+		Inbound: []netmap.InboundLink{
+			{Peer: nid(2), Transport: "udp", Credential: secret(2)},
+			{Peer: nid(3), Transport: "udp", Credential: secret(3), Shaping: tiny},
+		},
+	}
+	in := dataplane.AcceptedInbound(s, reg, transport.SpaceID{9}, 0)
+	if len(in.Links["udp"]) != 1 || in.Links["udp"][0].Peer != (transport.Identity{Space: transport.SpaceID{9}, Node: transport.NodeID(nid(2))}) {
+		t.Fatalf("accepted %+v", in.Links)
+	}
+	if len(in.Skipped) != 1 || in.Skipped[0].Reason != dataplane.ReasonMTUTooSmall {
+		t.Fatalf("skipped %v", in.Skipped)
+	}
+}
+
 func overlaySection() netmap.Section {
 	return netmap.Section{Node: netmap.NodeSettings{
 		ID:          nid(1),

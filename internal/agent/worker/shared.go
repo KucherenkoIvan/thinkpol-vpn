@@ -10,25 +10,76 @@ import (
 	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/ipc"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 )
 
 // SharedListener is one of the supervisor's public listeners, as this
 // worker is served by it: the datagrams or connections the supervisor
 // authenticated as this space's.
 type SharedListener struct {
-	ipc.Listener
-	// Packets, for a datagram transport, reads what the supervisor
-	// forwarded and writes replies back out through the public socket; for
-	// the transport's ListenForwarded. It ends when the listener goes or
-	// when it is closed, which is final: serve a listener with one
-	// transport listener for as long as the supervisor has it.
-	Packets net.PacketConn
-	// Streams, for a stream transport, delivers the connections the
-	// supervisor hands over, for the transport's HandoffListener. Never
-	// closed; Done is.
-	Streams <-chan Stream
+	// ID tags what the supervisor forwards; never reused for another
+	// listener.
+	ID uint32
+	// Transport is the transport's name in the map; Stream is set for a
+	// stream transport.
+	Transport string
+	Stream    bool
+	// Address is the public address the supervisor listens on.
+	Address string
 	// Done is closed when the supervisor no longer has the listener.
 	Done <-chan struct{}
+
+	packets *forwardedConn // a datagram transport's
+	streams chan Stream    // a stream transport's
+}
+
+// Listen is the transport's listener for what the supervisor forwards on
+// this listener: the worker's counterpart of Transport.Listen, so the data
+// plane serves it like any other listener (cfg.Address and cfg.Settings
+// are unused). Listen once per listener: the listener ends when the
+// supervisor drops it (Done) and closing it is final.
+func (l SharedListener) Listen(reg *transport.Registry, cfg transport.ListenConfig) (transport.Listener, error) {
+	t, ok := reg.Get(l.Transport)
+	if !ok {
+		return nil, fmt.Errorf("worker: shared listener %d: unknown transport %q", l.ID, l.Transport)
+	}
+	if !l.Stream {
+		pt, ok := t.(transport.PacketRoutable)
+		if !ok {
+			return nil, fmt.Errorf("worker: shared listener %d: %s isn't a datagram transport behind a shared listener", l.ID, l.Transport)
+		}
+		return pt.ListenForwarded(l.packets, cfg)
+	}
+	st, ok := t.(transport.StreamRoutable)
+	if !ok {
+		return nil, fmt.Errorf("worker: shared listener %d: %s isn't a stream transport behind a shared listener", l.ID, l.Transport)
+	}
+	hl, err := st.Handoff(cfg)
+	if err != nil {
+		return nil, err
+	}
+	go func() {
+		for {
+			select {
+			case <-l.Done:
+				_ = hl.Close()
+				return
+			case s := <-l.streams:
+				hl.ServeStream(s.Conn, s.Consumed)
+			}
+		}
+	}()
+	return hl, nil
+}
+
+// SharedDrops are what the worker dropped of what the supervisor forwarded.
+type SharedDrops struct {
+	// QueueFull counts datagrams and connections dropped because the
+	// listener's reader fell behind.
+	QueueFull uint64
+	// UnknownListener counts those for a listener the worker doesn't have
+	// (any more), or of the wrong kind.
+	UnknownListener uint64
 }
 
 // Stream is a connection the supervisor routed to this worker, with the
@@ -56,6 +107,8 @@ type replySender interface {
 // supervisor forwards to it.
 type sharedListeners struct {
 	send replySender
+
+	queueFull, unknownListener atomic.Uint64
 
 	mu   sync.Mutex
 	byID atomic.Pointer[map[uint32]*sharedEntry]
@@ -86,7 +139,7 @@ func (s *sharedListeners) update(ls []ipc.Listener) []SharedListener {
 	for _, l := range ls {
 		e := old[l.ID]
 		if e == nil {
-			e = newSharedEntry(l, s.send)
+			e = newSharedEntry(l, s.send, &s.queueFull)
 		}
 		next[l.ID] = e
 		out = append(out, e.l)
@@ -100,17 +153,21 @@ func (s *sharedListeners) update(ls []ipc.Listener) []SharedListener {
 	return out
 }
 
-func newSharedEntry(l ipc.Listener, send replySender) *sharedEntry {
+func newSharedEntry(l ipc.Listener, send replySender, queueFull *atomic.Uint64) *sharedEntry {
 	e := &sharedEntry{done: make(chan struct{})}
-	e.l = SharedListener{Listener: l, Done: e.done}
+	e.l = SharedListener{ID: l.ID, Transport: l.Transport, Stream: l.Stream, Address: l.Address, Done: e.done}
 	if l.Stream {
 		e.streams = make(chan Stream, streamQueue)
-		e.l.Streams = e.streams
+		e.l.streams = e.streams
 	} else {
-		e.packets = newForwardedConn(l, send, e.done)
-		e.l.Packets = e.packets
+		e.packets = newForwardedConn(l, send, e.done, queueFull)
+		e.l.packets = e.packets
 	}
 	return e
+}
+
+func (s *sharedListeners) drops() SharedDrops {
+	return SharedDrops{QueueFull: s.queueFull.Load(), UnknownListener: s.unknownListener.Load()}
 }
 
 func (e *sharedEntry) close() {
@@ -125,6 +182,8 @@ func (s *sharedListeners) datagram(payload []byte) error {
 	}
 	if e := (*s.byID.Load())[h.Listener]; e != nil && e.packets != nil {
 		e.packets.deliver(h.Remote, d)
+	} else {
+		s.unknownListener.Add(1)
 	}
 	return nil
 }
@@ -134,14 +193,17 @@ func (s *sharedListeners) datagram(payload []byte) error {
 func (s *sharedListeners) stream(listener uint32, conn net.Conn, consumed []byte) {
 	e := (*s.byID.Load())[listener]
 	if e == nil || e.streams == nil {
+		s.unknownListener.Add(1)
 		_ = conn.Close()
 		return
 	}
 	select {
 	case <-e.done:
+		s.unknownListener.Add(1)
 		_ = conn.Close()
 	case e.streams <- Stream{Conn: conn, Consumed: consumed}:
 	default:
+		s.queueFull.Add(1)
 		_ = conn.Close()
 	}
 }
@@ -159,7 +221,7 @@ type forwardedConn struct {
 	closed    chan struct{}
 	closeOnce sync.Once
 	// dropped counts datagrams dropped because the reader fell behind.
-	dropped atomic.Uint64
+	dropped *atomic.Uint64
 }
 
 type forwarded struct {
@@ -169,12 +231,12 @@ type forwarded struct {
 
 var errDeadline = errors.New("worker: a forwarded socket has no deadlines")
 
-func newForwardedConn(l ipc.Listener, send replySender, done <-chan struct{}) *forwardedConn {
+func newForwardedConn(l ipc.Listener, send replySender, done <-chan struct{}, dropped *atomic.Uint64) *forwardedConn {
 	var local net.Addr = &net.UDPAddr{}
 	if ap, err := netip.ParseAddrPort(l.Address); err == nil {
 		local = net.UDPAddrFromAddrPort(ap)
 	}
-	return &forwardedConn{id: l.ID, local: local, send: send, in: make(chan forwarded, forwardedQueue), done: done, closed: make(chan struct{})}
+	return &forwardedConn{id: l.ID, local: local, send: send, in: make(chan forwarded, forwardedQueue), done: done, closed: make(chan struct{}), dropped: dropped}
 }
 
 // deliver queues a datagram; d is the conn's from now on.

@@ -107,7 +107,7 @@ func (t *Transport) Listen(ctx context.Context, cfg transport.ListenConfig) (tra
 
 // ListenPacket implements transport.PacketRoutable: the socket Listen would
 // listen on, for a shared listener to read.
-func (t *Transport) ListenPacket(ctx context.Context, cfg transport.ListenConfig) (net.PacketConn, error) {
+func (t *Transport) ListenPacket(ctx context.Context, cfg transport.ListenConfig) (*net.UDPConn, error) {
 	ap, err := parseEndpoint(cfg.Address)
 	if err != nil {
 		return nil, err
@@ -120,12 +120,12 @@ func (t *Transport) ListenPacket(ctx context.Context, cfg transport.ListenConfig
 	if err != nil {
 		return nil, fmt.Errorf("udp: listen: %w", err)
 	}
-	return pc, nil
+	return pc.(*net.UDPConn), nil
 }
 
 // ListenForwarded implements transport.PacketRoutable with ListenOn.
-func (t *Transport) ListenForwarded(pc net.PacketConn, cfg transport.ListenConfig) transport.Listener {
-	return t.ListenOn(pc, cfg)
+func (t *Transport) ListenForwarded(pc net.PacketConn, cfg transport.ListenConfig) (transport.Listener, error) {
+	return t.ListenOn(pc, cfg), nil
 }
 
 // listenNetwork binds one address family, as the map's listeners mean it:

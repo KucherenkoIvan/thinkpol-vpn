@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -26,7 +27,14 @@ type Conn struct {
 	rmu sync.Mutex
 	buf []byte
 	oob []byte
+
+	wmu sync.Mutex // SendTimeout's deadline
 }
+
+// SocketBuffer is the send and receive buffer of each socket of a pair: room
+// for about a thousand full-size forwarded datagrams, so a burst rides out a
+// worker's scheduling delay instead of being dropped.
+const SocketBuffer = 2 << 20
 
 // pairFor makes a socket pair and returns the supervisor's Conn and the
 // worker's end as a file (for exec.Cmd.ExtraFiles). The caller closes the
@@ -35,6 +43,9 @@ func pairFor() (*Conn, *os.File, error) {
 	fds, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_SEQPACKET|unix.SOCK_CLOEXEC, 0)
 	if err != nil {
 		return nil, nil, fmt.Errorf("ipc: socketpair: %w", err)
+	}
+	for _, fd := range fds {
+		setBuffers(fd, SocketBuffer)
 	}
 	local := os.NewFile(uintptr(fds[0]), "ipc-supervisor")
 	remote := os.NewFile(uintptr(fds[1]), "ipc-worker")
@@ -121,6 +132,28 @@ func (m Message) marshal() ([]byte, []byte, error) {
 		oob = unix.UnixRights(fds...)
 	}
 	return b, oob, nil
+}
+
+// setBuffers sizes a socket's buffers, past the system's maximum where the
+// caller may (CAP_NET_ADMIN); best effort, the kernel's defaults otherwise.
+func setBuffers(fd, size int) {
+	for _, o := range [][2]int{{unix.SO_SNDBUFFORCE, unix.SO_SNDBUF}, {unix.SO_RCVBUFFORCE, unix.SO_RCVBUF}} {
+		if unix.SetsockoptInt(fd, unix.SOL_SOCKET, o[0], size) != nil {
+			_ = unix.SetsockoptInt(fd, unix.SOL_SOCKET, o[1], size)
+		}
+	}
+}
+
+// SendTimeout sends m as one packet, blocking for backpressure for at most
+// d: a peer that stops reading can't hold the sender up for longer.
+func (c *Conn) SendTimeout(m Message, d time.Duration) error {
+	c.wmu.Lock()
+	defer c.wmu.Unlock()
+	if err := c.c.SetWriteDeadline(time.Now().Add(d)); err != nil {
+		return fmt.Errorf("ipc: send %v: %w", m.Kind, err)
+	}
+	defer func() { _ = c.c.SetWriteDeadline(time.Time{}) }()
+	return c.Send(m)
 }
 
 // Send sends m as one packet, blocking for backpressure.

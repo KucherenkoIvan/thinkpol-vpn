@@ -194,6 +194,7 @@ func (s *Supervisor) SetSpaces(spaces []Space) error {
 	var started []*worker
 	for _, sp := range spaces {
 		if w, ok := s.workers[sp.ID]; ok {
+			w.inbound = sp.Inbound
 			w.setConfig(sp.Config) // an existing worker: push the new config
 			continue
 		}
@@ -235,7 +236,13 @@ func (s *Supervisor) rollback(ws []*worker) {
 		delete(s.workers, w.space)
 		delete(s.slots, w.slot)
 	}
+	// The shared listeners stop routing to the spaces rolled back.
+	inbound := make(map[transport.SpaceID]map[string][]transport.PeerLink, len(s.workers))
+	for id, w := range s.workers {
+		inbound[transport.SpaceID(id)] = w.inbound
+	}
 	s.mu.Unlock()
+	s.shared.setSpaces(inbound)
 	for _, w := range ws {
 		close(w.done) // it was never supervised; keep Workers()/Close consistent
 		if w.cg != nil {
@@ -362,6 +369,7 @@ type worker struct {
 	transit transit
 	uid     uint32
 	egress  Egress
+	inbound map[string][]transport.PeerLink // under Supervisor.mu
 	output  *logring.Ring
 	cg      *cgroup // nil when cgroups are unavailable
 	ctx     context.Context
@@ -391,6 +399,7 @@ func (s *Supervisor) newWorker(sp Space, slot int) *worker {
 		transit: s.opts.transit(slot),
 		uid:     s.opts.UIDBase + uint32(slot),
 		egress:  sp.Egress,
+		inbound: sp.Inbound,
 		config:  sp.Config,
 		output:  logring.New(s.opts.OutputBytes),
 		ctx:     ctx,
@@ -605,14 +614,29 @@ func (s *Supervisor) run(w *worker, log *slog.Logger) error {
 	w.mu.Unlock()
 	log.Info("worker ready")
 
+	// A control send that can't finish within StopTimeout means the worker
+	// stopped reading its socket: it is killed (and restarted), so it can't
+	// hold up SetSpaces, SetListeners or Close.
+	stuck := func(what string, err error) error {
+		if !errors.Is(err, os.ErrDeadlineExceeded) {
+			// The worker is gone or going: its exit is the reason.
+			s.awaitExit(p)
+			return p.exit()
+		}
+		_ = ends.Control.Close()
+		p.kill()
+		return fmt.Errorf("sending %s: %w", what, err)
+	}
 	// The listeners and the current config once, then whenever they
 	// change; datagrams and connections from now on.
 	if err := s.sendListeners(ends.Control); err != nil {
-		log.Warn("sending listeners", "err", err)
+		return stuck("listeners", err)
 	}
 	if err := s.sendConfig(ends.Control, w); err != nil {
-		log.Warn("sending config", "err", err)
+		return stuck("config", err)
 	}
+	countersTick := time.NewTicker(s.opts.CountersInterval)
+	defer countersTick.Stop()
 	detach := s.shared.attach(transport.SpaceID(w.space), &workerSockets{data: ends.Data, control: ends.Control})
 	defer detach()
 	dataGone := make(chan error, 1)
@@ -630,7 +654,12 @@ func (s *Supervisor) run(w *worker, log *slog.Logger) error {
 			return fmt.Errorf("data socket: %w", err)
 		case <-w.listenersChanged:
 			if err := s.sendListeners(ends.Control); err != nil {
-				log.Warn("sending listeners", "err", err)
+				return stuck("listeners", err)
+			}
+		case <-countersTick.C:
+			// For the worker's telemetry; skipped when the socket is full.
+			if m, err := ipc.CountersMessage(s.shared.counters(transport.SpaceID(w.space))); err == nil {
+				_ = ends.Control.TrySend(m)
 			}
 		case err := <-gone:
 			if errors.Is(err, io.EOF) {
@@ -646,11 +675,13 @@ func (s *Supervisor) run(w *worker, log *slog.Logger) error {
 			return fmt.Errorf("socket: %w", err)
 		case <-w.notify:
 			if err := s.sendConfig(ends.Control, w); err != nil {
-				log.Warn("sending config", "err", err)
+				return stuck("config", err)
 			}
 		case <-w.ctx.Done():
-			if err := ends.Control.Send(ipc.Message{Kind: ipc.KindStop}); err != nil {
+			if err := ends.Control.SendTimeout(ipc.Message{Kind: ipc.KindStop}, s.opts.StopTimeout); err != nil {
 				log.Warn("sending stop", "err", err)
+				p.kill()
+				return fmt.Errorf("killed: %w", err)
 			}
 			if !s.awaitExit(p) {
 				return fmt.Errorf("killed: still running %v after stop", s.opts.StopTimeout)
@@ -669,7 +700,7 @@ func (s *Supervisor) sendListeners(conn *ipc.Conn) error {
 	if err != nil {
 		return err
 	}
-	return conn.Send(m)
+	return conn.SendTimeout(m, s.opts.StopTimeout)
 }
 
 // readReplies sends out the datagrams a worker writes to its data socket,
@@ -704,14 +735,14 @@ func (s *Supervisor) sendConfig(conn *ipc.Conn, w *worker) error {
 		return nil
 	}
 	if 1+len(config) <= ipc.MaxMessageSize {
-		return conn.Send(ipc.ConfigMessage(config))
+		return conn.SendTimeout(ipc.ConfigMessage(config), s.opts.StopTimeout)
 	}
 	f, err := sealedMemfd("thinkpol-config", config)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = f.Close() }()
-	return conn.Send(ipc.Message{Kind: ipc.KindConfig, Files: []*os.File{f}})
+	return conn.SendTimeout(ipc.Message{Kind: ipc.KindConfig, Files: []*os.File{f}}, s.opts.StopTimeout)
 }
 
 // awaitExit gives the process StopTimeout to exit, then kills it; false if

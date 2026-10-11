@@ -68,3 +68,17 @@ func TestListenersRoundTrip(t *testing.T) {
 		t.Fatalf("no listeners: %+v, %v", out, err)
 	}
 }
+
+func TestCountersRoundTrip(t *testing.T) {
+	in := ipc.SharedCounters{Forwarded: 1, ForwardedBytes: 2, Replayed: 3, RepliesNotAllowed: 4, ReplyPeersEvicted: 5}
+	m, err := ipc.CountersMessage(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out, err := ipc.DecodeCounters(m); err != nil || out != in {
+		t.Fatalf("round trip: %+v, %v", out, err)
+	}
+	if _, err := ipc.DecodeCounters(ipc.Message{Kind: ipc.KindListeners}); err == nil {
+		t.Fatal("decoded listeners as counters")
+	}
+}

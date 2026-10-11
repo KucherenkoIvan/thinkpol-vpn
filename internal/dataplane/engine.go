@@ -204,7 +204,7 @@ func (e *Engine) apply(ctx context.Context, s netmap.Section) (string, error) {
 		return StepSection, fmt.Errorf("dataplane: section of node %s, not %s", s.Node.ID, e.cfg.ID)
 	}
 	pc := PathConfigFrom(s, e.cfg.Registry)
-	in := InboundFrom(s, e.cfg.Registry, e.cfg.Space)
+	in := AcceptedInbound(s, e.cfg.Registry, e.cfg.Space, e.cfg.LinkMTU)
 	mtu := OverlayMTU(&pc, &in, e.cfg.Registry, e.cfg.LinkMTU)
 	oc, ocErr := OverlayConfigFrom(s, e.cfg.WireGuardKey.Public(), mtu)
 	details := slices.Concat(pc.Skipped, in.Skipped, oc.Skipped)

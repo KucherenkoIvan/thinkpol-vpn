@@ -24,6 +24,7 @@
 //	worker → supervisor  Ready   (empty) once sandboxed: the worker serves from now on
 //	supervisor → worker  Listeners (JSON []Listener) after Ready and whenever the shared listeners change
 //	supervisor → worker  Stream  (listener id + consumed bytes, the connection's fd attached) per routed connection
+//	supervisor → worker  Counters (JSON SharedCounters) periodically: the space's own shared-listener figures
 //	supervisor → worker  Stop    (empty) shut down and exit 0
 //
 // The data socket carries only Datagram messages, both ways: a
@@ -47,7 +48,7 @@ import (
 // Version is the protocol version carried in Init; a worker refuses an Init
 // whose version differs, so a half-replaced binary can't mismatch its
 // supervisor. Bump it on any wire change here.
-const Version = 2
+const Version = 3
 
 // ErrFull is returned by TrySend when the socket's send buffer is full, so
 // the message was not sent; the caller drops it.
@@ -64,6 +65,7 @@ const (
 	KindDatagram  Kind = 5 // data socket: DatagramHeader + datagram, both ways
 	KindStream    Kind = 6 // control socket: stream handoff, listener id + consumed bytes, fd attached
 	KindListeners Kind = 7 // control socket: JSON []Listener
+	KindCounters  Kind = 8 // control socket: JSON SharedCounters, periodically
 )
 
 func (k Kind) String() string {
@@ -82,6 +84,8 @@ func (k Kind) String() string {
 		return "stream"
 	case KindListeners:
 		return "listeners"
+	case KindCounters:
+		return "counters"
 	}
 	return fmt.Sprintf("Kind(%d)", uint8(k))
 }
@@ -282,4 +286,65 @@ func DecodeStream(m Message) (listener uint32, conn *os.File, consumed []byte, e
 		return 0, nil, nil, fmt.Errorf("ipc: malformed %v message", m.Kind)
 	}
 	return binary.BigEndian.Uint32(m.Payload), m.Files[0], m.Payload[4:], nil
+}
+
+// SharedCounters are what the supervisor's shared listeners did for one
+// space. The supervisor sends them to that space's worker (a Counters
+// message) so the worker can seal them into its own telemetry: they hold
+// only the space's own figures, never the node's listeners, addresses or
+// other spaces.
+type SharedCounters struct {
+	// Forwarded counts the datagrams (ForwardedBytes their bytes) the
+	// worker's data socket took, Streams the connections handed over.
+	Forwarded      uint64 `json:"forwarded"`
+	ForwardedBytes uint64 `json:"forwarded_bytes"`
+	Streams        uint64 `json:"streams"`
+	// Stale and Replayed count the space's authenticated datagrams dropped
+	// as too old (clock window, replaced sender) or seen before.
+	Stale    uint64 `json:"stale"`
+	Replayed uint64 `json:"replayed"`
+	// NoWorker counts datagrams dropped while no worker could take them
+	// (none running, or its socket gone), WorkerFull those its socket had
+	// no room for, OverShare those its fair share refused.
+	NoWorker   uint64 `json:"no_worker"`
+	WorkerFull uint64 `json:"worker_full"`
+	OverShare  uint64 `json:"over_share"`
+	// StreamsRefused counts connections of the space that couldn't be
+	// handed over (no worker, a full socket, no descriptor).
+	StreamsRefused uint64 `json:"streams_refused"`
+	// Replies counts datagrams (ReplyBytes their bytes) the worker sent
+	// out. Refused: to a remote end none of its links' live datagrams came
+	// from lately (NotAllowed), through a listener that is gone
+	// (NoListener), past its fair share (OverShare); ReplyErrors failed on
+	// the socket.
+	Replies           uint64 `json:"replies"`
+	ReplyBytes        uint64 `json:"reply_bytes"`
+	RepliesNotAllowed uint64 `json:"replies_not_allowed"`
+	RepliesNoListener uint64 `json:"replies_no_listener"`
+	RepliesOverShare  uint64 `json:"replies_over_share"`
+	ReplyErrors       uint64 `json:"reply_errors"`
+	// ReplyPeersEvicted counts remote ends a link displaced from its own
+	// reply set (a link keeps its latest few).
+	ReplyPeersEvicted uint64 `json:"reply_peers_evicted"`
+}
+
+// CountersMessage carries a space's shared-listener counters.
+func CountersMessage(c SharedCounters) (Message, error) {
+	b, err := json.Marshal(c)
+	if err != nil {
+		return Message{}, fmt.Errorf("ipc: encode counters: %w", err)
+	}
+	return Message{Kind: KindCounters, Payload: b}, nil
+}
+
+// DecodeCounters decodes a Counters message.
+func DecodeCounters(m Message) (SharedCounters, error) {
+	var c SharedCounters
+	if m.Kind != KindCounters {
+		return c, fmt.Errorf("ipc: expected %v, got %v", KindCounters, m.Kind)
+	}
+	if err := json.Unmarshal(m.Payload, &c); err != nil {
+		return c, fmt.Errorf("ipc: decode counters: %w", err)
+	}
+	return c, nil
 }

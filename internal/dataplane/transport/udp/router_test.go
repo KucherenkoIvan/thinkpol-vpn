@@ -38,14 +38,14 @@ func newSupervisor(t *testing.T, tr *Transport, address string, peers transport.
 			if err != nil {
 				return
 			}
-			peer, ok := s.router.RouteDatagram(buf[:n])
+			peer, v := s.router.RouteDatagram(buf[:n])
 			s.mu.Lock()
 			w := s.workers[peer.Space]
 			if w == nil {
 				w = s.any
 			}
 			s.mu.Unlock()
-			if !ok || w == nil {
+			if v != transport.Routed || w == nil {
 				s.camo.Datagram(buf[:n], from)
 				continue
 			}
@@ -233,23 +233,29 @@ func TestRouterRoutesAndRejects(t *testing.T) {
 	}
 	now := c.now()
 	for _, p := range peers[:2] {
-		if id, ok := r.RouteDatagram(datagram(p, toListener, now)); !ok || id != p.Peer {
-			t.Fatalf("routed %s's datagram to %v (%v)", p.Peer, id, ok)
+		d := datagram(p, toListener, now)
+		if id, v := r.RouteDatagram(d); v != transport.Routed || id != p.Peer {
+			t.Fatalf("routed %s's datagram to %v (%v)", p.Peer, id, v)
+		}
+		if id, v := r.RouteDatagram(d); v != transport.Replayed || id != p.Peer {
+			t.Fatalf("%s's datagram again: %v (%v), want a replay", p.Peer, id, v)
 		}
 	}
 	forged := datagram(peers[0], toListener, now)
 	forged[clearSize] ^= 1
 	for name, d := range map[string][]byte{
-		"forged":             forged,
-		"unknown":            datagram(transporttest.SymmetricPeer(), toListener, now),
-		"wrong direction":    datagram(peers[0], toDialer, now),
-		"duplicate secret":   datagram(peers[2], toListener, now),
-		"sent 6 minutes ago": datagram(peers[0], toListener, now.Add(-6*time.Minute)),
-		"short":              {1, 2, 3},
+		"forged":           forged,
+		"unknown":          datagram(transporttest.SymmetricPeer(), toListener, now),
+		"wrong direction":  datagram(peers[0], toDialer, now),
+		"duplicate secret": datagram(peers[2], toListener, now),
+		"short":            {1, 2, 3},
 	} {
-		if id, ok := r.RouteDatagram(d); ok {
-			t.Errorf("%s datagram routed to %s", name, id)
+		if id, v := r.RouteDatagram(d); v != transport.Unknown {
+			t.Errorf("%s datagram: %v for %s", name, v, id)
 		}
+	}
+	if id, v := r.RouteDatagram(datagram(peers[0], toListener, now.Add(-6*time.Minute))); v != transport.Stale || id != peers[0].Peer {
+		t.Errorf("a datagram sent 6 minutes ago: %v for %s", v, id)
 	}
 	if got := r.Counters().StaleTimestamp; got != 1 {
 		t.Errorf("counted %d stale timestamps, want 1", got)
@@ -261,10 +267,23 @@ func TestRouterRoutesAndRejects(t *testing.T) {
 		t.Error("udp routed a stream")
 	}
 	table.Set([]transport.PeerLink{peers[1].PeerLink})
-	if _, ok := r.RouteDatagram(datagram(peers[0], toListener, now)); ok {
+	if _, v := r.RouteDatagram(datagram(peers[0], toListener, now)); v != transport.Unknown {
 		t.Error("routed a revoked credential")
 	}
-	if id, ok := r.RouteDatagram(datagram(peers[1], toListener, now)); !ok || id != peers[1].Peer {
+	if id, v := r.RouteDatagram(datagram(peers[1], toListener, now)); v != transport.Routed || id != peers[1].Peer {
 		t.Error("lost a kept credential on a table change")
+	}
+	// Its history survives the table change, and a secret taken out and
+	// put back: replays stay replays.
+	replay := datagram(peers[0], toListener, now)
+	table.Set([]transport.PeerLink{peers[0].PeerLink, peers[1].PeerLink})
+	if _, v := r.RouteDatagram(replay); v != transport.Routed {
+		t.Fatalf("a fresh datagram of a returning secret: %v", v)
+	}
+	table.Set([]transport.PeerLink{peers[1].PeerLink})
+	r.Rejected() // picks up the change
+	table.Set([]transport.PeerLink{peers[0].PeerLink, peers[1].PeerLink})
+	if _, v := r.RouteDatagram(replay); v != transport.Replayed {
+		t.Fatalf("a replay after the secret left and came back: %v", v)
 	}
 }
