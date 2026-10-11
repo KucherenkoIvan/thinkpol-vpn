@@ -127,6 +127,9 @@ func (c Config) Check() error {
 	if c.LinkMTU != 0 && (c.LinkMTU < 576 || c.LinkMTU > 65535) {
 		errs = append(errs, fmt.Errorf("link MTU %d: want 576 to 65535, or 0 for the default", c.LinkMTU))
 	}
+	if c.Mode == ModeDevice && !c.Connect && c.APISocket == "" {
+		errs = append(errs, errors.New("a device that starts disconnected needs the local API to connect: set an API socket"))
+	}
 	if c.APISocket != "" && !filepath.IsAbs(c.APISocket) {
 		errs = append(errs, fmt.Errorf("API socket %q: want an absolute path", c.APISocket))
 	}

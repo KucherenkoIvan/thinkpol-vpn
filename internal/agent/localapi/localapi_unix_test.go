@@ -7,12 +7,14 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -32,6 +34,19 @@ type fakeNode struct {
 	mu         sync.Mutex
 	st         agent.Status
 	connectErr error
+}
+
+func (n *fakeNode) SetRulePreset(_ context.Context, preset string) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if preset == "all-but-domestic" {
+		return agent.ErrPresetUnavailable
+	}
+	if preset != "everything" {
+		return agent.ErrUnknownPreset
+	}
+	n.st.RulePreset = preset
+	return nil
 }
 
 func (n *fakeNode) Status() agent.Status {
@@ -150,8 +165,14 @@ func TestTheCLIControlsTheNode(t *testing.T) {
 	if err != nil || len(spaces) != 1 || !spaces[0].GetActive() || spaces[0].GetId() != st.GetSpaceId() {
 		t.Fatalf("spaces %v, %v", spaces, err)
 	}
-	if err := c.SetRulePreset(ctx, "everything"); !errors.Is(err, ErrPresetsUnavailable) {
-		t.Fatalf("got %v, want ErrPresetsUnavailable", err)
+	if st, err := c.SetRulePreset(ctx, "everything"); err != nil || st.GetRulePreset() != "everything" {
+		t.Fatalf("preset: %v, %v", st, err)
+	}
+	if _, err := c.SetRulePreset(ctx, "all-but-domestic"); !errors.Is(err, ErrPresetUnavailable) {
+		t.Fatalf("got %v, want ErrPresetUnavailable", err)
+	}
+	if _, err := c.SetRulePreset(ctx, "nope"); !errors.Is(err, ErrUnknownPreset) {
+		t.Fatalf("got %v, want ErrUnknownPreset", err)
 	}
 
 	s.node.mu.Lock()
@@ -242,6 +263,12 @@ func TestStreamsFollowAndEndOnShutdown(t *testing.T) {
 	if _, err := os.Lstat(s.socket); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("socket left behind: %v", err)
 	}
+	// The lock stays, released: the next service takes it.
+	l, err := Listen(s.socket, me())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = l.Close()
 }
 
 func TestEverythingTheServiceSaysIsSanitized(t *testing.T) {
@@ -340,10 +367,6 @@ func TestListenOwnsItsDirectory(t *testing.T) {
 				t.Errorf("%s: mode %v gid %d, want %v gid %d", p, fi.Mode().Perm(), fi.Sys().(*syscall.Stat_t).Gid, want, gid)
 			}
 		}
-		// Another service on the same socket is refused.
-		if _, err := Listen(path, tc.p); err == nil || !strings.Contains(err.Error(), "another service") {
-			t.Fatalf("second Listen: %v", err)
-		}
 		_ = l.Close()
 	}
 
@@ -360,20 +383,51 @@ func TestListenOwnsItsDirectory(t *testing.T) {
 	}
 	_ = l.Close()
 
-	// A directory it didn't make the way it would is refused, not fixed.
+	// A directory of its own user left with another mode and group is
+	// fixed; a symlink isn't followed.
 	dir := filepath.Join(shortTempDir(t), "api")
 	if err := os.Mkdir(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(dir, 0o755); err != nil {
+	if err := os.Chmod(dir, 0o2775); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Listen(filepath.Join(dir, "api.sock"), me()); err == nil {
-		t.Fatal("took a directory others can enter")
+	if l, err = Listen(filepath.Join(dir, "api.sock"), me()); err != nil {
+		t.Fatalf("over a leftover directory: %v", err)
 	}
-	if fi, _ := os.Lstat(dir); fi.Mode().Perm() != 0o755 {
-		t.Fatalf("changed it to %v", fi.Mode().Perm())
+	_ = l.Close()
+	if fi, _ := os.Lstat(dir); fi.Mode().Perm() != 0o700 || fi.Mode()&os.ModeSetgid != 0 {
+		t.Fatalf("left it %v", fi.Mode())
 	}
+	link := filepath.Join(shortTempDir(t), "api")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Listen(filepath.Join(link, "api.sock"), me()); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("through a symlink: %v", err)
+	}
+	// Nor is a directory in a parent others can write to.
+	open := shortTempDir(t)
+	if err := os.Chmod(open, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Listen(filepath.Join(open, "api", "api.sock"), me()); err == nil || !strings.Contains(err.Error(), "no one else can write") {
+		t.Fatalf("in a world-writable parent: %v", err)
+	}
+	// Two services: the second is refused, its socket left alone.
+	path = filepath.Join(shortTempDir(t), "api", "api.sock")
+	first, err := Listen(path, me())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = first.Close() }()
+	if _, err := Listen(path, me()); err == nil || !strings.Contains(err.Error(), "another service") {
+		t.Fatalf("second service: %v", err)
+	}
+	if _, err := os.Lstat(path); err != nil {
+		t.Fatalf("the first service's socket: %v", err)
+	}
+
 	// So is a file that isn't a socket.
 	dir = filepath.Join(shortTempDir(t), "api")
 	if err := os.Mkdir(dir, 0o700); err != nil {
@@ -402,5 +456,147 @@ func TestDialExplainsWhyNot(t *testing.T) {
 	defer func() { _ = os.Chmod(dir, 0o700) }()
 	if _, err := Dial(s.socket); !errors.Is(err, ErrPermissionDenied) || !strings.Contains(err.Error(), "permission denied") {
 		t.Fatalf("no access: %v", err)
+	}
+}
+
+// The API failing never stops the node: the adapter logs, retries, and
+// returns only when the node stops.
+func TestAnAPIFailureLeavesTheNodeRunning(t *testing.T) {
+	open := shortTempDir(t)
+	if err := os.Chmod(open, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	var log bytes.Buffer
+	var mu sync.Mutex
+	a := Adapter(Options{
+		Socket: filepath.Join(open, "api", "api.sock"), Node: &fakeNode{}, Logs: logring.New(1 << 10),
+		Log:        slog.New(slog.NewTextHandler(&lockedWriter{w: &log, mu: &mu}, nil)),
+		RetryAfter: 20 * time.Millisecond,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- a.Run(ctx) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		mu.Lock()
+		n := strings.Count(log.String(), "the local API is down")
+		mu.Unlock()
+		if n >= 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no retries logged:\n%s", log.String())
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("the adapter returned %v while the node runs", err)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	// Fixed meanwhile: it serves.
+	if err := os.Chmod(open, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var c *Client
+	for c == nil {
+		var err error
+		if c, err = Dial(filepath.Join(open, "api", "api.sock")); err != nil {
+			if time.Now().After(deadline.Add(5 * time.Second)) {
+				t.Fatalf("never served: %v", err)
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	if _, err := c.Status(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	_ = c.Close()
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("stopped with %v", err)
+	}
+}
+
+type lockedWriter struct {
+	w  *bytes.Buffer
+	mu *sync.Mutex
+}
+
+func (l *lockedWriter) Write(b []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.w.Write(b)
+}
+
+// Many watchers share one status per tick.
+func TestWatchersShareTheStatus(t *testing.T) {
+	s := serve(t, me())
+	counting := &countingNode{fakeNode: s.node}
+	srv := &server{node: counting}
+	for range 100 {
+		srv.sharedStatus()
+	}
+	if n := counting.calls.Load(); n != 1 {
+		t.Fatalf("%d status reads for 100 watchers in one tick", n)
+	}
+}
+
+type countingNode struct {
+	*fakeNode
+	calls atomic.Int32
+}
+
+func (n *countingNode) Status() agent.Status {
+	n.calls.Add(1)
+	return n.fakeNode.Status()
+}
+
+func TestListenHoldsAtMostMaxConns(t *testing.T) {
+	path := filepath.Join(shortTempDir(t), "api", "api.sock")
+	l, err := Listen(path, me())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = l.Close() }()
+	accepted := make(chan net.Conn, MaxConns+1)
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			accepted <- c
+		}
+	}()
+	for range MaxConns + 1 {
+		c, err := net.Dial("unix", path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = c.Close() }()
+	}
+	var held []net.Conn
+	for range MaxConns {
+		select {
+		case c := <-accepted:
+			held = append(held, c)
+		case <-time.After(5 * time.Second):
+			t.Fatalf("accepted %d", len(held))
+		}
+	}
+	select {
+	case <-accepted:
+		t.Fatal("accepted past the limit")
+	case <-time.After(200 * time.Millisecond):
+	}
+	_ = held[0].Close()
+	select {
+	case c := <-accepted:
+		_ = c.Close()
+	case <-time.After(5 * time.Second):
+		t.Fatal("a closed connection didn't free its slot")
+	}
+	for _, c := range held[1:] {
+		_ = c.Close()
 	}
 }

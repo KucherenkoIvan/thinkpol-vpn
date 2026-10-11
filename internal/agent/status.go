@@ -35,6 +35,11 @@ type Status struct {
 	// Workers and PublicListeners are a server's.
 	Workers         []WorkerStatus
 	PublicListeners []PublicListenerStatus
+	// RulePreset is a device's rule preset (LocalRulesFile; "space" when it
+	// chose none), and RulesEnforced whether its data plane enforces it yet
+	// (once the rule engine, TP-015, is wired in).
+	RulePreset    string
+	RulesEnforced bool
 }
 
 // Connection is whether a node carries traffic.
@@ -131,6 +136,9 @@ type report struct {
 	listeners int
 	// workers is a server's supervisor, while it runs.
 	workers workerReporter
+	// preset and enforced are a device's rules (Status.RulePreset).
+	preset   string
+	enforced bool
 }
 
 // workerReporter is what a server's status comes from: the supervisor.
@@ -152,6 +160,9 @@ func (p *report) status() Status {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	s := Status{Mode: p.mode, Space: p.space, MapVersion: p.version, Removed: p.removed, Retrying: p.retrying, Listeners: p.listeners}
+	if p.mode != ModeServer {
+		s.RulePreset, s.RulesEnforced = p.preset, p.enforced
+	}
 	switch {
 	case p.mode == ModeServer:
 		s.Connection = Serving

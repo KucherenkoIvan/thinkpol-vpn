@@ -3,8 +3,11 @@ package agent
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -252,5 +255,130 @@ func TestHealth(t *testing.T) {
 		if got := tc.st.Health(); got.Level != tc.want.Level || !slices.Equal(got.Problems, tc.want.Problems) {
 			t.Errorf("%s: got %+v, want %+v", tc.name, got, tc.want)
 		}
+	}
+}
+
+// A device whose start failed and waits for a retry tries again on
+// Connect, and says why it failed.
+func TestConnectStartsADeviceThatIsRetrying(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	startNode(t, reg, s.a, s.verified(t, 1))
+	b := startDevice(t, s, reg, false)
+	ctx := context.Background()
+	if err := b.node.Connect(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// Removed and back: its start fails once, so it is up-but-retrying.
+	b.maps <- s.buildWithout(t, 2, s.b)
+	b.connection(t, Connecting)
+	b.failTUN <- struct{}{}
+	b.maps <- s.build(t, 3)
+	eventually(t, func() bool { st := b.node.Status(); return st.Retrying && st.Connection == Connecting })
+	b.failTUN <- struct{}{}
+	var se *StartError
+	if err := b.node.Connect(ctx); !errors.As(err, &se) {
+		t.Fatalf("got %v, want a StartError", err)
+	}
+	if st := b.node.Status(); st.Connection != Connecting || !st.Retrying {
+		t.Fatalf("after a failed Connect: %+v", st)
+	}
+	if err := b.node.Connect(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if st := b.node.Status(); st.Connection != Connected {
+		t.Fatalf("after Connect: %+v", st)
+	}
+}
+
+func TestRulePresetIsStoredByTheService(t *testing.T) {
+	s := newTestSpace(t)
+	dir := s.stateDir(t, s.b, 1)
+	n, err := Prepare(testConfig(dir), Logs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st := n.Status(); st.RulePreset != "space" || st.RulesEnforced {
+		t.Fatalf("status %+v", st)
+	}
+	ctx := context.Background()
+	if err := n.SetRulePreset(ctx, "nope"); !errors.Is(err, ErrUnknownPreset) {
+		t.Fatalf("got %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(dir, LocalRulesFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a refused preset wrote the file: %v", err)
+	}
+	// The device's own rules stay; the preset goes in front.
+	writeFile(t, filepath.Join(dir, LocalRulesFile), []byte("# mine\ncidr:192.0.2.0/24 -> direct\n"), 0o644)
+	if n, err = Prepare(testConfig(dir), Logs{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := n.SetRulePreset(ctx, "everything"); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, LocalRulesFile))
+	if err != nil || string(b) != "preset everything\ncidr:192.0.2.0/24 -> direct\n" {
+		t.Fatalf("file %q, %v", b, err)
+	}
+	if fi, _ := os.Lstat(filepath.Join(dir, LocalRulesFile)); fi.Mode().Perm() != 0o644 {
+		t.Fatalf("mode %v", fi.Mode())
+	}
+	if st := n.Status(); st.RulePreset != "everything" {
+		t.Fatalf("status %+v", st)
+	}
+	// Read back at the next start.
+	if n, err = Prepare(testConfig(dir), Logs{}); err != nil || n.Status().RulePreset != "everything" {
+		t.Fatalf("restart: %v", err)
+	}
+	// An engine that can't build it: nothing changes.
+	n.applyRules = func(context.Context, LocalRules) error { return ErrPresetUnavailable }
+	if err := n.SetRulePreset(ctx, "all-but-domestic"); !errors.Is(err, ErrPresetUnavailable) {
+		t.Fatalf("got %v", err)
+	}
+	if b2, _ := os.ReadFile(filepath.Join(dir, LocalRulesFile)); string(b2) != string(b) {
+		t.Fatalf("file changed to %q", b2)
+	}
+	// A server has no rules of its own.
+	if a, err := Prepare(testConfig(s.stateDir(t, s.a, 1)), Logs{}); err != nil || !errors.Is(a.SetRulePreset(ctx, "everything"), ErrServerMode) {
+		t.Fatalf("server: %v", err)
+	}
+}
+
+// A local rules file that can't be read or parsed never reads as none:
+// the node refuses to start.
+func TestABadLocalRulesFileFailsClosed(t *testing.T) {
+	s := newTestSpace(t)
+	for name, tc := range map[string]struct {
+		data string
+		perm os.FileMode
+	}{
+		"unknown preset":  {"preset sometimes\n", 0o644},
+		"two presets":     {"preset everything\npreset space\n", 0o644},
+		"writable by all": {"preset everything\n", 0o666},
+	} {
+		dir := s.stateDir(t, s.b, 1)
+		writeFile(t, filepath.Join(dir, LocalRulesFile), []byte(tc.data), tc.perm)
+		if _, err := Prepare(testConfig(dir), Logs{}); err == nil || !strings.Contains(err.Error(), LocalRulesFile) {
+			if runtime.GOOS != "windows" || name != "writable by all" {
+				t.Errorf("%s: got %v", name, err)
+			}
+		}
+	}
+}
+
+func TestADeviceStartingDisconnectedNeedsTheAPI(t *testing.T) {
+	s := newTestSpace(t)
+	cfg := testConfig(s.stateDir(t, s.b, 1))
+	cfg.Connect, cfg.APISocket = false, ""
+	if _, err := Prepare(cfg, Logs{}); err == nil || !strings.Contains(err.Error(), "local API") {
+		t.Fatalf("got %v", err)
+	}
+	cfg.Mode = ModeDevice
+	if err := cfg.Check(); err == nil {
+		t.Fatal("Check took it")
+	}
+	cfg.APISocket = "/run/x/api.sock"
+	if _, err := Prepare(cfg, Logs{}); err != nil {
+		t.Fatal(err)
 	}
 }

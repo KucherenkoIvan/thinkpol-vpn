@@ -270,14 +270,22 @@ func (r *runner) connect(ctx context.Context, connect bool) error {
 		r.stop()
 		r.retryAt = time.Time{}
 		r.dp.Log.Info("disconnected")
-	case connect && r.down:
-		r.down = false
-		if r.removed {
+	case connect && r.removed:
+		if r.down {
+			r.down = false
 			r.dp.Log.Info("connecting once a map includes this node")
-			return nil
 		}
+	case connect && r.engine == nil:
+		// Down on purpose, or up but its start failed and waits for a
+		// retry: either way it starts now, and says if it can't.
+		wasDown := r.down
+		r.down = false
 		if err := r.start(ctx); err != nil {
-			r.down = true
+			if wasDown {
+				r.down = true
+			} else {
+				r.retryAt = time.Now().Add(r.dp.retryAfter)
+			}
 			r.dp.Log.Warn("connecting failed", "version", r.cur.Header().Version, "err", err)
 			return err
 		}

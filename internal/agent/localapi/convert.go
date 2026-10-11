@@ -14,6 +14,8 @@ import (
 
 // statusProto is st on the wire. It copies only what agent.Status holds,
 // which is free of public addresses, keys and secrets by construction.
+// Names that come from the map or a transport (egresses, devices,
+// transports) are sanitized here too, besides by every client.
 func statusProto(st agent.Status) *localapiv1.Status {
 	h := st.Health()
 	out := &localapiv1.Status{
@@ -24,6 +26,7 @@ func statusProto(st agent.Status) *localapiv1.Status {
 		Connection: connectionProto(st.Connection),
 		Retrying:   st.Retrying,
 		Health:     &localapiv1.Health{Level: healthProto(h.Level), Problems: h.Problems},
+		RulePreset: st.RulePreset, RulesEnforced: st.RulesEnforced,
 	}
 	if dp := st.DataPlane; dp != nil {
 		out.DataPlane = dataPlaneProto(dp, st.Listeners)
@@ -36,7 +39,7 @@ func statusProto(st agent.Status) *localapiv1.Status {
 	}
 	for _, l := range st.PublicListeners {
 		out.PublicListeners = append(out.PublicListeners, &localapiv1.PublicListener{
-			Transport: l.Transport, Routed: l.Routed, Unauthenticated: l.Unauthenticated, NoSpace: l.NoSpace,
+			Transport: agent.Sanitize(l.Transport), Routed: l.Routed, Unauthenticated: l.Unauthenticated, NoSpace: l.NoSpace,
 			StreamsOverloaded: l.StreamsOverloaded, Rejected: uint32(l.Rejected),
 		})
 	}
@@ -63,7 +66,7 @@ func dataPlaneProto(dp *dataplane.Status, listeners int) *localapiv1.DataPlane {
 	}
 	for _, p := range dp.Peers {
 		pp := &localapiv1.Peer{
-			NodeId: idString(p.ID), Device: p.Device, FirstHop: idString(p.FirstHop),
+			NodeId: idString(p.ID), Device: agent.Sanitize(p.Device), FirstHop: idString(p.FirstHop),
 			LastHandshake: timestamp(p.LastHandshake), RxBytes: p.RxBytes, TxBytes: p.TxBytes,
 		}
 		for _, a := range p.Addresses {
@@ -77,7 +80,7 @@ func dataPlaneProto(dp *dataplane.Status, listeners int) *localapiv1.DataPlane {
 		}
 		for _, l := range n.Links {
 			np.Links = append(np.Links, &localapiv1.Link{
-				Transport: l.Transport, Dialed: l.Dialed, Endpoint: int32(l.Endpoint), Active: l.Active, Up: l.Up,
+				Transport: agent.Sanitize(l.Transport), Dialed: l.Dialed, Endpoint: int32(l.Endpoint), Active: l.Active, Up: l.Up,
 				UpFor: duration(l.UpFor), Rtt: duration(l.RTT), PacketsIn: l.PacketsIn, PacketsOut: l.PacketsOut,
 				BytesIn: l.BytesIn, BytesOut: l.BytesOut, QueueFull: l.QueueFull,
 			})
@@ -86,7 +89,7 @@ func dataPlaneProto(dp *dataplane.Status, listeners int) *localapiv1.DataPlane {
 	}
 	for _, e := range dp.Egresses {
 		out.Egresses = append(out.Egresses, &localapiv1.Egress{
-			Name: e.Name, Mtu: uint32(e.MTU), Queued: uint32(e.Queued), Routed: e.Routed, Delivered: e.Delivered,
+			Name: agent.Sanitize(e.Name), Mtu: uint32(e.MTU), Queued: uint32(e.Queued), Routed: e.Routed, Delivered: e.Delivered,
 			NotLocal: e.NotLocal, QueueFull: e.QueueFull, TooLarge: e.TooLarge,
 		})
 	}

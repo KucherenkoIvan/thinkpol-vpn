@@ -48,7 +48,7 @@ func m0State(t *testing.T, node string) (state, keys string) {
 func TestUpReadsTheDevTooling(t *testing.T) {
 	for node, mode := range map[string]agent.Mode{"server-1": agent.ModeServer, "device-a": agent.ModeDevice} {
 		state, _ := m0State(t, node)
-		cfg := agent.Config{StateDir: state, Mode: agent.ModeAuto, LogLevel: "info", Interface: "thinkpol0", LinkMTU: 1500, MapPoll: 5e9}
+		cfg := agent.Config{StateDir: state, Mode: agent.ModeAuto, LogLevel: "info", Interface: "thinkpol0", LinkMTU: 1500, MapPoll: 5e9, Connect: true}
 		n, err := agent.Prepare(cfg, agent.Logs{})
 		if err != nil {
 			t.Fatal(err)

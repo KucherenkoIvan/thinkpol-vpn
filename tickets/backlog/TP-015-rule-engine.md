@@ -34,6 +34,8 @@ Ordered routing rules decide per destination whether traffic goes direct, throug
   - not listed: `127.0.0.0/8` and `::1` (the OS handles loopback before any route we install), `0.0.0.0/8`, `240.0.0.0/4` and other reserved ranges (default handling is fine), `::ffff:0:0/96` (IPv4 is matched as IPv4).
   - Recommended for the "everything" preset too: LAN traffic can't usefully go through an exit, and keeping it local hides nothing from a censor.
 
+- **From TP-022's review (whoever merges second wires this):** TP-022 owns the local rules *file and API*: `agent.LocalRulesFile` (`rules.local` in the state dir, written atomically only by the service through `Node.SetRulePreset`, read in `LoadState` with the trusted reader; a parse error fails `Prepare`, never reads as empty), `agent.LocalRules` (same text format as `rules.Local`), `agent.RulePresets` (`space`, `everything`, `all-but-domestic`), `agent.ErrUnknownPreset`, `agent.ErrPresetUnavailable`. Left to wire: replace `agent.ParseLocalRules`'s rule lines with `rules.Local.UnmarshalText` (so bad rules fail at load), set `Node.applyRules` to call `Engine.SetRules` on the running device's engine (through the runner, like connect requests) and map `rules.ErrPresetUnavailable` to `agent.ErrPresetUnavailable`; feed the stored `LocalRules` to the engine at every start; then `Status.RulesEnforced` turns true.
+
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-10 notes from TP-016 review: set difference in `internal/lists`, the built-in local list and what goes direct in "all but domestic"

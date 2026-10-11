@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
+	"sync"
 	"time"
 
 	"github.com/KucherenkoIvan/go-kernel/app"
@@ -34,6 +36,15 @@ type Node struct {
 	stopped chan struct{}
 	// tweak, if set, adjusts a device's DataPlane: what tests swap.
 	tweak func(*DataPlane)
+
+	// rulesMu serializes SetRulePreset; local is the device's last good
+	// LocalRules, as LocalRulesFile holds them.
+	rulesMu sync.Mutex
+	local   LocalRules
+	// applyRules hands the device's rules to its data plane: the rule
+	// engine's Engine.SetRules (TP-015); nil until then, and the choice is
+	// only stored.
+	applyRules func(ctx context.Context, l LocalRules) error
 }
 
 // Prepare reads and checks what a node runs from (LoadState) and decides
@@ -64,11 +75,16 @@ func Prepare(cfg Config, logs Logs) (*Node, error) {
 		cfg: cfg, state: st, mode: cfg.Mode, logs: logs, want: cfg.Connect,
 		requests: make(chan connectRequest), stopped: make(chan struct{}),
 	}
-	n.report = report{space: st.Trust.SpaceID, version: st.Map.Header().Version, removed: st.Removed, want: n.want}
+	n.local = st.LocalRules
+	n.report = report{space: st.Trust.SpaceID, version: st.Map.Header().Version, removed: st.Removed, want: n.want,
+		preset: n.local.PresetName(), enforced: n.applyRules != nil}
 	if !st.Removed {
 		n.resolveMode()
 	}
 	n.report.mode = n.mode
+	if n.mode == ModeDevice && !cfg.Connect && cfg.APISocket == "" {
+		return nil, errors.New("a device that starts disconnected needs the local API to connect: set an API socket")
+	}
 	return n, nil
 }
 
@@ -96,6 +112,51 @@ func (n *Node) Connect(ctx context.Context) error { return n.request(ctx, true) 
 // the host, and returns once it is down. The device goes on following its
 // space's maps. ErrServerMode on a server.
 func (n *Node) Disconnect(ctx context.Context) error { return n.request(ctx, false) }
+
+// SetRulePreset switches a device's rules to preset (one of RulePresets),
+// keeping its own rules, and stores the choice in LocalRulesFile, which
+// only the service writes. ErrUnknownPreset for another name,
+// ErrPresetUnavailable when the space can't build it (nothing changes
+// then), ErrServerMode on a server.
+func (n *Node) SetRulePreset(ctx context.Context, preset string) error {
+	n.report.mu.Lock()
+	mode := n.report.mode
+	n.report.mu.Unlock()
+	if mode == ModeServer {
+		return ErrServerMode
+	}
+	if !slices.Contains(RulePresets, preset) {
+		return fmt.Errorf("%w: %q", ErrUnknownPreset, preset)
+	}
+	n.rulesMu.Lock()
+	defer n.rulesMu.Unlock()
+	next := n.local
+	next.Preset = preset
+	if preset == RulePresets[0] {
+		next.Preset = ""
+	}
+	data, err := next.MarshalText()
+	if err != nil {
+		return err
+	}
+	if n.applyRules != nil {
+		if err := n.applyRules(ctx, next); err != nil {
+			return err
+		}
+	}
+	d, err := openTrustedDir(n.cfg.StateDir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = d.Close() }()
+	if err := d.write(LocalRulesFile, data, 0o644); err != nil {
+		return err
+	}
+	n.local = next
+	n.report.set(func(p *report) { p.preset = next.PresetName() })
+	n.logs.Info("rule preset set", "preset", next.PresetName())
+	return nil
+}
 
 func (n *Node) request(ctx context.Context, connect bool) error {
 	n.report.mu.Lock()
@@ -189,13 +250,14 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
 	n.logs.Warn("removed from space: the map has no section for this node; waiting for a map that includes it",
 		"version", n.state.Map.Header().Version)
+	requested := false
 	for {
 		select {
 		case <-ctx.Done():
 			return false
 		case req := <-n.requests:
 			// Kept for when the node is back in its space.
-			n.want = req.connect
+			n.want, requested = req.connect, true
 			n.report.set(func(p *report) { p.want = n.want })
 			req.done <- nil
 		case env, ok := <-maps:
@@ -224,6 +286,9 @@ func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
 			n.state.Map, n.state.Section, n.state.Removed = m, section, false
 			n.resolveMode()
 			n.report.set(func(p *report) { p.mode, p.version, p.removed = n.mode, m.Header().Version, false })
+			if requested && n.mode == ModeServer {
+				n.logs.Warn("a connect or disconnect taken while removed is dropped: this node is a server, which always serves its spaces")
+			}
 			n.logs.Info("back in space", "version", m.Header().Version, "mode", n.mode)
 			return true
 		}

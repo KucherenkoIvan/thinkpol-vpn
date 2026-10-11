@@ -61,7 +61,7 @@ func Adapter(o Options) app.Adapter {
 	}
 	return app.Adapter{Name: "local API", Run: func(ctx context.Context) error {
 		for {
-			err := serve(ctx, o)
+			err := serveOnce(ctx, o)
 			if ctx.Err() != nil {
 				return nil
 			}
@@ -75,7 +75,7 @@ func Adapter(o Options) app.Adapter {
 	}}
 }
 
-func serve(ctx context.Context, o Options) error {
+func serveOnce(ctx context.Context, o Options) error {
 	p, err := NewPolicy(o.Group)
 	if err != nil {
 		return err

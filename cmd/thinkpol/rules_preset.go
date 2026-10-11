@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/localapi"
@@ -11,7 +12,7 @@ import (
 func init() {
 	register(command{
 		path:    "rules preset",
-		args:    "[-socket path] <everything|all-but-domestic>",
+		args:    "[-socket path] <space|everything|all-but-domestic>",
 		summary: "switch this device's routing rules to a preset",
 		run:     runRulesPreset,
 	})
@@ -31,5 +32,9 @@ func runRulesPreset(ctx context.Context, e env, args []string) error {
 		return err
 	}
 	defer func() { _ = c.Close() }()
-	return c.SetRulePreset(ctx, fs.Arg(0))
+	st, err := c.SetRulePreset(ctx, fs.Arg(0))
+	if err != nil {
+		return err
+	}
+	return localapi.WriteStatus(e.stdout, st, time.Now())
 }

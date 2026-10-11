@@ -89,18 +89,31 @@ func TestLocalAPI(t *testing.T) {
 		}
 	}
 
+	// device-a has a socket directory left from an earlier run, with the
+	// wrong mode and group: it is fixed. device-b's API can't serve (its
+	// directory is someone else's): its VPN runs all the same.
+	devA.MustExec(t, "install", "-d", "-m", "2777", "/run/thinkpol-api")
+	devB.MustExec(t, "install", "-d", "-m", "755", "-o", malloryUID, "/run/foreign-api")
 	up := map[string]*lab.Process{
 		"server-1": server.Start(t, "thinkpol", "up"),
 		"device-a": devA.Start(t, "thinkpol", "up", "-connect=false"),
-		"device-b": devB.Start(t, "thinkpol", "up"),
+		"device-b": devB.Start(t, "env", "THINKPOL_API_SOCKET=/run/foreign-api/api.sock", "thinkpol", "up"),
 	}
 	waitLog(t, up["server-1"], `worker space=\S+ .*msg="map applied"`)
 	waitLog(t, up["device-a"], "mode=device")
 	s4, s6 := space.overlay(1)
 	b4, _ := space.overlay(3)
 
+	t.Run("an API that can't serve leaves the VPN up", func(t *testing.T) {
+		waitLog(t, up["device-b"], `level=ERROR msg="the local API is down`)
+		ping(t, devB, s4)
+		if _, err := cli(t, devB, as("", "", "status", "-socket", "/run/foreign-api/api.sock")); err == nil {
+			t.Fatal("status from an API that can't serve")
+		}
+	})
+
 	t.Run("the socket's directory admits root and the group", func(t *testing.T) {
-		for _, n := range nodes {
+		for _, n := range []*lab.Node{server, devA} {
 			lab.Eventually(t, 30*time.Second, func() error {
 				_, err := cli(t, n, []string{"test", "-S", "/run/thinkpol-api/api.sock"})
 				return err
@@ -164,6 +177,27 @@ func TestLocalAPI(t *testing.T) {
 		}
 	})
 
+	t.Run("the group sets the rule preset, the service stores it", func(t *testing.T) {
+		res, err := cli(t, devA, as(aliceUID, apiGID, "rules", "preset", "everything"))
+		if err != nil || !regexp.MustCompile(`rule preset: +everything`).MatchString(res.Stdout) {
+			t.Fatalf("preset: %v\n%s%s", err, res.Stdout, res.Stderr)
+		}
+		if got := devA.MustExec(t, "stat", "-c", "%a %U", stateDir+"/rules.local"); got != "644 root\n" {
+			t.Errorf("rules.local: %q", got)
+		}
+		if got := devA.MustExec(t, "cat", stateDir+"/rules.local"); got != "preset everything\n" {
+			t.Errorf("rules.local holds %q", got)
+		}
+		res, err = cli(t, devA, as(aliceUID, apiGID, "rules", "preset", "sometimes"))
+		if err == nil || !strings.Contains(res.Stderr, "no such rule preset") {
+			t.Fatalf("unknown preset: %v\n%s", err, res.Stderr)
+		}
+		res, err = cli(t, devA, as(malloryUID, "", "rules", "preset", "space"))
+		if err == nil || !strings.Contains(res.Stderr, "permission denied") {
+			t.Fatalf("mallory: %v\n%s", err, res.Stderr)
+		}
+	})
+
 	t.Run("a device disconnects and leaves nothing up", func(t *testing.T) {
 		res, err := cli(t, devA, as(aliceUID, apiGID, "disconnect"))
 		if err != nil || !regexp.MustCompile(`state: +disconnected`).MatchString(res.Stdout) {
@@ -202,8 +236,9 @@ func TestLocalAPI(t *testing.T) {
 			t.Errorf("%s: thinkpol up exited with %v:\n%s", name, err, p.Output())
 		}
 	}
-	for _, n := range nodes {
-		if out := n.MustExec(t, "ls", "-A", "/run/thinkpol-api"); out != "" {
+	for _, n := range []*lab.Node{server, devA} {
+		// The lock file stays, unlocked, for the next run.
+		if out := n.MustExec(t, "ls", "-A", "/run/thinkpol-api"); out != "api.lock\n" {
 			t.Errorf("%s: left in /run/thinkpol-api: %s", n.Name, out)
 		}
 	}

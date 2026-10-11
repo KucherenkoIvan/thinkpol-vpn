@@ -15,7 +15,8 @@ import (
 )
 
 func testConfig(dir string) Config {
-	return Config{StateDir: dir, Mode: ModeAuto, LogLevel: "info", Interface: "thinkpol0", LinkMTU: 1500, MapPoll: time.Second}
+	return Config{StateDir: dir, Mode: ModeAuto, LogLevel: "info", Interface: "thinkpol0", LinkMTU: 1500, MapPoll: time.Second,
+		Connect: true, APISocket: "/run/thinkpol-api/api.sock"}
 }
 
 func TestPrepareTakesTheModeFromTheNodesKind(t *testing.T) {

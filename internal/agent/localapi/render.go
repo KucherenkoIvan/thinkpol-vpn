@@ -37,6 +37,12 @@ func WriteStatus(w io.Writer, st *localapiv1.Status, now time.Time) error {
 	}
 	line("space:\t%s, map version %d", space, st.GetMapVersion())
 	line("mode:\t%s", enumName(st.GetMode(), "MODE_"))
+	if p := st.GetRulePreset(); p != "" {
+		if !st.GetRulesEnforced() {
+			p += " (stored; not enforced until the node has a rule engine)"
+		}
+		line("rule preset:\t%s", p)
+	}
 	if st.GetRetrying() {
 		line("retrying:\tyes, see the service's log")
 	}
