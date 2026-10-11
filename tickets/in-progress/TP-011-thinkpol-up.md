@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: M
 depends_on: [TP-004, TP-008, TP-010]
 refs: [S1, DESIGN#desktop-client]
-owner: ""
-branch: ""
+owner: agent-tp-011
+branch: tp-011-thinkpol-up
 ---
 
 ## Goal
@@ -38,3 +38,4 @@ One command starts a node from its keys and map: device mode on a device, superv
 - 2026-10-10 created in backlog
 - 2026-10-10 docs (TP-006 review): notes from the path layer
 - 2026-10-11 docs (TP-010 review): notes from the shared listener
+- 2026-10-11 backlog → in-progress — owner: agent-tp-011, branch: tp-011-thinkpol-up (based on tp-010-shared-listener while TP-010 merges)
