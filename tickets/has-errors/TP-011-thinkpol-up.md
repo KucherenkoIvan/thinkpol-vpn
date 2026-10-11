@@ -78,6 +78,12 @@ Fix now:
 - [x] Nits: the worker logs with a plain stderr logger (no unused ring); `MapFile` const → `MapFileName`; `agent.Worker` → `agent.ServeSpace`; `DataPlane.Status` → `StatusAttrs`; a closed Maps channel doesn't tight-loop; worker config decoding disallows unknown fields; stale `Idle` comment; SIGTERM during the first Apply exits 0; the thread stays locked across SIOCGSKNS and the netlink handle; warn on a kind change in server mode too; say so when -map points elsewhere and the state dir also has a map.bin
 - [x] Tests: an Apply failure then a successful retry; serverSpaces retries after a failed SetSpaces; ServeSpace with a fake session (wrong keys/space refused, later configs reach Maps); SharedInbound: a closed Done is never reopened, a new set signals Changed
 
+Round 2 (delta review; merge after these):
+- [ ] R2-1 `StateDir` and `MapFile` cleaned (a trailing slash defeats O_NOFOLLOW); the path walked from / with openat(O_NOFOLLOW), every ancestor a directory owned by root or the euid and not writable by others (sticky ancestors traversed, documented; the state directory and the map's directory never sticky or writable by others). Test: a symlinked state directory given with a trailing slash is refused
+- [ ] R2-2 Log sanitization by rune: invalid UTF-8, C1 controls (U+0080–U+009F) and bidi overrides (U+202A–U+202E, U+2066–U+2069) escaped too
+- [ ] R2-3 A node whose on-disk map validly has no section for it starts idle ("removed from space") instead of exiting 1 (no crash loop under systemd), and runs once a map includes it; DESIGN note
+- [ ] R2-nit The watcher warns once per repeated read failure
+
 Deferred (Notes written into the tickets): TP-022 (app.Run out of internal/agent, a read-only status handle out of RunDataPlane, the supervisor in server mode), TP-037 (MapSource seam, `follower.take` shared by both modes), TP-038 (shared key-file codec, node.key written on the node).
 
 ## Log
@@ -91,3 +97,4 @@ Deferred (Notes written into the tickets): TP-022 (app.Run out of internal/agent
 - 2026-10-11 has-errors → in-progress — owner: agent-tp-011, picking up the review findings
 - 2026-10-11 review findings fixed: B1, S1, SEC-1–3, D1, S9–S11, nits, tests; DESIGN "Node safety" and "Engine and agent"; notes for TP-022, TP-037, TP-038. One `make lab-test` run hit two flakes outside this change (`lab` TestCommandStartsSealed: a node's sealing table not there yet at start; supervisor TestWorkersAreSandboxed under parallel load: a worker's net namespace read as the root's), both passing on rerun (sandbox test 6/6 alone); the next full run was green
 - 2026-10-11 in-progress → review — every finding checked; `make lint`, `make test`, `go test -race` on internal/agent/..., cmd/thinkpol and netcfg, `make lab-test` pass
+- 2026-10-11 review → has-errors — delta review round 2: R2-1–R2-3 and a nit (see Review findings); the setNetSysctls namespace leak goes to TP-054
