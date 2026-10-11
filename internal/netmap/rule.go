@@ -145,8 +145,9 @@ const (
 	maxDomain   = 253
 )
 
-// mappedRange is ::ffff:0:0/96: IPv4 is matched only as IPv4, so no IPv6
-// cidr may overlap it (lists hold the same rule).
+// mappedRange is ::ffff:0:0/96: IPv4 is matched only as IPv4 (lists hold
+// the same rule), so no IPv6 cidr may lie inside it, and one around it
+// (::/0) matches all of IPv6 but it.
 var mappedRange = netip.MustParsePrefix("::ffff:0:0/96")
 
 // ParseRule reads a rule's text form, `<match> -> <action>` (or with
@@ -260,8 +261,8 @@ func (m Match) check() error {
 			return fmt.Errorf("prefix %v", p)
 		case p != p.Masked():
 			return fmt.Errorf("prefix %v has host bits set", p)
-		case p.Addr().Is6() && p.Overlaps(mappedRange):
-			return fmt.Errorf("prefix %v overlaps %v: match IPv4 as IPv4", p, mappedRange)
+		case p.Addr().Is6() && p.Overlaps(mappedRange) && p.Bits() >= mappedRange.Bits():
+			return fmt.Errorf("prefix %v is inside %v: match IPv4 as IPv4", p, mappedRange)
 		}
 	case MatchGeoIP, MatchGeoSite:
 		return CheckListName(m.Value)
@@ -333,12 +334,6 @@ func checkDomain(d string) error {
 		}
 	}
 	return nil
-}
-
-// usesRules reports whether a section carries routing rules, which need
-// section reader 2.
-func (s *Section) usesRules() bool {
-	return len(s.Rules) > 0 || len(s.Chains) > 0 || s.Presets != RulePresets{}
 }
 
 // rulesWellFormed is the readers' check: kinds are set (a reader keeps an

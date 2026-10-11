@@ -627,9 +627,8 @@ type Section struct {
 	Blobs []*BlobRef `protobuf:"bytes,10,rep,name=blobs,proto3" json:"blobs,omitempty"`
 	// The space's default routing rules, in order: the first that matches a
 	// destination decides it (DESIGN.md "Routing rules and DNS"). A device
-	// may override them locally. A section with rules, chains or presets
-	// needs section reader 2: an older node would ignore them and send
-	// traffic meant for the tunnel around it.
+	// may override them locally. Older readers ignore rules, chains and
+	// presets, and route nothing outside the overlay through the tunnel.
 	Rules []*Rule `protobuf:"bytes,11,rep,name=rules,proto3" json:"rules,omitempty"`
 	// The chains rules send traffic through.
 	Chains []*Chain `protobuf:"bytes,12,rep,name=chains,proto3" json:"chains,omitempty"`

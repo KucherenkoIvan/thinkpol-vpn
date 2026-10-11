@@ -5,6 +5,8 @@
 // base: the space's default rules from the map, or a preset built from the
 // map's preset settings ("everything", "all but domestic"). [Effective]
 // puts them in order; the first rule that matches a destination decides it.
+// A preset the map can't build fails closed (see [PresetRules]), never
+// towards the space's rules.
 //
 // [Compile] resolves first-match-wins into a [Table]: disjoint prefixes,
 // IPv4 and IPv6, covering every address outside the space's overlay

@@ -108,9 +108,8 @@ message Section {
   repeated BlobRef blobs = 10;
   // The space's default routing rules, in order: the first that matches a
   // destination decides it (DESIGN.md "Routing rules and DNS"). A device
-  // may override them locally. A section with rules, chains or presets
-  // needs section reader 2: an older node would ignore them and send
-  // traffic meant for the tunnel around it.
+  // may override them locally. Older readers ignore rules, chains and
+  // presets, and route nothing outside the overlay through the tunnel.
   repeated Rule rules = 11;
   // The chains rules send traffic through.
   repeated Chain chains = 12;

@@ -1,6 +1,7 @@
 package rules
 
 import (
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"net/netip"
@@ -108,6 +109,28 @@ func TestCompile(t *testing.T) {
 			},
 		},
 		{
+			name:  "an IPv6 prefix around the IPv4-mapped range leaves IPv4 alone",
+			rules: "cidr:::/0 -> block\ncidr:::/80 -> direct\ndefault -> chain:nl",
+			want: want{
+				netmap.Block: {"2001:db8::1", "::", "::fffe:ffff:ffff", "::1:0:0:0", "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"},
+				nl:           {"::ffff:8.8.8.8", "8.8.8.8", "0.0.0.0", "255.255.255.255"},
+			},
+		},
+		{
+			name:  "::/80 ends where the mapped range does",
+			rules: "cidr:::/80 -> block\ndefault -> chain:nl",
+			want:  want{netmap.Block: {"::", "::fffe:ffff:ffff"}, nl: {"::ffff:1.2.3.4", "::1:0:0:0", "2001:db8::1"}},
+		},
+		{
+			name:  "a tunnelled name rule undercut by a later direct rule is flagged",
+			rules: "domain-suffix:example.com -> chain:de\ndomain:a.example.ru -> direct\ngeoip:ru -> direct\ngeosite:x -> block\ndefault -> chain:nl",
+			lists: map[string][]string{"ru": ruList},
+			want:  want{netmap.Direct: inRU, nl: outRU},
+			skipped: []Skip{
+				{OriginSpace, 0, ReasonByNameUndercut}, {OriginSpace, 1, ReasonByName}, {OriginSpace, 3, ReasonByName},
+			},
+		},
+		{
 			name:  "all but domestic",
 			rules: "local -> direct\ngeoip:ru -> direct\ndefault -> chain:nl",
 			lists: map[string][]string{"ru": ruList},
@@ -131,7 +154,7 @@ func TestCompile(t *testing.T) {
 			lists: map[string][]string{"ru": ruList},
 			want:  want{netmap.Direct: inRU, nl: outRU},
 			skipped: []Skip{
-				{OriginSpace, 0, ReasonByName}, {OriginSpace, 1, ReasonByName}, {OriginSpace, 2, ReasonByName},
+				{OriginSpace, 0, ReasonByNameUndercut}, {OriginSpace, 1, ReasonByNameUndercut}, {OriginSpace, 2, ReasonByName},
 			},
 		},
 		{
@@ -266,21 +289,21 @@ func TestEffectiveOverridesAndPresets(t *testing.T) {
 	o := Options{Overlay: overlay, GeoIP: geoip(t, map[string][]string{"ru": ruList})}
 	type want map[netmap.Action][]string
 	tests := []struct {
-		name     string
-		local    string
-		presets  netmap.RulePresets
-		base     Preset
-		want     want
-		disabled []string // the space's rules a preset leaves out
+		name        string
+		space       []netmap.Rule // nil: space above
+		local       string
+		presets     netmap.RulePresets
+		unavailable bool
+		want        want
 	}{
 		{
-			name: "the space's rules", presets: presets, base: PresetSpace,
+			name: "the space's rules", presets: presets,
 			want: want{netmap.Direct: append([]string{"192.168.1.1"}, inRU...), nl: outRU, netmap.Block: {"198.51.100.1"}},
 		},
 		{
 			name:    "local rules go first",
 			local:   "cidr:77.88.8.0/24 -> chain:nl\ncidr:198.51.100.7/32 -> direct\ncidr:8.8.8.0/24 -> block",
-			presets: presets, base: PresetSpace,
+			presets: presets,
 			want: want{
 				nl:            {"77.88.8.8", "1.1.1.1"},
 				netmap.Direct: {"77.88.0.1", "198.51.100.7", "192.168.1.1"},
@@ -288,25 +311,39 @@ func TestEffectiveOverridesAndPresets(t *testing.T) {
 			},
 		},
 		{
-			name: "a local default leaves the space's rules nothing", local: "default -> chain:de", presets: presets, base: PresetSpace,
+			name: "a local default leaves the space's rules nothing", local: "default -> chain:de", presets: presets,
 			want: want{de: {"192.168.1.1", "1.1.1.1", "5.255.255.5", "198.51.100.1"}},
 		},
 		{
-			name: "everything", local: "preset everything", presets: presets, base: PresetEverything,
+			name: "everything", local: "preset everything", presets: presets,
 			want: want{netmap.Direct: {"192.168.1.1", "fe80::1"}, nl: append(append([]string{"198.51.100.1"}, inRU...), outRU...)},
 		},
 		{
-			name: "all but domestic", local: "preset all-but-domestic", presets: presets, base: PresetAllButDomestic,
+			name: "all but domestic", local: "preset all-but-domestic", presets: presets,
 			want: want{netmap.Direct: append([]string{"192.168.1.1"}, inRU...), nl: append([]string{"198.51.100.1"}, outRU...)},
 		},
 		{
-			name: "a preset with local rules on top", local: "preset everything\ngeoip:ru -> direct", presets: presets, base: PresetEverything,
+			name: "a preset with local rules on top", local: "preset everything\ngeoip:ru -> direct", presets: presets,
 			want: want{netmap.Direct: inRU, nl: outRU},
 		},
 		{
-			name: "a preset the space can't build falls back to its rules", local: "preset all-but-domestic",
-			presets: netmap.RulePresets{Chain: "nl"}, base: PresetSpace,
-			want: want{netmap.Block: {"198.51.100.1"}, netmap.Direct: inRU},
+			name: "everything on a map without rules", space: []netmap.Rule{}, local: "preset everything",
+			presets: netmap.RulePresets{Chain: "nl"},
+			want:    want{netmap.Direct: {"192.168.1.1"}, nl: append(append([]string{"198.51.100.1"}, inRU...), outRU...)},
+		},
+		{
+			name: "all but domestic without a domestic list is everything, not the space's rules", local: "preset all-but-domestic",
+			presets: netmap.RulePresets{Chain: "nl"}, unavailable: true,
+			want: want{netmap.Direct: {"192.168.1.1"}, nl: append(append([]string{"198.51.100.1"}, inRU...), outRU...)},
+		},
+		{
+			name: "a preset without a chain keeps the LAN and blocks the rest", local: "preset everything",
+			presets: netmap.RulePresets{Domestic: "ru"}, unavailable: true,
+			want: want{netmap.Direct: {"192.168.1.1", "fe80::1"}, netmap.Block: append(append([]string{"198.51.100.1"}, inRU...), outRU...)},
+		},
+		{
+			name: "on a map without rules or presets, too", space: []netmap.Rule{}, local: "preset all-but-domestic", unavailable: true,
+			want: want{netmap.Direct: {"10.0.0.1"}, netmap.Block: append(inRU, outRU...)},
 		},
 	}
 	for _, tt := range tests {
@@ -315,9 +352,13 @@ func TestEffectiveOverridesAndPresets(t *testing.T) {
 			if err := l.UnmarshalText([]byte(tt.local)); err != nil {
 				t.Fatal(err)
 			}
-			entries, base := Effective(space, tt.presets, l)
-			if base != tt.base {
-				t.Fatalf("base %v, want %v", base, tt.base)
+			sp := space
+			if tt.space != nil {
+				sp = tt.space
+			}
+			entries, err := Effective(sp, tt.presets, l)
+			if errors.Is(err, ErrPresetUnavailable) != tt.unavailable {
+				t.Fatalf("err %v, want unavailable: %v", err, tt.unavailable)
 			}
 			for i, e := range entries {
 				if i < len(l.Rules) != (e.Origin == OriginLocal) {
@@ -356,15 +397,25 @@ func TestPresetRules(t *testing.T) {
 		}
 	}
 	for _, tc := range []struct {
-		p Preset
-		s netmap.RulePresets
+		p    Preset
+		s    netmap.RulePresets
+		want string
 	}{
-		{PresetEverything, netmap.RulePresets{Domestic: "ru"}},
-		{PresetAllButDomestic, netmap.RulePresets{Chain: "nl"}},
-		{Preset(9), p},
+		{PresetEverything, netmap.RulePresets{Domestic: "ru"}, "local -> direct; default -> block"},
+		{PresetAllButDomestic, netmap.RulePresets{}, "local -> direct; default -> block"},
+		{PresetAllButDomestic, netmap.RulePresets{Chain: "nl"}, "local -> direct; default -> chain:nl"},
+		{Preset(9), p, "local -> direct; default -> block"},
 	} {
-		if _, err := PresetRules(tc.p, nil, tc.s); err == nil {
-			t.Errorf("%v from %+v: no error", tc.p, tc.s)
+		rs, err := PresetRules(tc.p, mustRules(t, "default -> direct"), tc.s)
+		if !errors.Is(err, ErrPresetUnavailable) {
+			t.Errorf("%v from %+v: %v, want ErrPresetUnavailable", tc.p, tc.s, err)
+		}
+		var text []string
+		for _, r := range rs {
+			text = append(text, r.String())
+		}
+		if got := strings.Join(text, "; "); got != tc.want {
+			t.Errorf("%v from %+v: %s, want %s (failing closed)", tc.p, tc.s, got, tc.want)
 		}
 	}
 }
@@ -553,7 +604,9 @@ func (g *gen) naive(entries []Entry, o Options, a netip.Addr) (netmap.Action, bo
 			matches = true
 		case m.Kind == netmap.MatchLocal:
 			matches = lists.Local().Contains(a)
-		case m.Kind == netmap.MatchCIDR && (m.Prefix.Addr().Is4() || !m.Prefix.Overlaps(mappedRange)):
+		case m.Kind == netmap.MatchCIDR && (m.Prefix.Addr().Is4() || !m.Prefix.Overlaps(mappedRange) || m.Prefix.Bits() < 96):
+			// a is unmapped, so a prefix around the mapped range never
+			// matches a mapped address
 			matches = m.Prefix.Masked().Contains(a)
 		case m.Kind == netmap.MatchGeoIP && (m.Value == "aa" || m.Value == "bb"):
 			for _, p := range g.lists[m.Value] {
@@ -600,15 +653,6 @@ func (g *gen) probes() []netip.Addr {
 		}
 	}
 	return slices.DeleteFunc(out, func(a netip.Addr) bool { return !a.IsValid() })
-}
-
-func lastAddr(p netip.Prefix) netip.Addr {
-	b := p.Masked().Addr().AsSlice()
-	for i := p.Bits(); i < len(b)*8; i++ {
-		b[i/8] |= 0x80 >> (i % 8)
-	}
-	a, _ := netip.AddrFromSlice(b)
-	return a
 }
 
 func (g *gen) describe(entries []Entry) string {

@@ -15,9 +15,12 @@ import (
 // refuses sections that need a newer one. Raise it, and mark the sections
 // that use a new field, when older nodes must not silently ignore the field.
 //
-//	1  M0: node settings, peers, links, inbound links, routes, blobs
-//	2  routing rules, chains and rule presets (only sections that have them)
-const SectionReader = 2
+// Routing rules, chains and rule presets don't raise it: a node too old to
+// know them ignores them and routes nothing outside the overlay, so its
+// internet traffic never enters the tunnel, as on M0. Marking them would
+// prevent no leak and would freeze such nodes on their last map, with its
+// revocations.
+const SectionReader = 1
 
 // Section is one node's need-to-know part of the map: its own settings and
 // the nodes it talks to, every one known by an opaque id. New needs (ingress
@@ -484,12 +487,8 @@ func checkSettings(settings []byte, shapingBytes ...[]byte) error {
 }
 
 func sectionToProto(s *Section, h *Header) *netmapv1.Section {
-	reader := uint32(1)
-	if s.usesRules() {
-		reader = 2
-	}
 	pb := &netmapv1.Section{
-		MinReader:  reader,
+		MinReader:  SectionReader,
 		SpaceId:    h.SpaceID[:],
 		KeyEpoch:   h.KeyEpoch,
 		MapVersion: h.Version,

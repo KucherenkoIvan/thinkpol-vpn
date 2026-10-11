@@ -28,12 +28,13 @@ type Options struct {
 type Reason uint8
 
 const (
-	ReasonByName        Reason = iota + 1 // a domain or geosite matcher: not enforced in route-table mode
-	ReasonNoList                          // a GeoIP list the node doesn't have (yet): matches nothing
-	ReasonUnknownMatch                    // a matcher the node doesn't know or can't read: matches nothing
-	ReasonUnknownAction                   // an action the node doesn't know: blocks
-	ReasonNoChain                         // a chain that can't carry traffic: blocks
-	ReasonAfterUnknown                    // a direct rule after one whose addresses aren't known: off
+	ReasonByName         Reason = iota + 1 // a domain or geosite matcher: not enforced in route-table mode
+	ReasonNoList                           // a GeoIP list the node doesn't have (yet): matches nothing
+	ReasonUnknownMatch                     // a matcher the node doesn't know or can't read: matches nothing
+	ReasonUnknownAction                    // an action the node doesn't know: blocks
+	ReasonNoChain                          // a chain that can't carry traffic: blocks
+	ReasonAfterUnknown                     // a direct rule after one whose addresses aren't known: off
+	ReasonByNameUndercut                   // as ReasonByName, and a later direct rule may send its names' addresses around the tunnel
 )
 
 func (r Reason) String() string {
@@ -50,6 +51,8 @@ func (r Reason) String() string {
 		return "chain unavailable, blocked"
 	case ReasonAfterUnknown:
 		return "direct after a rule with unknown addresses, off"
+	case ReasonByNameUndercut:
+		return "not enforced in route-table mode, and a later direct rule may route its names around the tunnel"
 	}
 	return fmt.Sprintf("Reason(%d)", uint8(r))
 }
@@ -71,6 +74,7 @@ type Route struct {
 type Table struct {
 	routes  []Route // the /0 routes (nzero of them), then the others in address order
 	nzero   int
+	chains  []string
 	overlay *lists.Set
 	direct  *lists.Set
 	skipped []Skip
@@ -83,10 +87,10 @@ func Compile(entries []Entry, o Options) *Table {
 	claimed := t.overlay
 	var actions []netmap.Action // in order of first use, so the result is deterministic
 	effective := make(map[netmap.Action]*lists.Builder)
-	claim := func(a netmap.Action, s *lists.Set) {
+	claim := func(a netmap.Action, s *lists.Set) bool {
 		eff := s.Minus(claimed)
 		if eff.IsEmpty() {
-			return
+			return false
 		}
 		if effective[a] == nil {
 			actions = append(actions, a)
@@ -94,15 +98,20 @@ func Compile(entries []Entry, o Options) *Table {
 		}
 		effective[a].AddSet(eff)
 		claimed = union(claimed, eff)
+		return true
 	}
 
 	unknown := false // a rule whose addresses aren't known came first
+	var byName []int // skips of name rules that don't go direct, not yet followed by a direct rule
 	for _, e := range entries {
 		r := e.Rule
 		skip := func(reason Reason) {
 			t.skipped = append(t.skipped, Skip{Origin: e.Origin, Index: e.Index, Reason: reason})
 		}
 		if r.Match.Kind.ByName() {
+			if r.Action.Kind != netmap.ActionDirect {
+				byName = append(byName, len(t.skipped))
+			}
 			skip(ReasonByName)
 			continue
 		}
@@ -124,7 +133,12 @@ func Compile(entries []Entry, o Options) *Table {
 			skip(ReasonAfterUnknown)
 			continue
 		}
-		claim(action, set)
+		if claim(action, set) && action == netmap.Direct {
+			for _, i := range byName {
+				t.skipped[i].Reason = ReasonByNameUndercut
+			}
+			byName = nil
+		}
 	}
 	rest := netmap.Block
 	if len(entries) == 0 {
@@ -137,6 +151,11 @@ func Compile(entries []Entry, o Options) *Table {
 	// longest-prefix match still finds every address's action, from far
 	// fewer routes than the partition itself: the rest of the world around
 	// a country's list fragments into many times its prefixes.
+	for _, a := range actions {
+		if a.Kind == netmap.ActionChain {
+			t.chains = append(t.chains, a.Chain)
+		}
+	}
 	sets := make(map[netmap.Action]*lists.Set, len(actions))
 	var counts [2]map[netmap.Action]int // prefixes per family
 	counts[0], counts[1] = make(map[netmap.Action]int), make(map[netmap.Action]int)
@@ -190,12 +209,10 @@ func (o Options) resolve(m netmap.Match) (*lists.Set, Reason) {
 	case netmap.MatchLocal:
 		return lists.Local(), 0
 	case netmap.MatchCIDR:
-		// The builder's rule for IPv4-mapped IPv6 holds here too.
-		var b lists.Builder
-		if m.Prefix.Addr().Zone() != "" || b.AddPrefix(m.Prefix) != nil {
+		s, ok := cidrSet(m.Prefix)
+		if !ok {
 			return nil, ReasonUnknownMatch
 		}
-		s, _ := b.Build()
 		return s, 0
 	case netmap.MatchGeoIP:
 		if o.GeoIP != nil {
@@ -206,6 +223,44 @@ func (o Options) resolve(m netmap.Match) (*lists.Set, Reason) {
 		return nil, ReasonNoList
 	}
 	return nil, ReasonUnknownMatch
+}
+
+var mapped = netip.MustParsePrefix("::ffff:0:0/96")
+
+// cidrSet is a cidr matcher's addresses. IPv4 is matched only as IPv4, so
+// an IPv6 prefix around ::ffff:0:0/96 (::/0, ::/80) leaves that range out,
+// and one inside it matches nothing a list can hold: false.
+func cidrSet(p netip.Prefix) (*lists.Set, bool) {
+	if !p.IsValid() || p.Addr().Zone() != "" {
+		return nil, false
+	}
+	p = p.Masked()
+	var b lists.Builder
+	if p.Addr().Is6() && p.Overlaps(mapped) {
+		if p.Bits() >= mapped.Bits() {
+			return nil, false
+		}
+		first, last := p.Addr(), lastAddr(p)
+		if first.Less(mapped.Addr()) {
+			_ = b.AddRange(first, mapped.Addr().Prev())
+		}
+		if mappedLast := lastAddr(mapped); mappedLast.Less(last) {
+			_ = b.AddRange(mappedLast.Next(), last)
+		}
+	} else if b.AddPrefix(p) != nil {
+		return nil, false
+	}
+	s, _ := b.Build()
+	return s, true
+}
+
+func lastAddr(p netip.Prefix) netip.Addr {
+	b := p.Masked().Addr().AsSlice()
+	for i := p.Bits(); i < len(b)*8; i++ {
+		b[i/8] |= 0x80 >> (i % 8)
+	}
+	a, _ := netip.AddrFromSlice(b)
+	return a
 }
 
 func setOf(prefixes []netip.Prefix) *lists.Set {
@@ -256,6 +311,9 @@ func (t *Table) Lookup(a netip.Addr) (netmap.Action, bool) {
 // Direct is every address that goes around the tunnel: what route-table
 // mode installs as routes through the physical gateway.
 func (t *Table) Direct() *lists.Set { return t.direct }
+
+// Chains are the chains some destination goes through, in rule order.
+func (t *Table) Chains() []string { return t.chains }
 
 // Skipped are the rules not enforced as written, in rule order.
 func (t *Table) Skipped() []Skip { return t.skipped }

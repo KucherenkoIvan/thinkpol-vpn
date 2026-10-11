@@ -117,7 +117,11 @@ type Engine struct {
 	ownRules     rules.Local
 	ruleInput    *ruleInput
 	ruleNetworks []netip.Prefix
-	chainExit    map[string]netmap.NodeID
+	chainExit    map[string]netmap.NodeID // chains whose exit is a usable peer
+	usedExits    map[netmap.NodeID]bool   // their exits the rules send traffic to
+	overlay      *OverlayConfig           // the last section's, and its paths, for recompiling
+	paths        []path.Peer
+	routedRules  RuleStatus // what the router's table enforces
 	ruleTable    *rules.Table
 	ruleStatus   RuleStatus
 	geoipSets    map[[32]byte]*lists.Set // decoded, by hash
@@ -245,7 +249,8 @@ func (e *Engine) apply(ctx context.Context, s netmap.Section) (string, error) {
 	var want map[string][]devicePeer
 	if ocErr == nil {
 		e.chainExit = chainExits(s.Chains, oc.Peers)
-		e.compileRules(ruleInputOf(s), oc.Networks)
+		_ = e.compileRules(ruleInputOf(s), oc.Networks) // an unavailable preset is in Status
+		e.overlay, e.paths = &oc, pc.Peers
 		want = e.assign(oc)
 	} else {
 		want = sectionPeers(s, e.devices)
@@ -270,7 +275,7 @@ func (e *Engine) apply(ctx context.Context, s netmap.Section) (string, error) {
 	if err := e.addPeers(want, pc.Peers, oc.MTU); err != nil {
 		return StepDevices, err
 	}
-	if err := e.router.SetTable(e.table()); err != nil {
+	if err := e.setTable(); err != nil {
 		return StepRouter, err
 	}
 	return "", nil
@@ -352,7 +357,7 @@ func (e *Engine) removePeers(want map[string][]devicePeer, known bool, paths []p
 	for name := range departing {
 		delete(e.devices, name)
 	}
-	if err := e.router.SetTable(e.table()); err != nil {
+	if err := e.setTable(); err != nil {
 		return err
 	}
 	var errs []error
@@ -518,7 +523,7 @@ func (e *Engine) Status() Status {
 		LastApplyError: e.lastErr,
 		Router:         e.router.Counters(),
 		Path:           e.node.Counters(),
-		Rules:          e.ruleStatus,
+		Rules:          e.routedRules,
 	}
 	s.Rules.Skipped = slices.Clone(s.Rules.Skipped)
 	if e.ipv6Off != nil {

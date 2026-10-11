@@ -19,6 +19,8 @@ func TestParseRule(t *testing.T) {
 		{"local -> direct", Rule{Match{Kind: MatchLocal}, Direct}, ""},
 		{"geoip:ru → direct", Rule{Match{Kind: MatchGeoIP, Value: "ru"}, Direct}, "geoip:ru -> direct"},
 		{"  cidr:10.0.0.0/8->block ", Rule{Match{Kind: MatchCIDR, Prefix: netip.MustParsePrefix("10.0.0.0/8")}, Block}, "cidr:10.0.0.0/8 -> block"},
+		{"cidr:::/0 -> block", Rule{Match{Kind: MatchCIDR, Prefix: netip.MustParsePrefix("::/0")}, Block}, ""}, // all of IPv6 but ::ffff:0:0/96
+		{"cidr:::fffe:0:0/95 -> block", Rule{Match{Kind: MatchCIDR, Prefix: netip.MustParsePrefix("::fffe:0:0/95")}, Block}, ""},
 		{"cidr:2001:db8::/32 -> chain:de", Rule{Match{Kind: MatchCIDR, Prefix: netip.MustParsePrefix("2001:db8::/32")}, ToChain("de")}, ""},
 		{"domain:Mail.Example.RU. -> direct", Rule{Match{Kind: MatchDomain, Value: "mail.example.ru"}, Direct}, "domain:mail.example.ru -> direct"},
 		{"domain-suffix:xn--p1ai -> direct", Rule{Match{Kind: MatchDomainSuffix, Value: "xn--p1ai"}, Direct}, ""},
@@ -49,7 +51,7 @@ func TestParseRule(t *testing.T) {
 		"", "default", "default direct", "-> direct", "default ->",
 		"default:x -> direct", "local:lan -> direct", "everything -> direct",
 		"cidr -> direct", "cidr:10.0.0.1/8 -> direct", "cidr:10.0.0.0 -> direct", "cidr:fe80::%eth0/64 -> direct",
-		"cidr:::/0 -> direct", "cidr:::ffff:0:0/96 -> direct", "cidr:::ffff:10.0.0.0/104 -> direct", "cidr:::ffff:0:0/95 -> block",
+		"cidr:::ffff:0:0/96 -> direct", "cidr:::ffff:10.0.0.0/104 -> direct", "cidr:::ffff:0:0/95 -> block",
 		"geoip -> direct", "geoip: -> direct", "geoip:RU -> direct", "geoip:-ru -> direct", "geoip:ru_x -> direct",
 		"geoip:abcdefghijklmnopqrstuvwxyz0123456 -> direct",
 		"domain: -> direct", "domain:a..b -> direct", "domain:-a.b -> direct", "domain:a b -> direct", "domain:пример.рф -> direct",
@@ -61,21 +63,17 @@ func TestParseRule(t *testing.T) {
 	}
 }
 
-// Rules need section reader 2; sections without them stay readable by M0
-// nodes.
-func TestOnlySectionsWithRulesNeedTheNewReader(t *testing.T) {
+// Rules don't raise the section reader: an M0 node keeps following maps
+// (and their revocations), ignoring the rules it doesn't know.
+func TestSectionsWithRulesStayReaderOne(t *testing.T) {
 	f := newFixture(t, 2, 1) // entry, exit, device
 	h := f.verify(t, f.build(t)).Header()
-	for i, want := range []uint32{1, 1, 2} {
-		s := f.contents.Recipients[i].Section
-		if got := sectionToProto(&s, &h).GetMinReader(); got != want {
-			t.Errorf("section %d (%d rules) needs reader %d, want %d", i, len(s.Rules), got, want)
-		}
+	device := f.contents.Recipients[2].Section
+	if len(device.Rules) == 0 {
+		t.Fatal("the fixture's device has no rules")
 	}
-	presetsOnly := f.contents.Recipients[0].Section
-	presetsOnly.Presets = RulePresets{Domestic: "ru"}
-	if got := sectionToProto(&presetsOnly, &h).GetMinReader(); got != 2 {
-		t.Errorf("a section with presets only needs reader %d, want 2", got)
+	if got := sectionToProto(&device, &h).GetMinReader(); got != 1 {
+		t.Errorf("a section with rules needs reader %d, want 1", got)
 	}
 }
 

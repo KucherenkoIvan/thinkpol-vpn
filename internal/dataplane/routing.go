@@ -2,6 +2,7 @@ package dataplane
 
 import (
 	"crypto/sha256"
+	"fmt"
 	"net/netip"
 	"slices"
 
@@ -47,14 +48,11 @@ func chainExits(chains []netmap.Chain, peers []OverlayPeer) map[string]netmap.No
 	return out
 }
 
-// layout puts each chain's exit on a device of its own, allowed the
-// internet, and every other peer on the overlay device.
+// layout puts the exit of each chain the rules use on a device of its
+// own, allowed the internet, and every other peer on the overlay device.
 func (e *Engine) layout(oc OverlayConfig) map[string][]devicePeer {
 	want := overlayOnly(oc)
-	exits := make(map[netmap.NodeID]bool, len(e.chainExit))
-	for _, id := range e.chainExit {
-		exits[id] = true
-	}
+	exits := e.usedExits
 	if len(exits) == 0 {
 		return want
 	}
@@ -111,9 +109,14 @@ func ruleInputOf(s netmap.Section) *ruleInput {
 
 // compileRules compiles the device's rules from a section's, with the
 // space's overlay networks, against the chains e.chainExit can carry. The
-// result routes nothing until the next router table.
-func (e *Engine) compileRules(s *ruleInput, networks []netip.Prefix) {
-	entries, base := rules.Effective(s.rules, s.presets, e.ownRules)
+// result routes nothing until the next layout and router table. A preset
+// the map can't build, or whose chain can't carry traffic, is compiled
+// failing closed and reported as ErrPresetUnavailable.
+func (e *Engine) compileRules(s *ruleInput, networks []netip.Prefix) error {
+	entries, err := rules.Effective(s.rules, s.presets, e.ownRules)
+	if _, ok := e.chainExit[s.presets.Chain]; err == nil && e.ownRules.Preset != rules.PresetSpace && !ok {
+		err = fmt.Errorf("%w: chain unavailable", rules.ErrPresetUnavailable)
+	}
 	t := rules.Compile(entries, rules.Options{
 		Overlay: networks,
 		GeoIP:   e.geoip(s.blobs),
@@ -131,7 +134,11 @@ func (e *Engine) compileRules(s *ruleInput, networks []netip.Prefix) {
 	e.ruleTable = t
 	e.ruleInput = s
 	e.ruleNetworks = networks
-	e.ruleStatus = RuleStatus{Preset: base, PresetUnavailable: base != e.ownRules.Preset, Skipped: slices.Clone(t.Skipped())}
+	e.usedExits = make(map[netmap.NodeID]bool)
+	for _, c := range t.Chains() {
+		e.usedExits[e.chainExit[c]] = true
+	}
+	e.ruleStatus = RuleStatus{Preset: e.ownRules.Preset, PresetUnavailable: err != nil, Skipped: slices.Clone(t.Skipped())}
 	for _, p := range t.Direct().Prefixes() {
 		if p.Addr().Is4() {
 			e.ruleStatus.Direct4++
@@ -139,6 +146,7 @@ func (e *Engine) compileRules(s *ruleInput, networks []netip.Prefix) {
 			e.ruleStatus.Direct6++
 		}
 	}
+	return err
 }
 
 // geoip resolves a list name to the section's geoip blob of that name, as
@@ -204,7 +212,9 @@ func (e *Engine) ruleRoutes(egresses map[string]*router.Egress) []router.Route {
 }
 
 // SetRules replaces the device's own rule choice (its local file) and
-// enforces the result at once, without waiting for a map.
+// enforces the result at once, without waiting for a map. A preset the
+// map can't build is enforced failing closed (see rules.PresetRules) and
+// reported with rules.ErrPresetUnavailable.
 func (e *Engine) SetRules(l rules.Local) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -226,10 +236,32 @@ func (e *Engine) ReloadRules() error {
 	return e.recompileRules()
 }
 
+// recompileRules compiles the rules again and lays the devices out for
+// them: a chain the rules start or stop using moves its exit.
 func (e *Engine) recompileRules() error {
-	if e.ruleInput == nil {
-		return nil // the first Apply compiles them
+	if e.ruleInput == nil || e.overlay == nil {
+		return nil // the first Apply that can run compiles them
 	}
-	e.compileRules(e.ruleInput, e.ruleNetworks)
-	return e.router.SetTable(e.table())
+	unavailable := e.compileRules(e.ruleInput, e.ruleNetworks)
+	want := e.assign(*e.overlay)
+	if err := e.removePeers(want, true, e.paths); err != nil {
+		return err
+	}
+	if err := e.addPeers(want, e.paths, e.mtu); err != nil {
+		return err
+	}
+	if err := e.setTable(); err != nil {
+		return err
+	}
+	return unavailable
+}
+
+// setTable gives the router the table for what runs now; Status reports
+// the rules that table enforces.
+func (e *Engine) setTable() error {
+	if err := e.router.SetTable(e.table()); err != nil {
+		return err
+	}
+	e.routedRules = e.ruleStatus
+	return nil
 }

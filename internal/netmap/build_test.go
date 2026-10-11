@@ -170,7 +170,7 @@ func TestBuildRejectsInvalidContents(t *testing.T) {
 		{"default with an argument", device(func(s *Section) { s.Rules[4].Match.Value = "x" })},
 		{"cidr with host bits", device(func(s *Section) { s.Rules[3].Match.Prefix = netip.MustParsePrefix("2001:db8::1/32") })},
 		{"cidr without prefix", device(func(s *Section) { s.Rules[3].Match.Prefix = netip.Prefix{} })},
-		{"cidr over IPv4-mapped IPv6", device(func(s *Section) { s.Rules[3].Match.Prefix = netip.MustParsePrefix("::/0") })},
+		{"cidr inside IPv4-mapped IPv6", device(func(s *Section) { s.Rules[3].Match.Prefix = netip.MustParsePrefix("::ffff:10.0.0.0/104") })},
 		{"geoip list without a blob", device(func(s *Section) { s.Rules[2].Match.Value = "de" })},
 		{"geoip list name invalid", device(func(s *Section) { s.Rules[2].Match.Value = "RU" })},
 		{"geosite list without a blob", device(func(s *Section) { s.Rules[2].Match = Match{Kind: MatchGeoSite, Value: "ru"} })},

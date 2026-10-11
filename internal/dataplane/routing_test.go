@@ -2,6 +2,7 @@ package dataplane_test
 
 import (
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"net/netip"
 	"slices"
@@ -284,12 +285,21 @@ func TestRulesFollowListsAndLocalChoices(t *testing.T) {
 		yandex: exitOf(s), netip.MustParseAddr("77.88.0.1"): sentDirect, google: sentBlocked,
 	}, []rules.Skip{{Origin: rules.OriginLocal, Index: 2, Reason: rules.ReasonByName}})
 
+	// The map drops the presets: the device's choice fails closed, never
+	// falling back to the space's rules (which send RU direct).
 	a.section.Presets = netmap.RulePresets{}
 	a.apply(t)
-	if st := a.engine.Status().Rules; st.Preset != rules.PresetSpace || !st.PresetUnavailable {
+	if st := a.engine.Status().Rules; st.Preset != rules.PresetAllButDomestic || !st.PresetUnavailable {
 		t.Fatalf("rule status %+v: the preset is gone from the map", st)
 	}
-	check("the space's rules again", map[netip.Addr]string{yandex: exitOf(s), netip.MustParseAddr("77.88.0.1"): sentDirect}, []rules.Skip{{Origin: rules.OriginLocal, Index: 2, Reason: rules.ReasonByName}})
+	check("a preset the map can't build", map[netip.Addr]string{
+		yandex: exitOf(s), netip.MustParseAddr("77.88.0.1"): sentBlocked, netip.MustParseAddr("1.1.1.1"): sentBlocked,
+		netip.MustParseAddr("192.168.0.1"): sentDirect,
+	}, []rules.Skip{{Origin: rules.OriginLocal, Index: 2, Reason: rules.ReasonByName}})
+	if err := a.engine.SetRules(rules.Local{Preset: rules.PresetEverything}); !errors.Is(err, rules.ErrPresetUnavailable) {
+		t.Fatalf("SetRules of an unavailable preset: %v", err)
+	}
+	check("everything, unavailable", map[netip.Addr]string{yandex: sentBlocked, netip.MustParseAddr("10.1.1.1"): sentDirect}, nil)
 
 	text := fmt.Sprintf("%v %+v %#v", a.engine.Status(), a.engine.Status(), a.engine.Status())
 	for _, quoted := range []string{"example.com", "77.88.", "\"ru\"", "\"nl\""} {
@@ -332,3 +342,49 @@ func TestAChainWithoutItsExitBlocks(t *testing.T) {
 }
 
 func sha256Of(b []byte) [32]byte { return sha256.Sum256(b) }
+
+// Only a chain some rule uses gets a device for its exit: one no rule uses
+// leaves its exit on the overlay device, without the internet in its
+// allowed IPs. Switching rules moves the exit at once.
+func TestExitDevicesFollowTheRules(t *testing.T) {
+	net := memory.NewNetwork(memory.Datagram)
+	a, s, b := m0()
+	withChain(t, a, s, "local -> direct", "default -> block")
+	for _, nd := range []*node{s, a, b} {
+		nd.start(t, net)
+	}
+	device := func() string {
+		for _, p := range a.engine.Status().Peers {
+			if p.ID == s.id {
+				return p.Device
+			}
+		}
+		return ""
+	}
+	if d := device(); d != dataplane.OverlayDevice || len(a.engine.Status().Egresses) != 1 {
+		t.Fatalf("an unused chain's exit is on %q, egresses %+v", d, a.engine.Status().Egresses)
+	}
+	if got := routeOf(t, a, netip.MustParseAddr("192.0.2.80")); got != sentBlocked {
+		t.Fatalf("internet traffic %s", got)
+	}
+
+	if err := a.engine.SetRules(rules.Local{Rules: []netmap.Rule{mustRule(t, "cidr:192.0.2.0/24 -> chain:nl")}}); err != nil {
+		t.Fatal(err)
+	}
+	if d := device(); d != exitOf(s) {
+		t.Fatalf("the exit is on %q once a rule uses its chain", d)
+	}
+	if got := routeOf(t, a, netip.MustParseAddr("192.0.2.80")); got != exitOf(s) {
+		t.Fatalf("internet traffic %s", got)
+	}
+	ping(t, a, s.v4)
+
+	if err := a.engine.SetRules(rules.Local{}); err != nil {
+		t.Fatal(err)
+	}
+	if d := device(); d != dataplane.OverlayDevice || len(a.engine.Status().Egresses) != 1 {
+		t.Fatalf("the exit is on %q after its chain went out of use", d)
+	}
+	ping(t, a, s.v4)
+	ping(t, a, b.v4)
+}

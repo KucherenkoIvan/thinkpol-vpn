@@ -43,22 +43,30 @@ func ParsePreset(s string) (Preset, error) {
 	return 0, fmt.Errorf("rules: preset %q: want one of %s", s, strings.Join(presetNames[:], ", "))
 }
 
-// ErrPresetUnavailable is a preset the map's preset settings can't build:
-// no chain, or for "all but domestic" no domestic list.
+// ErrPresetUnavailable is a preset the map's preset settings can't build
+// as asked: no chain, or for "all but domestic" no domestic list.
 var ErrPresetUnavailable = errors.New("rules: preset unavailable in this space")
 
 // PresetRules returns a preset's rules: for PresetSpace the space's own,
-// otherwise built from the map's preset settings.
+// otherwise built from the map's preset settings. A preset the settings
+// can't build fails closed, never towards the space's rules (which may
+// send more around the tunnel than the device asked for): "all but
+// domestic" without a domestic list is "everything", and either without a
+// chain keeps only the local ranges, blocking the rest. Those rules come
+// with ErrPresetUnavailable, as do an unknown preset's.
 func PresetRules(p Preset, space []netmap.Rule, s netmap.RulePresets) ([]netmap.Rule, error) {
 	local := netmap.Rule{Match: netmap.Match{Kind: netmap.MatchLocal}, Action: netmap.Direct}
 	tunnel := netmap.Rule{Match: netmap.Match{Kind: netmap.MatchDefault}, Action: netmap.ToChain(s.Chain)}
+	closed := []netmap.Rule{local, {Match: netmap.Match{Kind: netmap.MatchDefault}, Action: netmap.Block}}
 	switch {
 	case p == PresetSpace:
 		return slices.Clone(space), nil
 	case p != PresetEverything && p != PresetAllButDomestic:
-		return nil, fmt.Errorf("rules: unknown preset %v", p)
-	case s.Chain == "" || p == PresetAllButDomestic && s.Domestic == "":
-		return nil, fmt.Errorf("%w: %v", ErrPresetUnavailable, p)
+		return closed, fmt.Errorf("%w: unknown preset %v", ErrPresetUnavailable, p)
+	case s.Chain == "":
+		return closed, fmt.Errorf("%w: %v: no chain", ErrPresetUnavailable, p)
+	case p == PresetAllButDomestic && s.Domestic == "":
+		return []netmap.Rule{local, tunnel}, fmt.Errorf("%w: %v: no domestic list", ErrPresetUnavailable, p)
 	case p == PresetEverything:
 		return []netmap.Rule{local, tunnel}, nil
 	}
@@ -164,19 +172,20 @@ type Entry struct {
 }
 
 // Effective is a device's rule list in order: its own rules, then its
-// preset's (or the space's). A preset the map can't build falls back to
-// the space's rules; base is the one used.
-func Effective(space []netmap.Rule, presets netmap.RulePresets, l Local) (entries []Entry, base Preset) {
+// preset's (or the space's). For a preset the map can't build it returns
+// PresetRules' fail-closed rules and ErrPresetUnavailable.
+func Effective(space []netmap.Rule, presets netmap.RulePresets, l Local) ([]Entry, error) {
+	var entries []Entry
 	for i, r := range l.Rules {
 		entries = append(entries, Entry{Rule: r, Origin: OriginLocal, Index: i})
 	}
-	base, origin := l.Preset, OriginPreset
-	baseRules, err := PresetRules(base, space, presets)
-	if err != nil || base == PresetSpace {
-		base, origin, baseRules = PresetSpace, OriginSpace, space
+	origin := OriginPreset
+	if l.Preset == PresetSpace {
+		origin = OriginSpace
 	}
-	for i, r := range baseRules {
+	base, err := PresetRules(l.Preset, space, presets)
+	for i, r := range base {
 		entries = append(entries, Entry{Rule: r, Origin: origin, Index: i})
 	}
-	return entries, base
+	return entries, err
 }
