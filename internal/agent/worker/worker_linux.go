@@ -129,11 +129,17 @@ func readControl(control *ipc.Conn, configCh chan []byte, cancel context.CancelC
 }
 
 // readConfig returns a config message's payload, reading it from the attached
-// sealed memfd when it came that way.
+// sealed memfd when it came that way. A memfd is read from offset 0 for its
+// whole size, not from the file's current position (the supervisor wrote it).
 func readConfig(m ipc.Message) ([]byte, error) {
 	defer m.CloseFiles()
 	if len(m.Files) == 0 {
 		return m.Payload, nil
 	}
-	return io.ReadAll(m.Files[0])
+	f := m.Files[0]
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	return io.ReadAll(io.NewSectionReader(f, 0, fi.Size()))
 }

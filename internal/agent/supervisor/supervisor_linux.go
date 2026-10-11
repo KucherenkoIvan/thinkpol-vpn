@@ -30,11 +30,13 @@ import (
 const selfExe = "/proc/self/exe"
 
 // workerAmbientCaps are the capabilities a worker carries across exec, all
-// confined to its own namespaces: SYS_ADMIN for mounts and pivot_root,
-// NET_ADMIN for its TUN, routes and nftables, NET_RAW for the data plane and
-// NET_BIND_SERVICE for its DNS resolver on port 53.
+// confined to its own namespaces: SYS_ADMIN for the mounts and pivot_root in
+// sandbox, SETPCAP to drop the capability bounding set afterwards, NET_ADMIN
+// for its TUN, routes and nftables, NET_RAW for the data plane and
+// NET_BIND_SERVICE for its DNS resolver on port 53. sandbox drops SYS_ADMIN
+// and SETPCAP once it is done with them.
 var workerAmbientCaps = []uintptr{
-	unix.CAP_SYS_ADMIN, unix.CAP_NET_ADMIN, unix.CAP_NET_RAW, unix.CAP_NET_BIND_SERVICE,
+	unix.CAP_SYS_ADMIN, unix.CAP_SETPCAP, unix.CAP_NET_ADMIN, unix.CAP_NET_RAW, unix.CAP_NET_BIND_SERVICE,
 }
 
 // Supervisor runs one worker per space, each in its own user, network, mount,
@@ -198,14 +200,36 @@ func (s *Supervisor) SetSpaces(spaces []Space) error {
 
 	// Rebuild the isolation tables for the current slots before any new
 	// worker's veth carries a packet. A slot is stable across a worker's
-	// restarts, so this is a no-op unless the set changed.
+	// restarts, so this is a no-op unless the set changed. On failure the
+	// just-started workers are rolled back: none has a goroutine yet, so a
+	// later Close must not wait on them.
 	if err := s.applyIsolation(active); err != nil {
+		s.rollback(started)
 		return err
 	}
 	for _, w := range started {
 		go s.supervise(w)
 	}
 	return nil
+}
+
+// rollback drops workers that were registered but never started (their done
+// channel would never close): remove them, free their slots and cgroups.
+func (s *Supervisor) rollback(ws []*worker) {
+	s.mu.Lock()
+	for _, w := range ws {
+		delete(s.workers, w.space)
+		delete(s.slots, w.slot)
+	}
+	s.mu.Unlock()
+	for _, w := range ws {
+		close(w.done) // it was never supervised; keep Workers()/Close consistent
+		if w.cg != nil {
+			if err := w.cg.remove(); err != nil {
+				s.log.Warn("removing a rolled-back worker's cgroup", "space", w.space.String(), "err", err)
+			}
+		}
+	}
 }
 
 func (s *Supervisor) stopAll(ws []*worker) {
@@ -448,12 +472,13 @@ func (s *Supervisor) run(w *worker, log *slog.Logger) error {
 			syscall.CLONE_NEWNET | syscall.CLONE_NEWIPC | syscall.CLONE_NEWUTS | unix.CLONE_NEWCGROUP,
 		UidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: int(w.uid), Size: 1}},
 		GidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: int(w.uid), Size: 1}},
-		GidMappingsEnableSetgroups: false,
+		GidMappingsEnableSetgroups: true,
 		// The child inherits host uid 0, which the map above doesn't cover, so
 		// without this it would be the overflow "nobody" uid inside its
 		// namespace. Becoming uid 0 there (host w.uid) makes it the namespace
-		// root that owns its mounts and interfaces.
-		Credential: &syscall.Credential{Uid: 0, Gid: 0, NoSetGroups: true},
+		// root that owns its mounts and interfaces; an empty Groups clears the
+		// supplementary groups it would otherwise inherit.
+		Credential: &syscall.Credential{Uid: 0, Gid: 0, Groups: []uint32{}},
 		// Ambient capabilities survive the exec; a process that is uid 0 in a
 		// new user namespace (mapped to an unprivileged host uid) would
 		// otherwise lose all capabilities, because the kernel's "root keeps
@@ -546,13 +571,17 @@ func (s *Supervisor) run(w *worker, log *slog.Logger) error {
 		case <-p.gone:
 			return p.exit()
 		case err := <-gone:
-			// The worker closed its socket or broke the protocol: close our
-			// end, give it StopTimeout, and report how it exited.
-			_ = ends.Control.Close()
-			if s.awaitExit(p) {
+			if errors.Is(err, io.EOF) {
+				// The worker's control socket closed: it has exited or is
+				// exiting, so its own exit is the reason.
+				s.awaitExit(p)
 				return p.exit()
 			}
-			return fmt.Errorf("socket: %w; killed", err)
+			// A protocol break while the worker is still running: that is the
+			// reason, whatever its incidental exit code.
+			_ = ends.Control.Close()
+			s.awaitExit(p)
+			return fmt.Errorf("socket: %w", err)
 		case <-w.notify:
 			if err := s.sendConfig(ends.Control, w); err != nil {
 				log.Warn("sending config", "err", err)
@@ -621,10 +650,7 @@ func readControl(conn *ipc.Conn, ready, gone chan<- error) {
 		m.CloseFiles()
 		err = fmt.Errorf("unexpected %v message", m.Kind)
 	}
-	if errors.Is(err, io.EOF) {
-		err = errors.New("closed by the worker")
-	}
-	gone <- err
+	gone <- err // io.EOF means the worker's socket closed (it is exiting)
 }
 
 // process is a started worker process with its network namespace held open.

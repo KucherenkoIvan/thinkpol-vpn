@@ -4,7 +4,9 @@ package supervisor_test
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -22,10 +24,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/nftables"
+	"github.com/google/nftables/expr"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
 	"golang.org/x/sys/unix"
 
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/ipc"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/logring"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/supervisor"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/worker"
@@ -49,6 +54,8 @@ func TestMain(m *testing.M) {
 	switch {
 	case os.Getenv("SUPERVISOR_TEST_ESCAPE") != "":
 		os.Exit(runEscapeControl())
+	case os.Getenv("SUPERVISOR_TEST_BAD_KIND") != "":
+		os.Exit(runBadKindWorker())
 	case os.Getenv(envWorker) != "":
 		os.Exit(runTestWorker())
 	case os.Getenv(envSupervisor) != "":
@@ -93,6 +100,9 @@ func runTestWorker() int {
 func probe(ctx context.Context, s worker.Session) error {
 	say := func(format string, args ...any) { fmt.Fprintf(os.Stderr, "probe "+format+"\n", args...) }
 
+	// The worker has no /proc: it reports what it can see over netlink and
+	// through syscalls; the test checks its namespaces and credentials from
+	// the outside via /proc/<pid>.
 	var links []string
 	if ls, err := dump(netlink.LinkList); err == nil {
 		for _, l := range ls {
@@ -100,11 +110,8 @@ func probe(ctx context.Context, s worker.Session) error {
 		}
 	}
 	slices.Sort(links)
-	ns := func(kind string) string { l, _ := os.Readlink("/proc/self/ns/" + kind); return l }
-	say("view links=%s root=%s procs=%s uidmap=%s sockets=%d capeff=%s netnsowner=%s ownuserns=%s net=%s pid=%s mnt=%s ipc=%s user=%s",
-		strings.Join(links, ","), dirList("/"), procPids(), uidMap(), unixSocketFDs(), capEff(),
-		netnsOwnerUserns(), nsID("/proc/self/ns/user"),
-		ns("net"), ns("pid"), ns("mnt"), ns("ipc"), ns("user"))
+	say("view links=%s root=%s caps=%016x", strings.Join(links, ","), dirList("/"), effectiveCaps())
+
 	// A NET_ADMIN operation in the worker's own namespace: add and remove a
 	// dummy link.
 	dummy := &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: "tp-probe0"}}
@@ -114,23 +121,18 @@ func probe(ctx context.Context, s worker.Session) error {
 		say("can netadmin")
 		_ = netlink.LinkDel(dummy)
 	}
+	// SYS_ADMIN was dropped: a mount must fail.
+	if err := unix.Mount("tmpfs", "/tmp", "tmpfs", 0, ""); err == nil {
+		say("can mount")
+	} else {
+		say("cannot mount: %v", err)
+	}
 
-	if err := escapeAttempt(); err != nil {
+	if err := escapeAttempt("tp-escape-w"); err != nil {
 		say("escape blocked: %v", err)
 	} else {
 		say("escape ok")
 	}
-
-	can := func(what string, err error) {
-		if err != nil {
-			say("cannot %s: %v", what, err)
-		} else {
-			say("can %s", what)
-		}
-	}
-	_, err := os.Stat("/dev/net/tun")
-	can("tun-node", err)
-	can("netsysctl", os.WriteFile("/proc/sys/net/ipv4/ip_forward", []byte("1"), 0))
 
 	pc, err := net.ListenPacket("udp", fmt.Sprintf(":%d", probePort))
 	if err != nil {
@@ -148,8 +150,10 @@ func probe(ctx context.Context, s worker.Session) error {
 		}
 	}()
 
-	// Targets arrive over the config channel (the worker can't read a host
-	// file after pivot_root); the latest config wins.
+	// Config arrives over the control channel (the worker can't read a host
+	// file after pivot_root); the latest config wins. Report a hash so the
+	// test can confirm exactly what the worker received, and parse any targets
+	// to send to.
 	var tmu sync.Mutex
 	var tgts []target
 	go func() {
@@ -158,7 +162,7 @@ func probe(ctx context.Context, s worker.Session) error {
 			tmu.Lock()
 			tgts = parsed
 			tmu.Unlock()
-			say("targets %d", len(parsed))
+			say("config sha256=%x len=%d targets=%d", sha256.Sum256(cfg), len(cfg), len(parsed))
 		}
 	}()
 	say("listening")
@@ -183,6 +187,16 @@ func probe(ctx context.Context, s worker.Session) error {
 			}
 		}
 	}
+}
+
+// effectiveCaps returns the worker's effective capability set via capget.
+func effectiveCaps() uint64 {
+	hdr := unix.CapUserHeader{Version: unix.LINUX_CAPABILITY_VERSION_3, Pid: int32(os.Getpid())}
+	var data [2]unix.CapUserData
+	if err := unix.Capget(&hdr, &data[0]); err != nil {
+		return 0
+	}
+	return uint64(data[0].Effective) | uint64(data[1].Effective)<<32
 }
 
 type target struct {
@@ -226,42 +240,56 @@ func dirList(path string) string {
 	return strings.Join(names, ",")
 }
 
-func procPids() string {
-	es, _ := os.ReadDir("/proc")
-	var pids []string
-	for _, e := range es {
-		if _, err := strconv.Atoi(e.Name()); err == nil {
-			pids = append(pids, e.Name())
-		}
+// The worker has no /proc, so the test inspects it from the outside through
+// /proc/<pid>; the supervisor owns the worker's user namespace, so this is
+// permitted without CAP_SYS_PTRACE.
+
+func procLink(t *testing.T, pid int, kind string) string {
+	t.Helper()
+	l, err := os.Readlink(fmt.Sprintf("/proc/%d/ns/%s", pid, kind))
+	if err != nil {
+		t.Fatalf("read %d ns %s: %v", pid, kind, err)
 	}
-	slices.Sort(pids)
-	return strings.Join(pids, ",")
+	return l
 }
 
-func capEff() string {
-	b, _ := os.ReadFile("/proc/self/status")
-	for _, line := range strings.Split(string(b), "\n") {
-		if v, ok := strings.CutPrefix(line, "CapEff:"); ok {
-			return strings.TrimSpace(v)
-		}
+func procUIDMap(t *testing.T, pid int) string {
+	t.Helper()
+	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/uid_map", pid))
+	if err != nil {
+		t.Fatalf("uid_map %d: %v", pid, err)
 	}
-	return "?"
-}
-
-func uidMap() string {
-	b, _ := os.ReadFile("/proc/self/uid_map")
 	return strings.Join(strings.Fields(string(b)), "_")
 }
 
-func unixSocketFDs() int {
-	es, _ := os.ReadDir("/proc/self/fd")
-	n := 0
-	for _, e := range es {
-		if l, err := os.Readlink("/proc/self/fd/" + e.Name()); err == nil && strings.HasPrefix(l, "socket:") {
-			n++
-		}
+// procLeakedFiles returns any open fd of pid that points to a real file path
+// outside the worker's minimal root (its only allowed device nodes). The
+// supervisor passes only the control and data sockets (via ExtraFiles) and Go
+// marks everything else close-on-exec, so a leaked host-file fd would be a
+// bug.
+func procLeakedFiles(t *testing.T, pid int) []string {
+	t.Helper()
+	allowed := map[string]bool{"/dev/null": true, "/dev/zero": true, "/dev/urandom": true, "/dev/net/tun": true}
+	es, err := os.ReadDir(fmt.Sprintf("/proc/%d/fd", pid))
+	if err != nil {
+		t.Fatalf("fds %d: %v", pid, err)
 	}
-	return n
+	var leaked []string
+	for _, e := range es {
+		l, err := os.Readlink(fmt.Sprintf("/proc/%d/fd/%s", pid, e.Name()))
+		switch {
+		case err != nil, !strings.HasPrefix(l, "/"), l == "/", allowed[l]:
+			continue
+		case strings.HasPrefix(l, "/dev/"):
+			continue
+		case strings.Count(l, "/") == 1 && strings.Contains(l, "."):
+			// A cgroup control file at the worker's cgroup-namespace root,
+			// e.g. /cpu.max, which the Go runtime reads for GOMAXPROCS.
+			continue
+		}
+		leaked = append(leaked, l)
+	}
+	return leaked
 }
 
 // rawSend4 sends an IPv4 UDP datagram with a chosen source address.
@@ -296,6 +324,31 @@ func udp4Packet(src, dst netip.Addr, sport, dport int, payload []byte) []byte {
 // network namespace (no user namespace) with a veth whose peer is in the root
 // namespace. It runs the escape op and prints the result, the negative control
 // for TestNetnsidEscapeBlocked.
+// runBadKindWorker is a worker that, after Ready, sends an unexpected message
+// kind on its control socket; the supervisor must kill and restart it. It
+// does not sandbox (the supervisor doesn't care how the worker misbehaves).
+func runBadKindWorker() int {
+	cf := os.NewFile(uintptr(ipc.ControlFD), "control")
+	c, err := ipc.FromFile(cf)
+	_ = cf.Close()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	if _, err := c.Receive(); err != nil { // Init
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	if err := c.Send(ipc.Message{Kind: ipc.KindReady}); err != nil {
+		return 1
+	}
+	if err := c.Send(ipc.Message{Kind: 222}); err != nil {
+		return 1
+	}
+	_, _ = c.Receive() // block until the supervisor closes the socket
+	return 0
+}
+
 func runEscapeControl() int {
 	runtime.LockOSThread()
 	rootns, err := os.Open("/proc/self/ns/net")
@@ -308,26 +361,22 @@ func runEscapeControl() int {
 		fmt.Fprintln(os.Stderr, "unshare:", err)
 		return 1
 	}
-	veth := &netlink.Veth{
-		LinkAttrs:     netlink.LinkAttrs{Name: "veth0"},
-		PeerName:      "tp-escctl-peer",
-		PeerNamespace: netlink.NsFd(int(rootns.Fd())),
-	}
-	if err := netlink.LinkAdd(veth); err != nil {
-		fmt.Fprintln(os.Stderr, "veth:", err)
+	// Register an id for the root namespace in this new namespace, then try to
+	// create a dummy there through it — the same operation a worker attempts,
+	// but from the initial user namespace, where it is permitted.
+	if err := netlink.SetNetNsIdByFd(int(rootns.Fd()), 0); err != nil {
+		fmt.Fprintln(os.Stderr, "set nsid:", err)
 		return 1
 	}
-	// Clean the peer left in the root namespace when done.
 	defer func() {
-		h, err := netlink.NewHandleAt(netns.NsHandle(rootns.Fd()))
-		if err == nil {
-			if l, err := h.LinkByName("tp-escctl-peer"); err == nil {
+		if h, err := netlink.NewHandleAt(netns.NsHandle(rootns.Fd())); err == nil {
+			if l, err := h.LinkByName("tp-escape-ctl"); err == nil {
 				_ = h.LinkDel(l)
 			}
 			h.Close()
 		}
 	}()
-	if err := escapeAttempt(); err != nil {
+	if err := createDummyInNetns(0, "tp-escape-ctl"); err != nil {
 		fmt.Printf("escape blocked: %v\n", err)
 	} else {
 		fmt.Println("escape ok")
@@ -562,6 +611,8 @@ func freshNamespace(t *testing.T) string {
 	return strings.Join(names, ",")
 }
 
+const capsKept = uint64(1)<<unix.CAP_NET_ADMIN | uint64(1)<<unix.CAP_NET_RAW | uint64(1)<<unix.CAP_NET_BIND_SERVICE
+
 func TestWorkersAreSandboxed(t *testing.T) {
 	needsLab(t)
 	a, b := netmap.NewSpaceID(), netmap.NewSpaceID()
@@ -574,39 +625,70 @@ func TestWorkersAreSandboxed(t *testing.T) {
 	wantLinks := freshNamespace(t)
 	seen := map[string]bool{}
 	for i, id := range []netmap.SpaceID{a, b} {
-		w := ws[i]
-		v, _ := probeDone(t, s, id)
+		v, lines := probeDone(t, s, id)
+		w, _ := info(s, id)
+		if w.Starts != 1 || !alive(w.PID) {
+			t.Fatalf("space %d worker flapping: %+v\noutput:\n%s", i, w, strings.Join(s.Output(id), "\n"))
+		}
+		pid := w.PID
 
-		// A user namespace mapping its root to the worker's host uid: the
-		// whole escape defence rests on it.
-		if v["uidmap"] != fmt.Sprintf("0_%d_1", w.UID) {
+		// A user namespace mapping its root to the worker's host uid, owning
+		// the worker's network namespace: the escape defence rests on it.
+		if v["uidmap"] = procUIDMap(t, pid); v["uidmap"] != fmt.Sprintf("0_%d_1", w.UID) {
 			t.Errorf("space %d uid_map %q, want 0 %d 1", i, v["uidmap"], w.UID)
 		}
-		if st := status(t, w.PID); st["NoNewPrivs"] != "1" {
+		if netnsOwnerOf(t, pid) != nsIno(t, fmt.Sprintf("/proc/%d/ns/user", pid)) {
+			t.Errorf("space %d network namespace not owned by its own user namespace", i)
+		}
+		st := status(t, pid)
+		if st["NoNewPrivs"] != "1" {
 			t.Errorf("space %d NoNewPrivs %q", i, st["NoNewPrivs"])
 		}
-		// A minimal root, its own interfaces, its own single process.
-		if v["root"] != "dev,proc,run,sys,tmp" {
-			t.Errorf("space %d root %q, want a minimal tmpfs", i, v["root"])
+		// Only the network capabilities remain; SYS_ADMIN (used for the
+		// mounts) is gone.
+		for _, k := range []string{"CapEff", "CapPrm", "CapBnd"} {
+			if got, _ := strconv.ParseUint(st[k], 16, 64); got != capsKept {
+				t.Errorf("space %d: %s %s, want %016x", i, k, st[k], capsKept)
+			}
+		}
+		if st["CapInh"] != "0000000000000000" || st["CapAmb"] != "0000000000000000" {
+			t.Errorf("space %d: CapInh %s CapAmb %s", i, st["CapInh"], st["CapAmb"])
+		}
+		// Supplementary groups cleared.
+		if g := strings.TrimSpace(st["Groups"]); g != "" {
+			t.Errorf("space %d: supplementary groups %q, want none", i, g)
+		}
+		if caps, _ := strconv.ParseUint(v["caps"], 16, 64); caps != capsKept {
+			t.Errorf("space %d effective caps %q, want %016x", i, v["caps"], capsKept)
+		}
+
+		// A minimal root, its own interfaces, exactly its two sockets.
+		if v["root"] != "dev,run,tmp" {
+			t.Errorf("space %d root %q, want a minimal tmpfs without /proc or /sys", i, v["root"])
 		}
 		if v["links"] != wantLinks {
 			t.Errorf("space %d interfaces %q, want %q", i, v["links"], wantLinks)
 		}
-		if v["procs"] != "1" {
-			t.Errorf("space %d sees processes %q, want only itself", i, v["procs"])
-		}
-		// Only the control and data sockets, no leaked supervisor socket.
-		if v["sockets"] != "2" {
-			t.Errorf("space %d has %s unix-socket fds, want 2 (control+data)", i, v["sockets"])
+		if leaked := procLeakedFiles(t, pid); len(leaked) > 0 {
+			t.Errorf("space %d has leaked host-file fds: %q", i, leaked)
 		}
 		// Every namespace fresh and distinct from the root's and the other
 		// worker's (a different IPC namespace means SysV shm isn't shared).
 		for _, kind := range []string{"net", "pid", "mnt", "ipc", "user"} {
-			got := v[kind]
-			if got == "" || got == own(kind) || seen[kind+got] {
+			got := procLink(t, pid, kind)
+			if got == own(kind) || seen[kind+got] {
 				t.Errorf("space %d: %s namespace %q shared (root's is %q)", i, kind, got, own(kind))
 			}
 			seen[kind+got] = true
+		}
+		// It can do NET_ADMIN in its own namespace but not mount (SYS_ADMIN
+		// dropped).
+		joined := strings.Join(lines, "\n")
+		if !strings.Contains(joined, "can netadmin") {
+			t.Errorf("space %d can't NET_ADMIN in its own namespace: %q", i, lines)
+		}
+		if !strings.Contains(joined, "cannot mount") {
+			t.Errorf("space %d could mount (SYS_ADMIN not dropped?): %q", i, lines)
 		}
 	}
 }
@@ -614,18 +696,17 @@ func TestWorkersAreSandboxed(t *testing.T) {
 // TestNetnsidEscapeBlocked is the B1 check: a worker holds CAP_NET_ADMIN, but
 // its network namespace is owned by its own non-initial user namespace, so
 // that capability can't reach the root namespace through the veth's
-// link-netnsid. It also runs the link-netnsid operation itself; that op is
-// best-effort (the lab kernel returns ENODEV rather than letting it resolve
-// the peer, see the ticket Notes), so the structural check is the gate.
+// link-netnsid. The link-netnsid operation (create a dummy in root) is refused
+// from the worker and succeeds from a positive control in the initial user
+// namespace.
 func TestNetnsidEscapeBlocked(t *testing.T) {
 	needsLab(t)
 	a := netmap.NewSpaceID()
 	s := start(t, options([]string{envProbe + "=1"}), a)
-	v, lines := probeDone(t, s, a)
+	_, lines := probeDone(t, s, a)
+	w, _ := info(s, a)
 
-	// The worker can do NET_ADMIN in its own namespace...
-	netadmin := false
-	var escape string
+	netadmin, escape := false, ""
 	for _, l := range lines {
 		if l == "can netadmin" {
 			netadmin = true
@@ -637,20 +718,25 @@ func TestNetnsidEscapeBlocked(t *testing.T) {
 	if !netadmin {
 		t.Fatalf("worker lacks NET_ADMIN in its own namespace: %q", lines)
 	}
-	// ...but that namespace is owned by the worker's own user namespace, which
-	// is non-initial (its uid_map maps container 0 to an unprivileged host
-	// uid), so the capability is confined and can't touch the root namespace.
-	if v["netnsowner"] != v["ownuserns"] || v["netnsowner"] == "err" {
-		t.Fatalf("worker's netns owner %q, own userns %q: not owned by its own user namespace", v["netnsowner"], v["ownuserns"])
-	}
-	w, _ := info(s, a)
-	if v["uidmap"] != fmt.Sprintf("0_%d_1", w.UID) {
-		t.Fatalf("worker user namespace maps %q, want a non-initial 0 %d 1", v["uidmap"], w.UID)
+	if netnsOwnerOf(t, w.PID) != nsIno(t, fmt.Sprintf("/proc/%d/ns/user", w.PID)) {
+		t.Fatal("worker's network namespace is not owned by its own user namespace")
 	}
 	if escape == "ok" {
-		t.Fatalf("the link-netnsid operation reached the root namespace from a confined worker")
+		t.Fatal("the link-netnsid operation reached the root namespace from a confined worker")
 	}
 	t.Logf("link-netnsid op from the confined worker: %s", escape)
+
+	// Positive control: the same operation from the initial user namespace
+	// must succeed, so the block above is the user namespace.
+	cmd := exec.Command(os.Args[0])
+	cmd.Env = append(os.Environ(), "SUPERVISOR_TEST_ESCAPE=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("escape control: %v: %s", err, out)
+	}
+	if !strings.Contains(string(out), "escape ok") {
+		t.Fatalf("link-netnsid op did not succeed without a user namespace: %s", out)
+	}
 }
 
 func TestNoPacketCrossesSpaces(t *testing.T) {
@@ -779,7 +865,7 @@ func deliverTargets(t *testing.T, s *supervisor.Supervisor, a, b netmap.SpaceID,
 		for _, id := range []netmap.SpaceID{a, b} {
 			got := false
 			for _, l := range probeLines(s, id) {
-				if strings.HasPrefix(l, "targets ") && l != "targets 0" {
+				if strings.HasPrefix(l, "config ") && strings.Contains(l, "targets=") && !strings.HasSuffix(l, "targets=0") {
 					got = true
 				}
 			}
@@ -1164,7 +1250,8 @@ func TestSetSpacesAddsAndRemoves(t *testing.T) {
 }
 
 // TestConfigReachesTheWorker checks a space's config is delivered after Ready
-// and on change.
+// and on change, intact, including one too large for a single packet (sealed
+// memfd). The probe reports a sha256 of each config it received.
 func TestConfigReachesTheWorker(t *testing.T) {
 	needsLab(t)
 	a := netmap.NewSpaceID()
@@ -1173,45 +1260,62 @@ func TestConfigReachesTheWorker(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
-	// A config too large for one packet, to exercise the sealed memfd path.
-	big := strings.Repeat("x", 128<<10)
-	if err := s.SetSpaces([]supervisor.Space{{ID: a, Config: []byte("first")}}); err != nil {
+	first := bytes.Repeat([]byte("ab"), 8)
+	big := bytes.Repeat([]byte("zqx9"), 64<<10) // 256 KiB: memfd path
+	if err := s.SetSpaces([]supervisor.Space{{ID: a, Config: first}}); err != nil {
 		t.Fatal(err)
 	}
 	waitReady(t, s, a)
-	// The probe doesn't consume config, but the worker reads it off the
-	// control socket without error; change it (incl. a large one) and the
-	// worker must stay up and ready.
-	for _, cfg := range [][]byte{[]byte("second"), []byte(big)} {
-		if err := s.SetSpaces([]supervisor.Space{{ID: a, Config: cfg}}); err != nil {
-			t.Fatal(err)
-		}
-	}
+	awaitConfigHash(t, s, a, first)
+	// Change it (incl. a large one): the worker must receive each intact and
+	// stay up.
 	w := waitReady(t, s, a)[0]
-	time.Sleep(500 * time.Millisecond)
+	if err := s.SetSpaces([]supervisor.Space{{ID: a, Config: big}}); err != nil {
+		t.Fatal(err)
+	}
+	awaitConfigHash(t, s, a, big)
 	if now, _ := info(s, a); now.Starts != w.Starts || !now.Ready {
 		t.Fatalf("config changes restarted the worker: %+v, was %+v", now, w)
 	}
 }
 
+// awaitConfigHash waits until the worker reports receiving a config whose
+// sha256 and length match want.
+func awaitConfigHash(t *testing.T, s *supervisor.Supervisor, space netmap.SpaceID, want []byte) {
+	t.Helper()
+	line := fmt.Sprintf("config sha256=%x len=%d", sha256.Sum256(want), len(want))
+	eventually(t, 10*time.Second, "worker received the config intact", func() error {
+		for _, l := range probeLines(s, space) {
+			if strings.HasPrefix(l, line) {
+				return nil
+			}
+		}
+		return fmt.Errorf("no %q in the worker's output", line)
+	})
+}
+
 func TestUnknownKindRestartsWorker(t *testing.T) {
 	needsLab(t)
-	// A worker sends an unexpected message after Ready (the probe doesn't;
-	// use the crash path's cousin): drive it through the supervisor by
-	// checking the supervisor kills and restarts on a protocol break. Here we
-	// rely on the worker exiting on EOF when we... instead, verify the
-	// supervisor restarts a worker that exits unexpectedly (socket EOF).
+	// The worker sends an unexpected message kind on its control socket after
+	// Ready; the supervisor must kill it and restart.
 	a := netmap.NewSpaceID()
-	s := start(t, options(nil), a)
-	w := waitReady(t, s, a)[0]
-	// Kill -TERM: the worker's signal handler ends serve, so it exits 0
-	// unexpectedly (not asked to stop), and the supervisor restarts it.
-	if err := unix.Kill(w.PID, unix.SIGTERM); err != nil {
+	o := options(nil)
+	o.Env = []string{"SUPERVISOR_TEST_BAD_KIND=1"}
+	s, err := supervisor.New(o)
+	if err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, 15*time.Second, "worker restarted after an unexpected exit", func() error {
-		if now, _ := info(s, a); now.Starts < 2 || !now.Ready {
-			return fmt.Errorf("%+v", now)
+	t.Cleanup(func() { _ = s.Close() })
+	if err := s.SetSpaces(spacesOf(a)); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, 25*time.Second, "worker killed and restarted on an unexpected kind", func() error {
+		w, _ := info(s, a)
+		if w.Starts < 2 {
+			return fmt.Errorf("%d starts", w.Starts)
+		}
+		if !strings.Contains(w.LastExit, "socket") {
+			return fmt.Errorf("last exit %q; output: %q", w.LastExit, s.Output(a))
 		}
 		return nil
 	})
@@ -1264,5 +1368,83 @@ func TestThinkpolWorkerCommand(t *testing.T) {
 	}
 	if log := events.String(); !strings.Contains(log, `msg="worker stopped" space=`+a.String()) {
 		t.Fatalf("no clean stop in the supervisor's log:\n%s", log)
+	}
+}
+
+// antiSpoofRules returns the rules of the inet anti-spoof input chain and the
+// total packets their counters have seen.
+func antiSpoofRules(t *testing.T) (rules int, packets uint64) {
+	t.Helper()
+	c, err := nftables.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	table := &nftables.Table{Family: nftables.TableFamilyINet, Name: supervisor.TableName}
+	rs, err := c.GetRules(table, &nftables.Chain{Name: "antispoof_in", Table: table})
+	if err != nil {
+		t.Fatalf("get anti-spoof rules: %v", err)
+	}
+	for _, r := range rs {
+		for _, e := range r.Exprs {
+			if ct, ok := e.(*expr.Counter); ok {
+				packets += ct.Packets
+			}
+		}
+	}
+	return len(rs), packets
+}
+
+// TestAntiSpoofDropsForgedSources checks the per-space anti-spoof rules fire:
+// a worker that sources a forged, off-link address is counted and dropped at
+// the input chain (reverse-path filtering off, so the packet reaches nftables).
+// Each slot has a rule for both families.
+func TestAntiSpoofDropsForgedSources(t *testing.T) {
+	needsLab(t)
+	// Reverse-path filtering off in the root namespace, so a forged source
+	// isn't dropped before the nftables input hook.
+	for _, key := range []string{"net/ipv4/conf/all/rp_filter", "net/ipv4/conf/default/rp_filter"} {
+		was, err := os.ReadFile("/proc/sys/" + key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile("/proc/sys/"+key, []byte("0"), 0); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.WriteFile("/proc/sys/"+key, was, 0) })
+	}
+	a := netmap.NewSpaceID()
+	s := start(t, options([]string{envProbe + "=1"}), a)
+	w := waitReady(t, s, a)[0]
+	rules, before := antiSpoofRules(t)
+	if rules < 2 {
+		t.Fatalf("anti-spoof input chain has %d rules, want at least 2 (IPv4 and IPv6 for the slot)", rules)
+	}
+	// Forge an off-link source to the slot's root end; the slot's transit
+	// address is the only accepted source, so this is dropped and counted.
+	spoof := w.RootAddrs[0].Addr().String() + "@203.0.113.9"
+	if err := s.SetSpaces([]supervisor.Space{{ID: a, Config: []byte(spoof)}}); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, 10*time.Second, "anti-spoof counter rises on forged sources", func() error {
+		if _, now := antiSpoofRules(t); now > before {
+			return nil
+		}
+		return fmt.Errorf("counter still %d", before)
+	})
+}
+
+// TestNodeCannotWriteKernelSysctl is the safety check for the reverted lab
+// profile: a lab node (SYS_ADMIN, AppArmor off) still cannot write the Docker
+// VM's kernel sysctls, so it can't reach the host through core_pattern.
+func TestNodeCannotWriteKernelSysctl(t *testing.T) {
+	needsLab(t)
+	cur, err := os.ReadFile("/proc/sys/kernel/core_pattern")
+	if err != nil {
+		t.Fatalf("read core_pattern: %v", err)
+	}
+	if err := os.WriteFile("/proc/sys/kernel/core_pattern", cur, 0); err == nil {
+		// Put it back if it somehow succeeded, then fail.
+		_ = os.WriteFile("/proc/sys/kernel/core_pattern", cur, 0)
+		t.Fatal("a lab node could write /proc/sys/kernel/core_pattern (the VM's /proc is not masked)")
 	}
 }

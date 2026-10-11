@@ -40,6 +40,10 @@ import (
 // neither of which can then flood the root namespace's neighbour table.
 // Egress (TP-014) regenerates these tables with its accepts.
 
+// failApplyIsolation makes applyIsolation fail when there are slots to apply,
+// for the SetSpaces rollback test. Tests set it; it is never set in production.
+var failApplyIsolation bool
+
 // zone is slot n's conntrack zone: nonzero, so a space's connections never
 // share conntrack with the root namespace's (zone 0).
 func zone(slot int) uint16 { return uint16(slot + 1) }
@@ -70,6 +74,9 @@ func (s *Supervisor) slotRules(slots []int) []slotRule {
 
 // applyIsolation rebuilds both tables from the active slots in one flush.
 func (s *Supervisor) applyIsolation(slots []int) error {
+	if failApplyIsolation && len(slots) > 0 {
+		return fmt.Errorf("supervisor: applyIsolation failed (injected)")
+	}
 	rules := s.slotRules(slots)
 	c, err := nftables.New()
 	if err != nil {
@@ -150,6 +157,7 @@ func antiSpoof(link string, nfproto byte, off uint32, addr []byte) []expr.Any {
 		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{nfproto}},
 		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: off, Len: uint32(len(addr))},
 		&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: addr},
+		&expr.Counter{},
 		&expr.Verdict{Kind: expr.VerdictDrop},
 	)
 }
@@ -166,7 +174,7 @@ func established(match []expr.Any) []expr.Any {
 }
 
 func drop(match []expr.Any) []expr.Any {
-	return append(match, &expr.Verdict{Kind: expr.VerdictDrop})
+	return append(match, &expr.Counter{}, &expr.Verdict{Kind: expr.VerdictDrop})
 }
 
 // spaceLink matches packets whose interface (key: in or out) starts with the

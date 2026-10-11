@@ -89,6 +89,11 @@ func (s *Supervisor) wire(w *worker, ns *os.File) (*wiring, error) {
 	if err := s.addNeighbours(w, ns, rootLink); err != nil {
 		return wd, fmt.Errorf("neighbours: %w", err)
 	}
+	// The worker has no /proc, so the supervisor sets the space's network
+	// sysctls here, by entering its namespace.
+	if err := setNetSysctls(int(ns.Fd()), baselineSysctls); err != nil {
+		return wd, fmt.Errorf("space sysctls: %w", err)
+	}
 	return wd, nil
 }
 

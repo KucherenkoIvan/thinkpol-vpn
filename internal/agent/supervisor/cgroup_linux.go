@@ -132,6 +132,12 @@ func sealedMemfd(name string, data []byte) (*os.File, error) {
 		_ = f.Close()
 		return nil, err
 	}
+	// Rewind, so a reader that reads from the current offset still gets the
+	// whole file (the worker reads from offset 0 regardless).
+	if _, err := f.Seek(0, 0); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
 	seals := unix.F_SEAL_SEAL | unix.F_SEAL_SHRINK | unix.F_SEAL_GROW | unix.F_SEAL_WRITE
 	if _, err := unix.FcntlInt(f.Fd(), unix.F_ADD_SEALS, seals); err != nil {
 		_ = f.Close()
