@@ -18,12 +18,18 @@ type InboundConfig struct {
 
 // InboundFrom converts a node's inbound links for its listeners, stamping
 // every link with space: the space whose map it came from, never anything
-// the map says. It skips links from no node or from the node itself, of
-// unknown transports, with shaping that doesn't decode, and those the
-// transport refuses.
+// the map says. It skips links the node's settings don't accept (on a
+// server with ingress off, anything but another server's, so a device's
+// credential is unauthenticated there and gets the camouflage), links from
+// no node or from the node itself, of unknown transports, with shaping that
+// doesn't decode, and those the transport refuses.
 func InboundFrom(s netmap.Section, reg *transport.Registry, space transport.SpaceID) InboundConfig {
 	c := InboundConfig{Links: make(map[string][]transport.PeerLink)}
 	for _, in := range s.Inbound {
+		if !s.Node.AcceptsInbound(in) {
+			c.Skipped = append(c.Skipped, skipOf(in.Peer, ItemInbound, ReasonIngressOff, fmt.Errorf("from a %v over %q", in.PeerKind, in.Transport)))
+			continue
+		}
 		pl, reason, err := peerLink(in, reg, space, s.Node.ID)
 		if err != nil {
 			c.Skipped = append(c.Skipped, skipOf(in.Peer, ItemInbound, reason, fmt.Errorf("over %q: %w", in.Transport, err)))
@@ -62,9 +68,8 @@ func peerLink(in netmap.InboundLink, reg *transport.Registry, space transport.Sp
 // listeners accept, per transport, for space. The engine serves it, and a
 // server's supervisor authenticates its shared listeners against each
 // space's AcceptedInbound, so the two can't disagree. It is InboundFrom
-// less the links too small for the overlay over linkMTU (OverlayMTU's
-// rule; 0 means DefaultLinkMTU). Node settings that restrict who may
-// connect (TP-013's ingress) belong here too.
+// (which applies the node's ingress setting) less the links too small for
+// the overlay over linkMTU (OverlayMTU's rule; 0 means DefaultLinkMTU).
 func AcceptedInbound(s netmap.Section, reg *transport.Registry, space transport.SpaceID, linkMTU int) InboundConfig {
 	in := InboundFrom(s, reg, space)
 	OverlayMTU(&PathConfig{}, &in, reg, linkMTU)

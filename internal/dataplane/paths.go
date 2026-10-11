@@ -34,7 +34,9 @@ func PathConfigFrom(s netmap.Section, reg *transport.Registry) PathConfig {
 
 	adjacent := make(map[netmap.NodeID]bool)
 	for _, in := range s.Inbound {
-		adjacent[in.Peer] = true
+		if s.Node.AcceptsInbound(in) {
+			adjacent[in.Peer] = true
+		}
 	}
 	for _, l := range s.Links {
 		if l.Peer.IsZero() || l.Peer == self {

@@ -208,7 +208,7 @@ func TestServerSeedsItsWorker(t *testing.T) {
 	writeFile(t, filepath.Join(dir, BlobDir, blobFileName(ref.SHA256)), ru, 0o600)
 
 	sup := &fakeSupervisor{}
-	r := runServerSpaces(t, s, sup, dir)
+	r := runServerSpacesIn(t, s, sup, dir)
 	eventually(t, func() bool { _, _, n := sup.last(); return n >= 1 })
 	sp, _, _ := sup.last()
 	c, err := DecodeWorkerConfig(sp[0].Config)

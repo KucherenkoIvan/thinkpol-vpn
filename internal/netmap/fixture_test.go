@@ -27,16 +27,16 @@ func mustMarshal(s transport.Shaping) []byte {
 // fixture is a space wired the way maps will be:
 //   - servers form a mesh: each dials every later server;
 //   - with two or more servers the last one is an exit that devices can't
-//     reach (ingress off) and the others are entries; one server is just an
-//     entry;
+//     reach (egress on, ingress off) and the others are entries (ingress
+//     on); one server is just an entry;
 //   - every device dials every entry over udp and tls (two endpoints) and
 //     has a direct path to it; other devices and the exit are reached with
 //     the entries as candidate first hops;
 //   - entries route to devices directly and to the exit, the first entry
 //     through a hop group of the next two when there are four servers or
 //     more;
-//   - the first device listens for direct paths, and devices use a named
-//     GeoIP blob.
+//   - devices use a named GeoIP blob (and don't listen: no direct paths
+//     between devices yet).
 type fixture struct {
 	signing  ed25519.PrivateKey
 	recovery ed25519.PrivateKey
@@ -134,8 +134,12 @@ func newFixture(t testing.TB, servers, devices int) *fixture {
 			})
 		}
 	}
+	if exit >= 0 {
+		sections[exit].Node.AllowEgress = true
+	}
 	for _, e := range entries {
 		s := &sections[e]
+		s.Node.AllowIngress = true
 		for d := servers; d < n; d++ {
 			s.Inbound = append(s.Inbound,
 				InboundLink{Peer: ids[d], PeerKind: NodeDevice, Transport: "udp", Credential: cred(e, d, "udp")},
@@ -160,9 +164,6 @@ func newFixture(t testing.TB, servers, devices int) *fixture {
 	for d := servers; d < n; d++ {
 		s := &sections[d]
 		s.Node.Kind = NodeDevice
-		if d == servers {
-			s.Node.Listeners = []Listener{{Transport: "udp", Address: netip.MustParseAddrPort("[::]:51820")}}
-		}
 		s.Blobs = []BlobRef{{Kind: BlobGeoIP, SHA256: testGeoIP.SHA256, Size: testGeoIP.Size, Name: "ru"}}
 		for _, e := range entries {
 			s.Links = append(s.Links, Link{Peer: ids[e], Endpoints: []Endpoint{

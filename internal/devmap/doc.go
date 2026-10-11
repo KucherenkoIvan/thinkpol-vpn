@@ -23,6 +23,8 @@
 //	      - udp://[2001:db8::1]:4500
 //	    listen:                 # optional, derived from endpoints
 //	      - udp://0.0.0.0:4500
+//	    ingress: true           # devices may connect (servers; default false)
+//	    egress: true            # internet traffic may leave (servers; default false)
 //	  - name: device-a
 //	    kind: device
 //	    lists: [ru]             # optional: the lists the node uses
@@ -52,7 +54,9 @@
 //     could go round in circles, following any next hop toward one
 //     destination, are refused.
 //   - Links: every pair of neighbours on a path is linked once. A device
-//     dials the server; of two servers, the one declared first dials. The
+//     dials the server, which must have ingress on, so no device's section
+//     has the address of a server with ingress off; of two servers, the one
+//     declared first dials. The
 //     dialer's link lists all of the other node's endpoints; the dialed node
 //     gets an inbound link per transport.
 //   - Credentials: one random secret per link and transport, fresh on every

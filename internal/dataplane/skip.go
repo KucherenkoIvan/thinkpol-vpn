@@ -59,6 +59,7 @@ const (
 	ReasonNoAddress                          // a peer without an address the overlay carries
 	ReasonKeyClaimed                         // a WireGuard key two peers claim
 	ReasonAddressClaimed                     // an overlay address two peers claim
+	ReasonIngressOff                         // a device's link to a server with ingress off
 )
 
 func (r Reason) String() string {
@@ -97,6 +98,8 @@ func (r Reason) String() string {
 		return "WireGuard key claimed by another peer"
 	case ReasonAddressClaimed:
 		return "address claimed by another peer"
+	case ReasonIngressOff:
+		return "ingress off"
 	}
 	return fmt.Sprintf("Reason(%d)", uint8(r))
 }

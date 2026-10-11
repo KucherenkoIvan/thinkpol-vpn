@@ -342,7 +342,22 @@ func (r *runner) applied() {
 	} else {
 		attrs = append(attrs, "ipv6_off", st.IPv6Off)
 	}
+	if n := r.section.Node; n.Kind == netmap.NodeServer {
+		attrs = append(attrs, serverSettings(n)...)
+	}
 	r.dp.Log.Info("map applied", attrs...)
+}
+
+// serverSettings are a server's ingress and egress settings, for its log.
+func serverSettings(n netmap.NodeSettings) []any {
+	ingress, egress := "off", "off"
+	if n.AllowIngress {
+		ingress = "on"
+	}
+	if n.AllowEgress {
+		egress = "on (not enforced until TP-014)"
+	}
+	return []any{"ingress", ingress, "egress", egress}
 }
 
 func (r *runner) logStatus() {

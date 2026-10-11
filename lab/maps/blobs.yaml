@@ -20,10 +20,12 @@ lists:
 nodes:
   - name: server-1
     kind: server
+    ingress: true
     endpoints:
       - udp://${SERVER_1_IPV4}:4500
   - name: server-2
     kind: server
+    ingress: true
     endpoints:
       - udp://${SERVER_2_IPV4}:4500
   - name: device-a

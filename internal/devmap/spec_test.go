@@ -11,7 +11,7 @@ import (
 )
 
 func TestSpecErrorsNameTheirLocation(t *testing.T) {
-	const nodes = "nodes:\n  - name: s\n    kind: server\n    endpoints: [udp://192.0.2.1:4500]\n  - name: d\n    kind: device\n"
+	const nodes = "nodes:\n  - name: s\n    kind: server\n    endpoints: [udp://192.0.2.1:4500]\n    ingress: true\n  - {name: d, kind: device}\n"
 	tests := []struct {
 		name, spec string
 		want       []string
@@ -63,6 +63,12 @@ func TestSpecErrorsNameTheirLocation(t *testing.T) {
 		{"list field", "lists:\n  - {name: ru, file: a, kind: geoip}\n" + nodes, []string{`unknown field "kind"`}},
 		{"node names an unknown list", "nodes:\n  - name: d\n    kind: device\n    lists: [ru]\n", []string{`spec.yaml:4:13: d: unknown list "ru"`}},
 		{"node names a list twice", "lists:\n  - {name: ru, file: a}\nnodes:\n  - name: d\n    kind: device\n    lists: [ru, ru]\n", []string{`spec.yaml:6:17: d: list "ru" is named twice`}},
+		{"ingress not a boolean", "nodes:\n  - name: s\n    kind: server\n    ingress: yes\n", []string{`spec.yaml:4:14: s: ingress "yes" is neither true nor false`}},
+		{"egress not a boolean", "nodes:\n  - name: s\n    kind: server\n    egress: [true]\n", []string{"spec.yaml:4:13: expected a single value"}},
+		{"device with ingress", "nodes:\n  - name: d\n    kind: device\n    ingress: true\n", []string{"spec.yaml:4:14: d: a device has no ingress setting"}},
+		{"device with egress", "nodes:\n  - name: d\n    kind: device\n    egress: false\n", []string{"spec.yaml:4:13: d: a device has no egress setting"}},
+		{"device dials a server with ingress off", "nodes:\n  - {name: s, kind: server, endpoints: ['udp://192.0.2.1:4500']}\n  - {name: d, kind: device}\npaths:\n  - [d, s]\n  - [s, d]\n",
+			[]string{"spec.yaml:5:9: s has ingress off, so d can't connect to it", "spec.yaml:6:6: s has ingress off, so d can't connect to it"}},
 		{"several errors at once", "nodes:\n  - name: a\n    kind: phone\n  - name: b\n", []string{"spec.yaml:3:11: a: kind", "spec.yaml:4:5: b: kind is missing"}},
 	}
 	for _, tt := range tests {
@@ -141,9 +147,11 @@ func TestWhoDials(t *testing.T) {
   - name: s2
     kind: server
     endpoints: [udp://192.0.2.2:4500]
+    ingress: true
   - name: s1
     kind: server
     endpoints: [udp://192.0.2.1:4500]
+    ingress: true
 paths:
   - [s1, dev]
   - [dev, s2, s1]
@@ -206,7 +214,7 @@ func TestIPv6NetworkComesFromTheSpaceKeys(t *testing.T) {
 
 func TestReadLists(t *testing.T) {
 	spec := "lists:\n  - {name: ru, file: lists/ru.geoip}\n  - {name: by, file: /abs/by.geoip}\n" +
-		"nodes:\n  - name: d\n    kind: device\n    lists: [by, ru]\n  - name: s\n    kind: server\n    endpoints: [udp://192.0.2.1:4500]\npaths:\n  - [d, s]\n"
+		"nodes:\n  - name: d\n    kind: device\n    lists: [by, ru]\n  - name: s\n    kind: server\n    ingress: true\n    endpoints: [udp://192.0.2.1:4500]\npaths:\n  - [d, s]\n"
 	s, err := ParseSpec("specs/spec.yaml", []byte(spec), nil)
 	if err != nil {
 		t.Fatal(err)

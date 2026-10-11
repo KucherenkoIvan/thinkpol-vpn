@@ -118,8 +118,10 @@ func TestRoundTrip(t *testing.T) {
 				if err != nil {
 					t.Fatalf("node %d: Open: %v", i, err)
 				}
-				if !reflect.DeepEqual(got, r.Section) {
-					t.Errorf("node %d: Open() = %+v, want %+v", i, got, r.Section)
+				want := r.Section
+				want.MinReader = SectionReader
+				if !reflect.DeepEqual(got, want) {
+					t.Errorf("node %d: Open() = %+v, want %+v", i, got, want)
 				}
 			}
 		})
@@ -457,6 +459,7 @@ func TestReadersIgnoreUnknownFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
+	sec.MinReader = SectionReader
 	if !reflect.DeepEqual(got, sec) {
 		t.Errorf("Open() = %+v, want %+v", got, sec)
 	}

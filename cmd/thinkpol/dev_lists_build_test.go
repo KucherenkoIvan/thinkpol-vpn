@@ -99,7 +99,7 @@ func TestDevMapBuildTakesLists(t *testing.T) {
 	if err := os.WriteFile(spec, []byte(`lists:
   - {name: ru, file: lists/ru.geoip}
 nodes:
-  - {name: s, kind: server, endpoints: ["udp://192.0.2.1:4500"]}
+  - {name: s, kind: server, ingress: true, endpoints: ["udp://192.0.2.1:4500"]}
   - {name: d, kind: device, lists: [ru]}
 paths:
   - [d, s]

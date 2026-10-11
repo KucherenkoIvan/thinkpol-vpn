@@ -10,6 +10,8 @@ size: 66130 bytes
 # section of server-1
 node: a1e2d7676663f3d4 (server-1)
 kind: server
+ingress: on, egress: off
+min reader: 1
 ipv4: 100.64.0.1 in 100.64.0.0/10
 ipv6: fddb:e588:2e25::1 in fddb:e588:2e25::/48
 listeners:
@@ -44,6 +46,7 @@ blobs: none
 # section of device-a
 node: f2b29856eb44337c (device-a)
 kind: device
+min reader: 1
 ipv4: 100.64.0.2 in 100.64.0.0/10
 ipv6: fddb:e588:2e25::2 in fddb:e588:2e25::/48
 listeners: none
@@ -70,6 +73,7 @@ blobs: none
 # section of device-b
 node: 982fe5e68ec4fe9d (device-b)
 kind: device
+min reader: 1
 ipv4: 100.64.0.3 in 100.64.0.0/10
 ipv6: fddb:e588:2e25::3 in fddb:e588:2e25::/48
 listeners: none
