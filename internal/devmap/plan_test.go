@@ -237,7 +237,7 @@ func TestPlanNeedsEveryNodesKeys(t *testing.T) {
 
 func TestReferenceIsTheFormat(t *testing.T) {
 	// Every field the parser knows appears in the reference spec.
-	for _, field := range []string{"space:", "ipv4:", "ipv6:", "nodes:", "name:", "kind:", "endpoints:", "listen:", "paths:"} {
+	for _, field := range []string{"space:", "ipv4:", "ipv6:", "nodes:", "name:", "kind:", "endpoints:", "listen:", "ingress:", "egress:", "paths:"} {
 		if !bytes.Contains([]byte(Reference), []byte("\n"+field)) && !bytes.Contains([]byte(Reference), []byte(" "+field)) {
 			t.Errorf("reference spec lacks %s", field)
 		}
@@ -251,9 +251,11 @@ const fourServers = `nodes:
   - name: s1
     kind: server
     endpoints: [udp://192.0.2.1:4500]
+    ingress: true
   - name: s2
     kind: server
     endpoints: [udp://192.0.2.2:4500]
+    ingress: true
 `
 
 // Two paths crossing the same relays in opposite directions would let s1
@@ -262,7 +264,7 @@ func TestForwardingLoopsAreRefused(t *testing.T) {
 	spec := fourServers + "paths:\n  - [a, s1, s2, b]\n  - [c, s2, s1, b]\n"
 	f := newFixture(t, "spec.yaml", []byte(spec), nil)
 	_, _, err := Plan(f.spec, f.keys, 1, nil)
-	if err == nil || !strings.Contains(err.Error(), "spec.yaml:13:5: the paths on lines 12 and 13 make a forwarding loop toward b: s1 → s2 → s1") {
+	if err == nil || !strings.Contains(err.Error(), "spec.yaml:15:5: the paths on lines 14 and 15 make a forwarding loop toward b: s1 → s2 → s1") {
 		t.Fatalf("err %v", err)
 	}
 
@@ -280,9 +282,47 @@ func TestForwardingLoopsAreRefused(t *testing.T) {
 	}
 }
 
+// What `dev map inspect` shows of a device's section never has the address
+// of a server with ingress off, even one the device reaches through relays;
+// the settings reach each server's own section.
+func TestDevicesNeverSeeAnIngressOffServer(t *testing.T) {
+	f := referenceFixture(t)
+	_, secs, names := f.sections(t, 1)
+	hidden := 0
+	for _, n := range f.spec.Nodes {
+		if n.Kind != netmap.NodeServer {
+			continue
+		}
+		if got := secs[n.Name].Node; got.AllowIngress != n.Ingress || got.AllowEgress != n.Egress {
+			t.Errorf("%s: section has ingress %v, egress %v; spec %v, %v", n.Name, got.AllowIngress, got.AllowEgress, n.Ingress, n.Egress)
+		}
+		if n.Ingress {
+			continue
+		}
+		hidden++
+		for _, d := range f.spec.Nodes {
+			if d.Kind != netmap.NodeDevice {
+				continue
+			}
+			var b bytes.Buffer
+			if err := DescribeSection(&b, secs[d.Name], names); err != nil {
+				t.Fatal(err)
+			}
+			for _, e := range n.Endpoints {
+				if strings.Contains(b.String(), e.AddrPort.Addr().String()) {
+					t.Errorf("%s's section has %s's address %v:\n%s", d.Name, n.Name, e.AddrPort.Addr(), b.String())
+				}
+			}
+		}
+	}
+	if hidden == 0 {
+		t.Fatal("the reference spec has no server with ingress off")
+	}
+}
+
 func TestDevicesCantBeLinked(t *testing.T) {
 	f := newFixture(t, "spec.yaml", []byte(fourServers+"paths:\n  - [a, b]\n"), nil)
-	if _, _, err := Plan(f.spec, f.keys, 1, nil); err == nil || err.Error() != "spec.yaml:12:9: neither a nor b has endpoints, so neither can dial the other" {
+	if _, _, err := Plan(f.spec, f.keys, 1, nil); err == nil || err.Error() != "spec.yaml:14:9: neither a nor b has endpoints, so neither can dial the other" {
 		t.Fatalf("err %v", err)
 	}
 }

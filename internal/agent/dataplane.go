@@ -312,6 +312,9 @@ func (r *runner) applied() {
 	} else {
 		attrs = append(attrs, "ipv6_off", st.IPv6Off)
 	}
+	if n := r.section.Node; n.Kind == netmap.NodeServer {
+		attrs = append(attrs, "ingress", n.AllowIngress, "egress", n.AllowEgress)
+	}
 	r.dp.Log.Info("map applied", attrs...)
 }
 

@@ -6,6 +6,8 @@ import (
 	"net/netip"
 	"testing"
 
+	"golang.org/x/crypto/nacl/box"
+
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/shaping"
 )
 
@@ -82,6 +84,9 @@ func TestBuildRejectsInvalidContents(t *testing.T) {
 		{"no IPv6 network", entry(func(s *Section) { s.Node.IPv6Network = netip.Prefix{} })},
 		{"address outside network", entry(func(s *Section) { s.Node.IPv4 = netip.MustParseAddr("100.101.0.1") })},
 		{"no IPv6 address", entry(func(s *Section) { s.Node.IPv6 = netip.Addr{} })},
+		{"device allows ingress", device(func(s *Section) { s.Node.AllowIngress = true })},
+		{"device allows egress", device(func(s *Section) { s.Node.AllowEgress = true })},
+		{"device links to a server with ingress off", entry(func(s *Section) { s.Node.AllowIngress = false })},
 		// listeners
 		{"bad transport name", entry(func(s *Section) { s.Node.Listeners[0].Transport = "UDP" })},
 		{"transport name starts with a digit", entry(func(s *Section) { s.Node.Listeners[0].Transport = "4udp" })},
@@ -216,4 +221,77 @@ func TestCheckSettingsDecodesShaping(t *testing.T) {
 			t.Errorf("%s: %v, want %v", name, err, tc.want)
 		}
 	}
+}
+
+// Ingress is the node's to enforce: Build lets an ingress-off server list
+// devices' inbound links (only devices must never get its address), marks
+// that section for readers that drop them, and those readers do.
+func TestIngressOffAcceptsOnlyServers(t *testing.T) {
+	// Recipients: 0 entry, 1 exit (ingress off), 2 and 3 devices.
+	f := newFixture(t, 2, 2)
+	exit := &f.contents.Recipients[1].Section
+	device := f.contents.Recipients[2].Section
+	server := exit.Inbound[0]
+	if server.PeerKind != NodeServer || exit.Node.AllowIngress {
+		t.Fatal("fixture: the exit should have ingress off and the entry's inbound link")
+	}
+	fromDevice := InboundLink{Peer: device.Node.ID, PeerKind: NodeDevice, Transport: "udp", Credential: []byte("a device's secret")}
+	exit.Inbound = append(exit.Inbound, fromDevice)
+
+	for _, tc := range []struct {
+		node NodeSettings
+		in   InboundLink
+		want bool
+	}{
+		{NodeSettings{Kind: NodeServer}, server, true},
+		{NodeSettings{Kind: NodeServer}, fromDevice, false},
+		{NodeSettings{Kind: NodeServer}, InboundLink{PeerKind: 9}, false},
+		{NodeSettings{Kind: NodeServer, AllowIngress: true}, fromDevice, true},
+		{NodeSettings{Kind: NodeDevice}, fromDevice, true},
+	} {
+		if got := tc.node.AcceptsInbound(tc.in); got != tc.want {
+			t.Errorf("%v (ingress %v) accepts a link from a %v: %v, want %v", tc.node.Kind, tc.node.AllowIngress, tc.in.PeerKind, got, tc.want)
+		}
+	}
+
+	m := f.verify(t, f.build(t))
+	for i, key := range f.keys {
+		want := uint64(1)
+		if i == 1 {
+			want = 2
+		}
+		if got := sectionReader(t, m, key); got != want {
+			t.Errorf("recipient %d: section needs reader %d, want %d", i, got, want)
+		}
+		got, err := m.Open(key)
+		if err != nil {
+			t.Fatalf("recipient %d: %v", i, err)
+		}
+		if got.Node.AllowIngress != f.contents.Recipients[i].Section.Node.AllowIngress ||
+			got.Node.AllowEgress != f.contents.Recipients[i].Section.Node.AllowEgress {
+			t.Errorf("recipient %d: settings %+v not kept", i, got.Node)
+		}
+	}
+}
+
+// sectionReader is the min_reader of key's section, as a reader sees it
+// before deciding whether it can read the rest.
+func sectionReader(t *testing.T, m *Map, key NodePrivateKey) uint64 {
+	t.Helper()
+	pub := key.Public()
+	for _, s := range m.sections {
+		if plain, ok := box.OpenAnonymous(nil, s, (*[32]byte)(&pub), (*[32]byte)(&key)); ok {
+			content, err := unpad(plain)
+			if err != nil {
+				t.Fatal(err)
+			}
+			reader, err := scanVarint(content, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return reader
+		}
+	}
+	t.Fatal("no section for the key")
+	return 0
 }

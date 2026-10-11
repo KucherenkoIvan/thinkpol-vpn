@@ -14,12 +14,27 @@ import (
 // every section with the lowest reader that understands it, and Open
 // refuses sections that need a newer one. Raise it, and mark the sections
 // that use a new field, when older nodes must not silently ignore the field.
-const SectionReader = 1
+//
+//	1: the first format.
+//	2: AllowIngress: a server with ingress off accepts only other servers'
+//	   inbound links, whatever else its section lists.
+const SectionReader = 2
+
+// minReader is the lowest reader that understands s. A server with ingress
+// off whose section still lists inbound links from devices relies on the
+// reader dropping them, which reader 1 doesn't.
+func (s *Section) minReader() uint32 {
+	for _, in := range s.Inbound {
+		if !s.Node.AcceptsInbound(in) {
+			return 2
+		}
+	}
+	return 1
+}
 
 // Section is one node's need-to-know part of the map: its own settings and
-// the nodes it talks to, every one known by an opaque id. New needs (ingress
-// and egress settings, rules, guest spaces, telemetry) are new fields here
-// and in the schema.
+// the nodes it talks to, every one known by an opaque id. New needs (rules,
+// guest spaces, telemetry) are new fields here and in the schema.
 type Section struct {
 	Node NodeSettings
 	// Peers are end-to-end WireGuard peers.
@@ -64,6 +79,19 @@ type NodeSettings struct {
 	IPv4Network, IPv6Network netip.Prefix
 	// Listeners are the transports this node listens on.
 	Listeners []Listener
+	// AllowIngress lets devices connect to this server, so it can start a
+	// chain. With it off, the node accepts only other servers' inbound
+	// links (AcceptsInbound) and no device's section has its address.
+	// AllowEgress lets internet traffic leave the space from this server,
+	// so it can end a chain. Both are server settings, off by default.
+	AllowIngress, AllowEgress bool
+}
+
+// AcceptsInbound reports whether a node with these settings accepts the
+// inbound link in: a server with ingress off accepts only other servers,
+// whatever its section lists. Devices have no ingress setting.
+func (n *NodeSettings) AcceptsInbound(in InboundLink) bool {
+	return n.Kind != NodeServer || n.AllowIngress || in.PeerKind == NodeServer
 }
 
 // Listener is a transport a node listens on.
@@ -284,6 +312,13 @@ func (s *Section) validate(headerBlobs []BlobRef) error {
 		return fmt.Errorf("node addresses %v, %v are outside the overlay networks", n.IPv4, n.IPv6)
 	}
 	inOverlay := func(a netip.Addr) bool { return n.IPv4Network.Contains(a) || n.IPv6Network.Contains(a) }
+	// A server with ingress off may still list devices' inbound links: its
+	// reader drops them (AcceptsInbound), and minReader keeps such a section
+	// from readers that wouldn't. What the builder must never do is give a
+	// device its address (Build's devicesReachOnlyIngress).
+	if n.Kind != NodeServer && (n.AllowIngress || n.AllowEgress) {
+		return errors.New("ingress and egress are server settings")
+	}
 
 	type transportAddr struct {
 		transport string
@@ -471,17 +506,19 @@ func checkSettings(settings []byte, shapingBytes ...[]byte) error {
 
 func sectionToProto(s *Section, h *Header) *netmapv1.Section {
 	pb := &netmapv1.Section{
-		MinReader:  SectionReader,
+		MinReader:  s.minReader(),
 		SpaceId:    h.SpaceID[:],
 		KeyEpoch:   h.KeyEpoch,
 		MapVersion: h.Version,
 		Node: &netmapv1.NodeSettings{
-			Id:          idBytes(s.Node.ID),
-			Kind:        netmapv1.NodeKind(s.Node.Kind),
-			Ipv4:        addrString(s.Node.IPv4),
-			Ipv6:        addrString(s.Node.IPv6),
-			Ipv4Network: prefixString(s.Node.IPv4Network),
-			Ipv6Network: prefixString(s.Node.IPv6Network),
+			Id:           idBytes(s.Node.ID),
+			Kind:         netmapv1.NodeKind(s.Node.Kind),
+			Ipv4:         addrString(s.Node.IPv4),
+			Ipv6:         addrString(s.Node.IPv6),
+			Ipv4Network:  prefixString(s.Node.IPv4Network),
+			Ipv6Network:  prefixString(s.Node.IPv6Network),
+			AllowIngress: s.Node.AllowIngress,
+			AllowEgress:  s.Node.AllowEgress,
 		},
 		Blobs: blobsToProto(s.Blobs),
 	}
@@ -547,6 +584,7 @@ func sectionFromProto(pb *netmapv1.Section) (Section, error) {
 	if s.Node.IPv6Network, err = parsePrefix(n.GetIpv6Network()); err != nil {
 		return s, err
 	}
+	s.Node.AllowIngress, s.Node.AllowEgress = n.GetAllowIngress(), n.GetAllowEgress()
 	for _, l := range n.GetListeners() {
 		addr, err := parseAddrPort(l.GetAddress())
 		if err != nil {

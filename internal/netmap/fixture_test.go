@@ -27,8 +27,8 @@ func mustMarshal(s transport.Shaping) []byte {
 // fixture is a space wired the way maps will be:
 //   - servers form a mesh: each dials every later server;
 //   - with two or more servers the last one is an exit that devices can't
-//     reach (ingress off) and the others are entries; one server is just an
-//     entry;
+//     reach (egress on, ingress off) and the others are entries (ingress
+//     on); one server is just an entry;
 //   - every device dials every entry over udp and tls (two endpoints) and
 //     has a direct path to it; other devices and the exit are reached with
 //     the entries as candidate first hops;
@@ -134,8 +134,12 @@ func newFixture(t testing.TB, servers, devices int) *fixture {
 			})
 		}
 	}
+	if exit >= 0 {
+		sections[exit].Node.AllowEgress = true
+	}
 	for _, e := range entries {
 		s := &sections[e]
+		s.Node.AllowIngress = true
 		for d := servers; d < n; d++ {
 			s.Inbound = append(s.Inbound,
 				InboundLink{Peer: ids[d], PeerKind: NodeDevice, Transport: "udp", Credential: cred(e, d, "udp")},

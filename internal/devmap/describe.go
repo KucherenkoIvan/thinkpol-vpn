@@ -32,6 +32,9 @@ func DescribeSection(w io.Writer, s netmap.Section, names Names) error {
 	n := s.Node
 	p.line(0, "node: %s", names.Of(n.ID))
 	p.line(0, "kind: %v", n.Kind)
+	if n.Kind == netmap.NodeServer {
+		p.line(0, "ingress: %s, egress: %s", onOff(n.AllowIngress), onOff(n.AllowEgress))
+	}
 	p.line(0, "ipv4: %v in %v", n.IPv4, n.IPv4Network)
 	p.line(0, "ipv6: %v in %v", n.IPv6, n.IPv6Network)
 	p.list(0, "listeners", len(n.Listeners), func(i int) {
@@ -75,6 +78,13 @@ func DescribeSection(w io.Writer, s netmap.Section, names Names) error {
 	})
 	p.blobs(0, s.Blobs)
 	return p.err
+}
+
+func onOff(b bool) string {
+	if b {
+		return "on"
+	}
+	return "off"
 }
 
 // fingerprint shows a credential well enough to match the two ends of a

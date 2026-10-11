@@ -111,6 +111,30 @@ func TestServerServesTheSpaceAndItsListeners(t *testing.T) {
 	}
 }
 
+// With ingress off, the inbound table the supervisor authenticates against
+// holds no device's link, whatever the section lists; with ingress on, the
+// next map lets the device in.
+func TestServerWithIngressOffAcceptsNoDevice(t *testing.T) {
+	s := newTestSpace(t)
+	s.ingressOff = true
+	sup := &fakeSupervisor{}
+	r := runServerSpaces(t, s, sup)
+	eventually(t, func() bool { return strings.Contains(r.log.String(), `msg="map applied" version=1`) })
+	if sp, _, _ := sup.last(); len(sp) != 1 || len(sp[0].Inbound["memory"]) != 0 {
+		t.Fatalf("spaces %+v: the device's link is accepted", sp)
+	}
+	if !strings.Contains(r.log.String(), "inbound_skipped=1 ingress=false egress=false") {
+		t.Fatalf("log:\n%s", r.log)
+	}
+
+	s.ingressOff = false
+	r.maps <- s.build(t, 2)
+	eventually(t, func() bool { return strings.Contains(r.log.String(), `msg="map applied" version=2`) })
+	if sp, _, _ := sup.last(); len(sp) != 1 || len(sp[0].Inbound["memory"]) != 1 {
+		t.Fatalf("spaces %+v: the device's link is refused with ingress on", sp)
+	}
+}
+
 // Listeners that fail at the start are retried; the node runs on.
 func TestServerRetriesListenersThatFailAtTheStart(t *testing.T) {
 	s := newTestSpace(t)

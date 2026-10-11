@@ -71,7 +71,7 @@ func TestDevMapInspectRejectsTamperedMaps(t *testing.T) {
 	dir := t.TempDir()
 	keys, mapFile := filepath.Join(dir, "keys"), filepath.Join(dir, "map.bin")
 	spec := filepath.Join(dir, "spec.yaml")
-	if err := os.WriteFile(spec, []byte("nodes:\n  - name: s\n    kind: server\n    endpoints: [udp://192.0.2.1:4500]\n  - {name: d, kind: device}\npaths:\n  - [d, s]\n"), 0o644); err != nil {
+	if err := os.WriteFile(spec, []byte("nodes:\n  - name: s\n    kind: server\n    endpoints: [udp://192.0.2.1:4500]\n    ingress: true\n  - {name: d, kind: device}\npaths:\n  - [d, s]\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	mustRunCLI(t, "dev", "keygen", "space", "-out", keys)

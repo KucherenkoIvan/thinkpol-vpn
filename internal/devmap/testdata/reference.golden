@@ -10,6 +10,7 @@ size: 66130 bytes
 # section of server-1
 node: a1e2d7676663f3d4 (server-1)
 kind: server
+ingress: on, egress: off
 ipv4: 100.64.0.1 in 100.64.0.0/10
 ipv6: fd12:3456:789a::1 in fd12:3456:789a::/48
 listeners:
@@ -53,6 +54,7 @@ blobs: none
 # section of server-2
 node: f2b29856eb44337c (server-2)
 kind: server
+ingress: on, egress: off
 ipv4: 100.64.0.2 in 100.64.0.0/10
 ipv6: fd12:3456:789a::2 in fd12:3456:789a::/48
 listeners:
@@ -90,6 +92,7 @@ blobs: none
 # section of server-3
 node: 982fe5e68ec4fe9d (server-3)
 kind: server
+ingress: off, egress: on
 ipv4: 100.64.0.3 in 100.64.0.0/10
 ipv6: fd12:3456:789a::3 in fd12:3456:789a::/48
 listeners:

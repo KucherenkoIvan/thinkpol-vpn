@@ -1,0 +1,29 @@
+# The lab's ingress map (TP-013): server-2 is reached by device-a through
+# server-1, and by device-b directly while SERVER_2_INGRESS is true. With it
+# false the build fails: no map gives a device the address of a server with
+# ingress off. Development tooling; the format is in `thinkpol dev map spec`.
+#
+#   thinkpol dev keygen space -out keys
+#   thinkpol dev keygen node -out keys server-1 server-2 device-a device-b
+#   SERVER_1_IPV4=... SERVER_2_IPV4=... SERVER_2_INGRESS=true \
+#     thinkpol dev map build -keys keys -out map.bin lab/maps/ingress.yaml
+
+nodes:
+  - name: server-1
+    kind: server
+    endpoints:
+      - udp://${SERVER_1_IPV4}:4500
+    ingress: true
+  - name: server-2
+    kind: server
+    endpoints:
+      - udp://${SERVER_2_IPV4}:4500
+    ingress: ${SERVER_2_INGRESS}
+  - name: device-a
+    kind: device
+  - name: device-b
+    kind: device
+
+paths:
+  - [device-a, server-1, server-2]
+  - [device-b, server-2]

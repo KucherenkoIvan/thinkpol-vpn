@@ -207,6 +207,30 @@ type Recipient struct {
 	Section Section
 }
 
+// devicesReachOnlyIngress is Build's check across sections: a device never
+// links to a server with ingress off, so no device's section has the
+// address of such a server. Only servers that are recipients can be
+// checked; a node outside the map (a shared node, used through a hosting
+// grant) is its own builder's to check.
+func devicesReachOnlyIngress(recipients []Recipient) error {
+	nodes := make(map[NodeID]*NodeSettings, len(recipients))
+	for i := range recipients {
+		n := &recipients[i].Section.Node
+		nodes[n.ID] = n
+	}
+	for i, r := range recipients {
+		if r.Section.Node.Kind != NodeDevice {
+			continue
+		}
+		for _, l := range r.Section.Links {
+			if to, ok := nodes[l.Peer]; ok && to.Kind == NodeServer && !to.AllowIngress {
+				return fmt.Errorf("recipient %d: a device links to %v, a server with ingress off", i, l.Peer)
+			}
+		}
+	}
+	return nil
+}
+
 // Build seals each section to its recipient, pads, shuffles and signs, and
 // returns the envelope bytes. Every call seals afresh, so no section is
 // shared between two envelopes.
@@ -255,6 +279,9 @@ func Build(signingKey ed25519.PrivateKey, c Contents) ([]byte, error) {
 		}
 		plain[i] = b
 		largest = max(largest, len(b))
+	}
+	if err := devicesReachOnlyIngress(c.Recipients); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidContents, err)
 	}
 	size := sectionSize(largest)
 	if size > maxSectionSize {

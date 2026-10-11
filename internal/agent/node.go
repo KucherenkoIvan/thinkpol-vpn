@@ -261,7 +261,8 @@ func (s *serverSpaces) apply() error {
 	if err := s.sup.SetListeners(ls); err != nil {
 		return errListeners{err}
 	}
-	s.log.Info("map applied", "version", s.cur.Header().Version, "listeners", len(ls), "inbound_skipped", len(inbound.Skipped))
+	s.log.Info("map applied", "version", s.cur.Header().Version, "listeners", len(ls), "inbound_skipped", len(inbound.Skipped),
+		"ingress", s.section.Node.AllowIngress, "egress", s.section.Node.AllowEgress)
 	return nil
 }
 

@@ -112,7 +112,10 @@ func Plan(s *Spec, k Keys, version uint64, random io.Reader) (netmap.Contents, N
 
 	sections := make([]netmap.Section, len(s.Nodes))
 	for i, n := range s.Nodes {
-		node := netmap.NodeSettings{ID: ids[i], Kind: n.Kind, IPv4: ipv4[i], IPv6: ipv6[i], IPv4Network: v4, IPv6Network: v6}
+		node := netmap.NodeSettings{
+			ID: ids[i], Kind: n.Kind, IPv4: ipv4[i], IPv6: ipv6[i], IPv4Network: v4, IPv6Network: v6,
+			AllowIngress: n.Ingress, AllowEgress: n.Egress,
+		}
 		for _, l := range n.Listeners {
 			node.Listeners = append(node.Listeners, netmap.Listener{Transport: l.Transport, Address: l.AddrPort})
 		}

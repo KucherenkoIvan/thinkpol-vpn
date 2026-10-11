@@ -10,6 +10,7 @@ size: 66130 bytes
 # section of server-1
 node: a1e2d7676663f3d4 (server-1)
 kind: server
+ingress: on, egress: off
 ipv4: 100.64.0.1 in 100.64.0.0/10
 ipv6: fddb:e588:2e25::1 in fddb:e588:2e25::/48
 listeners:
