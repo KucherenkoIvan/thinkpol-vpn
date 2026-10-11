@@ -1,14 +1,14 @@
 package localapi
 
 import (
-	"net"
+	"syscall"
 
 	"golang.org/x/sys/unix"
 )
 
 // callerOf reads the credentials of c's peer (LOCAL_PEERCRED): its uid and
 // its groups, the effective one first, as they were when it connected.
-func callerOf(c *net.UnixConn) (Caller, error) {
+func callerOf(c syscall.Conn) (Caller, error) {
 	raw, err := c.SyscallConn()
 	if err != nil {
 		return Caller{}, err

@@ -4,11 +4,11 @@ package localapi
 
 import (
 	"fmt"
-	"net"
 	"runtime"
+	"syscall"
 )
 
 // callerOf refuses: no peer credentials here, so no caller is let in.
-func callerOf(*net.UnixConn) (Caller, error) {
+func callerOf(syscall.Conn) (Caller, error) {
 	return Caller{}, fmt.Errorf("no peer credentials on %s", runtime.GOOS)
 }

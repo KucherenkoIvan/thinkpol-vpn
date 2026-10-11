@@ -113,10 +113,14 @@ func (c *Client) Spaces(ctx context.Context) ([]*localapiv1.Space, error) {
 	return sanitized(resp).GetSpaces(), nil
 }
 
-// SetRulePreset switches the device's routing rules to preset.
-func (c *Client) SetRulePreset(ctx context.Context, preset string) error {
-	_, err := c.api.SetRulePreset(ctx, &localapiv1.SetRulePresetRequest{Preset: preset})
-	return c.explain(err)
+// SetRulePreset switches the device's routing rules to preset and
+// returns its status.
+func (c *Client) SetRulePreset(ctx context.Context, preset string) (*localapiv1.Status, error) {
+	resp, err := c.api.SetRulePreset(ctx, &localapiv1.SetRulePresetRequest{Preset: preset})
+	if err != nil {
+		return nil, c.explain(err)
+	}
+	return sanitized(resp).GetStatus(), nil
 }
 
 // TailLogs calls fn with the agent's last lines (0: the service's
@@ -182,8 +186,8 @@ func (c *Client) explain(err error) error {
 			{ErrPermissionDenied, "permission denied: only root may do that"},
 			{ErrServerMode, "this node is a server: it serves its spaces whenever it runs"},
 			{ErrNotRunning, "the node is not running"},
-			{ErrPresetsUnavailable, "this node has no rule presets yet"},
-			{ErrUnknownPreset, "no such rule preset"},
+			{ErrPresetUnavailable, "this space can't build that preset (no exit, or no domestic list)"},
+			{ErrUnknownPreset, "no such rule preset: space, everything or all-but-domestic"},
 		} {
 			if remote.Code == e.err.Code {
 				return &clientError{e.msg, e.err}

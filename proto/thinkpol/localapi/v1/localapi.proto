@@ -33,8 +33,11 @@ service LocalService {
   // ListSpaces lists the spaces the node is enrolled in; one is active.
   rpc ListSpaces(ListSpacesRequest) returns (ListSpacesResponse);
   // SetRulePreset switches the device's routing rules to a preset
-  // ("everything", "all-but-domestic"). UNIMPLEMENTED
-  // "rule_presets_unavailable" until the node has a rule engine (TP-015).
+  // ("space", the space's own rules; "everything"; "all-but-domestic")
+  // and stores the choice in the device's local rules file, which only
+  // the service writes. INVALID_ARGUMENT "unknown_rule_preset" for
+  // another name; FAILED_PRECONDITION "rule_preset_unavailable" when the
+  // space can't build it, "server_mode" on a server.
   rpc SetRulePreset(SetRulePresetRequest) returns (SetRulePresetResponse);
   // TailLogs sends the agent's in-memory log: the last lines, then, when
   // following, every new line until the client goes away or the service
@@ -79,7 +82,9 @@ message SetRulePresetRequest {
   string preset = 1;
 }
 
-message SetRulePresetResponse {}
+message SetRulePresetResponse {
+  Status status = 1;
+}
 
 message TailLogsRequest {
   // The last lines to send first; 0 sends 100.
@@ -119,6 +124,10 @@ message Status {
   // A server's workers, one per space, and its public listeners.
   repeated Worker workers = 9;
   repeated PublicListener public_listeners = 10;
+  // A device's rule preset, from its local rules file ("space" when it
+  // has none), and whether its data plane enforces it yet.
+  string rule_preset = 11;
+  bool rules_enforced = 12;
 }
 
 enum Mode {

@@ -9,6 +9,7 @@ import (
 	"os/user"
 	"slices"
 	"strconv"
+	"syscall"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -148,8 +149,8 @@ func (p Policy) serverOptions() []grpckit.ServerOption {
 type peerCredentials struct{}
 
 func (peerCredentials) ServerHandshake(conn net.Conn) (net.Conn, credentials.AuthInfo, error) {
-	uc, ok := conn.(*net.UnixConn)
-	if !ok {
+	uc, ok := conn.(syscall.Conn)
+	if _, unix := conn.LocalAddr().(*net.UnixAddr); !ok || !unix {
 		return nil, nil, errors.New("localapi: not a Unix socket connection")
 	}
 	c, err := callerOf(uc)

@@ -647,6 +647,7 @@ func (x *SetRulePresetRequest) GetPreset() string {
 
 type SetRulePresetResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
+	Status        *Status                `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -679,6 +680,13 @@ func (x *SetRulePresetResponse) ProtoReflect() protoreflect.Message {
 // Deprecated: Use SetRulePresetResponse.ProtoReflect.Descriptor instead.
 func (*SetRulePresetResponse) Descriptor() ([]byte, []int) {
 	return file_thinkpol_localapi_v1_localapi_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *SetRulePresetResponse) GetStatus() *Status {
+	if x != nil {
+		return x.Status
+	}
+	return nil
 }
 
 type TailLogsRequest struct {
@@ -861,8 +869,12 @@ type Status struct {
 	// A server's workers, one per space, and its public listeners.
 	Workers         []*Worker         `protobuf:"bytes,9,rep,name=workers,proto3" json:"workers,omitempty"`
 	PublicListeners []*PublicListener `protobuf:"bytes,10,rep,name=public_listeners,json=publicListeners,proto3" json:"public_listeners,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// A device's rule preset, from its local rules file ("space" when it
+	// has none), and whether its data plane enforces it yet.
+	RulePreset    string `protobuf:"bytes,11,opt,name=rule_preset,json=rulePreset,proto3" json:"rule_preset,omitempty"`
+	RulesEnforced bool   `protobuf:"varint,12,opt,name=rules_enforced,json=rulesEnforced,proto3" json:"rules_enforced,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Status) Reset() {
@@ -963,6 +975,20 @@ func (x *Status) GetPublicListeners() []*PublicListener {
 		return x.PublicListeners
 	}
 	return nil
+}
+
+func (x *Status) GetRulePreset() string {
+	if x != nil {
+		return x.RulePreset
+	}
+	return ""
+}
+
+func (x *Status) GetRulesEnforced() bool {
+	if x != nil {
+		return x.RulesEnforced
+	}
+	return false
 }
 
 type Health struct {
@@ -1811,8 +1837,9 @@ const file_thinkpol_localapi_v1_localapi_proto_rawDesc = "" +
 	"\x12ListSpacesResponse\x123\n" +
 	"\x06spaces\x18\x01 \x03(\v2\x1b.thinkpol.localapi.v1.SpaceR\x06spaces\".\n" +
 	"\x14SetRulePresetRequest\x12\x16\n" +
-	"\x06preset\x18\x01 \x01(\tR\x06preset\"\x17\n" +
-	"\x15SetRulePresetResponse\"?\n" +
+	"\x06preset\x18\x01 \x01(\tR\x06preset\"M\n" +
+	"\x15SetRulePresetResponse\x124\n" +
+	"\x06status\x18\x01 \x01(\v2\x1c.thinkpol.localapi.v1.StatusR\x06status\"?\n" +
 	"\x0fTailLogsRequest\x12\x14\n" +
 	"\x05lines\x18\x01 \x01(\rR\x05lines\x12\x16\n" +
 	"\x06follow\x18\x02 \x01(\bR\x06follow\"@\n" +
@@ -1821,7 +1848,7 @@ const file_thinkpol_localapi_v1_localapi_proto_rawDesc = "" +
 	"\x06missed\x18\x02 \x01(\x04R\x06missed\"/\n" +
 	"\x05Space\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x16\n" +
-	"\x06active\x18\x02 \x01(\bR\x06active\"\xeb\x03\n" +
+	"\x06active\x18\x02 \x01(\bR\x06active\"\xb3\x04\n" +
 	"\x06Status\x12.\n" +
 	"\x04mode\x18\x01 \x01(\x0e2\x1a.thinkpol.localapi.v1.ModeR\x04mode\x12\x19\n" +
 	"\bspace_id\x18\x02 \x01(\tR\aspaceId\x12\x1f\n" +
@@ -1837,7 +1864,10 @@ const file_thinkpol_localapi_v1_localapi_proto_rawDesc = "" +
 	"data_plane\x18\b \x01(\v2\x1f.thinkpol.localapi.v1.DataPlaneR\tdataPlane\x126\n" +
 	"\aworkers\x18\t \x03(\v2\x1c.thinkpol.localapi.v1.WorkerR\aworkers\x12O\n" +
 	"\x10public_listeners\x18\n" +
-	" \x03(\v2$.thinkpol.localapi.v1.PublicListenerR\x0fpublicListeners\"]\n" +
+	" \x03(\v2$.thinkpol.localapi.v1.PublicListenerR\x0fpublicListeners\x12\x1f\n" +
+	"\vrule_preset\x18\v \x01(\tR\n" +
+	"rulePreset\x12%\n" +
+	"\x0erules_enforced\x18\f \x01(\bR\rrulesEnforced\"]\n" +
 	"\x06Health\x127\n" +
 	"\x05level\x18\x01 \x01(\x0e2!.thinkpol.localapi.v1.HealthLevelR\x05level\x12\x1a\n" +
 	"\bproblems\x18\x02 \x03(\tR\bproblems\"\xfc\x03\n" +
@@ -1999,45 +2029,46 @@ var file_thinkpol_localapi_v1_localapi_proto_depIdxs = []int32{
 	18, // 3: thinkpol.localapi.v1.ConnectResponse.status:type_name -> thinkpol.localapi.v1.Status
 	18, // 4: thinkpol.localapi.v1.DisconnectResponse.status:type_name -> thinkpol.localapi.v1.Status
 	17, // 5: thinkpol.localapi.v1.ListSpacesResponse.spaces:type_name -> thinkpol.localapi.v1.Space
-	0,  // 6: thinkpol.localapi.v1.Status.mode:type_name -> thinkpol.localapi.v1.Mode
-	1,  // 7: thinkpol.localapi.v1.Status.connection:type_name -> thinkpol.localapi.v1.Connection
-	19, // 8: thinkpol.localapi.v1.Status.health:type_name -> thinkpol.localapi.v1.Health
-	20, // 9: thinkpol.localapi.v1.Status.data_plane:type_name -> thinkpol.localapi.v1.DataPlane
-	26, // 10: thinkpol.localapi.v1.Status.workers:type_name -> thinkpol.localapi.v1.Worker
-	27, // 11: thinkpol.localapi.v1.Status.public_listeners:type_name -> thinkpol.localapi.v1.PublicListener
-	2,  // 12: thinkpol.localapi.v1.Health.level:type_name -> thinkpol.localapi.v1.HealthLevel
-	21, // 13: thinkpol.localapi.v1.DataPlane.peers:type_name -> thinkpol.localapi.v1.Peer
-	22, // 14: thinkpol.localapi.v1.DataPlane.neighbors:type_name -> thinkpol.localapi.v1.Neighbor
-	24, // 15: thinkpol.localapi.v1.DataPlane.egresses:type_name -> thinkpol.localapi.v1.Egress
-	25, // 16: thinkpol.localapi.v1.DataPlane.skipped:type_name -> thinkpol.localapi.v1.Skip
-	28, // 17: thinkpol.localapi.v1.DataPlane.counters:type_name -> thinkpol.localapi.v1.DataPlane.CountersEntry
-	30, // 18: thinkpol.localapi.v1.Peer.last_handshake:type_name -> google.protobuf.Timestamp
-	29, // 19: thinkpol.localapi.v1.Neighbor.up_for:type_name -> google.protobuf.Duration
-	29, // 20: thinkpol.localapi.v1.Neighbor.rtt:type_name -> google.protobuf.Duration
-	23, // 21: thinkpol.localapi.v1.Neighbor.links:type_name -> thinkpol.localapi.v1.Link
-	29, // 22: thinkpol.localapi.v1.Link.up_for:type_name -> google.protobuf.Duration
-	29, // 23: thinkpol.localapi.v1.Link.rtt:type_name -> google.protobuf.Duration
-	30, // 24: thinkpol.localapi.v1.Worker.ready_since:type_name -> google.protobuf.Timestamp
-	30, // 25: thinkpol.localapi.v1.Worker.restart_at:type_name -> google.protobuf.Timestamp
-	3,  // 26: thinkpol.localapi.v1.LocalService.GetStatus:input_type -> thinkpol.localapi.v1.GetStatusRequest
-	5,  // 27: thinkpol.localapi.v1.LocalService.WatchStatus:input_type -> thinkpol.localapi.v1.WatchStatusRequest
-	7,  // 28: thinkpol.localapi.v1.LocalService.Connect:input_type -> thinkpol.localapi.v1.ConnectRequest
-	9,  // 29: thinkpol.localapi.v1.LocalService.Disconnect:input_type -> thinkpol.localapi.v1.DisconnectRequest
-	11, // 30: thinkpol.localapi.v1.LocalService.ListSpaces:input_type -> thinkpol.localapi.v1.ListSpacesRequest
-	13, // 31: thinkpol.localapi.v1.LocalService.SetRulePreset:input_type -> thinkpol.localapi.v1.SetRulePresetRequest
-	15, // 32: thinkpol.localapi.v1.LocalService.TailLogs:input_type -> thinkpol.localapi.v1.TailLogsRequest
-	4,  // 33: thinkpol.localapi.v1.LocalService.GetStatus:output_type -> thinkpol.localapi.v1.GetStatusResponse
-	6,  // 34: thinkpol.localapi.v1.LocalService.WatchStatus:output_type -> thinkpol.localapi.v1.WatchStatusResponse
-	8,  // 35: thinkpol.localapi.v1.LocalService.Connect:output_type -> thinkpol.localapi.v1.ConnectResponse
-	10, // 36: thinkpol.localapi.v1.LocalService.Disconnect:output_type -> thinkpol.localapi.v1.DisconnectResponse
-	12, // 37: thinkpol.localapi.v1.LocalService.ListSpaces:output_type -> thinkpol.localapi.v1.ListSpacesResponse
-	14, // 38: thinkpol.localapi.v1.LocalService.SetRulePreset:output_type -> thinkpol.localapi.v1.SetRulePresetResponse
-	16, // 39: thinkpol.localapi.v1.LocalService.TailLogs:output_type -> thinkpol.localapi.v1.TailLogsResponse
-	33, // [33:40] is the sub-list for method output_type
-	26, // [26:33] is the sub-list for method input_type
-	26, // [26:26] is the sub-list for extension type_name
-	26, // [26:26] is the sub-list for extension extendee
-	0,  // [0:26] is the sub-list for field type_name
+	18, // 6: thinkpol.localapi.v1.SetRulePresetResponse.status:type_name -> thinkpol.localapi.v1.Status
+	0,  // 7: thinkpol.localapi.v1.Status.mode:type_name -> thinkpol.localapi.v1.Mode
+	1,  // 8: thinkpol.localapi.v1.Status.connection:type_name -> thinkpol.localapi.v1.Connection
+	19, // 9: thinkpol.localapi.v1.Status.health:type_name -> thinkpol.localapi.v1.Health
+	20, // 10: thinkpol.localapi.v1.Status.data_plane:type_name -> thinkpol.localapi.v1.DataPlane
+	26, // 11: thinkpol.localapi.v1.Status.workers:type_name -> thinkpol.localapi.v1.Worker
+	27, // 12: thinkpol.localapi.v1.Status.public_listeners:type_name -> thinkpol.localapi.v1.PublicListener
+	2,  // 13: thinkpol.localapi.v1.Health.level:type_name -> thinkpol.localapi.v1.HealthLevel
+	21, // 14: thinkpol.localapi.v1.DataPlane.peers:type_name -> thinkpol.localapi.v1.Peer
+	22, // 15: thinkpol.localapi.v1.DataPlane.neighbors:type_name -> thinkpol.localapi.v1.Neighbor
+	24, // 16: thinkpol.localapi.v1.DataPlane.egresses:type_name -> thinkpol.localapi.v1.Egress
+	25, // 17: thinkpol.localapi.v1.DataPlane.skipped:type_name -> thinkpol.localapi.v1.Skip
+	28, // 18: thinkpol.localapi.v1.DataPlane.counters:type_name -> thinkpol.localapi.v1.DataPlane.CountersEntry
+	30, // 19: thinkpol.localapi.v1.Peer.last_handshake:type_name -> google.protobuf.Timestamp
+	29, // 20: thinkpol.localapi.v1.Neighbor.up_for:type_name -> google.protobuf.Duration
+	29, // 21: thinkpol.localapi.v1.Neighbor.rtt:type_name -> google.protobuf.Duration
+	23, // 22: thinkpol.localapi.v1.Neighbor.links:type_name -> thinkpol.localapi.v1.Link
+	29, // 23: thinkpol.localapi.v1.Link.up_for:type_name -> google.protobuf.Duration
+	29, // 24: thinkpol.localapi.v1.Link.rtt:type_name -> google.protobuf.Duration
+	30, // 25: thinkpol.localapi.v1.Worker.ready_since:type_name -> google.protobuf.Timestamp
+	30, // 26: thinkpol.localapi.v1.Worker.restart_at:type_name -> google.protobuf.Timestamp
+	3,  // 27: thinkpol.localapi.v1.LocalService.GetStatus:input_type -> thinkpol.localapi.v1.GetStatusRequest
+	5,  // 28: thinkpol.localapi.v1.LocalService.WatchStatus:input_type -> thinkpol.localapi.v1.WatchStatusRequest
+	7,  // 29: thinkpol.localapi.v1.LocalService.Connect:input_type -> thinkpol.localapi.v1.ConnectRequest
+	9,  // 30: thinkpol.localapi.v1.LocalService.Disconnect:input_type -> thinkpol.localapi.v1.DisconnectRequest
+	11, // 31: thinkpol.localapi.v1.LocalService.ListSpaces:input_type -> thinkpol.localapi.v1.ListSpacesRequest
+	13, // 32: thinkpol.localapi.v1.LocalService.SetRulePreset:input_type -> thinkpol.localapi.v1.SetRulePresetRequest
+	15, // 33: thinkpol.localapi.v1.LocalService.TailLogs:input_type -> thinkpol.localapi.v1.TailLogsRequest
+	4,  // 34: thinkpol.localapi.v1.LocalService.GetStatus:output_type -> thinkpol.localapi.v1.GetStatusResponse
+	6,  // 35: thinkpol.localapi.v1.LocalService.WatchStatus:output_type -> thinkpol.localapi.v1.WatchStatusResponse
+	8,  // 36: thinkpol.localapi.v1.LocalService.Connect:output_type -> thinkpol.localapi.v1.ConnectResponse
+	10, // 37: thinkpol.localapi.v1.LocalService.Disconnect:output_type -> thinkpol.localapi.v1.DisconnectResponse
+	12, // 38: thinkpol.localapi.v1.LocalService.ListSpaces:output_type -> thinkpol.localapi.v1.ListSpacesResponse
+	14, // 39: thinkpol.localapi.v1.LocalService.SetRulePreset:output_type -> thinkpol.localapi.v1.SetRulePresetResponse
+	16, // 40: thinkpol.localapi.v1.LocalService.TailLogs:output_type -> thinkpol.localapi.v1.TailLogsResponse
+	34, // [34:41] is the sub-list for method output_type
+	27, // [27:34] is the sub-list for method input_type
+	27, // [27:27] is the sub-list for extension type_name
+	27, // [27:27] is the sub-list for extension extendee
+	0,  // [0:27] is the sub-list for field type_name
 }
 
 func init() { file_thinkpol_localapi_v1_localapi_proto_init() }

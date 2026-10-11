@@ -60,8 +60,11 @@ type LocalServiceClient interface {
 	// ListSpaces lists the spaces the node is enrolled in; one is active.
 	ListSpaces(ctx context.Context, in *ListSpacesRequest, opts ...grpc.CallOption) (*ListSpacesResponse, error)
 	// SetRulePreset switches the device's routing rules to a preset
-	// ("everything", "all-but-domestic"). UNIMPLEMENTED
-	// "rule_presets_unavailable" until the node has a rule engine (TP-015).
+	// ("space", the space's own rules; "everything"; "all-but-domestic")
+	// and stores the choice in the device's local rules file, which only
+	// the service writes. INVALID_ARGUMENT "unknown_rule_preset" for
+	// another name; FAILED_PRECONDITION "rule_preset_unavailable" when the
+	// space can't build it, "server_mode" on a server.
 	SetRulePreset(ctx context.Context, in *SetRulePresetRequest, opts ...grpc.CallOption) (*SetRulePresetResponse, error)
 	// TailLogs sends the agent's in-memory log: the last lines, then, when
 	// following, every new line until the client goes away or the service
@@ -186,8 +189,11 @@ type LocalServiceServer interface {
 	// ListSpaces lists the spaces the node is enrolled in; one is active.
 	ListSpaces(context.Context, *ListSpacesRequest) (*ListSpacesResponse, error)
 	// SetRulePreset switches the device's routing rules to a preset
-	// ("everything", "all-but-domestic"). UNIMPLEMENTED
-	// "rule_presets_unavailable" until the node has a rule engine (TP-015).
+	// ("space", the space's own rules; "everything"; "all-but-domestic")
+	// and stores the choice in the device's local rules file, which only
+	// the service writes. INVALID_ARGUMENT "unknown_rule_preset" for
+	// another name; FAILED_PRECONDITION "rule_preset_unavailable" when the
+	// space can't build it, "server_mode" on a server.
 	SetRulePreset(context.Context, *SetRulePresetRequest) (*SetRulePresetResponse, error)
 	// TailLogs sends the agent's in-memory log: the last lines, then, when
 	// following, every new line until the client goes away or the service
