@@ -47,7 +47,26 @@ Nodes get the list files (and later releases) referenced by their map from peers
 - **TP-040 (guests):** blobs are per space: a guest space's seeds belong in its own directory (e.g. `guests/<space-id>/blobs/`), read by `seedBlobs` for that space's worker only.
 - **TP-022/TP-041:** `Service.Status()` for the local API and telemetry.
 
+## Review findings
+Review: fix first (cache integrity held up). Orchestrator decisions:
+- [ ] B1 Privacy: devices never listen (`Plan.Listen` nil for NodeDevice). Servers get blobs from seeds or from other servers. Update the server-from-device test and DESIGN ("every node serves" → servers serve; devices only fetch)
+- [ ] B2 Trickle DoS: overall per-transfer deadline (DialTimeout + Size/minRate, minRate ~16 KiB/s) and cancel on map generation change; test with a trickling peer; a stalled fetch never blocks other blobs indefinitely
+- [ ] S1 accept(): close the listener before close(done) so retries can rebind
+- [ ] S2 Persist the held set's index (kind, name, sha) next to the blobs on devices; load stand-ins from it at start so the previous list survives a restart until its replacement is verified. Test: map v2 names ru=B, restart offline, Latest(geoip, "ru") returns A
+- [ ] S3 Lab test that port 4717 is unreachable from outside the tunnel (route to the device's/server's overlay address via its LAN IP from a neighbour, v4 and v6 → refused/timeout), and from a local process (lo)
+- [ ] S4 Memory: MaxHeld for servers 16 MiB (devices keep 64); don't keep seed bytes in the stored worker config — one memfd per blob sent once; TP-040 Notes: per-worker MemoryMax (cgroup) and account guest blobs
+- [ ] S5 Re-run Check when a held hash's kind changes (or key held blobs on sha+kind)
+- [ ] N1 One Changed() channel per consumer (Subscribe), signal on rename
+- [ ] N2 Dedupe same kind+name in PlanFrom (first wins, report the rest)
+- [ ] N3 Enforce the 64 MiB total consistently in ReadLists/Plan/seed
+- [ ] N4 Per-peer limit keyed by Peer.ID
+- [ ] N5 Android: skip the SO_BINDTODEVICE path cleanly (no warning loop); Android has no listeners after B1
+- [ ] N6 A server section run with -mode device doesn't write the header set to disk
+- [ ] I1 TP-015 integration: wire the blob service into its engine Blobs hook and call ReloadRules on change if TP-015 is on rewrite at the end; otherwise precise Notes in both tickets
+- [ ] I2 Downstream notes copied into TP-015, TP-018, TP-022, TP-036, TP-037, TP-038, TP-040, TP-041, TP-044 (one Log line each)
+
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-12 backlog → in-progress — owner: agent-tp-017, branch: tp-017-blob-distribution
 - 2026-10-12 in-progress → review — make lint, make test, make test-race and make lab-test pass (TestBlobDistribution); DESIGN.md "Lists" and "Node safety" updated (blob protocol; blobs/ in the state directory: written by devices, read-only seeds on servers)
+- 2026-10-12 review → has-errors — review findings B1, B2, S1–S5, N1–N6, I1, I2
