@@ -105,3 +105,15 @@ func TestSynopsisPanicsOnUnknownCommand(t *testing.T) {
 	}()
 	synopsis(io.Discard, "no such command")
 }
+
+func TestWorkerIsHiddenAndNeedsASpace(t *testing.T) {
+	if _, stdout, _ := runCLI(t, "help"); strings.Contains(stdout, "worker") {
+		t.Fatalf("worker listed: %q", stdout)
+	}
+	if code, _, stderr := runCLI(t, "worker"); code != 2 || !strings.HasPrefix(stderr, "usage: thinkpol worker -space <id>") {
+		t.Fatalf("exit %d, stderr %q", code, stderr)
+	}
+	if code, _, _ := runCLI(t, "worker", "-space", "nothex"); code != 1 {
+		t.Fatalf("bad space id: exit %d", code)
+	}
+}
