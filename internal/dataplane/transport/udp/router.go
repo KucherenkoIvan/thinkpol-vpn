@@ -18,10 +18,13 @@ import (
 // replay, which anyone with a passive tap can send, never reaches a worker
 // or costs its space anything.
 //
-// Its sender history outlives table changes as a Listener's does, but not
-// the Router: a new Router (a supervisor restart) routes replays of the
-// last five minutes once more, which the worker's Listener, if it kept
-// running, still drops.
+// Its sender history is per credential and outlives table changes, as a
+// Listener's does. One Router serves every socket of the transport (the
+// supervisor keeps one per transport, across its listeners' reopens), so a
+// datagram replayed to another listener is still a replay. Only a new
+// Router (a supervisor restart) routes replays of the last five minutes
+// once more, which the worker's Listener, if it kept running, still drops.
+// A Router is safe for concurrent use.
 type Router struct {
 	t     *Transport
 	peers transport.Peers

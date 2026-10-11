@@ -54,7 +54,11 @@ func (w *replayWindow) accept(counter uint64) bool {
 // oldest forgotten first: a dialer churning through senders can't make
 // this grow, or cost more per datagram, without bound. A forgotten sender
 // is older than the churning current one, so while that one is active it
-// is still refused.
+// is still refused; the residual: a sender evicted from the slots and then
+// pushed out of the ring by more than maxEvicted further evictions within
+// five minutes can take over again once the current sender has been
+// silent for senderTakeover (30 s), and making those evictions requires
+// the credential.
 type senders struct {
 	tick    uint64
 	entries [maxSenders]senderEntry

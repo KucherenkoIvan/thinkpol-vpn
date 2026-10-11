@@ -239,7 +239,8 @@ func (c *Conn) sendDatagram(h DatagramHeader, d []byte, block bool) error {
 // Drops is how many messages TrySend dropped because the buffer was full.
 func (c *Conn) Drops() uint64 { return c.drops.Load() }
 
-// Receive blocks for the next message. io.EOF means the other end is gone.
+// Receive blocks for the next message. io.EOF means the other end is gone
+// (closed, or reset by closing with messages unread).
 func (c *Conn) Receive() (Message, error) {
 	c.rmu.Lock()
 	defer c.rmu.Unlock()
@@ -251,7 +252,9 @@ func (c *Conn) Receive() (Message, error) {
 	switch {
 	case err != nil:
 		m.CloseFiles()
-		if errors.Is(err, io.EOF) {
+		// A peer that closes with messages unread resets the socket: gone
+		// all the same.
+		if errors.Is(err, io.EOF) || errors.Is(err, unix.ECONNRESET) {
 			return Message{}, io.EOF
 		}
 		return Message{}, fmt.Errorf("ipc: receive: %w", err)

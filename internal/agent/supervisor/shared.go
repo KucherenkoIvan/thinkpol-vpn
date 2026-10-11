@@ -132,7 +132,11 @@ type shared struct {
 	nextID    uint32
 	listeners map[string]*publicListener // by transport and address
 	tables    map[string]*transport.PeerTable
-	closed    bool
+	// routers holds one Router per transport, shared by all its listeners
+	// and kept across their reopens: replay state is per credential, not
+	// per socket.
+	routers map[string]transport.Router
+	closed  bool
 
 	// Read on every datagram, so swapped as a whole.
 	routes atomic.Pointer[map[transport.SpaceID]*route]
@@ -143,6 +147,7 @@ func newShared(reg *transport.Registry, fair FairShare, log *slog.Logger, now fu
 	s := &shared{
 		reg: reg, fair: fair, log: log, now: now, routingLimit: maxRoutingStreams,
 		listeners: map[string]*publicListener{}, tables: map[string]*transport.PeerTable{},
+		routers: map[string]transport.Router{},
 	}
 	s.routes.Store(&map[transport.SpaceID]*route{})
 	s.byID.Store(&map[uint32]*publicListener{})
@@ -275,6 +280,16 @@ func (s *shared) table(name string) *transport.PeerTable {
 	return t
 }
 
+// router is the transport's one Router over its merged table; s.mu held.
+func (s *shared) router(name string, t transport.Routable) transport.Router {
+	r := s.routers[name]
+	if r == nil {
+		r = t.Router(s.table(name))
+		s.routers[name] = r
+	}
+	return r
+}
+
 // setListeners opens, keeps and closes public listeners so the node listens
 // on exactly ls. A listener whose transport, address and settings stay
 // keeps its socket (and its id). One whose settings changed is closed and
@@ -346,14 +361,14 @@ func (s *shared) open(ctx context.Context, l Listener) (*publicListener, error) 
 			return nil, err
 		}
 		pl.udp = pc
-		pl.router = t.Router(s.table(l.Transport))
+		pl.router = s.router(l.Transport, t)
 	case transport.StreamRoutable:
 		ln, err := t.ListenStream(ctx, cfg)
 		if err != nil {
 			return nil, err
 		}
 		pl.ln = ln
-		pl.router = t.Router(s.table(l.Transport))
+		pl.router = s.router(l.Transport, t)
 	default:
 		return nil, errors.New("the transport can't sit behind a shared listener")
 	}

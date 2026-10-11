@@ -557,17 +557,17 @@ func TestSharedListenerThroughput(t *testing.T) {
 		copy(p, prefix)
 		return p
 	}
-	snapshot := func() (supervisor.SharedCounters, uint64) {
-		time.Sleep(300 * time.Millisecond) // the next report
+	snapshot := func() (supervisor.SharedCounters, uint64, uint64) {
+		time.Sleep(300 * time.Millisecond) // the next reports
 		mu.Lock()
 		defer mu.Unlock()
-		return counters, routed
+		return counters, routed, lastBytes
 	}
 
 	// Paced: 100 Mbit/s in 1 ms bursts for 4 s, a realistic load at twice
 	// the target, which should lose (almost) nothing.
 	const rate = 100e6 / 8 / size // packets per second
-	c0, r0 := snapshot()
+	c0, r0, b0 := snapshot()
 	var paced uint64
 	tick := time.NewTicker(time.Millisecond)
 	for begin := time.Now(); time.Since(begin) < 4*time.Second; {
@@ -579,13 +579,17 @@ func TestSharedListenerThroughput(t *testing.T) {
 		}
 	}
 	tick.Stop()
-	c1, r1 := snapshot()
+	c1, r1, b1 := snapshot()
 	forwarded := c1.Forwarded - c0.Forwarded
 	loss := 1 - float64(forwarded)/float64(paced)
-	t.Logf("paced 100 Mbit/s: %d sent, %d routed, %d forwarded to the worker (%d worker full): loss %.3f%%",
-		paced, r1-r0, forwarded, c1.WorkerFull-c0.WorkerFull, 100*loss)
-	if loss >= 0.005 {
-		t.Errorf("lost %.3f%% at 100 Mbit/s, want under 0.5%%", 100*loss)
+	// What the worker's link delivered: past its queues, the transport's
+	// second open and replay filter.
+	delivered := (b1 - b0) / size
+	workerLoss := 1 - float64(delivered)/float64(paced)
+	t.Logf("paced 100 Mbit/s: %d sent, %d routed, %d forwarded to the worker (%d worker full), %d delivered by its link: loss %.3f%% at the handoff, %.3f%% at the worker",
+		paced, r1-r0, forwarded, c1.WorkerFull-c0.WorkerFull, delivered, 100*loss, 100*workerLoss)
+	if loss >= 0.005 || workerLoss >= 0.005 {
+		t.Errorf("lost %.3f%% at the handoff and %.3f%% at the worker at 100 Mbit/s, want under 0.5%%", 100*loss, 100*workerLoss)
 	}
 	// One-way: the worker counts what it gets.
 	bulk := packet("bulk")

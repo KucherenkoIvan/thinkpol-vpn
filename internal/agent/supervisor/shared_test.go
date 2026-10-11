@@ -1177,3 +1177,73 @@ func TestStreamRoutingIsBounded(t *testing.T) {
 		t.Fatalf("listener %+v", li[0])
 	}
 }
+
+// A credential's replay history spans every listener of its transport and
+// survives a listener's reopening: a datagram captured on one listener and
+// sent to another, or to the reopened one, is a replay.
+func TestReplaysAcrossListeners(t *testing.T) {
+	s := newTestShared(t, nil)
+	a, b := Listener{Transport: udp.Name, Address: "127.0.0.1:0"}, Listener{Transport: udp.Name, Address: "[::1]:0"}
+	if _, err := s.setListeners(context.Background(), []Listener{a, b}); err != nil {
+		t.Fatal(err)
+	}
+	addrs := map[string]string{}
+	for _, pl := range *s.byID.Load() {
+		addrs[pl.cfg.Address] = pl.udp.LocalAddr().String()
+	}
+	space := randomSpace()
+	p := transporttest.SymmetricPeer()
+	s.setSpaces(map[transport.SpaceID]map[string][]transport.PeerLink{space: {udp.Name: {p.PeerLink}}})
+	w := newFakeWorker(s, space)
+	s.attach(space, w.sockets())
+
+	capture, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = capture.Close() }()
+	if err := dial(t, capture.LocalAddr().String(), p).WritePacket([]byte("once")); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 2048)
+	_ = capture.SetReadDeadline(time.Now().Add(wait))
+	n, _, err := capture.ReadFrom(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	genuine := buf[:n]
+	send := func(to string) {
+		t.Helper()
+		c, err := net.Dial("udp", to)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = c.Close() }()
+		if _, err := c.Write(genuine); err != nil {
+			t.Fatal(err)
+		}
+	}
+	send(addrs[a.Address])
+	eventually(t, "the genuine datagram on A", func() bool { return w.got.Load() == 1 })
+	send(addrs[b.Address])
+	eventually(t, "the replay on B", func() bool { return s.counters(space).Replayed == 1 })
+	// A reopened: a new socket, the same history.
+	if _, err := s.setListeners(context.Background(), []Listener{b}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.setListeners(context.Background(), []Listener{a, b}); err != nil {
+		t.Fatal(err)
+	}
+	for _, pl := range *s.byID.Load() {
+		if pl.cfg.Address == a.Address {
+			send(pl.udp.LocalAddr().String())
+		}
+	}
+	eventually(t, "the replay on the reopened A", func() bool { return s.counters(space).Replayed == 2 })
+	if w.got.Load() != 1 {
+		t.Fatalf("forwarded %d, want the genuine datagram only", w.got.Load())
+	}
+	if remotes := (*s.routes.Load())[space].remotesForTest(); len(remotes) != 1 {
+		t.Fatalf("remembered %v, want the genuine sender only", remotes)
+	}
+}
