@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: M
 depends_on: [TP-008]
 refs: [R2, R3, DESIGN#routing-rules-and-dns]
-owner: ""
-branch: ""
+owner: "agent-tp-015"
+branch: "tp-015-rule-engine"
 ---
 
 ## Goal
@@ -37,3 +37,4 @@ Ordered routing rules decide per destination whether traffic goes direct, throug
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-10 notes from TP-016 review: set difference in `internal/lists`, the built-in local list and what goes direct in "all but domestic"
+- 2026-10-12 backlog → in-progress — owner: agent-tp-015, branch: tp-015-rule-engine
