@@ -42,8 +42,26 @@ A running device node is controlled through a local API, and the CLI is its firs
 - **For TP-049 (tray):** use `localapi.Client` (sanitized results, explained errors, `errors.Is` with `localapi.ErrPermissionDenied` / `ErrNotRunning` / `ErrServerMode`); `WatchStatus` for live state; the user must be in the `thinkpol` group. Missing for the tray, each a new RPC or field (wire-compatible additions): space switching (D9: `ListSpaces` returns one space today), `owned by <space>` for the entry in use (needs the entry's owner space in the map, TP-040), kill switch (TP-048) and connect-on-boot (TP-046) toggles.
 - **Later:** a server's per-space data plane status lives in its worker process; reporting it needs a worker → supervisor status message over ipc (with TP-041's telemetry, or when guest admins get status).
 
+## Review findings
+Review verdict: merge after these.
+
+- [ ] 1. A leftover socket directory with the wrong group or mode must not take the VPN down: if the existing entry is a real directory owned by the service's uid in a root-only parent, fix its group and mode through an `O_DIRECTORY|O_NOFOLLOW` descriptor (fchown/fchmod); still refuse symlinks and other owners. And a local-API failure is non-fatal to the data plane (logged loudly, status unavailable, the VPN keeps running). Test both
+- [ ] 2. Limits: `netutil.LimitListener` (~32 connections), `grpc.MaxConcurrentStreams`, one shared status snapshot per tick for all watchers
+- [ ] 3. Connect returns an error when the device isn't actually up (`!down && engine == nil && !removed`: try starting now, return its error)
+- [ ] 4. Sanitize free-form strings server-side in `statusProto` (`Egress.Name`, `Peer.Device`, `Link.Transport`, `PublicListener.Transport`); TP-030 Notes: chain/egress names restricted to `[a-z0-9-]` at map parse
+- [ ] 5. Local rules file (decided in TP-015's review): the device's local rule overrides and preset choice live in a file owned by the service in its state dir, written only by the service through the privileged API (`SetRulePreset`), read with the TP-011 trusted reader; on a parse error keep the last good value or fail closed, never treat it as empty. TP-015 isn't merged: storage and API side here, the engine hook (`Engine.SetRules`, preset names `space`/`everything`/`all-but-domestic`, `ErrPresetUnavailable`) for whoever merges second; noted in both tickets
+- [ ] 6. TP-046 Notes (explicit acceptance items): install with `THINKPOL_CONNECT=false` (PRD D5); persist the user's last requested connect state (or tell boot from restart) so a crash-restart neither silently drops a connected user nor undoes an explicit disconnect
+- [ ] N1. `SO_PEERGROUPS` `ENOPROTOOPT` falls back to the effective gid
+- [ ] N2. `min()` against the length for the logs slice
+- [ ] N3. A Connect taken while removed, when the node turns out to be a server
+- [ ] N4. `Check` rejects `Connect=false` with an empty `APISocket` on a device
+- [ ] N5. A lock file against two instances racing the stale-socket removal
+- [ ] N6. A non-default `THINKPOL_API_SOCKET`'s parent must be root-owned (or the service's) and not group/world-writable
+- [ ] N7. DESIGN wording: credentials recorded at connect time
+
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-11 docs (TP-011 review): notes on the composition, a status handle and the supervisor for the local API
 - 2026-10-12 backlog → in-progress — owner: agent-tp-022, branch: tp-022-local-api
 - 2026-10-12 in-progress → review — local API, auth model and CLI done; make lint, make test, make test-race and make lab-test green
+- 2026-10-12 review → has-errors — review: six findings and seven nits
