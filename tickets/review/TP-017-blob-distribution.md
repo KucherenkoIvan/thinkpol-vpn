@@ -50,3 +50,4 @@ Nodes get the list files (and later releases) referenced by their map from peers
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-12 backlog → in-progress — owner: agent-tp-017, branch: tp-017-blob-distribution
+- 2026-10-12 in-progress → review — make lint, make test, make test-race and make lab-test pass (TestBlobDistribution); DESIGN.md "Lists" and "Node safety" updated (blob protocol; blobs/ in the state directory: written by devices, read-only seeds on servers)
