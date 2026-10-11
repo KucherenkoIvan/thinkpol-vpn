@@ -96,7 +96,6 @@ func TestBlobDistribution(t *testing.T) {
 	up1 := server1.Start(t, "thinkpol", "up")
 	up2 := server2.Start(t, "thinkpol", "up", "-mode", "device")
 	waitLog(t, up1, `worker space=\S+ .*`+applied(version[1]))
-	waitLog(t, up1, `msg="map applied" version=`+version[1]+` .*blob_seeds=1`)
 	waitLog(t, up2, applied(version[1]))
 
 	upA := devA.Start(t, "thinkpol", "up")

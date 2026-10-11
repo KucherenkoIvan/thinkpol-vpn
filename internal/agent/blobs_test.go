@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"log/slog"
 	"net"
 	"net/netip"
@@ -14,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/worker"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/blobs"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
@@ -68,11 +70,11 @@ func TestTheDataPlaneFetchesAndKeepsBlobs(t *testing.T) {
 	_, reg := memoryRegistry(t)
 	var ov loopbackOverlay
 
-	seeds := &seedStore{}
-	seeds.set([][]byte{data})
+	seeds := worker.NewSeeds()
+	seeds.Add(data)
 	a := newRunningNode()
 	dpA := a.dataPlane(reg, s.a, s.verified(t, 1))
-	dpA.Blobs = ov.service(seeds, dpA.Log)
+	dpA.Blobs = ov.service(seedStore{seeds}, dpA.Log)
 	a.run(t, dpA)
 
 	stateB := s.stateDir(t, s.b, 1)
@@ -204,8 +206,8 @@ func TestSeedBlobs(t *testing.T) {
 	}
 }
 
-// A server gives its worker the seeds of the map's blobs; the worker
-// serves them from memory.
+// A server's supervisor reads the seeds of the map's blobs from the state
+// directory only when it sends them; the worker serves them from memory.
 func TestServerSeedsItsWorker(t *testing.T) {
 	s := newTestSpace(t)
 	ru, ref := s.withList(t, "ru", "192.0.2.0/24")
@@ -219,12 +221,15 @@ func TestServerSeedsItsWorker(t *testing.T) {
 	r := runServerSpacesIn(t, s, sup, dir)
 	eventually(t, func() bool { _, _, n := sup.last(); return n >= 1 })
 	sp, _, _ := sup.last()
-	c, err := DecodeWorkerConfig(sp[0].Config)
-	if err != nil {
-		t.Fatal(err)
+	if sp[0].Seeds == nil {
+		t.Fatal("no seeds for the worker")
 	}
-	if len(c.Blobs) != 1 || !bytes.Equal(c.Blobs[0], ru) {
-		t.Fatalf("the worker's config carries %d blobs", len(c.Blobs))
+	got := sp[0].Seeds()
+	if len(got) != 1 || !bytes.Equal(got[0], ru) {
+		t.Fatalf("the worker's seeds: %d", len(got))
+	}
+	if bytes.Contains(sp[0].Config, ru) || bytes.Contains(sp[0].Config, []byte(base64.StdEncoding.EncodeToString(ru))) {
+		t.Error("the seed rides in the worker's config")
 	}
 
 	// The worker serves the seed: device b, without the list, gets it.
@@ -234,6 +239,8 @@ func TestServerSeedsItsWorker(t *testing.T) {
 	base := w.dataPlane(reg, NodeKeys{}, nil)
 	base.blobOptions = blobs.Options{Listen: ov.listen, Dial: ov.dial, Limits: fastBlobs}
 	sess := newFakeSession(s.id)
+	sess.Seeds = worker.NewSeeds()
+	sess.Seeds.Add(ru)
 	sess.config <- sp[0].Config
 	served := make(chan error, 1)
 	go func() { served <- serveSpace(base.Log, base)(w.ctx, sess.Session) }()

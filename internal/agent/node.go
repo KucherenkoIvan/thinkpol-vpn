@@ -249,18 +249,20 @@ func (s *serverSpaces) apply() error {
 		return s.sup.SetSpaces(nil)
 	}
 	id := s.cur.Header().SpaceID
-	var seeds [][]byte
-	if s.stateDir != "" {
-		seeds = seedBlobs(s.stateDir, s.cur.Header().Blobs, s.log)
-	}
 	config, err := WorkerConfig{
-		Keys: s.keys, Trust: s.trust, Map: s.cur.Bytes(), Interface: s.iface, LinkMTU: s.linkMTU, Blobs: seeds,
+		Keys: s.keys, Trust: s.trust, Map: s.cur.Bytes(), Interface: s.iface, LinkMTU: s.linkMTU,
 	}.Encode()
 	if err != nil {
 		return err
 	}
 	inbound := dataplane.AcceptedInbound(s.section, s.reg, transport.SpaceID(id), s.linkMTU)
-	if err := s.sup.SetSpaces([]supervisor.Space{{ID: id, Config: config, Inbound: inbound.Links}}); err != nil {
+	// The seeds are read when the supervisor sends them (a worker's start,
+	// a new map), never held here.
+	var seeds func() [][]byte
+	if dir, header, log := s.stateDir, s.cur.Header().Blobs, s.log; dir != "" && len(header) > 0 {
+		seeds = func() [][]byte { return seedBlobs(dir, header, log) }
+	}
+	if err := s.sup.SetSpaces([]supervisor.Space{{ID: id, Config: config, Inbound: inbound.Links, Seeds: seeds}}); err != nil {
 		return fmt.Errorf("serving space %v: %w", id, err)
 	}
 	ls := make([]supervisor.Listener, 0, len(s.section.Node.Listeners))
@@ -271,7 +273,7 @@ func (s *serverSpaces) apply() error {
 		return errListeners{err}
 	}
 	s.log.Info("map applied", append(append([]any{"version", s.cur.Header().Version, "listeners", len(ls), "inbound_skipped", len(inbound.Skipped)},
-		serverSettings(s.section.Node)...), "blob_seeds", len(seeds))...)
+		serverSettings(s.section.Node)...), "blobs", len(s.cur.Header().Blobs))...)
 	return nil
 }
 

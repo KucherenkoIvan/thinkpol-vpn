@@ -11,8 +11,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/worker"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/blobs"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/lists"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
@@ -223,33 +223,17 @@ func seedBlobs(stateDir string, header []netmap.BlobRef, log *slog.Logger) [][]b
 	return out
 }
 
-// seedStore is a worker's blobs.Store: the seeds its supervisor read from
-// the state directory (WorkerConfig.Blobs), in memory; a worker keeps
-// nothing on disk.
-type seedStore struct {
-	mu    sync.Mutex
-	blobs map[[32]byte][]byte
-}
+// seedStore is a worker's blobs.Store: the seeds its supervisor sent
+// (worker.Seeds), in memory; a worker keeps nothing on disk.
+type seedStore struct{ seeds *worker.Seeds }
 
-func (s *seedStore) set(seeds [][]byte) {
-	m := make(map[[32]byte][]byte, len(seeds))
-	for _, b := range seeds {
-		m[sha256.Sum256(b)] = b
-	}
-	s.mu.Lock()
-	s.blobs = m
-	s.mu.Unlock()
-}
+func (s seedStore) Load(ref netmap.BlobRef) []byte { return s.seeds.Get(ref.SHA256) }
 
-func (s *seedStore) Load(ref netmap.BlobRef) []byte {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.blobs[ref.SHA256]
-}
+func (s seedStore) Save(netmap.BlobRef, []byte) error { return nil }
 
-func (s *seedStore) Save(netmap.BlobRef, []byte) error { return nil }
-
-func (s *seedStore) Prune([]netmap.BlobRef) error { return nil }
+// Prune leaves the seeds alone: the worker drops those a new map doesn't
+// name when the map arrives (retainSeeds).
+func (s seedStore) Prune([]netmap.BlobRef) error { return nil }
 
 // Index is empty: a server needs no stand-ins, it uses no list itself.
-func (s *seedStore) Index() []netmap.BlobRef { return nil }
+func (s seedStore) Index() []netmap.BlobRef { return nil }

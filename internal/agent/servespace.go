@@ -52,8 +52,11 @@ func serveSpace(log *slog.Logger, base DataPlane) worker.Serve {
 			}
 		}
 
-		seeds := &seedStore{}
-		seeds.set(first.Blobs)
+		seeds := s.Seeds
+		if seeds == nil {
+			seeds = worker.NewSeeds()
+		}
+		retainSeeds(seeds, m)
 
 		ctx, cancel := context.WithCancel(ctx)
 		defer cancel()
@@ -77,9 +80,11 @@ func serveSpace(log *slog.Logger, base DataPlane) worker.Serve {
 						cancel()
 						return
 					}
-					// The seeds first: the map that names them is
-					// applied only once it is taken from maps.
-					seeds.set(c.Blobs)
+					// Seeds the new map doesn't name go; the ones it
+					// names came ahead of this config.
+					if next, err := netmap.Verify(c.Map, first.Trust); err == nil {
+						retainSeeds(seeds, next)
+					}
 					select {
 					case <-maps:
 					default:
@@ -108,7 +113,10 @@ func serveSpace(log *slog.Logger, base DataPlane) worker.Serve {
 		dp.Inbound = SharedInbound(ctx, reg, s.Listeners)
 		dp.Interface, dp.LinkMTU, dp.Log = first.Interface, first.LinkMTU, log
 		bo := base.blobOptions
-		bo.Store, bo.Log = seeds, log
+		bo.Store, bo.Log = seedStore{seeds}, log
+		if bo.Limits.MaxHeld == 0 {
+			bo.Limits.MaxHeld = blobs.ServerMaxHeldSize
+		}
 		dp.Blobs = blobs.New(bo)
 		// The space's own figures only (TP-041 seals them into its
 		// telemetry).
@@ -129,4 +137,13 @@ func serveSpace(log *slog.Logger, base DataPlane) worker.Serve {
 		}
 		return err
 	}
+}
+
+// retainSeeds drops the seeds m's header doesn't list.
+func retainSeeds(seeds *worker.Seeds, m *netmap.Map) {
+	listed := map[[32]byte]bool{}
+	for _, ref := range m.Header().Blobs {
+		listed[ref.SHA256] = true
+	}
+	seeds.Retain(func(sha [32]byte) bool { return listed[sha] })
 }
