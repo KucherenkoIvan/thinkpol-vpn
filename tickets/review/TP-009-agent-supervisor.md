@@ -119,3 +119,4 @@ Should-fix:
   <!-- was: Drop CAP_SYS_ADMIN (all sets incl. bounding/ambient) at the end of sandbox(); keep the network caps. -->
 - 2026-10-11 review → has-errors — delta review round 2 (R2.1 blocker + R2.2–R2.8)
 - 2026-10-11 has-errors → in-progress — owner: agent-tp-009, fixing delta review round 2
+- 2026-10-11 in-progress → review — delta review round 2 fixed (R2.1–R2.8); make lint, make test green; lab-gotest (internal/agent/...) green 3x; make lab-test green
