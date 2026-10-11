@@ -26,7 +26,7 @@ BUF_BREAKING_AGAINST ?= rewrite
 # cgo is off unless a target turns it on (test-race).
 export CGO_ENABLED := 0
 
-.PHONY: help build test test-race lint nocgo proto-check fmt proto tools lab lab-up lab-test lab-gotest lab-down
+.PHONY: help build test test-race lint nocgo proto-check fmt proto tools lab lab-up lab-test lab-perf lab-gotest lab-down
 
 help: ## list targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -108,6 +108,14 @@ lab-test: ## lab tests (each starts its own lab) + every package's tests inside 
 	$(LABCTL) gotest ./... || status=1; \
 	if [ -z "$$THINKPOL_LAB_KEEP" ]; then $(LABCTL) down -tests; fi; \
 	exit $$status
+
+# Performance gates: tests that check THINKPOL_LAB_PERF and are named
+# Test…Throughput, in these packages (a new one adds its package here).
+LAB_PERF_PKGS ?= ./internal/agent/supervisor
+LAB_PERF_RUN ?= Throughput$$
+
+lab-perf: ## performance gates, alone on the host: waits for every other lab run, then measures (THINKPOL_LAB_PERF=1)
+	$(LABCTL) gotest -perf -v -p 1 -run '$(LAB_PERF_RUN)' $(LAB_PERF_PKGS)
 
 lab-gotest: export LAB_RUN = $(RUN)
 lab-gotest: ## run PKG's tests inside a lab node with THINKPOL_LAB=1 (PKG=./internal/... RUN=regexp)

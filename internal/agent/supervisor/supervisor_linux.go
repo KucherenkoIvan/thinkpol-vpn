@@ -512,7 +512,13 @@ func (s *Supervisor) run(w *worker, log *slog.Logger) error {
 	}
 	cmd.Env = s.opts.Env
 	cmd.Dir = "/"
-	cmd.Stdout, cmd.Stderr = w.output, w.output
+	var out io.Writer = w.output
+	if s.opts.Output != nil {
+		if extra := s.opts.Output(w.space); extra != nil {
+			out = io.MultiWriter(w.output, extra)
+		}
+	}
+	cmd.Stdout, cmd.Stderr = out, out
 	cmd.ExtraFiles = child[:] // ControlFD, DataFD
 	cmd.WaitDelay = time.Second
 	cmd.SysProcAttr = &syscall.SysProcAttr{

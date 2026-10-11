@@ -156,6 +156,8 @@ What a censor finds on a seized or inspected server node:
 | Logs | None on disk. Agent logs go to an in-memory ring, readable over the overlay for debugging; provisioning sets journald to volatile storage |
 | Telemetry | Only in memory, per space, bounded (on the order of 15 minutes and tens of kilobytes); **each record sealed to the space's telemetry key as it's written**, so neither a memory dump nor swap yields readable data; oldest dropped first; gone on reboot |
 
+On disk that is the state directory (`/var/lib/thinkpol`), and nothing else: `node.key` (the node's id and private keys, 0600), written once, on the node, when it is provisioned; `space.pub` (the space's id and public keys, what every map is verified against); and `map.bin`, replaced atomically whenever the node takes a newer map (TP-037). Directory and files belong to the node's user (or root), are writable by no one else and are never symlinks, and so is every directory on the way from `/` (a sticky one like `/tmp` may be passed through): whoever could replace `space.pub` would choose the maps the node trusts, and whoever could replace `map.bin` could put back an older signed map for the node's next start. `thinkpol up` only reads it; a server's workers get their keys and map from the supervisor over their sockets, since they can't read it.
+
 Telemetry records are aggregates per link and per device id (rates, byte counts, path and transport in use, handshake failures), **never public IP addresses or destinations**. History lives only on the controller.
 
 Later: **ephemeral nodes** keep nothing on disk but the binary. After a reboot they are blank, and the node owner's controller re-provisions them over SSH.
@@ -251,7 +253,7 @@ lab/                      # censor lab (below)
 
 - **OS specifics** are per-OS files (`_linux.go`, `_darwin.go`, `_windows.go`) inside the package they belong to; there is no separate platform tree.
 - **Lists** are built offline (`thinkpol dev lists build`, later the controller), distributed by `dataplane/blobs`, and read by the router. `lists` sits outside `dataplane` because both planes use it.
-- **Engine and agent**: the data-plane engine (`dataplane.Engine`) is in-process wiring, configured by one call per map. Everything around it is the agent's: creating the TUN and its configurator, building the transport registry (with socket marking), watching for maps and applying each, and opening, serving and closing the listeners.
+- **Engine and agent**: the data-plane engine (`dataplane.Engine`) is in-process wiring, configured by one call per map. Everything around it is the agent's: creating the TUN and its configurator, building the transport registry (with socket marking), watching for maps and applying each, and opening, serving and closing the listeners. `thinkpol up` composes it in `internal/agent`: device mode runs one space's engine in-process on the node's own sockets; server mode runs the supervisor and a worker per space, each running the same data plane with the supervisor's shared listeners as its inbound. A node takes a new map when the file changes or on SIGHUP, through `(*Map).Next`. A valid newer map without a section for the node means it was removed from the space: the data plane (on a server, the space's worker and listeners) stops, the agent stays up and idle following the space's maps, and starts again when a later map includes the node. A node that finds itself removed when it starts (its map, valid, has no section for it) starts the same way, idle, rather than failing and being restarted over and over by its service manager.
 - **Dependency direction**: `dataplane`, `netmap`, `lists` and `agent` never import `features` or `shared`; `dataplane`, `netmap` and `lists` never import `agent`; `dataplane`, `netmap` and `lists` don't import go-kernel; `features` never import `dataplane` or `agent`, nor each other (cross-feature calls go through `shared/ports`); `shared` never imports `features`. The planes meet only through the signed map.
 - **Mobile**: everything under `dataplane`, `netmap` and `lists` is pure Go; all of it except `tun`, `egress` and `firewall` builds for Android.
 
@@ -279,7 +281,7 @@ Scope per milestone is in [PRD.md](PRD.md#release-plan); these are the technical
 
 | | Milestone | Done when |
 |---|---|---|
-| M0 | Two Linux nodes in the lab, hand-made map in the sealed-section format, `udp` transport, relay paths; server agent as supervisor + one worker in its own namespace | `ping` device ↔ device, directly and via a relay, over IPv4 and IPv6 |
+| M0 | Two Linux nodes in the lab, hand-made map in the sealed-section format, `udp` transport, relay paths; server agent as supervisor + one worker in its own namespace | `ping` directly (device ↔ server) and device ↔ device via a relay, over IPv4 and IPv6 ([lab/M0.md](lab/M0.md)) |
 | M1 | Exit node with NAT, route-table rules with GeoIP, DNS, IPv6 handling, macOS and Linux CLI clients | daily-usable on its own terms; leak tests pass |
 | M2 | `tls` transport with probe fallback; lab v1 (blocklists, WireGuard fingerprint, entropy, prober) | `udp` fails the lab, `tls` passes |
 | M3 | Chains and hop groups with failover; lab whitelist mode | `ru-entries → nl-exit` passes a whitelist; killing the active entry keeps an open connection alive |

@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"flag"
+	"log/slog"
 
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/worker"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
@@ -31,7 +33,16 @@ func runWorker(ctx context.Context, e env, args []string) error {
 	if err != nil {
 		return err
 	}
-	// The worker's stderr goes to the supervisor's in-memory ring for its
-	// space. TP-011 replaces Idle with the space's data plane.
-	return worker.Run(ctx, id, worker.Idle)
+	// The supervisor passes THINKPOL_LOG_LEVEL; the worker's stderr goes to
+	// its space's in-memory ring (and the owner space's to the node's log).
+	cfg, err := agent.LoadConfig()
+	if err != nil {
+		return err
+	}
+	level, err := agent.ParseLevel(cfg.LogLevel)
+	if err != nil {
+		return err
+	}
+	log := slog.New(slog.NewTextHandler(e.stderr, &slog.HandlerOptions{Level: level}))
+	return worker.Run(ctx, id, agent.ServeSpace(log))
 }
