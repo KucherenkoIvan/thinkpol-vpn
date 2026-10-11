@@ -83,7 +83,10 @@
 // On a server node the supervisor owns the public address for every space
 // (DESIGN.md "Server agent: one worker per space"). A [Routable] transport
 // gives it a [Router], which authenticates each datagram or the start of
-// each connection and says which space's worker it belongs to. Datagram
-// transports' workers listen on what the supervisor forwards; stream
-// transports' workers are a [HandoffListener].
+// each connection and says which space's worker it belongs to. A
+// [PacketRoutable] datagram transport opens the public socket for the
+// supervisor (ListenPacket) and listens, in the worker, on what the
+// supervisor forwards (ListenForwarded); a [StreamRoutable] stream
+// transport opens the public listener (ListenStream) and gives the worker
+// a [HandoffListener] for the connections passed to it.
 package transport
