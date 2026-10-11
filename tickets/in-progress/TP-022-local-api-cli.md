@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: M
 depends_on: [TP-011, KRN-001]
 refs: [D8, DESIGN#desktop-client]
-owner: ""
-branch: ""
+owner: "agent-tp-022"
+branch: "tp-022-local-api"
 ---
 
 ## Goal
@@ -33,3 +33,4 @@ A running device node is controlled through a local API, and the CLI is its firs
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-11 docs (TP-011 review): notes on the composition, a status handle and the supervisor for the local API
+- 2026-10-12 backlog → in-progress — owner: agent-tp-022, branch: tp-022-local-api
