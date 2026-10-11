@@ -26,6 +26,7 @@ Internet traffic can leave through ordered chains of hops, with several egress n
 
 ## Notes
 - From TP-006: multi-relay chains work by `Routes` already (path layer). Relays check sources loosely (a source they have no route to and aren't adjacent to is dropped), because maps needn't route both ways alike; make the builder's routes symmetric (each relay routes back to every source it carries through the hop that source's traffic arrives from) so a strict reverse-path check can come back. First and next hops must be adjacent, or the engine drops them. The builder computes a space-wide overlay MTU from the links' budgets (`path.MessageBudget`), so every device uses one TUN MTU.
+- **From TP-013 (N9 checks):** the settings are `NodeSettings.AllowIngress`/`AllowEgress`. A chain's first hop must allow ingress, its last egress, every member of a hop group too. Build's cross-section check belongs next to `hiddenFromDevices` in `internal/netmap/envelope.go` (which already keeps every link between devices and ingress-off servers out of the map, and an ingress-off server's addresses out of devices' sections); devmap's next to the ingress check in `checker.paths` (`internal/devmap/spec.go`).
 
 - **From TP-022's review:** chain (egress) names reach the local API's status and the tray as WireGuard device names: restrict them to `[a-z0-9-]` (and a sane length) when the map is parsed, so nothing a map says can act on a terminal. The local API sanitizes them server- and client-side meanwhile.
 
@@ -33,3 +34,4 @@ Internet traffic can leave through ordered chains of hops, with several egress n
 - 2026-10-10 created in backlog
 - 2026-10-10 docs (TP-003 review): chains in use at once end at different exits; acceptance uses `de` for the second exit; destination routing
 - 2026-10-10 docs (TP-006 review): notes from the path layer
+- 2026-10-12 docs (TP-013 review): notes from the ingress and egress settings

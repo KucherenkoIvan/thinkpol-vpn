@@ -17,6 +17,7 @@ nodes:
     endpoints:
       - udp://${SERVER_1_IPV4}:4500
       - udp://[${SERVER_1_IPV6}]:4500
+    ingress: true
   - name: device-a
     kind: device
   - name: device-b

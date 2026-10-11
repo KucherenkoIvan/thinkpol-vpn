@@ -32,6 +32,14 @@ func DescribeSection(w io.Writer, s netmap.Section, names Names) error {
 	n := s.Node
 	p.line(0, "node: %s", names.Of(n.ID))
 	p.line(0, "kind: %v", n.Kind)
+	if n.Kind == netmap.NodeServer {
+		egress := onOff(n.AllowEgress)
+		if n.AllowEgress {
+			egress += " (not enforced until TP-014)"
+		}
+		p.line(0, "ingress: %s, egress: %s", onOff(n.AllowIngress), egress)
+	}
+	p.line(0, "min reader: %d", s.MinReader)
 	p.line(0, "ipv4: %v in %v", n.IPv4, n.IPv4Network)
 	p.line(0, "ipv6: %v in %v", n.IPv6, n.IPv6Network)
 	p.list(0, "listeners", len(n.Listeners), func(i int) {
@@ -62,7 +70,11 @@ func DescribeSection(w io.Writer, s netmap.Section, names Names) error {
 	})
 	p.list(0, "inbound", len(s.Inbound), func(i int) {
 		in := s.Inbound[i]
-		p.line(1, "- peer: %s, %v", names.Of(in.Peer), in.PeerKind)
+		refused := ""
+		if !n.AcceptsInbound(in) {
+			refused = " (refused: ingress off)"
+		}
+		p.line(1, "- peer: %s, %v%s", names.Of(in.Peer), in.PeerKind, refused)
 		p.line(2, "%s, credential %s%s", in.Transport, fingerprint(in.Credential), settings(in.Settings))
 	})
 	p.list(0, "routes", len(s.Routes), func(i int) {
@@ -75,6 +87,13 @@ func DescribeSection(w io.Writer, s netmap.Section, names Names) error {
 	})
 	p.blobs(0, s.Blobs)
 	return p.err
+}
+
+func onOff(b bool) string {
+	if b {
+		return "on"
+	}
+	return "off"
 }
 
 // fingerprint shows a credential well enough to match the two ends of a

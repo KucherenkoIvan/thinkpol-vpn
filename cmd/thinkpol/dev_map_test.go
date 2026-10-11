@@ -41,7 +41,7 @@ func TestDevMapLabWorkflow(t *testing.T) {
 		t.Fatalf("header:\n%s", header)
 	}
 	for node, want := range map[string][]string{
-		"server-1": {"node: ", " (server-1)\nkind: server\n", "listeners:\n  - udp://0.0.0.0:4500\n  - udp://[::]:4500\n", "links: none", " (device-a), device\n", " (device-b), device\n", "routes:\n"},
+		"server-1": {"node: ", " (server-1)\nkind: server\ningress: on, egress: off\nmin reader: 1\n", "listeners:\n  - udp://0.0.0.0:4500\n  - udp://[::]:4500\n", "links: none", " (device-a), device\n", " (device-b), device\n", "routes:\n"},
 		"device-a": {" (device-a)\nkind: device\n", "udp://192.0.2.10:4500, credential 32 bytes", "udp://[2001:db8::10]:4500", "inbound: none", "routes: none", "(device-b)"},
 		"device-b": {" (device-b)\nkind: device\n", "udp://192.0.2.10:4500", "inbound: none", "routes: none", "(device-a)"},
 	} {
@@ -71,7 +71,7 @@ func TestDevMapInspectRejectsTamperedMaps(t *testing.T) {
 	dir := t.TempDir()
 	keys, mapFile := filepath.Join(dir, "keys"), filepath.Join(dir, "map.bin")
 	spec := filepath.Join(dir, "spec.yaml")
-	if err := os.WriteFile(spec, []byte("nodes:\n  - name: s\n    kind: server\n    endpoints: [udp://192.0.2.1:4500]\n  - {name: d, kind: device}\npaths:\n  - [d, s]\n"), 0o644); err != nil {
+	if err := os.WriteFile(spec, []byte("nodes:\n  - name: s\n    kind: server\n    endpoints: [udp://192.0.2.1:4500]\n    ingress: true\n  - {name: d, kind: device}\npaths:\n  - [d, s]\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	mustRunCLI(t, "dev", "keygen", "space", "-out", keys)
