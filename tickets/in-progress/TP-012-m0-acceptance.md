@@ -52,3 +52,4 @@ Review verdict: merge after these. The DESIGN.md M0 rewording is accepted by the
 - 2026-10-11 backlog → in-progress — owner: agent-tp-012, branch: tp-012-m0-acceptance (based on tp-011-thinkpol-up while TP-011 is in review)
 - 2026-10-11 in-progress → review — `TestM0` (underlay ipv4/ipv6), `TestCaptureFlagsRawWireGuard`, `TestLooksLikeWireGuard`; lab/M0.md; DESIGN.md M0 "done when" reworded (devices have no direct paths in the MVP); `make lint`, `make test`, `make lab-test` pass
 - 2026-10-11 review → has-errors — review findings R1–R4
+- 2026-10-11 has-errors → in-progress — owner: agent-tp-012, fixing R1–R4
