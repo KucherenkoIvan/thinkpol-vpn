@@ -98,3 +98,32 @@ func TestNewlineFloodStaysBounded(t *testing.T) {
 		t.Fatal("nothing counted as dropped under a flood")
 	}
 }
+
+func TestSinceFollowsTheLogLineByLine(t *testing.T) {
+	r := logring.New(logring.MaxLine)
+	_, _ = r.Write([]byte("one\ntwo\nthr"))
+	lines, next, missed := r.Since(0)
+	if !slices.Equal(lines, []string{"one", "two"}) || next != 2 || missed != 0 {
+		t.Fatalf("got %q, next %d, missed %d", lines, next, missed)
+	}
+	if lines, next2, _ := r.Since(next); len(lines) != 0 || next2 != next {
+		t.Fatalf("nothing new, got %q, next %d", lines, next2)
+	}
+	_, _ = r.Write([]byte("ee\n"))
+	if lines, next, _ = r.Since(next); !slices.Equal(lines, []string{"three"}) || next != 3 {
+		t.Fatalf("got %q, next %d", lines, next)
+	}
+	// A reader that fell behind is told how much it missed.
+	line := strings.Repeat("x", 99) + "\n"
+	for range 100 {
+		_, _ = r.Write([]byte(line))
+	}
+	lines, next, missed = r.Since(next)
+	if missed == 0 || uint64(len(lines))+missed != 100 || next != 103 {
+		t.Fatalf("%d lines, missed %d, next %d", len(lines), missed, next)
+	}
+	// A seq from the future is the end.
+	if lines, next, _ = r.Since(1000); len(lines) != 0 || next != 103 {
+		t.Fatalf("got %q, next %d", lines, next)
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	"github.com/KucherenkoIvan/go-kernel/config"
@@ -49,6 +50,17 @@ type Config struct {
 	// MapPoll is how often the map file is checked for a change; SIGHUP
 	// checks it at once.
 	MapPoll time.Duration `env:"THINKPOL_MAP_POLL" default:"5s"`
+	// Connect brings a device's data plane up when the node starts;
+	// otherwise it waits for the local API's Connect. A server always
+	// serves its spaces.
+	Connect bool `env:"THINKPOL_CONNECT" default:"true"`
+	// APISocket is the local API's Unix socket, in a directory of its own
+	// (DefaultAPISocket when THINKPOL_API_SOCKET is unset); empty serves no
+	// local API.
+	APISocket string `env:"THINKPOL_API_SOCKET"`
+	// APIGroup is the group (a name or a gid) whose members may use the
+	// local API besides root; if no such group exists, only root may.
+	APIGroup string `env:"THINKPOL_API_GROUP" default:"thinkpol"`
 }
 
 // LoadConfig reads the configuration from the environment, with the
@@ -59,7 +71,29 @@ func LoadConfig() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	c.APISocket = APISocket()
 	return *c, nil
+}
+
+// DefaultAPISocket is where the local API listens by default; empty where
+// it has no socket yet (Windows: a named pipe, TP-047).
+func DefaultAPISocket() string {
+	switch runtime.GOOS {
+	case "windows":
+		return ""
+	case "darwin":
+		return "/var/run/thinkpol-api/api.sock"
+	}
+	return "/run/thinkpol-api/api.sock"
+}
+
+// APISocket is the local API's socket: THINKPOL_API_SOCKET if set (empty
+// for none), else DefaultAPISocket.
+func APISocket() string {
+	if p, ok := os.LookupEnv("THINKPOL_API_SOCKET"); ok {
+		return p
+	}
+	return DefaultAPISocket()
 }
 
 // MapPath is the map file's path.
@@ -92,6 +126,12 @@ func (c Config) Check() error {
 	// Below 576 plus a link's overhead nothing fits.
 	if c.LinkMTU != 0 && (c.LinkMTU < 576 || c.LinkMTU > 65535) {
 		errs = append(errs, fmt.Errorf("link MTU %d: want 576 to 65535, or 0 for the default", c.LinkMTU))
+	}
+	if c.Mode == ModeDevice && !c.Connect && c.APISocket == "" {
+		errs = append(errs, errors.New("a device that starts disconnected needs the local API to connect: set an API socket"))
+	}
+	if c.APISocket != "" && !filepath.IsAbs(c.APISocket) {
+		errs = append(errs, fmt.Errorf("API socket %q: want an absolute path", c.APISocket))
 	}
 	if c.MapPoll < 100*time.Millisecond {
 		errs = append(errs, fmt.Errorf("map poll interval %v: want at least 100ms", c.MapPoll))
