@@ -47,8 +47,31 @@ The node's public address belongs to the supervisor, which authenticates every c
 - **For TP-028 (tls):** implement `transport.StreamRoutable`: `ListenStream` opens the public TCP listener, `Router(peers).RouteStream` peeks the ClientHello and must return **every** byte it read (they go to the worker or to the camouflage, which proxies them first), `Handoff(cfg)` is the worker's `HandoffListener`; feed it with `for s := range l.Streams { hl.ServeStream(s.Conn, s.Consumed) }` until `l.Done`. The supervisor's read deadline for routing is 10 s. The camouflage proxy is the listener's `Camouflage.Stream` and must not block (start its own goroutine). Add the lab test of a handoff through real workers that TP-010 couldn't.
 - **For TP-040 (caps):** implement `supervisor.FairShare` (per-space token buckets; `Allow` must be cheap and non-blocking, it runs per datagram on the listener's goroutine). It sees both directions of datagram traffic. Handed-over streams bypass it: cap them on the socket before the handoff (e.g. `SO_MAX_PACING_RATE` on the passed descriptor) or on the uplink, plus TP-009's veth/cgroup limits. Guests' `Inbound` come from the guests' own maps; only the owner's listeners are opened.
 
+## Review findings
+Two reviewers (2026-10-11); the routing core held up and no cross-space leak was found. Decided by the orchestrator.
+
+Blocker:
+- [ ] B1 Reply-table DoS via replays. (a) A supervisor-side replay filter now: per credential, a sliding window on udp's sender and counter, in front of forwarding and of remembering a remote, so replays are dropped before they cost the space anything. (b) Reply peers kept per link identity with a small cap (8 remotes per link, evicting that link's oldest), so nothing one link does displaces another's. (c) Amortized expiry (a sweep at most once per interval). (d) The reply window refreshed only by live (non-replayed) inbound datagrams and shortened to ~2 minutes, with the reason documented. (e) Tests: a replay adds no entry; a flood of new sources on one space doesn't stall another space's flow (measured); full-table behaviour counted.
+
+Should-fix:
+- [ ] 2 Control sends with a deadline: ipc `SendTimeout` for Listeners, Config and Stop (StopTimeout); on timeout the worker is killed and restarted with backoff. Test: a worker that stops reading fd 3 doesn't hang SetSpaces or Close.
+- [ ] 3 Precise DESIGN wording for the reply rule (only to source addresses its authenticated, non-replayed datagrams came from in the last ~2 minutes) and the ticket's replay note (replays need only a passive tap).
+- [ ] 4 Stream routing: at most 1024 connections in flight per listener; on overload the connection goes to the camouflage; counted.
+- [ ] 5 One source of truth for inbound tables: `dataplane.AcceptedInbound(section, reg, space, linkMTU)`, used by `Engine.Apply` and the supervisor's composition; TP-013's ingress filter goes inside it later. Fix the TP-011/TP-013 notes.
+- [ ] 6 Counters: NoSpace apart from Unauthenticated; WorkerFull only for ErrFull, otherwise NoWorker; StreamsRefused; RepliesRefused split (NotAllowed, NoListener, OverShare); ReplyErrors; `RouteDatagram` returns a verdict (Unknown, Routed, Stale, Replay) counted per space; worker-side drops (QueueFull, UnknownListener) exposed through the Session. Telemetry: the supervisor periodically sends each space's SharedCounters to its worker (a new IPC kind, IPC v3) so the worker seals them into its own telemetry (TP-041 note); owner-only fields (ListenerInfo.Address, Rejected) never go to telemetry, and the docs say so.
+- [ ] 7 Honest signatures: `ListenPacket` returns `*net.UDPConn`; `ListenForwarded` returns `(Listener, error)`; `Rejected()` on `Router`; no generic ReadFrom slow path.
+- [ ] 8 `SharedListener.Listen(reg, cfg) (transport.Listener, error)`, so TP-011's RunDataPlane takes one Inbound abstraction in device and worker modes; the worker's public API copies fields instead of embedding `ipc.Listener`.
+- [ ] 9 Throughput: a paced run at 100 Mbit/s (1 ms bursts) with loss < 0.5% by the supervisor's counters; SO_SNDBUF/SO_RCVBUF of 1–4 MiB on the data socket pair; Notes: over loopback the receive softirq runs on the sender's CPU.
+- [ ] 10 DESIGN: a pacing cap on a handed-over stream limits only its sends; uploads need policing (tc ingress/IFB) or a read-rate limit. Note for TP-040.
+- [ ] 11 TP-014 Notes (decided): a worker's outgoing dials to endpoints listed in its own section are allowed through the root namespace (masqueraded) whatever the egress setting; egress off still blocks everything else (M3 entry→exit needs it).
+- [ ] 12 Each "For TP-0xx" note copied into that ticket's Notes (TP-011, TP-013, TP-014, TP-028, TP-040, TP-041), with a Log line each.
+
+Nits:
+- [ ] rollback re-syncs the shared tables; SetListeners documents that a settings change reopens the socket (the port can be lost if the reopen fails); `reply()` unmaps IPv4-mapped destinations and keeps zones; TestWorkersOnlyAnswer without its race and not vacuous; expiry and full-table tests; `bytes.Compare` inline.
+
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-11 backlog → in-progress — owner: agent-tp-010, branch: tp-010-shared-listener
 - 2026-10-11 shared listener implemented: udp datagrams end to end (lab), stream handoff seam (in-process), throughput on one CPU; DESIGN.md "Server agent" extended: workers' replies only to remotes their own authenticated datagrams came from, replays charged, stream caps on the socket
 - 2026-10-11 in-progress → review
+- 2026-10-11 review → has-errors — two reviewers: 1 blocker, 11 should-fix, nits (see Review findings); also recorded: checkpoint commit ca5dc21 was committed with failing tests, against AGENTS.md rule 3 (pushed at the coordinator's request after an interruption; the next commit was green)
