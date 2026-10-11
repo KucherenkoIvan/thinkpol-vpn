@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"log/slog"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/worker"
@@ -33,14 +34,15 @@ func runWorker(ctx context.Context, e env, args []string) error {
 		return err
 	}
 	// The supervisor passes THINKPOL_LOG_LEVEL; the worker's stderr goes to
-	// its space's in-memory ring and the node's log stream.
+	// its space's in-memory ring (and the owner space's to the node's log).
 	cfg, err := agent.LoadConfig()
 	if err != nil {
 		return err
 	}
-	logs, err := agent.NewLogs(cfg.LogLevel, e.stderr)
+	level, err := agent.ParseLevel(cfg.LogLevel)
 	if err != nil {
 		return err
 	}
-	return worker.Run(ctx, id, agent.Worker(logs.Logger))
+	log := slog.New(slog.NewTextHandler(e.stderr, &slog.HandlerOptions{Level: level}))
+	return worker.Run(ctx, id, agent.ServeSpace(log))
 }

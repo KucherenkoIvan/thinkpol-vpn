@@ -3,10 +3,8 @@ package agent
 import (
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
@@ -21,11 +19,22 @@ import (
 //
 // `thinkpol up` only reads it: it writes no pid, lock or log file there or
 // anywhere else on disk (netcfg's locks are on /run, a tmpfs).
+//
+// The directory, the key files, the map and the map's directory must be
+// owned by the node's user (or root) and writable by nobody else, and are
+// never symlinks: whoever could replace space.pub would decide which maps
+// the node takes, and whoever could replace map.bin could put back an
+// older signed map, which the node takes at its next start (a running node
+// refuses anything older than what it has, a starting one has only the
+// file).
 const (
 	NodeKeyFile = "node.key"
 	TrustFile   = "space.pub"
-	MapFile     = "map.bin"
+	MapFileName = "map.bin"
 )
+
+// keyFileLimit bounds what is read of a key file.
+const keyFileLimit = 4 << 10
 
 // neverOnANode are files a space's admin keeps: a node holding one could
 // sign its space's maps.
@@ -46,23 +55,34 @@ type State struct {
 	// Unexpected names entries of the state directory that aren't the
 	// node's: reported, not used.
 	Unexpected []string
+	// Removed is set when Map, valid, has no section for the node: it was
+	// removed from the space (Section is empty).
+	Removed bool
+	// OwnMapUnused is set when MapPath is elsewhere but the state
+	// directory holds a map.bin too.
+	OwnMapUnused bool
 }
 
 // LoadState reads and checks a node's state: the keys in dir, the trust in
 // dir, and the map at mapPath, which must verify against the trust and
-// hold a section for the node's keys. It changes nothing.
+// hold a section for the node's keys, or else says it was removed. It
+// changes nothing.
 func LoadState(dir, mapPath string) (State, error) {
 	var st State
-	entries, err := os.ReadDir(dir)
+	d, err := openTrustedDir(dir)
 	if err != nil {
 		return st, fmt.Errorf("state directory: %w", err)
 	}
-	if err := notWritableByOthers(dir); err != nil {
-		return st, err
+	defer func() { _ = d.Close() }()
+	names, err := d.names()
+	if err != nil {
+		return st, fmt.Errorf("state directory: %w", err)
 	}
-	for _, e := range entries {
-		switch name := e.Name(); {
-		case name == NodeKeyFile, name == TrustFile, name == MapFile:
+	for _, name := range names {
+		switch {
+		case name == NodeKeyFile, name == TrustFile:
+		case name == MapFileName:
+			st.OwnMapUnused = !samePath(filepath.Join(dir, MapFileName), mapPath)
 		case slices.Contains(neverOnANode, name):
 			return st, fmt.Errorf("%s: a space's private key has no place on a node; remove it and keep it where maps are built", filepath.Join(dir, name))
 		default:
@@ -70,22 +90,17 @@ func LoadState(dir, mapPath string) (State, error) {
 		}
 	}
 
-	keyPath := filepath.Join(dir, NodeKeyFile)
-	data, err := readPrivate(keyPath)
+	data, _, err := d.read(NodeKeyFile, true, keyFileLimit)
 	if err != nil {
 		return st, err
 	}
-	if st.Keys, err = parseNodeKeys(keyPath, data); err != nil {
+	if st.Keys, err = parseNodeKeys(filepath.Join(dir, NodeKeyFile), data); err != nil {
 		return st, err
 	}
-	trustPath := filepath.Join(dir, TrustFile)
-	if err := notWritableByOthers(trustPath); err != nil {
+	if data, _, err = d.read(TrustFile, false, keyFileLimit); err != nil {
 		return st, err
 	}
-	if data, err = os.ReadFile(trustPath); err != nil {
-		return st, err
-	}
-	if st.Trust, err = parseTrust(trustPath, data); err != nil {
+	if st.Trust, err = parseTrust(filepath.Join(dir, TrustFile), data); err != nil {
 		return st, err
 	}
 
@@ -98,13 +113,28 @@ func LoadState(dir, mapPath string) (State, error) {
 	if st.Map, err = netmap.Verify(envelope, st.Trust); err != nil {
 		return st, fmt.Errorf("%s is not a valid map of space %v: %w", mapPath, st.Trust.SpaceID, err)
 	}
-	if st.Section, err = openSection(st.Map, st.Keys); err != nil {
+	st.Section, err = openSection(st.Map, st.Keys)
+	if errors.Is(err, netmap.ErrNotRecipient) {
+		// A valid map of the space without the node: it was removed, and
+		// waits for a map that includes it again.
+		st.Removed = true
+		return st, nil
+	}
+	if err != nil {
 		return st, fmt.Errorf("%s: %w", mapPath, err)
 	}
 	return st, nil
 }
 
+func samePath(a, b string) bool {
+	a, errA := filepath.Abs(a)
+	b, errB := filepath.Abs(b)
+	return errA == nil && errB == nil && a == b
+}
+
 // openSection opens the node's section of m and checks it is the node's.
+// A map without a section for the node's key is ErrNotRecipient: the node
+// was removed from the space.
 func openSection(m *netmap.Map, keys NodeKeys) (netmap.Section, error) {
 	s, err := m.Open(keys.Map)
 	if errors.Is(err, netmap.ErrNotRecipient) {
@@ -119,65 +149,24 @@ func openSection(m *netmap.Map, keys NodeKeys) (netmap.Section, error) {
 	return s, nil
 }
 
-// readMap reads a map file, at most netmap.MaxEnvelopeSize of it.
+// readMap reads a map file (at most netmap.MaxEnvelopeSize) under the
+// state directory's rules: file and directory owned by the node's user or
+// root and writable by no one else, no symlink, a regular file (a FIFO is
+// refused without blocking).
 func readMap(path string) ([]byte, os.FileInfo, error) {
-	f, err := os.Open(path)
+	d, err := openTrustedDir(filepath.Dir(path))
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("the map's directory: %w", err)
 	}
-	defer func() { _ = f.Close() }()
-	fi, err := f.Stat()
-	if err != nil {
-		return nil, nil, err
-	}
-	if !fi.Mode().IsRegular() {
-		return nil, nil, fmt.Errorf("%s: not a regular file", path)
-	}
-	b, err := io.ReadAll(io.LimitReader(f, netmap.MaxEnvelopeSize+1))
-	if err != nil {
-		return nil, nil, err
-	}
-	if len(b) > netmap.MaxEnvelopeSize {
-		return nil, nil, fmt.Errorf("%s: larger than a map can be (%d bytes)", path, netmap.MaxEnvelopeSize)
-	}
-	return b, fi, nil
-}
-
-// readPrivate reads a file only the node may read (its mode isn't checked
-// on Windows).
-func readPrivate(path string) ([]byte, error) {
-	fi, err := os.Stat(path)
-	if err != nil {
-		return nil, err
-	}
-	if runtime.GOOS != "windows" {
-		if perm := fi.Mode().Perm(); perm&0o077 != 0 {
-			return nil, fmt.Errorf("%s: mode %04o lets others read the node's private keys; chmod 600 it", path, perm)
-		}
-	}
-	return os.ReadFile(path)
-}
-
-// notWritableByOthers refuses a state directory or trust file others could
-// change: whoever can replace space.pub decides which maps the node takes.
-func notWritableByOthers(path string) error {
-	if runtime.GOOS == "windows" {
-		return nil
-	}
-	fi, err := os.Stat(path)
-	if err != nil {
-		return err
-	}
-	if perm := fi.Mode().Perm(); perm&0o022 != 0 {
-		return fmt.Errorf("%s: mode %04o lets others change it; chmod go-w it", path, perm)
-	}
-	return nil
+	defer func() { _ = d.Close() }()
+	return d.read(filepath.Base(path), false, netmap.MaxEnvelopeSize)
 }
 
 // mapChanged reports whether the file at path is no longer what was read
-// as old (replaced, resized or touched).
+// as old (replaced, resized or touched). It only decides whether to read:
+// readMap checks what is read.
 func mapChanged(old os.FileInfo, path string) (bool, error) {
-	fi, err := os.Stat(path)
+	fi, err := os.Lstat(path)
 	if err != nil {
 		return false, err
 	}

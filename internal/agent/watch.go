@@ -52,8 +52,12 @@ func (w *mapWatcher) run(ctx context.Context, out chan []byte) error {
 		}
 		envelope, fi, err := readMap(w.path)
 		if err != nil {
-			w.log.Warn("reading the map file", "err", err)
-			lastErr = err.Error()
+			// Said once until it changes: a refused file stays refused
+			// (and stays changed) on every poll.
+			if err.Error() != lastErr {
+				w.log.Warn("reading the map file", "err", err)
+				lastErr = err.Error()
+			}
 			continue
 		}
 		lastErr = ""

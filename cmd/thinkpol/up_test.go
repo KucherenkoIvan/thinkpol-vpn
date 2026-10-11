@@ -16,7 +16,7 @@ import (
 // directory the way TP-012 does: its own key, the space's trust, the map.
 func m0State(t *testing.T, node string) (state, keys string) {
 	t.Helper()
-	dir := t.TempDir()
+	dir := tempDir(t)
 	keys, mapFile := filepath.Join(dir, "keys"), filepath.Join(dir, "map.bin")
 	t.Setenv("SERVER_1_IPV4", "192.0.2.10")
 	t.Setenv("SERVER_1_IPV6", "2001:db8::10")
@@ -30,7 +30,7 @@ func m0State(t *testing.T, node string) (state, keys string) {
 	for from, to := range map[string]string{
 		filepath.Join(keys, node+".key"):      agent.NodeKeyFile,
 		filepath.Join(keys, devmap.TrustFile): agent.TrustFile,
-		mapFile:                               agent.MapFile,
+		mapFile:                               agent.MapFileName,
 	} {
 		perm := os.FileMode(0o644)
 		if to == agent.NodeKeyFile {
@@ -61,7 +61,7 @@ func TestUpReadsTheDevTooling(t *testing.T) {
 
 func TestUpRefusesAnInvalidMap(t *testing.T) {
 	state, keys := m0State(t, "device-a")
-	path := filepath.Join(state, agent.MapFile)
+	path := filepath.Join(state, agent.MapFileName)
 	env := readTestFile(t, path)
 	env[len(env)/2] ^= 1
 	if err := os.WriteFile(path, env, 0o644); err != nil {
@@ -102,4 +102,16 @@ func noSecrets(t *testing.T, keys, out string) {
 			}
 		}
 	}
+}
+
+// tempDir is a test's temporary directory by its real path: the node's
+// files are refused behind a symlink, and macOS's temporary directories
+// are under one (/var).
+func tempDir(t *testing.T) string {
+	t.Helper()
+	d, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d
 }

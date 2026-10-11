@@ -6,20 +6,25 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/logring"
 )
 
 func TestTheWatcherDeliversChangedMaps(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, MapFile)
+	dir := tempDir(t)
+	path := filepath.Join(dir, MapFileName)
 	writeFile(t, path, []byte("version 1"), 0o644)
 	_, fi, err := readMap(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	reload := make(chan os.Signal, 1)
-	w := &mapWatcher{path: path, interval: 10 * time.Millisecond, reload: reload, log: slog.New(slog.DiscardHandler), last: fi}
+	logs := logring.New(1 << 16)
+	w := &mapWatcher{path: path, interval: 10 * time.Millisecond, reload: reload, log: slog.New(slog.NewTextHandler(logs, nil)), last: fi}
 	out := make(chan []byte, 1)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -53,9 +58,21 @@ func TestTheWatcherDeliversChangedMaps(t *testing.T) {
 	writeFile(t, path, []byte("version 3!"), 0o644)
 	expect(t, out, "version 3!")
 
+	// A refused file (others may write it) is said once, not on every
+	// poll; modes aren't checked on Windows.
+	if runtime.GOOS != "windows" {
+		writeFile(t, path, []byte("refused"), 0o666)
+		time.Sleep(100 * time.Millisecond)
+		if c := strings.Count(logs.String(), "reading the map file"); c != 1 {
+			t.Fatalf("%d warnings:\n%s", c, logs.String())
+		}
+	}
+	writeFile(t, path, []byte("version 4!"), 0o644)
+	expect(t, out, "version 4!")
+
 	// SIGHUP reads it even unchanged.
 	reload <- os.Interrupt
-	expect(t, out, "version 3!")
+	expect(t, out, "version 4!")
 }
 
 func expect(t *testing.T, out <-chan []byte, want string) {

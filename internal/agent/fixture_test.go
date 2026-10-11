@@ -87,6 +87,26 @@ func (s *testSpace) build(t *testing.T, version uint64) []byte {
 	return env
 }
 
+// buildWithout signs a map at version from which gone was removed: the
+// other node alone, without its links to gone.
+func (s *testSpace) buildWithout(t *testing.T, version uint64, gone NodeKeys) []byte {
+	t.Helper()
+	a, b := s.sections()
+	stay, key := a, s.a.Map
+	if gone == s.a {
+		stay, key = b, s.b.Map
+	}
+	stay.Peers, stay.Links, stay.Inbound = nil, nil, nil
+	env, err := netmap.Build(s.signing, netmap.Contents{
+		SpaceID: s.id, Version: version, RecoveryKey: s.recovery,
+		Recipients: []netmap.Recipient{{Key: key.Public(), Section: stay}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return env
+}
+
 func (s *testSpace) verified(t *testing.T, version uint64) *netmap.Map {
 	t.Helper()
 	m, err := netmap.Verify(s.build(t, version), s.trust())
@@ -111,13 +131,13 @@ func trustFile(tr netmap.Trust) string {
 // stateDir lays out node k's state directory with a map at version.
 func (s *testSpace) stateDir(t *testing.T, k NodeKeys, version uint64) string {
 	t.Helper()
-	dir := filepath.Join(t.TempDir(), "state")
+	dir := filepath.Join(tempDir(t), "state")
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	writeFile(t, filepath.Join(dir, NodeKeyFile), []byte(nodeKeyFile(k)), 0o600)
 	writeFile(t, filepath.Join(dir, TrustFile), []byte(trustFile(s.trust())), 0o644)
-	writeFile(t, filepath.Join(dir, MapFile), s.build(t, version), 0o644)
+	writeFile(t, filepath.Join(dir, MapFileName), s.build(t, version), 0o644)
 	return dir
 }
 
@@ -130,4 +150,16 @@ func writeFile(t *testing.T, path string, data []byte, perm os.FileMode) {
 	if err := os.Chmod(path, perm); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// tempDir is a test's temporary directory by its real path: the node's
+// files are refused behind a symlink, and macOS's temporary directories
+// are under one (/var).
+func tempDir(t *testing.T) string {
+	t.Helper()
+	d, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d
 }

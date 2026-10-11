@@ -24,7 +24,7 @@ type Session struct {
 	Gateways  []netip.Addr
 	// Config delivers the space's opaque configuration from the supervisor:
 	// the current one first, then each change, latest-wins (an older pending
-	// one is dropped). nil in Idle mode.
+	// one is dropped).
 	Config <-chan []byte
 	// Listeners delivers the supervisor's shared listeners the worker is
 	// served by: the current set first, then each change, latest-wins. A
@@ -44,8 +44,8 @@ type Session struct {
 // without an error, ends the worker, and the supervisor restarts it.
 type Serve func(ctx context.Context, s Session) error
 
-// Idle serves nothing until ctx ends: the worker's data plane until `thinkpol
-// up` (TP-011) composes the real one.
+// Idle serves nothing until ctx ends: a worker for tests of the sandbox and
+// the supervisor. `thinkpol worker` serves agent.ServeSpace.
 func Idle(ctx context.Context, _ Session) error {
 	<-ctx.Done()
 	return nil

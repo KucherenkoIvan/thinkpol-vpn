@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/logring"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
@@ -65,6 +66,27 @@ func (o *workerOutput) forSpace(space netmap.SpaceID) io.Writer {
 	return &prefixedLines{out: o, prefix: "worker space=" + space.String() + " "}
 }
 
+const hexDigits = "0123456789abcdef"
+
+// appendSanitized appends a space's bytes so that nothing in them acts on
+// a terminal or a log viewer: invalid UTF-8 and C0 controls (but tab) as
+// \xNN, DEL as \x7f, C1 controls and bidirectional overrides as \uNNNN.
+func appendSanitized(dst, b []byte) []byte {
+	for len(b) > 0 {
+		r, n := utf8.DecodeRune(b)
+		switch {
+		case r == utf8.RuneError && n <= 1, r < 0x20 && r != '\t', r == 0x7f:
+			dst = append(dst, '\\', 'x', hexDigits[b[0]>>4], hexDigits[b[0]&0xf])
+		case r >= 0x80 && r <= 0x9f, r >= 0x202a && r <= 0x202e, r >= 0x2066 && r <= 0x2069:
+			dst = append(dst, '\\', 'u', hexDigits[r>>12&0xf], hexDigits[r>>8&0xf], hexDigits[r>>4&0xf], hexDigits[r&0xf])
+		default:
+			dst = append(dst, b[:n]...)
+		}
+		b = b[n:]
+	}
+	return dst
+}
+
 // prefixedLines buffers a worker's partial line until it ends; a line
 // longer than logring.MaxLine is cut there.
 type prefixedLines struct {
@@ -93,7 +115,9 @@ func (p *prefixedLines) Write(b []byte) (int, error) {
 
 func (p *prefixedLines) flush() {
 	line := make([]byte, 0, len(p.prefix)+len(p.partial)+1)
-	line = append(append(append(line, p.prefix...), p.partial...), '\n')
+	line = append(line, p.prefix...)
+	line = appendSanitized(line, p.partial)
+	line = append(line, '\n')
 	p.partial = p.partial[:0]
 	p.out.mu.Lock()
 	_, _ = p.out.w.Write(line)

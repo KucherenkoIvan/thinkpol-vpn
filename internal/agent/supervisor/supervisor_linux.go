@@ -514,7 +514,9 @@ func (s *Supervisor) run(w *worker, log *slog.Logger) error {
 	cmd.Dir = "/"
 	var out io.Writer = w.output
 	if s.opts.Output != nil {
-		out = io.MultiWriter(w.output, s.opts.Output(w.space))
+		if extra := s.opts.Output(w.space); extra != nil {
+			out = io.MultiWriter(w.output, extra)
+		}
 	}
 	cmd.Stdout, cmd.Stderr = out, out
 	cmd.ExtraFiles = child[:] // ControlFD, DataFD

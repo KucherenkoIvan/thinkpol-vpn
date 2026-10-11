@@ -46,6 +46,10 @@ const ipv6DefaultMetric = 1024
 // New returns a configurator for owner in the network namespace of the
 // calling thread.
 func New(owner Owner) (Configurator, error) {
+	// The namespace handle and the netlink socket must come from one
+	// thread's namespace.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	ns, err := currentNamespace()
 	if err != nil {
 		return nil, fmt.Errorf("netcfg: current namespace: %w", err)
@@ -53,7 +57,7 @@ func New(owner Owner) (Configurator, error) {
 	return newLinux(ns, "the current namespace", true, owner)
 }
 
-// currentNamespace opens the calling thread's network namespace. Without
+// currentNamespace opens the calling (locked) thread's network namespace. Without
 // /proc (a sandboxed server worker has none) it asks a socket of this
 // thread for its namespace (SIOCGSKNS, which needs CAP_NET_ADMIN there).
 func currentNamespace() (netns.NsHandle, error) {
@@ -61,8 +65,6 @@ func currentNamespace() (netns.NsHandle, error) {
 	if err == nil {
 		return ns, nil
 	}
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
 	sock, serr := unix.Socket(unix.AF_UNIX, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0)
 	if serr != nil {
 		return netns.None(), errors.Join(err, serr)
