@@ -81,3 +81,4 @@ Deferred (Notes written into the tickets): TP-022 (app.Run out of internal/agent
 - 2026-10-11 merged origin/rewrite (TP-010 done); `thinkpol up` in device and server mode (`internal/agent`), `thinkpol worker` runs the data plane; netcfg.New works without /proc (SIOCGSKNS), supervisor.Options.Output; DESIGN.md "Node safety" and "Engine and agent" updated
 - 2026-10-11 in-progress → review — all acceptance checked; `make lint`, `make test`, `go test -race` on internal/agent/..., cmd/thinkpol and netcfg, `make lab-test` (incl. `TestUpRunsTheM0Space`) pass
 - 2026-10-11 review → has-errors — two reviewers: B1, S1, SEC-1–3, D1, S9–S11, nits, tests (see Review findings); TP-022/037/038 deferred
+- 2026-10-11 has-errors → in-progress — owner: agent-tp-011, picking up the review findings
