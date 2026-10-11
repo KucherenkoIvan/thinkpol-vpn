@@ -50,13 +50,72 @@ func (w *replayWindow) accept(counter uint64) bool {
 // datagrams stay fresh (maxClockSkew): in a slot, with the counters seen,
 // even when it was refused; or, once evicted from the slots, by id alone,
 // refused outright. So a replay can't come back later as a "new" sender
-// once the current one goes quiet.
+// once the current one goes quiet. The evicted are at most maxEvicted, the
+// oldest forgotten first: a dialer churning through senders can't make
+// this grow, or cost more per datagram, without bound. A forgotten sender
+// is older than the churning current one, so while that one is active it
+// is still refused; the residual: a sender evicted from the slots and then
+// pushed out of the ring by more than maxEvicted further evictions within
+// five minutes can take over again once the current sender has been
+// silent for senderTakeover (30 s), and making those evictions requires
+// the credential.
 type senders struct {
 	tick    uint64
 	entries [maxSenders]senderEntry
 	current *senderEntry
-	seen    time.Time              // last datagram accepted from current
-	evicted map[senderID]time.Time // when; refused for maxClockSkew
+	seen    time.Time // last datagram accepted from current
+	evicted evictedSenders
+}
+
+// evictedSenders are the ids of senders evicted from the slots, refused for
+// maxClockSkew after: a map for lookups and a ring in eviction order, so
+// expiry and the bound cost O(1) per eviction.
+type evictedSenders struct {
+	at         map[senderID]time.Time
+	ring       []evictedSender
+	head, size int
+}
+
+type evictedSender struct {
+	id senderID
+	at time.Time
+}
+
+// maxEvicted bounds a credential's evicted senders.
+const maxEvicted = 1024
+
+func (e *evictedSenders) add(id senderID, now time.Time) {
+	e.expire(now)
+	if e.ring == nil {
+		e.at = make(map[senderID]time.Time)
+		e.ring = make([]evictedSender, maxEvicted)
+	}
+	if e.size == len(e.ring) {
+		e.pop()
+	}
+	e.ring[(e.head+e.size)%len(e.ring)] = evictedSender{id, now}
+	e.size++
+	e.at[id] = now
+}
+
+func (e *evictedSenders) pop() {
+	old := e.ring[e.head]
+	if at, ok := e.at[old.id]; ok && at.Equal(old.at) {
+		delete(e.at, old.id)
+	}
+	e.head = (e.head + 1) % len(e.ring)
+	e.size--
+}
+
+func (e *evictedSenders) expire(now time.Time) {
+	for e.size > 0 && now.Sub(e.ring[e.head].at) > maxClockSkew {
+		e.pop()
+	}
+}
+
+func (e *evictedSenders) has(id senderID, now time.Time) bool {
+	at, ok := e.at[id]
+	return ok && now.Sub(at) <= maxClockSkew
 }
 
 const (
@@ -97,11 +156,11 @@ func (s *senders) admit(id senderID, counter uint64, now time.Time) verdict {
 		}
 	}
 	if e == nil {
-		if s.wasEvicted(id, now) {
+		if s.evicted.has(id, now) {
 			return dropStale
 		}
 		if victim.used != 0 {
-			s.remember(victim.id, now)
+			s.evicted.add(victim.id, now)
 		}
 		*victim = senderEntry{id: id, refused: true}
 		e = victim
@@ -128,25 +187,4 @@ func (s *senders) admit(id senderID, counter uint64, now time.Time) verdict {
 		return deliverNewest
 	}
 	return deliver
-}
-
-func (s *senders) wasEvicted(id senderID, now time.Time) bool {
-	at, ok := s.evicted[id]
-	if ok && now.Sub(at) > maxClockSkew {
-		delete(s.evicted, id)
-		return false
-	}
-	return ok
-}
-
-func (s *senders) remember(id senderID, now time.Time) {
-	if s.evicted == nil {
-		s.evicted = make(map[senderID]time.Time)
-	}
-	for old, at := range s.evicted {
-		if now.Sub(at) > maxClockSkew {
-			delete(s.evicted, old)
-		}
-	}
-	s.evicted[id] = now
 }

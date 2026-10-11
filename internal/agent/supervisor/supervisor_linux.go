@@ -24,6 +24,7 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/ipc"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/logring"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
 
@@ -50,6 +51,8 @@ type Supervisor struct {
 	// (netcfg.ErrBusy for a second), and where root-namespace routes go
 	// when one is needed.
 	root netcfg.Configurator
+	// shared is the public listeners, routing to the workers.
+	shared *shared
 
 	setMu sync.Mutex // one SetSpaces (or Close teardown) at a time
 
@@ -77,7 +80,11 @@ func New(opts Options) (*Supervisor, error) {
 	if err != nil {
 		return nil, fmt.Errorf("supervisor: %w", err)
 	}
-	s := &Supervisor{opts: opts, log: opts.Log, root: root, workers: map[netmap.SpaceID]*worker{}, slots: map[int]bool{}}
+	s := &Supervisor{
+		opts: opts, log: opts.Log, root: root,
+		shared:  newShared(opts.Transports, opts.FairShare, opts.Log, opts.now),
+		workers: map[netmap.SpaceID]*worker{}, slots: map[int]bool{},
+	}
 	fail := func(err error) (*Supervisor, error) {
 		_ = removeIsolation()
 		_ = root.Close()
@@ -161,6 +168,13 @@ func (s *Supervisor) SetSpaces(spaces []Space) error {
 		s.mu.Unlock()
 		return fmt.Errorf("supervisor: %d spaces, room for %d", len(want), s.opts.slots())
 	}
+	// The credential tables first: a space leaving is unreachable before
+	// its worker stops, and a new one routable once its worker is ready.
+	inbound := make(map[transport.SpaceID]map[string][]transport.PeerLink, len(want))
+	for id, sp := range want {
+		inbound[transport.SpaceID(id)] = sp.Inbound
+	}
+	s.shared.setSpaces(inbound)
 	var stopping []*worker
 	for id, w := range s.workers {
 		if _, ok := want[id]; !ok {
@@ -180,6 +194,7 @@ func (s *Supervisor) SetSpaces(spaces []Space) error {
 	var started []*worker
 	for _, sp := range spaces {
 		if w, ok := s.workers[sp.ID]; ok {
+			w.inbound = sp.Inbound
 			w.setConfig(sp.Config) // an existing worker: push the new config
 			continue
 		}
@@ -221,7 +236,13 @@ func (s *Supervisor) rollback(ws []*worker) {
 		delete(s.workers, w.space)
 		delete(s.slots, w.slot)
 	}
+	// The shared listeners stop routing to the spaces rolled back.
+	inbound := make(map[transport.SpaceID]map[string][]transport.PeerLink, len(s.workers))
+	for id, w := range s.workers {
+		inbound[transport.SpaceID(id)] = w.inbound
+	}
 	s.mu.Unlock()
+	s.shared.setSpaces(inbound)
 	for _, w := range ws {
 		close(w.done) // it was never supervised; keep Workers()/Close consistent
 		if w.cg != nil {
@@ -249,6 +270,25 @@ func (s *Supervisor) stopAll(ws []*worker) {
 	}
 }
 
+// SetListeners makes the node listen on exactly ls, for every space it
+// serves (see Listener). Listeners that stay keep their sockets. A listener
+// that can't be opened is reported and the others are served. Every worker
+// is told the new set.
+func (s *Supervisor) SetListeners(ls []Listener) error {
+	changed, err := s.shared.setListeners(context.Background(), ls)
+	if changed {
+		s.mu.Lock()
+		for _, w := range s.workers {
+			w.signal(w.listenersChanged)
+		}
+		s.mu.Unlock()
+	}
+	return err
+}
+
+// Listeners describes the public listeners, ordered by id.
+func (s *Supervisor) Listeners() []ListenerInfo { return s.shared.infos() }
+
 // Workers describes every space's worker, ordered by slot.
 func (s *Supervisor) Workers() []WorkerInfo {
 	s.mu.Lock()
@@ -261,6 +301,7 @@ func (s *Supervisor) Workers() []WorkerInfo {
 	out := make([]WorkerInfo, len(ws))
 	for i, w := range ws {
 		out[i] = w.info()
+		out[i].Shared = s.shared.counters(transport.SpaceID(w.space))
 	}
 	return out
 }
@@ -288,6 +329,7 @@ func (s *Supervisor) Close() error {
 	}
 	s.closed = true
 	s.mu.Unlock()
+	s.shared.close()
 
 	s.setMu.Lock() // wait for an in-flight SetSpaces to finish
 	defer s.setMu.Unlock()
@@ -327,12 +369,15 @@ type worker struct {
 	transit transit
 	uid     uint32
 	egress  Egress
+	inbound map[string][]transport.PeerLink // under Supervisor.mu
 	output  *logring.Ring
 	cg      *cgroup // nil when cgroups are unavailable
 	ctx     context.Context
 	cancel  context.CancelFunc
 	done    chan struct{} // closed once stopped and cleaned up
 	notify  chan struct{} // config changed; coalesced
+	// listenersChanged: the shared listeners changed; coalesced
+	listenersChanged chan struct{}
 
 	mu        sync.Mutex
 	config    []byte
@@ -354,12 +399,15 @@ func (s *Supervisor) newWorker(sp Space, slot int) *worker {
 		transit: s.opts.transit(slot),
 		uid:     s.opts.UIDBase + uint32(slot),
 		egress:  sp.Egress,
+		inbound: sp.Inbound,
 		config:  sp.Config,
 		output:  logring.New(s.opts.OutputBytes),
 		ctx:     ctx,
 		cancel:  cancel,
 		done:    make(chan struct{}),
 		notify:  make(chan struct{}, 1),
+
+		listenersChanged: make(chan struct{}, 1),
 	}
 	if s.cgroups != nil {
 		cg, err := s.cgroups.child(w.link, s.opts.MemoryMax, s.opts.PidsMax)
@@ -378,11 +426,15 @@ func (w *worker) setConfig(config []byte) {
 	same := string(w.config) == string(config)
 	w.config = config
 	w.mu.Unlock()
-	if same {
-		return
+	if !same {
+		w.signal(w.notify)
 	}
+}
+
+// signal wakes the worker's run loop through ch, coalescing.
+func (w *worker) signal(ch chan struct{}) {
 	select {
-	case w.notify <- struct{}{}:
+	case ch <- struct{}{}:
 	default:
 	}
 }
@@ -562,14 +614,53 @@ func (s *Supervisor) run(w *worker, log *slog.Logger) error {
 	w.mu.Unlock()
 	log.Info("worker ready")
 
-	// Send the current config once, then whenever it changes.
-	if err := s.sendConfig(ends.Control, w); err != nil {
-		log.Warn("sending config", "err", err)
+	// A control send that can't finish within StopTimeout means the worker
+	// stopped reading its socket: it is killed (and restarted), so it can't
+	// hold up SetSpaces, SetListeners or Close.
+	stuck := func(what string, err error) error {
+		if !errors.Is(err, os.ErrDeadlineExceeded) {
+			// The worker is gone or going: its exit is the reason.
+			s.awaitExit(p)
+			return p.exit()
+		}
+		_ = ends.Control.Close()
+		p.kill()
+		return fmt.Errorf("sending %s: %w", what, err)
 	}
+	// The listeners and the current config once, then whenever they
+	// change; datagrams and connections from now on.
+	if err := s.sendListeners(ends.Control); err != nil {
+		return stuck("listeners", err)
+	}
+	if err := s.sendConfig(ends.Control, w); err != nil {
+		return stuck("config", err)
+	}
+	countersTick := time.NewTicker(s.opts.CountersInterval)
+	defer countersTick.Stop()
+	detach := s.shared.attach(transport.SpaceID(w.space), &workerSockets{data: ends.Data, control: ends.Control})
+	defer detach()
+	dataGone := make(chan error, 1)
+	go s.readReplies(ends.Data, transport.SpaceID(w.space), dataGone)
 	for {
 		select {
 		case <-p.gone:
 			return p.exit()
+		case err := <-dataGone:
+			if errors.Is(err, io.EOF) {
+				continue // the control socket or the exit tells why
+			}
+			_ = ends.Control.Close()
+			s.awaitExit(p)
+			return fmt.Errorf("data socket: %w", err)
+		case <-w.listenersChanged:
+			if err := s.sendListeners(ends.Control); err != nil {
+				return stuck("listeners", err)
+			}
+		case <-countersTick.C:
+			// For the worker's telemetry; skipped when the socket is full.
+			if m, err := ipc.CountersMessage(s.shared.counters(transport.SpaceID(w.space))); err == nil {
+				_ = ends.Control.TrySend(m)
+			}
 		case err := <-gone:
 			if errors.Is(err, io.EOF) {
 				// The worker's control socket closed: it has exited or is
@@ -584,11 +675,13 @@ func (s *Supervisor) run(w *worker, log *slog.Logger) error {
 			return fmt.Errorf("socket: %w", err)
 		case <-w.notify:
 			if err := s.sendConfig(ends.Control, w); err != nil {
-				log.Warn("sending config", "err", err)
+				return stuck("config", err)
 			}
 		case <-w.ctx.Done():
-			if err := ends.Control.Send(ipc.Message{Kind: ipc.KindStop}); err != nil {
+			if err := ends.Control.SendTimeout(ipc.Message{Kind: ipc.KindStop}, s.opts.StopTimeout); err != nil {
 				log.Warn("sending stop", "err", err)
+				p.kill()
+				return fmt.Errorf("killed: %w", err)
 			}
 			if !s.awaitExit(p) {
 				return fmt.Errorf("killed: still running %v after stop", s.opts.StopTimeout)
@@ -601,6 +694,39 @@ func (s *Supervisor) run(w *worker, log *slog.Logger) error {
 	}
 }
 
+// sendListeners tells a worker which shared listeners it is forwarded from.
+func (s *Supervisor) sendListeners(conn *ipc.Conn) error {
+	m, err := ipc.ListenersMessage(s.shared.ipcListeners())
+	if err != nil {
+		return err
+	}
+	return conn.SendTimeout(m, s.opts.StopTimeout)
+}
+
+// readReplies sends out the datagrams a worker writes to its data socket,
+// until the socket closes or the worker breaks the protocol (reported on
+// gone; io.EOF when it closed).
+func (s *Supervisor) readReplies(data *ipc.Conn, space transport.SpaceID, gone chan<- error) {
+	for {
+		m, err := data.Receive()
+		if err != nil {
+			gone <- err
+			return
+		}
+		m.CloseFiles()
+		if m.Kind != ipc.KindDatagram {
+			gone <- fmt.Errorf("unexpected %v message", m.Kind)
+			return
+		}
+		h, d, err := ipc.ParseDatagram(m.Payload)
+		if err != nil {
+			gone <- err
+			return
+		}
+		s.shared.reply(space, h, d)
+	}
+}
+
 // sendConfig sends the worker's current configuration, as a sealed memfd when
 // it is too large for one packet.
 func (s *Supervisor) sendConfig(conn *ipc.Conn, w *worker) error {
@@ -609,14 +735,14 @@ func (s *Supervisor) sendConfig(conn *ipc.Conn, w *worker) error {
 		return nil
 	}
 	if 1+len(config) <= ipc.MaxMessageSize {
-		return conn.Send(ipc.ConfigMessage(config))
+		return conn.SendTimeout(ipc.ConfigMessage(config), s.opts.StopTimeout)
 	}
 	f, err := sealedMemfd("thinkpol-config", config)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = f.Close() }()
-	return conn.Send(ipc.Message{Kind: ipc.KindConfig, Files: []*os.File{f}})
+	return conn.SendTimeout(ipc.Message{Kind: ipc.KindConfig, Files: []*os.File{f}}, s.opts.StopTimeout)
 }
 
 // awaitExit gives the process StopTimeout to exit, then kills it; false if

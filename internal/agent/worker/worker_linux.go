@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/ipc"
@@ -56,15 +57,21 @@ func Run(ctx context.Context, space netmap.SpaceID, serve Serve) error {
 
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
-	configCh := make(chan []byte, 1)
-	go readControl(control, configCh, cancel)
+	shared := newSharedListeners(data)
+	defer shared.update(nil) // every listener done
+	ch := channels{config: make(chan []byte, 1), listeners: make(chan []SharedListener, 1), counters: make(chan ipc.SharedCounters, 1)}
+	go readControl(control, shared, ch, cancel)
+	go readData(data, shared, cancel)
 
 	err = serve(ctx, Session{
-		Space:     space,
-		Interface: init.Interface,
-		Addrs:     init.Addrs,
-		Gateways:  init.Gateways,
-		Config:    configCh,
+		Space:          space,
+		Interface:      init.Interface,
+		Addrs:          init.Addrs,
+		Gateways:       init.Gateways,
+		Config:         ch.config,
+		Listeners:      ch.listeners,
+		SharedDrops:    shared.drops,
+		SharedCounters: ch.counters,
 	})
 	switch cause := context.Cause(ctx); {
 	case errors.Is(cause, errStopped):
@@ -90,9 +97,50 @@ func connFromFD(fd int, name string) (*ipc.Conn, error) {
 	return conn, nil
 }
 
-// readControl delivers each Config the supervisor sends (latest-wins) and
-// ends the worker on Stop, EOF or anything unexpected.
-func readControl(control *ipc.Conn, configCh chan []byte, cancel context.CancelCauseFunc) {
+// channels are where readControl delivers, latest-wins.
+type channels struct {
+	config    chan []byte
+	listeners chan []SharedListener
+	counters  chan ipc.SharedCounters
+}
+
+// latest replaces a pending value the serve loop hasn't taken; only the
+// control reader sends, so it never blocks.
+func latest[T any](ch chan T, v T) {
+	select {
+	case <-ch:
+	default:
+	}
+	ch <- v
+}
+
+// readData dispatches the datagrams the supervisor forwards; EOF is left to
+// the control socket, anything malformed ends the worker.
+func readData(data *ipc.Conn, shared *sharedListeners, cancel context.CancelCauseFunc) {
+	for {
+		m, err := data.Receive()
+		if err != nil {
+			if !errors.Is(err, io.EOF) {
+				cancel(fmt.Errorf("worker: data socket: %w", err))
+			}
+			return
+		}
+		m.CloseFiles()
+		if m.Kind != ipc.KindDatagram {
+			cancel(fmt.Errorf("worker: unexpected %v message on the data socket", m.Kind))
+			return
+		}
+		if err := shared.datagram(m.Payload); err != nil {
+			cancel(fmt.Errorf("worker: %w", err))
+			return
+		}
+	}
+}
+
+// readControl delivers each Config and Listeners the supervisor sends
+// (latest-wins) and each stream it hands over, and ends the worker on Stop,
+// EOF or anything unexpected.
+func readControl(control *ipc.Conn, shared *sharedListeners, ch channels, cancel context.CancelCauseFunc) {
 	for {
 		m, err := control.Receive()
 		switch {
@@ -114,12 +162,34 @@ func readControl(control *ipc.Conn, configCh chan []byte, cancel context.CancelC
 				cancel(fmt.Errorf("worker: config: %w", err))
 				return
 			}
-			// Latest-wins: drop a pending config the serve loop hasn't taken.
-			select {
-			case <-configCh:
-			default:
+			latest(ch.config, config)
+		case ipc.KindListeners:
+			m.CloseFiles()
+			ls, err := ipc.DecodeListeners(m)
+			if err != nil {
+				cancel(fmt.Errorf("worker: %w", err))
+				return
 			}
-			configCh <- config
+			latest(ch.listeners, shared.update(ls))
+		case ipc.KindCounters:
+			c, err := ipc.DecodeCounters(m)
+			if err != nil {
+				cancel(fmt.Errorf("worker: %w", err))
+				return
+			}
+			latest(ch.counters, c)
+		case ipc.KindStream:
+			id, f, consumed, err := ipc.DecodeStream(m)
+			if err != nil {
+				cancel(fmt.Errorf("worker: %w", err))
+				return
+			}
+			conn, err := net.FileConn(f)
+			_ = f.Close()
+			if err != nil {
+				continue // that connection is lost, the rest goes on
+			}
+			shared.stream(id, conn, consumed)
 		default:
 			m.CloseFiles()
 			cancel(fmt.Errorf("worker: unexpected %v message", m.Kind))

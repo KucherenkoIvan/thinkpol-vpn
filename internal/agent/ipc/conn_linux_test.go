@@ -9,6 +9,9 @@ import (
 	"net/netip"
 	"os"
 	"testing"
+	"time"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/ipc"
 )
@@ -177,5 +180,121 @@ func TestOnlySeqpacketSockets(t *testing.T) {
 	defer func() { _ = r.Close(); _ = wr.Close() }()
 	if _, err := ipc.FromFile(r); err == nil {
 		t.Fatal("a pipe was taken for the socket")
+	}
+}
+
+func dataPair(t *testing.T) (*ipc.Conn, *ipc.Conn) {
+	t.Helper()
+	ends, child, err := ipc.NewPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ends.Control.Close(); _ = ends.Data.Close() })
+	w, err := ipc.FromFile(child[1])
+	for _, f := range child {
+		_ = f.Close()
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+	return ends.Data, w
+}
+
+func TestDatagramsCrossBothWays(t *testing.T) {
+	sup, w := dataPair(t)
+	h := ipc.DatagramHeader{Listener: 3, Remote: netip.MustParseAddrPort("[2001:db8::7]:51820")}
+	big := bytes.Repeat([]byte{0x5a}, ipc.MaxDatagramSize)
+	if err := sup.TrySendDatagram(h, []byte("in")); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.SendDatagram(h, big); err != nil {
+		t.Fatal(err)
+	}
+	if err := sup.TrySendDatagram(h, append(big, 0)); err == nil {
+		t.Fatal("sent a datagram over the limit")
+	}
+	for _, c := range []struct {
+		from *ipc.Conn
+		want []byte
+	}{{w, []byte("in")}, {sup, big}} {
+		m, err := c.from.Receive()
+		if err != nil || m.Kind != ipc.KindDatagram {
+			t.Fatalf("%v, %v", m.Kind, err)
+		}
+		got, d, err := ipc.ParseDatagram(m.Payload)
+		if err != nil || got != h || !bytes.Equal(d, c.want) {
+			t.Fatalf("got %+v, %d bytes, %v", got, len(d), err)
+		}
+	}
+}
+
+func TestTrySendDatagramDropsWhenFull(t *testing.T) {
+	sup, _ := dataPair(t)
+	h := ipc.DatagramHeader{Listener: 1, Remote: netip.MustParseAddrPort("192.0.2.1:1")}
+	for range 100000 {
+		err := sup.TrySendDatagram(h, make([]byte, 1400))
+		if errors.Is(err, ipc.ErrFull) {
+			if sup.Drops() != 1 {
+				t.Fatalf("%d drops counted, want 1", sup.Drops())
+			}
+			return
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Fatal("TrySendDatagram never reported the buffer full")
+}
+
+// A peer that stops reading holds SendTimeout up for its deadline only.
+func TestSendTimeoutGivesUp(t *testing.T) {
+	sup, _ := pair(t) // the worker's end is open but never read
+	m := ipc.Message{Kind: ipc.KindConfig, Payload: make([]byte, 60<<10)}
+	start := time.Now()
+	for range 1000 {
+		if err := sup.SendTimeout(m, 200*time.Millisecond); err != nil {
+			if !errors.Is(err, os.ErrDeadlineExceeded) {
+				t.Fatalf("gave up with %v", err)
+			}
+			if d := time.Since(start); d > 5*time.Second {
+				t.Fatalf("gave up after %v", d)
+			}
+			// The deadline doesn't outlive the call.
+			if err := sup.TrySend(ipc.Message{Kind: ipc.KindStop}); err != nil && !errors.Is(err, ipc.ErrFull) {
+				t.Fatalf("after a timeout: %v", err)
+			}
+			return
+		}
+	}
+	t.Fatal("a peer that never reads took 60 MB")
+}
+
+func TestPairsHaveLargeBuffers(t *testing.T) {
+	ends, child, err := ipc.NewPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ends.Control.Close(); _ = ends.Data.Close() }()
+	for _, f := range child {
+		for _, o := range []int{unix.SO_SNDBUF, unix.SO_RCVBUF} {
+			// The kernel reports twice what was set.
+			if n, err := unix.GetsockoptInt(int(f.Fd()), unix.SOL_SOCKET, o); err != nil || n < ipc.SocketBuffer {
+				t.Errorf("buffer option %d: %d, %v", o, n, err)
+			}
+		}
+		_ = f.Close()
+	}
+}
+
+// A peer that closes with messages unread is gone, as one that read them.
+func TestClosedPeerWithUnreadMessagesIsEOF(t *testing.T) {
+	sup, w := pair(t)
+	if err := sup.Send(ipc.Message{Kind: ipc.KindConfig, Payload: []byte("never read")}); err != nil {
+		t.Fatal(err)
+	}
+	_ = w.Close()
+	if _, err := sup.Receive(); !errors.Is(err, io.EOF) {
+		t.Fatalf("receive after the peer closed unread: %v, want EOF", err)
 	}
 }

@@ -297,3 +297,30 @@ func TestSenderAdmission(t *testing.T) {
 	last := s.current.id
 	admit(last, 1, now.Add(senderTakeover+time.Second), deliverNewest)
 }
+
+// A dialer churning through senders keeps a bounded history that costs
+// O(1) per new sender, and a sender it just evicted is still refused.
+func TestSenderChurnIsBounded(t *testing.T) {
+	var s senders
+	now := time.Unix(1_000_000, 0)
+	start := time.Now()
+	var ids []senderID
+	for i := range 200_000 {
+		at := now.Add(time.Duration(i) * time.Microsecond)
+		id := newSenderID(at)
+		ids = append(ids, id)
+		if v := s.admit(id, 0, at); v != deliverNewest {
+			t.Fatalf("sender %d: %v", i, v)
+		}
+	}
+	if took := time.Since(start); took > 2*time.Second {
+		t.Fatalf("200000 new senders took %v", took)
+	}
+	if len(s.evicted.at) > maxEvicted || s.evicted.size > maxEvicted {
+		t.Fatalf("%d evicted senders kept, at most %d", len(s.evicted.at), maxEvicted)
+	}
+	recent := ids[len(ids)-maxSenders-1] // the last one out of the slots
+	if v := s.admit(recent, 1, now.Add(time.Second)); v != dropStale {
+		t.Fatalf("a just-evicted sender: %v, want refused", v)
+	}
+}

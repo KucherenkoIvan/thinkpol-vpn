@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/netip"
 
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/ipc"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
 
@@ -25,6 +26,18 @@ type Session struct {
 	// the current one first, then each change, latest-wins (an older pending
 	// one is dropped). nil in Idle mode.
 	Config <-chan []byte
+	// Listeners delivers the supervisor's shared listeners the worker is
+	// served by: the current set first, then each change, latest-wins. A
+	// listener keeps its SharedListener (and its Packets or Streams) for as
+	// long as it is listed.
+	Listeners <-chan []SharedListener
+	// SharedDrops reports what the worker dropped of what the shared
+	// listeners forwarded.
+	SharedDrops func() SharedDrops
+	// SharedCounters delivers, every few seconds, what the supervisor's
+	// shared listeners did for this space (latest-wins), for the worker's
+	// sealed telemetry. Only the space's own figures.
+	SharedCounters <-chan ipc.SharedCounters
 }
 
 // Serve runs a space's data plane until ctx ends. Returning early, with or

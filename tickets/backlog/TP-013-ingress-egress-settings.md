@@ -26,7 +26,9 @@ Every server node has allow-ingress and allow-egress settings, both off by defau
 
 ## Notes
 - From TP-003: `netmap.InboundLink.PeerKind` tells the listener whether a peer is a device or a server, so an ingress-off node can treat device credentials as unauthenticated. Add `allow_ingress`/`allow_egress` to `NodeSettings` (schema, Go type, both conversions, Build policy, the test fixture).
+- **From TP-010 (ingress off):** put the filter inside `dataplane.AcceptedInbound`. With ingress off, drop entries whose `netmap.InboundLink.PeerKind` is a device, so they become unauthenticated (camouflage). The engine and the supervisor then both apply it, so the two tables can't disagree.
 
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-10 docs (TP-003 review): notes on inbound peer kinds and adding the settings
+- 2026-10-11 docs (TP-010 review): notes from the shared listener

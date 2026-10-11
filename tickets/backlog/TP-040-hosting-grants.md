@@ -25,7 +25,12 @@ A node owner shares a server node with another space, fully isolated, capped and
 ## Notes
 - From TP-003's review (decided, not built): the owner's map section for a shared node gets a `HostedSpace` list, each `{space_id, signing key, recovery key, cap, allow_ingress, allow_egress}`; with the guest's keys the supervisor builds a `netmap.Trust` and verifies the guest's envelopes for that guest's worker only.
 - Only the owner space's listeners are honored on a shared node: guests can't open ports. The supervisor reads each guest's `Inbound` table from the guest's own map to authenticate the guest's connections on the owner's listeners, and hands them to the guest's worker.
+- **From TP-010 (caps):**
+  - Implement `supervisor.FairShare` as per-space token buckets. `Allow` must be cheap and non-blocking: it runs per datagram on the listener's goroutine. It sees both directions of datagram traffic. Replays never reach it: they are filtered per credential across every listener of the transport, and across listener reopens (only a supervisor restart starts the history afresh).
+  - Handed-over streams bypass it. A pacing rate (`SO_MAX_PACING_RATE`) set on the descriptor before the handoff caps only the node's sends; uploads need policing (tc ingress or IFB on the uplink) or a read-rate limit. Add TP-009's veth and cgroup limits.
+  - Guests' `Inbound` come from the guests' own maps (`AcceptedInbound`); only the owner's listeners are opened.
 
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-10 docs (TP-003 review): HostedSpace shape and listener/inbound rules for shared nodes in Notes
+- 2026-10-11 docs (TP-010 review): notes from the shared listener

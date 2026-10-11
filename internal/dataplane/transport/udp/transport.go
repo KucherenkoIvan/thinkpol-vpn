@@ -38,10 +38,10 @@ type Transport struct {
 }
 
 var (
-	_ transport.Transport    = (*Transport)(nil)
-	_ transport.Routable     = (*Transport)(nil)
-	_ transport.SendReporter = (*Listener)(nil)
-	_ transport.SendReporter = (*dialLink)(nil)
+	_ transport.Transport      = (*Transport)(nil)
+	_ transport.PacketRoutable = (*Transport)(nil)
+	_ transport.SendReporter   = (*Listener)(nil)
+	_ transport.SendReporter   = (*dialLink)(nil)
 )
 
 // New returns the udp adapter.
@@ -98,6 +98,16 @@ func parseEndpoint(endpoint string) (netip.AddrPort, error) {
 
 // Listen implements transport.Transport.
 func (t *Transport) Listen(ctx context.Context, cfg transport.ListenConfig) (transport.Listener, error) {
+	pc, err := t.ListenPacket(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	return t.ListenOn(pc, cfg), nil
+}
+
+// ListenPacket implements transport.PacketRoutable: the socket Listen would
+// listen on, for a shared listener to read.
+func (t *Transport) ListenPacket(ctx context.Context, cfg transport.ListenConfig) (*net.UDPConn, error) {
 	ap, err := parseEndpoint(cfg.Address)
 	if err != nil {
 		return nil, err
@@ -110,6 +120,11 @@ func (t *Transport) Listen(ctx context.Context, cfg transport.ListenConfig) (tra
 	if err != nil {
 		return nil, fmt.Errorf("udp: listen: %w", err)
 	}
+	return pc.(*net.UDPConn), nil
+}
+
+// ListenForwarded implements transport.PacketRoutable with ListenOn.
+func (t *Transport) ListenForwarded(pc net.PacketConn, cfg transport.ListenConfig) (transport.Listener, error) {
 	return t.ListenOn(pc, cfg), nil
 }
 

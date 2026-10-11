@@ -56,10 +56,14 @@ func TestMain(m *testing.M) {
 		os.Exit(runEscapeControl())
 	case os.Getenv("SUPERVISOR_TEST_BAD_KIND") != "":
 		os.Exit(runBadKindWorker())
+	case os.Getenv("SUPERVISOR_TEST_DEAF") != "":
+		os.Exit(runDeafWorker())
 	case os.Getenv(envWorker) != "":
 		os.Exit(runTestWorker())
 	case os.Getenv(envSupervisor) != "":
 		os.Exit(runTestSupervisor())
+	case os.Getenv(envSharedSupervisor) != "":
+		os.Exit(runSharedSupervisor())
 	}
 	os.Exit(m.Run())
 }
@@ -86,6 +90,8 @@ func runTestWorker() int {
 		serve = func(context.Context, worker.Session) error { select {} } // never returns: must be killed
 	case os.Getenv(envProbe) != "":
 		serve = probe
+	case os.Getenv(envShared) != "":
+		serve = sharedServe
 	}
 	if err := worker.Run(ctx, id, serve); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -347,6 +353,75 @@ func runBadKindWorker() int {
 	}
 	_, _ = c.Receive() // block until the supervisor closes the socket
 	return 0
+}
+
+// runDeafWorker is a worker that reports Ready and then never reads its
+// control socket again.
+func runDeafWorker() int {
+	cf := os.NewFile(uintptr(ipc.ControlFD), "control")
+	c, err := ipc.FromFile(cf)
+	_ = cf.Close()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	if _, err := c.Receive(); err != nil { // Init
+		return 1
+	}
+	if err := c.Send(ipc.Message{Kind: ipc.KindReady}); err != nil {
+		return 1
+	}
+	time.Sleep(time.Hour) // alive, reading nothing
+	return 0
+}
+
+// A worker that stops reading its control socket is killed once a control
+// send has waited StopTimeout, and restarted; neither SetSpaces nor Close
+// hangs on it.
+func TestDeafWorkerHoldsNothingUp(t *testing.T) {
+	needsLab(t)
+	opts := options([]string{"SUPERVISOR_TEST_DEAF=1"})
+	opts.StopTimeout = time.Second
+	space := netmap.NewSpaceID()
+	s, err := supervisor.New(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetSpaces([]supervisor.Space{{ID: space, Config: []byte("first")}}); err != nil {
+		t.Fatal(err)
+	}
+	waitReady(t, s, space)
+	config := make([]byte, 60<<10)
+	begin := time.Now()
+	for i := 0; ; i++ {
+		config[0], config[1] = byte(i), byte(i>>8)
+		if err := s.SetSpaces([]supervisor.Space{{ID: space, Config: append([]byte(nil), config...)}}); err != nil {
+			t.Fatal(err)
+		}
+		w, _ := info(s, space)
+		if strings.Contains(w.LastExit, "sending config") && strings.Contains(w.LastExit, "timeout") {
+			t.Logf("killed after %v: %s", time.Since(begin), w.LastExit)
+			break
+		}
+		if w.LastExit != "" && !strings.Contains(w.LastExit, "timeout") {
+			t.Fatalf("the worker ended otherwise: %s", w.LastExit)
+		}
+		if time.Since(begin) > 30*time.Second {
+			t.Fatalf("still not killed: %+v", w)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	waitReady(t, s, space) // restarted
+	closed := make(chan error, 1)
+	go func() { closed <- s.Close() }()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * opts.StopTimeout):
+		t.Fatal("Close hung on a deaf worker")
+	}
 }
 
 func runEscapeControl() int {
