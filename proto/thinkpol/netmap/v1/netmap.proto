@@ -106,6 +106,69 @@ message Section {
   repeated Route routes = 9;
   // The blobs this node uses, named; each is in the header.
   repeated BlobRef blobs = 10;
+  // The space's default routing rules, in order: the first that matches a
+  // destination decides it (DESIGN.md "Routing rules and DNS"). A device
+  // may override them locally. A section with rules, chains or presets
+  // needs section reader 2: an older node would ignore them and send
+  // traffic meant for the tunnel around it.
+  repeated Rule rules = 11;
+  // The chains rules send traffic through.
+  repeated Chain chains = 12;
+  // What a device's rule presets are built from.
+  RulePresets presets = 13;
+}
+
+enum MatchKind {
+  MATCH_KIND_UNSPECIFIED = 0;
+  // Every destination.
+  MATCH_KIND_DEFAULT = 1;
+  // The built-in local ranges (LANs, link-local, multicast), fixed in code.
+  MATCH_KIND_LOCAL = 2;
+  // A prefix: `value` in canonical text form.
+  MATCH_KIND_CIDR = 3;
+  // The GeoIP list the section's geoip blob named `value` holds.
+  MATCH_KIND_GEOIP = 4;
+  // Domain matchers are kept but not enforced in route-table mode.
+  MATCH_KIND_DOMAIN = 5;
+  MATCH_KIND_DOMAIN_SUFFIX = 6;
+  MATCH_KIND_GEOSITE = 7;
+}
+
+enum ActionKind {
+  ACTION_KIND_UNSPECIFIED = 0;
+  // Around the tunnel, through the physical network.
+  ACTION_KIND_DIRECT = 1;
+  // Through the chain named `chain`.
+  ACTION_KIND_CHAIN = 2;
+  ACTION_KIND_BLOCK = 3;
+}
+
+// Rule is `match → action`, e.g. `geoip:ru → direct`.
+message Rule {
+  MatchKind match = 1;
+  // The matcher's argument: a prefix (cidr), a list name (geoip, geosite)
+  // or a domain (domain, domain-suffix); empty for default and local.
+  string value = 2;
+  ActionKind action = 3;
+  // The chain, for ACTION_KIND_CHAIN.
+  string chain = 4;
+}
+
+// Chain is a named way out to the internet, as the node sees it: the exit,
+// a WireGuard peer reached through its candidate first hops (the relays
+// route the rest of the way).
+message Chain {
+  string name = 1;
+  bytes exit = 2;
+}
+
+// RulePresets are what the presets a device can switch to are built from:
+// "everything" sends all but local ranges through `chain`; "all but
+// domestic" also keeps the GeoIP list `domestic` out of the tunnel.
+message RulePresets {
+  // A geoip blob name, e.g. a country code.
+  string domestic = 1;
+  string chain = 2;
 }
 
 enum NodeKind {

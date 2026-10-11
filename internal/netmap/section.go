@@ -14,7 +14,10 @@ import (
 // every section with the lowest reader that understands it, and Open
 // refuses sections that need a newer one. Raise it, and mark the sections
 // that use a new field, when older nodes must not silently ignore the field.
-const SectionReader = 1
+//
+//	1  M0: node settings, peers, links, inbound links, routes, blobs
+//	2  routing rules, chains and rule presets (only sections that have them)
+const SectionReader = 2
 
 // Section is one node's need-to-know part of the map: its own settings and
 // the nodes it talks to, every one known by an opaque id. New needs (ingress
@@ -32,6 +35,14 @@ type Section struct {
 	Routes []Route
 	// Blobs are the blobs this node uses, named; each is in the header.
 	Blobs []BlobRef
+	// Rules are the space's default routing rules, in order: the first
+	// that matches a destination decides it. A device may override them
+	// locally (dataplane/rules).
+	Rules []Rule
+	// Chains are the chains rules send traffic through.
+	Chains []Chain
+	// Presets are what a device's rule presets are built from.
+	Presets RulePresets
 }
 
 // NodeKind is what a node is: a server (a VPS that relays) or a device.
@@ -247,6 +258,9 @@ func (s *Section) wellFormed() error {
 			hops[h] = true
 		}
 	}
+	if err := s.rulesWellFormed(); err != nil {
+		return err
+	}
 	return blobsWellFormed(s.Blobs)
 }
 
@@ -414,7 +428,7 @@ func (s *Section) validate(headerBlobs []BlobRef) error {
 			return fmt.Errorf("blob %x is not in the header", b.SHA256)
 		}
 	}
-	return nil
+	return s.validateRules()
 }
 
 func checkTransport(name string) error {
@@ -470,8 +484,12 @@ func checkSettings(settings []byte, shapingBytes ...[]byte) error {
 }
 
 func sectionToProto(s *Section, h *Header) *netmapv1.Section {
+	reader := uint32(1)
+	if s.usesRules() {
+		reader = 2
+	}
 	pb := &netmapv1.Section{
-		MinReader:  SectionReader,
+		MinReader:  reader,
 		SpaceId:    h.SpaceID[:],
 		KeyEpoch:   h.KeyEpoch,
 		MapVersion: h.Version,
@@ -516,6 +534,7 @@ func sectionToProto(s *Section, h *Header) *netmapv1.Section {
 	for _, r := range s.Routes {
 		pb.Routes = append(pb.Routes, &netmapv1.Route{Destination: idBytes(r.Destination), NextHops: idsBytes(r.NextHops)})
 	}
+	rulesToProto(s, pb)
 	return pb
 }
 
@@ -614,6 +633,9 @@ func sectionFromProto(pb *netmapv1.Section) (Section, error) {
 		s.Routes = append(s.Routes, r)
 	}
 	if s.Blobs, err = blobsFromProto(pb.GetBlobs()); err != nil {
+		return s, err
+	}
+	if err := rulesFromProto(pb, &s); err != nil {
 		return s, err
 	}
 	return s, nil

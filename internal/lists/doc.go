@@ -22,6 +22,7 @@
 //	encode:    Set.Blob() → bytes; sha256 of those names the blob
 //	read:      Decode(blob) → *Set (canonical only); Set.Contains, Set.Prefixes
 //	combine:   Builder.AddSet (union), Set.Minus (difference)
+//	built in:  Local (LANs, link-local, multicast), All (every address)
 //
 // Nothing here touches the network: sources are files an operator fetched.
 package lists

@@ -7,11 +7,19 @@ import (
 )
 
 // Route sends the destinations in Prefix to Egress; a nil Egress blocks
-// them.
+// them, unless the route is Direct.
 type Route struct {
 	Prefix netip.Prefix
 	Egress *Egress
+	// Direct marks destinations the rules send around the tunnel: route
+	// tables keep them out of the TUN, so one that enters it anyway is
+	// dropped and counted (Counters.Direct), never sent through an exit.
+	// A Direct route has no Egress.
+	Direct bool
 }
+
+// direct is what a Direct route resolves to.
+var direct = &Egress{name: "(direct)"}
 
 // Table is what the router classifies packets by. Within each list the
 // longest matching prefix wins, so first-match rules must be compiled into
@@ -57,10 +65,16 @@ func (r *Router) compile(t Table) (*compiled, error) {
 		into   *lpm
 	}{{"peer route", t.Peers, &c.peers}, {"rule", t.Rules, &c.rules}} {
 		for _, rt := range list.routes {
-			if rt.Egress != nil && rt.Egress.r != r {
-				return nil, fmt.Errorf("router: %s %s: egress %q belongs to another router", list.what, rt.Prefix, rt.Egress.name)
+			e := rt.Egress
+			switch {
+			case rt.Direct && e != nil:
+				return nil, fmt.Errorf("router: %s %s: direct, with egress %q", list.what, rt.Prefix, e.name)
+			case rt.Direct:
+				e = direct
+			case e != nil && e.r != r:
+				return nil, fmt.Errorf("router: %s %s: egress %q belongs to another router", list.what, rt.Prefix, e.name)
 			}
-			if err := list.into.add(rt.Prefix, rt.Egress); err != nil {
+			if err := list.into.add(rt.Prefix, e); err != nil {
 				return nil, fmt.Errorf("router: %s: %w", list.what, err)
 			}
 		}
@@ -69,7 +83,7 @@ func (r *Router) compile(t Table) (*compiled, error) {
 }
 
 // classify returns the egress for a destination; ok is false when nothing
-// routes it. A nil egress with ok blocks it.
+// routes it. A nil egress with ok blocks it; direct is a Direct route's.
 func (c *compiled) classify(dst netip.Addr) (e *Egress, ok bool) {
 	if _, inOverlay := c.overlay.lookup(dst); inOverlay {
 		return c.peers.lookup(dst)

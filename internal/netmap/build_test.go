@@ -25,6 +25,8 @@ func TestBuildRejectsInvalidContents(t *testing.T) {
 			s.Inbound = append([]InboundLink(nil), s.Inbound...)
 			s.Routes = append([]Route(nil), s.Routes...)
 			s.Blobs = append([]BlobRef(nil), s.Blobs...)
+			s.Rules = append([]Rule(nil), s.Rules...)
+			s.Chains = append([]Chain(nil), s.Chains...)
 			m(&s)
 			recipients[i].Section = s
 			c.Recipients = recipients
@@ -162,6 +164,31 @@ func TestBuildRejectsInvalidContents(t *testing.T) {
 			s.Blobs = []BlobRef{{Kind: BlobGeoSite, SHA256: testGeoIP.SHA256, Size: testGeoIP.Size}}
 		})},
 		{"blob repeated", device(func(s *Section) { s.Blobs = append(s.Blobs, s.Blobs[0]) })},
+		// rules
+		{"rule with unknown matcher", device(func(s *Section) { s.Rules[0].Match.Kind = 9 })},
+		{"rule with unknown action", device(func(s *Section) { s.Rules[0].Action.Kind = 9 })},
+		{"default with an argument", device(func(s *Section) { s.Rules[4].Match.Value = "x" })},
+		{"cidr with host bits", device(func(s *Section) { s.Rules[3].Match.Prefix = netip.MustParsePrefix("2001:db8::1/32") })},
+		{"cidr without prefix", device(func(s *Section) { s.Rules[3].Match.Prefix = netip.Prefix{} })},
+		{"cidr over IPv4-mapped IPv6", device(func(s *Section) { s.Rules[3].Match.Prefix = netip.MustParsePrefix("::/0") })},
+		{"geoip list without a blob", device(func(s *Section) { s.Rules[2].Match.Value = "de" })},
+		{"geoip list name invalid", device(func(s *Section) { s.Rules[2].Match.Value = "RU" })},
+		{"geosite list without a blob", device(func(s *Section) { s.Rules[2].Match = Match{Kind: MatchGeoSite, Value: "ru"} })},
+		{"domain invalid", device(func(s *Section) { s.Rules[1].Match.Value = "Example.RU" })},
+		{"domain with an empty label", device(func(s *Section) { s.Rules[1].Match.Value = "example..ru" })},
+		{"no default rule last", device(func(s *Section) { s.Rules = s.Rules[:4] })},
+		{"chain unknown", device(func(s *Section) { s.Rules[4].Action = ToChain("de") })},
+		{"direct naming a chain", device(func(s *Section) { s.Rules[0].Action.Chain = "nl" })},
+		{"chain name invalid", device(func(s *Section) { s.Chains[0].Name = "NL" })},
+		{"chain repeated", device(func(s *Section) { s.Chains = append(s.Chains, s.Chains[0]) })},
+		{"chain exit not a peer", device(func(s *Section) { s.Chains[0].Exit = NodeID{7, 7, 7} })},
+		{"chain exit is the node", device(func(s *Section) { s.Chains[0].Exit = s.Node.ID })},
+		{"two chains to one exit", device(func(s *Section) { s.Chains = append(s.Chains, Chain{Name: "nl2", Exit: exitID}) })},
+		{"preset domestic without a blob", device(func(s *Section) { s.Presets.Domestic = "de" })},
+		{"preset chain unknown", device(func(s *Section) { s.Presets.Chain = "de" })},
+		{"two geoip blobs with one name", device(func(s *Section) {
+			s.Blobs = append(s.Blobs, BlobRef{Kind: BlobGeoIP, SHA256: testGeoSite.SHA256, Size: testGeoSite.Size, Name: "ru"})
+		})},
 		// size
 		{"section too large", device(func(s *Section) {
 			for i := range 1100 {
