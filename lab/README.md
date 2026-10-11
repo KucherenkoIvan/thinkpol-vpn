@@ -10,6 +10,8 @@ make lab-up       # the standard topology for poking around (prints addresses)
 make lab-down     # remove every lab this checkout started
 ```
 
+**M0 acceptance** (device ↔ server and relayed device ↔ device pings, the relay proof, no WireGuard at the router) is `TestM0`; what it runs and proves is in [M0.md](M0.md).
+
 ## How it is built
 
 - **One image**, `lab/Dockerfile`: Debian slim, pinned by digest, with iproute2, nftables, iputils, tcpdump, curl, wireguard-tools (`wg`), openssl (`s_server` as a TLS target), nginx-light and netcat. It is tagged with a hash of the Dockerfile and the platform, so checkouts share it and a changed Dockerfile builds a new tag (the first build takes about a minute).
