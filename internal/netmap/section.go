@@ -19,6 +19,12 @@ import (
 // admitting what it shouldn't) is better kept out of the map by Build than
 // left to newer readers: ingress is (devices' links to a server with
 // ingress off are never written).
+//
+// Routing rules, chains and rule presets don't raise it: a node too old to
+// know them ignores them and routes nothing outside the overlay, so its
+// internet traffic never enters the tunnel, as on M0. Marking them would
+// prevent no leak and would freeze such nodes on their last map, with its
+// revocations.
 const SectionReader = 1
 
 // Section is one node's need-to-know part of the map: its own settings and
@@ -41,6 +47,14 @@ type Section struct {
 	Routes []Route
 	// Blobs are the blobs this node uses, named; each is in the header.
 	Blobs []BlobRef
+	// Rules are the space's default routing rules, in order: the first
+	// that matches a destination decides it. A device may override them
+	// locally (dataplane/rules).
+	Rules []Rule
+	// Chains are the chains rules send traffic through.
+	Chains []Chain
+	// Presets are what a device's rule presets are built from.
+	Presets RulePresets
 }
 
 // NodeKind is what a node is: a server (a VPS that relays) or a device.
@@ -272,6 +286,9 @@ func (s *Section) wellFormed() error {
 			hops[h] = true
 		}
 	}
+	if err := s.rulesWellFormed(); err != nil {
+		return err
+	}
 	return blobsWellFormed(s.Blobs)
 }
 
@@ -450,7 +467,7 @@ func (s *Section) validate(headerBlobs []BlobRef) error {
 			return fmt.Errorf("blob %x is not in the header", b.SHA256)
 		}
 	}
-	return nil
+	return s.validateRules()
 }
 
 func checkTransport(name string) error {
@@ -554,6 +571,7 @@ func sectionToProto(s *Section, h *Header) *netmapv1.Section {
 	for _, r := range s.Routes {
 		pb.Routes = append(pb.Routes, &netmapv1.Route{Destination: idBytes(r.Destination), NextHops: idsBytes(r.NextHops)})
 	}
+	rulesToProto(s, pb)
 	return pb
 }
 
@@ -653,6 +671,9 @@ func sectionFromProto(pb *netmapv1.Section) (Section, error) {
 		s.Routes = append(s.Routes, r)
 	}
 	if s.Blobs, err = blobsFromProto(pb.GetBlobs()); err != nil {
+		return s, err
+	}
+	if err := rulesFromProto(pb, &s); err != nil {
 		return s, err
 	}
 	return s, nil

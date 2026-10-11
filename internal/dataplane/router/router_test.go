@@ -79,6 +79,8 @@ func TestRoutesEachDestinationToItsEgress(t *testing.T) {
 			{Prefix: prefix("::/0"), Egress: exit},
 			{Prefix: prefix("10.0.0.0/8"), Egress: overlay},
 			{Prefix: prefix("10.1.0.0/16")}, // block
+			{Prefix: prefix("10.1.5.0/24"), Direct: true},
+			{Prefix: prefix("2001:db8:d::/48"), Direct: true},
 		},
 	})
 	if err != nil {
@@ -97,6 +99,9 @@ func TestRoutesEachDestinationToItsEgress(t *testing.T) {
 		{"fd00:1::9", nil},
 		{"10.2.3.4", toOverlay},
 		{"10.1.2.3", nil},
+		{"10.1.5.5", nil}, // direct: dropped, never to the exit's default
+		{"2001:db8:d::1", nil},
+		{"::ffff:10.1.5.5", nil}, // IPv4-mapped: by its IPv4 address, direct, not ::/0's exit
 		{"192.0.2.1", toExit},
 		{"2001:db8::1", toExit},
 	}
@@ -131,7 +136,7 @@ func TestRoutesEachDestinationToItsEgress(t *testing.T) {
 	default:
 	}
 	c := r.Counters()
-	if c.Routed != 7 || c.NoRoute != 2 || c.Blocked != 1 || c.Malformed != 2 {
+	if c.Routed != 7 || c.NoRoute != 2 || c.Blocked != 1 || c.Direct != 3 || c.Malformed != 2 {
 		t.Fatalf("counters %+v", c)
 	}
 }
@@ -275,11 +280,12 @@ func TestSetTableRefusesBadTables(t *testing.T) {
 	other, _ := newRouter(t)
 	e, foreign := egress(t, r, "e"), egress(t, other, "f")
 	for name, table := range map[string]router.Table{
-		"a prefix twice": {Peers: []router.Route{{Prefix: prefix("100.64.0.2/32"), Egress: e}, {Prefix: prefix("100.64.0.2/32"), Egress: e}}},
-		"another router": {Rules: []router.Route{{Prefix: prefix("0.0.0.0/0"), Egress: foreign}}},
-		"invalid prefix": {Overlay: []netip.Prefix{{}}},
-		"IPv4-mapped":    {Rules: []router.Route{{Prefix: prefix("::ffff:10.0.0.0/104"), Egress: e}}},
-		"invalid local":  {Local: []netip.Addr{{}}},
+		"a prefix twice":        {Peers: []router.Route{{Prefix: prefix("100.64.0.2/32"), Egress: e}, {Prefix: prefix("100.64.0.2/32"), Egress: e}}},
+		"another router":        {Rules: []router.Route{{Prefix: prefix("0.0.0.0/0"), Egress: foreign}}},
+		"invalid prefix":        {Overlay: []netip.Prefix{{}}},
+		"IPv4-mapped":           {Rules: []router.Route{{Prefix: prefix("::ffff:10.0.0.0/104"), Egress: e}}},
+		"invalid local":         {Local: []netip.Addr{{}}},
+		"direct with an egress": {Rules: []router.Route{{Prefix: prefix("10.0.0.0/8"), Egress: e, Direct: true}}},
 	} {
 		if err := r.SetTable(table); err == nil {
 			t.Errorf("%s: accepted", name)
