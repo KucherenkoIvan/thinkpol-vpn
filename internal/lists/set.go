@@ -256,6 +256,11 @@ func (s *Set) Minus(t *Set) *Set {
 	return out
 }
 
+// IsEmpty reports whether s holds no address.
+func (s *Set) IsEmpty() bool {
+	return s == nil || len(s.spans[fam4]) == 0 && len(s.spans[fam6]) == 0
+}
+
 // Equal reports whether s and t hold the same addresses.
 func (s *Set) Equal(t *Set) bool {
 	var a, b [2][]span

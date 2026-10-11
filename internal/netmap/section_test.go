@@ -58,6 +58,14 @@ func TestSectionFromProtoIsStrict(t *testing.T) {
 		{"route destination short", &entry, func(pb *netmapv1.Section) { pb.Routes[0].Destination = []byte{1} }},
 		{"next hop short", &entry, func(pb *netmapv1.Section) { pb.Routes[0].NextHops[0] = []byte{1} }},
 		{"next hop zero", &entry, func(pb *netmapv1.Section) { pb.Routes[0].NextHops[0] = make([]byte, 8) }},
+		{"rule matcher unspecified", &device, func(pb *netmapv1.Section) { pb.Rules[0].Match = 0 }},
+		{"rule action unspecified", &device, func(pb *netmapv1.Section) { pb.Rules[0].Action = 0 }},
+		{"cidr not canonical", &device, func(pb *netmapv1.Section) { pb.Rules[3].Value = "2001:DB8::/32" }},
+		{"cidr not a prefix", &device, func(pb *netmapv1.Section) { pb.Rules[3].Value = "2001:db8::" }},
+		{"chain exit short", &device, func(pb *netmapv1.Section) { pb.Chains[0].Exit = []byte{1} }},
+		{"chain exit is the node", &device, func(pb *netmapv1.Section) { pb.Chains[0].Exit = pb.Node.Id }},
+		{"chain unnamed", &device, func(pb *netmapv1.Section) { pb.Chains[0].Name = "" }},
+		{"chain repeated", &device, func(pb *netmapv1.Section) { pb.Chains = append(pb.Chains, pb.Chains[0]) }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -330,6 +330,9 @@ func Build(signingKey ed25519.PrivateKey, c Contents) ([]byte, error) {
 	if err := hiddenFromDevices(c.Recipients); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidContents, err)
 	}
+	if err := chainsEndAtExits(c.Recipients); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidContents, err)
+	}
 	size := sectionSize(largest)
 	if size > maxSectionSize {
 		return nil, fmt.Errorf("%w: a section of %d bytes, at most %d", ErrInvalidContents, largest, maxSectionSize-1)
