@@ -60,6 +60,8 @@ func TestMain(m *testing.M) {
 		os.Exit(runTestWorker())
 	case os.Getenv(envSupervisor) != "":
 		os.Exit(runTestSupervisor())
+	case os.Getenv(envSharedSupervisor) != "":
+		os.Exit(runSharedSupervisor())
 	}
 	os.Exit(m.Run())
 }
@@ -86,6 +88,8 @@ func runTestWorker() int {
 		serve = func(context.Context, worker.Session) error { select {} } // never returns: must be killed
 	case os.Getenv(envProbe) != "":
 		serve = probe
+	case os.Getenv(envShared) != "":
+		serve = sharedServe
 	}
 	if err := worker.Run(ctx, id, serve); err != nil {
 		fmt.Fprintln(os.Stderr, err)

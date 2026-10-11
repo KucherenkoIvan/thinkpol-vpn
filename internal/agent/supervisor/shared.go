@@ -193,6 +193,17 @@ func listenerKey(l Listener) string { return l.Transport + " " + l.Address }
 func (s *shared) setSpaces(inbound map[transport.SpaceID]map[string][]transport.PeerLink) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Routes before tables: a link that authenticates has a route.
+	old := *s.routes.Load()
+	routes := make(map[transport.SpaceID]*route, len(inbound))
+	for space := range inbound {
+		r := old[space]
+		if r == nil {
+			r = &route{space: space, peers: map[replyPeer]time.Time{}}
+		}
+		routes[space] = r
+	}
+	s.routes.Store(&routes)
 	merged := map[string][]transport.PeerLink{}
 	for _, space := range slices.SortedFunc(maps.Keys(inbound), func(a, b transport.SpaceID) int { return compareIDs(a[:], b[:]) }) {
 		for name, links := range inbound[space] {
@@ -210,16 +221,6 @@ func (s *shared) setSpaces(inbound map[transport.SpaceID]map[string][]transport.
 			t.Set(nil)
 		}
 	}
-	old := *s.routes.Load()
-	routes := make(map[transport.SpaceID]*route, len(inbound))
-	for space := range inbound {
-		r := old[space]
-		if r == nil {
-			r = &route{space: space, peers: map[replyPeer]time.Time{}}
-		}
-		routes[space] = r
-	}
-	s.routes.Store(&routes)
 }
 
 func compareIDs(a, b []byte) int { return slices.Compare(a, b) }

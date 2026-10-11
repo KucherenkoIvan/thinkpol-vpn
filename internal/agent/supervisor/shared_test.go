@@ -1,7 +1,6 @@
 package supervisor
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -41,6 +40,28 @@ type fakeWorker struct {
 
 	closeOnce sync.Once
 	done      chan struct{}
+
+	// For a worker serving every space (space zero): whose remote is whose.
+	mu      sync.Mutex
+	spaceOf map[netip.AddrPort]transport.SpaceID
+}
+
+// spaceSockets are a fake worker's sockets as one space's route sees them.
+type spaceSockets struct {
+	*fakeWorker
+	space transport.SpaceID
+}
+
+func (s spaceSockets) TrySendDatagram(h ipc.DatagramHeader, d []byte) error {
+	s.mu.Lock()
+	s.spaceOf[h.Remote] = s.space
+	s.mu.Unlock()
+	return s.fakeWorker.TrySendDatagram(h, d)
+}
+
+func (w *fakeWorker) socketsOf(space transport.SpaceID) *workerSockets {
+	ss := spaceSockets{w, space}
+	return &workerSockets{data: ss, control: ss}
 }
 
 type forwardedDatagram struct {
@@ -55,7 +76,10 @@ type handedStream struct {
 }
 
 func newFakeWorker(s *shared, space transport.SpaceID) *fakeWorker {
-	return &fakeWorker{s: s, space: space, in: make(chan forwardedDatagram, 1024), streams: make(chan handedStream, 16), done: make(chan struct{})}
+	return &fakeWorker{
+		s: s, space: space, in: make(chan forwardedDatagram, 1024), streams: make(chan handedStream, 16), done: make(chan struct{}),
+		spaceOf: map[netip.AddrPort]transport.SpaceID{},
+	}
 }
 
 func (w *fakeWorker) sockets() *workerSockets { return &workerSockets{data: w, control: w} }
@@ -103,7 +127,14 @@ func (w *fakeWorker) WriteTo(p []byte, addr net.Addr) (int, error) {
 	for k := range *w.s.byID.Load() {
 		id = max(id, k)
 	}
-	w.s.reply(w.space, ipc.DatagramHeader{Listener: id, Remote: addr.(*net.UDPAddr).AddrPort()}, p)
+	remote := addr.(*net.UDPAddr).AddrPort()
+	space := w.space
+	if space == (transport.SpaceID{}) {
+		w.mu.Lock()
+		space = w.spaceOf[remote]
+		w.mu.Unlock()
+	}
+	w.s.reply(space, ipc.DatagramHeader{Listener: id, Remote: remote}, p)
 	return len(p), nil
 }
 
@@ -640,16 +671,21 @@ func TestConformanceBehindTheSupervisor(t *testing.T) {
 			// worker serves them all, and follows the table's changes.
 			follow := func(links []transport.PeerLink) {
 				bySpace := map[transport.SpaceID]map[string][]transport.PeerLink{}
+				routesOnly := map[transport.SpaceID]map[string][]transport.PeerLink{}
 				for _, pl := range links {
 					if bySpace[pl.Peer.Space] == nil {
 						bySpace[pl.Peer.Space] = map[string][]transport.PeerLink{}
+						routesOnly[pl.Peer.Space] = nil
 					}
 					bySpace[pl.Peer.Space][udp.Name] = append(bySpace[pl.Peer.Space][udp.Name], pl)
 				}
-				s.setSpaces(bySpace)
-				for space := range bySpace {
-					s.attach(space, w.sockets())
+				// As the supervisor does: a new space's worker is attached
+				// before its links authenticate.
+				s.setSpaces(routesOnly)
+				for space := range routesOnly {
+					s.attach(space, w.socketsOf(space))
 				}
+				s.setSpaces(bySpace)
 			}
 			links, changed := peers.Snapshot()
 			follow(links)
@@ -716,9 +752,14 @@ func (lineRouter) RouteDatagram([]byte) (transport.Identity, bool) {
 }
 
 func (r lineRouter) RouteStream(conn net.Conn) (transport.Identity, []byte, bool) {
-	line, err := bufio.NewReader(io.LimitReader(conn, 64)).ReadBytes('\n')
-	if err != nil {
-		return transport.Identity{}, line, false
+	// Byte by byte: whatever is read is consumed and must be reported.
+	var line []byte
+	b := make([]byte, 1)
+	for len(line) < 64 && !bytes.HasSuffix(line, []byte("\n")) {
+		if _, err := conn.Read(b); err != nil {
+			return transport.Identity{}, line, false
+		}
+		line = append(line, b[0])
 	}
 	links, _ := r.peers.Snapshot()
 	for _, pl := range links {

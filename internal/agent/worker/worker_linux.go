@@ -58,7 +58,7 @@ func Run(ctx context.Context, space netmap.SpaceID, serve Serve) error {
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
 	shared := newSharedListeners(data)
-	defer shared.closeAll()
+	defer shared.update(nil) // every listener done
 	ch := channels{config: make(chan []byte, 1), listeners: make(chan []SharedListener, 1)}
 	go readControl(control, shared, ch, cancel)
 	go readData(data, shared, cancel)

@@ -117,11 +117,6 @@ func (e *sharedEntry) close() {
 	e.closing.Do(func() { close(e.done) })
 }
 
-// closeAll closes every listener: the supervisor is gone.
-func (s *sharedListeners) closeAll() {
-	s.update(nil)
-}
-
 // datagram dispatches one Datagram message's payload from the data socket.
 func (s *sharedListeners) datagram(payload []byte) error {
 	h, d, err := ipc.ParseDatagram(payload)
