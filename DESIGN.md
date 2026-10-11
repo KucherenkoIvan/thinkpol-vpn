@@ -233,6 +233,7 @@ internal/
     tun/ router/ wg/ path/
     transport/            # the transport port; adapters in transport/<name>/
     netcfg/               # interface addresses, MTU, routes (route-table rule enforcement)
+    nsthread/             # runs a function on an OS thread inside another namespace and moves the thread back
     firewall/             # kill switch (pf, nftables, WFP)
     egress/ dns/
     blobs/                # fetch-by-hash distribution of list files and releases between peers

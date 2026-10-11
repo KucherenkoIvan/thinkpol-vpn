@@ -232,7 +232,8 @@ func TestIPv4OnlyNetwork(t *testing.T) {
 // A node's own Command starts only once the node is sealed into the lab.
 func TestCommandStartsSealed(t *testing.T) {
 	t.Parallel()
-	record := `{ cat /etc/resolv.conf; ip -4 route show default; nft list tables; } > /tmp/at-start; sleep infinity`
+	// Written aside and renamed, so the poll below never reads a partial file.
+	record := `{ cat /etc/resolv.conf; ip -4 route show default; nft list tables; } > /tmp/at-start.tmp && mv /tmp/at-start.tmp /tmp/at-start; sleep infinity`
 	l := lab.Start(t, lab.Topology{
 		Networks: []lab.Network{{Name: "net"}},
 		Nodes: []lab.NodeSpec{

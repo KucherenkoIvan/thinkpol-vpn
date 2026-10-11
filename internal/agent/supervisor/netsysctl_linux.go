@@ -6,10 +6,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/nsthread"
 )
 
 // baselineSysctls are the network sysctls every space's namespace gets. The
@@ -22,21 +23,15 @@ var baselineSysctls = map[string]string{
 }
 
 // setNetSysctls sets kv (keys relative to /proc/sys) in the network namespace
-// nsFd. It runs on a throwaway OS thread: that thread enters a private mount
-// namespace and the target network namespace, mounts a fresh proc there (the
-// supervisor is in the initial user namespace, so no masked-proc restriction
-// applies), writes the values and exits without unlocking, so the kernel
-// discards the thread and nothing of the supervisor's other threads moves.
+// nsFd. A thread of its own enters a private mount namespace and the target
+// network namespace, mounts a fresh proc there (the supervisor is in the
+// initial user namespace, so no masked-proc restriction applies) and writes
+// the values; nsthread moves it back and keeps it off the scheduler.
 func setNetSysctls(nsFd int, kv map[string]string) error {
 	if len(kv) == 0 {
 		return nil
 	}
-	done := make(chan error, 1)
-	go func() {
-		runtime.LockOSThread() // never unlocked: the thread is discarded on return
-		done <- writeNetSysctls(nsFd, kv)
-	}()
-	return <-done
+	return nsthread.Do(func() error { return writeNetSysctls(nsFd, kv) })
 }
 
 func writeNetSysctls(nsFd int, kv map[string]string) error {

@@ -4,10 +4,11 @@ package tun
 
 import (
 	"fmt"
-	"runtime"
 
 	"golang.org/x/sys/unix"
 	wgtun "golang.zx2c4.com/wireguard/tun"
+
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/nsthread"
 )
 
 // Create creates a TUN named name with an MTU of mtu in the calling
@@ -21,33 +22,31 @@ func Create(name string, mtu int) (wgtun.Device, error) {
 }
 
 // CreateInNamespace is Create inside the network namespace at nsPath (e.g.
-// /run/netns/<name>), from a process in another one. The device keeps
-// working from any thread: its file and its netlink socket belong to that
-// namespace.
+// /run/netns/<name>), from a process in another one. Reads, writes, Events
+// and Close work from any thread: the device's file and netlink socket
+// belong to that namespace. MTU doesn't: wireguard-go looks the interface
+// up by name in the calling thread's namespace, so never call it on a
+// device made here.
 func CreateInNamespace(nsPath, name string, mtu int) (wgtun.Device, error) {
-	type result struct {
-		d   wgtun.Device
-		err error
-	}
-	done := make(chan result, 1)
-	go func() {
-		// Never unlocked: the thread leaves with this goroutine, so no
-		// other goroutine ever runs in the other namespace.
-		runtime.LockOSThread()
+	var d wgtun.Device
+	err := nsthread.Do(func() error {
 		fd, err := unix.Open(nsPath, unix.O_RDONLY|unix.O_CLOEXEC, 0)
 		if err != nil {
-			done <- result{err: fmt.Errorf("tun: namespace %s: %w", nsPath, err)}
-			return
+			return fmt.Errorf("tun: namespace %s: %w", nsPath, err)
 		}
 		err = unix.Setns(fd, unix.CLONE_NEWNET)
 		_ = unix.Close(fd)
 		if err != nil {
-			done <- result{err: fmt.Errorf("tun: enter namespace %s: %w", nsPath, err)}
-			return
+			return fmt.Errorf("tun: enter namespace %s: %w", nsPath, err)
 		}
-		d, err := Create(name, mtu)
-		done <- result{d, err}
-	}()
-	r := <-done
-	return r.d, r.err
+		d, err = Create(name, mtu)
+		return err
+	})
+	if err != nil {
+		if d != nil {
+			_ = d.Close()
+		}
+		return nil, err
+	}
+	return d, nil
 }
