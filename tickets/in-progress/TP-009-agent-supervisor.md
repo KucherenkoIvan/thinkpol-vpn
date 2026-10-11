@@ -109,3 +109,4 @@ Should-fix:
 - [ ] R2.7 Clear supplementary groups (`GidMappingsEnableSetgroups: true`, `Credential.Groups: []`).
 - [ ] R2.8 Drop CAP_SYS_ADMIN (all sets incl. bounding/ambient) at the end of sandbox(); keep the network caps.
 - 2026-10-11 review → has-errors — delta review round 2 (R2.1 blocker + R2.2–R2.8)
+- 2026-10-11 has-errors → in-progress — owner: agent-tp-009, fixing delta review round 2
