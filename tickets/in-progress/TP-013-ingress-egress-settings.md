@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: M
 depends_on: [TP-003, TP-010]
 refs: [N8]
-owner: ""
-branch: ""
+owner: agent-tp-013
+branch: tp-013-ingress-egress
 ---
 
 ## Goal
@@ -32,3 +32,4 @@ Every server node has allow-ingress and allow-egress settings, both off by defau
 - 2026-10-10 created in backlog
 - 2026-10-10 docs (TP-003 review): notes on inbound peer kinds and adding the settings
 - 2026-10-11 docs (TP-010 review): notes from the shared listener
+- 2026-10-12 backlog → in-progress — owner: agent-tp-013, branch: tp-013-ingress-egress
