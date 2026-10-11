@@ -90,3 +90,4 @@ Deferred (Notes written into the tickets): TP-022 (app.Run out of internal/agent
 - 2026-10-11 review → has-errors — two reviewers: B1, S1, SEC-1–3, D1, S9–S11, nits, tests (see Review findings); TP-022/037/038 deferred
 - 2026-10-11 has-errors → in-progress — owner: agent-tp-011, picking up the review findings
 - 2026-10-11 review findings fixed: B1, S1, SEC-1–3, D1, S9–S11, nits, tests; DESIGN "Node safety" and "Engine and agent"; notes for TP-022, TP-037, TP-038. One `make lab-test` run hit two flakes outside this change (`lab` TestCommandStartsSealed: a node's sealing table not there yet at start; supervisor TestWorkersAreSandboxed under parallel load: a worker's net namespace read as the root's), both passing on rerun (sandbox test 6/6 alone); the next full run was green
+- 2026-10-11 in-progress → review — every finding checked; `make lint`, `make test`, `go test -race` on internal/agent/..., cmd/thinkpol and netcfg, `make lab-test` pass
