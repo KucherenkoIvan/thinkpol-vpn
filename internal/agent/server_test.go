@@ -306,8 +306,9 @@ func TestOnlyTheOwnersWorkerOutputIsCopied(t *testing.T) {
 		t.Fatal("a guest space's worker output is copied into the node's log")
 	}
 	w := output(own)
-	_, _ = w.Write([]byte("evil \x1b[2J\x07 tab\there \x7f\n"))
-	if got, want := buf.String(), "worker space="+own.String()+` evil \x1b[2J\x07 tab`+"\there "+`\x7f`+"\n"; got != want {
+	_, _ = w.Write([]byte("evil \x1b[2J\x07 tab\there \x7f c1 \u009b bidi \u202e\u2066 bad \xff\xc3 ok é\n"))
+	want := "worker space=" + own.String() + ` evil \x1b[2J\x07 tab` + "\there " + `\x7f c1 \u009b bidi \u202e\u2066 bad \xff\xc3 ok ` + "é\n"
+	if got := buf.String(); got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 }

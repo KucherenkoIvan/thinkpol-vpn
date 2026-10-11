@@ -7,39 +7,80 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"strings"
 	"syscall"
 
 	"golang.org/x/sys/unix"
 )
 
-// trustedDir is a directory whose files a node may believe: owned by the
-// node's user (or root), not a symlink, and writable by nobody else. Files
-// are opened relative to the directory's descriptor, without following a
-// symlink and without blocking on a FIFO, and checked on the open
-// descriptor, so nothing can be swapped between the check and the read.
+// trustedDir is a directory whose files a node may believe: it and every
+// directory on its path are owned by the node's user (or root), none is a
+// symlink, and none is writable by anyone else. The path is walked from /
+// one component at a time with openat(O_NOFOLLOW), each checked on its open
+// descriptor, so nothing on the way can be swapped for a symlink between
+// the check and the use. An ancestor writable by others is passed through
+// only when it is sticky (like /tmp): there others can add entries but not
+// rename or remove ours, and a foreign entry on the path fails the owner
+// check. The directory itself is never sticky or writable by others.
+// Files are opened relative to its descriptor, without following a symlink
+// and without blocking on a FIFO, and checked on the open descriptor.
 type trustedDir struct {
 	f    *os.File
 	path string
 }
 
 func openTrustedDir(path string) (*trustedDir, error) {
-	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	abs, err := filepath.Abs(path)
 	if err != nil {
-		if errors.Is(err, unix.ELOOP) || errors.Is(err, unix.ENOTDIR) {
-			return nil, fmt.Errorf("%s: not a directory (a symlink is refused)", path)
-		}
-		return nil, &os.PathError{Op: "open", Path: path, Err: err}
-	}
-	f := os.NewFile(uintptr(fd), path)
-	fi, err := f.Stat()
-	if err == nil {
-		err = trusted(path, fi, false)
-	}
-	if err != nil {
-		_ = f.Close()
 		return nil, err
 	}
-	return &trustedDir{f: f, path: path}, nil
+	fd, err := unix.Open("/", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, &os.PathError{Op: "open", Path: "/", Err: err}
+	}
+	components := strings.Split(strings.TrimPrefix(abs, "/"), "/")
+	if abs == "/" {
+		components = nil
+	}
+	walked := "/"
+	for i := 0; ; i++ {
+		last := i == len(components)
+		if err := trustedDirFD(fd, walked, last); err != nil {
+			_ = unix.Close(fd)
+			return nil, err
+		}
+		if last {
+			break
+		}
+		walked = filepath.Join(walked, components[i])
+		next, err := unix.Openat(fd, components[i], unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		_ = unix.Close(fd)
+		if err != nil {
+			if errors.Is(err, unix.ELOOP) || errors.Is(err, unix.ENOTDIR) {
+				return nil, fmt.Errorf("%s: not a directory (a symlink is refused)", walked)
+			}
+			return nil, &os.PathError{Op: "open", Path: walked, Err: err}
+		}
+		fd = next
+	}
+	return &trustedDir{f: os.NewFile(uintptr(fd), abs), path: abs}, nil
+}
+
+// trustedDirFD checks one directory of the walk.
+func trustedDirFD(fd int, path string, last bool) error {
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil {
+		return &os.PathError{Op: "stat", Path: path, Err: err}
+	}
+	if uid := int(st.Uid); uid != 0 && uid != os.Geteuid() {
+		return fmt.Errorf("%s: owned by uid %d, not by this user or root", path, uid)
+	}
+	perm := os.FileMode(st.Mode) & os.ModePerm
+	if perm&0o022 != 0 && (last || st.Mode&unix.S_ISVTX == 0) {
+		return fmt.Errorf("%s: mode %04o lets others change it; chmod go-w it", path, perm)
+	}
+	return nil
 }
 
 func (d *trustedDir) Close() error { return d.f.Close() }

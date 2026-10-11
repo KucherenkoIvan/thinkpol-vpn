@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -127,5 +128,55 @@ func TestWorkerOutputKeepsLinesWhole(t *testing.T) {
 		if !ok {
 			t.Fatalf("mixed line %q", l)
 		}
+	}
+}
+
+// A node whose map, valid, has no section for it (it was removed while it
+// was down) starts idle and runs once a map includes it again.
+func TestARemovedNodeWaitsForAMapWithIt(t *testing.T) {
+	s := newTestSpace(t)
+	dir := s.stateDir(t, s.b, 1)
+	writeFile(t, filepath.Join(dir, MapFileName), s.buildWithout(t, 1, s.b), 0o644)
+	var out bytes.Buffer
+	logs, err := NewLogs("info", &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := Prepare(testConfig(dir), logs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !n.State().Removed || n.Mode() != ModeAuto {
+		t.Fatalf("removed %v, mode %s", n.State().Removed, n.Mode())
+	}
+
+	maps := make(chan []byte, 1)
+	result := make(chan bool, 1)
+	go func() { result <- n.awaitSection(context.Background(), maps) }()
+	maps <- s.buildWithout(t, 1, s.b) // not newer
+	maps <- s.buildWithout(t, 2, s.b) // newer, still without it
+	maps <- s.build(t, 2)             // not newer than what it took
+	maps <- s.build(t, 3)
+	select {
+	case ok := <-result:
+		if !ok {
+			t.Fatal("gave up")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("still waiting:\n%s", out.String())
+	}
+	if st := n.State(); st.Removed || st.Map.Header().Version != 3 || st.Section.Node.ID != s.b.ID || n.Mode() != ModeDevice {
+		t.Fatalf("removed %v, version %d, section of %v, mode %s", st.Removed, st.Map.Header().Version, st.Section.Node.ID, n.Mode())
+	}
+	if !strings.Contains(out.String(), "removed from space") || !strings.Contains(out.String(), "back in space") {
+		t.Fatalf("log:\n%s", out.String())
+	}
+
+	// Stopping while waiting is a clean stop.
+	n.state.Removed = true
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if n.awaitSection(ctx, maps) {
+		t.Fatal("went on after the stop")
 	}
 }

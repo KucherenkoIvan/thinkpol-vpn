@@ -131,7 +131,7 @@ func trustFile(tr netmap.Trust) string {
 // stateDir lays out node k's state directory with a map at version.
 func (s *testSpace) stateDir(t *testing.T, k NodeKeys, version uint64) string {
 	t.Helper()
-	dir := filepath.Join(t.TempDir(), "state")
+	dir := filepath.Join(tempDir(t), "state")
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -150,4 +150,16 @@ func writeFile(t *testing.T, path string, data []byte, perm os.FileMode) {
 	if err := os.Chmod(path, perm); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// tempDir is a test's temporary directory by its real path: the node's
+// files are refused behind a symlink, and macOS's temporary directories
+// are under one (/var).
+func tempDir(t *testing.T) string {
+	t.Helper()
+	d, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d
 }

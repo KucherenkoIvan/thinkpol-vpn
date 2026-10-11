@@ -55,6 +55,9 @@ type State struct {
 	// Unexpected names entries of the state directory that aren't the
 	// node's: reported, not used.
 	Unexpected []string
+	// Removed is set when Map, valid, has no section for the node: it was
+	// removed from the space (Section is empty).
+	Removed bool
 	// OwnMapUnused is set when MapPath is elsewhere but the state
 	// directory holds a map.bin too.
 	OwnMapUnused bool
@@ -62,7 +65,8 @@ type State struct {
 
 // LoadState reads and checks a node's state: the keys in dir, the trust in
 // dir, and the map at mapPath, which must verify against the trust and
-// hold a section for the node's keys. It changes nothing.
+// hold a section for the node's keys, or else says it was removed. It
+// changes nothing.
 func LoadState(dir, mapPath string) (State, error) {
 	var st State
 	d, err := openTrustedDir(dir)
@@ -109,7 +113,14 @@ func LoadState(dir, mapPath string) (State, error) {
 	if st.Map, err = netmap.Verify(envelope, st.Trust); err != nil {
 		return st, fmt.Errorf("%s is not a valid map of space %v: %w", mapPath, st.Trust.SpaceID, err)
 	}
-	if st.Section, err = openSection(st.Map, st.Keys); err != nil {
+	st.Section, err = openSection(st.Map, st.Keys)
+	if errors.Is(err, netmap.ErrNotRecipient) {
+		// A valid map of the space without the node: it was removed, and
+		// waits for a map that includes it again.
+		st.Removed = true
+		return st, nil
+	}
+	if err != nil {
 		return st, fmt.Errorf("%s: %w", mapPath, err)
 	}
 	return st, nil

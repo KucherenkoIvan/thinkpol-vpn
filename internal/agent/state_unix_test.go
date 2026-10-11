@@ -25,8 +25,27 @@ func TestLoadStateRefusesUntrustedFiles(t *testing.T) {
 		{"a symlinked state directory", false, func(t *testing.T, s *testSpace, dir string) string {
 			link := dir + "-link"
 			symlink(t, dir, link)
-			return link
+			return "state:" + link
 		}, "a symlink is refused"},
+		{"a symlinked state directory with a trailing slash", false, func(t *testing.T, s *testSpace, dir string) string {
+			link := dir + "-link"
+			symlink(t, dir, link)
+			return "state:" + link + "/"
+		}, "a symlink is refused"},
+		{"a symlinked ancestor", false, func(t *testing.T, s *testSpace, dir string) string {
+			parent := filepath.Dir(dir)
+			link := parent + "-link"
+			symlink(t, parent, link)
+			return "state:" + filepath.Join(link, filepath.Base(dir))
+		}, "a symlink is refused"},
+		{"an ancestor others can write", false, func(t *testing.T, s *testSpace, dir string) string {
+			chmod(t, filepath.Dir(dir), 0o777)
+			return ""
+		}, "chmod go-w"},
+		{"a sticky state directory others can write", false, func(t *testing.T, s *testSpace, dir string) string {
+			chmod(t, dir, os.ModeSticky|0o777)
+			return ""
+		}, "chmod go-w"},
 		{"a symlinked key file", false, func(t *testing.T, s *testSpace, dir string) string {
 			moveAndLink(t, filepath.Join(dir, NodeKeyFile))
 			return ""
@@ -52,7 +71,7 @@ func TestLoadStateRefusesUntrustedFiles(t *testing.T) {
 			return ""
 		}, "chmod go-w"},
 		{"a map in a directory others can write", false, func(t *testing.T, s *testSpace, dir string) string {
-			other := filepath.Join(t.TempDir(), "maps")
+			other := filepath.Join(tempDir(t), "maps")
 			if err := os.Mkdir(other, 0o700); err != nil {
 				t.Fatal(err)
 			}
@@ -84,12 +103,11 @@ func TestLoadStateRefusesUntrustedFiles(t *testing.T) {
 			s := newTestSpace(t)
 			dir := s.stateDir(t, s.b, 1)
 			stateDir, mapPath := dir, filepath.Join(dir, MapFileName)
-			if p := tc.mutate(t, s, dir); p != "" {
-				if strings.HasSuffix(p, "-link") {
-					stateDir, mapPath = p, filepath.Join(p, MapFileName)
-				} else {
-					mapPath = p
-				}
+			if p := tc.mutate(t, s, dir); strings.HasPrefix(p, "state:") {
+				stateDir = strings.TrimPrefix(p, "state:")
+				mapPath = filepath.Join(stateDir, MapFileName)
+			} else if p != "" {
+				mapPath = p
 			}
 			done := make(chan error, 1)
 			go func() { _, err := LoadState(stateDir, mapPath); done <- err }()
@@ -105,10 +123,22 @@ func TestLoadStateRefusesUntrustedFiles(t *testing.T) {
 	}
 }
 
+// A sticky ancestor others can write (like /tmp) is passed through: its
+// entries can't be swapped by others, and a foreign one fails the owner
+// check.
+func TestLoadStatePassesThroughStickyAncestors(t *testing.T) {
+	s := newTestSpace(t)
+	dir := s.stateDir(t, s.b, 1)
+	chmod(t, filepath.Dir(dir), os.ModeSticky|0o777)
+	if _, err := LoadState(dir+"/", filepath.Join(dir, MapFileName)); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestLoadStateTakesAMapFromElsewhere(t *testing.T) {
 	s := newTestSpace(t)
 	dir := s.stateDir(t, s.b, 1)
-	other := filepath.Join(t.TempDir(), "maps")
+	other := filepath.Join(tempDir(t), "maps")
 	if err := os.Mkdir(other, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +155,7 @@ func TestLoadStateTakesAMapFromElsewhere(t *testing.T) {
 // A FIFO put where the map was never blocks the watcher, so it never
 // blocks shutdown either.
 func TestTheWatcherNeverBlocksOnAFIFO(t *testing.T) {
-	dir := t.TempDir()
+	dir := tempDir(t)
 	path := filepath.Join(dir, MapFileName)
 	fifo(t, path)
 	reload := make(chan os.Signal, 1)

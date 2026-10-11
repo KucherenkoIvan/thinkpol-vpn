@@ -77,11 +77,6 @@ func TestLoadStateRefuses(t *testing.T) {
 			env[len(env)-1] ^= 1
 			writeFile(t, filepath.Join(dir, MapFileName), env, 0o644)
 		}, "not a valid map"},
-		{"a map without the node", false, func(t *testing.T, _ *testSpace, dir string) {
-			writeFile(t, filepath.Join(dir, NodeKeyFile), []byte(nodeKeyFile(NodeKeys{
-				ID: netmap.NodeID{9}, Map: netmap.GenerateNodeKey(), WireGuard: netmap.GenerateWireGuardKey(),
-			})), 0o600)
-		}, "no section for this node's key"},
 		{"another node's id", false, func(t *testing.T, s *testSpace, dir string) {
 			k := s.b
 			k.ID = s.a.ID

@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/KucherenkoIvan/go-kernel/app"
@@ -33,6 +34,10 @@ func Prepare(cfg Config, logs Logs) (*Node, error) {
 	if err := cfg.Check(); err != nil {
 		return nil, err
 	}
+	cfg.StateDir = filepath.Clean(cfg.StateDir)
+	if cfg.MapFile != "" {
+		cfg.MapFile = filepath.Clean(cfg.MapFile)
+	}
 	if logs.Logger == nil {
 		logs.Logger = slog.New(slog.DiscardHandler)
 	}
@@ -47,16 +52,25 @@ func Prepare(cfg Config, logs Logs) (*Node, error) {
 		logs.Warn("the state directory's map.bin is not used: the map comes from elsewhere", "map", st.MapPath)
 	}
 	n := &Node{cfg: cfg, state: st, mode: cfg.Mode, logs: logs}
-	if n.mode == ModeAuto {
-		n.mode = ModeDevice
-		if st.Section.Node.Kind == netmap.NodeServer {
-			n.mode = ModeServer
-		}
+	if !st.Removed {
+		n.resolveMode()
 	}
 	return n, nil
 }
 
-// Mode is the mode the node runs in.
+// resolveMode decides ModeAuto by the node's kind in its section.
+func (n *Node) resolveMode() {
+	if n.cfg.Mode != ModeAuto {
+		return
+	}
+	n.mode = ModeDevice
+	if n.state.Section.Node.Kind == netmap.NodeServer {
+		n.mode = ModeServer
+	}
+}
+
+// Mode is the mode the node runs in; ModeAuto while the node is removed
+// from its space and its kind unknown.
 func (n *Node) Mode() Mode { return n.mode }
 
 // State is what the node runs from.
@@ -65,44 +79,91 @@ func (n *Node) State() State { return n.state }
 // Run runs the node until ctx ends or it fails, and undoes everything it
 // set up before returning: a clean stop (nil) leaves no interface, route,
 // namespace or nftables table behind. reload (SIGHUP) makes it read the
-// map file at once. On a host whose data plane isn't there yet it refuses
-// before changing anything.
+// map file at once. A node removed from its space (its map has no section
+// for it) waits idle for a map that includes it. On a host whose data
+// plane isn't there yet it refuses before changing anything.
 func (n *Node) Run(ctx context.Context, reload <-chan os.Signal) error {
 	if err := supported(); err != nil {
 		return err
 	}
-	h := n.state.Map.Header()
-	n.logs.Info("starting", "mode", n.mode, "space", h.SpaceID, "node", n.state.Keys.ID, "version", h.Version, "map", n.state.MapPath)
-	watcher := &mapWatcher{path: n.state.MapPath, interval: n.cfg.MapPoll, reload: reload, log: n.logs.Logger, last: n.state.mapFile}
-	maps := make(chan []byte, 1)
 	reg, err := Transports()
 	if err != nil {
 		return err
 	}
-	if n.mode == ModeServer {
-		return n.runServer(ctx, reg, watcher, maps)
-	}
+	watcher := &mapWatcher{path: n.state.MapPath, interval: n.cfg.MapPoll, reload: reload, log: n.logs.Logger, last: n.state.mapFile}
+	maps := make(chan []byte, 1)
 	return app.Run(ctx,
 		app.Adapter{Name: "map watcher", Run: func(ctx context.Context) error { return watcher.run(ctx, maps) }},
-		app.Adapter{Name: "data plane", Run: func(ctx context.Context) error {
-			return RunDataPlane(ctx, DataPlane{
-				Keys:      n.state.Keys,
-				Map:       n.state.Map,
-				Maps:      maps,
-				Registry:  reg,
-				Inbound:   DirectInbound(reg),
-				Interface: n.cfg.Interface,
-				LinkMTU:   n.cfg.LinkMTU,
-				Log:       n.logs.With("space", h.SpaceID.String()),
-			})
-		}},
+		app.Adapter{Name: "node", Run: func(ctx context.Context) error { return n.run(ctx, reg, maps) }},
 	)
+}
+
+func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byte) error {
+	h := n.state.Map.Header()
+	n.logs.Info("starting", "mode", n.mode, "space", h.SpaceID, "node", n.state.Keys.ID, "version", h.Version, "map", n.state.MapPath)
+	if n.state.Removed && !n.awaitSection(ctx, maps) {
+		return nil
+	}
+	if n.mode == ModeServer {
+		return n.runServer(ctx, reg, maps)
+	}
+	return RunDataPlane(ctx, DataPlane{
+		Keys:      n.state.Keys,
+		Map:       n.state.Map,
+		Maps:      maps,
+		Registry:  reg,
+		Inbound:   DirectInbound(reg),
+		Interface: n.cfg.Interface,
+		LinkMTU:   n.cfg.LinkMTU,
+		Log:       n.logs.With("space", n.state.Trust.SpaceID.String()),
+	})
+}
+
+// awaitSection follows the space's maps while the node is removed from it,
+// until one includes the node (true) or ctx ends (false). A node removed
+// while it was down starts this way instead of failing, which under a
+// service manager would only restart it over and over.
+func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
+	n.logs.Warn("removed from space: the map has no section for this node; waiting for a map that includes it",
+		"version", n.state.Map.Header().Version)
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		case env, ok := <-maps:
+			if !ok {
+				maps = nil
+				continue
+			}
+			m, err := n.state.Map.Next(env)
+			if errors.Is(err, netmap.ErrNotNewer) {
+				continue
+			}
+			if err != nil {
+				n.logs.Warn("map refused, keeping the current one", "version", n.state.Map.Header().Version, "err", err)
+				continue
+			}
+			section, err := openSection(m, n.state.Keys)
+			if errors.Is(err, netmap.ErrNotRecipient) {
+				n.state.Map = m
+				continue
+			}
+			if err != nil {
+				n.logs.Error("map refused, keeping the current one", "version", n.state.Map.Header().Version, "err", err)
+				continue
+			}
+			n.state.Map, n.state.Section, n.state.Removed = m, section, false
+			n.resolveMode()
+			n.logs.Info("back in space", "version", m.Header().Version, "mode", n.mode)
+			return true
+		}
+	}
 }
 
 // runServer runs the supervisor, and gives it the node's space (its
 // worker's config and inbound links) and the node's listeners from every
-// map.
-func (n *Node) runServer(ctx context.Context, reg *transport.Registry, watcher *mapWatcher, maps chan []byte) error {
+// map, until ctx ends; the supervisor is closed on return.
+func (n *Node) runServer(ctx context.Context, reg *transport.Registry, maps chan []byte) error {
 	level, _ := ParseLevel(n.cfg.LogLevel)
 	own := n.state.Trust.SpaceID
 	out := &workerOutput{w: logOutput(n.logs)}
@@ -118,16 +179,17 @@ func (n *Node) runServer(ctx context.Context, reg *transport.Registry, watcher *
 	if err != nil {
 		return err
 	}
+	defer func() {
+		if err := sup.Close(); err != nil {
+			n.logs.Warn("closing the supervisor", "err", err)
+		}
+	}()
 	s := &serverSpaces{
 		sup: sup, reg: reg, log: n.logs.Logger, keys: n.state.Keys, trust: n.state.Trust,
 		iface: n.cfg.Interface, linkMTU: n.cfg.LinkMTU, cur: n.state.Map, section: n.state.Section,
 		retryAfter: RetryAfter,
 	}
-	return app.Run(ctx,
-		app.Adapter{Name: "supervisor", Close: func(context.Context) error { return sup.Close() }},
-		app.Adapter{Name: "map watcher", Run: func(ctx context.Context) error { return watcher.run(ctx, maps) }},
-		app.Adapter{Name: "spaces", Run: func(ctx context.Context) error { return s.run(ctx, maps) }},
-	)
+	return s.run(ctx, maps)
 }
 
 // ownerOutput copies the node owner's space's worker output to out; a
