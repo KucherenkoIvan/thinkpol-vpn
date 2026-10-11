@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: M
 depends_on: [TP-009, TP-013]
 refs: [R1, DESIGN#ipv6]
-owner: ""
-branch: ""
+owner: "agent-tp-014"
+branch: "tp-014-egress-linux"
 ---
 
 ## Goal
@@ -32,3 +32,4 @@ Nodes that allow egress forward a space's internet traffic, IPv4 and IPv6, and n
 - 2026-10-10 created in backlog
 - 2026-10-11 docs (TP-010 review): notes from the shared listener
 - 2026-10-12 docs (TP-013 review): notes from the ingress and egress settings
+- 2026-10-12 backlog → in-progress — owner: agent-tp-014, branch: tp-014-egress-linux
