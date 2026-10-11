@@ -372,3 +372,30 @@ func TestVersions(t *testing.T) {
 		t.Fatal("Keys.Trust differs from the space's")
 	}
 }
+
+// Inspect marks a device's link that a server with ingress off refuses: no
+// map Build makes has one, but a map is read as it is.
+func TestInspectMarksRefusedLinks(t *testing.T) {
+	s := netmap.Section{
+		MinReader: 1,
+		Node:      netmap.NodeSettings{ID: netmap.NodeID{1}, Kind: netmap.NodeServer, AllowEgress: true},
+		Inbound: []netmap.InboundLink{
+			{Peer: netmap.NodeID{2}, PeerKind: netmap.NodeServer, Transport: "udp", Credential: []byte{1}},
+			{Peer: netmap.NodeID{3}, PeerKind: netmap.NodeDevice, Transport: "udp", Credential: []byte{2}},
+		},
+	}
+	var b bytes.Buffer
+	if err := DescribeSection(&b, s, Names{}); err != nil {
+		t.Fatal(err)
+	}
+	out := b.String()
+	for _, want := range []string{
+		"ingress: off, egress: on (not enforced until TP-014)\nmin reader: 1\n",
+		"0200000000000000, server\n",
+		"0300000000000000, device (refused: ingress off)\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("no %q in:\n%s", want, out)
+		}
+	}
+}

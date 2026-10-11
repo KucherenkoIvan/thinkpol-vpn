@@ -14,28 +14,22 @@ import (
 // every section with the lowest reader that understands it, and Open
 // refuses sections that need a newer one. Raise it, and mark the sections
 // that use a new field, when older nodes must not silently ignore the field.
-//
-//	1: the first format.
-//	2: AllowIngress: a server with ingress off accepts only other servers'
-//	   inbound links, whatever else its section lists.
-const SectionReader = 2
-
-// minReader is the lowest reader that understands s. A server with ingress
-// off whose section still lists inbound links from devices relies on the
-// reader dropping them, which reader 1 doesn't.
-func (s *Section) minReader() uint32 {
-	for _, in := range s.Inbound {
-		if !s.Node.AcceptsInbound(in) {
-			return 2
-		}
-	}
-	return 1
-}
+// A node that refuses its section keeps its last map and stops taking newer
+// ones (revocations included), so a field whose absence fails open (a node
+// admitting what it shouldn't) is better kept out of the map by Build than
+// left to newer readers: ingress is (devices' links to a server with
+// ingress off are never written).
+const SectionReader = 1
 
 // Section is one node's need-to-know part of the map: its own settings and
 // the nodes it talks to, every one known by an opaque id. New needs (rules,
 // guest spaces, telemetry) are new fields here and in the schema.
 type Section struct {
+	// MinReader is the reader level the section was marked with, as Open
+	// read it (for inspection). Build ignores it: it marks every section
+	// itself.
+	MinReader uint32
+
 	Node NodeSettings
 	// Peers are end-to-end WireGuard peers.
 	Peers []Peer
@@ -80,8 +74,9 @@ type NodeSettings struct {
 	// Listeners are the transports this node listens on.
 	Listeners []Listener
 	// AllowIngress lets devices connect to this server, so it can start a
-	// chain. With it off, the node accepts only other servers' inbound
-	// links (AcceptsInbound) and no device's section has its address.
+	// chain. With it off, Build keeps every link between it and devices out
+	// of the map, its address out of devices' sections, and the node itself
+	// accepts only other servers' inbound links (AcceptsInbound).
 	// AllowEgress lets internet traffic leave the space from this server,
 	// so it can end a chain. Both are server settings, off by default.
 	AllowIngress, AllowEgress bool
@@ -89,7 +84,9 @@ type NodeSettings struct {
 
 // AcceptsInbound reports whether a node with these settings accepts the
 // inbound link in: a server with ingress off accepts only other servers,
-// whatever its section lists. Devices have no ingress setting.
+// whatever its section lists (Build never lists devices there; readers
+// check anyway, and a guest space's map is not the node owner's to trust).
+// Devices have no ingress setting.
 func (n *NodeSettings) AcceptsInbound(in InboundLink) bool {
 	return n.Kind != NodeServer || n.AllowIngress || in.PeerKind == NodeServer
 }
@@ -312,12 +309,13 @@ func (s *Section) validate(headerBlobs []BlobRef) error {
 		return fmt.Errorf("node addresses %v, %v are outside the overlay networks", n.IPv4, n.IPv6)
 	}
 	inOverlay := func(a netip.Addr) bool { return n.IPv4Network.Contains(a) || n.IPv6Network.Contains(a) }
-	// A server with ingress off may still list devices' inbound links: its
-	// reader drops them (AcceptsInbound), and minReader keeps such a section
-	// from readers that wouldn't. What the builder must never do is give a
-	// device its address (Build's devicesReachOnlyIngress).
 	if n.Kind != NodeServer && (n.AllowIngress || n.AllowEgress) {
 		return errors.New("ingress and egress are server settings")
+	}
+	// Devices don't listen until direct paths between devices exist: a
+	// device's listener would take links the ingress rules don't cover.
+	if n.Kind == NodeDevice && len(n.Listeners) > 0 {
+		return errors.New("a device has no listeners")
 	}
 
 	type transportAddr struct {
@@ -380,6 +378,9 @@ func (s *Section) validate(headerBlobs []BlobRef) error {
 		adjacent[in.Peer] = true
 		if !in.PeerKind.known() {
 			return fmt.Errorf("inbound link from %v: peer kind %v", in.Peer, in.PeerKind)
+		}
+		if !n.AcceptsInbound(in) {
+			return fmt.Errorf("inbound link from %v: a %v's, on a server with ingress off", in.Peer, in.PeerKind)
 		}
 		if err := checkTransport(in.Transport); err != nil {
 			return fmt.Errorf("inbound link from %v: %w", in.Peer, err)
@@ -506,7 +507,7 @@ func checkSettings(settings []byte, shapingBytes ...[]byte) error {
 
 func sectionToProto(s *Section, h *Header) *netmapv1.Section {
 	pb := &netmapv1.Section{
-		MinReader:  s.minReader(),
+		MinReader:  SectionReader,
 		SpaceId:    h.SpaceID[:],
 		KeyEpoch:   h.KeyEpoch,
 		MapVersion: h.Version,

@@ -23,10 +23,6 @@ type testSpace struct {
 	// listen is a's listener address on the memory network.
 	listen netip.AddrPort
 	secret []byte
-	// ingressOff turns a's ingress off: its section still lists b's
-	// inbound link, and the map leaves b out (no builder gives a device the
-	// address of a server with ingress off).
-	ingressOff bool
 }
 
 var (
@@ -68,7 +64,7 @@ func (s *testSpace) sections() (a, b netmap.Section) {
 	a4, a6 := overlay(1)
 	b4, b6 := overlay(2)
 	a.Node = netmap.NodeSettings{ID: s.a.ID, Kind: netmap.NodeServer, IPv4: a4, IPv6: a6, IPv4Network: testV4, IPv6Network: testV6,
-		Listeners: []netmap.Listener{{Transport: memory.Name, Address: s.listen}}, AllowIngress: !s.ingressOff}
+		Listeners: []netmap.Listener{{Transport: memory.Name, Address: s.listen}}, AllowIngress: true}
 	b.Node = netmap.NodeSettings{ID: s.b.ID, Kind: netmap.NodeDevice, IPv4: b4, IPv6: b6, IPv4Network: testV4, IPv6Network: testV6}
 	a.Inbound = []netmap.InboundLink{{Peer: s.b.ID, PeerKind: netmap.NodeDevice, Transport: memory.Name, Credential: s.secret}}
 	b.Links = []netmap.Link{{Peer: s.a.ID, Endpoints: []netmap.Endpoint{{Transport: memory.Name, Address: s.listen, Credential: s.secret}}}}
@@ -81,12 +77,9 @@ func (s *testSpace) sections() (a, b netmap.Section) {
 func (s *testSpace) build(t *testing.T, version uint64) []byte {
 	t.Helper()
 	a, b := s.sections()
-	recipients := []netmap.Recipient{{Key: s.a.Map.Public(), Section: a}, {Key: s.b.Map.Public(), Section: b}}
-	if s.ingressOff {
-		recipients = recipients[:1]
-	}
 	env, err := netmap.Build(s.signing, netmap.Contents{
-		SpaceID: s.id, Version: version, RecoveryKey: s.recovery, Recipients: recipients,
+		SpaceID: s.id, Version: version, RecoveryKey: s.recovery,
+		Recipients: []netmap.Recipient{{Key: s.a.Map.Public(), Section: a}, {Key: s.b.Map.Public(), Section: b}},
 	})
 	if err != nil {
 		t.Fatal(err)

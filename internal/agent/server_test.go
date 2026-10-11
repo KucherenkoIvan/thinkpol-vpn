@@ -70,7 +70,9 @@ type runningServer struct {
 	stop context.CancelFunc
 }
 
-func runServerSpaces(t *testing.T, s *testSpace, sup *fakeSupervisor) *runningServer {
+// runServerSpaces serves s's map at version 1, its section changed by
+// edits first.
+func runServerSpaces(t *testing.T, s *testSpace, sup *fakeSupervisor, edits ...func(*netmap.Section)) *runningServer {
 	t.Helper()
 	_, reg := memoryRegistry(t)
 	r := &runningServer{sup: sup, log: logring.New(1 << 20), maps: make(chan []byte, 1), done: make(chan error, 1)}
@@ -78,6 +80,9 @@ func runServerSpaces(t *testing.T, s *testSpace, sup *fakeSupervisor) *runningSe
 	section, err := openSection(m, s.a)
 	if err != nil {
 		t.Fatal(err)
+	}
+	for _, edit := range edits {
+		edit(&section)
 	}
 	ss := &serverSpaces{
 		sup: sup, reg: reg, log: slog.New(slog.NewTextHandler(r.log, nil)), keys: s.a, trust: s.trust(),
@@ -112,22 +117,20 @@ func TestServerServesTheSpaceAndItsListeners(t *testing.T) {
 }
 
 // With ingress off, the inbound table the supervisor authenticates against
-// holds no device's link, whatever the section lists; with ingress on, the
-// next map lets the device in.
+// holds no device's link, even one the section lists (which no map Build
+// makes has); with ingress on, the next map lets the device in.
 func TestServerWithIngressOffAcceptsNoDevice(t *testing.T) {
 	s := newTestSpace(t)
-	s.ingressOff = true
 	sup := &fakeSupervisor{}
-	r := runServerSpaces(t, s, sup)
+	r := runServerSpaces(t, s, sup, func(sec *netmap.Section) { sec.Node.AllowIngress = false })
 	eventually(t, func() bool { return strings.Contains(r.log.String(), `msg="map applied" version=1`) })
 	if sp, _, _ := sup.last(); len(sp) != 1 || len(sp[0].Inbound["memory"]) != 0 {
 		t.Fatalf("spaces %+v: the device's link is accepted", sp)
 	}
-	if !strings.Contains(r.log.String(), "inbound_skipped=1 ingress=false egress=false") {
+	if !strings.Contains(r.log.String(), "inbound_skipped=1 ingress=off egress=off") {
 		t.Fatalf("log:\n%s", r.log)
 	}
 
-	s.ingressOff = false
 	r.maps <- s.build(t, 2)
 	eventually(t, func() bool { return strings.Contains(r.log.String(), `msg="map applied" version=2`) })
 	if sp, _, _ := sup.last(); len(sp) != 1 || len(sp[0].Inbound["memory"]) != 1 {

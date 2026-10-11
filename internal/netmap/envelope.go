@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	mrand "math/rand/v2"
+	"net/netip"
 	"strconv"
 
 	"golang.org/x/crypto/nacl/box"
@@ -207,24 +208,70 @@ type Recipient struct {
 	Section Section
 }
 
-// devicesReachOnlyIngress is Build's check across sections: a device never
-// links to a server with ingress off, so no device's section has the
-// address of such a server. Only servers that are recipients can be
-// checked; a node outside the map (a shared node, used through a hosting
-// grant) is its own builder's to check.
-func devicesReachOnlyIngress(recipients []Recipient) error {
+// hiddenFromDevices is Build's check across sections that a server with
+// ingress off stays out of devices' reach:
+//   - no link between a device and such a server, whichever of them dials
+//     (validate already keeps devices' inbound links out of the server's
+//     own section);
+//   - every inbound link's peer kind is its peer's kind, so a device can't
+//     pass for a server;
+//   - no device dials an IP such a server listens on (a listener on a
+//     concrete address) or is dialed at by anyone, whatever node id the
+//     link names: its address can't reach a device under another id.
+//
+// Kinds and settings are known for recipients only; a node outside the map
+// (a shared node, used through a hosting grant) is checked by the builder
+// of the map that has it.
+func hiddenFromDevices(recipients []Recipient) error {
 	nodes := make(map[NodeID]*NodeSettings, len(recipients))
 	for i := range recipients {
 		n := &recipients[i].Section.Node
 		nodes[n.ID] = n
 	}
-	for i, r := range recipients {
-		if r.Section.Node.Kind != NodeDevice {
-			continue
+	hidden := func(n *NodeSettings) bool { return n.Kind == NodeServer && !n.AllowIngress }
+	apart := func(a, b *NodeSettings) bool {
+		return a.Kind == NodeDevice && hidden(b) || b.Kind == NodeDevice && hidden(a)
+	}
+	addrs := make(map[netip.Addr]bool)
+	for _, r := range recipients {
+		if n := &r.Section.Node; hidden(n) {
+			for _, l := range n.Listeners {
+				if !l.Address.Addr().IsUnspecified() {
+					addrs[l.Address.Addr()] = true
+				}
+			}
 		}
 		for _, l := range r.Section.Links {
-			if to, ok := nodes[l.Peer]; ok && to.Kind == NodeServer && !to.AllowIngress {
-				return fmt.Errorf("recipient %d: a device links to %v, a server with ingress off", i, l.Peer)
+			if to, ok := nodes[l.Peer]; ok && hidden(to) {
+				for _, e := range l.Endpoints {
+					addrs[e.Address.Addr()] = true
+				}
+			}
+		}
+	}
+	for i, r := range recipients {
+		n := &r.Section.Node
+		for _, l := range r.Section.Links {
+			if to, ok := nodes[l.Peer]; ok && apart(n, to) {
+				return fmt.Errorf("recipient %d: a %v links to %v, a %v: no links between devices and servers with ingress off", i, n.Kind, l.Peer, to.Kind)
+			}
+			if n.Kind != NodeDevice {
+				continue
+			}
+			for _, e := range l.Endpoints {
+				if addrs[e.Address.Addr()] {
+					return fmt.Errorf("recipient %d: a device dials %v, an address of a server with ingress off", i, e.Address)
+				}
+			}
+		}
+		for _, in := range r.Section.Inbound {
+			from, ok := nodes[in.Peer]
+			switch {
+			case !ok:
+			case from.Kind != in.PeerKind:
+				return fmt.Errorf("recipient %d: inbound link from %v as a %v, which is a %v", i, in.Peer, in.PeerKind, from.Kind)
+			case apart(n, from):
+				return fmt.Errorf("recipient %d: a %v accepts %v, a %v: no links between devices and servers with ingress off", i, n.Kind, in.Peer, from.Kind)
 			}
 		}
 	}
@@ -280,7 +327,7 @@ func Build(signingKey ed25519.PrivateKey, c Contents) ([]byte, error) {
 		plain[i] = b
 		largest = max(largest, len(b))
 	}
-	if err := devicesReachOnlyIngress(c.Recipients); err != nil {
+	if err := hiddenFromDevices(c.Recipients); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidContents, err)
 	}
 	size := sectionSize(largest)
@@ -495,6 +542,7 @@ func (m *Map) Open(key NodePrivateKey) (Section, error) {
 	case err != nil:
 		return Section{}, fmt.Errorf("%w: section: %v", ErrMalformed, err)
 	}
+	s.MinReader = uint32(reader)
 	return s, nil
 }
 
