@@ -59,3 +59,4 @@ Review 2026-10-12: node-side enforcement holds; the builder needs fixing. Decide
 - 2026-10-12 implemented: schema fields, Build rules, the ingress filter in `InboundFrom`/`PathConfigFrom`, section reader 2, devmap `ingress`/`egress`, agent logs, lab test; PRD (Node, N8) and DESIGN wording "other nodes" → "other servers", DESIGN notes the node enforces ingress from its own section
 - 2026-10-12 in-progress → review — all acceptance checked; `make lint`, `make test`, `go test -race` on netmap, dataplane, devmap, agent and cmd/thinkpol, `make lab-test` (incl. `TestIngressOffAdmitsOnlyServers`) pass
 - 2026-10-12 review → has-errors — review: F1, D1, F2, nits, downstream notes (see Review findings)
+- 2026-10-12 has-errors → in-progress — owner: agent-tp-013, picking up the review findings
