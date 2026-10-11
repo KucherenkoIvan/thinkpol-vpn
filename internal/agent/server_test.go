@@ -70,7 +70,7 @@ type runningServer struct {
 	stop context.CancelFunc
 }
 
-func runServerSpaces(t *testing.T, s *testSpace, sup *fakeSupervisor) *runningServer {
+func runServerSpaces(t *testing.T, s *testSpace, sup *fakeSupervisor, stateDir ...string) *runningServer {
 	t.Helper()
 	_, reg := memoryRegistry(t)
 	r := &runningServer{sup: sup, log: logring.New(1 << 20), maps: make(chan []byte, 1), done: make(chan error, 1)}
@@ -82,6 +82,9 @@ func runServerSpaces(t *testing.T, s *testSpace, sup *fakeSupervisor) *runningSe
 	ss := &serverSpaces{
 		sup: sup, reg: reg, log: slog.New(slog.NewTextHandler(r.log, nil)), keys: s.a, trust: s.trust(),
 		retryAfter: testRetry, cur: m, section: section,
+	}
+	if len(stateDir) > 0 {
+		ss.stateDir = stateDir[0]
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	r.stop = cancel

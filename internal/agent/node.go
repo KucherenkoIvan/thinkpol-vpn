@@ -14,6 +14,7 @@ import (
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/supervisor"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/blobs"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
@@ -107,6 +108,7 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 	if n.mode == ModeServer {
 		return n.runServer(ctx, reg, maps)
 	}
+	log := n.logs.With("space", n.state.Trust.SpaceID.String())
 	return RunDataPlane(ctx, DataPlane{
 		Keys:      n.state.Keys,
 		Map:       n.state.Map,
@@ -115,7 +117,8 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 		Inbound:   DirectInbound(reg),
 		Interface: n.cfg.Interface,
 		LinkMTU:   n.cfg.LinkMTU,
-		Log:       n.logs.With("space", n.state.Trust.SpaceID.String()),
+		Log:       log,
+		Blobs:     blobs.New(blobs.Options{Store: diskBlobs{dir: n.cfg.StateDir, log: log}, Log: log}),
 	})
 }
 
@@ -187,7 +190,7 @@ func (n *Node) runServer(ctx context.Context, reg *transport.Registry, maps chan
 	s := &serverSpaces{
 		sup: sup, reg: reg, log: n.logs.Logger, keys: n.state.Keys, trust: n.state.Trust,
 		iface: n.cfg.Interface, linkMTU: n.cfg.LinkMTU, cur: n.state.Map, section: n.state.Section,
-		retryAfter: RetryAfter,
+		retryAfter: RetryAfter, stateDir: n.cfg.StateDir,
 	}
 	return s.run(ctx, maps)
 }
@@ -219,6 +222,8 @@ type serverSpaces struct {
 	iface      string
 	linkMTU    int
 	retryAfter time.Duration
+	// stateDir holds the seeds of the space's blobs (seedBlobs).
+	stateDir string
 
 	cur     *netmap.Map
 	section netmap.Section
@@ -244,8 +249,12 @@ func (s *serverSpaces) apply() error {
 		return s.sup.SetSpaces(nil)
 	}
 	id := s.cur.Header().SpaceID
+	var seeds [][]byte
+	if s.stateDir != "" {
+		seeds = seedBlobs(s.stateDir, s.cur.Header().Blobs, s.log)
+	}
 	config, err := WorkerConfig{
-		Keys: s.keys, Trust: s.trust, Map: s.cur.Bytes(), Interface: s.iface, LinkMTU: s.linkMTU,
+		Keys: s.keys, Trust: s.trust, Map: s.cur.Bytes(), Interface: s.iface, LinkMTU: s.linkMTU, Blobs: seeds,
 	}.Encode()
 	if err != nil {
 		return err
@@ -261,7 +270,7 @@ func (s *serverSpaces) apply() error {
 	if err := s.sup.SetListeners(ls); err != nil {
 		return errListeners{err}
 	}
-	s.log.Info("map applied", "version", s.cur.Header().Version, "listeners", len(ls), "inbound_skipped", len(inbound.Skipped))
+	s.log.Info("map applied", "version", s.cur.Header().Version, "listeners", len(ls), "inbound_skipped", len(inbound.Skipped), "blob_seeds", len(seeds))
 	return nil
 }
 

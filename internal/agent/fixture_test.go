@@ -2,6 +2,7 @@ package agent
 
 import (
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"net/netip"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport/memory"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/lists"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
 
@@ -23,6 +25,8 @@ type testSpace struct {
 	// listen is a's listener address on the memory network.
 	listen netip.AddrPort
 	secret []byte
+	// blobs are the header's blobs; b's section names deviceBlobs.
+	blobs, deviceBlobs []netmap.BlobRef
 }
 
 var (
@@ -70,6 +74,7 @@ func (s *testSpace) sections() (a, b netmap.Section) {
 	b.Links = []netmap.Link{{Peer: s.a.ID, Endpoints: []netmap.Endpoint{{Transport: memory.Name, Address: s.listen, Credential: s.secret}}}}
 	a.Peers = []netmap.Peer{{ID: s.b.ID, WireGuardKey: s.b.WireGuard.Public(), Addresses: []netip.Addr{b4, b6}, Paths: []netmap.Path{{FirstHop: s.b.ID}}}}
 	b.Peers = []netmap.Peer{{ID: s.a.ID, WireGuardKey: s.a.WireGuard.Public(), Addresses: []netip.Addr{a4, a6}, Paths: []netmap.Path{{FirstHop: s.a.ID}}}}
+	b.Blobs = s.deviceBlobs
 	return a, b
 }
 
@@ -78,7 +83,7 @@ func (s *testSpace) build(t *testing.T, version uint64) []byte {
 	t.Helper()
 	a, b := s.sections()
 	env, err := netmap.Build(s.signing, netmap.Contents{
-		SpaceID: s.id, Version: version, RecoveryKey: s.recovery,
+		SpaceID: s.id, Version: version, RecoveryKey: s.recovery, Blobs: s.blobs,
 		Recipients: []netmap.Recipient{{Key: s.a.Map.Public(), Section: a}, {Key: s.b.Map.Public(), Section: b}},
 	})
 	if err != nil {
@@ -98,7 +103,7 @@ func (s *testSpace) buildWithout(t *testing.T, version uint64, gone NodeKeys) []
 	}
 	stay.Peers, stay.Links, stay.Inbound = nil, nil, nil
 	env, err := netmap.Build(s.signing, netmap.Contents{
-		SpaceID: s.id, Version: version, RecoveryKey: s.recovery,
+		SpaceID: s.id, Version: version, RecoveryKey: s.recovery, Blobs: s.blobs,
 		Recipients: []netmap.Recipient{{Key: key.Public(), Section: stay}},
 	})
 	if err != nil {
@@ -162,4 +167,24 @@ func tempDir(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return d
+}
+
+// withList gives the space a GeoIP list named name: in the header, and
+// named in device b's section. It returns the list's bytes and b's
+// reference.
+func (s *testSpace) withList(t *testing.T, name string, prefixes ...string) ([]byte, netmap.BlobRef) {
+	t.Helper()
+	var lb lists.Builder
+	for _, p := range prefixes {
+		if err := lb.AddPrefix(netip.MustParsePrefix(p)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	set, _ := lb.Build()
+	data := set.Blob()
+	ref := netmap.BlobRef{Kind: netmap.BlobGeoIP, SHA256: sha256.Sum256(data), Size: uint64(len(data))}
+	s.blobs = append(s.blobs, ref)
+	ref.Name = name
+	s.deviceBlobs = append(s.deviceBlobs, ref)
+	return data, ref
 }

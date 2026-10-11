@@ -52,3 +52,24 @@ func (d *trustedDir) read(name string, _ bool, limit int64) ([]byte, os.FileInfo
 	}
 	return b, fi, nil
 }
+
+func (d *trustedDir) mkdir(name string) error {
+	if err := os.Mkdir(filepath.Join(d.path, name), 0o700); err != nil && !os.IsExist(err) {
+		return err
+	}
+	return nil
+}
+
+func (d *trustedDir) writeFile(name string, data []byte) error {
+	tmp := filepath.Join(d.path, "."+name+".tmp")
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, filepath.Join(d.path, name)); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
+}
+
+func (d *trustedDir) remove(name string, _ bool) error { return os.Remove(filepath.Join(d.path, name)) }

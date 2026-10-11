@@ -23,28 +23,32 @@ type WorkerConfig struct {
 	Map       []byte
 	Interface string
 	LinkMTU   int
+	// Blobs are the seeds of the map's blobs the state directory holds
+	// (seedBlobs); the worker checks them against the map again.
+	Blobs [][]byte
 }
 
 // workerConfigVersion changes with the encoding; supervisor and worker are
 // always one build, so a mismatch is a bug, refused.
-const workerConfigVersion = 1
+const workerConfigVersion = 2
 
 type workerConfigJSON struct {
-	Version      int    `json:"version"`
-	NodeID       string `json:"node-id"`
-	MapKey       string `json:"map-key"`
-	WireGuardKey string `json:"wireguard-key"`
-	SpaceID      string `json:"space-id"`
-	SigningKey   string `json:"signing-key"`
-	RecoveryKey  string `json:"recovery-key"`
-	Map          []byte `json:"map"`
-	Interface    string `json:"interface"`
-	LinkMTU      int    `json:"link-mtu"`
+	Version      int      `json:"version"`
+	NodeID       string   `json:"node-id"`
+	MapKey       string   `json:"map-key"`
+	WireGuardKey string   `json:"wireguard-key"`
+	SpaceID      string   `json:"space-id"`
+	SigningKey   string   `json:"signing-key"`
+	RecoveryKey  string   `json:"recovery-key"`
+	Map          []byte   `json:"map"`
+	Interface    string   `json:"interface"`
+	LinkMTU      int      `json:"link-mtu"`
+	Blobs        [][]byte `json:"blobs"`
 }
 
 // String keeps the keys out of logs.
 func (c WorkerConfig) String() string {
-	return fmt.Sprintf("WorkerConfig(%v, space %v, map %d bytes)", c.Keys, c.Trust.SpaceID, len(c.Map))
+	return fmt.Sprintf("WorkerConfig(%v, space %v, map %d bytes, %d blobs)", c.Keys, c.Trust.SpaceID, len(c.Map), len(c.Blobs))
 }
 
 // Encode is the config as the supervisor sends it.
@@ -60,6 +64,7 @@ func (c WorkerConfig) Encode() ([]byte, error) {
 		Map:          c.Map,
 		Interface:    c.Interface,
 		LinkMTU:      c.LinkMTU,
+		Blobs:        c.Blobs,
 	})
 }
 
@@ -103,7 +108,7 @@ func DecodeWorkerConfig(b []byte) (WorkerConfig, error) {
 	if len(errs) > 0 {
 		return WorkerConfig{}, fmt.Errorf("worker config: bad %w", errors.Join(errs...))
 	}
-	c.Map, c.Interface, c.LinkMTU = j.Map, j.Interface, j.LinkMTU
+	c.Map, c.Interface, c.LinkMTU, c.Blobs = j.Map, j.Interface, j.LinkMTU, j.Blobs
 	return c, nil
 }
 

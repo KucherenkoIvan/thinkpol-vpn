@@ -9,6 +9,7 @@ import (
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/ipc"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/worker"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/blobs"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
 
@@ -51,6 +52,9 @@ func serveSpace(log *slog.Logger, base DataPlane) worker.Serve {
 			}
 		}
 
+		seeds := &seedStore{}
+		seeds.set(first.Blobs)
+
 		ctx, cancel := context.WithCancel(ctx)
 		defer cancel()
 		var badConfig atomic.Pointer[error]
@@ -73,6 +77,9 @@ func serveSpace(log *slog.Logger, base DataPlane) worker.Serve {
 						cancel()
 						return
 					}
+					// The seeds first: the map that names them is
+					// applied only once it is taken from maps.
+					seeds.set(c.Blobs)
 					select {
 					case <-maps:
 					default:
@@ -100,6 +107,9 @@ func serveSpace(log *slog.Logger, base DataPlane) worker.Serve {
 		dp.Keys, dp.Map, dp.Maps, dp.Registry = first.Keys, m, maps, reg
 		dp.Inbound = SharedInbound(ctx, reg, s.Listeners)
 		dp.Interface, dp.LinkMTU, dp.Log = first.Interface, first.LinkMTU, log
+		bo := base.blobOptions
+		bo.Store, bo.Log = seeds, log
+		dp.Blobs = blobs.New(bo)
 		// The space's own figures only (TP-041 seals them into its
 		// telemetry).
 		dp.StatusAttrs = func() []any {

@@ -161,7 +161,7 @@ func TestNodeKeysNeverPrint(t *testing.T) {
 
 func TestWorkerConfigRoundTrip(t *testing.T) {
 	s := newTestSpace(t)
-	c := WorkerConfig{Keys: s.a, Trust: s.trust(), Map: s.build(t, 3), Interface: "tp0", LinkMTU: 1400}
+	c := WorkerConfig{Keys: s.a, Trust: s.trust(), Map: s.build(t, 3), Interface: "tp0", LinkMTU: 1400, Blobs: [][]byte{[]byte("a"), []byte("bc")}}
 	b, err := c.Encode()
 	if err != nil {
 		t.Fatal(err)
@@ -170,7 +170,8 @@ func TestWorkerConfigRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !got.sameNode(c) || !bytes.Equal(got.Map, c.Map) || got.Interface != "tp0" || got.LinkMTU != 1400 {
+	if !got.sameNode(c) || !bytes.Equal(got.Map, c.Map) || got.Interface != "tp0" || got.LinkMTU != 1400 ||
+		len(got.Blobs) != 2 || string(got.Blobs[1]) != "bc" {
 		t.Fatalf("round trip: %v", got)
 	}
 	other := c
@@ -178,7 +179,7 @@ func TestWorkerConfigRoundTrip(t *testing.T) {
 	if other.sameNode(c) {
 		t.Fatal("another node's keys count as the same node")
 	}
-	for _, bad := range []string{`{"version":2}`, `{"version":1,"node-id":"00"}`, `not json`} {
+	for _, bad := range []string{`{"version":3}`, `{"version":1}`, `{"version":2,"node-id":"00"}`, `not json`} {
 		if _, err := DecodeWorkerConfig([]byte(bad)); err == nil {
 			t.Fatalf("decoded %s", bad)
 		}

@@ -1,0 +1,136 @@
+//go:build lab
+
+package lab_test
+
+import (
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/binary"
+	"encoding/hex"
+	"regexp"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/KucherenkoIvan/thinkpol-vpn/lab"
+)
+
+// listSource is a DB-IP Lite CSV in miniature: what `thinkpol dev lists
+// build` makes the lab's list from.
+const listSource = "5.3.0.0,5.3.255.255,RU\n" +
+	"37.17.0.0,37.17.127.255,BY\n" +
+	"77.88.8.0,77.88.8.255,RU\n" +
+	"2a02:6b8::,2a02:6b8:ffff:ffff:ffff:ffff:ffff:ffff,RU\n"
+
+// TestBlobDistribution is TP-017's acceptance: device-a's map names a GeoIP
+// list it doesn't have. It asks server-2 first, which sends a tampered copy
+// (a stand-in that answers every request with junk of the right size): the
+// device rejects it and fetches the list from server-1, whose worker holds
+// it from the seed in server-1's state directory, then keeps it in its own
+// state directory. A tampered copy there is rejected at the next start and
+// fetched again.
+func TestBlobDistribution(t *testing.T) {
+	t.Parallel()
+	l := lab.Start(t, lab.Standard())
+	builder := l.Node(lab.Internet)
+	server1, server2, devA := l.Node(lab.Server1), l.Node(lab.Server2), l.Node(lab.DeviceA)
+
+	// The space, its list and its map, made on a node outside it.
+	builder.WriteFile(t, "/tmp/bl/dbip-country-lite.csv", []byte(listSource))
+	builder.MustExec(t, "sh", "-ec", `cd /tmp/bl
+		thinkpol dev keygen space -out keys >/dev/null
+		thinkpol dev keygen node -out keys server-1 server-2 device-a >/dev/null
+		thinkpol dev lists build -only ru -out lists dbip-country-lite.csv >/dev/null`)
+	out := builder.MustExec(t, "env", "SERVER_1_IPV4="+server1.IPv4(lab.NetServers).String(),
+		"SERVER_2_IPV4="+server2.IPv4(lab.NetServers).String(), "RU_LIST=/tmp/bl/lists/ru.geoip",
+		"sh", "-ec", "cd /tmp/bl && thinkpol dev map build -keys keys -out map.bin /src/lab/maps/blobs.yaml")
+	version := regexp.MustCompile(`map version (\d+)`).FindStringSubmatch(out)
+	if version == nil {
+		t.Fatalf("build said %q", out)
+	}
+	file := func(name string) []byte {
+		t.Helper()
+		b, err := base64.StdEncoding.DecodeString(builder.MustExec(t, "base64", "-w0", "/tmp/bl/"+name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	list := file("lists/ru.geoip")
+	sum := sha256.Sum256(list)
+	blobFile := stateDir + "/blobs/" + hex.EncodeToString(sum[:])
+	nodeID := func(name string) string {
+		m := regexp.MustCompile(`node-id: "([0-9a-f]+)"`).FindSubmatch(file("keys/" + name + ".pub"))
+		if m == nil {
+			t.Fatalf("no node id for %s", name)
+		}
+		return string(m[1])
+	}
+	server1ID, server2ID := nodeID("server-1"), nodeID("server-2")
+	envelope := file("map.bin")
+	for name, n := range map[string]*lab.Node{"server-1": server1, "server-2": server2, "device-a": devA} {
+		n.MustExec(t, "install", "-d", "-m", "700", stateDir)
+		n.WriteFile(t, stateDir+"/node.key", file("keys/"+name+".key"))
+		n.WriteFile(t, stateDir+"/space.pub", file("keys/space.pub"))
+		n.MustExec(t, "chmod", "600", stateDir+"/node.key")
+		putMap(t, n, envelope)
+	}
+	// server-1's seed: the list, under its hash, where provisioning puts it.
+	server1.MustExec(t, "install", "-d", "-m", "700", stateDir+"/blobs")
+	server1.WriteFile(t, blobFile, list)
+	server1.MustExec(t, "chmod", "600", blobFile)
+
+	// server-2's overlay address answers on the blob port with a tampered
+	// list, once: a server that has been tampered with. server-2 runs in
+	// device mode so its overlay address is in the node's own namespace,
+	// where the stand-in listens (before thinkpol, which then can't).
+	resp := binary.BigEndian.AppendUint64([]byte{0}, uint64(len(list)))
+	resp = append(resp, []byte(strings.Repeat("\x5a", len(list)))...)
+	server2.WriteFile(t, "/tmp/tampered.resp", resp)
+	tampering := server2.Start(t, "sh", "-c", "exec nc -l 4717 < /tmp/tampered.resp")
+	lab.Eventually(t, 30*time.Second, func() error {
+		_, err := server2.Exec(t.Context(), "sh", "-c", "ss -Htln 'sport = :4717' | grep -q .")
+		return err
+	})
+
+	up1 := server1.Start(t, "thinkpol", "up")
+	up2 := server2.Start(t, "thinkpol", "up", "-mode", "device")
+	waitLog(t, up1, `worker space=\S+ .*`+applied(version[1]))
+	waitLog(t, up1, `msg="map applied" version=`+version[1]+` .*blob_seeds=1`)
+	waitLog(t, up2, applied(version[1]))
+
+	upA := devA.Start(t, "thinkpol", "up")
+	waitLog(t, upA, `msg="blob rejected: the peer sent something else; trying another peer" .*blob=\S+ kind=geoip name=ru peer=`+server2ID)
+	waitLog(t, upA, `msg="blob fetched" .*blob=\S+ kind=geoip name=ru size=\d+ peer=`+server1ID)
+	<-tampering.Done()
+	if got := devA.MustExec(t, "sha256sum", blobFile); !strings.HasPrefix(got, hex.EncodeToString(sum[:])) {
+		t.Fatalf("device-a keeps %q", got)
+	}
+	if got := devA.MustExec(t, "stat", "-c", "%a", blobFile, stateDir+"/blobs"); got != "600\n700\n" {
+		t.Errorf("modes of the stored list and its directory: %q", got)
+	}
+	// A server keeps what it fetches in memory only: server-1's state
+	// directory is as it was.
+	if got := server1.MustExec(t, "sh", "-c", "cd "+stateDir+" && find . | sort"); got != ".\n./blobs\n./blobs/"+hex.EncodeToString(sum[:])+"\n./map.bin\n./node.key\n./space.pub\n" {
+		t.Errorf("server-1's state directory:\n%s", got)
+	}
+
+	// A tampered copy in device-a's state directory is rejected at the
+	// next start and fetched again.
+	if err := upA.Stop(); err != nil {
+		t.Fatalf("device-a: %v\n%s", err, upA.Output())
+	}
+	devA.MustExec(t, "sh", "-ec", `printf 'Z' | dd of=`+blobFile+` bs=1 seek=8 conv=notrunc status=none`)
+	upA = devA.Start(t, "thinkpol", "up")
+	waitLog(t, upA, `msg="stored blob rejected: it doesn't match the map; fetching it again" .*blob=\S+ kind=geoip name=ru`)
+	waitLog(t, upA, `msg="blob fetched" .*blob=\S+ kind=geoip name=ru`)
+	lab.Eventually(t, 30*time.Second, func() error {
+		_, err := devA.Exec(t.Context(), "sh", "-c", "sha256sum "+blobFile+" | grep -q ^"+hex.EncodeToString(sum[:]))
+		return err
+	})
+	for name, p := range map[string]*lab.Process{"server-1": up1, "server-2": up2, "device-a": upA} {
+		if err := p.Stop(); err != nil {
+			t.Errorf("%s: thinkpol up exited with %v", name, err)
+		}
+	}
+}

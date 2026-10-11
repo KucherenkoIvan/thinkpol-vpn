@@ -11,6 +11,7 @@ import (
 	wgtun "golang.zx2c4.com/wireguard/tun"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/blobs"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/path"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
@@ -47,12 +48,19 @@ type DataPlane struct {
 	// StatusAttrs, if set, adds attributes to the periodic status line at
 	// debug level (a worker's shared-listener figures).
 	StatusAttrs func() []any
+	// Blobs, if set, holds, fetches and serves the blobs the map names
+	// (lists): RunDataPlane runs it, and gives it each map's plan once the
+	// map is applied.
+	Blobs *blobs.Service
 
 	// What tests swap: the TUN and its configurator, the path layer's
 	// timing, how long to wait before retrying what failed.
 	newTUN     func(name string) (wgtun.Device, netcfg.Configurator, error)
 	path       path.Options
 	retryAfter time.Duration
+	// blobOptions are the network functions and limits of the blob
+	// service a worker makes (serveSpace).
+	blobOptions blobs.Options
 }
 
 // RetryAfter is how long a data plane waits before retrying an Apply, a
@@ -95,6 +103,13 @@ func RunDataPlane(ctx context.Context, dp DataPlane) error {
 		return err
 	}
 	defer r.stop()
+	if dp.Blobs != nil {
+		// Stopped before the data plane, whose TUN its sockets are on.
+		bctx, cancel := context.WithCancel(ctx)
+		done := make(chan struct{})
+		go func() { defer close(done); dp.Blobs.Run(bctx) }()
+		defer func() { cancel(); <-done }()
+	}
 	return r.loop(ctx)
 }
 
@@ -264,6 +279,7 @@ func (r *runner) next(ctx context.Context, envelope []byte) {
 		}
 		r.stop()
 		r.retryAt = time.Time{}
+		r.updateBlobs()
 		return
 	}
 	if err != nil {
@@ -303,7 +319,21 @@ func (r *runner) apply(ctx context.Context) {
 	r.applied()
 }
 
+// updateBlobs gives the blob service what the current map asks of it:
+// nothing while the data plane is stopped.
+func (r *runner) updateBlobs() {
+	if r.dp.Blobs == nil {
+		return
+	}
+	if r.engine == nil {
+		r.dp.Blobs.Update(blobs.Plan{})
+		return
+	}
+	r.dp.Blobs.Update(blobs.PlanFrom(r.cur.Header().Blobs, r.section, r.engine.Status().IPv6, r.dp.Interface))
+}
+
 func (r *runner) applied() {
+	r.updateBlobs()
 	st := r.engine.Status()
 	attrs := []any{"version", r.cur.Header().Version, "node", r.dp.Keys.ID, "ipv4", r.section.Node.IPv4,
 		"mtu", st.MTU, "peers", len(st.Peers), "skipped", len(st.Skipped)}
@@ -336,6 +366,10 @@ func (r *runner) logStatus() {
 	attrs := []any{"version", r.cur.Header().Version, "peers", len(st.Peers), "handshaken", handshaken,
 		"neighbors", len(st.Neighbors), "links_up", up, "listeners", len(r.listeners.serving),
 		"no_path", st.Path.NoPath, "no_route", st.Router.NoRoute}
+	if r.dp.Blobs != nil {
+		b := r.dp.Blobs.Status()
+		attrs = append(attrs, "blobs_wanted", b.Wanted, "blobs_held", b.Held, "blobs_rejected", b.Rejected+b.StoreRejected)
+	}
 	if r.dp.StatusAttrs != nil {
 		attrs = append(attrs, r.dp.StatusAttrs()...)
 	}

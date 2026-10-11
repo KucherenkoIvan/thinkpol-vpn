@@ -2,9 +2,11 @@ package devmap
 
 import (
 	"math/rand/v2"
+	"net/netip"
 	"os"
 	"testing"
 
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/lists"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
 
@@ -20,6 +22,9 @@ func newFixture(t *testing.T, file string, data []byte, vars map[string]string) 
 	t.Helper()
 	s, err := ParseSpec(file, data, func(name string) (string, bool) { v, ok := vars[name]; return v, ok })
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ReadLists(s, testList); err != nil {
 		t.Fatal(err)
 	}
 	random := rand.NewChaCha8([32]byte{1})
@@ -82,4 +87,15 @@ func (f fixture) sections(t *testing.T, version uint64) (*netmap.Map, map[string
 		names[sec.Node.ID] = n.Name
 	}
 	return m, out, names
+}
+
+// testList reads any list file as a list of its own: a /24 of 10/8 named by
+// the path's length, so each path gives other content.
+func testList(path string) ([]byte, error) {
+	var b lists.Builder
+	if err := b.AddPrefix(netip.PrefixFrom(netip.AddrFrom4([4]byte{10, byte(len(path)), 0, 0}), 24)); err != nil {
+		return nil, err
+	}
+	set, _ := b.Build()
+	return set.Blob(), nil
 }
