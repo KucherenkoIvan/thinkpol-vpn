@@ -286,3 +286,15 @@ func TestPairsHaveLargeBuffers(t *testing.T) {
 		_ = f.Close()
 	}
 }
+
+// A peer that closes with messages unread is gone, as one that read them.
+func TestClosedPeerWithUnreadMessagesIsEOF(t *testing.T) {
+	sup, w := pair(t)
+	if err := sup.Send(ipc.Message{Kind: ipc.KindConfig, Payload: []byte("never read")}); err != nil {
+		t.Fatal(err)
+	}
+	_ = w.Close()
+	if _, err := sup.Receive(); !errors.Is(err, io.EOF) {
+		t.Fatalf("receive after the peer closed unread: %v, want EOF", err)
+	}
+}
