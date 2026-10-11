@@ -62,3 +62,5 @@ Review 2026-10-12: node-side enforcement holds; the builder needs fixing. Decide
 - 2026-10-12 in-progress → review — all acceptance checked; `make lint`, `make test`, `go test -race` on netmap, dataplane, devmap, agent and cmd/thinkpol, `make lab-test` (incl. `TestIngressOffAdmitsOnlyServers`) pass
 - 2026-10-12 review → has-errors — review: F1, D1, F2, nits, downstream notes (see Review findings)
 - 2026-10-12 has-errors → in-progress — owner: agent-tp-013, picking up the review findings
+- 2026-10-12 review findings fixed: F1, D1 (reader-2 marking removed; Build refuses devices' links on ingress-off servers), F2, nits (release note, inspect min reader and refused links, egress not enforced until TP-014), notes copied into TP-014, TP-030, TP-034, TP-035, TP-038, TP-040; lab test builds both maps with devmap; DESIGN "Server agent" says the builder keeps such a node apart from devices
+- 2026-10-12 in-progress → review — every finding checked; `make lint`, `make test`, `go test -race` on netmap, dataplane, devmap, agent and cmd/thinkpol, `make lab-test` pass
