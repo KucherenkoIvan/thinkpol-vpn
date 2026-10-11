@@ -43,6 +43,9 @@ func Prepare(cfg Config, logs Logs) (*Node, error) {
 	for _, name := range st.Unexpected {
 		logs.Warn("the state directory holds something that isn't the node's; it is not used", "entry", name)
 	}
+	if st.OwnMapUnused {
+		logs.Warn("the state directory's map.bin is not used: the map comes from elsewhere", "map", st.MapPath)
+	}
 	n := &Node{cfg: cfg, state: st, mode: cfg.Mode, logs: logs}
 	if n.mode == ModeAuto {
 		n.mode = ModeDevice
@@ -101,21 +104,24 @@ func (n *Node) Run(ctx context.Context, reload <-chan os.Signal) error {
 // map.
 func (n *Node) runServer(ctx context.Context, reg *transport.Registry, watcher *mapWatcher, maps chan []byte) error {
 	level, _ := ParseLevel(n.cfg.LogLevel)
+	own := n.state.Trust.SpaceID
+	out := &workerOutput{w: logOutput(n.logs)}
 	sup, err := supervisor.New(supervisor.Options{
 		Transports: reg,
 		Log:        n.logs.With("component", "supervisor"),
-		// Workers log at the node's level; their output goes to their
-		// space's ring and into the node's log stream.
+		// Workers log at the node's level. Their output goes to their
+		// space's ring; only the node owner's space's also goes into the
+		// node's log stream, never a guest's (DESIGN rule 6).
 		Env:    []string{"THINKPOL_LOG_LEVEL=" + level.String()},
-		Output: (&workerOutput{w: logOutput(n.logs)}).forSpace,
+		Output: ownerOutput(own, out),
 	})
 	if err != nil {
 		return err
 	}
-	s := &serverSpaces{node: n, sup: sup, reg: reg, cur: n.state.Map, section: n.state.Section}
-	if err := s.apply(); err != nil {
-		_ = sup.Close()
-		return err
+	s := &serverSpaces{
+		sup: sup, reg: reg, log: n.logs.Logger, keys: n.state.Keys, trust: n.state.Trust,
+		iface: n.cfg.Interface, linkMTU: n.cfg.LinkMTU, cur: n.state.Map, section: n.state.Section,
+		retryAfter: RetryAfter,
 	}
 	return app.Run(ctx,
 		app.Adapter{Name: "supervisor", Close: func(context.Context) error { return sup.Close() }},
@@ -124,29 +130,65 @@ func (n *Node) runServer(ctx context.Context, reg *transport.Registry, watcher *
 	)
 }
 
+// ownerOutput copies the node owner's space's worker output to out; a
+// guest space's stays in its ring.
+func ownerOutput(own netmap.SpaceID, out *workerOutput) func(netmap.SpaceID) io.Writer {
+	return func(space netmap.SpaceID) io.Writer {
+		if space != own {
+			return nil
+		}
+		return out.forSpace(space)
+	}
+}
+
+// spaceServer is what serverSpaces drives: the supervisor.
+type spaceServer interface {
+	SetSpaces([]supervisor.Space) error
+	SetListeners([]supervisor.Listener) error
+}
+
 // serverSpaces keeps the supervisor serving the node's current map.
 type serverSpaces struct {
-	node    *Node
-	sup     *supervisor.Supervisor
-	reg     *transport.Registry
+	sup        spaceServer
+	reg        *transport.Registry
+	log        *slog.Logger
+	keys       NodeKeys
+	trust      netmap.Trust
+	iface      string
+	linkMTU    int
+	retryAfter time.Duration
+
 	cur     *netmap.Map
 	section netmap.Section
+	// removed is set while the current map has no section for the node:
+	// the space's worker and the listeners are stopped.
+	removed bool
 }
+
+// errListeners is SetListeners failing: the other listeners are served,
+// the failed ones retried.
+type errListeners struct{ error }
+
+func (e errListeners) Unwrap() error { return e.error }
 
 // apply gives the supervisor the current map: the space (whose worker
 // gets the map and keys) and the listeners. Only the node owner's space is
 // served until hosting grants (TP-040) add guests.
 func (s *serverSpaces) apply() error {
-	n := s.node
+	if s.removed {
+		if err := s.sup.SetListeners(nil); err != nil {
+			return errListeners{err}
+		}
+		return s.sup.SetSpaces(nil)
+	}
 	id := s.cur.Header().SpaceID
 	config, err := WorkerConfig{
-		Keys: n.state.Keys, Trust: n.state.Trust, Map: s.cur.Bytes(),
-		Interface: n.cfg.Interface, LinkMTU: n.cfg.LinkMTU,
+		Keys: s.keys, Trust: s.trust, Map: s.cur.Bytes(), Interface: s.iface, LinkMTU: s.linkMTU,
 	}.Encode()
 	if err != nil {
 		return err
 	}
-	inbound := dataplane.AcceptedInbound(s.section, s.reg, transport.SpaceID(id), n.cfg.LinkMTU)
+	inbound := dataplane.AcceptedInbound(s.section, s.reg, transport.SpaceID(id), s.linkMTU)
 	if err := s.sup.SetSpaces([]supervisor.Space{{ID: id, Config: config, Inbound: inbound.Links}}); err != nil {
 		return fmt.Errorf("serving space %v: %w", id, err)
 	}
@@ -155,48 +197,81 @@ func (s *serverSpaces) apply() error {
 		ls = append(ls, supervisor.Listener{Transport: l.Transport, Address: l.Address.String(), Settings: l.Settings})
 	}
 	if err := s.sup.SetListeners(ls); err != nil {
-		// The others are served; the failed ones are retried.
 		return errListeners{err}
 	}
-	n.logs.Info("map applied", "version", s.cur.Header().Version, "listeners", len(ls), "inbound_skipped", len(inbound.Skipped))
+	s.log.Info("map applied", "version", s.cur.Header().Version, "listeners", len(ls), "inbound_skipped", len(inbound.Skipped))
 	return nil
 }
 
-type errListeners struct{ error }
-
-func (e errListeners) Unwrap() error { return e.error }
-
+// run serves the current map, then every newer one, until ctx ends. Only
+// the first SetSpaces failing is fatal (the node can't serve its space);
+// anything else is retried.
 func (s *serverSpaces) run(ctx context.Context, maps <-chan []byte) error {
-	log := s.node.logs
 	var retry <-chan time.Time
+	if err := s.apply(); err != nil {
+		if !errors.As(err, new(errListeners)) {
+			return err
+		}
+		s.log.Warn("opening listeners failed, retrying", "in", s.retryAfter, "err", err)
+		retry = time.After(s.retryAfter)
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-retry:
-			retry = nil
-		case env := <-maps:
-			m, err := s.cur.Next(env)
-			if errors.Is(err, netmap.ErrNotNewer) {
-				log.Debug("map not newer, ignored", "version", s.cur.Header().Version)
+		case env, ok := <-maps:
+			if !ok {
+				maps = nil
 				continue
 			}
-			if err != nil {
-				log.Warn("map refused, keeping the current one", "version", s.cur.Header().Version, "err", err)
+			if !s.next(env) {
 				continue
 			}
-			section, err := openSection(m, s.node.state.Keys)
-			if err != nil {
-				log.Error("map refused, keeping the current one", "version", s.cur.Header().Version, "err", err)
-				continue
-			}
-			s.cur, s.section = m, section
 		}
 		if err := s.apply(); err != nil {
-			log.Warn("serving the map failed, retrying", "version", s.cur.Header().Version, "in", RetryAfter, "err", err)
-			retry = time.After(RetryAfter)
+			s.log.Warn("serving the map failed, retrying", "version", s.cur.Header().Version, "in", s.retryAfter, "err", err)
+			retry = time.After(s.retryAfter)
+		} else {
+			retry = nil
 		}
 	}
+}
+
+// next takes a newer map if it is one, and reports whether it did.
+func (s *serverSpaces) next(env []byte) bool {
+	m, err := s.cur.Next(env)
+	if errors.Is(err, netmap.ErrNotNewer) {
+		s.log.Debug("map not newer, ignored", "version", s.cur.Header().Version)
+		return false
+	}
+	if err != nil {
+		s.log.Warn("map refused, keeping the current one", "version", s.cur.Header().Version, "err", err)
+		return false
+	}
+	section, err := openSection(m, s.keys)
+	if errors.Is(err, netmap.ErrNotRecipient) {
+		s.cur = m
+		if !s.removed {
+			s.removed = true
+			s.log.Warn("removed from space: the map has no section for this node; its worker and listeners stop until a map includes it again",
+				"version", m.Header().Version)
+		}
+		return true
+	}
+	if err != nil {
+		s.log.Error("map refused, keeping the current one", "version", s.cur.Header().Version, "err", err)
+		return false
+	}
+	if section.Node.Kind != s.section.Node.Kind {
+		s.log.Warn("the map changes this node's kind; restart the node to change its mode", "kind", section.Node.Kind)
+	}
+	if s.removed {
+		s.removed = false
+		s.log.Info("back in space", "version", m.Header().Version)
+	}
+	s.cur, s.section = m, section
+	return true
 }
 
 // logOutput is where the node's own log lines go: stderr and the ring.

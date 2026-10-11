@@ -28,24 +28,25 @@ type DataPlane struct {
 	// Map is the map to start from, verified; the node's section in it
 	// must open with Keys.
 	Map *netmap.Map
-	// Maps delivers envelopes of the same space, latest-wins. One is
-	// applied only if Map.Next takes it (valid, signed by the space, newer)
-	// and the node's section in it opens; otherwise the node keeps running
-	// on the map it has.
+	// Maps delivers envelopes of the same space, latest-wins. One is taken
+	// only if Map.Next takes it (valid, signed by the space, newer);
+	// otherwise the node keeps running on the map it has. A taken map
+	// without a section for the node stops the data plane until a later
+	// map includes the node again (it was removed from the space).
 	Maps     <-chan []byte
 	Registry *transport.Registry
 	Inbound  Inbound
-	// Interface names the TUN (tun.DefaultName when empty).
+	// Interface names the TUN; empty is tun.DefaultName.
 	Interface string
-	// LinkMTU is the MTU of the network under the links
-	// (dataplane.DefaultLinkMTU when 0).
+	// LinkMTU is the MTU of the network under the links; 0 is
+	// dataplane.DefaultLinkMTU.
 	LinkMTU int
 	// Log gets the data plane's events. It may quote the map at debug
 	// level: keep it local (stderr and the in-memory ring).
 	Log *slog.Logger
-	// Status, if set, adds attributes to the periodic status line at debug
-	// level (a worker's shared-listener figures).
-	Status func() []any
+	// StatusAttrs, if set, adds attributes to the periodic status line at
+	// debug level (a worker's shared-listener figures).
+	StatusAttrs func() []any
 
 	// What tests swap: the TUN and its configurator, the path layer's
 	// timing, how long to wait before retrying what failed.
@@ -54,8 +55,8 @@ type DataPlane struct {
 	retryAfter time.Duration
 }
 
-// RetryAfter is how long a data plane waits before retrying an Apply or a
-// listener that failed.
+// RetryAfter is how long a data plane waits before retrying an Apply, a
+// start or a listener that failed.
 const RetryAfter = 5 * time.Second
 
 // statusEvery paces the status line at debug level.
@@ -84,35 +85,16 @@ func RunDataPlane(ctx context.Context, dp DataPlane) error {
 	if err != nil {
 		return err
 	}
-	dev, ifc, err := dp.newTUN(dp.Interface)
-	if err != nil {
-		return err
-	}
-	engine, err := dataplane.NewEngine(dataplane.EngineConfig{
-		ID:           dp.Keys.ID,
-		Space:        transport.SpaceID(dp.Map.Header().SpaceID),
-		WireGuardKey: dp.Keys.WireGuard,
-		Registry:     dp.Registry,
-		TUN:          dev,
-		Interface:    ifc,
-		LinkMTU:      dp.LinkMTU,
-		Path:         dp.path,
-		Log:          dp.Log,
-	})
-	if err != nil {
-		if ifc != nil {
-			_ = ifc.Close()
+	r := &runner{dp: dp, cur: dp.Map, section: section, maps: dp.Maps}
+	// The first map must run: a node that can't carry it shouldn't look
+	// up. A shutdown meanwhile is no failure.
+	if err := r.start(ctx); err != nil {
+		if ctx.Err() != nil {
+			return nil
 		}
-		_ = dev.Close()
 		return err
 	}
-	r := &runner{dp: dp, engine: engine, cur: dp.Map, section: section, listeners: newListenerSet(engine, dp.Log)}
-	defer r.close()
-	// The first map must run: a node that can't carry it shouldn't look up.
-	if err := engine.Apply(ctx, section); err != nil {
-		return fmt.Errorf("applying map version %d: %w", dp.Map.Header().Version, err)
-	}
-	r.applied()
+	defer r.stop()
 	return r.loop(ctx)
 }
 
@@ -132,48 +114,131 @@ func newTUN(name string) (wgtun.Device, netcfg.Configurator, error) {
 	return dev, ifc, nil
 }
 
+// runner follows the space's maps and runs the data plane while the node
+// is in the space.
 type runner struct {
-	dp        DataPlane
+	dp      DataPlane
+	maps    <-chan []byte
+	cur     *netmap.Map
+	section netmap.Section
+
+	// engine and listeners are nil while stopped: the node was removed,
+	// or starting again failed.
 	engine    *dataplane.Engine
-	cur       *netmap.Map
-	section   netmap.Section
 	listeners *listenerSet
-	// applyFailed is set while the current section's Apply failed and is
-	// retried.
-	applyFailed bool
+	removed   bool
+	// retryAt is when to retry a failed Apply or start (zero: nothing to
+	// retry).
+	retryAt time.Time
+}
+
+// start brings the data plane up on the current section.
+func (r *runner) start(ctx context.Context) error {
+	dev, ifc, err := r.dp.newTUN(r.dp.Interface)
+	if err != nil {
+		return err
+	}
+	engine, err := dataplane.NewEngine(dataplane.EngineConfig{
+		ID:           r.dp.Keys.ID,
+		Space:        transport.SpaceID(r.cur.Header().SpaceID),
+		WireGuardKey: r.dp.Keys.WireGuard,
+		Registry:     r.dp.Registry,
+		TUN:          dev,
+		Interface:    ifc,
+		LinkMTU:      r.dp.LinkMTU,
+		Path:         r.dp.path,
+		Log:          r.dp.Log,
+	})
+	if err != nil {
+		if ifc != nil {
+			_ = ifc.Close()
+		}
+		_ = dev.Close()
+		return err
+	}
+	if err := engine.Apply(ctx, r.section); err != nil {
+		_ = engine.Close()
+		return fmt.Errorf("applying map version %d: %w", r.cur.Header().Version, err)
+	}
+	r.engine = engine
+	r.listeners = newListenerSet(engine, r.dp.Log, r.dp.retryAfter)
+	r.retryAt = time.Time{}
+	r.applied()
+	return nil
+}
+
+// stop takes the data plane down: listeners, engine, TUN and its
+// configuration.
+func (r *runner) stop() {
+	if r.engine == nil {
+		return
+	}
+	r.listeners.closeAll()
+	if err := r.engine.Close(); err != nil {
+		r.dp.Log.Warn("closing the data plane", "err", err)
+	}
+	r.listeners.wait()
+	r.engine, r.listeners = nil, nil
 }
 
 func (r *runner) loop(ctx context.Context) error {
-	var retry <-chan time.Time
-	arm := func() {
-		if retry == nil && (r.applyFailed || r.listeners.failed) {
-			retry = time.After(r.dp.retryAfter)
-		}
-	}
+	retry := time.NewTimer(time.Hour)
+	retry.Stop()
+	defer retry.Stop()
 	status := time.NewTicker(statusEvery)
 	defer status.Stop()
-	r.listeners.reconcile(ctx, r.dp.Inbound.Listeners(r.section))
-	arm()
 	for {
+		var ended <-chan struct{}
+		if r.listeners != nil {
+			r.listeners.reconcile(ctx, r.dp.Inbound.Listeners(r.section))
+			ended = r.listeners.ended
+		}
+		if at, ok := r.nextRetry(); ok {
+			retry.Reset(time.Until(at))
+		} else {
+			retry.Stop()
+		}
 		select {
 		case <-ctx.Done():
 			return nil
-		case env := <-r.dp.Maps:
+		case env, ok := <-r.maps:
+			if !ok {
+				r.maps = nil // no more maps: run on this one
+				continue
+			}
 			r.next(ctx, env)
 		case <-r.dp.Inbound.Changed():
-		case <-r.listeners.ended:
-		case <-retry:
-			retry = nil
-			if r.applyFailed {
-				r.apply(ctx)
-			}
+		case <-ended:
+		case <-retry.C:
+			r.retry(ctx)
 		case <-status.C:
 			r.logStatus()
-			continue
 		}
-		r.listeners.reconcile(ctx, r.dp.Inbound.Listeners(r.section))
-		arm()
 	}
+}
+
+// nextRetry is the earliest retry due: the data plane's or a listener's.
+func (r *runner) nextRetry() (time.Time, bool) {
+	at, ok := r.retryAt, !r.retryAt.IsZero()
+	if r.listeners != nil {
+		if l, lok := r.listeners.nextRetry(); lok && (!ok || l.Before(at)) {
+			at, ok = l, true
+		}
+	}
+	return at, ok
+}
+
+// retry retries a failed start or Apply when it is due; listeners retry in
+// reconcile.
+func (r *runner) retry(ctx context.Context) {
+	if r.retryAt.IsZero() || time.Now().Before(r.retryAt) {
+		return
+	}
+	if r.engine == nil {
+		r.tryStart(ctx)
+		return
+	}
+	r.apply(ctx)
 }
 
 // next takes a newer map, if it is one.
@@ -188,6 +253,19 @@ func (r *runner) next(ctx context.Context, envelope []byte) {
 		return
 	}
 	section, err := openSection(m, r.dp.Keys)
+	if errors.Is(err, netmap.ErrNotRecipient) {
+		// A valid newer map without the node: it was removed. The map
+		// is taken, so no older one that has the node can come back.
+		r.cur = m
+		if !r.removed {
+			r.removed = true
+			r.dp.Log.Warn("removed from space: the map has no section for this node; the data plane stops until a map includes it again",
+				"version", m.Header().Version)
+		}
+		r.stop()
+		r.retryAt = time.Time{}
+		return
+	}
 	if err != nil {
 		r.dp.Log.Error("map refused, keeping the current one", "version", r.cur.Header().Version, "err", err)
 		return
@@ -196,21 +274,36 @@ func (r *runner) next(ctx context.Context, envelope []byte) {
 		r.dp.Log.Warn("the map changes this node's kind; restart the node to change its mode", "kind", section.Node.Kind)
 	}
 	r.cur, r.section = m, section
+	if r.engine == nil {
+		if r.removed {
+			r.removed = false
+			r.dp.Log.Info("back in space", "version", m.Header().Version)
+		}
+		r.tryStart(ctx)
+		return
+	}
 	r.apply(ctx)
+}
+
+func (r *runner) tryStart(ctx context.Context) {
+	if err := r.start(ctx); err != nil {
+		r.retryAt = time.Now().Add(r.dp.retryAfter)
+		r.dp.Log.Warn("starting the data plane failed, retrying", "version", r.cur.Header().Version, "in", r.dp.retryAfter, "err", err)
+	}
 }
 
 func (r *runner) apply(ctx context.Context) {
 	if err := r.engine.Apply(ctx, r.section); err != nil {
-		r.applyFailed = true
+		r.retryAt = time.Now().Add(r.dp.retryAfter)
 		r.dp.Log.Warn("applying the map failed, retrying", "version", r.cur.Header().Version,
 			"step", r.engine.Status().LastApplyError, "in", r.dp.retryAfter, "err", err)
 		return
 	}
+	r.retryAt = time.Time{}
 	r.applied()
 }
 
 func (r *runner) applied() {
-	r.applyFailed = false
 	st := r.engine.Status()
 	attrs := []any{"version", r.cur.Header().Version, "node", r.dp.Keys.ID, "ipv4", r.section.Node.IPv4,
 		"mtu", st.MTU, "peers", len(st.Peers), "skipped", len(st.Skipped)}
@@ -223,7 +316,7 @@ func (r *runner) applied() {
 }
 
 func (r *runner) logStatus() {
-	if !r.dp.Log.Enabled(context.Background(), slog.LevelDebug) {
+	if r.engine == nil || !r.dp.Log.Enabled(context.Background(), slog.LevelDebug) {
 		return
 	}
 	st := r.engine.Status()
@@ -241,56 +334,59 @@ func (r *runner) logStatus() {
 		}
 	}
 	attrs := []any{"version", r.cur.Header().Version, "peers", len(st.Peers), "handshaken", handshaken,
-		"neighbors", len(st.Neighbors), "links_up", up, "listeners", r.listeners.running(),
+		"neighbors", len(st.Neighbors), "links_up", up, "listeners", len(r.listeners.serving),
 		"no_path", st.Path.NoPath, "no_route", st.Router.NoRoute}
-	if r.dp.Status != nil {
-		attrs = append(attrs, r.dp.Status()...)
+	if r.dp.StatusAttrs != nil {
+		attrs = append(attrs, r.dp.StatusAttrs()...)
 	}
 	r.dp.Log.Debug("status", attrs...)
 }
 
-func (r *runner) close() {
-	r.listeners.closeAll()
-	if err := r.engine.Close(); err != nil {
-		r.dp.Log.Warn("closing the data plane", "err", err)
-	}
-	r.listeners.wait()
-}
-
 // listenerSet is what a data plane serves of its Inbound's listeners.
 type listenerSet struct {
-	engine *dataplane.Engine
-	log    *slog.Logger
+	// peers and serve are the engine's Inbound and Serve.
+	peers      func(transport string) transport.Peers
+	serve      func(transport string, l transport.Listener) error
+	log        *slog.Logger
+	retryAfter time.Duration
 	// ended is signalled when a listener's Serve returned on its own.
 	ended   chan struct{}
 	serving map[string]*served
-	// failed is set while a listener that should run doesn't.
-	failed bool
+	// retryAt holds the listeners that failed to open or stopped on their
+	// own, and when to open them again.
+	retryAt map[string]time.Time
 }
 
 type served struct {
 	l      transport.Listener
 	closed atomic.Bool // by the set
+	// failed is set, before done closes, when Serve ended on its own.
+	failed bool
 	done   chan struct{}
 }
 
-func newListenerSet(engine *dataplane.Engine, log *slog.Logger) *listenerSet {
-	return &listenerSet{engine: engine, log: log, ended: make(chan struct{}, 1), serving: map[string]*served{}}
+func newListenerSet(engine *dataplane.Engine, log *slog.Logger, retryAfter time.Duration) *listenerSet {
+	return &listenerSet{
+		peers: engine.Inbound, serve: engine.Serve, log: log, retryAfter: retryAfter,
+		ended: make(chan struct{}, 1), serving: map[string]*served{}, retryAt: map[string]time.Time{},
+	}
 }
 
-// reconcile closes the listeners not in want (or ended) and opens those in
-// want that don't run.
+// reconcile closes the listeners not in want, and opens those in want that
+// don't run and aren't waiting for a retry.
 func (ls *listenerSet) reconcile(ctx context.Context, want []Listener) {
+	now := time.Now()
 	keep := make(map[string]bool, len(want))
 	for _, l := range want {
 		keep[l.Key] = true
 	}
 	for key, s := range ls.serving {
-		select {
-		case <-s.done:
+		if isClosed(s.done) {
 			delete(ls.serving, key)
+			if s.failed {
+				ls.retryAt[key] = now.Add(ls.retryAfter)
+			}
 			continue
-		default:
 		}
 		if !keep[key] {
 			s.closed.Store(true)
@@ -300,33 +396,56 @@ func (ls *listenerSet) reconcile(ctx context.Context, want []Listener) {
 			ls.log.Info("listener closed", "listener", key)
 		}
 	}
-	ls.failed = false
+	for key := range ls.retryAt {
+		if !keep[key] {
+			delete(ls.retryAt, key)
+		}
+	}
 	for _, l := range want {
 		if ls.serving[l.Key] != nil || isClosed(l.Done) {
 			continue
 		}
-		lst, err := l.Open(ctx, ls.engine.Inbound(l.Transport))
-		if err != nil {
-			ls.failed = true
-			ls.log.Warn("opening a listener failed, retrying", "listener", l.Key, "err", err)
+		if at, ok := ls.retryAt[l.Key]; ok && now.Before(at) {
 			continue
 		}
+		lst, err := l.Open(ctx, ls.peers(l.Transport))
+		if err != nil {
+			ls.retryAt[l.Key] = now.Add(ls.retryAfter)
+			ls.log.Warn("opening a listener failed, retrying", "listener", l.Key, "in", ls.retryAfter, "err", err)
+			continue
+		}
+		delete(ls.retryAt, l.Key)
 		s := &served{l: lst, done: make(chan struct{})}
 		ls.serving[l.Key] = s
 		ls.log.Info("listening", "listener", l.Key, "address", lst.Addr())
 		go func() {
-			defer close(s.done)
-			err := ls.engine.Serve(l.Transport, lst)
-			if s.closed.Load() || isClosed(l.Done) {
-				return
+			err := ls.serve(l.Transport, lst)
+			// Decide, then mark done, then signal: reconcile sees a
+			// stopped listener only once done is closed.
+			s.failed = !s.closed.Load() && !isClosed(l.Done)
+			if s.failed {
+				ls.log.Warn("listener stopped, reopening", "listener", l.Key, "in", ls.retryAfter, "err", err)
 			}
-			ls.log.Warn("listener stopped", "listener", l.Key, "err", err)
-			select {
-			case ls.ended <- struct{}{}:
-			default:
+			close(s.done)
+			if s.failed {
+				select {
+				case ls.ended <- struct{}{}:
+				default:
+				}
 			}
 		}()
 	}
+}
+
+// nextRetry is when the earliest listener retry is due.
+func (ls *listenerSet) nextRetry() (time.Time, bool) {
+	var at time.Time
+	for _, t := range ls.retryAt {
+		if at.IsZero() || t.Before(at) {
+			at = t
+		}
+	}
+	return at, !at.IsZero()
 }
 
 func isClosed(ch <-chan struct{}) bool {
@@ -340,8 +459,6 @@ func isClosed(ch <-chan struct{}) bool {
 		return false
 	}
 }
-
-func (ls *listenerSet) running() int { return len(ls.serving) }
 
 func (ls *listenerSet) closeAll() {
 	for _, s := range ls.serving {

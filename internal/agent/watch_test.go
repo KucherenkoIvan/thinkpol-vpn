@@ -12,7 +12,7 @@ import (
 
 func TestTheWatcherDeliversChangedMaps(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, MapFile)
+	path := filepath.Join(dir, MapFileName)
 	writeFile(t, path, []byte("version 1"), 0o644)
 	_, fi, err := readMap(path)
 	if err != nil {

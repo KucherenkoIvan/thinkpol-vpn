@@ -75,7 +75,10 @@ func SharedInbound(ctx context.Context, reg *transport.Registry, updates <-chan 
 			select {
 			case <-ctx.Done():
 				return
-			case ls := <-updates:
+			case ls, ok := <-updates:
+				if !ok {
+					return
+				}
 				s.mu.Lock()
 				s.current = ls
 				s.mu.Unlock()

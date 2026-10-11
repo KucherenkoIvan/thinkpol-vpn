@@ -40,10 +40,12 @@ type Config struct {
 	// LogLevel is debug, info, warn or error. Logs go to stderr and an
 	// in-memory ring, never to a file (PRD S2).
 	LogLevel string `env:"THINKPOL_LOG_LEVEL" default:"info"`
-	// Interface names the overlay TUN.
-	Interface string `env:"THINKPOL_INTERFACE" default:"thinkpol0"`
-	// LinkMTU is the MTU of the network under the node's links.
-	LinkMTU int `env:"THINKPOL_LINK_MTU" default:"1500"`
+	// Interface names the overlay TUN; empty is the platform's default
+	// (tun.DefaultName).
+	Interface string `env:"THINKPOL_INTERFACE"`
+	// LinkMTU is the MTU of the network under the node's links; 0 is
+	// dataplane.DefaultLinkMTU.
+	LinkMTU int `env:"THINKPOL_LINK_MTU"`
 	// MapPoll is how often the map file is checked for a change; SIGHUP
 	// checks it at once.
 	MapPoll time.Duration `env:"THINKPOL_MAP_POLL" default:"5s"`
@@ -65,7 +67,7 @@ func (c Config) MapPath() string {
 	if c.MapFile != "" {
 		return c.MapFile
 	}
-	return filepath.Join(c.StateDir, MapFile)
+	return filepath.Join(c.StateDir, MapFileName)
 }
 
 // Check rejects a configuration `thinkpol up` can't run with.
@@ -82,12 +84,14 @@ func (c Config) Check() error {
 	if _, err := ParseLevel(c.LogLevel); err != nil {
 		errs = append(errs, err)
 	}
-	if err := checkInterfaceName(c.Interface); err != nil {
-		errs = append(errs, err)
+	if c.Interface != "" {
+		if err := checkInterfaceName(c.Interface); err != nil {
+			errs = append(errs, err)
+		}
 	}
-	// IPv6 needs 1280 on every link; below 576 + the overhead nothing fits.
-	if c.LinkMTU < 576 || c.LinkMTU > 65535 {
-		errs = append(errs, fmt.Errorf("link MTU %d: want 576 to 65535", c.LinkMTU))
+	// Below 576 plus a link's overhead nothing fits.
+	if c.LinkMTU != 0 && (c.LinkMTU < 576 || c.LinkMTU > 65535) {
+		errs = append(errs, fmt.Errorf("link MTU %d: want 576 to 65535, or 0 for the default", c.LinkMTU))
 	}
 	if c.MapPoll < 100*time.Millisecond {
 		errs = append(errs, fmt.Errorf("map poll interval %v: want at least 100ms", c.MapPoll))

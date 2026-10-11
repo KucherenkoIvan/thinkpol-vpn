@@ -30,7 +30,7 @@ func m0State(t *testing.T, node string) (state, keys string) {
 	for from, to := range map[string]string{
 		filepath.Join(keys, node+".key"):      agent.NodeKeyFile,
 		filepath.Join(keys, devmap.TrustFile): agent.TrustFile,
-		mapFile:                               agent.MapFile,
+		mapFile:                               agent.MapFileName,
 	} {
 		perm := os.FileMode(0o644)
 		if to == agent.NodeKeyFile {
@@ -61,7 +61,7 @@ func TestUpReadsTheDevTooling(t *testing.T) {
 
 func TestUpRefusesAnInvalidMap(t *testing.T) {
 	state, keys := m0State(t, "device-a")
-	path := filepath.Join(state, agent.MapFile)
+	path := filepath.Join(state, agent.MapFileName)
 	env := readTestFile(t, path)
 	env[len(env)/2] ^= 1
 	if err := os.WriteFile(path, env, 0o644); err != nil {

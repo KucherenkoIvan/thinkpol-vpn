@@ -61,7 +61,8 @@ type Space struct {
 	// rules in the supervisor's table (TP-014). The zero value is no egress.
 	Egress Egress
 	// Inbound is, per transport name, the links the space's own map says
-	// to accept (dataplane.InboundFrom of its section). The supervisor
+	// to accept (dataplane.AcceptedInbound of its section, the table its
+	// worker's engine accepts too). The supervisor
 	// authenticates the shared listeners' traffic against every space's
 	// links, and stamps each link's Space with ID, whatever it said.
 	Inbound map[string][]transport.PeerLink
@@ -101,8 +102,10 @@ type Options struct {
 	// worker output never reaches a disk.
 	OutputBytes int
 	// Output, if set, gives a writer per space that gets its worker's
-	// output too, besides the ring: the node agent's own log stream
-	// (stderr, never a file). A slow writer slows that worker's logging.
+	// output too, besides the ring (the node agent's own log stream,
+	// never a file); nil for a space whose output stays in its ring. The
+	// output is the space's: the writer must neutralize control bytes. A
+	// slow writer slows that worker's logging.
 	Output func(space netmap.SpaceID) io.Writer
 	// MemoryMax and PidsMax cap a worker's cgroup (memory.max, pids.max);
 	// zero leaves that limit unset. Enforced where cgroup v2 is available,

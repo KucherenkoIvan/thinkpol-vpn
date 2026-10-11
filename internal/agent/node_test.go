@@ -82,8 +82,8 @@ func TestLoadConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := Config{StateDir: DefaultStateDir, Mode: ModeAuto, LogLevel: "info", Interface: "thinkpol0", LinkMTU: 1500, MapPoll: 5 * time.Second}
-	if cfg != want || cfg.MapPath() != filepath.Join(DefaultStateDir, MapFile) {
+	want := Config{StateDir: DefaultStateDir, Mode: ModeAuto, LogLevel: "info", MapPoll: 5 * time.Second}
+	if cfg != want || cfg.MapPath() != filepath.Join(DefaultStateDir, MapFileName) {
 		t.Fatalf("defaults %+v", cfg)
 	}
 	if err := cfg.Check(); err != nil {

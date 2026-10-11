@@ -12,18 +12,25 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
 
-// Worker is a server's data plane for one space, as `thinkpol worker`
+// ServeSpace is a server's data plane for one space, as `thinkpol worker`
 // serves it inside its sandbox (worker.Run): it waits for the supervisor's
 // WorkerConfig, then runs RunDataPlane on its own TUN in its namespace,
 // with the supervisor's shared listeners as its inbound, applying each
 // newer map the supervisor sends.
-func Worker(log *slog.Logger) worker.Serve {
+func ServeSpace(log *slog.Logger) worker.Serve { return serveSpace(log, DataPlane{}) }
+
+// serveSpace is ServeSpace with what tests swap in base (registry, TUN,
+// timing).
+func serveSpace(log *slog.Logger, base DataPlane) worker.Serve {
 	return func(ctx context.Context, s worker.Session) error {
 		var first WorkerConfig
 		select {
 		case <-ctx.Done():
 			return nil
-		case b := <-s.Config:
+		case b, ok := <-s.Config:
+			if !ok {
+				return errors.New("the supervisor sent no config")
+			}
 			c, err := DecodeWorkerConfig(b)
 			if err != nil {
 				return err
@@ -37,9 +44,11 @@ func Worker(log *slog.Logger) worker.Serve {
 		if err != nil {
 			return fmt.Errorf("the supervisor's map: %w", err)
 		}
-		reg, err := Transports()
-		if err != nil {
-			return err
+		reg := base.Registry
+		if reg == nil {
+			if reg, err = Transports(); err != nil {
+				return err
+			}
 		}
 
 		ctx, cancel := context.WithCancel(ctx)
@@ -51,7 +60,10 @@ func Worker(log *slog.Logger) worker.Serve {
 				select {
 				case <-ctx.Done():
 					return
-				case b := <-s.Config:
+				case b, ok := <-s.Config:
+					if !ok {
+						return
+					}
 					c, err := DecodeWorkerConfig(b)
 					if err == nil && !c.sameNode(first) {
 						err = errors.New("the supervisor changed the worker's keys or trust")
@@ -75,32 +87,33 @@ func Worker(log *slog.Logger) worker.Serve {
 				select {
 				case <-ctx.Done():
 					return
-				case c := <-s.SharedCounters:
+				case c, ok := <-s.SharedCounters:
+					if !ok {
+						return
+					}
 					counters.Store(&c)
 				}
 			}
 		}()
 
-		err = RunDataPlane(ctx, DataPlane{
-			Keys:      first.Keys,
-			Map:       m,
-			Maps:      maps,
-			Registry:  reg,
-			Inbound:   SharedInbound(ctx, reg, s.Listeners),
-			Interface: first.Interface,
-			LinkMTU:   first.LinkMTU,
-			Log:       log,
-			// The space's own figures only (TP-041 seals them into its
-			// telemetry).
-			Status: func() []any {
+		dp := base
+		dp.Keys, dp.Map, dp.Maps, dp.Registry = first.Keys, m, maps, reg
+		dp.Inbound = SharedInbound(ctx, reg, s.Listeners)
+		dp.Interface, dp.LinkMTU, dp.Log = first.Interface, first.LinkMTU, log
+		// The space's own figures only (TP-041 seals them into its
+		// telemetry).
+		dp.StatusAttrs = func() []any {
+			var attrs []any
+			if s.SharedDrops != nil {
 				d := s.SharedDrops()
-				attrs := []any{"shared_queue_full", d.QueueFull, "shared_unknown_listener", d.UnknownListener}
-				if c := counters.Load(); c != nil {
-					attrs = append(attrs, "shared", *c)
-				}
-				return attrs
-			},
-		})
+				attrs = append(attrs, "shared_queue_full", d.QueueFull, "shared_unknown_listener", d.UnknownListener)
+			}
+			if c := counters.Load(); c != nil {
+				attrs = append(attrs, "shared", *c)
+			}
+			return attrs
+		}
+		err = RunDataPlane(ctx, dp)
 		if bad := badConfig.Load(); bad != nil {
 			return *bad
 		}

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
@@ -65,7 +66,9 @@ func (c WorkerConfig) Encode() ([]byte, error) {
 // DecodeWorkerConfig reads what Encode wrote.
 func DecodeWorkerConfig(b []byte) (WorkerConfig, error) {
 	var j workerConfigJSON
-	if err := json.Unmarshal(b, &j); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&j); err != nil {
 		return WorkerConfig{}, fmt.Errorf("worker config: %w", err)
 	}
 	if j.Version != workerConfigVersion {

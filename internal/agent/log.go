@@ -65,6 +65,8 @@ func (o *workerOutput) forSpace(space netmap.SpaceID) io.Writer {
 	return &prefixedLines{out: o, prefix: "worker space=" + space.String() + " "}
 }
 
+const hexDigits = "0123456789abcdef"
+
 // prefixedLines buffers a worker's partial line until it ends; a line
 // longer than logring.MaxLine is cut there.
 type prefixedLines struct {
@@ -93,7 +95,17 @@ func (p *prefixedLines) Write(b []byte) (int, error) {
 
 func (p *prefixedLines) flush() {
 	line := make([]byte, 0, len(p.prefix)+len(p.partial)+1)
-	line = append(append(append(line, p.prefix...), p.partial...), '\n')
+	line = append(line, p.prefix...)
+	// The space's bytes never reach a terminal or a log viewer as control
+	// sequences.
+	for _, c := range p.partial {
+		if (c < 0x20 && c != '\t') || c == 0x7f {
+			line = append(line, '\\', 'x', hexDigits[c>>4], hexDigits[c&0xf])
+			continue
+		}
+		line = append(line, c)
+	}
+	line = append(line, '\n')
 	p.partial = p.partial[:0]
 	p.out.mu.Lock()
 	_, _ = p.out.w.Write(line)

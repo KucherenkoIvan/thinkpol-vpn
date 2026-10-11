@@ -87,6 +87,26 @@ func (s *testSpace) build(t *testing.T, version uint64) []byte {
 	return env
 }
 
+// buildWithout signs a map at version from which gone was removed: the
+// other node alone, without its links to gone.
+func (s *testSpace) buildWithout(t *testing.T, version uint64, gone NodeKeys) []byte {
+	t.Helper()
+	a, b := s.sections()
+	stay, key := a, s.a.Map
+	if gone == s.a {
+		stay, key = b, s.b.Map
+	}
+	stay.Peers, stay.Links, stay.Inbound = nil, nil, nil
+	env, err := netmap.Build(s.signing, netmap.Contents{
+		SpaceID: s.id, Version: version, RecoveryKey: s.recovery,
+		Recipients: []netmap.Recipient{{Key: key.Public(), Section: stay}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return env
+}
+
 func (s *testSpace) verified(t *testing.T, version uint64) *netmap.Map {
 	t.Helper()
 	m, err := netmap.Verify(s.build(t, version), s.trust())
@@ -117,7 +137,7 @@ func (s *testSpace) stateDir(t *testing.T, k NodeKeys, version uint64) string {
 	}
 	writeFile(t, filepath.Join(dir, NodeKeyFile), []byte(nodeKeyFile(k)), 0o600)
 	writeFile(t, filepath.Join(dir, TrustFile), []byte(trustFile(s.trust())), 0o644)
-	writeFile(t, filepath.Join(dir, MapFile), s.build(t, version), 0o644)
+	writeFile(t, filepath.Join(dir, MapFileName), s.build(t, version), 0o644)
 	return dir
 }
 

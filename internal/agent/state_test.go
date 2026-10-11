@@ -18,7 +18,7 @@ import (
 func TestLoadStateOpensTheNodesSection(t *testing.T) {
 	s := newTestSpace(t)
 	dir := s.stateDir(t, s.b, 7)
-	st, err := LoadState(dir, filepath.Join(dir, MapFile))
+	st, err := LoadState(dir, filepath.Join(dir, MapFileName))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,7 +34,7 @@ func TestLoadStateReportsUnexpectedEntries(t *testing.T) {
 	s := newTestSpace(t)
 	dir := s.stateDir(t, s.b, 1)
 	writeFile(t, filepath.Join(dir, "notes.txt"), []byte("x"), 0o600)
-	st, err := LoadState(dir, filepath.Join(dir, MapFile))
+	st, err := LoadState(dir, filepath.Join(dir, MapFileName))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +53,7 @@ func TestLoadStateRefuses(t *testing.T) {
 	}{
 		{"no key file", false, func(t *testing.T, _ *testSpace, dir string) { remove(t, dir, NodeKeyFile) }, "node.key"},
 		{"no trust", false, func(t *testing.T, _ *testSpace, dir string) { remove(t, dir, TrustFile) }, "space.pub"},
-		{"no map", false, func(t *testing.T, _ *testSpace, dir string) { remove(t, dir, MapFile) }, "map.bin"},
+		{"no map", false, func(t *testing.T, _ *testSpace, dir string) { remove(t, dir, MapFileName) }, "map.bin"},
 		{"a key file others can read", true, func(t *testing.T, _ *testSpace, dir string) {
 			chmod(t, filepath.Join(dir, NodeKeyFile), 0o640)
 		}, "chmod 600"},
@@ -75,7 +75,7 @@ func TestLoadStateRefuses(t *testing.T) {
 		{"a tampered map", false, func(t *testing.T, s *testSpace, dir string) {
 			env := s.build(t, 1)
 			env[len(env)-1] ^= 1
-			writeFile(t, filepath.Join(dir, MapFile), env, 0o644)
+			writeFile(t, filepath.Join(dir, MapFileName), env, 0o644)
 		}, "not a valid map"},
 		{"a map without the node", false, func(t *testing.T, _ *testSpace, dir string) {
 			writeFile(t, filepath.Join(dir, NodeKeyFile), []byte(nodeKeyFile(NodeKeys{
@@ -88,8 +88,8 @@ func TestLoadStateRefuses(t *testing.T) {
 			writeFile(t, filepath.Join(dir, NodeKeyFile), []byte(nodeKeyFile(k)), 0o600)
 		}, "the key file says"},
 		{"a map too large", false, func(t *testing.T, _ *testSpace, dir string) {
-			writeFile(t, filepath.Join(dir, MapFile), make([]byte, netmap.MaxEnvelopeSize+1), 0o644)
-		}, "larger than a map"},
+			writeFile(t, filepath.Join(dir, MapFileName), make([]byte, netmap.MaxEnvelopeSize+1), 0o644)
+		}, "larger than 16777216 bytes"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.unix && runtime.GOOS == "windows" {
@@ -98,7 +98,7 @@ func TestLoadStateRefuses(t *testing.T) {
 			s := newTestSpace(t)
 			dir := s.stateDir(t, s.b, 1)
 			tc.mutate(t, s, dir)
-			_, err := LoadState(dir, filepath.Join(dir, MapFile))
+			_, err := LoadState(dir, filepath.Join(dir, MapFileName))
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("got %v, want an error with %q", err, tc.want)
 			}

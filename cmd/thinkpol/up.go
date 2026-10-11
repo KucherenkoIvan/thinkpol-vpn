@@ -30,8 +30,8 @@ func runUp(ctx context.Context, e env, args []string) error {
 	fs.StringVar(&cfg.MapFile, "map", cfg.MapFile, "the map file, if not map.bin in the state directory (THINKPOL_MAP)")
 	mode := fs.String("mode", string(cfg.Mode), "auto (by the node's kind in the map), device or server (THINKPOL_MODE)")
 	fs.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "debug, info, warn or error; logs go to stderr only (THINKPOL_LOG_LEVEL)")
-	fs.StringVar(&cfg.Interface, "interface", cfg.Interface, "the overlay TUN's name (THINKPOL_INTERFACE)")
-	fs.IntVar(&cfg.LinkMTU, "link-mtu", cfg.LinkMTU, "MTU of the network under the links (THINKPOL_LINK_MTU)")
+	fs.StringVar(&cfg.Interface, "interface", cfg.Interface, "the overlay TUN's name; empty: the platform's default (THINKPOL_INTERFACE)")
+	fs.IntVar(&cfg.LinkMTU, "link-mtu", cfg.LinkMTU, "MTU of the network under the links; 0: 1500 (THINKPOL_LINK_MTU)")
 	fs.DurationVar(&cfg.MapPoll, "map-poll", cfg.MapPoll, "how often to check the map file for a change; SIGHUP checks at once (THINKPOL_MAP_POLL)")
 	if err := parseFlags(fs, e, args); err != nil {
 		return err
