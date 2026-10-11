@@ -23,7 +23,9 @@ const usage = `usage: labctl <command>
   up                                  start the standard topology for this checkout
   down [-tests | -stale]              remove this checkout's labs (-tests: only the ones tests
                                       started; -stale: every lab whose checkout is gone)
-  gotest [-v] [-run re] [-p n] pkgs...  run each package's tests in a fresh lab node with THINKPOL_LAB=1
+  gotest [-v] [-run re] [-p n] [-perf] pkgs...
+                                      run each package's tests in a fresh lab node with THINKPOL_LAB=1
+                                      (-perf: alone on the host, with THINKPOL_LAB_PERF=1: make lab-perf)
   project                             print this checkout's project prefix
 `
 
@@ -75,12 +77,23 @@ func run(ctx context.Context, args []string) error {
 		runRe := fs.String("run", "", "run only tests matching the regexp")
 		verbose := fs.Bool("v", false, "verbose test output")
 		parallel := fs.Int("p", 4, "packages tested at once")
+		perf := fs.Bool("perf", false, "a perf run: wait until no other lab runs, keep others from starting, set "+lab.PerfEnv+"=1")
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
 		ctx, cancel := context.WithTimeout(ctx, 60*time.Minute)
 		defer cancel()
-		return gotest(ctx, root, *runRe, *verbose, *parallel, fs.Args())
+		var env []string
+		if *perf {
+			fmt.Println("gotest: waiting until no other lab runs")
+			release, err := lab.AcquirePerfLock(ctx)
+			if err != nil {
+				return err
+			}
+			defer release()
+			env = append(env, lab.PerfEnv+"=1")
+		}
+		return gotest(ctx, root, *runRe, *verbose, *parallel, env, fs.Args())
 	case "project":
 		checkout, err := lab.CheckoutProject(root)
 		if err != nil {
@@ -126,7 +139,7 @@ func up(ctx context.Context, root string) error {
 	return nil
 }
 
-func gotest(ctx context.Context, root, runRe string, verbose bool, parallel int, patterns []string) error {
+func gotest(ctx context.Context, root, runRe string, verbose bool, parallel int, env, patterns []string) error {
 	if len(patterns) == 0 {
 		return errors.New("gotest: no packages")
 	}
@@ -145,7 +158,7 @@ func gotest(ctx context.Context, root, runRe string, verbose bool, parallel int,
 	if runRe != "" {
 		args = append(args, "-test.run", runRe)
 	}
-	failed, err := lab.GoTestEach(ctx, root, pkgs, parallel, os.Stdout, args...)
+	failed, err := lab.GoTestEach(ctx, root, pkgs, parallel, os.Stdout, env, args...)
 	if err != nil {
 		return err
 	}

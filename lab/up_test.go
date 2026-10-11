@@ -23,11 +23,12 @@ type m0Space struct {
 	builder *lab.Node
 	env     []string
 	ula     netip.Prefix
+	spec    string // the map spec on the builder
 }
 
 func newM0Space(t *testing.T, builder, server *lab.Node) *m0Space {
 	t.Helper()
-	s := &m0Space{builder: builder, env: []string{
+	s := &m0Space{builder: builder, spec: "/src/lab/maps/m0.yaml", env: []string{
 		"SERVER_1_IPV4=" + server.IPv4(lab.NetServers).String(),
 		"SERVER_1_IPV6=" + server.IPv6(lab.NetServers).String(),
 	}}
@@ -47,7 +48,7 @@ func newM0Space(t *testing.T, builder, server *lab.Node) *m0Space {
 func (s *m0Space) build(t *testing.T) ([]byte, string) {
 	t.Helper()
 	out := s.builder.MustExec(t, append(append([]string{"env"}, s.env...),
-		"sh", "-ec", "cd /tmp/m0 && thinkpol dev map build -keys keys -out map.bin /src/lab/maps/m0.yaml")...)
+		"sh", "-ec", "cd /tmp/m0 && thinkpol dev map build -keys keys -out map.bin "+s.spec)...)
 	v := regexp.MustCompile(`map version (\d+)`).FindStringSubmatch(out)
 	if v == nil {
 		t.Fatalf("build said %q", out)
