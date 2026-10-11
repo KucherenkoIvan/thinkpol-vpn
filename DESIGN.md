@@ -156,6 +156,8 @@ What a censor finds on a seized or inspected server node:
 | Logs | None on disk. Agent logs go to an in-memory ring, readable over the overlay for debugging; provisioning sets journald to volatile storage |
 | Telemetry | Only in memory, per space, bounded (on the order of 15 minutes and tens of kilobytes); **each record sealed to the space's telemetry key as it's written**, so neither a memory dump nor swap yields readable data; oldest dropped first; gone on reboot |
 
+On disk that is the state directory (`/var/lib/thinkpol`): `node.key` (the node's id and private keys, 0600), `space.pub` (the space's id and public keys, what every map is verified against) and `map.bin` (the newest map), nothing else. `thinkpol up` only reads it; a server's workers get their keys and map from the supervisor over their sockets, since they can't read it.
+
 Telemetry records are aggregates per link and per device id (rates, byte counts, path and transport in use, handshake failures), **never public IP addresses or destinations**. History lives only on the controller.
 
 Later: **ephemeral nodes** keep nothing on disk but the binary. After a reboot they are blank, and the node owner's controller re-provisions them over SSH.
@@ -248,7 +250,7 @@ lab/                      # censor lab (below)
 
 - **OS specifics** are per-OS files (`_linux.go`, `_darwin.go`, `_windows.go`) inside the package they belong to; there is no separate platform tree.
 - **Lists** are built offline (`thinkpol dev lists build`, later the controller), distributed by `dataplane/blobs`, and read by the router. `lists` sits outside `dataplane` because both planes use it.
-- **Engine and agent**: the data-plane engine (`dataplane.Engine`) is in-process wiring, configured by one call per map. Everything around it is the agent's: creating the TUN and its configurator, building the transport registry (with socket marking), watching for maps and applying each, and opening, serving and closing the listeners.
+- **Engine and agent**: the data-plane engine (`dataplane.Engine`) is in-process wiring, configured by one call per map. Everything around it is the agent's: creating the TUN and its configurator, building the transport registry (with socket marking), watching for maps and applying each, and opening, serving and closing the listeners. `thinkpol up` composes it in `internal/agent`: device mode runs one space's engine in-process on the node's own sockets; server mode runs the supervisor and a worker per space, each running the same data plane with the supervisor's shared listeners as its inbound. A node takes a new map when the file changes or on SIGHUP, through `(*Map).Next`.
 - **Dependency direction**: `dataplane`, `netmap`, `lists` and `agent` never import `features` or `shared`; `dataplane`, `netmap` and `lists` never import `agent`; `dataplane`, `netmap` and `lists` don't import go-kernel; `features` never import `dataplane` or `agent`, nor each other (cross-feature calls go through `shared/ports`); `shared` never imports `features`. The planes meet only through the signed map.
 - **Mobile**: everything under `dataplane`, `netmap` and `lists` is pure Go; all of it except `tun`, `egress` and `firewall` builds for Android.
 

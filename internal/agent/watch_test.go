@@ -1,0 +1,71 @@
+package agent
+
+import (
+	"bytes"
+	"context"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+)
+
+func TestTheWatcherDeliversChangedMaps(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, MapFile)
+	writeFile(t, path, []byte("version 1"), 0o644)
+	_, fi, err := readMap(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reload := make(chan os.Signal, 1)
+	w := &mapWatcher{path: path, interval: 10 * time.Millisecond, reload: reload, log: slog.New(slog.DiscardHandler), last: fi}
+	out := make(chan []byte, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- w.run(ctx, out) }()
+	defer func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Error(err)
+		}
+	}()
+
+	select {
+	case b := <-out:
+		t.Fatalf("delivered %q though nothing changed", b)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	// Replaced the way `dev map build` writes it: a new file renamed over.
+	tmp := filepath.Join(dir, "map.tmp")
+	writeFile(t, tmp, []byte("version 2"), 0o644)
+	if err := os.Rename(tmp, path); err != nil {
+		t.Fatal(err)
+	}
+	expect(t, out, "version 2")
+
+	// Missing for a while, then back.
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	writeFile(t, path, []byte("version 3!"), 0o644)
+	expect(t, out, "version 3!")
+
+	// SIGHUP reads it even unchanged.
+	reload <- os.Interrupt
+	expect(t, out, "version 3!")
+}
+
+func expect(t *testing.T, out <-chan []byte, want string) {
+	t.Helper()
+	select {
+	case b := <-out:
+		if !bytes.Equal(b, []byte(want)) {
+			t.Fatalf("delivered %q, want %q", b, want)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("%q not delivered", want)
+	}
+}
