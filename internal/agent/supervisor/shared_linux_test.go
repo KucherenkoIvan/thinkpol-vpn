@@ -157,14 +157,14 @@ func randomBytes(n int) []byte {
 	return b
 }
 
-// handMadeSpace is a space whose map section (written by hand) lets
-// dialers in over udp. Its inbound table and its worker's config both come
+// handMadeSpace is a space whose map section (written by hand, a server
+// with ingress on) lets dialers in over udp. Its inbound table and its worker's config both come
 // from that section, through the engine's conversion, as `thinkpol up`
 // will do it.
 func handMadeSpace(t testing.TB, dialers ...dialer) sharedSpace {
 	t.Helper()
 	sp := sharedSpace{ID: netmap.NewSpaceID(), Dialers: dialers}
-	section := netmap.Section{Node: netmap.NodeSettings{ID: netmap.NodeID(randomBytes(8)), Kind: netmap.NodeServer}}
+	section := netmap.Section{Node: netmap.NodeSettings{ID: netmap.NodeID(randomBytes(8)), Kind: netmap.NodeServer, AllowIngress: true}}
 	for _, d := range dialers {
 		section.Inbound = append(section.Inbound, netmap.InboundLink{Peer: d.Node, PeerKind: netmap.NodeDevice, Transport: udp.Name, Credential: d.Secret})
 	}
