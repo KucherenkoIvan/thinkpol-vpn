@@ -98,3 +98,4 @@ Deferred (Notes written into the tickets): TP-022 (app.Run out of internal/agent
 - 2026-10-11 review findings fixed: B1, S1, SEC-1–3, D1, S9–S11, nits, tests; DESIGN "Node safety" and "Engine and agent"; notes for TP-022, TP-037, TP-038. One `make lab-test` run hit two flakes outside this change (`lab` TestCommandStartsSealed: a node's sealing table not there yet at start; supervisor TestWorkersAreSandboxed under parallel load: a worker's net namespace read as the root's), both passing on rerun (sandbox test 6/6 alone); the next full run was green
 - 2026-10-11 in-progress → review — every finding checked; `make lint`, `make test`, `go test -race` on internal/agent/..., cmd/thinkpol and netcfg, `make lab-test` pass
 - 2026-10-11 review → has-errors — delta review round 2: R2-1–R2-3 and a nit (see Review findings); the setNetSysctls namespace leak goes to TP-054
+- 2026-10-11 has-errors → in-progress — owner: agent-tp-011, round 2
