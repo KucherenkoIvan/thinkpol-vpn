@@ -22,9 +22,11 @@ func Create(name string, mtu int) (wgtun.Device, error) {
 }
 
 // CreateInNamespace is Create inside the network namespace at nsPath (e.g.
-// /run/netns/<name>), from a process in another one. The device keeps
-// working from any thread: its file and its netlink socket belong to that
-// namespace.
+// /run/netns/<name>), from a process in another one. Reads, writes, Events
+// and Close work from any thread: the device's file and netlink socket
+// belong to that namespace. MTU doesn't: wireguard-go looks the interface
+// up by name in the calling thread's namespace, so never call it on a
+// device made here.
 func CreateInNamespace(nsPath, name string, mtu int) (wgtun.Device, error) {
 	var d wgtun.Device
 	err := nsthread.Do(func() error {
