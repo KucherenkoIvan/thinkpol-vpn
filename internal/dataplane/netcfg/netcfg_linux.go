@@ -675,12 +675,15 @@ func (c *linuxConfigurator) listRoutes(fam int, filter *netlink.Route, mask uint
 }
 
 // gone reports errors meaning the thing to remove or restore no longer
-// exists, which for cleanup is success.
+// exists, which for cleanup is success. ENXIO is an IPv6 address on an
+// interface the kernel has turned IPv6 off on (an MTU below 1280 does that,
+// taking the addresses along).
 func gone(err error) bool {
 	var nf netlink.LinkNotFoundError
 	return errors.As(err, &nf) ||
 		errors.Is(err, unix.ESRCH) || errors.Is(err, unix.ENOENT) ||
-		errors.Is(err, unix.ENODEV) || errors.Is(err, unix.EADDRNOTAVAIL)
+		errors.Is(err, unix.ENODEV) || errors.Is(err, unix.EADDRNOTAVAIL) ||
+		errors.Is(err, unix.ENXIO)
 }
 
 func linkAt(index int) netlink.Link {

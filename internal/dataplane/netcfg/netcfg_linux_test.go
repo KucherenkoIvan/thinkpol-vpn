@@ -932,3 +932,30 @@ func TestDefaultRoute(t *testing.T) {
 		t.Errorf("IPv6 default route: %v, want %v", got, want)
 	}
 }
+
+// Below 1280 the kernel turns IPv6 off on an interface and drops its IPv6
+// addresses; a config that lowers the MTU and drops the IPv6 address
+// applies, and raising it again brings the address back.
+func TestIPv6GoesAndComesBackWithTheMTU(t *testing.T) {
+	n := newTestNS(t)
+	n.dummy(t, "ovl0")
+	c := n.configurator(t)
+	v4, v6 := netip.MustParsePrefix("100.64.0.7/10"), netip.MustParsePrefix("fd12:3456:789a::7/48")
+	both := netcfg.Config{Interfaces: []netcfg.Interface{{Name: "ovl0", Addrs: []netip.Prefix{v4, v6}, MTU: 1328, Up: true}}}
+	v4only := netcfg.Config{Interfaces: []netcfg.Interface{{Name: "ovl0", Addrs: []netip.Prefix{v4}, MTU: 876, Up: true}}}
+	has := func(p netip.Prefix) bool { return slices.Contains(snapshot(t, n.h), "addr ovl0 "+p.String()) }
+	for i, step := range []struct {
+		cfg    netcfg.Config
+		withV6 bool
+	}{{both, true}, {v4only, false}, {both, true}, {v4only, false}} {
+		if err := c.Apply(context.Background(), step.cfg); err != nil {
+			t.Fatalf("step %d: %v", i, err)
+		}
+		if !has(v4) || has(v6) != step.withV6 {
+			t.Fatalf("step %d: addresses %v", i, snapshot(t, n.h))
+		}
+	}
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+}

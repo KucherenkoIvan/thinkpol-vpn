@@ -24,6 +24,10 @@ Internet traffic can leave through ordered chains of hops, with several egress n
 - [ ] the map builder rejects rules that use two chains ending at the same exit
 - [ ] a middle relay sees only transport ciphertext (capture)
 
+## Notes
+- From TP-006: multi-relay chains work by `Routes` already (path layer). Relays check sources loosely (a source they have no route to and aren't adjacent to is dropped), because maps needn't route both ways alike; make the builder's routes symmetric (each relay routes back to every source it carries through the hop that source's traffic arrives from) so a strict reverse-path check can come back. First and next hops must be adjacent, or the engine drops them. The builder computes a space-wide overlay MTU from the links' budgets (`path.MessageBudget`), so every device uses one TUN MTU.
+
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-10 docs (TP-003 review): chains in use at once end at different exits; acceptance uses `de` for the second exit; destination routing
+- 2026-10-10 docs (TP-006 review): notes from the path layer

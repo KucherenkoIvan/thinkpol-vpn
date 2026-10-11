@@ -147,7 +147,7 @@ func (dl *dialLink) WritePacket(p []byte) error {
 		if dl.closed.Load() {
 			return transport.ClosedError(nil)
 		}
-		return fmt.Errorf("udp: write: %w", err)
+		return writeError(err)
 	}
 	dl.meter.Sent(1, len(p), len(*bp)-Overhead-len(p), len(*bp))
 	return nil

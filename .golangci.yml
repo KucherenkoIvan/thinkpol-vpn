@@ -6,7 +6,20 @@ linters:
   enable:
     - misspell
     - depguard
+    - forbidigo
   settings:
+    # Only in internal/dataplane/path (see exclusions): the path layer is
+    # WireGuard's Bind and never opens or holds a socket of its own.
+    forbidigo:
+      analyze-types: true
+      forbid:
+        - pattern: '^net\.(Dial\w*|Listen\w*|File\w*Conn|Dialer|ListenConfig|UDPConn|TCPConn|IPConn|UnixConn|UnixListener|TCPListener)$'
+          msg: the path layer opens no socket; links come from transports
+        - pattern: '^conn\.(NewDefaultBind|NewStdNetBind|StdNetBind)$'
+          pkg: '^golang\.zx2c4\.com/wireguard/conn$'
+          msg: the path layer is the Bind; WireGuard never gets a socket
+        - pattern: '^(syscall|unix|windows)\.'
+          msg: the path layer opens no socket
     depguard:
       # Dependency direction from DESIGN.md "Repository layout". Deny entries
       # are prefix matches, so they cover every subpackage.
@@ -25,6 +38,17 @@ linters:
               desc: the node side must not import the control plane
             - pkg: github.com/KucherenkoIvan/thinkpol-vpn/internal/shared
               desc: shared is the control plane's; the node side must not import it
+        # the agent drives the data plane, never the other way round
+        planes-without-agent:
+          list-mode: lax
+          files:
+            - "**/internal/dataplane/**"
+            - "**/internal/netmap/**"
+            - "**/internal/lists/**"
+            - "**/internal/shaping/**"
+          deny:
+            - pkg: github.com/KucherenkoIvan/thinkpol-vpn/internal/agent
+              desc: the agent drives the data plane; the data plane, the map and the lists never import it
         # pure Go packages that also build for Android
         mobile-without-kernel:
           list-mode: lax
@@ -94,6 +118,9 @@ linters:
     generated: lax
     paths:
       - proto/gen
+    rules:
+      - path-except: internal/dataplane/path/
+        linters: [forbidigo]
 
 formatters:
   enable:
