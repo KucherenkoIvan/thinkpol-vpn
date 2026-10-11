@@ -47,6 +47,7 @@ type node struct {
 	listen netip.AddrPort // zero for a node that only dials
 
 	section netmap.Section
+	blobs   func(netmap.BlobRef) ([]byte, bool) // for EngineConfig.Blobs
 	engine  *dataplane.Engine
 	stack   *stack
 }
@@ -102,7 +103,7 @@ func (nd *node) start(t *testing.T, net *memory.Network) {
 	}
 	ch := tuntest.NewChannelTUN()
 	e, err := dataplane.NewEngine(dataplane.EngineConfig{
-		ID: nd.id, Space: testSpace, WireGuardKey: nd.key, Registry: reg, TUN: ch.TUN(), Path: fastPaths,
+		ID: nd.id, Space: testSpace, WireGuardKey: nd.key, Registry: reg, TUN: ch.TUN(), Path: fastPaths, Blobs: nd.blobs,
 	})
 	if err != nil {
 		t.Fatal(err)

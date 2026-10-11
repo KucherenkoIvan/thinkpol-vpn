@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"slices"
 	"sync"
 	"time"
 
@@ -16,6 +15,7 @@ import (
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/supervisor"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/rules"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
@@ -38,13 +38,11 @@ type Node struct {
 	tweak func(*DataPlane)
 
 	// rulesMu serializes SetRulePreset; local is the device's last good
-	// LocalRules, as LocalRulesFile holds them.
-	rulesMu sync.Mutex
-	local   LocalRules
-	// applyRules hands the device's rules to its data plane: the rule
-	// engine's Engine.SetRules (TP-015); nil until then, and the choice is
-	// only stored.
-	applyRules func(ctx context.Context, l LocalRules) error
+	// rules, as LocalRulesFile holds them (read by run while it builds
+	// the data plane, under rulesMu).
+	rulesMu       sync.Mutex
+	local         rules.Local
+	rulesRequests chan rulesRequest
 }
 
 // Prepare reads and checks what a node runs from (LoadState) and decides
@@ -73,11 +71,11 @@ func Prepare(cfg Config, logs Logs) (*Node, error) {
 	}
 	n := &Node{
 		cfg: cfg, state: st, mode: cfg.Mode, logs: logs, want: cfg.Connect,
-		requests: make(chan connectRequest), stopped: make(chan struct{}),
+		requests: make(chan connectRequest), stopped: make(chan struct{}), rulesRequests: make(chan rulesRequest),
 	}
 	n.local = st.LocalRules
 	n.report = report{space: st.Trust.SpaceID, version: st.Map.Header().Version, removed: st.Removed, want: n.want,
-		preset: n.local.PresetName(), enforced: n.applyRules != nil}
+		preset: n.local.Preset.String()}
 	if !st.Removed {
 		n.resolveMode()
 	}
@@ -113,11 +111,12 @@ func (n *Node) Connect(ctx context.Context) error { return n.request(ctx, true) 
 // space's maps. ErrServerMode on a server.
 func (n *Node) Disconnect(ctx context.Context) error { return n.request(ctx, false) }
 
-// SetRulePreset switches a device's rules to preset (one of RulePresets),
-// keeping its own rules, and stores the choice in LocalRulesFile, which
-// only the service writes. ErrUnknownPreset for another name,
-// ErrPresetUnavailable when the space can't build it (nothing changes
-// then), ErrServerMode on a server.
+// SetRulePreset switches a device's rules to preset ("space",
+// "everything", "all-but-domestic"), keeping its own rules: the choice is
+// stored in LocalRulesFile (only the service writes it), then enforced.
+// ErrUnknownPreset for another name; ErrPresetUnavailable when the
+// space's map can't build the preset, which is then kept and enforced
+// failing closed (see rules.PresetRules); ErrServerMode on a server.
 func (n *Node) SetRulePreset(ctx context.Context, preset string) error {
 	n.report.mu.Lock()
 	mode := n.report.mode
@@ -125,24 +124,17 @@ func (n *Node) SetRulePreset(ctx context.Context, preset string) error {
 	if mode == ModeServer {
 		return ErrServerMode
 	}
-	if !slices.Contains(RulePresets, preset) {
-		return fmt.Errorf("%w: %q", ErrUnknownPreset, preset)
+	p, err := rules.ParsePreset(preset)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrUnknownPreset, err)
 	}
 	n.rulesMu.Lock()
 	defer n.rulesMu.Unlock()
 	next := n.local
-	next.Preset = preset
-	if preset == RulePresets[0] {
-		next.Preset = ""
-	}
+	next.Preset = p
 	data, err := next.MarshalText()
 	if err != nil {
 		return err
-	}
-	if n.applyRules != nil {
-		if err := n.applyRules(ctx, next); err != nil {
-			return err
-		}
 	}
 	d, err := openTrustedDir(n.cfg.StateDir)
 	if err != nil {
@@ -153,9 +145,22 @@ func (n *Node) SetRulePreset(ctx context.Context, preset string) error {
 		return err
 	}
 	n.local = next
-	n.report.set(func(p *report) { p.preset = next.PresetName() })
-	n.logs.Info("rule preset set", "preset", next.PresetName())
-	return nil
+	n.report.set(func(r *report) { r.preset = p.String() })
+	n.logs.Info("rule preset set", "preset", p)
+	done := make(chan error, 1)
+	select {
+	case n.rulesRequests <- rulesRequest{rules: next, done: done}:
+	case <-n.stopped:
+		return nil // stored: the next start takes it
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (n *Node) request(ctx context.Context, connect bool) error {
@@ -233,10 +238,14 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 		LinkMTU:   n.cfg.LinkMTU,
 		Log:       n.logs.With("space", n.state.Trust.SpaceID.String()),
 
-		report:       &n.report,
-		requests:     n.requests,
-		disconnected: !n.want,
+		report:        &n.report,
+		requests:      n.requests,
+		disconnected:  !n.want,
+		rulesRequests: n.rulesRequests,
 	}
+	n.rulesMu.Lock()
+	dp.Rules = n.local
+	n.rulesMu.Unlock()
 	if n.tweak != nil {
 		n.tweak(&dp)
 	}
@@ -255,6 +264,9 @@ func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
 		select {
 		case <-ctx.Done():
 			return false
+		case req := <-n.rulesRequests:
+			// Stored already: the data plane starts with them.
+			req.done <- nil
 		case req := <-n.requests:
 			// Kept for when the node is back in its space.
 			n.want, requested = req.connect, true
@@ -325,7 +337,7 @@ func (n *Node) runServer(ctx context.Context, reg *transport.Registry, maps chan
 	s := &serverSpaces{
 		sup: sup, reg: reg, log: n.logs.Logger, keys: n.state.Keys, trust: n.state.Trust,
 		iface: n.cfg.Interface, linkMTU: n.cfg.LinkMTU, cur: n.state.Map, section: n.state.Section,
-		retryAfter: RetryAfter, report: &n.report, requests: n.requests,
+		retryAfter: RetryAfter, report: &n.report, requests: n.requests, rulesRequests: n.rulesRequests,
 	}
 	return s.run(ctx, maps)
 }
@@ -366,8 +378,9 @@ type serverSpaces struct {
 
 	// report gets the map's version and whether serving it failed;
 	// requests, a device's, are refused.
-	report   *report
-	requests <-chan connectRequest
+	report        *report
+	requests      <-chan connectRequest
+	rulesRequests <-chan rulesRequest
 }
 
 // errListeners is SetListeners failing: the other listeners are served,
@@ -427,6 +440,9 @@ func (s *serverSpaces) run(ctx context.Context, maps <-chan []byte) error {
 		case <-ctx.Done():
 			return nil
 		case req := <-s.requests:
+			req.done <- ErrServerMode
+			continue
+		case req := <-s.rulesRequests:
 			req.done <- ErrServerMode
 			continue
 		case <-retry:

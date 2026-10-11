@@ -873,8 +873,11 @@ type Status struct {
 	// has none), and whether its data plane enforces it yet.
 	RulePreset    string `protobuf:"bytes,11,opt,name=rule_preset,json=rulePreset,proto3" json:"rule_preset,omitempty"`
 	RulesEnforced bool   `protobuf:"varint,12,opt,name=rules_enforced,json=rulesEnforced,proto3" json:"rules_enforced,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// The map can't build the preset (no chain, or no domestic list): it is
+	// enforced failing closed until it can.
+	RulePresetUnavailable bool `protobuf:"varint,13,opt,name=rule_preset_unavailable,json=rulePresetUnavailable,proto3" json:"rule_preset_unavailable,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
 }
 
 func (x *Status) Reset() {
@@ -987,6 +990,13 @@ func (x *Status) GetRulePreset() string {
 func (x *Status) GetRulesEnforced() bool {
 	if x != nil {
 		return x.RulesEnforced
+	}
+	return false
+}
+
+func (x *Status) GetRulePresetUnavailable() bool {
+	if x != nil {
+		return x.RulePresetUnavailable
 	}
 	return false
 }
@@ -1848,7 +1858,7 @@ const file_thinkpol_localapi_v1_localapi_proto_rawDesc = "" +
 	"\x06missed\x18\x02 \x01(\x04R\x06missed\"/\n" +
 	"\x05Space\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x16\n" +
-	"\x06active\x18\x02 \x01(\bR\x06active\"\xb3\x04\n" +
+	"\x06active\x18\x02 \x01(\bR\x06active\"\xeb\x04\n" +
 	"\x06Status\x12.\n" +
 	"\x04mode\x18\x01 \x01(\x0e2\x1a.thinkpol.localapi.v1.ModeR\x04mode\x12\x19\n" +
 	"\bspace_id\x18\x02 \x01(\tR\aspaceId\x12\x1f\n" +
@@ -1867,7 +1877,8 @@ const file_thinkpol_localapi_v1_localapi_proto_rawDesc = "" +
 	" \x03(\v2$.thinkpol.localapi.v1.PublicListenerR\x0fpublicListeners\x12\x1f\n" +
 	"\vrule_preset\x18\v \x01(\tR\n" +
 	"rulePreset\x12%\n" +
-	"\x0erules_enforced\x18\f \x01(\bR\rrulesEnforced\"]\n" +
+	"\x0erules_enforced\x18\f \x01(\bR\rrulesEnforced\x126\n" +
+	"\x17rule_preset_unavailable\x18\r \x01(\bR\x15rulePresetUnavailable\"]\n" +
 	"\x06Health\x127\n" +
 	"\x05level\x18\x01 \x01(\x0e2!.thinkpol.localapi.v1.HealthLevelR\x05level\x12\x1a\n" +
 	"\bproblems\x18\x02 \x03(\tR\bproblems\"\xfc\x03\n" +

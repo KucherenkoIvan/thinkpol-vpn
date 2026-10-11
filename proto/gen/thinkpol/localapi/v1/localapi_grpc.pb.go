@@ -64,7 +64,8 @@ type LocalServiceClient interface {
 	// and stores the choice in the device's local rules file, which only
 	// the service writes. INVALID_ARGUMENT "unknown_rule_preset" for
 	// another name; FAILED_PRECONDITION "rule_preset_unavailable" when the
-	// space can't build it, "server_mode" on a server.
+	// space can't build it (the choice is kept, enforced failing closed),
+	// "server_mode" on a server.
 	SetRulePreset(ctx context.Context, in *SetRulePresetRequest, opts ...grpc.CallOption) (*SetRulePresetResponse, error)
 	// TailLogs sends the agent's in-memory log: the last lines, then, when
 	// following, every new line until the client goes away or the service
@@ -193,7 +194,8 @@ type LocalServiceServer interface {
 	// and stores the choice in the device's local rules file, which only
 	// the service writes. INVALID_ARGUMENT "unknown_rule_preset" for
 	// another name; FAILED_PRECONDITION "rule_preset_unavailable" when the
-	// space can't build it, "server_mode" on a server.
+	// space can't build it (the choice is kept, enforced failing closed),
+	// "server_mode" on a server.
 	SetRulePreset(context.Context, *SetRulePresetRequest) (*SetRulePresetResponse, error)
 	// TailLogs sends the agent's in-memory log: the last lines, then, when
 	// following, every new line until the client goes away or the service

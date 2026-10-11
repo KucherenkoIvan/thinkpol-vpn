@@ -13,6 +13,7 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/path"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/rules"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/tun"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
@@ -53,6 +54,10 @@ type DataPlane struct {
 	report       *report
 	requests     <-chan connectRequest
 	disconnected bool
+	// Rules are the device's own rule choice (LocalRulesFile), and
+	// rulesRequests replace them while it runs.
+	Rules         rules.Local
+	rulesRequests <-chan rulesRequest
 
 	// What tests swap: the TUN and its configurator, the path layer's
 	// timing, how long to wait before retrying what failed.
@@ -113,6 +118,14 @@ type connectRequest struct {
 	done    chan<- error
 }
 
+// rulesRequest replaces a device's own rules; done gets what enforcing
+// them said (rules.ErrPresetUnavailable: enforced failing closed) and
+// must have room for it.
+type rulesRequest struct {
+	rules rules.Local
+	done  chan<- error
+}
+
 // newTUN takes the overlay's network configuration (one owner per network
 // namespace: a second node agent here fails now, before anything changed)
 // and creates the TUN; the engine sets its MTU.
@@ -167,6 +180,7 @@ func (r *runner) start(ctx context.Context) error {
 		LinkMTU:      r.dp.LinkMTU,
 		Path:         r.dp.path,
 		Log:          r.dp.Log,
+		Rules:        r.dp.Rules,
 	})
 	if err != nil {
 		if ifc != nil {
@@ -237,6 +251,14 @@ func (r *runner) loop(ctx context.Context) error {
 			r.logStatus()
 		case req := <-r.dp.requests:
 			r.request(ctx, req)
+		case req := <-r.dp.rulesRequests:
+			r.dp.Rules = req.rules
+			var err error
+			if r.engine != nil {
+				err = r.engine.SetRules(req.rules)
+			}
+			r.publish()
+			req.done <- err
 		}
 	}
 }

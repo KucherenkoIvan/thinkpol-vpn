@@ -293,54 +293,73 @@ func TestConnectStartsADeviceThatIsRetrying(t *testing.T) {
 
 func TestRulePresetIsStoredByTheService(t *testing.T) {
 	s := newTestSpace(t)
-	dir := s.stateDir(t, s.b, 1)
-	n, err := Prepare(testConfig(dir), Logs{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if st := n.Status(); st.RulePreset != "space" || st.RulesEnforced {
+	_, reg := memoryRegistry(t)
+	startNode(t, reg, s.a, s.verified(t, 1))
+	b := startDevice(t, s, reg, true)
+	ctx := context.Background()
+	dir := b.node.cfg.StateDir
+	file := filepath.Join(dir, LocalRulesFile)
+	st := b.connection(t, Connected)
+	if st.RulePreset != "space" || !st.RulesEnforced || st.PresetUnavailable {
 		t.Fatalf("status %+v", st)
 	}
-	ctx := context.Background()
-	if err := n.SetRulePreset(ctx, "nope"); !errors.Is(err, ErrUnknownPreset) {
+	if err := b.node.SetRulePreset(ctx, "nope"); !errors.Is(err, ErrUnknownPreset) {
 		t.Fatalf("got %v", err)
 	}
-	if _, err := os.Lstat(filepath.Join(dir, LocalRulesFile)); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Lstat(file); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("a refused preset wrote the file: %v", err)
 	}
-	// The device's own rules stay; the preset goes in front.
-	writeFile(t, filepath.Join(dir, LocalRulesFile), []byte("# mine\ncidr:192.0.2.0/24 -> direct\n"), 0o644)
-	if n, err = Prepare(testConfig(dir), Logs{}); err != nil {
-		t.Fatal(err)
+	// The test space has no chain to build "everything" from: the choice
+	// is kept and enforced failing closed, and said so.
+	if err := b.node.SetRulePreset(ctx, "everything"); !errors.Is(err, ErrPresetUnavailable) {
+		t.Fatalf("got %v, want ErrPresetUnavailable", err)
 	}
-	if err := n.SetRulePreset(ctx, "everything"); err != nil {
-		t.Fatal(err)
+	if got, err := os.ReadFile(file); err != nil || string(got) != "preset everything\n" {
+		t.Fatalf("file %q, %v", got, err)
 	}
-	b, err := os.ReadFile(filepath.Join(dir, LocalRulesFile))
-	if err != nil || string(b) != "preset everything\ncidr:192.0.2.0/24 -> direct\n" {
-		t.Fatalf("file %q, %v", b, err)
-	}
-	if fi, _ := os.Lstat(filepath.Join(dir, LocalRulesFile)); fi.Mode().Perm() != 0o644 {
+	if fi, _ := os.Lstat(file); fi.Mode().Perm() != 0o644 {
 		t.Fatalf("mode %v", fi.Mode())
 	}
-	if st := n.Status(); st.RulePreset != "everything" {
+	st = b.node.Status()
+	if st.RulePreset != "everything" || !st.PresetUnavailable || !slices.Contains(st.Health().Problems, ProblemPresetUnavailable) {
 		t.Fatalf("status %+v", st)
 	}
 	// Read back at the next start.
-	if n, err = Prepare(testConfig(dir), Logs{}); err != nil || n.Status().RulePreset != "everything" {
+	n, err := Prepare(b.node.cfg, Logs{})
+	if err != nil || n.Status().RulePreset != "everything" {
 		t.Fatalf("restart: %v", err)
 	}
-	// An engine that can't build it: nothing changes.
-	n.applyRules = func(context.Context, LocalRules) error { return ErrPresetUnavailable }
-	if err := n.SetRulePreset(ctx, "all-but-domestic"); !errors.Is(err, ErrPresetUnavailable) {
-		t.Fatalf("got %v", err)
+	if err := b.node.SetRulePreset(ctx, "space"); err != nil {
+		t.Fatal(err)
 	}
-	if b2, _ := os.ReadFile(filepath.Join(dir, LocalRulesFile)); string(b2) != string(b) {
-		t.Fatalf("file changed to %q", b2)
+	if st := b.node.Status(); st.RulePreset != "space" || st.PresetUnavailable {
+		t.Fatalf("status %+v", st)
 	}
 	// A server has no rules of its own.
 	if a, err := Prepare(testConfig(s.stateDir(t, s.a, 1)), Logs{}); err != nil || !errors.Is(a.SetRulePreset(ctx, "everything"), ErrServerMode) {
 		t.Fatalf("server: %v", err)
+	}
+}
+
+// The device's own rules stay when the preset changes.
+func TestTheDevicesOwnRulesAreKept(t *testing.T) {
+	s := newTestSpace(t)
+	dir := s.stateDir(t, s.b, 1)
+	writeFile(t, filepath.Join(dir, LocalRulesFile), []byte("# mine\ncidr:192.0.2.0/24 -> direct\n"), 0o644)
+	n, err := Prepare(testConfig(dir), Logs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(n.local.Rules) != 1 || n.Status().RulePreset != "space" {
+		t.Fatalf("read %+v", n.local)
+	}
+	close(n.stopped) // not running: the choice is only stored
+	if err := n.SetRulePreset(context.Background(), "all-but-domestic"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, LocalRulesFile))
+	if err != nil || !strings.HasPrefix(string(got), "preset all-but-domestic\n") || !strings.Contains(string(got), "192.0.2.0/24") {
+		t.Fatalf("file %q, %v", got, err)
 	}
 }
 

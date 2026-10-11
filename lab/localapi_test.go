@@ -178,8 +178,10 @@ func TestLocalAPI(t *testing.T) {
 	})
 
 	t.Run("the group sets the rule preset, the service stores it", func(t *testing.T) {
+		// The M0 map has no chain to build "everything" from: the choice
+		// is kept and enforced failing closed, and the CLI says so.
 		res, err := cli(t, devA, as(aliceUID, apiGID, "rules", "preset", "everything"))
-		if err != nil || !regexp.MustCompile(`rule preset: +everything`).MatchString(res.Stdout) {
+		if err == nil || !strings.Contains(res.Stderr, "enforced failing closed") {
 			t.Fatalf("preset: %v\n%s%s", err, res.Stdout, res.Stderr)
 		}
 		if got := devA.MustExec(t, "stat", "-c", "%a %U", stateDir+"/rules.local"); got != "644 root\n" {
@@ -187,6 +189,15 @@ func TestLocalAPI(t *testing.T) {
 		}
 		if got := devA.MustExec(t, "cat", stateDir+"/rules.local"); got != "preset everything\n" {
 			t.Errorf("rules.local holds %q", got)
+		}
+		res, err = cli(t, devA, as(aliceUID, apiGID, "status"))
+		if err != nil || !regexp.MustCompile(`rule preset: +everything \(unavailable in this space: failing closed\)`).MatchString(res.Stdout) {
+			t.Fatalf("status: %v\n%s", err, res.Stdout)
+		}
+		ping(t, devA, s4) // the overlay is never routed by the rules
+		res, err = cli(t, devA, as(aliceUID, apiGID, "rules", "preset", "space"))
+		if err != nil || !regexp.MustCompile(`rule preset: +space\n`).MatchString(res.Stdout) {
+			t.Fatalf("back to the space's rules: %v\n%s%s", err, res.Stdout, res.Stderr)
 		}
 		res, err = cli(t, devA, as(aliceUID, apiGID, "rules", "preset", "sometimes"))
 		if err == nil || !strings.Contains(res.Stderr, "no such rule preset") {

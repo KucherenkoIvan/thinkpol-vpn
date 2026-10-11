@@ -15,8 +15,10 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/path"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/router"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/rules"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/wg"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/lists"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
 
@@ -62,6 +64,14 @@ type EngineConfig struct {
 	// Apply skipped or failed at, which may quote the map: keep it local.
 	// Nil discards them.
 	Log *slog.Logger
+	// Blobs returns a blob the map references, false while the node
+	// doesn't have it (TP-017's store); the engine checks its size and
+	// SHA-256 itself. Called with the engine locked: it must not call back
+	// into the engine. Nil: no blobs, so geoip rules match nothing.
+	Blobs func(netmap.BlobRef) ([]byte, bool)
+	// Rules is the device's own rule choice (its local file), until
+	// SetRules replaces it.
+	Rules rules.Local
 }
 
 // Engine is one space's data plane on a node (DESIGN.md "Data plane"): the
@@ -82,9 +92,9 @@ type Engine struct {
 	tunName string
 	node    *path.Node
 	router  *router.Router
-	// assign lays peers out on devices; rules adds rule routes. Fixed now
-	// (everything on the overlay device, no rules); tests swap them, and
-	// TP-030 and TP-015 fill them from the map.
+	// assign lays peers out on devices (layout: chain exits on their own,
+	// the rest on the overlay device); rules gives the router its rule
+	// routes (ruleRoutes). Tests swap them.
 	assign func(OverlayConfig) map[string][]devicePeer
 	rules  func(egresses map[string]*router.Egress) []router.Route
 
@@ -101,6 +111,20 @@ type Engine struct {
 	networks []netip.Prefix
 	skipped  []Skip
 	lastErr  string
+
+	// Routing rules: the device's own choice, what the last section gave
+	// them, the chains that can carry traffic, and the result.
+	ownRules     rules.Local
+	ruleInput    *ruleInput
+	ruleNetworks []netip.Prefix
+	chainExit    map[string]netmap.NodeID // chains whose exit is a usable peer
+	usedExits    map[netmap.NodeID]bool   // their exits the rules send traffic to
+	overlay      *OverlayConfig           // the last section's, and its paths, for recompiling
+	paths        []path.Peer
+	routedRules  RuleStatus // what the router's table enforces
+	ruleTable    *rules.Table
+	ruleStatus   RuleStatus
+	geoipSets    map[[32]byte]*lists.Set // decoded, by hash
 }
 
 // devicePeer is a peer of one device: the router sends it the peer's
@@ -140,16 +164,19 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Engine{
-		cfg:     cfg,
-		tunName: name,
-		node:    node,
-		router:  router.New(cfg.TUN),
-		assign:  overlayOnly,
-		devices: make(map[string]*egressDevice),
-		inbound: make(map[string]*transport.PeerTable),
-		links:   make(map[string][]transport.PeerLink),
-	}, nil
+	e := &Engine{
+		cfg:       cfg,
+		tunName:   name,
+		node:      node,
+		router:    router.New(cfg.TUN),
+		devices:   make(map[string]*egressDevice),
+		inbound:   make(map[string]*transport.PeerTable),
+		links:     make(map[string][]transport.PeerLink),
+		ownRules:  cfg.Rules,
+		geoipSets: make(map[[32]byte]*lists.Set),
+	}
+	e.assign, e.rules = e.layout, e.ruleRoutes
+	return e, nil
 }
 
 // overlayOnly puts every peer on the overlay device, allowed its own
@@ -172,7 +199,8 @@ func hostPrefixes(addrs []netip.Addr) []netip.Prefix {
 
 // Apply makes the engine carry the node's section s: the path layer's
 // links and routes, the listeners' peer tables, the WireGuard peers (only
-// what changed, so sessions survive), the router's table, and the TUN's
+// what changed, so sessions survive; each chain's exit on a device of its
+// own), the routing rules and the router's table, and the TUN's
 // addresses and MTU. What the section holds that can't be used safely is
 // skipped, entry by entry (Status.Skipped), never the whole section.
 //
@@ -220,6 +248,9 @@ func (e *Engine) apply(ctx context.Context, s netmap.Section) (string, error) {
 	e.node.Update(pc.Table)
 	var want map[string][]devicePeer
 	if ocErr == nil {
+		e.chainExit = chainExits(s.Chains, oc.Peers)
+		_ = e.compileRules(ruleInputOf(s), oc.Networks) // an unavailable preset is in Status
+		e.overlay, e.paths = &oc, pc.Peers
 		want = e.assign(oc)
 	} else {
 		want = sectionPeers(s, e.devices)
@@ -244,7 +275,7 @@ func (e *Engine) apply(ctx context.Context, s netmap.Section) (string, error) {
 	if err := e.addPeers(want, pc.Peers, oc.MTU); err != nil {
 		return StepDevices, err
 	}
-	if err := e.router.SetTable(e.table()); err != nil {
+	if err := e.setTable(); err != nil {
 		return StepRouter, err
 	}
 	return "", nil
@@ -326,7 +357,7 @@ func (e *Engine) removePeers(want map[string][]devicePeer, known bool, paths []p
 	for name := range departing {
 		delete(e.devices, name)
 	}
-	if err := e.router.SetTable(e.table()); err != nil {
+	if err := e.setTable(); err != nil {
 		return err
 	}
 	var errs []error
@@ -463,6 +494,8 @@ type Status struct {
 	LastApplyError string
 	Router         router.Counters
 	Path           path.Counters
+	// Rules is how the routing rules are enforced.
+	Rules RuleStatus
 }
 
 // PeerStatus is one WireGuard peer.
@@ -490,7 +523,9 @@ func (e *Engine) Status() Status {
 		LastApplyError: e.lastErr,
 		Router:         e.router.Counters(),
 		Path:           e.node.Counters(),
+		Rules:          e.routedRules,
 	}
+	s.Rules.Skipped = slices.Clone(s.Rules.Skipped)
 	if e.ipv6Off != nil {
 		s.IPv6Off = e.ipv6Off.Error()
 	}

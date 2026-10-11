@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"slices"
 
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/rules"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
 
@@ -67,7 +68,7 @@ type State struct {
 	// LocalRules is the device's LocalRulesFile; zero (the space's rules)
 	// when there is none. One that can't be read or parsed fails LoadState,
 	// never reads as none.
-	LocalRules LocalRules
+	LocalRules rules.Local
 }
 
 // LoadState reads and checks a node's state: the keys in dir, the trust in
@@ -91,7 +92,7 @@ func LoadState(dir, mapPath string) (State, error) {
 		case name == LocalRulesFile:
 			data, _, err := d.read(LocalRulesFile, false, localRulesLimit)
 			if err == nil {
-				st.LocalRules, err = ParseLocalRules(data)
+				st.LocalRules, err = parseLocalRules(data)
 			}
 			if err != nil {
 				return st, fmt.Errorf("%s: %w; fix it or remove it (the device then follows the space's rules)", filepath.Join(dir, LocalRulesFile), err)

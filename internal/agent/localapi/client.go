@@ -186,7 +186,7 @@ func (c *Client) explain(err error) error {
 			{ErrPermissionDenied, "permission denied: only root may do that"},
 			{ErrServerMode, "this node is a server: it serves its spaces whenever it runs"},
 			{ErrNotRunning, "the node is not running"},
-			{ErrPresetUnavailable, "this space can't build that preset (no exit, or no domestic list)"},
+			{ErrPresetUnavailable, "this space can't build that preset (no chain, or no domestic list): it is kept, and enforced failing closed"},
 			{ErrUnknownPreset, "no such rule preset: space, everything or all-but-domestic"},
 		} {
 			if remote.Code == e.err.Code {

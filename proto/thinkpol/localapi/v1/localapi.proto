@@ -37,7 +37,8 @@ service LocalService {
   // and stores the choice in the device's local rules file, which only
   // the service writes. INVALID_ARGUMENT "unknown_rule_preset" for
   // another name; FAILED_PRECONDITION "rule_preset_unavailable" when the
-  // space can't build it, "server_mode" on a server.
+  // space can't build it (the choice is kept, enforced failing closed),
+  // "server_mode" on a server.
   rpc SetRulePreset(SetRulePresetRequest) returns (SetRulePresetResponse);
   // TailLogs sends the agent's in-memory log: the last lines, then, when
   // following, every new line until the client goes away or the service
@@ -128,6 +129,9 @@ message Status {
   // has none), and whether its data plane enforces it yet.
   string rule_preset = 11;
   bool rules_enforced = 12;
+  // The map can't build the preset (no chain, or no domestic list): it is
+  // enforced failing closed until it can.
+  bool rule_preset_unavailable = 13;
 }
 
 enum Mode {

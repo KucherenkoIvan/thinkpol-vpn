@@ -36,10 +36,12 @@ type Status struct {
 	Workers         []WorkerStatus
 	PublicListeners []PublicListenerStatus
 	// RulePreset is a device's rule preset (LocalRulesFile; "space" when it
-	// chose none), and RulesEnforced whether its data plane enforces it yet
-	// (once the rule engine, TP-015, is wired in).
-	RulePreset    string
-	RulesEnforced bool
+	// chose none); RulesEnforced is set while its data plane runs them, and
+	// PresetUnavailable when the map can't build the preset, which is then
+	// enforced failing closed.
+	RulePreset        string
+	RulesEnforced     bool
+	PresetUnavailable bool
 }
 
 // Connection is whether a node carries traffic.
@@ -136,9 +138,8 @@ type report struct {
 	listeners int
 	// workers is a server's supervisor, while it runs.
 	workers workerReporter
-	// preset and enforced are a device's rules (Status.RulePreset).
-	preset   string
-	enforced bool
+	// preset is a device's rule preset (Status.RulePreset).
+	preset string
 }
 
 // workerReporter is what a server's status comes from: the supervisor.
@@ -161,7 +162,7 @@ func (p *report) status() Status {
 	defer p.mu.Unlock()
 	s := Status{Mode: p.mode, Space: p.space, MapVersion: p.version, Removed: p.removed, Retrying: p.retrying, Listeners: p.listeners}
 	if p.mode != ModeServer {
-		s.RulePreset, s.RulesEnforced = p.preset, p.enforced
+		s.RulePreset = p.preset
 	}
 	switch {
 	case p.mode == ModeServer:
@@ -174,6 +175,7 @@ func (p *report) status() Status {
 	if p.engine != nil {
 		st := p.engine.Status()
 		s.DataPlane = &st
+		s.RulesEnforced, s.PresetUnavailable = true, st.Rules.PresetUnavailable
 	}
 	if p.workers != nil {
 		for _, w := range p.workers.Workers() {
@@ -231,6 +233,10 @@ const (
 	ProblemWorkerDown     = "worker_down"     // a space's worker isn't ready
 	ProblemWorkerRestarts = "worker_restarted"
 	ProblemLinksRejected  = "links_rejected" // a public listener refused peer links
+	// ProblemPresetUnavailable: the map can't build the device's rule
+	// preset, so it is enforced failing closed (no internet but the local
+	// ranges' direct routes).
+	ProblemPresetUnavailable = "rule_preset_unavailable"
 )
 
 // Health grades the status.
@@ -292,6 +298,9 @@ func (s Status) Health() Health {
 		}
 		if len(dp.Skipped) > 0 {
 			add(HealthDegraded, ProblemSkipped)
+		}
+		if s.PresetUnavailable {
+			add(HealthDegraded, ProblemPresetUnavailable)
 		}
 	}
 	return h
