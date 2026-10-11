@@ -42,6 +42,15 @@ Every server node has allow-ingress and allow-egress settings, both off by defau
 - **For TP-040 (grants):** a guest space's inbound table comes from the guest's map, whose own `AllowIngress` must not be trusted: before `AcceptedInbound`, set the guest section's `AllowIngress` (and egress) to what the owner's map grants (at most what the node allows).
 - **For TP-034/TP-035 (controller):** turning ingress off = the setting plus dropping devices' links to the node from device sections (Build refuses otherwise); the server's section may keep the devices' inbound links (reader 2). `node add` (TP-038) starts with both off: the zero value.
 
+## Review findings
+Review 2026-10-12: node-side enforcement holds; the builder needs fixing. Decided by the orchestrator.
+
+- [ ] F1 Build refuses, in both directions, any link between a device and an ingress-off server (a server's links to device recipients; a device's inbound links from ingress-off servers); an `InboundLink.PeerKind` that disagrees with the named recipient's kind; a device endpoint address equal to any concrete listener address, or any endpoint address used elsewhere, of an ingress-off server. `validate` refuses device listeners until direct paths exist (documented). Tests: (a) a server dials a device, (b) a spoofed PeerKind, (c) an ingress-off server's address under another id
+- [ ] D1 (changes decision 1 of the first round) Build also refuses devices' inbound links in an ingress-off server's own section (the builder omits them; devmap never emits them), so no reader-2 marking for ingress: removed. `AcceptsInbound` stays on the reader side as defense in depth and for TP-040's guest maps. Why: a v0.1.0 node refusing a reader-2 section keeps its last map, keeps admitting the devices and stops taking later maps (revocations included), which fails open; and it would keep device secrets on a node that doesn't need them. Note for TP-034/035 accordingly
+- [ ] F2 Fix the `devicesReachOnlyIngress` doc comment
+- [ ] Nits: release note in the ticket (maps built before TP-013 read `allow_ingress = false`); inspect marks refused device links (if any remain) and prints the section's min_reader; "egress (not enforced until TP-014)" in inspect and in the applied log line
+- [ ] Downstream notes copied into TP-014, TP-030, TP-034, TP-035, TP-038, TP-040 (TP-040: a guest map's ingress replaced by what the owner's grant allows), one Log line each
+
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-10 docs (TP-003 review): notes on inbound peer kinds and adding the settings
@@ -49,3 +58,4 @@ Every server node has allow-ingress and allow-egress settings, both off by defau
 - 2026-10-12 backlog → in-progress — owner: agent-tp-013, branch: tp-013-ingress-egress
 - 2026-10-12 implemented: schema fields, Build rules, the ingress filter in `InboundFrom`/`PathConfigFrom`, section reader 2, devmap `ingress`/`egress`, agent logs, lab test; PRD (Node, N8) and DESIGN wording "other nodes" → "other servers", DESIGN notes the node enforces ingress from its own section
 - 2026-10-12 in-progress → review — all acceptance checked; `make lint`, `make test`, `go test -race` on netmap, dataplane, devmap, agent and cmd/thinkpol, `make lab-test` (incl. `TestIngressOffAdmitsOnlyServers`) pass
+- 2026-10-12 review → has-errors — review: F1, D1, F2, nits, downstream notes (see Review findings)
