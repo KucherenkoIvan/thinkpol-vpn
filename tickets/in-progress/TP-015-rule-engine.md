@@ -83,3 +83,4 @@ Two reviewers; orchestrator decisions. The compiler held; one blocker.
 - 2026-10-12 docs: DESIGN.md "Routing rules and DNS" (matchers incl. `local`, where rules and presets live, section reader 2, compilation and fail-closed semantics, a device per exit) and "Repository layout" (`dataplane/rules`; lists read by the rules)
 - 2026-10-12 in-progress → review — acceptance checked; `make lint`, `make test` and `go test -race` on dataplane, rules, router and lists pass
 - 2026-10-12 review → has-errors — one blocker (B1), D2, F3–F5 and four nits from review
+- 2026-10-12 has-errors → in-progress — owner: agent-tp-015, picking up the review findings
