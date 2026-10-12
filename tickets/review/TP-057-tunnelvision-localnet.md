@@ -77,3 +77,4 @@ Resolution:
 - 2026-10-12 review → has-errors — findings 1–4 (see Review findings)
 - 2026-10-12 has-errors → in-progress — owner: agent-tp-018, picking up the review findings
 - 2026-10-12 review fixes 1–4; DESIGN.md "Routing rules and DNS" (oif rules for every link at 5298, on-link trust inside Local ∩ Direct, IPv4's unreachable default only while the TUN is down, interface-bound sockets); TP-021 and TP-048 Notes
+- 2026-10-12 in-progress → review — every finding checked; `make lint`, `make test`, `go test -race` on routetable, netcfg, agent and dataplane, and `make lab-test LAB_P=2` (lab and 28 in-node packages) pass
