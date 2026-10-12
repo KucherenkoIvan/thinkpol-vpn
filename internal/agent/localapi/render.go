@@ -140,6 +140,12 @@ func writeDataPlane(line func(string, ...any), dp *localapiv1.DataPlane, now tim
 			line("  %s %s:\t%s", s.GetItem(), s.GetNodeId(), s.GetReason())
 		}
 	}
+	if n := dp.GetCounters()["route_table.routes"]; n > 0 {
+		line("route table:\t%d routes, re-applied %d times", n, dp.GetCounters()["route_table.reapplies"])
+		if ahead := dp.GetCounters()["route_table.rules_ahead"]; ahead > 0 {
+			line("\t%d policy rules of other software come first and may route around the tunnel", ahead)
+		}
+	}
 	var drops []string
 	for _, name := range slices.Sorted(maps.Keys(dp.GetCounters())) {
 		if v := dp.GetCounters()[name]; v > 0 && !trafficCounters[name] {
@@ -151,9 +157,11 @@ func writeDataPlane(line func(string, ...any), dp *localapiv1.DataPlane, now tim
 	}
 }
 
-// trafficCounters count what went through, not what was dropped.
+// trafficCounters count what went through (or is in place), not what was
+// dropped.
 var trafficCounters = map[string]bool{
 	"router.routed": true, "router.delivered": true, "path.sent": true, "path.delivered": true, "path.forwarded": true,
+	"route_table.routes": true, "route_table.reapplies": true, "route_table.rules_ahead": true,
 }
 
 // WriteSpaces writes the spaces, the active one marked.

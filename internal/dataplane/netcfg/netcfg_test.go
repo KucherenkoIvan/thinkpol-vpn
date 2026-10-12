@@ -26,6 +26,19 @@ func TestValidate(t *testing.T) {
 			{Dst: pfx("10.0.0.0/8"), Interface: "ovl0"},
 			{Dst: pfx("10.0.0.0/8"), Interface: "ovl0", Metric: 1},
 		}},
+		"same dst, other table": {Routes: []netcfg.Route{
+			{Dst: pfx("10.0.0.0/8"), Interface: "ovl0"},
+			{Dst: pfx("10.0.0.0/8"), Interface: "ovl0", Table: 100},
+		}},
+		"throw":       route(netcfg.Route{Dst: pfx("10.0.0.0/8"), Type: netcfg.RouteThrow, Table: 100}),
+		"unreachable": route(netcfg.Route{Dst: pfx("::/0"), Type: netcfg.RouteUnreachable, Table: 300, Metric: 2048}),
+		"rules": {Rules: []netcfg.Rule{
+			{Family: netcfg.IPv4, Priority: 5300, SuppressDefaultRoutes: true},
+			{Family: netcfg.IPv4, Priority: 5301, Table: 300, Mark: 7, Invert: true},
+			{Family: netcfg.IPv6, Priority: 5301, Table: 300, Mark: 7, Invert: true},
+			{Family: netcfg.IPv4, Priority: 5300, Dst: pfx("192.168.1.0/24")},
+			{Family: netcfg.IPv6, Priority: 5300, Dst: pfx("fe80::/64")},
+		}},
 	}
 	for name, c := range valid {
 		if err := c.Validate(); err != nil {
@@ -48,6 +61,19 @@ func TestValidate(t *testing.T) {
 		"metric above 32 bits":                 route(netcfg.Route{Dst: pfx("10.0.0.0/8"), Interface: "ovl0", Metric: int(uint64(math.MaxUint32) + 1)}),
 		"zoned gateway":                        route(netcfg.Route{Dst: pfx("::/0"), Gateway: addr("fe80::1%eth0"), Interface: "eth0"}),
 		"link-local gateway without interface": route(netcfg.Route{Dst: pfx("::/0"), Gateway: addr("fe80::1")}),
+		"throw with a gateway":                 route(netcfg.Route{Dst: pfx("10.0.0.0/8"), Type: netcfg.RouteThrow, Gateway: addr("10.1.1.1")}),
+		"unreachable with an interface":        route(netcfg.Route{Dst: pfx("10.0.0.0/8"), Type: netcfg.RouteUnreachable, Interface: "ovl0"}),
+		"unknown type":                         route(netcfg.Route{Dst: pfx("10.0.0.0/8"), Interface: "ovl0", Type: 9}),
+		"main table by number":                 route(netcfg.Route{Dst: pfx("10.0.0.0/8"), Interface: "ovl0", Table: 254}),
+		"local table":                          route(netcfg.Route{Dst: pfx("10.0.0.0/8"), Interface: "ovl0", Table: 255}),
+		"negative table":                       route(netcfg.Route{Dst: pfx("10.0.0.0/8"), Interface: "ovl0", Table: -1}),
+		"rule without a family":                {Rules: []netcfg.Rule{{Priority: 5300}}},
+		"rule at priority 0":                   {Rules: []netcfg.Rule{{Family: netcfg.IPv4}}},
+		"rule after main":                      {Rules: []netcfg.Rule{{Family: netcfg.IPv4, Priority: 32766}}},
+		"rule in the local table":              {Rules: []netcfg.Rule{{Family: netcfg.IPv4, Priority: 5300, Table: 255}}},
+		"rule to another family":               {Rules: []netcfg.Rule{{Family: netcfg.IPv4, Priority: 5300, Dst: pfx("fe80::/64")}}},
+		"rule to an unmasked dst":              {Rules: []netcfg.Rule{{Family: netcfg.IPv4, Priority: 5300, Dst: pfx("192.168.1.1/24")}}},
+		"rule twice":                           {Rules: []netcfg.Rule{{Family: netcfg.IPv6, Priority: 5300}, {Family: netcfg.IPv6, Priority: 5300}}},
 		"duplicate identity": {Routes: []netcfg.Route{
 			{Dst: pfx("10.0.0.0/8"), Interface: "ovl0"},
 			{Dst: pfx("10.0.0.0/8"), Gateway: addr("10.1.1.1")},

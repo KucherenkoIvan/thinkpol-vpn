@@ -16,6 +16,7 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/path"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/rules"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/tun"
@@ -51,6 +52,10 @@ type DataPlane struct {
 	// StatusAttrs, if set, adds attributes to the periodic status line at
 	// debug level (a worker's shared-listener figures).
 	StatusAttrs func() []any
+	// RouteTable enforces the rules in the OS routing table: everything
+	// but direct destinations and link endpoints into the TUN (a device;
+	// the transports' sockets must be marked, Transports(true)).
+	RouteTable bool
 	// Blobs, if set, holds and fetches the blobs the map names (lists):
 	// RunDataPlane runs it, and gives it each map's plan once the map is
 	// applied. ServeBlobs (a server's worker) also serves them, and holds
@@ -78,6 +83,7 @@ type DataPlane struct {
 	// What tests swap: the TUN and its configurator, the path layer's
 	// timing, how long to wait before retrying what failed.
 	newTUN     func(name string) (wgtun.Device, netcfg.Configurator, error)
+	newRoutes  func(log *slog.Logger) (dataplane.RouteTable, error)
 	path       path.Options
 	retryAfter time.Duration
 	// blobOptions are the network functions and limits of the blob
@@ -112,6 +118,9 @@ func RunDataPlane(ctx context.Context, dp DataPlane) error {
 	}
 	if dp.newTUN == nil {
 		dp.newTUN = newTUN
+	}
+	if dp.newRoutes == nil {
+		dp.newRoutes = newRouteTable
 	}
 	if dp.retryAfter == 0 {
 		dp.retryAfter = RetryAfter
@@ -186,6 +195,12 @@ func newTUN(name string) (wgtun.Device, netcfg.Configurator, error) {
 	return dev, ifc, nil
 }
 
+// newRouteTable takes the host's route-table enforcement (one per network
+// namespace, like the overlay's configuration).
+func newRouteTable(log *slog.Logger) (dataplane.RouteTable, error) {
+	return routetable.New(log)
+}
+
 // runner follows the space's maps and runs the data plane while the node
 // is in the space.
 type runner struct {
@@ -224,6 +239,16 @@ func (r *runner) start(ctx context.Context) error {
 	if err != nil {
 		return &StartError{Step: StepTUN, Err: err}
 	}
+	var routes dataplane.RouteTable
+	if r.dp.RouteTable {
+		if routes, err = r.dp.newRoutes(r.dp.Log); err != nil {
+			if ifc != nil {
+				_ = ifc.Close()
+			}
+			_ = dev.Close()
+			return &StartError{Step: dataplane.StepRouteTable, Err: err}
+		}
+	}
 	var resolver *dns.Server
 	var resolverIfc interface{ Update(dns.Config) } // nil without one
 	if r.dp.DNS {
@@ -241,6 +266,7 @@ func (r *runner) start(ctx context.Context) error {
 		Path:         r.dp.path,
 		Log:          r.dp.Log,
 		Rules:        r.dp.Rules,
+		RouteTable:   routes,
 		DNS:          resolverIfc,
 	}
 	if b := r.dp.Blobs; b != nil {
@@ -251,6 +277,9 @@ func (r *runner) start(ctx context.Context) error {
 	}
 	engine, err := dataplane.NewEngine(cfg)
 	if err != nil {
+		if routes != nil {
+			_ = routes.Close()
+		}
 		if ifc != nil {
 			_ = ifc.Close()
 		}
@@ -547,6 +576,9 @@ func (r *runner) applied() {
 	}
 	if n := r.section.Node; n.Kind == netmap.NodeServer {
 		attrs = append(attrs, serverSettings(n)...)
+	}
+	if st.RouteTable.Enforced {
+		attrs = append(attrs, "route_table_routes", st.RouteTable.Routes)
 	}
 	r.dp.Log.Info("map applied", attrs...)
 }

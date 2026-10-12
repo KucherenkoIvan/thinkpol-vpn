@@ -39,6 +39,9 @@ type Spec struct {
 	// they name; every device's section gets them.
 	Rules  []netmap.Rule
 	Chains []Chain
+	// Presets are what a device's "everything" and "all but domestic"
+	// presets are built from: a domestic list and a chain.
+	Presets netmap.RulePresets
 	// Lists are the space's GeoIP lists: every one goes into the map's
 	// header, and into the sections of the nodes that name it. ReadLists
 	// reads their files.
@@ -182,11 +185,12 @@ type rawSpec struct {
 		IPv4 scalar `yaml:"ipv4"`
 		IPv6 scalar `yaml:"ipv6"`
 	} `yaml:"space"`
-	Lists  []rawList  `yaml:"lists"`
-	Nodes  []rawNode  `yaml:"nodes"`
-	Paths  []rawPath  `yaml:"paths"`
-	Rules  []scalar   `yaml:"rules"`
-	Chains []rawChain `yaml:"chains"`
+	Lists   []rawList  `yaml:"lists"`
+	Nodes   []rawNode  `yaml:"nodes"`
+	Paths   []rawPath  `yaml:"paths"`
+	Rules   []scalar   `yaml:"rules"`
+	Chains  []rawChain `yaml:"chains"`
+	Presets rawPresets `yaml:"presets"`
 }
 
 type rawChain struct {
@@ -387,6 +391,7 @@ func (c *checker) spec(raw *rawSpec) *Spec {
 	c.paths(s, raw.Paths, byName)
 	c.names(s, raw)
 	c.rules(s, raw, byName, listByName)
+	c.presets(s, raw, listByName)
 	return s
 }
 

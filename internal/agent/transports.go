@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport/udp"
 )
@@ -8,10 +9,16 @@ import (
 // Transports is the node's transport registry: every transport a map may
 // name. Supervisor, worker and device build it the same way.
 //
-// Sockets aren't marked yet: in M0 only the overlay ranges are routed into
-// the TUN, so links can't loop through it. TP-018 adds the socket Control
-// (udp.Options.Control) here when route-table rules send everything else
-// into the TUN.
-func Transports() (*transport.Registry, error) {
-	return transport.NewRegistry(udp.New(udp.Options{}))
+// With markSockets, every link's socket carries routetable.Mark
+// (routetable.SocketControl, Linux), so it bypasses the TUN however the
+// route table routes its destination: a device's links, where route-table
+// mode sends everything else into the TUN. A server's workers don't mark
+// (their namespaces route nothing into the TUN, and marking needs
+// CAP_NET_ADMIN over the namespace). Never WireGuard: it has no sockets.
+func Transports(markSockets bool) (*transport.Registry, error) {
+	var o udp.Options
+	if markSockets {
+		o.Control = routetable.SocketControl()
+	}
+	return transport.NewRegistry(udp.New(o))
 }

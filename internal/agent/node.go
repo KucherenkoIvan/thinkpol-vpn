@@ -18,6 +18,7 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/blobs"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/rules"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
@@ -215,7 +216,7 @@ func (n *Node) Adapters(reload <-chan os.Signal) ([]app.Adapter, error) {
 	if err := supported(); err != nil {
 		return nil, err
 	}
-	reg, err := Transports()
+	reg, err := Transports(true) // a device's, or the supervisor's in the root namespace
 	if err != nil {
 		return nil, err
 	}
@@ -231,6 +232,9 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 	defer close(n.stopped)
 	h := n.state.Map.Header()
 	n.logs.Info("starting", "mode", n.mode, "space", h.SpaceID, "node", n.state.Keys.ID, "version", h.Version, "map", n.state.MapPath)
+	if n.mode != ModeServer && (n.state.Removed || !n.want) {
+		n.clearRouteTable()
+	}
 	// A resolver configuration a crash left behind goes back first,
 	// whatever the node does next.
 	if err := dns.RestoreSystem(); err != nil {
@@ -255,6 +259,7 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 		Blobs:        blobs.New(blobs.Options{Store: diskBlobs{dir: n.cfg.StateDir, log: log}, Log: log}),
 		DNS:          n.cfg.DNS,
 		DNSUpstreams: n.dnsUpstreams,
+		RouteTable:   true,
 
 		report:        &n.report,
 		requests:      n.requests,
@@ -268,6 +273,19 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 		n.tweak(&dp)
 	}
 	return RunDataPlane(ctx, dp)
+}
+
+// clearRouteTable removes what route-table enforcement left behind when
+// the node died connected (a crash, kill -9), for a device that starts
+// without connecting: connecting takes it over anyway.
+func (n *Node) clearRouteTable() {
+	err := routetable.Clear()
+	switch {
+	case err == nil:
+	case errors.Is(err, errors.ErrUnsupported):
+	default:
+		n.logs.Warn("removing a previous run's route table failed", "err", err)
+	}
 }
 
 // awaitSection follows the space's maps while the node is removed from it,

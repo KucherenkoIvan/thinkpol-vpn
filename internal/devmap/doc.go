@@ -37,6 +37,7 @@
 //	  - default -> chain:nl
 //	chains:
 //	  - {name: nl, exit: server-3}   # a server with egress: true
+//	presets: {domestic: ru, chain: nl}   # optional: what the presets use
 //
 // Values may use ${NAME}, filled from the environment by `dev map build`,
 // for addresses known only at run time (the lab's, which Docker assigns).

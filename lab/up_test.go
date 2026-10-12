@@ -195,6 +195,13 @@ func TestUpRunsTheM0Space(t *testing.T) {
 					}
 				}
 			}
+			for _, family := range []string{"-4", "-6"} {
+				for _, line := range strings.Split(strings.TrimSpace(n.MustExec(t, "ip", family, "rule")), "\n") {
+					if prio, _, _ := strings.Cut(line, ":"); prio != "0" && prio != "32766" && prio != "32767" {
+						t.Errorf("rule left: %s", line)
+					}
+				}
+			}
 			if out := n.MustExec(t, "nft", "list", "tables"); strings.Contains(out, "thinkpol") {
 				t.Errorf("nftables tables left:\n%s", out)
 			}

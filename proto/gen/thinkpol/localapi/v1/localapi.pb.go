@@ -1075,7 +1075,9 @@ type DataPlane struct {
 	// The listeners the device serves.
 	Listeners uint32 `protobuf:"varint,9,opt,name=listeners,proto3" json:"listeners,omitempty"`
 	// The router's and the path layer's counters by name ("router.no_route",
-	// "path.no_path", ...).
+	// "path.no_path", ...), and the route table's ("route_table.routes",
+	// "route_table.reapplies", "route_table.rules_ahead") while it enforces
+	// the rules.
 	Counters      map[string]uint64 `protobuf:"bytes,10,rep,name=counters,proto3" json:"counters,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

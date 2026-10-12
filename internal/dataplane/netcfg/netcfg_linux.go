@@ -97,8 +97,14 @@ func newLinux(ns netns.NsHandle, name string, current bool, owner Owner) (Config
 	if !owner.valid() {
 		return nil, fmt.Errorf("netcfg: unknown owner %v", owner)
 	}
+	// Watch subscribes in the namespace later, from any thread.
+	watchNS, err := unix.FcntlInt(uintptr(ns), unix.F_DUPFD_CLOEXEC, 0)
+	if err != nil {
+		return nil, fmt.Errorf("netcfg: namespace of %s: %w", name, err)
+	}
 	lock, err := lockOwner(ns, owner)
 	if err != nil {
+		_ = unix.Close(watchNS)
 		return nil, fmt.Errorf("netcfg: %v in %s: %w", owner, name, err)
 	}
 	var h *netlink.Handle
@@ -109,10 +115,12 @@ func newLinux(ns netns.NsHandle, name string, current bool, owner Owner) (Config
 	}
 	if err != nil {
 		_ = unix.Close(lock)
+		_ = unix.Close(watchNS)
 		return nil, fmt.Errorf("netcfg: netlink in %s: %w", name, err)
 	}
 	return &linuxConfigurator{
 		h:     h,
+		ns:    netns.NsHandle(watchNS),
 		lock:  lock,
 		proto: owner.RouteProtocol(),
 		links: make(map[string]linkChange),
@@ -149,7 +157,8 @@ func lockOwner(ns netns.NsHandle, owner Owner) (int, error) {
 type linuxConfigurator struct {
 	mu     sync.Mutex
 	h      *netlink.Handle
-	lock   int // the owner's lock file, flocked
+	ns     netns.NsHandle // the namespace, for Watch
+	lock   int            // the owner's lock file, flocked
 	proto  netlink.RouteProtocol
 	closed bool
 
@@ -170,14 +179,25 @@ type addrKey struct {
 	prefix netip.Prefix
 }
 
-// routeKey is a main-table route's identity in the kernel: two routes with
-// the same key can't coexist.
+// routeKey is a route's identity in the kernel: two routes with the same
+// key can't coexist.
 type routeKey struct {
+	table  int
 	metric int
 	dst    netip.Prefix
 }
 
-func keyOf(r Route) routeKey { return routeKey{metric: kernelMetric(r), dst: r.Dst} }
+func keyOf(r Route) routeKey {
+	return routeKey{table: kernelTable(r.Table), metric: kernelMetric(r), dst: r.Dst}
+}
+
+// kernelTable is the kernel's number for a Route's or Rule's table.
+func kernelTable(t int) int {
+	if t == 0 {
+		return unix.RT_TABLE_MAIN
+	}
+	return t
+}
 
 func kernelMetric(r Route) int {
 	if r.Metric == 0 && r.Family() == IPv6 {
@@ -234,6 +254,10 @@ func (c *linuxConfigurator) Apply(ctx context.Context, cfg Config) error {
 
 func (c *linuxConfigurator) apply(ctx context.Context, cfg Config, u *undoLog) error {
 	kroutes, err := c.ownKernelRoutes()
+	if err != nil {
+		return err
+	}
+	krules, err := c.ownKernelRules()
 	if err != nil {
 		return err
 	}
@@ -331,6 +355,10 @@ func (c *linuxConfigurator) apply(ctx context.Context, cfg Config, u *undoLog) e
 		if err := c.delKernelRoute(k, kr, u); err != nil {
 			return err
 		}
+	}
+	// Rules go in after the routes they lead to, and leave before.
+	if err := c.reconcileRules(ctx, cfg.Rules, krules, u); err != nil {
+		return err
 	}
 	for k, idx := range c.addrs {
 		if wantAddrs[k] {
@@ -539,19 +567,19 @@ func (c *linuxConfigurator) delKernelRoute(k routeKey, kr netlink.Route, u *undo
 	return nil
 }
 
-// ownKernelRoutes dumps the main table's routes with our protocol once per
+// ownKernelRoutes dumps every table's routes with our protocol once per
 // Apply or Close: every decision is made against it, so a reconcile is
 // O(routes).
 func (c *linuxConfigurator) ownKernelRoutes() (map[routeKey]netlink.Route, error) {
 	out := make(map[routeKey]netlink.Route)
 	for _, fam := range []int{netlink.FAMILY_V4, netlink.FAMILY_V6} {
-		routes, err := c.listRoutes(fam, &netlink.Route{Table: unix.RT_TABLE_MAIN, Protocol: c.proto},
+		routes, err := c.listRoutes(fam, &netlink.Route{Table: unix.RT_TABLE_UNSPEC, Protocol: c.proto},
 			netlink.RT_FILTER_TABLE|netlink.RT_FILTER_PROTOCOL)
 		if err != nil {
 			return nil, err
 		}
 		for _, r := range routes {
-			out[routeKey{metric: r.Priority, dst: dstOf(r, fam)}] = r
+			out[routeKey{table: r.Table, metric: r.Priority, dst: dstOf(r, fam)}] = r
 		}
 	}
 	return out, nil
@@ -663,7 +691,16 @@ func (c *linuxConfigurator) Close() error {
 	if err != nil {
 		return err
 	}
+	krules, err := c.ownKernelRules()
+	if err != nil {
+		return err
+	}
 	var errs []error
+	for _, kr := range krules {
+		if err := c.delKernelRule(kr, nil); err != nil {
+			errs = append(errs, err)
+		}
+	}
 	for k, kr := range kroutes {
 		if err := c.delKernelRoute(k, kr, nil); err != nil {
 			errs = append(errs, err)
@@ -688,6 +725,7 @@ func (c *linuxConfigurator) Close() error {
 	}
 	c.h.Close()
 	c.h = nil
+	_ = c.ns.Close()
 	return unix.Close(c.lock) // frees the owner's place in the namespace
 }
 
@@ -741,9 +779,19 @@ func (c *linuxConfigurator) toNetlinkRoute(r Route, linkIndex int) netlink.Route
 	nr := netlink.Route{
 		Dst:       ipNet(r.Dst),
 		LinkIndex: linkIndex,
-		Table:     unix.RT_TABLE_MAIN,
+		Table:     kernelTable(r.Table),
 		Priority:  kernelMetric(r),
 		Protocol:  c.proto,
+		Type:      unix.RTN_UNICAST,
+	}
+	switch r.Type {
+	case RouteThrow:
+		nr.Type = unix.RTN_THROW
+	case RouteUnreachable:
+		nr.Type = unix.RTN_UNREACHABLE
+	}
+	if nr.Type != unix.RTN_UNICAST {
+		return nr
 	}
 	if r.Gateway.IsValid() {
 		nr.Gw = r.Gateway.AsSlice()
@@ -762,14 +810,21 @@ func exactRoute(k routeKey, kr netlink.Route) netlink.Route {
 		Gw:        kr.Gw,
 		LinkIndex: kr.LinkIndex,
 		Scope:     kr.Scope,
-		Table:     unix.RT_TABLE_MAIN,
+		Table:     k.table,
 		Priority:  kr.Priority,
 		Protocol:  kr.Protocol,
+		Type:      kr.Type,
 	}
 }
 
 // sameRoute reports whether the kernel's route kr is what nr asks for.
 func sameRoute(kr, nr netlink.Route) bool {
+	if kr.Type != nr.Type {
+		return false
+	}
+	if nr.Type != unix.RTN_UNICAST {
+		return true // a throw or unreachable route is its key and type
+	}
 	return len(kr.MultiPath) == 0 && kr.Gw.Equal(nr.Gw) && kr.Scope == nr.Scope &&
 		(nr.LinkIndex == 0 || kr.LinkIndex == nr.LinkIndex) && kr.Type == unix.RTN_UNICAST
 }

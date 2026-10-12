@@ -79,6 +79,7 @@ nodes:
 
   - name: device-b
     kind: device
+    lists: [ru]
 
 # Paths: [one end, the relays in between, the other end]. The ends become
 # WireGuard peers of each other, each with its neighbour on the path as a
@@ -115,3 +116,10 @@ rules:
 chains:
   - name: nl
     exit: server-3
+
+# Presets: optional. What a device's "everything" and "all but domestic"
+# presets (its own choice, `thinkpol rules preset`) are built from: the
+# domestic list (in every device's lists) and the chain.
+presets:
+  domestic: ru
+  chain: nl
