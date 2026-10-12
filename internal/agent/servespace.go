@@ -121,6 +121,7 @@ func serveSpace(log *slog.Logger, base DataPlane) worker.Serve {
 			bo.Limits.MaxHeld = blobs.ServerMaxHeldSize
 		}
 		dp.Blobs, dp.ServeBlobs = blobs.New(bo), true
+		dp.DNS, dp.DNSUpstreams = first.DNS, first.DNSUpstreams
 		// The space's own figures only (TP-041 seals them into its
 		// telemetry).
 		dp.StatusAttrs = func() []any {

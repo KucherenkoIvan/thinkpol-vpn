@@ -27,4 +27,7 @@
 //   - an unknown action, or a chain that can't carry traffic, blocks;
 //   - a destination no rule matches is blocked; with no rules at all,
 //     nothing goes through the tunnel (everything is direct).
+//
+// [CompileNames] reads the same list by name, for the DNS resolver: which
+// upstream answers a name ([Names]).
 package rules

@@ -30,12 +30,27 @@ type Spec struct {
 	// to Plan, which derives it from the space id.
 	IPv4Network netip.Prefix
 	IPv6Network netip.Prefix
-	Nodes       []Node
-	Paths       []Path
+	// SpaceName is the zone of the overlay names devices resolve,
+	// `<node>.<space>.internal`; empty: no names in the map.
+	SpaceName string
+	Nodes     []Node
+	Paths     []Path
+	// Rules are the space's routing rules, in order, and Chains the chains
+	// they name; every device's section gets them.
+	Rules  []netmap.Rule
+	Chains []Chain
 	// Lists are the space's GeoIP lists: every one goes into the map's
 	// header, and into the sections of the nodes that name it. ReadLists
 	// reads their files.
 	Lists []List
+}
+
+// Chain is a chain rules send traffic through: at M1, its exit.
+type Chain struct {
+	Name string
+	// Exit is an index into Spec.Nodes: a server with egress on.
+	Exit int
+	Pos  Pos
 }
 
 // List is a GeoIP list blob, as `thinkpol dev lists build` writes it.
@@ -66,19 +81,7 @@ type Node struct {
 	// Lists are the lists the node uses, indexes into Spec.Lists: its
 	// section names them.
 	Lists []int
-	// Chains and Rules are a device's routing: its chains by name, each
-	// ending at an exit node, and its rules in order (netmap.ParseRule's
-	// text form).
-	Chains []Chain
-	Rules  []netmap.Rule
-	Pos    Pos
-}
-
-// Chain is a device's chain: a name its rules use, and the exit node.
-type Chain struct {
-	Name string
-	Exit int // index into Spec.Nodes
-	Pos  Pos
+	Pos   Pos
 }
 
 // Address is a transport and an IP literal with a port, written
@@ -175,12 +178,32 @@ func decodeError(file string, err error) error {
 
 type rawSpec struct {
 	Space struct {
+		Name scalar `yaml:"name"`
 		IPv4 scalar `yaml:"ipv4"`
 		IPv6 scalar `yaml:"ipv6"`
 	} `yaml:"space"`
-	Lists []rawList `yaml:"lists"`
-	Nodes []rawNode `yaml:"nodes"`
-	Paths []rawPath `yaml:"paths"`
+	Lists  []rawList  `yaml:"lists"`
+	Nodes  []rawNode  `yaml:"nodes"`
+	Paths  []rawPath  `yaml:"paths"`
+	Rules  []scalar   `yaml:"rules"`
+	Chains []rawChain `yaml:"chains"`
+}
+
+type rawChain struct {
+	pos  Pos
+	Name scalar `yaml:"name"`
+	Exit scalar `yaml:"exit"`
+}
+
+func (c *rawChain) UnmarshalYAML(node ast.Node) error {
+	type fields rawChain // without this method
+	var f fields
+	if err := yaml.NodeToValue(node, &f, yaml.Strict()); err != nil {
+		return err
+	}
+	*c = rawChain(f)
+	c.pos = posOf(node)
+	return nil
 }
 
 type rawList struct {
@@ -202,17 +225,15 @@ func (l *rawList) UnmarshalYAML(node ast.Node) error {
 
 type rawNode struct {
 	pos       Pos
-	Name      scalar            `yaml:"name"`
-	Kind      scalar            `yaml:"kind"`
-	IPv4      scalar            `yaml:"ipv4"`
-	IPv6      scalar            `yaml:"ipv6"`
-	Endpoints []scalar          `yaml:"endpoints"`
-	Listen    []scalar          `yaml:"listen"`
-	Ingress   scalar            `yaml:"ingress"`
-	Egress    scalar            `yaml:"egress"`
-	Lists     []scalar          `yaml:"lists"`
-	Chains    map[string]scalar `yaml:"chains"`
-	Rules     []scalar          `yaml:"rules"`
+	Name      scalar   `yaml:"name"`
+	Kind      scalar   `yaml:"kind"`
+	IPv4      scalar   `yaml:"ipv4"`
+	IPv6      scalar   `yaml:"ipv6"`
+	Endpoints []scalar `yaml:"endpoints"`
+	Listen    []scalar `yaml:"listen"`
+	Ingress   scalar   `yaml:"ingress"`
+	Egress    scalar   `yaml:"egress"`
+	Lists     []scalar `yaml:"lists"`
 }
 
 func (n *rawNode) UnmarshalYAML(node ast.Node) error {
@@ -363,79 +384,99 @@ func (c *checker) spec(raw *rawSpec) *Spec {
 		}
 		s.Nodes = append(s.Nodes, n)
 	}
-	for i, rn := range raw.Nodes {
-		c.routing(&s.Nodes[i], rn, byName)
-	}
 	c.paths(s, raw.Paths, byName)
-	c.chainExits(s)
+	c.names(s, raw)
+	c.rules(s, raw, byName, listByName)
 	return s
 }
 
-// chainExits checks that each chain ends at a server allowing egress that is
-// a peer of the device (a path joins them), where the chain was written.
-func (c *checker) chainExits(s *Spec) {
-	for d, n := range s.Nodes {
-		for _, ch := range n.Chains {
-			exit := s.Nodes[ch.Exit]
-			if exit.Kind != netmap.NodeServer || !exit.Egress {
-				c.errorf(ch.Pos, "%s: chain %s: %s doesn't allow egress, so it can't end a chain", n.Name, ch.Name, exit.Name)
-				continue
-			}
-			peers := slices.ContainsFunc(s.Paths, func(p Path) bool {
-				a, b := p.Nodes[0], p.Nodes[len(p.Nodes)-1]
-				return a == d && b == ch.Exit || a == ch.Exit && b == d
-			})
-			if !peers {
-				c.errorf(ch.Pos, "%s: chain %s: %s isn't a peer of %s: no path joins them", n.Name, ch.Name, exit.Name, n.Name)
-			}
+// names reads the space's name; with one, every node's name must be an
+// overlay name too.
+func (c *checker) names(s *Spec, raw *rawSpec) {
+	v := raw.Space.Name
+	if !v.set() {
+		return
+	}
+	text, ok := c.value(v)
+	if !ok {
+		return
+	}
+	if err := netmap.CheckLabel(text); err != nil {
+		c.errorf(v.pos, "space %v", err)
+		return
+	}
+	s.SpaceName = text
+	for i, n := range s.Nodes {
+		if n.Name == "" {
+			continue
+		}
+		if err := netmap.CheckLabel(n.Name); err != nil {
+			c.errorf(raw.Nodes[i].Name.pos, "%s can't be an overlay name in space %s: %v", n.Name, text, err)
 		}
 	}
 }
 
-// routing reads a device's chains (name: exit node) and rules. Whether the
-// exits are its peers and allow egress, and the rules' chains exist, is
-// netmap.Build's to say.
-func (c *checker) routing(n *Node, rn rawNode, byName map[string]int) {
-	if rn.Chains == nil && rn.Rules == nil {
-		return
-	}
-	if n.Kind != netmap.NodeDevice {
-		c.errorf(rn.pos, "%s: only a device has chains and rules", n.Name)
-		return
-	}
-	names := make([]string, 0, len(rn.Chains))
-	for name := range rn.Chains {
-		names = append(names, name)
-	}
-	slices.Sort(names)
-	for _, name := range names {
-		v := rn.Chains[name]
-		if err := netmap.CheckChainName(name); err != nil {
-			c.errorf(v.pos, "%s: %v", n.Name, err)
-			continue
+// rules reads the space's rules and chains.
+func (c *checker) rules(s *Spec, raw *rawSpec, byName, listByName map[string]int) {
+	chains := map[string]bool{}
+	for _, rc := range raw.Chains {
+		ch := Chain{Pos: rc.pos}
+		name, nameOK := c.value(rc.Name)
+		switch {
+		case !rc.Name.set():
+			c.errorf(rc.pos, "chain without a name")
+			nameOK = false
+		case !nameOK:
+		case netmap.CheckChainName(name) != nil:
+			c.errorf(rc.Name.pos, "%v", netmap.CheckChainName(name))
+			nameOK = false
+		case chains[name]:
+			c.errorf(rc.Name.pos, "chain %q is declared twice", name)
+			nameOK = false
 		}
-		exit, ok := c.value(v)
-		if !ok {
-			continue
-		}
+		exit, exitOK := c.value(rc.Exit)
 		i, known := byName[exit]
-		if !known {
-			c.errorf(v.pos, "%s: chain %s: unknown node %q", n.Name, name, exit)
-			continue
+		switch {
+		case !rc.Exit.set():
+			c.errorf(rc.pos, "chain %s: exit is missing (a server with egress: true)", name)
+			exitOK = false
+		case !exitOK:
+		case !known:
+			c.errorf(rc.Exit.pos, "chain %s: unknown node %q", name, exit)
+			exitOK = false
+		case s.Nodes[i].Kind != netmap.NodeServer || !s.Nodes[i].Egress:
+			c.errorf(rc.Exit.pos, "chain %s: %s is not a server with egress: true", name, exit)
+			exitOK = false
 		}
-		n.Chains = append(n.Chains, Chain{Name: name, Exit: i, Pos: v.pos})
+		if nameOK {
+			chains[name] = true
+		}
+		if nameOK && exitOK {
+			ch.Name, ch.Exit = name, i
+			s.Chains = append(s.Chains, ch)
+		}
 	}
-	for _, v := range rn.Rules {
+	for _, v := range raw.Rules {
 		text, ok := c.value(v)
 		if !ok {
 			continue
 		}
 		r, err := netmap.ParseRule(text)
-		if err != nil {
-			c.errorf(v.pos, "%s: %v", n.Name, err)
-			continue
+		switch {
+		case err != nil:
+			c.errorf(v.pos, "rule: %v", err)
+		case r.Match.Kind == netmap.MatchGeoSite:
+			c.errorf(v.pos, "rule %s: geosite lists aren't in specs yet", r)
+		case r.Match.Kind == netmap.MatchGeoIP && !hasKey(listByName, r.Match.Value):
+			c.errorf(v.pos, "rule %s: no list %s (declare it under lists)", r, r.Match.Value)
+		case r.Action.Kind == netmap.ActionChain && !chains[r.Action.Chain]:
+			c.errorf(v.pos, "rule %s: no chain %s (declare it under chains)", r, r.Action.Chain)
+		default:
+			s.Rules = append(s.Rules, r)
 		}
-		n.Rules = append(n.Rules, r)
+	}
+	if n := len(raw.Rules); n > 0 && len(s.Rules) == n && s.Rules[n-1].Match.Kind != netmap.MatchDefault {
+		c.errorf(raw.Rules[n-1].pos, "the last rule must match default, so every destination has an action")
 	}
 }
 
@@ -738,4 +779,9 @@ func (c *checker) paths(s *Spec, raw []rawPath, byName map[string]int) {
 		seen[key] = rp.pos
 		s.Paths = append(s.Paths, p)
 	}
+}
+
+func hasKey[V any](m map[string]V, k string) bool {
+	_, ok := m[k]
+	return ok
 }

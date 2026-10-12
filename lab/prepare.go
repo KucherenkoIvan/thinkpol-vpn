@@ -25,7 +25,8 @@ var (
 
 // Prepare builds the lab image (once per Dockerfile version and platform,
 // shared by all checkouts) and cross-compiles thinkpol into root/lab/bin for
-// the Docker VM's architecture. It returns the image reference.
+// the Docker VM's architecture, with the lab's own tools (labdns). It
+// returns the image reference.
 func Prepare(ctx context.Context, root string) (string, error) {
 	img, err := prepare(ctx, root)
 	return img.ref, err
@@ -46,6 +47,10 @@ func prepare(ctx context.Context, root string) (image, error) {
 		return image{}, err
 	}
 	if _, err := goBuild(ctx, root, t, filepath.Join(root, "lab", "bin", "thinkpol"), "build", "-trimpath", "./cmd/thinkpol"); err != nil {
+		return image{}, err
+	}
+	// labdns: a stand-in for resolvers out in the world.
+	if _, err := goBuild(ctx, root, t, filepath.Join(root, "lab", "bin", "labdns"), "build", "-trimpath", "./lab/labdns"); err != nil {
 		return image{}, err
 	}
 	prepared[root] = img

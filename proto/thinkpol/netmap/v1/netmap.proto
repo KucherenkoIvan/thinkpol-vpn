@@ -115,6 +115,11 @@ message Section {
   repeated Chain chains = 12;
   // What a device's rule presets are built from.
   RulePresets presets = 13;
+  // The space's name, the zone of its overlay names
+  // (`<node>.<space>.internal`, DESIGN.md "Routing rules and DNS"). Only
+  // devices' sections have names: a server's holds no member names
+  // (DESIGN.md "Node safety"). Empty: no overlay names.
+  string space_name = 14;
 }
 
 enum MatchKind {
@@ -195,6 +200,9 @@ message NodeSettings {
   // leaves the space from it. With both off the node only relays.
   bool allow_ingress = 8;
   bool allow_egress = 9;
+  // The node's own name in its space's zone, a DNS label; devices' sections
+  // only, like every name.
+  string name = 10;
 }
 
 message Listener {
@@ -215,6 +223,9 @@ message Peer {
   repeated string addresses = 3;
   // Candidate paths to the peer, in priority order (failover follows it).
   repeated Path paths = 4;
+  // The peer's name in the space's zone, a DNS label; devices' sections
+  // only. A node is named only to the nodes that have it as a peer.
+  string name = 5;
 }
 
 // Path is a candidate way to reach a peer, named by its first hop: an

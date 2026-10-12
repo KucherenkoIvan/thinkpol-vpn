@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -161,7 +162,8 @@ func TestNodeKeysNeverPrint(t *testing.T) {
 
 func TestWorkerConfigRoundTrip(t *testing.T) {
 	s := newTestSpace(t)
-	c := WorkerConfig{Keys: s.a, Trust: s.trust(), Map: s.build(t, 3), Interface: "tp0", LinkMTU: 1400}
+	c := WorkerConfig{Keys: s.a, Trust: s.trust(), Map: s.build(t, 3), Interface: "tp0", LinkMTU: 1400,
+		DNS: true, DNSUpstreams: []netip.AddrPort{netip.MustParseAddrPort("192.0.2.53:53"), netip.MustParseAddrPort("[2001:db8::53]:5353")}}
 	b, err := c.Encode()
 	if err != nil {
 		t.Fatal(err)
@@ -170,7 +172,8 @@ func TestWorkerConfigRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !got.sameNode(c) || !bytes.Equal(got.Map, c.Map) || got.Interface != "tp0" || got.LinkMTU != 1400 {
+	if !got.sameNode(c) || !bytes.Equal(got.Map, c.Map) || got.Interface != "tp0" || got.LinkMTU != 1400 ||
+		!got.DNS || !slices.Equal(got.DNSUpstreams, c.DNSUpstreams) {
 		t.Fatalf("round trip: %v", got)
 	}
 	other := c

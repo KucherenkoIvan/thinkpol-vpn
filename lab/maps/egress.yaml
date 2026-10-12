@@ -29,13 +29,16 @@ nodes:
     egress: true
   - name: device-a
     kind: device
-    chains:
-      out: ${EXIT}
-    rules:
-      # The lab's internet is a private network, which "local -> direct"
-      # would keep out of the tunnel.
-      - default -> chain:out
 
 paths:
   - [device-a, server-1, server-2]
   - [device-a, server-1, server-3]
+
+# The lab's internet is a private network, which "local -> direct" would
+# keep out of the tunnel.
+rules:
+  - default -> chain:out
+
+chains:
+  - name: out
+    exit: ${EXIT}

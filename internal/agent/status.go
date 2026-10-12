@@ -44,6 +44,11 @@ type Status struct {
 	RulePreset        string
 	RulesEnforced     bool
 	PresetUnavailable bool
+	// DNSUnprotected is set while a connected device's OS may resolve
+	// names outside the node's resolver (pointing it failed, or another
+	// link's domains in systemd-resolved): names may leave outside the
+	// tunnel.
+	DNSUnprotected bool
 }
 
 // Connection is whether a node carries traffic.
@@ -103,6 +108,11 @@ type PublicListenerStatus struct {
 // spaces whenever it runs.
 var ErrServerMode = errors.New("agent: a server node always serves its spaces")
 
+// ErrDNSUnprotected is Connect bringing a device up whose OS may still
+// resolve names outside the node's resolver: the tunnel is up, but names
+// may leave outside it (Status.DNSUnprotected).
+var ErrDNSUnprotected = errors.New("agent: connected, but the system may resolve names outside the tunnel")
+
 // ErrNotRunning is Connect or Disconnect on a node that isn't running.
 var ErrNotRunning = errors.New("agent: the node is not running")
 
@@ -142,6 +152,8 @@ type report struct {
 	workers workerReporter
 	// preset is a device's rule preset (Status.RulePreset).
 	preset string
+	// dns says why a device's OS may resolve outside its resolver.
+	dns func() error
 }
 
 // workerReporter is what a server's status comes from: the supervisor.
@@ -179,6 +191,7 @@ func (p *report) status() Status {
 		st := p.engine.Status()
 		s.DataPlane = &st
 		s.RulesEnforced, s.PresetUnavailable = true, st.Rules.PresetUnavailable
+		s.DNSUnprotected = p.dns != nil && p.dns() != nil
 	}
 	if p.workers != nil {
 		for _, w := range p.workers.Workers() {
@@ -242,6 +255,9 @@ const (
 	// preset, so it is enforced failing closed (no internet but the local
 	// ranges' direct routes).
 	ProblemPresetUnavailable = "rule_preset_unavailable"
+	// ProblemDNSUnprotected: the OS may resolve names outside the node's
+	// resolver, so names may leave outside the tunnel.
+	ProblemDNSUnprotected = "dns_not_protected"
 )
 
 // Health grades the status.
@@ -306,6 +322,9 @@ func (s Status) Health() Health {
 		}
 		if s.PresetUnavailable {
 			add(HealthDegraded, ProblemPresetUnavailable)
+		}
+		if s.DNSUnprotected {
+			add(HealthDegraded, ProblemDNSUnprotected)
 		}
 	}
 	return h

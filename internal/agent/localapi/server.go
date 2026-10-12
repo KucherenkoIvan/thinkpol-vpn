@@ -196,6 +196,8 @@ func nodeError(err error) error {
 		return ErrUnknownPreset
 	case errors.Is(err, agent.ErrPresetUnavailable):
 		return ErrPresetUnavailable
+	case errors.Is(err, agent.ErrDNSUnprotected):
+		return ErrDNSUnprotected
 	case errors.As(err, &se):
 		return status.Errorf(codes.Unavailable, "starting the data plane failed at step %q; the service's log has the details", se.Step)
 	}
