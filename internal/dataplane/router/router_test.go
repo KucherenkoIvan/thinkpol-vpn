@@ -135,9 +135,18 @@ func TestRoutesEachDestinationToItsEgress(t *testing.T) {
 		t.Fatalf("exit got an extra %x", p)
 	default:
 	}
-	c := r.Counters()
-	if c.Routed != 7 || c.NoRoute != 2 || c.Blocked != 1 || c.Direct != 3 || c.Malformed != 2 {
-		t.Fatalf("counters %+v", c)
+	// An egress counts a packet once its queue took it, which may be just
+	// after its reader has it.
+	deadline := time.Now().Add(wait)
+	for {
+		c := r.Counters()
+		if c.Routed == 7 && c.NoRoute == 2 && c.Blocked == 1 && c.Direct == 3 && c.Malformed == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("counters %+v", c)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 

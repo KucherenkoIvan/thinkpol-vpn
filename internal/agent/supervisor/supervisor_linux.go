@@ -221,8 +221,10 @@ func (s *Supervisor) SetSpaces(spaces []Space) error {
 		s.mu.Unlock()
 		return errors.New("supervisor: closed")
 	}
-	s.refreshUplinkLocked()
+	// What each running space's table forwards now, before the uplink
+	// and the grants change: a space whose differs after is told.
 	before := s.spaceEgresses()
+	s.refreshUplinkLocked()
 	var started []*worker
 	for _, sp := range spaces {
 		if w, ok := s.workers[sp.ID]; ok {
