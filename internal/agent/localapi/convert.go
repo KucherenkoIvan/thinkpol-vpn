@@ -56,7 +56,7 @@ func dataPlaneProto(dp *dataplane.Status, listeners int) *localapiv1.DataPlane {
 			"router.blocked": dp.Router.Blocked, "router.malformed": dp.Router.Malformed,
 			"router.too_large": dp.Router.TooLarge, "router.queue_full": dp.Router.QueueFull,
 			"router.read_errors": dp.Router.ReadErrors, "router.direct": dp.Router.Direct,
-			"path.sent":          dp.Path.Sent, "path.delivered": dp.Path.Delivered, "path.forwarded": dp.Path.Forwarded,
+			"path.sent": dp.Path.Sent, "path.delivered": dp.Path.Delivered, "path.forwarded": dp.Path.Forwarded,
 			"path.no_route": dp.Path.NoRoute, "path.spoofed": dp.Path.Spoofed, "path.hop_limit": dp.Path.HopLimit,
 			"path.no_path": dp.Path.NoPath, "path.unknown_peer": dp.Path.UnknownPeer,
 			"path.queue_full": dp.Path.QueueFull, "path.malformed": dp.Path.Malformed,
