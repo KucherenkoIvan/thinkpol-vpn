@@ -6,8 +6,8 @@ area: dataplane/router
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-008]
-owner: ""
-branch: ""
+owner: agent-small-fixes
+branch: tp-058-router-delivered-packets
 ---
 
 ## Goal
@@ -31,3 +31,4 @@ The router's `Delivered` counter counts packets on every platform, as its name a
 
 ## Log
 - 2026-10-12 created in backlog
+- 2026-10-12 backlog → in-progress — owner: agent-small-fixes, branch: tp-058-router-delivered-packets
