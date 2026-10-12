@@ -82,6 +82,7 @@ routes:
   - to: dee5d04bbfaf082a (device-b)
     next hops:
       - dee5d04bbfaf082a (device-b)
+      - a1e2d7676663f3d4 (server-1)
   - to: 91b4bda70e2b99f3 (device-a)
     next hops:
       - 91b4bda70e2b99f3 (device-a)
@@ -104,6 +105,11 @@ peers:
   - id: 91b4bda70e2b99f3 (device-a)
     wireguard key: 63b1c5d54d1130b223d7549ec7408ad1064328e75c03e7cd0f659c6e29d11152
     addresses: 100.64.0.4, fd12:3456:789a::4
+    first hops:
+      - f2b29856eb44337c (server-2)
+  - id: dee5d04bbfaf082a (device-b)
+    wireguard key: 20bf2a89ead6d7ce167a7eb754edc1afd184db7bc550650f412fdc8bf22db846
+    addresses: 100.64.0.5, fd12:3456:789a::5
     first hops:
       - f2b29856eb44337c (server-2)
 links: none
@@ -152,6 +158,13 @@ links:
       - udp://198.51.100.2:4500, credential 32 bytes, sha256 7172b8c7…
 inbound: none
 routes: none
+chains:
+  - nl: exit 982fe5e68ec4fe9d (server-3)
+rules:
+  - local -> direct
+  - cidr:198.51.100.0/24 -> direct
+  - default -> chain:nl
+presets: domestic "", chain "nl"
 blobs: none
 
 # section of device-b
@@ -173,6 +186,11 @@ peers:
     first hops:
       - a1e2d7676663f3d4 (server-1)
       - f2b29856eb44337c (server-2)
+  - id: 982fe5e68ec4fe9d (server-3)
+    wireguard key: f99b18e47cf083e58beb84372451720eb343e7ede820dcaef0db9928da4a4868
+    addresses: 100.64.0.3, fd12:3456:789a::3
+    first hops:
+      - a1e2d7676663f3d4 (server-1)
 links:
   - peer: a1e2d7676663f3d4 (server-1)
     endpoints:
@@ -183,4 +201,11 @@ links:
       - udp://198.51.100.2:4500, credential 32 bytes, sha256 5f78673a…
 inbound: none
 routes: none
+chains:
+  - nl: exit 982fe5e68ec4fe9d (server-3)
+rules:
+  - local -> direct
+  - cidr:198.51.100.0/24 -> direct
+  - default -> chain:nl
+presets: domestic "", chain "nl"
 blobs: none

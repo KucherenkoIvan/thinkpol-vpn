@@ -206,7 +206,7 @@ func (n *Node) Adapters(reload <-chan os.Signal) ([]app.Adapter, error) {
 	if err := supported(); err != nil {
 		return nil, err
 	}
-	reg, err := Transports()
+	reg, err := Transports(true) // a device's, or the supervisor's in the root namespace
 	if err != nil {
 		return nil, err
 	}
@@ -229,14 +229,15 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 		return n.runServer(ctx, reg, maps)
 	}
 	dp := DataPlane{
-		Keys:      n.state.Keys,
-		Map:       n.state.Map,
-		Maps:      maps,
-		Registry:  reg,
-		Inbound:   DirectInbound(reg),
-		Interface: n.cfg.Interface,
-		LinkMTU:   n.cfg.LinkMTU,
-		Log:       n.logs.With("space", n.state.Trust.SpaceID.String()),
+		Keys:       n.state.Keys,
+		Map:        n.state.Map,
+		Maps:       maps,
+		Registry:   reg,
+		Inbound:    DirectInbound(reg),
+		Interface:  n.cfg.Interface,
+		LinkMTU:    n.cfg.LinkMTU,
+		Log:        n.logs.With("space", n.state.Trust.SpaceID.String()),
+		RouteTable: true,
 
 		report:        &n.report,
 		requests:      n.requests,

@@ -59,6 +59,15 @@ func TestSpecErrorsNameTheirLocation(t *testing.T) {
 		{"device with egress", "nodes:\n  - name: d\n    kind: device\n    egress: false\n", []string{"spec.yaml:4:13: d: a device has no egress setting"}},
 		{"device dials a server with ingress off", "nodes:\n  - {name: s, kind: server, endpoints: ['udp://192.0.2.1:4500']}\n  - {name: d, kind: device}\npaths:\n  - [d, s]\n  - [s, d]\n",
 			[]string{"spec.yaml:5:9: s has ingress off, so d can't connect to it", "spec.yaml:6:6: s has ingress off, so d can't connect to it"}},
+		{"chain without exit", nodes + "chains:\n  - name: nl\n", []string{"spec.yaml:8:5: chain nl: exit is missing"}},
+		{"chain exit unknown", nodes + "chains:\n  - {name: nl, exit: x}\n", []string{`spec.yaml:8:22: chain nl: unknown node "x"`}},
+		{"chain exit a device", nodes + "chains:\n  - {name: nl, exit: d}\n", []string{"spec.yaml:8:22: chain nl: exit d is not a server"}},
+		{"chain bad name", nodes + "chains:\n  - {name: NL, exit: s}\n", []string{`spec.yaml:8:12: chain name "NL"`}},
+		{"chain twice", nodes + "chains:\n  - {name: nl, exit: s}\n  - {name: nl, exit: s}\n", []string{`spec.yaml:9:12: chain "nl" is declared twice`}},
+		{"rule unparsable", nodes + "rules:\n  - local direct\n", []string{"spec.yaml:8:5: rule \"local direct\""}},
+		{"rule bad cidr", nodes + "rules:\n  - cidr:10.1.1.1/8 -> direct\n", []string{"spec.yaml:8:5: "}},
+		{"rule unknown chain", nodes + "rules:\n  - default -> chain:nl\n", []string{`spec.yaml:8:5: rule default -> chain:nl: unknown chain "nl"`}},
+		{"preset unknown chain", nodes + "presets:\n  chain: nl\n", []string{`spec.yaml:8:10: presets: unknown chain "nl"`}},
 		{"several errors at once", "nodes:\n  - name: a\n    kind: phone\n  - name: b\n", []string{"spec.yaml:3:11: a: kind", "spec.yaml:4:5: b: kind is missing"}},
 	}
 	for _, tt := range tests {

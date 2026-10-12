@@ -27,6 +27,12 @@
 //	paths:                      # [one end, relays..., other end]
 //	  - [device-a, server-1]
 //	  - [device-a, server-1, device-b]
+//	chains:                     # optional: a name for an exit (a server)
+//	  - {name: nl, exit: server-1}
+//	rules:                      # optional: every device's rules, in order
+//	  - local -> direct
+//	  - default -> chain:nl
+//	presets: {chain: nl}        # optional: the presets' chain
 //
 // Values may use ${NAME}, filled from the environment by `dev map build`,
 // for addresses known only at run time (the lab's, which Docker assigns).

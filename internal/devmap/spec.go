@@ -31,6 +31,11 @@ type Spec struct {
 	IPv6Network netip.Prefix
 	Nodes       []Node
 	Paths       []Path
+	// Chains, Rules and Presets are the space's routing, in every
+	// device's section.
+	Chains  []Chain
+	Rules   []netmap.Rule
+	Presets netmap.RulePresets
 }
 
 // Node is one node of the spec.
@@ -147,8 +152,11 @@ type rawSpec struct {
 		IPv4 scalar `yaml:"ipv4"`
 		IPv6 scalar `yaml:"ipv6"`
 	} `yaml:"space"`
-	Nodes []rawNode `yaml:"nodes"`
-	Paths []rawPath `yaml:"paths"`
+	Nodes   []rawNode  `yaml:"nodes"`
+	Paths   []rawPath  `yaml:"paths"`
+	Chains  []rawChain `yaml:"chains"`
+	Rules   []scalar   `yaml:"rules"`
+	Presets rawPresets `yaml:"presets"`
 }
 
 type rawNode struct {
@@ -310,6 +318,7 @@ func (c *checker) spec(raw *rawSpec) *Spec {
 		s.Nodes = append(s.Nodes, n)
 	}
 	c.paths(s, raw.Paths, byName)
+	c.routing(s, raw, byName)
 	return s
 }
 

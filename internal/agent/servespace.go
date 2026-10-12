@@ -46,7 +46,7 @@ func serveSpace(log *slog.Logger, base DataPlane) worker.Serve {
 		}
 		reg := base.Registry
 		if reg == nil {
-			if reg, err = Transports(); err != nil {
+			if reg, err = Transports(false); err != nil {
 				return err
 			}
 		}

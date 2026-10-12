@@ -45,6 +45,7 @@ func startDevice(t *testing.T, s *testSpace, reg *transport.Registry, connect bo
 	n.tweak = func(dp *DataPlane) {
 		virtual := rn.dataPlane(reg, s.b, n.state.Map)
 		dp.path, dp.retryAfter = virtual.path, virtual.retryAfter
+		dp.RouteTable = false // virtual TUNs: the host's routing stays as it is
 		dp.newTUN = func(name string) (wgtun.Device, netcfg.Configurator, error) {
 			select {
 			case <-d.failTUN:
@@ -183,6 +184,7 @@ func TestARemovedDeviceConnectsOnceBack(t *testing.T) {
 	n.tweak = func(dp *DataPlane) {
 		virtual := rn.dataPlane(reg, s.b, n.state.Map)
 		dp.newTUN, dp.path, dp.retryAfter = virtual.newTUN, virtual.path, virtual.retryAfter
+		dp.RouteTable = false
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

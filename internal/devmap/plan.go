@@ -185,6 +185,12 @@ func Plan(s *Spec, k Keys, version uint64, random io.Reader) (netmap.Contents, N
 		sections[l.From].Links = append(sections[l.From].Links, link)
 	}
 
+	for i, n := range s.Nodes {
+		if n.Kind == netmap.NodeDevice {
+			deviceRouting(s, ids, &sections[i])
+		}
+	}
+
 	c := netmap.Contents{SpaceID: k.Space, Version: version, RecoveryKey: k.RecoveryKey}
 	for i, n := range s.Nodes {
 		if err := checkWithTransports(sections[i]); err != nil {
