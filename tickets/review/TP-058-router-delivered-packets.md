@@ -35,4 +35,4 @@ The router's `Delivered` counter counts packets on every platform, as its name a
 ## Log
 - 2026-10-12 created in backlog
 - 2026-10-12 backlog → in-progress — owner: agent-small-fixes, branch: tp-058-router-delivered-packets
-\n- 2026-10-12 in-progress → review — every acceptance box checked; `make lint`, `make test`, `go test -race` on router and localapi, and `make lab-gotest PKG=./internal/dataplane/router/` (the Linux TUN test 5/5) pass\n
+- 2026-10-12 in-progress → review — every acceptance box checked; `make lint`, `make test`, `go test -race` on router and localapi, and `make lab-gotest PKG=./internal/dataplane/router/` (the Linux TUN test 5/5) pass
