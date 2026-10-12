@@ -259,9 +259,10 @@ func (e *Engine) recompileRules() error {
 // setTable gives the router the table for what runs now; Status reports
 // the rules that table enforces.
 func (e *Engine) setTable() error {
-	if err := e.router.SetTable(e.table()); err != nil {
+	t := e.table()
+	if err := e.router.SetTable(t); err != nil {
 		return err
 	}
-	e.routedRules = e.ruleStatus
+	e.routedRules, e.routedExit = e.ruleStatus, len(t.Forward) > 0
 	return nil
 }

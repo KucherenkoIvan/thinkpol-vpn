@@ -94,6 +94,10 @@ func (s *Supervisor) wire(w *worker, ns *os.File) (*wiring, error) {
 	if err := setNetSysctls(int(ns.Fd()), baselineSysctls); err != nil {
 		return wd, fmt.Errorf("space sysctls: %w", err)
 	}
+	e, _ := w.egressRules()
+	if err := applySpaceTable(ns, w.transit, e); err != nil {
+		return wd, fmt.Errorf("the space's egress table: %w", err)
+	}
 	return wd, nil
 }
 

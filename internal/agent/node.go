@@ -6,14 +6,17 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/KucherenkoIvan/go-kernel/app"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/supervisor"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/egress"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
@@ -187,7 +190,7 @@ func (n *Node) runServer(ctx context.Context, reg *transport.Registry, maps chan
 	s := &serverSpaces{
 		sup: sup, reg: reg, log: n.logs.Logger, keys: n.state.Keys, trust: n.state.Trust,
 		iface: n.cfg.Interface, linkMTU: n.cfg.LinkMTU, cur: n.state.Map, section: n.state.Section,
-		retryAfter: RetryAfter,
+		retryAfter: RetryAfter, uplink: egress.FindUplink,
 	}
 	return s.run(ctx, maps)
 }
@@ -219,6 +222,9 @@ type serverSpaces struct {
 	iface      string
 	linkMTU    int
 	retryAfter time.Duration
+	// uplink finds the root namespace's way to the internet, for a space
+	// whose section allows egress (egress.FindUplink).
+	uplink func() (egress.Uplink, error)
 
 	cur     *netmap.Map
 	section netmap.Section
@@ -251,7 +257,9 @@ func (s *serverSpaces) apply() error {
 		return err
 	}
 	inbound := dataplane.AcceptedInbound(s.section, s.reg, transport.SpaceID(id), s.linkMTU)
-	if err := s.sup.SetSpaces([]supervisor.Space{{ID: id, Config: config, Inbound: inbound.Links}}); err != nil {
+	out, egressAttrs := s.egress()
+	space := supervisor.Space{ID: id, Config: config, Inbound: inbound.Links, Egress: out, Dials: dials(s.section)}
+	if err := s.sup.SetSpaces([]supervisor.Space{space}); err != nil {
 		return fmt.Errorf("serving space %v: %w", id, err)
 	}
 	ls := make([]supervisor.Listener, 0, len(s.section.Node.Listeners))
@@ -261,9 +269,39 @@ func (s *serverSpaces) apply() error {
 	if err := s.sup.SetListeners(ls); err != nil {
 		return errListeners{err}
 	}
-	s.log.Info("map applied", append([]any{"version", s.cur.Header().Version, "listeners", len(ls), "inbound_skipped", len(inbound.Skipped)},
-		serverSettings(s.section.Node)...)...)
+	s.log.Info("map applied", append(append([]any{"version", s.cur.Header().Version, "listeners", len(ls), "inbound_skipped", len(inbound.Skipped)},
+		serverSettings(s.section.Node)...), egressAttrs...)...)
 	return nil
+}
+
+// egress is the space's egress when its section allows it, through the
+// node's uplink, found again with every map (no uplink, no egress), and
+// what to log about it: the uplink and its families, never a destination.
+func (s *serverSpaces) egress() (supervisor.Egress, []any) {
+	if !s.section.Node.AllowEgress {
+		return supervisor.Egress{}, nil
+	}
+	up, err := s.uplink()
+	if err != nil {
+		s.log.Warn("egress is on but the node has no uplink: the space's internet traffic is dropped", "err", err)
+		return supervisor.Egress{}, []any{"uplink", "none"}
+	}
+	return supervisor.Egress{Uplink: up.Name, IPv4: up.IPv4, IPv6: up.IPv6},
+		[]any{"uplink", up.Name, "egress_ipv4", onOff(up.IPv4), "egress_ipv6", onOff(up.IPv6)}
+}
+
+// dials are the endpoints the section's links dial: the worker reaches
+// them out of its namespace whatever the egress.
+func dials(section netmap.Section) []netip.AddrPort {
+	var out []netip.AddrPort
+	for _, l := range section.Links {
+		for _, e := range l.Endpoints {
+			if e.Address.IsValid() && !slices.Contains(out, e.Address) {
+				out = append(out, e.Address)
+			}
+		}
+	}
+	return out
 }
 
 // run serves the current map, then every newer one, until ctx ends. Only

@@ -100,6 +100,9 @@ func serveSpace(log *slog.Logger, base DataPlane) worker.Serve {
 		dp.Keys, dp.Map, dp.Maps, dp.Registry = first.Keys, m, maps, reg
 		dp.Inbound = SharedInbound(ctx, reg, s.Listeners)
 		dp.Interface, dp.LinkMTU, dp.Log = first.Interface, first.LinkMTU, log
+		// The worker's namespace forwards and SNATs, and the supervisor's
+		// tables confine it, so a server allowing egress is an exit here.
+		dp.Forward = true
 		// The space's own figures only (TP-041 seals them into its
 		// telemetry).
 		dp.StatusAttrs = func() []any {

@@ -72,6 +72,14 @@ type EngineConfig struct {
 	// Rules is the device's own rule choice (its local file), until
 	// SetRules replaces it.
 	Rules rules.Local
+	// Forward lets the node be its space's exit when its section allows
+	// egress: what the overlay device decrypts for destinations outside
+	// the overlay goes to the TUN, for the network stack to forward and
+	// NAT. Only where that stack does it safely: a server's worker, whose
+	// namespace the supervisor's tables confine (TP-014). Off, the engine
+	// writes only the node's own addresses to the TUN, whatever the
+	// section says, as on a device.
+	Forward bool
 }
 
 // Engine is one space's data plane on a node (DESIGN.md "Data plane"): the
@@ -109,8 +117,11 @@ type Engine struct {
 	ipv6Off  error
 	local    []netip.Addr
 	networks []netip.Prefix
+	exit     bool // the section allows egress and cfg.Forward is set
 	skipped  []Skip
 	lastErr  string
+	// routedExit is whether the router's table forwards (Status.Exit).
+	routedExit bool
 
 	// Routing rules: the device's own choice, what the last section gave
 	// them, the chains that can carry traffic, and the result.
@@ -271,6 +282,7 @@ func (e *Engine) apply(ctx context.Context, s netmap.Section) (string, error) {
 		}
 	}
 	e.mtu, e.ipv6Off, e.local, e.networks = oc.MTU, oc.IPv6Off, oc.Local, oc.Networks
+	e.exit = e.cfg.Forward && s.Node.Kind == netmap.NodeServer && s.Node.AllowEgress
 
 	if err := e.addPeers(want, pc.Peers, oc.MTU); err != nil {
 		return StepDevices, err
@@ -415,6 +427,12 @@ func (e *Engine) table() router.Table {
 	if e.rules != nil {
 		t.Rules = e.rules(egresses)
 	}
+	// The space's devices and servers are the overlay device's peers;
+	// a chain's exit device carries replies from its exit, never
+	// traffic for this node to forward.
+	if d := e.devices[OverlayDevice]; e.exit && d != nil {
+		t.Forward = []*router.Egress{d.egress}
+	}
 	return t
 }
 
@@ -496,6 +514,9 @@ type Status struct {
 	Path           path.Counters
 	// Rules is how the routing rules are enforced.
 	Rules RuleStatus
+	// Exit says the node forwards its peers' internet traffic: its
+	// section allows egress and EngineConfig.Forward is set.
+	Exit bool
 }
 
 // PeerStatus is one WireGuard peer.
@@ -524,6 +545,7 @@ func (e *Engine) Status() Status {
 		Router:         e.router.Counters(),
 		Path:           e.node.Counters(),
 		Rules:          e.routedRules,
+		Exit:           e.routedExit,
 	}
 	s.Rules.Skipped = slices.Clone(s.Rules.Skipped)
 	if e.ipv6Off != nil {

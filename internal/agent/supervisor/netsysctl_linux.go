@@ -15,11 +15,15 @@ import (
 
 // baselineSysctls are the network sysctls every space's namespace gets. The
 // supervisor sets them (the worker has no /proc and can't): loose reverse-path
-// filtering, so the overlay's and relays' asymmetric paths aren't dropped.
-// Egress forwarding is added by TP-014.
+// filtering, so the overlay's and relays' asymmetric paths aren't dropped, and
+// forwarding, for egress. Whether anything is forwarded is the space's
+// table's to say (spaceTable: nothing without egress), and the root
+// namespace's tables enforce it whatever the space does with its own.
 var baselineSysctls = map[string]string{
 	"net/ipv4/conf/all/rp_filter":     "2",
 	"net/ipv4/conf/default/rp_filter": "2",
+	"net/ipv4/ip_forward":             "1",
+	"net/ipv6/conf/all/forwarding":    "1",
 }
 
 // setNetSysctls sets kv (keys relative to /proc/sys) in the network namespace

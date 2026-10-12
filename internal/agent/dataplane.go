@@ -47,6 +47,10 @@ type DataPlane struct {
 	// StatusAttrs, if set, adds attributes to the periodic status line at
 	// debug level (a worker's shared-listener figures).
 	StatusAttrs func() []any
+	// Forward makes the node its space's exit when its section allows
+	// egress (dataplane.EngineConfig.Forward): set in a server's worker,
+	// whose namespace forwards and NATs, never on a device.
+	Forward bool
 
 	// What tests swap: the TUN and its configurator, the path layer's
 	// timing, how long to wait before retrying what failed.
@@ -148,6 +152,7 @@ func (r *runner) start(ctx context.Context) error {
 		LinkMTU:      r.dp.LinkMTU,
 		Path:         r.dp.path,
 		Log:          r.dp.Log,
+		Forward:      r.dp.Forward,
 	})
 	if err != nil {
 		if ifc != nil {
@@ -320,14 +325,14 @@ func (r *runner) applied() {
 
 // serverSettings are a server's ingress and egress settings, for its log.
 func serverSettings(n netmap.NodeSettings) []any {
-	ingress, egress := "off", "off"
-	if n.AllowIngress {
-		ingress = "on"
+	return []any{"ingress", onOff(n.AllowIngress), "egress", onOff(n.AllowEgress)}
+}
+
+func onOff(on bool) string {
+	if on {
+		return "on"
 	}
-	if n.AllowEgress {
-		egress = "on (not enforced until TP-014)"
-	}
-	return []any{"ingress", ingress, "egress", egress}
+	return "off"
 }
 
 func (r *runner) logStatus() {

@@ -57,9 +57,14 @@ type Space struct {
 	// the running worker when it changes. A large one travels as a sealed
 	// memfd, never a disk file.
 	Config []byte
-	// Egress describes how the space reaches the internet, for the egress
-	// rules in the supervisor's table (TP-014). The zero value is no egress.
+	// Egress is how the space reaches the internet: its traffic leaves the
+	// root namespace by the uplink, masqueraded. The zero value is no
+	// egress.
 	Egress Egress
+	// Dials are the endpoints the space's worker dials (its section's
+	// links to other servers). They leave the root namespace, masqueraded,
+	// whatever Egress says; nothing else does without egress.
+	Dials []netip.AddrPort
 	// Inbound is, per transport name, the links the space's own map says
 	// to accept (dataplane.AcceptedInbound of its section, the table its
 	// worker's engine accepts too). The supervisor
@@ -69,12 +74,14 @@ type Space struct {
 }
 
 // Egress is a space's internet egress, enforced in the root namespace, the
-// only place the spaces' veths meet (TP-014 implements the rules).
+// only place the spaces' veths meet, and in the space's own namespace.
 type Egress struct {
 	// Uplink is the root-namespace interface a space's masqueraded traffic
-	// leaves by; empty means no egress.
+	// leaves by (egress.FindUplink); empty means no egress.
 	Uplink string
-	// IPv4 and IPv6 say which families may leave.
+	// IPv4 and IPv6 say which families may leave. A family that can't is
+	// refused inside the space's namespace: IPv6 with an ICMPv6 "no route"
+	// error, so clients fall back to IPv4 at once instead of timing out.
 	IPv4, IPv6 bool
 }
 

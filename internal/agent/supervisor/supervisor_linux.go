@@ -53,6 +53,9 @@ type Supervisor struct {
 	root netcfg.Configurator
 	// shared is the public listeners, routing to the workers.
 	shared *shared
+	// forwarding is what the supervisor turned on in the root namespace's
+	// sysctls for its spaces' egress and dials, restored on Close.
+	forwarding rootForwarding
 
 	setMu sync.Mutex // one SetSpaces (or Close teardown) at a time
 
@@ -195,6 +198,7 @@ func (s *Supervisor) SetSpaces(spaces []Space) error {
 	for _, sp := range spaces {
 		if w, ok := s.workers[sp.ID]; ok {
 			w.inbound = sp.Inbound
+			w.setEgress(sp.Egress, sp.Dials)
 			w.setConfig(sp.Config) // an existing worker: push the new config
 			continue
 		}
@@ -207,21 +211,18 @@ func (s *Supervisor) SetSpaces(spaces []Space) error {
 		s.workers[sp.ID] = w
 		started = append(started, w)
 	}
-	active := make([]int, 0, len(s.workers))
-	for _, w := range s.workers {
-		active = append(active, w.slot)
-	}
+	rules := s.slotRules()
 	s.mu.Unlock()
 
-	// Rebuild the isolation tables for the current slots before any new
-	// worker's veth carries a packet. A slot is stable across a worker's
-	// restarts, so this is a no-op unless the set changed. On failure the
+	// Rebuild the isolation tables for the current slots, their egress and
+	// dials, before any new worker's veth carries a packet. On failure the
 	// just-started workers are rolled back: none has a goroutine yet, so a
 	// later Close must not wait on them.
-	if err := s.applyIsolation(active); err != nil {
+	if err := s.applyIsolation(rules); err != nil {
 		s.rollback(started)
 		return err
 	}
+	s.forwarding.ensure(rules, s.log)
 	for _, w := range started {
 		go s.supervise(w)
 	}
@@ -347,6 +348,9 @@ func (s *Supervisor) Close() error {
 	if err := removeIsolation(); err != nil {
 		errs = append(errs, err)
 	}
+	if err := s.forwarding.restore(); err != nil {
+		errs = append(errs, err)
+	}
 	if s.cgroups != nil {
 		if err := s.cgroups.remove(); err != nil {
 			errs = append(errs, err)
@@ -368,7 +372,6 @@ type worker struct {
 	link    string
 	transit transit
 	uid     uint32
-	egress  Egress
 	inbound map[string][]transport.PeerLink // under Supervisor.mu
 	output  *logring.Ring
 	cg      *cgroup // nil when cgroups are unavailable
@@ -378,9 +381,14 @@ type worker struct {
 	notify  chan struct{} // config changed; coalesced
 	// listenersChanged: the shared listeners changed; coalesced
 	listenersChanged chan struct{}
+	// egressChanged: the space's egress changed, for its namespace's
+	// table; coalesced
+	egressChanged chan struct{}
 
 	mu        sync.Mutex
 	config    []byte
+	egress    Egress
+	dials     []netip.AddrPort
 	pid       int
 	ready     bool
 	starts    int
@@ -399,6 +407,7 @@ func (s *Supervisor) newWorker(sp Space, slot int) *worker {
 		transit: s.opts.transit(slot),
 		uid:     s.opts.UIDBase + uint32(slot),
 		egress:  sp.Egress,
+		dials:   slices.Clone(sp.Dials),
 		inbound: sp.Inbound,
 		config:  sp.Config,
 		output:  logring.New(s.opts.OutputBytes),
@@ -408,6 +417,7 @@ func (s *Supervisor) newWorker(sp Space, slot int) *worker {
 		notify:  make(chan struct{}, 1),
 
 		listenersChanged: make(chan struct{}, 1),
+		egressChanged:    make(chan struct{}, 1),
 	}
 	if s.cgroups != nil {
 		cg, err := s.cgroups.child(w.link, s.opts.MemoryMax, s.opts.PidsMax)
@@ -429,6 +439,26 @@ func (w *worker) setConfig(config []byte) {
 	if !same {
 		w.signal(w.notify)
 	}
+}
+
+// setEgress stores the space's egress and dials, and signals the running
+// worker's loop to update its namespace's table if the egress changed (the
+// dials are the root namespace's business only).
+func (w *worker) setEgress(e Egress, dials []netip.AddrPort) {
+	w.mu.Lock()
+	same := w.egress == e
+	w.egress, w.dials = e, slices.Clone(dials)
+	w.mu.Unlock()
+	if !same {
+		w.signal(w.egressChanged)
+	}
+}
+
+// egressRules are the space's egress and dials.
+func (w *worker) egressRules() (Egress, []netip.AddrPort) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.egress, slices.Clone(w.dials)
 }
 
 // signal wakes the worker's run loop through ch, coalescing.
@@ -682,6 +712,16 @@ func (s *Supervisor) run(w *worker, log *slog.Logger) error {
 		case <-w.notify:
 			if err := s.sendConfig(ends.Control, w); err != nil {
 				return stuck("config", err)
+			}
+		case <-w.egressChanged:
+			e, _ := w.egressRules()
+			if err := applySpaceTable(p.netns, w.transit, e); err != nil {
+				// Fail closed: the root namespace's table already
+				// follows the new egress; a fresh namespace gets the
+				// space's table right.
+				_ = ends.Control.Close()
+				p.kill()
+				return fmt.Errorf("the space's egress table: %w", err)
 			}
 		case <-w.ctx.Done():
 			if err := ends.Control.SendTimeout(ipc.Message{Kind: ipc.KindStop}, s.opts.StopTimeout); err != nil {
