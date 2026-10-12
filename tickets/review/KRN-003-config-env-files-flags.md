@@ -50,9 +50,10 @@ branch: "krn-003-config-env-files-flags"
 - The "minor tag released" and adoption boxes stay open until after review: the tag is pushed after review (ORCHESTRATION.md decisions), and adoption is a thinkpol-vpn change that follows the tag.
 
 ## Review findings
-- [ ] `config/config.go` `setValue`: a `[]mode` field (slice of a named string type) panics in `reflect.Value.Convert`; build the slice element by element (`MakeSlice` + `New(Elem).SetString`) and add a `[]mode` test
-- [ ] `docs/guides/config.md`: a guide bullet and an anti-patterns row saying not to put `flag:` on secret fields (`-h` prints the env-loaded value as the default; argv is visible in `ps`); optionally a `secret:"true"` tag that blanks the flag's DefValue, if it's cheap
-- [ ] `config.Validate(nil)` returns nil
+- [x] `config/config.go` `setValue`: a `[]mode` field (slice of a named string type) panics in `reflect.Value.Convert`; build the slice element by element (`MakeSlice` + `New(Elem).SetString`) and add a `[]mode` test
+- [x] `docs/guides/config.md`: a guide bullet and an anti-patterns row saying not to put `flag:` on secret fields (`-h` prints the env-loaded value as the default; argv is visible in `ps`); optionally a `secret:"true"` tag that blanks the flag's DefValue, if it's cheap
+- [x] `config.Validate(nil)` returns nil
+- Fixed on the go-kernel branch in `953fd23` fix(config): slices of named strings, secret flags, Validate(nil), and `a68e4a9` docs(config): keep secrets off flags; the secret tag. `setValue` builds slices element by element (`[]mode` env and flag tests); `secret:"true"` sets the flag's DefValue to the zero form so `-h` prints no default (test); the guide has the bullet plus the anti-patterns row, and the README lists the tag and the `required:` caveat; `Validate[T](nil)` returns nil (test). `make lint` and `make test` pass.
 
 ## Log
 - 2026-10-11 created in backlog
@@ -60,3 +61,4 @@ branch: "krn-003-config-env-files-flags"
 - 2026-10-13 in-progress → review — go-kernel branch krn-003-config-env-files-flags pushed; release planned as v0.19.0 after review
 - 2026-10-13 review → has-errors — 3 findings (named-string slice panic, secrets via flags, Validate(nil)); KRN-004 and KRN-005 passed
 - 2026-10-13 has-errors → in-progress — owner: agent-krn, fixing the review findings
+- 2026-10-13 in-progress → review — review findings fixed (go-kernel 953fd23, a68e4a9)
