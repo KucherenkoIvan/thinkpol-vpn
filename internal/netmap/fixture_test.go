@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"fmt"
 	"net/netip"
+	"slices"
 	"testing"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
@@ -193,6 +194,11 @@ func newFixture(t testing.TB, servers, devices int) *fixture {
 			if o != d && isDevice(o) {
 				s.Peers = append(s.Peers, peer(o, viaEntries()))
 			}
+		}
+		// Overlay names: devices' sections only.
+		s.SpaceName, s.Node.Name = "home", fmt.Sprintf("node-%d", d)
+		for i := range s.Peers {
+			s.Peers[i].Name = fmt.Sprintf("node-%d", slices.Index(ids, s.Peers[i].ID))
 		}
 	}
 

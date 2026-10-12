@@ -55,6 +55,10 @@ type Section struct {
 	Chains []Chain
 	// Presets are what a device's rule presets are built from.
 	Presets RulePresets
+	// SpaceName is the zone of the space's overlay names,
+	// `<node>.<space>.internal`. Names are in devices' sections only (a
+	// server's holds no member names); empty: no overlay names.
+	SpaceName string
 }
 
 // NodeKind is what a node is: a server (a VPS that relays) or a device.
@@ -94,6 +98,9 @@ type NodeSettings struct {
 	// AllowEgress lets internet traffic leave the space from this server,
 	// so it can end a chain. Both are server settings, off by default.
 	AllowIngress, AllowEgress bool
+	// Name is the node's own name in its space's zone, a DNS label;
+	// devices' sections only.
+	Name string
 }
 
 // AcceptsInbound reports whether a node with these settings accepts the
@@ -125,6 +132,10 @@ type Peer struct {
 	// Paths are the candidate paths to the peer in priority order, which is
 	// the order failover follows.
 	Paths []Path
+	// Name is the peer's name in the space's zone, a DNS label; devices'
+	// sections only, so a node is named only to the devices that have it
+	// as a peer.
+	Name string
 }
 
 // Path is a candidate way to reach a peer, named by its first hop: an
@@ -467,6 +478,9 @@ func (s *Section) validate(headerBlobs []BlobRef) error {
 			return fmt.Errorf("blob %x is not in the header", b.SHA256)
 		}
 	}
+	if err := s.validateNames(); err != nil {
+		return err
+	}
 	return s.validateRules()
 }
 
@@ -537,14 +551,16 @@ func sectionToProto(s *Section, h *Header) *netmapv1.Section {
 			Ipv6Network:  prefixString(s.Node.IPv6Network),
 			AllowIngress: s.Node.AllowIngress,
 			AllowEgress:  s.Node.AllowEgress,
+			Name:         s.Node.Name,
 		},
-		Blobs: blobsToProto(s.Blobs),
+		Blobs:     blobsToProto(s.Blobs),
+		SpaceName: s.SpaceName,
 	}
 	for _, l := range s.Node.Listeners {
 		pb.Node.Listeners = append(pb.Node.Listeners, &netmapv1.Listener{Transport: l.Transport, Address: addrPortString(l.Address), Settings: l.Settings})
 	}
 	for _, p := range s.Peers {
-		pp := &netmapv1.Peer{Id: idBytes(p.ID), WireguardPublicKey: p.WireGuardKey[:]}
+		pp := &netmapv1.Peer{Id: idBytes(p.ID), WireguardPublicKey: p.WireGuardKey[:], Name: p.Name}
 		for _, a := range p.Addresses {
 			pp.Addresses = append(pp.Addresses, addrString(a))
 		}
@@ -604,6 +620,7 @@ func sectionFromProto(pb *netmapv1.Section) (Section, error) {
 		return s, err
 	}
 	s.Node.AllowIngress, s.Node.AllowEgress = n.GetAllowIngress(), n.GetAllowEgress()
+	s.Node.Name, s.SpaceName = n.GetName(), pb.GetSpaceName()
 	for _, l := range n.GetListeners() {
 		addr, err := parseAddrPort(l.GetAddress())
 		if err != nil {
@@ -612,7 +629,7 @@ func sectionFromProto(pb *netmapv1.Section) (Section, error) {
 		s.Node.Listeners = append(s.Node.Listeners, Listener{Transport: l.GetTransport(), Address: addr, Settings: l.GetSettings()})
 	}
 	for _, pp := range pb.GetPeers() {
-		var p Peer
+		p := Peer{Name: pp.GetName()}
 		if p.ID, err = toArray[NodeID]("peer id", pp.GetId()); err != nil {
 			return s, err
 		}

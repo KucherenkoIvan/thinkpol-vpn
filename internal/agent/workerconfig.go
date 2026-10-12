@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
@@ -23,6 +24,10 @@ type WorkerConfig struct {
 	Map       []byte
 	Interface string
 	LinkMTU   int
+	// DNS runs the space's resolver, asking DNSUpstreams: the worker can't
+	// read the host's resolver configuration, so the supervisor does.
+	DNS          bool
+	DNSUpstreams []netip.AddrPort
 }
 
 // workerConfigVersion changes with the encoding; supervisor and worker are
@@ -30,16 +35,18 @@ type WorkerConfig struct {
 const workerConfigVersion = 1
 
 type workerConfigJSON struct {
-	Version      int    `json:"version"`
-	NodeID       string `json:"node-id"`
-	MapKey       string `json:"map-key"`
-	WireGuardKey string `json:"wireguard-key"`
-	SpaceID      string `json:"space-id"`
-	SigningKey   string `json:"signing-key"`
-	RecoveryKey  string `json:"recovery-key"`
-	Map          []byte `json:"map"`
-	Interface    string `json:"interface"`
-	LinkMTU      int    `json:"link-mtu"`
+	Version      int              `json:"version"`
+	NodeID       string           `json:"node-id"`
+	MapKey       string           `json:"map-key"`
+	WireGuardKey string           `json:"wireguard-key"`
+	SpaceID      string           `json:"space-id"`
+	SigningKey   string           `json:"signing-key"`
+	RecoveryKey  string           `json:"recovery-key"`
+	Map          []byte           `json:"map"`
+	Interface    string           `json:"interface"`
+	LinkMTU      int              `json:"link-mtu"`
+	DNS          bool             `json:"dns"`
+	DNSUpstreams []netip.AddrPort `json:"dns-upstreams"`
 }
 
 // String keeps the keys out of logs.
@@ -60,6 +67,8 @@ func (c WorkerConfig) Encode() ([]byte, error) {
 		Map:          c.Map,
 		Interface:    c.Interface,
 		LinkMTU:      c.LinkMTU,
+		DNS:          c.DNS,
+		DNSUpstreams: c.DNSUpstreams,
 	})
 }
 
@@ -104,6 +113,7 @@ func DecodeWorkerConfig(b []byte) (WorkerConfig, error) {
 		return WorkerConfig{}, fmt.Errorf("worker config: bad %w", errors.Join(errs...))
 	}
 	c.Map, c.Interface, c.LinkMTU = j.Map, j.Interface, j.LinkMTU
+	c.DNS, c.DNSUpstreams = j.DNS, j.DNSUpstreams
 	return c, nil
 }
 

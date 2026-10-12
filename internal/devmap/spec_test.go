@@ -69,6 +69,17 @@ func TestSpecErrorsNameTheirLocation(t *testing.T) {
 		{"device with egress", "nodes:\n  - name: d\n    kind: device\n    egress: false\n", []string{"spec.yaml:4:13: d: a device has no egress setting"}},
 		{"device dials a server with ingress off", "nodes:\n  - {name: s, kind: server, endpoints: ['udp://192.0.2.1:4500']}\n  - {name: d, kind: device}\npaths:\n  - [d, s]\n  - [s, d]\n",
 			[]string{"spec.yaml:5:9: s has ingress off, so d can't connect to it", "spec.yaml:6:6: s has ingress off, so d can't connect to it"}},
+		{"space name not a label", "space:\n  name: Home\n" + nodes, []string{`spec.yaml:2:9: space name "Home"`}},
+		{"node name not an overlay name", "space:\n  name: home\nnodes:\n  - name: d-\n    kind: device\n", []string{"spec.yaml:4:11: d- can't be an overlay name in space home"}},
+		{"rule unparsable", nodes + "rules:\n  - everything -> direct\n", []string{"spec.yaml:8:5: rule:"}},
+		{"rule with an unknown chain", nodes + "rules:\n  - default -> chain:nl\n", []string{"spec.yaml:8:5: rule default -> chain:nl: no chain nl"}},
+		{"rule with an undeclared list", nodes + "rules:\n  - geoip:ru -> direct\n  - default -> block\n", []string{"spec.yaml:8:5: rule geoip:ru -> direct: no list ru"}},
+		{"rule with a geosite list", nodes + "rules:\n  - geosite:ru -> direct\n  - default -> block\n", []string{"spec.yaml:8:5: rule geosite:ru -> direct: geosite lists aren't in specs yet"}},
+		{"last rule not default", nodes + "rules:\n  - local -> direct\n", []string{"spec.yaml:8:5: the last rule must match default"}},
+		{"chain exit without egress", nodes + "chains:\n  - {name: nl, exit: s}\n", []string{"spec.yaml:8:22: chain nl: s is not a server with egress: true"}},
+		{"chain exit unknown", nodes + "chains:\n  - {name: nl, exit: x}\n", []string{`spec.yaml:8:22: chain nl: unknown node "x"`}},
+		{"chain without an exit", nodes + "chains:\n  - {name: nl}\n", []string{"spec.yaml:8:6: chain nl: exit is missing"}},
+		{"chain name invalid", nodes + "chains:\n  - {name: NL, exit: s}\n", []string{`spec.yaml:8:12: chain name "NL"`}},
 		{"several errors at once", "nodes:\n  - name: a\n    kind: phone\n  - name: b\n", []string{"spec.yaml:3:11: a: kind", "spec.yaml:4:5: b: kind is missing"}},
 	}
 	for _, tt := range tests {

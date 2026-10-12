@@ -107,6 +107,11 @@ peers:
     addresses: 100.64.0.4, fd12:3456:789a::4
     first hops:
       - f2b29856eb44337c (server-2)
+  - id: dee5d04bbfaf082a (device-b)
+    wireguard key: 20bf2a89ead6d7ce167a7eb754edc1afd184db7bc550650f412fdc8bf22db846
+    addresses: 100.64.0.5, fd12:3456:789a::5
+    first hops:
+      - f2b29856eb44337c (server-2)
 links: none
 inbound:
   - peer: f2b29856eb44337c (server-2), server
@@ -120,25 +125,30 @@ kind: device
 min reader: 1
 ipv4: 100.64.0.4 in 100.64.0.0/10
 ipv6: fd12:3456:789a::4 in fd12:3456:789a::/48
+overlay name: device-a.home.internal
 listeners: none
 peers:
   - id: a1e2d7676663f3d4 (server-1)
+    name: server-1
     wireguard key: 8f357fe0d1907d7e77a128e319570f40029d94d9035225d3b175f644a0229336
     addresses: 100.64.0.1, fd12:3456:789a::1
     first hops:
       - a1e2d7676663f3d4 (server-1)
   - id: dee5d04bbfaf082a (device-b)
+    name: device-b
     wireguard key: 20bf2a89ead6d7ce167a7eb754edc1afd184db7bc550650f412fdc8bf22db846
     addresses: 100.64.0.5, fd12:3456:789a::5
     first hops:
       - a1e2d7676663f3d4 (server-1)
       - f2b29856eb44337c (server-2)
   - id: f2b29856eb44337c (server-2)
+    name: server-2
     wireguard key: d0bf1e89f6df2db9b5a012432cd7f3c6870b50f0e1cad83c6f48ae45c954014c
     addresses: 100.64.0.2, fd12:3456:789a::2
     first hops:
       - a1e2d7676663f3d4 (server-1)
   - id: 982fe5e68ec4fe9d (server-3)
+    name: server-3
     wireguard key: f99b18e47cf083e58beb84372451720eb343e7ede820dcaef0db9928da4a4868
     addresses: 100.64.0.3, fd12:3456:789a::3
     first hops:
@@ -155,6 +165,12 @@ inbound: none
 routes: none
 blobs:
   - geoip ru: sha256 54d35b16b38b6e64a8f490eed166bfee1c08b8f85f6afd4e18124794d3606499, 11 bytes
+rules:
+  - local -> direct
+  - domain-suffix:example.ru -> direct
+  - default -> chain:nl
+chains:
+  - nl: exit 982fe5e68ec4fe9d (server-3)
 
 # section of device-b
 node: dee5d04bbfaf082a (device-b)
@@ -162,18 +178,27 @@ kind: device
 min reader: 1
 ipv4: 100.64.0.5 in 100.64.0.0/10
 ipv6: fd12:3456:789a::5 in fd12:3456:789a::/48
+overlay name: device-b.home.internal
 listeners: none
 peers:
   - id: a1e2d7676663f3d4 (server-1)
+    name: server-1
     wireguard key: 8f357fe0d1907d7e77a128e319570f40029d94d9035225d3b175f644a0229336
     addresses: 100.64.0.1, fd12:3456:789a::1
     first hops:
       - a1e2d7676663f3d4 (server-1)
   - id: 91b4bda70e2b99f3 (device-a)
+    name: device-a
     wireguard key: 63b1c5d54d1130b223d7549ec7408ad1064328e75c03e7cd0f659c6e29d11152
     addresses: 100.64.0.4, fd12:3456:789a::4
     first hops:
       - a1e2d7676663f3d4 (server-1)
+      - f2b29856eb44337c (server-2)
+  - id: 982fe5e68ec4fe9d (server-3)
+    name: server-3
+    wireguard key: f99b18e47cf083e58beb84372451720eb343e7ede820dcaef0db9928da4a4868
+    addresses: 100.64.0.3, fd12:3456:789a::3
+    first hops:
       - f2b29856eb44337c (server-2)
 links:
   - peer: a1e2d7676663f3d4 (server-1)
@@ -186,3 +211,9 @@ links:
 inbound: none
 routes: none
 blobs: none
+rules:
+  - local -> direct
+  - domain-suffix:example.ru -> direct
+  - default -> chain:nl
+chains:
+  - nl: exit 982fe5e68ec4fe9d (server-3)

@@ -13,6 +13,11 @@
 # (e.g. one starting with ':').
 
 space:                        # optional
+  # The space's name: devices resolve each node they have as a peer as
+  # <node>.<space>.internal (overlay names), so with it every node name must
+  # be a DNS label (no dash at either end). Without it the map holds no
+  # names. Only devices' sections hold names.
+  name: home
   # The overlay IPv4 network: 100.64.0.0/10 or a network inside it.
   ipv4: 100.64.0.0/10
   # The overlay IPv6 network: a ULA /48 (inside fd00::/8). Without it, the
@@ -93,3 +98,20 @@ paths:
   - [device-a, server-2, device-b]      # the same peers' second choice
   - [device-a, server-1, server-2]      # server-2 reached through server-1
   - [device-a, server-1, server-2, server-3]   # three hops: two relays
+  - [device-b, server-2, server-3]
+
+# Routing rules: optional. The space's rules, in order (the first that
+# matches decides), as `<match> -> <action>`; the last must match default.
+# Matchers: default, local, cidr:<prefix>, geoip:<list>, domain:<name>,
+# domain-suffix:<name>; actions: direct, block, chain:<name>. Every device's
+# section gets them and the chains, so every device needs a path to each
+# chain's exit, and a geoip rule's list in its lists.
+rules:
+  - local -> direct
+  - domain-suffix:example.ru -> direct
+  - default -> chain:nl
+
+# Chains: a name and the exit, a server with egress: true.
+chains:
+  - name: nl
+    exit: server-3

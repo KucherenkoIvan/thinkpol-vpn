@@ -42,6 +42,9 @@ func DescribeSection(w io.Writer, s netmap.Section, names Names) error {
 	p.line(0, "min reader: %d", s.MinReader)
 	p.line(0, "ipv4: %v in %v", n.IPv4, n.IPv4Network)
 	p.line(0, "ipv6: %v in %v", n.IPv6, n.IPv6Network)
+	if s.SpaceName != "" || n.Name != "" {
+		p.line(0, "overlay name: %s.%s.internal", n.Name, s.SpaceName)
+	}
 	p.list(0, "listeners", len(n.Listeners), func(i int) {
 		l := n.Listeners[i]
 		p.line(1, "- %s://%v%s", l.Transport, l.Address, settings(l.Settings))
@@ -49,6 +52,9 @@ func DescribeSection(w io.Writer, s netmap.Section, names Names) error {
 	p.list(0, "peers", len(s.Peers), func(i int) {
 		peer := s.Peers[i]
 		p.line(1, "- id: %s", names.Of(peer.ID))
+		if peer.Name != "" {
+			p.line(2, "name: %s", peer.Name)
+		}
 		p.line(2, "wireguard key: %v", peer.WireGuardKey)
 		addrs := make([]string, len(peer.Addresses))
 		for j, a := range peer.Addresses {
@@ -86,6 +92,12 @@ func DescribeSection(w io.Writer, s netmap.Section, names Names) error {
 		}
 	})
 	p.blobs(0, s.Blobs)
+	if len(s.Rules) > 0 {
+		p.list(0, "rules", len(s.Rules), func(i int) { p.line(1, "- %s", s.Rules[i]) })
+		p.list(0, "chains", len(s.Chains), func(i int) {
+			p.line(1, "- %s: exit %s", s.Chains[i].Name, names.Of(s.Chains[i].Exit))
+		})
+	}
 	return p.err
 }
 

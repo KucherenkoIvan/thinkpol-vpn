@@ -86,7 +86,7 @@ func TestLoadConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := Config{StateDir: DefaultStateDir, Mode: ModeAuto, LogLevel: "info", MapPoll: 5 * time.Second,
-		Connect: true, APISocket: DefaultAPISocket(), APIGroup: "thinkpol"}
+		Connect: true, APISocket: DefaultAPISocket(), APIGroup: "thinkpol", DNS: true}
 	if cfg != want || cfg.MapPath() != filepath.Join(DefaultStateDir, MapFileName) {
 		t.Fatalf("defaults %+v", cfg)
 	}

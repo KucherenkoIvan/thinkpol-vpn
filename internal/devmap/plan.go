@@ -205,6 +205,35 @@ func Plan(s *Spec, k Keys, version uint64, random io.Reader) (netmap.Contents, N
 		sections[l.From].Links = append(sections[l.From].Links, link)
 	}
 
+	// Names and rules are for devices: a server's section holds neither.
+	for i, n := range s.Nodes {
+		sec := &sections[i]
+		if n.Kind != netmap.NodeDevice {
+			continue
+		}
+		if s.SpaceName != "" {
+			sec.SpaceName, sec.Node.Name = s.SpaceName, n.Name
+			for j := range sec.Peers {
+				sec.Peers[j].Name = names[sec.Peers[j].ID]
+			}
+		}
+		if len(s.Rules) == 0 {
+			continue
+		}
+		for _, r := range s.Rules {
+			if r.Match.Kind == netmap.MatchGeoIP && !slices.ContainsFunc(n.Lists, func(l int) bool { return s.Lists[l].Name == r.Match.Value }) {
+				return netmap.Contents{}, nil, fail(n, "rule %s needs the list: add it to the node's lists", r)
+			}
+		}
+		sec.Rules = slices.Clone(s.Rules)
+		for _, ch := range s.Chains {
+			if !slices.ContainsFunc(sec.Peers, func(p netmap.Peer) bool { return p.ID == ids[ch.Exit] }) {
+				return netmap.Contents{}, nil, fail(n, "no path to %s, the exit of chain %s", s.Nodes[ch.Exit].Name, ch.Name)
+			}
+			sec.Chains = append(sec.Chains, netmap.Chain{Name: ch.Name, Exit: ids[ch.Exit]})
+		}
+	}
+
 	c := netmap.Contents{SpaceID: k.Space, Version: version, RecoveryKey: k.RecoveryKey, Blobs: header}
 	for i, n := range s.Nodes {
 		if err := checkWithTransports(sections[i]); err != nil {
