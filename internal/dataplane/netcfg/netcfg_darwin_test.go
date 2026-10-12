@@ -641,6 +641,15 @@ func TestSurveyAndDefaultRoute(t *testing.T) {
 	if got := fmt.Sprint(s.Routes); got != "[8.8.8.0/24 via 192.168.1.1 dev en0 10.10.0.0/20 dev utun100]" {
 		t.Errorf("routes %s", got)
 	}
+	// Every identity no owner holds, whatever the route does.
+	for _, p := range []string{"0.0.0.0/0", "127.0.0.0/8", "198.18.0.0/15", "192.168.1.20/32", "8.8.8.0/24", "::1/128"} {
+		if !slices.Contains(s.Held, pfx(p)) {
+			t.Errorf("%s not held: %v", p, s.Held)
+		}
+	}
+	if slices.Contains(s.Held, pfx("0.0.0.0/1")) {
+		t.Error("the route table's own route is held")
+	}
 	if !slices.ContainsFunc(s.Links, func(l Link) bool { return l.Name == "utun7" && !l.Up }) {
 		t.Errorf("links %v", s.Links)
 	}

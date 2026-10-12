@@ -205,3 +205,43 @@ func TestSplitRoutesShadowAHostileNetwork(t *testing.T) {
 		t.Error("IPv6 off: the advertised prefix isn't rejected")
 	}
 }
+
+// Another VPN's own split routes (and IPv6 halves), someone's reject
+// route on an endpoint: the layout never takes an identity they hold, it
+// goes more specific, so applying it can't conflict.
+func TestSplitRoutesNeverTakeAnIdentityAnotherRouteHolds(t *testing.T) {
+	s := home()
+	s.Routes = []netcfg.Route{
+		{Dst: pfx("0.0.0.0/1"), Interface: "utun100"},
+		{Dst: pfx("128.0.0.0/1"), Interface: "utun100"},
+		{Dst: pfx("::/1"), Interface: "utun100"},
+	}
+	s.Held = []netip.Prefix{pfx("0.0.0.0/1"), pfx("128.0.0.0/1"), pfx("::/1"), pfx("198.51.100.7/32"), pfx("127.0.0.0/8")}
+	held := map[netip.Prefix]bool{}
+	for _, p := range s.Held {
+		held[p] = true
+	}
+	for _, ipv6 := range []bool{true, false} {
+		w := routetable.Want{TUN: "utun7", Overlay: overlay, Direct: localPlus(t),
+			Bypass: []netip.Addr{netip.MustParseAddr("198.51.100.7")}, IPv6: ipv6}
+		cfg := routetable.SplitRoutes(w, s)
+		darwinValid(t, cfg)
+		for _, r := range cfg.Routes {
+			if held[r.Dst] {
+				t.Errorf("IPv6 %v: %v takes another route's identity", ipv6, r)
+			}
+		}
+		got := routes(cfg)
+		for _, r := range []string{"0.0.0.0/2 dev utun7", "64.0.0.0/2 dev utun7", "128.0.0.0/2 dev utun7", "192.0.0.0/2 dev utun7", "unreachable 8000::/1"} {
+			if !got[r] {
+				t.Errorf("IPv6 %v: no %q", ipv6, r)
+			}
+		}
+		if ipv6 && !got["::/2 dev utun7"] {
+			t.Error("IPv6 into the TUN beneath the other VPN's ::/1")
+		}
+		if !ipv6 && (!got["unreachable ::/2"] || !got["unreachable 4000::/2"]) {
+			t.Errorf("IPv6 off: the other VPN's ::/1 isn't rejected beneath: %v", got)
+		}
+	}
+}

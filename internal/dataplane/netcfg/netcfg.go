@@ -376,6 +376,11 @@ type Survey struct {
 	// everything is looked up in the main table; Linux's policy routing
 	// never looks them up ahead of the tunnel).
 	Routes []Route
+	// Held are the destinations every unscoped route of the main table no
+	// owner added holds, whatever it does (reject, local, loopback,
+	// redirect routes included): on macOS a route's identity is its
+	// destination, so these are what owners' routes must not take.
+	Held []netip.Prefix
 }
 
 // Link is an interface as Survey sees it.

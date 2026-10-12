@@ -64,7 +64,10 @@ func Ahead(w Want, s netcfg.Survey) int {
 // server's classless routes, another VPN's) gets more specific routes into
 // the TUN covering what of it the rules don't send direct, but for the
 // default gateways, which must stay reachable on-link. A foreign host
-// route can't be outranked: Ahead counts those. Direct prefixes inside an
+// route can't be outranked: Ahead counts those. Where another route holds
+// the identity of one of ours (another VPN's own split routes, a reject
+// route someone added), ours is split into more specific halves instead,
+// so the layout never conflicts with what is there. Direct prefixes inside an
 // on-link subnet, and link-local, multicast and loopback ones, are left to
 // the OS's own routes.
 func SplitRoutes(w Want, s netcfg.Survey) netcfg.Config {
@@ -137,6 +140,9 @@ func splitRoutes(w Want, s netcfg.Survey) (netcfg.Config, int) {
 	for _, r := range s.Routes {
 		taken[r.Dst] = true
 	}
+	for _, p := range s.Held {
+		taken[p] = true
+	}
 	for _, p := range overlay {
 		taken[p] = true // the overlay configurator's routes into the TUN
 	}
@@ -157,25 +163,51 @@ func splitRoutes(w Want, s netcfg.Survey) (netcfg.Config, int) {
 		return netcfg.Route{Dst: p, Type: netcfg.RouteUnreachable}
 	}
 
+	ahead := 0
+	// cover routes p as route says, or, where another route holds p's
+	// identity (another VPN's split routes, someone's reject route), its
+	// halves, and so on: ours are always more specific, so they win
+	// without touching the other's. Pieces that go direct are left to the
+	// direct routes; a host route that can't be outranked counts as
+	// ahead.
+	var cover func(p netip.Prefix, route func(netip.Prefix) netcfg.Route)
+	cover = func(p netip.Prefix, route func(netip.Prefix) netcfg.Route) {
+		switch {
+		case within(p, thrown):
+		case !taken[p] && !ours[p]:
+			add(route(p))
+		case p.Bits() == p.Addr().BitLen():
+			ahead++
+		default:
+			for _, h := range halves(p) {
+				cover(h, route)
+			}
+		}
+	}
+	reject := func(p netip.Prefix) netcfg.Route { return netcfg.Route{Dst: p, Type: netcfg.RouteUnreachable} }
+
 	all4, all6 := netip.PrefixFrom(netip.IPv4Unspecified(), 0), netip.PrefixFrom(netip.IPv6Unspecified(), 0)
 	for _, h := range halves(all4) {
-		if !within(h, thrown) {
-			add(tunnel(h))
-		}
+		cover(h, tunnel)
 	}
 	h6 := halves(all6)
 	if carried(all6) {
 		for _, h := range h6 {
 			for _, q := range halves(h) {
-				if !within(q, thrown) {
-					add(tunnel(q))
-				}
+				cover(q, tunnel)
 			}
 		}
 	}
 	for _, h := range h6 {
-		if !within(h, thrown) {
-			add(netcfg.Route{Dst: h, Type: netcfg.RouteUnreachable})
+		switch {
+		case within(h, thrown):
+		case !taken[h] && !ours[h]:
+			add(reject(h))
+		case !carried(all6):
+			cover(h, reject)
+			// Carried: the TUN's routes are more specific than whoever
+			// holds h; only the reject behind them, for a crash, is
+			// missing.
 		}
 	}
 
@@ -194,7 +226,6 @@ func splitRoutes(w Want, s netcfg.Survey) (netcfg.Config, int) {
 		}
 	}
 
-	ahead := 0
 	shadow := func(c netip.Prefix) {
 		rest, ok := uncovered(c, thrownSet, gatewayHosts)
 		if !ok {

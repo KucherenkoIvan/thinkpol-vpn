@@ -790,6 +790,9 @@ func survey(v view, thinkpol map[netip.Prefix]bool) Survey {
 	}
 	const skip = unix.RTF_REJECT | unix.RTF_BLACKHOLE | unix.RTF_LOCAL | unix.RTF_BROADCAST
 	for _, r := range v.routes {
+		if !isThinkpol(r, thinkpol) {
+			s.Held = append(s.Held, r.dst)
+		}
 		if r.dst.Bits() == 0 || isThinkpol(r, thinkpol) || r.flags&skip != 0 || r.flags&unix.RTF_UP == 0 {
 			continue
 		}
@@ -810,6 +813,7 @@ func survey(v view, thinkpol map[netip.Prefix]bool) Survey {
 		s.Routes = append(s.Routes, routeOf(v, r))
 	}
 	slices.SortFunc(s.OnLink, comparePrefixes)
+	slices.SortFunc(s.Held, comparePrefixes)
 	slices.SortFunc(s.Routes, func(a, b Route) int { return comparePrefixes(a.Dst, b.Dst) })
 	return s
 }
