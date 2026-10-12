@@ -352,6 +352,37 @@ chains:
 	}
 }
 
+// A geoip rule goes to every device, so every device names its list.
+func TestDevicesNeedTheListsOfGeoIPRules(t *testing.T) {
+	spec := `lists:
+  - {name: ru, file: ru.geoip}
+nodes:
+  - {name: a, kind: device, lists: [ru]}
+  - {name: b, kind: device}
+  - name: s
+    kind: server
+    endpoints: [udp://192.0.2.1:4500]
+    ingress: true
+    egress: true
+paths:
+  - [a, s]
+  - [b, s]
+rules:
+  - geoip:ru -> direct
+  - default -> chain:out
+chains:
+  - {name: out, exit: s}
+`
+	f := newFixture(t, "spec.yaml", []byte(spec), nil)
+	if _, _, err := Plan(f.spec, f.keys, 1, nil); err == nil || !strings.Contains(err.Error(), "b: rule geoip:ru -> direct needs the list") {
+		t.Fatalf("err %v", err)
+	}
+	f = newFixture(t, "spec.yaml", []byte(strings.Replace(spec, "{name: b, kind: device}", "{name: b, kind: device, lists: [ru]}", 1)), nil)
+	if _, err := Build(f.spec, f.keys, 1, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestVersions(t *testing.T) {
 	f := labFixture(t)
 	for _, v := range []uint64{0, netmap.MaxVersion + 1} {
