@@ -229,8 +229,8 @@ func TestRouteTableSendsOnlyDirectAroundTheTunnel(t *testing.T) {
 	// specific than its default (a DHCP server's classless routes, another
 	// VPN's split defaults) don't take foreign traffic around the tunnel.
 	// Then the TUN goes down and up: its IPv4 default goes with it without
-	// a word from the kernel, the unreachable default holds, and the
-	// route table is put back once the TUN is up.
+	// a word from the kernel, the re-apply puts the unreachable default in
+	// its place, and the route table is put back once the TUN is up.
 	// (Last in this run: a TUN that goes down loses its IPv6 addresses
 	// until the next map re-applies them.)
 	gw := l.Node(router2).IPv4(lab.NetDevices).String()
@@ -241,15 +241,18 @@ func TestRouteTableSendsOnlyDirectAroundTheTunnel(t *testing.T) {
 	tryPing(foreign4)
 	dev.MustExec(t, "ip", "route", "del", "0.0.0.0/1")
 	dev.MustExec(t, "ip", "route", "del", "128.0.0.0/1")
+	// IPv4's unreachable default follows the link event a debounce later
+	// (TP-057: always there, it would refuse the gateways of interfaces
+	// added meanwhile); the status says the TUN is down.
 	dev.MustExec(t, "ip", "link", "set", "thinkpol0", "down")
-	expectRoutes(map[string]string{foreign4.String(): "unreachable"})
-	tryPing(foreign4)
 	lab.Eventually(t, 15*time.Second, func() error {
 		if !strings.Contains(dev.MustExec(t, "thinkpol", "status"), "route_table_not_enforced") {
 			return fmt.Errorf("the status doesn't say the route table isn't enforced")
 		}
 		return nil
 	})
+	expectRoutes(map[string]string{foreign4.String(): "unreachable"})
+	tryPing(foreign4)
 	dev.MustExec(t, "ip", "link", "set", "thinkpol0", "up")
 	lab.Eventually(t, 15*time.Second, func() error {
 		if got := routeDev(t, dev, foreign4.String()); got != "thinkpol0" {

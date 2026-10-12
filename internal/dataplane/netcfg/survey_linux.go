@@ -4,8 +4,11 @@ package netcfg
 
 import (
 	"context"
+	"fmt"
+	"net"
 	"net/netip"
 	"slices"
+	"strings"
 
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
@@ -21,7 +24,6 @@ func (c *linuxConfigurator) Survey(ctx context.Context) (Survey, error) {
 		return Survey{}, err
 	}
 	var s Survey
-	var indexes []int
 	for _, fam := range []int{netlink.FAMILY_V4, netlink.FAMILY_V6} {
 		routes, err := c.listRoutes(fam, &netlink.Route{Table: unix.RT_TABLE_MAIN, Protocol: unix.RTPROT_KERNEL},
 			netlink.RT_FILTER_TABLE|netlink.RT_FILTER_PROTOCOL)
@@ -34,9 +36,6 @@ func (c *linuxConfigurator) Survey(ctx context.Context) (Survey, error) {
 				continue
 			}
 			s.OnLink = append(s.OnLink, p)
-			if r.LinkIndex != 0 && !slices.Contains(indexes, r.LinkIndex) {
-				indexes = append(indexes, r.LinkIndex)
-			}
 		}
 		rules, err := c.listRules(fam)
 		if err != nil {
@@ -57,11 +56,14 @@ func (c *linuxConfigurator) Survey(ctx context.Context) (Survey, error) {
 	})
 	s.OnLink = slices.Compact(s.OnLink)
 	slices.Sort(s.ForeignRules)
-	for _, i := range indexes {
-		if l, err := c.h.LinkByIndex(i); err == nil {
-			s.OnLinkInterfaces = append(s.OnLinkInterfaces, l.Attrs().Name)
-		}
+	links, err := c.h.LinkList()
+	if err != nil {
+		return Survey{}, fmt.Errorf("netcfg: list links: %w", err)
 	}
-	slices.Sort(s.OnLinkInterfaces)
+	for _, l := range links {
+		a := l.Attrs()
+		s.Links = append(s.Links, Link{Name: a.Name, Up: a.Flags&net.FlagUp != 0})
+	}
+	slices.SortFunc(s.Links, func(a, b Link) int { return strings.Compare(a.Name, b.Name) })
 	return s, nil
 }

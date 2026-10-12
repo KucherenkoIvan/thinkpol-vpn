@@ -361,11 +361,18 @@ type Survey struct {
 	// addresses (Linux: proto kernel, without a gateway): the subnets
 	// reached on-link, both families.
 	OnLink []netip.Prefix
-	// OnLinkInterfaces are the interfaces those routes are on.
-	OnLinkInterfaces []string
+	// Links are the namespace's interfaces, loopback included.
+	Links []Link
 	// ForeignRules are the priorities of policy rules no owner added,
 	// but the OS's own (0, 32766, 32767), both families.
 	ForeignRules []int
+}
+
+// Link is an interface as Survey sees it.
+type Link struct {
+	Name string
+	// Up says the interface is administratively up (it can hold routes).
+	Up bool
 }
 
 // Configurator applies a Config to the OS for one Owner and owns what it

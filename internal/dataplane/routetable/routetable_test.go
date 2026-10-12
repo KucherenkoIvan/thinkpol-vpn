@@ -47,11 +47,20 @@ func ruleStrings(cfg netcfg.Config) []string {
 
 var overlay = []netip.Prefix{pfx("100.64.0.0/10"), pfx("fd12:3456:789a::/48")}
 
+// up is a survey of a device whose TUN is up.
+func up(onLink ...string) netcfg.Survey {
+	s := netcfg.Survey{Links: []netcfg.Link{{Name: "eth0", Up: true}, {Name: "lo", Up: true}, {Name: "thinkpol0", Up: true}, {Name: "wlan0"}}}
+	for _, p := range onLink {
+		s.OnLink = append(s.OnLink, pfx(p))
+	}
+	return s
+}
+
 func TestConfigLayout(t *testing.T) {
 	w := routetable.Want{
 		TUN:     "thinkpol0",
 		Overlay: overlay,
-		Direct:  set(t, "10.0.0.0/8", "198.51.100.0/24", "fc00::/7"),
+		Direct:  set(t, "10.0.0.0/8", "192.168.0.0/16", "198.51.100.0/24", "fc00::/7", "fe80::/10"),
 		// Endpoints: one inside a direct prefix, one adjacent to one (the
 		// throws merge), one IPv4-mapped, one twice.
 		Bypass: []netip.Addr{
@@ -63,12 +72,13 @@ func TestConfigLayout(t *testing.T) {
 		},
 		IPv6: true,
 	}
-	survey := netcfg.Survey{OnLink: []netip.Prefix{
-		pfx("192.168.1.0/24"), pfx("fe80::/64"), pfx("2001:db8:1::/64"),
-		pfx("100.64.0.0/10"), pfx("fd12:3456:789a::/48"), // the TUN's own
-		pfx("fd12:3456:789a:1::/64"),                               // a ULA prefix inside the overlay
-		pfx("8.0.0.0/8"), pfx("1.1.1.0/24"), pfx("203.0.113.9/32"), // public: never trusted
-	}, OnLinkInterfaces: []string{"eth0", "thinkpol0"}}
+	survey := up(
+		"192.168.1.0/24", "fe80::/64", "2001:db8:1::/64",
+		"100.64.0.0/10", "fd12:3456:789a::/48", // the TUN's own
+		"fd12:3456:789a:1::/64",                     // a ULA prefix inside the overlay
+		"8.0.0.0/8", "1.1.1.0/24", "203.0.113.9/32", // public: never trusted
+		"172.16.0.0/24", // private, but not direct by the rules
+	)
 	cfg := routetable.Config(w, survey)
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
@@ -79,27 +89,30 @@ func TestConfigLayout(t *testing.T) {
 		"fd12:3456:789a::/48 dev thinkpol0 table 29808",
 		"unreachable fd12:3456:789a::/48 metric 2048 table 29808",
 		"0.0.0.0/0 dev thinkpol0 table 29808",
-		"unreachable 0.0.0.0/0 metric 2048 table 29808",
 		"::/0 dev thinkpol0 table 29808",
 		"unreachable ::/0 metric 2048 table 29808",
 		"throw 10.0.0.0/8 table 29808",
+		"throw 192.168.0.0/16 table 29808",
 		"throw 198.51.100.0/24 table 29808",
 		"throw 198.51.101.0/32 table 29808",
 		"throw 203.0.113.9/32 table 29808",
 		"throw 2001:db8::1/128 table 29808",
 		"throw fc00::/7 table 29808",
+		"throw fe80::/10 table 29808",
 	}
 	if got := routeStrings(cfg); !slices.Equal(got, want) {
 		t.Errorf("routes:\n got %q\nwant %q", got, want)
 	}
 	wantRules := []string{
+		"IPv4 rule 5298 oif eth0 table 0 suppress_prefixlength 0",
+		"IPv4 rule 5298 oif wlan0 table 0 suppress_prefixlength 0",
 		"IPv4 rule 5299 to 100.64.0.0/10 table 29808",
 		"IPv4 rule 5300 to 192.168.1.0/24 table 0 suppress_prefixlength 0",
-		"IPv4 rule 5300 oif eth0 table 0 suppress_prefixlength 0",
 		"IPv4 rule 5301 not fwmark 0x7470 table 29808",
+		"IPv6 rule 5298 oif eth0 table 0 suppress_prefixlength 0",
+		"IPv6 rule 5298 oif wlan0 table 0 suppress_prefixlength 0",
 		"IPv6 rule 5299 to fd12:3456:789a::/48 table 29808",
 		"IPv6 rule 5300 to fe80::/64 table 0 suppress_prefixlength 0",
-		"IPv6 rule 5300 oif eth0 table 0 suppress_prefixlength 0",
 		"IPv6 rule 5301 not fwmark 0x7470 table 29808",
 	}
 	if got := ruleStrings(cfg); !slices.Equal(got, wantRules) {
@@ -110,10 +123,9 @@ func TestConfigLayout(t *testing.T) {
 // Without IPv6 in the TUN, IPv6 meets only the unreachable default (and
 // the throws): it is dropped, never sent around the tunnel.
 func TestConfigWithoutIPv6(t *testing.T) {
-	cfg := routetable.Config(routetable.Want{TUN: "thinkpol0", Direct: set(t, "fe80::/10")}, netcfg.Survey{})
+	cfg := routetable.Config(routetable.Want{TUN: "thinkpol0", Direct: set(t, "fe80::/10")}, up())
 	want := []string{
 		"0.0.0.0/0 dev thinkpol0 table 29808",
-		"unreachable 0.0.0.0/0 metric 2048 table 29808",
 		"unreachable ::/0 metric 2048 table 29808",
 		"throw fe80::/10 table 29808",
 	}
@@ -122,10 +134,34 @@ func TestConfigWithoutIPv6(t *testing.T) {
 	}
 }
 
+// With the TUN down (or gone), nothing goes to it: both families and the
+// overlay are unreachable but for the throws.
+func TestConfigWithTheTUNDown(t *testing.T) {
+	s := up()
+	s.Links[2].Up = false
+	w := routetable.Want{TUN: "thinkpol0", Overlay: overlay, Direct: set(t, "198.51.100.0/24"), IPv6: true}
+	if routetable.TUNUp(w, s) {
+		t.Fatal("TUNUp with the TUN down")
+	}
+	want := []string{
+		"unreachable 100.64.0.0/10 metric 2048 table 29808",
+		"unreachable fd12:3456:789a::/48 metric 2048 table 29808",
+		"unreachable 0.0.0.0/0 metric 2048 table 29808",
+		"unreachable ::/0 metric 2048 table 29808",
+		"throw 198.51.100.0/24 table 29808",
+	}
+	if got := routeStrings(routetable.Config(w, s)); !slices.Equal(got, want) {
+		t.Errorf("routes:\n got %q\nwant %q", got, want)
+	}
+	if routetable.TUNUp(routetable.Want{TUN: "gone0"}, s) {
+		t.Error("TUNUp for a TUN that isn't there")
+	}
+}
+
 // All of IPv4 direct (no overlay network claiming part of it) is a throw
 // default, not a second default route of the same identity.
 func TestConfigWithEverythingDirect(t *testing.T) {
-	cfg := routetable.Config(routetable.Want{TUN: "thinkpol0", Direct: set(t, "0.0.0.0/0"), IPv6: true}, netcfg.Survey{})
+	cfg := routetable.Config(routetable.Want{TUN: "thinkpol0", Direct: set(t, "0.0.0.0/0"), IPv6: true}, up())
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -140,16 +176,27 @@ func TestConfigWithEverythingDirect(t *testing.T) {
 }
 
 func TestTrustedOnLink(t *testing.T) {
+	direct := lists.Local()
 	for p, want := range map[string]bool{
 		"192.168.1.0/24": true, "10.0.0.0/8": true, "172.16.0.0/12": true, "169.254.0.0/16": true,
 		"fe80::/64": true, "fd00:1::/48": true, "192.168.1.7/32": true,
 		"203.0.113.0/24": false, "203.0.113.128/25": false, "1.1.1.0/24": false, "198.51.100.1/32": false,
-		"2001:db8:1::/64": false, "2001:4860:4860::/64": false, "100.64.0.0/24": false, "203.0.112.0/23": false, "8.0.0.0/8": false, "0.0.0.0/1": false, "224.0.0.0/3": false, "11.0.0.0/7": false,
+		"2001:db8:1::/64": false, "2001:4860:4860::/64": false, "100.64.0.0/24": false, "203.0.112.0/23": false,
+		"8.0.0.0/8": false, "0.0.0.0/1": false, "224.0.0.0/3": false, "11.0.0.0/7": false,
 		"2001:db8::/32": false, "::/1": false, "0.0.0.0/0": false,
 	} {
-		if got := routetable.TrustedOnLink(pfx(p)); got != want {
+		if got := routetable.TrustedOnLink(pfx(p), direct); got != want {
 			t.Errorf("%s: trusted %v, want %v", p, got, want)
 		}
+	}
+	// Where the rules tunnel part of a private range, an on-link subnet
+	// over it isn't trusted: the network can't widen what goes direct.
+	tunneled := direct.Minus(set(t, "10.20.0.0/16"))
+	if routetable.TrustedOnLink(pfx("10.0.0.0/8"), tunneled) || !routetable.TrustedOnLink(pfx("10.21.0.0/16"), tunneled) {
+		t.Error("an on-link subnet over a tunneled private range is trusted, or one beside it isn't")
+	}
+	if routetable.TrustedOnLink(pfx("192.168.1.0/24"), nil) {
+		t.Error("trusted with nothing direct")
 	}
 }
 
@@ -263,7 +310,9 @@ func eventually(t *testing.T, what string, cond func() bool) {
 }
 
 func TestEnforcerAppliesChangesAndReappliesOnEvents(t *testing.T) {
-	f := &fakeConfigurator{events: make(chan struct{}), survey: netcfg.Survey{ForeignRules: []int{5210, 5270, 5400}}}
+	survey := up()
+	survey.ForeignRules = []int{5210, 5270, 5400}
+	f := &fakeConfigurator{events: make(chan struct{}), survey: survey}
 	e := routetable.Open(f, nil)
 	ctx := context.Background()
 	if st := e.Status(); st.Enforced {
@@ -279,7 +328,7 @@ func TestEnforcerAppliesChangesAndReappliesOnEvents(t *testing.T) {
 	if n := f.count(); n != 1 {
 		t.Fatalf("%d Applies for one Want twice, want 1", n)
 	}
-	if st := e.Status(); !st.Enforced || st.Routes != 4 || st.RulesAhead != 2 || st.Error != "" {
+	if st := e.Status(); !st.Enforced || st.Routes != 3 || st.RulesAhead != 2 || st.Error != "" {
 		t.Errorf("status %+v", st)
 	}
 	// After an Enforce the watcher checks once, for what it missed.

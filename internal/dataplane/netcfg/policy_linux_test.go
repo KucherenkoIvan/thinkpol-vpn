@@ -287,8 +287,8 @@ func TestSurveyFindsOnLinkSubnetsAndForeignRules(t *testing.T) {
 			t.Errorf("on-link %v, want %v among them", s.OnLink, want)
 		}
 	}
-	if !slices.Contains(s.OnLinkInterfaces, "eth0") {
-		t.Errorf("on-link interfaces %v, want eth0 among them", s.OnLinkInterfaces)
+	if !slices.Contains(s.Links, netcfg.Link{Name: "eth0", Up: true}) || !slices.Contains(s.Links, netcfg.Link{Name: "lo"}) {
+		t.Errorf("links %v, want eth0 up and lo down among them", s.Links)
 	}
 	if slices.Contains(s.OnLink, pfx("198.51.100.0/24")) {
 		t.Errorf("a static route counted as on-link: %v", s.OnLink)

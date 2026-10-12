@@ -23,8 +23,15 @@ const (
 	// unreachable default behind each, a throw route per direct prefix and
 	// per link endpoint.
 	Table = 0x7470
+	// PriorityLinks looks up the main table, without its default routes,
+	// for lookups bound to a physical interface: the kernel resolving the
+	// gateway of a route given with its device (a DHCP client's default
+	// route, also one inside the overlay's range or on a subnet not
+	// mirrored yet), and sockets bound to it, which routing can't keep in
+	// the tunnel anyway (the firewall's job).
+	PriorityLinks = 5298
 	// PriorityOverlay looks the overlay's networks up in Table, before
-	// anything else: no route in main (a DHCP server's classless route
+	// anything else unbound: no route in main (a DHCP server's classless route
 	// into the overlay's range, an on-link subnet overlapping it) gets
 	// overlay traffic.
 	PriorityOverlay = 5299
@@ -38,9 +45,9 @@ const (
 	// throws, and marked packets, go on to the main table and its
 	// physical default route.
 	PriorityTunnel = 5301
-	// unreachableMetric puts the unreachable defaults behind the TUN's,
-	// so traffic is dropped whenever the TUN can't take it (down, gone,
-	// no IPv6).
+	// unreachableMetric puts the unreachable routes behind the TUN's, so
+	// traffic is dropped whenever the TUN can't take it (no IPv6; for the
+	// overlay, the TUN down or gone too).
 	unreachableMetric = 2048
 )
 
@@ -97,14 +104,16 @@ func prefixes(ps []netip.Prefix) []netip.Prefix {
 	return slices.Compact(out)
 }
 
-// TrustedOnLink is which of the physical interfaces' on-link subnets keep
-// their main-table lookup ahead of the tunnel: those entirely inside the
-// local ranges (lists.Local: RFC 1918 LANs, link-local, ULA). Whatever
-// public subnet a network makes "on-link" (a DHCP address 1.1.1.50/24, a
-// PPP peer, a router advertisement's prefix) goes through the tunnel like
-// any other destination (TunnelCrack's LocalNet attack), unless the rules
-// send it direct.
-func TrustedOnLink(p netip.Prefix) bool {
+// TrustedOnLink is whether one of the physical interfaces' on-link
+// subnets keeps its main-table lookup ahead of the tunnel: only one lying
+// entirely inside the local ranges (lists.Local: RFC 1918 LANs,
+// link-local, ULA) and inside direct, the destinations the rules send
+// around the tunnel. Whatever public subnet a network makes "on-link" (a
+// DHCP address 1.1.1.50/24, a PPP peer, a router advertisement's prefix:
+// TunnelCrack's LocalNet) goes through the tunnel like any other
+// destination, and so does a private one the rules tunnel or block: a
+// hostile network can't widen what goes direct.
+func TrustedOnLink(p netip.Prefix, direct *lists.Set) bool {
 	if !p.IsValid() || p.Bits() == 0 {
 		return false
 	}
@@ -113,7 +122,17 @@ func TrustedOnLink(p netip.Prefix) bool {
 		return false
 	}
 	set, _ := b.Build()
-	return set.Minus(lists.Local()).IsEmpty()
+	return set.Minus(lists.Local()).IsEmpty() && set.Minus(direct).IsEmpty()
+}
+
+// TUNUp reports whether s shows w's TUN up, able to hold its routes.
+func TUNUp(w Want, s netcfg.Survey) bool {
+	for _, l := range s.Links {
+		if l.Name == w.TUN {
+			return l.Up
+		}
+	}
+	return false
 }
 
 func overlaps(p netip.Prefix, among []netip.Prefix) bool {
@@ -128,14 +147,14 @@ func overlaps(p netip.Prefix, among []netip.Prefix) bool {
 // Config is w as netcfg configuration, for each family, given the OS's
 // routing (s):
 //
+//	rule 5298: oif <every link but the TUN and lo> lookup main suppress_prefixlength 0
 //	rule 5299: to <overlay network> lookup 0x7470
 //	rule 5300: to <trusted on-link subnet> lookup main suppress_prefixlength 0
-//	rule 5300: oif <physical interface> lookup main suppress_prefixlength 0
 //	rule 5301: not fwmark 0x7470 lookup 0x7470
 //	table 0x7470: <overlay network> dev <TUN>    (IPv6 only while the TUN carries it)
 //	              unreachable <overlay network> metric 2048
 //	              default dev <TUN>              (IPv6 only while the TUN carries it)
-//	              unreachable default metric 2048
+//	              unreachable default metric 2048 (IPv4 only while the TUN is down)
 //	              throw <direct prefix>, throw <endpoint>
 //
 // Direct traffic and endpoints are thrown on to the main table, so they
@@ -148,12 +167,18 @@ func Config(w Want, s netcfg.Survey) netcfg.Config {
 	overlay := prefixes(w.Overlay)
 	var onLink []netip.Prefix
 	for _, p := range s.OnLink {
-		if TrustedOnLink(p) && !overlaps(p, overlay) {
+		if TrustedOnLink(p, w.Direct) && !overlaps(p, overlay) {
 			onLink = append(onLink, p)
 		}
 	}
 	onLink = prefixes(onLink)
+	up := TUNUp(w, s)
 	for _, f := range []netcfg.Family{netcfg.IPv4, netcfg.IPv6} {
+		for _, l := range s.Links {
+			if l.Name != w.TUN && l.Name != "lo" {
+				cfg.Rules = append(cfg.Rules, netcfg.Rule{Family: f, Priority: PriorityLinks, Oif: l.Name, SuppressDefaultRoutes: true})
+			}
+		}
 		for _, p := range overlay {
 			if netcfg.FamilyOf(p.Addr()) == f {
 				cfg.Rules = append(cfg.Rules, netcfg.Rule{Family: f, Priority: PriorityOverlay, Dst: p, Table: Table})
@@ -166,19 +191,10 @@ func Config(w Want, s netcfg.Survey) netcfg.Config {
 				cfg.Rules = append(cfg.Rules, netcfg.Rule{Family: f, Priority: PriorityMain, Dst: p, SuppressDefaultRoutes: true})
 			}
 		}
-		for _, ifc := range s.OnLinkInterfaces {
-			if ifc != w.TUN {
-				// Lookups for a physical interface: the kernel resolving
-				// a gateway for a route given with it (a DHCP client
-				// adding the default route, on a public subnet or one not
-				// mirrored yet), and sockets bound to it.
-				cfg.Rules = append(cfg.Rules, netcfg.Rule{Family: f, Priority: PriorityMain, Oif: ifc, SuppressDefaultRoutes: true})
-			}
-		}
 		cfg.Rules = append(cfg.Rules, netcfg.Rule{Family: f, Priority: PriorityTunnel, Table: Table, Mark: Mark, Invert: true})
 	}
 	for _, p := range overlay {
-		if p.Addr().Is4() || w.IPv6 {
+		if up && (p.Addr().Is4() || w.IPv6) {
 			cfg.Routes = append(cfg.Routes, netcfg.Route{Dst: p, Interface: w.TUN, Table: Table})
 		}
 		cfg.Routes = append(cfg.Routes, netcfg.Route{Dst: p, Type: netcfg.RouteUnreachable, Metric: unreachableMetric, Table: Table})
@@ -191,15 +207,20 @@ func Config(w Want, s netcfg.Survey) netcfg.Config {
 	set, _ := thrown.Build()
 	throws := set.Prefixes()
 	all4 := netip.PrefixFrom(netip.IPv4Unspecified(), 0)
-	if !slices.Contains(throws, all4) {
-		// (All of IPv4 direct, which the overlay's network never allows,
-		// is a throw default instead.)
-		cfg.Routes = append(cfg.Routes,
-			netcfg.Route{Dst: all4, Interface: w.TUN, Table: Table},
-			netcfg.Route{Dst: all4, Type: netcfg.RouteUnreachable, Metric: unreachableMetric, Table: Table})
+	// (All of IPv4 direct, which the overlay's network never allows, is a
+	// throw default instead.) IPv4's unreachable default is there only
+	// while the TUN is down: a reject route answers the kernel's gateway
+	// lookups for a new interface before the rules for it exist, which
+	// the TUN's own default, bound to the TUN, lets through to main.
+	switch {
+	case slices.Contains(throws, all4):
+	case up:
+		cfg.Routes = append(cfg.Routes, netcfg.Route{Dst: all4, Interface: w.TUN, Table: Table})
+	default:
+		cfg.Routes = append(cfg.Routes, netcfg.Route{Dst: all4, Type: netcfg.RouteUnreachable, Metric: unreachableMetric, Table: Table})
 	}
 	all6 := netip.PrefixFrom(netip.IPv6Unspecified(), 0)
-	if w.IPv6 {
+	if up && w.IPv6 {
 		cfg.Routes = append(cfg.Routes, netcfg.Route{Dst: all6, Interface: w.TUN, Table: Table})
 	}
 	cfg.Routes = append(cfg.Routes, netcfg.Route{Dst: all6, Type: netcfg.RouteUnreachable, Metric: unreachableMetric, Table: Table})
@@ -266,6 +287,9 @@ const (
 	// ErrorUnsupported: the kernel can't hold the table (rules need
 	// Linux 4.17 or later); terminal.
 	ErrorUnsupported = "the route table needs Linux 4.17 or later"
+	// ErrorTUNDown: the TUN is down or gone; everything but direct
+	// destinations is unreachable until it is back.
+	ErrorTUNDown = "the TUN is down: traffic is blocked until it is back"
 )
 
 const (
@@ -384,6 +408,9 @@ func (e *Enforcer) apply(ctx context.Context, w Want, again bool) error {
 		return fmt.Errorf("routetable: %w", err)
 	}
 	e.status.Error = ""
+	if !TUNUp(w, s) {
+		e.status.Enforced, e.status.Error = false, ErrorTUNDown
+	}
 	e.status.RulesAhead = 0
 	for _, p := range s.ForeignRules {
 		if p < PriorityTunnel {
