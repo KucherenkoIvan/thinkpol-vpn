@@ -249,6 +249,7 @@ message Link {
   uint64 queue_full = 12;
 }
 
+// One WireGuard device's egress from the router; its counts are packets.
 message Egress {
   string name = 1;
   uint32 mtu = 2;

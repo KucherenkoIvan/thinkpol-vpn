@@ -1599,6 +1599,7 @@ func (x *Link) GetQueueFull() uint64 {
 	return 0
 }
 
+// One WireGuard device's egress from the router; its counts are packets.
 type Egress struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`

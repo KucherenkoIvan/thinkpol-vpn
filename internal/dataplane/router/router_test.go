@@ -181,6 +181,73 @@ func TestEgressWritesGoToTheTUN(t *testing.T) {
 	}
 }
 
+// bytesTUN reports writes as Linux's TUN does: in bytes, not packets.
+type bytesTUN struct {
+	tun.Device
+	fail error
+}
+
+func (b *bytesTUN) Write(bufs [][]byte, offset int) (int, error) {
+	if b.fail != nil {
+		return 0, b.fail
+	}
+	if _, err := b.Device.Write(bufs, offset); err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, p := range bufs {
+		n += len(p) - offset
+	}
+	return n, nil
+}
+
+// Delivered counts the packets handed to the TUN, whatever unit the TUN
+// reports its write in; a write that fails counts none.
+func TestDeliveredCountsPacketsWhateverTheTUNReports(t *testing.T) {
+	ch := tuntest.NewChannelTUN()
+	dev := &bytesTUN{Device: ch.TUN()}
+	r := router.New(dev)
+	t.Cleanup(func() { _ = r.Close() })
+	stop := make(chan struct{})
+	t.Cleanup(func() { close(stop) })
+	go func() {
+		for {
+			select {
+			case <-ch.Inbound:
+			case <-stop:
+				return
+			}
+		}
+	}()
+	e := egress(t, r, "overlay")
+	if err := r.SetTable(router.Table{Local: []netip.Addr{addr("100.64.0.1")}}); err != nil {
+		t.Fatal(err)
+	}
+	const n = 10
+	batch := func() [][]byte {
+		bufs := make([][]byte, n)
+		for i := range bufs {
+			p := packettest.UDPDatagram(netip.MustParseAddrPort("100.64.0.2:4000"), netip.MustParseAddrPort("100.64.0.1:5000"), make([]byte, 1000))
+			bufs[i] = append(make([]byte, 16), p...)
+		}
+		return bufs
+	}
+	if got, err := e.Write(batch(), 16); err != nil || got != n {
+		t.Fatalf("Write: %d, %v; want %d packets", got, err, n)
+	}
+	if s, c := e.Status(), r.Counters(); s.Delivered != n || c.Delivered != n {
+		t.Fatalf("delivered %d (egress) and %d (router), want %d packets", s.Delivered, c.Delivered, n)
+	}
+
+	dev.fail = errors.New("no room")
+	if _, err := e.Write(batch(), 16); err == nil {
+		t.Fatal("a failed TUN write went unreported")
+	}
+	if s, c := e.Status(), r.Counters(); s.Delivered != n || c.Delivered != n {
+		t.Fatalf("after a failed write: delivered %d (egress) and %d (router), want %d", s.Delivered, c.Delivered, n)
+	}
+}
+
 // What a WireGuard device decrypts reaches the TUN only for the node's own
 // addresses: a peer can't route through the node into its other networks.
 func TestEgressWritesOnlyLocalDestinations(t *testing.T) {

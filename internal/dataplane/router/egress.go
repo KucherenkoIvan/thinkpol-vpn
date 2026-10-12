@@ -41,7 +41,7 @@ type EgressStatus struct {
 	MTU       int
 	Queued    int    // packets waiting for the WireGuard device now
 	Routed    uint64 // queued for the WireGuard device
-	Delivered uint64 // decrypted by the device and written to the TUN
+	Delivered uint64 // decrypted by the device and written to the TUN (a failed write counts none)
 	Forwarded uint64 // of those, for the internet: the node forwards them (Table.Forward)
 	NotLocal  uint64 // decrypted for a destination not the node's own (nor the internet, forwarding), dropped
 	QueueFull uint64 // dropped: the device fell behind
@@ -188,7 +188,7 @@ func (e *Egress) Write(bufs [][]byte, offset int) (int, error) {
 		return len(bufs), nil
 	}
 	// Counted before the write: a TUN with offloads coalesces the packets
-	// in place, and reports what it wrote in bytes, not packets.
+	// in place.
 	var fwd uint64
 	if c.forward[e] {
 		for _, b := range out {
@@ -197,16 +197,17 @@ func (e *Egress) Write(bufs [][]byte, offset int) (int, error) {
 			}
 		}
 	}
+	// Linux's TUN reports a write in bytes, not packets, and a failed one
+	// doesn't say which packets it took: count the packets handed over, and
+	// none of a write that failed.
 	n, err := e.r.tun.Write(out, offset)
-	e.delivered.Add(uint64(n))
-	e.r.c.delivered.Add(uint64(n))
-	if err == nil {
-		e.forwarded.Add(fwd)
-		e.r.c.forwarded.Add(fwd)
-	}
 	if err != nil {
 		return n, err
 	}
+	e.delivered.Add(uint64(len(out)))
+	e.r.c.delivered.Add(uint64(len(out)))
+	e.forwarded.Add(fwd)
+	e.r.c.forwarded.Add(fwd)
 	return len(bufs), nil
 }
 
