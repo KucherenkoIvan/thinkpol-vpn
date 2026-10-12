@@ -49,6 +49,7 @@ type node struct {
 	section netmap.Section
 	blobs   func(netmap.BlobRef) ([]byte, bool) // for EngineConfig.Blobs
 	forward bool                                // for EngineConfig.Forward
+	standIn func(netmap.BlobKind, string) (netmap.BlobRef, []byte, bool)
 	engine  *dataplane.Engine
 	stack   *stack
 }
@@ -104,7 +105,8 @@ func (nd *node) start(t *testing.T, net *memory.Network) {
 	}
 	ch := tuntest.NewChannelTUN()
 	e, err := dataplane.NewEngine(dataplane.EngineConfig{
-		ID: nd.id, Space: testSpace, WireGuardKey: nd.key, Registry: reg, TUN: ch.TUN(), Path: fastPaths, Blobs: nd.blobs, Forward: nd.forward,
+		ID: nd.id, Space: testSpace, WireGuardKey: nd.key, Registry: reg, TUN: ch.TUN(), Path: fastPaths, Blobs: nd.blobs, StandIn: nd.standIn,
+		Forward: nd.forward,
 	})
 	if err != nil {
 		t.Fatal(err)

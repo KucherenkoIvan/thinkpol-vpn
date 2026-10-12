@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -387,4 +388,56 @@ func TestExitDevicesFollowTheRules(t *testing.T) {
 	}
 	ping(t, a, s.v4)
 	ping(t, a, b.v4)
+}
+
+// The map moves ru to a new list the node doesn't have yet: the rules keep
+// the previous one (EngineConfig.StandIn) until the new one checks out.
+func TestRulesKeepThePreviousListUntilItsSuccessorArrives(t *testing.T) {
+	list := func(prefixes ...string) ([]byte, netmap.BlobRef) {
+		var b lists.Builder
+		for _, p := range prefixes {
+			if err := b.AddPrefix(netip.MustParsePrefix(p)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		set, _ := b.Build()
+		blob := set.Blob()
+		return blob, netmap.BlobRef{Kind: netmap.BlobGeoIP, SHA256: sha256Of(blob), Size: uint64(len(blob)), Name: "ru"}
+	}
+	old, oldRef := list("77.88.0.0/18")
+	next, nextRef := list("5.255.255.0/24")
+	store := &blobStore{blobs: map[[32]byte][]byte{}}
+	var standIns atomic.Int32
+	net := memory.NewNetwork(memory.Datagram)
+	a, s, _ := m0()
+	withChain(t, a, s, "geoip:ru -> direct", "default -> chain:nl")
+	a.section.Blobs = []netmap.BlobRef{nextRef}
+	a.blobs = store.get
+	a.standIn = func(kind netmap.BlobKind, name string) (netmap.BlobRef, []byte, bool) {
+		standIns.Add(1)
+		if kind == netmap.BlobGeoIP && name == "ru" {
+			return oldRef, old, true
+		}
+		return netmap.BlobRef{}, nil, false
+	}
+	for _, nd := range []*node{s, a} {
+		nd.start(t, net)
+	}
+	yandex, newer := netip.MustParseAddr("77.88.8.8"), netip.MustParseAddr("5.255.255.5")
+	if got := routeOf(t, a, yandex); got != sentDirect {
+		t.Errorf("with the previous list standing in: %s goes %s", yandex, got)
+	}
+	if standIns.Load() == 0 {
+		t.Fatal("the stand-in was never asked")
+	}
+	store.put(nextRef.SHA256, next)
+	if err := a.engine.ReloadRules(); err != nil {
+		t.Fatal(err)
+	}
+	if got := routeOf(t, a, newer); got != sentDirect {
+		t.Errorf("with the new list: %s goes %s", newer, got)
+	}
+	if got := routeOf(t, a, yandex); got != exitOf(s) {
+		t.Errorf("with the new list: %s goes %s, want the exit", yandex, got)
+	}
 }

@@ -9,6 +9,7 @@ import (
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/ipc"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/worker"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/blobs"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
 
@@ -51,6 +52,12 @@ func serveSpace(log *slog.Logger, base DataPlane) worker.Serve {
 			}
 		}
 
+		seeds := s.Seeds
+		if seeds == nil {
+			seeds = worker.NewSeeds()
+		}
+		retainSeeds(seeds, m)
+
 		ctx, cancel := context.WithCancel(ctx)
 		defer cancel()
 		var badConfig atomic.Pointer[error]
@@ -72,6 +79,11 @@ func serveSpace(log *slog.Logger, base DataPlane) worker.Serve {
 						badConfig.Store(&err)
 						cancel()
 						return
+					}
+					// Seeds the new map doesn't name go; the ones it
+					// names came ahead of this config.
+					if next, err := netmap.Verify(c.Map, first.Trust); err == nil {
+						retainSeeds(seeds, next)
 					}
 					select {
 					case <-maps:
@@ -103,6 +115,12 @@ func serveSpace(log *slog.Logger, base DataPlane) worker.Serve {
 		// The worker's namespace forwards and SNATs, and the supervisor's
 		// tables confine it, so a server allowing egress is an exit here.
 		dp.Forward = true
+		bo := base.blobOptions
+		bo.Store, bo.Log = seedStore{seeds}, log
+		if bo.Limits.MaxHeld == 0 {
+			bo.Limits.MaxHeld = blobs.ServerMaxHeldSize
+		}
+		dp.Blobs, dp.ServeBlobs = blobs.New(bo), true
 		// The space's own figures only (TP-041 seals them into its
 		// telemetry).
 		dp.StatusAttrs = func() []any {
@@ -122,4 +140,13 @@ func serveSpace(log *slog.Logger, base DataPlane) worker.Serve {
 		}
 		return err
 	}
+}
+
+// retainSeeds drops the seeds m's header doesn't list.
+func retainSeeds(seeds *worker.Seeds, m *netmap.Map) {
+	listed := map[[32]byte]bool{}
+	for _, ref := range m.Header().Blobs {
+		listed[ref.SHA256] = true
+	}
+	seeds.Retain(func(sha [32]byte) bool { return listed[sha] })
 }

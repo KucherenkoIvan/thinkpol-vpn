@@ -41,6 +41,7 @@ A running device node is controlled through a local API, and the CLI is its firs
 - **For TP-046 (service install):** (acceptance items in TP-046's Notes) create the `thinkpol` group and add the installing user; run the service as root; don't use systemd's `RuntimeDirectory=` for `/run/thinkpol-api` unless it ends up exactly 0750 root:thinkpol (the service refuses anything else; simplest is to let the service create it). Connect-on-boot is `THINKPOL_CONNECT` / `-connect` (default true today; D5 wants the installed default off).
 - **For TP-049 (tray):** use `localapi.Client` (sanitized results, explained errors, `errors.Is` with `localapi.ErrPermissionDenied` / `ErrNotRunning` / `ErrServerMode`); `WatchStatus` for live state; the user must be in the `thinkpol` group. Missing for the tray, each a new RPC or field (wire-compatible additions): space switching (D9: `ListSpaces` returns one space today), `owned by <space>` for the entry in use (needs the entry's owner space in the map, TP-040), kill switch (TP-048) and connect-on-boot (TP-046) toggles.
 - **Later:** a server's per-space data plane status lives in its worker process; reporting it needs a worker → supervisor status message over ipc (with TP-041's telemetry, or when guest admins get status).
+- **From TP-017:** `blobs.Service.Status()` (counts only: wanted, held, stand-ins, skipped, failed, fetched, loaded, rejected, store rejected, abandoned, served, not here, busy, not peer; nothing from the map or about peers) is ready for the status API; `DataPlane.Blobs` holds the service. A disconnected device keeps its lists (the service keeps its wants with no peers); only removal from the space prunes them.
 
 ## Review findings
 Review verdict: merge after these. All fixed 2026-10-12; evidence per item below.
@@ -69,3 +70,4 @@ Review verdict: merge after these. All fixed 2026-10-12; evidence per item below
 - 2026-10-12 in-progress → review — review findings fixed; merged origin/rewrite (TP-013); make lint, make test, make test-race and make lab-test green
 - 2026-10-12 merged origin/rewrite (TP-015) into the branch and wired the local rules file to the rule engine (finding 5, merged second); docs (TP-015 review note folded into Notes)
 - 2026-10-12 review → done — merged into rewrite
+- 2026-10-12 docs (TP-017): notes from blob distribution

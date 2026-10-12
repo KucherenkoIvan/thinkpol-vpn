@@ -62,6 +62,7 @@ Ordered routing rules decide per destination whether traffic goes direct, throug
 - **TP-014 (egress):** the exit's router still drops a device's internet traffic as `NotLocal` (`TestRulesRouteThroughTheChainsExit` waits for exactly that); relax the check per egress on egress-allowed nodes.
 - **TP-017 (blobs):** feed `EngineConfig.Blobs` from the store and call `Engine.ReloadRules()` when a blob the section names arrives.
 - **TP-004 / lab tickets:** the dev spec has no rules, chains, presets or blob refs yet; whoever first needs them in the lab (TP-018/TP-023) adds them (rules as `netmap.ParseRule` text, chains naming an exit node, `.geoip` files → named `BlobRef`s).
+- **From TP-017 (wired on merge):** `agent.RunDataPlane` feeds `EngineConfig.Blobs` from the blob service (`Service.Get` by hash) and calls `Engine.ReloadRules()` whenever the service's held set changes (`Service.Subscribe`). New optional `EngineConfig.StandIn` (fed by `Service.Latest`): while the section's list isn't held yet, the rules use the previous list of that kind and name, checked against its own reference; `TestRulesKeepThePreviousListUntilItsSuccessorArrives`. Devices hold only their section's blobs, so the builder must name in a device's section every list its rules and presets use.
 
 ## Review findings
 Two reviewers; orchestrator decisions. The compiler held; one blocker.
@@ -89,3 +90,4 @@ Two reviewers; orchestrator decisions. The compiler held; one blocker.
 - 2026-10-12 review fixes: B1, D2, F3–F5, N1–N4; merged origin/rewrite (TP-013); DESIGN.md "Routing rules and DNS" (fail-closed presets, reader 1, clipped cidrs, exit devices only for chains in use); TP-022's Notes (the local rules file)
 - 2026-10-12 in-progress → review — every finding checked; `make lint`, `make test` and `go test -race` on dataplane, rules, router, netmap and lists pass
 - 2026-10-12 review → done — merged into rewrite
+- 2026-10-12 docs (TP-017): notes from blob distribution

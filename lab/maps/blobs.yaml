@@ -1,0 +1,37 @@
+# The blob distribution lab map (TP-017): device-a uses a GeoIP list it
+# doesn't have and fetches it through the overlay from its peers, server-2
+# first (it comes first in paths), then server-1. Development tooling; the
+# format is in `thinkpol dev map spec`.
+#
+# Set SERVER_1_IPV4 and SERVER_2_IPV4 to the servers' addresses on the
+# servers network, and RU_LIST to a list blob `thinkpol dev lists build`
+# wrote:
+#
+#   thinkpol dev keygen space -out keys
+#   thinkpol dev keygen node -out keys server-1 server-2 device-a
+#   thinkpol dev lists build -only ru -out lists dbip-country-lite.csv
+#   SERVER_1_IPV4=... SERVER_2_IPV4=... RU_LIST=$PWD/lists/ru.geoip \
+#     thinkpol dev map build -keys keys -out map.bin lab/maps/blobs.yaml
+
+lists:
+  - name: ru
+    file: ${RU_LIST}
+
+nodes:
+  - name: server-1
+    kind: server
+    ingress: true
+    endpoints:
+      - udp://${SERVER_1_IPV4}:4500
+  - name: server-2
+    kind: server
+    ingress: true
+    endpoints:
+      - udp://${SERVER_2_IPV4}:4500
+  - name: device-a
+    kind: device
+    lists: [ru]
+
+paths:
+  - [device-a, server-2]
+  - [device-a, server-1]

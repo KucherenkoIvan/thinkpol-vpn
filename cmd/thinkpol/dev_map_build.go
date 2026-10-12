@@ -40,6 +40,9 @@ func runDevMapBuild(_ context.Context, e env, args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := devmap.ReadLists(spec, os.ReadFile); err != nil {
+		return err
+	}
 	keys, err := devmap.LoadKeys(*dir, spec)
 	if err != nil {
 		return err
