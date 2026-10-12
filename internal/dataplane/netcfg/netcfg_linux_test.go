@@ -140,10 +140,68 @@ func (n *testNS) awaitLinkDown(t *testing.T, link string, routes int) {
 	}
 }
 
+// settle waits until the kernel has finished what it does on its own
+// after an IPv6 address or a link comes up. Duplicate address detection
+// runs from a work queue, and only when it ends does an address lose its
+// tentative flag and get its local route (table 255), so a snapshot taken
+// earlier would race it.
+func settle(t *testing.T, h *netlink.Handle) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		pending := unsettled(t, h)
+		if pending == "" {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the kernel never settled: %s", pending)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// unsettled names an IPv6 address the kernel isn't done with, or is "".
+func unsettled(t *testing.T, h *netlink.Handle) string {
+	t.Helper()
+	links, err := h.LinkList()
+	if err != nil {
+		t.Fatal(err)
+	}
+	up := map[int]bool{}
+	for _, l := range links {
+		up[l.Attrs().Index] = l.Attrs().Flags&net.FlagUp != 0
+	}
+	addrs, err := h.AddrList(nil, netlink.FAMILY_V6)
+	if err != nil {
+		t.Fatal(err)
+	}
+	routes, err := h.RouteListFiltered(netlink.FAMILY_V6, &netlink.Route{Table: unix.RT_TABLE_LOCAL}, netlink.RT_FILTER_TABLE)
+	if err != nil {
+		t.Fatal(err)
+	}
+	local := map[string]bool{}
+	for _, r := range routes {
+		if r.Type == unix.RTN_LOCAL && r.Dst != nil {
+			local[r.Dst.IP.String()] = true
+		}
+	}
+	for _, a := range addrs {
+		switch {
+		case a.Flags&unix.IFA_F_TENTATIVE != 0:
+			return a.IPNet.String() + " is tentative"
+		case up[a.LinkIndex] && a.Flags&unix.IFA_F_DADFAILED == 0 && !local[a.IP.String()]:
+			return a.IPNet.String() + " has no local route yet"
+		}
+	}
+	return ""
+}
+
 // snapshot is everything netcfg could touch in a namespace: links, every
-// address and every route in every table, as sorted lines.
+// address and every route in every table, as sorted lines, once the
+// kernel has settled.
 func snapshot(t *testing.T, h *netlink.Handle) []string {
 	t.Helper()
+	settle(t, h)
 	var out []string
 	links, err := h.LinkList()
 	if err != nil {
@@ -254,10 +312,26 @@ func requireSame(t *testing.T, what string, want, got []string) {
 
 // changes counts address and route events (ours, or for non-link-local
 // addresses) in the namespace while f runs, so a no-op can be told from a
-// remove-and-re-add.
+// remove-and-re-add. Each subscription delivers its events in order, so
+// after f it makes one address and one route change of its own, on a
+// dummy link it then removes, and counts what comes before them: however
+// late the events are read, none is missed or miscounted.
 func (n *testNS) changes(t *testing.T, f func()) int {
 	t.Helper()
+	const sentinelLink = "tpsentinel"
+	sentinelAddr := netip.MustParsePrefix("192.0.2.254/32")
+	sentinelRoute := netip.MustParsePrefix("198.51.100.254/32")
+	link := n.dummy(t, sentinelLink)
+	defer func() {
+		if err := n.h.LinkDel(link); err != nil {
+			t.Error(err)
+		}
+	}()
+	if err := n.h.LinkSetUp(link); err != nil {
+		t.Fatal(err)
+	}
 	done := make(chan struct{})
+	defer close(done)
 	routes := make(chan netlink.RouteUpdate, 1024)
 	addrs := make(chan netlink.AddrUpdate, 1024)
 	ns := n.ns
@@ -265,27 +339,34 @@ func (n *testNS) changes(t *testing.T, f func()) int {
 		t.Fatal(err)
 	}
 	if err := netlink.AddrSubscribeWithOptions(addrs, done, netlink.AddrSubscribeOptions{Namespace: &ns}); err != nil {
-		close(done)
 		t.Fatal(err)
 	}
 	f()
+	n.ip(t, "addr", "add", sentinelAddr.String(), "dev", sentinelLink)
+	n.ip(t, "route", "add", sentinelRoute.String(), "dev", sentinelLink, "proto", "static")
 	count := 0
-	timeout := time.After(300 * time.Millisecond)
-	for {
+	timeout := time.After(30 * time.Second)
+	for addrSeen, routeSeen := false, false; !addrSeen || !routeSeen; {
 		select {
 		case u := <-routes:
-			if isOwnerProtocol(u.Protocol) {
+			switch {
+			case u.Dst != nil && u.Dst.String() == sentinelRoute.String():
+				routeSeen = true
+			case !routeSeen && isOwnerProtocol(u.Protocol):
 				count++
 			}
 		case u := <-addrs:
-			if !u.LinkAddress.IP.IsLinkLocalUnicast() {
+			switch {
+			case u.LinkAddress.String() == sentinelAddr.String():
+				addrSeen = true
+			case !addrSeen && !u.LinkAddress.IP.IsLinkLocalUnicast():
 				count++
 			}
 		case <-timeout:
-			close(done)
-			return count
+			t.Fatalf("the sentinel changes never came back (address %v, route %v)", addrSeen, routeSeen)
 		}
 	}
+	return count
 }
 
 // fullConfig exercises everything the port has, dual-stack. Routes print
