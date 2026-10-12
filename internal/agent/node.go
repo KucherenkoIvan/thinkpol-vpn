@@ -56,7 +56,7 @@ type Node struct {
 // its mode: a node whose map is invalid, or holds no section for its keys,
 // never starts.
 func Prepare(cfg Config, logs Logs) (*Node, error) {
-	if err := cfg.Check(); err != nil {
+	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 	cfg.StateDir = filepath.Clean(cfg.StateDir)

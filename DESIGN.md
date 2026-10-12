@@ -232,7 +232,7 @@ Versions only go up, and the envelope is signed by the space's **signing key**. 
 
 **Kernel usage.** `config`, `app`, `observability`, `sqlite` and `webui` for the controller; `grpckit` for the push channel to nodes, which needs **streaming RPCs** (missing in grpckit today: add server and client stream interceptors there first). The data plane uses plain ports and adapters with no DDD aggregates: packets aren't domain events.
 
-The node agent uses go-kernel's `config` and `app` but not `observability` yet (it is stdout-only); that waits on KRN-005, which adds writer, level and format options.
+The node agent uses go-kernel's `config`, `app` and `observability`: `thinkpol up`'s environment variables and flags come from one tagged struct (no `.env` files, validated once after the flags), `app` runs it with the agent's logger and a second SIGINT/SIGTERM force-quits a hung shutdown, and its log is `observability`'s text logger writing to stderr and the in-memory ring at the node's own level, never `LOG_LEVEL`.
 
 **Protobuf contracts live in this repo** under `proto/`, buf-managed (the map format, the local service API, the controller's node API), never in go-kernel's `contracts/`. This is a deliberate thinkpol-only exception to the kernel convention of hosting consumers' contracts: these schemas are wire formats between thinkpol's own binaries, not contracts between separate services.
 

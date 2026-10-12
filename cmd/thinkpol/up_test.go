@@ -115,3 +115,29 @@ func tempDir(t *testing.T) string {
 	}
 	return d
 }
+
+// up's flags are agent.Config's tags: the help names each one's variable,
+// and a flag overrides its variable before the configuration is validated.
+func TestUpFlagsOverrideTheEnvironment(t *testing.T) {
+	code, _, stderr := runCLI(t, "up", "-h")
+	for _, want := range []string{"-state", "(env THINKPOL_STATE_DIR)", "-log-level", "(env THINKPOL_LOG_LEVEL)", "-dns-upstream"} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("exit %d, help misses %q:\n%s", code, want, stderr)
+		}
+	}
+
+	state, _ := m0State(t, "device-a")
+	path := filepath.Join(state, agent.MapFileName)
+	env := readTestFile(t, path)
+	env[len(env)/2] ^= 1 // stops `up` right after validation, before any data plane
+	if err := os.WriteFile(path, env, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("THINKPOL_LINK_MTU", "100")
+	if code, _, stderr := runCLI(t, "up", "-state", state); code != 1 || !strings.Contains(stderr, "link MTU 100") {
+		t.Fatalf("an invalid variable must fail validation: exit %d, stderr %q", code, stderr)
+	}
+	if code, _, stderr := runCLI(t, "up", "-state", state, "-link-mtu", "1500"); code != 1 || !strings.Contains(stderr, "is not a valid map") {
+		t.Fatalf("the flag must override the variable before validation: exit %d, stderr %q", code, stderr)
+	}
+}
