@@ -44,9 +44,33 @@ Nodes that allow egress forward a space's internet traffic, IPv4 and IPv6, and n
 - **For TP-038 (provisioning):** a container runtime's or host firewall's `FORWARD` drop (Docker, ufw) still wins over the supervisor's accepts: `node add` must allow forwarding from `tp-space*` to the uplink (or not install such policies). Provider-private ranges are reachable from exits; block them there if a provider's network needs it.
 - **For TP-021 / TP-048 (leaks, kill switch):** an exit without IPv6 rejects IPv6 with ICMPv6 no route; the device must still block IPv6 outside the tunnel itself.
 
+## Review findings
+Two reviewers (security, architecture), 2026-10-12; decided by the orchestrator.
+
+Blocking:
+- [ ] B1 ICMP RELATED interference across spaces and with the root (conntrack matches ICMP errors by the inner tuple; zone 0 is shared): bind every accept to the slot owning the conntrack entry by its original-direction addresses (`ct original saddr|daddr`): forward replies and egress/dial accepts; input: established only (no related) and the original destination the slot's transit address. Comments and DESIGN say what isolates (anti-spoof + original-tuple binding; zones are belt and braces). Tests: crafted ICMP port-unreachable/frag-needed from a worker quoting a root UDP flow (no ECONNREFUSED at the root socket, route MTU unchanged), the forward variant quoting another space's flow, a negative control with the binding removed
+- [ ] B2 Root forwarding the supervisor turned on itself: per family `iifname != tp-space* oifname != tp-space* drop` (not when forwarding was already on); the "we turned it on" fact persisted. LAN sub-test fixed (forwarding on before: nothing masqueraded; off before: LAN traffic dropped)
+
+Should-fix:
+- [ ] S1 `iifname tp-space* ct state invalid,untracked drop` before the accepts; a postrouting backstop dropping transit sources leaving non-space interfaces unmasqueraded (v4/v6)
+- [ ] S2 Sysctls: saved values persisted in the state dir and adopted on start; a key restored only if it still holds the value written; all/forwarding resetting per-interface flags minded; accept_ra 0 on the root veth ends
+- [ ] S3 Private ranges blocked by default for egress and dials (10/8, 172.16/12, 192.168/16, 100.64/10 incl. 100.100.100.200, 168.63.129.16, fc00::/7, plus metadata/link-local); `Options.EgressAllowed []netip.Prefix` accepted ahead of the drops; the lab sets it for its internet
+- [ ] S4 Dials: `oifname <uplink>` (uplink found with egress off too); protocol from the endpoint's transport (`Transport.Network()`; `Dial{Addr, Proto}`); a set instead of slots×endpoints×2 rules if easy; TP-040 note (guest dials: cap, public unicast only, never the node's addresses, count shown to the owner, only with egress granted)
+- [ ] S5 Per-slot conntrack cap: `ct state new ct count over MaxFlowsPerSpace drop` ahead of the accepts; default ~¼ of nf_conntrack_max; `Options.MaxFlowsPerSpace`; TP-040 note
+- [ ] S6 Masquerade fully random within a port range (32768–60999); setListeners refuses listener ports inside it
+- [ ] S7 The uplink is a node fact the supervisor owns: `Options.Uplink` (default FindUplink; package renamed `uplink`), re-checked on SetSpaces and on default-route changes (netlink subscription); `Space.Egress` becomes `EgressGrant{IPv4, IPv6}` intersected with the uplink's families; interface names validated; FindUplink ignores ULA for IPv6 egress
+- [ ] S8 Ordering: new egress stored under the lock; workers signalled only after applyIsolation succeeds; an applySpaceTable failure is logged and retried on the next signal, the worker isn't killed
+- [ ] S9 Observability: device mode logs "exit" truthfully and warns when AllowEgress && !Exit; `Supervisor.Egress() EgressInfo{Uplink, IPv4, IPv6, Forwarding4/6, Err}` in server status; router `Forwarded` counter; nft rule counters read (tagged by UserData) into `WorkerInfo.EgressPackets/Bytes` or removed; conntrack entries with the slot's transit source flushed when egress changes; forwarding off when the last egress/dial goes
+- [ ] S10 Downstream notes copied into TP-018, TP-020, TP-021, TP-030, TP-038, TP-040, TP-048 (Log line each)
+- [ ] S11 Tests: blocked destinations with egress on (metadata v4/v6, link-local, the other space's transit, private ranges), wrong-protocol dial, space table rewritten on an egress toggle, accept_ra 1→2 and restored on Close; counters instead of sleeps in negative checks; the lab test says the egress-off phase is refused by the engine first
+
+Nits:
+- [ ] Comments (isolation_linux.go:70-72, netsysctl_linux.go:20, slotZone); devmap chain/exit errors with file positions; `-secrets-seed` → `-insecure-secrets-seed` with per-link HMAC derivation
+
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-11 docs (TP-010 review): notes from the shared listener
 - 2026-10-12 docs (TP-013 review): notes from the ingress and egress settings
 - 2026-10-12 backlog → in-progress — owner: agent-tp-014, branch: tp-014-egress-linux
 - 2026-10-12 in-progress → review — acceptance checked; lint, test, race and lab checks as in Notes; DESIGN "Data plane" and "Server agent" describe the egress tables (conntrack zones narrowed, see Notes)
+- 2026-10-12 review → has-errors — two blockers (B1 ICMP related across spaces, B2 root forwarding), S1–S11 and nits from review
