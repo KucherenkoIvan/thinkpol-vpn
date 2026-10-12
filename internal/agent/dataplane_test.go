@@ -293,6 +293,10 @@ func (c *failingConfigurator) DefaultRoute(context.Context, netcfg.Family) (netc
 	return netcfg.Route{}, netcfg.ErrNoDefaultRoute
 }
 
+func (c *failingConfigurator) Watch(context.Context) (<-chan struct{}, error) {
+	return nil, errors.ErrUnsupported
+}
+
 func (c *failingConfigurator) Close() error { return nil }
 
 func TestAFailedApplyIsRetried(t *testing.T) {

@@ -130,8 +130,25 @@ func snapshot(t *testing.T, h *netlink.Handle) []string {
 	for _, r := range routes {
 		out = append(out, "route "+routeLine(r, names))
 	}
+	for _, fam := range []int{netlink.FAMILY_V4, netlink.FAMILY_V6} {
+		rules, err := h.RuleList(fam)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, r := range rules {
+			out = append(out, "rule "+ruleLine(r))
+		}
+	}
 	slices.Sort(out)
 	return out
+}
+
+func ruleLine(r netlink.Rule) string {
+	s := fmt.Sprintf("family %d prio %d table %d mark %#x invert %v suppress %d proto %d", r.Family, r.Priority, r.Table, r.Mark, r.Invert, r.SuppressPrefixlen, r.Protocol)
+	if r.Mask != nil {
+		s += fmt.Sprintf(" mask %#x", *r.Mask)
+	}
+	return s
 }
 
 func routeLine(r netlink.Route, names map[int]string) string {
@@ -170,18 +187,31 @@ func routesWith(t *testing.T, h *netlink.Handle, match func(netlink.RouteProtoco
 		if !match(r.Protocol) {
 			continue
 		}
-		l, err := h.LinkByIndex(r.LinkIndex)
-		if err != nil {
-			t.Fatal(err)
+		dev := ""
+		if r.LinkIndex != 0 {
+			l, err := h.LinkByIndex(r.LinkIndex)
+			if err != nil {
+				t.Fatal(err)
+			}
+			dev = l.Attrs().Name
 		}
 		s := fmt.Sprintf("%d %v", r.Table, r.Dst)
 		if ones, _ := r.Dst.Mask.Size(); r.Dst == nil || ones == 0 {
 			s = fmt.Sprintf("%d default", r.Table)
 		}
+		switch r.Type {
+		case unix.RTN_THROW:
+			s, dev = "throw "+s, ""
+		case unix.RTN_UNREACHABLE:
+			s, dev = "unreachable "+s, ""
+		}
 		if r.Gw != nil {
 			s += " via " + r.Gw.String()
 		}
-		out = append(out, s+fmt.Sprintf(" dev %s metric %d", l.Attrs().Name, r.Priority))
+		if dev != "" {
+			s += " dev " + dev
+		}
+		out = append(out, s+fmt.Sprintf(" metric %d", r.Priority))
 	}
 	slices.Sort(out)
 	return out
@@ -525,9 +555,10 @@ func TestMain(m *testing.M) {
 }
 
 var crashConfigs = map[string]func() netcfg.Config{
-	"full":  fullConfig,
-	"many":  func() netcfg.Config { return manyRoutes(manyRoutesCount) },
-	"table": tableConfig,
+	"full":   fullConfig,
+	"many":   func() netcfg.Config { return manyRoutes(manyRoutesCount) },
+	"table":  tableConfig,
+	"policy": policyConfig,
 }
 
 // tableConfig is a route-table owner's: routes only, on the overlay's
