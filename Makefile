@@ -95,6 +95,9 @@ $(TOOLS_STAMP):
 # own, named after this checkout, so several checkouts can run labs at once.
 LABCTL := go run ./lab/labctl
 LAB_TIMEOUT ?= 20m
+# Packages make lab-test runs in nodes at once. Fixed, not scaled by load:
+# tests must hold up under other runs' load anyway (lab/README.md).
+LAB_P ?= 4
 
 lab: lab-test ## the lab suite (TP-024 makes it run the censor matrix)
 
@@ -105,7 +108,7 @@ lab-test: ## lab tests (each starts its own lab) + every package's tests inside 
 	@$(LABCTL) down -stale
 	@status=0; \
 	go test -tags lab -count=1 -timeout $(LAB_TIMEOUT) ./lab/... || status=1; \
-	$(LABCTL) gotest ./... || status=1; \
+	$(LABCTL) gotest -p $(LAB_P) ./... || status=1; \
 	if [ -z "$$THINKPOL_LAB_KEEP" ]; then $(LABCTL) down -tests; fi; \
 	exit $$status
 
@@ -118,8 +121,8 @@ lab-perf: ## performance gates, alone on the host: waits for every other lab run
 	$(LABCTL) gotest -perf -v -p 1 -run '$(LAB_PERF_RUN)' $(LAB_PERF_PKGS)
 
 lab-gotest: export LAB_RUN = $(RUN)
-lab-gotest: ## run PKG's tests inside a lab node with THINKPOL_LAB=1 (PKG=./internal/... RUN=regexp)
-	$(LABCTL) gotest -v -run "$$LAB_RUN" $(or $(PKG),./...)
+lab-gotest: ## run PKG's tests inside a lab node with THINKPOL_LAB=1 (PKG=./internal/... RUN=regexp COUNT=n)
+	$(LABCTL) gotest -v -run "$$LAB_RUN" $(if $(COUNT),-count $(COUNT) -timeout 60m) $(or $(PKG),./...)
 
 lab-down: ## remove every lab this checkout started
 	$(LABCTL) down

@@ -448,8 +448,9 @@ func pinTo(t *testing.T, cpus string) {
 // with the supervisor and both workers pinned to one CPU (PRD
 // Performance: ≥ 50 Mbit/s on a 1-vCPU node): one-way into a worker, then
 // an echo through it (both directions at once), with 1400-byte packets
-// from dialers on other CPUs. Two spaces are served, the second idle. The
-// targets are checked only under make lab-perf (THINKPOL_LAB_PERF=1).
+// from dialers on other CPUs. Two spaces are served, the second idle. It
+// measures only under make lab-perf (THINKPOL_LAB_PERF=1); make lab-test
+// checks the handoff alone.
 func TestSharedListenerThroughput(t *testing.T) {
 	needsLab(t)
 	if n, _ := strconv.Atoi(strings.TrimSpace(mustOutput(t, "nproc"))); n < 2 {
@@ -668,14 +669,53 @@ func TestSharedListenerThroughput(t *testing.T) {
 
 	// The targets are a performance gate, checked only by make lab-perf
 	// (THINKPOL_LAB_PERF=1), which runs alone on the host and measures up
-	// to three times; elsewhere the numbers are logged and only a working
-	// handoff is checked.
+	// to three times. make lab-test shares the machine with other labs, so
+	// there the test checks only what load can't change: a working handoff
+	// that loses nothing it has room for. Echoes go with at most window
+	// packets in flight, which none of the path's queues (the public
+	// socket, the data socket, the worker's queue) can overflow, so every
+	// one must come back, however slowly.
 	perf := os.Getenv("THINKPOL_LAB_PERF") != ""
-	m := measure()
-	if perf && !m.meetsTargets() {
-		t.Logf("first measurement %s misses the targets: measuring twice more", m)
-		m = medianThroughput(m, measure(), measure())
-		t.Logf("median of three: %s", m)
+	var m throughput
+	if perf {
+		m = measure()
+		if !m.meetsTargets() {
+			t.Logf("first measurement %s misses the targets: measuring twice more", m)
+			m = medianThroughput(m, measure(), measure())
+			t.Logf("median of three: %s", m)
+		}
+	} else {
+		const packets, window = 2000, 32
+		echoes := make(chan struct{}, window)
+		go func() {
+			buf := make([]byte, transport.MaxPacketSize)
+			for {
+				if _, err := link.ReadPacket(buf); err != nil {
+					return
+				}
+				echoes <- struct{}{}
+			}
+		}()
+		sent, back := 0, 0
+	handoff:
+		for back < packets {
+			for ; sent < packets && sent-back < window; sent++ {
+				if err := link.WritePacket(packet("echo")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			select {
+			case <-echoes:
+				back++
+			case <-time.After(30 * time.Second):
+				break handoff
+			}
+		}
+		if back != packets {
+			t.Errorf("the shared listener doesn't hand off: %d of %d echoes came back, %d in flight at most", back, packets, window)
+		} else {
+			t.Logf("%d echoes through the handoff, %d in flight at most (targets checked by make lab-perf)", packets, window)
+		}
 	}
 
 	_ = cmd.Process.Signal(syscall.SIGTERM)
@@ -693,14 +733,7 @@ func TestSharedListenerThroughput(t *testing.T) {
 		if m.oneWay < 50 || m.echo < 50 {
 			t.Errorf("below the 50 Mbit/s target on one CPU: one way %.1f, echo %.1f", m.oneWay, m.echo)
 		}
-		return
 	}
-	// A broken handoff, not a busy machine: most of the paced load lost,
-	// or nothing getting through at all.
-	if m.loss >= 0.2 || m.workerLoss >= 0.2 || m.oneWay <= 0 || m.echo <= 0 {
-		t.Errorf("the shared listener doesn't hand off: %s", m)
-	}
-	t.Logf("measured %s (targets checked by make lab-perf)", m)
 }
 
 func mustOutput(t *testing.T, name string, args ...string) string {

@@ -148,7 +148,7 @@ func TestADeviceConnectsAndDisconnects(t *testing.T) {
 	// Removed while connected: it waits, and is back with the next map
 	// that has it.
 	b.maps <- s.buildWithout(t, 4, s.b)
-	st = b.connection(t, Connecting)
+	eventually(t, func() bool { st = b.node.Status(); return st.MapVersion == 4 && st.Connection == Connecting })
 	if !st.Removed || st.DataPlane != nil || !slices.Contains(st.Health().Problems, ProblemRemoved) {
 		t.Fatalf("removed: %+v", st)
 	}
