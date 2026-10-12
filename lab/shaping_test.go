@@ -37,7 +37,10 @@ func TestShapingCapture(t *testing.T) {
 	server.MustExec(t, "nft", "-f", "/tmp/sink.nft")
 
 	target := server.IPv4(lab.NetServers)
-	capture := router.Capture(t, fmt.Sprintf("udp and dst host %s and (dst port %d or dst port %d)", target, unshapedPort, shapedPort))
+	// Only the copy leaving the router: capture's ring holds about 500
+	// frames, and the sender's pacing gives it about half a second of a
+	// busy machine holding tcpdump up before it would drop any.
+	capture := router.Capture(t, fmt.Sprintf("outbound and udp and dst host %s and (dst port %d or dst port %d)", target, unshapedPort, shapedPort))
 	device.RunGoTests(t, "./internal/dataplane/transport/udp", "-test.run", "^TestLabSendShaped$", "-lab-target="+target.String())
 
 	sizes := map[uint16]map[int]int{unshapedPort: {}, shapedPort: {}} // port → datagram size → count

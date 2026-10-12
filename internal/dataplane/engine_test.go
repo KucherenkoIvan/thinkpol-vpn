@@ -23,9 +23,14 @@ import (
 
 const wait = 10 * time.Second
 
+// fastPaths are path timings six times faster than the defaults. A link
+// is dead after a second without proof: a busy machine can hold a probe up
+// for hundreds of milliseconds, and a link closed for that drops what is
+// sent meanwhile, a WireGuard handshake included, which is only retried
+// after WireGuard's 5 s.
 var fastPaths = path.Options{
-	ProbeInterval: 30 * time.Millisecond,
-	DeadAfter:     150 * time.Millisecond,
+	ProbeInterval: 300 * time.Millisecond,
+	DeadAfter:     time.Second,
 	RedialMin:     10 * time.Millisecond,
 	RedialMax:     100 * time.Millisecond,
 }

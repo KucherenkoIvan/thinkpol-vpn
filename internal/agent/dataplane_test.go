@@ -24,9 +24,14 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
 
+// fastPaths are path timings six times faster than the defaults. A link
+// is dead after a second without proof: a busy machine can hold a probe up
+// for hundreds of milliseconds, and a link closed for that drops what is
+// sent meanwhile, a WireGuard handshake included, which is only retried
+// after WireGuard's 5 s.
 var fastPaths = path.Options{
-	ProbeInterval: 30 * time.Millisecond,
-	DeadAfter:     150 * time.Millisecond,
+	ProbeInterval: 300 * time.Millisecond,
+	DeadAfter:     time.Second,
 	RedialMin:     10 * time.Millisecond,
 	RedialMax:     100 * time.Millisecond,
 }
@@ -310,7 +315,10 @@ func TestAFailedApplyIsRetried(t *testing.T) {
 	failedAt := time.Now()
 	ifc.failing.Store(false)
 	n.waitLog(t, `msg="map applied" version=2`)
-	if since := time.Since(failedAt); since > 5*testRetry {
+	// Retried on the data plane's own retryAfter, not the default: a few
+	// testRetry on an idle machine, and still far below RetryAfter on one
+	// busy with other tests.
+	if since := time.Since(failedAt); since > RetryAfter/2 {
 		t.Fatalf("retried after %v", since)
 	}
 }

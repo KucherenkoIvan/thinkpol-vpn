@@ -69,6 +69,7 @@ func TestReplaysAreDropped(t *testing.T) {
 	for _, d := range up {
 		f.tap.inject(d)
 	}
+	waitFor(t, "every replay at the camouflage", func() bool { return f.camo.Calls()-before >= int64(len(up)) })
 	expectNoPacket(t, got)
 	if f.camo.Calls()-before != int64(len(up)) {
 		t.Errorf("%d replays reached the camouflage, want %d", f.camo.Calls()-before, len(up))
@@ -115,6 +116,7 @@ func TestRestartThenReplay(t *testing.T) {
 	for _, d := range old {
 		f.tap.inject(d)
 	}
+	waitFor(t, "every replay counted", func() bool { return f.listener.Counters().StaleTimestamp >= uint64(len(old)) })
 	f.expectNoAccept()
 	if c := f.listener.Counters(); c.StaleTimestamp != uint64(len(old)) {
 		t.Fatalf("counted %d stale timestamps for %d replays", c.StaleTimestamp, len(old))
@@ -130,7 +132,7 @@ func TestRestartThenReplay(t *testing.T) {
 	for _, d := range old {
 		f.tap.inject(d)
 	}
-	time.Sleep(quiet)
+	waitFor(t, "the replays counted", func() bool { return f.listener.Counters().StaleTimestamp >= 2*uint64(len(old)) })
 	if got := server.RemoteAddr().String(); got != addr {
 		t.Fatalf("a replay moved the link from %s to %s", addr, got)
 	}

@@ -313,7 +313,13 @@ func TestSenderChurnIsBounded(t *testing.T) {
 			t.Fatalf("sender %d: %v", i, v)
 		}
 	}
-	if took := time.Since(start); took > 2*time.Second {
+	// About 0.1 s; a cost per eviction that grew with the history (up to
+	// maxEvicted entries) would be ten times that or more. The race
+	// detector's instrumentation alone makes it 15 times slower, so under
+	// -race the time says nothing about the cost.
+	if took := time.Since(start); raceEnabled {
+		t.Logf("200000 new senders took %v under the race detector", took)
+	} else if took > 2*time.Second {
 		t.Fatalf("200000 new senders took %v", took)
 	}
 	if len(s.evicted.at) > maxEvicted || s.evicted.size > maxEvicted {
