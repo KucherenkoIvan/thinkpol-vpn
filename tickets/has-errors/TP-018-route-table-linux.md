@@ -68,6 +68,17 @@ table 29808, proto 86:
 - **TP-047 (Windows):** the shrink-only coarsening rule above stands; the engine's shrink-before/grow-after ordering applies to any route budget too.
 - **TP-023 (M1 acceptance):** `lab/routetable_test.go` is the base for "direct vs tunneled"; once TP-014 merges, assert the foreign site answers through server-1. Lab networks are private ranges, which `local` (in every preset) sends around the tunnel: test sites need public-looking addresses (the test puts documentation addresses on lo and routes them on both routers).
 
+## Review findings
+Two reviewers; orchestrator decisions.
+
+- [ ] B1 A TUN going down and up silently removes the IPv4 default in table 0x7470 (no RTM_DELROUTE for IPv4): foreign IPv4 leaks direct, is never repaired, and status still says enforced. Watch RTNLGRP_LINK for the TUN (up/down/index change) and re-apply; re-apply also when the last re-apply failed; a cheap periodic re-apply as a backstop; Status shows enforcement failing (Enforced=false + last error) and `thinkpol status` reflects it. Lab: `ip link set <tun> down; up` → table restored, no foreign IPv4 at the router.
+- [ ] B2 TunnelVision (CVE-2024-3661): narrow rule 5300 so only the overlay prefixes and the physical interfaces' on-link subnets (mirroring main's `proto kernel scope link` routes) are looked up in main ahead of table 0x7470; every other main route (DHCP option-121 /1 routes, other VPNs' splits) no longer beats the tunnel. Needs `Dst` on `netcfg.Rule`. IPv6 the same, so a non-default IPv6 route in main can't beat the unreachable default with a v4-only overlay (D6). DESIGN and Notes ("IPv6 never leaks" must be true). Lab: `0.0.0.0/1` + `128.0.0.0/1` via the physical gateway in main → foreign traffic still enters the TUN; an IPv6 specific route in main with a v4-only overlay → IPv6 still unreachable.
+- [ ] B3 A crash, then a restart disconnected or removed: leftover proto-86 rules and routes stay. At a device's start when not connecting, open `netcfg.New(OwnerRouteTable)` and Close it (or make the Enforcer per node). Lab: kill -9 while connected, restart disconnected → rules and table 0x7470 gone.
+- [ ] B4 Kernels < 4.17: after the first RuleAdd, dump and verify our rules came back with protocol 86; if not, delete them by exact match and return ErrUnsupported ("needs Linux 4.17"). Unit test the detection path.
+- [ ] F5 DESIGN and the ws ticket's Notes: endpoint throws cover the whole IP; for CDN-fronted endpoints narrow them to the transport's flow (proto/dport rules). Note only.
+- [ ] DNS: mark the resolver's direct sockets (TP-020's `dns.Options.Control`) if TP-020 merges first; otherwise a precise Note in both tickets.
+- [ ] Nits: snapshot the Want under the lock and Apply outside it (Status mustn't block for seconds); a cancellable ctx for recompileRules; a status hint when Tailscale-style rules sit ahead of ours.
+
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-10 notes from TP-016 review: route count and the shrink-only rule for coarsening
@@ -76,3 +87,4 @@ table 29808, proto 86:
 - 2026-10-12 docs (TP-017): notes from blob distribution
 - 2026-10-12 merged origin/rewrite (TP-022, TP-017); netcfg tables, route types, rules and Watch; `dataplane/routetable`; engine and agent wiring; dev spec routing; DESIGN.md "Routing rules and DNS" (route table on Linux) and "Repository layout" (`routetable/`)
 - 2026-10-12 in-progress → review — both acceptance boxes checked; `make lint`, `make test`, `make test-race`, `make lab-gotest` (netcfg, routetable, agent) and `make lab-test` pass (flakes outside this change listed under Evidence)
+- 2026-10-12 review → has-errors — two reviewers: B1–B4, F5, DNS marking and nits (see Review findings)
