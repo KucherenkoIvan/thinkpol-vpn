@@ -14,6 +14,7 @@ import (
 	"golang.zx2c4.com/wireguard/tun/tuntest"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/packettest"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/path"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
@@ -48,6 +49,7 @@ type node struct {
 
 	section netmap.Section
 	blobs   func(netmap.BlobRef) ([]byte, bool) // for EngineConfig.Blobs
+	dns     interface{ Update(dns.Config) }     // for EngineConfig.DNS
 	engine  *dataplane.Engine
 	stack   *stack
 }
@@ -103,7 +105,7 @@ func (nd *node) start(t *testing.T, net *memory.Network) {
 	}
 	ch := tuntest.NewChannelTUN()
 	e, err := dataplane.NewEngine(dataplane.EngineConfig{
-		ID: nd.id, Space: testSpace, WireGuardKey: nd.key, Registry: reg, TUN: ch.TUN(), Path: fastPaths, Blobs: nd.blobs,
+		ID: nd.id, Space: testSpace, WireGuardKey: nd.key, Registry: reg, TUN: ch.TUN(), Path: fastPaths, Blobs: nd.blobs, DNS: nd.dns,
 	})
 	if err != nil {
 		t.Fatal(err)

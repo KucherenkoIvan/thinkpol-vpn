@@ -132,6 +132,7 @@ func (e *Engine) compileRules(s *ruleInput, networks []netip.Prefix) error {
 		}
 	}
 	e.ruleTable = t
+	e.nameRules = rules.CompileNames(entries, rules.Options{Chain: func(name string) bool { _, ok := e.chainExit[name]; return ok }})
 	e.ruleInput = s
 	e.ruleNetworks = networks
 	e.usedExits = make(map[netmap.NodeID]bool)
@@ -222,6 +223,7 @@ func (e *Engine) SetRules(l rules.Local) error {
 		return ErrEngineClosed
 	}
 	e.ownRules = l
+	defer e.updateDNS()
 	return e.recompileRules()
 }
 
@@ -233,6 +235,7 @@ func (e *Engine) ReloadRules() error {
 	if e.closed {
 		return ErrEngineClosed
 	}
+	defer e.updateDNS()
 	return e.recompileRules()
 }
 

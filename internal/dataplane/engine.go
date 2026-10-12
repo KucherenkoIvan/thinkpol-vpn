@@ -12,6 +12,7 @@ import (
 
 	"golang.zx2c4.com/wireguard/tun"
 
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/path"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/router"
@@ -72,6 +73,11 @@ type EngineConfig struct {
 	// Rules is the device's own rule choice (its local file), until
 	// SetRules replaces it.
 	Rules rules.Local
+	// DNS, if set, is the node's resolver (a *dns.Server): the engine
+	// tells it what to serve after every Apply and rule change (see
+	// dnsConfig). Called with the engine locked: it must not call back
+	// into the engine.
+	DNS interface{ Update(dns.Config) }
 }
 
 // Engine is one space's data plane on a node (DESIGN.md "Data plane"): the
@@ -125,6 +131,15 @@ type Engine struct {
 	ruleTable    *rules.Table
 	ruleStatus   RuleStatus
 	geoipSets    map[[32]byte]*lists.Set // decoded, by hash
+	nameRules    *rules.Names            // the rules compiled for DNS names
+
+	// What the resolver needs of the last section: the node's kind and
+	// egress setting, and the overlay names.
+	kind      netmap.NodeKind
+	egress    bool
+	spaceName string
+	ownName   string
+	peerNames map[netmap.NodeID]string
 }
 
 // devicePeer is a peer of one device: the router sends it the peer's
@@ -224,12 +239,18 @@ func (e *Engine) Apply(ctx context.Context, s netmap.Section) error {
 		e.lastErr = step
 		e.debug("apply failed", "step", step, "err", err)
 	}
+	e.updateDNS()
 	return err
 }
 
 func (e *Engine) apply(ctx context.Context, s netmap.Section) (string, error) {
 	if s.Node.ID != e.cfg.ID {
 		return StepSection, fmt.Errorf("dataplane: section of node %s, not %s", s.Node.ID, e.cfg.ID)
+	}
+	e.kind, e.egress, e.spaceName, e.ownName = s.Node.Kind, s.Node.AllowEgress, s.SpaceName, s.Node.Name
+	e.peerNames = make(map[netmap.NodeID]string, len(s.Peers))
+	for _, p := range s.Peers {
+		e.peerNames[p.ID] = p.Name
 	}
 	pc := PathConfigFrom(s, e.cfg.Registry)
 	in := AcceptedInbound(s, e.cfg.Registry, e.cfg.Space, e.cfg.LinkMTU)
