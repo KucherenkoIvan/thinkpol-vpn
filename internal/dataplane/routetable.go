@@ -79,8 +79,10 @@ func (e *Engine) shrinkRoutes(ctx context.Context) error {
 	}
 	w.Direct = nil
 	ferr := e.enforce(ctx, w)
+	// The route table keeps trying the last Want it was given: that is
+	// what the OS holds, or soon will.
+	e.routesWant = &w
 	if ferr == nil {
-		e.routesWant = &w
 		e.warn("route table: removing direct routes failed; nothing goes direct until the next Apply", err)
 		return err
 	}
@@ -101,10 +103,11 @@ func (e *Engine) growRoutes(ctx context.Context, shrinkErr error) error {
 		Bypass:  e.endpoints,
 		IPv6:    e.mtu > 0 && e.ipv6Off == nil,
 	}
-	if err := e.enforce(ctx, w); err != nil {
+	err := e.enforce(ctx, w)
+	e.routesWant = &w // the route table keeps trying it
+	if err != nil {
 		return fmt.Errorf("dataplane: route table: %w", errors.Join(shrinkErr, err))
 	}
-	e.routesWant = &w
 	return nil
 }
 
