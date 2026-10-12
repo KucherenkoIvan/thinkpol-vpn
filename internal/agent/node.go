@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"time"
 
@@ -350,9 +351,14 @@ func (n *Node) runServer(ctx context.Context, reg *transport.Registry, maps chan
 	level, _ := ParseLevel(n.cfg.LogLevel)
 	own := n.state.Trust.SpaceID
 	out := &workerOutput{w: logOutput(n.logs)}
+	allowed, err := n.cfg.EgressAllowedPrefixes()
+	if err != nil {
+		return err
+	}
 	sup, err := supervisor.New(supervisor.Options{
-		Transports: reg,
-		Log:        n.logs.With("component", "supervisor"),
+		Transports:    reg,
+		EgressAllowed: allowed,
+		Log:           n.logs.With("component", "supervisor"),
 		// Workers log at the node's level. Their output goes to their
 		// space's ring; only the node owner's space's also goes into the
 		// node's log stream, never a guest's (DESIGN rule 6).
@@ -395,6 +401,7 @@ func ownerOutput(own netmap.SpaceID, out *workerOutput) func(netmap.SpaceID) io.
 type spaceServer interface {
 	SetSpaces([]supervisor.Space) error
 	SetListeners([]supervisor.Listener) error
+	Egress() supervisor.EgressInfo
 }
 
 // serverSpaces keeps the supervisor serving the node's current map.
@@ -459,7 +466,12 @@ func (s *serverSpaces) apply() error {
 	if dir, header, log := s.stateDir, s.cur.Header().Blobs, s.log; dir != "" && len(header) > 0 {
 		seeds = func() [][]byte { return seedBlobs(dir, header, log) }
 	}
-	if err := s.sup.SetSpaces([]supervisor.Space{{ID: id, Config: config, Inbound: inbound.Links, Seeds: seeds}}); err != nil {
+	allow := s.section.Node.AllowEgress
+	space := supervisor.Space{
+		ID: id, Config: config, Inbound: inbound.Links, Seeds: seeds,
+		Egress: supervisor.EgressGrant{IPv4: allow, IPv6: allow}, Dials: dials(s.section, s.reg),
+	}
+	if err := s.sup.SetSpaces([]supervisor.Space{space}); err != nil {
 		return fmt.Errorf("serving space %v: %w", id, err)
 	}
 	ls := make([]supervisor.Listener, 0, len(s.section.Node.Listeners))
@@ -470,8 +482,42 @@ func (s *serverSpaces) apply() error {
 		return errListeners{err}
 	}
 	s.log.Info("map applied", append(append([]any{"version", s.cur.Header().Version, "listeners", len(ls), "inbound_skipped", len(inbound.Skipped)},
-		serverSettings(s.section.Node)...), "blobs", len(s.cur.Header().Blobs))...)
+		serverSettings(s.section.Node)...), append(s.egressAttrs(), "blobs", len(s.cur.Header().Blobs))...)...)
 	return nil
+}
+
+// egressAttrs say, for a section allowing egress, what the node can give
+// it: the uplink and its families, never a destination.
+func (s *serverSpaces) egressAttrs() []any {
+	if !s.section.Node.AllowEgress {
+		return nil
+	}
+	e := s.sup.Egress()
+	if e.Uplink == "" {
+		s.log.Warn("egress is on but the node has no uplink: the space's internet traffic is dropped", "err", e.Err)
+		return []any{"uplink", "none"}
+	}
+	return []any{"uplink", e.Uplink, "egress_ipv4", onOff(e.IPv4), "egress_ipv6", onOff(e.IPv6)}
+}
+
+// dials are the endpoints the section's links dial, in their transport's
+// protocol: the worker reaches them out of its namespace whatever the
+// egress. An endpoint of a transport the node doesn't have is never dialed.
+func dials(section netmap.Section, reg *transport.Registry) []supervisor.Dial {
+	var out []supervisor.Dial
+	for _, l := range section.Links {
+		for _, e := range l.Endpoints {
+			t, ok := reg.Get(e.Transport)
+			if !ok || !e.Address.IsValid() || e.Address.Port() == 0 {
+				continue
+			}
+			d := supervisor.Dial{Address: netip.AddrPortFrom(e.Address.Addr().Unmap(), e.Address.Port()), Network: t.Network()}
+			if !slices.Contains(out, d) {
+				out = append(out, d)
+			}
+		}
+	}
+	return out
 }
 
 // run serves the current map, then every newer one, until ctx ends. Only

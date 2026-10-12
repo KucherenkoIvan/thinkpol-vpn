@@ -23,5 +23,9 @@ While connected, IPv6 goes through the tunnel or is blocked; it never leaks arou
 ## Acceptance
 - [ ] lab capture and the macOS checklist: no IPv6 packet leaves a physical interface outside the tunnel while connected
 
+## Notes
+- **From TP-014 (egress):** an exit whose uplink has no IPv6 (no IPv6 default route, or only unique local addresses) refuses a device's IPv6 inside its namespace with ICMPv6 "no route", at once, and none leaves; the device must still keep IPv6 from going around the tunnel itself.
+
 ## Log
 - 2026-10-10 created in backlog
+- 2026-10-12 docs (TP-014 review): notes from egress on Linux

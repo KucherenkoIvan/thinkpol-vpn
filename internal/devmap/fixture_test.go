@@ -68,7 +68,7 @@ func labFixture(t *testing.T) fixture {
 // sections builds f's map, verifies it and opens every node's section.
 func (f fixture) sections(t *testing.T, version uint64) (*netmap.Map, map[string]netmap.Section, Names) {
 	t.Helper()
-	env, err := Build(f.spec, f.keys, version, rand.NewChaCha8([32]byte{2}))
+	env, err := Build(f.spec, f.keys, version, RandomSecrets(rand.NewChaCha8([32]byte{2})))
 	if err != nil {
 		t.Fatal(err)
 	}

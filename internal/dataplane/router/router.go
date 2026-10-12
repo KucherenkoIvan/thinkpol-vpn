@@ -52,6 +52,7 @@ type Router struct {
 type Counters struct {
 	Routed     uint64 // read from the TUN and queued on an egress
 	Delivered  uint64 // written to the TUN by egresses
+	Forwarded  uint64 // of Delivered, for the internet: the node forwards them (Table.Forward)
 	NotLocal   uint64 // decrypted by a WireGuard device for a destination not the node's own
 	NoRoute    uint64 // nothing routes the destination, an overlay address no peer has, or a closed egress
 	Blocked    uint64 // routed by a route without an egress
@@ -63,7 +64,7 @@ type Counters struct {
 }
 
 type counters struct {
-	routed, delivered, notLocal, noRoute, blocked, direct, malformed, tooLarge, queueFull, readErrors atomic.Uint64
+	routed, delivered, forwarded, notLocal, noRoute, blocked, direct, malformed, tooLarge, queueFull, readErrors atomic.Uint64
 }
 
 // New starts a router reading t, with an empty table: every packet is
@@ -103,6 +104,7 @@ func (r *Router) Counters() Counters {
 	return Counters{
 		Routed:     r.c.routed.Load(),
 		Delivered:  r.c.delivered.Load(),
+		Forwarded:  r.c.forwarded.Load(),
 		NotLocal:   r.c.notLocal.Load(),
 		NoRoute:    r.c.noRoute.Load(),
 		Blocked:    r.c.blocked.Load(),

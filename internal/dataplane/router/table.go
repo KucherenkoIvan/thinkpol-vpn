@@ -38,16 +38,42 @@ type Table struct {
 	// for anything else is dropped, so a peer can't use the node as a
 	// router into its other networks.
 	Local []netip.Addr
+	// Forward are the egresses that also write packets for destinations
+	// outside the overlay networks to the TUN, for the node to forward to
+	// the internet: the node is its space's exit (TP-014). Overlay
+	// destinations other than Local are dropped all the same.
+	Forward []*Egress
 }
 
 // compiled is a Table ready for lookups.
 type compiled struct {
 	overlay, peers, rules lpm
 	local                 map[netip.Addr]bool
+	forward               map[*Egress]bool
+}
+
+// delivers reports whether egress e writes a packet for dst to the TUN:
+// the node's own address, or, for a forwarding egress, an address outside
+// the overlay (never an IPv4-mapped one, which no network routes).
+func (c *compiled) delivers(e *Egress, dst netip.Addr) bool {
+	if c.local[dst] {
+		return true
+	}
+	if !c.forward[e] || dst.Is4In6() {
+		return false
+	}
+	_, inOverlay := c.overlay.lookup(dst)
+	return !inOverlay
 }
 
 func (r *Router) compile(t Table) (*compiled, error) {
-	c := &compiled{local: make(map[netip.Addr]bool, len(t.Local))}
+	c := &compiled{local: make(map[netip.Addr]bool, len(t.Local)), forward: make(map[*Egress]bool, len(t.Forward))}
+	for _, e := range t.Forward {
+		if e == nil || e.r != r {
+			return nil, fmt.Errorf("router: forwarding egress of another router")
+		}
+		c.forward[e] = true
+	}
 	for _, a := range t.Local {
 		if !a.IsValid() || a.Zone() != "" || a.Is4In6() {
 			return nil, fmt.Errorf("router: local address %s", a)

@@ -446,12 +446,68 @@ func TestInspectMarksRefusedLinks(t *testing.T) {
 	}
 	out := b.String()
 	for _, want := range []string{
-		"ingress: off, egress: on (not enforced until TP-014)\nmin reader: 1\n",
+		"ingress: off, egress: on\nmin reader: 1\n",
 		"0200000000000000, server\n",
 		"0300000000000000, device (refused: ingress off)\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("no %q in:\n%s", want, out)
+		}
+	}
+}
+
+// Builds with one secrets seed give every link the same secret, whatever
+// else changed; without one, fresh secrets every time.
+func TestSeededSecretsRepeat(t *testing.T) {
+	f := referenceFixture(t)
+	// By dialer and dialed node, each link's credentials.
+	type link struct{ from, to netmap.NodeID }
+	secrets := func(s *Spec, from Secrets) map[link][][]byte {
+		c, _, err := Plan(s, f.keys, 1, from)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[link][][]byte{}
+		for _, r := range c.Recipients {
+			for _, l := range r.Section.Links {
+				for _, e := range l.Endpoints {
+					k := link{r.Section.Node.ID, l.Peer}
+					out[k] = append(out[k], e.Credential)
+				}
+			}
+		}
+		return out
+	}
+	same := func(a, b map[link][][]byte) bool {
+		return maps.EqualFunc(a, b, func(x, y [][]byte) bool { return slices.EqualFunc(x, y, bytes.Equal) })
+	}
+	a := secrets(f.spec, InsecureSeededSecrets("lab"))
+	if len(a) == 0 || !same(a, secrets(f.spec, InsecureSeededSecrets("lab"))) {
+		t.Fatal("one seed, different secrets")
+	}
+	if same(a, secrets(f.spec, InsecureSeededSecrets("other"))) || same(a, secrets(f.spec, nil)) {
+		t.Fatal("secrets repeat without the seed")
+	}
+	// A path fewer: the links that remain keep their secrets. (Not the
+	// paths the chain's exit needs.)
+	var kept map[link][][]byte
+	for i := range f.spec.Paths {
+		fewer := *f.spec
+		fewer.Paths = slices.Delete(slices.Clone(f.spec.Paths), i, i+1)
+		if _, _, err := Plan(&fewer, f.keys, 1, nil); err != nil {
+			continue
+		}
+		if k := secrets(&fewer, InsecureSeededSecrets("lab")); len(k) < len(a) {
+			kept = k
+			break
+		}
+	}
+	if kept == nil {
+		t.Fatal("no path of the reference spec can go without a link going too")
+	}
+	for l, creds := range kept {
+		if !slices.EqualFunc(creds, a[l], bytes.Equal) {
+			t.Fatalf("the link %v changed its secret", l)
 		}
 	}
 }

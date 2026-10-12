@@ -52,6 +52,10 @@ type DataPlane struct {
 	// StatusAttrs, if set, adds attributes to the periodic status line at
 	// debug level (a worker's shared-listener figures).
 	StatusAttrs func() []any
+	// Forward makes the node its space's exit when its section allows
+	// egress (dataplane.EngineConfig.Forward): set in a server's worker,
+	// whose namespace forwards and NATs, never on a device.
+	Forward bool
 	// RouteTable enforces the rules in the OS routing table: everything
 	// but direct destinations and link endpoints into the TUN (a device;
 	// the transports' sockets must be marked, Transports(true)).
@@ -265,6 +269,7 @@ func (r *runner) start(ctx context.Context) error {
 		LinkMTU:      r.dp.LinkMTU,
 		Path:         r.dp.path,
 		Log:          r.dp.Log,
+		Forward:      r.dp.Forward,
 		Rules:        r.dp.Rules,
 		RouteTable:   routes,
 		DNS:          resolverIfc,
@@ -576,6 +581,10 @@ func (r *runner) applied() {
 	}
 	if n := r.section.Node; n.Kind == netmap.NodeServer {
 		attrs = append(attrs, serverSettings(n)...)
+		attrs = append(attrs, "exit", onOff(st.Exit))
+		if n.AllowEgress && !st.Exit {
+			r.dp.Log.Warn("the map allows egress, but a server forwards its space's internet traffic only in server mode: not an exit here")
+		}
 	}
 	if st.RouteTable.Enforced {
 		attrs = append(attrs, "route_table_routes", st.RouteTable.Routes)
@@ -585,14 +594,14 @@ func (r *runner) applied() {
 
 // serverSettings are a server's ingress and egress settings, for its log.
 func serverSettings(n netmap.NodeSettings) []any {
-	ingress, egress := "off", "off"
-	if n.AllowIngress {
-		ingress = "on"
+	return []any{"ingress", onOff(n.AllowIngress), "egress", onOff(n.AllowEgress)}
+}
+
+func onOff(on bool) string {
+	if on {
+		return "on"
 	}
-	if n.AllowEgress {
-		egress = "on (not enforced until TP-014)"
-	}
-	return []any{"ingress", ingress, "egress", egress}
+	return "off"
 }
 
 func (r *runner) logStatus() {

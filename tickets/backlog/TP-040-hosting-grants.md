@@ -31,6 +31,7 @@ A node owner shares a server node with another space, fully isolated, capped and
   - Guests' `Inbound` come from the guests' own maps (`AcceptedInbound`); only the owner's listeners are opened.
 - **From TP-013 (security):** a guest space's inbound table comes from the guest's own map, whose `AllowIngress` must not be trusted. Before `dataplane.AcceptedInbound` on a guest section, replace the section's `AllowIngress` (and `AllowEgress`) with what the owner's map grants that guest (at most what the node allows); then `AcceptsInbound` drops the guest's devices on a node not granted ingress. `netmap.Build`'s `hiddenFromDevices` checks recipients only, so a shared node (not a recipient of the guest map) is the guest builder's to check against the grant.
 - **From TP-017 (review S4):** blobs are per space. A guest space's seeds belong in its own directory (e.g. `guests/<space-id>/blobs/`), read by `seedBlobs` for that space's worker only (`supervisor.Space.Seeds`). A worker holds its space's whole header set in memory (at most `blobs.ServerMaxHeldSize`, 16 MiB, plus a stand-in set while lists are replaced): set a per-worker cgroup `MemoryMax` that accounts for it, and count a guest's blobs against the guest's share, not the owner's.
+- **From TP-014 (egress), decided in its review:** a guest's `Space.Egress` is the grant's (at most what the node allows), never the guest map's `AllowEgress`, and the guest's worker section gets `AllowEgress` set from the grant before it is handed over (the engine's exit follows the section). A guest's `Dials` are firewall holes its own admin authors: cap them (e.g. 64), take public unicast addresses only and never the node's own, show their count to the owner, and honour them only if the grant allows egress (or the owner's map lists the servers the guest may reach). Each space's flows through the root are capped (`Options.MaxFlowsPerSpace`, a quarter of the conntrack table by default): size it with the number of guests. Per-space egress caps would go on the veth (tc, `WorkerInfo.Link`).
 
 ## Log
 - 2026-10-10 created in backlog
@@ -38,3 +39,4 @@ A node owner shares a server node with another space, fully isolated, capped and
 - 2026-10-11 docs (TP-010 review): notes from the shared listener
 - 2026-10-12 docs (TP-013 review): notes from the ingress and egress settings
 - 2026-10-12 docs (TP-017): notes from blob distribution
+- 2026-10-12 docs (TP-014 review): notes from egress on Linux

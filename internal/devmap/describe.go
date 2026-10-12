@@ -33,11 +33,7 @@ func DescribeSection(w io.Writer, s netmap.Section, names Names) error {
 	p.line(0, "node: %s", names.Of(n.ID))
 	p.line(0, "kind: %v", n.Kind)
 	if n.Kind == netmap.NodeServer {
-		egress := onOff(n.AllowEgress)
-		if n.AllowEgress {
-			egress += " (not enforced until TP-014)"
-		}
-		p.line(0, "ingress: %s, egress: %s", onOff(n.AllowIngress), egress)
+		p.line(0, "ingress: %s, egress: %s", onOff(n.AllowIngress), onOff(n.AllowEgress))
 	}
 	p.line(0, "min reader: %d", s.MinReader)
 	p.line(0, "ipv4: %v in %v", n.IPv4, n.IPv4Network)

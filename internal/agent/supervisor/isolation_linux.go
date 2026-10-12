@@ -3,7 +3,9 @@
 package supervisor
 
 import (
+	"encoding/binary"
 	"fmt"
+	"net/netip"
 
 	"github.com/google/nftables"
 	"github.com/google/nftables/binaryutil"
@@ -19,65 +21,184 @@ import (
 // slots on every change (one atomic flush), in the root namespace:
 //
 //	table inet thinkpol-supervisor {
-//	  chain ct_pre  { hook prerouting priority raw;  per slot: iifname tp-spaceN ct zone set N+1 }
-//	  chain ct_out  { hook output     priority raw;  per slot: oifname tp-spaceN ct zone set N+1 }
-//	  chain antispoof_fwd { hook forward priority -10; per slot: iifname tp-spaceN, source not the slot's transit addr, drop }
-//	  chain antispoof_in  { hook input   priority -10; the same }
-//	  chain forward { hook forward priority filter; iifname/oifname tp-space* drop }   (TP-014 adds egress accepts before these)
-//	  chain input   { hook input   priority filter; iifname tp-space* ct state established,related accept; iifname tp-space* drop }
+//	  chain antispoof { hook prerouting priority raw - 10;
+//	    per slot: iifname tp-spaceN, source not the slot's transit address: drop }
+//	  chain ct_pre { hook prerouting priority raw;
+//	    per slot: iifname tp-spaceN daddr <the root end's transit address> ct zone set N+1
+//	              iifname tp-spaceN meta pkttype != host ct zone set N+1 }
+//	  chain ct_out { hook output priority raw; per slot: oifname tp-spaceN ct zone set N+1 }
+//	  chain forward { hook forward priority filter;
+//	    iifname tp-space* ct state invalid,untracked drop
+//	    per slot: iifname != tp-space* oifname tp-spaceN ct state established,related
+//	              ct original saddr <the slot's transit address> accept
+//	    oifname tp-space* drop
+//	    iifname tp-space* goto space_out
+//	    per family whose forwarding the supervisor turned on:
+//	      iifname != tp-space* oifname != tp-space* meta nfproto <family> drop }
+//	  chain space_out {
+//	    per slot: iifname tp-spaceN ct state new ct count over <MaxFlowsPerSpace> drop
+//	    daddr in EgressAllowed goto space_accept
+//	    daddr in egressBlocked or a transit range drop
+//	    goto space_accept }
+//	  chain space_accept {
+//	    per slot and family with egress: iifname tp-spaceN oifname <uplink> meta nfproto <family>
+//	              ct original saddr <the slot's transit address> accept
+//	    per slot and dial: iifname tp-spaceN oifname <uplink> daddr A meta l4proto <proto> th dport P
+//	              ct original saddr <the slot's transit address> accept
+//	    drop }
+//	  chain input { hook input priority filter;
+//	    per slot: iifname tp-spaceN ct state established ct original daddr <the slot's transit address> accept
+//	    iifname tp-space* drop }
+//	  chain postrouting { type nat hook postrouting priority srcnat;
+//	    oifname != tp-space* saddr in <a transit range> masquerade to :MasqueradePorts }
+//	  chain postrouting_guard { hook postrouting priority srcnat + 10;
+//	    oifname != tp-space* saddr in <a transit range> drop }
 //	}
 //	table arp thinkpol-supervisor-arp {
 //	  chain input { hook input priority filter; iifname tp-space* drop }
 //	}
 //
-// Per-space conntrack zones (ct_pre/ct_out) keep a space's connections out of
-// the root namespace's zone 0, so a space can't forge a packet that conntrack
-// counts as established or related to a root flow. Anti-spoof drops any packet
-// from a space whose source isn't that slot's transit address, before any
-// accept, so a space can't source-spoof. Permanent neighbour entries on both
-// veth ends (see wire) make ARP and ND unnecessary for real traffic, so the
-// arp table drops a space's ARP and the generic input chain drops its ND,
-// neither of which can then flood the root namespace's neighbour table.
-// Egress (TP-014) regenerates these tables with its accepts.
+// What keeps spaces apart from each other and from the root namespace's own
+// flows is two things. Anti-spoof runs before conntrack sees a packet: a
+// space's packets carry its own transit address as their source, or are
+// dropped. And every accept is bound to the slot that owns the conntrack
+// entry, by the entry's original-direction addresses: a space's flows
+// started from its transit address, the root's flows with a space went to
+// it. Conntrack takes an ICMP error as "related" to whichever flow its inner
+// header quotes, so a space quoting another space's flow, or a root flow,
+// in an error it forges gets the other flow's entry, which no accept of its
+// own slot matches; the input chain takes no "related" at all, so a forged
+// "port unreachable" or "fragmentation needed" never reaches the root's
+// sockets or its route cache.
+//
+// Conntrack zones are belt and braces: what a space exchanges with its end
+// of the veth pair (its gateway) or broadcasts, and what the root namespace
+// sends a space, is tracked in the space's own zone. What a space sends on
+// (egress, its dials) stays in zone 0, with the root's own flows: replies
+// arrive by the uplink, before anything could tell their zone, and must
+// find their flow to be un-NATed. (nftables can set a zone for the original
+// direction only, which would solve that, but google/nftables can't express
+// it, and "fib daddr type", which would let the zone follow the destination,
+// isn't in every kernel.)
+//
+// Egress opens exactly what is masqueraded: a space with egress may send to
+// the internet by the uplink, in the families granted and carried; every
+// space may reach the endpoints its own section dials (other servers), by
+// the uplink, in their transport's protocol, egress or not. Destinations no
+// space reaches are dropped first (egressBlocked: metadata services,
+// link-local and private networks, the transit ranges), unless
+// EgressAllowed names them. The space SNATs its overlay to its transit
+// address inside its namespace (applySpaceTable), so the root only ever sees
+// transit sources; it masquerades exactly the transit ranges, and drops a
+// transit source about to leave unmasqueraded. A space's new flows through
+// the root are capped (MaxFlowsPerSpace), so it can't fill the node's
+// conntrack table. Where the supervisor turned the root namespace's
+// forwarding on itself, nothing but the spaces' traffic is forwarded.
+// Permanent neighbour entries on both veth ends (see wire) make ARP and ND
+// unnecessary for real traffic: the arp table drops a space's ARP, and
+// anti-spoof its ND (whose sources are link-local), so neither floods the
+// root's neighbour table.
 
 // failApplyIsolation makes applyIsolation fail when there are slots to apply,
 // for the SetSpaces rollback test. Tests set it; it is never set in production.
 var failApplyIsolation bool
 
-// zone is slot n's conntrack zone: nonzero, so a space's connections never
-// share conntrack with the root namespace's (zone 0).
-func zone(slot int) uint16 { return uint16(slot + 1) }
+// unboundAccepts makes the accepts take any established or related flow,
+// whoever owns it: the negative control of the tests that forge ICMP errors.
+// Tests set it; it is never set in production.
+var unboundAccepts bool
 
-// slotRule is one slot's isolation: its veth end, its transit source
-// addresses and its conntrack zone.
-type slotRule struct {
-	link           string
-	v4addr, v6addr []byte // the slot's transit source addresses
-	zone           uint16
+// connlimitOver is NFT_CONNLIMIT_F_INV: the connlimit expression matches
+// above its count. ctDirOriginal is IP_CT_DIR_ORIGINAL.
+const (
+	connlimitOver = 1
+	ctDirOriginal = 0
+)
+
+// slotZone is slot n's conntrack zone: nonzero, so what a space exchanges
+// with the root namespace itself never shares conntrack with the root's own
+// flows (zone 0).
+func slotZone(slot int) uint16 { return uint16(slot + 1) }
+
+// egressBlocked are destinations no space reaches through the root
+// namespace, by egress or a dial, unless Options.EgressAllowed names them:
+// what is never routed to the internet, link-local networks with the cloud
+// metadata services (credentials and the node's own configuration live
+// there: 169.254.169.254, AWS's fd00:ec2::254, Azure's 168.63.129.16,
+// Alibaba's 100.100.100.200 in 100.64.0.0/10), and the private networks a
+// provider may run behind the node (RFC 1918, shared address space, ULA).
+var egressBlocked = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),
+	netip.MustParsePrefix("10.0.0.0/8"),
+	netip.MustParsePrefix("100.64.0.0/10"),
+	netip.MustParsePrefix("127.0.0.0/8"),
+	netip.MustParsePrefix("168.63.129.16/32"),
+	netip.MustParsePrefix("169.254.0.0/16"),
+	netip.MustParsePrefix("172.16.0.0/12"),
+	netip.MustParsePrefix("192.168.0.0/16"),
+	netip.MustParsePrefix("224.0.0.0/3"),
+	netip.MustParsePrefix("::/127"),
+	netip.MustParsePrefix("::ffff:0:0/96"),
+	netip.MustParsePrefix("fc00::/7"),
+	netip.MustParsePrefix("fe80::/10"),
+	netip.MustParsePrefix("ff00::/8"),
 }
 
-func (s *Supervisor) slotRules(slots []int) []slotRule {
-	out := make([]slotRule, 0, len(slots))
-	for _, slot := range slots {
-		t := s.opts.transit(slot)
-		v4 := t.space[0].Addr().As4()
-		v6 := t.space[1].Addr().As16()
-		out = append(out, slotRule{
-			link:   linkName(slot),
-			v4addr: v4[:],
-			v6addr: v6[:],
-			zone:   zone(slot),
+// slotRule is one slot's part of the tables: its veth end, its transit
+// addresses, its conntrack zone and what it may send on.
+type slotRule struct {
+	link string
+	src  [2]netip.Addr // the slot's transit addresses, IPv4 and IPv6
+	gw   [2]netip.Addr // the root end's transit addresses
+	zone uint16
+	// egress are the families it may send to the internet: granted, and
+	// carried by the uplink.
+	egress [2]bool
+	dials  []Dial
+}
+
+// tableState is everything the root namespace's tables are built from.
+type tableState struct {
+	rules []slotRule
+	// uplink is the node's uplink; empty: no egress, no dials.
+	uplink string
+	// owned are the families whose forwarding the supervisor turned on.
+	owned [2]bool
+	// maxFlows caps each space's flows through the root; 0: no cap.
+	maxFlows int
+}
+
+// tableState snapshots what the tables need; the caller holds s.mu.
+func (s *Supervisor) tableState() tableState {
+	st := tableState{uplink: s.uplink.Name, owned: s.forwarding.owned(), maxFlows: s.maxFlows}
+	for _, w := range s.workers {
+		grant, dials := w.egressRules()
+		st.rules = append(st.rules, slotRule{
+			link:   w.link,
+			src:    [2]netip.Addr{w.transit.space[0].Addr(), w.transit.space[1].Addr()},
+			gw:     [2]netip.Addr{w.transit.root[0].Addr(), w.transit.root[1].Addr()},
+			zone:   slotZone(w.slot),
+			egress: s.effective(grant),
+			dials:  dials,
 		})
 	}
-	return out
+	return st
 }
 
-// applyIsolation rebuilds both tables from the active slots in one flush.
-func (s *Supervisor) applyIsolation(slots []int) error {
-	if failApplyIsolation && len(slots) > 0 {
+// effective are the families of grant the uplink carries; the caller holds
+// s.mu.
+func (s *Supervisor) effective(grant EgressGrant) [2]bool {
+	if s.uplink.Name == "" {
+		return [2]bool{}
+	}
+	return [2]bool{grant.IPv4 && s.uplink.IPv4, grant.IPv6 && s.uplink.IPv6}
+}
+
+// applyIsolation rebuilds both tables in one flush.
+func (s *Supervisor) applyIsolation(st tableState) error {
+	if failApplyIsolation && len(st.rules) > 0 {
 		return fmt.Errorf("supervisor: applyIsolation failed (injected)")
 	}
-	rules := s.slotRules(slots)
 	c, err := nftables.New()
 	if err != nil {
 		return fmt.Errorf("nftables: %w", err)
@@ -93,84 +214,281 @@ func (s *Supervisor) applyIsolation(slots []int) error {
 		c.AddTable(t)
 	}
 	accept := nftables.ChainPolicyAccept
-	base := func(table *nftables.Table, name string, hook *nftables.ChainHook, prio nftables.ChainPriority) *nftables.Chain {
+	base := func(table *nftables.Table, name string, typ nftables.ChainType, hook *nftables.ChainHook, prio nftables.ChainPriority) *nftables.Chain {
 		return c.AddChain(&nftables.Chain{
-			Name: name, Table: table, Type: nftables.ChainTypeFilter,
+			Name: name, Table: table, Type: typ,
 			Hooknum: hook, Priority: nftables.ChainPriorityRef(prio), Policy: &accept,
 		})
 	}
-	ctPre := base(inet, "ct_pre", nftables.ChainHookPrerouting, *nftables.ChainPriorityRaw)
-	ctOut := base(inet, "ct_out", nftables.ChainHookOutput, *nftables.ChainPriorityRaw)
-	antiFwd := base(inet, "antispoof_fwd", nftables.ChainHookForward, -10)
-	antiIn := base(inet, "antispoof_in", nftables.ChainHookInput, -10)
-	forward := base(inet, "forward", nftables.ChainHookForward, *nftables.ChainPriorityFilter)
-	input := base(inet, "input", nftables.ChainHookInput, *nftables.ChainPriorityFilter)
+	regular := func(name string) *nftables.Chain { return c.AddChain(&nftables.Chain{Name: name, Table: inet}) }
+	filter := nftables.ChainTypeFilter
+	antiSpoofChain := base(inet, "antispoof", filter, nftables.ChainHookPrerouting, *nftables.ChainPriorityRaw-10)
+	ctPre := base(inet, "ct_pre", filter, nftables.ChainHookPrerouting, *nftables.ChainPriorityRaw)
+	ctOut := base(inet, "ct_out", filter, nftables.ChainHookOutput, *nftables.ChainPriorityRaw)
+	forward := base(inet, "forward", filter, nftables.ChainHookForward, *nftables.ChainPriorityFilter)
+	spaceOut, spaceAccept := regular("space_out"), regular("space_accept")
+	input := base(inet, "input", filter, nftables.ChainHookInput, *nftables.ChainPriorityFilter)
+	nat := base(inet, "postrouting", nftables.ChainTypeNAT, nftables.ChainHookPostrouting, *nftables.ChainPriorityNATSource)
+	guard := base(inet, "postrouting_guard", filter, nftables.ChainHookPostrouting, *nftables.ChainPriorityNATSource+10)
 	// The arp family has input and output hooks only (ARP is link-local, not
 	// forwarded), so a space's ARP is dropped on input.
-	arpIn := base(arp, "input", nftables.ChainHookInput, *nftables.ChainPriorityFilter)
+	arpIn := base(arp, "input", filter, nftables.ChainHookInput, *nftables.ChainPriorityFilter)
 
 	add := func(chain *nftables.Chain, exprs ...expr.Any) {
 		c.AddRule(&nftables.Rule{Table: chain.Table, Chain: chain, Exprs: exprs})
 	}
+	all := func(parts ...[]expr.Any) []expr.Any {
+		var out []expr.Any
+		for _, p := range parts {
+			out = append(out, p...)
+		}
+		return out
+	}
+	verdict := func(kind expr.VerdictKind) []expr.Any { return []expr.Any{&expr.Verdict{Kind: kind}} }
+	jump := func(to *nftables.Chain) []expr.Any {
+		return []expr.Any{&expr.Verdict{Kind: expr.VerdictGoto, Chain: to.Name}}
+	}
 
-	// Per-slot: conntrack zone, then anti-spoof.
-	for _, r := range rules {
-		add(ctPre, zoneSet(expr.MetaKeyIIFNAME, r.link, r.zone)...)
-		add(ctOut, zoneSet(expr.MetaKeyOIFNAME, r.link, r.zone)...)
-		for _, chain := range []*nftables.Chain{antiFwd, antiIn} {
-			add(chain, antiSpoof(r.link, unix.NFPROTO_IPV4, 12, r.v4addr)...)
-			add(chain, antiSpoof(r.link, unix.NFPROTO_IPV6, 8, r.v6addr)...)
+	// Per slot: anti-spoof before conntrack, then the zone of what is the
+	// root namespace's own business.
+	for _, r := range st.rules {
+		for _, a := range r.src {
+			add(antiSpoofChain, antiSpoof(r.link, a)...)
+		}
+		for _, gw := range r.gw {
+			add(ctPre, all(linkExact(expr.MetaKeyIIFNAME, r.link), daddrIn(netip.PrefixFrom(gw, gw.BitLen())), zone(r.zone))...)
+		}
+		add(ctPre, all(linkExact(expr.MetaKeyIIFNAME, r.link), notHost(), zone(r.zone))...)
+		add(ctOut, all(linkExact(expr.MetaKeyOIFNAME, r.link), zone(r.zone))...)
+	}
+
+	// Forward: nothing conntrack can't place; replies to what each space
+	// sent on, bound to its slot; nothing else to a space; what a space
+	// sends goes by space_out; and, where the supervisor turned forwarding
+	// on, nothing else at all.
+	add(forward, drop(all(spaceLink(expr.MetaKeyIIFNAME), ctState(expr.CtStateBitINVALID|expr.CtStateBitUNTRACKED)))...)
+	for _, r := range st.rules {
+		for _, a := range r.src {
+			add(forward, all(spaceLinkNot(expr.MetaKeyIIFNAME), linkExact(expr.MetaKeyOIFNAME, r.link),
+				ctState(expr.CtStateBitESTABLISHED|expr.CtStateBitRELATED), ctOriginal(expr.CtKeySRC, a), verdict(expr.VerdictAccept))...)
+		}
+	}
+	add(forward, drop(spaceLink(expr.MetaKeyOIFNAME))...)
+	add(forward, all(spaceLink(expr.MetaKeyIIFNAME), jump(spaceOut))...)
+	for i, nfproto := range []byte{unix.NFPROTO_IPV4, unix.NFPROTO_IPV6} {
+		if st.owned[i] {
+			add(forward, drop(all(spaceLinkNot(expr.MetaKeyIIFNAME), spaceLinkNot(expr.MetaKeyOIFNAME), nfprotoIs(nfproto)))...)
 		}
 	}
 
-	// Generic: nothing forwarded from or to a space.
-	add(forward, drop(spaceLink(expr.MetaKeyIIFNAME))...)
-	add(forward, drop(spaceLink(expr.MetaKeyOIFNAME))...)
+	// space_out: the flow cap, then the destinations no space reaches.
+	if st.maxFlows > 0 {
+		for _, r := range st.rules {
+			add(spaceOut, drop(all(linkExact(expr.MetaKeyIIFNAME, r.link), ctState(expr.CtStateBitNEW),
+				[]expr.Any{&expr.Connlimit{Count: uint32(st.maxFlows), Flags: connlimitOver}}))...)
+		}
+	}
+	for _, p := range s.opts.EgressAllowed {
+		add(spaceOut, all(daddrIn(p), jump(spaceAccept))...)
+	}
+	for _, p := range append(egressBlocked, s.opts.TransitIPv4, s.opts.TransitIPv6) {
+		add(spaceOut, drop(daddrIn(p))...)
+	}
+	add(spaceOut, jump(spaceAccept)...)
+
+	// space_accept: each slot's egress and dials, out of the uplink, for
+	// its own flows only.
+	if st.uplink != "" {
+		for _, r := range st.rules {
+			for i, a := range r.src {
+				if r.egress[i] {
+					add(spaceAccept, all(linkExact(expr.MetaKeyIIFNAME, r.link), linkExact(expr.MetaKeyOIFNAME, st.uplink),
+						ctOriginal(expr.CtKeySRC, a), verdict(expr.VerdictAccept))...)
+				}
+			}
+			for _, d := range r.dials {
+				a := r.src[0]
+				if !d.Address.Addr().Unmap().Is4() {
+					a = r.src[1]
+				}
+				add(spaceAccept, all(linkExact(expr.MetaKeyIIFNAME, r.link), linkExact(expr.MetaKeyOIFNAME, st.uplink),
+					dialMatch(d), ctOriginal(expr.CtKeySRC, a), verdict(expr.VerdictAccept))...)
+			}
+		}
+	}
+	add(spaceAccept, drop(nil)...)
+
 	// Input: a space reaches nothing of the root namespace's own, past
-	// replies to what the root namespace started (in the space's own zone).
-	add(input, established(spaceLink(expr.MetaKeyIIFNAME))...)
+	// replies to what the root namespace started with it.
+	for _, r := range st.rules {
+		for _, a := range r.src {
+			state := expr.CtStateBitESTABLISHED
+			if unboundAccepts {
+				state |= expr.CtStateBitRELATED
+			}
+			add(input, all(linkExact(expr.MetaKeyIIFNAME, r.link), ctState(state),
+				ctOriginal(expr.CtKeyDST, a), verdict(expr.VerdictAccept))...)
+		}
+	}
 	add(input, drop(spaceLink(expr.MetaKeyIIFNAME))...)
+
+	// Masquerade the transit ranges wherever they leave but to a space,
+	// within MasqueradePorts; anything still from a transit range after
+	// that is dropped.
+	for _, p := range []netip.Prefix{s.opts.TransitIPv4, s.opts.TransitIPv6} {
+		add(nat, masquerade(p)...)
+		add(guard, drop(all(spaceLinkNot(expr.MetaKeyOIFNAME), addrIn(p, srcOffset(p.Addr()))))...)
+	}
+
 	// ARP from a space never reaches the root namespace's neighbour table.
 	add(arpIn, drop(spaceLink(expr.MetaKeyIIFNAME))...)
 
 	if err := c.Flush(); err != nil {
-		return fmt.Errorf("nftables: apply isolation (%d slots): %w", len(slots), err)
+		return fmt.Errorf("nftables: apply isolation (%d slots): %w", len(st.rules), err)
 	}
 	return nil
 }
 
 // installIsolation sets up the tables with no slots yet.
-func (s *Supervisor) installIsolation() error { return s.applyIsolation(nil) }
+func (s *Supervisor) installIsolation() error {
+	s.mu.Lock()
+	st := s.tableState()
+	s.mu.Unlock()
+	return s.applyIsolation(st)
+}
 
-// zoneSet is "<key> == link; ct zone set <zone>".
-func zoneSet(key expr.MetaKey, link string, z uint16) []expr.Any {
-	return append(linkExact(key, link),
+// zone is "ct zone set <z>".
+func zone(z uint16) []expr.Any {
+	return []expr.Any{
 		&expr.Immediate{Register: 1, Data: binaryutil.NativeEndian.PutUint16(z)},
 		&expr.Ct{Register: 1, SourceRegister: true, Key: expr.CtKeyZONE},
+	}
+}
+
+// notHost is "meta pkttype != host": broadcast and multicast frames.
+func notHost() []expr.Any {
+	return []expr.Any{
+		&expr.Meta{Key: expr.MetaKeyPKTTYPE, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: []byte{unix.PACKET_HOST}},
+	}
+}
+
+// ctState is "ct state & bits != 0".
+func ctState(bits uint32) []expr.Any {
+	return []expr.Any{
+		&expr.Ct{Register: 1, Key: expr.CtKeySTATE},
+		&expr.Bitwise{SourceRegister: 1, DestRegister: 1, Len: 4, Mask: binaryutil.NativeEndian.PutUint32(bits), Xor: make([]byte, 4)},
+		&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: make([]byte, 4)},
+	}
+}
+
+// ctOriginal is "nfproto == a's family; ct original <saddr|daddr> == a": the
+// conntrack entry's original-direction address. In the inet family the
+// kernel loads the whole 16-byte tuple address; an IPv4 one is its first 4
+// bytes. (google/nftables sends the direction as 4 bytes, of which the
+// kernel reads the first: 0, the original direction, is all this asks.)
+func ctOriginal(key expr.CtKey, a netip.Addr) []expr.Any {
+	if unboundAccepts {
+		return family(a)
+	}
+	return append(family(a),
+		&expr.Ct{Register: 1, Key: key, Direction: ctDirOriginal},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: a.AsSlice()},
 	)
 }
 
-// antiSpoof is "iifname == link; nfproto == fam; <L3 source at off> != addr; drop".
-func antiSpoof(link string, nfproto byte, off uint32, addr []byte) []expr.Any {
-	return append(linkExact(expr.MetaKeyIIFNAME, link),
-		&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},
-		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{nfproto}},
-		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: off, Len: uint32(len(addr))},
-		&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: addr},
+// antiSpoof is "iifname == link; nfproto == addr's family; source != addr;
+// drop".
+func antiSpoof(link string, addr netip.Addr) []expr.Any {
+	return append(linkExact(expr.MetaKeyIIFNAME, link), append(family(addr),
+		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: srcOffset(addr), Len: uint32(addr.BitLen() / 8)},
+		&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: addr.AsSlice()},
 		&expr.Counter{},
 		&expr.Verdict{Kind: expr.VerdictDrop},
+	)...)
+}
+
+// dialMatch is "daddr == d's address; meta l4proto == d's protocol; th dport
+// == d's port".
+func dialMatch(d Dial) []expr.Any {
+	a := d.Address.Addr().Unmap()
+	proto := byte(unix.IPPROTO_UDP)
+	if d.Network == "tcp" {
+		proto = unix.IPPROTO_TCP
+	}
+	return append(daddrIn(netip.PrefixFrom(a, a.BitLen())),
+		&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{proto}},
+		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binary.BigEndian.AppendUint16(nil, d.Address.Port())},
 	)
+}
+
+// masquerade is "oifname != tp-space*; nfproto == p's family; saddr in p;
+// masquerade to :MasqueradePorts". The space's own SNAT already picked a
+// fully random port in that range (applySpaceTable), which the masquerade
+// keeps unless another flow holds it.
+func masquerade(p netip.Prefix) []expr.Any {
+	return append(append(spaceLinkNot(expr.MetaKeyOIFNAME), addrIn(p, srcOffset(p.Addr()))...),
+		&expr.Immediate{Register: 2, Data: binary.BigEndian.AppendUint16(nil, MasqueradePorts[0])},
+		&expr.Immediate{Register: 3, Data: binary.BigEndian.AppendUint16(nil, MasqueradePorts[1])},
+		&expr.Masq{ToPorts: true, RegProtoMin: 2, RegProtoMax: 3},
+	)
+}
+
+// daddrIn is "nfproto == p's family; daddr in p".
+func daddrIn(p netip.Prefix) []expr.Any { return addrIn(p, dstOffset(p.Addr())) }
+
+// addrIn is "nfproto == p's family; <network header at off> in p".
+func addrIn(p netip.Prefix, off uint32) []expr.Any {
+	p = p.Masked()
+	n := uint32(p.Addr().BitLen() / 8)
+	mask := make([]byte, n)
+	for i := range p.Bits() {
+		mask[i/8] |= 0x80 >> (i % 8)
+	}
+	return append(family(p.Addr()),
+		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: off, Len: n},
+		&expr.Bitwise{SourceRegister: 1, DestRegister: 1, Len: n, Mask: mask, Xor: make([]byte, n)},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: p.Addr().AsSlice()},
+	)
+}
+
+// family is "meta nfproto == a's family".
+func family(a netip.Addr) []expr.Any {
+	if a.Is4() {
+		return nfprotoIs(unix.NFPROTO_IPV4)
+	}
+	return nfprotoIs(unix.NFPROTO_IPV6)
+}
+
+func nfprotoIs(nfproto byte) []expr.Any {
+	return []expr.Any{
+		&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{nfproto}},
+	}
+}
+
+// srcOffset and dstOffset are where the network header holds a's family's
+// source and destination addresses.
+func srcOffset(a netip.Addr) uint32 {
+	if a.Is4() {
+		return 12
+	}
+	return 8
+}
+
+func dstOffset(a netip.Addr) uint32 {
+	if a.Is4() {
+		return 16
+	}
+	return 24
 }
 
 // established is "<match>; ct state established,related; accept".
 func established(match []expr.Any) []expr.Any {
-	mask := binaryutil.NativeEndian.PutUint32(expr.CtStateBitESTABLISHED | expr.CtStateBitRELATED)
-	return append(match,
-		&expr.Ct{Register: 1, Key: expr.CtKeySTATE},
-		&expr.Bitwise{SourceRegister: 1, DestRegister: 1, Len: 4, Mask: mask, Xor: make([]byte, 4)},
-		&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: make([]byte, 4)},
-		&expr.Verdict{Kind: expr.VerdictAccept},
-	)
+	return append(append(match, ctState(expr.CtStateBitESTABLISHED|expr.CtStateBitRELATED)...),
+		&expr.Verdict{Kind: expr.VerdictAccept})
 }
 
 func drop(match []expr.Any) []expr.Any {
@@ -183,6 +501,15 @@ func spaceLink(key expr.MetaKey) []expr.Any {
 	return []expr.Any{
 		&expr.Meta{Key: key, Register: 1},
 		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte(LinkPrefix)},
+	}
+}
+
+// spaceLinkNot matches packets whose interface doesn't start with the link
+// prefix.
+func spaceLinkNot(key expr.MetaKey) []expr.Any {
+	return []expr.Any{
+		&expr.Meta{Key: key, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: []byte(LinkPrefix)},
 	}
 }
 

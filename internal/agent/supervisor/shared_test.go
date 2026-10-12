@@ -1046,6 +1046,7 @@ type lineTransport struct{}
 func (lineTransport) Name() string                                     { return "line" }
 func (lineTransport) Dialer() transport.Dialer                         { return nil }
 func (lineTransport) Overhead(transport.Shaping) int                   { return 0 }
+func (lineTransport) Network() string                                  { return "tcp" }
 func (lineTransport) CheckEndpoint(string, transport.DialConfig) error { return nil }
 func (lineTransport) CheckInbound(transport.PeerLink) error            { return nil }
 func (lineTransport) Listen(context.Context, transport.ListenConfig) (transport.Listener, error) {

@@ -2,7 +2,6 @@ package router
 
 import (
 	"fmt"
-	"net/netip"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -16,7 +15,7 @@ const egressBatch = 32
 
 // Egress is the virtual TUN of one WireGuard device: it reads the packets
 // the router queued for it, and its writes go to the router's TUN, for the
-// node's own addresses only. It implements tun.Device; the WireGuard device
+// node's own addresses only (and the internet on an exit: Table.Forward). It implements tun.Device; the WireGuard device
 // owns it and closes it.
 type Egress struct {
 	r     *Router
@@ -31,7 +30,7 @@ type Egress struct {
 	isDone atomic.Bool
 	once   sync.Once
 
-	routed, delivered, notLocal, queueFull, tooLarge atomic.Uint64
+	routed, delivered, forwarded, notLocal, queueFull, tooLarge atomic.Uint64
 }
 
 var _ tun.Device = (*Egress)(nil)
@@ -43,7 +42,8 @@ type EgressStatus struct {
 	Queued    int    // packets waiting for the WireGuard device now
 	Routed    uint64 // queued for the WireGuard device
 	Delivered uint64 // decrypted by the device and written to the TUN
-	NotLocal  uint64 // decrypted for a destination not the node's own, dropped
+	Forwarded uint64 // of those, for the internet: the node forwards them (Table.Forward)
+	NotLocal  uint64 // decrypted for a destination not the node's own (nor the internet, forwarding), dropped
 	QueueFull uint64 // dropped: the device fell behind
 	TooLarge  uint64 // dropped: longer than the device's buffer
 }
@@ -112,6 +112,7 @@ func (e *Egress) Status() EgressStatus {
 		Queued:    len(e.queue),
 		Routed:    e.routed.Load(),
 		Delivered: e.delivered.Load(),
+		Forwarded: e.forwarded.Load(),
 		NotLocal:  e.notLocal.Load(),
 		QueueFull: e.queueFull.Load(),
 		TooLarge:  e.tooLarge.Load(),
@@ -167,39 +168,55 @@ func (e *Egress) Read(bufs [][]byte, sizes []int, offset int) (int, error) {
 	}
 }
 
-// Write implements tun.Device: packets for the node's own addresses go to
-// the router's TUN, anything else is dropped and counted (NotLocal). It
-// reports every packet as written.
+// Write implements tun.Device: packets for the node's own addresses (and,
+// on a forwarding egress, for the internet: Table.Forward) go to the
+// router's TUN, anything else is dropped and counted (NotLocal). It reports
+// every packet as written.
 func (e *Egress) Write(bufs [][]byte, offset int) (int, error) {
 	if e.isDone.Load() {
 		return 0, os.ErrClosed
 	}
-	local := e.r.table.Load().local
+	c := e.r.table.Load()
 	out := bufs
 	for i, b := range bufs {
-		if dst, ok := destination(b[offset:]); !ok || !local[dst] {
-			out = e.keepLocal(bufs[:i], bufs[i:], offset, local)
+		if dst, ok := destination(b[offset:]); !ok || !c.delivers(e, dst) {
+			out = e.keepDelivered(bufs[:i], bufs[i:], offset, c)
 			break
 		}
 	}
 	if len(out) == 0 {
 		return len(bufs), nil
 	}
+	// Counted before the write: a TUN with offloads coalesces the packets
+	// in place, and reports what it wrote in bytes, not packets.
+	var fwd uint64
+	if c.forward[e] {
+		for _, b := range out {
+			if dst, ok := destination(b[offset:]); ok && !c.local[dst] {
+				fwd++
+			}
+		}
+	}
 	n, err := e.r.tun.Write(out, offset)
 	e.delivered.Add(uint64(n))
 	e.r.c.delivered.Add(uint64(n))
+	if err == nil {
+		e.forwarded.Add(fwd)
+		e.r.c.forwarded.Add(fwd)
+	}
 	if err != nil {
 		return n, err
 	}
 	return len(bufs), nil
 }
 
-// keepLocal returns the local packets of kept and rest, counting the others.
-func (e *Egress) keepLocal(kept, rest [][]byte, offset int, local map[netip.Addr]bool) [][]byte {
+// keepDelivered returns the packets of kept and rest the egress delivers,
+// counting the others.
+func (e *Egress) keepDelivered(kept, rest [][]byte, offset int, c *compiled) [][]byte {
 	out := make([][]byte, len(kept), len(kept)+len(rest))
 	copy(out, kept)
 	for _, b := range rest {
-		if dst, ok := destination(b[offset:]); ok && local[dst] {
+		if dst, ok := destination(b[offset:]); ok && c.delivers(e, dst) {
 			out = append(out, b)
 			continue
 		}
