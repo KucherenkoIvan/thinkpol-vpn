@@ -170,6 +170,7 @@ func writeDataPlane(line func(string, ...any), dp *localapiv1.DataPlane, now tim
 var trafficCounters = map[string]bool{
 	"router.routed": true, "router.delivered": true, "router.forwarded": true, "path.sent": true, "path.delivered": true, "path.forwarded": true,
 	"route_table.routes": true, "route_table.reapplies": true, "route_table.rules_ahead": true,
+	"interface.reapplies": true,
 }
 
 // WriteSpaces writes the spaces, the active one marked.

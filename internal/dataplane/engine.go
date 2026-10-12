@@ -134,6 +134,9 @@ type Engine struct {
 	// ctx ends with Close: what SetRules and ReloadRules do runs under it.
 	ctx    context.Context
 	cancel context.CancelFunc
+	// interfaceWatched is closed when the interface's watcher has stopped
+	// (nil without an Interface).
+	interfaceWatched chan struct{}
 
 	mu      sync.Mutex
 	closed  bool
@@ -151,6 +154,12 @@ type Engine struct {
 	lastErr  string
 	// routedExit is whether the router's table forwards (Status.Exit).
 	routedExit bool
+	// ifc is the overlay interface's configuration in place (nil before
+	// the first Apply that set it), which a link event re-applies;
+	// ifcReapplies counts those that succeeded, ifcTiming paces them.
+	ifc          *netcfg.Interface
+	ifcReapplies uint64
+	ifcTiming    interfaceTiming
 
 	// Routing rules: the device's own choice, what the last section gave
 	// them, the chains that can carry traffic, and the result.
@@ -229,9 +238,14 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 		links:     make(map[string][]transport.PeerLink),
 		ownRules:  cfg.Rules,
 		geoipSets: make(map[[32]byte]*lists.Set),
+		ifcTiming: defaultInterfaceTiming,
 	}
 	e.assign, e.rules = e.layout, e.ruleRoutes
 	e.ctx, e.cancel = context.WithCancel(context.Background())
+	if cfg.Interface != nil {
+		e.interfaceWatched = make(chan struct{})
+		go e.watchInterface()
+	}
 	return e, nil
 }
 
@@ -330,12 +344,11 @@ func (e *Engine) apply(ctx context.Context, s netmap.Section) (string, error) {
 	}
 
 	if e.cfg.Interface != nil {
-		err := e.cfg.Interface.Apply(ctx, netcfg.Config{Interfaces: []netcfg.Interface{{
-			Name: e.tunName, Addrs: oc.Addrs, MTU: oc.MTU, Up: true,
-		}}})
-		if err != nil {
+		ifc := netcfg.Interface{Name: e.tunName, Addrs: slices.Clone(oc.Addrs), MTU: oc.MTU, Up: true}
+		if err := e.cfg.Interface.Apply(ctx, netcfg.Config{Interfaces: []netcfg.Interface{ifc}}); err != nil {
 			return StepInterface, fmt.Errorf("dataplane: overlay interface: %w", err)
 		}
+		e.ifc = &ifc
 	}
 	e.mtu, e.ipv6Off, e.local, e.networks = oc.MTU, oc.IPv6Off, oc.Local, oc.Networks
 	e.exit = e.cfg.Forward && s.Node.Kind == netmap.NodeServer && s.Node.AllowEgress
@@ -578,6 +591,10 @@ type Status struct {
 	Exit bool
 	// RouteTable is how the OS routing table enforces them.
 	RouteTable RouteTableStatus
+	// InterfaceReapplies counts successful re-applies of the overlay
+	// interface's addresses and MTU after its link came up (most change
+	// nothing).
+	InterfaceReapplies uint64
 }
 
 // PeerStatus is one WireGuard peer.
@@ -608,6 +625,8 @@ func (e *Engine) Status() Status {
 		Rules:          e.routedRules,
 		Exit:           e.routedExit,
 		RouteTable:     e.routeTableStatus(),
+
+		InterfaceReapplies: e.ifcReapplies,
 	}
 	s.Rules.Skipped = slices.Clone(s.Rules.Skipped)
 	if e.ipv6Off != nil {
@@ -640,6 +659,9 @@ func (e *Engine) Status() Status {
 // the path layer, and the TUN's configuration.
 func (e *Engine) Close() error {
 	e.cancel()
+	if e.interfaceWatched != nil {
+		<-e.interfaceWatched
+	}
 	e.serial.Lock()
 	defer e.serial.Unlock()
 	e.mu.Lock()

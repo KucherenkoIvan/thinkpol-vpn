@@ -67,7 +67,8 @@ func dataPlaneProto(dp *dataplane.Status, listeners int) *localapiv1.DataPlane {
 			"path.no_path": dp.Path.NoPath, "path.unknown_peer": dp.Path.UnknownPeer,
 			"path.queue_full": dp.Path.QueueFull, "path.malformed": dp.Path.Malformed,
 			"path.other_space": dp.Path.OtherSpace, "path.too_large": dp.Path.TooLarge,
-			"path.write_failed": dp.Path.WriteFailed,
+			"path.write_failed":   dp.Path.WriteFailed,
+			"interface.reapplies": dp.InterfaceReapplies,
 		},
 	}
 	if rt := dp.RouteTable; rt.Enforced || rt.Error != "" {

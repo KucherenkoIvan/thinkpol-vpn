@@ -1175,7 +1175,8 @@ type DataPlane struct {
 	// The router's and the path layer's counters by name ("router.no_route",
 	// "path.no_path", ...), and the route table's ("route_table.routes",
 	// "route_table.reapplies", "route_table.rules_ahead") while it enforces
-	// the rules.
+	// the rules, and how often the overlay interface was re-applied after its
+	// link came up ("interface.reapplies").
 	Counters      map[string]uint64 `protobuf:"bytes,10,rep,name=counters,proto3" json:"counters,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

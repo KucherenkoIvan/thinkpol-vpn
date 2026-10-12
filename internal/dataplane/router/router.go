@@ -44,6 +44,10 @@ type Router struct {
 
 	stop chan struct{} // closed by Close
 	done chan struct{} // closed when the read loop exits
+	// linkUp is signalled, coalesced, when the TUN reports its link up;
+	// linkDown is set while its last report was down.
+	linkUp   chan struct{}
+	linkDown atomic.Bool
 
 	c counters
 }
@@ -75,17 +79,39 @@ func New(t tun.Device) *Router {
 		egresses: make(map[*Egress]struct{}),
 		stop:     make(chan struct{}),
 		done:     make(chan struct{}),
+		linkUp:   make(chan struct{}, 1),
 	}
 	r.table.Store(&compiled{})
 	go r.read()
 	go func() {
 		// A TUN blocks its own goroutines when nobody takes its events;
-		// the router sets MTUs itself and has no use for them.
-		for range t.Events() {
+		// the router sets MTUs itself, and passes on only the link up.
+		for ev := range t.Events() {
+			if ev&tun.EventDown != 0 {
+				r.linkDown.Store(true)
+			}
+			if ev&tun.EventUp != 0 {
+				r.linkDown.Store(false)
+				select {
+				case r.linkUp <- struct{}{}:
+				default:
+				}
+			}
 		}
 	}()
 	return r
 }
+
+// LinkUp is signalled, coalesced, when the TUN reports its link up
+// (tun.EventUp). Linux's TUN reports it when the link comes up and again
+// on later changes of a running link (its MTU, say), so it says "check
+// the interface", not "it was down".
+func (r *Router) LinkUp() <-chan struct{} { return r.linkUp }
+
+// LinkDown reports whether the TUN's last link report was down (false
+// before any). Linux's TUN may report a quick bounce as up alone, and a
+// link that stays down only within a second.
+func (r *Router) LinkDown() bool { return r.linkDown.Load() }
 
 // SetTable replaces the routing table; packets already queued on an egress
 // stay there. It fails, changing nothing, on an invalid prefix, a prefix
