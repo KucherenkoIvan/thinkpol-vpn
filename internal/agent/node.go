@@ -16,6 +16,7 @@ import (
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/supervisor"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/blobs"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/rules"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
@@ -236,6 +237,7 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 	if n.mode == ModeServer {
 		return n.runServer(ctx, reg, maps)
 	}
+	log := n.logs.With("space", n.state.Trust.SpaceID.String())
 	dp := DataPlane{
 		Keys:         n.state.Keys,
 		Map:          n.state.Map,
@@ -244,7 +246,8 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 		Inbound:      DirectInbound(reg),
 		Interface:    n.cfg.Interface,
 		LinkMTU:      n.cfg.LinkMTU,
-		Log:          n.logs.With("space", n.state.Trust.SpaceID.String()),
+		Log:          log,
+		Blobs:        blobs.New(blobs.Options{Store: diskBlobs{dir: n.cfg.StateDir, log: log}, Log: log}),
 		DNS:          n.cfg.DNS,
 		DNSUpstreams: n.dnsUpstreams,
 
@@ -349,6 +352,7 @@ func (n *Node) runServer(ctx context.Context, reg *transport.Registry, maps chan
 		iface: n.cfg.Interface, linkMTU: n.cfg.LinkMTU, cur: n.state.Map, section: n.state.Section,
 		dns: n.cfg.DNS, dnsUpstreams: n.dnsUpstreams, systemUpstreams: dns.SystemUpstreams,
 		retryAfter: RetryAfter, report: &n.report, requests: n.requests, rulesRequests: n.rulesRequests,
+		stateDir: n.cfg.StateDir,
 	}
 	return s.run(ctx, maps)
 }
@@ -380,6 +384,8 @@ type serverSpaces struct {
 	iface      string
 	linkMTU    int
 	retryAfter time.Duration
+	// stateDir holds the seeds of the space's blobs (seedBlobs).
+	stateDir string
 	// dns runs the space's resolver in its worker, asking dnsUpstreams,
 	// else what systemUpstreams says the host uses.
 	dns             bool
@@ -424,7 +430,13 @@ func (s *serverSpaces) apply() error {
 		return err
 	}
 	inbound := dataplane.AcceptedInbound(s.section, s.reg, transport.SpaceID(id), s.linkMTU)
-	if err := s.sup.SetSpaces([]supervisor.Space{{ID: id, Config: config, Inbound: inbound.Links}}); err != nil {
+	// The seeds are read when the supervisor sends them (a worker's start,
+	// a new map), never held here.
+	var seeds func() [][]byte
+	if dir, header, log := s.stateDir, s.cur.Header().Blobs, s.log; dir != "" && len(header) > 0 {
+		seeds = func() [][]byte { return seedBlobs(dir, header, log) }
+	}
+	if err := s.sup.SetSpaces([]supervisor.Space{{ID: id, Config: config, Inbound: inbound.Links, Seeds: seeds}}); err != nil {
 		return fmt.Errorf("serving space %v: %w", id, err)
 	}
 	ls := make([]supervisor.Listener, 0, len(s.section.Node.Listeners))
@@ -434,8 +446,8 @@ func (s *serverSpaces) apply() error {
 	if err := s.sup.SetListeners(ls); err != nil {
 		return errListeners{err}
 	}
-	s.log.Info("map applied", append([]any{"version", s.cur.Header().Version, "listeners", len(ls), "inbound_skipped", len(inbound.Skipped)},
-		serverSettings(s.section.Node)...)...)
+	s.log.Info("map applied", append(append([]any{"version", s.cur.Header().Version, "listeners", len(ls), "inbound_skipped", len(inbound.Skipped)},
+		serverSettings(s.section.Node)...), "blobs", len(s.cur.Header().Blobs))...)
 	return nil
 }
 

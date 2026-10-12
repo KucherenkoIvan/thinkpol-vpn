@@ -60,7 +60,8 @@ func Run(ctx context.Context, space netmap.SpaceID, serve Serve) error {
 	shared := newSharedListeners(data)
 	defer shared.update(nil) // every listener done
 	ch := channels{config: make(chan []byte, 1), listeners: make(chan []SharedListener, 1), counters: make(chan ipc.SharedCounters, 1)}
-	go readControl(control, shared, ch, cancel)
+	seeds := NewSeeds()
+	go readControl(control, shared, ch, seeds, cancel)
 	go readData(data, shared, cancel)
 
 	err = serve(ctx, Session{
@@ -72,6 +73,7 @@ func Run(ctx context.Context, space netmap.SpaceID, serve Serve) error {
 		Listeners:      ch.listeners,
 		SharedDrops:    shared.drops,
 		SharedCounters: ch.counters,
+		Seeds:          seeds,
 	})
 	switch cause := context.Cause(ctx); {
 	case errors.Is(cause, errStopped):
@@ -140,7 +142,7 @@ func readData(data *ipc.Conn, shared *sharedListeners, cancel context.CancelCaus
 // readControl delivers each Config and Listeners the supervisor sends
 // (latest-wins) and each stream it hands over, and ends the worker on Stop,
 // EOF or anything unexpected.
-func readControl(control *ipc.Conn, shared *sharedListeners, ch channels, cancel context.CancelCauseFunc) {
+func readControl(control *ipc.Conn, shared *sharedListeners, ch channels, seeds *Seeds, cancel context.CancelCauseFunc) {
 	for {
 		m, err := control.Receive()
 		switch {
@@ -163,6 +165,14 @@ func readControl(control *ipc.Conn, shared *sharedListeners, ch channels, cancel
 				return
 			}
 			latest(ch.config, config)
+		case ipc.KindBlob:
+			// Held before the next message (the config naming it) is read.
+			b, err := readBlob(m)
+			if err != nil {
+				cancel(fmt.Errorf("worker: blob: %w", err))
+				return
+			}
+			seeds.Add(b)
 		case ipc.KindListeners:
 			m.CloseFiles()
 			ls, err := ipc.DecodeListeners(m)
@@ -212,4 +222,21 @@ func readConfig(m ipc.Message) ([]byte, error) {
 		return nil, err
 	}
 	return io.ReadAll(io.NewSectionReader(f, 0, fi.Size()))
+}
+
+// readBlob reads a Blob message's memfd from offset 0, at most
+// ipc.MaxBlobSize bytes.
+func readBlob(m ipc.Message) ([]byte, error) {
+	defer m.CloseFiles()
+	if len(m.Files) != 1 {
+		return nil, fmt.Errorf("%d files attached", len(m.Files))
+	}
+	fi, err := m.Files[0].Stat()
+	if err != nil {
+		return nil, err
+	}
+	if fi.Size() <= 0 || fi.Size() > ipc.MaxBlobSize {
+		return nil, fmt.Errorf("a blob of %d bytes", fi.Size())
+	}
+	return io.ReadAll(io.NewSectionReader(m.Files[0], 0, fi.Size()))
 }

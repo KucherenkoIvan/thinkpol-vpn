@@ -62,3 +62,12 @@ func (d *trustedDir) write(name string, data []byte, perm os.FileMode) error {
 	}
 	return os.Rename(tmp, filepath.Join(d.path, name))
 }
+
+func (d *trustedDir) mkdir(name string) error {
+	if err := os.Mkdir(filepath.Join(d.path, name), 0o700); err != nil && !os.IsExist(err) {
+		return err
+	}
+	return nil
+}
+
+func (d *trustedDir) remove(name string, _ bool) error { return os.Remove(filepath.Join(d.path, name)) }

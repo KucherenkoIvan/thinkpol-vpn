@@ -81,3 +81,48 @@ func TestDevListsBuild(t *testing.T) {
 		t.Errorf("no source: exit %d", code)
 	}
 }
+
+// A list built by `dev lists build` goes into a hand-made map: the header
+// lists it, the section of the node that uses it names it.
+func TestDevMapBuildTakesLists(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "dbip-country-lite.csv")
+	if err := os.WriteFile(src, []byte(dbipFixture), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRunCLI(t, "dev", "lists", "build", "-only", "ru", "-out", filepath.Join(dir, "lists"), src)
+	blob, err := os.ReadFile(filepath.Join(dir, "lists", "ru.geoip"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := filepath.Join(dir, "spec.yaml")
+	if err := os.WriteFile(spec, []byte(`lists:
+  - {name: ru, file: lists/ru.geoip}
+nodes:
+  - {name: s, kind: server, ingress: true, endpoints: ["udp://192.0.2.1:4500"]}
+  - {name: d, kind: device, lists: [ru]}
+paths:
+  - [d, s]
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	keys, mapFile := filepath.Join(dir, "keys"), filepath.Join(dir, "map.bin")
+	mustRunCLI(t, "dev", "keygen", "space", "-out", keys)
+	mustRunCLI(t, "dev", "keygen", "node", "-out", keys, "s", "d")
+	mustRunCLI(t, "dev", "map", "build", "-keys", keys, "-out", mapFile, spec)
+	sum := fmt.Sprintf("sha256 %x, %d bytes", sha256.Sum256(blob), len(blob))
+	if out := mustRunCLI(t, "dev", "map", "inspect", "-keys", keys, mapFile); !strings.Contains(out, "blobs:\n  - geoip: "+sum) {
+		t.Errorf("header:\n%s", out)
+	}
+	if out := mustRunCLI(t, "dev", "map", "inspect", "-keys", keys, "-node-key", filepath.Join(keys, "d.key"), mapFile); !strings.Contains(out, "  - geoip ru: "+sum) {
+		t.Errorf("d's section:\n%s", out)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "lists", "ru.geoip"), []byte("junk"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, stderr := runCLI(t, "dev", "map", "build", "-keys", keys, "-out", mapFile, spec); code != 1 ||
+		!strings.Contains(stderr, "spec.yaml:2:6: list ru: ") || !strings.Contains(stderr, "is not a GeoIP list blob") {
+		t.Errorf("a junk list: exit %d, stderr %q", code, stderr)
+	}
+}

@@ -29,8 +29,10 @@ branch: ""
   - **node.key written on the node.** Provisioning has the node generate its own keys (`netmap.GenerateNodeKey`, `GenerateWireGuardKey`, a random node id) and write `/var/lib/thinkpol/node.key` once, 0600, owned by the agent's user, in a 0700 directory no one else can write (`thinkpol up` refuses anything looser, `internal/agent/state.go`), then report only the public half. `space.pub` comes from the invite/controller.
   - **First boot without a map:** see TP-037's Notes; until the first map arrives, `thinkpol up` refuses to start.
 - **From TP-013:** a new node starts with ingress and egress off, the zero value of `NodeSettings.AllowIngress`/`AllowEgress`; `node set --ingress` is the controller flipping the setting and removing or adding the devices' links accordingly (TP-034's notes).
+- **From TP-017:** provisioning may seed a server's lists: `install -d -m 700 /var/lib/thinkpol/blobs` and each blob as `blobs/<hex sha256 of its content>` (0600), before the map that names them. The supervisor checks seeds against the map before sending them to the worker.
 
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-11 docs (TP-011 review): notes on a shared key-file codec, node.key written on the node, first boot
 - 2026-10-12 docs (TP-013 review): notes from the ingress and egress settings
+- 2026-10-12 docs (TP-017): notes from blob distribution

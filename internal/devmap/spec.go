@@ -12,6 +12,7 @@ import (
 	"github.com/goccy/go-yaml"
 	"github.com/goccy/go-yaml/ast"
 
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/lists"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
 
@@ -38,6 +39,10 @@ type Spec struct {
 	// they name; every device's section gets them.
 	Rules  []netmap.Rule
 	Chains []Chain
+	// Lists are the space's GeoIP lists: every one goes into the map's
+	// header, and into the sections of the nodes that name it. ReadLists
+	// reads their files.
+	Lists []List
 }
 
 // Chain is a chain rules send traffic through: at M1, its exit.
@@ -46,6 +51,17 @@ type Chain struct {
 	// Exit is an index into Spec.Nodes: a server with egress on.
 	Exit int
 	Pos  Pos
+}
+
+// List is a GeoIP list blob, as `thinkpol dev lists build` writes it.
+type List struct {
+	Name string
+	// File is where the blob is: relative to the spec's directory unless
+	// absolute.
+	File string
+	Pos  Pos
+	// Ref is the blob's reference, named, once ReadLists read it.
+	Ref netmap.BlobRef
 }
 
 // Node is one node of the spec.
@@ -62,7 +78,10 @@ type Node struct {
 	// Ingress lets devices dial this server; Egress lets internet traffic
 	// leave from it. Server settings, off unless written.
 	Ingress, Egress bool
-	Pos             Pos
+	// Lists are the lists the node uses, indexes into Spec.Lists: its
+	// section names them.
+	Lists []int
+	Pos   Pos
 }
 
 // Address is a transport and an IP literal with a port, written
@@ -163,6 +182,7 @@ type rawSpec struct {
 		IPv4 scalar `yaml:"ipv4"`
 		IPv6 scalar `yaml:"ipv6"`
 	} `yaml:"space"`
+	Lists  []rawList  `yaml:"lists"`
 	Nodes  []rawNode  `yaml:"nodes"`
 	Paths  []rawPath  `yaml:"paths"`
 	Rules  []scalar   `yaml:"rules"`
@@ -186,6 +206,23 @@ func (c *rawChain) UnmarshalYAML(node ast.Node) error {
 	return nil
 }
 
+type rawList struct {
+	pos  Pos
+	Name scalar `yaml:"name"`
+	File scalar `yaml:"file"`
+}
+
+func (l *rawList) UnmarshalYAML(node ast.Node) error {
+	type fields rawList // without this method
+	var f fields
+	if err := yaml.NodeToValue(node, &f, yaml.Strict()); err != nil {
+		return err
+	}
+	*l = rawList(f)
+	l.pos = posOf(node)
+	return nil
+}
+
 type rawNode struct {
 	pos       Pos
 	Name      scalar   `yaml:"name"`
@@ -196,6 +233,7 @@ type rawNode struct {
 	Listen    []scalar `yaml:"listen"`
 	Ingress   scalar   `yaml:"ingress"`
 	Egress    scalar   `yaml:"egress"`
+	Lists     []scalar `yaml:"lists"`
 }
 
 func (n *rawNode) UnmarshalYAML(node ast.Node) error {
@@ -328,6 +366,7 @@ func (c *checker) spec(raw *rawSpec) *Spec {
 		}
 	}
 
+	listByName := c.lists(s, raw.Lists)
 	if len(raw.Nodes) == 0 {
 		c.errorf(Pos{}, "no nodes")
 	}
@@ -335,6 +374,7 @@ func (c *checker) spec(raw *rawSpec) *Spec {
 	ipv4s, ipv6s := map[netip.Addr]string{}, map[netip.Addr]string{}
 	for _, rn := range raw.Nodes {
 		n := c.node(s, rn, ipv4s, ipv6s)
+		n.Lists = c.nodeLists(n.Name, rn.Lists, listByName)
 		if n.Name != "" {
 			if _, dup := byName[n.Name]; dup {
 				c.errorf(rn.Name.pos, "node %q is declared twice", n.Name)
@@ -346,7 +386,7 @@ func (c *checker) spec(raw *rawSpec) *Spec {
 	}
 	c.paths(s, raw.Paths, byName)
 	c.names(s, raw)
-	c.rules(s, raw, byName)
+	c.rules(s, raw, byName, listByName)
 	return s
 }
 
@@ -377,7 +417,7 @@ func (c *checker) names(s *Spec, raw *rawSpec) {
 }
 
 // rules reads the space's rules and chains.
-func (c *checker) rules(s *Spec, raw *rawSpec, byName map[string]int) {
+func (c *checker) rules(s *Spec, raw *rawSpec, byName, listByName map[string]int) {
 	chains := map[string]bool{}
 	for _, rc := range raw.Chains {
 		ch := Chain{Pos: rc.pos}
@@ -425,8 +465,10 @@ func (c *checker) rules(s *Spec, raw *rawSpec, byName map[string]int) {
 		switch {
 		case err != nil:
 			c.errorf(v.pos, "rule: %v", err)
-		case r.Match.Kind == netmap.MatchGeoIP || r.Match.Kind == netmap.MatchGeoSite:
-			c.errorf(v.pos, "rule %s: lists aren't in specs yet", r)
+		case r.Match.Kind == netmap.MatchGeoSite:
+			c.errorf(v.pos, "rule %s: geosite lists aren't in specs yet", r)
+		case r.Match.Kind == netmap.MatchGeoIP && !hasKey(listByName, r.Match.Value):
+			c.errorf(v.pos, "rule %s: no list %s (declare it under lists)", r, r.Match.Value)
 		case r.Action.Kind == netmap.ActionChain && !chains[r.Action.Chain]:
 			c.errorf(v.pos, "rule %s: no chain %s (declare it under chains)", r, r.Action.Chain)
 		default:
@@ -436,6 +478,61 @@ func (c *checker) rules(s *Spec, raw *rawSpec, byName map[string]int) {
 	if n := len(raw.Rules); n > 0 && len(s.Rules) == n && s.Rules[n-1].Match.Kind != netmap.MatchDefault {
 		c.errorf(raw.Rules[n-1].pos, "the last rule must match default, so every destination has an action")
 	}
+}
+
+// lists checks the spec's lists and returns them by name.
+func (c *checker) lists(s *Spec, raw []rawList) map[string]int {
+	byName := map[string]int{}
+	for _, rl := range raw {
+		l := List{Pos: rl.pos}
+		name, nameOK := c.value(rl.Name)
+		switch {
+		case !rl.Name.set():
+			c.errorf(rl.pos, "list without a name")
+			nameOK = false
+		case !nameOK:
+		case lists.CheckName(name) != nil:
+			c.errorf(rl.Name.pos, "%v", lists.CheckName(name))
+			nameOK = false
+		}
+		file, fileOK := c.value(rl.File)
+		if !rl.File.set() || fileOK && file == "" {
+			c.errorf(rl.pos, "list %s: file is missing (a blob `thinkpol dev lists build` wrote)", name)
+			fileOK = false
+		}
+		if !nameOK || !fileOK {
+			continue
+		}
+		if _, dup := byName[name]; dup {
+			c.errorf(rl.Name.pos, "list %q is declared twice", name)
+			continue
+		}
+		l.Name, l.File = name, file
+		byName[name] = len(s.Lists)
+		s.Lists = append(s.Lists, l)
+	}
+	return byName
+}
+
+// nodeLists resolves the lists a node names.
+func (c *checker) nodeLists(label string, raw []scalar, byName map[string]int) []int {
+	var out []int
+	for _, v := range raw {
+		name, ok := c.value(v)
+		if !ok {
+			continue
+		}
+		i, known := byName[name]
+		switch {
+		case !known:
+			c.errorf(v.pos, "%s: unknown list %q (declare it under lists)", label, name)
+		case slices.Contains(out, i):
+			c.errorf(v.pos, "%s: list %q is named twice", label, name)
+		default:
+			out = append(out, i)
+		}
+	}
+	return out
 }
 
 func (c *checker) node(s *Spec, rn rawNode, ipv4s, ipv6s map[netip.Addr]string) Node {
@@ -682,4 +779,9 @@ func (c *checker) paths(s *Spec, raw []rawPath, byName map[string]int) {
 		seen[key] = rp.pos
 		s.Paths = append(s.Paths, p)
 	}
+}
+
+func hasKey[V any](m map[string]V, k string) bool {
+	_, ok := m[k]
+	return ok
 }

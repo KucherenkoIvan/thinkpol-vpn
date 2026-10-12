@@ -17,12 +17,18 @@ import (
 //	node.key   the node's id and private keys in its space (0600)
 //	space.pub  the space's id and public keys: what every map is verified against
 //	map.bin    the latest map of the space: only the node's own section is readable
+//	blobs/     blobs the map names, each in a file named by its SHA-256 (hex)
 //	rules.local  a device's own routing choice (LocalRulesFile), if it made one
 //
-// `thinkpol up` writes nothing there but rules.local, and that only when
-// the local API changes the device's rules; no pid, lock or log file there
-// or anywhere else on disk (netcfg's and the local API's locks are on
-// /run, a tmpfs).
+// `thinkpol up` writes nothing there but rules.local, when the local API
+// changes the device's rules, and blobs/ on a device: the lists its rules
+// use, fetched from peers, with an index of their names, replaced when the
+// map changes once the successor is verified (diskBlobs). A server only
+// reads blobs/, its seeds, when the supervisor sends them to a worker:
+// what it fetches stays in its workers' memory. Every blob is checked
+// against the map before use, wherever it was read. No pid, lock or log
+// file there or anywhere else on disk (netcfg's and the local API's locks
+// are on /run, a tmpfs).
 //
 // The directory, the key files, the map and the map's directory must be
 // owned by the node's user (or root) and writable by nobody else, and are
@@ -35,6 +41,7 @@ const (
 	NodeKeyFile = "node.key"
 	TrustFile   = "space.pub"
 	MapFileName = "map.bin"
+	BlobDir     = "blobs"
 )
 
 // keyFileLimit bounds what is read of a key file.
@@ -88,7 +95,7 @@ func LoadState(dir, mapPath string) (State, error) {
 	}
 	for _, name := range names {
 		switch {
-		case name == NodeKeyFile, name == TrustFile:
+		case name == NodeKeyFile, name == TrustFile, name == BlobDir:
 		case name == LocalRulesFile:
 			data, _, err := d.read(LocalRulesFile, false, localRulesLimit)
 			if err == nil {
