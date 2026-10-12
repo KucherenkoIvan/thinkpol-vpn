@@ -59,3 +59,4 @@ branch: "krn-003-config-env-files-flags"
 - 2026-10-13 backlog → in-progress — owner: agent-krn, branch: krn-003-config-env-files-flags (go-kernel branch krn-003-config-env-files-flags)
 - 2026-10-13 in-progress → review — go-kernel branch krn-003-config-env-files-flags pushed; release planned as v0.19.0 after review
 - 2026-10-13 review → has-errors — 3 findings (named-string slice panic, secrets via flags, Validate(nil)); KRN-004 and KRN-005 passed
+- 2026-10-13 has-errors → in-progress — owner: agent-krn, fixing the review findings
