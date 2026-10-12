@@ -4,8 +4,11 @@ package netcfg
 
 import (
 	"context"
+	"fmt"
+	"net"
 	"net/netip"
 	"slices"
+	"strings"
 
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
@@ -53,5 +56,14 @@ func (c *linuxConfigurator) Survey(ctx context.Context) (Survey, error) {
 	})
 	s.OnLink = slices.Compact(s.OnLink)
 	slices.Sort(s.ForeignRules)
+	links, err := c.h.LinkList()
+	if err != nil {
+		return Survey{}, fmt.Errorf("netcfg: list links: %w", err)
+	}
+	for _, l := range links {
+		a := l.Attrs()
+		s.Links = append(s.Links, Link{Name: a.Name, Up: a.Flags&net.FlagUp != 0})
+	}
+	slices.SortFunc(s.Links, func(a, b Link) int { return strings.Compare(a.Name, b.Name) })
 	return s, nil
 }
