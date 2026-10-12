@@ -633,7 +633,12 @@ type Section struct {
 	// The chains rules send traffic through.
 	Chains []*Chain `protobuf:"bytes,12,rep,name=chains,proto3" json:"chains,omitempty"`
 	// What a device's rule presets are built from.
-	Presets       *RulePresets `protobuf:"bytes,13,opt,name=presets,proto3" json:"presets,omitempty"`
+	Presets *RulePresets `protobuf:"bytes,13,opt,name=presets,proto3" json:"presets,omitempty"`
+	// The space's name, the zone of its overlay names
+	// (`<node>.<space>.internal`, DESIGN.md "Routing rules and DNS"). Only
+	// devices' sections have names: a server's holds no member names
+	// (DESIGN.md "Node safety"). Empty: no overlay names.
+	SpaceName     string `protobuf:"bytes,14,opt,name=space_name,json=spaceName,proto3" json:"space_name,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -757,6 +762,13 @@ func (x *Section) GetPresets() *RulePresets {
 		return x.Presets
 	}
 	return nil
+}
+
+func (x *Section) GetSpaceName() string {
+	if x != nil {
+		return x.SpaceName
+	}
+	return ""
 }
 
 // Rule is `match → action`, e.g. `geoip:ru → direct`.
@@ -960,8 +972,11 @@ type NodeSettings struct {
 	// ingress off, the node's listeners accept only other servers and no
 	// device's section has its address; with egress off, no internet traffic
 	// leaves the space from it. With both off the node only relays.
-	AllowIngress  bool `protobuf:"varint,8,opt,name=allow_ingress,json=allowIngress,proto3" json:"allow_ingress,omitempty"`
-	AllowEgress   bool `protobuf:"varint,9,opt,name=allow_egress,json=allowEgress,proto3" json:"allow_egress,omitempty"`
+	AllowIngress bool `protobuf:"varint,8,opt,name=allow_ingress,json=allowIngress,proto3" json:"allow_ingress,omitempty"`
+	AllowEgress  bool `protobuf:"varint,9,opt,name=allow_egress,json=allowEgress,proto3" json:"allow_egress,omitempty"`
+	// The node's own name in its space's zone, a DNS label; devices' sections
+	// only, like every name.
+	Name          string `protobuf:"bytes,10,opt,name=name,proto3" json:"name,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1059,6 +1074,13 @@ func (x *NodeSettings) GetAllowEgress() bool {
 	return false
 }
 
+func (x *NodeSettings) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
 type Listener struct {
 	state     protoimpl.MessageState `protogen:"open.v1"`
 	Transport string                 `protobuf:"bytes,1,opt,name=transport,proto3" json:"transport,omitempty"`
@@ -1131,7 +1153,10 @@ type Peer struct {
 	// The peer's overlay addresses, canonical text form.
 	Addresses []string `protobuf:"bytes,3,rep,name=addresses,proto3" json:"addresses,omitempty"`
 	// Candidate paths to the peer, in priority order (failover follows it).
-	Paths         []*Path `protobuf:"bytes,4,rep,name=paths,proto3" json:"paths,omitempty"`
+	Paths []*Path `protobuf:"bytes,4,rep,name=paths,proto3" json:"paths,omitempty"`
+	// The peer's name in the space's zone, a DNS label; devices' sections
+	// only. A node is named only to the nodes that have it as a peer.
+	Name          string `protobuf:"bytes,5,opt,name=name,proto3" json:"name,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1192,6 +1217,13 @@ func (x *Peer) GetPaths() []*Path {
 		return x.Paths
 	}
 	return nil
+}
+
+func (x *Peer) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
 }
 
 // Path is a candidate way to reach a peer, named by its first hop: an
@@ -1667,7 +1699,7 @@ const file_thinkpol_netmap_v1_netmap_proto_rawDesc = "" +
 	"\x04size\x18\x03 \x01(\x04R\x04size\x12\x12\n" +
 	"\x04name\x18\x04 \x01(\tR\x04name\"'\n" +
 	"\rSealedSection\x12\x16\n" +
-	"\x06sealed\x18\x01 \x01(\fR\x06sealed\"\xd6\x04\n" +
+	"\x06sealed\x18\x01 \x01(\fR\x06sealed\"\xf5\x04\n" +
 	"\aSection\x12\x1d\n" +
 	"\n" +
 	"min_reader\x18\x01 \x01(\rR\tminReader\x12\x19\n" +
@@ -1684,7 +1716,9 @@ const file_thinkpol_netmap_v1_netmap_proto_rawDesc = "" +
 	" \x03(\v2\x1b.thinkpol.netmap.v1.BlobRefR\x05blobs\x12.\n" +
 	"\x05rules\x18\v \x03(\v2\x18.thinkpol.netmap.v1.RuleR\x05rules\x121\n" +
 	"\x06chains\x18\f \x03(\v2\x19.thinkpol.netmap.v1.ChainR\x06chains\x129\n" +
-	"\apresets\x18\r \x01(\v2\x1f.thinkpol.netmap.v1.RulePresetsR\apresets\"\x9f\x01\n" +
+	"\apresets\x18\r \x01(\v2\x1f.thinkpol.netmap.v1.RulePresetsR\apresets\x12\x1d\n" +
+	"\n" +
+	"space_name\x18\x0e \x01(\tR\tspaceName\"\x9f\x01\n" +
 	"\x04Rule\x123\n" +
 	"\x05match\x18\x01 \x01(\x0e2\x1d.thinkpol.netmap.v1.MatchKindR\x05match\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value\x126\n" +
@@ -1695,7 +1729,7 @@ const file_thinkpol_netmap_v1_netmap_proto_rawDesc = "" +
 	"\x04exit\x18\x02 \x01(\fR\x04exit\"?\n" +
 	"\vRulePresets\x12\x1a\n" +
 	"\bdomestic\x18\x01 \x01(\tR\bdomestic\x12\x14\n" +
-	"\x05chain\x18\x02 \x01(\tR\x05chain\"\xc2\x02\n" +
+	"\x05chain\x18\x02 \x01(\tR\x05chain\"\xd6\x02\n" +
 	"\fNodeSettings\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\fR\x02id\x120\n" +
 	"\x04kind\x18\x02 \x01(\x0e2\x1c.thinkpol.netmap.v1.NodeKindR\x04kind\x12\x12\n" +
@@ -1705,16 +1739,19 @@ const file_thinkpol_netmap_v1_netmap_proto_rawDesc = "" +
 	"\fipv6_network\x18\x06 \x01(\tR\vipv6Network\x12:\n" +
 	"\tlisteners\x18\a \x03(\v2\x1c.thinkpol.netmap.v1.ListenerR\tlisteners\x12#\n" +
 	"\rallow_ingress\x18\b \x01(\bR\fallowIngress\x12!\n" +
-	"\fallow_egress\x18\t \x01(\bR\vallowEgress\"^\n" +
+	"\fallow_egress\x18\t \x01(\bR\vallowEgress\x12\x12\n" +
+	"\x04name\x18\n" +
+	" \x01(\tR\x04name\"^\n" +
 	"\bListener\x12\x1c\n" +
 	"\ttransport\x18\x01 \x01(\tR\ttransport\x12\x18\n" +
 	"\aaddress\x18\x02 \x01(\tR\aaddress\x12\x1a\n" +
-	"\bsettings\x18\x03 \x01(\fR\bsettings\"\x96\x01\n" +
+	"\bsettings\x18\x03 \x01(\fR\bsettings\"\xaa\x01\n" +
 	"\x04Peer\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\fR\x02id\x120\n" +
 	"\x14wireguard_public_key\x18\x02 \x01(\fR\x12wireguardPublicKey\x12\x1c\n" +
 	"\taddresses\x18\x03 \x03(\tR\taddresses\x12.\n" +
-	"\x05paths\x18\x04 \x03(\v2\x18.thinkpol.netmap.v1.PathR\x05paths\"#\n" +
+	"\x05paths\x18\x04 \x03(\v2\x18.thinkpol.netmap.v1.PathR\x05paths\x12\x12\n" +
+	"\x04name\x18\x05 \x01(\tR\x04name\"#\n" +
 	"\x04Path\x12\x1b\n" +
 	"\tfirst_hop\x18\x01 \x01(\fR\bfirstHop\"V\n" +
 	"\x04Link\x12\x12\n" +

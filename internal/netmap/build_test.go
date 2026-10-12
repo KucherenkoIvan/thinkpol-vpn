@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"net/netip"
+	"strings"
 	"testing"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/shaping"
@@ -244,6 +245,17 @@ func TestBuildRejectsInvalidContents(t *testing.T) {
 		{"two geoip blobs with one name", device(func(s *Section) {
 			s.Blobs = append(s.Blobs, BlobRef{Kind: BlobGeoIP, SHA256: testGeoSite.SHA256, Size: testGeoSite.Size, Name: "ru"})
 		})},
+		// names
+		{"names in a server's section", exit(func(s *Section) { s.SpaceName = "home" })},
+		{"a server named in its own section", entry(func(s *Section) { s.Node.Name = "entry" })},
+		{"a peer named in a server's section", entry(func(s *Section) { s.Peers[0].Name = "a-device" })},
+		{"names without a space name", device(func(s *Section) { s.SpaceName = "" })},
+		{"space name not a label", device(func(s *Section) { s.SpaceName = "home.lan" })},
+		{"node name not a label", device(func(s *Section) { s.Node.Name = "Laptop" })},
+		{"peer name ending in a dash", device(func(s *Section) { s.Peers[0].Name = "entry-" })},
+		{"peer name too long", device(func(s *Section) { s.Peers[0].Name = strings.Repeat("a", 64) })},
+		{"two peers with one name", device(func(s *Section) { s.Peers[1].Name = s.Peers[0].Name })},
+		{"a peer with the node's name", device(func(s *Section) { s.Peers[0].Name = s.Node.Name })},
 		// size
 		{"section too large", device(func(s *Section) {
 			for i := range 1100 {

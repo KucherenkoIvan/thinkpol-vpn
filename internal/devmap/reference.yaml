@@ -13,6 +13,11 @@
 # (e.g. one starting with ':').
 
 space:                        # optional
+  # The space's name: devices resolve each node they have as a peer as
+  # <node>.<space>.internal (overlay names), so with it every node name must
+  # be a DNS label (no dash at either end). Without it the map holds no
+  # names. Only devices' sections hold names.
+  name: home
   # The overlay IPv4 network: 100.64.0.0/10 or a network inside it.
   ipv4: 100.64.0.0/10
   # The overlay IPv6 network: a ULA /48 (inside fd00::/8). Without it, the
@@ -94,24 +99,27 @@ paths:
   - [device-a, server-2, device-b]      # the same peers' second choice
   - [device-a, server-1, server-2]      # server-2 reached through server-1
   - [device-a, server-1, server-2, server-3]   # three hops: two relays
-  - [device-b, server-1, server-2, server-3]
+  - [device-b, server-2, server-3]
 
-# Routing: optional; the space's rules, in every device's section (devices
-# override them locally). A chain names its exit, a server with egress that
-# every device has a path to (at M1 a chain is its exit). Rules are
-# `<match> -> <action>`, first match wins, the last one `default`; matchers
-# default, local, cidr:<prefix>, geoip:<list>, domain:, domain-suffix:,
-# geosite:; actions direct, block, chain:<name>; a rule's list must be in
-# every device's lists. Presets: what a device's "everything" and "all but
-# domestic" presets are built from: the domestic list and the chain.
+# Routing rules: optional. The space's rules, in order (the first that
+# matches decides), as `<match> -> <action>`; the last must match default.
+# Matchers: default, local, cidr:<prefix>, geoip:<list>, domain:<name>,
+# domain-suffix:<name>; actions: direct, block, chain:<name>. Every device's
+# section gets them and the chains, so every device needs a path to each
+# chain's exit, and a geoip rule's list in its lists.
+rules:
+  - local -> direct
+  - domain-suffix:example.ru -> direct
+  - default -> chain:nl
+
+# Chains: a name and the exit, a server with egress: true.
 chains:
   - name: nl
     exit: server-3
-rules:
-  - local -> direct
-  - geoip:ru -> direct
-  - cidr:198.51.100.0/24 -> direct
-  - default -> chain:nl
+
+# Presets: optional. What a device's "everything" and "all but domestic"
+# presets (its own choice, `thinkpol rules preset`) are built from: the
+# domestic list (in every device's lists) and the chain.
 presets:
   domestic: ru
   chain: nl

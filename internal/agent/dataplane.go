@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"sync/atomic"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/blobs"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/path"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
@@ -61,6 +63,12 @@ type DataPlane struct {
 	// its own (a device, or a server run in device mode).
 	Blobs      *blobs.Service
 	ServeBlobs bool
+	// DNS runs the node's resolver on its overlay addresses (see
+	// dataplane's dnsConfig for what it serves), asking DNSUpstreams or,
+	// if there are none, the resolvers the OS used before. On a device the
+	// OS resolves through it while the data plane runs.
+	DNS          bool
+	DNSUpstreams []netip.AddrPort
 
 	// A device's (Node.run): where its status goes, its Connect and
 	// Disconnect requests, and whether it starts disconnected.
@@ -83,6 +91,12 @@ type DataPlane struct {
 	blobOptions blobs.Options
 	// onEngine sees each engine the data plane starts.
 	onEngine func(*dataplane.Engine)
+	// systemDNS points the OS at the resolver (dns.SetSystem), and
+	// systemUpstreams says what the OS used (dns.SystemUpstreams); dnsPort
+	// is the resolver's port (0: 53).
+	systemDNS       func(dns.SystemConfig) (dns.System, error)
+	systemUpstreams func(exclude []netip.Addr) ([]netip.Addr, error)
+	dnsPort         uint16
 }
 
 // RetryAfter is how long a data plane waits before retrying an Apply, a
@@ -111,6 +125,12 @@ func RunDataPlane(ctx context.Context, dp DataPlane) error {
 	if dp.retryAfter == 0 {
 		dp.retryAfter = RetryAfter
 	}
+	if dp.systemDNS == nil {
+		dp.systemDNS = dns.SetSystem
+	}
+	if dp.systemUpstreams == nil {
+		dp.systemUpstreams = dns.SystemUpstreams
+	}
 	if dp.Log == nil {
 		dp.Log = slog.New(slog.DiscardHandler)
 	}
@@ -118,7 +138,8 @@ func RunDataPlane(ctx context.Context, dp DataPlane) error {
 	if err != nil {
 		return err
 	}
-	r := &runner{dp: dp, cur: dp.Map, section: section, maps: dp.Maps, down: dp.disconnected}
+	r := &runner{dp: dp, cur: dp.Map, section: section, maps: dp.Maps, down: dp.disconnected, guard: &dnsGuard{}}
+	dp.report.set(func(p *report) { p.dns = r.guard.problem })
 	if dp.Blobs != nil {
 		r.blobsChanged = dp.Blobs.Subscribe()
 	}
@@ -189,10 +210,18 @@ type runner struct {
 	section netmap.Section
 
 	// engine and listeners are nil while stopped: the node was removed,
-	// or starting again failed.
+	// or starting again failed; so are resolver and system, the OS's
+	// resolver configuration while it points at the resolver (systemCfg).
 	engine    *dataplane.Engine
 	listeners *listenerSet
-	removed   bool
+	resolver  *dns.Server
+	// guard is the OS's resolver configuration while it should point at
+	// the resolver (systemCfg), and why it doesn't; dnsRetryAt is when to
+	// try pointing it again.
+	guard      *dnsGuard
+	systemCfg  dns.SystemConfig
+	dnsRetryAt time.Time
+	removed    bool
 	// down is set while a device is disconnected: it follows the maps but
 	// runs nothing.
 	down bool
@@ -220,6 +249,12 @@ func (r *runner) start(ctx context.Context) error {
 			return &StartError{Step: dataplane.StepRouteTable, Err: err}
 		}
 	}
+	var resolver *dns.Server
+	var resolverIfc interface{ Update(dns.Config) } // nil without one
+	if r.dp.DNS {
+		resolver = r.newResolver()
+		resolverIfc = resolver
+	}
 	cfg := dataplane.EngineConfig{
 		ID:           r.dp.Keys.ID,
 		Space:        transport.SpaceID(r.cur.Header().SpaceID),
@@ -232,6 +267,7 @@ func (r *runner) start(ctx context.Context) error {
 		Log:          r.dp.Log,
 		Rules:        r.dp.Rules,
 		RouteTable:   routes,
+		DNS:          resolverIfc,
 	}
 	if b := r.dp.Blobs; b != nil {
 		// The rules' lists: the current map's once held, the previous
@@ -248,17 +284,24 @@ func (r *runner) start(ctx context.Context) error {
 			_ = ifc.Close()
 		}
 		_ = dev.Close()
+		if resolver != nil {
+			_ = resolver.Close()
+		}
 		return &StartError{Step: StepEngine, Err: err}
 	}
 	if err := engine.Apply(ctx, r.section); err != nil {
 		step := engine.Status().LastApplyError
+		if resolver != nil {
+			_ = resolver.Close()
+		}
 		_ = engine.Close()
 		return &StartError{Step: step, Err: fmt.Errorf("applying map version %d: %w", r.cur.Header().Version, err)}
 	}
-	r.engine = engine
+	r.engine, r.resolver = engine, resolver
 	if r.dp.onEngine != nil {
 		r.dp.onEngine(engine)
 	}
+	r.pointSystem()
 	r.listeners = newListenerSet(engine, r.dp.Log, r.dp.retryAfter)
 	r.retryAt = time.Time{}
 	r.applied()
@@ -272,12 +315,16 @@ func (r *runner) stop() {
 		return
 	}
 	r.dp.report.set(func(p *report) { p.engine = nil })
+	r.restoreSystem()
+	if r.resolver != nil {
+		_ = r.resolver.Close()
+	}
 	r.listeners.closeAll()
 	if err := r.engine.Close(); err != nil {
 		r.dp.Log.Warn("closing the data plane", "err", err)
 	}
 	r.listeners.wait()
-	r.engine, r.listeners = nil, nil
+	r.engine, r.listeners, r.resolver = nil, nil, nil
 }
 
 func (r *runner) loop(ctx context.Context) error {
@@ -380,12 +427,20 @@ func (r *runner) connect(ctx context.Context, connect bool) error {
 		}
 		r.dp.Log.Info("connected")
 	}
+	if connect && r.engine != nil {
+		if err := r.guard.problem(); err != nil {
+			return fmt.Errorf("%w: %v", ErrDNSUnprotected, err)
+		}
+	}
 	return nil
 }
 
 // nextRetry is the earliest retry due: the data plane's or a listener's.
 func (r *runner) nextRetry() (time.Time, bool) {
 	at, ok := r.retryAt, !r.retryAt.IsZero()
+	if d := r.dnsRetryAt; !d.IsZero() && (!ok || d.Before(at)) {
+		at, ok = d, true
+	}
 	if r.listeners != nil {
 		if l, lok := r.listeners.nextRetry(); lok && (!ok || l.Before(at)) {
 			at, ok = l, true
@@ -397,6 +452,12 @@ func (r *runner) nextRetry() (time.Time, bool) {
 // retry retries a failed start or Apply when it is due; listeners retry in
 // reconcile.
 func (r *runner) retry(ctx context.Context) {
+	if d := r.dnsRetryAt; !d.IsZero() && !time.Now().Before(d) {
+		r.dnsRetryAt = time.Time{}
+		if r.engine != nil {
+			r.pointSystem()
+		}
+	}
 	if r.down || r.retryAt.IsZero() || time.Now().Before(r.retryAt) {
 		return
 	}
@@ -469,6 +530,7 @@ func (r *runner) apply(ctx context.Context) {
 		return
 	}
 	r.retryAt = time.Time{}
+	r.pointSystem()
 	r.applied()
 }
 
@@ -554,6 +616,9 @@ func (r *runner) logStatus() {
 	attrs := []any{"version", r.cur.Header().Version, "peers", len(st.Peers), "handshaken", handshaken,
 		"neighbors", len(st.Neighbors), "links_up", up, "listeners", len(r.listeners.serving),
 		"no_path", st.Path.NoPath, "no_route", st.Router.NoRoute}
+	if r.resolver != nil {
+		attrs = append(attrs, "dns", r.resolver.Counters())
+	}
 	if r.dp.Blobs != nil {
 		b := r.dp.Blobs.Status()
 		attrs = append(attrs, "blobs_wanted", b.Wanted, "blobs_held", b.Held, "blobs_rejected", b.Rejected+b.StoreRejected)

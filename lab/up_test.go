@@ -125,8 +125,10 @@ func TestUpRunsTheM0Space(t *testing.T) {
 	space := newM0Space(t, l.Node(lab.Internet), server)
 	envelope, v1 := space.build(t)
 	nodes := map[string]*lab.Node{"server-1": server, "device-a": devA, "device-b": devB}
+	resolvConf := map[string]string{}
 	for name, n := range nodes {
 		space.install(t, n, name, envelope)
+		resolvConf[name] = n.MustExec(t, "cat", "/etc/resolv.conf")
 		n.MustExec(t, "touch", "/tmp/before-up")
 	}
 
@@ -212,11 +214,16 @@ func TestUpRunsTheM0Space(t *testing.T) {
 			if out := n.MustExec(t, "ls", "-A", stateDir); out != "map.bin\nnode.key\nspace.pub\n" {
 				t.Errorf("the state directory holds:\n%s", out)
 			}
+			// A device's OS resolved through the node while it ran, and
+			// resolves as before once it stopped.
+			if conf := n.MustExec(t, "cat", "/etc/resolv.conf"); conf != resolvConf[name] {
+				t.Errorf("resolv.conf not restored:\n%s", conf)
+			}
 			// Nothing else on disk either: no logs, no pid or lock files
 			// (the test's own map replacements aside).
 			out := n.MustExec(t, "sh", "-c", `find / -xdev -newer /tmp/before-up \( -type f -o -type s -o -type p \) `+
 				`-not -path '/proc/*' -not -path '/sys/*' -not -path '/dev/*' -not -path '/run/*' -not -path '/tmp/*' `+
-				`-not -path '`+stateDir+`/map.bin' -print`)
+				`-not -path '`+stateDir+`/map.bin' -not -path /etc/resolv.conf -print`)
 			if out != "" {
 				t.Errorf("files written while it ran:\n%s", out)
 			}
