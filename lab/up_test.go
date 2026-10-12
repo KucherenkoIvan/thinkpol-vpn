@@ -191,8 +191,12 @@ func TestUpRunsTheM0Space(t *testing.T) {
 					if out := n.MustExec(t, "ip", family, "route", "show", "table", "all", "proto", proto); out != "" {
 						t.Errorf("routes of proto %s left:\n%s", proto, out)
 					}
-					if out := n.MustExec(t, "ip", family, "rule", "show", "protocol", proto); out != "" {
-						t.Errorf("rules of proto %s left:\n%s", proto, out)
+				}
+			}
+			for _, family := range []string{"-4", "-6"} {
+				for _, line := range strings.Split(strings.TrimSpace(n.MustExec(t, "ip", family, "rule")), "\n") {
+					if prio, _, _ := strings.Cut(line, ":"); prio != "0" && prio != "32766" && prio != "32767" {
+						t.Errorf("rule left: %s", line)
 					}
 				}
 			}

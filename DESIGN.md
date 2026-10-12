@@ -119,6 +119,8 @@ Two ways to enforce the same rules:
 | **Route table** (first) | Install `direct` IP ranges as OS routes to the physical gateway, everything else into TUN. Merge adjacent CIDRs; country lists are thousands of prefixes, and Windows is slow with big tables | IP only (`geoip`, `cidr`); domain rules are skipped with a warning |
 | **Userspace** (later) | Everything enters TUN; a userspace TCP/IP stack opens each connection itself, `direct` or tunneled | IP, domain (DNS interception, SNI), per app |
 
+**Route table on Linux** (`dataplane/routetable`): policy routing, per family. Rule 5300 looks up the main table without its default routes, so the overlay's, the LAN's and every more specific route there win; rule 5301 sends every packet without the links' firewall mark (0x7470) to a table of its own (0x7470): a default route into the TUN, a `throw` route per direct prefix and per link endpoint, and for IPv6 an `unreachable` default behind the TUN's. Thrown and marked packets go on to the main table and its physical default route, so nothing names the gateway: DHCP and roaming need no change, and the agent re-applies only when a default route changes or its own routes or rules are removed from outside. IPv6 the TUN can't carry (an overlay below 1280 bytes) meets the unreachable default: dropped, never sent around the tunnel. The transports' sockets carry the mark (`SO_MARK`, set by the transport adapter, never by WireGuard), and the endpoints' throws keep links out of the tunnel even without it (and keep strict reverse-path filtering happy). Any traffic to an entry's address, not only the link, therefore goes around the tunnel. Rules recompile into the table wherever the rules change (a map, the device's choice, a list arriving): direct prefixes the new rules drop leave the table before the router's table changes, new ones come after; a removal that fails falls back to nothing direct. All of it carries route protocol 86 (rules too, which needs Linux 4.17), so a restart after a crash takes it over and a stop removes it.
+
 GeoIP alone misroutes CDNs (foreign services on domestic IPs and vice versa), so the rule format supports domains from day one even though enforcement comes later.
 
 **DNS is routing.** A resolver on the node's overlay address answers overlay names (`<device>.<space>.internal`; `.internal` is reserved for private use, so a space name can never shadow a real domain), sends `direct` domains to a domestic upstream, and everything else through the tunnel to a resolver at the exit. No DNS leaks, and GeoIP isn't fed CDN answers from the wrong country.
@@ -245,7 +247,8 @@ internal/
     tun/ router/ wg/ path/
     rules/                # routing rules: presets, the device's local file, compilation into prefixes
     transport/            # the transport port; adapters in transport/<name>/
-    netcfg/               # interface addresses, MTU, routes (route-table rule enforcement)
+    netcfg/               # interface addresses, MTU, routes, policy rules
+    routetable/           # route-table rule enforcement on top of netcfg; the link sockets' mark
     nsthread/             # runs a function on an OS thread inside another namespace and moves the thread back
     firewall/             # kill switch (pf, nftables, WFP)
     egress/ dns/
