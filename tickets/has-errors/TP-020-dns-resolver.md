@@ -51,9 +51,24 @@ DNS follows the routing rules: overlay names resolve, `direct` domains use a dom
 - **TP-034/TP-035 (controller):** write the space's name and nodes' names into devices' sections only, as DNS labels unique in the section (`netmap.CheckLabel`).
 - **TP-023 (M1 acceptance):** `TestDNSFollowsTheRules` is the DNS leak check.
 
+## Review findings
+Two reviewers; orchestrator decisions. The resolver core held up.
+
+- [ ] B1. Search-list leak: in resolv.conf mode write only our zone in `search` (drop the original search/domain; document the LAN short-name cost in DESIGN); in the resolver, NXDOMAIN and never forward any name with an `internal` label anywhere. Lab: undotted `blocked.test`, and a tunnel name with the exit stopped plus a search domain routed direct → nothing on the physical side
+- [ ] S1. Whenever systemd-resolved owns `org.freedesktop.resolve1`, configure our link over D-Bus (and also rewrite resolv.conf if it isn't the stub)
+- [ ] S2. A failure to point the OS is retried on the retry timer; status/local API health problem "DNS not protected"; `thinkpol connect` returns an error explaining it while keeping the tunnel up
+- [ ] S3. inotify on /etc (IN_CLOSE_WRITE|IN_MOVED_TO|IN_CREATE) for resolv.conf changes, polling as a backstop
+- [ ] S4. Refresh the direct upstreams when the watched original changes (a Server setter)
+- [ ] S5. In resolved mode, after setup read every link's Domains/DefaultRoute and the global configuration; any routing or search domain on another link, or a global `~.`, that can beat or share with ours → health problem "DNS not protected" (never claim protection silently); check how current NetworkManager behaves
+- [ ] S6. Atomic resolv.conf writes (temp + fsync + rename; in place only on EBUSY/EXDEV, for bind mounts), fsync
+- [ ] S7. Reverse names: PTR for non-overlay addresses routed by the address rules (or always tunnel/block); any reverse name under an overlay prefix answered locally or NXDOMAIN, never forwarded
+- [ ] N1. Nits: escaped dots (`dns.SplitDomainName`, or block names with `\`); re-point by applying over the old configuration (no restore-then-set window); restore a managed resolv.conf at startup whatever the flags; per-client limits on the exit's resolver; a DESIGN line on the inherent CNAME direct → tunnel risk; optionally LLMNR/mDNS off on the physical link in resolved mode
+- [ ] C1. Coordinate with TP-018: it marks the resolver's direct sockets through `dns.Options.Control`; whichever merges second wires it
+
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-12 backlog → in-progress — owner: agent-tp-020, branch: tp-020-dns-resolver
 - 2026-10-12 docs: DESIGN.md "Routing rules and DNS" (names, rules by name, upstreams, OS integration, cache, logging) and "Node safety" (devices' sections name their peers; a connected device rewrites resolv.conf); acceptance's macOS half moved to TP-019 (its `needs_human: macos` checklist), see Notes
 - 2026-10-12 merged origin/rewrite (TP-017)
 - 2026-10-12 in-progress → review — acceptance checked; `make lint`, `make test`, `go test -race` on dataplane, agent, netmap and devmap, and `make lab-test` (lab tests and 26 packages in lab nodes) pass
+- 2026-10-12 review → has-errors — B1, S1–S7, nits and the TP-018 wiring from review
