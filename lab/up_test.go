@@ -191,6 +191,9 @@ func TestUpRunsTheM0Space(t *testing.T) {
 					if out := n.MustExec(t, "ip", family, "route", "show", "table", "all", "proto", proto); out != "" {
 						t.Errorf("routes of proto %s left:\n%s", proto, out)
 					}
+					if out := n.MustExec(t, "ip", family, "rule", "show", "protocol", proto); out != "" {
+						t.Errorf("rules of proto %s left:\n%s", proto, out)
+					}
 				}
 			}
 			if out := n.MustExec(t, "nft", "list", "tables"); strings.Contains(out, "thinkpol") {

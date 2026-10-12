@@ -1,0 +1,33 @@
+# The route-table lab map (TP-018): device-a sends a "domestic" target
+# (DOMESTIC_V4, DOMESTIC_V6: the internet node) around the tunnel and
+# everything else through it, to server-1 as the exit. Development tooling;
+# the format is in `thinkpol dev map spec`. No `local -> direct`: the lab's
+# own networks are private ranges, which it would send around the tunnel.
+#
+#   thinkpol dev keygen space -out keys
+#   thinkpol dev keygen node -out keys server-1 device-a device-b
+#   SERVER_1_IPV4=... SERVER_1_IPV6=... DOMESTIC_V4=... DOMESTIC_V6=... \
+#     thinkpol dev map build -keys keys -out map.bin lab/maps/routetable.yaml
+
+nodes:
+  - name: server-1
+    kind: server
+    endpoints:
+      - udp://${SERVER_1_IPV4}:4500
+      - udp://[${SERVER_1_IPV6}]:4500
+    ingress: true
+    egress: true
+  - name: device-a
+    kind: device
+
+paths:
+  - [device-a, server-1]
+
+chains:
+  - name: abroad
+    exit: server-1
+
+rules:
+  - cidr:${DOMESTIC_V4}/32 -> direct
+  - cidr:${DOMESTIC_V6}/128 -> direct
+  - default -> chain:abroad
