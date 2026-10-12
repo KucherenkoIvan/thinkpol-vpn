@@ -6,8 +6,8 @@ area: dataplane
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-018]
-owner: ""
-branch: ""
+owner: agent-small-fixes
+branch: tp-059-overlay-reapply-on-link-event
 ---
 
 ## Goal
@@ -32,3 +32,4 @@ When the overlay TUN goes down and up, Linux drops its IPv6 addresses (and the l
 
 ## Log
 - 2026-10-12 created in backlog
+- 2026-10-12 backlog → in-progress — owner: agent-small-fixes, branch: tp-059-overlay-reapply-on-link-event
