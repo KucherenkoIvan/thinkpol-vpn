@@ -170,8 +170,8 @@ func (s *dynamicStore) override() dict {
 	for _, a := range s.cfg.Servers {
 		d.arrays["ServerAddresses"] = append(d.arrays["ServerAddresses"], a.WithZone("").String())
 	}
-	d.arrays["SearchDomains"] = slices.Clone(s.cfg.Search)
 	if len(s.cfg.Search) > 0 {
+		d.arrays["SearchDomains"] = slices.Clone(s.cfg.Search)
 		d.strs["DomainName"] = s.cfg.Search[0]
 	}
 	d.strs[overrideProp] = "1"

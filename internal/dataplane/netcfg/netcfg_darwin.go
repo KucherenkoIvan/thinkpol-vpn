@@ -319,9 +319,16 @@ func (c *darwinConfigurator) apply(ctx context.Context, cfg Config, u *undoLog) 
 		}
 		desired[r.Dst] = true
 	}
-	// Ownership is decided on what was recorded before this Apply.
+	// Ownership is decided on what was recorded before this Apply, and
+	// a destination someone else's route holds is a conflict before
+	// anything is recorded: the record must never name another's route.
 	prior := maps.Clone(c.owned)
 	ours := func(r kroute) bool { return r.flags&routeFlag != 0 && prior[r.dst] }
+	for _, r := range routes {
+		if cur, ok := v.routes[r.Dst]; ok && !ours(cur) {
+			return fmt.Errorf("%w: route %v: another owner's or a foreign route has the same destination (%v)", ErrConflict, r, cur)
+		}
+	}
 	// Write ahead: the record holds every route this Apply may leave, so a
 	// crash halfway leaves none unrecorded.
 	for dst := range desired {
@@ -333,11 +340,6 @@ func (c *darwinConfigurator) apply(ctx context.Context, cfg Config, u *undoLog) 
 	if err := c.saveRecord(); err != nil {
 		return err
 	}
-	for dst := range desired {
-		if r, ok := v.routes[dst]; ok && r.flags&routeFlag == 0 {
-			delete(c.owned, dst) // someone else's: it stays theirs
-		}
-	}
 
 	for _, r := range routes {
 		if err := ctx.Err(); err != nil {
@@ -348,9 +350,6 @@ func (c *darwinConfigurator) apply(ctx context.Context, cfg Config, u *undoLog) 
 			return err
 		}
 		if cur, ok := v.routes[r.Dst]; ok {
-			if !ours(cur) {
-				return fmt.Errorf("%w: route %v: another owner's or a foreign route has the same destination (%v)", ErrConflict, r, cur)
-			}
 			if sameRoute(cur, want) {
 				continue
 			}
