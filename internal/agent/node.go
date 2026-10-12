@@ -25,6 +25,14 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
 
+// What a node does to the host outside a data plane, at its start: put
+// back what a crashed run left in the routing table and the resolver
+// configuration. Tests swap them, so they never touch the host.
+var (
+	clearHostRouteTable = routetable.Clear
+	restoreHostDNS      = dns.RestoreSystem
+)
+
 // Node is a node ready to run (`thinkpol up`): its configuration and state,
 // read and checked, nothing on the host touched yet.
 type Node struct {
@@ -214,7 +222,7 @@ func (n *Node) State() State { return n.state }
 // it. On a host whose data plane isn't there yet Adapters refuses, before
 // anything changed. Call it once.
 func (n *Node) Adapters(reload <-chan os.Signal) ([]app.Adapter, error) {
-	if err := supported(); err != nil {
+	if err := supported(n.mode); err != nil {
 		return nil, err
 	}
 	reg, err := Transports(true) // a device's, or the supervisor's in the root namespace
@@ -238,7 +246,7 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 	}
 	// A resolver configuration a crash left behind goes back first,
 	// whatever the node does next.
-	if err := dns.RestoreSystem(); err != nil {
+	if err := restoreHostDNS(); err != nil {
 		n.logs.Warn("DNS: restoring the system's resolver configuration left behind", "err", err)
 	}
 	if n.state.Removed && !n.awaitSection(ctx, maps) {
@@ -280,7 +288,7 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 // the node died connected (a crash, kill -9), for a device that starts
 // without connecting: connecting takes it over anyway.
 func (n *Node) clearRouteTable() {
-	err := routetable.Clear()
+	err := clearHostRouteTable()
 	switch {
 	case err == nil:
 	case errors.Is(err, errors.ErrUnsupported):

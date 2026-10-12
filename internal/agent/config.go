@@ -111,13 +111,15 @@ func LoadConfig() (Config, error) {
 }
 
 // DefaultAPISocket is where the local API listens by default; empty where
-// it has no socket yet (Windows: a named pipe, TP-047).
+// it has no socket yet (Windows: a named pipe, TP-047). On macOS not under
+// /var/run, which is group-writable (root:daemon 0775) and so fails the
+// API's parent check: /var/db is root's alone all the way up.
 func DefaultAPISocket() string {
 	switch runtime.GOOS {
 	case "windows":
 		return ""
 	case "darwin":
-		return "/var/run/thinkpol-api/api.sock"
+		return "/var/db/thinkpol-api/api.sock"
 	}
 	return "/run/thinkpol-api/api.sock"
 }
