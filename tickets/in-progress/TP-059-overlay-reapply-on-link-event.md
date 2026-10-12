@@ -50,3 +50,4 @@ Nits from review; the orchestrator's decisions.
 - 2026-10-12 backlog → in-progress — owner: agent-small-fixes, branch: tp-059-overlay-reapply-on-link-event
 - 2026-10-12 in-progress → review — every acceptance box checked; `make lint`, `make test` (one unrelated `blobs` TestATricklingPeerIsAbandoned flake under load, 10/10 alone, then a green run), `go test -race` on dataplane, router and localapi, and `make lab-test LAB_P=2` (lab tests and 28 packages in lab nodes) pass
 - 2026-10-13 review → has-errors — review nits R1–R6 (see Review findings)
+- 2026-10-13 has-errors → in-progress — owner: agent-small-fixes, picking up the review findings
