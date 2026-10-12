@@ -90,19 +90,25 @@ func Config(w Want) netcfg.Config {
 			netcfg.Rule{Family: f, Priority: PriorityTunnel, Table: Table, Mark: Mark, Invert: true},
 		)
 	}
-	cfg.Routes = append(cfg.Routes, netcfg.Route{Dst: netip.PrefixFrom(netip.IPv4Unspecified(), 0), Interface: w.TUN, Table: Table})
-	all6 := netip.PrefixFrom(netip.IPv6Unspecified(), 0)
-	if w.IPv6 {
-		cfg.Routes = append(cfg.Routes, netcfg.Route{Dst: all6, Interface: w.TUN, Table: Table})
-	}
-	cfg.Routes = append(cfg.Routes, netcfg.Route{Dst: all6, Type: netcfg.RouteUnreachable, Metric: unreachableMetric, Table: Table})
 	thrown := lists.Builder{}
 	thrown.AddSet(w.Direct)
 	for _, a := range bypass(w.Bypass) {
 		_ = thrown.AddPrefix(netip.PrefixFrom(a, a.BitLen())) // an IPv4-mapped endpoint was unmapped
 	}
 	set, _ := thrown.Build()
-	for _, p := range set.Prefixes() {
+	prefixes := set.Prefixes()
+	all4 := netip.PrefixFrom(netip.IPv4Unspecified(), 0)
+	if !slices.Contains(prefixes, all4) {
+		// (All of IPv4 direct, which the overlay's network never allows,
+		// would be a throw default instead.)
+		cfg.Routes = append(cfg.Routes, netcfg.Route{Dst: all4, Interface: w.TUN, Table: Table})
+	}
+	all6 := netip.PrefixFrom(netip.IPv6Unspecified(), 0)
+	if w.IPv6 {
+		cfg.Routes = append(cfg.Routes, netcfg.Route{Dst: all6, Interface: w.TUN, Table: Table})
+	}
+	cfg.Routes = append(cfg.Routes, netcfg.Route{Dst: all6, Type: netcfg.RouteUnreachable, Metric: unreachableMetric, Table: Table})
+	for _, p := range prefixes {
 		cfg.Routes = append(cfg.Routes, netcfg.Route{Dst: p, Type: netcfg.RouteThrow, Table: Table})
 	}
 	return cfg

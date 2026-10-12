@@ -241,3 +241,20 @@ func TestEnforcerAppliesChangesAndReappliesOnEvents(t *testing.T) {
 		t.Error("Enforce without a TUN succeeded")
 	}
 }
+
+// All of IPv4 direct (no overlay network claiming part of it) is a throw
+// default, not a second default route of the same identity.
+func TestConfigWithEverythingDirect(t *testing.T) {
+	cfg := routetable.Config(routetable.Want{TUN: "thinkpol0", Direct: set(t, "0.0.0.0/0"), IPv6: true})
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"::/0 dev thinkpol0 table 29808",
+		"unreachable ::/0 metric 2048 table 29808",
+		"throw 0.0.0.0/0 table 29808",
+	}
+	if got := routeStrings(cfg); !slices.Equal(got, want) {
+		t.Errorf("routes:\n got %q\nwant %q", got, want)
+	}
+}
