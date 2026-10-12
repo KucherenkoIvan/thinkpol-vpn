@@ -1,0 +1,41 @@
+# The lab's egress map (TP-014): device-a reaches the internet through
+# server-2, its chain's exit, relayed by server-1 (whose worker dials
+# server-2: a dial out of its namespace with its egress off). server-3 is
+# the exit device-a's section names once server-2's egress is off (a chain
+# must end at a node allowing egress); it never runs, and device-a keeps
+# the first map. Development tooling; the format is in `thinkpol dev map
+# spec`.
+#
+#   thinkpol dev keygen space -out keys
+#   thinkpol dev keygen node -out keys server-1 server-2 server-3 device-a
+#   SERVER_1_IPV4=... SERVER_2_IPV4=... SERVER_2_EGRESS=true EXIT=server-2 \
+#     thinkpol dev map build -keys keys -out map.bin lab/maps/egress.yaml
+
+nodes:
+  - name: server-1
+    kind: server
+    endpoints:
+      - udp://${SERVER_1_IPV4}:4500
+    ingress: true
+  - name: server-2
+    kind: server
+    endpoints:
+      - udp://${SERVER_2_IPV4}:4500
+    egress: ${SERVER_2_EGRESS}
+  - name: server-3
+    kind: server
+    endpoints:
+      - udp://192.0.2.3:4500
+    egress: true
+  - name: device-a
+    kind: device
+    chains:
+      out: ${EXIT}
+    rules:
+      # The lab's internet is a private network, which "local -> direct"
+      # would keep out of the tunnel.
+      - default -> chain:out
+
+paths:
+  - [device-a, server-1, server-2]
+  - [device-a, server-1, server-3]

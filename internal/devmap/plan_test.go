@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"flag"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"path/filepath"
@@ -237,7 +238,7 @@ func TestPlanNeedsEveryNodesKeys(t *testing.T) {
 
 func TestReferenceIsTheFormat(t *testing.T) {
 	// Every field the parser knows appears in the reference spec.
-	for _, field := range []string{"space:", "ipv4:", "ipv6:", "nodes:", "name:", "kind:", "endpoints:", "listen:", "ingress:", "egress:", "paths:"} {
+	for _, field := range []string{"space:", "ipv4:", "ipv6:", "nodes:", "name:", "kind:", "endpoints:", "listen:", "ingress:", "egress:", "chains:", "rules:", "paths:"} {
 		if !bytes.Contains([]byte(Reference), []byte("\n"+field)) && !bytes.Contains([]byte(Reference), []byte(" "+field)) {
 			t.Errorf("reference spec lacks %s", field)
 		}
@@ -397,5 +398,33 @@ func TestInspectMarksRefusedLinks(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("no %q in:\n%s", want, out)
 		}
+	}
+}
+
+// Builds with one secrets seed give every link the same secret; without
+// one, fresh secrets every time.
+func TestSeededSecretsRepeat(t *testing.T) {
+	f := referenceFixture(t)
+	secrets := func(random io.Reader) [][]byte {
+		c, _, err := Plan(f.spec, f.keys, 1, random)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out [][]byte
+		for _, r := range c.Recipients {
+			for _, l := range r.Section.Links {
+				for _, e := range l.Endpoints {
+					out = append(out, e.Credential)
+				}
+			}
+		}
+		return out
+	}
+	a, b := secrets(SeededSecrets("lab")), secrets(SeededSecrets("lab"))
+	if len(a) == 0 || !slices.EqualFunc(a, b, bytes.Equal) {
+		t.Fatal("one seed, different secrets")
+	}
+	if slices.EqualFunc(a, secrets(SeededSecrets("other")), bytes.Equal) || slices.EqualFunc(a, secrets(nil), bytes.Equal) {
+		t.Fatal("secrets repeat without the seed")
 	}
 }

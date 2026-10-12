@@ -1,10 +1,12 @@
 package devmap
 
 import (
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
 	"maps"
+	"math/rand/v2"
 	"net/netip"
 	"slices"
 	"strconv"
@@ -120,6 +122,10 @@ func Plan(s *Spec, k Keys, version uint64, random io.Reader) (netmap.Contents, N
 			node.Listeners = append(node.Listeners, netmap.Listener{Transport: l.Transport, Address: l.AddrPort})
 		}
 		sections[i].Node = node
+		sections[i].Rules = slices.Clone(n.Rules)
+		for _, ch := range n.Chains {
+			sections[i].Chains = append(sections[i].Chains, netmap.Chain{Name: ch.Name, Exit: ids[ch.Exit]})
+		}
 	}
 
 	// Peers and routes come from the paths: the ends are peers, each with
@@ -354,6 +360,14 @@ func NextVersion(now time.Time, previous []byte, trust netmap.Trust) uint64 {
 		v = m.Header().Version + 1
 	}
 	return v
+}
+
+// SeededSecrets is a source for Plan's link secrets derived from seed: two
+// builds of one spec with it give every link the same secret, so a lab test
+// can hand some nodes a newer map and keep others on an older one. Never
+// for a real space: the seed gives away every link.
+func SeededSecrets(seed string) io.Reader {
+	return rand.NewChaCha8(sha256.Sum256([]byte("thinkpol dev map secrets\x00" + seed)))
 }
 
 // Build plans a spec and seals and signs the map.

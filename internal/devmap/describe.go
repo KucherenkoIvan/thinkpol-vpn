@@ -81,6 +81,14 @@ func DescribeSection(w io.Writer, s netmap.Section, names Names) error {
 			p.line(3, "- %s", names.Of(h))
 		}
 	})
+	if len(s.Chains) > 0 {
+		p.list(0, "chains", len(s.Chains), func(i int) {
+			p.line(1, "- %s: exit %s", s.Chains[i].Name, names.Of(s.Chains[i].Exit))
+		})
+	}
+	if len(s.Rules) > 0 {
+		p.list(0, "rules", len(s.Rules), func(i int) { p.line(1, "- %s", s.Rules[i]) })
+	}
 	p.blobs(0, s.Blobs)
 	return p.err
 }

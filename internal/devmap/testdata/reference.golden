@@ -152,6 +152,11 @@ links:
       - udp://198.51.100.2:4500, credential 32 bytes, sha256 7172b8c7…
 inbound: none
 routes: none
+chains:
+  - out: exit 982fe5e68ec4fe9d (server-3)
+rules:
+  - local -> direct
+  - default -> chain:out
 blobs: none
 
 # section of device-b

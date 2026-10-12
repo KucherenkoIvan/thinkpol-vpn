@@ -47,7 +47,19 @@ type Node struct {
 	// Ingress lets devices dial this server; Egress lets internet traffic
 	// leave from it. Server settings, off unless written.
 	Ingress, Egress bool
-	Pos             Pos
+	// Chains and Rules are a device's routing: its chains by name, each
+	// ending at an exit node, and its rules in order (netmap.ParseRule's
+	// text form).
+	Chains []Chain
+	Rules  []netmap.Rule
+	Pos    Pos
+}
+
+// Chain is a device's chain: a name its rules use, and the exit node.
+type Chain struct {
+	Name string
+	Exit int // index into Spec.Nodes
+	Pos  Pos
 }
 
 // Address is a transport and an IP literal with a port, written
@@ -153,14 +165,16 @@ type rawSpec struct {
 
 type rawNode struct {
 	pos       Pos
-	Name      scalar   `yaml:"name"`
-	Kind      scalar   `yaml:"kind"`
-	IPv4      scalar   `yaml:"ipv4"`
-	IPv6      scalar   `yaml:"ipv6"`
-	Endpoints []scalar `yaml:"endpoints"`
-	Listen    []scalar `yaml:"listen"`
-	Ingress   scalar   `yaml:"ingress"`
-	Egress    scalar   `yaml:"egress"`
+	Name      scalar            `yaml:"name"`
+	Kind      scalar            `yaml:"kind"`
+	IPv4      scalar            `yaml:"ipv4"`
+	IPv6      scalar            `yaml:"ipv6"`
+	Endpoints []scalar          `yaml:"endpoints"`
+	Listen    []scalar          `yaml:"listen"`
+	Ingress   scalar            `yaml:"ingress"`
+	Egress    scalar            `yaml:"egress"`
+	Chains    map[string]scalar `yaml:"chains"`
+	Rules     []scalar          `yaml:"rules"`
 }
 
 func (n *rawNode) UnmarshalYAML(node ast.Node) error {
@@ -309,8 +323,58 @@ func (c *checker) spec(raw *rawSpec) *Spec {
 		}
 		s.Nodes = append(s.Nodes, n)
 	}
+	for i, rn := range raw.Nodes {
+		c.routing(&s.Nodes[i], rn, byName)
+	}
 	c.paths(s, raw.Paths, byName)
 	return s
+}
+
+// routing reads a device's chains (name: exit node) and rules. Whether the
+// exits are its peers and allow egress, and the rules' chains exist, is
+// netmap.Build's to say.
+func (c *checker) routing(n *Node, rn rawNode, byName map[string]int) {
+	if rn.Chains == nil && rn.Rules == nil {
+		return
+	}
+	if n.Kind != netmap.NodeDevice {
+		c.errorf(rn.pos, "%s: only a device has chains and rules", n.Name)
+		return
+	}
+	names := make([]string, 0, len(rn.Chains))
+	for name := range rn.Chains {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	for _, name := range names {
+		v := rn.Chains[name]
+		if err := netmap.CheckChainName(name); err != nil {
+			c.errorf(v.pos, "%s: %v", n.Name, err)
+			continue
+		}
+		exit, ok := c.value(v)
+		if !ok {
+			continue
+		}
+		i, known := byName[exit]
+		if !known {
+			c.errorf(v.pos, "%s: chain %s: unknown node %q", n.Name, name, exit)
+			continue
+		}
+		n.Chains = append(n.Chains, Chain{Name: name, Exit: i, Pos: v.pos})
+	}
+	for _, v := range rn.Rules {
+		text, ok := c.value(v)
+		if !ok {
+			continue
+		}
+		r, err := netmap.ParseRule(text)
+		if err != nil {
+			c.errorf(v.pos, "%s: %v", n.Name, err)
+			continue
+		}
+		n.Rules = append(n.Rules, r)
+	}
 }
 
 func (c *checker) node(s *Spec, rn rawNode, ipv4s, ipv6s map[netip.Addr]string) Node {

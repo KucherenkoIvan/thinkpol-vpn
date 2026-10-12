@@ -50,9 +50,8 @@ func TestIngressOffAdmitsOnlyServers(t *testing.T) {
 		space.install(t, n, name, v1)
 	}
 	up := map[string]*lab.Process{
-		// server-1 runs its data plane in-process on its own sockets: a
-		// worker's dials out of its namespace (to server-2) come with TP-014.
-		"server-1": s1.Start(t, "thinkpol", "up", "-map-poll", "1s", "-mode", "device"),
+		// server-1's worker dials server-2 out of its namespace.
+		"server-1": s1.Start(t, "thinkpol", "up", "-map-poll", "1s"),
 		"server-2": s2.Start(t, "thinkpol", "up", "-map-poll", "1s"),
 		"device-a": devA.Start(t, "thinkpol", "up", "-map-poll", "1s"),
 		"device-b": devB.Start(t, "thinkpol", "up", "-map-poll", "1s"),

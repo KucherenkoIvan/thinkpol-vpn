@@ -60,6 +60,16 @@ nodes:
 
   - name: device-a
     kind: device
+    # Routing, devices only: chains by name, each ending at an exit (a peer
+    # with egress), and rules in order, first match wins:
+    # <match> -> direct | block | chain:<name>, matches default, local,
+    # cidr:<prefix>, geoip:<list>, domain:<name>, domain-suffix:<name>.
+    # Without rules, nothing outside the overlay enters the tunnel.
+    chains:
+      out: server-3
+    rules:
+      - local -> direct
+      - default -> chain:out
 
   - name: device-b
     kind: device
