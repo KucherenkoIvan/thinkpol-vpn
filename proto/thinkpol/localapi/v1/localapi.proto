@@ -132,6 +132,22 @@ message Status {
   // The map can't build the preset (no chain, or no domestic list): it is
   // enforced failing closed until it can.
   bool rule_preset_unavailable = 13;
+  // A server's uplink and what it carries.
+  Uplink uplink = 14;
+}
+
+// Uplink is a server's way to the internet, for its spaces that allow
+// egress.
+message Uplink {
+  // The interface of the node's default route; empty without one (error
+  // says why), and then no space has egress.
+  string interface = 1;
+  bool ipv4 = 2;
+  bool ipv6 = 3;
+  // Whether the node forwards each family.
+  bool forwarding4 = 4;
+  bool forwarding6 = 5;
+  string error = 6;
 }
 
 enum Mode {

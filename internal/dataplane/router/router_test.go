@@ -263,7 +263,7 @@ func TestForwardingEgressDeliversTheInternet(t *testing.T) {
 		}
 	}
 	<-written
-	if s := overlay.Status(); s.Delivered != 2 || s.NotLocal != 3 {
+	if s := overlay.Status(); s.Delivered != 2 || s.Forwarded != 2 || s.NotLocal != 3 || r.Counters().Forwarded != 2 {
 		t.Fatalf("overlay egress %+v", s)
 	}
 	// A chain's exit device isn't forwarding: what it decrypts for the

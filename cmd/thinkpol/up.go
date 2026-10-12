@@ -39,6 +39,7 @@ func runUp(ctx context.Context, e env, args []string) error {
 	fs.BoolVar(&cfg.Connect, "connect", cfg.Connect, "a device connects when it starts; otherwise it waits for thinkpol connect (THINKPOL_CONNECT)")
 	fs.StringVar(&cfg.APISocket, "api-socket", cfg.APISocket, "the local API's socket, in a directory of its own; empty: no local API (THINKPOL_API_SOCKET)")
 	fs.StringVar(&cfg.APIGroup, "api-group", cfg.APIGroup, "the group whose members may use the local API besides root (THINKPOL_API_GROUP)")
+	fs.StringVar(&cfg.EgressAllowed, "egress-allowed", cfg.EgressAllowed, "comma-separated private prefixes an exit's spaces may still reach (THINKPOL_EGRESS_ALLOWED)")
 	if err := parseFlags(fs, e, args); err != nil {
 		return err
 	}

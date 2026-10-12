@@ -30,7 +30,7 @@ type Egress struct {
 	isDone atomic.Bool
 	once   sync.Once
 
-	routed, delivered, notLocal, queueFull, tooLarge atomic.Uint64
+	routed, delivered, forwarded, notLocal, queueFull, tooLarge atomic.Uint64
 }
 
 var _ tun.Device = (*Egress)(nil)
@@ -42,6 +42,7 @@ type EgressStatus struct {
 	Queued    int    // packets waiting for the WireGuard device now
 	Routed    uint64 // queued for the WireGuard device
 	Delivered uint64 // decrypted by the device and written to the TUN
+	Forwarded uint64 // of those, for the internet: the node forwards them (Table.Forward)
 	NotLocal  uint64 // decrypted for a destination not the node's own (nor the internet, forwarding), dropped
 	QueueFull uint64 // dropped: the device fell behind
 	TooLarge  uint64 // dropped: longer than the device's buffer
@@ -111,6 +112,7 @@ func (e *Egress) Status() EgressStatus {
 		Queued:    len(e.queue),
 		Routed:    e.routed.Load(),
 		Delivered: e.delivered.Load(),
+		Forwarded: e.forwarded.Load(),
 		NotLocal:  e.notLocal.Load(),
 		QueueFull: e.queueFull.Load(),
 		TooLarge:  e.tooLarge.Load(),
@@ -188,6 +190,16 @@ func (e *Egress) Write(bufs [][]byte, offset int) (int, error) {
 	n, err := e.r.tun.Write(out, offset)
 	e.delivered.Add(uint64(n))
 	e.r.c.delivered.Add(uint64(n))
+	if c.forward[e] {
+		var fwd uint64
+		for _, b := range out[:n] {
+			if dst, ok := destination(b[offset:]); ok && !c.local[dst] {
+				fwd++
+			}
+		}
+		e.forwarded.Add(fwd)
+		e.r.c.forwarded.Add(fwd)
+	}
 	if err != nil {
 		return n, err
 	}

@@ -23,6 +23,9 @@ type ListenConfig struct {
 type Transport interface {
 	// Name is the transport's name in the map ("udp", "tls", …).
 	Name() string
+	// Network is the IP protocol its links use on the wire: "udp" or
+	// "tcp" (a server's firewall lets a space dial its endpoints in it).
+	Network() string
 	Dialer() Dialer
 	Listen(ctx context.Context, cfg ListenConfig) (Listener, error)
 	// CheckEndpoint reports whether a dial entry of the map is usable.

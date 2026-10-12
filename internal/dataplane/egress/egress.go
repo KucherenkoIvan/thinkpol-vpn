@@ -7,8 +7,9 @@ type Uplink struct {
 	// Name is the interface's name in the root namespace.
 	Name string
 	// IPv4 and IPv6 say which families reach the internet through it: a
-	// default route of that family leaves by it, and for IPv6 it has an
-	// address beyond link-local, which NAT66 masquerades to.
+	// default route of that family leaves by it, and for IPv6 it has a
+	// global address (not link-local or unique local), which NAT66
+	// masquerades to.
 	IPv4, IPv6 bool
 }
 

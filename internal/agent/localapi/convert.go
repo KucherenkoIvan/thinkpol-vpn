@@ -37,6 +37,12 @@ func statusProto(st agent.Status) *localapiv1.Status {
 			ReadySince: timestamp(w.ReadySince), RestartAt: timestamp(w.RestartAt),
 		})
 	}
+	if e := st.Egress; e != nil {
+		out.Uplink = &localapiv1.Uplink{
+			Interface: agent.Sanitize(e.Uplink), Ipv4: e.IPv4, Ipv6: e.IPv6,
+			Forwarding4: e.Forwarding4, Forwarding6: e.Forwarding6, Error: agent.Sanitize(e.Err),
+		}
+	}
 	for _, l := range st.PublicListeners {
 		out.PublicListeners = append(out.PublicListeners, &localapiv1.PublicListener{
 			Transport: agent.Sanitize(l.Transport), Routed: l.Routed, Unauthenticated: l.Unauthenticated, NoSpace: l.NoSpace,
@@ -52,7 +58,7 @@ func dataPlaneProto(dp *dataplane.Status, listeners int) *localapiv1.DataPlane {
 		Listeners: uint32(listeners),
 		Counters: map[string]uint64{
 			"router.routed": dp.Router.Routed, "router.delivered": dp.Router.Delivered,
-			"router.not_local": dp.Router.NotLocal, "router.no_route": dp.Router.NoRoute,
+			"router.not_local": dp.Router.NotLocal, "router.forwarded": dp.Router.Forwarded, "router.no_route": dp.Router.NoRoute,
 			"router.blocked": dp.Router.Blocked, "router.malformed": dp.Router.Malformed,
 			"router.too_large": dp.Router.TooLarge, "router.queue_full": dp.Router.QueueFull,
 			"router.read_errors": dp.Router.ReadErrors,

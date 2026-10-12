@@ -54,10 +54,12 @@ func TestFindUplink(t *testing.T) {
 	run("addr", "add", "10.9.0.2/24", "dev", "lan0")
 	check("no default route", Uplink{}, ErrNoUplink)
 
-	// IPv6 only: its default route's link, with an address beyond
-	// link-local.
+	// IPv6 only: its default route's link, with a global address; a
+	// unique local one is no internet to masquerade to.
 	run("addr", "add", "fd00:9::2/64", "dev", "wan0", "nodad")
 	run("-6", "route", "add", "default", "via", "fd00:9::1", "dev", "wan0")
+	check("IPv6 with a unique local address", Uplink{Name: "wan0"}, nil)
+	run("addr", "add", "2001:db8:9::2/64", "dev", "wan0", "nodad")
 	check("IPv6 only", Uplink{Name: "wan0", IPv6: true}, nil)
 
 	// IPv4 picks the uplink; the lower metric wins.
@@ -71,10 +73,10 @@ func TestFindUplink(t *testing.T) {
 	check("IPv6 elsewhere", Uplink{Name: "lan0", IPv4: true}, nil)
 
 	// IPv6 with only a link-local address: nothing to masquerade to.
-	run("addr", "add", "fd00:a::2/64", "dev", "lan0", "nodad")
+	run("addr", "add", "2001:db8:a::2/64", "dev", "lan0", "nodad")
 	run("-6", "route", "del", "default", "via", "fd00:9::1", "dev", "wan0")
 	run("-6", "route", "add", "default", "via", "fe80::1", "dev", "lan0")
 	check("IPv6 on the uplink", Uplink{Name: "lan0", IPv4: true, IPv6: true}, nil)
-	run("addr", "del", "fd00:a::2/64", "dev", "lan0")
+	run("addr", "del", "2001:db8:a::2/64", "dev", "lan0")
 	check("IPv6 link-local only", Uplink{Name: "lan0", IPv4: true}, nil)
 }

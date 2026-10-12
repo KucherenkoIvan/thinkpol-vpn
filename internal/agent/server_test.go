@@ -17,7 +17,6 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/logring"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/supervisor"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/worker"
-	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/egress"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
@@ -28,12 +27,11 @@ type fakeSupervisor struct {
 	spaces                [][]supervisor.Space
 	listeners             [][]supervisor.Listener
 	failSpaces, failLists int // calls left to fail
-	// uplink is what the node's uplink is found to be, or uplinkErr.
-	uplink    egress.Uplink
-	uplinkErr error
+	// egress is what Egress reports.
+	egress supervisor.EgressInfo
 }
 
-func (f *fakeSupervisor) findUplink() (egress.Uplink, error) { return f.uplink, f.uplinkErr }
+func (f *fakeSupervisor) Egress() supervisor.EgressInfo { return f.egress }
 
 func (f *fakeSupervisor) SetSpaces(sp []supervisor.Space) error {
 	f.mu.Lock()
@@ -100,7 +98,7 @@ func runServerSpacesIn(t *testing.T, s *testSpace, sup *fakeSupervisor, stateDir
 	}
 	ss := &serverSpaces{
 		sup: sup, reg: reg, log: slog.New(slog.NewTextHandler(r.log, nil)), keys: s.a, trust: s.trust(),
-		retryAfter: testRetry, cur: m, section: section, uplink: sup.findUplink,
+		retryAfter: testRetry, cur: m, section: section,
 	}
 	ss.stateDir = stateDir
 	ctx, cancel := context.WithCancel(context.Background())
@@ -355,38 +353,39 @@ func TestOnlyTheOwnersWorkerOutputIsCopied(t *testing.T) {
 	}
 }
 
-// A server allowing egress gives the supervisor its uplink and the families
-// it carries, found with every map; without an uplink, or with egress
-// off, the space has no egress. Its section's endpoints are dials either
-// way.
+// A server allowing egress grants its space both families; the log says
+// what the node's uplink gives it. Its section's endpoints are dials either
+// way, in their transport's protocol, an unknown transport's left out.
 func TestServerEgressAndDials(t *testing.T) {
 	other := netip.MustParseAddrPort("198.51.100.7:4500")
 	withLinks := func(sec *netmap.Section) {
 		sec.Links = []netmap.Link{{Peer: netmap.NodeID{9}, Endpoints: []netmap.Endpoint{
 			{Transport: "memory", Address: other}, {Transport: "memory", Address: other},
 			{Transport: "memory", Address: netip.MustParseAddrPort("[2001:db8::7]:4500")},
+			{Transport: "carrier-pigeon", Address: netip.MustParseAddrPort("198.51.100.8:4500")},
 		}}}
 	}
 	for _, tc := range []struct {
 		name    string
 		egress  bool
-		sup     *fakeSupervisor
-		want    supervisor.Egress
+		info    supervisor.EgressInfo
+		want    supervisor.EgressGrant
 		wantLog string
 	}{
-		{"egress on", true, &fakeSupervisor{uplink: egress.Uplink{Name: "eth9", IPv4: true}},
-			supervisor.Egress{Uplink: "eth9", IPv4: true}, "egress=on uplink=eth9 egress_ipv4=on egress_ipv6=off"},
-		{"no uplink", true, &fakeSupervisor{uplinkErr: egress.ErrNoUplink},
-			supervisor.Egress{}, "egress=on uplink=none"},
-		{"egress off", false, &fakeSupervisor{uplink: egress.Uplink{Name: "eth9", IPv4: true}},
-			supervisor.Egress{}, "egress=off blobs="},
+		{"egress on", true, supervisor.EgressInfo{Uplink: "eth9", IPv4: true},
+			supervisor.EgressGrant{IPv4: true, IPv6: true}, "egress=on uplink=eth9 egress_ipv4=on egress_ipv6=off"},
+		{"no uplink", true, supervisor.EgressInfo{Err: "no default route"},
+			supervisor.EgressGrant{IPv4: true, IPv6: true}, "egress=on uplink=none"},
+		{"egress off", false, supervisor.EgressInfo{Uplink: "eth9", IPv4: true},
+			supervisor.EgressGrant{}, "egress=off blobs="},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := newTestSpace(t)
-			r := runServerSpaces(t, s, tc.sup, withLinks, func(sec *netmap.Section) { sec.Node.AllowEgress = tc.egress })
+			sup := &fakeSupervisor{egress: tc.info}
+			r := runServerSpaces(t, s, sup, withLinks, func(sec *netmap.Section) { sec.Node.AllowEgress = tc.egress })
 			eventually(t, func() bool { return strings.Contains(r.log.String(), `msg="map applied" version=1`) })
-			sp, _, _ := tc.sup.last()
-			want := []netip.AddrPort{other, netip.MustParseAddrPort("[2001:db8::7]:4500")}
+			sp, _, _ := sup.last()
+			want := []supervisor.Dial{{Address: other, Network: "udp"}, {Address: netip.MustParseAddrPort("[2001:db8::7]:4500"), Network: "udp"}}
 			if len(sp) != 1 || sp[0].Egress != tc.want || !slices.Equal(sp[0].Dials, want) {
 				t.Fatalf("spaces %+v", sp)
 			}

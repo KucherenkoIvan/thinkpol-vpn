@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"time"
 
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/egress"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
@@ -63,14 +64,14 @@ type Space struct {
 	// hasn't had yet goes to it as a sealed memfd before the config: the
 	// supervisor keeps no copy, and none rides in the config.
 	Seeds func() [][]byte `json:"-"`
-	// Egress is how the space reaches the internet: its traffic leaves the
-	// root namespace by the uplink, masqueraded. The zero value is no
-	// egress.
-	Egress Egress
+	// Egress is the families the space may reach the internet in: its
+	// traffic leaves the root namespace by the node's uplink, masqueraded,
+	// in those of them the uplink carries. The zero value is no egress.
+	Egress EgressGrant
 	// Dials are the endpoints the space's worker dials (its section's
-	// links to other servers). They leave the root namespace, masqueraded,
+	// links to other servers). They leave by the uplink, masqueraded,
 	// whatever Egress says; nothing else does without egress.
-	Dials []netip.AddrPort
+	Dials []Dial
 	// Inbound is, per transport name, the links the space's own map says
 	// to accept (dataplane.AcceptedInbound of its section, the table its
 	// worker's engine accepts too). The supervisor
@@ -79,17 +80,42 @@ type Space struct {
 	Inbound map[string][]transport.PeerLink
 }
 
-// Egress is a space's internet egress, enforced in the root namespace, the
-// only place the spaces' veths meet, and in the space's own namespace.
-type Egress struct {
-	// Uplink is the root-namespace interface a space's masqueraded traffic
-	// leaves by (egress.FindUplink); empty means no egress.
-	Uplink string
-	// IPv4 and IPv6 say which families may leave. A family that can't is
-	// refused inside the space's namespace: IPv6 with an ICMPv6 "no route"
-	// error, so clients fall back to IPv4 at once instead of timing out.
+// EgressGrant is what a space may send to the internet, enforced in the
+// root namespace, the only place the spaces' veths meet, and in the space's
+// own namespace. A family granted that the uplink doesn't carry is refused
+// inside the space's namespace with ICMP "no route", so clients fall back
+// to the other at once instead of timing out.
+type EgressGrant struct {
 	IPv4, IPv6 bool
 }
+
+// Dial is an endpoint a space's worker dials: an address and port, and the
+// transport's network ("udp" or "tcp").
+type Dial struct {
+	Address netip.AddrPort
+	Network string
+}
+
+// EgressInfo is the node's egress as the supervisor sees it: the uplink, the
+// families it carries, and whether the root namespace forwards them.
+type EgressInfo struct {
+	// Uplink is the interface of the root namespace's default route; empty
+	// when there is none (Err says why), and then no space has egress.
+	Uplink                   string
+	IPv4, IPv6               bool
+	Forwarding4, Forwarding6 bool
+	Err                      string
+}
+
+// MasqueradePorts is the source port range masqueraded flows get (fully
+// random within it). Listeners can't bind inside it, so no reply to a space's
+// flow is taken for a connection to a listener, or the other way round.
+var MasqueradePorts = [2]uint16{32768, 60999}
+
+// DefaultRuntimeDir holds what the supervisor changed in the root
+// namespace's sysctls, so a successor restores it: a tmpfs, like the
+// sysctls' own lifetime.
+const DefaultRuntimeDir = "/run/thinkpol"
 
 // Options configures a supervisor. Zero values take the defaults.
 type Options struct {
@@ -137,6 +163,22 @@ type Options struct {
 	// CountersInterval is how often each worker is sent its space's
 	// SharedCounters, for its telemetry (10 s).
 	CountersInterval time.Duration
+	// Uplink finds the node's uplink (egress.FindUplink). The supervisor
+	// asks again on every SetSpaces and whenever the root namespace's
+	// routes change.
+	Uplink func() (egress.Uplink, error)
+	// EgressAllowed are destinations spaces may reach by egress and dials
+	// although egressBlocked holds them (a provider network that is the
+	// internet to this node, as the lab's is).
+	EgressAllowed []netip.Prefix
+	// MaxFlowsPerSpace caps the connections a space has through the root
+	// namespace at once (new ones over it are dropped), so one space can't
+	// fill the node's conntrack table. 0: a quarter of nf_conntrack_max;
+	// negative: no cap.
+	MaxFlowsPerSpace int
+	// RuntimeDir is where the supervisor records the forwarding sysctls it
+	// changed (DefaultRuntimeDir).
+	RuntimeDir string
 	// now is an injectable clock for the backoff schedule in tests.
 	now func() time.Time
 }
@@ -178,6 +220,12 @@ func (o Options) withDefaults() (Options, error) {
 	if o.StopTimeout == 0 {
 		o.StopTimeout = 5 * time.Second
 	}
+	if o.Uplink == nil {
+		o.Uplink = egress.FindUplink
+	}
+	if o.RuntimeDir == "" {
+		o.RuntimeDir = DefaultRuntimeDir
+	}
 	if o.CountersInterval == 0 {
 		o.CountersInterval = 10 * time.Second
 	}
@@ -192,6 +240,11 @@ func (o Options) withDefaults() (Options, error) {
 	}
 	if o.now == nil {
 		o.now = time.Now
+	}
+	for _, p := range o.EgressAllowed {
+		if !p.IsValid() || p.Addr().Zone() != "" || p.Addr().Is4In6() {
+			return o, fmt.Errorf("supervisor: egress allowed %v: want an IPv4 or IPv6 prefix", p)
+		}
 	}
 	switch {
 	case !o.TransitIPv4.Addr().Is4() || o.TransitIPv4.Bits() > 30 || o.TransitIPv4 != o.TransitIPv4.Masked():

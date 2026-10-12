@@ -490,6 +490,10 @@ func (r *runner) applied() {
 	}
 	if n := r.section.Node; n.Kind == netmap.NodeServer {
 		attrs = append(attrs, serverSettings(n)...)
+		attrs = append(attrs, "exit", onOff(st.Exit))
+		if n.AllowEgress && !st.Exit {
+			r.dp.Log.Warn("the map allows egress, but a server forwards its space's internet traffic only in server mode: not an exit here")
+		}
 	}
 	r.dp.Log.Info("map applied", attrs...)
 }

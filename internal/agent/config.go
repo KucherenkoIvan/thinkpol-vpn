@@ -3,9 +3,11 @@ package agent
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/KucherenkoIvan/go-kernel/config"
@@ -61,6 +63,27 @@ type Config struct {
 	// APIGroup is the group (a name or a gid) whose members may use the
 	// local API besides root; if no such group exists, only root may.
 	APIGroup string `env:"THINKPOL_API_GROUP" default:"thinkpol"`
+	// EgressAllowed are prefixes (comma-separated) an exit's spaces may
+	// reach although they are private or provider networks, which egress
+	// otherwise refuses (supervisor.Options.EgressAllowed): a network that
+	// is this node's internet.
+	EgressAllowed string `env:"THINKPOL_EGRESS_ALLOWED"`
+}
+
+// EgressAllowedPrefixes parses EgressAllowed.
+func (c Config) EgressAllowedPrefixes() ([]netip.Prefix, error) {
+	var out []netip.Prefix
+	for _, f := range strings.Split(c.EgressAllowed, ",") {
+		if f = strings.TrimSpace(f); f == "" {
+			continue
+		}
+		p, err := netip.ParsePrefix(f)
+		if err != nil || p.Addr().Zone() != "" || p.Addr().Is4In6() {
+			return nil, fmt.Errorf("egress allowed %q: want IPv4 or IPv6 prefixes like 203.0.113.0/24", f)
+		}
+		out = append(out, p.Masked())
+	}
+	return out, nil
 }
 
 // LoadConfig reads the configuration from the environment, with the
@@ -132,6 +155,9 @@ func (c Config) Check() error {
 	}
 	if c.APISocket != "" && !filepath.IsAbs(c.APISocket) {
 		errs = append(errs, fmt.Errorf("API socket %q: want an absolute path", c.APISocket))
+	}
+	if _, err := c.EgressAllowedPrefixes(); err != nil {
+		errs = append(errs, err)
 	}
 	if c.MapPoll < 100*time.Millisecond {
 		errs = append(errs, fmt.Errorf("map poll interval %v: want at least 100ms", c.MapPoll))

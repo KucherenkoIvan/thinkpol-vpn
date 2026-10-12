@@ -15,7 +15,8 @@ import (
 // FindUplink finds the uplink of the current network namespace: the
 // interface of its preferred IPv4 default route (lowest metric), or of the
 // IPv6 one on a node without IPv4. IPv6 is on only when an IPv6 default
-// route leaves by the same interface: one uplink carries both families.
+// route leaves by the same interface and it has a global (not unique local)
+// IPv6 address: one uplink carries both families.
 func FindUplink() (Uplink, error) {
 	h, err := netlink.NewHandle(unix.NETLINK_ROUTE)
 	if err != nil {
@@ -24,6 +25,10 @@ func FindUplink() (Uplink, error) {
 	defer h.Close()
 	return findUplink(h)
 }
+
+// ula holds unique local addresses: an uplink with only those has no IPv6
+// internet to masquerade to.
+var ula = netip.MustParsePrefix("fc00::/7")
 
 func findUplink(h *netlink.Handle) (Uplink, error) {
 	v4, err := defaultLink(h, netlink.FAMILY_V4)
@@ -56,7 +61,7 @@ func findUplink(h *netlink.Handle) (Uplink, error) {
 		}
 		up.IPv6 = slices.ContainsFunc(addrs, func(a netlink.Addr) bool {
 			ip, ok := netip.AddrFromSlice(a.IP)
-			return ok && ip.Is6() && !ip.Is4In6() && !ip.IsLinkLocalUnicast() && !ip.IsLoopback()
+			return ok && ip.Is6() && !ip.Is4In6() && ip.IsGlobalUnicast() && !ula.Contains(ip)
 		})
 	}
 	return up, nil

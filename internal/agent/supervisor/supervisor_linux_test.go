@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -205,9 +206,12 @@ func probe(ctx context.Context, s worker.Session) error {
 			if target.tag != "" {
 				payload += "#" + target.tag
 			}
-			if target.spoof.IsValid() {
+			switch {
+			case target.icmp != nil && len(s.Addrs) > 0:
+				target.icmp.send(s.Addrs[0].Addr())
+			case target.spoof.IsValid():
 				spoofedSend(target.addr, target.spoof, payload)
-			} else {
+			default:
 				_, _ = pc.WriteTo([]byte(payload), net.UDPAddrFromAddrPort(netip.AddrPortFrom(target.addr, target.port)))
 			}
 		}
@@ -238,6 +242,7 @@ func effectiveCaps() uint64 {
 }
 
 type target struct {
+	icmp  *icmpError // when set, send this forged ICMP error instead
 	addr  netip.Addr
 	port  uint16     // probePort unless the target names one
 	spoof netip.Addr // when valid, send with this source address (to probePort)
@@ -249,6 +254,10 @@ type target struct {
 func parseTargets(config []byte) []target {
 	var out []target
 	for _, line := range strings.Fields(string(config)) {
+		if e, ok := parseICMPError(line); ok {
+			out = append(out, target{icmp: e})
+			continue
+		}
 		line, tag, _ := strings.Cut(line, "#")
 		dst, spoof, _ := strings.Cut(line, "@")
 		t := target{port: probePort, tag: tag}
@@ -265,6 +274,81 @@ func parseTargets(config []byte) []target {
 		out = append(out, t)
 	}
 	return out
+}
+
+// icmpError is a forged IPv4 ICMP error a probe sends from its transit
+// address to dst, quoting a UDP packet inner, as a compromised worker would
+// to interfere with a flow it doesn't own (conntrack takes an error as
+// related to the flow its quote names).
+type icmpError struct {
+	dst                netip.Addr
+	typ, code          byte
+	mtu                uint16
+	innerSrc, innerDst netip.AddrPort
+}
+
+// parseICMPError reads icmp/<dst>/<type>/<code>/<mtu>/<inner src>/<inner dst>.
+func parseICMPError(field string) (*icmpError, bool) {
+	parts := strings.Split(field, "/")
+	if len(parts) != 7 || parts[0] != "icmp" {
+		return nil, false
+	}
+	dst, err1 := netip.ParseAddr(parts[1])
+	typ, err2 := strconv.Atoi(parts[2])
+	code, err3 := strconv.Atoi(parts[3])
+	mtu, err4 := strconv.Atoi(parts[4])
+	src, err5 := netip.ParseAddrPort(parts[5])
+	idst, err6 := netip.ParseAddrPort(parts[6])
+	if errors.Join(err1, err2, err3, err4, err5, err6) != nil {
+		return nil, false
+	}
+	return &icmpError{dst: dst, typ: byte(typ), code: byte(code), mtu: uint16(mtu), innerSrc: src, innerDst: idst}, true
+}
+
+func (e *icmpError) String() string {
+	return fmt.Sprintf("icmp/%s/%d/%d/%d/%s/%s", e.dst, e.typ, e.code, e.mtu, e.innerSrc, e.innerDst)
+}
+
+func (e *icmpError) send(src netip.Addr) {
+	inner := udp4Packet(e.innerSrc.Addr(), e.innerDst.Addr(), int(e.innerSrc.Port()), int(e.innerDst.Port()), []byte("quoted"))
+	ipChecksum(inner[:20])
+	msg := make([]byte, 8, 8+len(inner))
+	msg[0], msg[1] = e.typ, e.code
+	binary.BigEndian.PutUint16(msg[6:], e.mtu)
+	msg = append(msg, inner...)
+	binary.BigEndian.PutUint16(msg[2:], checksum(msg))
+	pkt := make([]byte, 20, 20+len(msg))
+	pkt[0] = 0x45
+	binary.BigEndian.PutUint16(pkt[2:], uint16(20+len(msg)))
+	pkt[8], pkt[9] = 64, unix.IPPROTO_ICMP
+	copy(pkt[12:16], src.AsSlice())
+	copy(pkt[16:20], e.dst.AsSlice())
+	pkt = append(pkt, msg...)
+	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_RAW, unix.IPPROTO_RAW)
+	if err != nil {
+		return
+	}
+	defer func() { _ = unix.Close(fd) }()
+	_ = unix.Sendto(fd, pkt, 0, &unix.SockaddrInet4{Addr: e.dst.As4()})
+}
+
+func ipChecksum(h []byte) {
+	h[10], h[11] = 0, 0
+	binary.BigEndian.PutUint16(h[10:], checksum(h))
+}
+
+func checksum(b []byte) uint16 {
+	var sum uint32
+	for i := 0; i+1 < len(b); i += 2 {
+		sum += uint32(b[i])<<8 | uint32(b[i+1])
+	}
+	if len(b)%2 == 1 {
+		sum += uint32(b[len(b)-1]) << 8
+	}
+	for sum > 0xffff {
+		sum = sum&0xffff + sum>>16
+	}
+	return ^uint16(sum)
 }
 
 // spoofedSend sends a UDP datagram with a forged source address, to test

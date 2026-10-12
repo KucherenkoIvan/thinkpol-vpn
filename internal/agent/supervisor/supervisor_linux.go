@@ -24,6 +24,7 @@ import (
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/ipc"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/logring"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/egress"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
@@ -64,6 +65,14 @@ type Supervisor struct {
 	workers map[netmap.SpaceID]*worker
 	slots   map[int]bool
 	closed  bool
+	// uplink is the node's uplink as last found (uplinkErr when there is
+	// none); maxFlows caps each space's flows through the root (0: none).
+	uplink    egress.Uplink
+	uplinkErr error
+	maxFlows  int
+	// stopWatch ends the route watcher; watchDone is closed when it has.
+	stopWatch chan struct{}
+	watchDone chan struct{}
 }
 
 // New starts a supervisor with no spaces: it takes the node's supervisor
@@ -88,6 +97,8 @@ func New(opts Options) (*Supervisor, error) {
 		opts: opts, log: opts.Log, root: root,
 		shared:  newShared(opts.Transports, opts.FairShare, opts.Log, opts.now),
 		workers: map[netmap.SpaceID]*worker{}, slots: map[int]bool{},
+		maxFlows:  maxFlows(opts.MaxFlowsPerSpace),
+		stopWatch: make(chan struct{}), watchDone: make(chan struct{}),
 	}
 	fail := func(err error) (*Supervisor, error) {
 		_ = removeIsolation()
@@ -101,9 +112,19 @@ func New(opts Options) (*Supervisor, error) {
 	if err := removeStaleLinks(s.log); err != nil {
 		return fail(err)
 	}
+	// A predecessor's forwarding, if it died without restoring it: still
+	// the supervisor's to confine and put back.
+	if err := s.forwarding.load(opts.RuntimeDir); err != nil {
+		s.log.Warn("reading what a predecessor changed in the forwarding sysctls", "err", err)
+	}
+	s.refreshUplink()
 	if err := s.installIsolation(); err != nil {
 		return fail(err)
 	}
+	if err := s.forwarding.ensure([2]bool{}); err != nil {
+		s.log.Warn("restoring the forwarding sysctls", "err", err)
+	}
+	go s.watchRoutes()
 	// Resource limits are best-effort: where cgroup v2 can't be delegated
 	// the worker falls back to its own rlimits.
 	if cg, err := newCgroupParent(); err != nil {
@@ -156,6 +177,11 @@ func (s *Supervisor) SetSpaces(spaces []Space) error {
 		if sp.ID.IsZero() {
 			return errors.New("supervisor: zero space id")
 		}
+		for _, d := range sp.Dials {
+			if !d.Address.IsValid() || d.Address.Port() == 0 || d.Address.Addr().Zone() != "" || (d.Network != "udp" && d.Network != "tcp") {
+				return fmt.Errorf("supervisor: space %s: dial %v over %q", sp.ID, d.Address, d.Network)
+			}
+		}
 		if _, dup := want[sp.ID]; dup {
 			return fmt.Errorf("supervisor: space %s listed twice", sp.ID)
 		}
@@ -195,6 +221,8 @@ func (s *Supervisor) SetSpaces(spaces []Space) error {
 		s.mu.Unlock()
 		return errors.New("supervisor: closed")
 	}
+	s.refreshUplinkLocked()
+	before := s.spaceEgresses()
 	var started []*worker
 	for _, sp := range spaces {
 		if w, ok := s.workers[sp.ID]; ok {
@@ -212,22 +240,187 @@ func (s *Supervisor) SetSpaces(spaces []Space) error {
 		s.workers[sp.ID] = w
 		started = append(started, w)
 	}
-	rules := s.slotRules()
 	s.mu.Unlock()
 
 	// Rebuild the isolation tables for the current slots, their egress and
 	// dials, before any new worker's veth carries a packet. On failure the
 	// just-started workers are rolled back: none has a goroutine yet, so a
 	// later Close must not wait on them.
-	if err := s.applyIsolation(rules); err != nil {
+	if err := s.applyTables(before); err != nil {
 		s.rollback(started)
 		return err
 	}
-	s.forwarding.ensure(rules, s.log)
 	for _, w := range started {
 		go s.supervise(w)
 	}
 	return nil
+}
+
+// applyTables rebuilds the root namespace's tables and forwarding for what
+// the supervisor serves now; then each space whose egress differs from
+// before has its namespace's table rewritten (by its run loop) and its old
+// flows flushed. The caller holds setMu.
+func (s *Supervisor) applyTables(before map[*worker]spaceEgress) error {
+	s.mu.Lock()
+	st := s.tableState()
+	want := forwardingWanted(st)
+	st.owned = s.forwarding.willOwn(want)
+	after := s.spaceEgresses()
+	s.mu.Unlock()
+	if err := s.applyIsolation(st); err != nil {
+		return err
+	}
+	if err := s.forwarding.ensure(want); err != nil {
+		s.log.Warn("forwarding sysctls: egress may be off", "err", err)
+	}
+	for w, e := range after {
+		if old, ok := before[w]; ok && old != e {
+			w.signal(w.egressChanged)
+			if err := flushFlows(w.transit); err != nil {
+				s.log.Warn("flushing a space's flows", "space", w.space.String(), "err", err)
+			}
+		}
+	}
+	return nil
+}
+
+// forwardingWanted are the families some space sends on: by egress, or by
+// a dial (which leaves by the uplink too).
+func forwardingWanted(st tableState) [2]bool {
+	var want [2]bool
+	if st.uplink == "" {
+		return want
+	}
+	for _, r := range st.rules {
+		want[0], want[1] = want[0] || r.egress[0], want[1] || r.egress[1]
+		for _, d := range r.dials {
+			if d.Address.Addr().Unmap().Is4() {
+				want[0] = true
+			} else {
+				want[1] = true
+			}
+		}
+	}
+	return want
+}
+
+// spaceEgresses is what each worker's namespace table should forward; the
+// caller holds s.mu.
+func (s *Supervisor) spaceEgresses() map[*worker]spaceEgress {
+	out := make(map[*worker]spaceEgress, len(s.workers))
+	for _, w := range s.workers {
+		out[w] = s.spaceEgress(w)
+	}
+	return out
+}
+
+// spaceEgress is what w's namespace table should forward; the caller holds
+// s.mu.
+func (s *Supervisor) spaceEgress(w *worker) spaceEgress {
+	grant, _ := w.egressRules()
+	return spaceEgress{on: s.uplink.Name != "" && (grant.IPv4 || grant.IPv6), family: s.effective(grant)}
+}
+
+// currentSpaceEgress is spaceEgress, taking s.mu.
+func (s *Supervisor) currentSpaceEgress(w *worker) spaceEgress {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.spaceEgress(w)
+}
+
+// refreshUplink finds the uplink again.
+func (s *Supervisor) refreshUplink() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.refreshUplinkLocked()
+}
+
+// refreshUplinkLocked finds the uplink again, and reports whether it
+// changed; the caller holds s.mu. A name the tables couldn't match exactly
+// counts as no uplink.
+func (s *Supervisor) refreshUplinkLocked() bool {
+	up, err := s.opts.Uplink()
+	if err == nil && (up.Name == "" || len(up.Name) >= unix.IFNAMSIZ || strings.ContainsAny(up.Name, "\x00/ ") || strings.HasPrefix(up.Name, LinkPrefix)) {
+		err = fmt.Errorf("uplink %q: not an interface name the tables can match", up.Name)
+	}
+	if err != nil {
+		up = egress.Uplink{}
+	}
+	changed := up != s.uplink
+	if changed {
+		s.log.Info("uplink", "uplink", up.Name, "ipv4", up.IPv4, "ipv6", up.IPv6, "err", err)
+	}
+	s.uplink, s.uplinkErr = up, err
+	return changed
+}
+
+// watchRoutes follows the root namespace's routes: when the default route
+// moves (DHCP, a new interface), the uplink is found again and the tables
+// follow it.
+func (s *Supervisor) watchRoutes() {
+	defer close(s.watchDone)
+	updates := make(chan netlink.RouteUpdate, 64)
+	if err := netlink.RouteSubscribeWithOptions(updates, s.stopWatch, netlink.RouteSubscribeOptions{
+		ErrorCallback: func(err error) { s.log.Warn("route watcher", "err", err) },
+	}); err != nil {
+		s.log.Warn("not following route changes: the uplink is found again only with SetSpaces", "err", err)
+		return
+	}
+	for {
+		select {
+		case <-s.stopWatch:
+			return
+		case u, ok := <-updates:
+			if !ok {
+				return
+			}
+			if u.Dst != nil {
+				if ones, _ := u.Dst.Mask.Size(); ones != 0 {
+					continue
+				}
+			}
+			// Let a burst of changes settle.
+			time.Sleep(200 * time.Millisecond)
+			for len(updates) > 0 {
+				<-updates
+			}
+			s.uplinkMoved()
+		}
+	}
+}
+
+// uplinkMoved rebuilds the tables if the uplink changed.
+func (s *Supervisor) uplinkMoved() {
+	s.setMu.Lock()
+	defer s.setMu.Unlock()
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return
+	}
+	before := s.spaceEgresses()
+	changed := s.refreshUplinkLocked()
+	s.mu.Unlock()
+	if !changed {
+		return
+	}
+	if err := s.applyTables(before); err != nil {
+		s.log.Error("the uplink changed, and the tables couldn't follow", "err", err)
+	}
+}
+
+// Egress describes the node's egress: its uplink, the families it carries,
+// and whether the root namespace forwards them.
+func (s *Supervisor) Egress() EgressInfo {
+	s.mu.Lock()
+	up, err := s.uplink, s.uplinkErr
+	s.mu.Unlock()
+	on := s.forwarding.on()
+	info := EgressInfo{Uplink: up.Name, IPv4: up.IPv4, IPv6: up.IPv6, Forwarding4: on[0], Forwarding6: on[1]}
+	if err != nil {
+		info.Err = err.Error()
+	}
+	return info
 }
 
 // rollback drops workers that were registered but never started (their done
@@ -261,6 +454,10 @@ func (s *Supervisor) stopAll(ws []*worker) {
 	}
 	for _, w := range ws {
 		<-w.done
+		// The slot is reused later: none of its flows may carry over.
+		if err := flushFlows(w.transit); err != nil {
+			s.log.Warn("flushing a space's flows", "space", w.space.String(), "err", err)
+		}
 		s.mu.Lock()
 		delete(s.slots, w.slot)
 		s.mu.Unlock()
@@ -277,7 +474,17 @@ func (s *Supervisor) stopAll(ws []*worker) {
 // that can't be opened is reported and the others are served. Every worker
 // is told the new set.
 func (s *Supervisor) SetListeners(ls []Listener) error {
+	var refused []error
+	ls = slices.DeleteFunc(slices.Clone(ls), func(l Listener) bool {
+		ap, err := netip.ParseAddrPort(l.Address)
+		if err == nil && ap.Port() >= MasqueradePorts[0] && ap.Port() <= MasqueradePorts[1] {
+			refused = append(refused, fmt.Errorf("supervisor: listener %s: port inside the masquerade range %d-%d", l.Address, MasqueradePorts[0], MasqueradePorts[1]))
+			return true
+		}
+		return false
+	})
 	changed, err := s.shared.setListeners(context.Background(), ls)
+	err = errors.Join(append(refused, err)...)
 	if changed {
 		s.mu.Lock()
 		for _, w := range s.workers {
@@ -332,6 +539,8 @@ func (s *Supervisor) Close() error {
 	s.closed = true
 	s.mu.Unlock()
 	s.shared.close()
+	close(s.stopWatch)
+	<-s.watchDone
 
 	s.setMu.Lock() // wait for an in-flight SetSpaces to finish
 	defer s.setMu.Unlock()
@@ -388,8 +597,8 @@ type worker struct {
 
 	mu        sync.Mutex
 	config    []byte
-	egress    Egress
-	dials     []netip.AddrPort
+	egress    EgressGrant
+	dials     []Dial
 	seeds     func() [][]byte
 	pid       int
 	ready     bool
@@ -445,21 +654,16 @@ func (w *worker) setConfig(config []byte, seeds func() [][]byte) {
 	}
 }
 
-// setEgress stores the space's egress and dials, and signals the running
-// worker's loop to update its namespace's table if the egress changed (the
-// dials are the root namespace's business only).
-func (w *worker) setEgress(e Egress, dials []netip.AddrPort) {
+// setEgress stores the space's egress grant and dials; applyTables tells
+// the running worker's loop once the root's tables follow.
+func (w *worker) setEgress(e EgressGrant, dials []Dial) {
 	w.mu.Lock()
-	same := w.egress == e
+	defer w.mu.Unlock()
 	w.egress, w.dials = e, slices.Clone(dials)
-	w.mu.Unlock()
-	if !same {
-		w.signal(w.egressChanged)
-	}
 }
 
-// egressRules are the space's egress and dials.
-func (w *worker) egressRules() (Egress, []netip.AddrPort) {
+// egressRules are the space's egress grant and dials.
+func (w *worker) egressRules() (EgressGrant, []Dial) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.egress, slices.Clone(w.dials)
@@ -732,14 +936,11 @@ func (s *Supervisor) run(w *worker, log *slog.Logger) error {
 				return stuck("config", err)
 			}
 		case <-w.egressChanged:
-			e, _ := w.egressRules()
-			if err := applySpaceTable(p.netns, w.transit, e); err != nil {
-				// Fail closed: the root namespace's table already
-				// follows the new egress; a fresh namespace gets the
-				// space's table right.
-				_ = ends.Control.Close()
-				p.kill()
-				return fmt.Errorf("the space's egress table: %w", err)
+			// The root namespace's tables already follow the new egress,
+			// whatever this one does; a failure is retried with the next
+			// change, or in a fresh namespace.
+			if err := applySpaceTable(p.netns, w.transit, s.currentSpaceEgress(w)); err != nil {
+				log.Error("the space's egress table", "err", err)
 			}
 		case <-w.ctx.Done():
 			if err := ends.Control.SendTimeout(ipc.Message{Kind: ipc.KindStop}, s.opts.StopTimeout); err != nil {

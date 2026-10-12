@@ -44,8 +44,8 @@ func TestAnExitForwardsItsPeersInternetTraffic(t *testing.T) {
 					t.Errorf("ping %s through the exit: answered %v, want %v", dst, got, exit)
 				}
 			}
-			if !exit && s.engine.Status().Router.NotLocal == 0 {
-				t.Error("the exit dropped nothing as not its own")
+			if st := s.engine.Status().Router; exit && st.Forwarded == 0 || !exit && (st.NotLocal == 0 || st.Forwarded != 0) {
+				t.Errorf("router counters %+v", st)
 			}
 		})
 	}
