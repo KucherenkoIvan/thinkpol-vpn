@@ -1,6 +1,7 @@
 package dataplane
 
 import (
+	"context"
 	"crypto/sha256"
 	"fmt"
 	"net/netip"
@@ -243,6 +244,8 @@ func (e *Engine) recompileRules() error {
 		return nil // the first Apply that can run compiles them
 	}
 	unavailable := e.compileRules(e.ruleInput, e.ruleNetworks)
+	ctx := context.Background()
+	shrinkErr := e.shrinkRoutes(ctx)
 	want := e.assign(*e.overlay)
 	if err := e.removePeers(want, true, e.paths); err != nil {
 		return err
@@ -251,6 +254,9 @@ func (e *Engine) recompileRules() error {
 		return err
 	}
 	if err := e.setTable(); err != nil {
+		return err
+	}
+	if err := e.growRoutes(ctx, shrinkErr); err != nil {
 		return err
 	}
 	return unavailable
