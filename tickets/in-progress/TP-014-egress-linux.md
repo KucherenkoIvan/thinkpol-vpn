@@ -74,3 +74,4 @@ Nits:
 - 2026-10-12 backlog → in-progress — owner: agent-tp-014, branch: tp-014-egress-linux
 - 2026-10-12 in-progress → review — acceptance checked; lint, test, race and lab checks as in Notes; DESIGN "Data plane" and "Server agent" describe the egress tables (conntrack zones narrowed, see Notes)
 - 2026-10-12 review → has-errors — two blockers (B1 ICMP related across spaces, B2 root forwarding), S1–S11 and nits from review
+- 2026-10-12 has-errors → in-progress — owner: agent-tp-014, picking up the review findings
