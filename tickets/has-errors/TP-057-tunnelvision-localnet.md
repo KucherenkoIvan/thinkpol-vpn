@@ -53,7 +53,16 @@ table 29808: <overlay> dev <TUN>, unreachable <overlay> metric 2048,
 - Cost of decision 1, in DESIGN: hosts on a public on-link LAN go through the tunnel unless direct by rules; a DHCP server on such a LAN gets unicast renewals through the tunnel (they fail; the client falls back to broadcast, `255.255.255.255` is direct). A later setting could opt a LAN in.
 - TP-018's done ticket: its TP-021/TP-048 notes (lines 71–72) said IPv4 had no fallback; corrected, and its layout points here.
 
+## Review findings
+Review: no new leak for unbound traffic. Orchestrator decisions:
+
+- [ ] 1 The oif rules go below 5299 (e.g. 5298), so an access gateway inside the overlay's range resolves. Namespace test: DHCP 100.64.20.5/24, gateway 100.64.20.1 on eth0, overlay 100.64.0.0/16 → the default route is added and link sockets work.
+- [ ] 2 oif rules for every link but the TUN and lo (from the link list, up or not), re-applied on RTM_NEWLINK. Test: a second dummy interface created after Enforce, an address and a default route via a public gateway on it at once (no sleep) → the route add succeeds.
+- [ ] 3 Decision: an on-link subnet is trusted only inside `lists.Local()` ∩ the effective Direct set (a hostile network can't widen it against the rules; where the rules block or tunnel a private range, on-link doesn't override). Test: `cidr:10.20.0.0/16 -> chain:x` + DHCP 10.0.0.50/8 → 10.20.1.5 enters the TUN. DESIGN.
+- [ ] 4 DESIGN and Notes: interface-bound sockets (SO_BINDTODEVICE, IP_UNICAST_IF, PKTINFO ifindex; NetworkManager's connectivity checks, resolved's per-link DNS, `ping -I`) can't be confined by routing: hand them to TP-021/TP-048 (firewall) in their Notes with a Log line; a bound-socket test documents today's behaviour (`ip route get … oif eth0`) so a firewall ticket can flip it.
+
 ## Log
 - 2026-10-12 created in in-progress — owner: agent-tp-018, branch: tp-057-tunnelvision-localnet (follow-up to TP-018's post-merge leak check)
 - 2026-10-12 docs: TP-018's done Notes corrected (TP-021, TP-048: IPv4 has the unreachable fallback; layout superseded here); DESIGN.md "Routing rules and DNS" (route table on Linux: overlay in its own table, local-only on-link, oif rules)
 - 2026-10-12 merged origin/rewrite (TP-014); in-progress → review — every acceptance box checked; `make lint`, `make test`, `go test -race` on dataplane, routetable, netcfg and agent, and `make lab-test LAB_P=2` (lab and 28 in-node packages) pass
+- 2026-10-12 review → has-errors — findings 1–4 (see Review findings)
