@@ -237,7 +237,7 @@ func TestPlanNeedsEveryNodesKeys(t *testing.T) {
 
 func TestReferenceIsTheFormat(t *testing.T) {
 	// Every field the parser knows appears in the reference spec.
-	for _, field := range []string{"space:", "ipv4:", "ipv6:", "nodes:", "name:", "kind:", "endpoints:", "listen:", "ingress:", "egress:", "paths:"} {
+	for _, field := range []string{"space:", "ipv4:", "ipv6:", "nodes:", "name:", "kind:", "endpoints:", "listen:", "ingress:", "egress:", "paths:", "rules:", "chains:", "exit:"} {
 		if !bytes.Contains([]byte(Reference), []byte("\n"+field)) && !bytes.Contains([]byte(Reference), []byte(" "+field)) {
 			t.Errorf("reference spec lacks %s", field)
 		}
@@ -323,6 +323,31 @@ func TestDevicesNeverSeeAnIngressOffServer(t *testing.T) {
 func TestDevicesCantBeLinked(t *testing.T) {
 	f := newFixture(t, "spec.yaml", []byte(fourServers+"paths:\n  - [a, b]\n"), nil)
 	if _, _, err := Plan(f.spec, f.keys, 1, nil); err == nil || err.Error() != "spec.yaml:14:9: neither a nor b has endpoints, so neither can dial the other" {
+		t.Fatalf("err %v", err)
+	}
+}
+
+// Every device's section gets the space's rules and chains, so a device
+// without a path to a chain's exit can't be planned.
+func TestDevicesNeedAPathToEveryChainsExit(t *testing.T) {
+	spec := `nodes:
+  - {name: a, kind: device}
+  - {name: b, kind: device}
+  - name: s
+    kind: server
+    endpoints: [udp://192.0.2.1:4500]
+    ingress: true
+    egress: true
+paths:
+  - [a, s]
+  - [b, s, a]
+rules:
+  - default -> chain:out
+chains:
+  - {name: out, exit: s}
+`
+	f := newFixture(t, "spec.yaml", []byte(spec), nil)
+	if _, _, err := Plan(f.spec, f.keys, 1, nil); err == nil || !strings.Contains(err.Error(), "b: no path to s, the exit of chain out") {
 		t.Fatalf("err %v", err)
 	}
 }

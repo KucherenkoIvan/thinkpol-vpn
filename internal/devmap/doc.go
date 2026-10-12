@@ -9,6 +9,7 @@
 // dev map spec` prints it):
 //
 //	space:                      # optional
+//	  name: home                # overlay names <node>.home.internal (devices)
 //	  ipv4: 100.64.0.0/10       # overlay IPv4 network, inside 100.64.0.0/10 (default)
 //	  ipv6: fd12:3456:789a::/48 # ULA /48; default: the space's own, from space.key
 //	nodes:
@@ -27,6 +28,11 @@
 //	paths:                      # [one end, relays..., other end]
 //	  - [device-a, server-1]
 //	  - [device-a, server-1, device-b]
+//	rules:                      # optional, every device's: first match wins
+//	  - domain-suffix:example.ru -> direct
+//	  - default -> chain:nl
+//	chains:
+//	  - {name: nl, exit: server-3}   # a server with egress: true
 //
 // Values may use ${NAME}, filled from the environment by `dev map build`,
 // for addresses known only at run time (the lab's, which Docker assigns).
@@ -58,6 +64,11 @@
 //   - Credentials: one random secret per link and transport, fresh on every
 //     build: the dialer's credential and, udp being symmetric, the
 //     listener's verifier.
+//   - Names: with a space name, each device's section holds it, the
+//     device's own name and its peers' (a node is named only to the
+//     devices that have it as a peer); servers' sections hold no names.
+//   - Rules: every device's section gets the space's rules and chains;
+//     each device needs a path to every chain's exit.
 //   - Ids: random, made by `dev keygen node` and kept in the node's files.
 //
 // # Keys
