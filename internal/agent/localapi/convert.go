@@ -64,9 +64,10 @@ func dataPlaneProto(dp *dataplane.Status, listeners int) *localapiv1.DataPlane {
 			"path.write_failed": dp.Path.WriteFailed,
 		},
 	}
-	if rt := dp.RouteTable; rt.Enforced {
+	if rt := dp.RouteTable; rt.Enforced || rt.Error != "" {
 		out.Counters["route_table.routes"] = uint64(rt.Routes)
 		out.Counters["route_table.reapplies"] = rt.Reapplies
+		out.Counters["route_table.rules_ahead"] = uint64(rt.RulesAhead)
 	}
 	for _, p := range dp.Peers {
 		pp := &localapiv1.Peer{

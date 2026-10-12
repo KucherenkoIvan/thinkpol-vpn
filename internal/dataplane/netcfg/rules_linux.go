@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/netip"
 
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
@@ -70,6 +71,7 @@ func (c *linuxConfigurator) reconcileRules(ctx context.Context, want []Rule, hav
 			return err
 		}
 	}
+	var added []Rule
 	for _, r := range want {
 		if present[r] {
 			continue
@@ -81,8 +83,75 @@ func (c *linuxConfigurator) reconcileRules(ctx context.Context, want []Rule, hav
 			return err
 		}
 		present[r] = true
+		added = append(added, r)
 	}
-	return nil
+	if len(added) == 0 {
+		return nil
+	}
+	return c.checkRuleProtocol(added)
+}
+
+// errOldKernel is a kernel that drops a rule's protocol (before Linux
+// 4.17): its rules can't be told from anyone else's.
+var errOldKernel = fmt.Errorf("netcfg: policy rules need Linux 4.17 or later (rule protocols): %w", errors.ErrUnsupported)
+
+// checkRuleProtocol makes sure the rules just added came back carrying our
+// protocol; on a kernel that dropped it, it deletes them (exactly as the
+// kernel holds them) and fails.
+func (c *linuxConfigurator) checkRuleProtocol(added []Rule) error {
+	have, err := c.ownAndForeignRules()
+	if err != nil {
+		return err
+	}
+	stray := strayRules(added, have, uint8(c.proto))
+	if len(stray) == 0 {
+		return nil
+	}
+	var errs []error
+	for _, kr := range stray {
+		if err := c.h.RuleDel(&kr); err != nil && !gone(err) {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(append([]error{errOldKernel}, errs...)...)
+}
+
+func (c *linuxConfigurator) ownAndForeignRules() ([]netlink.Rule, error) {
+	var out []netlink.Rule
+	for _, fam := range []int{netlink.FAMILY_V4, netlink.FAMILY_V6} {
+		rules, err := c.listRules(fam)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, rules...)
+	}
+	return out, nil
+}
+
+// strayRules are the kernel's rules that are one of added but without
+// proto, for each added rule the kernel doesn't hold with proto: what a
+// kernel that drops rule protocols made of them.
+func strayRules(added []Rule, have []netlink.Rule, proto uint8) []netlink.Rule {
+	withProto := make(map[Rule]bool)
+	for _, kr := range have {
+		if r, ok := ruleOf(kr); ok && kr.Protocol == proto {
+			withProto[r] = true
+		}
+	}
+	missing := make(map[Rule]bool)
+	for _, r := range added {
+		if !withProto[r] {
+			missing[r] = true
+		}
+	}
+	var out []netlink.Rule
+	for _, kr := range have {
+		if r, ok := ruleOf(kr); ok && kr.Protocol != proto && missing[r] {
+			out = append(out, kr)
+			delete(missing, r) // one each: a foreign twin may be someone else's
+		}
+	}
+	return out
 }
 
 // ruleOf reads a kernel rule as a Rule; false if it has more to it than a
@@ -106,7 +175,18 @@ func ruleOf(kr netlink.Rule) (Rule, bool) {
 	if r.Table == unix.RT_TABLE_MAIN {
 		r.Table = 0
 	}
-	extra := kr.Src != nil || kr.Dst != nil || kr.IifName != "" || kr.OifName != "" || kr.Tos != 0 ||
+	if kr.Dst != nil {
+		a, ok := netip.AddrFromSlice(kr.Dst.IP)
+		ones, _ := kr.Dst.Mask.Size()
+		if !ok {
+			return Rule{}, false
+		}
+		if r.Family == IPv4 {
+			a = a.Unmap()
+		}
+		r.Dst = netip.PrefixFrom(a, ones)
+	}
+	extra := kr.Src != nil || kr.IifName != "" || kr.OifName != "" || kr.Tos != 0 ||
 		kr.TunID != 0 || kr.Goto >= 0 || kr.Flow >= 0 || kr.IPProto != 0 || kr.Dport != nil ||
 		kr.Sport != nil || kr.UIDRange != nil || kr.SuppressIfgroup >= 0 ||
 		(kr.SuppressPrefixlen != -1 && kr.SuppressPrefixlen != 0)
@@ -130,6 +210,9 @@ func (c *linuxConfigurator) toNetlinkRule(r Rule) *netlink.Rule {
 		nr.Family = netlink.FAMILY_V6
 	}
 	nr.Priority = r.Priority
+	if r.Dst.IsValid() {
+		nr.Dst = ipNet(r.Dst)
+	}
 	nr.Table = kernelTable(r.Table)
 	nr.Mark = r.Mark
 	nr.Invert = r.Invert

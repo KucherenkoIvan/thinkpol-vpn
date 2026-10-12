@@ -113,6 +113,14 @@ type Engine struct {
 	assign func(OverlayConfig) map[string][]devicePeer
 	rules  func(egresses map[string]*router.Egress) []router.Route
 
+	// serial orders Apply, SetRules, ReloadRules and Close; mu guards the
+	// state, and is let go while the OS routing table changes (seconds,
+	// at a country's size) so Status and Inbound don't wait for it.
+	serial sync.Mutex
+	// ctx ends with Close: what SetRules and ReloadRules do runs under it.
+	ctx    context.Context
+	cancel context.CancelFunc
+
 	mu      sync.Mutex
 	closed  bool
 	devices map[string]*egressDevice
@@ -197,6 +205,7 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 		geoipSets: make(map[[32]byte]*lists.Set),
 	}
 	e.assign, e.rules = e.layout, e.ruleRoutes
+	e.ctx, e.cancel = context.WithCancel(context.Background())
 	return e, nil
 }
 
@@ -234,6 +243,8 @@ func hostPrefixes(addrs []netip.Addr) []netip.Prefix {
 // section and the rest of the previous one; peers it added are those both
 // allow. Applying the same section again, or a newer one, converges.
 func (e *Engine) Apply(ctx context.Context, s netmap.Section) error {
+	e.serial.Lock()
+	defer e.serial.Unlock()
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.closed {
@@ -585,6 +596,9 @@ func (e *Engine) Status() Status {
 // Close stops the engine: the WireGuard devices, the router and the TUN,
 // the path layer, and the TUN's configuration.
 func (e *Engine) Close() error {
+	e.cancel()
+	e.serial.Lock()
+	defer e.serial.Unlock()
 	e.mu.Lock()
 	if e.closed {
 		e.mu.Unlock()

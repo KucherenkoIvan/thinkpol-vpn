@@ -25,7 +25,7 @@ func (c *linuxConfigurator) Watch(ctx context.Context) (<-chan struct{}, error) 
 		c.mu.Unlock()
 		return nil, ErrClosed
 	}
-	sock, err := nl.SubscribeAt(c.ns, netns.None(), unix.NETLINK_ROUTE,
+	sock, err := nl.SubscribeAt(c.ns, netns.None(), unix.NETLINK_ROUTE, unix.RTNLGRP_LINK,
 		unix.RTNLGRP_IPV4_ROUTE, unix.RTNLGRP_IPV6_ROUTE, unix.RTNLGRP_IPV4_RULE, unix.RTNLGRP_IPV6_RULE)
 	c.mu.Unlock()
 	if err != nil {
@@ -69,10 +69,19 @@ func (c *linuxConfigurator) Watch(ctx context.Context) (<-chan struct{}, error) 
 	return out, nil
 }
 
-// relevant reports whether a route or rule event may call for an Apply:
-// our routes or rules deleted, or a main-table default route of no owner
-// changed.
+// relevant reports whether an event may call for an Apply: a link that
+// came, went or changed flags (a TUN going down takes its routes along
+// without a word for IPv4), a main-table default route of no owner or an
+// on-link route of the kernel's that changed, or our routes or rules
+// deleted.
 func (c *linuxConfigurator) relevant(m syscall.NetlinkMessage) bool {
+	switch m.Header.Type {
+	case unix.RTM_DELLINK:
+		return true
+	case unix.RTM_NEWLINK:
+		// Wireless events and statistics come with no flag changed.
+		return len(m.Data) >= unix.SizeofIfInfomsg && nl.DeserializeIfInfomsg(m.Data).Change != 0
+	}
 	if len(m.Data) < unix.SizeofRtMsg {
 		return false
 	}
@@ -84,8 +93,11 @@ func (c *linuxConfigurator) relevant(m syscall.NetlinkMessage) bool {
 		}
 		fallthrough
 	case unix.RTM_NEWROUTE:
-		return h.Dst_len == 0 && h.Table == unix.RT_TABLE_MAIN && h.Type == unix.RTN_UNICAST &&
-			!isOwnerProtocol(netlink.RouteProtocol(h.Protocol))
+		if h.Table != unix.RT_TABLE_MAIN || h.Type != unix.RTN_UNICAST {
+			return false
+		}
+		return h.Protocol == unix.RTPROT_KERNEL ||
+			h.Dst_len == 0 && !isOwnerProtocol(netlink.RouteProtocol(h.Protocol))
 	case unix.RTM_DELRULE:
 		attrs, err := nl.ParseRouteAttr(m.Data[unix.SizeofRtMsg:])
 		if err != nil {

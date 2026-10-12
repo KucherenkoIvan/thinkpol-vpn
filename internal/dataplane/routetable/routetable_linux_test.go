@@ -142,10 +142,11 @@ func TestEnforcesInANamespace(t *testing.T) {
 	_ = b.AddPrefix(netip.MustParsePrefix("2001:db8:5::/48"))
 	direct, _ := b.Build()
 	want := routetable.Want{
-		TUN:    "thinkpol0",
-		Direct: direct,
-		Bypass: []netip.Addr{netip.MustParseAddr("203.0.113.7"), netip.MustParseAddr("2001:db8:7::7")},
-		IPv6:   true,
+		TUN:     "thinkpol0",
+		Overlay: []netip.Prefix{netip.MustParsePrefix("100.64.0.0/10"), netip.MustParsePrefix("fd12:3456:789a::/48")},
+		Direct:  direct,
+		Bypass:  []netip.Addr{netip.MustParseAddr("203.0.113.7"), netip.MustParseAddr("2001:db8:7::7")},
+		IPv6:    true,
 	}
 	if err := e.Enforce(ctx, want); err != nil {
 		t.Fatal(err)
@@ -185,19 +186,46 @@ func TestEnforcesInANamespace(t *testing.T) {
 	d.ip(t, "route", "del", "throw", "198.51.100.0/24", "table", "29808")
 	waitFor(t, func() bool { return d.state(t) == table }, "the rule and route put back")
 
+	// TunnelVision (CVE-2024-3661): a DHCP server's classless routes, or
+	// another VPN's split defaults, in the main table don't beat the
+	// tunnel; neither does an "on-link" subnet from a huge netmask.
+	d.ip(t, "route", "add", "0.0.0.0/1", "via", "192.0.2.1")
+	d.ip(t, "route", "add", "128.0.0.0/1", "via", "192.0.2.1")
+	d.ip(t, "addr", "add", "8.8.4.4/8", "dev", "eth0")
+	reapplies := e.Status().Reapplies
+	waitFor(t, func() bool { return e.Status().Reapplies > reapplies }, "a re-Apply after the new address")
+	d.expect(t, map[string]string{"8.8.8.8": "tunnel", "100.64.0.9": "tunnel", "192.0.2.77": "on-link", "198.51.100.9": "via 192.0.2.1"})
+	d.ip(t, "addr", "del", "8.8.4.4/8", "dev", "eth0")
+	d.ip(t, "route", "del", "0.0.0.0/1")
+	d.ip(t, "route", "del", "128.0.0.0/1")
+
+	// The TUN goes down: its routes go with it, silently for IPv4, and
+	// the unreachable defaults keep everything in; the route table says
+	// it isn't enforced until the TUN is up and its default is back.
+	d.ip(t, "link", "set", "thinkpol0", "down")
+	d.expect(t, map[string]string{"8.8.8.8": "unreachable", "2001:4860::8888": "unreachable", "198.51.100.9": "via 192.0.2.3"})
+	waitFor(t, func() bool { st := e.Status(); return !st.Enforced && st.Error == routetable.ErrorReapply }, "the status saying it isn't enforced")
+	d.ip(t, "link", "set", "thinkpol0", "up")
+	waitFor(t, func() bool { return e.Status().Enforced }, "enforcement back after the TUN came up")
+	d.expect(t, map[string]string{"8.8.8.8": "tunnel", "2001:4860::8888": "tunnel"})
+
 	// The overlay stops carrying IPv6: IPv6 is unreachable, not leaked,
 	// but direct IPv6 and endpoints still go out.
 	want.IPv6 = false
 	if err := e.Enforce(ctx, want); err != nil {
 		t.Fatal(err)
 	}
+	// A specific IPv6 route in main (a router advertisement's route
+	// information) doesn't beat it either.
+	d.ip(t, "-6", "route", "add", "2000::/3", "via", "2001:db8:1::1")
 	d.expect(t, map[string]string{
 		"2001:4860::8888":   "unreachable",
-		"fd12:3456:789a::9": "tunnel", // the overlay's own route, if the TUN still has it
-		"2001:db8:5::1":     "via 2001:db8:1::3",
-		"2001:db8:7::7":     "via 2001:db8:1::3",
+		"fd12:3456:789a::9": "tunnel",            // the overlay's own route, if the TUN still has it
+		"2001:db8:5::1":     "via 2001:db8:1::1", // direct, by main's routes, the injected one included
+		"2001:db8:7::7":     "via 2001:db8:1::1",
 		"8.8.8.8":           "tunnel",
 	})
+	d.ip(t, "-6", "route", "del", "2000::/3")
 	// IPv6 going off on the TUN itself (an MTU below 1280) takes its
 	// route along: still unreachable.
 	want.IPv6 = true

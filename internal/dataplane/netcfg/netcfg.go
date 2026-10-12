@@ -172,6 +172,9 @@ type Rule struct {
 	// Priority orders rules, lower first: 1–32765, below the main table's
 	// 32766.
 	Priority int
+	// Dst, when valid, matches only packets to this prefix (`to`), of
+	// the rule's family.
+	Dst netip.Prefix
 	// Table is the table to look up; 0 is the main table.
 	Table int
 	// Mark, when non-zero, matches only packets with exactly this
@@ -191,9 +194,12 @@ func (r Rule) String() string {
 	if r.Invert {
 		s += " not"
 	}
+	if r.Dst.IsValid() {
+		s += " to " + r.Dst.String()
+	}
 	if r.Mark != 0 {
 		s += fmt.Sprintf(" fwmark %#x", r.Mark)
-	} else {
+	} else if !r.Dst.IsValid() {
 		s += " all"
 	}
 	s += fmt.Sprintf(" table %d", r.Table)
@@ -314,6 +320,9 @@ func (c Config) Validate() error {
 		if err := checkTable(r.Table); err != nil {
 			return fmt.Errorf("netcfg: rule %v: %w", r, err)
 		}
+		if r.Dst.IsValid() && (r.Dst != r.Dst.Masked() || FamilyOf(r.Dst.Addr()) != r.Family || r.Dst.Addr().Is4In6()) {
+			return fmt.Errorf("netcfg: rule %v: destination must be a masked prefix of the rule's family", r)
+		}
 		if rules[r] {
 			return fmt.Errorf("netcfg: rule %v listed twice", r)
 		}
@@ -337,6 +346,17 @@ func checkTable(t int) error {
 		return fmt.Errorf("table %d is not 0 (main) or one of 1–252, 256 and up", t)
 	}
 	return nil
+}
+
+// Survey is the OS's own routing, as route-table enforcement needs it.
+type Survey struct {
+	// OnLink are the main table's routes the OS made for interfaces'
+	// addresses (Linux: proto kernel, without a gateway): the subnets
+	// reached on-link, both families.
+	OnLink []netip.Prefix
+	// ForeignRules are the priorities of policy rules no owner added,
+	// but the OS's own (0, 32766, 32767), both families.
+	ForeignRules []int
 }
 
 // Configurator applies a Config to the OS for one Owner and owns what it
@@ -375,12 +395,18 @@ type Configurator interface {
 	// configurator owns, preferring the lowest metric: the physical gateway
 	// that direct traffic and entry endpoints are routed through.
 	DefaultRoute(ctx context.Context, f Family) (Route, error)
-	// Watch reports, coalesced, routing changes that may call for an
-	// Apply: a default route in the main table that is no owner's came,
-	// went or changed (the physical gateway), or a route or rule of this
-	// owner was deleted (from outside, or by Apply itself: re-applying
-	// then changes nothing). The channel closes when ctx ends or watching
-	// fails; ErrUnsupported where an adapter can't watch.
+	// Watch reports, coalesced, changes that may call for an Apply: a
+	// default route in the main table that is no owner's came, went or
+	// changed (the physical gateway); an interface's on-link routes
+	// changed (its addresses); an interface came, went or changed state
+	// (a link going down takes its routes along, and Linux doesn't say so
+	// for IPv4); or a route or rule of this owner was deleted (from
+	// outside, or by Apply itself: re-applying then changes nothing). The
+	// channel closes when ctx ends or watching fails; ErrUnsupported where
+	// an adapter can't watch.
 	Watch(ctx context.Context) (<-chan struct{}, error)
+	// Survey reports what the OS's own routing holds that route-table
+	// enforcement builds on.
+	Survey(ctx context.Context) (Survey, error)
 	Close() error
 }

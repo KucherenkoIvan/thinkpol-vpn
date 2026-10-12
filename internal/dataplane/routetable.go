@@ -20,17 +20,25 @@ type RouteTable interface {
 	Close() error
 }
 
-// RouteTableStatus is how route-table enforcement stands: numbers only.
+// RouteTableStatus is how route-table enforcement stands: numbers and
+// fixed texts only.
 type RouteTableStatus struct {
-	// Enforced says the OS routing table holds the rules (a RouteTable,
-	// applied at least once).
+	// Enforced says the OS routing table holds the rules now; false
+	// without a RouteTable, before its first enforcement, and while
+	// putting it (back) in place fails, which Error then says
+	// (routetable.ErrorApply, routetable.ErrorReapply).
 	Enforced bool
+	Error    string
 	// Routes is how many routes the tunnel's table holds, LastApply how
 	// long putting the last change in place took, Reapplies how often a
-	// routing change (a gateway, an outside removal) was answered.
+	// routing change (a link, a gateway, an outside removal) or the
+	// backstop had it checked.
 	Routes    int
 	LastApply time.Duration
 	Reapplies uint64
+	// RulesAhead counts other software's policy rules ahead of the
+	// tunnel's (a mesh VPN's): they may route traffic around it.
+	RulesAhead int
 }
 
 // endpointsOf are the addresses the node dials its links on.
@@ -64,13 +72,13 @@ func (e *Engine) shrinkRoutes(ctx context.Context) error {
 	}
 	w := *e.routesWant
 	w.Direct = old.Minus(gone)
-	err := e.cfg.RouteTable.Enforce(ctx, w)
+	err := e.enforce(ctx, w)
 	if err == nil {
 		e.routesWant = &w
 		return nil
 	}
 	w.Direct = nil
-	ferr := e.cfg.RouteTable.Enforce(ctx, w)
+	ferr := e.enforce(ctx, w)
 	if ferr == nil {
 		e.routesWant = &w
 		e.warn("route table: removing direct routes failed; nothing goes direct until the next Apply", err)
@@ -87,12 +95,13 @@ func (e *Engine) growRoutes(ctx context.Context, shrinkErr error) error {
 		return nil
 	}
 	w := routetable.Want{
-		TUN:    e.tunName,
-		Direct: e.ruleTable.Direct(),
-		Bypass: e.endpoints,
-		IPv6:   e.mtu > 0 && e.ipv6Off == nil,
+		TUN:     e.tunName,
+		Overlay: e.networks,
+		Direct:  e.ruleTable.Direct(),
+		Bypass:  e.endpoints,
+		IPv6:    e.mtu > 0 && e.ipv6Off == nil,
 	}
-	if err := e.cfg.RouteTable.Enforce(ctx, w); err != nil {
+	if err := e.enforce(ctx, w); err != nil {
 		return fmt.Errorf("dataplane: route table: %w", errors.Join(shrinkErr, err))
 	}
 	e.routesWant = &w
@@ -100,11 +109,23 @@ func (e *Engine) growRoutes(ctx context.Context, shrinkErr error) error {
 }
 
 func (e *Engine) routeTableStatus() RouteTableStatus {
-	if e.cfg.RouteTable == nil || e.routesWant == nil {
+	if e.cfg.RouteTable == nil {
 		return RouteTableStatus{}
 	}
 	st := e.cfg.RouteTable.Status()
-	return RouteTableStatus{Enforced: true, Routes: st.Routes, LastApply: st.LastApply, Reapplies: st.Reapplies}
+	return RouteTableStatus{
+		Enforced: st.Enforced, Error: st.Error, Routes: st.Routes, LastApply: st.LastApply,
+		Reapplies: st.Reapplies, RulesAhead: st.RulesAhead,
+	}
+}
+
+// enforce puts w in place with e.mu let go meanwhile (e.serial keeps
+// everything else that changes the engine out).
+func (e *Engine) enforce(ctx context.Context, w routetable.Want) error {
+	rt := e.cfg.RouteTable
+	e.mu.Unlock()
+	defer e.mu.Lock()
+	return rt.Enforce(ctx, w)
 }
 
 // warn logs msg, and err (which may quote the map) at debug level only.

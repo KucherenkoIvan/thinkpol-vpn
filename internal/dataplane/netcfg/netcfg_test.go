@@ -36,6 +36,8 @@ func TestValidate(t *testing.T) {
 			{Family: netcfg.IPv4, Priority: 5300, SuppressDefaultRoutes: true},
 			{Family: netcfg.IPv4, Priority: 5301, Table: 300, Mark: 7, Invert: true},
 			{Family: netcfg.IPv6, Priority: 5301, Table: 300, Mark: 7, Invert: true},
+			{Family: netcfg.IPv4, Priority: 5300, Dst: pfx("192.168.1.0/24")},
+			{Family: netcfg.IPv6, Priority: 5300, Dst: pfx("fe80::/64")},
 		}},
 	}
 	for name, c := range valid {
@@ -69,6 +71,8 @@ func TestValidate(t *testing.T) {
 		"rule at priority 0":                   {Rules: []netcfg.Rule{{Family: netcfg.IPv4}}},
 		"rule after main":                      {Rules: []netcfg.Rule{{Family: netcfg.IPv4, Priority: 32766}}},
 		"rule in the local table":              {Rules: []netcfg.Rule{{Family: netcfg.IPv4, Priority: 5300, Table: 255}}},
+		"rule to another family":               {Rules: []netcfg.Rule{{Family: netcfg.IPv4, Priority: 5300, Dst: pfx("fe80::/64")}}},
+		"rule to an unmasked dst":              {Rules: []netcfg.Rule{{Family: netcfg.IPv4, Priority: 5300, Dst: pfx("192.168.1.1/24")}}},
 		"rule twice":                           {Rules: []netcfg.Rule{{Family: netcfg.IPv6, Priority: 5300}, {Family: netcfg.IPv6, Priority: 5300}}},
 		"duplicate identity": {Routes: []netcfg.Route{
 			{Dst: pfx("10.0.0.0/8"), Interface: "ovl0"},

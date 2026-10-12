@@ -7,6 +7,7 @@ import (
 	"slices"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
@@ -23,11 +24,21 @@ type fakeRouteTable struct {
 	calls   []routetable.Want
 	failing int
 	closed  bool
+	// hold, if set, keeps Enforce until it is closed; entered hears
+	// when an Enforce is held.
+	hold, entered chan struct{}
 }
 
 var errKernel = errors.New("the kernel said no")
 
 func (f *fakeRouteTable) Enforce(_ context.Context, w routetable.Want) error {
+	f.mu.Lock()
+	hold, entered := f.hold, f.entered
+	f.mu.Unlock()
+	if hold != nil {
+		entered <- struct{}{}
+		<-hold
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, w)
@@ -41,7 +52,7 @@ func (f *fakeRouteTable) Enforce(_ context.Context, w routetable.Want) error {
 func (f *fakeRouteTable) Status() routetable.Status {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return routetable.Status{Routes: len(f.calls)}
+	return routetable.Status{Enforced: f.failing == 0, Routes: len(f.calls)}
 }
 
 func (f *fakeRouteTable) Close() error {
@@ -97,6 +108,7 @@ func TestRouteTableFollowsTheRules(t *testing.T) {
 	}
 	w := calls[0]
 	if w.TUN != "loopbackTun1" || !w.IPv6 || !w.Direct.Equal(spaceDirect) ||
+		!slices.Contains(w.Overlay, space4) || !slices.Contains(w.Overlay, space6) || len(w.Overlay) != 2 ||
 		!slices.Equal(w.Bypass, []netip.Addr{s.listen.Addr()}) {
 		t.Fatalf("enforced %+v", w)
 	}
@@ -161,5 +173,41 @@ func TestRouteTableFollowsTheRules(t *testing.T) {
 	}
 	if !rt.closed {
 		t.Error("Close left the route table")
+	}
+}
+
+// Status doesn't wait while the OS routing table changes (seconds at a
+// country's size).
+func TestStatusDoesNotWaitForTheRouteTable(t *testing.T) {
+	net := memory.NewNetwork(memory.Datagram)
+	a, s, _ := m0()
+	withChain(t, a, s, "cidr:198.51.100.0/24 -> direct", "default -> chain:nl")
+	a.section.Presets = netmap.RulePresets{Chain: "nl"}
+	rt := &fakeRouteTable{}
+	a.routes = rt
+	s.start(t, net)
+	a.start(t, net)
+	hold := make(chan struct{})
+	rt.mu.Lock()
+	rt.hold, rt.entered = hold, make(chan struct{}, 4)
+	rt.mu.Unlock()
+	done := make(chan error, 1)
+	go func() { done <- a.engine.SetRules(rules.Local{Preset: rules.PresetEverything}) }()
+	<-rt.entered
+	status := make(chan struct{})
+	go func() { _ = a.engine.Status(); close(status) }()
+	select {
+	case <-status:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Status waited for the route table")
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("SetRules returned while its route table was held: %v", err)
+	default:
+	}
+	close(hold)
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }

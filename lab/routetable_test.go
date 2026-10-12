@@ -223,6 +223,46 @@ func TestRouteTableSendsOnlyDirectAroundTheTunnel(t *testing.T) {
 	preset("all-but-domestic")
 	dev.MustExec(t, "ping", "-c", "1", "-W", "2", domestic4.String())
 
+	// TunnelVision (CVE-2024-3661): routes in the main table that are more
+	// specific than its default (a DHCP server's classless routes, another
+	// VPN's split defaults) don't take foreign traffic around the tunnel.
+	// Then the TUN goes down and up: its IPv4 default goes with it without
+	// a word from the kernel, the unreachable default holds, and the
+	// route table is put back once the TUN is up.
+	// (Last in this run: a TUN that goes down loses its IPv6 addresses
+	// until the next map re-applies them.)
+	gw := l.Node(router2).IPv4(lab.NetDevices).String()
+	atGateway := l.Node(router2).Capture(t, "icmp or icmp6") // the device's gateway by now
+	dev.MustExec(t, "ip", "route", "add", "0.0.0.0/1", "via", gw)
+	dev.MustExec(t, "ip", "route", "add", "128.0.0.0/1", "via", gw)
+	expectRoutes(map[string]string{foreign4.String(): "thinkpol0", domestic4.String(): "eth"})
+	tryPing(foreign4)
+	dev.MustExec(t, "ip", "route", "del", "0.0.0.0/1")
+	dev.MustExec(t, "ip", "route", "del", "128.0.0.0/1")
+	dev.MustExec(t, "ip", "link", "set", "thinkpol0", "down")
+	expectRoutes(map[string]string{foreign4.String(): "unreachable"})
+	tryPing(foreign4)
+	lab.Eventually(t, 15*time.Second, func() error {
+		if !strings.Contains(dev.MustExec(t, "thinkpol", "status"), "route_table_not_enforced") {
+			return fmt.Errorf("the status doesn't say the route table isn't enforced")
+		}
+		return nil
+	})
+	dev.MustExec(t, "ip", "link", "set", "thinkpol0", "up")
+	lab.Eventually(t, 15*time.Second, func() error {
+		if got := routeDev(t, dev, foreign4.String()); got != "thinkpol0" {
+			return fmt.Errorf("foreign IPv4 goes %s after the TUN came up", got)
+		}
+		return nil
+	})
+	tryPing(foreign4)
+	if err := atGateway.Complete(); err != nil {
+		t.Fatal(err)
+	}
+	if n := seen(atGateway, func(p lab.Packet) bool { return p.Dst == foreign4 }); n != 0 {
+		t.Errorf("%d packets to the foreign %s at the router with split routes in main or the TUN down", n, foreign4)
+	}
+
 	stopAndCheck := func(p *lab.Process) {
 		t.Helper()
 		if err := p.Stop(); err != nil {
@@ -262,6 +302,14 @@ func TestRouteTableSendsOnlyDirectAroundTheTunnel(t *testing.T) {
 	if got := routeDev(t, dev, foreign6.String()); got != "unreachable" {
 		t.Errorf("route to the foreign %s with IPv6 off: %s, want unreachable", foreign6, got)
 	}
+	// A specific IPv6 route in main (a router advertisement's route
+	// information) doesn't take IPv6 around the tunnel either.
+	dev.MustExec(t, "ip", "-6", "route", "add", "2000::/3", "via", router.IPv6(lab.NetDevices).String())
+	if got := routeDev(t, dev, foreign6.String()); got != "unreachable" {
+		t.Errorf("route to the foreign %s with IPv6 off and 2000::/3 in main: %s, want unreachable", foreign6, got)
+	}
+	tryPing(foreign6)
+	dev.MustExec(t, "ip", "-6", "route", "del", "2000::/3")
 	lab.Eventually(t, 30*time.Second, func() error {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -274,6 +322,22 @@ func TestRouteTableSendsOnlyDirectAroundTheTunnel(t *testing.T) {
 	if n := seen(atRouter, func(p lab.Packet) bool { return p.Dst == foreign6 }); n != 0 {
 		t.Errorf("%d IPv6 packets to the foreign %s at the router with IPv6 off", n, foreign6)
 	}
+
+	// A crash (kill -9) while connected leaves the rules and the table;
+	// a restart that doesn't connect removes them.
+	dev.MustExec(t, "pkill", "-KILL", "-f", "thinkpol up")
+	<-up.Done()
+	if !strings.Contains(dev.MustExec(t, "ip", "rule"), "5301:") {
+		t.Fatal("no rules left by the crash: the test proves nothing")
+	}
+	up = dev.Start(t, "thinkpol", "up", "-map-poll", "1h", "-connect=false")
+	waitLog(t, up, `msg=starting`)
+	lab.Eventually(t, 15*time.Second, func() error {
+		if got := dev.MustExec(t, "ip", "rule") + dev.MustExec(t, "ip", "-6", "rule"); got != rulesBefore {
+			return fmt.Errorf("rules after a restart without connecting:\n%s", got)
+		}
+		return nil
+	})
 	stopAndCheck(up)
 	if err := srv.Stop(); err != nil {
 		t.Errorf("server-1: %v", err)
