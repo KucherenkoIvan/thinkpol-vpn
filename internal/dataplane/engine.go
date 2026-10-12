@@ -156,9 +156,10 @@ type Engine struct {
 	routedExit bool
 	// ifc is the overlay interface's configuration in place (nil before
 	// the first Apply that set it), which a link event re-applies;
-	// ifcReapplies counts those.
+	// ifcReapplies counts those that succeeded, ifcTiming paces them.
 	ifc          *netcfg.Interface
 	ifcReapplies uint64
+	ifcTiming    interfaceTiming
 
 	// Routing rules: the device's own choice, what the last section gave
 	// them, the chains that can carry traffic, and the result.
@@ -237,6 +238,7 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 		links:     make(map[string][]transport.PeerLink),
 		ownRules:  cfg.Rules,
 		geoipSets: make(map[[32]byte]*lists.Set),
+		ifcTiming: defaultInterfaceTiming,
 	}
 	e.assign, e.rules = e.layout, e.ruleRoutes
 	e.ctx, e.cancel = context.WithCancel(context.Background())
@@ -589,8 +591,9 @@ type Status struct {
 	Exit bool
 	// RouteTable is how the OS routing table enforces them.
 	RouteTable RouteTableStatus
-	// InterfaceReapplies counts re-applies of the overlay interface's
-	// addresses and MTU after its link came up (most change nothing).
+	// InterfaceReapplies counts successful re-applies of the overlay
+	// interface's addresses and MTU after its link came up (most change
+	// nothing).
 	InterfaceReapplies uint64
 }
 

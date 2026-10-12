@@ -9,43 +9,82 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 )
 
-const (
-	// interfaceDebounce gathers the link events of one bounce (or a
-	// flapping link) into one re-apply, as the route table's watcher does.
-	interfaceDebounce = 200 * time.Millisecond
-	// interfaceRetryAfter re-applies again while the last re-apply failed.
-	interfaceRetryAfter = 5 * time.Second
-)
+// interfaceTiming paces the interface's re-applies.
+type interfaceTiming struct {
+	// debounce gathers the link events of one bounce (or a flapping link)
+	// into one re-apply, as the route table's watcher does.
+	debounce time.Duration
+	// cooldown is the least time between two re-applies: events meanwhile
+	// wait for it, so a link that keeps changing costs a re-apply per
+	// cooldown at most.
+	cooldown time.Duration
+	// retry re-applies again while the last re-apply failed and the link
+	// is up.
+	retry time.Duration
+}
+
+var defaultInterfaceTiming = interfaceTiming{
+	debounce: 200 * time.Millisecond,
+	cooldown: time.Second,
+	retry:    5 * time.Second,
+}
 
 // watchInterface re-applies the overlay interface's configuration whenever
 // the TUN's link comes up: Linux drops a TUN's IPv6 addresses when its link
 // goes down (and something may have changed its MTU meanwhile), and the
-// next map may be far off. A link that is down is left down. It stops with
-// Close.
+// next map may be far off. A link that is down is left down, and isn't
+// retried until it comes up. It stops with Close.
 func (e *Engine) watchInterface() {
 	defer close(e.interfaceWatched)
 	var retry <-chan time.Time
+	var coolUntil time.Time
+	failing := false
 	for {
 		select {
 		case <-e.ctx.Done():
 			return
 		case <-e.router.LinkUp():
-			if !e.settleLinkEvents() {
+			if !e.settleLinkEvents(coolUntil) {
 				return
 			}
 		case <-retry:
 		}
 		retry = nil
-		if !e.reapplyInterface() {
-			retry = time.After(interfaceRetryAfter)
+		if e.router.LinkDown() {
+			continue // its coming up is the next event
 		}
+		t := e.timing()
+		applied, ifc, err := e.reapplyInterface()
+		if !applied {
+			continue
+		}
+		coolUntil = time.Now().Add(t.cooldown)
+		if err != nil {
+			if !failing {
+				e.logger().Warn("overlay interface: re-applying it after a link event failed, retrying while the link is up",
+					"in", t.retry, "err", err)
+			} else {
+				e.debug("overlay interface: re-applying it failed again", "err", err)
+			}
+			failing = true
+			retry = time.After(t.retry)
+			continue
+		}
+		failing = false
+		ipv6 := slices.ContainsFunc(ifc.Addrs, func(p netip.Prefix) bool { return p.Addr().Is6() })
+		e.logger().Info("overlay interface re-applied", "reason", "link event", "mtu", ifc.MTU, "ipv6", ipv6)
 	}
 }
 
-// settleLinkEvents lets a burst of link events pass, interfaceDebounce
-// from the first; false if the engine closed meanwhile.
-func (e *Engine) settleLinkEvents() bool {
-	timer := time.NewTimer(interfaceDebounce)
+// settleLinkEvents lets a burst of link events pass, debounce from the
+// first and no earlier than coolUntil; false if the engine closed
+// meanwhile.
+func (e *Engine) settleLinkEvents(coolUntil time.Time) bool {
+	wait := e.timing().debounce
+	if d := time.Until(coolUntil); d > wait {
+		wait = d
+	}
+	timer := time.NewTimer(wait)
 	defer timer.Stop()
 	for {
 		select {
@@ -59,33 +98,35 @@ func (e *Engine) settleLinkEvents() bool {
 }
 
 // reapplyInterface applies the interface configuration in place again,
-// between Applies; false if that failed.
-func (e *Engine) reapplyInterface() bool {
+// between Applies, and returns it; applied is false when there was nothing
+// to do (no Apply has configured it yet, or the engine is closing).
+func (e *Engine) reapplyInterface() (applied bool, ifc netcfg.Interface, err error) {
 	e.serial.Lock()
 	defer e.serial.Unlock()
 	e.mu.Lock()
-	ifc, closed := e.ifc, e.closed
+	cur, closed := e.ifc, e.closed
 	e.mu.Unlock()
-	if closed || ifc == nil || e.ctx.Err() != nil {
-		return true
+	if closed || cur == nil || e.ctx.Err() != nil {
+		return false, netcfg.Interface{}, nil
 	}
-	again := *ifc
-	again.Up = false // up when the event came; if it went down since, it stays down
-	err := e.cfg.Interface.Apply(e.ctx, netcfg.Config{Interfaces: []netcfg.Interface{again}})
+	ifc = *cur
+	ifc.Up = false // up when the event came; if it went down since, it stays down
+	err = e.cfg.Interface.Apply(e.ctx, netcfg.Config{Interfaces: []netcfg.Interface{ifc}})
 	if e.ctx.Err() != nil {
-		return true
+		return false, netcfg.Interface{}, nil
 	}
+	if err == nil {
+		e.mu.Lock()
+		e.ifcReapplies++
+		e.mu.Unlock()
+	}
+	return true, ifc, err
+}
+
+func (e *Engine) timing() interfaceTiming {
 	e.mu.Lock()
-	e.ifcReapplies++
-	e.mu.Unlock()
-	if err != nil {
-		e.logger().Warn("overlay interface: re-applying it after a link event failed, retrying",
-			"in", interfaceRetryAfter, "err", err)
-		return false
-	}
-	ipv6 := slices.ContainsFunc(ifc.Addrs, func(p netip.Prefix) bool { return p.Addr().Is6() })
-	e.logger().Info("overlay interface re-applied", "reason", "link event", "mtu", ifc.MTU, "ipv6", ipv6)
-	return true
+	defer e.mu.Unlock()
+	return e.ifcTiming
 }
 
 func (e *Engine) logger() *slog.Logger {

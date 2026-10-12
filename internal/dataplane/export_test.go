@@ -2,6 +2,7 @@ package dataplane
 
 import (
 	"net/netip"
+	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/router"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
@@ -36,4 +37,11 @@ func RouteDefaultsToOverlayForTest(e *Engine) {
 			{Prefix: netip.MustParsePrefix("::/0"), Egress: egresses[OverlayDevice]},
 		}
 	}
+}
+
+// SetInterfaceTimingForTest paces the interface's re-applies.
+func SetInterfaceTimingForTest(e *Engine, debounce, cooldown, retry time.Duration) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.ifcTiming = interfaceTiming{debounce: debounce, cooldown: cooldown, retry: retry}
 }

@@ -231,8 +231,6 @@ func TestRouteTableSendsOnlyDirectAroundTheTunnel(t *testing.T) {
 	// Then the TUN goes down and up: its IPv4 default goes with it without
 	// a word from the kernel, the re-apply puts the unreachable default in
 	// its place, and the route table is put back once the TUN is up.
-	// (Last in this run: a TUN that goes down loses its IPv6 addresses
-	// until the next map re-applies them.)
 	gw := l.Node(router2).IPv4(lab.NetDevices).String()
 	atGateway := l.Node(router2).Capture(t, "icmp or icmp6") // the device's gateway by now
 	dev.MustExec(t, "ip", "route", "add", "0.0.0.0/1", "via", gw)
