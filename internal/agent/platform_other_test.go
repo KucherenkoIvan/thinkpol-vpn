@@ -4,7 +4,6 @@ package agent
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"testing"
 )
@@ -23,7 +22,7 @@ func TestRunRefusesAnUnsupportedHost(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := n.Run(context.Background(), nil); !errors.Is(err, ErrUnsupported) {
+		if _, err := n.Adapters(nil); !errors.Is(err, ErrUnsupported) {
 			t.Fatalf("%s mode: got %v, want ErrUnsupported", n.Mode(), err)
 		}
 	}

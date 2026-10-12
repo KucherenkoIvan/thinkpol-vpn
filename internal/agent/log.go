@@ -68,6 +68,18 @@ func (o *workerOutput) forSpace(space netmap.SpaceID) io.Writer {
 
 const hexDigits = "0123456789abcdef"
 
+// Sanitize returns s with nothing left in it that acts on a terminal or a
+// log viewer (see appendSanitized), for rendering text that came from
+// elsewhere: a worker's output, or anything a local API client received.
+func Sanitize(s string) string {
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; c < 0x20 && c != '\t' || c >= 0x7f {
+			return string(appendSanitized(make([]byte, 0, len(s)+8), []byte(s)))
+		}
+	}
+	return s
+}
+
 // appendSanitized appends a space's bytes so that nothing in them acts on
 // a terminal or a log viewer: invalid UTF-8 and C0 controls (but tab) as
 // \xNN, DEL as \x7f, C1 controls and bidirectional overrides as \uNNNN.

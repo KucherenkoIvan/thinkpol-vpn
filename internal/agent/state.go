@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"slices"
 
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/rules"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
 
@@ -16,9 +17,12 @@ import (
 //	node.key   the node's id and private keys in its space (0600)
 //	space.pub  the space's id and public keys: what every map is verified against
 //	map.bin    the latest map of the space: only the node's own section is readable
+//	rules.local  a device's own routing choice (LocalRulesFile), if it made one
 //
-// `thinkpol up` only reads it: it writes no pid, lock or log file there or
-// anywhere else on disk (netcfg's locks are on /run, a tmpfs).
+// `thinkpol up` writes nothing there but rules.local, and that only when
+// the local API changes the device's rules; no pid, lock or log file there
+// or anywhere else on disk (netcfg's and the local API's locks are on
+// /run, a tmpfs).
 //
 // The directory, the key files, the map and the map's directory must be
 // owned by the node's user (or root) and writable by nobody else, and are
@@ -61,6 +65,10 @@ type State struct {
 	// OwnMapUnused is set when MapPath is elsewhere but the state
 	// directory holds a map.bin too.
 	OwnMapUnused bool
+	// LocalRules is the device's LocalRulesFile; zero (the space's rules)
+	// when there is none. One that can't be read or parsed fails LoadState,
+	// never reads as none.
+	LocalRules rules.Local
 }
 
 // LoadState reads and checks a node's state: the keys in dir, the trust in
@@ -81,6 +89,14 @@ func LoadState(dir, mapPath string) (State, error) {
 	for _, name := range names {
 		switch {
 		case name == NodeKeyFile, name == TrustFile:
+		case name == LocalRulesFile:
+			data, _, err := d.read(LocalRulesFile, false, localRulesLimit)
+			if err == nil {
+				st.LocalRules, err = parseLocalRules(data)
+			}
+			if err != nil {
+				return st, fmt.Errorf("%s: %w; fix it or remove it (the device then follows the space's rules)", filepath.Join(dir, LocalRulesFile), err)
+			}
 		case name == MapFileName:
 			st.OwnMapUnused = !samePath(filepath.Join(dir, MapFileName), mapPath)
 		case slices.Contains(neverOnANode, name):
