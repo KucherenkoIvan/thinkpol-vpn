@@ -86,10 +86,12 @@ type DataPlane struct {
 
 	// What tests swap: the TUN and its configurator, the path layer's
 	// timing, how long to wait before retrying what failed.
-	newTUN     func(name string) (wgtun.Device, netcfg.Configurator, error)
-	newRoutes  func(log *slog.Logger) (dataplane.RouteTable, error)
-	path       path.Options
-	retryAfter time.Duration
+	newTUN    func(name string) (wgtun.Device, netcfg.Configurator, error)
+	newRoutes func(log *slog.Logger) (dataplane.RouteTable, error)
+	// clearRouteTable removes a previous run's route table.
+	clearRouteTable func() error
+	path            path.Options
+	retryAfter      time.Duration
 	// blobOptions are the network functions and limits of the blob
 	// service a worker makes (serveSpace).
 	blobOptions blobs.Options
@@ -125,6 +127,9 @@ func RunDataPlane(ctx context.Context, dp DataPlane) error {
 	}
 	if dp.newRoutes == nil {
 		dp.newRoutes = newRouteTable
+	}
+	if dp.clearRouteTable == nil {
+		dp.clearRouteTable = routetable.Clear
 	}
 	if dp.retryAfter == 0 {
 		dp.retryAfter = RetryAfter
@@ -205,6 +210,17 @@ func newRouteTable(log *slog.Logger) (dataplane.RouteTable, error) {
 	return routetable.New(log)
 }
 
+// clearRoutes removes what route-table enforcement left (a crash) while no
+// Enforcer of this run holds it.
+func (r *runner) clearRoutes() {
+	if !r.dp.RouteTable {
+		return
+	}
+	if err := r.dp.clearRouteTable(); err != nil && !errors.Is(err, errors.ErrUnsupported) {
+		r.dp.Log.Warn("removing a previous run's route table failed", "err", err)
+	}
+}
+
 // runner follows the space's maps and runs the data plane while the node
 // is in the space.
 type runner struct {
@@ -241,6 +257,7 @@ type runner struct {
 func (r *runner) start(ctx context.Context) error {
 	dev, ifc, err := r.dp.newTUN(r.dp.Interface)
 	if err != nil {
+		r.clearRoutes() // a crashed run's table would block traffic meanwhile
 		return &StartError{Step: StepTUN, Err: err}
 	}
 	var routes dataplane.RouteTable
@@ -250,6 +267,7 @@ func (r *runner) start(ctx context.Context) error {
 				_ = ifc.Close()
 			}
 			_ = dev.Close()
+			r.clearRoutes()
 			return &StartError{Step: dataplane.StepRouteTable, Err: err}
 		}
 	}
@@ -317,6 +335,9 @@ func (r *runner) start(ctx context.Context) error {
 // configuration.
 func (r *runner) stop() {
 	if r.engine == nil {
+		// Down with nothing running (a start that failed, a node removed
+		// before it ran): what a crashed run left goes now.
+		r.clearRoutes()
 		return
 	}
 	r.dp.report.set(func(p *report) { p.engine = nil })

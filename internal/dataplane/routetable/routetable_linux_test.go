@@ -116,7 +116,7 @@ func (d *device) expect(t *testing.T, cases map[string]string) {
 	for dst, want := range cases {
 		mark := strings.HasSuffix(dst, " marked")
 		if got := d.route(t, strings.TrimSuffix(dst, " marked"), mark); got != want {
-			t.Errorf("%s: %s, want %s", dst, got, want)
+			t.Errorf("%s: %s, want %s\nrules:\n%smain:\n%s", dst, got, want, d.ip(t, "rule"), d.ip(t, "route"))
 		}
 	}
 }
@@ -162,7 +162,7 @@ func TestEnforcesInANamespace(t *testing.T) {
 		"8.8.8.8 marked":      "via 192.0.2.1",     // a link's socket
 		"203.0.113.7":         "via 192.0.2.1",     // an endpoint, even unmarked
 		"100.64.0.9":          "tunnel",            // the overlay, by its own route
-		"192.0.2.77":          "on-link",           // the LAN, by its own route
+		"192.0.2.77":          "tunnel",            // a public LAN: never trusted on-link
 		"2001:4860::8888":     "tunnel",            // IPv6 too
 		"2001:db8:5::1":       "via 2001:db8:1::1", // direct IPv6
 		"2001:db8:7::7":       "via 2001:db8:1::1", // an IPv6 endpoint
@@ -173,8 +173,11 @@ func TestEnforcesInANamespace(t *testing.T) {
 	// The gateway moves (DHCP, roaming): direct traffic follows without
 	// a change here; the watcher re-applies, finding nothing to do.
 	table := d.state(t)
-	d.ip(t, "route", "replace", "default", "via", "192.0.2.3")
+	d.ip(t, "route", "replace", "default", "via", "192.0.2.3", "dev", "eth0") // as DHCP clients add it
 	d.ip(t, "-6", "route", "replace", "default", "via", "2001:db8:1::3")
+	if out := d.ip(t, "route", "show", "default"); !strings.Contains(out, "dev eth0") {
+		t.Errorf("the new default route resolved its gateway into the tunnel: %s", out)
+	}
 	d.expect(t, map[string]string{
 		"198.51.100.9":   "via 192.0.2.3",
 		"8.8.8.8":        "tunnel",
@@ -199,7 +202,7 @@ func TestEnforcesInANamespace(t *testing.T) {
 	d.ip(t, "addr", "add", "8.8.4.4/8", "dev", "eth0")
 	reapplies := e.Status().Reapplies
 	waitFor(t, func() bool { return e.Status().Reapplies > reapplies }, "a re-Apply after the new address")
-	d.expect(t, map[string]string{"8.8.8.8": "tunnel", "100.64.0.9": "tunnel", "192.0.2.77": "on-link", "198.51.100.9": "via 192.0.2.1"})
+	d.expect(t, map[string]string{"8.8.8.8": "tunnel", "100.64.0.9": "tunnel", "192.0.2.77": "tunnel", "198.51.100.9": "via 192.0.2.1"})
 	d.ip(t, "addr", "del", "8.8.4.4/8", "dev", "eth0")
 	d.ip(t, "route", "del", "0.0.0.0/1")
 	d.ip(t, "route", "del", "128.0.0.0/1")
@@ -207,9 +210,12 @@ func TestEnforcesInANamespace(t *testing.T) {
 	// The TUN goes down: its routes go with it, silently for IPv4, and
 	// the unreachable defaults keep everything in; the route table says
 	// it isn't enforced until the TUN is up and its default is back.
+	// IPv4's unreachable default comes with the re-apply the link event
+	// starts (a debounce later): until then IPv4 finds no route in the
+	// table and falls through to main.
 	d.ip(t, "link", "set", "thinkpol0", "down")
-	d.expect(t, map[string]string{"8.8.8.8": "unreachable", "2001:4860::8888": "unreachable", "198.51.100.9": "via 192.0.2.3"})
-	waitFor(t, func() bool { st := e.Status(); return !st.Enforced && st.Error == routetable.ErrorReapply }, "the status saying it isn't enforced")
+	waitFor(t, func() bool { st := e.Status(); return !st.Enforced && st.Error == routetable.ErrorTUNDown }, "the status saying the TUN is down")
+	d.expect(t, map[string]string{"8.8.8.8": "unreachable", "2001:4860::8888": "unreachable", "100.64.0.9": "unreachable", "198.51.100.9": "via 192.0.2.3"})
 	d.ip(t, "link", "set", "thinkpol0", "up")
 	waitFor(t, func() bool { return e.Status().Enforced }, "enforcement back after the TUN came up")
 	d.expect(t, map[string]string{"8.8.8.8": "tunnel", "2001:4860::8888": "tunnel"})
@@ -327,5 +333,121 @@ func TestCountrySizedTable(t *testing.T) {
 	timed("disconnect (Close)", e.Close)
 	if got := d.state(t); got != before {
 		t.Errorf("after Close:\n%s\nwant\n%s", got, before)
+	}
+}
+
+// What a hostile local network can plant takes nothing around the tunnel:
+// a public subnet made on-link by a DHCP address or a router
+// advertisement (TunnelCrack's LocalNet), and routes into the overlay's
+// range (a classless route, an address inside it, an advertised prefix
+// inside the overlay's /48: TunnelVision on the overlay).
+func TestHostileLocalNetworkRoutes(t *testing.T) {
+	d := newDevice(t)
+	e := d.enforcer(t)
+	overlay := []netip.Prefix{netip.MustParsePrefix("100.64.0.0/16"), netip.MustParsePrefix("fd12:3456:789a::/48")}
+	var ob lists.Builder
+	for _, p := range overlay {
+		_ = ob.AddPrefix(p)
+	}
+	ov, _ := ob.Build()
+	want := routetable.Want{TUN: "thinkpol0", Overlay: overlay, Direct: local().Minus(ov), IPv6: true}
+	d.ip(t, "addr", "add", "10.9.0.2/24", "dev", "eth0") // a private LAN: trusted on-link
+	if err := e.Enforce(context.Background(), want); err != nil {
+		t.Fatal(err)
+	}
+	reapplies := e.Status().Reapplies
+	d.ip(t, "addr", "add", "198.51.100.50/24", "dev", "eth0")
+	d.ip(t, "-6", "route", "add", "2001:db8:ab::/64", "dev", "eth0", "proto", "kernel")
+	d.ip(t, "route", "add", "100.64.0.0/24", "via", "192.0.2.1")
+	d.ip(t, "addr", "add", "100.64.5.5/16", "dev", "eth0")
+	d.ip(t, "-6", "route", "add", "fd12:3456:789a:1::/64", "dev", "eth0", "proto", "kernel")
+	waitFor(t, func() bool { return e.Status().Reapplies > reapplies }, "a re-Apply after the network's changes")
+	time.Sleep(500 * time.Millisecond) // the burst settles
+	// A DHCP client on that public subnet adds its default route: the
+	// gateway resolves on the physical interface, not into the tunnel,
+	// and links follow it.
+	d.ip(t, "route", "replace", "default", "via", "198.51.100.1", "dev", "eth0")
+	if out := d.ip(t, "route", "show", "default"); !strings.Contains(out, "via 198.51.100.1 dev eth0") {
+		t.Errorf("the default route on a public subnet: %s", out)
+	}
+	d.expect(t, map[string]string{
+		"198.51.100.9":        "tunnel",  // on-link by a DHCP address
+		"2001:db8:ab::9":      "tunnel",  // on-link by an advertisement
+		"100.64.0.9":          "tunnel",  // a classless route into the overlay
+		"100.64.7.7":          "tunnel",  // an address inside the overlay
+		"fd12:3456:789a:1::9": "tunnel",  // an advertised prefix inside the overlay
+		"10.9.0.7":            "on-link", // the private LAN still works
+		"8.8.8.8":             "tunnel",
+		"8.8.8.8 marked":      "via 198.51.100.1",
+	})
+	// Without IPv6 in the TUN, the overlay's IPv6 is unreachable, not
+	// sent to the advertised on-link prefix inside it.
+	want.IPv6 = false
+	if err := e.Enforce(context.Background(), want); err != nil {
+		t.Fatal(err)
+	}
+	d.expect(t, map[string]string{"fd12:3456:789a:1::9": "unreachable", "2001:db8:ab::9": "unreachable"})
+}
+
+// What the review of TP-057 asked for: gateways resolve on the physical
+// side wherever they are (inside the overlay's range, on an interface
+// created after Enforce), on-link doesn't override what the rules tunnel,
+// and sockets bound to an interface are documented as routing's limit.
+func TestGatewaysOnLinksAndBoundSockets(t *testing.T) {
+	d := newDevice(t)
+	e := d.enforcer(t)
+	overlay := []netip.Prefix{netip.MustParsePrefix("100.64.0.0/16"), netip.MustParsePrefix("fd12:3456:789a::/48")}
+	var ob, tb lists.Builder
+	for _, p := range overlay {
+		_ = ob.AddPrefix(p)
+	}
+	_ = tb.AddPrefix(netip.MustParsePrefix("10.20.0.0/16")) // cidr:10.20.0.0/16 -> chain:x
+	ov, _ := ob.Build()
+	tunneled, _ := tb.Build()
+	want := routetable.Want{TUN: "thinkpol0", Overlay: overlay, Direct: local().Minus(ov).Minus(tunneled), IPv6: true}
+	if err := e.Enforce(context.Background(), want); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return e.Status().Enforced }, "enforcement")
+
+	// An access network inside the overlay's range (a CGNAT ISP):
+	// its gateway resolves on eth0, and links leave through it.
+	d.ip(t, "addr", "add", "100.64.20.5/24", "dev", "eth0")
+	d.ip(t, "route", "replace", "default", "via", "100.64.20.1", "dev", "eth0")
+	if out := d.ip(t, "route", "show", "default"); !strings.Contains(out, "via 100.64.20.1 dev eth0") {
+		t.Errorf("default route via a gateway inside the overlay: %s", out)
+	}
+	d.expect(t, map[string]string{"8.8.8.8 marked": "via 100.64.20.1", "8.8.8.8": "tunnel", "100.64.7.7": "tunnel"})
+
+	// An interface that appears after Enforce gets its default route at
+	// once, before any rule names it.
+	d.ip(t, "link", "add", "eth1", "type", "dummy")
+	d.ip(t, "link", "set", "eth1", "up")
+	d.ip(t, "addr", "add", "203.0.113.50/24", "dev", "eth1")
+	d.ip(t, "route", "replace", "default", "via", "203.0.113.1", "dev", "eth1")
+	if out := d.ip(t, "route", "show", "default"); !strings.Contains(out, "via 203.0.113.1 dev eth1") {
+		t.Errorf("default route on a new interface: %s", out)
+	}
+	d.expect(t, map[string]string{"8.8.8.8 marked": "via 203.0.113.1", "8.8.8.8": "tunnel"})
+	waitFor(t, func() bool { return strings.Contains(d.ip(t, "rule"), "oif eth1") }, "a rule for the new interface")
+	d.ip(t, "route", "replace", "default", "via", "192.0.2.1", "dev", "eth0")
+
+	// The rules tunnel 10.20.0.0/16: a network handing out 10.0.0.50/8
+	// doesn't make it on-link around the tunnel; the rest of 10/8 is
+	// direct, and on-link.
+	d.ip(t, "addr", "add", "10.0.0.50/8", "dev", "eth0")
+	time.Sleep(time.Second) // the re-apply after the new address
+	d.expect(t, map[string]string{"10.20.1.5": "tunnel", "10.21.0.5": "on-link"})
+
+	// Sockets bound to the physical interface (SO_BINDTODEVICE,
+	// IP_UNICAST_IF, a PKTINFO ifindex: `ping -I eth0`, connectivity
+	// checks, per-link DNS) aren't confined by routing: today both
+	// families leave by main's default route. A firewall ticket (TP-021,
+	// TP-048) is to flip these.
+	if out := d.ip(t, "route", "get", "8.8.8.8", "oif", "eth0"); !strings.Contains(out, "via 192.0.2.1 dev eth0") {
+		t.Errorf("an IPv4 socket bound to eth0: %s (documented: out of eth0 by main's default)", out)
+	}
+	if out := d.ip(t, "-6", "route", "get", "2001:4860::1", "oif", "eth0"); !strings.Contains(out, "via 2001:db8:1::1 dev eth0") {
+		t.Errorf("an IPv6 socket bound to eth0: %s (documented: out of eth0 by main's default)", out)
 	}
 }
