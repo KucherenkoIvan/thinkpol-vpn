@@ -94,7 +94,7 @@ blobs: none
 # section of server-3
 node: 982fe5e68ec4fe9d (server-3)
 kind: server
-ingress: off, egress: on (not enforced until TP-014)
+ingress: off, egress: on
 min reader: 1
 ipv4: 100.64.0.3 in 100.64.0.0/10
 ipv6: fd12:3456:789a::3 in fd12:3456:789a::/48

@@ -24,7 +24,8 @@ import (
 //	  chain antispoof { hook prerouting priority raw - 10;
 //	    per slot: iifname tp-spaceN, source not the slot's transit address: drop }
 //	  chain ct_pre { hook prerouting priority raw;
-//	    per slot: iifname tp-spaceN fib daddr type != unicast ct zone set N+1 }
+//	    per slot: iifname tp-spaceN daddr <the root end's transit address> ct zone set N+1
+//	              iifname tp-spaceN meta pkttype != host ct zone set N+1 }
 //	  chain ct_out { hook output priority raw; per slot: oifname tp-spaceN ct zone set N+1 }
 //	  chain forward { hook forward priority filter;
 //	    iifname != tp-space* oifname tp-space* ct state established,related accept
@@ -47,18 +48,22 @@ import (
 // its transit address as their source or are dropped, so a space can't
 // forge a packet that conntrack would count as part of anyone else's flow
 // (or update the state of one), whatever zone it lands in. What a space
-// sends to the root namespace itself (local, broadcast and multicast
-// destinations), and what the root namespace sends to a space, is tracked
-// in the space's own conntrack zone, apart from the root's zone 0, so the
-// input chain's "established" is only ever a reply to the root's own flow
-// with that space. What a space sends on (egress, its dials) stays in zone
-// 0: the replies come back by the uplink, before anything could tell which
-// zone they belong to, and must find their flow there to be un-NATed
-// (nftables can set a zone for the original direction only, which would
-// keep replies in zone 0, but the library the supervisor uses can't express
-// it). Its replies are recognised by conntrack after the masquerade is
-// undone, which takes them back to the transit address, and so the veth, of
-// the space whose flow it is.
+// sends to its end of the veth pair in the root namespace (its gateway) or
+// broadcasts, and what the root namespace sends to a space, is tracked in
+// the space's own conntrack zone, apart from the root's zone 0, so the
+// input chain's "established" is a reply to the root's own flow with that
+// space. What a space sends on (egress, its dials) stays in zone 0: the
+// replies come back by the uplink, before anything could tell which zone
+// they belong to, and must find their flow there to be un-NATed (nftables
+// can set a zone for the original direction only, which would keep replies
+// in zone 0, but the library the supervisor uses can't express it; nor can
+// the zone follow the destination's address type, "fib daddr type", which
+// not every kernel has). So does what a space sends to the node's other
+// addresses: dropped at input as new, since no flow in zone 0 has a space's
+// transit address as its peer but the space's own forwarded ones, whose
+// other end is never the node. Forwarded replies are recognised by
+// conntrack once the masquerade is undone, which takes them back to the
+// transit address, and so the veth, of the space whose flow it is.
 //
 // Egress (TP-014) opens exactly what is masqueraded: a space with egress
 // may send to the internet by the uplink, the families it has, and every
@@ -76,7 +81,7 @@ var failApplyIsolation bool
 
 // zone is slot n's conntrack zone: nonzero, so a space's connections with
 // the root namespace never share conntrack with the root's own (zone 0).
-func zone(slot int) uint16 { return uint16(slot + 1) }
+func slotZone(slot int) uint16 { return uint16(slot + 1) }
 
 // egressBlocked are destinations no space reaches through the root
 // namespace, by egress or a dial: the provider's metadata services and
@@ -100,7 +105,8 @@ var egressBlocked = []netip.Prefix{
 // source addresses, its conntrack zone and what it may send on.
 type slotRule struct {
 	link   string
-	v4, v6 netip.Addr // the slot's transit source addresses
+	v4, v6 netip.Addr    // the slot's transit source addresses
+	gw     [2]netip.Addr // the root end's transit addresses
 	zone   uint16
 	egress Egress
 	dials  []netip.AddrPort
@@ -116,7 +122,8 @@ func (s *Supervisor) slotRules() []slotRule {
 			link:   w.link,
 			v4:     t.space[0].Addr(),
 			v6:     t.space[1].Addr(),
-			zone:   zone(w.slot),
+			gw:     [2]netip.Addr{t.root[0].Addr(), t.root[1].Addr()},
+			zone:   slotZone(w.slot),
 			egress: e,
 			dials:  dials,
 		})
@@ -170,7 +177,10 @@ func (s *Supervisor) applyIsolation(rules []slotRule) error {
 	for _, r := range rules {
 		add(antiSpoofChain, antiSpoof(r.link, r.v4)...)
 		add(antiSpoofChain, antiSpoof(r.link, r.v6)...)
-		add(ctPre, notForwarded(r.link, r.zone)...)
+		for _, gw := range r.gw {
+			add(ctPre, append(append(linkExact(expr.MetaKeyIIFNAME, r.link), daddrIn(netip.PrefixFrom(gw, gw.BitLen()))...), zone(r.zone)...)...)
+		}
+		add(ctPre, append(append(linkExact(expr.MetaKeyIIFNAME, r.link), notHost()...), zone(r.zone)...)...)
 		add(ctOut, zoneSet(expr.MetaKeyOIFNAME, r.link, r.zone)...)
 	}
 
@@ -224,23 +234,23 @@ func (s *Supervisor) installIsolation() error { return s.applyIsolation(nil) }
 
 // zoneSet is "<key> == link; ct zone set <zone>".
 func zoneSet(key expr.MetaKey, link string, z uint16) []expr.Any {
-	return append(linkExact(key, link),
-		&expr.Immediate{Register: 1, Data: binaryutil.NativeEndian.PutUint16(z)},
-		&expr.Ct{Register: 1, SourceRegister: true, Key: expr.CtKeyZONE},
-	)
+	return append(linkExact(key, link), zone(z)...)
 }
 
-// notForwarded is "iifname == link; fib daddr type != unicast; ct zone set
-// <zone>": what a space sends to the root namespace itself (its local,
-// broadcast and multicast addresses) is tracked in the space's zone; what
-// it sends on, in zone 0 (see the package's tables above).
-func notForwarded(link string, z uint16) []expr.Any {
-	return append(linkExact(expr.MetaKeyIIFNAME, link),
-		&expr.Fib{Register: 1, FlagDADDR: true, ResultADDRTYPE: true},
-		&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(unix.RTN_UNICAST)},
+// zone is "ct zone set <z>".
+func zone(z uint16) []expr.Any {
+	return []expr.Any{
 		&expr.Immediate{Register: 1, Data: binaryutil.NativeEndian.PutUint16(z)},
 		&expr.Ct{Register: 1, SourceRegister: true, Key: expr.CtKeyZONE},
-	)
+	}
+}
+
+// notHost is "meta pkttype != host": broadcast and multicast frames.
+func notHost() []expr.Any {
+	return []expr.Any{
+		&expr.Meta{Key: expr.MetaKeyPKTTYPE, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: []byte{unix.PACKET_HOST}},
+	}
 }
 
 // antiSpoof is "iifname == link; nfproto == addr's family; source != addr;

@@ -185,11 +185,14 @@ func probe(ctx context.Context, s worker.Session) error {
 		current := tgts
 		tmu.Unlock()
 		for _, target := range current {
-			to := net.UDPAddrFromAddrPort(netip.AddrPortFrom(target.addr, probePort))
+			payload := "space=" + s.Space.String()
+			if target.tag != "" {
+				payload += "#" + target.tag
+			}
 			if target.spoof.IsValid() {
-				spoofedSend(target.addr, target.spoof, "space="+s.Space.String())
+				spoofedSend(target.addr, target.spoof, payload)
 			} else {
-				_, _ = pc.WriteTo([]byte("space="+s.Space.String()), to)
+				_, _ = pc.WriteTo([]byte(payload), net.UDPAddrFromAddrPort(netip.AddrPortFrom(target.addr, target.port)))
 			}
 		}
 	}
@@ -207,18 +210,26 @@ func effectiveCaps() uint64 {
 
 type target struct {
 	addr  netip.Addr
-	spoof netip.Addr // when valid, send with this source address
+	port  uint16     // probePort unless the target names one
+	spoof netip.Addr // when valid, send with this source address (to probePort)
+	tag   string     // appended to the payload after a '#'
 }
 
+// parseTargets reads a probe's targets, one per field:
+// <address>[@<spoofed source>][#<tag>] or <address:port>[#<tag>].
 func parseTargets(config []byte) []target {
 	var out []target
 	for _, line := range strings.Fields(string(config)) {
+		line, tag, _ := strings.Cut(line, "#")
 		dst, spoof, _ := strings.Cut(line, "@")
-		a, err := netip.ParseAddr(dst)
-		if err != nil {
+		t := target{port: probePort, tag: tag}
+		if ap, err := netip.ParseAddrPort(dst); err == nil {
+			t.addr, t.port = ap.Addr(), ap.Port()
+		} else if a, err := netip.ParseAddr(dst); err == nil {
+			t.addr = a
+		} else {
 			continue
 		}
-		t := target{addr: a}
 		if spoof != "" {
 			t.spoof, _ = netip.ParseAddr(spoof)
 		}
@@ -1446,8 +1457,8 @@ func TestThinkpolWorkerCommand(t *testing.T) {
 	}
 }
 
-// antiSpoofRules returns the rules of the inet anti-spoof input chain and the
-// total packets their counters have seen.
+// antiSpoofRules returns the rules of the inet anti-spoof chain and the total
+// packets their counters have seen.
 func antiSpoofRules(t *testing.T) (rules int, packets uint64) {
 	t.Helper()
 	c, err := nftables.New()
@@ -1455,7 +1466,7 @@ func antiSpoofRules(t *testing.T) (rules int, packets uint64) {
 		t.Fatal(err)
 	}
 	table := &nftables.Table{Family: nftables.TableFamilyINet, Name: supervisor.TableName}
-	rs, err := c.GetRules(table, &nftables.Chain{Name: "antispoof_in", Table: table})
+	rs, err := c.GetRules(table, &nftables.Chain{Name: "antispoof", Table: table})
 	if err != nil {
 		t.Fatalf("get anti-spoof rules: %v", err)
 	}
@@ -1470,9 +1481,9 @@ func antiSpoofRules(t *testing.T) (rules int, packets uint64) {
 }
 
 // TestAntiSpoofDropsForgedSources checks the per-space anti-spoof rules fire:
-// a worker that sources a forged, off-link address is counted and dropped at
-// the input chain (reverse-path filtering off, so the packet reaches nftables).
-// Each slot has a rule for both families.
+// a worker that sources a forged, off-link address is counted and dropped
+// before conntrack sees it (reverse-path filtering off, so nothing else drops
+// it first). Each slot has a rule for both families.
 func TestAntiSpoofDropsForgedSources(t *testing.T) {
 	needsLab(t)
 	// Reverse-path filtering off in the root namespace, so a forged source
@@ -1492,7 +1503,7 @@ func TestAntiSpoofDropsForgedSources(t *testing.T) {
 	w := waitReady(t, s, a)[0]
 	rules, before := antiSpoofRules(t)
 	if rules < 2 {
-		t.Fatalf("anti-spoof input chain has %d rules, want at least 2 (IPv4 and IPv6 for the slot)", rules)
+		t.Fatalf("anti-spoof chain has %d rules, want at least 2 (IPv4 and IPv6 for the slot)", rules)
 	}
 	// Forge an off-link source to the slot's root end; the slot's transit
 	// address is the only accepted source, so this is dropped and counted.

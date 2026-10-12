@@ -390,7 +390,7 @@ func TestInspectMarksRefusedLinks(t *testing.T) {
 	}
 	out := b.String()
 	for _, want := range []string{
-		"ingress: off, egress: on (not enforced until TP-014)\nmin reader: 1\n",
+		"ingress: off, egress: on\nmin reader: 1\n",
 		"0200000000000000, server\n",
 		"0300000000000000, device (refused: ingress off)\n",
 	} {
