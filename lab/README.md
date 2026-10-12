@@ -5,7 +5,7 @@ Docker containers on separate networks, driven by Go tests: the censor lab of [D
 ```sh
 make lab-test     # lab tests + every package's tests inside a lab node, then tear down
 make lab          # the same for now; TP-024 turns it into the censor matrix
-make lab-gotest PKG=./internal/dataplane/netcfg/... RUN=TestRoutes   # one package, in a node
+make lab-gotest PKG=./internal/dataplane/netcfg/... RUN=TestRoutes   # one package, in a node (COUNT=n repeats)
 make lab-up       # the standard topology for poking around (prints addresses)
 make lab-down     # remove every lab this checkout started
 make lab-perf     # performance gates, alone on the host (see "Performance gates")
@@ -94,13 +94,28 @@ if os.Getenv("THINKPOL_LAB") == "" {
 }
 ```
 
-`make lab-test` compiles **every** package's tests for Linux and runs each package, as root, in a fresh lab node of its own with `THINKPOL_LAB=1` (working directory: the package's directory under `/src`), so these tests run there and skip everywhere else. The node is alone on one dual-stack network with no route out: tests create the namespaces, veths and TUNs they need. Packages run four at a time (`labctl gotest -p`), each binary with `-test.timeout=10m` unless given its own. For one package: `make lab-gotest PKG=./internal/... RUN=regexp`. From a lab test, `node.RunGoTests(t, "./internal/agent/...", "-test.run", "X")` runs packages inside any node of a topology (that node, not a fresh one).
+`make lab-test` compiles **every** package's tests for Linux and runs each package, as root, in a fresh lab node of its own with `THINKPOL_LAB=1` (working directory: the package's directory under `/src`), so these tests run there and skip everywhere else. The node is alone on one dual-stack network with no route out: tests create the namespaces, veths and TUNs they need. Packages run four at a time (`labctl gotest -p`, `make lab-test LAB_P=n`), each binary with `-test.timeout=10m` unless given its own. For one package: `make lab-gotest PKG=./internal/... RUN=regexp`. From a lab test, `node.RunGoTests(t, "./internal/agent/...", "-test.run", "X")` runs packages inside any node of a topology (that node, not a fresh one).
+
+## Tests under load
+
+Several agents run `make lab-test` at once, so every test runs on a busy machine: a goroutine, a tcpdump or a whole node can be held up for hundreds of milliseconds. A test that passes only on an idle machine is a broken test. What holds up:
+
+- **Synchronize, don't sleep.** Wait for the event itself (a counter, a log line, a kernel flag, a channel), with a generous deadline; a fixed sleep before an assertion is a race. Sleeps are fine only for "nothing happens" windows, which load can only make pass.
+- **Lossy paths retransmit or count.** UDP over loopback or a lab network drops a datagram when its reader is held up and the socket buffer fills. A ping-pong resends after a timeout, a burst goes in batches the receiver has room for, and an exact count comes from the protocol's own counters, not from packets that crossed a socket.
+- **Time bounds prove a mechanism, not a speed.** Bound an elapsed time only to tell two mechanisms apart (a retry on the test's interval versus the default one), with the bound far from both.
+- **Performance belongs to `make lab-perf`** (below): throughput, loss under load and latency targets. `make lab-test` keeps a check of the same path that load can't change.
+- **Statistical checks** state their false-failure probability in a comment; keep it negligible (one in tens of millions of runs, or rarer).
+- **Captures** have a ring of about 500 frames: pace what you send, and filter to one side of a router (`outbound`) when you count.
+
+`make lab-test` runs `LAB_P` (default 4) packages in nodes at once and doesn't lower that when the host is busy. The load that matters comes from other runs, which a run can't control, and the Docker VM's load isn't the host's load average. The lab slot cap (`THINKPOL_LAB_MAX_LABS`) bounds the labs all runs start together. `make lab-test LAB_P=1` is there to lower it by hand.
+
+`labctl gotest -count n` (`make lab-gotest PKG=... RUN=... COUNT=n`) repeats tests in one node, to show a fix holds.
 
 ## Performance gates
 
-Throughput targets (PRD Performance) depend on what else the Docker VM is doing, so `make lab-test` doesn't gate on them: a perf test there checks only that the path works and logs its figures. `make lab-perf` runs the gates: `labctl gotest -perf` waits until no other lab of any run sharing this `TMPDIR` holds a slot, keeps new ones from starting while it runs (every lab slot holds `perf.lock` shared, a perf run holds it exclusively; its own labs don't wait), and sets `THINKPOL_LAB_PERF=1` in the node. A gated test measures once and, if it misses a target, twice more, and fails on the median of the three.
+Throughput targets (PRD Performance) depend on what else the Docker VM is doing, so `make lab-test` doesn't gate on them: a perf test there checks only that the path works, in a way load can't change (flow-controlled, so nothing may be lost), and doesn't measure. `make lab-perf` runs the gates: `labctl gotest -perf` waits until no other lab of any run sharing this `TMPDIR` holds a slot, keeps new ones from starting while it runs (every lab slot holds `perf.lock` shared, a perf run holds it exclusively; its own labs don't wait), and sets `THINKPOL_LAB_PERF=1` in the node. A gated test measures once and, if it misses a target, twice more, and fails on the median of the three.
 
-A perf test checks `THINKPOL_LAB_PERF` itself (packages under `internal/` can't import `lab`), is named `Test…Throughput`, and its package is listed in the Makefile's `LAB_PERF_PKGS`. Today that is `TestSharedListenerThroughput` (`internal/agent/supervisor`): under 0.5% loss at 100 Mbit/s and at least 50 Mbit/s one way and echoed, all on one CPU; in `make lab-test` it fails only on a broken handoff (20% loss, or nothing through). The lock doesn't see labs from `make lab-up` once `labctl` has exited, runs with another `TMPDIR`, or other projects on the Docker VM; a busy host can also keep a perf run waiting.
+A perf test checks `THINKPOL_LAB_PERF` itself (packages under `internal/` can't import `lab`), is named `Test…Throughput`, and its package is listed in the Makefile's `LAB_PERF_PKGS`. Today that is `TestSharedListenerThroughput` (`internal/agent/supervisor`): under 0.5% loss at 100 Mbit/s and at least 50 Mbit/s one way and echoed, all on one CPU; in `make lab-test` it sends 2000 echoes through the handoff with at most 32 in flight, which no queue on the path can overflow, and every one must come back. The lock doesn't see labs from `make lab-up` once `labctl` has exited, runs with another `TMPDIR`, or other projects on the Docker VM; a busy host can also keep a perf run waiting.
 
 ## Isolation and safety
 

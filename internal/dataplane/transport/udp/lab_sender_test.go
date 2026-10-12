@@ -44,7 +44,7 @@ func TestLabSendShaped(t *testing.T) {
 				if err := l.WritePacket(make([]byte, size)); err != nil {
 					t.Fatal(err)
 				}
-				time.Sleep(200 * time.Microsecond) // the capture, not the network, is what's measured
+				time.Sleep(time.Millisecond) // paced for the capture at the router (lab/shaping_test.go)
 			}
 		}
 		st := l.(*dialLink).Sent()

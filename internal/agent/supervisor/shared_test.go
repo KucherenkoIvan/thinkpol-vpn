@@ -381,6 +381,9 @@ func TestBadCredentialsNeverReachAWorker(t *testing.T) {
 			t.Fatal(err)
 		}
 		sent++
+		if sent%16 == 0 { // in batches the socket has room for, so none is lost
+			eventually(t, "a batch reaching the camouflage", func() bool { return camo.Calls() == int64(sent) })
+		}
 	}
 	eventually(t, "everything reaching the camouflage", func() bool { return camo.Calls() == int64(sent) })
 	if got := w.got.Load(); got != 0 {
@@ -416,15 +419,44 @@ func TestAStuckWorkerStallsOnlyItsSpace(t *testing.T) {
 	if got := read(t, link); got != "first" {
 		t.Fatalf("read %q", got)
 	}
+	got := make(chan string, 64)
+	go func() {
+		buf := make([]byte, transport.MaxPacketSize)
+		for {
+			n, err := link.ReadPacket(buf)
+			if err != nil {
+				return
+			}
+			got <- string(buf[:n])
+		}
+	}()
+	// The flood can overflow the shared socket, which loses the live
+	// space's datagram as often as the stuck one's: that's the network.
+	// It is resent until it arrives; a stall would never let it through.
+	stillHere := func(i int) {
+		want := fmt.Sprintf("still here %d", i)
+		for deadline := time.Now().Add(wait); time.Now().Before(deadline); {
+			if err := dl.WritePacket([]byte(want)); err != nil {
+				t.Fatal(err)
+			}
+			for resend := time.After(100 * time.Millisecond); ; {
+				select {
+				case g := <-got:
+					if g == want {
+						return
+					}
+					continue // an earlier one, resent
+				case <-resend:
+				}
+				break
+			}
+		}
+		t.Fatalf("%q never came through", want)
+	}
 	for i := range 2000 {
 		_ = ds.WritePacket([]byte("to the stuck worker"))
 		if i%100 == 0 {
-			if err := dl.WritePacket([]byte("still here")); err != nil {
-				t.Fatal(err)
-			}
-			if got := read(t, link); got != "still here" {
-				t.Fatalf("read %q", got)
-			}
+			stillHere(i)
 		}
 	}
 	eventually(t, "the stuck worker's drops", func() bool { return s.counters(stuck).WorkerFull > 0 })
@@ -766,7 +798,7 @@ func TestASourceFloodStallsNoOtherSpace(t *testing.T) {
 	}
 	// Ping-pong: the worker answers every ping it gets. Datagrams lost to
 	// the flood (the shared socket's buffer overflowing is the network's
-	// business, not the reply table's) are sent again after 50 ms.
+	// business, not the reply table's) are sent again after resend.
 	go func() {
 		buf := make([]byte, 64)
 		for {
@@ -788,6 +820,7 @@ func TestASourceFloodStallsNoOtherSpace(t *testing.T) {
 			pongs <- string(buf[:n])
 		}
 	}()
+	const resend = 50 * time.Millisecond
 	var rtts []time.Duration
 	lost := 0
 	for i, begin := 0, time.Now(); time.Since(begin) < 2*time.Second; i++ {
@@ -802,7 +835,7 @@ func TestASourceFloodStallsNoOtherSpace(t *testing.T) {
 			}
 			select {
 			case got = <-pongs:
-			case <-time.After(50 * time.Millisecond):
+			case <-time.After(resend):
 				lost++
 			}
 		}
@@ -822,8 +855,12 @@ func TestASourceFloodStallsNoOtherSpace(t *testing.T) {
 		t.Fatal("no eviction counted")
 	}
 	// Every ping came back (or the loop failed); a stall would show in the
-	// median, not only in the resent tail.
-	if median := rtts[len(rtts)/2]; median > 10*time.Millisecond {
+	// median, not only in the resent tail. Unloaded, the median is well
+	// under a millisecond, but on a machine busy with other tests the
+	// scheduler alone can add tens of them, so the bound is the resend
+	// interval: above it, most pings were stuck long enough to be sent
+	// again, which is a stall, not a slow machine.
+	if median := rtts[len(rtts)/2]; median > resend {
 		t.Fatalf("the calm space's median round trip was %v", median)
 	}
 }

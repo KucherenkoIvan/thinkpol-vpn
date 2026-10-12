@@ -533,10 +533,13 @@ func TestWatchersShareTheStatus(t *testing.T) {
 	s := serve(t, me())
 	counting := &countingNode{fakeNode: s.node}
 	srv := &server{node: counting}
+	start := time.Now()
 	for range 100 {
 		srv.sharedStatus()
 	}
-	if n := counting.calls.Load(); n != 1 {
+	// One read per minWatchInterval: one, unless a busy machine stalled
+	// the loop for longer than that.
+	if n, most := counting.calls.Load(), 1+int32(time.Since(start)/minWatchInterval); n > most || n < 1 {
 		t.Fatalf("%d status reads for 100 watchers in one tick", n)
 	}
 }

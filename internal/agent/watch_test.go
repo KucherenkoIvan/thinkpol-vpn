@@ -70,8 +70,12 @@ func TestTheWatcherDeliversChangedMaps(t *testing.T) {
 	// poll; modes aren't checked on Windows.
 	if runtime.GOOS != "windows" {
 		replace([]byte("refused"), 0o666)
-		time.Sleep(100 * time.Millisecond)
-		if c := strings.Count(logs.String(), "reading the map file"); c != 1 {
+		warnings := func() int { return strings.Count(logs.String(), "reading the map file") }
+		for deadline := time.Now().Add(5 * time.Second); warnings() == 0 && time.Now().Before(deadline); {
+			time.Sleep(w.interval)
+		}
+		time.Sleep(10 * w.interval) // polls that must say nothing more
+		if c := warnings(); c != 1 {
 			t.Fatalf("%d warnings:\n%s", c, logs.String())
 		}
 	}
