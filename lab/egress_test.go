@@ -27,8 +27,17 @@ func TestEgressThroughAnExit(t *testing.T) {
 	t.Parallel()
 	l := lab.Start(t, lab.Standard())
 	s1, s2, devA, inet := l.Node(lab.Server1), l.Node(lab.Server2), l.Node(lab.DeviceA), l.Node(lab.Internet)
-	inet4, inet6 := inet.IPv4(lab.NetServers), inet.IPv6(lab.NetServers)
-	exit4, exit6 := s2.IPv4(lab.NetServers), s2.IPv6(lab.NetServers)
+	inet4, exit4 := inet.IPv4(lab.NetServers), s2.IPv4(lab.NetServers)
+	// The lab's IPv6 is unique local, which is no internet to an exit:
+	// server-2 and the internet share a global (documentation) prefix
+	// too, and server-2's IPv6 default route goes by it.
+	inet6, exit6 := netip.MustParseAddr("2001:db8:5::1"), netip.MustParseAddr("2001:db8:5::2")
+	inet.MustExec(t, "ip", "addr", "add", inet6.String()+"/64", "dev", inet.Interface(lab.NetServers), "nodad")
+	s2.MustExec(t, "ip", "addr", "add", exit6.String()+"/64", "dev", s2.Interface(lab.NetServers), "nodad")
+	s2.MustExec(t, "ip", "-6", "route", "replace", "default", "via", inet6.String(), "dev", s2.Interface(lab.NetServers))
+	// The lab's networks are private, which egress and dials refuse
+	// unless the node says otherwise.
+	servers := netip.PrefixFrom(inet4, 24).Masked().String()
 	space := &m0Space{builder: inet, spec: "/src/lab/maps/egress.yaml", flags: []string{"-secrets-seed", "egress-lab"}}
 	settings := func(egress, exit string) {
 		space.env = []string{
@@ -49,7 +58,7 @@ func TestEgressThroughAnExit(t *testing.T) {
 	}
 	up := map[string]*lab.Process{}
 	for name, n := range nodes {
-		up[name] = n.Start(t, "thinkpol", "up", "-map-poll", "1s")
+		up[name] = n.Start(t, "thinkpol", "up", "-map-poll", "1s", "-egress-allowed", servers)
 	}
 	uplink := regexp.QuoteMeta(s2.Interface(lab.NetServers))
 	waitLog(t, up["server-2"], `msg="map applied" version=`+version1+` .*egress=on uplink=`+uplink+` egress_ipv4=on egress_ipv6=on`)
@@ -126,6 +135,10 @@ func TestEgressThroughAnExit(t *testing.T) {
 
 	// Egress off: server-2 and server-1 take the new map, device-a keeps
 	// sending its internet traffic to server-2, which forwards none of it.
+	// Its engine refuses it first (the section no longer allows egress, so
+	// it delivers nothing for the internet to its TUN); the namespace's and
+	// the root's tables, which would refuse it next, have lab tests of their
+	// own in internal/agent/supervisor.
 	settings("false", "server-3")
 	v3, version3 := space.build(t)
 	putMap(t, s1, v3)

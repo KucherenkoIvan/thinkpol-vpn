@@ -187,16 +187,20 @@ func (e *Egress) Write(bufs [][]byte, offset int) (int, error) {
 	if len(out) == 0 {
 		return len(bufs), nil
 	}
-	n, err := e.r.tun.Write(out, offset)
-	e.delivered.Add(uint64(n))
-	e.r.c.delivered.Add(uint64(n))
+	// Counted before the write: a TUN with offloads coalesces the packets
+	// in place, and reports what it wrote in bytes, not packets.
+	var fwd uint64
 	if c.forward[e] {
-		var fwd uint64
-		for _, b := range out[:n] {
+		for _, b := range out {
 			if dst, ok := destination(b[offset:]); ok && !c.local[dst] {
 				fwd++
 			}
 		}
+	}
+	n, err := e.r.tun.Write(out, offset)
+	e.delivered.Add(uint64(n))
+	e.r.c.delivered.Add(uint64(n))
+	if err == nil {
 		e.forwarded.Add(fwd)
 		e.r.c.forwarded.Add(fwd)
 	}

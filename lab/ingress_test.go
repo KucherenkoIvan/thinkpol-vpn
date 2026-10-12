@@ -50,8 +50,9 @@ func TestIngressOffAdmitsOnlyServers(t *testing.T) {
 		space.install(t, n, name, v1)
 	}
 	up := map[string]*lab.Process{
-		// server-1's worker dials server-2 out of its namespace.
-		"server-1": s1.Start(t, "thinkpol", "up", "-map-poll", "1s"),
+		// server-1's worker dials server-2 out of its namespace, on the
+		// lab's private network, which dials refuse unless allowed.
+		"server-1": s1.Start(t, "thinkpol", "up", "-map-poll", "1s", "-egress-allowed", netip.PrefixFrom(s1.IPv4(lab.NetServers), 24).Masked().String()),
 		"server-2": s2.Start(t, "thinkpol", "up", "-map-poll", "1s"),
 		"device-a": devA.Start(t, "thinkpol", "up", "-map-poll", "1s"),
 		"device-b": devB.Start(t, "thinkpol", "up", "-map-poll", "1s"),
