@@ -56,3 +56,4 @@ table 29808: <overlay> dev <TUN>, unreachable <overlay> metric 2048,
 ## Log
 - 2026-10-12 created in in-progress — owner: agent-tp-018, branch: tp-057-tunnelvision-localnet (follow-up to TP-018's post-merge leak check)
 - 2026-10-12 docs: TP-018's done Notes corrected (TP-021, TP-048: IPv4 has the unreachable fallback; layout superseded here); DESIGN.md "Routing rules and DNS" (route table on Linux: overlay in its own table, local-only on-link, oif rules)
+- 2026-10-12 merged origin/rewrite (TP-014); in-progress → review — every acceptance box checked; `make lint`, `make test`, `go test -race` on dataplane, routetable, netcfg and agent, and `make lab-test LAB_P=2` (lab and 28 in-node packages) pass
