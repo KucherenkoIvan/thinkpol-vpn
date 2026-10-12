@@ -314,22 +314,26 @@ func (r *runner) start(ctx context.Context) error {
 }
 
 // stop takes the data plane down: listeners, engine, TUN and its
-// configuration.
+// configuration. Callers set down, removed and cur first: the report gets
+// the whole new state at once, with the engine gone before it closes, so a
+// status read meanwhile is never a mix of before and after.
 func (r *runner) stop() {
 	if r.engine == nil {
 		return
 	}
-	r.dp.report.set(func(p *report) { p.engine = nil })
+	engine, listeners, resolver := r.engine, r.listeners, r.resolver
+	r.engine, r.listeners, r.resolver = nil, nil, nil
+	r.retryAt = time.Time{}
+	r.publish()
 	r.restoreSystem()
-	if r.resolver != nil {
-		_ = r.resolver.Close()
+	if resolver != nil {
+		_ = resolver.Close()
 	}
-	r.listeners.closeAll()
-	if err := r.engine.Close(); err != nil {
+	listeners.closeAll()
+	if err := engine.Close(); err != nil {
 		r.dp.Log.Warn("closing the data plane", "err", err)
 	}
-	r.listeners.wait()
-	r.engine, r.listeners, r.resolver = nil, nil, nil
+	listeners.wait()
 }
 
 func (r *runner) loop(ctx context.Context) error {
