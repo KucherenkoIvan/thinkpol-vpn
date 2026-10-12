@@ -88,3 +88,4 @@ Two reviewers; orchestrator decisions.
 - 2026-10-12 merged origin/rewrite (TP-022, TP-017); netcfg tables, route types, rules and Watch; `dataplane/routetable`; engine and agent wiring; dev spec routing; DESIGN.md "Routing rules and DNS" (route table on Linux) and "Repository layout" (`routetable/`)
 - 2026-10-12 in-progress → review — both acceptance boxes checked; `make lint`, `make test`, `make test-race`, `make lab-gotest` (netcfg, routetable, agent) and `make lab-test` pass (flakes outside this change listed under Evidence)
 - 2026-10-12 review → has-errors — two reviewers: B1–B4, F5, DNS marking and nits (see Review findings)
+- 2026-10-12 has-errors → in-progress — owner: agent-tp-018, picking up the review findings
