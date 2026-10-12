@@ -21,6 +21,7 @@ func (c *linuxConfigurator) Survey(ctx context.Context) (Survey, error) {
 		return Survey{}, err
 	}
 	var s Survey
+	var indexes []int
 	for _, fam := range []int{netlink.FAMILY_V4, netlink.FAMILY_V6} {
 		routes, err := c.listRoutes(fam, &netlink.Route{Table: unix.RT_TABLE_MAIN, Protocol: unix.RTPROT_KERNEL},
 			netlink.RT_FILTER_TABLE|netlink.RT_FILTER_PROTOCOL)
@@ -33,6 +34,9 @@ func (c *linuxConfigurator) Survey(ctx context.Context) (Survey, error) {
 				continue
 			}
 			s.OnLink = append(s.OnLink, p)
+			if r.LinkIndex != 0 && !slices.Contains(indexes, r.LinkIndex) {
+				indexes = append(indexes, r.LinkIndex)
+			}
 		}
 		rules, err := c.listRules(fam)
 		if err != nil {
@@ -53,5 +57,11 @@ func (c *linuxConfigurator) Survey(ctx context.Context) (Survey, error) {
 	})
 	s.OnLink = slices.Compact(s.OnLink)
 	slices.Sort(s.ForeignRules)
+	for _, i := range indexes {
+		if l, err := c.h.LinkByIndex(i); err == nil {
+			s.OnLinkInterfaces = append(s.OnLinkInterfaces, l.Attrs().Name)
+		}
+	}
+	slices.Sort(s.OnLinkInterfaces)
 	return s, nil
 }

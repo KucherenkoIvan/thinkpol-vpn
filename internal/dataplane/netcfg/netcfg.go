@@ -175,6 +175,10 @@ type Rule struct {
 	// Dst, when valid, matches only packets to this prefix (`to`), of
 	// the rule's family.
 	Dst netip.Prefix
+	// Oif, when set, matches only lookups for this outgoing interface
+	// (`oif`): sockets bound to it, and the kernel resolving the gateway
+	// of a route given with this device.
+	Oif string
 	// Table is the table to look up; 0 is the main table.
 	Table int
 	// Mark, when non-zero, matches only packets with exactly this
@@ -197,9 +201,12 @@ func (r Rule) String() string {
 	if r.Dst.IsValid() {
 		s += " to " + r.Dst.String()
 	}
+	if r.Oif != "" {
+		s += " oif " + r.Oif
+	}
 	if r.Mark != 0 {
 		s += fmt.Sprintf(" fwmark %#x", r.Mark)
-	} else if !r.Dst.IsValid() {
+	} else if !r.Dst.IsValid() && r.Oif == "" {
 		s += " all"
 	}
 	s += fmt.Sprintf(" table %d", r.Table)
@@ -354,6 +361,8 @@ type Survey struct {
 	// addresses (Linux: proto kernel, without a gateway): the subnets
 	// reached on-link, both families.
 	OnLink []netip.Prefix
+	// OnLinkInterfaces are the interfaces those routes are on.
+	OnLinkInterfaces []string
 	// ForeignRules are the priorities of policy rules no owner added,
 	// but the OS's own (0, 32766, 32767), both families.
 	ForeignRules []int

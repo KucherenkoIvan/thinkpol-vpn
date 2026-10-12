@@ -341,6 +341,31 @@ func TestRouteTableSendsOnlyDirectAroundTheTunnel(t *testing.T) {
 		return nil
 	})
 	stopAndCheck(up)
+
+	// A crash while connected, then a start that fails before the route
+	// table is taken over (no TUN): the leftovers go anyway, rather than
+	// keep the device's traffic blocked while it fails.
+	up = dev.Start(t, "thinkpol", "up", "-map-poll", "1h")
+	waitLog(t, up, applied(v1))
+	dev.MustExec(t, "pkill", "-KILL", "-f", "thinkpol up")
+	<-up.Done()
+	if !strings.Contains(dev.MustExec(t, "ip", "rule"), "5301:") {
+		t.Fatal("no rules left by the second crash: the test proves nothing")
+	}
+	// eth0 exists and isn't a TUN: creating the TUN fails at run time.
+	failing := dev.Start(t, "thinkpol", "up", "-map-poll", "1h", "-interface", dev.Interface(lab.NetDevices))
+	<-failing.Done()
+	if failing.Err() == nil || !strings.Contains(failing.Output(), "tun") {
+		t.Fatalf("thinkpol up didn't fail at the TUN: %v\n%s", failing.Err(), failing.Output())
+	}
+	if got := dev.MustExec(t, "ip", "rule") + dev.MustExec(t, "ip", "-6", "rule"); got != rulesBefore {
+		t.Errorf("rules after a crash and a failed start:\n%s\nwant\n%s\n%s", got, rulesBefore, failing.Output())
+	}
+	for _, family := range []string{"-4", "-6"} {
+		if out := dev.MustExec(t, "ip", family, "route", "show", "table", "all", "proto", "86"); out != "" {
+			t.Errorf("route-table routes left after a failed start:\n%s", out)
+		}
+	}
 	if err := srv.Stop(); err != nil {
 		t.Errorf("server-1: %v", err)
 	}

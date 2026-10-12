@@ -3,6 +3,7 @@ package routetable_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/netip"
 	"slices"
 	"sync"
@@ -65,13 +66,18 @@ func TestConfigLayout(t *testing.T) {
 	survey := netcfg.Survey{OnLink: []netip.Prefix{
 		pfx("192.168.1.0/24"), pfx("fe80::/64"), pfx("2001:db8:1::/64"),
 		pfx("100.64.0.0/10"), pfx("fd12:3456:789a::/48"), // the TUN's own
-		pfx("8.0.0.0/8"), pfx("2001:db8::/32"), // too wide to trust
-	}}
+		pfx("fd12:3456:789a:1::/64"),                               // a ULA prefix inside the overlay
+		pfx("8.0.0.0/8"), pfx("1.1.1.0/24"), pfx("203.0.113.9/32"), // public: never trusted
+	}, OnLinkInterfaces: []string{"eth0", "thinkpol0"}}
 	cfg := routetable.Config(w, survey)
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{
+		"100.64.0.0/10 dev thinkpol0 table 29808",
+		"unreachable 100.64.0.0/10 metric 2048 table 29808",
+		"fd12:3456:789a::/48 dev thinkpol0 table 29808",
+		"unreachable fd12:3456:789a::/48 metric 2048 table 29808",
 		"0.0.0.0/0 dev thinkpol0 table 29808",
 		"unreachable 0.0.0.0/0 metric 2048 table 29808",
 		"::/0 dev thinkpol0 table 29808",
@@ -87,12 +93,13 @@ func TestConfigLayout(t *testing.T) {
 		t.Errorf("routes:\n got %q\nwant %q", got, want)
 	}
 	wantRules := []string{
-		"IPv4 rule 5300 to 100.64.0.0/10 table 0 suppress_prefixlength 0",
+		"IPv4 rule 5299 to 100.64.0.0/10 table 29808",
 		"IPv4 rule 5300 to 192.168.1.0/24 table 0 suppress_prefixlength 0",
+		"IPv4 rule 5300 oif eth0 table 0 suppress_prefixlength 0",
 		"IPv4 rule 5301 not fwmark 0x7470 table 29808",
-		"IPv6 rule 5300 to 2001:db8:1::/64 table 0 suppress_prefixlength 0",
-		"IPv6 rule 5300 to fd12:3456:789a::/48 table 0 suppress_prefixlength 0",
+		"IPv6 rule 5299 to fd12:3456:789a::/48 table 29808",
 		"IPv6 rule 5300 to fe80::/64 table 0 suppress_prefixlength 0",
+		"IPv6 rule 5300 oif eth0 table 0 suppress_prefixlength 0",
 		"IPv6 rule 5301 not fwmark 0x7470 table 29808",
 	}
 	if got := ruleStrings(cfg); !slices.Equal(got, wantRules) {
@@ -135,8 +142,9 @@ func TestConfigWithEverythingDirect(t *testing.T) {
 func TestTrustedOnLink(t *testing.T) {
 	for p, want := range map[string]bool{
 		"192.168.1.0/24": true, "10.0.0.0/8": true, "172.16.0.0/12": true, "169.254.0.0/16": true,
-		"203.0.113.0/24": true, "203.0.113.128/25": true, "fe80::/64": true, "fd00:1::/48": true, "2001:db8:1::/64": true,
-		"203.0.112.0/23": false, "8.0.0.0/8": false, "0.0.0.0/1": false, "224.0.0.0/3": false, "11.0.0.0/7": false,
+		"fe80::/64": true, "fd00:1::/48": true, "192.168.1.7/32": true,
+		"203.0.113.0/24": false, "203.0.113.128/25": false, "1.1.1.0/24": false, "198.51.100.1/32": false,
+		"2001:db8:1::/64": false, "2001:4860:4860::/64": false, "100.64.0.0/24": false, "203.0.112.0/23": false, "8.0.0.0/8": false, "0.0.0.0/1": false, "224.0.0.0/3": false, "11.0.0.0/7": false,
 		"2001:db8::/32": false, "::/1": false, "0.0.0.0/0": false,
 	} {
 		if got := routetable.TrustedOnLink(pfx(p)); got != want {
@@ -175,6 +183,7 @@ type fakeConfigurator struct {
 	mu      sync.Mutex
 	applies []netcfg.Config
 	fail    bool
+	failErr error // what a failing Apply returns; nil: a plain error
 	closed  bool
 	survey  netcfg.Survey
 	events  chan struct{}
@@ -184,6 +193,9 @@ func (f *fakeConfigurator) Apply(_ context.Context, cfg netcfg.Config) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.fail {
+		if f.failErr != nil {
+			return f.failErr
+		}
 		return errors.New("the kernel said no")
 	}
 	f.applies = append(f.applies, cfg)
@@ -270,17 +282,19 @@ func TestEnforcerAppliesChangesAndReappliesOnEvents(t *testing.T) {
 	if st := e.Status(); !st.Enforced || st.Routes != 4 || st.RulesAhead != 2 || st.Error != "" {
 		t.Errorf("status %+v", st)
 	}
+	// After an Enforce the watcher checks once, for what it missed.
+	eventually(t, "the check after Enforce", func() bool { return e.Status().Reapplies == 1 })
 	// A burst of events is one re-Apply of the same config.
 	for range 5 {
 		f.events <- struct{}{}
 	}
-	eventually(t, "a re-Apply", func() bool { return f.count() >= 2 })
+	eventually(t, "a re-Apply", func() bool { return f.count() >= 3 })
 	time.Sleep(400 * time.Millisecond)
-	if n := f.count(); n != 2 {
-		t.Fatalf("%d Applies after a burst of events, want 2", n)
+	if n := f.count(); n != 3 {
+		t.Fatalf("%d Applies after a burst of events, want 3", n)
 	}
-	if st := e.Status(); st.Reapplies != 1 {
-		t.Errorf("reapplies %d, want 1", st.Reapplies)
+	if st := e.Status(); st.Reapplies != 2 {
+		t.Errorf("reapplies %d, want 2", st.Reapplies)
 	}
 	f.mu.Lock()
 	same := slices.Equal(routeStrings(f.applies[0]), routeStrings(f.applies[1]))
@@ -326,5 +340,28 @@ func TestEnforcerAppliesChangesAndReappliesOnEvents(t *testing.T) {
 	}
 	if err := e.Enforce(ctx, w); !errors.Is(err, netcfg.ErrClosed) {
 		t.Errorf("Enforce after Close: %v", err)
+	}
+}
+
+// A kernel that can't hold the table at all stops the enforcer for good:
+// no retries, and the status says why.
+func TestEnforcerStopsOnAnUnsupportedKernel(t *testing.T) {
+	f := &fakeConfigurator{events: make(chan struct{}), fail: true, failErr: fmt.Errorf("netcfg: old kernel: %w", errors.ErrUnsupported)}
+	e := routetable.Open(f, nil)
+	defer func() { _ = e.Close() }()
+	w := routetable.Want{TUN: "thinkpol0"}
+	if err := e.Enforce(context.Background(), w); !errors.Is(err, errors.ErrUnsupported) {
+		t.Fatalf("Enforce: %v", err)
+	}
+	if st := e.Status(); st.Enforced || st.Error != routetable.ErrorUnsupported {
+		t.Errorf("status %+v", st)
+	}
+	f.setFail(false)
+	time.Sleep(routetable.RetryAfter + time.Second)
+	if n := f.count(); n != 0 {
+		t.Errorf("%d Applies after an unsupported kernel, want none", n)
+	}
+	if err := e.Enforce(context.Background(), w); !errors.Is(err, errors.ErrUnsupported) {
+		t.Errorf("Enforce again: %v", err)
 	}
 }

@@ -23,10 +23,16 @@ const (
 	// unreachable default behind each, a throw route per direct prefix and
 	// per link endpoint.
 	Table = 0x7470
-	// PriorityMain looks up the main table for the overlay's networks and
-	// the subnets the physical interfaces reach on-link, and nothing else:
+	// PriorityOverlay looks the overlay's networks up in Table, before
+	// anything else: no route in main (a DHCP server's classless route
+	// into the overlay's range, an on-link subnet overlapping it) gets
+	// overlay traffic.
+	PriorityOverlay = 5299
+	// PriorityMain looks up the main table for the subnets the physical
+	// interfaces reach on-link inside the local ranges, and nothing else:
 	// no other route there (a DHCP server's classless routes, another
-	// VPN's) beats the tunnel.
+	// VPN's, an "on-link" public subnet a hostile network hands out) beats
+	// the tunnel.
 	PriorityMain = 5300
 	// PriorityTunnel sends every packet without Mark to Table; what Table
 	// throws, and marked packets, go on to the main table and its
@@ -92,34 +98,43 @@ func prefixes(ps []netip.Prefix) []netip.Prefix {
 }
 
 // TrustedOnLink is which of the physical interfaces' on-link subnets keep
-// their main-table lookup ahead of the tunnel: those inside the local
-// ranges (lists.Local: LANs, link-local, ULA), and other IPv4 subnets of
-// /24 or longer and IPv6 ones of /64 or longer. A network's DHCP server
-// handing out a huge netmask (an address in 8.0.0.0/8 "on-link") gets
-// nothing past the tunnel that way.
+// their main-table lookup ahead of the tunnel: those entirely inside the
+// local ranges (lists.Local: RFC 1918 LANs, link-local, ULA). Whatever
+// public subnet a network makes "on-link" (a DHCP address 1.1.1.50/24, a
+// PPP peer, a router advertisement's prefix) goes through the tunnel like
+// any other destination (TunnelCrack's LocalNet attack), unless the rules
+// send it direct.
 func TrustedOnLink(p netip.Prefix) bool {
 	if !p.IsValid() || p.Bits() == 0 {
 		return false
 	}
 	var b lists.Builder
-	if b.AddPrefix(p) == nil {
-		if set, _ := b.Build(); set.Minus(lists.Local()).IsEmpty() {
+	if b.AddPrefix(p) != nil {
+		return false
+	}
+	set, _ := b.Build()
+	return set.Minus(lists.Local()).IsEmpty()
+}
+
+func overlaps(p netip.Prefix, among []netip.Prefix) bool {
+	for _, q := range among {
+		if p.Overlaps(q) {
 			return true
 		}
 	}
-	if p.Addr().Is4() {
-		return p.Bits() >= 24
-	}
-	return p.Bits() >= 64
+	return false
 }
 
 // Config is w as netcfg configuration, for each family, given the OS's
 // routing (s):
 //
-//	rule 5300: to <overlay network> lookup main suppress_prefixlength 0
+//	rule 5299: to <overlay network> lookup 0x7470
 //	rule 5300: to <trusted on-link subnet> lookup main suppress_prefixlength 0
+//	rule 5300: oif <physical interface> lookup main suppress_prefixlength 0
 //	rule 5301: not fwmark 0x7470 lookup 0x7470
-//	table 0x7470: default dev <TUN>              (IPv6 only while the TUN carries it)
+//	table 0x7470: <overlay network> dev <TUN>    (IPv6 only while the TUN carries it)
+//	              unreachable <overlay network> metric 2048
+//	              default dev <TUN>              (IPv6 only while the TUN carries it)
 //	              unreachable default metric 2048
 //	              throw <direct prefix>, throw <endpoint>
 //
@@ -130,22 +145,43 @@ func TrustedOnLink(p netip.Prefix) bool {
 // table.
 func Config(w Want, s netcfg.Survey) netcfg.Config {
 	var cfg netcfg.Config
-	ahead := prefixes(w.Overlay)
+	overlay := prefixes(w.Overlay)
+	var onLink []netip.Prefix
 	for _, p := range s.OnLink {
-		if TrustedOnLink(p) {
-			ahead = append(ahead, p)
+		if TrustedOnLink(p) && !overlaps(p, overlay) {
+			onLink = append(onLink, p)
 		}
 	}
-	ahead = prefixes(ahead)
+	onLink = prefixes(onLink)
 	for _, f := range []netcfg.Family{netcfg.IPv4, netcfg.IPv6} {
-		for _, p := range ahead {
+		for _, p := range overlay {
 			if netcfg.FamilyOf(p.Addr()) == f {
-				// Without its default: a prefix whose own route is gone
-				// (a TUN that lost its addresses) must not find it.
+				cfg.Rules = append(cfg.Rules, netcfg.Rule{Family: f, Priority: PriorityOverlay, Dst: p, Table: Table})
+			}
+		}
+		for _, p := range onLink {
+			if netcfg.FamilyOf(p.Addr()) == f {
+				// Without its default: a subnet whose own route is gone
+				// must not find main's default.
 				cfg.Rules = append(cfg.Rules, netcfg.Rule{Family: f, Priority: PriorityMain, Dst: p, SuppressDefaultRoutes: true})
 			}
 		}
+		for _, ifc := range s.OnLinkInterfaces {
+			if ifc != w.TUN {
+				// Lookups for a physical interface: the kernel resolving
+				// a gateway for a route given with it (a DHCP client
+				// adding the default route, on a public subnet or one not
+				// mirrored yet), and sockets bound to it.
+				cfg.Rules = append(cfg.Rules, netcfg.Rule{Family: f, Priority: PriorityMain, Oif: ifc, SuppressDefaultRoutes: true})
+			}
+		}
 		cfg.Rules = append(cfg.Rules, netcfg.Rule{Family: f, Priority: PriorityTunnel, Table: Table, Mark: Mark, Invert: true})
+	}
+	for _, p := range overlay {
+		if p.Addr().Is4() || w.IPv6 {
+			cfg.Routes = append(cfg.Routes, netcfg.Route{Dst: p, Interface: w.TUN, Table: Table})
+		}
+		cfg.Routes = append(cfg.Routes, netcfg.Route{Dst: p, Type: netcfg.RouteUnreachable, Metric: unreachableMetric, Table: Table})
 	}
 	thrown := lists.Builder{}
 	thrown.AddSet(w.Direct)
@@ -197,7 +233,10 @@ type Enforcer struct {
 	mu      sync.Mutex
 	want    *Want // last given
 	failing bool  // the last Apply or re-Apply of want failed
-	status  Status
+	// unsupported: the OS can't enforce the table at all (a kernel without
+	// rule protocols); nothing is retried.
+	unsupported bool
+	status      Status
 }
 
 // Status is what an Enforcer reports: numbers and fixed texts only.
@@ -224,6 +263,9 @@ type Status struct {
 const (
 	ErrorApply   = "applying the route table failed"
 	ErrorReapply = "putting the route table back failed"
+	// ErrorUnsupported: the kernel can't hold the table (rules need
+	// Linux 4.17 or later); terminal.
+	ErrorUnsupported = "the route table needs Linux 4.17 or later"
 )
 
 const (
@@ -244,7 +286,7 @@ func Open(c netcfg.Configurator, log *slog.Logger) *Enforcer {
 		log = slog.New(slog.DiscardHandler)
 	}
 	e := &Enforcer{cfg: c, log: log}
-	e.startWatching()
+	e.startWatching(false)
 	return e
 }
 
@@ -268,13 +310,15 @@ func Clear() error {
 	return c.Close()
 }
 
-func (e *Enforcer) startWatching() {
+// startWatching starts the watcher; with check it re-applies first, for
+// what changed while it wasn't watching.
+func (e *Enforcer) startWatching(check bool) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	e.stopWatch, e.watching = cancel, done
 	go func() {
 		defer close(done)
-		e.watch(ctx)
+		e.watch(ctx, check)
 	}()
 }
 
@@ -297,12 +341,16 @@ func (e *Enforcer) Enforce(ctx context.Context, w Want) error {
 	}
 	e.mu.Lock()
 	same := e.want != nil && e.want.Equal(w) && !e.failing
+	unsupported := e.unsupported
 	e.mu.Unlock()
+	if unsupported {
+		return fmt.Errorf("routetable: %s: %w", ErrorUnsupported, errors.ErrUnsupported)
+	}
 	if same {
 		return nil
 	}
 	e.pauseWatching()
-	defer e.startWatching()
+	defer e.startWatching(true)
 	return e.apply(ctx, w, false)
 }
 
@@ -329,6 +377,9 @@ func (e *Enforcer) apply(ctx context.Context, w Want, again bool) error {
 		e.status.Error = ErrorApply
 		if again {
 			e.status.Error = ErrorReapply
+		}
+		if errors.Is(err, errors.ErrUnsupported) {
+			e.unsupported, e.status.Error = true, ErrorUnsupported
 		}
 		return fmt.Errorf("routetable: %w", err)
 	}
@@ -370,7 +421,7 @@ func (e *Enforcer) Close() error {
 
 // watch re-applies the last Want after each burst of changes Watch
 // reports, every Backstop, and every RetryAfter while that fails.
-func (e *Enforcer) watch(ctx context.Context) {
+func (e *Enforcer) watch(ctx context.Context, check bool) {
 	var ch <-chan struct{}
 	var rewatch <-chan time.Time
 	subscribe := func() {
@@ -385,13 +436,25 @@ func (e *Enforcer) watch(ctx context.Context) {
 		}
 	}
 	subscribe()
+	if check {
+		// Subscribed first, so nothing falls between the check and the
+		// events.
+		if !e.settle(ctx, ch) {
+			return
+		}
+		e.reapply(ctx)
+	}
 	for {
 		wait := Backstop
 		e.mu.Lock()
 		if e.failing {
 			wait = RetryAfter
 		}
+		unsupported := e.unsupported
 		e.mu.Unlock()
+		if unsupported {
+			return // nothing to retry: Close still removes what's left
+		}
 		timer := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
@@ -436,9 +499,9 @@ func (e *Enforcer) settle(ctx context.Context, ch <-chan struct{}) bool {
 
 func (e *Enforcer) reapply(ctx context.Context) {
 	e.mu.Lock()
-	w := e.want
+	w, unsupported := e.want, e.unsupported
 	e.mu.Unlock()
-	if w == nil || ctx.Err() != nil {
+	if w == nil || unsupported || ctx.Err() != nil {
 		return
 	}
 	if err := e.apply(ctx, *w, true); err != nil && ctx.Err() == nil {

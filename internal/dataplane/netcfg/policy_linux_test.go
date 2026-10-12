@@ -37,6 +37,7 @@ func policyConfig() netcfg.Config {
 			{Family: netcfg.IPv4, Priority: 5300, SuppressDefaultRoutes: true},
 			{Family: netcfg.IPv6, Priority: 5300, SuppressDefaultRoutes: true},
 			{Family: netcfg.IPv4, Priority: 5299, Dst: pfx("10.51.0.0/16")},
+			{Family: netcfg.IPv4, Priority: 5298, Oif: "ovl0", SuppressDefaultRoutes: true},
 			{Family: netcfg.IPv6, Priority: 5299, Dst: pfx("fd51::/48")},
 			{Family: netcfg.IPv4, Priority: 5301, Table: policyTable, Mark: 0x4242, Invert: true},
 			{Family: netcfg.IPv6, Priority: 5301, Table: policyTable, Mark: 0x4242, Invert: true},
@@ -83,8 +84,8 @@ func TestPolicyRoutingIsAppliedAndRemoved(t *testing.T) {
 		t.Fatal(err)
 	}
 	requireSame(t, "routes", policyConfigRoutes, ownerRoutes(t, n.h, netcfg.OwnerRouteTable))
-	if got := ownRules(t, n.h, netcfg.OwnerRouteTable); len(got) != 6 {
-		t.Fatalf("rules: %q, want 6", got)
+	if got := ownRules(t, n.h, netcfg.OwnerRouteTable); len(got) != 7 {
+		t.Fatalf("rules: %q, want 7", got)
 	}
 	applied := snapshot(t, n.h)
 	// The rules do what they say: the table's default for unmarked
@@ -111,6 +112,22 @@ func TestPolicyRoutingIsAppliedAndRemoved(t *testing.T) {
 		t.Errorf("re-applying made %d changes", ch)
 	}
 	requireSame(t, "after re-applying", applied, snapshot(t, n.h))
+	// Nothing is deleted and added back either (a rule the dump reads
+	// differently from how it was added would be, every time).
+	wctx, stop := context.WithCancel(ctx)
+	events, err := c.Watch(wctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Apply(ctx, policyConfig()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-events:
+		t.Error("re-applying deleted a route or rule of its own")
+	case <-time.After(500 * time.Millisecond):
+	}
+	stop()
 
 	// Outside changes are repaired; a rule dropped from the config goes.
 	n.ip(t, "rule", "del", "priority", "5301")
@@ -120,11 +137,11 @@ func TestPolicyRoutingIsAppliedAndRemoved(t *testing.T) {
 	}
 	requireSame(t, "after repairing", applied, snapshot(t, n.h))
 	less := policyConfig()
-	less.Rules = less.Rules[:5]
+	less.Rules = less.Rules[:6]
 	if err := c.Apply(ctx, less); err != nil {
 		t.Fatal(err)
 	}
-	if got := ownRules(t, n.h, netcfg.OwnerRouteTable); len(got) != 5 {
+	if got := ownRules(t, n.h, netcfg.OwnerRouteTable); len(got) != 6 {
 		t.Errorf("rules after dropping one: %q", got)
 	}
 	if err := c.Close(); err != nil {
@@ -140,7 +157,7 @@ func TestCancelledPolicyApplyLeavesNothing(t *testing.T) {
 	before := snapshot(t, n.h)
 	c := n.configuratorFor(t, netcfg.OwnerRouteTable)
 	left := &atomic.Int32{}
-	left.Store(int32(len(policyConfig().Routes) + 4)) // every route and four rules
+	left.Store(int32(len(policyConfig().Routes) + 5)) // every route and five rules
 	err := c.Apply(cancelAfter{context.Background(), left}, policyConfig())
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Apply: %v, want context.Canceled", err)
@@ -168,7 +185,7 @@ func TestTakesOverRulesLeftByACrash(t *testing.T) {
 	if err := rt.Apply(context.Background(), cfg); err != nil {
 		t.Fatal(err)
 	}
-	if got := ownRules(t, n.h, netcfg.OwnerRouteTable); len(got) != 5 {
+	if got := ownRules(t, n.h, netcfg.OwnerRouteTable); len(got) != 6 {
 		t.Errorf("rules after the takeover: %q", got)
 	}
 	if err := rt.Close(); err != nil {
@@ -269,6 +286,9 @@ func TestSurveyFindsOnLinkSubnetsAndForeignRules(t *testing.T) {
 		if !slices.Contains(s.OnLink, want) {
 			t.Errorf("on-link %v, want %v among them", s.OnLink, want)
 		}
+	}
+	if !slices.Contains(s.OnLinkInterfaces, "eth0") {
+		t.Errorf("on-link interfaces %v, want eth0 among them", s.OnLinkInterfaces)
 	}
 	if slices.Contains(s.OnLink, pfx("198.51.100.0/24")) {
 		t.Errorf("a static route counted as on-link: %v", s.OnLink)
