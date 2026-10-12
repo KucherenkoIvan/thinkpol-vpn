@@ -488,12 +488,22 @@ func TestSeededSecretsRepeat(t *testing.T) {
 	if same(a, secrets(f.spec, InsecureSeededSecrets("other"))) || same(a, secrets(f.spec, nil)) {
 		t.Fatal("secrets repeat without the seed")
 	}
-	// Fewer paths: the links that remain keep their secrets.
-	fewer := *f.spec
-	fewer.Paths = fewer.Paths[:len(fewer.Paths)-1]
-	kept := secrets(&fewer, InsecureSeededSecrets("lab"))
-	if len(kept) >= len(a) {
-		t.Fatalf("%d links with a path fewer, %d before", len(kept), len(a))
+	// A path fewer: the links that remain keep their secrets. (Not the
+	// paths the chain's exit needs.)
+	var kept map[link][][]byte
+	for i := range f.spec.Paths {
+		fewer := *f.spec
+		fewer.Paths = slices.Delete(slices.Clone(f.spec.Paths), i, i+1)
+		if _, _, err := Plan(&fewer, f.keys, 1, nil); err != nil {
+			continue
+		}
+		if k := secrets(&fewer, InsecureSeededSecrets("lab")); len(k) < len(a) {
+			kept = k
+			break
+		}
+	}
+	if kept == nil {
+		t.Fatal("no path of the reference spec can go without a link going too")
 	}
 	for l, creds := range kept {
 		if !slices.EqualFunc(creds, a[l], bytes.Equal) {
