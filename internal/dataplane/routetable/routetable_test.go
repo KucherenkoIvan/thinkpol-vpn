@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"runtime"
 	"slices"
 	"sync"
 	"testing"
@@ -79,7 +80,7 @@ func TestConfigLayout(t *testing.T) {
 		"8.0.0.0/8", "1.1.1.0/24", "203.0.113.9/32", // public: never trusted
 		"172.16.0.0/24", // private, but not direct by the rules
 	)
-	cfg := routetable.Config(w, survey)
+	cfg := routetable.PolicyRouting(w, survey)
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +124,7 @@ func TestConfigLayout(t *testing.T) {
 // Without IPv6 in the TUN, IPv6 meets only the unreachable default (and
 // the throws): it is dropped, never sent around the tunnel.
 func TestConfigWithoutIPv6(t *testing.T) {
-	cfg := routetable.Config(routetable.Want{TUN: "thinkpol0", Direct: set(t, "fe80::/10")}, up())
+	cfg := routetable.PolicyRouting(routetable.Want{TUN: "thinkpol0", Direct: set(t, "fe80::/10")}, up())
 	want := []string{
 		"0.0.0.0/0 dev thinkpol0 table 29808",
 		"unreachable ::/0 metric 2048 table 29808",
@@ -150,7 +151,7 @@ func TestConfigWithTheTUNDown(t *testing.T) {
 		"unreachable ::/0 metric 2048 table 29808",
 		"throw 198.51.100.0/24 table 29808",
 	}
-	if got := routeStrings(routetable.Config(w, s)); !slices.Equal(got, want) {
+	if got := routeStrings(routetable.PolicyRouting(w, s)); !slices.Equal(got, want) {
 		t.Errorf("routes:\n got %q\nwant %q", got, want)
 	}
 	if routetable.TUNUp(routetable.Want{TUN: "gone0"}, s) {
@@ -161,7 +162,7 @@ func TestConfigWithTheTUNDown(t *testing.T) {
 // All of IPv4 direct (no overlay network claiming part of it) is a throw
 // default, not a second default route of the same identity.
 func TestConfigWithEverythingDirect(t *testing.T) {
-	cfg := routetable.Config(routetable.Want{TUN: "thinkpol0", Direct: set(t, "0.0.0.0/0"), IPv6: true}, up())
+	cfg := routetable.PolicyRouting(routetable.Want{TUN: "thinkpol0", Direct: set(t, "0.0.0.0/0"), IPv6: true}, up())
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -328,7 +329,12 @@ func TestEnforcerAppliesChangesAndReappliesOnEvents(t *testing.T) {
 	if n := f.count(); n != 1 {
 		t.Fatalf("%d Applies for one Want twice, want 1", n)
 	}
-	if st := e.Status(); !st.Enforced || st.Routes != 3 || st.RulesAhead != 2 || st.Error != "" {
+	// This OS's layout: three routes and two rules ahead on Linux.
+	routes, ahead := len(routetable.Config(w, survey).Routes), routetable.Ahead(w, survey)
+	if runtime.GOOS == "linux" && (routes != 3 || ahead != 2) {
+		t.Errorf("Linux layout: %d routes, %d ahead", routes, ahead)
+	}
+	if st := e.Status(); !st.Enforced || st.Routes != routes || st.RulesAhead != ahead || st.Error != "" {
 		t.Errorf("status %+v", st)
 	}
 	// After an Enforce the watcher checks once, for what it missed.

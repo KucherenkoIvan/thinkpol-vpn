@@ -9,9 +9,10 @@ import (
 // Transports is the node's transport registry: every transport a map may
 // name. Supervisor, worker and device build it the same way.
 //
-// With markSockets, every link's socket carries routetable.Mark
-// (routetable.SocketControl, Linux), so it bypasses the TUN however the
-// route table routes its destination: a device's links, where route-table
+// With markSockets, every link's socket carries routetable.Mark on Linux
+// and is bound to the physical interface on macOS
+// (routetable.SocketControl), so it bypasses the TUN however the route
+// table routes its destination: a device's links, where route-table
 // mode sends everything else into the TUN. A server's workers don't mark
 // (their namespaces route nothing into the TUN, and marking needs
 // CAP_NET_ADMIN over the namespace). Never WireGuard: it has no sockets.

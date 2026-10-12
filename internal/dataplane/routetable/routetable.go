@@ -144,8 +144,8 @@ func overlaps(p netip.Prefix, among []netip.Prefix) bool {
 	return false
 }
 
-// Config is w as netcfg configuration, for each family, given the OS's
-// routing (s):
+// PolicyRouting is w as netcfg configuration for Linux, for each family,
+// given the OS's routing (s):
 //
 //	rule 5298: oif <every link but the TUN and lo> lookup main suppress_prefixlength 0
 //	rule 5299: to <overlay network> lookup 0x7470
@@ -162,7 +162,7 @@ func overlaps(p netip.Prefix, among []netip.Prefix) bool {
 // the gateway. Everything else meets the TUN's default or, when the TUN
 // can't take it, the unreachable one: it never falls through to the main
 // table.
-func Config(w Want, s netcfg.Survey) netcfg.Config {
+func PolicyRouting(w Want, s netcfg.Survey) netcfg.Config {
 	var cfg netcfg.Config
 	overlay := prefixes(w.Overlay)
 	var onLink []netip.Prefix
@@ -275,8 +275,10 @@ type Status struct {
 	// Reapplies counts re-Applies after a change or the backstop (most
 	// change nothing).
 	Reapplies uint64
-	// RulesAhead counts other software's policy rules that come before
-	// ours (a mesh VPN's, say): they may route around the tunnel.
+	// RulesAhead counts what other software has in place that may route
+	// around the tunnel and the layout can't override (Ahead): policy
+	// rules before ours (a mesh VPN's, say) on Linux, host routes over
+	// tunneled destinations on macOS.
 	RulesAhead int
 }
 
@@ -411,12 +413,7 @@ func (e *Enforcer) apply(ctx context.Context, w Want, again bool) error {
 	if !TUNUp(w, s) {
 		e.status.Enforced, e.status.Error = false, ErrorTUNDown
 	}
-	e.status.RulesAhead = 0
-	for _, p := range s.ForeignRules {
-		if p < PriorityTunnel {
-			e.status.RulesAhead++
-		}
-	}
+	e.status.RulesAhead = Ahead(w, s)
 	if !again || e.status.Routes != len(cfg.Routes) {
 		e.log.Info("route table applied", "routes", len(cfg.Routes), "took", took.Round(time.Millisecond))
 		e.status.LastApply = took
