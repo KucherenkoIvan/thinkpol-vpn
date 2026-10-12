@@ -1,18 +1,22 @@
 package devmap
 
 import (
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
 	"maps"
 	"net/netip"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/blobs"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport/udp"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/lists"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
 
@@ -120,6 +124,22 @@ func Plan(s *Spec, k Keys, version uint64, random io.Reader) (netmap.Contents, N
 			node.Listeners = append(node.Listeners, netmap.Listener{Transport: l.Transport, Address: l.AddrPort})
 		}
 		sections[i].Node = node
+		for _, l := range n.Lists {
+			sections[i].Blobs = append(sections[i].Blobs, s.Lists[l].Ref)
+		}
+	}
+	var header []netmap.BlobRef
+	var total uint64
+	for _, l := range s.Lists {
+		if l.Ref.Size == 0 {
+			return netmap.Contents{}, nil, &Error{File: s.File, Pos: l.Pos, Msg: "list " + l.Name + ": not read (ReadLists)"}
+		}
+		if total += l.Ref.Size; total > blobs.ServerMaxHeldSize {
+			return netmap.Contents{}, nil, &Error{File: s.File, Pos: l.Pos, Msg: fmt.Sprintf("list %s: the lists together pass %d bytes, what a server holds", l.Name, blobs.ServerMaxHeldSize)}
+		}
+		ref := l.Ref
+		ref.Name = "" // the header lists blobs unnamed
+		header = append(header, ref)
 	}
 
 	// Peers and routes come from the paths: the ends are peers, each with
@@ -191,7 +211,7 @@ func Plan(s *Spec, k Keys, version uint64, random io.Reader) (netmap.Contents, N
 		}
 	}
 
-	c := netmap.Contents{SpaceID: k.Space, Version: version, RecoveryKey: k.RecoveryKey}
+	c := netmap.Contents{SpaceID: k.Space, Version: version, RecoveryKey: k.RecoveryKey, Blobs: header}
 	for i, n := range s.Nodes {
 		if err := checkWithTransports(sections[i]); err != nil {
 			return netmap.Contents{}, nil, fail(n, "%v", err)
@@ -375,4 +395,48 @@ func Build(s *Spec, k Keys, version uint64, random io.Reader) ([]byte, error) {
 		return nil, fmt.Errorf("%s: %w (recipients are the nodes in spec order)", s.File, err)
 	}
 	return env, err
+}
+
+// ReadLists reads each of the spec's list files with read (a path relative
+// to the spec's directory unless absolute), checks it is a GeoIP list blob
+// a node would hold, and sets its reference.
+func ReadLists(s *Spec, read func(path string) ([]byte, error)) error {
+	var errs []error
+	fail := func(l List, format string, args ...any) {
+		errs = append(errs, &Error{File: s.File, Pos: l.Pos, Msg: "list " + l.Name + ": " + fmt.Sprintf(format, args...)})
+	}
+	bySum := map[[32]byte]string{}
+	var total int
+	for i, l := range s.Lists {
+		path := l.File
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(filepath.Dir(s.File), path)
+		}
+		data, err := read(path)
+		if err != nil {
+			fail(l, "%v", err)
+			continue
+		}
+		if len(data) > blobs.MaxBlobSize {
+			fail(l, "%s is %d bytes, more than a node holds (%d)", path, len(data), blobs.MaxBlobSize)
+			continue
+		}
+		// The header lists every list, and servers hold all of them.
+		if total += len(data); total > blobs.ServerMaxHeldSize {
+			fail(l, "the lists together pass %d bytes, what a server holds", blobs.ServerMaxHeldSize)
+			continue
+		}
+		if _, err := lists.Decode(data); err != nil {
+			fail(l, "%s is not a GeoIP list blob (`thinkpol dev lists build` writes them): %v", path, err)
+			continue
+		}
+		ref := netmap.BlobRef{Kind: netmap.BlobGeoIP, SHA256: sha256.Sum256(data), Size: uint64(len(data)), Name: l.Name}
+		if other, dup := bySum[ref.SHA256]; dup {
+			fail(l, "same content as list %s", other)
+			continue
+		}
+		bySum[ref.SHA256] = l.Name
+		s.Lists[i].Ref = ref
+	}
+	return errors.Join(errs...)
 }

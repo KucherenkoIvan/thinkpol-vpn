@@ -33,13 +33,15 @@ func (r *rawChain) UnmarshalYAML(node ast.Node) error {
 }
 
 type rawPresets struct {
-	Chain scalar `yaml:"chain"`
+	Domestic scalar `yaml:"domestic"`
+	Chain    scalar `yaml:"chain"`
 }
 
-// routing checks the spec's chains, rules and presets; the map's builder
-// checks the rest (the last rule is default, an exit is a peer of every
-// device and allows egress).
-func (c *checker) routing(s *Spec, raw *rawSpec, byName map[string]int) {
+// routing checks the spec's chains, rules and presets against its nodes
+// and lists; the map's builder checks the rest (the last rule is default,
+// an exit is a peer of every device and allows egress, every device names
+// the lists its rules use).
+func (c *checker) routing(s *Spec, raw *rawSpec, byName, lists map[string]int) {
 	chains := map[string]bool{}
 	for _, rc := range raw.Chains {
 		ch := Chain{Pos: rc.pos, Exit: -1}
@@ -94,7 +96,20 @@ func (c *checker) routing(s *Spec, raw *rawSpec, byName map[string]int) {
 			c.errorf(rr.pos, "rule %s: unknown chain %q (declare it under chains)", r, r.Action.Chain)
 			continue
 		}
+		if _, ok := lists[r.Match.Value]; r.Match.Kind == netmap.MatchGeoIP && !ok {
+			c.errorf(rr.pos, "rule %s: unknown list %q (declare it under lists)", r, r.Match.Value)
+			continue
+		}
 		s.Rules = append(s.Rules, r)
+	}
+	if v := raw.Presets.Domestic; v.set() {
+		if name, ok := c.value(v); ok {
+			if _, known := lists[name]; !known {
+				c.errorf(v.pos, "presets: unknown list %q", name)
+			} else {
+				s.Presets.Domestic = name
+			}
+		}
 	}
 	if v := raw.Presets.Chain; v.set() {
 		if name, ok := c.value(v); ok {

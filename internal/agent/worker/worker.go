@@ -2,8 +2,10 @@ package worker
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"net/netip"
+	"sync"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/ipc"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
@@ -38,6 +40,55 @@ type Session struct {
 	// shared listeners did for this space (latest-wins), for the worker's
 	// sealed telemetry. Only the space's own figures.
 	SharedCounters <-chan ipc.SharedCounters
+	// Seeds are the space's blob seeds the supervisor sent, each in place
+	// before the config whose map names it is delivered.
+	Seeds *Seeds
+}
+
+// Seeds hold blob seeds by the SHA-256 of their content; the data plane
+// checks them against its map before use.
+type Seeds struct {
+	mu sync.Mutex
+	m  map[[32]byte][]byte
+}
+
+// NewSeeds holds none.
+func NewSeeds() *Seeds { return &Seeds{m: map[[32]byte][]byte{}} }
+
+// Add holds b.
+func (s *Seeds) Add(b []byte) {
+	s.mu.Lock()
+	s.m[sha256.Sum256(b)] = b
+	s.mu.Unlock()
+}
+
+// Get returns the seed with this SHA-256, nil if none.
+func (s *Seeds) Get(sha [32]byte) []byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.m[sha]
+}
+
+// Retain drops every seed keep refuses.
+func (s *Seeds) Retain(keep func(sha [32]byte) bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for sha := range s.m {
+		if !keep(sha) {
+			delete(s.m, sha)
+		}
+	}
+}
+
+// Hashes lists the seeds held.
+func (s *Seeds) Hashes() [][32]byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([][32]byte, 0, len(s.m))
+	for sha := range s.m {
+		out = append(out, sha)
+	}
+	return out
 }
 
 // Serve runs a space's data plane until ctx ends. Returning early, with or

@@ -25,6 +25,7 @@
 //	supervisor → worker  Listeners (JSON []Listener) after Ready and whenever the shared listeners change
 //	supervisor → worker  Stream  (listener id + consumed bytes, the connection's fd attached) per routed connection
 //	supervisor → worker  Counters (JSON SharedCounters) periodically: the space's own shared-listener figures
+//	supervisor → worker  Blob    (a sealed memfd attached) each of the space's blob seeds, once per worker, before the Config that names it
 //	supervisor → worker  Stop    (empty) shut down and exit 0
 //
 // The data socket carries only Datagram messages, both ways: a
@@ -48,7 +49,7 @@ import (
 // Version is the protocol version carried in Init; a worker refuses an Init
 // whose version differs, so a half-replaced binary can't mismatch its
 // supervisor. Bump it on any wire change here.
-const Version = 3
+const Version = 4
 
 // ErrFull is returned by TrySend when the socket's send buffer is full, so
 // the message was not sent; the caller drops it.
@@ -66,6 +67,7 @@ const (
 	KindStream    Kind = 6 // control socket: stream handoff, listener id + consumed bytes, fd attached
 	KindListeners Kind = 7 // control socket: JSON []Listener
 	KindCounters  Kind = 8 // control socket: JSON SharedCounters, periodically
+	KindBlob      Kind = 9 // control socket: one blob seed, a sealed memfd attached
 )
 
 func (k Kind) String() string {
@@ -86,6 +88,8 @@ func (k Kind) String() string {
 		return "listeners"
 	case KindCounters:
 		return "counters"
+	case KindBlob:
+		return "blob"
 	}
 	return fmt.Sprintf("Kind(%d)", uint8(k))
 }
@@ -96,6 +100,8 @@ const (
 	MaxMessageSize = 64 << 10
 	// MaxFiles bounds the descriptors attached to one message.
 	MaxFiles = 4
+	// MaxBlobSize bounds a Blob message's memfd.
+	MaxBlobSize = 16 << 20
 	// ControlFD and DataFD are where a worker finds its two sockets.
 	ControlFD = 3
 	DataFD    = 4

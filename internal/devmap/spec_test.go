@@ -1,10 +1,13 @@
 package devmap
 
 import (
+	"errors"
 	"net/netip"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
 
 func TestSpecErrorsNameTheirLocation(t *testing.T) {
@@ -53,6 +56,13 @@ func TestSpecErrorsNameTheirLocation(t *testing.T) {
 		{"device relays", nodes + "  - name: e\n    kind: device\npaths:\n  - [s, d, e]\n", []string{"spec.yaml:10:9: d is a device and can't relay"}},
 		{"same path twice", nodes + "paths:\n  - [d, s]\n  - [d, s]\n", []string{"spec.yaml:9:5: same path as line 8"}},
 		{"same path reversed", nodes + "paths:\n  - [d, s]\n  - [s, d]\n", []string{"spec.yaml:9:5: same path as line 8, reversed"}},
+		{"list without a name", "lists:\n  - file: ru.geoip\n" + nodes, []string{"spec.yaml:2:5: list without a name"}},
+		{"list without a file", "lists:\n  - name: ru\n" + nodes, []string{"spec.yaml:2:5: list ru: file is missing"}},
+		{"bad list name", "lists:\n  - {name: RU_1, file: x}\n" + nodes, []string{`spec.yaml:2:12: lists: bad list name "RU_1"`}},
+		{"list twice", "lists:\n  - {name: ru, file: a}\n  - {name: ru, file: b}\n" + nodes, []string{`spec.yaml:3:12: list "ru" is declared twice`}},
+		{"list field", "lists:\n  - {name: ru, file: a, kind: geoip}\n" + nodes, []string{`unknown field "kind"`}},
+		{"node names an unknown list", "nodes:\n  - name: d\n    kind: device\n    lists: [ru]\n", []string{`spec.yaml:4:13: d: unknown list "ru"`}},
+		{"node names a list twice", "lists:\n  - {name: ru, file: a}\nnodes:\n  - name: d\n    kind: device\n    lists: [ru, ru]\n", []string{`spec.yaml:6:17: d: list "ru" is named twice`}},
 		{"ingress not a boolean", "nodes:\n  - name: s\n    kind: server\n    ingress: yes\n", []string{`spec.yaml:4:14: s: ingress "yes" is neither true nor false`}},
 		{"egress not a boolean", "nodes:\n  - name: s\n    kind: server\n    egress: [true]\n", []string{"spec.yaml:4:13: expected a single value"}},
 		{"device with ingress", "nodes:\n  - name: d\n    kind: device\n    ingress: true\n", []string{"spec.yaml:4:14: d: a device has no ingress setting"}},
@@ -67,6 +77,8 @@ func TestSpecErrorsNameTheirLocation(t *testing.T) {
 		{"rule unparsable", nodes + "rules:\n  - local direct\n", []string{"spec.yaml:8:5: rule \"local direct\""}},
 		{"rule bad cidr", nodes + "rules:\n  - cidr:10.1.1.1/8 -> direct\n", []string{"spec.yaml:8:5: "}},
 		{"rule unknown chain", nodes + "rules:\n  - default -> chain:nl\n", []string{`spec.yaml:8:5: rule default -> chain:nl: unknown chain "nl"`}},
+		{"rule unknown list", nodes + "rules:\n  - geoip:ru -> direct\n", []string{`spec.yaml:8:5: rule geoip:ru -> direct: unknown list "ru"`}},
+		{"preset unknown list", nodes + "presets:\n  domestic: ru\n", []string{`spec.yaml:8:13: presets: unknown list "ru"`}},
 		{"preset unknown chain", nodes + "presets:\n  chain: nl\n", []string{`spec.yaml:8:10: presets: unknown chain "nl"`}},
 		{"several errors at once", "nodes:\n  - name: a\n    kind: phone\n  - name: b\n", []string{"spec.yaml:3:11: a: kind", "spec.yaml:4:5: b: kind is missing"}},
 	}
@@ -210,3 +222,61 @@ func TestIPv6NetworkComesFromTheSpaceKeys(t *testing.T) {
 		t.Fatalf("the spec's network is %v", got)
 	}
 }
+
+func TestReadLists(t *testing.T) {
+	spec := "lists:\n  - {name: ru, file: lists/ru.geoip}\n  - {name: by, file: /abs/by.geoip}\n" +
+		"nodes:\n  - name: d\n    kind: device\n    lists: [by, ru]\n  - name: s\n    kind: server\n    ingress: true\n    endpoints: [udp://192.0.2.1:4500]\npaths:\n  - [d, s]\n"
+	s, err := ParseSpec("specs/spec.yaml", []byte(spec), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var read []string
+	if err := ReadLists(s, func(path string) ([]byte, error) { read = append(read, path); return testList(path) }); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(read, []string{"specs/lists/ru.geoip", "/abs/by.geoip"}) {
+		t.Errorf("read %v", read)
+	}
+	f := fixture{spec: s}
+	f.space, _ = NewSpaceKeys(nil)
+	f.nodes = map[string]NodeKeys{}
+	f.keys = Keys{Space: f.space.ID, IPv6Network: f.space.IPv6Network, Signing: f.space.Signing, RecoveryKey: f.space.Trust().RecoveryKey, Nodes: map[string]NodePublic{}}
+	for _, n := range s.Nodes {
+		k, _ := NewNodeKeys(nil)
+		f.nodes[n.Name], f.keys.Nodes[n.Name] = k, k.Public()
+	}
+	m, secs, _ := f.sections(t, 1)
+	if h := m.Header().Blobs; len(h) != 2 || h[0].Name != "" || h[0] != unnamed(s.Lists[0].Ref) || h[1] != unnamed(s.Lists[1].Ref) {
+		t.Errorf("header blobs %+v", h)
+	}
+	if b := secs["d"].Blobs; len(b) != 2 || b[0] != s.Lists[1].Ref || b[1] != s.Lists[0].Ref || b[0].Name != "by" {
+		t.Errorf("d's blobs %+v", b)
+	}
+	if b := secs["s"].Blobs; len(b) != 0 {
+		t.Errorf("s's blobs %+v", b)
+	}
+
+	for name, read := range map[string]func(string) ([]byte, error){
+		"unreadable":   func(string) ([]byte, error) { return nil, errors.New("no such file") },
+		"not a list":   func(string) ([]byte, error) { return []byte("junk"), nil },
+		"same content": func(string) ([]byte, error) { return testList("x") },
+	} {
+		s, _ := ParseSpec("spec.yaml", []byte(spec), nil)
+		if err := ReadLists(s, read); err == nil || !strings.Contains(err.Error(), "spec.yaml:") {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	// Two lists of 9 MiB: together past what a server holds (the size is
+	// checked before the content).
+	nine := func(string) ([]byte, error) { return make([]byte, 9<<20), nil }
+	tooMuch, _ := ParseSpec("spec.yaml", []byte(spec), nil)
+	if err := ReadLists(tooMuch, nine); err == nil || !strings.Contains(err.Error(), "list by: the lists together pass 16777216 bytes") {
+		t.Errorf("lists past the total: %v", err)
+	}
+	unread, _ := ParseSpec("spec.yaml", []byte(spec), nil)
+	if _, _, err := Plan(unread, f.keys, 1, nil); err == nil || !strings.Contains(err.Error(), "not read") {
+		t.Errorf("planning unread lists: %v", err)
+	}
+}
+
+func unnamed(r netmap.BlobRef) netmap.BlobRef { r.Name = ""; return r }

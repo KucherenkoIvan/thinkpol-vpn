@@ -166,3 +166,24 @@ func (d *trustedDir) write(name string, data []byte, perm os.FileMode) error {
 	}
 	return d.f.Sync()
 }
+
+// mkdir makes the directory name in d (0700, as the umask allows) unless it
+// exists.
+func (d *trustedDir) mkdir(name string) error {
+	if err := unix.Mkdirat(int(d.f.Fd()), name, 0o700); err != nil && !errors.Is(err, unix.EEXIST) {
+		return &os.PathError{Op: "mkdir", Path: d.path + string(os.PathSeparator) + name, Err: err}
+	}
+	return nil
+}
+
+// remove removes the file name from d; dir removes an empty directory.
+func (d *trustedDir) remove(name string, dir bool) error {
+	flags := 0
+	if dir {
+		flags = unix.AT_REMOVEDIR
+	}
+	if err := unix.Unlinkat(int(d.f.Fd()), name, flags); err != nil {
+		return &os.PathError{Op: "remove", Path: d.path + string(os.PathSeparator) + name, Err: err}
+	}
+	return nil
+}

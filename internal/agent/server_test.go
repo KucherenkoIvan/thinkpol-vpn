@@ -73,6 +73,11 @@ type runningServer struct {
 // runServerSpaces serves s's map at version 1, its section changed by
 // edits first.
 func runServerSpaces(t *testing.T, s *testSpace, sup *fakeSupervisor, edits ...func(*netmap.Section)) *runningServer {
+	return runServerSpacesIn(t, s, sup, "", edits...)
+}
+
+// runServerSpacesIn is runServerSpaces with stateDir holding the seeds.
+func runServerSpacesIn(t *testing.T, s *testSpace, sup *fakeSupervisor, stateDir string, edits ...func(*netmap.Section)) *runningServer {
 	t.Helper()
 	_, reg := memoryRegistry(t)
 	r := &runningServer{sup: sup, log: logring.New(1 << 20), maps: make(chan []byte, 1), done: make(chan error, 1)}
@@ -88,6 +93,7 @@ func runServerSpaces(t *testing.T, s *testSpace, sup *fakeSupervisor, edits ...f
 		sup: sup, reg: reg, log: slog.New(slog.NewTextHandler(r.log, nil)), keys: s.a, trust: s.trust(),
 		retryAfter: testRetry, cur: m, section: section,
 	}
+	ss.stateDir = stateDir
 	ctx, cancel := context.WithCancel(context.Background())
 	r.stop = cancel
 	go func() { r.done <- ss.run(ctx, r.maps) }()

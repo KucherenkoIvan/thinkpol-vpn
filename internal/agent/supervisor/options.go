@@ -57,6 +57,12 @@ type Space struct {
 	// the running worker when it changes. A large one travels as a sealed
 	// memfd, never a disk file.
 	Config []byte
+	// Seeds, if set, returns the space's blob seeds (the lists its map
+	// names that the node's state directory holds). It is called when a
+	// worker starts and when the config changes, and each seed the worker
+	// hasn't had yet goes to it as a sealed memfd before the config: the
+	// supervisor keeps no copy, and none rides in the config.
+	Seeds func() [][]byte `json:"-"`
 	// Egress describes how the space reaches the internet, for the egress
 	// rules in the supervisor's table (TP-014). The zero value is no egress.
 	Egress Egress

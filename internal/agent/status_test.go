@@ -28,9 +28,12 @@ type deviceNode struct {
 	failTUN chan struct{}
 }
 
-func startDevice(t *testing.T, s *testSpace, reg *transport.Registry, connect bool) *deviceNode {
+func startDevice(t *testing.T, s *testSpace, reg *transport.Registry, connect bool, prepare ...func(stateDir string)) *deviceNode {
 	t.Helper()
 	cfg := testConfig(s.stateDir(t, s.b, 1))
+	for _, p := range prepare {
+		p(cfg.StateDir)
+	}
 	cfg.Connect = connect
 	rn := newRunningNode()
 	logs, err := NewLogs("debug", rn.log)

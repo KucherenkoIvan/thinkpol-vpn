@@ -72,6 +72,13 @@ type EngineConfig struct {
 	// SHA-256 itself. Called with the engine locked: it must not call back
 	// into the engine. Nil: no blobs, so geoip rules match nothing.
 	Blobs func(netmap.BlobRef) ([]byte, bool)
+	// StandIn, if set, returns the blob of a kind and name the node held
+	// before (TP-017's Service.Latest), for a reference Blobs doesn't have
+	// yet: rules keep using the previous list until its successor is
+	// verified. What it returns is checked against the reference it
+	// returns, which must have the kind and name asked for. Called with
+	// the engine locked, like Blobs.
+	StandIn func(kind netmap.BlobKind, name string) (netmap.BlobRef, []byte, bool)
 	// Rules is the device's own rule choice (its local file), until
 	// SetRules replaces it.
 	Rules rules.Local

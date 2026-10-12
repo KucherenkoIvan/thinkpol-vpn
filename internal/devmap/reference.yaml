@@ -19,6 +19,16 @@ space:                        # optional
   # random /48 `dev keygen space` made (in space.key) is used.
   ipv6: fd12:3456:789a::/48
 
+# Lists: optional. GeoIP list blobs, as `thinkpol dev lists build` writes
+# them (<name>.geoip); a file's path is relative to the spec's directory.
+# The map's header lists every one (servers hold them all and pass them on);
+# a node's section names those in its own `lists`. Nodes fetch them from
+# their peers: give at least one node a copy, in its state directory as
+# blobs/<sha256 of the file, hex> (the SHA-256 `dev lists build` prints).
+lists:
+  - name: ru                  # how rules name it: geoip:ru
+    file: lists/ru.geoip
+
 nodes:
   - name: server-1            # lowercase letters, digits, dashes; also names
                               # the node's key files (server-1.key, .pub)
@@ -60,9 +70,11 @@ nodes:
 
   - name: device-a
     kind: device
+    lists: [ru]               # the lists this node's rules use
 
   - name: device-b
     kind: device
+    lists: [ru]
 
 # Paths: [one end, the relays in between, the other end]. The ends become
 # WireGuard peers of each other, each with its neighbour on the path as a
@@ -89,14 +101,17 @@ paths:
 # every device has a path to (at M1 a chain is its exit). Rules are
 # `<match> -> <action>`, first match wins, the last one `default`; matchers
 # default, local, cidr:<prefix>, geoip:<list>, domain:, domain-suffix:,
-# geosite:; actions direct, block, chain:<name>. Presets: the chain the
-# "everything" and "all but domestic" presets use.
+# geosite:; actions direct, block, chain:<name>; a rule's list must be in
+# every device's lists. Presets: what a device's "everything" and "all but
+# domestic" presets are built from: the domestic list and the chain.
 chains:
   - name: nl
     exit: server-3
 rules:
   - local -> direct
+  - geoip:ru -> direct
   - cidr:198.51.100.0/24 -> direct
   - default -> chain:nl
 presets:
+  domestic: ru
   chain: nl
