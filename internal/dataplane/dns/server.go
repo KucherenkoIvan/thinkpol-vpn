@@ -94,11 +94,11 @@ type Counters struct {
 	Queries   uint64 // queries taken
 	Refused   uint64 // from a source that may not ask, or not a query
 	Overlay   uint64 // answered from the overlay's names (or not found there)
-	Direct    uint64 // forwarded to the direct upstream
-	Tunnel    uint64 // forwarded through the tunnel
+	Direct    uint64 // for the direct upstream (cache hits included)
+	Tunnel    uint64 // for an exit, through the tunnel (cache hits included)
 	Blocked   uint64 // blocked by the rules
 	CacheHits uint64
-	Failed    uint64 // no upstream answered
+	Failed    uint64 // no upstream answered, or too many queries at once
 }
 
 type counters struct {

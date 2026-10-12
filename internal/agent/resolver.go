@@ -29,7 +29,7 @@ func (r *runner) newResolver() *dns.Server {
 		r.dp.Log.Warn("DNS: no upstream to ask; set one with -dns-upstream")
 	}
 	o := dns.Options{Upstreams: upstreams, Port: r.dp.dnsPort, Log: r.dp.Log}
-	if r.section.Node.Kind == netmap.NodeDevice && r.dp.dnsPort == 0 {
+	if r.section.Node.Kind == netmap.NodeDevice {
 		o.TunnelControl = dns.BindToInterface(r.dp.Interface)
 	}
 	return dns.New(o)

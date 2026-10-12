@@ -8,10 +8,6 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
 
-// loopback may ask a device's resolver too: the node's own processes
-// often reach their own addresses from it.
-var loopback = []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8"), netip.MustParsePrefix("::1/128")}
-
 func (e *Engine) updateDNS() {
 	if e.cfg.DNS != nil {
 		e.cfg.DNS.Update(e.dnsConfig())
@@ -38,11 +34,13 @@ func (e *Engine) dnsConfig() dns.Config {
 	case e.kind != netmap.NodeDevice:
 		return c
 	}
+	// The node's own processes reach its own addresses from them; a
+	// peer's address (whatever its WireGuard device allows it) is never
+	// one of them.
 	c.Listen = slices.Clone(e.local)
 	for _, a := range e.local {
 		c.Clients = append(c.Clients, netip.PrefixFrom(a, a.BitLen()))
 	}
-	c.Clients = append(c.Clients, loopback...)
 
 	peers := make(map[netmap.NodeID][]netip.Addr)
 	for _, d := range e.devices {
