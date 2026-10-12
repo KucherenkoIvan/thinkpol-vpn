@@ -52,3 +52,13 @@ func (d *trustedDir) read(name string, _ bool, limit int64) ([]byte, os.FileInfo
 	}
 	return b, fi, nil
 }
+
+// write replaces the file name in the directory with data: written aside,
+// then renamed over it.
+func (d *trustedDir) write(name string, data []byte, perm os.FileMode) error {
+	tmp := filepath.Join(d.path, "."+name+".new")
+	if err := os.WriteFile(tmp, data, perm); err != nil {
+		return err
+	}
+	return os.Rename(tmp, filepath.Join(d.path, name))
+}

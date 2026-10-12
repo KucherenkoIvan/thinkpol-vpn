@@ -8,7 +8,10 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/KucherenkoIvan/go-kernel/app"
+
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/localapi"
 )
 
 func init() {
@@ -33,6 +36,9 @@ func runUp(ctx context.Context, e env, args []string) error {
 	fs.StringVar(&cfg.Interface, "interface", cfg.Interface, "the overlay TUN's name; empty: the platform's default (THINKPOL_INTERFACE)")
 	fs.IntVar(&cfg.LinkMTU, "link-mtu", cfg.LinkMTU, "MTU of the network under the links; 0: 1500 (THINKPOL_LINK_MTU)")
 	fs.DurationVar(&cfg.MapPoll, "map-poll", cfg.MapPoll, "how often to check the map file for a change; SIGHUP checks at once (THINKPOL_MAP_POLL)")
+	fs.BoolVar(&cfg.Connect, "connect", cfg.Connect, "a device connects when it starts; otherwise it waits for thinkpol connect (THINKPOL_CONNECT)")
+	fs.StringVar(&cfg.APISocket, "api-socket", cfg.APISocket, "the local API's socket, in a directory of its own; empty: no local API (THINKPOL_API_SOCKET)")
+	fs.StringVar(&cfg.APIGroup, "api-group", cfg.APIGroup, "the group whose members may use the local API besides root (THINKPOL_API_GROUP)")
 	if err := parseFlags(fs, e, args); err != nil {
 		return err
 	}
@@ -56,5 +62,15 @@ func runUp(ctx context.Context, e env, args []string) error {
 	reload := make(chan os.Signal, 1)
 	signal.Notify(reload, syscall.SIGHUP)
 	defer signal.Stop(reload)
-	return node.Run(ctx, reload)
+	adapters, err := node.Adapters(reload)
+	if err != nil {
+		return err
+	}
+	if cfg.APISocket != "" {
+		adapters = append(adapters, localapi.Adapter(localapi.Options{
+			Socket: cfg.APISocket, Group: cfg.APIGroup, Node: node, Logs: logs.Ring,
+			Log: logs.With("component", "local API"),
+		}))
+	}
+	return app.Run(ctx, adapters...)
 }

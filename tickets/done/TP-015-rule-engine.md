@@ -76,6 +76,8 @@ Two reviewers; orchestrator decisions. The compiler held; one blocker.
 - [x] N3. Status reflects the router's actual table if `StepDevices` fails — `Engine.setTable` records the rules the router's table enforces; `Status.Rules` reports those (no test forces a device failure)
 - [x] N4. The router unmaps IPv4-mapped destinations in classify — `classify` unmaps; `TestRoutesEachDestinationToItsEgress` (`::ffff:10.1.5.5` goes by its IPv4 route, checked to fail without it)
 
+- **Wired by TP-022 (merged second, 2026-10-12):** the local rules file is `rules.local` in the state dir, owned and written only by the service (`agent.Node.SetRulePreset` via the local API), parsed with `rules.Local.UnmarshalText` in `LoadState` (a bad file fails the start), given to the engine as `EngineConfig.Rules` at every start and `Engine.SetRules` on change; `rules.ErrPresetUnavailable` reaches the CLI.
+
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-10 notes from TP-016 review: set difference in `internal/lists`, the built-in local list and what goes direct in "all but domestic"
