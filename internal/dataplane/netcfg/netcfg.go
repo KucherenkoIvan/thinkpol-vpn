@@ -364,8 +364,18 @@ type Survey struct {
 	// Links are the namespace's interfaces, loopback included.
 	Links []Link
 	// ForeignRules are the priorities of policy rules no owner added,
-	// but the OS's own (0, 32766, 32767), both families.
+	// but the OS's own (0, 32766, 32767), both families (Linux).
 	ForeignRules []int
+	// Defaults are the usable default routes no owner added, at most one
+	// per family (macOS, whose route-table layout names the gateway).
+	Defaults []Route
+	// Routes are the other routes of the main table no owner added that
+	// may take traffic ahead of routes into the TUN: gateway routes,
+	// interface routes not made for an interface's own subnet (another
+	// VPN's, a DHCP server's classless routes), host routes (macOS, where
+	// everything is looked up in the main table; Linux's policy routing
+	// never looks them up ahead of the tunnel).
+	Routes []Route
 }
 
 // Link is an interface as Survey sees it.
