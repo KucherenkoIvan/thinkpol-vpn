@@ -35,7 +35,18 @@ When the overlay TUN goes down and up, Linux drops its IPv6 addresses (and the l
 - **For TP-057 (coordination):** `lab/routetable_test.go` says, before its TUN bounce, "Last in this run: a TUN that goes down loses its IPv6 addresses until the next map re-applies them". After this ticket the engine puts them back when the link comes up, so that comment is stale. TP-057's branch edits that file, so it is left alone here: whichever of the two merges second drops the remark (the bounce no longer has to come last).
 - **Tests:** `TestALinkBounceReappliesTheInterface` (fake configurator, a virtual TUN whose link events the test sends: a down/up gives exactly one re-apply with the applied addresses and MTU, logged and counted; a down alone and Close re-apply nothing), `TestALinkEventBeforeTheFirstApplyChangesNothing`; lab `TestTheOverlayComesBackAfterALinkBounce` (`engine_lab_test.go`, M0 in namespaces on real TUNs: `ip link set down` drops device-a's IPv6 address, the MTU is set to 1400 while down, `up`; the address and MTU 1328 come back, and pings to server-1 and device-b over IPv4 and IPv6 pass with no Apply). Without the watcher both the unit and the lab test fail (checked). The namespace M0 setup moved into `startM0InNamespaces`, shared with `TestNamespacesPingOverTheOverlay`.
 
+## Review findings
+Nits from review; the orchestrator's decisions.
+
+- [ ] R1 Count `ifcReapplies` only on a successful re-apply.
+- [ ] R2 Don't retry while the link is down; log only the first failure of a persistent failure.
+- [ ] R3 A short cooldown after each re-apply.
+- [ ] R4 Test: an Apply with a new section racing a pending link event (the re-apply carries the new configuration).
+- [ ] R5 Test: a fake Interface failing once (the re-apply is retried).
+- [ ] R6 Drop the stale "TUN bounce comes last" remark in `lab/routetable_test.go`.
+
 ## Log
 - 2026-10-12 created in backlog
 - 2026-10-12 backlog → in-progress — owner: agent-small-fixes, branch: tp-059-overlay-reapply-on-link-event
 - 2026-10-12 in-progress → review — every acceptance box checked; `make lint`, `make test` (one unrelated `blobs` TestATricklingPeerIsAbandoned flake under load, 10/10 alone, then a green run), `go test -race` on dataplane, router and localapi, and `make lab-test LAB_P=2` (lab tests and 28 packages in lab nodes) pass
+- 2026-10-13 review → has-errors — review nits R1–R6 (see Review findings)
