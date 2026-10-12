@@ -23,5 +23,9 @@ With the kill switch on, nothing leaves the device when the tunnel is down.
 ## Acceptance
 - [ ] killing the service with the kill switch on leaves no traffic flowing except to entries, on all three OSes
 
+## Notes
+- **From TP-014 (egress):** an exit without IPv6 refuses a device's IPv6 with ICMPv6 "no route" rather than dropping it; the kill switch still has to block IPv6 outside the tunnel on the device, and must let the tunnel's own transport sockets out whatever the rules.
+
 ## Log
 - 2026-10-10 created in backlog
+- 2026-10-12 docs (TP-014 review): notes from egress on Linux

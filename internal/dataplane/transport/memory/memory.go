@@ -91,6 +91,10 @@ func (n *Network) Name() string                   { return Name }
 func (n *Network) Dialer() transport.Dialer       { return n }
 func (n *Network) Overhead(transport.Shaping) int { return 0 }
 
+// Network implements transport.Transport: memory links stand in for
+// datagrams on the wire.
+func (n *Network) Network() string { return "udp" }
+
 var errEmpty = errors.New("memory: empty credential")
 
 // checkShaping refuses shaping unless the network was made with

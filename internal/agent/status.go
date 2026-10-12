@@ -35,6 +35,8 @@ type Status struct {
 	// Workers and PublicListeners are a server's.
 	Workers         []WorkerStatus
 	PublicListeners []PublicListenerStatus
+	// Egress is a server's (nil on a device).
+	Egress *supervisor.EgressInfo
 	// RulePreset is a device's rule preset (LocalRulesFile; "space" when it
 	// chose none); RulesEnforced is set while its data plane runs them, and
 	// PresetUnavailable when the map can't build the preset, which is then
@@ -158,6 +160,7 @@ type report struct {
 type workerReporter interface {
 	Workers() []supervisor.WorkerInfo
 	Listeners() []supervisor.ListenerInfo
+	Egress() supervisor.EgressInfo
 }
 
 func (p *report) set(f func(p *report)) {
@@ -194,6 +197,8 @@ func (p *report) status() Status {
 		for _, w := range p.workers.Workers() {
 			s.Workers = append(s.Workers, WorkerStatus{Space: w.Space, Ready: w.Ready, Starts: w.Starts, ReadySince: w.ReadyAt, RestartAt: w.NextStart})
 		}
+		e := p.workers.Egress()
+		s.Egress = &e
 		for _, l := range p.workers.Listeners() {
 			s.PublicListeners = append(s.PublicListeners, PublicListenerStatus{
 				Transport: l.Transport, Routed: l.Routed, Unauthenticated: l.Unauthenticated, NoSpace: l.NoSpace,

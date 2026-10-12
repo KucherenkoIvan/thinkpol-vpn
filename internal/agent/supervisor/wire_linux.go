@@ -55,6 +55,12 @@ func (s *Supervisor) wire(w *worker, ns *os.File) (*wiring, error) {
 	if err != nil {
 		return wd, err
 	}
+	// The root end takes no router advertisements from the space: it has
+	// permanent neighbours and its own routes, and with IPv6 forwarding on
+	// accept_ra 1 would be ignored anyway, but 2 would not.
+	if err := writeSysctl("net/ipv6/conf/"+w.link+"/accept_ra", "0"); err != nil {
+		return wd, err
+	}
 	for _, p := range w.transit.root {
 		// No duplicate address detection: the pair has two ends and both
 		// addresses are ours.
@@ -93,6 +99,9 @@ func (s *Supervisor) wire(w *worker, ns *os.File) (*wiring, error) {
 	// sysctls here, by entering its namespace.
 	if err := setNetSysctls(int(ns.Fd()), baselineSysctls); err != nil {
 		return wd, fmt.Errorf("space sysctls: %w", err)
+	}
+	if err := applySpaceTable(ns, w.transit, s.currentSpaceEgress(w)); err != nil {
+		return wd, fmt.Errorf("the space's egress table: %w", err)
 	}
 	return wd, nil
 }

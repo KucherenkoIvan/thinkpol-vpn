@@ -119,8 +119,8 @@ func TestRouteTableSendsOnlyDirectAroundTheTunnel(t *testing.T) {
 		}
 		return n
 	}
-	// tryPing pings without caring for an answer: until egress (TP-014) the
-	// exit drops what the tunnel brings it.
+	// tryPing pings without caring for an answer: the exit forwards IPv4
+	// (TP-014), but has no IPv6 uplink (its lab address is unique local).
 	tryPing := func(dst netip.Addr) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -156,8 +156,10 @@ func TestRouteTableSendsOnlyDirectAroundTheTunnel(t *testing.T) {
 		}
 	}
 	for _, dst := range []netip.Addr{foreign4, foreign6} {
-		if n := seen(atRouter, func(p lab.Packet) bool { return p.Dst == dst }); n != 0 {
-			t.Errorf("%d packets to the foreign %s at the router, want none", n, dst)
+		// The exit's forwarded copies cross the router too, from its own
+		// address: none may come from the device's.
+		if n := seen(atRouter, func(p lab.Packet) bool { return p.Dst == dst && slices.Contains(devAddrs, p.Src) }); n != 0 {
+			t.Errorf("%d packets from the device to the foreign %s at the router, want none", n, dst)
 		}
 		if n := seen(onDevice, func(p lab.Packet) bool { return p.Dst == dst && p.Network == "" }); n == 0 {
 			t.Errorf("no packet to the foreign %s entered the TUN", dst)
@@ -259,7 +261,7 @@ func TestRouteTableSendsOnlyDirectAroundTheTunnel(t *testing.T) {
 	if err := atGateway.Complete(); err != nil {
 		t.Fatal(err)
 	}
-	if n := seen(atGateway, func(p lab.Packet) bool { return p.Dst == foreign4 }); n != 0 {
+	if n := seen(atGateway, func(p lab.Packet) bool { return p.Dst == foreign4 && slices.Contains(devAddrs, p.Src) }); n != 0 {
 		t.Errorf("%d packets to the foreign %s at the router with split routes in main or the TUN down", n, foreign4)
 	}
 

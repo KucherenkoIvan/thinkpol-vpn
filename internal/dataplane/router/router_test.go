@@ -135,9 +135,18 @@ func TestRoutesEachDestinationToItsEgress(t *testing.T) {
 		t.Fatalf("exit got an extra %x", p)
 	default:
 	}
-	c := r.Counters()
-	if c.Routed != 7 || c.NoRoute != 2 || c.Blocked != 1 || c.Direct != 3 || c.Malformed != 2 {
-		t.Fatalf("counters %+v", c)
+	// An egress counts a packet once its queue took it, which may be just
+	// after its reader has it.
+	deadline := time.Now().Add(wait)
+	for {
+		c := r.Counters()
+		if c.Routed == 7 && c.NoRoute == 2 && c.Blocked == 1 && c.Direct == 3 && c.Malformed == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("counters %+v", c)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 
@@ -214,6 +223,82 @@ func TestEgressWritesOnlyLocalDestinations(t *testing.T) {
 	// Nothing local at all: nothing written, still all taken.
 	if n, err := e.Write(batch[:1], 16); n != 1 || err != nil {
 		t.Fatalf("Write: %d, %v", n, err)
+	}
+}
+
+// On an exit (Table.Forward), the overlay device's decrypted packets for
+// the internet reach the TUN too, for the node to forward; overlay
+// addresses other than the node's own still don't, nor anything another
+// egress decrypts for the internet.
+func TestForwardingEgressDeliversTheInternet(t *testing.T) {
+	r, ch := newRouter(t)
+	overlay, exit := egress(t, r, "overlay"), egress(t, r, "exit-1")
+	table := router.Table{
+		Overlay: []netip.Prefix{prefix("100.64.0.0/10"), prefix("fd00:1::/48")},
+		Local:   []netip.Addr{addr("100.64.0.1"), addr("fd00:1::1")},
+		Forward: []*router.Egress{overlay},
+	}
+	if err := r.SetTable(table); err != nil {
+		t.Fatal(err)
+	}
+	pkt := func(src, dst string) []byte {
+		return append(make([]byte, 16), packettest.Echo(addr(src), addr(dst), 1, 1, nil)...)
+	}
+	internet4, internet6 := pkt("100.64.0.2", "192.0.2.1"), pkt("fd00:1::2", "2001:db8::1")
+	write := func(e *router.Egress, batch ...[]byte) {
+		t.Helper()
+		if n, err := e.Write(batch, 16); n != len(batch) || err != nil {
+			t.Errorf("Write: %d, %v; want every packet taken", n, err)
+		}
+	}
+	written := make(chan struct{})
+	go func() {
+		defer close(written)
+		write(overlay,
+			internet4,
+			pkt("100.64.0.2", "100.64.0.3"),      // another overlay node
+			pkt("fd00:1::2", "fd00:1::3"),        // the same, IPv6
+			pkt("fd00:1::2", "::ffff:192.0.2.1"), // IPv4-mapped: no network routes it
+			internet6)
+	}()
+	for _, want := range [][]byte{internet4[16:], internet6[16:]} {
+		select {
+		case got := <-ch.Inbound:
+			if !bytes.Equal(got, want) {
+				t.Fatalf("TUN got %x, want %x", got, want)
+			}
+		case <-time.After(wait):
+			t.Fatal("an internet packet didn't reach the TUN")
+		}
+	}
+	<-written
+	if s := overlay.Status(); s.Delivered != 2 || s.Forwarded != 2 || s.NotLocal != 3 || r.Counters().Forwarded != 2 {
+		t.Fatalf("overlay egress %+v", s)
+	}
+	// A chain's exit device isn't forwarding: what it decrypts for the
+	// internet is dropped.
+	write(exit, pkt("192.0.2.9", "198.51.100.1"))
+	if s := exit.Status(); s.Delivered != 0 || s.NotLocal != 1 {
+		t.Fatalf("exit egress %+v", s)
+	}
+	// Forwarding goes with the table.
+	table.Forward = nil
+	if err := r.SetTable(table); err != nil {
+		t.Fatal(err)
+	}
+	write(overlay, internet4)
+	if s := overlay.Status(); s.Delivered != 2 || s.NotLocal != 4 {
+		t.Fatalf("overlay egress without forwarding %+v", s)
+	}
+	select {
+	case got := <-ch.Inbound:
+		t.Fatalf("TUN got %x without forwarding", got)
+	default:
+	}
+	// An egress of another router can't forward.
+	other, _ := newRouter(t)
+	if err := r.SetTable(router.Table{Forward: []*router.Egress{egress(t, other, "overlay")}}); err == nil {
+		t.Fatal("a forwarding egress of another router was taken")
 	}
 }
 

@@ -1,0 +1,205 @@
+package supervisor
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// fakeProcSys is a /proc/sys holding the forwarding sysctls of a node with
+// an RA-configured uplink eth0 and a space's veth end, whose forwarding
+// switches have the kernel's side effects.
+func fakeProcSys(t *testing.T) func(key string) string {
+	t.Helper()
+	dir := t.TempDir()
+	oldDir, oldWrite := procSys, writeSysctl
+	t.Cleanup(func() { procSys, writeSysctl = oldDir, oldWrite })
+	procSys = dir
+	files := map[string]string{
+		"net/ipv4/ip_forward":            "0",
+		"net/netfilter/nf_conntrack_max": "262144",
+	}
+	for _, dev := range []string{"all", "default", "eth0"} {
+		files["net/ipv4/conf/"+dev+"/accept_redirects"] = "0" // hardened by the admin
+		files["net/ipv4/conf/"+dev+"/forwarding"] = "0"
+	}
+	for _, dev := range []string{"all", "default", "eth0", "tp-space0"} {
+		files["net/ipv6/conf/"+dev+"/forwarding"] = "0"
+		files["net/ipv6/conf/"+dev+"/accept_ra"] = "1"
+	}
+	files["net/ipv6/conf/eth1/forwarding"] = "1" // forwards on its own
+	files["net/ipv6/conf/eth1/accept_ra"] = "0"
+	for k, v := range files {
+		path := filepath.Join(dir, k)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(v+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	set := func(glob, value string) {
+		matches, _ := filepath.Glob(filepath.Join(dir, glob))
+		for _, m := range matches {
+			_ = os.WriteFile(m, []byte(value), 0o644)
+		}
+	}
+	// The kernel: IPv4's switch resets accept_redirects and every
+	// interface's forwarding; IPv6's sets every interface's forwarding.
+	writeSysctl = func(key, value string) error {
+		if err := writeSysctlFile(key, value); err != nil {
+			return err
+		}
+		switch key {
+		case "net/ipv4/ip_forward":
+			set("net/ipv4/conf/*/forwarding", value)
+			redirects := "1"
+			if value == "1" {
+				redirects = "0"
+			}
+			set("net/ipv4/conf/all/accept_redirects", redirects)
+		case "net/ipv6/conf/all/forwarding":
+			set("net/ipv6/conf/*/forwarding", value)
+		}
+		return nil
+	}
+	return func(key string) string {
+		v, err := readSysctl(key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+}
+
+func TestForwardingIsTurnedOnRecordedAndPutBack(t *testing.T) {
+	get := fakeProcSys(t)
+	run := t.TempDir()
+	var f rootForwarding
+	if err := f.load(run); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.ensure([2]bool{true, true}); err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string]string{
+		"net/ipv4/ip_forward":                "1",
+		"net/ipv6/conf/all/forwarding":       "1",
+		"net/ipv6/conf/eth0/accept_ra":       "2", // before IPv6 forwarding: keeps its default route
+		"net/ipv6/conf/default/accept_ra":    "2",
+		"net/ipv6/conf/tp-space0/accept_ra":  "1", // a space's veth end: never the uplink
+		"net/ipv4/conf/all/accept_redirects": "0",
+		"net/ipv4/conf/eth0/forwarding":      "1",
+	} {
+		if got := get(key); got != want {
+			t.Errorf("%s = %s, want %s", key, got, want)
+		}
+	}
+	if f.owned() != [2]bool{true, true} {
+		t.Fatalf("owned %v", f.owned())
+	}
+
+	// A successor adopts the record: the switches still hold what was
+	// written.
+	var next rootForwarding
+	if err := next.load(run); err != nil {
+		t.Fatal(err)
+	}
+	if next.owned() != [2]bool{true, true} {
+		t.Fatalf("successor owns %v", next.owned())
+	}
+	// Someone set eth0's accept_ra meanwhile: it isn't put back.
+	if err := writeSysctlFile("net/ipv6/conf/eth0/accept_ra", "0"); err != nil {
+		t.Fatal(err)
+	}
+	if err := next.restore(); err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string]string{
+		"net/ipv4/ip_forward":                "0",
+		"net/ipv6/conf/all/forwarding":       "0",
+		"net/ipv6/conf/eth1/forwarding":      "1", // reset by the switch, put back
+		"net/ipv4/conf/all/accept_redirects": "0", // the same
+		"net/ipv6/conf/eth0/accept_ra":       "0", // changed by someone else: left
+		"net/ipv6/conf/default/accept_ra":    "1",
+	} {
+		if got := get(key); got != want {
+			t.Errorf("after restore: %s = %s, want %s", key, got, want)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(run, forwardingFile)); !os.IsNotExist(err) {
+		t.Errorf("the record outlived the restore: %v", err)
+	}
+}
+
+// Forwarding that was on already is the node's: neither owned nor turned
+// off; and the supervisor's is turned off once no space needs it.
+func TestForwardingOnAlreadyIsLeftAlone(t *testing.T) {
+	get := fakeProcSys(t)
+	if err := writeSysctl("net/ipv4/ip_forward", "1"); err != nil {
+		t.Fatal(err)
+	}
+	var f rootForwarding
+	if err := f.load(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	if w := f.willOwn([2]bool{true, true}); w != [2]bool{false, true} {
+		t.Fatalf("would own %v", w)
+	}
+	if err := f.ensure([2]bool{true, true}); err != nil {
+		t.Fatal(err)
+	}
+	if f.owned() != [2]bool{false, true} {
+		t.Fatalf("owned %v", f.owned())
+	}
+	if err := f.ensure([2]bool{true, false}); err != nil {
+		t.Fatal(err)
+	}
+	if f.owned() != [2]bool{} || get("net/ipv6/conf/all/forwarding") != "0" || get("net/ipv4/ip_forward") != "1" {
+		t.Fatalf("owned %v, forwarding %s/%s", f.owned(), get("net/ipv4/ip_forward"), get("net/ipv6/conf/all/forwarding"))
+	}
+	if err := f.restore(); err != nil || get("net/ipv4/ip_forward") != "1" {
+		t.Fatalf("restore turned the node's own forwarding off: %v", err)
+	}
+}
+
+// A record whose switch someone else changed since is not adopted.
+func TestForwardingRecordOfAChangedSwitchIsDropped(t *testing.T) {
+	get := fakeProcSys(t)
+	run := t.TempDir()
+	var f rootForwarding
+	if err := f.load(run); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.ensure([2]bool{true, false}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeSysctlFile("net/ipv4/ip_forward", "0"); err != nil {
+		t.Fatal(err)
+	}
+	var next rootForwarding
+	if err := next.load(run); err != nil {
+		t.Fatal(err)
+	}
+	if next.owned() != [2]bool{} {
+		t.Fatalf("adopted a switch someone else turned off: %v", next.owned())
+	}
+	if err := next.restore(); err != nil || get("net/ipv4/ip_forward") != "0" {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(filepath.Join(run, forwardingFile))
+	if strings.TrimSpace(string(b)) != "" {
+		t.Fatalf("record left: %s", b)
+	}
+}
+
+func TestMaxFlowsDefaultsToAQuarterOfConntrack(t *testing.T) {
+	fakeProcSys(t)
+	if got := maxFlows(0); got != 262144/4 {
+		t.Fatalf("default %d", got)
+	}
+	if maxFlows(-1) != 0 || maxFlows(10) != 10 {
+		t.Fatal("explicit caps not kept")
+	}
+}

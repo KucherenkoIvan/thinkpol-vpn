@@ -57,6 +57,9 @@ func (t *Transport) Name() string { return Name }
 
 func (t *Transport) Dialer() transport.Dialer { return t }
 
+// Network implements transport.Transport.
+func (t *Transport) Network() string { return "udp" }
+
 // Overhead implements transport.Transport: the fixed Overhead plus the most
 // random padding adds.
 func (t *Transport) Overhead(s transport.Shaping) int { return Overhead + s.Padding.Growth() }

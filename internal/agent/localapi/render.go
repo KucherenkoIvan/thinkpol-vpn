@@ -64,6 +64,14 @@ func WriteStatus(w io.Writer, st *localapiv1.Status, now time.Time) error {
 			line("  %s\t%s\t%d starts", wk.GetSpaceId(), s, wk.GetStarts())
 		}
 	}
+	if e := st.GetUplink(); e != nil {
+		if e.GetInterface() == "" {
+			line("uplink:\tnone (%s): no space has egress", e.GetError())
+		} else {
+			line("uplink:\t%s, ipv4 %s, ipv6 %s, forwarding %s/%s", e.GetInterface(),
+				onOff(e.GetIpv4()), onOff(e.GetIpv6()), onOff(e.GetForwarding4()), onOff(e.GetForwarding6()))
+		}
+	}
 	if ls := st.GetPublicListeners(); len(ls) > 0 {
 		line("public listeners:")
 		for _, l := range ls {
@@ -234,4 +242,11 @@ func byteCount(n uint64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
+}
+
+func onOff(on bool) string {
+	if on {
+		return "on"
+	}
+	return "off"
 }

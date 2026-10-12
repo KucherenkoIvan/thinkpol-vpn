@@ -5,6 +5,9 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/netip"
+	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -24,7 +27,11 @@ type fakeSupervisor struct {
 	spaces                [][]supervisor.Space
 	listeners             [][]supervisor.Listener
 	failSpaces, failLists int // calls left to fail
+	// egress is what Egress reports.
+	egress supervisor.EgressInfo
 }
+
+func (f *fakeSupervisor) Egress() supervisor.EgressInfo { return f.egress }
 
 func (f *fakeSupervisor) SetSpaces(sp []supervisor.Space) error {
 	f.mu.Lock()
@@ -343,5 +350,48 @@ func TestOnlyTheOwnersWorkerOutputIsCopied(t *testing.T) {
 	want := "worker space=" + own.String() + ` evil \x1b[2J\x07 tab` + "\there " + `\x7f c1 \u009b bidi \u202e\u2066 bad \xff\xc3 ok ` + "é\n"
 	if got := buf.String(); got != want {
 		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+// A server allowing egress grants its space both families; the log says
+// what the node's uplink gives it. Its section's endpoints are dials either
+// way, in their transport's protocol, an unknown transport's left out.
+func TestServerEgressAndDials(t *testing.T) {
+	other := netip.MustParseAddrPort("198.51.100.7:4500")
+	withLinks := func(sec *netmap.Section) {
+		sec.Links = []netmap.Link{{Peer: netmap.NodeID{9}, Endpoints: []netmap.Endpoint{
+			{Transport: "memory", Address: other}, {Transport: "memory", Address: other},
+			{Transport: "memory", Address: netip.MustParseAddrPort("[2001:db8::7]:4500")},
+			{Transport: "carrier-pigeon", Address: netip.MustParseAddrPort("198.51.100.8:4500")},
+		}}}
+	}
+	for _, tc := range []struct {
+		name    string
+		egress  bool
+		info    supervisor.EgressInfo
+		want    supervisor.EgressGrant
+		wantLog string
+	}{
+		{"egress on", true, supervisor.EgressInfo{Uplink: "eth9", IPv4: true},
+			supervisor.EgressGrant{IPv4: true, IPv6: true}, "egress=on uplink=eth9 egress_ipv4=on egress_ipv6=off"},
+		{"no uplink", true, supervisor.EgressInfo{Err: "no default route"},
+			supervisor.EgressGrant{IPv4: true, IPv6: true}, "egress=on uplink=none"},
+		{"egress off", false, supervisor.EgressInfo{Uplink: "eth9", IPv4: true},
+			supervisor.EgressGrant{}, "egress=off blobs="},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestSpace(t)
+			sup := &fakeSupervisor{egress: tc.info}
+			r := runServerSpaces(t, s, sup, withLinks, func(sec *netmap.Section) { sec.Node.AllowEgress = tc.egress })
+			eventually(t, func() bool { return strings.Contains(r.log.String(), `msg="map applied" version=1`) })
+			sp, _, _ := sup.last()
+			want := []supervisor.Dial{{Address: other, Network: "udp"}, {Address: netip.MustParseAddrPort("[2001:db8::7]:4500"), Network: "udp"}}
+			if len(sp) != 1 || sp[0].Egress != tc.want || !slices.Equal(sp[0].Dials, want) {
+				t.Fatalf("spaces %+v", sp)
+			}
+			if !regexp.MustCompile(tc.wantLog).MatchString(r.log.String()) {
+				t.Fatalf("log, want %q:\n%s", tc.wantLog, r.log)
+			}
+		})
 	}
 }
