@@ -1,12 +1,12 @@
 package devmap
 
 import (
+	"crypto/hmac"
 	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
 	"maps"
-	"math/rand/v2"
 	"net/netip"
 	"path/filepath"
 	"slices"
@@ -68,10 +68,12 @@ func Links(s *Spec) ([]Link, error) {
 
 // Plan derives every node's section from a spec (see the package doc for
 // the rules) and returns the map's contents, recipients in the spec's node
-// order, and the nodes' names by id. Link secrets come from random
-// (crypto/rand when nil), fresh on every call.
-func Plan(s *Spec, k Keys, version uint64, random io.Reader) (netmap.Contents, Names, error) {
-	random = orCryptoRand(random)
+// order, and the nodes' names by id. Link secrets come from secrets
+// (RandomSecrets(nil) when nil: fresh on every call).
+func Plan(s *Spec, k Keys, version uint64, secrets Secrets) (netmap.Contents, Names, error) {
+	if secrets == nil {
+		secrets = RandomSecrets(nil)
+	}
 	fail := func(n Node, format string, args ...any) error {
 		return &Error{File: s.File, Pos: n.Pos, Msg: n.Name + ": " + fmt.Sprintf(format, args...)}
 	}
@@ -191,16 +193,16 @@ func Plan(s *Spec, k Keys, version uint64, random io.Reader) (netmap.Contents, N
 	// symmetric, so they are the same bytes).
 	for _, l := range links {
 		from, to := s.Nodes[l.From], s.Nodes[l.To]
-		secrets := map[string][]byte{}
+		made := map[string][]byte{}
 		link := netmap.Link{Peer: ids[l.To]}
 		for _, e := range to.Endpoints {
-			secret, ok := secrets[e.Transport]
+			secret, ok := made[e.Transport]
 			if !ok {
-				secret = make([]byte, transports[e.Transport].secretSize)
-				if _, err := io.ReadFull(random, secret); err != nil {
+				var err error
+				if secret, err = secrets(from.Name, to.Name, e.Transport, transports[e.Transport].secretSize); err != nil {
 					return netmap.Contents{}, nil, err
 				}
-				secrets[e.Transport] = secret
+				made[e.Transport] = secret
 				sections[l.To].Inbound = append(sections[l.To].Inbound, netmap.InboundLink{
 					Peer: ids[l.From], PeerKind: from.Kind, Transport: e.Transport, Credential: secret,
 				})
@@ -381,17 +383,41 @@ func NextVersion(now time.Time, previous []byte, trust netmap.Trust) uint64 {
 	return v
 }
 
-// SeededSecrets is a source for Plan's link secrets derived from seed: two
-// builds of one spec with it give every link the same secret, so a lab test
-// can hand some nodes a newer map and keep others on an older one. Never
-// for a real space: the seed gives away every link.
-func SeededSecrets(seed string) io.Reader {
-	return rand.NewChaCha8(sha256.Sum256([]byte("thinkpol dev map secrets\x00" + seed)))
+// Secrets makes the secret of the link from one node to another (by name)
+// over a transport, size bytes long.
+type Secrets func(from, to, transport string, size int) ([]byte, error)
+
+// RandomSecrets draws every secret from r (crypto/rand when nil).
+func RandomSecrets(r io.Reader) Secrets {
+	r = orCryptoRand(r)
+	return func(_, _, _ string, size int) ([]byte, error) {
+		b := make([]byte, size)
+		_, err := io.ReadFull(r, b)
+		return b, err
+	}
+}
+
+// InsecureSeededSecrets derives each link's secret from seed and the link
+// (HMAC-SHA256 of its ends and transport), so builds of one space give a
+// link the same secret whatever else changed, and a lab test can hand some
+// nodes a newer map and keep others on an older one. Never for a real
+// space: the seed gives away every link.
+func InsecureSeededSecrets(seed string) Secrets {
+	return func(from, to, transport string, size int) ([]byte, error) {
+		var out []byte
+		for block := byte(0); len(out) < size; block++ {
+			m := hmac.New(sha256.New, []byte(seed))
+			m.Write([]byte("thinkpol dev map link secret\x00" + from + "\x00" + to + "\x00" + transport + "\x00"))
+			m.Write([]byte{block})
+			out = m.Sum(out)
+		}
+		return out[:size], nil
+	}
 }
 
 // Build plans a spec and seals and signs the map.
-func Build(s *Spec, k Keys, version uint64, random io.Reader) ([]byte, error) {
-	c, _, err := Plan(s, k, version, random)
+func Build(s *Spec, k Keys, version uint64, secrets Secrets) ([]byte, error) {
+	c, _, err := Plan(s, k, version, secrets)
 	if err != nil {
 		return nil, err
 	}

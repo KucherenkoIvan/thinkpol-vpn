@@ -52,6 +52,8 @@ func TestSpecErrorsNameTheirLocation(t *testing.T) {
 		{"server with rules", "nodes:\n  - name: a\n    kind: server\n    rules: [default -> direct]\n", []string{"spec.yaml:2:5: a: only a device has chains and rules"}},
 		{"chain to nowhere", "nodes:\n  - name: a\n    kind: device\n    chains: {out: nope}\n", []string{`spec.yaml:4:19: a: chain out: unknown node "nope"`}},
 		{"bad chain name", "nodes:\n  - name: a\n    kind: device\n    chains: {Out: a}\n", []string{"spec.yaml:4:19: a: chain name"}},
+		{"chain to a server without egress", nodes + "  - {name: e, kind: device, chains: {out: s}}\npaths:\n  - [e, s]\n", []string{"spec.yaml:7:43: e: chain out: s doesn't allow egress"}},
+		{"chain to a stranger", "nodes:\n  - name: s\n    kind: server\n    endpoints: [udp://192.0.2.1:4500]\n    ingress: true\n    egress: true\n  - {name: d, kind: device, chains: {out: s}}\n", []string{"spec.yaml:7:43: d: chain out: s isn't a peer of d"}},
 		{"bad rule", "nodes:\n  - name: a\n    kind: device\n    rules: [everything -> out]\n", []string{"spec.yaml:4:13: a: "}},
 		{"path of one", nodes + "paths:\n  - [d]\n", []string{"spec.yaml:8:5: a path needs at least two nodes"}},
 		{"path not a list", nodes + "paths:\n  - d > s\n", []string{"spec.yaml:8:5: a path is a list of node names"}},

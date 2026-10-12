@@ -17,7 +17,7 @@ import (
 // supervisor sets them (the worker has no /proc and can't): loose reverse-path
 // filtering, so the overlay's and relays' asymmetric paths aren't dropped, and
 // forwarding, for egress. Whether anything is forwarded is the space's
-// table's to say (spaceTable: nothing without egress), and the root
+// own table's to say (applySpaceTable: nothing without egress), and the root
 // namespace's tables enforce it whatever the space does with its own.
 var baselineSysctls = map[string]string{
 	"net/ipv4/conf/all/rp_filter":     "2",

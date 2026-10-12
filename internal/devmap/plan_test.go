@@ -5,7 +5,6 @@ import (
 	"crypto/ed25519"
 	"flag"
 	"fmt"
-	"io"
 	"maps"
 	"os"
 	"path/filepath"
@@ -401,30 +400,48 @@ func TestInspectMarksRefusedLinks(t *testing.T) {
 	}
 }
 
-// Builds with one secrets seed give every link the same secret; without
-// one, fresh secrets every time.
+// Builds with one secrets seed give every link the same secret, whatever
+// else changed; without one, fresh secrets every time.
 func TestSeededSecretsRepeat(t *testing.T) {
 	f := referenceFixture(t)
-	secrets := func(random io.Reader) [][]byte {
-		c, _, err := Plan(f.spec, f.keys, 1, random)
+	// By dialer and dialed node, each link's credentials.
+	type link struct{ from, to netmap.NodeID }
+	secrets := func(s *Spec, from Secrets) map[link][][]byte {
+		c, _, err := Plan(s, f.keys, 1, from)
 		if err != nil {
 			t.Fatal(err)
 		}
-		var out [][]byte
+		out := map[link][][]byte{}
 		for _, r := range c.Recipients {
 			for _, l := range r.Section.Links {
 				for _, e := range l.Endpoints {
-					out = append(out, e.Credential)
+					k := link{r.Section.Node.ID, l.Peer}
+					out[k] = append(out[k], e.Credential)
 				}
 			}
 		}
 		return out
 	}
-	a, b := secrets(SeededSecrets("lab")), secrets(SeededSecrets("lab"))
-	if len(a) == 0 || !slices.EqualFunc(a, b, bytes.Equal) {
+	same := func(a, b map[link][][]byte) bool {
+		return maps.EqualFunc(a, b, func(x, y [][]byte) bool { return slices.EqualFunc(x, y, bytes.Equal) })
+	}
+	a := secrets(f.spec, InsecureSeededSecrets("lab"))
+	if len(a) == 0 || !same(a, secrets(f.spec, InsecureSeededSecrets("lab"))) {
 		t.Fatal("one seed, different secrets")
 	}
-	if slices.EqualFunc(a, secrets(SeededSecrets("other")), bytes.Equal) || slices.EqualFunc(a, secrets(nil), bytes.Equal) {
+	if same(a, secrets(f.spec, InsecureSeededSecrets("other"))) || same(a, secrets(f.spec, nil)) {
 		t.Fatal("secrets repeat without the seed")
+	}
+	// Fewer paths: the links that remain keep their secrets.
+	fewer := *f.spec
+	fewer.Paths = fewer.Paths[:len(fewer.Paths)-1]
+	kept := secrets(&fewer, InsecureSeededSecrets("lab"))
+	if len(kept) >= len(a) {
+		t.Fatalf("%d links with a path fewer, %d before", len(kept), len(a))
+	}
+	for l, creds := range kept {
+		if !slices.EqualFunc(creds, a[l], bytes.Equal) {
+			t.Fatalf("the link %v changed its secret", l)
+		}
 	}
 }

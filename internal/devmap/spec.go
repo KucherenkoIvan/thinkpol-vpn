@@ -367,7 +367,29 @@ func (c *checker) spec(raw *rawSpec) *Spec {
 		c.routing(&s.Nodes[i], rn, byName)
 	}
 	c.paths(s, raw.Paths, byName)
+	c.chainExits(s)
 	return s
+}
+
+// chainExits checks that each chain ends at a server allowing egress that is
+// a peer of the device (a path joins them), where the chain was written.
+func (c *checker) chainExits(s *Spec) {
+	for d, n := range s.Nodes {
+		for _, ch := range n.Chains {
+			exit := s.Nodes[ch.Exit]
+			if exit.Kind != netmap.NodeServer || !exit.Egress {
+				c.errorf(ch.Pos, "%s: chain %s: %s doesn't allow egress, so it can't end a chain", n.Name, ch.Name, exit.Name)
+				continue
+			}
+			peers := slices.ContainsFunc(s.Paths, func(p Path) bool {
+				a, b := p.Nodes[0], p.Nodes[len(p.Nodes)-1]
+				return a == d && b == ch.Exit || a == ch.Exit && b == d
+			})
+			if !peers {
+				c.errorf(ch.Pos, "%s: chain %s: %s isn't a peer of %s: no path joins them", n.Name, ch.Name, exit.Name, n.Name)
+			}
+		}
+	}
 }
 
 // routing reads a device's chains (name: exit node) and rules. Whether the

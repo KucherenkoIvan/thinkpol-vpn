@@ -38,7 +38,7 @@ func TestEgressThroughAnExit(t *testing.T) {
 	// The lab's networks are private, which egress and dials refuse
 	// unless the node says otherwise.
 	servers := netip.PrefixFrom(inet4, 24).Masked().String()
-	space := &m0Space{builder: inet, spec: "/src/lab/maps/egress.yaml", flags: []string{"-secrets-seed", "egress-lab"}}
+	space := &m0Space{builder: inet, spec: "/src/lab/maps/egress.yaml", flags: []string{"-insecure-secrets-seed", "egress-lab"}}
 	settings := func(egress, exit string) {
 		space.env = []string{
 			"SERVER_1_IPV4=" + s1.IPv4(lab.NetServers).String(), "SERVER_2_IPV4=" + exit4.String(),
