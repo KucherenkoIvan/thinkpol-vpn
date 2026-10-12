@@ -8,7 +8,6 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -19,6 +18,7 @@ import (
 	"github.com/vishvananda/netns"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/supervisor"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/nsthread"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
 
@@ -80,27 +80,23 @@ func labInternet(t *testing.T) (inet, lan string) {
 	return inet, lan
 }
 
-// inNamespace runs fn on a thread in the named network namespace; sockets
-// fn opens stay there.
+// inNamespace runs fn on a thread in the named network namespace, which
+// nsthread moves back afterwards; sockets fn opens stay there.
 func inNamespace(t *testing.T, name string, fn func()) {
 	t.Helper()
-	done := make(chan error, 1)
-	go func() {
-		runtime.LockOSThread() // never unlocked: the thread ends with the goroutine
+	err := nsthread.Do(func() error {
 		ns, err := netns.GetFromName(name)
 		if err != nil {
-			done <- err
-			return
+			return err
 		}
 		defer func() { _ = ns.Close() }()
 		if err := netns.Set(ns); err != nil {
-			done <- err
-			return
+			return err
 		}
 		fn()
-		done <- nil
-	}()
-	if err := <-done; err != nil {
+		return nil
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
 }

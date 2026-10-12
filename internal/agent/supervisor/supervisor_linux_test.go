@@ -164,6 +164,13 @@ func probe(ctx context.Context, s worker.Session) error {
 	var tgts []target
 	go func() {
 		for cfg := range s.Config {
+			if bytes.Contains(cfg, []byte(dropSpaceTable)) {
+				// As a compromised worker would: its namespace's table
+				// (which SNATs any source to the transit address) is its
+				// own to delete; only the root namespace's stands.
+				err := deleteSpaceTable()
+				say("deleted the space table: %v", err)
+			}
 			parsed := parseTargets(cfg)
 			tmu.Lock()
 			tgts = parsed
@@ -196,6 +203,19 @@ func probe(ctx context.Context, s worker.Session) error {
 			}
 		}
 	}
+}
+
+// dropSpaceTable in a probe's config makes it delete its namespace's
+// egress table before sending.
+const dropSpaceTable = "drop-space-table"
+
+func deleteSpaceTable() error {
+	c, err := nftables.New()
+	if err != nil {
+		return err
+	}
+	c.DelTable(&nftables.Table{Family: nftables.TableFamilyINet, Name: supervisor.SpaceTableName})
+	return c.Flush()
 }
 
 // effectiveCaps returns the worker's effective capability set via capget.
@@ -921,7 +941,8 @@ func crossTargets(t *testing.T, ws []supervisor.WorkerInfo) []string {
 		// source address.
 		targets = append(targets, w.RootAddrs[0].Addr().String()+"@"+w.RootAddrs[0].Addr().String())
 	}
-	return targets
+	// A compromised worker drops its own namespace's table first.
+	return append(targets, dropSpaceTable)
 }
 
 func enableForwarding(t *testing.T) {
@@ -1507,7 +1528,7 @@ func TestAntiSpoofDropsForgedSources(t *testing.T) {
 	}
 	// Forge an off-link source to the slot's root end; the slot's transit
 	// address is the only accepted source, so this is dropped and counted.
-	spoof := w.RootAddrs[0].Addr().String() + "@203.0.113.9"
+	spoof := w.RootAddrs[0].Addr().String() + "@203.0.113.9\n" + dropSpaceTable
 	if err := s.SetSpaces([]supervisor.Space{{ID: a, Config: []byte(spoof)}}); err != nil {
 		t.Fatal(err)
 	}
