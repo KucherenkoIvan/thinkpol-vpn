@@ -41,7 +41,9 @@ type DataPlane struct {
 	Maps     <-chan []byte
 	Registry *transport.Registry
 	Inbound  Inbound
-	// Interface names the TUN; empty is tun.DefaultName.
+	// Interface names the TUN to create; empty is tun.DefaultName. On
+	// macOS the kernel may pick the name ("utun" is the next free utunN):
+	// the data plane goes by the TUN's own name once it exists.
 	Interface string
 	// LinkMTU is the MTU of the network under the links; 0 is
 	// dataplane.DefaultLinkMTU.
@@ -147,7 +149,7 @@ func RunDataPlane(ctx context.Context, dp DataPlane) error {
 	if err != nil {
 		return err
 	}
-	r := &runner{dp: dp, cur: dp.Map, section: section, maps: dp.Maps, down: dp.disconnected, guard: &dnsGuard{}}
+	r := &runner{dp: dp, cur: dp.Map, section: section, maps: dp.Maps, down: dp.disconnected, guard: &dnsGuard{}, tun: dp.Interface}
 	dp.report.set(func(p *report) { p.dns = r.guard.problem })
 	if dp.Blobs != nil {
 		r.blobsChanged = dp.Blobs.Subscribe()
@@ -235,6 +237,8 @@ type runner struct {
 	engine    *dataplane.Engine
 	listeners *listenerSet
 	resolver  *dns.Server
+	// tun is the running TUN's name (Interface until one runs).
+	tun string
 	// guard is the OS's resolver configuration while it should point at
 	// the resolver (systemCfg), and why it doesn't; dnsRetryAt is when to
 	// try pointing it again.
@@ -259,6 +263,9 @@ func (r *runner) start(ctx context.Context) error {
 	if err != nil {
 		r.clearRoutes() // a crashed run's table would block traffic meanwhile
 		return &StartError{Step: StepTUN, Err: err}
+	}
+	if name, err := dev.Name(); err == nil && name != "" {
+		r.tun = name
 	}
 	var routes dataplane.RouteTable
 	if r.dp.RouteTable {
@@ -587,11 +594,11 @@ func (r *runner) updateBlobs() {
 	if r.engine == nil {
 		// Down (disconnected, or a start to retry): the lists stay, on
 		// disk too, but nothing is fetched or served.
-		p := blobs.PlanFrom(r.cur.Header().Blobs, r.section, false, r.dp.Interface, r.dp.ServeBlobs)
+		p := blobs.PlanFrom(r.cur.Header().Blobs, r.section, false, r.tun, r.dp.ServeBlobs)
 		r.dp.Blobs.Update(blobs.Plan{Want: p.Want})
 		return
 	}
-	r.dp.Blobs.Update(blobs.PlanFrom(r.cur.Header().Blobs, r.section, r.engine.Status().IPv6, r.dp.Interface, r.dp.ServeBlobs))
+	r.dp.Blobs.Update(blobs.PlanFrom(r.cur.Header().Blobs, r.section, r.engine.Status().IPv6, r.tun, r.dp.ServeBlobs))
 }
 
 func (r *runner) applied() {

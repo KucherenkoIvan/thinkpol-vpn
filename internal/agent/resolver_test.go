@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/netip"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 
@@ -86,7 +87,9 @@ func TestADevicePointsTheSystemAtItsResolverWhileConnected(t *testing.T) {
 	sys.mu.Lock()
 	got := sys.set[0]
 	sys.mu.Unlock()
-	if got.Interface != "thinkpol0" || !slices.Equal(got.Servers, []netip.Addr{b4, b6}) {
+	// The TUN by its own name (the virtual TUNs name themselves, like a
+	// macOS utun), not the one asked for.
+	if !strings.HasPrefix(got.Interface, "loopbackTun") || !slices.Equal(got.Servers, []netip.Addr{b4, b6}) {
 		t.Errorf("the system was pointed at %+v", got)
 	}
 	if len(asked) != 1 || !slices.Contains(asked[0], b4) {

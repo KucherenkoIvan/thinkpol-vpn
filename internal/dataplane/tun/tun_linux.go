@@ -11,6 +11,9 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/nsthread"
 )
 
+// DefaultName is the overlay interface's name.
+const DefaultName = "thinkpol0"
+
 // Create creates a TUN named name with an MTU of mtu in the calling
 // thread's network namespace. Closing it removes the interface.
 func Create(name string, mtu int) (wgtun.Device, error) {

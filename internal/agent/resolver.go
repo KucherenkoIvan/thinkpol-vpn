@@ -34,7 +34,7 @@ func (r *runner) newResolver() *dns.Server {
 	}
 	o := dns.Options{Upstreams: upstreams, Port: r.dp.dnsPort, Log: r.dp.Log}
 	if r.section.Node.Kind == netmap.NodeDevice {
-		o.TunnelControl = dns.BindToInterface(r.dp.Interface)
+		o.TunnelControl = dns.BindToInterface(r.tun)
 	}
 	if r.dp.RouteTable {
 		// The direct upstream's queries carry the links' mark, so they
@@ -90,7 +90,7 @@ func (r *runner) systemConfig() (dns.SystemConfig, bool) {
 	if r.resolver == nil || r.section.Node.Kind != netmap.NodeDevice {
 		return dns.SystemConfig{}, false
 	}
-	c := dns.SystemConfig{Interface: r.dp.Interface, Servers: []netip.Addr{r.section.Node.IPv4}}
+	c := dns.SystemConfig{Interface: r.tun, Servers: []netip.Addr{r.section.Node.IPv4}}
 	if r.engine.Status().IPv6 {
 		c.Servers = append(c.Servers, r.section.Node.IPv6)
 	}
