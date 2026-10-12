@@ -5,12 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"sync/atomic"
 	"time"
 
 	wgtun "golang.zx2c4.com/wireguard/tun"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/path"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/rules"
@@ -48,6 +50,12 @@ type DataPlane struct {
 	// StatusAttrs, if set, adds attributes to the periodic status line at
 	// debug level (a worker's shared-listener figures).
 	StatusAttrs func() []any
+	// DNS runs the node's resolver on its overlay addresses (see
+	// dataplane's dnsConfig for what it serves), asking DNSUpstreams or,
+	// if there are none, the resolvers the OS used before. On a device the
+	// OS resolves through it while the data plane runs.
+	DNS          bool
+	DNSUpstreams []netip.AddrPort
 
 	// A device's (Node.run): where its status goes, its Connect and
 	// Disconnect requests, and whether it starts disconnected.
@@ -64,6 +72,12 @@ type DataPlane struct {
 	newTUN     func(name string) (wgtun.Device, netcfg.Configurator, error)
 	path       path.Options
 	retryAfter time.Duration
+	// systemDNS points the OS at the resolver (dns.SetSystem), and
+	// systemUpstreams says what the OS used (dns.SystemUpstreams); dnsPort
+	// is the resolver's port (0: 53).
+	systemDNS       func(dns.SystemConfig) (dns.System, error)
+	systemUpstreams func(exclude []netip.Addr) ([]netip.Addr, error)
+	dnsPort         uint16
 }
 
 // RetryAfter is how long a data plane waits before retrying an Apply, a
@@ -88,6 +102,12 @@ func RunDataPlane(ctx context.Context, dp DataPlane) error {
 	}
 	if dp.retryAfter == 0 {
 		dp.retryAfter = RetryAfter
+	}
+	if dp.systemDNS == nil {
+		dp.systemDNS = dns.SetSystem
+	}
+	if dp.systemUpstreams == nil {
+		dp.systemUpstreams = dns.SystemUpstreams
 	}
 	if dp.Log == nil {
 		dp.Log = slog.New(slog.DiscardHandler)
@@ -151,9 +171,13 @@ type runner struct {
 	section netmap.Section
 
 	// engine and listeners are nil while stopped: the node was removed,
-	// or starting again failed.
+	// or starting again failed; so are resolver and system, the OS's
+	// resolver configuration while it points at the resolver (systemCfg).
 	engine    *dataplane.Engine
 	listeners *listenerSet
+	resolver  *dns.Server
+	system    dns.System
+	systemCfg dns.SystemConfig
 	removed   bool
 	// down is set while a device is disconnected: it follows the maps but
 	// runs nothing.
@@ -170,6 +194,12 @@ func (r *runner) start(ctx context.Context) error {
 	if err != nil {
 		return &StartError{Step: StepTUN, Err: err}
 	}
+	var resolver *dns.Server
+	var resolverIfc interface{ Update(dns.Config) } // nil without one
+	if r.dp.DNS {
+		resolver = r.newResolver()
+		resolverIfc = resolver
+	}
 	engine, err := dataplane.NewEngine(dataplane.EngineConfig{
 		ID:           r.dp.Keys.ID,
 		Space:        transport.SpaceID(r.cur.Header().SpaceID),
@@ -181,20 +211,28 @@ func (r *runner) start(ctx context.Context) error {
 		Path:         r.dp.path,
 		Log:          r.dp.Log,
 		Rules:        r.dp.Rules,
+		DNS:          resolverIfc,
 	})
 	if err != nil {
 		if ifc != nil {
 			_ = ifc.Close()
 		}
 		_ = dev.Close()
+		if resolver != nil {
+			_ = resolver.Close()
+		}
 		return &StartError{Step: StepEngine, Err: err}
 	}
 	if err := engine.Apply(ctx, r.section); err != nil {
 		step := engine.Status().LastApplyError
+		if resolver != nil {
+			_ = resolver.Close()
+		}
 		_ = engine.Close()
 		return &StartError{Step: step, Err: fmt.Errorf("applying map version %d: %w", r.cur.Header().Version, err)}
 	}
-	r.engine = engine
+	r.engine, r.resolver = engine, resolver
+	r.pointSystem()
 	r.listeners = newListenerSet(engine, r.dp.Log, r.dp.retryAfter)
 	r.retryAt = time.Time{}
 	r.applied()
@@ -208,12 +246,16 @@ func (r *runner) stop() {
 		return
 	}
 	r.dp.report.set(func(p *report) { p.engine = nil })
+	r.restoreSystem()
+	if r.resolver != nil {
+		_ = r.resolver.Close()
+	}
 	r.listeners.closeAll()
 	if err := r.engine.Close(); err != nil {
 		r.dp.Log.Warn("closing the data plane", "err", err)
 	}
 	r.listeners.wait()
-	r.engine, r.listeners = nil, nil
+	r.engine, r.listeners, r.resolver = nil, nil, nil
 }
 
 func (r *runner) loop(ctx context.Context) error {
@@ -401,6 +443,7 @@ func (r *runner) apply(ctx context.Context) {
 		return
 	}
 	r.retryAt = time.Time{}
+	r.pointSystem()
 	r.applied()
 }
 
@@ -452,6 +495,9 @@ func (r *runner) logStatus() {
 	attrs := []any{"version", r.cur.Header().Version, "peers", len(st.Peers), "handshaken", handshaken,
 		"neighbors", len(st.Neighbors), "links_up", up, "listeners", len(r.listeners.serving),
 		"no_path", st.Path.NoPath, "no_route", st.Router.NoRoute}
+	if r.resolver != nil {
+		attrs = append(attrs, "dns", r.resolver.Counters())
+	}
 	if r.dp.StatusAttrs != nil {
 		attrs = append(attrs, r.dp.StatusAttrs()...)
 	}

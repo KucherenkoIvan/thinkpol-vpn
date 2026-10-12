@@ -3,12 +3,16 @@ package agent
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/KucherenkoIvan/go-kernel/config"
+
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
 )
 
 // Mode is how a node runs its data plane.
@@ -61,6 +65,16 @@ type Config struct {
 	// APIGroup is the group (a name or a gid) whose members may use the
 	// local API besides root; if no such group exists, only root may.
 	APIGroup string `env:"THINKPOL_API_GROUP" default:"thinkpol"`
+	// DNS runs the node's resolver (DESIGN.md "DNS is routing"): a
+	// device's answers its overlay names and resolves the rest by its
+	// rules, and the OS resolves through it while the device is
+	// connected; an exit's is the resolver devices ask through the
+	// tunnel.
+	DNS bool `env:"THINKPOL_DNS" default:"true"`
+	// DNSUpstream is what the node's resolver asks, comma-separated IPs
+	// (port 53) or IP:ports: a device's domestic resolver, an exit's
+	// upstream. Empty: the resolvers the OS used before.
+	DNSUpstream string `env:"THINKPOL_DNS_UPSTREAM"`
 }
 
 // LoadConfig reads the configuration from the environment, with the
@@ -133,6 +147,9 @@ func (c Config) Check() error {
 	if c.APISocket != "" && !filepath.IsAbs(c.APISocket) {
 		errs = append(errs, fmt.Errorf("API socket %q: want an absolute path", c.APISocket))
 	}
+	if _, err := ParseUpstreams(c.DNSUpstream); err != nil {
+		errs = append(errs, err)
+	}
 	if c.MapPoll < 100*time.Millisecond {
 		errs = append(errs, fmt.Errorf("map poll interval %v: want at least 100ms", c.MapPoll))
 	}
@@ -151,4 +168,26 @@ func checkInterfaceName(name string) error {
 		}
 	}
 	return nil
+}
+
+// ParseUpstreams reads DNS upstreams: comma-separated IPs (port 53) or
+// IP:ports.
+func ParseUpstreams(s string) ([]netip.AddrPort, error) {
+	var out []netip.AddrPort
+	for f := range strings.SplitSeq(s, ",") {
+		f = strings.TrimSpace(f)
+		if f == "" {
+			continue
+		}
+		if a, err := netip.ParseAddr(f); err == nil && a.Zone() == "" {
+			out = append(out, netip.AddrPortFrom(a.Unmap(), dns.Port))
+			continue
+		}
+		ap, err := netip.ParseAddrPort(f)
+		if err != nil || ap.Port() == 0 || ap.Addr().Zone() != "" {
+			return nil, fmt.Errorf("DNS upstream %q: want an IP or IP:port", f)
+		}
+		out = append(out, netip.AddrPortFrom(ap.Addr().Unmap(), ap.Port()))
+	}
+	return out, nil
 }

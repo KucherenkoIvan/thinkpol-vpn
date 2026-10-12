@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"sync"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/supervisor"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/rules"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
@@ -29,6 +31,8 @@ type Node struct {
 	logs  Logs
 	// want is set while a device is meant to be connected.
 	want bool
+	// dnsUpstreams are cfg.DNSUpstream's.
+	dnsUpstreams []netip.AddrPort
 
 	report   report
 	requests chan connectRequest
@@ -59,6 +63,10 @@ func Prepare(cfg Config, logs Logs) (*Node, error) {
 	if logs.Logger == nil {
 		logs.Logger = slog.New(slog.DiscardHandler)
 	}
+	upstreams, err := ParseUpstreams(cfg.DNSUpstream)
+	if err != nil {
+		return nil, err
+	}
 	st, err := LoadState(cfg.StateDir, cfg.MapPath())
 	if err != nil {
 		return nil, err
@@ -70,7 +78,7 @@ func Prepare(cfg Config, logs Logs) (*Node, error) {
 		logs.Warn("the state directory's map.bin is not used: the map comes from elsewhere", "map", st.MapPath)
 	}
 	n := &Node{
-		cfg: cfg, state: st, mode: cfg.Mode, logs: logs, want: cfg.Connect,
+		cfg: cfg, state: st, mode: cfg.Mode, logs: logs, want: cfg.Connect, dnsUpstreams: upstreams,
 		requests: make(chan connectRequest), stopped: make(chan struct{}), rulesRequests: make(chan rulesRequest),
 	}
 	n.local = st.LocalRules
@@ -229,14 +237,16 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 		return n.runServer(ctx, reg, maps)
 	}
 	dp := DataPlane{
-		Keys:      n.state.Keys,
-		Map:       n.state.Map,
-		Maps:      maps,
-		Registry:  reg,
-		Inbound:   DirectInbound(reg),
-		Interface: n.cfg.Interface,
-		LinkMTU:   n.cfg.LinkMTU,
-		Log:       n.logs.With("space", n.state.Trust.SpaceID.String()),
+		Keys:         n.state.Keys,
+		Map:          n.state.Map,
+		Maps:         maps,
+		Registry:     reg,
+		Inbound:      DirectInbound(reg),
+		Interface:    n.cfg.Interface,
+		LinkMTU:      n.cfg.LinkMTU,
+		Log:          n.logs.With("space", n.state.Trust.SpaceID.String()),
+		DNS:          n.cfg.DNS,
+		DNSUpstreams: n.dnsUpstreams,
 
 		report:        &n.report,
 		requests:      n.requests,
@@ -337,6 +347,7 @@ func (n *Node) runServer(ctx context.Context, reg *transport.Registry, maps chan
 	s := &serverSpaces{
 		sup: sup, reg: reg, log: n.logs.Logger, keys: n.state.Keys, trust: n.state.Trust,
 		iface: n.cfg.Interface, linkMTU: n.cfg.LinkMTU, cur: n.state.Map, section: n.state.Section,
+		dns: n.cfg.DNS, dnsUpstreams: n.dnsUpstreams, systemUpstreams: dns.SystemUpstreams,
 		retryAfter: RetryAfter, report: &n.report, requests: n.requests, rulesRequests: n.rulesRequests,
 	}
 	return s.run(ctx, maps)
@@ -369,6 +380,11 @@ type serverSpaces struct {
 	iface      string
 	linkMTU    int
 	retryAfter time.Duration
+	// dns runs the space's resolver in its worker, asking dnsUpstreams,
+	// else what systemUpstreams says the host uses.
+	dns             bool
+	dnsUpstreams    []netip.AddrPort
+	systemUpstreams func(exclude []netip.Addr) ([]netip.Addr, error)
 
 	cur     *netmap.Map
 	section netmap.Section
@@ -402,6 +418,7 @@ func (s *serverSpaces) apply() error {
 	id := s.cur.Header().SpaceID
 	config, err := WorkerConfig{
 		Keys: s.keys, Trust: s.trust, Map: s.cur.Bytes(), Interface: s.iface, LinkMTU: s.linkMTU,
+		DNS: s.dns, DNSUpstreams: s.workerUpstreams(),
 	}.Encode()
 	if err != nil {
 		return err
@@ -506,4 +523,24 @@ func logOutput(l Logs) io.Writer {
 		return io.Discard
 	}
 	return l.out
+}
+
+// workerUpstreams are the upstreams a worker's resolver asks: the
+// configured ones, else the host's own resolvers, but none on loopback,
+// which a worker in its own namespace can't reach.
+func (s *serverSpaces) workerUpstreams() []netip.AddrPort {
+	if !s.dns || len(s.dnsUpstreams) > 0 {
+		return s.dnsUpstreams
+	}
+	host, err := s.systemUpstreams(nil)
+	if err != nil {
+		s.log.Warn("DNS: the host's resolvers are unknown; the space's resolver has no upstream", "err", err)
+	}
+	var out []netip.AddrPort
+	for _, a := range host {
+		if !a.IsLoopback() {
+			out = append(out, netip.AddrPortFrom(a, dns.Port))
+		}
+	}
+	return out
 }

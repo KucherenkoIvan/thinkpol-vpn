@@ -28,10 +28,13 @@ type deviceNode struct {
 	failTUN chan struct{}
 }
 
-func startDevice(t *testing.T, s *testSpace, reg *transport.Registry, connect bool) *deviceNode {
+func startDevice(t *testing.T, s *testSpace, reg *transport.Registry, connect bool, opts ...func(*Config, *DataPlane)) *deviceNode {
 	t.Helper()
 	cfg := testConfig(s.stateDir(t, s.b, 1))
 	cfg.Connect = connect
+	for _, o := range opts {
+		o(&cfg, nil)
+	}
 	rn := newRunningNode()
 	logs, err := NewLogs("debug", rn.log)
 	if err != nil {
@@ -52,6 +55,9 @@ func startDevice(t *testing.T, s *testSpace, reg *transport.Registry, connect bo
 			default:
 			}
 			return virtual.newTUN(name)
+		}
+		for _, o := range opts {
+			o(nil, dp)
 		}
 	}
 	go func() { rn.done <- n.run(rn.ctx, reg, rn.maps) }()

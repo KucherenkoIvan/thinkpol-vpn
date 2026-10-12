@@ -100,6 +100,7 @@ func serveSpace(log *slog.Logger, base DataPlane) worker.Serve {
 		dp.Keys, dp.Map, dp.Maps, dp.Registry = first.Keys, m, maps, reg
 		dp.Inbound = SharedInbound(ctx, reg, s.Listeners)
 		dp.Interface, dp.LinkMTU, dp.Log = first.Interface, first.LinkMTU, log
+		dp.DNS, dp.DNSUpstreams = first.DNS, first.DNSUpstreams
 		// The space's own figures only (TP-041 seals them into its
 		// telemetry).
 		dp.StatusAttrs = func() []any {

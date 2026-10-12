@@ -117,6 +117,8 @@ type Server struct {
 	cfg     *Config
 	serving map[netip.Addr]*listening
 	retry   *time.Timer
+	// failing are the addresses it couldn't listen on, said once each.
+	failing map[netip.Addr]bool
 }
 
 type listening struct {
@@ -140,7 +142,7 @@ func New(o Options) *Server {
 	if o.Log == nil {
 		o.Log = slog.New(slog.DiscardHandler)
 	}
-	s := &Server{opts: o, cache: newCache(max(o.CacheSize, 0)), inflight: make(chan struct{}, maxInflight), serving: map[netip.Addr]*listening{}}
+	s := &Server{opts: o, cache: newCache(max(o.CacheSize, 0)), inflight: make(chan struct{}, maxInflight), serving: map[netip.Addr]*listening{}, failing: map[netip.Addr]bool{}}
 	s.cfg = &Config{}
 	return s
 }
@@ -185,10 +187,14 @@ func (s *Server) reconcile() {
 		}
 		l, err := s.listen(a)
 		if err != nil {
-			s.opts.Log.Warn("DNS: can't listen yet, retrying", "address", a, "err", err)
+			if !s.failing[a] {
+				s.opts.Log.Warn("DNS: can't listen yet, retrying", "address", a, "err", err)
+				s.failing[a] = true
+			}
 			failed = true
 			continue
 		}
+		delete(s.failing, a)
 		s.serving[a] = l
 	}
 	if s.retry != nil {
