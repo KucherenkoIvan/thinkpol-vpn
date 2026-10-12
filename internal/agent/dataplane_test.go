@@ -16,6 +16,7 @@ import (
 	"golang.zx2c4.com/wireguard/tun/tuntest"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/logring"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/packettest"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/path"
@@ -443,5 +444,26 @@ func eventually(t *testing.T, cond func() bool) {
 		if time.Now().After(deadline) {
 			t.Fatal("condition not met in time")
 		}
+	}
+}
+
+// A start that fails before the route table is taken over (no TUN, no
+// route table) removes what a crashed run left, which would otherwise
+// keep traffic blocked while the node retries.
+func TestAFailedStartClearsACrashedRunsRouteTable(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	n := newRunningNode()
+	dp := n.dataPlane(reg, s.a, s.verified(t, 1))
+	dp.RouteTable = true
+	var cleared atomic.Int32
+	dp.clearRouteTable = func() error { cleared.Add(1); return nil }
+	dp.newTUN = func(string) (wgtun.Device, netcfg.Configurator, error) { return nil, nil, errors.New("no TUN today") }
+	dp.newRoutes = func(*slog.Logger) (dataplane.RouteTable, error) { panic("not reached") }
+	if err := RunDataPlane(n.ctx, dp); err == nil {
+		t.Fatal("RunDataPlane started without a TUN")
+	}
+	if cleared.Load() == 0 {
+		t.Error("the failed start left a previous run's route table")
 	}
 }

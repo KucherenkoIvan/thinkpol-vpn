@@ -163,6 +163,7 @@ func ruleOf(kr netlink.Rule) (Rule, bool) {
 		Mark:                  kr.Mark,
 		Invert:                kr.Invert,
 		SuppressDefaultRoutes: kr.SuppressPrefixlen == 0,
+		Oif:                   kr.OifName,
 	}
 	switch kr.Family {
 	case netlink.FAMILY_V4:
@@ -186,7 +187,7 @@ func ruleOf(kr netlink.Rule) (Rule, bool) {
 		}
 		r.Dst = netip.PrefixFrom(a, ones)
 	}
-	extra := kr.Src != nil || kr.IifName != "" || kr.OifName != "" || kr.Tos != 0 ||
+	extra := kr.Src != nil || kr.IifName != "" || kr.Tos != 0 ||
 		kr.TunID != 0 || kr.Goto >= 0 || kr.Flow >= 0 || kr.IPProto != 0 || kr.Dport != nil ||
 		kr.Sport != nil || kr.UIDRange != nil || kr.SuppressIfgroup >= 0 ||
 		(kr.SuppressPrefixlen != -1 && kr.SuppressPrefixlen != 0)
@@ -213,6 +214,7 @@ func (c *linuxConfigurator) toNetlinkRule(r Rule) *netlink.Rule {
 	if r.Dst.IsValid() {
 		nr.Dst = ipNet(r.Dst)
 	}
+	nr.OifName = r.Oif
 	nr.Table = kernelTable(r.Table)
 	nr.Mark = r.Mark
 	nr.Invert = r.Invert

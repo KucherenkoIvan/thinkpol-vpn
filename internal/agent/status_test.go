@@ -173,6 +173,61 @@ func TestADeviceConnectsAndDisconnects(t *testing.T) {
 	}
 }
 
+// A status read while the data plane stops (removed from the space, then
+// disconnected) shows the state before or the state after, never a mix
+// such as "connecting, old version, not removed".
+func TestStatusIsWholeWhileTheDataPlaneStops(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	startNode(t, reg, s.a, s.verified(t, 1))
+	b := startDevice(t, s, reg, true)
+	b.connection(t, Connected)
+
+	type view struct {
+		version   uint64
+		conn      Connection
+		removed   bool
+		dataPlane bool
+		retrying  bool
+	}
+	seen := map[view]int{}
+	stop, polled := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(polled)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			st := b.node.Status()
+			seen[view{st.MapVersion, st.Connection, st.Removed, st.DataPlane != nil, st.Retrying}]++
+		}
+	}()
+	b.maps <- s.buildWithout(t, 2, s.b)
+	eventually(t, func() bool { st := b.node.Status(); return st.MapVersion == 2 && st.Removed })
+	b.maps <- s.build(t, 3)
+	eventually(t, func() bool { st := b.node.Status(); return st.MapVersion == 3 && st.Connection == Connected })
+	if err := b.node.Disconnect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	close(stop)
+	<-polled
+
+	whole := []view{
+		{1, Connected, false, true, false},
+		{2, Connecting, true, false, false},
+		{3, Connected, false, true, false},
+		{3, Disconnected, false, false, false},
+	}
+	for v, n := range seen {
+		if !slices.Contains(whole, v) {
+			t.Errorf("read %d times: version %d, %s, removed %v, data plane %v, retrying %v",
+				n, v.version, v.conn, v.removed, v.dataPlane, v.retrying)
+		}
+	}
+}
+
 // A device removed while it was down keeps a Connect for when it is back.
 func TestARemovedDeviceConnectsOnceBack(t *testing.T) {
 	s := newTestSpace(t)
