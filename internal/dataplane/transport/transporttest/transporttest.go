@@ -504,8 +504,8 @@ func testBadCredential(t *testing.T, h Harness) {
 // testManyConcurrentLinks ping-pongs on many links at once. A datagram
 // transport may lose a packet as any network may (a socket buffer
 // overflowing while a loaded machine holds its reader up), so a client
-// whose echo is late sends the round again; a transport that loses more
-// than a few packets in a hundred still fails.
+// whose echo is late sends the round again; a transport that loses packets
+// itself still fails (see maxLost).
 func testManyConcurrentLinks(t *testing.T, h Harness) {
 	const links, rounds = 32, 16
 	peers := make([]Peer, links)
@@ -561,7 +561,7 @@ func testManyConcurrentLinks(t *testing.T, h Harness) {
 		}()
 	}
 	wg.Wait()
-	if n, of := lost.Load(), sent.Load(); n > of/20 {
+	if n, of := lost.Load(), sent.Load(); n > maxLost {
 		t.Errorf("%d of %d packets never came back", n, of)
 	} else if n > 0 || of > links*(rounds+1) {
 		t.Logf("%d packets sent for %d rounds, %d never came back", of, links*(rounds+1), n)
@@ -571,6 +571,12 @@ func testManyConcurrentLinks(t *testing.T, h Harness) {
 // resendAfter is how long a ping-pong client waits for an echo before it
 // sends the round again.
 const resendAfter = time.Second
+
+// maxLost is how many of testManyConcurrentLinks' 544 or more round trips
+// may never come back: the odd datagram a loaded machine's socket buffer
+// drops. An absolute bound, not a share, so a transport losing even 1% per
+// direction (about 11 round trips) fails.
+const maxLost = 3
 
 // pingPong is one client of testManyConcurrentLinks. A round's resend is a
 // new packet of the same size, so each echo says which one came back. It
