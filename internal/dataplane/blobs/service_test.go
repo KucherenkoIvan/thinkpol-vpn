@@ -13,6 +13,7 @@ import (
 	"net/netip"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -277,7 +278,7 @@ func TestADeviceFetchesItsListFromAServer(t *testing.T) {
 
 // tamperingPeer answers every request with a blob of the right size and
 // the wrong bytes.
-func tamperingPeer(t *testing.T, tn *testNet, at netip.Addr, size int, served *sync.WaitGroup) {
+func tamperingPeer(t *testing.T, tn *testNet, at netip.Addr, size int, served *atomic.Int32) {
 	tn.fake(t, netip.AddrPortFrom(at, Port), func(c net.Conn) {
 		var req [requestSize]byte
 		if _, err := io.ReadFull(c, req[:]); err != nil {
@@ -288,7 +289,7 @@ func tamperingPeer(t *testing.T, tn *testNet, at netip.Addr, size int, served *s
 		_, _ = c.Write(head[:])
 		_, _ = c.Write(bytes.Repeat([]byte{0x5a}, size))
 		if served != nil {
-			served.Done()
+			served.Add(1)
 		}
 	})
 }
@@ -296,8 +297,9 @@ func tamperingPeer(t *testing.T, tn *testNet, at netip.Addr, size int, served *s
 func TestATamperedBlobIsRejectedAndFetchedFromAnotherPeer(t *testing.T) {
 	data, ref := geoip(t, "ru", "192.0.2.0/24")
 	tn := newTestNet()
-	var tampered sync.WaitGroup
-	tampered.Add(1)
+	// The tampering peer comes first, and again in every round until the
+	// good one listens.
+	var tampered atomic.Int32
 	tamperingPeer(t, tn, overlay(3), len(data), &tampered)
 	good := startNode(t, tn, 1, newMemStore(data), fast)
 	good.Update(good.plan([]netmap.BlobRef{ref}))
@@ -307,12 +309,12 @@ func TestATamperedBlobIsRejectedAndFetchedFromAnotherPeer(t *testing.T) {
 	device.Update(device.plan([]netmap.BlobRef{ref}, bad, good)) // the tampering peer first
 
 	eventually(t, "the device holding the list", func() bool { _, ok := device.Get(ref.SHA256); return ok })
-	tampered.Wait()
+	eventually(t, "the tampered copy served", func() bool { return tampered.Load() > 0 })
 	got, _ := device.Get(ref.SHA256)
 	if !bytes.Equal(got, data) {
 		t.Fatal("the device holds the tampered bytes")
 	}
-	if st := device.Status(); st.Rejected != 1 || st.Fetched != 1 {
+	if st := device.Status(); st.Rejected == 0 || st.Fetched != 1 {
 		t.Errorf("status %+v", st)
 	}
 	if b := store.Load(ref); !bytes.Equal(b, data) {

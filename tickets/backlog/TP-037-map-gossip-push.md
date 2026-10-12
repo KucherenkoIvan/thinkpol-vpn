@@ -29,7 +29,9 @@ New maps reach every node, from the controller or from each other, and nodes run
   - **One `follower.take`.** Device mode (`runner.next` in `dataplane.go`) and server mode (`serverSpaces.next` in `node.go`) each run `(*Map).Next` → `openSection` → removed/back-in-space logic. Fold them into one `follower` (current map, section, removed flag) with a single `take(envelope)` both modes call, so the semantics can't drift.
   - **Persisting.** When a node takes a newer map from the network, write `map.bin` atomically (temp file in the state directory, fsync, rename, fsync the directory, as `devmap.WriteMap` does) under the state directory's rules (owner, no group/other write; `internal/agent/state.go`). The file watcher then sees its own write and `Next` ignores it (`ErrNotNewer`).
   - **First boot without a map:** `thinkpol up` refuses to start without a valid `map.bin` today. A freshly provisioned node (TP-038) has `node.key` and `space.pub` but no map until the controller publishes one; either provisioning writes the first map, or `up` learns to wait idle for one from gossip/push (the removed-from-space idle state is the model).
+- **From TP-017:** servers only read `blobs/` (seeds) and keep what they fetch in their workers' memory; devices write `blobs/` (files plus an `index`). If servers should keep fetched blobs across restarts, a worker needs a way to hand checked blobs to its supervisor (a new ipc kind, the reverse of `ipc.KindBlob`), which writes them like `map.bin`. Seeds are read when the supervisor sends them (worker start, new config), so a seed added without a new map reaches a running worker only with the next map.
 
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-11 docs (TP-011 review): notes on a MapSource seam, one follower for both modes, persisting maps, first boot
+- 2026-10-12 docs (TP-017): notes from blob distribution

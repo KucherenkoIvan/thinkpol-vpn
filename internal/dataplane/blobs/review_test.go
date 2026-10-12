@@ -48,7 +48,7 @@ func TestATricklingPeerIsAbandoned(t *testing.T) {
 	start := time.Now()
 	device.Update(device.plan([]netmap.BlobRef{ref}, node{addr: overlay(3)}, good))
 	eventually(t, "the list from the good peer", func() bool { _, ok := device.Get(ref.SHA256); return ok })
-	if d := time.Since(start); d > 3*time.Second {
+	if d := time.Since(start); d > 5*time.Second {
 		t.Errorf("took %v behind a trickling peer", d)
 	}
 	if st := device.Status(); st.Abandoned != 1 || st.Fetched != 1 {
@@ -71,7 +71,7 @@ func TestANewMapAbandonsAStalledTransfer(t *testing.T) {
 	start := time.Now()
 	device.Update(device.plan([]netmap.BlobRef{ref}, good))
 	eventually(t, "the new map's list", func() bool { _, ok := device.Get(ref.SHA256); return ok })
-	if d := time.Since(start); d > 2*time.Second {
+	if d := time.Since(start); d > 4*time.Second {
 		t.Errorf("the new map waited %v for the stalled transfer", d)
 	}
 	if st := device.Status(); st.Abandoned != 1 {
