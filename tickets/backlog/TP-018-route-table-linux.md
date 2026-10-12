@@ -30,9 +30,11 @@ On Linux devices, `direct` destinations go straight out and everything else ente
 - **Any coarsening (e.g. a route budget for Windows, TP-047) may only shrink the direct set, never grow it:** drop or split direct prefixes, never widen one. Growing would send foreign traffic outside the tunnel, in the clear in front of the censor; shrinking only sends some domestic traffic through the tunnel. Put it in `internal/lists` with a test that the result `Minus` the original is empty.
 - From TP-006: links' sockets are marked by the transport adapter (`udp.Options.Control`), never by WireGuard (no `fwmark` on any WireGuard device; the path layer's Bind refuses marks). Linux: `SO_MARK` plus an `ip rule` sending marked traffic to the main table. Darwin: `IP_BOUND_IF`/`IPV6_BOUND_IF` to the physical interface. Windows: `IP_UNICAST_IF`. TP-011 builds the Registry with that Control.
 - **From TP-017:** a device's direct set changes when a list arrives or is replaced (the engine recompiles on the blob service's change signal, `Engine.ReloadRules`), not only on a new map: route-table updates must be incremental or atomic. During a list's replacement the previous version stays in force (`EngineConfig.StandIn`) until the new one is verified, across restarts too (the device's `blobs/index`).
+- **From TP-014 (egress):** a device sends internet traffic into the TUN only through routes; `lab/egress_test.go` adds `ip route add <internet>/32 dev thinkpol0` (and the IPv6 one) by hand: replace them with the route-table mode. An exit's own sockets live in its worker's namespace and are unaffected. The router counts `Forwarded` (delivered for the internet) beside `Delivered`; note that on a Linux TUN with offloads `Delivered` counts what `tun.Write` returns, which is bytes, not packets.
 
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-10 notes from TP-016 review: route count and the shrink-only rule for coarsening
 - 2026-10-10 docs (TP-006 review): notes from the path layer
 - 2026-10-12 docs (TP-017): notes from blob distribution
+- 2026-10-12 docs (TP-014 review): notes from egress on Linux
