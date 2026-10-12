@@ -466,7 +466,7 @@ func TestADeviceStartingDisconnectedNeedsTheAPI(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 	cfg.Mode = ModeDevice
-	if err := cfg.Check(); err == nil {
+	if err := cfg.Validate(); err == nil {
 		t.Fatal("Check took it")
 	}
 	cfg.APISocket = "/run/x/api.sock"

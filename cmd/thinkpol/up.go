@@ -9,6 +9,7 @@ import (
 	"syscall"
 
 	"github.com/KucherenkoIvan/go-kernel/app"
+	"github.com/KucherenkoIvan/go-kernel/config"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/localapi"
@@ -29,34 +30,23 @@ func runUp(ctx context.Context, e env, args []string) error {
 		return err
 	}
 	fs := flag.NewFlagSet("up", flag.ContinueOnError)
-	fs.StringVar(&cfg.StateDir, "state", cfg.StateDir, "state directory: node.key, space.pub and map.bin (THINKPOL_STATE_DIR)")
-	fs.StringVar(&cfg.MapFile, "map", cfg.MapFile, "the map file, if not map.bin in the state directory (THINKPOL_MAP)")
-	mode := fs.String("mode", string(cfg.Mode), "auto (by the node's kind in the map), device or server (THINKPOL_MODE)")
-	fs.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "debug, info, warn or error; logs go to stderr only (THINKPOL_LOG_LEVEL)")
-	fs.StringVar(&cfg.Interface, "interface", cfg.Interface, "the overlay TUN's name; empty: the platform's default (THINKPOL_INTERFACE)")
-	fs.IntVar(&cfg.LinkMTU, "link-mtu", cfg.LinkMTU, "MTU of the network under the links; 0: 1500 (THINKPOL_LINK_MTU)")
-	fs.DurationVar(&cfg.MapPoll, "map-poll", cfg.MapPoll, "how often to check the map file for a change; SIGHUP checks at once (THINKPOL_MAP_POLL)")
-	fs.BoolVar(&cfg.Connect, "connect", cfg.Connect, "a device connects when it starts; otherwise it waits for thinkpol connect (THINKPOL_CONNECT)")
-	fs.StringVar(&cfg.APISocket, "api-socket", cfg.APISocket, "the local API's socket, in a directory of its own; empty: no local API (THINKPOL_API_SOCKET)")
-	fs.StringVar(&cfg.APIGroup, "api-group", cfg.APIGroup, "the group whose members may use the local API besides root (THINKPOL_API_GROUP)")
-	fs.StringVar(&cfg.EgressAllowed, "egress-allowed", cfg.EgressAllowed, "comma-separated private prefixes an exit's spaces may still reach (THINKPOL_EGRESS_ALLOWED)")
-	fs.BoolVar(&cfg.DNS, "dns", cfg.DNS, "run the node's resolver: a device's OS resolves through it while connected, an exit's serves devices through the tunnel (THINKPOL_DNS)")
-	fs.StringVar(&cfg.DNSUpstream, "dns-upstream", cfg.DNSUpstream, "what the resolver asks, IPs or IP:ports, comma-separated: a device's domestic resolver, an exit's upstream; empty: what the OS used (THINKPOL_DNS_UPSTREAM)")
+	if err := config.BindFlags(fs, &cfg); err != nil {
+		return err
+	}
 	if err := parseFlags(fs, e, args); err != nil {
 		return err
 	}
 	if fs.NArg() > 0 {
 		return errUsage
 	}
-	cfg.Mode = agent.Mode(*mode)
-	if err := cfg.Check(); err != nil {
+	if err := config.Validate(&cfg); err != nil {
 		return err
 	}
 	logs, err := agent.NewLogs(cfg.LogLevel, e.stderr)
 	if err != nil {
 		return err
 	}
-	// go-kernel's app logs through the default logger.
+	// What logs through slog's default (nsthread) reaches the node's log too.
 	slog.SetDefault(logs.Logger)
 	node, err := agent.Prepare(cfg, logs)
 	if err != nil {
@@ -75,5 +65,5 @@ func runUp(ctx context.Context, e env, args []string) error {
 			Log: logs.With("component", "local API"),
 		}))
 	}
-	return app.Run(ctx, adapters...)
+	return app.RunWith(ctx, app.Options{Logger: logs.Logger}, adapters...)
 }

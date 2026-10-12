@@ -169,6 +169,11 @@ func (n *runningNode) waitLog(t *testing.T, pattern string) {
 	eventually(t, func() bool { return re.MatchString(n.log.String()) })
 }
 
+// logMatches reports whether log has a line matching pattern.
+func logMatches(log, pattern string) bool {
+	return regexp.MustCompile(pattern).MatchString(log)
+}
+
 func memoryRegistry(t *testing.T) (*memory.Network, *transport.Registry) {
 	t.Helper()
 	net := memory.NewNetwork(memory.Datagram)
@@ -197,7 +202,7 @@ func TestDataPlaneRunsAndFollowsTheMap(t *testing.T) {
 	v2 := s.build(t, 2)
 	a.maps <- v2
 	b.maps <- v2
-	a.waitLog(t, `msg="map applied" version=2`)
+	a.waitLog(t, `msg="map applied" .*version=2`)
 	eventually(t, func() bool { return canListen(net, old) })
 	b.ping(t, b4, a4)
 	if canListen(net, s.listen) {
@@ -244,7 +249,7 @@ func TestDataPlaneStopsWhileRemoved(t *testing.T) {
 	b.maps <- without
 	a.waitLog(t, "removed from space")
 	eventually(t, func() bool { return canListen(net, s.listen) })
-	b.waitLog(t, `msg="map applied" version=2`)
+	b.waitLog(t, `msg="map applied" .*version=2`)
 	// Taken, so an older map with the node doesn't bring it back.
 	a.maps <- s.build(t, 1)
 	a.waitLog(t, "map not newer")
@@ -269,7 +274,7 @@ func TestDataPlaneStopsWhileRemoved(t *testing.T) {
 	a.maps <- v4
 	b.maps <- v4
 	a.waitLog(t, "back in space")
-	a.waitLog(t, `msg="map applied" version=4`)
+	a.waitLog(t, `msg="map applied" .*version=4`)
 	b.ping(t, b4, a4)
 	if a.tuns.Load() != 2 {
 		t.Fatalf("%d TUNs, want the data plane started twice", a.tuns.Load())
@@ -316,14 +321,14 @@ func TestAFailedApplyIsRetried(t *testing.T) {
 	n := newRunningNode()
 	n.ifc = ifc
 	n.run(t, n.dataPlane(reg, s.a, s.verified(t, 1)))
-	n.waitLog(t, `msg="map applied" version=1`)
+	n.waitLog(t, `msg="map applied" .*version=1`)
 
 	ifc.failing.Store(true)
 	n.maps <- s.build(t, 2)
 	n.waitLog(t, `applying the map failed, retrying`)
 	failedAt := time.Now()
 	ifc.failing.Store(false)
-	n.waitLog(t, `msg="map applied" version=2`)
+	n.waitLog(t, `msg="map applied" .*version=2`)
 	// Retried on the data plane's own retryAfter, not the default: a few
 	// testRetry on an idle machine, and still far below RetryAfter on one
 	// busy with other tests.

@@ -3,7 +3,7 @@ module github.com/KucherenkoIvan/thinkpol-vpn
 go 1.25.0
 
 require (
-	github.com/KucherenkoIvan/go-kernel v0.18.0
+	github.com/KucherenkoIvan/go-kernel v0.19.0
 	github.com/goccy/go-yaml v1.19.2
 	github.com/godbus/dbus/v5 v5.2.3
 	github.com/google/nftables v0.3.0
