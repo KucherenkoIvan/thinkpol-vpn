@@ -72,3 +72,4 @@ Two reviewers; orchestrator decisions. The resolver core held up.
 - 2026-10-12 merged origin/rewrite (TP-017)
 - 2026-10-12 in-progress → review — acceptance checked; `make lint`, `make test`, `go test -race` on dataplane, agent, netmap and devmap, and `make lab-test` (lab tests and 26 packages in lab nodes) pass
 - 2026-10-12 review → has-errors — B1, S1–S7, nits and the TP-018 wiring from review
+- 2026-10-12 has-errors → in-progress — owner: agent-tp-020, picking up the review findings
