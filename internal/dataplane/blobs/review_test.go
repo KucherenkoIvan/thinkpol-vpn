@@ -14,8 +14,10 @@ import (
 
 // tricklingPeer answers any request with the right header, then one byte
 // every 50 ms, never faster: slow enough to be abandoned, steady enough
-// never to hit the idle timeout.
-func tricklingPeer(t *testing.T, tn *testNet, at netip.Addr, size int) {
+// never to hit the idle timeout. The channel gets a value for each
+// transfer under way (header sent).
+func tricklingPeer(t *testing.T, tn *testNet, at netip.Addr, size int) <-chan struct{} {
+	started := make(chan struct{}, 16)
 	tn.fake(t, netip.AddrPortFrom(at, Port), func(c net.Conn) {
 		var req [requestSize]byte
 		if _, err := io.ReadFull(c, req[:]); err != nil {
@@ -26,6 +28,10 @@ func tricklingPeer(t *testing.T, tn *testNet, at netip.Addr, size int) {
 		if _, err := c.Write(head[:]); err != nil {
 			return
 		}
+		select {
+		case started <- struct{}{}:
+		default:
+		}
 		for range size {
 			time.Sleep(50 * time.Millisecond)
 			if _, err := c.Write([]byte{0}); err != nil {
@@ -33,6 +39,7 @@ func tricklingPeer(t *testing.T, tn *testNet, at netip.Addr, size int) {
 			}
 		}
 	})
+	return started
 }
 
 func TestATricklingPeerIsAbandoned(t *testing.T) {
@@ -60,14 +67,18 @@ func TestANewMapAbandonsAStalledTransfer(t *testing.T) {
 	old, oldRef := geoip(t, "ru", "192.0.2.0/24", "198.51.100.0/24", "2001:db8::/32")
 	data, ref := geoip(t, "de", "203.0.113.0/24")
 	tn := newTestNet()
-	tricklingPeer(t, tn, overlay(3), len(old))
+	trickling := tricklingPeer(t, tn, overlay(3), len(old))
 	good := startNode(t, tn, 1, newMemStore(data), fast)
 	good.Update(good.plan([]netmap.BlobRef{ref}))
 	limits := fast
 	limits.MinRate = 1 // the trickle alone would hold the fetch for hours
 	device := startNode(t, tn, 2, nil, limits)
 	device.Update(device.plan([]netmap.BlobRef{oldRef}, node{addr: overlay(3)}))
-	time.Sleep(200 * time.Millisecond) // the stalled transfer is under way
+	select { // the stalled transfer is under way
+	case <-trickling:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the device never asked the trickling peer")
+	}
 	start := time.Now()
 	device.Update(device.plan([]netmap.BlobRef{ref}, good))
 	eventually(t, "the new map's list", func() bool { _, ok := device.Get(ref.SHA256); return ok })
