@@ -196,29 +196,39 @@ func remoteAddr(c net.Conn) netip.Addr {
 	return netip.Addr{}
 }
 
-// peerKey is who a connection counts against: the plan's peer with that
-// overlay address (a peer has several), else the address.
-func (s *Service) peerKeyLocked(remote netip.Addr) string {
+// peerOf is the plan's peer with that overlay address (a peer has
+// several): who a connection counts against.
+func (s *Service) peerOfLocked(remote netip.Addr) (string, bool) {
 	for _, p := range s.plan.Peers {
 		if slices.Contains(p.Addrs, remote) {
-			return "peer " + p.ID.String()
+			return p.ID.String(), true
 		}
 	}
-	return "address " + remote.String()
+	return "", false
 }
 
-// admit takes a connection slot for remote, or says the service is busy.
-func (s *Service) admit(remote netip.Addr) (string, bool) {
+// errNotPeer is a connection from no peer of the plan.
+var errNotPeer = errors.New("blobs: not a peer")
+
+// admit takes a connection slot for remote's peer, or says the service is
+// busy, or that remote is no peer: through the tunnel every source is a
+// peer's overlay address (WireGuard's allowed IPs), so anything else came
+// from elsewhere (a process on the node itself) and gets nothing.
+func (s *Service) admit(remote netip.Addr) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	key := s.peerKeyLocked(remote)
+	key, ok := s.peerOfLocked(remote)
+	if !ok {
+		s.st.NotPeer++
+		return "", errNotPeer
+	}
 	if s.nconns >= s.limits.MaxConns || s.conns[key] >= s.limits.MaxConnsPerPeer {
 		s.st.Busy++
-		return "", false
+		return "", errBusy
 	}
 	s.nconns++
 	s.conns[key]++
-	return key, true
+	return key, nil
 }
 
 func (s *Service) release(key string) {
@@ -235,8 +245,11 @@ func (s *Service) serveConn(ctx context.Context, c net.Conn) {
 	remote := remoteAddr(c)
 	idle := func() { _ = c.SetDeadline(time.Now().Add(s.limits.IdleTimeout)) }
 	idle()
-	key, ok := s.admit(remote)
-	if !ok {
+	key, err := s.admit(remote)
+	switch {
+	case errors.Is(err, errNotPeer):
+		return // closed without a word
+	case err != nil:
 		_, _ = c.Write([]byte{byte(statusBusy)})
 		return
 	}

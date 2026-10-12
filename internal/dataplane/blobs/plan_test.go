@@ -35,7 +35,7 @@ func TestPlanFrom(t *testing.T) {
 		Blobs: []netmap.BlobRef{ru, by, wrongSize, de, de, renamed(fr, "de")},
 	}
 
-	got := PlanFrom(header, section, true, "tp0")
+	got := PlanFrom(header, section, true, "tp0", false)
 	want := Plan{
 		Want: []netmap.BlobRef{ru, de},
 		Peers: []Peer{
@@ -59,13 +59,12 @@ func TestPlanFrom(t *testing.T) {
 		t.Errorf("a device listens on %v", got.Listen)
 	}
 
-	got = PlanFrom(header, section, false, "tp0")
+	got = PlanFrom(header, section, false, "tp0", false)
 	if got.Local[0] != a("100.64.0.2") || len(got.Local) != 1 || len(got.Peers[0].Addrs) != 1 {
 		t.Errorf("IPv6 off: %+v", got)
 	}
 
-	section.Node.Kind = netmap.NodeServer
-	got = PlanFrom(header, section, true, "tp0")
+	got = PlanFrom(header, section, true, "tp0", true)
 	if !reflect.DeepEqual(got.Want, []netmap.BlobRef{de, ru, unnamed(fr)}) {
 		t.Errorf("server wants %+v; want the header, named", got.Want)
 	}

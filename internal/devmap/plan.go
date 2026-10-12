@@ -129,9 +129,13 @@ func Plan(s *Spec, k Keys, version uint64, random io.Reader) (netmap.Contents, N
 		}
 	}
 	var header []netmap.BlobRef
+	var total uint64
 	for _, l := range s.Lists {
 		if l.Ref.Size == 0 {
 			return netmap.Contents{}, nil, &Error{File: s.File, Pos: l.Pos, Msg: "list " + l.Name + ": not read (ReadLists)"}
+		}
+		if total += l.Ref.Size; total > blobs.ServerMaxHeldSize {
+			return netmap.Contents{}, nil, &Error{File: s.File, Pos: l.Pos, Msg: fmt.Sprintf("list %s: the lists together pass %d bytes, what a server holds", l.Name, blobs.ServerMaxHeldSize)}
 		}
 		ref := l.Ref
 		ref.Name = "" // the header lists blobs unnamed
@@ -396,6 +400,7 @@ func ReadLists(s *Spec, read func(path string) ([]byte, error)) error {
 		errs = append(errs, &Error{File: s.File, Pos: l.Pos, Msg: "list " + l.Name + ": " + fmt.Sprintf(format, args...)})
 	}
 	bySum := map[[32]byte]string{}
+	var total int
 	for i, l := range s.Lists {
 		path := l.File
 		if !filepath.IsAbs(path) {
@@ -408,6 +413,11 @@ func ReadLists(s *Spec, read func(path string) ([]byte, error)) error {
 		}
 		if len(data) > blobs.MaxBlobSize {
 			fail(l, "%s is %d bytes, more than a node holds (%d)", path, len(data), blobs.MaxBlobSize)
+			continue
+		}
+		// The header lists every list, and servers hold all of them.
+		if total += len(data); total > blobs.ServerMaxHeldSize {
+			fail(l, "the lists together pass %d bytes, what a server holds", blobs.ServerMaxHeldSize)
 			continue
 		}
 		if _, err := lists.Decode(data); err != nil {

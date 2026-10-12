@@ -7,6 +7,8 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
+	"fmt"
+	"net/netip"
 	"regexp"
 	"strings"
 	"testing"
@@ -82,8 +84,8 @@ func TestBlobDistribution(t *testing.T) {
 
 	// server-2's overlay address answers on the blob port with a tampered
 	// list, once: a server that has been tampered with. server-2 runs in
-	// device mode so its overlay address is in the node's own namespace,
-	// where the stand-in listens (before thinkpol, which then can't).
+	// device mode, so its overlay address is in the node's own namespace,
+	// where the stand-in listens, and thinkpol serves no blobs there.
 	resp := binary.BigEndian.AppendUint64([]byte{0}, uint64(len(list)))
 	resp = append(resp, []byte(strings.Repeat("\x5a", len(list)))...)
 	server2.WriteFile(t, "/tmp/tampered.resp", resp)
@@ -127,6 +129,90 @@ func TestBlobDistribution(t *testing.T) {
 		_, err := devA.Exec(t.Context(), "sh", "-c", "sha256sum "+blobFile+" | grep -q ^"+hex.EncodeToString(sum[:]))
 		return err
 	})
+	t.Run("the blob port answers only peers through the tunnel", func(t *testing.T) {
+		m := regexp.MustCompile(`ipv6-network: "([^"]+)"`).FindSubmatch(file("keys/space.key"))
+		if m == nil {
+			t.Fatal("no IPv6 network in space.key")
+		}
+		ula := netip.MustParsePrefix(string(m[1])).Addr().As16()
+		overlay := func(n byte) (string, string) {
+			v6 := ula
+			v6[15] = n
+			return fmt.Sprintf("100.64.0.%d", n), netip.AddrFrom16(v6).String()
+		}
+		s1v4, s1v6 := overlay(1)
+		dv4, dv6 := overlay(3)
+		reaches := func(n *lab.Node, addr, port string) bool {
+			_, err := n.Exec(t.Context(), "nc", "-z", "-w", "3", addr, port)
+			return err == nil
+		}
+		// A request for the list, as a peer sends it.
+		req := append([]byte("TPB\x01"), sum[:]...)
+		req = binary.BigEndian.AppendUint64(req, 0)
+		answer := func(n *lab.Node, prefix, addr string) int {
+			n.WriteFile(t, "/tmp/blob.req", req)
+			out := n.MustExec(t, "sh", "-c", prefix+"nc -w 3 "+addr+" 4717 < /tmp/blob.req | wc -c")
+			var got int
+			_, _ = fmt.Sscan(out, &got)
+			return got
+		}
+
+		// Through the tunnel, server-1's worker answers a peer.
+		for _, addr := range []string{s1v4, s1v6} {
+			if got, want := answer(devA, "", addr), 1+8+len(list); got != want {
+				t.Errorf("device-a got %d bytes from %s:4717 through the tunnel, want %d", got, addr, want)
+			}
+		}
+		// A process in the worker's own namespace (the kernel delivers it as
+		// if through the TUN) is no peer: it gets nothing.
+		pid := strings.TrimSpace(server1.MustExec(t, "pgrep", "-f", "thinkpol worker"))
+		inWorker := "nsenter --net=/proc/" + pid + "/ns/net "
+		for _, addr := range []string{s1v4, s1v6} {
+			if got := answer(server1, inWorker, addr); got != 0 {
+				t.Errorf("a local process in server-1's worker got %d bytes from %s:4717", got, addr)
+			}
+		}
+
+		// Devices, and servers run in device mode, only fetch: nothing
+		// listens on the blob port there.
+		for name, n := range map[string]*lab.Node{"device-a": devA, "server-2": server2} {
+			if out := n.MustExec(t, "sh", "-c", "ss -Htln 'sport = :4717'"); out != "" {
+				t.Errorf("%s listens on the blob port:\n%s", name, out)
+			}
+		}
+		// From the router, a neighbour of device-a's on its LAN, routed to
+		// its overlay addresses by its LAN addresses: a listener there not
+		// bound to the TUN answers (the route works), the blob port doesn't.
+		router := l.Node(lab.Router)
+		router.MustExec(t, "ip", "route", "add", dv4+"/32", "via", devA.IPv4(lab.NetDevices).String())
+		router.MustExec(t, "ip", "-6", "route", "add", dv6+"/128", "via", devA.IPv6(lab.NetDevices).String())
+		control4 := devA.Start(t, "nc", "-4", "-l", "4718")
+		control6 := devA.Start(t, "nc", "-6", "-l", "4719")
+		for _, c := range []struct{ addr, port string }{{dv4, "4718"}, {dv6, "4719"}} {
+			lab.Eventually(t, 30*time.Second, func() error {
+				if !reaches(router, c.addr, c.port) {
+					return fmt.Errorf("the control listener at %s:%s is unreachable from the router", c.addr, c.port)
+				}
+				return nil
+			})
+		}
+		_, _ = control4.Stop(), control6.Stop()
+		for _, addr := range []string{dv4, dv6} {
+			if reaches(router, addr, "4717") {
+				t.Errorf("the router reaches device-a's %s:4717 outside the tunnel", addr)
+			}
+		}
+		// A server's overlay addresses live in its worker's namespace, which
+		// a neighbour's packets for them never reach.
+		builder.MustExec(t, "ip", "route", "add", s1v4+"/32", "via", server1.IPv4(lab.NetServers).String())
+		builder.MustExec(t, "ip", "-6", "route", "add", s1v6+"/128", "via", server1.IPv6(lab.NetServers).String())
+		for _, addr := range []string{s1v4, s1v6} {
+			if reaches(builder, addr, "4717") {
+				t.Errorf("a neighbour reaches server-1's %s:4717 outside the tunnel", addr)
+			}
+		}
+	})
+
 	for name, p := range map[string]*lab.Process{"server-1": up1, "server-2": up2, "device-a": upA} {
 		if err := p.Stop(); err != nil {
 			t.Errorf("%s: thinkpol up exited with %v", name, err)

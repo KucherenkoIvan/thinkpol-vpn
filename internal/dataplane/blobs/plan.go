@@ -6,17 +6,18 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
 
-// PlanFrom is what a node's map asks of its service: a device holds the
-// blobs its section names, a server every blob of the header (the
-// availability set it passes on), named where its section names them. A
+// PlanFrom is what a node's map asks of its service: a node that only
+// fetches (a device) holds the blobs its section names; one that serves
+// (a server's worker) every blob of the header, the availability set it
+// passes on, named where its section names them. A
 // section's blob the header doesn't list with the same kind and size, or
 // whose kind and name (or hash) an earlier one has, is left out and
 // reported in Skipped (readers don't check this, the builder does). Peers
 // are the section's WireGuard peers in order, at their overlay addresses
-// (IPv4 first, IPv6 only while the overlay carries it). Only a server
-// listens, on its own overlay addresses: a device only fetches, so nothing
-// on it answers on the blob port. iface is the overlay's TUN.
-func PlanFrom(header []netmap.BlobRef, s netmap.Section, ipv6 bool, iface string) Plan {
+// (IPv4 first, IPv6 only while the overlay carries it). Only a node that
+// serves listens, on its own overlay addresses: on a device nothing
+// answers on the blob port. iface is the overlay's TUN.
+func PlanFrom(header []netmap.BlobRef, s netmap.Section, ipv6 bool, iface string, serve bool) Plan {
 	inHeader := make(map[[32]byte]netmap.BlobRef, len(header))
 	for _, ref := range header {
 		inHeader[ref.SHA256] = ref
@@ -46,7 +47,7 @@ func PlanFrom(header []netmap.BlobRef, s netmap.Section, ipv6 bool, iface string
 		}
 	}
 	p.Want = own
-	if s.Node.Kind == netmap.NodeServer {
+	if serve {
 		p.Want = nil
 		for _, ref := range header {
 			if n, ok := named[ref.SHA256]; ok {
@@ -79,7 +80,7 @@ func PlanFrom(header []netmap.BlobRef, s netmap.Section, ipv6 bool, iface string
 			p.Local = append(p.Local, a)
 		}
 	}
-	if s.Node.Kind == netmap.NodeServer {
+	if serve {
 		p.Listen = p.Local
 	}
 	return p

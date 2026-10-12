@@ -255,6 +255,13 @@ func TestReadLists(t *testing.T) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
+	// Two lists of 9 MiB: together past what a server holds (the size is
+	// checked before the content).
+	nine := func(string) ([]byte, error) { return make([]byte, 9<<20), nil }
+	tooMuch, _ := ParseSpec("spec.yaml", []byte(spec), nil)
+	if err := ReadLists(tooMuch, nine); err == nil || !strings.Contains(err.Error(), "list by: the lists together pass 16777216 bytes") {
+		t.Errorf("lists past the total: %v", err)
+	}
 	unread, _ := ParseSpec("spec.yaml", []byte(spec), nil)
 	if _, _, err := Plan(unread, f.keys, 1, nil); err == nil || !strings.Contains(err.Error(), "not read") {
 		t.Errorf("planning unread lists: %v", err)

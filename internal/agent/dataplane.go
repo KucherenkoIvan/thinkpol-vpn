@@ -49,10 +49,13 @@ type DataPlane struct {
 	// StatusAttrs, if set, adds attributes to the periodic status line at
 	// debug level (a worker's shared-listener figures).
 	StatusAttrs func() []any
-	// Blobs, if set, holds, fetches and serves the blobs the map names
-	// (lists): RunDataPlane runs it, and gives it each map's plan once the
-	// map is applied.
-	Blobs *blobs.Service
+	// Blobs, if set, holds and fetches the blobs the map names (lists):
+	// RunDataPlane runs it, and gives it each map's plan once the map is
+	// applied. ServeBlobs (a server's worker) also serves them, and holds
+	// the header's whole set to pass on; otherwise the node only fetches
+	// its own (a device, or a server run in device mode).
+	Blobs      *blobs.Service
+	ServeBlobs bool
 
 	// What tests swap: the TUN and its configurator, the path layer's
 	// timing, how long to wait before retrying what failed.
@@ -359,7 +362,7 @@ func (r *runner) updateBlobs() {
 		r.dp.Blobs.Update(blobs.Plan{})
 		return
 	}
-	r.dp.Blobs.Update(blobs.PlanFrom(r.cur.Header().Blobs, r.section, r.engine.Status().IPv6, r.dp.Interface))
+	r.dp.Blobs.Update(blobs.PlanFrom(r.cur.Header().Blobs, r.section, r.engine.Status().IPv6, r.dp.Interface, r.dp.ServeBlobs))
 }
 
 func (r *runner) applied() {

@@ -27,6 +27,7 @@ import (
 type testNet struct {
 	mu    sync.Mutex
 	addrs map[netip.AddrPort]string
+	src   sources
 }
 
 func newTestNet() *testNet { return &testNet{addrs: map[netip.AddrPort]string{}} }
@@ -39,7 +40,7 @@ func (n *testNet) listen(addr netip.AddrPort) (net.Listener, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	n.addrs[addr] = l.Addr().String()
-	return l, nil
+	return overlayListener{Listener: l, src: &n.src}, nil
 }
 
 // fake makes a raw server at addr that handles each connection with h.
@@ -61,7 +62,7 @@ func (n *testNet) fake(t *testing.T, addr netip.AddrPort, h func(c net.Conn)) {
 	}()
 }
 
-func (n *testNet) dial(ctx context.Context, _ netip.Addr, remote netip.AddrPort) (net.Conn, error) {
+func (n *testNet) dial(ctx context.Context, local netip.Addr, remote netip.AddrPort) (net.Conn, error) {
 	n.mu.Lock()
 	real, ok := n.addrs[remote]
 	n.mu.Unlock()
@@ -69,7 +70,11 @@ func (n *testNet) dial(ctx context.Context, _ netip.Addr, remote netip.AddrPort)
 		return nil, syscall.ECONNREFUSED
 	}
 	var d net.Dialer
-	return d.DialContext(ctx, "tcp", real)
+	c, err := d.DialContext(ctx, "tcp", real)
+	if err == nil && local.IsValid() {
+		n.src.note(c, local)
+	}
+	return c, err
 }
 
 // memStore is a Store in memory that records what it was asked.
@@ -209,11 +214,20 @@ func startNode(t *testing.T, tn *testNet, n byte, store Store, limits Limits) no
 	return node{Service: s, addr: overlay(n), log: logs}
 }
 
-// plan is a server's plan: it listens. device drops the listener.
+// plan is a server's plan: it listens, and fetches from peers in order.
+// Every other test address (100.64.0.1-9) is a peer too, after them: the
+// nodes that fetch from it.
 func (n node) plan(want []netmap.BlobRef, peers ...node) Plan {
 	p := Plan{Want: want, Local: []netip.Addr{n.addr}, Listen: []netip.Addr{n.addr}}
-	for i, peer := range peers {
-		p.Peers = append(p.Peers, Peer{ID: netmap.NodeID{byte(i + 1)}, Addrs: []netip.Addr{peer.addr}})
+	listed := map[netip.Addr]bool{n.addr: true}
+	for _, peer := range peers {
+		p.Peers = append(p.Peers, Peer{ID: netmap.NodeID{peer.addr.As4()[3]}, Addrs: []netip.Addr{peer.addr}})
+		listed[peer.addr] = true
+	}
+	for i := byte(1); i <= 9; i++ {
+		if a := overlay(i); !listed[a] {
+			p.Peers = append(p.Peers, Peer{ID: netmap.NodeID{i}, Addrs: []netip.Addr{a}})
+		}
 	}
 	return p
 }
@@ -409,7 +423,7 @@ func TestNothingIsServedThatIsNotHeld(t *testing.T) {
 
 	ask := func(req []byte) []byte {
 		t.Helper()
-		c, err := tn.dial(context.Background(), netip.Addr{}, netip.AddrPortFrom(server.addr, Port))
+		c, err := tn.dial(context.Background(), overlay(9), netip.AddrPortFrom(server.addr, Port))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -548,7 +562,7 @@ func TestBusyPastThePerPeerLimit(t *testing.T) {
 	eventually(t, "the server holding the list", func() bool { _, ok := server.Get(ref.SHA256); return ok })
 
 	// One connection that never sends its request holds the peer's slot.
-	hold, err := tn.dial(context.Background(), netip.Addr{}, netip.AddrPortFrom(server.addr, Port))
+	hold, err := tn.dial(context.Background(), overlay(9), netip.AddrPortFrom(server.addr, Port))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -558,7 +572,7 @@ func TestBusyPastThePerPeerLimit(t *testing.T) {
 		defer server.mu.Unlock()
 		return server.nconns == 1
 	})
-	c, err := tn.dial(context.Background(), netip.Addr{}, netip.AddrPortFrom(server.addr, Port))
+	c, err := tn.dial(context.Background(), overlay(9), netip.AddrPortFrom(server.addr, Port))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -623,5 +637,33 @@ func TestStatusQuotesNothing(t *testing.T) {
 		if strings.Contains(out, leak) {
 			t.Errorf("status %s quotes %q", out, leak)
 		}
+	}
+}
+
+// Through the tunnel every source is a peer's overlay address; a
+// connection from anything else gets nothing at all.
+func TestOnlyPeersAreServed(t *testing.T) {
+	data, ref := geoip(t, "ru", "192.0.2.0/24")
+	tn := newTestNet()
+	server := startNode(t, tn, 1, newMemStore(data), fast)
+	p := server.plan([]netmap.BlobRef{ref})
+	p.Peers = nil
+	server.Update(p)
+	eventually(t, "the server holding the list", func() bool { _, ok := server.Get(ref.SHA256); return ok })
+	for _, local := range []netip.Addr{overlay(2), {}} {
+		c, err := tn.dial(context.Background(), local, netip.AddrPortFrom(server.addr, Port))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = c.SetDeadline(time.Now().Add(2 * time.Second))
+		req := request{sha256: ref.SHA256}.encode()
+		_, _ = c.Write(req[:])
+		if b, _ := io.ReadAll(c); len(b) != 0 {
+			t.Errorf("from %v: %x", local, b)
+		}
+		_ = c.Close()
+	}
+	if st := server.Status(); st.NotPeer != 2 || st.Served != 0 {
+		t.Errorf("status %+v", st)
 	}
 }

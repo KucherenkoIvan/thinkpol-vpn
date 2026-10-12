@@ -179,8 +179,9 @@ type Status struct {
 	Fetched, Loaded, Rejected, StoreRejected, Abandoned uint64
 	// Served counts blobs (ServedBytes their bytes) sent to peers,
 	// NotHere requests for what the node doesn't hold, Busy requests
-	// refused for lack of room.
-	Served, ServedBytes, NotHere, Busy uint64
+	// refused for lack of room, NotPeer connections from no peer, closed
+	// unanswered.
+	Served, ServedBytes, NotHere, Busy, NotPeer uint64
 }
 
 // Service holds, fetches and serves the blobs a node's map asks for.

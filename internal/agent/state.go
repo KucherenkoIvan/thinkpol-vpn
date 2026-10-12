@@ -20,9 +20,11 @@ import (
 //
 // `thinkpol up` writes no pid, lock or log file there or anywhere else on
 // disk (netcfg's locks are on /run, a tmpfs). The one thing it writes is
-// blobs/ on a device: the lists its rules use, fetched from peers and
-// replaced when the map changes (diskBlobs). A server only reads blobs/,
-// its seeds: what it fetches stays in its workers' memory. Every blob is
+// blobs/ on a device: the lists its rules use, fetched from peers, with an
+// index of their names, replaced when the map changes once the successor
+// is verified (diskBlobs). A server only reads blobs/, its seeds, when the
+// supervisor sends them to a worker: what it fetches stays in its
+// workers' memory. Every blob is
 // checked against the map before use, wherever it was read.
 //
 // The directory, the key files, the map and the map's directory must be

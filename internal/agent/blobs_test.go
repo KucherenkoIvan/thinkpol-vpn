@@ -28,6 +28,40 @@ import (
 type loopbackOverlay struct {
 	mu    sync.Mutex
 	addrs map[netip.AddrPort]string
+	// from maps a dialer's loopback address to its overlay address, which
+	// the server sees as the remote end, as through the tunnel.
+	from map[string]netip.Addr
+}
+
+type overlayListener struct {
+	net.Listener
+	o *loopbackOverlay
+}
+
+func (l overlayListener) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	return &overlayConn{Conn: c, o: l.o}, nil
+}
+
+type overlayConn struct {
+	net.Conn
+	o *loopbackOverlay
+}
+
+func (c *overlayConn) RemoteAddr() net.Addr {
+	for range 100 {
+		c.o.mu.Lock()
+		a, ok := c.o.from[c.Conn.RemoteAddr().String()]
+		c.o.mu.Unlock()
+		if ok {
+			return net.TCPAddrFromAddrPort(netip.AddrPortFrom(a, 1))
+		}
+		time.Sleep(time.Millisecond)
+	}
+	return c.Conn.RemoteAddr()
 }
 
 func (o *loopbackOverlay) listen(addr netip.AddrPort) (net.Listener, error) {
@@ -41,10 +75,10 @@ func (o *loopbackOverlay) listen(addr netip.AddrPort) (net.Listener, error) {
 		o.addrs = map[netip.AddrPort]string{}
 	}
 	o.addrs[addr] = l.Addr().String()
-	return l, nil
+	return overlayListener{Listener: l, o: o}, nil
 }
 
-func (o *loopbackOverlay) dial(ctx context.Context, _ netip.Addr, remote netip.AddrPort) (net.Conn, error) {
+func (o *loopbackOverlay) dial(ctx context.Context, local netip.Addr, remote netip.AddrPort) (net.Conn, error) {
 	o.mu.Lock()
 	real, ok := o.addrs[remote]
 	o.mu.Unlock()
@@ -52,7 +86,16 @@ func (o *loopbackOverlay) dial(ctx context.Context, _ netip.Addr, remote netip.A
 		return nil, syscall.ECONNREFUSED
 	}
 	var d net.Dialer
-	return d.DialContext(ctx, "tcp", real)
+	c, err := d.DialContext(ctx, "tcp", real)
+	if err == nil {
+		o.mu.Lock()
+		if o.from == nil {
+			o.from = map[string]netip.Addr{}
+		}
+		o.from[c.LocalAddr().String()] = local
+		o.mu.Unlock()
+	}
+	return c, err
 }
 
 var fastBlobs = blobs.Limits{RetryMin: 20 * time.Millisecond, RetryMax: 100 * time.Millisecond, ListenRetry: 20 * time.Millisecond,
@@ -83,7 +126,7 @@ func TestTheDataPlaneFetchesAndKeepsBlobs(t *testing.T) {
 	seeds.Add(data)
 	a := newRunningNode()
 	dpA := a.dataPlane(reg, s.a, s.verified(t, 1))
-	dpA.Blobs = ov.service(seedStore{seeds}, dpA.Log)
+	dpA.Blobs, dpA.ServeBlobs = ov.service(seedStore{seeds}, dpA.Log), true
 	a.run(t, dpA)
 
 	stateB := s.stateDir(t, s.b, 1)
