@@ -8,8 +8,8 @@ size: L
 depends_on: [TP-008, TP-018]
 refs: [D1]
 needs_human: macos
-owner: ""
-branch: ""
+owner: "agent-tp-019"
+branch: "tp-019-macos-data-plane"
 ---
 
 ## Goal
@@ -29,3 +29,4 @@ The device data plane runs on macOS with the same behaviour as on Linux.
 
 ## Log
 - 2026-10-10 created in backlog
+- 2026-10-13 backlog → in-progress — owner: agent-tp-019, branch: tp-019-macos-data-plane
