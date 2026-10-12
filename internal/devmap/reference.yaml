@@ -19,6 +19,16 @@ space:                        # optional
   # random /48 `dev keygen space` made (in space.key) is used.
   ipv6: fd12:3456:789a::/48
 
+# Lists: optional. GeoIP list blobs, as `thinkpol dev lists build` writes
+# them (<name>.geoip); a file's path is relative to the spec's directory.
+# The map's header lists every one (servers hold them all and pass them on);
+# a node's section names those in its own `lists`. Nodes fetch them from
+# their peers: give at least one node a copy, in its state directory as
+# blobs/<sha256 of the file, hex> (the SHA-256 `dev lists build` prints).
+lists:
+  - name: ru                  # how rules name it: geoip:ru
+    file: lists/ru.geoip
+
 nodes:
   - name: server-1            # lowercase letters, digits, dashes; also names
                               # the node's key files (server-1.key, .pub)
@@ -60,6 +70,7 @@ nodes:
 
   - name: device-a
     kind: device
+    lists: [ru]               # the lists this node's rules use
 
   - name: device-b
     kind: device

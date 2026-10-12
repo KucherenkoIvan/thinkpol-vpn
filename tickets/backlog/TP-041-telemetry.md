@@ -26,7 +26,9 @@ Admins see what's happening without nodes holding anything useful to a censor.
 
 ## Notes
 - **From TP-010 (telemetry):** each worker receives its space's `ipc.SharedCounters` every `CountersInterval` (`Session.SharedCounters`) and its own drops (`Session.SharedDrops`); seal them into the space's telemetry like the rest. They hold only that space's figures. The owner-only `ListenerInfo` (public addresses, every space's rejected links) must never go into any space's telemetry.
+- **From TP-017:** `blobs.Service.Status()` is telemetry-safe (counts only); worth sealing per space: rejected, store rejected, abandoned (too slow or overtaken by a map), not peer, busy.
 
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-11 docs (TP-010 review): notes from the shared listener
+- 2026-10-12 docs (TP-017): notes from blob distribution

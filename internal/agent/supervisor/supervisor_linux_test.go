@@ -175,11 +175,20 @@ func probe(ctx context.Context, s worker.Session) error {
 
 	tick := time.NewTicker(100 * time.Millisecond)
 	defer tick.Stop()
+	seen := map[[32]byte]bool{}
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-tick.C:
+		}
+		if s.Seeds != nil {
+			for _, sha := range s.Seeds.Hashes() {
+				if !seen[sha] {
+					seen[sha] = true
+					say("seed sha256=%x", sha)
+				}
+			}
 		}
 		tmu.Lock()
 		current := tgts
@@ -1352,6 +1361,47 @@ func TestConfigReachesTheWorker(t *testing.T) {
 	if now, _ := info(s, a); now.Starts != w.Starts || !now.Ready {
 		t.Fatalf("config changes restarted the worker: %+v, was %+v", now, w)
 	}
+}
+
+// TestSeedsReachTheWorker checks a space's blob seeds arrive intact, one
+// memfd each (one larger than a packet), ahead of the config, and that a
+// new config brings the new seeds to the running worker.
+func TestSeedsReachTheWorker(t *testing.T) {
+	needsLab(t)
+	a := netmap.NewSpaceID()
+	s, err := supervisor.New(options([]string{envProbe + "=1"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	small, big := []byte("a small seed"), bytes.Repeat([]byte("seed"), 64<<10)
+	seeds := func(b ...[]byte) func() [][]byte { return func() [][]byte { return b } }
+	if err := s.SetSpaces([]supervisor.Space{{ID: a, Config: []byte("one"), Seeds: seeds(small, big)}}); err != nil {
+		t.Fatal(err)
+	}
+	waitReady(t, s, a)
+	awaitSeed(t, s, a, small)
+	awaitSeed(t, s, a, big)
+	awaitConfigHash(t, s, a, []byte("one"))
+	later := []byte("a later seed")
+	if err := s.SetSpaces([]supervisor.Space{{ID: a, Config: []byte("two"), Seeds: seeds(small, later)}}); err != nil {
+		t.Fatal(err)
+	}
+	awaitSeed(t, s, a, later)
+	awaitConfigHash(t, s, a, []byte("two"))
+}
+
+func awaitSeed(t *testing.T, s *supervisor.Supervisor, space netmap.SpaceID, want []byte) {
+	t.Helper()
+	line := fmt.Sprintf("seed sha256=%x", sha256.Sum256(want))
+	eventually(t, 10*time.Second, "worker received the seed intact", func() error {
+		for _, l := range probeLines(s, space) {
+			if strings.HasPrefix(l, line) {
+				return nil
+			}
+		}
+		return fmt.Errorf("no %q in the worker's output", line)
+	})
 }
 
 // awaitConfigHash waits until the worker reports receiving a config whose

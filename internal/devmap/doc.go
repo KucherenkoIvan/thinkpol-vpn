@@ -11,6 +11,9 @@
 //	space:                      # optional
 //	  ipv4: 100.64.0.0/10       # overlay IPv4 network, inside 100.64.0.0/10 (default)
 //	  ipv6: fd12:3456:789a::/48 # ULA /48; default: the space's own, from space.key
+//	lists:                      # optional: GeoIP list blobs (`dev lists build`)
+//	  - name: ru
+//	    file: lists/ru.geoip    # relative to the spec's directory
 //	nodes:
 //	  - name: server-1          # also names the node's key files
 //	    kind: server            # server | device
@@ -24,6 +27,7 @@
 //	    egress: true            # internet traffic may leave (servers; default false)
 //	  - name: device-a
 //	    kind: device
+//	    lists: [ru]             # optional: the lists the node uses
 //	paths:                      # [one end, relays..., other end]
 //	  - [device-a, server-1]
 //	  - [device-a, server-1, device-b]
@@ -59,6 +63,11 @@
 //     build: the dialer's credential and, udp being symmetric, the
 //     listener's verifier.
 //   - Ids: random, made by `dev keygen node` and kept in the node's files.
+//   - Lists: ReadLists reads each list's file and checks it is a GeoIP list
+//     blob. The header lists every list, unnamed (the availability set
+//     servers hold and pass on); a node's section names the lists in its
+//     lists. Nodes fetch the blobs from their peers, so some node needs a
+//     copy in its state directory (blobs/<hex SHA-256>).
 //
 // # Keys
 //

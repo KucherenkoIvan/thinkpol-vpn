@@ -4,6 +4,7 @@ package supervisor
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -195,7 +196,7 @@ func (s *Supervisor) SetSpaces(spaces []Space) error {
 	for _, sp := range spaces {
 		if w, ok := s.workers[sp.ID]; ok {
 			w.inbound = sp.Inbound
-			w.setConfig(sp.Config) // an existing worker: push the new config
+			w.setConfig(sp.Config, sp.Seeds) // an existing worker: push the new config
 			continue
 		}
 		slot := 0
@@ -381,6 +382,7 @@ type worker struct {
 
 	mu        sync.Mutex
 	config    []byte
+	seeds     func() [][]byte
 	pid       int
 	ready     bool
 	starts    int
@@ -401,6 +403,7 @@ func (s *Supervisor) newWorker(sp Space, slot int) *worker {
 		egress:  sp.Egress,
 		inbound: sp.Inbound,
 		config:  sp.Config,
+		seeds:   sp.Seeds,
 		output:  logring.New(s.opts.OutputBytes),
 		ctx:     ctx,
 		cancel:  cancel,
@@ -420,11 +423,12 @@ func (s *Supervisor) newWorker(sp Space, slot int) *worker {
 	return w
 }
 
-// setConfig stores a new config and signals the running worker to send it.
-func (w *worker) setConfig(config []byte) {
+// setConfig stores a new config and its seeds, and signals the running
+// worker to send them.
+func (w *worker) setConfig(config []byte, seeds func() [][]byte) {
 	w.mu.Lock()
 	same := string(w.config) == string(config)
-	w.config = config
+	w.config, w.seeds = config, seeds
 	w.mu.Unlock()
 	if !same {
 		w.signal(w.notify)
@@ -437,6 +441,12 @@ func (w *worker) signal(ch chan struct{}) {
 	case ch <- struct{}{}:
 	default:
 	}
+}
+
+func (w *worker) currentSeeds() func() [][]byte {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.seeds
 }
 
 func (w *worker) currentConfig() []byte {
@@ -638,6 +648,11 @@ func (s *Supervisor) run(w *worker, log *slog.Logger) error {
 	if err := s.sendListeners(ends.Control); err != nil {
 		return stuck("listeners", err)
 	}
+	// Each seed once per process, ahead of the config that names it.
+	sent := map[[32]byte]bool{}
+	if err := s.sendSeeds(ends.Control, w, sent); err != nil {
+		return stuck("blob seeds", err)
+	}
 	if err := s.sendConfig(ends.Control, w); err != nil {
 		return stuck("config", err)
 	}
@@ -680,6 +695,9 @@ func (s *Supervisor) run(w *worker, log *slog.Logger) error {
 			s.awaitExit(p)
 			return fmt.Errorf("socket: %w", err)
 		case <-w.notify:
+			if err := s.sendSeeds(ends.Control, w, sent); err != nil {
+				return stuck("blob seeds", err)
+			}
 			if err := s.sendConfig(ends.Control, w); err != nil {
 				return stuck("config", err)
 			}
@@ -749,6 +767,32 @@ func (s *Supervisor) sendConfig(conn *ipc.Conn, w *worker) error {
 	}
 	defer func() { _ = f.Close() }()
 	return conn.SendTimeout(ipc.Message{Kind: ipc.KindConfig, Files: []*os.File{f}}, s.opts.StopTimeout)
+}
+
+// sendSeeds sends the worker each of its space's current seeds it hasn't
+// had (sent), one sealed memfd per seed; nothing of them is kept here.
+func (s *Supervisor) sendSeeds(conn *ipc.Conn, w *worker, sent map[[32]byte]bool) error {
+	seeds := w.currentSeeds()
+	if seeds == nil {
+		return nil
+	}
+	for _, b := range seeds() {
+		sum := sha256.Sum256(b)
+		if sent[sum] || len(b) == 0 || len(b) > ipc.MaxBlobSize {
+			continue
+		}
+		f, err := sealedMemfd("thinkpol-blob", b)
+		if err != nil {
+			return err
+		}
+		err = conn.SendTimeout(ipc.Message{Kind: ipc.KindBlob, Files: []*os.File{f}}, s.opts.StopTimeout)
+		_ = f.Close()
+		if err != nil {
+			return err
+		}
+		sent[sum] = true
+	}
+	return nil
 }
 
 // awaitExit gives the process StopTimeout to exit, then kills it; false if

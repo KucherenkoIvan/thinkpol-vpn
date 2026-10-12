@@ -29,8 +29,10 @@ On Linux devices, `direct` destinations go straight out and everything else ente
 - **From TP-016 (lists):** `lists.Set.Prefixes()` is already the merged minimal CIDR list (overlapping and adjacent merged), IPv4 then IPv6. RU is ~23k prefixes (DB-IP Lite 2026-10: 12,895 IPv4 + 10,088 IPv6). Lists never hold IPv6 inside `::ffff:0:0/96`, so no IPv6 route can capture IPv4.
 - **Any coarsening (e.g. a route budget for Windows, TP-047) may only shrink the direct set, never grow it:** drop or split direct prefixes, never widen one. Growing would send foreign traffic outside the tunnel, in the clear in front of the censor; shrinking only sends some domestic traffic through the tunnel. Put it in `internal/lists` with a test that the result `Minus` the original is empty.
 - From TP-006: links' sockets are marked by the transport adapter (`udp.Options.Control`), never by WireGuard (no `fwmark` on any WireGuard device; the path layer's Bind refuses marks). Linux: `SO_MARK` plus an `ip rule` sending marked traffic to the main table. Darwin: `IP_BOUND_IF`/`IPV6_BOUND_IF` to the physical interface. Windows: `IP_UNICAST_IF`. TP-011 builds the Registry with that Control.
+- **From TP-017:** a device's direct set changes when a list arrives or is replaced (the engine recompiles on the blob service's change signal, `Engine.ReloadRules`), not only on a new map: route-table updates must be incremental or atomic. During a list's replacement the previous version stays in force (`EngineConfig.StandIn`) until the new one is verified, across restarts too (the device's `blobs/index`).
 
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-10 notes from TP-016 review: route count and the shrink-only rule for coarsening
 - 2026-10-10 docs (TP-006 review): notes from the path layer
+- 2026-10-12 docs (TP-017): notes from blob distribution

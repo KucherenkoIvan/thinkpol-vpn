@@ -11,6 +11,7 @@ import (
 	wgtun "golang.zx2c4.com/wireguard/tun"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/blobs"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/path"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/rules"
@@ -48,6 +49,13 @@ type DataPlane struct {
 	// StatusAttrs, if set, adds attributes to the periodic status line at
 	// debug level (a worker's shared-listener figures).
 	StatusAttrs func() []any
+	// Blobs, if set, holds and fetches the blobs the map names (lists):
+	// RunDataPlane runs it, and gives it each map's plan once the map is
+	// applied. ServeBlobs (a server's worker) also serves them, and holds
+	// the header's whole set to pass on; otherwise the node only fetches
+	// its own (a device, or a server run in device mode).
+	Blobs      *blobs.Service
+	ServeBlobs bool
 
 	// A device's (Node.run): where its status goes, its Connect and
 	// Disconnect requests, and whether it starts disconnected.
@@ -64,6 +72,11 @@ type DataPlane struct {
 	newTUN     func(name string) (wgtun.Device, netcfg.Configurator, error)
 	path       path.Options
 	retryAfter time.Duration
+	// blobOptions are the network functions and limits of the blob
+	// service a worker makes (serveSpace).
+	blobOptions blobs.Options
+	// onEngine sees each engine the data plane starts.
+	onEngine func(*dataplane.Engine)
 }
 
 // RetryAfter is how long a data plane waits before retrying an Apply, a
@@ -97,6 +110,9 @@ func RunDataPlane(ctx context.Context, dp DataPlane) error {
 		return err
 	}
 	r := &runner{dp: dp, cur: dp.Map, section: section, maps: dp.Maps, down: dp.disconnected}
+	if dp.Blobs != nil {
+		r.blobsChanged = dp.Blobs.Subscribe()
+	}
 	// The first map must run: a node that can't carry it shouldn't look
 	// up. A shutdown meanwhile is no failure.
 	if !r.down {
@@ -108,6 +124,13 @@ func RunDataPlane(ctx context.Context, dp DataPlane) error {
 		}
 	}
 	defer r.stop()
+	if dp.Blobs != nil {
+		// Stopped before the data plane, whose TUN its sockets are on.
+		bctx, cancel := context.WithCancel(ctx)
+		done := make(chan struct{})
+		go func() { defer close(done); dp.Blobs.Run(bctx) }()
+		defer func() { cancel(); <-done }()
+	}
 	return r.loop(ctx)
 }
 
@@ -158,6 +181,8 @@ type runner struct {
 	// down is set while a device is disconnected: it follows the maps but
 	// runs nothing.
 	down bool
+	// blobsChanged is signalled when the blob service's lists change.
+	blobsChanged <-chan struct{}
 	// retryAt is when to retry a failed Apply or start (zero: nothing to
 	// retry).
 	retryAt time.Time
@@ -170,7 +195,7 @@ func (r *runner) start(ctx context.Context) error {
 	if err != nil {
 		return &StartError{Step: StepTUN, Err: err}
 	}
-	engine, err := dataplane.NewEngine(dataplane.EngineConfig{
+	cfg := dataplane.EngineConfig{
 		ID:           r.dp.Keys.ID,
 		Space:        transport.SpaceID(r.cur.Header().SpaceID),
 		WireGuardKey: r.dp.Keys.WireGuard,
@@ -181,7 +206,14 @@ func (r *runner) start(ctx context.Context) error {
 		Path:         r.dp.path,
 		Log:          r.dp.Log,
 		Rules:        r.dp.Rules,
-	})
+	}
+	if b := r.dp.Blobs; b != nil {
+		// The rules' lists: the current map's once held, the previous
+		// version until then. ReloadRules follows the service's changes.
+		cfg.Blobs = func(ref netmap.BlobRef) ([]byte, bool) { return b.Get(ref.SHA256) }
+		cfg.StandIn = b.Latest
+	}
+	engine, err := dataplane.NewEngine(cfg)
 	if err != nil {
 		if ifc != nil {
 			_ = ifc.Close()
@@ -195,6 +227,9 @@ func (r *runner) start(ctx context.Context) error {
 		return &StartError{Step: step, Err: fmt.Errorf("applying map version %d: %w", r.cur.Header().Version, err)}
 	}
 	r.engine = engine
+	if r.dp.onEngine != nil {
+		r.dp.onEngine(engine)
+	}
 	r.listeners = newListenerSet(engine, r.dp.Log, r.dp.retryAfter)
 	r.retryAt = time.Time{}
 	r.applied()
@@ -247,6 +282,8 @@ func (r *runner) loop(ctx context.Context) error {
 		case <-ended:
 		case <-retry.C:
 			r.retry(ctx)
+		case <-r.blobsChanged:
+			r.reloadRules()
 		case <-status.C:
 			r.logStatus()
 		case req := <-r.dp.requests:
@@ -291,6 +328,7 @@ func (r *runner) connect(ctx context.Context, connect bool) error {
 		r.down = true
 		r.stop()
 		r.retryAt = time.Time{}
+		r.updateBlobs()
 		r.dp.Log.Info("disconnected")
 	case connect && r.removed:
 		if r.down {
@@ -363,6 +401,7 @@ func (r *runner) next(ctx context.Context, envelope []byte) {
 		}
 		r.stop()
 		r.retryAt = time.Time{}
+		r.updateBlobs()
 		return
 	}
 	if err != nil {
@@ -404,7 +443,38 @@ func (r *runner) apply(ctx context.Context) {
 	r.applied()
 }
 
+// reloadRules compiles the rules again with the lists held now.
+func (r *runner) reloadRules() {
+	if r.engine == nil {
+		return
+	}
+	if err := r.engine.ReloadRules(); err != nil && !errors.Is(err, rules.ErrPresetUnavailable) {
+		r.dp.Log.Warn("recompiling the rules with new lists", "err", err)
+	}
+}
+
+// updateBlobs gives the blob service what the current map asks of it:
+// nothing while the data plane is stopped.
+func (r *runner) updateBlobs() {
+	if r.dp.Blobs == nil {
+		return
+	}
+	if r.engine == nil && r.removed {
+		r.dp.Blobs.Update(blobs.Plan{}) // the space's lists are no use now
+		return
+	}
+	if r.engine == nil {
+		// Down (disconnected, or a start to retry): the lists stay, on
+		// disk too, but nothing is fetched or served.
+		p := blobs.PlanFrom(r.cur.Header().Blobs, r.section, false, r.dp.Interface, r.dp.ServeBlobs)
+		r.dp.Blobs.Update(blobs.Plan{Want: p.Want})
+		return
+	}
+	r.dp.Blobs.Update(blobs.PlanFrom(r.cur.Header().Blobs, r.section, r.engine.Status().IPv6, r.dp.Interface, r.dp.ServeBlobs))
+}
+
 func (r *runner) applied() {
+	r.updateBlobs()
 	st := r.engine.Status()
 	attrs := []any{"version", r.cur.Header().Version, "node", r.dp.Keys.ID, "ipv4", r.section.Node.IPv4,
 		"mtu", st.MTU, "peers", len(st.Peers), "skipped", len(st.Skipped)}
@@ -452,6 +522,10 @@ func (r *runner) logStatus() {
 	attrs := []any{"version", r.cur.Header().Version, "peers", len(st.Peers), "handshaken", handshaken,
 		"neighbors", len(st.Neighbors), "links_up", up, "listeners", len(r.listeners.serving),
 		"no_path", st.Path.NoPath, "no_route", st.Router.NoRoute}
+	if r.dp.Blobs != nil {
+		b := r.dp.Blobs.Status()
+		attrs = append(attrs, "blobs_wanted", b.Wanted, "blobs_held", b.Held, "blobs_rejected", b.Rejected+b.StoreRejected)
+	}
 	if r.dp.StatusAttrs != nil {
 		attrs = append(attrs, r.dp.StatusAttrs()...)
 	}
