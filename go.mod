@@ -6,6 +6,7 @@ require (
 	github.com/KucherenkoIvan/go-kernel v0.18.0
 	github.com/goccy/go-yaml v1.19.2
 	github.com/google/nftables v0.3.0
+	github.com/miekg/dns v1.1.73
 	github.com/vishvananda/netlink v1.3.1
 	github.com/vishvananda/netns v0.0.5
 	golang.org/x/crypto v0.55.0
