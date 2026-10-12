@@ -247,6 +247,35 @@ func (e *env) connect(pl Peer) (client, server *link) {
 	return client, server
 }
 
+// connectAdmitted is connect for a peer link a table change has just
+// admitted. Listeners may take the change in the background, and until
+// they have, a dial is camouflaged (and some transports decide that when
+// they dial), so it dials again until a link is accepted, waiting longer
+// each time.
+func (e *env) connectAdmitted(pl Peer) (client, server *link) {
+	e.t.Helper()
+	deadline := time.Now().Add(wait)
+	for patience := quiet; ; patience *= 2 {
+		client = e.dial(pl)
+		client.write([]byte("hello"))
+		ctx, cancel := context.WithTimeout(context.Background(), min(patience, time.Until(deadline)))
+		l, id, err := e.listener.Accept(ctx)
+		cancel()
+		if err == nil {
+			if id != pl.Peer {
+				e.t.Fatalf("accepted identity %s, want %s", id, pl.Peer)
+			}
+			server = watch(e.t, l)
+			server.expect([]byte("hello"))
+			return client, server
+		}
+		if !errors.Is(err, context.DeadlineExceeded) || time.Now().After(deadline) {
+			e.t.Fatalf("accept: %v", err)
+		}
+		_ = client.Close()
+	}
+}
+
 // link reads its packets in the background, so tests can wait on them with
 // timeouts.
 type link struct {
@@ -472,6 +501,11 @@ func testBadCredential(t *testing.T, h Harness) {
 	client.expect([]byte("still serving"))
 }
 
+// testManyConcurrentLinks ping-pongs on many links at once. A datagram
+// transport may lose a packet as any network may (a socket buffer
+// overflowing while a loaded machine holds its reader up), so a client
+// whose echo is late sends the round again; a transport that loses more
+// than a few packets in a hundred still fails.
 func testManyConcurrentLinks(t *testing.T, h Harness) {
 	const links, rounds = 32, 16
 	peers := make([]Peer, links)
@@ -513,45 +547,115 @@ func testManyConcurrentLinks(t *testing.T, h Harness) {
 	}()
 
 	var wg sync.WaitGroup
+	var sent, lost atomic.Int64
 	for i, pl := range peers {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := pingPong(e, pl, i, rounds); err != nil {
+			s, l, err := pingPong(e, pl, i, rounds)
+			sent.Add(int64(s))
+			lost.Add(int64(l))
+			if err != nil {
 				t.Errorf("link %d: %v", i, err)
 			}
 		}()
 	}
 	wg.Wait()
+	if n, of := lost.Load(), sent.Load(); n > of/20 {
+		t.Errorf("%d of %d packets never came back", n, of)
+	} else if n > 0 || of > links*(rounds+1) {
+		t.Logf("%d packets sent for %d rounds, %d never came back", of, links*(rounds+1), n)
+	}
 }
 
-// pingPong is one client of testManyConcurrentLinks.
-func pingPong(e *env, pl Peer, i, rounds int) error {
+// resendAfter is how long a ping-pong client waits for an echo before it
+// sends the round again.
+const resendAfter = time.Second
+
+// pingPong is one client of testManyConcurrentLinks. A round's resend is a
+// new packet of the same size, so each echo says which one came back. It
+// returns how many packets it sent and how many of them never came back.
+func pingPong(e *env, pl Peer, i, rounds int) (sent, lost int, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), wait)
 	defer cancel()
 	l, err := e.h.Dialer.Dial(ctx, e.dialTo, e.dialConfig(pl))
 	if err != nil {
-		return err
+		return 0, 0, err
 	}
 	client := watch(e.t, l)
-	hello := []byte(fmt.Sprintf("hello %d", i))
-	if err := client.WritePacket(hello); err != nil {
-		return err
+	outstanding := map[string]int{} // sent, not yet echoed
+	exchange := func(packet func() []byte) error {
+		deadline := time.After(wait)
+		round := map[string]bool{}
+		for {
+			p := packet()
+			if err := client.WritePacket(p); err != nil {
+				return err
+			}
+			sent++
+			outstanding[string(p)]++
+			round[string(p)] = true
+			resend := time.After(resendAfter)
+		echoes:
+			for {
+				select {
+				case got := <-client.packets:
+					if outstanding[string(got)] == 0 {
+						return fmt.Errorf("got a %d-byte packet nobody sent", len(got))
+					}
+					outstanding[string(got)]--
+					if round[string(got)] {
+						return nil
+					}
+				case err := <-client.err:
+					return fmt.Errorf("read: %w", err)
+				case <-resend:
+					break echoes
+				case <-deadline:
+					return fmt.Errorf("no echo within %v", wait)
+				}
+			}
+		}
 	}
-	if err := client.receiveEqual(hello); err != nil {
-		return err
+	defer func() {
+		// Late echoes of resent rounds still count as delivered.
+		drain := time.After(quiet)
+		for err == nil {
+			n := 0
+			for _, c := range outstanding {
+				n += c
+			}
+			if n == 0 {
+				break
+			}
+			select {
+			case got := <-client.packets:
+				if outstanding[string(got)] == 0 {
+					err = fmt.Errorf("got a %d-byte packet nobody sent", len(got))
+				}
+				outstanding[string(got)]--
+			case <-drain:
+				lost = n
+				return
+			}
+		}
+	}()
+	hello := []byte(fmt.Sprintf("hello %d", i))
+	if err := exchange(func() []byte { return hello }); err != nil {
+		return sent, 0, err
 	}
 	for r := range rounds {
-		p := randomPacket(1 + (i*rounds+r)*37%1500)
-		copy(p, fmt.Sprintf("%d/%d", i, r))
-		if err := client.WritePacket(p); err != nil {
-			return err
-		}
-		if err := client.receiveEqual(p); err != nil {
-			return fmt.Errorf("round %d: %w", r, err)
+		size := 1 + (i*rounds+r)*37%1500
+		err := exchange(func() []byte {
+			p := randomPacket(size)
+			copy(p, fmt.Sprintf("%d/%d", i, r))
+			return p
+		})
+		if err != nil {
+			return sent, 0, fmt.Errorf("round %d: %w", r, err)
 		}
 	}
-	return nil
+	return sent, 0, nil
 }
 
 func testConcurrentWrites(t *testing.T, h Harness) {
@@ -1093,8 +1197,7 @@ func testShapingRefused(t *testing.T, h Harness) {
 			fixed := bad
 			fixed.Shaping = h.Shaping
 			e.table.Set(links(good, fixed))
-			time.Sleep(20 * time.Millisecond)
-			fixedClient, fixedServer := e.connect(fixed)
+			fixedClient, fixedServer := e.connectAdmitted(fixed)
 			fixedServer.write([]byte("accepted"))
 			fixedClient.expect([]byte("accepted"))
 

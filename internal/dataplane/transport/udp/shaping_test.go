@@ -64,6 +64,14 @@ func TestPaddingHidesPacketSizes(t *testing.T) {
 			f := newFixture(t)
 			f.peer.Shaping = tc.shaping
 			f.table.Set([]transport.PeerLink{f.peer.PeerLink})
+			// The listener takes table changes in the background; its
+			// first reply must already be shaped.
+			waitFor(t, "the shaping applied", func() bool {
+				f.listener.mu.Lock()
+				defer f.listener.mu.Unlock()
+				fl := f.listener.flows[string(f.peer.Verifier)]
+				return fl != nil && fl.entry.Load().link.Shaping.Padding == tc.shaping.Padding
+			})
 			client, err := f.tr.Dial(context.Background(), f.tap.addr(), transport.DialConfig{Credential: f.peer.Credential, Shaping: tc.shaping})
 			if err != nil {
 				t.Fatal(err)
@@ -130,17 +138,23 @@ func TestPaddingHidesPacketSizes(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = client.Close() })
-		for range 100 {
-			if err := client.WritePacket(make([]byte, 166)); err != nil {
-				t.Fatal(err)
+		// In batches the tap's socket always has room for, so none is lost
+		// to a reader the machine's load holds up.
+		for batch := 1; batch <= 10; batch++ {
+			for range 10 {
+				if err := client.WritePacket(make([]byte, 166)); err != nil {
+					t.Fatal(err)
+				}
 			}
+			waitFor(t, "a batch captured", func() bool { up, _ := f.tap.captured(); return len(up) == 10*batch })
 		}
-		waitFor(t, "100 datagrams captured", func() bool { up, _ := f.tap.captured(); return len(up) == 100 })
 		up, _ := f.tap.captured()
 		seen := map[int]bool{}
 		for _, d := range up {
 			seen[len(d)] = true
 		}
+		// 100 uniform draws from 257 lengths show about 83; fewer than 50
+		// happens with probability about 5e-23.
 		if len(seen) < 50 {
 			t.Errorf("100 packets of one size went out in only %d sizes", len(seen))
 		}

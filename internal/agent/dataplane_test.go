@@ -310,7 +310,10 @@ func TestAFailedApplyIsRetried(t *testing.T) {
 	failedAt := time.Now()
 	ifc.failing.Store(false)
 	n.waitLog(t, `msg="map applied" version=2`)
-	if since := time.Since(failedAt); since > 5*testRetry {
+	// Retried on the data plane's own retryAfter, not the default: a few
+	// testRetry on an idle machine, and still far below RetryAfter on one
+	// busy with other tests.
+	if since := time.Since(failedAt); since > RetryAfter/2 {
 		t.Fatalf("retried after %v", since)
 	}
 }

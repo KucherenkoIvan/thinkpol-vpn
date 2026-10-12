@@ -101,6 +101,45 @@ func (n *testNS) ip(t *testing.T, args ...string) {
 	}
 }
 
+// awaitLinkDown waits until the given number of default routes through
+// link carry RTNH_F_LINKDOWN. The kernel flags them from its linkwatch work, which
+// runs after the carrier change (up to a second later, longer on a busy
+// machine), not when `ip link set ... down` returns.
+func (n *testNS) awaitLinkDown(t *testing.T, link string, routes int) {
+	t.Helper()
+	l, err := n.h.LinkByName(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		flagged := 0
+		for _, fam := range []int{netlink.FAMILY_V4, netlink.FAMILY_V6} {
+			rs, err := n.h.RouteListFiltered(fam, &netlink.Route{LinkIndex: l.Attrs().Index}, netlink.RT_FILTER_OIF)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, r := range rs {
+				if r.Dst != nil {
+					if ones, _ := r.Dst.Mask.Size(); ones != 0 {
+						continue
+					}
+				}
+				if r.Flags&unix.RTNH_F_LINKDOWN != 0 {
+					flagged++
+				}
+			}
+		}
+		if flagged >= routes {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d of %d default routes through %s flagged linkdown", flagged, routes, link)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // snapshot is everything netcfg could touch in a namespace: links, every
 // address and every route in every table, as sorted lines.
 func snapshot(t *testing.T, h *netlink.Handle) []string {
@@ -893,6 +932,7 @@ func TestDefaultRoute(t *testing.T) {
 	n.ip(t, "route", "add", "default", "via", "198.51.100.1", "metric", "10")
 	n.ip(t, "-6", "route", "add", "default", "via", "2001:db8:1::1", "dev", "veth9", "metric", "10")
 	n.ip(t, "link", "set", "veth9p", "down")
+	n.awaitLinkDown(t, "veth9", 2)
 
 	c := n.configurator(t)
 	ctx := context.Background()

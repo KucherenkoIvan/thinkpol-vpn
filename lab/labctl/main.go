@@ -23,8 +23,9 @@ const usage = `usage: labctl <command>
   up                                  start the standard topology for this checkout
   down [-tests | -stale]              remove this checkout's labs (-tests: only the ones tests
                                       started; -stale: every lab whose checkout is gone)
-  gotest [-v] [-run re] [-p n] [-perf] pkgs...
+  gotest [-v] [-run re] [-count n] [-timeout d] [-p n] [-perf] pkgs...
                                       run each package's tests in a fresh lab node with THINKPOL_LAB=1
+                                      (-count, -timeout: the test binary's; repeat runs for stability)
                                       (-perf: alone on the host, with THINKPOL_LAB_PERF=1: make lab-perf)
   project                             print this checkout's project prefix
 `
@@ -75,6 +76,8 @@ func run(ctx context.Context, args []string) error {
 	case "gotest":
 		fs := flag.NewFlagSet("gotest", flag.ContinueOnError)
 		runRe := fs.String("run", "", "run only tests matching the regexp")
+		count := fs.Int("count", 0, "run each test n times (the test binary's -test.count)")
+		timeout := fs.String("timeout", "", "the test binary's -test.timeout (default "+lab.DefaultTestTimeout+")")
 		verbose := fs.Bool("v", false, "verbose test output")
 		parallel := fs.Int("p", 4, "packages tested at once")
 		perf := fs.Bool("perf", false, "a perf run: wait until no other lab runs, keep others from starting, set "+lab.PerfEnv+"=1")
@@ -93,7 +96,20 @@ func run(ctx context.Context, args []string) error {
 			defer release()
 			env = append(env, lab.PerfEnv+"=1")
 		}
-		return gotest(ctx, root, *runRe, *verbose, *parallel, env, fs.Args())
+		var args []string
+		if *verbose {
+			args = append(args, "-test.v")
+		}
+		if *runRe != "" {
+			args = append(args, "-test.run", *runRe)
+		}
+		if *count > 0 {
+			args = append(args, fmt.Sprintf("-test.count=%d", *count))
+		}
+		if *timeout != "" {
+			args = append(args, "-test.timeout="+*timeout)
+		}
+		return gotest(ctx, root, *parallel, env, args, fs.Args())
 	case "project":
 		checkout, err := lab.CheckoutProject(root)
 		if err != nil {
@@ -139,7 +155,7 @@ func up(ctx context.Context, root string) error {
 	return nil
 }
 
-func gotest(ctx context.Context, root, runRe string, verbose bool, parallel int, env, patterns []string) error {
+func gotest(ctx context.Context, root string, parallel int, env, args, patterns []string) error {
 	if len(patterns) == 0 {
 		return errors.New("gotest: no packages")
 	}
@@ -150,13 +166,6 @@ func gotest(ctx context.Context, root, runRe string, verbose bool, parallel int,
 	if len(pkgs) == 0 {
 		fmt.Println("gotest: no packages with tests")
 		return nil
-	}
-	var args []string
-	if verbose {
-		args = append(args, "-test.v")
-	}
-	if runRe != "" {
-		args = append(args, "-test.run", runRe)
 	}
 	failed, err := lab.GoTestEach(ctx, root, pkgs, parallel, os.Stdout, env, args...)
 	if err != nil {
