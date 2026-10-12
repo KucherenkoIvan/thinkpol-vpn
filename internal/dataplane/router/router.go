@@ -51,7 +51,7 @@ type Router struct {
 // Counters are packet counts since the router started.
 type Counters struct {
 	Routed     uint64 // read from the TUN and queued on an egress
-	Delivered  uint64 // written to the TUN by egresses
+	Delivered  uint64 // written to the TUN by egresses (a failed write counts none)
 	Forwarded  uint64 // of Delivered, for the internet: the node forwards them (Table.Forward)
 	NotLocal   uint64 // decrypted by a WireGuard device for a destination not the node's own
 	NoRoute    uint64 // nothing routes the destination, an overlay address no peer has, or a closed egress

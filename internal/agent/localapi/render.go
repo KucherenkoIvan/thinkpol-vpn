@@ -168,7 +168,7 @@ func writeDataPlane(line func(string, ...any), dp *localapiv1.DataPlane, now tim
 // trafficCounters count what went through (or is in place), not what was
 // dropped.
 var trafficCounters = map[string]bool{
-	"router.routed": true, "router.delivered": true, "path.sent": true, "path.delivered": true, "path.forwarded": true,
+	"router.routed": true, "router.delivered": true, "router.forwarded": true, "path.sent": true, "path.delivered": true, "path.forwarded": true,
 	"route_table.routes": true, "route_table.reapplies": true, "route_table.rules_ahead": true,
 }
 
