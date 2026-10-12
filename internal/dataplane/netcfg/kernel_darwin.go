@@ -81,6 +81,10 @@ func (k *osKernel) del(r kroute) error {
 	return k.write(routeMessage(unix.RTM_DELETE, r, int(k.seq.Add(1))))
 }
 
+func (k *osKernel) change(r kroute) error {
+	return k.write(routeMessage(unix.RTM_CHANGE, r, int(k.seq.Add(1))))
+}
+
 func (k *osKernel) write(m *route.RouteMessage) error {
 	b, err := m.Marshal()
 	if err != nil {
@@ -467,6 +471,9 @@ func relevant(m route.Message) bool {
 	return false
 }
 
+// getSeq numbers DefaultInterface's lookups.
+var getSeq atomic.Int32
+
 // DefaultInterface is the interface of the family's unscoped default route
 // (the primary network service's): what the links' sockets are bound to
 // on macOS (IP_BOUND_IF), asked of the kernel per call (RTM_GET, as
@@ -485,7 +492,9 @@ func DefaultInterface(f Family) (name string, index int, err error) {
 	if f == IPv6 {
 		unspecified = netip.IPv6Unspecified()
 	}
-	const seq = 1
+	// Replies go to every routing socket of the process: each lookup
+	// takes only its own (sequence number and family).
+	seq := int(getSeq.Add(1))
 	m := routeMessage(unix.RTM_GET, kroute{dst: netip.PrefixFrom(unspecified, 0), flags: unix.RTF_UP | unix.RTF_GATEWAY}, seq)
 	b, err := m.Marshal()
 	if err != nil {
@@ -520,6 +529,9 @@ func DefaultInterface(f Family) (name string, index int, err error) {
 				return "", 0, rm.Err
 			}
 			r, ok := kernelRoute(rm)
+			if ok && FamilyOf(r.dst.Addr()) != f {
+				continue
+			}
 			if !ok || r.dst.Bits() != 0 || !usable(r) || r.flags&routeFlag != 0 {
 				return "", 0, fmt.Errorf("%w (%v)", ErrNoDefaultRoute, f)
 			}

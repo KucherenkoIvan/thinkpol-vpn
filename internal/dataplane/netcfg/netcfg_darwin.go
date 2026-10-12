@@ -98,6 +98,9 @@ type kernel interface {
 	add(kroute) error
 	// del deletes the route with r's identity; ESRCH if there is none.
 	del(r kroute) error
+	// change points the route with r's identity where r says
+	// (RTM_CHANGE); ESRCH if there is none.
+	change(r kroute) error
 	interfaces() ([]kifc, error)
 	// addrs are an interface's addresses with their prefix lengths.
 	addrs(index int) ([]netip.Prefix, error)
@@ -122,8 +125,11 @@ type darwinConfigurator struct {
 	// owned are the destinations of the routes this owner has (or may
 	// have, while an Apply runs) in the kernel, as its record says.
 	owned map[netip.Prefix]bool
-	links map[string]linkChange // interfaces whose MTU or state we changed
-	addrs map[addrKey]int       // owned addresses → index they were added to
+	// pinned are routes an Apply's undo failed to remove: they stay in
+	// the record, whatever the write-ahead's undo says.
+	pinned map[netip.Prefix]bool
+	links  map[string]linkChange // interfaces whose MTU or state we changed
+	addrs  map[addrKey]int       // owned addresses → index they were added to
 }
 
 type linkChange struct {
@@ -151,7 +157,7 @@ func newDarwin(owner Owner, k kernel, dir string) (*darwinConfigurator, error) {
 		return nil, fmt.Errorf("netcfg: %v: %w", owner, err)
 	}
 	return &darwinConfigurator{
-		k: k, owner: owner, dir: dir, lock: lock, owned: owned,
+		k: k, owner: owner, dir: dir, lock: lock, owned: owned, pinned: make(map[netip.Prefix]bool),
 		links: make(map[string]linkChange), addrs: make(map[addrKey]int),
 	}, nil
 }
@@ -211,6 +217,7 @@ func (c *darwinConfigurator) Apply(ctx context.Context, cfg Config) error {
 	if err := checkDarwin(cfg); err != nil {
 		return err
 	}
+	clear(c.pinned)
 	var undo undoLog
 	err := c.apply(ctx, cfg, &undo)
 	if err != nil {
@@ -334,7 +341,12 @@ func (c *darwinConfigurator) apply(ctx context.Context, cfg Config, u *undoLog) 
 	for dst := range desired {
 		if !c.owned[dst] {
 			c.owned[dst] = true
-			u.push(func() error { delete(c.owned, dst); return nil })
+			u.push(func() error {
+				if !c.pinned[dst] {
+					delete(c.owned, dst)
+				}
+				return nil
+			})
 		}
 	}
 	if err := c.saveRecord(); err != nil {
@@ -352,6 +364,12 @@ func (c *darwinConfigurator) apply(ctx context.Context, cfg Config, u *undoLog) 
 		if cur, ok := v.routes[r.Dst]; ok {
 			if sameRoute(cur, want) {
 				continue
+			}
+			if sameKind(cur, want) {
+				if err := c.changeRoute(cur, want, u); err == nil {
+					continue
+				}
+				// The kernel wouldn't change it in place: delete and add.
 			}
 			if err := c.delRoute(cur, u); err != nil {
 				return err
@@ -494,11 +512,30 @@ func (c *darwinConfigurator) addRoute(r Route, k kroute, u *undoLog) error {
 	c.owned[k.dst] = true
 	u.push(func() error {
 		if err := c.k.del(k); err != nil && !gone(err) {
+			c.pinned[k.dst] = true // still there, still ours: Close or the next Apply removes it
 			return fmt.Errorf("netcfg: remove route %v: %w", r, err)
 		}
 		return nil
 	})
 	return nil
+}
+
+// changeRoute moves the kernel's route kr, ours, to want in place
+// (RTM_CHANGE), so traffic never falls through to the next route
+// meanwhile: a new gateway or interface for a route of the same kind. Its
+// undo moves it back.
+func (c *darwinConfigurator) changeRoute(kr, want kroute, u *undoLog) error {
+	if err := c.k.change(want); err != nil {
+		return err
+	}
+	u.push(func() error { return c.k.change(kr) })
+	return nil
+}
+
+// sameKind reports whether two routes differ only in where they lead.
+func sameKind(a, b kroute) bool {
+	const kind = unix.RTF_REJECT | unix.RTF_GATEWAY | unix.RTF_HOST | unix.RTF_BLACKHOLE
+	return a.flags&kind == b.flags&kind
 }
 
 // delRoute deletes the kernel's route kr, ours; its undo adds it back.
@@ -845,6 +882,14 @@ func (c *darwinConfigurator) Close() error {
 		return nil
 	}
 	c.closed = true
+	// Whatever happens, the owner's place is freed: a configurator that
+	// failed to close is dropped by its caller, and its record lets the
+	// next one of the owner take over what is left.
+	defer func() {
+		_ = c.k.close()
+		_ = c.lock.release()
+		c.lock = nil
+	}()
 	v, err := c.view()
 	if err != nil {
 		return err
@@ -882,13 +927,7 @@ func (c *darwinConfigurator) Close() error {
 	if err := c.saveRecord(); err != nil {
 		errs = append(errs, err)
 	}
-	if len(errs) > 0 {
-		return errors.Join(errs...) // what's left stays recorded: Close again retries it
-	}
-	_ = c.k.close()
-	err = c.lock.release() // frees the owner's place
-	c.lock = nil
-	return err
+	return errors.Join(errs...) // what's left stays recorded for the next configurator
 }
 
 func (c *darwinConfigurator) saveRecord() error {

@@ -46,7 +46,7 @@ func (d dict) equal(o dict) bool {
 // numeric are the DNS keys whose values are numbers.
 var numeric = map[string]bool{
 	"ServerPort": true, "SearchOrder": true, "SupplementalMatchOrders": true,
-	"SupplementalMatchDomainsNoSearch": true, "ServiceIdentifier": true,
+	"SupplementalMatchDomainsNoSearch": true, "ServiceIdentifier": true, "ServerTimeout": true,
 }
 
 // store is the SystemConfiguration dynamic store, the configuration

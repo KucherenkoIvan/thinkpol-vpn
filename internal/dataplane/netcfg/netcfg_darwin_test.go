@@ -31,6 +31,10 @@ type fakeKernel struct {
 	failAdd int
 	// onAdd sees each route just before it is added.
 	onAdd func(kroute)
+	// failDel fails deletes; failChange fails changes; changes counts
+	// routes changed in place.
+	failDel, failChange bool
+	changes             int
 }
 
 func newFakeKernel() *fakeKernel {
@@ -102,11 +106,33 @@ func (k *fakeKernel) add(r kroute) error {
 func (k *fakeKernel) del(r kroute) error {
 	k.mu.Lock()
 	defer k.mu.Unlock()
+	if k.failDel {
+		return unix.EPERM
+	}
 	if _, ok := k.rs[r.dst]; !ok {
 		return unix.ESRCH
 	}
 	delete(k.rs, r.dst)
 	k.ops++
+	return nil
+}
+
+func (k *fakeKernel) change(r kroute) error {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.failChange {
+		return unix.EINVAL
+	}
+	if _, ok := k.rs[r.dst]; !ok {
+		return unix.ESRCH
+	}
+	r.flags |= unix.RTF_PRCLONING
+	if r.link != 0 {
+		r.index = r.link
+	}
+	k.rs[r.dst] = r
+	k.ops++
+	k.changes++
 	return nil
 }
 
@@ -214,7 +240,7 @@ func (k *fakeKernel) snapshot() string {
 	return strings.Join(lines, "\n")
 }
 
-func (k *fakeKernel) changes() int {
+func (k *fakeKernel) count() int {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	return k.ops
@@ -308,15 +334,15 @@ func TestApplyThenCloseRestoresEverything(t *testing.T) {
 		t.Errorf("utun7: %+v %v", *l, k.addrsB[20])
 	}
 
-	n := k.changes()
+	n := k.count()
 	if err := ov.Apply(ctx, overlayConfig); err != nil {
 		t.Fatal(err)
 	}
 	if err := rt.Apply(ctx, routeTableConfig); err != nil {
 		t.Fatal(err)
 	}
-	if k.changes() != n {
-		t.Errorf("re-applying made %d changes", k.changes()-n)
+	if k.count() != n {
+		t.Errorf("re-applying made %d changes", k.count()-n)
 	}
 
 	if err := rt.Close(); err != nil {
@@ -428,13 +454,12 @@ func TestTakesOverRoutesLeftByACrash(t *testing.T) {
 	next := Config{Routes: slices.Clone(routeTableConfig.Routes[:4])}
 	next.Routes = append(next.Routes, Route{Dst: pfx("10.0.0.0/8"), Gateway: ip("192.168.1.254")}) // moved
 	c := newTestConfigurator(t, k, dir, OwnerRouteTable)
-	n := k.changes()
+	n := k.count()
 	if err := c.Apply(ctx, next); err != nil {
 		t.Fatal(err)
 	}
-	// Kept: the four split routes; moved (deleted, added): one; removed:
-	// two.
-	if got := k.changes() - n; got != 2+2 {
+	// Kept: the four split routes; moved in place: one; removed: two.
+	if got := k.count() - n; got != 1+2 || k.changes != 1 {
 		t.Errorf("%d changes", got)
 	}
 	if r, _ := k.route("10.0.0.0/8"); r.gw != ip("192.168.1.254") {
@@ -697,5 +722,105 @@ func TestALockDirOthersCanWriteIsRefused(t *testing.T) {
 	}
 	if _, err := newDarwin(OwnerRouteTable, newFakeKernel(), filepath.Join(parent, "netcfg")); err == nil {
 		t.Fatal("a world-writable parent was accepted")
+	}
+}
+
+// A route that only moves (a new gateway: another network) is changed in
+// place, so traffic never falls through meanwhile; one that changes kind
+// (into the TUN ↔ rejected) is deleted and added; a change the kernel
+// refuses falls back to that.
+func TestMovedRoutesChangeInPlace(t *testing.T) {
+	k, dir := newFakeKernel(), t.TempDir()
+	ctx := context.Background()
+	c := newTestConfigurator(t, k, dir, OwnerRouteTable)
+	cfg := Config{Routes: []Route{
+		{Dst: pfx("0.0.0.0/1"), Interface: "utun7"},
+		{Dst: pfx("10.0.0.0/8"), Gateway: ip("192.168.1.1")},
+	}}
+	if err := c.Apply(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Routes[1].Gateway = ip("192.168.1.254")
+	n := k.count()
+	if err := c.Apply(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if k.count()-n != 1 || k.changes != 1 {
+		t.Errorf("a new gateway: %d changes, %d in place", k.count()-n, k.changes)
+	}
+	cfg.Routes[0] = Route{Dst: pfx("0.0.0.0/1"), Type: RouteUnreachable}
+	n = k.count()
+	if err := c.Apply(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if r, _ := k.route("0.0.0.0/1"); k.count()-n != 2 || r.flags&unix.RTF_REJECT == 0 {
+		t.Errorf("into the TUN → rejected: %d changes, %v", k.count()-n, r)
+	}
+	k.failChange = true
+	cfg.Routes[1].Gateway = ip("192.168.1.1")
+	if err := c.Apply(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if r, _ := k.route("10.0.0.0/8"); r.gw != ip("192.168.1.1") {
+		t.Errorf("fallback: %v", r)
+	}
+}
+
+// When undoing a failed Apply can't remove a route it added, the route
+// stays recorded, so the next Apply or Close still removes it.
+func TestARouteUndoCantRemoveStaysRecorded(t *testing.T) {
+	k, dir := newFakeKernel(), t.TempDir()
+	ctx := context.Background()
+	c := newTestConfigurator(t, k, dir, OwnerRouteTable)
+	before := k.snapshot()
+	added := 0
+	k.failAdd = 3
+	k.onAdd = func(kroute) {
+		if added++; added == 4 {
+			k.failDel = true // the undo's deletes fail
+		}
+	}
+	if err := c.Apply(ctx, routeTableConfig); err == nil {
+		t.Fatal("no error")
+	}
+	k.onAdd, k.failDel = nil, false
+	if got := record(t, dir, OwnerRouteTable); len(got) != 3 {
+		t.Fatalf("record after a failed undo: %v, want the 3 routes left", got)
+	}
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := k.snapshot(); got != before {
+		t.Errorf("after Close:\n%s\nwant:\n%s", got, before)
+	}
+}
+
+// A Close that fails still frees the owner's place; the next configurator
+// takes over what is left from the record.
+func TestAFailedCloseFreesTheOwnersPlace(t *testing.T) {
+	k, dir := newFakeKernel(), t.TempDir()
+	ctx := context.Background()
+	before := k.snapshot()
+	c, err := newDarwin(OwnerRouteTable, k, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Apply(ctx, routeTableConfig); err != nil {
+		t.Fatal(err)
+	}
+	k.failDel = true
+	if err := c.Close(); err == nil {
+		t.Fatal("Close: no error")
+	}
+	k.failDel = false
+	next, err := newDarwin(OwnerRouteTable, k, dir)
+	if err != nil {
+		t.Fatalf("after a failed Close: %v", err)
+	}
+	if err := next.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := k.snapshot(); got != before {
+		t.Errorf("after the next Close:\n%s\nwant:\n%s", got, before)
 	}
 }

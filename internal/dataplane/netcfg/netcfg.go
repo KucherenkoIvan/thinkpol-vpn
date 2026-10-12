@@ -417,7 +417,9 @@ type Link struct {
 //     interface it changed; something already gone (an interface deleted by
 //     its owner) counts as removed. Close is idempotent; if it fails, what's
 //     left stays recorded and calling Close again retries it. Only a
-//     successful Close frees the owner's place in the namespace.
+//     successful Close frees the owner's place in the namespace (Linux;
+//     on macOS a failed Close frees it too, and what is left stays in the
+//     owner's record for its next configurator to take over).
 //
 // Methods are safe for concurrent use.
 type Configurator interface {

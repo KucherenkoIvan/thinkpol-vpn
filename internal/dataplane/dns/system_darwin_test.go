@@ -289,6 +289,30 @@ func TestAnOriginalThatCantBePutBackIsLeftAlone(t *testing.T) {
 	}
 }
 
+// An original with a value scutil can't pass back as one token is left
+// alone too, rather than overridden for good.
+func TestAnOriginalWithSpacesIsLeftAlone(t *testing.T) {
+	f := aMac(t)
+	f.put("State:/Network/Service/A/DNS", dnsDict([]string{"192.168.1.1"}, map[string]string{"Options": "ndots:2 timeout:1"}))
+	before := f.dump()
+	s, err := setDynamicStore(f, nodeConfig, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d, _, _ := f.get("State:/Network/Service/A/DNS"); isOverride(d) {
+		t.Error("overridden")
+	}
+	if err := s.Problem(); !errors.Is(err, ErrUnprotected) {
+		t.Errorf("problem: %v", err)
+	}
+	if err := s.Restore(); err != nil {
+		t.Fatal(err)
+	}
+	if f.dump() != before {
+		t.Error("not as before after Restore")
+	}
+}
+
 func TestNoActiveServiceFailsAndChangesNothing(t *testing.T) {
 	resolverDir = t.TempDir()
 	f := &fakeStore{kv: map[string]dict{"Setup:/Network/Service/C/DNS": dnsDict([]string{"8.8.8.8"}, nil)}}

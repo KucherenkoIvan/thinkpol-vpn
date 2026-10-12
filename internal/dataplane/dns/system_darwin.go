@@ -123,6 +123,13 @@ func writeBackup(st store, b map[string]original) error {
 
 func isOverride(d dict) bool { return d.strs[overrideProp] == "1" }
 
+// restorable reports whether scutil can set d back as it is: no nested
+// values, nothing with spaces or quotes (`Options : ndots:2 timeout:1`).
+func restorable(key string, d dict) bool {
+	_, err := setScript(key, d)
+	return !d.opaque && err == nil
+}
+
 // dynamicStore is the OS's resolver configuration while overridden.
 type dynamicStore struct {
 	st store
@@ -236,7 +243,7 @@ func (s *dynamicStore) apply() error {
 			}
 			continue
 		}
-		if have.opaque {
+		if present && !restorable(k, have) {
 			errs = append(errs, fmt.Errorf("dns: %s holds values the node can't put back; it is left alone", k))
 			continue
 		}
