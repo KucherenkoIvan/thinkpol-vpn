@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: [TP-020]
 refs: [DESIGN#engine-and-agent]
-owner: ""
-branch: ""
+owner: agent-small-fixes
+branch: tp-056-status-stop-order
 ---
 
 ## Goal
@@ -30,3 +30,4 @@ Anything else in the status model.
 
 ## Log
 - 2026-10-12 created in backlog (TP-055 review follow-up)
+- 2026-10-12 backlog → in-progress — owner: agent-small-fixes, branch: tp-056-status-stop-order
