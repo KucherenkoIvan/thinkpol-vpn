@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: M
 depends_on: [TP-007, TP-015, TP-016]
 refs: [R2, DESIGN#routing-rules-and-dns]
-owner: ""
-branch: ""
+owner: "agent-tp-018"
+branch: "tp-018-route-table-linux"
 ---
 
 ## Goal
@@ -34,3 +34,4 @@ On Linux devices, `direct` destinations go straight out and everything else ente
 - 2026-10-10 created in backlog
 - 2026-10-10 notes from TP-016 review: route count and the shrink-only rule for coarsening
 - 2026-10-10 docs (TP-006 review): notes from the path layer
+- 2026-10-12 backlog → in-progress — owner: agent-tp-018, branch: tp-018-route-table-linux
