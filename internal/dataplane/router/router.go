@@ -44,6 +44,8 @@ type Router struct {
 
 	stop chan struct{} // closed by Close
 	done chan struct{} // closed when the read loop exits
+	// linkUp is signalled, coalesced, when the TUN reports its link up.
+	linkUp chan struct{}
 
 	c counters
 }
@@ -75,17 +77,30 @@ func New(t tun.Device) *Router {
 		egresses: make(map[*Egress]struct{}),
 		stop:     make(chan struct{}),
 		done:     make(chan struct{}),
+		linkUp:   make(chan struct{}, 1),
 	}
 	r.table.Store(&compiled{})
 	go r.read()
 	go func() {
 		// A TUN blocks its own goroutines when nobody takes its events;
-		// the router sets MTUs itself and has no use for them.
-		for range t.Events() {
+		// the router sets MTUs itself, and passes on only the link up.
+		for ev := range t.Events() {
+			if ev&tun.EventUp != 0 {
+				select {
+				case r.linkUp <- struct{}{}:
+				default:
+				}
+			}
 		}
 	}()
 	return r
 }
+
+// LinkUp is signalled, coalesced, when the TUN reports its link up
+// (tun.EventUp). Linux's TUN reports it when the link comes up and again
+// on later changes of a running link (its MTU, say), so it says "check
+// the interface", not "it was down".
+func (r *Router) LinkUp() <-chan struct{} { return r.linkUp }
 
 // SetTable replaces the routing table; packets already queued on an egress
 // stay there. It fails, changing nothing, on an invalid prefix, a prefix

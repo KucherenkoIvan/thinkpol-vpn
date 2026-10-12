@@ -106,13 +106,10 @@ func (nd *labNode) ping(t *testing.T, dst netip.Addr) {
 	}
 }
 
-// Two nodes in separate namespaces ping each other over overlay IPv4 and
-// IPv6, directly and through a third as relay, with the kernel's own ping:
-// TUN, router, WireGuard, path layer and udp, as in M0's acceptance.
-func TestNamespacesPingOverTheOverlay(t *testing.T) {
-	if os.Getenv("THINKPOL_LAB") == "" {
-		t.Skip("needs the lab")
-	}
+// startM0InNamespaces runs M0's three nodes in namespaces named after
+// prefix, each on a real TUN, linked by udp over the lab node's loopbacks.
+func startM0InNamespaces(t *testing.T, prefix string) (*labNode, *labNode, *labNode) {
+	t.Helper()
 	tr := udp.New(udp.Options{})
 	reg, err := transport.NewRegistry(tr)
 	if err != nil {
@@ -140,7 +137,7 @@ func TestNamespacesPingOverTheOverlay(t *testing.T) {
 
 	nodes := map[*node]*labNode{}
 	for _, nd := range []*node{s, a, b} {
-		nodes[nd] = &labNode{node: nd, ns: namespace(t, "tp008-"+strings.TrimPrefix(nd.name, "device-"))}
+		nodes[nd] = &labNode{node: nd, ns: namespace(t, prefix+"-"+strings.TrimPrefix(nd.name, "device-"))}
 	}
 	nodes[s].start(t, reg, tr, ports[0].String())
 	l6, err := tr.Listen(context.Background(), transport.ListenConfig{Address: ports[1].String(), Peers: nodes[s].engine.Inbound("udp")})
@@ -151,6 +148,19 @@ func TestNamespacesPingOverTheOverlay(t *testing.T) {
 	t.Cleanup(func() { _ = l6.Close() })
 	nodes[a].start(t, reg, tr, "")
 	nodes[b].start(t, reg, tr, "")
+	return nodes[a], nodes[s], nodes[b]
+}
+
+// Two nodes in separate namespaces ping each other over overlay IPv4 and
+// IPv6, directly and through a third as relay, with the kernel's own ping:
+// TUN, router, WireGuard, path layer and udp, as in M0's acceptance.
+func TestNamespacesPingOverTheOverlay(t *testing.T) {
+	if os.Getenv("THINKPOL_LAB") == "" {
+		t.Skip("needs the lab")
+	}
+	la, ls, lb := startM0InNamespaces(t, "tp008")
+	a, s, b := la.node, ls.node, lb.node
+	nodes := map[*node]*labNode{a: la, s: ls, b: lb}
 
 	for _, nd := range []*labNode{nodes[a], nodes[s], nodes[b]} {
 		out, err := inNamespace(nd.ns, "ip", "-o", "addr", "show", "dev", tun.DefaultName)
@@ -212,5 +222,52 @@ func TestNamespacesPingOverTheOverlay(t *testing.T) {
 	}
 	if out, err := inNamespace(nodes[b].ns, "ip", "link", "show", "dev", tun.DefaultName); err == nil {
 		t.Fatalf("device-b's TUN outlived its engine:\n%s", out)
+	}
+}
+
+// A TUN whose link goes down loses its IPv6 addresses, and its MTU may be
+// changed meanwhile; once the link is up again the engine puts the
+// interface back without a new map, and pings over IPv4 and IPv6 recover.
+func TestTheOverlayComesBackAfterALinkBounce(t *testing.T) {
+	if os.Getenv("THINKPOL_LAB") == "" {
+		t.Skip("needs the lab")
+	}
+	a, s, b := startM0InNamespaces(t, "tp059")
+	a.ping(t, s.v4)
+	a.ping(t, b.v6)
+	addrs := func() string {
+		out, err := inNamespace(a.ns, "ip", "-o", "addr", "show", "dev", tun.DefaultName)
+		if err != nil {
+			t.Fatalf("%v\n%s", err, out)
+		}
+		return string(out)
+	}
+	ipLink := func(args ...string) {
+		t.Helper()
+		if out, err := inNamespace(a.ns, append([]string{"ip", "link", "set", "dev", tun.DefaultName}, args...)...); err != nil {
+			t.Fatalf("ip link set %v: %v\n%s", args, err, out)
+		}
+	}
+
+	ipLink("down")
+	if strings.Contains(addrs(), a.v6.String()) {
+		t.Fatal("the TUN kept its IPv6 address going down: nothing to test")
+	}
+	ipLink("mtu", "1400")
+	ipLink("up")
+	for deadline := time.Now().Add(wait); !strings.Contains(addrs(), a.v6.String()+"/48"); time.Sleep(50 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("IPv6 address not back after the bounce:\n%s", addrs())
+		}
+	}
+	if out, err := inNamespace(a.ns, "ip", "-o", "link", "show", "dev", tun.DefaultName); err != nil || !strings.Contains(string(out), "mtu 1328") {
+		t.Fatalf("TUN link after the bounce, want MTU 1328: %v\n%s", err, out)
+	}
+	a.ping(t, s.v4)
+	a.ping(t, s.v6)
+	a.ping(t, b.v4)
+	a.ping(t, b.v6)
+	if st := a.engine.Status(); st.InterfaceReapplies == 0 || st.LastApplyError != "" || !st.IPv6 {
+		t.Fatalf("status after the bounce: %+v", st)
 	}
 }
