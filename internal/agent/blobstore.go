@@ -87,13 +87,13 @@ func (d diskBlobs) Save(ref netmap.BlobRef, data []byte) error {
 		return err
 	}
 	defer func() { _ = bd.Close() }()
-	if err := bd.writeFile(blobFileName(ref.SHA256), data); err != nil {
+	if err := bd.write(blobFileName(ref.SHA256), data, 0o600); err != nil {
 		return err
 	}
 	index := slices.DeleteFunc(readBlobIndex(bd), func(r netmap.BlobRef) bool {
 		return r.SHA256 == ref.SHA256 || r.Kind == ref.Kind && r.Name == ref.Name && !d.has(bd, r)
 	})
-	return bd.writeFile(blobIndexFile, encodeBlobIndex(append(index, ref)))
+	return bd.write(blobIndexFile, encodeBlobIndex(append(index, ref)), 0o600)
 }
 
 func (d diskBlobs) has(bd *trustedDir, ref netmap.BlobRef) bool {
@@ -168,7 +168,7 @@ func (d diskBlobs) Prune(keep []netmap.BlobRef) error {
 	var errs []error
 	left := 0
 	for _, name := range names {
-		ours := isBlobFileName(name) || name == blobIndexFile || strings.HasPrefix(name, ".") && strings.HasSuffix(name, ".tmp")
+		ours := isBlobFileName(name) || name == blobIndexFile || strings.HasPrefix(name, ".") && strings.HasSuffix(name, ".new")
 		if kept[name] || !ours {
 			left++
 			continue
@@ -179,7 +179,7 @@ func (d diskBlobs) Prune(keep []netmap.BlobRef) error {
 		}
 	}
 	if len(keep) > 0 {
-		if err := bd.writeFile(blobIndexFile, encodeBlobIndex(keep)); err != nil {
+		if err := bd.write(blobIndexFile, encodeBlobIndex(keep), 0o600); err != nil {
 			errs = append(errs, err)
 		}
 		left++

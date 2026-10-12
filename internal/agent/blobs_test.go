@@ -208,7 +208,7 @@ func TestDiskBlobs(t *testing.T) {
 	// Prune keeps what it is told and leaves what isn't a blob alone.
 	bd := filepath.Join(dir, BlobDir)
 	writeFile(t, filepath.Join(bd, "README"), []byte("x"), 0o600)
-	writeFile(t, filepath.Join(bd, "."+blobFileName(deRef.SHA256)+".tmp"), []byte("x"), 0o600)
+	writeFile(t, filepath.Join(bd, "."+blobFileName(deRef.SHA256)+".new"), []byte("x"), 0o600)
 	if err := d.Prune([]netmap.BlobRef{ruRef}); err != nil {
 		t.Fatal(err)
 	}
@@ -353,5 +353,29 @@ func TestAStoredListOutlivesARestartUntilItsSuccessorArrives(t *testing.T) {
 	writeFile(t, filepath.Join(dir, BlobDir, blobIndexFile), append([]byte("junk\n1 bad name 00 1\n"), encodeBlobIndex([]netmap.BlobRef{refA})...), 0o600)
 	if got := d.Index(); len(got) != 1 || got[0] != refA {
 		t.Fatalf("index %+v", got)
+	}
+}
+
+// Disconnecting keeps a device's lists, on disk too; only removal from the
+// space drops them.
+func TestADisconnectedDeviceKeepsItsLists(t *testing.T) {
+	s := newTestSpace(t)
+	data, ref := s.withList(t, "ru", "192.0.2.0/24")
+	_, reg := memoryRegistry(t)
+	startNode(t, reg, s.a, s.verified(t, 1))
+	b := startDevice(t, s, reg, true, func(dir string) {
+		if err := (diskBlobs{dir: dir, log: slog.New(slog.DiscardHandler)}).Save(ref, data); err != nil {
+			t.Fatal(err)
+		}
+	})
+	stored := filepath.Join(b.node.cfg.StateDir, BlobDir, blobFileName(ref.SHA256))
+	b.connection(t, Connected)
+	eventually(t, func() bool { return b.node.Status().DataPlane != nil })
+	if err := b.node.Disconnect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(200 * time.Millisecond) // a round of the blob service
+	if _, err := os.Stat(stored); err != nil {
+		t.Fatalf("the list went with the disconnect: %v", err)
 	}
 }

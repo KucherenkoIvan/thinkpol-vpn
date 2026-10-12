@@ -142,6 +142,31 @@ func trusted(path string, fi os.FileInfo, private bool) error {
 	return nil
 }
 
+// write replaces the file name in the directory with data, atomically: a
+// new file (mode perm, the service's own) is written, synced and renamed
+// over it, and the directory synced, so a crash leaves the old file or the
+// new one, never a part.
+func (d *trustedDir) write(name string, data []byte, perm os.FileMode) error {
+	tmp := "." + name + ".new"
+	dirfd := int(d.f.Fd())
+	_ = unix.Unlinkat(dirfd, tmp, 0)
+	fd, err := unix.Openat(dirfd, tmp, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, uint32(perm))
+	if err != nil {
+		return &os.PathError{Op: "create", Path: d.path + string(os.PathSeparator) + tmp, Err: err}
+	}
+	f := os.NewFile(uintptr(fd), tmp)
+	err = errors.Join(func() error { _, err := f.Write(data); return err }(), f.Chmod(perm), f.Sync())
+	err = errors.Join(err, f.Close())
+	if err == nil {
+		err = unix.Renameat(dirfd, tmp, dirfd, name)
+	}
+	if err != nil {
+		_ = unix.Unlinkat(dirfd, tmp, 0)
+		return fmt.Errorf("%s: %w", d.path+string(os.PathSeparator)+name, err)
+	}
+	return d.f.Sync()
+}
+
 // mkdir makes the directory name in d (0700, as the umask allows) unless it
 // exists.
 func (d *trustedDir) mkdir(name string) error {
@@ -149,38 +174,6 @@ func (d *trustedDir) mkdir(name string) error {
 		return &os.PathError{Op: "mkdir", Path: d.path + string(os.PathSeparator) + name, Err: err}
 	}
 	return nil
-}
-
-// writeFile replaces name in d with data atomically (0600, as the umask
-// allows): written aside, synced, renamed over it, and the directory
-// synced.
-func (d *trustedDir) writeFile(name string, data []byte) error {
-	dirfd := int(d.f.Fd())
-	tmp := "." + name + ".tmp"
-	path := d.path + string(os.PathSeparator) + tmp
-	_ = unix.Unlinkat(dirfd, tmp, 0)
-	fd, err := unix.Openat(dirfd, tmp, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
-	if err != nil {
-		return &os.PathError{Op: "create", Path: path, Err: err}
-	}
-	f := os.NewFile(uintptr(fd), path)
-	_, err = f.Write(data)
-	if err == nil {
-		err = f.Sync()
-	}
-	if cerr := f.Close(); err == nil {
-		err = cerr
-	}
-	if err == nil {
-		if rerr := unix.Renameat(dirfd, tmp, dirfd, name); rerr != nil {
-			err = &os.PathError{Op: "rename", Path: path, Err: rerr}
-		}
-	}
-	if err != nil {
-		_ = unix.Unlinkat(dirfd, tmp, 0)
-		return err
-	}
-	return unix.Fsync(dirfd)
 }
 
 // remove removes the file name from d; dir removes an empty directory.

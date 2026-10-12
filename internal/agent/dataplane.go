@@ -57,6 +57,16 @@ type DataPlane struct {
 	Blobs      *blobs.Service
 	ServeBlobs bool
 
+	// A device's (Node.run): where its status goes, its Connect and
+	// Disconnect requests, and whether it starts disconnected.
+	report       *report
+	requests     <-chan connectRequest
+	disconnected bool
+	// Rules are the device's own rule choice (LocalRulesFile), and
+	// rulesRequests replace them while it runs.
+	Rules         rules.Local
+	rulesRequests <-chan rulesRequest
+
 	// What tests swap: the TUN and its configurator, the path layer's
 	// timing, how long to wait before retrying what failed.
 	newTUN     func(name string) (wgtun.Device, netcfg.Configurator, error)
@@ -99,17 +109,19 @@ func RunDataPlane(ctx context.Context, dp DataPlane) error {
 	if err != nil {
 		return err
 	}
-	r := &runner{dp: dp, cur: dp.Map, section: section, maps: dp.Maps}
+	r := &runner{dp: dp, cur: dp.Map, section: section, maps: dp.Maps, down: dp.disconnected}
 	if dp.Blobs != nil {
 		r.blobsChanged = dp.Blobs.Subscribe()
 	}
 	// The first map must run: a node that can't carry it shouldn't look
 	// up. A shutdown meanwhile is no failure.
-	if err := r.start(ctx); err != nil {
-		if ctx.Err() != nil {
-			return nil
+	if !r.down {
+		if err := r.start(ctx); err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			return err
 		}
-		return err
 	}
 	defer r.stop()
 	if dp.Blobs != nil {
@@ -120,6 +132,21 @@ func RunDataPlane(ctx context.Context, dp DataPlane) error {
 		defer func() { cancel(); <-done }()
 	}
 	return r.loop(ctx)
+}
+
+// connectRequest asks a device's data plane to come up (connect) or go
+// down; done gets the outcome and must have room for it.
+type connectRequest struct {
+	connect bool
+	done    chan<- error
+}
+
+// rulesRequest replaces a device's own rules; done gets what enforcing
+// them said (rules.ErrPresetUnavailable: enforced failing closed) and
+// must have room for it.
+type rulesRequest struct {
+	rules rules.Local
+	done  chan<- error
 }
 
 // newTUN takes the overlay's network configuration (one owner per network
@@ -150,19 +177,23 @@ type runner struct {
 	// or starting again failed.
 	engine    *dataplane.Engine
 	listeners *listenerSet
+	removed   bool
+	// down is set while a device is disconnected: it follows the maps but
+	// runs nothing.
+	down bool
 	// blobsChanged is signalled when the blob service's lists change.
 	blobsChanged <-chan struct{}
-	removed      bool
 	// retryAt is when to retry a failed Apply or start (zero: nothing to
 	// retry).
 	retryAt time.Time
 }
 
-// start brings the data plane up on the current section.
+// start brings the data plane up on the current section. It fails with a
+// *StartError.
 func (r *runner) start(ctx context.Context) error {
 	dev, ifc, err := r.dp.newTUN(r.dp.Interface)
 	if err != nil {
-		return err
+		return &StartError{Step: StepTUN, Err: err}
 	}
 	cfg := dataplane.EngineConfig{
 		ID:           r.dp.Keys.ID,
@@ -174,6 +205,7 @@ func (r *runner) start(ctx context.Context) error {
 		LinkMTU:      r.dp.LinkMTU,
 		Path:         r.dp.path,
 		Log:          r.dp.Log,
+		Rules:        r.dp.Rules,
 	}
 	if b := r.dp.Blobs; b != nil {
 		// The rules' lists: the current map's once held, the previous
@@ -187,11 +219,12 @@ func (r *runner) start(ctx context.Context) error {
 			_ = ifc.Close()
 		}
 		_ = dev.Close()
-		return err
+		return &StartError{Step: StepEngine, Err: err}
 	}
 	if err := engine.Apply(ctx, r.section); err != nil {
+		step := engine.Status().LastApplyError
 		_ = engine.Close()
-		return fmt.Errorf("applying map version %d: %w", r.cur.Header().Version, err)
+		return &StartError{Step: step, Err: fmt.Errorf("applying map version %d: %w", r.cur.Header().Version, err)}
 	}
 	r.engine = engine
 	if r.dp.onEngine != nil {
@@ -209,6 +242,7 @@ func (r *runner) stop() {
 	if r.engine == nil {
 		return
 	}
+	r.dp.report.set(func(p *report) { p.engine = nil })
 	r.listeners.closeAll()
 	if err := r.engine.Close(); err != nil {
 		r.dp.Log.Warn("closing the data plane", "err", err)
@@ -229,6 +263,7 @@ func (r *runner) loop(ctx context.Context) error {
 			r.listeners.reconcile(ctx, r.dp.Inbound.Listeners(r.section))
 			ended = r.listeners.ended
 		}
+		r.publish()
 		if at, ok := r.nextRetry(); ok {
 			retry.Reset(time.Until(at))
 		} else {
@@ -251,8 +286,72 @@ func (r *runner) loop(ctx context.Context) error {
 			r.reloadRules()
 		case <-status.C:
 			r.logStatus()
+		case req := <-r.dp.requests:
+			r.request(ctx, req)
+		case req := <-r.dp.rulesRequests:
+			r.dp.Rules = req.rules
+			var err error
+			if r.engine != nil {
+				err = r.engine.SetRules(req.rules)
+			}
+			r.publish()
+			req.done <- err
 		}
 	}
+}
+
+// publish puts the data plane's state into the device's report.
+func (r *runner) publish() {
+	n := 0
+	if r.listeners != nil {
+		n = len(r.listeners.serving)
+	}
+	r.dp.report.set(func(p *report) {
+		p.engine, p.version, p.removed, p.retrying, p.listeners, p.want =
+			r.engine, r.cur.Header().Version, r.removed, !r.retryAt.IsZero(), n, !r.down
+	})
+}
+
+// request connects or disconnects a device. Connecting starts the data
+// plane at once on the current map, and fails if that fails; a node
+// removed from its space connects once a map includes it again. The
+// report is up to date before the requester hears back.
+func (r *runner) request(ctx context.Context, req connectRequest) {
+	err := r.connect(ctx, req.connect)
+	r.publish()
+	req.done <- err
+}
+
+func (r *runner) connect(ctx context.Context, connect bool) error {
+	switch {
+	case !connect && !r.down:
+		r.down = true
+		r.stop()
+		r.retryAt = time.Time{}
+		r.updateBlobs()
+		r.dp.Log.Info("disconnected")
+	case connect && r.removed:
+		if r.down {
+			r.down = false
+			r.dp.Log.Info("connecting once a map includes this node")
+		}
+	case connect && r.engine == nil:
+		// Down on purpose, or up but its start failed and waits for a
+		// retry: either way it starts now, and says if it can't.
+		wasDown := r.down
+		r.down = false
+		if err := r.start(ctx); err != nil {
+			if wasDown {
+				r.down = true
+			} else {
+				r.retryAt = time.Now().Add(r.dp.retryAfter)
+			}
+			r.dp.Log.Warn("connecting failed", "version", r.cur.Header().Version, "err", err)
+			return err
+		}
+		r.dp.Log.Info("connected")
+	}
+	return nil
 }
 
 // nextRetry is the earliest retry due: the data plane's or a listener's.
@@ -269,7 +368,7 @@ func (r *runner) nextRetry() (time.Time, bool) {
 // retry retries a failed start or Apply when it is due; listeners retry in
 // reconcile.
 func (r *runner) retry(ctx context.Context) {
-	if r.retryAt.IsZero() || time.Now().Before(r.retryAt) {
+	if r.down || r.retryAt.IsZero() || time.Now().Before(r.retryAt) {
 		return
 	}
 	if r.engine == nil {
@@ -318,7 +417,9 @@ func (r *runner) next(ctx context.Context, envelope []byte) {
 			r.removed = false
 			r.dp.Log.Info("back in space", "version", m.Header().Version)
 		}
-		r.tryStart(ctx)
+		if !r.down {
+			r.tryStart(ctx)
+		}
 		return
 	}
 	r.apply(ctx)
@@ -358,8 +459,15 @@ func (r *runner) updateBlobs() {
 	if r.dp.Blobs == nil {
 		return
 	}
+	if r.engine == nil && r.removed {
+		r.dp.Blobs.Update(blobs.Plan{}) // the space's lists are no use now
+		return
+	}
 	if r.engine == nil {
-		r.dp.Blobs.Update(blobs.Plan{})
+		// Down (disconnected, or a start to retry): the lists stay, on
+		// disk too, but nothing is fetched or served.
+		p := blobs.PlanFrom(r.cur.Header().Blobs, r.section, false, r.dp.Interface, r.dp.ServeBlobs)
+		r.dp.Blobs.Update(blobs.Plan{Want: p.Want})
 		return
 	}
 	r.dp.Blobs.Update(blobs.PlanFrom(r.cur.Header().Blobs, r.section, r.engine.Status().IPv6, r.dp.Interface, r.dp.ServeBlobs))

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/KucherenkoIvan/go-kernel/app"
@@ -15,6 +16,7 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/supervisor"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/blobs"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/rules"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
@@ -26,6 +28,22 @@ type Node struct {
 	state State
 	mode  Mode
 	logs  Logs
+	// want is set while a device is meant to be connected.
+	want bool
+
+	report   report
+	requests chan connectRequest
+	// stopped is closed once the node's adapter returned.
+	stopped chan struct{}
+	// tweak, if set, adjusts a device's DataPlane: what tests swap.
+	tweak func(*DataPlane)
+
+	// rulesMu serializes SetRulePreset; local is the device's last good
+	// rules, as LocalRulesFile holds them (read by run while it builds
+	// the data plane, under rulesMu).
+	rulesMu       sync.Mutex
+	local         rules.Local
+	rulesRequests chan rulesRequest
 }
 
 // Prepare reads and checks what a node runs from (LoadState) and decides
@@ -52,9 +70,19 @@ func Prepare(cfg Config, logs Logs) (*Node, error) {
 	if st.OwnMapUnused {
 		logs.Warn("the state directory's map.bin is not used: the map comes from elsewhere", "map", st.MapPath)
 	}
-	n := &Node{cfg: cfg, state: st, mode: cfg.Mode, logs: logs}
+	n := &Node{
+		cfg: cfg, state: st, mode: cfg.Mode, logs: logs, want: cfg.Connect,
+		requests: make(chan connectRequest), stopped: make(chan struct{}), rulesRequests: make(chan rulesRequest),
+	}
+	n.local = st.LocalRules
+	n.report = report{space: st.Trust.SpaceID, version: st.Map.Header().Version, removed: st.Removed, want: n.want,
+		preset: n.local.Preset.String()}
 	if !st.Removed {
 		n.resolveMode()
+	}
+	n.report.mode = n.mode
+	if n.mode == ModeDevice && !cfg.Connect && cfg.APISocket == "" {
+		return nil, errors.New("a device that starts disconnected needs the local API to connect: set an API socket")
 	}
 	return n, nil
 }
@@ -70,6 +98,95 @@ func (n *Node) resolveMode() {
 	}
 }
 
+// Status reports the node's state; safe to call from any goroutine.
+func (n *Node) Status() Status { return n.report.status() }
+
+// Connect brings a device's data plane up on its latest map and returns
+// once it is up, or why it failed to start (a *StartError); a device
+// removed from its space comes up once a map includes it again.
+// ErrServerMode on a server.
+func (n *Node) Connect(ctx context.Context) error { return n.request(ctx, true) }
+
+// Disconnect takes a device's data plane down, leaving nothing of it on
+// the host, and returns once it is down. The device goes on following its
+// space's maps. ErrServerMode on a server.
+func (n *Node) Disconnect(ctx context.Context) error { return n.request(ctx, false) }
+
+// SetRulePreset switches a device's rules to preset ("space",
+// "everything", "all-but-domestic"), keeping its own rules: the choice is
+// stored in LocalRulesFile (only the service writes it), then enforced.
+// ErrUnknownPreset for another name; ErrPresetUnavailable when the
+// space's map can't build the preset, which is then kept and enforced
+// failing closed (see rules.PresetRules); ErrServerMode on a server.
+func (n *Node) SetRulePreset(ctx context.Context, preset string) error {
+	n.report.mu.Lock()
+	mode := n.report.mode
+	n.report.mu.Unlock()
+	if mode == ModeServer {
+		return ErrServerMode
+	}
+	p, err := rules.ParsePreset(preset)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrUnknownPreset, err)
+	}
+	n.rulesMu.Lock()
+	defer n.rulesMu.Unlock()
+	next := n.local
+	next.Preset = p
+	data, err := next.MarshalText()
+	if err != nil {
+		return err
+	}
+	d, err := openTrustedDir(n.cfg.StateDir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = d.Close() }()
+	if err := d.write(LocalRulesFile, data, 0o644); err != nil {
+		return err
+	}
+	n.local = next
+	n.report.set(func(r *report) { r.preset = p.String() })
+	n.logs.Info("rule preset set", "preset", p)
+	done := make(chan error, 1)
+	select {
+	case n.rulesRequests <- rulesRequest{rules: next, done: done}:
+	case <-n.stopped:
+		return nil // stored: the next start takes it
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (n *Node) request(ctx context.Context, connect bool) error {
+	n.report.mu.Lock()
+	mode := n.report.mode
+	n.report.mu.Unlock()
+	if mode == ModeServer {
+		return ErrServerMode
+	}
+	done := make(chan error, 1)
+	select {
+	case n.requests <- connectRequest{connect: connect, done: done}:
+	case <-n.stopped:
+		return ErrNotRunning
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // Mode is the mode the node runs in; ModeAuto while the node is removed
 // from its space and its kind unknown.
 func (n *Node) Mode() Mode { return n.mode }
@@ -77,29 +194,33 @@ func (n *Node) Mode() Mode { return n.mode }
 // State is what the node runs from.
 func (n *Node) State() State { return n.state }
 
-// Run runs the node until ctx ends or it fails, and undoes everything it
-// set up before returning: a clean stop (nil) leaves no interface, route,
-// namespace or nftables table behind. reload (SIGHUP) makes it read the
-// map file at once. A node removed from its space (its map has no section
-// for it) waits idle for a map that includes it. On a host whose data
-// plane isn't there yet it refuses before changing anything.
-func (n *Node) Run(ctx context.Context, reload <-chan os.Signal) error {
+// Adapters are what runs the node, for the caller to run with go-kernel's
+// app.Run next to its own (the local API): the map watcher and the node.
+// Together they run the node until ctx ends or one fails, and undo
+// everything the node set up before returning: a clean stop leaves no
+// interface, route, namespace or nftables table behind. reload (SIGHUP)
+// makes the watcher read the map file at once. A node removed from its
+// space (its map has no section for it) waits idle for a map that includes
+// it. On a host whose data plane isn't there yet Adapters refuses, before
+// anything changed. Call it once.
+func (n *Node) Adapters(reload <-chan os.Signal) ([]app.Adapter, error) {
 	if err := supported(); err != nil {
-		return err
+		return nil, err
 	}
 	reg, err := Transports()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	watcher := &mapWatcher{path: n.state.MapPath, interval: n.cfg.MapPoll, reload: reload, log: n.logs.Logger, last: n.state.mapFile}
 	maps := make(chan []byte, 1)
-	return app.Run(ctx,
-		app.Adapter{Name: "map watcher", Run: func(ctx context.Context) error { return watcher.run(ctx, maps) }},
-		app.Adapter{Name: "node", Run: func(ctx context.Context) error { return n.run(ctx, reg, maps) }},
-	)
+	return []app.Adapter{
+		{Name: "map watcher", Run: func(ctx context.Context) error { return watcher.run(ctx, maps) }},
+		{Name: "node", Run: func(ctx context.Context) error { return n.run(ctx, reg, maps) }},
+	}, nil
 }
 
 func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byte) error {
+	defer close(n.stopped)
 	h := n.state.Map.Header()
 	n.logs.Info("starting", "mode", n.mode, "space", h.SpaceID, "node", n.state.Keys.ID, "version", h.Version, "map", n.state.MapPath)
 	if n.state.Removed && !n.awaitSection(ctx, maps) {
@@ -109,7 +230,7 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 		return n.runServer(ctx, reg, maps)
 	}
 	log := n.logs.With("space", n.state.Trust.SpaceID.String())
-	return RunDataPlane(ctx, DataPlane{
+	dp := DataPlane{
 		Keys:      n.state.Keys,
 		Map:       n.state.Map,
 		Maps:      maps,
@@ -119,7 +240,19 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 		LinkMTU:   n.cfg.LinkMTU,
 		Log:       log,
 		Blobs:     blobs.New(blobs.Options{Store: diskBlobs{dir: n.cfg.StateDir, log: log}, Log: log}),
-	})
+
+		report:        &n.report,
+		requests:      n.requests,
+		disconnected:  !n.want,
+		rulesRequests: n.rulesRequests,
+	}
+	n.rulesMu.Lock()
+	dp.Rules = n.local
+	n.rulesMu.Unlock()
+	if n.tweak != nil {
+		n.tweak(&dp)
+	}
+	return RunDataPlane(ctx, dp)
 }
 
 // awaitSection follows the space's maps while the node is removed from it,
@@ -129,10 +262,19 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
 	n.logs.Warn("removed from space: the map has no section for this node; waiting for a map that includes it",
 		"version", n.state.Map.Header().Version)
+	requested := false
 	for {
 		select {
 		case <-ctx.Done():
 			return false
+		case req := <-n.rulesRequests:
+			// Stored already: the data plane starts with them.
+			req.done <- nil
+		case req := <-n.requests:
+			// Kept for when the node is back in its space.
+			n.want, requested = req.connect, true
+			n.report.set(func(p *report) { p.want = n.want })
+			req.done <- nil
 		case env, ok := <-maps:
 			if !ok {
 				maps = nil
@@ -149,6 +291,7 @@ func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
 			section, err := openSection(m, n.state.Keys)
 			if errors.Is(err, netmap.ErrNotRecipient) {
 				n.state.Map = m
+				n.report.set(func(p *report) { p.version = m.Header().Version })
 				continue
 			}
 			if err != nil {
@@ -157,6 +300,10 @@ func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
 			}
 			n.state.Map, n.state.Section, n.state.Removed = m, section, false
 			n.resolveMode()
+			n.report.set(func(p *report) { p.mode, p.version, p.removed = n.mode, m.Header().Version, false })
+			if requested && n.mode == ModeServer {
+				n.logs.Warn("a connect or disconnect taken while removed is dropped: this node is a server, which always serves its spaces")
+			}
 			n.logs.Info("back in space", "version", m.Header().Version, "mode", n.mode)
 			return true
 		}
@@ -187,10 +334,14 @@ func (n *Node) runServer(ctx context.Context, reg *transport.Registry, maps chan
 			n.logs.Warn("closing the supervisor", "err", err)
 		}
 	}()
+	// Cleared before the supervisor closes (deferred calls run last first).
+	n.report.set(func(p *report) { p.workers = sup })
+	defer n.report.set(func(p *report) { p.workers = nil })
 	s := &serverSpaces{
 		sup: sup, reg: reg, log: n.logs.Logger, keys: n.state.Keys, trust: n.state.Trust,
 		iface: n.cfg.Interface, linkMTU: n.cfg.LinkMTU, cur: n.state.Map, section: n.state.Section,
-		retryAfter: RetryAfter, stateDir: n.cfg.StateDir,
+		retryAfter: RetryAfter, report: &n.report, requests: n.requests, rulesRequests: n.rulesRequests,
+		stateDir: n.cfg.StateDir,
 	}
 	return s.run(ctx, maps)
 }
@@ -230,6 +381,12 @@ type serverSpaces struct {
 	// removed is set while the current map has no section for the node:
 	// the space's worker and the listeners are stopped.
 	removed bool
+
+	// report gets the map's version and whether serving it failed;
+	// requests, a device's, are refused.
+	report        *report
+	requests      <-chan connectRequest
+	rulesRequests <-chan rulesRequest
 }
 
 // errListeners is SetListeners failing: the other listeners are served,
@@ -290,9 +447,16 @@ func (s *serverSpaces) run(ctx context.Context, maps <-chan []byte) error {
 		retry = time.After(s.retryAfter)
 	}
 	for {
+		s.report.set(func(p *report) { p.version, p.removed, p.retrying = s.cur.Header().Version, s.removed, retry != nil })
 		select {
 		case <-ctx.Done():
 			return nil
+		case req := <-s.requests:
+			req.done <- ErrServerMode
+			continue
+		case req := <-s.rulesRequests:
+			req.done <- ErrServerMode
+			continue
 		case <-retry:
 		case env, ok := <-maps:
 			if !ok {
