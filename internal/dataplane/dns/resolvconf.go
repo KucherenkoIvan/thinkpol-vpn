@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -22,16 +23,34 @@ type SystemConfig struct {
 	Interface string
 	// Servers are the resolver's addresses.
 	Servers []netip.Addr
-	// Search are domains short names are tried in (the space's zone).
+	// Search are domains short names are tried in (the space's zone); the
+	// OS's own search domains are left out while the node runs, so a
+	// name is never retried under a domain the rules send elsewhere.
 	Search []string
+	// Upstreams, if set, is told the resolvers the OS would use on its
+	// own whenever another program changes them while the node runs (a
+	// DHCP client rewriting resolv.conf, resolved's uplink servers). It is
+	// called from the configuration's own goroutine.
+	Upstreams func([]netip.Addr)
 }
 
 // System is the OS's resolver configuration while the node points it at
-// its own resolver.
+// its own resolver. Its methods are safe from any goroutine.
 type System interface {
+	// Update points the OS at a new configuration, over the current one:
+	// there is no moment the OS's own configuration is back.
+	Update(SystemConfig) error
+	// Problem says why names may still be resolved outside the node's
+	// resolver (another link's domains in systemd-resolved, a rewrite that
+	// failed), nil when the OS resolves through it only.
+	Problem() error
 	// Restore puts back what was there before.
 	Restore() error
 }
+
+// ErrUnprotected wraps every Problem: the OS doesn't resolve only through
+// the node's resolver.
+var ErrUnprotected = errors.New("dns: names may be resolved outside the node")
 
 // A resolv.conf the node manages starts with resolvConfHeader and keeps
 // what it replaced in comment lines, so it can be put back even after a
@@ -69,8 +88,8 @@ func parseResolvConf(content []byte) managedResolvConf {
 	return m
 }
 
-// render is the resolv.conf pointing at c.Servers, keeping the original's
-// search domains (after c.Search) and options, and the original itself in
+// render is the resolv.conf pointing at c.Servers, searching c.Search
+// only, keeping the original's options, and the original itself in
 // comments.
 func render(c SystemConfig, original []byte, symlink string) []byte {
 	var b bytes.Buffer
@@ -78,22 +97,14 @@ func render(c SystemConfig, original []byte, symlink string) []byte {
 	for _, s := range c.Servers {
 		fmt.Fprintf(&b, "nameserver %s\n", s.WithZone(""))
 	}
-	search := slices.Clone(c.Search)
 	var options []string
 	for _, f := range directives(original) {
-		switch f[0] {
-		case "search", "domain":
-			for _, d := range f[1:] {
-				if !slices.Contains(search, d) {
-					search = append(search, d)
-				}
-			}
-		case "options":
+		if f[0] == "options" {
 			options = append(options, f[1:]...)
 		}
 	}
-	if len(search) > 0 {
-		fmt.Fprintf(&b, "search %s\n", strings.Join(search, " "))
+	if len(c.Search) > 0 {
+		fmt.Fprintf(&b, "search %s\n", strings.Join(c.Search, " "))
 	}
 	if len(options) > 0 {
 		fmt.Fprintf(&b, "options %s\n", strings.Join(options, " "))
@@ -152,20 +163,26 @@ func originalResolvConf(path string) ([]byte, error) {
 // it back if something else rewrites it, Restore puts the original back.
 type resolvConf struct {
 	path string
-	cfg  SystemConfig
 
-	mu      sync.Mutex
-	stop    chan struct{}
-	stopped chan struct{}
+	mu       sync.Mutex
+	cfg      SystemConfig
+	original []byte // the last original seen
+	seen     bool   // original is set
+	err      error  // the last apply's
+	stop     chan struct{}
+	stopped  chan struct{}
 }
 
 // resolvConfCheck is how often a managed resolv.conf is checked for
-// another program having rewritten it.
+// another program having rewritten it, besides the change notifications.
 const resolvConfCheck = 2 * time.Second
 
 func setResolvConf(path string, c SystemConfig) (*resolvConf, error) {
 	r := &resolvConf{path: path, cfg: c, stop: make(chan struct{}), stopped: make(chan struct{})}
-	if err := r.apply(); err != nil {
+	r.mu.Lock()
+	err := r.apply()
+	r.mu.Unlock()
+	if err != nil {
 		return nil, err
 	}
 	go r.watch()
@@ -173,10 +190,10 @@ func setResolvConf(path string, c SystemConfig) (*resolvConf, error) {
 }
 
 // apply writes the managed resolv.conf over whatever is there, keeping it
-// as the original unless it is the node's own (left by a crash).
-func (r *resolvConf) apply() error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+// as the original unless it is the node's own (left by a crash). r.mu is
+// held.
+func (r *resolvConf) apply() (err error) {
+	defer func() { r.err = err }()
 	fi, err := os.Lstat(r.path)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
@@ -200,29 +217,54 @@ func (r *resolvConf) apply() error {
 	m := parseResolvConf(current)
 	if m.managed {
 		symlink = m.symlink
-		if string(render(r.cfg, m.original, symlink)) == string(current) {
-			return nil
-		}
 	}
 	content := render(r.cfg, m.original, symlink)
-	if fi != nil && fi.Mode().IsRegular() {
-		return writeInPlace(r.path, content)
+	if string(content) == string(current) {
+		return nil
 	}
-	return replace(r.path, func(tmp string) error { return os.WriteFile(tmp, content, 0o644) })
+	if r.seen && !bytes.Equal(r.original, m.original) && r.cfg.Upstreams != nil {
+		r.cfg.Upstreams(nameservers(m.original))
+	}
+	r.original, r.seen = m.original, true
+	if fi != nil && fi.Mode().IsRegular() {
+		return writeFile(r.path, content)
+	}
+	return replace(r.path, func(tmp string) error { return writeNew(tmp, content) })
 }
 
 func (r *resolvConf) watch() {
 	defer close(r.stopped)
+	changes, closeWatch := watchFile(r.path)
+	defer closeWatch()
 	t := time.NewTicker(resolvConfCheck)
 	defer t.Stop()
 	for {
 		select {
 		case <-r.stop:
 			return
+		case <-changes:
 		case <-t.C:
-			_ = r.apply()
 		}
+		r.mu.Lock()
+		_ = r.apply()
+		r.mu.Unlock()
 	}
+}
+
+func (r *resolvConf) Update(c SystemConfig) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.cfg = c
+	return r.apply()
+}
+
+func (r *resolvConf) Problem() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.err != nil {
+		return fmt.Errorf("%w: rewriting %s: %v", ErrUnprotected, r.path, r.err)
+	}
+	return nil
 }
 
 // Restore puts the original back, as a file or the symlink it was. A
@@ -240,6 +282,8 @@ func (r *resolvConf) Restore() error {
 	return restoreResolvConf(r.path)
 }
 
+// restoreResolvConf puts back the original a managed resolv.conf holds;
+// any other file is left alone.
 func restoreResolvConf(path string) error {
 	fi, err := os.Lstat(path)
 	if err != nil || !fi.Mode().IsRegular() {
@@ -256,18 +300,48 @@ func restoreResolvConf(path string) error {
 	case m.symlink != "":
 		return replace(path, func(tmp string) error { return os.Symlink(m.symlink, tmp) })
 	}
-	return writeInPlace(path, m.original)
+	return writeFile(path, m.original)
 }
 
-// writeInPlace rewrites a file's content without replacing the file:
-// /etc/resolv.conf is often a bind mount (containers), which a rename
-// can't replace.
+// writeFile replaces a file's content atomically: a new file, synced, then
+// renamed over it. A file that can't be renamed over (a bind mount, as
+// /etc/resolv.conf often is in containers: EBUSY, EXDEV) is rewritten in
+// place and synced.
+func writeFile(path string, content []byte) error {
+	err := replace(path, func(tmp string) error { return writeNew(tmp, content) })
+	if errors.Is(err, syscall.EBUSY) || errors.Is(err, syscall.EXDEV) {
+		return writeInPlace(path, content)
+	}
+	return err
+}
+
+// writeNew writes a new file and syncs it.
+func writeNew(path string, content []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return err
+	}
+	_, err = f.Write(content)
+	if err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	return err
+}
+
+// writeInPlace rewrites a file's content without replacing the file, and
+// syncs it.
 func writeInPlace(path string, content []byte) error {
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0)
 	if err != nil {
 		return err
 	}
 	_, err = f.Write(content)
+	if err == nil {
+		err = f.Sync()
+	}
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
@@ -275,16 +349,22 @@ func writeInPlace(path string, content []byte) error {
 }
 
 // replace puts what create makes at a temporary name next to path in its
-// place, atomically.
+// place, atomically, and syncs the directory.
 func replace(path string, create func(tmp string) error) error {
-	tmp := filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+".thinkpol")
+	dir := filepath.Dir(path)
+	tmp := filepath.Join(dir, "."+filepath.Base(path)+".thinkpol")
 	_ = os.Remove(tmp)
 	if err := create(tmp); err != nil {
+		_ = os.Remove(tmp)
 		return err
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)
 		return err
+	}
+	if d, err := os.Open(dir); err == nil {
+		_ = d.Sync()
+		_ = d.Close()
 	}
 	return nil
 }

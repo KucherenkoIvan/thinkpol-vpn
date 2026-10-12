@@ -39,9 +39,16 @@ func TestResolvConfIsReplacedAndRestored(t *testing.T) {
 	if servers := nameservers([]byte(got)); !slices.Equal(servers, testSystem.Servers) {
 		t.Errorf("nameservers %v in\n%s", servers, got)
 	}
-	for _, want := range []string{"search home.internal lan\n", "options timeout:1 attempts:2\n"} {
+	for _, want := range []string{"\nsearch home.internal\n", "\noptions timeout:1 attempts:2\n"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("no %q in\n%s", want, got)
+		}
+	}
+	// The OS's own search domains are out while the node runs: a failed
+	// name retried under one would go wherever the rules send that domain.
+	for _, line := range strings.Split(got, "\n") {
+		if strings.HasPrefix(line, "search") && strings.Contains(line, "lan") {
+			t.Errorf("the original search domain stays: %q", line)
 		}
 	}
 	// What the OS used before stays readable while the node runs.
@@ -124,6 +131,10 @@ func TestAResolvConfRewrittenMeanwhileIsTakenBack(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = r.Restore() })
+	upstreams := make(chan []netip.Addr, 1)
+	r.mu.Lock()
+	r.cfg.Upstreams = func(a []netip.Addr) { upstreams <- a }
+	r.mu.Unlock()
 	renewed := "nameserver 192.0.2.99\n"
 	if err := os.WriteFile(path, []byte(renewed), 0o644); err != nil {
 		t.Fatal(err)
@@ -134,6 +145,17 @@ func TestAResolvConfRewrittenMeanwhileIsTakenBack(t *testing.T) {
 			t.Fatalf("not taken back:\n%s", readString(t, path))
 		}
 		time.Sleep(100 * time.Millisecond)
+	}
+	select {
+	case got := <-upstreams:
+		if !slices.Equal(got, []netip.Addr{netip.MustParseAddr("192.0.2.99")}) {
+			t.Errorf("told the OS's resolvers are %v", got)
+		}
+	case <-time.After(time.Second):
+		t.Error("not told the OS's resolvers changed")
+	}
+	if err := r.Problem(); err != nil {
+		t.Errorf("problem %v", err)
 	}
 	if err := r.Restore(); err != nil {
 		t.Fatal(err)
@@ -174,4 +196,48 @@ func TestSystemUpstreams(t *testing.T) {
 	write(etc, "nameserver 127.0.0.53\noptions edns0 trust-ad\n")
 	write(uplink, "nameserver 198.51.100.53\nnameserver 100.64.0.2\n")
 	check("through systemd-resolved, without the node's own", "198.51.100.53")
+}
+
+// A new configuration goes over the old one; the original stays.
+func TestResolvConfUpdatesInPlace(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "resolv.conf")
+	if err := os.WriteFile(path, []byte(isp), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r, err := setResolvConf(path, testSystem)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := SystemConfig{Servers: testSystem.Servers[:1], Search: []string{"other.internal"}}
+	if err := r.Update(next); err != nil {
+		t.Fatal(err)
+	}
+	got := readString(t, path)
+	if !slices.Equal(nameservers([]byte(got)), next.Servers) || !strings.Contains(got, "\nsearch other.internal\n") {
+		t.Errorf("after Update:\n%s", got)
+	}
+	if err := r.Restore(); err != nil {
+		t.Fatal(err)
+	}
+	if got := readString(t, path); got != isp {
+		t.Errorf("restored\n%s", got)
+	}
+}
+
+// What a crash left is put back when the node starts, whatever it does
+// next; anything else is left alone.
+func TestALeftoverIsRestoredAtStart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "resolv.conf")
+	if err := os.WriteFile(path, render(testSystem, []byte(isp), ""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := restoreResolvConf(path); err != nil {
+		t.Fatal(err)
+	}
+	if got := readString(t, path); got != isp {
+		t.Errorf("restored\n%s", got)
+	}
+	if err := restoreResolvConf(path); err != nil || readString(t, path) != isp {
+		t.Errorf("a file the node doesn't manage changed: %v", err)
+	}
 }

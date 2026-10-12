@@ -188,6 +188,7 @@ func (c *Client) explain(err error) error {
 			{ErrNotRunning, "the node is not running"},
 			{ErrPresetUnavailable, "this space can't build that preset (no chain, or no domestic list): it is kept, and enforced failing closed"},
 			{ErrUnknownPreset, "no such rule preset: space, everything or all-but-domestic"},
+			{ErrDNSUnprotected, "connected, but DNS is not protected: the system may resolve names outside the tunnel (the service's log says why); the tunnel stays up"},
 		} {
 			if remote.Code == e.err.Code {
 				return &clientError{e.msg, e.err}

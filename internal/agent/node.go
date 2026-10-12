@@ -231,6 +231,11 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 	defer close(n.stopped)
 	h := n.state.Map.Header()
 	n.logs.Info("starting", "mode", n.mode, "space", h.SpaceID, "node", n.state.Keys.ID, "version", h.Version, "map", n.state.MapPath)
+	// A resolver configuration a crash left behind goes back first,
+	// whatever the node does next.
+	if err := dns.RestoreSystem(); err != nil {
+		n.logs.Warn("DNS: restoring the system's resolver configuration left behind", "err", err)
+	}
 	if n.state.Removed && !n.awaitSection(ctx, maps) {
 		return nil
 	}

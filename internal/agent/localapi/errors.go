@@ -20,6 +20,7 @@ var (
 	ErrNotRunning        = Error{Code: "not_running"}
 	ErrPresetUnavailable = Error{Code: "rule_preset_unavailable"}
 	ErrUnknownPreset     = Error{Code: "unknown_rule_preset"}
+	ErrDNSUnprotected    = Error{Code: "dns_not_protected"}
 
 	errorCodes = map[Error]codes.Code{
 		ErrPermissionDenied:  codes.PermissionDenied,
@@ -27,5 +28,6 @@ var (
 		ErrNotRunning:        codes.Unavailable,
 		ErrPresetUnavailable: codes.FailedPrecondition,
 		ErrUnknownPreset:     codes.InvalidArgument,
+		ErrDNSUnprotected:    codes.FailedPrecondition,
 	}
 )

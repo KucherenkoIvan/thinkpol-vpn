@@ -49,18 +49,47 @@ func (s *Server) answer(cfg *Config, src netip.Addr, req *dns.Msg) *dns.Msg {
 		return reply(req, dns.RcodeNotImplemented)
 	}
 	q := req.Question[0]
-	name := strings.TrimSuffix(strings.ToLower(q.Name), ".")
-	if name == "internal" || strings.HasSuffix(name, ".internal") {
-		s.n.overlay.Add(1)
-		return overlayAnswer(cfg, req, name, q.Qtype)
+	name := strings.ToLower(q.Name)
+	// A label with an escaped dot (or anything escaped) would match the
+	// rules as a different name than the one asked: refused.
+	if strings.ContainsRune(name, '\\') {
+		s.n.refused.Add(1)
+		return reply(req, dns.RcodeRefused)
 	}
-	if a, ok := reverseAddr(name); ok && slices.ContainsFunc(cfg.Overlay, func(p netip.Prefix) bool { return p.Contains(a) }) {
+	labels := dns.SplitDomainName(name)
+	name = strings.Join(labels, ".")
+	// Anything with an `internal` label is the overlay's or a search-list
+	// retry of an overlay name: never forwarded.
+	if slices.Contains(labels, "internal") {
 		s.n.overlay.Add(1)
-		return reverseAnswer(cfg, req, a, q.Qtype)
+		if labels[len(labels)-1] != "internal" {
+			m := reply(req, dns.RcodeNameError)
+			m.Authoritative = true
+			return m
+		}
+		return overlayAnswer(cfg, req, name, q.Qtype)
 	}
 
 	route := Route{Kind: RouteDirect}
-	if cfg.Route != nil {
+	if p, full, ok := reversePrefix(labels); ok {
+		// Reverse names go where the address goes; the overlay's (and any
+		// covering part of it) are answered here.
+		switch {
+		case slices.ContainsFunc(cfg.Overlay, p.Overlaps):
+			s.n.overlay.Add(1)
+			if !full {
+				m := reply(req, dns.RcodeNameError)
+				m.Authoritative = true
+				return m
+			}
+			return reverseAnswer(cfg, req, p.Addr(), q.Qtype)
+		case cfg.RouteAddr == nil:
+		case full:
+			route = cfg.RouteAddr(p.Addr())
+		default:
+			route = Route{Kind: RouteBlock} // a reverse zone, not an address: no rule says where
+		}
+	} else if cfg.Route != nil {
 		route = cfg.Route(name)
 	}
 	var servers []netip.AddrPort
@@ -68,7 +97,7 @@ func (s *Server) answer(cfg *Config, src netip.Addr, req *dns.Msg) *dns.Msg {
 	switch route.Kind {
 	case RouteDirect:
 		s.n.direct.Add(1)
-		servers, control = s.opts.Upstreams, s.opts.Control
+		servers, control = *s.upstreams.Load(), s.opts.Control
 	case RouteTunnel:
 		s.n.tunnel.Add(1)
 		for _, a := range route.Via {
@@ -90,6 +119,11 @@ func (s *Server) answer(cfg *Config, src netip.Addr, req *dns.Msg) *dns.Msg {
 		return m
 	}
 
+	if !s.takeClient(src) {
+		s.n.failed.Add(1)
+		return reply(req, dns.RcodeServerFailure)
+	}
+	defer s.releaseClient(src)
 	select {
 	case s.inflight <- struct{}{}:
 		defer func() { <-s.inflight }()
@@ -227,40 +261,43 @@ func reverseAnswer(cfg *Config, req *dns.Msg, a netip.Addr, qtype uint16) *dns.M
 	return m
 }
 
-// reverseAddr reads a full reverse name (in-addr.arpa or ip6.arpa).
-func reverseAddr(name string) (netip.Addr, bool) {
-	if v4, ok := strings.CutSuffix(name, ".in-addr.arpa"); ok {
-		parts := strings.Split(v4, ".")
-		if len(parts) != 4 {
-			return netip.Addr{}, false
+// reversePrefix reads a reverse name (labels of in-addr.arpa or
+// ip6.arpa, lowercase) as the prefix it stands for, and whether that is a
+// whole address. Not ok for any other name.
+func reversePrefix(labels []string) (p netip.Prefix, full, ok bool) {
+	n := len(labels)
+	switch {
+	case n >= 2 && labels[n-1] == "arpa" && labels[n-2] == "in-addr":
+		octets := labels[:n-2]
+		if len(octets) > 4 {
+			return p, false, false
 		}
 		var b [4]byte
-		for i, p := range parts {
-			n, err := strconv.ParseUint(p, 10, 8)
-			if err != nil || (len(p) > 1 && p[0] == '0') {
-				return netip.Addr{}, false
+		for i, o := range octets {
+			v, err := strconv.ParseUint(o, 10, 8)
+			if err != nil || len(o) > 1 && o[0] == '0' {
+				return p, false, false
 			}
-			b[3-i] = byte(n)
+			b[len(octets)-1-i] = byte(v)
 		}
-		return netip.AddrFrom4(b), true
-	}
-	if v6, ok := strings.CutSuffix(name, ".ip6.arpa"); ok {
-		nibbles := strings.Split(v6, ".")
-		if len(nibbles) != 32 {
-			return netip.Addr{}, false
+		return netip.PrefixFrom(netip.AddrFrom4(b), 8*len(octets)), len(octets) == 4, true
+	case n >= 2 && labels[n-1] == "arpa" && labels[n-2] == "ip6":
+		nibbles := labels[:n-2]
+		if len(nibbles) > 32 {
+			return p, false, false
 		}
 		var b [16]byte
-		for i, n := range nibbles {
-			v, err := strconv.ParseUint(n, 16, 4)
-			if err != nil || len(n) != 1 {
-				return netip.Addr{}, false
+		for i, nb := range nibbles {
+			v, err := strconv.ParseUint(nb, 16, 4)
+			if err != nil || len(nb) != 1 {
+				return p, false, false
 			}
-			j := 31 - i
+			j := len(nibbles) - 1 - i
 			b[j/2] |= byte(v) << (4 * (1 - j%2))
 		}
-		return netip.AddrFrom16(b), true
+		return netip.PrefixFrom(netip.AddrFrom16(b), 4*len(nibbles)), len(nibbles) == 32, true
 	}
-	return netip.Addr{}, false
+	return p, false, false
 }
 
 func routeKey(r Route) string {

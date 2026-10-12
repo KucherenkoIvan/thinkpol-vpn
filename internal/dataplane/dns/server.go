@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"slices"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -56,11 +57,15 @@ type Config struct {
 	// Route decides where a name outside `.internal` is resolved (the name
 	// lowercase, without the trailing dot). Nil: every name direct.
 	Route func(name string) Route
+	// RouteAddr decides where the reverse name (PTR) of an address outside
+	// the overlay is resolved: where the address's packets go. Nil: direct.
+	RouteAddr func(netip.Addr) Route
 }
 
 // Options are the server's for life.
 type Options struct {
-	// Upstreams are the direct upstream resolvers, tried in order.
+	// Upstreams are the direct upstream resolvers, tried in order, until
+	// SetUpstreams replaces them.
 	Upstreams []netip.AddrPort
 	// Control marks the direct upstream's sockets, as the links' are, so
 	// they leave around the tunnel in route-table mode.
@@ -85,9 +90,12 @@ type Options struct {
 // DefaultCacheSize is how many answers a server caches by default.
 const DefaultCacheSize = 2048
 
-// maxInflight bounds the queries forwarded at once; more are refused with
-// SERVFAIL.
-const maxInflight = 256
+// maxInflight bounds the queries forwarded at once, and maxPerClient
+// those of one client; more are answered SERVFAIL.
+const (
+	maxInflight  = 256
+	maxPerClient = 32
+)
 
 // Counters are what a server reports: figures only, never a name.
 type Counters struct {
@@ -107,10 +115,14 @@ type counters struct {
 
 // Server is a DNS server on the node's overlay addresses.
 type Server struct {
-	opts     Options
-	cache    *cache
-	inflight chan struct{}
-	n        counters
+	opts      Options
+	upstreams atomic.Pointer[[]netip.AddrPort]
+	cache     *cache
+	inflight  chan struct{}
+	n         counters
+
+	clientsMu sync.Mutex
+	perClient map[netip.Addr]int
 
 	mu      sync.Mutex
 	closed  bool
@@ -142,9 +154,39 @@ func New(o Options) *Server {
 	if o.Log == nil {
 		o.Log = slog.New(slog.DiscardHandler)
 	}
-	s := &Server{opts: o, cache: newCache(max(o.CacheSize, 0)), inflight: make(chan struct{}, maxInflight), serving: map[netip.Addr]*listening{}, failing: map[netip.Addr]bool{}}
+	s := &Server{opts: o, cache: newCache(max(o.CacheSize, 0)), inflight: make(chan struct{}, maxInflight),
+		perClient: map[netip.Addr]int{}, serving: map[netip.Addr]*listening{}, failing: map[netip.Addr]bool{}}
 	s.cfg = &Config{}
+	s.SetUpstreams(o.Upstreams)
 	return s
+}
+
+// SetUpstreams replaces the direct upstreams (the OS's own resolvers
+// changed), dropping what the old ones answered.
+func (s *Server) SetUpstreams(u []netip.AddrPort) {
+	u = slices.Clone(u)
+	if old := s.upstreams.Swap(&u); old != nil && !slices.Equal(*old, u) {
+		s.cache.flush()
+	}
+}
+
+// takeClient counts a forwarded query of src, false if it has too many.
+func (s *Server) takeClient(src netip.Addr) bool {
+	s.clientsMu.Lock()
+	defer s.clientsMu.Unlock()
+	if s.perClient[src] >= maxPerClient {
+		return false
+	}
+	s.perClient[src]++
+	return true
+}
+
+func (s *Server) releaseClient(src netip.Addr) {
+	s.clientsMu.Lock()
+	defer s.clientsMu.Unlock()
+	if s.perClient[src]--; s.perClient[src] <= 0 {
+		delete(s.perClient, src)
+	}
 }
 
 // Update replaces the configuration: the cache is flushed (answers were

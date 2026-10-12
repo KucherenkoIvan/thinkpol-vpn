@@ -119,14 +119,16 @@ func TestDNSFollowsTheRules(t *testing.T) {
 	waitLog(t, exit, applied(v1))
 
 	t.Run("resolv.conf", func(t *testing.T) {
-		original := "nameserver " + inetIP.String() + "\nsearch home.arpa\noptions timeout:2 attempts:3\n"
+		// The OS's own search domain is one the rules send direct: a name
+		// that fails must never be retried under it.
+		original := "nameserver " + inetIP.String() + "\nsearch direct.test\noptions timeout:2 attempts:3\n"
 		devA.WriteFile(t, "/etc/resolv.conf", []byte(original))
 		capture := devA.Capture(t, "")
 		up := devA.Start(t, "thinkpol", "up")
 		waitLog(t, up, "the system resolves through the node")
 		ping(t, devA, s4)
 		conf := devA.MustExec(t, "cat", "/etc/resolv.conf")
-		if !strings.Contains(conf, "nameserver "+a4.String()+"\n") || !strings.Contains(conf, "search lab.internal home.arpa\n") {
+		if !strings.Contains(conf, "nameserver "+a4.String()+"\n") || !strings.Contains(conf, "\nsearch lab.internal\n") {
 			t.Errorf("resolv.conf while connected:\n%s", conf)
 		}
 
@@ -136,12 +138,23 @@ func TestDNSFollowsTheRules(t *testing.T) {
 		mustResolve(t, devA, "www.direct.test", false, domesticA)
 		mustResolve(t, devA, "www.tunnel.test", false, foreignA)
 		mustResolve(t, devA, "www.tunnel.test", true, foreignAAAA)
-		if got, err := resolve(devA, "blocked.test.", false); err == nil {
+		if got, err := resolve(devA, "blocked.test", false); err == nil {
 			t.Errorf("a blocked name resolved to %s", got)
 		}
 		if got, err := resolve(devA, "device-c.lab.internal.", false); err == nil {
 			t.Errorf("a name the map doesn't have resolved to %s", got)
 		}
+
+		// With the exit down, a tunnel-bound name fails: it is never
+		// retried under a search domain, nor asked of anyone else.
+		if err := exit.Stop(); err != nil {
+			t.Errorf("the exit: %v", err)
+		}
+		if got, err := resolve(devA, "down.tunnel.test", false); err == nil {
+			t.Errorf("a tunnel-bound name resolved with the exit down: %s", got)
+		}
+		exit = server.Start(t, "thinkpol", "up", "-mode", "device", "-dns-upstream", inetIP.String()+":5353")
+		waitLog(t, exit, applied(v1))
 
 		if err := capture.Complete(); err != nil {
 			t.Fatal(err)

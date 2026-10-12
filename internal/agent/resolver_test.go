@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/netip"
 	"slices"
@@ -16,11 +17,18 @@ type fakeSystem struct {
 	mu       sync.Mutex
 	set      []dns.SystemConfig
 	restored int
+	// failSets fails that many Sets; problem is what Problem says.
+	failSets int
+	problem  error
 }
 
 func (f *fakeSystem) Set(c dns.SystemConfig) (dns.System, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.failSets > 0 {
+		f.failSets--
+		return nil, errors.New("no resolver configuration today")
+	}
 	f.set = append(f.set, c)
 	return f, nil
 }
@@ -30,6 +38,19 @@ func (f *fakeSystem) Restore() error {
 	defer f.mu.Unlock()
 	f.restored++
 	return nil
+}
+
+func (f *fakeSystem) Update(c dns.SystemConfig) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.set = append(f.set, c)
+	return nil
+}
+
+func (f *fakeSystem) Problem() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.problem
 }
 
 func (f *fakeSystem) counts() (set, restored int) {
@@ -135,5 +156,45 @@ func TestWorkersGetTheHostsResolversButLoopback(t *testing.T) {
 	s.dnsUpstreams = nil
 	if got := s.workerUpstreams(); got != nil {
 		t.Errorf("without DNS: %v", got)
+	}
+}
+
+// A device whose OS can't be pointed at its resolver stays connected, says
+// DNS isn't protected (and Connect says why), and keeps trying.
+func TestUnprotectedDNSIsReportedAndRetried(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	startNode(t, reg, s.a, s.verified(t, 1))
+	sys := &fakeSystem{failSets: 1}
+	b := startDevice(t, s, reg, false, func(c *Config, dp *DataPlane) {
+		if c != nil {
+			c.DNS = true
+			return
+		}
+		dp.systemDNS = sys.Set
+		dp.systemUpstreams = func([]netip.Addr) ([]netip.Addr, error) { return nil, nil }
+		dp.dnsPort = 5353
+	})
+	err := b.node.Connect(context.Background())
+	if !errors.Is(err, ErrDNSUnprotected) {
+		t.Fatalf("Connect: %v, want ErrDNSUnprotected", err)
+	}
+	st := b.connection(t, Connected)
+	if !st.DNSUnprotected || !slices.Contains(st.Health().Problems, ProblemDNSUnprotected) {
+		t.Errorf("status %+v, health %+v", st, st.Health())
+	}
+	// The retry points it.
+	eventually(t, func() bool { n, _ := sys.counts(); return n == 1 })
+	eventually(t, func() bool { return !b.node.Status().DNSUnprotected })
+	if err := b.node.Connect(context.Background()); err != nil {
+		t.Errorf("Connect once protected: %v", err)
+	}
+
+	// The configuration itself can say names may go elsewhere.
+	sys.mu.Lock()
+	sys.problem = dns.ErrUnprotected
+	sys.mu.Unlock()
+	if st := b.node.Status(); !st.DNSUnprotected {
+		t.Errorf("a problem the system reports isn't in the status")
 	}
 }

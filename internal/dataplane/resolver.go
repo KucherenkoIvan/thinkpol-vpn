@@ -78,11 +78,8 @@ func (e *Engine) dnsConfig() dns.Config {
 			via[chain] = addrs
 		}
 	}
-	c.Route = func(name string) dns.Route {
-		if names == nil {
-			return dns.Route{Kind: dns.RouteBlock}
-		}
-		switch a := names.Lookup(name); a.Kind {
+	route := func(a netmap.Action) dns.Route {
+		switch a.Kind {
 		case netmap.ActionDirect:
 			return dns.Route{Kind: dns.RouteDirect}
 		case netmap.ActionChain:
@@ -91,6 +88,24 @@ func (e *Engine) dnsConfig() dns.Config {
 			}
 		}
 		return dns.Route{Kind: dns.RouteBlock}
+	}
+	c.Route = func(name string) dns.Route {
+		if names == nil {
+			return dns.Route{Kind: dns.RouteBlock}
+		}
+		return route(names.Lookup(name))
+	}
+	// A reverse name goes where its address's packets go.
+	table := e.ruleTable
+	c.RouteAddr = func(a netip.Addr) dns.Route {
+		if table == nil {
+			return dns.Route{Kind: dns.RouteBlock}
+		}
+		action, ok := table.Lookup(a)
+		if !ok {
+			return dns.Route{Kind: dns.RouteBlock}
+		}
+		return route(action)
 	}
 	return c
 }

@@ -129,7 +129,8 @@ func RunDataPlane(ctx context.Context, dp DataPlane) error {
 	if err != nil {
 		return err
 	}
-	r := &runner{dp: dp, cur: dp.Map, section: section, maps: dp.Maps, down: dp.disconnected}
+	r := &runner{dp: dp, cur: dp.Map, section: section, maps: dp.Maps, down: dp.disconnected, guard: &dnsGuard{}}
+	dp.report.set(func(p *report) { p.dns = r.guard.problem })
 	if dp.Blobs != nil {
 		r.blobsChanged = dp.Blobs.Subscribe()
 	}
@@ -199,9 +200,13 @@ type runner struct {
 	engine    *dataplane.Engine
 	listeners *listenerSet
 	resolver  *dns.Server
-	system    dns.System
-	systemCfg dns.SystemConfig
-	removed   bool
+	// guard is the OS's resolver configuration while it should point at
+	// the resolver (systemCfg), and why it doesn't; dnsRetryAt is when to
+	// try pointing it again.
+	guard      *dnsGuard
+	systemCfg  dns.SystemConfig
+	dnsRetryAt time.Time
+	removed    bool
 	// down is set while a device is disconnected: it follows the maps but
 	// runs nothing.
 	down bool
@@ -393,12 +398,20 @@ func (r *runner) connect(ctx context.Context, connect bool) error {
 		}
 		r.dp.Log.Info("connected")
 	}
+	if connect && r.engine != nil {
+		if err := r.guard.problem(); err != nil {
+			return fmt.Errorf("%w: %v", ErrDNSUnprotected, err)
+		}
+	}
 	return nil
 }
 
 // nextRetry is the earliest retry due: the data plane's or a listener's.
 func (r *runner) nextRetry() (time.Time, bool) {
 	at, ok := r.retryAt, !r.retryAt.IsZero()
+	if d := r.dnsRetryAt; !d.IsZero() && (!ok || d.Before(at)) {
+		at, ok = d, true
+	}
 	if r.listeners != nil {
 		if l, lok := r.listeners.nextRetry(); lok && (!ok || l.Before(at)) {
 			at, ok = l, true
@@ -410,6 +423,12 @@ func (r *runner) nextRetry() (time.Time, bool) {
 // retry retries a failed start or Apply when it is due; listeners retry in
 // reconcile.
 func (r *runner) retry(ctx context.Context) {
+	if d := r.dnsRetryAt; !d.IsZero() && !time.Now().Before(d) {
+		r.dnsRetryAt = time.Time{}
+		if r.engine != nil {
+			r.pointSystem()
+		}
+	}
 	if r.down || r.retryAt.IsZero() || time.Now().Before(r.retryAt) {
 		return
 	}

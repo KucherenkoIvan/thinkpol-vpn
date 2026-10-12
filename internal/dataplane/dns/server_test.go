@@ -407,18 +407,101 @@ func TestCacheIsBounded(t *testing.T) {
 	}
 }
 
-func TestReverseAddr(t *testing.T) {
+func TestReversePrefix(t *testing.T) {
 	for name, want := range map[string]string{
-		"2.0.64.100.in-addr.arpa": "100.64.0.2",
-		"1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.a.9.8.7.6.5.4.3.2.1.d.f.ip6.arpa": "fd12:3456:789a::1",
+		"2.0.64.100.in-addr.arpa": "100.64.0.2/32",
+		"64.100.in-addr.arpa":     "100.64.0.0/16",
+		"in-addr.arpa":            "0.0.0.0/0",
+		"1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.a.9.8.7.6.5.4.3.2.1.d.f.ip6.arpa": "fd12:3456:789a::1/128",
+		"d.f.ip6.arpa": "fd00::/8",
 	} {
-		if a, ok := reverseAddr(name); !ok || a.String() != want {
-			t.Errorf("%s: %v %v", name, a, ok)
+		p, full, ok := reversePrefix(dns.SplitDomainName(name))
+		if !ok || p.String() != want || full != (p.IsSingleIP()) {
+			t.Errorf("%s: %v %v %v", name, p, full, ok)
 		}
 	}
-	for _, name := range []string{"0.64.100.in-addr.arpa", "256.0.64.100.in-addr.arpa", "02.0.64.100.in-addr.arpa", "x.ip6.arpa", "example.com"} {
-		if _, ok := reverseAddr(name); ok {
+	for _, name := range []string{"1.0.0.0.0.64.100.in-addr.arpa", "256.0.64.100.in-addr.arpa", "02.0.64.100.in-addr.arpa", "x.ip6.arpa", "example.com", "arpa"} {
+		if _, _, ok := reversePrefix(dns.SplitDomainName(name)); ok {
 			t.Errorf("%s parsed", name)
 		}
+	}
+}
+
+// Names a search list makes of overlay names, and names a resolver can't
+// match the rules against, never leave.
+func TestNoInternalOrEscapedNameIsForwarded(t *testing.T) {
+	f := newFixture(t, Options{})
+	for _, name := range []string{"x.lab.internal.example.com.", "internal.direct.", "a.internal.b.c."} {
+		if r := f.ask(t, "udp", name, dns.TypeA); r.Rcode != dns.RcodeNameError {
+			t.Errorf("%s: %v, want NXDOMAIN", name, dns.RcodeToString[r.Rcode])
+		}
+	}
+	if r := f.ask(t, "udp", `evil\.direct.example.`, dns.TypeA); r.Rcode != dns.RcodeRefused {
+		t.Errorf("an escaped dot: %v", dns.RcodeToString[r.Rcode])
+	}
+	if got := append(f.domestic.names(), f.exit.names()...); len(got) != 0 {
+		t.Errorf("forwarded: %v", got)
+	}
+}
+
+// A reverse name goes where its address goes; one under the overlay, or
+// covering part of it, is answered here.
+func TestReverseNamesFollowTheirAddress(t *testing.T) {
+	f := newFixture(t, Options{})
+	cfg := f.cfg
+	cfg.RouteAddr = func(a netip.Addr) Route {
+		if a == netip.MustParseAddr("192.0.2.1") {
+			return Route{Kind: RouteDirect}
+		}
+		return Route{Kind: RouteTunnel, Via: []netip.Addr{loopback}}
+	}
+	f.srv.Update(cfg)
+	f.ask(t, "udp", "1.2.0.192.in-addr.arpa.", dns.TypePTR)
+	f.ask(t, "udp", "9.2.0.192.in-addr.arpa.", dns.TypePTR)
+	for _, name := range []string{"64.100.in-addr.arpa.", "100.in-addr.arpa.", "a.9.8.7.6.5.4.3.2.1.d.f.ip6.arpa."} {
+		if r := f.ask(t, "udp", name, dns.TypeSOA); r.Rcode != dns.RcodeNameError {
+			t.Errorf("%s: %v", name, dns.RcodeToString[r.Rcode])
+		}
+	}
+	if r := f.ask(t, "udp", "2.0.192.in-addr.arpa.", dns.TypeSOA); r.Rcode != dns.RcodeServerFailure {
+		t.Errorf("a reverse zone outside the overlay: %v", dns.RcodeToString[r.Rcode])
+	}
+	if got := f.domestic.names(); !slices.Equal(got, []string{"1.2.0.192.in-addr.arpa."}) {
+		t.Errorf("domestic asked %v", got)
+	}
+	if got := f.exit.names(); !slices.Equal(got, []string{"9.2.0.192.in-addr.arpa."}) {
+		t.Errorf("exit asked %v", got)
+	}
+}
+
+func TestUpstreamsCanChange(t *testing.T) {
+	f := newFixture(t, Options{})
+	other := startUpstream(t, "192.0.2.77")
+	if r := f.ask(t, "udp", "direct.example.", dns.TypeA); !slices.Equal(answers(r), []string{"198.51.100.1"}) {
+		t.Fatalf("before: %v", answers(r))
+	}
+	f.srv.SetUpstreams([]netip.AddrPort{other.addrPort()})
+	if r := f.ask(t, "udp", "direct.example.", dns.TypeA); !slices.Equal(answers(r), []string{"192.0.2.77"}) {
+		t.Errorf("after: %v (a cached answer of the old upstream?)", answers(r))
+	}
+}
+
+func TestOneClientCantTakeEveryQuery(t *testing.T) {
+	s := New(Options{})
+	a, b := netip.MustParseAddr("100.64.0.2"), netip.MustParseAddr("100.64.0.3")
+	for range maxPerClient {
+		if !s.takeClient(a) {
+			t.Fatal("refused below the limit")
+		}
+	}
+	if s.takeClient(a) {
+		t.Error("over the limit")
+	}
+	if !s.takeClient(b) {
+		t.Error("another client refused")
+	}
+	s.releaseClient(a)
+	if !s.takeClient(a) {
+		t.Error("refused after a release")
 	}
 }

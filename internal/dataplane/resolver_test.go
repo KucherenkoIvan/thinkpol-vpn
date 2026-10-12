@@ -83,6 +83,16 @@ func TestTheResolverFollowsTheMapAndTheRules(t *testing.T) {
 		t.Errorf("a tunnel name goes %v via %v", k, via)
 	}
 
+	if c.RouteAddr == nil {
+		t.Fatal("no routes for reverse names")
+	}
+	if r := c.RouteAddr(netip.MustParseAddr("192.168.1.1")); r.Kind != dns.RouteDirect {
+		t.Errorf("a local address's reverse name goes %v", r.Kind)
+	}
+	if r := c.RouteAddr(netip.MustParseAddr("192.0.2.1")); r.Kind != dns.RouteTunnel || !slices.Equal(r.Via, []netip.Addr{s.v4, s.v6}) {
+		t.Errorf("an internet address's reverse name goes %v via %v", r.Kind, r.Via)
+	}
+
 	if c := recs[s].config(); !slices.Equal(c.Listen, []netip.Addr{s.v4, s.v6}) || !slices.Contains(c.Clients, space4) || c.Zone != "" || c.Route != nil {
 		t.Errorf("exit's resolver: %+v", c)
 	}
