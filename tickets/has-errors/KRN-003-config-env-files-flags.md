@@ -49,7 +49,13 @@ branch: "krn-003-config-env-files-flags"
 - **Release plan:** one combined minor release **v0.19.0** for KRN-003, KRN-004 and KRN-005 (all three are additive API, none depends on another, and the consumer adopts them together). Tag after review passes and the three branches are merged into go-kernel `master`. The branches touch adjacent one-line summaries in go-kernel `README.md` (guide list) and `docs/guides/service-runtime.md` (package table), so the 2nd and 3rd merge each hit a trivial conflict: keep both sides, each branch changes only its own package's row. A trial merge of all three with that resolution passes `make lint` and `make test`.
 - The "minor tag released" and adoption boxes stay open until after review: the tag is pushed after review (ORCHESTRATION.md decisions), and adoption is a thinkpol-vpn change that follows the tag.
 
+## Review findings
+- [ ] `config/config.go` `setValue`: a `[]mode` field (slice of a named string type) panics in `reflect.Value.Convert`; build the slice element by element (`MakeSlice` + `New(Elem).SetString`) and add a `[]mode` test
+- [ ] `docs/guides/config.md`: a guide bullet and an anti-patterns row saying not to put `flag:` on secret fields (`-h` prints the env-loaded value as the default; argv is visible in `ps`); optionally a `secret:"true"` tag that blanks the flag's DefValue, if it's cheap
+- [ ] `config.Validate(nil)` returns nil
+
 ## Log
 - 2026-10-11 created in backlog
 - 2026-10-13 backlog → in-progress — owner: agent-krn, branch: krn-003-config-env-files-flags (go-kernel branch krn-003-config-env-files-flags)
 - 2026-10-13 in-progress → review — go-kernel branch krn-003-config-env-files-flags pushed; release planned as v0.19.0 after review
+- 2026-10-13 review → has-errors — 3 findings (named-string slice panic, secrets via flags, Validate(nil)); KRN-004 and KRN-005 passed
