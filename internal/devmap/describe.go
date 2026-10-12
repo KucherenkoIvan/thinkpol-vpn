@@ -94,6 +94,9 @@ func DescribeSection(w io.Writer, s netmap.Section, names Names) error {
 			p.line(1, "- %s: exit %s", s.Chains[i].Name, names.Of(s.Chains[i].Exit))
 		})
 	}
+	if s.Presets != (netmap.RulePresets{}) {
+		p.line(0, "presets: domestic %q, chain %q", s.Presets.Domestic, s.Presets.Chain)
+	}
 	return p.err
 }
 

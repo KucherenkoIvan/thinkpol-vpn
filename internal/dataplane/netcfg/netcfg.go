@@ -89,6 +89,10 @@ func FamilyOf(a netip.Addr) Family {
 type Config struct {
 	Interfaces []Interface
 	Routes     []Route
+	// Rules are policy routing rules (Linux): which table a packet's
+	// route is looked up in. Without any, every route is in the main
+	// table and Route.Table must be zero.
+	Rules []Rule
 }
 
 // Interface is the configuration of one existing interface (a TUN, a veth).
@@ -108,10 +112,11 @@ type Interface struct {
 	Up bool
 }
 
-// Route is one route in the main routing table. Its identity is its
-// destination and metric (as in the OS routing table); its gateway and
-// interface are values. Blocking traffic is the firewall's job, not a route
-// type's.
+// Route is one route in a routing table, the main one unless Table says
+// otherwise. Its identity is its table, destination and metric (as in the
+// OS routing table); its type, gateway and interface are values. Blocking
+// traffic is the firewall's job; RouteUnreachable is only for a table
+// that must never fall through to the next rule (policy routing).
 type Route struct {
 	// Dst is the destination prefix, masked: 0.0.0.0/0 and ::/0 are the
 	// default routes of each family.
@@ -125,6 +130,83 @@ type Route struct {
 	// Metric orders routes to the same Dst, lower first; 0 is the OS
 	// default (1024 for IPv6 on Linux, so 0 and 1024 are the same route).
 	Metric int
+	// Table is the routing table (Linux: 1–252 or 256 and up); 0 is the
+	// main table.
+	Table int
+	// Type is what the route does; RouteThrow and RouteUnreachable take
+	// no Gateway or Interface.
+	Type RouteType
+}
+
+// RouteType is what a route does with the packets it matches.
+type RouteType int
+
+const (
+	// RouteUnicast sends them to Gateway or on-link out of Interface.
+	RouteUnicast RouteType = iota
+	// RouteThrow ends the lookup in this table: the next policy rule
+	// decides, as if the table had no route for the destination.
+	RouteThrow
+	// RouteUnreachable drops them, telling the sender the destination is
+	// unreachable.
+	RouteUnreachable
+)
+
+func (t RouteType) String() string {
+	switch t {
+	case RouteUnicast:
+		return "unicast"
+	case RouteThrow:
+		return "throw"
+	case RouteUnreachable:
+		return "unreachable"
+	}
+	return fmt.Sprintf("RouteType(%d)", int(t))
+}
+
+// Rule is a policy routing rule (Linux `ip rule`): packets it matches are
+// looked up in Table; a lookup that finds nothing (or a throw route) goes
+// on to the next rule. Its identity is all of its fields.
+type Rule struct {
+	Family Family
+	// Priority orders rules, lower first: 1–32765, below the main table's
+	// 32766.
+	Priority int
+	// Dst, when valid, matches only packets to this prefix (`to`), of
+	// the rule's family.
+	Dst netip.Prefix
+	// Table is the table to look up; 0 is the main table.
+	Table int
+	// Mark, when non-zero, matches only packets with exactly this
+	// firewall mark (sockets set it with SO_MARK).
+	Mark uint32
+	// Invert matches the packets the rule's selector doesn't (`not
+	// fwmark`).
+	Invert bool
+	// SuppressDefaultRoutes ignores the table's routes with prefix length
+	// 0 (`suppress_prefixlength 0`): the lookup finds only more specific
+	// routes there.
+	SuppressDefaultRoutes bool
+}
+
+func (r Rule) String() string {
+	s := fmt.Sprintf("%v rule %d", r.Family, r.Priority)
+	if r.Invert {
+		s += " not"
+	}
+	if r.Dst.IsValid() {
+		s += " to " + r.Dst.String()
+	}
+	if r.Mark != 0 {
+		s += fmt.Sprintf(" fwmark %#x", r.Mark)
+	} else if !r.Dst.IsValid() {
+		s += " all"
+	}
+	s += fmt.Sprintf(" table %d", r.Table)
+	if r.SuppressDefaultRoutes {
+		s += " suppress_prefixlength 0"
+	}
+	return s
 }
 
 // Family returns the route's address family.
@@ -132,6 +214,9 @@ func (r Route) Family() Family { return FamilyOf(r.Dst.Addr()) }
 
 func (r Route) String() string {
 	s := r.Dst.String()
+	if r.Type != RouteUnicast {
+		s = r.Type.String() + " " + s
+	}
 	if r.Gateway.IsValid() {
 		s += " via " + r.Gateway.String()
 	}
@@ -140,6 +225,9 @@ func (r Route) String() string {
 	}
 	if r.Metric != 0 {
 		s += fmt.Sprintf(" metric %d", r.Metric)
+	}
+	if r.Table != 0 {
+		s += fmt.Sprintf(" table %d", r.Table)
 	}
 	return s
 }
@@ -181,15 +269,25 @@ func (c Config) Validate() error {
 		}
 	}
 	type key struct {
-		metric int
-		dst    netip.Prefix
+		table, metric int
+		dst           netip.Prefix
 	}
 	routes := make(map[key]bool, len(c.Routes))
 	for _, r := range c.Routes {
 		if !r.Dst.IsValid() || r.Dst != r.Dst.Masked() || r.Dst.Addr().Is4In6() {
 			return fmt.Errorf("netcfg: route %v: destination must be a masked prefix", r)
 		}
-		if r.Gateway.IsValid() {
+		if err := checkTable(r.Table); err != nil {
+			return fmt.Errorf("netcfg: route %v: %w", r, err)
+		}
+		switch {
+		case r.Type == RouteThrow || r.Type == RouteUnreachable:
+			if r.Gateway.IsValid() || r.Interface != "" {
+				return fmt.Errorf("netcfg: route %v: a %v route has no gateway or interface", r, r.Type)
+			}
+		case r.Type != RouteUnicast:
+			return fmt.Errorf("netcfg: route %v: unknown type", r)
+		case r.Gateway.IsValid():
 			if FamilyOf(r.Gateway) != r.Family() || r.Gateway.Is4In6() {
 				return fmt.Errorf("netcfg: route %v: gateway is not in the destination's family", r)
 			}
@@ -199,19 +297,66 @@ func (c Config) Validate() error {
 			if r.Gateway.Is6() && r.Gateway.IsLinkLocalUnicast() && r.Interface == "" {
 				return fmt.Errorf("netcfg: route %v: a link-local gateway needs an interface", r)
 			}
-		} else if r.Interface == "" {
+		case r.Interface == "":
 			return fmt.Errorf("netcfg: route %v: needs a gateway or an interface", r)
 		}
 		if r.Metric < 0 || uint64(r.Metric) > math.MaxUint32 {
 			return fmt.Errorf("netcfg: route %v: metric out of range", r)
 		}
-		k := key{r.Metric, r.Dst}
+		k := key{r.Table, r.Metric, r.Dst}
 		if routes[k] {
 			return fmt.Errorf("netcfg: route %v listed twice", r)
 		}
 		routes[k] = true
 	}
+	rules := make(map[Rule]bool, len(c.Rules))
+	for _, r := range c.Rules {
+		if r.Family != IPv4 && r.Family != IPv6 {
+			return fmt.Errorf("netcfg: rule %v: unknown family", r)
+		}
+		if r.Priority < 1 || r.Priority > maxRulePriority {
+			return fmt.Errorf("netcfg: rule %v: priority out of 1–%d", r, maxRulePriority)
+		}
+		if err := checkTable(r.Table); err != nil {
+			return fmt.Errorf("netcfg: rule %v: %w", r, err)
+		}
+		if r.Dst.IsValid() && (r.Dst != r.Dst.Masked() || FamilyOf(r.Dst.Addr()) != r.Family || r.Dst.Addr().Is4In6()) {
+			return fmt.Errorf("netcfg: rule %v: destination must be a masked prefix of the rule's family", r)
+		}
+		if rules[r] {
+			return fmt.Errorf("netcfg: rule %v listed twice", r)
+		}
+		rules[r] = true
+	}
 	return nil
+}
+
+// maxRulePriority keeps rules ahead of the main table's (32766).
+const maxRulePriority = 32765
+
+// The tables Linux reserves: a Route or Rule names main as 0.
+const (
+	tableDefault = 253
+	tableMain    = 254
+	tableLocal   = 255
+)
+
+func checkTable(t int) error {
+	if t < 0 || uint64(t) > math.MaxUint32 || t == tableDefault || t == tableMain || t == tableLocal {
+		return fmt.Errorf("table %d is not 0 (main) or one of 1–252, 256 and up", t)
+	}
+	return nil
+}
+
+// Survey is the OS's own routing, as route-table enforcement needs it.
+type Survey struct {
+	// OnLink are the main table's routes the OS made for interfaces'
+	// addresses (Linux: proto kernel, without a gateway): the subnets
+	// reached on-link, both families.
+	OnLink []netip.Prefix
+	// ForeignRules are the priorities of policy rules no owner added,
+	// but the OS's own (0, 32766, 32767), both families.
+	ForeignRules []int
 }
 
 // Configurator applies a Config to the OS for one Owner and owns what it
@@ -219,9 +364,10 @@ func (c Config) Validate() error {
 //
 // The contract, on every OS:
 //   - At most one configurator per owner is alive in a network namespace;
-//     constructing a second fails with ErrBusy. Routes are tagged with the
-//     owner's identity, so every route carrying it is this configurator's:
-//     added by it, or left by a predecessor that died without Close.
+//     constructing a second fails with ErrBusy. Routes and rules are
+//     tagged with the owner's identity, so every one carrying it is this
+//     configurator's: added by it, or left by a predecessor that died
+//     without Close.
 //   - Apply converges the OS to cfg, comparing against what is actually
 //     there, not against what it did before: it adds what is missing
 //     (including owned state someone else removed, or that went with a
@@ -236,7 +382,7 @@ func (c Config) Validate() error {
 //     length, or a route with the identity of someone else's (another
 //     owner's included), fails with ErrConflict. MTU and link state changes
 //     are restored, unless someone changed them again since.
-//   - Close removes every owned address and route and restores every
+//   - Close removes every owned address, route and rule and restores every
 //     interface it changed; something already gone (an interface deleted by
 //     its owner) counts as removed. Close is idempotent; if it fails, what's
 //     left stays recorded and calling Close again retries it. Only a
@@ -249,5 +395,18 @@ type Configurator interface {
 	// configurator owns, preferring the lowest metric: the physical gateway
 	// that direct traffic and entry endpoints are routed through.
 	DefaultRoute(ctx context.Context, f Family) (Route, error)
+	// Watch reports, coalesced, changes that may call for an Apply: a
+	// default route in the main table that is no owner's came, went or
+	// changed (the physical gateway); an interface's on-link routes
+	// changed (its addresses); an interface came, went or changed state
+	// (a link going down takes its routes along, and Linux doesn't say so
+	// for IPv4); or a route or rule of this owner was deleted (from
+	// outside, or by Apply itself: re-applying then changes nothing). The
+	// channel closes when ctx ends or watching fails; ErrUnsupported where
+	// an adapter can't watch.
+	Watch(ctx context.Context) (<-chan struct{}, error)
+	// Survey reports what the OS's own routing holds that route-table
+	// enforcement builds on.
+	Survey(ctx context.Context) (Survey, error)
 	Close() error
 }

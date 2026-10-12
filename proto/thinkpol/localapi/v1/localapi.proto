@@ -199,7 +199,9 @@ message DataPlane {
   // The listeners the device serves.
   uint32 listeners = 9;
   // The router's and the path layer's counters by name ("router.no_route",
-  // "path.no_path", ...).
+  // "path.no_path", ...), and the route table's ("route_table.routes",
+  // "route_table.reapplies", "route_table.rules_ahead") while it enforces
+  // the rules.
   map<string, uint64> counters = 10;
 }
 

@@ -232,6 +232,8 @@ func (e *Engine) ruleRoutes(egresses map[string]*router.Egress) []router.Route {
 // map can't build is enforced failing closed (see rules.PresetRules) and
 // reported with rules.ErrPresetUnavailable.
 func (e *Engine) SetRules(l rules.Local) error {
+	e.serial.Lock()
+	defer e.serial.Unlock()
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.closed {
@@ -245,6 +247,8 @@ func (e *Engine) SetRules(l rules.Local) error {
 // ReloadRules compiles the rules again with the blobs cfg.Blobs has now:
 // call it when a list the rules use arrives.
 func (e *Engine) ReloadRules() error {
+	e.serial.Lock()
+	defer e.serial.Unlock()
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.closed {
@@ -261,6 +265,8 @@ func (e *Engine) recompileRules() error {
 		return nil // the first Apply that can run compiles them
 	}
 	unavailable := e.compileRules(e.ruleInput, e.ruleNetworks)
+	ctx := e.ctx
+	shrinkErr := e.shrinkRoutes(ctx)
 	want := e.assign(*e.overlay)
 	if err := e.removePeers(want, true, e.paths); err != nil {
 		return err
@@ -269,6 +275,9 @@ func (e *Engine) recompileRules() error {
 		return err
 	}
 	if err := e.setTable(); err != nil {
+		return err
+	}
+	if err := e.growRoutes(ctx, shrinkErr); err != nil {
 		return err
 	}
 	return unavailable

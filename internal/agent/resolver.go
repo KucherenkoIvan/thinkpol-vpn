@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
 
@@ -34,6 +35,11 @@ func (r *runner) newResolver() *dns.Server {
 	o := dns.Options{Upstreams: upstreams, Port: r.dp.dnsPort, Log: r.dp.Log}
 	if r.section.Node.Kind == netmap.NodeDevice {
 		o.TunnelControl = dns.BindToInterface(r.dp.Interface)
+	}
+	if r.dp.RouteTable {
+		// The direct upstream's queries carry the links' mark, so they
+		// leave around the tunnel whatever the route table holds.
+		o.Control = routetable.SocketControl()
 	}
 	return dns.New(o)
 }

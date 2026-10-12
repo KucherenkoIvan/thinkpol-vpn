@@ -228,7 +228,11 @@ func Plan(s *Spec, k Keys, version uint64, secrets Secrets) (netmap.Contents, Na
 				return netmap.Contents{}, nil, fail(n, "rule %s needs the list: add it to the node's lists", r)
 			}
 		}
+		if l := presetsNeed(s, n); l != "" {
+			return netmap.Contents{}, nil, fail(n, "the presets' domestic list %s: add it to the node's lists", l)
+		}
 		sec.Rules = slices.Clone(s.Rules)
+		sec.Presets = s.Presets
 		for _, ch := range s.Chains {
 			if !slices.ContainsFunc(sec.Peers, func(p netmap.Peer) bool { return p.ID == ids[ch.Exit] }) {
 				return netmap.Contents{}, nil, fail(n, "no path to %s, the exit of chain %s", s.Nodes[ch.Exit].Name, ch.Name)

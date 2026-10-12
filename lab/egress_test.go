@@ -63,10 +63,8 @@ func TestEgressThroughAnExit(t *testing.T) {
 	uplink := regexp.QuoteMeta(s2.Interface(lab.NetServers))
 	waitLog(t, up["server-2"], `msg="map applied" version=`+version1+` .*egress=on uplink=`+uplink+` egress_ipv4=on egress_ipv6=on`)
 	waitLog(t, up["device-a"], applied(version1))
-	// Until the route-table mode (TP-018), the device's OS routes only the
-	// overlay into the TUN: route the internet node there by hand.
-	devA.MustExec(t, "ip", "route", "add", inet4.String()+"/32", "dev", "thinkpol0")
-	devA.MustExec(t, "ip", "-6", "route", "add", inet6.String()+"/128", "dev", "thinkpol0")
+	// The device's route-table mode (TP-018) sends everything but its
+	// link endpoints into the TUN: its rule is "default -> chain:out".
 
 	web := inet.Capture(t, "tcp port 80")
 	fetch := func(url string, timeout time.Duration) (string, error) {

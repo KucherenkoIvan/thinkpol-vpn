@@ -255,6 +255,12 @@ const (
 	// preset, so it is enforced failing closed (no internet but the local
 	// ranges' direct routes).
 	ProblemPresetUnavailable = "rule_preset_unavailable"
+	// ProblemRouteTable: the OS routing table doesn't hold the rules now
+	// (putting it back failed): traffic may go around the tunnel.
+	ProblemRouteTable = "route_table_not_enforced"
+	// ProblemRulesAhead: other software's policy rules come before the
+	// route table's and may route traffic around the tunnel.
+	ProblemRulesAhead = "policy_rules_ahead"
 	// ProblemDNSUnprotected: the OS may resolve names outside the node's
 	// resolver, so names may leave outside the tunnel.
 	ProblemDNSUnprotected = "dns_not_protected"
@@ -322,6 +328,11 @@ func (s Status) Health() Health {
 		}
 		if s.PresetUnavailable {
 			add(HealthDegraded, ProblemPresetUnavailable)
+		}
+		if rt := dp.RouteTable; rt.Error != "" {
+			add(HealthDown, ProblemRouteTable)
+		} else if rt.Enforced && rt.RulesAhead > 0 {
+			add(HealthDegraded, ProblemRulesAhead)
 		}
 		if s.DNSUnprotected {
 			add(HealthDegraded, ProblemDNSUnprotected)

@@ -79,6 +79,8 @@ func TestSpecErrorsNameTheirLocation(t *testing.T) {
 		{"chain exit without egress", nodes + "chains:\n  - {name: nl, exit: s}\n", []string{"spec.yaml:8:22: chain nl: s is not a server with egress: true"}},
 		{"chain exit unknown", nodes + "chains:\n  - {name: nl, exit: x}\n", []string{`spec.yaml:8:22: chain nl: unknown node "x"`}},
 		{"chain without an exit", nodes + "chains:\n  - {name: nl}\n", []string{"spec.yaml:8:6: chain nl: exit is missing"}},
+		{"preset unknown list", nodes + "presets:\n  domestic: ru\n", []string{"spec.yaml:8:13: presets: no list ru"}},
+		{"preset unknown chain", nodes + "presets:\n  chain: nl\n", []string{"spec.yaml:8:10: presets: no chain nl"}},
 		{"chain name invalid", nodes + "chains:\n  - {name: NL, exit: s}\n", []string{`spec.yaml:8:12: chain name "NL"`}},
 		{"several errors at once", "nodes:\n  - name: a\n    kind: phone\n  - name: b\n", []string{"spec.yaml:3:11: a: kind", "spec.yaml:4:5: b: kind is missing"}},
 	}

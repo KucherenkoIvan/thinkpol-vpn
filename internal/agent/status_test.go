@@ -16,6 +16,7 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/path"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 )
 
@@ -51,6 +52,7 @@ func startDevice(t *testing.T, s *testSpace, reg *transport.Registry, connect bo
 	n.tweak = func(dp *DataPlane) {
 		virtual := rn.dataPlane(reg, s.b, n.state.Map)
 		dp.path, dp.retryAfter = virtual.path, virtual.retryAfter
+		dp.RouteTable = false // virtual TUNs: the host's routing stays as it is
 		dp.newTUN = func(name string) (wgtun.Device, netcfg.Configurator, error) {
 			select {
 			case <-d.failTUN:
@@ -192,6 +194,7 @@ func TestARemovedDeviceConnectsOnceBack(t *testing.T) {
 	n.tweak = func(dp *DataPlane) {
 		virtual := rn.dataPlane(reg, s.b, n.state.Map)
 		dp.newTUN, dp.path, dp.retryAfter = virtual.newTUN, virtual.path, virtual.retryAfter
+		dp.RouteTable = false
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -255,6 +258,12 @@ func TestHealth(t *testing.T) {
 		{"one down", Status{Connection: Connected, DataPlane: &dataplane.Status{Neighbors: []path.NeighborStatus{up, down},
 			LastApplyError: dataplane.StepRouter, Skipped: []dataplane.Skip{{}}}},
 			Health{HealthDegraded, []string{ProblemApplyFailed, ProblemNeighborDown, ProblemSkipped}}},
+		{"route table not enforced", Status{Connection: Connected, DataPlane: &dataplane.Status{
+			RouteTable: dataplane.RouteTableStatus{Error: routetable.ErrorReapply, Routes: 9}}},
+			Health{HealthDown, []string{ProblemRouteTable}}},
+		{"rules ahead of the route table", Status{Connection: Connected, DataPlane: &dataplane.Status{
+			RouteTable: dataplane.RouteTableStatus{Enforced: true, Routes: 9, RulesAhead: 2}}},
+			Health{HealthDegraded, []string{ProblemRulesAhead}}},
 		{"server", Status{Connection: Serving, Workers: []WorkerStatus{{Ready: true, Starts: 1}}}, Health{}},
 		{"server worker down", Status{Connection: Serving, Workers: []WorkerStatus{{Ready: true, Starts: 3}, {}},
 			PublicListeners: []PublicListenerStatus{{Rejected: 1}}},

@@ -16,6 +16,7 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/path"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/router"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/rules"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/wg"
@@ -37,6 +38,8 @@ const (
 	StepInterface = "interface" // the TUN's addresses and MTU (netcfg)
 	StepDevices   = "devices"   // WireGuard devices and their Binds' peers
 	StepRouter    = "router"    // the router's table
+	// StepRouteTable is the OS routing table (route-table mode).
+	StepRouteTable = "route table"
 )
 
 // EngineConfig is what an engine runs on.
@@ -88,6 +91,11 @@ type EngineConfig struct {
 	// writes only the node's own addresses to the TUN, whatever the
 	// section says, as on a device.
 	Forward bool
+	// RouteTable, if set, enforces the rules in the OS routing table (a
+	// device's route-table mode); the engine owns it once NewEngine
+	// succeeds. Nil leaves the OS routing alone: servers' workers, tests,
+	// and platforms where the OS takes the routes with the TUN.
+	RouteTable RouteTable
 	// DNS, if set, is the node's resolver (a *dns.Server): the engine
 	// tells it what to serve after every Apply and rule change (see
 	// dnsConfig). Called with the engine locked: it must not call back
@@ -119,6 +127,14 @@ type Engine struct {
 	assign func(OverlayConfig) map[string][]devicePeer
 	rules  func(egresses map[string]*router.Egress) []router.Route
 
+	// serial orders Apply, SetRules, ReloadRules and Close; mu guards the
+	// state, and is let go while the OS routing table changes (seconds,
+	// at a country's size) so Status and Inbound don't wait for it.
+	serial sync.Mutex
+	// ctx ends with Close: what SetRules and ReloadRules do runs under it.
+	ctx    context.Context
+	cancel context.CancelFunc
+
 	mu      sync.Mutex
 	closed  bool
 	devices map[string]*egressDevice
@@ -149,7 +165,12 @@ type Engine struct {
 	ruleTable    *rules.Table
 	ruleStatus   RuleStatus
 	geoipSets    map[[32]byte]*lists.Set // decoded, by hash
-	nameRules    *rules.Names            // the rules compiled for DNS names
+
+	// Route-table mode: the links' endpoints, and what the OS routing
+	// table holds (nil before the first enforcement).
+	endpoints  []netip.Addr
+	routesWant *routetable.Want
+	nameRules  *rules.Names // the rules compiled for DNS names
 
 	// What the resolver needs of the last section: the node's kind and
 	// egress setting, and the overlay names.
@@ -175,7 +196,8 @@ type egressDevice struct {
 }
 
 // NewEngine starts an engine. It carries nothing until the first Apply.
-// On error the caller keeps the TUN and the Interface and closes them.
+// On error the caller keeps the TUN, the Interface and the RouteTable and
+// closes them.
 func NewEngine(cfg EngineConfig) (*Engine, error) {
 	switch {
 	case cfg.ID.IsZero():
@@ -209,6 +231,7 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 		geoipSets: make(map[[32]byte]*lists.Set),
 	}
 	e.assign, e.rules = e.layout, e.ruleRoutes
+	e.ctx, e.cancel = context.WithCancel(context.Background())
 	return e, nil
 }
 
@@ -246,6 +269,8 @@ func hostPrefixes(addrs []netip.Addr) []netip.Prefix {
 // section and the rest of the previous one; peers it added are those both
 // allow. Applying the same section again, or a newer one, converges.
 func (e *Engine) Apply(ctx context.Context, s netmap.Section) error {
+	e.serial.Lock()
+	defer e.serial.Unlock()
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.closed {
@@ -286,10 +311,13 @@ func (e *Engine) apply(ctx context.Context, s netmap.Section) (string, error) {
 	}
 	e.node.Update(pc.Table)
 	var want map[string][]devicePeer
+	var shrinkErr error
 	if ocErr == nil {
 		e.chainExit = chainExits(s.Chains, oc.Peers)
 		_ = e.compileRules(ruleInputOf(s), oc.Networks) // an unavailable preset is in Status
+		shrinkErr = e.shrinkRoutes(ctx)
 		e.overlay, e.paths = &oc, pc.Peers
+		e.endpoints = endpointsOf(pc)
 		want = e.assign(oc)
 	} else {
 		want = sectionPeers(s, e.devices)
@@ -317,6 +345,9 @@ func (e *Engine) apply(ctx context.Context, s netmap.Section) (string, error) {
 	}
 	if err := e.setTable(); err != nil {
 		return StepRouter, err
+	}
+	if err := e.growRoutes(ctx, shrinkErr); err != nil {
+		return StepRouteTable, err
 	}
 	return "", nil
 }
@@ -545,6 +576,8 @@ type Status struct {
 	// Exit says the node forwards its peers' internet traffic: its
 	// section allows egress and EngineConfig.Forward is set.
 	Exit bool
+	// RouteTable is how the OS routing table enforces them.
+	RouteTable RouteTableStatus
 }
 
 // PeerStatus is one WireGuard peer.
@@ -574,6 +607,7 @@ func (e *Engine) Status() Status {
 		Path:           e.node.Counters(),
 		Rules:          e.routedRules,
 		Exit:           e.routedExit,
+		RouteTable:     e.routeTableStatus(),
 	}
 	s.Rules.Skipped = slices.Clone(s.Rules.Skipped)
 	if e.ipv6Off != nil {
@@ -605,6 +639,9 @@ func (e *Engine) Status() Status {
 // Close stops the engine: the WireGuard devices, the router and the TUN,
 // the path layer, and the TUN's configuration.
 func (e *Engine) Close() error {
+	e.cancel()
+	e.serial.Lock()
+	defer e.serial.Unlock()
 	e.mu.Lock()
 	if e.closed {
 		e.mu.Unlock()
@@ -616,6 +653,11 @@ func (e *Engine) Close() error {
 	e.mu.Unlock()
 
 	var errs []error
+	// Routing goes back to the OS first: nothing goes on into a TUN
+	// that is closing.
+	if e.cfg.RouteTable != nil {
+		errs = append(errs, e.cfg.RouteTable.Close())
+	}
 	for _, d := range devices {
 		errs = append(errs, d.wg.Close())
 	}
