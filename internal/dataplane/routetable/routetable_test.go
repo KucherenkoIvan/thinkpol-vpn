@@ -87,12 +87,12 @@ func TestConfigLayout(t *testing.T) {
 		t.Errorf("routes:\n got %q\nwant %q", got, want)
 	}
 	wantRules := []string{
-		"IPv4 rule 5300 to 100.64.0.0/10 table 0",
-		"IPv4 rule 5300 to 192.168.1.0/24 table 0",
+		"IPv4 rule 5300 to 100.64.0.0/10 table 0 suppress_prefixlength 0",
+		"IPv4 rule 5300 to 192.168.1.0/24 table 0 suppress_prefixlength 0",
 		"IPv4 rule 5301 not fwmark 0x7470 table 29808",
-		"IPv6 rule 5300 to 2001:db8:1::/64 table 0",
-		"IPv6 rule 5300 to fd12:3456:789a::/48 table 0",
-		"IPv6 rule 5300 to fe80::/64 table 0",
+		"IPv6 rule 5300 to 2001:db8:1::/64 table 0 suppress_prefixlength 0",
+		"IPv6 rule 5300 to fd12:3456:789a::/48 table 0 suppress_prefixlength 0",
+		"IPv6 rule 5300 to fe80::/64 table 0 suppress_prefixlength 0",
 		"IPv6 rule 5301 not fwmark 0x7470 table 29808",
 	}
 	if got := ruleStrings(cfg); !slices.Equal(got, wantRules) {

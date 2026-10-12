@@ -140,7 +140,12 @@ func TestEnforcesInANamespace(t *testing.T) {
 	b.AddSet(local())
 	_ = b.AddPrefix(netip.MustParsePrefix("198.51.100.0/24"))
 	_ = b.AddPrefix(netip.MustParsePrefix("2001:db8:5::/48"))
+	var ob lists.Builder
+	_ = ob.AddPrefix(netip.MustParsePrefix("100.64.0.0/10"))
+	_ = ob.AddPrefix(netip.MustParsePrefix("fd12:3456:789a::/48"))
+	overlay, _ := ob.Build()
 	direct, _ := b.Build()
+	direct = direct.Minus(overlay) // the overlay is decided before any rule
 	want := routetable.Want{
 		TUN:     "thinkpol0",
 		Overlay: []netip.Prefix{netip.MustParsePrefix("100.64.0.0/10"), netip.MustParsePrefix("fd12:3456:789a::/48")},
@@ -220,7 +225,7 @@ func TestEnforcesInANamespace(t *testing.T) {
 	d.ip(t, "-6", "route", "add", "2000::/3", "via", "2001:db8:1::1")
 	d.expect(t, map[string]string{
 		"2001:4860::8888":   "unreachable",
-		"fd12:3456:789a::9": "tunnel",            // the overlay's own route, if the TUN still has it
+		"fd12:3456:789a::9": "unreachable",       // the TUN lost its IPv6 address going down: no route of its own
 		"2001:db8:5::1":     "via 2001:db8:1::1", // direct, by main's routes, the injected one included
 		"2001:db8:7::7":     "via 2001:db8:1::1",
 		"8.8.8.8":           "tunnel",

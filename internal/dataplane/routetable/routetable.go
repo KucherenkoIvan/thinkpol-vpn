@@ -116,8 +116,8 @@ func TrustedOnLink(p netip.Prefix) bool {
 // Config is w as netcfg configuration, for each family, given the OS's
 // routing (s):
 //
-//	rule 5300: to <overlay network> lookup main
-//	rule 5300: to <trusted on-link subnet> lookup main
+//	rule 5300: to <overlay network> lookup main suppress_prefixlength 0
+//	rule 5300: to <trusted on-link subnet> lookup main suppress_prefixlength 0
 //	rule 5301: not fwmark 0x7470 lookup 0x7470
 //	table 0x7470: default dev <TUN>              (IPv6 only while the TUN carries it)
 //	              unreachable default metric 2048
@@ -140,7 +140,9 @@ func Config(w Want, s netcfg.Survey) netcfg.Config {
 	for _, f := range []netcfg.Family{netcfg.IPv4, netcfg.IPv6} {
 		for _, p := range ahead {
 			if netcfg.FamilyOf(p.Addr()) == f {
-				cfg.Rules = append(cfg.Rules, netcfg.Rule{Family: f, Priority: PriorityMain, Dst: p})
+				// Without its default: a prefix whose own route is gone
+				// (a TUN that lost its addresses) must not find it.
+				cfg.Rules = append(cfg.Rules, netcfg.Rule{Family: f, Priority: PriorityMain, Dst: p, SuppressDefaultRoutes: true})
 			}
 		}
 		cfg.Rules = append(cfg.Rules, netcfg.Rule{Family: f, Priority: PriorityTunnel, Table: Table, Mark: Mark, Invert: true})
