@@ -118,6 +118,7 @@ func TestDNSFollowsTheRules(t *testing.T) {
 	exit := server.Start(t, "thinkpol", "up", "-mode", "device", "-dns-upstream", inetIP.String()+":5353")
 	waitLog(t, exit, applied(v1))
 
+	parent := t // the exit outlives the subtests
 	t.Run("resolv.conf", func(t *testing.T) {
 		// The OS's own search domain is one the rules send direct: a name
 		// that fails must never be retried under it.
@@ -153,7 +154,7 @@ func TestDNSFollowsTheRules(t *testing.T) {
 		if got, err := resolve(devA, "down.tunnel.test", false); err == nil {
 			t.Errorf("a tunnel-bound name resolved with the exit down: %s", got)
 		}
-		exit = server.Start(t, "thinkpol", "up", "-mode", "device", "-dns-upstream", inetIP.String()+":5353")
+		exit = server.Start(parent, "thinkpol", "up", "-mode", "device", "-dns-upstream", inetIP.String()+":5353")
 		waitLog(t, exit, applied(v1))
 
 		if err := capture.Complete(); err != nil {
@@ -204,6 +205,28 @@ func TestDNSFollowsTheRules(t *testing.T) {
 			t.Fatal(err)
 		}
 		noLeaks(t, capture.Stop(), inetIP)
+
+		// A domain on the physical link takes its names past the TUN: the
+		// device says DNS isn't protected, and says so no longer once it
+		// goes.
+		health := func() string { return devB.MustExec(t, "thinkpol", "status") }
+		if out := health(); strings.Contains(out, "dns_not_protected") {
+			t.Fatalf("not protected before any other domain:\n%s", out)
+		}
+		devB.MustExec(t, "resolvectl", "domain", link, "~example.org")
+		lab.Eventually(t, 20*time.Second, func() error {
+			if out := health(); !strings.Contains(out, "dns_not_protected") {
+				return fmt.Errorf("status:\n%s", out)
+			}
+			return nil
+		})
+		devB.MustExec(t, "resolvectl", "domain", link, "")
+		lab.Eventually(t, 20*time.Second, func() error {
+			if out := health(); strings.Contains(out, "dns_not_protected") {
+				return fmt.Errorf("status:\n%s", out)
+			}
+			return nil
+		})
 
 		if err := up.Stop(); err != nil {
 			t.Errorf("thinkpol up: %v\n%s", err, up.Output())

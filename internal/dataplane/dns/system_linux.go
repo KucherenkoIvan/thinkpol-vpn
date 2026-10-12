@@ -143,6 +143,12 @@ type resolvedDomain struct {
 	RoutingOnly bool
 }
 
+type resolvedLinkAddr struct {
+	Ifindex int32
+	Family  int32
+	Address []byte
+}
+
 type resolvedLinkDomain struct {
 	Ifindex     int32
 	Domain      string
@@ -214,24 +220,36 @@ func (r *resolved) call(method string, args ...any) error {
 }
 
 // check finds what can take names past the link: a domain configured on
-// any other link, or globally. resolved sends a name to the links whose
-// domain matches it best, all of them on a tie: another link's domain
-// beats the link's "~." for the names under it, and another "~." (which
-// NetworkManager adds to the connection with the default route) shares
-// every name. Links without domains get names only when no domain
-// matches, which "~." rules out.
+// any other link, or globally, where there are servers to send its names
+// to. resolved sends a name to the links whose domain matches it best,
+// all of them on a tie: another link's domain beats the link's "~." for
+// the names under it, and another "~." (which NetworkManager adds to the
+// connection with the default route) shares every name. Links without
+// domains get names only when no domain matches, which "~." rules out;
+// a domain without servers sends its names nowhere.
 func (r *resolved) check() error {
-	v, err := r.conn.Object(resolvedName, resolvedPath).GetProperty(resolvedManager + ".Domains")
-	if err != nil {
-		return fmt.Errorf("%w: reading systemd-resolved's domains: %v", ErrUnprotected, err)
+	manager := r.conn.Object(resolvedName, resolvedPath)
+	var domains []resolvedLinkDomain
+	var servers []resolvedLinkAddr
+	for _, p := range []struct {
+		name string
+		to   any
+	}{{"Domains", &domains}, {"DNS", &servers}} {
+		v, err := manager.GetProperty(resolvedManager + "." + p.name)
+		if err == nil {
+			err = v.Store(p.to)
+		}
+		if err != nil {
+			return fmt.Errorf("%w: reading systemd-resolved's %s: %v", ErrUnprotected, p.name, err)
+		}
 	}
-	var all []resolvedLinkDomain
-	if err := v.Store(&all); err != nil {
-		return fmt.Errorf("%w: reading systemd-resolved's domains: %v", ErrUnprotected, err)
+	served := map[int32]bool{}
+	for _, s := range servers {
+		served[s.Ifindex] = true
 	}
 	var others []string
-	for _, d := range all {
-		if d.Ifindex == r.index {
+	for _, d := range domains {
+		if d.Ifindex == r.index || !served[d.Ifindex] {
 			continue
 		}
 		name := d.Domain
