@@ -66,3 +66,4 @@ Review: no new leak for unbound traffic. Orchestrator decisions:
 - 2026-10-12 docs: TP-018's done Notes corrected (TP-021, TP-048: IPv4 has the unreachable fallback; layout superseded here); DESIGN.md "Routing rules and DNS" (route table on Linux: overlay in its own table, local-only on-link, oif rules)
 - 2026-10-12 merged origin/rewrite (TP-014); in-progress → review — every acceptance box checked; `make lint`, `make test`, `go test -race` on dataplane, routetable, netcfg and agent, and `make lab-test LAB_P=2` (lab and 28 in-node packages) pass
 - 2026-10-12 review → has-errors — findings 1–4 (see Review findings)
+- 2026-10-12 has-errors → in-progress — owner: agent-tp-018, picking up the review findings
