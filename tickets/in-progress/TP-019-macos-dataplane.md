@@ -8,7 +8,7 @@ size: L
 depends_on: [TP-008, TP-018]
 refs: [D1]
 needs_human: macos
-owner: "agent-tp-019"
+owner: "cursor-opus-tp019-r3"
 branch: "tp-019-macos-data-plane"
 ---
 
@@ -127,3 +127,4 @@ Round 2 resolution: R2.1 `netcfg.ConnectedRoutes` (utun networks as halves) + th
 - 2026-10-13 in-progress → review — round 2 R2.1–R2.9 done; make lint, make test green on a Mac (no test touches the host: checked after the run); device-only boxes pending the Device checklist
 - 2026-10-13 notes: merge with TP-060's host lock; macOS lock directory weakness (TP-060 review)
 - 2026-10-13 review → has-errors — round 3: R3.1–R3.3 (merge with TP-060, macOS lock and record directory)
+- 2026-10-13 has-errors → in-progress — owner: cursor-opus-tp019-r3, fixing round 3
