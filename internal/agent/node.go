@@ -25,12 +25,14 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
 
-// What a node does to the host outside a data plane, at its start: put
-// back what a crashed run left in the routing table and the resolver
-// configuration. Tests swap them, so they never touch the host.
+// What a node does to the host outside a data plane, at its start: take
+// the host's agent lock, put back what a crashed run left in the routing
+// table and the resolver configuration. Tests swap them, so they never
+// touch the host.
 var (
 	clearHostRouteTable = routetable.Clear
 	restoreHostDNS      = dns.RestoreSystem
+	lockHost            = hostLock
 )
 
 // Node is a node ready to run (`thinkpol up`): its configuration and state,
@@ -241,6 +243,13 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 	defer close(n.stopped)
 	h := n.state.Map.Header()
 	n.logs.Info("starting", "mode", n.mode, "space", h.SpaceID, "node", n.state.Keys.ID, "version", h.Version, "map", n.state.MapPath)
+	// One node agent per host: a second would undo the first's routes
+	// and resolver configuration with the cleanups below.
+	unlock, err := lockHost()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	if n.mode != ModeServer && (n.state.Removed || !n.want) {
 		n.clearRouteTable()
 	}

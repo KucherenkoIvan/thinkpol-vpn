@@ -1,6 +1,7 @@
 package dns
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -138,7 +139,7 @@ func overridden(t *testing.T, f *fakeStore, key string) {
 func TestEveryActiveServiceResolvesThroughTheNodeUntilRestore(t *testing.T) {
 	f := aMac(t)
 	before := f.dump()
-	s, err := setDynamicStore(f, nodeConfig, time.Hour)
+	s, err := setDynamicStore(f, nodeConfig, nil, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +172,7 @@ func TestEveryActiveServiceResolvesThroughTheNodeUntilRestore(t *testing.T) {
 func TestACrashedNodesOverridesAreRestoredAtStart(t *testing.T) {
 	f := aMac(t)
 	before := f.dump()
-	s, err := setDynamicStore(f, nodeConfig, time.Hour)
+	s, err := setDynamicStore(f, nodeConfig, nil, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +199,7 @@ func TestTheSystemsRepublishedConfigurationIsOverriddenAgain(t *testing.T) {
 	var told [][]netip.Addr
 	c := nodeConfig
 	c.Upstreams = func(a []netip.Addr) { told = append(told, a) }
-	s, err := setDynamicStore(f, c, time.Hour)
+	s, err := setDynamicStore(f, c, nil, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,7 +231,7 @@ func TestTheSystemsRepublishedConfigurationIsOverriddenAgain(t *testing.T) {
 // Restore leaves it.
 func TestRestoreLeavesWhatTheSystemPublishedSince(t *testing.T) {
 	f := aMac(t)
-	s, err := setDynamicStore(f, nodeConfig, time.Hour)
+	s, err := setDynamicStore(f, nodeConfig, nil, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,7 +246,7 @@ func TestRestoreLeavesWhatTheSystemPublishedSince(t *testing.T) {
 
 func TestUpdatePointsEveryServiceAtTheNewServers(t *testing.T) {
 	f := aMac(t)
-	s, err := setDynamicStore(f, nodeConfig, time.Hour)
+	s, err := setDynamicStore(f, nodeConfig, nil, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -268,48 +269,41 @@ func TestUpdatePointsEveryServiceAtTheNewServers(t *testing.T) {
 	}
 }
 
-// A configuration the node couldn't put back exactly is left alone, and
-// the system is not protected.
-func TestAnOriginalThatCantBePutBackIsLeftAlone(t *testing.T) {
-	f := aMac(t)
-	odd := dnsDict([]string{"192.168.1.1"}, nil)
-	odd.opaque = true
-	f.put("State:/Network/Service/A/DNS", odd)
-	s, err := setDynamicStore(f, nodeConfig, time.Hour)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = s.Restore() }()
-	if d, _, _ := f.get("State:/Network/Service/A/DNS"); isOverride(d) {
-		t.Error("an opaque original was overridden")
-	}
-	overridden(t, f, "State:/Network/Service/B/DNS")
-	if err := s.Problem(); !errors.Is(err, ErrUnprotected) {
-		t.Errorf("problem: %v", err)
-	}
-}
-
-// An original with a value scutil can't pass back as one token is left
-// alone too, rather than overridden for good.
-func TestAnOriginalWithSpacesIsLeftAlone(t *testing.T) {
-	f := aMac(t)
-	f.put("State:/Network/Service/A/DNS", dnsDict([]string{"192.168.1.1"}, map[string]string{"Options": "ndots:2 timeout:1"}))
-	before := f.dump()
-	s, err := setDynamicStore(f, nodeConfig, time.Hour)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if d, _, _ := f.get("State:/Network/Service/A/DNS"); isOverride(d) {
-		t.Error("overridden")
-	}
-	if err := s.Problem(); !errors.Is(err, ErrUnprotected) {
-		t.Errorf("problem: %v", err)
-	}
-	if err := s.Restore(); err != nil {
-		t.Fatal(err)
-	}
-	if f.dump() != before {
-		t.Error("not as before after Restore")
+// An original scutil can't set back as it was (nested values, values
+// with spaces) is overridden all the same, failing closed, and put back by
+// removing the key, so the system publishes its own again; its servers
+// are still the domestic upstreams meanwhile.
+func TestAnOriginalThatCantBePutBackIsOverriddenAndRemovedAfter(t *testing.T) {
+	for name, odd := range map[string]dict{
+		"opaque": func() dict { d := dnsDict([]string{"192.168.1.1"}, nil); d.opaque = true; return d }(),
+		"spaces": dnsDict([]string{"192.168.1.1"}, map[string]string{"Options": "ndots:2 timeout:1"}),
+	} {
+		f := aMac(t)
+		f.put("State:/Network/Service/A/DNS", odd)
+		s, err := setDynamicStore(f, nodeConfig, nil, time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		overridden(t, f, "State:/Network/Service/A/DNS")
+		if got, err := systemUpstreams(f, nil); err != nil || fmt.Sprint(got) != "[192.168.1.1]" {
+			t.Errorf("%s: upstreams %v, %v", name, got, err)
+		}
+		// A crash, then the next start.
+		s.mu.Lock()
+		s.stopped = true
+		close(s.stop)
+		s.mu.Unlock()
+		if err := restoreBackup(f); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok, _ := f.get("State:/Network/Service/A/DNS"); ok {
+			t.Errorf("%s: the key stays after the restore", name)
+		}
+		for _, k := range []string{"State:/Network/Service/B/DNS", "Setup:/Network/Service/B/DNS"} {
+			if d, _, _ := f.get(k); isOverride(d) {
+				t.Errorf("%s: %s still overridden", name, k)
+			}
+		}
 	}
 }
 
@@ -317,13 +311,13 @@ func TestNoActiveServiceFailsAndChangesNothing(t *testing.T) {
 	resolverDir = t.TempDir()
 	f := &fakeStore{kv: map[string]dict{"Setup:/Network/Service/C/DNS": dnsDict([]string{"8.8.8.8"}, nil)}}
 	before := f.dump()
-	if _, err := setDynamicStore(f, nodeConfig, time.Hour); err == nil {
+	if _, err := setDynamicStore(f, nodeConfig, nil, time.Hour); err == nil {
 		t.Fatal("no error")
 	}
 	if f.dump() != before {
 		t.Error("changed")
 	}
-	if _, err := setDynamicStore(f, SystemConfig{}, time.Hour); err == nil {
+	if _, err := setDynamicStore(f, SystemConfig{}, nil, time.Hour); err == nil {
 		t.Fatal("no servers: no error")
 	}
 }
@@ -334,7 +328,7 @@ func TestResolverFilesAreOtherResolvers(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(resolverDir, "example.test"), []byte("nameserver 10.9.9.9\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	s, err := setDynamicStore(f, nodeConfig, time.Hour)
+	s, err := setDynamicStore(f, nodeConfig, nil, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -350,5 +344,37 @@ func TestManualServersAreTheUpstreams(t *testing.T) {
 	got, err := systemUpstreams(f, []netip.Addr{netip.MustParseAddr("100.64.0.7")})
 	if err != nil || fmt.Sprint(got) != "[1.1.1.1]" {
 		t.Errorf("%v, %v", got, err)
+	}
+}
+
+// A change the store notifies is overridden at once, not at the next
+// backstop check; the watch covers the services' and the global keys.
+func TestTheStoresNotificationsTriggerACheck(t *testing.T) {
+	f := aMac(t)
+	events := make(chan struct{}, 1)
+	var watched []string
+	notify := func(_ context.Context, patterns []string) (<-chan struct{}, error) {
+		watched = patterns
+		return events, nil
+	}
+	s, err := setDynamicStore(f, nodeConfig, notify, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Restore() }()
+	if len(watched) == 0 {
+		t.Fatal("nothing watched")
+	}
+	f.put("State:/Network/Service/A/DNS", dnsDict([]string{"10.0.0.1"}, nil))
+	events <- struct{}{}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if d, _, _ := f.get("State:/Network/Service/A/DNS"); isOverride(d) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("not overridden after the notification")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

@@ -1,6 +1,7 @@
 package dns
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -31,10 +32,15 @@ const (
 	backupProp = "Originals"
 	// overrideProp marks a DNS dictionary as the node's.
 	overrideProp = "ThinkpolOverride"
-	// checkEvery is how often the overrides are checked: DHCP renewing a
-	// lease, the user editing DNS settings or a new network service
-	// publishes the system's configuration over them.
+	// The overrides are checked whenever the store says a service's keys
+	// changed (DHCP renewing a lease, the user editing DNS settings, a new
+	// network service publish the system's configuration over them), and
+	// every backstop anyway; every checkEvery while the store can't be
+	// watched.
 	checkEvery = 2 * time.Second
+	backstop   = 30 * time.Second
+	// settle gathers a burst of the store's notifications into one check.
+	settle = 100 * time.Millisecond
 )
 
 var (
@@ -47,7 +53,7 @@ var (
 // only, until Restore; it keeps doing so as the system republishes its
 // own configuration.
 func SetSystem(c SystemConfig) (System, error) {
-	return setDynamicStore(scutil{}, c, checkEvery)
+	return setDynamicStore(scutil{}, c, watchStore, checkEvery)
 }
 
 // RestoreSystem puts back what a node that died while connected left
@@ -67,6 +73,13 @@ type original struct {
 	Present bool                `json:"present"`
 	Strs    map[string]string   `json:"strs,omitempty"`
 	Arrays  map[string][]string `json:"arrays,omitempty"`
+	// Unrestorable: scutil couldn't set the original back as it was
+	// (nested values, values with spaces); it is put back by removing
+	// the key, so the system publishes its own again (State: at the next
+	// DHCP renewal or network change, Setup: when the network settings
+	// are saved again or at reboot), resolving nothing meanwhile rather
+	// than through the overlay's resolver. Only its servers are kept.
+	Unrestorable bool `json:"unrestorable,omitempty"`
 }
 
 func (o original) dict() dict {
@@ -147,7 +160,14 @@ type dynamicStore struct {
 	primary []netip.Addr
 }
 
-func setDynamicStore(st store, c SystemConfig, every time.Duration) (*dynamicStore, error) {
+// storeWatch subscribes to changes of the store's keys matching patterns;
+// nil (tests) or a failure leaves polling alone.
+type storeWatch func(ctx context.Context, patterns []string) (<-chan struct{}, error)
+
+// watchedKeys are what a check depends on.
+var watchedKeys = []string{serviceStatePattern, `Setup:/Network/Service/[^/]+/DNS`, `State:/Network/Global/IPv[46]`}
+
+func setDynamicStore(st store, c SystemConfig, notify storeWatch, every time.Duration) (*dynamicStore, error) {
 	if len(c.Servers) == 0 {
 		return nil, errors.New("dns: no resolver address to point the system at")
 	}
@@ -167,7 +187,18 @@ func setDynamicStore(st store, c SystemConfig, every time.Duration) (*dynamicSto
 	}
 	// Some services may still resolve elsewhere: Problem says so, and
 	// every check tries again.
-	go s.watch(every)
+	ctx, cancel := context.WithCancel(context.Background())
+	var events <-chan struct{}
+	if notify != nil {
+		events, _ = notify(ctx, watchedKeys)
+	}
+	if events != nil && every < backstop {
+		every = backstop
+	}
+	go func() {
+		defer cancel()
+		s.watch(events, every)
+	}()
 	return s, nil
 }
 
@@ -243,11 +274,13 @@ func (s *dynamicStore) apply() error {
 			}
 			continue
 		}
+		o := originalOf(k, have, present)
 		if present && !restorable(k, have) {
-			errs = append(errs, fmt.Errorf("dns: %s holds values the node can't put back; it is left alone", k))
-			continue
+			// Overridden all the same (fail closed); put back by removal.
+			o = original{Key: k, Present: true, Unrestorable: true,
+				Arrays: map[string][]string{"ServerAddresses": have.array("ServerAddresses")}}
 		}
-		s.backup[k] = originalOf(k, have, present)
+		s.backup[k] = o
 		changes = append(changes, change{k, have})
 	}
 	if len(changes) > 0 {
@@ -293,7 +326,7 @@ func (s *dynamicStore) putBack(k string) error {
 		return err
 	}
 	if present && isOverride(have) {
-		if o.Present {
+		if o.Present && !o.Unrestorable {
 			err = s.st.set(k, o.dict())
 		} else {
 			err = s.st.remove(k)
@@ -344,7 +377,7 @@ func (s *dynamicStore) primaryOriginal() []netip.Addr {
 	return addrs
 }
 
-func (s *dynamicStore) watch(every time.Duration) {
+func (s *dynamicStore) watch(events <-chan struct{}, every time.Duration) {
 	defer close(s.done)
 	t := time.NewTicker(every)
 	defer t.Stop()
@@ -353,8 +386,20 @@ func (s *dynamicStore) watch(every time.Duration) {
 		case <-s.stop:
 			return
 		case <-t.C:
-			s.check()
+		case _, ok := <-events:
+			if !ok {
+				// The subscription ended: poll as often as without one.
+				events = nil
+				t.Reset(checkEvery)
+				continue
+			}
+			select {
+			case <-s.stop:
+				return
+			case <-time.After(settle):
+			}
 		}
+		s.check()
 	}
 }
 

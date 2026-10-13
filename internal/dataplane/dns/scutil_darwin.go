@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os/exec"
 	"slices"
 	"strings"
@@ -128,6 +129,53 @@ func (s scutil) remove(key string) error {
 		return fmt.Errorf("scutil: remove %s: %s", key, out)
 	}
 	return nil
+}
+
+// watchStore subscribes to changes of the store's keys matching patterns
+// through a long-lived scutil (`n.add <pattern> pattern`, `n.watch`), which
+// prints a notification for every change: each line it prints signals.
+// It runs until ctx ends; the channel closes when scutil exits.
+func watchStore(ctx context.Context, patterns []string) (<-chan struct{}, error) {
+	var script strings.Builder
+	for _, p := range patterns {
+		if err := checkToken(p); err != nil {
+			return nil, err
+		}
+		fmt.Fprintf(&script, "n.add %s pattern\n", p)
+	}
+	script.WriteString("n.watch\n")
+	cmd := exec.CommandContext(ctx, scutilPath)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	if _, err := io.WriteString(stdin, script.String()); err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return nil, err
+	}
+	out := make(chan struct{}, 1)
+	go func() {
+		defer close(out)
+		// stdin stays open: scutil keeps watching until ctx kills it.
+		defer func() { _ = stdin.Close() }()
+		sc := bufio.NewScanner(stdout)
+		for sc.Scan() {
+			select {
+			case out <- struct{}{}:
+			default:
+			}
+		}
+		_ = cmd.Wait()
+	}()
+	return out, nil
 }
 
 // checkToken refuses what scutil's command line would split or misread.

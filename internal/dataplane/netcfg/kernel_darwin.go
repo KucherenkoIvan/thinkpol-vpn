@@ -493,53 +493,60 @@ func DefaultInterface(f Family) (name string, index int, err error) {
 		unspecified = netip.IPv6Unspecified()
 	}
 	// Replies go to every routing socket of the process: each lookup
-	// takes only its own (sequence number and family).
-	seq := int(getSeq.Add(1))
-	m := routeMessage(unix.RTM_GET, kroute{dst: netip.PrefixFrom(unspecified, 0), flags: unix.RTF_UP | unix.RTF_GATEWAY}, seq)
-	b, err := m.Marshal()
-	if err != nil {
-		return "", 0, err
-	}
-	if _, err := unix.Write(fd, b); err != nil {
-		if errors.Is(err, unix.ESRCH) {
-			return "", 0, fmt.Errorf("%w (%v)", ErrNoDefaultRoute, f)
-		}
-		return "", 0, err
-	}
+	// takes only its own (sequence number and family). A flood of
+	// routing messages can overflow the socket (ENOBUFS) or hold the
+	// reply up: the question is asked again, a few times.
 	buf := make([]byte, 4096)
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		n, err := unix.Read(fd, buf)
-		if errors.Is(err, unix.EINTR) {
-			continue
-		}
+	for range 3 {
+		seq := int(getSeq.Add(1))
+		m := routeMessage(unix.RTM_GET, kroute{dst: netip.PrefixFrom(unspecified, 0), flags: unix.RTF_UP | unix.RTF_GATEWAY}, seq)
+		b, err := m.Marshal()
 		if err != nil {
 			return "", 0, err
 		}
-		msgs, err := route.ParseRIB(route.RIBTypeRoute, buf[:n])
-		if err != nil {
-			continue
-		}
-		for _, msg := range msgs {
-			rm, ok := msg.(*route.RouteMessage)
-			if !ok || rm.Type != unix.RTM_GET || rm.Seq != seq || rm.ID != uintptr(os.Getpid()) {
-				continue
-			}
-			if rm.Err != nil {
-				return "", 0, rm.Err
-			}
-			r, ok := kernelRoute(rm)
-			if ok && FamilyOf(r.dst.Addr()) != f {
-				continue
-			}
-			if !ok || r.dst.Bits() != 0 || !usable(r) || r.flags&routeFlag != 0 {
+		if _, err := unix.Write(fd, b); err != nil {
+			if errors.Is(err, unix.ESRCH) {
 				return "", 0, fmt.Errorf("%w (%v)", ErrNoDefaultRoute, f)
 			}
-			i, err := net.InterfaceByIndex(r.index)
-			if err != nil {
+			return "", 0, err
+		}
+		deadline := time.Now().Add(time.Second)
+	read:
+		for time.Now().Before(deadline) {
+			n, err := unix.Read(fd, buf)
+			switch {
+			case errors.Is(err, unix.EINTR):
+				continue
+			case errors.Is(err, unix.ENOBUFS), errors.Is(err, unix.EAGAIN):
+				break read // lost or late: ask again
+			case err != nil:
 				return "", 0, err
 			}
-			return i.Name, i.Index, nil
+			msgs, err := route.ParseRIB(route.RIBTypeRoute, buf[:n])
+			if err != nil {
+				continue
+			}
+			for _, msg := range msgs {
+				rm, ok := msg.(*route.RouteMessage)
+				if !ok || rm.Type != unix.RTM_GET || rm.Seq != seq || rm.ID != uintptr(os.Getpid()) {
+					continue
+				}
+				if rm.Err != nil {
+					return "", 0, rm.Err
+				}
+				r, ok := kernelRoute(rm)
+				if ok && FamilyOf(r.dst.Addr()) != f {
+					continue
+				}
+				if !ok || r.dst.Bits() != 0 || !usable(r) || r.flags&routeFlag != 0 {
+					return "", 0, fmt.Errorf("%w (%v)", ErrNoDefaultRoute, f)
+				}
+				i, err := net.InterfaceByIndex(r.index)
+				if err != nil {
+					return "", 0, err
+				}
+				return i.Name, i.Index, nil
+			}
 		}
 	}
 	return "", 0, fmt.Errorf("netcfg: no answer from the routing socket about the %v default route", f)
