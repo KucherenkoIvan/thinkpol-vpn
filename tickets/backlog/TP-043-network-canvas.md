@@ -23,5 +23,9 @@ The network drawn like Packet Tracer: nodes, links, transports and chains, with 
 - Shared nodes read-only and labelled `owned by <space>`.
 - Record the kernel lesson: do islands like this belong in `webui`?
 
+## Notes
+- **Don't start before the panel's design exists (TP-062).** Same as TP-042: the panel's organisation, authentication and authorization are on hold (DESIGN "Open questions"), and the canvas JSON endpoint and live stream are part of what that design must cover.
+
 ## Log
 - 2026-10-10 created in backlog
+- 2026-10-13 docs (TP-062): do not start before the panel's authn/authz design exists (blocking note)

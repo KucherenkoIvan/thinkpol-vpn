@@ -54,13 +54,15 @@ Scale is small on purpose: a handful of servers, up to ~20 devices per space, a 
 
 **Getting started**
 - As an admin, I create a space and turn a fresh Linux box into a node with one command, without hand-editing anything on the server, then choose whether devices may connect to it, internet traffic may leave from it, both, or neither.
-- As an admin, I invite a member with a link or QR code; they install the client, open the invite and are connected without a terminal.
+- As an admin, I invite a member with a link or QR code; they install the client and open the invite, and once I approve their device they are connected, without a terminal.
+- As an admin, I see devices waiting for approval and approve or reject them; one I don't approve in time expires.
 - As a member, I'm enrolled in several spaces (mine and my family's) and switch between them from the tray; one is active at a time.
 
 **Everyday use**
 - As a member, I click the tray icon to connect or disconnect, and see whether I'm connected, through which chain, and whether something is wrong.
 - As a member, I choose what goes through the tunnel: everything, everything except domestic sites (the default), or my own rules on top of the space's defaults.
 - As a member, I turn on the kill switch so nothing leaks when the tunnel drops, and still log into hotel Wi-Fi (allow-LAN, temporary pause).
+- As a member on "everything" or "all but domestic", I'm not exposed when the agent crashes: nothing leaks until it is back, without my having changed a setting.
 - As a member, I turn on connect-on-boot (off by default).
 - As a member, I reach my other devices (SSH to my desktop, a file share) by name, wherever they are.
 
@@ -144,10 +146,10 @@ Milestones as in [Release plan](#release-plan). Priority: **must** for the MVP, 
 | D1 | Runs on macOS, Linux, Windows | must | M1 (macOS, Linux), M5 (Windows) |
 | D2 | Privileged background service + unprivileged tray app; the tray app talks to the service locally | must | M5 |
 | D3 | Tray: connect/disconnect, status (chain, entry in use, health), space switcher, rule preset switcher | must | M5 |
-| D4 | Kill switch toggle (default off): when on and the tunnel is down, nothing leaves except traffic to entry nodes; allow-LAN option; temporary pause | must | M5 |
+| D4 | Kill switch toggle (default off): when on and the tunnel is down, nothing leaves except traffic to entry nodes; allow-LAN option; temporary pause. After an agent crash the device **fails closed by default** under the "everything" and "all but domestic" presets (opt-out); a deliberate disconnect follows the toggle | must | M5 |
 | D5 | Connect-on-boot toggle (default off) | must | M5 |
 | D6 | No IPv6 leaks: IPv6 goes through the tunnel or is blocked while connected | must | M1 |
-| D7 | Join a space from an invite link or QR code without a terminal | must | M5 |
+| D7 | Join a space from an invite link or QR code without a terminal; the device stays pending until the admin approves it | must | M5 |
 | D8 | CLI covering everything the tray does | must | M1 |
 | D9 | Enrolled in several spaces, one active at a time | must | M5 |
 | D10 | When the entry in use belongs to another space, the tray shows `owned by <space>` | must | M5 |
@@ -157,7 +159,7 @@ Milestones as in [Release plan](#release-plan). Priority: **must** for the MVP, 
 | ID | Requirement | Pri | M |
 |---|---|---|---|
 | A1 | Each space is managed by its own admin, who alone holds its signing key; a controller manages one admin's spaces | must | M4 |
-| A2 | Members with roles (admin, member); invites expire and are single-use | must | M4 |
+| A2 | Members with roles (admin, member); invites expire and are single-use; redeeming one creates a pending device with no access until the admin approves it, and pending devices expire | must | M4 |
 | A3 | Access grants: which chains a member may use, whether a device is reachable by the whole space or only its owner | must | M4 |
 | A4 | `node add root@host` over SSH: idempotent install, keys generated on the node, re-run repairs; the node starts with ingress and egress off | must | M4 |
 | A5 | Network map signed per space, distributed by gossip; nodes keep the last valid map; removal takes effect at the next map | must | M4 |
@@ -177,7 +179,7 @@ Milestones as in [Release plan](#release-plan). Priority: **must** for the MVP, 
 | **Failover** | A blocked or dead entry is detected and replaced within 15 s; no flapping (hysteresis). |
 | **Isolation** | On a shared node, no packet, route, DNS answer or telemetry record of one space is visible to another. One space's load can't starve another past its fair share. |
 | **Privacy** | Nodes never log destinations. Telemetry history lives only on the controller (24 h by default), which runs outside the censor's reach; nodes hold minutes of it, sealed, in memory (S1–S4). Private keys never leave the node that generated them. |
-| **Trust** | A node owner sees a guest space's traffic volume and its members' IP addresses on the link (unavoidable for an entry), never the traffic contents, rules or member list. |
+| **Trust** | A node owner sees a guest space's traffic volume and its members' IP addresses on the link (unavoidable for an entry), never the traffic contents, rules or member list. This holds for an owner running the honest binary; one who modifies it can read what their node handles. |
 | **Security** | Map changes require the space's admin key; nodes reject older map versions. A removed device loses access at the next map. |
 | **IPv6** | Dual-stack inside the overlay; rules, DNS and the kill switch cover both families. |
 | **Scale** | Designed for ≤ 10 servers, ≤ 20 devices per space, a few spaces per shared node. Nothing must be designed for more. |
@@ -189,7 +191,7 @@ Milestones as in [Release plan](#release-plan). Priority: **must** for the MVP, 
 | | Milestone | Ships |
 |---|---|---|
 | M0 | Overlay | Two Linux nodes in the lab, hand-made signed map in the need-to-know format, `udp` transport, relay paths, device ↔ device ping. The server agent already runs each space as its own isolated worker |
-| M1 | Daily-usable core | Per-node ingress/egress settings, an egress node, rules with GeoIP, DNS, IPv6 handling, macOS and Linux clients via CLI |
+| M1 | Daily-usable core | Per-node ingress/egress settings, an egress node, rules with GeoIP, DNS, IPv6 handling, macOS and Linux clients via CLI. The leak guarantees are Linux-only until the macOS data plane and IPv6 handling land (TP-019, TP-021) |
 | M2 | Disguise | `tls` transport with probe fallback, censor lab v1 |
 | M3 | Chains | Multi-hop chains, hop groups with failover, lab whitelist mode |
 | M4 | Control plane | Controller on go-kernel: spaces, members, invites, SSH provisioning, map gossip, hosting grants and shared nodes, node safety, telemetry, admin panel with canvas and dashboards |
@@ -210,6 +212,8 @@ Milestones as in [Release plan](#release-plan). Priority: **must** for the MVP, 
 | Risk | Mitigation |
 |---|---|
 | The censor seizes or inspects an in-country entry node | Need-to-know map parts, opaque ids, no disk logs, sealed in-memory telemetry (S1–S4); ephemeral nodes later |
+| The censor seizes or compromises a member's device | It holds valid credentials, so it passes as the member until revoked. Per-device grants (A3) bound what it reaches; revocation spreads by gossip once one honest entry is reachable; the section shows only that device's entries, chains and rules |
+| Government-affiliated apps on members' devices probe for blocked services and for VPN state | A TUN interface, its routes and the DNS configuration are visible to local apps and can't be hidden; Android's VpnService is detectable. "All but domestic" keeps domestic apps' traffic on the domestic path; per-app split tunnelling in userspace mode is the later mitigation; researched in TP-065 |
 | The censor learns our transports (the repo is public) | Probe resistance and fingerprint mimicry don't rely on secrecy; private plugins for experiments; transports swappable per link without releases |
 | Whitelists tighten to the point where even domestic VPS IPs are filtered | Hop groups with many entries; failover; sharing entries between spaces; CDN-fronted `ws` as a fallback |
 | A shared node is lost or its node owner stops cooperating | Guest spaces keep alternative entries in their hop groups; revocation is clean on both sides |
@@ -223,8 +227,11 @@ Milestones as in [Release plan](#release-plan). Priority: **must** for the MVP, 
 - **Controller placement.** Default: a server node the admin owns outside the censor's jurisdiction, reachable only through the overlay. A laptop works, but dashboards then only fill while it's on.
 - **Signing key recovery.** An offline recovery key (A11), not re-creating the space or keeping several signing keys.
 - **Traffic shape.** Delegated to transports (C6); there's no better layer for it.
+- **Reality.** The owner wants REALITY support: the `reality`-style transport is pulled forward as a VLESS/Reality-compatible transport, so existing VLESS/Reality servers and tooling can interoperate; researched first (TP-064). A "bridge" node type (a VLESS ingress routed into the overlay) was considered and set aside as too complex for now.
+- **Crash posture.** Fail-closed after an agent crash is the default for the "everything" and "all but domestic" presets, opt-out (D4): a crash is the likeliest mass-exposure event and the members affected can least act on it.
+- **Invites are not membership.** A redeemed invite creates a pending device the admin must approve (A2), because invites travel through surveilled channels.
 - **What a node owner sees.** A shared entry sees guest members' IPs and traffic volume; under a whitelist it must be their first hop, so nothing can hide that. Accepted between friends and family, and disclosed: the tray labels such entries `owned by <space>` (D10).
 
 ## Open questions
 
-None right now; new ones go here.
+- **Admin panel: organisation, authentication and authorization (A6).** On hold: the owner hasn't decided how the panel is organised. To be designed before TP-042 starts; the overlay is not access control (see DESIGN.md "Open questions").
