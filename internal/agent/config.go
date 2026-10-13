@@ -30,16 +30,13 @@ const (
 	ModeServer Mode = "server"
 )
 
-// DefaultStateDir is where a node keeps its keys and its map, and nothing
-// else (PRD S1).
-const DefaultStateDir = "/var/lib/thinkpol"
-
 // Config is what `thinkpol up` runs with: environment variables, which the
 // command's flags override. The flag: and help: tags are the flags
 // (config.BindFlags), so a setting is named in one place.
 type Config struct {
-	// StateDir holds the node's keys and its map (see LoadState).
-	StateDir string `env:"THINKPOL_STATE_DIR" default:"/var/lib/thinkpol" flag:"state" help:"state directory: node.key, space.pub and map.bin"`
+	// StateDir holds the node's keys and its map (see LoadState):
+	// DefaultStateDir when THINKPOL_STATE_DIR is unset.
+	StateDir string `env:"THINKPOL_STATE_DIR" flag:"state" help:"state directory: node.key, space.pub and map.bin"`
 	// MapFile is the map's path; empty means map.bin in StateDir.
 	MapFile string `env:"THINKPOL_MAP" flag:"map" help:"the map file, if not map.bin in the state directory"`
 	Mode    Mode   `env:"THINKPOL_MODE" default:"auto" flag:"mode" help:"auto (by the node's kind in the map), device or server"`
@@ -108,6 +105,9 @@ func LoadConfig() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	if _, ok := os.LookupEnv("THINKPOL_STATE_DIR"); !ok {
+		c.StateDir = DefaultStateDir
+	}
 	c.APISocket = APISocket()
 	return *c, nil
 }
@@ -115,13 +115,15 @@ func LoadConfig() (Config, error) {
 // DefaultAPISocket is where the local API listens by default; empty where
 // it has no socket yet (Windows: a named pipe, TP-047). On macOS not under
 // /var/run, which is group-writable (root:daemon 0775) and so fails the
-// API's parent check: /var/db is root's alone all the way up.
+// API's parent check, and not under /var, a symlink: /private/var/db is
+// root's alone all the way up. Not inside netcfg.StateDir either, which is
+// 0700: the API group couldn't reach the socket.
 func DefaultAPISocket() string {
 	switch runtime.GOOS {
 	case "windows":
 		return ""
 	case "darwin":
-		return "/var/db/thinkpol-api/api.sock"
+		return "/private/var/db/thinkpol-api/api.sock"
 	}
 	return "/run/thinkpol-api/api.sock"
 }
