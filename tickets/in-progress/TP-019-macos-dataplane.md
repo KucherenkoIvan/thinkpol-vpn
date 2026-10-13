@@ -8,7 +8,7 @@ size: L
 depends_on: [TP-008, TP-018]
 refs: [D1]
 needs_human: macos
-owner: "cursor-opus-tp019-r3"
+owner: "cursor-opus-tp019-r4"
 branch: "tp-019-macos-data-plane"
 ---
 
@@ -140,3 +140,4 @@ Round 2 resolution: R2.1 `netcfg.ConnectedRoutes` (utun networks as halves) + th
 - 2026-10-13 docs: DESIGN.md the agent lock's directory (`dataplane/trusteddir`, `/private/var/db/thinkpol/agent.lock` on macOS), macOS route records in `/private/var/db/thinkpol/netcfg` with the boot session, repository layout (`trusteddir`)
 - 2026-10-13 in-progress → review — round 3 R3.1–R3.3 done; make lint, make test green on a Mac (no `/private/var/db/thinkpol` or `/var/run/thinkpol` after); lab: `make lab-gotest PKG=./internal/agent/...`, `PKG=./internal/dataplane/trusteddir/...` and `TestASecondAgentChangesNothing` pass; device-only boxes pending the Device checklist
 - 2026-10-13 review → has-errors — round 4: R4.1–R4.3 (macOS default paths through the `/var` symlink)
+- 2026-10-13 has-errors → in-progress — owner: cursor-opus-tp019-r4, fixing round 4
