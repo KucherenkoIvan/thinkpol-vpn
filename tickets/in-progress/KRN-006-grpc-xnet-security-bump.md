@@ -7,8 +7,8 @@ repo: go-kernel
 size: S
 depends_on: []
 refs: []
-owner: ""
-branch: ""
+owner: "cursor-glm-krn006"
+branch: "krn-006-grpc-xnet-bump"
 ---
 
 ## Goal
@@ -29,3 +29,4 @@ go-kernel (public library) still requires google.golang.org/grpc 1.82.0 and gola
 
 ## Log
 - 2026-10-13 created in backlog
+- 2026-10-13 backlog → in-progress — owner: cursor-glm-krn006, branch: krn-006-grpc-xnet-bump
