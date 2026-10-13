@@ -39,6 +39,10 @@ type RouteTableStatus struct {
 	// RulesAhead counts other software's policy rules ahead of the
 	// tunnel's (a mesh VPN's): they may route traffic around it.
 	RulesAhead int
+	// OverlayAhead counts foreign host routes over overlay addresses the
+	// table can't outrank (macOS): those peers' traffic leaves in the
+	// clear.
+	OverlayAhead int
 }
 
 // endpointsOf are the addresses the node dials its links on.
@@ -118,7 +122,7 @@ func (e *Engine) routeTableStatus() RouteTableStatus {
 	st := e.cfg.RouteTable.Status()
 	return RouteTableStatus{
 		Enforced: st.Enforced, Error: st.Error, Routes: st.Routes, LastApply: st.LastApply,
-		Reapplies: st.Reapplies, RulesAhead: st.RulesAhead,
+		Reapplies: st.Reapplies, RulesAhead: st.RulesAhead, OverlayAhead: st.OverlayAhead,
 	}
 }
 

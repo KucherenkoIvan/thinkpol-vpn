@@ -423,7 +423,10 @@ func (c *darwinConfigurator) apply(ctx context.Context, cfg Config, u *undoLog) 
 // connected are the routes a point-to-point interface (a utun) needs for
 // the networks of its addresses, which macOS doesn't add for it (it routes
 // only the peer address): owned like any other route, unless the kernel
-// already routes the network through the interface.
+// already routes the network through the interface. They are each
+// network's two halves (ConnectedRoutes), so that a route for the whole
+// network, such as route-table enforcement's reject route that outlives
+// the utun, can sit behind them.
 func (c *darwinConfigurator) connected(v view, l kifc, ifc Interface) []Route {
 	if !l.p2p {
 		return nil
@@ -437,7 +440,9 @@ func (c *darwinConfigurator) connected(v view, l kifc, ifc Interface) []Route {
 		if r, ok := v.routes[dst]; ok && !c.ours(r) && r.flags&unix.RTF_GATEWAY == 0 && (r.link == l.index || r.index == l.index) {
 			continue // the kernel's (or another's) route into it does
 		}
-		out = append(out, Route{Dst: dst, Interface: l.name})
+		for _, h := range ConnectedRoutes(dst) {
+			out = append(out, Route{Dst: h, Interface: l.name})
+		}
 	}
 	return out
 }

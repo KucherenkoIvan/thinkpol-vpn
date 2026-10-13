@@ -80,13 +80,18 @@ func TestSplitRoutesOnAHomeNetwork(t *testing.T) {
 		"203.0.113.0/24 via 192.168.1.1 dev en0",
 		"198.51.100.7/32 via 192.168.1.1 dev en0", "2001:db8::7/128 via fe80::1 dev en0",
 		"fc00::/8 via fe80::1 dev en0",
+		// Behind the overlay configurator's halves, for a crash.
+		"unreachable 100.64.0.0/10", "unreachable fd12:3456:789a::/48",
 	} {
 		if !got[want] {
 			t.Errorf("no %q", want)
 		}
 	}
 	for r := range got {
-		dst := netip.MustParsePrefix(strings.Fields(strings.TrimPrefix(r, "unreachable "))[0])
+		if strings.HasPrefix(r, "unreachable ") {
+			continue
+		}
+		dst := netip.MustParsePrefix(strings.Fields(r)[0])
 		// The overlay is never direct, and what the OS routes on its own
 		// interfaces (link-local, multicast, the LAN) gets no route.
 		for _, never := range []string{"100.64.0.0/10", "fd12:3456:789a::/48", "169.254.0.0/16", "224.0.0.0/4", "fe80::/10", "ff00::/8", "192.168.1.0/24"} {
@@ -178,10 +183,12 @@ func TestSplitRoutesShadowAHostileNetwork(t *testing.T) {
 		"8.8.8.0/25 dev utun7", "8.8.8.128/25 dev utun7",
 		"100.64.0.0/25 dev utun7", "100.64.0.128/25 dev utun7",
 		"100.64.7.0/25 dev utun7", "100.64.7.128/25 dev utun7",
-		// 100.0.0.0/9's halves, but the overlay's own /10 split again.
-		"100.0.0.0/10 dev utun7", "100.64.0.0/11 dev utun7", "100.96.0.0/11 dev utun7",
-		// The public subnet without its gateway, .1.
-		"198.51.100.0/32 dev utun7", "198.51.100.2/31 dev utun7", "198.51.100.128/25 dev utun7",
+		// 100.0.0.0/9 but the overlay, whose own halves outrank it.
+		"100.0.0.0/10 dev utun7",
+		// The public subnet, its gateway included: a hostile network's
+		// gateway gets nothing in the clear.
+		"198.51.100.0/25 dev utun7", "198.51.100.128/25 dev utun7",
+		"unreachable 100.64.0.0/10",
 		"2001:db8:ab::/65 dev utun7", "2001:db8:ab:0:8000::/65 dev utun7",
 		"2001:db8:ab:1::/65 dev utun7",
 	} {
@@ -190,8 +197,8 @@ func TestSplitRoutesShadowAHostileNetwork(t *testing.T) {
 		}
 	}
 	for r := range got {
-		if strings.HasPrefix(r, "198.51.100.1/32") || strings.HasPrefix(r, "10.8.") || strings.HasPrefix(r, "192.168.1.") {
-			t.Errorf("%s: the gateway, direct destinations and trusted subnets stay as they are", r)
+		if strings.HasPrefix(r, "10.8.") || strings.HasPrefix(r, "192.168.1.") || strings.HasPrefix(r, "100.64.0.0/11") || strings.HasPrefix(r, "100.96.0.0/11") {
+			t.Errorf("%s: direct destinations, trusted subnets and the overlay configurator's routes stay as they are", r)
 		}
 	}
 	if runtime.GOOS == "darwin" {
@@ -242,6 +249,34 @@ func TestSplitRoutesNeverTakeAnIdentityAnotherRouteHolds(t *testing.T) {
 		}
 		if !ipv6 && (!got["unreachable ::/2"] || !got["unreachable 4000::/2"]) {
 			t.Errorf("IPv6 off: the other VPN's ::/1 isn't rejected beneath: %v", got)
+		}
+	}
+}
+
+// A hostile network's DHCP puts the Mac and its gateway inside the
+// overlay's range (100.64.0.77/24 via 100.64.0.1), and a classless host
+// route on a peer's overlay address: the gateway gets no on-link route in
+// the clear, and the host route, which nothing outranks, is an overlay
+// hijack the status reports.
+func TestAGatewayInsideTheOverlayIsNotExempt(t *testing.T) {
+	s := home("100.64.0.0/24")
+	s.Defaults[0].Gateway = netip.MustParseAddr("100.64.0.1")
+	s.Routes = []netcfg.Route{{Dst: pfx("100.64.0.9/32"), Gateway: netip.MustParseAddr("100.64.0.1"), Interface: "en0"}}
+	w := routetable.Want{TUN: "utun7", Overlay: overlay, Direct: localPlus(t), IPv6: true}
+	cfg := routetable.SplitRoutes(w, s)
+	darwinValid(t, cfg)
+	got := routes(cfg)
+	for _, r := range []string{"100.64.0.0/25 dev utun7", "100.64.0.128/25 dev utun7", "unreachable 100.64.0.0/10"} {
+		if !got[r] {
+			t.Errorf("no %q", r)
+		}
+	}
+	if runtime.GOOS == "darwin" {
+		if n := routetable.OverlayAhead(w, s); n != 1 {
+			t.Errorf("%d overlay routes ahead, want 1", n)
+		}
+		if n := routetable.Ahead(w, s); n != 0 {
+			t.Errorf("%d other routes ahead", n)
 		}
 	}
 }

@@ -355,6 +355,21 @@ func checkTable(t int) error {
 	return nil
 }
 
+// ConnectedRoutes are the destinations netcfg routes into a
+// point-to-point interface (macOS's utun; Linux's kernel routes the whole network) for one of its networks: the
+// network's two halves.
+func ConnectedRoutes(network netip.Prefix) []netip.Prefix {
+	network = network.Masked()
+	if network.Bits() >= network.Addr().BitLen() {
+		return []netip.Prefix{network}
+	}
+	lo := netip.PrefixFrom(network.Addr(), network.Bits()+1)
+	b := network.Addr().AsSlice()
+	b[network.Bits()/8] |= 0x80 >> (network.Bits() % 8)
+	hi, _ := netip.AddrFromSlice(b)
+	return []netip.Prefix{lo, netip.PrefixFrom(hi, network.Bits()+1)}
+}
+
 // Survey is the OS's own routing, as route-table enforcement needs it.
 type Survey struct {
 	// OnLink are the main table's routes the OS made for interfaces'

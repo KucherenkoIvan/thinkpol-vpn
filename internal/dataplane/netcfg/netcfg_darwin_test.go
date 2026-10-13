@@ -308,7 +308,7 @@ func TestApplyThenCloseRestoresEverything(t *testing.T) {
 	}
 	// The utun is point-to-point: the overlay's networks are routed into
 	// it by the overlay's configurator.
-	for _, dst := range []string{"100.64.0.0/10", "fd12:3456:789a::/48"} {
+	for _, dst := range []string{"100.64.0.0/11", "100.96.0.0/11", "fd12:3456:789a::/49", "fd12:3456:789a:8000::/49"} {
 		r, ok := k.route(dst)
 		if !ok || r.link != 20 || r.flags&routeFlag == 0 {
 			t.Errorf("%s: %v, %v; want an owned route into utun7", dst, r, ok)
@@ -323,7 +323,7 @@ func TestApplyThenCloseRestoresEverything(t *testing.T) {
 	if r, _ := k.route("::/1"); r.flags&unix.RTF_REJECT == 0 || r.gw != ip("::1") {
 		t.Errorf("reject route %v flags %#x", r, r.flags)
 	}
-	if got := record(t, dir, OwnerOverlay); !slices.Equal(got, []string{"100.64.0.0/10", "fd12:3456:789a::/48"}) {
+	if got := record(t, dir, OwnerOverlay); !slices.Equal(got, []string{"100.64.0.0/11", "100.96.0.0/11", "fd12:3456:789a:8000::/49", "fd12:3456:789a::/49"}) {
 		t.Errorf("overlay's record %v", got)
 	}
 	if got := record(t, dir, OwnerRouteTable); len(got) != len(routeTableConfig.Routes) {
@@ -422,17 +422,17 @@ func TestOwnersNeverTouchEachOther(t *testing.T) {
 	if err := ov.Apply(ctx, overlayConfig); err != nil {
 		t.Fatal(err)
 	}
-	clash := Config{Routes: []Route{{Dst: pfx("100.64.0.0/10"), Interface: "utun7"}}}
+	clash := Config{Routes: []Route{{Dst: pfx("100.64.0.0/11"), Interface: "utun7"}}}
 	if err := rt.Apply(ctx, clash); !errors.Is(err, ErrConflict) {
 		t.Fatalf("the overlay's route: %v, want ErrConflict", err)
 	}
 	if err := rt.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := k.route("100.64.0.0/10"); !ok {
+	if _, ok := k.route("100.64.0.0/11"); !ok {
 		t.Fatal("the route table's Close removed the overlay's route")
 	}
-	if got := record(t, dir, OwnerOverlay); len(got) != 2 {
+	if got := record(t, dir, OwnerOverlay); len(got) != 4 {
 		t.Errorf("overlay's record %v", got)
 	}
 }
@@ -545,7 +545,7 @@ func TestReApplyRepairsOutsideChanges(t *testing.T) {
 	want := k.snapshot()
 	k.mu.Lock()
 	delete(k.rs, pfx("128.0.0.0/1"))
-	delete(k.rs, pfx("100.64.0.0/10"))
+	delete(k.rs, pfx("100.96.0.0/11"))
 	k.addrsB[20] = k.addrsB[20][:1] // the IPv6 address went
 	k.ifcs["utun7"].mtu = 1500
 	k.mu.Unlock()
@@ -571,14 +571,15 @@ func TestARecreatedInterfaceGetsItsConfigBack(t *testing.T) {
 	k.mu.Lock()
 	delete(k.ifcs, "utun7")
 	delete(k.addrsB, 20)
-	delete(k.rs, pfx("100.64.0.0/10"))
-	delete(k.rs, pfx("fd12:3456:789a::/48"))
+	for _, p := range []string{"100.64.0.0/11", "100.96.0.0/11", "fd12:3456:789a::/49", "fd12:3456:789a:8000::/49"} {
+		delete(k.rs, pfx(p))
+	}
 	k.ifcs["utun7"] = &kifc{name: "utun7", index: 21, mtu: 1500, p2p: true}
 	k.mu.Unlock()
 	if err := ov.Apply(ctx, overlayConfig); err != nil {
 		t.Fatal(err)
 	}
-	if r, ok := k.route("100.64.0.0/10"); !ok || r.link != 21 {
+	if r, ok := k.route("100.96.0.0/11"); !ok || r.link != 21 {
 		t.Errorf("connected route %v, %v", r, ok)
 	}
 	if len(k.addrsB[21]) != 2 || k.ifcs["utun7"].mtu != 1328 {
@@ -601,7 +602,7 @@ func TestAConnectedRouteOfTheKernelIsUsed(t *testing.T) {
 	if err := ov.Apply(context.Background(), overlayConfig); err != nil {
 		t.Fatal(err)
 	}
-	if got := record(t, dir, OwnerOverlay); !slices.Equal(got, []string{"fd12:3456:789a::/48"}) {
+	if got := record(t, dir, OwnerOverlay); !slices.Equal(got, []string{"fd12:3456:789a:8000::/49", "fd12:3456:789a::/49"}) {
 		t.Errorf("record %v", got)
 	}
 	if err := ov.Close(); err != nil {

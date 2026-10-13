@@ -14,7 +14,7 @@ import (
 // macOS (SplitRoutes).
 func Config(w Want, s netcfg.Survey) netcfg.Config {
 	if runtime.GOOS == "darwin" {
-		cfg, _ := splitRoutes(w, s)
+		cfg, _, _ := splitRoutes(w, s)
 		return cfg
 	}
 	return PolicyRouting(w, s)
@@ -26,7 +26,7 @@ func Config(w Want, s netcfg.Survey) netcfg.Config {
 // destinations (see SplitRoutes).
 func Ahead(w Want, s netcfg.Survey) int {
 	if runtime.GOOS == "darwin" {
-		_, n := splitRoutes(w, s)
+		_, n, _ := splitRoutes(w, s)
 		return n
 	}
 	n := 0
@@ -71,8 +71,21 @@ func Ahead(w Want, s netcfg.Survey) int {
 // on-link subnet, and link-local, multicast and loopback ones, are left to
 // the OS's own routes.
 func SplitRoutes(w Want, s netcfg.Survey) netcfg.Config {
-	cfg, _ := splitRoutes(w, s)
+	cfg, _, _ := splitRoutes(w, s)
 	return cfg
+}
+
+// OverlayAhead counts foreign host routes inside the overlay's networks
+// that nothing can outrank (macOS: a DHCP server's classless host route
+// to a peer's overlay address), which take that peer's traffic out of
+// the tunnel in the clear. Linux looks the overlay up in a table of its
+// own: always zero there.
+func OverlayAhead(w Want, s netcfg.Survey) int {
+	if runtime.GOOS != "darwin" {
+		return 0
+	}
+	_, _, n := splitRoutes(w, s)
+	return n
 }
 
 // The ranges direct routes are never added for: the OS routes them on its
@@ -103,7 +116,7 @@ func halves(p netip.Prefix) [2]netip.Prefix {
 
 func family(p netip.Prefix) netcfg.Family { return netcfg.FamilyOf(p.Addr()) }
 
-func splitRoutes(w Want, s netcfg.Survey) (netcfg.Config, int) {
+func splitRoutes(w Want, s netcfg.Survey) (cfg netcfg.Config, ahead, overlayAhead int) {
 	up := TUNUp(w, s)
 	overlay := prefixes(w.Overlay)
 	var ob lists.Builder
@@ -123,11 +136,24 @@ func splitRoutes(w Want, s netcfg.Survey) (netcfg.Config, int) {
 	thrown := thrownSet.Prefixes()
 	direct := w.Direct.Minus(overlaySet)
 
+	// Trusted on-link subnets keep their routes; the others are shadowed.
+	var trusted []netip.Prefix
+	for _, p := range s.OnLink {
+		if p.Bits() > 0 && p.Bits() < p.Addr().BitLen() && TrustedOnLink(p, direct) && !overlaps(p, overlay) {
+			trusted = append(trusted, p)
+		}
+	}
+	// A default gateway stays reachable on-link only inside a trusted
+	// subnet: one a hostile network puts in the overlay's range or on a
+	// public "on-link" subnet would get that address in the clear. The
+	// links don't need it: they are bound to the physical interface and
+	// use its scoped routes; direct traffic via such a gateway enters the
+	// TUN instead (dropped, never leaked).
 	gateways := map[netcfg.Family]netcfg.Route{}
 	var gatewayHosts []netip.Prefix
 	for _, d := range s.Defaults {
 		gateways[family(d.Dst)] = d
-		if d.Gateway.IsValid() {
+		if d.Gateway.IsValid() && within(netip.PrefixFrom(d.Gateway, d.Gateway.BitLen()), trusted) {
 			gatewayHosts = append(gatewayHosts, netip.PrefixFrom(d.Gateway, d.Gateway.BitLen()))
 		}
 	}
@@ -144,10 +170,11 @@ func splitRoutes(w Want, s netcfg.Survey) (netcfg.Config, int) {
 		taken[p] = true
 	}
 	for _, p := range overlay {
-		taken[p] = true // the overlay configurator's routes into the TUN
+		for _, h := range netcfg.ConnectedRoutes(p) {
+			taken[h] = true // the overlay configurator's routes into the TUN
+		}
 	}
 
-	var cfg netcfg.Config
 	ours := map[netip.Prefix]bool{}
 	add := func(r netcfg.Route) {
 		if !ours[r.Dst] {
@@ -163,7 +190,15 @@ func splitRoutes(w Want, s netcfg.Survey) (netcfg.Config, int) {
 		return netcfg.Route{Dst: p, Type: netcfg.RouteUnreachable}
 	}
 
-	ahead := 0
+	// hostAhead counts a foreign host route nothing can outrank: inside
+	// the overlay it hijacks a peer's address.
+	hostAhead := func(p netip.Prefix) {
+		if overlaps(p, overlay) {
+			overlayAhead++
+		} else {
+			ahead++
+		}
+	}
 	// cover routes p as route says, or, where another route holds p's
 	// identity (another VPN's split routes, someone's reject route), its
 	// halves, and so on: ours are always more specific, so they win
@@ -177,7 +212,7 @@ func splitRoutes(w Want, s netcfg.Survey) (netcfg.Config, int) {
 		case !taken[p] && !ours[p]:
 			add(route(p))
 		case p.Bits() == p.Addr().BitLen():
-			ahead++
+			hostAhead(p)
 		default:
 			for _, h := range halves(p) {
 				cover(h, route)
@@ -210,6 +245,15 @@ func splitRoutes(w Want, s netcfg.Survey) (netcfg.Config, int) {
 			// missing.
 		}
 	}
+	// Each overlay network is rejected behind the overlay configurator's
+	// halves into the TUN: when the TUN is gone (a crash takes its routes
+	// along) overlay traffic, the DNS the OS was pointed at included, is
+	// dropped instead of following the physical default route.
+	for _, p := range overlay {
+		if !taken[p] && !ours[p] {
+			add(reject(p))
+		}
+	}
 
 	for _, p := range thrown {
 		ps := []netip.Prefix{p}
@@ -227,12 +271,20 @@ func splitRoutes(w Want, s netcfg.Survey) (netcfg.Config, int) {
 	}
 
 	shadow := func(c netip.Prefix) {
-		rest, ok := uncovered(c, thrownSet, gatewayHosts)
+		// The overlay configurator's halves already outrank a route less
+		// specific than them.
+		exempt := slices.Clone(gatewayHosts)
+		for _, p := range overlay {
+			if c.Bits() <= p.Bits() {
+				exempt = append(exempt, p)
+			}
+		}
+		rest, ok := uncovered(c, thrownSet, exempt)
 		if !ok {
 			return
 		}
 		if c.Bits() == c.Addr().BitLen() {
-			ahead++ // a host route: nothing is more specific
+			hostAhead(c) // nothing is more specific
 			return
 		}
 		// A piece must be more specific than c, and no other route's
@@ -243,7 +295,7 @@ func splitRoutes(w Want, s netcfg.Survey) (netcfg.Config, int) {
 			case q != c && !taken[q] && !ours[q]:
 				add(tunnel(q))
 			case q.Bits() == q.Addr().BitLen():
-				ahead++
+				hostAhead(q)
 			default:
 				for _, h := range halves(q) {
 					place(h)
@@ -275,7 +327,7 @@ func splitRoutes(w Want, s netcfg.Survey) (netcfg.Config, int) {
 		}
 		return 0
 	})
-	return cfg, ahead
+	return cfg, ahead, overlayAhead
 }
 
 // insideOnLink reports whether p lies inside, and is smaller than, one of
@@ -290,9 +342,9 @@ func insideOnLink(p netip.Prefix, onLink []netip.Prefix) bool {
 }
 
 // uncovered is what of c the tunnel must take back from a foreign route:
-// c without what goes direct and the default gateways. False when nothing
-// is left.
-func uncovered(c netip.Prefix, thrown *lists.Set, gatewayHosts []netip.Prefix) ([]netip.Prefix, bool) {
+// c without what goes direct and what is exempt (trusted gateways, the
+// overlay where its own routes win). False when nothing is left.
+func uncovered(c netip.Prefix, thrown *lists.Set, exempt []netip.Prefix) ([]netip.Prefix, bool) {
 	var b lists.Builder
 	if b.AddPrefix(c) != nil {
 		// A range lists can't hold (around IPv4-mapped IPv6): take it
@@ -300,7 +352,7 @@ func uncovered(c netip.Prefix, thrown *lists.Set, gatewayHosts []netip.Prefix) (
 		return []netip.Prefix{c}, true
 	}
 	var gb lists.Builder
-	for _, g := range gatewayHosts {
+	for _, g := range exempt {
 		_ = gb.AddPrefix(g)
 	}
 	cs, _ := b.Build()

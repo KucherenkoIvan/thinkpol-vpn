@@ -319,6 +319,9 @@ func TestHealth(t *testing.T) {
 		{"rules ahead of the route table", Status{Connection: Connected, DataPlane: &dataplane.Status{
 			RouteTable: dataplane.RouteTableStatus{Enforced: true, Routes: 9, RulesAhead: 2}}},
 			Health{HealthDegraded, []string{ProblemRulesAhead}}},
+		{"overlay addresses taken around the route table", Status{Connection: Connected, DataPlane: &dataplane.Status{
+			RouteTable: dataplane.RouteTableStatus{Enforced: true, Routes: 9, OverlayAhead: 1}}},
+			Health{HealthDown, []string{ProblemOverlayRoutesAhead}}},
 		{"server", Status{Connection: Serving, Workers: []WorkerStatus{{Ready: true, Starts: 1}}}, Health{}},
 		{"server worker down", Status{Connection: Serving, Workers: []WorkerStatus{{Ready: true, Starts: 3}, {}},
 			PublicListeners: []PublicListenerStatus{{Rejected: 1}}},

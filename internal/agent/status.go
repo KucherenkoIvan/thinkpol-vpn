@@ -261,6 +261,10 @@ const (
 	// ProblemRulesAhead: other software's policy rules come before the
 	// route table's and may route traffic around the tunnel.
 	ProblemRulesAhead = "policy_rules_ahead"
+	// ProblemOverlayRoutesAhead: other routes the route table can't
+	// outrank take overlay addresses (a hostile network's host routes,
+	// macOS): those peers' traffic leaves around the tunnel.
+	ProblemOverlayRoutesAhead = "overlay_routes_ahead"
 	// ProblemDNSUnprotected: the OS may resolve names outside the node's
 	// resolver, so names may leave outside the tunnel.
 	ProblemDNSUnprotected = "dns_not_protected"
@@ -333,6 +337,9 @@ func (s Status) Health() Health {
 			add(HealthDown, ProblemRouteTable)
 		} else if rt.Enforced && rt.RulesAhead > 0 {
 			add(HealthDegraded, ProblemRulesAhead)
+		}
+		if rt := dp.RouteTable; rt.Error == "" && rt.OverlayAhead > 0 {
+			add(HealthDown, ProblemOverlayRoutesAhead)
 		}
 		if s.DNSUnprotected {
 			add(HealthDegraded, ProblemDNSUnprotected)

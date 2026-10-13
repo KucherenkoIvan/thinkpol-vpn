@@ -75,6 +75,7 @@ func dataPlaneProto(dp *dataplane.Status, listeners int) *localapiv1.DataPlane {
 		out.Counters["route_table.routes"] = uint64(rt.Routes)
 		out.Counters["route_table.reapplies"] = rt.Reapplies
 		out.Counters["route_table.rules_ahead"] = uint64(rt.RulesAhead)
+		out.Counters["route_table.overlay_routes_ahead"] = uint64(rt.OverlayAhead)
 	}
 	for _, p := range dp.Peers {
 		pp := &localapiv1.Peer{

@@ -280,6 +280,10 @@ type Status struct {
 	// rules before ours (a mesh VPN's, say) on Linux, host routes over
 	// tunneled destinations on macOS.
 	RulesAhead int
+	// OverlayAhead counts foreign host routes inside the overlay's
+	// networks that nothing outranks (macOS, OverlayAhead): a peer's
+	// traffic leaves around the tunnel.
+	OverlayAhead int
 }
 
 // What Status.Error says.
@@ -413,7 +417,7 @@ func (e *Enforcer) apply(ctx context.Context, w Want, again bool) error {
 	if !TUNUp(w, s) {
 		e.status.Enforced, e.status.Error = false, ErrorTUNDown
 	}
-	e.status.RulesAhead = Ahead(w, s)
+	e.status.RulesAhead, e.status.OverlayAhead = Ahead(w, s), OverlayAhead(w, s)
 	if !again || e.status.Routes != len(cfg.Routes) {
 		e.log.Info("route table applied", "routes", len(cfg.Routes), "took", took.Round(time.Millisecond))
 		e.status.LastApply = took
