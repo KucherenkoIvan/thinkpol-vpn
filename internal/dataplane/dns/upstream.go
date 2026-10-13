@@ -64,13 +64,20 @@ func exchangeUDP(q *dns.Msg, srv netip.AddrPort, control func(string, string, sy
 	// One byte more than we asked the server to keep to: a bigger
 	// datagram doesn't fit and is no answer.
 	buf := make([]byte, upstreamUDPSize+1)
-	want := netip.AddrPortFrom(srv.Addr().Unmap(), srv.Port())
+	// Without the zone: a link-local server written with a numeric zone
+	// (fe80::1%2, as resolved writes it) comes back named (%eth0).
+	want := noZone(srv)
 	for {
 		n, from, err := c.ReadFromUDPAddrPort(buf)
+		if isMessageSize(err) {
+			// Windows: a datagram bigger than buf (the socket is
+			// connected, so it came from srv).
+			return nil, errNotAnAnswer
+		}
 		if err != nil {
 			return nil, err
 		}
-		if netip.AddrPortFrom(from.Addr().Unmap(), from.Port()) != want {
+		if noZone(from) != want {
 			continue
 		}
 		r := new(dns.Msg)
@@ -94,6 +101,10 @@ func exchangeUDP(q *dns.Msg, srv netip.AddrPort, control func(string, string, sy
 		}
 		return r, nil
 	}
+}
+
+func noZone(a netip.AddrPort) netip.AddrPort {
+	return netip.AddrPortFrom(a.Addr().Unmap().WithZone(""), a.Port())
 }
 
 // isAnswerTo reports whether r is a response to q: same ID, opcode and

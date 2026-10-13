@@ -180,3 +180,72 @@ func TestATruncatedAnswerGoesOverTCP(t *testing.T) {
 		t.Errorf("answer %v, want the TCP one", got)
 	}
 }
+
+// linkLocal is a link-local IPv6 address of this host's that answers
+// itself, with its zone as a number (as resolved writes one): fe80::1 on
+// macOS's loopback, an interface's own address elsewhere.
+func linkLocal(t *testing.T) (netip.Addr, string) {
+	t.Helper()
+	ifcs, err := net.Interfaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ifc := range ifcs {
+		if ifc.Flags&net.FlagUp == 0 {
+			continue
+		}
+		addrs, _ := ifc.Addrs()
+		for _, a := range addrs {
+			p, err := netip.ParsePrefix(a.String())
+			if err != nil || !p.Addr().Is6() || !p.Addr().IsLinkLocalUnicast() {
+				continue
+			}
+			pc, err := net.ListenUDP("udp", net.UDPAddrFromAddrPort(netip.AddrPortFrom(p.Addr().WithZone(ifc.Name), 0)))
+			if err != nil {
+				continue
+			}
+			_ = pc.Close()
+			return p.Addr(), ifc.Name
+		}
+	}
+	t.Skip("no link-local IPv6 address here")
+	return netip.Addr{}, ""
+}
+
+// A link-local upstream written with a numeric zone is answered: the
+// reply comes back with the zone's name, which is the same server.
+func TestALinkLocalUpstreamWithANumericZoneIsAnswered(t *testing.T) {
+	addr, name := linkLocal(t)
+	ifc, err := net.InterfaceByName(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pc, err := net.ListenUDP("udp", net.UDPAddrFromAddrPort(netip.AddrPortFrom(addr.WithZone(name), 0)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = pc.Close() })
+	go func() {
+		buf := make([]byte, 65535)
+		for {
+			n, from, err := pc.ReadFromUDPAddrPort(buf)
+			if err != nil {
+				return
+			}
+			q := new(dns.Msg)
+			if q.Unpack(buf[:n]) == nil {
+				send(pc, from, answerA(q, "198.51.100.7"))
+			}
+		}
+	}()
+	srv := netip.AddrPortFrom(addr.WithZone(strconv.Itoa(ifc.Index)), pc.LocalAddr().(*net.UDPAddr).AddrPort().Port())
+	m := new(dns.Msg)
+	m.SetQuestion("example.org.", dns.TypeA)
+	r, err := exchangeWith(m, srv, nil, 2*time.Second)
+	if err != nil {
+		t.Fatalf("%v: %v", srv, err)
+	}
+	if got := answers(r); !slices.Equal(got, []string{"198.51.100.7"}) {
+		t.Errorf("answer %v", got)
+	}
+}

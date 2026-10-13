@@ -673,7 +673,8 @@ func TestOnlyPeersAreServed(t *testing.T) {
 }
 
 // The plan is the access control for the whole transfer, not only its
-// start: a peer the new map drops gets nothing more once the plan is in.
+// start: a peer the new map drops gets nothing more once the plan is in,
+// and its connection is reset, so nothing buffered reaches it.
 func TestAPeerDroppedFromThePlanIsServedNoMore(t *testing.T) {
 	data := make([]byte, 1<<20)
 	if _, err := rand.Read(data); err != nil {
@@ -705,8 +706,8 @@ func TestAPeerDroppedFromThePlanIsServedNoMore(t *testing.T) {
 	p.Peers = slices.DeleteFunc(p.Peers, func(peer Peer) bool { return slices.Contains(peer.Addrs, overlay(9)) })
 	server.Update(p)
 	rest, err := io.ReadAll(c)
-	if err != nil {
-		t.Fatalf("the transfer didn't end: %v", err)
+	if !errors.Is(err, syscall.ECONNRESET) {
+		t.Fatalf("the transfer ended with %v, want a reset", err)
 	}
 	if got := 1 + len(rest); got >= len(data) {
 		t.Errorf("the dropped peer got all %d bytes", got)

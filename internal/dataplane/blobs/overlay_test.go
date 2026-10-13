@@ -51,6 +51,14 @@ type overlayConn struct {
 	src *sources
 }
 
+// SetLinger reaches the TCP connection underneath, as on the overlay.
+func (c *overlayConn) SetLinger(sec int) error {
+	if tc, ok := c.Conn.(*net.TCPConn); ok {
+		return tc.SetLinger(sec)
+	}
+	return nil
+}
+
 // RemoteAddr waits briefly for the dialer to note its overlay address
 // (the kernel completes the connection before Dial returns), and is the
 // loopback address of a dialer that noted none.

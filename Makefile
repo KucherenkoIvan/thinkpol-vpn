@@ -1,7 +1,9 @@
 # thinkpol-vpn development targets. `make help` lists them.
 
 # Dev tools, pinned, installed per checkout into bin/tools (lint and proto
-# install them on first use). Bumping a version reinstalls them all.
+# install them on first use). Bumping a version reinstalls them all. They
+# need Go 1.26 or later to build (govulncheck, golangci-lint): an older
+# local Go must leave GOTOOLCHAIN at auto, or the install fails.
 GOLANGCI_LINT_VERSION := v2.14.0
 BUF_VERSION := v1.73.0
 PROTOC_GEN_GO_VERSION := v1.36.12
@@ -60,11 +62,11 @@ lint: $(TOOLS_STAMP) ## gofmt, then go vet + golangci-lint per OS (lab tests inc
 
 # govulncheck fetches the Go vulnerability database (vuln.go.dev) on every
 # run, so lint needs the network; a scan takes seconds. It reports only
-# vulnerabilities our code can reach, per OS we ship for.
-vulncheck: $(TOOLS_STAMP) ## govulncheck per OS: fail on a known vulnerability in reachable code (needs the network)
-	@for os in $(LINT_GOOS); do \
+# vulnerabilities our code can reach, per OS we ship for (Android too).
+vulncheck: $(TOOLS_STAMP) ## govulncheck per OS, Android included: fail on a known vulnerability in reachable code (needs the network)
+	@for os in $(LINT_GOOS) android; do \
 		echo "govulncheck, GOOS=$$os"; \
-		GOOS=$$os $(TOOLS)/govulncheck ./... || exit 1; \
+		GOOS=$$os GOARCH=$$([ $$os = android ] && echo arm64 || go env GOARCH) $(TOOLS)/govulncheck ./... || exit 1; \
 	done
 
 nocgo: ## fail if the data plane, the map or the lists depend on cgo
