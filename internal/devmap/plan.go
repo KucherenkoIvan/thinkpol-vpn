@@ -426,12 +426,20 @@ func RandomSecrets(r io.Reader) Secrets {
 	}
 }
 
+// ErrNotLab refuses an insecure secrets seed for a spec that isn't a
+// lab's.
+var ErrNotLab = errors.New("an insecure secrets seed is for lab specs only (lab: true): the seed gives away every link")
+
 // InsecureSeededSecrets derives each link's secret from seed and the link
 // (HMAC-SHA256 of its ends and transport), so builds of one space give a
 // link the same secret whatever else changed, and a lab test can hand some
 // nodes a newer map and keep others on an older one. Never for a real
-// space: the seed gives away every link.
-func InsecureSeededSecrets(seed string) Secrets {
+// space: the seed gives away every link, so it is refused (ErrNotLab)
+// unless the spec says `lab: true`.
+func InsecureSeededSecrets(s *Spec, seed string) (Secrets, error) {
+	if !s.Lab {
+		return nil, fmt.Errorf("%s: %w", s.File, ErrNotLab)
+	}
 	return func(from, to, transport string, size int) ([]byte, error) {
 		var out []byte
 		for block := byte(0); len(out) < size; block++ {
@@ -441,7 +449,7 @@ func InsecureSeededSecrets(seed string) Secrets {
 			out = m.Sum(out)
 		}
 		return out[:size], nil
-	}
+	}, nil
 }
 
 // Build plans a spec and seals and signs the map.

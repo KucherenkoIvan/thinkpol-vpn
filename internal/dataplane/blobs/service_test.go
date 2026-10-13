@@ -3,6 +3,7 @@ package blobs
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -667,5 +669,46 @@ func TestOnlyPeersAreServed(t *testing.T) {
 	}
 	if st := server.Status(); st.NotPeer != 2 || st.Served != 0 {
 		t.Errorf("status %+v", st)
+	}
+}
+
+// The plan is the access control for the whole transfer, not only its
+// start: a peer the new map drops gets nothing more once the plan is in.
+func TestAPeerDroppedFromThePlanIsServedNoMore(t *testing.T) {
+	data := make([]byte, 1<<20)
+	if _, err := rand.Read(data); err != nil {
+		t.Fatal(err)
+	}
+	ref := refOf(netmap.BlobKind(7), "", data)
+	limits := fast
+	limits.ServeRate, limits.MinRate = 256<<10, 1
+	tn := newTestNet()
+	server := startNode(t, tn, 1, newMemStore(data), limits)
+	p := server.plan([]netmap.BlobRef{ref})
+	server.Update(p)
+	eventually(t, "the server holding the blob", func() bool { _, ok := server.Get(ref.SHA256); return ok })
+
+	c, err := tn.dial(context.Background(), overlay(9), netip.AddrPortFrom(server.addr, Port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+	req := request{sha256: ref.SHA256}.encode()
+	if _, err := c.Write(req[:]); err != nil {
+		t.Fatal(err)
+	}
+	head := make([]byte, responseHeaderSize+1)
+	if _, err := io.ReadFull(c, head); err != nil || head[0] != byte(statusOK) {
+		t.Fatalf("transfer didn't start: %x, %v", head, err)
+	}
+	p.Peers = slices.DeleteFunc(p.Peers, func(peer Peer) bool { return slices.Contains(peer.Addrs, overlay(9)) })
+	server.Update(p)
+	rest, err := io.ReadAll(c)
+	if err != nil {
+		t.Fatalf("the transfer didn't end: %v", err)
+	}
+	if got := 1 + len(rest); got >= len(data) {
+		t.Errorf("the dropped peer got all %d bytes", got)
 	}
 }

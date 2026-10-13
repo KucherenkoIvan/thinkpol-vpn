@@ -62,6 +62,8 @@ Two planes. The **data plane** moves packets on every node; the **control plane*
 | `reality`-style | borrows a real site's TLS handshake, no certificate of our own | later |
 | `obfs-udp` | obfuscated datagrams | for direct device-to-device paths, where TCP hole punching is impractical |
 
+`udp`'s datagrams are sealed with an AEAD, not a NaCl sealed box (those are only for what is sealed to a public key, such as the map's sections): XChaCha20-Poly1305 under a key per direction derived (HKDF-SHA256) from the link's credential, which authenticates every datagram.
+
 Stream transports carry TCP inside TCP and degrade under loss; datagram transports are the first thing throttled under whitelists. Hence **transports are chosen per link**, not per network.
 
 **The map says, the engine converts, the transport decides.** Each transport's settings (listener, dial side, inbound side) are its own protobuf messages in `proto/thinkpol/transport/v1/`: the controller encodes them, the transport's adapter decodes them, and the map and everything between carry them as opaque bytes. The conversion from the map to the transport port's types lives in the data-plane engine (`internal/dataplane`), not in `netmap` or the adapters; it checks each entry with the transport before using it. Endpoints in the map are IP literals: the controller resolves names, nodes never resolve them at dial time. Transports may rely on clocks: nodes' clocks must agree within five minutes (`udp` drops datagrams sealed further from its own clock).

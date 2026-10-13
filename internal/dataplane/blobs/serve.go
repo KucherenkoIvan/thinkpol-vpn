@@ -8,7 +8,6 @@ import (
 	"io"
 	"net"
 	"net/netip"
-	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -196,15 +195,24 @@ func remoteAddr(c net.Conn) netip.Addr {
 	return netip.Addr{}
 }
 
-// peerOf is the plan's peer with that overlay address (a peer has
-// several): who a connection counts against.
+// peerOfLocked is the current plan's peer with that overlay address (a
+// peer has several): who a connection counts against. The plan is the
+// access control, and this is the one place it is asked: when a
+// connection is admitted and before each chunk it is sent, so a peer the
+// map drops (or an address it gives another peer) gets nothing more from
+// the moment the new plan is in, whatever the order in which the tunnel
+// and this service take the new map.
 func (s *Service) peerOfLocked(remote netip.Addr) (string, bool) {
-	for _, p := range s.plan.Peers {
-		if slices.Contains(p.Addrs, remote) {
-			return p.ID.String(), true
-		}
-	}
-	return "", false
+	key, ok := s.peerOf[remote]
+	return key, ok
+}
+
+// stillPeer reports whether remote still is key's under the current plan.
+func (s *Service) stillPeer(remote netip.Addr, key string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	k, ok := s.peerOfLocked(remote)
+	return ok && k == key
 }
 
 // errNotPeer is a connection from no peer of the plan.
@@ -297,6 +305,9 @@ func (s *Service) serveConn(ctx context.Context, c net.Conn) {
 	for len(rest) > 0 {
 		n := min(chunk, len(rest))
 		if err := s.rate.wait(ctx, n); err != nil {
+			return
+		}
+		if !s.stillPeer(remote, key) {
 			return
 		}
 		idle()
