@@ -64,3 +64,4 @@ Fixes: 1. `noZone` drops the zone (and unmaps) on both sides before the source c
 - 2026-10-13 in-progress → review — all acceptance met; lint, test, race and the lab checks above pass
 - 2026-10-13 review → has-errors — 5 findings from the orchestrator's review, see Review findings
 - 2026-10-13 has-errors → in-progress — owner: agent-hardening, fixing review findings
+- 2026-10-13 in-progress → review — review findings fixed; lint, test, race and the dns lab-gotest pass
