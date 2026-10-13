@@ -3,7 +3,8 @@
 
   python3 tickets/board.py            board + tickets needing a human + ready list
   python3 tickets/board.py -m M0      only one milestone
-  python3 tickets/board.py --next-id  next free TP- id
+  python3 tickets/board.py --next-id  next free TP- id (--next-id KRN: next free KRN- id); sees ids
+                                      on this checkout and on every local and remote branch
   python3 tickets/board.py --check    validate frontmatter and dependencies
   python3 tickets/board.py --waves    unfinished tickets grouped by dependency depth
 """
@@ -11,6 +12,7 @@
 import argparse
 import pathlib
 import re
+import subprocess
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent
@@ -49,6 +51,35 @@ def load():
             meta["path"] = path
             tickets[meta["id"]] = meta
     return tickets
+
+
+def branch_ids(prefix):
+    """Numbers of `prefix`-NNN ids used on any local or remote branch, from branch
+    names (tp-061-slug) and from the ticket files each branch carries, so an id that
+    only an open branch has is never handed out again."""
+    def git(*args):
+        try:
+            out = subprocess.run(["git", "-C", str(ROOT), *args], capture_output=True, text=True)
+        except OSError:
+            return []
+        return out.stdout.splitlines() if out.returncode == 0 else []
+
+    pattern = re.compile(rf"(?:^|/){prefix}-(\d+)", re.I)
+    numbers = set()
+    for ref in git("for-each-ref", "--format=%(refname:short)", "refs/heads", "refs/remotes"):
+        match = pattern.search(ref)
+        if match:
+            numbers.add(int(match.group(1)))
+        for path in git("ls-tree", "-r", "--name-only", ref, "--", "tickets"):
+            match = pattern.search(path)
+            if match:
+                numbers.add(int(match.group(1)))
+    return numbers
+
+
+def next_id(tickets, prefix):
+    numbers = {int(t[len(prefix) + 1:]) for t in tickets if t.startswith(prefix + "-")}
+    return f"{prefix}-{max(numbers | branch_ids(prefix), default=0) + 1:03d}"
 
 
 def ready(tickets):
@@ -120,7 +151,8 @@ def waves(tickets):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("-m", "--milestone")
-    parser.add_argument("--next-id", action="store_true")
+    parser.add_argument("--next-id", nargs="?", const="TP", choices=["TP", "KRN"],
+                        help="next free id of the series (TP by default; KRN ids are separate)")
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--waves", action="store_true")
     args = parser.parse_args()
@@ -136,8 +168,7 @@ def main():
         return 0
 
     if args.next_id:
-        numbers = [int(t[3:]) for t in tickets if t.startswith("TP-")]
-        print(f"TP-{max(numbers, default=0) + 1:03d}")
+        print(next_id(tickets, args.next_id))
         return 0
 
     if args.check:

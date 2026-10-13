@@ -61,6 +61,7 @@ The node's public address belongs to the supervisor, which authenticates every c
   - Handed-over streams bypass it. A pacing rate (`SO_MAX_PACING_RATE`) set on the descriptor before the handoff caps only the node's sends; uploads need policing (tc ingress or IFB on the uplink) or a read-rate limit. Add TP-009's veth and cgroup limits.
   - Guests' `Inbound` come from the guests' own maps (`AcceptedInbound`); only the owner's listeners are opened.
 - **For TP-041 (telemetry):** each worker receives its space's `ipc.SharedCounters` every `CountersInterval` (`Session.SharedCounters`) and its own drops (`Session.SharedDrops`); seal them into the space's telemetry like the rest. They hold only that space's figures. The owner-only `ListenerInfo` (public addresses, every space's rejected links) must never go into any space's telemetry.
+- **Pre-auth parsing moves out of the supervisor (independent design review, 2026-10-13; TP-062).** Today the supervisor, as root, parses unauthenticated bytes (datagram authentication, timestamp and replay filtering, later the ClientHello peek) and holds the merged credential tables of every space. The decision is an unprivileged gatekeeper for that path (DESIGN "Server agent"): TP-063. This ticket's design stands until then.
 
 ## Review findings
 Two reviewers (2026-10-11); the routing core held up and no cross-space leak was found. Decided by the orchestrator.
@@ -103,3 +104,4 @@ Round 2 (delta review, 2026-10-11):
 - 2026-10-11 round 2 fixed: one udp Router per transport across listeners and reopens, worker-side loss asserted in the paced run, ring residual documented; ipc `Receive` reports a peer reset (closed with messages unread) as EOF, which the always-sent Listeners message made visible in TestCrashingWorkerBacksOff
 - 2026-10-11 in-progress → review
 - 2026-10-11 review → done — merged into rewrite
+- 2026-10-13 docs (TP-062): note that pre-auth parsing moves to a gatekeeper (TP-063)
