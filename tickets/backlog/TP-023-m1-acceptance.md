@@ -20,8 +20,12 @@ M1's "done when" as lab tests, plus one real-world run on macOS.
 - The macOS checklists from TP-019 and TP-021 run once by the author on a real network.
 
 ## Acceptance
-- [ ] lab tests green
-- [ ] macOS checklist results recorded in Notes
+- [ ] lab tests green. They cover **Linux only**: M1's leak guarantees (DNS, IPv6, the route table) are Linux-only until TP-019 and TP-021 land, and the lab says nothing about macOS
+- [ ] macOS checklist results recorded in Notes; M1's claim for macOS is exactly what the checklist shows, and the acceptance is worded so nobody reads it as "macOS is safe" (independent design review, 2026-10-13)
+
+## Notes
+- **Scope of the leak guarantees (TP-062):** TP-019 is not in `depends_on`. If it isn't done when this runs, M1 is accepted as Linux-only and Notes say so.
 
 ## Log
 - 2026-10-10 created in backlog
+- 2026-10-13 docs (TP-062): acceptance scoped: leak guarantees are Linux-only until TP-019/TP-021
