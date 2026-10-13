@@ -16,3 +16,6 @@ __pycache__/
 .DS_Store
 .idea/
 .vscode/
+
+# local correspondence with reviewers; never committed
+/comms/
