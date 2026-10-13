@@ -132,7 +132,6 @@ func (s *Server) answer(cfg *Config, src netip.Addr, req *dns.Msg) *dns.Msg {
 		return reply(req, dns.RcodeServerFailure)
 	}
 	out := new(dns.Msg)
-	out.Id = dns.Id()
 	out.RecursionDesired = true
 	out.CheckingDisabled = req.CheckingDisabled
 	out.Question = []dns.Question{{Name: dns.Fqdn(name), Qtype: q.Qtype, Qclass: q.Qclass}}
@@ -149,17 +148,12 @@ func (s *Server) answer(cfg *Config, src netip.Addr, req *dns.Msg) *dns.Msg {
 }
 
 // exchange asks each server in turn until one answers with something
-// other than a failure, over UDP, and over TCP when the answer is
-// truncated. Nil if none answered.
+// other than a failure (exchangeWith: only srv's own answer counts). Nil
+// if none answered.
 func (s *Server) exchange(m *dns.Msg, servers []netip.AddrPort, control func(string, string, syscall.RawConn) error) *dns.Msg {
 	var last *dns.Msg
 	for _, srv := range servers {
-		c := &dns.Client{Net: "udp", Timeout: s.opts.Timeout, UDPSize: upstreamUDPSize, Dialer: &net.Dialer{Timeout: s.opts.Timeout, Control: control}}
-		r, _, err := c.Exchange(m, srv.String())
-		if err == nil && r.Truncated {
-			c.Net = "tcp"
-			r, _, err = c.Exchange(m, srv.String())
-		}
+		r, err := exchangeWith(m, srv, control, s.opts.Timeout)
 		if err != nil {
 			continue
 		}

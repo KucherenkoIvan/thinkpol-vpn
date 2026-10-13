@@ -66,6 +66,8 @@ Two planes. The **data plane** moves packets on every node; the **control plane*
 | `reality`-style | borrows a real site's TLS handshake, no certificate of our own | pulled forward as a VLESS/Reality-compatible transport, so existing tooling and servers can interoperate; researched first (TP-064) |
 | `obfs-udp` | obfuscated datagrams | for direct device-to-device paths, where TCP hole punching is impractical |
 
+`udp`'s datagrams are sealed with an AEAD, not a NaCl sealed box (those are only for what is sealed to a public key, such as the map's sections): XChaCha20-Poly1305 under a key per direction derived (HKDF-SHA256) from the link's credential, which authenticates every datagram.
+
 **Server-side tells.** uTLS covers the client and the camouflage site's certificate covers what a probe sees, but not the server's own hello: the worker terminates TLS with Go's stack, so its JA3S/JA4S, extension order and ALPN differ from the camouflage site's, a stable discriminator for a censor that fingerprints responses. A second tell: every probe makes the entry open an upstream connection to the camouflage target, which an ordinary server doesn't. Both are known weaknesses; the lab's prober measures them (TP-026, TP-032) and the matrix shows them honestly, and borrowing a real handshake (`reality`-style, above) is what removes the first. A "bridge" node type (a VLESS ingress routed into the overlay) was considered and set aside as too complex for now.
 
 Stream transports carry TCP inside TCP and degrade under loss; datagram transports are the first thing throttled under whitelists. Hence **transports are chosen per link**, not per network.

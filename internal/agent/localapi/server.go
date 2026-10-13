@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"math"
 	"sync"
 	"time"
 
@@ -217,7 +218,8 @@ func (s *server) SetRulePreset(ctx context.Context, req *localapiv1.SetRulePrese
 }
 
 func (s *server) TailLogs(req *localapiv1.TailLogsRequest, stream grpc.ServerStreamingServer[localapiv1.TailLogsResponse]) error {
-	n := int(req.GetLines())
+	// Through uint64, so the count stays positive where int is 32 bits.
+	n := int(min(uint64(req.GetLines()), math.MaxInt32))
 	if n == 0 {
 		n = 100
 	}

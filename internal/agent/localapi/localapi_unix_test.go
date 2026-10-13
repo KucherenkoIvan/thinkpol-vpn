@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"math"
 	"net"
 	"os"
 	"path/filepath"
@@ -601,5 +602,68 @@ func TestListenHoldsAtMostMaxConns(t *testing.T) {
 	}
 	for _, c := range held[1:] {
 		_ = c.Close()
+	}
+}
+
+// panickyNode panics in Status while panics is set.
+type panickyNode struct {
+	*fakeNode
+	panics atomic.Bool
+}
+
+func (n *panickyNode) Status() agent.Status {
+	if n.panics.Load() {
+		panic("status")
+	}
+	return n.fakeNode.Status()
+}
+
+// A handler that panics fails its own call, not the service: grpckit's
+// standard chain, outermost on NewGRPCServer's server, recovers unary and
+// streaming handlers alike.
+func TestAPanickingHandlerFailsOnlyItsCall(t *testing.T) {
+	socket := filepath.Join(shortTempDir(t), "api", "api.sock")
+	l, err := Listen(socket, me())
+	if err != nil {
+		t.Fatal(err)
+	}
+	node := &panickyNode{fakeNode: &fakeNode{}}
+	ctx, cancel := context.WithCancel(context.Background())
+	srv := NewGRPCServer(ctx, Options{Node: node, Logs: logring.New(1 << 10), Log: slog.New(slog.DiscardHandler)}, me())
+	done := make(chan error, 1)
+	go func() { done <- grpckit.Serve(ctx, srv, l) }()
+	t.Cleanup(func() { cancel(); <-done })
+	c := dial(t, socket)
+
+	node.panics.Store(true)
+	if _, err := c.Status(context.Background()); err == nil || !strings.Contains(err.Error(), "Internal") {
+		t.Errorf("unary: %v, want Internal", err)
+	}
+	if err := c.WatchStatus(context.Background(), time.Second, func(*localapiv1.Status) error { return nil }); err == nil || !strings.Contains(err.Error(), "Internal") {
+		t.Errorf("stream: %v, want Internal", err)
+	}
+	node.panics.Store(false)
+	if _, err := c.Status(context.Background()); err != nil {
+		t.Errorf("after the panics: %v", err)
+	}
+}
+
+// Any line count a caller asks for is a count, never a panic: the most
+// a uint32 holds (what the client sends for math.MaxInt on 64 bits) sends
+// the whole ring.
+func TestTailLogsTakesAnyLineCount(t *testing.T) {
+	s := serve(t, me())
+	c := dial(t, s.socket)
+	for range 5 {
+		_, _ = s.logs.Write([]byte("line\n"))
+	}
+	for _, n := range []int{math.MaxInt32, math.MaxInt} {
+		var got []string
+		if err := c.TailLogs(context.Background(), n, false, func(lines []string, _ uint64) error {
+			got = append(got, lines...)
+			return nil
+		}); err != nil || len(got) != 5 {
+			t.Errorf("%d lines: %d, %v", n, len(got), err)
+		}
 	}
 }

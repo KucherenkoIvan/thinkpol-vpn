@@ -25,6 +25,9 @@ var Reference string
 // with the links those paths need (see the package doc for the format).
 type Spec struct {
 	File string
+	// Lab marks a spec for lab tests only (`lab: true`): the only kind
+	// InsecureSeededSecrets takes. Nothing of it goes into the map.
+	Lab bool
 	// IPv4Network is the overlay IPv4 network (100.64.0.0/10 unless the spec
 	// narrows it). IPv6Network is the ULA /48, invalid when the spec leaves it
 	// to Plan, which derives it from the space id.
@@ -180,6 +183,7 @@ func decodeError(file string, err error) error {
 }
 
 type rawSpec struct {
+	Lab   scalar `yaml:"lab"`
 	Space struct {
 		Name scalar `yaml:"name"`
 		IPv4 scalar `yaml:"ipv4"`
@@ -339,6 +343,14 @@ func (c *checker) value(s scalar) (string, bool) {
 
 func (c *checker) spec(raw *rawSpec) *Spec {
 	s := &Spec{File: c.file, IPv4Network: cgnat}
+	// As written, never from ${NAME}: the spec itself says it is a lab's.
+	switch v := raw.Lab; {
+	case !v.set(), v.text == "false":
+	case v.text == "true":
+		s.Lab = true
+	default:
+		c.errorf(v.pos, "lab %q is neither true nor false", v.text)
+	}
 	if v := raw.Space.IPv4; v.set() {
 		if text, ok := c.value(v); ok {
 			p, err := netip.ParsePrefix(text)

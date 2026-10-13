@@ -22,7 +22,8 @@
 //
 // Inside the seal: the sender (its creation time in nanoseconds, strictly
 // increasing per process, and 4 random bytes; a new one per dial and per
-// listener-side link), the time the datagram was sent (Unix seconds), a
+// listener-side link), the time the datagram was sent (Unix seconds, a
+// uint32 that wraps in 2106; the freshness check allows for it), a
 // counter per sender, and the packets, each behind its length. A zero
 // length, or fewer than two bytes left, ends the packets; the rest is
 // padding, zeros sealed with everything else. A sender puts one packet in

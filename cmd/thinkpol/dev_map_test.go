@@ -114,6 +114,35 @@ func TestDevMapBuildNamesSpecLocations(t *testing.T) {
 	}
 }
 
+// -insecure-secrets-seed is refused unless the spec itself says lab: true.
+func TestDevMapBuildSeedNeedsALabSpec(t *testing.T) {
+	dir := t.TempDir()
+	keys := filepath.Join(dir, "keys")
+	mustRunCLI(t, "dev", "keygen", "space", "-out", keys)
+	mustRunCLI(t, "dev", "keygen", "node", "-out", keys, "s", "d")
+	const nodes = "nodes:\n  - name: s\n    kind: server\n    endpoints: [udp://192.0.2.1:4500]\n    ingress: true\n  - name: d\n    kind: device\npaths:\n  - [d, s]\n"
+	for name, c := range map[string]struct {
+		spec string
+		ok   bool
+	}{
+		"no lab":    {nodes, false},
+		"lab false": {"lab: false\n" + nodes, false},
+		"lab true":  {"lab: true\n" + nodes, true},
+	} {
+		spec := filepath.Join(dir, strings.ReplaceAll(name, " ", "-")+".yaml")
+		if err := os.WriteFile(spec, []byte(c.spec), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		code, _, stderr := runCLI(t, "dev", "map", "build", "-keys", keys, "-out", filepath.Join(dir, "map.bin"), "-insecure-secrets-seed", "x", spec)
+		switch {
+		case c.ok && code != 0:
+			t.Errorf("%s: exit %d, %s", name, code, stderr)
+		case !c.ok && (code != 1 || !strings.Contains(stderr, "lab: true")):
+			t.Errorf("%s: exit %d, %s", name, code, stderr)
+		}
+	}
+}
+
 func TestDevKeygenNeverReplacesKeys(t *testing.T) {
 	keys := filepath.Join(t.TempDir(), "keys")
 	mustRunCLI(t, "dev", "keygen", "space", "-out", keys)

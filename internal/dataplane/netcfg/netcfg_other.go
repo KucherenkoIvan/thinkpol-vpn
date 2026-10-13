@@ -12,5 +12,9 @@ import (
 // rather than half-configuring the host. On Android the VpnService builder
 // sets addresses and routes, so there is never a netcfg adapter there.
 func New(owner Owner) (Configurator, error) {
-	return nil, fmt.Errorf("netcfg: no adapter for %s: %w", runtime.GOOS, errors.ErrUnsupported)
+	return nil, errNoAdapter
 }
+
+// errNoAdapter is a variable, not built in New, so that staticcheck can't
+// prove New always fails here and flag every caller's error check.
+var errNoAdapter = fmt.Errorf("netcfg: no adapter for %s: %w", runtime.GOOS, errors.ErrUnsupported)

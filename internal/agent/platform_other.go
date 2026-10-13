@@ -12,5 +12,10 @@ import (
 // was (macOS's data plane is TP-019, Windows' TP-047, Android's runs in
 // its VpnService).
 func supported() error {
-	return fmt.Errorf("%w: no data plane on %s yet", ErrUnsupported, runtime.GOOS)
+	return errNoDataPlane
 }
+
+// errNoDataPlane is a variable, not built in supported, so that
+// staticcheck can't prove supported always fails here and flag the
+// caller's error check.
+var errNoDataPlane = fmt.Errorf("%w: no data plane on %s yet", ErrUnsupported, runtime.GOOS)

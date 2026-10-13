@@ -193,8 +193,11 @@ type Service struct {
 	now    func() time.Time
 	rate   *limiter
 
-	mu      sync.Mutex
-	plan    Plan
+	mu   sync.Mutex
+	plan Plan
+	// peerOf is the plan's peers by overlay address, built with the plan
+	// in Update: who may be served (admit, and every chunk after).
+	peerOf  map[netip.Addr]string
 	gen     uint64
 	want    map[[32]byte]netmap.BlobRef
 	skipped int
@@ -301,6 +304,14 @@ func (s *Service) Update(p Plan) {
 		s.cancelFetch = nil
 	}
 	s.plan = p
+	s.peerOf = map[netip.Addr]string{}
+	for _, peer := range p.Peers {
+		for _, a := range peer.Addrs {
+			if _, dup := s.peerOf[a.Unmap()]; !dup {
+				s.peerOf[a.Unmap()] = peer.ID.String()
+			}
+		}
+	}
 	s.gen++
 	previous := s.want
 	s.want = map[[32]byte]netmap.BlobRef{}

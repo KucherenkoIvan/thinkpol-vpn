@@ -48,7 +48,7 @@ Now recorded as `needs_human` on the tickets themselves; `board.py` lists them.
 
 ## Environment notes
 
-- With `GOTOOLCHAIN=auto`, an older local Go downloads the toolchain `go.mod` asks for (1.25) automatically.
+- With `GOTOOLCHAIN=auto`, an older local Go downloads the toolchain `go.mod` asks for automatically.
 - go-kernel is public, so no `GOPRIVATE` or SSH setup is needed to fetch it.
 - Linux-only code (network namespaces, netlink, nftables, NFQUEUE) can't be tested on the macOS host; its tests run inside lab containers.
 
