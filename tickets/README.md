@@ -12,7 +12,7 @@ tickets/
   done/          reviewed and merged into the `rewrite` branch
 ```
 
-`python3 tickets/board.py` prints the board, the tickets that need a human, and the tickets that are ready to start. `--next-id` prints the next free id; `--check` validates frontmatter and dependencies; `--waves` groups unfinished tickets by what can run in parallel. Suggestions for running several tickets at once are in [ORCHESTRATION.md](ORCHESTRATION.md).
+`python3 tickets/board.py` prints the board, the tickets that need a human, and the tickets that are ready to start. `--next-id` prints the next free TP id, counting ids that exist only on local or remote branches (`--next-id KRN` does the same for the separate KRN series); `--check` validates frontmatter and dependencies; `--waves` groups unfinished tickets by what can run in parallel. Suggestions for running several tickets at once are in [ORCHESTRATION.md](ORCHESTRATION.md).
 
 ## Ticket files
 
@@ -78,7 +78,7 @@ Waiting for a dependency is **not** blocked: such tickets stay in `backlog/` and
 
 ## Branches
 
-One branch per ticket, named `<id-lowercase>-<slug>` (e.g. `tp-005-udp-transport`), cut from `rewrite` and merged back into `rewrite`. `KRN-` tickets branch from go-kernel's `main` and follow go-kernel's own rules (docs completeness, tagged releases); the ticket here records the released tag in `## Notes`.
+One branch per ticket, named `<id-lowercase>-<slug>` (e.g. `tp-005-udp-transport`), cut from `rewrite` and merged back into `rewrite`. `KRN-` tickets branch from go-kernel's `master` and follow go-kernel's own rules (docs completeness, tagged releases); the ticket here records the released tag in `## Notes`.
 
 ## Splitting an epic
 
