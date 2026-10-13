@@ -10,7 +10,7 @@ Work in progress: the project is being rewritten from scratch.
 
 ## Development
 
-Needs Go 1.25 (with `GOTOOLCHAIN=auto`, an older Go downloads it) and `make`. [go-kernel](https://github.com/KucherenkoIvan/go-kernel) is public, so no `GOPRIVATE` or SSH setup is needed.
+Needs Go 1.26 (`go.mod` pins the toolchain; with `GOTOOLCHAIN=auto`, an older Go downloads it), `make`, and the network for `make lint` (govulncheck reads the Go vulnerability database). [go-kernel](https://github.com/KucherenkoIvan/go-kernel) is public, so no `GOPRIVATE` or SSH setup is needed.
 
 ```sh
 make tools                     # pinned dev tools into bin/tools (lint does it on first use)

@@ -66,7 +66,7 @@ type Node struct {
 // its mode: a node whose map is invalid, or holds no section for its keys,
 // never starts.
 func Prepare(cfg Config, logs Logs) (*Node, error) {
-	if err := cfg.Check(); err != nil {
+	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 	cfg.StateDir = filepath.Clean(cfg.StateDir)
@@ -221,21 +221,34 @@ func (n *Node) State() State { return n.state }
 // interface, route, namespace or nftables table behind. reload (SIGHUP)
 // makes the watcher read the map file at once. A node removed from its
 // space (its map has no section for it) waits idle for a map that includes
-// it. On a host whose data plane isn't there yet Adapters refuses, before
-// anything changed. Call it once.
+// it. On a host whose data plane isn't there yet, or where another node
+// agent runs (it holds the host's agent lock), Adapters refuses, before
+// anything changed. The lock is held until the node adapter returns, or
+// the process ends. Call it once.
 func (n *Node) Adapters(reload <-chan os.Signal) ([]app.Adapter, error) {
 	if err := supported(n.mode); err != nil {
 		return nil, err
 	}
+	// One node agent per host, taken before anything of this node (or the
+	// caller's adapters) touches the host: a second agent would undo the
+	// first's routes and resolver configuration with run's cleanups.
+	unlock, err := lockHost()
+	if err != nil {
+		return nil, err
+	}
 	reg, err := Transports(true) // a device's, or the supervisor's in the root namespace
 	if err != nil {
+		unlock()
 		return nil, err
 	}
 	watcher := &mapWatcher{path: n.state.MapPath, interval: n.cfg.MapPoll, reload: reload, log: n.logs.Logger, last: n.state.mapFile}
 	maps := make(chan []byte, 1)
 	return []app.Adapter{
 		{Name: "map watcher", Run: func(ctx context.Context) error { return watcher.run(ctx, maps) }},
-		{Name: "node", Run: func(ctx context.Context) error { return n.run(ctx, reg, maps) }},
+		{Name: "node", Run: func(ctx context.Context) error {
+			defer unlock()
+			return n.run(ctx, reg, maps)
+		}},
 	}, nil
 }
 
@@ -243,13 +256,6 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 	defer close(n.stopped)
 	h := n.state.Map.Header()
 	n.logs.Info("starting", "mode", n.mode, "space", h.SpaceID, "node", n.state.Keys.ID, "version", h.Version, "map", n.state.MapPath)
-	// One node agent per host: a second would undo the first's routes
-	// and resolver configuration with the cleanups below.
-	unlock, err := lockHost()
-	if err != nil {
-		return err
-	}
-	defer unlock()
 	if n.mode != ModeServer && (n.state.Removed || !n.want) {
 		n.clearRouteTable()
 	}

@@ -107,3 +107,4 @@ Resolution:
 - 2026-10-12 review fixes: B1–B4, F5, nits; merged origin/rewrite (TP-055, TP-020: its dev spec rules and chains kept, presets added; the resolver's direct sockets marked); DESIGN.md "Routing rules and DNS" (route table on Linux after review)
 - 2026-10-12 in-progress → review — every finding checked; after merging origin/rewrite (TP-020): `make lint`, `make test`, `go test -race` on dataplane, routetable, netcfg, agent, localapi, devmap and dns, and `make lab-test LAB_P=2` (lab and 27 in-node packages) pass
 - 2026-10-12 review → done — merged into rewrite
+- 2026-10-13 docs (TP-062): crash posture decided: fail-closed after an agent crash by default under the everything and all-but-domestic presets; the Linux route table's IPv4-flows-after-a-crash is the M1 behaviour until TP-048 (see its Notes)

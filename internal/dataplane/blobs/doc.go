@@ -25,10 +25,13 @@
 // A server answers statusOK only for a blob it holds, which is always one
 // a signed map of the space listed; anything else gets statusNotHere,
 // whether the hash is unknown or merely not held, so the service is no
-// oracle beyond the availability set the peer already has. The length is
-// the blob's size less the offset; the client knows the size from its own
-// map and refuses any other. offset lets a client resume a transfer that
-// broke; the whole blob is checked once it is complete.
+// oracle beyond the availability set the peer already has. Only the
+// current plan's peers are served, by overlay address: a connection from
+// any other source is closed unanswered, and a transfer stops as soon as
+// a new plan no longer has its peer. The length is the blob's size less
+// the offset; the client knows the size from its own map and refuses any
+// other. offset lets a client resume a transfer that broke; the whole
+// blob is checked once it is complete.
 //
 // # Bounds
 //

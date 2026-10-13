@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"net"
 	"path/filepath"
 	"syscall"
@@ -34,6 +35,14 @@ type Client struct {
 
 // Dial connects to the local API at path. It tries the socket first, so
 // that a missing service or a caller without access is told so plainly.
+//
+// The client doesn't authenticate the server: the socket's directory is
+// the trust anchor. Listen keeps it the service user's (root's, as
+// installed), writable by that user alone, in a parent no one else can
+// write to (ownDir, checkParent), so only the service can have put a
+// socket at the default path. Those checks are all that keeps another
+// process from posing as the service; they must stay exact. A path given
+// by hand is trusted as given.
 func Dial(path string) (*Client, error) {
 	probe, err := net.DialTimeout("unix", path, 5*time.Second)
 	if err != nil {
@@ -128,7 +137,7 @@ func (c *Client) SetRulePreset(ctx context.Context, preset string) (*localapiv1.
 // ends (nil), fn fails, or the service stops. missed counts lines the ring
 // dropped before they could be sent.
 func (c *Client) TailLogs(ctx context.Context, lines int, follow bool, fn func(lines []string, missed uint64) error) error {
-	stream, err := c.api.TailLogs(ctx, &localapiv1.TailLogsRequest{Lines: uint32(max(lines, 0)), Follow: follow})
+	stream, err := c.api.TailLogs(ctx, &localapiv1.TailLogsRequest{Lines: uint32(min(uint64(max(lines, 0)), math.MaxUint32)), Follow: follow})
 	if err != nil {
 		return c.explain(err)
 	}

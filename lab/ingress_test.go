@@ -57,7 +57,7 @@ func TestIngressOffAdmitsOnlyServers(t *testing.T) {
 		"device-a": devA.Start(t, "thinkpol", "up", "-map-poll", "1s"),
 		"device-b": devB.Start(t, "thinkpol", "up", "-map-poll", "1s"),
 	}
-	waitLog(t, up["server-2"], `msg="map applied" version=`+version1+` .*ingress=on egress=off`)
+	waitLog(t, up["server-2"], `msg="map applied" .*version=`+version1+` .*ingress=on egress=off`)
 
 	server2 := netip.AddrFrom4([4]byte{100, 64, 0, 2}) // overlay addresses go in spec order
 	ping(t, devB, server2)                             // directly: device-b's credential works
@@ -75,7 +75,7 @@ func TestIngressOffAdmitsOnlyServers(t *testing.T) {
 	for _, name := range []string{"server-1", "server-2", "device-a"} {
 		putMap(t, nodes[name], v2)
 	}
-	waitLog(t, up["server-2"], `msg="map applied" version=`+version2+` .*ingress=off egress=off`)
+	waitLog(t, up["server-2"], `msg="map applied" .*version=`+version2+` .*ingress=off egress=off`)
 	waitLog(t, up["server-1"], applied(version2))
 	waitLog(t, up["device-a"], applied(version2))
 

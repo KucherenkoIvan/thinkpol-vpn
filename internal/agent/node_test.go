@@ -90,7 +90,7 @@ func TestLoadConfig(t *testing.T) {
 	if cfg != want || cfg.MapPath() != filepath.Join(DefaultStateDir, MapFileName) {
 		t.Fatalf("defaults %+v", cfg)
 	}
-	if err := cfg.Check(); err != nil {
+	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("THINKPOL_MODE", "device")

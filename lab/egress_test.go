@@ -61,7 +61,7 @@ func TestEgressThroughAnExit(t *testing.T) {
 		up[name] = n.Start(t, "thinkpol", "up", "-map-poll", "1s", "-egress-allowed", servers)
 	}
 	uplink := regexp.QuoteMeta(s2.Interface(lab.NetServers))
-	waitLog(t, up["server-2"], `msg="map applied" version=`+version1+` .*egress=on uplink=`+uplink+` egress_ipv4=on egress_ipv6=on`)
+	waitLog(t, up["server-2"], `msg="map applied" .*version=`+version1+` .*egress=on uplink=`+uplink+` egress_ipv4=on egress_ipv6=on`)
 	waitLog(t, up["device-a"], applied(version1))
 	// The device's route-table mode (TP-018) sends everything but its
 	// link endpoints into the TUN: its rule is "default -> chain:out".
@@ -103,7 +103,7 @@ func TestEgressThroughAnExit(t *testing.T) {
 	for _, n := range nodes {
 		putMap(t, n, v2)
 	}
-	waitLog(t, up["server-2"], `msg="map applied" version=`+version2+` .*egress_ipv4=on egress_ipv6=off`)
+	waitLog(t, up["server-2"], `msg="map applied" .*version=`+version2+` .*egress_ipv4=on egress_ipv6=off`)
 	waitLog(t, up["device-a"], applied(version2))
 	web = inet.Capture(t, "ip6 and tcp port 80")
 	lab.Eventually(t, 30*time.Second, func() error {
@@ -141,7 +141,7 @@ func TestEgressThroughAnExit(t *testing.T) {
 	v3, version3 := space.build(t)
 	putMap(t, s1, v3)
 	putMap(t, s2, v3)
-	waitLog(t, up["server-2"], `msg="map applied" version=`+version3+` .*ingress=off egress=off`)
+	waitLog(t, up["server-2"], `msg="map applied" .*version=`+version3+` .*ingress=off egress=off`)
 	waitLog(t, up["server-1"], applied(version3))
 	web = inet.Capture(t, "tcp port 80 or icmp")
 	for i := range 3 {

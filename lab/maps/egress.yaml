@@ -11,6 +11,10 @@
 #   SERVER_1_IPV4=... SERVER_2_IPV4=... SERVER_2_EGRESS=true EXIT=server-2 \
 #     thinkpol dev map build -keys keys -out map.bin lab/maps/egress.yaml
 
+# The test builds both maps with -insecure-secrets-seed, so the links
+# device-a keeps share their secrets.
+lab: true
+
 nodes:
   - name: server-1
     kind: server

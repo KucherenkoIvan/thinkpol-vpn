@@ -183,7 +183,7 @@ func TestSealOpenAndTamper(t *testing.T) {
 		t.Fatalf("connection id %x, want %x", got, id)
 	}
 	o, err := open(nil, newAEAD(secret, toListener), d)
-	if err != nil || o.sender != sender || o.counter != 7 || o.packets != 1 || !bytes.Equal(firstFrame(o), packet) || o.sent.Unix() != now.Unix() {
+	if err != nil || o.sender != sender || o.counter != 7 || o.packets != 1 || !bytes.Equal(firstFrame(o), packet) || o.sent != uint32(now.Unix()) {
 		t.Fatalf("open: %+v %v", o, err)
 	}
 	if !o.fresh(now.Add(maxClockSkew)) || o.fresh(now.Add(maxClockSkew+2*time.Second)) || o.fresh(now.Add(-maxClockSkew-2*time.Second)) {
@@ -328,5 +328,30 @@ func TestSenderChurnIsBounded(t *testing.T) {
 	recent := ids[len(ids)-maxSenders-1] // the last one out of the slots
 	if v := s.admit(recent, 1, now.Add(time.Second)); v != dropStale {
 		t.Fatalf("a just-evicted sender: %v, want refused", v)
+	}
+}
+
+// The sealed send time is uint32 seconds and wraps in 2106; freshness
+// holds across the wrap, either way round.
+func TestFreshnessHoldsAcrossTheWrap(t *testing.T) {
+	secret := randomSecret(t)
+	wrap := time.Unix(1<<32, 0)
+	for _, sent := range []time.Time{wrap.Add(-10 * time.Second), wrap.Add(10 * time.Second)} {
+		id := connIDFor(secret, toListener, epochOf(sent))
+		d := seal(nil, newAEAD(secret, toListener), id, newSenderID(sent), sent, 1, []byte("p"), transport.Padding{})
+		o, err := open(nil, newAEAD(secret, toListener), d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, skew := range []time.Duration{0, 20 * time.Second, -20 * time.Second, maxClockSkew, -maxClockSkew} {
+			if !o.fresh(sent.Add(skew)) {
+				t.Errorf("sent %v, received %v later: stale", sent.UTC(), skew)
+			}
+		}
+		for _, skew := range []time.Duration{maxClockSkew + 2*time.Second, -maxClockSkew - 2*time.Second, 24 * time.Hour} {
+			if o.fresh(sent.Add(skew)) {
+				t.Errorf("sent %v, received %v later: fresh", sent.UTC(), skew)
+			}
+		}
 	}
 }

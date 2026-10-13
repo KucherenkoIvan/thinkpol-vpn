@@ -12,6 +12,12 @@
 # addresses known only at run time. Quote a value that YAML could misread
 # (e.g. one starting with ':').
 
+# Lab: optional, false unless written. true marks a spec for lab tests
+# only, the one kind `dev map build -insecure-secrets-seed` takes (the seed
+# gives away every link). It puts nothing into the map. Written as is, not
+# with ${NAME}.
+lab: false
+
 space:                        # optional
   # The space's name: devices resolve each node they have as a peer as
   # <node>.<space>.internal (overlay names), so with it every node name must

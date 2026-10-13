@@ -1,14 +1,17 @@
 # thinkpol-vpn development targets. `make help` lists them.
 
 # Dev tools, pinned, installed per checkout into bin/tools (lint and proto
-# install them on first use). Bumping a version reinstalls them all.
+# install them on first use). Bumping a version reinstalls them all. They
+# need Go 1.26 or later to build (govulncheck, golangci-lint): an older
+# local Go must leave GOTOOLCHAIN at auto, or the install fails.
 GOLANGCI_LINT_VERSION := v2.14.0
 BUF_VERSION := v1.73.0
 PROTOC_GEN_GO_VERSION := v1.36.12
 PROTOC_GEN_GO_GRPC_VERSION := v1.6.2
+GOVULNCHECK_VERSION := v1.9.0
 
 TOOLS := $(CURDIR)/bin/tools
-TOOLS_STAMP := $(TOOLS)/.installed-$(GOLANGCI_LINT_VERSION)-$(BUF_VERSION)-$(PROTOC_GEN_GO_VERSION)-$(PROTOC_GEN_GO_GRPC_VERSION)
+TOOLS_STAMP := $(TOOLS)/.installed-$(GOLANGCI_LINT_VERSION)-$(BUF_VERSION)-$(PROTOC_GEN_GO_VERSION)-$(PROTOC_GEN_GO_GRPC_VERSION)-$(GOVULNCHECK_VERSION)
 
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
@@ -26,7 +29,7 @@ BUF_BREAKING_AGAINST ?= rewrite
 # cgo is off unless a target turns it on (test-race).
 export CGO_ENABLED := 0
 
-.PHONY: help build test test-race lint nocgo proto-check fmt proto tools lab lab-up lab-test lab-perf lab-gotest lab-down
+.PHONY: help build test test-race lint vulncheck nocgo proto-check fmt proto tools lab lab-up lab-test lab-perf lab-gotest lab-down
 
 help: ## list targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -40,7 +43,7 @@ test: ## unit tests (lab tests skip outside the lab)
 test-race: ## unit tests with the race detector (needs cgo)
 	CGO_ENABLED=1 go test -race ./...
 
-lint: $(TOOLS_STAMP) ## gofmt, then go vet + golangci-lint per OS (lab tests included), the Android build and the no-cgo check
+lint: $(TOOLS_STAMP) ## gofmt, then go vet + golangci-lint per OS (lab tests included), the Android build, the no-cgo check and vulncheck
 	@out=$$(gofmt -l . 2>&1) || { echo "$$out"; exit 1; }; \
 	if [ -n "$$out" ]; then echo "gofmt needed:"; echo "$$out"; exit 1; fi
 	@for os in $(LINT_GOOS); do \
@@ -55,6 +58,16 @@ lint: $(TOOLS_STAMP) ## gofmt, then go vet + golangci-lint per OS (lab tests inc
 	GOOS=android GOARCH=arm64 go build $$pkgs
 	@$(MAKE) --no-print-directory nocgo
 	@$(MAKE) --no-print-directory proto-check
+	@$(MAKE) --no-print-directory vulncheck
+
+# govulncheck fetches the Go vulnerability database (vuln.go.dev) on every
+# run, so lint needs the network; a scan takes seconds. It reports only
+# vulnerabilities our code can reach, per OS we ship for (Android too).
+vulncheck: $(TOOLS_STAMP) ## govulncheck per OS, Android included: fail on a known vulnerability in reachable code (needs the network)
+	@for os in $(LINT_GOOS) android; do \
+		echo "govulncheck, GOOS=$$os"; \
+		GOOS=$$os GOARCH=$$([ $$os = android ] && echo arm64 || go env GOARCH) $(TOOLS)/govulncheck ./... || exit 1; \
+	done
 
 nocgo: ## fail if the data plane, the map or the lists depend on cgo
 	@for os in $(LINT_GOOS) android; do \
@@ -89,6 +102,7 @@ $(TOOLS_STAMP):
 	GOBIN=$(TOOLS) go install github.com/bufbuild/buf/cmd/buf@$(BUF_VERSION)
 	GOBIN=$(TOOLS) go install google.golang.org/protobuf/cmd/protoc-gen-go@$(PROTOC_GEN_GO_VERSION)
 	GOBIN=$(TOOLS) go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@$(PROTOC_GEN_GO_GRPC_VERSION)
+	GOBIN=$(TOOLS) go install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
 	touch $@
 
 # The lab (lab/README.md): Docker only, every lab a Compose project of its

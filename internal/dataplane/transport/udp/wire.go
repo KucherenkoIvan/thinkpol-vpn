@@ -29,7 +29,7 @@ const (
 	connIDSize  = 8
 	nonceSize   = chacha20poly1305.NonceSizeX
 	senderSize  = 12 // creation time in Unix nanoseconds [8] | random [4]
-	sentSize    = 4  // Unix seconds, uint32
+	sentSize    = 4  // Unix seconds, uint32: wraps in 2106, see fresh
 	counterSize = 8
 	tagSize     = chacha20poly1305.Overhead
 	frameHeader = 2 // packet length, big endian
@@ -196,7 +196,7 @@ func seal(dst []byte, aead cipher.AEAD, id connID, sender senderID, now time.Tim
 	pp := plainPool.Get().(*[]byte)
 	defer plainPool.Put(pp)
 	plain := append((*pp)[:0], sender[:]...)
-	plain = binary.BigEndian.AppendUint32(plain, uint32(now.Unix()))
+	plain = binary.BigEndian.AppendUint32(plain, uint32(now.Unix())) // wraps in 2106: fresh allows for it
 	plain = binary.BigEndian.AppendUint64(plain, counter)
 	plain = binary.BigEndian.AppendUint16(plain, uint16(len(packet)))
 	plain = append(plain, packet...)
@@ -219,15 +219,18 @@ var (
 // opened is an authenticated datagram.
 type opened struct {
 	sender  senderID
-	sent    time.Time
+	sent    uint32 // Unix seconds mod 2^32
 	counter uint64
 	frames  []byte // checked: nextFrame splits it without failing
 	packets int    // in frames; none is a cover datagram
 }
 
 // fresh reports whether the datagram was sent within maxClockSkew of now.
+// The send time is uint32 Unix seconds, which wraps in 2106: the distance
+// is taken mod 2^32 and read as signed, so it holds across the wrap (for
+// any skew under 68 years).
 func (o opened) fresh(now time.Time) bool {
-	d := now.Sub(o.sent)
+	d := time.Duration(int32(uint32(now.Unix())-o.sent)) * time.Second
 	return d <= maxClockSkew && d >= -maxClockSkew
 }
 
@@ -244,7 +247,7 @@ func open(dst []byte, aead cipher.AEAD, d []byte) (opened, error) {
 	}
 	var o opened
 	copy(o.sender[:], plain)
-	o.sent = time.Unix(int64(binary.BigEndian.Uint32(plain[senderSize:])), 0)
+	o.sent = binary.BigEndian.Uint32(plain[senderSize:])
 	o.counter = binary.BigEndian.Uint64(plain[senderSize+sentSize : innerSize])
 	o.frames = plain[innerSize:]
 	for rest := o.frames; ; o.packets++ {

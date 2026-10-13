@@ -24,7 +24,7 @@ func runDevMapBuild(_ context.Context, e env, args []string) error {
 	dir := fs.String("keys", "keys", "key directory: space.key, space.pub and <name>.pub for every node")
 	out := fs.String("out", "map.bin", "file to write the signed map to")
 	version := fs.Uint64("version", 0, "map version (default: the current Unix time, or one past the map in -out if that is higher)")
-	seed := fs.String("insecure-secrets-seed", "", "derive each link's secret from this seed instead of at random, so builds of one spec share them (lab tests only: the seed gives away every link)")
+	seed := fs.String("insecure-secrets-seed", "", "derive each link's secret from this seed instead of at random, so builds of one spec share them (lab tests only: refused unless the spec says lab: true, since the seed gives away every link)")
 	if err := parseFlags(fs, e, args); err != nil {
 		return err
 	}
@@ -52,7 +52,9 @@ func runDevMapBuild(_ context.Context, e env, args []string) error {
 	}
 	var secrets devmap.Secrets // crypto/rand
 	if *seed != "" {
-		secrets = devmap.InsecureSeededSecrets(*seed)
+		if secrets, err = devmap.InsecureSeededSecrets(spec, *seed); err != nil {
+			return err
+		}
 	}
 	env, err := devmap.Build(spec, keys, *version, secrets)
 	if err != nil {

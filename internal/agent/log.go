@@ -9,12 +9,17 @@ import (
 	"sync"
 	"unicode/utf8"
 
+	"github.com/KucherenkoIvan/go-kernel/observability"
+
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/logring"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
 
 // LogRingSize bounds the agent's in-memory log.
 const LogRingSize = 256 << 10
+
+// LogService is the service attribute on every line of the agent's log.
+const LogService = "thinkpol"
 
 // Logs are where a node's agent logs: text lines to the process's stderr
 // and to an in-memory ring, never to a file (PRD S2; under systemd stderr
@@ -35,8 +40,12 @@ func NewLogs(level string, stderr io.Writer) (Logs, error) {
 	}
 	ring := logring.New(LogRingSize)
 	out := io.MultiWriter(stderr, ring)
-	h := slog.NewTextHandler(out, &slog.HandlerOptions{Level: lvl})
-	return Logs{Logger: slog.New(h), Ring: ring, out: out}, nil
+	// The level is the node's own setting, never go-kernel's LOG_LEVEL.
+	logger, err := observability.NewLoggerWith(LogService, observability.Options{Writer: out, Level: lvl, Format: "text"})
+	if err != nil {
+		return Logs{}, err
+	}
+	return Logs{Logger: logger, Ring: ring, out: out}, nil
 }
 
 // ParseLevel parses debug, info, warn or error.

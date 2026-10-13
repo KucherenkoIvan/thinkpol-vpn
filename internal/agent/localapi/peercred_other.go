@@ -10,5 +10,9 @@ import (
 
 // callerOf refuses: no peer credentials here, so no caller is let in.
 func callerOf(syscall.Conn) (Caller, error) {
-	return Caller{}, fmt.Errorf("no peer credentials on %s", runtime.GOOS)
+	return Caller{}, errNoPeerCredentials
 }
+
+// A variable, not built in callerOf, so that staticcheck can't prove
+// callerOf always fails here and flag the caller's error check.
+var errNoPeerCredentials = fmt.Errorf("no peer credentials on %s", runtime.GOOS)

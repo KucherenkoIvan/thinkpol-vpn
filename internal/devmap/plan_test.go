@@ -3,11 +3,14 @@ package devmap
 import (
 	"bytes"
 	"crypto/ed25519"
+	"errors"
 	"flag"
 	"fmt"
 	"maps"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -460,6 +463,7 @@ func TestInspectMarksRefusedLinks(t *testing.T) {
 // else changed; without one, fresh secrets every time.
 func TestSeededSecretsRepeat(t *testing.T) {
 	f := referenceFixture(t)
+	f.spec.Lab = true
 	// By dialer and dialed node, each link's credentials.
 	type link struct{ from, to netmap.NodeID }
 	secrets := func(s *Spec, from Secrets) map[link][][]byte {
@@ -481,11 +485,11 @@ func TestSeededSecretsRepeat(t *testing.T) {
 	same := func(a, b map[link][][]byte) bool {
 		return maps.EqualFunc(a, b, func(x, y [][]byte) bool { return slices.EqualFunc(x, y, bytes.Equal) })
 	}
-	a := secrets(f.spec, InsecureSeededSecrets("lab"))
-	if len(a) == 0 || !same(a, secrets(f.spec, InsecureSeededSecrets("lab"))) {
+	a := secrets(f.spec, seeded(t, f.spec, "lab"))
+	if len(a) == 0 || !same(a, secrets(f.spec, seeded(t, f.spec, "lab"))) {
 		t.Fatal("one seed, different secrets")
 	}
-	if same(a, secrets(f.spec, InsecureSeededSecrets("other"))) || same(a, secrets(f.spec, nil)) {
+	if same(a, secrets(f.spec, seeded(t, f.spec, "other"))) || same(a, secrets(f.spec, nil)) {
 		t.Fatal("secrets repeat without the seed")
 	}
 	// A path fewer: the links that remain keep their secrets. (Not the
@@ -497,7 +501,7 @@ func TestSeededSecretsRepeat(t *testing.T) {
 		if _, _, err := Plan(&fewer, f.keys, 1, nil); err != nil {
 			continue
 		}
-		if k := secrets(&fewer, InsecureSeededSecrets("lab")); len(k) < len(a) {
+		if k := secrets(&fewer, seeded(t, f.spec, "lab")); len(k) < len(a) {
 			kept = k
 			break
 		}
@@ -508,6 +512,55 @@ func TestSeededSecretsRepeat(t *testing.T) {
 	for l, creds := range kept {
 		if !slices.EqualFunc(creds, a[l], bytes.Equal) {
 			t.Fatalf("the link %v changed its secret", l)
+		}
+	}
+}
+
+func seeded(t *testing.T, s *Spec, seed string) Secrets {
+	t.Helper()
+	secrets, err := InsecureSeededSecrets(s, seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return secrets
+}
+
+// A secrets seed is refused for any spec that doesn't say `lab: true`,
+// and saying it changes nothing in the map.
+func TestASecretsSeedNeedsALabSpec(t *testing.T) {
+	f := referenceFixture(t)
+	if f.spec.Lab {
+		t.Fatal("the reference spec is a lab's")
+	}
+	if _, err := InsecureSeededSecrets(f.spec, "lab"); !errors.Is(err, ErrNotLab) {
+		t.Fatalf("a seed for a spec that isn't a lab's: %v", err)
+	}
+	plan := func(s *Spec) netmap.Contents {
+		c, _, err := Plan(s, f.keys, 1, RandomSecrets(rand.NewChaCha8([32]byte{3})))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	lab := *f.spec
+	lab.Lab = true
+	if !reflect.DeepEqual(plan(f.spec), plan(&lab)) {
+		t.Error("lab: true changed the map")
+	}
+	if _, err := InsecureSeededSecrets(&lab, "lab"); err != nil {
+		t.Errorf("a seed for a lab spec: %v", err)
+	}
+
+	for text, want := range map[string]bool{"lab: true\n": true, "lab: false\n": false, "": false} {
+		s, err := ParseSpec("x.yaml", []byte(text+"nodes:\n  - name: a\n    kind: device\n"), nil)
+		if err != nil || s.Lab != want {
+			t.Errorf("%q: lab %v, %v", text, s != nil && s.Lab, err)
+		}
+	}
+	for _, text := range []string{"lab: yes\n", "lab: ${LAB}\n"} {
+		_, err := ParseSpec("x.yaml", []byte(text+"nodes:\n  - name: a\n    kind: device\n"), func(string) (string, bool) { return "true", true })
+		if err == nil || !strings.Contains(err.Error(), "neither true nor false") {
+			t.Errorf("%q: %v", text, err)
 		}
 	}
 }

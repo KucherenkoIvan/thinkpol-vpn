@@ -23,13 +23,15 @@ The workhorse transport: looks like a browser talking to a website, and is a web
 
 ## Out of scope
 - ACME (real domain) certificate source: TP-052.
-- Borrowing a real site's handshake: the later `reality`-style transport.
+- Borrowing a real site's handshake: the `reality`-style transport (research: TP-064).
 
 ## Acceptance
 - [ ] passes the TP-005 conformance suite with shaping on and off
 - [ ] a probe without credentials gets the camouflage site, byte for byte
 - [ ] the client's JA3/JA4 matches the targeted browser
 - [ ] the server certificate comes through the certificate source port; the self-signed adapter generates a certificate, and the client rejects any certificate that doesn't match its pin
+- [ ] a replayed ClientHello (a token already in the replay cache, or outside the timestamp window) takes exactly the camouflage path: the same bytes, upstream connection and timing as an unauthenticated connection; a test captures a real member's ClientHello, replays it, and tells it from a fresh probe by nothing
+- [ ] the token's timestamp window is stated in DESIGN with the replay-versus-clock-skew tradeoff it sets, and the replay cache is bounded (sends a connection to the camouflage when the bound is hit, never accepts a replay)
 
 ## Notes
 - **Decided in the TP-005 review (2026-10-10):** the tls auth token rides in the ClientHello (e.g. an HMAC of the credential and a coarse timestamp in the legacy session id, via uTLS). The supervisor peeks at the ClientHello without terminating TLS and keeps a replay cache. Authenticated: it hands the fd plus the consumed bytes to the space's worker, which terminates TLS with its self-signed, pinned certificate. Anything else is proxied whole to the camouflage target, so probes see the real site's certificate. See DESIGN.md (transports table, server agent). This replaces "authentication inside the first application data" in Scope; the probe fallback proxies the whole connection, ClientHello included.
@@ -40,8 +42,14 @@ The workhorse transport: looks like a browser talking to a website, and is a web
   - Implement `transport.StreamRoutable`. `ListenStream` opens the public TCP listener. `Router(peers).RouteStream` peeks at the ClientHello and must return **every** byte it read: they go to the worker, or to the camouflage, which proxies them first. `Router.Rejected` reports unusable links. `Handoff(cfg)` is the worker's `HandoffListener`; `SharedListener.Listen` feeds it the handed-over connections.
   - The supervisor's routing deadline is 10 s, with at most 1024 connections being routed per listener. The camouflage proxy is the listener's `Camouflage.Stream`; it must not block, so it starts its own goroutine.
   - Add the lab test of a handoff through real workers that TP-010 couldn't.
+- **Decisions from the independent design review, 2026-10-13 (TP-062):**
+  - **Replay is a camouflage case.** A cache hit is treated as an unauthenticated connection, never dropped or reset: otherwise replay is an active-probing oracle (no upstream connection appears). DESIGN "Server agent" states it, with the window: it is both the replay window and the clock-skew outage margin (start at five minutes; the lab tunes it).
+  - **Asymmetric credentials preferred.** The `tls` token should verify against a public key in the listener's section, not a shared secret, so a node's listener holds verifiers (DESIGN "Server agent"). Pre-auth parsing then moves to the gatekeeper (TP-063).
+  - **The camouflage target is per node and security-relevant:** no fleet-wide default; document it with the setting (TP-038 chooses it).
+  - **Server-side tells:** the worker's ServerHello (JA3S/JA4S, extension order, ALPN) won't match the camouflage site's, and each probe makes the entry open an upstream connection to the camouflage target; the lab measures both (TP-026, TP-032) and the matrix reports them honestly. The `reality`-style transport (TP-064) is what removes the first.
 
 ## Log
 - 2026-10-10 created in blocked
 - 2026-10-10 blocked → backlog — certificate source decided: pluggable port, self-signed pinned adapter first (see Notes)
 - 2026-10-11 docs (TP-010 review): notes from the shared listener
+- 2026-10-13 docs (TP-062): replay takes the camouflage path, token window and bounded cache, asymmetric credentials, per-node camouflage target, server-side tells

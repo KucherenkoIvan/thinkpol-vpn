@@ -35,51 +35,52 @@ const (
 const DefaultStateDir = "/var/lib/thinkpol"
 
 // Config is what `thinkpol up` runs with: environment variables, which the
-// command's flags override.
+// command's flags override. The flag: and help: tags are the flags
+// (config.BindFlags), so a setting is named in one place.
 type Config struct {
 	// StateDir holds the node's keys and its map (see LoadState).
-	StateDir string `env:"THINKPOL_STATE_DIR" default:"/var/lib/thinkpol"`
+	StateDir string `env:"THINKPOL_STATE_DIR" default:"/var/lib/thinkpol" flag:"state" help:"state directory: node.key, space.pub and map.bin"`
 	// MapFile is the map's path; empty means map.bin in StateDir.
-	MapFile string `env:"THINKPOL_MAP"`
-	Mode    Mode   `env:"THINKPOL_MODE" default:"auto"`
+	MapFile string `env:"THINKPOL_MAP" flag:"map" help:"the map file, if not map.bin in the state directory"`
+	Mode    Mode   `env:"THINKPOL_MODE" default:"auto" flag:"mode" help:"auto (by the node's kind in the map), device or server"`
 	// LogLevel is debug, info, warn or error. Logs go to stderr and an
 	// in-memory ring, never to a file (PRD S2).
-	LogLevel string `env:"THINKPOL_LOG_LEVEL" default:"info"`
+	LogLevel string `env:"THINKPOL_LOG_LEVEL" default:"info" flag:"log-level" help:"debug, info, warn or error; logs go to stderr only"`
 	// Interface names the overlay TUN; empty is the platform's default
 	// (tun.DefaultName).
-	Interface string `env:"THINKPOL_INTERFACE"`
+	Interface string `env:"THINKPOL_INTERFACE" flag:"interface" help:"the overlay TUN's name; empty: the platform's default"`
 	// LinkMTU is the MTU of the network under the node's links; 0 is
 	// dataplane.DefaultLinkMTU.
-	LinkMTU int `env:"THINKPOL_LINK_MTU"`
+	LinkMTU int `env:"THINKPOL_LINK_MTU" flag:"link-mtu" help:"MTU of the network under the links; 0: 1500"`
 	// MapPoll is how often the map file is checked for a change; SIGHUP
 	// checks it at once.
-	MapPoll time.Duration `env:"THINKPOL_MAP_POLL" default:"5s"`
+	MapPoll time.Duration `env:"THINKPOL_MAP_POLL" default:"5s" flag:"map-poll" help:"how often to check the map file for a change; SIGHUP checks at once"`
 	// Connect brings a device's data plane up when the node starts;
 	// otherwise it waits for the local API's Connect. A server always
 	// serves its spaces.
-	Connect bool `env:"THINKPOL_CONNECT" default:"true"`
+	Connect bool `env:"THINKPOL_CONNECT" default:"true" flag:"connect" help:"a device connects when it starts; otherwise it waits for thinkpol connect"`
 	// APISocket is the local API's Unix socket, in a directory of its own
 	// (DefaultAPISocket when THINKPOL_API_SOCKET is unset); empty serves no
 	// local API.
-	APISocket string `env:"THINKPOL_API_SOCKET"`
+	APISocket string `env:"THINKPOL_API_SOCKET" flag:"api-socket" help:"the local API's socket, in a directory of its own; empty: no local API"`
 	// APIGroup is the group (a name or a gid) whose members may use the
 	// local API besides root; if no such group exists, only root may.
-	APIGroup string `env:"THINKPOL_API_GROUP" default:"thinkpol"`
+	APIGroup string `env:"THINKPOL_API_GROUP" default:"thinkpol" flag:"api-group" help:"the group whose members may use the local API besides root"`
 	// DNS runs the node's resolver (DESIGN.md "DNS is routing"): a
 	// device's answers its overlay names and resolves the rest by its
 	// rules, and the OS resolves through it while the device is
 	// connected; an exit's is the resolver devices ask through the
 	// tunnel.
-	DNS bool `env:"THINKPOL_DNS" default:"true"`
+	DNS bool `env:"THINKPOL_DNS" default:"true" flag:"dns" help:"run the node's resolver: a device's OS resolves through it while connected, an exit's serves devices through the tunnel"`
 	// DNSUpstream is what the node's resolver asks, comma-separated IPs
 	// (port 53) or IP:ports: a device's domestic resolver, an exit's
 	// upstream. Empty: the resolvers the OS used before.
-	DNSUpstream string `env:"THINKPOL_DNS_UPSTREAM"`
+	DNSUpstream string `env:"THINKPOL_DNS_UPSTREAM" flag:"dns-upstream" help:"what the resolver asks, IPs or IP:ports, comma-separated: a device's domestic resolver, an exit's upstream; empty: what the OS used"`
 	// EgressAllowed are prefixes (comma-separated) an exit's spaces may
 	// reach although they are private or provider networks, which egress
 	// otherwise refuses (supervisor.Options.EgressAllowed): a network that
 	// is this node's internet.
-	EgressAllowed string `env:"THINKPOL_EGRESS_ALLOWED"`
+	EgressAllowed string `env:"THINKPOL_EGRESS_ALLOWED" flag:"egress-allowed" help:"comma-separated private prefixes an exit's spaces may still reach"`
 }
 
 // EgressAllowedPrefixes parses EgressAllowed.
@@ -100,9 +101,10 @@ func (c Config) EgressAllowedPrefixes() ([]netip.Prefix, error) {
 
 // LoadConfig reads the configuration from the environment, with the
 // defaults above. Unlike go-kernel's usual setup it reads no .env files: a
-// node's configuration is its environment and its flags.
+// node's configuration is its environment and its flags. It doesn't
+// validate: flags may still change it (see Validate).
 func LoadConfig() (Config, error) {
-	c, err := config.Load[Config](os.DevNull)
+	c, err := config.LoadWith[Config](config.WithoutEnvFiles(), config.DeferValidate())
 	if err != nil {
 		return Config{}, err
 	}
@@ -141,8 +143,9 @@ func (c Config) MapPath() string {
 	return filepath.Join(c.StateDir, MapFileName)
 }
 
-// Check rejects a configuration `thinkpol up` can't run with.
-func (c Config) Check() error {
+// Validate rejects a configuration `thinkpol up` can't run with. It is
+// go-kernel config's validation hook (config.Validate).
+func (c Config) Validate() error {
 	var errs []error
 	if c.StateDir == "" {
 		errs = append(errs, errors.New("no state directory"))

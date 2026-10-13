@@ -8,7 +8,6 @@ import (
 	"io"
 	"net"
 	"net/netip"
-	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -196,15 +195,25 @@ func remoteAddr(c net.Conn) netip.Addr {
 	return netip.Addr{}
 }
 
-// peerOf is the plan's peer with that overlay address (a peer has
-// several): who a connection counts against.
+// peerOfLocked is the current plan's peer with that overlay address (a
+// peer has several): who a connection counts against. The plan is the
+// access control, and this is the one place it is asked: when a
+// connection is admitted and before each chunk it is sent. That covers a
+// transfer within one map transition, for an address the new map drops
+// or reassigns to another peer in the same map: it gets no chunk after
+// the new plan is in, and its connection is reset (abort), so nothing
+// already buffered reaches it either.
 func (s *Service) peerOfLocked(remote netip.Addr) (string, bool) {
-	for _, p := range s.plan.Peers {
-		if slices.Contains(p.Addrs, remote) {
-			return p.ID.String(), true
-		}
-	}
-	return "", false
+	key, ok := s.peerOf[remote]
+	return key, ok
+}
+
+// stillPeer reports whether remote still is key's under the current plan.
+func (s *Service) stillPeer(remote netip.Addr, key string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	k, ok := s.peerOfLocked(remote)
+	return ok && k == key
 }
 
 // errNotPeer is a connection from no peer of the plan.
@@ -299,6 +308,10 @@ func (s *Service) serveConn(ctx context.Context, c net.Conn) {
 		if err := s.rate.wait(ctx, n); err != nil {
 			return
 		}
+		if !s.stillPeer(remote, key) {
+			abort(c)
+			return
+		}
 		idle()
 		if _, err := c.Write(rest[:n]); err != nil {
 			return
@@ -308,6 +321,15 @@ func (s *Service) serveConn(ctx context.Context, c net.Conn) {
 	}
 	s.count(func(st *Status) { st.Served++ })
 	s.log.Debug("blob served", "blob", hex.EncodeToString(req.sha256[:6]), "peer", remote)
+}
+
+// abort closes c with a reset where it can (no linger), so what is still
+// buffered for the peer is dropped instead of delivered.
+func abort(c net.Conn) {
+	if l, ok := c.(interface{ SetLinger(sec int) error }); ok {
+		_ = l.SetLinger(0)
+	}
+	_ = c.Close()
 }
 
 // limiter is a token bucket shared by every transfer: rate bytes per
