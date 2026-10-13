@@ -48,6 +48,15 @@ The findings of the independent security code review of 2026-10-13 are fixed or 
 - **`lab: true`** is read as written (no `${NAME}`), so the spec itself has to say it. It only gates `InsecureSeededSecrets(spec, seed)`, the one way to get seeded secrets, and nothing goes into the map. `reference.yaml` documents it; `lab/maps/egress.yaml` (the only seeded build) declares it.
 - **DESIGN.md** "Transports": one sentence. udp's datagrams are sealed with an AEAD (XChaCha20-Poly1305 under a per-direction key derived from the link's credential), not a NaCl sealed box; sealed boxes are only for what is sealed to a public key, such as map sections.
 
+## Review findings
+From the orchestrator's review, 2026-10-13. One fix pass, then merge.
+- [ ] 1. `dns/upstream.go`: the source check compares the AddrPort with its zone. resolved writes `fe80::1%2` (numeric) while Go reports `%eth0`, so every link-local upstream's reply is rejected (timeout, no TCP fallback). Compare without the zone (Unmap + WithZone("") on both, plus the port) or rely on the connected socket; test with a numeric-zone server.
+- [ ] 2. Windows: an over-size datagram (WSAEMSGSIZE) maps to errNotAnAnswer (TCP fallback), not to skipping the server.
+- [ ] 3. `blobs/serve.go`: when stillPeer fails, abort the connection (SetLinger(0), a reset) instead of a graceful close, so buffered data isn't delivered; narrow the comment to "within one map transition, for an address reassigned in the same map".
+- [ ] 4. Makefile: run vulncheck for android too.
+- [ ] 5. Note in the ticket: rebuilding the tools with an older local Go fails closed; document that `make tools` needs Go ≥ 1.26 or `GOTOOLCHAIN=auto`.
+
 ## Log
 - 2026-10-13 created in in-progress — owner: agent-hardening, branch: tp-061-security-hardening
 - 2026-10-13 in-progress → review — all acceptance met; lint, test, race and the lab checks above pass
+- 2026-10-13 review → has-errors — 5 findings from the orchestrator's review, see Review findings
