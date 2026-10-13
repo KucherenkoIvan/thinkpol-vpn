@@ -30,7 +30,8 @@ thinkpol-vpn is a self-hosted virtual network that survives a censor: one Go bin
 
 ```sh
 make help       # list targets
-make lint       # gofmt, go vet + golangci-lint for darwin/linux/windows, Android build, no-cgo check
+make lint       # gofmt, go vet + golangci-lint for darwin/linux/windows, Android build, no-cgo check, vulncheck
+make vulncheck  # govulncheck per OS: known vulnerabilities in reachable code (needs the network)
 make test       # unit tests
 make test-race  # unit tests with the race detector (cgo on)
 make build      # bin/thinkpol
