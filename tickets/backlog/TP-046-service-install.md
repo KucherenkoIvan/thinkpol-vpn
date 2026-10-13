@@ -29,7 +29,9 @@ The client runs as a proper background service on every desktop OS.
   - Persist the user's last requested connect state (or tell a boot from a restart), so a crash-restart neither silently drops a connected user (traffic leaks until the kill switch, TP-048) nor undoes an explicit disconnect.
   - Create the `thinkpol` group and add the installing user; run the service as root. Leave `/run/thinkpol-api` to the service (it creates it 0750 root:thinkpol and fixes a leftover of its own); don't use systemd's `RuntimeDirectory=` for it unless it ends up exactly that.
 - **Crash posture (independent design review, 2026-10-13; TP-062).** The service must restart after a crash and the device must stay fail-closed until it does (default for the "everything" and "all but domestic" presets, opt-out; the guard is TP-048's). The persisted connect state above tells a crash from a deliberate disconnect, which still follows the kill-switch toggle (PRD D4). macOS must meet this too (launchd's restart and the pf guard).
+- **Host lock needs a stable inode (TP-060).** The agent lock `/run/thinkpol/agent.lock` only works while its inode survives. Do NOT use `RuntimeDirectory=thinkpol`: systemd deletes the directory when the unit stops, including when the unit stops because it lost the lock, and a later agent would then lock a fresh inode while the old holder still runs. Create `/run/thinkpol` yourself (the agent does, root 0700), or set `RuntimeDirectoryPreserve=yes`.
 
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-13 docs (TP-062): crash posture: restart after a crash, fail-closed until then, macOS included
+- 2026-10-13 notes: the host lock and systemd's `RuntimeDirectory=` (TP-060)

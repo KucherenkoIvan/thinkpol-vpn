@@ -25,6 +25,16 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
 
+// What a node does to the host outside a data plane, at its start: take
+// the host's agent lock, put back what a crashed run left in the routing
+// table and the resolver configuration. Tests swap them, so they never
+// touch the host.
+var (
+	clearHostRouteTable = routetable.Clear
+	restoreHostDNS      = dns.RestoreSystem
+	lockHost            = hostLock
+)
+
 // Node is a node ready to run (`thinkpol up`): its configuration and state,
 // read and checked, nothing on the host touched yet.
 type Node struct {
@@ -211,21 +221,34 @@ func (n *Node) State() State { return n.state }
 // interface, route, namespace or nftables table behind. reload (SIGHUP)
 // makes the watcher read the map file at once. A node removed from its
 // space (its map has no section for it) waits idle for a map that includes
-// it. On a host whose data plane isn't there yet Adapters refuses, before
-// anything changed. Call it once.
+// it. On a host whose data plane isn't there yet, or where another node
+// agent runs (it holds the host's agent lock), Adapters refuses, before
+// anything changed. The lock is held until the node adapter returns, or
+// the process ends. Call it once.
 func (n *Node) Adapters(reload <-chan os.Signal) ([]app.Adapter, error) {
 	if err := supported(); err != nil {
 		return nil, err
 	}
+	// One node agent per host, taken before anything of this node (or the
+	// caller's adapters) touches the host: a second agent would undo the
+	// first's routes and resolver configuration with run's cleanups.
+	unlock, err := lockHost()
+	if err != nil {
+		return nil, err
+	}
 	reg, err := Transports(true) // a device's, or the supervisor's in the root namespace
 	if err != nil {
+		unlock()
 		return nil, err
 	}
 	watcher := &mapWatcher{path: n.state.MapPath, interval: n.cfg.MapPoll, reload: reload, log: n.logs.Logger, last: n.state.mapFile}
 	maps := make(chan []byte, 1)
 	return []app.Adapter{
 		{Name: "map watcher", Run: func(ctx context.Context) error { return watcher.run(ctx, maps) }},
-		{Name: "node", Run: func(ctx context.Context) error { return n.run(ctx, reg, maps) }},
+		{Name: "node", Run: func(ctx context.Context) error {
+			defer unlock()
+			return n.run(ctx, reg, maps)
+		}},
 	}, nil
 }
 
@@ -238,7 +261,7 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 	}
 	// A resolver configuration a crash left behind goes back first,
 	// whatever the node does next.
-	if err := dns.RestoreSystem(); err != nil {
+	if err := restoreHostDNS(); err != nil {
 		n.logs.Warn("DNS: restoring the system's resolver configuration left behind", "err", err)
 	}
 	if n.state.Removed && !n.awaitSection(ctx, maps) {
@@ -280,7 +303,7 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 // the node died connected (a crash, kill -9), for a device that starts
 // without connecting: connecting takes it over anyway.
 func (n *Node) clearRouteTable() {
-	err := routetable.Clear()
+	err := clearHostRouteTable()
 	switch {
 	case err == nil:
 	case errors.Is(err, errors.ErrUnsupported):
