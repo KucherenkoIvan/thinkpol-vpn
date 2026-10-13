@@ -6,8 +6,8 @@ area: agent
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-020, TP-022]
-owner: ""
-branch: ""
+owner: "cursor-opus-tp060"
+branch: "tp-060-agent-lock-linux"
 ---
 
 ## Goal
@@ -33,3 +33,4 @@ On Linux, a second `thinkpol up` on a node where an agent is already running doe
 
 ## Log
 - 2026-10-13 created in backlog
+- 2026-10-13 backlog → in-progress — owner: cursor-opus-tp060, branch: tp-060-agent-lock-linux
