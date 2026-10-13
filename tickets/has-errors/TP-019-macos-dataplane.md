@@ -89,8 +89,22 @@ Adversarial review (2026-10-13), orchestrator decision: fix every proven finding
 - [x] 7 (low) Delete-then-add left a window where the physical default carried traffic — routes that only move are changed in place (`RTM_CHANGE`, fallback delete and add; `TestMovedRoutesChangeInPlace`); a change of kind (TUN up ↔ down) stays delete and add, while the utun can't take traffic anyway.
 - Suspicions (short `sockaddr_dl`, ICMP-redirect host routes, `RTM_GET` under a routing-socket flood) are Device checklist step 15.
 
+### Round 2 (formal review, 2026-10-13)
+Orchestrator decisions: fix every proven finding and the lower ones; the suspicion is verified on the device first.
+
+- [ ] R2.1 Crash: overlay IPv4 and DNS leak out en0 (nothing rejects the overlay's IPv4 range after the utun dies; the DNS overrides point at the overlay address and survive). The utun gets the overlay networks' halves and a reject route for each whole overlay network stays behind, surviving a crash (Linux parity).
+- [ ] R2.2 Shadows exclude every default gateway: a hostile DHCP gateway inside the overlay or on an untrusted public on-link subnet gets that address on-link in the clear. Exclude only gateways inside trusted on-link subnets (links bind to en0 and use its scoped routes); foreign host routes inside the overlay are an explicit overlay-hijack residual with its own health flag.
+- [ ] R2.3 DNS fails open: an original scutil can't re-create is left un-overridden. Override anyway; restore such a key by removing it, so the system republishes it (fails closed meanwhile); documented.
+- [ ] R2.4 DNS watch event-driven (`scutil` `n.add`/`n.watch`), polling kept as a backstop.
+- [ ] R2.5 A host-wide agent lock before the start-time cleanups, so a second `thinkpol up` can't revert a running instance's DNS overrides and routes.
+- [ ] R2.6 `DefaultInterface`: on ENOBUFS or a read timeout keep reading or ask again instead of failing.
+- [ ] R2.7 Document the TunnelVision window on macOS (a new on-link subnet or classless route wins until the watcher re-applies; Linux fails closed).
+- [ ] R2.8 Suspicion (device first): source-address interface selection may let sockets with an en0 source address bypass the split routes — Notes get the candidate fixes; Device checklist gets the test.
+- [ ] R2.9 Device checklist additions (crash capture, source-bound sockets, DNS captures, overlay host route, group login, encrypted DNS/Private Relay baseline, rollback after crash + network change).
+
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-13 backlog → in-progress — owner: agent-tp-019, branch: tp-019-macos-data-plane
 - 2026-10-13 docs: DESIGN.md "Route table on macOS" (new), DNS on macOS, link and DNS sockets on macOS, local API socket `/var/db/thinkpol-api` on macOS, node safety (dynamic store, route records), repository layout (`ifbind`)
 - 2026-10-13 in-progress → review — make lint, make test green on a Mac (no test touches the host: checked after the run); adversarial review findings 1–7 fixed; device-only boxes pending the Device checklist (needs_human: macos)
+- 2026-10-13 review → has-errors — formal review round 2: R2.1–R2.9
