@@ -14,6 +14,8 @@ import (
 	"testing"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/trusteddir"
 )
 
 // fakeKernel is a routing table and interfaces in memory, keeping the
@@ -279,9 +281,39 @@ var routeTableConfig = Config{Routes: []Route{
 	{Dst: pfx("2001:db8::/32"), Gateway: ip("fe80::1"), Interface: "en0"},
 }}
 
+// tempDir is a test's directory by a path without symlinks (macOS's
+// temporary directories are under /var, a symlink), as trusteddir wants.
+func tempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func openDir(t *testing.T, dir string) *os.File {
+	t.Helper()
+	d, err := trusteddir.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	return d
+}
+
+func thisBoot(t *testing.T) string {
+	t.Helper()
+	boot, err := bootSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return boot
+}
+
 func record(t *testing.T, dir string, o Owner) []string {
 	t.Helper()
-	rec, err := readRecord(recordPath(dir, o))
+	rec, err := readRecord(openDir(t, dir), recordName(o), thisBoot(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -296,7 +328,7 @@ func record(t *testing.T, dir string, o Owner) []string {
 func TestApplyThenCloseRestoresEverything(t *testing.T) {
 	k := newFakeKernel()
 	before := k.snapshot()
-	dir := t.TempDir()
+	dir := tempDir(t)
 	ctx := context.Background()
 	ov := newTestConfigurator(t, k, dir, OwnerOverlay)
 	rt := newTestConfigurator(t, k, dir, OwnerRouteTable)
@@ -355,7 +387,7 @@ func TestApplyThenCloseRestoresEverything(t *testing.T) {
 		t.Errorf("after Close:\n%s\nwant:\n%s", got, before)
 	}
 	for _, o := range []Owner{OwnerOverlay, OwnerRouteTable} {
-		if _, err := os.Stat(recordPath(dir, o)); !errors.Is(err, os.ErrNotExist) {
+		if _, err := os.Stat(filepath.Join(dir, recordName(o))); !errors.Is(err, os.ErrNotExist) {
 			t.Errorf("%v's record left: %v", o, err)
 		}
 		// Its place is free again.
@@ -371,7 +403,7 @@ func TestApplyThenCloseRestoresEverything(t *testing.T) {
 }
 
 func TestOneConfiguratorPerOwner(t *testing.T) {
-	k, dir := newFakeKernel(), t.TempDir()
+	k, dir := newFakeKernel(), tempDir(t)
 	c := newTestConfigurator(t, k, dir, OwnerRouteTable)
 	if _, err := newDarwin(OwnerRouteTable, k, dir); !errors.Is(err, ErrBusy) {
 		t.Fatalf("second configurator: %v, want ErrBusy", err)
@@ -384,7 +416,7 @@ func TestOneConfiguratorPerOwner(t *testing.T) {
 // Routes that aren't an owner's (not recorded by it, or without the
 // thinkpol flag) are never changed or removed, whatever flags they carry.
 func TestForeignStateIsNeverTouched(t *testing.T) {
-	k, dir := newFakeKernel(), t.TempDir()
+	k, dir := newFakeKernel(), tempDir(t)
 	ctx := context.Background()
 	// Another VPN's split route (RTF_PROTO1), and a route someone else
 	// tagged with our flag.
@@ -415,7 +447,7 @@ func TestForeignStateIsNeverTouched(t *testing.T) {
 }
 
 func TestOwnersNeverTouchEachOther(t *testing.T) {
-	k, dir := newFakeKernel(), t.TempDir()
+	k, dir := newFakeKernel(), tempDir(t)
 	ctx := context.Background()
 	ov := newTestConfigurator(t, k, dir, OwnerOverlay)
 	rt := newTestConfigurator(t, k, dir, OwnerRouteTable)
@@ -440,7 +472,7 @@ func TestOwnersNeverTouchEachOther(t *testing.T) {
 // A configurator that died without Close leaves routes and a record; its
 // successor takes over what the new config wants and removes the rest.
 func TestTakesOverRoutesLeftByACrash(t *testing.T) {
-	k, dir := newFakeKernel(), t.TempDir()
+	k, dir := newFakeKernel(), tempDir(t)
 	ctx := context.Background()
 	dead, err := newDarwin(OwnerRouteTable, k, dir)
 	if err != nil {
@@ -478,7 +510,7 @@ func TestTakesOverRoutesLeftByACrash(t *testing.T) {
 // A failure halfway puts back what the Apply changed, record included.
 func TestFailedApplyLeavesNothing(t *testing.T) {
 	for _, first := range []bool{true, false} {
-		k, dir := newFakeKernel(), t.TempDir()
+		k, dir := newFakeKernel(), tempDir(t)
 		ctx := context.Background()
 		c := newTestConfigurator(t, k, dir, OwnerRouteTable)
 		ov := newTestConfigurator(t, k, dir, OwnerOverlay)
@@ -514,11 +546,11 @@ func TestFailedApplyLeavesNothing(t *testing.T) {
 // Every route an Apply adds is in the record before it is added, so a
 // crash at any moment leaves nothing the successor wouldn't take over.
 func TestTheRecordIsWrittenAhead(t *testing.T) {
-	k, dir := newFakeKernel(), t.TempDir()
+	k, dir := newFakeKernel(), tempDir(t)
 	c := newTestConfigurator(t, k, dir, OwnerRouteTable)
 	var missing []string
 	k.onAdd = func(r kroute) {
-		rec, _ := readRecord(recordPath(dir, OwnerRouteTable))
+		rec, _ := readRecord(c.dir, recordName(OwnerRouteTable), c.boot)
 		if !rec[r.dst] {
 			missing = append(missing, r.dst.String())
 		}
@@ -532,7 +564,7 @@ func TestTheRecordIsWrittenAhead(t *testing.T) {
 }
 
 func TestReApplyRepairsOutsideChanges(t *testing.T) {
-	k, dir := newFakeKernel(), t.TempDir()
+	k, dir := newFakeKernel(), tempDir(t)
 	ctx := context.Background()
 	c := newTestConfigurator(t, k, dir, OwnerRouteTable)
 	ov := newTestConfigurator(t, k, dir, OwnerOverlay)
@@ -562,7 +594,7 @@ func TestReApplyRepairsOutsideChanges(t *testing.T) {
 
 // A recreated utun (same name, new index) gets everything back.
 func TestARecreatedInterfaceGetsItsConfigBack(t *testing.T) {
-	k, dir := newFakeKernel(), t.TempDir()
+	k, dir := newFakeKernel(), tempDir(t)
 	ctx := context.Background()
 	ov := newTestConfigurator(t, k, dir, OwnerOverlay)
 	if err := ov.Apply(ctx, overlayConfig); err != nil {
@@ -596,7 +628,7 @@ func TestARecreatedInterfaceGetsItsConfigBack(t *testing.T) {
 // The kernel's own route into a point-to-point interface is used, not
 // owned.
 func TestAConnectedRouteOfTheKernelIsUsed(t *testing.T) {
-	k, dir := newFakeKernel(), t.TempDir()
+	k, dir := newFakeKernel(), tempDir(t)
 	k.rs[pfx("100.64.0.0/10")] = kroute{dst: pfx("100.64.0.0/10"), link: 20, index: 20, flags: unix.RTF_UP | unix.RTF_CLONING}
 	ov := newTestConfigurator(t, k, dir, OwnerOverlay)
 	if err := ov.Apply(context.Background(), overlayConfig); err != nil {
@@ -614,7 +646,7 @@ func TestAConnectedRouteOfTheKernelIsUsed(t *testing.T) {
 }
 
 func TestWhatMacOSCantHoldIsRefused(t *testing.T) {
-	k, dir := newFakeKernel(), t.TempDir()
+	k, dir := newFakeKernel(), tempDir(t)
 	c := newTestConfigurator(t, k, dir, OwnerRouteTable)
 	before := k.snapshot()
 	for _, cfg := range []Config{
@@ -637,7 +669,7 @@ func TestWhatMacOSCantHoldIsRefused(t *testing.T) {
 }
 
 func TestSurveyAndDefaultRoute(t *testing.T) {
-	k, dir := newFakeKernel(), t.TempDir()
+	k, dir := newFakeKernel(), tempDir(t)
 	ctx := context.Background()
 	// Another VPN's routes into its utun, a DHCP server's classless route,
 	// a reject route of someone's.
@@ -691,39 +723,109 @@ func TestSurveyAndDefaultRoute(t *testing.T) {
 }
 
 func TestRecordsRoundTrip(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "x.routes")
+	dir := tempDir(t)
+	d, path, boot := openDir(t, dir), filepath.Join(dir, "x.routes"), thisBoot(t)
 	want := map[netip.Prefix]bool{pfx("0.0.0.0/1"): true, pfx("2001:db8::/32"): true, pfx("203.0.113.9/32"): true}
-	if err := writeRecord(path, want); err != nil {
+	if err := writeRecord(d, "x.routes", boot, want); err != nil {
 		t.Fatal(err)
 	}
-	got, err := readRecord(path)
+	got, err := readRecord(d, "x.routes", boot)
 	if err != nil || !maps.Equal(got, want) {
 		t.Fatalf("%v, %v", got, err)
 	}
-	if err := writeRecord(path, nil); err != nil {
+	if got, err := readRecord(d, "x.routes", "another boot"); err != nil || len(got) != 0 {
+		t.Errorf("a record of another boot: %v, %v", got, err)
+	}
+	if err := writeRecord(d, "x.routes", boot, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("an empty record stays: %v", err)
 	}
-	if err := os.WriteFile(path, []byte("10.0.0.1/8\n"), 0o600); err != nil {
+	for name, data := range map[string]string{
+		"an unmasked prefix": "boot " + boot + "\n10.0.0.1/8\n",
+		"no boot session":    "10.0.0.0/8\n",
+	} {
+		if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := readRecord(d, "x.routes", boot); err == nil {
+			t.Errorf("%s: read", name)
+		}
+	}
+	// The temporary file is never followed out of the directory.
+	target := filepath.Join(dir, "elsewhere")
+	if err := os.Symlink(target, path+".tmp"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := readRecord(path); err == nil {
-		t.Error("an unmasked prefix was read")
+	if err := writeRecord(d, "x.routes", boot, want); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the symlink's target was written: %v", err)
 	}
 }
 
-// The lock directory must be this user's alone: its record decides what
-// gets deleted.
-func TestALockDirOthersCanWriteIsRefused(t *testing.T) {
-	parent := t.TempDir()
-	if err := os.Chmod(parent, 0o777); err != nil {
+// LockDir outlives a reboot, the routes don't: a record from an earlier
+// boot owns nothing, so a route someone else tagged with our flag at one
+// of its destinations stays foreign.
+func TestARecordOfAnEarlierBootOwnsNothing(t *testing.T) {
+	k, dir := newFakeKernel(), tempDir(t)
+	k.rs[pfx("10.0.0.0/8")] = kroute{dst: pfx("10.0.0.0/8"), gw: ip("192.168.1.1"), index: 11, flags: unix.RTF_UP | unix.RTF_GATEWAY | routeFlag}
+	before := k.snapshot()
+	if err := writeRecord(openDir(t, dir), recordName(OwnerRouteTable), "an earlier boot", map[netip.Prefix]bool{pfx("10.0.0.0/8"): true}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := newDarwin(OwnerRouteTable, newFakeKernel(), filepath.Join(parent, "netcfg")); err == nil {
-		t.Fatal("a world-writable parent was accepted")
+	c := newTestConfigurator(t, k, dir, OwnerRouteTable)
+	if err := c.Apply(context.Background(), Config{Routes: []Route{{Dst: pfx("10.0.0.0/8"), Gateway: ip("192.168.1.1")}}}); !errors.Is(err, ErrConflict) {
+		t.Errorf("Apply over it: %v, want ErrConflict", err)
 	}
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := k.snapshot(); got != before {
+		t.Errorf("after Close:\n%s\nwant:\n%s", got, before)
+	}
+}
+
+// The lock directory and everything above it must be this user's (or
+// root's) alone, never a symlink: its record decides what gets deleted,
+// and a directory someone else could rename would let a second
+// configurator lock a fresh file.
+func TestALockDirOthersControlIsRefused(t *testing.T) {
+	t.Run("a parent others can write to", func(t *testing.T) {
+		parent := tempDir(t)
+		if err := os.Chmod(parent, 0o777); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := newDarwin(OwnerRouteTable, newFakeKernel(), filepath.Join(parent, "netcfg")); err == nil {
+			t.Fatal("a world-writable parent was accepted")
+		}
+	})
+	t.Run("a grandparent others can write to", func(t *testing.T) {
+		grand := tempDir(t)
+		if err := os.Mkdir(filepath.Join(grand, "thinkpol"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(grand, 0o775); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := newDarwin(OwnerRouteTable, newFakeKernel(), filepath.Join(grand, "thinkpol", "netcfg")); err == nil {
+			t.Fatal("a group-writable ancestor was accepted")
+		}
+	})
+	t.Run("a symlinked directory", func(t *testing.T) {
+		base := tempDir(t)
+		if err := os.Mkdir(filepath.Join(base, "real"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink("real", filepath.Join(base, "netcfg")); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := newDarwin(OwnerRouteTable, newFakeKernel(), filepath.Join(base, "netcfg")); err == nil {
+			t.Fatal("a symlink was followed")
+		}
+	})
 }
 
 // A route that only moves (a new gateway: another network) is changed in
@@ -731,7 +833,7 @@ func TestALockDirOthersCanWriteIsRefused(t *testing.T) {
 // (into the TUN ↔ rejected) is deleted and added; a change the kernel
 // refuses falls back to that.
 func TestMovedRoutesChangeInPlace(t *testing.T) {
-	k, dir := newFakeKernel(), t.TempDir()
+	k, dir := newFakeKernel(), tempDir(t)
 	ctx := context.Background()
 	c := newTestConfigurator(t, k, dir, OwnerRouteTable)
 	cfg := Config{Routes: []Route{
@@ -770,7 +872,7 @@ func TestMovedRoutesChangeInPlace(t *testing.T) {
 // When undoing a failed Apply can't remove a route it added, the route
 // stays recorded, so the next Apply or Close still removes it.
 func TestARouteUndoCantRemoveStaysRecorded(t *testing.T) {
-	k, dir := newFakeKernel(), t.TempDir()
+	k, dir := newFakeKernel(), tempDir(t)
 	ctx := context.Background()
 	c := newTestConfigurator(t, k, dir, OwnerRouteTable)
 	before := k.snapshot()
@@ -799,7 +901,7 @@ func TestARouteUndoCantRemoveStaysRecorded(t *testing.T) {
 // A Close that fails still frees the owner's place; the next configurator
 // takes over what is left from the record.
 func TestAFailedCloseFreesTheOwnersPlace(t *testing.T) {
-	k, dir := newFakeKernel(), t.TempDir()
+	k, dir := newFakeKernel(), tempDir(t)
 	ctx := context.Background()
 	before := k.snapshot()
 	c, err := newDarwin(OwnerRouteTable, k, dir)

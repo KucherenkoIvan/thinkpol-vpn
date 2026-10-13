@@ -6,17 +6,29 @@ import (
 	"fmt"
 	"maps"
 	"net/netip"
+	"os"
 	"slices"
 	"strings"
 	"sync"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/trusteddir"
 )
 
+// StateDir holds what thinkpol keeps on macOS outside the node's state
+// directory: the agent's lock and LockDir. /private/var/db is root's alone
+// all the way up (/var is a symlink to /private/var, which the walk would
+// refuse), unlike /var/run, which is root:daemon 0775 and not sticky:
+// there anyone of group daemon could rename a lock's directory away from
+// under its holder, or swap it for a symlink.
+const StateDir = "/private/var/db/thinkpol"
+
 // LockDir holds, per owner, the lock that keeps one configurator per owner
-// alive and the record of the routes it owns. Both go when the machine
-// restarts, as the routes do.
-const LockDir = "/var/run/thinkpol/netcfg"
+// alive and the record of the routes it owns. Both outlive a reboot,
+// which the routes don't: a record carries its boot session, and one of
+// an earlier boot holds nothing.
+const LockDir = StateDir + "/netcfg"
 
 // routeFlag tags every route a thinkpol configurator adds. It alone isn't
 // ownership: other software uses the protocol flags too (RTF_PROTO1 is
@@ -118,7 +130,8 @@ type darwinConfigurator struct {
 	mu     sync.Mutex
 	k      kernel
 	owner  Owner
-	dir    string
+	dir    *os.File // the lock directory, opened by trusteddir
+	boot   string   // the boot session, stamped on records
 	lock   *ownerLock
 	closed bool
 
@@ -144,20 +157,32 @@ type addrKey struct {
 	prefix netip.Prefix
 }
 
-// newDarwin takes owner's place in dir (its lock and its record) and
+// newDarwin takes owner's place in path (its lock and its record; the
+// directory is made if missing, and it and everything above it must pass
+// trusteddir, since the record decides which routes are deleted) and
 // returns its configurator on k.
-func newDarwin(owner Owner, k kernel, dir string) (*darwinConfigurator, error) {
-	lock, err := lockOwner(dir, owner)
+func newDarwin(owner Owner, k kernel, path string) (*darwinConfigurator, error) {
+	boot, err := bootSession()
 	if err != nil {
 		return nil, fmt.Errorf("netcfg: %v: %w", owner, err)
 	}
-	owned, err := readRecord(recordPath(dir, owner))
+	dir, err := trusteddir.Make(path)
+	if err != nil {
+		return nil, fmt.Errorf("netcfg: %v: %w", owner, err)
+	}
+	lock, err := lockOwner(dir, owner)
+	if err != nil {
+		_ = dir.Close()
+		return nil, fmt.Errorf("netcfg: %v: %w", owner, err)
+	}
+	owned, err := readRecord(dir, recordName(owner), boot)
 	if err != nil {
 		_ = lock.release()
+		_ = dir.Close()
 		return nil, fmt.Errorf("netcfg: %v: %w", owner, err)
 	}
 	return &darwinConfigurator{
-		k: k, owner: owner, dir: dir, lock: lock, owned: owned, pinned: make(map[netip.Prefix]bool),
+		k: k, owner: owner, dir: dir, boot: boot, lock: lock, owned: owned, pinned: make(map[netip.Prefix]bool),
 		links: make(map[string]linkChange), addrs: make(map[addrKey]int),
 	}, nil
 }
@@ -736,14 +761,14 @@ func (c *darwinConfigurator) DefaultRoute(ctx context.Context, f Family) (Route,
 	if err != nil {
 		return Route{}, err
 	}
-	return defaultRoute(v, thinkpolRoutes(c.dir), f)
+	return defaultRoute(v, c.thinkpolRoutes(), f)
 }
 
 // thinkpolRoutes are the destinations every owner's record holds.
-func thinkpolRoutes(dir string) map[netip.Prefix]bool {
+func (c *darwinConfigurator) thinkpolRoutes() map[netip.Prefix]bool {
 	out := make(map[netip.Prefix]bool)
 	for _, o := range Owners {
-		rec, _ := readRecord(recordPath(dir, o))
+		rec, _ := readRecord(c.dir, recordName(o), c.boot)
 		for p := range rec {
 			out[p] = true
 		}
@@ -816,7 +841,7 @@ func (c *darwinConfigurator) Survey(ctx context.Context) (Survey, error) {
 	if err != nil {
 		return Survey{}, err
 	}
-	return survey(v, thinkpolRoutes(c.dir)), nil
+	return survey(v, c.thinkpolRoutes()), nil
 }
 
 func survey(v view, thinkpol map[netip.Prefix]bool) Survey {
@@ -893,6 +918,7 @@ func (c *darwinConfigurator) Close() error {
 	defer func() {
 		_ = c.k.close()
 		_ = c.lock.release()
+		_ = c.dir.Close()
 		c.lock = nil
 	}()
 	v, err := c.view()
@@ -936,7 +962,7 @@ func (c *darwinConfigurator) Close() error {
 }
 
 func (c *darwinConfigurator) saveRecord() error {
-	if err := writeRecord(recordPath(c.dir, c.owner), c.owned); err != nil {
+	if err := writeRecord(c.dir, recordName(c.owner), c.boot, c.owned); err != nil {
 		return fmt.Errorf("netcfg: record of %v's routes: %w", c.owner, err)
 	}
 	return nil

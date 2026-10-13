@@ -5,85 +5,92 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"io/fs"
+	"io"
 	"net/netip"
 	"os"
-	"path/filepath"
 	"slices"
-	"syscall"
+	"strings"
+	"sync"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/trusteddir"
 )
 
 // ownerLock is an owner's exclusive flock in LockDir, held for its
 // configurator's life (released by the kernel when the process dies).
-type ownerLock struct{ fd int }
+type ownerLock struct{ f *os.File }
 
-// lockOwner takes owner's lock in dir, made first if need be. dir and
-// its parent must be this user's and writable by no one else, since the
-// record next to the lock decides which routes are deleted.
-func lockOwner(dir string, owner Owner) (*ownerLock, error) {
-	if err := makePrivateDir(dir); err != nil {
-		return nil, err
+// lockOwner takes owner's lock in dir.
+func lockOwner(dir *os.File, owner Owner) (*ownerLock, error) {
+	f, err := trusteddir.Lock(dir, owner.String()+".lock")
+	if errors.Is(err, trusteddir.ErrLocked) {
+		return nil, ErrBusy
 	}
-	path := filepath.Join(dir, owner.String()+".lock")
-	fd, err := unix.Open(path, unix.O_RDWR|unix.O_CREAT|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
 	if err != nil {
 		return nil, err
 	}
-	if err := unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB); err != nil {
-		_ = unix.Close(fd)
-		if errors.Is(err, unix.EWOULDBLOCK) {
-			return nil, ErrBusy
-		}
-		return nil, err
-	}
-	return &ownerLock{fd: fd}, nil
+	return &ownerLock{f: f}, nil
 }
 
-func (l *ownerLock) release() error { return unix.Close(l.fd) }
+func (l *ownerLock) release() error { return l.f.Close() }
 
-// makePrivateDir makes dir and its parent (0700) if missing, and checks
-// both are real directories of this user that no one else can write to.
-func makePrivateDir(dir string) error {
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	for _, d := range []string{filepath.Dir(dir), dir} {
-		fi, err := os.Lstat(d)
-		if err != nil {
-			return err
-		}
-		st, ok := fi.Sys().(*syscall.Stat_t)
-		if !fi.IsDir() || !ok || int(st.Uid) != os.Geteuid() || fi.Mode().Perm()&0o022 != 0 {
-			return fmt.Errorf("%s: want a directory of uid %d that no one else can write to", d, os.Geteuid())
-		}
-	}
-	return nil
-}
+func recordName(owner Owner) string { return owner.String() + ".routes" }
 
-func recordPath(dir string, owner Owner) string {
-	return filepath.Join(dir, owner.String()+".routes")
-}
-
-// recordHeader starts a record: the destinations of the routes an owner
-// added, one per line.
+// recordHeader starts a record: the boot session it was written in, then
+// the destinations of the routes an owner added, one per line.
 const recordHeader = "# thinkpol netcfg: routes this owner added (RTF_PROTO2); rewritten on every change"
 
-// readRecord reads an owner's record; a missing one is empty.
-func readRecord(path string) (map[netip.Prefix]bool, error) {
+// bootSession names this boot of the machine. LockDir outlives a reboot
+// and the routes don't: a record of another boot session holds nothing.
+var bootSession = sync.OnceValues(func() (string, error) {
+	s, err := unix.Sysctl("kern.bootsessionuuid")
+	if err == nil && s == "" {
+		err = errors.New("empty")
+	}
+	if err != nil {
+		return "", fmt.Errorf("kern.bootsessionuuid: %w", err)
+	}
+	return s, nil
+})
+
+// readRecord reads the record name in dir; a missing one, or one written
+// in another boot session than boot, is empty.
+func readRecord(dir *os.File, name string, boot string) (map[netip.Prefix]bool, error) {
 	out := make(map[netip.Prefix]bool)
-	data, err := os.ReadFile(path)
-	if errors.Is(err, fs.ErrNotExist) {
+	path := dir.Name() + "/" + name
+	fd, err := unix.Openat(int(dir.Fd()), name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+	if errors.Is(err, unix.ENOENT) {
 		return out, nil
 	}
+	if err != nil {
+		return nil, &os.PathError{Op: "open", Path: path, Err: err}
+	}
+	f := os.NewFile(uintptr(fd), path)
+	defer func() { _ = f.Close() }()
+	if fi, err := f.Stat(); err != nil || !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s: not a regular file", path)
+	}
+	data, err := io.ReadAll(f)
 	if err != nil {
 		return nil, err
 	}
 	sc := bufio.NewScanner(bytes.NewReader(data))
+	booted := false
 	for sc.Scan() {
 		line := sc.Text()
 		if line == "" || line[0] == '#' {
+			continue
+		}
+		if !booted {
+			s, ok := strings.CutPrefix(line, "boot ")
+			if !ok {
+				return nil, fmt.Errorf("%s: no boot session", path)
+			}
+			if s != boot {
+				return out, nil // the routes went with that boot
+			}
+			booted = true
 			continue
 		}
 		p, err := netip.ParsePrefix(line)
@@ -95,11 +102,13 @@ func readRecord(path string) (map[netip.Prefix]bool, error) {
 	return out, sc.Err()
 }
 
-// writeRecord replaces the record atomically; an empty one is removed.
-func writeRecord(path string, owned map[netip.Prefix]bool) error {
+// writeRecord replaces the record name in dir atomically, stamped with
+// boot; an empty one is removed.
+func writeRecord(dir *os.File, name string, boot string, owned map[netip.Prefix]bool) error {
+	dirfd := int(dir.Fd())
 	if len(owned) == 0 {
-		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return err
+		if err := unix.Unlinkat(dirfd, name, 0); err != nil && !errors.Is(err, unix.ENOENT) {
+			return &os.PathError{Op: "remove", Path: dir.Name() + "/" + name, Err: err}
 		}
 		return nil
 	}
@@ -109,25 +118,25 @@ func writeRecord(path string, owned map[netip.Prefix]bool) error {
 	}
 	slices.SortFunc(ps, comparePrefixes)
 	var b bytes.Buffer
-	b.WriteString(recordHeader + "\n")
+	b.WriteString(recordHeader + "\nboot " + boot + "\n")
 	for _, p := range ps {
 		b.WriteString(p.String() + "\n")
 	}
-	tmp := path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	tmp := name + ".tmp"
+	_ = unix.Unlinkat(dirfd, tmp, 0)
+	fd, err := unix.Openat(dirfd, tmp, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
 	if err != nil {
-		return err
+		return &os.PathError{Op: "create", Path: dir.Name() + "/" + tmp, Err: err}
 	}
-	if _, err := f.Write(b.Bytes()); err != nil {
-		_ = f.Close()
-		return err
+	f := os.NewFile(uintptr(fd), tmp)
+	err = errors.Join(func() error { _, err := f.Write(b.Bytes()); return err }(), f.Sync())
+	err = errors.Join(err, f.Close())
+	if err == nil {
+		err = unix.Renameat(dirfd, tmp, dirfd, name)
 	}
-	if err := f.Sync(); err != nil {
-		_ = f.Close()
-		return err
+	if err != nil {
+		_ = unix.Unlinkat(dirfd, tmp, 0)
+		return fmt.Errorf("%s: %w", dir.Name()+"/"+name, err)
 	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return nil
 }
