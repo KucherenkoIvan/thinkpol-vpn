@@ -108,3 +108,4 @@ Orchestrator decisions: fix every proven finding and the lower ones; the suspici
 - 2026-10-13 docs: DESIGN.md "Route table on macOS" (new), DNS on macOS, link and DNS sockets on macOS, local API socket `/var/db/thinkpol-api` on macOS, node safety (dynamic store, route records), repository layout (`ifbind`)
 - 2026-10-13 in-progress → review — make lint, make test green on a Mac (no test touches the host: checked after the run); adversarial review findings 1–7 fixed; device-only boxes pending the Device checklist (needs_human: macos)
 - 2026-10-13 review → has-errors — formal review round 2: R2.1–R2.9
+- 2026-10-13 has-errors → in-progress — owner: agent-tp-019, fixing round 2
