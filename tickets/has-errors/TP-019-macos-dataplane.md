@@ -109,6 +109,11 @@ Orchestrator decisions: fix every proven finding and the lower ones; the suspici
 - [x] R2.8 Suspicion (device first): source-address interface selection may let sockets with an en0 source address bypass the split routes — Notes get the candidate fixes; Device checklist gets the test.
 - [x] R2.9 Device checklist additions (crash capture, source-bound sockets, DNS captures, overlay host route, group login, encrypted DNS/Private Relay baseline, rollback after crash + network change).
 
+### Round 3 (merge with TP-060 and its review, 2026-10-13)
+- [ ] R3.1 Merged with TP-060, the host lock is taken twice in one start (TP-019's `lockHost()` at the top of `run`, TP-060's in `Adapters`): the second `flock` gets `EWOULDBLOCK` and every `thinkpol up` fails. Unit tests stub `lockHost`, so nothing but a lab test catches it.
+- [ ] R3.2 macOS lock directory: `/private/var/run` is `root:daemon` 0775 without the sticky bit, so a process with gid `daemon` can rename `/var/run/thinkpol` away while agent A holds the lock (agent B then locks a fresh inode), and the directory can be swapped for a symlink between the `Lstat` and the `Open`.
+- [ ] R3.3 netcfg's macOS owner locks and route records (`/var/run/thinkpol/netcfg`) share R3.2's weakness, and a record's temporary file is opened following symlinks (root truncating a file of the attacker's choice).
+
 Round 2 resolution: R2.1 `netcfg.ConnectedRoutes` (utun networks as halves) + the route table's reject per overlay network (`TestSplitRoutesOnAHomeNetwork`, netcfg tests on halves). R2.2 gateways exempt only inside trusted on-link subnets; `OverlayAhead` → `overlay_routes_ahead` (down) (`TestAGatewayInsideTheOverlayIsNotExempt`, `TestSplitRoutesShadowAHostileNetwork`, agent health test). R2.3 `original.Unrestorable`, restored by removal (`TestAnOriginalThatCantBePutBackIsOverriddenAndRemovedAfter`). R2.4 `watchStore` (scutil `n.watch`), 30 s backstop (`TestTheStoresNotificationsTriggerACheck`). R2.5 `hostLock` (`/var/run/thinkpol/agent.lock`) before the cleanups; tests swap it. R2.6 `DefaultInterface` asks again (3×) on ENOBUFS or a late reply. R2.7, R2.8 Notes (residual risks) and DESIGN.md. R2.9 Device checklist steps 0, 6, 8, 9, 12, 13, 16 and the rollback note.
 
 ## Log
@@ -121,3 +126,4 @@ Round 2 resolution: R2.1 `netcfg.ConnectedRoutes` (utun networks as halves) + th
 - 2026-10-13 docs: DESIGN.md "Route table on macOS" (overlay halves and its reject behind, gateways exempt only in trusted subnets, overlay_routes_ahead, the TunnelVision window) and DNS on macOS (fail closed by removal, store notifications, one agent per Mac)
 - 2026-10-13 in-progress → review — round 2 R2.1–R2.9 done; make lint, make test green on a Mac (no test touches the host: checked after the run); device-only boxes pending the Device checklist
 - 2026-10-13 notes: merge with TP-060's host lock; macOS lock directory weakness (TP-060 review)
+- 2026-10-13 review → has-errors — round 3: R3.1–R3.3 (merge with TP-060, macOS lock and record directory)
