@@ -60,3 +60,4 @@ From the orchestrator's review, 2026-10-13. One fix pass, then merge.
 - 2026-10-13 created in in-progress — owner: agent-hardening, branch: tp-061-security-hardening
 - 2026-10-13 in-progress → review — all acceptance met; lint, test, race and the lab checks above pass
 - 2026-10-13 review → has-errors — 5 findings from the orchestrator's review, see Review findings
+- 2026-10-13 has-errors → in-progress — owner: agent-hardening, fixing review findings
