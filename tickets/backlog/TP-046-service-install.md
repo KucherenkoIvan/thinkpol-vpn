@@ -5,7 +5,7 @@ milestone: M5
 area: agent
 repo: thinkpol-vpn
 size: L
-depends_on: [TP-022]
+depends_on: [TP-022, TP-075]
 refs: [D2, D5]
 needs_human: macos
 owner: ""
@@ -32,6 +32,7 @@ The client runs as a proper background service on every desktop OS.
 - **Host lock needs a stable inode (TP-060).** The agent lock `/run/thinkpol/agent.lock` only works while its inode survives. Do NOT use `RuntimeDirectory=thinkpol`: systemd deletes the directory when the unit stops, including when the unit stops because it lost the lock, and a later agent would then lock a fresh inode while the old holder still runs. Create `/run/thinkpol` yourself (the agent does, root 0700), or set `RuntimeDirectoryPreserve=yes`.
 
 ## Log
+- 2026-10-15 docs (independent review 2026-10-15): depends on TP-075 (agent refactor before service install)
 - 2026-10-10 created in backlog
 - 2026-10-13 docs (TP-062): crash posture: restart after a crash, fail-closed until then, macOS included
 - 2026-10-13 notes: the host lock and systemd's `RuntimeDirectory=` (TP-060)

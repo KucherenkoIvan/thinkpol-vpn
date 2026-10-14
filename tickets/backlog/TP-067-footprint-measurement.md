@@ -24,7 +24,7 @@ Measure what thinkpol needs to run, so that README can state minimal and recomme
 - Run it once more with 3 spaces on one node.
 - Record the results in Notes.
 - Add a "System requirements" section to README.md with minimal and recommended values. Mark each value as measured or estimated.
-- Optional: set default worker MemoryMax/PidsMax values from the measurements.
+- Set default worker `MemoryMax`, `PidsMax` and `FairShare` from the measurements (wire them through `supervisor.Options` from `node.go`).
 
 ## Out of scope
 - Tuning the data plane to improve the numbers: this ticket measures, it doesn't optimize.
@@ -33,9 +33,12 @@ Measure what thinkpol needs to run, so that README can state minimal and recomme
 ## Acceptance
 - [ ] the lab measurement is reproducible with a single command
 - [ ] README has the system requirements, backed by the numbers in Notes
+- [ ] production builds set non-zero `MemoryMax`, `PidsMax` and `FairShare` defaults from the measurements
 
 ## Notes
+- **Independent review (2026-10-15):** without cgroup limits a compromised worker can fork-bomb the host; the unmetered reply path (`shared.go:652-656`, a blocking `WriteToUDPAddrPort` on the shared socket) lets one flooding worker stall every space's replies.
 - **From the 2026-10-14 estimate:** the hard requirements known from code are: node: Linux with kernel 4.17 or newer (5.7 or newer for the cgroup fd), /dev/net/tun, nftables with conntrack, namespaces, root, cgroup v2 recommended, and a KVM VPS rather than OpenVZ/LXC; client: macOS on Apple silicon, or Linux 4.17 or newer, with outbound UDP. The PRD target is at least 50 Mbit/s over two hops on 1-vCPU nodes. The first device test's exit ran within a 0.75 CPU / 300 MB container limit. Nothing has been measured yet.
 
 ## Log
+- 2026-10-15 docs (independent review 2026-10-15): MemoryMax/PidsMax/FairShare defaults mandatory in scope; acceptance and notes on fork-bomb and reply-path flooding
 - 2026-10-14 created in backlog
