@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: []
 refs: [N3, R4, DESIGN#routing-rules-and-dns]
-owner: ""
-branch: ""
+owner: agent-composer
+branch: tp-073-resolvconf-upstreams
 ---
 
 ## Goal
@@ -30,3 +30,4 @@ Direct DNS upstreams taken from a rewritten `resolv.conf` are filtered the same 
 ## Log
 - 2026-10-15 created in backlog
 - 2026-10-15 docs: board fix-ups (log order, refs, parked notes)
+- 2026-10-15 backlog → in-progress — owner: agent-composer, branch: tp-073-resolvconf-upstreams
