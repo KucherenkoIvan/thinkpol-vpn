@@ -103,6 +103,9 @@ import (
 // for the SetSpaces rollback test. Tests set it; it is never set in production.
 var failApplyIsolation bool
 
+// testCloseTeardown records Close teardown steps; tests set it.
+var testCloseTeardown func(string)
+
 // unboundAccepts makes the accepts take any established or related flow,
 // whoever owns it: the negative control of the tests that forge ICMP errors.
 // Tests set it; it is never set in production.

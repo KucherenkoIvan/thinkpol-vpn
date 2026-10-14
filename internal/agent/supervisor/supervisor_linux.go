@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"maps"
 	"runtime"
 	"slices"
 	"strings"
@@ -226,8 +227,10 @@ func (s *Supervisor) SetSpaces(spaces []Space) error {
 	before := s.spaceEgresses()
 	s.refreshUplinkLocked()
 	var started []*worker
+	var restored []workerApplySnap
 	for _, sp := range spaces {
 		if w, ok := s.workers[sp.ID]; ok {
+			restored = append(restored, snapWorker(w))
 			w.inbound = sp.Inbound
 			w.setEgress(sp.Egress, sp.Dials)
 			w.setConfig(sp.Config, sp.Seeds) // an existing worker: push the new config
@@ -247,9 +250,11 @@ func (s *Supervisor) SetSpaces(spaces []Space) error {
 	// Rebuild the isolation tables for the current slots, their egress and
 	// dials, before any new worker's veth carries a packet. On failure the
 	// just-started workers are rolled back: none has a goroutine yet, so a
-	// later Close must not wait on them.
+	// later Close must not wait on them. Existing workers' state is put
+	// back too, so a later SetSpaces still sees the egress gap and retries.
 	if err := s.applyTables(before); err != nil {
 		s.rollback(started)
+		s.restoreWorkers(restored)
 		return err
 	}
 	for _, w := range started {
@@ -401,6 +406,7 @@ func (s *Supervisor) uplinkMoved() {
 		return
 	}
 	before := s.spaceEgresses()
+	prevUp, prevUpErr := s.uplink, s.uplinkErr
 	changed := s.refreshUplinkLocked()
 	s.mu.Unlock()
 	if !changed {
@@ -408,6 +414,9 @@ func (s *Supervisor) uplinkMoved() {
 	}
 	if err := s.applyTables(before); err != nil {
 		s.log.Error("the uplink changed, and the tables couldn't follow", "err", err)
+		s.mu.Lock()
+		s.uplink, s.uplinkErr = prevUp, prevUpErr
+		s.mu.Unlock()
 	}
 }
 
@@ -423,6 +432,51 @@ func (s *Supervisor) Egress() EgressInfo {
 		info.Err = err.Error()
 	}
 	return info
+}
+
+// workerApplySnap is an existing worker's state before a SetSpaces update.
+type workerApplySnap struct {
+	w       *worker
+	inbound map[string][]transport.PeerLink
+	egress  EgressGrant
+	dials   []Dial
+	config  []byte
+	seeds   func() [][]byte
+}
+
+func snapWorker(w *worker) workerApplySnap {
+	eg, dials := w.egressRules()
+	return workerApplySnap{
+		w:       w,
+		inbound: maps.Clone(w.inbound),
+		egress:  eg,
+		dials:   dials,
+		config:  w.currentConfig(),
+		seeds:   w.currentSeeds(),
+	}
+}
+
+// restoreWorkers puts existing workers back after a failed applyTables.
+func (s *Supervisor) restoreWorkers(snaps []workerApplySnap) {
+	if len(snaps) == 0 {
+		return
+	}
+	s.mu.Lock()
+	for _, snap := range snaps {
+		w := snap.w
+		w.inbound = snap.inbound
+		w.setEgress(snap.egress, snap.dials)
+		w.mu.Lock()
+		w.config, w.seeds = snap.config, snap.seeds
+		w.mu.Unlock()
+		w.signal(w.notify)
+	}
+	inbound := make(map[transport.SpaceID]map[string][]transport.PeerLink, len(s.workers))
+	for id, w := range s.workers {
+		inbound[transport.SpaceID(id)] = w.inbound
+	}
+	s.mu.Unlock()
+	s.shared.setSpaces(inbound)
 }
 
 // rollback drops workers that were registered but never started (their done
@@ -557,11 +611,19 @@ func (s *Supervisor) Close() error {
 
 	s.stopAll(ws)
 	var errs []error
+	// Forwarding off before the isolation tables go: with forwarding on and
+	// no forward-chain rules, the root would briefly forward everything.
+	if err := s.forwarding.restore(); err != nil {
+		errs = append(errs, err)
+	}
+	if testCloseTeardown != nil {
+		testCloseTeardown("forwarding")
+	}
 	if err := removeIsolation(); err != nil {
 		errs = append(errs, err)
 	}
-	if err := s.forwarding.restore(); err != nil {
-		errs = append(errs, err)
+	if testCloseTeardown != nil {
+		testCloseTeardown("isolation")
 	}
 	if s.cgroups != nil {
 		if err := s.cgroups.remove(); err != nil {
