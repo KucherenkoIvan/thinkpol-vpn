@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -32,6 +33,8 @@ type SystemConfig struct {
 	// DHCP client rewriting resolv.conf, resolved's uplink servers). It is
 	// called from the configuration's own goroutine.
 	Upstreams func([]netip.Addr)
+	// Log receives warnings from configuration watchers.
+	Log *slog.Logger
 }
 
 // System is the OS's resolver configuration while the node points it at
@@ -224,7 +227,14 @@ func (r *resolvConf) apply() (err error) {
 		return nil
 	}
 	if r.seen && !bytes.Equal(r.original, m.original) && r.cfg.Upstreams != nil {
-		r.cfg.Upstreams(upstreamsFromContent(m.original, r.uplink, r.cfg.Servers))
+		ups := upstreamsFromContent(m.original, r.uplink, r.cfg.Servers)
+		if len(ups) == 0 {
+			if r.cfg.Log != nil {
+				r.cfg.Log.Warn("DNS: no upstream to ask; set one with -dns-upstream")
+			}
+		} else {
+			r.cfg.Upstreams(ups)
+		}
 	}
 	r.original, r.seen = m.original, true
 	if fi != nil && fi.Mode().IsRegular() {

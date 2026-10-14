@@ -178,8 +178,12 @@ func TestARewrittenResolvConfFiltersStubUpstreams(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = r.Restore() })
 	upstreams := make(chan []netip.Addr, 2)
+	var lastUpstreams []netip.Addr
 	r.mu.Lock()
-	r.cfg.Upstreams = func(a []netip.Addr) { upstreams <- a }
+	r.cfg.Upstreams = func(a []netip.Addr) {
+		lastUpstreams = a
+		upstreams <- a
+	}
 	r.mu.Unlock()
 
 	mixed := "nameserver 127.0.0.53\nnameserver 192.0.2.88\n"
@@ -241,13 +245,14 @@ func TestARewrittenResolvConfFiltersStubUpstreams(t *testing.T) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+	wantKept := []netip.Addr{netip.MustParseAddr("198.51.100.53")}
 	select {
 	case got := <-upstreams:
-		if len(got) != 0 {
-			t.Errorf("stub-only without uplink: upstreams %v, want none", got)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("stub-only without uplink: not told upstreams changed")
+		t.Errorf("stub-only without uplink: upstreams %v, want previous kept without callback", got)
+	case <-time.After(300 * time.Millisecond):
+	}
+	if !slices.Equal(lastUpstreams, wantKept) {
+		t.Errorf("stub-only without uplink: upstreams %v, want previous %v kept", lastUpstreams, wantKept)
 	}
 }
 

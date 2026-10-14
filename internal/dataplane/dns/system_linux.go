@@ -282,7 +282,8 @@ func (r *resolved) watch() {
 		r.problem = r.check()
 		var changed []netip.Addr
 		if b, err := os.ReadFile(resolvedUplink); err == nil && r.uplink {
-			if servers := nameservers(b); !slices.Equal(servers, r.servers) {
+			servers := upstreamsFromContent(b, resolvedUplink, r.cfg.Servers)
+			if !slices.Equal(servers, r.servers) {
 				r.servers, changed = servers, servers
 			}
 		}
