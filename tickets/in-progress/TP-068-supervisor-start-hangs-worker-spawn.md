@@ -40,3 +40,4 @@ Round 2 (2026-10-15).
 - 2026-10-15 backlog → in-progress — owner: agent-composer, branch: tp-068-supervisor-spawn-hang
 - 2026-10-15 in-progress → review — close p.gone on spawn failure; make lint and make test pass
 - 2026-10-15 review → has-errors — round 2 review findings 1–4 (see Review findings)
+- 2026-10-15 has-errors → in-progress — owner: agent-composer, fixing round 2 findings
