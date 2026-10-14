@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: []
 refs: [N2, DESIGN#data-plane]
-owner: ""
-branch: ""
+owner: agent-composer
+branch: tp-071-data-frame-mod16
 ---
 
 ## Goal
@@ -29,3 +29,4 @@ Leader following works under bulk traffic when the overlay MTU is not a multiple
 ## Log
 - 2026-10-15 created in backlog
 - 2026-10-15 docs: board fix-ups (log order, refs, parked notes)
+- 2026-10-15 backlog → in-progress — owner: agent-composer, branch: tp-071-data-frame-mod16
