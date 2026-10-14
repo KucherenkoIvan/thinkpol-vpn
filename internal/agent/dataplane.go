@@ -90,10 +90,10 @@ type DataPlane struct {
 	// timing, how long to wait before retrying what failed.
 	newTUN    func(name string) (wgtun.Device, netcfg.Configurator, error)
 	newRoutes func(log *slog.Logger) (dataplane.RouteTable, error)
-	// clearRouteTable removes a previous run's route table.
-	clearRouteTable func() error
-	path            path.Options
-	retryAfter      time.Duration
+	// clearNetwork removes a previous run's routes (clearNetwork).
+	clearNetwork func() error
+	path         path.Options
+	retryAfter   time.Duration
 	// blobOptions are the network functions and limits of the blob
 	// service a worker makes (serveSpace).
 	blobOptions blobs.Options
@@ -130,8 +130,8 @@ func RunDataPlane(ctx context.Context, dp DataPlane) error {
 	if dp.newRoutes == nil {
 		dp.newRoutes = newRouteTable
 	}
-	if dp.clearRouteTable == nil {
-		dp.clearRouteTable = routetable.Clear
+	if dp.clearNetwork == nil {
+		dp.clearNetwork = clearHostNetwork
 	}
 	if dp.retryAfter == 0 {
 		dp.retryAfter = RetryAfter
@@ -212,14 +212,14 @@ func newRouteTable(log *slog.Logger) (dataplane.RouteTable, error) {
 	return routetable.New(log)
 }
 
-// clearRoutes removes what route-table enforcement left (a crash) while no
-// Enforcer of this run holds it.
+// clearRoutes removes what a crashed run left in the host's routing, route
+// table and overlay, while nothing of this run holds either.
 func (r *runner) clearRoutes() {
 	if !r.dp.RouteTable {
 		return
 	}
-	if err := r.dp.clearRouteTable(); err != nil && !errors.Is(err, errors.ErrUnsupported) {
-		r.dp.Log.Warn("removing a previous run's route table failed", "err", err)
+	if err := r.dp.clearNetwork(); err != nil {
+		r.dp.Log.Warn("removing a previous run's routes failed", "err", err)
 	}
 }
 

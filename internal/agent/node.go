@@ -19,7 +19,7 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/blobs"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
-	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/rules"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
@@ -30,10 +30,29 @@ import (
 // table and the resolver configuration. Tests swap them, so they never
 // touch the host.
 var (
-	clearHostRouteTable = routetable.Clear
-	restoreHostDNS      = dns.RestoreSystem
-	lockHost            = hostLock
+	clearHostNetwork = clearNetwork
+	restoreHostDNS   = dns.RestoreSystem
+	lockHost         = hostLock
 )
+
+// clearOwner removes what a dead configurator of one owner left
+// (netcfg.Clear); tests swap it.
+var clearOwner = netcfg.Clear
+
+// clearNetwork removes what a device's crashed run left in the host's
+// routing, for both of its owners: route-table enforcement's routes (its
+// rejects outlive the TUN) and the overlay's (on macOS they go with the
+// utun, but stay in the overlay's record), each owner's record with them.
+// The second is cleared whatever the first says.
+func clearNetwork() error {
+	var errs []error
+	for _, o := range []netcfg.Owner{netcfg.OwnerRouteTable, netcfg.OwnerOverlay} {
+		if err := clearOwner(o); err != nil && !errors.Is(err, errors.ErrUnsupported) {
+			errs = append(errs, fmt.Errorf("%v: %w", o, err))
+		}
+	}
+	return errors.Join(errs...)
+}
 
 // Node is a node ready to run (`thinkpol up`): its configuration and state,
 // read and checked, nothing on the host touched yet.
@@ -257,7 +276,7 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 	h := n.state.Map.Header()
 	n.logs.Info("starting", "mode", n.mode, "space", h.SpaceID, "node", n.state.Keys.ID, "version", h.Version, "map", n.state.MapPath)
 	if n.mode != ModeServer && (n.state.Removed || !n.want) {
-		n.clearRouteTable()
+		n.clearNetwork()
 	}
 	// A resolver configuration a crash left behind goes back first,
 	// whatever the node does next.
@@ -299,16 +318,12 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 	return RunDataPlane(ctx, dp)
 }
 
-// clearRouteTable removes what route-table enforcement left behind when
-// the node died connected (a crash, kill -9), for a device that starts
-// without connecting: connecting takes it over anyway.
-func (n *Node) clearRouteTable() {
-	err := clearHostRouteTable()
-	switch {
-	case err == nil:
-	case errors.Is(err, errors.ErrUnsupported):
-	default:
-		n.logs.Warn("removing a previous run's route table failed", "err", err)
+// clearNetwork removes what the data plane left in the host's routing
+// when the node died connected (a crash, kill -9), for a device that
+// starts without connecting: connecting takes it over anyway.
+func (n *Node) clearNetwork() {
+	if err := clearHostNetwork(); err != nil {
+		n.logs.Warn("removing a previous run's routes failed", "err", err)
 	}
 }
 

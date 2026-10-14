@@ -332,13 +332,7 @@ func New(log *slog.Logger) (*Enforcer, error) {
 
 // Clear removes what an Enforcer of this host left (a crash), with
 // nothing put in place: for a device that starts without connecting.
-func Clear() error {
-	c, err := netcfg.New(netcfg.OwnerRouteTable)
-	if err != nil {
-		return err
-	}
-	return c.Close()
-}
+func Clear() error { return netcfg.Clear(netcfg.OwnerRouteTable) }
 
 // startWatching starts the watcher; with check it re-applies first, for
 // what changed while it wasn't watching.

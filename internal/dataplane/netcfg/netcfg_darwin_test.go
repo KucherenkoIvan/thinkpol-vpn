@@ -927,3 +927,58 @@ func TestAFailedCloseFreesTheOwnersPlace(t *testing.T) {
 		t.Errorf("after the next Close:\n%s\nwant:\n%s", got, before)
 	}
 }
+
+// A crash leaves both owners' records behind: the route table's routes
+// stay in the kernel (its rejects outlive the utun), the overlay's go with
+// the utun but stay recorded. A configurator that takes an owner's place
+// and closes with nothing applied (Clear) empties its record either way,
+// so a recorded destination never outlives the run that routed it.
+func TestClosingWithNothingAppliedClearsACrashedRunsRecord(t *testing.T) {
+	k, dir := newFakeKernel(), tempDir(t)
+	ctx := context.Background()
+	for _, o := range []struct {
+		owner Owner
+		cfg   Config
+	}{{OwnerOverlay, overlayConfig}, {OwnerRouteTable, routeTableConfig}} {
+		dead, err := newDarwin(o.owner, k, dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := dead.Apply(ctx, o.cfg); err != nil {
+			t.Fatal(err)
+		}
+		_ = dead.lock.release() // the process died: the kernel drops the flock
+		_ = dead.dir.Close()
+	}
+	// The utun goes with the process, and its routes with it.
+	k.mu.Lock()
+	delete(k.ifcs, "utun7")
+	delete(k.addrsB, 20)
+	for dst, r := range k.rs {
+		if r.index == 20 || r.link == 20 {
+			delete(k.rs, dst)
+		}
+	}
+	k.mu.Unlock()
+	if got := record(t, dir, OwnerOverlay); len(got) == 0 {
+		t.Fatal("the crashed overlay recorded nothing")
+	}
+
+	for _, o := range []Owner{OwnerOverlay, OwnerRouteTable} {
+		c, err := newDarwin(o, k, dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := c.Close(); err != nil {
+			t.Fatalf("%v: %v", o, err)
+		}
+		if got := record(t, dir, o); len(got) != 0 {
+			t.Errorf("%v: record left %v", o, got)
+		}
+	}
+	for _, r := range k.rs {
+		if r.flags&routeFlag != 0 {
+			t.Errorf("route %v left", r)
+		}
+	}
+}

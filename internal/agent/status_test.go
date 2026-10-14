@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -475,5 +476,59 @@ func TestADeviceStartingDisconnectedNeedsTheAPI(t *testing.T) {
 	cfg.APISocket = "/run/x/api.sock"
 	if _, err := Prepare(cfg, Logs{}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A device that starts disconnected (after a crash: `thinkpol up
+// -connect=false`) clears what the crashed run left for both of the data
+// plane's owners on the host: the route table's and the overlay's, whose
+// routes went with the utun but stayed in its record on macOS.
+func TestAStartWhileDisconnectedClearsACrashedRunsRoutes(t *testing.T) {
+	prevHost, prevOwner := clearHostNetwork, clearOwner
+	t.Cleanup(func() { clearHostNetwork, clearOwner = prevHost, prevOwner })
+	cleared := make(chan []netcfg.Owner, 4)
+	clearHostNetwork = func() error {
+		var owners []netcfg.Owner
+		clearOwner = func(o netcfg.Owner) error { owners = append(owners, o); return nil }
+		err := clearNetwork()
+		cleared <- owners
+		return err
+	}
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	startDevice(t, s, reg, false)
+	select {
+	case owners := <-cleared:
+		if want := []netcfg.Owner{netcfg.OwnerRouteTable, netcfg.OwnerOverlay}; !slices.Equal(owners, want) {
+			t.Fatalf("cleared %v, want %v", owners, want)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("a disconnected start cleared nothing")
+	}
+}
+
+// Clearing one owner failing doesn't keep the other's leftovers; an OS
+// without an adapter for an owner has nothing to clear.
+func TestClearingTheNetworkTriesBothOwners(t *testing.T) {
+	prev := clearOwner
+	t.Cleanup(func() { clearOwner = prev })
+	var owners []netcfg.Owner
+	clearOwner = func(o netcfg.Owner) error {
+		owners = append(owners, o)
+		if o == netcfg.OwnerRouteTable {
+			return errors.New("no routing socket today")
+		}
+		return nil
+	}
+	err := clearNetwork()
+	if !slices.Equal(owners, []netcfg.Owner{netcfg.OwnerRouteTable, netcfg.OwnerOverlay}) {
+		t.Errorf("cleared %v", owners)
+	}
+	if err == nil || !strings.Contains(err.Error(), "route-table: no routing socket today") {
+		t.Errorf("error %v", err)
+	}
+	clearOwner = func(netcfg.Owner) error { return fmt.Errorf("netcfg: %w", errors.ErrUnsupported) }
+	if err := clearNetwork(); err != nil {
+		t.Errorf("unsupported: %v", err)
 	}
 }

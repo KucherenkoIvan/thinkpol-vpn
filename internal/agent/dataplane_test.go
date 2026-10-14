@@ -462,7 +462,7 @@ func TestAFailedStartClearsACrashedRunsRouteTable(t *testing.T) {
 	dp := n.dataPlane(reg, s.a, s.verified(t, 1))
 	dp.RouteTable = true
 	var cleared atomic.Int32
-	dp.clearRouteTable = func() error { cleared.Add(1); return nil }
+	dp.clearNetwork = func() error { cleared.Add(1); return nil }
 	dp.newTUN = func(string) (wgtun.Device, netcfg.Configurator, error) { return nil, nil, errors.New("no TUN today") }
 	dp.newRoutes = func(*slog.Logger) (dataplane.RouteTable, error) { panic("not reached") }
 	if err := RunDataPlane(n.ctx, dp); err == nil {

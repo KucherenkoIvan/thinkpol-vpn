@@ -370,6 +370,20 @@ func ConnectedRoutes(network netip.Prefix) []netip.Prefix {
 	return []netip.Prefix{lo, netip.PrefixFrom(hi, network.Bits()+1)}
 }
 
+// Clear removes what a dead configurator of owner left on this host (a
+// crash): it takes the owner's place and closes it with nothing applied,
+// which removes every route the owner still holds and, on macOS, empties
+// the owner's record, routes gone with their interface included.
+// errors.ErrUnsupported where this OS has no adapter for owner; ErrBusy
+// while a configurator of owner is alive.
+func Clear(owner Owner) error {
+	c, err := New(owner)
+	if err != nil {
+		return err
+	}
+	return c.Close()
+}
+
 // Survey is the OS's own routing, as route-table enforcement needs it.
 type Survey struct {
 	// OnLink are the main table's routes the OS made for interfaces'
