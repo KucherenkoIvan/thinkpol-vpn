@@ -294,6 +294,7 @@ func TestAWatcherThatStopsLetsGoOfItsSubscriptions(t *testing.T) {
 	if err := e.Enforce(context.Background(), routetable.Want{TUN: "thinkpol0"}); !errors.Is(err, errors.ErrUnsupported) {
 		t.Fatalf("Enforce: %v", err)
 	}
+	eventually(t, "the guard subscribed", func() bool { return g.watches.Load() > 0 })
 	eventually(t, "the guard's subscription let go", func() bool { return g.watches.Load() == 0 })
 }
 
