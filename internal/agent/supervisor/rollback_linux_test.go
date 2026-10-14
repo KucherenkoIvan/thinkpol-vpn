@@ -85,11 +85,13 @@ func TestSetSpacesRetriesEgressAfterIsolationFailure(t *testing.T) {
 	}
 
 	grant := EgressGrant{IPv4: true}
+	t.Cleanup(func() { failApplyIsolation = false })
 	failApplyIsolation = true
-	defer func() { failApplyIsolation = false }()
 	if err := s.SetSpaces([]Space{{ID: space, Egress: grant}}); err == nil {
+		failApplyIsolation = false
 		t.Fatal("SetSpaces returned nil despite the injected isolation failure")
 	}
+	failApplyIsolation = false
 	s.mu.Lock()
 	eg, _ := s.workers[space].egressRules()
 	s.mu.Unlock()
@@ -100,8 +102,12 @@ func TestSetSpacesRetriesEgressAfterIsolationFailure(t *testing.T) {
 	if err := s.SetSpaces([]Space{{ID: space, Egress: grant}}); err != nil {
 		t.Fatalf("retry SetSpaces: %v", err)
 	}
-	if readSysctl(forward4) != "1" {
-		t.Fatalf("forwarding not turned on after retry: %s", readSysctl(forward4))
+	fwd, err := readSysctl(forward4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fwd != "1" {
+		t.Fatalf("forwarding not turned on after retry: %s", fwd)
 	}
 }
 
