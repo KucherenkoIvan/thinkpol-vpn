@@ -87,11 +87,27 @@ const (
 	wgData       = 4
 )
 
+// wgDataLen reports whether n is a WireGuard data message length for a
+// device whose TUN MTU is tunMTU (0: only lengths that are always valid).
+// wireguard-go pads plaintext to min(roundup16(len), mtu) before sealing,
+// so a full-MTU packet on a TUN whose MTU is not a multiple of 16 is
+// 32+tunMTU bytes, not a multiple of 16.
+func wgDataLen(n, tunMTU int) bool {
+	if n < 32 {
+		return false
+	}
+	content := n - 32
+	if content%16 == 0 {
+		return true
+	}
+	return tunMTU > 0 && content == tunMTU
+}
+
 // wgType returns the type of a message shaped like a WireGuard message
 // (its type, three zero bytes, and its type's size), or 0. The shape is no
 // proof: anything can be shaped so. It keeps plainly malformed junk from
 // counting as a sign of life.
-func wgType(m []byte) byte {
+func wgType(m []byte, tunMTU int) byte {
 	if len(m) < 4 || m[1] != 0 || m[2] != 0 || m[3] != 0 {
 		return 0
 	}
@@ -99,7 +115,7 @@ func wgType(m []byte) byte {
 	case t == wgInitiation && len(m) == 148,
 		t == wgResponse && len(m) == 92,
 		t == wgCookie && len(m) == 64,
-		t == wgData && len(m) >= 32 && len(m)%16 == 0:
+		t == wgData && wgDataLen(len(m), tunMTU):
 		return t
 	}
 	return 0

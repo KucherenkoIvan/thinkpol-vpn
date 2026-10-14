@@ -473,6 +473,7 @@ func (e *Engine) addPeers(want map[string][]devicePeer, paths []path.Peer, mtu i
 		return err
 	}
 	for name, d := range e.devices {
+		d.wg.Bind().SetWireGuardMTU(mtu)
 		if err := d.egress.SetMTU(mtu); err != nil {
 			return err
 		}

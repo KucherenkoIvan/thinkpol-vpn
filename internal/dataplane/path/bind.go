@@ -70,6 +70,8 @@ type Bind struct {
 
 	released bool // under node.mu
 
+	tunMTU atomic.Int32 // WireGuard TUN MTU; see SetWireGuardMTU
+
 	rmu  sync.RWMutex  // Open and Close against deliver
 	open chan struct{} // closed by Close; nil while closed
 }
@@ -79,6 +81,16 @@ var _ conn.Bind = (*Bind)(nil)
 type inbound struct {
 	buf *[]byte // a packet frame
 	ep  *peerEndpoint
+}
+
+// SetWireGuardMTU sets the TUN MTU of the WireGuard device on this bind.
+// The path layer uses it to recognise full-MTU data frames when padding is
+// capped by the MTU. Zero leaves only the usual multiple-of-16 lengths.
+func (b *Bind) SetWireGuardMTU(mtu int) {
+	if mtu < 0 {
+		mtu = 0
+	}
+	b.tunMTU.Store(int32(mtu))
 }
 
 // NewBind returns a Bind for one WireGuard device; give it the device's
@@ -281,7 +293,7 @@ func (b *Bind) deliver(ps *peerState, via NodeID, buf *[]byte, now int64) {
 	}
 	ep := ps.endpoint(via)
 	// Nor do cookie replies and junk.
-	if t := wgType((*buf)[HeaderSize:]); t != 0 && t != wgCookie && slices.Contains(*ps.hops.Load(), via) {
+	if t := wgType((*buf)[HeaderSize:], int(b.tunMTU.Load())); t != 0 && t != wgCookie && slices.Contains(*ps.hops.Load(), via) {
 		ep.lastSeen.Store(now)
 	}
 	select {
@@ -306,7 +318,7 @@ func (b *Bind) Send(bufs [][]byte, ep conn.Endpoint) error {
 	}
 	cookies := true
 	for _, m := range bufs {
-		if wgType(m) != wgCookie {
+		if wgType(m, int(b.tunMTU.Load())) != wgCookie {
 			cookies = false
 		}
 	}
