@@ -7,7 +7,6 @@ repo: thinkpol-vpn
 size: S
 depends_on: [TP-012]
 refs: [PRD#performance, DESIGN#processes]
-needs_human: ""
 owner: ""
 branch: ""
 ---
@@ -29,7 +28,7 @@ Measure what thinkpol needs to run, so that README can state minimal and recomme
 
 ## Out of scope
 - Tuning the data plane to improve the numbers: this ticket measures, it doesn't optimize.
-- Measuring on a live production server. Measurements run in lab containers only.
+- Measuring on any real host: measurements run in lab containers only.
 
 ## Acceptance
 - [ ] the lab measurement is reproducible with a single command
