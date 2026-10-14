@@ -31,7 +31,7 @@ func TestResolvConfIsReplacedAndRestored(t *testing.T) {
 	if err := os.WriteFile(path, []byte(isp), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	r, err := setResolvConf(path, testSystem)
+	r, err := setResolvConf(path, "", testSystem)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +75,7 @@ func TestALeftoverResolvConfKeepsItsOriginal(t *testing.T) {
 	}
 	next := testSystem
 	next.Servers = next.Servers[:1]
-	r, err := setResolvConf(path, next)
+	r, err := setResolvConf(path, "", next)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +100,7 @@ func TestASymlinkedResolvConfComesBackAsTheLink(t *testing.T) {
 	if err := os.Symlink(target, path); err != nil {
 		t.Fatal(err)
 	}
-	r, err := setResolvConf(path, testSystem)
+	r, err := setResolvConf(path, "", testSystem)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +126,7 @@ func TestAResolvConfRewrittenMeanwhileIsTakenBack(t *testing.T) {
 	if err := os.WriteFile(path, []byte(isp), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	r, err := setResolvConf(path, testSystem)
+	r, err := setResolvConf(path, "", testSystem)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,6 +162,97 @@ func TestAResolvConfRewrittenMeanwhileIsTakenBack(t *testing.T) {
 	}
 	if got := readString(t, path); got != renewed {
 		t.Errorf("restored\n%s\nwant the renewed one", got)
+	}
+}
+
+func TestARewrittenResolvConfFiltersStubUpstreams(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "resolv.conf")
+	uplink := filepath.Join(dir, "uplink.conf")
+	if err := os.WriteFile(path, []byte(isp), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r, err := setResolvConf(path, uplink, testSystem)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = r.Restore() })
+	upstreams := make(chan []netip.Addr, 2)
+	var lastUpstreams []netip.Addr
+	r.mu.Lock()
+	r.cfg.Upstreams = func(a []netip.Addr) {
+		lastUpstreams = a
+		upstreams <- a
+	}
+	r.mu.Unlock()
+
+	mixed := "nameserver 127.0.0.53\nnameserver 192.0.2.88\n"
+	if err := os.WriteFile(path, []byte(mixed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * resolvConfCheck)
+	for !slices.Equal(nameservers([]byte(readString(t, path))), testSystem.Servers) {
+		if time.Now().After(deadline) {
+			t.Fatalf("not taken back:\n%s", readString(t, path))
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	select {
+	case got := <-upstreams:
+		want := []netip.Addr{netip.MustParseAddr("192.0.2.88")}
+		if !slices.Equal(got, want) {
+			t.Errorf("mixed stub and real: upstreams %v, want %v", got, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("mixed stub and real: not told upstreams changed")
+	}
+
+	if err := os.WriteFile(uplink, []byte("nameserver 198.51.100.53\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stubOnly := "nameserver 127.0.0.53\n"
+	if err := os.WriteFile(path, []byte(stubOnly), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	deadline = time.Now().Add(3 * resolvConfCheck)
+	for !slices.Equal(nameservers([]byte(readString(t, path))), testSystem.Servers) {
+		if time.Now().After(deadline) {
+			t.Fatalf("stub-only rewrite not taken back:\n%s", readString(t, path))
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	select {
+	case got := <-upstreams:
+		want := []netip.Addr{netip.MustParseAddr("198.51.100.53")}
+		if !slices.Equal(got, want) {
+			t.Errorf("stub-only with uplink: upstreams %v, want %v", got, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("stub-only with uplink: not told upstreams changed")
+	}
+
+	if err := os.Remove(uplink); err != nil {
+		t.Fatal(err)
+	}
+	stubOnlyOther := "nameserver 127.0.0.54\noptions edns0\n"
+	if err := os.WriteFile(path, []byte(stubOnlyOther), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	deadline = time.Now().Add(3 * resolvConfCheck)
+	for !slices.Equal(nameservers([]byte(readString(t, path))), testSystem.Servers) {
+		if time.Now().After(deadline) {
+			t.Fatalf("stub-only without uplink not taken back:\n%s", readString(t, path))
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	wantKept := []netip.Addr{netip.MustParseAddr("198.51.100.53")}
+	select {
+	case got := <-upstreams:
+		t.Errorf("stub-only without uplink: upstreams %v, want previous kept without callback", got)
+	case <-time.After(300 * time.Millisecond):
+	}
+	if !slices.Equal(lastUpstreams, wantKept) {
+		t.Errorf("stub-only without uplink: upstreams %v, want previous %v kept", lastUpstreams, wantKept)
 	}
 }
 
@@ -204,7 +295,7 @@ func TestResolvConfUpdatesInPlace(t *testing.T) {
 	if err := os.WriteFile(path, []byte(isp), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	r, err := setResolvConf(path, testSystem)
+	r, err := setResolvConf(path, "", testSystem)
 	if err != nil {
 		t.Fatal(err)
 	}

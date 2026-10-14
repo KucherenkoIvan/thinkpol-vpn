@@ -40,7 +40,7 @@ func SetSystem(c SystemConfig) (System, error) {
 		parts = append(parts, r)
 	}
 	if !stub || len(parts) == 0 {
-		rc, err := setResolvConf(etcResolvConf, c)
+		rc, err := setResolvConf(etcResolvConf, resolvedUplink, c)
 		if err != nil {
 			_ = parts.Restore()
 			return nil, err
@@ -282,7 +282,8 @@ func (r *resolved) watch() {
 		r.problem = r.check()
 		var changed []netip.Addr
 		if b, err := os.ReadFile(resolvedUplink); err == nil && r.uplink {
-			if servers := nameservers(b); !slices.Equal(servers, r.servers) {
+			servers := upstreamsFromContent(b, resolvedUplink, r.cfg.Servers)
+			if !slices.Equal(servers, r.servers) {
 				r.servers, changed = servers, servers
 			}
 		}
