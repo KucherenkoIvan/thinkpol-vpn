@@ -433,3 +433,21 @@ func TestMinus(t *testing.T) {
 		t.Fatalf("got %v", got)
 	}
 }
+
+func TestRangesAreMergedSpans(t *testing.T) {
+	// Adjacent prefixes that no CIDR covers come back as one range; the
+	// top of IPv6 ends at its last address.
+	s := build(t, "10.0.0.0/8", "11.0.0.0/8", "192.168.1.0/24", "2001:db8::/33", "2001:db8:8000::/33", "ff00::/8")
+	want := []Range{
+		{addr("10.0.0.0"), addr("11.255.255.255")},
+		{addr("192.168.1.0"), addr("192.168.1.255")},
+		{addr("2001:db8::"), addr("2001:db8:ffff:ffff:ffff:ffff:ffff:ffff")},
+		{addr("ff00::"), addr("ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff")},
+	}
+	if got := s.Ranges(); !slices.Equal(got, want) {
+		t.Errorf("Ranges:\n got %v\nwant %v", got, want)
+	}
+	if (*Set)(nil).Ranges() != nil {
+		t.Error("a nil set has ranges")
+	}
+}
