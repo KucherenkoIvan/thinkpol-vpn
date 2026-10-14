@@ -133,3 +133,4 @@ Round 3, cross-model review (Grok) of round 2; orchestrator's list:
 - 2026-10-14 round 2: review findings 1–12 and nits fixed (see Review findings); merged origin/rewrite (TP-067 board docs); DESIGN.md "Routing rules and DNS" (the guard's port, watch, own status, no-nf_tables decision) and "Repository layout" (the agent composes the guard); TP-048 Notes corrected
 - 2026-10-14 in-progress → review — round 2: every finding checked; `make lint` (with the Android build), `make test`, race on routetable, agent and lists, `make lab-gotest` for firewall and routetable, and `make lab-test LAB_P=2` (lab and 29 in-node packages) pass; the macOS checklist box stays open (macOS pf pending TP-019)
 - 2026-10-15 review → has-errors — cross-model review (Grok) of round 2: R3.1 (blocker), R3.2, R3.3 and suspicions R3.a–c (see Review findings)
+- 2026-10-15 has-errors → in-progress — owner: agent-tp-021, round 3: the cross-model review's findings
