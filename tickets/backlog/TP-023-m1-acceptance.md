@@ -25,7 +25,9 @@ M1's "done when" as lab tests, plus one real-world run on macOS.
 
 ## Notes
 - **Scope of the leak guarantees (TP-062):** TP-019 is not in `depends_on`. If it isn't done when this runs, M1 is accepted as Linux-only and Notes say so.
+- **M1 claim (author, 2026-10-15):** M1 proves the core works on a real Mac and on Linux. It does not claim daily use. Daily use is success metric 2, and it starts after M2's disguised transport.
 
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-13 docs (TP-062): acceptance scoped: leak guarantees are Linux-only until TP-019/TP-021
+- 2026-10-15 decision (author, 2026-10-15): M1 is working core, not daily use; daily use waits for M2 disguised transport
