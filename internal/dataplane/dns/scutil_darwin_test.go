@@ -87,3 +87,25 @@ func TestScutilSetScript(t *testing.T) {
 		t.Error("an opaque dict: no error")
 	}
 }
+
+// An empty string in an array (an empty supplemental match domain, the
+// node's default resolver) goes to scutil as "" and comes back as it
+// prints it, "0 : ".
+func TestAnEmptyStringRoundTrips(t *testing.T) {
+	d := newDict()
+	d.arrays["SupplementalMatchDomains"] = []string{""}
+	d.strs["SearchOrder"] = "100000"
+	script, err := setScript("State:/Network/Service/X/DNS", d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(script, "d.add SupplementalMatchDomains * \"\"\n") || !strings.Contains(script, "d.add SearchOrder # 100000\n") {
+		t.Errorf("script:\n%s", script)
+	}
+	// What scutil prints for it (d.show of that script, seen on a Mac).
+	shown := "<dictionary> {\n  SearchOrder : 100000\n  SupplementalMatchDomains : <array> {\n    0 : \n  }\n}\n"
+	got, ok, err := parseShow(shown)
+	if err != nil || !ok || got.opaque || !got.equal(d) {
+		t.Errorf("parsed %+v %v %v", got, ok, err)
+	}
+}

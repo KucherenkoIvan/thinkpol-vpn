@@ -217,6 +217,12 @@ func setScript(key string, d dict) (string, error) {
 		}
 		fmt.Fprintf(&b, "d.add %s %s", k, kind)
 		for _, v := range d.arrays[k] {
+			if v == "" && !numeric[k] {
+				// scutil reads "" as one empty string: an empty
+				// supplemental match domain is a default resolver.
+				b.WriteString(` ""`)
+				continue
+			}
 			if err := checkToken(v); err != nil {
 				return "", err
 			}
@@ -280,6 +286,10 @@ func parseShow(out string) (dict, bool, error) {
 				el := strings.TrimSpace(lines[i])
 				if el == "}" {
 					break
+				}
+				if strings.HasSuffix(el, " :") { // "0 : " trimmed: an empty string
+					arr = append(arr, "")
+					continue
 				}
 				_, ev, ok := strings.Cut(el, " : ")
 				if !ok || strings.HasPrefix(ev, "<") {

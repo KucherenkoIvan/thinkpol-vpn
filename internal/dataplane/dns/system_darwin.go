@@ -18,18 +18,42 @@ import (
 // macOS: the resolver configuration lives in configd's dynamic store, per
 // network service: State:/Network/Service/<id>/DNS (what DHCP or a VPN
 // published) and, where DNS servers were set by hand,
-// Setup:/Network/Service/<id>/DNS, which wins over it. SetSystem overrides
-// both for every active service with the node's resolver, so the default
-// resolver (the primary service's) and every service's scoped one ask the
-// node. The originals are kept in the store itself (backupKey), which,
-// like the overrides, lives until the machine restarts: a node that
-// crashed puts them back when it starts again (RestoreSystem), and a
-// reboot has the system publish its own again. Supplemental resolvers
-// other software adds (another VPN's per-domain DNS, /etc/resolver files)
-// still take the names under their domains: Problem says so.
+// Setup:/Network/Service/<id>/DNS, which wins over it.
+//
+// The node's resolver is published as a service of its own (resolverKey):
+// a DNS dictionary whose supplemental match domain is empty, which configd
+// turns into an additional default resolver, asked before the services'
+// own (SearchOrder below their 200000), and unscoped. It has no IPv4 or
+// IPv6 entity on purpose: configd copies such an entity's InterfaceName
+// onto the service's resolver, and mDNSResponder sends to a resolver of an
+// interface bound to it (IP_BOUND_IF). That is what broke the first device
+// run, whose override sat on en0's service: a query bound to en0 can't
+// reach the overlay address, which only the utun routes. Tailscale's
+// tailscaled publishes the same key.
+//
+// Failing closed, every active service's State: DNS key is overridden with
+// the node's resolver too, so the services' own resolvers (asked after the
+// node's, or for questions scoped to an interface) lead nowhere but the
+// node. Setup: keys are never written: they are configd's copy of the
+// network preferences, republished from them whenever the preferences
+// change. A service with DNS set by hand (its Setup: key wins over State:)
+// keeps its own servers as a fallback: Problem says so.
+//
+// The originals are kept in the store itself (backupKey), which, like the
+// overrides, lives until the machine restarts: a node that crashed puts
+// them back when it starts again (RestoreSystem), and a reboot has the
+// system publish its own again. Supplemental resolvers other software adds
+// (another VPN's per-domain DNS or its own default, /etc/resolver files)
+// still take the names under their domains: Problem says so too.
 const (
 	backupKey  = "State:/Network/thinkpol/DNS"
 	backupProp = "Originals"
+	// resolverKey is the node's own service's DNS: a fixed id of
+	// thinkpol's, no other service's.
+	resolverKey = "State:/Network/Service/8E3C1F52-6B0D-4E7A-9C25-0D4B7A61F3E9/DNS"
+	// resolverOrder puts the node's resolver ahead of the services'
+	// (configd's default order is 200000).
+	resolverOrder = "100000"
 	// overrideProp marks a DNS dictionary as the node's.
 	overrideProp = "ThinkpolOverride"
 	// The overrides are checked whenever the store says a service's keys
@@ -147,11 +171,14 @@ func restorable(key string, d dict) bool {
 type dynamicStore struct {
 	st store
 
-	mu      sync.Mutex
-	cfg     SystemConfig
-	backup  map[string]original
-	err     error // the last check's failure
-	others  []string
+	mu     sync.Mutex
+	cfg    SystemConfig
+	backup map[string]original
+	err    error // the last check's failure
+	others []string
+	// manual counts the active services whose DNS was set by hand
+	// (Setup:), which can't be overridden.
+	manual  int
 	stopped bool
 	stop    chan struct{}
 	done    chan struct{}
@@ -202,6 +229,19 @@ func setDynamicStore(st store, c SystemConfig, notify storeWatch, every time.Dur
 	return s, nil
 }
 
+// resolver is the node's own service's DNS dictionary: an unscoped
+// default resolver, asked first.
+func (s *dynamicStore) resolver() dict {
+	d := newDict()
+	for _, a := range s.cfg.Servers {
+		d.arrays["ServerAddresses"] = append(d.arrays["ServerAddresses"], a.WithZone("").String())
+	}
+	d.arrays["SupplementalMatchDomains"] = []string{""}
+	d.strs["SearchOrder"] = resolverOrder
+	d.strs[overrideProp] = "1"
+	return d
+}
+
 // override is the DNS dictionary every service gets.
 func (s *dynamicStore) override() dict {
 	d := newDict()
@@ -216,16 +256,17 @@ func (s *dynamicStore) override() dict {
 	return d
 }
 
-// targets are the DNS keys to override: every active service's State
-// key, and its Setup key where DNS was set by hand.
-func (s *dynamicStore) targets() ([]string, error) {
+// targets are the DNS keys to write: the node's own service's, then every
+// active service's State key; manual counts the active services whose DNS
+// was set by hand.
+func (s *dynamicStore) targets() (out []string, manual int, err error) {
 	keys, err := s.st.keys(serviceStatePattern)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	setup, err := s.st.keys(`Setup:/Network/Service/[^/]+/DNS`)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	active := map[string]bool{}
 	for _, k := range keys {
@@ -233,14 +274,17 @@ func (s *dynamicStore) targets() ([]string, error) {
 			active[m[2]] = true
 		}
 	}
-	var out []string
+	if len(active) == 0 {
+		return nil, 0, nil
+	}
+	out = []string{resolverKey}
 	for _, id := range sortedKeys(active) {
 		out = append(out, "State:/Network/Service/"+id+"/DNS")
-		if k := "Setup:/Network/Service/" + id + "/DNS"; slices.Contains(setup, k) {
-			out = append(out, k)
+		if slices.Contains(setup, "Setup:/Network/Service/"+id+"/DNS") {
+			manual++
 		}
 	}
-	return out, nil
+	return out, manual, nil
 }
 
 // apply overrides every target that isn't overridden yet, taking what is
@@ -248,21 +292,26 @@ func (s *dynamicStore) targets() ([]string, error) {
 // and puts back the targets that are gone from the list. Called with mu
 // held.
 func (s *dynamicStore) apply() error {
-	targets, err := s.targets()
+	targets, manual, err := s.targets()
 	if err != nil {
 		return fmt.Errorf("dns: reading the system's network services: %w", err)
 	}
 	if len(targets) == 0 {
 		return errors.New("dns: no active network service to point at the resolver")
 	}
-	want := s.override()
+	s.manual = manual
+	override, resolver := s.override(), s.resolver()
 	type change struct {
 		key  string
-		have dict
+		want dict
 	}
 	var changes []change
 	var errs []error
 	for _, k := range targets {
+		want := override
+		if k == resolverKey {
+			want = resolver
+		}
 		have, present, err := s.st.get(k)
 		if err != nil {
 			errs = append(errs, err)
@@ -270,7 +319,7 @@ func (s *dynamicStore) apply() error {
 		}
 		if present && isOverride(have) {
 			if !have.equal(want) {
-				changes = append(changes, change{k, have}) // Update's new servers
+				changes = append(changes, change{k, want}) // Update's new servers
 			}
 			continue
 		}
@@ -281,7 +330,7 @@ func (s *dynamicStore) apply() error {
 				Arrays: map[string][]string{"ServerAddresses": have.array("ServerAddresses")}}
 		}
 		s.backup[k] = o
-		changes = append(changes, change{k, have})
+		changes = append(changes, change{k, want})
 	}
 	if len(changes) > 0 {
 		if err := writeBackup(s.st, s.backup); err != nil {
@@ -289,7 +338,7 @@ func (s *dynamicStore) apply() error {
 		}
 	}
 	for _, c := range changes {
-		if err := s.st.set(c.key, want); err != nil {
+		if err := s.st.set(c.key, c.want); err != nil {
 			errs = append(errs, fmt.Errorf("dns: overriding %s: %w", c.key, err))
 			continue
 		}
@@ -354,9 +403,10 @@ func (s *dynamicStore) otherResolvers() []string {
 			continue
 		}
 		for _, dom := range d.array("SupplementalMatchDomains") {
-			if dom != "" {
-				out = append(out, dom)
+			if dom == "" {
+				dom = "(every name: another default resolver)"
 			}
+			out = append(out, dom)
 		}
 	}
 	if entries, err := os.ReadDir(resolverDir); err == nil {
@@ -441,6 +491,8 @@ func (s *dynamicStore) Problem() error {
 		return fmt.Errorf("%w: %v", ErrUnprotected, s.err)
 	case len(s.others) > 0:
 		return fmt.Errorf("%w: other resolvers take the names under %d domains", ErrUnprotected, len(s.others))
+	case s.manual > 0:
+		return fmt.Errorf("%w: %d network services have DNS set by hand, which stays their resolver (asked after the node's, and for questions scoped to their interface)", ErrUnprotected, s.manual)
 	}
 	return nil
 }

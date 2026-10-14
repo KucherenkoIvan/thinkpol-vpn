@@ -136,6 +136,23 @@ func overridden(t *testing.T, f *fakeStore, key string) {
 	}
 }
 
+// ownResolver checks the node's own service: an unscoped default resolver
+// (an empty supplemental match domain, no interface), asked first.
+func ownResolver(t *testing.T, f *fakeStore, servers ...string) {
+	t.Helper()
+	d, ok, _ := f.get(resolverKey)
+	if !ok || !isOverride(d) || !slices.Equal(d.array("ServerAddresses"), servers) ||
+		!slices.Equal(d.array("SupplementalMatchDomains"), []string{""}) || d.strs["SearchOrder"] != "100000" {
+		t.Errorf("the node's service: %+v, ok %v", d, ok)
+	}
+	// An IPv4 or IPv6 entity would give it an interface: a scoped
+	// resolver, which mDNSResponder asks bound to that interface.
+	id := strings.TrimSuffix(strings.TrimPrefix(resolverKey, "State:/Network/Service/"), "/DNS")
+	if keys, _ := f.keys("(State|Setup):/Network/Service/" + id + "/.*"); len(keys) != 1 {
+		t.Errorf("the node's service has %v", keys)
+	}
+}
+
 func TestEveryActiveServiceResolvesThroughTheNodeUntilRestore(t *testing.T) {
 	f := aMac(t)
 	before := f.dump()
@@ -143,12 +160,14 @@ func TestEveryActiveServiceResolvesThroughTheNodeUntilRestore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, k := range []string{"State:/Network/Service/A/DNS", "State:/Network/Service/B/DNS", "Setup:/Network/Service/B/DNS"} {
+	ownResolver(t, f, "100.64.0.7", "fd12:3456:789a::7")
+	for _, k := range []string{"State:/Network/Service/A/DNS", "State:/Network/Service/B/DNS"} {
 		overridden(t, f, k)
 	}
-	for _, k := range []string{"Setup:/Network/Service/C/DNS", "State:/Network/Service/D/DNS"} {
+	// Setup: keys are the preferences' copy: never written.
+	for _, k := range []string{"Setup:/Network/Service/B/DNS", "Setup:/Network/Service/C/DNS", "State:/Network/Service/D/DNS"} {
 		if d, _, _ := f.get(k); isOverride(d) {
-			t.Errorf("%s overridden: not an active service's", k)
+			t.Errorf("%s overridden", k)
 		}
 	}
 	// The other VPN's domain still goes to its resolver: not protected.
@@ -256,7 +275,7 @@ func TestUpdatePointsEveryServiceAtTheNewServers(t *testing.T) {
 	if err := s.Update(c); err != nil {
 		t.Fatal(err)
 	}
-	for _, k := range []string{"State:/Network/Service/A/DNS", "Setup:/Network/Service/B/DNS"} {
+	for _, k := range []string{"State:/Network/Service/A/DNS", "State:/Network/Service/B/DNS", resolverKey} {
 		if d, _, _ := f.get(k); fmt.Sprint(d.array("ServerAddresses")) != "[100.64.0.7]" {
 			t.Errorf("%s: %+v", k, d)
 		}
@@ -299,7 +318,7 @@ func TestAnOriginalThatCantBePutBackIsOverriddenAndRemovedAfter(t *testing.T) {
 		if _, ok, _ := f.get("State:/Network/Service/A/DNS"); ok {
 			t.Errorf("%s: the key stays after the restore", name)
 		}
-		for _, k := range []string{"State:/Network/Service/B/DNS", "Setup:/Network/Service/B/DNS"} {
+		for _, k := range []string{"State:/Network/Service/B/DNS", resolverKey} {
 			if d, _, _ := f.get(k); isOverride(d) {
 				t.Errorf("%s: %s still overridden", name, k)
 			}
@@ -376,5 +395,68 @@ func TestTheStoresNotificationsTriggerACheck(t *testing.T) {
 			t.Fatal("not overridden after the notification")
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// A service with DNS set by hand keeps its own servers (Setup: wins over
+// State:, and Setup: is never written): they stay a fallback, which
+// Problem says.
+func TestDNSSetByHandIsReported(t *testing.T) {
+	f := aMac(t)
+	_ = f.remove("State:/Network/Service/D/DNS") // no other VPN
+	s, err := setDynamicStore(f, nodeConfig, nil, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Restore() }()
+	if err := s.Problem(); !errors.Is(err, ErrUnprotected) || !strings.Contains(err.Error(), "1 network services have DNS set by hand") {
+		t.Errorf("problem: %v", err)
+	}
+	_ = f.remove("Setup:/Network/Service/B/DNS")
+	s.check()
+	if err := s.Problem(); err != nil {
+		t.Errorf("nothing set by hand: %v", err)
+	}
+}
+
+// Another program's default resolver (its own empty supplemental domain)
+// may be asked before the node's: reported.
+func TestAnotherDefaultResolverIsReported(t *testing.T) {
+	f := aMac(t)
+	_ = f.remove("Setup:/Network/Service/B/DNS")
+	other := dnsDict([]string{"10.2.2.2"}, map[string]string{"SearchOrder": "50000"})
+	other.arrays["SupplementalMatchDomains"] = []string{""}
+	f.put("State:/Network/Service/D/DNS", other)
+	s, err := setDynamicStore(f, nodeConfig, nil, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Restore() }()
+	if err := s.Problem(); !errors.Is(err, ErrUnprotected) {
+		t.Errorf("problem: %v", err)
+	}
+}
+
+// An earlier version overrode Setup: keys too: a start puts such a
+// leftover back, and a running node puts back any it finds in its backup.
+func TestASetupOverrideLeftByAnEarlierVersionGoesBack(t *testing.T) {
+	f := aMac(t)
+	manual := dnsDict([]string{"9.9.9.9"}, nil)
+	f.put("Setup:/Network/Service/B/DNS", dnsDict([]string{"100.64.0.7"}, map[string]string{overrideProp: "1"}))
+	if err := writeBackup(f, map[string]original{"Setup:/Network/Service/B/DNS": originalOf("Setup:/Network/Service/B/DNS", manual, true)}); err != nil {
+		t.Fatal(err)
+	}
+	s, err := setDynamicStore(f, nodeConfig, nil, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d, _, _ := f.get("Setup:/Network/Service/B/DNS"); isOverride(d) || fmt.Sprint(d.array("ServerAddresses")) != "[9.9.9.9]" {
+		t.Errorf("Setup: of B while running: %+v", d)
+	}
+	if err := s.Restore(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, _ := f.get(resolverKey); ok {
+		t.Error("the node's service stays after Restore")
 	}
 }
