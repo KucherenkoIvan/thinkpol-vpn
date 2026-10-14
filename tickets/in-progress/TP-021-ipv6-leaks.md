@@ -8,8 +8,8 @@ size: M
 depends_on: [TP-018, TP-019]
 refs: [D6, DESIGN#ipv6]
 needs_human: macos
-owner: ""
-branch: ""
+owner: "agent-tp-021"
+branch: "tp-021-ipv6-leaks"
 ---
 
 ## Goal
@@ -32,3 +32,4 @@ While connected, IPv6 goes through the tunnel or is blocked; it never leaks arou
 - 2026-10-10 created in backlog
 - 2026-10-12 docs (TP-014 review): notes from egress on Linux
 - 2026-10-12 docs (TP-057 review): interface-bound sockets are the firewall's to confine
+- 2026-10-14 backlog → in-progress — owner: agent-tp-021, branch: tp-021-ipv6-leaks (round 1: Linux; the orchestrator starts it while TP-019 is in review, macOS pf waits for its merge)
