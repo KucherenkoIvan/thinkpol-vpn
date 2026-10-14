@@ -18,9 +18,11 @@ A node owner shares a server node with another space, fully isolated, capped and
 - `HostingGrant` aggregate; offer and accept tokens passed between two controllers.
 - The node owner's map lists guest spaces (public key, cap, ingress/egress granted).
 - Supervisor starts guest workers and accepts guest envelopes for those workers only.
-- Bandwidth caps and fair share between spaces.
 - The guest controller's view: shared node as an endpoint plus the grant, read-only.
 - Revocation on both sides.
+
+## Out of scope
+- **Parked (author, 2026-10-15):** Bandwidth caps and fair share between spaces.
 
 ## Notes
 - From TP-003's review (decided, not built): the owner's map section for a shared node gets a `HostedSpace` list, each `{space_id, signing key, recovery key, cap, allow_ingress, allow_egress}`; with the guest's keys the supervisor builds a `netmap.Trust` and verifies the guest's envelopes for that guest's worker only.

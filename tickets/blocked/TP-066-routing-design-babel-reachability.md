@@ -7,6 +7,7 @@ repo: thinkpol-vpn
 size: M
 depends_on: [TP-006]
 refs: [R5, R6, R7, DESIGN#data-plane]
+needs_human: decision
 owner: ""
 branch: ""
 ---
@@ -42,8 +43,10 @@ A written design, with no code, for how nodes learn reachability beyond their ow
 - [ ] follow-up implementation tickets are proposed in Notes, with the frame kinds they add and what each one depends on
 
 ## Notes
+- **Parked (author, 2026-10-15):** not needed for ten servers with signed static paths; revisit after the daily-use month has started.
 - Related: TP-006 (path layer and `netmap.Section.Routes`, the forwarding table this design feeds), TP-030 (chains), TP-031 (hop groups, failover, probes), TP-027 (shaping and `transport.WriteControl`), TP-037 (map gossip push, the other way the map reaches nodes; this design must not turn it into link-state flooding), TP-034 and TP-035 (controller and topology policy, the source of the signed allowed paths).
 - Starting point: TP-006 already keeps forwarding by destination, and only link liveness is detected in M0–M2. This design adds the reachability that TP-006 leaves to the map.
 
 ## Log
 - 2026-10-13 created in backlog
+- 2026-10-15 decision (author, 2026-10-15): parked until after the daily-use month has started
