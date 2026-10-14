@@ -47,6 +47,9 @@ func TestALinksLifeIsLoggedAtInfoLevel(t *testing.T) {
 	f.dial("A", "B")
 	eventually(t, "the link up logged", func() bool { return len(log.lines("link up")) >= 1 })
 
+	// The first dial may have raced B's table and gone unanswered: only
+	// what follows the silence counts.
+	before := len(log.lines("dial failed"))
 	f.silence("A", "B", true)
 	eventually(t, "A sees B down", func() bool { return !f.isUp("A", "B") })
 	// Several redials go unanswered meanwhile.
@@ -62,7 +65,7 @@ func TestALinksLifeIsLoggedAtInfoLevel(t *testing.T) {
 			t.Errorf("A's link closed line %q lacks %s", closed, want)
 		}
 	}
-	failed := log.lines("dial failed")
+	failed := log.lines("dial failed")[before:]
 	if len(failed) != 1 || !strings.Contains(failed[0], "failures=1") || !strings.Contains(failed[0], "no answer within 150ms") {
 		t.Errorf("dial failed lines %q", failed)
 	}
