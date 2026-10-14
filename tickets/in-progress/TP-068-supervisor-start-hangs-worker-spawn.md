@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: []
 refs: [N5, DESIGN#server-agent-one-worker-per-space]
-owner: ""
-branch: ""
+owner: agent-composer
+branch: tp-068-supervisor-spawn-hang
 ---
 
 ## Goal
@@ -29,3 +29,4 @@ When a worker process fails to start, `thinkpol up` returns an error instead of 
 ## Log
 - 2026-10-15 created in backlog
 - 2026-10-15 docs: board fix-ups (log order, refs, parked notes)
+- 2026-10-15 backlog → in-progress — owner: agent-composer, branch: tp-068-supervisor-spawn-hang
