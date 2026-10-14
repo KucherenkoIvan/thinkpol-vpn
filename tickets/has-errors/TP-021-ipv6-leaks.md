@@ -113,6 +113,14 @@ Resolution (round 2):
 12. Exempt's doc (`routetable/guard.go:36-43`), DESIGN.md and Notes now say locally generated traffic, and that rule 5301 confines forwarded traffic. Cheap, so done: the chain hooks at NF_IP6_PRI_LAST (`guardPriority`, `firewall/guard_linux.go:33`), after every other output chain.
 - Nits: `sockbuf` (:97); `whole()` (:211) counts `guardRules(e, guardSet, 0)` without a set; `Status.Error`'s and `GuardError`'s docs list every `Error*`.
 
+Round 3, cross-model review (Grok) of round 2; orchestrator's list:
+- [ ] R3.1 (blocker) `reapplyGuard` returned early while route re-apply was failing (`Enforce` keeps the old routes, `apply` applies the guard only after routes succeed): a deleted guard stayed deleted for as long as routes kept failing, with `GuardEnforced` still true. The guard's re-apply must not depend on the routes' failure state, and its health must be truthful. Test: routes failing, guard deleted, guard back and health right.
+- [ ] R3.2 `Clear` removed the guard on any `netcfg.New` error but `ErrBusy` (EMFILE before the flock, MkdirAll/open failures, a flock taken then dropped when NewHandle failed): it could delete a live run's table. Remove the guard only while this process holds the owner lock; otherwise leave it and return the error.
+- [ ] R3.3 `Watch` ignored set-element changes and `whole` only counted rules and checked the set exists: `nft add element … exempt6 { ::/0 }` and a same-count `nft replace rule` were never repaired. Signal on element changes and rule replacements; compare content (rule expressions, set elements, or a digest); fix the "element edits only refuse" comment. Tests: an element added, a same-count rule replaced.
+- [ ] R3.a (suspicion) terminal `ErrGuardUnsupported` on any EOPNOTSUPP ack (Flush, Watch, Close), not only a missing nf_tables; narrow to a capability probe at dial/first use; `Close` mustn't count unsupported as success after `DelTable` failed.
+- [ ] R3.b (suspicion) an event dropped after an already-consumed ENOBUFS goes unseen until the backstop: re-verify shortly after any ENOBUFS.
+- [ ] R3.c (suspicion) `watch` returned on the route table's unsupported path without cancelling its context (sockets live until Close).
+
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-12 docs (TP-014 review): notes from egress on Linux
@@ -124,3 +132,4 @@ Resolution (round 2):
 - 2026-10-14 has-errors → in-progress — owner: agent-tp-021, round 2: the review findings
 - 2026-10-14 round 2: review findings 1–12 and nits fixed (see Review findings); merged origin/rewrite (TP-067 board docs); DESIGN.md "Routing rules and DNS" (the guard's port, watch, own status, no-nf_tables decision) and "Repository layout" (the agent composes the guard); TP-048 Notes corrected
 - 2026-10-14 in-progress → review — round 2: every finding checked; `make lint` (with the Android build), `make test`, race on routetable, agent and lists, `make lab-gotest` for firewall and routetable, and `make lab-test LAB_P=2` (lab and 29 in-node packages) pass; the macOS checklist box stays open (macOS pf pending TP-019)
+- 2026-10-15 review → has-errors — cross-model review (Grok) of round 2: R3.1 (blocker), R3.2, R3.3 and suspicions R3.a–c (see Review findings)
