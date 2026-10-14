@@ -20,6 +20,9 @@ func TestRouteMessagesRoundTrip(t *testing.T) {
 		{dst: pfx("2001:db8::/32"), gw: ip("fe80::1"), gwZone: 11, index: 11, flags: unix.RTF_UP | unix.RTF_GATEWAY | routeFlag},
 		{dst: pfx("fd12:3456:789a::/48"), link: 20, index: 20, flags: unix.RTF_UP | routeFlag},
 		{dst: pfx("2001:db8::1/128"), gw: ip("fe80::1"), gwZone: 4, index: 4, flags: unix.RTF_UP | unix.RTF_GATEWAY | unix.RTF_HOST},
+		// route -n add -host 203.0.113.53 192.168.1.1 -ifscope en0: the
+		// scope in rtm_index.
+		{dst: pfx("203.0.113.53/32"), gw: ip("192.168.1.1"), index: 11, flags: unix.RTF_UP | unix.RTF_GATEWAY | unix.RTF_HOST | unix.RTF_STATIC | unix.RTF_IFSCOPE | routeFlag},
 	} {
 		b, err := routeMessage(unix.RTM_ADD, r, 7).Marshal()
 		if err != nil {
@@ -33,6 +36,9 @@ func TestRouteMessagesRoundTrip(t *testing.T) {
 		got, ok := kernelRoute(rm)
 		if !ok || got != r {
 			t.Errorf("round trip of %v (%+v): %+v, %v", r, r, got, ok)
+		}
+		if r.flags&unix.RTF_IFSCOPE != 0 && (rm.Index != r.index || got.key().scope != r.index) {
+			t.Errorf("%v: scope %d, key %v", r, rm.Index, got.key())
 		}
 		if rm.Type != unix.RTM_ADD || rm.Seq != 7 {
 			t.Errorf("%v: type %d seq %d", r, rm.Type, rm.Seq)

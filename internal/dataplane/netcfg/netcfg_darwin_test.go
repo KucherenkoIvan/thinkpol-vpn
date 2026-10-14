@@ -24,7 +24,8 @@ import (
 type fakeKernel struct {
 	mu     sync.Mutex
 	rs     map[netip.Prefix]kroute
-	extra  []kroute // scoped and cloned routes
+	scoped map[rkey]kroute // scoped routes added
+	extra  []kroute        // the system's scoped and cloned routes
 	ifcs   map[string]*kifc
 	addrsB map[int][]netip.Prefix
 
@@ -40,7 +41,7 @@ type fakeKernel struct {
 }
 
 func newFakeKernel() *fakeKernel {
-	k := &fakeKernel{rs: map[netip.Prefix]kroute{}, ifcs: map[string]*kifc{}, addrsB: map[int][]netip.Prefix{}, failAdd: -1}
+	k := &fakeKernel{rs: map[netip.Prefix]kroute{}, scoped: map[rkey]kroute{}, ifcs: map[string]*kifc{}, addrsB: map[int][]netip.Prefix{}, failAdd: -1}
 	k.ifcs["lo0"] = &kifc{name: "lo0", index: 1, mtu: 16384, up: true, loopback: true}
 	k.ifcs["en0"] = &kifc{name: "en0", index: 11, mtu: 1500, up: true}
 	k.ifcs["utun7"] = &kifc{name: "utun7", index: 20, mtu: 1500, p2p: true}
@@ -74,6 +75,7 @@ func (k *fakeKernel) routes() ([]kroute, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	out := slices.Collect(maps.Values(k.rs))
+	out = append(out, slices.Collect(maps.Values(k.scoped))...)
 	return append(out, k.extra...), nil
 }
 
@@ -89,11 +91,22 @@ func (k *fakeKernel) add(r kroute) error {
 	if k.failAdd > 0 {
 		k.failAdd--
 	}
-	if _, ok := k.rs[r.dst]; ok {
-		return unix.EEXIST
-	}
 	if r.link != 0 && k.byIndex(r.link) == nil {
 		return unix.ENXIO
+	}
+	if r.flags&unix.RTF_IFSCOPE != 0 {
+		if k.byIndex(r.index) == nil {
+			return unix.ENXIO
+		}
+		if _, ok := k.scoped[r.key()]; ok || k.hasExtra(r.key()) {
+			return unix.EEXIST
+		}
+		k.scoped[r.key()] = r
+		k.ops++
+		return nil
+	}
+	if _, ok := k.rs[r.dst]; ok {
+		return unix.EEXIST
 	}
 	// The kernel adds its own flags and fills the interface in.
 	r.flags |= unix.RTF_PRCLONING
@@ -111,6 +124,14 @@ func (k *fakeKernel) del(r kroute) error {
 	if k.failDel {
 		return unix.EPERM
 	}
+	if r.flags&unix.RTF_IFSCOPE != 0 {
+		if _, ok := k.scoped[r.key()]; !ok {
+			return unix.ESRCH
+		}
+		delete(k.scoped, r.key())
+		k.ops++
+		return nil
+	}
 	if _, ok := k.rs[r.dst]; !ok {
 		return unix.ESRCH
 	}
@@ -125,6 +146,15 @@ func (k *fakeKernel) change(r kroute) error {
 	if k.failChange {
 		return unix.EINVAL
 	}
+	if r.flags&unix.RTF_IFSCOPE != 0 {
+		if _, ok := k.scoped[r.key()]; !ok {
+			return unix.ESRCH
+		}
+		k.scoped[r.key()] = r
+		k.ops++
+		k.changes++
+		return nil
+	}
 	if _, ok := k.rs[r.dst]; !ok {
 		return unix.ESRCH
 	}
@@ -136,6 +166,15 @@ func (k *fakeKernel) change(r kroute) error {
 	k.ops++
 	k.changes++
 	return nil
+}
+
+func (k *fakeKernel) hasExtra(key rkey) bool {
+	for _, r := range k.extra {
+		if !r.ignored() && r.key() == key {
+			return true
+		}
+	}
+	return false
 }
 
 func (k *fakeKernel) byIndex(i int) *kifc {
@@ -234,6 +273,9 @@ func (k *fakeKernel) snapshot() string {
 	var lines []string
 	for _, r := range k.rs {
 		lines = append(lines, fmt.Sprintf("%v flags=%#x", r, r.flags&^unix.RTF_PRCLONING))
+	}
+	for _, r := range k.scoped {
+		lines = append(lines, fmt.Sprintf("%v scope %d flags=%#x", r, r.index, r.flags))
 	}
 	for _, l := range k.ifcs {
 		lines = append(lines, fmt.Sprintf("%s mtu=%d up=%v addrs=%v", l.name, l.mtu, l.up, k.addrsB[l.index]))
@@ -551,7 +593,7 @@ func TestTheRecordIsWrittenAhead(t *testing.T) {
 	var missing []string
 	k.onAdd = func(r kroute) {
 		rec, _ := readRecord(c.dir, recordName(OwnerRouteTable), c.boot)
-		if !rec[r.dst] {
+		if !rec[r.key()] {
 			missing = append(missing, r.dst.String())
 		}
 	}
@@ -725,7 +767,8 @@ func TestSurveyAndDefaultRoute(t *testing.T) {
 func TestRecordsRoundTrip(t *testing.T) {
 	dir := tempDir(t)
 	d, path, boot := openDir(t, dir), filepath.Join(dir, "x.routes"), thisBoot(t)
-	want := map[netip.Prefix]bool{pfx("0.0.0.0/1"): true, pfx("2001:db8::/32"): true, pfx("203.0.113.9/32"): true}
+	want := map[rkey]bool{unscoped(pfx("0.0.0.0/1")): true, unscoped(pfx("2001:db8::/32")): true, unscoped(pfx("203.0.113.9/32")): true,
+		{pfx("203.0.113.9/32"), 11}: true}
 	if err := writeRecord(d, "x.routes", boot, want); err != nil {
 		t.Fatal(err)
 	}
@@ -744,6 +787,7 @@ func TestRecordsRoundTrip(t *testing.T) {
 	}
 	for name, data := range map[string]string{
 		"an unmasked prefix": "boot " + boot + "\n10.0.0.1/8\n",
+		"a bad scope":        "boot " + boot + "\n10.0.0.1/32 scope en0\n",
 		"no boot session":    "10.0.0.0/8\n",
 	} {
 		if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
@@ -773,7 +817,7 @@ func TestARecordOfAnEarlierBootOwnsNothing(t *testing.T) {
 	k, dir := newFakeKernel(), tempDir(t)
 	k.rs[pfx("10.0.0.0/8")] = kroute{dst: pfx("10.0.0.0/8"), gw: ip("192.168.1.1"), index: 11, flags: unix.RTF_UP | unix.RTF_GATEWAY | routeFlag}
 	before := k.snapshot()
-	if err := writeRecord(openDir(t, dir), recordName(OwnerRouteTable), "an earlier boot", map[netip.Prefix]bool{pfx("10.0.0.0/8"): true}); err != nil {
+	if err := writeRecord(openDir(t, dir), recordName(OwnerRouteTable), "an earlier boot", map[rkey]bool{unscoped(pfx("10.0.0.0/8")): true}); err != nil {
 		t.Fatal(err)
 	}
 	c := newTestConfigurator(t, k, dir, OwnerRouteTable)
@@ -979,6 +1023,97 @@ func TestClosingWithNothingAppliedClearsACrashedRunsRecord(t *testing.T) {
 	for _, r := range k.rs {
 		if r.flags&routeFlag != 0 {
 			t.Errorf("route %v left", r)
+		}
+	}
+}
+
+// A scoped route (RTF_IFSCOPE, only sockets bound to its interface use it)
+// is owned like any other, by its destination and its interface: it lives
+// beside an unscoped route to the same destination, someone else's scoped
+// route there is a conflict, it follows its gateway in place, a crashed
+// run's is cleared through the record, and Close removes it.
+func TestScopedRoutesAreOwnedByTheirScopeToo(t *testing.T) {
+	k, dir := newFakeKernel(), tempDir(t)
+	ctx := context.Background()
+	before := k.snapshot()
+	upstream := Route{Dst: pfx("203.0.113.53/32"), Gateway: ip("192.168.1.1"), Interface: "en0", Scope: "en0"}
+	cfg := Config{Routes: []Route{
+		{Dst: pfx("0.0.0.0/1"), Interface: "utun7"},
+		{Dst: pfx("203.0.113.53/32"), Interface: "utun7"}, // the same destination, unscoped
+		upstream,
+	}}
+	dead, err := newDarwin(OwnerRouteTable, k, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := dead.Apply(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	r, ok := k.scoped[rkey{pfx("203.0.113.53/32"), 11}]
+	if !ok || r.flags&unix.RTF_IFSCOPE == 0 || r.flags&routeFlag == 0 || r.index != 11 || r.gw != ip("192.168.1.1") {
+		t.Fatalf("scoped route %+v, %v", r, ok)
+	}
+	if got := record(t, dir, OwnerRouteTable); !slices.Contains(got, "203.0.113.53/32 scope 11") || !slices.Contains(got, "203.0.113.53/32") {
+		t.Errorf("record %v", got)
+	}
+	// Re-applying changes nothing; a new gateway moves it in place.
+	n := k.count()
+	if err := dead.Apply(ctx, cfg); err != nil || k.count() != n {
+		t.Errorf("re-apply: %v, %d changes", err, k.count()-n)
+	}
+	moved := cfg
+	moved.Routes = slices.Clone(cfg.Routes)
+	moved.Routes[2].Gateway = ip("192.168.1.254")
+	if err := dead.Apply(ctx, moved); err != nil {
+		t.Fatal(err)
+	}
+	if r := k.scoped[rkey{pfx("203.0.113.53/32"), 11}]; r.gw != ip("192.168.1.254") || k.changes != 1 {
+		t.Errorf("moved: %+v, %d changes in place", r, k.changes)
+	}
+	_ = dead.lock.release() // a crash
+	_ = dead.dir.Close()
+
+	// The next run's clear removes it through the record.
+	c, err := newDarwin(OwnerRouteTable, k, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := k.snapshot(); got != before {
+		t.Errorf("after the clear:\n%s\nwant:\n%s", got, before)
+	}
+
+	// Someone else's scoped route with that identity is a conflict, and
+	// stays.
+	k.extra = append(k.extra, kroute{dst: pfx("203.0.113.53/32"), gw: ip("192.168.1.1"), index: 11, flags: unix.RTF_UP | unix.RTF_GATEWAY | unix.RTF_HOST | unix.RTF_IFSCOPE | unix.RTF_STATIC})
+	c2 := newTestConfigurator(t, k, dir, OwnerRouteTable)
+	if err := c2.Apply(ctx, Config{Routes: []Route{upstream}}); !errors.Is(err, ErrConflict) {
+		t.Errorf("over another's scoped route: %v, want ErrConflict", err)
+	}
+	s, err := c2.Survey(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(s.HeldScoped) != 2 || !slices.ContainsFunc(s.HeldScoped, func(r Route) bool { return r.Dst == pfx("203.0.113.53/32") && r.Scope == "en0" }) {
+		t.Errorf("held scoped %v", s.HeldScoped)
+	}
+	for _, p := range s.Held {
+		if p == pfx("203.0.113.53/32") {
+			t.Error("a scoped route counted as an unscoped identity")
+		}
+	}
+}
+
+func TestAScopedRouteMustLeaveThroughItsScope(t *testing.T) {
+	c := newTestConfigurator(t, newFakeKernel(), tempDir(t), OwnerRouteTable)
+	for _, r := range []Route{
+		{Dst: pfx("203.0.113.53/32"), Gateway: ip("192.168.1.1"), Interface: "utun7", Scope: "en0"},
+		{Dst: pfx("203.0.113.53/32"), Type: RouteUnreachable, Scope: "en0"},
+	} {
+		if err := c.Apply(context.Background(), Config{Routes: []Route{r}}); err == nil {
+			t.Errorf("%v: applied", r)
 		}
 	}
 }

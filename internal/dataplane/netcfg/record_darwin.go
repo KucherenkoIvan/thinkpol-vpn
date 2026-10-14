@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -38,7 +39,9 @@ func (l *ownerLock) release() error { return l.f.Close() }
 func recordName(owner Owner) string { return owner.String() + ".routes" }
 
 // recordHeader starts a record: the boot session it was written in, then
-// the destinations of the routes an owner added, one per line.
+// the identities of the routes an owner added, one per line: the
+// destination, and for a scoped route "scope <interface index>" (an
+// index names the same interface for the whole boot).
 const recordHeader = "# thinkpol netcfg: routes this owner added (RTF_PROTO2); rewritten on every change"
 
 // bootSession names this boot of the machine. LockDir outlives a reboot
@@ -56,8 +59,8 @@ var bootSession = sync.OnceValues(func() (string, error) {
 
 // readRecord reads the record name in dir; a missing one, or one written
 // in another boot session than boot, is empty.
-func readRecord(dir *os.File, name string, boot string) (map[netip.Prefix]bool, error) {
-	out := make(map[netip.Prefix]bool)
+func readRecord(dir *os.File, name string, boot string) (map[rkey]bool, error) {
+	out := make(map[rkey]bool)
 	path := dir.Name() + "/" + name
 	fd, err := unix.Openat(int(dir.Fd()), name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
 	if errors.Is(err, unix.ENOENT) {
@@ -93,18 +96,18 @@ func readRecord(dir *os.File, name string, boot string) (map[netip.Prefix]bool, 
 			booted = true
 			continue
 		}
-		p, err := netip.ParsePrefix(line)
-		if err != nil || p != p.Masked() {
+		k, err := parseRecordLine(line)
+		if err != nil {
 			return nil, fmt.Errorf("%s: bad line %q", path, line)
 		}
-		out[p] = true
+		out[k] = true
 	}
 	return out, sc.Err()
 }
 
 // writeRecord replaces the record name in dir atomically, stamped with
 // boot; an empty one is removed.
-func writeRecord(dir *os.File, name string, boot string, owned map[netip.Prefix]bool) error {
+func writeRecord(dir *os.File, name string, boot string, owned map[rkey]bool) error {
 	dirfd := int(dir.Fd())
 	if len(owned) == 0 {
 		if err := unix.Unlinkat(dirfd, name, 0); err != nil && !errors.Is(err, unix.ENOENT) {
@@ -112,15 +115,20 @@ func writeRecord(dir *os.File, name string, boot string, owned map[netip.Prefix]
 		}
 		return nil
 	}
-	ps := make([]netip.Prefix, 0, len(owned))
-	for p := range owned {
-		ps = append(ps, p)
+	ks := make([]rkey, 0, len(owned))
+	for k := range owned {
+		ks = append(ks, k)
 	}
-	slices.SortFunc(ps, comparePrefixes)
+	slices.SortFunc(ks, func(a, b rkey) int {
+		if c := comparePrefixes(a.dst, b.dst); c != 0 {
+			return c
+		}
+		return a.scope - b.scope
+	})
 	var b bytes.Buffer
 	b.WriteString(recordHeader + "\nboot " + boot + "\n")
-	for _, p := range ps {
-		b.WriteString(p.String() + "\n")
+	for _, k := range ks {
+		b.WriteString(k.String() + "\n")
 	}
 	tmp := name + ".tmp"
 	_ = unix.Unlinkat(dirfd, tmp, 0)
@@ -139,4 +147,20 @@ func writeRecord(dir *os.File, name string, boot string, owned map[netip.Prefix]
 		return fmt.Errorf("%s: %w", dir.Name()+"/"+name, err)
 	}
 	return nil
+}
+
+// parseRecordLine reads a record's line: "<prefix>" or "<prefix> scope <index>".
+func parseRecordLine(line string) (rkey, error) {
+	dst, scope, scoped := strings.Cut(line, " scope ")
+	p, err := netip.ParsePrefix(dst)
+	if err != nil || p != p.Masked() {
+		return rkey{}, errors.New("not a masked prefix")
+	}
+	k := unscoped(p)
+	if scoped {
+		if k.scope, err = strconv.Atoi(scope); err != nil || k.scope <= 0 {
+			return rkey{}, errors.New("bad scope")
+		}
+	}
+	return k, nil
 }

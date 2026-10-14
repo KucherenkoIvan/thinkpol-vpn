@@ -449,8 +449,9 @@ func (k *osKernel) watch(ctx context.Context) (<-chan struct{}, error) {
 }
 
 // relevant reports whether a routing message may call for an Apply: an
-// interface that changed or whose addresses changed (its subnets), or an
-// unscoped route that came, went or changed, but for thinkpol's own adds.
+// interface that changed or whose addresses changed (its subnets), an
+// unscoped route that came, went or changed, but for thinkpol's own adds,
+// or a scoped route of thinkpol's that went.
 // The kernel's clones (neighbours, host caches) come and go all the time
 // and never matter.
 func relevant(m route.Message) bool {
@@ -463,8 +464,13 @@ func relevant(m route.Message) bool {
 		default:
 			return false
 		}
-		if m.Flags&(unix.RTF_WASCLONED|unix.RTF_IFSCOPE) != 0 {
+		if m.Flags&unix.RTF_WASCLONED != 0 {
 			return false
+		}
+		if m.Flags&unix.RTF_IFSCOPE != 0 {
+			// Only a thinkpol route's going matters: another's scoped
+			// routes never compete with the tunnel's.
+			return m.Type == unix.RTM_DELETE && m.Flags&routeFlag != 0
 		}
 		return m.Type != unix.RTM_ADD || m.Flags&routeFlag == 0
 	}

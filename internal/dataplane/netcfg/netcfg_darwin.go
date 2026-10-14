@@ -56,8 +56,9 @@ func New(owner Owner) (Configurator, error) {
 }
 
 // kroute is a route as the kernel's routing table holds it. Its identity
-// is its destination (with its mask) and, for a scoped route, its
-// interface; netcfg only ever adds unscoped routes.
+// is its destination (with its mask) and, for a scoped route
+// (RTF_IFSCOPE: only sockets bound to the interface use it), its
+// interface (rkey).
 type kroute struct {
 	dst netip.Prefix
 	// gw is the gateway's address (RTF_GATEWAY, or a reject route's
@@ -75,10 +76,32 @@ type kroute struct {
 
 // ignored reports routes that are no one's to own or conflict with: the
 // kernel's clones (neighbours, host caches; they inherit their parent's
-// flags, routeFlag included) and scoped routes, which only sockets bound
-// to their interface use and which never share an identity with an
-// unscoped route.
-func (r kroute) ignored() bool { return r.flags&(unix.RTF_WASCLONED|unix.RTF_IFSCOPE) != 0 }
+// flags, routeFlag included).
+func (r kroute) ignored() bool { return r.flags&unix.RTF_WASCLONED != 0 }
+
+// rkey is a route's identity: its destination and, for a scoped route,
+// its interface's index (0: unscoped). A scoped route never shares an
+// identity with an unscoped one.
+type rkey struct {
+	dst   netip.Prefix
+	scope int
+}
+
+func unscoped(dst netip.Prefix) rkey { return rkey{dst: dst} }
+
+func (k rkey) String() string {
+	if k.scope == 0 {
+		return k.dst.String()
+	}
+	return fmt.Sprintf("%v scope %d", k.dst, k.scope)
+}
+
+func (r kroute) key() rkey {
+	if r.flags&unix.RTF_IFSCOPE != 0 {
+		return rkey{dst: r.dst, scope: r.index}
+	}
+	return unscoped(r.dst)
+}
 
 func (r kroute) String() string {
 	s := r.dst.String()
@@ -135,12 +158,12 @@ type darwinConfigurator struct {
 	lock   *ownerLock
 	closed bool
 
-	// owned are the destinations of the routes this owner has (or may
+	// owned are the identities of the routes this owner has (or may
 	// have, while an Apply runs) in the kernel, as its record says.
-	owned map[netip.Prefix]bool
+	owned map[rkey]bool
 	// pinned are routes an Apply's undo failed to remove: they stay in
 	// the record, whatever the write-ahead's undo says.
-	pinned map[netip.Prefix]bool
+	pinned map[rkey]bool
 	links  map[string]linkChange // interfaces whose MTU or state we changed
 	addrs  map[addrKey]int       // owned addresses → index they were added to
 }
@@ -182,7 +205,7 @@ func newDarwin(owner Owner, k kernel, path string) (*darwinConfigurator, error) 
 		return nil, fmt.Errorf("netcfg: %v: %w", owner, err)
 	}
 	return &darwinConfigurator{
-		k: k, owner: owner, dir: dir, boot: boot, lock: lock, owned: owned, pinned: make(map[netip.Prefix]bool),
+		k: k, owner: owner, dir: dir, boot: boot, lock: lock, owned: owned, pinned: make(map[rkey]bool),
 		links: make(map[string]linkChange), addrs: make(map[addrKey]int),
 	}, nil
 }
@@ -215,6 +238,8 @@ func checkDarwin(cfg Config) error {
 	}
 	for _, r := range cfg.Routes {
 		switch {
+		case r.Scope != "" && r.Interface != "" && r.Interface != r.Scope:
+			return fmt.Errorf("netcfg: route %v: a scoped route leaves through its scope's interface", r)
 		case r.Table != 0:
 			return fmt.Errorf("netcfg: route %v: tables on darwin: %w", r, errors.ErrUnsupported)
 		case r.Metric != 0:
@@ -258,7 +283,7 @@ func (c *darwinConfigurator) Apply(ctx context.Context, cfg Config) error {
 
 // view is the kernel's routing table as Apply and Survey see it.
 type view struct {
-	routes map[netip.Prefix]kroute // unscoped, not cloned
+	routes map[rkey]kroute // not cloned
 	ifcs   map[string]kifc
 	byIdx  map[int]kifc
 }
@@ -268,10 +293,10 @@ func (c *darwinConfigurator) view() (view, error) {
 	if err != nil {
 		return view{}, fmt.Errorf("netcfg: list routes: %w", err)
 	}
-	v := view{routes: make(map[netip.Prefix]kroute), ifcs: make(map[string]kifc), byIdx: make(map[int]kifc)}
+	v := view{routes: make(map[rkey]kroute), ifcs: make(map[string]kifc), byIdx: make(map[int]kifc)}
 	for _, r := range rs {
 		if !r.ignored() && r.dst.IsValid() {
-			v.routes[r.dst] = r
+			v.routes[r.key()] = r
 		}
 	}
 	ifcs, err := c.k.interfaces()
@@ -286,7 +311,7 @@ func (c *darwinConfigurator) view() (view, error) {
 
 // ours reports whether the kernel's route r is this owner's.
 func (c *darwinConfigurator) ours(r kroute) bool {
-	return r.flags&routeFlag != 0 && c.owned[r.dst]
+	return r.flags&routeFlag != 0 && c.owned[r.key()]
 }
 
 func (c *darwinConfigurator) apply(ctx context.Context, cfg Config, u *undoLog) error {
@@ -296,9 +321,9 @@ func (c *darwinConfigurator) apply(ctx context.Context, cfg Config, u *undoLog) 
 	}
 	// Recorded routes that aren't there (or aren't ours any more) are
 	// forgotten: a crashed predecessor's, gone with an interface.
-	for dst := range c.owned {
-		if r, ok := v.routes[dst]; !ok || r.flags&routeFlag == 0 {
-			c.forget(dst, u)
+	for k := range c.owned {
+		if r, ok := v.routes[k]; !ok || r.flags&routeFlag == 0 {
+			c.forget(k, u)
 		}
 	}
 
@@ -344,31 +369,36 @@ func (c *darwinConfigurator) apply(ctx context.Context, cfg Config, u *undoLog) 
 		routes = append(routes, c.connected(v, l, ifc)...)
 	}
 
-	desired := make(map[netip.Prefix]bool, len(routes))
-	for _, r := range routes {
-		if desired[r.Dst] {
+	desired := make(map[rkey]bool, len(routes))
+	wants := make([]kroute, len(routes))
+	for i, r := range routes {
+		want, err := c.toKernel(v, r)
+		if err != nil {
+			return err
+		}
+		if desired[want.key()] {
 			return fmt.Errorf("netcfg: route %v: another route has the same destination", r)
 		}
-		desired[r.Dst] = true
+		desired[want.key()], wants[i] = true, want
 	}
 	// Ownership is decided on what was recorded before this Apply, and
-	// a destination someone else's route holds is a conflict before
+	// an identity someone else's route holds is a conflict before
 	// anything is recorded: the record must never name another's route.
 	prior := maps.Clone(c.owned)
-	ours := func(r kroute) bool { return r.flags&routeFlag != 0 && prior[r.dst] }
-	for _, r := range routes {
-		if cur, ok := v.routes[r.Dst]; ok && !ours(cur) {
+	ours := func(r kroute) bool { return r.flags&routeFlag != 0 && prior[r.key()] }
+	for i, r := range routes {
+		if cur, ok := v.routes[wants[i].key()]; ok && !ours(cur) {
 			return fmt.Errorf("%w: route %v: another owner's or a foreign route has the same destination (%v)", ErrConflict, r, cur)
 		}
 	}
 	// Write ahead: the record holds every route this Apply may leave, so a
 	// crash halfway leaves none unrecorded.
-	for dst := range desired {
-		if !c.owned[dst] {
-			c.owned[dst] = true
+	for k := range desired {
+		if !c.owned[k] {
+			c.owned[k] = true
 			u.push(func() error {
-				if !c.pinned[dst] {
-					delete(c.owned, dst)
+				if !c.pinned[k] {
+					delete(c.owned, k)
 				}
 				return nil
 			})
@@ -378,15 +408,12 @@ func (c *darwinConfigurator) apply(ctx context.Context, cfg Config, u *undoLog) 
 		return err
 	}
 
-	for _, r := range routes {
+	for i, r := range routes {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		want, err := c.toKernel(v, r)
-		if err != nil {
-			return err
-		}
-		if cur, ok := v.routes[r.Dst]; ok {
+		want := wants[i]
+		if cur, ok := v.routes[want.key()]; ok {
 			if sameRoute(cur, want) {
 				continue
 			}
@@ -406,19 +433,19 @@ func (c *darwinConfigurator) apply(ctx context.Context, cfg Config, u *undoLog) 
 	}
 	// Ours but not wanted: dropped from the config, or a dead
 	// predecessor's leftovers.
-	for dst := range c.owned {
-		if desired[dst] {
+	for k := range c.owned {
+		if desired[k] {
 			continue
 		}
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if cur, ok := v.routes[dst]; ok && ours(cur) {
+		if cur, ok := v.routes[k]; ok && ours(cur) {
 			if err := c.delRoute(cur, u); err != nil {
 				return err
 			}
 		}
-		c.forget(dst, u)
+		c.forget(k, u)
 	}
 	for k, idx := range c.addrs {
 		if wantAddrs[k] {
@@ -462,7 +489,7 @@ func (c *darwinConfigurator) connected(v view, l kifc, ifc Interface) []Route {
 		if dst.Bits() == p.Addr().BitLen() {
 			continue
 		}
-		if r, ok := v.routes[dst]; ok && !c.ours(r) && r.flags&unix.RTF_GATEWAY == 0 && (r.link == l.index || r.index == l.index) {
+		if r, ok := v.routes[unscoped(dst)]; ok && !c.ours(r) && r.flags&unix.RTF_GATEWAY == 0 && (r.link == l.index || r.index == l.index) {
 			continue // the kernel's (or another's) route into it does
 		}
 		for _, h := range ConnectedRoutes(dst) {
@@ -487,12 +514,21 @@ func (c *darwinConfigurator) toKernel(v view, r Route) (kroute, error) {
 		k.flags |= unix.RTF_HOST
 	}
 	index := 0
-	if r.Interface != "" {
-		l, ok := v.ifcs[r.Interface]
+	ifc := r.Interface
+	if r.Scope != "" {
+		ifc = r.Scope
+	}
+	if ifc != "" {
+		l, ok := v.ifcs[ifc]
 		if !ok {
-			return kroute{}, fmt.Errorf("netcfg: route %v: interface %s: %w", r, r.Interface, errNoInterface)
+			return kroute{}, fmt.Errorf("netcfg: route %v: interface %s: %w", r, ifc, errNoInterface)
 		}
 		index = l.index
+	}
+	if r.Scope != "" {
+		// route(8)'s -ifscope: the flag, and the scope's index in
+		// rtm_index.
+		k.flags |= unix.RTF_IFSCOPE
 	}
 	switch {
 	case r.Type == RouteUnreachable:
@@ -534,15 +570,15 @@ func sameRoute(kr, want kroute) bool {
 func (c *darwinConfigurator) addRoute(r Route, k kroute, u *undoLog) error {
 	if err := c.k.add(k); err != nil {
 		if errors.Is(err, unix.EEXIST) {
-			delete(c.owned, k.dst) // whoever it is, it isn't ours
+			delete(c.owned, k.key()) // whoever it is, it isn't ours
 			return fmt.Errorf("%w: route %v: another owner's or a foreign route has the same destination", ErrConflict, r)
 		}
 		return fmt.Errorf("netcfg: add route %v: %w", r, err)
 	}
-	c.owned[k.dst] = true
+	c.owned[k.key()] = true
 	u.push(func() error {
 		if err := c.k.del(k); err != nil && !gone(err) {
-			c.pinned[k.dst] = true // still there, still ours: Close or the next Apply removes it
+			c.pinned[k.key()] = true // still there, still ours: Close or the next Apply removes it
 			return fmt.Errorf("netcfg: remove route %v: %w", r, err)
 		}
 		return nil
@@ -581,13 +617,13 @@ func (c *darwinConfigurator) delRoute(kr kroute, u *undoLog) error {
 	return nil
 }
 
-// forget drops dst from the record; its undo puts it back.
-func (c *darwinConfigurator) forget(dst netip.Prefix, u *undoLog) {
-	if !c.owned[dst] {
+// forget drops k from the record; its undo puts it back.
+func (c *darwinConfigurator) forget(k rkey, u *undoLog) {
+	if !c.owned[k] {
 		return
 	}
-	delete(c.owned, dst)
-	u.push(func() error { c.owned[dst] = true; return nil })
+	delete(c.owned, k)
+	u.push(func() error { c.owned[k] = true; return nil })
 }
 
 // configureLink sets the MTU and brings the link up as asked. Zero values
@@ -764,9 +800,9 @@ func (c *darwinConfigurator) DefaultRoute(ctx context.Context, f Family) (Route,
 	return defaultRoute(v, c.thinkpolRoutes(), f)
 }
 
-// thinkpolRoutes are the destinations every owner's record holds.
-func (c *darwinConfigurator) thinkpolRoutes() map[netip.Prefix]bool {
-	out := make(map[netip.Prefix]bool)
+// thinkpolRoutes are the identities every owner's record holds.
+func (c *darwinConfigurator) thinkpolRoutes() map[rkey]bool {
+	out := make(map[rkey]bool)
 	for _, o := range Owners {
 		rec, _ := readRecord(c.dir, recordName(o), c.boot)
 		for p := range rec {
@@ -776,8 +812,8 @@ func (c *darwinConfigurator) thinkpolRoutes() map[netip.Prefix]bool {
 	return out
 }
 
-func isThinkpol(r kroute, thinkpol map[netip.Prefix]bool) bool {
-	return r.flags&routeFlag != 0 && thinkpol[r.dst]
+func isThinkpol(r kroute, thinkpol map[rkey]bool) bool {
+	return r.flags&routeFlag != 0 && thinkpol[r.key()]
 }
 
 // usable reports a route packets can take: up, neither reject nor
@@ -789,12 +825,12 @@ func usable(r kroute) bool {
 // defaultRoute is the family's unscoped default route: the primary
 // service's, which macOS keeps unscoped (the others' are scoped to their
 // interfaces).
-func defaultRoute(v view, thinkpol map[netip.Prefix]bool, f Family) (Route, error) {
+func defaultRoute(v view, thinkpol map[rkey]bool, f Family) (Route, error) {
 	dst := netip.PrefixFrom(netip.IPv4Unspecified(), 0)
 	if f == IPv6 {
 		dst = netip.PrefixFrom(netip.IPv6Unspecified(), 0)
 	}
-	r, ok := v.routes[dst]
+	r, ok := v.routes[unscoped(dst)]
 	if !ok || !usable(r) || isThinkpol(r, thinkpol) {
 		return Route{}, fmt.Errorf("%w (%v)", ErrNoDefaultRoute, f)
 	}
@@ -844,7 +880,7 @@ func (c *darwinConfigurator) Survey(ctx context.Context) (Survey, error) {
 	return survey(v, c.thinkpolRoutes()), nil
 }
 
-func survey(v view, thinkpol map[netip.Prefix]bool) Survey {
+func survey(v view, thinkpol map[rkey]bool) Survey {
 	var s Survey
 	for _, l := range v.ifcs {
 		s.Links = append(s.Links, Link{Name: l.name, Up: l.up})
@@ -857,6 +893,15 @@ func survey(v view, thinkpol map[netip.Prefix]bool) Survey {
 	}
 	const skip = unix.RTF_REJECT | unix.RTF_BLACKHOLE | unix.RTF_LOCAL | unix.RTF_BROADCAST
 	for _, r := range v.routes {
+		if r.key().scope != 0 {
+			// Only sockets bound to its interface use a scoped route.
+			if !isThinkpol(r, thinkpol) {
+				if l, ok := v.byIdx[r.index]; ok {
+					s.HeldScoped = append(s.HeldScoped, Route{Dst: r.dst, Scope: l.name})
+				}
+			}
+			continue
+		}
 		if !isThinkpol(r, thinkpol) {
 			s.Held = append(s.Held, r.dst)
 		}
@@ -926,15 +971,15 @@ func (c *darwinConfigurator) Close() error {
 		return err
 	}
 	var errs []error
-	for dst := range c.owned {
-		r, ok := v.routes[dst]
+	for k := range c.owned {
+		r, ok := v.routes[k]
 		if ok && c.ours(r) {
 			if err := c.delRoute(r, nil); err != nil {
 				errs = append(errs, err)
 				continue
 			}
 		}
-		delete(c.owned, dst)
+		delete(c.owned, k)
 	}
 	for k, idx := range c.addrs {
 		have, err := c.k.addrs(idx)

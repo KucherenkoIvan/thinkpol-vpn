@@ -237,6 +237,9 @@ func (c *linuxConfigurator) Apply(ctx context.Context, cfg Config) error {
 	}
 	keys := make(map[routeKey]Route, len(cfg.Routes))
 	for _, r := range cfg.Routes {
+		if r.Scope != "" {
+			return fmt.Errorf("netcfg: route %v: scoped routes on linux: %w", r, errors.ErrUnsupported)
+		}
 		if prev, dup := keys[keyOf(r)]; dup {
 			return fmt.Errorf("netcfg: routes %v and %v are the same route in the kernel", prev, r)
 		}

@@ -136,6 +136,13 @@ type Route struct {
 	// Type is what the route does; RouteThrow and RouteUnreachable take
 	// no Gateway or Interface.
 	Type RouteType
+	// Scope, when set, makes the route one only sockets bound to this
+	// interface use (macOS RTF_IFSCOPE, route(8)'s -ifscope; its traffic
+	// leaves through that interface), part of its identity: it never
+	// conflicts with an unscoped route to the same destination. Linux
+	// refuses it (errors.ErrUnsupported): its sockets bypass the tunnel by
+	// their mark instead.
+	Scope string
 }
 
 // RouteType is what a route does with the packets it matches.
@@ -236,6 +243,9 @@ func (r Route) String() string {
 	if r.Table != 0 {
 		s += fmt.Sprintf(" table %d", r.Table)
 	}
+	if r.Scope != "" {
+		s += " scope " + r.Scope
+	}
 	return s
 }
 
@@ -278,6 +288,7 @@ func (c Config) Validate() error {
 	type key struct {
 		table, metric int
 		dst           netip.Prefix
+		scope         string
 	}
 	routes := make(map[key]bool, len(c.Routes))
 	for _, r := range c.Routes {
@@ -310,7 +321,10 @@ func (c Config) Validate() error {
 		if r.Metric < 0 || uint64(r.Metric) > math.MaxUint32 {
 			return fmt.Errorf("netcfg: route %v: metric out of range", r)
 		}
-		k := key{r.Table, r.Metric, r.Dst}
+		if r.Scope != "" && r.Type != RouteUnicast {
+			return fmt.Errorf("netcfg: route %v: only a unicast route can be scoped", r)
+		}
+		k := key{r.Table, r.Metric, r.Dst, r.Scope}
 		if routes[k] {
 			return fmt.Errorf("netcfg: route %v listed twice", r)
 		}
@@ -429,6 +443,10 @@ type Survey struct {
 	// redirect routes included): on macOS a route's identity is its
 	// destination, so these are what owners' routes must not take.
 	Held []netip.Prefix
+	// HeldScoped are the scoped routes no owner added (macOS), each by
+	// its destination and Scope: what owners' scoped routes must not
+	// take.
+	HeldScoped []Route
 }
 
 // Link is an interface as Survey sees it.
