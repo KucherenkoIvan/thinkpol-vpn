@@ -40,7 +40,7 @@ func SetSystem(c SystemConfig) (System, error) {
 		parts = append(parts, r)
 	}
 	if !stub || len(parts) == 0 {
-		rc, err := setResolvConf(etcResolvConf, c)
+		rc, err := setResolvConf(etcResolvConf, resolvedUplink, c)
 		if err != nil {
 			_ = parts.Restore()
 			return nil, err

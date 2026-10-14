@@ -162,7 +162,8 @@ func originalResolvConf(path string) ([]byte, error) {
 // resolvConf manages a resolv.conf file: Set replaces it, a watcher puts
 // it back if something else rewrites it, Restore puts the original back.
 type resolvConf struct {
-	path string
+	path   string
+	uplink string // systemd-resolved uplink resolv.conf for stub fallback
 
 	mu       sync.Mutex
 	cfg      SystemConfig
@@ -177,8 +178,8 @@ type resolvConf struct {
 // another program having rewritten it, besides the change notifications.
 const resolvConfCheck = 2 * time.Second
 
-func setResolvConf(path string, c SystemConfig) (*resolvConf, error) {
-	r := &resolvConf{path: path, cfg: c, stop: make(chan struct{}), stopped: make(chan struct{})}
+func setResolvConf(path string, uplink string, c SystemConfig) (*resolvConf, error) {
+	r := &resolvConf{path: path, uplink: uplink, cfg: c, stop: make(chan struct{}), stopped: make(chan struct{})}
 	r.mu.Lock()
 	err := r.apply()
 	r.mu.Unlock()
@@ -223,7 +224,7 @@ func (r *resolvConf) apply() (err error) {
 		return nil
 	}
 	if r.seen && !bytes.Equal(r.original, m.original) && r.cfg.Upstreams != nil {
-		r.cfg.Upstreams(nameservers(m.original))
+		r.cfg.Upstreams(upstreamsFromContent(m.original, r.uplink, r.cfg.Servers))
 	}
 	r.original, r.seen = m.original, true
 	if fi != nil && fi.Mode().IsRegular() {
@@ -376,14 +377,9 @@ func onlyStubs(servers []netip.Addr) bool {
 	return len(servers) > 0 && !slices.ContainsFunc(servers, func(a netip.Addr) bool { return !slices.Contains(resolvedStubs, a) })
 }
 
-// upstreamsFrom are the servers the resolv.conf at etc named before the
-// node managed it or, if those are systemd-resolved's stub, the servers
-// in resolved's own list at uplink; never the stub or exclude.
-func upstreamsFrom(etc, uplink string, exclude []netip.Addr) ([]netip.Addr, error) {
-	content, err := originalResolvConf(etc)
-	if err != nil {
-		return nil, err
-	}
+// upstreamsFromContent are the servers a resolv.conf names, with the same
+// stub filtering and uplink fallback as upstreamsFrom.
+func upstreamsFromContent(content []byte, uplink string, exclude []netip.Addr) []netip.Addr {
 	servers := nameservers(content)
 	if onlyStubs(servers) {
 		if b, err := os.ReadFile(uplink); err == nil {
@@ -392,5 +388,16 @@ func upstreamsFrom(etc, uplink string, exclude []netip.Addr) ([]netip.Addr, erro
 	}
 	return slices.DeleteFunc(servers, func(a netip.Addr) bool {
 		return slices.Contains(exclude, a) || slices.Contains(resolvedStubs, a)
-	}), nil
+	})
+}
+
+// upstreamsFrom are the servers the resolv.conf at etc named before the
+// node managed it or, if those are systemd-resolved's stub, the servers
+// in resolved's own list at uplink; never the stub or exclude.
+func upstreamsFrom(etc, uplink string, exclude []netip.Addr) ([]netip.Addr, error) {
+	content, err := originalResolvConf(etc)
+	if err != nil {
+		return nil, err
+	}
+	return upstreamsFromContent(content, uplink, exclude), nil
 }
