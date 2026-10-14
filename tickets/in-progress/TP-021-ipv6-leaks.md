@@ -101,3 +101,4 @@ Round 1 reviews (design and correctness), orchestrator's list; nothing blocking,
 - 2026-10-14 Linux: `firewall.IPv6Guard` (nftables `inet thinkpol-guard`), applied with the route table (`routetable.Guard`, `GuardFor`, `OpenWithGuard`), `lists.Set.Ranges`; `TestGatewaysOnLinksAndBoundSockets` flipped for IPv6; lab `TestNoIPv6LeavesAroundTheTunnel`; DESIGN.md "Routing rules and DNS", "IPv6", "Repository layout"; TP-048 Notes; acceptance split into the lab capture (checked) and the macOS checklist (round 2)
 - 2026-10-14 in-progress → review — round 1: Linux; macOS pf pending TP-019. `make lint`, `make test`, race on touched packages and `make lab-test LAB_P=2` pass; the macOS checklist box stays open until round 2
 - 2026-10-14 review → has-errors — design and correctness reviews: findings 1–12 and nits (see Review findings)
+- 2026-10-14 has-errors → in-progress — owner: agent-tp-021, round 2: the review findings
