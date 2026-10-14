@@ -36,6 +36,11 @@ const (
 	DefaultHopLimit = 8
 
 	probeSize = 10
+
+	// MinOverlayMTU is the smallest overlay TUN MTU any node runs with;
+	// wireguard-go caps padding there, so path's data-frame length rule
+	// keys off it.
+	MinOverlayMTU = 576
 )
 
 type header struct {
@@ -87,6 +92,19 @@ const (
 	wgData       = 4
 )
 
+// wgDataLen reports whether n is a plausible WireGuard data message length.
+// wireguard-go pads plaintext to min(roundup16(len), sender MTU) before
+// sealing, so lengths are a multiple of 16 or a capped full-MTU on the
+// sender (>= MinOverlayMTU); the receiver's own MTU does not appear on the
+// wire.
+func wgDataLen(n int) bool {
+	if n < 32 {
+		return false
+	}
+	content := n - 32
+	return content%16 == 0 || content >= MinOverlayMTU
+}
+
 // wgType returns the type of a message shaped like a WireGuard message
 // (its type, three zero bytes, and its type's size), or 0. The shape is no
 // proof: anything can be shaped so. It keeps plainly malformed junk from
@@ -99,7 +117,7 @@ func wgType(m []byte) byte {
 	case t == wgInitiation && len(m) == 148,
 		t == wgResponse && len(m) == 92,
 		t == wgCookie && len(m) == 64,
-		t == wgData && len(m) >= 32 && len(m)%16 == 0:
+		t == wgData && wgDataLen(len(m)):
 		return t
 	}
 	return 0
