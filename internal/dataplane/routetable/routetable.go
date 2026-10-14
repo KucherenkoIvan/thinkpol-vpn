@@ -68,12 +68,19 @@ type Want struct {
 	// for direct destinations and endpoints: it never leaks around the
 	// tunnel.
 	IPv6 bool
+	// Upstreams are the resolver's direct DNS upstreams. On macOS their
+	// sockets are bound to the physical interface (SocketControl), which
+	// reaches only what a route on that interface reaches: each gets a
+	// route scoped to the interface (one only such sockets use), unless
+	// it is on-link. Linux's sockets carry the mark instead: unused there.
+	Upstreams []netip.Addr
 }
 
 // Equal reports whether w and o put the same routes in place.
 func (w Want) Equal(o Want) bool {
 	return w.TUN == o.TUN && w.IPv6 == o.IPv6 && w.Direct.Equal(o.Direct) &&
-		slices.Equal(bypass(w.Bypass), bypass(o.Bypass)) && slices.Equal(prefixes(w.Overlay), prefixes(o.Overlay))
+		slices.Equal(bypass(w.Bypass), bypass(o.Bypass)) && slices.Equal(prefixes(w.Overlay), prefixes(o.Overlay)) &&
+		slices.Equal(bypass(w.Upstreams), bypass(o.Upstreams))
 }
 
 func bypass(addrs []netip.Addr) []netip.Addr {

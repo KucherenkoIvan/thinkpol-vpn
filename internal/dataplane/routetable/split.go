@@ -270,6 +270,29 @@ func splitRoutes(w Want, s netcfg.Survey) (cfg netcfg.Config, ahead, overlayAhea
 		}
 	}
 
+	// The direct DNS upstreams, for the resolver's sockets bound to the
+	// physical interface: a route scoped to it (RTF_IFSCOPE), via its
+	// gateway, which only sockets bound to it use, so nothing else goes
+	// around the tunnel to that address. Not for an upstream on-link
+	// (its subnet's route is on the interface already), on loopback or
+	// link-local, or in the overlay; for IPv6 only with an IPv6 default
+	// route; not where another route holds that identity.
+	heldScoped := map[netcfg.Route]bool{}
+	for _, r := range s.HeldScoped {
+		heldScoped[netcfg.Route{Dst: r.Dst, Scope: r.Scope}] = true
+	}
+	for _, a := range bypass(w.Upstreams) {
+		p := netip.PrefixFrom(a, a.BitLen())
+		gw, ok := gateways[family(p)]
+		switch {
+		case !ok || !gw.Gateway.IsValid() || gw.Interface == "":
+		case within(p, osScoped) || overlaps(p, overlay) || insideOnLink(p, s.OnLink):
+		case heldScoped[netcfg.Route{Dst: p, Scope: gw.Interface}]:
+		default:
+			cfg.Routes = append(cfg.Routes, netcfg.Route{Dst: p, Gateway: gw.Gateway, Interface: gw.Interface, Scope: gw.Interface})
+		}
+	}
+
 	shadow := func(c netip.Prefix) {
 		// The overlay configurator's halves already outrank a route less
 		// specific than them.

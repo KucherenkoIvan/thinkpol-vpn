@@ -237,6 +237,8 @@ type runner struct {
 	engine    *dataplane.Engine
 	listeners *listenerSet
 	resolver  *dns.Server
+	// upstreams are the resolver's direct upstreams as it started.
+	upstreams []netip.Addr
 	// tun is the running TUN's name (Interface until one runs).
 	tun string
 	// guard is the OS's resolver configuration while it should point at
@@ -328,6 +330,11 @@ func (r *runner) start(ctx context.Context) error {
 		return &StartError{Step: step, Err: fmt.Errorf("applying map version %d: %w", r.cur.Header().Version, err)}
 	}
 	r.engine, r.resolver = engine, resolver
+	if resolver != nil && r.dp.RouteTable {
+		if err := engine.SetDirectUpstreams(ctx, r.upstreams); err != nil {
+			r.dp.Log.Warn("DNS: keeping the direct upstreams reachable failed", "err", err)
+		}
+	}
 	if r.dp.onEngine != nil {
 		r.dp.onEngine(engine)
 	}

@@ -57,12 +57,17 @@ func darwinValid(t *testing.T, cfg netcfg.Config) {
 	if len(cfg.Rules) > 0 {
 		t.Errorf("rules %v", cfg.Rules)
 	}
-	seen := map[netip.Prefix]bool{}
+	type identity struct {
+		dst   netip.Prefix
+		scope string
+	}
+	seen := map[identity]bool{}
 	for _, r := range cfg.Routes {
-		if r.Metric != 0 || r.Table != 0 || r.Type == netcfg.RouteThrow || r.Dst.Bits() == 0 || seen[r.Dst] {
+		id := identity{r.Dst, r.Scope}
+		if r.Metric != 0 || r.Table != 0 || r.Type == netcfg.RouteThrow || r.Dst.Bits() == 0 || seen[id] {
 			t.Errorf("route %v", r)
 		}
-		seen[r.Dst] = true
+		seen[id] = true
 	}
 }
 
@@ -278,5 +283,49 @@ func TestAGatewayInsideTheOverlayIsNotExempt(t *testing.T) {
 		if n := routetable.Ahead(w, s); n != 0 {
 			t.Errorf("%d other routes ahead", n)
 		}
+	}
+}
+
+// The resolver's direct upstreams get routes scoped to the physical
+// interface, for its sockets bound there (only they use such a route):
+// not one on-link, on loopback or in the overlay, IPv6 only with an IPv6
+// default route, and not where someone else's scoped route is.
+func TestDirectUpstreamsGetScopedRoutes(t *testing.T) {
+	w := routetable.Want{TUN: "utun7", Overlay: overlay, Direct: localPlus(t), IPv6: true, Upstreams: []netip.Addr{
+		netip.MustParseAddr("1.1.1.1"), netip.MustParseAddr("192.168.1.1"), netip.MustParseAddr("2001:db8::53"),
+		netip.MustParseAddr("100.64.0.53"), netip.MustParseAddr("127.0.0.1"), netip.MustParseAddr("1.1.1.1"),
+	}}
+	scoped := func(s netcfg.Survey) []string {
+		cfg := routetable.SplitRoutes(w, s)
+		darwinValid(t, cfg)
+		var out []string
+		for _, r := range cfg.Routes {
+			if r.Scope != "" {
+				out = append(out, r.String())
+			}
+		}
+		return out
+	}
+	if got := strings.Join(scoped(home()), ", "); got != "1.1.1.1/32 via 192.168.1.1 dev en0 scope en0, 2001:db8::53/128 via fe80::1 dev en0 scope en0" {
+		t.Errorf("scoped routes: %s", got)
+	}
+	noV6 := home()
+	noV6.Defaults = noV6.Defaults[:1]
+	if got := strings.Join(scoped(noV6), ", "); got != "1.1.1.1/32 via 192.168.1.1 dev en0 scope en0" {
+		t.Errorf("without an IPv6 default: %s", got)
+	}
+	held := home()
+	held.HeldScoped = []netcfg.Route{{Dst: pfx("1.1.1.1/32"), Scope: "en0"}}
+	if got := strings.Join(scoped(held), ", "); got != "2001:db8::53/128 via fe80::1 dev en0 scope en0" {
+		t.Errorf("with another's scoped route: %s", got)
+	}
+	// The upstreams are part of what a Want puts in place.
+	if o := w; !w.Equal(o) {
+		t.Error("equal Wants differ")
+	}
+	o := w
+	o.Upstreams = nil
+	if w.Equal(o) {
+		t.Error("Wants with different upstreams are equal")
 	}
 }

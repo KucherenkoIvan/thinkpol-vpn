@@ -180,6 +180,7 @@ type Engine struct {
 	// Route-table mode: the links' endpoints, and what the OS routing
 	// table holds (nil before the first enforcement).
 	endpoints  []netip.Addr
+	upstreams  []netip.Addr // the resolver's direct upstreams (SetDirectUpstreams)
 	routesWant *routetable.Want
 	nameRules  *rules.Names // the rules compiled for DNS names
 

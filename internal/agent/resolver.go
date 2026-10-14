@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"net/netip"
 	"slices"
@@ -32,6 +33,10 @@ func (r *runner) newResolver() *dns.Server {
 	if len(upstreams) == 0 {
 		r.dp.Log.Warn("DNS: no upstream to ask; set one with -dns-upstream")
 	}
+	r.upstreams = r.upstreams[:0]
+	for _, u := range upstreams {
+		r.upstreams = append(r.upstreams, u.Addr())
+	}
 	o := dns.Options{Upstreams: upstreams, Port: r.dp.dnsPort, Log: r.dp.Log}
 	if r.section.Node.Kind == netmap.NodeDevice {
 		o.TunnelControl = dns.BindToInterface(r.tun)
@@ -40,8 +45,8 @@ func (r *runner) newResolver() *dns.Server {
 		// The direct upstream's queries carry the links' mark, so they
 		// leave around the tunnel whatever the route table holds. On
 		// macOS they are bound to the physical interface instead, which
-		// reaches an upstream only on-link or inside a direct prefix
-		// (routetable.SocketControl).
+		// reaches only what a route on it reaches: the route table gives
+		// each upstream a route scoped to it (Engine.SetDirectUpstreams).
 		o.Control = routetable.SocketControl()
 	}
 	return dns.New(o)
@@ -102,14 +107,22 @@ func (r *runner) systemConfig() (dns.SystemConfig, bool) {
 	}
 	if len(r.dp.DNSUpstreams) == 0 {
 		srv, own, log := r.resolver, []netip.Addr{r.section.Node.IPv4, r.section.Node.IPv6}, r.dp.Log
+		engine, routes := r.engine, r.dp.RouteTable
 		c.Upstreams = func(host []netip.Addr) {
 			var ups []netip.AddrPort
+			var addrs []netip.Addr
 			for _, a := range host {
 				if !slices.Contains(own, a) && !a.IsUnspecified() {
 					ups = append(ups, netip.AddrPortFrom(a, dns.Port))
+					addrs = append(addrs, a)
 				}
 			}
 			srv.SetUpstreams(ups)
+			if routes {
+				if err := engine.SetDirectUpstreams(context.Background(), addrs); err != nil {
+					log.Warn("DNS: keeping the direct upstreams reachable failed", "err", err)
+				}
+			}
 			log.Info("DNS: the system's own resolvers changed", "upstreams", len(ups))
 		}
 	}
