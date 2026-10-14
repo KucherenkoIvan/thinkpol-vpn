@@ -25,7 +25,7 @@ Leader following works under bulk traffic when the overlay MTU is not a multiple
 
 ## Notes
 - **Independent review (2026-10-15):** unshaped 1328 is safe, which is why no test caught it.
-- **Data-frame length rule (round 2):** `wgDataLen` in `frame.go` accepts content `n-32` when `content%16 == 0` (wireguard-go's usual padding) or `content >= minOverlayMTU` (576, same as `dataplane.MinOverlayMTU`). Capped full-MTU frames on the sender use the sender's overlay floor, which is always at least 576, so the rule does not need the receiver's MTU. That still rejects sub-576 junk that is not a multiple of 16; oversized TUN reads that pad via `lastUnit %= mtu` can land in the second branch when content ≥ 576.
+- **Data-frame length rule (round 2):** `wgDataLen` in `frame.go` accepts content `n-32` when `content%16 == 0` (wireguard-go's usual padding) or `content >= path.MinOverlayMTU` (576; `dataplane.MinOverlayMTU` aliases it). Capped full-MTU frames on the sender use the sender's overlay floor, which is always at least 576, so the rule does not need the receiver's MTU. That still rejects sub-576 junk that is not a multiple of 16; oversized TUN reads that pad via `lastUnit %= mtu` can land in the second branch when content ≥ 576. Round 1 failed at `shaped_mtu_test.go:48` (`lastSeen not set`), not line 50.
 
 ## Review findings
 From independent review, 2026-10-15.
@@ -41,3 +41,4 @@ From independent review, 2026-10-15.
 - 2026-10-15 review → has-errors — receiver-MTU data-frame rule; see Review findings
 - 2026-10-15 has-errors → in-progress — owner: agent-composer, fixing review findings
 - 2026-10-15 in-progress → review — sender-independent `wgDataLen`; mismatched-MTU follower test; make lint, make test and dataplane race pass
+- 2026-10-15 review follow-up: one MinOverlayMTU constant owned by path

@@ -36,6 +36,11 @@ const (
 	DefaultHopLimit = 8
 
 	probeSize = 10
+
+	// MinOverlayMTU is the smallest overlay TUN MTU any node runs with;
+	// wireguard-go caps padding there, so path's data-frame length rule
+	// keys off it.
+	MinOverlayMTU = 576
 )
 
 type header struct {
@@ -87,23 +92,17 @@ const (
 	wgData       = 4
 )
 
-// minOverlayMTU matches dataplane.MinOverlayMTU: the smallest overlay TUN
-// MTU any node runs with. wireguard-go caps padding there, so a sender's
-// full-MTU frame has at least this much content even when that MTU is not a
-// multiple of 16.
-const minOverlayMTU = 576
-
 // wgDataLen reports whether n is a plausible WireGuard data message length.
 // wireguard-go pads plaintext to min(roundup16(len), sender MTU) before
 // sealing, so lengths are a multiple of 16 or a capped full-MTU on the
-// sender (>= minOverlayMTU); the receiver's own MTU does not appear on the
+// sender (>= MinOverlayMTU); the receiver's own MTU does not appear on the
 // wire.
 func wgDataLen(n int) bool {
 	if n < 32 {
 		return false
 	}
 	content := n - 32
-	return content%16 == 0 || content >= minOverlayMTU
+	return content%16 == 0 || content >= MinOverlayMTU
 }
 
 // wgType returns the type of a message shaped like a WireGuard message

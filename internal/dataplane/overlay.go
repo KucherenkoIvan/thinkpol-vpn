@@ -16,7 +16,7 @@ const (
 	DefaultLinkMTU = 1500
 	// MinOverlayMTU is the smallest overlay MTU a node runs with: every
 	// IPv4 host must take 576-byte packets.
-	MinOverlayMTU = 576
+	MinOverlayMTU = path.MinOverlayMTU
 	// MinIPv6MTU is IPv6's minimum link MTU; below it the overlay carries
 	// IPv4 only.
 	MinIPv6MTU = 1280

@@ -15,9 +15,9 @@ func TestWgDataLen(t *testing.T) {
 		{1360, true}, // 32+1328, unshaped full MTU
 		{1260, true}, // 32+1228, shaped full MTU from a remote sender
 		{1308, true}, // 32+1276, shaped full MTU
-		{608, true},  // 32+576, content at minOverlayMTU
+		{608, true},  // 32+576, content at MinOverlayMTU
 		{612, true},  // content 580: capped padding, not a multiple of 16
-		{50, false},  // junk below minOverlayMTU, not a multiple of 16
+		{50, false},  // junk below MinOverlayMTU, not a multiple of 16
 		{31, false},
 	} {
 		if got := wgDataLen(tc.n); got != tc.ok {
