@@ -15,11 +15,15 @@ var physicalInterface = netcfg.DefaultInterface
 // SocketControl returns the Control for the transports' sockets
 // (udp.Options.Control) and the direct DNS upstream's: it binds each to
 // the interface of its family's default route (IP_BOUND_IF,
-// IPV6_BOUND_IF), looked up as the socket opens, so it routes by that
-// interface's own scoped routes and never into the TUN, whatever the split
-// routes say; a link redialed after the network changed binds to the new
+// IPV6_BOUND_IF), looked up as the socket opens, so it never routes into
+// the TUN; a link redialed after the network changed binds to the new
 // interface. A socket with no default route for its family fails to open
-// rather than loop through the tunnel.
+// rather than loop through the tunnel. A bound socket reaches only
+// destinations whose own route is on that interface (an on-link subnet,
+// the layout's endpoint and direct routes): the primary interface has no
+// scoped default route of its own, so for a destination the split routes
+// send into the utun the kernel answers EHOSTUNREACH (seen on a device:
+// `ping -b en0` to a tunneled address).
 func SocketControl() func(network, address string, c syscall.RawConn) error {
 	return ifbind.Control(func(ipv6 bool) (ifbind.Interface, error) {
 		f := netcfg.IPv4

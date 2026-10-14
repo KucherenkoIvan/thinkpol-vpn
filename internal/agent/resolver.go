@@ -37,9 +37,11 @@ func (r *runner) newResolver() *dns.Server {
 		o.TunnelControl = dns.BindToInterface(r.tun)
 	}
 	if r.dp.RouteTable {
-		// The direct upstream's queries carry the links' mark (bound to
-		// the physical interface on macOS), so they leave around the
-		// tunnel whatever the route table holds.
+		// The direct upstream's queries carry the links' mark, so they
+		// leave around the tunnel whatever the route table holds. On
+		// macOS they are bound to the physical interface instead, which
+		// reaches an upstream only on-link or inside a direct prefix
+		// (routetable.SocketControl).
 		o.Control = routetable.SocketControl()
 	}
 	return dns.New(o)
