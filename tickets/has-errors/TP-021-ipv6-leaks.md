@@ -76,6 +76,23 @@ block return out quick inet6 all
 4. `routetable/guard_darwin.go`: `newGuard`/`clearGuard` returning the pf guard (and narrow `guard_other.go`'s build line to `(!linux && !darwin) || android`). With TP-019's split routes, the guard also covers what its Notes leave to pf: foreign host routes over tunneled destinations (IPv6), scoped routing by source address, interface-bound sockets.
 5. A darwin unit test for the generated anchor and table text (no pfctl), and **the checklist** on a real Mac, connected with "all but domestic": `ping6 -c1 -I en0 2001:4860:4860::8888` and `curl -6 -m5 --interface en0 https://[2001:4860:4860::8888]/` refused at once; `sudo tcpdump -ni en0 'ip6 and not net fe80::/10 and not net ff00::/8'` shows only direct destinations and entries while browsing; `sudo pfctl -a com.apple/thinkpol -sr` lists the rules; after `sudo pkill -9 -f 'thinkpol up'` the same pings stay refused; `thinkpol up -connect=false` (then stop) leaves the anchor empty and pf's enable count as before (`sudo pfctl -s info`).
 
+## Review findings
+Round 1 reviews (design and correctness), orchestrator's list; nothing blocking, all fixed before merge.
+
+- [ ] 1 Watch the guard: subscribe to nftables table/chain deletions (NFNLGRP_NFTABLES) and re-apply through the Enforcer, so `flush ruleset` or `systemctl reload nftables` gets the guard back within about a second, not the 60 s backstop. Test: delete the table from outside, it comes back without an Apply.
+- [ ] 2 Adapter composition in the agent (DESIGN.md "Repository layout"): no `routetable/guard_linux.go`/`guard_other.go`; the agent builds `routetable.OpenWithGuard(c, firewall.NewIPv6Guard(), log)` and clears with `errors.Join(routetable.Clear(), firewall.ClearIPv6Guard())`; `routetable.Clear` clears routes only. The Guard port and GuardFor stay in routetable.
+- [ ] 3 Android boundary (option b): `Exempt` and `LinkScoped` move to routetable, which never imports firewall; firewall may import routetable. firewall/doc.go, AGENTS.md rule 4 and DESIGN.md's Android line stay true.
+- [ ] 4 Lock ordering: Close and Clear remove the guard before letting go of netcfg's owner lock; clearing the guard doesn't depend on `netcfg.New` succeeding; errors joined.
+- [ ] 5 `IPv6Guard.Close` retryable: closed only once the table is removed.
+- [ ] 6 The guard's own status: `Status.GuardEnforced` and a health code of its own; EOPNOTSUPP/EPROTONOSUPPORT or no nf_tables → terminal `ErrorGuardUnsupported` (no 5 s retries). Decision (orchestrator): without nf_tables connect proceeds and health warns loudly `ipv6_guard_unsupported` (not fail-closed); in DESIGN.md. ErrorGuard's text: "applying the leak guard failed".
+- [ ] 7 ND requires `ip6 hoplimit 255` (types 133–137), MLD `ip6 hoplimit 1` (130–132, 143); fix the comment.
+- [ ] 8 Honest apply-failure docs: Enforce's comment and the engine's log don't claim all-or-nothing when routes went in and the guard failed.
+- [ ] 9 Negative control in the lab test (a capture with the guard off shows ICMPv6 and TCP to the foreign site), or correct the ticket.
+- [ ] 10 TP-048 Notes: the kill switch is its own owner (`inet thinkpol-killswitch`, its own exempt4/exempt6, applied by the agent from the toggle and preset, survives disconnect), sharing only Exempt's shape; the IPv6 guard stays the route table's and lives and dies with the connection.
+- [ ] 11 macOS round 2 prep: `Exempt.Upstreams []netip.Addr` (pf has no mark), sourced by the agent; the plan uses the firewall's own `<statedir>/pf-guard.token` with a boot-session header (not TP-019's route records: an import cycle); verify the main ruleset has `anchor "com.apple/*"` or fail.
+- [ ] 12 Forwarded traffic: narrow the claim to locally generated traffic (rule 5301 confines forwarded traffic); consider a late output priority so a route chain re-marking after us can't slip through (do it if cheap, else note).
+- [ ] Nits: `sndbuf` → `sockbuf`; `whole()` counts without a fake set; `Status.Error`'s doc lists every `Error*`.
+
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-12 docs (TP-014 review): notes from egress on Linux
@@ -83,3 +100,4 @@ block return out quick inet6 all
 - 2026-10-14 backlog → in-progress — owner: agent-tp-021, branch: tp-021-ipv6-leaks (round 1: Linux; the orchestrator starts it while TP-019 is in review, macOS pf waits for its merge)
 - 2026-10-14 Linux: `firewall.IPv6Guard` (nftables `inet thinkpol-guard`), applied with the route table (`routetable.Guard`, `GuardFor`, `OpenWithGuard`), `lists.Set.Ranges`; `TestGatewaysOnLinksAndBoundSockets` flipped for IPv6; lab `TestNoIPv6LeavesAroundTheTunnel`; DESIGN.md "Routing rules and DNS", "IPv6", "Repository layout"; TP-048 Notes; acceptance split into the lab capture (checked) and the macOS checklist (round 2)
 - 2026-10-14 in-progress → review — round 1: Linux; macOS pf pending TP-019. `make lint`, `make test`, race on touched packages and `make lab-test LAB_P=2` pass; the macOS checklist box stays open until round 2
+- 2026-10-14 review → has-errors — design and correctness reviews: findings 1–12 and nits (see Review findings)
