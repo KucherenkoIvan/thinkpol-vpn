@@ -23,8 +23,8 @@ func TestFollowerWithShapedOverlayMTU(t *testing.T) {
 
 func testFollowerFullMTU(t *testing.T, f *fabric, tunMTU int) {
 	a, b := twoRelays(t, f, r1r2, []string{"R2", "R1"})
-	a.Bind.SetWireGuardMTU(tunMTU)
-	b.Bind.SetWireGuardMTU(tunMTU)
+	a.SetWireGuardMTU(tunMTU)
+	b.SetWireGuardMTU(tunMTU)
 	full := wgFullMTUData(tunMTU)
 
 	toA := b.endpoint(t, "A")
@@ -39,7 +39,7 @@ func testFollowerFullMTU(t *testing.T, f *fabric, tunMTU int) {
 	if hop := a.current("B"); hop != "R1" {
 		t.Fatalf("A answers through %q, want R1", hop)
 	}
-	if b.Bind.LastSeen(id("A"), id("R1")) == 0 {
+	if b.LastSeen(id("A"), id("R1")) == 0 {
 		t.Fatal("lastSeen not set for A's packets through R1")
 	}
 	b.sendWG(t, got.ep, full)
@@ -60,13 +60,13 @@ func TestUnshapedOverlayMTUStillCountsFullMTU(t *testing.T) {
 	eachSemanticsFake(t, func(t *testing.T, f *fabric) {
 		const tunMTU = 1328
 		a, b := twoRelays(t, f, r1r2, r1r2)
-		a.Bind.SetWireGuardMTU(tunMTU)
-		b.Bind.SetWireGuardMTU(tunMTU)
+		a.SetWireGuardMTU(tunMTU)
+		b.SetWireGuardMTU(tunMTU)
 		full := wgFullMTUData(tunMTU)
 		toB := a.endpoint(t, "B")
 		a.sendWG(t, toB, full)
 		got := b.expectWG(t, full)
-		if b.Bind.LastSeen(id("A"), id("R1")) == 0 {
+		if b.LastSeen(id("A"), id("R1")) == 0 {
 			t.Fatal("lastSeen not set for full-MTU frame on unshaped 1328")
 		}
 		b.sendWG(t, got.ep, full)
@@ -80,11 +80,11 @@ func TestJunkDataLengthStillRejected(t *testing.T) {
 	junk[0] = 4
 	f := newFabric(t, 0)
 	a, b := twoRelays(t, f, r1r2, r1r2)
-	b.Bind.SetWireGuardMTU(tunMTU)
+	b.SetWireGuardMTU(tunMTU)
 	toB := a.endpoint(t, "B")
 	a.sendWG(t, toB, junk)
 	b.expectWG(t, junk)
-	if b.Bind.LastSeen(id("A"), id("R1")) != 0 {
+	if b.LastSeen(id("A"), id("R1")) != 0 {
 		t.Fatal("junk length counted as a sign of life")
 	}
 }
