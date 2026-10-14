@@ -8,7 +8,7 @@ size: L
 depends_on: [TP-008, TP-018]
 refs: [D1]
 needs_human: macos
-owner: "claude-opus-tp019-r5"
+owner: "claude-opus-tp019-r6"
 branch: "tp-019-macos-data-plane"
 ---
 
@@ -169,3 +169,4 @@ Round 2 resolution: R2.1 `netcfg.ConnectedRoutes` (utun networks as halves) + th
 - 2026-10-14 review → in-progress — owner: claude-opus-tp019-r5, round 5: fixing what the first device run (2026-10-13) found
 - 2026-10-14 in-progress → review — round 5, the first device run's failures: macOS IPv4 DNS (the router reflects packets for the node's own address back into the utun), the overlay's record left after a crash (a start without connecting clears both owners), step 9's drop explained by logs from now on (links' lives and WireGuard handshake timeouts at info); the en0-bound socket finding documented, its direct-upstream gap left for a decision; make lint, make test green on a Mac (nothing of the host touched); lab: `labctl gotest ./internal/agent/... ./internal/dataplane/...` and `TestRouteTableSendsOnlyDirectAroundTheTunnel`, `TestASecondAgentChangesNothing`, `TestUpRunsTheM0Space`, `TestDNSFollowsTheRules`, `TestLocalAPI` pass; device-only boxes pending the next device run (Notes, "Next device run must check")
 - 2026-10-14 review → has-errors — round 5 reviews (correctness; security/macOS): R5.A–R5.E
+- 2026-10-14 has-errors → in-progress — owner: claude-opus-tp019-r6, fixing round 5
