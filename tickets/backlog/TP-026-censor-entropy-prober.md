@@ -5,7 +5,7 @@ milestone: M2
 area: lab/censor
 repo: thinkpol-vpn
 size: M
-depends_on: [TP-024]
+depends_on: [TP-024, TP-064]
 refs: [C4]
 owner: ""
 branch: ""
