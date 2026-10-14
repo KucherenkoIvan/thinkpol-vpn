@@ -300,9 +300,9 @@ type stubWorkerReporter struct {
 	workers []supervisor.WorkerInfo
 }
 
-func (s stubWorkerReporter) Workers() []supervisor.WorkerInfo { return s.workers }
+func (s stubWorkerReporter) Workers() []supervisor.WorkerInfo   { return s.workers }
 func (stubWorkerReporter) Listeners() []supervisor.ListenerInfo { return nil }
-func (stubWorkerReporter) Egress() supervisor.EgressInfo       { return supervisor.EgressInfo{} }
+func (stubWorkerReporter) Egress() supervisor.EgressInfo        { return supervisor.EgressInfo{} }
 
 func TestWorkerLastExitInStatus(t *testing.T) {
 	const reason = "start: no such file"

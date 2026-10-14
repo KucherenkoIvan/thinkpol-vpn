@@ -56,3 +56,5 @@ Round 3 (2026-10-15).
 - 2026-10-15 in-progress → review — round 2 findings fixed; make lint and make test pass
 - 2026-10-15 review → has-errors — round 3 review findings 1–3 (see Review findings)
 - 2026-10-15 has-errors → in-progress — owner: agent-composer, fixing round 3 findings
+- 2026-10-15 lab-gotest PKG=./internal/agent/supervisor/... LAB_P=1 GOFLAGS=-p=4 — PASS (TestWorkerSpawnFailureSurfaces)
+- 2026-10-15 in-progress → review — round 3 findings fixed; make lint and make test pass
