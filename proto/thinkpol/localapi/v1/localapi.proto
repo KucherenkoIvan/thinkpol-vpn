@@ -278,6 +278,8 @@ message Worker {
   google.protobuf.Timestamp ready_since = 4;
   // When a restart after a crash is due.
   google.protobuf.Timestamp restart_at = 5;
+  // Why the last process ended (spawn or exit); sanitized on the wire.
+  string last_exit = 6;
 }
 
 // One of a server's public listeners, without its address.

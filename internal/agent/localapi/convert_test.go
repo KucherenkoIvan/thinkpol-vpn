@@ -14,6 +14,7 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/packettest"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/router"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
 
 // bytesTUN reports writes as Linux's TUN does: in bytes, not packets.
@@ -89,5 +90,29 @@ func TestDeliveredPacketsReachTheStatus(t *testing.T) {
 	}
 	if strings.Contains(text.String(), "dropped") {
 		t.Errorf("delivered traffic shown as dropped:\n%s", text.String())
+	}
+}
+
+func TestWorkerLastExitReachesStatusAndCLI(t *testing.T) {
+	const reason = "start: exec /nonexistent/thinkpol-worker: no such file"
+	st := agent.Status{
+		Connection: agent.Serving,
+		Workers: []agent.WorkerStatus{{
+			Space: netmap.SpaceID{0xab}, Ready: false, Starts: 1, LastExit: reason + "\x1b]0;pwned\x07",
+		}},
+	}
+	out := statusProto(st)
+	if got := out.GetWorkers()[0].GetLastExit(); got != agent.Sanitize(reason+"\x1b]0;pwned\x07") {
+		t.Fatalf("last_exit %q", got)
+	}
+	var text bytes.Buffer
+	if err := WriteStatus(&text, out, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(text.String(), reason) {
+		t.Fatalf("render missing spawn reason:\n%s", text.String())
+	}
+	if strings.Contains(text.String(), "\x1b") {
+		t.Fatalf("raw ESC in render:\n%s", text.String())
 	}
 }

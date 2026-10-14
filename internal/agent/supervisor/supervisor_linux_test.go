@@ -1598,6 +1598,11 @@ func TestWorkerSpawnFailureSurfaces(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	space := netmap.NewSpaceID()
 	if err := s.SetSpaces(spacesOf(space)); err != nil {
 		t.Fatalf("SetSpaces: %v", err)
