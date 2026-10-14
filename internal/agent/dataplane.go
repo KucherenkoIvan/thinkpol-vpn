@@ -332,7 +332,7 @@ func (r *runner) start(ctx context.Context) error {
 	r.engine, r.resolver = engine, resolver
 	if resolver != nil && r.dp.RouteTable {
 		if err := engine.SetDirectUpstreams(ctx, r.upstreams); err != nil {
-			r.dp.Log.Warn("DNS: keeping the direct upstreams reachable failed", "err", err)
+			r.dp.Log.Warn("DNS: keeping the direct upstreams reachable failed", "err", path.RedactError(err))
 		}
 	}
 	if r.dp.onEngine != nil {

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/path"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
@@ -120,7 +121,7 @@ func (r *runner) systemConfig() (dns.SystemConfig, bool) {
 			srv.SetUpstreams(ups)
 			if routes {
 				if err := engine.SetDirectUpstreams(context.Background(), addrs); err != nil {
-					log.Warn("DNS: keeping the direct upstreams reachable failed", "err", err)
+					log.Warn("DNS: keeping the direct upstreams reachable failed", "err", path.RedactError(err))
 				}
 			}
 			log.Info("DNS: the system's own resolvers changed", "upstreams", len(ups))
