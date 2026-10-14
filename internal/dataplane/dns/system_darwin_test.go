@@ -102,7 +102,11 @@ func dnsDict(servers []string, extra map[string]string) dict {
 	return d
 }
 
-// aMac is the store of a Mac with Wi-Fi (A, primary, DHCP's DNS),
+// wifiService sorts before resolverKey so restore order can't pass on plain
+// sorted keys alone.
+const wifiService = "0B2D6C1E-0000-4000-8000-000000000001"
+
+// aMac is the store of a Mac with Wi-Fi (primary, DHCP's DNS),
 // Ethernet (B, active, DNS set by hand), an inactive service with DNS set
 // by hand (C) and another VPN's per-domain resolver (D).
 func aMac(t *testing.T) *fakeStore {
@@ -110,13 +114,13 @@ func aMac(t *testing.T) *fakeStore {
 	resolverDir = t.TempDir() // no /etc/resolver files
 	f := &fakeStore{kv: map[string]dict{}}
 	global := newDict()
-	global.strs["PrimaryService"] = "A"
+	global.strs["PrimaryService"] = wifiService
 	f.put("State:/Network/Global/IPv4", global)
 	ipv4 := newDict()
 	ipv4.arrays["Addresses"] = []string{"192.168.1.20"}
-	f.put("State:/Network/Service/A/IPv4", ipv4)
+	f.put("State:/Network/Service/"+wifiService+"/IPv4", ipv4)
 	f.put("State:/Network/Service/B/IPv4", ipv4)
-	f.put("State:/Network/Service/A/DNS", dnsDict([]string{"192.168.1.1"}, map[string]string{"DomainName": "lan"}))
+	f.put("State:/Network/Service/"+wifiService+"/DNS", dnsDict([]string{"192.168.1.1"}, map[string]string{"DomainName": "lan"}))
 	f.put("Setup:/Network/Service/B/DNS", dnsDict([]string{"9.9.9.9"}, nil))
 	f.put("Setup:/Network/Service/C/DNS", dnsDict([]string{"8.8.8.8"}, nil))
 	vpn := dnsDict([]string{"10.1.1.1"}, map[string]string{"ServerPort": "53"})
@@ -208,7 +212,7 @@ func TestEveryActiveServiceResolvesThroughTheNodeUntilRestore(t *testing.T) {
 		t.Fatal(err)
 	}
 	ownResolver(t, f, "100.64.0.7", "fd12:3456:789a::7")
-	for _, k := range []string{"State:/Network/Service/A/DNS", "State:/Network/Service/B/DNS"} {
+	for _, k := range []string{"State:/Network/Service/" + wifiService + "/DNS", "State:/Network/Service/B/DNS"} {
 		overridden(t, f, k)
 	}
 	// Setup: keys are the preferences' copy: never written.
@@ -269,9 +273,9 @@ func TestTheSystemsRepublishedConfigurationIsOverriddenAgain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.put("State:/Network/Service/A/DNS", dnsDict([]string{"10.0.0.1"}, nil))
+	f.put("State:/Network/Service/"+wifiService+"/DNS", dnsDict([]string{"10.0.0.1"}, nil))
 	s.check()
-	overridden(t, f, "State:/Network/Service/A/DNS")
+	overridden(t, f, "State:/Network/Service/"+wifiService+"/DNS")
 	if len(told) != 1 || fmt.Sprint(told[0]) != "[10.0.0.1]" {
 		t.Errorf("told %v", told)
 	}
@@ -285,7 +289,7 @@ func TestTheSystemsRepublishedConfigurationIsOverriddenAgain(t *testing.T) {
 	if err := s.Restore(); err != nil {
 		t.Fatal(err)
 	}
-	if d, _, _ := f.get("State:/Network/Service/A/DNS"); fmt.Sprint(d.array("ServerAddresses")) != "[10.0.0.1]" || isOverride(d) {
+	if d, _, _ := f.get("State:/Network/Service/" + wifiService + "/DNS"); fmt.Sprint(d.array("ServerAddresses")) != "[10.0.0.1]" || isOverride(d) {
 		t.Errorf("A after Restore: %+v", d)
 	}
 	if _, ok, _ := f.get("State:/Network/Service/E/DNS"); ok {
@@ -301,11 +305,11 @@ func TestRestoreLeavesWhatTheSystemPublishedSince(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.put("State:/Network/Service/A/DNS", dnsDict([]string{"10.0.0.1"}, nil))
+	f.put("State:/Network/Service/"+wifiService+"/DNS", dnsDict([]string{"10.0.0.1"}, nil))
 	if err := s.Restore(); err != nil {
 		t.Fatal(err)
 	}
-	if d, _, _ := f.get("State:/Network/Service/A/DNS"); fmt.Sprint(d.array("ServerAddresses")) != "[10.0.0.1]" {
+	if d, _, _ := f.get("State:/Network/Service/" + wifiService + "/DNS"); fmt.Sprint(d.array("ServerAddresses")) != "[10.0.0.1]" {
 		t.Errorf("A after Restore: %+v", d)
 	}
 }
@@ -322,7 +326,7 @@ func TestUpdatePointsEveryServiceAtTheNewServers(t *testing.T) {
 	if err := s.Update(c); err != nil {
 		t.Fatal(err)
 	}
-	for _, k := range []string{"State:/Network/Service/A/DNS", "State:/Network/Service/B/DNS", resolverKey} {
+	for _, k := range []string{"State:/Network/Service/" + wifiService + "/DNS", "State:/Network/Service/B/DNS", resolverKey} {
 		if d, _, _ := f.get(k); fmt.Sprint(d.array("ServerAddresses")) != "[100.64.0.7]" {
 			t.Errorf("%s: %+v", k, d)
 		}
@@ -345,12 +349,12 @@ func TestAnOriginalThatCantBePutBackIsOverriddenAndRemovedAfter(t *testing.T) {
 		"spaces": dnsDict([]string{"192.168.1.1"}, map[string]string{"Options": "ndots:2 timeout:1"}),
 	} {
 		f := aMac(t)
-		f.put("State:/Network/Service/A/DNS", odd)
+		f.put("State:/Network/Service/"+wifiService+"/DNS", odd)
 		s, err := setDynamicStore(f, nodeConfig, nil, time.Hour)
 		if err != nil {
 			t.Fatal(err)
 		}
-		overridden(t, f, "State:/Network/Service/A/DNS")
+		overridden(t, f, "State:/Network/Service/"+wifiService+"/DNS")
 		if got, err := systemUpstreams(f, nil); err != nil || fmt.Sprint(got) != "[192.168.1.1]" {
 			t.Errorf("%s: upstreams %v, %v", name, got, err)
 		}
@@ -362,7 +366,7 @@ func TestAnOriginalThatCantBePutBackIsOverriddenAndRemovedAfter(t *testing.T) {
 		if err := restoreBackup(f); err != nil {
 			t.Fatal(err)
 		}
-		if _, ok, _ := f.get("State:/Network/Service/A/DNS"); ok {
+		if _, ok, _ := f.get("State:/Network/Service/" + wifiService + "/DNS"); ok {
 			t.Errorf("%s: the key stays after the restore", name)
 		}
 		for _, k := range []string{"State:/Network/Service/B/DNS", resolverKey} {
@@ -406,7 +410,7 @@ func TestResolverFilesAreOtherResolvers(t *testing.T) {
 
 func TestManualServersAreTheUpstreams(t *testing.T) {
 	f := aMac(t)
-	f.put("Setup:/Network/Service/A/DNS", dnsDict([]string{"1.1.1.1", "100.64.0.7"}, nil))
+	f.put("Setup:/Network/Service/"+wifiService+"/DNS", dnsDict([]string{"1.1.1.1", "100.64.0.7"}, nil))
 	got, err := systemUpstreams(f, []netip.Addr{netip.MustParseAddr("100.64.0.7")})
 	if err != nil || fmt.Sprint(got) != "[1.1.1.1]" {
 		t.Errorf("%v, %v", got, err)
@@ -431,11 +435,11 @@ func TestTheStoresNotificationsTriggerACheck(t *testing.T) {
 	if len(watched) == 0 {
 		t.Fatal("nothing watched")
 	}
-	f.put("State:/Network/Service/A/DNS", dnsDict([]string{"10.0.0.1"}, nil))
+	f.put("State:/Network/Service/"+wifiService+"/DNS", dnsDict([]string{"10.0.0.1"}, nil))
 	events <- struct{}{}
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		if d, _, _ := f.get("State:/Network/Service/A/DNS"); isOverride(d) {
+		if d, _, _ := f.get("State:/Network/Service/" + wifiService + "/DNS"); isOverride(d) {
 			break
 		}
 		if time.Now().After(deadline) {
