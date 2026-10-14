@@ -17,9 +17,10 @@ import (
 
 // fakeStore is a dynamic store in memory.
 type fakeStore struct {
-	mu   sync.Mutex
-	kv   map[string]dict
-	sets int
+	mu      sync.Mutex
+	kv      map[string]dict
+	sets    int
+	setsLog []string
 }
 
 func (f *fakeStore) keys(pattern string) ([]string, error) {
@@ -51,6 +52,7 @@ func (f *fakeStore) set(key string, d dict) error {
 	defer f.mu.Unlock()
 	f.kv[key] = clone(d)
 	f.sets++
+	f.setsLog = append(f.setsLog, "set "+key)
 	return nil
 }
 
@@ -58,6 +60,7 @@ func (f *fakeStore) remove(key string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	delete(f.kv, key)
+	f.setsLog = append(f.setsLog, "remove "+key)
 	return nil
 }
 
@@ -150,6 +153,50 @@ func ownResolver(t *testing.T, f *fakeStore, servers ...string) {
 	id := strings.TrimSuffix(strings.TrimPrefix(resolverKey, "State:/Network/Service/"), "/DNS")
 	if keys, _ := f.keys("(State|Setup):/Network/Service/" + id + "/.*"); len(keys) != 1 {
 		t.Errorf("the node's service has %v", keys)
+	}
+}
+
+func TestDNSApplyPublishesTheResolverLast(t *testing.T) {
+	f := aMac(t)
+	s, err := setDynamicStore(f, nodeConfig, nil, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolverSet := -1
+	for i, op := range f.setsLog {
+		if op == "set "+resolverKey {
+			resolverSet = i
+		}
+	}
+	if resolverSet < 0 {
+		t.Fatal("the supplemental resolver was never written")
+	}
+	for i, op := range f.setsLog {
+		if strings.HasPrefix(op, "set State:/Network/Service/") && strings.HasSuffix(op, "/DNS") && op != "set "+resolverKey && i >= resolverSet {
+			t.Fatalf("apply order: %q at %d is not before the resolver at %d\n%v", op, i, resolverSet, f.setsLog)
+		}
+	}
+	f.setsLog = nil
+	if err := s.Restore(); err != nil {
+		t.Fatal(err)
+	}
+	resolverOp := -1
+	for i, op := range f.setsLog {
+		if strings.Contains(op, resolverKey) {
+			resolverOp = i
+			break
+		}
+	}
+	if resolverOp < 0 {
+		t.Fatal("restore never touched the supplemental resolver")
+	}
+	for i, op := range f.setsLog {
+		if !strings.HasPrefix(op, "set State:/Network/Service/") || !strings.HasSuffix(op, "/DNS") || strings.Contains(op, "8E3C1F52") {
+			continue
+		}
+		if i < resolverOp {
+			t.Fatalf("restore order: %q at %d is before the resolver at %d\n%v", op, i, resolverOp, f.setsLog)
+		}
 	}
 }
 

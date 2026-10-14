@@ -256,9 +256,10 @@ func (s *dynamicStore) override() dict {
 	return d
 }
 
-// targets are the DNS keys to write: the node's own service's, then every
-// active service's State key; manual counts the active services whose DNS
-// was set by hand.
+// targets are the DNS keys to write: every active service's State key,
+// then the node's own service's (published last so a crash mid-apply
+// never leaves only the supplemental resolver); manual counts the active
+// services whose DNS was set by hand.
 func (s *dynamicStore) targets() (out []string, manual int, err error) {
 	keys, err := s.st.keys(serviceStatePattern)
 	if err != nil {
@@ -277,14 +278,30 @@ func (s *dynamicStore) targets() (out []string, manual int, err error) {
 	if len(active) == 0 {
 		return nil, 0, nil
 	}
-	out = []string{resolverKey}
 	for _, id := range sortedKeys(active) {
 		out = append(out, "State:/Network/Service/"+id+"/DNS")
 		if slices.Contains(setup, "Setup:/Network/Service/"+id+"/DNS") {
 			manual++
 		}
 	}
+	out = append(out, resolverKey)
 	return out, manual, nil
+}
+
+// restoreKeys orders backup keys for teardown: drop the supplemental
+// resolver before putting the services' overrides back.
+func restoreKeys(backup map[string]original) []string {
+	var rest []string
+	for k := range backup {
+		if k != resolverKey {
+			rest = append(rest, k)
+		}
+	}
+	slices.Sort(rest)
+	if _, ok := backup[resolverKey]; ok {
+		return append([]string{resolverKey}, rest...)
+	}
+	return rest
 }
 
 // apply overrides every target that isn't overridden yet, taking what is
@@ -349,7 +366,7 @@ func (s *dynamicStore) apply() error {
 	}
 	// Services that went (or went inactive): theirs goes back.
 	putBack := false
-	for _, k := range sortedKeys(s.backup) {
+	for _, k := range restoreKeys(s.backup) {
 		if !slices.Contains(targets, k) {
 			putBack = true
 			if err := s.putBack(k); err != nil {
@@ -517,7 +534,7 @@ func (s *dynamicStore) restore() error {
 		return nil
 	}
 	var errs []error
-	for _, k := range sortedKeys(s.backup) {
+	for _, k := range restoreKeys(s.backup) {
 		if err := s.putBack(k); err != nil {
 			errs = append(errs, err)
 		}
