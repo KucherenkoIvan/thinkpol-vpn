@@ -5,6 +5,26 @@ import (
 	"testing"
 )
 
+func TestWgDataLen(t *testing.T) {
+	for _, tc := range []struct {
+		n, mtu int
+		ok     bool
+	}{
+		{32, 1328, true},
+		{48, 1328, true},
+		{1360, 1328, true}, // 32+1328, unshaped full MTU
+		{1260, 1228, true}, // 32+1228, shaped full MTU
+		{1308, 1276, true},
+		{50, 1228, false},
+		{1260, 1328, false},
+		{31, 1228, false},
+	} {
+		if got := wgDataLen(tc.n, tc.mtu); got != tc.ok {
+			t.Errorf("wgDataLen(%d, %d) = %v, want %v", tc.n, tc.mtu, got, tc.ok)
+		}
+	}
+}
+
 func TestPacketHeader(t *testing.T) {
 	h := header{hopLimit: 3, dst: NodeID{1, 2, 3, 4, 5, 6, 7, 8}, src: NodeID{9, 10, 11, 12, 13, 14, 15, 16}}
 	msg := []byte("a WireGuard message")

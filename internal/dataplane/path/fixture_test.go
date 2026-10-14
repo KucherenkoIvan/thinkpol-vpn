@@ -335,6 +335,14 @@ func wgMsg(tag string) []byte {
 	return m
 }
 
+// wgFullMTUData is a WireGuard-shaped data message as long as a full-MTU
+// packet on a TUN of mtu bytes (32 bytes of WireGuard overhead plus mtu).
+func wgFullMTUData(mtu int) []byte {
+	m := make([]byte, 32+mtu)
+	m[0] = 4
+	return m
+}
+
 func tagOf(m []byte) string {
 	if len(m) != 48 {
 		return string(m)
@@ -495,6 +503,13 @@ func (b *rawBind) send(t *testing.T, ep conn.Endpoint, msg string) {
 	t.Helper()
 	if err := b.Send([][]byte{wgMsg(msg)}, ep); err != nil {
 		t.Fatalf("send %q: %v", msg, err)
+	}
+}
+
+func (b *rawBind) sendWG(t *testing.T, ep conn.Endpoint, msg []byte) {
+	t.Helper()
+	if err := b.Send([][]byte{msg}, ep); err != nil {
+		t.Fatalf("send %d-byte message: %v", len(msg), err)
 	}
 }
 
