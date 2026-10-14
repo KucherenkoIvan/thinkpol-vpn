@@ -54,7 +54,7 @@ const (
 // it (ClearIPv6Guard) or replaces it.
 type IPv6Guard struct {
 	mu      sync.Mutex
-	netns   int // the namespace's fd; 0 is the calling thread's
+	netns   int // the namespace's fd; -1 is the calling thread's
 	applied *Exempt
 	closed  bool
 }
@@ -64,7 +64,7 @@ var errClosed = errors.New("firewall: the IPv6 guard is closed")
 
 // NewIPv6Guard returns the guard of the calling thread's network
 // namespace. Nothing is in place until Apply.
-func NewIPv6Guard() *IPv6Guard { return &IPv6Guard{} }
+func NewIPv6Guard() *IPv6Guard { return &IPv6Guard{netns: -1} }
 
 // NewIPv6GuardInNamespace returns the guard of the network namespace at
 // path (/run/netns/<name>, /proc/<pid>/ns/net), without entering it.
@@ -105,7 +105,7 @@ func (g *IPv6Guard) conn() (*nftables.Conn, error) {
 		}
 		return serr
 	})}
-	if g.netns != 0 {
+	if g.netns >= 0 {
 		opts = append(opts, nftables.WithNetNSFd(g.netns))
 	}
 	c, err := nftables.New(opts...)
@@ -201,9 +201,8 @@ func (g *IPv6Guard) Close() error {
 		err = removeGuard(c)
 	}
 	g.applied = nil
-	if g.netns != 0 {
+	if g.netns >= 0 {
 		_ = unix.Close(g.netns)
-		g.netns = 0
 	}
 	return err
 }
