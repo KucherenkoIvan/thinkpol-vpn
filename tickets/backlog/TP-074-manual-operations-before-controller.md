@@ -6,6 +6,7 @@ area: ops
 repo: thinkpol-vpn
 size: M
 depends_on: []
+refs: [A4, S2]
 owner: ""
 branch: ""
 ---
@@ -33,3 +34,4 @@ The pre-M4 operating model is documented and tooled: map distribution, restarts,
 
 ## Log
 - 2026-10-15 created in backlog
+- 2026-10-15 docs: board fix-ups (log order, refs, parked notes)

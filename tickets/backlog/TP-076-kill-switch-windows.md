@@ -17,7 +17,6 @@ With the kill switch on, nothing leaves a Windows device when the tunnel is down
 
 ## Scope
 - Windows Filtering Platform (WFP) kill-switch rules: only entry endpoints allowed, plus LAN with allow-LAN.
-- Temporary pause for captive portals.
 - Rules stay in place if the service crashes, until the service restores them (same acceptance themes as TP-048, on Windows).
 
 ## Out of scope
@@ -34,3 +33,4 @@ With the kill switch on, nothing leaves a Windows device when the tunnel is down
 
 ## Log
 - 2026-10-15 created in backlog
+- 2026-10-15 docs: board fix-ups (log order, refs, parked notes)

@@ -26,5 +26,5 @@ M4's "done when": provisioning, sharing, isolation and seizure safety proven in 
 - M4 acceptance no longer waits on the canvas library decision (TP-043 removed from depends_on).
 
 ## Log
-- 2026-10-15 docs (independent review 2026-10-15): dropped TP-043 from depends_on; note on canvas library
 - 2026-10-10 created in backlog
+- 2026-10-15 docs (independent review 2026-10-15): dropped TP-043 from depends_on; note on canvas library

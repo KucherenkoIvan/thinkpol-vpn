@@ -6,6 +6,7 @@ area: dataplane/path
 repo: thinkpol-vpn
 size: S
 depends_on: []
+refs: [N2, DESIGN#data-plane]
 owner: ""
 branch: ""
 ---
@@ -27,3 +28,4 @@ Leader following works under bulk traffic when the overlay MTU is not a multiple
 
 ## Log
 - 2026-10-15 created in backlog
+- 2026-10-15 docs: board fix-ups (log order, refs, parked notes)

@@ -40,5 +40,5 @@ Measure what thinkpol needs to run, so that README can state minimal and recomme
 - **From the 2026-10-14 estimate:** the hard requirements known from code are: node: Linux with kernel 4.17 or newer (5.7 or newer for the cgroup fd), /dev/net/tun, nftables with conntrack, namespaces, root, cgroup v2 recommended, and a KVM VPS rather than OpenVZ/LXC; client: macOS on Apple silicon, or Linux 4.17 or newer, with outbound UDP. The PRD target is at least 50 Mbit/s over two hops on 1-vCPU nodes. The first device test's exit ran within a 0.75 CPU / 300 MB container limit. Nothing has been measured yet.
 
 ## Log
-- 2026-10-15 docs (independent review 2026-10-15): MemoryMax/PidsMax/FairShare defaults mandatory in scope; acceptance and notes on fork-bomb and reply-path flooding
 - 2026-10-14 created in backlog
+- 2026-10-15 docs (independent review 2026-10-15): MemoryMax/PidsMax/FairShare defaults mandatory in scope; acceptance and notes on fork-bomb and reply-path flooding

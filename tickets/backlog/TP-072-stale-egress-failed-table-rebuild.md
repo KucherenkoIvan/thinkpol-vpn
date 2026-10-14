@@ -6,6 +6,7 @@ area: agent/supervisor
 repo: thinkpol-vpn
 size: S
 depends_on: []
+refs: [R1, DESIGN#ipv6]
 owner: ""
 branch: ""
 ---
@@ -29,3 +30,4 @@ A transient `applyTables` failure does not leave an existing space on stale egre
 
 ## Log
 - 2026-10-15 created in backlog
+- 2026-10-15 docs: board fix-ups (log order, refs, parked notes)

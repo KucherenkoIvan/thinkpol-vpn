@@ -35,10 +35,10 @@ branch: ""
 - **Per-node camouflage target (independent design review, 2026-10-13; TP-062):** provisioning chooses the camouflage target for each node and records it with the node's settings; no fleet-wide default (a homogeneous default is a fingerprint of the fleet). Document the choice as security-relevant, with TP-028. Provisioning also pins the update signing key on the node (TP-044).
 
 ## Log
-- 2026-10-15 docs (independent review 2026-10-15): chrony/NTP in scope; pointer to TP-074
 - 2026-10-10 created in backlog
 - 2026-10-11 docs (TP-011 review): notes on a shared key-file codec, node.key written on the node, first boot
 - 2026-10-12 docs (TP-013 review): notes from the ingress and egress settings
 - 2026-10-12 docs (TP-017): notes from blob distribution
 - 2026-10-12 docs (TP-014 review): notes from egress on Linux
 - 2026-10-13 docs (TP-062): note: camouflage target chosen per node; update key pinned at provisioning
+- 2026-10-15 docs (independent review 2026-10-15): chrony/NTP in scope; pointer to TP-074

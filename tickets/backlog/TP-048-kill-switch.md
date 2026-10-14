@@ -33,8 +33,8 @@ With the kill switch on, nothing leaves the device when the tunnel is down.
 - **Crash posture (independent design review, 2026-10-13; TP-062).** Fail-closed after an agent crash is the default for the "everything" and "all but domestic" presets (opt-out); a deliberate disconnect still follows the kill-switch toggle (PRD D4, off by default). Today's behaviour, from TP-018 (done): after a crash IPv4 flows and IPv6 is unreachable but for direct destinations. The firewall rules therefore stay after a crash for those presets even with the toggle off, and are removed on a deliberate disconnect; macOS must meet this too (DESIGN "Desktop client", "Kill switch"). TP-019 (macOS data plane) is in review, so its ticket isn't changed: this ticket and TP-046 carry the note.
 
 ## Log
-- 2026-10-15 docs (independent review 2026-10-15): retitled to macOS and Linux; milestone M2; depends on TP-021 not TP-047; needs_human macos; Windows/WFP moved to TP-076; note on missing macOS pf guard
 - 2026-10-10 created in backlog
 - 2026-10-12 docs (TP-014 review): notes from egress on Linux
 - 2026-10-12 docs (TP-057 review): interface-bound sockets are the firewall's to confine
 - 2026-10-13 docs (TP-062): crash posture: fail-closed by default under the everything and all-but-domestic presets
+- 2026-10-15 docs (independent review 2026-10-15): retitled to macOS and Linux; milestone M2; depends on TP-021 not TP-047; needs_human macos; Windows/WFP moved to TP-076; note on missing macOS pf guard

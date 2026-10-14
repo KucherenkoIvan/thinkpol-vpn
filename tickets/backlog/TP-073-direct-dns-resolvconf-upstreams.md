@@ -6,12 +6,13 @@ area: dataplane/dns
 repo: thinkpol-vpn
 size: S
 depends_on: []
+refs: [N3, R4, DESIGN#routing-rules-and-dns]
 owner: ""
 branch: ""
 ---
 
 ## Goal
-Domestic DNS upstreams taken from a rewritten `resolv.conf` are filtered the same way as upstreams discovered elsewhere.
+Direct DNS upstreams taken from a rewritten `resolv.conf` are filtered the same way as upstreams discovered elsewhere.
 
 ## Scope
 - `dns/resolvconf.go:225` passes a rewritten resolv.conf's nameservers to `Upstreams` unfiltered, while `upstreamsFrom` (`:393`) strips the resolved stub, so an outside rewrite to `127.0.0.53` silently kills direct DNS.
@@ -28,3 +29,4 @@ Domestic DNS upstreams taken from a rewritten `resolv.conf` are filtered the sam
 
 ## Log
 - 2026-10-15 created in backlog
+- 2026-10-15 docs: board fix-ups (log order, refs, parked notes)

@@ -6,6 +6,7 @@ area: agent
 repo: thinkpol-vpn
 size: L
 depends_on: [TP-019]
+refs: [S1, DESIGN#desktop-client]
 owner: ""
 branch: ""
 ---
@@ -35,3 +36,4 @@ branch: ""
 
 ## Log
 - 2026-10-15 created in backlog
+- 2026-10-15 docs: board fix-ups (log order, refs, parked notes)

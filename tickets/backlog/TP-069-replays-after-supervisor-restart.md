@@ -6,6 +6,7 @@ area: dataplane/transport
 repo: thinkpol-vpn
 size: M
 depends_on: []
+refs: [C1, C3, C6, DESIGN#transports]
 owner: ""
 branch: ""
 ---
@@ -33,3 +34,4 @@ After a supervisor restart, datagram replays within the freshness window do not 
 
 ## Log
 - 2026-10-15 created in backlog
+- 2026-10-15 docs: board fix-ups (log order, refs, parked notes)

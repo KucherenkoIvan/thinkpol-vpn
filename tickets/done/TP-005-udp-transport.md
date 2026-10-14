@@ -104,7 +104,6 @@ Round 2 (delta review):
 - [x] R2.3 Verify the deletions in 2c926fa have equivalents; restore anything lost; record in Notes.
 
 ## Log
-- 2026-10-15 docs (independent review 2026-10-15): superseded note on supervisor-restart replays; tracked in TP-069
 - 2026-10-10 created in backlog
 - 2026-10-10 backlog → in-progress — owner: agent-tp-005, branch: tp-005-udp-transport
 - 2026-10-10 reworked udp crypto to a stateless design after the pre-review findings (nonce reuse, epoch rollback); suite extended
@@ -118,3 +117,4 @@ Round 2 (delta review):
 - 2026-10-10 round 2 findings fixed
 - 2026-10-10 in-progress → review
 - 2026-10-10 review → done — merged into rewrite
+- 2026-10-15 docs (independent review 2026-10-15): superseded note on supervisor-restart replays; tracked in TP-069
