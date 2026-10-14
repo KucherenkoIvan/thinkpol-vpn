@@ -45,15 +45,17 @@ func TestGuardForIsWhatTheTableThrows(t *testing.T) {
 // fakeGuard records what it is given, and when: how many route Applies
 // the configurator had seen by then; the test signals its Watch.
 type fakeGuard struct {
-	f       *fakeConfigurator
-	events  chan struct{}
-	mu      sync.Mutex
-	applied []routetable.Exempt
-	after   []int
-	failErr error
-	closed  bool
-	order   *[]string    // what was closed, in order
-	watches atomic.Int32 // subscriptions alive
+	f          *fakeConfigurator
+	events     chan struct{}
+	mu         sync.Mutex
+	applied    []routetable.Exempt
+	after      []int
+	failErr    error
+	closed     bool
+	order      *[]string       // what was closed, in order
+	watches    atomic.Int32    // subscriptions alive
+	released   atomic.Int32    // subscriptions fully torn down
+	subscribed []chan struct{} // closed when each Watch goroutine is listening
 }
 
 func newFakeGuard(f *fakeConfigurator) *fakeGuard {
@@ -74,9 +76,17 @@ func (g *fakeGuard) Apply(_ context.Context, e routetable.Exempt) error {
 
 func (g *fakeGuard) Watch(ctx context.Context) (<-chan struct{}, error) {
 	out := make(chan struct{})
+	ready := make(chan struct{})
+	g.mu.Lock()
+	g.subscribed = append(g.subscribed, ready)
+	g.mu.Unlock()
 	g.watches.Add(1)
 	go func() {
-		defer g.watches.Add(-1)
+		close(ready)
+		defer func() {
+			g.watches.Add(-1)
+			g.released.Add(1)
+		}()
 		defer close(out)
 		for {
 			select {
@@ -299,8 +309,23 @@ func TestAWatcherThatStopsLetsGoOfItsSubscriptions(t *testing.T) {
 	if err := e.Enforce(context.Background(), routetable.Want{TUN: "thinkpol0"}); !errors.Is(err, errors.ErrUnsupported) {
 		t.Fatalf("Enforce: %v", err)
 	}
-	eventually(t, "the guard subscribed", func() bool { return g.watches.Load() > 0 })
-	eventually(t, "the guard's subscription let go", func() bool { return g.watches.Load() == 0 })
+	eventually(t, "the Open watcher's subscription released", func() bool { return g.released.Load() >= 1 })
+	eventually(t, "the new watcher subscribed", func() bool {
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		if len(g.subscribed) < 2 {
+			return false
+		}
+		select {
+		case <-g.subscribed[1]:
+			return true
+		default:
+			return false
+		}
+	})
+	eventually(t, "the new watcher's subscription released", func() bool {
+		return g.released.Load() >= 2 && g.watches.Load() == 0
+	})
 }
 
 // Clear removes a crashed run's guard only while it holds the route
