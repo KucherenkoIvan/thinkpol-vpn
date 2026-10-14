@@ -8,19 +8,22 @@ import (
 	"net/netip"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 )
+
+// errHostUnreach stands for the kernel's error (the path layer names no
+// syscall).
+var errHostUnreach = errors.New("sendto: no route to host")
 
 // Errors in logs say what failed, never where: a *net.OpError quotes both
 // ends of a socket.
 func TestRedactedErrorsQuoteNoAddress(t *testing.T) {
 	for _, err := range []error{
 		&net.OpError{Op: "write", Net: "udp", Source: net.UDPAddrFromAddrPort(netip.MustParseAddrPort("192.168.0.113:50123")),
-			Addr: net.UDPAddrFromAddrPort(netip.MustParseAddrPort("203.0.113.7:4500")), Err: syscall.EHOSTUNREACH},
+			Addr: net.UDPAddrFromAddrPort(netip.MustParseAddrPort("203.0.113.7:4500")), Err: errHostUnreach},
 		&net.OpError{Op: "read", Net: "udp", Source: net.UDPAddrFromAddrPort(netip.MustParseAddrPort("[fe80::1%en0]:50123")),
-			Addr: net.UDPAddrFromAddrPort(netip.MustParseAddrPort("[2001:db8::7]:4500")), Err: syscall.ECONNREFUSED},
+			Addr: net.UDPAddrFromAddrPort(netip.MustParseAddrPort("[2001:db8::7]:4500")), Err: errors.New("connection refused")},
 		errors.New("dial udp 2001:db8::7: no route"),
 	} {
 		got := redact(err)
@@ -33,7 +36,7 @@ func TestRedactedErrorsQuoteNoAddress(t *testing.T) {
 			t.Errorf("%q: nothing redacted", got)
 		}
 	}
-	if got := redact(syscall.EHOSTUNREACH); got != syscall.EHOSTUNREACH.Error() {
+	if got := redact(errHostUnreach); got != errHostUnreach.Error() {
 		t.Errorf("an error without an address became %q", got)
 	}
 }
