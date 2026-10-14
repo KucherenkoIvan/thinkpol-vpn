@@ -7,24 +7,25 @@ repo: thinkpol-vpn
 size: M
 depends_on: [TP-018, TP-019]
 refs: [D6, DESIGN#ipv6]
-needs_human: macos
 owner: "agent-tp-021"
 branch: "tp-021-ipv6-leaks"
 ---
 
 ## Goal
-While connected, IPv6 goes through the tunnel or is blocked; it never leaks around it.
+While connected on Linux, IPv6 goes through the tunnel or is blocked; it never leaks around it. macOS pf guard: TP-078.
 
 ## Scope
 - If the egress supports IPv6: route IPv6 into the tunnel like IPv4.
-- Otherwise: block IPv6 on physical interfaces while connected (Linux nftables, macOS pf anchor), except to entry endpoints.
+- Otherwise: block IPv6 on physical interfaces while connected (Linux nftables), except to entry endpoints.
 - Restore on disconnect, also after a crash (next start cleans up).
+- macOS pf anchor: TP-078.
 
 ## Acceptance
 - [x] lab capture (Linux): no IPv6 packet leaves a physical interface outside the tunnel while connected — `lab/ipv6leak_test.go` `TestNoIPv6LeavesAroundTheTunnel`: device-a connected with "all but domestic" (`lab/maps/routetable.yaml`); `ping -6 -I eth0`, `ping -6 -I <eth0's address>`, unbound `ping -6` and `curl -6 --interface eth0` to a foreign IPv6 site; a capture of the device's own outgoing IPv6 on every lab interface shows only direct destinations (the domestic site, `local`: the lab's unique-local networks, link-local, multicast) and the entry's endpoint, and does show the direct ping (the capture works). The same with the overlay IPv4-only (`-link-mtu 1300`) and after a kill -9 while connected; `-connect=false` removes the guard, a clean stop too. Deleted from outside while connected (`nft delete table`), the guard is back within about a second and the capture stays clean. Negative control, in the test: disconnected (no guard), the same bound ping is answered and the capture shows ICMPv6 and TCP from the device's address to the foreign site.
-- [ ] the macOS checklist (pf anchor): round 2, after TP-019 merges (see Notes)
 
 ## Notes
+- **Scope cut (2026-10-15):** the macOS pf guard moved to TP-078; TP-021 delivers the Linux guard.
+
 - **From TP-014 (egress):** an exit whose uplink has no IPv6 (no IPv6 default route, or only unique local addresses) refuses a device's IPv6 inside its namespace with ICMPv6 "no route", at once, and none leaves; the device must still keep IPv6 from going around the tunnel itself.
 
 - **From TP-057 (route table):** sockets bound to an interface (`SO_BINDTODEVICE`, `IP_UNICAST_IF`, an `IP_PKTINFO` ifindex: `ping -I eth0`, NetworkManager's connectivity checks, systemd-resolved's per-link DNS) can't be confined by routing: IPv4 and IPv6 both leave by main's default route (the rule `oif <link> lookup main suppress_prefixlength 0` at 5298 exists so the kernel can resolve gateways, and IPv4 would otherwise reach on-link hosts by ARP anyway). Block them in the firewall while connected (e.g. nftables: output on a physical interface, not marked 0x7470, not to a direct destination, not to the LAN), at least for IPv6 here. `internal/dataplane/routetable` `TestGatewaysOnLinksAndBoundSockets` documents today's behaviour (`ip route get … oif eth0`): flip its assertions when the firewall lands.
@@ -65,21 +66,7 @@ table inet thinkpol-guard {
 
 *Effects worth knowing:* every interface but the TUN and lo counts as physical (rule 5298's set): IPv6 from a bound socket to another VPN's interface, a bridge or a veth is refused unless direct. NetworkManager's per-device IPv6 connectivity check and systemd-resolved's per-link IPv6 DNS fail while connected (that is the point; resolved's per-link domains already make `dns_not_protected`).
 
-**macOS (round 2 of the platform work, after TP-019 merges): what it needs.**
-1. `internal/dataplane/firewall/guard_darwin.go`: a pf guard implementing `routetable.Guard` (`Apply(ctx, Exempt)`, `Watch`, `Close`), as an anchor under Apple's `com.apple/*` hook (`com.apple/thinkpol`, loaded with `pfctl -a com.apple/thinkpol -f -`, so `/etc/pf.conf` is never edited). **First verify the main ruleset references `anchor "com.apple/*"`** (`pfctl -s rules` / `-s Anchors`) **or fail** with `ErrGuardUnsupported`-like status: an anchor nothing evaluates guards nothing. A persistent table holds the exempt destinations (pf tables take prefixes: `Exempt.Direct`'s IPv6 `Prefixes()`, `Exempt.Upstreams`, plus `routetable.LinkScoped`; `pfctl -a … -t thinkpol_exempt6 -T replace -f -`):
-```
-pass out quick on lo0 all
-pass out quick on <utunN> all
-pass out quick inet6 to <thinkpol_exempt6>
-pass out quick inet6 proto icmp6 icmp6-type { 133, 134, 135, 136, 137 }   # with hop limit 255 if pf can say it, else noted
-pass out quick inet6 proto icmp6 icmp6-type { 130, 131, 132, 143 }
-block return out quick inet6 all
-```
-   pf must be enabled by reference (`pfctl -E` returns a token; `pfctl -X <token>` releases it), so the guard doesn't turn off a pf someone else enabled, nor leave pf on when it is gone.
-2. **No socket mark on macOS:** links and the direct DNS upstream are bound to the physical interface (`IP_BOUND_IF`, TP-019's `ifbind`), not marked. Endpoints are in `Exempt.Direct`; the direct upstreams come in `Exempt.Upstreams`, which the agent already fills from its resolver (`agent.leakGuard`, round 2 of this ticket) and re-applies when they change.
-3. **Records, crash, Clear:** the anchor and the pf token survive a crash (fail-closed, as on Linux). The firewall keeps its own record, `<statedir>/pf-guard.token`, with a boot-session header (as TP-019's records have, but its own file: using TP-019's netcfg records from `firewall` would make an import cycle); a fresh guard's `Close` (what `routetable.Clear` calls) flushes the anchor (`pfctl -a com.apple/thinkpol -F all`) and releases a token from the same boot; after a reboot the anchor is gone anyway and the record is dropped.
-4. `agent/leakguard_darwin.go`: `newHostGuard` returning the pf guard (and narrow `leakguard_other.go`'s build line to `(!linux && !darwin) || android`). With TP-019's split routes, the guard also covers what its Notes leave to pf: foreign host routes over tunneled destinations (IPv6), scoped routing by source address, interface-bound sockets. `Watch`: pf has no event stream; poll the anchor's rule count (or rely on the backstop) and say so.
-5. A darwin unit test for the generated anchor and table text (no pfctl), and **the checklist** on a real Mac, connected with "all but domestic": `ping6 -c1 -I en0 2001:4860:4860::8888` and `curl -6 -m5 --interface en0 https://[2001:4860:4860::8888]/` refused at once; `sudo tcpdump -ni en0 'ip6 and not net fe80::/10 and not net ff00::/8'` shows only direct destinations, entries and the direct upstream while browsing; `sudo pfctl -a com.apple/thinkpol -sr` lists the rules; after `sudo pkill -9 -f 'thinkpol up'` the same pings stay refused; `thinkpol up -connect=false` (then stop) leaves the anchor empty and pf's enable count as before (`sudo pfctl -s info`).
+Moved to TP-078 (macOS pf guard).
 
 ## Review findings
 Round 1 reviews (design and correctness), orchestrator's list; nothing blocking, all fixed before merge.
@@ -145,3 +132,4 @@ Resolution (round 3):
 - 2026-10-15 has-errors → in-progress — owner: agent-tp-021, round 3: the cross-model review's findings
 - 2026-10-15 round 3: R3.1–R3.3 and R3.a–c fixed (see Review findings); merged origin/rewrite (AGENTS.md roles and rules); DESIGN.md "Routing rules and DNS" (the guard follows the routes in place, content checks, Clear only under the lock, the probe)
 - 2026-10-15 in-progress → review — round 3: every finding checked; `make lint`, `make test`, race on routetable and agent, `make lab-gotest` for firewall and routetable, and `make lab-test LAB_P=2` (lab and 29 in-node packages) pass. Not verified: a kernel without nf_tables (the probe's EINVAL is inferred from nfnetlink's source) and the overflow recheck (no way to force ENOBUFS); the macOS checklist box stays open (macOS pf pending TP-019)
+- 2026-10-15 scope split: macOS pf guard → TP-078; Linux guard ready to merge

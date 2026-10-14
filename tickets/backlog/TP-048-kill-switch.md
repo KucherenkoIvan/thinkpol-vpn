@@ -5,7 +5,7 @@ milestone: M5
 area: dataplane/firewall
 repo: thinkpol-vpn
 size: L
-depends_on: [TP-046, TP-047]
+depends_on: [TP-046, TP-047, TP-078]
 refs: [D4]
 needs_human: windows
 owner: ""
@@ -39,3 +39,4 @@ With the kill switch on, nothing leaves the device when the tunnel is down.
 - 2026-10-13 docs (TP-062): crash posture: fail-closed by default under the everything and all-but-domestic presets
 - 2026-10-14 docs (TP-021): notes from the IPv6 leak guard on Linux
 - 2026-10-14 docs (TP-021 review): the kill switch is its own owner and table; only Exempt's shape is shared
+- 2026-10-15 docs (TP-078 split): depends on the macOS pf IPv6 leak guard
