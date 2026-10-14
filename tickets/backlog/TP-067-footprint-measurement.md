@@ -7,7 +7,6 @@ repo: thinkpol-vpn
 size: S
 depends_on: [TP-012]
 refs: [PRD#performance, DESIGN#processes]
-needs_human: ""
 owner: ""
 branch: ""
 ---
