@@ -61,6 +61,9 @@ func WriteStatus(w io.Writer, st *localapiv1.Status, now time.Time) error {
 			} else if wk.GetRestartAt() != nil {
 				s = "restarting in " + round(wk.GetRestartAt().AsTime().Sub(now)).String()
 			}
+			if !wk.GetReady() && wk.GetLastExit() != "" {
+				s += " (" + wk.GetLastExit() + ")"
+			}
 			line("  %s\t%s\t%d starts", wk.GetSpaceId(), s, wk.GetStarts())
 		}
 	}

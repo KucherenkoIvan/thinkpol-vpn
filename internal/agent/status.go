@@ -81,9 +81,7 @@ func (c Connection) String() string {
 	return "unknown"
 }
 
-// WorkerStatus is one space's worker on a server. Why a worker exited is
-// left out: the reason may carry the worker's own words, and goes to the
-// node's log instead.
+// WorkerStatus is one space's worker on a server.
 type WorkerStatus struct {
 	Space netmap.SpaceID
 	Ready bool
@@ -93,6 +91,9 @@ type WorkerStatus struct {
 	// ReadySince is when the running process became ready; RestartAt when
 	// a restart after a crash is due (zero when not applicable).
 	ReadySince, RestartAt time.Time
+	// LastExit is why the previous process ended (spawn or exit); the local
+	// API sanitizes it before the wire.
+	LastExit string
 }
 
 // PublicListenerStatus is one of a server's public listeners: what it
@@ -196,7 +197,10 @@ func (p *report) status() Status {
 	}
 	if p.workers != nil {
 		for _, w := range p.workers.Workers() {
-			s.Workers = append(s.Workers, WorkerStatus{Space: w.Space, Ready: w.Ready, Starts: w.Starts, ReadySince: w.ReadyAt, RestartAt: w.NextStart})
+			s.Workers = append(s.Workers, WorkerStatus{
+				Space: w.Space, Ready: w.Ready, Starts: w.Starts, ReadySince: w.ReadyAt, RestartAt: w.NextStart,
+				LastExit: w.LastExit,
+			})
 		}
 		e := p.workers.Egress()
 		s.Egress = &e

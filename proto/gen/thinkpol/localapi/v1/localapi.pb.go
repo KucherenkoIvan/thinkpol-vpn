@@ -1771,7 +1771,9 @@ type Worker struct {
 	Starts     uint32                 `protobuf:"varint,3,opt,name=starts,proto3" json:"starts,omitempty"`
 	ReadySince *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=ready_since,json=readySince,proto3" json:"ready_since,omitempty"`
 	// When a restart after a crash is due.
-	RestartAt     *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=restart_at,json=restartAt,proto3" json:"restart_at,omitempty"`
+	RestartAt *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=restart_at,json=restartAt,proto3" json:"restart_at,omitempty"`
+	// Why the last process ended (spawn or exit); sanitized on the wire.
+	LastExit      string `protobuf:"bytes,6,opt,name=last_exit,json=lastExit,proto3" json:"last_exit,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1839,6 +1841,13 @@ func (x *Worker) GetRestartAt() *timestamppb.Timestamp {
 		return x.RestartAt
 	}
 	return nil
+}
+
+func (x *Worker) GetLastExit() string {
+	if x != nil {
+		return x.LastExit
+	}
+	return ""
 }
 
 // One of a server's public listeners, without its address.
@@ -2052,7 +2061,7 @@ const file_thinkpol_localapi_v1_localapi_proto_rawDesc = "" +
 	"\x04Skip\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x12\n" +
 	"\x04item\x18\x02 \x01(\tR\x04item\x12\x16\n" +
-	"\x06reason\x18\x03 \x01(\tR\x06reason\"\xc9\x01\n" +
+	"\x06reason\x18\x03 \x01(\tR\x06reason\"\xe6\x01\n" +
 	"\x06Worker\x12\x19\n" +
 	"\bspace_id\x18\x01 \x01(\tR\aspaceId\x12\x14\n" +
 	"\x05ready\x18\x02 \x01(\bR\x05ready\x12\x16\n" +
@@ -2060,7 +2069,8 @@ const file_thinkpol_localapi_v1_localapi_proto_rawDesc = "" +
 	"\vready_since\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
 	"readySince\x129\n" +
 	"\n" +
-	"restart_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\trestartAt\"\xd6\x01\n" +
+	"restart_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\trestartAt\x12\x1b\n" +
+	"\tlast_exit\x18\x06 \x01(\tR\blastExit\"\xd6\x01\n" +
 	"\x0ePublicListener\x12\x1c\n" +
 	"\ttransport\x18\x01 \x01(\tR\ttransport\x12\x16\n" +
 	"\x06routed\x18\x02 \x01(\x04R\x06routed\x12(\n" +

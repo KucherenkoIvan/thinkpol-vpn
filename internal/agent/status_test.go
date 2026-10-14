@@ -13,11 +13,13 @@ import (
 
 	wgtun "golang.zx2c4.com/wireguard/tun"
 
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/supervisor"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/path"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
 
 // deviceNode is device b of the test space as `thinkpol up` runs it, on
@@ -291,6 +293,26 @@ func TestAServerRefusesConnect(t *testing.T) {
 	}
 	if st := n.Status(); st.Connection != Serving || st.Mode != ModeServer {
 		t.Fatalf("status %+v", st)
+	}
+}
+
+type stubWorkerReporter struct {
+	workers []supervisor.WorkerInfo
+}
+
+func (s stubWorkerReporter) Workers() []supervisor.WorkerInfo   { return s.workers }
+func (stubWorkerReporter) Listeners() []supervisor.ListenerInfo { return nil }
+func (stubWorkerReporter) Egress() supervisor.EgressInfo        { return supervisor.EgressInfo{} }
+
+func TestWorkerLastExitInStatus(t *testing.T) {
+	const reason = "start: no such file"
+	space := netmap.SpaceID{0x01}
+	st := (&report{
+		mode:    ModeServer,
+		workers: stubWorkerReporter{workers: []supervisor.WorkerInfo{{Space: space, Ready: false, Starts: 1, LastExit: reason}}},
+	}).status()
+	if len(st.Workers) != 1 || st.Workers[0].LastExit != reason {
+		t.Fatalf("workers %+v", st.Workers)
 	}
 }
 
