@@ -39,3 +39,4 @@ From independent review, 2026-10-15.
 - 2026-10-15 backlog → in-progress — owner: agent-composer, branch: tp-071-data-frame-mod16
 - 2026-10-15 in-progress → review — capped full-MTU data frames count as signs of life; make lint and make test pass
 - 2026-10-15 review → has-errors — receiver-MTU data-frame rule; see Review findings
+- 2026-10-15 has-errors → in-progress — owner: agent-composer, fixing review findings
