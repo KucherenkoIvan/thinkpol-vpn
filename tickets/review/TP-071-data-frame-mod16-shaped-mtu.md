@@ -21,12 +21,14 @@ Leader following works under bulk traffic when the overlay MTU is not a multiple
 - Shaping contract changes beyond what path needs to recognise life signs.
 
 ## Acceptance
-- [ ] a test with a shaped MTU, bulk traffic and following: the follower follows the leader
+- [x] a test with a shaped MTU, bulk traffic and following: the follower follows the leader — `TestFollowerWithShapedOverlayMTU` in `internal/dataplane/path/shaped_mtu_test.go`
 
 ## Notes
 - **Independent review (2026-10-15):** unshaped 1328 is safe, which is why no test caught it.
+- **Data-frame length rule:** `wgDataLen` in `frame.go` accepts WireGuard data messages whose ciphertext is a multiple of 16 bytes, or exactly the TUN MTU when padding is capped there (wireguard-go `calculatePaddingSize`); the bind's TUN MTU comes from `SetWireGuardMTU`, wired from the engine overlay MTU.
 
 ## Log
 - 2026-10-15 created in backlog
 - 2026-10-15 docs: board fix-ups (log order, refs, parked notes)
 - 2026-10-15 backlog → in-progress — owner: agent-composer, branch: tp-071-data-frame-mod16
+- 2026-10-15 in-progress → review — capped full-MTU data frames count as signs of life; make lint and make test pass
