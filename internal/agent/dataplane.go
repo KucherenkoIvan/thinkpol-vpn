@@ -562,7 +562,7 @@ func (r *runner) next(ctx context.Context, envelope []byte) {
 func (r *runner) tryStart(ctx context.Context) {
 	if err := r.start(ctx); err != nil {
 		r.retryAt = time.Now().Add(r.dp.retryAfter)
-		r.dp.Log.Warn("starting the data plane failed, retrying", "version", r.cur.Header().Version, "in", r.dp.retryAfter, "err", err)
+		r.dp.Log.Warn("starting the data plane failed, retrying", "version", r.cur.Header().Version, "in", r.dp.retryAfter, "err", path.RedactError(err))
 	}
 }
 
@@ -570,7 +570,7 @@ func (r *runner) apply(ctx context.Context) {
 	if err := r.engine.Apply(ctx, r.section); err != nil {
 		r.retryAt = time.Now().Add(r.dp.retryAfter)
 		r.dp.Log.Warn("applying the map failed, retrying", "version", r.cur.Header().Version,
-			"step", r.engine.Status().LastApplyError, "in", r.dp.retryAfter, "err", err)
+			"step", r.engine.Status().LastApplyError, "in", r.dp.retryAfter, "err", path.RedactError(err))
 		return
 	}
 	r.retryAt = time.Time{}

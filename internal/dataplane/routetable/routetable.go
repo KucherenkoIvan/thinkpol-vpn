@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/path"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/lists"
 )
 
@@ -534,6 +535,6 @@ func (e *Enforcer) reapply(ctx context.Context) {
 		return
 	}
 	if err := e.apply(ctx, *w, true); err != nil && ctx.Err() == nil {
-		e.log.Warn("route table: putting it back failed, retrying", "in", RetryAfter, "err", err)
+		e.log.Warn("route table: putting it back failed, retrying", "in", RetryAfter, "err", path.RedactError(err))
 	}
 }

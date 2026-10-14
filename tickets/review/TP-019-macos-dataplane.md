@@ -253,3 +253,4 @@ Round 2 resolution: R2.1 `netcfg.ConnectedRoutes` (utun networks as halves) + th
 - 2026-10-15 review → has-errors — review (cross-model, round 6): crash-window DNS order, mapped-v4 redaction, raw errors in agent warns
 - 2026-10-15 has-errors → in-progress — owner: composer-tp019-r7, fixing round 6
 - 2026-10-15 in-progress → review — round 7: DNS apply/restore ordering, mapped-v4 redaction, redacted upstream-route warns
+- 2026-10-15 review follow-up (round 7): restore-order test made able to fail; route-table errors redacted at warn level
