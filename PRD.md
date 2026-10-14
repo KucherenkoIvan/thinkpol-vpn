@@ -191,7 +191,7 @@ Milestones as in [Release plan](#release-plan). Priority: **must** for the MVP, 
 | | Milestone | Ships |
 |---|---|---|
 | M0 | Overlay | Two Linux nodes in the lab, hand-made signed map in the need-to-know format, `udp` transport, relay paths, device ↔ device ping. The server agent already runs each space as its own isolated worker |
-| M1 | Daily-usable core | Per-node ingress/egress settings, an egress node, rules with GeoIP, DNS, IPv6 handling, macOS and Linux clients via CLI. The leak guarantees are Linux-only until the macOS data plane and IPv6 handling land (TP-019, TP-021) |
+| M1 | Working core | Per-node ingress/egress settings, an egress node, rules with GeoIP, DNS, IPv6 handling, macOS and Linux clients via CLI. The leak guarantees are Linux-only until the macOS data plane and IPv6 handling land (TP-019, TP-021). Daily use starts once a disguised transport passes the censor lab (M2) |
 | M2 | Disguise | `tls` transport with probe fallback, censor lab v1 |
 | M3 | Chains | Multi-hop chains, hop groups with failover, lab whitelist mode |
 | M4 | Control plane | Controller on go-kernel: spaces, members, invites, SSH provisioning, map gossip, hosting grants and shared nodes, node safety, telemetry, admin panel with canvas and dashboards |
@@ -203,7 +203,7 @@ Milestones as in [Release plan](#release-plan). Priority: **must** for the MVP, 
 ## Success metrics
 
 1. **Lab:** every MVP transport has a known result against every censor module; `tls` passes everything except whitelist mode, and chains pass whitelist mode.
-2. **Daily use:** the author replaces VLESS + Reality on macOS for a month without falling back.
+2. **Daily use:** once a disguised transport passes the censor lab (M2), the author replaces VLESS + Reality on macOS for a month without falling back.
 3. **Hand-off:** one family member or friend installs, joins and uses it without help.
 4. **Sharing:** a second space runs through the author's entry node, and the lab confirms nothing crosses between the two.
 

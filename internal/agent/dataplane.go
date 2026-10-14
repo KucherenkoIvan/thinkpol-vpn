@@ -89,7 +89,7 @@ type DataPlane struct {
 	// What tests swap: the TUN and its configurator, the path layer's
 	// timing, how long to wait before retrying what failed.
 	newTUN    func(name string) (wgtun.Device, netcfg.Configurator, error)
-	newRoutes func(log *slog.Logger) (dataplane.RouteTable, error)
+	newRoutes func(log *slog.Logger, guard routetable.Guard) (dataplane.RouteTable, error)
 	// clearNetwork removes a previous run's routes (clearNetwork).
 	clearNetwork func() error
 	path         path.Options
@@ -207,13 +207,14 @@ func newTUN(name string) (wgtun.Device, netcfg.Configurator, error) {
 }
 
 // newRouteTable takes the host's route-table enforcement (one per network
-// namespace, like the overlay's configuration).
-func newRouteTable(log *slog.Logger) (dataplane.RouteTable, error) {
-	return routetable.New(log)
+// namespace, like the overlay's configuration), with guard (nil: none).
+func newRouteTable(log *slog.Logger, guard routetable.Guard) (dataplane.RouteTable, error) {
+	return routetable.New(guard, log)
 }
 
 // clearRoutes removes what a crashed run left in the host's routing, route
-// table and overlay, while nothing of this run holds either.
+// table (its leak guard included) and overlay, while nothing of this run
+// holds either.
 func (r *runner) clearRoutes() {
 	if !r.dp.RouteTable {
 		return
@@ -271,7 +272,7 @@ func (r *runner) start(ctx context.Context) error {
 	}
 	var routes dataplane.RouteTable
 	if r.dp.RouteTable {
-		if routes, err = r.dp.newRoutes(r.dp.Log); err != nil {
+		if routes, err = r.dp.newRoutes(r.dp.Log, newHostGuard()); err != nil {
 			if ifc != nil {
 				_ = ifc.Close()
 			}

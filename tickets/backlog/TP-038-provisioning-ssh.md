@@ -15,7 +15,7 @@ branch: ""
 `thinkpol node add root@host` turns a fresh Linux box into a node, and re-running it repairs the node.
 
 ## Scope
-- Idempotent steps: upload the binary, systemd unit, sysctls, base nftables, volatile journald, state dir permissions, key generation on the node, public key retrieval, add to the space with ingress and egress off, publish.
+- Idempotent steps: upload the binary, systemd unit, sysctls, base nftables, volatile journald, chrony/NTP time sync, state dir permissions, key generation on the node, public key retrieval, add to the space with ingress and egress off, publish.
 - `thinkpol node set <node> --ingress --egress`.
 - A dry-run mode printing the plan.
 
@@ -31,6 +31,7 @@ branch: ""
 - **From TP-013:** a new node starts with ingress and egress off, the zero value of `NodeSettings.AllowIngress`/`AllowEgress`; `node set --ingress` is the controller flipping the setting and removing or adding the devices' links accordingly (TP-034's notes).
 - **From TP-017:** provisioning may seed a server's lists: `install -d -m 700 /var/lib/thinkpol/blobs` and each blob as `blobs/<hex sha256 of its content>` (0600), before the map that names them. The supervisor checks seeds against the map before sending them to the worker.
 - **From TP-014 (egress):** the supervisor turns the root namespace's forwarding on itself when a space needs it (accept_ra 2 first on RA-configured interfaces), confines it to the spaces and puts it back on stop, recording what it changed in `/run/thinkpol/forwarding.json`. If `node add` makes forwarding persistent instead (sysctl.d), the node forwards for itself too and the supervisor leaves it alone: then the host firewall must not forward anything else. A container runtime's or ufw's `FORWARD` drop policy still wins over the supervisor's accepts: allow forwarding from `tp-space*` to the uplink, or don't install such policies. Provider-private networks are unreachable from exits by default (`-egress-allowed` lists exceptions, e.g. a private network the servers dial each other on).
+- **Time sync:** chrony/NTP setup on provisioned nodes; clock-skew health and the pre-controller runbook live in TP-074.
 - **Per-node camouflage target (independent design review, 2026-10-13; TP-062):** provisioning chooses the camouflage target for each node and records it with the node's settings; no fleet-wide default (a homogeneous default is a fingerprint of the fleet). Document the choice as security-relevant, with TP-028. Provisioning also pins the update signing key on the node (TP-044).
 
 ## Log
@@ -40,3 +41,4 @@ branch: ""
 - 2026-10-12 docs (TP-017): notes from blob distribution
 - 2026-10-12 docs (TP-014 review): notes from egress on Linux
 - 2026-10-13 docs (TP-062): note: camouflage target chosen per node; update key pinned at provisioning
+- 2026-10-15 docs (independent review 2026-10-15): chrony/NTP in scope; pointer to TP-074

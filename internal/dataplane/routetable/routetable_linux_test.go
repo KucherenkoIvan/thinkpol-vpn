@@ -9,10 +9,12 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/firewall"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/lists"
@@ -20,8 +22,15 @@ import (
 
 // device is a network namespace set up like a device: a "physical" eth0
 // with default routes for both families and a TUN-like thinkpol0 with the
-// overlay's addresses.
-type device struct{ name string }
+// overlay's addresses. eth0 is a veth to a gateway namespace (192.0.2.1,
+// 2001:db8:1::1), which answers pings to the sites on its lo
+// (gatewaySites).
+type device struct{ name, gw string }
+
+// gatewaySites are addresses the gateway answers for: foreign, direct by
+// the tests' rules (a private range is "local"), and the IPv4 the IPv6
+// guard leaves alone.
+var gatewaySites = []string{"2001:4860::1/128", "fd99::1/128", "8.8.8.8/32"}
 
 func newDevice(t *testing.T) *device {
 	t.Helper()
@@ -30,13 +39,24 @@ func newDevice(t *testing.T) *device {
 	}
 	b := make([]byte, 4)
 	_, _ = rand.Read(b)
-	d := &device{name: "rt-" + hex.EncodeToString(b)}
-	if out, err := exec.Command("ip", "netns", "add", d.name).CombinedOutput(); err != nil {
-		t.Fatalf("ip netns add: %v: %s", err, out)
+	d := &device{name: "rt-" + hex.EncodeToString(b), gw: "rtgw-" + hex.EncodeToString(b)}
+	for _, ns := range []string{d.name, d.gw} {
+		if out, err := exec.Command("ip", "netns", "add", ns).CombinedOutput(); err != nil {
+			t.Fatalf("ip netns add: %v: %s", err, out)
+		}
+		t.Cleanup(func() { _, _ = exec.Command("ip", "netns", "del", ns).CombinedOutput() })
 	}
-	t.Cleanup(func() { _, _ = exec.Command("ip", "netns", "del", d.name).CombinedOutput() })
+	gw := [][]string{
+		{"link", "set", "lo", "up"},
+		{"link", "set", "gw0", "up"},
+		{"addr", "add", "192.0.2.1/24", "dev", "gw0"},
+		{"addr", "add", "2001:db8:1::1/64", "dev", "gw0", "nodad"},
+	}
+	for _, a := range gatewaySites {
+		gw = append(gw, []string{"addr", "add", a, "dev", "lo"})
+	}
 	for _, args := range [][]string{
-		{"link", "add", "eth0", "type", "dummy"},
+		{"link", "add", "eth0", "type", "veth", "peer", "name", "gw0", "netns", d.gw},
 		{"link", "add", "thinkpol0", "type", "dummy"},
 		{"link", "set", "lo", "up"},
 		{"link", "set", "eth0", "up"},
@@ -49,6 +69,11 @@ func newDevice(t *testing.T) *device {
 		{"-6", "route", "add", "default", "via", "2001:db8:1::1"},
 	} {
 		d.ip(t, args...)
+	}
+	for _, args := range gw {
+		if out, err := exec.Command("ip", append([]string{"-n", d.gw}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("ip -n %s %s: %v: %s", d.gw, strings.Join(args, " "), err, out)
+		}
 	}
 	return d
 }
@@ -67,15 +92,38 @@ func (d *device) tryIP(args ...string) (string, error) {
 	return string(out), err
 }
 
+// enforcer enforces in the device's namespace with the IPv6 leak guard,
+// as on a device.
 func (d *device) enforcer(t *testing.T) *routetable.Enforcer {
 	t.Helper()
 	c, err := netcfg.NewInNamespace("/run/netns/"+d.name, netcfg.OwnerRouteTable)
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := routetable.Open(c, nil)
+	g, err := firewall.NewIPv6GuardInNamespace("/run/netns/" + d.name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := routetable.OpenWithGuard(c, g, nil)
 	t.Cleanup(func() { _ = e.Close() })
 	return e
+}
+
+// ping says whether one ping from the device, with ping's own arguments
+// (-I eth0: a socket bound to it; -m 29808: a link's mark), is answered.
+func (d *device) ping(t *testing.T, dst string, args ...string) bool {
+	t.Helper()
+	cmd := append([]string{"netns", "exec", d.name, "ping", "-c", "1", "-W", "2"}, args...)
+	return exec.Command("ip", append(cmd, dst)...).Run() == nil
+}
+
+func (d *device) nftTables(t *testing.T) string {
+	t.Helper()
+	out, err := exec.Command("ip", "netns", "exec", d.name, "nft", "list", "tables").CombinedOutput()
+	if err != nil {
+		t.Fatalf("nft list tables: %v: %s", err, out)
+	}
+	return string(out)
 }
 
 // route says where the kernel sends a packet: "tunnel", "via <gateway>",
@@ -121,11 +169,11 @@ func (d *device) expect(t *testing.T, cases map[string]string) {
 	}
 }
 
-// state is what route-table enforcement can leave: its table and every
-// rule.
+// state is what route-table enforcement can leave: its table, every rule
+// and the guard's nftables table.
 func (d *device) state(t *testing.T) string {
 	t.Helper()
-	return d.ip(t, "rule") + d.ip(t, "-6", "rule") + d.ip(t, "route", "show", "table", "all", "proto", "86") +
+	return d.nftTables(t) + d.ip(t, "rule") + d.ip(t, "-6", "rule") + d.ip(t, "route", "show", "table", "all", "proto", "86") +
 		d.ip(t, "-6", "route", "show", "table", "all", "proto", "86")
 }
 
@@ -391,8 +439,9 @@ func TestHostileLocalNetworkRoutes(t *testing.T) {
 
 // What the review of TP-057 asked for: gateways resolve on the physical
 // side wherever they are (inside the overlay's range, on an interface
-// created after Enforce), on-link doesn't override what the rules tunnel,
-// and sockets bound to an interface are documented as routing's limit.
+// created after Enforce), on-link doesn't override what the rules tunnel;
+// and what routing can't confine, sockets bound to an interface, the
+// IPv6 leak guard does (TP-021).
 func TestGatewaysOnLinksAndBoundSockets(t *testing.T) {
 	d := newDevice(t)
 	e := d.enforcer(t)
@@ -441,13 +490,105 @@ func TestGatewaysOnLinksAndBoundSockets(t *testing.T) {
 
 	// Sockets bound to the physical interface (SO_BINDTODEVICE,
 	// IP_UNICAST_IF, a PKTINFO ifindex: `ping -I eth0`, connectivity
-	// checks, per-link DNS) aren't confined by routing: today both
-	// families leave by main's default route. A firewall ticket (TP-021,
-	// TP-048) is to flip these.
-	if out := d.ip(t, "route", "get", "8.8.8.8", "oif", "eth0"); !strings.Contains(out, "via 192.0.2.1 dev eth0") {
-		t.Errorf("an IPv4 socket bound to eth0: %s (documented: out of eth0 by main's default)", out)
-	}
+	// checks, per-link DNS) aren't confined by routing: the kernel routes
+	// them out of eth0 by main's default route...
 	if out := d.ip(t, "-6", "route", "get", "2001:4860::1", "oif", "eth0"); !strings.Contains(out, "via 2001:db8:1::1 dev eth0") {
-		t.Errorf("an IPv6 socket bound to eth0: %s (documented: out of eth0 by main's default)", out)
+		t.Errorf("an IPv6 socket bound to eth0: %s (routing: out of eth0 by main's default)", out)
+	}
+	// ...and the guard refuses their IPv6 there, but to direct
+	// destinations, from the links' marked sockets and on the link itself.
+	for _, c := range []struct {
+		dst  string
+		args []string
+		want bool
+	}{
+		{"2001:4860::1", []string{"-6", "-I", "eth0"}, false}, // foreign, bound: refused
+		{"2001:4860::1", []string{"-6"}, false},               // unbound: into the TUN (a dummy, nothing answers)
+		{"2001:4860::1", []string{"-6", "-m", "29808"}, true}, // a link's marked socket
+		{"fd99::1", []string{"-6", "-I", "eth0"}, true},       // direct (local), bound
+		{"fd99::1", []string{"-6"}, true},                     // direct, unbound
+		{"ff02::1", []string{"-6", "-I", "eth0"}, true},       // the link itself
+	} {
+		if got := d.ping(t, c.dst, c.args...); got != c.want {
+			t.Errorf("ping %v %s: answered %v, want %v", c.args, c.dst, got, c.want)
+		}
+	}
+	// IPv4 bound sockets still leave by main's default: the kill
+	// switch's to confine (TP-048).
+	if !d.ping(t, "8.8.8.8", "-4", "-I", "eth0") {
+		t.Error("an IPv4 ping bound to eth0 wasn't answered (documented: it leaves until TP-048)")
+	}
+	if !strings.Contains(d.nftTables(t), firewall.GuardTable) {
+		t.Errorf("no guard table:\n%s", d.nftTables(t))
+	}
+	if err := e.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(d.nftTables(t), firewall.GuardTable) {
+		t.Errorf("Close left the guard:\n%s", d.nftTables(t))
+	}
+	if !d.ping(t, "2001:4860::1", "-6", "-I", "eth0") {
+		t.Error("an IPv6 ping bound to eth0 refused after Close")
+	}
+}
+
+// The guard deleted from outside (`nft flush ruleset`, a firewall
+// service's reload, `nft delete table`) is back within about a second,
+// without an Enforce and long before the Backstop.
+func TestTheGuardComesBackOnItsOwn(t *testing.T) {
+	d := newDevice(t)
+	e := d.enforcer(t)
+	want := routetable.Want{TUN: "thinkpol0", Direct: local(), IPv6: true}
+	if err := e.Enforce(context.Background(), want); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return e.Status().GuardEnforced }, "the guard")
+	for _, args := range [][]string{
+		{"delete", "table", "inet", firewall.GuardTable},
+		{"flush", "ruleset"},
+		{"delete", "chain", "inet", firewall.GuardTable, "output"},
+	} {
+		if out, err := exec.Command("ip", append([]string{"netns", "exec", d.name, "nft"}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("nft %v: %v: %s", args, err, out)
+		}
+		start := time.Now()
+		waitFor(t, func() bool { return !d.ping(t, "2001:4860::1", "-6", "-W", "1", "-I", "eth0") }, "the guard back after nft "+strings.Join(args, " "))
+		if took := time.Since(start); took > 3*time.Second {
+			t.Errorf("nft %v: the guard came back after %v", args, took)
+		}
+		if st := e.Status(); !st.GuardEnforced || st.GuardError != "" {
+			t.Errorf("nft %v: status %+v", args, st)
+		}
+	}
+	// Changed rather than deleted: an element added to the exempt set (a
+	// leak) and the reject rule replaced in place (the same rule count)
+	// are put right too.
+	nft := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command("ip", append([]string{"netns", "exec", d.name, "nft"}, args...)...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("nft %v: %v: %s", args, err, out)
+		}
+		return string(out)
+	}
+	lastRule := func() string {
+		hs := regexp.MustCompile(`# handle (\d+)`).FindAllStringSubmatch(nft("-a", "list", "chain", "inet", firewall.GuardTable, "output"), -1)
+		return hs[len(hs)-1][1]
+	}
+	for _, change := range []func() []string{
+		func() []string {
+			return []string{"add", "element", "inet", firewall.GuardTable, "exempt6", "{ 2001:4860::1 }"}
+		},
+		func() []string {
+			return []string{"replace", "rule", "inet", firewall.GuardTable, "output", "handle", lastRule(), "accept"}
+		},
+	} {
+		args := change()
+		nft(args...)
+		start := time.Now()
+		waitFor(t, func() bool { return !d.ping(t, "2001:4860::1", "-6", "-W", "1", "-I", "eth0") }, "the guard put right after nft "+strings.Join(args, " "))
+		if took := time.Since(start); took > 3*time.Second {
+			t.Errorf("nft %v: the guard put right after %v", args, took)
+		}
 	}
 }

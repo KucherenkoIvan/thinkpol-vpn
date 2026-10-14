@@ -20,6 +20,7 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/blobs"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/rules"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
@@ -35,15 +36,26 @@ var (
 	lockHost         = hostLock
 )
 
-// clearOwner removes what a dead configurator of one owner left
-// (netcfg.Clear); tests swap it.
-var clearOwner = netcfg.Clear
+// clearOwner removes what a dead configurator of one owner left; tests
+// swap it.
+var clearOwner = clearHostOwner
+
+// clearHostOwner is netcfg.Clear, but for the route table, whose leak
+// guard goes too, closed while the route table's owner lock is held and
+// left alone when it can't be taken (routetable.Clear).
+func clearHostOwner(o netcfg.Owner) error {
+	if o == netcfg.OwnerRouteTable {
+		return routetable.Clear(newHostGuard())
+	}
+	return netcfg.Clear(o)
+}
 
 // clearNetwork removes what a device's crashed run left in the host's
-// routing, for both of its owners: route-table enforcement's routes (its
-// rejects outlive the TUN) and the overlay's (on macOS they go with the
-// utun, but stay in the overlay's record), each owner's record with them.
-// The second is cleared whatever the first says.
+// routing, for both of its owners, in this order: route-table
+// enforcement's routes (its rejects outlive the TUN) with its leak guard,
+// then the overlay's (on macOS they go with the utun, but stay in the
+// overlay's record), each owner's record with them. The second is cleared
+// whatever the first says.
 func clearNetwork() error {
 	var errs []error
 	for _, o := range []netcfg.Owner{netcfg.OwnerRouteTable, netcfg.OwnerOverlay} {

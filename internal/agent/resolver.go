@@ -47,7 +47,8 @@ func (r *runner) newResolver() *dns.Server {
 		// leave around the tunnel whatever the route table holds. On
 		// macOS they are bound to the physical interface instead, which
 		// reaches only what a route on it reaches: the route table gives
-		// each upstream a route scoped to it (Engine.SetDirectUpstreams).
+		// each upstream a route scoped to it, and the leak guard exempts
+		// them (Engine.SetDirectUpstreams, the one source of both).
 		o.Control = routetable.SocketControl()
 	}
 	return dns.New(o)

@@ -395,21 +395,31 @@ func ConnectedRoutes(network netip.Prefix) []netip.Prefix {
 // tagged (and, on macOS, recorded) for the next configurator, as after a
 // crash, so a failed clear never keeps later starts out with ErrBusy.
 func Clear(owner Owner) error {
-	return clearWith(func() (Configurator, error) { return New(owner) })
+	return ClearWith(func() (Configurator, error) { return New(owner) }, nil)
 }
 
-func clearWith(open func() (Configurator, error)) error {
+// ClearWith is Clear with the owner's configurator from open, running
+// held (nil: nothing) while it holds the owner's place, before closing
+// it: what else the owner left that only its place makes safe to touch
+// (the route table's leak guard). Nothing runs when open fails, whatever
+// the reason: the place may be a live owner's. A failed held still
+// closes the configurator; the errors are joined.
+func ClearWith(open func() (Configurator, error), held func() error) error {
 	c, err := open()
 	if err != nil {
 		return err
+	}
+	var herr error
+	if held != nil {
+		herr = held()
 	}
 	if err := c.Close(); err != nil {
 		if a, ok := c.(abandoner); ok {
 			a.abandon()
 		}
-		return err
+		return errors.Join(herr, err)
 	}
-	return nil
+	return herr
 }
 
 // abandoner is a configurator whose failed Close may keep its owner's

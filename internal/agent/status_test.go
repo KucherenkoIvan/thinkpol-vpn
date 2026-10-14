@@ -323,6 +323,12 @@ func TestHealth(t *testing.T) {
 		{"overlay addresses taken around the route table", Status{Connection: Connected, DataPlane: &dataplane.Status{
 			RouteTable: dataplane.RouteTableStatus{Enforced: true, Routes: 9, OverlayAhead: 1}}},
 			Health{HealthDown, []string{ProblemOverlayRoutesAhead}}},
+		{"leak guard failing, routes in place", Status{Connection: Connected, DataPlane: &dataplane.Status{
+			RouteTable: dataplane.RouteTableStatus{Enforced: true, Routes: 9, GuardError: routetable.ErrorGuard}}},
+			Health{HealthDegraded, []string{ProblemGuard}}},
+		{"no nf_tables: connected, a loud warning", Status{Connection: Connected, DataPlane: &dataplane.Status{
+			RouteTable: dataplane.RouteTableStatus{Enforced: true, Routes: 9, GuardError: routetable.ErrorGuardUnsupported}}},
+			Health{HealthDegraded, []string{ProblemGuardUnsupported}}},
 		{"server", Status{Connection: Serving, Workers: []WorkerStatus{{Ready: true, Starts: 1}}}, Health{}},
 		{"server worker down", Status{Connection: Serving, Workers: []WorkerStatus{{Ready: true, Starts: 3}, {}},
 			PublicListeners: []PublicListenerStatus{{Rejected: 1}}},

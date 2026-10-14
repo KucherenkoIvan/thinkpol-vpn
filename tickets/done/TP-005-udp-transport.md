@@ -44,6 +44,7 @@ The contract every transport implements, and the plain `udp` baseline that the l
   - **Ordered senders:** a sender carries its creation time. An unknown sender older than the current one is dropped unless the current one has been silent for 30 s. Only the current sender's newest counter moves the reply address.
   - **Guarantee:** captures older than five minutes are dead. While a dialer is active, no replay delivers twice or moves its link.
   - **Residual:** after a listener restart, replays of the last five minutes open a link and deliver once more (WireGuard drops them). An on-path attacker can race a held datagram ahead of the original, as with WireGuard roaming.
+  - **Superseded (independent review 2026-10-15):** after a supervisor restart the WireGuard device is fresh too, so it answers a replayed initiation; the "WireGuard drops them" comfort doesn't hold. Tracked in TP-069.
   - Overhead is 72 bytes per packet.
 - **History:**
   1. AES-GCM sessions; the pre-review found nonce reuse.
@@ -116,3 +117,4 @@ Round 2 (delta review):
 - 2026-10-10 round 2 findings fixed
 - 2026-10-10 in-progress → review
 - 2026-10-10 review → done — merged into rewrite
+- 2026-10-15 docs (independent review 2026-10-15): superseded note on supervisor-restart replays; tracked in TP-069

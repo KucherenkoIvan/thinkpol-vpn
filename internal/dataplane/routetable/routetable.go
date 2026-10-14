@@ -74,6 +74,7 @@ type Want struct {
 	// reaches only what a route on that interface reaches: each gets a
 	// route scoped to the interface (one only such sockets use), unless
 	// it is on-link. Linux's sockets carry the mark instead: unused there.
+	// The guard exempts them too (GuardFor), for an OS without marks.
 	Upstreams []netip.Addr
 }
 
@@ -243,15 +244,19 @@ func PolicyRouting(w Want, s netcfg.Survey) netcfg.Config {
 // when Watch reports a change (an interface going down or up, its
 // subnets, the physical gateway, someone removing a route or rule of
 // ours), every Backstop anyway, and every RetryAfter while that fails.
-// Close removes everything.
+// Close removes everything. With a Guard, the guard follows the routes at
+// each step, with a status of its own: its failure never undoes the
+// routes or fails an Enforce.
 type Enforcer struct {
-	cfg netcfg.Configurator
-	log *slog.Logger
+	cfg   netcfg.Configurator
+	guard Guard // nil: routes only
+	log   *slog.Logger
 
 	// enforcing serializes Enforce and Close, which pause the watcher (it
 	// re-applies on its own goroutine, never at the same time): so the
-	// configurator is used by one goroutine at a time, and the watcher
-	// doesn't wade through an Apply's own tens of thousands of events.
+	// configurator and the guard are used by one goroutine at a time, and
+	// the watcher doesn't wade through an Apply's own tens of thousands of
+	// events.
 	enforcing sync.Mutex
 	closed    bool
 	stopWatch context.CancelFunc
@@ -259,23 +264,38 @@ type Enforcer struct {
 
 	// mu guards what Status and the watcher read; never held during an
 	// Apply.
-	mu      sync.Mutex
-	want    *Want // last given
-	failing bool  // the last Apply or re-Apply of want failed
+	mu   sync.Mutex
+	want *Want // last given
+	// applied is the last Want whose routes went in: what the OS holds
+	// while want's fail (an Apply is all or nothing), and what the guard
+	// must match meanwhile.
+	applied *Want
+	failing bool // the last Apply or re-Apply of want's routes failed
 	// unsupported: the OS can't enforce the table at all (a kernel without
 	// rule protocols); nothing is retried.
 	unsupported bool
-	status      Status
+	// guardFailing: the guard's last Apply failed (retried every
+	// RetryAfter); guardUnsupported: the OS can't hold it (terminal).
+	guardFailing, guardUnsupported bool
+	status                         Status
 }
 
 // Status is what an Enforcer reports: numbers and fixed texts only.
 type Status struct {
-	// Enforced says the last Want is in place: false before the first
-	// Enforce and while putting it back fails.
+	// Enforced says the last Want's routes are in place: false before the
+	// first Enforce and while putting them back fails.
 	Enforced bool
-	// Error says what failed while not Enforced: ErrorApply or
-	// ErrorReapply; empty otherwise.
+	// Error says what is wrong with the routes: ErrorApply, ErrorReapply,
+	// ErrorUnsupported or ErrorTUNDown (then Enforced is false too); empty
+	// otherwise.
 	Error string
+	// GuardEnforced says the leak guard for the last Want is in place:
+	// false without a Guard, before the first Enforce, and while applying
+	// it fails.
+	GuardEnforced bool
+	// GuardError says what is wrong with the guard: ErrorGuard or
+	// ErrorGuardUnsupported; empty otherwise (no Guard included).
+	GuardError string
 	// Routes is how many routes the last applied Want put in Table.
 	Routes int
 	// LastApply is how long the last successful Apply took.
@@ -294,7 +314,7 @@ type Status struct {
 	OverlayAhead int
 }
 
-// What Status.Error says.
+// What Status.Error and Status.GuardError say.
 const (
 	ErrorApply   = "applying the route table failed"
 	ErrorReapply = "putting the route table back failed"
@@ -304,6 +324,12 @@ const (
 	// ErrorTUNDown: the TUN is down or gone; everything but direct
 	// destinations is unreachable until it is back.
 	ErrorTUNDown = "the TUN is down: traffic is blocked until it is back"
+	// ErrorGuard: the routes may be in place, the leak guard isn't (or
+	// isn't up to date); retried every RetryAfter.
+	ErrorGuard = "applying the leak guard failed"
+	// ErrorGuardUnsupported: the OS can't hold the leak guard (Linux: no
+	// nf_tables); terminal. Interface-bound sockets aren't confined.
+	ErrorGuardUnsupported = "the leak guard is unsupported here: interface-bound sockets aren't confined"
 )
 
 const (
@@ -317,30 +343,54 @@ const (
 	RetryAfter = 5 * time.Second
 )
 
-// Open starts enforcing through c, which it owns from now on (Close closes
-// it). Nothing is in place until the first Enforce.
+// Open starts enforcing routes only through c, which it owns from now on
+// (Close closes it). Nothing is in place until the first Enforce.
 func Open(c netcfg.Configurator, log *slog.Logger) *Enforcer {
+	return OpenWithGuard(c, nil, log)
+}
+
+// OpenWithGuard is Open with g enforced along with the routes (nil:
+// none); it owns g too.
+func OpenWithGuard(c netcfg.Configurator, g Guard, log *slog.Logger) *Enforcer {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	e := &Enforcer{cfg: c, log: log}
+	e := &Enforcer{cfg: c, guard: g, log: log}
 	e.startWatching(false)
 	return e
 }
 
 // New opens an Enforcer on this host's routing (the calling thread's
-// network namespace). errors.ErrUnsupported where netcfg has no adapter.
-func New(log *slog.Logger) (*Enforcer, error) {
+// network namespace), with g (nil: none). errors.ErrUnsupported where
+// netcfg has no adapter.
+func New(g Guard, log *slog.Logger) (*Enforcer, error) {
 	c, err := netcfg.New(netcfg.OwnerRouteTable)
 	if err != nil {
 		return nil, err
 	}
-	return Open(c, log), nil
+	return OpenWithGuard(c, g, log), nil
 }
 
 // Clear removes what an Enforcer of this host left (a crash), with
-// nothing put in place: for a device that starts without connecting.
-func Clear() error { return netcfg.Clear(netcfg.OwnerRouteTable) }
+// nothing put in place: for a device that starts without connecting. g
+// (nil: none) is a fresh Guard of the host, whose Close removes the
+// crashed run's guard, only while this process holds the route table's
+// owner lock: whatever keeps netcfg from taking it (another live run,
+// or any failure on the way) may mean the guard there is live, so it is
+// left alone and the error returned. A Close of the routes that fails
+// still lets go of the lock (netcfg.Clear).
+func Clear(g Guard) error {
+	return clearWith(func() (netcfg.Configurator, error) { return netcfg.New(netcfg.OwnerRouteTable) }, g)
+}
+
+// clearWith is Clear with the owner's configurator from open.
+func clearWith(open func() (netcfg.Configurator, error), g Guard) error {
+	var held func() error
+	if g != nil {
+		held = g.Close
+	}
+	return netcfg.ClearWith(open, held)
+}
 
 // startWatching starts the watcher; with check it re-applies first, for
 // what changed while it wasn't watching.
@@ -350,6 +400,7 @@ func (e *Enforcer) startWatching(check bool) {
 	e.stopWatch, e.watching = cancel, done
 	go func() {
 		defer close(done)
+		defer cancel() // a watcher that stops on its own lets go of its subscriptions
 		e.watch(ctx, check)
 	}()
 }
@@ -360,8 +411,11 @@ func (e *Enforcer) pauseWatching() {
 	<-e.watching
 }
 
-// Enforce puts w in place, all or nothing: on failure what was in place
-// stays, and the watcher tries w again every RetryAfter.
+// Enforce puts w's routes in place, all or nothing: on failure what was
+// in place stays, Enforce fails, and the watcher tries w again every
+// RetryAfter. The guard, if any, follows routes that went in; its own
+// failure doesn't fail Enforce (Status.GuardError says it, and the
+// watcher retries it).
 func (e *Enforcer) Enforce(ctx context.Context, w Want) error {
 	if w.TUN == "" {
 		return errors.New("routetable: no TUN")
@@ -372,7 +426,7 @@ func (e *Enforcer) Enforce(ctx context.Context, w Want) error {
 		return netcfg.ErrClosed
 	}
 	e.mu.Lock()
-	same := e.want != nil && e.want.Equal(w) && !e.failing
+	same := e.want != nil && e.want.Equal(w) && !e.failing && !e.guardFailing
 	unsupported := e.unsupported
 	e.mu.Unlock()
 	if unsupported {
@@ -386,8 +440,10 @@ func (e *Enforcer) Enforce(ctx context.Context, w Want) error {
 	return e.apply(ctx, w, false)
 }
 
-// apply puts w in place against the OS's routing as it is now; the
-// watcher is paused or apply runs on it.
+// apply puts w in place against the OS's routing as it is now, then the
+// guard for what the routes hold now: w's if they went in, else the last
+// applied Want's, which an Apply that failed left in place. The watcher
+// is paused or apply runs on it. Only the routes' failure is returned.
 func (e *Enforcer) apply(ctx context.Context, w Want, again bool) error {
 	start := time.Now()
 	s, err := e.cfg.Survey(ctx)
@@ -397,9 +453,22 @@ func (e *Enforcer) apply(ctx context.Context, w Want, again bool) error {
 		err = e.cfg.Apply(ctx, cfg)
 	}
 	took := time.Since(start)
+	if err == nil {
+		e.applyGuard(ctx, w)
+	} else {
+		e.mu.Lock()
+		held := e.applied
+		e.mu.Unlock()
+		if held != nil {
+			e.applyGuard(ctx, *held)
+		}
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.want = &w
+	if err == nil {
+		e.applied = &w
+	}
 	e.failing = err != nil
 	e.status.Enforced = err == nil
 	if again {
@@ -428,6 +497,37 @@ func (e *Enforcer) apply(ctx context.Context, w Want, again bool) error {
 	return nil
 }
 
+// applyGuard puts the guard for w in place and says how that went in the
+// status; nothing once the OS turned out unable to hold it.
+func (e *Enforcer) applyGuard(ctx context.Context, w Want) {
+	if e.guard == nil {
+		return
+	}
+	e.mu.Lock()
+	unsupported := e.guardUnsupported
+	e.mu.Unlock()
+	if unsupported {
+		return
+	}
+	err := e.guard.Apply(ctx, GuardFor(w))
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	switch {
+	case err == nil:
+		e.guardFailing, e.status.GuardEnforced, e.status.GuardError = false, true, ""
+	case errors.Is(err, ErrGuardUnsupported):
+		e.guardFailing, e.guardUnsupported = false, true
+		e.status.GuardEnforced, e.status.GuardError = false, ErrorGuardUnsupported
+		e.log.Warn("route table: the OS can't hold the leak guard; sockets bound to an interface aren't confined", "err", err)
+	default:
+		if !e.guardFailing {
+			e.log.Warn("route table: applying the leak guard failed, retrying", "in", RetryAfter, "err", err)
+		}
+		e.guardFailing = true
+		e.status.GuardEnforced, e.status.GuardError = false, ErrorGuard
+	}
+}
+
 // Status reports the enforcer's state; it never waits for an Apply.
 func (e *Enforcer) Status() Status {
 	e.mu.Lock()
@@ -435,7 +535,9 @@ func (e *Enforcer) Status() Status {
 	return e.status
 }
 
-// Close stops watching and removes every route and rule in place.
+// Close stops watching and removes everything in place: the guard first,
+// then the routes and rules, whose configurator lets go of the owner lock
+// last. Close may be called again after a failure.
 func (e *Enforcer) Close() error {
 	e.enforcing.Lock()
 	defer e.enforcing.Unlock()
@@ -444,16 +546,21 @@ func (e *Enforcer) Close() error {
 		e.pauseWatching()
 	}
 	e.mu.Lock()
-	e.want, e.status = nil, Status{}
+	e.want, e.applied, e.status = nil, nil, Status{}
 	e.mu.Unlock()
-	return e.cfg.Close()
+	var err error
+	if e.guard != nil {
+		err = e.guard.Close()
+	}
+	return errors.Join(err, e.cfg.Close())
 }
 
 // watch re-applies the last Want after each burst of changes Watch
-// reports, every Backstop, and every RetryAfter while that fails.
+// reports, every Backstop, and every RetryAfter while that fails; and the
+// guard alone after each burst of the guard's own Watch.
 func (e *Enforcer) watch(ctx context.Context, check bool) {
-	var ch <-chan struct{}
-	var rewatch <-chan time.Time
+	var ch, gch <-chan struct{}
+	var rewatch, regwatch <-chan time.Time
 	subscribe := func() {
 		var err error
 		ch, err = e.cfg.Watch(ctx)
@@ -465,7 +572,26 @@ func (e *Enforcer) watch(ctx context.Context, check bool) {
 			ch, rewatch = nil, time.After(RetryAfter)
 		}
 	}
+	subscribeGuard := func() {
+		e.mu.Lock()
+		unsupported := e.guardUnsupported
+		e.mu.Unlock()
+		if e.guard == nil || unsupported {
+			gch, regwatch = nil, nil
+			return
+		}
+		var err error
+		gch, err = e.guard.Watch(ctx)
+		switch {
+		case errors.Is(err, errors.ErrUnsupported), errors.Is(err, ErrGuardUnsupported):
+			gch, regwatch = nil, nil // the backstop alone
+		case err != nil:
+			e.log.Warn("route table: watching the leak guard failed, retrying", "in", RetryAfter, "err", err)
+			gch, regwatch = nil, time.After(RetryAfter)
+		}
+	}
 	subscribe()
+	subscribeGuard()
 	if check {
 		// Subscribed first, so nothing falls between the check and the
 		// events.
@@ -477,7 +603,7 @@ func (e *Enforcer) watch(ctx context.Context, check bool) {
 	for {
 		wait := Backstop
 		e.mu.Lock()
-		if e.failing {
+		if e.failing || e.guardFailing {
 			wait = RetryAfter
 		}
 		unsupported := e.unsupported
@@ -493,6 +619,21 @@ func (e *Enforcer) watch(ctx context.Context, check bool) {
 		case <-rewatch:
 			timer.Stop()
 			subscribe()
+			continue
+		case <-regwatch:
+			timer.Stop()
+			subscribeGuard()
+			e.reapplyGuard(ctx) // whatever happened meanwhile
+			continue
+		case _, ok := <-gch:
+			timer.Stop()
+			if !ok {
+				// Events may have been lost: subscribe again, then check.
+				subscribeGuard()
+			} else if !e.settle(ctx, gch) {
+				return
+			}
+			e.reapplyGuard(ctx)
 			continue
 		case <-timer.C:
 		case _, ok := <-ch:
@@ -537,4 +678,21 @@ func (e *Enforcer) reapply(ctx context.Context) {
 	if err := e.apply(ctx, *w, true); err != nil && ctx.Err() == nil {
 		e.log.Warn("route table: putting it back failed, retrying", "in", RetryAfter, "err", path.RedactError(err))
 	}
+}
+
+// reapplyGuard puts the guard back alone, for the routes in place (the
+// last applied Want's), whether or not the routes' latest Apply failed:
+// a failed Apply leaves the previous routes in place, and they need
+// their guard.
+func (e *Enforcer) reapplyGuard(ctx context.Context) {
+	e.mu.Lock()
+	w := e.applied
+	e.mu.Unlock()
+	if w == nil || ctx.Err() != nil {
+		return // no routes in place yet: nothing to guard
+	}
+	e.applyGuard(ctx, *w)
+	e.mu.Lock()
+	e.status.Reapplies++
+	e.mu.Unlock()
 }

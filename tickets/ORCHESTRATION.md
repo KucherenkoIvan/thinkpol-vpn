@@ -64,3 +64,14 @@ Made by the project owner and the orchestrator. These are rules for running this
 - **Host safety.** Never change the macOS host's network stack (routes, interfaces, DNS, pf, sysctls). Linux networking code runs only inside lab containers.
 - **`needs_human`.** Tickets that need the author carry `needs_human: decision | macos | windows | person` (see [README.md](README.md#ticket-files)). For `decision`, agents prepare a comparison and the author picks. For `macos`, `windows` and `person`, agents build and test everything possible in the lab, then hand the author a short checklist.
 - **WIP limit raised to 4 (2026-10-10).** Lab runs are isolated per worktree, so the lab is no longer the bottleneck; tickets in `review/` or `has-errors/` don't count.
+
+## Decisions (2026-10-15)
+
+Made by the project owner following an independent review.
+
+- For `needs_human: macos` or `windows` tickets, the real-device run happens after review round 1, not after the lab rounds; the device-test kit is built alongside the implementation.
+- At most 3 review → fix rounds per ticket; beyond that, split the rest into a new ticket.
+- Decisions go into DESIGN.md; tickets carry pointers, not accreted design.
+- Security-sensitive code written by one model family gets a second-opinion review from a different family.
+- Merge order for the in-flight M1 branches: tp-021 before tp-019; tp-019 absorbs the conflict.
+- Critical path after M1: agent-layer refactor (TP-075), then service install (TP-046), the macOS/Linux kill switch (TP-048), the Reality evaluation (TP-064), and then tls (TP-028) and the censor-lab modules. Daily use starts after M2.

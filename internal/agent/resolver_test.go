@@ -243,7 +243,7 @@ func TestTheDirectUpstreamsReachTheRouteTable(t *testing.T) {
 			return
 		}
 		dp.RouteTable = true
-		dp.newRoutes = func(*slog.Logger) (dataplane.RouteTable, error) { return table, nil }
+		dp.newRoutes = func(*slog.Logger, routetable.Guard) (dataplane.RouteTable, error) { return table, nil }
 		dp.clearNetwork = func() error { return nil }
 		dp.systemDNS = sys.Set
 		dp.systemUpstreams = func([]netip.Addr) ([]netip.Addr, error) {

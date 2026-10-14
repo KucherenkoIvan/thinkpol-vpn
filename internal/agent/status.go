@@ -7,6 +7,7 @@ import (
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/supervisor"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
 
@@ -265,6 +266,14 @@ const (
 	// outrank take overlay addresses (a hostile network's host routes,
 	// macOS): those peers' traffic leaves around the tunnel.
 	ProblemOverlayRoutesAhead = "overlay_routes_ahead"
+	// ProblemGuard: the leak guard isn't in place now (applying it
+	// failed; retried): IPv6 from interface-bound sockets may go around
+	// the tunnel.
+	ProblemGuard = "ipv6_guard_not_enforced"
+	// ProblemGuardUnsupported: the OS can't hold the leak guard (Linux:
+	// no nf_tables): the device connects, but IPv6 from interface-bound
+	// sockets isn't confined.
+	ProblemGuardUnsupported = "ipv6_guard_unsupported"
 	// ProblemDNSUnprotected: the OS may resolve names outside the node's
 	// resolver, so names may leave outside the tunnel.
 	ProblemDNSUnprotected = "dns_not_protected"
@@ -340,6 +349,13 @@ func (s Status) Health() Health {
 		}
 		if rt := dp.RouteTable; rt.Error == "" && rt.OverlayAhead > 0 {
 			add(HealthDown, ProblemOverlayRoutesAhead)
+		}
+		switch dp.RouteTable.GuardError {
+		case "":
+		case routetable.ErrorGuardUnsupported:
+			add(HealthDegraded, ProblemGuardUnsupported)
+		default:
+			add(HealthDegraded, ProblemGuard)
 		}
 		if s.DNSUnprotected {
 			add(HealthDegraded, ProblemDNSUnprotected)
