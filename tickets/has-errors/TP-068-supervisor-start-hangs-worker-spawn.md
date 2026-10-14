@@ -38,6 +38,11 @@ Round 2 (2026-10-15).
 - [x] 3. `TestWorkerSpawnFailureSurfaces` missing `t.Cleanup(s.Close)` (lab hygiene).
 - [x] 4. Log has no lab run of `TestWorkerSpawnFailureSurfaces`.
 
+Round 3 (2026-10-15).
+- [ ] 1. `TestWorkerSpawnFailureSurfaces` does not exercise `SetSpaces` removal before `Close`.
+- [ ] 2. Goal claims health shows the spawn error; health only reports `worker_down` (fix Goal text).
+- [ ] 3. No unit test for `LastExit` in `report.status()` (`internal/agent/status.go:202`).
+
 ## Log
 - 2026-10-15 created in backlog
 - 2026-10-15 docs: board fix-ups (log order, refs, parked notes)
@@ -49,3 +54,4 @@ Round 2 (2026-10-15).
 - 2026-10-15 lab-gotest PKG=./internal/agent/supervisor/... LAB_P=1 GOFLAGS=-p=4 — PASS (TestWorkerSpawnFailureSurfaces included)
 - 2026-10-15 lab-gotest PKG=./internal/agent/... LAB_P=1 GOFLAGS=-p=4 — PASS (6 packages)
 - 2026-10-15 in-progress → review — round 2 findings fixed; make lint and make test pass
+- 2026-10-15 review → has-errors — round 3 review findings 1–3 (see Review findings)
