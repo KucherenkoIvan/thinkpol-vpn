@@ -65,10 +65,11 @@ type Counters struct {
 	TooLarge   uint64 // longer than MaxPacket, or than the WireGuard device's buffer
 	QueueFull  uint64 // the egress's queue was full
 	ReadErrors uint64 // the TUN failed a read
+	Reflected  uint64 // read from the TUN for a Local address and written back to it (Table.ReflectLocal)
 }
 
 type counters struct {
-	routed, delivered, forwarded, notLocal, noRoute, blocked, direct, malformed, tooLarge, queueFull, readErrors atomic.Uint64
+	routed, delivered, forwarded, notLocal, noRoute, blocked, direct, malformed, tooLarge, queueFull, readErrors, reflected atomic.Uint64
 }
 
 // New starts a router reading t, with an empty table: every packet is
@@ -139,6 +140,7 @@ func (r *Router) Counters() Counters {
 		TooLarge:   r.c.tooLarge.Load(),
 		QueueFull:  r.c.queueFull.Load(),
 		ReadErrors: r.c.readErrors.Load(),
+		Reflected:  r.c.reflected.Load(),
 	}
 }
 
@@ -178,7 +180,7 @@ func (r *Router) read() {
 	for {
 		n, err := r.tun.Read(bufs, sizes, readOffset)
 		for i := range n {
-			r.route(bufs[i][readOffset : readOffset+sizes[i]])
+			r.route(bufs[i][:readOffset+sizes[i]])
 		}
 		if err == nil {
 			failures = 0
@@ -206,13 +208,25 @@ func (r *Router) read() {
 	}
 }
 
-func (r *Router) route(p []byte) {
+// route classifies the packet at buf[readOffset:]; the headroom in front
+// of it lets a reflected packet go back to the TUN as it is.
+func (r *Router) route(buf []byte) {
+	p := buf[readOffset:]
 	dst, ok := destination(p)
 	if !ok {
 		r.c.malformed.Add(1)
 		return
 	}
-	e, ok := r.table.Load().classify(dst)
+	c := r.table.Load()
+	if c.reflect && c.local[dst] {
+		// One packet at a time: a TUN with offloads may coalesce a batch
+		// in place, and these are rare (the node talking to itself).
+		if _, err := r.tun.Write([][]byte{buf}, readOffset); err == nil {
+			r.c.reflected.Add(1)
+		}
+		return
+	}
+	e, ok := c.classify(dst)
 	switch {
 	case !ok:
 		r.c.noRoute.Add(1)

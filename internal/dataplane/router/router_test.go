@@ -532,3 +532,61 @@ func TestAClosedEgressGetsNothing(t *testing.T) {
 		t.Fatalf("counters %+v", c)
 	}
 }
+
+// What the node sends to its own overlay address comes out of a macOS utun
+// (it routes the point-to-point interface's own address into it): with
+// ReflectLocal it goes back into the TUN as it was, for the OS to deliver
+// to itself (a query to the node's own resolver, its answer); without, an
+// overlay address no peer has is dropped as before.
+func TestPacketsForTheNodeItselfAreReflected(t *testing.T) {
+	for _, reflect := range []bool{true, false} {
+		r, ch := newRouter(t)
+		overlay := egress(t, r, "overlay")
+		err := r.SetTable(router.Table{
+			Overlay:      []netip.Prefix{prefix("100.64.0.0/16"), prefix("fd00:1::/48")},
+			Peers:        []router.Route{{Prefix: prefix("100.64.0.2/32"), Egress: overlay}},
+			Rules:        []router.Route{{Prefix: prefix("0.0.0.0/0"), Egress: overlay}},
+			Local:        []netip.Addr{addr("100.64.0.1"), addr("fd00:1::1")},
+			ReflectLocal: reflect,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		toOverlay := reads(overlay)
+		query := packettest.UDPDatagram(netip.MustParseAddrPort("100.64.0.1:53000"), netip.MustParseAddrPort("100.64.0.1:53"), []byte("query"))
+		for _, pkt := range [][]byte{query, ping("fd00:1::1", "fd00:1::1")} {
+			ch.Outbound <- pkt
+			if !reflect {
+				continue
+			}
+			select {
+			case got := <-ch.Inbound:
+				if !bytes.Equal(got, pkt) {
+					t.Fatalf("reflected %x, want %x", got, pkt)
+				}
+			case <-time.After(wait):
+				t.Fatal("a packet for the node itself never came back to the TUN")
+			}
+		}
+		marker := ping("100.64.0.1", "100.64.0.2")
+		ch.Outbound <- marker // everything before it was handled
+		if got := <-toOverlay; !bytes.Equal(got, marker) {
+			t.Fatalf("reflect=%v: the egress got %x", reflect, got)
+		}
+		select {
+		case p := <-ch.Inbound:
+			t.Fatalf("reflect=%v: the TUN got an extra %x", reflect, p)
+		default:
+		}
+		want := router.Counters{Routed: 1, Reflected: 2}
+		if !reflect {
+			want = router.Counters{Routed: 1, NoRoute: 2}
+		}
+		// Routed counts once the queue took it, maybe just after the read.
+		for deadline := time.Now().Add(wait); r.Counters() != want; time.Sleep(time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatalf("reflect=%v: counters %+v, want %+v", reflect, r.Counters(), want)
+			}
+		}
+	}
+}

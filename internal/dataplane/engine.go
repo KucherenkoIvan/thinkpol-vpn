@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/netip"
+	"runtime"
 	"slices"
 	"sync"
 	"time"
@@ -484,9 +485,13 @@ func (e *Engine) addPeers(want map[string][]devicePeer, paths []path.Peer, mtu i
 	return nil
 }
 
+// reflectLocal: macOS routes the utun's own address into the utun (see
+// router.Table.ReflectLocal).
+const reflectLocal = runtime.GOOS == "darwin"
+
 // table is the router table for what runs now.
 func (e *Engine) table() router.Table {
-	t := router.Table{Overlay: e.networks, Local: e.local}
+	t := router.Table{Overlay: e.networks, Local: e.local, ReflectLocal: reflectLocal}
 	egresses := make(map[string]*router.Egress, len(e.devices))
 	for name, d := range e.devices {
 		egresses[name] = d.egress

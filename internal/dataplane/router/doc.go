@@ -13,6 +13,11 @@
 // egress blocks, and a Direct route drops what route tables should have
 // kept out of the TUN.
 //
+// On macOS a packet for the node's own overlay address comes out of the
+// utun (the OS routes the point-to-point interface's own address into it):
+// the router writes it back into the TUN, so the OS delivers it to itself
+// (Table.ReflectLocal), the way Tailscale does on macOS.
+//
 // The router owns the TUN: closing it closes the TUN. It never looks at
 // what a WireGuard device writes back: WireGuard already dropped anything
 // whose source its peer isn't allowed.
