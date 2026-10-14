@@ -230,10 +230,12 @@ func (f *rootForwarding) enable(fam int) error {
 
 // restoreFamily puts back what enable changed: the switch, then what writing
 // it reset (which the switch's own write resets again), then accept_ra;
-// each only if it still holds what the supervisor left there.
+// each only if it still holds what the supervisor left there. A switch that
+// can't be turned off stays the supervisor's, with all it changed: still to
+// be confined (applyIsolation) and recorded for the next try or successor;
+// and IPv6's accept_ra stays 2 while its forwarding is on.
 func (f *rootForwarding) restoreFamily(fam int) error {
 	c := f.fams[fam]
-	f.fams[fam] = nil
 	if c == nil {
 		return nil
 	}
@@ -244,7 +246,9 @@ func (f *rootForwarding) restoreFamily(fam int) error {
 	side := slices.DeleteFunc(slices.Clone(c.Side), func(s sysctlChange) bool { return !held(s) })
 	var errs []error
 	if held(c.Main) {
-		errs = append(errs, writeSysctl(c.Main.Key, c.Main.Original))
+		if err := writeSysctl(c.Main.Key, c.Main.Original); err != nil {
+			return err
+		}
 		for _, s := range side {
 			errs = append(errs, writeSysctl(s.Key, s.Original))
 		}
@@ -254,6 +258,7 @@ func (f *rootForwarding) restoreFamily(fam int) error {
 			errs = append(errs, writeSysctl(s.Key, s.Original))
 		}
 	}
+	f.fams[fam] = nil
 	return errors.Join(errs...)
 }
 
