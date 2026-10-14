@@ -41,6 +41,30 @@ func TestRedactedErrorsQuoteNoAddress(t *testing.T) {
 	}
 }
 
+func TestRedactLeavesNoAddressDigits(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want string
+	}{
+		{"peer ::ffff:192.0.2.1 timed out", "peer <addr> timed out"},
+		{"dial [::ffff:192.0.2.1]:80: refused", "dial <addr>: refused"},
+		{"send on fe80::1%en0 failed", "send on <addr> failed"},
+		{"connect [2001:db8::1]:443: timeout", "connect <addr>: timeout"},
+		{"route 192.0.2.1:443 unreachable", "route <addr> unreachable"},
+		{"no path to 2001:db8::1", "no path to <addr>"},
+	} {
+		got := redact(errors.New(tc.in))
+		if got != tc.want {
+			t.Errorf("redact(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+		for _, digit := range []string{"192", "0.2", "2001", "db8", "fe80", "443", "80"} {
+			if strings.Contains(got, digit) {
+				t.Errorf("%q still quotes %s", got, digit)
+			}
+		}
+	}
+}
+
 // fakeLink is a transport link whose far end can move.
 type fakeLink struct {
 	mu     sync.Mutex

@@ -315,12 +315,24 @@ func portOf(a net.Addr) int {
 
 // addrPattern matches what an error may quote of a network address: IPv4
 // with or without a port, bracketed IPv6 with a port, bare IPv6 (with a
-// zone). It errs on matching too much (a clock reading), never too little.
-var addrPattern = regexp.MustCompile(`\[[0-9A-Za-z:.%_-]+\](:\d+)?|\b\d{1,3}(\.\d{1,3}){3}(:\d+)?\b|[0-9A-Fa-f]{0,4}(:[0-9A-Fa-f]{0,4}){2,7}(%[0-9A-Za-z_-]+)?`)
+// zone), IPv4-mapped IPv6. It errs on matching too much (a clock reading),
+// never too little.
+var addrPattern = regexp.MustCompile(`\[[0-9A-Za-z:.%_-]+\](:\d+)?|` +
+	`(?i)::ffff:\d{1,3}(?:\.\d{1,3}){3}(?:%[0-9A-Za-z_-]+)?|` +
+	`\b\d{1,3}(?:\.\d{1,3}){3}(:\d+)?\b|` +
+	`[0-9A-Fa-f]{0,4}(?::[0-9A-Fa-f]{0,4}){2,7}(?:%[0-9A-Za-z_-]+)?`)
 
 // redact is err's text without network addresses (a *net.OpError quotes
 // both ends): logs may leave the device.
 func redact(err error) string { return addrPattern.ReplaceAllString(err.Error(), "<addr>") }
+
+// RedactError is err.Error() with network addresses replaced by <addr>.
+func RedactError(err error) string {
+	if err == nil {
+		return ""
+	}
+	return redact(err)
+}
 
 // send queues a packet frame and owns b from then on. A closed link or a
 // full queue drops it.
