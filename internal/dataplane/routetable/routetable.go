@@ -235,10 +235,12 @@ func Config(w Want, s netcfg.Survey) netcfg.Config {
 // when Watch reports a change (an interface going down or up, its
 // subnets, the physical gateway, someone removing a route or rule of
 // ours), every Backstop anyway, and every RetryAfter while that fails.
-// Close removes everything.
+// Close removes everything. With a Guard, the firewall's part follows the
+// routes at each step.
 type Enforcer struct {
-	cfg netcfg.Configurator
-	log *slog.Logger
+	cfg   netcfg.Configurator
+	guard Guard // nil: routes only
+	log   *slog.Logger
 
 	// enforcing serializes Enforce and Close, which pause the watcher (it
 	// re-applies on its own goroutine, never at the same time): so the
@@ -287,6 +289,9 @@ const (
 	// ErrorUnsupported: the kernel can't hold the table (rules need
 	// Linux 4.17 or later); terminal.
 	ErrorUnsupported = "the route table needs Linux 4.17 or later"
+	// ErrorGuard: the routes are in place, the leak guard isn't (or
+	// isn't up to date).
+	ErrorGuard = "applying the IPv6 leak guard failed"
 	// ErrorTUNDown: the TUN is down or gone; everything but direct
 	// destinations is unreachable until it is back.
 	ErrorTUNDown = "the TUN is down: traffic is blocked until it is back"
@@ -303,35 +308,43 @@ const (
 	RetryAfter = 5 * time.Second
 )
 
-// Open starts enforcing through c, which it owns from now on (Close closes
-// it). Nothing is in place until the first Enforce.
+// Open starts enforcing routes only through c, which it owns from now on
+// (Close closes it). Nothing is in place until the first Enforce.
 func Open(c netcfg.Configurator, log *slog.Logger) *Enforcer {
+	return OpenWithGuard(c, nil, log)
+}
+
+// OpenWithGuard is Open with g enforced along with the routes; it owns g
+// too.
+func OpenWithGuard(c netcfg.Configurator, g Guard, log *slog.Logger) *Enforcer {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	e := &Enforcer{cfg: c, log: log}
+	e := &Enforcer{cfg: c, guard: g, log: log}
 	e.startWatching(false)
 	return e
 }
 
 // New opens an Enforcer on this host's routing (the calling thread's
-// network namespace). errors.ErrUnsupported where netcfg has no adapter.
+// network namespace), with the OS's leak guard where there is one.
+// errors.ErrUnsupported where netcfg has no adapter.
 func New(log *slog.Logger) (*Enforcer, error) {
 	c, err := netcfg.New(netcfg.OwnerRouteTable)
 	if err != nil {
 		return nil, err
 	}
-	return Open(c, log), nil
+	return OpenWithGuard(c, newGuard(), log), nil
 }
 
-// Clear removes what an Enforcer of this host left (a crash), with
-// nothing put in place: for a device that starts without connecting.
+// Clear removes what an Enforcer of this host left (a crash), the guard
+// included, with nothing put in place: for a device that starts without
+// connecting.
 func Clear() error {
 	c, err := netcfg.New(netcfg.OwnerRouteTable)
 	if err != nil {
 		return err
 	}
-	return c.Close()
+	return errors.Join(c.Close(), clearGuard())
 }
 
 // startWatching starts the watcher; with check it re-applies first, for
@@ -388,6 +401,11 @@ func (e *Enforcer) apply(ctx context.Context, w Want, again bool) error {
 		cfg = Config(w, s)
 		err = e.cfg.Apply(ctx, cfg)
 	}
+	guardFailed := false
+	if err == nil && e.guard != nil {
+		err = e.guard.Apply(ctx, GuardFor(w))
+		guardFailed = err != nil
+	}
 	took := time.Since(start)
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -402,7 +420,10 @@ func (e *Enforcer) apply(ctx context.Context, w Want, again bool) error {
 		if again {
 			e.status.Error = ErrorReapply
 		}
-		if errors.Is(err, errors.ErrUnsupported) {
+		if guardFailed {
+			e.status.Error = ErrorGuard
+		}
+		if !guardFailed && errors.Is(err, errors.ErrUnsupported) {
 			e.unsupported, e.status.Error = true, ErrorUnsupported
 		}
 		return fmt.Errorf("routetable: %w", err)
@@ -443,7 +464,11 @@ func (e *Enforcer) Close() error {
 	e.mu.Lock()
 	e.want, e.status = nil, Status{}
 	e.mu.Unlock()
-	return e.cfg.Close()
+	err := e.cfg.Close()
+	if e.guard != nil {
+		err = errors.Join(err, e.guard.Close())
+	}
+	return err
 }
 
 // watch re-applies the last Want after each burst of changes Watch

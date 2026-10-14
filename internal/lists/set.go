@@ -220,6 +220,25 @@ func (s *Set) Prefixes() []netip.Prefix {
 	return out
 }
 
+// Range is an inclusive address range of one family.
+type Range struct{ First, Last netip.Addr }
+
+// Ranges returns the set as its ranges, IPv4 first, each family in address
+// order: disjoint and never adjacent, so fewer than its prefixes (what an
+// interval set in a firewall wants).
+func (s *Set) Ranges() []Range {
+	if s == nil {
+		return nil
+	}
+	var out []Range
+	for f := range s.spans {
+		for _, sp := range s.spans[f] {
+			out = append(out, Range{toAddr(family(f), sp.first), toAddr(family(f), sp.last)})
+		}
+	}
+	return out
+}
+
 // Minus returns the addresses of s that are not in t.
 func (s *Set) Minus(t *Set) *Set {
 	out := &Set{}
