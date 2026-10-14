@@ -376,13 +376,32 @@ func ConnectedRoutes(network netip.Prefix) []netip.Prefix {
 // the owner's record, routes gone with their interface included.
 // errors.ErrUnsupported where this OS has no adapter for owner; ErrBusy
 // while a configurator of owner is alive.
+//
+// A Close that fails still frees the owner's place: what it left stays
+// tagged (and, on macOS, recorded) for the next configurator, as after a
+// crash, so a failed clear never keeps later starts out with ErrBusy.
 func Clear(owner Owner) error {
-	c, err := New(owner)
+	return clearWith(func() (Configurator, error) { return New(owner) })
+}
+
+func clearWith(open func() (Configurator, error)) error {
+	c, err := open()
 	if err != nil {
 		return err
 	}
-	return c.Close()
+	if err := c.Close(); err != nil {
+		if a, ok := c.(abandoner); ok {
+			a.abandon()
+		}
+		return err
+	}
+	return nil
 }
+
+// abandoner is a configurator whose failed Close may keep its owner's
+// place (Linux: a Close that fails is retried by calling it again); abandon
+// frees the place, leaving what it holds to the next configurator.
+type abandoner interface{ abandon() }
 
 // Survey is the OS's own routing, as route-table enforcement needs it.
 type Survey struct {

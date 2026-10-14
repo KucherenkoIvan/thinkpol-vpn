@@ -940,6 +940,16 @@ func TestOneConfiguratorPerOwnerAndNamespace(t *testing.T) {
 	n.configurator(t) // the place is free again
 }
 
+// A clear whose Close fails frees the owner's place all the same: later
+// starts aren't refused with ErrBusy until the process restarts.
+func TestAFailedClearFreesTheNamespace(t *testing.T) {
+	n := newTestNS(t)
+	if err := netcfg.ClearFailingClose(n.path, netcfg.OwnerOverlay); err == nil {
+		t.Fatal("the failed Close went unreported")
+	}
+	n.configurator(t) // the place is free
+}
+
 func TestOwnersNeverTouchEachOther(t *testing.T) {
 	n := newTestNS(t)
 	n.dummy(t, "ovl0")

@@ -729,6 +729,22 @@ func (c *linuxConfigurator) Close() error {
 	return unix.Close(c.lock) // frees the owner's place in the namespace
 }
 
+// abandon frees the owner's place without cleaning up: the routes and
+// rules left carry the owner's protocol, so the next configurator takes
+// them over, as after a crash.
+func (c *linuxConfigurator) abandon() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.h == nil {
+		return
+	}
+	c.closed = true
+	c.h.Close()
+	c.h = nil
+	_ = c.ns.Close()
+	_ = unix.Close(c.lock)
+}
+
 // listRoutes retries dumps the kernel interrupted because the table changed
 // underneath them.
 func (c *linuxConfigurator) listRoutes(fam int, filter *netlink.Route, mask uint64) ([]netlink.Route, error) {
