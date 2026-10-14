@@ -21,12 +21,14 @@ When a worker process fails to start, `thinkpol up` returns an error instead of 
 - Other supervisor lifecycle bugs; sandbox policy changes.
 
 ## Acceptance
-- [ ] a worker spawn failure (e.g. user namespaces refused) surfaces as an error from server start, with a test that would have hung before the fix
+- [x] a worker spawn failure (e.g. user namespaces refused) surfaces as an error from server start, with a test that would have hung before the fix — `TestWorkerSpawnFailureSurfaces` (lab)
 
 ## Notes
 - **Independent review (2026-10-15):** `supervisor_linux.go:1094-1110` — on `cmd.Start` failure the goroutine returns without closing `p.gone`; the caller blocks on `<-p.gone` forever. Failure scenario: a VPS whose kernel refuses user namespaces, or a Docker host without the `pivot_root` seccomp rule TP-019 found, hangs `thinkpol up` instead of reporting an error.
+- Close `p.gone` on `cmd.Start` failure so `start()` returns and `run()` records `start: …` in `LastExit`; `TestWorkerSpawnFailureSurfaces` uses a missing worker binary.
 
 ## Log
 - 2026-10-15 created in backlog
 - 2026-10-15 docs: board fix-ups (log order, refs, parked notes)
 - 2026-10-15 backlog → in-progress — owner: agent-composer, branch: tp-068-supervisor-spawn-hang
+- 2026-10-15 in-progress → review — close p.gone on spawn failure; make lint and make test pass
