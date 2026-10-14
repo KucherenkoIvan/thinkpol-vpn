@@ -8,7 +8,7 @@ size: L
 depends_on: [TP-008, TP-018]
 refs: [D1]
 needs_human: macos
-owner: "cursor-opus-tp019-r4"
+owner: "claude-opus-tp019-r5"
 branch: "tp-019-macos-data-plane"
 ---
 
@@ -145,3 +145,4 @@ Round 2 resolution: R2.1 `netcfg.ConnectedRoutes` (utun networks as halves) + th
 - 2026-10-13 has-errors → in-progress — owner: cursor-opus-tp019-r4, fixing round 4
 - 2026-10-13 docs: DESIGN.md macOS state directory `/private/var/lib/thinkpol` and local API `/private/var/db/thinkpol-api`, every macOS default names its real path (the walk refuses `/var`)
 - 2026-10-13 in-progress → review — round 4 R4.1–R4.3 done; make lint, make test green on a Mac (no `/private/var/lib/thinkpol`, `/private/var/db/thinkpol*` or `/var/run/thinkpol` after); lab: `make lab-gotest PKG=./internal/agent/...` passes; device-only boxes pending the Device checklist
+- 2026-10-14 review → in-progress — owner: claude-opus-tp019-r5, round 5: fixing what the first device run (2026-10-13) found
