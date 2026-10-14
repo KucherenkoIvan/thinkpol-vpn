@@ -3,6 +3,7 @@ package wg
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -56,6 +57,8 @@ type Device struct {
 	dev  *device.Device
 	bind *path.Bind
 
+	hs *handshakeLog // nil without a log
+
 	mu     sync.Mutex
 	key    netmap.WireGuardPrivateKey
 	peers  map[netmap.WireGuardKey]Peer // as configured
@@ -71,11 +74,12 @@ type Device struct {
 // WireGuard logs every failed send as an error, and a peer without a path
 // (path.ErrNoPath, counted by the path layer as NoPath) fails every
 // packet and every handshake retry: those go to the debug level. Its
-// verbose messages go to the debug level too, but for a handshake that
-// didn't complete in time and the first one done after that (info), so a
-// log at info level explains a drop.
+// verbose messages go to the debug level too, but for a peer's first
+// handshake that didn't complete in time and the first one done after
+// that (info), so a log at info level explains a drop.
 func New(name string, t tun.Device, b *path.Bind, log *slog.Logger) *Device {
 	logger := &device.Logger{Verbosef: device.DiscardLogf, Errorf: device.DiscardLogf}
+	var hs *handshakeLog
 	if log != nil {
 		log = log.With("wireguard", name)
 		logger.Errorf = func(format string, args ...any) {
@@ -85,10 +89,12 @@ func New(name string, t tun.Device, b *path.Bind, log *slog.Logger) *Device {
 			}
 			log.Log(context.Background(), level, fmt.Sprintf(format, args...))
 		}
-		logger.Verbosef = (&handshakeLog{log: log, late: make(map[string]bool)}).verbosef
+		hs = &handshakeLog{log: log, late: make(map[string]bool)}
+		logger.Verbosef = hs.verbosef
 	}
 	return &Device{
 		name:   name,
+		hs:     hs,
 		dev:    device.NewDevice(t, b, logger),
 		bind:   b,
 		peers:  make(map[netmap.WireGuardKey]Peer),
@@ -96,14 +102,40 @@ func New(name string, t tun.Device, b *path.Bind, log *slog.Logger) *Device {
 	}
 }
 
-// handshakeLog sorts WireGuard's verbose messages: a handshake that timed
-// out (WireGuard retries it) goes to the info level, and so does the next
-// handshake of that peer done, ending the outage; everything else is
-// debug.
+// handshakeLog sorts WireGuard's verbose messages: the first handshake of
+// a peer that timed out goes to the info level (WireGuard's retries after
+// it to debug), and so does the next handshake of that peer done, ending
+// the outage; everything else is debug.
 type handshakeLog struct {
 	log  *slog.Logger
 	mu   sync.Mutex
-	late map[string]bool // peers whose handshake timed out, until one is done
+	late map[string]bool // peers (as WireGuard names them) whose handshake timed out, until one is done
+}
+
+// keep forgets the peers not in keys, so peers the map took away while
+// their handshakes failed don't stay behind.
+func (h *handshakeLog) keep(keys map[netmap.WireGuardKey]Peer) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.late) == 0 {
+		return
+	}
+	names := make(map[string]bool, len(keys))
+	for k := range keys {
+		names[peerName(k)] = true
+	}
+	for p := range h.late {
+		if !names[p] {
+			delete(h.late, p)
+		}
+	}
+}
+
+// peerName is how WireGuard names a peer in its messages (device.Peer's
+// String): its key in base64, abbreviated.
+func peerName(k netmap.WireGuardKey) string {
+	b := base64.StdEncoding.EncodeToString(k[:])
+	return "peer(" + b[0:4] + "…" + b[39:43] + ")"
 }
 
 func (h *handshakeLog) verbosef(format string, args ...any) {
@@ -115,8 +147,10 @@ func (h *handshakeLog) verbosef(format string, args ...any) {
 	h.mu.Lock()
 	switch {
 	case strings.Contains(format, "Handshake did not complete") || strings.Contains(format, "stopped hearing back"):
-		h.late[peer] = true
-		level = slog.LevelInfo
+		if !h.late[peer] {
+			h.late[peer] = true
+			level = slog.LevelInfo
+		}
 	case h.late[peer] && (strings.Contains(format, "Received handshake response") || strings.Contains(format, "Sending handshake response")):
 		delete(h.late, peer)
 		level = slog.LevelInfo
@@ -196,6 +230,9 @@ func (d *Device) Configure(key netmap.WireGuardPrivateKey, peers []Peer) error {
 		}
 	}
 	d.key, d.peers, d.synced = key, next, true
+	if d.hs != nil {
+		d.hs.keep(next)
+	}
 	if !d.up {
 		if err := d.dev.Up(); err != nil {
 			return fmt.Errorf("wg: device %s: up: %w", d.name, err)

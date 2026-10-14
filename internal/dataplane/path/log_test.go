@@ -60,7 +60,7 @@ func TestALinksLifeIsLoggedAtInfoLevel(t *testing.T) {
 			closed = l
 		}
 	}
-	for _, want := range []string{"reason=\"no answer to its probes within 150ms\"", "dialed=true", "was_up_for=", "last_in=", "last_proof="} {
+	for _, want := range []string{"reason=\"no answer to its probes within 150ms\"", "dialed=true", "proven_for=", "last_in=", "last_proof=", "local_port=", "remote="} {
 		if !strings.Contains(closed, want) {
 			t.Errorf("A's link closed line %q lacks %s", closed, want)
 		}

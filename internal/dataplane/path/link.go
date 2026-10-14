@@ -2,12 +2,17 @@ package path
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net"
+	"net/netip"
+	"regexp"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -139,6 +144,11 @@ type link struct {
 
 	packetsIn, packetsOut, bytesIn, bytesOut, queueFull atomic.Uint64
 	readFailures, writeFailures                         atomic.Uint64
+
+	// For logs: the socket's local port, and the far end's address as
+	// last seen (the watcher's alone) with its tag (remoteTag).
+	localPort        int
+	remote, remoteID string
 }
 
 // addLink starts reading and writing tl, a link to the adjacent node id,
@@ -150,8 +160,11 @@ func (n *Node) addLink(id NodeID, tl transport.Link, dialed bool, transportName 
 		queue:   make(chan *[]byte, n.opts.QueueLen),
 		control: make(chan *[]byte, maxProbes),
 		done:    make(chan struct{}), created: now,
-		probes: make(map[uint64]int64),
+		probes:    make(map[uint64]int64),
+		localPort: portOf(tl.LocalAddr()),
 	}
+	l.remote = addrString(tl.RemoteAddr())
+	l.remoteID = remoteTag(l.remote)
 	// Found and joined under one lock, so pruning can't drop the neighbor
 	// in between; joined before its goroutines start, so Close (which
 	// cancels, then closes every link it finds) can't miss it, and spawning
@@ -188,9 +201,10 @@ func (l *link) proven(now int64) {
 }
 
 // logAttrs describe the link in logs: whose it is, how it came, what it
-// carried. No network address: like Status, logs may leave the device.
+// carried. No network address: like Status, logs may leave the device. The
+// local port and the far end's tag tell a NAT rebind or a new socket apart.
 func (l *link) logAttrs(now int64) []any {
-	attrs := []any{"neighbor", l.nb.id, "transport", l.transport, "dialed", l.dialed}
+	attrs := []any{"neighbor", l.nb.id, "transport", l.transport, "dialed", l.dialed, "local_port", l.localPort, "remote", l.remoteID}
 	if l.dialed {
 		attrs = append(attrs, "endpoint", l.endpoint)
 	}
@@ -231,10 +245,12 @@ func (l *link) close(why string, err error) {
 		now := l.node.now()
 		attrs := append([]any{"reason", why}, l.logAttrs(now)...)
 		if err != nil {
-			attrs = append(attrs, "err", err)
+			attrs = append(attrs, "err", redact(err))
 		}
 		if up := l.upSince.Load(); up != 0 {
-			attrs = append(attrs, "was_up_for", time.Duration(now-up).Round(time.Millisecond))
+			// From its first proof to its last: not the silence before
+			// the close.
+			attrs = append(attrs, "proven_for", time.Duration(l.lastProof.Load()-up).Round(time.Millisecond))
 			l.node.opts.Log.Info("link closed", attrs...)
 			return
 		}
@@ -249,8 +265,62 @@ func (l *link) failed(op string, count *atomic.Uint64, err error) {
 	if count.Add(1) == 1 {
 		level = slog.LevelInfo
 	}
-	l.node.opts.Log.Log(context.Background(), level, "link "+op+" failed", append(l.logAttrs(0), "err", err)...)
+	l.node.opts.Log.Log(context.Background(), level, "link "+op+" failed", append(l.logAttrs(0), "err", redact(err))...)
 }
+
+// watchRemote logs the far end's address changing under the link (a NAT
+// rebind the listener follows), by its tag. Only the node's watcher calls
+// it.
+func (l *link) watchRemote() {
+	a := addrString(l.tl.RemoteAddr())
+	if a == l.remote {
+		return
+	}
+	prev := l.remoteID
+	l.remote, l.remoteID = a, remoteTag(a)
+	l.node.opts.Log.Info("link remote moved", append(l.logAttrs(0), "previous", prev)...)
+}
+
+// processKey keys remoteTag: tags stay comparable within one process, and
+// no table of addresses turns them back into addresses.
+var processKey = func() []byte {
+	k := make([]byte, 32)
+	_, _ = rand.Read(k)
+	return k
+}()
+
+// remoteTag names an address in logs without saying it.
+func remoteTag(addr string) string {
+	if addr == "" {
+		return ""
+	}
+	m := hmac.New(sha256.New, processKey)
+	m.Write([]byte(addr))
+	return hex.EncodeToString(m.Sum(nil)[:4])
+}
+
+func addrString(a net.Addr) string {
+	if a == nil {
+		return ""
+	}
+	return a.String()
+}
+
+func portOf(a net.Addr) int {
+	if ap, err := netip.ParseAddrPort(addrString(a)); err == nil {
+		return int(ap.Port())
+	}
+	return 0
+}
+
+// addrPattern matches what an error may quote of a network address: IPv4
+// with or without a port, bracketed IPv6 with a port, bare IPv6 (with a
+// zone). It errs on matching too much (a clock reading), never too little.
+var addrPattern = regexp.MustCompile(`\[[0-9A-Za-z:.%_-]+\](:\d+)?|\b\d{1,3}(\.\d{1,3}){3}(:\d+)?\b|[0-9A-Fa-f]{0,4}(:[0-9A-Fa-f]{0,4}){2,7}(%[0-9A-Za-z_-]+)?`)
+
+// redact is err's text without network addresses (a *net.OpError quotes
+// both ends): logs may leave the device.
+func redact(err error) string { return addrPattern.ReplaceAllString(err.Error(), "<addr>") }
 
 // send queues a packet frame and owns b from then on. A closed link or a
 // full queue drops it.
@@ -359,6 +429,7 @@ func (l *link) tick(now int64) {
 		l.close("no answer to its probes within "+o.DeadAfter.String(), nil)
 		return
 	}
+	l.watchRemote()
 	if now-l.lastProbe.Load() >= int64(o.ProbeInterval) && now-l.lastProof.Load() >= int64(o.ProbeInterval) {
 		l.probe(now)
 	}
@@ -459,7 +530,7 @@ func (n *Node) startDial(id NodeID, eps []Endpoint) *dialLoop {
 					level = slog.LevelInfo
 				}
 				n.opts.Log.Log(ctx, level, "dial failed", "neighbor", id, "transport", ep.Transport, "endpoint", next,
-					"failures", failures, "retry_in", backoff, "err", err)
+					"failures", failures, "retry_in", backoff, "err", redact(err))
 				next = (next + 1) % len(eps)
 			}
 			select {
