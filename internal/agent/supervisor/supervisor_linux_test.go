@@ -1586,8 +1586,8 @@ func TestStopTimeoutKills(t *testing.T) {
 }
 
 // TestWorkerSpawnFailureSurfaces checks a missing worker binary makes run()
-// return quickly with a start error, and Close does not hang on the supervise
-// loop (before the fix, start() blocked forever on p.gone).
+// return quickly with a start error, and SetSpaces removal and Close do not
+// hang on the supervise loop (before the fix, start() blocked forever on p.gone).
 func TestWorkerSpawnFailureSurfaces(t *testing.T) {
 	needsLab(t)
 	const missing = "/nonexistent/thinkpol-worker"
@@ -1618,9 +1618,19 @@ func TestWorkerSpawnFailureSurfaces(t *testing.T) {
 		return nil
 	})
 	done := make(chan error, 1)
-	go func() { done <- s.Close() }()
+	go func() { done <- s.SetSpaces(nil) }()
 	select {
 	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("SetSpaces(nil) hung after a worker spawn failure")
+	}
+	closed := make(chan error, 1)
+	go func() { closed <- s.Close() }()
+	select {
+	case err := <-closed:
 		if err != nil {
 			t.Fatal(err)
 		}

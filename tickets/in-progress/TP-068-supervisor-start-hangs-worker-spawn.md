@@ -12,7 +12,7 @@ branch: tp-068-supervisor-spawn-hang
 ---
 
 ## Goal
-When a worker fails to spawn, nothing hangs on shutdown or space removal; the supervisor keeps the async model (the worker restarts with backoff, as in DESIGN.md), and status/health show the spawn error.
+When a worker fails to spawn, nothing hangs on shutdown or space removal; the supervisor keeps the async model (the worker restarts with backoff, as in DESIGN.md); status shows the spawn error on the worker line; health reports worker_down.
 
 ## Scope
 - Fix `internal/agent/supervisor/supervisor_linux.go:1094-1110`: in `start()`, when `cmd.Start` fails the goroutine must close `p.gone` before returning so the caller is not left blocking on `<-p.gone` indefinitely.
@@ -39,9 +39,9 @@ Round 2 (2026-10-15).
 - [x] 4. Log has no lab run of `TestWorkerSpawnFailureSurfaces`.
 
 Round 3 (2026-10-15).
-- [ ] 1. `TestWorkerSpawnFailureSurfaces` does not exercise `SetSpaces` removal before `Close`.
-- [ ] 2. Goal claims health shows the spawn error; health only reports `worker_down` (fix Goal text).
-- [ ] 3. No unit test for `LastExit` in `report.status()` (`internal/agent/status.go:202`).
+- [x] 1. `TestWorkerSpawnFailureSurfaces` does not exercise `SetSpaces` removal before `Close`.
+- [x] 2. Goal claims health shows the spawn error; health only reports `worker_down` (fix Goal text).
+- [x] 3. No unit test for `LastExit` in `report.status()` (`internal/agent/status.go:202`).
 
 ## Log
 - 2026-10-15 created in backlog
@@ -55,3 +55,4 @@ Round 3 (2026-10-15).
 - 2026-10-15 lab-gotest PKG=./internal/agent/... LAB_P=1 GOFLAGS=-p=4 — PASS (6 packages)
 - 2026-10-15 in-progress → review — round 2 findings fixed; make lint and make test pass
 - 2026-10-15 review → has-errors — round 3 review findings 1–3 (see Review findings)
+- 2026-10-15 has-errors → in-progress — owner: agent-composer, fixing round 3 findings
