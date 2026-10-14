@@ -5,7 +5,7 @@ milestone: M2
 area: dataplane/transport
 repo: thinkpol-vpn
 size: L
-depends_on: [TP-010, TP-027]
+depends_on: [TP-010, TP-027, TP-064]
 refs: [C2, DESIGN#transports]
 owner: ""
 branch: ""
@@ -34,6 +34,7 @@ The workhorse transport: looks like a browser talking to a website, and is a web
 - [ ] the token's timestamp window is stated in DESIGN with the replay-versus-clock-skew tradeoff it sets, and the replay cache is bounded (sends a connection to the camouflage when the bound is hit, never accepts a replay)
 
 ## Notes
+- Reality evaluation (TP-064) decides the workhorse transport before tls is built.
 - **Decided in the TP-005 review (2026-10-10):** the tls auth token rides in the ClientHello (e.g. an HMAC of the credential and a coarse timestamp in the legacy session id, via uTLS). The supervisor peeks at the ClientHello without terminating TLS and keeps a replay cache. Authenticated: it hands the fd plus the consumed bytes to the space's worker, which terminates TLS with its self-signed, pinned certificate. Anything else is proxied whole to the camouflage target, so probes see the real site's certificate. See DESIGN.md (transports table, server agent). This replaces "authentication inside the first application data" in Scope; the probe fallback proxies the whole connection, ClientHello included.
 - **Port (TP-005):** implement `transport.Transport` and `transport.Routable` (`RouteStream` peeks the ClientHello and returns the consumed bytes). The worker side is a `transport.HandoffListener`. Settings go in `proto/thinkpol/transport/v1/` as tls messages; the pin can travel there or in the credential. Run `transporttest.Run` with restart support, and with `Interpose` if you can replay a TCP stream.
 - **Blocker resolved (2026-10-10):** the author has no domain and no valid TLS certificate. Decision: the certificate comes from a pluggable certificate source port; the first adapter is self-signed and pinned by the client (option (c) of the original blocker). ACME with a real domain (option (a)) is TP-052, blocked until a domain and registrar exist; the `reality`-style transport (option (b)) stays a later transport.
