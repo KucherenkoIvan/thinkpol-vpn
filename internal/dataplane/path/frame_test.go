@@ -7,20 +7,21 @@ import (
 
 func TestWgDataLen(t *testing.T) {
 	for _, tc := range []struct {
-		n, mtu int
-		ok     bool
+		n  int
+		ok bool
 	}{
-		{32, 1328, true},
-		{48, 1328, true},
-		{1360, 1328, true}, // 32+1328, unshaped full MTU
-		{1260, 1228, true}, // 32+1228, shaped full MTU
-		{1308, 1276, true},
-		{50, 1228, false},
-		{1260, 1328, false},
-		{31, 1228, false},
+		{32, true},   // keepalive, content 0
+		{48, true},   // small padded data
+		{1360, true}, // 32+1328, unshaped full MTU
+		{1260, true}, // 32+1228, shaped full MTU from a remote sender
+		{1308, true}, // 32+1276, shaped full MTU
+		{608, true},  // 32+576, content at minOverlayMTU
+		{612, true},  // content 580: capped padding, not a multiple of 16
+		{50, false},  // junk below minOverlayMTU, not a multiple of 16
+		{31, false},
 	} {
-		if got := wgDataLen(tc.n, tc.mtu); got != tc.ok {
-			t.Errorf("wgDataLen(%d, %d) = %v, want %v", tc.n, tc.mtu, got, tc.ok)
+		if got := wgDataLen(tc.n); got != tc.ok {
+			t.Errorf("wgDataLen(%d) = %v, want %v", tc.n, got, tc.ok)
 		}
 	}
 }

@@ -87,27 +87,30 @@ const (
 	wgData       = 4
 )
 
-// wgDataLen reports whether n is a WireGuard data message length for a
-// device whose TUN MTU is tunMTU (0: only lengths that are always valid).
-// wireguard-go pads plaintext to min(roundup16(len), mtu) before sealing,
-// so a full-MTU packet on a TUN whose MTU is not a multiple of 16 is
-// 32+tunMTU bytes, not a multiple of 16.
-func wgDataLen(n, tunMTU int) bool {
+// minOverlayMTU matches dataplane.MinOverlayMTU: the smallest overlay TUN
+// MTU any node runs with. wireguard-go caps padding there, so a sender's
+// full-MTU frame has at least this much content even when that MTU is not a
+// multiple of 16.
+const minOverlayMTU = 576
+
+// wgDataLen reports whether n is a plausible WireGuard data message length.
+// wireguard-go pads plaintext to min(roundup16(len), sender MTU) before
+// sealing, so lengths are a multiple of 16 or a capped full-MTU on the
+// sender (>= minOverlayMTU); the receiver's own MTU does not appear on the
+// wire.
+func wgDataLen(n int) bool {
 	if n < 32 {
 		return false
 	}
 	content := n - 32
-	if content%16 == 0 {
-		return true
-	}
-	return tunMTU > 0 && content == tunMTU
+	return content%16 == 0 || content >= minOverlayMTU
 }
 
 // wgType returns the type of a message shaped like a WireGuard message
 // (its type, three zero bytes, and its type's size), or 0. The shape is no
 // proof: anything can be shaped so. It keeps plainly malformed junk from
 // counting as a sign of life.
-func wgType(m []byte, tunMTU int) byte {
+func wgType(m []byte) byte {
 	if len(m) < 4 || m[1] != 0 || m[2] != 0 || m[3] != 0 {
 		return 0
 	}
@@ -115,7 +118,7 @@ func wgType(m []byte, tunMTU int) byte {
 	case t == wgInitiation && len(m) == 148,
 		t == wgResponse && len(m) == 92,
 		t == wgCookie && len(m) == 64,
-		t == wgData && wgDataLen(len(m), tunMTU):
+		t == wgData && wgDataLen(len(m)):
 		return t
 	}
 	return 0

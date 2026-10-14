@@ -25,13 +25,13 @@ Leader following works under bulk traffic when the overlay MTU is not a multiple
 
 ## Notes
 - **Independent review (2026-10-15):** unshaped 1328 is safe, which is why no test caught it.
-- **Data-frame length rule:** `wgDataLen` in `frame.go` accepts WireGuard data messages whose ciphertext is a multiple of 16 bytes, or exactly the TUN MTU when padding is capped there (wireguard-go `calculatePaddingSize`); the bind's TUN MTU comes from `SetWireGuardMTU`, wired from the engine overlay MTU.
+- **Data-frame length rule (round 2):** `wgDataLen` in `frame.go` accepts content `n-32` when `content%16 == 0` (wireguard-go's usual padding) or `content >= minOverlayMTU` (576, same as `dataplane.MinOverlayMTU`). Capped full-MTU frames on the sender use the sender's overlay floor, which is always at least 576, so the rule does not need the receiver's MTU. That still rejects sub-576 junk that is not a multiple of 16; oversized TUN reads that pad via `lastUnit %= mtu` can land in the second branch when content ≥ 576.
 
 ## Review findings
 From independent review, 2026-10-15.
-- [ ] **Blocker:** `wgDataLen` checks capped full-MTU frames against the receiver's own TUN MTU, but wireguard-go pads to the sender's MTU; per-node overlay MTUs differ until TP-030, so a follower with a larger MTU never counts the leader's full-MTU frames as signs of life.
-- [ ] **Should-fix:** nothing tests the engine wiring (`engine.go` `SetWireGuardMTU`); if the length rule is sender-independent, that call and per-bind MTU state should go away.
-- [ ] **Nit:** TUN packets larger than the device MTU get WireGuard lengths that are neither a multiple of 16 nor `32+MTU` (`calculatePaddingSize` uses `lastUnit %= mtu`).
+- [x] **Blocker:** `wgDataLen` checks capped full-MTU frames against the receiver's own TUN MTU, but wireguard-go pads to the sender's MTU; per-node overlay MTUs differ until TP-030, so a follower with a larger MTU never counts the leader's full-MTU frames as signs of life.
+- [x] **Should-fix:** nothing tests the engine wiring (`engine.go` `SetWireGuardMTU`); if the length rule is sender-independent, that call and per-bind MTU state should go away.
+- [x] **Nit:** TUN packets larger than the device MTU get WireGuard lengths that are neither a multiple of 16 nor `32+MTU` (`calculatePaddingSize` uses `lastUnit %= mtu`).
 
 ## Log
 - 2026-10-15 created in backlog
@@ -40,3 +40,4 @@ From independent review, 2026-10-15.
 - 2026-10-15 in-progress → review — capped full-MTU data frames count as signs of life; make lint and make test pass
 - 2026-10-15 review → has-errors — receiver-MTU data-frame rule; see Review findings
 - 2026-10-15 has-errors → in-progress — owner: agent-composer, fixing review findings
+- 2026-10-15 in-progress → review — sender-independent `wgDataLen`; mismatched-MTU follower test; make lint, make test and dataplane race pass
