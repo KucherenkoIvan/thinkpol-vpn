@@ -38,8 +38,10 @@ func (r *runner) newResolver() *dns.Server {
 	}
 	if r.dp.RouteTable {
 		// The direct upstream's queries carry the links' mark, so they
-		// leave around the tunnel whatever the route table holds.
+		// leave around the tunnel whatever the route table holds; the
+		// leak guard learns them for an OS without marks.
 		o.Control = routetable.SocketControl()
+		r.leak.setUpstreams(upstreams)
 	}
 	return dns.New(o)
 }
@@ -98,7 +100,7 @@ func (r *runner) systemConfig() (dns.SystemConfig, bool) {
 		c.Search = []string{r.section.SpaceName + ".internal"}
 	}
 	if len(r.dp.DNSUpstreams) == 0 {
-		srv, own, log := r.resolver, []netip.Addr{r.section.Node.IPv4, r.section.Node.IPv6}, r.dp.Log
+		srv, own, log, leak := r.resolver, []netip.Addr{r.section.Node.IPv4, r.section.Node.IPv6}, r.dp.Log, r.leak
 		c.Upstreams = func(host []netip.Addr) {
 			var ups []netip.AddrPort
 			for _, a := range host {
@@ -107,6 +109,7 @@ func (r *runner) systemConfig() (dns.SystemConfig, bool) {
 				}
 			}
 			srv.SetUpstreams(ups)
+			leak.setUpstreams(ups)
 			log.Info("DNS: the system's own resolvers changed", "upstreams", len(ups))
 		}
 	}

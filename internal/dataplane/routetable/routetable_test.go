@@ -234,6 +234,7 @@ type fakeConfigurator struct {
 	closed  bool
 	survey  netcfg.Survey
 	events  chan struct{}
+	order   *[]string // what was closed, in order
 }
 
 func (f *fakeConfigurator) Apply(_ context.Context, cfg netcfg.Config) error {
@@ -295,6 +296,9 @@ func (f *fakeConfigurator) Close() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.closed = true
+	if f.order != nil {
+		*f.order = append(*f.order, "routes")
+	}
 	return nil
 }
 

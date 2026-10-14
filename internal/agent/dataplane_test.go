@@ -20,6 +20,7 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/packettest"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/path"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport/memory"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
@@ -464,7 +465,7 @@ func TestAFailedStartClearsACrashedRunsRouteTable(t *testing.T) {
 	var cleared atomic.Int32
 	dp.clearRouteTable = func() error { cleared.Add(1); return nil }
 	dp.newTUN = func(string) (wgtun.Device, netcfg.Configurator, error) { return nil, nil, errors.New("no TUN today") }
-	dp.newRoutes = func(*slog.Logger) (dataplane.RouteTable, error) { panic("not reached") }
+	dp.newRoutes = func(*slog.Logger, routetable.Guard) (dataplane.RouteTable, error) { panic("not reached") }
 	if err := RunDataPlane(n.ctx, dp); err == nil {
 		t.Fatal("RunDataPlane started without a TUN")
 	}

@@ -29,6 +29,12 @@ type RouteTableStatus struct {
 	// (routetable.ErrorApply, routetable.ErrorReapply).
 	Enforced bool
 	Error    string
+	// GuardEnforced says the leak guard is in place (routetable's Guard:
+	// what routing can't confine, interface-bound sockets); false without
+	// one, and while applying it fails, which GuardError then says
+	// (routetable.ErrorGuard, routetable.ErrorGuardUnsupported).
+	GuardEnforced bool
+	GuardError    string
 	// Routes is how many routes the tunnel's table holds, LastApply how
 	// long putting the last change in place took, Reapplies how often a
 	// routing change (a link, a gateway, an outside removal) or the
@@ -117,7 +123,8 @@ func (e *Engine) routeTableStatus() RouteTableStatus {
 	}
 	st := e.cfg.RouteTable.Status()
 	return RouteTableStatus{
-		Enforced: st.Enforced, Error: st.Error, Routes: st.Routes, LastApply: st.LastApply,
+		Enforced: st.Enforced, Error: st.Error, GuardEnforced: st.GuardEnforced, GuardError: st.GuardError,
+		Routes: st.Routes, LastApply: st.LastApply,
 		Reapplies: st.Reapplies, RulesAhead: st.RulesAhead,
 	}
 }

@@ -530,3 +530,33 @@ func TestGatewaysOnLinksAndBoundSockets(t *testing.T) {
 		t.Error("an IPv6 ping bound to eth0 refused after Close")
 	}
 }
+
+// The guard deleted from outside (`nft flush ruleset`, a firewall
+// service's reload, `nft delete table`) is back within about a second,
+// without an Enforce and long before the Backstop.
+func TestTheGuardComesBackOnItsOwn(t *testing.T) {
+	d := newDevice(t)
+	e := d.enforcer(t)
+	want := routetable.Want{TUN: "thinkpol0", Direct: local(), IPv6: true}
+	if err := e.Enforce(context.Background(), want); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return e.Status().GuardEnforced }, "the guard")
+	for _, args := range [][]string{
+		{"delete", "table", "inet", firewall.GuardTable},
+		{"flush", "ruleset"},
+		{"delete", "chain", "inet", firewall.GuardTable, "output"},
+	} {
+		if out, err := exec.Command("ip", append([]string{"netns", "exec", d.name, "nft"}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("nft %v: %v: %s", args, err, out)
+		}
+		start := time.Now()
+		waitFor(t, func() bool { return !d.ping(t, "2001:4860::1", "-6", "-W", "1", "-I", "eth0") }, "the guard back after nft "+strings.Join(args, " "))
+		if took := time.Since(start); took > 3*time.Second {
+			t.Errorf("nft %v: the guard came back after %v", args, took)
+		}
+		if st := e.Status(); !st.GuardEnforced || st.GuardError != "" {
+			t.Errorf("nft %v: status %+v", args, st)
+		}
+	}
+}

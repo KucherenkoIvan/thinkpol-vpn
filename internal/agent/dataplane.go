@@ -87,7 +87,7 @@ type DataPlane struct {
 	// What tests swap: the TUN and its configurator, the path layer's
 	// timing, how long to wait before retrying what failed.
 	newTUN    func(name string) (wgtun.Device, netcfg.Configurator, error)
-	newRoutes func(log *slog.Logger) (dataplane.RouteTable, error)
+	newRoutes func(log *slog.Logger, guard routetable.Guard) (dataplane.RouteTable, error)
 	// clearRouteTable removes a previous run's route table.
 	clearRouteTable func() error
 	path            path.Options
@@ -129,7 +129,7 @@ func RunDataPlane(ctx context.Context, dp DataPlane) error {
 		dp.newRoutes = newRouteTable
 	}
 	if dp.clearRouteTable == nil {
-		dp.clearRouteTable = routetable.Clear
+		dp.clearRouteTable = clearHostRoutes
 	}
 	if dp.retryAfter == 0 {
 		dp.retryAfter = RetryAfter
@@ -205,10 +205,14 @@ func newTUN(name string) (wgtun.Device, netcfg.Configurator, error) {
 }
 
 // newRouteTable takes the host's route-table enforcement (one per network
-// namespace, like the overlay's configuration).
-func newRouteTable(log *slog.Logger) (dataplane.RouteTable, error) {
-	return routetable.New(log)
+// namespace, like the overlay's configuration), with guard (nil: none).
+func newRouteTable(log *slog.Logger, guard routetable.Guard) (dataplane.RouteTable, error) {
+	return routetable.New(guard, log)
 }
+
+// clearHostRoutes removes what route-table enforcement left on this host,
+// the leak guard included.
+func clearHostRoutes() error { return routetable.Clear(newHostGuard()) }
 
 // clearRoutes removes what route-table enforcement left (a crash) while no
 // Enforcer of this run holds it.
@@ -235,6 +239,9 @@ type runner struct {
 	engine    *dataplane.Engine
 	listeners *listenerSet
 	resolver  *dns.Server
+	// leak is the route table's leak guard while the data plane runs
+	// with one; it learns the resolver's direct upstreams.
+	leak *leakGuard
 	// guard is the OS's resolver configuration while it should point at
 	// the resolver (systemCfg), and why it doesn't; dnsRetryAt is when to
 	// try pointing it again.
@@ -261,8 +268,12 @@ func (r *runner) start(ctx context.Context) error {
 		return &StartError{Step: StepTUN, Err: err}
 	}
 	var routes dataplane.RouteTable
+	r.leak = nil
 	if r.dp.RouteTable {
-		if routes, err = r.dp.newRoutes(r.dp.Log); err != nil {
+		if g := newHostGuard(); g != nil {
+			r.leak = newLeakGuard(g)
+		}
+		if routes, err = r.dp.newRoutes(r.dp.Log, r.leak.routeGuard()); err != nil {
 			if ifc != nil {
 				_ = ifc.Close()
 			}

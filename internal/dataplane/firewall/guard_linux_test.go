@@ -7,10 +7,12 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/netip"
 	"os"
 	"os/exec"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -20,6 +22,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/firewall"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/lists"
 )
 
@@ -167,7 +170,7 @@ func TestIPv6GuardRefusesWhatRoutingCantConfine(t *testing.T) {
 		t.Fatal("the gateway doesn't answer without a guard: the test proves nothing")
 	}
 	g := p.guard(t)
-	e := firewall.Exempt{TUN: "thinkpol0", Mark: 0x7470, Direct: set(t, "2001:db8:d0::/48", "198.51.100.0/24")}
+	e := routetable.Exempt{TUN: "thinkpol0", Mark: 0x7470, Direct: set(t, "2001:db8:d0::/48", "198.51.100.0/24")}
 	ctx := context.Background()
 	if err := g.Apply(ctx, e); err != nil {
 		t.Fatal(err)
@@ -203,15 +206,57 @@ func TestIPv6GuardRefusesWhatRoutingCantConfine(t *testing.T) {
 	expect("applied")
 
 	// The same again checks the table and leaves it; someone deleting it
-	// gets it back with the next Apply.
+	// is seen at once (Watch), and it comes back with the next Apply.
 	if err := g.Apply(ctx, e); err != nil {
 		t.Fatal(err)
 	}
-	if out, err := exec.Command("ip", "netns", "exec", p.dev, "nft", "delete", "table", "inet", firewall.GuardTable).CombinedOutput(); err != nil {
-		t.Fatalf("nft delete table: %v: %s", err, out)
+	wctx, cancel := context.WithCancel(ctx)
+	events, err := g.Watch(wctx)
+	if err != nil {
+		t.Fatal(err)
 	}
+	nft := func(args ...string) {
+		t.Helper()
+		if out, err := exec.Command("ip", append([]string{"netns", "exec", p.dev, "nft"}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("nft %s: %v: %s", strings.Join(args, " "), err, out)
+		}
+	}
+	signalled := func(what string) {
+		t.Helper()
+		select {
+		case <-events:
+		case <-time.After(2 * time.Second):
+			t.Errorf("Watch didn't signal %s", what)
+		}
+	}
+	nft("add", "table", "inet", "someone-else") // another table: no signal
+	nft("delete", "table", "inet", "someone-else")
+	select {
+	case <-events:
+		t.Error("Watch signalled another table's changes")
+	case <-time.After(500 * time.Millisecond):
+	}
+	nft("delete", "table", "inet", firewall.GuardTable)
+	signalled("the table deleted")
 	if !p.ping(t, foreign6, "-I", "eth0") {
 		t.Fatal("still refused with the table deleted")
+	}
+	if err := g.Apply(ctx, e); err != nil {
+		t.Fatal(err)
+	}
+	signalled("its own Apply") // which finds it whole next time
+	nft("flush", "ruleset")
+	signalled("a flushed ruleset")
+	if err := g.Apply(ctx, e); err != nil {
+		t.Fatal(err)
+	}
+	signalled("its own Apply")
+	// A rule slipped in ahead of ours is seen, and the next Apply
+	// rebuilds the table without it.
+	nft("insert", "rule", "inet", firewall.GuardTable, "output", "accept")
+	signalled("a rule inserted")
+	cancel()
+	for range events { // closes once ctx ends
 	}
 	if err := g.Apply(ctx, e); err != nil {
 		t.Fatal(err)
@@ -256,10 +301,10 @@ func TestIPv6GuardTakesACountrySizedSet(t *testing.T) {
 	direct, _ := b.Build()
 	g := p.guard(t)
 	start := time.Now()
-	if err := g.Apply(context.Background(), firewall.Exempt{TUN: "thinkpol0", Mark: 0x7470, Direct: direct}); err != nil {
+	if err := g.Apply(context.Background(), routetable.Exempt{TUN: "thinkpol0", Mark: 0x7470, Direct: direct}); err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("applied %d ranges in %v", len(firewall.Exempt{Direct: direct}.Ranges6()), time.Since(start).Round(time.Millisecond))
+	t.Logf("applied %d ranges in %v", len(routetable.Exempt{Direct: direct}.Ranges6()), time.Since(start).Round(time.Millisecond))
 	if took := time.Since(start); took > 20*time.Second {
 		t.Errorf("took %v", took)
 	}
@@ -272,4 +317,111 @@ func TestIPv6GuardTakesACountrySizedSet(t *testing.T) {
 	if p.ping(t, foreign6, "-I", "eth0") {
 		t.Error("a foreign destination answered")
 	}
+}
+
+// sendICMPv6 sends one bare ICMPv6 message of type typ with the hop limit
+// hops from a raw socket bound to eth0 in the device's namespace.
+func (p *pair) sendICMPv6(t *testing.T, typ byte, hops int, dst string) {
+	t.Helper()
+	p.inNamespace(t, func() {
+		fd, err := unix.Socket(unix.AF_INET6, unix.SOCK_RAW|unix.SOCK_CLOEXEC, unix.IPPROTO_ICMPV6)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer func() { _ = unix.Close(fd) }()
+		if err := errors.Join(unix.BindToDevice(fd, "eth0"),
+			unix.SetsockoptInt(fd, unix.IPPROTO_IPV6, unix.IPV6_UNICAST_HOPS, hops),
+			unix.SetsockoptInt(fd, unix.IPPROTO_IPV6, unix.IPV6_MULTICAST_HOPS, hops)); err != nil {
+			t.Error(err)
+			return
+		}
+		msg := make([]byte, 24) // type, code, checksum (the kernel's), reserved, a target
+		msg[0] = typ
+		copy(msg[8:], netip.MustParseAddr(dst).AsSlice())
+		// A refused send may fail here (EPERM) or be answered with an
+		// ICMPv6 error: either way nothing leaves.
+		_ = unix.Sendto(fd, msg, 0, &unix.SockaddrInet6{Addr: netip.MustParseAddr(dst).As16()})
+	})
+}
+
+// gwCounted is how many ICMPv6 messages of type typ to foreign6 the
+// gateway has received (the kernel's own neighbour discovery goes to
+// other addresses): an observer on the far side of the link.
+func (p *pair) gwCounted(t *testing.T, typ byte) int {
+	t.Helper()
+	out, err := exec.Command("ip", "netns", "exec", p.gw, "nft", "list", "chain", "inet", "observe", fmt.Sprintf("t%d", typ)).CombinedOutput()
+	if err != nil {
+		t.Fatalf("nft list: %v: %s", err, out)
+	}
+	f := strings.Fields(string(out))
+	for i := range f[:len(f)-1] {
+		if f[i] == "packets" {
+			n, _ := strconv.Atoi(f[i+1])
+			return n
+		}
+	}
+	t.Fatalf("no counter in:\n%s", out)
+	return 0
+}
+
+// Neighbour discovery and MLD pass the guard only as the link-scoped
+// messages they are: a neighbour solicitation with hop limit 255 reaches
+// the gateway even to a global address, one with another hop limit
+// doesn't; MLD only with hop limit 1.
+func TestIPv6GuardPassesNeighbourDiscoveryOnlyOnTheLink(t *testing.T) {
+	p := newPair(t)
+	var rules strings.Builder
+	rules.WriteString("table inet observe {\n")
+	for _, typ := range []int{135, 131} {
+		fmt.Fprintf(&rules, "chain t%d { type filter hook input priority 0; ip6 daddr %s icmpv6 type %d counter; }\n", typ, foreign6, typ)
+	}
+	rules.WriteString("}\n")
+	cmd := exec.Command("ip", "netns", "exec", p.gw, "nft", "-f", "-")
+	cmd.Stdin = strings.NewReader(rules.String())
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("nft -f: %v: %s", err, out)
+	}
+	g := p.guard(t)
+	if err := g.Apply(context.Background(), routetable.Exempt{TUN: "thinkpol0", Mark: 0x7470}); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		typ  byte
+		hops int
+		dst  string
+		want int // the gateway's count after it
+	}{
+		{135, 64, foreign6, 0},  // a "neighbour solicitation" routed like any packet: refused
+		{135, 255, foreign6, 1}, // the real thing: passes
+		{131, 64, foreign6, 0},  // MLD with a hop limit that could leave the link
+		{131, 1, foreign6, 1},   // MLD as it is sent
+	} {
+		p.sendICMPv6(t, c.typ, c.hops, c.dst)
+		deadline := time.Now().Add(2 * time.Second)
+		got := p.gwCounted(t, c.typ)
+		for got != c.want && time.Now().Before(deadline) && c.want > 0 {
+			time.Sleep(50 * time.Millisecond)
+			got = p.gwCounted(t, c.typ)
+		}
+		if c.want == 0 {
+			time.Sleep(300 * time.Millisecond)
+			got = p.gwCounted(t, c.typ)
+		}
+		if got != c.want {
+			t.Errorf("type %d, hop limit %d: the gateway counted %d, want %d", c.typ, c.hops, got, c.want)
+		}
+	}
+}
+
+func set(t *testing.T, prefixes ...string) *lists.Set {
+	t.Helper()
+	var b lists.Builder
+	for _, p := range prefixes {
+		if err := b.AddPrefix(netip.MustParsePrefix(p)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s, _ := b.Build()
+	return s
 }

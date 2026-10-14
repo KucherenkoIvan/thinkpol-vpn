@@ -19,7 +19,6 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/blobs"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
-	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/rules"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
@@ -30,7 +29,7 @@ import (
 // table and the resolver configuration. Tests swap them, so they never
 // touch the host.
 var (
-	clearHostRouteTable = routetable.Clear
+	clearHostRouteTable = clearHostRoutes
 	restoreHostDNS      = dns.RestoreSystem
 	lockHost            = hostLock
 )

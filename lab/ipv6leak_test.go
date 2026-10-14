@@ -146,6 +146,21 @@ func TestNoIPv6LeavesAroundTheTunnel(t *testing.T) {
 	if !guard() {
 		t.Fatal("no guard table while connected")
 	}
+	// Deleted from outside (a firewall service's reload), the guard is
+	// back within about a second, long before the route table's backstop.
+	// (Not `nft flush ruleset`: the lab's own tables must stay.)
+	dev.MustExec(t, "nft", "delete", "table", "inet", "thinkpol-guard")
+	start := time.Now()
+	lab.Eventually(t, 10*time.Second, func() error {
+		if !guard() {
+			return fmt.Errorf("the guard isn't back")
+		}
+		return nil
+	})
+	if took := time.Since(start); took > 3*time.Second {
+		t.Errorf("the guard came back after %v", took)
+	}
+	check("the guard put back", func() { attempts("the guard put back") })
 
 	// The overlay too small for IPv6 (a 1300-byte link): IPv6 is
 	// unreachable unbound and refused bound.
@@ -176,11 +191,30 @@ func TestNoIPv6LeavesAroundTheTunnel(t *testing.T) {
 		}
 		return nil
 	})
-	// Disconnected, a bound socket goes out as it would without thinkpol.
+	// The negative control: disconnected, with no guard, the same
+	// attempts leave the physical side, and the capture shows them, ICMPv6
+	// and TCP from the device's own address to the foreign site.
 	lab.Eventually(t, 15*time.Second, func() error {
 		_, err := run(5*time.Second, "ping", "-6", "-c", "1", "-W", "2", "-I", eth, foreign6.String())
 		return err
 	})
+	c := dev.Capture(t, "ip6")
+	if _, err := run(10*time.Second, "ping", "-6", "-c", "1", "-W", "2", "-I", eth, foreign6.String()); err != nil {
+		t.Errorf("disconnected, a ping bound to %s wasn't answered: %v", eth, err)
+	}
+	_, _ = run(10*time.Second, "curl", "-6", "-sS", "-m", "5", "--interface", eth, "http://["+foreign6.String()+"]/")
+	if err := c.Complete(); err != nil {
+		t.Fatal(err)
+	}
+	leaked := map[uint8]bool{}
+	for _, p := range c.Packets() {
+		if p.Outgoing && p.Network != "" && p.Dst == foreign6 && p.Src == dev.IPv6(lab.NetDevices) {
+			leaked[p.Proto] = true
+		}
+	}
+	if !leaked[58] || !leaked[6] {
+		t.Errorf("the negative control: the capture saw ICMPv6 %v and TCP %v to the foreign site with no guard, want both: the leak check above proves nothing", leaked[58], leaked[6])
+	}
 	if err := up.Stop(); err != nil {
 		t.Errorf("thinkpol up -connect=false: %v\n%s", err, up.Output())
 	}
