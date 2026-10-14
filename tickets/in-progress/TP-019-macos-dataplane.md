@@ -8,7 +8,7 @@ size: L
 depends_on: [TP-008, TP-018]
 refs: [D1]
 needs_human: macos
-owner: "claude-opus-tp019-r6"
+owner: "composer-tp019-r7"
 branch: "tp-019-macos-data-plane"
 ---
 
@@ -251,3 +251,4 @@ Round 2 resolution: R2.1 `netcfg.ConnectedRoutes` (utun networks as halves) + th
 - 2026-10-14 has-errors → in-progress — owner: claude-opus-tp019-r6, fixing round 5
 - 2026-10-14 in-progress → review — round 6, R5.A–R5.E done: the macOS resolver is a network service of the node's own (an unscoped default resolver, no interface entity, no `Setup:` writes; credited to cross-model research), reflection only local-to-local, foreign sources kept from WireGuard, address-free link logs with local port and remote tag, a failed clear frees the owner's place, scoped routes for direct DNS upstreams off-link; make lint, make test green on a Mac (nothing of the host touched); lab: `labctl gotest ./internal/agent/... ./internal/dataplane/...` and `TestRouteTableSendsOnlyDirectAroundTheTunnel`, `TestASecondAgentChangesNothing`, `TestUpRunsTheM0Space`, `TestDNSFollowsTheRules`, `TestLocalAPI`, `TestEgressThroughAnExit`, `TestIngressOffAdmitsOnlyServers`, `TestM0`, `TestCaptureFlagsRawWireGuard` pass; device-only boxes pending the next device run (Notes, "Next device run must check")
 - 2026-10-15 review → has-errors — review (cross-model, round 6): crash-window DNS order, mapped-v4 redaction, raw errors in agent warns
+- 2026-10-15 has-errors → in-progress — owner: composer-tp019-r7, fixing round 6
