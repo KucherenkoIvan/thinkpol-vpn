@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -557,6 +558,37 @@ func TestTheGuardComesBackOnItsOwn(t *testing.T) {
 		}
 		if st := e.Status(); !st.GuardEnforced || st.GuardError != "" {
 			t.Errorf("nft %v: status %+v", args, st)
+		}
+	}
+	// Changed rather than deleted: an element added to the exempt set (a
+	// leak) and the reject rule replaced in place (the same rule count)
+	// are put right too.
+	nft := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command("ip", append([]string{"netns", "exec", d.name, "nft"}, args...)...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("nft %v: %v: %s", args, err, out)
+		}
+		return string(out)
+	}
+	lastRule := func() string {
+		hs := regexp.MustCompile(`# handle (\d+)`).FindAllStringSubmatch(nft("-a", "list", "chain", "inet", firewall.GuardTable, "output"), -1)
+		return hs[len(hs)-1][1]
+	}
+	for _, change := range []func() []string{
+		func() []string {
+			return []string{"add", "element", "inet", firewall.GuardTable, "exempt6", "{ 2001:4860::1 }"}
+		},
+		func() []string {
+			return []string{"replace", "rule", "inet", firewall.GuardTable, "output", "handle", lastRule(), "accept"}
+		},
+	} {
+		args := change()
+		nft(args...)
+		start := time.Now()
+		waitFor(t, func() bool { return !d.ping(t, "2001:4860::1", "-6", "-W", "1", "-I", "eth0") }, "the guard put right after nft "+strings.Join(args, " "))
+		if took := time.Since(start); took > 3*time.Second {
+			t.Errorf("nft %v: the guard put right after %v", args, took)
 		}
 	}
 }

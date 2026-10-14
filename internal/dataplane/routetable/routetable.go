@@ -255,9 +255,13 @@ type Enforcer struct {
 
 	// mu guards what Status and the watcher read; never held during an
 	// Apply.
-	mu      sync.Mutex
-	want    *Want // last given
-	failing bool  // the last Apply or re-Apply of want's routes failed
+	mu   sync.Mutex
+	want *Want // last given
+	// applied is the last Want whose routes went in: what the OS holds
+	// while want's fail (an Apply is all or nothing), and what the guard
+	// must match meanwhile.
+	applied *Want
+	failing bool // the last Apply or re-Apply of want's routes failed
 	// unsupported: the OS can't enforce the table at all (a kernel without
 	// rule protocols); nothing is retried.
 	unsupported bool
@@ -355,21 +359,23 @@ func New(g Guard, log *slog.Logger) (*Enforcer, error) {
 // Clear removes what an Enforcer of this host left (a crash), with
 // nothing put in place: for a device that starts without connecting. g
 // (nil: none) is a fresh Guard of the host, whose Close removes the
-// crashed run's guard: under the route table's owner lock, so it never
-// races a run taking the table over; without the lock only if netcfg
-// can't take it at all, and never while another configurator holds it
-// (netcfg.ErrBusy: its guard is live).
+// crashed run's guard, only while this process holds the route table's
+// owner lock: whatever keeps netcfg from taking it (another live run,
+// or any failure on the way) may mean the guard there is live, so it is
+// left alone and the error returned.
 func Clear(g Guard) error {
-	c, err := netcfg.New(netcfg.OwnerRouteTable)
-	if errors.Is(err, netcfg.ErrBusy) {
+	return clearWith(func() (netcfg.Configurator, error) { return netcfg.New(netcfg.OwnerRouteTable) }, g)
+}
+
+// clearWith is Clear with the owner's configurator from open.
+func clearWith(open func() (netcfg.Configurator, error), g Guard) error {
+	c, err := open()
+	if err != nil {
 		return err
 	}
 	var gerr error
 	if g != nil {
 		gerr = g.Close()
-	}
-	if err != nil {
-		return errors.Join(err, gerr)
 	}
 	return errors.Join(gerr, c.Close())
 }
@@ -382,6 +388,7 @@ func (e *Enforcer) startWatching(check bool) {
 	e.stopWatch, e.watching = cancel, done
 	go func() {
 		defer close(done)
+		defer cancel() // a watcher that stops on its own lets go of its subscriptions
 		e.watch(ctx, check)
 	}()
 }
@@ -422,8 +429,9 @@ func (e *Enforcer) Enforce(ctx context.Context, w Want) error {
 }
 
 // apply puts w in place against the OS's routing as it is now, then the
-// guard if the routes went in; the watcher is paused or apply runs on
-// it. Only the routes' failure is returned.
+// guard for what the routes hold now: w's if they went in, else the last
+// applied Want's, which an Apply that failed left in place. The watcher
+// is paused or apply runs on it. Only the routes' failure is returned.
 func (e *Enforcer) apply(ctx context.Context, w Want, again bool) error {
 	start := time.Now()
 	s, err := e.cfg.Survey(ctx)
@@ -435,10 +443,20 @@ func (e *Enforcer) apply(ctx context.Context, w Want, again bool) error {
 	took := time.Since(start)
 	if err == nil {
 		e.applyGuard(ctx, w)
+	} else {
+		e.mu.Lock()
+		held := e.applied
+		e.mu.Unlock()
+		if held != nil {
+			e.applyGuard(ctx, *held)
+		}
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.want = &w
+	if err == nil {
+		e.applied = &w
+	}
 	e.failing = err != nil
 	e.status.Enforced = err == nil
 	if again {
@@ -521,7 +539,7 @@ func (e *Enforcer) Close() error {
 		e.pauseWatching()
 	}
 	e.mu.Lock()
-	e.want, e.status = nil, Status{}
+	e.want, e.applied, e.status = nil, nil, Status{}
 	e.mu.Unlock()
 	var err error
 	if e.guard != nil {
@@ -548,7 +566,11 @@ func (e *Enforcer) watch(ctx context.Context, check bool) {
 		}
 	}
 	subscribeGuard := func() {
-		if e.guard == nil {
+		e.mu.Lock()
+		unsupported := e.guardUnsupported
+		e.mu.Unlock()
+		if e.guard == nil || unsupported {
+			gch, regwatch = nil, nil
 			return
 		}
 		var err error
@@ -651,14 +673,16 @@ func (e *Enforcer) reapply(ctx context.Context) {
 	}
 }
 
-// reapplyGuard puts the guard for the last Want back, alone: the routes
-// weren't touched.
+// reapplyGuard puts the guard back alone, for the routes in place (the
+// last applied Want's), whether or not the routes' latest Apply failed:
+// a failed Apply leaves the previous routes in place, and they need
+// their guard.
 func (e *Enforcer) reapplyGuard(ctx context.Context) {
 	e.mu.Lock()
-	w, failing := e.want, e.failing
+	w := e.applied
 	e.mu.Unlock()
-	if w == nil || failing || ctx.Err() != nil {
-		return // no routes in place for it: the routes' retry brings it
+	if w == nil || ctx.Err() != nil {
+		return // no routes in place yet: nothing to guard
 	}
 	e.applyGuard(ctx, *w)
 	e.mu.Lock()

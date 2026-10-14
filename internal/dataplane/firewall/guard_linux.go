@@ -8,7 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"reflect"
 	"sync"
+	"time"
 
 	"github.com/google/nftables"
 	"github.com/google/nftables/expr"
@@ -68,6 +70,8 @@ type IPv6Guard struct {
 	netns   int // the namespace's fd; -1 is the calling thread's
 	applied *routetable.Exempt
 	closed  bool
+	// capable: the probe saw nf_tables in the kernel.
+	capable bool
 }
 
 var _ routetable.Guard = (*IPv6Guard)(nil)
@@ -127,30 +131,48 @@ func (g *IPv6Guard) conn() (*nftables.Conn, error) {
 	}
 	c, err := nftables.New(opts...)
 	if err != nil {
-		return nil, unsupported(fmt.Errorf("firewall: nftables: %w", err))
+		return nil, fmt.Errorf("firewall: nftables: %w", err)
 	}
 	return c, nil
 }
 
-// unsupported marks err as routetable.ErrGuardUnsupported when it says
-// the kernel has no nf_tables (no netfilter netlink, or no nftables
-// subsystem behind it).
-func unsupported(err error) error {
-	if err == nil {
+// probe asks the kernel, once, whether it has nf_tables at all: a dump
+// of the inet tables, the lightest request there is. Its answer is the
+// only one that can make the guard unsupported; an error from any later
+// request (an EOPNOTSUPP ack to a batch included) is an ordinary failure,
+// retried. Before an answer, probe asks again each time.
+func (g *IPv6Guard) probe(c *nftables.Conn) error {
+	if g.capable {
 		return nil
 	}
-	for _, errno := range []unix.Errno{unix.EPROTONOSUPPORT, unix.EOPNOTSUPP, unix.EAFNOSUPPORT} {
+	_, err := c.ListTablesOfFamily(nftables.TableFamilyINet)
+	if err == nil {
+		g.capable = true
+		return nil
+	}
+	if noNFTables(err) {
+		return fmt.Errorf("%w: %w", routetable.ErrGuardUnsupported, err)
+	}
+	return fmt.Errorf("firewall: nftables: %w", err)
+}
+
+// noNFTables says whether err, from the probe's dump, means the kernel
+// has no nf_tables: no netfilter netlink (the socket's protocol), or no
+// nftables subsystem behind it, which nfnetlink answers with EINVAL to a
+// plain request and EOPNOTSUPP inside a batch.
+func noNFTables(err error) bool {
+	for _, errno := range []unix.Errno{unix.EPROTONOSUPPORT, unix.EAFNOSUPPORT, unix.EOPNOTSUPP, unix.EINVAL} {
 		if errors.Is(err, errno) {
-			return fmt.Errorf("%w: %w", routetable.ErrGuardUnsupported, err)
+			return true
 		}
 	}
-	return err
+	return false
 }
 
 // Apply puts e in place, replacing whatever the table held in one
 // transaction: there is never a moment without a guard. Applying what is
-// in place again only checks the table is still whole (someone may have
-// deleted it or its rules), and rebuilds it if not.
+// in place again only checks the table holds exactly that (whole: someone
+// may have deleted, replaced or added to it), and rebuilds it if not.
 func (g *IPv6Guard) Apply(ctx context.Context, e routetable.Exempt) error {
 	if e.TUN == "" {
 		return errors.New("firewall: no TUN")
@@ -165,6 +187,9 @@ func (g *IPv6Guard) Apply(ctx context.Context, e routetable.Exempt) error {
 	}
 	c, err := g.conn()
 	if err != nil {
+		return err
+	}
+	if err := g.probe(c); err != nil {
 		return err
 	}
 	if g.applied != nil && g.applied.Equal(e) && whole(c, e) {
@@ -199,26 +224,89 @@ func (g *IPv6Guard) Apply(ctx context.Context, e routetable.Exempt) error {
 		c.AddRule(&nftables.Rule{Table: table, Chain: chain, Exprs: exprs})
 	}
 	if err := c.Flush(); err != nil {
-		return unsupported(fmt.Errorf("firewall: apply the IPv6 guard: %w", err))
+		return fmt.Errorf("firewall: apply the IPv6 guard: %w", err)
 	}
 	g.applied = &e
 	return nil
 }
 
-// whole reports whether the table holds e's chain, rules and set.
-// (Elements deleted one by one go unnoticed: only a refusal can come of
-// it, never a leak.)
+// whole reports whether the table holds exactly what Apply put there for
+// e: the chain as hooked, each rule's expressions (counters aside) in
+// order, and the set's elements, an element added (a leak) or removed (a
+// refusal) included. It dumps the set: tens of milliseconds for a
+// country-sized one, on each re-apply.
 func whole(c *nftables.Conn, e routetable.Exempt) bool {
 	table := &nftables.Table{Family: nftables.TableFamilyINet, Name: GuardTable}
-	if _, err := c.ListChain(table, guardChain); err != nil {
+	chain, err := c.ListChain(table, guardChain)
+	if err != nil || chain.Hooknum == nil || *chain.Hooknum != *nftables.ChainHookOutput ||
+		chain.Priority == nil || *chain.Priority != guardPriority || chain.Policy == nil || *chain.Policy != nftables.ChainPolicyAccept {
 		return false
 	}
-	rules, err := c.GetRules(table, &nftables.Chain{Name: guardChain, Table: table})
-	if err != nil || len(rules) != len(guardRules(e, guardSet, 0)) {
+	rules, err := c.GetRules(table, chain)
+	want := guardRules(e, guardSet, 0)
+	if err != nil || len(rules) != len(want) {
 		return false
 	}
-	_, err = c.GetSetByName(table, guardSet)
-	return err == nil
+	for i, r := range rules {
+		if !sameExprs(r.Exprs, want[i]) {
+			return false
+		}
+	}
+	set, err := c.GetSetByName(table, guardSet)
+	if err != nil || !set.Interval || set.KeyType.Name != nftables.TypeIP6Addr.Name {
+		return false
+	}
+	elems, err := c.GetSetElements(set)
+	return err == nil && sameElements(elems, intervals(e.Ranges6()))
+}
+
+// sameExprs compares a rule as the kernel dumps it with one as Apply
+// builds it: counters' values and the set's batch id don't count, nor do
+// fields a dump fills in that Apply leaves at zero.
+func sameExprs(got, want []expr.Any) bool {
+	return len(got) == len(want) && reflect.DeepEqual(canonical(got), canonical(want))
+}
+
+func canonical(exprs []expr.Any) []expr.Any {
+	out := make([]expr.Any, len(exprs))
+	for i, x := range exprs {
+		switch v := x.(type) {
+		case *expr.Counter:
+			out[i] = &expr.Counter{}
+		case *expr.Lookup:
+			l := *v
+			l.SetID, l.IsDestRegSet = 0, false
+			out[i] = &l
+		case *expr.Payload:
+			p := *v
+			p.OperationType = expr.PayloadLoad
+			out[i] = &p
+		default:
+			out[i] = x
+		}
+	}
+	return out
+}
+
+// sameElements compares a set's dumped elements with what Apply added,
+// in any order.
+func sameElements(got, want []nftables.SetElement) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	key := func(e nftables.SetElement) string { return fmt.Sprintf("%x/%t", e.Key, e.IntervalEnd) }
+	seen := make(map[string]int, len(want))
+	for _, e := range want {
+		seen[key(e)]++
+	}
+	for _, e := range got {
+		k := key(e)
+		if seen[k] == 0 {
+			return false
+		}
+		seen[k]--
+	}
+	return true
 }
 
 // Close removes the table and lets go of the namespace. A failure leaves
@@ -232,9 +320,14 @@ func (g *IPv6Guard) Close() error {
 	}
 	c, err := g.conn()
 	if err == nil {
-		err = unsupported(removeGuard(c))
+		err = g.probe(c)
+		if err == nil {
+			err = removeGuard(c)
+		} else if errors.Is(err, routetable.ErrGuardUnsupported) {
+			err = nil // no nf_tables: no table to remove
+		}
 	}
-	if err != nil && !errors.Is(err, routetable.ErrGuardUnsupported) {
+	if err != nil {
 		return err
 	}
 	g.closed, g.applied = true, nil
@@ -254,18 +347,35 @@ func removeGuard(c *nftables.Conn) error {
 	return nil
 }
 
-// Watch signals, coalesced, when anything of the guard's table is
-// deleted or a rule is added to it from outside (`nft flush ruleset`, a
-// firewall service's reload, a rule inserted ahead of ours), and when
-// events may have been lost (the socket overflowed). The guard's own
-// Apply shows up too, and finds the table whole. The channel closes when
-// ctx ends or the subscription breaks.
+// recheckAfterOverflow is when Watch signals again after the socket
+// overflowed: what was lost may have come after the re-apply the first
+// signal started.
+const recheckAfterOverflow = time.Second
+
+// Watch signals, coalesced, when anything of the guard's table changes
+// from outside: a deletion (`nft flush ruleset`, a firewall service's
+// reload), a rule added or replaced, a set element added or deleted; and
+// when events may have been lost (the socket overflowed: at once and
+// again recheckAfterOverflow later). The guard's own Apply shows up too,
+// and finds the table whole. The channel closes when ctx ends or the
+// subscription breaks. On a kernel without nf_tables it fails with
+// routetable.ErrGuardUnsupported.
 func (g *IPv6Guard) Watch(ctx context.Context) (<-chan struct{}, error) {
 	g.mu.Lock()
 	ns, closed := g.netns, g.closed
+	var perr error
+	if !closed {
+		var c *nftables.Conn
+		if c, perr = g.conn(); perr == nil {
+			perr = g.probe(c)
+		}
+	}
 	g.mu.Unlock()
 	if closed {
 		return nil, errClosed
+	}
+	if perr != nil {
+		return nil, perr
 	}
 	cfg := &netlink.Config{}
 	if ns >= 0 {
@@ -273,11 +383,11 @@ func (g *IPv6Guard) Watch(ctx context.Context) (<-chan struct{}, error) {
 	}
 	nl, err := netlink.Dial(unix.NETLINK_NETFILTER, cfg)
 	if err != nil {
-		return nil, unsupported(fmt.Errorf("firewall: watch: %w", err))
+		return nil, fmt.Errorf("firewall: watch: %w", err)
 	}
 	if err := errors.Join(forceBuffers(nl), nl.JoinGroup(unix.NFNLGRP_NFTABLES)); err != nil {
 		_ = nl.Close()
-		return nil, unsupported(fmt.Errorf("firewall: watch: %w", err))
+		return nil, fmt.Errorf("firewall: watch: %w", err)
 	}
 	out := make(chan struct{}, 1)
 	signal := func() {
@@ -286,9 +396,23 @@ func (g *IPv6Guard) Watch(ctx context.Context) (<-chan struct{}, error) {
 		default:
 		}
 	}
+	var mu sync.Mutex // guards done, so no late recheck sends on a closed out
+	done := false
+	recheck := func() {
+		mu.Lock()
+		defer mu.Unlock()
+		if !done {
+			signal()
+		}
+	}
 	stop := context.AfterFunc(ctx, func() { _ = nl.Close() })
 	go func() {
-		defer close(out)
+		defer func() {
+			mu.Lock()
+			done = true
+			close(out)
+			mu.Unlock()
+		}()
 		defer stop()
 		defer func() { _ = nl.Close() }()
 		for {
@@ -298,6 +422,7 @@ func (g *IPv6Guard) Watch(ctx context.Context) (<-chan struct{}, error) {
 				return
 			case errors.Is(err, unix.ENOBUFS):
 				signal() // something may have been lost
+				time.AfterFunc(recheckAfterOverflow, recheck)
 				continue
 			case err != nil:
 				return
@@ -312,15 +437,18 @@ func (g *IPv6Guard) Watch(ctx context.Context) (<-chan struct{}, error) {
 	return out, nil
 }
 
-// touchesGuard says whether m, an nftables event, deletes something of
-// the guard's table or adds a rule to it. Each of these messages starts
-// with the family (nfgenmsg) and has the table's name as attribute 1.
+// touchesGuard says whether m, an nftables event, changes the guard's
+// table: deletes something of it, adds or replaces a rule (a replacement
+// is a NEWRULE too), adds or deletes set elements. Each of these messages
+// starts with the family (nfgenmsg) and has the table's name as
+// attribute 1.
 func touchesGuard(m netlink.Message) bool {
 	if m.Header.Type>>8 != unix.NFNL_SUBSYS_NFTABLES || len(m.Data) < 4 || m.Data[0] != unix.NFPROTO_INET {
 		return false
 	}
 	switch m.Header.Type & 0xff {
-	case unix.NFT_MSG_DELTABLE, unix.NFT_MSG_DELCHAIN, unix.NFT_MSG_DELRULE, unix.NFT_MSG_DELSET, unix.NFT_MSG_NEWRULE:
+	case unix.NFT_MSG_DELTABLE, unix.NFT_MSG_DELCHAIN, unix.NFT_MSG_DELRULE, unix.NFT_MSG_DELSET,
+		unix.NFT_MSG_NEWRULE, unix.NFT_MSG_NEWSETELEM, unix.NFT_MSG_DELSETELEM:
 	default:
 		return false
 	}
@@ -329,7 +457,7 @@ func touchesGuard(m netlink.Message) bool {
 		return false
 	}
 	for ad.Next() {
-		if ad.Type() == 1 { // NFTA_{TABLE_NAME,CHAIN_TABLE,RULE_TABLE,SET_TABLE}
+		if ad.Type() == 1 { // NFTA_{TABLE_NAME,CHAIN_TABLE,RULE_TABLE,SET_TABLE,SET_ELEM_LIST_TABLE}
 			return ad.String() == GuardTable
 		}
 	}

@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -107,6 +108,20 @@ func (p *pair) ping(t *testing.T, dst string, args ...string) bool {
 		t.Logf("ping %s %s: %v: %s", strings.Join(args, " "), dst, err, out)
 	}
 	return err == nil
+}
+
+// handles are the guard chain's rule handles, in order.
+func (p *pair) handles(t *testing.T) string {
+	t.Helper()
+	out, err := exec.Command("ip", "netns", "exec", p.dev, "nft", "-a", "list", "chain", "inet", firewall.GuardTable, "output").CombinedOutput()
+	if err != nil {
+		t.Fatalf("nft list chain: %v: %s", err, out)
+	}
+	var hs []string
+	for _, m := range regexp.MustCompile(`# handle (\d+)`).FindAllStringSubmatch(string(out), -1) {
+		hs = append(hs, m[1])
+	}
+	return strings.Join(hs, " ")
 }
 
 func (p *pair) table(t *testing.T) string {
@@ -255,13 +270,55 @@ func TestIPv6GuardRefusesWhatRoutingCantConfine(t *testing.T) {
 	// rebuilds the table without it.
 	nft("insert", "rule", "inet", firewall.GuardTable, "output", "accept")
 	signalled("a rule inserted")
+	if err := g.Apply(ctx, e); err != nil {
+		t.Fatal(err)
+	}
+	expect("re-applied after a rule was inserted")
+	signalled("its own Apply")
+
+	// Applying what is in place leaves the table as it is (the same rule
+	// handles): whole compares what the kernel holds with what Apply put
+	// there and finds them the same.
+	handles := p.handles(t)
+	if err := g.Apply(ctx, e); err != nil {
+		t.Fatal(err)
+	}
+	if got := p.handles(t); got != handles {
+		t.Errorf("applying what was in place rebuilt the table: handles %s, were %s", got, handles)
+	}
+
+	// An element added to the set (a leak: the foreign site exempt) and
+	// the reject rule replaced in place (the same rule count) are seen,
+	// and the next Apply puts back exactly what it wants.
+	nft("add", "element", "inet", firewall.GuardTable, "exempt6", "{ "+foreign6+" }")
+	signalled("an element added")
+	if !p.ping(t, foreign6, "-I", "eth0") {
+		t.Fatal("the added element didn't open the foreign site: the test proves nothing")
+	}
+	if err := g.Apply(ctx, e); err != nil {
+		t.Fatal(err)
+	}
+	expect("re-applied after an element was added")
+	signalled("its own Apply")
+	last := strings.Fields(p.handles(t))
+	nft("replace", "rule", "inet", firewall.GuardTable, "output", "handle", last[len(last)-1], "accept")
+	signalled("a rule replaced")
+	if !p.ping(t, foreign6, "-I", "eth0") {
+		t.Fatal("the replaced rule didn't let the foreign site through: the test proves nothing")
+	}
+	if err := g.Apply(ctx, e); err != nil {
+		t.Fatal(err)
+	}
+	expect("re-applied after a rule was replaced")
+	nft("delete", "element", "inet", firewall.GuardTable, "exempt6", "{ 2001:db8:d0::/48 }")
+	signalled("an element deleted")
 	cancel()
 	for range events { // closes once ctx ends
 	}
 	if err := g.Apply(ctx, e); err != nil {
 		t.Fatal(err)
 	}
-	expect("re-applied after a deletion")
+	expect("re-applied after an element was deleted")
 
 	// A successor (a restart after a crash) takes the table over.
 	g2 := p.guard(t)
@@ -307,6 +364,17 @@ func TestIPv6GuardTakesACountrySizedSet(t *testing.T) {
 	t.Logf("applied %d ranges in %v", len(routetable.Exempt{Direct: direct}.Ranges6()), time.Since(start).Round(time.Millisecond))
 	if took := time.Since(start); took > 20*time.Second {
 		t.Errorf("took %v", took)
+	}
+	// A re-apply compares the whole set with the kernel's and changes
+	// nothing.
+	handles := p.handles(t)
+	start = time.Now()
+	if err := g.Apply(context.Background(), routetable.Exempt{TUN: "thinkpol0", Mark: 0x7470, Direct: direct}); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("checked them in %v", time.Since(start).Round(time.Millisecond))
+	if got := p.handles(t); got != handles {
+		t.Errorf("a re-apply of the same set rebuilt the table: handles %s, were %s", got, handles)
 	}
 	if !p.ping(t, "2a00:2::1", "-I", "eth0") {
 		t.Error("a destination inside a direct /32 refused")
