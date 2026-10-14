@@ -495,7 +495,9 @@ const reflectLocal = runtime.GOOS == "darwin"
 
 // table is the router table for what runs now.
 func (e *Engine) table() router.Table {
-	t := router.Table{Overlay: e.networks, Local: e.local, ReflectLocal: reflectLocal}
+	// A device never forwards the OS's traffic: only its own addresses
+	// may speak through it.
+	t := router.Table{Overlay: e.networks, Local: e.local, ReflectLocal: reflectLocal, LocalSourcesOnly: e.kind == netmap.NodeDevice}
 	egresses := make(map[string]*router.Egress, len(e.devices))
 	for name, d := range e.devices {
 		egresses[name] = d.egress

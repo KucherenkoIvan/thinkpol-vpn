@@ -590,3 +590,84 @@ func TestPacketsForTheNodeItselfAreReflected(t *testing.T) {
 		}
 	}
 }
+
+// Only the OS talking to itself is reflected: a packet for a local address
+// with any other source (injected on the TUN, a peer's address) is never
+// delivered as if WireGuard had authenticated it. A reflection the TUN
+// fails is counted.
+func TestOnlyLocalToLocalIsReflected(t *testing.T) {
+	ch := tuntest.NewChannelTUN()
+	dev := &bytesTUN{Device: ch.TUN()}
+	r := router.New(dev)
+	t.Cleanup(func() { _ = r.Close() })
+	overlay := egress(t, r, "overlay")
+	err := r.SetTable(router.Table{
+		Overlay:      []netip.Prefix{prefix("100.64.0.0/16")},
+		Peers:        []router.Route{{Prefix: prefix("100.64.0.2/32"), Egress: overlay}},
+		Local:        []netip.Addr{addr("100.64.0.1")},
+		ReflectLocal: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	toOverlay := reads(overlay)
+	ch.Outbound <- ping("100.64.0.2", "100.64.0.1") // a peer's source
+	dev.fail = errors.New("TUN gone")
+	ch.Outbound <- ping("100.64.0.1", "100.64.0.1")
+	ch.Outbound <- ping("100.64.0.1", "100.64.0.2") // a marker
+	<-toOverlay
+	select {
+	case p := <-ch.Inbound:
+		t.Fatalf("the TUN got %x", p)
+	default:
+	}
+	want := router.Counters{Routed: 1, NoRoute: 1, ReflectFailed: 1}
+	for deadline := time.Now().Add(wait); r.Counters() != want; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("counters %+v, want %+v", r.Counters(), want)
+		}
+	}
+}
+
+// What the OS sends from a link-local address (neighbour discovery,
+// multicast on the TUN) never reaches WireGuard, whose peers would refuse
+// it; on a device (LocalSourcesOnly) neither does any source but its own.
+func TestForeignSourcesNeverReachWireGuard(t *testing.T) {
+	for _, localOnly := range []bool{false, true} {
+		r, ch := newRouter(t)
+		exit := egress(t, r, "exit")
+		err := r.SetTable(router.Table{
+			Rules:            []router.Route{{Prefix: prefix("0.0.0.0/0"), Egress: exit}, {Prefix: prefix("::/0"), Egress: exit}},
+			Local:            []netip.Addr{addr("100.64.0.1"), addr("fd00:1::1")},
+			LocalSourcesOnly: localOnly,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		toExit := reads(exit)
+		ch.Outbound <- ping("fe80::5404:4dff:fe31:64ae", "ff02::16")
+		ch.Outbound <- ping("fe80::1", "2001:db8::1")
+		ch.Outbound <- ping("10.9.9.9", "192.0.2.1") // not the node's
+		ch.Outbound <- ping("100.64.0.1", "192.0.2.1")
+		want := []string{"192.0.2.1"}
+		if !localOnly {
+			want = []string{"192.0.2.1", "192.0.2.1"}
+		}
+		for range want {
+			select {
+			case <-toExit:
+			case <-time.After(wait):
+				t.Fatalf("localOnly=%v: too little reached the exit", localOnly)
+			}
+		}
+		foreign := uint64(2)
+		if localOnly {
+			foreign = 3
+		}
+		for deadline := time.Now().Add(wait); r.Counters().ForeignSource != foreign || r.Counters().Routed != uint64(len(want)); time.Sleep(time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatalf("localOnly=%v: counters %+v", localOnly, r.Counters())
+			}
+		}
+	}
+}
