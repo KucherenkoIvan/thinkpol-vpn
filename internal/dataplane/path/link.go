@@ -5,6 +5,8 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net"
 	"slices"
 	"sync"
@@ -128,6 +130,7 @@ type link struct {
 	created   int64
 	lastProof atomic.Int64
 	lastProbe atomic.Int64
+	lastIn    atomic.Int64
 	upSince   atomic.Int64
 	rtt       atomic.Int64
 
@@ -135,6 +138,7 @@ type link struct {
 	probes map[uint64]int64 // token → when sent
 
 	packetsIn, packetsOut, bytesIn, bytesOut, queueFull atomic.Uint64
+	readFailures, writeFailures                         atomic.Uint64
 }
 
 // addLink starts reading and writing tl, a link to the adjacent node id,
@@ -161,7 +165,7 @@ func (n *Node) addLink(id NodeID, tl transport.Link, dialed bool, transportName 
 	l.nb.add(l)
 	n.nmu.Unlock()
 	if !n.spawn(l.readLoop) || !n.spawn(l.writeLoop) {
-		l.close()
+		l.close("the node stopped", nil)
 		return l
 	}
 	l.probe(now)
@@ -176,8 +180,35 @@ func (l *link) up(now int64) bool {
 func (l *link) proven(now int64) {
 	if !l.up(now) {
 		l.upSince.Store(now)
+		l.lastProof.Store(now)
+		l.node.opts.Log.Info("link up", l.logAttrs(now)...)
+		return
 	}
 	l.lastProof.Store(now)
+}
+
+// logAttrs describe the link in logs: whose it is, how it came, what it
+// carried. No network address: like Status, logs may leave the device.
+func (l *link) logAttrs(now int64) []any {
+	attrs := []any{"neighbor", l.nb.id, "transport", l.transport, "dialed", l.dialed}
+	if l.dialed {
+		attrs = append(attrs, "endpoint", l.endpoint)
+	}
+	if rtt := l.rtt.Load(); rtt != 0 {
+		attrs = append(attrs, "rtt", time.Duration(rtt).Round(time.Millisecond))
+	}
+	if now == 0 {
+		return attrs
+	}
+	ago := func(t int64) any {
+		if t == 0 {
+			return "never"
+		}
+		return time.Duration(now - t).Round(time.Millisecond)
+	}
+	return append(attrs, "age", time.Duration(now-l.created).Round(time.Millisecond),
+		"last_proof", ago(l.lastProof.Load()), "last_in", ago(l.lastIn.Load()),
+		"packets_in", l.packetsIn.Load(), "packets_out", l.packetsOut.Load())
 }
 
 func (l *link) closed() bool {
@@ -189,12 +220,36 @@ func (l *link) closed() bool {
 	}
 }
 
-func (l *link) close() {
+// close closes the link for why (err, if any, is what said so) and logs
+// it: at info level for a link that was up, at debug for one that never
+// was (a dial that went unanswered: its dial loop logs that).
+func (l *link) close(why string, err error) {
 	l.closeOnce.Do(func() {
 		close(l.done)
 		_ = l.tl.Close()
 		l.nb.remove(l)
+		now := l.node.now()
+		attrs := append([]any{"reason", why}, l.logAttrs(now)...)
+		if err != nil {
+			attrs = append(attrs, "err", err)
+		}
+		if up := l.upSince.Load(); up != 0 {
+			attrs = append(attrs, "was_up_for", time.Duration(now-up).Round(time.Millisecond))
+			l.node.opts.Log.Info("link closed", attrs...)
+			return
+		}
+		l.node.opts.Log.Debug("link closed before it came up", attrs...)
 	})
+}
+
+// failed logs a link's failed read or write: its first at info level, the
+// rest at debug.
+func (l *link) failed(op string, count *atomic.Uint64, err error) {
+	level := slog.LevelDebug
+	if count.Add(1) == 1 {
+		level = slog.LevelInfo
+	}
+	l.node.opts.Log.Log(context.Background(), level, "link "+op+" failed", append(l.logAttrs(0), "err", err)...)
 }
 
 // send queues a packet frame and owns b from then on. A closed link or a
@@ -247,18 +302,18 @@ func (l *link) writeLoop() {
 			l.packetsOut.Add(1)
 			l.bytesOut.Add(uint64(size))
 		case errors.Is(err, net.ErrClosed):
-			l.close()
+			l.close("the transport closed it", err)
 			return
 		case errors.Is(err, transport.ErrPacketTooLong) || errors.Is(err, transport.ErrPacketSize):
 			l.node.counters.tooLarge.Add(1)
 		default:
 			l.node.counters.writeFailed.Add(1)
+			l.failed("write", &l.writeFailures, err)
 		}
 	}
 }
 
 func (l *link) readLoop() {
-	defer l.close()
 	failures := 0
 	for {
 		b := getBuf()
@@ -266,8 +321,11 @@ func (l *link) readLoop() {
 		if err != nil {
 			putBuf(b)
 			if errors.Is(err, net.ErrClosed) {
+				l.close("the transport closed it", err)
 				return
 			}
+			l.node.counters.readFailed.Add(1)
+			l.failed("read", &l.readFailures, err)
 			// Any other error loses one packet; don't spin on a run of them.
 			if failures++; failures > 3 {
 				select {
@@ -283,6 +341,7 @@ func (l *link) readLoop() {
 			putBuf(b)
 			continue
 		}
+		l.lastIn.Store(l.node.now())
 		l.packetsIn.Add(1)
 		l.bytesIn.Add(uint64(n))
 		*b = (*b)[:n]
@@ -297,7 +356,7 @@ func (l *link) readLoop() {
 func (l *link) tick(now int64) {
 	o := l.node.opts
 	if now-max(l.lastProof.Load(), l.created) >= int64(o.DeadAfter) {
-		l.close()
+		l.close("no answer to its probes within "+o.DeadAfter.String(), nil)
 		return
 	}
 	if now-l.lastProbe.Load() >= int64(o.ProbeInterval) && now-l.lastProof.Load() >= int64(o.ProbeInterval) {
@@ -367,7 +426,7 @@ func (n *Node) startDial(id NodeID, eps []Endpoint) *dialLoop {
 	ctx, cancel := context.WithCancel(n.ctx)
 	d := &dialLoop{endpoints: eps, cancel: cancel}
 	n.spawn(func() {
-		backoff, next := n.opts.RedialMin, 0
+		backoff, next, failures := n.opts.RedialMin, 0, 0
 		for ctx.Err() == nil {
 			ep := eps[next]
 			dctx, dcancel := context.WithTimeout(ctx, n.opts.DeadAfter)
@@ -379,14 +438,28 @@ func (n *Node) startDial(id NodeID, eps []Endpoint) *dialLoop {
 				select {
 				case <-l.done:
 				case <-ctx.Done():
-					l.close()
+					l.close("no longer dialed (the table changed, or the node stopped)", nil)
 					return
 				}
 				heard = l.upSince.Load() != 0
+				if !heard {
+					err = fmt.Errorf("no answer within %v", n.opts.DeadAfter)
+				}
 			}
 			if heard {
-				backoff, next = n.opts.RedialMin, 0
+				backoff, next, failures = n.opts.RedialMin, 0, 0
 			} else {
+				if ctx.Err() != nil {
+					return
+				}
+				// The first failure of a run says why at info level; the
+				// rest go to debug until a link comes up again.
+				level := slog.LevelDebug
+				if failures++; failures == 1 {
+					level = slog.LevelInfo
+				}
+				n.opts.Log.Log(ctx, level, "dial failed", "neighbor", id, "transport", ep.Transport, "endpoint", next,
+					"failures", failures, "retry_in", backoff, "err", err)
 				next = (next + 1) % len(eps)
 			}
 			select {

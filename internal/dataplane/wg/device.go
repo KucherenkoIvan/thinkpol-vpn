@@ -70,7 +70,10 @@ type Device struct {
 //
 // WireGuard logs every failed send as an error, and a peer without a path
 // (path.ErrNoPath, counted by the path layer as NoPath) fails every
-// packet and every handshake retry: those go to the debug level.
+// packet and every handshake retry: those go to the debug level. Its
+// verbose messages go to the debug level too, but for a handshake that
+// didn't complete in time and the first one done after that (info), so a
+// log at info level explains a drop.
 func New(name string, t tun.Device, b *path.Bind, log *slog.Logger) *Device {
 	logger := &device.Logger{Verbosef: device.DiscardLogf, Errorf: device.DiscardLogf}
 	if log != nil {
@@ -82,9 +85,7 @@ func New(name string, t tun.Device, b *path.Bind, log *slog.Logger) *Device {
 			}
 			log.Log(context.Background(), level, fmt.Sprintf(format, args...))
 		}
-		if log.Enabled(context.Background(), slog.LevelDebug) {
-			logger.Verbosef = func(format string, args ...any) { log.Debug(fmt.Sprintf(format, args...)) }
-		}
+		logger.Verbosef = (&handshakeLog{log: log, late: make(map[string]bool)}).verbosef
 	}
 	return &Device{
 		name:   name,
@@ -92,6 +93,37 @@ func New(name string, t tun.Device, b *path.Bind, log *slog.Logger) *Device {
 		bind:   b,
 		peers:  make(map[netmap.WireGuardKey]Peer),
 		synced: true,
+	}
+}
+
+// handshakeLog sorts WireGuard's verbose messages: a handshake that timed
+// out (WireGuard retries it) goes to the info level, and so does the next
+// handshake of that peer done, ending the outage; everything else is
+// debug.
+type handshakeLog struct {
+	log  *slog.Logger
+	mu   sync.Mutex
+	late map[string]bool // peers whose handshake timed out, until one is done
+}
+
+func (h *handshakeLog) verbosef(format string, args ...any) {
+	peer := ""
+	if len(args) > 0 {
+		peer = fmt.Sprint(args[0])
+	}
+	level := slog.LevelDebug
+	h.mu.Lock()
+	switch {
+	case strings.Contains(format, "Handshake did not complete") || strings.Contains(format, "stopped hearing back"):
+		h.late[peer] = true
+		level = slog.LevelInfo
+	case h.late[peer] && (strings.Contains(format, "Received handshake response") || strings.Contains(format, "Sending handshake response")):
+		delete(h.late, peer)
+		level = slog.LevelInfo
+	}
+	h.mu.Unlock()
+	if h.log.Enabled(context.Background(), level) {
+		h.log.Log(context.Background(), level, fmt.Sprintf(format, args...))
 	}
 }
 

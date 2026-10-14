@@ -65,9 +65,10 @@ type EngineConfig struct {
 	LinkMTU int
 	// Path tunes the path layer; its Space is set from Space.
 	Path path.Options
-	// Log gets WireGuard's errors and, at debug level, the details of what
-	// Apply skipped or failed at, which may quote the map: keep it local.
-	// Nil discards them.
+	// Log gets WireGuard's errors and handshake timeouts, the links' lives
+	// (path.Options.Log, unless Path has its own) and, at debug level, the
+	// details of what Apply skipped or failed at, which may quote the map:
+	// keep it local. Nil discards them.
 	Log *slog.Logger
 	// Blobs returns a blob the map references, false while the node
 	// doesn't have it (TP-017's store); the engine checks its size and
@@ -225,6 +226,9 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 	}
 	opts := cfg.Path
 	opts.Space = cfg.Space
+	if opts.Log == nil {
+		opts.Log = cfg.Log
+	}
 	node, err := path.NewNode(path.NodeID(cfg.ID), opts)
 	if err != nil {
 		return nil, err
