@@ -7,7 +7,7 @@ repo: thinkpol-vpn
 size: S
 depends_on: []
 refs: [R1, DESIGN#ipv6]
-owner: agent-composer
+owner: agent-opus
 branch: tp-072-stale-egress
 ---
 
@@ -47,3 +47,4 @@ Round 1 review (correctness), orchestrator's list.
 - 2026-10-15 backlog → in-progress — owner: agent-composer, branch: tp-072-stale-egress
 - 2026-10-15 in-progress → review — restore worker/uplink state on failed rebuild, Close forwarding-first; make lint, make test, lab-gotest supervisor pass
 - 2026-10-15 review → has-errors — 8 findings (config rollback drops seeds, inbound rollback, Close without tables on restore failure, test overclaims), see Review findings
+- 2026-10-15 has-errors → in-progress — owner: agent-opus, fixing the review findings
