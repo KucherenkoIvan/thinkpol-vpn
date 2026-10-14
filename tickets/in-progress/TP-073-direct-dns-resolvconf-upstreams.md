@@ -41,3 +41,4 @@ Direct DNS upstreams taken from a rewritten `resolv.conf` are filtered the same 
 - 2026-10-15 backlog → in-progress — owner: agent-composer, branch: tp-073-resolvconf-upstreams
 - 2026-10-15 in-progress → review — filter rewritten resolv.conf upstreams through `upstreamsFromContent`; make lint, make test pass
 - 2026-10-15 review → has-errors — reviewer: empty stub fallback cleared upstreams; resolved watcher unfiltered; DESIGN gap
+- 2026-10-15 has-errors → in-progress — fix round 2
