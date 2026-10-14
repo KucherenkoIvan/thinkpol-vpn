@@ -1585,6 +1585,45 @@ func TestStopTimeoutKills(t *testing.T) {
 	}
 }
 
+// TestWorkerSpawnFailureSurfaces checks a missing worker binary makes run()
+// return quickly with a start error, and Close does not hang on the supervise
+// loop (before the fix, start() blocked forever on p.gone).
+func TestWorkerSpawnFailureSurfaces(t *testing.T) {
+	needsLab(t)
+	const missing = "/nonexistent/thinkpol-worker"
+	opts := options(nil)
+	opts.Command = []string{missing, "worker"}
+	opts.Backoff = supervisor.Backoff{Initial: 10 * time.Millisecond, Max: 50 * time.Millisecond, ResetAfter: time.Second}
+	s, err := supervisor.New(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	space := netmap.NewSpaceID()
+	if err := s.SetSpaces(spacesOf(space)); err != nil {
+		t.Fatalf("SetSpaces: %v", err)
+	}
+	eventually(t, 3*time.Second, "spawn failure recorded", func() error {
+		w, ok := info(s, space)
+		if !ok {
+			return errors.New("no worker")
+		}
+		if !strings.Contains(w.LastExit, "start:") || !strings.Contains(w.LastExit, missing) {
+			return fmt.Errorf("last exit %q", w.LastExit)
+		}
+		return nil
+	})
+	done := make(chan error, 1)
+	go func() { done <- s.Close() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close hung after a worker spawn failure")
+	}
+}
+
 func TestThinkpolWorkerCommand(t *testing.T) {
 	needsLab(t)
 	const bin = "/opt/thinkpol/bin/thinkpol"

@@ -1094,6 +1094,7 @@ func start(cmd *exec.Cmd) (*process, error) {
 		if err := cmd.Start(); err != nil {
 			runtime.UnlockOSThread()
 			started <- err
+			close(p.gone)
 			return
 		}
 		p.pid = cmd.Process.Pid
