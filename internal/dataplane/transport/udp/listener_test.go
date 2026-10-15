@@ -429,9 +429,9 @@ func TestNoncesNeverRepeat(t *testing.T) {
 // TestNineRedialsThenQuietThenOldest replays every redial's first datagram
 // once the current sender has gone quiet: the oldest was evicted from the
 // slots, the others are remembered, and none gets back in. The dialers'
-// clocks are ahead by the allowed skew, so the evicted oldest's datagram
-// is still fresh a full skew past its eviction on the listener's clock —
-// it is refused only while the evicted are remembered for twice the skew.
+// clocks are ahead by the allowed skew; the evicted oldest is refused only
+// while its id is remembered by the newest sealed send time seen from it,
+// until the freshness check would reject that time.
 func TestNineRedialsThenQuietThenOldest(t *testing.T) {
 	f := newFixture(t)
 	// Nodes' clocks may be off by maxClockSkew; the worst case for the
@@ -641,6 +641,14 @@ func TestAnEvictedSenderThatKeepsSendingStaysRemembered(t *testing.T) {
 	waitFor(t, "the tap holding a datagram", func() bool { f.tap.mu.Lock(); defer f.tap.mu.Unlock(); return len(f.tap.held) == 1 })
 	held := f.tap.takeHeld()[0]
 	f.tap.hold(false)
+	f.listener.mu.Lock()
+	fl := f.listener.flows[string(f.peer.Verifier)]
+	e := fl.entry.Load()
+	f.listener.mu.Unlock()
+	stillSending, err := open(nil, e.recv, held)
+	if err != nil {
+		t.Fatal(err)
+	}
 	f.tap.inject(held) // the tap took it off the wire; the listener turns it away
 	waitFor(t, "the turned-away datagram counted", func() bool { return f.listener.Counters().StaleSender > 0 })
 
@@ -649,13 +657,24 @@ func TestAnEvictedSenderThatKeepsSendingStaysRemembered(t *testing.T) {
 	// skew ahead — is fresh for another skew yet.
 	f.clock.advance(2*maxClockSkew - 15*time.Second)
 	f.tap.rebind()
+	extra := f.dialWith(skewed)
+	write(t, extra, "extra")
+	expectPacket(t, got, []byte("extra"))
+	f.listener.mu.Lock()
+	if _, ok := fl.senders.evicted.byID[stillSending.sender]; !ok {
+		f.listener.mu.Unlock()
+		t.Fatal("the evicted sender's memory ran out while its newest datagrams are still fresh")
+	}
+	f.listener.mu.Unlock()
 	addr := server.RemoteAddr().String()
 	before := f.listener.Counters()
 	f.tap.inject(held)
-	waitFor(t, "the replay turned away", func() bool {
-		c := f.listener.Counters()
-		return c.StaleSender+c.Replayed > before.StaleSender+before.Replayed
+	waitFor(t, "the replay refused as a stale sender", func() bool {
+		return f.listener.Counters().StaleSender > before.StaleSender
 	})
+	if c := f.listener.Counters(); c.Replayed != before.Replayed {
+		t.Fatalf("the replay was counted as a replay, not refused as a stale sender")
+	}
 	f.expectNoAccept()
 	expectNoPacket(t, got)
 	if a := server.RemoteAddr().String(); a != addr {

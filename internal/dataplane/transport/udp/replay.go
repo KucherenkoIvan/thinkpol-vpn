@@ -139,12 +139,6 @@ func (e *evictedSenders) seen(id senderID, sent uint32) bool {
 	return true
 }
 
-// has reports whether an evicted sender is remembered at now.
-func (e *evictedSenders) has(id senderID, now time.Time) bool {
-	s, ok := e.byID[id]
-	return ok && sentFresh(s.sent, now)
-}
-
 func (s *evictedSender) note(sent uint32) {
 	if later(sent, s.sent) {
 		s.sent = sent

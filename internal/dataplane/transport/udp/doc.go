@@ -86,11 +86,13 @@
 //     sender's clock was right) opens a link (to the replayer's address,
 //     until the real dialer's next datagram moves it back) and delivers
 //     each of their packets once more; WireGuard drops them;
-//   - an on-path attacker can hold back a datagram the listener never saw
-//     and show it later: ahead of the original, or, from an older sender,
-//     once the current sender has been quiet for 30 seconds (that is what
-//     a dialer whose clock went back looks like); as with WireGuard's own
-//     roaming, it moves the link until the real dialer's next datagram.
+//   - an on-path attacker can hold back the newest datagram the listener
+//     never saw and show it later: ahead of the original, or, from an
+//     older sender, once the current sender has been quiet for 30 seconds
+//     (that is what a dialer whose clock went back looks like); with no
+//     link open it opens one toward the attacker's address, which lasts
+//     until DeadAfter; as with WireGuard's own roaming, it moves the link
+//     until the real dialer's next datagram.
 //
 // # Links
 //

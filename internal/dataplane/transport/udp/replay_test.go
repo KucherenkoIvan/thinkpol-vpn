@@ -42,8 +42,15 @@ func TestAnEvictedSenderKeepsRefreshingItsMemory(t *testing.T) {
 	// Measured from the eviction alone, the memory would forget the id
 	// ten minutes after it; its newest datagram is fresh until thirty
 	// seconds plus two skews.
-	if v := s.admit(senderIDFor(1), 2, sealed, base.Add(2*maxClockSkew+15*time.Second)); v != dropStale {
+	replayAt := base.Add(2*maxClockSkew + 15*time.Second)
+	if v := s.admit(senderIDFor(maxSenders+2), 0, uint32(replayAt.Unix()), replayAt); v != deliverNewest {
+		t.Fatalf("the newcomer's verdict is %v", v)
+	}
+	if v := s.admit(senderIDFor(1), 2, sealed, replayAt); v != dropStale {
 		t.Fatalf("the evicted sender's verdict is %v, want %v", v, dropStale)
+	}
+	if senderInSlot(&s, senderIDFor(1)) {
+		t.Fatal("the evicted sender's memory ran out while its newest datagrams are still fresh")
 	}
 }
 
@@ -52,16 +59,45 @@ func TestAnEvictedSenderKeepsRefreshingItsMemory(t *testing.T) {
 // evicted (its clock a skew ahead, truncated to the second) stays fresh a
 // little past two skews; the memory must not run out sooner on finer ones.
 func TestTheMemoryExpiresExactlyWhenFreshnessDoes(t *testing.T) {
-	var e evictedSenders
-	id := senderID{}
+	var s senders
 	at := time.Unix(1_800_000_000, 500_000_000)
-	e.add(id, uint32(at.Add(maxClockSkew).Unix()), at)
-	if !e.has(id, at.Add(2*maxClockSkew+300*time.Millisecond)) {
+	sealed := uint32(at.Add(maxClockSkew).Unix())
+	id := senderIDFor(1)
+	if v := s.admit(id, 0, sealed, at); v != deliverNewest {
+		t.Fatalf("the first sender's verdict is %v", v)
+	}
+	for i := int64(2); i <= maxSenders+1; i++ {
+		if v := s.admit(senderIDFor(i), 0, sealed, at); v != deliverNewest {
+			t.Fatalf("sender %d's verdict is %v", i, v)
+		}
+	}
+	t1 := at.Add(2*maxClockSkew + 300*time.Millisecond)
+	if v := s.admit(id, 1, sealed, t1); v != dropStale {
 		t.Fatal("forgotten while a datagram sealed as it was evicted is still fresh")
 	}
-	if e.has(id, at.Add(2*maxClockSkew+1200*time.Millisecond)) {
+	if senderInSlot(&s, id) {
+		t.Fatal("forgotten while a datagram sealed as it was evicted is still fresh")
+	}
+	t2 := at.Add(2*maxClockSkew + 1200*time.Millisecond)
+	if v := s.admit(senderIDFor(maxSenders+2), 0, uint32(t2.Unix()), t2); v != deliverNewest {
+		t.Fatalf("the newcomer's verdict is %v", v)
+	}
+	if v := s.admit(id, 2, sealed, t2); v != dropStale {
+		t.Fatalf("the evicted sender's verdict is %v, want %v", v, dropStale)
+	}
+	if !senderInSlot(&s, id) {
 		t.Fatal("remembered past what the freshness check accepts")
 	}
+}
+
+func senderInSlot(s *senders, id senderID) bool {
+	for i := range s.entries {
+		c := &s.entries[i]
+		if c.used != 0 && c.id == id {
+			return true
+		}
+	}
+	return false
 }
 
 // TestAReplayDoesNotRefreshTheLRUStamp: a sender whose only traffic is
