@@ -27,7 +27,7 @@ Non-reflection paths; changing how macOS routes local overlay traffic; device ve
 ## Acceptance
 
 - [x] reflected TCP, UDP and ICMPv6 (and ICMP/TCP/UDP over IPv4) packets carry a correct checksum, unit-tested with packets whose checksum field holds a wrong or partial value (`checksum_test.go`, `TestReflectedIPv6UDPFixesChecksum` in `router_test.go`; `make test`, `go test -race ./internal/dataplane/checksum/... ./internal/dataplane/router/...`)
-- [ ] the device checklist: `dig @A6`, TCP to A6 and `ping6 A6` work, and the "bad checksum" counter doesn't grow (next device run)
+- [x] the device checklist: `dig @A6`, TCP to A6 and `ping6 A6` work, and the "bad checksum" counter doesn't grow (device run 4: N10 and N12 PASS; no checksum drops)
 
 ## Review findings
 
@@ -48,6 +48,8 @@ Root cause (inferred): XNU treats traffic to a local IPv6 address as loopback an
 
 Effect: anything on the Mac talking to its own overlay IPv6 is broken. A6 is often the second nameserver of the system resolver, so DNS failover is broken too.
 
+- **Device run 4 (2026-10-15):** N10 and N12 PASS — TCP, `ping6` and `dig` to the node's own overlay IPv6 work; `router.reflected` grows; checksum counters show no drops; IPv6 overlay names resolve.
+
 ## Log
 
 - 2026-10-15 created in in-progress (split from TP-019 after device run 2; stacked on tp-019-macos-data-plane)
@@ -56,3 +58,4 @@ Effect: anything on the Mac talking to its own overlay IPv6 is broken. A6 is oft
 - 2026-10-15 has-errors → in-progress — fix round 2
 - 2026-10-15 in-progress → review — round 2 fixes; `make test` pass; `make lint` golangci green; `buf breaking` on `localapi.proto` field 6 inherited from base
 - 2026-10-15 review follow-up: ext-len test reproduces the loop; router test flips checksum bytes; checksumtest package
+- 2026-10-15 device run 4: own IPv6 TCP/ping6/dig work on the device
