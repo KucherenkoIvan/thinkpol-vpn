@@ -19,7 +19,7 @@ Hop groups, chains and rule sets live in the controller with their invariants en
 
 ## Acceptance
 - [ ] invalid chains (first hop without ingress, last hop without egress, a hop group member without them) are rejected with domain errors
-- [ ] hop-group invariants from N9 are enforced (members distinct, selection policy valid, every member allows ingress and egress where the chain position requires it)
+- [ ] hop groups enforce DESIGN "Control plane" (`topology`) and PRD R6 (members plus an allowed selection policy: `failover`, `lowest-latency`, `spread`)
 - [ ] a rule set that references chains or matchers the domain does not allow is rejected with domain errors
 
 ## Notes
@@ -29,3 +29,4 @@ Hop groups, chains and rule sets live in the controller with their invariants en
 - 2026-10-10 created in backlog
 - 2026-10-12 docs (TP-013 review): notes from the ingress and egress settings
 - 2026-10-15 docs (backlog grooming): acceptance for hop groups and rule-set policy
+- 2026-10-15 docs (backlog grooming, review fixes): hop-group acceptance cites DESIGN/PRD R6

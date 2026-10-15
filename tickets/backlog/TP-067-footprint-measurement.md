@@ -6,7 +6,7 @@ area: lab
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-012]
-refs: [PRD#performance, DESIGN#server-agent-one-worker-per-space]
+refs: [PRD#non-functional-requirements, DESIGN#server-agent-one-worker-per-space]
 owner: ""
 branch: ""
 ---
@@ -37,7 +37,7 @@ Measure what thinkpol needs to run, so that README can state minimal and recomme
 - [ ] production builds set non-zero `MemoryMax` and `PidsMax` defaults from the measurements
 
 ## Notes
-- **Independent review (2026-10-15):** without cgroup limits a compromised worker can fork-bomb the host; the unmetered reply path (`shared.go:652-656`, a blocking `WriteToUDPAddrPort` on the shared socket) lets one flooding worker stall every space's replies.
+- **Independent review (2026-10-15):** without cgroup limits a compromised worker can fork-bomb the host. Fair-share reply path: parked with TP-040.
 - **From the 2026-10-14 estimate:** the hard requirements known from code are: node: Linux with kernel 4.17 or newer (5.7 or newer for the cgroup fd), /dev/net/tun, nftables with conntrack, namespaces, root, cgroup v2 recommended, and a KVM VPS rather than OpenVZ/LXC; client: macOS on Apple silicon, or Linux 4.17 or newer, with outbound UDP. The PRD target is at least 50 Mbit/s over two hops on 1-vCPU nodes. The first device test's exit ran within a 0.75 CPU / 300 MB container limit. Nothing has been measured yet.
 - **First real measurements (device run 4, 2026-10-15; informal, not the lab method this ticket asks for):**
   - client on macOS arm64: RSS ~70 MiB steady after a 12,908-route table (35 MiB before it; retained Go heap, not growth); about 0.45 of one core at ~94 Mbit/s, i.e. ~200 Mbit/s per core for userspace WireGuard plus the outer transport
@@ -49,3 +49,4 @@ Measure what thinkpol needs to run, so that README can state minimal and recomme
 - 2026-10-15 docs (independent review 2026-10-15): MemoryMax/PidsMax/FairShare defaults mandatory in scope; acceptance and notes on fork-bomb and reply-path flooding
 - 2026-10-15 docs: first measured footprint from device run 4
 - 2026-10-15 docs (backlog grooming): milestone M3; FairShare out of scope (TP-040); refs fixed
+- 2026-10-15 docs (backlog grooming, review fixes): PRD ref slug; reply-path note points at TP-040

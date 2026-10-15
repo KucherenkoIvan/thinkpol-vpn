@@ -5,9 +5,9 @@ milestone: M2
 area: dataplane/path
 repo: thinkpol-vpn
 size: S
-depends_on: [TP-080]
+depends_on: [TP-019, TP-080]
 split_from: TP-080
-refs: [N2, DESIGN#data-plane]
+refs: [N2, DESIGN#data-plane-every-node-one-binary]
 needs_human: macos
 owner: ""
 branch: ""
@@ -25,6 +25,8 @@ Device run 4: when the client restarted on a new local port, the exit logged `li
 
 ## Notes
 - Split from TP-080 (backlog grooming 2026-10-15). Complements TP-080's inbound-data-as-proof fix.
+- TP-080's original note expected one fix to cover both triggers; if TP-080's fix (inbound data as proof of life) also covers rebinds, close this as subsumed.
 
 ## Log
 - 2026-10-15 created in backlog (split from TP-080, backlog grooming)
+- 2026-10-15 docs (backlog grooming, review fixes): depends_on TP-019; DESIGN ref slug; subsumed-by-TP-080 note

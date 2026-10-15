@@ -319,11 +319,11 @@ Scope per milestone is in [PRD.md](PRD.md#release-plan); these are the technical
 | | Milestone | Done when |
 |---|---|---|
 | M0 | Two Linux nodes in the lab, hand-made map in the sealed-section format, `udp` transport, relay paths; server agent as supervisor + one worker in its own namespace | `ping` directly (device ↔ server) and device ↔ device via a relay, over IPv4 and IPv6 ([lab/M0.md](lab/M0.md)) |
-| M1 | Exit node with NAT, route-table rules with GeoIP, DNS, IPv6 handling, macOS and Linux CLI clients | works end to end on a real Mac and on Linux: connect, rules, DNS and IPv6 handling pass the device checklist and the lab leak tests; leak tests pass (macOS's leak guarantees arrive with TP-019 and TP-078) |
-| M2 | `tls` transport with probe fallback; lab v1 (blocklists, WireGuard fingerprint, entropy, prober) | `udp` fails the lab, `tls` passes |
+| M1 | Exit node with NAT, route-table rules with GeoIP, DNS, IPv6 handling, macOS and Linux CLI clients | works end to end on a real Mac and on Linux: connect, rules, DNS and IPv6 handling pass the device checklist and the lab leak tests; leak tests pass (on Linux: macOS's leak guarantees arrive with TP-019 and TP-078) |
+| M2 | `tls` transport with probe fallback; lab v1 (blocklists, WireGuard fingerprint, entropy, prober); kill switch and connect-on-boot on macOS/Linux (TP-048, TP-046) | `udp` fails the lab, `tls` passes |
 | M3 | Chains and hop groups with failover; lab whitelist mode | `ru-entries → nl-exit` passes a whitelist; killing the active entry keeps an open connection alive |
 | M4 | Controller on go-kernel: spaces, members, invites, SSH provisioning with hardening, map gossip, hosting grants and shared nodes, telemetry, admin panel with canvas | a fresh box joins with one command and shows up on the canvas; a second space shares the entry and the isolation and seizure checks pass |
-| M5 | Desktop client: service + tray app on macOS, Linux, Windows; kill switch; connect-on-boot; invite links; space switcher | a non-technical member joins from an invite without a terminal |
+| M5 | Desktop client: service + tray app on macOS, Linux, Windows; tray toggles for kill switch and connect-on-boot; Windows kill switch and connect-on-boot; invite links; space switcher | a non-technical member joins from an invite without a terminal |
 
 After the MVP: Android, userspace enforcement (domain rules), direct paths, tuned traffic shaping, `ws` behind a CDN, ephemeral nodes.
 

@@ -20,9 +20,7 @@ Members use thinkpol from a tray icon, never a terminal.
 - Menu: connect/disconnect, status (chain, entry, health, `owned by <space>`), space switcher, rule presets, kill switch, connect-on-boot.
 - Talks to the service over the local API; live status needs streaming (KRN-002).
 
-## Notes
-- Split before starting (backlog grooming 2026-10-15).
-
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-15 docs (backlog grooming): depends on TP-048 for kill-switch control
+- 2026-10-15 docs (backlog grooming, review fixes): removed redundant split note

@@ -21,6 +21,7 @@ With the kill switch on, nothing leaves the device when the tunnel is down.
 - Rules stay in place if the service crashes, until it restores them.
 
 ## Acceptance
+- [ ] with the service from TP-046, a simulated agent crash keeps traffic fail-closed until the restarted agent is back (macOS and Linux)
 - [ ] killing the service with the kill switch on leaves no traffic flowing except to entries, on macOS and Linux
 - [ ] after the agent crashes (killed, not stopped) with the "everything" or "all but domestic" preset and the kill switch off, nothing leaves except traffic to entries (and LAN with allow-LAN) until the agent starts and connects again, on macOS and Linux; opt-out is a setting
 - [ ] a deliberate disconnect with the kill switch off removes the guard and traffic flows direct; with the switch on it stays
@@ -42,3 +43,4 @@ With the kill switch on, nothing leaves the device when the tunnel is down.
 - 2026-10-14 docs (TP-021 review): the kill switch is its own owner and table; only Exempt's shape is shared
 - 2026-10-15 docs (independent review 2026-10-15): retitled to macOS and Linux; milestone M2; depends on TP-021 not TP-047; needs_human macos; Windows/WFP moved to TP-076; note on missing macOS pf guard
 - 2026-10-15 docs (TP-078 split): depends on the macOS pf IPv6 leak guard
+- 2026-10-15 docs (backlog grooming, review fixes): acceptance for fail-closed gap after crash with TP-046 service

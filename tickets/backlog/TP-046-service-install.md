@@ -13,7 +13,7 @@ branch: ""
 ---
 
 ## Goal
-The client runs as a proper background service on every desktop OS.
+The client runs as a proper background service on macOS and Linux (Windows: TP-047).
 
 ## Scope
 - `thinkpol service install | uninstall`: launchd daemon (macOS), systemd unit (Linux). Windows service: TP-047.
@@ -23,7 +23,7 @@ The client runs as a proper background service on every desktop OS.
 ## Acceptance
 - [ ] install, reboot, uninstall on macOS and Linux leave the system clean
 - [ ] connect-on-boot is off by default after install (PRD D5); the toggle enables it
-- [ ] after a simulated agent crash, the service restarts and traffic stays fail-closed until connect succeeds (PRD D4; kill-switch guard is TP-048)
+- [ ] after a simulated crash the service restarts the agent and restores the persisted connect state; fail-closed during the gap is verified in TP-048
 
 ## Notes
 - **From TP-022's review (acceptance items when this starts):**
@@ -39,3 +39,4 @@ The client runs as a proper background service on every desktop OS.
 - 2026-10-13 notes: the host lock and systemd's `RuntimeDirectory=` (TP-060)
 - 2026-10-15 docs (independent review 2026-10-15): depends on TP-075 (agent refactor before service install)
 - 2026-10-15 docs (backlog grooming): milestone M2; Windows service moved to TP-047; connect-on-boot and crash acceptance added
+- 2026-10-15 docs (backlog grooming, review fixes): Goal scoped to macOS/Linux; crash acceptance decoupled from TP-048 fail-closed check

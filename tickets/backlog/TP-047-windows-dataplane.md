@@ -5,7 +5,7 @@ milestone: M5
 area: dataplane
 repo: thinkpol-vpn
 size: epic
-depends_on: [TP-019, TP-021, TP-075]
+depends_on: [TP-019, TP-021, TP-046, TP-075]
 refs: [D1]
 needs_human: windows
 owner: ""
@@ -23,9 +23,7 @@ The device data plane runs on Windows.
 - DNS through NRPT; IPv6 leak prevention.
 - Local API over a named pipe (check KRN-001 covers it).
 
-## Notes
-- Split before starting (backlog grooming 2026-10-15).
-
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-15 docs (backlog grooming): depends on TP-075; Windows service scope from TP-046
+- 2026-10-15 docs (backlog grooming, review fixes): depends_on TP-046; removed redundant split note

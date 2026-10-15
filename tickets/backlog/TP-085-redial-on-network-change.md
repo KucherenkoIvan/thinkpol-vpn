@@ -7,7 +7,7 @@ repo: thinkpol-vpn
 size: S
 depends_on: [TP-019]
 split_from: TP-080
-refs: [N2, DESIGN#data-plane]
+refs: [N2, DESIGN#data-plane-every-node-one-binary]
 needs_human: macos
 owner: ""
 branch: ""
@@ -29,3 +29,4 @@ From the 2026-10-15 macOS manual session: after sleep/wake or a network change, 
 
 ## Log
 - 2026-10-15 created in backlog (split from TP-080, backlog grooming)
+- 2026-10-15 docs (backlog grooming, review fixes): DESIGN ref slug

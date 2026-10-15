@@ -25,7 +25,6 @@ A node owner shares a server node with another space, fully isolated, capped and
 - **Parked (author, 2026-10-15):** Bandwidth caps and fair share between spaces.
 
 ## Notes
-- Split before starting (backlog grooming 2026-10-15).
 - From TP-003's review (decided, not built): the owner's map section for a shared node gets a `HostedSpace` list, each `{space_id, signing key, recovery key, cap, allow_ingress, allow_egress}`; with the guest's keys the supervisor builds a `netmap.Trust` and verifies the guest's envelopes for that guest's worker only.
 - Only the owner space's listeners are honored on a shared node: guests can't open ports. The supervisor reads each guest's `Inbound` table from the guest's own map to authenticate the guest's connections on the owner's listeners, and hands them to the guest's worker.
 - **From TP-010 (caps):**
@@ -45,4 +44,4 @@ A node owner shares a server node with another space, fully isolated, capped and
 - 2026-10-12 docs (TP-017): notes from blob distribution
 - 2026-10-12 docs (TP-014 review): notes from egress on Linux
 - 2026-10-15 docs: board fix-ups (log order, refs, parked notes)
-- 2026-10-15 docs (backlog grooming): split note
+- 2026-10-15 docs (backlog grooming, review fixes): removed redundant split note and log line

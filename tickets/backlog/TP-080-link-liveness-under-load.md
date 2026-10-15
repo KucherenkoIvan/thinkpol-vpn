@@ -5,7 +5,7 @@ milestone: M2
 area: dataplane/path
 repo: thinkpol-vpn
 size: M
-depends_on: []
+depends_on: [TP-019]
 refs: [N2, DESIGN#data-plane]
 needs_human: macos
 owner: ""
@@ -34,3 +34,4 @@ DESIGN.md has the 6 s dead interval in its path-layer section; check that the ch
 - 2026-10-15 docs: second trigger (port change / NAT rebind) from device run 4 analysis
 - 2026-10-15 docs: redial on a network change (macOS manual session)
 - 2026-10-15 docs (backlog grooming): split — this ticket keeps inbound-data proof of life; TP-084/TP-085 for the other triggers
+- 2026-10-15 docs (backlog grooming, review fixes): depends_on TP-019 for device checklist

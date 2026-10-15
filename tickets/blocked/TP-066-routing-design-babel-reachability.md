@@ -6,7 +6,7 @@ area: dataplane/path
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-006]
-refs: [R5, R6, R7, DESIGN#data-plane]
+refs: [R5, R6, R7, DESIGN#data-plane-every-node-one-binary]
 owner: ""
 branch: ""
 ---
@@ -38,11 +38,11 @@ A written design, with no code, for how nodes learn reachability beyond their ow
 - [ ] the Babel-versus-hop-groups-and-failover comparison is in Notes, and each rule we take or drop has its reason written next to it
 - [ ] every decision made here is recorded in Notes as one line with its why
 - [ ] every attack in the scope list has a stated mitigation or an accepted residual risk
-- [ ] TP-030 and TP-031 notes point at the new DESIGN section when this design exists; TP-031's end-to-end probe item is either replaced by the withdrawal design or kept with a reason
+- [ ] TP-030 and TP-031 notes point at the new DESIGN section; TP-031's end-to-end probe item is either replaced by the withdrawal design or kept with a reason
 - [ ] follow-up implementation tickets are proposed in Notes, with the frame kinds they add and what each one depends on
 
 ## Blocked by
-Parked until after the daily-use month (Decisions 2026-10-15).
+Parked until after the daily-use month (Decisions 2026-10-15). The author un-parks it.
 
 ## Notes
 - **Parked (author, 2026-10-15):** not needed for ten servers with signed static paths; revisit after the daily-use month has started.
@@ -53,3 +53,4 @@ Parked until after the daily-use month (Decisions 2026-10-15).
 - 2026-10-13 created in backlog
 - 2026-10-15 decision (author, 2026-10-15): parked until after the daily-use month has started
 - 2026-10-15 docs (backlog grooming): Blocked by added; Goal no longer gates TP-030/TP-031; refs anchor fixed
+- 2026-10-15 docs (backlog grooming, review fixes): DESIGN ref slug; Blocked by un-park wording; acceptance wording

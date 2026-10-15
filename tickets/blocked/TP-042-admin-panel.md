@@ -23,7 +23,7 @@ The space is managed from a web panel reachable only through the overlay.
 - [ ] the panel isn't reachable on a public address
 
 ## Blocked by
-The admin panel's organisation, authentication and authorization are not designed (DESIGN "Open questions"); no ticket owns that design yet.
+The admin panel's organisation, authentication and authorization are not designed (DESIGN "Open questions"); no ticket owns that design yet. Only the author can provide it.
 
 ## Notes
 - **List provenance and attribution (from TP-016 review):** wherever the panel shows GeoIP lists, it shows each list's source (e.g. DB-IP Lite 2026-10, or a v2fly release), its license and the attribution the license asks for: `lists.Format.Attribution()`, e.g. "IP Geolocation by DB-IP (CC BY 4.0)". A blob holds only prefixes, so the controller stores source and attribution next to each list it builds.
@@ -34,3 +34,4 @@ The admin panel's organisation, authentication and authorization are not designe
 - 2026-10-10 notes from TP-016 review: list provenance and attribution in the panel
 - 2026-10-13 docs (TP-062): do not start before the panel's authn/authz design exists (blocking note)
 - 2026-10-15 backlog → blocked — panel authn/authz design missing (backlog grooming)
+- 2026-10-15 docs (backlog grooming, review fixes): Blocked by names who can unblock

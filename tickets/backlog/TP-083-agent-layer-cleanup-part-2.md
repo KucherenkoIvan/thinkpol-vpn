@@ -32,6 +32,8 @@ Finish the agent-layer refactor after TP-075: teardown order, transport wiring s
 
 ## Notes
 - **Split (backlog grooming 2026-10-15):** split from TP-075; part 1 (composition root and map follower) must land first for TP-046.
+- **Independent review (2026-10-15), file:line evidence (part 2 slice):** three DI styles on `DataPlane` (ten private hook fields, package-level swappable vars, `tweak func`); Linux-shaped ports (`netcfg.Rule` with `Oif`, `Mark`, `SuppressDefaultRoutes`; `routetable.Config` without build tags); `dataplane/routetable.go:17-21` declared in terms of `routetable.Want`; `engine.go:103` imports `dns`, which justifies the depguard rule; status vocabulary not fixed; ~twenty tests use `waitLog("map applied")` though `Status().MapVersion` exposes the fact.
 
 ## Log
 - 2026-10-15 created in backlog (split from TP-075, backlog grooming)
+- 2026-10-15 docs (backlog grooming, review fixes): recovered part-2 evidence note from original TP-075
