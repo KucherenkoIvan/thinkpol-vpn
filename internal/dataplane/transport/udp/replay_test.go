@@ -64,7 +64,6 @@ func TestTheMemoryExpiresExactlyWhenFreshnessDoes(t *testing.T) {
 	}
 }
 
-
 // TestAReplayDoesNotRefreshTheLRUStamp: a sender whose only traffic is
 // replays stays the oldest slot and is evicted — and remembered — first,
 // instead of holding a slot while an active sender is evicted around it.
