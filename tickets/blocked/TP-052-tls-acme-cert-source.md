@@ -32,7 +32,9 @@ The author has no domain. Needs a domain (or several, for rotation) and a regist
 
 ## Notes
 - **Optional now (TP-005 review, 2026-10-10):** probes are proxied whole to the camouflage target and see the real site's certificate (DESIGN.md), so the node's own certificate is only ever seen by authenticated clients that pin it. An ACME certificate no longer fixes a prober-visible weakness; keep this only if a real certificate is wanted for other reasons.
+- Follows TP-028 to after the MVP (decision 2026-10-15): `reality` (TP-087) is M2's disguised transport.
 
 ## Log
 - 2026-10-10 created in blocked
 - 2026-10-15 docs (backlog grooming): Out of scope aligned with TP-064 (Reality evaluation)
+- 2026-10-15 docs (board op): Notes line, follows TP-028 to after the MVP

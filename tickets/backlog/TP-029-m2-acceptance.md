@@ -5,7 +5,7 @@ milestone: M2
 area: lab
 repo: thinkpol-vpn
 size: S
-depends_on: [TP-025, TP-026, TP-028]
+depends_on: [TP-025, TP-026, TP-087]
 refs: [C1, C2, C4]
 owner: ""
 branch: ""
@@ -22,3 +22,4 @@ M2's "done when": the matrix shows `udp` getting caught and `tls` passing.
 
 ## Log
 - 2026-10-10 created in backlog
+- 2026-10-15 deps (board op): TP-028 → TP-087, `reality` is the M2 disguised transport
