@@ -1,0 +1,49 @@
+---
+id: TP-073
+title: "Direct DNS upstreams from a rewritten resolv.conf are not filtered"
+milestone: M2
+area: dataplane/dns
+repo: thinkpol-vpn
+size: S
+depends_on: []
+refs: [N3, R4, DESIGN#routing-rules-and-dns]
+owner: agent-composer
+branch: tp-073-resolvconf-upstreams
+---
+
+## Goal
+Direct DNS upstreams taken from a rewritten `resolv.conf` are filtered the same way as upstreams discovered elsewhere.
+
+## Scope
+- `dns/resolvconf.go:225` passes a rewritten resolv.conf's nameservers to `Upstreams` unfiltered, while `upstreamsFrom` (`:393`) strips the resolved stub, so an outside rewrite to `127.0.0.53` silently kills direct DNS.
+
+## Out of scope
+- Full resolv.conf watcher redesign.
+
+## Acceptance
+- [x] nameservers from a rewritten resolv.conf go through the same stub filtering as `upstreamsFrom` — `internal/dataplane/dns/resolvconf.go:230` via `upstreamsFromContent`, shared with `upstreamsFrom` at `:412`
+- [x] a test: rewritten resolv.conf pointing at the local stub does not become a direct upstream — `TestARewrittenResolvConfFiltersStubUpstreams` (`internal/dataplane/dns/resolvconf_test.go:168`)
+
+## Review findings
+- [x] Empty filtered upstreams on external rewrite must keep the previous upstreams and Warn (not call `Upstreams([])`); test must assert kept upstreams (`resolvconf.go`, `resolvconf_test.go`)
+- [x] Known gap (no watcher redesign): stub uplink read once; after rewrite `r.original` is stub content so `apply` never calls `Upstreams` again; resolved watcher only when `r.uplink` at `SetSystem`; later DHCP/resolved changes leave direct DNS stale until restart — document in Notes for follow-up
+- [x] Resolved watcher: route uplink nameservers through `upstreamsFromContent` (`system_linux.go`)
+- [x] DESIGN.md: stub never a direct upstream; empty uplink keeps previous upstreams
+- [x] Ticket Notes: record resolved watcher / stub-read-once gap for follow-up
+
+## Notes
+- **Independent review (2026-10-15):** proven mismatch between `:225` and `:393`.
+- Extracted `upstreamsFromContent`; `resolvConf` keeps the resolved uplink path for stub-only fallback; `Upstreams` on an external rewrite now uses the same filter as `SystemUpstreams`.
+- **Follow-up (watcher gap):** the stub fallback reads systemd-resolved's uplink file once and never again. After an outside rewrite to the stub, `r.original` equals that stub content, so `apply` does not call `Upstreams` on later rewrites of the same stub. The resolved uplink watcher notifies only when `r.uplink` was true at `SetSystem` time. Later DHCP or resolved server changes can leave direct DNS upstreams stale until the node restarts.
+
+- **Left for a follow-up (review, round 2):** the resolved watcher's empty case wipes or keeps upstreams depending on a nil vs empty slice (`system_linux.go:285-293`), so make it an explicit policy. The rewrite-path Warn text says "no upstream to ask" while the previous upstreams are kept, so reword it.
+
+## Log
+- 2026-10-15 created in backlog
+- 2026-10-15 docs: board fix-ups (log order, refs, parked notes)
+- 2026-10-15 backlog → in-progress — owner: agent-composer, branch: tp-073-resolvconf-upstreams
+- 2026-10-15 in-progress → review — filter rewritten resolv.conf upstreams through `upstreamsFromContent`; make lint, make test pass
+- 2026-10-15 review → has-errors — reviewer: empty stub fallback cleared upstreams; resolved watcher unfiltered; DESIGN gap
+- 2026-10-15 has-errors → in-progress — fix round 2
+- 2026-10-15 in-progress → review — keep upstreams when stub fallback is empty; filter resolved watcher; DESIGN note; make lint, make test, race dns pass
+- 2026-10-15 review → done — merged into rewrite (two review rounds: one stub filter on every path; an empty rewrite keeps the previous upstreams)
