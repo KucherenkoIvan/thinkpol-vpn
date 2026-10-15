@@ -32,6 +32,9 @@ Everything that parses unauthenticated, attacker-controlled bytes runs in an unp
 
 ## Notes
 - Source: DESIGN "Server agent" (pre-authentication parsing moves out of the root supervisor); the supervisor's shape today is in TP-010's ticket.
+- Split before starting (backlog grooming 2026-10-15): separate moving today's `udp` replay filter from the `tls` ClientHello move if both won't fit one branch.
+- **TP-069 and TP-070:** their tests should move with the filter into the gatekeeper; name them here so implementers re-home tests instead of rewriting from scratch. No `depends_on` between those tickets and this one.
 
 ## Log
 - 2026-10-13 created in backlog (TP-062)
+- 2026-10-15 docs (backlog grooming): split note; TP-069/TP-070 test re-home named in Notes

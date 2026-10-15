@@ -7,13 +7,12 @@ repo: thinkpol-vpn
 size: M
 depends_on: [TP-006]
 refs: [R5, R6, R7, DESIGN#data-plane]
-needs_human: decision
 owner: ""
 branch: ""
 ---
 
 ## Goal
-A written design, with no code, for how nodes learn reachability beyond their own links: a small Babel-style distance-vector protocol among neighbours that finds working paths inside the set the signed map allows. The controller states the policy (which paths may exist, who may originate which destination); the nodes make the choice (which allowed path is best right now). The result settles the protocol, the loop-freedom rules and the attack model before any of TP-030/TP-031 is built on top of it.
+A written design, with no code, for how nodes learn reachability beyond their own links: a small Babel-style distance-vector protocol among neighbours that finds working paths inside the set the signed map allows. The controller states the policy (which paths may exist, who may originate which destination); the nodes make the choice (which allowed path is best right now). TP-030 and TP-031 do not wait on this ticket; the design is for a later revisit.
 
 ## Scope
 - **Protocol shape.** A distance-vector exchange among neighbours only: reachability, cost, withdrawals, sequence numbers set by the origin, hold timers, and flap damping. Routes are keyed by (destination node, origin), and a route is only usable if it stays inside the paths the signed map allows.
@@ -39,8 +38,11 @@ A written design, with no code, for how nodes learn reachability beyond their ow
 - [ ] the Babel-versus-hop-groups-and-failover comparison is in Notes, and each rule we take or drop has its reason written next to it
 - [ ] every decision made here is recorded in Notes as one line with its why
 - [ ] every attack in the scope list has a stated mitigation or an accepted residual risk
-- [ ] TP-030 and TP-031 notes point at the new DESIGN section; TP-031's end-to-end probe item is either replaced by the withdrawal design or kept with a reason
+- [ ] TP-030 and TP-031 notes point at the new DESIGN section when this design exists; TP-031's end-to-end probe item is either replaced by the withdrawal design or kept with a reason
 - [ ] follow-up implementation tickets are proposed in Notes, with the frame kinds they add and what each one depends on
+
+## Blocked by
+Parked until after the daily-use month (Decisions 2026-10-15).
 
 ## Notes
 - **Parked (author, 2026-10-15):** not needed for ten servers with signed static paths; revisit after the daily-use month has started.
@@ -50,3 +52,4 @@ A written design, with no code, for how nodes learn reachability beyond their ow
 ## Log
 - 2026-10-13 created in backlog
 - 2026-10-15 decision (author, 2026-10-15): parked until after the daily-use month has started
+- 2026-10-15 docs (backlog grooming): Blocked by added; Goal no longer gates TP-030/TP-031; refs anchor fixed

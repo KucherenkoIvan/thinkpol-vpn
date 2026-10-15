@@ -25,6 +25,8 @@ Replay filtering and sender-id memory use consistent clocks so a skewed sender c
 ## Acceptance
 - [ ] evicted sender ids stay refused long enough relative to sender-clock acceptance
 - [ ] `TestNineRedialsThenQuietThenOldest` extended with the sender's clock skewed ahead by the allowed skew (passive tap replay cannot open a link and get probe replies)
+- [ ] a late datagram from a dead port does not open a new link toward that address (`udp/listener.go:264-266`)
+- [ ] a replay does not refresh a slot's LRU stamp before the replay check (`udp/replay.go:172`)
 
 ## Notes
 - **Independent review (2026-10-15):** failure scenario — sender clocked ahead by the allowed skew plus eight redials during an outage lets a passive tap replay a datagram, open a link to the attacker's address, and get probe replies. `TestNineRedialsThenQuietThenOldest` never skewed the sender's clock.
@@ -32,3 +34,4 @@ Replay filtering and sender-id memory use consistent clocks so a skewed sender c
 ## Log
 - 2026-10-15 created in backlog
 - 2026-10-15 docs: board fix-ups (log order, refs, parked notes)
+- 2026-10-15 docs (backlog grooming): acceptance for listener and LRU-stamp bugs
