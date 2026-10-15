@@ -27,8 +27,15 @@ func Run(ctx context.Context, cfg Config, eng *Engine) error {
 		return err
 	}
 	defer removeQueueRule()
-	defer eng.Shutdown()
-	return serveQueue(ctx, cfg, eng)
+	// serveQueue returns once the queue is closed and its callback has
+	// returned, so nothing publishes to the active modules' channels when
+	// Shutdown closes them.
+	err := serveQueue(ctx, cfg, eng)
+	eng.Shutdown()
+	if n := eng.Unnoticed(); n > 0 {
+		log.Printf("censor: %d new flows never reached an active module (its channel was full)", n)
+	}
+	return err
 }
 
 // serveQueue opens the queue and serves it with the engine. The queue rule
@@ -77,14 +84,16 @@ func serveQueue(ctx context.Context, cfg Config, eng *Engine) error {
 		}
 		id := *a.PacketID
 		ip := *a.Payload
+		if isFragment(ip) {
+			log.Printf("censor: a fragment escaped reassembly, dropping it")
+			setVerdict(nf, id, Drop)
+			return 0
+		}
 		p, ok := decodePacket(ip)
 		if !ok {
-			if isFragment(ip) {
-				log.Printf("censor: undecodable fragment, dropping")
-				setVerdict(nf, id, Drop)
-			} else {
-				setVerdict(nf, id, Accept)
-			}
+			// Malformed: nothing for a module to judge, and the
+			// receiver's stack discards it anyway.
+			setVerdict(nf, id, Accept)
 			return 0
 		}
 		setVerdictFor := func(v Verdict) { setVerdict(nf, id, v) }
@@ -135,17 +144,23 @@ func setVerdict(nf *nfqueue.Nfqueue, id uint32, v Verdict) {
 	}
 }
 
-// installQueueRule sends every forwarded first fragment, IPv4 and IPv6, to
-// the queue. Non-first fragments are dropped: the engine cannot inspect
-// them. The router forwards only the lab's own traffic, so the rule needs
-// no match of its own.
+// installQueueRule sends every forwarded packet, IPv4 and IPv6, to the
+// queue, whole: the ct match makes the kernel turn on conntrack and its
+// defragmentation in this network namespace for both families (it
+// reassembles before the forward hook), so modules see whole datagrams,
+// not a first fragment whose rest passes unjudged. A fragment that still
+// arrives escaped reassembly and is dropped, counted; the masks leave DF
+// out, which nearly every TCP segment carries. The router forwards only the
+// lab's own traffic, so the rule needs no match of its own.
 func installQueueRule(queue uint16) error {
 	removeQueueRule()
 	rule := fmt.Sprintf(`
 table inet %s {
   chain forward {
     type filter hook forward priority filter; policy accept;
-    ip frag-off != 0 drop
+    ct state invalid counter
+    ip frag-off & 0x3fff != 0 counter drop
+    exthdr frag exists counter drop
     queue num %d
   }
 }
@@ -160,27 +175,4 @@ table inet %s {
 
 func removeQueueRule() {
 	_ = exec.Command("nft", "delete", "table", "inet", table).Run()
-}
-
-// isFragment reports whether ip is a non-first IP fragment the decoder
-// skips.
-func isFragment(ip []byte) bool {
-	if len(ip) < 1 {
-		return false
-	}
-	switch ip[0] >> 4 {
-	case 4:
-		if len(ip) < 8 {
-			return false
-		}
-		return binaryFragOff(ip[6:8]) != 0
-	case 6:
-		return false // non-first v6 frags are dropped in nft
-	default:
-		return false
-	}
-}
-
-func binaryFragOff(b []byte) uint16 {
-	return (uint16(b[0])<<8 | uint16(b[1])) & 0x1fff
 }

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 	"sync"
 	"time"
 )
@@ -50,13 +49,19 @@ func NewEngine(passives []Passive, actives []Active, verdicts io.Writer) *Engine
 	return e
 }
 
-// Shutdown stops the active modules and closes their flow channels.
+// Shutdown stops the active modules and closes their flow channels. Call
+// it once the queue no longer calls Handle; a Handle after it decides as
+// before and publishes nothing.
 func (e *Engine) Shutdown() {
 	if e.stop != nil {
 		e.stop()
 	}
 	e.flows.closeEvents()
 }
+
+// Unnoticed is how many times a new flow was not handed to an active
+// module because the module's channel was full, summed over the modules.
+func (e *Engine) Unnoticed() uint64 { return e.flows.unnoticed.Load() }
 
 // Handle decides one packet.
 func (e *Engine) Handle(p *Packet) Action {
@@ -94,14 +99,17 @@ func (e *Engine) flagFunc(module string) FlagFunc {
 // decide logs an action and normalizes what the queue adapter applies:
 // Reset needs TCP, Throttle needs a hold and a sane Held.
 func (e *Engine) decide(a Action, f *Flow) Action {
-	switch {
-	case a.Verdict == Reset && f.Key.Proto != ProtoTCP:
+	if a.Verdict == Reset && f.Key.Proto != ProtoTCP {
 		a.Reason = fmt.Sprintf("%s (not TCP, dropping)", a.Reason)
 		a.Verdict = Drop
-	case a.Verdict == Throttle && a.Hold <= 0:
-		a.Hold = 500 * time.Millisecond
-	case a.Verdict == Throttle && a.Held != Accept && a.Held != Drop:
-		a.Held = Accept
+	}
+	if a.Verdict == Throttle {
+		if a.Hold <= 0 {
+			a.Hold = 500 * time.Millisecond
+		}
+		if a.Held != Accept && a.Held != Drop {
+			a.Held = Accept
+		}
 	}
 	e.logEntry(time.Now(), a, f.Key.String(), f.Packets, f.Bytes)
 	return a
@@ -132,7 +140,9 @@ func (e *Engine) logEntry(now time.Time, a Action, flow string, packets, bytes u
 	})
 }
 
-// verdictLog writes the verdict entries as JSONL.
+// verdictLog writes the verdict entries as JSONL, one write per entry and
+// no fsync: readers in the same machine see each line once written, and a
+// sync per packet would stall the queue.
 type verdictLog struct {
 	mu sync.Mutex
 	w  io.Writer
@@ -144,7 +154,4 @@ func (l *verdictLog) write(entry LogEntry) {
 	enc := json.NewEncoder(l.w)
 	enc.SetEscapeHTML(false)
 	_ = enc.Encode(entry)
-	if f, ok := l.w.(*os.File); ok {
-		_ = f.Sync()
-	}
 }

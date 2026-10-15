@@ -61,8 +61,8 @@ func (p *Packet) String() string {
 }
 
 // decodePacket decodes an IP packet as the queue hands it over. It returns
-// false for anything it cannot read — a non-IP packet, a later fragment —
-// and the engine accepts those: no module can judge what it cannot see.
+// false for anything it cannot read: a non-IP or malformed packet, or a
+// later fragment. The queue adapter checks isFragment first.
 func decodePacket(ip []byte) (Packet, bool) {
 	var pkt Packet
 	if len(ip) < 1 {
@@ -145,4 +145,40 @@ func decodePacket(ip []byte) (Packet, bool) {
 		pkt.Payload = l4[off:]
 	}
 	return pkt, true
+}
+
+// isFragment reports whether ip is an IP fragment, first or later, IPv4 or
+// IPv6. The router reassembles datagrams before the censor sees them (see
+// installQueueRule), so a fragment that still reaches the queue escaped
+// reassembly: its later fragments carry no ports, and accepting them would
+// let a blocked datagram's bytes through. The queue adapter drops them.
+func isFragment(ip []byte) bool {
+	if len(ip) < 1 {
+		return false
+	}
+	switch ip[0] >> 4 {
+	case 4:
+		// More fragments, or a fragment offset; DF and the reserved bit
+		// don't count.
+		return len(ip) >= 20 && binary.BigEndian.Uint16(ip[6:])&0x3fff != 0
+	case 6:
+		if len(ip) < 40 {
+			return false
+		}
+		next, rest := ip[6], ip[40:]
+		for {
+			switch next {
+			case 44:
+				return true
+			case 0, 43, 60:
+				if len(rest) < 8 || len(rest) < 8+int(rest[1])*8 {
+					return false
+				}
+				next, rest = rest[0], rest[8+int(rest[1])*8:]
+			default:
+				return false
+			}
+		}
+	}
+	return false
 }

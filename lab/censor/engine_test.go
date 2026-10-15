@@ -151,32 +151,74 @@ func TestEngineActiveTwoModules(t *testing.T) {
 	eng.Shutdown()
 }
 
-// TestEngineActiveNoStarve publishes a new flow while an active module is
-// busy with a bulk of earlier flows.
-func TestEngineActiveNoStarve(t *testing.T) {
-	slow := &slowActive{ch: make(chan FlowSnapshot, 512)}
-	eng := NewEngine(nil, []Active{slow}, nil)
+// TestEngineSlowActiveNeverStalls checks that an active module which
+// doesn't read its channel never stalls the queue's callback: Handle
+// returns at once, the flows its channel had no room for are counted, and
+// the module sees new flows again once it has room.
+func TestEngineSlowActiveNeverStalls(t *testing.T) {
+	stuck := &stuckActive{release: make(chan struct{}), got: make(chan FlowSnapshot, 1024)}
+	eng := NewEngine(nil, []Active{stuck}, nil)
+	defer eng.Shutdown()
 
-	for i := 0; i < 300; i++ {
-		p := udpPacket(netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("198.51.100.2"), uint16(i+1), 2, []byte("x"))
-		eng.Handle(p)
+	const flows = 300
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < flows; i++ {
+			eng.Handle(udpPacket(netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("198.51.100.2"), uint16(i+1), 2, []byte("x")))
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Handle waited for an active module that doesn't read: the queue would stall")
+	}
+	missed := eng.Unnoticed()
+	if missed == 0 || missed >= flows {
+		t.Fatalf("unnoticed = %d, want the flows past the channel's room", missed)
+	}
+
+	close(stuck.release)
+	for i := uint64(0); i < flows-missed; i++ {
+		select {
+		case <-stuck.got:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("the module got %d of the %d published flows", i, flows-missed)
+		}
 	}
 	late := udpPacket(netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("198.51.100.3"), 9, 2, []byte("late"))
 	eng.Handle(late)
-
-	deadline := time.After(5 * time.Second)
-	gotLate := false
-	for !gotLate {
-		select {
-		case s := <-slow.ch:
-			if s.Key.Dst == late.Dst {
-				gotLate = true
-			}
-		case <-deadline:
-			t.Fatal("the late flow never reached the active module")
+	select {
+	case s := <-stuck.got:
+		if s.Key.Dst != late.Dst {
+			t.Errorf("got %v, want the late flow", s.Key)
 		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the late flow never reached the module once it had room")
 	}
+}
+
+// TestEngineHandleAfterShutdown: a packet the queue hands over while the
+// engine shuts down must not send on a closed channel.
+func TestEngineHandleAfterShutdown(t *testing.T) {
+	eng := NewEngine(nil, []Active{&proberModule{}}, nil)
 	eng.Shutdown()
+	p := udpPacket(netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("198.51.100.2"), 1, 2, []byte("x"))
+	if a := eng.Handle(p); a.Verdict != Accept {
+		t.Errorf("after shutdown: %+v", a)
+	}
+	eng.Shutdown() // a second Shutdown is harmless too
+}
+
+// TestEngineThrottleDefaults: a throttle with neither a hold nor a sane
+// after-hold verdict gets both defaults, not just the first.
+func TestEngineThrottleDefaults(t *testing.T) {
+	m := &throttlePinModule{held: Reset}
+	eng := NewEngine([]Passive{m}, nil, nil)
+	a := eng.Handle(udpPacket(netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("198.51.100.2"), 1, 2, []byte("x")))
+	if a.Verdict != Throttle || a.Hold <= 0 || a.Held != Accept {
+		t.Errorf("throttle without hold or held: %+v, want a default hold and held accept", a)
+	}
 }
 
 type countingModule struct {
@@ -234,13 +276,21 @@ func (m *proberModule) Run(ctx context.Context, flows <-chan FlowSnapshot, flag 
 	}
 }
 
-type slowActive struct {
-	ch chan FlowSnapshot
+// stuckActive reads nothing until release is closed, then forwards every
+// flow to got.
+type stuckActive struct {
+	release chan struct{}
+	got     chan FlowSnapshot
 }
 
-func (m *slowActive) Name() string { return "slow" }
+func (m *stuckActive) Name() string { return "stuck" }
 
-func (m *slowActive) Run(ctx context.Context, flows <-chan FlowSnapshot, _ FlagFunc) {
+func (m *stuckActive) Run(ctx context.Context, flows <-chan FlowSnapshot, _ FlagFunc) {
+	select {
+	case <-ctx.Done():
+		return
+	case <-m.release:
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -249,8 +299,7 @@ func (m *slowActive) Run(ctx context.Context, flows <-chan FlowSnapshot, _ FlagF
 			if !ok {
 				return
 			}
-			m.ch <- f
-			time.Sleep(time.Millisecond)
+			m.got <- f
 		}
 	}
 }

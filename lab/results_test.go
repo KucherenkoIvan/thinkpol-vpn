@@ -11,9 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -22,136 +20,114 @@ import (
 )
 
 // TestCensorMatrix scores every transport against every censor module
-// (PRD C4, success metric 1) and regenerates lab/RESULTS.md. A cell's
-// result is whether the transport's data crossed the censor in the lab
-// router; a cell whose outcome contradicts what its censor means to
-// produce fails the test, not just the matrix.
+// (PRD C4, success metric 1) and regenerates lab/RESULTS.md. Every cell is
+// probed: a transport passes when its data crossed the censor in the lab
+// router over IPv4 and over IPv6, and fails when it crossed over neither. A
+// cell whose outcome contradicts what its censor means to produce fails the
+// test, and a cell whose censor can't be trusted (censord died, the kernel
+// dropped queued packets, the verdict log doesn't show the probe's flows)
+// is an error. RESULTS.md is written only by a complete run with no error.
 func TestCensorMatrix(t *testing.T) {
-	var mu sync.Mutex
-	var results []matrixCell
-	var finished sync.Map // transport/censor -> verdict
-	expected := len(probes) * len(censorCases)
+	var cells []matrixCell
+	off := map[string]string{} // transport -> its "off" result
+	t.Cleanup(func() { writeResults(t, cells, len(transports)*len(censorCases)) })
 
-	for _, tr := range probes {
+	for _, tr := range transports {
 		for _, cc := range censorCases {
-			tr, cc := tr, cc
 			t.Run(tr.name+"/"+cc.name, func(t *testing.T) {
-				verdict := "error"
-				detail := ""
+				cell := matrixCell{transport: tr.name, censor: cc.name, result: "error"}
 				defer func() {
-					mu.Lock()
-					results = append(results, matrixCell{tr.name, cc.name, verdict, detail})
-					mu.Unlock()
-					finished.Store(tr.name+"/"+cc.name, verdict)
+					cells = append(cells, cell)
+					if cc.modules == nil {
+						off[tr.name] = cell.result
+					}
 				}()
-
-				if cc.name == entryBlockCase {
-					waitOffPass(t, tr.name, &finished)
+				if cc.modules != nil && off[tr.name] != "pass" {
+					cell.detail = "the transport failed without a censor"
+					t.Fatalf("%s without a censor is %q: %s says nothing", tr.name, off[tr.name], cc.name)
 				}
 
 				l := lab.Start(t, lab.Standard())
-				ctx, err := tr.setup(t, l)
+				target, err := tr.setup(t, l)
 				if err != nil {
-					detail = err.Error()
+					cell.detail = "setup failed"
 					t.Fatal(err)
 				}
-				var censord *lab.Process
-				var qd0, ud0 uint64
+				var c *censorRun
 				if cc.modules != nil {
-					censord, qd0, ud0 = startCensor(t, l, cc.modules(t, l))
+					c = startCensor(t, l, cc.modules(t, l))
 				}
 
 				want := cc.want(tr.name)
-				probed := true
-				if len(cc.expect) > 0 {
-					if _, ok := cc.expect[tr.name]; !ok {
-						verdict = "pass"
-						probed = false
-					} else if err := tr.probe(t, l, ctx, cc.tcpMustFail); err != nil {
-						verdict = "fail"
-						detail = err.Error()
-						t.Logf("transport %s against %s: %v", tr.name, cc.name, err)
-					} else {
-						verdict = "pass"
-					}
-				} else if err := tr.probe(t, l, ctx, cc.tcpMustFail); err != nil {
-					verdict = "fail"
-					detail = err.Error()
-					t.Logf("transport %s against %s: %v", tr.name, cc.name, err)
-				} else {
-					verdict = "pass"
-				}
+				crossed := tr.probe(t, l, target, want == "pass")
+				cell.result, cell.detail = score(crossed)
 
-				if cc.modules != nil && probed {
-					if err := censorHealthSince(t, l, qd0, ud0); err != nil {
-						verdict = "error"
-						detail = err.Error()
-						t.Error(err)
-					} else if err := checkVerdictLog(t, l, tr.name); err != nil {
-						verdict = "error"
-						detail = err.Error()
-						t.Error(err)
+				if c != nil {
+					if err := c.healthy(t); err != nil {
+						cell.result, cell.detail = "error", "censor unhealthy"
+						t.Fatal(err)
 					}
-					if censord != nil && !processAlive(censord) {
-						verdict = "error"
-						detail = "censord exited"
-						t.Error("censord died during the cell")
+					if err := tr.sawFlows(t, l, c); err != nil {
+						cell.result, cell.detail = "error", "the verdict log misses the probe's flows"
+						t.Fatal(err)
 					}
 				}
-
-				if verdict != want && verdict != "error" {
-					t.Errorf("%s against %s: %s, want %s", tr.name, cc.name, verdict, want)
+				if want == "fail" {
+					how, err := blockedBy(t, l, c)
+					if err != nil {
+						t.Error(err)
+					} else if cell.result == "fail" {
+						cell.detail += "; the censor " + how + " them"
+					}
 				}
-				if cc.name == entryBlockCase && verdict == "fail" {
-					checkDroppedByCensor(t, l)
+				if cell.result != want {
+					t.Errorf("%s against %s: %s (%s), want %s", tr.name, cc.name, cell.result, cell.detail, want)
 				}
 			})
 		}
 	}
-
-	t.Cleanup(func() { writeResults(t, results, expected) })
 }
-
-func waitOffPass(t *testing.T, transport string, finished *sync.Map) {
-	t.Helper()
-	deadline := time.Now().Add(15 * time.Minute)
-	for time.Now().Before(deadline) {
-		if v, ok := finished.Load(transport + "/off"); ok {
-			if v != "pass" {
-				t.Fatalf("off cell for %s is %s, entry block is meaningless", transport, v)
-			}
-			return
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-	t.Fatalf("off cell for %s never finished", transport)
-}
-
-const entryBlockCase = "block-ip (entry)"
 
 type matrixCell struct {
-	transport, censor, verdict, detail string
+	transport, censor, result, detail string
+}
+
+// crossed is what a probe found: whether data crossed over each family.
+type crossed struct{ v4, v6 bool }
+
+func score(c crossed) (result, detail string) {
+	switch {
+	case c.v4 && c.v6:
+		return "pass", ""
+	case c.v4:
+		return "fail", "only IPv4 crossed"
+	case c.v6:
+		return "fail", "only IPv6 crossed"
+	}
+	return "fail", "neither IPv4 nor IPv6 crossed"
 }
 
 type censorCase struct {
 	name string
-	// expect names the result each transport should show when the censor is
-	// working; transports omitted default to pass.
-	expect map[string]string
-	// tcpMustFail: the TCP probe must fail on every address family.
-	tcpMustFail bool
-	modules     func(t *testing.T, l *lab.Lab) []censor.ModuleConfig
+	// expect is each transport's result when the censor works as meant;
+	// a transport not in it must pass.
+	expect  map[string]string
+	modules func(t *testing.T, l *lab.Lab) []censor.ModuleConfig // nil: no censord
 }
 
 func (cc censorCase) want(transport string) string {
 	if w, ok := cc.expect[transport]; ok {
 		return w
 	}
-	if len(cc.expect) == 0 {
-		return "pass"
-	}
 	return "pass"
 }
+
+// Row names. The plain-tcp row is no transport: it is the control that TCP
+// on the underlay, what a TLS-shaped transport rides, crosses the censor.
+const (
+	rowUDP      = "udp"
+	rowPlainTCP = "plain-tcp (control)"
+)
 
 var censorCases = []censorCase{
 	{name: "off"},
@@ -159,28 +135,72 @@ var censorCases = []censorCase{
 		return []censor.ModuleConfig{{Name: "block-ip", Settings: json.RawMessage(
 			`{"destinations": ["203.0.113.9", "2001:db8::9"]}`)}}
 	}},
-	{name: entryBlockCase, expect: map[string]string{"udp": "fail", "tcp": "fail"}, tcpMustFail: true, modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig {
-		return entryBlockSettings(t, l, "drop")
-	}},
-	{name: "block-ip reset (entry)", expect: map[string]string{"tcp": "fail"}, tcpMustFail: true, modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig {
-		return entryBlockSettings(t, l, "reset")
-	}},
+	{name: "block-ip (entry)", expect: map[string]string{rowUDP: "fail", rowPlainTCP: "fail"},
+		modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig { return entryBlockSettings(t, l, "drop") }},
+	// Reset is TCP's; on udp the engine drops instead.
+	{name: "block-ip reset (entry)", expect: map[string]string{rowUDP: "fail", rowPlainTCP: "fail"},
+		modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig { return entryBlockSettings(t, l, "reset") }},
 }
 
-type probeCtx struct {
-	o4, o6 netip.Addr
-}
+// probeTarget is what a probe sends to: overlay addresses for a transport,
+// server-1's own for the control.
+type probeTarget struct{ v4, v6 netip.Addr }
 
-var probes = []struct {
+type transport struct {
 	name  string
-	setup func(t *testing.T, l *lab.Lab) (probeCtx, error)
-	probe func(t *testing.T, l *lab.Lab, ctx probeCtx, tcpMustFail bool) error
-}{
-	{"udp", setupUDP, probeUDP},
-	{"tcp", setupTCP, probeTCP},
+	setup func(t *testing.T, l *lab.Lab) (probeTarget, error)
+	// probe reports whether data crossed over each family; wantPass gives
+	// it time to retry, otherwise it settles a blocked family quickly.
+	probe func(t *testing.T, l *lab.Lab, to probeTarget, wantPass bool) crossed
+	// sawFlows checks the verdict log has the probe's flows on the
+	// underlay: the censor saw what it judged.
+	sawFlows func(t *testing.T, l *lab.Lab, c *censorRun) error
 }
 
-func setupUDP(t *testing.T, l *lab.Lab) (probeCtx, error) {
+var transports = []transport{
+	{rowPlainTCP, setupPlainTCP, probePlainTCP, sawPlainTCP},
+	{rowUDP, setupUDP, probeUDP, sawUDP},
+}
+
+// probeWindow is how long a probe retries a family that should cross; one
+// that should not gets blockedWindow.
+const probeWindow, blockedWindow = 30 * time.Second, 8 * time.Second
+
+func window(wantPass bool) time.Duration {
+	if wantPass {
+		return probeWindow
+	}
+	return blockedWindow
+}
+
+func setupPlainTCP(t *testing.T, l *lab.Lab) (probeTarget, error) {
+	server := l.Node(lab.Server1)
+	listenTCP(t, server)
+	return probeTarget{server.IPv4(lab.NetServers), server.IPv6(lab.NetServers)}, nil
+}
+
+func probePlainTCP(t *testing.T, l *lab.Lab, to probeTarget, wantPass bool) crossed {
+	dev := l.Node(lab.DeviceA)
+	return crossed{
+		v4: tcpCrosses(dev, to.v4, window(wantPass)) == nil,
+		v6: tcpCrosses(dev, to.v6, window(wantPass)) == nil,
+	}
+}
+
+func sawPlainTCP(t *testing.T, l *lab.Lab, c *censorRun) error {
+	dev, server := l.Node(lab.DeviceA), l.Node(lab.Server1)
+	for _, src := range []netip.Addr{dev.IPv4(lab.NetDevices), dev.IPv6(lab.NetDevices)} {
+		dst := serverAddrFor(server, src)
+		if !c.logged(t, func(e verdictLine) bool {
+			return e.Key.Proto == censor.ProtoTCP && e.Key.Src == src && e.Key.Dst == dst && e.Key.DstPort == tcpProbePort
+		}) {
+			return fmt.Errorf("no TCP flow %s -> %s:%d in the verdict log", src, dst, tcpProbePort)
+		}
+	}
+	return nil
+}
+
+func setupUDP(t *testing.T, l *lab.Lab) (probeTarget, error) {
 	dev, server := l.Node(lab.DeviceA), l.Node(lab.Server1)
 	space := newM0Space(t, l.Node(lab.Internet), server)
 	envelope, version := space.build(t)
@@ -190,59 +210,61 @@ func setupUDP(t *testing.T, l *lab.Lab) (probeCtx, error) {
 	upSrv := server.Start(t, "thinkpol", "up")
 	applied := applied(version)
 	if err := waitOutput(upSrv, applied, 60*time.Second); err != nil {
-		return probeCtx{}, fmt.Errorf("server-1: %w", err)
+		return probeTarget{}, fmt.Errorf("server-1: %w", err)
 	}
 	if err := waitOutput(upDev, applied, 60*time.Second); err != nil {
-		return probeCtx{}, fmt.Errorf("device-a: %w", err)
+		return probeTarget{}, fmt.Errorf("device-a: %w", err)
 	}
 	if err := waitOutput(upDev, `link up`, 60*time.Second); err != nil {
-		return probeCtx{}, err
+		return probeTarget{}, err
 	}
 	o4, o6 := space.overlay(1)
-	return probeCtx{o4, o6}, nil
+	return probeTarget{o4, o6}, nil
 }
 
-func probeUDP(t *testing.T, l *lab.Lab, ctx probeCtx, _ bool) error {
+// probeUDP pings server-1's overlay addresses, IPv4 and IPv6, through the
+// tunnel.
+func probeUDP(t *testing.T, l *lab.Lab, to probeTarget, wantPass bool) crossed {
 	dev := l.Node(lab.DeviceA)
-	if err := pingErr(dev, ctx.o4); err != nil {
-		return err
+	return crossed{
+		v4: pingErr(dev, to.v4, window(wantPass)) == nil,
+		v6: pingErr(dev, to.v6, window(wantPass)) == nil,
 	}
-	return pingErr(dev, ctx.o6)
 }
 
-func setupTCP(t *testing.T, l *lab.Lab) (probeCtx, error) {
+// sawUDP: the tunnel runs over one underlay family (m0.yaml's first
+// endpoint), so the log needs UDP from device-a to server-1 in either.
+func sawUDP(t *testing.T, l *lab.Lab, c *censorRun) error {
+	dev, server := l.Node(lab.DeviceA), l.Node(lab.Server1)
+	if !c.logged(t, func(e verdictLine) bool {
+		return e.Key.Proto == censor.ProtoUDP &&
+			(e.Key.Src == dev.IPv4(lab.NetDevices) && e.Key.Dst == server.IPv4(lab.NetServers) ||
+				e.Key.Src == dev.IPv6(lab.NetDevices) && e.Key.Dst == server.IPv6(lab.NetServers))
+	}) {
+		return fmt.Errorf("no UDP flow device-a -> server-1 in the verdict log")
+	}
+	return nil
+}
+
+// blockedBy checks the verdict log blamed block-ip for the blocked cell:
+// it dropped or reset packets to server-1. It returns which.
+func blockedBy(t *testing.T, l *lab.Lab, c *censorRun) (string, error) {
+	if c == nil {
+		return "", fmt.Errorf("a blocking cell without a censor")
+	}
 	server := l.Node(lab.Server1)
-	_, _ = bringUpM0TCP(t, l)
-	return probeCtx{server.IPv4(lab.NetServers), server.IPv6(lab.NetServers)}, nil
-}
-
-func probeTCP(t *testing.T, l *lab.Lab, ctx probeCtx, mustFail bool) error {
-	dev := l.Node(lab.DeviceA)
-	if mustFail {
-		if tcpConnect(dev, ctx.o4) == nil || tcpConnect(dev, ctx.o6) == nil {
-			return nil
+	var verdicts []string
+	for _, v := range []censor.Verdict{censor.Drop, censor.Reset} {
+		if c.logged(t, func(e verdictLine) bool {
+			return e.Verdict == v && e.Module == "block-ip" && (e.Key.Dst == server.IPv4(lab.NetServers) || e.Key.Dst == server.IPv6(lab.NetServers))
+		}) {
+			verdicts = append(verdicts, map[censor.Verdict]string{censor.Drop: "dropped", censor.Reset: "reset"}[v])
 		}
-		return fmt.Errorf("tcp blocked to %s and %s", ctx.o4, ctx.o6)
 	}
-	e4 := tcpConnectRetry(dev, ctx.o4)
-	e6 := tcpConnectRetry(dev, ctx.o6)
-	if e4 == nil || e6 == nil {
-		return nil
+	if len(verdicts) == 0 {
+		return "", fmt.Errorf("the transport stopped, but the verdict log has no block-ip drop or reset to server-1")
 	}
-	return fmt.Errorf("tcp v4: %v; v6: %v", e4, e6)
-}
-
-func tcpConnectRetry(dev *lab.Node, dst netip.Addr) error {
-	deadline := time.Now().Add(45 * time.Second)
-	var last error
-	for time.Now().Before(deadline) {
-		last = tcpConnect(dev, dst)
-		if last == nil {
-			return nil
-		}
-		time.Sleep(300 * time.Millisecond)
-	}
-	return last
+	return strings.Join(verdicts, " and "), nil
 }
 
 func waitOutput(p *lab.Process, pattern string, timeout time.Duration) error {
@@ -259,8 +281,8 @@ func waitOutput(p *lab.Process, pattern string, timeout time.Duration) error {
 	}
 }
 
-func pingErr(from *lab.Node, to netip.Addr) error {
-	deadline := time.Now().Add(45 * time.Second)
+func pingErr(from *lab.Node, to netip.Addr, within time.Duration) error {
+	deadline := time.Now().Add(within)
 	for {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		_, err := from.Exec(ctx, "ping", "-c", "1", "-W", "1", to.String())
@@ -275,29 +297,26 @@ func pingErr(from *lab.Node, to netip.Addr) error {
 	}
 }
 
-var censorLogPath = "/run/censor/verdicts.jsonl"
+const (
+	censorQueue   = 100
+	censorLogPath = "/run/censor/verdicts.jsonl"
+)
 
-func processAlive(p *lab.Process) bool {
-	select {
-	case <-p.Done():
-		return false
-	default:
-		return true
-	}
+// censorRun is censord running in the lab router, with the kernel's queue
+// counters from when it became ready.
+type censorRun struct {
+	router *lab.Node
+	proc   *lab.Process
+	start  censor.QueueStats
 }
 
-func startCensor(t *testing.T, l *lab.Lab, modules []censor.ModuleConfig) (*lab.Process, uint64, uint64) {
+func startCensor(t *testing.T, l *lab.Lab, modules []censor.ModuleConfig) *censorRun {
 	t.Helper()
-	b, err := json.Marshal(censor.Config{
-		Queue:   100,
-		Log:     censorLogPath,
-		Modules: modules,
-	})
+	b, err := json.Marshal(censor.Config{Queue: censorQueue, Log: censorLogPath, Modules: modules})
 	if err != nil {
 		t.Fatal(err)
 	}
 	router := l.Node(lab.Router)
-	router.MustExec(t, "mkdir", "-p", "/run/censor")
 	router.WriteFile(t, "/run/censor/config.json", b)
 	p := router.Start(t, "censord", "-config", "/run/censor/config.json")
 	lab.Eventually(t, 30*time.Second, func() error {
@@ -306,95 +325,87 @@ func startCensor(t *testing.T, l *lab.Lab, modules []censor.ModuleConfig) (*lab.
 		}
 		return nil
 	})
-	qd, ud, err := nfqueueDrops(router.MustExec(t, "cat", "/proc/net/netfilter/nfnetlink_queue"))
-	if err != nil {
+	c := &censorRun{router: router, proc: p}
+	if c.start, err = c.stats(t); err != nil {
 		t.Fatal(err)
 	}
-	return p, qd, ud
+	t.Logf("queue %d when censord was ready: %+v", censorQueue, c.start)
+	return c
 }
 
-func censorHealthSince(t *testing.T, l *lab.Lab, qd0, ud0 uint64) error {
-	t.Helper()
-	router := l.Node(lab.Router)
-	qd, ud, err := nfqueueDrops(router.MustExec(t, "cat", "/proc/net/netfilter/nfnetlink_queue"))
+func (c *censorRun) stats(t *testing.T) (censor.QueueStats, error) {
+	return censor.ParseQueueStats(c.router.MustExec(t, "cat", "/proc/net/netfilter/nfnetlink_queue"), censorQueue)
+}
+
+// healthy is nil when censord is still running and the kernel dropped
+// nothing on the way to it since it became ready.
+func (c *censorRun) healthy(t *testing.T) error {
+	select {
+	case <-c.proc.Done():
+		return fmt.Errorf("censord exited: %v\n%s", c.proc.Err(), c.proc.Output())
+	default:
+	}
+	now, err := c.stats(t)
 	if err != nil {
 		return err
 	}
-	if qd > qd0 || ud > ud0 {
-		return fmt.Errorf("nfqueue drops grew queue_dropped=%d→%d user_dropped=%d→%d", qd0, qd, ud0, ud)
+	if now.QueueDropped > c.start.QueueDropped || now.UserDropped > c.start.UserDropped {
+		return fmt.Errorf("the kernel dropped queued packets: queue_dropped %d -> %d, user_dropped %d -> %d",
+			c.start.QueueDropped, now.QueueDropped, c.start.UserDropped, now.UserDropped)
 	}
 	return nil
 }
 
-func nfqueueDrops(proc string) (queueDropped, userDropped uint64, err error) {
-	for _, line := range strings.Split(proc, "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 5 || fields[0] != "100" {
-			continue
-		}
-		qd, err1 := strconv.ParseUint(fields[3], 10, 64)
-		ud, err2 := strconv.ParseUint(fields[4], 10, 64)
-		if err1 != nil || err2 != nil {
-			return 0, 0, fmt.Errorf("parse nfnetlink_queue %q", line)
-		}
-		return qd, ud, nil
-	}
-	return 0, 0, fmt.Errorf("queue 100 not in nfnetlink_queue")
+// verdictLine is a verdict log entry with its flow parsed.
+type verdictLine struct {
+	censor.LogEntry
+	Key censor.FlowKey
 }
 
-func checkVerdictLog(t *testing.T, l *lab.Lab, transport string) error {
+// logged reports whether a verdict log entry matches, waiting briefly for
+// the log to catch up.
+func (c *censorRun) logged(t *testing.T, match func(verdictLine) bool) bool {
 	t.Helper()
-	out := l.Node(lab.Router).MustExec(t, "cat", censorLogPath)
-	if strings.TrimSpace(out) == "" {
-		return fmt.Errorf("empty verdict log for %s probe", transport)
-	}
-	return nil
-}
-
-func checkDroppedByCensor(t *testing.T, l *lab.Lab) {
-	t.Helper()
-	server := l.Node(lab.Server1)
-	out := l.Node(lab.Router).MustExec(t, "cat", censorLogPath)
-	drops := 0
-	for _, line := range strings.Split(out, "\n") {
-		if line == "" {
-			continue
-		}
-		var e censor.LogEntry
-		if err := json.Unmarshal([]byte(line), &e); err != nil {
-			t.Fatalf("verdict log line %q: %v", line, err)
-		}
-		key, err := censor.ParseFlowKey(e.Flow)
-		if err != nil {
-			continue
-		}
-		for _, a := range []netip.Addr{server.IPv4(lab.NetServers), server.IPv6(lab.NetServers)} {
-			if e.Verdict == censor.Drop && key.Dst == a {
-				drops++
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		for _, line := range strings.Split(c.router.MustExec(t, "cat", censorLogPath), "\n") {
+			if line == "" {
+				continue
+			}
+			var e verdictLine
+			if err := json.Unmarshal([]byte(line), &e.LogEntry); err != nil {
+				t.Fatalf("verdict log line %q: %v", line, err)
+			}
+			key, err := censor.ParseFlowKey(e.Flow)
+			if err != nil {
+				continue // not TCP or UDP
+			}
+			e.Key = key
+			if match(e) {
+				return true
 			}
 		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(200 * time.Millisecond)
 	}
-	if drops == 0 {
-		t.Errorf("the transport stopped, but the verdict log has no drop for the entry node %s:\n%s",
-			server.IPv4(lab.NetServers), out)
-		return
-	}
-	t.Logf("the censor dropped %d packets to the entry node", drops)
 }
 
 func writeResults(t *testing.T, cells []matrixCell, expected int) {
 	t.Helper()
 	if len(cells) < expected {
-		t.Logf("partial matrix run (%d/%d cells), not writing RESULTS.md", len(cells), expected)
+		t.Logf("partial matrix run (%d of %d cells): RESULTS.md not written", len(cells), expected)
 		return
 	}
 	for _, c := range cells {
-		if c.verdict == "error" {
-			t.Log("matrix cell errored, not writing RESULTS.md")
+		if c.result == "error" {
+			t.Logf("cell %s / %s errored: RESULTS.md not written", c.transport, c.censor)
 			return
 		}
 	}
 	if t.Failed() {
+		t.Log("the matrix test failed: RESULTS.md not written")
 		return
 	}
 	root, err := lab.Root()
@@ -405,24 +416,19 @@ func writeResults(t *testing.T, cells []matrixCell, expected int) {
 		if c := strings.Compare(a.transport, b.transport); c != 0 {
 			return c
 		}
-		if c := strings.Compare(a.censor, b.censor); c != 0 {
-			return c
-		}
-		return 0
+		return strings.Compare(a.censor, b.censor)
 	})
 	var b strings.Builder
 	b.WriteString("# Censor lab results\n\n")
 	b.WriteString("<!-- Generated by `make lab` (TestCensorMatrix); do not edit. -->\n\n")
-	b.WriteString("Did a transport's data cross the censor in the lab router: pass when it did, fail when the censor stopped it.\n\n")
+	b.WriteString("Did a transport's data cross the censor in the lab router, device-a to server-1: " +
+		"pass when it crossed over IPv4 and over IPv6, fail when it didn't. Every cell is probed. " +
+		"`plain-tcp (control)` is not a transport: it shows that plain TCP on the underlay crosses the censor, and that the censor sees it.\n\n")
 	b.WriteString("| transport | censor | result | detail |\n|---|---|---|---|\n")
 	for _, c := range cells {
-		fmt.Fprintf(&b, "| %s | %s | %s | %s |\n", c.transport, c.censor, c.verdict, escapeCell(c.detail))
+		fmt.Fprintf(&b, "| %s | %s | %s | %s |\n", c.transport, c.censor, c.result, strings.ReplaceAll(c.detail, "|", `\|`))
 	}
 	if err := os.WriteFile(filepath.Join(root, "lab", "RESULTS.md"), []byte(b.String()), 0o644); err != nil {
 		t.Fatal(err)
 	}
-}
-
-func escapeCell(s string) string {
-	return strings.ReplaceAll(strings.ReplaceAll(s, "|", "\\|"), "\n", " ")
 }

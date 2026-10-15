@@ -4,6 +4,7 @@ package lab_test
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"net/netip"
@@ -15,173 +16,327 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/lab/censor"
 )
 
+// tcpProbePort is where server-1 listens for plain TCP through the censor.
 const tcpProbePort = 18080
 
-// TestTCPResetNotOnServer checks block-ip reset: the client sees a reset,
-// and the RST is injected toward the client, not forwarded to server-1.
-func TestTCPResetNotOnServer(t *testing.T) {
+// TestCensorForwardsWhatNoModuleDecides runs censord with no module at all:
+// everything crosses the router, through the queue. Plain TCP connects over
+// IPv4 and IPv6 (TCP segments carry DF, which a fragment rule must not take
+// for a fragment), a UDP datagram the sender's kernel fragments arrives
+// whole over both families, and the verdict log shows the censor accepted
+// each of those flows, the datagram's in one piece.
+func TestCensorForwardsWhatNoModuleDecides(t *testing.T) {
 	l := lab.Start(t, lab.Standard())
-	server := l.Node(lab.Server1)
-	underlay4, underlay6 := bringUpM0TCP(t, l)
-	_, qd0, ud0 := startCensor(t, l, entryBlockSettings(t, l, "reset"))
-	cap := server.Start(t, "tcpdump", "-i", "any", "-nn", "-l", "tcp", "and", "port", fmt.Sprint(tcpProbePort))
-	time.Sleep(500 * time.Millisecond)
+	dev, server, router := l.Node(lab.DeviceA), l.Node(lab.Server1), l.Node(lab.Router)
+	listenTCP(t, server)
+	c := startCensor(t, l, []censor.ModuleConfig{})
 
-	tryTCP(t, l.Node(lab.DeviceA), underlay4, false)
-	tryTCP(t, l.Node(lab.DeviceA), underlay6, false)
-
-	time.Sleep(500 * time.Millisecond)
-	out := cap.Output()
-	if strings.Contains(out, " Flags [R") || strings.Contains(out, " Flags [R.") {
-		t.Errorf("server-1 saw an RST on the wire:\n%s", out)
+	// The datagram must reach the router in fragments, or this checks
+	// nothing about them.
+	routerCap := router.Capture(t, captureFrom(dev))
+	for _, dst := range serverAddrs(server) {
+		if err := tcpCrosses(dev, dst, 20*time.Second); err != nil {
+			t.Errorf("plain TCP with no module: %v", err)
+		}
+		if got := sendDatagram(t, dev, server, dst, 19100, fragmentedSize); got != fragmentedSize {
+			t.Errorf("a %d-byte UDP datagram to %s arrived as %d bytes", fragmentedSize, dst, got)
+		}
 	}
-	assertCensorSaw(t, l, server.IPv4(lab.NetServers), qd0, ud0)
+	waitFragments(t, routerCap, dev)
+
+	if err := c.healthy(t); err != nil {
+		t.Fatal(err)
+	}
+	for _, src := range []netip.Addr{dev.IPv4(lab.NetDevices), dev.IPv6(lab.NetDevices)} {
+		dst := serverAddrFor(server, src)
+		if !c.logged(t, func(e verdictLine) bool {
+			return e.Key.Proto == censor.ProtoTCP && e.Key.Src == src && e.Key.Dst == dst &&
+				e.Key.DstPort == tcpProbePort && e.Verdict == censor.Accept
+		}) {
+			t.Errorf("no accepted TCP flow %s -> %s in the verdict log: it did not cross the queue", src, dst)
+		}
+		if !c.logged(t, func(e verdictLine) bool {
+			return e.Key.Proto == censor.ProtoUDP && e.Key.Src == src && e.Key.Dst == dst &&
+				e.Key.DstPort == 19100 && e.Verdict == censor.Accept && e.Bytes == fragmentedSize
+		}) {
+			t.Errorf("the verdict log has no whole %d-byte datagram %s -> %s: modules did not see it reassembled", fragmentedSize, src, dst)
+		}
+	}
 }
 
-// TestTCPThroughCensorDrop checks TCP across the router with block-ip drop.
+// TestCensorFragmentedUDPBlocked blocks server-1 and sends it UDP datagrams
+// the sender's kernel fragments: not one fragment, first or later, may
+// reach server-1, over IPv4 or IPv6.
+func TestCensorFragmentedUDPBlocked(t *testing.T) {
+	l := lab.Start(t, lab.Standard())
+	dev, server, router := l.Node(lab.DeviceA), l.Node(lab.Server1), l.Node(lab.Router)
+	c := startCensor(t, l, entryBlockSettings(t, l, "drop"))
+
+	routerCap := router.Capture(t, captureFrom(dev))
+	serverCap := server.Capture(t, captureFrom(dev))
+	for _, dst := range serverAddrs(server) {
+		if got := sendDatagram(t, dev, server, dst, 19200, fragmentedSize); got != 0 {
+			t.Errorf("%d bytes of a blocked datagram reached %s", got, dst)
+		}
+	}
+	waitFragments(t, routerCap, dev)
+	if err := serverCap.Complete(); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range serverCap.Packets() {
+		t.Errorf("server-1 got a packet from device-a through the censor: %s -> %s proto %d, %d bytes, fragment %v",
+			p.Src, p.Dst, p.Proto, len(p.IP), ipFragment(p.IP))
+	}
+	if err := c.healthy(t); err != nil {
+		t.Fatal(err)
+	}
+	for _, src := range []netip.Addr{dev.IPv4(lab.NetDevices), dev.IPv6(lab.NetDevices)} {
+		dst := serverAddrFor(server, src)
+		if !c.logged(t, func(e verdictLine) bool {
+			return e.Key.Proto == censor.ProtoUDP && e.Key.Src == src && e.Key.Dst == dst &&
+				e.Verdict == censor.Drop && e.Module == "block-ip" && e.Bytes == fragmentedSize
+		}) {
+			t.Errorf("no block-ip drop of the whole datagram %s -> %s in the verdict log", src, dst)
+		}
+	}
+}
+
+// TestTCPResetReachesClient checks block-ip reset: device-a's connect is
+// refused at once (an RST, not a timeout), the RST is on device-a's wire,
+// coming from server-1's address, and server-1 sees nothing: neither the
+// SYN nor an RST.
+func TestTCPResetReachesClient(t *testing.T) {
+	l := lab.Start(t, lab.Standard())
+	dev, server := l.Node(lab.DeviceA), l.Node(lab.Server1)
+	listenTCP(t, server)
+	c := startCensor(t, l, entryBlockSettings(t, l, "reset"))
+
+	filter := fmt.Sprintf("tcp port %d", tcpProbePort)
+	devCap := dev.Capture(t, filter)
+	serverCap := server.Capture(t, filter)
+	for _, dst := range serverAddrs(server) {
+		res, took, err := tcpConnect(dev, dst, 5)
+		if err == nil {
+			t.Errorf("tcp to %s connected through a reset censor", dst)
+			continue
+		}
+		if !strings.Contains(res.Stderr, "refused") || took > 2*time.Second {
+			t.Errorf("tcp to %s: want an immediate \"Connection refused\", got %q after %s", dst, strings.TrimSpace(res.Stderr), took.Round(time.Millisecond))
+		}
+		devCap.WaitFor(t, 5*time.Second, func(p lab.Packet) bool {
+			flags, ok := tcpFlags(p)
+			return ok && !p.Outgoing && p.Src == dst && p.SrcPort == tcpProbePort && flags&censor.Rst != 0
+		})
+	}
+	if err := serverCap.Complete(); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range serverCap.Packets() {
+		flags, _ := tcpFlags(p)
+		t.Errorf("server-1 saw %s:%d -> %s:%d flags %#x: the censor must stop the SYN and answer it itself",
+			p.Src, p.SrcPort, p.Dst, p.DstPort, flags)
+	}
+	if err := c.healthy(t); err != nil {
+		t.Fatal(err)
+	}
+	for _, dst := range serverAddrs(server) {
+		if !c.logged(t, func(e verdictLine) bool {
+			return e.Key.Proto == censor.ProtoTCP && e.Key.Dst == dst && e.Verdict == censor.Reset && e.Module == "block-ip"
+		}) {
+			t.Errorf("no block-ip reset to %s in the verdict log", dst)
+		}
+	}
+}
+
+// TestTCPThroughCensorDrop checks block-ip drop on plain TCP: the connect
+// times out over both families, server-1 never sees the SYN, and the
+// verdict log has the drops.
 func TestTCPThroughCensorDrop(t *testing.T) {
 	l := lab.Start(t, lab.Standard())
-	server := l.Node(lab.Server1)
-	underlay4, underlay6 := bringUpM0TCP(t, l)
-	_, qd0, ud0 := startCensor(t, l, entryBlockSettings(t, l, "drop"))
-	tryTCP(t, l.Node(lab.DeviceA), underlay4, false)
-	tryTCP(t, l.Node(lab.DeviceA), underlay6, false)
-	assertCensorSaw(t, l, server.IPv4(lab.NetServers), qd0, ud0)
+	dev, server := l.Node(lab.DeviceA), l.Node(lab.Server1)
+	listenTCP(t, server)
+	c := startCensor(t, l, entryBlockSettings(t, l, "drop"))
+
+	serverCap := server.Capture(t, fmt.Sprintf("tcp port %d", tcpProbePort))
+	for _, dst := range serverAddrs(server) {
+		if _, _, err := tcpConnect(dev, dst, 3); err == nil {
+			t.Errorf("tcp to %s connected through a dropping censor", dst)
+		}
+	}
+	if err := serverCap.Complete(); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(serverCap.Packets()); n > 0 {
+		t.Errorf("server-1 saw %d packets of the dropped connections", n)
+	}
+	if err := c.healthy(t); err != nil {
+		t.Fatal(err)
+	}
+	for _, dst := range serverAddrs(server) {
+		if !c.logged(t, func(e verdictLine) bool {
+			return e.Key.Proto == censor.ProtoTCP && e.Key.Dst == dst && e.Verdict == censor.Drop && e.Module == "block-ip"
+		}) {
+			t.Errorf("no block-ip drop to %s in the verdict log", dst)
+		}
+	}
 }
 
-// TestFragmentedUDPDropped ensures non-first IPv4 fragments never pass as
-// accepted payloads through the censor.
-func TestFragmentedUDPDropped(t *testing.T) {
-	l := lab.Start(t, lab.Standard())
-	_, _ = bringUpM0TCP(t, l)
-	startCensor(t, l, []censor.ModuleConfig{})
-	router := l.Node(lab.Router)
-	serverIP := l.Node(lab.Server1).IPv4(lab.NetServers).String()
-	iface := router.Interface(lab.NetServers)
-	router.MustExec(t, "sh", "-ec", fmt.Sprintf("ip link set dev %s mtu 576", iface))
-	_, err := router.Exec(context.Background(), "which", "hping3")
-	if err != nil {
-		t.Skip("hping3 not in the lab image")
-	}
-	router.MustExec(t, "sh", "-ec", fmt.Sprintf("hping3 -2 -c 1 -d 1200 -p 54321 --frag %s >/dev/null 2>&1", serverIP))
-	time.Sleep(time.Second)
-	log := router.MustExec(t, "cat", "/run/censor/verdicts.jsonl")
-	for _, line := range strings.Split(log, "\n") {
-		if line == "" {
-			continue
-		}
-		var e censor.LogEntry
-		if err := json.Unmarshal([]byte(line), &e); err != nil {
-			continue
-		}
-		if e.Verdict == censor.Accept && strings.Contains(e.Flow, ":54321") {
-			t.Errorf("fragmented flow accepted: %s", line)
-		}
-	}
-}
+// fragmentedSize is a UDP payload far above the lab's 1500-byte MTU: the
+// sender's kernel sends it as three fragments.
+const fragmentedSize = 3000
 
 func entryBlockSettings(t *testing.T, l *lab.Lab, verdict string) []censor.ModuleConfig {
-	server := l.Node(lab.Server1)
-	s := struct {
+	t.Helper()
+	b, err := json.Marshal(struct {
 		Destinations []string `json:"destinations"`
-		Verdict      string   `json:"verdict,omitempty"`
+		Verdict      string   `json:"verdict"`
 	}{Destinations: []string{
-		server.IPv4(lab.NetServers).String(),
-		server.IPv6(lab.NetServers).String(),
-	}, Verdict: verdict}
-	if verdict == "drop" {
-		s.Verdict = ""
-	}
-	b, err := json.Marshal(s)
+		l.Node(lab.Server1).IPv4(lab.NetServers).String(),
+		l.Node(lab.Server1).IPv6(lab.NetServers).String(),
+	}, Verdict: verdict})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return []censor.ModuleConfig{{Name: "block-ip", Settings: b}}
 }
 
-func bringUpM0TCP(t *testing.T, l *lab.Lab) (netip.Addr, netip.Addr) {
+func serverAddrs(server *lab.Node) []netip.Addr {
+	return []netip.Addr{server.IPv4(lab.NetServers), server.IPv6(lab.NetServers)}
+}
+
+// serverAddrFor is server-1's address in src's family.
+func serverAddrFor(server *lab.Node, src netip.Addr) netip.Addr {
+	if src.Is4() {
+		return server.IPv4(lab.NetServers)
+	}
+	return server.IPv6(lab.NetServers)
+}
+
+func captureFrom(dev *lab.Node) string {
+	return fmt.Sprintf("src host %s or src host %s", dev.IPv4(lab.NetDevices), dev.IPv6(lab.NetDevices))
+}
+
+// listenTCP keeps a plain TCP listener on server-1 for each family; -k keeps
+// it listening after a connection.
+func listenTCP(t *testing.T, server *lab.Node) {
 	t.Helper()
-	dev, server := l.Node(lab.DeviceA), l.Node(lab.Server1)
-	space := newM0Space(t, l.Node(lab.Internet), server)
-	envelope, version := space.build(t)
-	space.install(t, dev, "device-a", envelope)
-	space.install(t, server, "server-1", envelope)
-	upDev := dev.Start(t, "thinkpol", "up")
-	upSrv := server.Start(t, "thinkpol", "up")
-	applied := applied(version)
-	if err := waitOutput(upSrv, applied, 60*time.Second); err != nil {
-		t.Fatal(err)
+	for _, a := range serverAddrs(server) {
+		family := "-4"
+		if a.Is6() {
+			family = "-6"
+		}
+		server.Start(t, "nc", family, "-k", "-l", "-s", a.String(), "-p", fmt.Sprint(tcpProbePort))
 	}
-	if err := waitOutput(upDev, applied, 60*time.Second); err != nil {
-		t.Fatal(err)
-	}
-	if err := waitOutput(upDev, `link up`, 60*time.Second); err != nil {
-		t.Fatal(err)
-	}
-	u4, u6 := server.IPv4(lab.NetServers), server.IPv6(lab.NetServers)
-	server.Start(t, "sh", "-ec", fmt.Sprintf(
-		"nc -4 -l -p %d -s %s >/dev/null 2>&1 & nc -6 -l -p %d -s %s >/dev/null 2>&1 &",
-		tcpProbePort, u4, tcpProbePort, u6))
-	lab.Eventually(t, 60*time.Second, func() error {
-		out := server.MustExec(t, "sh", "-ec", fmt.Sprintf("ss -H -lnt sport = :%d | wc -l", tcpProbePort))
-		n := strings.TrimSpace(out)
-		if n == "0" || n == "" {
+	lab.Eventually(t, 30*time.Second, func() error {
+		out := server.MustExec(t, "ss", "-H", "-lnt", fmt.Sprintf("sport = :%d", tcpProbePort))
+		if n := len(strings.Split(strings.TrimSpace(out), "\n")); strings.TrimSpace(out) == "" || n < 2 {
 			return fmt.Errorf("listeners: %q", out)
 		}
 		return nil
 	})
-	return u4, u6
 }
 
-func tryTCP(t *testing.T, dev *lab.Node, dst netip.Addr, wantOK bool) {
-	t.Helper()
-	err := tcpConnect(dev, dst)
-	if wantOK && err != nil {
-		t.Errorf("tcp to %s: %v", dst, err)
-	}
-	if !wantOK && err == nil {
-		t.Errorf("tcp to %s connected, want failure", dst)
-	}
-}
-
-func tcpConnect(dev *lab.Node, dst netip.Addr) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+// tcpConnect opens and closes one TCP connection from dev, waiting at most
+// wait seconds, and says how long it took.
+func tcpConnect(dev *lab.Node, dst netip.Addr, wait int) (lab.Result, time.Duration, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(wait+10)*time.Second)
 	defer cancel()
-	_, err := dev.Exec(ctx, "sh", "-ec", fmt.Sprintf("nc -z -w 3 %s %d", dst, tcpProbePort))
-	return err
+	start := time.Now()
+	res, err := dev.Exec(ctx, "nc", "-v", "-z", "-w", fmt.Sprint(wait), dst.String(), fmt.Sprint(tcpProbePort))
+	return res, time.Since(start), err
 }
 
-func assertCensorSaw(t *testing.T, l *lab.Lab, server netip.Addr, qd0, ud0 uint64) {
+// tcpCrosses retries a TCP connect until one succeeds or within runs out.
+func tcpCrosses(dev *lab.Node, dst netip.Addr, within time.Duration) error {
+	deadline := time.Now().Add(within)
+	for {
+		_, _, err := tcpConnect(dev, dst, 2)
+		if err == nil {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("tcp to %s: %w", dst, err)
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+}
+
+// sendDatagram sends one size-byte UDP datagram from dev to dst:port and
+// returns how many bytes a listener on server-1 received within a few
+// seconds.
+func sendDatagram(t *testing.T, dev, server *lab.Node, dst netip.Addr, port, size int) int {
 	t.Helper()
-	if err := censorHealthSince(t, l, qd0, ud0); err != nil {
-		t.Fatal(err)
+	family := "-4"
+	if dst.Is6() {
+		family = "-6"
 	}
-	router := l.Node(lab.Router)
-	out := router.MustExec(t, "cat", "/run/censor/verdicts.jsonl")
-	if out == "" {
-		t.Fatal("empty verdict log")
+	out := fmt.Sprintf("/tmp/udp-%s-%d", strings.ReplaceAll(dst.String(), ":", "_"), port)
+	server.Start(t, "sh", "-c", fmt.Sprintf("exec nc -u %s -l -s %s -p %d > %s", family, dst, port, out))
+	lab.Eventually(t, 30*time.Second, func() error {
+		if strings.TrimSpace(server.MustExec(t, "ss", "-H", "-lnu", fmt.Sprintf("sport = :%d", port))) == "" {
+			return fmt.Errorf("no UDP listener on %d yet", port)
+		}
+		return nil
+	})
+	// One write of size bytes, one datagram: nc sends what each read of
+	// the pipe returns, and a pipe write this small is atomic.
+	dev.MustExec(t, "sh", "-c", fmt.Sprintf("head -c %d /dev/zero | nc -u %s -w 1 %s %d", size, family, dst, port))
+	got := 0
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		n := strings.TrimSpace(server.MustExec(t, "sh", "-c", "wc -c < "+out))
+		_, _ = fmt.Sscan(n, &got)
+		if got >= size {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
 	}
-	want := []netip.Addr{server, l.Node(lab.Server1).IPv6(lab.NetServers)}
-	found := false
-	for _, line := range strings.Split(out, "\n") {
-		if line == "" {
-			continue
-		}
-		var e censor.LogEntry
-		if err := json.Unmarshal([]byte(line), &e); err != nil {
-			t.Fatalf("verdict: %v", err)
-		}
-		key, err := censor.ParseFlowKey(e.Flow)
-		if err != nil {
-			continue
-		}
-		for _, d := range want {
-			if key.Dst == d && e.Module == "block-ip" {
-				found = true
-			}
-		}
+	return got
+}
+
+// waitFragments requires device-a's datagrams to have reached the router
+// as fragments, later ones included, over both families.
+func waitFragments(t *testing.T, routerCap *lab.Capture, dev *lab.Node) {
+	t.Helper()
+	for _, src := range []netip.Addr{dev.IPv4(lab.NetDevices), dev.IPv6(lab.NetDevices)} {
+		routerCap.WaitFor(t, 5*time.Second, func(p lab.Packet) bool {
+			return !p.Outgoing && p.Src == src && ipFragment(p.IP) == "later"
+		})
 	}
-	if !found {
-		t.Fatalf("verdict log has no block-ip flow to %v:\n%s", want, out)
+}
+
+// ipFragment says whether an IP packet is a fragment: "" for none, "first"
+// or "later".
+func ipFragment(ip []byte) string {
+	if len(ip) >= 20 && ip[0]>>4 == 4 {
+		switch f := binary.BigEndian.Uint16(ip[6:]); {
+		case f&0x1fff != 0:
+			return "later"
+		case f&0x2000 != 0:
+			return "first"
+		}
+		return ""
 	}
+	if len(ip) >= 48 && ip[0]>>4 == 6 && ip[6] == 44 {
+		if binary.BigEndian.Uint16(ip[42:])&0xfff8 != 0 {
+			return "later"
+		}
+		return "first"
+	}
+	return ""
+}
+
+// tcpFlags reads a captured TCP segment's flags.
+func tcpFlags(p lab.Packet) (uint8, bool) {
+	if p.Proto != lab.ProtoTCP {
+		return 0, false
+	}
+	off := 40
+	if p.Src.Is4() {
+		off = int(p.IP[0]&0x0f) * 4
+	}
+	if len(p.IP) < off+14 {
+		return 0, false
+	}
+	return p.IP[off+13], true
 }

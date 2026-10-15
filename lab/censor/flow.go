@@ -101,10 +101,13 @@ type FlowSnapshot struct {
 type flowTable struct {
 	mu    sync.Mutex
 	flows map[FlowKey]*Flow
-	// events has one channel per active module. A flow the channel has no
-	// room for is not published: an active module that misses one still
-	// sees the later ones.
+	// events has one channel per active module. publish runs in the
+	// queue's serial callback, so it never waits: a new flow the channel
+	// has no room for is counted in unnoticed and not published, and the
+	// module still sees the later ones once it has caught up.
 	events    []chan FlowSnapshot
+	eventsMu  sync.Mutex // guards closed against publish
+	closed    bool
 	unnoticed atomic.Uint64
 }
 
@@ -154,26 +157,39 @@ func (t *flowTable) flagged(key FlowKey) *Action {
 	return &f.verdict.action
 }
 
-// publish hands a new flow to every active module.
+// publish hands a new flow to every active module that has room for it,
+// without waiting; after closeEvents it does nothing.
 func (t *flowTable) publish(f *Flow) {
 	if len(t.events) == 0 {
 		return
 	}
 	snap := FlowSnapshot{Key: f.Key, Started: f.Started, Packets: f.Packets, Bytes: f.Bytes}
+	t.eventsMu.Lock()
+	defer t.eventsMu.Unlock()
+	if t.closed {
+		return
+	}
 	for _, ch := range t.events {
-		ch <- snap
+		select {
+		case ch <- snap:
+		default:
+			t.unnoticed.Add(1)
+		}
 	}
 }
 
-// closeEvents closes every active module's channel.
+// closeEvents closes every active module's channel, once.
 func (t *flowTable) closeEvents() {
+	t.eventsMu.Lock()
+	defer t.eventsMu.Unlock()
+	if t.closed {
+		return
+	}
+	t.closed = true
 	for _, ch := range t.events {
 		close(ch)
 	}
 }
-
-// Unnoticed is how many flows never reached the active modules.
-func (t *flowTable) Unnoticed() uint64 { return t.unnoticed.Load() }
 
 // flowEvents returns the channel for active module i.
 func (t *flowTable) flowEvents(i int) <-chan FlowSnapshot { return t.events[i] }

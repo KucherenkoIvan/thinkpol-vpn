@@ -63,10 +63,10 @@ table inet %s {
 		go func() { errc <- serveQueue(ctx, Config{Queue: queue}, eng) }()
 		t.Cleanup(func() {
 			cancel()
-			eng.Shutdown()
 			if err := <-errc; err != nil {
 				t.Errorf("censor: %v", err)
 			}
+			eng.Shutdown() // as Run does: once the queue has stopped calling Handle
 		})
 		return logPath
 	}

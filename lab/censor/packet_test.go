@@ -101,3 +101,60 @@ func TestDecodePacketIPv6ThroughExtensions(t *testing.T) {
 		t.Errorf("decoded %+v", p)
 	}
 }
+
+// TestIsFragment covers both families: every fragment, first or later, is
+// one, whatever headers precede the IPv6 fragment header; DF is not.
+func TestIsFragment(t *testing.T) {
+	v4 := func(fragField uint16) []byte {
+		ip := make([]byte, 20+8)
+		ip[0] = 0x45
+		binary.BigEndian.PutUint16(ip[2:], uint16(len(ip)))
+		binary.BigEndian.PutUint16(ip[6:], fragField)
+		ip[9] = byte(ProtoUDP)
+		return ip
+	}
+	// v6 builds an IPv6 packet whose header chain is hops (each an 8-byte
+	// extension header of that type) and then UDP.
+	v6 := func(fragOffset uint16, hops ...byte) []byte {
+		ip := make([]byte, 40+8*len(hops)+8)
+		ip[0] = 0x60
+		binary.BigEndian.PutUint16(ip[4:], uint16(len(ip)-40))
+		next := byte(ProtoUDP)
+		if len(hops) > 0 {
+			next = hops[0]
+		}
+		ip[6] = next
+		for i, h := range hops {
+			ext := ip[40+8*i:]
+			ext[0] = byte(ProtoUDP)
+			if i+1 < len(hops) {
+				ext[0] = hops[i+1]
+			}
+			if h == 44 {
+				binary.BigEndian.PutUint16(ext[2:], fragOffset<<3)
+			}
+		}
+		return ip
+	}
+	for _, c := range []struct {
+		name string
+		ip   []byte
+		want bool
+	}{
+		{"ipv4 whole", v4(0), false},
+		{"ipv4 DF", v4(0x4000), false},
+		{"ipv4 first fragment", v4(0x2000), true},
+		{"ipv4 later fragment", v4(185), true},
+		{"ipv4 last fragment", v4(370), true},
+		{"ipv6 whole", v6(0), false},
+		{"ipv6 first fragment", v6(0, 44), true},
+		{"ipv6 later fragment", v6(181, 44), true},
+		{"ipv6 later fragment behind hop-by-hop", v6(181, 0, 44), true},
+		{"ipv6 destination options only", v6(0, 60), false},
+		{"junk", []byte{0x01}, false},
+	} {
+		if got := isFragment(c.ip); got != c.want {
+			t.Errorf("%s: isFragment = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
