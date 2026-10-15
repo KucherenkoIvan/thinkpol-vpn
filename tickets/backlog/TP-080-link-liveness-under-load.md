@@ -28,7 +28,9 @@ Implement so a link must not be declared dead while it is still receiving authen
 DESIGN.md has the 6 s dead interval in its path-layer section; check that the change agrees with DESIGN, and update DESIGN in the same branch.
 - **Second trigger (cross-model analysis of device run 4):** a source-port change. When the client restarted on a new local port, the exit logged `link remote moved` and 0.5 s later closed the link with `no answer to its probes within 6s`, `last_in=48ms`, `last_proof=6.445s`: data from the new port was arriving, but the probe deadline was not reset on the move. A NAT rebind would look the same. The fix should cover both: inbound authenticated data counts as proof, and/or a remote move resets or re-probes.
 - **Run 4 itself:** the link stayed up through the speed test (status `links_up=1` before and after on both sides).
+- Third case, from the 2026-10-15 manual session on macOS: after sleep/wake or a network change, the link is only declared dead after the 6 s probe timeout, and it comes back 1.4–3.5 s after the network returns. Redialing as soon as the route survey sees a new default route (or the old one gone) would cut recovery to the redial time. The same signal could also shorten the NAT-rebind case above.
 
 ## Log
 - 2026-10-15 created in backlog (device run 3 and 4 findings)
 - 2026-10-15 docs: second trigger (port change / NAT rebind) from device run 4 analysis
+- 2026-10-15 docs: redial on a network change (macOS manual session)
