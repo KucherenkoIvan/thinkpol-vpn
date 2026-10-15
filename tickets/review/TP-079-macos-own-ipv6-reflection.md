@@ -26,7 +26,7 @@ Non-reflection paths; changing how macOS routes local overlay traffic; device ve
 
 ## Acceptance
 
-- [ ] reflected TCP, UDP and ICMPv6 (and ICMP/TCP/UDP over IPv4) packets carry a correct checksum, unit-tested with packets whose checksum field holds a wrong or partial value
+- [x] reflected TCP, UDP and ICMPv6 (and ICMP/TCP/UDP over IPv4) packets carry a correct checksum, unit-tested with packets whose checksum field holds a wrong or partial value (`TestFixReflectedChecksums` in `internal/dataplane/checksum/checksum_test.go`; `make test`, `go test -race ./internal/dataplane/router/...`)
 - [ ] the device checklist: `dig @A6`, TCP to A6 and `ping6 A6` work, and the "bad checksum" counter doesn't grow (next device run)
 
 ## Notes
@@ -42,3 +42,4 @@ Effect: anything on the Mac talking to its own overlay IPv6 is broken. A6 is oft
 ## Log
 
 - 2026-10-15 created in in-progress (split from TP-019 after device run 2; stacked on tp-019-macos-data-plane)
+- 2026-10-15 in-progress → review — unit acceptance checked; device checklist pending (`needs_human: macos`); `make test`, `go test -race ./internal/dataplane/router/...` pass
