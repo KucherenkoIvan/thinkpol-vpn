@@ -46,32 +46,32 @@ Linux nftables guard (TP-021).
 **Round 1 (2026-10-15), claude-opus-tp078; round 2 the same day after the cross-family review (Review findings below).** The design and its limits are in DESIGN.md, "IPv6", bullet "The leak guard on macOS". Nothing here has touched pf on a real Mac: every pfctl run goes through `pfctl`, an interface with a stateful fake in the tests (`fakepf_darwin_test.go`: anchors, tables, references, states and `-k` as XNU's DIOCKILLSTATES matches them, `const` tables refusing an in-place change, `Invalid argument` for a missing anchor, an unreadable References layout). The pfctl output formats are from pfctl(8), pf.conf(5), the stock `/etc/pf.conf` and the published OS X `-s References` transcripts the review cites; the rest is inference until the checklist below records them.
 
 - **Code.**
-  - `firewall/guard_darwin.go`: `IPv6Guard`: `Apply` :142, `Close` :492, `Watch` :550 (polls every `guardPoll` = 10 s, :21; `broken` :581).
-  - The steps of an Apply: the hook check :184, the load and its read-back :199, `intact` :256, `enable` (reference taken, taken over, or found by pid) :314, `kill` (states) :406.
-  - Releasing and clearing: `resolve` (a token by pid) :295, `release` :386, `flush` (a missing anchor counts as empty) :457.
-  - `firewall/pfctl_darwin.go`: the exec runner :64 (15 s bound, `LC_ALL=C`; a missing pfctl is `ErrGuardUnsupported`) and the parsers: `hooked` :149, `parseToken` :173, `parseReferences` :222, `parseTable` :283, `parseStateAddrs` :318. Also `exemptPrefixes`/`upstreamPrefixes`/`upstreamPorts` :343–372, `guardRules` :417, `anchorText` :449, `saneRules` :475.
+  - `firewall/guard_darwin.go`: `IPv6Guard`: `Apply` :139, `Close` :487, `Watch` :545 (polls every `guardPoll` = 10 s, :21; `broken` :576).
+  - The steps of an Apply: the hook check :187, the load and its read-back :202, `intact` :254, `enable` (reference taken, taken over, or found by pid) :308, `kill` (states) :403.
+  - Releasing and clearing: `resolve` (a token by pid) :289, `release` :380, `flush` (a missing anchor counts as empty) :454.
+  - `firewall/pfctl_darwin.go`: the exec runner :63 (15 s bound, `LC_ALL=C`; a missing pfctl is `ErrGuardUnsupported`) and the parsers: `hooked` :148, `parseToken` :172, `parseReferences` :221, `parseTable` :282, `parseStateAddrs` :317. Also `exemptPrefixes` :342, `upstreamTargets` :362, `guardRules` :409, `anchorText` :441, `saneRules` :463.
   - `firewall/token_darwin.go`: the record `<statedir>/pf-guard.token` (`netcfg.StateDir`): `boot <uuid>` plus `token <value|unknown> pid <pid>`, read and written through `trusteddir`.
   - `agent/leakguard_darwin.go`: `newHostGuard`. `leakguard_other.go` is now `(!linux && !darwin) || android`.
   - Round 2 also carries the upstreams' ports. `routetable.Want.Upstreams` and `Exempt.Upstreams` are `[]netip.AddrPort`, so are `Engine.SetDirectUpstreams` and the agent's runner (a configured `-dns-upstream [v6]:port` keeps its port).
 - **Deviations from Scope.**
-  - Tables go in with the rules in one `-f -`, not by `-T replace`: one transaction. They are not `const` (R2.8).
+  - The table goes in with the rules in one `-f -`, not by `-T replace`: one transaction. It is not `const` (R2.8).
   - Close runs `-F rules` and `-F Tables`, never `-F all`, which also flushes pf's global state table.
   - Rules are `inet6` and `no state`.
   - Neighbour discovery has no rule: the exempt table's link-local unicast and multicast cover it (R2.2). MLD goes to `ff00::/8`; no hop-limit match exists in pf.
-  - The DNS upstreams have a table of their own, passing DNS only (R2.3).
+  - Each global IPv6 DNS upstream gets DNS on its own port and ICMPv6 135/136 (R2.3, R3.3), by rules naming it; round 2's upstream table is gone. A link-local upstream is passed whole by `fe80::/10`.
   - The anchor is `com.apple/000.thinkpol` (R2.4).
-  - Watch polls the hook, the rules, both tables, pf enabled, and a failed last Apply.
+  - Watch polls the hook, the rules, the table, pf enabled, and a failed last Apply.
 - **Pid reuse (R2.7).** The record names the reference by the token and by the pid of the pfctl that ran `-E`. That pfctl exits at once. A later enabler can get the same pid, and a released token value can come back (it is a kernel address's hash). If both happen to one reference, `-X` would release someone else's. pf offers nothing better to tell them apart. The window is a released-and-retaken token plus a wrapped pid within one boot.
-- **Verified here** (round 2).
+- **Verified here** (rounds 2 and 3).
   - `make lint`, `make test`, and `go test -race` (firewall ×3, agent, routetable, dataplane) pass on a Mac.
-  - The round-1 pfctl tripwire was rerun: no test runs `/sbin/pfctl`.
+  - The pfctl tripwire was rerun each round: no test runs `/sbin/pfctl`.
   - The lab passes: `lab-gotest` for `./internal/dataplane/...` and `./internal/agent/...` (Linux; the upstream-type change touches it).
-  - 17 planted bugs, each failing the tests (listed in the round-2 Log line).
+  - Planted bugs, each failing the tests: 17 in round 2, 4 in round 3 (listed in the Log lines).
 - **Unverified, for the device run.**
   - The stream `pfctl -E` prints its token on.
   - pfctl's listing of the rules (expansion, `no state` kept).
   - What a flush or listing of a missing anchor answers.
-  - The `-s states` layout and whether `-k <local> -k <remote>` kills an inbound state the other way round.
+  - The `-s states` layout, whether `-k` of nothing exits 0, and whether `-k <local> -k <remote>` kills an inbound state the other way round (step 0 records the first two).
   - Whether a reload replaces a table's content (step 8 decides).
   - Whether bound sockets reach pf at all (steps 3–4).
   - Whether `pfctl -d` drops references (step 7, only on a Mac where nothing else holds one).
@@ -89,9 +89,14 @@ It assumes TP-019's step 0 preparation (`bin/thinkpol`, the state dir). Record e
    - `sudo pfctl -s info 2>/dev/null | head -1 | tee /tmp/tp078-info-before.txt`.
    - `sudo pfctl -s References 2>/dev/null | tee /tmp/tp078-refs-before.txt`: record the layout verbatim. **Note whether any reference is listed below the header** (the Application Firewall's `socketfilterfw`, another app): if one is, step 7's `pfctl -d` and step 12 are skipped.
    - `sudo pfctl -a com.apple -s Anchors 2>/dev/null`: Apple's anchors there.
-   - `sudo pfctl -ss 2>/dev/null | tee /tmp/tp078-states-before.txt | grep -c '\['` counts the IPv6 states.
+   - `sudo pfctl -ss 2>/dev/null | tee /tmp/tp078-states-before.txt | grep -c '\['` counts the IPv6 states. Record one IPv6 line verbatim: `grep -m1 '\[' /tmp/tp078-states-before.txt`. If pf is off and holds no state, take one after step 1 instead.
+     - The guard expects lines like `ALL tcp 2001:db8::10[51000] -> 2001:db8:ab::7[443] ESTABLISHED:ESTABLISHED`: each IPv6 address with its port in brackets, a translation in parentheses, `->` or `<-`.
+     - IPv6 addresses printed another way mean the guard finds no state to kill: states opened before `up` would survive. Record it and flag it.
+   - One throwaway kill, of two documentation addresses no real flow can have: `sudo pfctl -k 2001:db8::1 -k 2001:db8::2; echo "exit $?"`.
+     - Exit 0, with a line like `killed 0 states`, means the guard's kills work.
+     - A non-zero exit or a usage message means every Apply that finds a state to kill fails, and the health says `ipv6_guard_not_enforced` while such states exist. Record the output and flag it.
    - `sudo ls /private/var/db/thinkpol/pf-guard.token` gives "No such file".
-1. *Up, with a connection open from before.*
+1. *Up, with a connection open from before.* (If `$R` turns out to be one of the direct DNS upstreams, step 2's rules name it: use `R=2606:4700:4700::1111` instead.)
    - In a second terminal, `sudo tcpdump -ni en0 "ip6 and host $R"`.
    - In a third, `nc -6 $R 443` (an IPv6 TCP connection, left open; tcpdump shows its handshake).
    - Then `sudo ./bin/thinkpol up -state /private/var/lib/thinkpol -mode device -log-level debug`, and `sudo ./bin/thinkpol rules preset all-but-domestic`.
@@ -103,15 +108,15 @@ It assumes TP-019's step 0 preparation (`bin/thinkpol`, the state dir). Record e
 2. *What pf holds.*
    - `sudo pfctl -a com.apple/000.thinkpol -s rules 2>/dev/null` lists, in order:
      - pass on `lo0`, pass on `utunN`, pass to `<thinkpol_exempt6>`;
-     - for each IPv6 direct upstream port, `proto tcp` and `proto udp` to `<thinkpol_upstream6>` on that port;
-     - two ICMPv6 neighbour rules to `<thinkpol_upstream6>`;
+     - for each global IPv6 direct upstream, `proto tcp` and `proto udp` to that address on its own port (`port = 53`), and no other port;
+     - for each such address, two ICMPv6 neighbour rules (`neighbrsol`, `neighbradv`): only an on-link upstream needs them;
      - four MLD rules to `ff00::/8`;
      - `block return out quick inet6 all`.
      
-     That is 12 rules with one upstream port, 8 with no IPv6 upstream. **Every pass line ends in `no state`, and the block has `quick`**; anything else is a fail. Record the listing verbatim.
+     That is 12 rules with one global IPv6 upstream on one port, and 8 with none (a link-local upstream adds none: `fe80::/10` passes it). **Every pass line ends in `no state`, and the block has `quick`**; anything else is a fail. Record the listing verbatim.
    - `sudo pfctl -a com.apple/000.thinkpol -t thinkpol_exempt6 -T show 2>/dev/null | grep -cE '^ *(fe80::/10|ff02::/16)$'` gives `2`.
-   - `... -t thinkpol_upstream6 -T show` lists exactly the IPv6 direct upstreams (`scutil --dns`'s resolver #1 IPv6 addresses, or the configured ones).
-   - `sudo pfctl -a com.apple -s Anchors 2>/dev/null` lists `com.apple/000.thinkpol` first.
+   - The upstream rules name exactly the global IPv6 direct upstreams (`scutil --dns`'s resolver #1 IPv6 addresses, or the configured ones).
+   - `sudo pfctl -a com.apple -s Anchors 2>/dev/null` lists `com.apple/000.thinkpol`. pf evaluates the anchors by name, whatever order this listing prints them in.
    - `sudo pfctl -s info 2>/dev/null | head -1` says Enabled.
    - `sudo pfctl -s References 2>/dev/null` has exactly one line more than the baseline, process `pfctl`.
    - `sudo cat /private/var/db/thinkpol/pf-guard.token` has `boot <uuid>`, equal to `sysctl -n kern.bootsessionuuid`, and `token <T> pid <P>`, equal to that new line. `token unknown` there is a fail: record the `-E` output in the log.
@@ -120,17 +125,19 @@ It assumes TP-019's step 0 preparation (`bin/thinkpol`, the state dir). Record e
    - `time ping6 -c1 -I en0 $R` gets no reply and returns at once.
    - `time curl -6 -sS -m5 --interface en0 "https://[$R]/"; echo $?` exits 7 in well under 5 s, not 28.
    - `A=$(ifconfig en0 inet6 | awk '/inet6/ && !/fe80/ && !/deprecated/ {print $2; exit}'); time curl -6 -sS -m5 --interface $A "https://[$R]/"` is refused at once.
-   - Repeat the `-v` listing. **The block rule's `Packets:` must have grown by at least 3. If it didn't, the step fails**: routing refused first, and this step says nothing about the guard. Record the messages either way; step 4 is the guard's own case.
+   - Repeat the `-v` listing. If `Packets:` didn't grow, routing refused first and this step says nothing about the guard. Growth is only suggestive, because background IPv6 to destinations that aren't exempt counts too. Record the messages either way: **step 4 decides**.
 4. *A route that would leak.* One command line; it adds the route, tests, and removes it whatever happens:
    - Find the gateway: `GW=$(netstat -rn -f inet6 | awk '$1=="default" && /en0/ {print $2; exit}'); echo $GW`.
    - In a second terminal, `sudo tcpdump -ni en0 "ip6 and host $R"`.
    - Then run: `sudo route -n add -inet6 -host $R $GW; route -n get -inet6 $R | grep interface; time curl -6 -sS -m5 "https://[$R]/"; echo "curl exit $?"; sudo route -n delete -inet6 -host $R`.
-   - Expect `interface: en0`, then curl exit 7 at once, tcpdump showing nothing, and the block rule's `Packets:` grown.
+   - Expect `interface: en0`, then curl exit 7 at once, and tcpdump showing nothing.
+   - **This step decides the guard's case.** The route sends `$R` out of en0, so without the guard the curl would leave there (TP-021's lab test shows the same with the guard off); only pf can stop it.
    - `netstat -rn -f inet6 | grep -F "$R"` is empty afterwards.
 5. *What is exempt still works, and only that.*
    - `sudo ./bin/thinkpol status` shows the links up.
    - After 2 minutes, `ndp -an | grep en0` still has reachable entries (neighbour discovery passes), and `ping6 -c1 $GW` replies.
-   - With an IPv6 direct upstream `U` and en0's address `A` (step 3): `dig -b $A @$U example.com +short +time=3` answers (DNS to it is exempt). `time curl -6 -sS -m5 --interface en0 "http://[$U]/"` is refused at once (nothing else to it is).
+   - With an IPv6 direct upstream `U` and en0's address `A` (step 3): `dig -b $A @$U example.com +short +time=3` answers (DNS to it is exempt).
+   - **Only if `U` is global** (not `fe80::…`): `time curl -6 -sS -m5 --interface en0 "http://[$U]/"` is refused at once (nothing else to it is). A link-local `U` is passed whole by the exempt table's `fe80::/10`, by design (it never leaves the link), so there the curl proves nothing.
    - If the direct set has IPv6, a domestic site with an AAAA record answers over `curl -6`, and `sudo pfctl -a com.apple/000.thinkpol -t thinkpol_exempt6 -T test <its address>` gives `1/1 addresses match`.
 6. *Leak capture.* Run `sudo tcpdump -ni en0 'ip6 and not net fe80::/10 and not net ff00::/8'` while browsing tunnelled IPv6 sites for a minute. Only direct destinations, entries and DNS to the direct upstream appear; check any surprise with `-T test` as in 5.
 7. *Outside changes undone* (the 10 s poll). Each within about 15 s:
@@ -147,7 +154,7 @@ It assumes TP-019's step 0 preparation (`bin/thinkpol`, the state dir). Record e
 9. *Crash.* `sudo pkill -9 -f 'thinkpol up'`. Step 3's `ping6` and `curl` are still refused at once. The rules, pf Enabled and the record all stay.
 10. *Start without connecting clears it.* `sudo ./bin/thinkpol up -state /private/var/lib/thinkpol -mode device -connect=false`, then Ctrl-C after `starting`.
     - The log has no `removing a previous run's routes failed`.
-    - `sudo pfctl -a com.apple/000.thinkpol -s rules 2>/dev/null` lists nothing (or the anchor is gone), and both tables' `-T show` say they don't exist.
+    - `sudo pfctl -a com.apple/000.thinkpol -s rules 2>/dev/null` lists nothing (or the anchor is gone), and `-t thinkpol_exempt6 -T show` says the table doesn't exist.
     - `diff <(sudo pfctl -s References 2>/dev/null | awk 'NR>2 {print $1, $2, $3}') <(awk 'NR>2 {print $1, $2, $3}' /tmp/tp078-refs-before.txt)` is empty: the same references as the baseline, timestamps aside.
     - `sudo pfctl -s info 2>/dev/null | head -1 | awk '{print $2}'` is as in `/tmp/tp078-info-before.txt`.
     - The record is gone, and `ping6 -c1 -I en0 $R` replies again.
@@ -162,6 +169,9 @@ It assumes TP-019's step 0 preparation (`bin/thinkpol`, the state dir). Record e
     - Then `sudo pfctl -s rules 2>/dev/null | diff /tmp/tp078-main-before.txt -` is empty, and `sudo ./bin/thinkpol disconnect; sudo ./bin/thinkpol connect` brings the health back clean.
 
 *Rollback, at any point.*
+
+Stop thinkpol first (Ctrl-C, or `sudo pkill -TERM -f 'thinkpol up'`): while it runs, the guard puts back whatever is flushed within about 10 s. Step 10 (`up -connect=false`, then Ctrl-C) is the clean way to remove everything. After a kill -9 the commands below remove the guard, but the route table's split and reject routes stay (IPv6 refused but for direct destinations) until step 10 runs.
+
 - `sudo route -n delete -inet6 -host 2001:4860:4860::8888` (step 4, if it stopped halfway).
 - `sudo pfctl -f /etc/pf.conf` (step 12, if it stopped halfway).
 - `sudo pfctl -a com.apple/000.thinkpol -F rules; sudo pfctl -a com.apple/000.thinkpol -F Tables`.
@@ -218,9 +228,9 @@ Resolution (round 2):
 ### Round 3 (Grok delta review of round 2, 2026-10-15)
 Status: R2.1–R2.4 and R2.6–R2.8 fixed, R2.5 partly; no blocker. Orchestrator's list, the last round under the 3-round rule.
 
-- [ ] R3.1 Pre-existing non-DNS flows to an upstream address survive: `kill` treats the upstream table as exempt (`guard_darwin.go:89`, `:432`), but `-k` matches hosts, not ports. Stop exempting upstream addresses in `kill` (DNS re-flows through the `no state` port rule); the test at `guard_darwin_test.go:578` must catch it.
-- [ ] R3.2 States created during a bypass persist: `Apply` returns at `:155` before `killStates` is set, and the next success with an intact anchor skips load and kill. Set `killStates` on any Apply that follows a failed one; test it.
-- [ ] R3.3 Nits:
+- [x] R3.1 Pre-existing non-DNS flows to an upstream address survive: `kill` treats the upstream table as exempt (`guard_darwin.go:89`, `:432`), but `-k` matches hosts, not ports. Stop exempting upstream addresses in `kill` (DNS re-flows through the `no state` port rule); the test at `guard_darwin_test.go:578` must catch it.
+- [x] R3.2 States created during a bypass persist: `Apply` returns at `:155` before `killStates` is set, and the next success with an intact anchor skips load and kill. Set `killStates` on any Apply that follows a failed one; test it.
+- [x] R3.3 Nits:
   - Each upstream gets only its own ports: per-(address, port) rules or tables, not one brace list crossing every port with every address (`pfctl_darwin.go:424`).
   - ICMPv6 135/136 to upstreams: keep them, and say in DESIGN and the checklist that they are only for an on-link upstream.
   - Checklist step 5: the HTTP-refusal test only for a global upstream (a link-local one is passed by `fe80::/10`).
@@ -228,6 +238,26 @@ Status: R2.1–R2.4 and R2.6–R2.8 fixed, R2.5 partly; no blocker. Orchestrator
   - Step 2: the anchor name present, not "listed first".
   - Step 3: the counter can grow from background traffic; step 4 decides.
   - Step 0: record one real `-s states` line and run one `-k` of a throwaway IPv6 pair before trusting the parser; say how to read the results.
+
+Resolution (round 3):
+- R3.1 `exempts` (`guard_darwin.go`, the method on `appliedGuard`) is the exempt table alone. An upstream's address isn't exempt for `kill` (:403): its states go, DNS included, and DNS goes on through its stateless port rule.
+  - Test: `TestApplyKillsStatesTheGuardRefuses` has an upstream state on :443 and one on :53, and requires both killed.
+  - Planted bug: `exempts` sparing upstream addresses again fails it.
+- R3.2 `Apply` (:139) sets `killStates` whenever the previous Apply failed. So a state a quick pass above the hook made (it keeps state by default) goes on the next success, even when the anchor is intact and isn't reloaded.
+  - Test: `TestStatesMadeWhileTheGuardFailedAreKilled`: a bypass with a foreign state, Apply fails, the bypass goes, Apply succeeds without a reload, and the state is gone.
+  - Planted bug: no kill after a failure fails it.
+  - What is left: a bypass that comes and goes between two polls without the guard noticing leaves its states until the next successful load or failure (DESIGN says so).
+- R3.3 Nits:
+  - **Upstreams.** Round 2's upstream table is replaced by rules naming each global IPv6 upstream on its own port (`guardRules`, `pfctl_darwin.go:409`; `upstreamTargets` :362). Link-local upstreams are skipped: `fe80::/10` passes them whole, and pf couldn't name them without their interface. Two upstreams on different ports no longer cross.
+    - Tests: `TestAnchorText`, `TestTheTableAndTheUpstreams`.
+    - Planted bugs: ports crossed, and a link-local upstream named, each fail them.
+  - **ICMPv6 135/136 to upstreams** are kept, per address. DESIGN, the `guardRules` comment and checklist step 2 say they are only for an on-link upstream.
+  - **Checklist.** Step 5 runs the HTTP refusal only for a global upstream. The rollback says to stop thinkpol first, and that after a kill -9 the split routes stay until `up -connect=false`. Step 2 requires the anchor's name, not its place. Step 3 is suggestive and step 4 decides. Step 0 records one real `-s states` line and runs a throwaway `pfctl -k 2001:db8::1 -k 2001:db8::2`, with how to read both.
+- **Only a real Mac can settle:**
+  - the `-E`, References, `-s states` and `-k` outputs;
+  - whether a reload narrows the table (step 8);
+  - whether bound sockets reach pf (steps 3–4);
+  - what a missing anchor's flush answers (step 10).
 
 ## Log
 - 2026-10-15 created in backlog (split from TP-021 after 3 review rounds; the Linux guard merged in TP-021)
@@ -238,3 +268,4 @@ Status: R2.1–R2.4 and R2.6–R2.8 fixed, R2.5 partly; no blocker. Orchestrator
 - 2026-10-15 in-progress → review — round 2: R2.1–R2.8 fixed. Unreadable -E token found by pid or Apply/Close fail; ND rule dropped, MLD to ff00::/8; DNS upstreams in thinkpol_upstream6 for DNS only, upstream ports carried through Want/Exempt/Engine/agent; quick pass above the hook = not enforced; anchor com.apple/000.thinkpol; IPv6 states to non-exempt ends killed with pfctl -k; tables not const; missing anchor = empty; checklist reworked. make lint, make test (pfctl tripwire clean), -race, lab-gotest dataplane (20 pkgs) and agent (6 pkgs) pass. 17 planted bugs each caught: an unknown token held, Apply succeeding unread, Close forgetting it, MLD to any, upstreams in the exempt table, quick pass ignored, no kill, kill ignoring exemptions, kill one direction, no kill after re-enable, stateful passes accepted, Watch quiet after a failure, loose References match, const tables, missing-anchor flush failing Close, any Invalid argument taken as empty (rules, tables). Device run pending
 - 2026-10-15 review → has-errors — Grok delta review of round 2: R2.5 partly fixed (upstream addresses exempt from kill, states made during a bypass), checklist nits; findings R3.1–R3.3
 - 2026-10-15 has-errors → in-progress — owner: claude-opus-tp078, round 3
+- 2026-10-15 in-progress → review — round 3: R3.1–R3.3 fixed. kill exempts the main table only (upstream states die, DNS re-flows statelessly); any Apply after a failed one kills states; per-(address, port) upstream DNS rules, upstream table dropped, link-local upstreams left to fe80::/10; checklist steps 0, 2, 3, 4, 5 and rollback reworked. make lint, make test (pfctl tripwire clean), -race, lab-gotest dataplane (20 pkgs) and agent (6 pkgs) pass. 4 planted bugs each caught: kill sparing upstream addresses, no kill after a failure, ports crossed, a link-local upstream named. Ready for the owner's device run; what only a real Mac settles is listed in Resolution (round 3)
