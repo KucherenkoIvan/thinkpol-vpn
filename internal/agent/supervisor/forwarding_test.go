@@ -1,6 +1,7 @@
 package supervisor
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -191,6 +192,60 @@ func TestForwardingRecordOfAChangedSwitchIsDropped(t *testing.T) {
 	b, _ := os.ReadFile(filepath.Join(run, forwardingFile))
 	if strings.TrimSpace(string(b)) != "" {
 		t.Fatalf("record left: %s", b)
+	}
+}
+
+// Forwarding that can't be turned off stays the supervisor's, recorded,
+// with IPv6's accept_ra still 2: a successor adopts it and turns it off.
+func TestForwardingThatCannotBeTurnedOffStaysRecorded(t *testing.T) {
+	get := fakeProcSys(t)
+	run := t.TempDir()
+	var f rootForwarding
+	if err := f.load(run); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.ensure([2]bool{true, true}); err != nil {
+		t.Fatal(err)
+	}
+	kernel := writeSysctl
+	writeSysctl = func(key, value string) error {
+		if key == forwardingKeys[1] && value == "0" {
+			return errors.New("refused")
+		}
+		return kernel(key, value)
+	}
+	if err := f.restore(); err == nil {
+		t.Fatal("restore returned nil with IPv6 forwarding still on")
+	}
+	if f.owned() != [2]bool{false, true} {
+		t.Fatalf("owned %v after a restore that turned IPv4 off only", f.owned())
+	}
+	for key, want := range map[string]string{
+		"net/ipv4/ip_forward":          "0",
+		"net/ipv6/conf/all/forwarding": "1",
+		"net/ipv6/conf/eth0/accept_ra": "2",
+	} {
+		if got := get(key); got != want {
+			t.Errorf("after the failed restore: %s = %s, want %s", key, got, want)
+		}
+	}
+	writeSysctl = kernel
+
+	var next rootForwarding
+	if err := next.load(run); err != nil {
+		t.Fatal(err)
+	}
+	if next.owned() != [2]bool{false, true} {
+		t.Fatalf("successor owns %v", next.owned())
+	}
+	if err := next.restore(); err != nil {
+		t.Fatal(err)
+	}
+	if get("net/ipv6/conf/all/forwarding") != "0" || get("net/ipv6/conf/eth0/accept_ra") != "1" {
+		t.Fatalf("successor's restore: forwarding %s, accept_ra %s", get("net/ipv6/conf/all/forwarding"), get("net/ipv6/conf/eth0/accept_ra"))
+	}
+	if _, err := os.Stat(filepath.Join(run, forwardingFile)); !os.IsNotExist(err) {
+		t.Errorf("the record outlived the restore: %v", err)
 	}
 }
 

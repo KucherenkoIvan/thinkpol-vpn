@@ -100,8 +100,15 @@ func New(opts Options) (*Supervisor, error) {
 		maxFlows:  maxFlows(opts.MaxFlowsPerSpace),
 		stopWatch: make(chan struct{}), watchDone: make(chan struct{}),
 	}
+	// A predecessor's forwarding, if it died without restoring it: still
+	// the supervisor's to confine and put back, even if this start fails.
+	if err := s.forwarding.load(opts.RuntimeDir); err != nil {
+		s.log.Warn("reading what a predecessor changed in the forwarding sysctls", "err", err)
+	}
 	fail := func(err error) (*Supervisor, error) {
-		_ = removeIsolation()
+		if err := s.putBackForwarding(); err != nil {
+			s.log.Error("putting back the forwarding sysctls", "err", err)
+		}
 		_ = root.Close()
 		return nil, fmt.Errorf("supervisor: %w", err)
 	}
@@ -111,11 +118,6 @@ func New(opts Options) (*Supervisor, error) {
 	}
 	if err := removeStaleLinks(s.log); err != nil {
 		return fail(err)
-	}
-	// A predecessor's forwarding, if it died without restoring it: still
-	// the supervisor's to confine and put back.
-	if err := s.forwarding.load(opts.RuntimeDir); err != nil {
-		s.log.Warn("reading what a predecessor changed in the forwarding sysctls", "err", err)
 	}
 	s.refreshUplink()
 	if err := s.installIsolation(); err != nil {
@@ -224,6 +226,7 @@ func (s *Supervisor) SetSpaces(spaces []Space) error {
 	// What each running space's table forwards now, before the uplink
 	// and the grants change: a space whose differs after is told.
 	before := s.spaceEgresses()
+	was := s.tablesInput()
 	s.refreshUplinkLocked()
 	var started []*worker
 	for _, sp := range spaces {
@@ -247,9 +250,12 @@ func (s *Supervisor) SetSpaces(spaces []Space) error {
 	// Rebuild the isolation tables for the current slots, their egress and
 	// dials, before any new worker's veth carries a packet. On failure the
 	// just-started workers are rolled back: none has a goroutine yet, so a
-	// later Close must not wait on them.
+	// later Close must not wait on them. What the tables are built from is
+	// put back to what they still enforce, so the next SetSpaces sees the
+	// difference and applies it.
 	if err := s.applyTables(before); err != nil {
 		s.rollback(started)
+		s.restoreTablesInput(was)
 		return err
 	}
 	for _, w := range started {
@@ -401,6 +407,7 @@ func (s *Supervisor) uplinkMoved() {
 		return
 	}
 	before := s.spaceEgresses()
+	was := s.tablesInput()
 	changed := s.refreshUplinkLocked()
 	s.mu.Unlock()
 	if !changed {
@@ -408,6 +415,7 @@ func (s *Supervisor) uplinkMoved() {
 	}
 	if err := s.applyTables(before); err != nil {
 		s.log.Error("the uplink changed, and the tables couldn't follow", "err", err)
+		s.restoreTablesInput(was)
 	}
 }
 
@@ -423,6 +431,53 @@ func (s *Supervisor) Egress() EgressInfo {
 		info.Err = err.Error()
 	}
 	return info
+}
+
+// tablesInput is what the root namespace's tables and the spaces' own are
+// built from, besides the slots: the uplink, and each worker's egress grant
+// and dials.
+type tablesInput struct {
+	uplink    egress.Uplink
+	uplinkErr error
+	workers   map[*worker]workerEgress
+}
+
+type workerEgress struct {
+	grant EgressGrant
+	dials []Dial
+}
+
+// tablesInput snapshots what the tables are built from; the caller holds
+// s.mu.
+func (s *Supervisor) tablesInput() tablesInput {
+	in := tablesInput{uplink: s.uplink, uplinkErr: s.uplinkErr, workers: make(map[*worker]workerEgress, len(s.workers))}
+	for _, w := range s.workers {
+		grant, dials := w.egressRules()
+		in.workers[w] = workerEgress{grant: grant, dials: dials}
+	}
+	return in
+}
+
+// restoreTablesInput puts back, after a failed rebuild, what the tables are
+// built from to what they still enforce. Only that: a config and seeds
+// pushed meanwhile stay (the worker has them already; taken back, it would
+// drop the seeds only the new map names, and sendSeeds never sends a seed
+// twice to one process), and so do the inbound credentials (the worker
+// keeps the new map). A worker that restarted meanwhile wired its
+// namespace's table for what is being undone: its run loop rewrites it.
+func (s *Supervisor) restoreTablesInput(in tablesInput) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	wired := s.spaceEgresses()
+	s.uplink, s.uplinkErr = in.uplink, in.uplinkErr
+	for w, e := range in.workers {
+		w.setEgress(e.grant, e.dials)
+	}
+	for w, e := range wired {
+		if s.spaceEgress(w) != e {
+			w.signal(w.egressChanged)
+		}
+	}
 }
 
 // rollback drops workers that were registered but never started (their done
@@ -557,10 +612,7 @@ func (s *Supervisor) Close() error {
 
 	s.stopAll(ws)
 	var errs []error
-	if err := removeIsolation(); err != nil {
-		errs = append(errs, err)
-	}
-	if err := s.forwarding.restore(); err != nil {
+	if err := s.putBackForwarding(); err != nil {
 		errs = append(errs, err)
 	}
 	if s.cgroups != nil {
@@ -575,6 +627,20 @@ func (s *Supervisor) Close() error {
 		return fmt.Errorf("supervisor: close: %w", err)
 	}
 	return nil
+}
+
+// putBackForwarding turns off the root's forwarding the supervisor turned
+// on, then removes the isolation tables: never the other way round, or the
+// root would forward everything for a moment. A family whose forwarding
+// can't be turned off keeps the tables, which forward only the spaces'
+// traffic (none, once they are stopped), and its record, so the next
+// supervisor adopts it and tries again.
+func (s *Supervisor) putBackForwarding() error {
+	err := s.forwarding.restore()
+	if on := s.forwarding.owned(); on != [2]bool{} {
+		return errors.Join(err, fmt.Errorf("forwarding still on (IPv4, IPv6: %v): the isolation tables stay", on))
+	}
+	return errors.Join(err, removeIsolation())
 }
 
 // worker is one space's worker across its restarts.

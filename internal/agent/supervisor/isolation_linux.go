@@ -99,9 +99,10 @@ import (
 // anti-spoof its ND (whose sources are link-local), so neither floods the
 // root's neighbour table.
 
-// failApplyIsolation makes applyIsolation fail when there are slots to apply,
-// for the SetSpaces rollback test. Tests set it; it is never set in production.
-var failApplyIsolation bool
+// failApplyIsolation, when set, is asked before each rebuild of the tables
+// (with how many slots it has) and fails it with what it returns: the tests
+// of a failed rebuild. Tests set it; it is never set in production.
+var failApplyIsolation func(slots int) error
 
 // unboundAccepts makes the accepts take any established or related flow,
 // whoever owns it: the negative control of the tests that forge ICMP errors.
@@ -196,8 +197,10 @@ func (s *Supervisor) effective(grant EgressGrant) [2]bool {
 
 // applyIsolation rebuilds both tables in one flush.
 func (s *Supervisor) applyIsolation(st tableState) error {
-	if failApplyIsolation && len(st.rules) > 0 {
-		return fmt.Errorf("supervisor: applyIsolation failed (injected)")
+	if failApplyIsolation != nil {
+		if err := failApplyIsolation(len(st.rules)); err != nil {
+			return err
+		}
 	}
 	c, err := nftables.New()
 	if err != nil {
