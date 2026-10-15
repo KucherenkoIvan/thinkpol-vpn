@@ -8,8 +8,8 @@ size: M
 depends_on: [TP-019, TP-021]
 refs: [D6, DESIGN#ipv6]
 needs_human: macos
-owner: ""
-branch: ""
+owner: "claude-opus-tp078"
+branch: "tp-078-macos-pf-guard"
 ---
 
 ## Goal
@@ -46,3 +46,4 @@ Linux nftables guard (TP-021).
 
 ## Log
 - 2026-10-15 created in backlog (split from TP-021 after 3 review rounds; the Linux guard merged in TP-021)
+- 2026-10-15 backlog → in-progress — owner: claude-opus-tp078
