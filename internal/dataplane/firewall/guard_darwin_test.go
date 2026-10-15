@@ -391,6 +391,7 @@ func TestApplyRepairsWhatChangedOutside(t *testing.T) {
 			r.pf.setAnchor(GuardAnchor, &fakeAnchor{})
 		}},
 		{"pf disabled", func(r *rig) { r.pf.disable() }},
+		{"pf disabled, its references kept", func(r *rig) { r.pf.keepRefs = true; r.pf.disable() }},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			r := newRig(t)
@@ -405,10 +406,11 @@ func TestApplyRepairsWhatChangedOutside(t *testing.T) {
 				t.Fatal(err)
 			}
 			r.whole(t, e)
-			if c.name == "pf disabled" && slices.Equal(r.pf.references(), first) {
-				t.Error("pf back on with the reference pfctl -d dropped")
+			disabled := strings.HasPrefix(c.name, "pf disabled")
+			if disabled && (len(r.pf.references()) != 1 || slices.Equal(r.pf.references(), first)) {
+				t.Errorf("references %v, want one new one instead of %v", r.pf.references(), first)
 			}
-			if c.name != "pf disabled" && !slices.Equal(r.pf.references(), first) {
+			if !disabled && !slices.Equal(r.pf.references(), first) {
 				t.Errorf("references %v, want %v kept", r.pf.references(), first)
 			}
 		})

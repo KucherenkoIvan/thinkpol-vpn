@@ -196,8 +196,8 @@ func (g *IPv6Guard) enabled(ctx context.Context) (bool, error) {
 
 // enable makes sure pf is on with a reference of the guard's: kept while
 // pf is on; taken over from the record (a crashed run's, this boot); taken
-// anew when pf is off (someone ran `pfctl -d`, which drops every
-// reference) or the guard has none.
+// anew when the guard has none, or when pf is off (someone ran `pfctl
+// -d`), the old one then released if pf still lists it.
 func (g *IPv6Guard) enable(ctx context.Context) error {
 	on, err := g.enabled(ctx)
 	if err != nil {
@@ -228,14 +228,7 @@ func (g *IPv6Guard) enable(ctx context.Context) error {
 	if !on {
 		g.lostToken = false // pf is off: no reference is left, a lost one neither
 	}
-	if g.token != nil {
-		// pf is off although the guard holds a reference: release it if
-		// it is somehow still listed, so the guard never holds two.
-		if err := g.release(ctx, *g.token); err != nil {
-			return err
-		}
-		g.token = nil
-	}
+	old := g.token
 	out, err := g.pf.run(ctx, nil, "-E")
 	if err != nil {
 		return fmt.Errorf("firewall: enable pf: %w", err)
@@ -250,6 +243,13 @@ func (g *IPv6Guard) enable(ctx context.Context) error {
 		return err
 	}
 	g.recorded = true
+	if old != nil {
+		// pf was off although the guard held a reference. If pfctl -d
+		// left it listed, release it now that pf is on again (pf refuses
+		// -X while off); best effort: the new one is the record's, and
+		// enforcing comes first.
+		_ = g.release(ctx, *old)
+	}
 	return nil
 }
 

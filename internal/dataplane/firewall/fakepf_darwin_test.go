@@ -30,6 +30,9 @@ type fakePF struct {
 	noToken bool
 	// reuse: the next -E's token has this value.
 	reuse uint64
+	// keepRefs: pfctl -d leaves the references listed; forcedOff is pf
+	// off that way.
+	keepRefs, forcedOff bool
 }
 
 type fakeAnchor struct {
@@ -44,12 +47,18 @@ func newFakePF() *fakePF {
 	return &fakePF{main: stockMain, anchors: map[string]*fakeAnchor{}, next: 9000000000000000001, pid: 4000, fail: map[string]error{}}
 }
 
-func (f *fakePF) on() bool { return len(f.refs) > 0 || f.plainOn }
+func (f *fakePF) on() bool { return !f.forcedOff && (len(f.refs) > 0 || f.plainOn) }
 
-// disable is `pfctl -d`: off, every reference dropped.
+// disable is `pfctl -d`: off, every reference dropped, or, with
+// keepRefs, only marked off (the references stay listed and -X fails
+// while off).
 func (f *fakePF) disable() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.keepRefs {
+		f.forcedOff = true
+		return
+	}
 	f.refs, f.plainOn = nil, false
 }
 
@@ -178,11 +187,15 @@ func (f *fakePF) run(ctx context.Context, stdin []byte, args ...string) (pfOutpu
 			v, f.reuse = f.reuse, 0
 		}
 		f.refs = append(f.refs, pfToken{value: v, pid: out.pid})
+		f.forcedOff = false
 		out.stderr = append(out.stderr, "pf enabled\n"...)
 		if !f.noToken {
 			fmt.Fprintf(&b, "Token : %d\n", v)
 		}
 	case len(args) == 2 && args[0] == "-X":
+		if !f.on() {
+			return out, fmt.Errorf("pfctl: DIOCSTOPREF: No such file or directory: %w", errFake)
+		}
 		v, _ := strconv.ParseUint(args[1], 10, 64)
 		i := slices.IndexFunc(f.refs, func(t pfToken) bool { return t.value == v })
 		if i < 0 {
