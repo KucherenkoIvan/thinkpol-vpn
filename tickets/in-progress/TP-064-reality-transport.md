@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: L
 depends_on: []
 refs: [C2, DESIGN#transports]
-owner: ""
-branch: ""
+owner: "glm-tp064"
+branch: "tp-064-reality-prototype"
 ---
 
 ## Goal
@@ -45,3 +45,4 @@ Questions to answer:
 - 2026-10-13 created in backlog (TP-062)
 - 2026-10-15 docs (board op): findings note added to Notes, findings box ticked; prototype and DESIGN transports table boxes left open
 - 2026-10-15 docs (board op): DESIGN transports table box ticked; prototype box left open
+- 2026-10-15 backlog → in-progress — owner: glm-tp064 (prototype)
