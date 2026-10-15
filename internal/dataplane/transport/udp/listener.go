@@ -16,6 +16,13 @@ import (
 const (
 	acceptQueue = 64
 	linkQueue   = 256
+
+	// deadRemoteHold is how long a link the app closed keeps its remote
+	// from reopening the flow: within it the datagrams still arriving
+	// from that port are the late ones, sent before the link closed. A
+	// dialer that comes back redials (a new sender) or moves (a new
+	// address) sooner than that.
+	deadRemoteHold = 30 * time.Second
 )
 
 // Listener accepts udp links on one packet socket. It never answers a
@@ -54,6 +61,18 @@ type flow struct {
 	entry   atomic.Pointer[peerEntry]
 	link    *serverLink // nil until a datagram opens one
 	senders *senders
+	shut    shutLink
+}
+
+// shutLink remembers the end of a link the app closed: it gave up on the
+// remote (its probes went unanswered), and the datagrams that port had
+// already sent, or that a tap replays from it, must not open the next
+// link toward it. A link shut because its credential left the table is
+// not remembered: the remote may be alive and sending.
+type shutLink struct {
+	sender senderID // the flow's current sender when the link closed
+	remote net.Addr
+	at     time.Time
 }
 
 func newListener(t *Transport, pc net.PacketConn, peers transport.Peers, camouflage transport.Camouflage) *Listener {
@@ -262,10 +281,19 @@ func (l *Listener) receive(d []byte, from net.Addr) bool {
 		return true
 	}
 	if f.link == nil {
+		// The app closed the last link on a remote it gave up on: the
+		// datagrams still arriving from that port are the late ones it
+		// sent before the link closed, and they reopen the link toward
+		// a port nobody answers. A redial is a new sender and a moved
+		// remote is a different address, so both open.
+		if s := f.shut; now.Sub(s.at) <= deadRemoteHold && s.sender == o.sender && s.remote.String() == from.String() {
+			return false
+		}
 		link := newServerLink(l, f, from)
 		select {
 		case l.accept <- link:
 			f.link = link
+			f.shut = shutLink{}
 		default:
 			return true // nobody is accepting: dropped, as the network would
 		}
@@ -365,6 +393,9 @@ func (sl *serverLink) Close() error {
 	sl.l.mu.Lock()
 	if sl.flow.link == sl {
 		sl.flow.link = nil
+		// The link served the flow's current sender; its late datagrams
+		// are the ones still in flight from the remote.
+		sl.flow.shut = shutLink{sender: sl.flow.senders.current.id, remote: *sl.remote.Load(), at: sl.l.t.now()}
 	}
 	sl.l.mu.Unlock()
 	sl.shut(nil)

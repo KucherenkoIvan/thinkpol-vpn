@@ -505,6 +505,38 @@ func TestRefusedSenderStaysRefused(t *testing.T) {
 	}
 }
 
+// TestALateDatagramFromTheDeadPortDoesNotReopen: the app closed the link
+// because its remote stopped answering; the datagrams that port had
+// already sent arrive late and open no new link toward it. A dialer that
+// comes back redials — a new sender, from a new port — and still opens one.
+func TestALateDatagramFromTheDeadPortDoesNotReopen(t *testing.T) {
+	f := newFixture(t)
+	client := f.dial()
+	write(t, client, "first")
+	server := f.accept()
+	got := reads(server)
+	expectPacket(t, got, []byte("first"))
+
+	f.tap.hold(true)
+	write(t, client, "in flight")
+	waitFor(t, "the tap holding a datagram", func() bool { f.tap.mu.Lock(); defer f.tap.mu.Unlock(); return len(f.tap.held) == 1 })
+	held := f.tap.takeHeld()[0]
+	f.tap.hold(false)
+
+	_ = client.Close() // the dialer's port dies
+	_ = server.Close() // the listener's link is closed on it
+
+	before := f.camo.Calls()
+	f.tap.inject(held) // late, from the port the link was closed on
+	waitFor(t, "the late datagram at the camouflage", func() bool { return f.camo.Calls() > before })
+	f.expectNoAccept()
+
+	f.tap.rebind()
+	fresh := f.dial()
+	write(t, fresh, "fresh")
+	expectPacket(t, reads(f.accept()), []byte("fresh"))
+}
+
 // TestRemovedSecretKeepsItsHistory takes a credential out of the table and
 // puts it back: what was captured before is still a replay.
 func TestRemovedSecretKeepsItsHistory(t *testing.T) {
