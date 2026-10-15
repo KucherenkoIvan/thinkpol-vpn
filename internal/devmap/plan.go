@@ -8,6 +8,7 @@ import (
 	"io"
 	"maps"
 	"net/netip"
+	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -465,6 +466,27 @@ func Build(s *Spec, k Keys, version uint64, secrets Secrets) ([]byte, error) {
 		return nil, fmt.Errorf("%s: %w (recipients are the nodes in spec order)", s.File, err)
 	}
 	return env, err
+}
+
+// Rotate replaces the deployed map at path with a freshly credentialed one
+// from spec at the next version past what is already there.
+func Rotate(s *Spec, k Keys, path string) (version uint64, nbytes int, err error) {
+	previous, err := os.ReadFile(path)
+	if err != nil {
+		return 0, 0, fmt.Errorf("%s: %w; a rotation replaces a deployed map, the first build is dev map build", path, err)
+	}
+	if _, err := netmap.Verify(previous, k.Trust()); err != nil {
+		return 0, 0, fmt.Errorf("%s is not a valid map of space %v: %w", path, k.Space, err)
+	}
+	version = NextVersion(time.Now(), previous, k.Trust())
+	env, err := Build(s, k, version, nil)
+	if err != nil {
+		return 0, 0, err
+	}
+	if err := WriteMap(path, env); err != nil {
+		return 0, 0, err
+	}
+	return version, len(env), nil
 }
 
 // ReadLists reads each of the spec's list files with read (a path relative

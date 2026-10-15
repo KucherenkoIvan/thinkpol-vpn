@@ -6,6 +6,7 @@ Work in progress: the project is being rewritten from scratch.
 
 - [PRD.md](PRD.md): what it must do
 - [DESIGN.md](DESIGN.md): how it works
+- [docs/runbook-pre-controller.md](docs/runbook-pre-controller.md): running a space by hand, before the controller
 - [tickets/](tickets/README.md): the board (`python3 tickets/board.py`)
 
 ## Development
