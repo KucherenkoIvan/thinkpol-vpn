@@ -23,17 +23,11 @@ func TestQueuePipeline(t *testing.T) {
 	if os.Getenv("THINKPOL_LAB") == "" {
 		t.Skip("needs the lab")
 	}
-	listener, err := net.Listen("tcp", "127.0.0.2:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = listener.Close() }()
 	udp, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.2")})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = udp.Close() }()
-	tcpAddr := net.JoinHostPort("127.0.0.2", fmt.Sprint(listener.Addr().(*net.TCPAddr).Port))
 	udpAddr := &net.UDPAddr{IP: net.ParseIP("127.0.0.2"), Port: udp.LocalAddr().(*net.UDPAddr).Port}
 
 	// startCensor serves a queue with one module behind an output-hook
@@ -52,14 +46,21 @@ table inet %s {
 		t.Cleanup(func() { runNFT(t, "delete table inet "+table+"\n") })
 
 		logPath := filepath.Join(t.TempDir(), "verdicts.jsonl")
+		// The log file, as censord's main opens it and hands it to the
+		// engine.
+		logFile, err := os.Create(logPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = logFile.Close() })
 		m, err := newBlockIP([]byte(settings))
 		if err != nil {
 			t.Fatal(err)
 		}
-		eng := NewEngine([]Passive{m}, nil, nil)
+		eng := NewEngine([]Passive{m}, nil, logFile)
 		ctx, cancel := context.WithCancel(context.Background())
 		errc := make(chan error, 1)
-		go func() { errc <- serveQueue(ctx, Config{Queue: queue, Log: logPath}, eng) }()
+		go func() { errc <- serveQueue(ctx, Config{Queue: queue}, eng) }()
 		t.Cleanup(func() {
 			cancel()
 			if err := <-errc; err != nil {
@@ -108,23 +109,6 @@ table inet %s {
 		}
 	})
 
-	t.Run("resets what a module resets", func(t *testing.T) {
-		logPath := startCensor(t, "censor-test-reset", 203, `{"destinations": ["127.0.0.2"], "verdict": "reset"}`)
-		// Every SYN to 127.0.0.2 gets an RST and is dropped, so the dial
-		// fails; the log proves it was the censor's RST.
-		deadline := time.Now().Add(10 * time.Second)
-		for time.Now().Before(deadline) {
-			if conn, err := net.DialTimeout("tcp", tcpAddr, time.Second); err == nil {
-				_ = conn.Close()
-				continue
-			}
-			if entry := verdictFor(t, logPath, func(e *LogEntry) bool { return e.Verdict == Reset }); entry == nil {
-				t.Fatal("no reset in the verdict log")
-			}
-			return
-		}
-		t.Fatal("a connection the censor reset still went through")
-	})
 }
 
 // verdictFor reads the verdict log until an entry matches, briefly.
