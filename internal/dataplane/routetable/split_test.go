@@ -291,9 +291,9 @@ func TestAGatewayInsideTheOverlayIsNotExempt(t *testing.T) {
 // not one on-link, on loopback or in the overlay, IPv6 only with an IPv6
 // default route, and not where someone else's scoped route is.
 func TestDirectUpstreamsGetScopedRoutes(t *testing.T) {
-	w := routetable.Want{TUN: "utun7", Overlay: overlay, Direct: localPlus(t), IPv6: true, Upstreams: []netip.Addr{
-		netip.MustParseAddr("1.1.1.1"), netip.MustParseAddr("192.168.1.1"), netip.MustParseAddr("2001:db8::53"),
-		netip.MustParseAddr("100.64.0.53"), netip.MustParseAddr("127.0.0.1"), netip.MustParseAddr("1.1.1.1"),
+	w := routetable.Want{TUN: "utun7", Overlay: overlay, Direct: localPlus(t), IPv6: true, Upstreams: []netip.AddrPort{
+		netip.MustParseAddrPort("1.1.1.1:53"), netip.MustParseAddrPort("192.168.1.1:53"), netip.MustParseAddrPort("[2001:db8::53]:53"),
+		netip.MustParseAddrPort("100.64.0.53:53"), netip.MustParseAddrPort("127.0.0.1:53"), netip.MustParseAddrPort("1.1.1.1:5353"),
 	}}
 	scoped := func(s netcfg.Survey) []string {
 		cfg := routetable.SplitRoutes(w, s)

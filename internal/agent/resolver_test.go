@@ -219,7 +219,7 @@ func (w *wantsTable) Enforce(_ context.Context, want routetable.Want) error {
 func (w *wantsTable) Status() routetable.Status { return routetable.Status{Enforced: true} }
 func (w *wantsTable) Close() error              { return nil }
 
-func (w *wantsTable) upstreams() []netip.Addr {
+func (w *wantsTable) upstreams() []netip.AddrPort {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if len(w.wants) == 0 {
@@ -252,14 +252,40 @@ func TestTheDirectUpstreamsReachTheRouteTable(t *testing.T) {
 		dp.dnsPort = 5353
 	})
 	b.connection(t, Connected)
-	eventually(t, func() bool { return slices.Equal(table.upstreams(), []netip.Addr{netip.MustParseAddr("192.0.2.53")}) })
+	eventually(t, func() bool {
+		return slices.Equal(table.upstreams(), []netip.AddrPort{netip.MustParseAddrPort("192.0.2.53:53")})
+	})
 	eventually(t, func() bool { n, _ := sys.counts(); return n == 1 })
 	sys.mu.Lock()
 	tell := sys.set[0].Upstreams
 	sys.mu.Unlock()
 	b4, _ := overlay(2)
 	tell([]netip.Addr{netip.MustParseAddr("198.51.100.53"), b4}) // a new network's, and the node's own
-	if got := table.upstreams(); !slices.Equal(got, []netip.Addr{netip.MustParseAddr("198.51.100.53")}) {
+	if got := table.upstreams(); !slices.Equal(got, []netip.AddrPort{netip.MustParseAddrPort("198.51.100.53:53")}) {
 		t.Errorf("after the system's resolvers changed: %v", got)
 	}
+}
+
+// A configured upstream reaches the route table with its port: the
+// leak guard on macOS exempts DNS to it on that port only.
+func TestAConfiguredUpstreamReachesTheRouteTableWithItsPort(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	startNode(t, reg, s.a, s.verified(t, 1))
+	table := &wantsTable{}
+	up := netip.MustParseAddrPort("[2001:db8::53]:5353")
+	b := startDevice(t, s, reg, true, func(c *Config, dp *DataPlane) {
+		if c != nil {
+			c.DNS = true
+			return
+		}
+		dp.RouteTable = true
+		dp.newRoutes = func(*slog.Logger, routetable.Guard) (dataplane.RouteTable, error) { return table, nil }
+		dp.clearNetwork = func() error { return nil }
+		dp.systemDNS = (&fakeSystem{}).Set
+		dp.DNSUpstreams = []netip.AddrPort{up}
+		dp.dnsPort = 5353
+	})
+	b.connection(t, Connected)
+	eventually(t, func() bool { return slices.Equal(table.upstreams(), []netip.AddrPort{up}) })
 }

@@ -223,18 +223,18 @@ func TestDirectUpstreamsReachTheRouteTable(t *testing.T) {
 	s.start(t, net)
 	a.start(t, net)
 	ctx := context.Background()
-	up := []netip.Addr{netip.MustParseAddr("203.0.113.53"), netip.MustParseAddr("2001:db8::53")}
+	up := []netip.AddrPort{netip.MustParseAddrPort("203.0.113.53:53"), netip.MustParseAddrPort("[2001:db8::53]:53")}
 	_, n := rt.since(0)
 	if err := a.engine.SetDirectUpstreams(ctx, up); err != nil {
 		t.Fatal(err)
 	}
 	calls, n := rt.since(n)
-	want := []netip.Addr{up[0], up[1]}
-	slices.SortFunc(want, func(x, y netip.Addr) int { return x.Compare(y) })
+	want := []netip.AddrPort{up[0], up[1]}
+	slices.SortFunc(want, func(x, y netip.AddrPort) int { return x.Compare(y) })
 	if len(calls) != 1 || !slices.Equal(calls[0].Upstreams, want) || !slices.Equal(calls[0].Bypass, []netip.Addr{s.listen.Addr()}) {
 		t.Fatalf("enforced %+v", calls)
 	}
-	if err := a.engine.SetDirectUpstreams(ctx, []netip.Addr{up[1], up[0], up[0]}); err != nil {
+	if err := a.engine.SetDirectUpstreams(ctx, []netip.AddrPort{up[1], up[0], up[0]}); err != nil {
 		t.Fatal(err)
 	}
 	if calls, _ := rt.since(n); len(calls) != 0 {

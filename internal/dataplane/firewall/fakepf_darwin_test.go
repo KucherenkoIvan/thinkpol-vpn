@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -11,33 +13,66 @@ import (
 )
 
 // fakePF is pf as pfctl shows it: the main ruleset's listing, anchors
-// with rules and a table, enable references. It lists rules its own way,
-// as pfctl does (one rule per ICMPv6 type, by name), so a guard comparing
-// the listing with the text it loaded fails here as it would on a Mac.
-// No test here runs the real pfctl.
+// with rules and tables, enable references, states. It lists rules its
+// own way, as pfctl does (one rule per list item, ICMPv6 types by name,
+// `port = 53`), so a guard comparing the listing with the text it loaded
+// fails here as it would on a Mac. No test here runs the real pfctl.
 type fakePF struct {
 	mu      sync.Mutex
 	main    []string
 	anchors map[string]*fakeAnchor
-	refs    []pfToken
+	refs    []fakeRef
 	plainOn bool // `pfctl -e`: on without a reference
 	next    uint64
 	pid     int
+	states  []fakeState
 	calls   [][]string
-	// fail fails every run whose args hold the key (joined by spaces).
+	// fail fails every run whose args hold the key (words joined by
+	// spaces).
 	fail map[string]error
 	// noToken: -E takes a reference but prints no token.
 	noToken bool
 	// reuse: the next -E's token has this value.
 	reuse uint64
-	// keepRefs: pfctl -d leaves the references listed; forcedOff is pf
-	// off that way.
+	// keepRefs: pfctl -d leaves the references listed (and -X fails
+	// while off); forcedOff is pf off that way.
 	keepRefs, forcedOff bool
+	// flushMissingOK: -F of an anchor that doesn't exist succeeds;
+	// otherwise it answers `Invalid argument`, as listing one does.
+	flushMissingOK bool
+	// oddReferences: -s References prints a layout the guard can't read.
+	oddReferences bool
+	// loadHook, if set, changes what a load puts in place.
+	loadHook func(*fakeAnchor)
+}
+
+type fakeRef struct {
+	pfToken
+	name string
 }
 
 type fakeAnchor struct {
-	rules []string
-	table []string // as loaded
+	rules  []string
+	tables map[string][]string // as loaded
+	consts map[string]bool
+}
+
+func (a *fakeAnchor) clone() *fakeAnchor {
+	c := &fakeAnchor{rules: slices.Clone(a.rules), tables: map[string][]string{}, consts: map[string]bool{}}
+	for k, v := range a.tables {
+		c.tables[k] = slices.Clone(v)
+	}
+	for k, v := range a.consts {
+		c.consts[k] = v
+	}
+	return c
+}
+
+// fakeState is a state: the host's end, the other end, who opened it.
+type fakeState struct {
+	proto         string
+	local, remote netip.AddrPort
+	out           bool
 }
 
 // stockMain is the main ruleset as macOS loads it from /etc/pf.conf.
@@ -49,9 +84,8 @@ func newFakePF() *fakePF {
 
 func (f *fakePF) on() bool { return !f.forcedOff && (len(f.refs) > 0 || f.plainOn) }
 
-// disable is `pfctl -d`: off, every reference dropped, or, with
-// keepRefs, only marked off (the references stay listed and -X fails
-// while off).
+// disable is `pfctl -d`: off, every reference dropped, or with keepRefs
+// only marked off.
 func (f *fakePF) disable() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -62,15 +96,21 @@ func (f *fakePF) disable() {
 	f.refs, f.plainOn = nil, false
 }
 
-// takeRef is another program's `pfctl -E`.
+// takeRef is another program's `pfctl -E` (the Application Firewall's).
 func (f *fakePF) takeRef() pfToken {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.pid++
 	t := pfToken{value: f.next, pid: f.pid}
 	f.next += 7
-	f.refs = append(f.refs, t)
+	f.refs = append(f.refs, fakeRef{t, "socketfilterfw"})
 	return t
+}
+
+func (f *fakePF) set(fn func(f *fakePF)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	fn(f)
 }
 
 func (f *fakePF) anchor(name string) *fakeAnchor {
@@ -78,9 +118,9 @@ func (f *fakePF) anchor(name string) *fakeAnchor {
 	defer f.mu.Unlock()
 	a := f.anchors[name]
 	if a == nil {
-		return &fakeAnchor{}
+		return &fakeAnchor{tables: map[string][]string{}, consts: map[string]bool{}}
 	}
-	return &fakeAnchor{rules: slices.Clone(a.rules), table: slices.Clone(a.table)}
+	return a.clone()
 }
 
 func (f *fakePF) setAnchor(name string, a *fakeAnchor) {
@@ -92,13 +132,23 @@ func (f *fakePF) setAnchor(name string, a *fakeAnchor) {
 func (f *fakePF) references() []pfToken {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return slices.Clone(f.refs)
+	var out []pfToken
+	for _, r := range f.refs {
+		out = append(out, r.pfToken)
+	}
+	return out
 }
 
 func (f *fakePF) isOn() bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.on()
+}
+
+func (f *fakePF) stateList() []fakeState {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.states)
 }
 
 // ran counts the runs whose args hold key (words, joined by spaces)
@@ -133,8 +183,7 @@ func (f *fakePF) failOn(key string, err error) {
 
 var errFake = errors.New("exit status 1")
 
-// fakeLoadHook, if set, changes what a load puts in place.
-var fakeLoadHook func(*fakeAnchor)
+const altq = "No ALTQ support in kernel\nALTQ related functions disabled\n"
 
 func (f *fakePF) run(ctx context.Context, stdin []byte, args ...string) (pfOutput, error) {
 	f.mu.Lock()
@@ -144,17 +193,22 @@ func (f *fakePF) run(ctx context.Context, stdin []byte, args ...string) (pfOutpu
 	}
 	f.calls = append(f.calls, args)
 	f.pid++
-	out := pfOutput{pid: f.pid, stderr: []byte("No ALTQ support in kernel\nALTQ related functions disabled\n")}
+	out := pfOutput{pid: f.pid, stderr: []byte(altq)}
+	fail := func(msg string) (pfOutput, error) {
+		out.stderr = append(out.stderr, msg+"\n"...)
+		return out, fmt.Errorf("pfctl %s: %w: %s", strings.Join(args, " "), errFake, msg)
+	}
 	joined := " " + strings.Join(args, " ") + " "
 	for k, err := range f.fail {
 		if strings.Contains(joined, " "+k+" ") {
-			return out, fmt.Errorf("pfctl %s: %w", strings.Join(args, " "), err)
+			return fail("pfctl: " + err.Error())
 		}
 	}
 	anchor := ""
 	if len(args) >= 2 && args[0] == "-a" {
 		anchor, args = args[1], args[2:]
 	}
+	a := f.anchors[anchor]
 	var b strings.Builder
 	switch {
 	case slices.Equal(args, []string{"-s", "rules"}) && anchor == "":
@@ -162,9 +216,8 @@ func (f *fakePF) run(ctx context.Context, stdin []byte, args ...string) (pfOutpu
 			b.WriteString(l + "\n")
 		}
 	case slices.Equal(args, []string{"-s", "rules"}):
-		a := f.anchors[anchor]
 		if a == nil {
-			return out, fmt.Errorf("pfctl: DIOCGETRULES: Invalid argument: %w", errFake)
+			return fail("pfctl: DIOCGETRULES: Invalid argument")
 		}
 		for _, l := range a.rules {
 			b.WriteString(l + "\n")
@@ -174,11 +227,25 @@ func (f *fakePF) run(ctx context.Context, stdin []byte, args ...string) (pfOutpu
 		if f.on() {
 			status = "Enabled"
 		}
-		fmt.Fprintf(&b, "Status: %s for 0 days 00:01:02           Debug: Urgent\n\nState Table                          Total             Rate\n  current entries                        0\n", status)
+		fmt.Fprintf(&b, "Status: %s for 0 days 00:01:02           Debug: Urgent\n\nState Table                          Total             Rate\n  current entries                        %d\n", status, len(f.states))
 	case slices.Equal(args, []string{"-s", "References"}):
+		if f.oddReferences {
+			for _, r := range f.refs {
+				fmt.Fprintf(&b, "token=%d by %s(%d)\n", r.value, r.name, r.pid)
+			}
+			break
+		}
 		b.WriteString("TOKENS:\nPID      Process Name                 TOKEN                 TIMESTAMP\n")
-		for _, t := range f.refs {
-			fmt.Fprintf(&b, "%-8d %-28s %-21d 0 days 00:00:05\n", t.pid, "pfctl", t.value)
+		for _, r := range f.refs {
+			fmt.Fprintf(&b, "%-8d %-28s %-21d 0 days 00:00:05\n", r.pid, r.name, r.value)
+		}
+	case slices.Equal(args, []string{"-s", "states"}):
+		for _, s := range f.states {
+			arrow := "->"
+			if !s.out {
+				arrow = "<-"
+			}
+			fmt.Fprintf(&b, "ALL %s %s %s %s       ESTABLISHED:ESTABLISHED\n", s.proto, fakeHost(s.local), arrow, fakeHost(s.remote))
 		}
 	case slices.Equal(args, []string{"-E"}):
 		v := f.next
@@ -186,7 +253,7 @@ func (f *fakePF) run(ctx context.Context, stdin []byte, args ...string) (pfOutpu
 		if f.reuse != 0 {
 			v, f.reuse = f.reuse, 0
 		}
-		f.refs = append(f.refs, pfToken{value: v, pid: out.pid})
+		f.refs = append(f.refs, fakeRef{pfToken{value: v, pid: out.pid}, "pfctl"})
 		f.forcedOff = false
 		out.stderr = append(out.stderr, "pf enabled\n"...)
 		if !f.noToken {
@@ -194,87 +261,169 @@ func (f *fakePF) run(ctx context.Context, stdin []byte, args ...string) (pfOutpu
 		}
 	case len(args) == 2 && args[0] == "-X":
 		if !f.on() {
-			return out, fmt.Errorf("pfctl: DIOCSTOPREF: No such file or directory: %w", errFake)
+			return fail("pfctl: DIOCSTOPREF: No such file or directory")
 		}
 		v, _ := strconv.ParseUint(args[1], 10, 64)
-		i := slices.IndexFunc(f.refs, func(t pfToken) bool { return t.value == v })
+		i := slices.IndexFunc(f.refs, func(r fakeRef) bool { return r.value == v })
 		if i < 0 {
-			return out, fmt.Errorf("pfctl: DIOCSTOPREF: No such process: %w", errFake)
+			return fail("pfctl: DIOCSTOPREF: No such process")
 		}
 		f.refs = slices.Delete(f.refs, i, i+1)
-	case anchor != "" && slices.Equal(args, []string{"-f", "-"}):
-		a, err := fakeLoad(string(stdin))
+	case len(args) == 2 && args[0] == "-k" || len(args) == 4 && args[0] == "-k" && args[2] == "-k":
+		src, err := fakeNet(args[1])
 		if err != nil {
-			return out, err
+			return fail("pfctl: invalid host " + args[1])
 		}
-		if fakeLoadHook != nil {
-			fakeLoadHook(a)
+		dst := netip.PrefixFrom(netip.IPv6Unspecified(), 0)
+		if src.Addr().Is4() {
+			dst = netip.PrefixFrom(netip.IPv4Unspecified(), 0)
 		}
-		f.anchors[anchor] = a
+		if len(args) == 4 {
+			if dst, err = fakeNet(args[3]); err != nil || dst.Addr().Is4() != src.Addr().Is4() {
+				return fail("pfctl: invalid host " + args[3])
+			}
+		}
+		// As XNU's DIOCKILLSTATES: a state's source is who opened it.
+		killed := 0
+		f.states = slices.DeleteFunc(f.states, func(s fakeState) bool {
+			from, to := s.local.Addr(), s.remote.Addr()
+			if !s.out {
+				from, to = to, from
+			}
+			if from.Is4() != src.Addr().Is4() || !src.Contains(from) || !dst.Contains(to) {
+				return false
+			}
+			killed++
+			return true
+		})
+		out.stderr = fmt.Appendf(out.stderr, "killed %d states from 1 sources and 0 destinations\n", killed)
+	case anchor != "" && slices.Equal(args, []string{"-f", "-"}):
+		loaded, err := fakeLoad(string(stdin))
+		if err != nil {
+			return fail("pfctl: " + err.Error())
+		}
+		if f.loadHook != nil {
+			f.loadHook(loaded)
+		}
+		// OpenBSD's pf refuses to change an active const table in place.
+		if a != nil {
+			for name, entries := range loaded.tables {
+				if a.consts[name] && !slices.Equal(a.tables[name], entries) {
+					return fail("pfctl: DIOCXCOMMIT: Operation not permitted")
+				}
+			}
+		}
+		f.anchors[anchor] = loaded
 	case anchor != "" && slices.Equal(args, []string{"-F", "rules"}):
-		if a := f.anchors[anchor]; a != nil {
-			a.rules = nil
+		if a == nil {
+			if f.flushMissingOK {
+				break
+			}
+			return fail("pfctl: DIOCBEGINRULES: Invalid argument")
 		}
+		a.rules = nil
 	case anchor != "" && slices.Equal(args, []string{"-F", "Tables"}):
-		if a := f.anchors[anchor]; a != nil {
-			a.table = nil
+		if a == nil {
+			if f.flushMissingOK {
+				break
+			}
+			return fail("pfctl: DIOCRCLRTABLES: Invalid argument")
+		}
+		a.tables, a.consts = map[string][]string{}, map[string]bool{}
+		if len(a.rules) == 0 {
+			delete(f.anchors, anchor)
 		}
 	case anchor != "" && len(args) == 4 && args[0] == "-t" && args[2] == "-T" && args[3] == "show":
-		a := f.anchors[anchor]
-		if a == nil || a.table == nil || args[1] != guardTable {
-			return out, fmt.Errorf("pfctl: Table does not exist: %w", errFake)
+		if a == nil {
+			return fail("pfctl: DIOCRGETADDRS: Invalid argument")
 		}
-		for _, e := range a.table {
+		entries, ok := a.tables[args[1]]
+		if !ok {
+			return fail("pfctl: Table does not exist.")
+		}
+		for _, e := range entries {
 			b.WriteString("   " + strings.TrimSuffix(e, "/128") + "\n")
 		}
 	default:
-		return out, fmt.Errorf("fake pfctl: unexpected %q: %w", args, errFake)
+		return fail(fmt.Sprintf("fake pfctl: unexpected %q", args))
 	}
 	out.stdout = []byte(b.String())
 	return out, nil
 }
 
-// icmp6Names are pfctl's names for the ICMPv6 types the guard passes.
+func fakeHost(ap netip.AddrPort) string {
+	if ap.Addr().Is4() {
+		return ap.String()
+	}
+	return fmt.Sprintf("%s[%d]", ap.Addr(), ap.Port())
+}
+
+func fakeNet(s string) (netip.Prefix, error) {
+	if strings.Contains(s, "/") {
+		return netip.ParsePrefix(s)
+	}
+	a, err := netip.ParseAddr(s)
+	if err != nil {
+		return netip.Prefix{}, err
+	}
+	return netip.PrefixFrom(a, a.BitLen()), nil
+}
+
+// icmp6Names are pfctl's names for some ICMPv6 types.
 var icmp6Names = map[string]string{"133": "routersol", "134": "routeradv", "135": "neighbrsol", "136": "neighbradv", "137": "redir", "130": "listqry", "131": "listenrep", "132": "listendone"}
 
-// fakeLoad parses an anchor's text as far as the guard writes it: one
-// table with a list, then rules, each listed as pfctl would.
+var portNumber = regexp.MustCompile(`\bport ([0-9]+)\b`)
+
+// fakeLoad parses an anchor's text as far as the guard writes it: tables
+// with lists, then rules, each listed as pfctl would.
 func fakeLoad(text string) (*fakeAnchor, error) {
 	text = strings.ReplaceAll(text, "\\\n", " ")
-	a := &fakeAnchor{}
+	a := &fakeAnchor{tables: map[string][]string{}, consts: map[string]bool{}}
 	for _, l := range strings.Split(text, "\n") {
 		l = strings.TrimSpace(l)
 		switch {
 		case l == "":
-		case strings.HasPrefix(l, "table "):
-			open, end := strings.Index(l, "{"), strings.LastIndex(l, "}")
-			if open < 0 || end < open || !strings.HasPrefix(l, "table <"+guardTable+"> const persist {") {
-				return nil, fmt.Errorf("stdin: syntax error in %q: %w", l, errFake)
+		case strings.HasPrefix(l, "table <"):
+			m := regexp.MustCompile(`^table <([a-z0-9_]+)> ((?:const |persist )+)\{(.*)\}$`).FindStringSubmatch(l)
+			if m == nil {
+				return nil, fmt.Errorf("stdin: syntax error in %q", l)
 			}
-			a.table = append(a.table, strings.FieldsFunc(l[open+1:end], func(r rune) bool { return r == ',' || r == ' ' || r == '\t' })...)
-			if a.table == nil {
-				a.table = []string{}
-			}
+			a.tables[m[1]] = strings.FieldsFunc(m[3], func(r rune) bool { return r == ',' || r == ' ' || r == '\t' })
+			a.consts[m[1]] = strings.Contains(m[2], "const")
 		case strings.HasPrefix(l, "pass ") || strings.HasPrefix(l, "block "):
-			l = strings.Replace(l, "from any to", "to", 1)
-			if i := strings.Index(l, "icmp6-type { "); i >= 0 {
-				j := strings.Index(l[i:], "}") + i
-				for _, ty := range strings.Split(l[i+len("icmp6-type { "):j], ", ") {
-					name := icmp6Names[strings.TrimSpace(ty)]
-					if name == "" {
-						name = strings.TrimSpace(ty)
-					}
-					a.rules = append(a.rules, l[:i]+"icmp6-type "+name+l[j+1:])
+			for _, t := range regexp.MustCompile(`<([a-z0-9_]+)>`).FindAllStringSubmatch(l, -1) {
+				if _, ok := a.tables[t[1]]; !ok {
+					return nil, fmt.Errorf("stdin: table <%s> not defined", t[1])
 				}
-				continue
 			}
-			a.rules = append(a.rules, l)
+			a.rules = append(a.rules, fakeExpand(l)...)
 		default:
-			return nil, fmt.Errorf("stdin: syntax error in %q: %w", l, errFake)
+			return nil, fmt.Errorf("stdin: syntax error in %q", l)
 		}
 	}
-	if a.table == nil {
-		return nil, fmt.Errorf("stdin: no table: %w", errFake)
-	}
 	return a, nil
+}
+
+// fakeExpand is one rule as pfctl lists it: one rule per item of each
+// `{ ... }` list, `from any to` shortened, `port = N`, ICMPv6 types by
+// name.
+func fakeExpand(rule string) []string {
+	i := strings.Index(rule, "{ ")
+	if i < 0 {
+		rule = strings.Replace(rule, "from any to", "to", 1)
+		rule = portNumber.ReplaceAllString(rule, "port = $1")
+		if j := strings.Index(rule, "icmp6-type "); j >= 0 {
+			f := strings.Fields(rule[j:])
+			if name := icmp6Names[f[1]]; name != "" {
+				rule = rule[:j] + "icmp6-type " + name + rule[j+len("icmp6-type ")+len(f[1]):]
+			}
+		}
+		return []string{rule}
+	}
+	j := strings.Index(rule[i:], " }") + i
+	var out []string
+	for _, item := range strings.Split(rule[i+2:j], ", ") {
+		out = append(out, fakeExpand(rule[:i]+item+rule[j+2:])...)
+	}
+	return out
 }

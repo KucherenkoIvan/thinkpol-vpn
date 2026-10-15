@@ -26,7 +26,8 @@ const tokenRecord = "pf-guard.token"
 const tokenHeader = "# thinkpol firewall: the pf enable reference (pfctl -E) the IPv6 guard holds; released with pfctl -X"
 
 // pfToken is a pf enable reference: the token `pfctl -E` printed and
-// the pid of that pfctl, which `pfctl -s References` lists with it.
+// the pid of that pfctl, which `pfctl -s References` lists with it. A
+// zero value is a token not known yet (recorded as "unknown").
 type pfToken struct {
 	value uint64
 	pid   int
@@ -99,8 +100,8 @@ func (s tokenStore) read() (pfToken, recordState, error) {
 	return t, recordHeld, nil
 }
 
-// parseRecord reads "boot <session>" then "token <value> pid <pid>",
-// comments and blank lines aside; anything else is no record.
+// parseRecord reads "boot <session>" then "token <value|unknown> pid
+// <pid>", comments and blank lines aside; anything else is no record.
 func parseRecord(data []byte) (pfToken, string, bool) {
 	var boot string
 	var t pfToken
@@ -122,9 +123,15 @@ func parseRecord(data []byte) (pfToken, string, bool) {
 			if len(f) != 4 || f[0] != "token" || f[2] != "pid" {
 				return pfToken{}, "", false
 			}
-			v, err1 := strconv.ParseUint(f[1], 10, 64)
+			var v uint64
+			var err1 error
+			if f[1] != "unknown" {
+				if v, err1 = strconv.ParseUint(f[1], 10, 64); v == 0 {
+					err1 = errors.New("zero")
+				}
+			}
 			pid, err2 := strconv.Atoi(f[3])
-			if err1 != nil || err2 != nil || v == 0 || pid <= 0 {
+			if err1 != nil || err2 != nil || pid <= 0 {
 				return pfToken{}, "", false
 			}
 			t = pfToken{value: v, pid: pid}
@@ -148,7 +155,11 @@ func (s tokenStore) write(t pfToken) error {
 	}
 	defer func() { _ = d.Close() }()
 	dirfd := int(d.Fd())
-	data := fmt.Sprintf("%s\nboot %s\ntoken %d pid %d\n", tokenHeader, boot, t.value, t.pid)
+	value := "unknown"
+	if t.value != 0 {
+		value = strconv.FormatUint(t.value, 10)
+	}
+	data := fmt.Sprintf("%s\nboot %s\ntoken %s pid %d\n", tokenHeader, boot, value, t.pid)
 	tmp := tokenRecord + ".tmp"
 	_ = unix.Unlinkat(dirfd, tmp, 0)
 	fd, err := unix.Openat(dirfd, tmp, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)

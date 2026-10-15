@@ -38,11 +38,16 @@ func TestExemptEqual(t *testing.T) {
 		t.Error("the same addresses, built otherwise, aren't equal")
 	}
 	ups := b
-	ups.Upstreams = []netip.Addr{netip.MustParseAddr("2001:db8:53::53"), netip.MustParseAddr("::ffff:192.0.2.53"), {}}
+	ups.Upstreams = []netip.AddrPort{netip.MustParseAddrPort("[2001:db8:53::53]:53"), netip.MustParseAddrPort("[::ffff:192.0.2.53]:53"), {}}
 	same := ups
-	same.Upstreams = []netip.Addr{netip.MustParseAddr("192.0.2.53"), netip.MustParseAddr("2001:db8:53::53")}
+	same.Upstreams = []netip.AddrPort{netip.MustParseAddrPort("192.0.2.53:53"), netip.MustParseAddrPort("[2001:db8:53::53]:53")}
 	if !ups.Equal(same) {
 		t.Error("the same upstreams, in another order or mapped, aren't equal")
+	}
+	otherPort := same
+	otherPort.Upstreams = []netip.AddrPort{netip.MustParseAddrPort("192.0.2.53:53"), netip.MustParseAddrPort("[2001:db8:53::53]:5353")}
+	if ups.Equal(otherPort) {
+		t.Error("upstreams on another port are equal")
 	}
 	for _, o := range []routetable.Exempt{
 		{TUN: "thinkpol1", Mark: 0x7470, Direct: a.Direct},

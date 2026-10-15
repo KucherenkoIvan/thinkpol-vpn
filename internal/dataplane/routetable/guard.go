@@ -56,15 +56,16 @@ type Exempt struct {
 	// counts; IPv4 is the kill switch's (TP-048).
 	Direct *lists.Set
 	// Upstreams are the direct DNS upstreams the agent's resolver asks
-	// (Want.Upstreams): for an OS without socket marks (macOS's pf),
-	// where Mark can't exempt them. Linux's guard leaves them to Mark.
-	Upstreams []netip.Addr
+	// (Want.Upstreams), with their ports: for an OS without socket marks
+	// (macOS's pf exempts DNS to them, no more), where Mark can't exempt
+	// them. Linux's guard leaves them to Mark.
+	Upstreams []netip.AddrPort
 }
 
 // Equal reports whether e and o exempt the same traffic.
 func (e Exempt) Equal(o Exempt) bool {
 	return e.TUN == o.TUN && e.Mark == o.Mark && e.Direct.Equal(o.Direct) &&
-		slices.Equal(bypass(e.Upstreams), bypass(o.Upstreams))
+		slices.Equal(upstreams(e.Upstreams), upstreams(o.Upstreams))
 }
 
 // LinkScoped are the IPv6 destinations that never leave the link, which
@@ -105,5 +106,5 @@ func GuardFor(w Want) Exempt {
 		_ = b.AddPrefix(netip.PrefixFrom(a, a.BitLen())) // an IPv4-mapped endpoint was unmapped
 	}
 	direct, _ := b.Build()
-	return Exempt{TUN: w.TUN, Mark: Mark, Direct: direct, Upstreams: bypass(w.Upstreams)}
+	return Exempt{TUN: w.TUN, Mark: Mark, Direct: direct, Upstreams: upstreams(w.Upstreams)}
 }

@@ -127,7 +127,7 @@ func (e *Engine) growRoutes(ctx context.Context, shrinkErr error) error {
 // the physical interface (routetable.Want.Upstreams: macOS's scoped
 // routes). It re-enforces what is in place if they changed; before the
 // first Apply they are kept for it.
-func (e *Engine) SetDirectUpstreams(ctx context.Context, addrs []netip.Addr) error {
+func (e *Engine) SetDirectUpstreams(ctx context.Context, addrs []netip.AddrPort) error {
 	e.serial.Lock()
 	defer e.serial.Unlock()
 	e.mu.Lock()
@@ -136,7 +136,7 @@ func (e *Engine) SetDirectUpstreams(ctx context.Context, addrs []netip.Addr) err
 		return ErrEngineClosed
 	}
 	addrs = slices.Clone(addrs)
-	slices.SortFunc(addrs, func(a, b netip.Addr) int { return a.Compare(b) })
+	slices.SortFunc(addrs, func(a, b netip.AddrPort) int { return a.Compare(b) })
 	addrs = slices.Compact(addrs)
 	if slices.Equal(addrs, e.upstreams) {
 		return nil

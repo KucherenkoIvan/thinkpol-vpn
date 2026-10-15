@@ -18,6 +18,12 @@ import (
 
 const thisBoot = "6F1C0D2E-0000-4000-8000-000000000001"
 
+// The host's own addresses in these tests.
+var (
+	ownV6 = netip.MustParseAddr("2001:db8:1::10")
+	ownV4 = netip.MustParseAddr("192.0.2.10")
+)
+
 func set(t *testing.T, prefixes ...string) *lists.Set {
 	t.Helper()
 	var b lists.Builder
@@ -38,10 +44,10 @@ func pfxs(ss ...string) []netip.Prefix {
 	return out
 }
 
-func addrs(ss ...string) []netip.Addr {
-	var out []netip.Addr
+func aps(ss ...string) []netip.AddrPort {
+	var out []netip.AddrPort
 	for _, s := range ss {
-		out = append(out, netip.MustParseAddr(s))
+		out = append(out, netip.MustParseAddrPort(s))
 	}
 	return out
 }
@@ -53,9 +59,14 @@ func exempt(t *testing.T) routetable.Exempt {
 		TUN:       "utun7",
 		Mark:      routetable.Mark,
 		Direct:    set(t, "2001:db8:d0::/48", "2001:db8:e::9/128", "198.51.100.0/24"),
-		Upstreams: addrs("2001:db8:53::1", "192.0.2.53"),
+		Upstreams: aps("[2001:db8:53::1]:53", "192.0.2.53:53"),
 	}
 }
+
+// rulesFor is how many rules pfctl lists for exempt(t)'s anchor: lo0,
+// the utun, the exempt table, DNS to the upstream (tcp, udp), its
+// neighbour probes (2), MLD (4), the block.
+const rulesFor = 12
 
 // tempDir is a test's directory by a path without symlinks (macOS's
 // temporary directories are under /var, a symlink), as trusteddir wants.
@@ -83,7 +94,11 @@ func (r *rig) store() tokenStore {
 	return tokenStore{dir: r.dir, boot: func() (string, error) { return r.boot, nil }}
 }
 
-func (r *rig) guard() *IPv6Guard { return newIPv6Guard(r.pf, r.store(), time.Hour) }
+func ownAddrs() ([]netip.Addr, error) {
+	return []netip.Addr{netip.IPv6Loopback(), ownV6, ownV4}, nil
+}
+
+func (r *rig) guard() *IPv6Guard { return newIPv6Guard(r.pf, r.store(), time.Hour, ownAddrs) }
 
 func (r *rig) record(t *testing.T) string {
 	t.Helper()
@@ -104,28 +119,34 @@ func (r *rig) writeRecord(t *testing.T, content string) {
 	}
 }
 
-// whole fails t unless pf holds the guard for e: the anchor's table is
-// exactly e's (as prefixes), the rules pass tun and end in the block, pf
-// is on with exactly one reference besides others, the record's.
+func tableOf(a *fakeAnchor, name string) []netip.Prefix {
+	var out []netip.Prefix
+	for _, s := range a.tables[name] {
+		out = append(out, netip.MustParsePrefix(s))
+	}
+	return out
+}
+
+// whole fails t unless pf holds the guard for e: the tables are exactly
+// e's, the rules pass tun and end in the block, pf is on with exactly
+// one reference besides others, the record's.
 func (r *rig) whole(t *testing.T, e routetable.Exempt, others ...pfToken) {
 	t.Helper()
 	a := r.pf.anchor(GuardAnchor)
-	got := make([]netip.Prefix, 0, len(a.table))
-	for _, s := range a.table {
-		got = append(got, netip.MustParsePrefix(s))
+	if got, want := tableOf(a, exemptTable), exemptPrefixes(e); !slices.Equal(got, want) {
+		t.Errorf("exempt table %v, want %v", got, want)
 	}
-	if want := exemptTable(e); !slices.Equal(got, want) {
-		t.Errorf("table %v, want %v", got, want)
+	if got, want := tableOf(a, upstreamTable), upstreamPrefixes(e); !slices.Equal(got, want) {
+		t.Errorf("upstream table %v, want %v", got, want)
 	}
-	if len(a.rules) != 13 || !strings.Contains(a.rules[1], " on "+e.TUN+" ") || a.rules[12] != "block return out quick inet6 all" {
-		t.Errorf("rules %q", a.rules)
+	if err := saneRules(a.rules, e.TUN, upstreamPorts(e)); err != nil || a.rules[len(a.rules)-1] != "block return out quick inet6 all" {
+		t.Errorf("rules %q: %v", a.rules, err)
 	}
 	if !r.pf.isOn() {
 		t.Error("pf is off")
 	}
-	refs := r.pf.references()
 	var ours []pfToken
-	for _, ref := range refs {
+	for _, ref := range r.pf.references() {
 		if !slices.Contains(others, ref) {
 			ours = append(ours, ref)
 		}
@@ -134,7 +155,7 @@ func (r *rig) whole(t *testing.T, e routetable.Exempt, others ...pfToken) {
 		t.Fatalf("references %v besides %v, want one of the guard's", ours, others)
 	}
 	if rec := r.record(t); !strings.Contains(rec, "\nboot "+r.boot+"\n") ||
-		!strings.Contains(rec, "\ntoken "+itoa(ours[0].value)+" pid "+itoa(uint64(ours[0].pid))+"\n") {
+		!strings.Contains(rec, "\ntoken "+strconv.FormatUint(ours[0].value, 10)+" pid "+strconv.Itoa(ours[0].pid)+"\n") {
 		t.Errorf("record %q, want %v of boot %s", rec, ours[0], r.boot)
 	}
 }
@@ -143,7 +164,7 @@ func (r *rig) whole(t *testing.T, e routetable.Exempt, others ...pfToken) {
 // its references, no record; others' references untouched.
 func (r *rig) gone(t *testing.T, others ...pfToken) {
 	t.Helper()
-	if a := r.pf.anchor(GuardAnchor); len(a.rules) != 0 || len(a.table) != 0 {
+	if a := r.pf.anchor(GuardAnchor); len(a.rules) != 0 || len(a.tables) != 0 {
 		t.Errorf("anchor left: %+v", a)
 	}
 	if refs := r.pf.references(); !slices.Equal(refs, others) {
@@ -154,42 +175,59 @@ func (r *rig) gone(t *testing.T, others ...pfToken) {
 	}
 }
 
-func itoa(v uint64) string { return strconv.FormatUint(v, 10) }
-
 func TestAnchorText(t *testing.T) {
-	got := anchorText("utun7", exemptTable(exempt(t)))
-	want := `table <thinkpol_exempt6> const persist { \
+	e := exempt(t)
+	e.Upstreams = append(e.Upstreams, netip.MustParseAddrPort("[2001:db8:53::2]:5353"))
+	got := anchorText("utun7", exemptPrefixes(e), upstreamPrefixes(e), upstreamPorts(e))
+	want := `table <thinkpol_exempt6> persist { \
 	2001:db8:e::9/128, \
-	2001:db8:53::1/128, \
 	2001:db8:d0::/48, \
 	fe80::/10, \
 	ff02::/16 }
+table <thinkpol_upstream6> persist { \
+	2001:db8:53::1/128, \
+	2001:db8:53::2/128 }
 pass out quick on lo0 inet6 all no state
 pass out quick on utun7 inet6 all no state
 pass out quick inet6 from any to <thinkpol_exempt6> no state
-pass out quick inet6 proto ipv6-icmp all icmp6-type { 133, 134, 135, 136, 137 } no state
-pass out quick inet6 proto ipv6-icmp all icmp6-type { 130, 131, 132, 143 } no state
+pass out quick inet6 proto { tcp, udp } from any to <thinkpol_upstream6> port { 53, 5353 } no state
+pass out quick inet6 proto ipv6-icmp from any to <thinkpol_upstream6> icmp6-type { 135, 136 } no state
+pass out quick inet6 proto ipv6-icmp from any to ff00::/8 icmp6-type { 130, 131, 132, 143 } no state
 block return out quick inet6 all
 `
 	if got != want {
 		t.Errorf("anchor:\n%s\nwant:\n%s", got, want)
 	}
+	// Without IPv6 upstreams, an empty upstream table (cleared on load)
+	// and no rule for it.
+	e.Upstreams = aps("192.0.2.53:53")
+	got = anchorText("utun7", exemptPrefixes(e), upstreamPrefixes(e), upstreamPorts(e))
+	if !strings.Contains(got, "table <thinkpol_upstream6> persist { }\n") || strings.Contains(got, "port") {
+		t.Errorf("without IPv6 upstreams:\n%s", got)
+	}
 }
 
-// The table is the IPv6 exempt destinations as the fewest prefixes; IPv4
-// and zones never reach it.
-func TestExemptTable(t *testing.T) {
+// The exempt table is the IPv6 exempt destinations as the fewest
+// prefixes, never the upstreams; the upstream table is their IPv6
+// addresses, with their ports apart. IPv4 and zones never reach either.
+func TestTheTables(t *testing.T) {
 	var b lists.Builder
 	_ = b.AddRange(netip.MustParseAddr("2001:db8::1"), netip.MustParseAddr("2001:db8::2")) // two prefixes
 	_ = b.AddPrefix(netip.MustParsePrefix("2001:db8::4/126"))
+	_ = b.AddPrefix(netip.MustParsePrefix("192.0.2.0/24"))
 	direct, _ := b.Build()
 	e := routetable.Exempt{TUN: "utun3", Direct: direct,
-		Upstreams: addrs("2001:db8::3", "fe80::1%en0", "::ffff:192.0.2.1", "192.0.2.2", "2001:db8:1::5")}
-	want := pfxs("2001:db8::1/128", "2001:db8::2/127", "2001:db8::4/126", "2001:db8:1::5/128", "fe80::/10", "ff02::/16")
-	if got := exemptTable(e); !slices.Equal(got, want) {
-		t.Errorf("table %v, want %v", got, want)
+		Upstreams: aps("[2001:db8::3]:53", "[fe80::1%en0]:53", "[::ffff:192.0.2.1]:53", "192.0.2.2:5300", "[2001:db8:1::5]:5353", "[2001:db8:1::5]:53")}
+	if got, want := exemptPrefixes(e), pfxs("2001:db8::1/128", "2001:db8::2/128", "2001:db8::4/126", "fe80::/10", "ff02::/16"); !slices.Equal(got, want) {
+		t.Errorf("exempt %v, want %v", got, want)
 	}
-	if got := exemptTable(routetable.Exempt{TUN: "utun3"}); !slices.Equal(got, routetable.LinkScoped) {
+	if got, want := upstreamPrefixes(e), pfxs("2001:db8::3/128", "2001:db8:1::5/128", "fe80::1/128"); !slices.Equal(got, want) {
+		t.Errorf("upstreams %v, want %v", got, want)
+	}
+	if got, want := upstreamPorts(e), []uint16{53, 5353}; !slices.Equal(got, want) {
+		t.Errorf("ports %v, want %v", got, want)
+	}
+	if got := exemptPrefixes(routetable.Exempt{TUN: "utun3"}); !slices.Equal(got, routetable.LinkScoped) {
 		t.Errorf("nothing exempt: %v, want LinkScoped", got)
 	}
 }
@@ -213,18 +251,26 @@ func TestApplyRefusesWhatIsntAnInterfaceName(t *testing.T) {
 func TestHooked(t *testing.T) {
 	for _, c := range []struct {
 		rules string
-		want  bool
+		want  hook
 	}{
-		{"scrub-anchor \"com.apple/*\" all fragment reassemble\nanchor \"com.apple/*\" all\n", true},
-		{"anchor \"com.apple/*\"\n", true},
-		{"  anchor \"com.apple/*\" all  \n", true},
-		{"", false},
-		{"scrub-anchor \"com.apple/*\" all fragment reassemble\n", false},
-		{"anchor \"com.apple/*\" in all\n", false},
-		{"anchor \"com.apple/*\" on en0 all\n", false},
-		{"anchor \"com.apple\" all\n", false},
-		{"anchor \"com.apple/thinkpol\" all\n", false},
-		{"pass out all # anchor \"com.apple/*\" all\n", false},
+		{"scrub-anchor \"com.apple/*\" all fragment reassemble\nanchor \"com.apple/*\" all\n", hookOK},
+		{"anchor \"com.apple/*\"\n", hookOK},
+		{"  anchor \"com.apple/*\" all  \n", hookOK},
+		{"No ALTQ support in kernel\nanchor \"com.apple/*\" all\n", hookOK},
+		{"pass out all flags S/SA keep state\nanchor \"com.apple/*\" all\n", hookOK},       // no quick: our block still wins
+		{"pass in quick inet6 all\nanchor \"com.apple/*\" all\n", hookOK},                  // inbound only
+		{"pass out quick inet proto tcp all\nanchor \"com.apple/*\" all\n", hookOK},        // IPv4 only
+		{"anchor \"com.apple/*\" all\npass out quick inet6 all\n", hookOK},                 // after it
+		{"pass out quick inet6 all\nanchor \"com.apple/*\" all\n", hookBypassed},           // before it
+		{"pass quick all\nanchor \"com.apple/*\" all\n", hookBypassed},                     // both directions
+		{"pass out quick on en0 all no state\nanchor \"com.apple/*\" all\n", hookBypassed}, // either family
+		{"", hookMissing},
+		{"scrub-anchor \"com.apple/*\" all fragment reassemble\n", hookMissing},
+		{"anchor \"com.apple/*\" in all\n", hookMissing},
+		{"anchor \"com.apple/*\" on en0 all\n", hookMissing},
+		{"anchor \"com.apple\" all\n", hookMissing},
+		{"anchor \"com.apple/000.thinkpol\" all\n", hookMissing},
+		{"pass out all # anchor \"com.apple/*\" all\n", hookMissing},
 	} {
 		if got := hooked([]byte(c.rules)); got != c.want {
 			t.Errorf("%q: %v, want %v", c.rules, got, c.want)
@@ -237,7 +283,7 @@ func TestParseToken(t *testing.T) {
 		stdout, stderr string
 		want           uint64
 	}{
-		{"Token : 14715852371098265711\n", "No ALTQ support in kernel\nALTQ related functions disabled\npf enabled\n", 14715852371098265711},
+		{"Token : 14715852371098265711\n", altq + "pf enabled\n", 14715852371098265711},
 		{"", "pf enabled\nToken : 42\n", 42},
 		{"Token: 7", "", 7},
 		{"", "pf enabled\n", 0},
@@ -260,6 +306,7 @@ func TestParseEnabled(t *testing.T) {
 	}{
 		{"Status: Enabled for 0 days 00:01:02           Debug: Urgent\n\nState Table\n", true, false},
 		{"Status: Disabled for 0 days 00:00:00          Debug: Urgent\n", false, false},
+		{"Status: Disabled\n", false, false},
 		{"Interface Stats for en0\nStatus: Enabled\n", true, false},
 		{"", false, true},
 		{"Status: Unknown\n", false, true},
@@ -272,28 +319,51 @@ func TestParseEnabled(t *testing.T) {
 	}
 }
 
-func TestReferenced(t *testing.T) {
-	refs := []byte("TOKENS:\nPID      Process Name                 TOKEN                 TIMESTAMP\n" +
-		"4012     pfctl                        9000000000000000001   0 days 00:00:05\n" +
-		"77       pfctl                        555                   1 days 02:00:00\n")
+// References as published OS X transcripts print them.
+func TestParseReferences(t *testing.T) {
+	listing := []byte(altq + "TOKENS:\nPID      Process Name                 TOKEN                 TIMESTAMP\n" +
+		"618      socketfilterfw               9813589183660731843   0 days 00:03:31\n" +
+		"17013    pfctl                        18446743524308110600  0 days 01:05:50\n")
+	refs, understood := parseReferences(listing)
+	want := []pfReference{{618, 9813589183660731843}, {17013, 18446743524308110600}}
+	if !understood || !slices.Equal(refs, want) {
+		t.Fatalf("%v, %v", refs, understood)
+	}
 	for _, c := range []struct {
 		t    pfToken
 		want reference
 	}{
-		{pfToken{9000000000000000001, 4012}, refOurs},
-		{pfToken{9000000000000000001, 4013}, refForeign}, // the value, reused by another enabler
-		{pfToken{555, 4012}, refForeign},
-		{pfToken{55, 77}, refGone},     // a prefix of a token isn't one
-		{pfToken{4012, 4012}, refGone}, // a pid isn't a token
+		{pfToken{18446743524308110600, 17013}, refOurs},
+		{pfToken{18446743524308110600, 17014}, refForeign}, // the value, reused by another enabler
+		{pfToken{9813589183660731843, 17013}, refForeign},
+		{pfToken{17013, 17013}, refGone}, // a pid isn't a token
+		{pfToken{1844674352430811060, 17013}, refGone},
 	} {
 		if got := referenced(refs, c.t); got != c.want {
 			t.Errorf("%v: %v, want %v", c.t, got, c.want)
 		}
 	}
+	if v, ok := byPid(refs, 17013); !ok || v != 18446743524308110600 {
+		t.Errorf("byPid: %d, %v", v, ok)
+	}
+	if _, ok := byPid(append(refs, pfReference{17013, 5}), 17013); ok {
+		t.Error("byPid: two references of one pid, one chosen")
+	}
+	if _, ok := byPid(refs, 1); ok {
+		t.Error("byPid: a pid not listed found")
+	}
+	if refs, understood := parseReferences([]byte("TOKENS:\nPID      Process Name                 TOKEN                 TIMESTAMP\n")); len(refs) != 0 || !understood {
+		t.Errorf("an empty listing: %v, %v", refs, understood)
+	}
+	for _, odd := range []string{"", "token=5 by pfctl(17013)\n", "17013 pfctl\n", "pfctl 17013 5 0 days\n"} {
+		if refs, understood := parseReferences([]byte(odd)); len(refs) != 0 || understood {
+			t.Errorf("%q: %v, %v", odd, refs, understood)
+		}
+	}
 }
 
 func TestParseTable(t *testing.T) {
-	got, err := parseTable([]byte("   2001:db8:d0::/48\n   2001:db8:53::1\n   ::102:304\n   fe80::/10\n\n"))
+	got, err := parseTable([]byte(altq + "   2001:db8:d0::/48\n   2001:db8:53::1\n   ::102:304\n   fe80::/10\n\n"))
 	want := pfxs("::102:304/128", "2001:db8:53::1/128", "2001:db8:d0::/48", "fe80::/10")
 	if err != nil || !slices.Equal(got, want) {
 		t.Errorf("%v, %v; want %v", got, err, want)
@@ -301,6 +371,56 @@ func TestParseTable(t *testing.T) {
 	for _, bad := range []string{"   !2001:db8::/32\n", "   192.0.2.0/24\n", "   2001:db8::1/32\n", "   fe80::1%en0\n", "   ::ffff:192.0.2.1\n", "   garbage\n"} {
 		if got, err := parseTable([]byte(bad)); err == nil {
 			t.Errorf("%q: %v", bad, got)
+		}
+	}
+}
+
+func TestParseStateAddrs(t *testing.T) {
+	got := parseStateAddrs([]byte(altq +
+		"ALL tcp 2001:db8:1::10[51000] -> 2001:db8:ab::7[443]       ESTABLISHED:ESTABLISHED\n" +
+		"ALL udp 2001:db8:1::10[5353] <- 2001:db8:ab::8[53]       SINGLE:NO_TRAFFIC\n" +
+		"en0 tcp 2001:db8:1::10[1] (2001:db8:1::11[2]) -> 2001:db8:ab::9[3]   X\n" +
+		"ALL tcp 192.0.2.10:51000 -> 198.51.100.7:443       ESTABLISHED:ESTABLISHED\n" +
+		"ALL ipv6-icmp fe80::1%en0[3] -> ff02::1[0]       0:0\n"))
+	want := [][]netip.Addr{
+		{ownV6, netip.MustParseAddr("2001:db8:ab::7")},
+		{ownV6, netip.MustParseAddr("2001:db8:ab::8")},
+		{ownV6, netip.MustParseAddr("2001:db8:1::11"), netip.MustParseAddr("2001:db8:ab::9")},
+		{netip.MustParseAddr("fe80::1"), netip.MustParseAddr("ff02::1")},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("%v", got)
+	}
+	for i := range want {
+		if !slices.Equal(got[i], want[i]) {
+			t.Errorf("line %d: %v, want %v", i, got[i], want[i])
+		}
+	}
+}
+
+// Only a listing whose passes are stateless, with every word, rule for
+// rule, is the guard's.
+func TestSaneRules(t *testing.T) {
+	a, err := fakeLoad(anchorText("utun7", exemptPrefixes(exempt(t)), upstreamPrefixes(exempt(t)), upstreamPorts(exempt(t))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ports := upstreamPorts(exempt(t))
+	if err := saneRules(a.rules, "utun7", ports); err != nil {
+		t.Fatalf("the fake's listing: %v", err)
+	}
+	for name, change := range map[string]func([]string) []string{
+		"kept state": func(r []string) []string {
+			r[1] = strings.Replace(r[1], "no state", "flags S/SA keep state", 1)
+			return r
+		},
+		"one missing":     func(r []string) []string { return r[1:] },
+		"one more":        func(r []string) []string { return append(r, "pass out quick inet6 all no state") },
+		"another utun":    func(r []string) []string { r[1] = strings.Replace(r[1], "utun7", "utun8", 1); return r },
+		"block not quick": func(r []string) []string { r[len(r)-1] = "block return out inet6 all"; return r },
+	} {
+		if err := saneRules(change(slices.Clone(a.rules)), "utun7", ports); err == nil {
+			t.Errorf("%s: sane", name)
 		}
 	}
 }
@@ -313,6 +433,9 @@ func TestApplyPutsTheGuardInPlace(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.whole(t, e)
+	if a := r.pf.anchor(GuardAnchor); len(a.rules) != rulesFor {
+		t.Errorf("%d rules: %q", len(a.rules), a.rules)
+	}
 	// The anchor is loaded before pf comes on.
 	if f, en := slices.IndexFunc(r.pf.calls, func(c []string) bool { return slices.Contains(c, "-f") }),
 		slices.IndexFunc(r.pf.calls, func(c []string) bool { return slices.Equal(c, []string{"-E"}) }); f < 0 || en < f {
@@ -352,7 +475,7 @@ func TestApplyingAgainOnlyReads(t *testing.T) {
 	if err := g.Apply(context.Background(), exempt(t)); err != nil {
 		t.Fatal(err)
 	}
-	for _, write := range []string{"-f", "-E", "-X", "-F"} {
+	for _, write := range []string{"-f", "-E", "-X", "-F", "-k", "states"} {
 		if n := r.pf.ran(write); n != 0 {
 			t.Errorf("%s ran %d times", write, n)
 		}
@@ -363,35 +486,26 @@ func TestApplyingAgainOnlyReads(t *testing.T) {
 // What changes from outside is put right by the next Apply (and Watch
 // sees it, TestWatchSignalsWhenTheGuardBreaks): content, not counts.
 func TestApplyRepairsWhatChangedOutside(t *testing.T) {
+	edit := func(f func(a *fakeAnchor)) func(r *rig) {
+		return func(r *rig) {
+			a := r.pf.anchor(GuardAnchor)
+			f(a)
+			r.pf.setAnchor(GuardAnchor, a)
+		}
+	}
 	for _, c := range []struct {
 		name   string
 		change func(r *rig)
 	}{
-		{"an entry added", func(r *rig) {
-			a := r.pf.anchor(GuardAnchor)
-			a.table = append(a.table, "::/0")
-			r.pf.setAnchor(GuardAnchor, a)
-		}},
-		{"an entry replaced", func(r *rig) {
-			a := r.pf.anchor(GuardAnchor)
-			a.table[0] = "2000::/3"
-			r.pf.setAnchor(GuardAnchor, a)
-		}},
-		{"an entry removed", func(r *rig) {
-			a := r.pf.anchor(GuardAnchor)
-			a.table = a.table[1:]
-			r.pf.setAnchor(GuardAnchor, a)
-		}},
-		{"the block replaced by a pass", func(r *rig) {
-			a := r.pf.anchor(GuardAnchor)
-			a.rules[12] = "pass out quick inet6 all"
-			r.pf.setAnchor(GuardAnchor, a)
-		}},
-		{"the anchor flushed", func(r *rig) {
-			r.pf.setAnchor(GuardAnchor, &fakeAnchor{})
-		}},
+		{"an entry added", edit(func(a *fakeAnchor) { a.tables[exemptTable] = append(a.tables[exemptTable], "::/0") })},
+		{"an entry replaced", edit(func(a *fakeAnchor) { a.tables[exemptTable][0] = "2000::/3" })},
+		{"an entry removed", edit(func(a *fakeAnchor) { a.tables[exemptTable] = a.tables[exemptTable][1:] })},
+		{"an upstream added", edit(func(a *fakeAnchor) { a.tables[upstreamTable] = append(a.tables[upstreamTable], "::/0") })},
+		{"the block replaced by a pass", edit(func(a *fakeAnchor) { a.rules[len(a.rules)-1] = "pass out quick inet6 all" })},
+		{"the tables flushed", edit(func(a *fakeAnchor) { a.tables = map[string][]string{} })},
+		{"the anchor flushed", func(r *rig) { r.pf.setAnchor(GuardAnchor, nil) }},
 		{"pf disabled", func(r *rig) { r.pf.disable() }},
-		{"pf disabled, its references kept", func(r *rig) { r.pf.keepRefs = true; r.pf.disable() }},
+		{"pf disabled, its references kept", func(r *rig) { r.pf.set(func(f *fakePF) { f.keepRefs = true }); r.pf.disable() }},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			r := newRig(t)
@@ -417,7 +531,8 @@ func TestApplyRepairsWhatChangedOutside(t *testing.T) {
 	}
 }
 
-// A new Exempt replaces the table and the rules, with the same reference.
+// A new Exempt replaces the tables (narrower too: no `const` to stop the
+// reload) and the rules, with the same reference.
 func TestApplyingAnotherExemptReplacesIt(t *testing.T) {
 	r := newRig(t)
 	g := r.guard()
@@ -426,16 +541,76 @@ func TestApplyingAnotherExemptReplacesIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	first := r.pf.references()
-	e2 := routetable.Exempt{TUN: "utun9", Direct: set(t, "2001:db8:f0::/44"), Upstreams: addrs("2001:db8:54::1")}
+	e2 := routetable.Exempt{TUN: "utun9", Direct: set(t, "2001:db8:f0::/44"), Upstreams: aps("[2001:db8:54::1]:5353")}
 	if err := g.Apply(context.Background(), e2); err != nil {
 		t.Fatal(err)
 	}
 	r.whole(t, e2)
-	if a := r.pf.anchor(GuardAnchor); slices.Contains(a.table, "2001:db8:d0::/48") || slices.Contains(a.table, "2001:db8:53::1/128") {
-		t.Errorf("the old exempts stayed: %v", a.table)
+	a := r.pf.anchor(GuardAnchor)
+	if slices.Contains(a.tables[exemptTable], "2001:db8:d0::/48") || slices.Contains(a.tables[upstreamTable], "2001:db8:53::1/128") {
+		t.Errorf("the old exempts stayed: %v", a.tables)
+	}
+	if !slices.Contains(a.rules, "pass out quick inet6 proto udp to <thinkpol_upstream6> port = 5353 no state") {
+		t.Errorf("rules %q, want DNS to the upstream's port", a.rules)
 	}
 	if !slices.Equal(r.pf.references(), first) {
 		t.Errorf("references %v, want %v", r.pf.references(), first)
+	}
+	// Back to the wider set, then narrower again.
+	for _, x := range []routetable.Exempt{e, e2} {
+		if err := g.Apply(context.Background(), x); err != nil {
+			t.Fatal(err)
+		}
+		r.whole(t, x)
+	}
+}
+
+// States pf holds would pass without a rule: once the guard is in place,
+// those to and from what it doesn't exempt go, the rest stay.
+func TestApplyKillsStatesTheGuardRefuses(t *testing.T) {
+	r := newRig(t)
+	st := func(proto, local, remote string, out bool) fakeState {
+		return fakeState{proto, netip.MustParseAddrPort(local), netip.MustParseAddrPort(remote), out}
+	}
+	foreignOut := st("tcp", "[2001:db8:1::10]:51000", "[2001:db8:ab::7]:443", true)
+	foreignIn := st("tcp", "[2001:db8:1::10]:22", "[2001:db8:ab::8]:50000", false)
+	direct := st("tcp", "[2001:db8:1::10]:51001", "[2001:db8:d0::5]:443", true)
+	upstream := st("udp", "[2001:db8:1::10]:51002", "[2001:db8:53::1]:53", true)
+	link := st("udp", "[2001:db8:1::10]:5353", "[ff02::fb]:5353", true)
+	v4 := st("tcp", "192.0.2.10:51003", "198.51.100.200:443", true)
+	loop := st("tcp", "[::1]:51004", "[::1]:8080", true)
+	r.pf.states = []fakeState{foreignOut, foreignIn, direct, upstream, link, v4, loop}
+	g := r.guard()
+	if err := g.Apply(context.Background(), exempt(t)); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := r.pf.stateList(), []fakeState{direct, upstream, link, v4, loop}; !slices.Equal(got, want) {
+		t.Errorf("states %v, want %v", got, want)
+	}
+	// A state made while pf was off goes when the guard turns it back on.
+	r.pf.disable()
+	r.pf.set(func(f *fakePF) { f.states = append(f.states, foreignOut) })
+	if err := g.Apply(context.Background(), exempt(t)); err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(r.pf.stateList(), foreignOut) {
+		t.Error("a state made while pf was off survived")
+	}
+	// Re-applying what is in place leaves states alone.
+	r.pf.forget()
+	if err := g.Apply(context.Background(), exempt(t)); err != nil || r.pf.ran("-k") != 0 {
+		t.Errorf("re-apply: %v, %d kills", err, r.pf.ran("-k"))
+	}
+	// A kill that fails fails the Apply, and the retry kills.
+	r.pf.set(func(f *fakePF) { f.states = append(f.states, foreignIn) })
+	r.pf.setAnchor(GuardAnchor, nil)
+	r.pf.failOn("-k", errFake)
+	if err := g.Apply(context.Background(), exempt(t)); err == nil {
+		t.Fatal("applied with states left")
+	}
+	r.pf.failOn("-k", nil)
+	if err := g.Apply(context.Background(), exempt(t)); err != nil || slices.Contains(r.pf.stateList(), foreignIn) {
+		t.Errorf("retry: %v, states %v", err, r.pf.stateList())
 	}
 }
 
@@ -479,16 +654,40 @@ func TestAFreshGuardClearsACrashedRun(t *testing.T) {
 	r.gone(t, theirs)
 }
 
-// A fresh guard with nothing left to clear only flushes the (empty)
-// anchor.
+// A fresh guard with nothing left to clear: the anchor doesn't exist,
+// whether pfctl's flush of it succeeds or answers `Invalid argument`.
 func TestAFreshGuardCloseOnACleanHost(t *testing.T) {
-	r := newRig(t)
-	if err := r.guard().Close(); err != nil {
-		t.Fatal(err)
+	for _, ok := range []bool{false, true} {
+		r := newRig(t)
+		r.pf.flushMissingOK = ok
+		if err := r.guard().Close(); err != nil {
+			t.Fatalf("flush of a missing anchor succeeds %v: %v", ok, err)
+		}
+		r.gone(t)
+		if n := r.pf.ran("-X") + r.pf.ran("-E"); n != 0 {
+			t.Errorf("references touched %d times", n)
+		}
 	}
-	r.gone(t)
-	if n := r.pf.ran("-X") + r.pf.ran("-E"); n != 0 {
-		t.Errorf("references touched %d times", n)
+}
+
+// `Invalid argument` from a flush of an anchor that is there isn't an
+// empty anchor: the Close fails.
+func TestAFlushThatFailsIsNoEmptyAnchor(t *testing.T) {
+	for _, key := range []string{"-F rules", "-F Tables"} {
+		r := newRig(t)
+		g := r.guard()
+		if err := g.Apply(context.Background(), exempt(t)); err != nil {
+			t.Fatal(err)
+		}
+		r.pf.failOn(key, errors.New("DIOCBEGINRULES: Invalid argument"))
+		if err := g.Close(); err == nil {
+			t.Fatalf("%s: closed with the anchor in place", key)
+		}
+		r.pf.failOn(key, nil)
+		if err := g.Close(); err != nil {
+			t.Fatal(err)
+		}
+		r.gone(t)
 	}
 }
 
@@ -525,7 +724,7 @@ func TestARecordOfAnEarlierBootReleasesNothing(t *testing.T) {
 	}
 	refs := r.pf.references() // as if another enabler holds the same token and pid this boot
 	r.boot = "6F1C0D2E-0000-4000-8000-000000000002"
-	r.pf.setAnchor(GuardAnchor, &fakeAnchor{}) // a reboot took it
+	r.pf.setAnchor(GuardAnchor, nil) // a reboot took it
 	if err := r.guard().Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -545,7 +744,7 @@ func TestNeverReleasesAReferenceThatIsntOurs(t *testing.T) {
 		}
 		ours := r.pf.references()[0]
 		r.pf.disable() // pfctl -d drops it ...
-		r.pf.reuse = ours.value
+		r.pf.set(func(f *fakePF) { f.reuse = ours.value })
 		theirs := r.pf.takeRefVia(t) // ... and another program's -E gets the same value
 		if theirs.value != ours.value || theirs.pid == ours.pid {
 			t.Fatalf("setup: %v, %v", theirs, ours)
@@ -575,7 +774,7 @@ func TestNeverReleasesAReferenceThatIsntOurs(t *testing.T) {
 	t.Run("a broken record", func(t *testing.T) {
 		r := newRig(t)
 		theirs := r.pf.takeRef()
-		r.writeRecord(t, "boot "+thisBoot+"\ntoken "+itoa(theirs.value)+"\n") // no pid: not ours to judge
+		r.writeRecord(t, "boot "+thisBoot+"\ntoken "+strconv.FormatUint(theirs.value, 10)+"\n") // no pid: not ours to judge
 		if err := r.guard().Close(); err != nil {
 			t.Fatal(err)
 		}
@@ -618,6 +817,24 @@ func TestWithoutTheAppleHookTheGuardIsUnsupported(t *testing.T) {
 	}
 }
 
+// A quick pass above the hook ends evaluation before the anchor: the
+// guard isn't enforced (an ordinary failure, retried), and is again once
+// it is gone.
+func TestAQuickPassAboveTheHookIsNotEnforced(t *testing.T) {
+	r := newRig(t)
+	r.pf.main = []string{"pass out quick inet6 all no state", `anchor "com.apple/*" all`}
+	g := r.guard()
+	err := g.Apply(context.Background(), exempt(t))
+	if err == nil || errors.Is(err, routetable.ErrGuardUnsupported) {
+		t.Fatalf("%v, want an ordinary failure", err)
+	}
+	r.pf.set(func(f *fakePF) { f.main = stockMain })
+	if err := g.Apply(context.Background(), exempt(t)); err != nil {
+		t.Fatal(err)
+	}
+	r.whole(t, exempt(t))
+}
+
 // The hook going away under an applied guard makes it unsupported too;
 // Close still removes it all.
 func TestTheHookGoingAwayIsUnsupported(t *testing.T) {
@@ -626,7 +843,7 @@ func TestTheHookGoingAwayIsUnsupported(t *testing.T) {
 	if err := g.Apply(context.Background(), exempt(t)); err != nil {
 		t.Fatal(err)
 	}
-	r.pf.main = nil
+	r.pf.set(func(f *fakePF) { f.main = nil })
 	if err := g.Apply(context.Background(), exempt(t)); !errors.Is(err, routetable.ErrGuardUnsupported) {
 		t.Errorf("%v, want unsupported", err)
 	}
@@ -639,9 +856,10 @@ func TestTheHookGoingAwayIsUnsupported(t *testing.T) {
 // A pfctl failure is an ordinary, retried failure, never unsupported; the
 // retry finishes the job without a second reference.
 func TestPfctlFailuresAreRetried(t *testing.T) {
-	for _, key := range []string{"rules", "-f", "show", "info", "-E"} {
+	for _, key := range []string{"rules", "-f", "show", "info", "-E", "states"} {
 		t.Run(key, func(t *testing.T) {
 			r := newRig(t)
+			r.pf.states = []fakeState{{"tcp", netip.MustParseAddrPort("[2001:db8:1::10]:1"), netip.MustParseAddrPort("[2001:db8:ab::7]:2"), true}}
 			g := r.guard()
 			e := exempt(t)
 			r.pf.failOn(key, errFake)
@@ -649,7 +867,7 @@ func TestPfctlFailuresAreRetried(t *testing.T) {
 			if err == nil || errors.Is(err, routetable.ErrGuardUnsupported) {
 				t.Fatalf("%v, want an ordinary failure", err)
 			}
-			if key != "-E" && r.pf.isOn() {
+			if key != "-E" && key != "states" && r.pf.isOn() {
 				t.Error("pf enabled without the guard in place")
 			}
 			r.pf.failOn(key, nil)
@@ -657,6 +875,9 @@ func TestPfctlFailuresAreRetried(t *testing.T) {
 				t.Fatal(err)
 			}
 			r.whole(t, e)
+			if len(r.pf.stateList()) != 0 {
+				t.Errorf("states left: %v", r.pf.stateList())
+			}
 		})
 	}
 }
@@ -684,45 +905,103 @@ func TestAFailedReloadKeepsTheOldGuard(t *testing.T) {
 	r.whole(t, e2)
 }
 
-// pf listing what wasn't loaded fails the Apply.
+// pf holding other than what was loaded fails the Apply.
 func TestALoadPfDoesntHoldFails(t *testing.T) {
-	r := newRig(t)
-	g := r.guard()
-	// The fake drops the last table entry on load, as a pf that took the
-	// list wrong would.
-	orig := fakeLoadHook
-	fakeLoadHook = func(a *fakeAnchor) { a.table = a.table[:len(a.table)-1] }
-	defer func() { fakeLoadHook = orig }()
-	if err := g.Apply(context.Background(), exempt(t)); err == nil {
-		t.Fatal("applied")
-	}
-	if r.pf.isOn() {
-		t.Error("pf enabled for a guard that isn't in place")
+	for name, hook := range map[string]func(a *fakeAnchor){
+		"an entry dropped": func(a *fakeAnchor) { a.tables[exemptTable] = a.tables[exemptTable][1:] },
+		"a pass with state": func(a *fakeAnchor) {
+			a.rules[0] = strings.Replace(a.rules[0], "no state", "keep state", 1)
+		},
+	} {
+		r := newRig(t)
+		r.pf.loadHook = hook
+		if err := r.guard().Apply(context.Background(), exempt(t)); err == nil {
+			t.Errorf("%s: applied", name)
+		}
+		if r.pf.isOn() {
+			t.Errorf("%s: pf enabled for a guard that isn't in place", name)
+		}
 	}
 }
 
-// `pfctl -E` that prints no token took a reference all the same: the
-// guard doesn't take another on the retry.
+// `pfctl -E` that prints no token took a reference all the same: it is
+// found by the pfctl's pid and recorded; until it is, the record names the
+// pid, Apply fails, no second reference is taken, and Close can't finish.
 func TestAnUnreadableTokenIsNotTakenTwice(t *testing.T) {
-	r := newRig(t)
-	g := r.guard()
-	r.pf.noToken = true
-	if err := g.Apply(context.Background(), exempt(t)); err == nil {
-		t.Fatal("applied")
-	}
-	r.pf.noToken = false
-	if err := g.Apply(context.Background(), exempt(t)); err != nil {
-		t.Fatal(err)
-	}
-	if refs := r.pf.references(); len(refs) != 1 {
-		t.Errorf("references %v, want the one", refs)
-	}
-	// pf turned off meanwhile: that reference is gone too, so a new one.
-	r.pf.disable()
-	if err := g.Apply(context.Background(), exempt(t)); err != nil {
-		t.Fatal(err)
-	}
-	r.whole(t, exempt(t))
+	t.Run("found by pid", func(t *testing.T) {
+		r := newRig(t)
+		r.pf.noToken = true
+		g := r.guard()
+		if err := g.Apply(context.Background(), exempt(t)); err != nil {
+			t.Fatal(err)
+		}
+		r.whole(t, exempt(t))
+		if err := g.Close(); err != nil {
+			t.Fatal(err)
+		}
+		r.gone(t)
+		if r.pf.isOn() {
+			t.Error("pf left on")
+		}
+	})
+	t.Run("not found yet", func(t *testing.T) {
+		r := newRig(t)
+		r.pf.noToken, r.pf.oddReferences = true, true
+		g := r.guard()
+		for range 2 {
+			if err := g.Apply(context.Background(), exempt(t)); !errors.Is(err, errUnreadToken) {
+				t.Fatalf("%v, want the unread token", err)
+			}
+		}
+		refs := r.pf.references()
+		if len(refs) != 1 {
+			t.Fatalf("references %v, want the one", refs)
+		}
+		if rec := r.record(t); !strings.Contains(rec, "\ntoken unknown pid "+strconv.Itoa(refs[0].pid)+"\n") {
+			t.Errorf("record %q", rec)
+		}
+		if err := g.Close(); err == nil {
+			t.Fatal("closed with the reference unknown")
+		}
+		if !slices.Equal(r.pf.references(), refs) || r.record(t) == "" {
+			t.Error("the reference or its record went")
+		}
+		r.pf.set(func(f *fakePF) { f.oddReferences = false })
+		if err := g.Apply(context.Background(), exempt(t)); err != nil {
+			t.Fatal(err)
+		}
+		r.whole(t, exempt(t))
+		if err := g.Close(); err != nil {
+			t.Fatal(err)
+		}
+		r.gone(t)
+	})
+	t.Run("a crashed run's", func(t *testing.T) {
+		r := newRig(t)
+		r.pf.noToken, r.pf.oddReferences = true, true
+		if err := r.guard().Apply(context.Background(), exempt(t)); !errors.Is(err, errUnreadToken) {
+			t.Fatalf("%v, want the unread token", err)
+		}
+		r.pf.set(func(f *fakePF) { f.oddReferences = false })
+		if err := r.guard().Close(); err != nil {
+			t.Fatal(err)
+		}
+		r.gone(t)
+	})
+	t.Run("gone meanwhile", func(t *testing.T) {
+		r := newRig(t)
+		r.pf.noToken, r.pf.oddReferences = true, true
+		g := r.guard()
+		if err := g.Apply(context.Background(), exempt(t)); !errors.Is(err, errUnreadToken) {
+			t.Fatalf("%v, want the unread token", err)
+		}
+		r.pf.disable()
+		r.pf.set(func(f *fakePF) { f.oddReferences, f.noToken = false, false })
+		if err := g.Apply(context.Background(), exempt(t)); err != nil {
+			t.Fatal(err)
+		}
+		r.whole(t, exempt(t))
+	})
 }
 
 // A Close that fails keeps what it couldn't remove, record included, and
@@ -774,13 +1053,10 @@ func TestTheRecordIsWrittenOnTheRetry(t *testing.T) {
 
 func TestWatchSignalsWhenTheGuardBreaks(t *testing.T) {
 	r := newRig(t)
-	g := newIPv6Guard(r.pf, r.store(), 10*time.Millisecond)
+	g := newIPv6Guard(r.pf, r.store(), 10*time.Millisecond, ownAddrs)
 	ctx, cancel := context.WithCancel(context.Background())
 	ch, err := g.Watch(ctx)
 	if err != nil {
-		t.Fatal(err)
-	}
-	if err := g.Apply(context.Background(), exempt(t)); err != nil {
 		t.Fatal(err)
 	}
 	quiet := func() {
@@ -799,6 +1075,25 @@ func TestWatchSignalsWhenTheGuardBreaks(t *testing.T) {
 			t.Fatalf("%s: no signal", what)
 		}
 	}
+	apply := func() {
+		t.Helper()
+		if err := g.Apply(context.Background(), exempt(t)); err != nil {
+			t.Fatal(err)
+		}
+		for len(ch) > 0 { // a poll that ran before the Apply
+			<-ch
+		}
+	}
+	// Nothing applied yet: nothing to say.
+	quiet()
+	// A failed Apply is due a retry.
+	r.pf.failOn("-f", errFake)
+	if err := g.Apply(context.Background(), exempt(t)); err == nil {
+		t.Fatal("applied")
+	}
+	signalled("a failed load")
+	r.pf.failOn("-f", nil)
+	apply()
 	quiet()
 	for _, c := range []struct {
 		what   string
@@ -806,28 +1101,24 @@ func TestWatchSignalsWhenTheGuardBreaks(t *testing.T) {
 	}{
 		{"an entry added", func() {
 			a := r.pf.anchor(GuardAnchor)
-			a.table = append(a.table, "::/0")
+			a.tables[exemptTable] = append(a.tables[exemptTable], "::/0")
 			r.pf.setAnchor(GuardAnchor, a)
 		}},
 		{"a rule replaced", func() {
 			a := r.pf.anchor(GuardAnchor)
-			a.rules[12] = "pass out quick inet6 all"
+			a.rules[len(a.rules)-1] = "pass out quick inet6 all"
 			r.pf.setAnchor(GuardAnchor, a)
 		}},
 		{"pf disabled", r.pf.disable},
-		{"the hook gone", func() { r.pf.mu.Lock(); r.pf.main = nil; r.pf.mu.Unlock() }},
+		{"the hook gone", func() { r.pf.set(func(f *fakePF) { f.main = nil }) }},
+		{"a quick pass above the hook", func() {
+			r.pf.set(func(f *fakePF) { f.main = append([]string{"pass out quick all"}, stockMain...) })
+		}},
 	} {
 		c.change()
 		signalled(c.what)
-		r.pf.mu.Lock()
-		r.pf.main = stockMain
-		r.pf.mu.Unlock()
-		if err := g.Apply(context.Background(), exempt(t)); err != nil {
-			t.Fatal(err)
-		}
-		for len(ch) > 0 { // a poll that ran before the Apply
-			<-ch
-		}
+		r.pf.set(func(f *fakePF) { f.main = stockMain })
+		apply()
 		quiet()
 	}
 	cancel()
@@ -847,15 +1138,15 @@ func TestExecPfctl(t *testing.T) {
 	if err == nil || time.Since(start) > 5*time.Second {
 		t.Errorf("sleep: %v after %v", err, time.Since(start))
 	}
-	_, err = execPfctl{path: "/bin/ls", timeout: 5 * time.Second}.run(context.Background(), nil, "/nonexistent-tp078")
-	if err == nil || errors.Is(err, routetable.ErrGuardUnsupported) {
-		t.Errorf("a failing run: %v", err)
+	out, err = execPfctl{path: "/bin/ls", timeout: 5 * time.Second}.run(context.Background(), nil, "/nonexistent-tp078")
+	if err == nil || errors.Is(err, routetable.ErrGuardUnsupported) || len(out.stderr) == 0 {
+		t.Errorf("a failing run: %v, stderr %q", err, out.stderr)
 	}
 	_, err = execPfctl{path: "/nonexistent-tp078/pfctl", timeout: time.Second}.run(context.Background(), nil, "-s", "info")
 	if !errors.Is(err, routetable.ErrGuardUnsupported) {
 		t.Errorf("no pfctl: %v, want unsupported", err)
 	}
-	g := newIPv6Guard(execPfctl{path: "/nonexistent-tp078/pfctl", timeout: time.Second}, newRig(t).store(), time.Hour)
+	g := newIPv6Guard(execPfctl{path: "/nonexistent-tp078/pfctl", timeout: time.Second}, newRig(t).store(), time.Hour, ownAddrs)
 	if err := g.Close(); err != nil {
 		t.Errorf("Close without pfctl: %v", err)
 	}
