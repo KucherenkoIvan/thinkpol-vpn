@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: []
 refs: [C1, C3, C6, DESIGN#transports]
-owner: ""
-branch: ""
+owner: "glm-tp070"
+branch: "tp-070-udp-replay-skew"
 ---
 
 ## Goal
@@ -35,3 +35,4 @@ Replay filtering and sender-id memory use consistent clocks so a skewed sender c
 - 2026-10-15 created in backlog
 - 2026-10-15 docs: board fix-ups (log order, refs, parked notes)
 - 2026-10-15 docs (backlog grooming): acceptance for listener and LRU-stamp bugs
+- 2026-10-15 backlog → in-progress — owner: glm-tp070
