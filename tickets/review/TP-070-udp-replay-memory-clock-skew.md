@@ -36,9 +36,16 @@ Round 1 review (cross-model, 2026-10-15):
 - [x] **S2** The memory uses a monotonic clock while freshness uses the wall clock (`replay.go:124,131`, `listener.go:180`, `router.go:116` versus `wire.go:233`). After NTP steps the receiver's wall clock back by Δ, replays get through in the Δ window. The fake clock advances both together, so no test can see it. FIX (preferred, also fixes S1 and S3): store the newest sealed `o.sent` seen per evicted or retired id, and forget the id once `fresh` would reject that sealed time, using the same arithmetic as `fresh()`.
 - [x] **S3** A one-second gap at exactly 2×skew (`replay.go:98,124,131`): `fresh()` truncates to whole seconds, the memory compares nanoseconds. Fixed by S2, or by `senderForget = 2*maxClockSkew + 2*time.Second`.
 - [x] **S4** Docs contradict the code: `doc.go:74` ("captured more than five minutes ago is dead everywhere" — it can be fresh for up to 10 min after capture), `doc.go:78-79` likewise; the "Links" section (`doc.go:91-93`) and DESIGN.md don't describe the new behaviour; `doc.go:70` says "Everything else goes to the camouflage, and is counted" — any new drop path must increment a counter; `doc.go:100` says "The Router keeps no replay state", but `router.go:72` calls `admit`.
-- [x] **S5** Test gaps: same sender, same port, still alive, after a mistaken close reopens a link at once (the B1 regression); same sender from a new port; a reordered OLDER datagram (not newest) from a dead or old port doesn't open a link; a test that steps the WALL clock independently of monotonic time (S2); a test at the exact 2×skew boundary (S3).
+- [x] **S5** Test gaps: same sender, same port, still alive, after a mistaken close reopens a link at once (the B1 regression); same sender from a new port; a reordered OLDER datagram (not newest) from a dead or old port doesn't open a link; the S2 wall-clock step test replaced by the sealed-time memory fix (see Notes, round 2 S2 caveat); a test at the exact 2×skew boundary (S3).
 - [x] **N1** A reordered late datagram from an earlier port (P, after the link moved to Q) still opens a link toward the dead P. The `deliverNewest` rule in B1 covers it.
 - [x] **N2** Retired-flow memory now lasts longer. Fine, but say so in doc.go.
+
+Round 3 review (delta, 2026-10-15):
+
+- [x] **R3.1** Refresh tests (`TestAnEvictedSenderKeepsRefreshingItsMemory`, `TestAnEvictedSenderThatKeepsSendingStaysRemembered`) must force `expire()` via a new sender after the clock step and before the replay; without `note()` in `seen()` both must fail.
+- [x] **R3.2** `TestTheMemoryExpiresExactlyWhenFreshnessDoes` must use `seen()` and `expire()` on the production path; drop test-only `has()`.
+- [x] **R3.3** `TestNineRedialsThenQuietThenOldest` comment: sealed-time memory, not “twice the skew”.
+- [x] **R3.4** `doc.go`: withheld-newest-datagram attack; with no link open, opens one toward the attacker until DeadAfter.
 
 ## Notes
 - **Independent review (2026-10-15):** failure scenario — sender clocked ahead by the allowed skew plus eight redials during an outage lets a passive tap replay a datagram, open a link to the attacker's address, and get probe replies. `TestNineRedialsThenQuietThenOldest` never skewed the sender's clock.
@@ -55,3 +62,7 @@ Round 1 review (cross-model, 2026-10-15):
 - 2026-10-15 review → has-errors — round 1 review (cross-model): dead-remote hold blocks live dialers; replay memory clock
 - 2026-10-15 has-errors → in-progress — round 2: picking the findings up
 - 2026-10-15 in-progress → review — round 2: the dead-remote hold is gone, a link opens only on the sender's newest counter (a mistaken close reopens at once while the dialer sends); the replay memory and the retired credentials run on the newest sealed send time seen, by the freshness arithmetic, so an NTP wall step moves both together and an evicted sender that keeps sending stays remembered; NoLink counts the drop of a datagram no link could take; docs (doc.go, DESIGN.md) match; every finding has a test failing on f2cf6f3 except S2 (unwritable with stdlib time.Time — see Notes); make lint, make test green on a Mac; lab not run (udp unit tests only)
+- 2026-10-15 docs: acceptance box for late datagrams narrowed to reordered ones (approved by orchestrator)
+- 2026-10-15 review → has-errors — round 3 review (delta): refresh tests, `has()`, doc and comment nits
+- 2026-10-15 has-errors → in-progress — round 3: picking the findings up
+- 2026-10-15 in-progress → review — round 3: refresh tests admit a new sender so `expire()` runs before the replay; `TestTheMemoryExpiresExactlyWhenFreshnessDoes` uses `seen()` and `expire()`; `has()` removed; doc.go withheld-newest attack; make lint, make test green on a Mac; lab not run (udp unit tests only)
