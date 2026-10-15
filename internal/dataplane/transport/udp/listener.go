@@ -8,7 +8,6 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 )
@@ -39,12 +38,11 @@ type Listener struct {
 	scratch []byte             // packets are opened here, so camouflage sees datagrams intact
 }
 
-// retiree is a removed flow's sender history, kept while its datagrams can
-// still be fresh, so taking a secret out of the table and putting it back
-// doesn't reopen it to replays.
+// retiree is a removed flow's sender history, kept while a datagram of it
+// could still be fresh, so taking a secret out of the table and putting it
+// back doesn't reopen it to replays.
 type retiree struct {
 	senders *senders
-	at      time.Time
 }
 
 // flow is the listener's state for one credential. Its senders outlive the
@@ -161,7 +159,7 @@ func (l *Listener) reindex(links []transport.PeerLink) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	for key, r := range l.retired {
-		if now.Sub(r.at) > maxClockSkew {
+		if !sentFresh(r.senders.newest, now) {
 			delete(l.retired, key)
 		}
 	}
@@ -177,7 +175,7 @@ func (l *Listener) reindex(links []transport.PeerLink) {
 			}
 			f.link.shut(reason)
 		}
-		l.retired[key] = retiree{senders: f.senders, at: now}
+		l.retired[key] = retiree{senders: f.senders}
 		delete(l.flows, key)
 	}
 	for key, e := range set.bySecret {
@@ -246,7 +244,7 @@ func (l *Listener) receive(d []byte, from net.Addr) bool {
 		l.counters.staleTimestamp.Add(1)
 		return false
 	}
-	v := f.senders.admit(o.sender, o.counter, now)
+	v := f.senders.admit(o.sender, o.counter, o.sent, now)
 	switch v {
 	case dropReplay:
 		l.counters.replayed.Add(1)
@@ -265,6 +263,15 @@ func (l *Listener) receive(d []byte, from net.Addr) bool {
 		return true
 	}
 	if f.link == nil {
+		// Only the current sender's newest counter opens a link, the same
+		// rule that moves an open one: a reordered or replayed datagram
+		// opens nothing toward the port it came from, however it got
+		// there, while a dialer whose link the app closed keeps sending
+		// newest counters and opens one at once.
+		if v != deliverNewest {
+			l.counters.noLink.Add(1)
+			return false
+		}
 		link := newServerLink(l, f, from)
 		select {
 		case l.accept <- link:
@@ -362,8 +369,8 @@ func (sl *serverLink) WritePacket(p []byte) error {
 	return nil
 }
 
-// Close closes this link only. If the dialer keeps sending, its datagrams
-// open a new link.
+// Close closes this link only. The dialer's next datagram — its newest
+// counter — opens a new link; a reordered older one opens nothing.
 func (sl *serverLink) Close() error {
 	sl.l.mu.Lock()
 	if sl.flow.link == sl {

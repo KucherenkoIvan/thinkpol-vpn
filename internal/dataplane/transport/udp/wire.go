@@ -225,14 +225,23 @@ type opened struct {
 	packets int    // in frames; none is a cover datagram
 }
 
+// sentFresh reports whether a datagram sealed at the Unix second sent
+// could still be fresh at now: the arithmetic opened.fresh uses, shared
+// with the receiver's memory so the two never disagree.
+func sentFresh(sent uint32, now time.Time) bool {
+	d := time.Duration(int32(uint32(now.Unix())-sent)) * time.Second
+	return d <= maxClockSkew && d >= -maxClockSkew
+}
+
+// later reports whether the sealed send time a is after b, both uint32
+// Unix seconds that wrap in 2106.
+func later(a, b uint32) bool { return int32(a-b) > 0 }
+
 // fresh reports whether the datagram was sent within maxClockSkew of now.
 // The send time is uint32 Unix seconds, which wraps in 2106: the distance
 // is taken mod 2^32 and read as signed, so it holds across the wrap (for
 // any skew under 68 years).
-func (o opened) fresh(now time.Time) bool {
-	d := time.Duration(int32(uint32(now.Unix())-o.sent)) * time.Second
-	return d <= maxClockSkew && d >= -maxClockSkew
-}
+func (o opened) fresh(now time.Time) bool { return sentFresh(o.sent, now) }
 
 // open authenticates datagram d and appends its plaintext to dst. dst must
 // not overlap d unless it is exactly d's ciphertext: on failure Open may

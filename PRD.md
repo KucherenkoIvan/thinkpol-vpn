@@ -122,7 +122,7 @@ Milestones as in [Release plan](#release-plan). Priority: **must** for the MVP, 
 | ID | Requirement | Pri | M |
 |---|---|---|---|
 | C1 | No WireGuard (or other known VPN) fingerprint on any link | must | M0 |
-| C2 | `tls` transport: browser-grade TLS fingerprint; unauthenticated connections forwarded to a real site | must | M2 |
+| C2 | `reality` transport: browser-grade TLS fingerprint (REALITY's handshake); unauthenticated connections forwarded to a real site | must | M2 |
 | C3 | Transport chosen per link, changeable from the panel without reinstalling anything | must | M2 |
 | C4 | Censor lab: Compose environment with switchable censor modules (IP/SNI blocklists, VPN fingerprints, fully-encrypted heuristics, active prober, JA3/JA4, whitelist mode, throttling) and a generated pass/fail matrix | must | M2–M3 |
 | C5 | `ws` transport usable behind a CDN | should | — |
@@ -192,7 +192,7 @@ Milestones as in [Release plan](#release-plan). Priority: **must** for the MVP, 
 |---|---|---|
 | M0 | Overlay | Two Linux nodes in the lab, hand-made signed map in the need-to-know format, `udp` transport, relay paths, device ↔ device ping. The server agent already runs each space as its own isolated worker |
 | M1 | Working core | Per-node ingress/egress settings, an egress node, rules with GeoIP, DNS, IPv6 handling, macOS and Linux clients via CLI. macOS leak guarantees land with the macOS data plane and IPv6 guard (TP-019, TP-078). Daily use starts once a disguised transport passes the censor lab (M2) |
-| M2 | Disguise | `tls` transport with probe fallback, censor lab v1; kill switch and connect-on-boot on macOS/Linux (TP-048, TP-046) |
+| M2 | Disguise | `reality` transport with probe fallback, censor lab v1; kill switch and connect-on-boot on macOS/Linux (TP-048, TP-046) |
 | M3 | Chains | Multi-hop chains, hop groups with failover, lab whitelist mode |
 | M4 | Control plane | Controller on go-kernel: spaces, members, invites, SSH provisioning, map gossip, hosting grants and shared nodes, node safety, telemetry, admin panel with canvas and dashboards |
 | M5 | Desktop client | Tray app on macOS, Linux, Windows; invite links; space switcher (kill-switch and connect-on-boot toggles in the tray; Windows enforcement) |
@@ -202,7 +202,7 @@ Milestones as in [Release plan](#release-plan). Priority: **must** for the MVP, 
 
 ## Success metrics
 
-1. **Lab:** every MVP transport has a known result against every censor module; `tls` passes everything except whitelist mode, and chains pass whitelist mode.
+1. **Lab:** every MVP transport has a known result against every censor module; `reality` passes everything except whitelist mode, and chains pass whitelist mode.
 2. **Daily use:** once a disguised transport passes the censor lab (M2), the author replaces VLESS + Reality on macOS for a month without falling back.
 3. **Hand-off:** one family member or friend installs, joins and uses it without help.
 4. **Sharing:** a second space runs through the author's entry node, and the lab confirms nothing crosses between the two.
@@ -228,6 +228,7 @@ Milestones as in [Release plan](#release-plan). Priority: **must** for the MVP, 
 - **Signing key recovery.** An offline recovery key (A11), not re-creating the space or keeping several signing keys.
 - **Traffic shape.** Delegated to transports (C6); there's no better layer for it.
 - **Reality.** The owner wants REALITY support: the `reality`-style transport is pulled forward as a VLESS/Reality-compatible transport, so existing VLESS/Reality servers and tooling can interoperate; researched first (TP-064). A "bridge" node type (a VLESS ingress routed into the overlay) was considered and set aside as too complex for now.
+- **REALITY is the M2 disguised transport (2026-10-15).** After the TP-064 findings, thinkpol implements REALITY's handshake (a uTLS browser ClientHello with the session-id seal; failed auth is spliced to a real target site) for client → entry links (TP-087). Our own `tls` transport (TP-028) moves to after the MVP: adding REALITY doesn't block a TLS/TCP transport later, and it saves time to the MVP. Reuse over rewrite where licences allow: uTLS (BSD-3) is imported; XTLS/REALITY and Xray-core (MPL-2.0) may be used as unmodified Go module dependencies, but their files are never copied into this tree under MIT; TP-087 decides between depending on XTLS/REALITY's server and reimplementing it. Stock VLESS clients and servers are not supported by this transport: thinkpol is a WireGuard mesh, VLESS is a proxy protocol.
 - **Crash posture.** Fail-closed after an agent crash is the default for the "everything" and "all but domestic" presets, opt-out (D4): a crash is the likeliest mass-exposure event and the members affected can least act on it.
 - **Invites are not membership.** A redeemed invite creates a pending device the admin must approve (A2), because invites travel through surveilled channels.
 - **What a node owner sees.** A shared entry sees guest members' IPs and traffic volume; under a whitelist it must be their first hop, so nothing can hide that. Accepted between friends and family, and disclosed: the tray labels such entries `owned by <space>` (D10).
