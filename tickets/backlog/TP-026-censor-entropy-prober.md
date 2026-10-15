@@ -5,7 +5,7 @@ milestone: M2
 area: lab/censor
 repo: thinkpol-vpn
 size: M
-depends_on: [TP-024, TP-064]
+depends_on: [TP-024, TP-064, TP-089]
 refs: [C4]
 owner: ""
 branch: ""
@@ -29,3 +29,4 @@ The lab catches traffic that looks like random bytes and servers that don't beha
 - 2026-10-10 created in backlog
 - 2026-10-13 docs (TP-062): prober covers the server-side fingerprint and the upstream-connection tell
 - 2026-10-15 docs (backlog grooming): owns server JA3S/JA4S computation (TP-032 keeps client fingerprints and whitelist)
+- 2026-10-15 depends_on TP-089 (split from TP-024 review)

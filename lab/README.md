@@ -4,7 +4,7 @@ Docker containers on separate networks, driven by Go tests: the censor lab of [D
 
 ```sh
 make lab-test     # lab tests + every package's tests inside a lab node, then tear down
-make lab          # the same for now; TP-024 turns it into the censor matrix
+make lab          # the same, ending in the censor matrix: lab/RESULTS.md
 make lab-gotest PKG=./internal/dataplane/netcfg/... RUN=TestRoutes   # one package, in a node (COUNT=n repeats)
 make lab-up       # the standard topology for poking around (prints addresses)
 make lab-down     # remove every lab this checkout started
@@ -16,7 +16,7 @@ make lab-perf     # performance gates, alone on the host (see "Performance gates
 ## How it is built
 
 - **One image**, `lab/Dockerfile`: Debian slim, pinned by digest, with iproute2, nftables, iputils, tcpdump, curl, wireguard-tools (`wg`), openssl (`s_server` as a TLS target), nginx-light, netcat, and dbus-daemon with systemd-resolved (installed, never started by the image: a test that needs a device resolving through resolved starts both). It is tagged with a hash of the Dockerfile and the platform, so checkouts share it and a changed Dockerfile builds a new tag (the first build takes about a minute).
-- **No Go inside.** `thinkpol` (and `labdns`, a stand-in for resolvers out in the world that answers every name with fixed addresses and prints who asked what) is cross-compiled on the host (`GOOS=linux CGO_ENABLED=0`, `GOARCH` of the Docker server, override with `THINKPOL_LAB_GOARCH`) into `lab/bin`, which every node mounts read-only at `/opt/thinkpol/bin` (on `PATH`). The checkout is mounted read-only at `/src` for test data.
+- **No Go inside.** `thinkpol`, and the lab's own tools (`labdns`, a stand-in for resolvers out in the world that answers every name with fixed addresses and prints who asked what; `censord`, the censor of [DESIGN.md](../DESIGN.md#censor-lab), run in the router), are cross-compiled on the host (`GOOS=linux CGO_ENABLED=0`, `GOARCH` of the Docker server, override with `THINKPOL_LAB_GOARCH`) into `lab/bin`, which every node mounts read-only at `/opt/thinkpol/bin` (on `PATH`). The checkout is mounted read-only at `/src` for test data.
 - **Every node** runs as root with `NET_ADMIN`, `NET_RAW` and `SYS_ADMIN`, `/dev/net/tun`, and AppArmor off (its Docker profile blocks the mounts network namespaces need). That covers namespaces, TUN, nftables (queue rules included) and network sysctls: `/proc/sys/net` is writable, the rest of `/proc/sys` is not. Nodes are **not privileged**; `NodeSpec.Privileged` exists for a need these can't meet, with the reason written next to it. Each node has `THINKPOL_LAB=1` and `LAB_NODE=<name>` in its environment and runs `sleep infinity` under an init unless the topology says otherwise.
 - **The lab is sealed.** Before a node's own `Command` runs (it waits for a marker the harness writes last), the harness, in every node: deletes Docker's default routes (a node with a `Gateway` routes IPv4 and IPv6 through it instead); cuts the node off from Docker's bridge, the Docker VM's end of every lab network and the only way out: its addresses are blackholed and an nftables `netdev` table per interface (`tplab_<interface>`) drops every frame to or from its MAC, which also covers its IPv6 link-local address (published ports of other projects listen in the VM); points `/etc/resolv.conf` at nothing, so Docker's resolver never forwards a lookup out (lab names resolve through `/etc/hosts`, which lists every node); and the networks don't masquerade. A lab node can reach other lab nodes and nothing else, which `TestSmoke/hermetic` checks. Tests must not delete the `tplab_*` tables (no `nft flush ruleset` in a node: flush your own tables).
 - **Topologies are declared in Go** and rendered to a Compose file under `lab/.run/<project>/` (ignored by git). There is no shared `compose.yaml` to edit: a test that needs another node declares it.
@@ -27,7 +27,7 @@ make lab-perf     # performance gates, alone on the host (see "Performance gates
 device-a, device-b ── [devices] ── router ── [servers] ── server-1, server-2, internet
 ```
 
-`lab.Standard()`: networks `devices` and `servers` (dual-stack), the `router` on both with forwarding on, devices and servers routing through it, `internet` (the target for egress and "direct" traffic) on the servers side. Servers have forwarding on too (relays, exits). Everything between the two sides crosses the router: that is where packets are captured, and where the censor goes (TP-024).
+`lab.Standard()`: networks `devices` and `servers` (dual-stack), the `router` on both with forwarding on, devices and servers routing through it, `internet` (the target for egress and "direct" traffic) on the servers side. Servers have forwarding on too (relays, exits). Everything between the two sides crosses the router: that is where packets are captured, and where the censor sits.
 
 ## Writing a lab test
 
