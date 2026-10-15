@@ -72,7 +72,7 @@ Two planes. The **data plane** moves packets on every node; the **control plane*
 
 Stream transports carry TCP inside TCP and degrade under loss; datagram transports are the first thing throttled under whitelists. Hence **transports are chosen per link**, not per network.
 
-**The map says, the engine converts, the transport decides.** Each transport's settings (listener, dial side, inbound side) are its own protobuf messages in `proto/thinkpol/transport/v1/`: the controller encodes them, the transport's adapter decodes them, and the map and everything between carry them as opaque bytes. The conversion from the map to the transport port's types lives in the data-plane engine (`internal/dataplane`), not in `netmap` or the adapters; it checks each entry with the transport before using it. Endpoints in the map are IP literals: the controller resolves names, nodes never resolve them at dial time. Transports may rely on clocks: nodes' clocks must agree within five minutes (`udp` drops datagrams sealed further from its own clock).
+**The map says, the engine converts, the transport decides.** Each transport's settings (listener, dial side, inbound side) are its own protobuf messages in `proto/thinkpol/transport/v1/`: the controller encodes them, the transport's adapter decodes them, and the map and everything between carry them as opaque bytes. The conversion from the map to the transport port's types lives in the data-plane engine (`internal/dataplane`), not in `netmap` or the adapters; it checks each entry with the transport before using it. Endpoints in the map are IP literals: the controller resolves names, nodes never resolve them at dial time. Transports may rely on clocks: nodes' clocks must agree within five minutes (`udp` drops datagrams sealed further from its own clock). What a node's transports dropped that way, within the last five minutes, shows in its health as `clock_skew`: a peer's clock disagrees with its own beyond the margin, or datagrams are being replayed from older than that — the drop is the same either way, and nothing says which peer.
 
 **Transports own traffic shape.** WireGuard's fixed packet sizes and its rhythm (rekey every 2 minutes, keepalives) would show through any wrapper, and only the transport knows what traffic it's imitating. So padding, batching and timing are part of the transport contract; the layers above never pad. The contract (`transport.Shaping`, encoded as `thinkpol.transport.v1.Shaping`):
 
@@ -199,6 +199,8 @@ Telemetry records are aggregates per link and per device id (rates, byte counts,
 Later: **ephemeral nodes** keep nothing on disk but the binary. After a reboot they are blank, and the node owner's controller re-provisions them over SSH.
 
 ### Control plane (the controller, on go-kernel)
+
+Until a space has its controller (or instead of one, by choice), it runs hand-operated: [docs/runbook-pre-controller.md](docs/runbook-pre-controller.md) is the operating model of that period — maps built with the dev tooling (`dev map build`, `dev map rotate`) and copied to every node over SSH, restarts after reboots, binary updates, and chrony for the clock agreement the transports rely on.
 
 A DDD service: CLI plus `thinkpol admin serve` for the web panel, reachable **only through the overlay**. That is a network control, not access control: members' devices are on the overlay by design, and the controller holds the space's signing key. How the panel is organised, authenticated and authorised is open (see Open questions).
 
