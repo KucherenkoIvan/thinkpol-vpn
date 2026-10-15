@@ -28,7 +28,7 @@ Questions to answer:
 ## Acceptance
 - [x] a findings note in this ticket's Notes answers each question above, with the recommendation and the follow-up tickets it proposes
 - [ ] where a question needs it, a throwaway prototype in the lab (not merged into `internal/`) shows an interoperating handshake or says why it can't
-- [ ] DESIGN.md's transports table reflects the result
+- [x] DESIGN.md's transports table reflects the result
 
 ## Notes
 - Related: TP-028 (`tls`, whose server-side tells this addresses), TP-026 and TP-032 (the prober that measures them), PRD "Decisions" (Reality).
@@ -44,3 +44,4 @@ Questions to answer:
 ## Log
 - 2026-10-13 created in backlog (TP-062)
 - 2026-10-15 docs (board op): findings note added to Notes, findings box ticked; prototype and DESIGN transports table boxes left open
+- 2026-10-15 docs (board op): DESIGN transports table box ticked; prototype box left open

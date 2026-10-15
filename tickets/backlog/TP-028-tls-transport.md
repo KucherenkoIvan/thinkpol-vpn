@@ -49,6 +49,7 @@ The workhorse transport: looks like a browser talking to a website, and is a web
   - **The camouflage target is per node and security-relevant:** no fleet-wide default; document it with the setting (TP-038 chooses it).
   - **Server-side tells:** the worker's ServerHello (JA3S/JA4S, extension order, ALPN) won't match the camouflage site's, and each probe makes the entry open an upstream connection to the camouflage target; the lab measures both (TP-026, TP-032) and the matrix reports them honestly. The `reality`-style transport (TP-064) is what removes the first.
 - Moved after the MVP (decision 2026-10-15): `reality` (TP-087) is M2's disguised transport; `tls` stays for node-to-node links later.
+- Takes over TP-063's `tls` part (decision 2026-10-15): the gatekeeper's ClientHello peek and token check, with the asymmetric verifiers, land with this ticket.
 
 ## Log
 - 2026-10-10 created in blocked
@@ -58,3 +59,4 @@ The workhorse transport: looks like a browser talking to a website, and is a web
 - 2026-10-15 docs (backlog grooming): Scope and Notes aligned with TP-064 and 2026-10-15 decisions (Reality evaluation before build)
 - 2026-10-15 docs (backlog grooming, review fixes): dropped stale Scope-replace sentence in Notes
 - 2026-10-15 docs (board op): milestone M2 → later; Notes line on the move after the MVP
+- 2026-10-15 docs (board op): Notes line, takes over TP-063's `tls` gatekeeper part

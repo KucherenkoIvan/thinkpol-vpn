@@ -202,7 +202,7 @@ Milestones as in [Release plan](#release-plan). Priority: **must** for the MVP, 
 
 ## Success metrics
 
-1. **Lab:** every MVP transport has a known result against every censor module; `tls` passes everything except whitelist mode, and chains pass whitelist mode.
+1. **Lab:** every MVP transport has a known result against every censor module; `reality` passes everything except whitelist mode, and chains pass whitelist mode.
 2. **Daily use:** once a disguised transport passes the censor lab (M2), the author replaces VLESS + Reality on macOS for a month without falling back.
 3. **Hand-off:** one family member or friend installs, joins and uses it without help.
 4. **Sharing:** a second space runs through the author's entry node, and the lab confirms nothing crosses between the two.
