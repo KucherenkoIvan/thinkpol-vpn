@@ -53,6 +53,10 @@ func prepare(ctx context.Context, root string) (image, error) {
 	if _, err := goBuild(ctx, root, t, filepath.Join(root, "lab", "bin", "labdns"), "build", "-trimpath", "./lab/labdns"); err != nil {
 		return image{}, err
 	}
+	// censord: the lab's censor, run in the router.
+	if _, err := goBuild(ctx, root, t, filepath.Join(root, "lab", "bin", "censord"), "build", "-trimpath", "./lab/censord"); err != nil {
+		return image{}, err
+	}
 	prepared[root] = img
 	return img, nil
 }
