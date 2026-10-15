@@ -146,7 +146,7 @@ Milestones as in [Release plan](#release-plan). Priority: **must** for the MVP, 
 | D1 | Runs on macOS, Linux, Windows | must | M1 (macOS, Linux), M5 (Windows) |
 | D2 | Privileged background service + unprivileged tray app; the tray app talks to the service locally | must | M5 |
 | D3 | Tray: connect/disconnect, status (chain, entry in use, health), space switcher, rule preset switcher | must | M5 |
-| D4 | Kill switch toggle (default off): when on and the tunnel is down, nothing leaves except traffic to entry nodes; allow-LAN option; temporary pause. After an agent crash the device **fails closed by default** under the "everything" and "all but domestic" presets (opt-out); a deliberate disconnect follows the toggle | must | M5 |
+| D4 | Kill switch toggle (default off): when on and the tunnel is down, nothing leaves except traffic to entry nodes; allow-LAN option; temporary pause. After an agent crash the device **fails closed by default** under the "everything" and "all but domestic" presets (opt-out); a deliberate disconnect follows the toggle | must | M2 |
 | D5 | Connect-on-boot toggle (default off) | must | M5 |
 | D6 | No IPv6 leaks: IPv6 goes through the tunnel or is blocked while connected | must | M1 |
 | D7 | Join a space from an invite link or QR code without a terminal; the device stays pending until the admin approves it | must | M5 |
@@ -191,11 +191,11 @@ Milestones as in [Release plan](#release-plan). Priority: **must** for the MVP, 
 | | Milestone | Ships |
 |---|---|---|
 | M0 | Overlay | Two Linux nodes in the lab, hand-made signed map in the need-to-know format, `udp` transport, relay paths, device ↔ device ping. The server agent already runs each space as its own isolated worker |
-| M1 | Working core | Per-node ingress/egress settings, an egress node, rules with GeoIP, DNS, IPv6 handling, macOS and Linux clients via CLI. The leak guarantees are Linux-only until the macOS data plane and IPv6 handling land (TP-019, TP-021). Daily use starts once a disguised transport passes the censor lab (M2) |
+| M1 | Working core | Per-node ingress/egress settings, an egress node, rules with GeoIP, DNS, IPv6 handling, macOS and Linux clients via CLI. macOS leak guarantees land with the macOS data plane and IPv6 guard (TP-019, TP-078). Daily use starts once a disguised transport passes the censor lab (M2) |
 | M2 | Disguise | `tls` transport with probe fallback, censor lab v1 |
 | M3 | Chains | Multi-hop chains, hop groups with failover, lab whitelist mode |
 | M4 | Control plane | Controller on go-kernel: spaces, members, invites, SSH provisioning, map gossip, hosting grants and shared nodes, node safety, telemetry, admin panel with canvas and dashboards |
-| M5 | Desktop client | Tray app on macOS, Linux, Windows; kill switch; connect-on-boot; invite links; space switcher |
+| M5 | Desktop client | Tray app on macOS, Linux, Windows; invite links; space switcher (kill-switch and connect-on-boot toggles in the tray; enforcement on macOS and Linux is M2) |
 | — | **MVP = M0–M5** | |
 | next | Android | Client on Android (data plane already buildable for mobile) |
 | later | | Domain rules in userspace mode, direct paths, traffic shaping, `ws` behind a CDN, ephemeral nodes |

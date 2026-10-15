@@ -17,7 +17,8 @@ The lab catches traffic that looks like random bytes and servers that don't beha
 ## Scope
 - The exemption rules from Wu et al., "How the Great Firewall of China Detects and Blocks Fully Encrypted Traffic" (USENIX Security 2023), on the first data packet of a flow: average set bits per byte, printable prefix, printable fraction, printable runs, TLS/HTTP fingerprints. Apply them to UDP flows too.
 - Active prober: on suspected flows, connect to the server with replayed and random payloads; flag servers that answer unlike a normal web server (timeouts, resets, closing after N bytes).
-- The prober also fingerprints the **response side**: the server hello's JA3S/JA4S, extension order and ALPN, compared with the camouflage site's own, and flags the **upstream tell**, an entry that opens a connection to the camouflage target on every probe (independent design review, 2026-10-13).
+- **JA3S/JA4S** for the server hello (extension order and ALPN included), compared with the camouflage site's fingerprint; the lab matrix uses these results honestly.
+- The prober also flags the **upstream tell**, an entry that opens a connection to the camouflage target on every probe (independent design review, 2026-10-13).
 
 ## Acceptance
 - [ ] a Shadowsocks-like random stream is flagged; HTTPS is not
@@ -27,3 +28,4 @@ The lab catches traffic that looks like random bytes and servers that don't beha
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-13 docs (TP-062): prober covers the server-side fingerprint and the upstream-connection tell
+- 2026-10-15 docs (backlog grooming): owns server JA3S/JA4S computation (TP-032 keeps client fingerprints and whitelist)

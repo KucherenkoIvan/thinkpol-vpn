@@ -18,13 +18,14 @@ The lab reproduces whitelist mode, TLS fingerprint filtering and volume throttli
 - Whitelist mode: only allow-listed destination IPs and SNIs pass.
 - JA3/JA4 computation with an allow-list of common browser fingerprints.
 - Volume throttling: flows to non-domestic addresses slowed or frozen after N kilobytes.
-- JA3S/JA4S computation for the response side, with the camouflage site's fingerprint as the reference, so the prober (TP-026) and the matrix can compare a node's server hello with the real site's (independent design review, 2026-10-13).
+- Server hello fingerprints (JA3S/JA4S): TP-026; this module consumes them for whitelist mode and the matrix.
 
 ## Acceptance
 - [ ] Go's default `crypto/tls` client is blocked by the JA3/JA4 allow-list while the uTLS Chrome fingerprint passes
 - [ ] whitelist mode blocks everything not listed
-- [ ] the lab computes JA3S/JA4S of a server hello and tells Go's default `crypto/tls` server from the camouflage site's
+- [ ] with TP-026's server fingerprints, the matrix compares a node's server hello to the camouflage site's
 
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-13 docs (TP-062): JA3S/JA4S for the response side
+- 2026-10-15 docs (backlog grooming): server JA3S/JA4S owned by TP-026

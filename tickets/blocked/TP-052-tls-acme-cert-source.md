@@ -21,7 +21,7 @@ A `tls` node can serve a real, publicly trusted certificate for an ordinary-look
 
 ## Out of scope
 - Registering domains or managing DNS records automatically.
-- The `reality`-style transport (no certificate of our own): a separate later transport.
+- The `reality`-style transport (no certificate of our own): evaluated in TP-064; not this ticket.
 
 ## Acceptance
 - [ ] a lab node gets and renews a certificate through the ACME adapter (against a test ACME server such as Pebble in the lab)
@@ -35,3 +35,4 @@ The author has no domain. Needs a domain (or several, for rotation) and a regist
 
 ## Log
 - 2026-10-10 created in blocked
+- 2026-10-15 docs (backlog grooming): Out of scope aligned with TP-064 (Reality evaluation)
