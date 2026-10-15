@@ -23,10 +23,10 @@ Replay filtering and sender-id memory use consistent clocks so a skewed sender c
 - Supervisor-restart replay window (TP-069).
 
 ## Acceptance
-- [ ] evicted sender ids stay refused long enough relative to sender-clock acceptance
-- [ ] `TestNineRedialsThenQuietThenOldest` extended with the sender's clock skewed ahead by the allowed skew (passive tap replay cannot open a link and get probe replies)
-- [ ] a late datagram from a dead port does not open a new link toward that address (`udp/listener.go:264-266`)
-- [ ] a replay does not refresh a slot's LRU stamp before the replay check (`udp/replay.go:172`)
+- [x] evicted sender ids stay refused long enough relative to sender-clock acceptance
+- [x] `TestNineRedialsThenQuietThenOldest` extended with the sender's clock skewed ahead by the allowed skew (passive tap replay cannot open a link and get probe replies)
+- [x] a late datagram from a dead port does not open a new link toward that address (`udp/listener.go:264-266`)
+- [x] a replay does not refresh a slot's LRU stamp before the replay check (`udp/replay.go:172`)
 
 ## Notes
 - **Independent review (2026-10-15):** failure scenario — sender clocked ahead by the allowed skew plus eight redials during an outage lets a passive tap replay a datagram, open a link to the attacker's address, and get probe replies. `TestNineRedialsThenQuietThenOldest` never skewed the sender's clock.
@@ -36,3 +36,5 @@ Replay filtering and sender-id memory use consistent clocks so a skewed sender c
 - 2026-10-15 docs: board fix-ups (log order, refs, parked notes)
 - 2026-10-15 docs (backlog grooming): acceptance for listener and LRU-stamp bugs
 - 2026-10-15 backlog → in-progress — owner: glm-tp070
+- 2026-10-15 docs: DESIGN.md's bounded-state bullet and doc.go's receiver rules now say ten minutes (twice the skew), not five — the docs were wrong about the bound, fixed in this branch
+- 2026-10-15 in-progress → review — evicted and retired sender ids remembered for 2 × maxClockSkew; nine-redial replay test run with the sender's clock at the full skew; a link closed by the app remembers its remote and refuses to reopen toward it; replay no longer refreshes the LRU stamp; make lint, make test green on a Mac; lab not run (udp unit tests only)
