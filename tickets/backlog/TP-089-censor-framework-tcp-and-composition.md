@@ -27,13 +27,19 @@ The censor framework can inspect multi-segment TCP handshakes, link reverse flow
 - Topology for TP-026's upstream tell: the entry→target connection does not cross the router today.
 
 ## Out of scope
-- What TP-024 round 2 delivers: RST toward the client, active-module channels, matrix TCP probe, fragment policy at the queue.
+- What TP-024 delivers (through its round 3): RSTs toward the client only; a per-module channel of new flows that never blocks the queue; IP fragments reassembled before the queue for both families, with any fragment that escapes reassembly dropped; the matrix's `plain-tcp (control)` row and both-family probes; a verdict log without fsync.
 
 ## Acceptance
 - [ ] a two-segment TLS ClientHello is visible to passive modules as one prefix on the flow
 - [ ] reverse flows link for JA3S computation
+- [ ] a flow's payload is retained (bounded) for an active module to replay, and a lab test replays a captured ClientHello from it
+- [ ] one module can be passive and active at once, or a passive module tags a suspect flow that an active module then receives
+- [ ] composition: a module's pinned Accept no longer stops a later module (or a flagging active module) from blocking the flow, with a unit test of the chosen rule (review S9)
+- [ ] a Reset verdict sends RSTs to both ends, and a lab test sees one at device-a and one at server-1
+- [ ] the topology for TP-026's upstream tell is decided and built: the entry → camouflage-target connection crosses a censor point, and a lab test sees it there
 - [ ] throttling uses mark/tc or a policer, not NFQUEUE hold
 - [ ] verdict log is bounded per flow for long runs
 
 ## Log
 - 2026-10-15 created in backlog (split from TP-024 review)
+- 2026-10-15 docs (TP-024 round 3): acceptance for payload retention, passive-plus-active modules, composition, RSTs to both ends and the upstream-tell topology; out of scope corrected to what TP-024 delivers
