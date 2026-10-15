@@ -51,3 +51,4 @@ Round 1 review (cross-model, 2026-10-15):
 - 2026-10-15 docs: DESIGN.md's bounded-state bullet and doc.go's receiver rules now say ten minutes (twice the skew), not five — the docs were wrong about the bound, fixed in this branch
 - 2026-10-15 in-progress → review — evicted and retired sender ids remembered for 2 × maxClockSkew; nine-redial replay test run with the sender's clock at the full skew; a link closed by the app remembers its remote and refuses to reopen toward it; replay no longer refreshes the LRU stamp; make lint, make test green on a Mac; lab not run (udp unit tests only)
 - 2026-10-15 review → has-errors — round 1 review (cross-model): dead-remote hold blocks live dialers; replay memory clock
+- 2026-10-15 has-errors → in-progress — round 2: picking the findings up
