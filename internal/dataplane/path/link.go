@@ -123,14 +123,8 @@ type link struct {
 	dialed    bool
 	transport string
 	endpoint  int
-	// staleClock is the transport's datagrams dropped as sealed outside
-	// its clock margin (nil without a StaleClockSource), folded into the
-	// node's counts by the read loop; staleClockFolded is how much of it
-	// is already there.
-	staleClock       func() uint64
-	staleClockFolded atomic.Uint64
-	queue            chan *[]byte // packets
-	control          chan *[]byte // probes and replies, sent first
+	queue     chan *[]byte // packets
+	control   chan *[]byte // probes and replies, sent first
 
 	done      chan struct{}
 	closeOnce sync.Once
@@ -168,9 +162,6 @@ func (n *Node) addLink(id NodeID, tl transport.Link, dialed bool, transportName 
 		done:    make(chan struct{}), created: now,
 		probes:    make(map[uint64]int64),
 		localPort: portOf(tl.LocalAddr()),
-	}
-	if sc, ok := tl.(transport.StaleClockSource); ok {
-		l.staleClock = sc.StaleClock
 	}
 	l.remote = addrString(tl.RemoteAddr())
 	l.remoteID = remoteTag(l.remote)
@@ -248,7 +239,6 @@ func (l *link) closed() bool {
 // was (a dial that went unanswered: its dial loop logs that).
 func (l *link) close(why string, err error) {
 	l.closeOnce.Do(func() {
-		l.foldStaleClock()
 		close(l.done)
 		_ = l.tl.Close()
 		l.nb.remove(l)
@@ -429,7 +419,6 @@ func (l *link) readLoop() {
 			continue
 		}
 		failures = 0
-		l.foldStaleClock()
 		if n == 0 {
 			putBuf(b)
 			continue
@@ -442,28 +431,11 @@ func (l *link) readLoop() {
 	}
 }
 
-// foldStaleClock reports the link transport's datagrams dropped as sealed
-// outside its clock margin to the node's counts: evidence that a peer's
-// clock disagrees with the node's beyond the margin (the health says
-// clock_skew). The transport's count is cumulative, so only the growth
-// since the last read is new.
-func (l *link) foldStaleClock() {
-	if l.staleClock == nil {
-		return
-	}
-	if cur := l.staleClock(); cur > l.staleClockFolded.Load() {
-		prev := l.staleClockFolded.Swap(cur)
-		l.node.counters.staleClock.Add(cur - prev)
-		l.node.counters.staleClockAt.Store(l.node.now())
-	}
-}
-
 // tick closes the link once it has gone DeadAfter without proof that both
 // directions work, and probes it when its last proof is older than
 // ProbeInterval. Both ends probe: a link that only delivers one way is down
 // for both.
 func (l *link) tick(now int64) {
-	l.foldStaleClock()
 	o := l.node.opts
 	if now-max(l.lastProof.Load(), l.created) >= int64(o.DeadAfter) {
 		l.close("no answer to its probes within "+o.DeadAfter.String(), nil)

@@ -591,11 +591,6 @@ type Counters struct {
 	TooLarge    uint64
 	WriteFailed uint64 // a link's transport failed to write a packet for another reason
 	ReadFailed  uint64 // a link's transport failed a read (a packet lost, the link kept)
-	// StaleClock is what the links' transports dropped as sealed outside
-	// their clock margin (udp: five minutes): a peer's clock disagrees
-	// with the node's beyond the margin. When the last was seen is
-	// StaleClockSeen.
-	StaleClock uint64
 }
 
 type counters struct {
@@ -603,39 +598,18 @@ type counters struct {
 	noRoute, spoofed, hopLimit, noPath, unknownPeer atomic.Uint64
 	queueFull, malformed, otherSpace                atomic.Uint64
 	tooLarge, writeFailed, readFailed               atomic.Uint64
-	// staleClock is what the links' transports dropped as sealed outside
-	// their clock margin; staleClockAt is when the last was seen, on the
-	// node's clock (0: never).
-	staleClock   atomic.Uint64
-	staleClockAt atomic.Int64
 }
 
 // Counters returns the node's counters.
 func (n *Node) Counters() Counters {
-	n.nmu.RLock()
-	for _, nb := range n.neighbors {
-		for _, l := range nb.all() {
-			l.foldStaleClock()
-		}
-	}
-	n.nmu.RUnlock()
 	c := &n.counters
 	return Counters{
 		Sent: c.sent.Load(), Delivered: c.delivered.Load(), Forwarded: c.forwarded.Load(),
 		NoRoute: c.noRoute.Load(), Spoofed: c.spoofed.Load(), HopLimit: c.hopLimit.Load(), NoPath: c.noPath.Load(),
 		UnknownPeer: c.unknownPeer.Load(), QueueFull: c.queueFull.Load(), Malformed: c.malformed.Load(),
 		OtherSpace: c.otherSpace.Load(), TooLarge: c.tooLarge.Load(), WriteFailed: c.writeFailed.Load(),
-		ReadFailed: c.readFailed.Load(), StaleClock: c.staleClock.Load(),
+		ReadFailed: c.readFailed.Load(),
 	}
-}
-
-// StaleClockSeen is when the node last saw a link's transport drop a
-// datagram as sealed outside its clock margin; zero if never.
-func (n *Node) StaleClockSeen() time.Time {
-	if t := n.counters.staleClockAt.Load(); t != 0 {
-		return n.wall(t)
-	}
-	return time.Time{}
 }
 
 // NeighborStatus is the state of the links to one adjacent node. Status

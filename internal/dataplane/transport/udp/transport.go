@@ -166,19 +166,6 @@ type Counters struct {
 
 type counters struct {
 	delivered, cover, unauthenticated, staleTimestamp, staleSender, replayed, noLink atomic.Uint64
-	staleClockAt                                                                     atomic.Pointer[time.Time]
-}
-
-func (c *counters) noteStaleClock(at time.Time) {
-	c.staleTimestamp.Add(1)
-	c.staleClockAt.Store(&at)
-}
-
-func (c *counters) staleClockAtTime() time.Time {
-	if p := c.staleClockAt.Load(); p != nil {
-		return *p
-	}
-	return time.Time{}
 }
 
 // received counts an authenticated datagram that passed every check.

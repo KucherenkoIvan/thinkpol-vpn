@@ -132,7 +132,7 @@ func TestRestartThenReplay(t *testing.T) {
 	for _, d := range old {
 		f.tap.inject(d)
 	}
-	waitFor(t, "the replays counted", func() bool { return f.listener.Counters().Replayed >= uint64(len(old)) })
+	waitFor(t, "the replays counted", func() bool { return f.listener.Counters().StaleTimestamp >= 2*uint64(len(old)) })
 	if got := server.RemoteAddr().String(); got != addr {
 		t.Fatalf("a replay moved the link from %s to %s", addr, got)
 	}

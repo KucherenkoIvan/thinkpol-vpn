@@ -178,22 +178,3 @@ func OrDrop(c Camouflage) Camouflage {
 	}
 	return c
 }
-
-// StaleClockSource is implemented by a Link, Listener or Router of a
-// transport that authenticates freshness against its own clock (DESIGN:
-// nodes' clocks must agree within five minutes). StaleClock returns how
-// many datagrams it dropped as sealed outside its clock margin since it
-// opened: a peer's clock disagrees with its own beyond the margin, or
-// datagrams were replayed from older than that. The data plane turns it
-// into the clock-skew health problem.
-type StaleClockSource interface {
-	StaleClock() uint64
-}
-
-// StaleClockAtSource is a StaleClockSource that records when the last
-// stale-clock drop happened on its own clock (not when something else read
-// the count).
-type StaleClockAtSource interface {
-	StaleClockSource
-	StaleClockAt() time.Time
-}

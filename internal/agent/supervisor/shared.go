@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/ipc"
-	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/clockburst"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 )
 
@@ -142,13 +141,6 @@ type shared struct {
 	// Read on every datagram, so swapped as a whole.
 	routes atomic.Pointer[map[transport.SpaceID]*route]
 	byID   atomic.Pointer[map[uint32]*publicListener]
-
-	// staleClock counts the routers' datagrams dropped as sealed outside
-	// their clock margin (a StaleClock verdict), across the spaces; seen
-	// is when the last was seen (zero: never).
-	staleClockCount atomic.Uint64
-	staleClockSeen  atomic.Pointer[time.Time]
-	staleClockBurst *clockburst.Window
 }
 
 func newShared(reg *transport.Registry, fair FairShare, log *slog.Logger, now func() time.Time) *shared {
@@ -159,7 +151,6 @@ func newShared(reg *transport.Registry, fair FairShare, log *slog.Logger, now fu
 	}
 	s.routes.Store(&map[transport.SpaceID]*route{})
 	s.byID.Store(&map[uint32]*publicListener{})
-	s.staleClockBurst = clockburst.NewWindow(5 * time.Minute)
 	return s
 }
 
@@ -509,13 +500,7 @@ func (s *shared) serveDatagrams(pl *publicListener) {
 			pl.unauthenticated.Add(1)
 		case r == nil:
 			pl.noSpace.Add(1)
-		case verdict == transport.StaleClock:
-			r.counters.stale.Add(1)
-			s.staleClockCount.Add(1)
-			t := s.now()
-			s.staleClockSeen.Store(&t)
-			s.staleClockBurst.Add(1, t)
-		case verdict == transport.StaleSender:
+		case verdict == transport.Stale:
 			r.counters.stale.Add(1)
 		case verdict == transport.Replayed:
 			r.counters.replayed.Add(1)

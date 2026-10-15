@@ -8,7 +8,6 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 )
@@ -97,12 +96,6 @@ func (l *Listener) Addr() net.Addr { return l.pc.LocalAddr() }
 
 // Counters reports what the listener dropped and why.
 func (l *Listener) Counters() Counters { return l.counters.snapshot() }
-
-// StaleClock implements transport.StaleClockSource.
-func (l *Listener) StaleClock() uint64 { return l.counters.staleTimestamp.Load() }
-
-// StaleClockAt implements transport.StaleClockAtSource.
-func (l *Listener) StaleClockAt() time.Time { return l.counters.staleClockAtTime() }
 
 // Sent reports what the listener's links sent and what their padding cost.
 func (l *Listener) Sent() transport.SendStats { return l.meter.Stats() }
@@ -245,11 +238,7 @@ func (l *Listener) receive(d []byte, from net.Addr) bool {
 		return false
 	}
 	if !o.fresh(now) {
-		if f.senders.wouldReplay(o.sender, o.counter) {
-			l.counters.replayed.Add(1)
-		} else {
-			l.counters.noteStaleClock(now)
-		}
+		l.counters.staleTimestamp.Add(1)
 		return false
 	}
 	v := f.senders.admit(o.sender, o.counter, o.sent, now)

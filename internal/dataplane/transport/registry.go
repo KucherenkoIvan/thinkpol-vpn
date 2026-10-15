@@ -104,15 +104,9 @@ const (
 	Unknown Verdict = iota
 	// Routed is authenticated, fresh and not seen before: forward it.
 	Routed
-	// StaleClock is authenticated but was sent outside the receiver's
-	// clock window: a sender whose clock disagrees with the receiver's
-	// beyond the margin (DESIGN: nodes' clocks must agree within five
-	// minutes), or a replay of a datagram older than that. Drop it, and
-	// say so in the node's health (clock_skew).
-	StaleClock
-	// StaleSender is authenticated and fresh, but from a sender a newer
-	// one replaced: drop it.
-	StaleSender
+	// Stale is authenticated but too old to deliver (sent outside the
+	// clock window, or by a sender a newer one replaced): drop it.
+	Stale
 	// Replayed is authenticated but delivered before: drop it, so a replay
 	// costs its space nothing.
 	Replayed

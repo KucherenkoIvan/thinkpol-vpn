@@ -30,10 +30,6 @@ func statusProto(st agent.Status) *localapiv1.Status {
 	}
 	if dp := st.DataPlane; dp != nil {
 		out.DataPlane = dataPlaneProto(dp, st.Listeners)
-	} else if st.StaleClock > 0 {
-		out.DataPlane = &localapiv1.DataPlane{
-			Counters: map[string]uint64{"stale_clock": st.StaleClock},
-		}
 	}
 	for _, w := range st.Workers {
 		out.Workers = append(out.Workers, &localapiv1.Worker{
@@ -74,7 +70,6 @@ func dataPlaneProto(dp *dataplane.Status, listeners int) *localapiv1.DataPlane {
 			"path.queue_full": dp.Path.QueueFull, "path.malformed": dp.Path.Malformed,
 			"path.other_space": dp.Path.OtherSpace, "path.too_large": dp.Path.TooLarge,
 			"path.write_failed": dp.Path.WriteFailed, "path.read_failed": dp.Path.ReadFailed,
-			"stale_clock":         dp.StaleClock,
 			"interface.reapplies": dp.InterfaceReapplies,
 		},
 	}

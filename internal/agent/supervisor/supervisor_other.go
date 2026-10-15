@@ -2,11 +2,7 @@
 
 package supervisor
 
-import (
-	"time"
-
-	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
-)
+import "github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 
 // Supervisor runs one worker per space; only on Linux.
 type Supervisor struct{}
@@ -21,6 +17,3 @@ func (*Supervisor) Workers() []WorkerInfo          { return nil }
 func (*Supervisor) Output(netmap.SpaceID) []string { return nil }
 func (*Supervisor) Close() error                   { return nil }
 func (*Supervisor) Egress() EgressInfo             { return EgressInfo{Err: ErrUnsupported.Error()} }
-func (*Supervisor) StaleClock() (uint64, uint64, time.Time) {
-	return 0, 0, time.Time{}
-}

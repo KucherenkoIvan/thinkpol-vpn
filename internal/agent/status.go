@@ -50,17 +50,6 @@ type Status struct {
 	// link's domains in systemd-resolved): names may leave outside the
 	// tunnel.
 	DNSUnprotected bool
-	// StaleClock counts what the node's transports dropped as sealed
-	// outside their clock margin (udp: five minutes): a peer's clock
-	// disagrees with the node's beyond the margin, or datagrams were
-	// replayed from older than that. StaleClockSeen is when the last was
-	// seen (zero if never). A device's data plane reports its links and
-	// listeners; a server's, its shared listeners' routers. Nothing says
-	// which peer: check the clocks of both ends of a link that
-	// misbehaves.
-	StaleClock      uint64
-	StaleClockBurst uint64
-	StaleClockSeen  time.Time
 }
 
 // Connection is whether a node carries traffic.
@@ -174,10 +163,6 @@ type workerReporter interface {
 	Workers() []supervisor.WorkerInfo
 	Listeners() []supervisor.ListenerInfo
 	Egress() supervisor.EgressInfo
-	// StaleClock is what the shared listeners' routers dropped as sealed
-	// outside their clock margin; burst is how many in the current window,
-	// and seen is when the last was seen (zero: never).
-	StaleClock() (uint64, uint64, time.Time)
 }
 
 func (p *report) set(f func(p *report)) {
@@ -209,10 +194,8 @@ func (p *report) status() Status {
 		s.DataPlane = &st
 		s.RulesEnforced, s.PresetUnavailable = true, st.Rules.PresetUnavailable
 		s.DNSUnprotected = p.dns != nil && p.dns() != nil
-		s.StaleClock, s.StaleClockBurst, s.StaleClockSeen = st.StaleClock, st.StaleClockBurst, st.StaleClockSeen
 	}
 	if p.workers != nil {
-		s.StaleClock, s.StaleClockBurst, s.StaleClockSeen = p.workers.StaleClock()
 		for _, w := range p.workers.Workers() {
 			s.Workers = append(s.Workers, WorkerStatus{
 				Space: w.Space, Ready: w.Ready, Starts: w.Starts, ReadySince: w.ReadyAt, RestartAt: w.NextStart,
@@ -298,23 +281,7 @@ const (
 	// ProblemDNSUnprotected: the OS may resolve names outside the node's
 	// resolver, so names may leave outside the tunnel.
 	ProblemDNSUnprotected = "dns_not_protected"
-	// ProblemClockSkew: the node dropped datagrams its transports found
-	// sealed outside their clock margin (udp: five minutes) recently: a
-	// peer's clock disagrees with its own beyond the margin, or datagrams
-	// were replayed from older than that. Nothing says which peer; the
-	// clocks of both ends of a link that misbehaves are suspect.
-	ProblemClockSkew = "clock_skew"
 )
-
-// staleClockWindow is how long after a stale-clock drop the health still
-// reports clock_skew: the margin transports allow between nodes' clocks
-// (DESIGN: nodes' clocks must agree within five minutes), so the problem
-// clears about as long after the clocks agree again.
-const staleClockWindow = 5 * time.Minute
-
-// staleClockHealthMin is how many stale-clock drops within staleClockWindow
-// before health reports clock_skew (one forged replay must not flip it).
-const staleClockHealthMin = 3
 
 // Health grades the status.
 func (s Status) Health() Health {
@@ -397,9 +364,6 @@ func (s Status) Health() Health {
 		if s.DNSUnprotected {
 			add(HealthDegraded, ProblemDNSUnprotected)
 		}
-	}
-	if s.StaleClockBurst >= staleClockHealthMin && time.Since(s.StaleClockSeen) <= staleClockWindow {
-		add(HealthDegraded, ProblemClockSkew)
 	}
 	return h
 }
