@@ -58,7 +58,9 @@ func TestCensorMatrix(t *testing.T) {
 			})
 		}
 	}
-	writeResults(t, results)
+	// The parallel subtests only finish once this function has returned, so
+	// the file is written from the cleanup, which runs after them.
+	t.Cleanup(func() { writeResults(t, results) })
 }
 
 // The censor case that proves the pipeline end to end: the trivial module
