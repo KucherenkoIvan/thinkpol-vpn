@@ -612,6 +612,13 @@ type counters struct {
 
 // Counters returns the node's counters.
 func (n *Node) Counters() Counters {
+	n.nmu.RLock()
+	for _, nb := range n.neighbors {
+		for _, l := range nb.all() {
+			l.foldStaleClock()
+		}
+	}
+	n.nmu.RUnlock()
 	c := &n.counters
 	return Counters{
 		Sent: c.sent.Load(), Delivered: c.delivered.Load(), Forwarded: c.forwarded.Load(),

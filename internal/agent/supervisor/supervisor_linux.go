@@ -437,11 +437,13 @@ func (s *Supervisor) Egress() EgressInfo {
 // outside their clock margin (transport.StaleClockSource), and when the
 // last was seen: a node's peer's clock disagrees with its own beyond the
 // margin, which the node's health reports as clock_skew.
-func (s *Supervisor) StaleClock() (uint64, time.Time) {
-	if n := s.shared.staleClockAt.Load(); n != 0 {
-		return s.shared.staleClockCount.Load(), time.Unix(0, n)
+func (s *Supervisor) StaleClock() (uint64, uint64, time.Time) {
+	now := s.shared.now()
+	var seen time.Time
+	if p := s.shared.staleClockSeen.Load(); p != nil {
+		seen = *p
 	}
-	return s.shared.staleClockCount.Load(), time.Time{}
+	return s.shared.staleClockCount.Load(), s.shared.staleClockBurst.Count(now), seen
 }
 
 // tablesInput is what the root namespace's tables and the spaces' own are

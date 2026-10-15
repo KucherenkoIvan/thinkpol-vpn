@@ -21,6 +21,6 @@ func (*Supervisor) Workers() []WorkerInfo          { return nil }
 func (*Supervisor) Output(netmap.SpaceID) []string { return nil }
 func (*Supervisor) Close() error                   { return nil }
 func (*Supervisor) Egress() EgressInfo             { return EgressInfo{Err: ErrUnsupported.Error()} }
-func (*Supervisor) StaleClock() (uint64, time.Time) {
-	return 0, time.Time{}
+func (*Supervisor) StaleClock() (uint64, uint64, time.Time) {
+	return 0, 0, time.Time{}
 }

@@ -248,6 +248,7 @@ func (l *link) closed() bool {
 // was (a dial that went unanswered: its dial loop logs that).
 func (l *link) close(why string, err error) {
 	l.closeOnce.Do(func() {
+		l.foldStaleClock()
 		close(l.done)
 		_ = l.tl.Close()
 		l.nb.remove(l)
@@ -462,6 +463,7 @@ func (l *link) foldStaleClock() {
 // ProbeInterval. Both ends probe: a link that only delivers one way is down
 // for both.
 func (l *link) tick(now int64) {
+	l.foldStaleClock()
 	o := l.node.opts
 	if now-max(l.lastProof.Load(), l.created) >= int64(o.DeadAfter) {
 		l.close("no answer to its probes within "+o.DeadAfter.String(), nil)

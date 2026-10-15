@@ -30,6 +30,10 @@ func statusProto(st agent.Status) *localapiv1.Status {
 	}
 	if dp := st.DataPlane; dp != nil {
 		out.DataPlane = dataPlaneProto(dp, st.Listeners)
+	} else if st.StaleClock > 0 {
+		out.DataPlane = &localapiv1.DataPlane{
+			Counters: map[string]uint64{"stale_clock": st.StaleClock},
+		}
 	}
 	for _, w := range st.Workers {
 		out.Workers = append(out.Workers, &localapiv1.Worker{

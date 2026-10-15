@@ -116,3 +116,11 @@ func TestWorkerLastExitReachesStatusAndCLI(t *testing.T) {
 		t.Fatalf("raw ESC in render:\n%s", text.String())
 	}
 }
+
+func TestServerStaleClockInStatusProto(t *testing.T) {
+	st := agent.Status{Connection: agent.Serving, StaleClock: 7}
+	out := statusProto(st)
+	if out.DataPlane == nil || out.DataPlane.Counters["stale_clock"] != 7 {
+		t.Fatalf("data plane counters %+v", out.DataPlane)
+	}
+}

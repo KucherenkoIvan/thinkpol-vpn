@@ -21,9 +21,10 @@ A **node** (server or device) holds only:
 ```
 
 The **admin's build machine** holds the `keys/` directory from
-`thinkpol dev keygen`: `space.key` (the signing key — private),
-`recovery.key` (offline, never on any machine that runs the network),
-`space.pub`, and per node `<name>.key` and `<name>.pub`. The spec
+`thinkpol dev keygen space` and `thinkpol dev keygen node`: `space.key`
+(the signing key — private), `recovery.key` (offline, never on any machine
+that runs the network; create it with `dev keygen space -recovery-out
+<dir>`), `space.pub`, and per node `<name>.key` and `<name>.pub`. The spec
 (`spec.yaml`) describing the space lives next to it; `thinkpol dev map
 spec` prints its format.
 
@@ -36,7 +37,7 @@ The server agent is `thinkpol up`, run as root on the VPS. It serves the
 space whenever it runs; its log goes to stderr and an in-memory ring
 (`thinkpol logs`, root only), never to disk by the agent's own hand. There
 is no service unit from us yet (that is TP-046); run it under your own
-service manager, for example:
+service manager, for example a unit named `thinkpol.service`:
 
 ```ini
 [Unit]
@@ -70,22 +71,35 @@ every node.
    ```
 
    `dev map rotate` rebuilds the spec with fresh per-link credentials and a
-   version past the deployed map (so nodes take it), refuses when the file
-   at `-out` is not the space's current map, and prints the nodes the new
-   file must reach. The first build of a space is `thinkpol dev map build`
-   instead. `thinkpol dev map inspect -keys keys map.bin` shows what the
-   new map says.
-3. Copy the same `map.bin` to every node, replaced atomically:
+   version past the deployed map (so nodes take it). It requires a valid
+   signed map of the same space at `-out` (the file to replace); the first
+   build of a space is `thinkpol dev map build` instead. `thinkpol dev map
+   inspect -keys keys map.bin` shows what the new map says.
+
+   Every `dev map build` and every rotation re-keys **all** links in the
+   spec, not only the ones you changed. Nodes on different map versions
+   cannot link to each other.
+3. Copy the same `map.bin` to every node. **Devices have no SSH path** —
+   deliver their map through whatever channel you use for device config, or
+   accept that they stay cut off until they get it. **Admin access over the
+   overlay** can drop mid-rollout when credentials change; reach nodes by
+   their **public** addresses from the spec, push the file to all servers
+   in parallel, then signal each one:
 
    ```sh
-   scp map.bin root@<node>:/tmp/map.new
-   ssh root@<node> 'install -m 644 /tmp/map.new /var/lib/thinkpol/map.bin && rm /tmp/map.new'
+   staging=$(mktemp -d)
+   scp map.bin root@<node>:"$staging/map.new"
+   ssh root@<node> "cp \"$staging/map.new\" /var/lib/thinkpol/map.bin && chmod 644 /var/lib/thinkpol/map.bin && rm -rf \"$staging\" && systemctl kill -s HUP thinkpol"
    ```
 
-   `install` renames over the old file, so the node never sees a
-   half-written map. (A node that does catch one ignores it and retries on
-   the next poll.) The file must end up owned by root (or the agent's user)
-   and not group- or world-writable.
+   The dev tooling writes maps atomically (temp file in the state
+   directory, then rename over `map.bin`). On the node, copy into place
+   before removing the old file so a node that starts during the gap does
+   not see a half-written map. The file must end up owned by root (or the
+   agent's user) and not group- or world-writable.
+
+   Deliver to **devices first**, or accept that they drop off until they
+   receive the new map.
 4. Each node takes the new map within its map poll (5 s by default,
    `THINKPOL_MAP_POLL`) or immediately on `SIGHUP`, and says so in `thinkpol
    status` (the map version).
@@ -109,7 +123,7 @@ The state directory survives; everything else the node knew is in memory
 on purpose (no logs, no state on disk). Recovery is starting the agent
 again:
 
-1. Start it the way you run it (the unit above: `systemctl start thinkpol`).
+1. Start it the way you run it (for example `systemctl start thinkpol`).
 2. Check `thinkpol status`: serving, its workers ready.
 
 Nothing else to do. The agent re-derives its firewall and network setup on
@@ -126,14 +140,15 @@ Signed updates distributed through the network arrive with the controller
    accompanied it). Check it runs before installing:
 
    ```sh
-   scp bin/thinkpol root@<node>:/tmp/thinkpol.new
-   ssh root@<node> '/tmp/thinkpol.new version'
+   staging=$(mktemp -d)
+   scp bin/thinkpol root@<node>:"$staging/thinkpol.new"
+   ssh root@<node> "\"$staging/thinkpol.new\" version"
    ```
 
 2. Swap the binary and restart the agent:
 
    ```sh
-   ssh root@<node> 'install -m 755 /tmp/thinkpol.new /usr/local/bin/thinkpol && rm /tmp/thinkpol.new && systemctl restart thinkpol'
+   ssh root@<node> "install -m 755 \"$staging/thinkpol.new\" /usr/local/bin/thinkpol && rm -rf \"$staging\" && systemctl restart thinkpol"
    ```
 
 3. `ssh root@<node> thinkpol status`: serving again, workers ready.
@@ -147,7 +162,8 @@ Transports rely on clocks: nodes' clocks must agree within five minutes,
 and `udp` drops datagrams sealed further from its own clock than that
 (DESIGN, "The map says, the engine converts, the transport decides"). A
 node whose clock is off cannot link, and the peers that drop its datagrams
-report the skew in their health.
+report the skew in their health once several such drops arrive in a short
+window (not from a single replayed packet).
 
 - **Linux nodes:** install and enable chrony (any NTP client will do;
   provisioning sets this up automatically from M4, TP-038):
@@ -162,11 +178,10 @@ report the skew in their health.
   Windows do this by default).
 
 - **Reading the health:** `thinkpol status` on the receiving node names a
-  clock-skew problem when it dropped authenticated datagrams sent outside
-  the five-minute agreement — a peer's clock is off, or old datagrams are
-  being replayed at it. If no clock is actually off, the node is under a
-  replay; the datagrams were dropped either way. Fix a clock that is off;
-  do not touch the map.
+  clock-skew problem when it dropped several authenticated datagrams sent
+  outside the five-minute agreement recently — a peer's clock is off, or
+  (after the threshold) evidence of sustained skew. Fix a clock that is
+  off; do not touch the map.
 
 ## When something is wrong
 
@@ -175,4 +190,4 @@ report the skew in their health.
 - `thinkpol logs`: the agent's own log ring (root only).
 - A node that its map no longer includes idles instead of failing: it
   starts, finds no section for itself, and waits. Adding it back to the
-  spec and rotating brings it in at the next map.
+  spec and rotating brings it in at the next map. 

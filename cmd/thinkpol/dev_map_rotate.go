@@ -6,10 +6,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/devmap"
-	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
 
 func init() {
@@ -50,22 +48,8 @@ func runDevMapRotate(_ context.Context, e env, args []string) error {
 	if err != nil {
 		return err
 	}
-	previous, err := os.ReadFile(*out)
+	version, nbytes, err := devmap.Rotate(spec, keys, *out)
 	if err != nil {
-		return fmt.Errorf("%s: %w; a rotation replaces a deployed map, the first build is dev map build", *out, err)
-	}
-	if _, err := netmap.Verify(previous, keys.Trust()); err != nil {
-		return fmt.Errorf("%s is not a valid map of space %v: %w", *out, keys.Space, err)
-	}
-	// The version past the deployed map makes nodes take the rotation; the
-	// fresh secrets (nil: crypto/rand) are what rotates every link's
-	// credential.
-	version := devmap.NextVersion(time.Now(), previous, keys.Trust())
-	env, err := devmap.Build(spec, keys, version, nil)
-	if err != nil {
-		return err
-	}
-	if err := devmap.WriteMap(*out, env); err != nil {
 		return err
 	}
 	names := make([]string, len(spec.Nodes))
@@ -74,6 +58,6 @@ func runDevMapRotate(_ context.Context, e env, args []string) error {
 	}
 	_, err = fmt.Fprintf(e.stdout,
 		"map version %d of space %v: %d nodes, %d bytes, written to %s\nrotate: copy %s to every node's map file; every node takes the same file, within its map poll or on SIGHUP: %s\n",
-		version, keys.Space, len(spec.Nodes), len(env), *out, *out, strings.Join(names, ", "))
+		version, keys.Space, len(spec.Nodes), nbytes, *out, *out, strings.Join(names, ", "))
 	return err
 }

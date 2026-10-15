@@ -9,10 +9,12 @@ import (
 	"runtime"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.zx2c4.com/wireguard/tun"
 
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/clockburst"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/path"
@@ -187,9 +189,11 @@ type Engine struct {
 	// Stale-clock sources of the listeners Serve was given (their links
 	// are the path layer's), and what of theirs Status has already counted
 	// (their counters are cumulative), with when it last grew.
-	staleClockers    []func() uint64
-	staleClockFolded uint64
-	staleClockSeenAt time.Time
+	staleClockers        []staleClockFeed
+	staleClockFolded     uint64
+	pathStaleClockFolded uint64
+	staleClockSeenAt     time.Time
+	staleClockBurst      *clockburst.Window
 
 	// What the resolver needs of the last section: the node's kind and
 	// egress setting, and the overlay names.
@@ -242,16 +246,17 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 		return nil, err
 	}
 	e := &Engine{
-		cfg:       cfg,
-		tunName:   name,
-		node:      node,
-		router:    router.New(cfg.TUN),
-		devices:   make(map[string]*egressDevice),
-		inbound:   make(map[string]*transport.PeerTable),
-		links:     make(map[string][]transport.PeerLink),
-		ownRules:  cfg.Rules,
-		geoipSets: make(map[[32]byte]*lists.Set),
-		ifcTiming: defaultInterfaceTiming,
+		cfg:             cfg,
+		tunName:         name,
+		node:            node,
+		router:          router.New(cfg.TUN),
+		devices:         make(map[string]*egressDevice),
+		inbound:         make(map[string]*transport.PeerTable),
+		links:           make(map[string][]transport.PeerLink),
+		ownRules:        cfg.Rules,
+		geoipSets:       make(map[[32]byte]*lists.Set),
+		ifcTiming:       defaultInterfaceTiming,
+		staleClockBurst: clockburst.NewWindow(5 * time.Minute),
 	}
 	e.assign, e.rules = e.layout, e.ruleRoutes
 	e.ctx, e.cancel = context.WithCancel(context.Background())
@@ -565,13 +570,41 @@ func (e *Engine) debug(msg string, args ...any) {
 // with Inbound(transportName) as its peers. A listener that counts what it
 // dropped as sealed outside its clock margin (transport.StaleClockSource)
 // feeds the engine's stale-clock count.
+type staleClockFeed struct {
+	id    uint64
+	count func() uint64
+	at    func() time.Time
+}
+
+var nextStaleClockFeedID atomic.Uint64
+
 func (e *Engine) Serve(transportName string, l transport.Listener) error {
+	var feedID uint64
 	if sc, ok := l.(transport.StaleClockSource); ok {
+		feed := staleClockFeed{
+			id:    nextStaleClockFeedID.Add(1),
+			count: sc.StaleClock,
+		}
+		if at, ok := l.(transport.StaleClockAtSource); ok {
+			feed.at = at.StaleClockAt
+		}
+		feedID = feed.id
 		e.mu.Lock()
-		e.staleClockers = append(e.staleClockers, sc.StaleClock)
+		e.staleClockers = append(e.staleClockers, feed)
 		e.mu.Unlock()
 	}
-	return e.node.Serve(transportName, l)
+	err := e.node.Serve(transportName, l)
+	if feedID != 0 {
+		e.mu.Lock()
+		for i, f := range e.staleClockers {
+			if f.id == feedID {
+				e.staleClockers = append(e.staleClockers[:i], e.staleClockers[i+1:]...)
+				break
+			}
+		}
+		e.mu.Unlock()
+	}
+	return err
 }
 
 // Inbound is the peer table for the engine's listeners of a transport:
@@ -622,10 +655,12 @@ type Status struct {
 	// with this node's beyond the margin, or datagrams were replayed from
 	// older than that. It counts the links' and the listeners' transports
 	// since the engine started; StaleClockSeen is when it last grew (zero
-	// if never). Nothing here says which peer: check the clocks of both
-	// ends of a link that misbehaves.
-	StaleClock     uint64
-	StaleClockSeen time.Time
+	// if never). StaleClockBurst is how many of those fell in the current
+	// five-minute window (health needs at least three). Nothing here says
+	// which peer: check the clocks of both ends of a link that misbehaves.
+	StaleClock      uint64
+	StaleClockBurst uint64
+	StaleClockSeen  time.Time
 	// InterfaceReapplies counts successful re-applies of the overlay
 	// interface's addresses and MTU after its link came up (most change
 	// nothing).
@@ -666,15 +701,36 @@ func (e *Engine) Status() Status {
 	}
 	// The listeners' stale-clock counts are cumulative and only read here,
 	// so their growth since the last Status is what just happened.
+	now := time.Now()
 	var listeners uint64
+	var listenerAt time.Time
 	for _, f := range e.staleClockers {
-		listeners += f()
+		listeners += f.count()
+		if f.at != nil {
+			if t := f.at(); t.After(listenerAt) {
+				listenerAt = t
+			}
+		}
 	}
 	if listeners > e.staleClockFolded {
-		e.staleClockFolded, e.staleClockSeenAt = listeners, time.Now()
+		e.staleClockBurst.Add(listeners-e.staleClockFolded, now)
+		e.staleClockFolded = listeners
+		if listenerAt.IsZero() {
+			e.staleClockSeenAt = now
+		} else {
+			e.staleClockSeenAt = listenerAt
+		}
+	}
+	if pc.StaleClock > e.pathStaleClockFolded {
+		e.staleClockBurst.Add(pc.StaleClock-e.pathStaleClockFolded, now)
+		e.pathStaleClockFolded = pc.StaleClock
 	}
 	s.StaleClock = pc.StaleClock + listeners
+	s.StaleClockBurst = e.staleClockBurst.Count(now)
 	s.StaleClockSeen = e.node.StaleClockSeen()
+	if listenerAt.After(s.StaleClockSeen) {
+		s.StaleClockSeen = listenerAt
+	}
 	if e.staleClockSeenAt.After(s.StaleClockSeen) {
 		s.StaleClockSeen = e.staleClockSeenAt
 	}

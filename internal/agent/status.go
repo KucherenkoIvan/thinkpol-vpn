@@ -58,8 +58,9 @@ type Status struct {
 	// listeners; a server's, its shared listeners' routers. Nothing says
 	// which peer: check the clocks of both ends of a link that
 	// misbehaves.
-	StaleClock     uint64
-	StaleClockSeen time.Time
+	StaleClock      uint64
+	StaleClockBurst uint64
+	StaleClockSeen  time.Time
 }
 
 // Connection is whether a node carries traffic.
@@ -174,8 +175,9 @@ type workerReporter interface {
 	Listeners() []supervisor.ListenerInfo
 	Egress() supervisor.EgressInfo
 	// StaleClock is what the shared listeners' routers dropped as sealed
-	// outside their clock margin, and when the last was seen (zero: never).
-	StaleClock() (uint64, time.Time)
+	// outside their clock margin; burst is how many in the current window,
+	// and seen is when the last was seen (zero: never).
+	StaleClock() (uint64, uint64, time.Time)
 }
 
 func (p *report) set(f func(p *report)) {
@@ -207,10 +209,10 @@ func (p *report) status() Status {
 		s.DataPlane = &st
 		s.RulesEnforced, s.PresetUnavailable = true, st.Rules.PresetUnavailable
 		s.DNSUnprotected = p.dns != nil && p.dns() != nil
-		s.StaleClock, s.StaleClockSeen = st.StaleClock, st.StaleClockSeen
+		s.StaleClock, s.StaleClockBurst, s.StaleClockSeen = st.StaleClock, st.StaleClockBurst, st.StaleClockSeen
 	}
 	if p.workers != nil {
-		s.StaleClock, s.StaleClockSeen = p.workers.StaleClock()
+		s.StaleClock, s.StaleClockBurst, s.StaleClockSeen = p.workers.StaleClock()
 		for _, w := range p.workers.Workers() {
 			s.Workers = append(s.Workers, WorkerStatus{
 				Space: w.Space, Ready: w.Ready, Starts: w.Starts, ReadySince: w.ReadyAt, RestartAt: w.NextStart,
@@ -310,6 +312,10 @@ const (
 // clears about as long after the clocks agree again.
 const staleClockWindow = 5 * time.Minute
 
+// staleClockHealthMin is how many stale-clock drops within staleClockWindow
+// before health reports clock_skew (one forged replay must not flip it).
+const staleClockHealthMin = 3
+
 // Health grades the status.
 func (s Status) Health() Health {
 	var h Health
@@ -319,9 +325,6 @@ func (s Status) Health() Health {
 	}
 	if s.Removed {
 		add(HealthDown, ProblemRemoved)
-	}
-	if s.StaleClock > 0 && time.Since(s.StaleClockSeen) <= staleClockWindow {
-		add(HealthDegraded, ProblemClockSkew)
 	}
 	switch s.Connection {
 	case Disconnected:
@@ -394,6 +397,9 @@ func (s Status) Health() Health {
 		if s.DNSUnprotected {
 			add(HealthDegraded, ProblemDNSUnprotected)
 		}
+	}
+	if s.StaleClockBurst >= staleClockHealthMin && time.Since(s.StaleClockSeen) <= staleClockWindow {
+		add(HealthDegraded, ProblemClockSkew)
 	}
 	return h
 }

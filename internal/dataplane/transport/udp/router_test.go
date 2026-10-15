@@ -254,6 +254,7 @@ func TestRouterRoutesAndRejects(t *testing.T) {
 			t.Errorf("%s datagram: %v for %s", name, v, id)
 		}
 	}
+	// Unknown sender and old sealed time: clock skew, not replay.
 	if id, v := r.RouteDatagram(datagram(peers[0], toListener, now.Add(-6*time.Minute))); v != transport.StaleClock || id != peers[0].Peer {
 		t.Errorf("a datagram sent 6 minutes ago: %v for %s", v, id)
 	}
@@ -285,5 +286,25 @@ func TestRouterRoutesAndRejects(t *testing.T) {
 	table.Set([]transport.PeerLink{peers[0].PeerLink, peers[1].PeerLink})
 	if _, v := r.RouteDatagram(replay); v != transport.Replayed {
 		t.Fatalf("a replay after the secret left and came back: %v", v)
+	}
+}
+
+func TestRouterStaleSender(t *testing.T) {
+	c := &clock{}
+	tr := New(Options{Now: c.now})
+	peers := []transporttest.Peer{transporttest.SymmetricPeer()}
+	table := transport.NewPeerTable(peers[0].PeerLink)
+	r := tr.Router(table).(*Router)
+	now := c.now()
+	newer := senderIDFor(now.UnixNano())
+	older := senderIDFor(now.UnixNano() - int64(time.Second))
+	datagram := func(sender senderID, counter uint64, at time.Time) []byte {
+		return seal(nil, newAEAD(peers[0].Credential, toListener), connIDFor(peers[0].Credential, toListener, epochOf(at)), sender, at, counter, []byte("packet"), transport.Padding{})
+	}
+	if _, v := r.RouteDatagram(datagram(newer, 0, now)); v != transport.Routed {
+		t.Fatalf("newer sender: %v", v)
+	}
+	if id, v := r.RouteDatagram(datagram(older, 0, now)); v != transport.StaleSender || id != peers[0].Peer {
+		t.Fatalf("older sender: %v for %s", v, id)
 	}
 }

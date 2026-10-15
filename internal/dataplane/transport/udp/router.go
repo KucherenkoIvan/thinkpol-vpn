@@ -67,7 +67,12 @@ func (r *Router) RouteDatagram(d []byte) (transport.Identity, transport.Verdict)
 		r.counters.unauthenticated.Add(1)
 		return transport.Identity{}, transport.Unknown
 	case !o.fresh(now):
-		r.counters.staleTimestamp.Add(1)
+		snd := r.senders[string(e.link.Verifier)]
+		if snd.wouldReplay(o.sender, o.counter) {
+			r.counters.replayed.Add(1)
+			return e.link.Peer, transport.Replayed
+		}
+		r.counters.noteStaleClock(now)
 		return e.link.Peer, transport.StaleClock
 	}
 	switch r.senders[string(e.link.Verifier)].admit(o.sender, o.counter, o.sent, now) {

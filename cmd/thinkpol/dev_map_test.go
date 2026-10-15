@@ -75,7 +75,7 @@ func TestDevMapRotate(t *testing.T) {
 	t.Setenv("SERVER_1_IPV6", "2001:db8::10")
 	mustRunCLI(t, "dev", "keygen", "space", "-out", keys)
 	mustRunCLI(t, "dev", "keygen", "node", "-out", keys, "server-1", "device-a", "device-b")
-	mustRunCLI(t, "dev", "map", "build", "-keys", keys, "-out", mapFile, "-version", "5", "../../lab/maps/m0.yaml")
+	mustRunCLI(t, "dev", "map", "build", "-keys", keys, "-out", mapFile, "../../lab/maps/m0.yaml")
 	first := readTestFile(t, mapFile)
 
 	// A rotation replaces a deployed map: with none there, it says so

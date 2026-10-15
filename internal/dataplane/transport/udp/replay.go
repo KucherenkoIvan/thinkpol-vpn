@@ -170,6 +170,40 @@ const (
 	deliverNewest                // deliver; the current sender's newest counter
 )
 
+// wouldReplay reports whether a datagram with this sender and counter would
+// be refused as a replay, without changing the filter. Used when the sealed
+// send time is outside the clock margin: a replay of a live sender must not
+// count as clock skew.
+func (s *senders) wouldReplay(id senderID, counter uint64) bool {
+	for i := range s.entries {
+		c := &s.entries[i]
+		if c.used == 0 || c.id != id {
+			continue
+		}
+		w := &c.window
+		if !w.started {
+			return false
+		}
+		if counter > w.highest {
+			return false
+		}
+		if w.highest-counter >= replayWindowSize {
+			return true
+		}
+		word, bit := (counter/64)%replayWords, uint64(1)<<(counter%64)
+		if w.ring[word]&bit != 0 {
+			return true
+		}
+		return true
+	}
+	if s.evicted.byID != nil {
+		if _, ok := s.evicted.byID[id]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *senders) admit(id senderID, counter uint64, sent uint32, now time.Time) verdict {
 	s.tick++
 	if later(sent, s.newest) {

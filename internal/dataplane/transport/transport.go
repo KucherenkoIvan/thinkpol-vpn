@@ -189,3 +189,11 @@ func OrDrop(c Camouflage) Camouflage {
 type StaleClockSource interface {
 	StaleClock() uint64
 }
+
+// StaleClockAtSource is a StaleClockSource that records when the last
+// stale-clock drop happened on its own clock (not when something else read
+// the count).
+type StaleClockAtSource interface {
+	StaleClockSource
+	StaleClockAt() time.Time
+}

@@ -9,6 +9,7 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 )
@@ -75,6 +76,9 @@ func (dl *dialLink) Counters() Counters { return dl.counters.snapshot() }
 // StaleClock implements transport.StaleClockSource.
 func (dl *dialLink) StaleClock() uint64 { return dl.counters.staleTimestamp.Load() }
 
+// StaleClockAt implements transport.StaleClockAtSource.
+func (dl *dialLink) StaleClockAt() time.Time { return dl.counters.staleClockAtTime() }
+
 func (dl *dialLink) ReadPacket(p []byte) (int, error) {
 	dl.readMu.Lock()
 	defer dl.readMu.Unlock()
@@ -120,7 +124,11 @@ func (dl *dialLink) receive(d []byte) []byte {
 		dl.counters.unauthenticated.Add(1)
 		return nil
 	case !o.fresh(now):
-		dl.counters.staleTimestamp.Add(1)
+		if dl.senders.wouldReplay(o.sender, o.counter) {
+			dl.counters.replayed.Add(1)
+		} else {
+			dl.counters.noteStaleClock(now)
+		}
 		return nil
 	}
 	switch dl.senders.admit(o.sender, o.counter, o.sent, now) {
