@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/devmap"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
@@ -75,7 +76,10 @@ func TestDevMapRotate(t *testing.T) {
 	t.Setenv("SERVER_1_IPV6", "2001:db8::10")
 	mustRunCLI(t, "dev", "keygen", "space", "-out", keys)
 	mustRunCLI(t, "dev", "keygen", "node", "-out", keys, "server-1", "device-a", "device-b")
-	mustRunCLI(t, "dev", "map", "build", "-keys", keys, "-out", mapFile, "../../lab/maps/m0.yaml")
+	// The deployed map is ahead of the clock (a version from the future),
+	// so the rotation must take one past it, not the current Unix time.
+	const deployed = 4_000_000_000
+	mustRunCLI(t, "dev", "map", "build", "-keys", keys, "-out", mapFile, "-version", "4000000000", "../../lab/maps/m0.yaml")
 	first := readTestFile(t, mapFile)
 
 	// A rotation replaces a deployed map: with none there, it says so
@@ -112,8 +116,21 @@ func TestDevMapRotate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if b.Header().Version <= a.Header().Version {
-		t.Fatalf("rotated to version %d, was %d", b.Header().Version, a.Header().Version)
+	if a.Header().Version != deployed || b.Header().Version != deployed+1 {
+		t.Fatalf("rotated version %d to %d, want %d to %d", a.Header().Version, b.Header().Version, uint64(deployed), uint64(deployed+1))
+	}
+
+	// A deployed map behind the clock rotates to the current Unix time.
+	behind := filepath.Join(dir, "behind.bin")
+	mustRunCLI(t, "dev", "map", "build", "-keys", keys, "-out", behind, "-version", "5", "../../lab/maps/m0.yaml")
+	start := time.Now().Unix()
+	mustRunCLI(t, "dev", "map", "rotate", "-keys", keys, "-out", behind, "../../lab/maps/m0.yaml")
+	m, err := netmap.Verify(readTestFile(t, behind), devmapTrust(t, keys))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := m.Header().Version; v < uint64(start) || v > uint64(time.Now().Unix()) {
+		t.Fatalf("a map at version 5 rotated to %d, want the current Unix time (from %d)", v, start)
 	}
 	link := func(m *netmap.Map) []byte {
 		t.Helper()
