@@ -44,6 +44,17 @@ Round 1 review (cross-family, 2026-10-15):
 - [x] **6** Runbook accuracy — build re-keys all links, devices, atomic install, keygen commands, recovery-out, mktemp, rotate check wording, systemd unit name (`docs/runbook-pre-controller.md`).
 - [x] **N** `dev map rotate` logic in `devmap.Rotate` (`internal/devmap/plan.go`); health problem order; engine unregisters stale-clock feeds; server `stale_clock` in local API.
 
+Round 2 delta review (Claude, 2026-10-15):
+
+- [ ] **B1** (blocker) `clock_skew` is still forgeable. A stale datagram only reaches the read-only `wouldReplay`, never `admit`, so nothing records it: the same captured datagram replayed 3 times counts 3 times and meets `staleClockHealthMin`. Senders are unknown after a receiver restart, on every redial (a new `dialLink` has empty `senders`), once an evicted id expires, and for withheld datagrams.
+- [ ] **S1** Runbook staging is broken (`docs/runbook-pre-controller.md:90-92, 143-151`): `mktemp -d` runs on the admin's machine; `cp` over `map.bin` isn't atomic.
+- [ ] **S2** `systemctl kill -s HUP thinkpol` signals the whole cgroup, and workers exit on SIGHUP (`main.go:18` handles only INT and TERM).
+- [ ] **S3** Unregistering a listener breaks `staleClockFolded` (`engine.go:597-606, 715-723`).
+- [ ] **S4** `foldStaleClock` runs on several goroutines and can underflow uint64 (`link.go:454-456`).
+- [ ] **S5** `clockburst` is a fixed window anchored at the first drop, which flaps.
+- [ ] **S6** Tests don't exercise the fixes: engine tests copy `Status`/`Serve` logic, `TestFoldStaleClock` calls fold directly, the supervisor test is stub-only, `TestWouldReplay` lacks the unseen-in-window and evicted cases and a no-mutation check.
+- [ ] **N2** Nits: `wouldReplay`'s both-branches-true and its comment (`replay.go:193-197`); garbled runbook health wording (180-184); contradictory device advice (82-84 vs 101-102); listener drops added to the burst at `Status` time (`engine.go:716`); `TestDevMapRotate` hits the "one past" branch only within the same second.
+
 ## Log
 - 2026-10-15 created in backlog
 - 2026-10-15 docs: board fix-ups (log order, refs, parked notes)
@@ -52,3 +63,4 @@ Round 1 review (cross-family, 2026-10-15):
 - 2026-10-15 review → has-errors — round 1 cross-family review (see Review findings)
 - 2026-10-15 has-errors → in-progress — round 2 fixes
 - 2026-10-15 in-progress → review — round 2: merged rewrite (TP-070), replay-safe clock_skew, runbook and tests; make lint and make test on darwin
+- 2026-10-15 review → has-errors — round 2 delta review: 1 blocker, 6 should-fix, nits (see Review findings)
