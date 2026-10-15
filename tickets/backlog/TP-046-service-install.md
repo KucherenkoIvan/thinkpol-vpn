@@ -1,7 +1,7 @@
 ---
 id: TP-046
 title: "Service install and connect-on-boot"
-milestone: M5
+milestone: M2
 area: agent
 repo: thinkpol-vpn
 size: L
@@ -16,12 +16,14 @@ branch: ""
 The client runs as a proper background service on every desktop OS.
 
 ## Scope
-- `thinkpol service install | uninstall`: launchd daemon (macOS), systemd unit (Linux), Windows service (with TP-047).
+- `thinkpol service install | uninstall`: launchd daemon (macOS), systemd unit (Linux). Windows service: TP-047.
 - Connect-on-boot toggle, default off.
 - Permissions on the local API socket or pipe.
 
 ## Acceptance
 - [ ] install, reboot, uninstall on macOS and Linux leave the system clean
+- [ ] connect-on-boot is off by default after install (PRD D5); the toggle enables it
+- [ ] after a simulated agent crash, the service restarts and traffic stays fail-closed until connect succeeds (PRD D4; kill-switch guard is TP-048)
 
 ## Notes
 - **From TP-022's review (acceptance items when this starts):**
@@ -36,3 +38,4 @@ The client runs as a proper background service on every desktop OS.
 - 2026-10-13 docs (TP-062): crash posture: restart after a crash, fail-closed until then, macOS included
 - 2026-10-13 notes: the host lock and systemd's `RuntimeDirectory=` (TP-060)
 - 2026-10-15 docs (independent review 2026-10-15): depends on TP-075 (agent refactor before service install)
+- 2026-10-15 docs (backlog grooming): milestone M2; Windows service moved to TP-047; connect-on-boot and crash acceptance added

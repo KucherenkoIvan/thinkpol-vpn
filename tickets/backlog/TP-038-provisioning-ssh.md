@@ -23,6 +23,7 @@ branch: ""
 - [ ] a fresh lab container becomes a working node with one command; running it again changes nothing
 
 ## Notes
+- Split before starting (backlog grooming 2026-10-15).
 - **Shaping rollout (TP-027):** the controller puts shaping, or a new shaping field or value, into a link only when both ends' nodes reported supporting it (DESIGN "Transports own traffic shape"). Provisioning registers the node with its agent version and capabilities, so the first map it gets carries only shaping it supports.
 - **From TP-011's review (deferred here):**
   - **A shared key-file codec.** `internal/devmap/keys.go` (writes and reads dev key files, YAML with positions) and `internal/agent/keyfile.go` (reads `node.key`/`space.pub`) duplicate the format. Extract `internal/keyfile`: read and write, the 0600 rule for private files (written with explicit chmod, refused on read when others can read them), owner checks, redacted `String`s; used by devmap and agent (depguard: no devmap dependency for the agent).
@@ -42,3 +43,4 @@ branch: ""
 - 2026-10-12 docs (TP-014 review): notes from egress on Linux
 - 2026-10-13 docs (TP-062): note: camouflage target chosen per node; update key pinned at provisioning
 - 2026-10-15 docs (independent review 2026-10-15): chrony/NTP in scope; pointer to TP-074
+- 2026-10-15 docs (backlog grooming): split note

@@ -1,12 +1,12 @@
 ---
 id: TP-067
 title: "Resource footprint and system requirements"
-milestone: M1
+milestone: M3
 area: lab
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-012]
-refs: [PRD#performance, DESIGN#processes]
+refs: [PRD#performance, DESIGN#server-agent-one-worker-per-space]
 owner: ""
 branch: ""
 ---
@@ -24,16 +24,17 @@ Measure what thinkpol needs to run, so that README can state minimal and recomme
 - Run it once more with 3 spaces on one node.
 - Record the results in Notes.
 - Add a "System requirements" section to README.md with minimal and recommended values. Mark each value as measured or estimated.
-- Set default worker `MemoryMax`, `PidsMax` and `FairShare` from the measurements (wire them through `supervisor.Options` from `node.go`).
+- Set default worker `MemoryMax` and `PidsMax` from the measurements (wire them through `supervisor.Options` from `node.go`).
 
 ## Out of scope
 - Tuning the data plane to improve the numbers: this ticket measures, it doesn't optimize.
 - Measuring on any real host: measurements run in lab containers only.
+- Fair share and bandwidth caps (parked in TP-040).
 
 ## Acceptance
 - [ ] the lab measurement is reproducible with a single command
 - [ ] README has the system requirements, backed by the numbers in Notes
-- [ ] production builds set non-zero `MemoryMax`, `PidsMax` and `FairShare` defaults from the measurements
+- [ ] production builds set non-zero `MemoryMax` and `PidsMax` defaults from the measurements
 
 ## Notes
 - **Independent review (2026-10-15):** without cgroup limits a compromised worker can fork-bomb the host; the unmetered reply path (`shared.go:652-656`, a blocking `WriteToUDPAddrPort` on the shared socket) lets one flooding worker stall every space's replies.
@@ -47,3 +48,4 @@ Measure what thinkpol needs to run, so that README can state minimal and recomme
 - 2026-10-14 created in backlog
 - 2026-10-15 docs (independent review 2026-10-15): MemoryMax/PidsMax/FairShare defaults mandatory in scope; acceptance and notes on fork-bomb and reply-path flooding
 - 2026-10-15 docs: first measured footprint from device run 4
+- 2026-10-15 docs (backlog grooming): milestone M3; FairShare out of scope (TP-040); refs fixed

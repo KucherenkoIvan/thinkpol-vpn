@@ -26,6 +26,7 @@ A chain hop can be a group of nodes; the client picks a healthy one and switches
 - [ ] paths are probed end to end (each candidate first hop through to the peer), so a path broken beyond its first hop (or a relay's next hop) is left within the failover bound
 
 ## Notes
+- Split before starting (backlog grooming 2026-10-15).
 - From TP-006: policies plug in as `path.Selector`s (`Peer.Selector` for first hops, `Route.Selector` for next hops in the middle) over a `path.Choice{Current, Follows, Candidates}`; `Candidate` carries `Up`, `UpFor`, `RTT`, `HeardVia`, `Followed`. A stateful selector must be passed again, the same value, on every SetPeers/Update. One end of each pair follows (the higher node id) and never returns to its primary on its own; relays in the middle don't follow. `spread` in the middle of a chain needs per-(source, destination) state that `Choice` doesn't carry yet.
 - **Liveness in M0–M2 is link liveness only** (TP-006, after its delta review): failover covers a node's own first-hop (or next-hop) link failing. A first or next hop whose links are up but that can't reach the peer further on goes unnoticed until this ticket's end-to-end probes (a new frame kind; older nodes drop unknown kinds); see the acceptance item. TP-006 tried an end-to-end demotion stopgap and removed it: without probes it demoted healthy hops across idle gaps. The policy pinned by `TestAFailedOverPairReturnsAfterTheHoldDown`: the leader returns to its primary after the hold-down and the follower comes along; this ticket decides the final policy (and whether a dialed link returns to its first endpoint).
 - `Bind.Current` and `Node.Route` give the current entry and next hop, with since when, for the local API status.
@@ -37,3 +38,4 @@ A chain hop can be a group of nodes; the client picks a healthy one and switches
 - 2026-10-10 created in backlog
 - 2026-10-10 docs (TP-003 review): hop groups map onto first hops and route next hops
 - 2026-10-10 docs (TP-006 review): notes from the path layer
+- 2026-10-15 docs (backlog grooming): split note

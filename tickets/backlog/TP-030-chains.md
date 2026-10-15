@@ -29,6 +29,7 @@ Internet traffic can leave through ordered chains of hops, with several egress n
 - **From TP-013 (N9 checks):** the settings are `NodeSettings.AllowIngress`/`AllowEgress`. A chain's first hop must allow ingress, its last egress, every member of a hop group too. Build's cross-section check belongs next to `hiddenFromDevices` in `internal/netmap/envelope.go` (which already keeps every link between devices and ingress-off servers out of the map, and an ingress-off server's addresses out of devices' sections); devmap's next to the ingress check in `checker.paths` (`internal/devmap/spec.go`).
 
 - **From TP-022's review:** chain (egress) names reach the local API's status and the tray as WireGuard device names: restrict them to `[a-z0-9-]` (and a sane length) when the map is parsed, so nothing a map says can act on a terminal. The local API sanitizes them server- and client-side meanwhile.
+- Split before starting (backlog grooming 2026-10-15).
 - **From TP-014 (egress):** an exit is a server in server mode whose section allows egress; nothing more on the exit side. Middle hops need no egress: a worker's dials to the endpoints its section lists leave the root namespace by the uplink, in the transport's protocol (`Transport.Network()`), whatever the egress, but endpoints on private networks are refused unless the node's `EgressAllowed` (`-egress-allowed`) names them. devmap checks a chain's exit (egress, a path to it) at the chain's position. An exit without IPv6 answers IPv6 with "no route", so the device falls back to IPv4 by itself.
 
 ## Log
@@ -37,3 +38,4 @@ Internet traffic can leave through ordered chains of hops, with several egress n
 - 2026-10-10 docs (TP-006 review): notes from the path layer
 - 2026-10-12 docs (TP-013 review): notes from the ingress and egress settings
 - 2026-10-12 docs (TP-014 review): notes from egress on Linux
+- 2026-10-15 docs (backlog grooming): split note
