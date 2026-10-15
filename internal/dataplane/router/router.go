@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"golang.zx2c4.com/wireguard/tun"
+
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/checksum"
 )
 
 // MaxPacket is the longest packet the router reads from the TUN and the
@@ -219,8 +221,8 @@ func (r *Router) read() {
 	}
 }
 
-// route classifies the packet at buf[readOffset:]; the headroom in front
-// of it lets a reflected packet go back to the TUN as it is.
+// route classifies the packet at buf[readOffset:]; readOffset is virtio
+// headroom on Linux TUNs with offloads.
 func (r *Router) route(buf []byte) {
 	p := buf[readOffset:]
 	src, dst, ok := addresses(p)
@@ -239,6 +241,7 @@ func (r *Router) route(buf []byte) {
 	if c.reflect && c.local[dst] && c.local[src] {
 		// One packet at a time: a TUN with offloads may coalesce a batch
 		// in place, and these are rare (the node talking to itself).
+		checksum.Fix(p)
 		if _, err := r.tun.Write([][]byte{buf}, readOffset); err != nil {
 			r.c.reflectFailed.Add(1)
 		} else {

@@ -11,6 +11,7 @@ import (
 	"golang.zx2c4.com/wireguard/tun"
 	"golang.zx2c4.com/wireguard/tun/tuntest"
 
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/checksum/checksumtest"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/packettest"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/router"
 )
@@ -530,6 +531,46 @@ func TestAClosedEgressGetsNothing(t *testing.T) {
 	}
 	if c := r.Counters(); c.NoRoute != 1 || c.Routed != 0 {
 		t.Fatalf("counters %+v", c)
+	}
+}
+
+// Reflected IPv6 UDP with a bad checksum is fixed before the TUN write.
+func TestReflectedIPv6UDPFixesChecksum(t *testing.T) {
+	r, ch := newRouter(t)
+	overlay := egress(t, r, "overlay")
+	err := r.SetTable(router.Table{
+		Overlay:      []netip.Prefix{prefix("fd00:1::/48")},
+		Peers:        []router.Route{{Prefix: prefix("fd00:1::2/128"), Egress: overlay}},
+		Rules:        []router.Route{{Prefix: prefix("::/0"), Egress: overlay}},
+		Local:        []netip.Addr{addr("fd00:1::1")},
+		ReflectLocal: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sp := netip.MustParseAddrPort("[fd00:1::1]:53000")
+	dp := netip.MustParseAddrPort("[fd00:1::1]:53")
+	pkt := packettest.UDPDatagram(sp, dp, []byte("dns"))
+	pkt[46] ^= 0xff
+	pkt[47] ^= 0xff
+	if checksumtest.OK(pkt) {
+		t.Fatal("input checksum should be bad")
+	}
+	ch.Outbound <- pkt
+	select {
+	case got := <-ch.Inbound:
+		if !checksumtest.OK(got) {
+			t.Fatal("reflected packet checksum not valid")
+		}
+	case <-time.After(wait):
+		t.Fatal("no reflection")
+	}
+	marker := ping("fd00:1::1", "fd00:1::2")
+	ch.Outbound <- marker
+	select {
+	case <-reads(overlay):
+	case <-time.After(5 * time.Second):
+		t.Fatal("marker not routed to overlay")
 	}
 }
 

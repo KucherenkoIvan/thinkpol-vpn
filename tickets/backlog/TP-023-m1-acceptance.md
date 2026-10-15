@@ -5,7 +5,7 @@ milestone: M1
 area: lab
 repo: thinkpol-vpn
 size: M
-depends_on: [TP-013, TP-014, TP-017, TP-019, TP-020, TP-021, TP-022, TP-078]
+depends_on: [TP-013, TP-014, TP-017, TP-019, TP-020, TP-021, TP-022, TP-078, TP-079]
 refs: [DESIGN#milestones]
 needs_human: macos
 owner: ""
@@ -26,7 +26,6 @@ M1's "done when" as lab tests, plus one real-world run on macOS.
 ## Notes
 - **Scope of the leak guarantees (TP-062), superseded 2026-10-15:** M1 needs a real Mac; TP-019 and TP-078 are in `depends_on`. The Linux-only acceptance fallback no longer applies.
 - **M1 claim (author, 2026-10-15):** M1 proves the core works on a real Mac and on Linux. It does not claim daily use. Daily use is success metric 2, and it starts after M2's disguised transport.
-- TP-079 (macOS own-IPv6 reflection checksum) joins `depends_on` when its branch merges.
 
 ## Log
 - 2026-10-10 created in backlog
@@ -34,3 +33,4 @@ M1's "done when" as lab tests, plus one real-world run on macOS.
 - 2026-10-15 decision (author, 2026-10-15): M1 is working core, not daily use; daily use waits for M2 disguised transport
 - 2026-10-15 docs (backlog grooming): depends on TP-019 and TP-078; macOS required for M1 acceptance; TP-079 when merged
 - 2026-10-15 docs (backlog grooming, review fixes): Scope checklists TP-078; acceptance wording restored
+- 2026-10-15 docs: depends on TP-079 (merged)
