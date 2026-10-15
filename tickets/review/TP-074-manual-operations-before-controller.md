@@ -24,10 +24,10 @@ The pre-M4 operating model is documented and tooled: map distribution, restarts,
 - Anything the controller (M4) automates.
 
 ## Acceptance
-- [ ] runbook committed and covers map copy, reboot recovery and binary updates over SSH
-- [ ] map-rotation helper command exists and is documented in the runbook
-- [ ] health reports clock skew beyond 5 minutes
-- [ ] chrony/NTP setup documented for nodes
+- [x] runbook committed and covers map copy, reboot recovery and binary updates over SSH
+- [x] map-rotation helper command exists and is documented in the runbook
+- [x] health reports clock skew beyond 5 minutes
+- [x] chrony/NTP setup documented for nodes
 
 ## Notes
 - **Independent review (2026-10-15):** until M4 there is no ticket for hand-operated map distribution, reboot recovery, or clock checks.
@@ -36,3 +36,4 @@ The pre-M4 operating model is documented and tooled: map distribution, restarts,
 - 2026-10-15 created in backlog
 - 2026-10-15 docs: board fix-ups (log order, refs, parked notes)
 - 2026-10-15 backlog → in-progress — owner: glm-tp074
+- 2026-10-15 in-progress → review — pre-controller runbook, dev map rotate, clock_skew health; make lint and make test on darwin
