@@ -14,12 +14,15 @@ const (
 	extRouting  = 43
 	extFragment = 44
 	extDest     = 60
+
+	maxIPv6Ext = 8
 )
 
 // Fix overwrites checksum fields in p when it recognises IPv4 or IPv6 with
 // TCP, UDP or ICMP(v6). Extension headers are skipped on IPv6; if the next
 // header is not one of those, the packet is left unchanged (except IPv4
-// header checksum, which is always fixed).
+// header checksum, which is always fixed). Fragmented IPv4 keeps L4 alone;
+// IPv6 with a fragment header is left completely unchanged.
 func Fix(p []byte) {
 	if len(p) == 0 {
 		return
@@ -40,6 +43,15 @@ func fixIPv4(p []byte) {
 	if hl < 20 || hl > len(p) {
 		return
 	}
+	total := int(binary.BigEndian.Uint16(p[2:4]))
+	if total < hl || total > len(p) {
+		return
+	}
+	p = p[:total]
+	if ipv4Fragmented(p) {
+		putHeader(p[10:12], p[:hl])
+		return
+	}
 	putHeader(p[10:12], p[:hl])
 	body := p[hl:]
 	switch p[9] {
@@ -50,8 +62,25 @@ func fixIPv4(p []byte) {
 	}
 }
 
+func ipv4Fragmented(p []byte) bool {
+	if len(p) < 8 {
+		return false
+	}
+	off := (int(p[6]&0x1f) << 8) | int(p[7])
+	return off != 0 || p[6]&0x20 != 0
+}
+
 func fixIPv6(p []byte) {
 	if len(p) < 40 {
+		return
+	}
+	payload := int(binary.BigEndian.Uint16(p[4:6]))
+	end := 40 + payload
+	if end > len(p) {
+		return
+	}
+	p = p[:end]
+	if ipv6HasFragment(p) {
 		return
 	}
 	off, proto, ok := ipv6Transport(p)
@@ -68,37 +97,61 @@ func fixIPv6(p []byte) {
 	}
 }
 
+func ipv6HasFragment(p []byte) bool {
+	proto := p[6]
+	off := 40
+	for n := 0; n < maxIPv6Ext; n++ {
+		switch proto {
+		case protoTCP, protoUDP, protoICMPv6:
+			return false
+		case extFragment:
+			return true
+		case extHopByHop, extRouting, extDest:
+			if len(p) < off+2 {
+				return false
+			}
+			next := p[off]
+			extLen := (int(p[off+1]) + 1) * 8
+			if extLen < 8 || len(p) < off+extLen {
+				return false
+			}
+			proto = next
+			off += extLen
+		default:
+			return false
+		}
+	}
+	return false
+}
+
 func ipv6Transport(p []byte) (off int, proto byte, ok bool) {
 	if len(p) < 40 {
 		return 0, 0, false
 	}
 	proto = p[6]
 	off = 40
-	for {
+	for n := 0; n < maxIPv6Ext; n++ {
 		switch proto {
 		case protoTCP, protoUDP, protoICMPv6:
 			return off, proto, true
+		case extFragment:
+			return 0, 0, false
 		case extHopByHop, extRouting, extDest:
 			if len(p) < off+2 {
 				return 0, 0, false
 			}
 			next := p[off]
-			extLen := int(p[off+1]+1) * 8
-			if len(p) < off+extLen {
+			extLen := (int(p[off+1]) + 1) * 8
+			if extLen < 8 || len(p) < off+extLen {
 				return 0, 0, false
 			}
 			proto = next
 			off += extLen
-		case extFragment:
-			if len(p) < off+8 {
-				return 0, 0, false
-			}
-			proto = p[off]
-			off += 8
 		default:
 			return 0, 0, false
 		}
 	}
+	return 0, 0, false
 }
 
 func putHeader(at []byte, hdr []byte) {

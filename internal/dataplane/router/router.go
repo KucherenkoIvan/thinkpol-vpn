@@ -221,8 +221,8 @@ func (r *Router) read() {
 	}
 }
 
-// route classifies the packet at buf[readOffset:]; the headroom in front
-// of it lets a reflected packet go back to the TUN with checksums fixed.
+// route classifies the packet at buf[readOffset:]; readOffset is virtio
+// headroom on Linux TUNs with offloads.
 func (r *Router) route(buf []byte) {
 	p := buf[readOffset:]
 	src, dst, ok := addresses(p)
