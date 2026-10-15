@@ -65,3 +65,4 @@ Round 2 delta review (Claude, 2026-10-15):
 - 2026-10-15 review → has-errors — round 2 delta review: 1 blocker, 6 should-fix, nits (see Review findings)
 - 2026-10-15 has-errors → in-progress — owner: claude-tp074, round 3 (last) fixes
 - 2026-10-15 in-progress → review — round 3: clock_skew health cut to TP-090 (B1 forgery reproduced on 2a006c3), runbook staging/rename/reload fixed, rotate test pins both version branches; make lint, make test and go test -race (cmd/thinkpol, devmap, dataplane/..., agent/...) pass on darwin. Not run: the runbook's ssh/systemd commands on a real node (no host may be contacted), the lab.
+- 2026-10-15 docs: TP-074 review nits — runbook rollback/devices/chrony/staging, DESIGN device map delivery, TP-090 spec tightened

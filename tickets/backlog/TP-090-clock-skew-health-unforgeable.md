@@ -16,11 +16,10 @@ A node's health names `clock_skew` when a peer's clock disagrees with its own be
 
 ## Scope
 - A `clock_skew` health problem (devices and servers, including what a server's workers see on their dialed links).
-- The evidence it is built on, robust against replay. The `udp` receiver can't tell a peer with a skewed clock from a replay of an old capture by one datagram alone, so the evidence needs one of these:
+- The evidence it is built on, robust against replay. The `udp` receiver can't tell a peer with a skewed clock from a replay of an old capture by one datagram alone, so the evidence needs **all** of (a) the sealed-time-after-filter-creation rule, (b) remembering each (sender, counter) already counted as stale, and (c) keeping evicted sender ids for the whole connection-id window — **or** the probe-based offset measurement instead (a probe reply carrying the responder's sealed clock, answered to a fresh nonce, warns before the margin is reached).
   - (a) Count a stale datagram from a sender the receiver doesn't know only if its sealed time is later than the receiver filter's creation time. This catches a peer that is ahead at once, and a peer D behind after D of uptime; replays of captures from before a restart or redial never count.
   - (b) Remember each (sender, counter) already counted as stale, bounded, so duplicates don't count again.
   - (c) For this classification, remember evicted sender ids for the whole connection-id window, not only while their datagrams could still be fresh.
-  - Or something stronger, e.g. measure the offset on links that do come up (a probe reply carrying the responder's sealed clock, answered to a fresh nonce) and warn before the margin is reached.
 - A threshold over a sliding window: keep the last N drop times, and report skew if the Nth most recent is within five minutes. A fixed window anchored at the first drop flaps.
 - Race-free folding of cumulative per-link and per-listener counts into the node's (forward-only CAS or a mutex; no uint64 underflow when two goroutines fold at once), and per-feed accounting so a listener that goes away doesn't skew the sum.
 
@@ -28,7 +27,7 @@ A node's health names `clock_skew` when a peer's clock disagrees with its own be
 - Clock setup and the runbook (TP-074, TP-038).
 
 ## Acceptance
-- [ ] a test replays the SAME stale datagram 3 times to a fresh receiver (router, listener and dialed link): no `clock_skew`
+- [ ] a test replays **three different** stale captures (not the same datagram three times) to a fresh receiver (router, listener and dialed link): with the health threshold N set to any value, replayed captures never count toward `clock_skew`
 - [ ] a test replays captures from before a receiver restart or redial: no `clock_skew`
 - [ ] a test with a genuinely skewed peer (ahead and behind) raises `clock_skew`
 - [ ] the engine and supervisor tests call the real `Status`/`Serve` code, not copies of it; a dialed link that never delivers a packet still reaches health
@@ -43,3 +42,4 @@ A node's health names `clock_skew` when a peer's clock disagrees with its own be
 
 ## Log
 - 2026-10-15 created in backlog (cut from TP-074 round 3)
+- 2026-10-15 docs: TP-074 review nits — scope needs (a)+(b)+(c) or probe; acceptance uses three distinct stale captures

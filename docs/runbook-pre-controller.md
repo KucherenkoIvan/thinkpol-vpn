@@ -87,9 +87,11 @@ every node.
    order:
 
    - **Devices first.** They have no SSH path: deliver the file through
-     whatever channel you use for device config, into the device's state
-     directory as `map.bin`. Each device drops off until the servers have
-     the new map too, so finish the servers right after.
+     whatever channel you use for device config. Stage it in the device's
+     state directory under a temporary name and rename it over `map.bin`
+     (same directory, same filesystem — no torn write), the same way as
+     for servers. Each device drops off until the servers have the new map
+     too, so finish the servers right after.
    - **Then every server, in parallel.** Admin access over the overlay can
      drop mid-rollout as credentials change, so reach servers by their
      **public** addresses from the spec. Per server, stage the file in a
@@ -97,7 +99,9 @@ every node.
      temporary name, and rename it over `map.bin`:
 
      ```sh
+     set -e
      staging=$(ssh root@<node> mktemp -d)
+     test -n "$staging"
      scp map.bin root@<node>:"$staging/map.bin"
      ssh root@<node> "install -m 644 -o root -g root \"$staging/map.bin\" /var/lib/thinkpol/.map.new && mv -f /var/lib/thinkpol/.map.new /var/lib/thinkpol/map.bin && rm -rf \"$staging\""
      ```
@@ -124,8 +128,11 @@ Notes:
   map refuses links from nodes still on the old one, and the other way
   round, so distribute the file to all nodes promptly; links come back as
   each end picks the new map up.
-- A node refuses any map older than the one it holds. There is no
-  rollback: fix forward with a newer version.
+- A node refuses any map older than the one it holds on the normal poll
+  path. A restart loads whatever `map.bin` verifies, so replacing the
+  file and restarting rolls **that** node back; peers already on the newer
+  map won't link to it until they roll back too or you issue a newer map
+  everyone takes.
 - `space.pub` only changes when the space's keys themselves change; nodes
   already hold it.
 
@@ -181,9 +188,10 @@ node whose clock is off by more cannot link to its peers.
   provisioning sets this up automatically from M4, TP-038):
 
   ```sh
-  apt install chrony      # or dnf install chrony
-  systemctl enable --now chrony
-  chronyc tracking        # check the "System time" offset is small
+  apt install chrony           # Debian/Ubuntu; service unit: chrony
+  # dnf install chrony         # Fedora/RHEL; service unit: chronyd
+  systemctl enable --now chrony  # or chronyd on Fedora/RHEL
+  chronyc tracking               # check the "System time" offset is small
   ```
 
 - **Devices:** keep the OS's own automatic date and time on (macOS and

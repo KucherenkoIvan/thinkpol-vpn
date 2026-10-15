@@ -200,7 +200,7 @@ Later: **ephemeral nodes** keep nothing on disk but the binary. After a reboot t
 
 ### Control plane (the controller, on go-kernel)
 
-Until a space has its controller (or instead of one, by choice), it runs hand-operated: [docs/runbook-pre-controller.md](docs/runbook-pre-controller.md) is the operating model of that period — maps built with the dev tooling (`dev map build`, `dev map rotate`) and copied to every node over SSH, restarts after reboots, binary updates, and chrony for the clock agreement the transports rely on.
+Until a space has its controller (or instead of one, by choice), it runs hand-operated: [docs/runbook-pre-controller.md](docs/runbook-pre-controller.md) is the operating model of that period — maps built with the dev tooling (`dev map build`, `dev map rotate`), copied to servers over SSH and to devices by hand, restarts after reboots, binary updates, and chrony for the clock agreement the transports rely on.
 
 A DDD service: CLI plus `thinkpol admin serve` for the web panel, reachable **only through the overlay**. That is a network control, not access control: members' devices are on the overlay by design, and the controller holds the space's signing key. How the panel is organised, authenticated and authorised is open (see Open questions).
 
