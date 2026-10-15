@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -64,6 +65,77 @@ func TestDevMapLabWorkflow(t *testing.T) {
 	mustRunCLI(t, "dev", "keygen", "space", "-out", other)
 	if code, _, stderr := runCLI(t, "dev", "map", "inspect", "-keys", other, mapFile); code != 1 || !strings.Contains(stderr, "is not a valid map") {
 		t.Errorf("other space: exit %d, %s", code, stderr)
+	}
+}
+
+func TestDevMapRotate(t *testing.T) {
+	dir := t.TempDir()
+	keys, mapFile := filepath.Join(dir, "keys"), filepath.Join(dir, "map.bin")
+	t.Setenv("SERVER_1_IPV4", "192.0.2.10")
+	t.Setenv("SERVER_1_IPV6", "2001:db8::10")
+	mustRunCLI(t, "dev", "keygen", "space", "-out", keys)
+	mustRunCLI(t, "dev", "keygen", "node", "-out", keys, "server-1", "device-a", "device-b")
+	mustRunCLI(t, "dev", "map", "build", "-keys", keys, "-out", mapFile, "-version", "5", "../../lab/maps/m0.yaml")
+	first := readTestFile(t, mapFile)
+
+	// A rotation replaces a deployed map: with none there, it says so
+	// instead of building.
+	absent := filepath.Join(dir, "absent.bin")
+	if code, _, stderr := runCLI(t, "dev", "map", "rotate", "-keys", keys, "-out", absent, "../../lab/maps/m0.yaml"); code != 1 || !strings.Contains(stderr, "the first build is dev map build") || !strings.Contains(stderr, absent) {
+		t.Fatalf("no map to rotate: exit %d, %s", code, stderr)
+	}
+	if _, err := os.Stat(absent); !os.IsNotExist(err) {
+		t.Error("the failed rotation wrote a map")
+	}
+
+	// The map at -out must be of the space whose keys rotate it.
+	other := filepath.Join(dir, "other")
+	mustRunCLI(t, "dev", "keygen", "space", "-out", other)
+	mustRunCLI(t, "dev", "keygen", "node", "-out", other, "server-1", "device-a", "device-b")
+	otherMap := filepath.Join(dir, "other.bin")
+	mustRunCLI(t, "dev", "map", "build", "-keys", other, "-out", otherMap, "../../lab/maps/m0.yaml")
+	if code, _, stderr := runCLI(t, "dev", "map", "rotate", "-keys", keys, "-out", otherMap, "../../lab/maps/m0.yaml"); code != 1 || !strings.Contains(stderr, "is not a valid map of space") {
+		t.Fatalf("another space's map: exit %d, %s", code, stderr)
+	}
+
+	out := mustRunCLI(t, "dev", "map", "rotate", "-keys", keys, "-out", mapFile, "../../lab/maps/m0.yaml")
+	if !strings.Contains(out, "rotate: copy "+mapFile) || !strings.Contains(out, "server-1, device-a, device-b") || !strings.Contains(out, "map poll or on SIGHUP") {
+		t.Fatalf("rotate said %q", out)
+	}
+
+	rotated := readTestFile(t, mapFile)
+	a, err := netmap.Verify(first, devmapTrust(t, keys))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := netmap.Verify(rotated, devmapTrust(t, keys))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.Header().Version <= a.Header().Version {
+		t.Fatalf("rotated to version %d, was %d", b.Header().Version, a.Header().Version)
+	}
+	link := func(m *netmap.Map) []byte {
+		t.Helper()
+		k, err := devmap.ReadNodeKey(filepath.Join(keys, "device-a.key"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		sec, err := m.Open(k.Map)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(sec.Links) != 1 || len(sec.Links[0].Endpoints) == 0 {
+			t.Fatalf("device-a's section: %+v", sec)
+		}
+		return sec.Links[0].Endpoints[0].Credential
+	}
+	if slices.Equal(link(a), link(b)) {
+		t.Error("the rotation left device-a's link credential")
+	}
+	// The nodes' keys still open their sections, under the same names.
+	if section := mustRunCLI(t, "dev", "map", "inspect", "-keys", keys, "-node-key", filepath.Join(keys, "device-a.key"), mapFile); !strings.Contains(section, "(device-a)") {
+		t.Fatalf("device-a's section after the rotation:\n%s", section)
 	}
 }
 
@@ -180,7 +252,7 @@ func TestDevCommandsAreLabelledAsDevelopmentTooling(t *testing.T) {
 		}
 	}
 	_, stdout, _ := runCLI(t, "dev", "-h")
-	for _, path := range []string{"dev keygen space", "dev keygen node", "dev map build", "dev map inspect", "dev map spec"} {
+	for _, path := range []string{"dev keygen space", "dev keygen node", "dev map build", "dev map inspect", "dev map rotate", "dev map spec"} {
 		if !strings.Contains(stdout, path+"  ") {
 			t.Errorf("dev -h doesn't list %s:\n%s", path, stdout)
 		}
@@ -206,6 +278,7 @@ func TestDevCommandsNeverPrintSecrets(t *testing.T) {
 	runAll("dev", "keygen", "node", "-out", keys, "device-a") // refused: exists
 	runAll("dev", "map", "build", "-keys", keys, "-out", mapFile, "../../lab/maps/m0.yaml")
 	runAll("dev", "map", "build", "-keys", keys, "-out", mapFile, "-version", "99999999999999999", "../../lab/maps/m0.yaml")
+	runAll("dev", "map", "rotate", "-keys", keys, "-out", mapFile, "../../lab/maps/m0.yaml")
 	runAll("dev", "map", "inspect", "-keys", keys, mapFile)
 	for _, n := range nodes {
 		runAll("dev", "map", "inspect", "-keys", keys, "-node-key", filepath.Join(keys, n+".key"), mapFile)
