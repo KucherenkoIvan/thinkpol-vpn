@@ -428,13 +428,19 @@ func TestNoncesNeverRepeat(t *testing.T) {
 
 // TestNineRedialsThenQuietThenOldest replays every redial's first datagram
 // once the current sender has gone quiet: the oldest was evicted from the
-// slots, the others are remembered, and none gets back in.
+// slots, the others are remembered, and none gets back in. The dialers'
+// clocks are ahead by the allowed skew, so the evicted oldest's datagram
+// is still fresh a full skew past its eviction on the listener's clock —
+// it is refused only while the evicted are remembered for twice the skew.
 func TestNineRedialsThenQuietThenOldest(t *testing.T) {
 	f := newFixture(t)
+	// Nodes' clocks may be off by maxClockSkew; the worst case for the
+	// replay memory is a sender at the full skew ahead.
+	skewed := New(Options{Now: (&clock{off: maxClockSkew}).now})
 	var server transport.Link
 	var got <-chan []byte
 	for i := range 9 {
-		d := f.dial()
+		d := f.dialWith(skewed)
 		p := fmt.Sprint("dial ", i)
 		write(t, d, p)
 		if i == 0 {
@@ -446,7 +452,9 @@ func TestNineRedialsThenQuietThenOldest(t *testing.T) {
 	up, _ := f.tap.captured()
 	addr := server.RemoteAddr().String()
 
-	f.clock.advance(senderTakeover + time.Second)
+	// Past one skew the oldest would be forgotten if the memory ran on
+	// the receiver's clock alone; its datagram is fresh until two.
+	f.clock.advance(senderTakeover + maxClockSkew + 15*time.Second)
 	f.tap.rebind()
 	before := f.listener.Counters()
 	for _, d := range up {
