@@ -215,6 +215,20 @@ Resolution (round 2):
   - `const` dropped. A reload that can't narrow a const table would leave a wide preset's exemptions behind, which is worse than a `-T add` the 10 s poll undoes. The fake models OpenBSD's refusal, and `TestApplyingAnotherExemptReplacesIt` fails with `const` back. Step 8 checks the reload on the device.
   - A flush or listing of a missing anchor that answers `Invalid argument` is empty (`flush` :457, `listRules` :228), but only once a listing confirms nothing is there. Tests: `TestAFreshGuardCloseOnACleanHost` (both answers), `TestAFlushThatFailsIsNoEmptyAnchor`.
 
+### Round 3 (Grok delta review of round 2, 2026-10-15)
+Status: R2.1–R2.4 and R2.6–R2.8 fixed, R2.5 partly; no blocker. Orchestrator's list, the last round under the 3-round rule.
+
+- [ ] R3.1 Pre-existing non-DNS flows to an upstream address survive: `kill` treats the upstream table as exempt (`guard_darwin.go:89`, `:432`), but `-k` matches hosts, not ports. Stop exempting upstream addresses in `kill` (DNS re-flows through the `no state` port rule); the test at `guard_darwin_test.go:578` must catch it.
+- [ ] R3.2 States created during a bypass persist: `Apply` returns at `:155` before `killStates` is set, and the next success with an intact anchor skips load and kill. Set `killStates` on any Apply that follows a failed one; test it.
+- [ ] R3.3 Nits:
+  - Each upstream gets only its own ports: per-(address, port) rules or tables, not one brace list crossing every port with every address (`pfctl_darwin.go:424`).
+  - ICMPv6 135/136 to upstreams: keep them, and say in DESIGN and the checklist that they are only for an on-link upstream.
+  - Checklist step 5: the HTTP-refusal test only for a global upstream (a link-local one is passed by `fe80::/10`).
+  - Rollback: after kill -9 stop the process before flushing; the split routes stay until `up -connect=false`.
+  - Step 2: the anchor name present, not "listed first".
+  - Step 3: the counter can grow from background traffic; step 4 decides.
+  - Step 0: record one real `-s states` line and run one `-k` of a throwaway IPv6 pair before trusting the parser; say how to read the results.
+
 ## Log
 - 2026-10-15 created in backlog (split from TP-021 after 3 review rounds; the Linux guard merged in TP-021)
 - 2026-10-15 backlog → in-progress — owner: claude-opus-tp078
@@ -222,3 +236,4 @@ Resolution (round 2):
 - 2026-10-15 review → has-errors — cross-family review (Grok): 1 blocker (unreadable -E token leaks the reference), 5 should-fix, nits and suspicions; findings R2.1–R2.8
 - 2026-10-15 has-errors → in-progress — owner: claude-opus-tp078, round 2
 - 2026-10-15 in-progress → review — round 2: R2.1–R2.8 fixed. Unreadable -E token found by pid or Apply/Close fail; ND rule dropped, MLD to ff00::/8; DNS upstreams in thinkpol_upstream6 for DNS only, upstream ports carried through Want/Exempt/Engine/agent; quick pass above the hook = not enforced; anchor com.apple/000.thinkpol; IPv6 states to non-exempt ends killed with pfctl -k; tables not const; missing anchor = empty; checklist reworked. make lint, make test (pfctl tripwire clean), -race, lab-gotest dataplane (20 pkgs) and agent (6 pkgs) pass. 17 planted bugs each caught: an unknown token held, Apply succeeding unread, Close forgetting it, MLD to any, upstreams in the exempt table, quick pass ignored, no kill, kill ignoring exemptions, kill one direction, no kill after re-enable, stateful passes accepted, Watch quiet after a failure, loose References match, const tables, missing-anchor flush failing Close, any Invalid argument taken as empty (rules, tables). Device run pending
+- 2026-10-15 review → has-errors — Grok delta review of round 2: R2.5 partly fixed (upstream addresses exempt from kill, states made during a bypass), checklist nits; findings R3.1–R3.3
