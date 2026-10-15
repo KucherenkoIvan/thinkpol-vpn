@@ -5,7 +5,7 @@ milestone: M5
 area: cmd/thinkpol-tray
 repo: thinkpol-vpn
 size: epic
-depends_on: [TP-046, TP-048]
+depends_on: [TP-046, TP-048, TP-086]
 refs: [D2, D3, D9, D10]
 needs_human: decision
 owner: ""
@@ -24,3 +24,4 @@ Members use thinkpol from a tray icon, never a terminal.
 - 2026-10-10 created in backlog
 - 2026-10-15 docs (backlog grooming): depends on TP-048 for kill-switch control
 - 2026-10-15 docs (backlog grooming, review fixes): removed redundant split note
+- 2026-10-15 docs: depends on TP-086 (frontend stack revisit)

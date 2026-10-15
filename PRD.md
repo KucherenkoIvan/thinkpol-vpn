@@ -219,7 +219,7 @@ Milestones as in [Release plan](#release-plan). Priority: **must** for the MVP, 
 | A shared node is lost or its node owner stops cooperating | Guest spaces keep alternative entries in their hop groups; revocation is clean on both sides |
 | Scope: this is several products in one | Milestones each deliver something usable; the lab defines "done"; the MVP excludes mobile and direct paths |
 | Windows (Wintun, routing, service install) eats time | Last in the MVP; nothing earlier depends on it |
-| The canvas editor clashes with go-kernel's server-rendered `webui` | Canvas as a JS island inside htmx pages; record it as a kernel lesson |
+| The canvas editor clashes with go-kernel's server-rendered `webui` | Canvas as a JS island inside htmx pages; record it as a kernel lesson (provisional; the frontend stack is revisited in TP-086) |
 
 ## Decisions
 

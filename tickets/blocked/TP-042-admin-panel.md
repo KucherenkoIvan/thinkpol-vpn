@@ -5,7 +5,7 @@ milestone: M4
 area: features
 repo: thinkpol-vpn
 size: L
-depends_on: [TP-035, TP-041]
+depends_on: [TP-035, TP-041, TP-086]
 refs: [A6, A8]
 owner: ""
 branch: ""
@@ -35,3 +35,4 @@ The admin panel's organisation, authentication and authorization are not designe
 - 2026-10-13 docs (TP-062): do not start before the panel's authn/authz design exists (blocking note)
 - 2026-10-15 backlog → blocked — panel authn/authz design missing (backlog grooming)
 - 2026-10-15 docs (backlog grooming, review fixes): Blocked by names who can unblock
+- 2026-10-15 docs: depends on TP-086 (frontend stack revisit)

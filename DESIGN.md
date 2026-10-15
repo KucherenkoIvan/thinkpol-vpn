@@ -161,7 +161,7 @@ A later candidate path, not a separate feature. Nodes learn their public endpoin
 
 ### Desktop client
 
-Two processes. The **service** is the node agent: it runs privileged (TUN, routes, firewall), installed as a launchd daemon, systemd unit or Windows service. The **tray app** is unprivileged and talks to the service over a local socket (named pipe on Windows) with a small gRPC API: connect/disconnect, status, space switcher, rule presets, kill switch, connect-on-boot. The CLI is a third client of the same API.
+Two processes. The **service** is the node agent: it runs privileged (TUN, routes, firewall), installed as a launchd daemon, systemd unit or Windows service. The **tray app** is unprivileged and talks to the service over a local socket (named pipe on Windows) with a small gRPC API: connect/disconnect, status, space switcher, rule presets, kill switch, connect-on-boot. The CLI is a third client of the same API. The tray app's UI stack is provisional (TP-086).
 
 A device can be enrolled in several spaces but runs **one at a time**: switching spaces tears down one data plane and brings up the other.
 
@@ -219,7 +219,7 @@ Everything is space-scoped: every aggregate carries its space id.
 
 Events (`NodeJoined`, `NodeRemoved`, `MemberRemoved`, `GrantAccepted`, `GrantRevoked`, `ChainChanged`, `PolicyChanged`, `MapPublished`, `PathDegraded`, `TransportBlocked`) drive publishing and the dashboards.
 
-**Admin panel.** Server-rendered with go-kernel's `webui` (htmx) for lists, forms and dashboards. The **canvas** (nodes, links, transports, chains as paths, live health and traffic on top, editing by dragging) is a JavaScript island on its page, a graph-editor library fed by a JSON endpoint and a live-update stream. Shared nodes appear on a guest's canvas as read-only, labelled `owned by <space>`. Whether islands like this belong in `webui` itself is a kernel question this project answers.
+**Admin panel.** Server-rendered with go-kernel's `webui` (htmx) for lists, forms and dashboards. The **canvas** (nodes, links, transports, chains as paths, live health and traffic on top, editing by dragging) is a JavaScript island on its page, a graph-editor library fed by a JSON endpoint and a live-update stream. Shared nodes appear on a guest's canvas as read-only, labelled `owned by <space>`. Whether islands like this belong in `webui` itself is a kernel question this project answers. Provisional: the admin panel and the client apps get separate frontends, and both stacks are revisited in TP-086.
 
 **The signed map.** One per space: a signed envelope with a header (space id, key epoch, version, the space's signing and recovery public keys, hashes of list files) and **one sealed section per node**, an anonymous sealed box to that node's map key (its own X25519 key, separate from its WireGuard key). Sections carry no recipient id: a node finds its own by trying to open each one, so nothing in the envelope links a section to a node, or a node's sections across versions. Each section holds only what its node needs:
 - an entry gets the device ids it accepts, the transport's verifier for each one's credential (a hash or public key where the transport allows, the shared secret for a symmetric transport), per-link transport settings, and its forwarding table
