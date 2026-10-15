@@ -47,6 +47,9 @@ Wants=network-online.target
 
 [Service]
 ExecStart=/usr/local/bin/thinkpol up
+# SIGHUP to the agent alone: it re-reads the map at once. The per-space
+# workers it runs don't handle SIGHUP, so never signal the whole unit.
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 
 [Install]
@@ -79,30 +82,39 @@ every node.
    Every `dev map build` and every rotation re-keys **all** links in the
    spec, not only the ones you changed. Nodes on different map versions
    cannot link to each other.
-3. Copy the same `map.bin` to every node. **Devices have no SSH path** —
-   deliver their map through whatever channel you use for device config, or
-   accept that they stay cut off until they get it. **Admin access over the
-   overlay** can drop mid-rollout when credentials change; reach nodes by
-   their **public** addresses from the spec, push the file to all servers
-   in parallel, then signal each one:
+3. Copy the same `map.bin` to every node. Whichever side of a link has
+   the new map can't link to the other until both have it, so go in this
+   order:
 
-   ```sh
-   staging=$(mktemp -d)
-   scp map.bin root@<node>:"$staging/map.new"
-   ssh root@<node> "cp \"$staging/map.new\" /var/lib/thinkpol/map.bin && chmod 644 /var/lib/thinkpol/map.bin && rm -rf \"$staging\" && systemctl kill -s HUP thinkpol"
-   ```
+   - **Devices first.** They have no SSH path: deliver the file through
+     whatever channel you use for device config, into the device's state
+     directory as `map.bin`. Each device drops off until the servers have
+     the new map too, so finish the servers right after.
+   - **Then every server, in parallel.** Admin access over the overlay can
+     drop mid-rollout as credentials change, so reach servers by their
+     **public** addresses from the spec. Per server, stage the file in a
+     directory made on the node, copy it into the state directory under a
+     temporary name, and rename it over `map.bin`:
 
-   The dev tooling writes maps atomically (temp file in the state
-   directory, then rename over `map.bin`). On the node, copy into place
-   before removing the old file so a node that starts during the gap does
-   not see a half-written map. The file must end up owned by root (or the
-   agent's user) and not group- or world-writable.
+     ```sh
+     staging=$(ssh root@<node> mktemp -d)
+     scp map.bin root@<node>:"$staging/map.bin"
+     ssh root@<node> "install -m 644 -o root -g root \"$staging/map.bin\" /var/lib/thinkpol/.map.new && mv -f /var/lib/thinkpol/.map.new /var/lib/thinkpol/map.bin && rm -rf \"$staging\""
+     ```
 
-   Deliver to **devices first**, or accept that they drop off until they
-   receive the new map.
+     The rename is atomic (same directory, same filesystem), so an agent
+     that starts or polls mid-copy sees the old map or the new one, never
+     a half-written file; the dev tooling writes its own output the same
+     way. The file must end up owned by root (or the agent's user) and
+     not group- or world-writable.
 4. Each node takes the new map within its map poll (5 s by default,
-   `THINKPOL_MAP_POLL`) or immediately on `SIGHUP`, and says so in `thinkpol
-   status` (the map version).
+   `THINKPOL_MAP_POLL`) and says so in `thinkpol status` (the map
+   version). To take it at once, `ssh root@<node> systemctl reload
+   thinkpol` with the unit above, which sends SIGHUP to the agent's main
+   process only. Don't use `systemctl kill -s HUP thinkpol`: it signals
+   every process in the unit's cgroup, and a per-space worker there dies
+   of the SIGHUP it doesn't handle (the agent restarts it, an outage for
+   that space).
 
 Notes:
 
@@ -137,18 +149,20 @@ Signed updates distributed through the network arrive with the controller
 
 1. Build or download the binary for the node's platform (`make build` from
    the revision you trust; verify a release's checksum with whatever
-   accompanied it). Check it runs before installing:
+   accompanied it). Stage it in a directory made on the node and check it
+   runs there before installing:
 
    ```sh
-   staging=$(mktemp -d)
-   scp bin/thinkpol root@<node>:"$staging/thinkpol.new"
-   ssh root@<node> "\"$staging/thinkpol.new\" version"
+   staging=$(ssh root@<node> mktemp -d)
+   scp bin/thinkpol root@<node>:"$staging/thinkpol"
+   ssh root@<node> "\"$staging/thinkpol\" version"
    ```
 
-2. Swap the binary and restart the agent:
+2. Swap the binary in with a rename (an agent restarted mid-copy never
+   runs a half-written file) and restart the agent:
 
    ```sh
-   ssh root@<node> "install -m 755 \"$staging/thinkpol.new\" /usr/local/bin/thinkpol && rm -rf \"$staging\" && systemctl restart thinkpol"
+   ssh root@<node> "install -m 755 -o root -g root \"$staging/thinkpol\" /usr/local/bin/.thinkpol.new && mv -f /usr/local/bin/.thinkpol.new /usr/local/bin/thinkpol && rm -rf \"$staging\" && systemctl restart thinkpol"
    ```
 
 3. `ssh root@<node> thinkpol status`: serving again, workers ready.
@@ -161,9 +175,7 @@ refuses to start twice on one host, so a stray manual run changes nothing.
 Transports rely on clocks: nodes' clocks must agree within five minutes,
 and `udp` drops datagrams sealed further from its own clock than that
 (DESIGN, "The map says, the engine converts, the transport decides"). A
-node whose clock is off cannot link, and the peers that drop its datagrams
-report the skew in their health once several such drops arrive in a short
-window (not from a single replayed packet).
+node whose clock is off by more cannot link to its peers.
 
 - **Linux nodes:** install and enable chrony (any NTP client will do;
   provisioning sets this up automatically from M4, TP-038):
@@ -177,11 +189,11 @@ window (not from a single replayed packet).
 - **Devices:** keep the OS's own automatic date and time on (macOS and
   Windows do this by default).
 
-- **Reading the health:** `thinkpol status` on the receiving node names a
-  clock-skew problem when it dropped several authenticated datagrams sent
-  outside the five-minute agreement recently — a peer's clock is off, or
-  (after the threshold) evidence of sustained skew. Fix a clock that is
-  off; do not touch the map.
+- **Spotting a clock that is off:** `thinkpol status` has no clock
+  problem yet (TP-090). The symptom is links that never come up between
+  nodes on the same map version. Compare the clocks of both ends
+  (`date -u` on each, `chronyc tracking` on Linux), fix the one that is
+  off, and leave the map alone.
 
 ## When something is wrong
 
