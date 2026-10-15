@@ -328,7 +328,8 @@ const (
 	// isn't up to date); retried every RetryAfter.
 	ErrorGuard = "applying the leak guard failed"
 	// ErrorGuardUnsupported: the OS can't hold the leak guard (Linux: no
-	// nf_tables); terminal. Interface-bound sockets aren't confined.
+	// nf_tables; macOS: pf's main ruleset has no `anchor "com.apple/*"`);
+	// terminal. Interface-bound sockets aren't confined.
 	ErrorGuardUnsupported = "the leak guard is unsupported here: interface-bound sockets aren't confined"
 )
 

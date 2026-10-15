@@ -10,7 +10,7 @@ import (
 )
 
 // Guard is the firewall half of enforcement, a port the agent fills
-// (firewall.IPv6Guard on Linux): it refuses on the physical interfaces
+// (firewall.IPv6Guard: nftables on Linux, pf on macOS): it refuses on the physical interfaces
 // what routing can't keep in the tunnel. An Enforcer opened with one
 // applies it after the routes, with the same Want (GuardFor), on every
 // Apply and re-apply, re-applies it when Watch says it may have been
@@ -29,7 +29,8 @@ type Guard interface {
 }
 
 // ErrGuardUnsupported: the OS can't hold the guard (no nf_tables in the
-// kernel); terminal for the Enforcer.
+// kernel; no `anchor "com.apple/*"` in pf's main ruleset); terminal for the
+// Enforcer.
 var ErrGuardUnsupported = errors.New("routetable: the OS can't hold the leak guard")
 
 // Exempt is what the leak guard lets out of every interface but the TUN
@@ -47,7 +48,8 @@ type Exempt struct {
 	TUN string
 	// Mark is the links' socket mark (Mark): the transports' and the
 	// direct DNS upstream's sockets, which leave around the tunnel by
-	// design. Zero is none (an OS without socket marks).
+	// design. Zero is none; an OS without socket marks (macOS) ignores
+	// it.
 	Mark uint32
 	// Direct are the destinations that leave around the tunnel by the
 	// rules (their direct set) and the links' endpoints. Its IPv6 part
