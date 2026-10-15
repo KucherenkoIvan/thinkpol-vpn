@@ -23,7 +23,7 @@ The device data plane runs on macOS with the same behaviour as on Linux.
 
 ## Acceptance
 - [x] everything in Scope is implemented behind small OS interfaces, builds for darwin (`make lint`: vet + golangci-lint for darwin/linux/windows, Android build, no cgo) and is unit-tested with fakes that touch no system state (`make test` on a Mac): utun (`tun_darwin.go`), the netcfg adapter (`netcfg_darwin_test.go`: apply/close back to the snapshot, re-apply is a no-op, foreign and other owners' routes never touched, crash takeover, a failed Apply leaves nothing, record written ahead, recreated utun, refused metrics/tables/throws/rules; `kernel_darwin_test.go`: routing messages round-trip, ioctl argument sizes), route-table layout (`split_test.go`: home network, IPv6 off, TUN down, everything direct, hostile network shadowing), socket binding (`ifbind_darwin_test.go`, `control_darwin_test.go`: `IP_BOUND_IF` set on real sockets, nothing sent), DNS (`system_darwin_test.go`, `scutil_darwin_test.go`), local API (`peercred_darwin_test.go`: `LOCAL_PEERCRED` on a real Unix socket pair) — see Notes
-- [ ] manual checklist on the author's Mac, recorded in Notes: up, ping a server's overlay address, browse through an egress node, sleep/wake, Wi-Fi change, down leaves no routes — pending device checklist (Notes, "Device checklist"); automatic part passed in device run 4; manual steps 7, 8, 13, 15b, 15e pending
+- [x] manual checklist on the author's Mac, recorded in Notes: up, ping a server's overlay address, browse through an egress node, sleep/wake, Wi-Fi change, down leaves no routes — manual session 2026-10-15 (Notes, "Manual session"); overlay ping from device run 4; steps 13, 15b and step 8's captures not run
 - [x] overlay names resolve on macOS (moved here from TP-020) (device run 4: step 6 and N1)
 
 ## Notes
@@ -164,6 +164,8 @@ macOS state paths (round 4: every default names the real path, since `/var`, `/e
 - **Leak evidence caveat (cross-model analysis):** the kit decoded its pcaps to empty text, so its packet counts were always zero. The captures themselves were valid. Re-read by hand: steps 6, 12 and 16 captured 0 packets; step 5's 4 packets were unrelated inbound TCP segments and link-local ICMPv6, none to the watched sites. The conclusions hold, but this run's leak checks could not have failed. The kit fix is tracked privately (TP-082).
 - Not run this time: manual steps 7 (sleep/wake), 8 (Wi-Fi change), 13 (local API groups), 15b and 15e. Runs 1–3: IPv4 DNS bug, own-IPv6 checksum bug (TP-079), then a full product pass with invalid leak captures (kit bug).
 
+**Manual session (2026-10-15).** The author's Mac against the same exit, by the private kit's manual mode, about 18 minutes of daily use (browsing, chat) through the tunnel. Sleep/wake and network changes (Wi-Fi off/on, switching networks): while the network was gone the route table fell back to its fail-closed set (9 routes) and the link was closed after 6 s without probe answers ("no answer to its probes within 6s"); once the network returned the full table (16 routes) came back at once and the link was up again 1.4–3.5 s later. DNS followed every change of the system's own resolvers. Another VPN client started and stopped while thinkpol was up (its routes took the table to 18, then 22, then back to 16) without the link dropping. No WARN or ERROR lines in the agent's log. The kit's restore after the session: CLEAN (thinkpol's own stop). Not run: step 8's captures (the tcpdump during a network change, the republish timing), step 13 (local API groups) and step 15b. Recovery could be faster: redial as soon as the route survey sees a new default route instead of waiting out the probe timeout (TP-080).
+
 ## Review findings
 Adversarial review (2026-10-13), orchestrator decision: fix every proven finding; suspicions go to the Device checklist.
 
@@ -269,3 +271,4 @@ Round 2 resolution: R2.1 `netcfg.ConnectedRoutes` (utun networks as halves) + th
 - 2026-10-15 review follow-up (merge): DESIGN pointer to TP-078; watcher-stop test observes the new watcher
 - 2026-10-15 device run 4: PASS (automatic checklist); manual steps pending
 - 2026-10-15 docs: run 4 leak-evidence caveat
+- 2026-10-15 manual session: sleep/wake, network changes and another VPN client coexisting pass, restore clean; manual box ticked; steps 13, 15b and step 8's captures not run
