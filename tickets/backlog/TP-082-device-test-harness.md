@@ -34,6 +34,12 @@ Rewriting every check in this ticket.
 
 ## Notes
 Per-round lessons from the kit work: stub-only tests gave false greens; bash `$BASHPID` and `set -u` pitfalls; mixing fixes with new checks in one round; long-lived agent contexts.
+- Kit bugs found by cross-model analysis of device run 4 (examples of why the harness needs real tests):
+  - pcaps were decoded to empty text (stderr dropped), so packet-count checks always saw zero and could never fail. The run-4 conclusions were confirmed only by re-reading the pcaps by hand.
+  - log-line counts double-counted a file that is a prefix of another
+  - a counter diff subtracted unrelated lines (the N12 checksum figure)
+  - the route monitor missed events during a 12k-route burst
 
 ## Log
 - 2026-10-15 created in backlog (device run 3 and 4 findings)
+- 2026-10-15 docs: kit bugs found in device run 4 analysis

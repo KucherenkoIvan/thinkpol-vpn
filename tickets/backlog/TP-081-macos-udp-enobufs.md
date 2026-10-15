@@ -25,6 +25,9 @@ On darwin, set a larger `SO_SNDBUF` on the link socket (check what is set today)
 - [ ] device checklist: ENOBUFS count during the tunnel speed test drops by an order of magnitude, with upload not worse
 
 ## Notes
+- **Count correction (cross-model analysis):** run 4 had 1311 ENOBUFS lines, not 2622. The kit counted two log files, one of which is a prefix of the other. All of them fell in the last ~5 s of the upload phase, and upload goodput still matched the direct uplink (90 vs 89 Mbit/s), so the impact on run 4's throughput was small.
+- The kit's 'udp dropped due to full socket buffers' counter is receive-side and can't see these send-side drops.
 
 ## Log
 - 2026-10-15 created in backlog (device run 3 and 4 findings)
+- 2026-10-15 docs: ENOBUFS count corrected
