@@ -182,10 +182,10 @@ func (s *senders) admit(id senderID, counter uint64, now time.Time) verdict {
 	takesOver := s.current == nil || id.created() > s.current.id.created() || quiet
 	newest := !e.window.started || counter > e.window.highest
 	fresh := e.window.accept(counter) // recorded even if refused below
-	e.used = s.tick
 	if !fresh {
 		return dropReplay
 	}
+	e.used = s.tick
 	if e != s.current && takesOver {
 		s.current, e.refused = e, false
 	}
