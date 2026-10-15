@@ -153,7 +153,20 @@ Linux nftables guard (TP-021).
 
 A reboot undoes all of it: the anchor and the reference go, and the record's boot session no longer matches.
 
+## Review findings
+Cross-family adversarial review (Grok, 2026-10-15) of round 1; orchestrator's list, round 2 of at most 3.
+
+- [ ] R2.1 (blocker) An unreadable `pfctl -E` token: the retry returns nil while `lostToken` is set, nothing on disk names the reference, and Close sets `closed` without releasing it (pf stays on after a clean stop). A reference that isn't on disk is a failed Apply, retries included: keep the `-E` pid, recover the token from `-s References` by that pid, keep failing while that fails; Close must not close while it is unresolved. Rewrite `TestAnUnreadableTokenIsNotTakenTwice` to require the reference recorded or released and Close to clean it up.
+- [ ] R2.2 ND/MLD pass rules match any destination (ICMPv6 133–137/130–132/143 to a global address leaves en0): restrict to `to { fe80::/10, ff00::/8 }` or delete what the exempt table already covers; say why in DESIGN.
+- [ ] R2.3 The DNS upstream's address is exempt for every socket and protocol: a table of its own, `thinkpol_upstream6`, passing only `proto { tcp, udp }` to its DNS port (853 only if the resolver does DoT); endpoints stay in the main table.
+- [ ] R2.4 The hook check passes when a `pass ... quick` above `anchor "com.apple/*"` ends evaluation first: fail it then; rename the anchor to sort first among com.apple's children (`com.apple/000.thinkpol`); ticket, DESIGN and checklist follow.
+- [ ] R2.5 Pre-existing states skip the anchor (floating state policy): after a load pf enforces, kill IPv6 states whose remote is outside the exempt tables (`pfctl -k`), leaving exempt ones and all IPv4 alone; the fake models `-k`.
+- [ ] R2.6 Device checklist: step 3 fails if the block counter didn't grow; step 4's host route deleted in the rollback; step 7 never runs `pfctl -d` when step 0 listed references (hard stop), References must match the baseline after the run; step 12 optional, restore in the same shell; step 2 requires `no state` on passes and `quick` on the block; `pfctl -ss` before and after connect. Safe on a daily Mac whose Application Firewall holds a pf reference.
+- [ ] R2.7 Nits: `saneRules` requires `no state` on every pass line; the pid-reuse caveat in the ticket; Watch signals while the last Apply failed (or say why the Enforcer's retry covers it); parser hardening (References line `^(\d+)\s+\S+\s+(\d+)\s+`, ALTQ lines skipped everywhere).
+- [ ] R2.8 Suspicions: `const` may refuse the reload that repair and preset changes depend on (drop it, or make the checklist decisive; explain); a flush or listing of a missing anchor answering `Invalid argument` is an empty anchor, and the fake can answer so.
+
 ## Log
 - 2026-10-15 created in backlog (split from TP-021 after 3 review rounds; the Linux guard merged in TP-021)
 - 2026-10-15 backlog → in-progress — owner: claude-opus-tp078
 - 2026-10-15 in-progress → review — round 1: pf guard (anchor com.apple/thinkpol, table thinkpol_exempt6, enable by reference with a boot-stamped token record, 10 s poll), agent wiring, DESIGN "IPv6". make lint, make test (with a pfctl tripwire: no test runs pfctl), go test -race (firewall, agent, routetable), lab-gotest dataplane and agent pass; nine mutations each caught. Device checklist pending (owner's run after review round 1); pfctl output formats and pf behaviour are inferences from the man pages until then
+- 2026-10-15 review → has-errors — cross-family review (Grok): 1 blocker (unreadable -E token leaks the reference), 5 should-fix, nits and suspicions; findings R2.1–R2.8
