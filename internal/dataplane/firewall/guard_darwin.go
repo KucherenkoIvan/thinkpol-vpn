@@ -17,18 +17,18 @@ import (
 // guardPoll is how often Watch reads the guard back from pf: pf has no
 // event stream, so a flush, a disabled pf or a replaced main ruleset is
 // seen within guardPoll (and a debounce) rather than at once as on Linux.
-// Each poll runs pfctl five times.
+// Each poll runs pfctl four times.
 const guardPoll = 10 * time.Second
 
 // IPv6Guard is routetable's Guard on macOS: it keeps IPv6 from leaving
 // around the tunnel (routetable.Exempt) with a pf anchor, GuardAnchor,
 // under Apple's `anchor "com.apple/*"` (guardRules lists its rules), and
-// the anchor's two tables, loaded together by one `pfctl -a
+// the anchor's table, loaded together by one `pfctl -a
 // com.apple/000.thinkpol -f -`:
 //
 //	table <thinkpol_exempt6> persist { <Exempt.Direct's IPv6>, LinkScoped }
-//	table <thinkpol_upstream6> persist { <Exempt.Upstreams' IPv6> }
 //
+// and DNS to each IPv6 direct upstream (Exempt.Upstreams) on its port.
 // An anchor nothing evaluates guards nothing: Apply first checks the main
 // ruleset still has the hook (without it the guard is unsupported, and the
 // health says ipv6_guard_unsupported; /etc/pf.conf is never edited), and
@@ -40,8 +40,9 @@ const guardPoll = 10 * time.Second
 // Apply fails until `pfctl -s References` names it), and Close releases it
 // (`pfctl -X`), but only while that listing has it as taken by the pfctl
 // the record names. States pf already holds would pass without a rule
-// (pf's state policy is floating): after a load or an enable, Apply kills
-// the IPv6 ones to destinations the guard doesn't exempt.
+// (pf's state policy is floating): after a load, an enable, or a failed
+// Apply (a quick pass above the hook may have made some meanwhile), Apply
+// kills the IPv6 ones whose other end isn't in the exempt table.
 //
 // The anchor and the reference stay when the process dies: a crash leaves
 // IPv6 confined, as the route table's rejects do. The next start's
@@ -69,30 +70,26 @@ type IPv6Guard struct {
 	token    *pfToken
 	recorded bool
 	// killStates: pf's states still need checking against applied (after
-	// a load or an enable).
+	// a load, an enable, or a failed Apply).
 	killStates bool
 	// failing: the last Apply failed (but for unsupported); Watch says so.
 	failing bool
 	closed  bool
 }
 
-// appliedGuard is a guard Apply put in place: for exempt, the tables it
+// appliedGuard is a guard Apply put in place: for exempt, the table it
 // loaded, and the anchor's rules as pfctl listed them after the load.
 type appliedGuard struct {
-	exempt          routetable.Exempt
-	table, upstream []netip.Prefix
-	rules           []string
+	exempt routetable.Exempt
+	table  []netip.Prefix
+	rules  []string
 }
 
-// exempts reports whether a is a destination the guard lets out by
-// address: in the exempt table or the upstream table.
+// exempts reports whether the guard lets anything out to addr: it is in
+// the exempt table. An upstream's address isn't: only DNS to it is, and a
+// state names hosts, not ports.
 func (a *appliedGuard) exempts(addr netip.Addr) bool {
 	for _, p := range a.table {
-		if p.Contains(addr) {
-			return true
-		}
-	}
-	for _, p := range a.upstream {
 		if p.Contains(addr) {
 			return true
 		}
@@ -151,6 +148,12 @@ func (g *IPv6Guard) Apply(ctx context.Context, e routetable.Exempt) (err error) 
 	if g.closed {
 		return errClosed
 	}
+	if g.failing {
+		// Whatever failed (a quick pass above the hook, pf on without the
+		// anchor) may have let states be made that the anchor would
+		// refuse.
+		g.killStates = true
+	}
 	defer func() { g.failing = err != nil && !errors.Is(err, routetable.ErrGuardUnsupported) }()
 	if err := g.checkHook(ctx); err != nil {
 		return err
@@ -197,30 +200,25 @@ func (g *IPv6Guard) checkHook(ctx context.Context) error {
 
 // load loads e's anchor and reads it back.
 func (g *IPv6Guard) load(ctx context.Context, e routetable.Exempt) (*appliedGuard, error) {
-	table, upstream, ports := exemptPrefixes(e), upstreamPrefixes(e), upstreamPorts(e)
-	if _, err := g.pf.run(ctx, []byte(anchorText(e.TUN, table, upstream, ports)), "-a", GuardAnchor, "-f", "-"); err != nil {
+	table, upstreams := exemptPrefixes(e), upstreamTargets(e)
+	if _, err := g.pf.run(ctx, []byte(anchorText(e.TUN, table, upstreams)), "-a", GuardAnchor, "-f", "-"); err != nil {
 		return nil, fmt.Errorf("firewall: load the IPv6 guard: %w", err)
 	}
 	rules, err := g.listRules(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if err := saneRules(rules, e.TUN, ports); err != nil {
+	if err := saneRules(rules, e.TUN, upstreams); err != nil {
 		return nil, err
 	}
-	for _, t := range []struct {
-		name string
-		want []netip.Prefix
-	}{{exemptTable, table}, {upstreamTable, upstream}} {
-		got, err := g.listTable(ctx, t.name)
-		if err != nil {
-			return nil, err
-		}
-		if !slices.Equal(got, t.want) {
-			return nil, fmt.Errorf("firewall: pf's table %s holds %d entries unlike the %d loaded", t.name, len(got), len(t.want))
-		}
+	got, err := g.listTable(ctx, exemptTable)
+	if err != nil {
+		return nil, err
 	}
-	return &appliedGuard{exempt: e, table: table, upstream: upstream, rules: rules}, nil
+	if !slices.Equal(got, table) {
+		return nil, fmt.Errorf("firewall: pf's table %s holds %d entries unlike the %d loaded", exemptTable, len(got), len(table))
+	}
+	return &appliedGuard{exempt: e, table: table, rules: rules}, nil
 }
 
 // listRules lists the anchor's rules; an anchor that doesn't exist has
@@ -251,7 +249,7 @@ func (g *IPv6Guard) listTable(ctx context.Context, name string) ([]netip.Prefix,
 }
 
 // intact reports whether the anchor still holds exactly a: its rules as
-// listed after the load, line for line, and both tables, entry for entry
+// listed after the load, line for line, and the table, entry for entry
 // (an entry added is a leak, one removed a refusal).
 func (g *IPv6Guard) intact(ctx context.Context, a *appliedGuard) bool {
 	rules, err := g.listRules(ctx)
@@ -259,11 +257,7 @@ func (g *IPv6Guard) intact(ctx context.Context, a *appliedGuard) bool {
 		return false
 	}
 	table, err := g.listTable(ctx, exemptTable)
-	if err != nil || !slices.Equal(table, a.table) {
-		return false
-	}
-	upstream, err := g.listTable(ctx, upstreamTable)
-	return err == nil && slices.Equal(upstream, a.upstream)
+	return err == nil && slices.Equal(table, a.table)
 }
 
 func (g *IPv6Guard) enabled(ctx context.Context) (bool, error) {
@@ -397,8 +391,11 @@ func (g *IPv6Guard) release(ctx context.Context, t pfToken) error {
 	return nil
 }
 
-// kill kills the IPv6 states pf holds to or from a destination a doesn't
-// exempt: they would pass without the anchor. A state is named by its
+// kill kills the IPv6 states pf holds to or from an address outside a's
+// exempt table: they would pass without the anchor. A direct upstream's
+// address is outside it (only DNS to it is exempt, and `-k` names hosts,
+// not ports): its states go too, and DNS goes on through its stateless
+// rule. A state is named by its
 // two ends, the host's own address and the other one (`pfctl -k local -k
 // remote` for one the host opened, `-k remote -k local` for one opened to
 // it); exempt ones and IPv4 ones are left alone. Killing a tunnelled
@@ -472,16 +469,14 @@ func (g *IPv6Guard) flush(ctx context.Context) error {
 			}
 			continue
 		}
-		for _, name := range []string{exemptTable, upstreamTable} {
-			if _, lerr := g.listTable(ctx, name); !errors.Is(lerr, errNoTable) {
-				return fmt.Errorf("firewall: remove the IPv6 guard: %w", err)
-			}
+		if _, lerr := g.listTable(ctx, exemptTable); !errors.Is(lerr, errNoTable) {
+			return fmt.Errorf("firewall: remove the IPv6 guard: %w", err)
 		}
 	}
 	return nil
 }
 
-// Close flushes the anchor's rules and tables, then releases the
+// Close flushes the anchor's rules and table, then releases the
 // reference the guard holds, or the one its record holds from this boot
 // (a fresh guard's Close is how a crashed run's guard goes), and removes
 // the record. A failure, a reference whose token can't be found included,
@@ -545,7 +540,7 @@ func (g *IPv6Guard) forget() error {
 // Watch polls the guard every guardPoll and signals, coalesced, when it
 // isn't whole any more: the last Apply failed (so a retry is due even
 // without the Enforcer's own), or, applied, the hook is gone or bypassed,
-// pf is off, the anchor's rules or tables changed. pf has no event
+// pf is off, the anchor's rules or table changed. pf has no event
 // stream. The channel closes when ctx ends.
 func (g *IPv6Guard) Watch(ctx context.Context) (<-chan struct{}, error) {
 	g.mu.Lock()

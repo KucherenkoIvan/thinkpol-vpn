@@ -24,11 +24,10 @@ import (
 // system loads at boot without enabling pf), so /etc/pf.conf is never
 // edited. Its name sorts before Apple's own anchors there (200.AirDrop,
 // 250.ApplicationFirewall), which pf evaluates in name order: none of
-// theirs runs first. The tables are the anchor's own.
+// theirs runs first. The table is the anchor's own.
 const (
-	GuardAnchor   = "com.apple/000.thinkpol"
-	exemptTable   = "thinkpol_exempt6"
-	upstreamTable = "thinkpol_upstream6"
+	GuardAnchor = "com.apple/000.thinkpol"
+	exemptTable = "thinkpol_exempt6"
 	// appleHook is the main ruleset's anchor rule that evaluates every
 	// anchor under com.apple, ours included.
 	appleHook = `"com.apple/*"`
@@ -355,28 +354,20 @@ func exemptPrefixes(e routetable.Exempt) []netip.Prefix {
 	return out
 }
 
-// upstreamPrefixes and upstreamPorts are the upstream table's content
-// for e, the IPv6 direct DNS upstreams' addresses, and the ports DNS to
-// them may use: only that is exempt, not the whole address (the resolver
-// asks plain DNS, UDP then TCP, no DoT).
-func upstreamPrefixes(e routetable.Exempt) []netip.Prefix {
-	var out []netip.Prefix
+// upstreamTargets are the direct DNS upstreams the guard passes DNS to,
+// each on its own port (the resolver asks plain DNS, UDP then TCP, no
+// DoT): the IPv6 ones but link-local ones, which the exempt table passes
+// whole (they never leave the link) and pf couldn't name without their
+// interface. Only DNS to them is exempt, not the whole address.
+func upstreamTargets(e routetable.Exempt) []netip.AddrPort {
+	var out []netip.AddrPort
 	for _, ap := range e.Upstreams {
-		if a := ap.Addr().Unmap().WithZone(""); a.Is6() && ap.Port() != 0 {
-			out = append(out, netip.PrefixFrom(a, 128))
+		a := ap.Addr().Unmap().WithZone("")
+		if a.Is6() && !a.IsLinkLocalUnicast() && !a.IsUnspecified() && ap.Port() != 0 {
+			out = append(out, netip.AddrPortFrom(a, ap.Port()))
 		}
 	}
-	return sortedPrefixes(out)
-}
-
-func upstreamPorts(e routetable.Exempt) []uint16 {
-	var out []uint16
-	for _, ap := range e.Upstreams {
-		if ap.Addr().Unmap().Is6() && ap.Port() != 0 {
-			out = append(out, ap.Port())
-		}
-	}
-	slices.Sort(out)
+	slices.SortFunc(out, func(a, b netip.AddrPort) int { return a.Compare(b) })
 	return slices.Compact(out)
 }
 
@@ -394,14 +385,13 @@ type guardRule struct {
 	words []string
 }
 
-// guardRules are the anchor's rules for tun and the upstreams' ports
-// (none: no upstream rule), in order:
+// guardRules are the anchor's rules for tun and the upstreams, in order:
 //
 //	pass out quick on lo0 inet6 all no state
 //	pass out quick on <utun> inet6 all no state
 //	pass out quick inet6 from any to <thinkpol_exempt6> no state
-//	pass out quick inet6 proto { tcp, udp } from any to <thinkpol_upstream6> port { <ports> } no state
-//	pass out quick inet6 proto ipv6-icmp from any to <thinkpol_upstream6> icmp6-type { 135, 136 } no state
+//	pass out quick inet6 proto { tcp, udp } from any to <upstream> port <its port> no state   (each upstream)
+//	pass out quick inet6 proto ipv6-icmp from any to <upstream> icmp6-type { 135, 136 } no state   (each upstream address)
 //	pass out quick inet6 proto ipv6-icmp from any to ff00::/8 icmp6-type { 130, 131, 132, 143 } no state
 //	block return out quick inet6 all
 //
@@ -410,27 +400,29 @@ type guardRule struct {
 // pf's state table, whose limit is 10000 by default). Neighbour discovery
 // needs no rule of its own: its destinations are link-local unicast and
 // multicast, in the exempt table, and one to a global address leaves only
-// if that address is exempt, or is an upstream's (an on-link upstream's
-// unicast neighbour probes, solicitations 135 and advertisements 136). MLD reports go to their group, any multicast
+// if that address is exempt, or is an upstream's: an on-link upstream's
+// unicast neighbour probes (solicitations 135, advertisements 136), which
+// for an upstream off the link are two ICMPv6 types a router could
+// forward, nothing more. MLD reports go to their group, any multicast
 // scope; pf can't match a hop limit (Linux requires 1), so the multicast
 // destination is what keeps them on the link.
-func guardRules(tun string, ports []uint16) []guardRule {
+func guardRules(tun string, upstreams []netip.AddrPort) []guardRule {
 	with := func(w ...string) []string { return append([]string{"pass", "out", "quick", "inet6"}, w...) }
 	rules := []guardRule{
 		{"pass out quick on lo0 inet6 all no state", 1, with("on", "lo0")},
 		{"pass out quick on " + tun + " inet6 all no state", 1, with("on", tun)},
 		{"pass out quick inet6 from any to <" + exemptTable + "> no state", 1, with("<" + exemptTable + ">")},
 	}
-	if len(ports) > 0 {
-		ps := make([]string, len(ports))
-		for i, p := range ports {
-			ps[i] = strconv.Itoa(int(p))
-		}
-		rules = append(rules,
-			guardRule{"pass out quick inet6 proto { tcp, udp } from any to <" + upstreamTable + "> port { " + strings.Join(ps, ", ") + " } no state",
-				2 * len(ports), with("<"+upstreamTable+">", "port")},
-			guardRule{"pass out quick inet6 proto ipv6-icmp from any to <" + upstreamTable + "> icmp6-type { 135, 136 } no state",
-				2, with("<"+upstreamTable+">", "icmp6-type")})
+	for _, u := range upstreams {
+		a, p := u.Addr().String(), strconv.Itoa(int(u.Port()))
+		rules = append(rules, guardRule{"pass out quick inet6 proto { tcp, udp } from any to " + a + " port " + p + " no state", 2, with(a, "port", p)})
+	}
+	var addrs []netip.Addr
+	for _, u := range upstreams {
+		addrs = append(addrs, u.Addr())
+	}
+	for _, a := range slices.Compact(addrs) {
+		rules = append(rules, guardRule{"pass out quick inet6 proto ipv6-icmp from any to " + a.String() + " icmp6-type { 135, 136 } no state", 2, with(a.String(), "icmp6-type")})
 	}
 	return append(rules,
 		guardRule{"pass out quick inet6 proto ipv6-icmp from any to ff00::/8 icmp6-type { 130, 131, 132, 143 } no state", 4, with("ff00::/8", "icmp6-type")},
@@ -438,29 +430,25 @@ func guardRules(tun string, ports []uint16) []guardRule {
 	)
 }
 
-// anchorText is what the guard loads into its anchor: the tables, with
-// their content, and the rules. One load is one pf transaction, so the
-// rules and the tables they look up change together; a table defined
-// with a list of addresses gets exactly that list on every load, `{ }`
-// included (pf.conf(5)). Not `const`: that would keep pfctl -T from
-// changing the tables, but OpenBSD's pf refuses to change a const table
-// in place, and a reload that can't replace them would leave a wider
-// exempt set behind; the guard's poll undoes a `-T add` instead.
-func anchorText(tun string, exempt, upstreams []netip.Prefix, ports []uint16) string {
+// anchorText is what the guard loads into its anchor: the table, with its
+// content, and the rules. One load is one pf transaction, so the rules
+// and the table they look up change together; a table defined with a
+// list of addresses gets exactly that list on every load (pf.conf(5)).
+// Not `const`: that would keep pfctl -T from changing the table, but
+// OpenBSD's pf refuses to change a const table in place, and a reload
+// that can't replace it would leave a wider exempt set behind; the
+// guard's poll undoes a `-T add` instead.
+func anchorText(tun string, exempt []netip.Prefix, upstreams []netip.AddrPort) string {
 	var b strings.Builder
-	table := func(name string, ps []netip.Prefix) {
-		b.WriteString("table <" + name + "> persist {")
-		for i, p := range ps {
-			if i > 0 {
-				b.WriteString(",")
-			}
-			b.WriteString(" \\\n\t" + p.String())
+	b.WriteString("table <" + exemptTable + "> persist {")
+	for i, p := range exempt {
+		if i > 0 {
+			b.WriteString(",")
 		}
-		b.WriteString(" }\n")
+		b.WriteString(" \\\n\t" + p.String())
 	}
-	table(exemptTable, exempt)
-	table(upstreamTable, upstreams)
-	for _, r := range guardRules(tun, ports) {
+	b.WriteString(" }\n")
+	for _, r := range guardRules(tun, upstreams) {
 		b.WriteString(r.text + "\n")
 	}
 	return b.String()
@@ -472,9 +460,9 @@ func anchorText(tun string, exempt, upstreams []netip.Prefix, ports []uint16) st
 // its own way (protocol and ICMPv6 type names, implied options), so this
 // is no comparison of text; the listing it accepts is kept, and every
 // later check compares the anchor with it exactly.
-func saneRules(listed []string, tun string, ports []uint16) error {
+func saneRules(listed []string, tun string, upstreams []netip.AddrPort) error {
 	i := 0
-	for _, r := range guardRules(tun, ports) {
+	for _, r := range guardRules(tun, upstreams) {
 		for range r.n {
 			if i >= len(listed) {
 				return fmt.Errorf("firewall: pf lists %d rules in the guard's anchor, want more", len(listed))

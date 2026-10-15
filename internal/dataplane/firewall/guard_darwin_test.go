@@ -136,10 +136,10 @@ func (r *rig) whole(t *testing.T, e routetable.Exempt, others ...pfToken) {
 	if got, want := tableOf(a, exemptTable), exemptPrefixes(e); !slices.Equal(got, want) {
 		t.Errorf("exempt table %v, want %v", got, want)
 	}
-	if got, want := tableOf(a, upstreamTable), upstreamPrefixes(e); !slices.Equal(got, want) {
-		t.Errorf("upstream table %v, want %v", got, want)
+	if len(a.tables) != 1 {
+		t.Errorf("tables %v, want the exempt table alone", a.tables)
 	}
-	if err := saneRules(a.rules, e.TUN, upstreamPorts(e)); err != nil || a.rules[len(a.rules)-1] != "block return out quick inet6 all" {
+	if err := saneRules(a.rules, e.TUN, upstreamTargets(e)); err != nil || a.rules[len(a.rules)-1] != "block return out quick inet6 all" {
 		t.Errorf("rules %q: %v", a.rules, err)
 	}
 	if !r.pf.isOn() {
@@ -177,55 +177,64 @@ func (r *rig) gone(t *testing.T, others ...pfToken) {
 
 func TestAnchorText(t *testing.T) {
 	e := exempt(t)
-	e.Upstreams = append(e.Upstreams, netip.MustParseAddrPort("[2001:db8:53::2]:5353"))
-	got := anchorText("utun7", exemptPrefixes(e), upstreamPrefixes(e), upstreamPorts(e))
+	e.Upstreams = append(e.Upstreams, aps("[2001:db8:53::2]:5353", "[fe80::53%en0]:53")...)
+	got := anchorText("utun7", exemptPrefixes(e), upstreamTargets(e))
 	want := `table <thinkpol_exempt6> persist { \
 	2001:db8:e::9/128, \
 	2001:db8:d0::/48, \
 	fe80::/10, \
 	ff02::/16 }
-table <thinkpol_upstream6> persist { \
-	2001:db8:53::1/128, \
-	2001:db8:53::2/128 }
 pass out quick on lo0 inet6 all no state
 pass out quick on utun7 inet6 all no state
 pass out quick inet6 from any to <thinkpol_exempt6> no state
-pass out quick inet6 proto { tcp, udp } from any to <thinkpol_upstream6> port { 53, 5353 } no state
-pass out quick inet6 proto ipv6-icmp from any to <thinkpol_upstream6> icmp6-type { 135, 136 } no state
+pass out quick inet6 proto { tcp, udp } from any to 2001:db8:53::1 port 53 no state
+pass out quick inet6 proto { tcp, udp } from any to 2001:db8:53::2 port 5353 no state
+pass out quick inet6 proto ipv6-icmp from any to 2001:db8:53::1 icmp6-type { 135, 136 } no state
+pass out quick inet6 proto ipv6-icmp from any to 2001:db8:53::2 icmp6-type { 135, 136 } no state
 pass out quick inet6 proto ipv6-icmp from any to ff00::/8 icmp6-type { 130, 131, 132, 143 } no state
 block return out quick inet6 all
 `
 	if got != want {
 		t.Errorf("anchor:\n%s\nwant:\n%s", got, want)
 	}
-	// Without IPv6 upstreams, an empty upstream table (cleared on load)
-	// and no rule for it.
-	e.Upstreams = aps("192.0.2.53:53")
-	got = anchorText("utun7", exemptPrefixes(e), upstreamPrefixes(e), upstreamPorts(e))
-	if !strings.Contains(got, "table <thinkpol_upstream6> persist { }\n") || strings.Contains(got, "port") {
-		t.Errorf("without IPv6 upstreams:\n%s", got)
+	// Without IPv6 upstreams, no rule for them.
+	e.Upstreams = aps("192.0.2.53:53", "[fe80::53%en0]:53")
+	got = anchorText("utun7", exemptPrefixes(e), upstreamTargets(e))
+	if strings.Contains(got, "port") || strings.Contains(got, "135") {
+		t.Errorf("without global IPv6 upstreams:\n%s", got)
 	}
 }
 
 // The exempt table is the IPv6 exempt destinations as the fewest
-// prefixes, never the upstreams; the upstream table is their IPv6
-// addresses, with their ports apart. IPv4 and zones never reach either.
-func TestTheTables(t *testing.T) {
+// prefixes, never the upstreams; each global IPv6 upstream is passed DNS
+// on its own port, no other. IPv4 and zones never reach either.
+func TestTheTableAndTheUpstreams(t *testing.T) {
 	var b lists.Builder
 	_ = b.AddRange(netip.MustParseAddr("2001:db8::1"), netip.MustParseAddr("2001:db8::2")) // two prefixes
 	_ = b.AddPrefix(netip.MustParsePrefix("2001:db8::4/126"))
 	_ = b.AddPrefix(netip.MustParsePrefix("192.0.2.0/24"))
 	direct, _ := b.Build()
 	e := routetable.Exempt{TUN: "utun3", Direct: direct,
-		Upstreams: aps("[2001:db8::3]:53", "[fe80::1%en0]:53", "[::ffff:192.0.2.1]:53", "192.0.2.2:5300", "[2001:db8:1::5]:5353", "[2001:db8:1::5]:53")}
+		Upstreams: aps("[2001:db8::3]:53", "[fe80::1%en0]:53", "[::ffff:192.0.2.1]:53", "192.0.2.2:5300", "[2001:db8:1::5]:5353", "[2001:db8:1::5]:53", "[2001:db8::3]:53")}
 	if got, want := exemptPrefixes(e), pfxs("2001:db8::1/128", "2001:db8::2/128", "2001:db8::4/126", "fe80::/10", "ff02::/16"); !slices.Equal(got, want) {
 		t.Errorf("exempt %v, want %v", got, want)
 	}
-	if got, want := upstreamPrefixes(e), pfxs("2001:db8::3/128", "2001:db8:1::5/128", "fe80::1/128"); !slices.Equal(got, want) {
+	want := aps("[2001:db8::3]:53", "[2001:db8:1::5]:53", "[2001:db8:1::5]:5353")
+	if got := upstreamTargets(e); !slices.Equal(got, want) {
 		t.Errorf("upstreams %v, want %v", got, want)
 	}
-	if got, want := upstreamPorts(e), []uint16{53, 5353}; !slices.Equal(got, want) {
-		t.Errorf("ports %v, want %v", got, want)
+	text := anchorText("utun3", exemptPrefixes(e), upstreamTargets(e))
+	for _, line := range []string{
+		"pass out quick inet6 proto { tcp, udp } from any to 2001:db8::3 port 53 no state",
+		"pass out quick inet6 proto { tcp, udp } from any to 2001:db8:1::5 port 53 no state",
+		"pass out quick inet6 proto { tcp, udp } from any to 2001:db8:1::5 port 5353 no state",
+	} {
+		if !strings.Contains(text, line+"\n") {
+			t.Errorf("no %q in\n%s", line, text)
+		}
+	}
+	if strings.Contains(text, "2001:db8::3 port 5353") || strings.Count(text, "to 2001:db8:1::5 icmp6-type") != 1 {
+		t.Errorf("ports crossed or probes doubled:\n%s", text)
 	}
 	if got := exemptPrefixes(routetable.Exempt{TUN: "utun3"}); !slices.Equal(got, routetable.LinkScoped) {
 		t.Errorf("nothing exempt: %v, want LinkScoped", got)
@@ -401,11 +410,11 @@ func TestParseStateAddrs(t *testing.T) {
 // Only a listing whose passes are stateless, with every word, rule for
 // rule, is the guard's.
 func TestSaneRules(t *testing.T) {
-	a, err := fakeLoad(anchorText("utun7", exemptPrefixes(exempt(t)), upstreamPrefixes(exempt(t)), upstreamPorts(exempt(t))))
+	a, err := fakeLoad(anchorText("utun7", exemptPrefixes(exempt(t)), upstreamTargets(exempt(t))))
 	if err != nil {
 		t.Fatal(err)
 	}
-	ports := upstreamPorts(exempt(t))
+	ports := upstreamTargets(exempt(t))
 	if err := saneRules(a.rules, "utun7", ports); err != nil {
 		t.Fatalf("the fake's listing: %v", err)
 	}
@@ -500,7 +509,7 @@ func TestApplyRepairsWhatChangedOutside(t *testing.T) {
 		{"an entry added", edit(func(a *fakeAnchor) { a.tables[exemptTable] = append(a.tables[exemptTable], "::/0") })},
 		{"an entry replaced", edit(func(a *fakeAnchor) { a.tables[exemptTable][0] = "2000::/3" })},
 		{"an entry removed", edit(func(a *fakeAnchor) { a.tables[exemptTable] = a.tables[exemptTable][1:] })},
-		{"an upstream added", edit(func(a *fakeAnchor) { a.tables[upstreamTable] = append(a.tables[upstreamTable], "::/0") })},
+		{"an upstream's port widened", edit(func(a *fakeAnchor) { a.rules[3] = "pass out quick inet6 proto tcp to 2001:db8:53::1 no state" })},
 		{"the block replaced by a pass", edit(func(a *fakeAnchor) { a.rules[len(a.rules)-1] = "pass out quick inet6 all" })},
 		{"the tables flushed", edit(func(a *fakeAnchor) { a.tables = map[string][]string{} })},
 		{"the anchor flushed", func(r *rig) { r.pf.setAnchor(GuardAnchor, nil) }},
@@ -547,10 +556,10 @@ func TestApplyingAnotherExemptReplacesIt(t *testing.T) {
 	}
 	r.whole(t, e2)
 	a := r.pf.anchor(GuardAnchor)
-	if slices.Contains(a.tables[exemptTable], "2001:db8:d0::/48") || slices.Contains(a.tables[upstreamTable], "2001:db8:53::1/128") {
-		t.Errorf("the old exempts stayed: %v", a.tables)
+	if slices.Contains(a.tables[exemptTable], "2001:db8:d0::/48") || slices.ContainsFunc(a.rules, func(r string) bool { return strings.Contains(r, "2001:db8:53::1") }) {
+		t.Errorf("the old exempts stayed: %v, %q", a.tables, a.rules)
 	}
-	if !slices.Contains(a.rules, "pass out quick inet6 proto udp to <thinkpol_upstream6> port = 5353 no state") {
+	if !slices.Contains(a.rules, "pass out quick inet6 proto udp to 2001:db8:54::1 port = 5353 no state") {
 		t.Errorf("rules %q, want DNS to the upstream's port", a.rules)
 	}
 	if !slices.Equal(r.pf.references(), first) {
@@ -575,16 +584,17 @@ func TestApplyKillsStatesTheGuardRefuses(t *testing.T) {
 	foreignOut := st("tcp", "[2001:db8:1::10]:51000", "[2001:db8:ab::7]:443", true)
 	foreignIn := st("tcp", "[2001:db8:1::10]:22", "[2001:db8:ab::8]:50000", false)
 	direct := st("tcp", "[2001:db8:1::10]:51001", "[2001:db8:d0::5]:443", true)
-	upstream := st("udp", "[2001:db8:1::10]:51002", "[2001:db8:53::1]:53", true)
+	upstreamDNS := st("udp", "[2001:db8:1::10]:51002", "[2001:db8:53::1]:53", true)
+	upstreamWeb := st("tcp", "[2001:db8:1::10]:51005", "[2001:db8:53::1]:443", true) // not DNS: -k can't tell them apart
 	link := st("udp", "[2001:db8:1::10]:5353", "[ff02::fb]:5353", true)
 	v4 := st("tcp", "192.0.2.10:51003", "198.51.100.200:443", true)
 	loop := st("tcp", "[::1]:51004", "[::1]:8080", true)
-	r.pf.states = []fakeState{foreignOut, foreignIn, direct, upstream, link, v4, loop}
+	r.pf.states = []fakeState{foreignOut, foreignIn, direct, upstreamDNS, upstreamWeb, link, v4, loop}
 	g := r.guard()
 	if err := g.Apply(context.Background(), exempt(t)); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := r.pf.stateList(), []fakeState{direct, upstream, link, v4, loop}; !slices.Equal(got, want) {
+	if got, want := r.pf.stateList(), []fakeState{direct, link, v4, loop}; !slices.Equal(got, want) {
 		t.Errorf("states %v, want %v", got, want)
 	}
 	// A state made while pf was off goes when the guard turns it back on.
@@ -611,6 +621,35 @@ func TestApplyKillsStatesTheGuardRefuses(t *testing.T) {
 	r.pf.failOn("-k", nil)
 	if err := g.Apply(context.Background(), exempt(t)); err != nil || slices.Contains(r.pf.stateList(), foreignIn) {
 		t.Errorf("retry: %v, states %v", err, r.pf.stateList())
+	}
+}
+
+// States made while the guard failed (a quick pass above the hook keeps
+// state by default) go on the next success, even with the anchor intact.
+func TestStatesMadeWhileTheGuardFailedAreKilled(t *testing.T) {
+	r := newRig(t)
+	g := r.guard()
+	if err := g.Apply(context.Background(), exempt(t)); err != nil {
+		t.Fatal(err)
+	}
+	foreign := fakeState{"tcp", netip.MustParseAddrPort("[2001:db8:1::10]:51000"), netip.MustParseAddrPort("[2001:db8:ab::7]:443"), true}
+	r.pf.set(func(f *fakePF) {
+		f.main = append([]string{"pass out quick inet6 all"}, stockMain...)
+		f.states = append(f.states, foreign)
+	})
+	if err := g.Apply(context.Background(), exempt(t)); err == nil {
+		t.Fatal("applied under a quick pass")
+	}
+	r.pf.set(func(f *fakePF) { f.main = stockMain })
+	r.pf.forget()
+	if err := g.Apply(context.Background(), exempt(t)); err != nil {
+		t.Fatal(err)
+	}
+	if r.pf.ran("-f") != 0 {
+		t.Error("reloaded an intact anchor")
+	}
+	if slices.Contains(r.pf.stateList(), foreign) {
+		t.Error("a state made under the quick pass survived")
 	}
 }
 
