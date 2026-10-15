@@ -271,11 +271,12 @@ func TestReplayWindowAgainstAModel(t *testing.T) {
 
 func TestSenderAdmission(t *testing.T) {
 	now := time.Now()
+	sent := uint32(now.Unix())
 	sender := func(at time.Time) senderID { return newSenderID(at) }
 	var s senders
 	admit := func(id senderID, counter uint64, at time.Time, want verdict) {
 		t.Helper()
-		if got := s.admit(id, counter, at); got != want {
+		if got := s.admit(id, counter, sent, at); got != want {
 			t.Fatalf("admit(created %d, %d) = %v, want %v", id.created(), counter, got, want)
 		}
 	}
@@ -309,7 +310,7 @@ func TestSenderChurnIsBounded(t *testing.T) {
 		at := now.Add(time.Duration(i) * time.Microsecond)
 		id := newSenderID(at)
 		ids = append(ids, id)
-		if v := s.admit(id, 0, at); v != deliverNewest {
+		if v := s.admit(id, 0, uint32(at.Unix()), at); v != deliverNewest {
 			t.Fatalf("sender %d: %v", i, v)
 		}
 	}
@@ -322,11 +323,11 @@ func TestSenderChurnIsBounded(t *testing.T) {
 	} else if took > 2*time.Second {
 		t.Fatalf("200000 new senders took %v", took)
 	}
-	if len(s.evicted.at) > maxEvicted || s.evicted.size > maxEvicted {
-		t.Fatalf("%d evicted senders kept, at most %d", len(s.evicted.at), maxEvicted)
+	if len(s.evicted.byID) > maxEvicted || s.evicted.size > maxEvicted {
+		t.Fatalf("%d evicted senders kept, at most %d", len(s.evicted.byID), maxEvicted)
 	}
 	recent := ids[len(ids)-maxSenders-1] // the last one out of the slots
-	if v := s.admit(recent, 1, now.Add(time.Second)); v != dropStale {
+	if v := s.admit(recent, 1, uint32(now.Add(time.Second).Unix()), now.Add(time.Second)); v != dropStale {
 		t.Fatalf("a just-evicted sender: %v, want refused", v)
 	}
 }

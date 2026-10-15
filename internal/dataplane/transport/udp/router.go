@@ -22,8 +22,9 @@ import (
 // Listener's does. One Router serves every socket of the transport (the
 // supervisor keeps one per transport, across its listeners' reopens), so a
 // datagram replayed to another listener is still a replay. Only a new
-// Router (a supervisor restart) routes replays of the last five minutes
-// once more, which the worker's Listener, if it kept running, still drops.
+// Router (a supervisor restart) routes replays of datagrams sent in the
+// last ten minutes once more — five, if the sender's clock was right —
+// which the worker's Listener, if it kept running, still drops.
 // A Router is safe for concurrent use.
 type Router struct {
 	t     *Transport
@@ -69,7 +70,7 @@ func (r *Router) RouteDatagram(d []byte) (transport.Identity, transport.Verdict)
 		r.counters.staleTimestamp.Add(1)
 		return e.link.Peer, transport.Stale
 	}
-	switch r.senders[string(e.link.Verifier)].admit(o.sender, o.counter, now) {
+	switch r.senders[string(e.link.Verifier)].admit(o.sender, o.counter, o.sent, now) {
 	case dropReplay:
 		r.counters.replayed.Add(1)
 		return e.link.Peer, transport.Replayed
@@ -113,13 +114,13 @@ func (r *Router) refresh(now time.Time) {
 	links, r.changed = r.peers.Snapshot()
 	r.set = indexPeers(links, epochOf(now))
 	for key, rt := range r.retired {
-		if now.Sub(rt.at) > maxClockSkew {
+		if !sentFresh(rt.senders.newest, now) {
 			delete(r.retired, key)
 		}
 	}
 	for key, s := range r.senders {
 		if r.set.bySecret[key] == nil {
-			r.retired[key] = retiree{senders: s, at: now}
+			r.retired[key] = retiree{senders: s}
 			delete(r.senders, key)
 		}
 	}

@@ -428,13 +428,19 @@ func TestNoncesNeverRepeat(t *testing.T) {
 
 // TestNineRedialsThenQuietThenOldest replays every redial's first datagram
 // once the current sender has gone quiet: the oldest was evicted from the
-// slots, the others are remembered, and none gets back in.
+// slots, the others are remembered, and none gets back in. The dialers'
+// clocks are ahead by the allowed skew; the evicted oldest is refused only
+// while its id is remembered by the newest sealed send time seen from it,
+// until the freshness check would reject that time.
 func TestNineRedialsThenQuietThenOldest(t *testing.T) {
 	f := newFixture(t)
+	// Nodes' clocks may be off by maxClockSkew; the worst case for the
+	// replay memory is a sender at the full skew ahead.
+	skewed := New(Options{Now: (&clock{off: maxClockSkew}).now})
 	var server transport.Link
 	var got <-chan []byte
 	for i := range 9 {
-		d := f.dial()
+		d := f.dialWith(skewed)
 		p := fmt.Sprint("dial ", i)
 		write(t, d, p)
 		if i == 0 {
@@ -446,7 +452,9 @@ func TestNineRedialsThenQuietThenOldest(t *testing.T) {
 	up, _ := f.tap.captured()
 	addr := server.RemoteAddr().String()
 
-	f.clock.advance(senderTakeover + time.Second)
+	// Past one skew the oldest would be forgotten if the memory ran on
+	// the receiver's clock alone; its datagram is fresh until two.
+	f.clock.advance(senderTakeover + maxClockSkew + 15*time.Second)
 	f.tap.rebind()
 	before := f.listener.Counters()
 	for _, d := range up {
@@ -494,6 +502,183 @@ func TestRefusedSenderStaysRefused(t *testing.T) {
 	f.expectNoAccept()
 	if a := server.RemoteAddr().String(); a != addr {
 		t.Fatalf("the held datagram moved the link from %s to %s", addr, a)
+	}
+}
+
+// TestAClosedLinkReopensWhileTheDialerKeepsSending: the exit closes a
+// link by mistake while the dialer is alive (its probes lost behind bulk
+// traffic, data still arriving): the dialer's next datagram — same sender,
+// same port, newest counter — reopens a link at once.
+func TestAClosedLinkReopensWhileTheDialerKeepsSending(t *testing.T) {
+	f := newFixture(t)
+	client := f.dial()
+	fromClient := reads(client)
+	write(t, client, "before")
+	server := f.accept()
+	got := reads(server)
+	expectPacket(t, got, []byte("before"))
+
+	_ = server.Close() // the exit gave up on the remote by mistake
+
+	write(t, client, "after")
+	reopened := f.accept()
+	expectPacket(t, reads(reopened), []byte("after"))
+	write(t, reopened, "still yours")
+	expectPacket(t, fromClient, []byte("still yours"))
+}
+
+// TestAClosedLinkReopensOnANewPort: the same sender from a new port opens
+// a link too; nothing about the close locks a rebinding dialer out.
+func TestAClosedLinkReopensOnANewPort(t *testing.T) {
+	f := newFixture(t)
+	client := f.dial()
+	fromClient := reads(client)
+	write(t, client, "before")
+	server := f.accept()
+	got := reads(server)
+	expectPacket(t, got, []byte("before"))
+
+	_ = server.Close()
+	f.tap.rebind()
+	write(t, client, "after")
+	reopened := f.accept()
+	expectPacket(t, reads(reopened), []byte("after"))
+	write(t, reopened, "still yours")
+	expectPacket(t, fromClient, []byte("still yours"))
+}
+
+// TestAReorderedDatagramOpensNoLinkAfterTheClose: a datagram older than
+// the newest seen, from the port the app closed the link on, opens no link
+// toward it; the dialer's next newest one does.
+func TestAReorderedDatagramOpensNoLinkAfterTheClose(t *testing.T) {
+	f := newFixture(t)
+	client := f.dial()
+	write(t, client, "one")
+	server := f.accept()
+	got := reads(server)
+	expectPacket(t, got, []byte("one"))
+
+	f.tap.hold(true)
+	write(t, client, "in flight")
+	waitFor(t, "the tap holding a datagram", func() bool { f.tap.mu.Lock(); defer f.tap.mu.Unlock(); return len(f.tap.held) == 1 })
+	held := f.tap.takeHeld()[0]
+	f.tap.hold(false)
+	write(t, client, "newer")
+	expectPacket(t, got, []byte("newer"))
+
+	_ = server.Close()
+	before := f.camo.Calls()
+	f.tap.inject(held) // older than the newest seen, from the closed port
+	waitFor(t, "the reordered datagram at the camouflage", func() bool { return f.camo.Calls() > before })
+	f.expectNoAccept()
+
+	write(t, client, "after")
+	expectPacket(t, reads(f.accept()), []byte("after"))
+}
+
+// TestALateDatagramFromTheDeadPortDoesNotReopen: the app closed the link
+// because its remote stopped answering; a reordered datagram that port had
+// already sent arrives late and opens no new link toward it. A dialer that
+// comes back redials — a new sender, from a new port — and still opens one.
+func TestALateDatagramFromTheDeadPortDoesNotReopen(t *testing.T) {
+	f := newFixture(t)
+	client := f.dial()
+	write(t, client, "first")
+	server := f.accept()
+	got := reads(server)
+	expectPacket(t, got, []byte("first"))
+
+	f.tap.hold(true)
+	write(t, client, "in flight")
+	waitFor(t, "the tap holding a datagram", func() bool { f.tap.mu.Lock(); defer f.tap.mu.Unlock(); return len(f.tap.held) == 1 })
+	held := f.tap.takeHeld()[0]
+	f.tap.hold(false)
+	write(t, client, "newer") // moves the window past the held datagram
+	expectPacket(t, got, []byte("newer"))
+
+	_ = client.Close() // the dialer's port dies
+	_ = server.Close() // the listener's link is closed on it
+
+	before := f.camo.Calls()
+	f.tap.inject(held) // late and older than the newest seen, from the dead port
+	waitFor(t, "the late datagram at the camouflage", func() bool { return f.camo.Calls() > before })
+	f.expectNoAccept()
+
+	f.tap.rebind()
+	fresh := f.dial()
+	write(t, fresh, "fresh")
+	expectPacket(t, reads(f.accept()), []byte("fresh"))
+}
+
+// TestAnEvictedSenderThatKeepsSendingStaysRemembered: a sender evicted
+// from the slots that keeps sending — its datagrams turned away — must
+// stay remembered as long as its newest datagrams are fresh. Measured from
+// the eviction alone, the memory runs out while a tap's capture of its
+// latest datagrams is still replayable. The sender's clock is ahead by the
+// full allowed skew.
+func TestAnEvictedSenderThatKeepsSendingStaysRemembered(t *testing.T) {
+	f := newFixture(t)
+	// The sender's clock is ahead by the full allowed skew, and moves
+	// with the fixture's, so its sealed send times advance as the
+	// listener's clock is moved forward.
+	skewed := New(Options{Now: func() time.Time { return f.clock.now().Add(maxClockSkew) }})
+	first := f.dialWith(skewed)
+	write(t, first, "first")
+	server := f.accept()
+	got := reads(server)
+	expectPacket(t, got, []byte("first"))
+	for i := range maxSenders { // nine senders: the first is evicted
+		d := f.dialWith(skewed)
+		p := fmt.Sprint("dial ", i)
+		write(t, d, p)
+		expectPacket(t, got, []byte(p))
+	}
+
+	// The evicted sender keeps sending, thirty seconds after the eviction.
+	f.clock.advance(30 * time.Second)
+	f.tap.hold(true)
+	write(t, first, "still sending")
+	waitFor(t, "the tap holding a datagram", func() bool { f.tap.mu.Lock(); defer f.tap.mu.Unlock(); return len(f.tap.held) == 1 })
+	held := f.tap.takeHeld()[0]
+	f.tap.hold(false)
+	f.listener.mu.Lock()
+	fl := f.listener.flows[string(f.peer.Verifier)]
+	e := fl.entry.Load()
+	f.listener.mu.Unlock()
+	stillSending, err := open(nil, e.recv, held)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.tap.inject(held) // the tap took it off the wire; the listener turns it away
+	waitFor(t, "the turned-away datagram counted", func() bool { return f.listener.Counters().StaleSender > 0 })
+
+	// Forgotten ten minutes after the eviction, the id comes back while
+	// the captured datagram — sealed thirty seconds later on a clock a
+	// skew ahead — is fresh for another skew yet.
+	f.clock.advance(2*maxClockSkew - 15*time.Second)
+	f.tap.rebind()
+	extra := f.dialWith(skewed)
+	write(t, extra, "extra")
+	expectPacket(t, got, []byte("extra"))
+	f.listener.mu.Lock()
+	if _, ok := fl.senders.evicted.byID[stillSending.sender]; !ok {
+		f.listener.mu.Unlock()
+		t.Fatal("the evicted sender's memory ran out while its newest datagrams are still fresh")
+	}
+	f.listener.mu.Unlock()
+	addr := server.RemoteAddr().String()
+	before := f.listener.Counters()
+	f.tap.inject(held)
+	waitFor(t, "the replay refused as a stale sender", func() bool {
+		return f.listener.Counters().StaleSender > before.StaleSender
+	})
+	if c := f.listener.Counters(); c.Replayed != before.Replayed {
+		t.Fatalf("the replay was counted as a replay, not refused as a stale sender")
+	}
+	f.expectNoAccept()
+	expectNoPacket(t, got)
+	if a := server.RemoteAddr().String(); a != addr {
+		t.Fatalf("the replay moved the link from %s to %s", addr, a)
 	}
 }
 
