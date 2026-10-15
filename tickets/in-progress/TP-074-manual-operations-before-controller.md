@@ -7,7 +7,7 @@ repo: thinkpol-vpn
 size: M
 depends_on: []
 refs: [A4, S2]
-owner: "glm-tp074"
+owner: "claude-tp074"
 branch: "tp-074-manual-ops"
 ---
 
@@ -64,3 +64,4 @@ Round 2 delta review (Claude, 2026-10-15):
 - 2026-10-15 has-errors → in-progress — round 2 fixes
 - 2026-10-15 in-progress → review — round 2: merged rewrite (TP-070), replay-safe clock_skew, runbook and tests; make lint and make test on darwin
 - 2026-10-15 review → has-errors — round 2 delta review: 1 blocker, 6 should-fix, nits (see Review findings)
+- 2026-10-15 has-errors → in-progress — owner: claude-tp074, round 3 (last) fixes
