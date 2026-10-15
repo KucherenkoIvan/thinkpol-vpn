@@ -123,8 +123,14 @@ type link struct {
 	dialed    bool
 	transport string
 	endpoint  int
-	queue     chan *[]byte // packets
-	control   chan *[]byte // probes and replies, sent first
+	// staleClock is the transport's datagrams dropped as sealed outside
+	// its clock margin (nil without a StaleClockSource), folded into the
+	// node's counts by the read loop; staleClockFolded is how much of it
+	// is already there.
+	staleClock       func() uint64
+	staleClockFolded atomic.Uint64
+	queue            chan *[]byte // packets
+	control          chan *[]byte // probes and replies, sent first
 
 	done      chan struct{}
 	closeOnce sync.Once
@@ -162,6 +168,9 @@ func (n *Node) addLink(id NodeID, tl transport.Link, dialed bool, transportName 
 		done:    make(chan struct{}), created: now,
 		probes:    make(map[uint64]int64),
 		localPort: portOf(tl.LocalAddr()),
+	}
+	if sc, ok := tl.(transport.StaleClockSource); ok {
+		l.staleClock = sc.StaleClock
 	}
 	l.remote = addrString(tl.RemoteAddr())
 	l.remoteID = remoteTag(l.remote)
@@ -419,6 +428,7 @@ func (l *link) readLoop() {
 			continue
 		}
 		failures = 0
+		l.foldStaleClock()
 		if n == 0 {
 			putBuf(b)
 			continue
@@ -428,6 +438,22 @@ func (l *link) readLoop() {
 		l.bytesIn.Add(uint64(n))
 		*b = (*b)[:n]
 		l.node.handle(l, b)
+	}
+}
+
+// foldStaleClock reports the link transport's datagrams dropped as sealed
+// outside its clock margin to the node's counts: evidence that a peer's
+// clock disagrees with the node's beyond the margin (the health says
+// clock_skew). The transport's count is cumulative, so only the growth
+// since the last read is new.
+func (l *link) foldStaleClock() {
+	if l.staleClock == nil {
+		return
+	}
+	if cur := l.staleClock(); cur > l.staleClockFolded.Load() {
+		prev := l.staleClockFolded.Swap(cur)
+		l.node.counters.staleClock.Add(cur - prev)
+		l.node.counters.staleClockAt.Store(l.node.now())
 	}
 }
 

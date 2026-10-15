@@ -70,6 +70,7 @@ func dataPlaneProto(dp *dataplane.Status, listeners int) *localapiv1.DataPlane {
 			"path.queue_full": dp.Path.QueueFull, "path.malformed": dp.Path.Malformed,
 			"path.other_space": dp.Path.OtherSpace, "path.too_large": dp.Path.TooLarge,
 			"path.write_failed": dp.Path.WriteFailed, "path.read_failed": dp.Path.ReadFailed,
+			"stale_clock":         dp.StaleClock,
 			"interface.reapplies": dp.InterfaceReapplies,
 		},
 	}

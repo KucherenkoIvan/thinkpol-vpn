@@ -99,6 +99,9 @@ func (l *Listener) Addr() net.Addr { return l.pc.LocalAddr() }
 // Counters reports what the listener dropped and why.
 func (l *Listener) Counters() Counters { return l.counters.snapshot() }
 
+// StaleClock implements transport.StaleClockSource.
+func (l *Listener) StaleClock() uint64 { return l.counters.staleTimestamp.Load() }
+
 // Sent reports what the listener's links sent and what their padding cost.
 func (l *Listener) Sent() transport.SendStats { return l.meter.Stats() }
 

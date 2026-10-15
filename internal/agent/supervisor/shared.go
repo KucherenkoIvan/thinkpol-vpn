@@ -141,6 +141,12 @@ type shared struct {
 	// Read on every datagram, so swapped as a whole.
 	routes atomic.Pointer[map[transport.SpaceID]*route]
 	byID   atomic.Pointer[map[uint32]*publicListener]
+
+	// staleClock counts the routers' datagrams dropped as sealed outside
+	// their clock margin (a StaleClock verdict), across the spaces; at is
+	// when the last was seen (Unix nanoseconds, 0: never).
+	staleClockCount atomic.Uint64
+	staleClockAt    atomic.Int64
 }
 
 func newShared(reg *transport.Registry, fair FairShare, log *slog.Logger, now func() time.Time) *shared {
@@ -500,7 +506,11 @@ func (s *shared) serveDatagrams(pl *publicListener) {
 			pl.unauthenticated.Add(1)
 		case r == nil:
 			pl.noSpace.Add(1)
-		case verdict == transport.Stale:
+		case verdict == transport.StaleClock:
+			r.counters.stale.Add(1)
+			s.staleClockCount.Add(1)
+			s.staleClockAt.Store(s.now().UnixNano())
+		case verdict == transport.StaleSender:
 			r.counters.stale.Add(1)
 		case verdict == transport.Replayed:
 			r.counters.replayed.Add(1)

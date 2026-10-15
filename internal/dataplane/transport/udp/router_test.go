@@ -254,7 +254,7 @@ func TestRouterRoutesAndRejects(t *testing.T) {
 			t.Errorf("%s datagram: %v for %s", name, v, id)
 		}
 	}
-	if id, v := r.RouteDatagram(datagram(peers[0], toListener, now.Add(-6*time.Minute))); v != transport.Stale || id != peers[0].Peer {
+	if id, v := r.RouteDatagram(datagram(peers[0], toListener, now.Add(-6*time.Minute))); v != transport.StaleClock || id != peers[0].Peer {
 		t.Errorf("a datagram sent 6 minutes ago: %v for %s", v, id)
 	}
 	if got := r.Counters().StaleTimestamp; got != 1 {

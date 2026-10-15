@@ -304,6 +304,7 @@ type stubWorkerReporter struct {
 func (s stubWorkerReporter) Workers() []supervisor.WorkerInfo   { return s.workers }
 func (stubWorkerReporter) Listeners() []supervisor.ListenerInfo { return nil }
 func (stubWorkerReporter) Egress() supervisor.EgressInfo        { return supervisor.EgressInfo{} }
+func (stubWorkerReporter) StaleClock() (uint64, time.Time)      { return 0, time.Time{} }
 
 func TestWorkerLastExitInStatus(t *testing.T) {
 	const reason = "start: no such file"
@@ -356,6 +357,9 @@ func TestHealth(t *testing.T) {
 			PublicListeners: []PublicListenerStatus{{Rejected: 1}}},
 			Health{HealthDown, []string{ProblemWorkerDown, ProblemWorkerRestarts, ProblemLinksRejected}}},
 		{"server retrying", Status{Connection: Serving, Retrying: true}, Health{HealthDegraded, []string{ProblemRetrying}}},
+		{"clock skew", Status{Connection: Connected, StaleClock: 1, StaleClockSeen: time.Now()},
+			Health{HealthDegraded, []string{ProblemClockSkew}}},
+		{"clock skew cleared", Status{Connection: Connected, StaleClock: 3, StaleClockSeen: time.Now().Add(-staleClockWindow - time.Second)}, Health{}},
 	} {
 		if got := tc.st.Health(); got.Level != tc.want.Level || !slices.Equal(got.Problems, tc.want.Problems) {
 			t.Errorf("%s: got %+v, want %+v", tc.name, got, tc.want)

@@ -67,7 +67,7 @@ func (r *Router) RouteDatagram(d []byte) (transport.Identity, transport.Verdict)
 		return transport.Identity{}, transport.Unknown
 	case !o.fresh(now):
 		r.counters.staleTimestamp.Add(1)
-		return e.link.Peer, transport.Stale
+		return e.link.Peer, transport.StaleClock
 	}
 	switch r.senders[string(e.link.Verifier)].admit(o.sender, o.counter, now) {
 	case dropReplay:
@@ -75,7 +75,7 @@ func (r *Router) RouteDatagram(d []byte) (transport.Identity, transport.Verdict)
 		return e.link.Peer, transport.Replayed
 	case dropStale:
 		r.counters.staleSender.Add(1)
-		return e.link.Peer, transport.Stale
+		return e.link.Peer, transport.StaleSender
 	}
 	r.counters.received(o.packets)
 	return e.link.Peer, transport.Routed

@@ -184,6 +184,13 @@ type Engine struct {
 	routesWant *routetable.Want
 	nameRules  *rules.Names // the rules compiled for DNS names
 
+	// Stale-clock sources of the listeners Serve was given (their links
+	// are the path layer's), and what of theirs Status has already counted
+	// (their counters are cumulative), with when it last grew.
+	staleClockers    []func() uint64
+	staleClockFolded uint64
+	staleClockSeenAt time.Time
+
 	// What the resolver needs of the last section: the node's kind and
 	// egress setting, and the overlay names.
 	kind      netmap.NodeKind
@@ -555,8 +562,15 @@ func (e *Engine) debug(msg string, args ...any) {
 
 // Serve runs the path layer on a listener of the named transport until the
 // listener or the engine closes; see path.Node.Serve. Open the listener
-// with Inbound(transportName) as its peers.
+// with Inbound(transportName) as its peers. A listener that counts what it
+// dropped as sealed outside its clock margin (transport.StaleClockSource)
+// feeds the engine's stale-clock count.
 func (e *Engine) Serve(transportName string, l transport.Listener) error {
+	if sc, ok := l.(transport.StaleClockSource); ok {
+		e.mu.Lock()
+		e.staleClockers = append(e.staleClockers, sc.StaleClock)
+		e.mu.Unlock()
+	}
 	return e.node.Serve(transportName, l)
 }
 
@@ -603,6 +617,15 @@ type Status struct {
 	Exit bool
 	// RouteTable is how the OS routing table enforces them.
 	RouteTable RouteTableStatus
+	// StaleClock counts what the transports dropped as sealed outside
+	// their clock margin (udp: five minutes): a peer's clock disagrees
+	// with this node's beyond the margin, or datagrams were replayed from
+	// older than that. It counts the links' and the listeners' transports
+	// since the engine started; StaleClockSeen is when it last grew (zero
+	// if never). Nothing here says which peer: check the clocks of both
+	// ends of a link that misbehaves.
+	StaleClock     uint64
+	StaleClockSeen time.Time
 	// InterfaceReapplies counts successful re-applies of the overlay
 	// interface's addresses and MTU after its link came up (most change
 	// nothing).
@@ -625,6 +648,7 @@ type PeerStatus struct {
 func (e *Engine) Status() Status {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	pc := e.node.Counters()
 	s := Status{
 		MTU:            e.mtu,
 		IPv6:           e.mtu > 0 && e.ipv6Off == nil,
@@ -633,12 +657,26 @@ func (e *Engine) Status() Status {
 		Skipped:        slices.Clone(e.skipped),
 		LastApplyError: e.lastErr,
 		Router:         e.router.Counters(),
-		Path:           e.node.Counters(),
+		Path:           pc,
 		Rules:          e.routedRules,
 		Exit:           e.routedExit,
 		RouteTable:     e.routeTableStatus(),
 
 		InterfaceReapplies: e.ifcReapplies,
+	}
+	// The listeners' stale-clock counts are cumulative and only read here,
+	// so their growth since the last Status is what just happened.
+	var listeners uint64
+	for _, f := range e.staleClockers {
+		listeners += f()
+	}
+	if listeners > e.staleClockFolded {
+		e.staleClockFolded, e.staleClockSeenAt = listeners, time.Now()
+	}
+	s.StaleClock = pc.StaleClock + listeners
+	s.StaleClockSeen = e.node.StaleClockSeen()
+	if e.staleClockSeenAt.After(s.StaleClockSeen) {
+		s.StaleClockSeen = e.staleClockSeenAt
 	}
 	s.Rules.Skipped = slices.Clone(s.Rules.Skipped)
 	if e.ipv6Off != nil {

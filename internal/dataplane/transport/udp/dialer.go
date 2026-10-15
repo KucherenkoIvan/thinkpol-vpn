@@ -72,6 +72,9 @@ func (dl *dialLink) Sent() transport.SendStats { return dl.meter.Stats() }
 // Counters reports what the link dropped and why.
 func (dl *dialLink) Counters() Counters { return dl.counters.snapshot() }
 
+// StaleClock implements transport.StaleClockSource.
+func (dl *dialLink) StaleClock() uint64 { return dl.counters.staleTimestamp.Load() }
+
 func (dl *dialLink) ReadPacket(p []byte) (int, error) {
 	dl.readMu.Lock()
 	defer dl.readMu.Unlock()

@@ -433,6 +433,17 @@ func (s *Supervisor) Egress() EgressInfo {
 	return info
 }
 
+// StaleClock reports what the shared listeners' routers dropped as sealed
+// outside their clock margin (transport.StaleClockSource), and when the
+// last was seen: a node's peer's clock disagrees with its own beyond the
+// margin, which the node's health reports as clock_skew.
+func (s *Supervisor) StaleClock() (uint64, time.Time) {
+	if n := s.shared.staleClockAt.Load(); n != 0 {
+		return s.shared.staleClockCount.Load(), time.Unix(0, n)
+	}
+	return s.shared.staleClockCount.Load(), time.Time{}
+}
+
 // tablesInput is what the root namespace's tables and the spaces' own are
 // built from, besides the slots: the uplink, and each worker's egress grant
 // and dials.
