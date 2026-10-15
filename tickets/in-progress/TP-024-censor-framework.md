@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: L
 depends_on: [TP-012]
 refs: [C4, DESIGN#censor-lab]
-owner: ""
-branch: ""
+owner: "glm-tp024"
+branch: "tp-024-censor-framework"
 ---
 
 ## Goal
@@ -26,3 +26,4 @@ A pluggable censor in the lab's router, and a runner that scores every transport
 
 ## Log
 - 2026-10-10 created in backlog
+- 2026-10-15 backlog → in-progress — owner: glm-tp024
