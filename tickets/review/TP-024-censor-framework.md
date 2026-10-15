@@ -54,6 +54,10 @@ Round-2 delta review (blockers N1–N3, should-fix N4–N10):
 - [x] nits: Held normalisation in decide (lab/censor/engine.go:101-104) is skipped when Hold is also unset; `nc -l` without `-k` — fixed: `TestEngineThrottleDefaults` fails on 2d335b7; listeners use `nc -k`
 - [x] process: the round-2 Log claims `make lab` ran (it didn't); S4 and S7 were ticked without holding; TP-089 is incomplete (missing acceptance for payload retention, passive-plus-active modules, S9 composition, RSTs to both ends, upstream-tell topology; IPv6 fragments; a false "fragment policy delivered" out-of-scope line) — fixed: corrections in the Log below, S4/S7 re-checked with round-3 evidence, TP-089 acceptance and out-of-scope completed
 
+## Out of scope
+- IPv6 fragments are dropped at nft (`exthdr frag exists`) and in userspace (`isFragment`) as delivered in round 3; no further fragment work here.
+- Matrix one-family leak scoring and userspace IPv6 extension-header walk (merge-check leftovers) moved to TP-089.
+
 ## Notes
 - Fragments in the lab: conntrack is already active in lab containers' network namespaces (IPv4 and IPv6), so the router reassembled fragmented datagrams before the forward hook even on 2d335b7; the fragment tests therefore pass there too and only guard against regressions. The censor no longer relies on that: its own `ct` match turns reassembly on. Why IPv6 conntrack is on in the containers is not established (inference: Docker's netns setup).
 - Matrix probes retry a family 30 s when the cell should pass and 8 s when it should fail; the transport is up before censord starts, so a pass shows at once.
@@ -70,3 +74,4 @@ Round-2 delta review (blockers N1–N3, should-fix N4–N10):
 - 2026-10-15 has-errors → in-progress — round 3 (last allowed) — owner: claude-tp024-r3
 - 2026-10-15 correction: round 2's `review → has-errors` and `has-errors → in-progress` lines were written while the file stayed in review/ (1814ef4 to 2d335b7), and its `make lab` claim was untrue: TestCensorMatrix alone wrote RESULTS.md, with an unprobed udp / reset cell
 - 2026-10-15 in-progress → review — round 3: N1–N10, nits and process items fixed; `make lint`, `make test`, `go test -race ./lab/censor/...`, `make lab-gotest PKG=./lab/censor/...`, the four censor lab tests and TestCensorMatrix, then the full `make lab` (THINKPOL_LAB_MAX_LABS=1 LAB_P=1: lab package ok in 381 s, 33 packages ok in nodes), which regenerated lab/RESULTS.md; new lab tests also run against 2d335b7's censor (they fail there except the fragment ones, see Notes); N5 has no behavioural test
+- 2026-10-16 docs(board): merge-check leftovers to TP-089; IPv6 fragment drop documented as delivered

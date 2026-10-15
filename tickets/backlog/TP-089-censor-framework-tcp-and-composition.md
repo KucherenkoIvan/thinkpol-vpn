@@ -39,7 +39,13 @@ The censor framework can inspect multi-segment TCP handshakes, link reverse flow
 - [ ] the topology for TP-026's upstream tell is decided and built: the entry → camouflage-target connection crosses a censor point, and a lab test sees it there
 - [ ] throttling uses mark/tc or a policer, not NFQUEUE hold
 - [ ] verdict log is bounded per flow for long runs
+- [ ] the matrix scorer fails a blocking cell where only one family was blocked (`lab/results_test.go` `score`/`blockedBy`: today "only IPv4" or "only IPv6" scores `fail`, which a blocking cell expects, so a one-family leak stays green)
+- [ ] userspace `isFragment` walks past AH (and any IPv6 extension header) to a fragment header (`lab/censor/packet.go:173-178`); nft `exthdr` already drops these before the queue
+
+## Notes
+- TP-024 round-3 merge check (Grok): the two acceptance items above are leftovers from TP-024 review, not gaps in TP-024's delivered scope.
 
 ## Log
 - 2026-10-15 created in backlog (split from TP-024 review)
 - 2026-10-15 docs (TP-024 round 3): acceptance for payload retention, passive-plus-active modules, composition, RSTs to both ends and the upstream-tell topology; out of scope corrected to what TP-024 delivers
+- 2026-10-16 docs(board): two acceptance items from TP-024 round-3 merge check (matrix one-family leak scoring; userspace IPv6 ext-header walk)
