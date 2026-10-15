@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/checksum"
-	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/checksum/oracle"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/checksum/checksumtest"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/packettest"
 )
 
@@ -38,11 +38,11 @@ func TestFixReflectedChecksums(t *testing.T) {
 		for _, c := range cases {
 			t.Run(corrupt+"/"+c.name, func(t *testing.T) {
 				pkt := corruptChecksum(bytes.Clone(c.pkt), corrupt)
-				if oracle.OK(pkt) {
+				if checksumtest.OK(pkt) {
 					t.Fatal("input should fail verification")
 				}
 				checksum.Fix(pkt)
-				if !oracle.OK(pkt) {
+				if !checksumtest.OK(pkt) {
 					t.Fatal("oracle rejected fixed packet")
 				}
 			})
@@ -71,7 +71,7 @@ func TestFixIPv4FragmentLeavesL4(t *testing.T) {
 			if !bytes.Equal(pkt[20:], l4Before) {
 				t.Fatal("L4 was modified on a fragment")
 			}
-			if !oracle.OK(pkt) {
+			if !checksumtest.OK(pkt) {
 				t.Fatal("IPv4 header checksum not fixed")
 			}
 		})
@@ -100,7 +100,7 @@ func TestFixIPv4UDPChecksumZero(t *testing.T) {
 	pkt[10], pkt[11] = 0, 0
 	binary.BigEndian.PutUint16(pkt[10:], 0xbeef)
 	checksum.Fix(pkt)
-	if !oracle.OK(pkt) {
+	if !checksumtest.OK(pkt) {
 		t.Fatal("fixed UDP v4")
 	}
 }
@@ -110,8 +110,9 @@ func TestFixExtLen255Terminates(t *testing.T) {
 	pkt[0] = 0x60
 	binary.BigEndian.PutUint16(pkt[4:], 8)
 	pkt[6] = 0
-	pkt[40] = 17
+	pkt[40] = 0
 	pkt[41] = 255
+	want := bytes.Clone(pkt)
 	done := make(chan struct{})
 	go func() {
 		checksum.Fix(pkt)
@@ -121,6 +122,9 @@ func TestFixExtLen255Terminates(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("Fix hung on extension length 255")
+	}
+	if !bytes.Equal(pkt, want) {
+		t.Fatal("packet changed")
 	}
 }
 
@@ -145,7 +149,7 @@ func TestKnownVectors(t *testing.T) {
 		if !bytes.Equal(pkt, v.want) {
 			t.Fatalf("%s: got %x want %x", v.name, pkt, v.want)
 		}
-		if !oracle.OK(pkt) {
+		if !checksumtest.OK(pkt) {
 			t.Fatalf("%s: oracle rejected", v.name)
 		}
 	}
@@ -167,6 +171,21 @@ var knownVectors = []struct {
 			0x45, 0x00, 0x00, 0x1c, 0x00, 0x00, 0x00, 0x00, 0x40, 0x11,
 			0xb2, 0x4f, 0x64, 0x40, 0x00, 0x01, 0x64, 0x40, 0x00, 0x01,
 			0xcf, 0x08, 0x00, 0x35, 0x00, 0x08, 0x68, 0x1e, 0x01, 0x02, 0x03, 0x04,
+		},
+	},
+	// 2001:db8::1:4660 -> 2001:db8::2:53, empty UDP; one's complement sum over
+	// pseudo-header (src, dst, u32 8, zero u32, next=17) plus the UDP header = 0xffff → csum 0x9200.
+	{
+		name: "ipv6_udp_min",
+		raw: []byte{
+			0x60, 0x00, 0x00, 0x00, 0x00, 0x08, 0x11, 0x00, 0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00,
+			0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00,
+			0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x12, 0x34, 0x00, 0x35, 0x00, 0x08, 0x00, 0x00,
+		},
+		want: []byte{
+			0x60, 0x00, 0x00, 0x00, 0x00, 0x08, 0x11, 0x00, 0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00,
+			0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00,
+			0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x12, 0x34, 0x00, 0x35, 0x00, 0x08, 0x92, 0x00,
 		},
 	},
 }

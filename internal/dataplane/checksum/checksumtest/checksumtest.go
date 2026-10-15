@@ -1,5 +1,5 @@
-// Package oracle verifies IP checksums independently of checksum.Fix (tests).
-package oracle
+// Package checksumtest verifies IP checksums independently of checksum.Fix (tests).
+package checksumtest
 
 import "encoding/binary"
 

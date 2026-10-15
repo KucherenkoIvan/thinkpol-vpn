@@ -32,7 +32,7 @@ Non-reflection paths; changing how macOS routes local overlay traffic; device ve
 ## Review findings
 
 - [x] 1. BLOCKER — IPv4 fragments and IPv6 fragment header: skip L4 / leave packet unchanged (`checksum.go`)
-- [x] 2. BLOCKER — IPv6 extension length byte arithmetic infinite loop (`checksum.go:86`, `checksum_test.go:171`)
+- [x] 2. BLOCKER — IPv6 extension length byte arithmetic infinite loop (`checksum.go:144`, `checksum_test.go:108` `TestFixExtLen255Terminates`)
 - [x] 3. SHOULD-FIX — router wiring test with bad IPv6 UDP checksum (`router_test.go`)
 - [x] 4. SHOULD-FIX — independent test oracle and extra vectors (`checksum_test.go`)
 - [x] 5. SUSPICION — clamp packet length to IP Total Length / IPv6 payload (`checksum.go`)
@@ -55,3 +55,4 @@ Effect: anything on the Mac talking to its own overlay IPv6 is broken. A6 is oft
 - 2026-10-15 review → has-errors — review round 2 findings recorded
 - 2026-10-15 has-errors → in-progress — fix round 2
 - 2026-10-15 in-progress → review — round 2 fixes; `make test` pass; `make lint` golangci green; `buf breaking` on `localapi.proto` field 6 inherited from base
+- 2026-10-15 review follow-up: ext-len test reproduces the loop; router test flips checksum bytes; checksumtest package

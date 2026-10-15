@@ -11,7 +11,7 @@ import (
 	"golang.zx2c4.com/wireguard/tun"
 	"golang.zx2c4.com/wireguard/tun/tuntest"
 
-	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/checksum/oracle"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/checksum/checksumtest"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/packettest"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/router"
 )
@@ -551,15 +551,15 @@ func TestReflectedIPv6UDPFixesChecksum(t *testing.T) {
 	sp := netip.MustParseAddrPort("[fd00:1::1]:53000")
 	dp := netip.MustParseAddrPort("[fd00:1::1]:53")
 	pkt := packettest.UDPDatagram(sp, dp, []byte("dns"))
-	pkt[42] ^= 0xff
-	pkt[43] ^= 0xff
-	if oracle.OK(pkt) {
+	pkt[46] ^= 0xff
+	pkt[47] ^= 0xff
+	if checksumtest.OK(pkt) {
 		t.Fatal("input checksum should be bad")
 	}
 	ch.Outbound <- pkt
 	select {
 	case got := <-ch.Inbound:
-		if !oracle.OK(got) {
+		if !checksumtest.OK(got) {
 			t.Fatal("reflected packet checksum not valid")
 		}
 	case <-time.After(wait):
@@ -567,7 +567,11 @@ func TestReflectedIPv6UDPFixesChecksum(t *testing.T) {
 	}
 	marker := ping("fd00:1::1", "fd00:1::2")
 	ch.Outbound <- marker
-	<-reads(overlay)
+	select {
+	case <-reads(overlay):
+	case <-time.After(5 * time.Second):
+		t.Fatal("marker not routed to overlay")
+	}
 }
 
 // What the node sends to its own overlay address comes out of a macOS utun
