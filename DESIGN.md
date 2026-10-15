@@ -316,6 +316,13 @@ Besides censor modules, the lab runs two non-censor checks:
 
 `make lab` runs every transport against every module and regenerates a pass/fail matrix committed as `lab/RESULTS.md`.
 
+**The censor framework** (TP-024). The censor is a program, `censord`, run in the lab router's container: nftables sends every forwarded packet, IPv4 and IPv6, to an NFQUEUE (`florianl/go-nfqueue`, pure Go), and the engine decides each packet with the modules the test picked in the JSON config `censord` starts with. The engine tracks per-flow state — counts, a verdict pinned to a flow — and writes every decision, with its module and reason, to a verdict log (JSONL) the tests read. Modules register from init, like `cmd/thinkpol`'s commands, and are either:
+
+- **Passive**, shown every packet and returning a verdict: accept, drop, reset (an RST the censor sends itself, TCP only), or throttle (hold the packet, then accept or drop it). A module may pin its verdict to the flow, and later packets of the flow are decided without the modules seeing them again.
+- **Active**, acting on their own (the prober): they are fed the flows the censor sees, may probe and flag flows, and no per-packet verdict of their own.
+
+A packet the censor cannot parse is accepted: no module can judge what it cannot see. New transports join the matrix by adding a probe — bring the transport up between device-a and server-1 through the router, and report whether data crossed, both families; new modules by registering themselves — neither changes the framework.
+
 ## Milestones
 
 Scope per milestone is in [PRD.md](PRD.md#release-plan); these are the technical "done" checks.

@@ -59,8 +59,8 @@ const (
 
 // Standard is the usual lab: devices on one network, servers and the
 // internet target on another, and a router joining the two. Everything a
-// device sends to a server or the internet crosses the router, which is where
-// packets are captured and where the censor sits later.
+// device sends to a server or the internet crosses the router, which is
+// where packets are captured and where the censor sits.
 func Standard() Topology {
 	device := func(name string) NodeSpec {
 		return NodeSpec{Name: name, Networks: []string{NetDevices}, Gateway: Router}

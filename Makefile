@@ -113,7 +113,7 @@ LAB_TIMEOUT ?= 20m
 # tests must hold up under other runs' load anyway (lab/README.md).
 LAB_P ?= 4
 
-lab: lab-test ## the lab suite (TP-024 makes it run the censor matrix)
+lab: lab-test ## the lab suite, ending in the censor matrix (lab/RESULTS.md)
 
 lab-up: ## start the standard topology for this checkout, for poking around
 	$(LABCTL) up
