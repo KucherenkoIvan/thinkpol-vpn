@@ -8,6 +8,7 @@
 package reality_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdh"
 	"crypto/rand"
@@ -25,12 +26,13 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/lab"
 )
 
-// The stock server: the only part of this lab we don't build. Pinned by
-// digest; the tag is recorded for the ticket.
+// The stock server: the only part of this lab we don't build. Pinned by the
+// multi-arch index digest of the tag (docker buildx imagetools inspect);
+// the tag is recorded for the ticket.
 const (
 	xrayImage  = "ghcr.io/xtls/xray-core"
 	xrayTag    = "26.3.27"
-	xrayDigest = "sha256:79f798b6a130132414c45773bc039e9e51b9694f2dd5ddf99083353ece168f48"
+	xrayDigest = "sha256:592ec4d11f656db95598d01e76dbcc6e002d67360b96a5436500a938230f52c7"
 	xrayRef    = xrayImage + "@" + xrayDigest
 
 	sni        = "example.net"
@@ -40,9 +42,11 @@ const (
 	xrayPort   = 443
 	targetPort = 8443
 	echoPort   = 8001
-	// maxTimeDiff is milliseconds (Xray's conf multiplies by time.Millisecond);
-	// five minutes, matching DESIGN's clock rule.
-	maxTimeDiffMs = 300000
+	// maxTimeDiff is 10000. Xray's conf multiplies it by time.Millisecond,
+	// so the window is 10 s; read as seconds it would be ~2.8 h. The stale
+	// timestamp subtest in the node (60 s skew, right short id, splice
+	// expected) fails if the server reads it as seconds.
+	maxTimeDiff = 10000
 )
 
 func TestRealityPrototype(t *testing.T) {
@@ -88,15 +92,44 @@ func TestRealityPrototype(t *testing.T) {
 	lab.Eventually(t, 30*time.Second, func() error {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		res, err := node.Exec(ctx, "nc", "-z", xrayIP, fmt.Sprint(xrayPort))
-		if err != nil {
+		if _, err := node.Exec(ctx, "nc", "-z", xrayIP, fmt.Sprint(xrayPort)); err != nil {
 			return fmt.Errorf("xray %s:%d not answering: %v\n%s", xrayIP, xrayPort, err, xrayLogs(t, l))
 		}
-		_ = res
 		return nil
 	})
 
-	node.RunGoTests(t, "./lab/prototypes/reality", "-test.run", "TestRealityClientInterop")
+	// The in-node tests skip (and a skip is not a failure) when the lab env
+	// or the config is missing, so a green run proves nothing unless the
+	// output shows every subtest passing.
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	defer cancel()
+	pkgs, err := lab.ListGoPackages(ctx, mustRoot(t), "./lab/prototypes/reality")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, pkg := range pkgs {
+		var out bytes.Buffer
+		if err := node.GoTest(ctx, &out, pkg, "-test.v", "-test.run", "TestRealityClientInterop"); err != nil {
+			t.Errorf("in-node tests failed:\n%s\n%s", out.String(), xrayLogs(t, l))
+			continue
+		}
+		t.Logf("in-node tests:\n%s", out.String())
+		for _, subtest := range []string{"right_short_id", "wrong_short_id", "stale_timestamp"} {
+			want := "--- PASS: TestRealityClientInterop/" + subtest
+			if !strings.Contains(out.String(), want) {
+				t.Errorf("in-node output has no %q (skipped?):\n%s", want, out.String())
+			}
+		}
+	}
+}
+
+func mustRoot(t *testing.T) string {
+	t.Helper()
+	root, err := lab.Root()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return root
 }
 
 // shortID8 returns a random short id, hex-encoded: the credential's wire
@@ -144,7 +177,7 @@ func startXray(t *testing.T, l *lab.Lab, node *lab.Node, serverKey []byte, short
 					"serverNames": []string{sni},
 					"privateKey":  base64.RawURLEncoding.EncodeToString(serverKey),
 					"shortIds":    []string{shortID},
-					"maxTimeDiff": maxTimeDiffMs,
+					"maxTimeDiff": maxTimeDiff,
 				},
 			},
 		}},

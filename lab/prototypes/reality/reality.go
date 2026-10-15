@@ -71,6 +71,9 @@ type Client struct {
 	realSigned bool
 }
 
+// timeNow is stubbed by the tests to seal a stale timestamp.
+var timeNow = time.Now
+
 // Verified reports that the server's certificate carried REALITY's
 // HMAC-SHA512 signature over the leaf public key.
 func (c *Client) Verified() bool { return c.verified }
@@ -114,6 +117,9 @@ func NewClient(conn net.Conn, cfg ClientConfig) (*Client, error) {
 	if len(hello.Raw) <= sessionIDOffset+sessionIDSize {
 		return nil, fmt.Errorf("reality: ClientHello too short: %d bytes", len(hello.Raw))
 	}
+	if hello.Raw[sessionIDOffset-1] != sessionIDSize {
+		return nil, fmt.Errorf("reality: ClientHello session id length %d, want %d", hello.Raw[sessionIDOffset-1], sessionIDSize)
+	}
 	// Zero the session id in the marshaled hello first: it is the additional
 	// data the seal is computed over, on both ends.
 	hello.SessionId = make([]byte, sessionIDSize)
@@ -121,7 +127,7 @@ func NewClient(conn net.Conn, cfg ClientConfig) (*Client, error) {
 
 	plaintext := make([]byte, sealedPlaintext)
 	plaintext[0], plaintext[1], plaintext[2] = cfg.Version[0], cfg.Version[1], cfg.Version[2]
-	binary.BigEndian.PutUint32(plaintext[4:], uint32(time.Now().Unix()))
+	binary.BigEndian.PutUint32(plaintext[4:], uint32(timeNow().Unix()))
 	copy(plaintext[8:], cfg.ShortID)
 
 	shared, err := x25519Shared(uconn, cfg.ServerPublicKey)
@@ -190,7 +196,9 @@ func (c *Client) verifyServerCertificate(rawCerts [][]byte, _ [][]*x509.Certific
 func x25519Shared(uconn *utls.UConn, serverPublic []byte) ([]byte, error) {
 	ecdhe := uconn.HandshakeState.State13.KeyShareKeys.Ecdhe
 	if ecdhe == nil {
-		// Chrome's hello offers X25519MLKEM768; REALITY uses the X25519 half.
+		// No standalone X25519 share; fall back to the X25519 half of
+		// X25519MLKEM768. The Chrome hello carries a standalone share, so
+		// this path is not exercised by the prototype.
 		ecdhe = uconn.HandshakeState.State13.KeyShareKeys.MlkemEcdhe
 	}
 	if ecdhe == nil {

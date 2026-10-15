@@ -79,12 +79,20 @@ func TestRealityClientInterop(t *testing.T) {
 	startEcho(t, cfg.HTTPAddr)
 
 	t.Run("right short id", func(t *testing.T) {
+		resetTargetStats()
 		client := handshake(t, cfg.XrayAddr, ClientConfig{
 			ServerName:      cfg.SNI,
 			ServerPublicKey: serverKey,
 			ShortID:         shortID,
 			Version:         version,
-		}, 0)
+		}, authenticates)
+
+		// The seal was accepted: the server keyed it from the standalone
+		// X25519 share the Chrome hello carries (the client prefers it over
+		// the X25519MLKEM768 half).
+		if client.conn.HandshakeState.State13.KeyShareKeys.Ecdhe == nil {
+			t.Error("the handshake was keyed from the X25519MLKEM768 half, not the standalone X25519 share")
+		}
 
 		// One application-data round trip: a single VLESS request to the
 		// echo server, through the stock Xray inbound.
@@ -114,23 +122,61 @@ func TestRealityClientInterop(t *testing.T) {
 		if !bytes.HasSuffix(response, []byte(echoBody)) {
 			t.Fatalf("echo response: got %q, want it to end with %q", response, echoBody)
 		}
+
+		// Measured, not assumed: on the authenticated path Xray has already
+		// dialed the camouflage target; what reaches it there decides the
+		// upstream tell (TP-087, TP-088). A short settle lets anything Xray
+		// had in flight land.
+		time.Sleep(500 * time.Millisecond)
+		conns, hellos := targetStats()
+		t.Logf("authenticated path: the target accepted %d connection(s), %d carried a ClientHello", conns, len(hellos))
+		for i, h := range hellos {
+			if bytes.Equal(h, client.Hello) {
+				t.Logf("authenticated path: hello %d/%d is byte-identical to what the client sent", i+1, len(hellos))
+			} else {
+				t.Logf("authenticated path: hello %d/%d differs from what the client sent", i+1, len(hellos))
+			}
+		}
 	})
 
 	t.Run("wrong short id", func(t *testing.T) {
+		resetTargetStats()
 		handshake(t, cfg.XrayAddr, ClientConfig{
 			ServerName:      cfg.SNI,
 			ServerPublicKey: serverKey,
 			ShortID:         shortIDWrong,
 			Version:         version,
-		}, 1)
+		}, splices)
+	})
+
+	// The seal carries a Unix time the server checks against maxTimeDiff.
+	// The config sets it to 10000: read as milliseconds (as Xray's conf
+	// reads it), the window is 10 s and a 60 s skew is stale; read as
+	// seconds, the window is ~2.8 h and the handshake would authenticate.
+	t.Run("stale timestamp", func(t *testing.T) {
+		resetTargetStats()
+		timeNow = func() time.Time { return time.Now().Add(-time.Minute) }
+		defer func() { timeNow = time.Now }()
+		handshake(t, cfg.XrayAddr, ClientConfig{
+			ServerName:      cfg.SNI,
+			ServerPublicKey: serverKey,
+			ShortID:         shortID,
+			Version:         version,
+		}, splices)
 	})
 }
 
-// handshake runs one REALITY handshake against the stock server. expect,
-// 0 or 1, says which outcome the caller wants: 0, the server authenticates
-// the client; 1, the server splices the connection to the target, and the
-// checks for that path run here.
-func handshake(t *testing.T, addr string, cfg ClientConfig, expect int) *Client {
+// outcome says which server behaviour a handshake should produce.
+type outcome uint
+
+const (
+	authenticates outcome = iota // the server accepted the seal: a REALITY session
+	splices                      // the server rejected it: the connection is spliced to the target
+)
+
+// handshake runs one REALITY handshake against the stock server. want says
+// which outcome the caller expects; the checks for the splice path run here.
+func handshake(t *testing.T, addr string, cfg ClientConfig, want outcome) *Client {
 	t.Helper()
 	dialed, err := net.Dial("tcp", addr)
 	if err != nil {
@@ -145,12 +191,12 @@ func handshake(t *testing.T, addr string, cfg ClientConfig, expect int) *Client 
 	defer cancel()
 	handshakeErr := client.Handshake(ctx)
 
-	switch expect {
-	case 0:
+	switch want {
+	case authenticates:
 		if handshakeErr != nil {
 			t.Fatalf("REALITY handshake: %v", handshakeErr)
 		}
-	case 1:
+	case splices:
 		if handshakeErr == nil {
 			t.Fatal("expected the splice path (real certificate), got a REALITY session")
 		}
@@ -176,12 +222,29 @@ func handshake(t *testing.T, addr string, cfg ClientConfig, expect int) *Client 
 // The camouflage target and the echo server run in this test binary. One
 // test runs at a time in the node, so package-level state is fine.
 var (
-	targetMu        sync.Mutex
-	targetLeafCert  *tls.Certificate
-	targetParsed    *x509.Certificate
-	helloSeen       []byte
-	helloSeenRecord bool
+	targetMu       sync.Mutex
+	targetLeafCert *tls.Certificate
+	targetParsed   *x509.Certificate
+	targetConns    int      // connections accepted since the last resetTargetStats
+	targetHellos   [][]byte // the first ClientHello record on each connection that delivered one
 )
+
+// resetTargetStats makes the connection and hello counts measure one
+// subtest only.
+func resetTargetStats() {
+	targetMu.Lock()
+	defer targetMu.Unlock()
+	targetConns, targetHellos = 0, nil
+}
+
+// targetStats reports how many connections the target accepted since the
+// last reset, and the ClientHello messages captured on them (the
+// handshake-message bytes, record header stripped).
+func targetStats() (conns int, hellos [][]byte) {
+	targetMu.Lock()
+	defer targetMu.Unlock()
+	return targetConns, append([][]byte(nil), targetHellos...)
+}
 
 func startTarget(t *testing.T, addr, sni string) {
 	t.Helper()
@@ -219,15 +282,19 @@ func startTarget(t *testing.T, addr, sni string) {
 			if err != nil {
 				return
 			}
+			targetMu.Lock()
+			targetConns++
+			targetMu.Unlock()
 			go func() {
 				defer func() { _ = conn.Close() }()
 				tlsConn := tls.Server(&recordingConn{Conn: conn}, &tls.Config{
 					Certificates: []tls.Certificate{*targetLeafCert},
 					MinVersion:   tls.VersionTLS13,
 				})
-				// Xray splices the raw bytes to us on the unauthenticated
-				// path only; on the authenticated path it dials but never
-				// sends a ClientHello, so the handshake times out and the
+				// Xray splices the raw bytes to us when the seal is
+				// rejected; on the authenticated path it also forwards the
+				// ClientHello (measured, see the right-short-id subtest's
+				// log) but nothing else, so the handshake times out and the
 				// connection is dropped. Both are fine.
 				_ = tlsConn.SetDeadline(time.Now().Add(30 * time.Second))
 				if err := tlsConn.Handshake(); err != nil {
@@ -249,10 +316,10 @@ func targetLeaf() *x509.Certificate {
 func capturedHello() []byte {
 	targetMu.Lock()
 	defer targetMu.Unlock()
-	if !helloSeenRecord {
+	if len(targetHellos) == 0 {
 		return nil
 	}
-	return append([]byte(nil), helloSeen...)
+	return append([]byte(nil), targetHellos[0]...)
 }
 
 // recordingConn keeps the first complete TLS record a connection delivers:
@@ -275,8 +342,7 @@ func (c *recordingConn) Read(p []byte) (int, error) {
 	if len(c.buf) >= 5 {
 		if l := int(c.buf[3])<<8 | int(c.buf[4]); len(c.buf) >= 5+l {
 			targetMu.Lock()
-			helloSeen = append([]byte(nil), c.buf[5:5+l]...)
-			helloSeenRecord = true
+			targetHellos = append(targetHellos, append([]byte(nil), c.buf[5:5+l]...))
 			targetMu.Unlock()
 			c.done = true
 		}

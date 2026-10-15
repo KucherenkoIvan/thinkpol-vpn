@@ -15,7 +15,6 @@ import (
 // VLESS address types (proxy/vless/encoding headers).
 const (
 	addrIPv4   = 0x01
-	addrDomain = 0x02
 	addrIPv6   = 0x03
 	commandTCP = 0x01
 )
