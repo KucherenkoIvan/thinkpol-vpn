@@ -46,89 +46,109 @@ func (w *replayWindow) accept(counter uint64) bool {
 // redials, or a listener that restarts, is a new sender with counters from
 // zero and a later creation time.
 //
-// Every sender that ever showed up is remembered for as long as its
-// datagrams can stay fresh (senderForget, twice maxClockSkew: the sealed
-// send time is the sender's, up to a skew ahead of the receiver's clock):
-// in a slot, with the counters seen, even when it was refused; or, once
-// evicted from the slots, by id alone, refused outright. So a replay can't
-// come back later as a "new" sender once the current one goes quiet. The
-// evicted are at most maxEvicted, the oldest forgotten first: a dialer
-// churning through senders can't make this grow, or cost more per
-// datagram, without bound. A forgotten sender is older than the churning
-// current one, so while that one is active it is still refused; the
-// residual: a sender evicted from the slots and then pushed out of the
-// ring by more than maxEvicted further evictions within ten minutes can
-// take over again once the current sender has been silent for
-// senderTakeover (30 s), and making those evictions requires the
-// credential.
+// Every sender that ever showed up is remembered for as long as a
+// datagram of it could still be fresh: in a slot, with the counters seen,
+// even when it was refused; or, once evicted from the slots, by id alone
+// with the newest sealed send time seen from it (freshness is what bounds
+// a replay, and it runs on the sender's sealed time — a receiver whose
+// wall clock steps back stays consistent with it), refused outright. So a
+// replay can't come back later as a "new" sender once the current one
+// goes quiet. The evicted are at most maxEvicted, the oldest forgotten
+// first: a dialer churning through senders can't make this grow, or cost
+// more per datagram, without bound. A forgotten sender is older than the
+// churning current one, so while that one is active it is still refused;
+// the residual: a sender evicted from the slots and then pushed out of
+// the ring by more than maxEvicted further evictions while its datagrams
+// could still be fresh can take over again once the current sender has
+// been silent for senderTakeover (30 s), and making those evictions
+// requires the credential.
 type senders struct {
 	tick    uint64
 	entries [maxSenders]senderEntry
 	current *senderEntry
 	seen    time.Time // last datagram accepted from current
+	newest  uint32    // newest sealed send time any datagram has shown
 	evicted evictedSenders
 }
 
 // evictedSenders are the ids of senders evicted from the slots, refused
-// for senderForget after: a map for lookups and a ring in eviction order,
-// so expiry and the bound cost O(1) per eviction.
+// while a datagram of them could still be fresh: a map for lookups and a
+// ring in eviction order, so expiry and the bound cost O(1) per eviction.
 type evictedSenders struct {
-	at         map[senderID]time.Time
+	byID       map[senderID]*evictedSender
 	ring       []evictedSender
 	head, size int
 }
 
 type evictedSender struct {
-	id senderID
-	at time.Time
+	id   senderID
+	sent uint32 // the newest sealed send time seen from it
 }
 
 // maxEvicted bounds a credential's evicted senders.
 const maxEvicted = 1024
 
-// senderForget is how long a receiver remembers a sender id it will not
-// accept: one evicted from the slots, or a retired flow's. A datagram is
-// accepted within maxClockSkew of its sealed send time on the sender's
-// clock, and a sender was last seen no later than its eviction, so a
-// datagram sealed as it was evicted, by a sender clocked ahead by the full
-// skew, stays fresh twice the skew past the eviction on the receiver's
-// clock. Forgetting earlier would let a replay of it come back as a "new"
-// sender and take the link over; past twice the skew its datagrams are
-// stale whatever the sender's clock.
-const senderForget = 2 * maxClockSkew
-
-func (e *evictedSenders) add(id senderID, now time.Time) {
+func (e *evictedSenders) add(id senderID, sent uint32, now time.Time) {
 	e.expire(now)
+	if s, ok := e.byID[id]; ok { // never seen, but stay honest
+		s.note(sent)
+		return
+	}
 	if e.ring == nil {
-		e.at = make(map[senderID]time.Time)
+		e.byID = make(map[senderID]*evictedSender)
 		e.ring = make([]evictedSender, maxEvicted)
 	}
 	if e.size == len(e.ring) {
 		e.pop()
 	}
-	e.ring[(e.head+e.size)%len(e.ring)] = evictedSender{id, now}
+	s := &e.ring[(e.head+e.size)%len(e.ring)]
+	*s = evictedSender{id: id, sent: sent}
 	e.size++
-	e.at[id] = now
+	e.byID[id] = s
 }
 
 func (e *evictedSenders) pop() {
-	old := e.ring[e.head]
-	if at, ok := e.at[old.id]; ok && at.Equal(old.at) {
-		delete(e.at, old.id)
+	old := &e.ring[e.head]
+	if cur, ok := e.byID[old.id]; ok && cur == old {
+		delete(e.byID, old.id)
 	}
 	e.head = (e.head + 1) % len(e.ring)
 	e.size--
 }
 
 func (e *evictedSenders) expire(now time.Time) {
-	for e.size > 0 && now.Sub(e.ring[e.head].at) > senderForget {
+	// The ring is in eviction order, not send-time order, so a stale
+	// entry behind a fresh head lingers until the head ages past it: at
+	// most maxEvicted entries, each forgotten once no datagram sealed at
+	// its newest send time could still be fresh.
+	for e.size > 0 && !sentFresh(e.ring[e.head].sent, now) {
 		e.pop()
 	}
 }
 
+// seen reports whether an evicted sender is still remembered, noting the
+// newest sealed send time seen from it: a sender the receiver keeps
+// turning away keeps sending, and its newest datagrams must be remembered
+// as long as they are fresh, not from its eviction alone.
+func (e *evictedSenders) seen(id senderID, sent uint32) bool {
+	s, ok := e.byID[id]
+	if !ok {
+		return false
+	}
+	s.note(sent)
+	return true
+}
+
+// has reports whether an evicted sender is remembered at now.
 func (e *evictedSenders) has(id senderID, now time.Time) bool {
-	at, ok := e.at[id]
-	return ok && now.Sub(at) <= senderForget
+	s, ok := e.byID[id]
+	return ok && sentFresh(s.sent, now)
+}
+
+func (s *evictedSender) note(sent uint32) {
+	if later(sent, s.sent) {
+		s.sent = sent
+	}
 }
 
 const (
@@ -142,6 +162,7 @@ type senderEntry struct {
 	id      senderID
 	used    uint64 // tick of last use; 0 = empty
 	refused bool   // turned away as older than the current sender
+	sent    uint32 // the newest sealed send time seen from it
 	window  replayWindow
 }
 
@@ -155,8 +176,11 @@ const (
 	deliverNewest                // deliver; the current sender's newest counter
 )
 
-func (s *senders) admit(id senderID, counter uint64, now time.Time) verdict {
+func (s *senders) admit(id senderID, counter uint64, sent uint32, now time.Time) verdict {
 	s.tick++
+	if later(sent, s.newest) {
+		s.newest = sent
+	}
 	var e, victim *senderEntry
 	for i := range s.entries {
 		c := &s.entries[i]
@@ -169,14 +193,17 @@ func (s *senders) admit(id senderID, counter uint64, now time.Time) verdict {
 		}
 	}
 	if e == nil {
-		if s.evicted.has(id, now) {
+		if s.evicted.seen(id, sent) {
 			return dropStale
 		}
 		if victim.used != 0 {
-			s.evicted.add(victim.id, now)
+			s.evicted.add(victim.id, victim.sent, now)
 		}
-		*victim = senderEntry{id: id, refused: true}
+		*victim = senderEntry{id: id, refused: true, sent: sent}
 		e = victim
+	}
+	if later(sent, e.sent) {
+		e.sent = sent
 	}
 	quiet := s.current == nil || now.Sub(s.seen) > senderTakeover
 	takesOver := s.current == nil || id.created() > s.current.id.created() || quiet

@@ -46,12 +46,11 @@ type Listener struct {
 	scratch []byte             // packets are opened here, so camouflage sees datagrams intact
 }
 
-// retiree is a removed flow's sender history, kept while its datagrams can
-// still be fresh, so taking a secret out of the table and putting it back
-// doesn't reopen it to replays.
+// retiree is a removed flow's sender history, kept while a datagram of it
+// could still be fresh, so taking a secret out of the table and putting it
+// back doesn't reopen it to replays.
 type retiree struct {
 	senders *senders
-	at      time.Time
 }
 
 // flow is the listener's state for one credential. Its senders outlive the
@@ -177,7 +176,7 @@ func (l *Listener) reindex(links []transport.PeerLink) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	for key, r := range l.retired {
-		if now.Sub(r.at) > senderForget {
+		if !sentFresh(r.senders.newest, now) {
 			delete(l.retired, key)
 		}
 	}
@@ -193,7 +192,7 @@ func (l *Listener) reindex(links []transport.PeerLink) {
 			}
 			f.link.shut(reason)
 		}
-		l.retired[key] = retiree{senders: f.senders, at: now}
+		l.retired[key] = retiree{senders: f.senders}
 		delete(l.flows, key)
 	}
 	for key, e := range set.bySecret {
@@ -262,7 +261,7 @@ func (l *Listener) receive(d []byte, from net.Addr) bool {
 		l.counters.staleTimestamp.Add(1)
 		return false
 	}
-	v := f.senders.admit(o.sender, o.counter, now)
+	v := f.senders.admit(o.sender, o.counter, o.sent, now)
 	switch v {
 	case dropReplay:
 		l.counters.replayed.Add(1)

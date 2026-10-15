@@ -120,7 +120,7 @@ func (dl *dialLink) receive(d []byte) []byte {
 		dl.counters.staleTimestamp.Add(1)
 		return nil
 	}
-	switch dl.senders.admit(o.sender, o.counter, now) {
+	switch dl.senders.admit(o.sender, o.counter, o.sent, now) {
 	case dropReplay:
 		dl.counters.replayed.Add(1)
 		return nil
