@@ -14,6 +14,7 @@ package censor
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 )
@@ -54,6 +55,21 @@ func (v Verdict) MarshalJSON() ([]byte, error) {
 		return nil, fmt.Errorf("censor: unknown verdict %d", uint8(v))
 	}
 	return []byte(`"` + v.String() + `"`), nil
+}
+
+// UnmarshalJSON reads what MarshalJSON wrote.
+func (v *Verdict) UnmarshalJSON(b []byte) error {
+	var s string
+	if err := json.Unmarshal(b, &s); err != nil {
+		return err
+	}
+	for want, name := range map[Verdict]string{Accept: "accept", Drop: "drop", Reset: "reset", Throttle: "throttle"} {
+		if s == name {
+			*v = want
+			return nil
+		}
+	}
+	return fmt.Errorf("censor: unknown verdict %q", s)
 }
 
 // Decision is what a passive module returns for one packet.
