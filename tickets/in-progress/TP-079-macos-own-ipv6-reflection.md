@@ -53,3 +53,4 @@ Effect: anything on the Mac talking to its own overlay IPv6 is broken. A6 is oft
 - 2026-10-15 created in in-progress (split from TP-019 after device run 2; stacked on tp-019-macos-data-plane)
 - 2026-10-15 in-progress → review — unit acceptance checked; device checklist pending (`needs_human: macos`); `make test`, `go test -race ./internal/dataplane/router/...` pass
 - 2026-10-15 review → has-errors — review round 2 findings recorded
+- 2026-10-15 has-errors → in-progress — fix round 2
