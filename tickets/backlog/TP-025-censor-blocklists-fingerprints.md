@@ -5,7 +5,7 @@ milestone: M2
 area: lab/censor
 repo: thinkpol-vpn
 size: M
-depends_on: [TP-024, TP-064]
+depends_on: [TP-024, TP-064, TP-089]
 refs: [C4]
 owner: ""
 branch: ""
@@ -26,3 +26,4 @@ The lab blocks what real censors block first: listed IPs and SNIs, WireGuard and
 
 ## Log
 - 2026-10-10 created in backlog
+- 2026-10-15 depends_on TP-089 (split from TP-024 review)

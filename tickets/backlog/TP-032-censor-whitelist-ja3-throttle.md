@@ -5,7 +5,7 @@ milestone: M3
 area: lab/censor
 repo: thinkpol-vpn
 size: M
-depends_on: [TP-024, TP-026, TP-064]
+depends_on: [TP-024, TP-026, TP-064, TP-089]
 refs: [C4]
 owner: ""
 branch: ""
@@ -30,3 +30,4 @@ The lab reproduces whitelist mode, TLS fingerprint filtering and volume throttli
 - 2026-10-13 docs (TP-062): JA3S/JA4S for the response side
 - 2026-10-15 docs (backlog grooming): server JA3S/JA4S owned by TP-026
 - 2026-10-15 docs (backlog grooming, review fixes): depends_on TP-026; whitelist-mode wording dropped from JA3S line
+- 2026-10-15 depends_on TP-089 (split from TP-024 review)

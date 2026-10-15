@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"sync"
 	"time"
 )
@@ -30,6 +31,7 @@ type Engine struct {
 	passives []Passive
 	flows    *flowTable
 	log      *verdictLog
+	stop     context.CancelFunc
 }
 
 // NewEngine builds the engine and starts the active modules. The verdicts
@@ -40,29 +42,41 @@ func NewEngine(passives []Passive, actives []Active, verdicts io.Writer) *Engine
 	if verdicts != nil {
 		e.log = &verdictLog{w: verdicts}
 	}
-	for _, a := range actives {
-		go a.Run(context.Background(), e.flows.flowEvents(), e.flagFunc(a.Name()))
+	ctx, cancel := context.WithCancel(context.Background())
+	e.stop = cancel
+	for i, a := range actives {
+		go a.Run(ctx, e.flows.flowEvents(i), e.flagFunc(a.Name()))
 	}
 	return e
 }
 
+// Shutdown stops the active modules and closes their flow channels.
+func (e *Engine) Shutdown() {
+	if e.stop != nil {
+		e.stop()
+	}
+	e.flows.closeEvents()
+}
+
 // Handle decides one packet.
 func (e *Engine) Handle(p *Packet) Action {
-	f := e.flows.flow(FlowKey{p.Proto, p.Src, p.Dst, p.SrcPort, p.DstPort}, time.Now(), uint64(len(p.Payload)))
-	e.flows.publish(f)
-	if fv := e.flows.flagged(f.Key); fv != nil {
-		return e.decide(Action{Verdict: fv.verdict, Module: fv.module, Reason: fv.reason}, f)
+	f, isNew := e.flows.flow(FlowKey{p.Proto, p.Src, p.Dst, p.SrcPort, p.DstPort}, time.Now(), uint64(len(p.Payload)))
+	if isNew {
+		e.flows.publish(f)
+	}
+	if a := e.flows.flagged(f.Key); a != nil {
+		return e.decide(*a, f)
 	}
 	for _, m := range e.passives {
 		d := m.Inspect(p, f)
 		if d.Verdict == Accept && !d.Flow {
 			continue
 		}
-		if d.Flow {
-			e.flows.flag(f.Key, d.Verdict, m.Name(), d.Reason)
-		}
 		a := actionOf(d)
 		a.Module = m.Name()
+		if d.Flow {
+			e.flows.flag(f.Key, a)
+		}
 		return e.decide(a, f)
 	}
 	return e.decide(Action{Verdict: Accept}, f)
@@ -71,8 +85,9 @@ func (e *Engine) Handle(p *Packet) Action {
 // flagFunc is a FlagFunc the named module flags flows with.
 func (e *Engine) flagFunc(module string) FlagFunc {
 	return func(key FlowKey, verdict Verdict, reason string) {
-		e.flows.flag(key, verdict, module, reason)
-		e.logEntry(time.Now(), Action{Verdict: verdict, Module: module, Reason: reason}, key.String(), 0, 0)
+		a := Action{Verdict: verdict, Module: module, Reason: reason}
+		e.flows.flag(key, a)
+		e.logEntry(time.Now(), a, key.String(), 0, 0)
 	}
 }
 
@@ -85,7 +100,7 @@ func (e *Engine) decide(a Action, f *Flow) Action {
 		a.Verdict = Drop
 	case a.Verdict == Throttle && a.Hold <= 0:
 		a.Hold = 500 * time.Millisecond
-	case a.Verdict == Throttle && a.Held != Drop:
+	case a.Verdict == Throttle && a.Held != Accept && a.Held != Drop:
 		a.Held = Accept
 	}
 	e.logEntry(time.Now(), a, f.Key.String(), f.Packets, f.Bytes)
@@ -129,4 +144,7 @@ func (l *verdictLog) write(entry LogEntry) {
 	enc := json.NewEncoder(l.w)
 	enc.SetEscapeHTML(false)
 	_ = enc.Encode(entry)
+	if f, ok := l.w.(*os.File); ok {
+		_ = f.Sync()
+	}
 }

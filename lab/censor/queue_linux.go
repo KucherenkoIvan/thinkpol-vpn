@@ -8,6 +8,7 @@ import (
 	"log"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	nfqueue "github.com/florianl/go-nfqueue/v2"
@@ -26,12 +27,16 @@ func Run(ctx context.Context, cfg Config, eng *Engine) error {
 		return err
 	}
 	defer removeQueueRule()
+	defer eng.Shutdown()
 	return serveQueue(ctx, cfg, eng)
 }
 
 // serveQueue opens the queue and serves it with the engine. The queue rule
 // itself is the caller's (Run's forward hook; tests queue output instead).
 func serveQueue(ctx context.Context, cfg Config, eng *Engine) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	nf, err := nfqueue.Open(&nfqueue.Config{
 		NfQueue:      cfg.Queue,
 		MaxPacketLen: 0xffff,
@@ -42,8 +47,7 @@ func serveQueue(ctx context.Context, cfg Config, eng *Engine) error {
 		return fmt.Errorf("censor: open queue %d: %w", cfg.Queue, err)
 	}
 	defer func() { _ = nf.Close() }()
-	// A full socket buffer must not kill the receive loop; the missed
-	// packets stay queued.
+	// ENOBUFS on a full socket buffer must not stop the receive loop.
 	if err := nf.SetOption(netlink.NoENOBUFS, true); err != nil {
 		return fmt.Errorf("censor: netlink option: %w", err)
 	}
@@ -54,13 +58,17 @@ func serveQueue(ctx context.Context, cfg Config, eng *Engine) error {
 	}
 	defer rst.close()
 
+	var applyMu sync.Mutex
 	var applyErr error
 	failed := func(err error) int {
 		if ctx.Err() != nil {
 			return 0
 		}
 		log.Printf("censor: queue: %v", err)
+		applyMu.Lock()
 		applyErr = err
+		applyMu.Unlock()
+		cancel()
 		return 1
 	}
 	err = nf.RegisterWithErrorFunc(ctx, func(a nfqueue.Attribute) int {
@@ -68,9 +76,15 @@ func serveQueue(ctx context.Context, cfg Config, eng *Engine) error {
 			return 0
 		}
 		id := *a.PacketID
-		p, ok := decodePacket(*a.Payload)
+		ip := *a.Payload
+		p, ok := decodePacket(ip)
 		if !ok {
-			setVerdict(nf, id, Accept)
+			if isFragment(ip) {
+				log.Printf("censor: undecodable fragment, dropping")
+				setVerdict(nf, id, Drop)
+			} else {
+				setVerdict(nf, id, Accept)
+			}
 			return 0
 		}
 		setVerdictFor := func(v Verdict) { setVerdict(nf, id, v) }
@@ -82,7 +96,10 @@ func serveQueue(ctx context.Context, cfg Config, eng *Engine) error {
 	}
 	log.Printf("censor ready: queue=%d", cfg.Queue)
 	<-ctx.Done()
-	return applyErr
+	applyMu.Lock()
+	err = applyErr
+	applyMu.Unlock()
+	return err
 }
 
 // decide applies the engine's action: mostly a verdict for the kernel,
@@ -118,8 +135,9 @@ func setVerdict(nf *nfqueue.Nfqueue, id uint32, v Verdict) {
 	}
 }
 
-// installQueueRule sends every forwarded packet, IPv4 and IPv6, to the
-// queue. The router forwards only the lab's own traffic, so the rule needs
+// installQueueRule sends every forwarded first fragment, IPv4 and IPv6, to
+// the queue. Non-first fragments are dropped: the engine cannot inspect
+// them. The router forwards only the lab's own traffic, so the rule needs
 // no match of its own.
 func installQueueRule(queue uint16) error {
 	removeQueueRule()
@@ -127,6 +145,7 @@ func installQueueRule(queue uint16) error {
 table inet %s {
   chain forward {
     type filter hook forward priority filter; policy accept;
+    ip frag-off != 0 drop
     queue num %d
   }
 }
@@ -141,4 +160,27 @@ table inet %s {
 
 func removeQueueRule() {
 	_ = exec.Command("nft", "delete", "table", "inet", table).Run()
+}
+
+// isFragment reports whether ip is a non-first IP fragment the decoder
+// skips.
+func isFragment(ip []byte) bool {
+	if len(ip) < 1 {
+		return false
+	}
+	switch ip[0] >> 4 {
+	case 4:
+		if len(ip) < 8 {
+			return false
+		}
+		return binaryFragOff(ip[6:8]) != 0
+	case 6:
+		return false // non-first v6 frags are dropped in nft
+	default:
+		return false
+	}
+}
+
+func binaryFragOff(b []byte) uint16 {
+	return (uint16(b[0])<<8 | uint16(b[1])) & 0x1fff
 }

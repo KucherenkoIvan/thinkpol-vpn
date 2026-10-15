@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -26,119 +27,224 @@ import (
 // router; a cell whose outcome contradicts what its censor means to
 // produce fails the test, not just the matrix.
 func TestCensorMatrix(t *testing.T) {
-	t.Parallel()
 	var mu sync.Mutex
 	var results []matrixCell
+	var finished sync.Map // transport/censor -> verdict
+	expected := len(probes) * len(censorCases)
 
 	for _, tr := range probes {
 		for _, cc := range censorCases {
 			tr, cc := tr, cc
 			t.Run(tr.name+"/"+cc.name, func(t *testing.T) {
-				t.Parallel()
+				verdict := "error"
+				detail := ""
+				defer func() {
+					mu.Lock()
+					results = append(results, matrixCell{tr.name, cc.name, verdict, detail})
+					mu.Unlock()
+					finished.Store(tr.name+"/"+cc.name, verdict)
+				}()
+
+				if cc.name == entryBlockCase {
+					waitOffPass(t, tr.name, &finished)
+				}
+
 				l := lab.Start(t, lab.Standard())
+				ctx, err := tr.setup(t, l)
+				if err != nil {
+					detail = err.Error()
+					t.Fatal(err)
+				}
+				var censord *lab.Process
+				var qd0, ud0 uint64
 				if cc.modules != nil {
-					startCensor(t, l, cc.modules(t, l))
+					censord, qd0, ud0 = startCensor(t, l, cc.modules(t, l))
 				}
-				verdict := "pass"
-				if err := tr.run(t, l); err != nil {
+
+				want := cc.want(tr.name)
+				probed := true
+				if len(cc.expect) > 0 {
+					if _, ok := cc.expect[tr.name]; !ok {
+						verdict = "pass"
+						probed = false
+					} else if err := tr.probe(t, l, ctx, cc.tcpMustFail); err != nil {
+						verdict = "fail"
+						detail = err.Error()
+						t.Logf("transport %s against %s: %v", tr.name, cc.name, err)
+					} else {
+						verdict = "pass"
+					}
+				} else if err := tr.probe(t, l, ctx, cc.tcpMustFail); err != nil {
 					verdict = "fail"
+					detail = err.Error()
 					t.Logf("transport %s against %s: %v", tr.name, cc.name, err)
+				} else {
+					verdict = "pass"
 				}
-				if verdict != cc.want {
-					t.Errorf("%s against %s: %s, want %s", tr.name, cc.name, verdict, cc.want)
+
+				if cc.modules != nil && probed {
+					if err := censorHealthSince(t, l, qd0, ud0); err != nil {
+						verdict = "error"
+						detail = err.Error()
+						t.Error(err)
+					} else if err := checkVerdictLog(t, l, tr.name); err != nil {
+						verdict = "error"
+						detail = err.Error()
+						t.Error(err)
+					}
+					if censord != nil && !processAlive(censord) {
+						verdict = "error"
+						detail = "censord exited"
+						t.Error("censord died during the cell")
+					}
+				}
+
+				if verdict != want && verdict != "error" {
+					t.Errorf("%s against %s: %s, want %s", tr.name, cc.name, verdict, want)
 				}
 				if cc.name == entryBlockCase && verdict == "fail" {
-					// The transport stopping is not enough: the drops
-					// must be the censor's, in the verdict log.
 					checkDroppedByCensor(t, l)
 				}
-				mu.Lock()
-				defer mu.Unlock()
-				results = append(results, matrixCell{tr.name, cc.name, verdict})
 			})
 		}
 	}
-	// The parallel subtests only finish once this function has returned, so
-	// the file is written from the cleanup, which runs after them.
-	t.Cleanup(func() { writeResults(t, results) })
+
+	t.Cleanup(func() { writeResults(t, results, expected) })
 }
 
-// The censor case that proves the pipeline end to end: the trivial module
-// blocking the entry node by destination IP.
+func waitOffPass(t *testing.T, transport string, finished *sync.Map) {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Minute)
+	for time.Now().Before(deadline) {
+		if v, ok := finished.Load(transport + "/off"); ok {
+			if v != "pass" {
+				t.Fatalf("off cell for %s is %s, entry block is meaningless", transport, v)
+			}
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Fatalf("off cell for %s never finished", transport)
+}
+
 const entryBlockCase = "block-ip (entry)"
 
-// matrixCell is one cell of the matrix.
-type matrixCell struct{ transport, censor, verdict string }
+type matrixCell struct {
+	transport, censor, verdict, detail string
+}
 
-// censorCase is one column of the matrix: the modules a test starts the
-// censor with, and the transport result that means the censor did its
-// work.
 type censorCase struct {
 	name string
-	want string // "pass" or "fail"
-	// modules builds the config for a lab, whose addresses it needs; nil
-	// starts no censor.
-	modules func(t *testing.T, l *lab.Lab) []censor.ModuleConfig
+	// expect names the result each transport should show when the censor is
+	// working; transports omitted default to pass.
+	expect map[string]string
+	// tcpMustFail: the TCP probe must fail on every address family.
+	tcpMustFail bool
+	modules     func(t *testing.T, l *lab.Lab) []censor.ModuleConfig
+}
+
+func (cc censorCase) want(transport string) string {
+	if w, ok := cc.expect[transport]; ok {
+		return w
+	}
+	if len(cc.expect) == 0 {
+		return "pass"
+	}
+	return "pass"
 }
 
 var censorCases = []censorCase{
-	{name: "off", want: "pass"},
-	{name: "block-ip (elsewhere)", want: "pass", modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig {
+	{name: "off"},
+	{name: "block-ip (elsewhere)", modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig {
 		return []censor.ModuleConfig{{Name: "block-ip", Settings: json.RawMessage(
 			`{"destinations": ["203.0.113.9", "2001:db8::9"]}`)}}
 	}},
-	{name: entryBlockCase, want: "fail", modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig {
-		server := l.Node(lab.Server1)
-		settings, err := json.Marshal(struct {
-			Destinations []string `json:"destinations"`
-		}{Destinations: []string{
-			server.IPv4(lab.NetServers).String(),
-			server.IPv6(lab.NetServers).String(),
-		}})
-		if err != nil {
-			t.Fatal(err)
-		}
-		return []censor.ModuleConfig{{Name: "block-ip", Settings: settings}}
+	{name: entryBlockCase, expect: map[string]string{"udp": "fail", "tcp": "fail"}, tcpMustFail: true, modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig {
+		return entryBlockSettings(t, l, "drop")
+	}},
+	{name: "block-ip reset (entry)", expect: map[string]string{"tcp": "fail"}, tcpMustFail: true, modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig {
+		return entryBlockSettings(t, l, "reset")
 	}},
 }
 
-// probes are the transports the matrix scores. Each brings its transport
-// up between device-a and server-1, through the router the censor sits in,
-// and returns nil when data crossed, both families.
-var probes = []struct {
-	name string
-	run  func(t *testing.T, l *lab.Lab) error
-}{
-	{"udp", probeUDP},
+type probeCtx struct {
+	o4, o6 netip.Addr
 }
 
-// probeUDP runs the M0 space's udp transport between device-a and
-// server-1 and pings across it. Errors are results (a censor's block),
-// not failures; a Fatal is broken infrastructure.
-func probeUDP(t *testing.T, l *lab.Lab) error {
+var probes = []struct {
+	name  string
+	setup func(t *testing.T, l *lab.Lab) (probeCtx, error)
+	probe func(t *testing.T, l *lab.Lab, ctx probeCtx, tcpMustFail bool) error
+}{
+	{"udp", setupUDP, probeUDP},
+	{"tcp", setupTCP, probeTCP},
+}
+
+func setupUDP(t *testing.T, l *lab.Lab) (probeCtx, error) {
 	dev, server := l.Node(lab.DeviceA), l.Node(lab.Server1)
-	space := newM0Space(t, l.Node(lab.Internet), server) // docker exec only: no routed traffic
+	space := newM0Space(t, l.Node(lab.Internet), server)
 	envelope, version := space.build(t)
 	space.install(t, dev, "device-a", envelope)
 	space.install(t, server, "server-1", envelope)
-
 	upDev := dev.Start(t, "thinkpol", "up")
 	upSrv := server.Start(t, "thinkpol", "up")
 	applied := applied(version)
 	if err := waitOutput(upSrv, applied, 60*time.Second); err != nil {
-		return fmt.Errorf("server-1: %w", err)
+		return probeCtx{}, fmt.Errorf("server-1: %w", err)
 	}
 	if err := waitOutput(upDev, applied, 60*time.Second); err != nil {
-		return fmt.Errorf("device-a: %w", err)
+		return probeCtx{}, fmt.Errorf("device-a: %w", err)
 	}
-	s4, s6 := space.overlay(1)
-	if err := pingErr(dev, s4); err != nil {
-		return err
+	if err := waitOutput(upDev, `link up`, 60*time.Second); err != nil {
+		return probeCtx{}, err
 	}
-	return pingErr(dev, s6)
+	o4, o6 := space.overlay(1)
+	return probeCtx{o4, o6}, nil
 }
 
-// waitOutput waits for a log line of a started process.
+func probeUDP(t *testing.T, l *lab.Lab, ctx probeCtx, _ bool) error {
+	dev := l.Node(lab.DeviceA)
+	if err := pingErr(dev, ctx.o4); err != nil {
+		return err
+	}
+	return pingErr(dev, ctx.o6)
+}
+
+func setupTCP(t *testing.T, l *lab.Lab) (probeCtx, error) {
+	server := l.Node(lab.Server1)
+	_, _ = bringUpM0TCP(t, l)
+	return probeCtx{server.IPv4(lab.NetServers), server.IPv6(lab.NetServers)}, nil
+}
+
+func probeTCP(t *testing.T, l *lab.Lab, ctx probeCtx, mustFail bool) error {
+	dev := l.Node(lab.DeviceA)
+	if mustFail {
+		if tcpConnect(dev, ctx.o4) == nil || tcpConnect(dev, ctx.o6) == nil {
+			return nil
+		}
+		return fmt.Errorf("tcp blocked to %s and %s", ctx.o4, ctx.o6)
+	}
+	e4 := tcpConnectRetry(dev, ctx.o4)
+	e6 := tcpConnectRetry(dev, ctx.o6)
+	if e4 == nil || e6 == nil {
+		return nil
+	}
+	return fmt.Errorf("tcp v4: %v; v6: %v", e4, e6)
+}
+
+func tcpConnectRetry(dev *lab.Node, dst netip.Addr) error {
+	deadline := time.Now().Add(45 * time.Second)
+	var last error
+	for time.Now().Before(deadline) {
+		last = tcpConnect(dev, dst)
+		if last == nil {
+			return nil
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	return last
+}
+
 func waitOutput(p *lab.Process, pattern string, timeout time.Duration) error {
 	re := regexp.MustCompile(pattern)
 	deadline := time.Now().Add(timeout)
@@ -153,8 +259,6 @@ func waitOutput(p *lab.Process, pattern string, timeout time.Duration) error {
 	}
 }
 
-// pingErr pings until it works or the timeout passes: an error, for the
-// matrix to record.
 func pingErr(from *lab.Node, to netip.Addr) error {
 	deadline := time.Now().Add(45 * time.Second)
 	for {
@@ -171,19 +275,29 @@ func pingErr(from *lab.Node, to netip.Addr) error {
 	}
 }
 
-// startCensor writes the config and starts censord in the router, and
-// waits for it to serve the queue.
-func startCensor(t *testing.T, l *lab.Lab, modules []censor.ModuleConfig) {
+var censorLogPath = "/run/censor/verdicts.jsonl"
+
+func processAlive(p *lab.Process) bool {
+	select {
+	case <-p.Done():
+		return false
+	default:
+		return true
+	}
+}
+
+func startCensor(t *testing.T, l *lab.Lab, modules []censor.ModuleConfig) (*lab.Process, uint64, uint64) {
 	t.Helper()
 	b, err := json.Marshal(censor.Config{
 		Queue:   100,
-		Log:     "/run/censor/verdicts.jsonl",
+		Log:     censorLogPath,
 		Modules: modules,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	router := l.Node(lab.Router)
+	router.MustExec(t, "mkdir", "-p", "/run/censor")
 	router.WriteFile(t, "/run/censor/config.json", b)
 	p := router.Start(t, "censord", "-config", "/run/censor/config.json")
 	lab.Eventually(t, 30*time.Second, func() error {
@@ -192,14 +306,55 @@ func startCensor(t *testing.T, l *lab.Lab, modules []censor.ModuleConfig) {
 		}
 		return nil
 	})
+	qd, ud, err := nfqueueDrops(router.MustExec(t, "cat", "/proc/net/netfilter/nfnetlink_queue"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p, qd, ud
 }
 
-// checkDroppedByCensor reads the verdict log and fails the test unless the
-// censor dropped traffic to the entry node.
+func censorHealthSince(t *testing.T, l *lab.Lab, qd0, ud0 uint64) error {
+	t.Helper()
+	router := l.Node(lab.Router)
+	qd, ud, err := nfqueueDrops(router.MustExec(t, "cat", "/proc/net/netfilter/nfnetlink_queue"))
+	if err != nil {
+		return err
+	}
+	if qd > qd0 || ud > ud0 {
+		return fmt.Errorf("nfqueue drops grew queue_dropped=%d→%d user_dropped=%d→%d", qd0, qd, ud0, ud)
+	}
+	return nil
+}
+
+func nfqueueDrops(proc string) (queueDropped, userDropped uint64, err error) {
+	for _, line := range strings.Split(proc, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 5 || fields[0] != "100" {
+			continue
+		}
+		qd, err1 := strconv.ParseUint(fields[3], 10, 64)
+		ud, err2 := strconv.ParseUint(fields[4], 10, 64)
+		if err1 != nil || err2 != nil {
+			return 0, 0, fmt.Errorf("parse nfnetlink_queue %q", line)
+		}
+		return qd, ud, nil
+	}
+	return 0, 0, fmt.Errorf("queue 100 not in nfnetlink_queue")
+}
+
+func checkVerdictLog(t *testing.T, l *lab.Lab, transport string) error {
+	t.Helper()
+	out := l.Node(lab.Router).MustExec(t, "cat", censorLogPath)
+	if strings.TrimSpace(out) == "" {
+		return fmt.Errorf("empty verdict log for %s probe", transport)
+	}
+	return nil
+}
+
 func checkDroppedByCensor(t *testing.T, l *lab.Lab) {
 	t.Helper()
 	server := l.Node(lab.Server1)
-	out := l.Node(lab.Router).MustExec(t, "cat", "/run/censor/verdicts.jsonl")
+	out := l.Node(lab.Router).MustExec(t, "cat", censorLogPath)
 	drops := 0
 	for _, line := range strings.Split(out, "\n") {
 		if line == "" {
@@ -209,8 +364,12 @@ func checkDroppedByCensor(t *testing.T, l *lab.Lab) {
 		if err := json.Unmarshal([]byte(line), &e); err != nil {
 			t.Fatalf("verdict log line %q: %v", line, err)
 		}
+		key, err := censor.ParseFlowKey(e.Flow)
+		if err != nil {
+			continue
+		}
 		for _, a := range []netip.Addr{server.IPv4(lab.NetServers), server.IPv6(lab.NetServers)} {
-			if e.Verdict == censor.Drop && strings.Contains(e.Flow, a.String()) {
+			if e.Verdict == censor.Drop && key.Dst == a {
 				drops++
 			}
 		}
@@ -223,10 +382,21 @@ func checkDroppedByCensor(t *testing.T, l *lab.Lab) {
 	t.Logf("the censor dropped %d packets to the entry node", drops)
 }
 
-// writeResults regenerates lab/RESULTS.md from the cells, deterministically
-// so a committed file only changes when the matrix does.
-func writeResults(t *testing.T, cells []matrixCell) {
+func writeResults(t *testing.T, cells []matrixCell, expected int) {
 	t.Helper()
+	if len(cells) < expected {
+		t.Logf("partial matrix run (%d/%d cells), not writing RESULTS.md", len(cells), expected)
+		return
+	}
+	for _, c := range cells {
+		if c.verdict == "error" {
+			t.Log("matrix cell errored, not writing RESULTS.md")
+			return
+		}
+	}
+	if t.Failed() {
+		return
+	}
 	root, err := lab.Root()
 	if err != nil {
 		t.Fatal(err)
@@ -235,17 +405,24 @@ func writeResults(t *testing.T, cells []matrixCell) {
 		if c := strings.Compare(a.transport, b.transport); c != 0 {
 			return c
 		}
-		return strings.Compare(a.censor, b.censor)
+		if c := strings.Compare(a.censor, b.censor); c != 0 {
+			return c
+		}
+		return 0
 	})
 	var b strings.Builder
 	b.WriteString("# Censor lab results\n\n")
 	b.WriteString("<!-- Generated by `make lab` (TestCensorMatrix); do not edit. -->\n\n")
 	b.WriteString("Did a transport's data cross the censor in the lab router: pass when it did, fail when the censor stopped it.\n\n")
-	b.WriteString("| transport | censor | result |\n|---|---|---|\n")
+	b.WriteString("| transport | censor | result | detail |\n|---|---|---|---|\n")
 	for _, c := range cells {
-		fmt.Fprintf(&b, "| %s | %s | %s |\n", c.transport, c.censor, c.verdict)
+		fmt.Fprintf(&b, "| %s | %s | %s | %s |\n", c.transport, c.censor, c.verdict, escapeCell(c.detail))
 	}
 	if err := os.WriteFile(filepath.Join(root, "lab", "RESULTS.md"), []byte(b.String()), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func escapeCell(s string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(s, "|", "\\|"), "\n", " ")
 }

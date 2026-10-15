@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"io"
 	"log"
 	"os"
 	"os/signal"
@@ -37,12 +38,14 @@ func main() {
 		log.Fatalf("censord: %v", err)
 	}
 
-	var verdicts *os.File
+	var verdicts io.Writer
 	if cfg.Log != "" {
-		if verdicts, err = os.Create(cfg.Log); err != nil {
+		f, err := os.Create(cfg.Log)
+		if err != nil {
 			log.Fatalf("censord: %v", err)
 		}
-		defer func() { _ = verdicts.Close() }()
+		defer func() { _ = f.Close() }()
+		verdicts = f
 	}
 	names := make([]string, 0, len(passives)+len(actives))
 	for _, m := range passives {

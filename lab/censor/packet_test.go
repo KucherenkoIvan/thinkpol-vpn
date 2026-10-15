@@ -66,6 +66,15 @@ func TestDecodePacket(t *testing.T) {
 	if _, ok := decodePacket([]byte{0x01, 0x02, 0x03}); ok {
 		t.Error("junk decoded")
 	}
+
+	tcpBad := make([]byte, 20+20)
+	tcpBad[0] = 0x45
+	binary.BigEndian.PutUint16(tcpBad[2:], uint16(len(tcpBad)))
+	tcpBad[9] = byte(ProtoTCP)
+	tcpBad[32] = 15 << 4 // data offset past the segment
+	if _, ok := decodePacket(tcpBad); ok {
+		t.Error("tcp with bad data offset decoded")
+	}
 }
 
 func TestDecodePacketIPv6ThroughExtensions(t *testing.T) {

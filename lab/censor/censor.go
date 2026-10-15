@@ -105,7 +105,7 @@ type Passive interface {
 type Active interface {
 	// Name is the module's name in the config.
 	Name() string
-	Run(ctx context.Context, flows <-chan *Flow, flag FlagFunc)
+	Run(ctx context.Context, flows <-chan FlowSnapshot, flag FlagFunc)
 }
 
 // FlagFunc pins a verdict to a flow, later packets included. An Active

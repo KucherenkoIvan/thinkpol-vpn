@@ -84,10 +84,25 @@ func TestEngineFlowVerdictSticks(t *testing.T) {
 	}
 }
 
+// TestEnginePinnedThrottle keeps Hold and Held on a pinned flow verdict.
+func TestEnginePinnedThrottle(t *testing.T) {
+	m := &throttlePinModule{hold: 2 * time.Second, held: Drop}
+	eng := NewEngine([]Passive{m}, nil, nil)
+	p := udpPacket(netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("198.51.100.2"), 1, 2, []byte("x"))
+	a := eng.Handle(p)
+	if a.Verdict != Throttle || a.Hold != 2*time.Second || a.Held != Drop {
+		t.Fatalf("first: %+v", a)
+	}
+	a = eng.Handle(p)
+	if a.Verdict != Throttle || a.Hold != 2*time.Second || a.Held != Drop {
+		t.Errorf("pinned: %+v", a)
+	}
+}
+
 // TestEngineActiveFlags checks an active module: it sees new flows and its
 // flag decides the flow's later packets, logged under its own name.
 func TestEngineActiveFlags(t *testing.T) {
-	prober := &proberModule{}
+	prober := &proberModule{ch: make(chan FlowSnapshot, 8)}
 	eng := NewEngine(nil, []Active{prober}, nil)
 
 	p := udpPacket(netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("198.51.100.2"), 1, 2, []byte("x"))
@@ -95,21 +110,73 @@ func TestEngineActiveFlags(t *testing.T) {
 		t.Errorf("before the flag: %+v", a)
 	}
 
-	deadline := time.Now().Add(5 * time.Second)
-	for len(prober.seen) == 0 && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-	if len(prober.seen) == 0 {
+	var snap FlowSnapshot
+	select {
+	case snap = <-prober.ch:
+	case <-time.After(5 * time.Second):
 		t.Fatal("no flow reached the active module")
 	}
-	if f := prober.seen[0]; f.Key.Src != p.Src || f.Bytes != 1 || f.Packets != 1 {
-		t.Errorf("the flow the module saw: %+v", f)
+	if snap.Key.Src != p.Src || snap.Bytes != 1 || snap.Packets != 1 {
+		t.Errorf("the flow the module saw: %+v", snap)
 	}
-	prober.flag(prober.seen[0].Key, Drop, "looks fake")
+	prober.flag(snap.Key, Drop, "looks fake")
 
 	if a := eng.Handle(p); a.Verdict != Drop || a.Module != "prober" {
 		t.Errorf("flagged flow: %+v", a)
 	}
+	eng.Shutdown()
+}
+
+// TestEngineActiveTwoModules gives each active module its own channel and
+// every new flow.
+func TestEngineActiveTwoModules(t *testing.T) {
+	a1 := &proberModule{name: "one", ch: make(chan FlowSnapshot, 512)}
+	a2 := &proberModule{name: "two", ch: make(chan FlowSnapshot, 512)}
+	eng := NewEngine(nil, []Active{a1, a2}, nil)
+
+	for i := 0; i < 3; i++ {
+		p := udpPacket(netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("198.51.100.2"), uint16(i+1), 2, []byte("x"))
+		eng.Handle(p)
+	}
+	deadline := time.After(5 * time.Second)
+	for _, m := range []*proberModule{a1, a2} {
+		for i := 0; i < 3; i++ {
+			select {
+			case <-m.ch:
+			case <-deadline:
+				t.Fatalf("%s saw %d flows, want 3", m.name, i)
+			}
+		}
+	}
+	eng.Shutdown()
+}
+
+// TestEngineActiveNoStarve publishes a new flow while an active module is
+// busy with a bulk of earlier flows.
+func TestEngineActiveNoStarve(t *testing.T) {
+	slow := &slowActive{ch: make(chan FlowSnapshot, 512)}
+	eng := NewEngine(nil, []Active{slow}, nil)
+
+	for i := 0; i < 300; i++ {
+		p := udpPacket(netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("198.51.100.2"), uint16(i+1), 2, []byte("x"))
+		eng.Handle(p)
+	}
+	late := udpPacket(netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("198.51.100.3"), 9, 2, []byte("late"))
+	eng.Handle(late)
+
+	deadline := time.After(5 * time.Second)
+	gotLate := false
+	for !gotLate {
+		select {
+		case s := <-slow.ch:
+			if s.Key.Dst == late.Dst {
+				gotLate = true
+			}
+		case <-deadline:
+			t.Fatal("the late flow never reached the active module")
+		}
+	}
+	eng.Shutdown()
 }
 
 type countingModule struct {
@@ -123,17 +190,68 @@ func (m *countingModule) Inspect(p *Packet, f *Flow) Decision {
 	return Decision{Verdict: Drop, Flow: true}
 }
 
+type throttlePinModule struct {
+	hold time.Duration
+	held Verdict
+}
+
+func (m *throttlePinModule) Name() string { return "throttle-pin" }
+
+func (m *throttlePinModule) Inspect(p *Packet, f *Flow) Decision {
+	return Decision{Verdict: Throttle, Flow: true, Hold: m.hold, Held: m.held}
+}
+
 type proberModule struct {
-	seen []*Flow
+	name string
+	ch   chan FlowSnapshot
+	seen []FlowSnapshot
 	flag FlagFunc
 }
 
-func (m *proberModule) Name() string { return "prober" }
+func (m *proberModule) Name() string {
+	if m.name != "" {
+		return m.name
+	}
+	return "prober"
+}
 
-func (m *proberModule) Run(ctx context.Context, flows <-chan *Flow, flag FlagFunc) {
+func (m *proberModule) Run(ctx context.Context, flows <-chan FlowSnapshot, flag FlagFunc) {
 	m.flag = flag
-	for f := range flows {
-		m.seen = append(m.seen, f)
+	if m.ch == nil {
+		m.ch = make(chan FlowSnapshot, 512)
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case f, ok := <-flows:
+			if !ok {
+				return
+			}
+			m.seen = append(m.seen, f)
+			m.ch <- f
+		}
+	}
+}
+
+type slowActive struct {
+	ch chan FlowSnapshot
+}
+
+func (m *slowActive) Name() string { return "slow" }
+
+func (m *slowActive) Run(ctx context.Context, flows <-chan FlowSnapshot, _ FlagFunc) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case f, ok := <-flows:
+			if !ok {
+				return
+			}
+			m.ch <- f
+			time.Sleep(time.Millisecond)
+		}
 	}
 }
 
@@ -154,5 +272,16 @@ func TestBuildModules(t *testing.T) {
 		{Name: "block-ip", Settings: json.RawMessage(`{}`)},
 	}}); err == nil {
 		t.Error("block-ip built without destinations")
+	}
+}
+
+func TestParseFlowKey(t *testing.T) {
+	k := FlowKey{
+		Proto: ProtoTCP, Src: netip.MustParseAddr("192.0.2.1"), Dst: netip.MustParseAddr("198.51.100.2"),
+		SrcPort: 1, DstPort: 443,
+	}
+	got, err := ParseFlowKey(k.String())
+	if err != nil || got != k {
+		t.Errorf("round-trip: %v %+v", err, got)
 	}
 }

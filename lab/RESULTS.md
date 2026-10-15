@@ -4,8 +4,13 @@
 
 Did a transport's data cross the censor in the lab router: pass when it did, fail when the censor stopped it.
 
-| transport | censor | result |
-|---|---|---|
-| udp | block-ip (elsewhere) | pass |
-| udp | block-ip (entry) | fail |
-| udp | off | pass |
+| transport | censor | result | detail |
+|---|---|---|---|
+| tcp | block-ip (elsewhere) | pass |  |
+| tcp | block-ip (entry) | fail | tcp blocked to 172.16.18.3 and fdd1:53d7:c2c0:1::3 |
+| tcp | block-ip reset (entry) | fail | tcp blocked to 172.16.0.3 and fd3b:ed80:98f7:1::3 |
+| tcp | off | pass |  |
+| udp | block-ip (elsewhere) | pass |  |
+| udp | block-ip (entry) | fail | ping 100.64.0.1 from device-a: device-a: ping -c 1 -W 1 100.64.0.1: exit 1:  |
+| udp | block-ip reset (entry) | pass |  |
+| udp | off | pass |  |

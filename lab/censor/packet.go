@@ -138,9 +138,11 @@ func decodePacket(ip []byte) (Packet, bool) {
 		pkt.Seq = binary.BigEndian.Uint32(l4[4:])
 		pkt.Ack = binary.BigEndian.Uint32(l4[8:])
 		pkt.Flags = l4[13]
-		if off := int(l4[12]>>4) * 4; off >= 20 && off <= len(l4) {
-			pkt.Payload = l4[off:]
+		off := int(l4[12]>>4) * 4
+		if off < 20 || off > len(l4) {
+			return pkt, false
 		}
+		pkt.Payload = l4[off:]
 	}
 	return pkt, true
 }

@@ -25,12 +25,6 @@ func newRSTSender() (*rstSender, error) {
 		return nil, err
 	}
 	s.v4 = fd
-	fd, err = openRaw(unix.AF_INET6, unix.IPPROTO_RAW, unix.IPPROTO_IPV6, unix.IPV6_HDRINCL)
-	if err != nil {
-		s.close()
-		return nil, err
-	}
-	s.v6 = fd
 	return s, nil
 }
 
@@ -46,12 +40,20 @@ func openRaw(family, proto, hdrinclLevel, hdrincl int) (int, error) {
 	return fd, nil
 }
 
-// send sends the RST that answers p.
+// send sends the RST that answers p toward the packet's source (the peer
+// that sent it through the censor).
 func (s *rstSender) send(p *Packet) error {
 	if p.Dst.Is4() {
-		return sendRaw(s.v4, buildRST(p), p.Dst)
+		return sendRaw(s.v4, buildRST(p), p.Src)
 	}
-	return sendRaw(s.v6, buildRST(p), p.Dst)
+	if s.v6 < 0 {
+		fd, err := openRaw(unix.AF_INET6, unix.IPPROTO_RAW, unix.IPPROTO_IPV6, unix.IPV6_HDRINCL)
+		if err != nil {
+			return err
+		}
+		s.v6 = fd
+	}
+	return sendRaw(s.v6, buildRST(p), p.Src)
 }
 
 func sendRaw(fd int, b []byte, to netip.Addr) error {
