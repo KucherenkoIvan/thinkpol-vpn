@@ -73,3 +73,4 @@ Questions to answer:
 - 2026-10-15 backlog → in-progress — owner: glm-tp064 (prototype)
 - 2026-10-15 in-progress → review — prototype box ticked, result in Notes; `make lint`, `make test` and the lab test pass on this branch
 - 2026-10-15 review → has-errors — round-1 review findings (S1-S4, N1, N2, N4) as boxes; owner: glm-tp064 (round 2)
+- 2026-10-15 has-errors → in-progress — owner: glm-tp064 (round 2)
