@@ -170,3 +170,4 @@ Cross-family adversarial review (Grok, 2026-10-15) of round 1; orchestrator's li
 - 2026-10-15 backlog → in-progress — owner: claude-opus-tp078
 - 2026-10-15 in-progress → review — round 1: pf guard (anchor com.apple/thinkpol, table thinkpol_exempt6, enable by reference with a boot-stamped token record, 10 s poll), agent wiring, DESIGN "IPv6". make lint, make test (with a pfctl tripwire: no test runs pfctl), go test -race (firewall, agent, routetable), lab-gotest dataplane and agent pass; nine mutations each caught. Device checklist pending (owner's run after review round 1); pfctl output formats and pf behaviour are inferences from the man pages until then
 - 2026-10-15 review → has-errors — cross-family review (Grok): 1 blocker (unreadable -E token leaks the reference), 5 should-fix, nits and suspicions; findings R2.1–R2.8
+- 2026-10-15 has-errors → in-progress — owner: claude-opus-tp078, round 2
