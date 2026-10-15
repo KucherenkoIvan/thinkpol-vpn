@@ -161,6 +161,7 @@ macOS state paths (round 4: every default names the real path, since `/var`, `/e
 - A scoped host route to an off-link direct DNS upstream works; only sockets bound to the physical interface use it.
 - The real country list (~12.9k routes) installed in 118 ms; status polls were answered while routes went in and out.
 - Speed (`networkQuality`): direct 138/89 Mbit/s down/up, tunnel 94/90. Client RSS 74 MiB max, CPU 46% max (37% avg during the speed test); exit 72 MiB max, CPU 77% max under a 0.75-core cap.
+- **Leak evidence caveat (cross-model analysis):** the kit decoded its pcaps to empty text, so its packet counts were always zero. The captures themselves were valid. Re-read by hand: steps 6, 12 and 16 captured 0 packets; step 5's 4 packets were unrelated inbound TCP segments and link-local ICMPv6, none to the watched sites. The conclusions hold, but this run's leak checks could not have failed. The kit fix is tracked privately (TP-082).
 - Not run this time: manual steps 7 (sleep/wake), 8 (Wi-Fi change), 13 (local API groups), 15b and 15e. Runs 1–3: IPv4 DNS bug, own-IPv6 checksum bug (TP-079), then a full product pass with invalid leak captures (kit bug).
 
 ## Review findings
@@ -267,3 +268,4 @@ Round 2 resolution: R2.1 `netcfg.ConnectedRoutes` (utun networks as halves) + th
 - 2026-10-15 merged origin/rewrite (TP-021's Linux guard): Clear keeps the guard under the owner lock and clears both records; upstreams feed scoped routes and guard exemptions (netcfg.ClearWith runs the guard's Close while the route table's lock is held, a failed Close still abandons; GuardFor takes Want.Upstreams, so agent.leakGuard is gone and TP-078's scope says so; darwin has no guard until TP-078). make lint, make test, go test -race (routetable, netcfg, agent, dns) green on a Mac; lab: make lab-gotest for routetable, netcfg, firewall, agent (incl. TestEnforcerAppliesTheGuardWithTheRoutes, TestClearTouchesTheGuardOnlyUnderTheOwnerLock, TestAFailedClearFreesTheNamespace), and TestNoIPv6LeavesAroundTheTunnel, TestRouteTableSendsOnlyDirectAroundTheTunnel, TestASecondAgentChangesNothing, TestDNSFollowsTheRules, TestUpRunsTheM0Space pass
 - 2026-10-15 review follow-up (merge): DESIGN pointer to TP-078; watcher-stop test observes the new watcher
 - 2026-10-15 device run 4: PASS (automatic checklist); manual steps pending
+- 2026-10-15 docs: run 4 leak-evidence caveat
