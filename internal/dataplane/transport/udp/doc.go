@@ -59,9 +59,11 @@
 //     current one has been silent for 30 seconds (a dialer whose clock went
 //     back); a refused sender keeps its slot, with its counters recorded,
 //     so showing its datagrams again later is a replay;
-//   - a sender evicted from the slots is refused for five minutes, after
-//     which its datagrams are stale anyway; a credential taken out of the
-//     table keeps its senders for as long, should it come back;
+//   - a sender evicted from the slots, or a credential taken out of the
+//     table, is remembered for twice the skew, by id: a datagram sealed as
+//     it was evicted or retired, by a sender clocked ahead by the skew, is
+//     still fresh one skew later on the receiver's clock, and past the
+//     memory a replay would come back as a "new" sender;
 //   - only the current sender's newest counter moves the link's reply
 //     address.
 //

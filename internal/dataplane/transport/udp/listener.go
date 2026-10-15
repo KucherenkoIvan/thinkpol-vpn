@@ -158,7 +158,7 @@ func (l *Listener) reindex(links []transport.PeerLink) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	for key, r := range l.retired {
-		if now.Sub(r.at) > maxClockSkew {
+		if now.Sub(r.at) > senderForget {
 			delete(l.retired, key)
 		}
 	}

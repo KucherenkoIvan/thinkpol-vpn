@@ -113,7 +113,7 @@ func (r *Router) refresh(now time.Time) {
 	links, r.changed = r.peers.Snapshot()
 	r.set = indexPeers(links, epochOf(now))
 	for key, rt := range r.retired {
-		if now.Sub(rt.at) > maxClockSkew {
+		if now.Sub(rt.at) > senderForget {
 			delete(r.retired, key)
 		}
 	}
