@@ -22,5 +22,9 @@ Opening an invite link joins the space from the tray app.
 ## Acceptance
 - [ ] clicking an invite link on a fresh machine with the app installed ends connected
 
+## Notes
+- Acceptance says the invite ends connected; PRD D7 and TP-039 say a redeemed device stays pending until approved. Settle in the UX design round (ORCHESTRATION, Decisions 2026-10-15).
+
 ## Log
 - 2026-10-10 created in backlog
+- 2026-10-15 docs (backlog grooming): Notes on invite connected vs pending (UX design round)

@@ -74,4 +74,5 @@ Made by the project owner following an independent review.
 - Decisions go into DESIGN.md; tickets carry pointers, not accreted design.
 - Security-sensitive code written by one model family gets a second-opinion review from a different family.
 - Merge order for the in-flight M1 branches: tp-021 before tp-019; tp-019 absorbs the conflict.
-- Critical path after M1: agent-layer refactor (TP-075), then service install (TP-046), the macOS/Linux kill switch (TP-048), the Reality evaluation (TP-064), and then tls (TP-028) and the censor-lab modules. Daily use starts after M2.
+- Critical path after M1: agent-layer refactor part 1 (TP-075), with the Reality evaluation (TP-064) and the censor framework (TP-024) running alongside it; then service install (TP-046), then the macOS/Linux kill switch (TP-048); then tls (TP-028) and the censor modules (TP-025, TP-026, TP-032) after TP-064. Daily use starts after M2.
+- UX design round after the mechanics: once the core transports and data plane are built, user-facing flows (invites, the admin panel and its canvas, the tray app) get a fresh design round, informed by the technical limits found and by experience from building. Until then UX details in tickets are provisional.
