@@ -27,12 +27,12 @@ func TestQueuePipeline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 	udp, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.2")})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer udp.Close()
+	defer func() { _ = udp.Close() }()
 	tcpAddr := net.JoinHostPort("127.0.0.2", fmt.Sprint(listener.Addr().(*net.TCPAddr).Port))
 	udpAddr := &net.UDPAddr{IP: net.ParseIP("127.0.0.2"), Port: udp.LocalAddr().(*net.UDPAddr).Port}
 
@@ -74,12 +74,12 @@ table inet %s {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 		got := make([]byte, 16)
 		deadline := time.Now().Add(10 * time.Second)
 		for time.Now().Before(deadline) {
-			c.Write([]byte("hello"))
-			udp.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+			_, _ = c.Write([]byte("hello"))
+			_ = udp.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
 			if n, _, err := udp.ReadFromUDP(got); err == nil && string(got[:n]) == "hello" {
 				return
 			}
@@ -93,10 +93,10 @@ table inet %s {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 		stop := time.Now().Add(2 * time.Second)
 		for time.Now().Before(stop) {
-			c.Write([]byte("hello"))
+			_, _ = c.Write([]byte("hello"))
 			time.Sleep(100 * time.Millisecond)
 		}
 		// The verdict log, not silence alone, proves the pipeline
@@ -115,7 +115,7 @@ table inet %s {
 		deadline := time.Now().Add(10 * time.Second)
 		for time.Now().Before(deadline) {
 			if conn, err := net.DialTimeout("tcp", tcpAddr, time.Second); err == nil {
-				conn.Close()
+				_ = conn.Close()
 				continue
 			}
 			if entry := verdictFor(t, logPath, func(e *LogEntry) bool { return e.Verdict == Reset }); entry == nil {

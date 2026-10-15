@@ -128,5 +128,5 @@ func (l *verdictLog) write(entry LogEntry) {
 	defer l.mu.Unlock()
 	enc := json.NewEncoder(l.w)
 	enc.SetEscapeHTML(false)
-	enc.Encode(entry)
+	_ = enc.Encode(entry)
 }

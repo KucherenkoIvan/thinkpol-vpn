@@ -42,7 +42,7 @@ func main() {
 		if verdicts, err = os.Create(cfg.Log); err != nil {
 			log.Fatalf("censord: %v", err)
 		}
-		defer verdicts.Close()
+		defer func() { _ = verdicts.Close() }()
 	}
 	names := make([]string, 0, len(passives)+len(actives))
 	for _, m := range passives {

@@ -40,7 +40,7 @@ func openRaw(family, proto, hdrinclLevel, hdrincl int) (int, error) {
 		return -1, fmt.Errorf("censor: raw socket: %w", err)
 	}
 	if err := unix.SetsockoptInt(fd, hdrinclLevel, hdrincl, 1); err != nil {
-		unix.Close(fd)
+		_ = unix.Close(fd)
 		return -1, fmt.Errorf("censor: hdrincl: %w", err)
 	}
 	return fd, nil
@@ -68,7 +68,7 @@ func sendRaw(fd int, b []byte, to netip.Addr) error {
 func (s *rstSender) close() {
 	for _, fd := range []*int{&s.v4, &s.v6} {
 		if *fd >= 0 {
-			unix.Close(*fd)
+			_ = unix.Close(*fd)
 			*fd = -1
 		}
 	}

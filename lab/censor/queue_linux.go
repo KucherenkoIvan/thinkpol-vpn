@@ -41,7 +41,7 @@ func serveQueue(ctx context.Context, cfg Config, eng *Engine) error {
 	if err != nil {
 		return fmt.Errorf("censor: open queue %d: %w", cfg.Queue, err)
 	}
-	defer nf.Close()
+	defer func() { _ = nf.Close() }()
 	// A full socket buffer must not kill the receive loop; the missed
 	// packets stay queued.
 	if err := nf.SetOption(netlink.NoENOBUFS, true); err != nil {

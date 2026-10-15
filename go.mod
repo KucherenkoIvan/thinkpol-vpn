@@ -6,6 +6,7 @@ toolchain go1.26.9
 
 require (
 	github.com/KucherenkoIvan/go-kernel v0.20.0
+	github.com/florianl/go-nfqueue/v2 v2.1.0
 	github.com/goccy/go-yaml v1.19.2
 	github.com/godbus/dbus/v5 v5.2.3
 	github.com/google/nftables v0.3.0
@@ -22,7 +23,6 @@ require (
 )
 
 require (
-	github.com/florianl/go-nfqueue/v2 v2.1.0 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/mdlayher/socket v0.5.1 // indirect
 	golang.org/x/sync v0.24.0 // indirect
