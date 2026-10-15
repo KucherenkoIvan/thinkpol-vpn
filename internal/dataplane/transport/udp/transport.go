@@ -161,10 +161,11 @@ type Counters struct {
 	StaleTimestamp  uint64 // sent more than five minutes from our clock
 	StaleSender     uint64 // an older sender while a newer one is active
 	Replayed        uint64 // a counter seen before, or behind the window
+	NoLink          uint64 // no link is open, and the datagram opens none
 }
 
 type counters struct {
-	delivered, cover, unauthenticated, staleTimestamp, staleSender, replayed atomic.Uint64
+	delivered, cover, unauthenticated, staleTimestamp, staleSender, replayed, noLink atomic.Uint64
 }
 
 // received counts an authenticated datagram that passed every check.
@@ -183,6 +184,7 @@ func (c *counters) snapshot() Counters {
 		StaleTimestamp:  c.staleTimestamp.Load(),
 		StaleSender:     c.staleSender.Load(),
 		Replayed:        c.replayed.Load(),
+		NoLink:          c.noLink.Load(),
 	}
 }
 
