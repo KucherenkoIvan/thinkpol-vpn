@@ -29,6 +29,15 @@ Non-reflection paths; changing how macOS routes local overlay traffic; device ve
 - [x] reflected TCP, UDP and ICMPv6 (and ICMP/TCP/UDP over IPv4) packets carry a correct checksum, unit-tested with packets whose checksum field holds a wrong or partial value (`TestFixReflectedChecksums` in `internal/dataplane/checksum/checksum_test.go`; `make test`, `go test -race ./internal/dataplane/router/...`)
 - [ ] the device checklist: `dig @A6`, TCP to A6 and `ping6 A6` work, and the "bad checksum" counter doesn't grow (next device run)
 
+## Review findings
+
+- [ ] 1. BLOCKER — IPv4 fragments and IPv6 fragment header: skip L4 / leave packet unchanged (`checksum.go`)
+- [ ] 2. BLOCKER — IPv6 extension length byte arithmetic infinite loop (`checksum.go:86`, `checksum_test.go:171`)
+- [ ] 3. SHOULD-FIX — router wiring test with bad IPv6 UDP checksum (`router_test.go`)
+- [ ] 4. SHOULD-FIX — independent test oracle and extra vectors (`checksum_test.go`)
+- [ ] 5. SUSPICION — clamp packet length to IP Total Length / IPv6 payload (`checksum.go`)
+- [ ] 6. NITS — `router.go` comment; `DESIGN.md` reflection checksum clause
+
 ## Notes
 
 On macOS the node's overlay utun has IPv4 A4 (point-to-point to itself, route `A4 A4 UH utunN`) and IPv6 A6 (route `A6 link#N UHL lo0`). Packets the Mac sends to its own overlay addresses are written into the utun. The router reflects them back into the TUN when both source and destination are local addresses (`internal/dataplane/router/router.go`, reflection branch added in TP-019). That reaches the in-process DNS resolver on A4 for IPv4.
@@ -43,3 +52,4 @@ Effect: anything on the Mac talking to its own overlay IPv6 is broken. A6 is oft
 
 - 2026-10-15 created in in-progress (split from TP-019 after device run 2; stacked on tp-019-macos-data-plane)
 - 2026-10-15 in-progress → review — unit acceptance checked; device checklist pending (`needs_human: macos`); `make test`, `go test -race ./internal/dataplane/router/...` pass
+- 2026-10-15 review → has-errors — review round 2 findings recorded
