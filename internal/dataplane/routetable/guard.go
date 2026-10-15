@@ -53,9 +53,9 @@ type Exempt struct {
 	// rules (their direct set) and the links' endpoints. Its IPv6 part
 	// counts; IPv4 is the kill switch's (TP-048).
 	Direct *lists.Set
-	// Upstreams are the direct DNS upstreams the agent's resolver asks:
-	// for an OS without socket marks (macOS's pf), where Mark can't
-	// exempt them. Linux's guard leaves them to Mark.
+	// Upstreams are the direct DNS upstreams the agent's resolver asks
+	// (Want.Upstreams): for an OS without socket marks (macOS's pf),
+	// where Mark can't exempt them. Linux's guard leaves them to Mark.
 	Upstreams []netip.Addr
 }
 
@@ -93,8 +93,9 @@ func (e Exempt) Ranges6() []lists.Range {
 }
 
 // GuardFor is what the guard lets out around the tunnel for w: exactly
-// what the table throws (the direct destinations and the endpoints) and
-// the links' marked sockets. Upstreams are the agent's to add.
+// what the table throws (the direct destinations and the endpoints), the
+// links' marked sockets, and w's direct DNS upstreams, the same ones the
+// table routes (Want.Upstreams): one source for both.
 func GuardFor(w Want) Exempt {
 	var b lists.Builder
 	b.AddSet(w.Direct)
@@ -102,5 +103,5 @@ func GuardFor(w Want) Exempt {
 		_ = b.AddPrefix(netip.PrefixFrom(a, a.BitLen())) // an IPv4-mapped endpoint was unmapped
 	}
 	direct, _ := b.Build()
-	return Exempt{TUN: w.TUN, Mark: Mark, Direct: direct}
+	return Exempt{TUN: w.TUN, Mark: Mark, Direct: direct, Upstreams: bypass(w.Upstreams)}
 }

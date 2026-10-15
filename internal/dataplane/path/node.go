@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"reflect"
 	"slices"
@@ -49,6 +50,10 @@ type Options struct {
 	// only ever subtracts its readings. Timers that only pace the work (the
 	// liveness check, dial backoff) stay on the wall clock.
 	Now func() time.Time
+	// Log gets the links' lives at info level: up, closed and why, the
+	// first failed dial of a run and the first failed read or write of a
+	// link (the rest at debug). Nil discards them.
+	Log *slog.Logger
 
 	watchEvery time.Duration // how often links are checked (tests)
 }
@@ -76,6 +81,9 @@ func (o Options) withDefaults() (Options, error) {
 	}
 	if o.Now == nil {
 		o.Now = time.Now
+	}
+	if o.Log == nil {
+		o.Log = slog.New(slog.DiscardHandler)
 	}
 	switch {
 	case o.DeadAfter <= o.ProbeInterval:
@@ -374,7 +382,7 @@ func (n *Node) Close() error {
 	n.nmu.RLock()
 	for _, nb := range n.neighbors {
 		for _, l := range nb.all() {
-			l.close()
+			l.close("the node stopped", nil)
 		}
 	}
 	n.nmu.RUnlock()
@@ -582,13 +590,14 @@ type Counters struct {
 	// relayed. Overlay MTUs above what the links carry show up here.
 	TooLarge    uint64
 	WriteFailed uint64 // a link's transport failed to write a packet for another reason
+	ReadFailed  uint64 // a link's transport failed a read (a packet lost, the link kept)
 }
 
 type counters struct {
 	sent, delivered, forwarded                      atomic.Uint64
 	noRoute, spoofed, hopLimit, noPath, unknownPeer atomic.Uint64
 	queueFull, malformed, otherSpace                atomic.Uint64
-	tooLarge, writeFailed                           atomic.Uint64
+	tooLarge, writeFailed, readFailed               atomic.Uint64
 }
 
 // Counters returns the node's counters.
@@ -599,6 +608,7 @@ func (n *Node) Counters() Counters {
 		NoRoute: c.noRoute.Load(), Spoofed: c.spoofed.Load(), HopLimit: c.hopLimit.Load(), NoPath: c.noPath.Load(),
 		UnknownPeer: c.unknownPeer.Load(), QueueFull: c.queueFull.Load(), Malformed: c.malformed.Load(),
 		OtherSpace: c.otherSpace.Load(), TooLarge: c.tooLarge.Load(), WriteFailed: c.writeFailed.Load(),
+		ReadFailed: c.readFailed.Load(),
 	}
 }
 

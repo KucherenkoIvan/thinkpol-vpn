@@ -70,6 +70,16 @@ func (s *Server) answer(cfg *Config, src netip.Addr, req *dns.Msg) *dns.Msg {
 		return overlayAnswer(cfg, req, name, q.Qtype)
 	}
 
+	// resolver.arpa is the resolver's own name (RFC 9462): an answer for
+	// _dns.resolver.arpa would have the OS upgrade it to an encrypted
+	// resolver (DDR) that bypasses the node. There is none.
+	if n := len(labels); n >= 2 && labels[n-1] == "arpa" && labels[n-2] == "resolver" {
+		s.n.blocked.Add(1)
+		m := reply(req, dns.RcodeNameError)
+		m.Authoritative = true
+		return m
+	}
+
 	route := Route{Kind: RouteDirect}
 	if p, full, ok := reversePrefix(labels); ok {
 		// Reverse names go where the address goes; the overlay's (and any

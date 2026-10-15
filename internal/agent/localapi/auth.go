@@ -68,9 +68,9 @@ type Policy struct {
 }
 
 // NewPolicy is the policy of a service running as this process, with the
-// group named group, or numbered (a gid: where the pure-Go lookup can't see
-// the system's groups, as on macOS): none if group is empty or no such
-// group exists (then only root and the service's user may use the API).
+// group named group (in /etc/group, or on macOS in Directory Services), or
+// numbered (a gid): none if group is empty or no such group exists (then
+// only root and the service's user may use the API).
 func NewPolicy(group string) (Policy, error) {
 	p := Policy{ServiceUID: uint32(os.Geteuid())}
 	if group == "" {
@@ -82,6 +82,11 @@ func NewPolicy(group string) (Policy, error) {
 	}
 	g, err := user.LookupGroup(group)
 	if errors.As(err, new(user.UnknownGroupError)) {
+		// The pure-Go lookup reads /etc/group only; macOS keeps its
+		// groups in Directory Services.
+		if gid, ok := systemGroup(group); ok {
+			p.Group, p.HasGroup = gid, true
+		}
 		return p, nil
 	}
 	if err != nil {

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/path"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/lists"
 )
 
@@ -68,12 +69,20 @@ type Want struct {
 	// for direct destinations and endpoints: it never leaks around the
 	// tunnel.
 	IPv6 bool
+	// Upstreams are the resolver's direct DNS upstreams. On macOS their
+	// sockets are bound to the physical interface (SocketControl), which
+	// reaches only what a route on that interface reaches: each gets a
+	// route scoped to the interface (one only such sockets use), unless
+	// it is on-link. Linux's sockets carry the mark instead: unused there.
+	// The guard exempts them too (GuardFor), for an OS without marks.
+	Upstreams []netip.Addr
 }
 
 // Equal reports whether w and o put the same routes in place.
 func (w Want) Equal(o Want) bool {
 	return w.TUN == o.TUN && w.IPv6 == o.IPv6 && w.Direct.Equal(o.Direct) &&
-		slices.Equal(bypass(w.Bypass), bypass(o.Bypass)) && slices.Equal(prefixes(w.Overlay), prefixes(o.Overlay))
+		slices.Equal(bypass(w.Bypass), bypass(o.Bypass)) && slices.Equal(prefixes(w.Overlay), prefixes(o.Overlay)) &&
+		slices.Equal(bypass(w.Upstreams), bypass(o.Upstreams))
 }
 
 func bypass(addrs []netip.Addr) []netip.Addr {
@@ -144,8 +153,8 @@ func overlaps(p netip.Prefix, among []netip.Prefix) bool {
 	return false
 }
 
-// Config is w as netcfg configuration, for each family, given the OS's
-// routing (s):
+// PolicyRouting is w as netcfg configuration for Linux, for each family,
+// given the OS's routing (s):
 //
 //	rule 5298: oif <every link but the TUN and lo> lookup main suppress_prefixlength 0
 //	rule 5299: to <overlay network> lookup 0x7470
@@ -162,7 +171,7 @@ func overlaps(p netip.Prefix, among []netip.Prefix) bool {
 // the gateway. Everything else meets the TUN's default or, when the TUN
 // can't take it, the unreachable one: it never falls through to the main
 // table.
-func Config(w Want, s netcfg.Survey) netcfg.Config {
+func PolicyRouting(w Want, s netcfg.Survey) netcfg.Config {
 	var cfg netcfg.Config
 	overlay := prefixes(w.Overlay)
 	var onLink []netip.Prefix
@@ -294,9 +303,15 @@ type Status struct {
 	// Reapplies counts re-Applies after a change or the backstop (most
 	// change nothing).
 	Reapplies uint64
-	// RulesAhead counts other software's policy rules that come before
-	// ours (a mesh VPN's, say): they may route around the tunnel.
+	// RulesAhead counts what other software has in place that may route
+	// around the tunnel and the layout can't override (Ahead): policy
+	// rules before ours (a mesh VPN's, say) on Linux, host routes over
+	// tunneled destinations on macOS.
 	RulesAhead int
+	// OverlayAhead counts foreign host routes inside the overlay's
+	// networks that nothing outranks (macOS, OverlayAhead): a peer's
+	// traffic leaves around the tunnel.
+	OverlayAhead int
 }
 
 // What Status.Error and Status.GuardError say.
@@ -362,22 +377,19 @@ func New(g Guard, log *slog.Logger) (*Enforcer, error) {
 // crashed run's guard, only while this process holds the route table's
 // owner lock: whatever keeps netcfg from taking it (another live run,
 // or any failure on the way) may mean the guard there is live, so it is
-// left alone and the error returned.
+// left alone and the error returned. A Close of the routes that fails
+// still lets go of the lock (netcfg.Clear).
 func Clear(g Guard) error {
 	return clearWith(func() (netcfg.Configurator, error) { return netcfg.New(netcfg.OwnerRouteTable) }, g)
 }
 
 // clearWith is Clear with the owner's configurator from open.
 func clearWith(open func() (netcfg.Configurator, error), g Guard) error {
-	c, err := open()
-	if err != nil {
-		return err
-	}
-	var gerr error
+	var held func() error
 	if g != nil {
-		gerr = g.Close()
+		held = g.Close
 	}
-	return errors.Join(gerr, c.Close())
+	return netcfg.ClearWith(open, held)
 }
 
 // startWatching starts the watcher; with check it re-applies first, for
@@ -476,12 +488,7 @@ func (e *Enforcer) apply(ctx context.Context, w Want, again bool) error {
 	if !TUNUp(w, s) {
 		e.status.Enforced, e.status.Error = false, ErrorTUNDown
 	}
-	e.status.RulesAhead = 0
-	for _, p := range s.ForeignRules {
-		if p < PriorityTunnel {
-			e.status.RulesAhead++
-		}
-	}
+	e.status.RulesAhead, e.status.OverlayAhead = Ahead(w, s), OverlayAhead(w, s)
 	if !again || e.status.Routes != len(cfg.Routes) {
 		e.log.Info("route table applied", "routes", len(cfg.Routes), "took", took.Round(time.Millisecond))
 		e.status.LastApply = took
@@ -669,7 +676,7 @@ func (e *Enforcer) reapply(ctx context.Context) {
 		return
 	}
 	if err := e.apply(ctx, *w, true); err != nil && ctx.Err() == nil {
-		e.log.Warn("route table: putting it back failed, retrying", "in", RetryAfter, "err", err)
+		e.log.Warn("route table: putting it back failed, retrying", "in", RetryAfter, "err", path.RedactError(err))
 	}
 }
 

@@ -940,6 +940,28 @@ func TestOneConfiguratorPerOwnerAndNamespace(t *testing.T) {
 	n.configurator(t) // the place is free again
 }
 
+// Scoped routes are macOS's: Linux's sockets bypass the tunnel by their
+// mark. Refused before anything changes.
+func TestScopedRoutesAreRefused(t *testing.T) {
+	n := newTestNS(t)
+	n.dummy(t, "ovl0")
+	c := n.configuratorFor(t, netcfg.OwnerRouteTable)
+	err := c.Apply(context.Background(), netcfg.Config{Routes: []netcfg.Route{{Dst: pfx("10.60.0.53/32"), Interface: "ovl0", Scope: "ovl0"}}})
+	if !errors.Is(err, errors.ErrUnsupported) {
+		t.Errorf("a scoped route: %v, want ErrUnsupported", err)
+	}
+}
+
+// A clear whose Close fails frees the owner's place all the same: later
+// starts aren't refused with ErrBusy until the process restarts.
+func TestAFailedClearFreesTheNamespace(t *testing.T) {
+	n := newTestNS(t)
+	if err := netcfg.ClearFailingClose(n.path, netcfg.OwnerOverlay); err == nil {
+		t.Fatal("the failed Close went unreported")
+	}
+	n.configurator(t) // the place is free
+}
+
 func TestOwnersNeverTouchEachOther(t *testing.T) {
 	n := newTestNS(t)
 	n.dummy(t, "ovl0")

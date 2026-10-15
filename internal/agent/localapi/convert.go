@@ -62,13 +62,14 @@ func dataPlaneProto(dp *dataplane.Status, listeners int) *localapiv1.DataPlane {
 			"router.not_local": dp.Router.NotLocal, "router.forwarded": dp.Router.Forwarded, "router.no_route": dp.Router.NoRoute,
 			"router.blocked": dp.Router.Blocked, "router.malformed": dp.Router.Malformed,
 			"router.too_large": dp.Router.TooLarge, "router.queue_full": dp.Router.QueueFull,
-			"router.read_errors": dp.Router.ReadErrors, "router.direct": dp.Router.Direct,
+			"router.read_errors": dp.Router.ReadErrors, "router.direct": dp.Router.Direct, "router.reflected": dp.Router.Reflected,
+			"router.reflect_failed": dp.Router.ReflectFailed, "router.foreign_source": dp.Router.ForeignSource,
 			"path.sent": dp.Path.Sent, "path.delivered": dp.Path.Delivered, "path.forwarded": dp.Path.Forwarded,
 			"path.no_route": dp.Path.NoRoute, "path.spoofed": dp.Path.Spoofed, "path.hop_limit": dp.Path.HopLimit,
 			"path.no_path": dp.Path.NoPath, "path.unknown_peer": dp.Path.UnknownPeer,
 			"path.queue_full": dp.Path.QueueFull, "path.malformed": dp.Path.Malformed,
 			"path.other_space": dp.Path.OtherSpace, "path.too_large": dp.Path.TooLarge,
-			"path.write_failed":   dp.Path.WriteFailed,
+			"path.write_failed": dp.Path.WriteFailed, "path.read_failed": dp.Path.ReadFailed,
 			"interface.reapplies": dp.InterfaceReapplies,
 		},
 	}
@@ -76,6 +77,7 @@ func dataPlaneProto(dp *dataplane.Status, listeners int) *localapiv1.DataPlane {
 		out.Counters["route_table.routes"] = uint64(rt.Routes)
 		out.Counters["route_table.reapplies"] = rt.Reapplies
 		out.Counters["route_table.rules_ahead"] = uint64(rt.RulesAhead)
+		out.Counters["route_table.overlay_routes_ahead"] = uint64(rt.OverlayAhead)
 	}
 	for _, p := range dp.Peers {
 		pp := &localapiv1.Peer{

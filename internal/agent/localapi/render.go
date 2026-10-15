@@ -156,6 +156,9 @@ func writeDataPlane(line func(string, ...any), dp *localapiv1.DataPlane, now tim
 		if ahead := dp.GetCounters()["route_table.rules_ahead"]; ahead > 0 {
 			line("\t%d policy rules of other software come first and may route around the tunnel", ahead)
 		}
+		if ahead := dp.GetCounters()["route_table.overlay_routes_ahead"]; ahead > 0 {
+			line("\t%d routes of other software take overlay addresses around the tunnel", ahead)
+		}
 	}
 	var drops []string
 	for _, name := range slices.Sorted(maps.Keys(dp.GetCounters())) {
@@ -173,7 +176,8 @@ func writeDataPlane(line func(string, ...any), dp *localapiv1.DataPlane, now tim
 var trafficCounters = map[string]bool{
 	"router.routed": true, "router.delivered": true, "router.forwarded": true, "path.sent": true, "path.delivered": true, "path.forwarded": true,
 	"route_table.routes": true, "route_table.reapplies": true, "route_table.rules_ahead": true,
-	"interface.reapplies": true,
+	"route_table.overlay_routes_ahead": true,
+	"interface.reapplies":              true,
 }
 
 // WriteSpaces writes the spaces, the active one marked.

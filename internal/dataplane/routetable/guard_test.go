@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -16,7 +17,8 @@ import (
 )
 
 // The guard lets out around the tunnel exactly what the table throws,
-// and the links' marked sockets.
+// the links' marked sockets, and the direct DNS upstreams the table
+// routes.
 func TestGuardForIsWhatTheTableThrows(t *testing.T) {
 	w := routetable.Want{
 		TUN:     "thinkpol0",
@@ -24,9 +26,12 @@ func TestGuardForIsWhatTheTableThrows(t *testing.T) {
 		Direct:  set(t, "198.51.100.0/24", "2001:db8:d0::/48"),
 		Bypass:  []netip.Addr{netip.MustParseAddr("203.0.113.7"), netip.MustParseAddr("2001:db8:7::7"), netip.MustParseAddr("::ffff:203.0.113.8"), {}},
 		IPv6:    true,
+		Upstreams: []netip.Addr{netip.MustParseAddr("2001:db8:53::1"), netip.MustParseAddr("::ffff:192.0.2.53"),
+			netip.MustParseAddr("2001:db8:53::1"), {}},
 	}
 	want := routetable.Exempt{TUN: "thinkpol0", Mark: routetable.Mark,
-		Direct: set(t, "198.51.100.0/24", "2001:db8:d0::/48", "203.0.113.7/32", "203.0.113.8/32", "2001:db8:7::7/128")}
+		Direct:    set(t, "198.51.100.0/24", "2001:db8:d0::/48", "203.0.113.7/32", "203.0.113.8/32", "2001:db8:7::7/128"),
+		Upstreams: []netip.Addr{netip.MustParseAddr("192.0.2.53"), netip.MustParseAddr("2001:db8:53::1")}}
 	if got := routetable.GuardFor(w); !got.Equal(want) {
 		t.Errorf("GuardFor: %+v, want %+v", got, want)
 	}
@@ -40,15 +45,17 @@ func TestGuardForIsWhatTheTableThrows(t *testing.T) {
 // fakeGuard records what it is given, and when: how many route Applies
 // the configurator had seen by then; the test signals its Watch.
 type fakeGuard struct {
-	f       *fakeConfigurator
-	events  chan struct{}
-	mu      sync.Mutex
-	applied []routetable.Exempt
-	after   []int
-	failErr error
-	closed  bool
-	order   *[]string    // what was closed, in order
-	watches atomic.Int32 // subscriptions alive
+	f          *fakeConfigurator
+	events     chan struct{}
+	mu         sync.Mutex
+	applied    []routetable.Exempt
+	after      []int
+	failErr    error
+	closed     bool
+	order      *[]string       // what was closed, in order
+	watches    atomic.Int32    // subscriptions alive
+	released   atomic.Int32    // subscriptions fully torn down
+	subscribed []chan struct{} // closed when each Watch goroutine is listening
 }
 
 func newFakeGuard(f *fakeConfigurator) *fakeGuard {
@@ -69,9 +76,17 @@ func (g *fakeGuard) Apply(_ context.Context, e routetable.Exempt) error {
 
 func (g *fakeGuard) Watch(ctx context.Context) (<-chan struct{}, error) {
 	out := make(chan struct{})
+	ready := make(chan struct{})
+	g.mu.Lock()
+	g.subscribed = append(g.subscribed, ready)
+	g.mu.Unlock()
 	g.watches.Add(1)
 	go func() {
-		defer g.watches.Add(-1)
+		close(ready)
+		defer func() {
+			g.watches.Add(-1)
+			g.released.Add(1)
+		}()
 		defer close(out)
 		for {
 			select {
@@ -294,8 +309,23 @@ func TestAWatcherThatStopsLetsGoOfItsSubscriptions(t *testing.T) {
 	if err := e.Enforce(context.Background(), routetable.Want{TUN: "thinkpol0"}); !errors.Is(err, errors.ErrUnsupported) {
 		t.Fatalf("Enforce: %v", err)
 	}
-	eventually(t, "the guard subscribed", func() bool { return g.watches.Load() > 0 })
-	eventually(t, "the guard's subscription let go", func() bool { return g.watches.Load() == 0 })
+	eventually(t, "the Open watcher's subscription released", func() bool { return g.released.Load() >= 1 })
+	eventually(t, "the new watcher subscribed", func() bool {
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		if len(g.subscribed) < 2 {
+			return false
+		}
+		select {
+		case <-g.subscribed[1]:
+			return true
+		default:
+			return false
+		}
+	})
+	eventually(t, "the new watcher's subscription released", func() bool {
+		return g.released.Load() >= 2 && g.watches.Load() == 0
+	})
 }
 
 // Clear removes a crashed run's guard only while it holds the route
@@ -319,5 +349,34 @@ func TestClearTouchesTheGuardOnlyUnderTheOwnerLock(t *testing.T) {
 	}
 	if len(order) != 2 || order[0] != "guard" || order[1] != "routes" {
 		t.Errorf("Clear closed %v, want the guard, then the routes (letting go of the lock)", order)
+	}
+}
+
+// The direct DNS upstreams the table routes (Want.Upstreams) are what
+// the guard exempts: a change of upstreams alone reaches both, with no
+// second channel to the guard.
+func TestTheGuardFollowsTheDirectUpstreams(t *testing.T) {
+	f := &fakeConfigurator{events: make(chan struct{}), survey: up()}
+	g := newFakeGuard(f)
+	e := routetable.OpenWithGuard(f, g, nil)
+	defer func() { _ = e.Close() }()
+	ctx := context.Background()
+	w := routetable.Want{TUN: "thinkpol0", Direct: set(t, "2001:db8:d0::/48")}
+	if err := e.Enforce(ctx, w); err != nil {
+		t.Fatal(err)
+	}
+	w.Upstreams = []netip.Addr{netip.MustParseAddr("2001:db8:53::1")}
+	routes := f.count()
+	if err := e.Enforce(ctx, w); err != nil {
+		t.Fatal(err)
+	}
+	if f.count() == routes {
+		t.Error("new upstreams didn't reach the routes")
+	}
+	g.mu.Lock()
+	last := g.applied[len(g.applied)-1]
+	g.mu.Unlock()
+	if !slices.Equal(last.Upstreams, w.Upstreams) {
+		t.Errorf("the guard exempts upstreams %v, want %v", last.Upstreams, w.Upstreams)
 	}
 }

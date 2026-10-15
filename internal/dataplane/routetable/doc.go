@@ -4,8 +4,10 @@
 // which leave through the physical default route.
 //
 // Config is the layout as netcfg configuration (on Linux, policy routing:
-// a table of its own and two rules per family); an Enforcer applies it
+// a table of its own and rules per family, PolicyRouting; on macOS, split
+// routes in the main table, SplitRoutes); an Enforcer applies it
 // through a netcfg configurator of OwnerRouteTable and keeps it in place
-// as routing changes. SocketControl marks the transports' sockets so
-// links bypass the tunnel whatever the table holds.
+// as routing changes. SocketControl marks the transports' sockets (Linux)
+// or binds them to the physical interface (macOS) so links bypass the
+// tunnel whatever the table holds.
 package routetable

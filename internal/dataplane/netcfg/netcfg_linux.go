@@ -237,6 +237,9 @@ func (c *linuxConfigurator) Apply(ctx context.Context, cfg Config) error {
 	}
 	keys := make(map[routeKey]Route, len(cfg.Routes))
 	for _, r := range cfg.Routes {
+		if r.Scope != "" {
+			return fmt.Errorf("netcfg: route %v: scoped routes on linux: %w", r, errors.ErrUnsupported)
+		}
 		if prev, dup := keys[keyOf(r)]; dup {
 			return fmt.Errorf("netcfg: routes %v and %v are the same route in the kernel", prev, r)
 		}
@@ -727,6 +730,22 @@ func (c *linuxConfigurator) Close() error {
 	c.h = nil
 	_ = c.ns.Close()
 	return unix.Close(c.lock) // frees the owner's place in the namespace
+}
+
+// abandon frees the owner's place without cleaning up: the routes and
+// rules left carry the owner's protocol, so the next configurator takes
+// them over, as after a crash.
+func (c *linuxConfigurator) abandon() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.h == nil {
+		return
+	}
+	c.closed = true
+	c.h.Close()
+	c.h = nil
+	_ = c.ns.Close()
+	_ = unix.Close(c.lock)
 }
 
 // listRoutes retries dumps the kernel interrupted because the table changed

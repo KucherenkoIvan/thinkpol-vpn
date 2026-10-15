@@ -259,6 +259,31 @@ func TestPathlessPeersDoNotFloodTheLog(t *testing.T) {
 	}
 }
 
+// The name the log's handshake tracking computes for a peer is the one
+// WireGuard's own messages carry, so a removed peer is forgotten.
+func TestPeerNamesAreWireGuards(t *testing.T) {
+	net := memory.NewNetwork(memory.Datagram)
+	a := newNode(t, net, "A")
+	var log recorder
+	ch := tuntest.NewChannelTUN()
+	dev := wg.New("overlay", ch.TUN(), a.NewBind(), slog.New(&log))
+	t.Cleanup(func() { _ = dev.Close() })
+	peer := netmap.GenerateWireGuardKey().Public()
+	configure(t, dev, netmap.GenerateWireGuardKey(), wg.Peer{Key: peer, Node: id("Z"), AllowedIPs: []netip.Prefix{prefix("100.64.0.9/32")}})
+	log.mu.Lock()
+	defer log.mu.Unlock()
+	for _, rec := range log.recs {
+		if strings.HasPrefix(rec.Message, wg.PeerName(peer)+" - ") {
+			return
+		}
+	}
+	var msgs []string
+	for _, rec := range log.recs {
+		msgs = append(msgs, rec.Message)
+	}
+	t.Errorf("no message names %s: %q", wg.PeerName(peer), msgs)
+}
+
 type recorder struct {
 	mu   sync.Mutex
 	recs []slog.Record

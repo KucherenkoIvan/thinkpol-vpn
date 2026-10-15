@@ -532,3 +532,142 @@ func TestAClosedEgressGetsNothing(t *testing.T) {
 		t.Fatalf("counters %+v", c)
 	}
 }
+
+// What the node sends to its own overlay address comes out of a macOS utun
+// (it routes the point-to-point interface's own address into it): with
+// ReflectLocal it goes back into the TUN as it was, for the OS to deliver
+// to itself (a query to the node's own resolver, its answer); without, an
+// overlay address no peer has is dropped as before.
+func TestPacketsForTheNodeItselfAreReflected(t *testing.T) {
+	for _, reflect := range []bool{true, false} {
+		r, ch := newRouter(t)
+		overlay := egress(t, r, "overlay")
+		err := r.SetTable(router.Table{
+			Overlay:      []netip.Prefix{prefix("100.64.0.0/16"), prefix("fd00:1::/48")},
+			Peers:        []router.Route{{Prefix: prefix("100.64.0.2/32"), Egress: overlay}},
+			Rules:        []router.Route{{Prefix: prefix("0.0.0.0/0"), Egress: overlay}},
+			Local:        []netip.Addr{addr("100.64.0.1"), addr("fd00:1::1")},
+			ReflectLocal: reflect,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		toOverlay := reads(overlay)
+		query := packettest.UDPDatagram(netip.MustParseAddrPort("100.64.0.1:53000"), netip.MustParseAddrPort("100.64.0.1:53"), []byte("query"))
+		for _, pkt := range [][]byte{query, ping("fd00:1::1", "fd00:1::1")} {
+			ch.Outbound <- pkt
+			if !reflect {
+				continue
+			}
+			select {
+			case got := <-ch.Inbound:
+				if !bytes.Equal(got, pkt) {
+					t.Fatalf("reflected %x, want %x", got, pkt)
+				}
+			case <-time.After(wait):
+				t.Fatal("a packet for the node itself never came back to the TUN")
+			}
+		}
+		marker := ping("100.64.0.1", "100.64.0.2")
+		ch.Outbound <- marker // everything before it was handled
+		if got := <-toOverlay; !bytes.Equal(got, marker) {
+			t.Fatalf("reflect=%v: the egress got %x", reflect, got)
+		}
+		select {
+		case p := <-ch.Inbound:
+			t.Fatalf("reflect=%v: the TUN got an extra %x", reflect, p)
+		default:
+		}
+		want := router.Counters{Routed: 1, Reflected: 2}
+		if !reflect {
+			want = router.Counters{Routed: 1, NoRoute: 2}
+		}
+		// Routed counts once the queue took it, maybe just after the read.
+		for deadline := time.Now().Add(wait); r.Counters() != want; time.Sleep(time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatalf("reflect=%v: counters %+v, want %+v", reflect, r.Counters(), want)
+			}
+		}
+	}
+}
+
+// Only the OS talking to itself is reflected: a packet for a local address
+// with any other source (injected on the TUN, a peer's address) is never
+// delivered as if WireGuard had authenticated it. A reflection the TUN
+// fails is counted.
+func TestOnlyLocalToLocalIsReflected(t *testing.T) {
+	ch := tuntest.NewChannelTUN()
+	dev := &bytesTUN{Device: ch.TUN()}
+	r := router.New(dev)
+	t.Cleanup(func() { _ = r.Close() })
+	overlay := egress(t, r, "overlay")
+	err := r.SetTable(router.Table{
+		Overlay:      []netip.Prefix{prefix("100.64.0.0/16")},
+		Peers:        []router.Route{{Prefix: prefix("100.64.0.2/32"), Egress: overlay}},
+		Local:        []netip.Addr{addr("100.64.0.1")},
+		ReflectLocal: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	toOverlay := reads(overlay)
+	ch.Outbound <- ping("100.64.0.2", "100.64.0.1") // a peer's source
+	dev.fail = errors.New("TUN gone")
+	ch.Outbound <- ping("100.64.0.1", "100.64.0.1")
+	ch.Outbound <- ping("100.64.0.1", "100.64.0.2") // a marker
+	<-toOverlay
+	select {
+	case p := <-ch.Inbound:
+		t.Fatalf("the TUN got %x", p)
+	default:
+	}
+	want := router.Counters{Routed: 1, NoRoute: 1, ReflectFailed: 1}
+	for deadline := time.Now().Add(wait); r.Counters() != want; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("counters %+v, want %+v", r.Counters(), want)
+		}
+	}
+}
+
+// What the OS sends from a link-local address (neighbour discovery,
+// multicast on the TUN) never reaches WireGuard, whose peers would refuse
+// it; on a device (LocalSourcesOnly) neither does any source but its own.
+func TestForeignSourcesNeverReachWireGuard(t *testing.T) {
+	for _, localOnly := range []bool{false, true} {
+		r, ch := newRouter(t)
+		exit := egress(t, r, "exit")
+		err := r.SetTable(router.Table{
+			Rules:            []router.Route{{Prefix: prefix("0.0.0.0/0"), Egress: exit}, {Prefix: prefix("::/0"), Egress: exit}},
+			Local:            []netip.Addr{addr("100.64.0.1"), addr("fd00:1::1")},
+			LocalSourcesOnly: localOnly,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		toExit := reads(exit)
+		ch.Outbound <- ping("fe80::5404:4dff:fe31:64ae", "ff02::16")
+		ch.Outbound <- ping("fe80::1", "2001:db8::1")
+		ch.Outbound <- ping("10.9.9.9", "192.0.2.1") // not the node's
+		ch.Outbound <- ping("100.64.0.1", "192.0.2.1")
+		want := []string{"192.0.2.1"}
+		if !localOnly {
+			want = []string{"192.0.2.1", "192.0.2.1"}
+		}
+		for range want {
+			select {
+			case <-toExit:
+			case <-time.After(wait):
+				t.Fatalf("localOnly=%v: too little reached the exit", localOnly)
+			}
+		}
+		foreign := uint64(2)
+		if localOnly {
+			foreign = 3
+		}
+		for deadline := time.Now().Add(wait); r.Counters().ForeignSource != foreign || r.Counters().Routed != uint64(len(want)); time.Sleep(time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatalf("localOnly=%v: counters %+v", localOnly, r.Counters())
+			}
+		}
+	}
+}

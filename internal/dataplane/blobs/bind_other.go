@@ -1,4 +1,4 @@
-//go:build !linux && !android
+//go:build !linux && !android && !darwin
 
 package blobs
 
@@ -8,8 +8,8 @@ import (
 )
 
 // bindTo refuses an interface: binding sockets to the TUN keeps the service
-// to the tunnel, and the platforms with a data plane on the way (TP-019,
-// TP-047) bring their own (IP_BOUND_IF, IP_UNICAST_IF).
+// to the tunnel, and Windows brings its own with its data plane (TP-047,
+// IP_UNICAST_IF).
 func bindTo(iface string) func(network, address string, c syscall.RawConn) error {
 	if iface == "" {
 		return nil

@@ -43,6 +43,17 @@ type Table struct {
 	// the internet: the node is its space's exit (TP-014). Overlay
 	// destinations other than Local are dropped all the same.
 	Forward []*Egress
+	// ReflectLocal writes packets read from the TUN for a Local address
+	// back into the TUN (Counters.Reflected), for the OS to deliver to
+	// itself. macOS routes its own address on a point-to-point utun
+	// into the utun instead of delivering it locally, so without this
+	// the node's processes never reach a service on its overlay address
+	// (its resolver). Elsewhere the OS never hands the TUN such packets.
+	ReflectLocal bool
+	// LocalSourcesOnly drops packets read from the TUN whose source isn't
+	// a Local address (Counters.ForeignSource): a node that never forwards
+	// the OS's traffic, a device. Link-local sources are dropped always.
+	LocalSourcesOnly bool
 }
 
 // compiled is a Table ready for lookups.
@@ -50,6 +61,18 @@ type compiled struct {
 	overlay, peers, rules lpm
 	local                 map[netip.Addr]bool
 	forward               map[*Egress]bool
+	reflect, localOnly    bool
+}
+
+// sendsFrom reports whether a packet the OS wrote to the TUN with source
+// src may go on to WireGuard: never from a link-local address, and with
+// LocalSourcesOnly only from a Local one. WireGuard's peers would drop
+// anything else anyway.
+func (c *compiled) sendsFrom(src netip.Addr) bool {
+	if src.IsLinkLocalUnicast() {
+		return false
+	}
+	return !c.localOnly || c.local[src]
 }
 
 // delivers reports whether egress e writes a packet for dst to the TUN:
@@ -67,7 +90,7 @@ func (c *compiled) delivers(e *Egress, dst netip.Addr) bool {
 }
 
 func (r *Router) compile(t Table) (*compiled, error) {
-	c := &compiled{local: make(map[netip.Addr]bool, len(t.Local)), forward: make(map[*Egress]bool, len(t.Forward))}
+	c := &compiled{local: make(map[netip.Addr]bool, len(t.Local)), forward: make(map[*Egress]bool, len(t.Forward)), reflect: t.ReflectLocal, localOnly: t.LocalSourcesOnly}
 	for _, e := range t.Forward {
 		if e == nil || e.r != r {
 			return nil, fmt.Errorf("router: forwarding egress of another router")

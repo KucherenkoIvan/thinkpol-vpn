@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"net/netip"
 	"slices"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/path"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
@@ -32,16 +34,22 @@ func (r *runner) newResolver() *dns.Server {
 	if len(upstreams) == 0 {
 		r.dp.Log.Warn("DNS: no upstream to ask; set one with -dns-upstream")
 	}
+	r.upstreams = r.upstreams[:0]
+	for _, u := range upstreams {
+		r.upstreams = append(r.upstreams, u.Addr())
+	}
 	o := dns.Options{Upstreams: upstreams, Port: r.dp.dnsPort, Log: r.dp.Log}
 	if r.section.Node.Kind == netmap.NodeDevice {
-		o.TunnelControl = dns.BindToInterface(r.dp.Interface)
+		o.TunnelControl = dns.BindToInterface(r.tun)
 	}
 	if r.dp.RouteTable {
 		// The direct upstream's queries carry the links' mark, so they
-		// leave around the tunnel whatever the route table holds; the
-		// leak guard learns them for an OS without marks.
+		// leave around the tunnel whatever the route table holds. On
+		// macOS they are bound to the physical interface instead, which
+		// reaches only what a route on it reaches: the route table gives
+		// each upstream a route scoped to it, and the leak guard exempts
+		// them (Engine.SetDirectUpstreams, the one source of both).
 		o.Control = routetable.SocketControl()
-		r.leak.setUpstreams(upstreams)
 	}
 	return dns.New(o)
 }
@@ -92,7 +100,7 @@ func (r *runner) systemConfig() (dns.SystemConfig, bool) {
 	if r.resolver == nil || r.section.Node.Kind != netmap.NodeDevice {
 		return dns.SystemConfig{}, false
 	}
-	c := dns.SystemConfig{Interface: r.dp.Interface, Servers: []netip.Addr{r.section.Node.IPv4}, Log: r.dp.Log}
+	c := dns.SystemConfig{Interface: r.tun, Servers: []netip.Addr{r.section.Node.IPv4}, Log: r.dp.Log}
 	if r.engine.Status().IPv6 {
 		c.Servers = append(c.Servers, r.section.Node.IPv6)
 	}
@@ -100,16 +108,23 @@ func (r *runner) systemConfig() (dns.SystemConfig, bool) {
 		c.Search = []string{r.section.SpaceName + ".internal"}
 	}
 	if len(r.dp.DNSUpstreams) == 0 {
-		srv, own, log, leak := r.resolver, []netip.Addr{r.section.Node.IPv4, r.section.Node.IPv6}, r.dp.Log, r.leak
+		srv, own, log := r.resolver, []netip.Addr{r.section.Node.IPv4, r.section.Node.IPv6}, r.dp.Log
+		engine, routes := r.engine, r.dp.RouteTable
 		c.Upstreams = func(host []netip.Addr) {
 			var ups []netip.AddrPort
+			var addrs []netip.Addr
 			for _, a := range host {
 				if !slices.Contains(own, a) && !a.IsUnspecified() {
 					ups = append(ups, netip.AddrPortFrom(a, dns.Port))
+					addrs = append(addrs, a)
 				}
 			}
 			srv.SetUpstreams(ups)
-			leak.setUpstreams(ups)
+			if routes {
+				if err := engine.SetDirectUpstreams(context.Background(), addrs); err != nil {
+					log.Warn("DNS: keeping the direct upstreams reachable failed", "err", path.RedactError(err))
+				}
+			}
 			log.Info("DNS: the system's own resolvers changed", "upstreams", len(ups))
 		}
 	}

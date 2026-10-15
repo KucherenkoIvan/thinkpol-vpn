@@ -505,3 +505,21 @@ func TestOneClientCantTakeEveryQuery(t *testing.T) {
 		t.Error("refused after a release")
 	}
 }
+
+// The resolver's own name (RFC 9462) has no answer: an OS that found an
+// encrypted resolver under _dns.resolver.arpa would switch to it, around
+// the node (DDR). It is never forwarded.
+func TestDiscoveryOfDesignatedResolversFindsNone(t *testing.T) {
+	f := newFixture(t, Options{})
+	for _, q := range []struct {
+		name  string
+		qtype uint16
+	}{{"_dns.resolver.arpa.", dns.TypeSVCB}, {"_DNS.Resolver.ARPA.", dns.TypeSVCB}, {"resolver.arpa.", dns.TypeA}} {
+		if r := f.ask(t, "udp", q.name, q.qtype); r.Rcode != dns.RcodeNameError || !r.Authoritative {
+			t.Errorf("%s: %v, want an authoritative NXDOMAIN", q.name, dns.RcodeToString[r.Rcode])
+		}
+	}
+	if got := append(f.domestic.names(), f.exit.names()...); len(got) != 0 {
+		t.Errorf("forwarded: %v", got)
+	}
+}

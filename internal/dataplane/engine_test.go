@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
+	"runtime"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -561,4 +562,19 @@ func TestIngressOffServesOnlyServers(t *testing.T) {
 	exit.section.Node.AllowIngress = true
 	exit.apply(t)
 	ping(t, a, exit.v4)
+}
+
+// A node reaches its own overlay addresses: on macOS what it sends to them
+// comes out of the utun, and the engine hands it back (the resolver on the
+// node's address answers the node). Elsewhere the OS delivers it itself and
+// never hands the TUN such a packet, so the engine leaves it alone.
+func TestANodeReachesItsOwnAddresses(t *testing.T) {
+	a := newSpaceNode("device-a", 1, "")
+	a.start(t, memory.NewNetwork(memory.Datagram))
+	for _, dst := range []netip.Addr{a.v4, a.v6} {
+		got := tryPing(a, dst, 500*time.Millisecond)
+		if want := runtime.GOOS == "darwin"; got != want {
+			t.Errorf("%s pinging itself: answered %v, want %v", dst, got, want)
+		}
+	}
 }

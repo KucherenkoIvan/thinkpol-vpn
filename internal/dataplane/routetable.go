@@ -45,6 +45,10 @@ type RouteTableStatus struct {
 	// RulesAhead counts other software's policy rules ahead of the
 	// tunnel's (a mesh VPN's): they may route traffic around it.
 	RulesAhead int
+	// OverlayAhead counts foreign host routes over overlay addresses the
+	// table can't outrank (macOS): those peers' traffic leaves in the
+	// clear.
+	OverlayAhead int
 }
 
 // endpointsOf are the addresses the node dials its links on.
@@ -103,16 +107,50 @@ func (e *Engine) growRoutes(ctx context.Context, shrinkErr error) error {
 		return nil
 	}
 	w := routetable.Want{
-		TUN:     e.tunName,
-		Overlay: e.networks,
-		Direct:  e.ruleTable.Direct(),
-		Bypass:  e.endpoints,
-		IPv6:    e.mtu > 0 && e.ipv6Off == nil,
+		TUN:       e.tunName,
+		Overlay:   e.networks,
+		Direct:    e.ruleTable.Direct(),
+		Bypass:    e.endpoints,
+		IPv6:      e.mtu > 0 && e.ipv6Off == nil,
+		Upstreams: e.upstreams,
 	}
 	err := e.enforce(ctx, w)
 	e.routesWant = &w // the route table keeps trying it
 	if err != nil {
 		return fmt.Errorf("dataplane: route table: %w", errors.Join(shrinkErr, err))
+	}
+	return nil
+}
+
+// SetDirectUpstreams says which direct DNS upstreams the node's resolver
+// asks, so the route table keeps them reachable from the sockets bound to
+// the physical interface (routetable.Want.Upstreams: macOS's scoped
+// routes). It re-enforces what is in place if they changed; before the
+// first Apply they are kept for it.
+func (e *Engine) SetDirectUpstreams(ctx context.Context, addrs []netip.Addr) error {
+	e.serial.Lock()
+	defer e.serial.Unlock()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.closed {
+		return ErrEngineClosed
+	}
+	addrs = slices.Clone(addrs)
+	slices.SortFunc(addrs, func(a, b netip.Addr) int { return a.Compare(b) })
+	addrs = slices.Compact(addrs)
+	if slices.Equal(addrs, e.upstreams) {
+		return nil
+	}
+	e.upstreams = addrs
+	if e.cfg.RouteTable == nil || e.routesWant == nil {
+		return nil
+	}
+	w := *e.routesWant
+	w.Upstreams = addrs
+	err := e.enforce(ctx, w)
+	e.routesWant = &w // the route table keeps trying it
+	if err != nil {
+		return fmt.Errorf("dataplane: route table: %w", err)
 	}
 	return nil
 }
@@ -125,7 +163,7 @@ func (e *Engine) routeTableStatus() RouteTableStatus {
 	return RouteTableStatus{
 		Enforced: st.Enforced, Error: st.Error, GuardEnforced: st.GuardEnforced, GuardError: st.GuardError,
 		Routes: st.Routes, LastApply: st.LastApply,
-		Reapplies: st.Reapplies, RulesAhead: st.RulesAhead,
+		Reapplies: st.Reapplies, RulesAhead: st.RulesAhead, OverlayAhead: st.OverlayAhead,
 	}
 }
 

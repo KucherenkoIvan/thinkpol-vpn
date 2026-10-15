@@ -136,6 +136,13 @@ type Route struct {
 	// Type is what the route does; RouteThrow and RouteUnreachable take
 	// no Gateway or Interface.
 	Type RouteType
+	// Scope, when set, makes the route one only sockets bound to this
+	// interface use (macOS RTF_IFSCOPE, route(8)'s -ifscope; its traffic
+	// leaves through that interface), part of its identity: it never
+	// conflicts with an unscoped route to the same destination. Linux
+	// refuses it (errors.ErrUnsupported): its sockets bypass the tunnel by
+	// their mark instead.
+	Scope string
 }
 
 // RouteType is what a route does with the packets it matches.
@@ -236,6 +243,9 @@ func (r Route) String() string {
 	if r.Table != 0 {
 		s += fmt.Sprintf(" table %d", r.Table)
 	}
+	if r.Scope != "" {
+		s += " scope " + r.Scope
+	}
 	return s
 }
 
@@ -278,6 +288,7 @@ func (c Config) Validate() error {
 	type key struct {
 		table, metric int
 		dst           netip.Prefix
+		scope         string
 	}
 	routes := make(map[key]bool, len(c.Routes))
 	for _, r := range c.Routes {
@@ -310,7 +321,10 @@ func (c Config) Validate() error {
 		if r.Metric < 0 || uint64(r.Metric) > math.MaxUint32 {
 			return fmt.Errorf("netcfg: route %v: metric out of range", r)
 		}
-		k := key{r.Table, r.Metric, r.Dst}
+		if r.Scope != "" && r.Type != RouteUnicast {
+			return fmt.Errorf("netcfg: route %v: only a unicast route can be scoped", r)
+		}
+		k := key{r.Table, r.Metric, r.Dst, r.Scope}
 		if routes[k] {
 			return fmt.Errorf("netcfg: route %v listed twice", r)
 		}
@@ -355,6 +369,64 @@ func checkTable(t int) error {
 	return nil
 }
 
+// ConnectedRoutes are the destinations netcfg routes into a
+// point-to-point interface (macOS's utun; Linux's kernel routes the whole network) for one of its networks: the
+// network's two halves.
+func ConnectedRoutes(network netip.Prefix) []netip.Prefix {
+	network = network.Masked()
+	if network.Bits() >= network.Addr().BitLen() {
+		return []netip.Prefix{network}
+	}
+	lo := netip.PrefixFrom(network.Addr(), network.Bits()+1)
+	b := network.Addr().AsSlice()
+	b[network.Bits()/8] |= 0x80 >> (network.Bits() % 8)
+	hi, _ := netip.AddrFromSlice(b)
+	return []netip.Prefix{lo, netip.PrefixFrom(hi, network.Bits()+1)}
+}
+
+// Clear removes what a dead configurator of owner left on this host (a
+// crash): it takes the owner's place and closes it with nothing applied,
+// which removes every route the owner still holds and, on macOS, empties
+// the owner's record, routes gone with their interface included.
+// errors.ErrUnsupported where this OS has no adapter for owner; ErrBusy
+// while a configurator of owner is alive.
+//
+// A Close that fails still frees the owner's place: what it left stays
+// tagged (and, on macOS, recorded) for the next configurator, as after a
+// crash, so a failed clear never keeps later starts out with ErrBusy.
+func Clear(owner Owner) error {
+	return ClearWith(func() (Configurator, error) { return New(owner) }, nil)
+}
+
+// ClearWith is Clear with the owner's configurator from open, running
+// held (nil: nothing) while it holds the owner's place, before closing
+// it: what else the owner left that only its place makes safe to touch
+// (the route table's leak guard). Nothing runs when open fails, whatever
+// the reason: the place may be a live owner's. A failed held still
+// closes the configurator; the errors are joined.
+func ClearWith(open func() (Configurator, error), held func() error) error {
+	c, err := open()
+	if err != nil {
+		return err
+	}
+	var herr error
+	if held != nil {
+		herr = held()
+	}
+	if err := c.Close(); err != nil {
+		if a, ok := c.(abandoner); ok {
+			a.abandon()
+		}
+		return errors.Join(herr, err)
+	}
+	return herr
+}
+
+// abandoner is a configurator whose failed Close may keep its owner's
+// place (Linux: a Close that fails is retried by calling it again); abandon
+// frees the place, leaving what it holds to the next configurator.
+type abandoner interface{ abandon() }
+
 // Survey is the OS's own routing, as route-table enforcement needs it.
 type Survey struct {
 	// OnLink are the main table's routes the OS made for interfaces'
@@ -364,8 +436,27 @@ type Survey struct {
 	// Links are the namespace's interfaces, loopback included.
 	Links []Link
 	// ForeignRules are the priorities of policy rules no owner added,
-	// but the OS's own (0, 32766, 32767), both families.
+	// but the OS's own (0, 32766, 32767), both families (Linux).
 	ForeignRules []int
+	// Defaults are the usable default routes no owner added, at most one
+	// per family (macOS, whose route-table layout names the gateway).
+	Defaults []Route
+	// Routes are the other routes of the main table no owner added that
+	// may take traffic ahead of routes into the TUN: gateway routes,
+	// interface routes not made for an interface's own subnet (another
+	// VPN's, a DHCP server's classless routes), host routes (macOS, where
+	// everything is looked up in the main table; Linux's policy routing
+	// never looks them up ahead of the tunnel).
+	Routes []Route
+	// Held are the destinations every unscoped route of the main table no
+	// owner added holds, whatever it does (reject, local, loopback,
+	// redirect routes included): on macOS a route's identity is its
+	// destination, so these are what owners' routes must not take.
+	Held []netip.Prefix
+	// HeldScoped are the scoped routes no owner added (macOS), each by
+	// its destination and Scope: what owners' scoped routes must not
+	// take.
+	HeldScoped []Route
 }
 
 // Link is an interface as Survey sees it.
@@ -402,7 +493,9 @@ type Link struct {
 //     interface it changed; something already gone (an interface deleted by
 //     its owner) counts as removed. Close is idempotent; if it fails, what's
 //     left stays recorded and calling Close again retries it. Only a
-//     successful Close frees the owner's place in the namespace.
+//     successful Close frees the owner's place in the namespace (Linux;
+//     on macOS a failed Close frees it too, and what is left stays in the
+//     owner's record for its next configurator to take over).
 //
 // Methods are safe for concurrent use.
 type Configurator interface {

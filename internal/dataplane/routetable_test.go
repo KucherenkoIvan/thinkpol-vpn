@@ -211,3 +211,38 @@ func TestStatusDoesNotWaitForTheRouteTable(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// The resolver's direct upstreams reach the route table (macOS gives them
+// routes scoped to the physical interface): kept from before the first
+// Apply, re-enforced when they change, and not when they don't.
+func TestDirectUpstreamsReachTheRouteTable(t *testing.T) {
+	net := memory.NewNetwork(memory.Datagram)
+	a, s, _ := m0()
+	rt := &fakeRouteTable{}
+	a.routes = rt
+	s.start(t, net)
+	a.start(t, net)
+	ctx := context.Background()
+	up := []netip.Addr{netip.MustParseAddr("203.0.113.53"), netip.MustParseAddr("2001:db8::53")}
+	_, n := rt.since(0)
+	if err := a.engine.SetDirectUpstreams(ctx, up); err != nil {
+		t.Fatal(err)
+	}
+	calls, n := rt.since(n)
+	want := []netip.Addr{up[0], up[1]}
+	slices.SortFunc(want, func(x, y netip.Addr) int { return x.Compare(y) })
+	if len(calls) != 1 || !slices.Equal(calls[0].Upstreams, want) || !slices.Equal(calls[0].Bypass, []netip.Addr{s.listen.Addr()}) {
+		t.Fatalf("enforced %+v", calls)
+	}
+	if err := a.engine.SetDirectUpstreams(ctx, []netip.Addr{up[1], up[0], up[0]}); err != nil {
+		t.Fatal(err)
+	}
+	if calls, _ := rt.since(n); len(calls) != 0 {
+		t.Errorf("the same upstreams enforced again: %v", calls)
+	}
+	// A map applied later keeps them.
+	a.apply(t)
+	if calls, _ := rt.since(n); len(calls) == 0 || !slices.Equal(calls[len(calls)-1].Upstreams, want) {
+		t.Errorf("after an Apply: %+v", calls)
+	}
+}

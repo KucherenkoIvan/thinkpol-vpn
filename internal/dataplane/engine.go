@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/netip"
+	"runtime"
 	"slices"
 	"sync"
 	"time"
@@ -64,9 +65,10 @@ type EngineConfig struct {
 	LinkMTU int
 	// Path tunes the path layer; its Space is set from Space.
 	Path path.Options
-	// Log gets WireGuard's errors and, at debug level, the details of what
-	// Apply skipped or failed at, which may quote the map: keep it local.
-	// Nil discards them.
+	// Log gets WireGuard's errors and handshake timeouts, the links' lives
+	// (path.Options.Log, unless Path has its own) and, at debug level, the
+	// details of what Apply skipped or failed at, which may quote the map:
+	// keep it local. Nil discards them.
 	Log *slog.Logger
 	// Blobs returns a blob the map references, false while the node
 	// doesn't have it (TP-017's store); the engine checks its size and
@@ -178,6 +180,7 @@ type Engine struct {
 	// Route-table mode: the links' endpoints, and what the OS routing
 	// table holds (nil before the first enforcement).
 	endpoints  []netip.Addr
+	upstreams  []netip.Addr // the resolver's direct upstreams (SetDirectUpstreams)
 	routesWant *routetable.Want
 	nameRules  *rules.Names // the rules compiled for DNS names
 
@@ -224,6 +227,9 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 	}
 	opts := cfg.Path
 	opts.Space = cfg.Space
+	if opts.Log == nil {
+		opts.Log = cfg.Log
+	}
 	node, err := path.NewNode(path.NodeID(cfg.ID), opts)
 	if err != nil {
 		return nil, err
@@ -484,9 +490,15 @@ func (e *Engine) addPeers(want map[string][]devicePeer, paths []path.Peer, mtu i
 	return nil
 }
 
+// reflectLocal: macOS routes the utun's own address into the utun (see
+// router.Table.ReflectLocal).
+const reflectLocal = runtime.GOOS == "darwin"
+
 // table is the router table for what runs now.
 func (e *Engine) table() router.Table {
-	t := router.Table{Overlay: e.networks, Local: e.local}
+	// A device never forwards the OS's traffic: only its own addresses
+	// may speak through it.
+	t := router.Table{Overlay: e.networks, Local: e.local, ReflectLocal: reflectLocal, LocalSourcesOnly: e.kind == netmap.NodeDevice}
 	egresses := make(map[string]*router.Egress, len(e.devices))
 	for name, d := range e.devices {
 		egresses[name] = d.egress

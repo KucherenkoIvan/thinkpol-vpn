@@ -78,10 +78,16 @@ func TestUpRefusesAnUnsupportedHost(t *testing.T) {
 	if runtime.GOOS == "linux" {
 		t.Skip("Linux runs the data plane (the lab tests `thinkpol up` there)")
 	}
-	for _, node := range []string{"server-1", "device-a"} {
+	nodes, refusal := []string{"server-1", "device-a"}, "no data plane on "+runtime.GOOS
+	if runtime.GOOS == "darwin" {
+		// A device runs on macOS (as root, on the real network: never
+		// here); a server refuses before touching anything.
+		nodes, refusal = []string{"server-1"}, "server mode needs Linux"
+	}
+	for _, node := range nodes {
 		state, keys := m0State(t, node)
 		code, stdout, stderr := runCLI(t, "up", "-state", state)
-		if code != 1 || !strings.Contains(stderr, "no data plane on "+runtime.GOOS) {
+		if code != 1 || !strings.Contains(stderr, refusal) {
 			t.Fatalf("%s: exit %d, stdout %q, stderr %q", node, code, stdout, stderr)
 		}
 		noSecrets(t, keys, stdout+stderr)

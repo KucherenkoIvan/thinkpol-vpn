@@ -41,7 +41,9 @@ type DataPlane struct {
 	Maps     <-chan []byte
 	Registry *transport.Registry
 	Inbound  Inbound
-	// Interface names the TUN; empty is tun.DefaultName.
+	// Interface names the TUN to create; empty is tun.DefaultName. On
+	// macOS the kernel may pick the name ("utun" is the next free utunN):
+	// the data plane goes by the TUN's own name once it exists.
 	Interface string
 	// LinkMTU is the MTU of the network under the links; 0 is
 	// dataplane.DefaultLinkMTU.
@@ -88,10 +90,10 @@ type DataPlane struct {
 	// timing, how long to wait before retrying what failed.
 	newTUN    func(name string) (wgtun.Device, netcfg.Configurator, error)
 	newRoutes func(log *slog.Logger, guard routetable.Guard) (dataplane.RouteTable, error)
-	// clearRouteTable removes a previous run's route table.
-	clearRouteTable func() error
-	path            path.Options
-	retryAfter      time.Duration
+	// clearNetwork removes a previous run's routes (clearNetwork).
+	clearNetwork func() error
+	path         path.Options
+	retryAfter   time.Duration
 	// blobOptions are the network functions and limits of the blob
 	// service a worker makes (serveSpace).
 	blobOptions blobs.Options
@@ -128,8 +130,8 @@ func RunDataPlane(ctx context.Context, dp DataPlane) error {
 	if dp.newRoutes == nil {
 		dp.newRoutes = newRouteTable
 	}
-	if dp.clearRouteTable == nil {
-		dp.clearRouteTable = clearHostRoutes
+	if dp.clearNetwork == nil {
+		dp.clearNetwork = clearHostNetwork
 	}
 	if dp.retryAfter == 0 {
 		dp.retryAfter = RetryAfter
@@ -147,7 +149,7 @@ func RunDataPlane(ctx context.Context, dp DataPlane) error {
 	if err != nil {
 		return err
 	}
-	r := &runner{dp: dp, cur: dp.Map, section: section, maps: dp.Maps, down: dp.disconnected, guard: &dnsGuard{}}
+	r := &runner{dp: dp, cur: dp.Map, section: section, maps: dp.Maps, down: dp.disconnected, guard: &dnsGuard{}, tun: dp.Interface}
 	dp.report.set(func(p *report) { p.dns = r.guard.problem })
 	if dp.Blobs != nil {
 		r.blobsChanged = dp.Blobs.Subscribe()
@@ -210,18 +212,15 @@ func newRouteTable(log *slog.Logger, guard routetable.Guard) (dataplane.RouteTab
 	return routetable.New(guard, log)
 }
 
-// clearHostRoutes removes what route-table enforcement left on this host,
-// the leak guard included.
-func clearHostRoutes() error { return routetable.Clear(newHostGuard()) }
-
-// clearRoutes removes what route-table enforcement left (a crash) while no
-// Enforcer of this run holds it.
+// clearRoutes removes what a crashed run left in the host's routing, route
+// table (its leak guard included) and overlay, while nothing of this run
+// holds either.
 func (r *runner) clearRoutes() {
 	if !r.dp.RouteTable {
 		return
 	}
-	if err := r.dp.clearRouteTable(); err != nil && !errors.Is(err, errors.ErrUnsupported) {
-		r.dp.Log.Warn("removing a previous run's route table failed", "err", err)
+	if err := r.dp.clearNetwork(); err != nil {
+		r.dp.Log.Warn("removing a previous run's routes failed", "err", err)
 	}
 }
 
@@ -239,9 +238,10 @@ type runner struct {
 	engine    *dataplane.Engine
 	listeners *listenerSet
 	resolver  *dns.Server
-	// leak is the route table's leak guard while the data plane runs
-	// with one; it learns the resolver's direct upstreams.
-	leak *leakGuard
+	// upstreams are the resolver's direct upstreams as it started.
+	upstreams []netip.Addr
+	// tun is the running TUN's name (Interface until one runs).
+	tun string
 	// guard is the OS's resolver configuration while it should point at
 	// the resolver (systemCfg), and why it doesn't; dnsRetryAt is when to
 	// try pointing it again.
@@ -267,13 +267,12 @@ func (r *runner) start(ctx context.Context) error {
 		r.clearRoutes() // a crashed run's table would block traffic meanwhile
 		return &StartError{Step: StepTUN, Err: err}
 	}
+	if name, err := dev.Name(); err == nil && name != "" {
+		r.tun = name
+	}
 	var routes dataplane.RouteTable
-	r.leak = nil
 	if r.dp.RouteTable {
-		if g := newHostGuard(); g != nil {
-			r.leak = newLeakGuard(g)
-		}
-		if routes, err = r.dp.newRoutes(r.dp.Log, r.leak.routeGuard()); err != nil {
+		if routes, err = r.dp.newRoutes(r.dp.Log, newHostGuard()); err != nil {
 			if ifc != nil {
 				_ = ifc.Close()
 			}
@@ -332,6 +331,11 @@ func (r *runner) start(ctx context.Context) error {
 		return &StartError{Step: step, Err: fmt.Errorf("applying map version %d: %w", r.cur.Header().Version, err)}
 	}
 	r.engine, r.resolver = engine, resolver
+	if resolver != nil && r.dp.RouteTable {
+		if err := engine.SetDirectUpstreams(ctx, r.upstreams); err != nil {
+			r.dp.Log.Warn("DNS: keeping the direct upstreams reachable failed", "err", path.RedactError(err))
+		}
+	}
 	if r.dp.onEngine != nil {
 		r.dp.onEngine(engine)
 	}
@@ -559,7 +563,7 @@ func (r *runner) next(ctx context.Context, envelope []byte) {
 func (r *runner) tryStart(ctx context.Context) {
 	if err := r.start(ctx); err != nil {
 		r.retryAt = time.Now().Add(r.dp.retryAfter)
-		r.dp.Log.Warn("starting the data plane failed, retrying", "version", r.cur.Header().Version, "in", r.dp.retryAfter, "err", err)
+		r.dp.Log.Warn("starting the data plane failed, retrying", "version", r.cur.Header().Version, "in", r.dp.retryAfter, "err", path.RedactError(err))
 	}
 }
 
@@ -567,7 +571,7 @@ func (r *runner) apply(ctx context.Context) {
 	if err := r.engine.Apply(ctx, r.section); err != nil {
 		r.retryAt = time.Now().Add(r.dp.retryAfter)
 		r.dp.Log.Warn("applying the map failed, retrying", "version", r.cur.Header().Version,
-			"step", r.engine.Status().LastApplyError, "in", r.dp.retryAfter, "err", err)
+			"step", r.engine.Status().LastApplyError, "in", r.dp.retryAfter, "err", path.RedactError(err))
 		return
 	}
 	r.retryAt = time.Time{}
@@ -598,11 +602,11 @@ func (r *runner) updateBlobs() {
 	if r.engine == nil {
 		// Down (disconnected, or a start to retry): the lists stay, on
 		// disk too, but nothing is fetched or served.
-		p := blobs.PlanFrom(r.cur.Header().Blobs, r.section, false, r.dp.Interface, r.dp.ServeBlobs)
+		p := blobs.PlanFrom(r.cur.Header().Blobs, r.section, false, r.tun, r.dp.ServeBlobs)
 		r.dp.Blobs.Update(blobs.Plan{Want: p.Want})
 		return
 	}
-	r.dp.Blobs.Update(blobs.PlanFrom(r.cur.Header().Blobs, r.section, r.engine.Status().IPv6, r.dp.Interface, r.dp.ServeBlobs))
+	r.dp.Blobs.Update(blobs.PlanFrom(r.cur.Header().Blobs, r.section, r.engine.Status().IPv6, r.tun, r.dp.ServeBlobs))
 }
 
 func (r *runner) applied() {

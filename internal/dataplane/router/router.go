@@ -65,10 +65,19 @@ type Counters struct {
 	TooLarge   uint64 // longer than MaxPacket, or than the WireGuard device's buffer
 	QueueFull  uint64 // the egress's queue was full
 	ReadErrors uint64 // the TUN failed a read
+	Reflected  uint64 // read from the TUN from and for Local addresses and written back to it (Table.ReflectLocal)
+	// ReflectFailed: to be reflected, but the TUN failed the write.
+	ReflectFailed uint64
+	// ForeignSource: read from the TUN with a source no peer accepts
+	// from this node, so never handed to WireGuard: a link-local one
+	// (the OS's own neighbour and multicast traffic on the TUN), or,
+	// with Table.LocalSourcesOnly, any but a Local address.
+	ForeignSource uint64
 }
 
 type counters struct {
 	routed, delivered, forwarded, notLocal, noRoute, blocked, direct, malformed, tooLarge, queueFull, readErrors atomic.Uint64
+	reflected, reflectFailed, foreignSource                                                                      atomic.Uint64
 }
 
 // New starts a router reading t, with an empty table: every packet is
@@ -139,6 +148,10 @@ func (r *Router) Counters() Counters {
 		TooLarge:   r.c.tooLarge.Load(),
 		QueueFull:  r.c.queueFull.Load(),
 		ReadErrors: r.c.readErrors.Load(),
+		Reflected:  r.c.reflected.Load(),
+
+		ReflectFailed: r.c.reflectFailed.Load(),
+		ForeignSource: r.c.foreignSource.Load(),
 	}
 }
 
@@ -178,7 +191,7 @@ func (r *Router) read() {
 	for {
 		n, err := r.tun.Read(bufs, sizes, readOffset)
 		for i := range n {
-			r.route(bufs[i][readOffset : readOffset+sizes[i]])
+			r.route(bufs[i][:readOffset+sizes[i]])
 		}
 		if err == nil {
 			failures = 0
@@ -206,13 +219,34 @@ func (r *Router) read() {
 	}
 }
 
-func (r *Router) route(p []byte) {
-	dst, ok := destination(p)
+// route classifies the packet at buf[readOffset:]; the headroom in front
+// of it lets a reflected packet go back to the TUN as it is.
+func (r *Router) route(buf []byte) {
+	p := buf[readOffset:]
+	src, dst, ok := addresses(p)
 	if !ok {
 		r.c.malformed.Add(1)
 		return
 	}
-	e, ok := r.table.Load().classify(dst)
+	c := r.table.Load()
+	if !c.sendsFrom(src) {
+		r.c.foreignSource.Add(1)
+		return
+	}
+	// Both ends local: the OS talking to itself. Anything else for a
+	// local address (a source injected on the TUN, a peer's address) is
+	// never delivered as if WireGuard had authenticated it.
+	if c.reflect && c.local[dst] && c.local[src] {
+		// One packet at a time: a TUN with offloads may coalesce a batch
+		// in place, and these are rare (the node talking to itself).
+		if _, err := r.tun.Write([][]byte{buf}, readOffset); err != nil {
+			r.c.reflectFailed.Add(1)
+		} else {
+			r.c.reflected.Add(1)
+		}
+		return
+	}
+	e, ok := c.classify(dst)
 	switch {
 	case !ok:
 		r.c.noRoute.Add(1)
@@ -237,6 +271,25 @@ func (r *Router) Egresses() []EgressStatus {
 	r.mu.Unlock()
 	slices.SortFunc(out, func(a, b EgressStatus) int { return strings.Compare(a.Name, b.Name) })
 	return out
+}
+
+// addresses reads the source and destination addresses of an IPv4 or
+// IPv6 packet.
+func addresses(p []byte) (src, dst netip.Addr, ok bool) {
+	if len(p) == 0 {
+		return src, dst, false
+	}
+	switch p[0] >> 4 {
+	case 4:
+		if len(p) >= 20 {
+			return netip.AddrFrom4([4]byte(p[12:16])), netip.AddrFrom4([4]byte(p[16:20])), true
+		}
+	case 6:
+		if len(p) >= 40 {
+			return netip.AddrFrom16([16]byte(p[8:24])), netip.AddrFrom16([16]byte(p[24:40])), true
+		}
+	}
+	return src, dst, false
 }
 
 // destination reads the destination address of an IPv4 or IPv6 packet.

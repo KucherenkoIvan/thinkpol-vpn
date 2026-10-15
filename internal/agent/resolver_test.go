@@ -6,10 +6,13 @@ import (
 	"log/slog"
 	"net/netip"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
 )
 
 // fakeSystem records what a node asks of the OS resolver configuration.
@@ -86,7 +89,9 @@ func TestADevicePointsTheSystemAtItsResolverWhileConnected(t *testing.T) {
 	sys.mu.Lock()
 	got := sys.set[0]
 	sys.mu.Unlock()
-	if got.Interface != "thinkpol0" || !slices.Equal(got.Servers, []netip.Addr{b4, b6}) {
+	// The TUN by its own name (the virtual TUNs name themselves, like a
+	// macOS utun), not the one asked for.
+	if !strings.HasPrefix(got.Interface, "loopbackTun") || !slices.Equal(got.Servers, []netip.Addr{b4, b6}) {
 		t.Errorf("the system was pointed at %+v", got)
 	}
 	if len(asked) != 1 || !slices.Contains(asked[0], b4) {
@@ -196,5 +201,65 @@ func TestUnprotectedDNSIsReportedAndRetried(t *testing.T) {
 	sys.mu.Unlock()
 	if st := b.node.Status(); !st.DNSUnprotected {
 		t.Errorf("a problem the system reports isn't in the status")
+	}
+}
+
+// wantsTable records what the engine enforces in the OS routing table.
+type wantsTable struct {
+	mu    sync.Mutex
+	wants []routetable.Want
+}
+
+func (w *wantsTable) Enforce(_ context.Context, want routetable.Want) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.wants = append(w.wants, want)
+	return nil
+}
+func (w *wantsTable) Status() routetable.Status { return routetable.Status{Enforced: true} }
+func (w *wantsTable) Close() error              { return nil }
+
+func (w *wantsTable) upstreams() []netip.Addr {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if len(w.wants) == 0 {
+		return nil
+	}
+	return w.wants[len(w.wants)-1].Upstreams
+}
+
+// In route-table mode the resolver's direct upstreams reach the route
+// table (macOS keeps them reachable from the physical interface), and
+// follow the system's own resolvers when they change.
+func TestTheDirectUpstreamsReachTheRouteTable(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	startNode(t, reg, s.a, s.verified(t, 1))
+	sys := &fakeSystem{}
+	table := &wantsTable{}
+	b := startDevice(t, s, reg, true, func(c *Config, dp *DataPlane) {
+		if c != nil {
+			c.DNS = true
+			return
+		}
+		dp.RouteTable = true
+		dp.newRoutes = func(*slog.Logger, routetable.Guard) (dataplane.RouteTable, error) { return table, nil }
+		dp.clearNetwork = func() error { return nil }
+		dp.systemDNS = sys.Set
+		dp.systemUpstreams = func([]netip.Addr) ([]netip.Addr, error) {
+			return []netip.Addr{netip.MustParseAddr("192.0.2.53")}, nil
+		}
+		dp.dnsPort = 5353
+	})
+	b.connection(t, Connected)
+	eventually(t, func() bool { return slices.Equal(table.upstreams(), []netip.Addr{netip.MustParseAddr("192.0.2.53")}) })
+	eventually(t, func() bool { n, _ := sys.counts(); return n == 1 })
+	sys.mu.Lock()
+	tell := sys.set[0].Upstreams
+	sys.mu.Unlock()
+	b4, _ := overlay(2)
+	tell([]netip.Addr{netip.MustParseAddr("198.51.100.53"), b4}) // a new network's, and the node's own
+	if got := table.upstreams(); !slices.Equal(got, []netip.Addr{netip.MustParseAddr("198.51.100.53")}) {
+		t.Errorf("after the system's resolvers changed: %v", got)
 	}
 }

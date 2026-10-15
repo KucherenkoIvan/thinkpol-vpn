@@ -27,8 +27,8 @@ import (
 // reads blobs/, its seeds, when the supervisor sends them to a worker:
 // what it fetches stays in its workers' memory. Every blob is checked
 // against the map before use, wherever it was read. No pid, lock or log
-// file there or anywhere else on disk (netcfg's and the local API's locks
-// are on /run, a tmpfs).
+// file there or anywhere else on disk (the agent's, netcfg's and the local
+// API's locks are on /run, a tmpfs; macOS has none: /private/var/db).
 //
 // The directory, the key files, the map and the map's directory must be
 // owned by the node's user (or root) and writable by nobody else, and are
