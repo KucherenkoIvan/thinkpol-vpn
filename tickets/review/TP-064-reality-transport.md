@@ -27,7 +27,7 @@ Questions to answer:
 
 ## Acceptance
 - [x] a findings note in this ticket's Notes answers each question above, with the recommendation and the follow-up tickets it proposes
-- [ ] where a question needs it, a throwaway prototype in the lab (not merged into `internal/`) shows an interoperating handshake or says why it can't
+- [x] where a question needs it, a throwaway prototype in the lab (not merged into `internal/`) shows an interoperating handshake or says why it can't
 - [x] DESIGN.md's transports table reflects the result
 
 ## Notes
@@ -40,9 +40,26 @@ Questions to answer:
   - **Detection state:** the inner protocol is WireGuard, so the TLS-in-TLS fingerprint doesn't apply, but record lengths and the rekey rhythm do (C6). SNI should be plausible for the node's IP and network; a CDN target turns the node into a public forwarder. No measurement of RU or IR; whitelists are not passed by any disguise.
   - **Recommendation:** thinkpol↔thinkpol REALITY as the M2 censor-facing transport on uTLS; `tls` kept for links that can live with our own certificate; stock VLESS only as an optional front, later, never an exit. First lab test: two handshakes against unmodified Xray (right short id verifies, wrong one is spliced to a local target). Proposed tickets: the `reality` transport (TP-087), the gatekeeper learning `reality` (TP-088), and docs.
   - **Decision (2026-10-15):** `reality` is the M2 disguised transport, `tls` (TP-028) moves to after the MVP; see PRD "Decisions" and ORCHESTRATION "Decisions (2026-10-15)".
+- **Prototype result (2026-10-15)**, `lab/prototypes/reality/` on branch `tp-064-reality-prototype`: both handshakes work against unmodified Xray. Answer to the riskiest question: **yes, a thinkpol-written REALITY client interoperates with a stock Xray server.** The client (`reality.go`, on uTLS, seal and HMAC check written from the findings) authenticated with the right short id (Ed25519 leaf whose signature is `HMAC-SHA512(AuthKey, pubkey)`), then carried one VLESS request through the stock server to an HTTP echo; with a wrong short id the server spliced the raw connection to the camouflage target, whose minted certificate the client received unchanged, and the target received the ClientHello **byte-identical** to what was sent. Test: `TestRealityPrototype` (lab tag, host) starting the stock Xray container and `TestRealityClientInterop` (run inside the lab node); output:
+  ```
+  === RUN   TestRealityClientInterop
+  === RUN   TestRealityClientInterop/right_short_id
+  === RUN   TestRealityClientInterop/wrong_short_id
+      reality_test.go:120: splice path: the target received the identical ClientHello (1812 bytes)
+  --- PASS: TestRealityClientInterop (1.01s)
+      --- PASS: TestRealityClientInterop/right_short_id (1.01s)
+      --- PASS: TestRealityClientInterop/wrong_short_id (0.00s)
+  PASS
+  --- PASS: TestRealityPrototype (5.66s)
+  ```
+  - **Versions:** Xray `26.3.27`, image `ghcr.io/xtls/xray-core`, linux/arm64 manifest digest `sha256:79f798b6a130132414c45773bc039e9e51b9694f2dd5ddf99083353ece168f48`; uTLS `v1.8.2` (BSD-3-Clause, licence checked), fingerprint `HelloChrome_Auto` (what Xray's own client uses for `"chrome"`); Go 1.26 stdlib `crypto/hkdf`.
+  - **Interop details that held exactly as described:** session id at handshake offset 39; additional data = the ClientHello handshake message (4-byte header included, TLS record header not) with the session id zeroed; AES-256-GCM with `HKDF-SHA256(shared, salt=Random[:20], info="REALITY")`, nonce `Random[20:32]`, the 32-byte ciphertext+tag filling the session id. No debugging was needed: the first sealed ClientHello was accepted. Xray's config `privateKey`/`publicKey` are base64url-raw; `maxTimeDiff` is milliseconds (the conf multiplies by `time.Millisecond`); `minClientVer`/`maxClientVer` unset means no version check.
+  - **Surprise, inference from source, not tested:** current XTLS/REALITY's server ignores (splices) any ClientHello without an `X25519MLKEM768` key share, using the X25519 half for the shared secret when no standalone X25519 share is present. The Chrome hello carries it. TP-087's hello must include that key share.
+  - **For TP-087:** the uTLS v1.8.2 public surface is exactly enough — `BuildHandshakeState`, then `HandshakeState.Hello.Raw`/`SessionId`/`Random` and `State13.KeyShareKeys.Ecdhe`/`MlkemEcdhe` for the shared secret; patch `Raw[39:]` after building and the handshake sends the patched hello. Xray dials `target` before parsing the ClientHello even on the authenticated path, so the upstream tell exists for every connection, not only probes (source observation, not measured). The one-shot VLESS round trip needed: version byte, UUID, empty addons, `0x01`, port, address type + address; response is version byte + empty addons, then the payload. Nothing from Xray's code was copied.
 
 ## Log
 - 2026-10-13 created in backlog (TP-062)
 - 2026-10-15 docs (board op): findings note added to Notes, findings box ticked; prototype and DESIGN transports table boxes left open
 - 2026-10-15 docs (board op): DESIGN transports table box ticked; prototype box left open
 - 2026-10-15 backlog → in-progress — owner: glm-tp064 (prototype)
+- 2026-10-15 in-progress → review — prototype box ticked, result in Notes; `make lint`, `make test` and the lab test pass on this branch
