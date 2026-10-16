@@ -275,7 +275,8 @@ const (
 	// the tunnel.
 	ProblemGuard = "ipv6_guard_not_enforced"
 	// ProblemGuardUnsupported: the OS can't hold the leak guard (Linux:
-	// no nf_tables): the device connects, but IPv6 from interface-bound
+	// no nf_tables; macOS: no `anchor "com.apple/*"` in pf's main
+	// ruleset): the device connects, but IPv6 from interface-bound
 	// sockets isn't confined.
 	ProblemGuardUnsupported = "ipv6_guard_unsupported"
 	// ProblemDNSUnprotected: the OS may resolve names outside the node's

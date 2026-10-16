@@ -239,7 +239,7 @@ type runner struct {
 	listeners *listenerSet
 	resolver  *dns.Server
 	// upstreams are the resolver's direct upstreams as it started.
-	upstreams []netip.Addr
+	upstreams []netip.AddrPort
 	// tun is the running TUN's name (Interface until one runs).
 	tun string
 	// guard is the OS's resolver configuration while it should point at

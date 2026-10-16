@@ -74,15 +74,38 @@ type Want struct {
 	// reaches only what a route on that interface reaches: each gets a
 	// route scoped to the interface (one only such sockets use), unless
 	// it is on-link. Linux's sockets carry the mark instead: unused there.
-	// The guard exempts them too (GuardFor), for an OS without marks.
-	Upstreams []netip.Addr
+	// The guard exempts them too (GuardFor), for an OS without marks: to
+	// their port, so they carry it.
+	Upstreams []netip.AddrPort
 }
 
 // Equal reports whether w and o put the same routes in place.
 func (w Want) Equal(o Want) bool {
 	return w.TUN == o.TUN && w.IPv6 == o.IPv6 && w.Direct.Equal(o.Direct) &&
 		slices.Equal(bypass(w.Bypass), bypass(o.Bypass)) && slices.Equal(prefixes(w.Overlay), prefixes(o.Overlay)) &&
-		slices.Equal(bypass(w.Upstreams), bypass(o.Upstreams))
+		slices.Equal(upstreams(w.Upstreams), upstreams(o.Upstreams))
+}
+
+// upstreams sorts and deduplicates valid upstreams, unmapped and without
+// zones (as bypass does their addresses).
+func upstreams(aps []netip.AddrPort) []netip.AddrPort {
+	out := make([]netip.AddrPort, 0, len(aps))
+	for _, ap := range aps {
+		if a := ap.Addr(); a.IsValid() && !a.IsUnspecified() {
+			out = append(out, netip.AddrPortFrom(a.Unmap().WithZone(""), ap.Port()))
+		}
+	}
+	slices.SortFunc(out, func(a, b netip.AddrPort) int { return a.Compare(b) })
+	return slices.Compact(out)
+}
+
+// upstreamAddrs are the addresses of upstreams(aps), each once.
+func upstreamAddrs(aps []netip.AddrPort) []netip.Addr {
+	var out []netip.Addr
+	for _, ap := range upstreams(aps) {
+		out = append(out, ap.Addr())
+	}
+	return slices.Compact(out)
 }
 
 func bypass(addrs []netip.Addr) []netip.Addr {
@@ -328,7 +351,8 @@ const (
 	// isn't up to date); retried every RetryAfter.
 	ErrorGuard = "applying the leak guard failed"
 	// ErrorGuardUnsupported: the OS can't hold the leak guard (Linux: no
-	// nf_tables); terminal. Interface-bound sockets aren't confined.
+	// nf_tables; macOS: pf's main ruleset has no `anchor "com.apple/*"`);
+	// terminal. Interface-bound sockets aren't confined.
 	ErrorGuardUnsupported = "the leak guard is unsupported here: interface-bound sockets aren't confined"
 )
 

@@ -26,12 +26,12 @@ func TestGuardForIsWhatTheTableThrows(t *testing.T) {
 		Direct:  set(t, "198.51.100.0/24", "2001:db8:d0::/48"),
 		Bypass:  []netip.Addr{netip.MustParseAddr("203.0.113.7"), netip.MustParseAddr("2001:db8:7::7"), netip.MustParseAddr("::ffff:203.0.113.8"), {}},
 		IPv6:    true,
-		Upstreams: []netip.Addr{netip.MustParseAddr("2001:db8:53::1"), netip.MustParseAddr("::ffff:192.0.2.53"),
-			netip.MustParseAddr("2001:db8:53::1"), {}},
+		Upstreams: []netip.AddrPort{netip.MustParseAddrPort("[2001:db8:53::1]:53"), netip.MustParseAddrPort("[::ffff:192.0.2.53]:53"),
+			netip.MustParseAddrPort("[2001:db8:53::1]:53"), {}},
 	}
 	want := routetable.Exempt{TUN: "thinkpol0", Mark: routetable.Mark,
 		Direct:    set(t, "198.51.100.0/24", "2001:db8:d0::/48", "203.0.113.7/32", "203.0.113.8/32", "2001:db8:7::7/128"),
-		Upstreams: []netip.Addr{netip.MustParseAddr("192.0.2.53"), netip.MustParseAddr("2001:db8:53::1")}}
+		Upstreams: []netip.AddrPort{netip.MustParseAddrPort("192.0.2.53:53"), netip.MustParseAddrPort("[2001:db8:53::1]:53")}}
 	if got := routetable.GuardFor(w); !got.Equal(want) {
 		t.Errorf("GuardFor: %+v, want %+v", got, want)
 	}
@@ -365,7 +365,7 @@ func TestTheGuardFollowsTheDirectUpstreams(t *testing.T) {
 	if err := e.Enforce(ctx, w); err != nil {
 		t.Fatal(err)
 	}
-	w.Upstreams = []netip.Addr{netip.MustParseAddr("2001:db8:53::1")}
+	w.Upstreams = []netip.AddrPort{netip.MustParseAddrPort("[2001:db8:53::1]:53")}
 	routes := f.count()
 	if err := e.Enforce(ctx, w); err != nil {
 		t.Fatal(err)

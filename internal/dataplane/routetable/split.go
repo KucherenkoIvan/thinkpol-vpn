@@ -281,7 +281,7 @@ func splitRoutes(w Want, s netcfg.Survey) (cfg netcfg.Config, ahead, overlayAhea
 	for _, r := range s.HeldScoped {
 		heldScoped[netcfg.Route{Dst: r.Dst, Scope: r.Scope}] = true
 	}
-	for _, a := range bypass(w.Upstreams) {
+	for _, a := range upstreamAddrs(w.Upstreams) {
 		p := netip.PrefixFrom(a, a.BitLen())
 		gw, ok := gateways[family(p)]
 		switch {

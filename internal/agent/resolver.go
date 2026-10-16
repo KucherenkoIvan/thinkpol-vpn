@@ -34,10 +34,7 @@ func (r *runner) newResolver() *dns.Server {
 	if len(upstreams) == 0 {
 		r.dp.Log.Warn("DNS: no upstream to ask; set one with -dns-upstream")
 	}
-	r.upstreams = r.upstreams[:0]
-	for _, u := range upstreams {
-		r.upstreams = append(r.upstreams, u.Addr())
-	}
+	r.upstreams = slices.Clone(upstreams)
 	o := dns.Options{Upstreams: upstreams, Port: r.dp.dnsPort, Log: r.dp.Log}
 	if r.section.Node.Kind == netmap.NodeDevice {
 		o.TunnelControl = dns.BindToInterface(r.tun)
@@ -112,16 +109,14 @@ func (r *runner) systemConfig() (dns.SystemConfig, bool) {
 		engine, routes := r.engine, r.dp.RouteTable
 		c.Upstreams = func(host []netip.Addr) {
 			var ups []netip.AddrPort
-			var addrs []netip.Addr
 			for _, a := range host {
 				if !slices.Contains(own, a) && !a.IsUnspecified() {
 					ups = append(ups, netip.AddrPortFrom(a, dns.Port))
-					addrs = append(addrs, a)
 				}
 			}
 			srv.SetUpstreams(ups)
 			if routes {
-				if err := engine.SetDirectUpstreams(context.Background(), addrs); err != nil {
+				if err := engine.SetDirectUpstreams(context.Background(), ups); err != nil {
 					log.Warn("DNS: keeping the direct upstreams reachable failed", "err", path.RedactError(err))
 				}
 			}

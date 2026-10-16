@@ -10,7 +10,7 @@ import (
 )
 
 // Guard is the firewall half of enforcement, a port the agent fills
-// (firewall.IPv6Guard on Linux): it refuses on the physical interfaces
+// (firewall.IPv6Guard: nftables on Linux, pf on macOS): it refuses on the physical interfaces
 // what routing can't keep in the tunnel. An Enforcer opened with one
 // applies it after the routes, with the same Want (GuardFor), on every
 // Apply and re-apply, re-applies it when Watch says it may have been
@@ -29,7 +29,8 @@ type Guard interface {
 }
 
 // ErrGuardUnsupported: the OS can't hold the guard (no nf_tables in the
-// kernel); terminal for the Enforcer.
+// kernel; no `anchor "com.apple/*"` in pf's main ruleset); terminal for the
+// Enforcer.
 var ErrGuardUnsupported = errors.New("routetable: the OS can't hold the leak guard")
 
 // Exempt is what the leak guard lets out of every interface but the TUN
@@ -47,22 +48,24 @@ type Exempt struct {
 	TUN string
 	// Mark is the links' socket mark (Mark): the transports' and the
 	// direct DNS upstream's sockets, which leave around the tunnel by
-	// design. Zero is none (an OS without socket marks).
+	// design. Zero is none; an OS without socket marks (macOS) ignores
+	// it.
 	Mark uint32
 	// Direct are the destinations that leave around the tunnel by the
 	// rules (their direct set) and the links' endpoints. Its IPv6 part
 	// counts; IPv4 is the kill switch's (TP-048).
 	Direct *lists.Set
 	// Upstreams are the direct DNS upstreams the agent's resolver asks
-	// (Want.Upstreams): for an OS without socket marks (macOS's pf),
-	// where Mark can't exempt them. Linux's guard leaves them to Mark.
-	Upstreams []netip.Addr
+	// (Want.Upstreams), with their ports: for an OS without socket marks
+	// (macOS's pf exempts DNS to them, no more), where Mark can't exempt
+	// them. Linux's guard leaves them to Mark.
+	Upstreams []netip.AddrPort
 }
 
 // Equal reports whether e and o exempt the same traffic.
 func (e Exempt) Equal(o Exempt) bool {
 	return e.TUN == o.TUN && e.Mark == o.Mark && e.Direct.Equal(o.Direct) &&
-		slices.Equal(bypass(e.Upstreams), bypass(o.Upstreams))
+		slices.Equal(upstreams(e.Upstreams), upstreams(o.Upstreams))
 }
 
 // LinkScoped are the IPv6 destinations that never leave the link, which
@@ -103,5 +106,5 @@ func GuardFor(w Want) Exempt {
 		_ = b.AddPrefix(netip.PrefixFrom(a, a.BitLen())) // an IPv4-mapped endpoint was unmapped
 	}
 	direct, _ := b.Build()
-	return Exempt{TUN: w.TUN, Mark: Mark, Direct: direct, Upstreams: bypass(w.Upstreams)}
+	return Exempt{TUN: w.TUN, Mark: Mark, Direct: direct, Upstreams: upstreams(w.Upstreams)}
 }
