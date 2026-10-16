@@ -275,10 +275,8 @@ func TestRouteTableSendsOnlyDirectAroundTheTunnel(t *testing.T) {
 		if after != rulesBefore {
 			t.Errorf("rules after the stop:\n%s\nwant\n%s", after, rulesBefore)
 		}
-		for _, family := range []string{"-4", "-6"} {
-			if out := dev.MustExec(t, "ip", family, "route", "show", "table", "all", "proto", "86"); out != "" {
-				t.Errorf("route-table routes left:\n%s", out)
-			}
+		if out := routeTableRoutes(t, dev); out != "" {
+			t.Errorf("route-table routes left:\n%s", out)
 		}
 	}
 	stopAndCheck(up)
@@ -362,10 +360,8 @@ func TestRouteTableSendsOnlyDirectAroundTheTunnel(t *testing.T) {
 	if got := dev.MustExec(t, "ip", "rule") + dev.MustExec(t, "ip", "-6", "rule"); got != rulesBefore {
 		t.Errorf("rules after a crash and a failed start:\n%s\nwant\n%s\n%s", got, rulesBefore, failing.Output())
 	}
-	for _, family := range []string{"-4", "-6"} {
-		if out := dev.MustExec(t, "ip", family, "route", "show", "table", "all", "proto", "86"); out != "" {
-			t.Errorf("route-table routes left after a failed start:\n%s", out)
-		}
+	if out := routeTableRoutes(t, dev); out != "" {
+		t.Errorf("route-table routes left after a failed start:\n%s", out)
 	}
 	if err := srv.Stop(); err != nil {
 		t.Errorf("server-1: %v", err)

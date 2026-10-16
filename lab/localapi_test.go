@@ -5,7 +5,6 @@ package lab_test
 import (
 	"context"
 	"fmt"
-	"net/netip"
 	"regexp"
 	"strings"
 	"testing"
@@ -257,71 +256,65 @@ func TestLocalAPI(t *testing.T) {
 	}
 }
 
-// TestTeardownAfterCLIDisconnect is the teardown check behind the CLI
+// TestDisconnectLeavesNothingBehind is the teardown check behind the CLI
 // (TestLocalAPI checks only the TUN): with the DNS map (rules and DNS),
 // after `thinkpol disconnect` the route table's rules and routes,
 // resolv.conf and the IPv6 guard table are all gone, and come back on
-// `connect`. device-b carries on throughout.
-func TestTeardownAfterCLIDisconnect(t *testing.T) {
+// `connect` — both families' rules, the guard's chain with its table, and
+// AAAA resolution included. device-b carries on throughout.
+func TestDisconnectLeavesNothingBehind(t *testing.T) {
 	t.Parallel()
 	l := lab.Start(t, lab.Standard())
 	server, devA, devB, inet := l.Node(lab.Server1), l.Node(lab.DeviceA), l.Node(lab.DeviceB), l.Node(lab.Internet)
 	inetIP := inet.IPv4(lab.NetServers)
-	waitLog(t, inet.Start(t, "labdns", "-listen", ":53", "-a", domesticA, "-aaaa", "2001:db8:d::53"), "listening on :53/udp")
-	waitLog(t, inet.Start(t, "labdns", "-listen", ":5353", "-a", foreignA, "-aaaa", foreignAAAA), "listening on :5353/udp")
+	startResolvers(t, inet)
 
-	space := newM0Space(t, inet, server)
-	space.spec = "/src/lab/maps/dns.yaml"
-	envelope, v1 := space.build(t)
-	for name, n := range map[string]*lab.Node{"server-1": server, "device-a": devA, "device-b": devB} {
-		space.install(t, n, name, envelope)
-	}
+	space, v1 := buildDNSMap(t, inet, server, devA, devB)
 	s4, _ := space.overlay(1)
+	a4, _ := space.overlay(2)
 	b4, _ := space.overlay(3)
 
-	original := "nameserver " + inetIP.String() + "\nsearch direct.test\noptions timeout:2 attempts:3\n"
-	devA.WriteFile(t, "/etc/resolv.conf", []byte(original))
-	rulesBefore := devA.MustExec(t, "ip", "rule") + devA.MustExec(t, "ip", "-6", "rule")
+	original := osResolvConf(inetIP)
+	devA.WriteFile(t, "/etc/resolv.conf", original)
+	rulesBefore := devA.MustExec(t, "ip", "rule") + "\n" + devA.MustExec(t, "ip", "-6", "rule")
 
-	// The lab's addresses are private, which the worker's egress refuses
-	// unless allowed.
-	servers := netip.PrefixFrom(inetIP, 24).Masked().String()
-	exit := server.Start(t, "thinkpol", "up", "-egress-allowed", servers, "-dns-upstream", inetIP.String()+":5353")
-	waitLog(t, exit, `worker space=\S+ .*`+applied(v1))
-	devBUp := devB.Start(t, "thinkpol", "up", "-map-poll", "1h")
+	exit := startServerExit(t, server, inetIP, v1)
+	devBUp := devB.Start(t, "thinkpol", "up")
 	up := devA.Start(t, "thinkpol", "up", "-connect=false")
 	waitLog(t, up, "mode=device")
 
 	// What a disconnect must take away is all there while connected, and
-	// all gone after: the route table's rules and routes, resolv.conf and
-	// the IPv6 guard table.
-	expect := func(connected bool) {
-		t.Helper()
-		rules := devA.MustExec(t, "ip", "rule") + devA.MustExec(t, "ip", "-6", "rule")
+	// all gone after: the route table's rules and routes (both families),
+	// resolv.conf and the guard table with its chain.
+	state := func(connected bool) error {
+		rules4, rules6 := devA.MustExec(t, "ip", "rule"), devA.MustExec(t, "ip", "-6", "rule")
 		if connected {
-			if !strings.Contains(rules, "5301:") {
-				t.Errorf("no route-table rules while connected:\n%s", rules)
+			if !strings.Contains(rules4, "5301:") || !strings.Contains(rules6, "5301:") {
+				return fmt.Errorf("no route-table rules while connected:\n%s%s", rules4, rules6)
 			}
-		} else if rules != rulesBefore {
-			t.Errorf("rules after disconnecting:\n%s\nwant\n%s", rules, rulesBefore)
+		} else {
+			if got := rules4 + "\n" + rules6; got != rulesBefore {
+				return fmt.Errorf("rules after disconnecting:\n%s\nwant\n%s", got, rulesBefore)
+			}
+			if _, err := cli(t, devA, []string{"ip", "link", "show", "thinkpol0"}); err == nil {
+				return fmt.Errorf("the TUN outlived the disconnect")
+			}
 		}
-		routes := ""
-		for _, family := range []string{"-4", "-6"} {
-			routes += devA.MustExec(t, "ip", family, "route", "show", "table", "all", "proto", "86")
-		}
-		if got := routes != ""; got != connected {
-			t.Errorf("the route table's routes: present %v, want %v", got, connected)
+		if got := routeTableRoutes(t, devA) != ""; got != connected {
+			return fmt.Errorf("the route table's routes: present %v, want %v", got, connected)
 		}
 		conf := devA.MustExec(t, "cat", "/etc/resolv.conf")
-		if connected && conf == original {
-			t.Errorf("resolv.conf while connected is the original:\n%s", conf)
+		if connected {
+			if !strings.Contains(conf, "nameserver "+a4.String()+"\n") {
+				return fmt.Errorf("resolv.conf while connected:\n%s", conf)
+			}
+		} else if conf != string(original) {
+			return fmt.Errorf("resolv.conf after disconnecting:\n%s\nwant\n%s", conf, original)
 		}
-		if !connected && conf != original {
-			t.Errorf("resolv.conf after disconnecting:\n%s\nwant\n%s", conf, original)
+		if got := hasGuard(t, devA); got != connected {
+			return fmt.Errorf("the IPv6 guard: present %v, want %v", got, connected)
 		}
-		if got := strings.Contains(devA.MustExec(t, "nft", "list", "tables"), "thinkpol-guard"); got != connected {
-			t.Errorf("the IPv6 guard table: present %v, want %v", got, connected)
-		}
+		return nil
 	}
 
 	res, err := cli(t, devA, as("", "", "connect"))
@@ -329,29 +322,22 @@ func TestTeardownAfterCLIDisconnect(t *testing.T) {
 		t.Fatalf("connect: %v\n%s", err, res.Stdout)
 	}
 	ping(t, devA, s4)
-	a4 := overlayAddr(t, devA, "thinkpol0")
-	lab.Eventually(t, 30*time.Second, func() error {
-		conf := devA.MustExec(t, "cat", "/etc/resolv.conf")
-		if !strings.Contains(conf, "nameserver "+a4.String()+"\n") {
-			return fmt.Errorf("resolv.conf while connected:\n%s", conf)
-		}
-		return nil
-	})
-	expect(true)
+	lab.Eventually(t, 30*time.Second, func() error { return state(true) })
+	capture := devA.Capture(t, "")
 	mustResolve(t, devA, "www.tunnel.test", false, foreignA)
+	mustResolve(t, devA, "www.tunnel.test", true, foreignAAAA)
 	mustResolve(t, devA, "device-b.lab.internal", false, b4.String())
+	mustResolve(t, devA, "www.direct.test", false, domesticA)
+	if err := capture.Complete(); err != nil {
+		t.Fatal(err)
+	}
+	noLeaks(t, capture.Stop(), inetIP)
 
 	res, err = cli(t, devA, as("", "", "disconnect"))
 	if err != nil || !regexp.MustCompile(`state: +disconnected`).MatchString(res.Stdout) {
 		t.Fatalf("disconnect: %v\n%s", err, res.Stdout)
 	}
-	lab.Eventually(t, 30*time.Second, func() error {
-		if _, err := cli(t, devA, []string{"ip", "link", "show", "thinkpol0"}); err == nil {
-			return fmt.Errorf("the TUN outlived the disconnect")
-		}
-		expect(false)
-		return nil
-	})
+	lab.Eventually(t, 30*time.Second, func() error { return state(false) })
 	noPing(t, devA, s4.String())
 	ping(t, devB, s4) // the others carry on
 
@@ -360,16 +346,9 @@ func TestTeardownAfterCLIDisconnect(t *testing.T) {
 	if err != nil || !regexp.MustCompile(`state: +connected`).MatchString(res.Stdout) {
 		t.Fatalf("reconnect: %v\n%s", err, res.Stdout)
 	}
-	lab.Eventually(t, 30*time.Second, func() error {
-		ping(t, devA, s4)
-		expect(true)
-		conf := devA.MustExec(t, "cat", "/etc/resolv.conf")
-		if !strings.Contains(conf, "nameserver "+a4.String()+"\n") {
-			return fmt.Errorf("resolv.conf after reconnecting:\n%s", conf)
-		}
-		return nil
-	})
-	mustResolve(t, devA, "www.tunnel.test", false, foreignA)
+	ping(t, devA, s4)
+	lab.Eventually(t, 30*time.Second, func() error { return state(true) })
+	mustResolve(t, devA, "www.tunnel.test", true, foreignAAAA)
 
 	if err := up.Stop(); err != nil {
 		t.Errorf("device-a: thinkpol up exited with %v:\n%s", err, up.Output())
@@ -380,21 +359,6 @@ func TestTeardownAfterCLIDisconnect(t *testing.T) {
 	if err := exit.Stop(); err != nil {
 		t.Errorf("the exit: %v\n%s", err, exit.Output())
 	}
-}
-
-// overlayAddr is a node's own address on its thinkpol TUN.
-func overlayAddr(t *testing.T, n *lab.Node, tun string) netip.Addr {
-	t.Helper()
-	out := n.MustExec(t, "ip", "-o", "-4", "addr", "show", "dev", tun)
-	f := strings.Fields(out)
-	if len(f) < 4 {
-		t.Fatalf("no address on %s:\n%s", tun, out)
-	}
-	a, _, found := strings.Cut(f[3], "/")
-	if !found {
-		t.Fatalf("no prefix on %s:\n%s", tun, out)
-	}
-	return netip.MustParseAddr(a)
 }
 
 // addrOn is a node's addresses on a network, if it is on it.
