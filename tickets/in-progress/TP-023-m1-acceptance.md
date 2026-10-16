@@ -8,8 +8,8 @@ size: M
 depends_on: [TP-013, TP-014, TP-017, TP-019, TP-020, TP-021, TP-022, TP-078, TP-079, TP-092]
 refs: [DESIGN#milestones]
 needs_human: macos
-owner: ""
-branch: ""
+owner: glm-tp023
+branch: tp-023-m1-acceptance
 ---
 
 ## Goal
@@ -35,3 +35,4 @@ M1's "done when" as lab tests, plus one real-world run on macOS.
 - 2026-10-15 docs (backlog grooming, review fixes): Scope checklists TP-078; acceptance wording restored
 - 2026-10-15 docs: depends on TP-079 (merged)
 - 2026-10-16 docs (TP-078 device session A): depends on TP-092
+- 2026-10-16 backlog → in-progress, owner glm-tp023, branch tp-023-m1-acceptance
