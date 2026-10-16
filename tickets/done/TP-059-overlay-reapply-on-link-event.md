@@ -45,7 +45,7 @@ Nits from review; the orchestrator's decisions.
 - [x] R5 Test: a fake Interface failing once (the re-apply is retried).
 - [x] R6 Drop the stale "TUN bounce comes last" remark in `lab/routetable_test.go`.
 
-Resolution (601379d):
+Resolution (6c87f3b):
 - R1 `ifcReapplies` counts successes only (`Status.InterfaceReapplies` doc says so).
 - R2 `Router.LinkDown()` (set by `tun.EventDown`, cleared by `EventUp`): a due retry, or a burst that ends with the link down, re-applies nothing until the next link-up. The first failure of a run warns ("retrying while the link is up"), later ones go to debug; a success ends the run.
 - R3 `interfaceTiming{debounce 200 ms, cooldown 1 s, retry 5 s}`: after any re-apply the next waits until the cooldown ends; events meanwhile are kept, not dropped. Tests set it through `SetInterfaceTimingForTest`.

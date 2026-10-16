@@ -15,7 +15,7 @@ branch: tp-001-skeleton
 The old prototype is gone and the repo has the layout, tooling and agent rules every later ticket builds on.
 
 ## Scope
-- Remove the old code: `cmd/`, `internal/`, `pkg/`, `configs/`, `emulation/`, the committed `client` binary, the old Makefile. History keeps it at `01a8c23`.
+- Remove the old code: `cmd/`, `internal/`, `pkg/`, `configs/`, `emulation/`, the committed `client` binary, the old Makefile. History keeps it at `9e41350`.
 - `go.mod`: `module github.com/KucherenkoIvan/thinkpol-vpn`, `go 1.25` (go-kernel's floor), go-kernel at its latest tag.
 - Skeleton from DESIGN.md: `cmd/thinkpol` with only a `version` command; `internal/{agent,dataplane,netmap,features,shared}` with a `doc.go` each stating what belongs there.
 - Makefile modelled on go-kernel's: `help`, `test`, `lint`, `fmt`, `tools`, and `lab-up` / `lab-test` / `lab-down` placeholders.
@@ -52,7 +52,7 @@ Build everything with `CGO_ENABLED=0`.
   - `internal/features/members/members.go: import '…/internal/agent' is not allowed from list 'features-without-node-side': control plane features must not import the node agent`
   - `internal/shared/probe/probe.go: import '…/internal/features/members' is not allowed from list 'shared-without-features': shared code must not depend on a feature`
   - `internal/features/spaces/spaces.go: import '…/internal/features/members' is not allowed from list 'feature-spaces': features talk to each other only through shared/ports`
-- Rebased once onto `rewrite` at 59dd3a6 before the first review; after that, no history rewrites.
+- Rebased once onto `rewrite` at d663fa0 before the first review; after that, no history rewrites.
 
 ## Review findings
 Two reviewers (correctness, architecture); accepted by the orchestrator.

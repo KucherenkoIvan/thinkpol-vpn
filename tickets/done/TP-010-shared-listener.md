@@ -95,7 +95,7 @@ Round 2 (delta review, 2026-10-11):
 - 2026-10-11 backlog → in-progress — owner: agent-tp-010, branch: tp-010-shared-listener
 - 2026-10-11 shared listener implemented: udp datagrams end to end (lab), stream handoff seam (in-process), throughput on one CPU; DESIGN.md "Server agent" extended: workers' replies only to remotes their own authenticated datagrams came from, replays charged, stream caps on the socket
 - 2026-10-11 in-progress → review
-- 2026-10-11 review → has-errors — two reviewers: 1 blocker, 11 should-fix, nits (see Review findings); also recorded: checkpoint commit ca5dc21 was committed with failing tests, against AGENTS.md rule 3 (pushed at the coordinator's request after an interruption; the next commit was green)
+- 2026-10-11 review → has-errors — two reviewers: 1 blocker, 11 should-fix, nits (see Review findings); also recorded: checkpoint commit 97e4984 was committed with failing tests, against AGENTS.md rule 3 (pushed at the coordinator's request after an interruption; the next commit was green)
 - 2026-10-11 has-errors → in-progress — owner: agent-tp-010, picking up the review findings
 - 2026-10-11 review findings fixed (B1, 2–12, nits); DESIGN.md "Server agent" reply rule and stream caps reworded; udp's evicted-sender history bounded (a churning dialer could stall a shared Router, found by the new flood test); notes copied into TP-011, TP-013, TP-014, TP-028, TP-040, TP-041
 - 2026-10-11 in-progress → review

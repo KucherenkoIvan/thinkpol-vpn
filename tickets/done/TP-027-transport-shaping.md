@@ -65,7 +65,7 @@ Review verdict: merge after these (orchestrator decisions).
 - [x] N7. Optional `interface{ Sent() SendStats }` for the engine
 - [x] N8. Fix the "sizes, not secrets" comment
 
-Resolution (0552721):
+Resolution (358afe1):
 1. New leaf package `internal/shaping` (imports only the generated proto; covered by the planes-without-control-plane and mobile-without-kernel depguard rules and the no-cgo check) holds `Decode` (strict, unknown fields → `ErrUnsupported`) and `Check` (limits). `netmap.Build` runs `Decode` on every non-empty endpoint/inbound shaping (`checkSettings`), so netmap never imports the data plane. The transport port's `ParseShaping`/`Validate`/`Marshal` build on it; `ErrInvalidShaping`/`ErrUnsupportedShaping` are its errors. Fixtures use `transport.Shaping.Marshal()`; tests `TestCheckSettingsDecodesShaping`, Build cases "… shaping undecodable / with an unknown field / invalid".
 2. DESIGN "Transports own traffic shape": Rollout bullet. Notes added to TP-034, TP-038, TP-044. min_reader: see Log.
 3. `ControlWriter` doc and DESIGN: control-packet and shaped round trips are upper bounds (2 × `MaxControlHold` + both ends' `Shaping.MaxDelay()`); latency on unheld traffic (WireGuard handshake round trip, or `WritePacket` on links without batching/jitter); WireGuard handshakes, keepalives and data are always `WritePacket`. Note added to TP-031.
@@ -80,6 +80,6 @@ N1 `Marshal() ([]byte, error)`. N2 `transport.ErrSettingsRefused` (udp via the p
 - 2026-10-10 in-progress → review
 - 2026-10-10 review → has-errors — review: 5 findings, 8 nits (see Review findings)
 - 2026-10-10 has-errors → in-progress — owner: agent-tp-027, picking up the review findings
-- 2026-10-10 review findings fixed (0552721); the new map fields don't raise min_reader: acceptable only because no node is deployed yet. Once nodes are, a new map field older readers must not ignore raises min_reader, and new shaping follows the rollout policy
+- 2026-10-10 review findings fixed (358afe1); the new map fields don't raise min_reader: acceptable only because no node is deployed yet. Once nodes are, a new map field older readers must not ignore raises min_reader, and new shaping follows the rollout policy
 - 2026-10-10 in-progress → review
 - 2026-10-10 review → done — merged into rewrite

@@ -67,7 +67,7 @@ The contract every transport implements, and the plain `udp` baseline that the l
 - **Round 2:**
   - A refused older sender keeps a slot with its counters recorded. Evicted senders are refused for 5 minutes. A credential removed from the table keeps its sender history for 5 minutes.
   - The remaining takeover path is a datagram the listener never saw, held back and shown once the current sender has been quiet for 30 s. That is indistinguishable from a dialer whose clock went back, and is documented as a residual in `udp/doc.go`.
-- **Commit 2c926fa check (R2.3):** that commit accidentally carried three already-staged deletions (`udp/demux.go`, `udp/demux_test.go`, `udp/tap_test.go`). Every deleted test has an equivalent in the tree:
+- **Commit 63adbde check (R2.3):** that commit accidentally carried three already-staged deletions (`udp/demux.go`, `udp/demux_test.go`, `udp/tap_test.go`). Every deleted test has an equivalent in the tree:
   - `TestDemuxRoutesAndRejects` became `TestRouterRoutesAndRejects`.
   - `TestConformanceBehindSharedListener` and `TestWorkersGetOnlyTheirOwnLinks` are in `router_test.go`.
   - `TestProbesGetNoAnswer`, `TestReplaysAreDropped`, `TestReplayFromElsewhereDoesNotMoveTheLink`, `TestNoncesNeverRepeat`, `TestListenerFollowsARebindingDialer` and `TestWireCarriesNoPlaintext` are in `listener_test.go`.
@@ -101,7 +101,7 @@ Nits:
 Round 2 (delta review):
 - [x] R2.1 Quiet-sender takeover by replay. (a) On dropStale, record the refused sender in a non-current slot with its counter marked seen (not delivered), so a later replay of it is a replay. (b) Remember the ids of senders evicted from the 8 slots for 5 minutes and refuse them. (c) On reindex, keep removed flows' sender history for 5 minutes. Tests: "nine redials, quiet 30 s, inject oldest" and "held datagram refused as stale, quiet 30 s, inject" leave RemoteAddr unchanged, with nothing delivered or accepted.
 - [x] R2.2 Doc: conn id rotation doesn't prevent linking by 5-tuple; the Router forwards in-window replays (the worker drops them). TP-010 note: replays are unpriced against fair share; the supervisor may need a small replay filter.
-- [x] R2.3 Verify the deletions in 2c926fa have equivalents; restore anything lost; record in Notes.
+- [x] R2.3 Verify the deletions in 63adbde have equivalents; restore anything lost; record in Notes.
 
 ## Log
 - 2026-10-10 created in backlog

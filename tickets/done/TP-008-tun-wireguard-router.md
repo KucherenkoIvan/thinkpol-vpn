@@ -83,7 +83,7 @@ Should-fix:
 Nits:
 - [x] N1 tun doc vs build tags; drop or clarify the MaxPacket cap and its comment; nil Interface doc mentions VpnService/NetworkExtension modes; NewEgress rejects duplicate names; pooled buffers sized by egress MTU; `wg.Device.Close` returns an error; `Peers()` reports parse errors
 
-Resolution (50975cf; Notes above describe the result):
+Resolution (279ab06; Notes above describe the result):
 - B1 `skip.go`: `Skip{Node, What, Reason}` with fixed `Item`/`Reason` vocabularies in every conversion and in `Status`; `SkipDetail.Err` only to the debug log; `Status.IPv6Off` and `LastApplyError` fixed texts. `TestStatusQuotesNothingFromTheMap` (endpoints 192.0.2.7:0 and an unknown transport, credentials: none in `fmt.Sprint` of the status); `TestPathConfigSkipsWhatItCannotUse` asserts typed skips.
 - B2 `OverlayConfig.Networks` holds both networks whatever is carried; `Addrs`/`Local` and the peer filter carry IPv6 or not. overlay_test expects 2 networks; the IPv6-off test installs a `::/0` → overlay rule (hook) and asserts NoRoute rises and Routed doesn't.
 - B3 `Table.Local` + `Egress.Write` filter (`NotLocal`, per egress and total); `TestEgressWritesOnlyLocalDestinations`; end to end in `wg.TestTwoDevicesBehindOneRouter` (a peer that allows itself 0.0.0.0/0 sends from its overlay address to 192.168.1.5: dropped, counted). TP-030 note.

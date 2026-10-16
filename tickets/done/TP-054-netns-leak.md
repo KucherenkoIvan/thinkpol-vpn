@@ -54,5 +54,5 @@ Third-party libraries' own namespace round trips (noted below), and any other ch
 
 ## Log
 - 2026-10-12 created in in-progress — owner: agent-tp-054, branch: tp-054-netns-leak (bug from TP-011's review and a flaky TestCommandStartsSealed)
-- 2026-10-12 in-progress → review — fix in c5d6b62 (nsthread.Do for setNetSysctls and tun.CreateInNamespace) and f26c09a (lab snapshot), merged with rewrite (TP-011, TP-012); make lint, make test, race, lab-gotest agent/tun/nsthread, make lab-test green
+- 2026-10-12 in-progress → review — fix in 888d33c (nsthread.Do for setNetSysctls and tun.CreateInNamespace) and 8765072 (lab snapshot), merged with rewrite (TP-011, TP-012); make lint, make test, race, lab-gotest agent/tun/nsthread, make lab-test green
 - 2026-10-12 review → done — merged into rewrite
