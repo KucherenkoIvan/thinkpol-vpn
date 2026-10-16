@@ -64,7 +64,7 @@ IPv4 from interface-bound sockets is held back only by scoped routing: it failed
 ### Full suite
 
 - 2026-10-16, commit 175f97d: `make lint` pass (1:42), `make test` pass (1:04), `make lab-test LAB_P=1 GOFLAGS=-p=4` pass (9:23): the `lab` package's tests in 210.9 s and all 34 packages' tests in lab nodes PASS; no flaky test, nothing rerun, no defect found.
-- 2026-10-16, commit (this round, see Log): below.
+- 2026-10-16, commit 293910c: `make lint` pass (0:25), `make test` pass (0:01), `make lab-test LAB_P=1 GOFLAGS=-p=4` pass (~9:30): the `lab` package's tests (the two new ones included) and all 34 packages' tests in lab nodes PASS; no flaky test, nothing rerun, no defect found.
 
 ## Log
 - 2026-10-10 created in backlog
@@ -82,4 +82,4 @@ IPv4 from interface-bound sockets is held back only by scoped routing: it failed
 - 2026-10-16 review fixes (round 2): the macOS claim says what the device records show (session A: the guard never came up; session B: it loaded and passed its own check, no device has seen it block anything; the pf guard's leak paths are tested only against the fake pfctl); the IPv4/R2.8 sentence corrected (scoped routing only, the scoped direct-DNS-upstream host route a known exception, no backstop until TP-048, IPv4 after a crash); known macOS limits as one Gaps bullet; the D6, R3, N3, N8, R9 and D1/D8 rows corrected (spec defaults cited, "only relays" not lab-proven, geosite gap, list-update test cited, members refused TP-094, tray parity trivial); TP-019's carried-over device checks mapped to TP-094/TP-085/TP-093 with run 4's N-checks accounted for — no new carry-over ticket; traceability, Gaps and macOS under Notes as subsections, one copy of the macOS claim, lab timings moved here, Out of scope added, refs set.
 - 2026-10-16 docs (TP-085): its device acceptance carries TP-019's step 8 captures and step 15b, in the record-don't-judge form.
 - 2026-10-16 lab: `TestDNSFollowsTheRulesOnAServerExit` (R4 with the exit in server mode: the resolver in its worker, queries leaving through the namespace's egress — TP-020's follow-up) and `TestTeardownAfterCLIDisconnect` (after `thinkpol disconnect` the route table's rules and routes, resolv.conf and the IPv6 guard table are gone, and come back on connect) added.
-- 2026-10-16 full suite at this round's commit: below.
+- 2026-10-16 full suite at commit 293910c: lint/test/lab-test pass (Notes, Full suite). A first run of TestDNSFollowsTheRulesOnAServerExit failed: the server-mode exit needs `-egress-allowed` for its worker's upstream queries (the lab's addresses are private, which egress refuses); fixed in the test, no product change.
