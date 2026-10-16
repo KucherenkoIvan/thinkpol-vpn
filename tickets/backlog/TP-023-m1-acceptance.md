@@ -5,7 +5,7 @@ milestone: M1
 area: lab
 repo: thinkpol-vpn
 size: M
-depends_on: [TP-013, TP-014, TP-017, TP-019, TP-020, TP-021, TP-022, TP-078, TP-079]
+depends_on: [TP-013, TP-014, TP-017, TP-019, TP-020, TP-021, TP-022, TP-078, TP-079, TP-092]
 refs: [DESIGN#milestones]
 needs_human: macos
 owner: ""
@@ -34,3 +34,4 @@ M1's "done when" as lab tests, plus one real-world run on macOS.
 - 2026-10-15 docs (backlog grooming): depends on TP-019 and TP-078; macOS required for M1 acceptance; TP-079 when merged
 - 2026-10-15 docs (backlog grooming, review fixes): Scope checklists TP-078; acceptance wording restored
 - 2026-10-15 docs: depends on TP-079 (merged)
+- 2026-10-16 docs (TP-078 device session A): depends on TP-092
