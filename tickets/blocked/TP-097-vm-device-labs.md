@@ -1,6 +1,6 @@
 ---
 id: TP-097
-title: "VM device labs for macOS and Windows"
+title: "(cancelled) VM device labs for macOS and Windows"
 milestone: M2
 area: lab
 repo: thinkpol-vpn
@@ -12,6 +12,8 @@ branch: ""
 ---
 
 ## Goal
+**Cancelled 2026-10-16 by the owner:** macOS and Windows are tested on real devices; Docker stays the lab for Linux nodes, servers, clients and destinations. The ticket is kept so its id stays taken.
+
 Device checks that need a real macOS or Windows network stack run in throwaway virtual machines on the development Mac. Agents drive them over SSH and may run anything there as administrator, because breaking a VM costs nothing. The owner's own computers get only the short final checklist. A router VM gives the VMs native IPv6, so device steps that need an IPv6 network (TP-096) can run without one.
 
 ## Scope
@@ -42,3 +44,4 @@ Device checks that need a real macOS or Windows network stack run in throwaway v
 
 ## Log
 - 2026-10-16 created in backlog (owner approved VM device labs)
+- 2026-10-16 cancelled by the owner (real devices for macOS and Windows)

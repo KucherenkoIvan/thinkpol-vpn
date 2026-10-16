@@ -5,7 +5,7 @@ milestone: M2
 area: dataplane/firewall
 repo: thinkpol-vpn
 size: S
-depends_on: [TP-078, TP-092, TP-097]
+depends_on: [TP-078, TP-092]
 refs: [DESIGN#ipv6]
 needs_human: macos
 owner: ""
@@ -34,3 +34,4 @@ The owner has no network with native IPv6 available now. Unblock when one is.
 ## Log
 - 2026-10-16 created (TP-078/TP-092 device sessions)
 - 2026-10-16 docs: can run in TP-097's VM lab (a router VM gives native IPv6), so it depends on TP-097
+- 2026-10-16 docs: TP-097 cancelled; this waits for a network with native IPv6 again
