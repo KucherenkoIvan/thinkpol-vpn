@@ -306,7 +306,7 @@ type Enforcer struct {
 	guardWarnAt     time.Time
 	guardSuppressed int
 	// now: the clock the warn rate limit reads.
-	now func() time.Time
+	now    func() time.Time
 	status Status
 }
 
