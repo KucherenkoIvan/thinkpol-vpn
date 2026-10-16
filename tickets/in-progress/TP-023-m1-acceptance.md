@@ -64,4 +64,5 @@ The M1 claim for macOS is exactly what the device records show, no more. The dat
 - 2026-10-16 docs (TP-078 device session A): depends on TP-092
 - 2026-10-16 backlog → in-progress, owner glm-tp023, branch tp-023-m1-acceptance
 - 2026-10-16 Notes: traceability table, gaps, and the M1 claim for macOS (data plane TP-019, IPv6 guard TP-078/TP-092; not a claim that macOS is safe). The owner accepted the wording of that claim on 2026-10-16.
+- 2026-10-16 review → in-progress — round 2: review findings
 - 2026-10-16 full suite at commit 175f97d: `make lint` pass (1:42), `make test` pass (1:04), `make lab-test LAB_P=1 GOFLAGS=-p=4` pass (9:23): the `lab` package's tests in 210.9 s and all 34 packages' tests in lab nodes PASS; no flaky test, nothing rerun, no defect found. No new lab tests were needed: every Scope item already has a proving test (Notes, Traceability). Nothing could not be verified on this branch except what the tickets already park: TP-096's native-IPv6 device steps and TP-019's leftover device checks.
