@@ -24,7 +24,7 @@ const guardPoll = 10 * time.Second
 // around the tunnel (routetable.Exempt) with a pf anchor, GuardAnchor,
 // under Apple's `anchor "com.apple/*"` (guardRules lists its rules), and
 // the anchor's table, loaded together by one `pfctl -a
-// com.apple/000.thinkpol -f -`:
+// com.apple/000.thinkpol -f - -o none` (the optimizer off, below):
 //
 //	table <thinkpol_exempt6> persist { <Exempt.Direct's IPv6>, LinkScoped }
 //
@@ -198,10 +198,14 @@ func (g *IPv6Guard) checkHook(ctx context.Context) error {
 	return nil
 }
 
-// load loads e's anchor and reads it back.
+// load loads e's anchor and reads it back. The load runs with pfctl's
+// rule optimizer off (`-o none`): the default, `basic`, re-orders rules
+// (and may merge them into a table), and saneRules expects the listing
+// in the order and shape the guard wrote — as a device showed, where
+// pfctl listed the multicast rule first and every load was refused.
 func (g *IPv6Guard) load(ctx context.Context, e routetable.Exempt) (*appliedGuard, error) {
 	table, upstreams := exemptPrefixes(e), upstreamTargets(e)
-	if _, err := g.pf.run(ctx, []byte(anchorText(e.TUN, table, upstreams)), "-a", GuardAnchor, "-f", "-"); err != nil {
+	if _, err := g.pf.run(ctx, []byte(anchorText(e.TUN, table, upstreams)), "-a", GuardAnchor, "-f", "-", "-o", "none"); err != nil {
 		return nil, fmt.Errorf("firewall: load the IPv6 guard: %w", err)
 	}
 	rules, err := g.listRules(ctx)
