@@ -300,7 +300,14 @@ type Enforcer struct {
 	// guardFailing: the guard's last Apply failed (retried every
 	// RetryAfter); guardUnsupported: the OS can't hold it (terminal).
 	guardFailing, guardUnsupported bool
-	status                         Status
+	// guardWarnAt, guardSuppressed: the last warn of the guard's failing
+	// apply, and the failures silenced since it; every failure is
+	// retried, one a minute is logged, with the count silenced.
+	guardWarnAt     time.Time
+	guardSuppressed int
+	// now: the clock the warn rate limit reads.
+	now    func() time.Time
+	status Status
 }
 
 // Status is what an Enforcer reports: numbers and fixed texts only.
@@ -365,6 +372,9 @@ const (
 	// RetryAfter re-applies while the last attempt failed (a TUN that is
 	// down can't take its route back).
 	RetryAfter = 5 * time.Second
+	// guardWarnEvery: at most one warn of the guard's failing apply a
+	// minute; the failures since the last one are counted, not logged.
+	guardWarnEvery = time.Minute
 )
 
 // Open starts enforcing routes only through c, which it owns from now on
@@ -379,7 +389,7 @@ func OpenWithGuard(c netcfg.Configurator, g Guard, log *slog.Logger) *Enforcer {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	e := &Enforcer{cfg: c, guard: g, log: log}
+	e := &Enforcer{cfg: c, guard: g, log: log, now: time.Now}
 	e.startWatching(false)
 	return e
 }
@@ -539,17 +549,33 @@ func (e *Enforcer) applyGuard(ctx context.Context, w Want) {
 	switch {
 	case err == nil:
 		e.guardFailing, e.status.GuardEnforced, e.status.GuardError = false, true, ""
+		e.guardWarnAt, e.guardSuppressed = time.Time{}, 0
 	case errors.Is(err, ErrGuardUnsupported):
 		e.guardFailing, e.guardUnsupported = false, true
 		e.status.GuardEnforced, e.status.GuardError = false, ErrorGuardUnsupported
 		e.log.Warn("route table: the OS can't hold the leak guard; sockets bound to an interface aren't confined", "err", err)
 	default:
-		if !e.guardFailing {
-			e.log.Warn("route table: applying the leak guard failed, retrying", "in", RetryAfter, "err", err)
-		}
+		e.warnGuard(err)
 		e.guardFailing = true
 		e.status.GuardEnforced, e.status.GuardError = false, ErrorGuard
 	}
+}
+
+// warnGuard logs the guard's failing apply, at most one line a minute:
+// the failures since the last line are counted and said with it, not
+// kept silent. Every failure is still retried.
+func (e *Enforcer) warnGuard(err error) {
+	now := e.now()
+	if !e.guardWarnAt.IsZero() && now.Sub(e.guardWarnAt) < guardWarnEvery {
+		e.guardSuppressed++
+		return
+	}
+	args := []any{"in", RetryAfter}
+	if e.guardSuppressed > 0 {
+		args = append(args, "suppressed", e.guardSuppressed)
+	}
+	e.log.Warn("route table: applying the leak guard failed, retrying", append(args, "err", err)...)
+	e.guardWarnAt, e.guardSuppressed = now, 0
 }
 
 // Status reports the enforcer's state; it never waits for an Apply.

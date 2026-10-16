@@ -452,6 +452,100 @@ func TestApplyPutsTheGuardInPlace(t *testing.T) {
 	}
 }
 
+// The load runs with pfctl's rule optimizer off: its listing is then the
+// rules as written, in the order saneRules expects.
+func TestApplyLoadsUnoptimized(t *testing.T) {
+	r := newRig(t)
+	if err := r.guard().Apply(context.Background(), exempt(t)); err != nil {
+		t.Fatal(err)
+	}
+	i := slices.IndexFunc(r.pf.calls, func(c []string) bool { return slices.Contains(c, "-f") })
+	if i < 0 {
+		t.Fatal("no load ran")
+	}
+	if c := r.pf.calls[i]; !slices.Equal(c[len(c)-2:], []string{"-o", "none"}) {
+		t.Errorf("load %v, want -o none", c)
+	}
+	r.whole(t, exempt(t))
+}
+
+// withoutNone is a pfctl that drops `-o none` from its runs: how a load
+// without the option reaches pf, whose default optimizer reorders the
+// rules — as the device saw.
+type withoutNone struct{ pf pfctl }
+
+func (w withoutNone) run(ctx context.Context, stdin []byte, args ...string) (pfOutput, error) {
+	if i := slices.Index(args, "-o"); i >= 0 && i+1 < len(args) && args[i+1] == "none" {
+		args = append(args[:i:i], args[i+2:]...)
+	}
+	return w.pf.run(ctx, stdin, args...)
+}
+
+// A load the optimizer reordered is refused, with the device's error:
+// rule 1 is then the multicast one, not the one naming an interface.
+func TestAnOptimizedLoadIsRefused(t *testing.T) {
+	r := newRig(t)
+	g := newIPv6Guard(withoutNone{r.pf}, r.store(), time.Hour, ownAddrs)
+	const want = `firewall: pf lists the guard's rule 1 as "pass out quick inet6 proto ipv6-icmp from any to ff00::/8 icmp6-type groupqry no state", without "on"`
+	err := g.Apply(context.Background(), exempt(t))
+	if err == nil || err.Error() != want {
+		t.Fatalf("%v\nwant %q", err, want)
+	}
+	if r.pf.isOn() {
+		t.Error("pf enabled for a refused load")
+	}
+	// The same load with the optimizer off is the guard, in place.
+	if err := r.guard().Apply(context.Background(), exempt(t)); err != nil {
+		t.Fatal(err)
+	}
+	r.whole(t, exempt(t))
+}
+
+// The fake pfctl reorders a load without `-o none`, like pfctl's
+// "basic" optimizer did on the device, and keeps the order with it.
+func TestTheFakeOptimizesALoadWithoutNone(t *testing.T) {
+	text := anchorText("utun7", exemptPrefixes(exempt(t)), upstreamTargets(exempt(t)))
+	listed := func(opts ...string) []string {
+		f := newFakePF()
+		if _, err := f.run(context.Background(), []byte(text), append([]string{"-a", GuardAnchor, "-f", "-"}, opts...)...); err != nil {
+			t.Fatal(err)
+		}
+		return f.anchor(GuardAnchor).rules
+	}
+	reordered := listed()
+	if !strings.Contains(reordered[0], "ff00::/8") || !strings.Contains(reordered[0], "groupqry") {
+		t.Errorf("rule 1 after a load without -o none: %q", reordered[0])
+	}
+	if saneRules(reordered, "utun7", upstreamTargets(exempt(t))) == nil {
+		t.Error("the reordered listing is sane")
+	}
+	asWritten := listed("-o", "none")
+	loaded, err := fakeLoad(text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(asWritten, loaded.rules) {
+		t.Errorf("a load with -o none: %q, want as written %q", asWritten, loaded.rules)
+	}
+	if err := saneRules(asWritten, "utun7", upstreamTargets(exempt(t))); err != nil {
+		t.Fatalf("the unoptimized listing: %v", err)
+	}
+}
+
+// On a device the multicast rule was listed first and every load was refused;
+// with `-o none` the load is accepted and verified (TP-092 device session B, 2026-10-16).
+func TestEveryLoadCarriesNoOptimizer(t *testing.T) {
+	b, err := os.ReadFile("guard_darwin.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, l := range strings.Split(string(b), "\n") {
+		if strings.Contains(l, `"-f"`) && !strings.Contains(l, `"none"`) {
+			t.Errorf("guard_darwin.go:%d: a load without -o none: %s", i+1, l)
+		}
+	}
+}
+
 // Someone else's reference stays theirs: the guard takes its own, and
 // leaves theirs when it goes.
 func TestTheGuardSharesPfWithOthers(t *testing.T) {
@@ -559,7 +653,7 @@ func TestApplyingAnotherExemptReplacesIt(t *testing.T) {
 	if slices.Contains(a.tables[exemptTable], "2001:db8:d0::/48") || slices.ContainsFunc(a.rules, func(r string) bool { return strings.Contains(r, "2001:db8:53::1") }) {
 		t.Errorf("the old exempts stayed: %v, %q", a.tables, a.rules)
 	}
-	if !slices.Contains(a.rules, "pass out quick inet6 proto udp to 2001:db8:54::1 port = 5353 no state") {
+	if !slices.Contains(a.rules, "pass out quick inet6 proto udp from any to 2001:db8:54::1 port = 5353 no state") {
 		t.Errorf("rules %q, want DNS to the upstream's port", a.rules)
 	}
 	if !slices.Equal(r.pf.references(), first) {

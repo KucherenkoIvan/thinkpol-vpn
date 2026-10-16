@@ -1,11 +1,14 @@
 package routetable_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/netip"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -378,5 +381,85 @@ func TestTheGuardFollowsTheDirectUpstreams(t *testing.T) {
 	g.mu.Unlock()
 	if !slices.Equal(last.Upstreams, w.Upstreams) {
 		t.Errorf("the guard exempts upstreams %v, want %v", last.Upstreams, w.Upstreams)
+	}
+}
+
+// lockedBuffer is a test's log sink.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (w *lockedBuffer) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.b.Write(p)
+}
+
+func (w *lockedBuffer) lines(s string) []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	var out []string
+	for _, l := range strings.Split(w.b.String(), "\n") {
+		if strings.Contains(l, s) {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// A guard that keeps failing is retried every RetryAfter, and every
+// failure is warned, at most one line a minute, the failures silenced
+// since the last line counted with it; a success resets the limit.
+func TestGuardFailuresAreWarnedAtMostAMinuteApart(t *testing.T) {
+	f := &fakeConfigurator{}
+	g := newFakeGuard(f)
+	g.setFail(errors.New("the guard's load was refused"))
+	var buf lockedBuffer
+	e := routetable.OpenWithGuard(f, g, slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	defer func() { _ = e.Close() }()
+	now := time.Unix(0, 0)
+	var mu sync.Mutex
+	routetable.SetNow(e, func() time.Time { mu.Lock(); defer mu.Unlock(); return now })
+	advance := func(d time.Duration) { mu.Lock(); now = now.Add(d); mu.Unlock() }
+	apply := func() { e.GuardApply(context.Background(), routetable.Want{TUN: "thinkpol0"}) }
+	warns := func() []string { return buf.lines("applying the leak guard failed") }
+
+	// The first failure warns.
+	apply()
+	if n := len(warns()); n != 1 {
+		t.Fatalf("%d warns after the first failure, want 1", n)
+	}
+	// Failures within the minute are counted, not warned.
+	for range 5 {
+		apply()
+	}
+	if n := len(warns()); n != 1 {
+		t.Fatalf("%d warns within the minute, want 1", n)
+	}
+	// Past the minute, one line with the silenced count.
+	advance(routetable.RetryAfter * 12)
+	apply()
+	if n := len(warns()); n != 2 {
+		t.Fatalf("%d warns after a minute, want 2", n)
+	}
+	if !strings.Contains(warns()[1], "suppressed=5") {
+		t.Errorf("the second warn doesn't count the silenced ones: %q", warns()[1])
+	}
+	// The limit starts again.
+	apply()
+	if n := len(warns()); n != 2 {
+		t.Fatalf("%d warns right after, want 2", n)
+	}
+	// A success resets it: the next failure warns at once.
+	g.setFail(nil)
+	apply()
+	g.setFail(errors.New("the guard's load was refused"))
+	apply()
+	if n := len(warns()); n != 3 {
+		t.Fatalf("%d warns after a success in between, want 3", n)
+	}
+	if strings.Contains(warns()[2], "suppressed=") {
+		t.Errorf("the warn after a success counts what wasn't silenced: %q", warns()[2])
 	}
 }
