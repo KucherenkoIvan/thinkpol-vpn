@@ -3,6 +3,7 @@
 /lab/bin/
 /lab/.run/
 /thinkpol
+/labdns
 /thinkpol-tray
 *.exe
 *.test
