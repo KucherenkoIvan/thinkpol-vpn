@@ -93,7 +93,7 @@ Nits:
 - 2026-10-11 review → has-errors — two reviews: 3 blockers (netnsid escape, conntrack bypass, Close race), should-fixes 4–17, nits
 - 2026-10-11 has-errors → in-progress — owner: agent-tp-009, fixing the review findings
 - 2026-10-11 review fixes done (B1-B3, 4-17, nits); make lint, make test green; lab-gotest (internal/agent/...) green 3x; lab-test green 3x — staying in in-progress at owner's request (end of day)
-- 2026-10-11 in-progress → review — review findings fixed (e00612d); merged origin/rewrite (TP-008, TP-053); make lint, make test, lab-gotest (internal/agent/...) green
+- 2026-10-11 in-progress → review — review findings fixed (3c51b43); merged origin/rewrite (TP-008, TP-053); make lint, make test, lab-gotest (internal/agent/...) green
 
 ### Round 2 (delta review, 2026-10-11)
 Orchestrator decisions; core B1–B3 hold.

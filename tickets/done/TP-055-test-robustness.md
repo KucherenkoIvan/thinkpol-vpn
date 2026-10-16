@@ -33,7 +33,7 @@ Earlier flakes already fixed: `TestWorkersAreSandboxed` (TP-054), `TestCommandSt
 - [x] in-node package parallelism under load decided and documented: fixed `LAB_P` (default 4), not scaled by load (lab/README.md "Tests under load")
 - [x] each fixed test run with a high `-count` inside lab nodes, green, with 8 CPU burners saturating the Docker VM (host load 22–28): `TestDefaultRoute`, `TestPaddingHidesPacketSizes`, `TestSharedListenerThroughput` 30/30 each; netcfg package 20/20; `TestAPeerMovesBetweenDevices` and the relay/exit tests 30/30; dataplane and agent packages 10/10; lab `TestShapingCapture` 5/5; every package 5/5 (`labctl gotest -count 5 ./...`)
 - [x] host, under the same load: agent `TestADeviceConnectsAndDisconnects` 40/40 under `-race` (origin/rewrite: 2/40 fail); udp and supervisor conformance 8/8 under `-race`; supervisor flood, stuck-worker, bad-credential tests 20/20 under `-race`; watcher, retry, shared-status, blobs, udp replay and churn tests 20–50 runs each; whole repo 3× under `-race`
-- [x] one full `make lab-test` green (at accc627) while another lab (`make lab-up` under `THINKPOL_LAB_PROJECT=tp055-load`, its device-a running 8 busy loops) was up
+- [x] one full `make lab-test` green (at f13028d) while another lab (`make lab-up` under `THINKPOL_LAB_PROJECT=tp055-load`, its device-a running 8 busy loops) was up
 - [x] `make lint`, `make test` green
 
 ## Notes

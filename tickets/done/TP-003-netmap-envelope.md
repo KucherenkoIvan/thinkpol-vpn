@@ -64,7 +64,7 @@ Gossip (TP-037), building maps from controller state (TP-036).
 - Blobs: the header lists every blob unnamed (relays' availability set); sections name the ones their node uses. Public list hashes are visible to all nodes holding the envelope (accepted, DESIGN "Lists").
 
 **Tooling:**
-- Flake check (S2): `go test -count=200 -timeout 90m ./internal/netmap/` passed on e582308 in 925 s. Without `-timeout` it hits go test's default 10-minute limit (one run of the package takes ~5 s), which is not a failure of any test.
+- Flake check (S2): `go test -count=200 -timeout 90m ./internal/netmap/` passed on d62493b in 925 s. Without `-timeout` it hits go test's default 10-minute limit (one run of the package takes ~5 s), which is not a failure of any test.
 - depguard `netmap-schema-only-in-netmap`: checked once with a throwaway import in `internal/agent` — `import '…/proto/gen/thinkpol/netmap/v1' is not allowed from list 'netmap-schema-only-in-netmap'`; `internal/netmap` passes.
 - `make lint` runs `make proto-check`: `buf lint`, regenerate into a temp dir and diff against `proto/gen` (checked once: an edited generated file fails), and `buf breaking` with category WIRE against `rewrite` (`BUF_BREAKING_AGAINST`), skipped while `rewrite` has no `.proto` files. Checked once against this branch's first schema commit: it reports the field renumbering as breaking. buf resolves the ref in the shared git dir, so use a branch name or sha, not `HEAD`. `proto/buf.yaml` breaking category changed from FILE to WIRE.
 
@@ -77,7 +77,7 @@ Gossip (TP-037), building maps from controller state (TP-036).
 - TP-036: see its Notes (key epoch, recovery records in envelope field 3, hooks in `Next`/`Accept`).
 - TP-037: store and forward `Map.Bytes()`; take maps with `(*Map).Next`; bootstrap with `Verify(env, trustFromInvite)`.
 - TP-040: HostedSpace shape and shared-node listener rules are in its Notes.
-- The merge commit of `rewrite` into this branch (973d4b8) carries git's default message without the co-author trailer; no force-push to fix it.
+- The merge commit of `rewrite` into this branch (d2d7ea4) carries git's default message without the co-author trailer; no force-push to fix it.
 
 ## Review findings
 Two reviewers (security, architecture); decisions by the orchestrator.

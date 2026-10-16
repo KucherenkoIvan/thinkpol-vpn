@@ -174,7 +174,7 @@ Adversarial review (2026-10-13), orchestrator decision: fix every proven finding
 - [x] 3 (medium) Close kept the flock on error, so the next start got `ErrBusy` — Close always frees the owner's place; the record carries what is left to the next configurator (`TestAFailedCloseFreesTheOwnersPlace`; port contract documents the macOS difference).
 - [x] 4 (medium) `DefaultInterface` matched replies on a constant sequence number, without the family: concurrent IPv4/IPv6 lookups could read each other's replies — a sequence number per lookup, the reply's family checked.
 - [x] 5 (medium) A DNS original with values scutil can't pass back as one token (`Options : ndots:2 timeout:1`) was overridden for good — such originals are left alone and reported (`restorable`, `TestAnOriginalWithSpacesIsLeftAlone`); `ServerTimeout` is numeric.
-- [x] 6 (low) Write-ahead could record a destination a foreign `RTF_PROTO2` route holds — confirmed fixed in bdea2ee (conflicts are checked before anything is recorded).
+- [x] 6 (low) Write-ahead could record a destination a foreign `RTF_PROTO2` route holds — confirmed fixed in a241a41 (conflicts are checked before anything is recorded).
 - [x] 7 (low) Delete-then-add left a window where the physical default carried traffic — routes that only move are changed in place (`RTM_CHANGE`, fallback delete and add; `TestMovedRoutesChangeInPlace`); a change of kind (TUN up ↔ down) stays delete and add, while the utun can't take traffic anyway.
 - Suspicions (short `sockaddr_dl`, ICMP-redirect host routes, `RTM_GET` under a routing-socket flood) are Device checklist step 15.
 

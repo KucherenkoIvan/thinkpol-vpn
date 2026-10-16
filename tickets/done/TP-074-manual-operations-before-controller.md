@@ -30,7 +30,7 @@ The pre-M4 operating model is documented and tooled: map distribution, restarts,
 
 ## Notes
 - **Independent review (2026-10-15):** until M4 there is no ticket for hand-operated map distribution, reboot recovery, or clock checks.
-- **Round 3 scope decision: `clock_skew` health cut to TP-090.** Rounds 1-2 couldn't make it unforgeable. On the round-2 head (2a006c3), one captured datagram replayed 3 times to a fresh router got the `StaleClock` verdict 3 times, which met the health threshold of 3. The fix needs new replay-filter state (stale datagrams counted only past the filter's creation time, de-duplicated, evicted ids kept for the connection-id window), a sliding window, race-free folding and real engine and supervisor tests. That's more than one last round can land and prove, so every clock_skew code path is reverted to `rewrite` as merged. No partial counters are kept: without the health code they only reclassified drops already counted as `StaleTimestamp`, and they carried their own nits. Round-1 findings 1-5 describe the cut code.
+- **Round 3 scope decision: `clock_skew` health cut to TP-090.** Rounds 1-2 couldn't make it unforgeable. On the round-2 head (35e445c), one captured datagram replayed 3 times to a fresh router got the `StaleClock` verdict 3 times, which met the health threshold of 3. The fix needs new replay-filter state (stale datagrams counted only past the filter's creation time, de-duplicated, evicted ids kept for the connection-id window), a sliding window, race-free folding and real engine and supervisor tests. That's more than one last round can land and prove, so every clock_skew code path is reverted to `rewrite` as merged. No partial counters are kept: without the health code they only reclassified drops already counted as `StaleTimestamp`, and they carried their own nits. Round-1 findings 1-5 describe the cut code.
 
 ## Review findings
 Round 1 review (cross-family, 2026-10-15):
@@ -64,6 +64,6 @@ Round 2 delta review (Claude, 2026-10-15):
 - 2026-10-15 in-progress → review — round 2: merged rewrite (TP-070), replay-safe clock_skew, runbook and tests; make lint and make test on darwin
 - 2026-10-15 review → has-errors — round 2 delta review: 1 blocker, 6 should-fix, nits (see Review findings)
 - 2026-10-15 has-errors → in-progress — owner: claude-tp074, round 3 (last) fixes
-- 2026-10-15 in-progress → review — round 3: clock_skew health cut to TP-090 (B1 forgery reproduced on 2a006c3), runbook staging/rename/reload fixed, rotate test pins both version branches; make lint, make test and go test -race (cmd/thinkpol, devmap, dataplane/..., agent/...) pass on darwin. Not run: the runbook's ssh/systemd commands on a real node (no host may be contacted), the lab.
+- 2026-10-15 in-progress → review — round 3: clock_skew health cut to TP-090 (B1 forgery reproduced on 35e445c), runbook staging/rename/reload fixed, rotate test pins both version branches; make lint, make test and go test -race (cmd/thinkpol, devmap, dataplane/..., agent/...) pass on darwin. Not run: the runbook's ssh/systemd commands on a real node (no host may be contacted), the lab.
 - 2026-10-15 docs: TP-074 review nits — runbook rollback/devices/chrony/staging, DESIGN device map delivery, TP-090 spec tightened
 - 2026-10-15 merged into rewrite (review → done)
