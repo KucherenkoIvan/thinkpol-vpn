@@ -40,7 +40,8 @@ Linux nftables guard (TP-021).
 ## Acceptance
 - [x] darwin guard implemented behind the existing `routetable.Guard` port, unit-tested on generated pf rules
 - [x] crash cleanup via the pf token record
-- [ ] the macOS device checklist (bound `ping6`/`curl -6 --interface en0` refused, tcpdump on en0 clean, still refused after kill -9, clean after `-connect=false`), recorded in Notes
+- [x] on a real Mac the guard loads, verifies its rules and is enforced (health without `ipv6_guard_*`), with TP-092's fix (device sessions A and B, 2026-10-16, in Notes)
+- [ ] (moved to TP-096) the native-IPv6 device steps: bound `ping6`/`curl -6 --interface en0` refused, tcpdump on en0 clean, still refused after kill -9, clean after `-connect=false`
 
 ## Notes
 **Round 1 (2026-10-15), claude-opus-tp078; round 2 the same day after the cross-family review (Review findings below).** The design and its limits are in DESIGN.md, "IPv6", bullet "The leak guard on macOS". Nothing here has touched pf on a real Mac: every pfctl run goes through `pfctl`, an interface with a stateful fake in the tests (`fakepf_darwin_test.go`: anchors, tables, references, states and `-k` as XNU's DIOCKILLSTATES matches them, `const` tables refusing an in-place change, `Invalid argument` for a missing anchor, an unreadable References layout). The pfctl output formats are from pfctl(8), pf.conf(5), the stock `/etc/pf.conf` and the published OS X `-s References` transcripts the review cites; the rest is inference until the checklist below records them.
@@ -179,6 +180,12 @@ Stop thinkpol first (Ctrl-C, or `sudo pkill -TERM -f 'thinkpol up'`): while it r
 
 A reboot undoes all of it but the record, whose boot session then no longer matches.
 
+**Device sessions (2026-10-16), the owner's Mac, macOS, a network without native IPv6.**
+- Session A (build ebc225f): the guard never came up. pfctl listed the anchor's rules in another order (the ff00::/8 multicast rule first), so `saneRules` refused every load, and health was `ipv6_guard_not_enforced` from the start. The agent logged one WARN, then went quiet. Fixed in TP-092: the load runs with pfctl's optimizer off (`-o none`), and failures warn at most once a minute.
+- Session B (TP-092's build): health had no problem from the start, and no guard failure was logged. The guard loaded, its rules passed `saneRules`, and it was enforced. Checks 08, 09 and 10 were UNKNOWN because the network had no native IPv6 (no global address, no IPv6 default route), so the leak paths couldn't be exercised. They move to TP-096.
+- After session A's stop, `pfctl -s Anchors` still listed `com.apple/000.thinkpol`, but the anchor held no rules and no tables: pf keeps a flushed anchor's name. No leftover. The pf `-E` token record was absent.
+- Seen on the device: when `saneRules` refuses a load, the rules just loaded stay in the anchor (load returns before any flush), and the agent reports not enforced. Follow-up in TP-095.
+
 ## Review findings
 Cross-family adversarial review (Grok, 2026-10-15) of round 1; orchestrator's list, round 2 of at most 3.
 
@@ -269,3 +276,4 @@ Resolution (round 3):
 - 2026-10-15 review → has-errors — Grok delta review of round 2: R2.5 partly fixed (upstream addresses exempt from kill, states made during a bypass), checklist nits; findings R3.1–R3.3
 - 2026-10-15 has-errors → in-progress — owner: claude-opus-tp078, round 3
 - 2026-10-15 in-progress → review — round 3: R3.1–R3.3 fixed. kill exempts the main table only (upstream states die, DNS re-flows statelessly); any Apply after a failed one kills states; per-(address, port) upstream DNS rules, upstream table dropped, link-local upstreams left to fe80::/10; checklist steps 0, 2, 3, 4, 5 and rollback reworked. make lint, make test (pfctl tripwire clean), -race, lab-gotest dataplane (20 pkgs) and agent (6 pkgs) pass. 4 planted bugs each caught: kill sparing upstream addresses, no kill after a failure, ports crossed, a link-local upstream named. Ready for the owner's device run; what only a real Mac settles is listed in Resolution (round 3)
+- 2026-10-16 device sessions A and B recorded; native-IPv6 steps moved to TP-096
