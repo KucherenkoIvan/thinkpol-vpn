@@ -250,3 +250,70 @@ func TestDNSFollowsTheRules(t *testing.T) {
 		}
 	}
 }
+
+// TestDNSFollowsTheRulesOnAServerExit is the R4 leak check with the exit
+// running as a server (TP-020's follow-up): its resolver sits in the
+// worker, and its upstream queries leave the worker's namespace only
+// through its egress. device-a resolves tunnel-bound names through it and
+// leaks nothing; the foreign resolver sees the queries from the exit's own
+// address, and the domestic one is never asked a tunnel or overlay name.
+func TestDNSFollowsTheRulesOnAServerExit(t *testing.T) {
+	t.Parallel()
+	l := lab.Start(t, lab.Standard())
+	server, devA, inet := l.Node(lab.Server1), l.Node(lab.DeviceA), l.Node(lab.Internet)
+	inetIP := inet.IPv4(lab.NetServers)
+	domestic := inet.Start(t, "labdns", "-listen", ":53", "-a", domesticA, "-aaaa", "2001:db8:d::53")
+	foreign := inet.Start(t, "labdns", "-listen", ":5353", "-a", foreignA, "-aaaa", foreignAAAA)
+	waitLog(t, domestic, "listening on :53/udp")
+	waitLog(t, foreign, "listening on :5353/udp")
+
+	space := newM0Space(t, inet, server)
+	space.spec = "/src/lab/maps/dns.yaml"
+	envelope, v1 := space.build(t)
+	space.install(t, server, "server-1", envelope)
+	space.install(t, devA, "device-a", envelope)
+	s4, _ := space.overlay(1)
+
+	// No -mode device: the exit is a server, its resolver runs in the
+	// worker and asks WorkerConfig.DNSUpstreams. The lab's addresses are
+	// private, which the worker's egress refuses unless allowed.
+	servers := netip.PrefixFrom(inetIP, 24).Masked().String()
+	exit := server.Start(t, "thinkpol", "up", "-egress-allowed", servers, "-dns-upstream", inetIP.String()+":5353")
+	waitLog(t, exit, `worker space=\S+ .*`+applied(v1))
+
+	devA.WriteFile(t, "/etc/resolv.conf", []byte("nameserver "+inetIP.String()+"\nsearch direct.test\noptions timeout:2 attempts:3\n"))
+	capture := devA.Capture(t, "")
+	up := devA.Start(t, "thinkpol", "up")
+	waitLog(t, up, "the system resolves through the node")
+	ping(t, devA, s4)
+
+	mustResolve(t, devA, "www.tunnel.test", false, foreignA)
+	mustResolve(t, devA, "www.tunnel.test", true, foreignAAAA)
+	mustResolve(t, devA, "www.direct.test", false, domesticA)
+	mustResolve(t, devA, "server-1.lab.internal", false, s4.String())
+	if got, err := resolve(devA, "blocked.test", false); err == nil {
+		t.Errorf("a blocked name resolved to %s", got)
+	}
+	if err := capture.Complete(); err != nil {
+		t.Fatal(err)
+	}
+	noLeaks(t, capture.Stop(), inetIP)
+
+	// The worker's upstream queries crossed the namespace's egress: the
+	// foreign resolver saw them from the exit's own address.
+	if out := foreign.Output(); !strings.Contains(out, "query www.tunnel.test. A from "+server.IPv4(lab.NetServers).String()) {
+		t.Errorf("the exit's upstream wasn't asked for the tunnel's names through the worker's egress:\n%s", out)
+	}
+	for _, line := range strings.Split(domestic.Output(), "\n") {
+		if strings.Contains(line, "tunnel") || strings.Contains(line, "internal") || strings.Contains(line, "blocked") {
+			t.Errorf("the domestic resolver was asked: %s", line)
+		}
+	}
+
+	if err := up.Stop(); err != nil {
+		t.Errorf("thinkpol up: %v\n%s", err, up.Output())
+	}
+	if err := exit.Stop(); err != nil {
+		t.Errorf("the exit: %v\n%s", err, exit.Output())
+	}
+}
