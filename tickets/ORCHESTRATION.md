@@ -77,3 +77,11 @@ Made by the project owner following an independent review.
 - Critical path after M1: agent-layer refactor part 1 (TP-075), with the Reality evaluation (TP-064) and the censor framework (TP-024) running alongside it; then service install (TP-046), then the macOS/Linux kill switch (TP-048); then the `reality` transport (TP-087) and the censor modules (TP-025, TP-026, TP-032) after TP-064. Daily use starts after M2.
 - **REALITY is the M2 disguised transport** (after the TP-064 findings): thinkpol implements REALITY's handshake for client → entry links (TP-087, TP-088); our own `tls` (TP-028) moves to after the MVP. Reuse over rewrite where licences allow: uTLS (BSD-3) is imported; XTLS/REALITY and Xray-core (MPL-2.0) may be unmodified Go module dependencies, never copied into the tree under MIT; TP-087 decides between depending on XTLS/REALITY's server and reimplementing it. Stock VLESS clients and servers are not supported. See PRD "Decisions".
 - UX design round after the mechanics: once the core transports and data plane are built, user-facing flows (invites, the admin panel and its canvas, the tray app) get a fresh design round, informed by the technical limits found and by experience from building. Until then UX details in tickets are provisional.
+
+## Device testing (2026-10-16)
+
+Made by the project owner after TP-078's device-test kit grew to about three times the size of the product change it tested, without having run once.
+
+- **Record, don't judge.** Device scripts do a step and save evidence: `thinkpol diag` (TP-091), a capture, the agent's log and timestamps. An agent judges the evidence after the run. Judgement that recurs becomes a Go test over recorded fixtures or a lab test, never device-script logic.
+- **Budget.** A ticket's device tooling must not be bigger than the ticket's own change. If a check needs more, it's a product diagnostic or a lab test.
+- **Lighter process for tooling:** one review round, a fresh agent per round with a handoff note, and safety (restore, dead-man, no lasting host changes) as a small frozen core kept apart from the checks.

@@ -5,7 +5,7 @@ milestone: M2
 area: dataplane/firewall
 repo: thinkpol-vpn
 size: L
-depends_on: [TP-046, TP-021, TP-078]
+depends_on: [TP-046, TP-021, TP-078, TP-091]
 refs: [D4]
 needs_human: macos
 owner: ""
@@ -44,3 +44,4 @@ With the kill switch on, nothing leaves the device when the tunnel is down.
 - 2026-10-15 docs (independent review 2026-10-15): retitled to macOS and Linux; milestone M2; depends on TP-021 not TP-047; needs_human macos; Windows/WFP moved to TP-076; note on missing macOS pf guard
 - 2026-10-15 docs (TP-078 split): depends on the macOS pf IPv6 leak guard
 - 2026-10-15 docs (backlog grooming, review fixes): acceptance for fail-closed gap after crash with TP-046 service
+- 2026-10-16 docs (device testing rethink): depends on TP-091, whose `diag` snapshot is the evidence for its device run
