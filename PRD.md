@@ -109,13 +109,13 @@ Milestones as in [Release plan](#release-plan). Priority: **must** for the MVP, 
 |---|---|---|---|
 | R1 | Nodes that allow egress forward internet traffic for the space (IPv4; IPv6 if the VPS has it) | must | M1 |
 | R2 | Ordered rules with actions `direct`, `chain:<name>`, `block`; matchers `default`, `cidr`, `geoip` | must | M1 |
-| R3 | Space-wide default rules plus per-device overrides; presets "everything" and "all but domestic" | must | M1 |
+| R3 | Space-wide default rules plus per-device overrides; presets "everything" and "all but domestic" | must | M1 (presets per device); M4 (per-device custom rules, set by the controller) |
 | R4 | DNS follows the rules: `direct` domains go to a domestic resolver, everything else through the tunnel; no DNS leaks | must | M1 |
 | R5 | Chains of two or more hops; hops can be hop groups | must | M3 |
 | R6 | Hop group policies `failover`, `lowest-latency`, `spread` | must: failover; should: others | M3 |
 | R7 | Switching entries keeps the exit, so open connections survive | must | M3 |
 | R8 | Domain matchers (`domain`, `domain-suffix`, `geosite`) enforced in userspace mode | later | — |
-| R9 | GeoIP/geosite lists distributed through the network and updatable without a release | must | M1 |
+| R9 | GeoIP/geosite lists distributed through the network and updatable without a release | must | M1 (GeoIP); geosite: later, once it has a format |
 
 ### Censorship resistance
 
@@ -148,7 +148,7 @@ Milestones as in [Release plan](#release-plan). Priority: **must** for the MVP, 
 | D3 | Tray: connect/disconnect, status (chain, entry in use, health), space switcher, rule preset switcher | must | M5 |
 | D4 | Kill switch toggle (default off): when on and the tunnel is down, nothing leaves except traffic to entry nodes; allow-LAN option; temporary pause. After an agent crash the device **fails closed by default** under the "everything" and "all but domestic" presets (opt-out); a deliberate disconnect follows the toggle | must | M2 (macOS, Linux), M5 (Windows) |
 | D5 | Connect-on-boot toggle (default off) | must | M2 (macOS, Linux), M5 (tray toggle, Windows) |
-| D6 | No IPv6 leaks: IPv6 goes through the tunnel or is blocked while connected | must | M1 |
+| D6 | No IPv6 leaks: IPv6 goes through the tunnel or is blocked while connected | must | M1 (Linux); M2 (macOS device proof: TP-096) |
 | D7 | Join a space from an invite link or QR code without a terminal; the device stays pending until the admin approves it | must | M5 |
 | D8 | CLI covering everything the tray does | must | M1 |
 | D9 | Enrolled in several spaces, one active at a time | must | M5 |
@@ -191,7 +191,7 @@ Milestones as in [Release plan](#release-plan). Priority: **must** for the MVP, 
 | | Milestone | Ships |
 |---|---|---|
 | M0 | Overlay | Two Linux nodes in the lab, hand-made signed map in the need-to-know format, `udp` transport, relay paths, device ↔ device ping. The server agent already runs each space as its own isolated worker |
-| M1 | Working core | Per-node ingress/egress settings, an egress node, rules with GeoIP, DNS, IPv6 handling, macOS and Linux clients via CLI. macOS leak guarantees land with the macOS data plane and IPv6 guard (TP-019, TP-078). Daily use starts once a disguised transport passes the censor lab (M2) |
+| M1 | Working core | Per-node ingress/egress settings, an egress node, rules with GeoIP, DNS, IPv6 handling, macOS and Linux clients via CLI. Leak guarantees are proven on Linux. On macOS, M1 proves the data plane, DNS and that the IPv6 guard loads on a real Mac; the guard's leak paths on native IPv6 (TP-096) and confinement after a crash (kill switch, TP-048) come in M2. Daily use starts once a disguised transport passes the censor lab (M2) |
 | M2 | Disguise | `reality` transport with probe fallback, censor lab v1; kill switch and connect-on-boot on macOS/Linux (TP-048, TP-046) |
 | M3 | Chains | Multi-hop chains, hop groups with failover, lab whitelist mode |
 | M4 | Control plane | Controller on go-kernel: spaces, members, invites, SSH provisioning, map gossip, hosting grants and shared nodes, node safety, telemetry, admin panel with canvas and dashboards |
