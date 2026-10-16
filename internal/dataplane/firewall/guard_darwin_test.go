@@ -532,9 +532,8 @@ func TestTheFakeOptimizesALoadWithoutNone(t *testing.T) {
 	}
 }
 
-// A load path that drops `-o none` fails this: pfctl's default
-// optimizer reorders the listing saneRules checks, and every load was
-// refused on the device until the option was there.
+// On a device the multicast rule was listed first and every load was refused;
+// with `-o none` the load is accepted and verified (TP-092 device session B, 2026-10-16).
 func TestEveryLoadCarriesNoOptimizer(t *testing.T) {
 	b, err := os.ReadFile("guard_darwin.go")
 	if err != nil {
