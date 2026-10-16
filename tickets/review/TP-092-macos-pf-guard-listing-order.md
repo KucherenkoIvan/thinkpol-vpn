@@ -25,9 +25,9 @@ On a real Mac the IPv6 leak guard loads and is enforced. In TP-078's first devic
 - Other device findings (TP-093, TP-094).
 
 ## Acceptance
-- [ ] a test using the device's listing below fails before the fix and passes after it
-- [ ] the fake pfctl re-orders without `-o none`, and a test proves the guard then refuses
-- [ ] `make lint` and `make test` pass
+- [x] a test using the device's listing below fails before the fix and passes after it
+- [x] the fake pfctl re-orders without `-o none`, and a test proves the guard then refuses
+- [x] `make lint` and `make test` pass
 - [ ] device session B (TP-078's checklist, steps 0–10) on the TP-092 build: the health shows no `ipv6_guard_*` problem, and 08/09/10 pass
 
 ## Notes
@@ -38,3 +38,4 @@ On a real Mac the IPv6 leak guard loads and is enforced. In TP-078's first devic
 ## Log
 - 2026-10-16 created in backlog (TP-078 device session A)
 - 2026-10-16 backlog → in-progress (owner glm-tp092)
+- 2026-10-16 in-progress → review. The guard's one load path (`load`, guard_darwin.go) now passes `-o none`; a source test (TestEveryLoadCarriesNoOptimizer) fails if a load line ever drops it. The fake pfctl reorders a load without `-o none` the way the device saw (the multicast rules listed first) and names ICMPv6 type 130 `groupqry`, and it no longer shortens `from any to` — the device's listing kept it (one test assertion updated). Tests added: TestApplyLoadsUnoptimized, TestAnOptimizedLoadIsRefused (the device's error text exactly), TestTheFakeOptimizesALoadWithoutNone, TestEveryLoadCarriesNoOptimizer; routetable: every failed guard apply warns at most once a minute with the silenced count (TestGuardFailuresAreWarnedAtMostAMinuteApart, an injected clock — the package had none, so a `now` func on the Enforcer). Planted bug (the `-o none` removed): 15 firewall tests failed, TestAnOptimizedLoadIsRefused printed the device's error text verbatim; the fix restored, all green. `make lint` and `make test` pass; the pfctl tripwire holds (no test runs the real pfctl). Only a real Mac can verify: that pfctl accepts `-o none` on an anchor load and lists unoptimized (pf.conf(5) says it does; session B), and that macOS's pfctl prints the other expanded rules the way the fake guesses (`listenrep`, `listendone`, 143, and `from any to` on the non-multicast rules — only the groupqry rule is device-evidenced).
