@@ -116,6 +116,28 @@ func waitLog(t *testing.T, p *lab.Process, pattern string) {
 // applied matches the log line of a node, or its worker, applying a map.
 func applied(version string) string { return `msg="map applied" .*version=` + version + ` ` }
 
+// routeTableRoutes is everything in the routing tables of the route
+// table's protocol (86), both families.
+func routeTableRoutes(t *testing.T, n *lab.Node) string {
+	t.Helper()
+	var out strings.Builder
+	for _, family := range []string{"-4", "-6"} {
+		out.WriteString(n.MustExec(t, "ip", family, "route", "show", "table", "all", "proto", "86"))
+	}
+	return out.String()
+}
+
+// hasGuard says whether the IPv6 leak guard's nftables table is there and
+// holds its chain: its name in `nft list tables`, and a chain listed in
+// the table itself (the name alone proves nothing).
+func hasGuard(t *testing.T, n *lab.Node) bool {
+	t.Helper()
+	if !strings.Contains(n.MustExec(t, "nft", "list", "tables"), "thinkpol-guard") {
+		return false
+	}
+	return strings.Contains(n.MustExec(t, "nft", "list", "table", "inet", "thinkpol-guard"), "chain")
+}
+
 // TestUpRunsTheM0Space brings the M0 space up with `thinkpol up` on every
 // node (server-1 as a supervisor with a sandboxed worker, the devices in
 // device mode), pings across it, moves it to a new map by file change and
