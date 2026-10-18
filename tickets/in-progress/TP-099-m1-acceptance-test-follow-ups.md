@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: [TP-023]
 refs: [R4, D6, DESIGN#milestones, DESIGN#dns]
-owner: ""
-branch: ""
+owner: claude-tp099
+branch: tp-099-m1-acceptance-test-follow-ups
 ---
 
 ## Goal
@@ -46,3 +46,4 @@ Origin: TP-023 review round 3 (2026-10-17), split under the three-round cap.
 
 ## Log
 - 2026-10-17 created in backlog (TP-023 round 3 findings)
+- 2026-10-18 backlog → in-progress (agent, TP-099 branch)
