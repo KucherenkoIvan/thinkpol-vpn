@@ -6,8 +6,8 @@ area: lab
 repo: thinkpol-vpn
 size: S
 depends_on: []
-owner: ""
-branch: ""
+owner: agent-opus
+branch: tp-100-faster-full-lab-suite
 ---
 
 ## Goal
@@ -32,3 +32,4 @@ Measured 2026-10-18 at bbe4873 with `LAB_P=1`: `lab/` phase ~3:30 wall (tests pa
 
 ## Log
 - 2026-10-18 created in backlog (code-quality review)
+- 2026-10-18 backlog → in-progress — owner: agent-opus, branch: tp-100-faster-full-lab-suite
