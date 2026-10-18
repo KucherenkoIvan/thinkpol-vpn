@@ -26,6 +26,7 @@ const tcpProbePort = 18080
 // whole over both families, and the verdict log shows the censor accepted
 // each of those flows, the datagram's in one piece.
 func TestCensorForwardsWhatNoModuleDecides(t *testing.T) {
+	t.Parallel()
 	l := lab.Start(t, lab.Standard())
 	dev, server, router := l.Node(lab.DeviceA), l.Node(lab.Server1), l.Node(lab.Router)
 	listenTCP(t, server)
@@ -68,6 +69,7 @@ func TestCensorForwardsWhatNoModuleDecides(t *testing.T) {
 // the sender's kernel fragments: not one fragment, first or later, may
 // reach server-1, over IPv4 or IPv6.
 func TestCensorFragmentedUDPBlocked(t *testing.T) {
+	t.Parallel()
 	l := lab.Start(t, lab.Standard())
 	dev, server, router := l.Node(lab.DeviceA), l.Node(lab.Server1), l.Node(lab.Router)
 	c := startCensor(t, l, entryBlockSettings(t, l, "drop"))
@@ -106,6 +108,7 @@ func TestCensorFragmentedUDPBlocked(t *testing.T) {
 // coming from server-1's address, and server-1 sees nothing: neither the
 // SYN nor an RST.
 func TestTCPResetReachesClient(t *testing.T) {
+	t.Parallel()
 	l := lab.Start(t, lab.Standard())
 	dev, server := l.Node(lab.DeviceA), l.Node(lab.Server1)
 	listenTCP(t, server)
@@ -152,6 +155,7 @@ func TestTCPResetReachesClient(t *testing.T) {
 // times out over both families, server-1 never sees the SYN, and the
 // verdict log has the drops.
 func TestTCPThroughCensorDrop(t *testing.T) {
+	t.Parallel()
 	l := lab.Start(t, lab.Standard())
 	dev, server := l.Node(lab.DeviceA), l.Node(lab.Server1)
 	listenTCP(t, server)

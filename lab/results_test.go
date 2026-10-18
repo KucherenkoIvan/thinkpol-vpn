@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -29,30 +28,32 @@ import (
 // its censor means to produce fails the test, and a cell whose censor can't
 // be trusted (censord died, the kernel dropped queued packets, the verdict
 // log doesn't show the probe's flows) is an error. RESULTS.md is written
-// only by a complete run with no error. A transport's off cell runs before
-// its censored cells and they read its result: against a censor it must
-// still pass what it passed without one. The off cell is not parallel and
-// the censored cells never wait for anything: a censored cell whose
-// baseline didn't run (a -run filter can select it alone) fails fast.
-// Every cell holds its own lab slot (see lab.StartOwnSlot): the matrix
-// runs up to six labs at once, and the slot cap bounds them along with
-// every other run's.
+// only by a complete run with no error.
+//
+// A transport's off cell (no censor) runs before its censored cells and
+// they read its result: against a censor it must still pass what it passed
+// without one. A censored cell without a passing off cell is an error and
+// fails fast, whether the off cell didn't run (a -run filter can select the
+// cell alone) or it failed. Every cell holds its own lab slot
+// (lab.StartOwnSlot: one per subtest).
 func TestCensorMatrix(t *testing.T) {
+	t.Parallel()
 	var (
 		mu    sync.Mutex
 		cells []matrixCell
 	)
+	record := func(cell matrixCell) {
+		mu.Lock()
+		defer mu.Unlock()
+		cells = append(cells, cell)
+	}
 	t.Cleanup(func() { writeResults(t, cells, len(transports)*len(censorCases)) })
 
 	// runCell probes one cell and records it; the cell is returned with its
 	// result even when the test fails.
 	runCell := func(t *testing.T, tr transport, cc censorCase) matrixCell {
 		cell := matrixCell{transport: tr.name, censor: cc.name, result: "error"}
-		defer func() {
-			mu.Lock()
-			defer mu.Unlock()
-			cells = append(cells, cell)
-		}()
+		defer func() { record(cell) }()
 
 		l := lab.StartOwnSlot(t, lab.Standard())
 		target, err := tr.setup(t, l)
@@ -94,59 +95,32 @@ func TestCensorMatrix(t *testing.T) {
 	}
 
 	for _, tr := range transports {
-		tr := tr
 		t.Run(tr.name, func(t *testing.T) {
 			t.Parallel()
-			offOK := false
+			offResult := "" // the off cell's result; "" when it didn't run
 			t.Run("off", func(t *testing.T) {
-				offOK = runCell(t, tr, censorCases[0]).result == "pass"
+				offResult = runCell(t, tr, censorCases[0]).result
 			})
 			for _, cc := range censorCases {
 				if cc.modules == nil {
 					continue
 				}
-				cc := cc
 				t.Run(cc.name, func(t *testing.T) {
 					t.Parallel()
-					if !offOK {
-						mu.Lock()
-						cells = append(cells, matrixCell{transport: tr.name, censor: cc.name,
+					if offResult == "" {
+						record(matrixCell{transport: tr.name, censor: cc.name,
+							result: "error", detail: "the off cell didn't run"})
+						t.Fatalf("%s without a censor: the off cell didn't run", tr.name)
+					}
+					if offResult != "pass" {
+						record(matrixCell{transport: tr.name, censor: cc.name,
 							result: "error", detail: "the transport failed without a censor"})
-						mu.Unlock()
 						t.Fatalf("%s without a censor: %s says nothing", tr.name, cc.name)
 					}
 					runCell(t, tr, cc)
 				})
 			}
 		})
-	}
-}
-
-// TestFilteredMatrixRun guards the gate against a past deadlock: a -run
-// filter can select a censored cell without its transport's off cell, and
-// the cell must then fail fast instead of waiting for a baseline that no
-// run of this filter will ever produce. The real test runs, filtered, in a
-// subprocess; the filtered cell starts no lab.
-func TestFilteredMatrixRun(t *testing.T) {
-	root, err := lab.Root()
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "go", "test", "-tags", "lab", "-count=1",
-		"-run", `^TestCensorMatrix$/^udp$/^block-ip \(entry\)$`,
-		"-timeout", "2m", "./lab/")
-	cmd.Dir = root
-	out, err := cmd.CombinedOutput()
-	if ctx.Err() != nil {
-		t.Fatalf("the filtered run hung:\n%s", out)
-	}
-	if err == nil {
-		t.Fatalf("a censored cell ran without its off cell and passed:\n%s", out)
-	}
-	if !strings.Contains(string(out), "without a censor") {
-		t.Fatalf("the filtered run failed another way:\n%s", out)
 	}
 }
 
