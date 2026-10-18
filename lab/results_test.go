@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -21,68 +22,108 @@ import (
 
 // TestCensorMatrix scores every transport against every censor module
 // (PRD C4, success metric 1) and regenerates lab/RESULTS.md. Every cell is
-// probed: a transport passes when its data crossed the censor in the lab
-// router over IPv4 and over IPv6, and fails when it crossed over neither. A
-// cell whose outcome contradicts what its censor means to produce fails the
-// test, and a cell whose censor can't be trusted (censord died, the kernel
-// dropped queued packets, the verdict log doesn't show the probe's flows)
-// is an error. RESULTS.md is written only by a complete run with no error.
+// probed in its own lab, the cells at once: a transport passes when its
+// data crossed the censor in the lab router over IPv4 and over IPv6, and
+// fails when it crossed over neither. A cell whose outcome contradicts what
+// its censor means to produce fails the test, and a cell whose censor can't
+// be trusted (censord died, the kernel dropped queued packets, the verdict
+// log doesn't show the probe's flows) is an error. RESULTS.md is written
+// only by a complete run with no error. A transport's censored cells wait
+// for its uncensored cell: against a censor it must still pass what it
+// passed without one. The cells of one top-level test share one lab slot
+// (see lab.Start), so the parallelism doesn't widen the lab slot cap.
 func TestCensorMatrix(t *testing.T) {
-	var cells []matrixCell
-	off := map[string]string{} // transport -> its "off" result
+	var (
+		mu    sync.Mutex
+		cells []matrixCell
+	)
+	// The result of a transport's uncensored cell, set when offDone closes:
+	// every censored cell of that transport waits on the close.
+	offRes := map[string]string{}
+	offDone := map[string]chan struct{}{}
 	t.Cleanup(func() { writeResults(t, cells, len(transports)*len(censorCases)) })
 
+	// runCell probes one cell and records it; the cell's result is left in
+	// *cell even when the test fails.
+	runCell := func(t *testing.T, tr transport, cc censorCase, cell *matrixCell) {
+		*cell = matrixCell{transport: tr.name, censor: cc.name, result: "error"}
+		defer func() {
+			mu.Lock()
+			defer mu.Unlock()
+			cells = append(cells, *cell)
+		}()
+
+		l := lab.Start(t, lab.Standard())
+		target, err := tr.setup(t, l)
+		if err != nil {
+			cell.detail = "setup failed"
+			t.Fatal(err)
+		}
+		var c *censorRun
+		if cc.modules != nil {
+			c = startCensor(t, l, cc.modules(t, l))
+		}
+
+		want := cc.want(tr.name)
+		crossed := tr.probe(t, l, target, want == "pass")
+		cell.result, cell.detail = score(crossed)
+
+		if c != nil {
+			if err := c.healthy(t); err != nil {
+				cell.result, cell.detail = "error", "censor unhealthy"
+				t.Fatal(err)
+			}
+			if err := tr.sawFlows(t, l, c); err != nil {
+				cell.result, cell.detail = "error", "the verdict log misses the probe's flows"
+				t.Fatal(err)
+			}
+		}
+		if want == "fail" {
+			how, err := blockedBy(t, l, c)
+			if err != nil {
+				t.Error(err)
+			} else if cell.result == "fail" {
+				cell.detail += "; the censor " + how + " them"
+			}
+		}
+		if cell.result != want {
+			t.Errorf("%s against %s: %s (%s), want %s", tr.name, cc.name, cell.result, cell.detail, want)
+		}
+	}
+
 	for _, tr := range transports {
+		offDone[tr.name] = make(chan struct{})
+		t.Run(tr.name+"/off", func(t *testing.T) {
+			t.Parallel()
+			var cell matrixCell
+			defer func() {
+				mu.Lock()
+				offRes[tr.name] = cell.result
+				mu.Unlock()
+				close(offDone[tr.name])
+			}()
+			runCell(t, tr, censorCase{name: "off"}, &cell)
+		})
 		for _, cc := range censorCases {
+			if cc.modules == nil {
+				continue
+			}
 			t.Run(tr.name+"/"+cc.name, func(t *testing.T) {
-				cell := matrixCell{transport: tr.name, censor: cc.name, result: "error"}
-				defer func() {
+				t.Parallel()
+				<-offDone[tr.name]
+				mu.Lock()
+				res := offRes[tr.name]
+				mu.Unlock()
+				var cell matrixCell
+				if res != "pass" {
+					cell = matrixCell{transport: tr.name, censor: cc.name, result: "error",
+						detail: "the transport failed without a censor"}
+					mu.Lock()
 					cells = append(cells, cell)
-					if cc.modules == nil {
-						off[tr.name] = cell.result
-					}
-				}()
-				if cc.modules != nil && off[tr.name] != "pass" {
-					cell.detail = "the transport failed without a censor"
-					t.Fatalf("%s without a censor is %q: %s says nothing", tr.name, off[tr.name], cc.name)
+					mu.Unlock()
+					t.Fatalf("%s without a censor is %q: %s says nothing", tr.name, res, cc.name)
 				}
-
-				l := lab.Start(t, lab.Standard())
-				target, err := tr.setup(t, l)
-				if err != nil {
-					cell.detail = "setup failed"
-					t.Fatal(err)
-				}
-				var c *censorRun
-				if cc.modules != nil {
-					c = startCensor(t, l, cc.modules(t, l))
-				}
-
-				want := cc.want(tr.name)
-				crossed := tr.probe(t, l, target, want == "pass")
-				cell.result, cell.detail = score(crossed)
-
-				if c != nil {
-					if err := c.healthy(t); err != nil {
-						cell.result, cell.detail = "error", "censor unhealthy"
-						t.Fatal(err)
-					}
-					if err := tr.sawFlows(t, l, c); err != nil {
-						cell.result, cell.detail = "error", "the verdict log misses the probe's flows"
-						t.Fatal(err)
-					}
-				}
-				if want == "fail" {
-					how, err := blockedBy(t, l, c)
-					if err != nil {
-						t.Error(err)
-					} else if cell.result == "fail" {
-						cell.detail += "; the censor " + how + " them"
-					}
-				}
-				if cell.result != want {
-					t.Errorf("%s against %s: %s (%s), want %s", tr.name, cc.name, cell.result, cell.detail, want)
-				}
+				runCell(t, tr, cc, &cell)
 			})
 		}
 	}

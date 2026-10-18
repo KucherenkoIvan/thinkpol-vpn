@@ -3,7 +3,7 @@
 Docker containers on separate networks, driven by Go tests: the censor lab of [DESIGN.md](../DESIGN.md#censor-lab) and the place where every Linux networking test runs. All it needs is Docker (with Compose v2) and Go; nothing in the lab touches the host's network stack.
 
 ```sh
-make lab-test     # lab tests + every package's tests inside a lab node, then tear down
+make lab-test     # lab tests and every package's tests inside a lab node, at once, then tear down
 make lab          # the same, ending in the censor matrix: lab/RESULTS.md
 make lab-gotest PKG=./internal/dataplane/netcfg/... RUN=TestRoutes   # one package, in a node (COUNT=n repeats)
 make lab-up       # the standard topology for poking around (prints addresses)
@@ -107,7 +107,9 @@ Several agents run `make lab-test` at once, so every test runs on a busy machine
 - **Statistical checks** state their false-failure probability in a comment; keep it negligible (one in tens of millions of runs, or rarer).
 - **Captures** have a ring of about 500 frames: pace what you send, and filter to one side of a router (`outbound`) when you count.
 
-`make lab-test` runs `LAB_P` (default 4) packages in nodes at once and doesn't lower that when the host is busy. The load that matters comes from other runs, which a run can't control, and the Docker VM's load isn't the host's load average. The lab slot cap (`THINKPOL_LAB_MAX_LABS`) bounds the labs all runs start together. `make lab-test LAB_P=1` is there to lower it by hand.
+`make lab-test` runs its two phases **at the same time**: the `lab/` tests and the in-node packages, each phase's output prefixed (`[lab]`, `[node]`), one exit status for both, the tear-down after both. Together they draw from the lab slot cap, so a concurrent run doesn't queue on the phases, it shares their slots.
+
+`make lab-test` runs `LAB_P` (default 4) packages in nodes at once and doesn't lower that when the host is busy. The load that matters comes from other runs, which a run can't control, and the Docker VM's load isn't the host's load average. The lab slot cap (`THINKPOL_LAB_MAX_LABS`) bounds the labs all runs start together. When another lab run is already going, pass `make lab-test LAB_P=1`: two full-parallel runs multiply each other's labs and CPU, and the second one only waits on the first's slots. On a quiet machine leave the default.
 
 `labctl gotest -count n` (`make lab-gotest PKG=... RUN=... COUNT=n`) repeats tests in one node, to show a fix holds.
 
