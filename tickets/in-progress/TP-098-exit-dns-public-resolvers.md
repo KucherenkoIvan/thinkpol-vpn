@@ -45,3 +45,4 @@ An exit resolves tunnel-bound names on any host out of the box: a cloud VPS (AWS
 - 2026-10-18 tests: TestAWorkerResolvesThroughTheDefaultPublicUpstreams, TestAnUpstreamTheEgressRefusesIsReportedNotSilentlyDropped (internal/agent/resolver_test.go); TestTheDefaultUpstreamAddressesPassTheEgress, TestTheEgressRefusesWhatTheIsolationDropsUnlessAllowed (internal/agent/supervisor/egress_test.go)
 - 2026-10-18 make lint, make test pass; timed full lab suite (make lab-test LAB_P=1 plus -v): lab 212s, gotest 341s, both exit 0, no failures; TestDNSFollowsTheRulesOnAServerExit and TestEgressThroughAnExit passed unchanged (the lab DNS test keeps -dns-upstream with -egress-allowed); logs in the labtiming scratch (lab.log, gotest.log)
 - 2026-10-18 in-progress → review — branch tp-098-exit-dns-public-resolvers @ ea4a60a
+- 2026-10-18 review → in-progress — owner: claude-tp098, round 2: review findings
