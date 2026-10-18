@@ -26,11 +26,18 @@ var egressBlocked = []netip.Prefix{
 	netip.MustParsePrefix("ff00::/8"),
 }
 
-// EgressRefused says whether the isolation refuses a destination to the
-// spaces: it is in egressBlocked and EgressAllowed doesn't name it. The
-// node checks a worker resolver's upstreams with it, so the resolver can't
-// be given an upstream the spaces' egress would drop.
+// EgressRefused says whether the egress refuses a destination to the
+// spaces: it is in egressBlocked and EgressAllowed doesn't name it. It
+// says nothing of the transit ranges, which the supervisor refuses
+// besides these. The node checks a worker resolver's upstreams with it,
+// so the resolver can't be given an upstream the spaces' egress would
+// drop.
 func EgressRefused(addr netip.Addr, allowed []netip.Prefix) bool {
+	if addr.Zone() != "" {
+		// A zoned address is scoped to a link of the host's, never a
+		// destination through the uplink.
+		return true
+	}
 	for _, p := range allowed {
 		if p.Contains(addr) {
 			return false

@@ -70,9 +70,10 @@ type DataPlane struct {
 	Blobs      *blobs.Service
 	ServeBlobs bool
 	// DNS runs the node's resolver on its overlay addresses (see
-	// dataplane's dnsConfig for what it serves), asking DNSUpstreams or,
-	// if there are none, the resolvers the OS used before. On a device the
-	// OS resolves through it while the data plane runs.
+	// dataplane's dnsConfig for what it serves), asking DNSUpstreams: a
+	// device with none asks the resolvers the OS used before, a server's
+	// has none. On a device the OS resolves through it while the data
+	// plane runs.
 	DNS          bool
 	DNSUpstreams []netip.AddrPort
 
