@@ -87,7 +87,11 @@ func ask(server, name string) {
 		}
 	}
 	if len(answers) == 0 {
-		fmt.Printf("rcode %s\n", dns.RcodeToString[resp.Rcode])
+		rc := "rcode " + dns.RcodeToString[resp.Rcode]
+		if resp.Authoritative {
+			rc += " authoritative"
+		}
+		fmt.Println(rc)
 		os.Exit(1)
 	}
 	for _, answer := range answers {
