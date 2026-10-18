@@ -5,7 +5,7 @@ milestone: M2
 area: dataplane/transport
 repo: thinkpol-vpn
 size: L
-depends_on: [TP-064, TP-010, TP-027]
+depends_on: [TP-064, TP-010, TP-027, TP-101]
 refs: [C2, C6, DESIGN#transports]
 owner: ""
 branch: ""

@@ -5,7 +5,7 @@ milestone: M5
 area: dataplane
 repo: thinkpol-vpn
 size: epic
-depends_on: [TP-019, TP-021, TP-046, TP-075]
+depends_on: [TP-019, TP-021, TP-046, TP-075, TP-102]
 refs: [D1]
 needs_human: windows
 owner: ""
