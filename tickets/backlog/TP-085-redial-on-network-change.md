@@ -23,6 +23,7 @@ From the 2026-10-15 macOS manual session: after sleep/wake or a network change, 
 - [ ] on a route-table change that replaces the default route, the client starts a redial without waiting for the 6 s dead interval
 - [ ] device checklist: after sleep/wake or Wi-Fi change, the tunnel is back within about the redial time, not dead-interval plus redial (measured: link declared dead after the 6 s probe timeout today; back 1.4–3.5 s after the network returns)
 - [ ] device, recorded not judged (ORCHESTRATION.md "Device testing (2026-10-16)"): during a Wi-Fi change, save `thinkpol diag` (TP-091) plus a capture of the physical interface. An agent judges the evidence after the run
+- [ ] a DNS-leak capture on the physical interface with a positive control: a direct name appears in it, and no tunnel-bound name does
 
 ## Notes
 - Split from TP-080 (backlog grooming 2026-10-15). Measured numbers from the macOS session: dead after 6 s probe timeout; recovery 1.4–3.5 s after the network returns.

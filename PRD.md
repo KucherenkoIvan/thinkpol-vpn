@@ -110,7 +110,7 @@ Milestones as in [Release plan](#release-plan). Priority: **must** for the MVP, 
 | R1 | Nodes that allow egress forward internet traffic for the space (IPv4; IPv6 if the VPS has it) | must | M1 |
 | R2 | Ordered rules with actions `direct`, `chain:<name>`, `block`; matchers `default`, `cidr`, `geoip` | must | M1 |
 | R3 | Space-wide default rules plus per-device overrides; presets "everything" and "all but domestic" | must | M1 (presets per device); M4 (per-device custom rules, set by the controller) |
-| R4 | DNS follows the rules: `direct` domains go to a domestic resolver, everything else through the tunnel; no DNS leaks | must | M1 (Linux lab; macOS: one device run's capture was consistent with no leak but proves none — it had no positive control, TP-019 run 4; the device evidence is to be recorded in TP-085) |
+| R4 | DNS follows the rules: `direct` domains go to a domestic resolver, everything else through the tunnel; no DNS leaks | must | M1 (Linux lab; macOS: no DNS leak proven yet, TP-085) |
 | R5 | Chains of two or more hops; hops can be hop groups | must | M3 |
 | R6 | Hop group policies `failover`, `lowest-latency`, `spread` | must: failover; should: others | M3 |
 | R7 | Switching entries keeps the exit, so open connections survive | must | M3 |
@@ -191,7 +191,7 @@ Milestones as in [Release plan](#release-plan). Priority: **must** for the MVP, 
 | | Milestone | Ships |
 |---|---|---|
 | M0 | Overlay | Two Linux nodes in the lab, hand-made signed map in the need-to-know format, `udp` transport, relay paths, device ↔ device ping. The server agent already runs each space as its own isolated worker |
-| M1 | Working core | Per-node ingress/egress settings, an egress node, rules with GeoIP, DNS, IPv6 handling, macOS and Linux clients via CLI. Leak guarantees are proven on Linux. On macOS, M1 proves the data plane, DNS and that the IPv6 guard loads on a real Mac; the guard's leak paths on macOS are unproven on a device, as DESIGN's milestones state (TP-096); confinement after a crash (kill switch, TP-048) comes in M2. Daily use starts once a disguised transport passes the censor lab (M2) |
+| M1 | Working core | Per-node ingress/egress settings, an egress node, rules with GeoIP, DNS, IPv6 handling, macOS and Linux clients via CLI. Leak guarantees are proven on Linux. On macOS, M1 proves the data plane, DNS resolution and that the IPv6 guard loads; what is unproven there is in DESIGN's milestones. Confinement after a crash (kill switch, TP-048) comes in M2. Daily use starts once a disguised transport passes the censor lab (M2) |
 | M2 | Disguise | `reality` transport with probe fallback, censor lab v1; kill switch and connect-on-boot on macOS/Linux (TP-048, TP-046) |
 | M3 | Chains | Multi-hop chains, hop groups with failover, lab whitelist mode (chains through an allowlisted entry; obtaining one is not promised) |
 | M4 | Control plane | Controller on go-kernel: spaces, members, invites, SSH provisioning, map gossip, hosting grants and shared nodes, node safety, telemetry, admin panel with canvas and dashboards |
