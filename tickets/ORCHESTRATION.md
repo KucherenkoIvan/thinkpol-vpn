@@ -96,5 +96,11 @@ Made by the project owner after a design and code-quality review of `rewrite` at
   - wave 2, after TP-075: TP-109 and TP-110;
   - wave 3: TP-083 and TP-102. Whichever lands last adds the `funlen` gate.
 - **No feature tickets start until the phase ends.** Afterwards come TP-095 (it edits code TP-102 restructures) and TP-077 (the packages are about to move).
-- **Done when:** TP-109's depguard rule passes, `funlen` is on, no test-only globals in the production build, each duplicated security path has one implementation, and a full lab run takes about 3 minutes.
+- **Done when:** TP-109's depguard rule passes, `funlen` is on, no test-only globals in the production build, each duplicated security path has one implementation, and a full lab run takes about 3 minutes. The phase touches macOS code (TP-102, TP-108, TP-109), so it also ends with one run of the macOS device checklist by the owner.
 - Refactors change no behaviour: existing tests pass unchanged, or each changed test says why.
+
+## Code health between milestones (2026-10-18)
+
+- **At every milestone tag,** a design and code-quality review of the whole tree by two model families, held to AGENTS.md and DESIGN.md. It also reports the lab suite's time, the lint gates and the longest functions. Findings arrive through the orchestrator's inbox and are triaged like any other work. What the next milestone needs first becomes a consolidation phase before its features start.
+- **Between milestones,** the ticket that would add a third copy of a mechanism, or a new OS adapter, consolidates the existing copies first (AGENTS.md, Implementer).
+- **Refactors that touch macOS or Windows code** end with a run of that platform's device checklist; the lab covers Linux only.
