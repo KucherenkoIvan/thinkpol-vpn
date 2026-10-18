@@ -347,6 +347,12 @@ After the MVP: Android, userspace enforcement (domain rules), direct paths, tune
 
 VPS provider APIs (every node is a fresh Linux box you rent yourself), automatic IP rotation (needs provider APIs), onion-layered encryption across hops, iOS, our own crypto. Android is the first step after the MVP, so data-plane packages must stay buildable for mobile (no cgo, no desktop-only dependencies outside `tun`, `egress` and the firewall adapters).
 
+After the MVP, considered and set aside (owner, 2026-10-18):
+
+- **A member's device as an exit** (a home connection as the way out, e.g. for domestic services that refuse foreign addresses). Forwarding needs a worker, so only on Linux, and the node's own configuration should be able to limit it to domestic destinations: an exit inside a censoring country exposes its owner (PRD risks).
+- **A device that offers its home network** (Tailscale's subnet routers). Home devices trust their LAN and a seized member device keeps valid credentials, so not a route into the LAN: a Linux node that offers named services (host and port), allowed in its own configuration, with the gateway, link-local, multicast and the node itself always refused, use narrowed per member by the map, and each connection logged.
+- Both are capabilities the node's owner allows locally and the space's map can only narrow.
+
 ## Open questions
 
 - **Admin panel: organisation, authentication and authorization.** The owner hasn't decided how the panel is organised, so none of this is designed: who may sign in, what each role may see and change, sessions, CSRF on the forms, what the canvas endpoint exposes. To be designed before TP-042 starts; overlay reachability is not access control.
