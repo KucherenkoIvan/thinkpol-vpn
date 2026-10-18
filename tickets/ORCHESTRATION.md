@@ -85,3 +85,21 @@ Made by the project owner after TP-078's device-test kit grew to about three tim
 - **Record, don't judge.** Device scripts do a step and save evidence: `thinkpol diag` (TP-091), a capture, the agent's log and timestamps. An agent judges the evidence after the run. Judgement that recurs becomes a Go test over recorded fixtures or a lab test, never device-script logic.
 - **Budget.** A ticket's device tooling must not be bigger than the ticket's own change. If a check needs more, it's a product diagnostic or a lab test.
 - **Lighter process for tooling:** one review round, a fresh agent per round with a handoff note, and safety (restore, dead-man, no lasting host changes) as a small frozen core kept apart from the checks.
+
+## Consolidation phase (2026-10-18)
+
+Made by the project owner after a design and code-quality review of `rewrite` at M1 (2fa1191). The code is sound, but the data plane's ports are owned by its adapters, the composition root sits in `internal/agent`, and several security-relevant paths are written two or three times. Nearly every M2 feature would land in that code and add another copy, so the restructuring comes first.
+
+- **Order.** TP-098 and TP-099 finish, then TP-100 (faster lab). Then the phase, in waves:
+  - wave 0: TP-106, TP-108, TP-105 (TP-106 before TP-101: both touch `transport`);
+  - wave 1, in parallel: TP-075, TP-101, TP-103, TP-104, TP-107;
+  - wave 2, after TP-075: TP-109 and TP-110;
+  - wave 3: TP-083 and TP-102. Whichever lands last adds the `funlen` gate.
+- **No feature tickets start until the phase ends.** Afterwards come TP-095 (it edits code TP-102 restructures) and TP-077 (the packages are about to move).
+- **Done when:** TP-109's depguard rule passes, `funlen` is on, no test-only globals in the production build, each duplicated security path has one implementation, and a full lab run takes about 3 minutes. The phase touches macOS code (TP-102, TP-108, TP-109), so it also ends with one run of the macOS device checklist by the owner.
+- Refactors change no behaviour: existing tests pass unchanged, or each changed test says why.
+
+## Code health between milestones (2026-10-18)
+
+- **At every milestone tag,** the owner holds a code-health review session. The orchestrator brings a factual brief: lab suite time, lint gates, the longest functions, code that exists in more than one copy, and the code the next milestone's tickets will touch. The session's findings come to the orchestrator, who files them; what the next milestone needs first becomes a consolidation phase before its features start.
+- **Refactors that touch macOS or Windows code** end with a run of that platform's device checklist; the lab covers Linux only.

@@ -1,6 +1,8 @@
 # Agent instructions
 
-thinkpol-vpn is a self-hosted virtual network that survives a censor: one Go binary (`thinkpol`) for the node agent, the client service, the CLI and the admin panel. [PRD.md](PRD.md) says what it must do and [DESIGN.md](DESIGN.md) says how; they are the source of truth. Don't contradict them in code: if they're wrong, fix them in the same branch and say so in the ticket's log.
+What the project is: [README.md](README.md). [PRD.md](PRD.md) says what it must do and [DESIGN.md](DESIGN.md) says how; they are the source of truth. Don't contradict them in code: if they're wrong, fix them in the same branch and say so in the ticket's log.
+
+Your task's prompt may override the workflow and conventions below, never the hard rules. If your prompt conflicts with this file, say so in your report.
 
 ## Hard rules
 
@@ -21,16 +23,7 @@ thinkpol-vpn is a self-hosted virtual network that survives a censor: one Go bin
 - **Push.** Ticket branches and `rewrite` live on `origin`; push a ticket branch as soon as it exists and after every commit.
 - **Commits.** Conventional commits (`feat:`, `fix:`, `chore:`, `docs:`, `test:`, `refactor:`).
 - **go-kernel** is the control plane's kernel and is public: no `GOPRIVATE` or SSH setup. Its own rules apply to `KRN-` tickets, which are worked in go-kernel's repo.
-
-## Roles
-
-Every agent working here has one role, named in its task.
-
 - **Shared memory.** If a `recall` MCP server is available, start by calling `pack` with the keywords `project:thinkpol-vpn`, `start-here` and your ticket id. Store durable findings (gotchas, root causes, decisions and why) as you learn them, one small topic each. Never store secrets or anything rule 7 forbids.
-- **Implementer.** Works one ticket in its worktree. Done means `make lint`, `make test` and the ticket's lab checks pass, the ticket is moved per the board rules, and the branch is pushed. Check an acceptance box only with evidence produced in this branch. Say in the ticket's Log what you could not verify (device-only behaviour, platform assumptions) and label inferences as inferences. Don't fix what you weren't asked to fix: note it in the ticket instead. The final report lists changes with file:line, tests added, what was run with its result, and open questions.
-- **Reviewer.** Read-only: never edits, commits or pushes. Tries to break the change with concrete inputs, states and orderings, and checks the ticket's claims (acceptance boxes, "tested" statements) against the code and tests. Each finding has file:line, a failure scenario and a severity (blocker, should-fix, nit); proven defects are kept apart from suspicions. "Nothing found" is a valid result.
-- **Board op.** Does exactly the edit asked and nothing more: no extra sections, notes or rewording. Runs `python3 tickets/board.py --check` before committing.
-- **Researcher.** Read-only. Cites a source (URL or file:line) for every claim and labels guesses as guesses.
 
 ## Conventions
 

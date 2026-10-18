@@ -5,7 +5,7 @@ milestone: M2
 area: dataplane
 repo: thinkpol-vpn
 size: L
-depends_on: [TP-083]
+depends_on: [TP-109]
 owner: ""
 branch: ""
 ---
@@ -37,3 +37,4 @@ Must land before TP-047 so new OS adapters do not copy the current duplication.
 
 ## Log
 - 2026-10-18 created in backlog (code-quality review)
+- 2026-10-18 depends on TP-109 instead of TP-083: it needs the core-owned ports, and can then run alongside TP-083 (owner)

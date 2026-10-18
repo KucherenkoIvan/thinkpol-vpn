@@ -65,7 +65,7 @@ Always `git mv`, and append a line to `## Log` in the same commit:
 | From → to | Allowed when |
 |---|---|
 | backlog → in-progress | every `depends_on` ticket is in `done/`; `owner` and `branch` are set |
-| in-progress → review | every acceptance box is checked; `make lint` and `make test` pass (and the lab checks the ticket names) |
+| in-progress → review | every acceptance box is checked, each with evidence produced in the ticket's branch; the Log says what couldn't be verified (device-only behaviour, platform assumptions); `make lint` and `make test` pass (and the lab checks the ticket names) |
 | review → done | review found nothing blocking, and the branch is merged into `rewrite` |
 | review → has-errors | review found problems; they are written into a `## Review findings` section as checkboxes |
 | has-errors → in-progress | someone picks the findings up; every finding is checked before review again |
