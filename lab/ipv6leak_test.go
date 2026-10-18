@@ -139,7 +139,7 @@ func TestNoIPv6LeavesAroundTheTunnel(t *testing.T) {
 	}
 
 	check("connected", func() { attempts("connected") })
-	if !hasGuard(t, dev) {
+	if hasGuard(t, dev) != guardPresent {
 		t.Fatal("no guard table while connected")
 	}
 	// Deleted from outside (a firewall service's reload), the guard is
@@ -148,7 +148,7 @@ func TestNoIPv6LeavesAroundTheTunnel(t *testing.T) {
 	dev.MustExec(t, "nft", "delete", "table", "inet", "thinkpol-guard")
 	start := time.Now()
 	lab.Eventually(t, 10*time.Second, func() error {
-		if !hasGuard(t, dev) {
+		if hasGuard(t, dev) != guardPresent {
 			return fmt.Errorf("the guard isn't back")
 		}
 		return nil
@@ -163,7 +163,7 @@ func TestNoIPv6LeavesAroundTheTunnel(t *testing.T) {
 	if err := up.Stop(); err != nil {
 		t.Fatalf("thinkpol up: %v\n%s", err, up.Output())
 	}
-	if hasGuard(t, dev) {
+	if hasGuard(t, dev) != guardAbsent {
 		t.Error("the guard outlived a clean stop")
 	}
 	up = dev.Start(t, "thinkpol", "up", "-map-poll", "1h", "-link-mtu", "1300")
@@ -175,14 +175,14 @@ func TestNoIPv6LeavesAroundTheTunnel(t *testing.T) {
 	// table: bound sockets stay confined until the next start.
 	dev.MustExec(t, "pkill", "-KILL", "-f", "thinkpol up")
 	<-up.Done()
-	if !hasGuard(t, dev) {
+	if hasGuard(t, dev) != guardPresent {
 		t.Fatal("the crash took the guard along")
 	}
 	check("after a crash", func() { attempts("after a crash") })
 	up = dev.Start(t, "thinkpol", "up", "-map-poll", "1h", "-connect=false")
 	waitLog(t, up, `msg=starting`)
 	lab.Eventually(t, 15*time.Second, func() error {
-		if hasGuard(t, dev) {
+		if hasGuard(t, dev) != guardAbsent {
 			return fmt.Errorf("the guard is still there after a start without connecting")
 		}
 		return nil

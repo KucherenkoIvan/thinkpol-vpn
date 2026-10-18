@@ -116,26 +116,47 @@ func waitLog(t *testing.T, p *lab.Process, pattern string) {
 // applied matches the log line of a node, or its worker, applying a map.
 func applied(version string) string { return `msg="map applied" .*version=` + version + ` ` }
 
-// routeTableRoutes is everything in the routing tables of the route
-// table's protocol (86), both families.
-func routeTableRoutes(t *testing.T, n *lab.Node) string {
+// policyRules is the device's policy rules (both families), which a stop
+// or a failed start must put back exactly.
+func policyRules(t *testing.T, n *lab.Node) (v4, v6 string) {
 	t.Helper()
-	var out strings.Builder
-	for _, family := range []string{"-4", "-6"} {
-		out.WriteString(n.MustExec(t, "ip", family, "route", "show", "table", "all", "proto", "86"))
-	}
-	return out.String()
+	return n.MustExec(t, "ip", "rule"), n.MustExec(t, "ip", "-6", "rule")
 }
 
-// hasGuard says whether the IPv6 leak guard's nftables table is there and
-// holds its chain: its name in `nft list tables`, and a chain listed in
-// the table itself (the name alone proves nothing).
-func hasGuard(t *testing.T, n *lab.Node) bool {
+// routeTableRoutes is everything in the routing tables of the route
+// table's protocol (86), IPv4 and IPv6.
+func routeTableRoutes(t *testing.T, n *lab.Node) (v4, v6 string) {
 	t.Helper()
-	if !strings.Contains(n.MustExec(t, "nft", "list", "tables"), "thinkpol-guard") {
-		return false
+	return n.MustExec(t, "ip", "-4", "route", "show", "table", "all", "proto", "86"),
+		n.MustExec(t, "ip", "-6", "route", "show", "table", "all", "proto", "86")
+}
+
+// The IPv6 leak guard's nftables table, from one `nft list table` call:
+// whose failure means absent, so a table vanishing mid-poll is absent and
+// the poll retries instead of failing the test.
+type guardState string
+
+const (
+	guardPresent guardState = "present" // the table holds its chain
+	guardEmpty   guardState = "empty"   // the table without the chain: a leftover no stop may leave
+	guardAbsent  guardState = "absent"  // no table by that name at all
+)
+
+// hasGuard says which state the IPv6 leak guard's nftables table is in:
+// present requires the chain, absent no table by that name at all, and an
+// empty leftover table is neither and must fail a "gone" check.
+func hasGuard(t *testing.T, n *lab.Node) guardState {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	res, err := n.Exec(ctx, "nft", "list", "table", "inet", "thinkpol-guard")
+	if err != nil {
+		return guardAbsent
 	}
-	return strings.Contains(n.MustExec(t, "nft", "list", "table", "inet", "thinkpol-guard"), "chain")
+	if strings.Contains(res.Stdout, "chain") {
+		return guardPresent
+	}
+	return guardEmpty
 }
 
 // TestUpRunsTheM0Space brings the M0 space up with `thinkpol up` on every

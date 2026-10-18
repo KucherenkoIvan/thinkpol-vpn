@@ -276,32 +276,40 @@ func TestDisconnectLeavesNothingBehind(t *testing.T) {
 
 	original := osResolvConf(inetIP)
 	devA.WriteFile(t, "/etc/resolv.conf", original)
-	rulesBefore := devA.MustExec(t, "ip", "rule") + "\n" + devA.MustExec(t, "ip", "-6", "rule")
+	rulesBefore4, rulesBefore6 := policyRules(t, devA)
 
-	exit := startServerExit(t, server, inetIP, v1)
+	exit := startServerExit(t, server, inetIP, v1, true)
 	devBUp := devB.Start(t, "thinkpol", "up")
 	up := devA.Start(t, "thinkpol", "up", "-connect=false")
 	waitLog(t, up, "mode=device")
 
-	// What a disconnect must take away is all there while connected, and
-	// all gone after: the route table's rules and routes (both families),
-	// resolv.conf and the guard table with its chain.
-	state := func(connected bool) error {
-		rules4, rules6 := devA.MustExec(t, "ip", "rule"), devA.MustExec(t, "ip", "-6", "rule")
+	wantConnected := func(connected bool) error {
+		rules4, rules6 := policyRules(t, devA)
 		if connected {
 			if !strings.Contains(rules4, "5301:") || !strings.Contains(rules6, "5301:") {
 				return fmt.Errorf("no route-table rules while connected:\n%s%s", rules4, rules6)
 			}
 		} else {
-			if got := rules4 + "\n" + rules6; got != rulesBefore {
-				return fmt.Errorf("rules after disconnecting:\n%s\nwant\n%s", got, rulesBefore)
+			if rules4 != rulesBefore4 || rules6 != rulesBefore6 {
+				return fmt.Errorf("rules after disconnecting:\n%s\n%s\nwant\n%s\n%s", rules4, rules6, rulesBefore4, rulesBefore6)
 			}
-			if _, err := cli(t, devA, []string{"ip", "link", "show", "thinkpol0"}); err == nil {
+			res, err := cli(t, devA, []string{"ip", "link", "show", "thinkpol0"})
+			if err == nil {
 				return fmt.Errorf("the TUN outlived the disconnect")
+			} else if !strings.Contains(res.Stderr, "does not exist") {
+				return fmt.Errorf("ip link show thinkpol0: %v: %s", err, res.Stderr)
 			}
 		}
-		if got := routeTableRoutes(t, devA) != ""; got != connected {
-			return fmt.Errorf("the route table's routes: present %v, want %v", got, connected)
+		routes4, routes6 := routeTableRoutes(t, devA)
+		if connected {
+			// The guard's always-present `unreachable ::/0` is in the
+			// IPv6 table: only the TUN's own default in each family
+			// proves the routes came back.
+			if !strings.Contains(routes4, "default dev thinkpol0") || !strings.Contains(routes6, "default dev thinkpol0") {
+				return fmt.Errorf("no TUN default in the route table's routes:\n%s\n%s", routes4, routes6)
+			}
+		} else if routes4 != "" || routes6 != "" {
+			return fmt.Errorf("the route table's routes after disconnecting:\n%s\n%s", routes4, routes6)
 		}
 		conf := devA.MustExec(t, "cat", "/etc/resolv.conf")
 		if connected {
@@ -311,8 +319,12 @@ func TestDisconnectLeavesNothingBehind(t *testing.T) {
 		} else if conf != string(original) {
 			return fmt.Errorf("resolv.conf after disconnecting:\n%s\nwant\n%s", conf, original)
 		}
-		if got := hasGuard(t, devA); got != connected {
-			return fmt.Errorf("the IPv6 guard: present %v, want %v", got, connected)
+		want := guardAbsent
+		if connected {
+			want = guardPresent
+		}
+		if got := hasGuard(t, devA); got != want {
+			return fmt.Errorf("the IPv6 guard: %s, want %s", got, want)
 		}
 		return nil
 	}
@@ -322,7 +334,7 @@ func TestDisconnectLeavesNothingBehind(t *testing.T) {
 		t.Fatalf("connect: %v\n%s", err, res.Stdout)
 	}
 	ping(t, devA, s4)
-	lab.Eventually(t, 30*time.Second, func() error { return state(true) })
+	lab.Eventually(t, 30*time.Second, func() error { return wantConnected(true) })
 	capture := devA.Capture(t, "")
 	mustResolve(t, devA, "www.tunnel.test", false, foreignA)
 	mustResolve(t, devA, "www.tunnel.test", true, foreignAAAA)
@@ -337,7 +349,7 @@ func TestDisconnectLeavesNothingBehind(t *testing.T) {
 	if err != nil || !regexp.MustCompile(`state: +disconnected`).MatchString(res.Stdout) {
 		t.Fatalf("disconnect: %v\n%s", err, res.Stdout)
 	}
-	lab.Eventually(t, 30*time.Second, func() error { return state(false) })
+	lab.Eventually(t, 30*time.Second, func() error { return wantConnected(false) })
 	noPing(t, devA, s4.String())
 	ping(t, devB, s4) // the others carry on
 
@@ -347,8 +359,15 @@ func TestDisconnectLeavesNothingBehind(t *testing.T) {
 		t.Fatalf("reconnect: %v\n%s", err, res.Stdout)
 	}
 	ping(t, devA, s4)
-	lab.Eventually(t, 30*time.Second, func() error { return state(true) })
+	lab.Eventually(t, 30*time.Second, func() error { return wantConnected(true) })
+	capture = devA.Capture(t, "")
+	mustResolve(t, devA, "www.tunnel.test", false, foreignA)
 	mustResolve(t, devA, "www.tunnel.test", true, foreignAAAA)
+	mustResolve(t, devA, "www.direct.test", false, domesticA)
+	if err := capture.Complete(); err != nil {
+		t.Fatal(err)
+	}
+	noLeaks(t, capture.Stop(), inetIP)
 
 	if err := up.Stop(); err != nil {
 		t.Errorf("device-a: thinkpol up exited with %v:\n%s", err, up.Output())
