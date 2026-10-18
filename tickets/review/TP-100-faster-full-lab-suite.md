@@ -32,9 +32,9 @@ Measured 2026-10-18 at bbe4873 with `LAB_P=1`: `lab/` phase ~3:30 wall (tests pa
 
 Timing 2026-10-18, same machine, quiet (0 `tplab-*` containers checked before each run; none appeared mid-run), `LAB_P=4` default and `THINKPOL_LAB_MAX_LABS` default for both runs, `docker ps` clean after each:
 - before: `origin/rewrite` at be6e24a, unchanged Makefile — 336.3 s wall (`lab` package 224.6 s, in-node phase the remaining ~112 s, 34 packages at `-p 4`).
-- after: this branch at 6373095 — 152.3 s wall; `lab` package 151.1 s, in-node phase finished under it.
+- after: recorded in round 1 as "152.3 s at 6373095", but that timing can't have run on 6373095 as pushed: the round-1 gate deadlocks on that tree (below), so the commit the run actually timed can't be named. Round 2 supersedes it: this branch at 51d76cf — 156.5 s wall on a quiet machine (0 `tplab-*` containers in three checks over 90 s before the run, and it passed; `lab` package 155.2 s, in-node phase finished under it, 34 packages at `-p 4`).
 
-TestCensorMatrix: its cells now run as parallel subtests of the one top-level test, so they still hold the single lab slot `lab.Start` gives `test:TestCensorMatrix` — the parallelism does not widen the slot cap. Cells of the same transport were deliberately serial before only because a censored cell asserted its transport passed without a censor; that gate is kept (a transport's censored cells wait for its uncensored cell's result), everything else runs at once. Cells that run and pass take 6–42 s each; the whole matrix went from ~2:00 to 43 s alone.
+TestCensorMatrix, corrected in round 2: each cell takes its own lab slot (`lab.StartOwnSlot`), so `THINKPOL_LAB_MAX_LABS` bounds the matrix's labs — up to six at once — together with every other run's; round 1 shared one slot across all eight cells and so dodged the cap. The off cell is a non-parallel t.Run and the censored cells read its result instead of waiting on a channel: a censored cell whose baseline didn't run (a `-run` filter such as `TestCensorMatrix/udp/block-ip` selects one alone) fails fast instead of hanging, and with a low `-test.parallel` the censored cells can no longer fill every parallel slot while waiting. The gate itself is kept (a transport must pass without a censor before it is judged against one); `TestFilteredMatrixRun` runs the filtered `-run` in a subprocess as a regression check.
 
 Other cheap wins looked at, not done:
 - Node start cost (~2.5 s per package) is no longer on the critical path at all: the whole in-node phase finishes under the `lab/` phase.
@@ -49,3 +49,6 @@ Other cheap wins looked at, not done:
 - 2026-10-18 timed runs, quiet machine, defaults: before 336.3 s (5:36), after 152.3 s (2:32); `make lint`, `make test` green on this branch
 - 2026-10-18 in-progress → review
 - 2026-10-18 review → in-progress — round 2: review findings (owner: agent-opus)
+- 2026-10-18 round 2: the matrix gate can't hang any more (off cell non-parallel, censored cells read its result; `TestFilteredMatrixRun` guards the filtered `-run`), each cell takes its own lab slot (`lab.StartOwnSlot`), `make lab-test` prefixes stderr through awk and fails if `labctl down -tests` fails (51d76cf)
+- 2026-10-18 timed run, quiet machine, defaults: 156.5 s (2:37); `make lint`, `make test` green on this branch
+- 2026-10-18 in-progress → review
