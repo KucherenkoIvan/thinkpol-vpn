@@ -30,6 +30,7 @@ branch: ""
 - **Split (backlog grooming 2026-10-15):** this ticket is part 1 only. TP-083 takes the rest of the original TP-075 refactor (status vocabulary, `waitLog` removal, cleanup stack, transport split, depguard).
 - **Independent review (2026-10-15), file:line evidence (composition root and map follower):** adapters built in `node.go:239`, `dataplane.go:191-211`, `supervisor_linux.go:92` vs `cmd/thinkpol/up.go` (`Prepare`, `Adapters`); map-follow state three times with the same log strings.
 - **One `follower.take` (from TP-037 / TP-011):** device mode (`runner.next` in `dataplane.go`) and server mode (`serverSpaces.next` in `node.go`) each run `(*Map).Next` → `openSection` → removed/back-in-space logic. Fold them into one `follower` (current map, section, removed flag) with a single `take(envelope)` both modes call, so the semantics can't drift.
+- This is also the architecture correction: the composition root moves from `internal/agent` to `cmd/`, so the data plane's adapters are built and passed in, not built by the core.
 
 ## Log
 - 2026-10-15 created in backlog
