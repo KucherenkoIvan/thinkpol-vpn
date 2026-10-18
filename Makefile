@@ -121,11 +121,12 @@ lab-up: ## start the standard topology for this checkout, for poking around
 	$(LABCTL) up
 
 lab-test: ## lab tests (each starts its own lab) and every package's tests inside a lab node, at once; tears down after
+# Each phase writes its own exit status: sh has no pipefail.
 	@$(LABCTL) down -stale
 	@tmp=$$(mktemp -d) || exit 1; trap 'rm -rf "$$tmp"' EXIT; \
 	status=0; \
-	( { go test -tags lab -count=1 -timeout $(LAB_TIMEOUT) ./lab/...; echo $$? > "$$tmp/lab.status"; } | sed 's/^/[lab]  /' ) & \
-	( { $(LABCTL) gotest -p $(LAB_P) ./...; echo $$? > "$$tmp/node.status"; } | sed 's/^/[node] /' ) & \
+	( { go test -tags lab -count=1 -timeout $(LAB_TIMEOUT) ./lab/...; echo $$? > "$$tmp/lab.status"; } 2>&1 | awk '{print "[lab]  " $$0; fflush()}' ) & \
+	( { $(LABCTL) gotest -p $(LAB_P) ./...; echo $$? > "$$tmp/node.status"; } 2>&1 | awk '{print "[node] " $$0; fflush()}' ) & \
 	wait; \
 	for f in lab node; do \
 		if [ -f "$$tmp/$$f.status" ]; then \
@@ -134,7 +135,7 @@ lab-test: ## lab tests (each starts its own lab) and every package's tests insid
 			echo "lab-test: the $$f phase died without a status" >&2; status=1; \
 		fi; \
 	done; \
-	if [ -z "$$THINKPOL_LAB_KEEP" ]; then $(LABCTL) down -tests; fi; \
+	if [ -z "$$THINKPOL_LAB_KEEP" ] && ! $(LABCTL) down -tests; then status=1; fi; \
 	exit $$status
 
 # Performance gates: tests that check THINKPOL_LAB_PERF and are named
