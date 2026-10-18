@@ -101,6 +101,5 @@ Made by the project owner after a design and code-quality review of `rewrite` at
 
 ## Code health between milestones (2026-10-18)
 
-- **At every milestone tag,** a design and code-quality review of the whole tree by two model families, held to AGENTS.md and DESIGN.md. It also reports the lab suite's time, the lint gates and the longest functions. Findings arrive through the orchestrator's inbox and are triaged like any other work. What the next milestone needs first becomes a consolidation phase before its features start.
-- **Between milestones,** the ticket that would add a third copy of a mechanism, or a new OS adapter, consolidates the existing copies first (AGENTS.md, Implementer).
+- **At every milestone tag,** the owner holds a code-health review session. The orchestrator brings a factual brief: lab suite time, lint gates, the longest functions, code that exists in more than one copy, and the code the next milestone's tickets will touch. The session's findings come to the orchestrator, who files them; what the next milestone needs first becomes a consolidation phase before its features start.
 - **Refactors that touch macOS or Windows code** end with a run of that platform's device checklist; the lab covers Linux only.
