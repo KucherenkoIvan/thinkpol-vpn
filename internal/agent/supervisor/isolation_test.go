@@ -28,11 +28,11 @@ func TestTheEgressRefusesWhatTheIsolationDropsUnlessAllowed(t *testing.T) {
 			t.Errorf("%s not refused", a)
 		}
 	}
-	allowed := []netip.Prefix{netip.MustParsePrefix("192.168.0.0/16"), netip.MustParsePrefix("2001:db8:f00d::/48")}
+	allowed := []netip.Prefix{netip.MustParsePrefix("192.168.0.0/16"), netip.MustParsePrefix("fd00:ec2::/64")}
 	if EgressRefused(netip.MustParseAddr("192.168.1.53"), allowed) {
 		t.Errorf("an allowed prefix refused")
 	}
-	if EgressRefused(netip.MustParseAddr("2001:db8:f00d::53"), allowed) {
+	if EgressRefused(netip.MustParseAddr("fd00:ec2::254"), allowed) {
 		t.Errorf("an allowed prefix refused")
 	}
 	if !EgressRefused(netip.MustParseAddr("10.0.0.53"), allowed) {

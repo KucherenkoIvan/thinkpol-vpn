@@ -19,10 +19,14 @@ import (
 // it asks the configured upstreams. A device with none asks the
 // resolvers the OS uses now (read before the OS is pointed at the
 // resolver; what the node itself wrote there is never taken for one); a
-// server's has none. A device asks exits through the overlay TUN only.
+// worker never falls back to those, because its sandbox can't read the
+// host's resolver configuration at all. A device asks exits through the
+// overlay TUN only.
 func (r *runner) newResolver() *dns.Server {
 	upstreams := r.dp.DNSUpstreams
-	if len(upstreams) == 0 && r.section.Node.Kind == netmap.NodeDevice {
+	// Forward is set only in a server's worker (serveSpace), never on a
+	// device: it is what "inside a worker" means here.
+	if len(upstreams) == 0 && !r.dp.Forward {
 		own := []netip.Addr{r.section.Node.IPv4, r.section.Node.IPv6}
 		host, err := r.dp.systemUpstreams(own)
 		if err != nil {
@@ -33,14 +37,11 @@ func (r *runner) newResolver() *dns.Server {
 		}
 	}
 	if len(upstreams) == 0 {
-		if r.section.Node.Kind == netmap.NodeDevice {
-			r.dp.Log.Warn("DNS: no upstream to ask; set one with -dns-upstream")
-		} else {
-			// A server's resolver has no upstream only when the
-			// supervisor refused every configured one (each is logged
-			// there with its address): "set one with -dns-upstream"
-			// would be a lie.
+		if r.dp.Forward {
+			// workerUpstreams refused every one and logged each.
 			r.dp.Log.Warn("DNS: no upstream to ask: the worker's egress refuses every configured one; tunnel-bound names won't resolve")
+		} else {
+			r.dp.Log.Warn("DNS: no upstream to ask; set one with -dns-upstream")
 		}
 	}
 	r.upstreams = slices.Clone(upstreams)
@@ -206,7 +207,6 @@ var defaultWorkerUpstreams = []netip.AddrPort{
 // counted in health, never silently dropped.
 func (s *serverSpaces) workerUpstreams() []netip.AddrPort {
 	if !s.dns {
-		s.report.set(func(p *report) { p.dnsUpstreamsRefused = 0 })
 		return nil
 	}
 	ups := s.dnsUpstreams

@@ -184,8 +184,7 @@ func (p *report) set(f func(p *report)) {
 func (p *report) status() Status {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	s := Status{Mode: p.mode, Space: p.space, MapVersion: p.version, Removed: p.removed, Retrying: p.retrying, Listeners: p.listeners}
-	s.DNSUpstreamsRefused = p.dnsUpstreamsRefused
+	s := Status{Mode: p.mode, Space: p.space, MapVersion: p.version, Removed: p.removed, Retrying: p.retrying, Listeners: p.listeners, DNSUpstreamsRefused: p.dnsUpstreamsRefused}
 	if p.mode != ModeServer {
 		s.RulePreset = p.preset
 	}
@@ -290,9 +289,10 @@ const (
 	// ProblemDNSUnprotected: the OS may resolve names outside the node's
 	// resolver, so names may leave outside the tunnel.
 	ProblemDNSUnprotected = "dns_not_protected"
-	// ProblemDNSUpstreamRefused: a resolver upstream the worker's egress
-	// refuses (Status.DNSUpstreamsRefused counts them) isn't configured,
-	// so some or all tunnel-bound names fail.
+	// ProblemDNSUpstreamRefused: resolver upstreams the worker's egress
+	// refuses (Status.DNSUpstreamsRefused counts them) aren't configured:
+	// the resolver asks the rest, and with none left tunnel-bound names
+	// fail.
 	ProblemDNSUpstreamRefused = "dns_upstream_refused"
 )
 

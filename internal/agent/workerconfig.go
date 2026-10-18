@@ -24,11 +24,8 @@ type WorkerConfig struct {
 	Map       []byte
 	Interface string
 	LinkMTU   int
-	// DNS runs the space's resolver, asking DNSUpstreams: what the
-	// operator set, else the public resolvers (Quad9, then Cloudflare) —
-	// a device, which defaults to what the OS used, runs its resolver
-	// itself. The worker can't read the host's resolver configuration,
-	// so the supervisor picks the upstreams.
+	// DNS runs the space's resolver, asking DNSUpstreams, which the node
+	// picks (serverSpaces.workerUpstreams); the worker never falls back.
 	DNS          bool
 	DNSUpstreams []netip.AddrPort
 }

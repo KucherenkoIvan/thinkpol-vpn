@@ -24,7 +24,7 @@ An exit resolves tunnel-bound names on any host out of the box: a cloud VPS (AWS
 - The device side's domestic upstream: unchanged.
 
 ## Acceptance
-- [x] unit tests: with no `-dns-upstream`, the worker's upstreams are the default public list on both families, and the host's resolvers are not used; with `-dns-upstream`, the configured ones — `TestAWorkerResolvesThroughTheDefaultPublicUpstreams` (internal/agent/resolver_test.go); the host-resolver path is gone from the code
+- [x] unit tests: with no `-dns-upstream`, the worker's upstreams are the default public list on both families, and the host's resolvers are not used; with `-dns-upstream`, the configured ones — `TestAWorkerResolvesThroughTheDefaultPublicUpstreams` (internal/agent/resolver_test.go); a worker never asks the host's resolvers — `TestAWorkerWithEveryUpstreamRefusedHasNone` (internal/agent/resolver_test.go)
 - [x] the upstream check uses the same blocked-destination list as the worker's egress (`egressBlocked` plus `EgressAllowed`), not a copy, so the two can't drift: unit tests show the defaults pass and private, link-local and metadata upstreams are refused unless `EgressAllowed` names them — `supervisor.EgressRefused` (internal/agent/supervisor/isolation.go) over the one `egressBlocked`, which the linux isolation also builds from; `TestPublicDestinationsPassTheEgress`, `TestTheEgressRefusesWhatTheIsolationDropsUnlessAllowed` (supervisor/isolation_test.go), and the allowed-opens-it case in `TestAnUpstreamTheEgressRefusesIsReportedNotSilentlyDropped`
 - [x] a private or link-local upstream is reported in health and in the log, and isn't silently dropped — `workerUpstreams` logs each refused one with its address and why; health problem `dns_upstream_refused` (internal/agent/status.go) at degraded, asserted in `TestAnUpstreamTheEgressRefusesIsReportedNotSilentlyDropped`
 - [x] `make lint`, `make test`, `make lab-test` pass
@@ -48,5 +48,6 @@ An exit resolves tunnel-bound names on any host out of the box: a cloud VPS (AWS
 - 2026-10-18 in-progress → review — branch tp-098-exit-dns-public-resolvers @ ea4a60a
 - 2026-10-18 review → in-progress — owner: claude-tp098, round 2: review findings
 - 2026-10-18 round-2 fixes: a server's resolver with every upstream refused has none and never asks the host's resolvers (TestAWorkerWithEveryUpstreamRefusedHasNone, resolver_test.go); refused upstreams are logged once per change of the refused set, not on every apply; Status.DNSUpstreamsRefused is a count; serverSpaces.defaultUpstreams deleted (defaultWorkerUpstreams and workerUpstreams moved to resolver.go, next to the DNS wiring); supervisor/egress.go → isolation.go, and EgressRefused refuses a zoned address; the -dns-upstream help and DESIGN.md's DNS section say the new default
-- 2026-10-18 make lint, make test pass; make lab-test LAB_P=1 GOFLAGS=-p=4 passes on ce8131d (2026-10-18 14:42 +05, gotest ok, 34 packages, no failures)
+- 2026-10-18 make lint, make test pass; make lab-test LAB_P=1 GOFLAGS=-p=4 passes on ce8131d (gotest ok, 34 packages, no failures)
 - 2026-10-18 in-progress → review — branch tp-098-exit-dns-public-resolvers @ ce8131d
+- 2026-10-18 review → in-progress — owner: claude-tp098, round 3: review findings
