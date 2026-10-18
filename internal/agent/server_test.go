@@ -80,11 +80,13 @@ type runningServer struct {
 // runServerSpaces serves s's map at version 1, its section changed by
 // edits first.
 func runServerSpaces(t *testing.T, s *testSpace, sup *fakeSupervisor, edits ...func(*netmap.Section)) *runningServer {
-	return runServerSpacesIn(t, s, sup, "", edits...)
+	return runServerSpacesIn(t, s, sup, "", nil, edits...)
 }
 
-// runServerSpacesIn is runServerSpaces with stateDir holding the seeds.
-func runServerSpacesIn(t *testing.T, s *testSpace, sup *fakeSupervisor, stateDir string, edits ...func(*netmap.Section)) *runningServer {
+// runServerSpacesIn is runServerSpaces with stateDir holding the seeds,
+// and the serverSpaces built by tweak (the node's wiring under test)
+// before it runs.
+func runServerSpacesIn(t *testing.T, s *testSpace, sup *fakeSupervisor, stateDir string, tweak func(*serverSpaces), edits ...func(*netmap.Section)) *runningServer {
 	t.Helper()
 	_, reg := memoryRegistry(t)
 	r := &runningServer{sup: sup, log: logring.New(1 << 20), maps: make(chan []byte, 1), done: make(chan error, 1)}
@@ -101,6 +103,9 @@ func runServerSpacesIn(t *testing.T, s *testSpace, sup *fakeSupervisor, stateDir
 		retryAfter: testRetry, cur: m, section: section,
 	}
 	ss.stateDir = stateDir
+	if tweak != nil {
+		tweak(ss)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	r.stop = cancel
 	go func() { r.done <- ss.run(ctx, r.maps) }()
@@ -126,6 +131,27 @@ func TestServerServesTheSpaceAndItsListeners(t *testing.T) {
 	c, err := DecodeWorkerConfig(sp[0].Config)
 	if err != nil || !c.sameNode(WorkerConfig{Keys: s.a, Trust: s.trust()}) {
 		t.Fatalf("worker config %v, %v", c, err)
+	}
+}
+
+// The worker's config carries what workerUpstreams kept: an upstream the
+// egress refuses isn't sent to the worker as if it were configured.
+func TestTheWorkerConfigCarriesTheUpstreamsTheEgressDidNotRefuse(t *testing.T) {
+	s := newTestSpace(t)
+	sup := &fakeSupervisor{}
+	public := netip.MustParseAddrPort("9.9.9.9:53")
+	runServerSpacesIn(t, s, sup, "", func(ss *serverSpaces) {
+		ss.dns = true
+		ss.dnsUpstreams = []netip.AddrPort{netip.MustParseAddrPort("192.168.1.53:53"), public}
+	})
+	eventually(t, func() bool { sp, _, _ := sup.last(); return len(sp) == 1 })
+	sp, _, _ := sup.last()
+	c, err := DecodeWorkerConfig(sp[0].Config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(c.DNSUpstreams, []netip.AddrPort{public}) {
+		t.Fatalf("the worker config's upstreams: %v", c.DNSUpstreams)
 	}
 }
 

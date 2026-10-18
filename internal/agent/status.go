@@ -50,6 +50,10 @@ type Status struct {
 	// link's domains in systemd-resolved): names may leave outside the
 	// tunnel.
 	DNSUnprotected bool
+	// DNSUpstreamsRefused is a server's: how many of the resolver
+	// upstreams the worker's egress refuses, so the resolver doesn't use
+	// them (each is logged with its address).
+	DNSUpstreamsRefused int
 }
 
 // Connection is whether a node carries traffic.
@@ -156,6 +160,9 @@ type report struct {
 	preset string
 	// dns says why a device's OS may resolve outside its resolver.
 	dns func() error
+	// dnsUpstreamsRefused is a server's count of resolver upstreams the
+	// worker's egress refuses (Status.DNSUpstreamsRefused).
+	dnsUpstreamsRefused int
 }
 
 // workerReporter is what a server's status comes from: the supervisor.
@@ -177,7 +184,7 @@ func (p *report) set(f func(p *report)) {
 func (p *report) status() Status {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	s := Status{Mode: p.mode, Space: p.space, MapVersion: p.version, Removed: p.removed, Retrying: p.retrying, Listeners: p.listeners}
+	s := Status{Mode: p.mode, Space: p.space, MapVersion: p.version, Removed: p.removed, Retrying: p.retrying, Listeners: p.listeners, DNSUpstreamsRefused: p.dnsUpstreamsRefused}
 	if p.mode != ModeServer {
 		s.RulePreset = p.preset
 	}
@@ -282,6 +289,11 @@ const (
 	// ProblemDNSUnprotected: the OS may resolve names outside the node's
 	// resolver, so names may leave outside the tunnel.
 	ProblemDNSUnprotected = "dns_not_protected"
+	// ProblemDNSUpstreamRefused: resolver upstreams the worker's egress
+	// refuses (Status.DNSUpstreamsRefused counts them) aren't configured:
+	// the resolver asks the rest, and with none left tunnel-bound names
+	// fail.
+	ProblemDNSUpstreamRefused = "dns_upstream_refused"
 )
 
 // Health grades the status.
@@ -323,6 +335,9 @@ func (s Status) Health() Health {
 				add(HealthDegraded, ProblemLinksRejected)
 				break
 			}
+		}
+		if s.DNSUpstreamsRefused > 0 {
+			add(HealthDegraded, ProblemDNSUpstreamRefused)
 		}
 	}
 	if dp := s.DataPlane; dp != nil {
