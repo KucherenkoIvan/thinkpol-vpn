@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: []
 refs: [R4, DESIGN#dns]
-owner: ""
-branch: ""
+owner: "claude-tp098"
+branch: "tp-098-exit-dns-public-resolvers"
 ---
 
 ## Goal
@@ -37,3 +37,4 @@ An exit resolves tunnel-bound names on any host out of the box: a cloud VPS (AWS
 ## Log
 - 2026-10-16 created in backlog (TP-023 round-2 review)
 - 2026-10-18 acceptance narrowed to unit tests; no lab stand-in resolvers (owner)
+- 2026-10-18 backlog → in-progress — owner: claude-tp098, branch: tp-098-exit-dns-public-resolvers
