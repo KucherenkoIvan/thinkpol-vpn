@@ -33,7 +33,7 @@ Product behaviour changes beyond what the tests and docs need to align.
 - [x] scope item 1: fixed or answered in the Log with a reason
 - [x] scope item 2: fixed or answered in the Log with a reason
 - [x] scope item 3: fixed or answered in the Log with a reason
-- [ ] scope item 4: fixed or answered in the Log with a reason; owner re-confirmed PRD wording before merge
+- [x] scope item 4: fixed or answered in the Log with a reason; owner re-confirmed PRD wording before merge
 - [x] scope item 5: fixed or answered in the Log with a reason
 - [x] scope item 6: fixed or answered in the Log with a reason
 - [x] scope item 7: fixed or answered in the Log with a reason
@@ -61,3 +61,4 @@ Origin: TP-023 review round 3 (2026-10-17), split under the three-round cap.
 - 2026-10-18 docs (item 6, 21ff8ec): PRD R4's macOS column reads "M1 (Linux lab; macOS: no DNS leak proven yet, TP-085)"; PRD's M1 row points the macOS limits at DESIGN's milestones instead of restating them; DESIGN's M1 done-when names both unproven on macOS — the guard's leak paths (TP-096) and DNS leaks (TP-085); the local API's macOS caveat is in DESIGN's "not yet …" pattern; DESIGN's TP-098 caveat paragraph (~:144) is left alone: TP-098 rewrites it; TP-023's traceability R4 row keeps the run-4 detail (steps 6, 12 and 16 zero-packet captures, no positive control) with a Log line; TP-085 gained the acceptance box "a DNS-leak capture on the physical interface with a positive control: a direct name appears in it, and no tunnel-bound name does". Acceptance box 4 stays unchecked: the owner re-confirms the PRD wording before merge.
 - 2026-10-18 full suite at commit 2c89eac: `make lint`, `make test` pass; `make lab-test LAB_P=1 GOFLAGS=-p=4` green (the lab package in 246 s, 34 in-node packages, no failures; one other ticket's lab was running throughout); the changed tests rerun twice more with `go test -tags lab -count=1 -run '<names>'`, both green.
 - 2026-10-18 in-progress → review (agent, TP-099 branch)
+- 2026-10-18 owner re-confirmed the PRD wording (R4 cell, M1 row) and DESIGN M1 done-when as of 21ff8ec
