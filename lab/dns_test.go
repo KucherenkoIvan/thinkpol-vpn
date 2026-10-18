@@ -156,8 +156,6 @@ func TestDNSFollowsTheRules(t *testing.T) {
 		}
 	})
 
-	// The exit's upstream was asked the tunnel's names, by the exit; the
-	// domestic resolver never was, nor about the overlay.
 	tunnelNamesAskedOnlyOfTheExit(t, domestic, foreign, server)
 }
 

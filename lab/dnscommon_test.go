@@ -68,11 +68,11 @@ func startDeviceExit(t *testing.T, server *lab.Node, upstream netip.Addr, versio
 // in the worker and asks upstream's :5353. The lab's addresses are
 // private, which the worker's egress refuses unless egress allows it to
 // the upstream's subnet (zero allows nothing).
-func startServerExit(t *testing.T, server *lab.Node, upstream netip.Addr, version string, egress netip.Prefix) *lab.Process {
+func startServerExit(t *testing.T, server *lab.Node, upstream netip.Addr, version string, egressAllowed netip.Prefix) *lab.Process {
 	t.Helper()
 	args := []string{"thinkpol", "up", "-dns-upstream", upstream.String() + ":5353"}
-	if egress.IsValid() {
-		args = append(args, "-egress-allowed", egress.String())
+	if egressAllowed.IsValid() {
+		args = append(args, "-egress-allowed", egressAllowed.String())
 	}
 	exit := server.Start(t, args...)
 	waitLog(t, exit, `worker space=\S+ .*`+applied(version))

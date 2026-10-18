@@ -304,7 +304,7 @@ func TestDisconnectLeavesNothingBehind(t *testing.T) {
 	wantConnected := func(connected bool) error {
 		rules4, rules6 := policyRules(t, devA)
 		if connected {
-			if !strings.Contains(rules4, "5301:") || !strings.Contains(rules6, "5301:") {
+			if !routeTableRulesUp(rules4, rules6) {
 				return fmt.Errorf("no route-table rules while connected:\n%s%s", rules4, rules6)
 			}
 		} else {
@@ -378,7 +378,7 @@ func TestDisconnectLeavesNothingBehind(t *testing.T) {
 	capture = devA.Capture(t, "")
 	mustResolve(t, devA, "www.tunnel.test", false, foreignA)
 	mustResolve(t, devA, "www.tunnel.test", true, foreignAAAA)
-	mustResolve(t, devA, "www.direct.test", false, domesticA)
+	mustResolve(t, devA, "www4.direct.test", false, domesticA)
 	if err := capture.Complete(); err != nil {
 		t.Fatal(err)
 	}

@@ -123,6 +123,12 @@ func policyRules(t *testing.T, n *lab.Node) (v4, v6 string) {
 	return n.MustExec(t, "ip", "rule"), n.MustExec(t, "ip", "-6", "rule")
 }
 
+// routeTableRulesUp says whether the route table's own policy rules
+// (priority 5301) are in both families' listings.
+func routeTableRulesUp(v4, v6 string) bool {
+	return strings.Contains(v4, "5301:") && strings.Contains(v6, "5301:")
+}
+
 // routeTableRoutes is everything in the routing tables of the route
 // table's protocol (86), IPv4 and IPv6.
 func routeTableRoutes(t *testing.T, n *lab.Node) (v4, v6 string) {
