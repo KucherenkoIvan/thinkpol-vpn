@@ -47,3 +47,6 @@ An exit resolves tunnel-bound names on any host out of the box: a cloud VPS (AWS
 - 2026-10-18 make lint, make test pass; timed full lab suite (make lab-test LAB_P=1 plus -v): lab 212s, gotest 341s, both exit 0, no failures; TestDNSFollowsTheRulesOnAServerExit and TestEgressThroughAnExit passed unchanged (the lab DNS test keeps -dns-upstream with -egress-allowed)
 - 2026-10-18 in-progress → review — branch tp-098-exit-dns-public-resolvers @ ea4a60a
 - 2026-10-18 review → in-progress — owner: claude-tp098, round 2: review findings
+- 2026-10-18 round-2 fixes: a server's resolver with every upstream refused has none and never asks the host's resolvers (TestAWorkerWithEveryUpstreamRefusedHasNone, resolver_test.go); refused upstreams are logged once per change of the refused set, not on every apply; Status.DNSUpstreamsRefused is a count; serverSpaces.defaultUpstreams deleted (defaultWorkerUpstreams and workerUpstreams moved to resolver.go, next to the DNS wiring); supervisor/egress.go → isolation.go, and EgressRefused refuses a zoned address; the -dns-upstream help and DESIGN.md's DNS section say the new default
+- 2026-10-18 make lint, make test pass; make lab-test LAB_P=1 GOFLAGS=-p=4 passes on ce8131d (2026-10-18 14:42 +05, gotest ok, 34 packages, no failures)
+- 2026-10-18 in-progress → review — branch tp-098-exit-dns-public-resolvers @ ce8131d
