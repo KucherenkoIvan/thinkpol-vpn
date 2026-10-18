@@ -14,11 +14,6 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/lab"
 )
 
-// The shared fixtures and checks of the DNS lab tests: the two resolvers
-// out in the world, the DNS space's map, a device's original
-// /etc/resolv.conf, a server-mode exit, a name lookup through the OS
-// resolver, and what a capture of a device's physical side may hold.
-
 // Answers of the two resolvers out in the world: an answer says which one
 // it came from.
 const (
@@ -59,15 +54,25 @@ func osResolvConf(resolver netip.Addr) []byte {
 	return []byte("nameserver " + resolver.String() + "\nsearch direct.test\noptions timeout:2 attempts:3\n")
 }
 
+// startDeviceExit starts server as a device-mode exit: its resolver's
+// own queries leave from the node itself, without a worker's egress (the
+// server-mode case is startServerExit).
+func startDeviceExit(t *testing.T, server *lab.Node, upstream netip.Addr, version string) *lab.Process {
+	t.Helper()
+	exit := server.Start(t, "thinkpol", "up", "-mode", "device", "-dns-upstream", upstream.String()+":5353")
+	waitLog(t, exit, applied(version))
+	return exit
+}
+
 // startServerExit starts server as a server-mode exit: its resolver runs
 // in the worker and asks upstream's :5353. The lab's addresses are
-// private, which the worker's egress refuses unless egressOpen allows it
-// to the upstream's subnet.
-func startServerExit(t *testing.T, server *lab.Node, upstream netip.Addr, version string, egressOpen bool) *lab.Process {
+// private, which the worker's egress refuses unless egress allows it to
+// the upstream's subnet (zero allows nothing).
+func startServerExit(t *testing.T, server *lab.Node, upstream netip.Addr, version string, egress netip.Prefix) *lab.Process {
 	t.Helper()
 	args := []string{"thinkpol", "up", "-dns-upstream", upstream.String() + ":5353"}
-	if egressOpen {
-		args = append(args, "-egress-allowed", netip.PrefixFrom(upstream, 24).Masked().String())
+	if egress.IsValid() {
+		args = append(args, "-egress-allowed", egress.String())
 	}
 	exit := server.Start(t, args...)
 	waitLog(t, exit, `worker space=\S+ .*`+applied(version))
@@ -109,6 +114,8 @@ func resolve(n *lab.Node, name string, v6 bool) (string, error) {
 	return f[0], nil
 }
 
+// mustResolve resolves through the node's OS resolver until the name
+// answers with want (a new or changed answer can take a poll to appear).
 func mustResolve(t *testing.T, n *lab.Node, name string, v6 bool, want string) {
 	t.Helper()
 	lab.Eventually(t, 30*time.Second, func() error {
@@ -118,6 +125,25 @@ func mustResolve(t *testing.T, n *lab.Node, name string, v6 bool, want string) {
 		}
 		if got != want {
 			return fmt.Errorf("%s resolves to %s, want %s", name, got, want)
+		}
+		return nil
+	})
+}
+
+// mustAsk asks name of a resolver at server's :53 directly (labdns's
+// client mode, so the node's own resolver and its cache stay out of it)
+// until it answers with want among its A records.
+func mustAsk(t *testing.T, n *lab.Node, server netip.Addr, name, want string) {
+	t.Helper()
+	lab.Eventually(t, 30*time.Second, func() error {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		res, err := n.Exec(ctx, "labdns", "-server", server.String()+":53", "-query", name)
+		if err != nil {
+			return fmt.Errorf("labdns -query %s: %v\n%s%s", name, err, res.Stdout, res.Stderr)
+		}
+		if got := strings.TrimSpace(res.Stdout); got != want {
+			return fmt.Errorf("%s asked of %s answered %q, want %s", name, server, got, want)
 		}
 		return nil
 	})
@@ -141,7 +167,7 @@ func noLeaks(t *testing.T, packets []lab.Packet, domestic netip.Addr) {
 		if p.SrcPort != 53 && p.DstPort != 53 && p.SrcPort != 5353 && p.DstPort != 5353 {
 			continue
 		}
-		if other := p.Dst; p.Outgoing && other != domestic || !p.Outgoing && p.Src != domestic {
+		if p.Outgoing && p.Dst != domestic || !p.Outgoing && p.Src != domestic {
 			t.Errorf("DNS with someone but the domestic resolver: %v:%d → %v:%d", p.Src, p.SrcPort, p.Dst, p.DstPort)
 		}
 		if p.Outgoing && bytes.Contains(p.Payload, []byte("direct")) {

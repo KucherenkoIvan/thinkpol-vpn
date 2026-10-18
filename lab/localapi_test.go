@@ -5,6 +5,7 @@ package lab_test
 import (
 	"context"
 	"fmt"
+	"net/netip"
 	"regexp"
 	"strings"
 	"testing"
@@ -215,8 +216,9 @@ func TestLocalAPI(t *testing.T) {
 		if err != nil || !regexp.MustCompile(`state: +disconnected`).MatchString(res.Stdout) {
 			t.Fatalf("disconnect: %v\n%s", err, res.Stdout)
 		}
-		if _, err := cli(t, devA, []string{"ip", "link", "show", "thinkpol0"}); err == nil {
-			t.Fatal("the TUN outlived the disconnect")
+		noPing(t, devA, s4.String())
+		if err := tunGone(t, devA); err != nil {
+			t.Fatal(err)
 		}
 		noPing(t, devA, s4.String())
 		ping(t, devB, s4) // the others carry on
@@ -256,6 +258,22 @@ func TestLocalAPI(t *testing.T) {
 	}
 }
 
+// tunGone returns nil only when the TUN is gone: only "does not exist"
+// from `ip link show` counts; any other failure is an unknown state.
+func tunGone(t *testing.T, n *lab.Node) error {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	res, err := n.Exec(ctx, "ip", "link", "show", "thinkpol0")
+	if err == nil {
+		return fmt.Errorf("the TUN outlived the disconnect")
+	}
+	if !strings.Contains(res.Stderr, "does not exist") {
+		return fmt.Errorf("ip link show thinkpol0: %v: %s", err, res.Stderr)
+	}
+	return nil
+}
+
 // TestDisconnectLeavesNothingBehind is the teardown check behind the CLI
 // (TestLocalAPI checks only the TUN): with the DNS map (rules and DNS),
 // after `thinkpol disconnect` the route table's rules and routes,
@@ -278,7 +296,7 @@ func TestDisconnectLeavesNothingBehind(t *testing.T) {
 	devA.WriteFile(t, "/etc/resolv.conf", original)
 	rulesBefore4, rulesBefore6 := policyRules(t, devA)
 
-	exit := startServerExit(t, server, inetIP, v1, true)
+	exit := startServerExit(t, server, inetIP, v1, netip.PrefixFrom(inetIP, 24).Masked())
 	devBUp := devB.Start(t, "thinkpol", "up")
 	up := devA.Start(t, "thinkpol", "up", "-connect=false")
 	waitLog(t, up, "mode=device")
@@ -293,18 +311,15 @@ func TestDisconnectLeavesNothingBehind(t *testing.T) {
 			if rules4 != rulesBefore4 || rules6 != rulesBefore6 {
 				return fmt.Errorf("rules after disconnecting:\n%s\n%s\nwant\n%s\n%s", rules4, rules6, rulesBefore4, rulesBefore6)
 			}
-			res, err := cli(t, devA, []string{"ip", "link", "show", "thinkpol0"})
-			if err == nil {
-				return fmt.Errorf("the TUN outlived the disconnect")
-			} else if !strings.Contains(res.Stderr, "does not exist") {
-				return fmt.Errorf("ip link show thinkpol0: %v: %s", err, res.Stderr)
+			if err := tunGone(t, devA); err != nil {
+				return err
 			}
 		}
 		routes4, routes6 := routeTableRoutes(t, devA)
 		if connected {
-			// The guard's always-present `unreachable ::/0` is in the
-			// IPv6 table: only the TUN's own default in each family
-			// proves the routes came back.
+			// The route table's always-present `unreachable ::/0`
+			// (routetable.go) is in the IPv6 table: only the TUN's own
+			// default in each family proves the routes came back.
 			if !strings.Contains(routes4, "default dev thinkpol0") || !strings.Contains(routes6, "default dev thinkpol0") {
 				return fmt.Errorf("no TUN default in the route table's routes:\n%s\n%s", routes4, routes6)
 			}
@@ -323,7 +338,7 @@ func TestDisconnectLeavesNothingBehind(t *testing.T) {
 		if connected {
 			want = guardPresent
 		}
-		if got := hasGuard(t, devA); got != want {
+		if got := ipv6Guard(t, devA); got != want {
 			return fmt.Errorf("the IPv6 guard: %s, want %s", got, want)
 		}
 		return nil

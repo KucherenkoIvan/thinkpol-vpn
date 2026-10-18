@@ -2,7 +2,9 @@
 // world (a domestic ISP's, an exit's upstream): it answers every A and
 // AAAA question with fixed addresses, so an answer tells which resolver it
 // came from, and prints every question it gets with its source, so a test
-// can tell who asked what. Lab use only: a real node never logs names.
+// can tell who asked what. With -server it is instead a client that asks
+// one A question of a resolver and prints its answers. Lab use only: a
+// real node never logs names.
 package main
 
 import (
@@ -14,6 +16,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/miekg/dns"
 )
@@ -22,7 +25,13 @@ func main() {
 	listen := flag.String("listen", ":53", "address to serve on, UDP and TCP")
 	a := flag.String("a", "", "the address of every A answer")
 	aaaa := flag.String("aaaa", "", "the address of every AAAA answer")
+	server := flag.String("server", "", "client mode: ask this server (host:port) one A question for -query and exit")
+	query := flag.String("query", "", "the name the client asks (with -server)")
 	flag.Parse()
+	if *server != "" {
+		ask(*server, *query)
+		return
+	}
 	var answer4, answer6 netip.Addr
 	if *a != "" {
 		answer4 = netip.MustParseAddr(*a)
@@ -58,4 +67,30 @@ func main() {
 		go func() { errs <- srv.ListenAndServe() }()
 	}
 	log.Fatal(<-errs)
+}
+
+// ask sends one A question to the server and prints the answers'
+// addresses, one per line; a missing answer (NXDOMAIN, SERVFAIL, no A
+// records) exits non-zero.
+func ask(server, name string) {
+	m := new(dns.Msg)
+	m.SetQuestion(dns.CanonicalName(name), dns.TypeA)
+	c := &dns.Client{Timeout: 5 * time.Second}
+	resp, _, err := c.Exchange(m, server)
+	if err != nil {
+		log.Fatal(err)
+	}
+	var answers []string
+	for _, rr := range resp.Answer {
+		if rec, ok := rr.(*dns.A); ok {
+			answers = append(answers, rec.A.String())
+		}
+	}
+	if len(answers) == 0 {
+		fmt.Printf("rcode %s\n", dns.RcodeToString[resp.Rcode])
+		os.Exit(1)
+	}
+	for _, answer := range answers {
+		fmt.Println(answer)
+	}
 }

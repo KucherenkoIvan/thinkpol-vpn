@@ -5,6 +5,7 @@ package lab_test
 import (
 	"context"
 	"fmt"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
@@ -31,11 +32,7 @@ func TestDNSFollowsTheRules(t *testing.T) {
 	a4, _ := space.overlay(2)
 	b4, b6 := space.overlay(3)
 
-	// The exit runs its data plane in device mode: its resolver's own
-	// queries leave from the node itself, without a worker's egress (the
-	// server-mode case is TestDNSFollowsTheRulesOnAServerExit).
-	exit := server.Start(t, "thinkpol", "up", "-mode", "device", "-dns-upstream", inetIP.String()+":5353")
-	waitLog(t, exit, applied(v1))
+	exit := startDeviceExit(t, server, inetIP, v1)
 
 	parent := t // the exit outlives the subtests
 	t.Run("resolv.conf", func(t *testing.T) {
@@ -74,8 +71,7 @@ func TestDNSFollowsTheRules(t *testing.T) {
 		if got, err := resolve(devA, "down.tunnel.test", false); err == nil {
 			t.Errorf("a tunnel-bound name resolved with the exit down: %s", got)
 		}
-		exit = server.Start(parent, "thinkpol", "up", "-mode", "device", "-dns-upstream", inetIP.String()+":5353")
-		waitLog(t, exit, applied(v1))
+		exit = startDeviceExit(parent, server, inetIP, v1)
 
 		if err := capture.Complete(); err != nil {
 			t.Fatal(err)
@@ -181,7 +177,7 @@ func TestDNSFollowsTheRulesOnAServerExit(t *testing.T) {
 	space, v1 := buildDNSMap(t, inet, server, devA)
 	s4, _ := space.overlay(1)
 
-	exit := startServerExit(t, server, inetIP, v1, true)
+	exit := startServerExit(t, server, inetIP, v1, netip.PrefixFrom(inetIP, 24).Masked())
 
 	devA.WriteFile(t, "/etc/resolv.conf", osResolvConf(inetIP))
 	capture := devA.Capture(t, "")
@@ -204,22 +200,27 @@ func TestDNSFollowsTheRulesOnAServerExit(t *testing.T) {
 	tunnelNamesAskedOnlyOfTheExit(t, domestic, foreign, server)
 
 	// The negative control: the same setup without the exit's egress
-	// opened to the upstream's subnet. The worker's own queries are
-	// refused, so a tunnel-bound name doesn't resolve, while a direct
-	// name still does (the device's own path is untouched).
+	// opened to the upstream's subnet. The exit's resolver answers an
+	// overlay name asked of it directly (labdns's client mode; device-a's
+	// own resolver answers such a name itself and never forwards it), so
+	// the tunnel and the resolver both work after the restart, and the
+	// failed lookup of a tunnel-bound name below can only be the worker's
+	// egress refusing the upstream. A direct name still resolves (the
+	// device's own path is untouched), and the foreign resolver never
+	// saw the refused name.
 	if err := exit.Stop(); err != nil {
 		t.Fatalf("the exit: %v\n%s", err, exit.Output())
 	}
-	exit = startServerExit(t, server, inetIP, v1, false)
-	// The tunnel and the exit's resolver both answer after the restart,
-	// so the failed lookup below is the worker's egress refusing the
-	// upstream, not a broken exit.
+	exit = startServerExit(t, server, inetIP, v1, netip.Prefix{})
 	ping(t, devA, s4)
-	mustResolve(t, devA, "server-1.lab.internal", false, s4.String())
+	mustAsk(t, devA, s4, "server-1.lab.internal", s4.String())
 	if got, err := resolve(devA, "www2.tunnel.test", false); err == nil {
 		t.Errorf("a tunnel-bound name resolved with the worker's egress closed: %s", got)
 	}
-	mustResolve(t, devA, "www.direct.test", false, domesticA)
+	if out := foreign.Output(); strings.Contains(out, "www2") {
+		t.Errorf("the foreign resolver saw www2:\n%s", out)
+	}
+	mustResolve(t, devA, "www3.direct.test", false, domesticA)
 
 	if err := up.Stop(); err != nil {
 		t.Errorf("thinkpol up: %v\n%s", err, up.Output())

@@ -328,7 +328,7 @@ func TestRouteTableSendsOnlyDirectAroundTheTunnel(t *testing.T) {
 	// a restart that doesn't connect removes them.
 	dev.MustExec(t, "pkill", "-KILL", "-f", "thinkpol up")
 	<-up.Done()
-	if !strings.Contains(dev.MustExec(t, "ip", "rule"), "5301:") {
+	if rules4, rules6 := policyRules(t, dev); !strings.Contains(rules4, "5301:") || !strings.Contains(rules6, "5301:") {
 		t.Fatal("no rules left by the crash: the test proves nothing")
 	}
 	up = dev.Start(t, "thinkpol", "up", "-map-poll", "1h", "-connect=false")
@@ -348,7 +348,7 @@ func TestRouteTableSendsOnlyDirectAroundTheTunnel(t *testing.T) {
 	waitLog(t, up, applied(v1))
 	dev.MustExec(t, "pkill", "-KILL", "-f", "thinkpol up")
 	<-up.Done()
-	if !strings.Contains(dev.MustExec(t, "ip", "rule"), "5301:") {
+	if rules4, rules6 := policyRules(t, dev); !strings.Contains(rules4, "5301:") || !strings.Contains(rules6, "5301:") {
 		t.Fatal("no rules left by the second crash: the test proves nothing")
 	}
 	// eth0 exists and isn't a TUN: creating the TUN fails at run time.

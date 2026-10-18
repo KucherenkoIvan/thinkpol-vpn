@@ -131,9 +131,7 @@ func routeTableRoutes(t *testing.T, n *lab.Node) (v4, v6 string) {
 		n.MustExec(t, "ip", "-6", "route", "show", "table", "all", "proto", "86")
 }
 
-// The IPv6 leak guard's nftables table, from one `nft list table` call:
-// whose failure means absent, so a table vanishing mid-poll is absent and
-// the poll retries instead of failing the test.
+// The IPv6 leak guard's nftables table's state.
 type guardState string
 
 const (
@@ -142,10 +140,10 @@ const (
 	guardAbsent  guardState = "absent"  // no table by that name at all
 )
 
-// hasGuard says which state the IPv6 leak guard's nftables table is in:
-// present requires the chain, absent no table by that name at all, and an
-// empty leftover table is neither and must fail a "gone" check.
-func hasGuard(t *testing.T, n *lab.Node) guardState {
+// ipv6Guard reads the state from one `nft list table` call, whose failure
+// means absent, so a table vanishing mid-poll retries instead of failing
+// the test.
+func ipv6Guard(t *testing.T, n *lab.Node) guardState {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
