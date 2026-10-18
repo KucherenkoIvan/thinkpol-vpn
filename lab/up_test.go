@@ -140,15 +140,19 @@ const (
 	guardAbsent  guardState = "absent"  // no table by that name at all
 )
 
-// ipv6Guard reads the state from one `nft list table` call, whose failure
-// means absent, so a table vanishing mid-poll retries instead of failing
-// the test.
+// ipv6Guard reads the state from one `nft list table` call: absent only
+// when nft says there is no such table, so a table vanishing mid-poll
+// retries; any other failure is an unknown state that carries the reason,
+// the same shape as tunGone.
 func ipv6Guard(t *testing.T, n *lab.Node) guardState {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	res, err := n.Exec(ctx, "nft", "list", "table", "inet", "thinkpol-guard")
 	if err != nil {
+		if !strings.Contains(res.Stderr, "No such file or directory") {
+			return guardState(fmt.Sprintf("unknown (%v: %s)", err, res.Stderr))
+		}
 		return guardAbsent
 	}
 	if strings.Contains(res.Stdout, "chain") {
