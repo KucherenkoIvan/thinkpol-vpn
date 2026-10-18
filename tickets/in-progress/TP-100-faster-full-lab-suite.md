@@ -48,3 +48,4 @@ Other cheap wins looked at, not done:
 - 2026-10-18 first parallel-matrix version deadlocked (one buffered channel served only one of three waiters per transport); fixed with a close-broadcast; caught by `make lab-test` on a quiet machine, matrix 43 s alone
 - 2026-10-18 timed runs, quiet machine, defaults: before 336.3 s (5:36), after 152.3 s (2:32); `make lint`, `make test` green on this branch
 - 2026-10-18 in-progress → review
+- 2026-10-18 review → in-progress — round 2: review findings (owner: agent-opus)
