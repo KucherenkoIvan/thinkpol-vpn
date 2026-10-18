@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/supervisor"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
@@ -143,15 +144,19 @@ func TestParseUpstreams(t *testing.T) {
 	}
 }
 
-// A worker can't reach the host's loopback from its namespace, nor read
-// its resolver configuration: the supervisor passes the host's resolvers
-// but loopback ones.
-func TestWorkersGetTheHostsResolversButLoopback(t *testing.T) {
-	s := &serverSpaces{dns: true, log: slog.New(slog.DiscardHandler), systemUpstreams: func([]netip.Addr) ([]netip.Addr, error) {
-		return []netip.Addr{netip.MustParseAddr("127.0.0.1"), netip.MustParseAddr("192.0.2.53"), netip.MustParseAddr("::1")}, nil
-	}}
-	if got := s.workerUpstreams(); !slices.Equal(got, []netip.AddrPort{netip.MustParseAddrPort("192.0.2.53:53")}) {
-		t.Errorf("host's: %v", got)
+// With no -dns-upstream an exit's resolver asks the default public
+// resolvers on both families, never the host's own (which are private on
+// most clouds, and the worker's egress refuses them anyway); with
+// -dns-upstream, the configured ones.
+func TestAWorkerResolvesThroughTheDefaultPublicUpstreams(t *testing.T) {
+	s := &serverSpaces{dns: true, log: slog.New(slog.DiscardHandler)}
+	if got := s.workerUpstreams(); !slices.Equal(got, defaultWorkerUpstreams) {
+		t.Fatalf("defaults: %v", got)
+	}
+	for _, a := range defaultWorkerUpstreams {
+		if supervisor.EgressRefused(a.Addr(), nil) {
+			t.Errorf("default %v refused by the egress", a)
+		}
 	}
 	s.dnsUpstreams = []netip.AddrPort{netip.MustParseAddrPort("198.51.100.53:53")}
 	if got := s.workerUpstreams(); !slices.Equal(got, s.dnsUpstreams) {
@@ -161,6 +166,42 @@ func TestWorkersGetTheHostsResolversButLoopback(t *testing.T) {
 	s.dnsUpstreams = nil
 	if got := s.workerUpstreams(); got != nil {
 		t.Errorf("without DNS: %v", got)
+	}
+}
+
+// An upstream the worker's egress refuses is not configured for the
+// resolver: it is named in the status and the health, and -egress-allowed
+// opens it.
+func TestAnUpstreamTheEgressRefusesIsReportedNotSilentlyDropped(t *testing.T) {
+	private := netip.MustParseAddrPort("192.168.1.53:53")
+	metadata := netip.MustParseAddrPort("169.254.169.254:53")
+	public := netip.MustParseAddrPort("9.9.9.9:53")
+	s := &serverSpaces{dns: true, log: slog.New(slog.DiscardHandler), report: &report{mode: ModeServer},
+		dnsUpstreams: []netip.AddrPort{private, public, metadata}}
+	if got := s.workerUpstreams(); !slices.Equal(got, []netip.AddrPort{public}) {
+		t.Fatalf("kept: %v", got)
+	}
+	if st := s.report.status(); !slices.Equal(st.DNSUpstreamsRefused, []netip.AddrPort{private, metadata}) {
+		t.Fatalf("status: %v", st.DNSUpstreamsRefused)
+	} else if h := st.Health(); h.Level != HealthDegraded || !slices.Contains(h.Problems, ProblemDNSUpstreamRefused) {
+		t.Fatalf("health %+v", h)
+	}
+
+	s.egressAllowed = []netip.Prefix{netip.MustParsePrefix("192.168.0.0/16")}
+	if got := s.workerUpstreams(); !slices.Equal(got, []netip.AddrPort{private, public}) {
+		t.Fatalf("with -egress-allowed kept: %v", got)
+	}
+	if st := s.report.status(); !slices.Equal(st.DNSUpstreamsRefused, []netip.AddrPort{metadata}) {
+		t.Fatalf("with -egress-allowed status: %v", st.DNSUpstreamsRefused)
+	}
+
+	// Nothing refused clears the problem.
+	s.dnsUpstreams = []netip.AddrPort{public}
+	if got := s.workerUpstreams(); !slices.Equal(got, []netip.AddrPort{public}) {
+		t.Fatalf("kept: %v", got)
+	}
+	if st := s.report.status(); len(st.DNSUpstreamsRefused) != 0 || slices.Contains(st.Health().Problems, ProblemDNSUpstreamRefused) {
+		t.Fatalf("after clearing: %v, %v", st.DNSUpstreamsRefused, st.Health())
 	}
 }
 

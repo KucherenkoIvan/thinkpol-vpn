@@ -2,6 +2,7 @@ package agent
 
 import (
 	"errors"
+	"net/netip"
 	"sync"
 	"time"
 
@@ -50,6 +51,10 @@ type Status struct {
 	// link's domains in systemd-resolved): names may leave outside the
 	// tunnel.
 	DNSUnprotected bool
+	// DNSUpstreamsRefused is a server's: the resolver upstreams the
+	// worker's egress refuses, so the resolver doesn't use them (each is
+	// logged with its address).
+	DNSUpstreamsRefused []netip.AddrPort
 }
 
 // Connection is whether a node carries traffic.
@@ -156,6 +161,9 @@ type report struct {
 	preset string
 	// dns says why a device's OS may resolve outside its resolver.
 	dns func() error
+	// dnsUpstreamsRefused is a server's resolver upstreams the worker's
+	// egress refuses (Status.DNSUpstreamsRefused).
+	dnsUpstreamsRefused []netip.AddrPort
 }
 
 // workerReporter is what a server's status comes from: the supervisor.
@@ -178,6 +186,7 @@ func (p *report) status() Status {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	s := Status{Mode: p.mode, Space: p.space, MapVersion: p.version, Removed: p.removed, Retrying: p.retrying, Listeners: p.listeners}
+	s.DNSUpstreamsRefused = p.dnsUpstreamsRefused
 	if p.mode != ModeServer {
 		s.RulePreset = p.preset
 	}
@@ -282,6 +291,10 @@ const (
 	// ProblemDNSUnprotected: the OS may resolve names outside the node's
 	// resolver, so names may leave outside the tunnel.
 	ProblemDNSUnprotected = "dns_not_protected"
+	// ProblemDNSUpstreamRefused: a resolver upstream the worker's egress
+	// refuses (Status.DNSUpstreamsRefused names them) isn't configured, so
+	// some or all tunnel-bound names fail.
+	ProblemDNSUpstreamRefused = "dns_upstream_refused"
 )
 
 // Health grades the status.
@@ -323,6 +336,9 @@ func (s Status) Health() Health {
 				add(HealthDegraded, ProblemLinksRejected)
 				break
 			}
+		}
+		if len(s.DNSUpstreamsRefused) > 0 {
+			add(HealthDegraded, ProblemDNSUpstreamRefused)
 		}
 	}
 	if dp := s.DataPlane; dp != nil {

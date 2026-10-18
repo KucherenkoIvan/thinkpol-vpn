@@ -425,12 +425,13 @@ func (n *Node) runServer(ctx context.Context, reg *transport.Registry, maps chan
 	}()
 	// Cleared before the supervisor closes (deferred calls run last first).
 	n.report.set(func(p *report) { p.workers = sup })
-	defer n.report.set(func(p *report) { p.workers = nil })
+	defer n.report.set(func(p *report) { p.workers, p.dnsUpstreamsRefused = nil, nil })
 	s := &serverSpaces{
 		sup: sup, reg: reg, log: n.logs.Logger, keys: n.state.Keys, trust: n.state.Trust,
 		iface: n.cfg.Interface, linkMTU: n.cfg.LinkMTU, cur: n.state.Map, section: n.state.Section,
-		dns: n.cfg.DNS, dnsUpstreams: n.dnsUpstreams, systemUpstreams: dns.SystemUpstreams,
-		retryAfter: RetryAfter, report: &n.report, requests: n.requests, rulesRequests: n.rulesRequests,
+		dns: n.cfg.DNS, dnsUpstreams: n.dnsUpstreams, defaultUpstreams: defaultWorkerUpstreams,
+		egressAllowed: allowed,
+		retryAfter:    RetryAfter, report: &n.report, requests: n.requests, rulesRequests: n.rulesRequests,
 		stateDir: n.cfg.StateDir,
 	}
 	return s.run(ctx, maps)
@@ -467,10 +468,13 @@ type serverSpaces struct {
 	// stateDir holds the seeds of the space's blobs (seedBlobs).
 	stateDir string
 	// dns runs the space's resolver in its worker, asking dnsUpstreams,
-	// else what systemUpstreams says the host uses.
-	dns             bool
-	dnsUpstreams    []netip.AddrPort
-	systemUpstreams func(exclude []netip.Addr) ([]netip.Addr, error)
+	// else defaultUpstreams (defaultWorkerUpstreams). egressAllowed are
+	// the prefixes the worker's egress allows anyway (Options.EgressAllowed):
+	// an upstream outside them that egressBlocked holds is refused.
+	dns              bool
+	dnsUpstreams     []netip.AddrPort
+	defaultUpstreams []netip.AddrPort
+	egressAllowed    []netip.Prefix
 
 	cur     *netmap.Map
 	section netmap.Section
@@ -656,22 +660,45 @@ func logOutput(l Logs) io.Writer {
 	return l.out
 }
 
+// defaultWorkerUpstreams are the upstreams an exit's resolver asks when
+// -dns-upstream is unset: well-known public resolvers on both families.
+// The host's own resolvers are not used: on most clouds they sit on
+// private or link-local addresses, which the worker's isolation refuses,
+// and widening the egress to reach them would open the provider's private
+// network (the cloud metadata services included) to every space.
+var defaultWorkerUpstreams = []netip.AddrPort{
+	netip.AddrPortFrom(netip.MustParseAddr("9.9.9.9"), dns.Port),
+	netip.AddrPortFrom(netip.MustParseAddr("2620:fe::fe"), dns.Port),
+	netip.AddrPortFrom(netip.MustParseAddr("1.1.1.1"), dns.Port),
+	netip.AddrPortFrom(netip.MustParseAddr("2606:4700:4700::1111"), dns.Port),
+}
+
 // workerUpstreams are the upstreams a worker's resolver asks: the
-// configured ones, else the host's own resolvers, but none on loopback,
-// which a worker in its own namespace can't reach.
+// configured ones, else the default public resolvers; the host's own
+// resolvers are never used. One the worker's egress refuses is not
+// configured: it is logged and named in health, never silently dropped.
 func (s *serverSpaces) workerUpstreams() []netip.AddrPort {
-	if !s.dns || len(s.dnsUpstreams) > 0 {
-		return s.dnsUpstreams
+	if !s.dns {
+		s.report.set(func(p *report) { p.dnsUpstreamsRefused = nil })
+		return nil
 	}
-	host, err := s.systemUpstreams(nil)
-	if err != nil {
-		s.log.Warn("DNS: the host's resolvers are unknown; the space's resolver has no upstream", "err", err)
-	}
-	var out []netip.AddrPort
-	for _, a := range host {
-		if !a.IsLoopback() {
-			out = append(out, netip.AddrPortFrom(a, dns.Port))
+	ups := s.dnsUpstreams
+	if len(ups) == 0 {
+		ups = s.defaultUpstreams
+		if ups == nil {
+			ups = defaultWorkerUpstreams
 		}
 	}
+	var out, refused []netip.AddrPort
+	for _, a := range ups {
+		if supervisor.EgressRefused(a.Addr(), s.egressAllowed) {
+			refused = append(refused, a)
+			s.log.Warn("DNS: the worker's egress refuses the upstream; not configured for the resolver",
+				"upstream", a, "hint", "-dns-upstream or -egress-allowed")
+			continue
+		}
+		out = append(out, a)
+	}
+	s.report.set(func(p *report) { p.dnsUpstreamsRefused = refused })
 	return out
 }
