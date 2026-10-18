@@ -13,7 +13,8 @@ import (
 
 // MaxLabsEnv caps how many slots labs may hold at once across every checkout
 // that shares a temporary directory (TMPDIR), i.e. every run of this user on
-// the host. All the labs one test starts share a slot.
+// the host. The labs one top-level test starts share a slot; a subtest that
+// starts its own lab (lab.StartOwnSlot) holds a slot of its own.
 const MaxLabsEnv = "THINKPOL_LAB_MAX_LABS"
 
 const defaultMaxLabs = 12

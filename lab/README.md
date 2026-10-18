@@ -109,7 +109,7 @@ Several agents run `make lab-test` at once, so every test runs on a busy machine
 
 `make lab-test` runs its two phases **at the same time**: the `lab/` tests and the in-node packages, each phase's output prefixed (`[lab]`, `[node]`), one exit status for both, the tear-down after both. Both phases take lab slots from the same cap, so another run going at the same time competes with both for slots instead of waiting for one phase to end.
 
-`make lab-test` runs `LAB_P` (default 4) packages in nodes at once and doesn't lower that when the host is busy. The load that matters comes from other runs, which a run can't control, and the Docker VM's load isn't the host's load average. The lab slot cap (`THINKPOL_LAB_MAX_LABS`) bounds the labs all runs start together. When another lab run is already going, pass `make lab-test LAB_P=1`: two full-parallel runs multiply each other's labs and CPU. `LAB_P=1` only throttles the node phase, though: the `lab/` tests always run as parallel as their subtests are. On a quiet machine leave the default.
+`make lab-test` runs `LAB_P` (default 4) packages in nodes at once and doesn't lower that when the host is busy. The load that matters comes from other runs, which a run can't control, and the Docker VM's load isn't the host's load average. The lab slot cap (`THINKPOL_LAB_MAX_LABS`) bounds the labs all runs start together. When another lab run is already going, pass `make lab-test LAB_P=1`: two full-parallel runs multiply each other's labs and CPU. `LAB_P=1` only throttles the node phase, though: the `lab/` tests are bounded by `go test -parallel` and the lab slot cap, not by `LAB_P`. On a quiet machine leave the default.
 
 `labctl gotest -count n` (`make lab-gotest PKG=... RUN=... COUNT=n`) repeats tests in one node, to show a fix holds.
 
@@ -136,7 +136,7 @@ Several checkouts can run `make lab-test` at once, and `make lab-down` only remo
 |---|---|
 | `THINKPOL_LAB_PROJECT` | replaces the checkout part of project names (e.g. two runs from one checkout) |
 | `THINKPOL_LAB_KEEP` | a failed test's lab stays up; `make lab-test` skips its final clean-up |
-| `THINKPOL_LAB_MAX_LABS` | lab slots at once per `TMPDIR` (default 12; one per top-level test) |
+| `THINKPOL_LAB_MAX_LABS` | lab slots at once per `TMPDIR` (default 12; one per top-level test, one per subtest for `lab.StartOwnSlot`) |
 | `THINKPOL_LAB_SUBNET_POOL` | IPv4 range for lab networks (default `172.16.0.0/16`) |
 | `THINKPOL_LAB_PERF` | set to 1 in the nodes by `make lab-perf`; tests check their performance targets only then |
 | `THINKPOL_LAB_GOARCH` | architecture to build for (default: the Docker server's) |

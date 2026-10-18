@@ -100,7 +100,20 @@ func buildImage(ctx context.Context, root string, t target) (image, error) {
 		return image{}, err
 	}
 	sum := sha256.Sum256(append(dockerfile, t.platform...))
-	img := image{ref: "thinkpol-lab:" + hex.EncodeToString(sum[:6]), platform: t.platform}
+	hexSum := hex.EncodeToString(sum[:6])
+	img := image{ref: "thinkpol-lab:" + hexSum, platform: t.platform}
+	// The check-then-build spans processes (the two phases of make lab-test
+	// build in parallel): a host-wide lock keeps a cold cache from building
+	// the same image twice.
+	dir, err := lockDir()
+	if err != nil {
+		return image{}, err
+	}
+	unlock, err := waitLock(ctx, "the lab image build", filepath.Join(dir, "image-"+hexSum+".lock"))
+	if err != nil {
+		return image{}, err
+	}
+	defer unlock()
 	if _, err := docker(ctx, "image", "inspect", "--format", "{{.Id}}", img.ref); err == nil {
 		return img, nil
 	}

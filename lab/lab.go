@@ -52,11 +52,11 @@ func Start(t testing.TB, topo Topology) *Lab {
 
 // StartOwnSlot is Start with the lab taking its own slot of the cap instead
 // of its top-level test's: a test whose subtests each start one lab gets a
-// slot per subtest, so the cap bounds its labs like every other run's. Each
-// test or subtest must start at most one lab this way: the slot is held
-// until it ends.
+// slot per subtest, so the cap bounds its labs like every other run's. The
+// slot is keyed by the test or subtest that starts the lab, and held until
+// it ends.
 func StartOwnSlot(t testing.TB, topo Topology) *Lab {
-	return start(t, topo, "")
+	return start(t, topo, t.Name())
 }
 
 func start(t testing.TB, topo Topology, slotKey string) *Lab {
