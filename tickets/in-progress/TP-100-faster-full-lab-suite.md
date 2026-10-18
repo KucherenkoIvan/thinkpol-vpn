@@ -52,3 +52,4 @@ Other cheap wins looked at, not done:
 - 2026-10-18 round 2: the matrix gate can't hang any more (off cell non-parallel, censored cells read its result; `TestFilteredMatrixRun` guards the filtered `-run`), each cell takes its own lab slot (`lab.StartOwnSlot`), `make lab-test` prefixes stderr through awk and fails if `labctl down -tests` fails (51d76cf)
 - 2026-10-18 timed run, quiet machine, defaults: 156.5 s (2:37); `make lint`, `make test` green on this branch
 - 2026-10-18 in-progress → review
+- 2026-10-18 review → in-progress — round 3: review findings (owner: agent-opus)
