@@ -62,3 +62,4 @@ Origin: TP-023 review round 3 (2026-10-17), split under the three-round cap.
 - 2026-10-18 full suite at commit 2c89eac: `make lint`, `make test` pass; `make lab-test LAB_P=1 GOFLAGS=-p=4` green (the lab package in 246 s, 34 in-node packages, no failures; one other ticket's lab was running throughout); the changed tests rerun twice more with `go test -tags lab -count=1 -run '<names>'`, both green.
 - 2026-10-18 in-progress → review (agent, TP-099 branch)
 - 2026-10-18 owner re-confirmed the PRD wording (R4 cell, M1 row) and DESIGN M1 done-when as of 21ff8ec
+- 2026-10-18 review → in-progress (agent, TP-099 branch; round 3: review findings)
