@@ -199,22 +199,19 @@ func TestDNSFollowsTheRulesOnAServerExit(t *testing.T) {
 	noLeaks(t, capture.Stop(), inetIP)
 	tunnelNamesAskedOnlyOfTheExit(t, domestic, foreign, server)
 
-	// The negative control: the same setup without the exit's egress
-	// opened to the upstream's subnet. The exit's resolver serves no
-	// overlay names itself (a server with egress holds none), so asked
-	// directly (labdns's client mode; device-a's own resolver answers
-	// such a name itself and never forwards it) it gives an
-	// authoritative NXDOMAIN without asking any upstream: the tunnel and
-	// the resolver both work after the restart, and the failed lookup of
-	// a tunnel-bound name below can only be the worker's egress refusing
-	// the upstream. A direct name still resolves (the device's own path
-	// is untouched), and the foreign resolver never saw the refused name.
+	// The negative control: the same restart with the exit's egress
+	// closed. The tunnel and its resolver work after it (mustAsk's
+	// authoritative NXDOMAIN to an overlay name; a direct name still
+	// resolves), and the foreign resolver never saw the refused name.
+	// The positive control — the same restart with the egress allowed,
+	// once more — resolves a fresh tunnel-bound name, so the egress flag
+	// is the only difference between the two.
 	if err := exit.Stop(); err != nil {
 		t.Fatalf("the exit: %v\n%s", err, exit.Output())
 	}
 	exit = startServerExit(t, server, inetIP, v1, netip.Prefix{})
 	ping(t, devA, s4)
-	mustAsk(t, devA, s4, "server-1.lab.internal", "rcode NXDOMAIN authoritative")
+	mustAsk(t, devA, s4, "server-1.lab.internal", "NXDOMAIN aa")
 	if got, err := resolve(devA, "www2.tunnel.test", false); err == nil {
 		t.Errorf("a tunnel-bound name resolved with the worker's egress closed: %s", got)
 	}
@@ -222,6 +219,11 @@ func TestDNSFollowsTheRulesOnAServerExit(t *testing.T) {
 		t.Errorf("the foreign resolver saw www2:\n%s", out)
 	}
 	mustResolve(t, devA, "www3.direct.test", false, domesticA)
+	if err := exit.Stop(); err != nil {
+		t.Fatalf("the exit: %v\n%s", err, exit.Output())
+	}
+	exit = startServerExit(t, server, inetIP, v1, netip.PrefixFrom(inetIP, 24).Masked())
+	mustResolve(t, devA, "www4.tunnel.test", false, foreignA)
 
 	if err := up.Stop(); err != nil {
 		t.Errorf("thinkpol up: %v\n%s", err, up.Output())

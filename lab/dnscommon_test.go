@@ -132,8 +132,7 @@ func mustResolve(t *testing.T, n *lab.Node, name string, v6 bool, want string) {
 
 // mustAsk asks name of a resolver at server's :53 directly (labdns's
 // client mode, so the node's own resolver and its cache stay out of it)
-// until the answer is want: an A record's address, or "rcode <name>
-// authoritative" for an answer the resolver gave itself.
+// until the answer is want, an error counting as a retry.
 func mustAsk(t *testing.T, n *lab.Node, server netip.Addr, name, want string) {
 	t.Helper()
 	lab.Eventually(t, 30*time.Second, func() error {
@@ -144,7 +143,7 @@ func mustAsk(t *testing.T, n *lab.Node, server netip.Addr, name, want string) {
 		if got == want {
 			return nil
 		}
-		if err != nil && got == "" {
+		if err != nil {
 			return fmt.Errorf("labdns -query %s: %v\n%s%s", name, err, res.Stdout, res.Stderr)
 		}
 		return fmt.Errorf("%s asked of %s answered %q, want %q", name, server, got, want)

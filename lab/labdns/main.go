@@ -3,8 +3,8 @@
 // AAAA question with fixed addresses, so an answer tells which resolver it
 // came from, and prints every question it gets with its source, so a test
 // can tell who asked what. With -server it is instead a client that asks
-// one A question of a resolver and prints its answers. Lab use only: a
-// real node never logs names.
+// one A question of a resolver and prints its reply's rcode. Lab use
+// only: a real node never logs names.
 package main
 
 import (
@@ -69,10 +69,13 @@ func main() {
 	log.Fatal(<-errs)
 }
 
-// ask sends one A question to the server and prints the answers'
-// addresses, one per line; a missing answer (NXDOMAIN, SERVFAIL, no A
-// records) exits non-zero.
+// ask asks one A question of the server and prints the reply's rcode,
+// with " aa" if the reply is authoritative; without a reply it exits
+// non-zero.
 func ask(server, name string) {
+	if name == "" {
+		log.Fatal("no -query")
+	}
 	m := new(dns.Msg)
 	m.SetQuestion(dns.CanonicalName(name), dns.TypeA)
 	c := &dns.Client{Timeout: 5 * time.Second}
@@ -80,21 +83,9 @@ func ask(server, name string) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	var answers []string
-	for _, rr := range resp.Answer {
-		if rec, ok := rr.(*dns.A); ok {
-			answers = append(answers, rec.A.String())
-		}
+	rc := dns.RcodeToString[resp.Rcode]
+	if resp.Authoritative {
+		rc += " aa"
 	}
-	if len(answers) == 0 {
-		rc := "rcode " + dns.RcodeToString[resp.Rcode]
-		if resp.Authoritative {
-			rc += " authoritative"
-		}
-		fmt.Println(rc)
-		os.Exit(1)
-	}
-	for _, answer := range answers {
-		fmt.Println(answer)
-	}
+	fmt.Println(rc)
 }
