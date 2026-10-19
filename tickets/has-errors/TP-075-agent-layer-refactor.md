@@ -44,6 +44,15 @@ branch: "tp-075-agent-layer-refactor"
 - [x] R2.9 hostlock_unix.go: one doc comment (no stacked old paragraph, no "who wires it").
 - [x] R2.10 The ticket's hook attribution: the remaining private test fields (path, retryAfter, onEngine, dnsPort, Node.tweak) — add a Scope bullet to TP-083 (tickets/backlog/TP-083-*.md, with a Log line) or correct this ticket's Log; blobOptions/newBlobs is this ticket's now (R2.5).
 - [x] R2.11 Nits: comments state constraints, not who calls (platform.go, node.go, dataplane.go, servespace.go, cmd platform.go, tests); validate the whole Platform/Host once in Prepare/ServeSpace or drop the partial nil check and its test-mentioning message; one name clearNetwork; rewrite Log line ~44: "Not verified here: the adapters' host-side paths outside the lab's Linux (macOS device on a real network: needs_human: macos)".
+- [ ] R3.1 One "back in space" line: a node that starts removed logs one line, with mode, after the dropped-connect warning (as before this ticket); runner and serverSpaces keep their own modeless line; test: strings.Count(out, "back in space") == 1 on the start-while-removed path, the line carries mode=, the warning comes first when a connect was requested.
+- [ ] R3.2 R2.8 was ticked but not done: tests still write Host fakes onto dp.Host from n.tweak after Prepare (status_test.go, resolver_test.go). Every Host/Platform fake goes into the Platform passed to Prepare (startDevice's opts get the *Platform before Prepare); n.tweak keeps only the private DataPlane fields (TP-083's). A Node.run that stopped copying plat.Host must fail a test.
+- [ ] R3.3 R2.1's Log line is missing: DESIGN.md "Engine and agent" changed.
+- [ ] R3.4 Comments state constraints, not callers: platform.go (Platform, Transports, BlobNet), servespace.go, node.go, supervisor/supervisor_linux.go, supervisor/options.go (NewRoot, "Zero values take the defaults"), rollback_linux_test.go.
+- [ ] R3.5 One name: runner.clearRoutes goes, the Host's clearNetwork logs its own warning; no duplicate "removing a previous run's routes failed" string.
+- [ ] R3.6 servespace.go: no conditional MaxHeld default (TP-104 set ServerMaxHeldSize directly); the test hook keeps the server's MaxHeld.
+- [ ] R3.7 A test pins markSockets per mode (device and supervisor true, worker false): the test helper's Transports records its argument.
+- [ ] R3.8 TP-083's ticket: its private-hooks list includes blobOptions; a Notes line that Host carries device-only adapters into the worker, kept off only by the Forward and RouteTable flags. Log line there.
+- [ ] R3.9 Nits: platform_test.go Transports closure → Transports; cmd/thinkpol/up.go applyPlatformDefaults moves into internal/agent (agent.ApplyOSDefaults) so cmd only calls it; optionally platform_{linux,darwin,other}.go → supported_*.go.
 
 ## Log
 - 2026-10-15 created in backlog
@@ -63,3 +72,4 @@ branch: "tp-075-agent-layer-refactor"
 - 2026-10-19 round 2: the worker's blob service is blobs.NewOnNet(o, Host.BlobNet), the fastBlobs limits override stays a private hook (blobOptions); TP-104's newBlobs hook and serveSpace's test-only Registry fallback are gone, the worker builds its registry through Host.Transports
 - 2026-10-19 round 2: one named map follower (follow) with markRemoved owning the removal warning; no warnKind (a kind held is the running node's, 0 is none); the node's back-in-space line carries its mode again; tests inject through Prepare's Platform; the private test hooks left (path, retryAfter, onEngine, dnsPort, tweak) are TP-083's scope
 - 2026-10-19 in-progress → review — make lint, make test green; make lab-test green (exit 0, 35 packages PASS) at d1e40b0. Not verified here: the adapters' host-side paths outside the lab's Linux (macOS device on a real network: needs_human: macos)
+- 2026-10-19 review → has-errors — review round 3: R3.1–R3.9
