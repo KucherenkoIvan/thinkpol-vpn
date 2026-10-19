@@ -9,14 +9,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	wgtun "golang.zx2c4.com/wireguard/tun"
-
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/blobs"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
-	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/path"
-	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/rules"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/tun"
@@ -77,6 +73,11 @@ type DataPlane struct {
 	DNS          bool
 	DNSUpstreams []netip.AddrPort
 
+	// Platform is what this data plane needs of its host: the adapters the
+	// composition root (cmd/thinkpol) builds for the OS it runs on, or a
+	// test's fakes.
+	Platform Platform
+
 	// A device's (Node.run): where its status goes, its Connect and
 	// Disconnect requests, and whether it starts disconnected.
 	report       *report
@@ -87,25 +88,17 @@ type DataPlane struct {
 	Rules         rules.Local
 	rulesRequests <-chan rulesRequest
 
-	// What tests swap: the TUN and its configurator, the path layer's
-	// timing, how long to wait before retrying what failed.
-	newTUN    func(name string) (wgtun.Device, netcfg.Configurator, error)
-	newRoutes func(log *slog.Logger, guard routetable.Guard) (dataplane.RouteTable, error)
-	// clearNetwork removes a previous run's routes (clearNetwork).
-	clearNetwork func() error
-	path         path.Options
-	retryAfter   time.Duration
+	// What tests tune: the path layer's timing, how long to wait before
+	// retrying what failed.
+	path       path.Options
+	retryAfter time.Duration
 	// blobOptions are the network functions and limits of the blob
 	// service a worker makes (serveSpace).
 	blobOptions blobs.Options
 	// onEngine sees each engine the data plane starts.
 	onEngine func(*dataplane.Engine)
-	// systemDNS points the OS at the resolver (dns.SetSystem), and
-	// systemUpstreams says what the OS used (dns.SystemUpstreams); dnsPort
-	// is the resolver's port (0: 53).
-	systemDNS       func(dns.SystemConfig) (dns.System, error)
-	systemUpstreams func(exclude []netip.Addr) ([]netip.Addr, error)
-	dnsPort         uint16
+	// dnsPort is the resolver's port (0: 53).
+	dnsPort uint16
 }
 
 // RetryAfter is how long a data plane waits before retrying an Apply, a
@@ -125,23 +118,11 @@ func RunDataPlane(ctx context.Context, dp DataPlane) error {
 	if dp.Interface == "" {
 		dp.Interface = tun.DefaultName
 	}
-	if dp.newTUN == nil {
-		dp.newTUN = newTUN
-	}
-	if dp.newRoutes == nil {
-		dp.newRoutes = newRouteTable
-	}
-	if dp.clearNetwork == nil {
-		dp.clearNetwork = clearHostNetwork
+	if dp.Platform.NewTUN == nil {
+		return errors.New("agent: no platform: the composition root builds one for the OS (cmd/thinkpol), tests fake one")
 	}
 	if dp.retryAfter == 0 {
 		dp.retryAfter = RetryAfter
-	}
-	if dp.systemDNS == nil {
-		dp.systemDNS = dns.SetSystem
-	}
-	if dp.systemUpstreams == nil {
-		dp.systemUpstreams = dns.SystemUpstreams
 	}
 	if dp.Log == nil {
 		dp.Log = slog.New(slog.DiscardHandler)
@@ -150,7 +131,13 @@ func RunDataPlane(ctx context.Context, dp DataPlane) error {
 	if err != nil {
 		return err
 	}
-	r := &runner{dp: dp, cur: dp.Map, section: section, maps: dp.Maps, down: dp.disconnected, guard: &dnsGuard{}, tun: dp.Interface}
+	r := &runner{
+		dp: dp, maps: dp.Maps, down: dp.disconnected, guard: &dnsGuard{}, tun: dp.Interface,
+		mapFollower: mapFollower{
+			log: dp.Log, keys: dp.Keys, cur: dp.Map, section: section,
+			removedMsg: "the data plane stops until a map includes it again", warnKind: true,
+		},
+	}
 	dp.report.set(func(p *report) { p.dns = r.guard.problem })
 	if dp.Blobs != nil {
 		r.blobsChanged = dp.Blobs.Subscribe()
@@ -191,28 +178,6 @@ type rulesRequest struct {
 	done  chan<- error
 }
 
-// newTUN takes the overlay's network configuration (one owner per network
-// namespace: a second node agent here fails now, before anything changed)
-// and creates the TUN; the engine sets its MTU.
-func newTUN(name string) (wgtun.Device, netcfg.Configurator, error) {
-	ifc, err := netcfg.New(netcfg.OwnerOverlay)
-	if err != nil {
-		return nil, nil, err
-	}
-	dev, err := tun.Create(name, 1420)
-	if err != nil {
-		_ = ifc.Close()
-		return nil, nil, err
-	}
-	return dev, ifc, nil
-}
-
-// newRouteTable takes the host's route-table enforcement (one per network
-// namespace, like the overlay's configuration), with guard (nil: none).
-func newRouteTable(log *slog.Logger, guard routetable.Guard) (dataplane.RouteTable, error) {
-	return routetable.New(guard, log)
-}
-
 // clearRoutes removes what a crashed run left in the host's routing, route
 // table (its leak guard included) and overlay, while nothing of this run
 // holds either.
@@ -220,18 +185,18 @@ func (r *runner) clearRoutes() {
 	if !r.dp.RouteTable {
 		return
 	}
-	if err := r.dp.clearNetwork(); err != nil {
+	if err := r.dp.Platform.clearNetwork(); err != nil {
 		r.dp.Log.Warn("removing a previous run's routes failed", "err", err)
 	}
 }
 
 // runner follows the space's maps and runs the data plane while the node
-// is in the space.
+// is in the space; the maps it follows (its section, its removals) are the
+// mapFollower.
 type runner struct {
-	dp      DataPlane
-	maps    <-chan []byte
-	cur     *netmap.Map
-	section netmap.Section
+	dp   DataPlane
+	maps <-chan []byte
+	mapFollower
 
 	// engine and listeners are nil while stopped: the node was removed,
 	// or starting again failed; so are resolver and system, the OS's
@@ -249,7 +214,6 @@ type runner struct {
 	guard      *dnsGuard
 	systemCfg  dns.SystemConfig
 	dnsRetryAt time.Time
-	removed    bool
 	// down is set while a device is disconnected: it follows the maps but
 	// runs nothing.
 	down bool
@@ -263,7 +227,7 @@ type runner struct {
 // start brings the data plane up on the current section. It fails with a
 // *StartError.
 func (r *runner) start(ctx context.Context) error {
-	dev, ifc, err := r.dp.newTUN(r.dp.Interface)
+	dev, ifc, err := r.dp.Platform.NewTUN(r.dp.Interface)
 	if err != nil {
 		r.clearRoutes() // a crashed run's table would block traffic meanwhile
 		return &StartError{Step: StepTUN, Err: err}
@@ -273,7 +237,7 @@ func (r *runner) start(ctx context.Context) error {
 	}
 	var routes dataplane.RouteTable
 	if r.dp.RouteTable {
-		if routes, err = r.dp.newRoutes(r.dp.Log, newHostGuard()); err != nil {
+		if routes, err = r.dp.Platform.NewRoutes(r.dp.Log, r.dp.Platform.NewGuard()); err != nil {
 			if ifc != nil {
 				_ = ifc.Close()
 			}
@@ -514,45 +478,20 @@ func (r *runner) retry(ctx context.Context) {
 	r.apply(ctx)
 }
 
-// next takes a newer map, if it is one.
+// next takes a newer map, if it is one, and acts on it: a map without the
+// node stops the data plane, one with it applies it (or starts the data
+// plane on it).
 func (r *runner) next(ctx context.Context, envelope []byte) {
-	m, err := r.cur.Next(envelope)
-	switch {
-	case errors.Is(err, netmap.ErrNotNewer):
-		r.dp.Log.Debug("map not newer, ignored", "version", r.cur.Header().Version)
-		return
-	case err != nil:
-		r.dp.Log.Warn("map refused, keeping the current one", "version", r.cur.Header().Version, "err", err)
+	if !r.take(envelope) {
 		return
 	}
-	section, err := openSection(m, r.dp.Keys)
-	if errors.Is(err, netmap.ErrNotRecipient) {
-		// A valid newer map without the node: it was removed. The map
-		// is taken, so no older one that has the node can come back.
-		r.cur = m
-		if !r.removed {
-			r.removed = true
-			r.dp.Log.Warn("removed from space: the map has no section for this node; the data plane stops until a map includes it again",
-				"version", m.Header().Version)
-		}
+	if r.removed {
 		r.stop()
 		r.retryAt = time.Time{}
 		r.updateBlobs()
 		return
 	}
-	if err != nil {
-		r.dp.Log.Error("map refused, keeping the current one", "version", r.cur.Header().Version, "err", err)
-		return
-	}
-	if section.Node.Kind != r.section.Node.Kind {
-		r.dp.Log.Warn("the map changes this node's kind; restart the node to change its mode", "kind", section.Node.Kind)
-	}
-	r.cur, r.section = m, section
 	if r.engine == nil {
-		if r.removed {
-			r.removed = false
-			r.dp.Log.Info("back in space", "version", m.Header().Version)
-		}
 		if !r.down {
 			r.tryStart(ctx)
 		}

@@ -99,8 +99,11 @@ func runServerSpacesIn(t *testing.T, s *testSpace, sup *fakeSupervisor, stateDir
 		edit(&section)
 	}
 	ss := &serverSpaces{
-		sup: sup, reg: reg, log: slog.New(slog.NewTextHandler(r.log, nil)), keys: s.a, trust: s.trust(),
-		retryAfter: testRetry, cur: m, section: section,
+		sup: sup, reg: reg, trust: s.trust(), retryAfter: testRetry,
+		mapFollower: mapFollower{
+			log: slog.New(slog.NewTextHandler(r.log, nil)), keys: s.a, cur: m, section: section,
+			removedMsg: "its worker and listeners stop until a map includes it again", warnKind: true,
+		},
 	}
 	ss.stateDir = stateDir
 	if tweak != nil {

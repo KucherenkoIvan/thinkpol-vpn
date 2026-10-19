@@ -17,8 +17,11 @@ import (
 // serves it inside its sandbox (worker.Run): it waits for the supervisor's
 // WorkerConfig, then runs RunDataPlane on its own TUN in its namespace,
 // with the supervisor's shared listeners as its inbound, applying each
-// newer map the supervisor sends.
-func ServeSpace(log *slog.Logger) worker.Serve { return serveSpace(log, DataPlane{}) }
+// newer map the supervisor sends. The platform is the worker's host (its
+// namespace's) adapters, built by the composition root (cmd/thinkpol).
+func ServeSpace(log *slog.Logger, plat Platform) worker.Serve {
+	return serveSpace(log, DataPlane{Platform: plat})
+}
 
 // serveSpace is ServeSpace with what tests swap in base (registry, TUN,
 // timing).

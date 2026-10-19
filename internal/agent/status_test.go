@@ -47,7 +47,7 @@ func startDevice(t *testing.T, s *testSpace, reg *transport.Registry, connect bo
 	if err != nil {
 		t.Fatal(err)
 	}
-	n, err := Prepare(cfg, logs)
+	n, err := Prepare(cfg, logs, testPlatform())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,13 +56,13 @@ func startDevice(t *testing.T, s *testSpace, reg *transport.Registry, connect bo
 		virtual := rn.dataPlane(reg, s.b, n.state.Map)
 		dp.path, dp.retryAfter = virtual.path, virtual.retryAfter
 		dp.RouteTable = false // virtual TUNs: the host's routing stays as it is
-		dp.newTUN = func(name string) (wgtun.Device, netcfg.Configurator, error) {
+		dp.Platform.NewTUN = func(name string) (wgtun.Device, netcfg.Configurator, error) {
 			select {
 			case <-d.failTUN:
 				return nil, nil, errors.New("no TUN today")
 			default:
 			}
-			return virtual.newTUN(name)
+			return virtual.Platform.NewTUN(name)
 		}
 		for _, o := range opts {
 			o(nil, dp)
@@ -245,14 +245,15 @@ func TestARemovedDeviceConnectsOnceBack(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	n, err := Prepare(cfg, logs)
+	n, err := Prepare(cfg, logs, testPlatform())
 	if err != nil {
 		t.Fatal(err)
 	}
 	n.tweak = func(dp *DataPlane) {
 		virtual := rn.dataPlane(reg, s.b, n.state.Map)
-		dp.newTUN, dp.path, dp.retryAfter = virtual.newTUN, virtual.path, virtual.retryAfter
+		dp.path, dp.retryAfter = virtual.path, virtual.retryAfter
 		dp.RouteTable = false
+		dp.Platform.NewTUN = virtual.Platform.NewTUN
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -283,7 +284,7 @@ func TestARemovedDeviceConnectsOnceBack(t *testing.T) {
 
 func TestAServerRefusesConnect(t *testing.T) {
 	s := newTestSpace(t)
-	n, err := Prepare(testConfig(s.stateDir(t, s.a, 1)), Logs{})
+	n, err := Prepare(testConfig(s.stateDir(t, s.a, 1)), Logs{}, testPlatform())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -430,7 +431,7 @@ func TestRulePresetIsStoredByTheService(t *testing.T) {
 		t.Fatalf("status %+v", st)
 	}
 	// Read back at the next start.
-	n, err := Prepare(b.node.cfg, Logs{})
+	n, err := Prepare(b.node.cfg, Logs{}, testPlatform())
 	if err != nil || n.Status().RulePreset != "everything" {
 		t.Fatalf("restart: %v", err)
 	}
@@ -441,7 +442,7 @@ func TestRulePresetIsStoredByTheService(t *testing.T) {
 		t.Fatalf("status %+v", st)
 	}
 	// A server has no rules of its own.
-	if a, err := Prepare(testConfig(s.stateDir(t, s.a, 1)), Logs{}); err != nil || !errors.Is(a.SetRulePreset(ctx, "everything"), ErrServerMode) {
+	if a, err := Prepare(testConfig(s.stateDir(t, s.a, 1)), Logs{}, testPlatform()); err != nil || !errors.Is(a.SetRulePreset(ctx, "everything"), ErrServerMode) {
 		t.Fatalf("server: %v", err)
 	}
 }
@@ -451,7 +452,7 @@ func TestTheDevicesOwnRulesAreKept(t *testing.T) {
 	s := newTestSpace(t)
 	dir := s.stateDir(t, s.b, 1)
 	writeFile(t, filepath.Join(dir, LocalRulesFile), []byte("# mine\ncidr:192.0.2.0/24 -> direct\n"), 0o644)
-	n, err := Prepare(testConfig(dir), Logs{})
+	n, err := Prepare(testConfig(dir), Logs{}, testPlatform())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -482,7 +483,7 @@ func TestABadLocalRulesFileFailsClosed(t *testing.T) {
 	} {
 		dir := s.stateDir(t, s.b, 1)
 		writeFile(t, filepath.Join(dir, LocalRulesFile), []byte(tc.data), tc.perm)
-		if _, err := Prepare(testConfig(dir), Logs{}); err == nil || !strings.Contains(err.Error(), LocalRulesFile) {
+		if _, err := Prepare(testConfig(dir), Logs{}, testPlatform()); err == nil || !strings.Contains(err.Error(), LocalRulesFile) {
 			if runtime.GOOS != "windows" || name != "writable by all" {
 				t.Errorf("%s: got %v", name, err)
 			}
@@ -494,7 +495,7 @@ func TestADeviceStartingDisconnectedNeedsTheAPI(t *testing.T) {
 	s := newTestSpace(t)
 	cfg := testConfig(s.stateDir(t, s.b, 1))
 	cfg.Connect, cfg.APISocket = false, ""
-	if _, err := Prepare(cfg, Logs{}); err == nil || !strings.Contains(err.Error(), "local API") {
+	if _, err := Prepare(cfg, Logs{}, testPlatform()); err == nil || !strings.Contains(err.Error(), "local API") {
 		t.Fatalf("got %v", err)
 	}
 	cfg.Mode = ModeDevice
@@ -502,7 +503,7 @@ func TestADeviceStartingDisconnectedNeedsTheAPI(t *testing.T) {
 		t.Fatal("Check took it")
 	}
 	cfg.APISocket = "/run/x/api.sock"
-	if _, err := Prepare(cfg, Logs{}); err != nil {
+	if _, err := Prepare(cfg, Logs{}, testPlatform()); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -512,51 +513,72 @@ func TestADeviceStartingDisconnectedNeedsTheAPI(t *testing.T) {
 // plane's owners on the host: the route table's and the overlay's, whose
 // routes went with the utun but stayed in its record on macOS.
 func TestAStartWhileDisconnectedClearsACrashedRunsRoutes(t *testing.T) {
-	prevHost, prevOwner := clearHostNetwork, clearOwner
-	t.Cleanup(func() { clearHostNetwork, clearOwner = prevHost, prevOwner })
-	cleared := make(chan []netcfg.Owner, 4)
-	clearHostNetwork = func() error {
-		var owners []netcfg.Owner
-		clearOwner = func(o netcfg.Owner) error { owners = append(owners, o); return nil }
-		err := clearNetwork()
-		cleared <- owners
-		return err
-	}
 	s := newTestSpace(t)
 	_, reg := memoryRegistry(t)
-	startDevice(t, s, reg, false)
-	select {
-	case owners := <-cleared:
-		if want := []netcfg.Owner{netcfg.OwnerRouteTable, netcfg.OwnerOverlay}; !slices.Equal(owners, want) {
-			t.Fatalf("cleared %v, want %v", owners, want)
+	cleared := make(chan netcfg.Owner, 4)
+	plat := testPlatform()
+	plat.ClearOwner = func(o netcfg.Owner) error { cleared <- o; return nil }
+	rn := newRunningNode()
+	logs, err := NewLogs("info", rn.log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := testConfig(s.stateDir(t, s.b, 1))
+	cfg.Connect = false
+	n, err := Prepare(cfg, logs, plat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n.tweak = func(dp *DataPlane) {
+		virtual := rn.dataPlane(reg, s.b, n.state.Map)
+		dp.path, dp.retryAfter = virtual.path, virtual.retryAfter
+		dp.RouteTable = false
+		dp.Platform.NewTUN = virtual.Platform.NewTUN
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- n.run(ctx, reg, rn.maps) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Error("the node didn't stop")
 		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("a disconnected start cleared nothing")
+	})
+	for _, want := range []netcfg.Owner{netcfg.OwnerRouteTable, netcfg.OwnerOverlay} {
+		select {
+		case got := <-cleared:
+			if got != want {
+				t.Fatalf("cleared %v, want %v", got, want)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("a disconnected start cleared nothing")
+		}
 	}
 }
 
 // Clearing one owner failing doesn't keep the other's leftovers; an OS
-// without an adapter for an owner has nothing to clear.
+// without an adapter for an owner has nothing to clear. (The hook is
+// Platform.ClearOwner, where the composition root builds the real one.)
 func TestClearingTheNetworkTriesBothOwners(t *testing.T) {
-	prev := clearOwner
-	t.Cleanup(func() { clearOwner = prev })
 	var owners []netcfg.Owner
-	clearOwner = func(o netcfg.Owner) error {
+	plat := Platform{ClearOwner: func(o netcfg.Owner) error {
 		owners = append(owners, o)
 		if o == netcfg.OwnerRouteTable {
 			return errors.New("no routing socket today")
 		}
 		return nil
-	}
-	err := clearNetwork()
+	}}
+	err := plat.clearNetwork()
 	if !slices.Equal(owners, []netcfg.Owner{netcfg.OwnerRouteTable, netcfg.OwnerOverlay}) {
 		t.Errorf("cleared %v", owners)
 	}
 	if err == nil || !strings.Contains(err.Error(), "route-table: no routing socket today") {
 		t.Errorf("error %v", err)
 	}
-	clearOwner = func(netcfg.Owner) error { return fmt.Errorf("netcfg: %w", errors.ErrUnsupported) }
-	if err := clearNetwork(); err != nil {
+	plat.ClearOwner = func(netcfg.Owner) error { return fmt.Errorf("netcfg: %w", errors.ErrUnsupported) }
+	if err := plat.clearNetwork(); err != nil {
 		t.Errorf("unsupported: %v", err)
 	}
 }

@@ -78,8 +78,8 @@ func TestADevicePointsTheSystemAtItsResolverWhileConnected(t *testing.T) {
 			c.DNS = true
 			return
 		}
-		dp.systemDNS = sys.Set
-		dp.systemUpstreams = func(exclude []netip.Addr) ([]netip.Addr, error) {
+		dp.Platform.SetSystemDNS = sys.Set
+		dp.Platform.SystemUpstreams = func(exclude []netip.Addr) ([]netip.Addr, error) {
 			asked = append(asked, exclude)
 			return []netip.Addr{netip.MustParseAddr("192.0.2.53")}, nil
 		}
@@ -149,7 +149,7 @@ func TestParseUpstreams(t *testing.T) {
 // resolvers: both families, port 53, every one passing the worker's
 // egress; with -dns-upstream, the configured ones.
 func TestAWorkerResolvesThroughTheDefaultPublicUpstreams(t *testing.T) {
-	s := &serverSpaces{dns: true, log: slog.New(slog.DiscardHandler)}
+	s := &serverSpaces{dns: true, mapFollower: mapFollower{log: slog.New(slog.DiscardHandler)}}
 	want := []netip.AddrPort{
 		netip.MustParseAddrPort("9.9.9.9:53"),
 		netip.MustParseAddrPort("[2620:fe::fe]:53"),
@@ -195,8 +195,9 @@ func TestAWorkerResolvesThroughTheDefaultPublicUpstreams(t *testing.T) {
 func TestAWorkerWithEveryUpstreamRefusedHasNone(t *testing.T) {
 	var buf bytes.Buffer
 	log := slog.New(slog.NewTextHandler(&buf, nil))
-	s := &serverSpaces{dns: true, log: log, report: &report{mode: ModeServer},
+	s := &serverSpaces{dns: true, report: &report{mode: ModeServer},
 		dnsUpstreams: []netip.AddrPort{netip.MustParseAddrPort("192.168.1.53:53"), netip.MustParseAddrPort("169.254.169.254:53")}}
+	s.log = log
 	ups := s.workerUpstreams()
 	if ups != nil {
 		t.Fatalf("all refused, kept: %v", ups)
@@ -216,8 +217,8 @@ func TestAWorkerWithEveryUpstreamRefusedHasNone(t *testing.T) {
 	}
 	asked := false
 	r := &runner{dp: DataPlane{DNS: true, DNSUpstreams: ups, Forward: true, Log: log,
-		systemUpstreams: func([]netip.Addr) ([]netip.Addr, error) { asked = true; return nil, nil },
-	}, section: section}
+		Platform: Platform{SystemUpstreams: func([]netip.Addr) ([]netip.Addr, error) { asked = true; return nil, nil }},
+	}, mapFollower: mapFollower{section: section}}
 	if res := r.newResolver(); res == nil {
 		t.Fatal("no resolver")
 	}
@@ -248,11 +249,11 @@ func TestAServerSectionInDeviceModeFallsBackToTheSystemResolvers(t *testing.T) {
 	}
 	asked := false
 	r := &runner{dp: DataPlane{DNS: true, Log: slog.New(slog.DiscardHandler),
-		systemUpstreams: func([]netip.Addr) ([]netip.Addr, error) {
+		Platform: Platform{SystemUpstreams: func([]netip.Addr) ([]netip.Addr, error) {
 			asked = true
 			return []netip.Addr{netip.MustParseAddr("192.0.2.53")}, nil
-		},
-	}, section: section}
+		}},
+	}, mapFollower: mapFollower{section: section}}
 	if res := r.newResolver(); res == nil {
 		t.Fatal("no resolver")
 	}
@@ -273,8 +274,9 @@ func TestAnUpstreamTheEgressRefusesIsReportedNotSilentlyDropped(t *testing.T) {
 	private := netip.MustParseAddrPort("192.168.1.53:53")
 	metadata := netip.MustParseAddrPort("169.254.169.254:53")
 	public := netip.MustParseAddrPort("9.9.9.9:53")
-	s := &serverSpaces{dns: true, log: slog.New(slog.NewTextHandler(&buf, nil)), report: &report{mode: ModeServer},
+	s := &serverSpaces{dns: true, report: &report{mode: ModeServer},
 		dnsUpstreams: []netip.AddrPort{private, public, metadata}}
+	s.log = slog.New(slog.NewTextHandler(&buf, nil))
 	if got := s.workerUpstreams(); !slices.Equal(got, []netip.AddrPort{public}) {
 		t.Fatalf("kept: %v", got)
 	}
@@ -339,8 +341,8 @@ func TestUnprotectedDNSIsReportedAndRetried(t *testing.T) {
 			c.DNS = true
 			return
 		}
-		dp.systemDNS = sys.Set
-		dp.systemUpstreams = func([]netip.Addr) ([]netip.Addr, error) { return nil, nil }
+		dp.Platform.SetSystemDNS = sys.Set
+		dp.Platform.SystemUpstreams = func([]netip.Addr) ([]netip.Addr, error) { return nil, nil }
 		dp.dnsPort = 5353
 	})
 	err := b.node.Connect(context.Background())
@@ -406,10 +408,9 @@ func TestTheDirectUpstreamsReachTheRouteTable(t *testing.T) {
 			return
 		}
 		dp.RouteTable = true
-		dp.newRoutes = func(*slog.Logger, routetable.Guard) (dataplane.RouteTable, error) { return table, nil }
-		dp.clearNetwork = func() error { return nil }
-		dp.systemDNS = sys.Set
-		dp.systemUpstreams = func([]netip.Addr) ([]netip.Addr, error) {
+		dp.Platform.NewRoutes = func(*slog.Logger, routetable.Guard) (dataplane.RouteTable, error) { return table, nil }
+		dp.Platform.SetSystemDNS = sys.Set
+		dp.Platform.SystemUpstreams = func([]netip.Addr) ([]netip.Addr, error) {
 			return []netip.Addr{netip.MustParseAddr("192.0.2.53")}, nil
 		}
 		dp.dnsPort = 5353
@@ -443,9 +444,8 @@ func TestAConfiguredUpstreamReachesTheRouteTableWithItsPort(t *testing.T) {
 			return
 		}
 		dp.RouteTable = true
-		dp.newRoutes = func(*slog.Logger, routetable.Guard) (dataplane.RouteTable, error) { return table, nil }
-		dp.clearNetwork = func() error { return nil }
-		dp.systemDNS = (&fakeSystem{}).Set
+		dp.Platform.NewRoutes = func(*slog.Logger, routetable.Guard) (dataplane.RouteTable, error) { return table, nil }
+		dp.Platform.SetSystemDNS = (&fakeSystem{}).Set
 		dp.DNSUpstreams = []netip.AddrPort{up}
 		dp.dnsPort = 5353
 	})

@@ -61,7 +61,7 @@ func runUp(ctx context.Context, e env, args []string) error {
 	}
 	// What logs through slog's default (nsthread) reaches the node's log too.
 	slog.SetDefault(logs.Logger)
-	node, err := agent.Prepare(cfg, logs)
+	node, err := agent.Prepare(cfg, logs, platform())
 	if err != nil {
 		return err
 	}

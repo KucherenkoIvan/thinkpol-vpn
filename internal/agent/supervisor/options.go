@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/egress"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
@@ -122,6 +123,9 @@ type Options struct {
 	// Command starts a worker; the supervisor appends "-space <id>".
 	// Default: the running binary's `worker` command (/proc/self/exe).
 	Command []string
+	// NewRoot builds the supervisor's network configurator, the root
+	// namespace's owner. Default: netcfg.New(OwnerSupervisor).
+	NewRoot func() (netcfg.Configurator, error)
 	// Env is the workers' whole environment (default: empty).
 	Env []string
 	// TransitIPv4 and TransitIPv6 are carved into one /30 and one /64 per

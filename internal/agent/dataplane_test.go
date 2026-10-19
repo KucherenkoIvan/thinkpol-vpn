@@ -63,16 +63,18 @@ func newRunningNode() *runningNode {
 }
 
 func (n *runningNode) dataPlane(reg *transport.Registry, keys NodeKeys, m *netmap.Map) DataPlane {
+	plat := testPlatform()
+	plat.NewTUN = func(string) (wgtun.Device, netcfg.Configurator, error) {
+		ch := tuntest.NewChannelTUN()
+		n.ch.Store(ch)
+		n.tuns.Add(1)
+		go n.stack(ch)
+		return ch.TUN(), n.ifc, nil
+	}
 	return DataPlane{
 		Keys: keys, Map: m, Maps: n.maps, Registry: reg, Inbound: DirectInbound(reg),
-		Log: slog.New(slog.NewTextHandler(n.log, &slog.HandlerOptions{Level: slog.LevelDebug})),
-		newTUN: func(string) (wgtun.Device, netcfg.Configurator, error) {
-			ch := tuntest.NewChannelTUN()
-			n.ch.Store(ch)
-			n.tuns.Add(1)
-			go n.stack(ch)
-			return ch.TUN(), n.ifc, nil
-		},
+		Log:        slog.New(slog.NewTextHandler(n.log, &slog.HandlerOptions{Level: slog.LevelDebug})),
+		Platform:   plat,
 		path:       fastPaths,
 		retryAfter: testRetry,
 	}
@@ -420,12 +422,13 @@ func TestDataPlaneRefusesAMapWithoutTheNode(t *testing.T) {
 	_, reg := memoryRegistry(t)
 	stranger := NodeKeys{ID: netmap.NodeID{9}, Map: netmap.GenerateNodeKey(), WireGuard: netmap.GenerateWireGuardKey()}
 	created := false
+	plat := testPlatform()
+	plat.NewTUN = func(string) (wgtun.Device, netcfg.Configurator, error) {
+		created = true
+		return tuntest.NewChannelTUN().TUN(), nil, nil
+	}
 	err := RunDataPlane(context.Background(), DataPlane{
-		Keys: stranger, Map: s.verified(t, 1), Registry: reg, Inbound: DirectInbound(reg),
-		newTUN: func(string) (wgtun.Device, netcfg.Configurator, error) {
-			created = true
-			return tuntest.NewChannelTUN().TUN(), nil, nil
-		},
+		Keys: stranger, Map: s.verified(t, 1), Registry: reg, Inbound: DirectInbound(reg), Platform: plat,
 	})
 	if err == nil || !strings.Contains(err.Error(), "no section for this node's key") {
 		t.Fatalf("got %v", err)
@@ -463,9 +466,9 @@ func TestAFailedStartClearsACrashedRunsRouteTable(t *testing.T) {
 	dp := n.dataPlane(reg, s.a, s.verified(t, 1))
 	dp.RouteTable = true
 	var cleared atomic.Int32
-	dp.clearNetwork = func() error { cleared.Add(1); return nil }
-	dp.newTUN = func(string) (wgtun.Device, netcfg.Configurator, error) { return nil, nil, errors.New("no TUN today") }
-	dp.newRoutes = func(*slog.Logger, routetable.Guard) (dataplane.RouteTable, error) { panic("not reached") }
+	dp.Platform.ClearOwner = func(netcfg.Owner) error { cleared.Add(1); return nil }
+	dp.Platform.NewTUN = func(string) (wgtun.Device, netcfg.Configurator, error) { return nil, nil, errors.New("no TUN today") }
+	dp.Platform.NewRoutes = func(*slog.Logger, routetable.Guard) (dataplane.RouteTable, error) { panic("not reached") }
 	if err := RunDataPlane(n.ctx, dp); err == nil {
 		t.Fatal("RunDataPlane started without a TUN")
 	}

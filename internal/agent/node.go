@@ -18,53 +18,10 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/supervisor"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/blobs"
-	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
-	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
-	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/rules"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
-
-// What a node does to the host outside a data plane, at its start: take
-// the host's agent lock, put back what a crashed run left in the routing
-// table and the resolver configuration. Tests swap them, so they never
-// touch the host.
-var (
-	clearHostNetwork = clearNetwork
-	restoreHostDNS   = dns.RestoreSystem
-	lockHost         = hostLock
-)
-
-// clearOwner removes what a dead configurator of one owner left; tests
-// swap it.
-var clearOwner = clearHostOwner
-
-// clearHostOwner is netcfg.Clear, but for the route table, whose leak
-// guard goes too, closed while the route table's owner lock is held and
-// left alone when it can't be taken (routetable.Clear).
-func clearHostOwner(o netcfg.Owner) error {
-	if o == netcfg.OwnerRouteTable {
-		return routetable.Clear(newHostGuard())
-	}
-	return netcfg.Clear(o)
-}
-
-// clearNetwork removes what a device's crashed run left in the host's
-// routing, for both of its owners, in this order: route-table
-// enforcement's routes (its rejects outlive the TUN) with its leak guard,
-// then the overlay's (on macOS they go with the utun, but stay in the
-// overlay's record), each owner's record with them. The second is cleared
-// whatever the first says.
-func clearNetwork() error {
-	var errs []error
-	for _, o := range []netcfg.Owner{netcfg.OwnerRouteTable, netcfg.OwnerOverlay} {
-		if err := clearOwner(o); err != nil && !errors.Is(err, errors.ErrUnsupported) {
-			errs = append(errs, fmt.Errorf("%v: %w", o, err))
-		}
-	}
-	return errors.Join(errs...)
-}
 
 // Node is a node ready to run (`thinkpol up`): its configuration and state,
 // read and checked, nothing on the host touched yet.
@@ -73,6 +30,9 @@ type Node struct {
 	state State
 	mode  Mode
 	logs  Logs
+	// plat is what the node needs of its host, built by the composition
+	// root (cmd/thinkpol); tests fake it.
+	plat Platform
 	// want is set while a device is meant to be connected.
 	want bool
 	// dnsUpstreams are cfg.DNSUpstream's.
@@ -95,8 +55,9 @@ type Node struct {
 
 // Prepare reads and checks what a node runs from (LoadState) and decides
 // its mode: a node whose map is invalid, or holds no section for its keys,
-// never starts.
-func Prepare(cfg Config, logs Logs) (*Node, error) {
+// never starts. The platform is the host's adapters, built by the
+// composition root (cmd/thinkpol).
+func Prepare(cfg Config, logs Logs, plat Platform) (*Node, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -122,7 +83,7 @@ func Prepare(cfg Config, logs Logs) (*Node, error) {
 		logs.Warn("the state directory's map.bin is not used: the map comes from elsewhere", "map", st.MapPath)
 	}
 	n := &Node{
-		cfg: cfg, state: st, mode: cfg.Mode, logs: logs, want: cfg.Connect, dnsUpstreams: upstreams,
+		cfg: cfg, state: st, mode: cfg.Mode, logs: logs, plat: plat, want: cfg.Connect, dnsUpstreams: upstreams,
 		requests: make(chan connectRequest), stopped: make(chan struct{}), rulesRequests: make(chan rulesRequest),
 	}
 	n.local = st.LocalRules
@@ -263,7 +224,7 @@ func (n *Node) Adapters(reload <-chan os.Signal) ([]app.Adapter, error) {
 	// One node agent per host, taken before anything of this node (or the
 	// caller's adapters) touches the host: a second agent would undo the
 	// first's routes and resolver configuration with run's cleanups.
-	unlock, err := lockHost()
+	unlock, err := n.plat.LockHost()
 	if err != nil {
 		return nil, err
 	}
@@ -292,7 +253,7 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 	}
 	// A resolver configuration a crash left behind goes back first,
 	// whatever the node does next.
-	if err := restoreHostDNS(); err != nil {
+	if err := n.plat.RestoreDNS(); err != nil {
 		n.logs.Warn("DNS: restoring the system's resolver configuration left behind", "err", err)
 	}
 	if n.state.Removed && !n.awaitSection(ctx, maps) {
@@ -315,6 +276,7 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 		DNS:          n.cfg.DNS,
 		DNSUpstreams: n.dnsUpstreams,
 		RouteTable:   true,
+		Platform:     n.plat,
 
 		report:        &n.report,
 		requests:      n.requests,
@@ -334,7 +296,7 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 // when the node died connected (a crash, kill -9), for a device that
 // starts without connecting: connecting takes it over anyway.
 func (n *Node) clearNetwork() {
-	if err := clearHostNetwork(); err != nil {
+	if err := n.plat.clearNetwork(); err != nil {
 		n.logs.Warn("removing a previous run's routes failed", "err", err)
 	}
 }
@@ -346,6 +308,8 @@ func (n *Node) clearNetwork() {
 func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
 	n.logs.Warn("removed from space: the map has no section for this node; waiting for a map that includes it",
 		"version", n.state.Map.Header().Version)
+	f := mapFollower{log: n.logs.Logger, keys: n.state.Keys, cur: n.state.Map, removed: true,
+		removedMsg: "waiting for a map that includes it"}
 	requested := false
 	for {
 		select {
@@ -364,31 +328,20 @@ func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
 				maps = nil
 				continue
 			}
-			m, err := n.state.Map.Next(env)
-			if errors.Is(err, netmap.ErrNotNewer) {
+			if !f.take(env) {
 				continue
 			}
-			if err != nil {
-				n.logs.Warn("map refused, keeping the current one", "version", n.state.Map.Header().Version, "err", err)
+			if f.removed {
+				// Still out: the report gets the newer map's version.
+				n.report.set(func(p *report) { p.version = f.cur.Header().Version })
 				continue
 			}
-			section, err := openSection(m, n.state.Keys)
-			if errors.Is(err, netmap.ErrNotRecipient) {
-				n.state.Map = m
-				n.report.set(func(p *report) { p.version = m.Header().Version })
-				continue
-			}
-			if err != nil {
-				n.logs.Error("map refused, keeping the current one", "version", n.state.Map.Header().Version, "err", err)
-				continue
-			}
-			n.state.Map, n.state.Section, n.state.Removed = m, section, false
+			n.state.Map, n.state.Section, n.state.Removed = f.cur, f.section, false
 			n.resolveMode()
-			n.report.set(func(p *report) { p.mode, p.version, p.removed = n.mode, m.Header().Version, false })
+			n.report.set(func(p *report) { p.mode, p.version, p.removed = n.mode, f.cur.Header().Version, false })
 			if requested && n.mode == ModeServer {
 				n.logs.Warn("a connect or disconnect taken while removed is dropped: this node is a server, which always serves its spaces")
 			}
-			n.logs.Info("back in space", "version", m.Header().Version, "mode", n.mode)
 			return true
 		}
 	}
@@ -405,7 +358,7 @@ func (n *Node) runServer(ctx context.Context, reg *transport.Registry, maps chan
 	if err != nil {
 		return err
 	}
-	sup, err := supervisor.New(supervisor.Options{
+	sup, err := n.plat.NewSupervisor(supervisor.Options{
 		Transports:    reg,
 		EgressAllowed: allowed,
 		Log:           n.logs.With("component", "supervisor"),
@@ -427,11 +380,15 @@ func (n *Node) runServer(ctx context.Context, reg *transport.Registry, maps chan
 	n.report.set(func(p *report) { p.workers = sup })
 	defer n.report.set(func(p *report) { p.workers, p.dnsUpstreamsRefused = nil, 0 })
 	s := &serverSpaces{
-		sup: sup, reg: reg, log: n.logs.Logger, keys: n.state.Keys, trust: n.state.Trust,
-		iface: n.cfg.Interface, linkMTU: n.cfg.LinkMTU, cur: n.state.Map, section: n.state.Section,
+		sup: sup, reg: reg, trust: n.state.Trust,
+		iface: n.cfg.Interface, linkMTU: n.cfg.LinkMTU,
 		dns: n.cfg.DNS, dnsUpstreams: n.dnsUpstreams, egressAllowed: allowed,
 		retryAfter: RetryAfter, report: &n.report, requests: n.requests, rulesRequests: n.rulesRequests,
 		stateDir: n.cfg.StateDir,
+		mapFollower: mapFollower{
+			log: n.logs.Logger, keys: n.state.Keys, cur: n.state.Map, section: n.state.Section,
+			removedMsg: "its worker and listeners stop until a map includes it again", warnKind: true,
+		},
 	}
 	return s.run(ctx, maps)
 }
@@ -454,12 +411,11 @@ type spaceServer interface {
 	Egress() supervisor.EgressInfo
 }
 
-// serverSpaces keeps the supervisor serving the node's current map.
+// serverSpaces keeps the supervisor serving the node's current map; the
+// map it follows (its section, its removals) is the mapFollower.
 type serverSpaces struct {
 	sup        spaceServer
 	reg        *transport.Registry
-	log        *slog.Logger
-	keys       NodeKeys
 	trust      netmap.Trust
 	iface      string
 	linkMTU    int
@@ -479,11 +435,7 @@ type serverSpaces struct {
 	// listeners fail.
 	refusedLogged []netip.AddrPort
 
-	cur     *netmap.Map
-	section netmap.Section
-	// removed is set while the current map has no section for the node:
-	// the space's worker and the listeners are stopped.
-	removed bool
+	mapFollower
 
 	// report gets the map's version and whether serving it failed;
 	// requests, a device's, are refused.
@@ -607,7 +559,7 @@ func (s *serverSpaces) run(ctx context.Context, maps <-chan []byte) error {
 				maps = nil
 				continue
 			}
-			if !s.next(env) {
+			if !s.take(env) {
 				continue
 			}
 		}
@@ -618,42 +570,6 @@ func (s *serverSpaces) run(ctx context.Context, maps <-chan []byte) error {
 			retry = nil
 		}
 	}
-}
-
-// next takes a newer map if it is one, and reports whether it did.
-func (s *serverSpaces) next(env []byte) bool {
-	m, err := s.cur.Next(env)
-	if errors.Is(err, netmap.ErrNotNewer) {
-		s.log.Debug("map not newer, ignored", "version", s.cur.Header().Version)
-		return false
-	}
-	if err != nil {
-		s.log.Warn("map refused, keeping the current one", "version", s.cur.Header().Version, "err", err)
-		return false
-	}
-	section, err := openSection(m, s.keys)
-	if errors.Is(err, netmap.ErrNotRecipient) {
-		s.cur = m
-		if !s.removed {
-			s.removed = true
-			s.log.Warn("removed from space: the map has no section for this node; its worker and listeners stop until a map includes it again",
-				"version", m.Header().Version)
-		}
-		return true
-	}
-	if err != nil {
-		s.log.Error("map refused, keeping the current one", "version", s.cur.Header().Version, "err", err)
-		return false
-	}
-	if section.Node.Kind != s.section.Node.Kind {
-		s.log.Warn("the map changes this node's kind; restart the node to change its mode", "kind", section.Node.Kind)
-	}
-	if s.removed {
-		s.removed = false
-		s.log.Info("back in space", "version", m.Header().Version)
-	}
-	s.cur, s.section = m, section
-	return true
 }
 
 // logOutput is where the node's own log lines go: stderr and the ring.

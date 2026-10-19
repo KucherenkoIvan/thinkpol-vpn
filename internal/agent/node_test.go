@@ -38,7 +38,7 @@ func TestPrepareTakesTheModeFromTheNodesKind(t *testing.T) {
 	} {
 		cfg := testConfig(s.stateDir(t, tc.keys, 1))
 		cfg.Mode = tc.mode
-		n, err := Prepare(cfg, logs)
+		n, err := Prepare(cfg, logs, testPlatform())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -67,7 +67,7 @@ func TestPrepareChecksTheConfig(t *testing.T) {
 	} {
 		cfg := testConfig(dir)
 		tc.change(&cfg)
-		if _, err := Prepare(cfg, Logs{}); err == nil || !strings.Contains(err.Error(), tc.want) {
+		if _, err := Prepare(cfg, Logs{}, testPlatform()); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("got %v, want an error with %q", err, tc.want)
 		}
 	}
@@ -142,7 +142,7 @@ func TestARemovedNodeWaitsForAMapWithIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	n, err := Prepare(testConfig(dir), logs)
+	n, err := Prepare(testConfig(dir), logs, testPlatform())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -89,7 +89,13 @@ func New(opts Options) (*Supervisor, error) {
 		// version check confirms.
 		opts.Command = []string{selfExe, "worker"}
 	}
-	root, err := netcfg.New(netcfg.OwnerSupervisor)
+	// The root namespace's own configurator: the composition root
+	// (cmd/thinkpol) builds it into the platform.
+	newRoot := opts.NewRoot
+	if newRoot == nil {
+		newRoot = func() (netcfg.Configurator, error) { return netcfg.New(netcfg.OwnerSupervisor) }
+	}
+	root, err := newRoot()
 	if err != nil {
 		return nil, fmt.Errorf("supervisor: %w", err)
 	}

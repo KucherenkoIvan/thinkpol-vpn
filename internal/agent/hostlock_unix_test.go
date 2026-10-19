@@ -20,13 +20,11 @@ import (
 func TestAStartTakesTheHostLockOnce(t *testing.T) {
 	path := filepath.Join(tempDir(t), "agent.lock")
 	cleaned := make(chan struct{}, 1)
-	prevLock, prevDNS := lockHost, restoreHostDNS
-	lockHost = func() (func(), error) { return lockHostAt(path) }
-	restoreHostDNS = func() error {
-		cleaned <- struct{}{}
-		return prevDNS()
-	}
-	t.Cleanup(func() { lockHost, restoreHostDNS = prevLock, prevDNS })
+	// The lock and DNS restore are the platform's hooks now; the lock
+	// itself stays real (a file of the test's).
+	plat := testPlatform()
+	plat.LockHost = func() (func(), error) { return lockHostAt(path) }
+	plat.RestoreDNS = func() error { cleaned <- struct{}{}; return nil }
 
 	s := newTestSpace(t)
 	cfg := testConfig(s.stateDir(t, s.b, 1))
@@ -35,7 +33,7 @@ func TestAStartTakesTheHostLockOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	n, err := Prepare(cfg, logs)
+	n, err := Prepare(cfg, logs, plat)
 	if err != nil {
 		t.Fatal(err)
 	}
