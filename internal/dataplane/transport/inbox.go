@@ -26,10 +26,14 @@ func NewInbox[T any](depth int) *Inbox[T] {
 
 // Queue is the inbox's queue, for a sender that blocks (a stream's
 // backpressure) or selects among queues and closings.
-func (i *Inbox[T]) Queue() chan T { return i.queue }
+func (i *Inbox[T]) Queue() chan<- T { return i.queue }
 
 // Done is closed when the inbox closes; senders select against it.
 func (i *Inbox[T]) Done() <-chan struct{} { return i.done }
+
+// Closed reports whether the inbox has closed. A listener whose accept
+// inbox is its lifecycle closes and is closed through it.
+func (i *Inbox[T]) Closed() bool { return i.closed() }
 
 // TrySend queues v without blocking, and reports whether it fit.
 func (i *Inbox[T]) TrySend(v T) bool {
@@ -41,13 +45,14 @@ func (i *Inbox[T]) TrySend(v T) bool {
 	}
 }
 
-// Recv waits for the inbox's next item, failing with a ClosedError once
-// the inbox has closed, or with ctx's error when ctx did first. An item
-// that arrives as the inbox closes is not delivered.
+// Recv waits for the inbox's next item, failing with the close's error —
+// ClosedError, with the Close cause — once the inbox has closed, or with
+// ctx's error when ctx did first. An item that arrives as the inbox closes
+// is not delivered.
 func (i *Inbox[T]) Recv(ctx context.Context) (T, error) {
 	var zero T
 	if i.closed() {
-		return zero, ClosedError(nil)
+		return zero, i.closeErr
 	}
 	select {
 	case <-i.done:
@@ -58,10 +63,11 @@ func (i *Inbox[T]) Recv(ctx context.Context) (T, error) {
 			return v, nil
 		}
 	}
-	return zero, ClosedError(nil)
+	return zero, i.closeErr
 }
 
-// Err is the error reads return once the inbox has closed.
+// Err is the error reads return once the inbox has closed, and nil before.
+// Read it only once Done has closed: the close of Done carries the write.
 func (i *Inbox[T]) Err() error { return i.closeErr }
 
 // Close closes the inbox: reads return ClosedError(cause). Close reports
@@ -85,11 +91,12 @@ func (i *Inbox[T]) closed() bool {
 	}
 }
 
-// ReadPacket receives the inbox's next packet into p: the ReadPacket of a
-// link whose receive end the inbox is. A packet longer than p doesn't
+// ReadPacketFrom receives the inbox's next packet into p: the ReadPacket of
+// a link whose receive end the inbox is. A packet longer than p doesn't
 // fit: it is dropped and io.ErrShortBuffer returned, as transport.Link's
-// ReadPacket says.
-func ReadPacket(i *Inbox[[]byte], p []byte) (int, error) {
+// ReadPacket says. A packet that arrives as the inbox closes is dropped,
+// as Recv drops an item, and the close's error returned.
+func ReadPacketFrom(i *Inbox[[]byte], p []byte) (int, error) {
 	select {
 	case <-i.done:
 		return 0, i.closeErr
@@ -99,6 +106,9 @@ func ReadPacket(i *Inbox[[]byte], p []byte) (int, error) {
 	case <-i.done:
 		return 0, i.closeErr
 	case packet := <-i.queue:
+		if i.closed() {
+			return 0, i.closeErr
+		}
 		if len(packet) > len(p) {
 			return 0, io.ErrShortBuffer
 		}

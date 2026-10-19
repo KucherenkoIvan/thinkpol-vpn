@@ -56,7 +56,7 @@ type dialLink struct {
 
 	counter atomic.Uint64
 	closed  atomic.Bool
-	receiver
+	admitLadder
 	meter transport.SendMeter
 
 	readMu  sync.Mutex
@@ -111,7 +111,7 @@ func (dl *dialLink) receive(d []byte) []byte {
 		return nil
 	}
 	// Opened in place: nothing else needs the datagram.
-	o, v := dl.admitWith(d[clearSize:clearSize], &dl.senders, dl.recv, d, now)
+	o, v := dl.admitOne(d[clearSize:clearSize], &dl.senders, dl.recv, d, now)
 	if v < deliver {
 		return nil
 	}

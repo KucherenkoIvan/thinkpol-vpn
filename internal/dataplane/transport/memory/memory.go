@@ -133,7 +133,6 @@ func (n *Network) Listen(_ context.Context, cfg transport.ListenConfig) (transpo
 	l := &Listener{
 		net: n, addr: Addr(cfg.Address), peers: cfg.Peers, camo: transport.OrDrop(cfg.Camouflage),
 		accept: transport.NewInbox[*end](acceptQueue),
-		done:   make(chan struct{}),
 		live:   make(map[*end]transport.PeerLink),
 	}
 	links, changed := cfg.Peers.Snapshot()
@@ -162,16 +161,16 @@ func (n *Network) Dial(ctx context.Context, endpoint string, cfg transport.DialC
 	return l.connect(ctx, local, cfg.Credential)
 }
 
-// Listener is a memory transport listener.
+// Listener is a memory transport listener. The accept inbox is its
+// lifecycle: it closes first, so a closing listener never hands out a
+// link from Accept.
 type Listener struct {
 	net   *Network
 	addr  Addr
 	peers transport.Peers
 	camo  transport.Camouflage
 
-	accept    *transport.Inbox[*end]
-	done      chan struct{}
-	closeOnce sync.Once
+	accept *transport.Inbox[*end]
 
 	mu    sync.Mutex
 	links []transport.PeerLink
@@ -183,7 +182,7 @@ func (l *Listener) connect(ctx context.Context, local Addr, cred []byte) (transp
 	client := newEnd(sem, local, l.addr)
 	server := newEnd(sem, l.addr, local)
 	l.mu.Lock()
-	if l.closed() {
+	if l.accept.Closed() {
 		l.mu.Unlock()
 		return nil, fmt.Errorf("memory: dial %s: %w", l.addr, transport.ClosedError(nil))
 	}
@@ -211,7 +210,7 @@ func (l *Listener) connect(ctx context.Context, local Addr, cred []byte) (transp
 	l.mu.Unlock()
 
 	select {
-	case <-l.done:
+	case <-l.accept.Done():
 	case <-ctx.Done():
 		_ = server.Close()
 		return nil, ctx.Err()
@@ -225,21 +224,12 @@ func (l *Listener) connect(ctx context.Context, local Addr, cred []byte) (transp
 			}
 		}
 		l.mu.Unlock()
-		if !l.closed() {
+		if !l.accept.Closed() {
 			return client, nil
 		}
 	}
 	_ = server.Close()
 	return nil, fmt.Errorf("memory: dial %s: %w", l.addr, transport.ClosedError(nil))
-}
-
-func (l *Listener) closed() bool {
-	select {
-	case <-l.done:
-		return true
-	default:
-		return false
-	}
 }
 
 // lookup finds the peer link for cred and whether CheckInbound refuses
@@ -260,7 +250,7 @@ func same(a, b transport.PeerLink) bool {
 func (l *Listener) watchPeers(changed <-chan struct{}) {
 	for {
 		select {
-		case <-l.done:
+		case <-l.accept.Done():
 			return
 		case <-changed:
 		}
@@ -297,12 +287,11 @@ func (l *Listener) Accept(ctx context.Context) (transport.Link, transport.Identi
 // Addr implements transport.Listener.
 func (l *Listener) Addr() net.Addr { return l.addr }
 
-// Close implements transport.Listener and frees the endpoint.
+// Close implements transport.Listener and frees the endpoint. The accept
+// inbox closes first, so Accept hands out no link of a closing listener.
 func (l *Listener) Close() error {
-	l.closeOnce.Do(func() {
+	if l.accept.Close(nil) {
 		l.mu.Lock()
-		close(l.done)
-		l.accept.Close(nil)
 		for e := range l.live {
 			e.shut(nil)
 			e.other.shut(nil)
@@ -312,7 +301,7 @@ func (l *Listener) Close() error {
 		l.net.mu.Lock()
 		delete(l.net.listeners, string(l.addr))
 		l.net.mu.Unlock()
-	})
+	}
 	return nil
 }
 
@@ -325,7 +314,7 @@ type end struct {
 	camo          func([]byte) // where such a dialer's packets go
 	onClose       func()
 
-	*transport.Inbox[[]byte]
+	Inbox *transport.Inbox[[]byte]
 }
 
 func newEnd(sem Semantics, local, remote Addr) *end {
@@ -334,7 +323,7 @@ func newEnd(sem Semantics, local, remote Addr) *end {
 
 // ReadPacket implements transport.Link: the packets the other end wrote.
 func (e *end) ReadPacket(p []byte) (int, error) {
-	return transport.ReadPacket(e.Inbox, p)
+	return transport.ReadPacketFrom(e.Inbox, p)
 }
 
 // WritePacket implements transport.Link.
@@ -343,8 +332,8 @@ func (e *end) WritePacket(p []byte) error {
 		return err
 	}
 	select {
-	case <-e.Done():
-		return e.Err()
+	case <-e.Inbox.Done():
+		return e.Inbox.Err()
 	default:
 	}
 	c := append([]byte(nil), p...)
@@ -353,15 +342,15 @@ func (e *end) WritePacket(p []byte) error {
 		e.camo(c)
 	case e.sem == Stream:
 		select {
-		case e.other.Queue() <- c:
-		case <-e.other.Done(): // closing one end closes both
+		case e.other.Inbox.Queue() <- c:
+		case <-e.other.Inbox.Done(): // closing one end closes both
 			e.shut(nil)
-			return e.Err()
-		case <-e.Done():
-			return e.Err()
+			return e.Inbox.Err()
+		case <-e.Inbox.Done():
+			return e.Inbox.Err()
 		}
 	default:
-		e.other.TrySend(c) // reader too slow: drop, as the network would
+		e.other.Inbox.TrySend(c) // reader too slow: drop, as the network would
 	}
 	return nil
 }
@@ -382,14 +371,7 @@ func (e *end) shut(reason error) {
 	}
 }
 
-func (e *end) closed() bool {
-	select {
-	case <-e.Done():
-		return true
-	default:
-		return false
-	}
-}
+func (e *end) closed() bool { return e.Inbox.Closed() }
 
 func (e *end) LocalAddr() net.Addr  { return e.local }
 func (e *end) RemoteAddr() net.Addr { return e.remote }

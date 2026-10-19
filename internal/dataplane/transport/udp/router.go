@@ -30,35 +30,32 @@ type Router struct {
 	t     *Transport
 	peers transport.Peers
 
+	admitLadder
 	mu      sync.Mutex
 	set     *peerSet
 	changed <-chan struct{}
-	table   *senderTable
+	table   *senderHistories
 	scratch []byte
-	receiver
 }
 
 var _ transport.Router = (*Router)(nil)
 
 func newRouter(t *Transport, peers transport.Peers) *Router {
-	return &Router{t: t, peers: peers, table: newSenderTable(), scratch: make([]byte, 0, maxDatagram)}
+	return &Router{t: t, peers: peers, table: newSenderHistories(), scratch: make([]byte, 0, maxDatagram)}
 }
 
 // RouteDatagram implements transport.Router.
 func (r *Router) RouteDatagram(d []byte) (transport.Identity, transport.Verdict) {
-	id, ok := idOf(d)
-	if !ok {
-		r.counters.unauthenticated.Add(1)
-		return transport.Identity{}, transport.Unknown
-	}
 	now := r.t.now()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.refresh(now)
-	e, o, v := r.admit(r.scratch[:0], r.set, r.table, id, d, now)
+	e, o, v := r.admit(r.scratch[:0], r.set, r.table, d, now)
 	switch v {
 	case dropUnauthenticated:
-		// No credential to name: not routed anywhere.
+		// No connection id in the table, or the tag failed under the one
+		// it matched: not routed anywhere, and not named even when the
+		// id matched.
 		return transport.Identity{}, transport.Unknown
 	case dropStaleTimestamp, dropStale:
 		return e.link.Peer, transport.Stale
@@ -100,5 +97,5 @@ func (r *Router) refresh(now time.Time) {
 	var links []transport.PeerLink
 	links, r.changed = r.peers.Snapshot()
 	r.set = indexPeers(links, epochOf(now))
-	r.table.sync(r.set, now)
+	r.table.follow(r.set, now)
 }
