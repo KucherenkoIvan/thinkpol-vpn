@@ -62,3 +62,4 @@ listener and the router. `inbox_test.go` is new coverage.
 - 2026-10-19 review → has-errors — review round 2: R2.1–R2.8 in ## Review findings
 - 2026-10-19 has-errors → in-progress — picking up R2.1–R2.8
 - 2026-10-19 R2.1–R2.8 done — the inbox is the listeners' lifecycle and the ladder's first rung lives in admit, allocation-free on the hot path (7abdea2); Notes corrected, TP-087 told to move the skew window to the port first (7609235); make lint, make test, go test -race ./internal/dataplane/transport/... and a full make lab-test (lab plus every package in a lab node, LAB_P=1, exit 0) pass at 6c24bea
+- 2026-10-19 in-progress → review — review round 2 closed: all eight findings re-checked against the code, nothing security-relevant changed since 7abdea2; lint, unit, race and the full lab run pass at e92c90a
