@@ -32,16 +32,19 @@ type deviceNode struct {
 	failTUN chan struct{}
 }
 
-// startDevice starts device b; each of opts is called with its config
-// (and a nil DataPlane) before it is prepared, then with its DataPlane
-// (and a nil Config) before it runs.
-func startDevice(t *testing.T, s *testSpace, reg *transport.Registry, connect bool, opts ...func(*Config, *DataPlane)) *deviceNode {
+// deviceOpt adjusts device b: prepare its config and platform (every
+// host fake) before it is prepared, run its data plane's private test
+// fields before it runs.
+type deviceOpt struct {
+	prepare func(*Config, *Platform)
+	run     func(*DataPlane)
+}
+
+// startDevice starts device b with opts.
+func startDevice(t *testing.T, s *testSpace, reg *transport.Registry, connect bool, opts ...deviceOpt) *deviceNode {
 	t.Helper()
 	cfg := testConfig(s.stateDir(t, s.b, 1))
 	cfg.Connect = connect
-	for _, o := range opts {
-		o(&cfg, nil)
-	}
 	rn := newRunningNode()
 	failTUN := make(chan struct{}, 1)
 	logs, err := NewLogs("debug", rn.log)
@@ -51,6 +54,11 @@ func startDevice(t *testing.T, s *testSpace, reg *transport.Registry, connect bo
 	plat := testPlatform()
 	plat.NewConfigurator = func(netcfg.Owner) (netcfg.Configurator, error) { return rn.ifc, nil }
 	plat.NewTUN = rn.virtualTUN(failTUN)
+	for _, o := range opts {
+		if o.prepare != nil {
+			o.prepare(&cfg, &plat)
+		}
+	}
 	n, err := Prepare(cfg, logs, plat)
 	if err != nil {
 		t.Fatal(err)
@@ -60,7 +68,9 @@ func startDevice(t *testing.T, s *testSpace, reg *transport.Registry, connect bo
 		dp.path, dp.retryAfter = fastPaths, testRetry
 		dp.RouteTable = false // virtual TUNs: the host's routing stays as it is
 		for _, o := range opts {
-			o(nil, dp)
+			if o.run != nil {
+				o.run(dp)
+			}
 		}
 	}
 	go func() { rn.done <- n.run(rn.ctx, reg, rn.maps) }()

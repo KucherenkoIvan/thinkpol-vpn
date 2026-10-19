@@ -364,14 +364,11 @@ func TestADisconnectedDeviceKeepsItsLists(t *testing.T) {
 	data, ref := s.withList(t, "ru", "192.0.2.0/24")
 	_, reg := memoryRegistry(t)
 	startNode(t, reg, s.a, s.verified(t, 1))
-	b := startDevice(t, s, reg, true, func(c *Config, _ *DataPlane) {
-		if c == nil {
-			return
-		}
+	b := startDevice(t, s, reg, true, deviceOpt{prepare: func(c *Config, _ *Platform) {
 		if err := (diskBlobs{dir: c.StateDir, log: slog.New(slog.DiscardHandler)}).Save(ref, data); err != nil {
 			t.Fatal(err)
 		}
-	})
+	}})
 	stored := filepath.Join(b.node.cfg.StateDir, BlobDir, blobFileName(ref.SHA256))
 	b.connection(t, Connected)
 	eventually(t, func() bool { return b.node.Status().DataPlane != nil })

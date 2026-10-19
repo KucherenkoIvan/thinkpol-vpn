@@ -74,17 +74,18 @@ func TestADevicePointsTheSystemAtItsResolverWhileConnected(t *testing.T) {
 	startNode(t, reg, s.a, s.verified(t, 1))
 	sys := &fakeSystem{}
 	var asked [][]netip.Addr
-	b := startDevice(t, s, reg, true, func(c *Config, dp *DataPlane) {
-		if c != nil {
+	b := startDevice(t, s, reg, true, deviceOpt{
+		prepare: func(c *Config, p *Platform) {
 			c.DNS = true
-			return
-		}
-		dp.Host.SetSystemDNS = sys.Set
-		dp.Host.SystemUpstreams = func(exclude []netip.Addr) ([]netip.Addr, error) {
-			asked = append(asked, exclude)
-			return []netip.Addr{netip.MustParseAddr("192.0.2.53")}, nil
-		}
-		dp.dnsPort = 5353
+			p.SetSystemDNS = sys.Set
+			p.SystemUpstreams = func(exclude []netip.Addr) ([]netip.Addr, error) {
+				asked = append(asked, exclude)
+				return []netip.Addr{netip.MustParseAddr("192.0.2.53")}, nil
+			}
+		},
+		run: func(dp *DataPlane) {
+			dp.dnsPort = 5353
+		},
 	})
 	b4, b6 := overlay(2)
 	b.connection(t, Connected)
@@ -340,14 +341,15 @@ func TestUnprotectedDNSIsReportedAndRetried(t *testing.T) {
 	_, reg := memoryRegistry(t)
 	startNode(t, reg, s.a, s.verified(t, 1))
 	sys := &fakeSystem{failSets: 1}
-	b := startDevice(t, s, reg, false, func(c *Config, dp *DataPlane) {
-		if c != nil {
+	b := startDevice(t, s, reg, false, deviceOpt{
+		prepare: func(c *Config, p *Platform) {
 			c.DNS = true
-			return
-		}
-		dp.Host.SetSystemDNS = sys.Set
-		dp.Host.SystemUpstreams = func([]netip.Addr) ([]netip.Addr, error) { return nil, nil }
-		dp.dnsPort = 5353
+			p.SetSystemDNS = sys.Set
+			p.SystemUpstreams = func([]netip.Addr) ([]netip.Addr, error) { return nil, nil }
+		},
+		run: func(dp *DataPlane) {
+			dp.dnsPort = 5353
+		},
 	})
 	err := b.node.Connect(context.Background())
 	if !errors.Is(err, ErrDNSUnprotected) {
@@ -381,14 +383,15 @@ func TestAFailedFirstReadOfTheSystemsResolversIsPassedOn(t *testing.T) {
 	_, reg := memoryRegistry(t)
 	startNode(t, reg, s.a, s.verified(t, 1))
 	sys := &fakeSystem{}
-	b := startDevice(t, s, reg, true, func(c *Config, dp *DataPlane) {
-		if c != nil {
+	b := startDevice(t, s, reg, true, deviceOpt{
+		prepare: func(c *Config, p *Platform) {
 			c.DNS = true
-			return
-		}
-		dp.Host.SetSystemDNS = sys.Set
-		dp.Host.SystemUpstreams = func([]netip.Addr) ([]netip.Addr, error) { return nil, errors.New("the store is unreadable") }
-		dp.dnsPort = 5353
+			p.SetSystemDNS = sys.Set
+			p.SystemUpstreams = func([]netip.Addr) ([]netip.Addr, error) { return nil, errors.New("the store is unreadable") }
+		},
+		run: func(dp *DataPlane) {
+			dp.dnsPort = 5353
+		},
 	})
 	b.connection(t, Connected)
 	eventually(t, func() bool { n, _ := sys.counts(); return n == 1 })
@@ -411,14 +414,15 @@ func TestStaleUpstreamsAreDegradedNotUnprotected(t *testing.T) {
 	_, reg := memoryRegistry(t)
 	startNode(t, reg, s.a, s.verified(t, 1))
 	sys := &fakeSystem{}
-	b := startDevice(t, s, reg, true, func(c *Config, dp *DataPlane) {
-		if c != nil {
+	b := startDevice(t, s, reg, true, deviceOpt{
+		prepare: func(c *Config, p *Platform) {
 			c.DNS = true
-			return
-		}
-		dp.Host.SetSystemDNS = sys.Set
-		dp.Host.SystemUpstreams = func([]netip.Addr) ([]netip.Addr, error) { return nil, nil }
-		dp.dnsPort = 5353
+			p.SetSystemDNS = sys.Set
+			p.SystemUpstreams = func([]netip.Addr) ([]netip.Addr, error) { return nil, nil }
+		},
+		run: func(dp *DataPlane) {
+			dp.dnsPort = 5353
+		},
 	})
 	b.connection(t, Connected)
 	if err := b.node.Connect(context.Background()); err != nil {
@@ -448,14 +452,15 @@ func TestAnUntaggedProblemIsUnprotected(t *testing.T) {
 	_, reg := memoryRegistry(t)
 	startNode(t, reg, s.a, s.verified(t, 1))
 	sys := &fakeSystem{}
-	b := startDevice(t, s, reg, true, func(c *Config, dp *DataPlane) {
-		if c != nil {
+	b := startDevice(t, s, reg, true, deviceOpt{
+		prepare: func(c *Config, p *Platform) {
 			c.DNS = true
-			return
-		}
-		dp.Host.SetSystemDNS = sys.Set
-		dp.Host.SystemUpstreams = func([]netip.Addr) ([]netip.Addr, error) { return nil, nil }
-		dp.dnsPort = 5353
+			p.SetSystemDNS = sys.Set
+			p.SystemUpstreams = func([]netip.Addr) ([]netip.Addr, error) { return nil, nil }
+		},
+		run: func(dp *DataPlane) {
+			dp.dnsPort = 5353
+		},
 	})
 	b.connection(t, Connected)
 	sys.mu.Lock()
@@ -502,18 +507,19 @@ func TestTheDirectUpstreamsReachTheRouteTable(t *testing.T) {
 	startNode(t, reg, s.a, s.verified(t, 1))
 	sys := &fakeSystem{}
 	table := &wantsTable{}
-	b := startDevice(t, s, reg, true, func(c *Config, dp *DataPlane) {
-		if c != nil {
+	b := startDevice(t, s, reg, true, deviceOpt{
+		prepare: func(c *Config, p *Platform) {
 			c.DNS = true
-			return
-		}
-		dp.RouteTable = true
-		dp.Host.NewRouteTable = func(*slog.Logger, routetable.Guard) (dataplane.RouteTable, error) { return table, nil }
-		dp.Host.SetSystemDNS = sys.Set
-		dp.Host.SystemUpstreams = func([]netip.Addr) ([]netip.Addr, error) {
-			return []netip.Addr{netip.MustParseAddr("192.0.2.53")}, nil
-		}
-		dp.dnsPort = 5353
+			p.NewRouteTable = func(*slog.Logger, routetable.Guard) (dataplane.RouteTable, error) { return table, nil }
+			p.SetSystemDNS = sys.Set
+			p.SystemUpstreams = func([]netip.Addr) ([]netip.Addr, error) {
+				return []netip.Addr{netip.MustParseAddr("192.0.2.53")}, nil
+			}
+		},
+		run: func(dp *DataPlane) {
+			dp.RouteTable = true
+			dp.dnsPort = 5353
+		},
 	})
 	b.connection(t, Connected)
 	eventually(t, func() bool {
@@ -538,16 +544,16 @@ func TestAConfiguredUpstreamReachesTheRouteTableWithItsPort(t *testing.T) {
 	startNode(t, reg, s.a, s.verified(t, 1))
 	table := &wantsTable{}
 	up := netip.MustParseAddrPort("[2001:db8::53]:5353")
-	b := startDevice(t, s, reg, true, func(c *Config, dp *DataPlane) {
-		if c != nil {
-			c.DNS = true
-			return
-		}
-		dp.RouteTable = true
-		dp.Host.NewRouteTable = func(*slog.Logger, routetable.Guard) (dataplane.RouteTable, error) { return table, nil }
-		dp.Host.SetSystemDNS = (&fakeSystem{}).Set
-		dp.DNSUpstreams = []netip.AddrPort{up}
-		dp.dnsPort = 5353
+	b := startDevice(t, s, reg, true, deviceOpt{
+		prepare: func(c *Config, p *Platform) {
+			c.DNS, c.DNSUpstream = true, up.String()
+			p.NewRouteTable = func(*slog.Logger, routetable.Guard) (dataplane.RouteTable, error) { return table, nil }
+			p.SetSystemDNS = (&fakeSystem{}).Set
+		},
+		run: func(dp *DataPlane) {
+			dp.RouteTable = true
+			dp.dnsPort = 5353
+		},
 	})
 	b.connection(t, Connected)
 	eventually(t, func() bool { return slices.Equal(table.upstreams(), []netip.AddrPort{up}) })
