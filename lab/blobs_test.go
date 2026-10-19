@@ -3,6 +3,7 @@
 package lab_test
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
@@ -142,9 +143,22 @@ func TestBlobDistribution(t *testing.T) {
 		}
 		s1v4, s1v6 := overlay(1)
 		dv4, dv6 := overlay(3)
-		reaches := func(n *lab.Node, addr, port string) bool {
-			_, err := execRead(n, pollTimeout, "nc", "-z", "-w", "3", addr, port)
-			return err == nil
+		// reaches says whether a TCP connect from n to addr:port succeeds.
+		// Only nc's own failure (exit 1 with its "connect to ... failed"
+		// line; docker exec also exits 1 when docker fails) means it
+		// doesn't; any other failure (an exec error, a timeout, no nc) is
+		// an unknown state and an error.
+		reaches := func(n *lab.Node, timeout time.Duration, addr, port string) (bool, error) {
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
+			defer cancel()
+			res, err := n.Exec(ctx, "nc", "-v", "-z", "-w", "3", addr, port)
+			switch {
+			case err == nil:
+				return true, nil
+			case res.ExitCode == 1 && strings.Contains(res.Stderr, "connect to ") && strings.Contains(res.Stderr, " failed"):
+				return false, nil
+			}
+			return false, fmt.Errorf("nc %s %s from %s: %w", addr, port, n.Name, err)
 		}
 		// A request for the list, as a peer sends it.
 		req := append([]byte("TPB\x01"), sum[:]...)
@@ -190,7 +204,11 @@ func TestBlobDistribution(t *testing.T) {
 		control6 := devA.Start(t, "nc", "-6", "-l", "4719")
 		for _, c := range []struct{ addr, port string }{{dv4, "4718"}, {dv6, "4719"}} {
 			lab.Eventually(t, 30*time.Second, func() error {
-				if !reaches(router, c.addr, c.port) {
+				ok, err := reaches(router, pollTimeout, c.addr, c.port)
+				if err != nil {
+					return err
+				}
+				if !ok {
 					return fmt.Errorf("the control listener at %s:%s is unreachable from the router", c.addr, c.port)
 				}
 				return nil
@@ -198,7 +216,9 @@ func TestBlobDistribution(t *testing.T) {
 		}
 		_, _ = control4.Stop(), control6.Stop()
 		for _, addr := range []string{dv4, dv6} {
-			if reaches(router, addr, "4717") {
+			if ok, err := reaches(router, execTimeout, addr, "4717"); err != nil {
+				t.Fatal(err)
+			} else if ok {
 				t.Errorf("the router reaches device-a's %s:4717 outside the tunnel", addr)
 			}
 		}
@@ -207,7 +227,9 @@ func TestBlobDistribution(t *testing.T) {
 		builder.MustExec(t, "ip", "route", "add", s1v4+"/32", "via", server1.IPv4(lab.NetServers).String())
 		builder.MustExec(t, "ip", "-6", "route", "add", s1v6+"/128", "via", server1.IPv6(lab.NetServers).String())
 		for _, addr := range []string{s1v4, s1v6} {
-			if reaches(builder, addr, "4717") {
+			if ok, err := reaches(builder, execTimeout, addr, "4717"); err != nil {
+				t.Fatal(err)
+			} else if ok {
 				t.Errorf("a neighbour reaches server-1's %s:4717 outside the tunnel", addr)
 			}
 		}
