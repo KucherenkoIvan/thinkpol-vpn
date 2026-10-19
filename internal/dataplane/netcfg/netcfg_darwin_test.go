@@ -764,6 +764,32 @@ func TestSurveyAndDefaultRoute(t *testing.T) {
 	}
 }
 
+// A corrupt record of another owner is an error, not an empty one: its
+// owner's identities are unknown, so Survey and DefaultRoute refuse to
+// answer rather than mistake the owner's routes for foreign ones.
+func TestACorruptRecordOfAnotherOwnerFailsTheSurveyAndDefaultRoute(t *testing.T) {
+	k, dir := newFakeKernel(), tempDir(t)
+	ctx := context.Background()
+	rt := newTestConfigurator(t, k, dir, OwnerRouteTable)
+	if err := rt.Apply(ctx, routeTableConfig); err != nil {
+		t.Fatal(err)
+	}
+	before := k.snapshot()
+	corrupt := filepath.Join(dir, recordName(OwnerOverlay))
+	if err := os.WriteFile(corrupt, []byte("garbage\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rt.Survey(ctx); err == nil {
+		t.Error("Survey over a corrupt record: nil error")
+	}
+	if _, err := rt.DefaultRoute(ctx, IPv4); err == nil {
+		t.Error("DefaultRoute over a corrupt record: nil error")
+	}
+	if k.snapshot() != before {
+		t.Error("a corrupt record changed something")
+	}
+}
+
 func TestRecordsRoundTrip(t *testing.T) {
 	dir := tempDir(t)
 	d, path, boot := openDir(t, dir), filepath.Join(dir, "x.routes"), thisBoot(t)

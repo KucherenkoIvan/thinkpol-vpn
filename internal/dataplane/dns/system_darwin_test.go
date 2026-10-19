@@ -21,11 +21,17 @@ type fakeStore struct {
 	kv      map[string]dict
 	sets    int
 	setsLog []string
+	// keysErr fails every keys call; getErrs fails get for its keys.
+	keysErr error
+	getErrs map[string]error
 }
 
 func (f *fakeStore) keys(pattern string) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.keysErr != nil {
+		return nil, f.keysErr
+	}
 	re := regexp.MustCompile("^" + pattern + "$")
 	var out []string
 	for k := range f.kv {
@@ -40,6 +46,9 @@ func (f *fakeStore) keys(pattern string) ([]string, error) {
 func (f *fakeStore) get(key string) (dict, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if err := f.getErrs[key]; err != nil {
+		return dict{}, false, err
+	}
 	d, ok := f.kv[key]
 	return clone(d), ok, nil
 }
@@ -483,6 +492,58 @@ func TestAnotherDefaultResolverIsReported(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = s.Restore() }()
+	if err := s.Problem(); !errors.Is(err, ErrUnprotected) {
+		t.Errorf("problem: %v", err)
+	}
+}
+
+// A store read that fails while looking for other resolvers is an error,
+// not an empty answer: what can't be read may hold a resolver, so Problem
+// must not call the node protected.
+func TestAFailedReadOfAnotherResolverIsReported(t *testing.T) {
+	f := aMac(t)
+	_ = f.remove("State:/Network/Service/D/DNS")
+	_ = f.remove("Setup:/Network/Service/B/DNS")
+	s, err := setDynamicStore(f, nodeConfig, nil, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Restore() }()
+	if err := s.Problem(); err != nil {
+		t.Fatalf("problem before the failure: %v", err)
+	}
+	vpn := dnsDict([]string{"10.1.1.1"}, map[string]string{"ServerPort": "53"})
+	vpn.arrays["SupplementalMatchDomains"] = []string{"corp.example"}
+	f.put("State:/Network/Service/D/DNS", vpn)
+	f.mu.Lock()
+	f.getErrs = map[string]error{"State:/Network/Service/D/DNS": errors.New("read failed")}
+	f.mu.Unlock()
+	if err := s.Update(nodeConfig); err == nil {
+		t.Error("Update over a failed read: nil error")
+	}
+	if err := s.Problem(); !errors.Is(err, ErrUnprotected) || !strings.Contains(err.Error(), "State:/Network/Service/D/DNS") {
+		t.Errorf("problem: %v", err)
+	}
+}
+
+func TestAFailedListingOfOtherResolversIsReported(t *testing.T) {
+	f := aMac(t)
+	_ = f.remove("State:/Network/Service/D/DNS")
+	_ = f.remove("Setup:/Network/Service/B/DNS")
+	s, err := setDynamicStore(f, nodeConfig, nil, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Restore() }()
+	if err := s.Problem(); err != nil {
+		t.Fatalf("problem before the failure: %v", err)
+	}
+	f.mu.Lock()
+	f.keysErr = errors.New("list failed")
+	f.mu.Unlock()
+	if err := s.Update(nodeConfig); err == nil {
+		t.Error("Update over a failed listing: nil error")
+	}
 	if err := s.Problem(); !errors.Is(err, ErrUnprotected) {
 		t.Errorf("problem: %v", err)
 	}

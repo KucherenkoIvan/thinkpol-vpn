@@ -379,7 +379,11 @@ func (s *dynamicStore) apply() error {
 			errs = append(errs, err)
 		}
 	}
-	s.others = s.otherResolvers()
+	if others, err := s.otherResolvers(); err != nil {
+		errs = append(errs, err)
+	} else {
+		s.others = others
+	}
 	return errors.Join(errs...)
 }
 
@@ -407,16 +411,23 @@ func (s *dynamicStore) putBack(k string) error {
 
 // otherResolvers are the domains other software sends to resolvers of
 // its own: supplemental match domains of services that aren't overridden
-// (another VPN's split DNS) and /etc/resolver files.
-func (s *dynamicStore) otherResolvers() []string {
+// (another VPN's split DNS) and /etc/resolver files. A failed read is an
+// error, not an empty answer: what can't be read may hold a resolver.
+func (s *dynamicStore) otherResolvers() ([]string, error) {
 	var out []string
-	keys, _ := s.st.keys(`State:/Network/Service/[^/]+/DNS`)
+	keys, err := s.st.keys(`State:/Network/Service/[^/]+/DNS`)
+	if err != nil {
+		return nil, fmt.Errorf("dns: listing the network services' DNS states: %w", err)
+	}
 	for _, k := range keys {
 		if _, ours := s.backup[k]; ours {
 			continue
 		}
 		d, ok, err := s.st.get(k)
-		if err != nil || !ok || isOverride(d) {
+		if err != nil {
+			return nil, fmt.Errorf("dns: reading %s: %w", k, err)
+		}
+		if !ok || isOverride(d) {
 			continue
 		}
 		for _, dom := range d.array("SupplementalMatchDomains") {
@@ -434,7 +445,7 @@ func (s *dynamicStore) otherResolvers() []string {
 		}
 	}
 	slices.Sort(out)
-	return slices.Compact(out)
+	return slices.Compact(out), nil
 }
 
 // primaryOriginal is the primary service's servers as the system has
