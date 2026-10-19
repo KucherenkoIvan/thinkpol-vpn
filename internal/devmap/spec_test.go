@@ -58,7 +58,7 @@ func TestSpecErrorsNameTheirLocation(t *testing.T) {
 		{"same path reversed", nodes + "paths:\n  - [d, s]\n  - [s, d]\n", []string{"spec.yaml:9:5: same path as line 8, reversed"}},
 		{"list without a name", "lists:\n  - file: ru.geoip\n" + nodes, []string{"spec.yaml:2:5: list without a name"}},
 		{"list without a file", "lists:\n  - name: ru\n" + nodes, []string{"spec.yaml:2:5: list ru: file is missing"}},
-		{"bad list name", "lists:\n  - {name: RU_1, file: x}\n" + nodes, []string{`spec.yaml:2:12: lists: bad list name "RU_1"`}},
+		{"bad list name", "lists:\n  - {name: RU_1, file: x}\n" + nodes, []string{`spec.yaml:2:12: list name "RU_1": use 1-32`}},
 		{"list twice", "lists:\n  - {name: ru, file: a}\n  - {name: ru, file: b}\n" + nodes, []string{`spec.yaml:3:12: list "ru" is declared twice`}},
 		{"list field", "lists:\n  - {name: ru, file: a, kind: geoip}\n" + nodes, []string{`unknown field "kind"`}},
 		{"node names an unknown list", "nodes:\n  - name: d\n    kind: device\n    lists: [ru]\n", []string{`spec.yaml:4:13: d: unknown list "ru"`}},
@@ -70,7 +70,10 @@ func TestSpecErrorsNameTheirLocation(t *testing.T) {
 		{"device dials a server with ingress off", "nodes:\n  - {name: s, kind: server, endpoints: ['udp://192.0.2.1:4500']}\n  - {name: d, kind: device}\npaths:\n  - [d, s]\n  - [s, d]\n",
 			[]string{"spec.yaml:5:9: s has ingress off, so d can't connect to it", "spec.yaml:6:6: s has ingress off, so d can't connect to it"}},
 		{"space name not a label", "space:\n  name: Home\n" + nodes, []string{`spec.yaml:2:9: space name "Home"`}},
-		{"node name not an overlay name", "space:\n  name: home\nnodes:\n  - name: d-\n    kind: device\n", []string{"spec.yaml:4:11: d- can't be an overlay name in space home"}},
+		// Node names are overlay names, checked once (netmap.CheckLabel,
+		// by CheckName): a name no overlay name can take is refused with
+		// or without a space name.
+		{"node name with a trailing dash", "nodes:\n  - name: d-\n    kind: device\n", []string{"spec.yaml:2:11: node name \"d-\""}},
 		{"rule unparsable", nodes + "rules:\n  - everything -> direct\n", []string{"spec.yaml:8:5: rule:"}},
 		{"rule with an unknown chain", nodes + "rules:\n  - default -> chain:nl\n", []string{"spec.yaml:8:5: rule default -> chain:nl: no chain nl"}},
 		{"rule with an undeclared list", nodes + "rules:\n  - geoip:ru -> direct\n  - default -> block\n", []string{"spec.yaml:8:5: rule geoip:ru -> direct: no list ru"}},

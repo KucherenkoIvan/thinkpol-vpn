@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"google.golang.org/protobuf/encoding/protowire"
+
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
 
 // v2flyEntry is one GeoIP message of a geoip.dat fixture.
@@ -243,19 +245,6 @@ func TestFormatFromPath(t *testing.T) {
 	}
 }
 
-func TestCheckName(t *testing.T) {
-	for _, ok := range []string{"ru", "private", "zz", "a", "cloudflare-ipv6", strings.Repeat("a", 32)} {
-		if err := CheckName(ok); err != nil {
-			t.Errorf("%q: %v", ok, err)
-		}
-	}
-	for _, bad := range []string{"", "RU", "-ru", "r u", "geolocation-!cn", strings.Repeat("a", 33), "ру"} {
-		if CheckName(bad) == nil {
-			t.Errorf("%q accepted", bad)
-		}
-	}
-}
-
 // FuzzImportV2fly: a geoip.dat is a downloaded file; no input may panic.
 func FuzzImportV2fly(f *testing.F) {
 	f.Add(v2flyDat(fixtureV2fly...))
@@ -266,7 +255,7 @@ func FuzzImportV2fly(f *testing.F) {
 			return
 		}
 		for _, l := range BuildAll(lists) {
-			if CheckName(l.Name) != nil {
+			if netmap.CheckListName(l.Name) != nil {
 				t.Fatalf("bad name %q", l.Name)
 			}
 			if _, err := Decode(l.Blob); err != nil {

@@ -142,7 +142,9 @@ type RulePresets struct {
 
 const (
 	maxListName = 32
-	maxDomain   = 253
+	// Chain names share the list names' limit.
+	maxChainName = maxListName
+	maxDomain    = 253
 )
 
 // mappedRange is ::ffff:0:0/96: IPv4 is matched only as IPv4 (lists hold
@@ -286,33 +288,20 @@ func (a Action) check() error {
 
 // CheckListName reports whether name can name a list (a geoip or geosite
 // blob): 1-32 lowercase letters, digits and dashes, starting with a letter
-// or digit, as lists.CheckName.
+// or digit.
 func CheckListName(name string) error {
-	if !isName(name, maxListName) {
-		return fmt.Errorf("list name %q: use 1-%d lowercase letters, digits and dashes, starting with a letter or digit", name, maxListName)
+	if checkName(name, maxListName, true) {
+		return nil
 	}
-	return nil
+	return fmt.Errorf("list name %q: use 1-%d lowercase letters, digits and dashes, starting with a letter or digit", name, maxListName)
 }
 
 // CheckChainName reports whether name can name a chain: as a list name.
 func CheckChainName(name string) error {
-	if !isName(name, maxListName) {
-		return fmt.Errorf("chain name %q: use 1-%d lowercase letters, digits and dashes, starting with a letter or digit", name, maxListName)
+	if checkName(name, maxChainName, true) {
+		return nil
 	}
-	return nil
-}
-
-func isName(s string, maxLen int) bool {
-	if s == "" || len(s) > maxLen {
-		return false
-	}
-	for i, c := range s {
-		if c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || i > 0 && c == '-' {
-			continue
-		}
-		return false
-	}
-	return true
+	return fmt.Errorf("chain name %q: use 1-%d lowercase letters, digits and dashes, starting with a letter or digit", name, maxChainName)
 }
 
 // checkDomain accepts a lowercase ASCII domain without a trailing dot
@@ -323,7 +312,7 @@ func checkDomain(d string) error {
 		return fmt.Errorf("domain %q", d)
 	}
 	for label := range strings.SplitSeq(d, ".") {
-		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+		if label == "" || len(label) > maxLabel || label[0] == '-' || label[len(label)-1] == '-' {
 			return fmt.Errorf("domain %q", d)
 		}
 		for _, c := range label {
@@ -360,10 +349,10 @@ func (s *Section) rulesWellFormed() error {
 
 // validateRules is Build's check: every rule passes Check and refers only
 // to what the section has (its chains, its named blobs), and the last one
-// matches default; every chain's
-// exit is a peer, and no two chains end at the same exit (WireGuard holds
-// one session per exit and the path layer uses one path to it at a time,
-// so two such chains could never carry traffic at once).
+// matches default; every chain's exit is a peer, and no two chains end at
+// the same exit (WireGuard holds one session per exit and the path layer
+// uses one path to it at a time, so two such chains could never carry
+// traffic at once).
 func (s *Section) validateRules() error {
 	named := make(map[BlobKind]map[string]bool)
 	for _, b := range s.Blobs {
@@ -404,13 +393,11 @@ func (s *Section) validateRules() error {
 		switch {
 		case r.Action.Kind == ActionChain && !chains[r.Action.Chain]:
 			return fmt.Errorf("rule %s: no chain %s", r, r.Action.Chain)
-		case r.Match.Kind == MatchGeoIP && !named[BlobGeoIP][r.Match.Value]:
-			return fmt.Errorf("rule %s: no geoip blob named %s", r, r.Match.Value)
-		case r.Match.Kind == MatchGeoSite && !named[BlobGeoSite][r.Match.Value]:
-			return fmt.Errorf("rule %s: no geosite blob named %s", r, r.Match.Value)
+		case r.Match.NamesAList() && !named[listBlobKind(r.Match.Kind)][r.Match.Value]:
+			return fmt.Errorf("rule %s: no %v blob named %s", r, listBlobKind(r.Match.Kind), r.Match.Value)
 		}
 	}
-	if n := len(s.Rules); n > 0 && s.Rules[n-1].Match.Kind != MatchDefault {
+	if !EndsWithDefault(s.Rules) {
 		return errors.New("rules: the last rule must match default, so every destination has an action")
 	}
 	if d := s.Presets.Domestic; d != "" && !named[BlobGeoIP][d] {
@@ -422,9 +409,34 @@ func (s *Section) validateRules() error {
 	return nil
 }
 
+// listBlobKind is the blob kind a list-naming matcher's value names.
+func listBlobKind(k MatchKind) BlobKind {
+	if k == MatchGeoSite {
+		return BlobGeoSite
+	}
+	return BlobGeoIP
+}
+
+// NamesAList reports whether the matcher matches by the name of a list
+// blob (geoip, or geosite once specs carry them): the list it names must
+// be declared.
+func (m Match) NamesAList() bool { return m.Kind == MatchGeoIP || m.Kind == MatchGeoSite }
+
+// EndsWithDefault reports whether the last rule matches default. An empty
+// list passes: with no rules nothing enters the tunnel.
+func EndsWithDefault(rules []Rule) bool {
+	return len(rules) == 0 || rules[len(rules)-1].Match.Kind == MatchDefault
+}
+
+// MayEndAChain reports whether the node may be a chain's exit: only a
+// server with egress on.
+func (n *NodeSettings) MayEndAChain() bool {
+	return n.Kind == NodeServer && n.AllowEgress
+}
+
 // chainsEndAtExits is Build's check across sections that every chain ends
-// at a server that allows egress. As in hiddenFromDevices, a node outside
-// the map (a shared node) is checked by the builder of the map that has it.
+// at a server that allows egress. A node outside the map (a shared node)
+// is checked by the builder of the map that has it.
 func chainsEndAtExits(recipients []Recipient) error {
 	nodes := make(map[NodeID]*NodeSettings, len(recipients))
 	for i := range recipients {
@@ -433,7 +445,7 @@ func chainsEndAtExits(recipients []Recipient) error {
 	}
 	for i, r := range recipients {
 		for _, c := range r.Section.Chains {
-			if exit, ok := nodes[c.Exit]; ok && (exit.Kind != NodeServer || !exit.AllowEgress) {
+			if exit, ok := nodes[c.Exit]; ok && !exit.MayEndAChain() {
 				return fmt.Errorf("recipient %d: chain %s ends at %v, not a server that allows egress", i, c.Name, c.Exit)
 			}
 		}
