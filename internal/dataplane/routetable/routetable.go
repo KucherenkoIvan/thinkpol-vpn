@@ -334,12 +334,12 @@ type Status struct {
 	// change nothing).
 	Reapplies uint64
 	// RulesAhead counts what other software has in place that may route
-	// around the tunnel and the layout can't override (Ahead): policy
+	// around the tunnel and the layout can't override (Layout.Ahead): policy
 	// rules before ours (a mesh VPN's, say) on Linux, host routes over
 	// tunneled destinations on macOS.
 	RulesAhead int
 	// OverlayAhead counts foreign host routes inside the overlay's
-	// networks that nothing outranks (macOS, OverlayAhead): a peer's
+	// networks that nothing outranks (macOS, Layout.OverlayAhead): a peer's
 	// traffic leaves around the tunnel.
 	OverlayAhead int
 }
@@ -481,10 +481,10 @@ func (e *Enforcer) Enforce(ctx context.Context, w Want) error {
 func (e *Enforcer) apply(ctx context.Context, w Want, again bool) error {
 	start := time.Now()
 	s, err := e.cfg.Survey(ctx)
-	var cfg netcfg.Config
+	var l Layout
 	if err == nil {
-		cfg = Config(w, s)
-		err = e.cfg.Apply(ctx, cfg)
+		l = LayoutOf(w, s)
+		err = e.cfg.Apply(ctx, l.Config)
 	}
 	took := time.Since(start)
 	if err == nil {
@@ -522,12 +522,12 @@ func (e *Enforcer) apply(ctx context.Context, w Want, again bool) error {
 	if !TUNUp(w, s) {
 		e.status.Enforced, e.status.Error = false, ErrorTUNDown
 	}
-	e.status.RulesAhead, e.status.OverlayAhead = Ahead(w, s), OverlayAhead(w, s)
-	if !again || e.status.Routes != len(cfg.Routes) {
-		e.log.Info("route table applied", "routes", len(cfg.Routes), "took", took.Round(time.Millisecond))
+	e.status.RulesAhead, e.status.OverlayAhead = l.Ahead, l.OverlayAhead
+	if !again || e.status.Routes != len(l.Config.Routes) {
+		e.log.Info("route table applied", "routes", len(l.Config.Routes), "took", took.Round(time.Millisecond))
 		e.status.LastApply = took
 	}
-	e.status.Routes = len(cfg.Routes)
+	e.status.Routes = len(l.Config.Routes)
 	return nil
 }
 
