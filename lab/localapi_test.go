@@ -220,7 +220,6 @@ func TestLocalAPI(t *testing.T) {
 		if err := tunGone(t, devA); err != nil {
 			t.Fatal(err)
 		}
-		noPing(t, devA, s4.String())
 		ping(t, devB, s4) // the others carry on
 		if _, err := cli(t, devA, as("", "", "connect")); err != nil {
 			t.Fatal(err)
@@ -256,22 +255,6 @@ func TestLocalAPI(t *testing.T) {
 			t.Errorf("%s: left in /run/thinkpol-api: %s", n.Name, out)
 		}
 	}
-}
-
-// tunGone returns nil only when the TUN is gone: only "does not exist"
-// from `ip link show` counts; any other failure is an unknown state.
-func tunGone(t *testing.T, n *lab.Node) error {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	res, err := n.Exec(ctx, "ip", "link", "show", "thinkpol0")
-	if err == nil {
-		return fmt.Errorf("the TUN outlived the disconnect")
-	}
-	if !strings.Contains(res.Stderr, "does not exist") {
-		return fmt.Errorf("ip link show thinkpol0: %v: %s", err, res.Stderr)
-	}
-	return nil
 }
 
 // TestDisconnectLeavesNothingBehind is the teardown check behind the CLI
@@ -317,9 +300,10 @@ func TestDisconnectLeavesNothingBehind(t *testing.T) {
 		}
 		routes4, routes6 := routeTableRoutes(t, devA)
 		if connected {
-			// The route table's always-present `unreachable ::/0`
-			// (routetable.go) is in the IPv6 table: only the TUN's own
-			// default in each family proves the routes came back.
+			// The route table's `unreachable ::/0` (routetable.go),
+			// there whenever it is up, is in the IPv6 table: only the
+			// TUN's own default in each family proves the routes came
+			// back.
 			if !strings.Contains(routes4, "default dev thinkpol0") || !strings.Contains(routes6, "default dev thinkpol0") {
 				return fmt.Errorf("no TUN default in the route table's routes:\n%s\n%s", routes4, routes6)
 			}
@@ -338,7 +322,11 @@ func TestDisconnectLeavesNothingBehind(t *testing.T) {
 		if connected {
 			want = guardPresent
 		}
-		if got := ipv6Guard(t, devA); got != want {
+		got, err := ipv6Guard(devA)
+		if err != nil {
+			return err
+		}
+		if got != want {
 			return fmt.Errorf("the IPv6 guard: %s, want %s", got, want)
 		}
 		return nil

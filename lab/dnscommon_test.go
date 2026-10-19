@@ -66,8 +66,8 @@ func startDeviceExit(t *testing.T, server *lab.Node, upstream netip.Addr, versio
 
 // startServerExit starts server as a server-mode exit: its resolver runs
 // in the worker and asks upstream's :5353. The lab's addresses are
-// private, which the worker's egress refuses unless egress allows it to
-// the upstream's subnet (zero allows nothing).
+// private, which the worker's egress refuses: the zero Prefix passes no
+// -egress-allowed, so the upstream is refused.
 func startServerExit(t *testing.T, server *lab.Node, upstream netip.Addr, version string, egressAllowed netip.Prefix) *lab.Process {
 	t.Helper()
 	args := []string{"thinkpol", "up", "-dns-upstream", upstream.String() + ":5353"}
@@ -130,23 +130,22 @@ func mustResolve(t *testing.T, n *lab.Node, name string, v6 bool, want string) {
 	})
 }
 
-// mustAsk asks name of a resolver at server's :53 directly (labdns's
+// mustAsk asks name of a resolver at resolver's :53 directly (labdns's
 // client mode, so the node's own resolver and its cache stay out of it)
 // until the answer is want, an error counting as a retry.
-func mustAsk(t *testing.T, n *lab.Node, server netip.Addr, name, want string) {
+func mustAsk(t *testing.T, n *lab.Node, resolver netip.Addr, name, want string) {
 	t.Helper()
 	lab.Eventually(t, 30*time.Second, func() error {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		res, err := n.Exec(ctx, "labdns", "-server", server.String()+":53", "-query", name)
-		got := strings.TrimSpace(res.Stdout)
-		if got == want {
-			return nil
-		}
+		res, err := n.Exec(ctx, "labdns", "-server", resolver.String()+":53", "-query", name)
 		if err != nil {
 			return fmt.Errorf("labdns -query %s: %v\n%s%s", name, err, res.Stdout, res.Stderr)
 		}
-		return fmt.Errorf("%s asked of %s answered %q, want %q", name, server, got, want)
+		if got := strings.TrimSpace(res.Stdout); got != want {
+			return fmt.Errorf("%s asked of %s answered %q, want %q", name, resolver, got, want)
+		}
+		return nil
 	})
 }
 

@@ -116,57 +116,6 @@ func waitLog(t *testing.T, p *lab.Process, pattern string) {
 // applied matches the log line of a node, or its worker, applying a map.
 func applied(version string) string { return `msg="map applied" .*version=` + version + ` ` }
 
-// policyRules is the device's policy rules (both families), which a stop
-// or a failed start must put back exactly.
-func policyRules(t *testing.T, n *lab.Node) (v4, v6 string) {
-	t.Helper()
-	return n.MustExec(t, "ip", "rule"), n.MustExec(t, "ip", "-6", "rule")
-}
-
-// routeTableRulesUp says whether the route table's own policy rules
-// (priority 5301) are in both families' listings.
-func routeTableRulesUp(v4, v6 string) bool {
-	return strings.Contains(v4, "5301:") && strings.Contains(v6, "5301:")
-}
-
-// routeTableRoutes is everything in the routing tables of the route
-// table's protocol (86), IPv4 and IPv6.
-func routeTableRoutes(t *testing.T, n *lab.Node) (v4, v6 string) {
-	t.Helper()
-	return n.MustExec(t, "ip", "-4", "route", "show", "table", "all", "proto", "86"),
-		n.MustExec(t, "ip", "-6", "route", "show", "table", "all", "proto", "86")
-}
-
-// The IPv6 leak guard's nftables table's state.
-type guardState string
-
-const (
-	guardPresent guardState = "present" // the table holds its chain
-	guardEmpty   guardState = "empty"   // the table without the chain: a leftover no stop may leave
-	guardAbsent  guardState = "absent"  // no table by that name at all
-)
-
-// ipv6Guard reads the state from one `nft list table` call: absent only
-// when nft says there is no such table, so a table vanishing mid-poll
-// retries; any other failure is an unknown state that carries the reason,
-// the same shape as tunGone.
-func ipv6Guard(t *testing.T, n *lab.Node) guardState {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	res, err := n.Exec(ctx, "nft", "list", "table", "inet", "thinkpol-guard")
-	if err != nil {
-		if !strings.Contains(res.Stderr, "No such file or directory") {
-			return guardState(fmt.Sprintf("unknown (%v: %s)", err, res.Stderr))
-		}
-		return guardAbsent
-	}
-	if strings.Contains(res.Stdout, "chain") {
-		return guardPresent
-	}
-	return guardEmpty
-}
-
 // TestUpRunsTheM0Space brings the M0 space up with `thinkpol up` on every
 // node (server-1 as a supervisor with a sandboxed worker, the devices in
 // device mode), pings across it, moves it to a new map by file change and
