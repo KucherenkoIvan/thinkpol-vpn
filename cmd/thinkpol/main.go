@@ -15,11 +15,19 @@ import (
 )
 
 func main() {
+	args := os.Args[1:]
+	e := env{stdin: os.Stdin, stdout: os.Stdout, stderr: os.Stderr}
+	// A service command runs under app.RunWith, which owns SIGINT/SIGTERM:
+	// a second handler would swallow the signal that force-quits a hung
+	// shutdown. Plain commands take the NotifyContext.
+	if c, _, ok := matchCommand(args); ok && c.ownsSignals {
+		os.Exit(run(context.Background(), e, args))
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	// After the first signal cancels ctx, restore the default handling so a
 	// second Ctrl-C kills a command that is slow to shut down.
 	context.AfterFunc(ctx, stop)
-	code := run(ctx, env{stdin: os.Stdin, stdout: os.Stdout, stderr: os.Stderr}, os.Args[1:])
+	code := run(ctx, e, args)
 	stop()
 	os.Exit(code)
 }

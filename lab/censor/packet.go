@@ -4,6 +4,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net/netip"
+
+	"github.com/KucherenkoIvan/thinkpol-vpn/lab/ip"
 )
 
 // Proto is the IP protocol number of a packet's payload.
@@ -63,109 +65,55 @@ func (p *Packet) String() string {
 // decodePacket decodes an IP packet as the queue hands it over. It returns
 // false for anything it cannot read: a non-IP or malformed packet, or a
 // later fragment. The queue adapter checks isFragment first.
-func decodePacket(ip []byte) (Packet, bool) {
-	var pkt Packet
-	if len(ip) < 1 {
-		return pkt, false
+func decodePacket(b []byte) (Packet, bool) {
+	h, ok := ip.Decode(b)
+	if !ok || h.LaterFragment {
+		return Packet{}, false
 	}
-	var l4 []byte
-	first := true
-	switch ip[0] >> 4 {
-	case 4:
-		if len(ip) < 20 {
-			return pkt, false
-		}
-		ihl := int(ip[0]&0x0f) * 4
-		total := int(binary.BigEndian.Uint16(ip[2:]))
-		if ihl < 20 || total < ihl || total > len(ip) {
-			return pkt, false
-		}
-		ip = ip[:total]
-		pkt.Proto, pkt.Src, pkt.Dst = Proto(ip[9]),
-			netip.AddrFrom4([4]byte(ip[12:16])), netip.AddrFrom4([4]byte(ip[16:20]))
-		first = binary.BigEndian.Uint16(ip[6:])&0x1fff == 0
-		l4 = ip[ihl:]
-	case 6:
-		if len(ip) < 40 {
-			return pkt, false
-		}
-		total := 40 + int(binary.BigEndian.Uint16(ip[4:]))
-		if total > len(ip) {
-			return pkt, false
-		}
-		ip = ip[:total]
-		pkt.Src = netip.AddrFrom16([16]byte(ip[8:24]))
-		pkt.Dst = netip.AddrFrom16([16]byte(ip[24:40]))
-		next, rest := ip[6], ip[40:]
-	exts:
-		for {
-			switch next {
-			case 0, 43, 60: // hop-by-hop, routing, destination options
-				if len(rest) < 8 || len(rest) < 8+int(rest[1])*8 {
-					return pkt, false
-				}
-				next, rest = rest[0], rest[8+int(rest[1])*8:]
-			case 44: // fragment
-				if len(rest) < 8 {
-					return pkt, false
-				}
-				first = binary.BigEndian.Uint16(rest[2:])&0xfff8 == 0
-				next, rest = rest[0], rest[8:]
-			default:
-				break exts
-			}
-		}
-		pkt.Proto, l4 = Proto(next), rest
-	default:
-		return pkt, false
-	}
-	if !first {
-		return pkt, false
-	}
-	pkt.Payload = l4
+	pkt := Packet{Src: h.Src, Dst: h.Dst, Proto: Proto(h.Proto), Payload: h.Payload}
 	switch pkt.Proto {
 	case ProtoUDP:
-		if len(l4) < 8 {
-			return pkt, false
+		if len(h.Payload) < 8 {
+			return Packet{}, false
 		}
-		pkt.SrcPort, pkt.DstPort = binary.BigEndian.Uint16(l4), binary.BigEndian.Uint16(l4[2:])
-		pkt.Payload = l4[8:]
+		pkt.SrcPort, pkt.DstPort = binary.BigEndian.Uint16(h.Payload), binary.BigEndian.Uint16(h.Payload[2:])
+		pkt.Payload = h.Payload[8:]
 	case ProtoTCP:
-		if len(l4) < 20 {
-			return pkt, false
+		if len(h.Payload) < 20 {
+			return Packet{}, false
 		}
-		pkt.SrcPort, pkt.DstPort = binary.BigEndian.Uint16(l4), binary.BigEndian.Uint16(l4[2:])
-		pkt.Seq = binary.BigEndian.Uint32(l4[4:])
-		pkt.Ack = binary.BigEndian.Uint32(l4[8:])
-		pkt.Flags = l4[13]
-		off := int(l4[12]>>4) * 4
-		if off < 20 || off > len(l4) {
-			return pkt, false
+		pkt.SrcPort, pkt.DstPort = binary.BigEndian.Uint16(h.Payload), binary.BigEndian.Uint16(h.Payload[2:])
+		pkt.Seq = binary.BigEndian.Uint32(h.Payload[4:])
+		pkt.Ack = binary.BigEndian.Uint32(h.Payload[8:])
+		pkt.Flags = h.Payload[13]
+		off := int(h.Payload[12]>>4) * 4
+		if off < 20 || off > len(h.Payload) {
+			return Packet{}, false
 		}
-		pkt.Payload = l4[off:]
+		pkt.Payload = h.Payload[off:]
 	}
 	return pkt, true
 }
 
-// isFragment reports whether ip is an IP fragment, first or later, IPv4 or
+// isFragment reports whether b is an IP fragment, first or later, IPv4 or
 // IPv6. The router reassembles datagrams before the censor sees them (see
 // installQueueRule), so a fragment that still reaches the queue escaped
 // reassembly: its later fragments carry no ports, and accepting them would
 // let a blocked datagram's bytes through. The queue adapter drops them.
-func isFragment(ip []byte) bool {
-	if len(ip) < 1 {
+func isFragment(b []byte) bool {
+	if len(b) < 1 {
 		return false
 	}
-	switch ip[0] >> 4 {
+	switch b[0] >> 4 {
 	case 4:
 		// More fragments, or a fragment offset; DF and the reserved bit
 		// don't count.
-		return len(ip) >= 20 && binary.BigEndian.Uint16(ip[6:])&0x3fff != 0
+		return len(b) >= 20 && binary.BigEndian.Uint16(b[6:])&0x3fff != 0
 	case 6:
-		if len(ip) < 40 {
+		if len(b) < 40 {
 			return false
 		}
-		next, rest := ip[6], ip[40:]
+		next, rest := b[6], b[40:]
 		for {
 			switch next {
 			case 44:

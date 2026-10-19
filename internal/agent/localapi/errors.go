@@ -31,3 +31,15 @@ var (
 		ErrDNSUnprotected:    codes.FailedPrecondition,
 	}
 )
+
+// ErrStartFailed is a data plane that failed to start on Connect: what
+// the client wraps the failure into, not a refusal the server sends.
+var ErrStartFailed = Error{Code: "start_failed"}
+
+// startFailedPrefix begins a start failure's code, before its step.
+var startFailedPrefix = ErrStartFailed.Code + ":"
+
+// startFailed is a start failure's refusal at step: the interceptor sends
+// the code alone, so the step rides in the code and the detail stays in
+// the service's log.
+func startFailed(step string) Error { return Error{Code: startFailedPrefix + step} }
