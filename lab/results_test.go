@@ -95,6 +95,9 @@ func TestCensorMatrix(t *testing.T) {
 	}
 
 	off, censored := censorCases[0], censorCases[1:]
+	if off.modules != nil {
+		t.Fatalf("censor case %q is the off cell and must have no censor", off.name)
+	}
 	for _, cc := range censored {
 		if cc.modules == nil {
 			t.Fatalf("censor case %q has no censor: only censorCases[0] may be off", cc.name)
@@ -104,7 +107,7 @@ func TestCensorMatrix(t *testing.T) {
 		t.Run(tr.name, func(t *testing.T) {
 			t.Parallel()
 			offResult := "" // the off cell's result; "" when it didn't run
-			t.Run("off", func(t *testing.T) {
+			t.Run(off.name, func(t *testing.T) {
 				// runCell records the cell even when t.Fatal stops it,
 				// but the assignment would not happen: claim that the
 				// cell ran before it can fail.
