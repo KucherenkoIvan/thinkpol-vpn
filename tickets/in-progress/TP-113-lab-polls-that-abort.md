@@ -120,3 +120,4 @@ A lab poll retries a failed read and fails only at its deadline; a one-shot chec
 - 2026-10-19 verified on the committed, pushed head 51448af with a clean tree, no other tplab containers (LAB_P=4): make lint exit 0 (17s), make test exit 0 (1s, Go's test cache), make lab-test exit 0 (123s; lab ok in 96.7s, censor matrix included; node phase 35 packages ok; no skips). The lab package also passed alone before the commit (124s).
 - 2026-10-19 in-progress → review
 - 2026-10-19 review → has-errors — round 4: R3.1-R3.8
+- 2026-10-19 has-errors → in-progress — owner: agent-claude, branch: tp-113-lab-polls-that-abort
