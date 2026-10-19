@@ -23,14 +23,23 @@ The udp transport implements replay policy once: the authenticate-and-admit ladd
 - Removing `SendReporter` or `Buckets` (TP-106).
 
 ## Acceptance
-- [ ] udp and memory still pass the transport conformance suite and existing udp tests
-- [ ] `make lint`, `make test`, `make lab-test` pass
-- [ ] no behaviour change: existing tests pass unchanged, or each changed test says why
+- [x] udp and memory still pass the transport conformance suite and existing udp tests
+- [x] `make lint`, `make test`, `make lab-test` pass
+- [x] no behaviour change: existing tests pass unchanged, or each changed test says why
 
 ## Notes
 Origin: design and code-quality review of rewrite at 2fa1191 (2026-10-18).
 Must land before TP-087 so `reality` does not add a third copy of the admit ladder.
 
+What the consolidation is: `transport.Inbox` (new, generic) is the queue-fed
+link end both transports embed and the accept queue both listeners own; the
+Accept select is `Inbox.Recv`. In udp, `receiver` runs the ladder's checked
+half (open → fresh → senders.admit → the turn-away counters) for the
+listener, the router and the dialer, and `senderTable` owns the per-secret
+sender histories with the retired-sender bookkeeping for the listener and
+the router. No existing test changed; `inbox_test.go` is new coverage.
+
 ## Log
 - 2026-10-18 created in backlog (code-quality review)
 - 2026-10-19 backlog → in-progress — owner: agent-glm, branch: tp-101-udp-one-receiver-for-admit-ladder
+- 2026-10-19 in-progress → review — make lint, make test and a full make lab-test (lab plus every package in a lab node) pass at f3a021e; the conformance suite and both transports' tests pass unchanged, so nothing was left unverified
