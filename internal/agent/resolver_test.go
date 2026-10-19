@@ -83,7 +83,7 @@ func TestADevicePointsTheSystemAtItsResolverWhileConnected(t *testing.T) {
 				return []netip.Addr{netip.MustParseAddr("192.0.2.53")}, nil
 			}
 		},
-		run: func(dp *DataPlane) {
+		dataPlane: func(dp *DataPlane) {
 			dp.dnsPort = 5353
 		},
 	})
@@ -347,7 +347,7 @@ func TestUnprotectedDNSIsReportedAndRetried(t *testing.T) {
 			p.SetSystemDNS = sys.Set
 			p.SystemUpstreams = func([]netip.Addr) ([]netip.Addr, error) { return nil, nil }
 		},
-		run: func(dp *DataPlane) {
+		dataPlane: func(dp *DataPlane) {
 			dp.dnsPort = 5353
 		},
 	})
@@ -389,7 +389,7 @@ func TestAFailedFirstReadOfTheSystemsResolversIsPassedOn(t *testing.T) {
 			p.SetSystemDNS = sys.Set
 			p.SystemUpstreams = func([]netip.Addr) ([]netip.Addr, error) { return nil, errors.New("the store is unreadable") }
 		},
-		run: func(dp *DataPlane) {
+		dataPlane: func(dp *DataPlane) {
 			dp.dnsPort = 5353
 		},
 	})
@@ -420,7 +420,7 @@ func TestStaleUpstreamsAreDegradedNotUnprotected(t *testing.T) {
 			p.SetSystemDNS = sys.Set
 			p.SystemUpstreams = func([]netip.Addr) ([]netip.Addr, error) { return nil, nil }
 		},
-		run: func(dp *DataPlane) {
+		dataPlane: func(dp *DataPlane) {
 			dp.dnsPort = 5353
 		},
 	})
@@ -458,7 +458,7 @@ func TestAnUntaggedProblemIsUnprotected(t *testing.T) {
 			p.SetSystemDNS = sys.Set
 			p.SystemUpstreams = func([]netip.Addr) ([]netip.Addr, error) { return nil, nil }
 		},
-		run: func(dp *DataPlane) {
+		dataPlane: func(dp *DataPlane) {
 			dp.dnsPort = 5353
 		},
 	})
@@ -516,7 +516,7 @@ func TestTheDirectUpstreamsReachTheRouteTable(t *testing.T) {
 				return []netip.Addr{netip.MustParseAddr("192.0.2.53")}, nil
 			}
 		},
-		run: func(dp *DataPlane) {
+		dataPlane: func(dp *DataPlane) {
 			dp.RouteTable = true
 			dp.dnsPort = 5353
 		},
@@ -550,7 +550,7 @@ func TestAConfiguredUpstreamReachesTheRouteTableWithItsPort(t *testing.T) {
 			p.NewRouteTable = func(*slog.Logger, routetable.Guard) (dataplane.RouteTable, error) { return table, nil }
 			p.SetSystemDNS = (&fakeSystem{}).Set
 		},
-		run: func(dp *DataPlane) {
+		dataPlane: func(dp *DataPlane) {
 			dp.RouteTable = true
 			dp.dnsPort = 5353
 		},

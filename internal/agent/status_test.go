@@ -1,11 +1,8 @@
 package agent
 
 import (
-	"bytes"
 	"context"
 	"errors"
-	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -33,11 +30,11 @@ type deviceNode struct {
 }
 
 // deviceOpt adjusts device b: prepare its config and platform (every
-// host fake) before it is prepared, run its data plane's private test
-// fields before it runs.
+// host fake) before it is prepared, dataPlane its data plane's private
+// test fields before it runs.
 type deviceOpt struct {
-	prepare func(*Config, *Platform)
-	run     func(*DataPlane)
+	prepare   func(*Config, *Platform)
+	dataPlane func(*DataPlane)
 }
 
 // startDevice starts device b with opts.
@@ -68,8 +65,8 @@ func startDevice(t *testing.T, s *testSpace, reg *transport.Registry, connect bo
 		dp.path, dp.retryAfter = fastPaths, testRetry
 		dp.RouteTable = false // virtual TUNs: the host's routing stays as it is
 		for _, o := range opts {
-			if o.run != nil {
-				o.run(dp)
+			if o.dataPlane != nil {
+				o.dataPlane(dp)
 			}
 		}
 	}
@@ -241,50 +238,34 @@ func TestARemovedDeviceConnectsOnceBack(t *testing.T) {
 	s := newTestSpace(t)
 	_, reg := memoryRegistry(t)
 	startNode(t, reg, s.a, s.verified(t, 1))
-	dir := s.stateDir(t, s.b, 1)
-	writeFile(t, filepath.Join(dir, MapFileName), s.buildWithout(t, 1, s.b), 0o644)
-	cfg := testConfig(dir)
-	cfg.Connect = false
-	rn := newRunningNode()
-	logs, err := NewLogs("info", rn.log)
-	if err != nil {
-		t.Fatal(err)
-	}
-	plat := testPlatform()
-	plat.NewConfigurator = func(netcfg.Owner) (netcfg.Configurator, error) { return rn.ifc, nil }
-	plat.NewTUN = rn.virtualTUN(nil)
-	n, err := Prepare(cfg, logs, plat)
-	if err != nil {
-		t.Fatal(err)
-	}
-	n.tweak = func(dp *DataPlane) {
-		dp.path, dp.retryAfter = fastPaths, testRetry
-		dp.RouteTable = false
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	done := make(chan error, 1)
-	go func() { done <- n.run(ctx, reg, rn.maps) }()
-	if st := n.Status(); !st.Removed || st.Mode != ModeAuto {
+	b := startDevice(t, s, reg, false, deviceOpt{prepare: func(c *Config, _ *Platform) {
+		writeFile(t, filepath.Join(c.StateDir, MapFileName), s.buildWithout(t, 1, s.b), 0o644)
+	}})
+	ctx := context.Background()
+	if st := b.node.Status(); !st.Removed || st.Mode != ModeAuto {
 		t.Fatalf("status %+v", st)
 	}
-	if err := n.Connect(ctx); err != nil {
+	if err := b.node.Connect(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if st := n.Status(); st.Connection != Connecting {
+	if st := b.node.Status(); st.Connection != Connecting {
 		t.Fatalf("status %+v", st)
 	}
-	rn.maps <- s.build(t, 2)
-	eventually(t, func() bool { return n.Status().Connection == Connected })
-	if st := n.Status(); st.Mode != ModeDevice || st.Removed || st.MapVersion != 2 {
+	b.maps <- s.build(t, 2)
+	st := b.connection(t, Connected)
+	if st.Mode != ModeDevice || st.Removed || st.MapVersion != 2 {
 		t.Fatalf("status %+v", st)
 	}
 	b4, _ := overlay(2)
 	a4, _ := overlay(1)
-	rn.ping(t, b4, a4)
-	cancel()
-	if err := <-done; err != nil {
+	b.ping(t, b4, a4)
+	b.stop()
+	if err := <-b.done; err != nil {
 		t.Fatal(err)
+	}
+	b.done <- nil // for the cleanup
+	if got := b.log.String(); strings.Count(got, "back in space") != 1 {
+		t.Errorf("log %q", got)
 	}
 }
 
@@ -522,37 +503,10 @@ func TestAStartWhileDisconnectedClearsACrashedRunsRoutes(t *testing.T) {
 	s := newTestSpace(t)
 	_, reg := memoryRegistry(t)
 	cleared := make(chan netcfg.Owner, 4)
-	plat := testPlatform()
-	plat.ClearConfig = func(o netcfg.Owner) error { cleared <- o; return nil }
-	plat.ClearRouteTable = func(routetable.Guard) error { cleared <- netcfg.OwnerRouteTable; return nil }
-	rn := newRunningNode()
-	logs, err := NewLogs("info", rn.log)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg := testConfig(s.stateDir(t, s.b, 1))
-	cfg.Connect = false
-	plat.NewConfigurator = func(netcfg.Owner) (netcfg.Configurator, error) { return rn.ifc, nil }
-	plat.NewTUN = rn.virtualTUN(nil)
-	n, err := Prepare(cfg, logs, plat)
-	if err != nil {
-		t.Fatal(err)
-	}
-	n.tweak = func(dp *DataPlane) {
-		dp.path, dp.retryAfter = fastPaths, testRetry
-		dp.RouteTable = false
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- n.run(ctx, reg, rn.maps) }()
-	t.Cleanup(func() {
-		cancel()
-		select {
-		case <-done:
-		case <-time.After(10 * time.Second):
-			t.Error("the node didn't stop")
-		}
-	})
+	startDevice(t, s, reg, false, deviceOpt{prepare: func(_ *Config, p *Platform) {
+		p.ClearConfig = func(o netcfg.Owner) error { cleared <- o; return nil }
+		p.ClearRouteTable = func(routetable.Guard) error { cleared <- netcfg.OwnerRouteTable; return nil }
+	}})
 	for _, want := range []netcfg.Owner{netcfg.OwnerRouteTable, netcfg.OwnerOverlay} {
 		select {
 		case got := <-cleared:
@@ -562,40 +516,5 @@ func TestAStartWhileDisconnectedClearsACrashedRunsRoutes(t *testing.T) {
 		case <-time.After(10 * time.Second):
 			t.Fatal("a disconnected start cleared nothing")
 		}
-	}
-}
-
-// Clearing one owner failing doesn't keep the other's leftovers; an OS
-// without an adapter for an owner has nothing to clear.
-func TestClearingTheNetworkTriesBothOwners(t *testing.T) {
-	var owners []netcfg.Owner
-	clear := func(o netcfg.Owner) error {
-		owners = append(owners, o)
-		if o == netcfg.OwnerRouteTable {
-			return errors.New("no routing socket today")
-		}
-		return nil
-	}
-	h := Host{
-		NewGuard:        func() routetable.Guard { return nil },
-		ClearRouteTable: func(routetable.Guard) error { return clear(netcfg.OwnerRouteTable) },
-		ClearConfig:     clear,
-	}
-	var out bytes.Buffer
-	log := slog.New(slog.NewTextHandler(&out, nil))
-	h.clearNetwork(log)
-	if !slices.Equal(owners, []netcfg.Owner{netcfg.OwnerRouteTable, netcfg.OwnerOverlay}) {
-		t.Errorf("cleared %v", owners)
-	}
-	if got := out.String(); strings.Count(got, "removing a previous run's routes failed") != 1 ||
-		!strings.Contains(got, "route-table: no routing socket today") {
-		t.Errorf("log %q", got)
-	}
-	out.Reset()
-	h.ClearRouteTable = func(routetable.Guard) error { return fmt.Errorf("netcfg: %w", errors.ErrUnsupported) }
-	h.ClearConfig = func(netcfg.Owner) error { return fmt.Errorf("netcfg: %w", errors.ErrUnsupported) }
-	h.clearNetwork(log)
-	if out.Len() != 0 {
-		t.Errorf("unsupported: %q", out.String())
 	}
 }

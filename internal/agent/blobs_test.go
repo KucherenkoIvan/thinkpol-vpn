@@ -277,7 +277,7 @@ func TestServerSeedsItsWorker(t *testing.T) {
 	writeFile(t, filepath.Join(dir, BlobDir, blobFileName(ref.SHA256)), ru, 0o600)
 
 	sup := &fakeSupervisor{}
-	r := runServerSpacesIn(t, s, sup, dir, nil)
+	runServerSpacesIn(t, s, sup, dir, nil)
 	eventually(t, func() bool { _, _, n := sup.last(); return n >= 1 })
 	sp, _, _ := sup.last()
 	if sp[0].Seeds == nil {
@@ -318,7 +318,6 @@ func TestServerSeedsItsWorker(t *testing.T) {
 	b.run(t, dpB)
 	eventually(t, func() bool { _, ok := dpB.Blobs.Get(ref.SHA256); return ok })
 	w.waitLog(t, `msg="blob loaded"`)
-	_ = r
 }
 
 // Map v1 named ru = A, which the device stored; v2 names ru = B. Restarted
