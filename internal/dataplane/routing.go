@@ -232,6 +232,7 @@ func (e *Engine) ruleRoutes(egresses map[string]*router.Egress) []router.Route {
 // map can't build is enforced failing closed (see rules.PresetRules) and
 // reported with rules.ErrPresetUnavailable.
 func (e *Engine) SetRules(l rules.Local) error {
+	defer e.flushEvents()
 	e.serial.Lock()
 	defer e.serial.Unlock()
 	e.mu.Lock()
@@ -247,6 +248,7 @@ func (e *Engine) SetRules(l rules.Local) error {
 // ReloadRules compiles the rules again with the blobs cfg.Blobs has now:
 // call it when a list the rules use arrives.
 func (e *Engine) ReloadRules() error {
+	defer e.flushEvents()
 	e.serial.Lock()
 	defer e.serial.Unlock()
 	e.mu.Lock()

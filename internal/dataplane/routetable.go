@@ -117,6 +117,7 @@ func (e *Engine) growRoutes(ctx context.Context, shrinkErr error) error {
 	err := e.enforce(ctx, w)
 	e.routesWant = &w // the route table keeps trying it
 	if err != nil {
+		e.note(Event{Kind: EventRouteTableNotEnforced})
 		return fmt.Errorf("dataplane: route table: %w", errors.Join(shrinkErr, err))
 	}
 	return nil

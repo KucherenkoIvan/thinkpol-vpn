@@ -103,6 +103,9 @@ type EngineConfig struct {
 	// dnsConfig). Called with the engine locked: it must not call back
 	// into the engine.
 	DNS interface{ Update(dns.Config) }
+	// Events, if set, hears what happens to the engine (Event), on the
+	// goroutine whose call caused it, once that call let the engine go.
+	Events func(Event)
 }
 
 // Engine is one space's data plane on a node (DESIGN.md "Data plane"): the
@@ -142,6 +145,7 @@ type Engine struct {
 
 	mu      sync.Mutex
 	closed  bool
+	pending []Event // noted for cfg.Events (flushEvents)
 	devices map[string]*egressDevice
 	inbound map[string]*transport.PeerTable
 	links   map[string][]transport.PeerLink // last applied, by transport
@@ -289,6 +293,7 @@ func hostPrefixes(addrs []netip.Addr) []netip.Prefix {
 // section and the rest of the previous one; peers it added are those both
 // allow. Applying the same section again, or a newer one, converges.
 func (e *Engine) Apply(ctx context.Context, s netmap.Section) error {
+	defer e.flushEvents()
 	e.serial.Lock()
 	defer e.serial.Unlock()
 	e.mu.Lock()

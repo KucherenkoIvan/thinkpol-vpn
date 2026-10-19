@@ -60,6 +60,7 @@ type node struct {
 	routes  dataplane.RouteTable                // for EngineConfig.RouteTable
 	standIn func(netmap.BlobKind, string) (netmap.BlobRef, []byte, bool)
 	dns     interface{ Update(dns.Config) } // for EngineConfig.DNS
+	events  func(dataplane.Event)           // for EngineConfig.Events
 	engine  *dataplane.Engine
 	stack   *stack
 }
@@ -118,6 +119,7 @@ func (nd *node) start(t *testing.T, net *memory.Network) {
 		ID: nd.id, Space: testSpace, WireGuardKey: nd.key, Registry: reg, TUN: ch.TUN(), Path: fastPaths, Blobs: nd.blobs, StandIn: nd.standIn, DNS: nd.dns,
 		Forward:    nd.forward,
 		RouteTable: nd.routes,
+		Events:     nd.events,
 	})
 	if err != nil {
 		t.Fatal(err)

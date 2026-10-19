@@ -98,6 +98,12 @@ func TestRouteTableFollowsTheRules(t *testing.T) {
 	a.section.Presets = netmap.RulePresets{Chain: "nl"}
 	rt := &fakeRouteTable{}
 	a.routes = rt
+	// Heard with the engine unlocked: reading its status doesn't wait.
+	var heard []dataplane.Event
+	a.events = func(ev dataplane.Event) {
+		_ = a.engine.Status()
+		heard = append(heard, ev)
+	}
 	s.start(t, net)
 	a.start(t, net)
 
@@ -149,6 +155,9 @@ func TestRouteTableFollowsTheRules(t *testing.T) {
 	if len(calls) != 3 || calls[1].Direct != nil || !calls[2].Direct.Equal(directOf(t)) {
 		t.Fatalf("a failed removal enforced %v", calls)
 	}
+	if len(heard) != 0 {
+		t.Fatalf("events %v while the route table ends up enforced", heard)
+	}
 
 	// The final set fails: Apply says so, by step.
 	rt.mu.Lock()
@@ -156,6 +165,9 @@ func TestRouteTableFollowsTheRules(t *testing.T) {
 	rt.mu.Unlock()
 	if err := a.engine.SetRules(rules.Local{}); !errors.Is(err, errKernel) {
 		t.Fatalf("SetRules with the route table failing: %v", err)
+	}
+	if !slices.Equal(heard, []dataplane.Event{{Kind: dataplane.EventRouteTableNotEnforced}}) {
+		t.Fatalf("events %v, want the route table not enforced", heard)
 	}
 	a.section.Rules = a.section.Rules[1:] // local no longer direct
 	rt.mu.Lock()
@@ -166,6 +178,9 @@ func TestRouteTableFollowsTheRules(t *testing.T) {
 	}
 	if st := a.engine.Status(); st.LastApplyError != dataplane.StepRouteTable {
 		t.Errorf("last apply error %q, want %q", st.LastApplyError, dataplane.StepRouteTable)
+	}
+	if len(heard) != 2 || heard[1].Kind != dataplane.EventRouteTableNotEnforced {
+		t.Errorf("events %v, want the route table not enforced again", heard)
 	}
 	_, _ = rt.since(n)
 	if err := a.engine.Close(); err != nil {
