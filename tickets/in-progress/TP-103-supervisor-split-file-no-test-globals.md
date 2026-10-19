@@ -6,8 +6,8 @@ area: agent
 repo: thinkpol-vpn
 size: M
 depends_on: []
-owner: ""
-branch: ""
+owner: agent-glm
+branch: tp-103-supervisor-split-file-no-test-globals
 ---
 
 ## Goal
@@ -33,3 +33,4 @@ Origin: design and code-quality review of rewrite at 2fa1191 (2026-10-18).
 
 ## Log
 - 2026-10-18 created in backlog (code-quality review)
+- 2026-10-19 backlog → in-progress — owner: agent-glm, branch: tp-103-supervisor-split-file-no-test-globals
