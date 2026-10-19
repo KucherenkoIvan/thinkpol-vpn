@@ -98,3 +98,4 @@ The supervisor's forged-ICMP test is fixed on this branch: its expired-flow flak
 - 2026-10-19 review → has-errors — round 7: review findings
 - 2026-10-19 has-errors → in-progress — round 7: review findings (owner: agent-opus)
 - 2026-10-19 round 7, in 8427347: lab/README.md's requirements name the Docker VM kernel and CONFIG_NF_CONNTRACK_PROCFS through the supervisor's forged-ICMP test (no egress /proc/net reader is left), and its cap paragraph names TestM0; the matrix doc states the off-cell gate without the false "must still pass what it passed" clause, a censored case without modules fails loudly before the transports loop, and the two gate messages are package constants; the Notes' stale 2026-10-18 LAB_P=1 measurement line is gone; make lint, make test green; the censor matrix green alone (43.8 s)
+- 2026-10-19 in-progress → review
