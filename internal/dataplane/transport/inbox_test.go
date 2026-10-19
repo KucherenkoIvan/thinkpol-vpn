@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -66,7 +67,7 @@ func TestInboxRecvFailsWhenCtxDoes(t *testing.T) {
 	}
 }
 
-func TestInboxCloseUnblocksAWaitingRecv(t *testing.T) {
+func TestInboxCloseEndsRecv(t *testing.T) {
 	in := NewInbox[Identity](1)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
@@ -101,46 +102,56 @@ func TestInboxCloseCauseReachesTheReaders(t *testing.T) {
 	}
 }
 
-// TestAnItemRacingClose hammers a sender against a closer: the reader
-// takes what arrives until the close shows, and the close is the last
-// thing it sees.
+// TestAnItemRacingClose races an item against the close, 200 times per
+// read: a sender sends until the close shows, a closer yields once and
+// closes with a cause, and the reader takes what arrives until it sees an
+// error — which must be the cause. From then on the close is sticky: every
+// later read returns the cause, never an item.
 func TestAnItemRacingClose(t *testing.T) {
+	cause := io.ErrUnexpectedEOF
 	for _, read := range []struct {
 		name string
-		read func(*Inbox[[]byte], []byte) error
+		read func(*Inbox[[]byte]) error
 	}{
-		{"ReadPacketFrom", func(in *Inbox[[]byte], p []byte) error { _, err := ReadPacketFrom(in, p); return err }},
-		{"Recv", func(in *Inbox[[]byte], _ []byte) error { _, err := in.Recv(context.Background()); return err }},
+		{"ReadPacketFrom", func(in *Inbox[[]byte]) error { _, err := ReadPacketFrom(in, make([]byte, MaxPacketSize)); return err }},
+		{"Recv", func(in *Inbox[[]byte]) error { _, err := in.Recv(context.Background()); return err }},
 	} {
 		t.Run(read.name, func(t *testing.T) {
-			in := NewInbox[[]byte](1)
-			stop := make(chan struct{})
-			var wg sync.WaitGroup
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				for {
-					select {
-					case <-stop:
-						return
-					default:
+			for range 200 {
+				in := NewInbox[[]byte](1)
+				var wg sync.WaitGroup
+				wg.Add(3)
+				go func() {
+					defer wg.Done()
+					for !in.Closed() {
+						in.TrySend([]byte("packet"))
 					}
-					in.TrySend([]byte("packet"))
-				}
-			}()
-			in.Close(nil)
-			close(stop)
-			wg.Wait()
-			p := make([]byte, MaxPacketSize)
-			for {
-				err := read.read(in, p)
-				if !errors.Is(err, net.ErrClosed) {
-					if err != nil {
-						t.Fatalf("reading a closed inbox: %v", err)
+				}()
+				go func() {
+					defer wg.Done()
+					runtime.Gosched()
+					in.Close(cause)
+				}()
+				errc := make(chan error, 1)
+				go func() {
+					defer wg.Done()
+					for {
+						err := read.read(in)
+						if err != nil {
+							errc <- err
+							return
+						}
 					}
-					continue // a packet TrySend raced in with; fine before the read saw the close
+				}()
+				if err := <-errc; !errors.Is(err, cause) {
+					t.Fatalf("reading past the close: %v", err)
 				}
-				break
+				wg.Wait()
+				for range 16 {
+					if err := read.read(in); !errors.Is(err, cause) {
+						t.Fatalf("the close isn't sticky: %v", err)
+					}
+				}
 			}
 		})
 	}

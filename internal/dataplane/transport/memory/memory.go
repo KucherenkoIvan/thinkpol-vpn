@@ -175,6 +175,8 @@ type Listener struct {
 	mu    sync.Mutex
 	links []transport.PeerLink
 	live  map[*end]transport.PeerLink // accepted, open server ends
+
+	closeOnce sync.Once
 }
 
 func (l *Listener) connect(ctx context.Context, local Addr, cred []byte) (transport.Link, error) {
@@ -202,7 +204,7 @@ func (l *Listener) connect(ctx context.Context, local Addr, cred []byte) (transp
 		l.mu.Unlock()
 	}
 	for e := range l.live {
-		if e.closed() { // closed from the dialer's side
+		if e.in.Closed() { // closed from the dialer's side
 			delete(l.live, e)
 		}
 	}
@@ -288,9 +290,11 @@ func (l *Listener) Accept(ctx context.Context) (transport.Link, transport.Identi
 func (l *Listener) Addr() net.Addr { return l.addr }
 
 // Close implements transport.Listener and frees the endpoint. The accept
-// inbox closes first, so Accept hands out no link of a closing listener.
+// inbox closes first, so Accept hands out no link of a closing listener,
+// and a Close that lost the race waits for the winner.
 func (l *Listener) Close() error {
-	if l.accept.Close(nil) {
+	l.closeOnce.Do(func() {
+		l.accept.Close(nil)
 		l.mu.Lock()
 		for e := range l.live {
 			e.shut(nil)
@@ -301,7 +305,7 @@ func (l *Listener) Close() error {
 		l.net.mu.Lock()
 		delete(l.net.listeners, string(l.addr))
 		l.net.mu.Unlock()
-	}
+	})
 	return nil
 }
 
@@ -314,16 +318,16 @@ type end struct {
 	camo          func([]byte) // where such a dialer's packets go
 	onClose       func()
 
-	Inbox *transport.Inbox[[]byte]
+	in *transport.Inbox[[]byte]
 }
 
 func newEnd(sem Semantics, local, remote Addr) *end {
-	return &end{sem: sem, local: local, remote: remote, Inbox: transport.NewInbox[[]byte](linkQueue)}
+	return &end{sem: sem, local: local, remote: remote, in: transport.NewInbox[[]byte](linkQueue)}
 }
 
 // ReadPacket implements transport.Link: the packets the other end wrote.
 func (e *end) ReadPacket(p []byte) (int, error) {
-	return transport.ReadPacketFrom(e.Inbox, p)
+	return transport.ReadPacketFrom(e.in, p)
 }
 
 // WritePacket implements transport.Link.
@@ -331,10 +335,8 @@ func (e *end) WritePacket(p []byte) error {
 	if err := transport.CheckPacketSize(p); err != nil {
 		return err
 	}
-	select {
-	case <-e.Inbox.Done():
-		return e.Inbox.Err()
-	default:
+	if err := e.in.Err(); err != nil {
+		return err
 	}
 	c := append([]byte(nil), p...)
 	switch {
@@ -342,15 +344,15 @@ func (e *end) WritePacket(p []byte) error {
 		e.camo(c)
 	case e.sem == Stream:
 		select {
-		case e.other.Inbox.Queue() <- c:
-		case <-e.other.Inbox.Done(): // closing one end closes both
+		case e.other.in.Queue() <- c:
+		case <-e.other.in.Done(): // closing one end closes both
 			e.shut(nil)
-			return e.Inbox.Err()
-		case <-e.Inbox.Done():
-			return e.Inbox.Err()
+			return e.in.Err()
+		case <-e.in.Done():
+			return e.in.Err()
 		}
 	default:
-		e.other.Inbox.TrySend(c) // reader too slow: drop, as the network would
+		e.other.in.TrySend(c) // reader too slow: drop, as the network would
 	}
 	return nil
 }
@@ -366,12 +368,10 @@ func (e *end) Close() error {
 func (e *end) shut(reason error) {
 	// Only the first closer propagates: the other end's shut comes back
 	// here, and its Inbox turns the second Close away.
-	if e.Inbox.Close(reason) && e.sem == Stream && e.other != nil {
+	if e.in.Close(reason) && e.sem == Stream && e.other != nil {
 		e.other.shut(nil)
 	}
 }
-
-func (e *end) closed() bool { return e.Inbox.Closed() }
 
 func (e *end) LocalAddr() net.Addr  { return e.local }
 func (e *end) RemoteAddr() net.Addr { return e.remote }

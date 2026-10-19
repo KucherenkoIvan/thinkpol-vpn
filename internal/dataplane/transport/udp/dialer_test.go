@@ -8,9 +8,9 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 )
 
-// The dialer runs the ladder's checked half over what it reads; these
-// tests replay and forge at it the way the listener-side tests replay at
-// the listener.
+// The dialer keeps its own id check (idWindow.recognises) and runs the
+// ladder from the open on; these tests replay and forge at it the way the
+// listener-side tests replay at the listener.
 
 // TestDialerDropsAReplayedDatagram: a datagram the listener sent, captured
 // and shown to the dialer again, is a replay.

@@ -35,6 +35,9 @@ type Listener struct {
 	table   *senderHistories
 	flows   map[string]*flow // by secret
 	scratch []byte           // packets are opened here, so camouflage sees datagrams intact
+
+	closeOnce sync.Once
+	closeErr  error
 }
 
 // flow is the listener's state for one credential's link. The credential's
@@ -90,22 +93,23 @@ func (l *Listener) Rejected() []transport.PeerError {
 }
 
 // Close implements transport.Listener. The accept inbox closes first, so
-// Accept hands out no link of a closing listener. Dialers' links outlive
-// it: they carry on with a listener restarted on the same address.
+// Accept hands out no link of a closing listener, and a Close that lost
+// the race waits for the winner. Dialers' links outlive it: they carry on
+// with a listener restarted on the same address.
 func (l *Listener) Close() error {
-	if !l.accept.Close(nil) {
-		return nil
-	}
-	err := l.pc.Close()
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	for _, f := range l.flows {
-		if f.link != nil {
-			f.link.Inbox.Close(nil)
-			f.link = nil
+	l.closeOnce.Do(func() {
+		l.accept.Close(nil)
+		l.closeErr = l.pc.Close()
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		for _, f := range l.flows {
+			if f.link != nil {
+				f.link.in.Close(nil)
+				f.link = nil
+			}
 		}
-	}
-	return err
+	})
+	return l.closeErr
 }
 
 func (l *Listener) watchPeers(changed <-chan struct{}) {
@@ -139,7 +143,7 @@ func (l *Listener) reindex(links []transport.PeerLink) {
 			if r, ok := set.refused[key]; ok && r.peer == f.entry.Load().link.Peer {
 				reason = fmt.Errorf("%w: %w", transport.ErrSettingsRefused, r.err)
 			}
-			f.link.Inbox.Close(reason)
+			f.link.in.Close(reason)
 		}
 		delete(l.flows, key)
 	}
@@ -237,13 +241,13 @@ type serverLink struct {
 	counter atomic.Uint64
 	remote  atomic.Pointer[net.Addr]
 
-	Inbox *transport.Inbox[[]byte]
+	in *transport.Inbox[[]byte]
 }
 
 func newServerLink(l *Listener, f *flow, from net.Addr) *serverLink {
 	sl := &serverLink{
 		l: l, flow: f, peer: f.entry.Load().link.Peer, sender: newSenderID(l.t.now()),
-		Inbox: transport.NewInbox[[]byte](linkQueue),
+		in: transport.NewInbox[[]byte](linkQueue),
 	}
 	sl.remote.Store(&from)
 	return sl
@@ -251,12 +255,12 @@ func newServerLink(l *Listener, f *flow, from net.Addr) *serverLink {
 
 // deliver queues a copy of a packet that lives in the listener's scratch.
 func (sl *serverLink) deliver(packet []byte) {
-	sl.Inbox.TrySend(append([]byte(nil), packet...))
+	sl.in.TrySend(append([]byte(nil), packet...))
 }
 
 // ReadPacket implements transport.Link: the packets the listener queued.
 func (sl *serverLink) ReadPacket(p []byte) (int, error) {
-	return transport.ReadPacketFrom(sl.Inbox, p)
+	return transport.ReadPacketFrom(sl.in, p)
 }
 
 // WritePacket implements transport.Link.
@@ -264,10 +268,8 @@ func (sl *serverLink) WritePacket(p []byte) error {
 	if err := transport.CheckPacketSize(p); err != nil {
 		return err
 	}
-	select {
-	case <-sl.Inbox.Done():
-		return sl.Inbox.Err()
-	default:
+	if err := sl.in.Err(); err != nil {
+		return err
 	}
 	e := sl.flow.entry.Load()
 	now := sl.l.t.now()
@@ -275,10 +277,8 @@ func (sl *serverLink) WritePacket(p []byte) error {
 	defer datagramPool.Put(bp)
 	*bp = seal((*bp)[:0], e.send, e.out.at(epochOf(now)), sl.sender, now, sl.counter.Add(1)-1, p, e.link.Shaping.Padding)
 	if _, err := sl.l.pc.WriteTo(*bp, *sl.remote.Load()); err != nil {
-		select {
-		case <-sl.Inbox.Done():
-			return sl.Inbox.Err()
-		default:
+		if err := sl.in.Err(); err != nil {
+			return err
 		}
 		return writeError(err)
 	}
@@ -294,7 +294,7 @@ func (sl *serverLink) Close() error {
 		sl.flow.link = nil
 	}
 	sl.l.mu.Unlock()
-	sl.Inbox.Close(nil)
+	sl.in.Close(nil)
 	return nil
 }
 

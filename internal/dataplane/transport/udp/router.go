@@ -31,6 +31,7 @@ type Router struct {
 	peers transport.Peers
 
 	admitLadder
+
 	mu      sync.Mutex
 	set     *peerSet
 	changed <-chan struct{}

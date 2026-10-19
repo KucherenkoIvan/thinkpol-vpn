@@ -33,7 +33,14 @@ func (i *Inbox[T]) Done() <-chan struct{} { return i.done }
 
 // Closed reports whether the inbox has closed. A listener whose accept
 // inbox is its lifecycle closes and is closed through it.
-func (i *Inbox[T]) Closed() bool { return i.closed() }
+func (i *Inbox[T]) Closed() bool {
+	select {
+	case <-i.done:
+		return true
+	default:
+		return false
+	}
+}
 
 // TrySend queues v without blocking, and reports whether it fit.
 func (i *Inbox[T]) TrySend(v T) bool {
@@ -51,7 +58,7 @@ func (i *Inbox[T]) TrySend(v T) bool {
 // is not delivered.
 func (i *Inbox[T]) Recv(ctx context.Context) (T, error) {
 	var zero T
-	if i.closed() {
+	if i.Closed() {
 		return zero, i.closeErr
 	}
 	select {
@@ -59,16 +66,23 @@ func (i *Inbox[T]) Recv(ctx context.Context) (T, error) {
 	case <-ctx.Done():
 		return zero, ctx.Err()
 	case v := <-i.queue:
-		if !i.closed() {
+		if !i.Closed() {
 			return v, nil
 		}
 	}
 	return zero, i.closeErr
 }
 
-// Err is the error reads return once the inbox has closed, and nil before.
-// Read it only once Done has closed: the close of Done carries the write.
-func (i *Inbox[T]) Err() error { return i.closeErr }
+// Err is the error reads return once the inbox has closed, and nil
+// before: a write can read it instead of selecting against Done.
+func (i *Inbox[T]) Err() error {
+	select {
+	case <-i.done:
+		return i.closeErr
+	default:
+		return nil
+	}
+}
 
 // Close closes the inbox: reads return ClosedError(cause). Close reports
 // whether this call closed it; the later ones change nothing.
@@ -82,36 +96,18 @@ func (i *Inbox[T]) Close(cause error) bool {
 	return first
 }
 
-func (i *Inbox[T]) closed() bool {
-	select {
-	case <-i.done:
-		return true
-	default:
-		return false
-	}
-}
-
 // ReadPacketFrom receives the inbox's next packet into p: the ReadPacket of
 // a link whose receive end the inbox is. A packet longer than p doesn't
 // fit: it is dropped and io.ErrShortBuffer returned, as transport.Link's
 // ReadPacket says. A packet that arrives as the inbox closes is dropped,
 // as Recv drops an item, and the close's error returned.
 func ReadPacketFrom(i *Inbox[[]byte], p []byte) (int, error) {
-	select {
-	case <-i.done:
-		return 0, i.closeErr
-	default:
+	packet, err := i.Recv(context.Background())
+	if err != nil {
+		return 0, err
 	}
-	select {
-	case <-i.done:
-		return 0, i.closeErr
-	case packet := <-i.queue:
-		if i.closed() {
-			return 0, i.closeErr
-		}
-		if len(packet) > len(p) {
-			return 0, io.ErrShortBuffer
-		}
-		return copy(p, packet), nil
+	if len(packet) > len(p) {
+		return 0, io.ErrShortBuffer
 	}
+	return copy(p, packet), nil
 }

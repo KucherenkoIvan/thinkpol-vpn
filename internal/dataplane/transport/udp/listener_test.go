@@ -644,8 +644,6 @@ func TestAnEvictedSenderThatKeepsSendingStaysRemembered(t *testing.T) {
 	f.listener.mu.Lock()
 	fl := f.listener.flows[string(f.peer.Verifier)]
 	e := fl.entry.Load()
-	// The flow carries no sender history of its own; the listener's table
-	// holds the credential's history, shared across its links.
 	hist := f.listener.table.historyOf(f.peer.Verifier)
 	f.listener.mu.Unlock()
 	stillSending, err := open(nil, e.recv, held)

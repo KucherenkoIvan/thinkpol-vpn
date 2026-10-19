@@ -7,10 +7,10 @@ import (
 
 // admitLadder is the authenticate-and-admit ladder the package doc describes
 // under "What a receiver accepts", shared by the listener, the router and
-// the dialer: the open, the freshness check, the sender rules, and the
-// counters for everything turned away. The caller does the steps where
-// the ends differ — holding the lock, delivering the packets to the link —
-// and calls the ladder under its own lock.
+// the dialer: the connection id, the lookup, the open, the freshness
+// check, the sender rules, and the counters for everything turned away.
+// The caller takes its lock once across the ladder call and does the
+// steps where the ends differ — delivering the packets to the link.
 type admitLadder struct {
 	counters counters
 }
@@ -21,18 +21,18 @@ type admitLadder struct {
 // into dst, and puts it to the sender rules of the secret's history in
 // table. It reports the entry the datagram authenticated under, the
 // opened datagram, and how far it got.
-func (r *admitLadder) admit(dst []byte, set *peerSet, table *senderHistories, d []byte, now time.Time) (*peerEntry, opened, verdict) {
+func (a *admitLadder) admit(dst []byte, set *peerSet, table *senderHistories, d []byte, now time.Time) (*peerEntry, opened, verdict) {
 	id, ok := idOf(d)
 	if !ok {
-		r.counters.unauthenticated.Add(1)
+		a.counters.unauthenticated.Add(1)
 		return nil, opened{}, dropUnauthenticated
 	}
 	e := set.lookup(id, epochOf(now))
 	if e == nil {
-		r.counters.unauthenticated.Add(1)
+		a.counters.unauthenticated.Add(1)
 		return nil, opened{}, dropUnauthenticated
 	}
-	o, v := r.admitOne(dst, table.historyOf(e.link.Verifier), e.recv, d, now)
+	o, v := a.admitOne(dst, table.historyOf(e.link.Verifier), e.recv, d, now)
 	return e, o, v
 }
 
@@ -40,23 +40,23 @@ func (r *admitLadder) admit(dst []byte, set *peerSet, table *senderHistories, d 
 // opens the datagram into dst under recv and puts it to the sender rules
 // of s. It counts what it turns away; the packets delivered are the
 // caller's to count, when it has delivered them.
-func (r *admitLadder) admitOne(dst []byte, s *senders, recv cipher.AEAD, d []byte, now time.Time) (opened, verdict) {
+func (a *admitLadder) admitOne(dst []byte, s *senders, recv cipher.AEAD, d []byte, now time.Time) (opened, verdict) {
 	o, err := open(dst, recv, d)
 	switch {
 	case err != nil:
-		r.counters.unauthenticated.Add(1)
+		a.counters.unauthenticated.Add(1)
 		return opened{}, dropUnauthenticated
 	case !o.fresh(now):
-		r.counters.staleTimestamp.Add(1)
+		a.counters.staleTimestamp.Add(1)
 		return opened{}, dropStaleTimestamp
 	}
 	v := s.admit(o.sender, o.counter, o.sent, now)
 	switch v {
 	case dropReplay:
-		r.counters.replayed.Add(1)
+		a.counters.replayed.Add(1)
 		return opened{}, dropReplay
 	case dropStale:
-		r.counters.staleSender.Add(1)
+		a.counters.staleSender.Add(1)
 		return opened{}, dropStale
 	}
 	return o, v
@@ -78,10 +78,8 @@ func newSenderHistories() *senderHistories {
 }
 
 // historyOf returns the secret's sender history: the one it has, a retired
-// one the last table change left, or a new one. The secret is the
-// verifier's slice: the hot path looks the history up for every datagram,
-// and the map index of string(secret) doesn't allocate, a string
-// conversion of the whole secret would.
+// one the last table change left, or a new one. m[string(b)] compiles
+// without a copy; storing string(b) anywhere else would allocate.
 func (t *senderHistories) historyOf(secret []byte) *senders {
 	if s, ok := t.histories[string(secret)]; ok {
 		return s

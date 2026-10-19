@@ -3,6 +3,7 @@ package memory_test
 import (
 	"context"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -90,5 +91,31 @@ func TestRegistry(t *testing.T) {
 	}
 	if names := r.Names(); len(names) != 1 || names[0] != memory.Name {
 		t.Fatalf("Names() = %v", names)
+	}
+}
+
+// TestConcurrentClosesFreeTheEndpoint: a Close that lost the race waits
+// for the winner, so once both return the endpoint is free and Listen
+// takes the address again.
+func TestConcurrentClosesFreeTheEndpoint(t *testing.T) {
+	network := memory.NewNetwork(memory.Datagram)
+	l, err := network.Listen(context.Background(), transport.ListenConfig{Address: "endpoint", Peers: transport.NewPeerTable()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(2)
+	for range 2 {
+		go func() {
+			defer wg.Done()
+			<-start
+			_ = l.Close()
+		}()
+	}
+	close(start)
+	wg.Wait()
+	if _, err := network.Listen(context.Background(), transport.ListenConfig{Address: "endpoint", Peers: transport.NewPeerTable()}); err != nil {
+		t.Fatalf("Listen on the closed listener's address: %v", err)
 	}
 }
