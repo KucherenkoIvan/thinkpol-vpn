@@ -53,6 +53,15 @@ branch: "tp-075-agent-layer-refactor"
 - [x] R3.7 A test pins markSockets per mode (device and supervisor true, worker false): the test helper's Transports records its argument.
 - [x] R3.8 TP-083's ticket: its private-hooks list includes blobOptions; a Notes line that Host carries device-only adapters into the worker, kept off only by the Forward and RouteTable flags. Log line there.
 - [x] R3.9 Nits: platform_test.go Transports closure → Transports; cmd/thinkpol/up.go applyPlatformDefaults moves into internal/agent (agent.ApplyOSDefaults) so cmd only calls it; optionally platform_{linux,darwin,other}.go → supported_*.go.
+- [ ] R4.1 status_test.go: TestARemovedDeviceConnectsOnceBack and TestAStartWhileDisconnectedClearsACrashedRunsRoutes build their device on startDevice (deviceOpt.prepare writes the removed map into c.StateDir; the clear fakes go into p.ClearConfig / p.ClearRouteTable), not a third hand-built copy; same assertions.
+- [ ] R4.2 TestARemovedDeviceConnectsOnceBack (through n.run on a removed start) asserts strings.Count(log, "back in space") == 1.
+- [ ] R4.3 supervisor/options.go: Log and Output state the constraint, not their callers.
+- [ ] R4.4 Why a worker doesn't mark its sockets is said once (transports.go); no repeats in servespace.go and node.go, no caller list in transports.go.
+- [ ] R4.5 servespace.go: ServeSpace's doc says what it does, not who calls it; dataplane.go: no Host field comment restating the type; the private-fields comment says what tests tune.
+- [ ] R4.6 platform.go NewGuard: the host's leak guard or nil where the host has none yet (Windows: TP-047/TP-048); required.
+- [ ] R4.7 node.go awaitSection: no cur set then markRemoved on the same map; uses take's back result instead of reading f.removed.
+- [ ] R4.8 deviceOpt.run → dataPlane; TestClearingTheNetworkTriesBothOwners in platform_test.go; blobs_test.go drops the unused r.
+- [ ] R4.9 DESIGN.md "Engine and agent": adapters chosen and wired by the composition root per OS (HostLock and Transports live in internal/agent); TP-083 Notes without the stray blank line; the flaky transporttest ShapingRefused failure goes to TP-113's Notes.
 
 ## Log
 - 2026-10-15 created in backlog
@@ -80,3 +89,4 @@ branch: "tp-075-agent-layer-refactor"
 - 2026-10-19 round 3: device tests put every host fake into the Platform passed to Prepare (startDevice's deviceOpt.prepare), n.tweak keeps only the private DataPlane fields; a test pins markSockets per mode (device and supervisor true, worker false); a worker's blob service always holds the server's MaxHeld
 - 2026-10-19 round 3: comments state constraints, not callers (platform.go, servespace.go, node.go, supervisor options and New, rollback test); agent.ApplyOSDefaults replaces cmd's applyPlatformDefaults; platform_{linux,darwin,other}.go renamed supported_*.go; TP-083 lists blobOptions and notes the Host the worker carries
 - 2026-10-19 in-progress → review — make lint, make test green; make lab-test green (exit 0, 35 packages PASS) at 1523831 (a first run hit a timing failure in transporttest ShapingRefused behind the supervisor; the package passed alone and the full rerun passed). Not verified here: the adapters' host-side paths outside the lab's Linux (macOS device on a real network: needs_human: macos)
+- 2026-10-19 review → has-errors — review round 4: R4.1–R4.9
