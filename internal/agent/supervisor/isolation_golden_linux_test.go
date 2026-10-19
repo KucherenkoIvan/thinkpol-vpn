@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"log/slog"
 	"net/netip"
@@ -15,18 +16,22 @@ import (
 	"testing"
 )
 
+// update rewrites the golden files instead of comparing.
+var update = flag.Bool("update", false, "rewrite the golden files instead of comparing")
+
 // The golden files pin the isolation tables' rules: the test applies them
 // for a fixed state and compares them, as the kernel reports them via
 // nft, with what it reported before. A refactor of the rule builders
 // proves this way that it regenerates exactly the same rules. When a
 // golden file is missing the test prints what it built and fails, so a
 // deliberate rule change is a copy of that block into testdata, reviewed
-// in the diff.
+// in the diff (or a run with -update, where testdata is writable).
 
 // TestIsolationRulesetGolden pins the tables for two slots, one with IPv4
 // egress and two dials, one with IPv6 egress and one dial, the supervisor
 // owning IPv4's forwarding, an allowed prefix and a flow cap — in both
-// accept modes (unboundAccepts is the forged-ICMP tests' negative control).
+// accept modes (unboundAccepts is the forged-ICMP tests' negative control,
+// see Options) — and for the state New installs.
 func TestIsolationRulesetGolden(t *testing.T) {
 	if os.Getenv("THINKPOL_LAB") == "" {
 		t.Skip("needs the lab")
@@ -35,7 +40,7 @@ func TestIsolationRulesetGolden(t *testing.T) {
 		name    string
 		unbound bool
 	}{
-		{"bound", false}, {"unbound", true},
+		{"bound", false}, {"unbound", true}, {"fresh", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := &Supervisor{opts: Options{
@@ -50,13 +55,24 @@ func TestIsolationRulesetGolden(t *testing.T) {
 				t.Fatal(err)
 			}
 			s.opts = opts
-			if err := s.applyIsolation(goldenState(opts)); err != nil {
+			st := goldenState(opts)
+			if tc.name == "fresh" {
+				st = freshState()
+			}
+			if err := s.applyIsolation(st); err != nil {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = removeIsolation() })
 			goldenCompare(t, "isolation-"+tc.name+".golden", isolationDump(t))
 		})
 	}
+}
+
+// freshState is what New installs: no slots yet, no uplink the tables
+// could match, IPv6 forwarding owned (adopted from a predecessor), and no
+// flow cap.
+func freshState() tableState {
+	return tableState{owned: [2]bool{false, true}}
 }
 
 // goldenState is what the tables are built from in the golden test: two
@@ -132,7 +148,14 @@ func normalizeJSON(v any) {
 
 func goldenCompare(t *testing.T, name, got string) {
 	t.Helper()
-	want, err := os.ReadFile(filepath.Join("testdata", name))
+	path := filepath.Join("testdata", name)
+	if *update {
+		if err := os.WriteFile(path, []byte(got), 0o644); err != nil {
+			t.Fatalf("rewrite %s: %v", path, err)
+		}
+		return
+	}
+	want, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		fmt.Printf("=== GOLDEN %s ===\n%s=== END ===\n", name, got)
 		t.Fatalf("no golden file testdata/%s: copy the block printed above into it and run the test again", name)
