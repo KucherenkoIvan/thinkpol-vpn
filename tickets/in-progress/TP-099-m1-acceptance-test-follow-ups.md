@@ -140,3 +140,4 @@ Origin: TP-023 review round 3 (2026-10-17), split under the three-round cap.
 - 2026-10-19 full suite at commit 65e00c4: make lint, make test pass; make lab-test LAB_P=1 green (581 s, the lab package in 232 s, 34 in-node packages, no failures); the changed tests run three times in all, green
 - 2026-10-19 in-progress → review (agent, TP-099 branch)
 - 2026-10-19 review → has-errors (agent, TP-099 branch; round 7: review findings R7.1–R7.8)
+- 2026-10-19 has-errors → in-progress (agent, TP-099 branch; round 7)
