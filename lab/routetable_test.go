@@ -74,7 +74,10 @@ func TestRouteTableSendsOnlyDirectAroundTheTunnel(t *testing.T) {
 	server.MustExec(t, "install", "-d", "-m", "700", stateDir+"/blobs")
 	server.WriteFile(t, seed, list)
 	server.MustExec(t, "chmod", "600", seed)
-	rulesBefore := dev.MustExec(t, "ip", "rule") + dev.MustExec(t, "ip", "-6", "rule")
+	rulesBefore4, rulesBefore6, err := policyRules(dev, execTimeout)
+	if err != nil {
+		t.Fatal(err)
+	}
 	tablesBefore := dev.MustExec(t, "sh", "-c", "ip route show table all; ip -6 route show table all")
 
 	srv := server.Start(t, "thinkpol", "up", "-map-poll", "1s")
@@ -271,12 +274,19 @@ func TestRouteTableSendsOnlyDirectAroundTheTunnel(t *testing.T) {
 		if err := p.Stop(); err != nil {
 			t.Fatalf("thinkpol up exited with %v:\n%s", err, p.Output())
 		}
-		after := dev.MustExec(t, "ip", "rule") + dev.MustExec(t, "ip", "-6", "rule")
-		if after != rulesBefore {
-			t.Errorf("rules after the stop:\n%s\nwant\n%s", after, rulesBefore)
+		after4, after6, err := policyRules(dev, execTimeout)
+		if err != nil {
+			t.Fatal(err)
 		}
-		if out := routeTableRoutes(t, dev); out != "" {
-			t.Errorf("route-table routes left:\n%s", out)
+		if after4 != rulesBefore4 || after6 != rulesBefore6 {
+			t.Errorf("rules after the stop:\n%s\n%s\nwant\n%s\n%s", after4, after6, rulesBefore4, rulesBefore6)
+		}
+		v4, v6, err := routeTableRoutes(dev, execTimeout)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if v4 != "" || v6 != "" {
+			t.Errorf("route-table routes left:\n%s\n%s", v4, v6)
 		}
 	}
 	stopAndCheck(up)
@@ -328,14 +338,20 @@ func TestRouteTableSendsOnlyDirectAroundTheTunnel(t *testing.T) {
 	// a restart that doesn't connect removes them.
 	dev.MustExec(t, "pkill", "-KILL", "-f", "thinkpol up")
 	<-up.Done()
-	if !strings.Contains(dev.MustExec(t, "ip", "rule"), "5301:") {
+	if rules4, rules6, err := policyRules(dev, execTimeout); err != nil {
+		t.Fatal(err)
+	} else if !routeTableRulesUp(rules4, rules6) {
 		t.Fatal("no rules left by the crash: the test proves nothing")
 	}
 	up = dev.Start(t, "thinkpol", "up", "-map-poll", "1h", "-connect=false")
 	waitLog(t, up, `msg=starting`)
 	lab.Eventually(t, 15*time.Second, func() error {
-		if got := dev.MustExec(t, "ip", "rule") + dev.MustExec(t, "ip", "-6", "rule"); got != rulesBefore {
-			return fmt.Errorf("rules after a restart without connecting:\n%s", got)
+		v4, v6, err := policyRules(dev, pollTimeout)
+		if err != nil {
+			return err
+		}
+		if v4 != rulesBefore4 || v6 != rulesBefore6 {
+			return fmt.Errorf("rules after a restart without connecting:\n%s\n%s", v4, v6)
 		}
 		return nil
 	})
@@ -348,7 +364,9 @@ func TestRouteTableSendsOnlyDirectAroundTheTunnel(t *testing.T) {
 	waitLog(t, up, applied(v1))
 	dev.MustExec(t, "pkill", "-KILL", "-f", "thinkpol up")
 	<-up.Done()
-	if !strings.Contains(dev.MustExec(t, "ip", "rule"), "5301:") {
+	if rules4, rules6, err := policyRules(dev, execTimeout); err != nil {
+		t.Fatal(err)
+	} else if !routeTableRulesUp(rules4, rules6) {
 		t.Fatal("no rules left by the second crash: the test proves nothing")
 	}
 	// eth0 exists and isn't a TUN: creating the TUN fails at run time.
@@ -357,11 +375,15 @@ func TestRouteTableSendsOnlyDirectAroundTheTunnel(t *testing.T) {
 	if failing.Err() == nil || !strings.Contains(failing.Output(), "tun") {
 		t.Fatalf("thinkpol up didn't fail at the TUN: %v\n%s", failing.Err(), failing.Output())
 	}
-	if got := dev.MustExec(t, "ip", "rule") + dev.MustExec(t, "ip", "-6", "rule"); got != rulesBefore {
-		t.Errorf("rules after a crash and a failed start:\n%s\nwant\n%s\n%s", got, rulesBefore, failing.Output())
+	if v4, v6, err := policyRules(dev, execTimeout); err != nil {
+		t.Fatal(err)
+	} else if v4 != rulesBefore4 || v6 != rulesBefore6 {
+		t.Errorf("rules after a crash and a failed start:\n%s\n%s\nwant\n%s\n%s\n%s", v4, v6, rulesBefore4, rulesBefore6, failing.Output())
 	}
-	if out := routeTableRoutes(t, dev); out != "" {
-		t.Errorf("route-table routes left after a failed start:\n%s", out)
+	if v4, v6, err := routeTableRoutes(dev, execTimeout); err != nil {
+		t.Fatal(err)
+	} else if v4 != "" || v6 != "" {
+		t.Errorf("route-table routes left after a failed start:\n%s\n%s", v4, v6)
 	}
 	if err := srv.Stop(); err != nil {
 		t.Errorf("server-1: %v", err)

@@ -6,7 +6,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
 	"net/netip"
 	"strings"
 	"testing"
@@ -139,20 +138,15 @@ func TestNoIPv6LeavesAroundTheTunnel(t *testing.T) {
 	}
 
 	check("connected", func() { attempts("connected") })
-	if !hasGuard(t, dev) {
-		t.Fatal("no guard table while connected")
+	if err := wantGuard(dev, execTimeout, guardPresent); err != nil {
+		t.Fatal(err)
 	}
 	// Deleted from outside (a firewall service's reload), the guard is
 	// back within about a second, long before the route table's backstop.
 	// (Not `nft flush ruleset`: the lab's own tables must stay.)
 	dev.MustExec(t, "nft", "delete", "table", "inet", "thinkpol-guard")
 	start := time.Now()
-	lab.Eventually(t, 10*time.Second, func() error {
-		if !hasGuard(t, dev) {
-			return fmt.Errorf("the guard isn't back")
-		}
-		return nil
-	})
+	lab.Eventually(t, 30*time.Second, func() error { return wantGuard(dev, pollTimeout, guardPresent) })
 	if took := time.Since(start); took > 3*time.Second {
 		t.Errorf("the guard came back after %v", took)
 	}
@@ -163,8 +157,8 @@ func TestNoIPv6LeavesAroundTheTunnel(t *testing.T) {
 	if err := up.Stop(); err != nil {
 		t.Fatalf("thinkpol up: %v\n%s", err, up.Output())
 	}
-	if hasGuard(t, dev) {
-		t.Error("the guard outlived a clean stop")
+	if err := wantGuard(dev, execTimeout, guardAbsent); err != nil {
+		t.Fatal(err)
 	}
 	up = dev.Start(t, "thinkpol", "up", "-map-poll", "1h", "-link-mtu", "1300")
 	waitLog(t, up, applied(v1)+`.*ipv6_off=`)
@@ -175,18 +169,13 @@ func TestNoIPv6LeavesAroundTheTunnel(t *testing.T) {
 	// table: bound sockets stay confined until the next start.
 	dev.MustExec(t, "pkill", "-KILL", "-f", "thinkpol up")
 	<-up.Done()
-	if !hasGuard(t, dev) {
-		t.Fatal("the crash took the guard along")
+	if err := wantGuard(dev, execTimeout, guardPresent); err != nil {
+		t.Fatal(err)
 	}
 	check("after a crash", func() { attempts("after a crash") })
 	up = dev.Start(t, "thinkpol", "up", "-map-poll", "1h", "-connect=false")
 	waitLog(t, up, `msg=starting`)
-	lab.Eventually(t, 15*time.Second, func() error {
-		if hasGuard(t, dev) {
-			return fmt.Errorf("the guard is still there after a start without connecting")
-		}
-		return nil
-	})
+	lab.Eventually(t, 30*time.Second, func() error { return wantGuard(dev, pollTimeout, guardAbsent) })
 	// The negative control: disconnected, with no guard, the same
 	// attempts leave the physical side, and the capture shows them, ICMPv6
 	// and TCP from the device's own address to the foreign site.

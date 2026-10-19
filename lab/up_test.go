@@ -102,6 +102,22 @@ func ping(t *testing.T, from *lab.Node, to netip.Addr) {
 	})
 }
 
+// noPing fails unless the ping got no reply: exit code 1 and ping's own
+// " 0 received" summary (docker exec also exits 1 when docker fails). Any other failure (an exec error, a timeout) is an
+// unknown state and fails with its reason — never proof the path is down.
+func noPing(t *testing.T, from *lab.Node, to netip.Addr) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), execTimeout)
+	defer cancel()
+	res, err := from.Exec(ctx, "ping", "-c", "2", "-W", "1", to.String())
+	if err == nil {
+		t.Fatalf("%s answers %s", to, from.Name)
+	}
+	if res.ExitCode != 1 || !strings.Contains(res.Stdout, " 0 received") {
+		t.Fatalf("ping %s from %s says nothing about the path: %v\n%s", to, from.Name, err, res.Stdout)
+	}
+}
+
 func waitLog(t *testing.T, p *lab.Process, pattern string) {
 	t.Helper()
 	re := regexp.MustCompile(pattern)
@@ -115,28 +131,6 @@ func waitLog(t *testing.T, p *lab.Process, pattern string) {
 
 // applied matches the log line of a node, or its worker, applying a map.
 func applied(version string) string { return `msg="map applied" .*version=` + version + ` ` }
-
-// routeTableRoutes is everything in the routing tables of the route
-// table's protocol (86), both families.
-func routeTableRoutes(t *testing.T, n *lab.Node) string {
-	t.Helper()
-	var out strings.Builder
-	for _, family := range []string{"-4", "-6"} {
-		out.WriteString(n.MustExec(t, "ip", family, "route", "show", "table", "all", "proto", "86"))
-	}
-	return out.String()
-}
-
-// hasGuard says whether the IPv6 leak guard's nftables table is there and
-// holds its chain: its name in `nft list tables`, and a chain listed in
-// the table itself (the name alone proves nothing).
-func hasGuard(t *testing.T, n *lab.Node) bool {
-	t.Helper()
-	if !strings.Contains(n.MustExec(t, "nft", "list", "tables"), "thinkpol-guard") {
-		return false
-	}
-	return strings.Contains(n.MustExec(t, "nft", "list", "table", "inet", "thinkpol-guard"), "chain")
-}
 
 // TestUpRunsTheM0Space brings the M0 space up with `thinkpol up` on every
 // node (server-1 as a supervisor with a sandboxed worker, the devices in

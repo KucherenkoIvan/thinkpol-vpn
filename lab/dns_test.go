@@ -3,80 +3,16 @@
 package lab_test
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"net/netip"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/lab"
 )
-
-// resolve asks the node's OS resolver (glibc, through /etc/resolv.conf)
-// for a name's address of one family.
-func resolve(n *lab.Node, name string, v6 bool) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	db := "ahostsv4"
-	if v6 {
-		db = "ahostsv6"
-	}
-	res, err := n.Exec(ctx, "getent", db, name)
-	if err != nil {
-		return "", err
-	}
-	f := strings.Fields(res.Stdout)
-	if len(f) == 0 {
-		return "", fmt.Errorf("getent %s %s: nothing", db, name)
-	}
-	return f[0], nil
-}
-
-func mustResolve(t *testing.T, n *lab.Node, name string, v6 bool, want string) {
-	t.Helper()
-	lab.Eventually(t, 30*time.Second, func() error {
-		got, err := resolve(n, name, v6)
-		if err != nil {
-			return err
-		}
-		if got != want {
-			return fmt.Errorf("%s resolves to %s, want %s", name, got, want)
-		}
-		return nil
-	})
-}
-
-// noLeaks checks what a device's physical side carried: DNS only to and
-// from the domestic resolver, only for names the rules send direct, and no
-// tunnel-bound or overlay name in the clear in any packet.
-func noLeaks(t *testing.T, packets []lab.Packet, domestic netip.Addr) {
-	t.Helper()
-	direct := 0
-	for _, p := range packets {
-		if p.Network != lab.NetDevices {
-			continue // the TUN: inside the tunnel
-		}
-		for _, secret := range []string{"tunnel", "internal", "blocked"} {
-			if bytes.Contains(p.Payload, []byte(secret)) {
-				t.Errorf("a %q name in the clear: %v:%d → %v:%d", secret, p.Src, p.SrcPort, p.Dst, p.DstPort)
-			}
-		}
-		if p.SrcPort != 53 && p.DstPort != 53 && p.SrcPort != 5353 && p.DstPort != 5353 {
-			continue
-		}
-		if other := p.Dst; p.Outgoing && other != domestic || !p.Outgoing && p.Src != domestic {
-			t.Errorf("DNS with someone but the domestic resolver: %v:%d → %v:%d", p.Src, p.SrcPort, p.Dst, p.DstPort)
-		}
-		if p.Outgoing && bytes.Contains(p.Payload, []byte("direct")) {
-			direct++
-		}
-	}
-	if direct == 0 {
-		t.Error("no direct name was asked of the domestic resolver: the capture proves nothing")
-	}
-}
 
 // TestDNSFollowsTheRules runs the DNS lab map (lab/maps/dns.yaml) with two
 // resolvers out in the world on the internet node: the devices' domestic
@@ -97,11 +33,7 @@ func TestDNSFollowsTheRules(t *testing.T) {
 	a4, _ := space.overlay(2)
 	b4, b6 := space.overlay(3)
 
-	// The exit runs its data plane in device mode: its resolver's own
-	// queries leave from the node itself, without a worker's egress (the
-	// server-mode case is TestDNSFollowsTheRulesOnAServerExit).
-	exit := server.Start(t, "thinkpol", "up", "-mode", "device", "-dns-upstream", inetIP.String()+":5353")
-	waitLog(t, exit, applied(v1))
+	exit := startDeviceExit(t, server, inetIP, v1)
 
 	parent := t // the exit outlives the subtests
 	t.Run("resolv.conf", func(t *testing.T) {
@@ -122,6 +54,7 @@ func TestDNSFollowsTheRules(t *testing.T) {
 		mustResolve(t, devA, "device-b.lab.internal", true, b6.String())
 		mustResolve(t, devA, "server-1.lab.internal", false, s4.String())
 		mustResolve(t, devA, "www.direct.test", false, domesticA)
+		mustResolve(t, devA, "www.direct.test", true, domesticAAAA)
 		mustResolve(t, devA, "www.tunnel.test", false, foreignA)
 		mustResolve(t, devA, "www.tunnel.test", true, foreignAAAA)
 		if got, err := resolve(devA, "blocked.test", false); err == nil {
@@ -139,8 +72,7 @@ func TestDNSFollowsTheRules(t *testing.T) {
 		if got, err := resolve(devA, "down.tunnel.test", false); err == nil {
 			t.Errorf("a tunnel-bound name resolved with the exit down: %s", got)
 		}
-		exit = server.Start(parent, "thinkpol", "up", "-mode", "device", "-dns-upstream", inetIP.String()+":5353")
-		waitLog(t, exit, applied(v1))
+		exit = startDeviceExit(parent, server, inetIP, v1)
 
 		if err := capture.Complete(); err != nil {
 			t.Fatal(err)
@@ -171,7 +103,9 @@ func TestDNSFollowsTheRules(t *testing.T) {
 		devB.MustExec(t, "sh", "-ec", "mkdir -p /run/dbus && dbus-daemon --system --fork")
 		devB.Start(t, "/lib/systemd/systemd-resolved")
 		lab.Eventually(t, 20*time.Second, func() error {
-			_, err := devB.Exec(context.Background(), "resolvectl", "dns", link, inetIP.String())
+			ctx, cancel := context.WithTimeout(context.Background(), pollTimeout)
+			defer cancel()
+			_, err := devB.Exec(ctx, "resolvectl", "dns", link, inetIP.String())
 			return err
 		})
 		mustResolve(t, devB, "before.direct.test", false, domesticA)
@@ -185,6 +119,7 @@ func TestDNSFollowsTheRules(t *testing.T) {
 		}
 		mustResolve(t, devB, "device-a.lab.internal", false, a4.String())
 		mustResolve(t, devB, "www.direct.test", false, domesticA)
+		mustResolve(t, devB, "www.direct.test", true, domesticAAAA)
 		mustResolve(t, devB, "www2.tunnel.test", false, foreignA)
 		if err := capture.Complete(); err != nil {
 			t.Fatal(err)
@@ -194,20 +129,35 @@ func TestDNSFollowsTheRules(t *testing.T) {
 		// A domain on the physical link takes its names past the TUN: the
 		// device says DNS isn't protected, and says so no longer once it
 		// goes.
-		health := func() string { return devB.MustExec(t, "thinkpol", "status") }
-		if out := health(); strings.Contains(out, "dns_not_protected") {
+		health := func(timeout time.Duration) (string, error) {
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
+			defer cancel()
+			res, err := devB.Exec(ctx, "thinkpol", "status")
+			return res.Stdout, err
+		}
+		if out, err := health(execTimeout); err != nil {
+			t.Fatal(err)
+		} else if strings.Contains(out, "dns_not_protected") {
 			t.Fatalf("not protected before any other domain:\n%s", out)
 		}
 		devB.MustExec(t, "resolvectl", "domain", link, "~example.org")
 		lab.Eventually(t, 20*time.Second, func() error {
-			if out := health(); !strings.Contains(out, "dns_not_protected") {
+			out, err := health(pollTimeout)
+			if err != nil {
+				return err
+			}
+			if !strings.Contains(out, "dns_not_protected") {
 				return fmt.Errorf("status:\n%s", out)
 			}
 			return nil
 		})
 		devB.MustExec(t, "resolvectl", "domain", link, "")
 		lab.Eventually(t, 20*time.Second, func() error {
-			if out := health(); strings.Contains(out, "dns_not_protected") {
+			out, err := health(pollTimeout)
+			if err != nil {
+				return err
+			}
+			if strings.Contains(out, "dns_not_protected") {
 				return fmt.Errorf("status:\n%s", out)
 			}
 			return nil
@@ -216,27 +166,28 @@ func TestDNSFollowsTheRules(t *testing.T) {
 		if err := up.Stop(); err != nil {
 			t.Errorf("thinkpol up: %v\n%s", err, up.Output())
 		}
-		if out, err := devB.Exec(context.Background(), "resolvectl", "dns", "thinkpol0"); err == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), execTimeout)
+		defer cancel()
+		// Only resolvectl's own refusal, naming the link, shows resolved
+		// dropped the TUN; any other failure (docker, a timeout) shows nothing.
+		if out, err := devB.Exec(ctx, "resolvectl", "dns", "thinkpol0"); err == nil {
 			t.Errorf("resolved still has the TUN: %s", out.Stdout)
+		} else if !strings.Contains(out.Stderr, "thinkpol0") {
+			t.Errorf("resolvectl dns thinkpol0 says nothing about the TUN: %v", err)
 		}
 		if conf := devB.MustExec(t, "cat", "/etc/resolv.conf"); !strings.HasPrefix(conf, "nameserver 127.0.0.53\n") {
 			t.Errorf("resolv.conf was touched:\n%s", conf)
 		}
 	})
 
-	// The exit's upstream was asked the tunnel's names, by the exit; the
-	// domestic resolver never was, nor about the overlay.
-	resolversAskedOnlyByTheExit(t, domestic, foreign, server)
+	tunnelNamesAskedOnlyOfTheExit(t, domestic, foreign, server)
 }
 
 // TestDNSFollowsTheRulesOnAServerExit is the R4 leak check with the exit
-// running as a server: its resolver sits in the worker, and its upstream
-// queries leave through the worker's egress: the foreign resolver sees
-// them from the exit's own address. device-a resolves tunnel-bound names
-// through it and leaks nothing; the domestic resolver is never asked a
-// tunnel or overlay name. The negative control: without the worker's
-// egress opened to the upstream's subnet, the same setup fails to resolve
-// a tunnel-bound name.
+// running as a server: its resolver asks its upstream on the internet
+// node, and the foreign resolver sees the queries from the exit's own
+// address. device-a resolves tunnel-bound names through it and leaks
+// nothing; the domestic resolver is never asked a tunnel or overlay name.
 func TestDNSFollowsTheRulesOnAServerExit(t *testing.T) {
 	t.Parallel()
 	l := lab.Start(t, lab.Standard())
@@ -247,9 +198,8 @@ func TestDNSFollowsTheRulesOnAServerExit(t *testing.T) {
 	space, v1 := buildDNSMap(t, inet, server, devA)
 	s4, _ := space.overlay(1)
 
-	// No -mode device: the exit is a server, its resolver runs in the
-	// worker and asks the upstream from the worker's namespace.
-	exit := startServerExit(t, server, inetIP, v1)
+	upstreamNet := netip.PrefixFrom(inetIP, 24).Masked()
+	exit := startServerExit(t, server, inetIP, v1, upstreamNet)
 
 	devA.WriteFile(t, "/etc/resolv.conf", osResolvConf(inetIP))
 	capture := devA.Capture(t, "")
@@ -260,6 +210,7 @@ func TestDNSFollowsTheRulesOnAServerExit(t *testing.T) {
 	mustResolve(t, devA, "www.tunnel.test", false, foreignA)
 	mustResolve(t, devA, "www.tunnel.test", true, foreignAAAA)
 	mustResolve(t, devA, "www.direct.test", false, domesticA)
+	mustResolve(t, devA, "www.direct.test", true, domesticAAAA)
 	mustResolve(t, devA, "server-1.lab.internal", false, s4.String())
 	if got, err := resolve(devA, "blocked.test", false); err == nil {
 		t.Errorf("a blocked name resolved to %s", got)
@@ -268,21 +219,59 @@ func TestDNSFollowsTheRulesOnAServerExit(t *testing.T) {
 		t.Fatal(err)
 	}
 	noLeaks(t, capture.Stop(), inetIP)
-	resolversAskedOnlyByTheExit(t, domestic, foreign, server)
 
-	// The negative control: the same setup without the exit's egress
-	// opened to the upstream's subnet. The worker's own queries are
-	// refused, so a tunnel-bound name doesn't resolve, while a direct
-	// name still does (the device's own path is untouched).
-	if err := exit.Stop(); err != nil {
-		t.Fatalf("the exit: %v\n%s", err, exit.Output())
+	// The negative control: the same restart with the exit's egress
+	// closed. The readiness probe asks the exit's resolver itself: a
+	// server with egress holds no overlay names, so its authoritative
+	// NXDOMAIN says the tunnel and the resolver are up. A fresh direct
+	// name proves the device's own resolver is alive, not the tunnel.
+	// Each phase resolves names never asked before: the resolvers cache
+	// answers for 60 s. The positive control repeats the restart with
+	// the egress allowed.
+	restartExit := func(egressAllowed netip.Prefix) {
+		if err := exit.Stop(); err != nil {
+			t.Fatalf("the exit: %v\n%s", err, exit.Output())
+		}
+		exit = startServerExit(t, server, inetIP, v1, egressAllowed)
+		ping(t, devA, s4)
+		mustAsk(t, devA, s4, "server-1.lab.internal", "NXDOMAIN aa")
 	}
-	exit = server.Start(t, "thinkpol", "up", "-dns-upstream", inetIP.String()+":5353")
-	waitLog(t, exit, `worker space=\S+ .*`+applied(v1))
+	restartExit(netip.Prefix{})
+	waitLog(t, exit, `worker space=\S+ .*no upstream to ask: the worker's egress refuses`)
+	if refused := regexp.MustCompile(`refuses the upstream.*upstream=` + regexp.QuoteMeta(inetIP.String()) + `:5353`); !refused.MatchString(exit.Output()) {
+		t.Errorf("the exit didn't report refusing %s:5353:\n%s", inetIP, exit.Output())
+	}
+	lab.Eventually(t, 30*time.Second, func() error {
+		ctx, cancel := context.WithTimeout(context.Background(), pollTimeout)
+		defer cancel()
+		st, err := server.Exec(ctx, "thinkpol", "status")
+		if err != nil {
+			return err
+		}
+		if !strings.Contains(st.Stdout, "dns_upstream_refused") {
+			return fmt.Errorf("no dns_upstream_refused in the server's status:\n%s", st.Stdout)
+		}
+		return nil
+	})
 	if got, err := resolve(devA, "www2.tunnel.test", false); err == nil {
-		t.Errorf("a tunnel-bound name resolved with the worker's egress closed: %s", got)
+		t.Errorf("a tunnel-bound name resolved with the resolver's upstream refused: %s", got)
 	}
-	mustResolve(t, devA, "www.direct.test", false, domesticA)
+	mustResolve(t, devA, "www3.direct.test", false, domesticA)
+	restartExit(upstreamNet)
+	mustResolve(t, devA, "www4.tunnel.test", false, foreignA)
+	// The resolver's log is ordered: once the positive control's query
+	// reached the foreign resolver, the absence of www2 says it never
+	// saw the refused name.
+	lab.Eventually(t, 30*time.Second, func() error {
+		if out := foreign.Output(); !strings.Contains(out, "www4") {
+			return fmt.Errorf("the foreign resolver never saw www4:\n%s", out)
+		}
+		return nil
+	})
+	if out := foreign.Output(); strings.Contains(out, "www2") {
+		t.Errorf("the foreign resolver saw www2:\n%s", out)
+	}
+	tunnelNamesAskedOnlyOfTheExit(t, domestic, foreign, server)
 
 	if err := up.Stop(); err != nil {
 		t.Errorf("thinkpol up: %v\n%s", err, up.Output())
