@@ -23,8 +23,6 @@ type netSysctls interface {
 	Write(key, value string) error
 	// Glob matches keys by pattern.
 	Glob(pattern string) ([]string, error)
-	// ReadDir lists a sysctl directory's entries.
-	ReadDir(rel string) ([]os.DirEntry, error)
 }
 
 // procSysFS is the real sysctls: /proc/sys.
@@ -58,10 +56,6 @@ func (sys procSysFS) Glob(pattern string) ([]string, error) {
 		keys[i], _ = filepath.Rel(sys.root, m)
 	}
 	return keys, nil
-}
-
-func (sys procSysFS) ReadDir(rel string) ([]os.DirEntry, error) {
-	return os.ReadDir(filepath.Join(sys.root, rel))
 }
 
 // forwardingFile records, in Options.RuntimeDir, the forwarding sysctls the
@@ -232,15 +226,16 @@ func (f *rootForwarding) enable(fam int) error {
 	}
 	c := &forwardingChange{Main: sysctlChange{Key: main, Original: was, Written: "1"}}
 	if fam == 1 {
-		dirs, err := f.sys.ReadDir("net/ipv6/conf")
+		dirs, err := f.sys.Glob("net/ipv6/conf/*")
 		if err != nil {
 			return err
 		}
 		for _, d := range dirs {
-			if d.Name() == "all" || strings.HasPrefix(d.Name(), LinkPrefix) {
+			dev := filepath.Base(d)
+			if dev == "all" || strings.HasPrefix(dev, LinkPrefix) {
 				continue
 			}
-			key := "net/ipv6/conf/" + d.Name() + "/accept_ra"
+			key := "net/ipv6/conf/" + dev + "/accept_ra"
 			if v, err := f.sys.Read(key); err == nil && v == "1" {
 				if err := f.sys.Write(key, "2"); err != nil {
 					return err
