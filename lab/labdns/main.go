@@ -28,12 +28,13 @@ func main() {
 	aaaa := flag.String("aaaa", "", "the address of every AAAA answer")
 	server := flag.String("server", "", "client mode: ask this server (host:port) one A question for -query and exit")
 	query := flag.String("query", "", "the name the client asks (with -server)")
+	timeout := flag.Duration("timeout", 5*time.Second, "how long the client waits for the reply (with -server)")
 	flag.Parse()
 	if (*server == "") != (*query == "") {
 		log.Fatal("-server and -query go together")
 	}
 	if *server != "" {
-		ask(*server, *query)
+		ask(*server, *query, *timeout)
 		return
 	}
 	var answer4, answer6 netip.Addr
@@ -74,10 +75,10 @@ func main() {
 }
 
 // ask exits non-zero only when no reply arrives.
-func ask(server, name string) {
+func ask(server, name string, timeout time.Duration) {
 	m := new(dns.Msg)
 	m.SetQuestion(dns.CanonicalName(name), dns.TypeA)
-	c := &dns.Client{Timeout: 5 * time.Second}
+	c := &dns.Client{Timeout: timeout}
 	resp, _, err := c.Exchange(m, server)
 	if err != nil {
 		log.Fatal(err)
