@@ -315,39 +315,71 @@ func (g *IPv6Guard) enable(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if g.token == nil {
-		t, state, err := g.tokens.read()
-		switch {
-		case err != nil:
-			return err
-		case state == recordHeld:
-			g.token, g.recorded = &t, true
-		case state == recordStale:
-			if err := g.tokens.remove(); err != nil {
-				return err
-			}
-		}
+	if err := g.adoptRecord(); err != nil {
+		return err
 	}
-	if g.token != nil && g.token.value == 0 {
-		v, ok, err := g.resolve(ctx, *g.token)
-		if err != nil {
-			return err
-		}
-		if ok {
-			g.token, g.recorded = &pfToken{value: v, pid: g.token.pid}, false
-		} else {
-			g.token = nil // gone: the record is replaced below
-		}
+	if err := g.resolveToken(ctx); err != nil {
+		return err
 	}
 	if on && g.token != nil {
-		if !g.recorded {
-			if err := g.tokens.write(*g.token); err != nil {
-				return err
-			}
-			g.recorded = true
-		}
+		return g.recordToken()
+	}
+	return g.takeReference(ctx)
+}
+
+// adoptRecord takes over the reference the record names (a crashed
+// run's, this boot) when the guard holds none, and removes a stale record.
+func (g *IPv6Guard) adoptRecord() error {
+	if g.token != nil {
 		return nil
 	}
+	t, state, err := g.tokens.read()
+	switch {
+	case err != nil:
+		return err
+	case state == recordHeld:
+		g.token, g.recorded = &t, true
+	case state == recordStale:
+		return g.tokens.remove()
+	}
+	return nil
+}
+
+// resolveToken finds the token of a reference the guard knows by its pid
+// only; one pf no longer lists is dropped, and its record replaced by the
+// next reference's.
+func (g *IPv6Guard) resolveToken(ctx context.Context) error {
+	if g.token == nil || g.token.value != 0 {
+		return nil
+	}
+	v, ok, err := g.resolve(ctx, *g.token)
+	if err != nil {
+		return err
+	}
+	if ok {
+		g.token, g.recorded = &pfToken{value: v, pid: g.token.pid}, false
+	} else {
+		g.token = nil // gone: the record is replaced below
+	}
+	return nil
+}
+
+// recordToken writes the guard's reference to the record, unless it is
+// there already.
+func (g *IPv6Guard) recordToken() error {
+	if g.recorded {
+		return nil
+	}
+	if err := g.tokens.write(*g.token); err != nil {
+		return err
+	}
+	g.recorded = true
+	return nil
+}
+
+// takeReference turns pf on with a new reference (`pfctl -E`) and
+// records it, then releases the one the guard held, if pf still lists it.
+func (g *IPv6Guard) takeReference(ctx context.Context) error {
 	old := g.token
 	out, err := g.pf.run(ctx, nil, "-E")
 	if err != nil {
@@ -362,10 +394,9 @@ func (g *IPv6Guard) enable(ctx context.Context) error {
 		t.value = v
 	}
 	g.token, g.recorded = &t, false
-	if err := g.tokens.write(t); err != nil {
+	if err := g.recordToken(); err != nil {
 		return err
 	}
-	g.recorded = true
 	if old != nil {
 		// pf was off although the guard held a reference. If pfctl -d
 		// left it listed, release it now that pf is on again (pf refuses

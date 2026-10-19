@@ -40,6 +40,25 @@ func addrOf(a net.Addr) netip.Addr {
 }
 
 func (s *Server) answer(cfg *Config, src netip.Addr, req *dns.Msg) *dns.Msg {
+	if m := s.refuse(cfg, src, req); m != nil {
+		return m
+	}
+	labels := dns.SplitDomainName(strings.ToLower(req.Question[0].Name))
+	name := strings.Join(labels, ".")
+	route, m := s.route(cfg, req, labels, name)
+	if m != nil {
+		return m
+	}
+	ups, ok := s.upstreamsFor(route)
+	if !ok {
+		return reply(req, dns.RcodeServerFailure)
+	}
+	return s.forward(req, src, name, route, ups)
+}
+
+// refuse answers what the resolver doesn't take: clients outside
+// cfg.Clients, anything but one query, escaped names. Nil for the rest.
+func (s *Server) refuse(cfg *Config, src netip.Addr, req *dns.Msg) *dns.Msg {
 	if !slices.ContainsFunc(cfg.Clients, func(p netip.Prefix) bool { return p.Contains(src) }) {
 		s.n.refused.Add(1)
 		return reply(req, dns.RcodeRefused)
@@ -48,77 +67,93 @@ func (s *Server) answer(cfg *Config, src netip.Addr, req *dns.Msg) *dns.Msg {
 		s.n.refused.Add(1)
 		return reply(req, dns.RcodeNotImplemented)
 	}
-	q := req.Question[0]
-	name := strings.ToLower(q.Name)
 	// A label with an escaped dot (or anything escaped) would match the
 	// rules as a different name than the one asked: refused.
-	if strings.ContainsRune(name, '\\') {
+	if strings.ContainsRune(req.Question[0].Name, '\\') {
 		s.n.refused.Add(1)
 		return reply(req, dns.RcodeRefused)
 	}
-	labels := dns.SplitDomainName(name)
-	name = strings.Join(labels, ".")
+	return nil
+}
+
+// route says where the name with labels goes, or answers it here (a
+// non-nil message): the overlay's names, the resolver's own, the
+// overlay's reverse names.
+func (s *Server) route(cfg *Config, req *dns.Msg, labels []string, name string) (Route, *dns.Msg) {
 	// Anything with an `internal` label is the overlay's or a search-list
 	// retry of an overlay name: never forwarded.
 	if slices.Contains(labels, "internal") {
 		s.n.overlay.Add(1)
 		if labels[len(labels)-1] != "internal" {
-			m := reply(req, dns.RcodeNameError)
-			m.Authoritative = true
-			return m
+			return Route{}, nameError(req)
 		}
-		return overlayAnswer(cfg, req, name, q.Qtype)
+		return Route{}, overlayAnswer(cfg, req, name, req.Question[0].Qtype)
 	}
-
 	// resolver.arpa is the resolver's own name (RFC 9462): an answer for
 	// _dns.resolver.arpa would have the OS upgrade it to an encrypted
 	// resolver (DDR) that bypasses the node. There is none.
 	if n := len(labels); n >= 2 && labels[n-1] == "arpa" && labels[n-2] == "resolver" {
 		s.n.blocked.Add(1)
-		m := reply(req, dns.RcodeNameError)
-		m.Authoritative = true
-		return m
+		return Route{}, nameError(req)
 	}
-
-	route := Route{Kind: RouteDirect}
 	if p, full, ok := reversePrefix(labels); ok {
-		// Reverse names go where the address goes; the overlay's (and any
-		// covering part of it) are answered here.
-		switch {
-		case slices.ContainsFunc(cfg.Overlay, p.Overlaps):
-			s.n.overlay.Add(1)
-			if !full {
-				m := reply(req, dns.RcodeNameError)
-				m.Authoritative = true
-				return m
-			}
-			return reverseAnswer(cfg, req, p.Addr(), q.Qtype)
-		case cfg.RouteAddr == nil:
-		case full:
-			route = cfg.RouteAddr(p.Addr())
-		default:
-			route = Route{Kind: RouteBlock} // a reverse zone, not an address: no rule says where
-		}
-	} else if cfg.Route != nil {
-		route = cfg.Route(name)
+		return s.reverseRoute(cfg, req, p, full)
 	}
-	var servers []netip.AddrPort
-	var control func(string, string, syscall.RawConn) error
+	if cfg.Route != nil {
+		return cfg.Route(name), nil
+	}
+	return Route{Kind: RouteDirect}, nil
+}
+
+// reverseRoute routes a reverse name, of prefix p (full: an address),
+// where the address goes; the overlay's (and any covering part of it) are
+// answered here.
+func (s *Server) reverseRoute(cfg *Config, req *dns.Msg, p netip.Prefix, full bool) (Route, *dns.Msg) {
+	switch {
+	case slices.ContainsFunc(cfg.Overlay, p.Overlaps):
+		s.n.overlay.Add(1)
+		if !full {
+			return Route{}, nameError(req)
+		}
+		return Route{}, reverseAnswer(cfg, req, p.Addr(), req.Question[0].Qtype)
+	case cfg.RouteAddr == nil:
+		return Route{Kind: RouteDirect}, nil
+	case full:
+		return cfg.RouteAddr(p.Addr()), nil
+	}
+	return Route{Kind: RouteBlock}, nil // a reverse zone, not an address: no rule says where
+}
+
+// upstreamSet is the servers a query is forwarded to, and the Control of
+// the sockets asking them.
+type upstreamSet struct {
+	servers []netip.AddrPort
+	control func(string, string, syscall.RawConn) error
+}
+
+// upstreamsFor are the servers route sends a query to; false for a route
+// that blocks it.
+func (s *Server) upstreamsFor(route Route) (upstreamSet, bool) {
 	switch route.Kind {
 	case RouteDirect:
 		s.n.direct.Add(1)
-		servers, control = *s.upstreams.Load(), s.opts.Control
+		return upstreamSet{servers: *s.upstreams.Load(), control: s.opts.Control}, true
 	case RouteTunnel:
 		s.n.tunnel.Add(1)
+		var servers []netip.AddrPort
 		for _, a := range route.Via {
 			servers = append(servers, netip.AddrPortFrom(a, s.opts.TunnelPort))
 		}
-		control = s.opts.TunnelControl
-	default:
-		s.n.blocked.Add(1)
-		return reply(req, dns.RcodeServerFailure)
+		return upstreamSet{servers: servers, control: s.opts.TunnelControl}, true
 	}
+	s.n.blocked.Add(1)
+	return upstreamSet{}, false
+}
 
+// forward answers req for name from the cache, or else from ups, within
+// the client's and the resolver's limits on queries under way.
+func (s *Server) forward(req *dns.Msg, src netip.Addr, name string, route Route, ups upstreamSet) *dns.Msg {
+	q := req.Question[0]
 	do := false
 	if opt := req.IsEdns0(); opt != nil {
 		do = opt.Do()
@@ -148,7 +183,7 @@ func (s *Server) answer(cfg *Config, src netip.Addr, req *dns.Msg) *dns.Msg {
 	// Only our own EDNS record: none of the client's options (its subnet,
 	// cookies) travel upstream.
 	out.SetEdns0(upstreamUDPSize, do)
-	resp := s.exchange(out, servers, control)
+	resp := s.exchange(out, ups.servers, ups.control)
 	if resp == nil || resp.Rcode == dns.RcodeServerFailure {
 		s.n.failed.Add(1)
 		return reply(req, dns.RcodeServerFailure)
@@ -184,6 +219,14 @@ func reply(req *dns.Msg, rcode int) *dns.Msg {
 	m := new(dns.Msg)
 	m.SetRcode(req, rcode)
 	m.RecursionAvailable = true
+	return m
+}
+
+// nameError is an authoritative NXDOMAIN: a name the resolver answers for
+// itself doesn't exist.
+func nameError(req *dns.Msg) *dns.Msg {
+	m := reply(req, dns.RcodeNameError)
+	m.Authoritative = true
 	return m
 }
 
