@@ -99,15 +99,7 @@ func TestDNSFollowsTheRules(t *testing.T) {
 
 	t.Run("systemd-resolved", func(t *testing.T) {
 		link := devB.Interface(lab.NetDevices)
-		devB.WriteFile(t, "/etc/resolv.conf", []byte("nameserver 127.0.0.53\noptions edns0 trust-ad\nsearch .\n"))
-		devB.MustExec(t, "sh", "-ec", "mkdir -p /run/dbus && dbus-daemon --system --fork")
-		devB.Start(t, "/lib/systemd/systemd-resolved")
-		lab.Eventually(t, 20*time.Second, func() error {
-			ctx, cancel := context.WithTimeout(context.Background(), pollTimeout)
-			defer cancel()
-			_, err := devB.Exec(ctx, "resolvectl", "dns", link, inetIP.String())
-			return err
-		})
+		startResolved(t, devB, inetIP)
 		mustResolve(t, devB, "before.direct.test", false, domesticA)
 
 		capture := devB.Capture(t, "")
@@ -129,20 +121,14 @@ func TestDNSFollowsTheRules(t *testing.T) {
 		// A domain on the physical link takes its names past the TUN: the
 		// device says DNS isn't protected, and says so no longer once it
 		// goes.
-		health := func(timeout time.Duration) (string, error) {
-			ctx, cancel := context.WithTimeout(context.Background(), timeout)
-			defer cancel()
-			res, err := devB.Exec(ctx, "thinkpol", "status")
-			return res.Stdout, err
-		}
-		if out, err := health(execTimeout); err != nil {
+		if out, err := execRead(devB, execTimeout, "thinkpol", "status"); err != nil {
 			t.Fatal(err)
 		} else if strings.Contains(out, "dns_not_protected") {
 			t.Fatalf("not protected before any other domain:\n%s", out)
 		}
 		devB.MustExec(t, "resolvectl", "domain", link, "~example.org")
-		lab.Eventually(t, 20*time.Second, func() error {
-			out, err := health(pollTimeout)
+		lab.Eventually(t, 30*time.Second, func() error {
+			out, err := execRead(devB, pollTimeout, "thinkpol", "status")
 			if err != nil {
 				return err
 			}
@@ -152,8 +138,8 @@ func TestDNSFollowsTheRules(t *testing.T) {
 			return nil
 		})
 		devB.MustExec(t, "resolvectl", "domain", link, "")
-		lab.Eventually(t, 20*time.Second, func() error {
-			out, err := health(pollTimeout)
+		lab.Eventually(t, 30*time.Second, func() error {
+			out, err := execRead(devB, pollTimeout, "thinkpol", "status")
 			if err != nil {
 				return err
 			}

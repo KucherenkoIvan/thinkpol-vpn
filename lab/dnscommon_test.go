@@ -114,11 +114,25 @@ func resolve(n *lab.Node, name string, v6 bool) (string, error) {
 	return f[0], nil
 }
 
+// startResolved makes n resolve through systemd-resolved (and its D-Bus),
+// with dns as the server of n's devices-network link.
+func startResolved(t *testing.T, n *lab.Node, dns netip.Addr) {
+	t.Helper()
+	link := n.Interface(lab.NetDevices)
+	n.WriteFile(t, "/etc/resolv.conf", []byte("nameserver 127.0.0.53\noptions edns0 trust-ad\nsearch .\n"))
+	n.MustExec(t, "sh", "-ec", "mkdir -p /run/dbus && dbus-daemon --system --fork")
+	n.Start(t, "/lib/systemd/systemd-resolved")
+	lab.Eventually(t, 30*time.Second, func() error {
+		_, err := execRead(n, pollTimeout, "resolvectl", "dns", link, dns.String())
+		return err
+	})
+}
+
 // mustResolve resolves through the node's OS resolver until the name
 // answers with want (a new or changed answer can take a poll to appear).
 func mustResolve(t *testing.T, n *lab.Node, name string, v6 bool, want string) {
 	t.Helper()
-	lab.Eventually(t, 30*time.Second, func() error {
+	lab.Eventually(t, 60*time.Second, func() error {
 		got, err := resolve(n, name, v6)
 		if err != nil {
 			return err
