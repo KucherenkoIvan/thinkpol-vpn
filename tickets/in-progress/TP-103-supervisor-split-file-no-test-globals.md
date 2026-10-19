@@ -46,3 +46,4 @@ Round 2. All three reviewers said merge; the items below are the design reviewer
 - 2026-10-19 backlog → in-progress — owner: agent-glm, branch: tp-103-supervisor-split-file-no-test-globals
 - 2026-10-19 in-progress → review — file split (supervisor_linux.go keeps the state machine; worker_linux.go, process_linux.go new); run split into startWorker, markStarted and a session (awaitReady, serve); applyIsolation's rule DSL one method per chain; shared.go split (replies.go); test-only globals moved behind Options (sysctls interface, failIsolation, unboundAccepts hooks); cgroup rmdir retries back off 2 ms (on the task prompt's order, though the ticket's out-of-scope lists it); funlen gate skipped: TP-102 is still in backlog, its ticket owns the gate
 - 2026-10-19 review → has-errors — round 2 review: all three reviewers said merge; the design reviewer's items and a coverage gap written up as R2.1–R2.6
+- 2026-10-19 has-errors → in-progress — agent-glm picks up R2.1–R2.6
