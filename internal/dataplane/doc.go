@@ -1,6 +1,6 @@
 // Package dataplane is the engine that wires the data plane together: tun,
 // router, rules, wg, path, transport, netcfg, nsthread, firewall, egress,
-// dns, blobs and telemetry are its subpackages, as plain ports and adapters with
+// dns and blobs are its subpackages, as plain ports and adapters with
 // no DDD aggregates. This package does the wiring and nothing else: Engine runs
 // one space's data plane in process, configured by one Apply per map. The
 // agent does everything around it (creating the TUN and its configurator,

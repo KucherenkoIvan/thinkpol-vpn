@@ -304,22 +304,6 @@ func (s Shaping) Marshal() ([]byte, error) {
 	return b, nil
 }
 
-// Buckets returns bucket padding to sizes, for tests and tools; it panics
-// on more than MaxBuckets sizes or one above 65535.
-func Buckets(sizes ...int) Padding {
-	p := Padding{Mode: PadToBuckets}
-	if len(sizes) > MaxBuckets {
-		panic("transport: too many buckets")
-	}
-	for i, size := range sizes {
-		if size < 0 || size > 0xffff {
-			panic("transport: bucket size out of range")
-		}
-		p.Buckets[i] = uint16(size)
-	}
-	return p
-}
-
 // SendStats is what one end of a link, or a listener's links together,
 // put on the wire, and what shaping cost: the overhead the lab weighs
 // against what shaping hides.
@@ -329,13 +313,6 @@ type SendStats struct {
 	PacketBytes  uint64
 	PaddingBytes uint64
 	WireBytes    uint64 // whole units, before IP and UDP or TCP headers
-}
-
-// SendReporter is a Link or Listener that reports what it sent. The engine
-// and telemetry find it by type assertion; adapters that shape implement
-// it.
-type SendReporter interface {
-	Sent() SendStats
 }
 
 // Overhead is the wire bytes per packet byte, less one: 0.25 means a

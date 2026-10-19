@@ -10,6 +10,7 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/path"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport/transporttest"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport/udp"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
@@ -28,7 +29,7 @@ func TestPathConfigSkipsWhatItCannotUse(t *testing.T) {
 	secret := bytes.Repeat([]byte{7}, udp.MinSecretSize)
 	good := netmap.Endpoint{Transport: "udp", Address: netip.MustParseAddrPort("192.0.2.1:4500"), Credential: secret}
 	with := func(f func(*netmap.Endpoint)) netmap.Endpoint { e := good; f(&e); return e }
-	buckets := transport.Shaping{Padding: transport.Buckets(256, 1280)}
+	buckets := transport.Shaping{Padding: transporttest.Buckets(256, 1280)}
 	encoded, err := buckets.Marshal()
 	if err != nil {
 		t.Fatal(err)
