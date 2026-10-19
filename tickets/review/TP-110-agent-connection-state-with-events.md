@@ -102,3 +102,4 @@ The device's connection lifecycle is one explicit state with transition methods 
 - 2026-10-20 round 3: EventRouteTableNotEnforced documents that it is any RouteTable.Error (failed Apply, rule change or direct-upstreams update, the route table's own reapply, TUN down, unsupported); Notes fixed (SetDirectUpstreams failing is told; round numbers as in this Log)
 - 2026-10-20 merged origin/rewrite: nothing new
 - 2026-10-20 make lint (exit 0) and make test (exit 0) at b159080; make lab-test exit 0 at b159080 (lab suite ok, 35 node packages PASS), 183 s with LAB_P=4 (no other lab running). Not verified here: the route-table and DNS events on a real macOS device
+- 2026-10-20 in-progress → review
