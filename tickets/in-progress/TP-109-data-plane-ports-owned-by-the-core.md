@@ -56,3 +56,4 @@ The data-plane core owns its port types; netcfg, routetable and dns adapt to the
 - 2026-10-19 checks at f2478f1 (git merge origin/rewrite: already up to date): make lint exit 0, make test exit 0, make lab-test exit 0 in 442s (LAB_P=1, another lab running; 35 node packages ok, lab suite ok). An earlier make lab-test at f2478f1 (LAB_P=4, 147s) exited 2 on blobs TestAPeerDroppedFromThePlanIsServedNoMore ("connection refused"); blobs doesn't depend on any changed package, and make lab-gotest PKG=./internal/dataplane/blobs then passed 3 of 3: a flake
 - 2026-10-19 in-progress → review — not verified here: macOS (the route-table adapter's upstreams on a device: the agent's tests cover that they reach routetable.Want, as before)
 - 2026-10-19 review → has-errors — review round 1: R1.1–R1.9 (design review; two reviewers said merge)
+- 2026-10-19 has-errors → in-progress — review round 1 findings picked up (R1.1–R1.9)
