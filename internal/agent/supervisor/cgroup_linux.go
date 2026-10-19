@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -98,7 +99,7 @@ func (c *cgroup) fd() int { return int(c.f.Fd()) }
 func (c *cgroup) remove() error {
 	_ = c.f.Close()
 	// The cgroup empties when the worker dies; removing it may need a retry
-	// while the kernel reaps.
+	// while the kernel reaps — a short backoff, bounded (about 100 ms).
 	var err error
 	for range 50 {
 		if err = os.Remove(c.dir); err == nil || errors.Is(err, os.ErrNotExist) {
@@ -107,6 +108,7 @@ func (c *cgroup) remove() error {
 		if !errors.Is(err, unix.EBUSY) {
 			break
 		}
+		time.Sleep(2 * time.Millisecond)
 	}
 	return fmt.Errorf("remove cgroup %s: %w", c.dir, err)
 }
