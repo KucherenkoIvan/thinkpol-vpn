@@ -2,7 +2,9 @@ package memory_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -95,27 +97,46 @@ func TestRegistry(t *testing.T) {
 }
 
 // TestConcurrentClosesFreeTheEndpoint: a Close that lost the race waits
-// for the winner, so once both return the endpoint is free and Listen
-// takes the address again.
+// for the winner, so whichever Close returns, the endpoint is free: a dial
+// is refused, not met by a listener still closing. The listener holds
+// links, so its teardown takes long enough for a Close that didn't wait to
+// be seen.
 func TestConcurrentClosesFreeTheEndpoint(t *testing.T) {
+	peer := transporttest.SymmetricPeer()
+	cfg := transport.ListenConfig{Address: "endpoint", Peers: transport.NewPeerTable(peer.PeerLink)}
+	dial := transport.DialConfig{Credential: peer.Credential}
 	network := memory.NewNetwork(memory.Datagram)
-	l, err := network.Listen(context.Background(), transport.ListenConfig{Address: "endpoint", Peers: transport.NewPeerTable()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	start := make(chan struct{})
-	var wg sync.WaitGroup
-	wg.Add(2)
-	for range 2 {
-		go func() {
-			defer wg.Done()
-			<-start
-			_ = l.Close()
+	for range 50 {
+		l, err := network.Listen(context.Background(), cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		go func() { // the links wait in the accept queue until taken
+			for {
+				if _, _, err := l.Accept(context.Background()); err != nil {
+					return
+				}
+			}
 		}()
-	}
-	close(start)
-	wg.Wait()
-	if _, err := network.Listen(context.Background(), transport.ListenConfig{Address: "endpoint", Peers: transport.NewPeerTable()}); err != nil {
-		t.Fatalf("Listen on the closed listener's address: %v", err)
+		for range 200 {
+			if _, err := network.Dial(context.Background(), "endpoint", dial); err != nil {
+				t.Fatal(err)
+			}
+		}
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		for range 2 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				_ = l.Close()
+				if _, err := network.Dial(context.Background(), "endpoint", dial); err == nil || errors.Is(err, net.ErrClosed) {
+					t.Errorf("a dial after Close returned: %v", err)
+				}
+			}()
+		}
+		close(start)
+		wg.Wait()
 	}
 }

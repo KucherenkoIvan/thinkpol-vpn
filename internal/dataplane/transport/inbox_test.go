@@ -107,7 +107,7 @@ func TestInboxCloseCauseReachesTheReaders(t *testing.T) {
 // closes with a cause, and the reader takes what arrives until it sees an
 // error — which must be the cause. From then on the close is sticky: every
 // later read returns the cause, never an item.
-func TestAnItemRacingClose(t *testing.T) {
+func TestInboxItemRacingClose(t *testing.T) {
 	cause := io.ErrUnexpectedEOF
 	for _, read := range []struct {
 		name string

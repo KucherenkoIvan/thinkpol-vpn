@@ -21,9 +21,11 @@ func TestAdmitAllocatesNothingOnTheHotPath(t *testing.T) {
 	set := indexPeers([]transport.PeerLink{peer.PeerLink}, epochOf(now))
 	table := newSenderHistories()
 	// AllocsPerRun warms the closure up once, then measures 100 runs.
+	// One sender, a new counter each: the steady path, not a takeover.
+	sender := newSenderID(now)
 	datagrams := make([][]byte, 102)
 	for i := range datagrams {
-		datagrams[i] = seal(nil, newAEAD(peer.Credential, toListener), connIDFor(peer.Credential, toListener, epochOf(now)), newSenderID(now), now, uint64(i), []byte("packet"), transport.Padding{})
+		datagrams[i] = seal(nil, newAEAD(peer.Credential, toListener), connIDFor(peer.Credential, toListener, epochOf(now)), sender, now, uint64(i), []byte("packet"), transport.Padding{})
 	}
 	dst := make([]byte, 0, maxDatagram)
 	var ladder admitLadder

@@ -6,11 +6,12 @@ import (
 )
 
 // admitLadder is the authenticate-and-admit ladder the package doc describes
-// under "What a receiver accepts", shared by the listener, the router and
-// the dialer: the connection id, the lookup, the open, the freshness
-// check, the sender rules, and the counters for everything turned away.
-// The caller takes its lock once across the ladder call and does the
-// steps where the ends differ — delivering the packets to the link.
+// under "What a receiver accepts", and the counters for everything it turns
+// away. admit runs it whole for a table receiver (the listener, the router):
+// the connection id, the lookup, the open, the freshness check, the sender
+// rules. admitOne runs it from the open on, for the dialer, which checks its
+// own connection id. The caller holds its lock across the call and delivers
+// the packets itself.
 type admitLadder struct {
 	counters counters
 }
@@ -78,8 +79,8 @@ func newSenderHistories() *senderHistories {
 }
 
 // historyOf returns the secret's sender history: the one it has, a retired
-// one the last table change left, or a new one. m[string(b)] compiles
-// without a copy; storing string(b) anywhere else would allocate.
+// one the last table change left, or a new one. The lookup m[string(secret)]
+// doesn't copy secret; only inserting a new history does.
 func (t *senderHistories) historyOf(secret []byte) *senders {
 	if s, ok := t.histories[string(secret)]; ok {
 		return s
