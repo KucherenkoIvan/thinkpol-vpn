@@ -378,8 +378,6 @@ func (s *Section) validate(headerBlobs []BlobRef) error {
 	return s.validateRules()
 }
 
-// validateNode checks the node's own settings: its overlay networks and
-// addresses, its kind's settings, and its listeners.
 // transportAddr identifies a listener or an endpoint by transport and
 // address: the same pair twice is refused.
 type transportAddr struct {
@@ -387,6 +385,8 @@ type transportAddr struct {
 	address   netip.AddrPort
 }
 
+// validateNode checks the node's own settings: its overlay networks and
+// addresses, its kind's settings, and its listeners.
 func (s *Section) validateNode() error {
 	n := &s.Node
 	if !IsOverlayIPv4(n.IPv4Network) {

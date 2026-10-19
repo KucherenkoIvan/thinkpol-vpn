@@ -32,7 +32,7 @@ func CheckLabel(name string) error {
 	if checkName(name, maxLabel, false) {
 		return nil
 	}
-	return fmt.Errorf("name %q: use 1-%d lowercase letters, digits and dashes, no dash at either end", name, maxLabel)
+	return fmt.Errorf("name %q: use 1-%d lowercase letters, digits and dashes, starting and ending with a letter or digit", name, maxLabel)
 }
 
 // validateNames is Build's check of the overlay names: only a device's

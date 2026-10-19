@@ -123,7 +123,7 @@ type planner struct {
 
 	ids      []netmap.NodeID
 	names    Names
-	keys     map[netmap.NodePublicKey]string // the nodes' map keys, by name
+	keys     map[netmap.NodePublicKey]string // the nodes' names, by map key
 	links    []Link
 	v4, v6   netip.Prefix
 	ipv4     []netip.Addr

@@ -142,7 +142,9 @@ type RulePresets struct {
 
 const (
 	maxListName = 32
-	maxDomain   = 253
+	// Chain names share the list names' limit.
+	maxChainName = maxListName
+	maxDomain    = 253
 )
 
 // mappedRange is ::ffff:0:0/96: IPv4 is matched only as IPv4 (lists hold
@@ -296,10 +298,10 @@ func CheckListName(name string) error {
 
 // CheckChainName reports whether name can name a chain: as a list name.
 func CheckChainName(name string) error {
-	if checkName(name, maxListName, true) {
+	if checkName(name, maxChainName, true) {
 		return nil
 	}
-	return fmt.Errorf("chain name %q: use 1-%d lowercase letters, digits and dashes, starting with a letter or digit", name, maxListName)
+	return fmt.Errorf("chain name %q: use 1-%d lowercase letters, digits and dashes, starting with a letter or digit", name, maxChainName)
 }
 
 // checkDomain accepts a lowercase ASCII domain without a trailing dot
@@ -420,9 +422,8 @@ func listBlobKind(k MatchKind) BlobKind {
 // be declared.
 func (m Match) NamesAList() bool { return m.Kind == MatchGeoIP || m.Kind == MatchGeoSite }
 
-// EndsWithDefault reports whether rules give every destination an action:
-// a non-empty rule set ends with the default matcher, and an empty one
-// leaves every destination alone.
+// EndsWithDefault reports whether the last rule matches default. An empty
+// list passes: with no rules nothing enters the tunnel.
 func EndsWithDefault(rules []Rule) bool {
 	return len(rules) == 0 || rules[len(rules)-1].Match.Kind == MatchDefault
 }

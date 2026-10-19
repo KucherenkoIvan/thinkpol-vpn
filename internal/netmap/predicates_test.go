@@ -91,7 +91,7 @@ func TestNameChecks(t *testing.T) {
 			t.Errorf("CheckChainName(%q): %v", ok, err)
 		}
 	}
-	for _, bad := range []string{"", "RU", "-ru", "r u", strings.Repeat("a", 33)} {
+	for _, bad := range []string{"", "RU", "-ru", "r u", "ру", "geolocation-!cn", strings.Repeat("a", 33)} {
 		if CheckListName(bad) == nil {
 			t.Errorf("CheckListName(%q) accepted", bad)
 		}

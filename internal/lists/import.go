@@ -83,7 +83,7 @@ func Import(r io.Reader, f Format, only []string) (map[string]*Builder, error) {
 	if len(only) > 0 {
 		for _, name := range only {
 			if err := netmap.CheckListName(name); err != nil {
-				return nil, err
+				return nil, fmt.Errorf("lists: %w", err)
 			}
 		}
 		keep = func(name string) bool { return slices.Contains(only, name) }
@@ -201,7 +201,7 @@ func v2flyEntry(entry []byte, keep func(string) bool, out map[string]*Builder, e
 		return nil
 	}
 	if err := netmap.CheckListName(name); err != nil {
-		return err
+		return fmt.Errorf("lists: %w", err)
 	}
 	if reverse {
 		return fmt.Errorf("entry %q: reverse_match is not supported", name)

@@ -89,6 +89,11 @@ type Node struct {
 	Pos   Pos
 }
 
+// settings is what netmap's builder policy reads of the node.
+func (n Node) settings() *netmap.NodeSettings {
+	return &netmap.NodeSettings{Kind: n.Kind, AllowIngress: n.Ingress, AllowEgress: n.Egress}
+}
+
 // Address is a transport and an IP literal with a port, written
 // transport://ip:port.
 type Address struct {
@@ -399,15 +404,14 @@ func (c *checker) spec(raw *rawSpec) *Spec {
 		s.Nodes = append(s.Nodes, n)
 	}
 	c.paths(s, raw.Paths, byName)
-	c.names(s, raw)
+	c.spaceName(s, raw)
 	c.rules(s, raw, byName, listByName)
 	c.presets(s, raw, listByName)
 	return s
 }
 
-// names reads the space's name; node names are checked as nodes are read
-// (CheckName), so only the space's own is left to check here.
-func (c *checker) names(s *Spec, raw *rawSpec) {
+// spaceName reads the space's name.
+func (c *checker) spaceName(s *Spec, raw *rawSpec) {
 	v := raw.Space.Name
 	if !v.set() {
 		return
@@ -451,7 +455,7 @@ func (c *checker) rules(s *Spec, raw *rawSpec, byName, listByName map[string]int
 		case !known:
 			c.errorf(rc.Exit.pos, "chain %s: unknown node %q", name, exit)
 			exitOK = false
-		case !(&netmap.NodeSettings{Kind: s.Nodes[i].Kind, AllowEgress: s.Nodes[i].Egress}).MayEndAChain():
+		case !s.Nodes[i].settings().MayEndAChain():
 			c.errorf(rc.Exit.pos, "chain %s: %s is not a server with egress: true", name, exit)
 			exitOK = false
 		}
@@ -765,10 +769,7 @@ func (c *checker) paths(s *Spec, raw []rawPath, byName map[string]int) {
 		// A device dials its neighbour on the path, and gets its address.
 		for _, end := range [][2]int{{0, 1}, {len(p.Nodes) - 1, len(p.Nodes) - 2}} {
 			dev, next := s.Nodes[p.Nodes[end[0]]], s.Nodes[p.Nodes[end[1]]]
-			if dev.Kind == netmap.NodeDevice && !netmap.MayLink(
-				&netmap.NodeSettings{Kind: dev.Kind, AllowIngress: dev.Ingress},
-				&netmap.NodeSettings{Kind: next.Kind, AllowIngress: next.Ingress},
-			) {
+			if dev.Kind == netmap.NodeDevice && !netmap.MayLink(dev.settings(), next.settings()) {
 				c.errorf(rp.hops[end[1]].pos, "%s has ingress off, so %s can't connect to it (ingress: true lets devices in)", next.Name, dev.Name)
 				ok = false
 			}
