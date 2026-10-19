@@ -160,14 +160,17 @@ type senderEntry struct {
 	window  replayWindow
 }
 
-// verdict is what a receiver does with an authenticated, fresh datagram.
+// verdict is what the receive ladder did with a datagram: the two
+// failures before the sender rules, then what the sender rules say.
 type verdict int
 
 const (
-	dropReplay    verdict = iota // a counter seen before or behind the window
-	dropStale                    // a sender older than the current one, or forgotten
-	deliver                      // deliver, but don't move the reply address
-	deliverNewest                // deliver; the current sender's newest counter
+	dropUnauthenticated verdict = iota // open failed: not under the credential's key
+	dropStaleTimestamp                 // sealed too far from the receiver's clock
+	dropReplay                         // a counter seen before or behind the window
+	dropStale                          // a sender older than the current one, or forgotten
+	deliver                            // deliver, but don't move the reply address
+	deliverNewest                      // deliver; the current sender's newest counter
 )
 
 func (s *senders) admit(id senderID, counter uint64, sent uint32, now time.Time) verdict {

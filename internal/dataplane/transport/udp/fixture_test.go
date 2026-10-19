@@ -147,6 +147,20 @@ func (tp *tap) inject(d []byte) {
 	}
 }
 
+// injectDown sends d to the dialer from the tap's front address, the
+// listener's, as a datagram the listener sent would arrive.
+func (tp *tap) injectDown(d []byte) {
+	tp.mu.Lock()
+	client := tp.client
+	tp.mu.Unlock()
+	if client == nil {
+		tp.t.Fatal("no dialer has sent through the tap yet")
+	}
+	if _, err := tp.front.WriteTo(d, client); err != nil {
+		tp.t.Fatal(err)
+	}
+}
+
 func (tp *tap) captured() (up, down [][]byte) {
 	tp.mu.Lock()
 	defer tp.mu.Unlock()

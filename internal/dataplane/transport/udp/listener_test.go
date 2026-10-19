@@ -644,6 +644,7 @@ func TestAnEvictedSenderThatKeepsSendingStaysRemembered(t *testing.T) {
 	f.listener.mu.Lock()
 	fl := f.listener.flows[string(f.peer.Verifier)]
 	e := fl.entry.Load()
+	hist := f.listener.table.historyOf(f.peer.Verifier)
 	f.listener.mu.Unlock()
 	stillSending, err := open(nil, e.recv, held)
 	if err != nil {
@@ -661,7 +662,7 @@ func TestAnEvictedSenderThatKeepsSendingStaysRemembered(t *testing.T) {
 	write(t, extra, "extra")
 	expectPacket(t, got, []byte("extra"))
 	f.listener.mu.Lock()
-	if _, ok := fl.senders.evicted.byID[stillSending.sender]; !ok {
+	if _, ok := hist.evicted.byID[stillSending.sender]; !ok {
 		f.listener.mu.Unlock()
 		t.Fatal("the evicted sender's memory ran out while its newest datagrams are still fresh")
 	}
