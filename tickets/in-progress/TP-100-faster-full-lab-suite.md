@@ -98,3 +98,4 @@ The supervisor's forged-ICMP test is fixed on this branch: its expired-flow flak
 - 2026-10-19 full `make lab-test` at f7e7dbb with LAB_P=1 (TP-099's round running at the same time): pass in 405 s (6:45) wall, only TP-099's own tplab containers besides this run's; the wall time is not comparable to the earlier defaults runs
 - 2026-10-19 in-progress → review
 - 2026-10-19 review → has-errors — round 7: review findings
+- 2026-10-19 has-errors → in-progress — round 7: review findings (owner: agent-opus)
