@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: [TP-103]
 refs: [DESIGN#server-agent]
-owner: ""
-branch: ""
+owner: "agent-claude"
+branch: "tp-114-supervisor-arp-filter-on-the-wrong-hook"
 ---
 
 ## Goal
@@ -32,3 +32,4 @@ A space's ARP never reaches the root namespace's neighbour table, as DESIGN ("Se
 
 ## Log
 - 2026-10-19 created in backlog (TP-103 review: security bug, high priority after TP-103)
+- 2026-10-19 backlog → in-progress — owner: agent-claude, branch: tp-114-supervisor-arp-filter-on-the-wrong-hook
