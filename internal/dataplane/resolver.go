@@ -4,9 +4,57 @@ import (
 	"net/netip"
 	"slices"
 
-	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
+
+// Resolver is the node's resolver (on a node, dns's Server): Update
+// replaces what it serves.
+type Resolver interface {
+	Update(c ResolverConfig)
+}
+
+// ResolverConfig is what the node's resolver serves.
+type ResolverConfig struct {
+	// Listen are the addresses to serve on: the node's overlay addresses.
+	// None: the resolver doesn't listen.
+	Listen []netip.Addr
+	// Clients are the sources that may ask; anyone else is refused.
+	Clients []netip.Prefix
+	// Zone is the space's zone, `<space>.internal`, lowercase without the
+	// trailing dot; empty: no overlay names.
+	Zone string
+	// Names are the overlay names in Zone, by label, and their addresses.
+	Names map[string][]netip.Addr
+	// Overlay are the space's overlay networks: their reverse names are
+	// answered from Names, never forwarded.
+	Overlay []netip.Prefix
+	// Route decides where a name outside `.internal` is resolved (the name
+	// lowercase, without the trailing dot). Nil: every name direct.
+	Route func(name string) NameRoute
+	// RouteAddr decides where the reverse name (PTR) of an address outside
+	// the overlay is resolved: where the address's packets go. Nil: direct.
+	RouteAddr func(netip.Addr) NameRoute
+}
+
+// NameRouteKind is where a name's query goes.
+type NameRouteKind uint8
+
+const (
+	// ResolveDirect asks the domestic upstream, around the tunnel.
+	ResolveDirect NameRouteKind = iota + 1
+	// ResolveTunnel asks the resolver at an exit, through the tunnel.
+	ResolveTunnel
+	// ResolveBlock asks no one: the query fails.
+	ResolveBlock
+)
+
+// NameRoute is where one name's query goes.
+type NameRoute struct {
+	Kind NameRouteKind
+	// Via are the exit's overlay addresses, for ResolveTunnel: its
+	// resolver is there.
+	Via []netip.Addr
+}
 
 func (e *Engine) updateDNS() {
 	if e.cfg.DNS != nil {
@@ -25,8 +73,8 @@ func (e *Engine) updateDNS() {
 //   - an exit's (a server that allows egress), on its overlay addresses,
 //     for the space's overlay: every name to its own upstream;
 //   - any other server's: none.
-func (e *Engine) dnsConfig() dns.Config {
-	c := dns.Config{Overlay: slices.Clone(e.networks)}
+func (e *Engine) dnsConfig() ResolverConfig {
+	c := ResolverConfig{Overlay: slices.Clone(e.networks)}
 	switch {
 	case e.kind == netmap.NodeServer && e.egress:
 		c.Listen, c.Clients = slices.Clone(e.local), slices.Clone(e.networks)
@@ -78,32 +126,32 @@ func (e *Engine) dnsConfig() dns.Config {
 			via[chain] = addrs
 		}
 	}
-	route := func(a netmap.Action) dns.Route {
+	route := func(a netmap.Action) NameRoute {
 		switch a.Kind {
 		case netmap.ActionDirect:
-			return dns.Route{Kind: dns.RouteDirect}
+			return NameRoute{Kind: ResolveDirect}
 		case netmap.ActionChain:
 			if v, ok := via[a.Chain]; ok {
-				return dns.Route{Kind: dns.RouteTunnel, Via: v}
+				return NameRoute{Kind: ResolveTunnel, Via: v}
 			}
 		}
-		return dns.Route{Kind: dns.RouteBlock}
+		return NameRoute{Kind: ResolveBlock}
 	}
-	c.Route = func(name string) dns.Route {
+	c.Route = func(name string) NameRoute {
 		if names == nil {
-			return dns.Route{Kind: dns.RouteBlock}
+			return NameRoute{Kind: ResolveBlock}
 		}
 		return route(names.Lookup(name))
 	}
 	// A reverse name goes where its address's packets go.
 	table := e.ruleTable
-	c.RouteAddr = func(a netip.Addr) dns.Route {
+	c.RouteAddr = func(a netip.Addr) NameRoute {
 		if table == nil {
-			return dns.Route{Kind: dns.RouteBlock}
+			return NameRoute{Kind: ResolveBlock}
 		}
 		action, ok := table.Lookup(a)
 		if !ok {
-			return dns.Route{Kind: dns.RouteBlock}
+			return NameRoute{Kind: ResolveBlock}
 		}
 		return route(action)
 	}

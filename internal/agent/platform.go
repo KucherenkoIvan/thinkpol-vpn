@@ -8,7 +8,6 @@ import (
 
 	wgtun "golang.zx2c4.com/wireguard/tun"
 
-	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/blobs"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
@@ -28,7 +27,7 @@ type Host struct {
 	// where the host has none yet (Windows: TP-047/TP-048). Required.
 	NewGuard func() routetable.Guard
 	// NewRouteTable takes route-table enforcement, with guard (nil: none).
-	NewRouteTable func(log *slog.Logger, guard routetable.Guard) (dataplane.RouteTable, error)
+	NewRouteTable func(log *slog.Logger, guard routetable.Guard) (RouteEnforcer, error)
 	// ClearConfig removes what a dead configurator of one owner left.
 	ClearConfig func(o netcfg.Owner) error
 	// ClearRouteTable removes what route-table enforcement left, with the

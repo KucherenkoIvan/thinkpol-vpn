@@ -15,7 +15,6 @@ import (
 	"golang.zx2c4.com/wireguard/tun/tuntest"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
-	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/packettest"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/path"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
@@ -59,7 +58,7 @@ type node struct {
 	forward bool                                // for EngineConfig.Forward
 	routes  dataplane.RouteTable                // for EngineConfig.RouteTable
 	standIn func(netmap.BlobKind, string) (netmap.BlobRef, []byte, bool)
-	dns     interface{ Update(dns.Config) } // for EngineConfig.DNS
+	dns     dataplane.Resolver // for EngineConfig.DNS
 	engine  *dataplane.Engine
 	stack   *stack
 }

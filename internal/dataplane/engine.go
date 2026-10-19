@@ -13,11 +13,8 @@ import (
 
 	"golang.zx2c4.com/wireguard/tun"
 
-	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
-	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/path"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/router"
-	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/rules"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/wg"
@@ -59,7 +56,7 @@ type EngineConfig struct {
 	// owns it once NewEngine succeeds. Nil leaves the TUN alone: in-process
 	// tests, and platforms where the OS configures the TUN it hands over
 	// (Android's VpnService, Apple's NetworkExtension).
-	Interface netcfg.Configurator
+	Interface InterfaceConfigurator
 	// LinkMTU is the MTU of the network under every link; 0 means
 	// DefaultLinkMTU.
 	LinkMTU int
@@ -98,11 +95,10 @@ type EngineConfig struct {
 	// succeeds. Nil leaves the OS routing alone: servers' workers, tests,
 	// and platforms where the OS takes the routes with the TUN.
 	RouteTable RouteTable
-	// DNS, if set, is the node's resolver (a *dns.Server): the engine
-	// tells it what to serve after every Apply and rule change (see
-	// dnsConfig). Called with the engine locked: it must not call back
-	// into the engine.
-	DNS interface{ Update(dns.Config) }
+	// DNS, if set, is the node's resolver: the engine tells it what to
+	// serve after every Apply and rule change (see dnsConfig). Called
+	// with the engine locked: it must not call back into the engine.
+	DNS Resolver
 }
 
 // Engine is one space's data plane on a node (DESIGN.md "Data plane"): the
@@ -159,7 +155,7 @@ type Engine struct {
 	// ifc is the overlay interface's configuration in place (nil before
 	// the first Apply that set it), which a link event re-applies;
 	// ifcReapplies counts those that succeeded, ifcTiming paces them.
-	ifc          *netcfg.Interface
+	ifc          *InterfaceConfig
 	ifcReapplies uint64
 	ifcTiming    interfaceTiming
 
@@ -180,8 +176,7 @@ type Engine struct {
 	// Route-table mode: the links' endpoints, and what the OS routing
 	// table holds (nil before the first enforcement).
 	endpoints  []netip.Addr
-	upstreams  []netip.AddrPort // the resolver's direct upstreams (SetDirectUpstreams)
-	routesWant *routetable.Want
+	routesWant *RouteTableWant
 	nameRules  *rules.Names // the rules compiled for DNS names
 
 	// What the resolver needs of the last section: the node's kind and
@@ -350,8 +345,8 @@ func (e *Engine) apply(ctx context.Context, s netmap.Section) (string, error) {
 	}
 
 	if e.cfg.Interface != nil {
-		ifc := netcfg.Interface{Name: e.tunName, Addrs: slices.Clone(oc.Addrs), MTU: oc.MTU, Up: true}
-		if err := e.cfg.Interface.Apply(ctx, netcfg.Config{Interfaces: []netcfg.Interface{ifc}}); err != nil {
+		ifc := InterfaceConfig{Name: e.tunName, Addrs: slices.Clone(oc.Addrs), MTU: oc.MTU, Up: true}
+		if err := e.cfg.Interface.Apply(ctx, ifc); err != nil {
 			return StepInterface, fmt.Errorf("dataplane: overlay interface: %w", err)
 		}
 		e.ifc = &ifc

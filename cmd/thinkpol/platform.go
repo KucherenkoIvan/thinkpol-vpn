@@ -4,7 +4,6 @@ import (
 	"log/slog"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent"
-	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
@@ -34,6 +33,6 @@ func platform() agent.Platform {
 
 // newRouteTable takes route-table enforcement, with its leak guard
 // (nil: none), in the route table's own argument order.
-func newRouteTable(log *slog.Logger, guard routetable.Guard) (dataplane.RouteTable, error) {
+func newRouteTable(log *slog.Logger, guard routetable.Guard) (agent.RouteEnforcer, error) {
 	return routetable.New(guard, log)
 }

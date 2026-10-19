@@ -16,7 +16,6 @@ import (
 	"golang.zx2c4.com/wireguard/tun/tuntest"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/logring"
-	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/packettest"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/path"
@@ -482,7 +481,7 @@ func TestAFailedStartClearsACrashedRunsRouteTable(t *testing.T) {
 	var cleared atomic.Int32
 	dp.Host.ClearConfig = func(netcfg.Owner) error { cleared.Add(1); return nil }
 	dp.Host.NewTUN = func(string, int) (wgtun.Device, error) { return nil, errors.New("no TUN today") }
-	dp.Host.NewRouteTable = func(*slog.Logger, routetable.Guard) (dataplane.RouteTable, error) { panic("not reached") }
+	dp.Host.NewRouteTable = func(*slog.Logger, routetable.Guard) (RouteEnforcer, error) { panic("not reached") }
 	if err := RunDataPlane(n.ctx, dp); err == nil {
 		t.Fatal("RunDataPlane started without a TUN")
 	}

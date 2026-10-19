@@ -1,13 +1,34 @@
 package dataplane
 
 import (
+	"context"
 	"log/slog"
 	"net/netip"
 	"slices"
 	"time"
-
-	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 )
+
+// InterfaceConfigurator sets the overlay interface's addresses, MTU and
+// link state (on a node, netcfg's configurator of the overlay's owner).
+// Apply converges the interface to c, all or nothing; re-applying the same
+// configuration changes nothing. Close removes the addresses it added and
+// restores what it changed. Safe for concurrent use.
+type InterfaceConfigurator interface {
+	Apply(ctx context.Context, c InterfaceConfig) error
+	Close() error
+}
+
+// InterfaceConfig is the overlay interface's configuration.
+type InterfaceConfig struct {
+	Name string
+	// Addrs are the interface's addresses with their on-link prefix
+	// length.
+	Addrs []netip.Prefix
+	// MTU is set when non-zero; zero leaves the interface's MTU alone.
+	MTU int
+	// Up brings the interface up; false leaves its state alone.
+	Up bool
+}
 
 // interfaceTiming paces the interface's re-applies.
 type interfaceTiming struct {
@@ -100,20 +121,20 @@ func (e *Engine) settleLinkEvents(coolUntil time.Time) bool {
 // reapplyInterface applies the interface configuration in place again,
 // between Applies, and returns it; applied is false when there was nothing
 // to do (no Apply has configured it yet, or the engine is closing).
-func (e *Engine) reapplyInterface() (applied bool, ifc netcfg.Interface, err error) {
+func (e *Engine) reapplyInterface() (applied bool, ifc InterfaceConfig, err error) {
 	e.serial.Lock()
 	defer e.serial.Unlock()
 	e.mu.Lock()
 	cur, closed := e.ifc, e.closed
 	e.mu.Unlock()
 	if closed || cur == nil || e.ctx.Err() != nil {
-		return false, netcfg.Interface{}, nil
+		return false, InterfaceConfig{}, nil
 	}
 	ifc = *cur
 	ifc.Up = false // up when the event came; if it went down since, it stays down
-	err = e.cfg.Interface.Apply(e.ctx, netcfg.Config{Interfaces: []netcfg.Interface{ifc}})
+	err = e.cfg.Interface.Apply(e.ctx, ifc)
 	if e.ctx.Err() != nil {
-		return false, netcfg.Interface{}, nil
+		return false, InterfaceConfig{}, nil
 	}
 	if err == nil {
 		e.mu.Lock()

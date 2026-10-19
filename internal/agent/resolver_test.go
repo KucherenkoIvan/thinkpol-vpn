@@ -13,7 +13,6 @@ import (
 	"testing"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/supervisor"
-	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
 )
@@ -510,7 +509,7 @@ func TestTheDirectUpstreamsReachTheRouteTable(t *testing.T) {
 	b := startDevice(t, s, reg, true, deviceOpt{
 		prepare: func(c *Config, p *Platform) {
 			c.DNS = true
-			p.NewRouteTable = func(*slog.Logger, routetable.Guard) (dataplane.RouteTable, error) { return table, nil }
+			p.NewRouteTable = func(*slog.Logger, routetable.Guard) (RouteEnforcer, error) { return table, nil }
 			p.SetSystemDNS = sys.Set
 			p.SystemUpstreams = func([]netip.Addr) ([]netip.Addr, error) {
 				return []netip.Addr{netip.MustParseAddr("192.0.2.53")}, nil
@@ -547,7 +546,7 @@ func TestAConfiguredUpstreamReachesTheRouteTableWithItsPort(t *testing.T) {
 	b := startDevice(t, s, reg, true, deviceOpt{
 		prepare: func(c *Config, p *Platform) {
 			c.DNS, c.DNSUpstream = true, up.String()
-			p.NewRouteTable = func(*slog.Logger, routetable.Guard) (dataplane.RouteTable, error) { return table, nil }
+			p.NewRouteTable = func(*slog.Logger, routetable.Guard) (RouteEnforcer, error) { return table, nil }
 			p.SetSystemDNS = (&fakeSystem{}).Set
 		},
 		dataPlane: func(dp *DataPlane) {
