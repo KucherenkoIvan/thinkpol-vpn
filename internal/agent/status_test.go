@@ -3,13 +3,18 @@ package agent
 import (
 	"context"
 	"errors"
+	"log/slog"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	wgtun "golang.zx2c4.com/wireguard/tun"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/supervisor"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
@@ -27,14 +32,18 @@ type deviceNode struct {
 	node *Node
 	// failTUN makes the next TUN fail to come up.
 	failTUN chan struct{}
+	// events are the node's.
+	events *heardEvents
 }
 
 // deviceOpt adjusts device b: prepare sets its config and platform
-// (every host fake) before it is prepared, dataPlane its data plane's
-// private test fields and RouteTable (off by default: virtual TUNs leave
-// the host's routing alone) before it runs.
+// (every host fake) before it is prepared, node sees the prepared node
+// before it runs, dataPlane sets its data plane's private test fields and
+// RouteTable (off by default: virtual TUNs leave the host's routing
+// alone) before it runs.
 type deviceOpt struct {
 	prepare   func(*Config, *Platform)
+	node      func(*Node)
 	dataPlane func(*DataPlane)
 }
 
@@ -61,7 +70,13 @@ func startDevice(t *testing.T, s *testSpace, reg *transport.Registry, connect bo
 	if err != nil {
 		t.Fatal(err)
 	}
-	d := &deviceNode{runningNode: rn, node: n, failTUN: failTUN}
+	d := &deviceNode{runningNode: rn, node: n, failTUN: failTUN, events: newHeardEvents(t)}
+	n.Subscribe(d.events.add)
+	for _, o := range opts {
+		if o.node != nil {
+			o.node(n)
+		}
+	}
 	n.tweak = func(dp *DataPlane) {
 		dp.path, dp.retryAfter = fastPaths, testRetry
 		dp.RouteTable = false // virtual TUNs: the host's routing stays as it is
@@ -76,6 +91,9 @@ func startDevice(t *testing.T, s *testSpace, reg *transport.Registry, connect bo
 		rn.stop()
 		select {
 		case <-rn.done:
+			if n.conn.refused != 0 {
+				t.Errorf("the connection refused %d moves", n.conn.refused)
+			}
 		case <-time.After(10 * time.Second):
 			t.Error("the node didn't stop")
 		}
@@ -167,11 +185,18 @@ func TestADeviceConnectsAndDisconnects(t *testing.T) {
 	b.maps <- s.build(t, 5)
 	b.connection(t, Connected)
 	b.ping(t, b4, a4)
+	// Up each time it came up, on the map it came up on; nothing for the
+	// start that failed.
+	b.events.are(t, Event{EventConnected, 2}, Event{EventConnected, 3},
+		Event{EventRemovedFromSpace, 4}, Event{EventBackInSpace, 5}, Event{EventConnected, 5})
 
 	// Stopped, it says so.
 	b.stop()
 	if err := <-b.done; err != nil {
 		t.Fatal(err)
+	}
+	if st := b.node.Status(); st.Connection != Disconnected || st.DataPlane != nil {
+		t.Fatalf("stopped: %+v", st)
 	}
 	b.done <- nil // for the cleanup
 	if err := b.node.Disconnect(ctx); !errors.Is(err, ErrNotRunning) {
@@ -263,6 +288,163 @@ func TestARemovedDeviceConnectsOnceBack(t *testing.T) {
 	if got := b.log.String(); strings.Count(got, "back in space") != 1 {
 		t.Errorf("log %q", got)
 	}
+	b.events.are(t, Event{EventRemovedFromSpace, 1}, Event{EventBackInSpace, 2}, Event{EventConnected, 2})
+}
+
+// A map whose rules the OS routing table can't take is an event, told
+// once while it fails; the Apply is retried.
+func TestARouteTableNotEnforcedIsAnEvent(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	startNode(t, reg, s.a, s.verified(t, 1))
+	table := &wantsTable{}
+	b := startDevice(t, s, reg, true, deviceOpt{
+		prepare: func(_ *Config, p *Platform) {
+			p.NewRouteTable = func(*slog.Logger, routetable.Guard) (RouteEnforcer, error) { return table, nil }
+		},
+		dataPlane: func(dp *DataPlane) { dp.RouteTable = true },
+	})
+	b.connection(t, Connected)
+	table.mu.Lock()
+	table.failing = 2
+	table.mu.Unlock()
+	b.maps <- s.build(t, 2)
+	b.events.are(t, Event{EventConnected, 1}, Event{EventRouteTableNotEnforced, 2})
+	b.waitLog(t, `msg="map applied" .*version=2`)
+}
+
+// The route table failing on its own is told as the status says so; once
+// it recovered on its own, failing again is told again.
+func TestARouteTableNotEnforcedIsToldAgainAfterItRecovered(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	startNode(t, reg, s.a, s.verified(t, 1))
+	table := &wantsTable{}
+	b := startDevice(t, s, reg, true, deviceOpt{
+		prepare: func(_ *Config, p *Platform) {
+			p.NewRouteTable = func(*slog.Logger, routetable.Guard) (RouteEnforcer, error) { return table, nil }
+		},
+		dataPlane: func(dp *DataPlane) { dp.RouteTable = true },
+	})
+	b.connection(t, Connected)
+	// Each flip lands as the map's Apply enforces, before the publish
+	// after it; the runner takes the maps in order.
+	table.breakAtNextEnforce(true)
+	b.maps <- s.build(t, 2)
+	b.events.are(t, Event{EventConnected, 1}, Event{EventRouteTableNotEnforced, 2})
+	table.breakAtNextEnforce(false)
+	b.maps <- s.build(t, 3)
+	eventually(t, func() bool { st := b.node.Status(); return st.MapVersion == 3 && st.DataPlane.RouteTable.Error == "" })
+	table.breakAtNextEnforce(true)
+	b.maps <- s.build(t, 4)
+	b.events.are(t, Event{EventConnected, 1}, Event{EventRouteTableNotEnforced, 2}, Event{EventRouteTableNotEnforced, 4})
+}
+
+// A node that returns reads disconnected: its first start failed, or it
+// stopped while it waited out of its space.
+func TestAStoppedNodeReadsDisconnected(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	startNode(t, reg, s.a, s.verified(t, 1))
+
+	failed := startDevice(t, s, reg, true, deviceOpt{prepare: func(_ *Config, p *Platform) {
+		p.NewTUN = func(string, int) (wgtun.Device, error) { return nil, errors.New("no TUN today") }
+	}})
+	if err := <-failed.done; err == nil {
+		t.Fatal("the first start didn't fail")
+	}
+	failed.done <- nil // for the cleanup
+	if st := failed.node.Status(); st.Connection != Disconnected {
+		t.Errorf("after a failed first start: %+v", st)
+	}
+
+	removed := startDevice(t, s, reg, true, deviceOpt{prepare: func(c *Config, _ *Platform) {
+		writeFile(t, filepath.Join(c.StateDir, MapFileName), s.buildWithout(t, 1, s.b), 0o644)
+	}})
+	removed.connection(t, Connecting)
+	removed.stop()
+	if err := <-removed.done; err != nil {
+		t.Fatal(err)
+	}
+	removed.done <- nil
+	if st := removed.node.Status(); st.Connection != Disconnected || !st.Removed {
+		t.Errorf("stopped while removed: %+v", st)
+	}
+	removed.events.are(t, Event{EventRemovedFromSpace, 1})
+}
+
+// A subscriber that reads the status as it hears an event sees what the
+// event says.
+func TestTheStatusShowsWhatAnEventSays(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	startNode(t, reg, s.a, s.verified(t, 1))
+	sys := &fakeSystem{failSets: 1}
+	type seen struct {
+		ev Event
+		st Status
+	}
+	var mu sync.Mutex
+	var heard []seen
+	b := startDevice(t, s, reg, true, deviceOpt{
+		prepare: func(c *Config, p *Platform) {
+			c.DNS = true
+			p.SetSystemDNS = sys.Set
+			p.SystemUpstreams = func([]netip.Addr) ([]netip.Addr, error) { return nil, nil }
+		},
+		node: func(n *Node) {
+			n.Subscribe(func(ev Event) {
+				st := n.Status()
+				mu.Lock()
+				defer mu.Unlock()
+				heard = append(heard, seen{ev, st})
+			})
+		},
+		dataPlane: func(dp *DataPlane) { dp.dnsPort = 5353 },
+	})
+	b.events.are(t, Event{EventConnected, 1}, Event{EventDNSUnprotected, 1})
+	b.maps <- s.buildWithout(t, 2, s.b)
+	b.events.are(t, Event{EventConnected, 1}, Event{EventDNSUnprotected, 1}, Event{EventRemovedFromSpace, 2})
+	b.maps <- s.build(t, 3)
+	b.events.are(t, Event{EventConnected, 1}, Event{EventDNSUnprotected, 1}, Event{EventRemovedFromSpace, 2},
+		Event{EventBackInSpace, 3}, Event{EventConnected, 3})
+	eventually(t, func() bool { mu.Lock(); defer mu.Unlock(); return len(heard) == 5 })
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, h := range heard {
+		st := h.st
+		var shows bool
+		switch h.ev.Kind {
+		case EventConnected:
+			shows = st.Connection == Connected && st.DataPlane != nil
+		case EventDNSUnprotected:
+			shows = st.Connection == Connected && st.DNSUnprotected
+		case EventRemovedFromSpace:
+			shows = st.Removed && st.Connection == Connecting && st.DataPlane == nil
+		case EventBackInSpace:
+			shows = !st.Removed
+		}
+		if !shows || st.MapVersion != h.ev.MapVersion {
+			t.Errorf("%s at version %d, status %+v", h.ev.Kind, h.ev.MapVersion, st)
+		}
+	}
+}
+
+// A subscriber's panic is logged; the node goes on, and so do the other
+// subscribers.
+func TestAPanickingSubscriberDoesNotStopTheNode(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	startNode(t, reg, s.a, s.verified(t, 1))
+	b := startDevice(t, s, reg, true, deviceOpt{node: func(n *Node) {
+		n.Subscribe(func(Event) { panic("a subscriber's bug") })
+	}})
+	b.events.are(t, Event{EventConnected, 1})
+	b.waitLog(t, "an event subscriber panicked")
+	b4, _ := overlay(2)
+	a4, _ := overlay(1)
+	b.ping(t, b4, a4)
 }
 
 func TestAServerRefusesConnect(t *testing.T) {

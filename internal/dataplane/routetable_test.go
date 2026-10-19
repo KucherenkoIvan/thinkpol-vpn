@@ -160,8 +160,8 @@ func TestRouteTableFollowsTheRules(t *testing.T) {
 	rt.mu.Lock()
 	rt.failing = 3
 	rt.mu.Unlock()
-	if err := a.engine.Apply(context.Background(), a.section); err == nil {
-		t.Fatal("Apply with the route table failing succeeded")
+	if err := a.engine.Apply(context.Background(), a.section); !errors.Is(err, errKernel) {
+		t.Fatalf("Apply with the route table failing: %v", err)
 	}
 	if st := a.engine.Status(); st.LastApplyError != dataplane.StepRouteTable {
 		t.Errorf("last apply error %q, want %q", st.LastApplyError, dataplane.StepRouteTable)

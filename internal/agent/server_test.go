@@ -232,7 +232,8 @@ func TestServerRetriesAFailedMap(t *testing.T) {
 func TestServerStopsTheSpaceWhileRemoved(t *testing.T) {
 	s := newTestSpace(t)
 	sup := &fakeSupervisor{}
-	r := runServerSpaces(t, s, sup)
+	heard := newHeardEvents(t)
+	r := runServerSpacesIn(t, s, sup, "", func(ss *serverSpaces) { ss.events = heard.add })
 	eventually(t, func() bool { _, _, n := sup.last(); return n == 1 })
 	r.maps <- s.buildWithout(t, 2, s.a)
 	eventually(t, func() bool { _, _, n := sup.last(); return n == 2 })
@@ -247,6 +248,7 @@ func TestServerStopsTheSpaceWhileRemoved(t *testing.T) {
 	r.maps <- s.build(t, 4)
 	eventually(t, func() bool { return strings.Contains(r.log.String(), "back in space") })
 	eventually(t, func() bool { sp, _, _ := sup.last(); return len(sp) == 1 })
+	heard.are(t, Event{EventRemovedFromSpace, 2}, Event{EventBackInSpace, 4})
 }
 
 // fakeSession is a worker's view of its supervisor, for ServeSpace.

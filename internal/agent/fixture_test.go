@@ -8,7 +8,10 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport/memory"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/lists"
@@ -190,4 +193,56 @@ func (s *testSpace) withList(t *testing.T, name string, prefixes ...string) ([]b
 	ref.Name = name
 	s.deviceBlobs = append(s.deviceBlobs, ref)
 	return data, ref
+}
+
+// heardEvents records a node's events.
+type heardEvents struct {
+	mu  sync.Mutex
+	evs []Event
+	// asserted is the last list are matched: no other event may come.
+	asserted []Event
+	checked  bool
+}
+
+// newHeardEvents records events; once t's later cleanups ran (the node
+// stopped), the events heard must be the last list are matched.
+func newHeardEvents(t *testing.T) *heardEvents {
+	h := &heardEvents{}
+	t.Cleanup(func() {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		if h.checked && !slices.Equal(h.evs, h.asserted) {
+			t.Errorf("events %v, want %v and nothing more", h.evs, h.asserted)
+		}
+	})
+	return h
+}
+
+func (h *heardEvents) add(ev Event) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.evs = append(h.evs, ev)
+}
+
+func (h *heardEvents) get() []Event {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return slices.Clone(h.evs)
+}
+
+// are waits until the events heard are want.
+func (h *heardEvents) are(t *testing.T, want ...Event) {
+	t.Helper()
+	h.mu.Lock()
+	h.asserted, h.checked = want, true
+	h.mu.Unlock()
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		got := h.get()
+		if slices.Equal(got, want) {
+			return
+		}
+		if len(got) >= len(want) || time.Now().After(deadline) {
+			t.Fatalf("events %v, want %v", got, want)
+		}
+	}
 }

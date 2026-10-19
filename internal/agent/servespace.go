@@ -131,6 +131,8 @@ func serveSpace(log *slog.Logger, base DataPlane) worker.Serve {
 			}
 			return attrs
 		}
+		conn := newConnection(true, false) // a worker's: always meant to be up
+		dp.conn = &conn
 		err = RunDataPlane(ctx, dp)
 		if bad := badConfig.Load(); bad != nil {
 			return *bad
