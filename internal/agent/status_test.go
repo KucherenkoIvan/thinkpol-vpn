@@ -31,7 +31,8 @@ type deviceNode struct {
 
 // deviceOpt adjusts device b: prepare sets its config and platform
 // (every host fake) before it is prepared, dataPlane its data plane's
-// private test fields before it runs.
+// private test fields and RouteTable (off by default: virtual TUNs leave
+// the host's routing alone) before it runs.
 type deviceOpt struct {
 	prepare   func(*Config, *Platform)
 	dataPlane func(*DataPlane)
@@ -259,11 +260,6 @@ func TestARemovedDeviceConnectsOnceBack(t *testing.T) {
 	b4, _ := overlay(2)
 	a4, _ := overlay(1)
 	b.ping(t, b4, a4)
-	b.stop()
-	if err := <-b.done; err != nil {
-		t.Fatal(err)
-	}
-	b.done <- nil // for the cleanup
 	if got := b.log.String(); strings.Count(got, "back in space") != 1 {
 		t.Errorf("log %q", got)
 	}

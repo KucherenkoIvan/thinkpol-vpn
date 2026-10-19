@@ -136,7 +136,7 @@ func TestTransportsMarkSocketsPerMode(t *testing.T) {
 // without an adapter for an owner has nothing to clear.
 func TestClearingTheNetworkTriesBothOwners(t *testing.T) {
 	var owners []netcfg.Owner
-	clear := func(o netcfg.Owner) error {
+	clearOwner := func(o netcfg.Owner) error {
 		owners = append(owners, o)
 		if o == netcfg.OwnerRouteTable {
 			return errors.New("no routing socket today")
@@ -145,8 +145,8 @@ func TestClearingTheNetworkTriesBothOwners(t *testing.T) {
 	}
 	h := Host{
 		NewGuard:        func() routetable.Guard { return nil },
-		ClearRouteTable: func(routetable.Guard) error { return clear(netcfg.OwnerRouteTable) },
-		ClearConfig:     clear,
+		ClearRouteTable: func(routetable.Guard) error { return clearOwner(netcfg.OwnerRouteTable) },
+		ClearConfig:     clearOwner,
 	}
 	var out bytes.Buffer
 	log := slog.New(slog.NewTextHandler(&out, nil))

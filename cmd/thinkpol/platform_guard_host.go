@@ -1,3 +1,5 @@
+//go:build (linux && !android) || darwin
+
 package main
 
 import (
@@ -5,5 +7,6 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
 )
 
-// newGuard is the host's IPv6 leak guard (a pf anchor).
+// newGuard is the host's IPv6 leak guard (nftables on Linux, a pf anchor
+// on macOS).
 func newGuard() routetable.Guard { return firewall.NewIPv6Guard() }
