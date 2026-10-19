@@ -31,8 +31,8 @@ type Node struct {
 	state State
 	mode  Mode
 	logs  Logs
-	// plat is what the node needs of its host, built by the composition
-	// root (cmd/thinkpol); tests fake it.
+	// plat is the node's platform: what the node needs of its host, its
+	// Host what one data plane needs (tests put fakes into it).
 	plat Platform
 	// want is set while a device is meant to be connected.
 	want bool
@@ -56,8 +56,7 @@ type Node struct {
 
 // Prepare reads and checks what a node runs from (LoadState) and decides
 // its mode: a node whose map is invalid, or holds no section for its keys,
-// never starts. The platform is the host's adapters, built by the
-// composition root (cmd/thinkpol).
+// never starts. The platform is the host's adapters, per OS.
 func Prepare(cfg Config, logs Logs, plat Platform) (*Node, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -550,7 +549,9 @@ func (s *serverSpaces) run(ctx context.Context, maps <-chan []byte) error {
 		retry = time.After(s.retryAfter)
 	}
 	for {
-		s.report.set(func(p *report) { p.version, p.removed, p.retrying = s.follow.cur.Header().Version, s.follow.removed, retry != nil })
+		s.report.set(func(p *report) {
+			p.version, p.removed, p.retrying = s.follow.cur.Header().Version, s.follow.removed, retry != nil
+		})
 		select {
 		case <-ctx.Done():
 			return nil

@@ -18,13 +18,13 @@ import (
 // WorkerConfig, then runs RunDataPlane on its own TUN in its namespace,
 // with the supervisor's shared listeners as its inbound, applying each
 // newer map the supervisor sends. The host is what one data plane needs
-// of the worker's namespace, from the composition root.
+// of the worker's namespace (see Host).
 func ServeSpace(log *slog.Logger, h Host) worker.Serve {
 	return serveSpace(log, DataPlane{Host: h})
 }
 
-// serveSpace is ServeSpace with what tests swap in base (registry, TUN,
-// timing).
+// serveSpace is ServeSpace with what tests swap in base (the transports'
+// network, the TUN, the blob service, the timing).
 func serveSpace(log *slog.Logger, base DataPlane) worker.Serve {
 	return func(ctx context.Context, s worker.Session) error {
 		var first WorkerConfig

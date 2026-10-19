@@ -54,6 +54,6 @@ branch: "tp-075-agent-layer-refactor"
 - 2026-10-19 the composition root (cmd/thinkpol's platform()) builds the node's host adapters and hands them to internal/agent as agent.Platform; the package-variable test hooks are gone, tests fake adapters through the same Platform (tweak/onEngine/private fields stay: TP-083)
 - 2026-10-19 one mapFollower with a single take(envelope) for Node.awaitSection, serverSpaces and the data plane's runner (device and server modes); log line texts unchanged
 - 2026-10-19 merged origin/rewrite (TP-107); TP-104 not merged yet, so no blobs.Net in the Platform
-- 2026-10-19 in-progress → review — make lint, make test green; make lab-test green (exit 0, all 35 node packages PASS, lab suite ok) at c38c9d2. Not verifiable here: macOS device behaviour on a real network (needs_human: macos) — none of the adapters' host-side paths beyond the lab's Linux; Windows/Android adapters are TP-047's
+- 2026-10-19 in-progress → review — make lint, make test green; make lab-test green (exit 0, all 35 node packages PASS, lab suite ok) at c38c9d2. Not verified here: the adapters' host-side paths outside the lab's Linux (macOS device on a real network: needs_human: macos)
 - 2026-10-19 review → has-errors — review round 2: R2.1–R2.11
 - 2026-10-19 has-errors → in-progress — review round 2 findings picked up (R2.1–R2.11)

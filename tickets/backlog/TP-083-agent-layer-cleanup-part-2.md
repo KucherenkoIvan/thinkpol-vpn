@@ -24,6 +24,7 @@ Finish the agent-layer refactor after TP-075, TP-109 and TP-110: teardown order,
 - One table each for counters (`internal/agent/localapi/convert.go` ~61-81 with `render.go` ~176), refusals (`errors.go` ~18-32, `client.go` ~191-201) and display names (`enumName`).
 - Move `cmd/thinkpol/dev_lists_build.go` logic (~41-83) out of `cmd/`.
 - Deduplicate the six command files' shared socket flag and dial prologue.
+- The remaining private test hooks on `DataPlane` and `Node` (path, retryAfter, onEngine, dnsPort, `Node.tweak`): where they stay, say so in one place; where a typed status (this ticket) can replace them, drop them.
 
 ## Out of scope
 - Data-plane port types and depguard on core imports: TP-109.
@@ -43,3 +44,4 @@ Finish the agent-layer refactor after TP-075, TP-109 and TP-110: teardown order,
 - 2026-10-15 created in backlog (split from TP-075, backlog grooming)
 - 2026-10-15 docs (backlog grooming, review fixes): recovered part-2 evidence note from original TP-075
 - 2026-10-18 split: port ownership → TP-109, connection state and events → TP-110; Engine split and local API tables added (owner)
+- 2026-10-19 docs (TP-075 review round 2): the remaining private test hooks on DataPlane and Node (path, retryAfter, onEngine, dnsPort, tweak) are this ticket's scope

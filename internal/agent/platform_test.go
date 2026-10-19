@@ -14,11 +14,11 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 )
 
-// testHost is what tests build where the composition root builds the real
-// one: fakes that touch nothing on the host, and loud ones where a test
-// should have set its own (the TUN, the route table, the OS resolver
-// configuration). No test takes the host's agent lock (hostlock_unix_test.go
-// locks files of its own).
+// testHost is the host's adapters as tests see them: fakes that touch
+// nothing on the host, and loud ones where a test should have set its own
+// (the TUN, the route table, the OS resolver configuration). No test
+// takes the host's agent lock (hostlock_unix_test.go locks files of its
+// own).
 func testHost() Host {
 	return Host{
 		NewConfigurator: func(netcfg.Owner) (netcfg.Configurator, error) {

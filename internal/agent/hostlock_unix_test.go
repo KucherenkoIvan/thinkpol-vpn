@@ -20,8 +20,8 @@ import (
 func TestAStartTakesTheHostLockOnce(t *testing.T) {
 	path := filepath.Join(tempDir(t), "agent.lock")
 	cleaned := make(chan struct{}, 1)
-	// The lock and DNS restore are the platform's hooks now; the lock
-	// itself stays real (a file of the test's).
+	// The lock is real here (a file of the test's); DNS restore is a
+	// fake.
 	plat := testPlatform()
 	plat.LockHost = func() (func(), error) { return lockHostAt(path) }
 	plat.RestoreDNS = func() error { cleaned <- struct{}{}; return nil }

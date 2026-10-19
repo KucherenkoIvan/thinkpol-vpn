@@ -17,9 +17,8 @@ import (
 )
 
 // Host is what one data plane needs of its network stack: the adapters
-// for the OS it runs on. It is built by the composition root, per OS;
-// the agent sequences it and never constructs it. The zero value's
-// BlobNet is the node's real network.
+// for the OS it runs on, per OS. The agent sequences it and never
+// constructs it. The zero value's BlobNet is the node's real network.
 type Host struct {
 	// NewConfigurator takes the network configuration of one owner (one
 	// owner per network namespace: a second node agent fails now, before
@@ -51,10 +50,9 @@ type Host struct {
 	BlobNet blobs.Net
 }
 
-// Platform is what a node needs of its host, built once by the
-// composition root for the OS it runs on: one data plane's Host, and what
-// touches the host outside one. internal/agent builds none of it and only
-// calls what is here; tests put fakes into the same struct.
+// Platform is what a node needs of its host: one data plane's Host, and
+// what touches the host outside one. internal/agent builds none of it and
+// only sequences what is here; tests put fakes into the same struct.
 type Platform struct {
 	Host
 	// LockHost takes the agent lock: one node agent per host, held until

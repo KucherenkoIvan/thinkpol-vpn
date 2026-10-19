@@ -13,13 +13,11 @@ import (
 // errAnotherAgent: another node agent holds the host's agent lock.
 var errAnotherAgent = errors.New("another thinkpol agent is running on this host")
 
-// hostLock takes the host's agent lock (hostLockPath) and returns its
-// release. A node agent changes host-wide state outside any namespace
-// (routes, the resolver configuration), and its start-time cleanups would
-// undo a running agent's: one agent per host.
 // HostLock takes the host's agent lock: an exclusive flock on the host's
-// lock path, held until the release or the process dies. The composition
-// root (cmd/thinkpol) builds it into the platform.
+// lock path, held until the release or the process dies. A node agent
+// changes host-wide state outside any namespace (routes, the resolver
+// configuration), and its start-time cleanups would undo a running
+// agent's: one agent per host.
 func HostLock() (func(), error) { return lockHostAt(hostLockPath) }
 
 // lockHostAt takes an exclusive flock on path, held until the release or
