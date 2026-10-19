@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net/netip"
+	"slices"
 
 	"github.com/google/nftables"
 	"github.com/google/nftables/binaryutil"
@@ -133,11 +134,25 @@ type tableState struct {
 	owned [2]bool
 	// maxFlows caps each space's flows through the root; 0: no cap.
 	maxFlows int
+	// egressAllowed are destinations egressBlocked holds that spaces may
+	// reach anyway (Options.EgressAllowed).
+	egressAllowed []netip.Prefix
+	// transit4 and transit6 are the prefixes the slots' addresses come
+	// from (Options.TransitIPv4, Options.TransitIPv6): what masquerades.
+	transit4, transit6 netip.Prefix
+	// unbound is Options.unboundAccepts (there): the forged-ICMP tests'
+	// negative control.
+	unbound bool
 }
 
 // tableState snapshots what the tables need; the caller holds s.mu.
 func (s *Supervisor) tableState() tableState {
-	st := tableState{uplink: s.uplink.Name, owned: s.forwarding.owned(), maxFlows: s.maxFlows}
+	st := tableState{
+		uplink: s.uplink.Name, owned: s.forwarding.owned(), maxFlows: s.maxFlows,
+		egressAllowed: s.opts.EgressAllowed,
+		transit4:      s.opts.TransitIPv4, transit6: s.opts.TransitIPv6,
+		unbound: s.opts.unboundAccepts,
+	}
 	for _, w := range s.workers {
 		grant, dials := w.egressRules()
 		st.rules = append(st.rules, slotRule{
@@ -168,18 +183,32 @@ func (s *Supervisor) applyIsolation(st tableState) error {
 			return err
 		}
 	}
+	return buildIsolation(st)
+}
+
+// installIsolation sets up the tables with no slots yet.
+func (s *Supervisor) installIsolation() error {
+	s.mu.Lock()
+	st := s.tableState()
+	s.mu.Unlock()
+	return s.applyIsolation(st)
+}
+
+// buildIsolation installs the tables for st: a plain function of the
+// state, so a test builds and inspects them without a supervisor.
+func buildIsolation(st tableState) error {
 	c, err := nftables.New()
 	if err != nil {
 		return fmt.Errorf("nftables: %w", err)
 	}
-	r := newRules(c, s.opts.unboundAccepts)
+	r := newRules(c)
 	r.addAntiSpoof(st)
 	r.addZones(st)
 	r.addForward(st)
-	r.addSpaceOut(st, s.opts)
+	r.addSpaceOut(st)
 	r.addSpaceAccept(st)
 	r.addInput(st)
-	r.addMasquerade(s.opts)
+	r.addMasquerade(st)
 	r.addArp()
 	if err := c.Flush(); err != nil {
 		return fmt.Errorf("nftables: apply isolation (%d slots): %w", len(st.rules), err)
@@ -188,26 +217,23 @@ func (s *Supervisor) applyIsolation(st tableState) error {
 }
 
 // rules assembles the supervisor's tables: the kernel connection, the two
-// tables and their chains, and where each per-chain builder below adds its
-// rules. unboundAccepts is the forged-ICMP tests' negative control (Options
-// documents it); the accepts then take any established or related flow,
-// whoever owns it.
+// tables, their chains, and where each per-chain builder below adds its
+// rules.
 type rules struct {
-	c                                                                                 *nftables.Conn
-	unboundAccepts                                                                    bool
-	inet, arp                                                                         *nftables.Table
+	c         *nftables.Conn
+	inet, arp *nftables.Table
+
 	antiSpoof, ctPre, ctOut, forward, spaceOut, spaceAccept, input, nat, guard, arpIn *nftables.Chain
 }
 
 // newRules replaces the supervisor's tables atomically (add-then-delete-
 // then-add, whether or not they, or a dead supervisor's, were there) and
 // creates their chains.
-func newRules(c *nftables.Conn, unboundAccepts bool) *rules {
+func newRules(c *nftables.Conn) *rules {
 	r := &rules{
-		c:              c,
-		unboundAccepts: unboundAccepts,
-		inet:           &nftables.Table{Family: nftables.TableFamilyINet, Name: TableName},
-		arp:            &nftables.Table{Family: nftables.TableFamilyARP, Name: ArpTableName},
+		c:    c,
+		inet: &nftables.Table{Family: nftables.TableFamilyINet, Name: TableName},
+		arp:  &nftables.Table{Family: nftables.TableFamilyARP, Name: ArpTableName},
 	}
 	for _, t := range []*nftables.Table{r.inet, r.arp} {
 		c.AddTable(t)
@@ -274,7 +300,7 @@ func (r *rules) addForward(st tableState) {
 	for _, sr := range st.rules {
 		for _, a := range sr.src {
 			r.add(r.forward, all(spaceLinkNot(expr.MetaKeyIIFNAME), linkExact(expr.MetaKeyOIFNAME, sr.link),
-				ctState(expr.CtStateBitESTABLISHED|expr.CtStateBitRELATED), r.ctOriginal(expr.CtKeySRC, a), verdict(expr.VerdictAccept))...)
+				ctState(expr.CtStateBitESTABLISHED|expr.CtStateBitRELATED), ctOriginal(st.unbound, expr.CtKeySRC, a), accept())...)
 		}
 	}
 	r.add(r.forward, drop(spaceLink(expr.MetaKeyOIFNAME))...)
@@ -289,17 +315,17 @@ func (r *rules) addForward(st tableState) {
 // addSpaceOut caps each space's new flows through the root (the flow cap),
 // then refuses the destinations no space reaches (egressBlocked and the
 // transit ranges, less what EgressAllowed names).
-func (r *rules) addSpaceOut(st tableState, opts Options) {
+func (r *rules) addSpaceOut(st tableState) {
 	if st.maxFlows > 0 {
 		for _, sr := range st.rules {
 			r.add(r.spaceOut, drop(all(linkExact(expr.MetaKeyIIFNAME, sr.link), ctState(expr.CtStateBitNEW),
 				[]expr.Any{&expr.Connlimit{Count: uint32(st.maxFlows), Flags: connlimitOver}}))...)
 		}
 	}
-	for _, p := range opts.EgressAllowed {
+	for _, p := range st.egressAllowed {
 		r.add(r.spaceOut, all(daddrIn(p), jump(r.spaceAccept))...)
 	}
-	for _, p := range append(egressBlocked, opts.TransitIPv4, opts.TransitIPv6) {
+	for _, p := range slices.Concat(egressBlocked, []netip.Prefix{st.transit4, st.transit6}) {
 		r.add(r.spaceOut, drop(daddrIn(p))...)
 	}
 	r.add(r.spaceOut, jump(r.spaceAccept)...)
@@ -313,7 +339,7 @@ func (r *rules) addSpaceAccept(st tableState) {
 			for i, a := range sr.src {
 				if sr.egress[i] {
 					r.add(r.spaceAccept, all(linkExact(expr.MetaKeyIIFNAME, sr.link), linkExact(expr.MetaKeyOIFNAME, st.uplink),
-						r.ctOriginal(expr.CtKeySRC, a), verdict(expr.VerdictAccept))...)
+						ctOriginal(st.unbound, expr.CtKeySRC, a), accept())...)
 				}
 			}
 			for _, d := range sr.dials {
@@ -322,7 +348,7 @@ func (r *rules) addSpaceAccept(st tableState) {
 					a = sr.src[1]
 				}
 				r.add(r.spaceAccept, all(linkExact(expr.MetaKeyIIFNAME, sr.link), linkExact(expr.MetaKeyOIFNAME, st.uplink),
-					dialMatch(d), r.ctOriginal(expr.CtKeySRC, a), verdict(expr.VerdictAccept))...)
+					dialMatch(d), ctOriginal(st.unbound, expr.CtKeySRC, a), accept())...)
 			}
 		}
 	}
@@ -332,24 +358,24 @@ func (r *rules) addSpaceAccept(st tableState) {
 // addInput lets a space reach nothing of the root namespace's own, past
 // replies to what the root namespace started with it.
 func (r *rules) addInput(st tableState) {
+	state := expr.CtStateBitESTABLISHED
+	if st.unbound {
+		state |= expr.CtStateBitRELATED
+	}
 	for _, sr := range st.rules {
 		for _, a := range sr.src {
-			state := expr.CtStateBitESTABLISHED
-			if r.unboundAccepts {
-				state |= expr.CtStateBitRELATED
-			}
 			r.add(r.input, all(linkExact(expr.MetaKeyIIFNAME, sr.link), ctState(state),
-				r.ctOriginal(expr.CtKeyDST, a), verdict(expr.VerdictAccept))...)
+				ctOriginal(st.unbound, expr.CtKeyDST, a), accept())...)
 		}
 	}
 	r.add(r.input, drop(spaceLink(expr.MetaKeyIIFNAME))...)
 }
 
-// addMasquerade masquerades the transit ranges wherever they leave but to
-// a space, within MasqueradePorts; anything still from a transit range
+// addMasquerade masquerades the transit prefixes wherever they leave but
+// to a space, within MasqueradePorts; anything still from a transit range
 // after that is dropped.
-func (r *rules) addMasquerade(opts Options) {
-	for _, p := range []netip.Prefix{opts.TransitIPv4, opts.TransitIPv6} {
+func (r *rules) addMasquerade(st tableState) {
+	for _, p := range []netip.Prefix{st.transit4, st.transit6} {
 		r.add(r.nat, masquerade(p)...)
 		r.add(r.guard, drop(all(spaceLinkNot(expr.MetaKeyOIFNAME), addrIn(p, srcOffset(p.Addr()))))...)
 	}
@@ -359,14 +385,6 @@ func (r *rules) addMasquerade(opts Options) {
 // table.
 func (r *rules) addArp() {
 	r.add(r.arpIn, drop(spaceLink(expr.MetaKeyIIFNAME))...)
-}
-
-// installIsolation sets up the tables with no slots yet.
-func (s *Supervisor) installIsolation() error {
-	s.mu.Lock()
-	st := s.tableState()
-	s.mu.Unlock()
-	return s.applyIsolation(st)
 }
 
 // zone is "ct zone set <z>".
@@ -399,8 +417,10 @@ func ctState(bits uint32) []expr.Any {
 // kernel loads the whole 16-byte tuple address; an IPv4 one is its first 4
 // bytes. (google/nftables sends the direction as 4 bytes, of which the
 // kernel reads the first: 0, the original direction, is all this asks.)
-func (r *rules) ctOriginal(key expr.CtKey, a netip.Addr) []expr.Any {
-	if r.unboundAccepts {
+// Unbound (Options.unboundAccepts): the family only, so the accept takes a
+// related flow whoever owns it.
+func ctOriginal(unbound bool, key expr.CtKey, a netip.Addr) []expr.Any {
+	if unbound {
 		return family(a)
 	}
 	return append(family(a),
@@ -497,12 +517,6 @@ func dstOffset(a netip.Addr) uint32 {
 	return 24
 }
 
-// established is "<match>; ct state established,related; accept".
-func established(match []expr.Any) []expr.Any {
-	return append(append(match, ctState(expr.CtStateBitESTABLISHED|expr.CtStateBitRELATED)...),
-		&expr.Verdict{Kind: expr.VerdictAccept})
-}
-
 func drop(match []expr.Any) []expr.Any {
 	return append(match, &expr.Counter{}, &expr.Verdict{Kind: expr.VerdictDrop})
 }
@@ -516,8 +530,8 @@ func all(parts ...[]expr.Any) []expr.Any {
 	return out
 }
 
-// verdict is a bare accept-or-drop expression.
-func verdict(kind expr.VerdictKind) []expr.Any { return []expr.Any{&expr.Verdict{Kind: kind}} }
+// accept is a bare accept expression.
+func accept() []expr.Any { return []expr.Any{&expr.Verdict{Kind: expr.VerdictAccept}} }
 
 // jump is "goto to".
 func jump(to *nftables.Chain) []expr.Any {

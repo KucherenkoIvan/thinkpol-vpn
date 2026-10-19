@@ -8,7 +8,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"log/slog"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -30,8 +29,8 @@ var update = flag.Bool("update", false, "rewrite the golden files instead of com
 // TestIsolationRulesetGolden pins the tables for two slots, one with IPv4
 // egress and two dials, one with IPv6 egress and one dial, the supervisor
 // owning IPv4's forwarding, an allowed prefix and a flow cap — in both
-// accept modes (unboundAccepts is the forged-ICMP tests' negative control,
-// see Options) — and for the state New installs.
+// accept modes (unboundAccepts: see Options) — and for the state New
+// installs.
 func TestIsolationRulesetGolden(t *testing.T) {
 	if os.Getenv("THINKPOL_LAB") == "" {
 		t.Skip("needs the lab")
@@ -43,23 +42,12 @@ func TestIsolationRulesetGolden(t *testing.T) {
 		{"bound", false}, {"unbound", true}, {"fresh", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			s := &Supervisor{opts: Options{
-				TransitIPv4:    DefaultTransitIPv4,
-				TransitIPv6:    DefaultTransitIPv6,
-				EgressAllowed:  []netip.Prefix{netip.MustParsePrefix("10.9.9.0/24")},
-				Log:            slog.New(slog.DiscardHandler),
-				unboundAccepts: tc.unbound,
-			}}
-			opts, err := s.opts.withDefaults()
-			if err != nil {
-				t.Fatal(err)
-			}
-			s.opts = opts
-			st := goldenState(opts)
+			st := goldenState()
 			if tc.name == "fresh" {
 				st = freshState()
 			}
-			if err := s.applyIsolation(st); err != nil {
+			st.unbound = tc.unbound
+			if err := buildIsolation(st); err != nil {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = removeIsolation() })
@@ -72,15 +60,24 @@ func TestIsolationRulesetGolden(t *testing.T) {
 // could match, IPv6 forwarding owned (adopted from a predecessor), and no
 // flow cap.
 func freshState() tableState {
-	return tableState{owned: [2]bool{false, true}}
+	return tableState{
+		owned:    [2]bool{false, true},
+		transit4: DefaultTransitIPv4,
+		transit6: DefaultTransitIPv6,
+	}
 }
 
 // goldenState is what the tables are built from in the golden test: two
 // slots, with egress and dials on both families between them.
-func goldenState(opts Options) tableState {
-	st := tableState{uplink: "tp-up0", owned: [2]bool{true, false}, maxFlows: 1000}
+func goldenState() tableState {
+	st := tableState{
+		uplink: "tp-up0", owned: [2]bool{true, false}, maxFlows: 1000,
+		egressAllowed: []netip.Prefix{netip.MustParsePrefix("10.9.9.0/24")},
+		transit4:      DefaultTransitIPv4,
+		transit6:      DefaultTransitIPv6,
+	}
 	slot := func(n int, egress [2]bool, dials ...Dial) {
-		t := opts.transit(n)
+		t := transitOf(DefaultTransitIPv4, DefaultTransitIPv6, n)
 		st.rules = append(st.rules, slotRule{
 			link: linkName(n),
 			src:  [2]netip.Addr{t.space[0].Addr(), t.space[1].Addr()},

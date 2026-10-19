@@ -204,7 +204,7 @@ func dial(t *testing.T, address string, p transporttest.Peer) transport.Link {
 	return l
 }
 
-func accept(t *testing.T, l transport.Listener) (transport.Link, transport.Identity) {
+func acceptLink(t *testing.T, l transport.Listener) (transport.Link, transport.Identity) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), wait)
 	defer cancel()
@@ -297,7 +297,7 @@ func TestWorkersGetOnlyTheirOwnLinks(t *testing.T) {
 		t.Fatal(err)
 	}
 	for space, l := range listeners {
-		link, id := accept(t, l)
+		link, id := acceptLink(t, l)
 		if id.Space != space {
 			t.Fatalf("worker of %s accepted %s", space, id)
 		}
@@ -412,7 +412,7 @@ func TestAStuckWorkerStallsOnlyItsSpace(t *testing.T) {
 	l := serve(t, wl, pl.PeerLink)
 	ds, dl := dial(t, address, ps), dial(t, address, pl)
 
-	link, _ := accept(t, func() transport.Listener {
+	link, _ := acceptLink(t, func() transport.Listener {
 		_ = dl.WritePacket([]byte("first"))
 		return l
 	}())
@@ -513,7 +513,7 @@ func TestFairShareChargedAfterTheWorkerAccepts(t *testing.T) {
 	if err := d.WritePacket(make([]byte, 1000)); err != nil {
 		t.Fatal(err)
 	}
-	link, _ := accept(t, l)
+	link, _ := acceptLink(t, l)
 	read(t, link)
 	if got := m.of(space); got != 1000+udp.Overhead {
 		t.Fatalf("charged %d after one datagram, want %d", got, 1000+udp.Overhead)
@@ -769,7 +769,7 @@ func TestASourceFloodStallsNoOtherSpace(t *testing.T) {
 	l := serve(t, wc, pc.PeerLink)
 	d := dial(t, address, pc)
 	_ = d.WritePacket([]byte("ping"))
-	link, _ := accept(t, l)
+	link, _ := acceptLink(t, l)
 	read(t, link)
 
 	stop := make(chan struct{})

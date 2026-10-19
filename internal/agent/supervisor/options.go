@@ -183,11 +183,13 @@ type Options struct {
 	// sysctls are the root namespace's sysctls (the supervisor's own
 	// /proc/sys); tests stand in for the kernel.
 	sysctls netSysctls
-	// unboundAccepts and failIsolation are test-only hooks: the forged-ICMP
-	// tests' negative control, and the failure injected into a table
-	// rebuild. Production never sets them; only the linux build reads them.
-	// Both are set at New and never written on a live supervisor: a test
-	// arms and disarms them atomically instead.
+	// unboundAccepts and failIsolation are test-only hooks, and only the
+	// linux build reads them; production never sets them. unboundAccepts
+	// is the forged-ICMP tests' negative control: the accepts then take
+	// any established or related flow, whoever owns it. failIsolation is
+	// the failure injected into a table rebuild. Both are set at New and
+	// never written on a live supervisor: a test arms and disarms them
+	// atomically instead.
 	unboundAccepts bool           //nolint:unused // test-only, read in the linux build
 	failIsolation  *rebuildFailer //nolint:unused // test-only, read in the linux build
 	// now is an injectable clock for the backoff schedule in tests.
@@ -338,8 +340,14 @@ type transit struct {
 }
 
 func (o Options) transit(slot int) transit {
-	v4 := nthAddr(o.TransitIPv4.Addr(), uint64(slot)*4) // the slot's /30 block base
-	v6 := nthAddr(o.TransitIPv6.Addr(), uint64(slot))   // the slot's /64 base
+	return transitOf(o.TransitIPv4, o.TransitIPv6, slot)
+}
+
+// transitOf is the address plan of slot n's veth pair under the transit
+// prefixes: the root end's and the space end's addresses, IPv4 and IPv6.
+func transitOf(transit4, transit6 netip.Prefix, slot int) transit {
+	v4 := nthAddr(transit4.Addr(), uint64(slot)*4) // the slot's /30 block base
+	v6 := nthAddr(transit6.Addr(), uint64(slot))   // the slot's /64 base
 	return transit{
 		root:  [2]netip.Prefix{netip.PrefixFrom(v4.Next(), 30), netip.PrefixFrom(offset6(v6, 1), 64)},
 		space: [2]netip.Prefix{netip.PrefixFrom(v4.Next().Next(), 30), netip.PrefixFrom(offset6(v6, 2), 64)},
