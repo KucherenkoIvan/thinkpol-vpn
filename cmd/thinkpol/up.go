@@ -25,23 +25,12 @@ func init() {
 	})
 }
 
-// applyPlatformDefaults fills what the environment left unset with this
-// OS's defaults: a config tag can't vary by OS.
-func applyPlatformDefaults(cfg *agent.Config) {
-	if _, ok := os.LookupEnv("THINKPOL_STATE_DIR"); !ok {
-		cfg.StateDir = agent.DefaultStateDir
-	}
-	if _, ok := os.LookupEnv("THINKPOL_API_SOCKET"); !ok {
-		cfg.APISocket = agent.DefaultAPISocket()
-	}
-}
-
 func runUp(ctx context.Context, e env, args []string) error {
 	cfg, err := agent.LoadConfig()
 	if err != nil {
 		return err
 	}
-	applyPlatformDefaults(&cfg)
+	agent.ApplyOSDefaults(&cfg)
 	fs := flag.NewFlagSet("up", flag.ContinueOnError)
 	if err := config.BindFlags(fs, &cfg); err != nil {
 		return err
