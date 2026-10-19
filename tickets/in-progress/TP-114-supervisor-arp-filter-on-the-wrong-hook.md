@@ -49,3 +49,4 @@ Round 2 (2026-10-19): all three reviewers found the fix correct; test and commen
 - 2026-10-19 fixed: the arp chain on NF_ARP_IN (google/nftables and x/sys/unix name no arp hooks, so a named constant); lab test with negative control; the three isolation goldens regenerated, and a diff against the old ones shows the arp chain's hook (output → input) as the only change; DESIGN "Server agent" already says what the fix makes true, left unchanged
 - 2026-10-19 in-progress → review
 - 2026-10-19 review → has-errors — review round 2: test and comment cleanup (R2.1–R2.10)
+- 2026-10-19 has-errors → in-progress — owner: agent-claude, branch: tp-114-supervisor-arp-filter-on-the-wrong-hook
