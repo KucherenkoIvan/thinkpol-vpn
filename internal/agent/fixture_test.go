@@ -8,7 +8,11 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport/memory"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/lists"
@@ -190,4 +194,46 @@ func (s *testSpace) withList(t *testing.T, name string, prefixes ...string) ([]b
 	ref.Name = name
 	s.deviceBlobs = append(s.deviceBlobs, ref)
 	return data, ref
+}
+
+// heardEvents records a node's events.
+type heardEvents struct {
+	mu  sync.Mutex
+	evs []Event
+}
+
+func (h *heardEvents) add(ev Event) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.evs = append(h.evs, ev)
+}
+
+func (h *heardEvents) get() []Event {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return slices.Clone(h.evs)
+}
+
+// are waits until the events heard are want, and fails if more come
+// meanwhile.
+func (h *heardEvents) are(t *testing.T, want ...Event) {
+	t.Helper()
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		got := h.get()
+		if slices.Equal(got, want) {
+			return
+		}
+		if len(got) >= len(want) || time.Now().After(deadline) {
+			t.Fatalf("events %v, want %v", got, want)
+		}
+	}
+}
+
+// invalidTransitions fails t if log says a connection was asked to make a
+// move it can't.
+func invalidTransitions(t *testing.T, log string) {
+	t.Helper()
+	if strings.Contains(log, errInvalidTransition.Error()) {
+		t.Error("a connection was asked for a move it can't make")
+	}
 }

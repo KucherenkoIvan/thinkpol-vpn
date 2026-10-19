@@ -165,6 +165,7 @@ func (r *runner) pointSystem() {
 		r.dnsRetryAt = time.Now().Add(r.dp.retryAfter)
 		r.dp.Log.Error("DNS: the system doesn't resolve through the node: names may leave outside the tunnel; retrying",
 			"in", r.dp.retryAfter, "err", err)
+		r.dp.events.emit(EventDNSUnprotected, r.follow.cur.Header().Version)
 		return
 	}
 	r.guard.set(true, sys, nil)
@@ -172,6 +173,7 @@ func (r *runner) pointSystem() {
 	if p := sys.Problem(); p != nil {
 		if dns.Unprotected(p) {
 			r.dp.Log.Error("DNS: the system resolves through the node, but not only: names may leave outside the tunnel", "err", p)
+			r.dp.events.emit(EventDNSUnprotected, r.follow.cur.Header().Version)
 		} else {
 			// The OS configuration warned when the read failed: one
 			// warning an episode.

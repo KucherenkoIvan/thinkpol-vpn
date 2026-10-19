@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -27,6 +28,8 @@ type deviceNode struct {
 	node *Node
 	// failTUN makes the next TUN fail to come up.
 	failTUN chan struct{}
+	// events are the node's.
+	events *heardEvents
 }
 
 // deviceOpt adjusts device b: prepare sets its config and platform
@@ -61,7 +64,8 @@ func startDevice(t *testing.T, s *testSpace, reg *transport.Registry, connect bo
 	if err != nil {
 		t.Fatal(err)
 	}
-	d := &deviceNode{runningNode: rn, node: n, failTUN: failTUN}
+	d := &deviceNode{runningNode: rn, node: n, failTUN: failTUN, events: &heardEvents{}}
+	n.Subscribe(d.events.add)
 	n.tweak = func(dp *DataPlane) {
 		dp.path, dp.retryAfter = fastPaths, testRetry
 		dp.RouteTable = false // virtual TUNs: the host's routing stays as it is
@@ -79,6 +83,7 @@ func startDevice(t *testing.T, s *testSpace, reg *transport.Registry, connect bo
 		case <-time.After(10 * time.Second):
 			t.Error("the node didn't stop")
 		}
+		invalidTransitions(t, rn.log.String())
 		if t.Failed() {
 			t.Logf("log:\n%s", rn.log)
 		}
@@ -167,6 +172,10 @@ func TestADeviceConnectsAndDisconnects(t *testing.T) {
 	b.maps <- s.build(t, 5)
 	b.connection(t, Connected)
 	b.ping(t, b4, a4)
+	// Up each time it came up, on the map it came up on; nothing for the
+	// start that failed.
+	b.events.are(t, Event{EventConnected, 2}, Event{EventConnected, 3},
+		Event{EventRemovedFromSpace, 4}, Event{EventBackInSpace, 5}, Event{EventConnected, 5})
 
 	// Stopped, it says so.
 	b.stop()
@@ -263,6 +272,29 @@ func TestARemovedDeviceConnectsOnceBack(t *testing.T) {
 	if got := b.log.String(); strings.Count(got, "back in space") != 1 {
 		t.Errorf("log %q", got)
 	}
+	b.events.are(t, Event{EventRemovedFromSpace, 1}, Event{EventBackInSpace, 2}, Event{EventConnected, 2})
+}
+
+// A map whose rules the OS routing table can't take is an event; the
+// Apply is retried.
+func TestARouteTableNotEnforcedIsAnEvent(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	startNode(t, reg, s.a, s.verified(t, 1))
+	table := &wantsTable{}
+	b := startDevice(t, s, reg, true, deviceOpt{
+		prepare: func(_ *Config, p *Platform) {
+			p.NewRouteTable = func(*slog.Logger, routetable.Guard) (dataplane.RouteTable, error) { return table, nil }
+		},
+		dataPlane: func(dp *DataPlane) { dp.RouteTable = true },
+	})
+	b.connection(t, Connected)
+	table.mu.Lock()
+	table.failing = 1
+	table.mu.Unlock()
+	b.maps <- s.build(t, 2)
+	b.events.are(t, Event{EventConnected, 1}, Event{EventRouteTableNotEnforced, 2})
+	b.waitLog(t, `msg="map applied" .*version=2`)
 }
 
 func TestAServerRefusesConnect(t *testing.T) {

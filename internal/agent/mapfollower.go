@@ -11,10 +11,12 @@ import (
 // current map, its section in it, and whether it was removed from the
 // space. Device mode (the data plane's runner), server mode (the
 // supervisor's spaces) and a node waiting while removed all take envelopes
-// through one, so what a newer map means can't drift between them.
+// through one, so what a newer map means can't drift between them. Its
+// removals and returns are the node's events (emit).
 type mapFollower struct {
 	log  *slog.Logger
 	keys NodeKeys
+	emit emitter
 
 	cur     *netmap.Map
 	section netmap.Section
@@ -68,6 +70,7 @@ func (f *mapFollower) take(envelope []byte) (taken, back bool) {
 // version, with attrs.
 func (f *mapFollower) sayBack(attrs ...any) {
 	f.log.Info("back in space", append([]any{"version", f.cur.Header().Version}, attrs...)...)
+	f.emit.emit(EventBackInSpace, f.cur.Header().Version)
 }
 
 // markRemoved takes m, a map without the node's section (a newer one in
@@ -81,4 +84,5 @@ func (f *mapFollower) markRemoved(m *netmap.Map) {
 	f.removed = true
 	f.log.Warn("removed from space: the map has no section for this node; "+f.removedMsg,
 		"version", m.Header().Version)
+	f.emit.emit(EventRemovedFromSpace, m.Header().Version)
 }

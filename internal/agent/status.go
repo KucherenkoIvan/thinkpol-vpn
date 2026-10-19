@@ -153,8 +153,8 @@ type report struct {
 	space   netmap.SpaceID
 	version uint64
 	removed bool
-	// want: a device meant to be connected.
-	want     bool
+	// conn is a device's connection.
+	conn     connState
 	retrying bool
 	// engine is a device's running engine; it is cleared before the engine
 	// closes, and Status calls it under mu, so it is never used closed.
@@ -199,7 +199,9 @@ func (p *report) status() Status {
 		s.Connection = Serving
 	case p.engine != nil:
 		s.Connection = Connected
-	case p.want:
+	case p.conn != connDisconnected:
+		// Meant to be up: starting, retrying, out of its space, or the
+		// node stopping.
 		s.Connection = Connecting
 	}
 	if p.engine != nil {

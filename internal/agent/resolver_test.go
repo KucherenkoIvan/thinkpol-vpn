@@ -359,6 +359,7 @@ func TestUnprotectedDNSIsReportedAndRetried(t *testing.T) {
 	if !st.DNSUnprotected || !slices.Contains(st.Health().Problems, ProblemDNSUnprotected) {
 		t.Errorf("status %+v, health %+v", st, st.Health())
 	}
+	b.events.are(t, Event{EventDNSUnprotected, 1}, Event{EventConnected, 1})
 	// The retry points it.
 	eventually(t, func() bool { n, _ := sys.counts(); return n == 1 })
 	eventually(t, func() bool { return !b.node.Status().DNSUnprotected })
@@ -478,12 +479,18 @@ func TestAnUntaggedProblemIsUnprotected(t *testing.T) {
 type wantsTable struct {
 	mu    sync.Mutex
 	wants []routetable.Want
+	// failing fails that many Enforces.
+	failing int
 }
 
 func (w *wantsTable) Enforce(_ context.Context, want routetable.Want) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.wants = append(w.wants, want)
+	if w.failing > 0 {
+		w.failing--
+		return errors.New("the routing table is busy")
+	}
 	return nil
 }
 func (w *wantsTable) Status() routetable.Status { return routetable.Status{Enforced: true} }

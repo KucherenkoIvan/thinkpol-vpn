@@ -110,6 +110,7 @@ func (n *runningNode) run(t *testing.T, dp DataPlane) {
 		case <-time.After(10 * time.Second):
 			t.Error("the data plane didn't stop")
 		}
+		invalidTransitions(t, n.log.String())
 		if t.Failed() {
 			t.Logf("log:\n%s", n.log)
 		}

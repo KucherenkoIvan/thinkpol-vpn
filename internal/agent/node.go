@@ -29,17 +29,20 @@ import (
 type Node struct {
 	cfg   Config
 	state State
-	mode  Mode
 	logs  Logs
 	// plat is what the node needs of its host.
 	plat Platform
-	// want is set while a device is meant to be connected.
-	want bool
+	// conn is a device's connection, moved only by the goroutine that
+	// runs the node.
+	conn connection
 	// dnsUpstreams are cfg.DNSUpstream's.
 	dnsUpstreams []netip.AddrPort
 
+	// report holds the node's status, its mode included.
 	report   report
 	requests chan connectRequest
+	// subscribers hear the node's events (Subscribe).
+	subscribers []func(Event)
 	// stopped is closed once the node's adapter returned.
 	stopped chan struct{}
 	// tweak, if set, adjusts a device's DataPlane: what tests swap.
@@ -82,31 +85,32 @@ func Prepare(cfg Config, logs Logs, plat Platform) (*Node, error) {
 		logs.Warn("the state directory's map.bin is not used: the map comes from elsewhere", "map", st.MapPath)
 	}
 	n := &Node{
-		cfg: cfg, state: st, mode: cfg.Mode, logs: logs, plat: plat, want: cfg.Connect, dnsUpstreams: upstreams,
+		cfg: cfg, state: st, logs: logs, plat: plat, conn: newConnection(cfg.Connect, st.Removed), dnsUpstreams: upstreams,
 		requests: make(chan connectRequest), stopped: make(chan struct{}), rulesRequests: make(chan rulesRequest),
 	}
 	n.local = st.LocalRules
-	n.report = report{space: st.Trust.SpaceID, version: st.Map.Header().Version, removed: st.Removed, want: n.want,
-		preset: n.local.Preset.String()}
+	mode := cfg.Mode
 	if !st.Removed {
-		n.resolveMode()
+		mode = n.resolveMode()
 	}
-	n.report.mode = n.mode
-	if n.mode == ModeDevice && !cfg.Connect && cfg.APISocket == "" {
+	n.report = report{mode: mode, space: st.Trust.SpaceID, version: st.Map.Header().Version, removed: st.Removed,
+		conn: n.conn.state, preset: n.local.Preset.String()}
+	if mode == ModeDevice && !cfg.Connect && cfg.APISocket == "" {
 		return nil, errors.New("a device that starts disconnected needs the local API to connect: set an API socket")
 	}
 	return n, nil
 }
 
-// resolveMode decides ModeAuto by the node's kind in its section.
-func (n *Node) resolveMode() {
-	if n.cfg.Mode != ModeAuto {
-		return
+// resolveMode is the node's mode, ModeAuto decided by its kind in its
+// section.
+func (n *Node) resolveMode() Mode {
+	switch {
+	case n.cfg.Mode != ModeAuto:
+		return n.cfg.Mode
+	case n.state.Section.Node.Kind == netmap.NodeServer:
+		return ModeServer
 	}
-	n.mode = ModeDevice
-	if n.state.Section.Node.Kind == netmap.NodeServer {
-		n.mode = ModeServer
-	}
+	return ModeDevice
 }
 
 // Status reports the node's state; safe to call from any goroutine.
@@ -130,10 +134,7 @@ func (n *Node) Disconnect(ctx context.Context) error { return n.request(ctx, fal
 // space's map can't build the preset, which is then kept and enforced
 // failing closed (see rules.PresetRules); ErrServerMode on a server.
 func (n *Node) SetRulePreset(ctx context.Context, preset string) error {
-	n.report.mu.Lock()
-	mode := n.report.mode
-	n.report.mu.Unlock()
-	if mode == ModeServer {
+	if n.Mode() == ModeServer {
 		return ErrServerMode
 	}
 	p, err := rules.ParsePreset(preset)
@@ -176,10 +177,7 @@ func (n *Node) SetRulePreset(ctx context.Context, preset string) error {
 }
 
 func (n *Node) request(ctx context.Context, connect bool) error {
-	n.report.mu.Lock()
-	mode := n.report.mode
-	n.report.mu.Unlock()
-	if mode == ModeServer {
+	if n.Mode() == ModeServer {
 		return ErrServerMode
 	}
 	done := make(chan error, 1)
@@ -199,8 +197,24 @@ func (n *Node) request(ctx context.Context, connect bool) error {
 }
 
 // Mode is the mode the node runs in; ModeAuto while the node is removed
-// from its space and its kind unknown.
-func (n *Node) Mode() Mode { return n.mode }
+// from its space and its kind unknown. Safe to call from any goroutine.
+func (n *Node) Mode() Mode {
+	n.report.mu.Lock()
+	defer n.report.mu.Unlock()
+	return n.report.mode
+}
+
+// Subscribe has f hear the node's events as they happen, on the goroutine
+// that runs the node: f must return quickly, and may read Status but not
+// call Connect, Disconnect or SetRulePreset, which wait for that
+// goroutine. Call it before the node runs.
+func (n *Node) Subscribe(f func(Event)) { n.subscribers = append(n.subscribers, f) }
+
+func (n *Node) emit(ev Event) {
+	for _, f := range n.subscribers {
+		f(ev)
+	}
+}
 
 // State is what the node runs from.
 func (n *Node) State() State { return n.state }
@@ -217,7 +231,7 @@ func (n *Node) State() State { return n.state }
 // anything changed. The lock is held until the node adapter returns, or
 // the process ends. Call it once.
 func (n *Node) Adapters(reload <-chan os.Signal) ([]app.Adapter, error) {
-	if err := supported(n.mode); err != nil {
+	if err := supported(n.Mode()); err != nil {
 		return nil, err
 	}
 	// One node agent per host, taken before anything of this node (or the
@@ -246,8 +260,8 @@ func (n *Node) Adapters(reload <-chan os.Signal) ([]app.Adapter, error) {
 func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byte) error {
 	defer close(n.stopped)
 	h := n.state.Map.Header()
-	n.logs.Info("starting", "mode", n.mode, "space", h.SpaceID, "node", n.state.Keys.ID, "version", h.Version, "map", n.state.MapPath)
-	if n.mode != ModeServer && (n.state.Removed || !n.want) {
+	n.logs.Info("starting", "mode", n.Mode(), "space", h.SpaceID, "node", n.state.Keys.ID, "version", h.Version, "map", n.state.MapPath)
+	if n.Mode() != ModeServer && n.conn.state != connConnecting {
 		// What the data plane left in the host's routing when the node
 		// died connected (a crash, kill -9): a device that starts
 		// without connecting has nothing holding it, and connecting
@@ -262,7 +276,7 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 	if n.state.Removed && !n.awaitSection(ctx, maps) {
 		return nil
 	}
-	if n.mode == ModeServer {
+	if n.Mode() == ModeServer {
 		return n.runServer(ctx, reg, maps)
 	}
 	log := n.logs.With("space", n.state.Trust.SpaceID.String())
@@ -282,8 +296,9 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 		Host:         n.plat.Host,
 
 		report:        &n.report,
+		conn:          &n.conn,
 		requests:      n.requests,
-		disconnected:  !n.want,
+		events:        n.emit,
 		rulesRequests: n.rulesRequests,
 	}
 	n.rulesMu.Lock()
@@ -300,9 +315,19 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 // while it was down starts this way instead of failing, which under a
 // service manager would only restart it over and over.
 func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
-	f := mapFollower{log: n.logs.Logger, keys: n.state.Keys,
+	f := mapFollower{log: n.logs.Logger, keys: n.state.Keys, emit: n.emit,
 		removedMsg: "waiting for a map that includes it"}
 	f.markRemoved(n.state.Map)
+	// The report gets the map, the connection and, once back, the mode.
+	mode := ModeAuto
+	publish := func() {
+		n.report.set(func(p *report) {
+			p.version, p.removed, p.conn = f.cur.Header().Version, f.removed, n.conn.state
+			if mode != ModeAuto {
+				p.mode = mode
+			}
+		})
+	}
 	requested := false
 	for {
 		select {
@@ -313,8 +338,18 @@ func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
 			req.done <- nil
 		case req := <-n.requests:
 			// Kept for when the node is back in its space.
-			n.want, requested = req.connect, true
-			n.report.set(func(p *report) { p.want = n.want })
+			requested = true
+			var err error
+			switch {
+			case req.connect && n.conn.down():
+				err = n.conn.connect(false)
+			case !req.connect && !n.conn.down():
+				err = n.conn.disconnect()
+			}
+			if err != nil {
+				n.logs.Error("connection", "err", err)
+			}
+			publish()
 			req.done <- nil
 		case env, ok := <-maps:
 			if !ok {
@@ -326,17 +361,21 @@ func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
 				continue
 			}
 			if !back {
-				// Still out: the report gets the newer map's version.
-				n.report.set(func(p *report) { p.version = f.cur.Header().Version })
+				publish() // still out, on a newer map
 				continue
 			}
 			n.state.Map, n.state.Section, n.state.Removed = f.cur, f.section, false
-			n.resolveMode()
-			n.report.set(func(p *report) { p.mode, p.version, p.removed = n.mode, f.cur.Header().Version, false })
-			if requested && n.mode == ModeServer {
+			mode = n.resolveMode()
+			if mode != ModeServer && n.conn.state == connRemoved {
+				if err := n.conn.start(); err != nil {
+					n.logs.Error("connection", "err", err)
+				}
+			}
+			publish()
+			if requested && mode == ModeServer {
 				n.logs.Warn("a connect or disconnect taken while removed is dropped: this node is a server, which always serves its spaces")
 			}
-			f.sayBack("mode", n.mode)
+			f.sayBack("mode", mode)
 			return true
 		}
 	}
@@ -388,7 +427,7 @@ func (n *Node) runServer(ctx context.Context, reg *transport.Registry, maps chan
 		retryAfter: RetryAfter, report: &n.report, requests: n.requests, rulesRequests: n.rulesRequests,
 		stateDir: n.cfg.StateDir, log: n.logs.Logger,
 		follow: mapFollower{
-			log: n.logs.Logger, keys: n.state.Keys, cur: n.state.Map, section: n.state.Section,
+			log: n.logs.Logger, keys: n.state.Keys, cur: n.state.Map, section: n.state.Section, emit: n.emit,
 			removedMsg: serverRemovedMsg,
 		},
 	}

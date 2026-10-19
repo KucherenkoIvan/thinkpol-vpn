@@ -76,11 +76,13 @@ type DataPlane struct {
 
 	Host Host
 
-	// A device's (Node.run): where its status goes, its Connect and
-	// Disconnect requests, and whether it starts disconnected.
-	report       *report
-	requests     <-chan connectRequest
-	disconnected bool
+	// A device's (Node.run): where its status goes, its connection (nil:
+	// always up, a worker's), its Connect and Disconnect requests, and who
+	// hears its events.
+	report   *report
+	conn     *connection
+	requests <-chan connectRequest
+	events   emitter
 	// Rules are the device's own rule choice (LocalRulesFile), and
 	// rulesRequests replace them while it runs.
 	Rules         rules.Local
@@ -124,26 +126,31 @@ func RunDataPlane(ctx context.Context, dp DataPlane) error {
 	if err != nil {
 		return err
 	}
+	conn := dp.conn
+	if conn == nil {
+		c := newConnection(true, false)
+		conn = &c
+	}
 	r := &runner{
-		dp: dp, maps: dp.Maps, down: dp.disconnected, guard: &dnsGuard{}, tun: dp.Interface,
+		dp: dp, maps: dp.Maps, conn: conn, guard: &dnsGuard{}, tun: dp.Interface,
 		follow: mapFollower{
-			log: dp.Log, keys: dp.Keys, cur: dp.Map, section: section,
+			log: dp.Log, keys: dp.Keys, cur: dp.Map, section: section, emit: dp.events,
 			removedMsg: "the data plane stops until a map includes it again",
 		},
 	}
-	dp.report.set(func(p *report) { p.dns = r.guard.problem })
 	if dp.Blobs != nil {
 		r.blobsChanged = dp.Blobs.Subscribe()
 	}
 	// The first map must run: a node that can't carry it shouldn't look
 	// up. A shutdown meanwhile is no failure.
-	if !r.down {
+	if r.conn.state == connConnecting {
 		if err := r.start(ctx); err != nil {
 			if ctx.Err() != nil {
 				return nil
 			}
 			return err
 		}
+		r.connected()
 	}
 	defer r.stop()
 	if dp.Blobs != nil {
@@ -172,12 +179,14 @@ type rulesRequest struct {
 }
 
 // runner follows the space's maps (follow) and runs the data plane while
-// the node is in the space.
+// the node is in the space and its connection is meant to be up.
 type runner struct {
 	dp   DataPlane
 	maps <-chan []byte
 	// follow is the map the runner follows (its section, its removals).
 	follow mapFollower
+	// conn is the device's connection: connected while engine is set.
+	conn *connection
 
 	// engine and listeners are nil while stopped: the node was removed,
 	// or starting again failed; so are resolver and system, the OS's
@@ -200,9 +209,6 @@ type runner struct {
 	guard      *dnsGuard
 	systemCfg  dns.SystemConfig
 	dnsRetryAt time.Time
-	// down is set while a device is disconnected: it follows the maps but
-	// runs nothing.
-	down bool
 	// blobsChanged is signalled when the blob service's lists change.
 	blobsChanged <-chan struct{}
 	// retryAt is when to retry a failed Apply or start (zero: nothing to
@@ -269,6 +275,9 @@ func (r *runner) start(ctx context.Context) error {
 		RouteTable:   routes,
 		DNS:          resolverIfc,
 	}
+	if r.dp.events != nil {
+		cfg.Events = r.engineEvent
+	}
 	if b := r.dp.Blobs; b != nil {
 		// The rules' lists: the current map's once held, the previous
 		// version until then. ReloadRules follows the service's changes.
@@ -314,9 +323,10 @@ func (r *runner) start(ctx context.Context) error {
 }
 
 // stop takes the data plane down: listeners, engine, TUN and its
-// configuration. Callers set down, removed and cur first: the report gets
-// the whole new state at once, with the engine gone before it closes, so a
-// status read meanwhile is never a mix of before and after.
+// configuration. Callers move the connection (and take the map) first:
+// the report gets the whole new state at once, with the engine gone before
+// it closes, so a status read meanwhile is never a mix of before and
+// after.
 func (r *runner) stop() {
 	if r.engine == nil {
 		// Down with nothing running (a start that failed, a node removed
@@ -397,9 +407,33 @@ func (r *runner) publish() {
 		n = len(r.listeners.serving)
 	}
 	r.dp.report.set(func(p *report) {
-		p.engine, p.version, p.removed, p.retrying, p.listeners, p.want =
-			r.engine, r.follow.cur.Header().Version, r.follow.removed, !r.retryAt.IsZero(), n, !r.down
+		p.engine, p.version, p.removed, p.retrying, p.listeners, p.conn, p.dns =
+			r.engine, r.follow.cur.Header().Version, r.follow.removed, !r.retryAt.IsZero(), n, r.conn.state, r.guard.problem
 	})
+}
+
+// move logs a transition the connection refused: a bug, the connection
+// stays where it was.
+func (r *runner) move(err error) {
+	if err != nil {
+		r.dp.Log.Error("connection", "err", err)
+	}
+}
+
+// connected moves the connection to connected once the data plane is up,
+// and says so.
+func (r *runner) connected() {
+	r.move(r.conn.started())
+	r.dp.events.emit(EventConnected, r.follow.cur.Header().Version)
+}
+
+// engineEvent passes the engine's events on as the node's. The engine
+// tells them from the call that caused them (Apply, SetRules,
+// ReloadRules), all made on the runner's goroutine.
+func (r *runner) engineEvent(ev dataplane.Event) {
+	if ev.Kind == dataplane.EventRouteTableNotEnforced {
+		r.dp.events.emit(EventRouteTableNotEnforced, r.follow.cur.Header().Version)
+	}
 }
 
 // request connects or disconnects a device. Connecting starts the data
@@ -414,34 +448,33 @@ func (r *runner) request(ctx context.Context, req connectRequest) {
 
 func (r *runner) connect(ctx context.Context, connect bool) error {
 	switch {
-	case !connect && !r.down:
-		r.down = true
+	case !connect && !r.conn.down():
+		r.move(r.conn.disconnect())
 		r.stop()
 		r.retryAt = time.Time{}
 		r.updateBlobs()
 		r.dp.Log.Info("disconnected")
-	case connect && r.follow.removed:
-		if r.down {
-			r.down = false
-			r.dp.Log.Info("connecting once a map includes this node")
-		}
-	case connect && r.engine == nil:
+	case connect && (r.conn.down() || r.conn.state == connRetrying):
 		// Down on purpose, or up but its start failed and waits for a
-		// retry: either way it starts now, and says if it can't.
-		wasDown := r.down
-		r.down = false
+		// retry: either way it starts now, and says if it can't; out of
+		// its space, once a map has it again.
+		r.move(r.conn.connect(!r.follow.removed))
+		if r.conn.state == connRemoved {
+			r.dp.Log.Info("connecting once a map includes this node")
+			break
+		}
 		if err := r.start(ctx); err != nil {
-			if wasDown {
-				r.down = true
-			} else {
+			r.move(r.conn.startFailed())
+			if r.conn.state == connRetrying {
 				r.retryAt = time.Now().Add(r.dp.retryAfter)
 			}
 			r.dp.Log.Warn("connecting failed", "version", r.follow.cur.Header().Version, "err", err)
 			return err
 		}
+		r.connected()
 		r.dp.Log.Info("connected")
 	}
-	if connect && r.engine != nil {
+	if connect && r.conn.state == connConnected {
 		if err := r.guard.problem(); dns.Unprotected(err) {
 			return fmt.Errorf("%w: %v", ErrDNSUnprotected, err)
 		}
@@ -472,14 +505,15 @@ func (r *runner) retry(ctx context.Context) {
 			r.pointSystem()
 		}
 	}
-	if r.down || r.retryAt.IsZero() || time.Now().Before(r.retryAt) {
+	if r.retryAt.IsZero() || time.Now().Before(r.retryAt) {
 		return
 	}
-	if r.engine == nil {
+	switch r.conn.state {
+	case connRetrying:
 		r.tryStart(ctx)
-		return
+	case connConnected:
+		r.apply(ctx)
 	}
-	r.apply(ctx)
 }
 
 // next takes a newer map, if it is one, and acts on it: a map without the
@@ -494,25 +528,31 @@ func (r *runner) next(ctx context.Context, envelope []byte) {
 		r.follow.sayBack()
 	}
 	if r.follow.removed {
+		r.move(r.conn.remove())
 		r.stop()
 		r.retryAt = time.Time{}
 		r.updateBlobs()
 		return
 	}
-	if r.engine == nil {
-		if !r.down {
-			r.tryStart(ctx)
-		}
-		return
+	switch r.conn.state {
+	case connRemoved, connRetrying:
+		r.tryStart(ctx)
+	case connConnected:
+		r.apply(ctx)
 	}
-	r.apply(ctx)
 }
 
+// tryStart starts the data plane nobody asked to start (back in its space,
+// a retry), and retries it if that fails.
 func (r *runner) tryStart(ctx context.Context) {
+	r.move(r.conn.start())
 	if err := r.start(ctx); err != nil {
+		r.move(r.conn.startFailed())
 		r.retryAt = time.Now().Add(r.dp.retryAfter)
 		r.dp.Log.Warn("starting the data plane failed, retrying", "version", r.follow.cur.Header().Version, "in", r.dp.retryAfter, "err", path.RedactError(err))
+		return
 	}
+	r.connected()
 }
 
 func (r *runner) apply(ctx context.Context) {
