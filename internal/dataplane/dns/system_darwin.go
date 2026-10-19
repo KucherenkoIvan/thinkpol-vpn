@@ -75,6 +75,8 @@ var (
 	// watched, and listed when counting the services whose DNS was set
 	// by hand.
 	serviceSetupDNSPattern = `Setup:/Network/Service/[^/]+/DNS`
+	globalIPv4Key          = "State:/Network/Global/IPv4"
+	globalIPv6Key          = "State:/Network/Global/IPv6"
 	serviceKey             = regexp.MustCompile(`^(State|Setup):/Network/Service/([^/]+)/(IPv4|IPv6|DNS)$`)
 	resolverDir            = "/etc/resolver"
 )
@@ -196,7 +198,8 @@ type dynamicStore struct {
 	// cfg.Upstreams.
 	primary []netip.Addr
 	// primaryFailed marks a read of the primary service's servers that
-	// failed and was warned about: warned once, not at every check.
+	// failed at the last check: warned about once, not at every check,
+	// and it drives Problem's ErrUpstreamsStale.
 	primaryFailed bool
 }
 
@@ -478,6 +481,12 @@ func (s *dynamicStore) otherResolvers() ([]string, error) {
 // primary network service (offline) is a real empty answer and is told
 // as such. Called with mu held.
 func (s *dynamicStore) primaryOriginal() []netip.Addr {
+	if s.cfg.Upstreams == nil {
+		// The system's servers aren't used as the direct upstreams
+		// (-dns-upstream set): never read, and never stale.
+		s.primaryFailed = false
+		return nil
+	}
 	addrs, err := primaryServers(s.st, s.backup)
 	if err != nil && !errors.Is(err, errNoPrimary) {
 		if !s.primaryFailed {
@@ -554,17 +563,21 @@ func (s *dynamicStore) Update(c SystemConfig) error {
 func (s *dynamicStore) Problem() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	var errs []error
 	switch {
 	case s.err != nil:
-		return fmt.Errorf("%w: %v", ErrUnprotected, s.err)
+		errs = append(errs, fmt.Errorf("%w: %v", ErrUnprotected, s.err))
 	case len(s.others) > 0:
-		return fmt.Errorf("%w: other resolvers take the names under %d domains", ErrUnprotected, len(s.others))
+		errs = append(errs, fmt.Errorf("%w: other resolvers take the names under %d domains", ErrUnprotected, len(s.others)))
 	case s.manual > 0:
-		return fmt.Errorf("%w: %d network services have DNS set by hand, which stays their resolver (asked after the node's, and for questions scoped to their interface)", ErrUnprotected, s.manual)
-	case s.primaryFailed:
-		return fmt.Errorf("%w: reading the primary service's DNS servers keeps failing", ErrUpstreamsStale)
+		errs = append(errs, fmt.Errorf("%w: %d network services have DNS set by hand, which stays their resolver (asked after the node's, and for questions scoped to their interface)", ErrUnprotected, s.manual))
 	}
-	return nil
+	if s.primaryFailed {
+		// Not instead of the unprotected cause above but with it:
+		// Unprotected sorts a joined problem back out.
+		errs = append(errs, fmt.Errorf("%w: reading the primary service's DNS servers failed at the last check", ErrUpstreamsStale))
+	}
+	return errors.Join(errs...)
 }
 
 func (s *dynamicStore) Restore() error {
@@ -610,15 +623,15 @@ func restoreBackup(st store) error {
 // primaryServers are the primary service's DNS servers as the system has
 // them, the originals where the node overrode them.
 func primaryServers(st store, backup map[string]original) ([]netip.Addr, error) {
-	g, ok, err := st.get("State:/Network/Global/IPv4")
+	g, ok, err := st.get(globalIPv4Key)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("dns: reading %s: %w", globalIPv4Key, err)
 	}
 	id := g.strs["PrimaryService"]
 	if !ok || id == "" {
-		g6, ok6, err := st.get("State:/Network/Global/IPv6")
+		g6, ok6, err := st.get(globalIPv6Key)
 		if err != nil {
-			return nil, fmt.Errorf("dns: reading State:/Network/Global/IPv6: %w", err)
+			return nil, fmt.Errorf("dns: reading %s: %w", globalIPv6Key, err)
 		}
 		if ok6 {
 			id = g6.strs["PrimaryService"]
@@ -630,7 +643,7 @@ func primaryServers(st store, backup map[string]original) ([]netip.Addr, error) 
 	for _, k := range []string{"Setup:/Network/Service/" + id + "/DNS", "State:/Network/Service/" + id + "/DNS"} {
 		d, present, err := st.get(k)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("dns: reading %s: %w", k, err)
 		}
 		if present && isOverride(d) {
 			o, kept := backup[k]

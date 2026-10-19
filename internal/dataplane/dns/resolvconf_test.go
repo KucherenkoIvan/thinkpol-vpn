@@ -1,6 +1,8 @@
 package dns
 
 import (
+	"errors"
+	"fmt"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -9,6 +11,24 @@ import (
 	"testing"
 	"time"
 )
+
+// Unprotected sorts a Problem: an untagged error is unprotected (a
+// System that reports a problem it doesn't name fails closed), only nil
+// and ErrUpstreamsStale are not.
+func TestUnprotectedSortsProblems(t *testing.T) {
+	if Unprotected(nil) {
+		t.Error("nil is unprotected")
+	}
+	if !Unprotected(ErrUnprotected) || !Unprotected(fmt.Errorf("%w: rewrite failed", ErrUnprotected)) {
+		t.Error("an ErrUnprotected problem is not unprotected")
+	}
+	if Unprotected(fmt.Errorf("%w: read failed", ErrUpstreamsStale)) {
+		t.Error("stale upstreams are unprotected")
+	}
+	if !Unprotected(errors.New("the store is unreadable")) {
+		t.Error("an untagged problem reads as protected")
+	}
+}
 
 var testSystem = SystemConfig{
 	Servers: []netip.Addr{netip.MustParseAddr("100.64.0.2"), netip.MustParseAddr("fd12:3456:789a::2")},

@@ -600,6 +600,9 @@ func TestAFailedPrimaryReadKeepsTheUpstreamsOfflineClearsThem(t *testing.T) {
 	if n := strings.Count(log.String(), "level=WARN"); n != 1 {
 		t.Errorf("a failed read warned %d times, want once", n)
 	}
+	if !strings.Contains(log.String(), "dns: reading State:/Network/Global/IPv4") {
+		t.Errorf("the warning doesn't name the read: %s", log.String())
+	}
 	f.mu.Lock()
 	delete(f.getErrs, "State:/Network/Global/IPv4")
 	f.mu.Unlock()
@@ -727,7 +730,9 @@ func TestStaleUpstreamsAreReportedNotUnprotected(t *testing.T) {
 	f := aMac(t)
 	_ = f.remove("State:/Network/Service/D/DNS")
 	_ = f.remove("Setup:/Network/Service/B/DNS")
-	s, err := setDynamicStore(f, nodeConfig, nil, time.Hour)
+	c := nodeConfig
+	c.Upstreams = func([]netip.Addr) {}
+	s, err := setDynamicStore(f, c, nil, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -748,5 +753,114 @@ func TestStaleUpstreamsAreReportedNotUnprotected(t *testing.T) {
 	s.check()
 	if err := s.Problem(); err != nil {
 		t.Errorf("problem after a good read: %v", err)
+	}
+}
+
+// Staleness doesn't hide behind an unprotected cause: Problem joins
+// them, and Unprotected still sorts the join out.
+func TestStaleUpstreamsAreReportedAlongsideUnprotected(t *testing.T) {
+	f := aMac(t)
+	c := nodeConfig
+	c.Upstreams = func([]netip.Addr) {}
+	s, err := setDynamicStore(f, c, nil, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Restore() }()
+	f.mu.Lock()
+	f.getErrs = map[string]error{"State:/Network/Global/IPv4": errors.New("read failed")}
+	f.mu.Unlock()
+	s.check()
+	p := s.Problem()
+	if !errors.Is(p, ErrUnprotected) || !errors.Is(p, ErrUpstreamsStale) || !Unprotected(p) {
+		t.Errorf("problem: %v", p)
+	}
+	if !strings.Contains(p.Error(), "1 domains") || !strings.Contains(p.Error(), "failed at the last check") {
+		t.Errorf("problem doesn't name both: %v", p)
+	}
+}
+
+// With the upstreams configured (-dns-upstream) the system's servers
+// aren't used as the direct upstreams: they aren't read, and a failed
+// read reports nothing.
+func TestUnusedUpstreamsArentReadOrReported(t *testing.T) {
+	f := aMac(t)
+	_ = f.remove("State:/Network/Service/D/DNS")
+	_ = f.remove("Setup:/Network/Service/B/DNS")
+	var log bytes.Buffer
+	c := nodeConfig // no Upstreams callback
+	c.Log = slog.New(slog.NewTextHandler(&log, nil))
+	s, err := setDynamicStore(f, c, nil, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Restore() }()
+	if err := s.Problem(); err != nil {
+		t.Fatalf("problem before the failure: %v", err)
+	}
+	f.mu.Lock()
+	f.getErrs = map[string]error{"State:/Network/Global/IPv4": errors.New("read failed")}
+	f.mu.Unlock()
+	s.check()
+	if err := s.Problem(); err != nil {
+		t.Errorf("a failed read of unused upstreams: %v", err)
+	}
+	if strings.Contains(log.String(), "level=WARN") {
+		t.Errorf("warned about unused upstreams: %s", log.String())
+	}
+}
+
+// An empty string value (seen for an empty DomainName) can be written
+// back as `d.add Key ""`: the original stays restorable, and Restore
+// sets it back instead of removing the key and leaving that network
+// without DNS until its next renewal.
+func TestAnEmptyStringValueIsRestorable(t *testing.T) {
+	f := aMac(t)
+	odd := dnsDict([]string{"192.168.1.1"}, map[string]string{"DomainName": ""})
+	f.put("State:/Network/Service/"+wifiService+"/DNS", odd)
+	s, err := setDynamicStore(f, nodeConfig, nil, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	overridden(t, f, "State:/Network/Service/"+wifiService+"/DNS")
+	s.mu.Lock()
+	o := s.backup["State:/Network/Service/"+wifiService+"/DNS"]
+	s.mu.Unlock()
+	if o.Unrestorable || !o.Present || o.Strs["DomainName"] != "" {
+		t.Errorf("the original: %+v", o)
+	}
+	f.setsLog = nil
+	if err := s.Restore(); err != nil {
+		t.Fatal(err)
+	}
+	if d, ok, _ := f.get("State:/Network/Service/" + wifiService + "/DNS"); !ok || !d.equal(odd) {
+		t.Errorf("after Restore: %+v, ok %v", d, ok)
+	}
+	for _, op := range f.setsLog {
+		if op == "remove State:/Network/Service/"+wifiService+"/DNS" {
+			t.Errorf("the key was removed: %v", f.setsLog)
+		}
+	}
+}
+
+// A read that fails inside the primary service's lookup names what was
+// read.
+func TestAFailedPrimaryServiceReadNamesTheKey(t *testing.T) {
+	f := aMac(t)
+	var log bytes.Buffer
+	c := nodeConfig
+	c.Log = slog.New(slog.NewTextHandler(&log, nil))
+	c.Upstreams = func([]netip.Addr) {}
+	s, err := setDynamicStore(f, c, nil, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Restore() }()
+	f.mu.Lock()
+	f.getErrs = map[string]error{"State:/Network/Service/" + wifiService + "/DNS": errors.New("read failed")}
+	f.mu.Unlock()
+	s.check()
+	if !strings.Contains(log.String(), "dns: reading State:/Network/Service/"+wifiService+"/DNS") {
+		t.Errorf("the warning doesn't name the read: %s", log.String())
 	}
 }

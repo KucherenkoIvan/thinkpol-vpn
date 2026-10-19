@@ -52,16 +52,27 @@ type System interface {
 	Restore() error
 }
 
-// ErrUnprotected wraps every Problem: the OS doesn't resolve only through
-// the node's resolver.
+// ErrUnprotected marks the Problems where the OS doesn't resolve only
+// through the node's resolver. A System's Problem may instead report
+// ErrUpstreamsStale, which is not unprotected; Unprotected tells the
+// two apart.
 var ErrUnprotected = errors.New("dns: names may be resolved outside the node")
 
 // ErrUpstreamsStale is what a System's Problem reports (never wrapped by
 // ErrUnprotected) while the direct upstreams the OS's own resolvers were
-// last read as may be stale: reading them keeps failing, so names
+// last read as may be stale: the last read of them failed, so names
 // outside the node may not resolve. The OS still resolves through the
 // node, so it is not unprotected.
 var ErrUpstreamsStale = errors.New("dns: the direct upstreams may be stale")
+
+// Unprotected says whether a Problem leaves names resolving outside the
+// node's resolver: an ErrUnprotected problem, or anything else — a
+// System that reports a problem it doesn't name must read as
+// unprotected, never as protected. Only nil and ErrUpstreamsStale are
+// not unprotected.
+func Unprotected(problem error) bool {
+	return problem != nil && (errors.Is(problem, ErrUnprotected) || !errors.Is(problem, ErrUpstreamsStale))
+}
 
 // A resolv.conf the node manages starts with resolvConfHeader and keeps
 // what it replaced in comment lines, so it can be put back even after a

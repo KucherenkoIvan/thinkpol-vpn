@@ -48,6 +48,12 @@ func TestScutilShowIsParsed(t *testing.T) {
 	if err != nil || !ok || d.opaque || d.strs["DomainName"] != "" || d.strs["SearchOrder"] != "1" {
 		t.Errorf("empty value: %+v %v %v", d, ok, err)
 	}
+	// A value that contains the phrase is present, not missing.
+	phrased := "<dictionary> {\n  DomainName : No such key\n}\n"
+	d, ok, err = parseShow(phrased)
+	if err != nil || !ok || d.opaque || d.strs["DomainName"] != "No such key" {
+		t.Errorf("a value with the phrase: %+v %v %v", d, ok, err)
+	}
 	for _, bad := range []string{"garbage", "<dictionary> {\n  A : b\n"} {
 		if _, _, err := parseShow(bad); err == nil {
 			t.Errorf("%q: no error", bad)
@@ -74,6 +80,13 @@ func TestScutilListIsParsed(t *testing.T) {
 	if _, err := parseList("  subKey [0] =\n"); err == nil {
 		t.Error("a keyless subKey line: no error")
 	}
+	// Real scutil prints "  no keys." for none: completely empty output
+	// is a failed listing, not an empty one.
+	for _, out := range []string{"", "  \n"} {
+		if _, err := parseList(out); err == nil {
+			t.Errorf("%q: no error", out)
+		}
+	}
 }
 
 // What SetSystem writes reads back the same, numbers as numbers.
@@ -89,12 +102,27 @@ func TestScutilSetScript(t *testing.T) {
 		t.Errorf("script:\n%s\nwant:\n%s", got, want)
 	}
 	// Nothing that would split into several tokens, or inject a command.
-	for _, v := range []string{"a b", "x\nquit", "", `"q"`} {
+	for _, v := range []string{"a b", "x\nquit", `"q"`} {
 		d := newDict()
 		d.strs["DomainName"] = v
 		if _, err := setScript("State:/Network/Service/A/DNS", d); err == nil {
 			t.Errorf("%q: no error", v)
 		}
+	}
+	// An empty string value goes as "", an empty number can't be.
+	empty := newDict()
+	empty.strs["DomainName"] = ""
+	script, err := setScript("State:/Network/Service/A/DNS", empty)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(script, `d.add DomainName ""`+"\n") {
+		t.Errorf("script:\n%s", script)
+	}
+	emptyNumber := newDict()
+	emptyNumber.strs["SearchOrder"] = ""
+	if _, err := setScript("State:/Network/Service/A/DNS", emptyNumber); err == nil {
+		t.Error("an empty number: no error")
 	}
 	if _, err := setScript("State:/Network/Service/A/DNS\nremove X", newDict()); err == nil {
 		t.Error("a key with a newline: no error")
@@ -124,6 +152,21 @@ func TestAnEmptyStringRoundTrips(t *testing.T) {
 	shown := "<dictionary> {\n  SearchOrder : 100000\n  SupplementalMatchDomains : <array> {\n    0 : \n  }\n}\n"
 	got, ok, err := parseShow(shown)
 	if err != nil || !ok || got.opaque || !got.equal(d) {
+		t.Errorf("parsed %+v %v %v", got, ok, err)
+	}
+	// An empty string value goes as "" too, and reads back as scutil
+	// prints it ("Key : ", seen for an empty DomainName).
+	str := newDict()
+	str.strs["DomainName"] = ""
+	script, err = setScript("State:/Network/Service/X/DNS", str)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(script, `d.add DomainName ""`+"\n") {
+		t.Errorf("script:\n%s", script)
+	}
+	got, ok, err = parseShow("<dictionary> {\n  DomainName : \n}\n")
+	if err != nil || !ok || got.opaque || !got.equal(str) {
 		t.Errorf("parsed %+v %v %v", got, ok, err)
 	}
 }

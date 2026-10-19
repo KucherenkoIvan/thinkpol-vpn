@@ -85,7 +85,7 @@ func (s scutil) keys(pattern string) ([]string, error) {
 	}
 	out, err := s.run("list " + pattern + "\n")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("scutil: list %s: %w", pattern, err)
 	}
 	return parseList(out)
 }
@@ -96,7 +96,7 @@ func (s scutil) get(key string) (dict, bool, error) {
 	}
 	out, err := s.run("show " + key + "\n")
 	if err != nil {
-		return dict{}, false, err
+		return dict{}, false, fmt.Errorf("scutil: show %s: %w", key, err)
 	}
 	return parseShow(out)
 }
@@ -198,6 +198,13 @@ func setScript(key string, d dict) (string, error) {
 	b.WriteString("d.init\n")
 	for _, k := range sortedKeys(d.strs) {
 		v := d.strs[k]
+		if v == "" && !numeric[k] {
+			// scutil reads "" as one empty string, as it does in
+			// arrays: a value that can't be written back would make
+			// the original unrestorable.
+			fmt.Fprintf(&b, `d.add %s ""`+"\n", k)
+			continue
+		}
 		if err := errors.Join(checkToken(k), checkToken(v)); err != nil {
 			return "", err
 		}
@@ -244,25 +251,36 @@ func sortedKeys[V any](m map[string]V) []string {
 }
 
 // parseList reads `list`'s output: "  subKey [0] = <key>" per key, or
-// "  no keys." when nothing matches. scutil answers a command it doesn't
-// know in text and exits 0, so any other line is a failed listing, not
-// an empty one.
+// "  no keys." when nothing matches (real scutil always prints it for
+// none, so completely empty output is a failed listing). scutil answers
+// a command it doesn't know in text and exits 0, so any other line is a
+// failed listing, not an empty one.
 func parseList(out string) ([]string, error) {
 	var keys []string
+	sawLine := false
 	sc := bufio.NewScanner(strings.NewReader(out))
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		switch {
-		case line == "", line == "no keys.":
+		case line == "":
+		case line == "no keys.":
+			sawLine = true
 		case strings.HasPrefix(line, "subKey ["):
+			sawLine = true
 			_, k, ok := strings.Cut(line, "] = ")
 			if !ok || k == "" {
-				return nil, fmt.Errorf("scutil: unexpected list line %q", line)
+				return nil, fmt.Errorf("scutil: unexpected line %q", line)
 			}
 			keys = append(keys, k)
 		default:
-			return nil, fmt.Errorf("scutil: unexpected list output %q", line)
+			return nil, fmt.Errorf("scutil: unexpected line %q", line)
 		}
+	}
+	if err := sc.Err(); err != nil {
+		return nil, fmt.Errorf("scutil: reading the list: %w", err)
+	}
+	if !sawLine {
+		return nil, errors.New("scutil: empty list output")
 	}
 	return keys, nil
 }
@@ -270,7 +288,13 @@ func parseList(out string) ([]string, error) {
 // parseShow reads `show`'s output: a dictionary, or "No such key".
 func parseShow(out string) (dict, bool, error) {
 	trimmed := strings.TrimSpace(out)
-	if strings.Contains(trimmed, "No such key") {
+	// "No such key" names an absent key; a key whose value contains the
+	// phrase is present, so it is matched only outside a dictionary.
+	head := trimmed
+	if i := strings.Index(trimmed, "<dictionary> {"); i >= 0 {
+		head = trimmed[:i]
+	}
+	if strings.TrimSpace(head) == "No such key" {
 		return dict{}, false, nil
 	}
 	if !strings.HasPrefix(trimmed, "<dictionary> {") {
