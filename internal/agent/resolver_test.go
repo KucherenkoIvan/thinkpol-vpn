@@ -367,13 +367,16 @@ func TestUnprotectedDNSIsReportedAndRetried(t *testing.T) {
 		t.Errorf("Connect once protected: %v", err)
 	}
 
-	// The configuration itself can say names may go elsewhere.
+	// The configuration itself can say names may go elsewhere: told once
+	// the status says so (here, as the next map is taken).
 	sys.mu.Lock()
 	sys.problem = dns.ErrUnprotected
 	sys.mu.Unlock()
 	if st := b.node.Status(); !st.DNSUnprotected {
 		t.Errorf("a problem the system reports isn't in the status")
 	}
+	b.maps <- s.build(t, 2)
+	b.events.are(t, Event{EventConnected, 1}, Event{EventDNSUnprotected, 1}, Event{EventDNSUnprotected, 2})
 }
 
 // A device that couldn't read the system's resolvers before pointing the
@@ -480,22 +483,45 @@ func TestAnUntaggedProblemIsUnprotected(t *testing.T) {
 type wantsTable struct {
 	mu    sync.Mutex
 	wants []routetable.Want
-	// failing fails that many Enforces.
+	// failing fails that many Enforces; the status says the last one
+	// failed, as routetable's does. broken is the table failing to put
+	// the routes back on its own, and recovering, whatever Enforce did.
 	failing int
+	failed  bool
+	broken  bool
 }
 
 func (w *wantsTable) Enforce(_ context.Context, want routetable.Want) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.wants = append(w.wants, want)
+	w.failed = w.failing > 0
 	if w.failing > 0 {
 		w.failing--
 		return errors.New("the routing table is busy")
 	}
 	return nil
 }
-func (w *wantsTable) Status() routetable.Status { return routetable.Status{Enforced: true} }
-func (w *wantsTable) Close() error              { return nil }
+
+func (w *wantsTable) Status() routetable.Status {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	switch {
+	case w.broken:
+		return routetable.Status{Error: routetable.ErrorReapply}
+	case w.failed:
+		return routetable.Status{Error: routetable.ErrorApply}
+	}
+	return routetable.Status{Enforced: true}
+}
+
+func (w *wantsTable) Close() error { return nil }
+
+func (w *wantsTable) setBroken(broken bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.broken = broken
+}
 
 func (w *wantsTable) upstreams() []netip.AddrPort {
 	w.mu.Lock()

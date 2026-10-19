@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/netip"
-	"slices"
 	"sync/atomic"
 	"time"
 
@@ -94,8 +93,10 @@ type DataPlane struct {
 	path        path.Options
 	retryAfter  time.Duration
 	blobOptions blobs.Options
-	// onEngine sees each engine the data plane starts.
+	// onEngine sees each engine the data plane starts, onConn the
+	// connection RunDataPlane makes when conn is nil.
 	onEngine func(*dataplane.Engine)
+	onConn   func(*connection)
 	// dnsPort is the resolver's port (0: 53).
 	dnsPort uint16
 }
@@ -131,6 +132,9 @@ func RunDataPlane(ctx context.Context, dp DataPlane) error {
 	if conn == nil {
 		c := newConnection(true, false)
 		conn = &c
+		if dp.onConn != nil {
+			dp.onConn(conn)
+		}
 	}
 	r := &runner{
 		dp: dp, maps: dp.Maps, conn: conn, guard: &dnsGuard{}, tun: dp.Interface,
@@ -146,6 +150,9 @@ func RunDataPlane(ctx context.Context, dp DataPlane) error {
 	// up. A shutdown meanwhile is no failure.
 	if r.conn.state == connConnecting {
 		if err := r.start(ctx); err != nil {
+			// The node returns: its connection is down.
+			logRefused(r.dp.Log, r.conn.startFailed(false))
+			r.publish()
 			if ctx.Err() != nil {
 				return nil
 			}
@@ -189,11 +196,10 @@ type runner struct {
 	follow mapFollower
 	// conn is the device's connection: connected while engine is set.
 	conn *connection
-	// told are the events to tell once the report shows them (publish).
-	told []EventKind
-	// dnsUnprotected and routeTableFailing are set while those problems
-	// were told and hold (EventDNSUnprotected, EventRouteTableNotEnforced).
-	dnsUnprotected, routeTableFailing bool
+	// told are the events to tell once the report shows them (publish);
+	// shown is the problems the report showed at the last publish.
+	told  []EventKind
+	shown struct{ dnsUnprotected, routeTableFailing bool }
 
 	// engine and listeners are nil while stopped: the node was removed,
 	// or starting again failed; so are resolver and system, the OS's
@@ -353,7 +359,7 @@ func (r *runner) stop() {
 	}
 	engine, listeners, resolver := r.engine, r.listeners, r.resolver
 	r.engine, r.listeners, r.resolver, r.routes = nil, nil, nil, nil
-	r.retryAt, r.routeTableFailing = time.Time{}, false
+	r.retryAt = time.Time{}
 	r.publish()
 	r.restoreSystem()
 	if resolver != nil {
@@ -418,7 +424,6 @@ func (r *runner) loop(ctx context.Context) error {
 			var err error
 			if r.engine != nil {
 				err = r.engine.SetRules(req.rules)
-				r.routeTableSaid(err)
 			}
 			r.publish()
 			req.done <- err
@@ -427,7 +432,8 @@ func (r *runner) loop(ctx context.Context) error {
 }
 
 // publish puts the data plane's state into the device's report, then
-// tells the events that state shows.
+// tells the events that state shows: those queued (tell), in the order
+// they were, then the problems the report shows that it didn't before.
 func (r *runner) publish() {
 	n := 0
 	if r.listeners != nil {
@@ -437,36 +443,27 @@ func (r *runner) publish() {
 		p.engine, p.version, p.removed, p.retrying, p.listeners, p.conn, p.dns =
 			r.engine, r.follow.cur.Header().Version, r.follow.removed, !r.retryAt.IsZero(), n, r.conn.state, r.guard.problem
 	})
+	// What Status says of them (DNSUnprotected; DataPlane.RouteTable's
+	// Error): the route table recovers and fails again on its own, the
+	// OS's resolver configuration may change what it says.
+	dnsUnprotected := r.engine != nil && dns.Unprotected(r.guard.problem())
+	routeTableFailing := r.routes != nil && r.routes.Status().Error != ""
+	if dnsUnprotected && !r.shown.dnsUnprotected {
+		r.tell(EventDNSUnprotected)
+	}
+	if routeTableFailing && !r.shown.routeTableFailing {
+		r.tell(EventRouteTableNotEnforced)
+	}
+	r.shown.dnsUnprotected, r.shown.routeTableFailing = dnsUnprotected, routeTableFailing
 	told := r.told
 	r.told = nil
-	slices.Sort(told)
-	for _, kind := range slices.Compact(told) {
+	for _, kind := range told {
 		r.dp.events.emit(kind, r.follow.cur.Header().Version)
 	}
 }
 
 // tell has publish tell kind.
 func (r *runner) tell(kind EventKind) { r.told = append(r.told, kind) }
-
-// raise tells kind when its problem starts (held goes from clear to set).
-func (r *runner) raise(held *bool, kind EventKind) {
-	if !*held {
-		*held = true
-		r.tell(kind)
-	}
-}
-
-// routeTableSaid takes what a running engine's Apply, SetRules or
-// ReloadRules returned: a route table that failed to take the rules is
-// told when that starts; one that took them clears it.
-func (r *runner) routeTableSaid(err error) {
-	switch {
-	case errors.Is(err, dataplane.ErrRouteTableNotEnforced):
-		r.raise(&r.routeTableFailing, EventRouteTableNotEnforced)
-	case err == nil, errors.Is(err, rules.ErrPresetUnavailable):
-		r.routeTableFailing = false
-	}
-}
 
 // request connects or disconnects a device. Connecting starts the data
 // plane at once on the current map, and fails if that fails; a node
@@ -604,9 +601,7 @@ func (r *runner) tryStart(ctx context.Context) {
 }
 
 func (r *runner) apply(ctx context.Context) {
-	err := r.engine.Apply(ctx, r.follow.section)
-	r.routeTableSaid(err)
-	if err != nil {
+	if err := r.engine.Apply(ctx, r.follow.section); err != nil {
 		r.retryAt = time.Now().Add(r.dp.retryAfter)
 		r.dp.Log.Warn("applying the map failed, retrying", "version", r.follow.cur.Header().Version,
 			"step", r.engine.Status().LastApplyError, "in", r.dp.retryAfter, "err", path.RedactError(err))
@@ -622,9 +617,7 @@ func (r *runner) reloadRules() {
 	if r.engine == nil {
 		return
 	}
-	err := r.engine.ReloadRules()
-	r.routeTableSaid(err)
-	if err != nil && !errors.Is(err, rules.ErrPresetUnavailable) {
+	if err := r.engine.ReloadRules(); err != nil && !errors.Is(err, rules.ErrPresetUnavailable) {
 		r.dp.Log.Warn("recompiling the rules with new lists", "err", err)
 	}
 }

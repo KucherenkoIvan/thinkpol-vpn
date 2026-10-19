@@ -1,8 +1,7 @@
 package agent
 
 // EventKind is what happened to a node. Each is an edge, told once when
-// it happens, never again while it holds. Kinds told together are told in
-// the order below.
+// it happens, never again while it holds.
 type EventKind uint8
 
 const (
@@ -15,16 +14,18 @@ const (
 	// EventConnected: a device's data plane came up. Told each time it
 	// does.
 	EventConnected
-	// EventDNSUnprotected: a connected device's OS may resolve names
-	// outside the node's resolver (Status.DNSUnprotected): pointing it
-	// failed, or it says names may go elsewhere as it is pointed. Told
-	// when that starts, not on each failed retry; again only after
-	// pointing it worked or the data plane went down.
+	// EventDNSUnprotected: the status of a connected device says its OS
+	// may resolve names outside the node's resolver (Status.DNSUnprotected:
+	// pointing it failed, or the OS's configuration says names may go
+	// elsewhere). Told when the status starts saying so, not while it
+	// goes on; again once it said otherwise or the data plane went down.
 	EventDNSUnprotected
-	// EventRouteTableNotEnforced: putting a running data plane's rules
-	// into the OS routing table failed (an Apply, a rule change, new
-	// lists). Told when that starts, not on each failed retry; again only
-	// after the rules were put in place or the data plane went down.
+	// EventRouteTableNotEnforced: the status of a running data plane says
+	// the OS routing table doesn't hold its rules (DataPlane.RouteTable's
+	// Error: an Apply or a rule change failed to put them in place, or the
+	// route table failed to put them back on its own). Told when the
+	// status starts saying so, not while it goes on; again once it said
+	// otherwise or the data plane went down.
 	EventRouteTableNotEnforced
 )
 

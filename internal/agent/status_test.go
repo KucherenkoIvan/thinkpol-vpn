@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	wgtun "golang.zx2c4.com/wireguard/tun"
+
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/supervisor"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
@@ -311,6 +313,65 @@ func TestARouteTableNotEnforcedIsAnEvent(t *testing.T) {
 	b.waitLog(t, `msg="map applied" .*version=2`)
 }
 
+// The route table failing on its own is told as the status says so; once
+// it recovered on its own, failing again is told again.
+func TestARouteTableNotEnforcedIsToldAgainAfterItRecovered(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	startNode(t, reg, s.a, s.verified(t, 1))
+	table := &wantsTable{}
+	b := startDevice(t, s, reg, true, deviceOpt{
+		prepare: func(_ *Config, p *Platform) {
+			p.NewRouteTable = func(*slog.Logger, routetable.Guard) (RouteEnforcer, error) { return table, nil }
+		},
+		dataPlane: func(dp *DataPlane) { dp.RouteTable = true },
+	})
+	b.connection(t, Connected)
+	table.setBroken(true)
+	b.maps <- s.build(t, 2)
+	b.events.are(t, Event{EventConnected, 1}, Event{EventRouteTableNotEnforced, 2})
+	table.setBroken(false)
+	b.maps <- s.build(t, 3)
+	b.waitLog(t, `msg="map applied" .*version=3`)
+	eventually(t, func() bool { return b.node.Status().DataPlane.RouteTable.Error == "" })
+	table.setBroken(true)
+	b.maps <- s.build(t, 4)
+	b.events.are(t, Event{EventConnected, 1}, Event{EventRouteTableNotEnforced, 2}, Event{EventRouteTableNotEnforced, 4})
+}
+
+// A node that returns reads disconnected: its first start failed, or it
+// stopped while it waited out of its space.
+func TestAStoppedNodeReadsDisconnected(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	startNode(t, reg, s.a, s.verified(t, 1))
+
+	failed := startDevice(t, s, reg, true, deviceOpt{prepare: func(_ *Config, p *Platform) {
+		p.NewTUN = func(string, int) (wgtun.Device, error) { return nil, errors.New("no TUN today") }
+	}})
+	if err := <-failed.done; err == nil {
+		t.Fatal("the first start didn't fail")
+	}
+	failed.done <- nil // for the cleanup
+	if st := failed.node.Status(); st.Connection != Disconnected {
+		t.Errorf("after a failed first start: %+v", st)
+	}
+
+	removed := startDevice(t, s, reg, true, deviceOpt{prepare: func(c *Config, _ *Platform) {
+		writeFile(t, filepath.Join(c.StateDir, MapFileName), s.buildWithout(t, 1, s.b), 0o644)
+	}})
+	removed.connection(t, Connecting)
+	removed.stop()
+	if err := <-removed.done; err != nil {
+		t.Fatal(err)
+	}
+	removed.done <- nil
+	if st := removed.node.Status(); st.Connection != Disconnected || !st.Removed {
+		t.Errorf("stopped while removed: %+v", st)
+	}
+	removed.events.are(t, Event{EventRemovedFromSpace, 1})
+}
+
 // A subscriber that reads the status as it hears an event sees what the
 // event says.
 func TestTheStatusShowsWhatAnEventSays(t *testing.T) {
@@ -346,6 +407,7 @@ func TestTheStatusShowsWhatAnEventSays(t *testing.T) {
 	b.maps <- s.build(t, 3)
 	b.events.are(t, Event{EventConnected, 1}, Event{EventDNSUnprotected, 1}, Event{EventRemovedFromSpace, 2},
 		Event{EventBackInSpace, 3}, Event{EventConnected, 3})
+	eventually(t, func() bool { mu.Lock(); defer mu.Unlock(); return len(heard) == 5 })
 
 	mu.Lock()
 	defer mu.Unlock()

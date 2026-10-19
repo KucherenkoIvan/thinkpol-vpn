@@ -345,6 +345,11 @@ func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
 	for {
 		select {
 		case <-ctx.Done():
+			// The node returns: its connection is down.
+			if !n.conn.disconnected() {
+				logRefused(n.logs.Logger, n.conn.disconnect())
+			}
+			publish()
 			return false
 		case req := <-n.rulesRequests:
 			// Stored already: the data plane starts with them.
@@ -352,14 +357,16 @@ func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
 		case req := <-n.requests:
 			// Kept for when the node is back in its space.
 			requested = true
+			var err error
 			switch {
 			case req.connect && n.conn.disconnected():
-				logRefused(n.logs.Logger, n.conn.connect(false))
+				err = n.conn.connect(false)
 			case !req.connect && !n.conn.disconnected():
-				logRefused(n.logs.Logger, n.conn.disconnect())
+				err = n.conn.disconnect()
 			}
+			logRefused(n.logs.Logger, err)
 			publish()
-			req.done <- nil
+			req.done <- err
 		case env, ok := <-maps:
 			if !ok {
 				maps = nil

@@ -13,7 +13,9 @@ import (
 
 // ErrRouteTableNotEnforced is putting the compiled rules into the OS
 // routing table failing (Apply, SetRules, ReloadRules): the route table
-// keeps trying, Status.RouteTable says how it stands.
+// keeps trying, Status.RouteTable says how it stands. Its text is the
+// prefix these errors had before it existed, so messages and logs read
+// as they did.
 var ErrRouteTableNotEnforced = errors.New("dataplane: route table")
 
 // RouteTable enforces the rules in the OS routing table (route-table

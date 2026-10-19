@@ -53,8 +53,9 @@ type runningNode struct {
 	done    chan error
 	// ifc, if set, is the configurator each TUN gets.
 	ifc netcfg.Configurator
-	// conn is the data plane's connection, read once it returned.
-	conn connection
+	// conn is the connection RunDataPlane made (onConn), read once it
+	// returned.
+	conn *connection
 }
 
 func newRunningNode() *runningNode {
@@ -86,14 +87,24 @@ func (n *runningNode) dataPlane(reg *transport.Registry, keys NodeKeys, m *netma
 	h.NewConfigurator = func(netcfg.Owner) (netcfg.Configurator, error) { return n.ifc, nil }
 	h.NewTUN = n.virtualTUN(nil)
 	h.Transports = func(bool) (*transport.Registry, error) { return reg, nil }
-	n.conn = newConnection(true, false)
 	return DataPlane{
-		conn: &n.conn,
 		Keys: keys, Map: m, Maps: n.maps, Registry: reg, Inbound: DirectInbound(reg),
 		Log:        slog.New(slog.NewTextHandler(n.log, &slog.HandlerOptions{Level: slog.LevelDebug})),
 		Host:       h,
 		path:       fastPaths,
 		retryAfter: testRetry,
+		onConn:     func(c *connection) { n.conn = c },
+	}
+}
+
+// noRefusals fails t if the data plane's connection refused a move; call
+// it once RunDataPlane returned.
+func (n *runningNode) noRefusals(t *testing.T) {
+	t.Helper()
+	if n.conn == nil {
+		t.Error("RunDataPlane made no connection")
+	} else if n.conn.refused != 0 {
+		t.Errorf("the connection refused %d moves", n.conn.refused)
 	}
 }
 
@@ -110,9 +121,7 @@ func (n *runningNode) run(t *testing.T, dp DataPlane) {
 		n.stop()
 		select {
 		case <-n.done:
-			if n.conn.refused != 0 {
-				t.Errorf("the connection refused %d moves", n.conn.refused)
-			}
+			n.noRefusals(t)
 		case <-time.After(10 * time.Second):
 			t.Error("the data plane didn't stop")
 		}
@@ -373,6 +382,11 @@ func TestAShutdownDuringTheFirstApplyIsNoFailure(t *testing.T) {
 	if err := <-n.done; err != nil {
 		t.Fatalf("got %v", err)
 	}
+	// Its own connection (a worker's), down with it.
+	n.noRefusals(t)
+	if n.conn.state != connDisconnected {
+		t.Errorf("connection %s after a shutdown during the first start", n.conn.state)
+	}
 }
 
 // flakyInbound is a's memory listener, opened through Open so the test
@@ -491,6 +505,10 @@ func TestAFailedStartClearsACrashedRunsRouteTable(t *testing.T) {
 	dp.Host.NewRouteTable = func(*slog.Logger, routetable.Guard) (RouteEnforcer, error) { panic("not reached") }
 	if err := RunDataPlane(n.ctx, dp); err == nil {
 		t.Fatal("RunDataPlane started without a TUN")
+	}
+	n.noRefusals(t)
+	if n.conn.state != connDisconnected {
+		t.Errorf("connection %s after a failed first start", n.conn.state)
 	}
 	if cleared.Load() == 0 {
 		t.Error("the failed start left a previous run's route table")
