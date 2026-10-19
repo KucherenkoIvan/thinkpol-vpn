@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/netip"
+	"sync/atomic"
 	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/egress"
@@ -185,10 +186,59 @@ type Options struct {
 	// unboundAccepts and failIsolation are test-only hooks: the forged-ICMP
 	// tests' negative control, and the failure injected into a table
 	// rebuild. Production never sets them; only the linux build reads them.
-	unboundAccepts bool                  //nolint:unused // test-only, read in the linux build
-	failIsolation  func(slots int) error //nolint:unused // test-only, read in the linux build
+	// Both are set at New and never written on a live supervisor: a test
+	// arms and disarms them atomically instead.
+	unboundAccepts bool           //nolint:unused // test-only, read in the linux build
+	failIsolation  *rebuildFailer //nolint:unused // test-only, read in the linux build
 	// now is an injectable clock for the backoff schedule in tests.
 	now func() time.Time
+}
+
+// rebuildFailer is the test-only Options.failIsolation: the injected
+// failure of an isolation-table rebuild. Like the field, the type and its
+// methods are read in the linux build only.
+//
+//nolint:unused // test-only, read in the linux build
+type rebuildFailer struct {
+	armed atomic.Bool
+	// err is what an armed rebuild fails with.
+	err error
+	// before, if set, runs just before the failure, to open a window.
+	before atomic.Pointer[func()]
+	// failEmpty fails the no-slot install too (New's), not only a rebuild
+	// for spaces: a test failing New itself needs that, while one failing
+	// a SetSpaces leaves it off, so a concurrent no-slot rebuild passes.
+	failEmpty bool
+}
+
+// arm fails every rebuild until disarm, running before just before
+// failing, if set.
+//
+//nolint:unused // test-only, read in the linux build
+func (f *rebuildFailer) arm(before func()) {
+	if before != nil {
+		f.before.Store(&before)
+	}
+	f.armed.Store(true)
+}
+
+//nolint:unused // test-only, read in the linux build
+func (f *rebuildFailer) disarm() {
+	f.armed.Store(false)
+	f.before.Store(nil)
+}
+
+// fail is what applyIsolation asks before it touches nftables.
+//
+//nolint:unused // test-only, read in the linux build
+func (f *rebuildFailer) fail(slots int) error {
+	if !f.armed.Load() || (slots == 0 && !f.failEmpty) {
+		return nil
+	}
+	if b := f.before.Load(); b != nil {
+		(*b)()
+	}
+	return f.err
 }
 
 // Backoff paces restarts: the first after Initial, each next one twice as

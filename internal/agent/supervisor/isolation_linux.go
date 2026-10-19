@@ -163,8 +163,8 @@ func (s *Supervisor) effective(grant EgressGrant) [2]bool {
 
 // applyIsolation rebuilds both tables in one flush.
 func (s *Supervisor) applyIsolation(st tableState) error {
-	if fn := s.opts.failIsolation; fn != nil {
-		if err := fn(len(st.rules)); err != nil {
+	if f := s.opts.failIsolation; f != nil {
+		if err := f.fail(len(st.rules)); err != nil {
 			return err
 		}
 	}
