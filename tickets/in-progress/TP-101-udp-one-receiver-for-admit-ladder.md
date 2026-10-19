@@ -39,15 +39,21 @@ The udp transport implements replay policy once: the authenticate-and-admit ladd
 
 ## Notes
 Origin: design and code-quality review of rewrite at 2fa1191 (2026-10-18).
-Must land before TP-087 so `reality` does not add a third copy of the admit ladder.
+Must land before TP-087, with the claims corrected (round 2): `reality`
+does NOT reuse the admit ladder or the sender histories — those are udp's —
+and needs its own token replay cache (DESIGN "Bounded state"). What reality
+DOES reuse from here is `transport.Inbox`, for its Accept queue. What
+reality WOULD copy is the five-minute skew window (`maxClockSkew`,
+udp/wire.go) and the wrap-safe `sentFresh`: TP-087 should move them to the
+port first (its Notes say so).
 
 What the consolidation is: `transport.Inbox` (new, generic) is the queue-fed
-link end both transports embed and the accept queue both listeners own; the
-Accept select is `Inbox.Recv`. In udp, `receiver` runs the ladder's checked
-half (open → fresh → senders.admit → the turn-away counters) for the
-listener, the router and the dialer, and `senderTable` owns the per-secret
-sender histories with the retired-sender bookkeeping for the listener and
-the router. No existing test changed; `inbox_test.go` is new coverage.
+link end both transports hold and the accept queue both listeners own; the
+Accept select is `Inbox.Recv`. In udp, `admitLadder` runs the ladder's
+checked half (open → fresh → senders.admit → the turn-away counters) for the
+listener, the router and the dialer, and `senderHistories` owns the
+per-secret sender histories with the retired-sender bookkeeping for the
+listener and the router. `inbox_test.go` is new coverage.
 
 ## Log
 - 2026-10-18 created in backlog (code-quality review)

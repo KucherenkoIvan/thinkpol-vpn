@@ -36,6 +36,8 @@ The disguised transport for client → entry links: thinkpol speaks REALITY's ha
 
 ## Notes
 - Findings and wire format: TP-064 Notes. Decision: PRD "Decisions" (2026-10-15), DESIGN "Transports".
+- From TP-101's review (2026-10-19): the five-minute skew window (`maxClockSkew`) and the wrap-safe `sentFresh` live in udp/wire.go; move them to the transport port before building reality's replay checks on copies of them.
 
 ## Log
 - 2026-10-15 created in backlog (TP-064 findings)
+- 2026-10-19 Notes: move udp's skew window and sentFresh to the port first (TP-101 review round 2)
