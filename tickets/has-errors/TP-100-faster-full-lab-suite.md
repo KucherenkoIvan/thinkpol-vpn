@@ -42,6 +42,13 @@ Other cheap wins looked at, not done:
 The supervisor's forged-ICMP test is fixed on this branch: its expired-flow flake failed this ticket's timed runs; the fix tightens what it asserts.
 
 ## Review findings
+- [ ] R7.1 lab/README.md:3: "All it needs is Docker (with Compose v2) and Go, and a Docker VM kernel built with `CONFIG_NF_CONNTRACK_PROCFS` (the supervisor's forged-ICMP test reads `/proc/thread-self/net/nf_conntrack`); nothing in the lab touches the host's network stack." (keep any part of the current sentence this drops, if still true).
+- [ ] R7.2 lab/results_test.go ~33-38: the "against a censor it must still pass what it passed without one" sentence is false (two censored cases expect fail). Replace the paragraph with: "A transport's off cell (no censor) runs before its censored cells and they read its result: a transport must pass without a censor before it is judged against one. A censored cell without a passing off cell is an error and fails fast, whether the off cell didn't run (a -run filter can select the cell alone) or it failed. Every cell holds its own lab slot (lab.StartOwnSlot)."
+- [ ] R7.3 Ticket Notes ~31: delete the "Measured 2026-10-18 at bbe4873 with LAB_P=1 …" line (history, and its last clause is false now); line ~38 keeps the per-package node-start detail.
+- [ ] R7.4 results_test.go ~110-112: drop the `if cc.modules == nil { continue }` guard inside the censored loop; instead, before the loop, fail loudly if any censored case has no modules ("censor case %q has no censor: only censorCases[0] may be off").
+- [ ] R7.5 lab/README.md ~128: "(the censor matrix, TestM0)".
+- [ ] R7.6 results_test.go ~115: the two gate messages as constants.
+
 - [x] R6.1 lab/results_test.go ~22-31: R5.5's reflow was checked but not done (line 28 is a stub). Use: "// TestCensorMatrix scores every transport against every censor module / (PRD C4, success metric 1) and regenerates lab/RESULTS.md. Every cell is / probed in its own lab, and a transport's censored cells run in parallel: / a transport passes when its data crossed the censor in the lab router / over IPv4 and over IPv6, and fails when it crossed over neither. A cell / whose outcome contradicts what its censor means to produce fails the / test, and a cell whose censor can't be trusted (censord died, the kernel / dropped queued packets, the verdict log doesn't show the probe's flows) / is an error. RESULTS.md is written only by a complete run with no error." (keep any sentence the current comment has that this drops, if still true).
 - [x] R6.2 One variable per gate message (results_test.go ~117-124), used by both record and t.Fatal.
 - [x] R6.3 internal/agent/supervisor/egress_linux_test.go: refused() now returns true for any socket error, which is the opposite of "refused" in TestForgedICMPErrorsAreRefused. Rename it errorReached; comment: "errorReached reports whether a socket error reached the root's socket. The forger sends a port unreachable and a fragmentation needed on the same flow, and the second usually overwrites the first in sk_err (EMSGSIZE over ECONNREFUSED), so whichever error surfaces counts; a read timeout is not one." Update call sites.
@@ -90,3 +97,4 @@ The supervisor's forged-ICMP test is fixed on this branch: its expired-flow flak
 - 2026-10-19 `make lint`, `make test` green; `make lab-gotest PKG=./internal/agent/supervisor` (LAB_P=1) green
 - 2026-10-19 full `make lab-test` at f7e7dbb with LAB_P=1 (TP-099's round running at the same time): pass in 405 s (6:45) wall, only TP-099's own tplab containers besides this run's; the wall time is not comparable to the earlier defaults runs
 - 2026-10-19 in-progress → review
+- 2026-10-19 review → has-errors — round 7: review findings
