@@ -28,8 +28,6 @@ A full `make lab-test` on a quiet machine finishes in roughly three to four minu
 
 ## Notes
 Origin: design and code-quality review of rewrite at 2fa1191 (2026-10-18).
-Measured 2026-10-18 at bbe4873 with `LAB_P=1`: `lab/` phase ~3:30 wall (tests parallel, sum ~7:19; `TestCensorMatrix` ~2:00 is the floor); in-node package phase ~5:40 (34 packages serially; tests ~4:16 plus ~2.5 s node start each); the two phases run one after the other.
-
 Timed `make lab-test`, same machine, no other lab running, defaults: 336.3 s at be6e24a before, 154 s at b876e8c after; per-round timings are in the Log.
 
 TestCensorMatrix: each cell takes its own lab slot (`lab.StartOwnSlot`), so `THINKPOL_LAB_MAX_LABS` bounds the matrix's labs — up to six at once — together with every other run's. The off cell is a non-parallel t.Run and the censored cells read its result: a censored cell whose baseline didn't run (a `-run` filter such as `TestCensorMatrix/udp/block-ip` selects one alone) fails fast, and with a low `-test.parallel` the censored cells can't fill every parallel slot while waiting. A transport must pass without a censor before it is judged against one.
@@ -42,12 +40,12 @@ Other cheap wins looked at, not done:
 The supervisor's forged-ICMP test is fixed on this branch: its expired-flow flake failed this ticket's timed runs; the fix tightens what it asserts.
 
 ## Review findings
-- [ ] R7.1 lab/README.md:3: "All it needs is Docker (with Compose v2) and Go, and a Docker VM kernel built with `CONFIG_NF_CONNTRACK_PROCFS` (the supervisor's forged-ICMP test reads `/proc/thread-self/net/nf_conntrack`); nothing in the lab touches the host's network stack." (keep any part of the current sentence this drops, if still true).
-- [ ] R7.2 lab/results_test.go ~33-38: the "against a censor it must still pass what it passed without one" sentence is false (two censored cases expect fail). Replace the paragraph with: "A transport's off cell (no censor) runs before its censored cells and they read its result: a transport must pass without a censor before it is judged against one. A censored cell without a passing off cell is an error and fails fast, whether the off cell didn't run (a -run filter can select the cell alone) or it failed. Every cell holds its own lab slot (lab.StartOwnSlot)."
-- [ ] R7.3 Ticket Notes ~31: delete the "Measured 2026-10-18 at bbe4873 with LAB_P=1 …" line (history, and its last clause is false now); line ~38 keeps the per-package node-start detail.
-- [ ] R7.4 results_test.go ~110-112: drop the `if cc.modules == nil { continue }` guard inside the censored loop; instead, before the loop, fail loudly if any censored case has no modules ("censor case %q has no censor: only censorCases[0] may be off").
-- [ ] R7.5 lab/README.md ~128: "(the censor matrix, TestM0)".
-- [ ] R7.6 results_test.go ~115: the two gate messages as constants.
+- [x] R7.1 lab/README.md:3: "All it needs is Docker (with Compose v2) and Go, and a Docker VM kernel built with `CONFIG_NF_CONNTRACK_PROCFS` (the supervisor's forged-ICMP test reads `/proc/thread-self/net/nf_conntrack`); nothing in the lab touches the host's network stack." (keep any part of the current sentence this drops, if still true).
+- [x] R7.2 lab/results_test.go ~33-38: the "against a censor it must still pass what it passed without one" sentence is false (two censored cases expect fail). Replace the paragraph with: "A transport's off cell (no censor) runs before its censored cells and they read its result: a transport must pass without a censor before it is judged against one. A censored cell without a passing off cell is an error and fails fast, whether the off cell didn't run (a -run filter can select the cell alone) or it failed. Every cell holds its own lab slot (lab.StartOwnSlot)."
+- [x] R7.3 Ticket Notes ~31: delete the "Measured 2026-10-18 at bbe4873 with LAB_P=1 …" line (history, and its last clause is false now); line ~38 keeps the per-package node-start detail.
+- [x] R7.4 results_test.go ~110-112: drop the `if cc.modules == nil { continue }` guard inside the censored loop; instead, before the loop, fail loudly if any censored case has no modules ("censor case %q has no censor: only censorCases[0] may be off").
+- [x] R7.5 lab/README.md ~128: "(the censor matrix, TestM0)".
+- [x] R7.6 results_test.go ~115: the two gate messages as constants.
 
 - [x] R6.1 lab/results_test.go ~22-31: R5.5's reflow was checked but not done (line 28 is a stub). Use: "// TestCensorMatrix scores every transport against every censor module / (PRD C4, success metric 1) and regenerates lab/RESULTS.md. Every cell is / probed in its own lab, and a transport's censored cells run in parallel: / a transport passes when its data crossed the censor in the lab router / over IPv4 and over IPv6, and fails when it crossed over neither. A cell / whose outcome contradicts what its censor means to produce fails the / test, and a cell whose censor can't be trusted (censord died, the kernel / dropped queued packets, the verdict log doesn't show the probe's flows) / is an error. RESULTS.md is written only by a complete run with no error." (keep any sentence the current comment has that this drops, if still true).
 - [x] R6.2 One variable per gate message (results_test.go ~117-124), used by both record and t.Fatal.
@@ -99,3 +97,4 @@ The supervisor's forged-ICMP test is fixed on this branch: its expired-flow flak
 - 2026-10-19 in-progress → review
 - 2026-10-19 review → has-errors — round 7: review findings
 - 2026-10-19 has-errors → in-progress — round 7: review findings (owner: agent-opus)
+- 2026-10-19 round 7, in 8427347: lab/README.md's requirements name the Docker VM kernel and CONFIG_NF_CONNTRACK_PROCFS through the supervisor's forged-ICMP test (no egress /proc/net reader is left), and its cap paragraph names TestM0; the matrix doc states the off-cell gate without the false "must still pass what it passed" clause, a censored case without modules fails loudly before the transports loop, and the two gate messages are package constants; the Notes' stale 2026-10-18 LAB_P=1 measurement line is gone; make lint, make test green; the censor matrix green alone (43.8 s)
