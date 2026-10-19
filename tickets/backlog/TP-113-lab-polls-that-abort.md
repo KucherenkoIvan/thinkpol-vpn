@@ -28,6 +28,8 @@ A lab poll retries a failed read and fails only at its deadline; a one-shot chec
 
 ## Notes
 - Origin: TP-099's round-6 correctness review (2026-10-19). TP-099 fixed the same pattern in the DNS and disconnect tests; these are outside its scope.
+- Also seen flaking (2026-10-19, TP-101's run, passed on rerun and on rewrite): `internal/dataplane/blobs` `TestABlobInTheStoreNeedsNoPeer`. Look at its timing assumptions while here.
 
 ## Log
 - 2026-10-19 created in backlog (TP-099 review round 6)
+- 2026-10-19 notes: a flaky blobs unit test to look at
