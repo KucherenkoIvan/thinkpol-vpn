@@ -119,10 +119,7 @@ func serveSpace(log *slog.Logger, base DataPlane) worker.Serve {
 		// tables confine it, so a server allowing egress is an exit here.
 		dp.Forward = true
 		bo := base.blobOptions
-		bo.Store, bo.Log = seedStore{seeds}, log
-		if bo.Limits.MaxHeld == 0 {
-			bo.Limits.MaxHeld = blobs.ServerMaxHeldSize
-		}
+		bo.Store, bo.Log, bo.Limits.MaxHeld = seedStore{seeds}, log, blobs.ServerMaxHeldSize
 		dp.Blobs, dp.ServeBlobs = blobs.NewOnNet(bo, base.Host.BlobNet), true
 		dp.DNS, dp.DNSUpstreams = first.DNS, first.DNSUpstreams
 		// The space's own figures only (TP-041 seals them into its

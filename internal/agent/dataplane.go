@@ -89,8 +89,9 @@ type DataPlane struct {
 	rulesRequests <-chan rulesRequest
 
 	// What tests tune: the path layer's timing, how long to wait before
-	// retrying what failed, and a worker's blob service's limits (its
-	// network comes through Host.BlobNet).
+	// retrying what failed, and a worker's blob service's limits but
+	// MaxHeld, always the server's (its network comes through
+	// Host.BlobNet).
 	path        path.Options
 	retryAfter  time.Duration
 	blobOptions blobs.Options
