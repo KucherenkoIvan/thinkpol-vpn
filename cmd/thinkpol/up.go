@@ -17,11 +17,23 @@ import (
 
 func init() {
 	register(command{
-		path:    "up",
-		args:    "[-state dir] [-map file] [-mode auto|device|server] [flags]",
-		summary: "run this node from the keys and map in its state directory (environment: THINKPOL_*)",
-		run:     runUp,
+		path:        "up",
+		args:        "[-state dir] [-map file] [-mode auto|device|server] [flags]",
+		summary:     "run this node from the keys and map in its state directory (environment: THINKPOL_*)",
+		ownsSignals: true,
+		run:         runUp,
 	})
+}
+
+// applyPlatformDefaults fills what the environment left unset with this
+// OS's defaults: a config tag can't vary by OS.
+func applyPlatformDefaults(cfg *agent.Config) {
+	if _, ok := os.LookupEnv("THINKPOL_STATE_DIR"); !ok {
+		cfg.StateDir = agent.DefaultStateDir
+	}
+	if _, ok := os.LookupEnv("THINKPOL_API_SOCKET"); !ok {
+		cfg.APISocket = agent.DefaultAPISocket()
+	}
 }
 
 func runUp(ctx context.Context, e env, args []string) error {
@@ -29,6 +41,7 @@ func runUp(ctx context.Context, e env, args []string) error {
 	if err != nil {
 		return err
 	}
+	applyPlatformDefaults(&cfg)
 	fs := flag.NewFlagSet("up", flag.ContinueOnError)
 	if err := config.BindFlags(fs, &cfg); err != nil {
 		return err

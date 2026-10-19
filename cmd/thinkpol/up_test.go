@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/devmap"
@@ -59,7 +60,62 @@ func TestUpReadsTheDevTooling(t *testing.T) {
 	}
 }
 
+// unsetTHINKPOL hides the developer's exported THINKPOL_ variables from
+// the test and the commands it runs: t.Setenv restores each one's old
+// value at cleanup, set or unset as it was.
+func unsetTHINKPOL(t *testing.T) {
+	t.Helper()
+	for _, kv := range os.Environ() {
+		k, _, _ := strings.Cut(kv, "=")
+		if strings.HasPrefix(k, "THINKPOL_") {
+			t.Setenv(k, "")
+			_ = os.Unsetenv(k)
+		}
+	}
+}
+
+// The platform defaults for what the environment left unset: the state
+// directory and the API socket of this OS, validated with the rest; a
+// set-empty socket stays (it means no local API), and an environment-set
+// state directory stays.
+func TestUpAppliesThePlatformDefaults(t *testing.T) {
+	unsetTHINKPOL(t)
+	cfg, err := agent.LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	applyPlatformDefaults(&cfg)
+	want := agent.Config{StateDir: agent.DefaultStateDir, Mode: agent.ModeAuto, LogLevel: "info", MapPoll: 5 * time.Second,
+		Connect: true, APISocket: agent.DefaultAPISocket(), APIGroup: "thinkpol", DNS: true}
+	if cfg != want {
+		t.Fatalf("defaults %+v", cfg)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("THINKPOL_API_SOCKET", "")
+	if cfg, err = agent.LoadConfig(); err != nil {
+		t.Fatal(err)
+	}
+	applyPlatformDefaults(&cfg)
+	if cfg.APISocket != "" || cfg.StateDir != agent.DefaultStateDir {
+		t.Fatalf("a set-empty socket must stay: %+v", cfg)
+	}
+	t.Setenv("THINKPOL_API_SOCKET", "")
+	_ = os.Unsetenv("THINKPOL_API_SOCKET")
+	envState := filepath.Join(tempDir(t), "env-state")
+	t.Setenv("THINKPOL_STATE_DIR", envState)
+	if cfg, err = agent.LoadConfig(); err != nil {
+		t.Fatal(err)
+	}
+	applyPlatformDefaults(&cfg)
+	if cfg.StateDir != envState || cfg.APISocket != agent.DefaultAPISocket() {
+		t.Fatalf("an environment-set state directory must stay: got %q, want %q", cfg.StateDir, envState)
+	}
+}
+
 func TestUpRefusesAnInvalidMap(t *testing.T) {
+	unsetTHINKPOL(t)
 	state, keys := m0State(t, "device-a")
 	path := filepath.Join(state, agent.MapFileName)
 	env := readTestFile(t, path)
@@ -75,6 +131,7 @@ func TestUpRefusesAnInvalidMap(t *testing.T) {
 }
 
 func TestUpRefusesAnUnsupportedHost(t *testing.T) {
+	unsetTHINKPOL(t)
 	if runtime.GOOS == "linux" {
 		t.Skip("Linux runs the data plane (the lab tests `thinkpol up` there)")
 	}
@@ -125,6 +182,7 @@ func tempDir(t *testing.T) string {
 // up's flags are agent.Config's tags: the help names each one's variable,
 // and a flag overrides its variable before the configuration is validated.
 func TestUpFlagsOverrideTheEnvironment(t *testing.T) {
+	unsetTHINKPOL(t)
 	code, _, stderr := runCLI(t, "up", "-h")
 	for _, want := range []string{"-state", "(env THINKPOL_STATE_DIR)", "-log-level", "(env THINKPOL_LOG_LEVEL)", "-dns-upstream"} {
 		if !strings.Contains(stderr, want) {
