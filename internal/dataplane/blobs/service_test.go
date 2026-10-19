@@ -200,10 +200,10 @@ func overlay(n byte) netip.Addr { return netip.AddrFrom4([4]byte{100, 64, 0, n})
 func startNode(t *testing.T, tn *testNet, n byte, store Store, limits Limits) node {
 	t.Helper()
 	logs := &logBuffer{}
-	s := New(Options{
-		Store: store, Limits: limits, Listen: tn.listen, Dial: tn.dial,
+	s := NewOnNet(Options{
+		Store: store, Limits: limits,
 		Log: slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
-	})
+	}, Net{Listen: tn.listen, Dial: tn.dial})
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { defer close(done); s.Run(ctx) }()
