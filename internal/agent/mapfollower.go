@@ -24,9 +24,6 @@ type mapFollower struct {
 	// map has no section for this node; <removedMsg>", said once per
 	// removal, about what stopping means here.
 	removedMsg string
-	// warnKind warns when a taken map changes the node's kind: a running
-	// node can't change its mode (it restarts to).
-	warnKind bool
 }
 
 // take takes a newer map if it is one (valid, signed by the space,
@@ -48,19 +45,17 @@ func (f *mapFollower) take(envelope []byte) bool {
 	if errors.Is(err, netmap.ErrNotRecipient) {
 		// A valid newer map without the node: it was removed. The map
 		// is taken, so no older one that has the node can come back.
-		f.cur = m
-		if !f.removed {
-			f.removed = true
-			f.log.Warn("removed from space: the map has no section for this node; "+f.removedMsg,
-				"version", m.Header().Version)
-		}
+		f.markRemoved(m)
 		return true
 	}
 	if err != nil {
 		f.log.Error("map refused, keeping the current one", "version", f.cur.Header().Version, "err", err)
 		return false
 	}
-	if f.warnKind && section.Node.Kind != f.section.Node.Kind {
+	// A kind held is the running node's: it can't change (it restarts
+	// to). Kind 0 is no kind held yet, a follower that starts while the
+	// node is out of its space.
+	if f.section.Node.Kind != 0 && section.Node.Kind != f.section.Node.Kind {
 		f.log.Warn("the map changes this node's kind; restart the node to change its mode", "kind", section.Node.Kind)
 	}
 	f.cur, f.section = m, section
@@ -69,4 +64,17 @@ func (f *mapFollower) take(envelope []byte) bool {
 		f.log.Info("back in space", "version", m.Header().Version)
 	}
 	return true
+}
+
+// markRemoved takes m, a map without the node's section (a newer one in
+// take, the starting one where a node starts removed), and says once per
+// removal what the node does meanwhile.
+func (f *mapFollower) markRemoved(m *netmap.Map) {
+	f.cur = m
+	if f.removed {
+		return
+	}
+	f.removed = true
+	f.log.Warn("removed from space: the map has no section for this node; "+f.removedMsg,
+		"version", m.Header().Version)
 }

@@ -304,10 +304,9 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 // while it was down starts this way instead of failing, which under a
 // service manager would only restart it over and over.
 func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
-	n.logs.Warn("removed from space: the map has no section for this node; waiting for a map that includes it",
-		"version", n.state.Map.Header().Version)
-	f := mapFollower{log: n.logs.Logger, keys: n.state.Keys, cur: n.state.Map, removed: true,
+	f := mapFollower{log: n.logs.Logger, keys: n.state.Keys, cur: n.state.Map,
 		removedMsg: "waiting for a map that includes it"}
+	f.markRemoved(n.state.Map)
 	requested := false
 	for {
 		select {
@@ -340,10 +339,15 @@ func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
 			if requested && n.mode == ModeServer {
 				n.logs.Warn("a connect or disconnect taken while removed is dropped: this node is a server, which always serves its spaces")
 			}
+			n.logs.Info("back in space", "version", f.cur.Header().Version, "mode", n.mode)
 			return true
 		}
 	}
 }
+
+// serverRemovedMsg completes the removal warning for a server's spaces:
+// its worker and listeners stop until a map includes it again.
+const serverRemovedMsg = "its worker and listeners stop until a map includes it again"
 
 // runServer runs the supervisor, and gives it the node's space (its
 // worker's config and inbound links) and the node's listeners from every
@@ -385,10 +389,10 @@ func (n *Node) runServer(ctx context.Context, reg *transport.Registry, maps chan
 		iface: n.cfg.Interface, linkMTU: n.cfg.LinkMTU,
 		dns: n.cfg.DNS, dnsUpstreams: n.dnsUpstreams, egressAllowed: allowed,
 		retryAfter: RetryAfter, report: &n.report, requests: n.requests, rulesRequests: n.rulesRequests,
-		stateDir: n.cfg.StateDir,
-		mapFollower: mapFollower{
+		stateDir: n.cfg.StateDir, log: n.logs.Logger,
+		follow: mapFollower{
 			log: n.logs.Logger, keys: n.state.Keys, cur: n.state.Map, section: n.state.Section,
-			removedMsg: "its worker and listeners stop until a map includes it again", warnKind: true,
+			removedMsg: serverRemovedMsg,
 		},
 	}
 	return s.run(ctx, maps)
@@ -413,7 +417,7 @@ type spaceServer interface {
 }
 
 // serverSpaces keeps the supervisor serving the node's current map; the
-// map it follows (its section, its removals) is the mapFollower.
+// map it follows is its follow.
 type serverSpaces struct {
 	sup        spaceServer
 	reg        *transport.Registry
@@ -421,6 +425,7 @@ type serverSpaces struct {
 	iface      string
 	linkMTU    int
 	retryAfter time.Duration
+	log        *slog.Logger
 	// stateDir holds the seeds of the space's blobs (seedBlobs).
 	stateDir string
 	// dns runs the space's resolver in its worker, asking dnsUpstreams,
@@ -436,7 +441,8 @@ type serverSpaces struct {
 	// listeners fail.
 	refusedLogged []netip.AddrPort
 
-	mapFollower
+	// follow is the map the server follows (its section, its removals).
+	follow mapFollower
 
 	// report gets the map's version and whether serving it failed;
 	// requests, a device's, are refused.
@@ -455,52 +461,52 @@ func (e errListeners) Unwrap() error { return e.error }
 // gets the map and keys) and the listeners. Only the node owner's space is
 // served until hosting grants (TP-040) add guests.
 func (s *serverSpaces) apply() error {
-	if s.removed {
+	if s.follow.removed {
 		s.report.set(func(p *report) { p.dnsUpstreamsRefused = 0 })
 		if err := s.sup.SetListeners(nil); err != nil {
 			return errListeners{err}
 		}
 		return s.sup.SetSpaces(nil)
 	}
-	id := s.cur.Header().SpaceID
+	id := s.follow.cur.Header().SpaceID
 	config, err := WorkerConfig{
-		Keys: s.keys, Trust: s.trust, Map: s.cur.Bytes(), Interface: s.iface, LinkMTU: s.linkMTU,
+		Keys: s.follow.keys, Trust: s.trust, Map: s.follow.cur.Bytes(), Interface: s.iface, LinkMTU: s.linkMTU,
 		DNS: s.dns, DNSUpstreams: s.workerUpstreams(),
 	}.Encode()
 	if err != nil {
 		return err
 	}
-	inbound := dataplane.AcceptedInbound(s.section, s.reg, transport.SpaceID(id), s.linkMTU)
+	inbound := dataplane.AcceptedInbound(s.follow.section, s.reg, transport.SpaceID(id), s.linkMTU)
 	// The seeds are read when the supervisor sends them (a worker's start,
 	// a new map), never held here.
 	var seeds func() [][]byte
-	if dir, header, log := s.stateDir, s.cur.Header().Blobs, s.log; dir != "" && len(header) > 0 {
+	if dir, header, log := s.stateDir, s.follow.cur.Header().Blobs, s.log; dir != "" && len(header) > 0 {
 		seeds = func() [][]byte { return seedBlobs(dir, header, log) }
 	}
-	allow := s.section.Node.AllowEgress
+	allow := s.follow.section.Node.AllowEgress
 	space := supervisor.Space{
 		ID: id, Config: config, Inbound: inbound.Links, Seeds: seeds,
-		Egress: supervisor.EgressGrant{IPv4: allow, IPv6: allow}, Dials: dials(s.section, s.reg),
+		Egress: supervisor.EgressGrant{IPv4: allow, IPv6: allow}, Dials: dials(s.follow.section, s.reg),
 	}
 	if err := s.sup.SetSpaces([]supervisor.Space{space}); err != nil {
 		return fmt.Errorf("serving space %v: %w", id, err)
 	}
-	ls := make([]supervisor.Listener, 0, len(s.section.Node.Listeners))
-	for _, l := range s.section.Node.Listeners {
+	ls := make([]supervisor.Listener, 0, len(s.follow.section.Node.Listeners))
+	for _, l := range s.follow.section.Node.Listeners {
 		ls = append(ls, supervisor.Listener{Transport: l.Transport, Address: l.Address.String(), Settings: l.Settings})
 	}
 	if err := s.sup.SetListeners(ls); err != nil {
 		return errListeners{err}
 	}
-	s.log.Info("map applied", append(append([]any{"version", s.cur.Header().Version, "listeners", len(ls), "inbound_skipped", len(inbound.Skipped)},
-		serverSettings(s.section.Node)...), append(s.egressAttrs(), "blobs", len(s.cur.Header().Blobs))...)...)
+	s.log.Info("map applied", append(append([]any{"version", s.follow.cur.Header().Version, "listeners", len(ls), "inbound_skipped", len(inbound.Skipped)},
+		serverSettings(s.follow.section.Node)...), append(s.egressAttrs(), "blobs", len(s.follow.cur.Header().Blobs))...)...)
 	return nil
 }
 
 // egressAttrs say, for a section allowing egress, what the node can give
 // it: the uplink and its families, never a destination.
 func (s *serverSpaces) egressAttrs() []any {
-	if !s.section.Node.AllowEgress {
+	if !s.follow.section.Node.AllowEgress {
 		return nil
 	}
 	e := s.sup.Egress()
@@ -544,7 +550,7 @@ func (s *serverSpaces) run(ctx context.Context, maps <-chan []byte) error {
 		retry = time.After(s.retryAfter)
 	}
 	for {
-		s.report.set(func(p *report) { p.version, p.removed, p.retrying = s.cur.Header().Version, s.removed, retry != nil })
+		s.report.set(func(p *report) { p.version, p.removed, p.retrying = s.follow.cur.Header().Version, s.follow.removed, retry != nil })
 		select {
 		case <-ctx.Done():
 			return nil
@@ -560,12 +566,12 @@ func (s *serverSpaces) run(ctx context.Context, maps <-chan []byte) error {
 				maps = nil
 				continue
 			}
-			if !s.take(env) {
+			if !s.follow.take(env) {
 				continue
 			}
 		}
 		if err := s.apply(); err != nil {
-			s.log.Warn("serving the map failed, retrying", "version", s.cur.Header().Version, "in", s.retryAfter, "err", err)
+			s.log.Warn("serving the map failed, retrying", "version", s.follow.cur.Header().Version, "in", s.retryAfter, "err", err)
 			retry = time.After(s.retryAfter)
 		} else {
 			retry = nil

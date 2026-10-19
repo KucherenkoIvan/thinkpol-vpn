@@ -149,7 +149,7 @@ func TestParseUpstreams(t *testing.T) {
 // resolvers: both families, port 53, every one passing the worker's
 // egress; with -dns-upstream, the configured ones.
 func TestAWorkerResolvesThroughTheDefaultPublicUpstreams(t *testing.T) {
-	s := &serverSpaces{dns: true, mapFollower: mapFollower{log: slog.New(slog.DiscardHandler)}}
+	s := &serverSpaces{dns: true, follow: mapFollower{log: slog.New(slog.DiscardHandler)}}
 	want := []netip.AddrPort{
 		netip.MustParseAddrPort("9.9.9.9:53"),
 		netip.MustParseAddrPort("[2620:fe::fe]:53"),
@@ -218,7 +218,7 @@ func TestAWorkerWithEveryUpstreamRefusedHasNone(t *testing.T) {
 	asked := false
 	r := &runner{dp: DataPlane{DNS: true, DNSUpstreams: ups, Forward: true, Log: log,
 		Host: Host{SystemUpstreams: func([]netip.Addr) ([]netip.Addr, error) { asked = true; return nil, nil }},
-	}, mapFollower: mapFollower{section: section}}
+	}, follow: mapFollower{section: section}}
 	if res := r.newResolver(); res == nil {
 		t.Fatal("no resolver")
 	}
@@ -253,7 +253,7 @@ func TestAServerSectionInDeviceModeFallsBackToTheSystemResolvers(t *testing.T) {
 			asked = true
 			return []netip.Addr{netip.MustParseAddr("192.0.2.53")}, nil
 		}},
-	}, mapFollower: mapFollower{section: section}}
+	}, follow: mapFollower{section: section}}
 	if res := r.newResolver(); res == nil {
 		t.Fatal("no resolver")
 	}

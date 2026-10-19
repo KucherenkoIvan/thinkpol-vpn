@@ -168,7 +168,10 @@ func TestARemovedNodeWaitsForAMapWithIt(t *testing.T) {
 	if st := n.State(); st.Removed || st.Map.Header().Version != 3 || st.Section.Node.ID != s.b.ID || n.Mode() != ModeDevice {
 		t.Fatalf("removed %v, version %d, section of %v, mode %s", st.Removed, st.Map.Header().Version, st.Section.Node.ID, n.Mode())
 	}
-	if !strings.Contains(out.String(), "removed from space") || !strings.Contains(out.String(), "back in space") {
+	// The back-in-space line says which mode the node came back as (the
+	// follower's own line has no mode).
+	if !strings.Contains(out.String(), "removed from space") ||
+		!strings.Contains(out.String(), "version=3 mode=device") {
 		t.Fatalf("log:\n%s", out.String())
 	}
 

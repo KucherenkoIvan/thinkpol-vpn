@@ -130,9 +130,9 @@ func RunDataPlane(ctx context.Context, dp DataPlane) error {
 	}
 	r := &runner{
 		dp: dp, maps: dp.Maps, down: dp.disconnected, guard: &dnsGuard{}, tun: dp.Interface,
-		mapFollower: mapFollower{
+		follow: mapFollower{
 			log: dp.Log, keys: dp.Keys, cur: dp.Map, section: section,
-			removedMsg: "the data plane stops until a map includes it again", warnKind: true,
+			removedMsg: "the data plane stops until a map includes it again",
 		},
 	}
 	dp.report.set(func(p *report) { p.dns = r.guard.problem })
@@ -187,13 +187,13 @@ func (r *runner) clearRoutes() {
 	}
 }
 
-// runner follows the space's maps and runs the data plane while the node
-// is in the space; the maps it follows (its section, its removals) are the
-// mapFollower.
+// runner follows the space's maps (follow) and runs the data plane while
+// the node is in the space.
 type runner struct {
 	dp   DataPlane
 	maps <-chan []byte
-	mapFollower
+	// follow is the map the runner follows (its section, its removals).
+	follow mapFollower
 
 	// engine and listeners are nil while stopped: the node was removed,
 	// or starting again failed; so are resolver and system, the OS's
@@ -263,7 +263,7 @@ func (r *runner) start(ctx context.Context) error {
 	}
 	cfg := dataplane.EngineConfig{
 		ID:           r.dp.Keys.ID,
-		Space:        transport.SpaceID(r.cur.Header().SpaceID),
+		Space:        transport.SpaceID(r.follow.cur.Header().SpaceID),
 		WireGuardKey: r.dp.Keys.WireGuard,
 		Registry:     r.dp.Registry,
 		TUN:          dev,
@@ -296,13 +296,13 @@ func (r *runner) start(ctx context.Context) error {
 		}
 		return &StartError{Step: StepEngine, Err: err}
 	}
-	if err := engine.Apply(ctx, r.section); err != nil {
+	if err := engine.Apply(ctx, r.follow.section); err != nil {
 		step := engine.Status().LastApplyError
 		if resolver != nil {
 			_ = resolver.Close()
 		}
 		_ = engine.Close()
-		return &StartError{Step: step, Err: fmt.Errorf("applying map version %d: %w", r.cur.Header().Version, err)}
+		return &StartError{Step: step, Err: fmt.Errorf("applying map version %d: %w", r.follow.cur.Header().Version, err)}
 	}
 	r.engine, r.resolver = engine, resolver
 	if resolver != nil && r.dp.RouteTable {
@@ -355,7 +355,7 @@ func (r *runner) loop(ctx context.Context) error {
 	for {
 		var ended <-chan struct{}
 		if r.listeners != nil {
-			r.listeners.reconcile(ctx, r.dp.Inbound.Listeners(r.section))
+			r.listeners.reconcile(ctx, r.dp.Inbound.Listeners(r.follow.section))
 			ended = r.listeners.ended
 		}
 		r.publish()
@@ -403,7 +403,7 @@ func (r *runner) publish() {
 	}
 	r.dp.report.set(func(p *report) {
 		p.engine, p.version, p.removed, p.retrying, p.listeners, p.want =
-			r.engine, r.cur.Header().Version, r.removed, !r.retryAt.IsZero(), n, !r.down
+			r.engine, r.follow.cur.Header().Version, r.follow.removed, !r.retryAt.IsZero(), n, !r.down
 	})
 }
 
@@ -425,7 +425,7 @@ func (r *runner) connect(ctx context.Context, connect bool) error {
 		r.retryAt = time.Time{}
 		r.updateBlobs()
 		r.dp.Log.Info("disconnected")
-	case connect && r.removed:
+	case connect && r.follow.removed:
 		if r.down {
 			r.down = false
 			r.dp.Log.Info("connecting once a map includes this node")
@@ -441,7 +441,7 @@ func (r *runner) connect(ctx context.Context, connect bool) error {
 			} else {
 				r.retryAt = time.Now().Add(r.dp.retryAfter)
 			}
-			r.dp.Log.Warn("connecting failed", "version", r.cur.Header().Version, "err", err)
+			r.dp.Log.Warn("connecting failed", "version", r.follow.cur.Header().Version, "err", err)
 			return err
 		}
 		r.dp.Log.Info("connected")
@@ -491,10 +491,10 @@ func (r *runner) retry(ctx context.Context) {
 // node stops the data plane, one with it applies it (or starts the data
 // plane on it).
 func (r *runner) next(ctx context.Context, envelope []byte) {
-	if !r.take(envelope) {
+	if !r.follow.take(envelope) {
 		return
 	}
-	if r.removed {
+	if r.follow.removed {
 		r.stop()
 		r.retryAt = time.Time{}
 		r.updateBlobs()
@@ -512,14 +512,14 @@ func (r *runner) next(ctx context.Context, envelope []byte) {
 func (r *runner) tryStart(ctx context.Context) {
 	if err := r.start(ctx); err != nil {
 		r.retryAt = time.Now().Add(r.dp.retryAfter)
-		r.dp.Log.Warn("starting the data plane failed, retrying", "version", r.cur.Header().Version, "in", r.dp.retryAfter, "err", path.RedactError(err))
+		r.dp.Log.Warn("starting the data plane failed, retrying", "version", r.follow.cur.Header().Version, "in", r.dp.retryAfter, "err", path.RedactError(err))
 	}
 }
 
 func (r *runner) apply(ctx context.Context) {
-	if err := r.engine.Apply(ctx, r.section); err != nil {
+	if err := r.engine.Apply(ctx, r.follow.section); err != nil {
 		r.retryAt = time.Now().Add(r.dp.retryAfter)
-		r.dp.Log.Warn("applying the map failed, retrying", "version", r.cur.Header().Version,
+		r.dp.Log.Warn("applying the map failed, retrying", "version", r.follow.cur.Header().Version,
 			"step", r.engine.Status().LastApplyError, "in", r.dp.retryAfter, "err", path.RedactError(err))
 		return
 	}
@@ -544,31 +544,31 @@ func (r *runner) updateBlobs() {
 	if r.dp.Blobs == nil {
 		return
 	}
-	if r.engine == nil && r.removed {
+	if r.engine == nil && r.follow.removed {
 		r.dp.Blobs.Update(blobs.Plan{}) // the space's lists are no use now
 		return
 	}
 	if r.engine == nil {
 		// Down (disconnected, or a start to retry): the lists stay, on
 		// disk too, but nothing is fetched or served.
-		p := blobs.PlanFrom(r.cur.Header().Blobs, r.section, false, r.tun, r.dp.ServeBlobs)
+		p := blobs.PlanFrom(r.follow.cur.Header().Blobs, r.follow.section, false, r.tun, r.dp.ServeBlobs)
 		r.dp.Blobs.Update(blobs.Plan{Want: p.Want})
 		return
 	}
-	r.dp.Blobs.Update(blobs.PlanFrom(r.cur.Header().Blobs, r.section, r.engine.Status().IPv6, r.tun, r.dp.ServeBlobs))
+	r.dp.Blobs.Update(blobs.PlanFrom(r.follow.cur.Header().Blobs, r.follow.section, r.engine.Status().IPv6, r.tun, r.dp.ServeBlobs))
 }
 
 func (r *runner) applied() {
 	r.updateBlobs()
 	st := r.engine.Status()
-	attrs := []any{"version", r.cur.Header().Version, "node", r.dp.Keys.ID, "ipv4", r.section.Node.IPv4,
+	attrs := []any{"version", r.follow.cur.Header().Version, "node", r.dp.Keys.ID, "ipv4", r.follow.section.Node.IPv4,
 		"mtu", st.MTU, "peers", len(st.Peers), "skipped", len(st.Skipped)}
 	if st.IPv6 {
-		attrs = append(attrs, "ipv6", r.section.Node.IPv6)
+		attrs = append(attrs, "ipv6", r.follow.section.Node.IPv6)
 	} else {
 		attrs = append(attrs, "ipv6_off", st.IPv6Off)
 	}
-	if n := r.section.Node; n.Kind == netmap.NodeServer {
+	if n := r.follow.section.Node; n.Kind == netmap.NodeServer {
 		attrs = append(attrs, serverSettings(n)...)
 		attrs = append(attrs, "exit", onOff(st.Exit))
 		if n.AllowEgress && !st.Exit {
@@ -611,7 +611,7 @@ func (r *runner) logStatus() {
 			}
 		}
 	}
-	attrs := []any{"version", r.cur.Header().Version, "peers", len(st.Peers), "handshaken", handshaken,
+	attrs := []any{"version", r.follow.cur.Header().Version, "peers", len(st.Peers), "handshaken", handshaken,
 		"neighbors", len(st.Neighbors), "links_up", up, "listeners", len(r.listeners.serving),
 		"no_path", st.Path.NoPath, "no_route", st.Router.NoRoute}
 	if r.resolver != nil {

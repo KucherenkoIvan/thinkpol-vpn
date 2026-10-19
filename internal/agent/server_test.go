@@ -100,9 +100,11 @@ func runServerSpacesIn(t *testing.T, s *testSpace, sup *fakeSupervisor, stateDir
 	}
 	ss := &serverSpaces{
 		sup: sup, reg: reg, trust: s.trust(), retryAfter: testRetry,
-		mapFollower: mapFollower{
-			log: slog.New(slog.NewTextHandler(r.log, nil)), keys: s.a, cur: m, section: section,
-			removedMsg: "its worker and listeners stop until a map includes it again", warnKind: true,
+		log: slog.New(slog.NewTextHandler(r.log, nil)),
+		follow: mapFollower{
+			log:  slog.New(slog.NewTextHandler(r.log, nil)),
+			keys: s.a, cur: m, section: section,
+			removedMsg: serverRemovedMsg,
 		},
 	}
 	ss.stateDir = stateDir
