@@ -31,11 +31,11 @@ import (
 // is an error. RESULTS.md is written only by a complete run with no error.
 //
 // A transport's off cell (no censor) runs before its censored cells and
-// they read its result: against a censor it must still pass what it passed
-// without one. A censored cell without a passing off cell is an error and
-// fails fast, whether the off cell didn't run (a -run filter can select the
-// cell alone) or it failed. Every cell holds its own lab slot
-// (lab.StartOwnSlot: one per subtest).
+// they read its result: a transport must pass without a censor before it
+// is judged against one. A censored cell without a passing off cell is an
+// error and fails fast, whether the off cell didn't run (a -run filter can
+// select the cell alone) or it failed. Every cell holds its own lab slot
+// (lab.StartOwnSlot).
 func TestCensorMatrix(t *testing.T) {
 	t.Parallel()
 	var (
@@ -95,6 +95,11 @@ func TestCensorMatrix(t *testing.T) {
 	}
 
 	off, censored := censorCases[0], censorCases[1:]
+	for _, cc := range censored {
+		if cc.modules == nil {
+			t.Fatalf("censor case %q has no censor: only censorCases[0] may be off", cc.name)
+		}
+	}
 	for _, tr := range transports {
 		t.Run(tr.name, func(t *testing.T) {
 			t.Parallel()
@@ -107,21 +112,17 @@ func TestCensorMatrix(t *testing.T) {
 				offResult = runCell(t, tr, off).result
 			})
 			for _, cc := range censored {
-				if cc.modules == nil {
-					continue
-				}
 				t.Run(cc.name, func(t *testing.T) {
 					t.Parallel()
-					notRun, notPassed := "the off cell didn't run", "the off cell didn't pass"
 					if offResult == "" {
 						record(matrixCell{transport: tr.name, censor: cc.name,
-							result: "error", detail: notRun})
-						t.Fatal(notRun)
+							result: "error", detail: gateNotRun})
+						t.Fatal(gateNotRun)
 					}
 					if offResult != "pass" {
 						record(matrixCell{transport: tr.name, censor: cc.name,
-							result: "error", detail: notPassed})
-						t.Fatal(notPassed)
+							result: "error", detail: gateNotPassed})
+						t.Fatal(gateNotPassed)
 					}
 					runCell(t, tr, cc)
 				})
@@ -129,6 +130,13 @@ func TestCensorMatrix(t *testing.T) {
 		})
 	}
 }
+
+// The off-cell gate messages: a censored cell sees them when its baseline
+// didn't run or didn't pass.
+const (
+	gateNotRun    = "the off cell didn't run"
+	gateNotPassed = "the off cell didn't pass"
+)
 
 type matrixCell struct {
 	transport, censor, result, detail string
