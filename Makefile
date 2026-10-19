@@ -110,7 +110,9 @@ $(TOOLS_STAMP):
 LABCTL := go run ./lab/labctl
 LAB_TIMEOUT ?= 20m
 # Packages make lab-test runs in nodes at once. Fixed, not scaled by load:
-# tests must hold up under other runs' load anyway (lab/README.md).
+# tests must hold up under other runs' load anyway (lab/README.md). The
+# lab/ test phase and this phase run at the same time and draw from the
+# same lab slot cap.
 LAB_P ?= 4
 
 lab: lab-test ## the lab suite, ending in the censor matrix (lab/RESULTS.md)
@@ -118,12 +120,22 @@ lab: lab-test ## the lab suite, ending in the censor matrix (lab/RESULTS.md)
 lab-up: ## start the standard topology for this checkout, for poking around
 	$(LABCTL) up
 
-lab-test: ## lab tests (each starts its own lab) + every package's tests inside a lab node; tears down after
+lab-test: ## lab tests (each starts its own lab) and every package's tests inside a lab node, at once; tears down after
+# Each phase writes its own exit status: sh has no pipefail.
 	@$(LABCTL) down -stale
-	@status=0; \
-	go test -tags lab -count=1 -timeout $(LAB_TIMEOUT) ./lab/... || status=1; \
-	$(LABCTL) gotest -p $(LAB_P) ./... || status=1; \
-	if [ -z "$$THINKPOL_LAB_KEEP" ]; then $(LABCTL) down -tests; fi; \
+	@tmp=$$(mktemp -d) || exit 1; trap 'rm -rf "$$tmp"' EXIT; \
+	status=0; \
+	( { go test -tags lab -count=1 -timeout $(LAB_TIMEOUT) ./lab/...; echo $$? > "$$tmp/lab.status"; } 2>&1 | awk '{print "[lab]  " $$0; fflush()}' ) & \
+	( { $(LABCTL) gotest -p $(LAB_P) ./...; echo $$? > "$$tmp/node.status"; } 2>&1 | awk '{print "[node] " $$0; fflush()}' ) & \
+	wait; \
+	for f in lab node; do \
+		if [ -f "$$tmp/$$f.status" ]; then \
+			s=$$(cat "$$tmp/$$f.status"); [ "$$s" -eq 0 ] || status=1; \
+		else \
+			echo "lab-test: the $$f phase died without a status" >&2; status=1; \
+		fi; \
+	done; \
+	if [ -z "$$THINKPOL_LAB_KEEP" ] && ! $(LABCTL) down -tests; then status=1; fi; \
 	exit $$status
 
 # Performance gates: tests that check THINKPOL_LAB_PERF and are named

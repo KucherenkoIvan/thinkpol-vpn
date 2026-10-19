@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -21,72 +22,124 @@ import (
 
 // TestCensorMatrix scores every transport against every censor module
 // (PRD C4, success metric 1) and regenerates lab/RESULTS.md. Every cell is
-// probed: a transport passes when its data crossed the censor in the lab
-// router over IPv4 and over IPv6, and fails when it crossed over neither. A
-// cell whose outcome contradicts what its censor means to produce fails the
+// probed in its own lab, and a transport's censored cells run in parallel:
+// a transport passes when its data crossed the censor in the lab router
+// over IPv4 and over IPv6, and fails when it crossed over neither. A cell
+// whose outcome contradicts what its censor means to produce fails the
 // test, and a cell whose censor can't be trusted (censord died, the kernel
 // dropped queued packets, the verdict log doesn't show the probe's flows)
 // is an error. RESULTS.md is written only by a complete run with no error.
+//
+// A transport's off cell (no censor) runs before its censored cells and
+// they read its result: a transport must pass without a censor before it
+// is judged against one. A censored cell without a passing off cell is an
+// error and fails fast, whether the off cell didn't run (a -run filter can
+// select the cell alone) or it failed. Every cell holds its own lab slot
+// (lab.StartOwnSlot).
 func TestCensorMatrix(t *testing.T) {
-	var cells []matrixCell
-	off := map[string]string{} // transport -> its "off" result
+	t.Parallel()
+	var (
+		mu    sync.Mutex
+		cells []matrixCell
+	)
+	record := func(cell matrixCell) {
+		mu.Lock()
+		defer mu.Unlock()
+		cells = append(cells, cell)
+	}
 	t.Cleanup(func() { writeResults(t, cells, len(transports)*len(censorCases)) })
 
-	for _, tr := range transports {
-		for _, cc := range censorCases {
-			t.Run(tr.name+"/"+cc.name, func(t *testing.T) {
-				cell := matrixCell{transport: tr.name, censor: cc.name, result: "error"}
-				defer func() {
-					cells = append(cells, cell)
-					if cc.modules == nil {
-						off[tr.name] = cell.result
-					}
-				}()
-				if cc.modules != nil && off[tr.name] != "pass" {
-					cell.detail = "the transport failed without a censor"
-					t.Fatalf("%s without a censor is %q: %s says nothing", tr.name, off[tr.name], cc.name)
-				}
+	// runCell probes one cell and records it: t.Fatal below ends the
+	// function before its return, the deferred record is what survives.
+	runCell := func(t *testing.T, tr transport, cc censorCase) matrixCell {
+		cell := matrixCell{transport: tr.name, censor: cc.name, result: "error"}
+		defer func() { record(cell) }()
 
-				l := lab.Start(t, lab.Standard())
-				target, err := tr.setup(t, l)
-				if err != nil {
-					cell.detail = "setup failed"
-					t.Fatal(err)
-				}
-				var c *censorRun
-				if cc.modules != nil {
-					c = startCensor(t, l, cc.modules(t, l))
-				}
+		l := lab.StartOwnSlot(t, lab.Standard())
+		target, err := tr.setup(t, l)
+		if err != nil {
+			cell.detail = "setup failed"
+			t.Fatal(err)
+		}
+		var c *censorRun
+		if cc.modules != nil {
+			c = startCensor(t, l, cc.modules(t, l))
+		}
 
-				want := cc.want(tr.name)
-				crossed := tr.probe(t, l, target, want == "pass")
-				cell.result, cell.detail = score(crossed)
+		want := cc.want(tr.name)
+		crossed := tr.probe(t, l, target, want == "pass")
+		cell.result, cell.detail = score(crossed)
 
-				if c != nil {
-					if err := c.healthy(t); err != nil {
-						cell.result, cell.detail = "error", "censor unhealthy"
-						t.Fatal(err)
-					}
-					if err := tr.sawFlows(t, l, c); err != nil {
-						cell.result, cell.detail = "error", "the verdict log misses the probe's flows"
-						t.Fatal(err)
-					}
-				}
-				if want == "fail" {
-					how, err := blockedBy(t, l, c)
-					if err != nil {
-						t.Error(err)
-					} else if cell.result == "fail" {
-						cell.detail += "; the censor " + how + " them"
-					}
-				}
-				if cell.result != want {
-					t.Errorf("%s against %s: %s (%s), want %s", tr.name, cc.name, cell.result, cell.detail, want)
-				}
-			})
+		if c != nil {
+			if err := c.healthy(t); err != nil {
+				cell.result, cell.detail = "error", "censor unhealthy"
+				t.Fatal(err)
+			}
+			if err := tr.sawFlows(t, l, c); err != nil {
+				cell.result, cell.detail = "error", "the verdict log misses the probe's flows"
+				t.Fatal(err)
+			}
+		}
+		if want == "fail" {
+			how, err := blockedBy(t, l, c)
+			if err != nil {
+				t.Error(err)
+			} else if cell.result == "fail" {
+				cell.detail += "; the censor " + how + " them"
+			}
+		}
+		if cell.result != want {
+			t.Errorf("%s against %s: %s (%s), want %s", tr.name, cc.name, cell.result, cell.detail, want)
+		}
+		return cell
+	}
+
+	off, censored := censorCases[0], censorCases[1:]
+	if off.modules != nil {
+		t.Fatalf("censor case %q is the off cell and must have no censor", off.name)
+	}
+	for _, cc := range censored {
+		if cc.modules == nil {
+			t.Fatalf("censor case %q has no censor: only censorCases[0] may be off", cc.name)
 		}
 	}
+	for _, tr := range transports {
+		t.Run(tr.name, func(t *testing.T) {
+			t.Parallel()
+			offResult := "" // the off cell's result; "" when it didn't run
+			t.Run(off.name, func(t *testing.T) {
+				// runCell records the cell even when t.Fatal stops it,
+				// but the assignment would not happen: claim that the
+				// cell ran before it can fail.
+				offResult = "error"
+				offResult = runCell(t, tr, off).result
+			})
+			for _, cc := range censored {
+				t.Run(cc.name, func(t *testing.T) {
+					t.Parallel()
+					if offResult == "" {
+						record(matrixCell{transport: tr.name, censor: cc.name,
+							result: "error", detail: gateNotRun})
+						t.Fatal(gateNotRun)
+					}
+					if offResult != "pass" {
+						record(matrixCell{transport: tr.name, censor: cc.name,
+							result: "error", detail: gateNotPassed})
+						t.Fatal(gateNotPassed)
+					}
+					runCell(t, tr, cc)
+				})
+			}
+		})
+	}
 }
+
+// The off-cell gate messages: a censored cell sees them when its baseline
+// didn't run or didn't pass.
+const (
+	gateNotRun    = "the off cell didn't run"
+	gateNotPassed = "the off cell didn't pass"
+)
 
 type matrixCell struct {
 	transport, censor, result, detail string

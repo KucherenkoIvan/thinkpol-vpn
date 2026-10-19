@@ -43,8 +43,24 @@ type Bridge struct {
 }
 
 // Start brings up a lab for the test and tears it down when the test ends.
-// When the test fails, the containers' logs go to the test log.
+// When the test fails, the containers' logs go to the test log. All the
+// labs one top-level test starts share one slot of the cap, so a test
+// starting a second lab never waits for itself.
 func Start(t testing.TB, topo Topology) *Lab {
+	return start(t, topo, "test:"+strings.SplitN(t.Name(), "/", 2)[0])
+}
+
+// StartOwnSlot is Start with one slot per test or subtest (keyed by its
+// full name) instead of one per top-level test, held until that test ends:
+// a test whose subtests each start one lab gives each subtest its own
+// slot, so the cap bounds its labs like every other run's. Don't mix it
+// with Start, or nest it under a test that holds a slot of its own: the
+// parent holds its slot while its subtests wait here.
+func StartOwnSlot(t testing.TB, topo Topology) *Lab {
+	return start(t, topo, "own:"+t.Name())
+}
+
+func start(t testing.TB, topo Topology, slotKey string) *Lab {
 	t.Helper()
 	root, err := Root()
 	if err != nil {
@@ -58,8 +74,6 @@ func Start(t testing.TB, topo Topology) *Lab {
 	project := claimProject(testProject(checkout, cwd, t.Name()))
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
-	// All the labs of one top-level test share a slot of the host-wide cap.
-	slotKey := "test:" + strings.SplitN(t.Name(), "/", 2)[0]
 	l, err := up(ctx, root, project, topo, slotKey)
 	if l != nil {
 		t.Cleanup(func() { l.cleanup(t) })
