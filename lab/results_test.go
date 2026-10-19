@@ -22,7 +22,8 @@ import (
 
 // TestCensorMatrix scores every transport against every censor module
 // (PRD C4, success metric 1) and regenerates lab/RESULTS.md. Every cell is
-// probed in its own lab, the cells at once: a transport passes when its
+// probed in its own lab, and a transport's censored cells run in parallel:
+// a transport passes when its
 // data crossed the censor in the lab router over IPv4 and over IPv6, and
 // fails when it crossed over neither. A cell whose outcome contradicts what
 // its censor means to produce fails the test, and a cell whose censor can't
@@ -49,8 +50,8 @@ func TestCensorMatrix(t *testing.T) {
 	}
 	t.Cleanup(func() { writeResults(t, cells, len(transports)*len(censorCases)) })
 
-	// runCell probes one cell and records it; the cell is returned with its
-	// result even when the test fails.
+	// runCell probes one cell and records it: t.Fatal below ends the
+	// function before its return, the deferred record is what survives.
 	runCell := func(t *testing.T, tr transport, cc censorCase) matrixCell {
 		cell := matrixCell{transport: tr.name, censor: cc.name, result: "error"}
 		defer func() { record(cell) }()
@@ -94,14 +95,19 @@ func TestCensorMatrix(t *testing.T) {
 		return cell
 	}
 
+	off, censored := censorCases[0], censorCases[1:]
 	for _, tr := range transports {
 		t.Run(tr.name, func(t *testing.T) {
 			t.Parallel()
 			offResult := "" // the off cell's result; "" when it didn't run
 			t.Run("off", func(t *testing.T) {
-				offResult = runCell(t, tr, censorCases[0]).result
+				// runCell records the cell even when t.Fatal stops it,
+				// but the assignment would not happen: claim that the
+				// cell ran before it can fail.
+				offResult = "error"
+				offResult = runCell(t, tr, off).result
 			})
-			for _, cc := range censorCases {
+			for _, cc := range censored {
 				if cc.modules == nil {
 					continue
 				}
@@ -115,7 +121,7 @@ func TestCensorMatrix(t *testing.T) {
 					if offResult != "pass" {
 						record(matrixCell{transport: tr.name, censor: cc.name,
 							result: "error", detail: "the transport failed without a censor"})
-						t.Fatalf("%s without a censor: %s says nothing", tr.name, cc.name)
+						t.Fatalf("the transport failed without a censor: %s can't be judged", cc.name)
 					}
 					runCell(t, tr, cc)
 				})

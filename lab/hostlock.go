@@ -19,8 +19,8 @@ const MaxLabsEnv = "THINKPOL_LAB_MAX_LABS"
 
 const defaultMaxLabs = 12
 
-// lockDir holds the host-wide locks: one for allocating subnets, one per lab
-// slot, and the perf lock.
+// lockDir holds the host-wide locks: one for allocating subnets, one per
+// lab slot, one for the lab image build, and the perf lock.
 func lockDir() (string, error) {
 	dir := filepath.Join(os.TempDir(), "thinkpol-lab-locks")
 	return dir, os.MkdirAll(dir, 0o700)
