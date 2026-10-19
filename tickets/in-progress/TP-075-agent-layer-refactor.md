@@ -53,15 +53,15 @@ branch: "tp-075-agent-layer-refactor"
 - [x] R3.7 A test pins markSockets per mode (device and supervisor true, worker false): the test helper's Transports records its argument.
 - [x] R3.8 TP-083's ticket: its private-hooks list includes blobOptions; a Notes line that Host carries device-only adapters into the worker, kept off only by the Forward and RouteTable flags. Log line there.
 - [x] R3.9 Nits: platform_test.go Transports closure → Transports; cmd/thinkpol/up.go applyPlatformDefaults moves into internal/agent (agent.ApplyOSDefaults) so cmd only calls it; optionally platform_{linux,darwin,other}.go → supported_*.go.
-- [ ] R4.1 status_test.go: TestARemovedDeviceConnectsOnceBack and TestAStartWhileDisconnectedClearsACrashedRunsRoutes build their device on startDevice (deviceOpt.prepare writes the removed map into c.StateDir; the clear fakes go into p.ClearConfig / p.ClearRouteTable), not a third hand-built copy; same assertions.
-- [ ] R4.2 TestARemovedDeviceConnectsOnceBack (through n.run on a removed start) asserts strings.Count(log, "back in space") == 1.
-- [ ] R4.3 supervisor/options.go: Log and Output state the constraint, not their callers.
-- [ ] R4.4 Why a worker doesn't mark its sockets is said once (transports.go); no repeats in servespace.go and node.go, no caller list in transports.go.
-- [ ] R4.5 servespace.go: ServeSpace's doc says what it does, not who calls it; dataplane.go: no Host field comment restating the type; the private-fields comment says what tests tune.
-- [ ] R4.6 platform.go NewGuard: the host's leak guard or nil where the host has none yet (Windows: TP-047/TP-048); required.
-- [ ] R4.7 node.go awaitSection: no cur set then markRemoved on the same map; uses take's back result instead of reading f.removed.
-- [ ] R4.8 deviceOpt.run → dataPlane; TestClearingTheNetworkTriesBothOwners in platform_test.go; blobs_test.go drops the unused r.
-- [ ] R4.9 DESIGN.md "Engine and agent": adapters chosen and wired by the composition root per OS (HostLock and Transports live in internal/agent); TP-083 Notes without the stray blank line; the flaky transporttest ShapingRefused failure goes to TP-113's Notes.
+- [x] R4.1 status_test.go: TestARemovedDeviceConnectsOnceBack and TestAStartWhileDisconnectedClearsACrashedRunsRoutes build their device on startDevice (deviceOpt.prepare writes the removed map into c.StateDir; the clear fakes go into p.ClearConfig / p.ClearRouteTable), not a third hand-built copy; same assertions.
+- [x] R4.2 TestARemovedDeviceConnectsOnceBack (through n.run on a removed start) asserts strings.Count(log, "back in space") == 1.
+- [x] R4.3 supervisor/options.go: Log and Output state the constraint, not their callers.
+- [x] R4.4 Why a worker doesn't mark its sockets is said once (transports.go); no repeats in servespace.go and node.go, no caller list in transports.go.
+- [x] R4.5 servespace.go: ServeSpace's doc says what it does, not who calls it; dataplane.go: no Host field comment restating the type; the private-fields comment says what tests tune.
+- [x] R4.6 platform.go NewGuard: the host's leak guard or nil where the host has none yet (Windows: TP-047/TP-048); required.
+- [x] R4.7 node.go awaitSection: no cur set then markRemoved on the same map; uses take's back result instead of reading f.removed.
+- [x] R4.8 deviceOpt.run → dataPlane; TestClearingTheNetworkTriesBothOwners in platform_test.go; blobs_test.go drops the unused r.
+- [x] R4.9 DESIGN.md "Engine and agent": adapters chosen and wired by the composition root per OS (HostLock and Transports live in internal/agent); TP-083 Notes without the stray blank line; the flaky transporttest ShapingRefused failure goes to TP-113's Notes.
 
 ## Log
 - 2026-10-15 created in backlog
@@ -92,3 +92,4 @@ branch: "tp-075-agent-layer-refactor"
 - 2026-10-19 review → has-errors — review round 4: R4.1–R4.9
 - 2026-10-19 has-errors → in-progress — review round 4 findings picked up (R4.1–R4.9)
 - 2026-10-19 the flaky transporttest ShapingRefused run (round 3 lab-test) is noted in TP-113
+- 2026-10-19 round 4: the removed and disconnected device starts go through startDevice (the removed one logs "back in space" once); deviceOpt.run is dataPlane, the clearing test is in platform_test.go; awaitSection starts through markRemoved alone and reads take's back; comments state constraints (supervisor Log and Output, ServeSpace, DataPlane, NewGuard, the worker's unmarked sockets said once in Transports); DESIGN.md "Engine and agent": the adapters are chosen and wired by cmd/thinkpol per OS
