@@ -5,29 +5,30 @@ import (
 	"testing"
 )
 
-// fakeConfigurator closes as told and records being abandoned.
+// fakeConfigurator closes as told and records being closed. (TP-102: a
+// failed Close frees the owner's place on every OS, so a clear no longer
+// abandons a configurator; these tests check the Close instead.)
 type fakeConfigurator struct {
 	Configurator
-	closeErr  error
-	abandoned bool
+	closeErr error
+	closed   bool
 }
 
-func (f *fakeConfigurator) Close() error { return f.closeErr }
-func (f *fakeConfigurator) abandon()     { f.abandoned = true }
+func (f *fakeConfigurator) Close() error { f.closed = true; return f.closeErr }
 
-// A clear whose Close fails still frees the owner's place, so the next
-// start isn't refused with ErrBusy; one that closes keeps nothing to free.
-func TestAFailedClearFreesTheOwnersPlace(t *testing.T) {
+// A clear closes the owner's configurator and reports a Close that fails;
+// one that can't take the owner's place closes nothing.
+func TestAClearClosesTheOwnersConfigurator(t *testing.T) {
 	failing := &fakeConfigurator{closeErr: errors.New("netlink gone")}
 	if err := ClearWith(func() (Configurator, error) { return failing, nil }, nil); err == nil {
 		t.Error("the failed Close went unreported")
 	}
-	if !failing.abandoned {
-		t.Error("a failed clear kept the owner's place")
+	if !failing.closed {
+		t.Error("a failed clear didn't close")
 	}
 	ok := &fakeConfigurator{}
-	if err := ClearWith(func() (Configurator, error) { return ok, nil }, nil); err != nil || ok.abandoned {
-		t.Errorf("a clear that closed: %v, abandoned %v", err, ok.abandoned)
+	if err := ClearWith(func() (Configurator, error) { return ok, nil }, nil); err != nil || !ok.closed {
+		t.Errorf("a clear that closed: %v, closed %v", err, ok.closed)
 	}
 	if err := ClearWith(func() (Configurator, error) { return nil, ErrBusy }, nil); !errors.Is(err, ErrBusy) {
 		t.Errorf("a clear that couldn't open: %v", err)
@@ -45,16 +46,16 @@ func TestClearRunsHeldOnlyWhileHoldingTheOwnersPlace(t *testing.T) {
 	heldErr, closeErr := errors.New("guard gone"), errors.New("netlink gone")
 	f := &fakeConfigurator{closeErr: closeErr}
 	err := ClearWith(func() (Configurator, error) { return f, nil }, func() error {
-		if f.abandoned {
+		if f.closed {
 			t.Error("held ran after the place was let go")
 		}
 		return heldErr
 	})
-	if !errors.Is(err, heldErr) || !errors.Is(err, closeErr) || !f.abandoned {
-		t.Errorf("held and Close failing: %v, abandoned %v", err, f.abandoned)
+	if !errors.Is(err, heldErr) || !errors.Is(err, closeErr) || !f.closed {
+		t.Errorf("held and Close failing: %v, closed %v", err, f.closed)
 	}
 	ok := &fakeConfigurator{}
-	if err := ClearWith(func() (Configurator, error) { return ok, nil }, func() error { return heldErr }); !errors.Is(err, heldErr) || ok.abandoned {
-		t.Errorf("held failing, Close fine: %v, abandoned %v", err, ok.abandoned)
+	if err := ClearWith(func() (Configurator, error) { return ok, nil }, func() error { return heldErr }); !errors.Is(err, heldErr) || !ok.closed {
+		t.Errorf("held failing, Close fine: %v, closed %v", err, ok.closed)
 	}
 }

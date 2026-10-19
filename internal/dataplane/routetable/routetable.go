@@ -412,7 +412,7 @@ func New(g Guard, log *slog.Logger) (*Enforcer, error) {
 // owner lock: whatever keeps netcfg from taking it (another live run,
 // or any failure on the way) may mean the guard there is live, so it is
 // left alone and the error returned. A Close of the routes that fails
-// still lets go of the lock (netcfg.Clear).
+// still lets go of the lock (netcfg.Configurator).
 func Clear(g Guard) error {
 	return clearWith(func() (netcfg.Configurator, error) { return netcfg.New(netcfg.OwnerRouteTable) }, g)
 }
@@ -587,7 +587,9 @@ func (e *Enforcer) Status() Status {
 
 // Close stops watching and removes everything in place: the guard first,
 // then the routes and rules, whose configurator lets go of the owner lock
-// last. Close may be called again after a failure.
+// last, even when it fails (what it leaves is the owner's next
+// configurator's). Close may be called again after a failure: that
+// retries the guard's removal.
 func (e *Enforcer) Close() error {
 	e.enforcing.Lock()
 	defer e.enforcing.Unlock()

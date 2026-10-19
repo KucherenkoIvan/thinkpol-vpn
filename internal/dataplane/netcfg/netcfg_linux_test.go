@@ -956,8 +956,9 @@ func TestScopedRoutesAreRefused(t *testing.T) {
 // starts aren't refused with ErrBusy until the process restarts.
 func TestAFailedClearFreesTheNamespace(t *testing.T) {
 	n := newTestNS(t)
-	if err := netcfg.ClearFailingClose(n.path, netcfg.OwnerOverlay); err == nil {
-		t.Fatal("the failed Close went unreported")
+	n.dummy(t, "ovl0") // TP-102: the Close fails for real now, restoring ovl0's MTU, not in a stub
+	if err := netcfg.ClearFailingClose(n.path, netcfg.OwnerOverlay, "ovl0"); err == nil || !strings.Contains(err.Error(), "restore MTU of ovl0") {
+		t.Fatalf("the failed Close: %v, want the MTU restore's error", err)
 	}
 	n.configurator(t) // the place is free
 }

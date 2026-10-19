@@ -516,6 +516,22 @@ func (c *linuxConfigurator) Close() error {
 		return nil
 	}
 	c.closed = true
+	err := c.removeOwned()
+	// Whatever happens, the owner's place is freed: what is left carries
+	// the owner's protocol (and the ledger forgets it), so the next
+	// configurator of the owner takes it over, as after a crash.
+	c.h.Close()
+	c.h = nil
+	_ = c.ns.Close()
+	if lerr := unix.Close(c.lock); err == nil {
+		err = lerr
+	}
+	return err
+}
+
+// removeOwned removes every rule, route and address of the owner and
+// restores every interface it changed, going on past failures.
+func (c *linuxConfigurator) removeOwned() error {
 	kroutes, err := c.ownKernelRoutes()
 	if err != nil {
 		return err
@@ -540,29 +556,7 @@ func (c *linuxConfigurator) Close() error {
 		}
 	}
 	errs = append(errs, c.closeAll(ops)...)
-	if len(errs) > 0 {
-		return errors.Join(errs...) // what's left stays recorded: Close again retries it
-	}
-	c.h.Close()
-	c.h = nil
-	_ = c.ns.Close()
-	return unix.Close(c.lock) // frees the owner's place in the namespace
-}
-
-// abandon frees the owner's place without cleaning up: the routes and
-// rules left carry the owner's protocol, so the next configurator takes
-// them over, as after a crash.
-func (c *linuxConfigurator) abandon() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.h == nil {
-		return
-	}
-	c.closed = true
-	c.h.Close()
-	c.h = nil
-	_ = c.ns.Close()
-	_ = unix.Close(c.lock)
+	return errors.Join(errs...)
 }
 
 // listRoutes retries dumps the kernel interrupted because the table changed
