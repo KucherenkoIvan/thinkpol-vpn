@@ -83,3 +83,4 @@ A corrupt record of another owner (the overlay's, say) keeps failing this node's
 - 2026-10-19 in-progress → review — all round 4 findings fixed and checked (4416494), make lint/test/lab-test pass, the full lab run finished 2026-10-19; still not verified on real macOS hardware, only the fakes
 - 2026-10-19 in-progress → review (the board move af7bed5 announced, done by the orchestrator)
 - 2026-10-19 review → has-errors — round 5 findings R5.1–R5.7
+- 2026-10-19 has-errors → in-progress — round 5 fixes start
