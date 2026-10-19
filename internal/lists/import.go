@@ -16,6 +16,8 @@ import (
 	"strings"
 
 	"google.golang.org/protobuf/encoding/protowire"
+
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
 
 // Format is a source format an importer reads.
@@ -121,15 +123,12 @@ func Import(r io.Reader, f Format, only []string) (map[string]*Builder, error) {
 }
 
 // CheckName rejects names a rule can't refer to: 1 to 32 characters of
-// a-z, 0-9 and '-', starting with a letter or digit.
+// a-z, 0-9 and '-', starting with a letter or digit. It is netmap's rule
+// for the names a map's rules refer to (netmap.CheckListName) at the same
+// limit; the message stays the lists package's.
 func CheckName(name string) error {
-	if name == "" || len(name) > 32 || name[0] == '-' {
+	if netmap.CheckListName(name) != nil {
 		return fmt.Errorf("lists: bad list name %q", name)
-	}
-	for _, c := range name {
-		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' {
-			return fmt.Errorf("lists: bad list name %q", name)
-		}
 	}
 	return nil
 }

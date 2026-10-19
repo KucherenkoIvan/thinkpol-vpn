@@ -75,150 +75,223 @@ func Plan(s *Spec, k Keys, version uint64, secrets Secrets) (netmap.Contents, Na
 	if secrets == nil {
 		secrets = RandomSecrets(nil)
 	}
-	fail := func(n Node, format string, args ...any) error {
-		return &Error{File: s.File, Pos: n.Pos, Msg: n.Name + ": " + fmt.Sprintf(format, args...)}
-	}
 	if version == 0 || version > netmap.MaxVersion {
 		return netmap.Contents{}, nil, fmt.Errorf("map version %d: must be from 1 to %d", version, uint64(netmap.MaxVersion))
 	}
+	p := &planner{s: s, k: k, secrets: secrets}
+	for _, phase := range []func() error{
+		p.resolveNodes, p.resolveLinks, p.assignAddresses, p.writeSections,
+		p.addPeersAndRoutes, p.addLinkSecrets, p.addDeviceRules,
+	} {
+		if err := phase(); err != nil {
+			return netmap.Contents{}, nil, err
+		}
+	}
 
-	ids := make([]netmap.NodeID, len(s.Nodes))
-	names := Names{}
-	keys := map[netmap.NodePublicKey]string{}
+	c := netmap.Contents{SpaceID: k.Space, Version: version, RecoveryKey: k.RecoveryKey, Blobs: p.header}
 	for i, n := range s.Nodes {
-		pub, ok := k.Nodes[n.Name]
+		if err := checkWithTransports(p.sections[i]); err != nil {
+			return netmap.Contents{}, nil, p.fail(n, "%v", err)
+		}
+		c.Recipients = append(c.Recipients, netmap.Recipient{Key: k.Nodes[n.Name].Map, Section: p.sections[i]})
+	}
+	return c, p.names, nil
+}
+
+// planner is one Plan run: the spec, its keys and what the phases have
+// built so far, in Plan's order.
+type planner struct {
+	s       *Spec
+	k       Keys
+	secrets Secrets
+
+	ids      []netmap.NodeID
+	names    Names
+	keys     map[netmap.NodePublicKey]string // the nodes' map keys, by name
+	links    []Link
+	v4, v6   netip.Prefix
+	ipv4     []netip.Addr
+	ipv6     []netip.Addr
+	sections []netmap.Section
+	header   []netmap.BlobRef
+}
+
+func (p *planner) fail(n Node, format string, args ...any) error {
+	return &Error{File: p.s.File, Pos: n.Pos, Msg: n.Name + ": " + fmt.Sprintf(format, args...)}
+}
+
+// resolveNodes takes each node's public keys: ids and names by id, names
+// by map key, and no two nodes on one key or id.
+func (p *planner) resolveNodes() error {
+	s := p.s
+	p.ids = make([]netmap.NodeID, len(s.Nodes))
+	p.names = Names{}
+	p.keys = map[netmap.NodePublicKey]string{}
+	for i, n := range s.Nodes {
+		pub, ok := p.k.Nodes[n.Name]
 		if !ok {
-			return netmap.Contents{}, nil, fail(n, "no public keys")
+			return p.fail(n, "no public keys")
 		}
-		if other, taken := keys[pub.Map]; taken {
-			return netmap.Contents{}, nil, fail(n, "has the same keys as %s", other)
+		if other, taken := p.keys[pub.Map]; taken {
+			return p.fail(n, "has the same keys as %s", other)
 		}
-		if other, taken := names[pub.ID]; taken {
-			return netmap.Contents{}, nil, fail(n, "has the same node id as %s", other)
+		if other, taken := p.names[pub.ID]; taken {
+			return p.fail(n, "has the same node id as %s", other)
 		}
-		ids[i] = pub.ID
-		names[pub.ID], keys[pub.Map] = n.Name, n.Name
+		p.ids[i] = pub.ID
+		p.names[pub.ID], p.keys[pub.Map] = n.Name, n.Name
 	}
+	return nil
+}
 
-	links, err := Links(s)
+// resolveLinks derives who dials whom from the spec's paths.
+func (p *planner) resolveLinks() error {
+	links, err := Links(p.s)
 	if err != nil {
-		return netmap.Contents{}, nil, err
+		return err
 	}
+	p.links = links
+	return nil
+}
 
-	v4, v6 := s.IPv4Network, s.IPv6Network
-	if !v6.IsValid() {
-		v6 = k.IPv6Network
+// assignAddresses fixes the overlay networks (the space's IPv6 network
+// from the keys when the spec leaves it out) and gives every node without
+// a fixed address the lowest free one.
+func (p *planner) assignAddresses() error {
+	s := p.s
+	p.v4, p.v6 = s.IPv4Network, s.IPv6Network
+	if !p.v6.IsValid() {
+		p.v6 = p.k.IPv6Network
 	}
-	ipv4, err := assign(s, v4, func(n Node) netip.Addr { return n.IPv4 })
-	if err != nil {
-		return netmap.Contents{}, nil, err
+	var err error
+	if p.ipv4, err = assign(s, p.v4, func(n Node) netip.Addr { return n.IPv4 }); err != nil {
+		return err
 	}
-	ipv6, err := assign(s, v6, func(n Node) netip.Addr { return n.IPv6 })
-	if err != nil {
-		return netmap.Contents{}, nil, err
+	if p.ipv6, err = assign(s, p.v6, func(n Node) netip.Addr { return n.IPv6 }); err != nil {
+		return err
 	}
+	return nil
+}
 
-	sections := make([]netmap.Section, len(s.Nodes))
+// writeSections starts every section with its node's settings and the
+// blobs it names, and collects the header's blob set.
+func (p *planner) writeSections() error {
+	s := p.s
+	p.sections = make([]netmap.Section, len(s.Nodes))
 	for i, n := range s.Nodes {
 		node := netmap.NodeSettings{
-			ID: ids[i], Kind: n.Kind, IPv4: ipv4[i], IPv6: ipv6[i], IPv4Network: v4, IPv6Network: v6,
+			ID: p.ids[i], Kind: n.Kind, IPv4: p.ipv4[i], IPv6: p.ipv6[i], IPv4Network: p.v4, IPv6Network: p.v6,
 			AllowIngress: n.Ingress, AllowEgress: n.Egress,
 		}
 		for _, l := range n.Listeners {
 			node.Listeners = append(node.Listeners, netmap.Listener{Transport: l.Transport, Address: l.AddrPort})
 		}
-		sections[i].Node = node
+		p.sections[i].Node = node
 		for _, l := range n.Lists {
-			sections[i].Blobs = append(sections[i].Blobs, s.Lists[l].Ref)
+			p.sections[i].Blobs = append(p.sections[i].Blobs, s.Lists[l].Ref)
 		}
 	}
-	var header []netmap.BlobRef
 	var total uint64
 	for _, l := range s.Lists {
 		if l.Ref.Size == 0 {
-			return netmap.Contents{}, nil, &Error{File: s.File, Pos: l.Pos, Msg: "list " + l.Name + ": not read (ReadLists)"}
+			return &Error{File: s.File, Pos: l.Pos, Msg: "list " + l.Name + ": not read (ReadLists)"}
 		}
 		if total += l.Ref.Size; total > blobs.ServerMaxHeldSize {
-			return netmap.Contents{}, nil, &Error{File: s.File, Pos: l.Pos, Msg: fmt.Sprintf("list %s: the lists together pass %d bytes, what a server holds", l.Name, blobs.ServerMaxHeldSize)}
+			return &Error{File: s.File, Pos: l.Pos, Msg: fmt.Sprintf("list %s: the lists together pass %d bytes, what a server holds", l.Name, blobs.ServerMaxHeldSize)}
 		}
 		ref := l.Ref
 		ref.Name = "" // the header lists blobs unnamed
-		header = append(header, ref)
+		p.header = append(p.header, ref)
 	}
+	return nil
+}
 
+// addPeersAndRoutes makes peers of every path's ends and routes the
+// relays need, refusing forwarding loops.
+func (p *planner) addPeersAndRoutes() error {
+	s := p.s
 	// Peers and routes come from the paths: the ends are peers, each with
 	// its neighbour on the path as a first hop; every node in between routes
 	// to both ends through its neighbours.
 	addPeer := func(at, peer, firstHop int) {
-		sec := &sections[at]
-		j := slices.IndexFunc(sec.Peers, func(p netmap.Peer) bool { return p.ID == ids[peer] })
+		sec := &p.sections[at]
+		j := slices.IndexFunc(sec.Peers, func(pp netmap.Peer) bool { return pp.ID == p.ids[peer] })
 		if j < 0 {
 			sec.Peers = append(sec.Peers, netmap.Peer{
-				ID:           ids[peer],
-				WireGuardKey: k.Nodes[s.Nodes[peer].Name].WireGuard,
-				Addresses:    []netip.Addr{ipv4[peer], ipv6[peer]},
+				ID:           p.ids[peer],
+				WireGuardKey: p.k.Nodes[s.Nodes[peer].Name].WireGuard,
+				Addresses:    []netip.Addr{p.ipv4[peer], p.ipv6[peer]},
 			})
 			j = len(sec.Peers) - 1
 		}
-		if hop := (netmap.Path{FirstHop: ids[firstHop]}); !slices.Contains(sec.Peers[j].Paths, hop) {
+		if hop := (netmap.Path{FirstHop: p.ids[firstHop]}); !slices.Contains(sec.Peers[j].Paths, hop) {
 			sec.Peers[j].Paths = append(sec.Peers[j].Paths, hop)
 		}
 	}
 	routes := forwarding{}
-	for _, p := range s.Paths {
-		a, b := p.Nodes[0], p.Nodes[len(p.Nodes)-1]
-		addPeer(a, b, p.Nodes[1])
-		addPeer(b, a, p.Nodes[len(p.Nodes)-2])
-		for h := 1; h < len(p.Nodes)-1; h++ {
-			routes.add(p.Nodes[h], b, p.Nodes[h+1], p.Pos)
-			routes.add(p.Nodes[h], a, p.Nodes[h-1], p.Pos)
+	for _, path := range s.Paths {
+		a, b := path.Nodes[0], path.Nodes[len(path.Nodes)-1]
+		addPeer(a, b, path.Nodes[1])
+		addPeer(b, a, path.Nodes[len(path.Nodes)-2])
+		for h := 1; h < len(path.Nodes)-1; h++ {
+			routes.add(path.Nodes[h], b, path.Nodes[h+1], path.Pos)
+			routes.add(path.Nodes[h], a, path.Nodes[h-1], path.Pos)
 		}
 	}
 	if err := routes.checkLoops(s); err != nil {
-		return netmap.Contents{}, nil, err
+		return err
 	}
 	for _, r := range routes {
-		route := netmap.Route{Destination: ids[r.dest]}
+		route := netmap.Route{Destination: p.ids[r.dest]}
 		for _, h := range r.next {
-			route.NextHops = append(route.NextHops, ids[h])
+			route.NextHops = append(route.NextHops, p.ids[h])
 		}
-		sections[r.at].Routes = append(sections[r.at].Routes, route)
+		p.sections[r.at].Routes = append(p.sections[r.at].Routes, route)
 	}
+	return nil
+}
 
-	// Each link gets one secret per transport the dialed node has endpoints
-	// for: the dialer's credential, and the listener's verifier (udp is
-	// symmetric, so they are the same bytes).
-	for _, l := range links {
+// addLinkSecrets gives each link one secret per transport the dialed node
+// has endpoints for: the dialer's credential, and the listener's verifier
+// (udp is symmetric, so they are the same bytes).
+func (p *planner) addLinkSecrets() error {
+	s := p.s
+	for _, l := range p.links {
 		from, to := s.Nodes[l.From], s.Nodes[l.To]
 		made := map[string][]byte{}
-		link := netmap.Link{Peer: ids[l.To]}
+		link := netmap.Link{Peer: p.ids[l.To]}
 		for _, e := range to.Endpoints {
 			secret, ok := made[e.Transport]
 			if !ok {
 				var err error
-				if secret, err = secrets(from.Name, to.Name, e.Transport, transports[e.Transport].secretSize); err != nil {
-					return netmap.Contents{}, nil, err
+				if secret, err = p.secrets(from.Name, to.Name, e.Transport, transports[e.Transport].secretSize); err != nil {
+					return err
 				}
 				made[e.Transport] = secret
-				sections[l.To].Inbound = append(sections[l.To].Inbound, netmap.InboundLink{
-					Peer: ids[l.From], PeerKind: from.Kind, Transport: e.Transport, Credential: secret,
+				p.sections[l.To].Inbound = append(p.sections[l.To].Inbound, netmap.InboundLink{
+					Peer: p.ids[l.From], PeerKind: from.Kind, Transport: e.Transport, Credential: secret,
 				})
 			}
 			link.Endpoints = append(link.Endpoints, netmap.Endpoint{Transport: e.Transport, Address: e.AddrPort, Credential: secret})
 		}
-		sections[l.From].Links = append(sections[l.From].Links, link)
+		p.sections[l.From].Links = append(p.sections[l.From].Links, link)
 	}
+	return nil
+}
 
-	// Names and rules are for devices: a server's section holds neither.
+// addDeviceRules gives the devices their names, rules, presets and chains:
+// a server's section holds neither names nor rules.
+func (p *planner) addDeviceRules() error {
+	s := p.s
 	for i, n := range s.Nodes {
-		sec := &sections[i]
+		sec := &p.sections[i]
 		if n.Kind != netmap.NodeDevice {
 			continue
 		}
 		if s.SpaceName != "" {
 			sec.SpaceName, sec.Node.Name = s.SpaceName, n.Name
 			for j := range sec.Peers {
-				sec.Peers[j].Name = names[sec.Peers[j].ID]
+				sec.Peers[j].Name = p.names[sec.Peers[j].ID]
 			}
 		}
 		if len(s.Rules) == 0 {
@@ -226,30 +299,22 @@ func Plan(s *Spec, k Keys, version uint64, secrets Secrets) (netmap.Contents, Na
 		}
 		for _, r := range s.Rules {
 			if r.Match.Kind == netmap.MatchGeoIP && !slices.ContainsFunc(n.Lists, func(l int) bool { return s.Lists[l].Name == r.Match.Value }) {
-				return netmap.Contents{}, nil, fail(n, "rule %s needs the list: add it to the node's lists", r)
+				return p.fail(n, "rule %s needs the list: add it to the node's lists", r)
 			}
 		}
 		if l := presetsNeed(s, n); l != "" {
-			return netmap.Contents{}, nil, fail(n, "the presets' domestic list %s: add it to the node's lists", l)
+			return p.fail(n, "the presets' domestic list %s: add it to the node's lists", l)
 		}
 		sec.Rules = slices.Clone(s.Rules)
 		sec.Presets = s.Presets
 		for _, ch := range s.Chains {
-			if !slices.ContainsFunc(sec.Peers, func(p netmap.Peer) bool { return p.ID == ids[ch.Exit] }) {
-				return netmap.Contents{}, nil, fail(n, "no path to %s, the exit of chain %s", s.Nodes[ch.Exit].Name, ch.Name)
+			if !slices.ContainsFunc(sec.Peers, func(pp netmap.Peer) bool { return pp.ID == p.ids[ch.Exit] }) {
+				return p.fail(n, "no path to %s, the exit of chain %s", s.Nodes[ch.Exit].Name, ch.Name)
 			}
-			sec.Chains = append(sec.Chains, netmap.Chain{Name: ch.Name, Exit: ids[ch.Exit]})
+			sec.Chains = append(sec.Chains, netmap.Chain{Name: ch.Name, Exit: p.ids[ch.Exit]})
 		}
 	}
-
-	c := netmap.Contents{SpaceID: k.Space, Version: version, RecoveryKey: k.RecoveryKey, Blobs: header}
-	for i, n := range s.Nodes {
-		if err := checkWithTransports(sections[i]); err != nil {
-			return netmap.Contents{}, nil, fail(n, "%v", err)
-		}
-		c.Recipients = append(c.Recipients, netmap.Recipient{Key: k.Nodes[n.Name].Map, Section: sections[i]})
-	}
-	return c, names, nil
+	return nil
 }
 
 // forwarding is the relays' routes in order of first use: at node at, to

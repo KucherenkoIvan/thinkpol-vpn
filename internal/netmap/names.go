@@ -10,7 +10,8 @@ const maxLabel = 63
 
 // CheckLabel reports whether name can be a node's or a space's overlay
 // name: one DNS label of 1-63 lowercase letters, digits and dashes, with
-// no dash at either end.
+// no dash at either end. The one rule for overlay names, at this limit:
+// devmap's node-name and key-file checks share it.
 func CheckLabel(name string) error {
 	if name == "" || len(name) > maxLabel || name[0] == '-' || name[len(name)-1] == '-' {
 		return fmt.Errorf("name %q: use 1-%d lowercase letters, digits and dashes, no dash at either end", name, maxLabel)

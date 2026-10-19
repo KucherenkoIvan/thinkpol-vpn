@@ -42,7 +42,7 @@ func (s *Service) fetchFrom(ctx context.Context, p Plan, peer Peer, ref netmap.B
 		}
 		for attempt := 0; ; attempt++ {
 			before := len(buf)
-			err = s.fetchOnce(ctx, p.Interface, local, netip.AddrPortFrom(addr, s.port), ref, &buf)
+			err = s.fetchOnce(ctx, p.Interface, local, netip.AddrPortFrom(addr, Port), ref, &buf)
 			if err == nil {
 				return buf, nil
 			}
@@ -83,7 +83,7 @@ func (s *Service) fetchOnce(ctx context.Context, iface string, local netip.Addr,
 		}
 	}()
 	dctx, cancel := context.WithTimeout(ctx, s.limits.DialTimeout)
-	conn, err := s.dial(dctx, iface, local, remote)
+	conn, err := s.openConn(dctx, iface, local, remote)
 	cancel()
 	if err != nil {
 		return err
@@ -140,9 +140,12 @@ func (s *Service) fetchOnce(ctx context.Context, iface string, local netip.Addr,
 	return nil
 }
 
-func (s *Service) dial(ctx context.Context, iface string, local netip.Addr, remote netip.AddrPort) (net.Conn, error) {
-	if s.o.Dial != nil {
-		return s.o.Dial(ctx, local, remote)
+// openConn opens the connection to remote: the test's overlay, or the
+// node's real one, bound to the overlay's TUN (iface) and to the local
+// overlay address.
+func (s *Service) openConn(ctx context.Context, iface string, local netip.Addr, remote netip.AddrPort) (net.Conn, error) {
+	if s.dial != nil {
+		return s.dial(ctx, local, remote)
 	}
 	d := net.Dialer{LocalAddr: net.TCPAddrFromAddrPort(netip.AddrPortFrom(local, 0)), Control: bindTo(iface)}
 	return d.DialContext(ctx, "tcp", remote.String())

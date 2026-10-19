@@ -203,10 +203,28 @@ const (
 	maxSettings      = 4096
 )
 
+// CGNAT and ULA are the ranges a space's overlay networks live in: an
+// IPv4 prefix inside CGNAT (RFC 6598), and an IPv6 /48 inside the ULA
+// range (RFC 4193, locally assigned). devmap's spec checker shares the
+// policy with Build.
 var (
-	cgnat = netip.MustParsePrefix("100.64.0.0/10")
-	ula   = netip.MustParsePrefix("fd00::/8") // RFC 4193, locally assigned
+	CGNAT = netip.MustParsePrefix("100.64.0.0/10")
+	ULA   = netip.MustParsePrefix("fd00::/8")
 )
+
+// IsOverlayIPv4 reports whether p can be a space's overlay IPv4 network:
+// a masked IPv4 prefix inside CGNAT, itself included.
+func IsOverlayIPv4(p netip.Prefix) bool {
+	return p.IsValid() && p.Addr().Is4() && p == p.Masked() &&
+		CGNAT.Contains(p.Addr()) && p.Bits() >= CGNAT.Bits()
+}
+
+// IsOverlayIPv6 reports whether p can be a space's overlay IPv6 network:
+// a masked IPv6 /48 inside the ULA range.
+func IsOverlayIPv6(p netip.Prefix) bool {
+	return p.IsValid() && p.Addr().Is6() && !p.Addr().Is4In6() && p == p.Masked() &&
+		ULA.Contains(p.Addr()) && p.Bits() == 48
+}
 
 // errUnknownKind makes Open report a section for a node kind this reader
 // doesn't know as a format it doesn't support.
@@ -324,19 +342,41 @@ func (s *Section) validate(headerBlobs []BlobRef) error {
 	if err := s.wellFormed(); err != nil {
 		return err
 	}
-	n := &s.Node
-	if !n.IPv4Network.IsValid() || !n.IPv4Network.Addr().Is4() || n.IPv4Network != n.IPv4Network.Masked() ||
-		!cgnat.Contains(n.IPv4Network.Addr()) || n.IPv4Network.Bits() < cgnat.Bits() {
-		return fmt.Errorf("IPv4 network %v is not a prefix inside %v", n.IPv4Network, cgnat)
+	if err := s.validateNode(); err != nil {
+		return err
 	}
-	if !n.IPv6Network.IsValid() || !n.IPv6Network.Addr().Is6() || n.IPv6Network.Addr().Is4In6() ||
-		n.IPv6Network != n.IPv6Network.Masked() || !ula.Contains(n.IPv6Network.Addr()) || n.IPv6Network.Bits() != 48 {
-		return fmt.Errorf("IPv6 network %v is not a /48 inside %v", n.IPv6Network, ula)
+	adjacent, err := s.validateDialing()
+	if err != nil {
+		return err
+	}
+	if err := s.validatePeers(adjacent); err != nil {
+		return err
+	}
+	if err := s.validateRoutes(adjacent); err != nil {
+		return err
+	}
+	if err := s.validateBlobs(headerBlobs); err != nil {
+		return err
+	}
+	if err := s.validateNames(); err != nil {
+		return err
+	}
+	return s.validateRules()
+}
+
+// validateNode checks the node's own settings: its overlay networks and
+// addresses, its kind's settings, and its listeners.
+func (s *Section) validateNode() error {
+	n := &s.Node
+	if !IsOverlayIPv4(n.IPv4Network) {
+		return fmt.Errorf("IPv4 network %v is not a prefix inside %v", n.IPv4Network, CGNAT)
+	}
+	if !IsOverlayIPv6(n.IPv6Network) {
+		return fmt.Errorf("IPv6 network %v is not a /48 inside %v", n.IPv6Network, ULA)
 	}
 	if !n.IPv4Network.Contains(n.IPv4) || !n.IPv6Network.Contains(n.IPv6) {
 		return fmt.Errorf("node addresses %v, %v are outside the overlay networks", n.IPv4, n.IPv6)
 	}
-	inOverlay := func(a netip.Addr) bool { return n.IPv4Network.Contains(a) || n.IPv6Network.Contains(a) }
 	if n.Kind != NodeServer && (n.AllowIngress || n.AllowEgress) {
 		return errors.New("ingress and egress are server settings")
 	}
@@ -367,33 +407,43 @@ func (s *Section) validate(headerBlobs []BlobRef) error {
 		}
 		listeners[k] = true
 	}
+	return nil
+}
 
+// validateDialing checks the node's links and inbound links, and returns
+// the set of adjacent nodes the two name together.
+func (s *Section) validateDialing() (map[NodeID]bool, error) {
+	n := &s.Node
+	type transportAddr struct {
+		transport string
+		address   netip.AddrPort
+	}
 	adjacent := make(map[NodeID]bool, len(s.Links)+len(s.Inbound))
 	for _, l := range s.Links {
 		adjacent[l.Peer] = true
 		if len(l.Endpoints) == 0 {
-			return fmt.Errorf("link to %v: no endpoints", l.Peer)
+			return nil, fmt.Errorf("link to %v: no endpoints", l.Peer)
 		}
 		endpoints := make(map[transportAddr]bool, len(l.Endpoints))
 		for _, e := range l.Endpoints {
 			if err := checkTransport(e.Transport); err != nil {
-				return fmt.Errorf("link to %v: %w", l.Peer, err)
+				return nil, fmt.Errorf("link to %v: %w", l.Peer, err)
 			}
 			if err := checkAddrPort(e.Address); err != nil {
-				return fmt.Errorf("link to %v: %w", l.Peer, err)
+				return nil, fmt.Errorf("link to %v: %w", l.Peer, err)
 			}
 			if e.Address.Addr().IsUnspecified() {
-				return fmt.Errorf("link to %v: endpoint %v has no address to dial", l.Peer, e.Address)
+				return nil, fmt.Errorf("link to %v: endpoint %v has no address to dial", l.Peer, e.Address)
 			}
 			if err := checkCredential(e.Credential); err != nil {
-				return fmt.Errorf("link to %v: %w", l.Peer, err)
+				return nil, fmt.Errorf("link to %v: %w", l.Peer, err)
 			}
 			if err := checkSettings(e.Settings, e.Shaping); err != nil {
-				return fmt.Errorf("link to %v: %w", l.Peer, err)
+				return nil, fmt.Errorf("link to %v: %w", l.Peer, err)
 			}
 			k := transportAddr{e.Transport, e.Address}
 			if endpoints[k] {
-				return fmt.Errorf("link to %v: endpoint %s %s listed twice", l.Peer, e.Transport, e.Address)
+				return nil, fmt.Errorf("link to %v: endpoint %s %s listed twice", l.Peer, e.Transport, e.Address)
 			}
 			endpoints[k] = true
 		}
@@ -405,27 +455,34 @@ func (s *Section) validate(headerBlobs []BlobRef) error {
 	for _, in := range s.Inbound {
 		adjacent[in.Peer] = true
 		if !in.PeerKind.known() {
-			return fmt.Errorf("inbound link from %v: peer kind %v", in.Peer, in.PeerKind)
+			return nil, fmt.Errorf("inbound link from %v: peer kind %v", in.Peer, in.PeerKind)
 		}
 		if !n.AcceptsInbound(in) {
-			return fmt.Errorf("inbound link from %v: a %v's, on a server with ingress off", in.Peer, in.PeerKind)
+			return nil, fmt.Errorf("inbound link from %v: a %v's, on a server with ingress off", in.Peer, in.PeerKind)
 		}
 		if err := checkTransport(in.Transport); err != nil {
-			return fmt.Errorf("inbound link from %v: %w", in.Peer, err)
+			return nil, fmt.Errorf("inbound link from %v: %w", in.Peer, err)
 		}
 		if err := checkCredential(in.Credential); err != nil {
-			return fmt.Errorf("inbound link from %v: %w", in.Peer, err)
+			return nil, fmt.Errorf("inbound link from %v: %w", in.Peer, err)
 		}
 		if err := checkSettings(in.Settings, in.Shaping); err != nil {
-			return fmt.Errorf("inbound link from %v: %w", in.Peer, err)
+			return nil, fmt.Errorf("inbound link from %v: %w", in.Peer, err)
 		}
 		k := transportCredential{in.Transport, string(in.Credential)}
 		if credentials[k] {
-			return fmt.Errorf("inbound link from %v: credential shared with another peer on %s", in.Peer, in.Transport)
+			return nil, fmt.Errorf("inbound link from %v: credential shared with another peer on %s", in.Peer, in.Transport)
 		}
 		credentials[k] = true
 	}
+	return adjacent, nil
+}
 
+// validatePeers checks the peers: keys, overlay addresses of their own,
+// and first hops that are adjacent.
+func (s *Section) validatePeers(adjacent map[NodeID]bool) error {
+	n := &s.Node
+	inOverlay := func(a netip.Addr) bool { return n.IPv4Network.Contains(a) || n.IPv6Network.Contains(a) }
 	addresses := map[netip.Addr]bool{n.IPv4: true, n.IPv6: true}
 	for _, p := range s.Peers {
 		if p.WireGuardKey.IsZero() {
@@ -457,6 +514,12 @@ func (s *Section) validate(headerBlobs []BlobRef) error {
 			hops[path.FirstHop] = true
 		}
 	}
+	return nil
+}
+
+// validateRoutes checks the forwarding table: every route has next hops,
+// and they are adjacent.
+func (s *Section) validateRoutes(adjacent map[NodeID]bool) error {
 	for _, r := range s.Routes {
 		if len(r.NextHops) == 0 {
 			return fmt.Errorf("route to %v: no next hops", r.Destination)
@@ -467,7 +530,12 @@ func (s *Section) validate(headerBlobs []BlobRef) error {
 			}
 		}
 	}
+	return nil
+}
 
+// validateBlobs checks the section's blobs against the header's: a
+// section names only blobs the header carries, with their kind and size.
+func (s *Section) validateBlobs(headerBlobs []BlobRef) error {
 	available := make(map[[32]byte]BlobRef, len(headerBlobs))
 	for _, b := range headerBlobs {
 		available[b.SHA256] = b
@@ -478,10 +546,7 @@ func (s *Section) validate(headerBlobs []BlobRef) error {
 			return fmt.Errorf("blob %x is not in the header", b.SHA256)
 		}
 	}
-	if err := s.validateNames(); err != nil {
-		return err
-	}
-	return s.validateRules()
+	return nil
 }
 
 func checkTransport(name string) error {

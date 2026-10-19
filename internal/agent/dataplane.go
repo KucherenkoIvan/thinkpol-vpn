@@ -95,10 +95,9 @@ type DataPlane struct {
 	clearNetwork func() error
 	path         path.Options
 	retryAfter   time.Duration
-	// blobOptions are the network functions and limits of the blob
-	// service a worker makes (serveSpace).
-	blobOptions blobs.Options
-	// onEngine sees each engine the data plane starts.
+	// newBlobs makes the blob service a worker serves its space's lists
+	// with (blobs.New; tests put it on a loopback overlay).
+	newBlobs func(blobs.Options) *blobs.Service // onEngine sees each engine the data plane starts.
 	onEngine func(*dataplane.Engine)
 	// systemDNS points the OS at the resolver (dns.SetSystem), and
 	// systemUpstreams says what the OS used (dns.SystemUpstreams); dnsPort

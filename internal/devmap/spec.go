@@ -127,18 +127,17 @@ func (e *Error) Error() string {
 }
 
 var (
-	cgnat     = netip.MustParsePrefix("100.64.0.0/10")
-	ula       = netip.MustParsePrefix("fd00::/8")
-	nameRE    = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
 	varRefRE  = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 	reserved  = []string{"space", "recovery"} // key file names of the space
 	maxErrors = 20
 )
 
 // CheckName reports whether name can name a node: it names the node's key
-// files too, so it is kept to lowercase letters, digits and dashes.
+// files too, so it is kept to lowercase letters, digits and dashes. An
+// overlay name (netmap.CheckLabel) at the same limit: a node's name must
+// also hold once the space has one.
 func CheckName(name string) error {
-	if !nameRE.MatchString(name) {
+	if netmap.CheckLabel(name) != nil {
 		return fmt.Errorf("node name %q: use 1-63 lowercase letters, digits and dashes, starting with a letter or digit", name)
 	}
 	if slices.Contains(reserved, name) {
@@ -342,7 +341,7 @@ func (c *checker) value(s scalar) (string, bool) {
 }
 
 func (c *checker) spec(raw *rawSpec) *Spec {
-	s := &Spec{File: c.file, IPv4Network: cgnat}
+	s := &Spec{File: c.file, IPv4Network: netmap.CGNAT}
 	// As written, never from ${NAME}: the spec itself says it is a lab's.
 	switch v := raw.Lab; {
 	case !v.set(), v.text == "false":
@@ -359,8 +358,8 @@ func (c *checker) spec(raw *rawSpec) *Spec {
 				c.errorf(v.pos, "space ipv4 %q is not an IPv4 network like 100.64.0.0/24", text)
 			case p != p.Masked():
 				c.errorf(v.pos, "space ipv4 %v is not a network address (%v is)", p, p.Masked())
-			case !cgnat.Contains(p.Addr()) || p.Bits() < cgnat.Bits():
-				c.errorf(v.pos, "space ipv4 %v is not inside %v", p, cgnat)
+			case !netmap.IsOverlayIPv4(p):
+				c.errorf(v.pos, "space ipv4 %v is not inside %v", p, netmap.CGNAT)
 			default:
 				s.IPv4Network = p
 			}
@@ -374,8 +373,8 @@ func (c *checker) spec(raw *rawSpec) *Spec {
 				c.errorf(v.pos, "space ipv6 %q is not an IPv6 network like fd12:3456:789a::/48", text)
 			case p != p.Masked():
 				c.errorf(v.pos, "space ipv6 %v is not a network address (%v is)", p, p.Masked())
-			case !ula.Contains(p.Addr()) || p.Bits() != 48:
-				c.errorf(v.pos, "space ipv6 %v is not a /48 inside %v", p, ula)
+			case !netmap.IsOverlayIPv6(p):
+				c.errorf(v.pos, "space ipv6 %v is not a /48 inside %v", p, netmap.ULA)
 			default:
 				s.IPv6Network = p
 			}
@@ -461,7 +460,7 @@ func (c *checker) rules(s *Spec, raw *rawSpec, byName, listByName map[string]int
 		case !known:
 			c.errorf(rc.Exit.pos, "chain %s: unknown node %q", name, exit)
 			exitOK = false
-		case s.Nodes[i].Kind != netmap.NodeServer || !s.Nodes[i].Egress:
+		case !netmap.MayEndAChain(s.Nodes[i].Kind, s.Nodes[i].Egress):
 			c.errorf(rc.Exit.pos, "chain %s: %s is not a server with egress: true", name, exit)
 			exitOK = false
 		}
@@ -484,15 +483,15 @@ func (c *checker) rules(s *Spec, raw *rawSpec, byName, listByName map[string]int
 			c.errorf(v.pos, "rule: %v", err)
 		case r.Match.Kind == netmap.MatchGeoSite:
 			c.errorf(v.pos, "rule %s: geosite lists aren't in specs yet", r)
-		case r.Match.Kind == netmap.MatchGeoIP && !hasKey(listByName, r.Match.Value):
+		case r.Match.NamesAList() && !hasKey(listByName, r.Match.Value):
 			c.errorf(v.pos, "rule %s: no list %s (declare it under lists)", r, r.Match.Value)
-		case r.Action.Kind == netmap.ActionChain && !chains[r.Action.Chain]:
+		case r.Action.NamesAChain() && !chains[r.Action.Chain]:
 			c.errorf(v.pos, "rule %s: no chain %s (declare it under chains)", r, r.Action.Chain)
 		default:
 			s.Rules = append(s.Rules, r)
 		}
 	}
-	if n := len(raw.Rules); n > 0 && len(s.Rules) == n && s.Rules[n-1].Match.Kind != netmap.MatchDefault {
+	if n := len(raw.Rules); n > 0 && len(s.Rules) == n && netmap.NeedsDefault(s.Rules) {
 		c.errorf(raw.Rules[n-1].pos, "the last rule must match default, so every destination has an action")
 	}
 }
@@ -775,7 +774,7 @@ func (c *checker) paths(s *Spec, raw []rawPath, byName map[string]int) {
 		// A device dials its neighbour on the path, and gets its address.
 		for _, end := range [][2]int{{0, 1}, {len(p.Nodes) - 1, len(p.Nodes) - 2}} {
 			dev, next := s.Nodes[p.Nodes[end[0]]], s.Nodes[p.Nodes[end[1]]]
-			if dev.Kind == netmap.NodeDevice && next.Kind == netmap.NodeServer && !next.Ingress {
+			if dev.Kind == netmap.NodeDevice && netmap.ApartByIngress(dev.Kind, dev.Ingress, next.Kind, next.Ingress) {
 				c.errorf(rp.hops[end[1]].pos, "%s has ingress off, so %s can't connect to it (ingress: true lets devices in)", next.Name, dev.Name)
 				ok = false
 			}

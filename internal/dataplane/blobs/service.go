@@ -117,16 +117,6 @@ type Options struct {
 	// Log gets the service's events; local only.
 	Log    *slog.Logger
 	Limits Limits
-
-	// Listen and Dial replace the network (tests). By default the service
-	// listens on and dials from the node's overlay addresses, bound to
-	// Plan.Interface.
-	Listen func(addr netip.AddrPort) (net.Listener, error)
-	Dial   func(ctx context.Context, local netip.Addr, remote netip.AddrPort) (net.Conn, error)
-	// Port replaces Port (tests).
-	Port uint16
-	// Now replaces time.Now (tests of the rate limit).
-	Now func() time.Time
 }
 
 // Peer is a node the service may fetch from: a WireGuard peer, reached at
@@ -184,14 +174,25 @@ type Status struct {
 	Served, ServedBytes, NotHere, Busy, NotPeer uint64
 }
 
+// Net replaces the node's network for a service (tests and labs): a
+// loopback overlay stands in for the overlay's TUN, whose sockets Listen
+// and Dial would otherwise be bound to (see openListener and openConn).
+// The zero value is the node's real network.
+type Net struct {
+	Listen func(addr netip.AddrPort) (net.Listener, error)
+	Dial   func(ctx context.Context, local netip.Addr, remote netip.AddrPort) (net.Conn, error)
+}
+
 // Service holds, fetches and serves the blobs a node's map asks for.
 type Service struct {
 	o      Options
 	limits Limits
 	log    *slog.Logger
-	port   uint16
-	now    func() time.Time
 	rate   *limiter
+	// listen and dial are the service's network (Net): a loopback overlay
+	// in tests, the node's real network in production.
+	listen func(addr netip.AddrPort) (net.Listener, error)
+	dial   func(ctx context.Context, local netip.Addr, remote netip.AddrPort) (net.Conn, error)
 
 	mu   sync.Mutex
 	plan Plan
@@ -224,12 +225,22 @@ type Service struct {
 
 // New makes a service holding nothing; Update gives it a plan, Run runs it.
 func New(o Options) *Service {
+	return newService(o, Net{})
+}
+
+// NewOnNet is New on n instead of the node's real network: the listener
+// and dialer of a lab's loopback overlay.
+func NewOnNet(o Options, n Net) *Service {
+	return newService(o, n)
+}
+
+func newService(o Options, n Net) *Service {
 	s := &Service{
 		o:          o,
 		limits:     o.Limits.withDefaults(),
 		log:        o.Log,
-		port:       o.Port,
-		now:        o.Now,
+		listen:     n.Listen,
+		dial:       n.Dial,
 		want:       map[[32]byte]netmap.BlobRef{},
 		held:       map[[32]byte]netmap.BlobRef{},
 		data:       map[[32]byte][]byte{},
@@ -242,13 +253,7 @@ func New(o Options) *Service {
 	if s.log == nil {
 		s.log = slog.New(slog.DiscardHandler)
 	}
-	if s.port == 0 {
-		s.port = Port
-	}
-	if s.now == nil {
-		s.now = time.Now
-	}
-	s.rate = newLimiter(s.limits.ServeRate, s.now)
+	s.rate = newLimiter(s.limits.ServeRate, time.Now)
 	return s
 }
 

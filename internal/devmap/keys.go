@@ -369,7 +369,7 @@ func parseEd25519Public(s string) (ed25519.PublicKey, error) {
 
 func parseULA(s string) (netip.Prefix, error) {
 	p, err := netip.ParsePrefix(s)
-	if err != nil || !p.Addr().Is6() || p != p.Masked() || p.Bits() != 48 || !ula.Contains(p.Addr()) {
+	if err != nil || !netmap.IsOverlayIPv6(p) {
 		return netip.Prefix{}, fmt.Errorf("%q is not a ULA /48", s)
 	}
 	return p, nil

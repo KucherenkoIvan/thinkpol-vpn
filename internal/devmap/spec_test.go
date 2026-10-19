@@ -70,7 +70,10 @@ func TestSpecErrorsNameTheirLocation(t *testing.T) {
 		{"device dials a server with ingress off", "nodes:\n  - {name: s, kind: server, endpoints: ['udp://192.0.2.1:4500']}\n  - {name: d, kind: device}\npaths:\n  - [d, s]\n  - [s, d]\n",
 			[]string{"spec.yaml:5:9: s has ingress off, so d can't connect to it", "spec.yaml:6:6: s has ingress off, so d can't connect to it"}},
 		{"space name not a label", "space:\n  name: Home\n" + nodes, []string{`spec.yaml:2:9: space name "Home"`}},
-		{"node name not an overlay name", "space:\n  name: home\nnodes:\n  - name: d-\n    kind: device\n", []string{"spec.yaml:4:11: d- can't be an overlay name in space home"}},
+		{"node name not an overlay name", "space:\n  name: home\nnodes:\n  - name: d-\n    kind: device\n", []string{"spec.yaml:4:11: node name \"d-\""}},
+		// Node names are overlay names, checked once (netmap.CheckLabel):
+		// a name no overlay name can take is refused without a space name too.
+		{"node name with a trailing dash", "nodes:\n  - name: d-\n    kind: device\n", []string{"spec.yaml:2:11: node name \"d-\""}},
 		{"rule unparsable", nodes + "rules:\n  - everything -> direct\n", []string{"spec.yaml:8:5: rule:"}},
 		{"rule with an unknown chain", nodes + "rules:\n  - default -> chain:nl\n", []string{"spec.yaml:8:5: rule default -> chain:nl: no chain nl"}},
 		{"rule with an undeclared list", nodes + "rules:\n  - geoip:ru -> direct\n  - default -> block\n", []string{"spec.yaml:8:5: rule geoip:ru -> direct: no list ru"}},

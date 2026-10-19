@@ -208,6 +208,14 @@ type Recipient struct {
 	Section Section
 }
 
+// ApartByIngress reports whether a link between the two is kept out of
+// the map: a device and a server with ingress off have none, whichever of
+// them dials (hiddenFromDevices; devmap's spec checker shares it).
+func ApartByIngress(a NodeKind, aIngress bool, b NodeKind, bIngress bool) bool {
+	return a == NodeDevice && b == NodeServer && !bIngress ||
+		b == NodeDevice && a == NodeServer && !aIngress
+}
+
 // hiddenFromDevices is Build's check across sections that a server with
 // ingress off stays out of devices' reach:
 //   - no link between a device and such a server, whichever of them dials
@@ -229,9 +237,7 @@ func hiddenFromDevices(recipients []Recipient) error {
 		nodes[n.ID] = n
 	}
 	hidden := func(n *NodeSettings) bool { return n.Kind == NodeServer && !n.AllowIngress }
-	apart := func(a, b *NodeSettings) bool {
-		return a.Kind == NodeDevice && hidden(b) || b.Kind == NodeDevice && hidden(a)
-	}
+	apart := func(a, b *NodeSettings) bool { return ApartByIngress(a.Kind, a.AllowIngress, b.Kind, b.AllowIngress) }
 	addrs := make(map[netip.Addr]bool)
 	for _, r := range recipients {
 		if n := &r.Section.Node; hidden(n) {

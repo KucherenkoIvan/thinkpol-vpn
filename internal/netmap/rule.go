@@ -286,7 +286,8 @@ func (a Action) check() error {
 
 // CheckListName reports whether name can name a list (a geoip or geosite
 // blob): 1-32 lowercase letters, digits and dashes, starting with a letter
-// or digit, as lists.CheckName.
+// or digit. The one rule for such names, at this limit: lists.CheckName
+// and devmap's spec checker share it.
 func CheckListName(name string) error {
 	if !isName(name, maxListName) {
 		return fmt.Errorf("list name %q: use 1-%d lowercase letters, digits and dashes, starting with a letter or digit", name, maxListName)
@@ -402,15 +403,13 @@ func (s *Section) validateRules() error {
 			return err
 		}
 		switch {
-		case r.Action.Kind == ActionChain && !chains[r.Action.Chain]:
+		case r.Action.NamesAChain() && !chains[r.Action.Chain]:
 			return fmt.Errorf("rule %s: no chain %s", r, r.Action.Chain)
-		case r.Match.Kind == MatchGeoIP && !named[BlobGeoIP][r.Match.Value]:
-			return fmt.Errorf("rule %s: no geoip blob named %s", r, r.Match.Value)
-		case r.Match.Kind == MatchGeoSite && !named[BlobGeoSite][r.Match.Value]:
-			return fmt.Errorf("rule %s: no geosite blob named %s", r, r.Match.Value)
+		case r.Match.NamesAList() && !named[listBlobKind(r.Match.Kind)][r.Match.Value]:
+			return fmt.Errorf("rule %s: no %v blob named %s", r, listBlobKind(r.Match.Kind), r.Match.Value)
 		}
 	}
-	if n := len(s.Rules); n > 0 && s.Rules[n-1].Match.Kind != MatchDefault {
+	if NeedsDefault(s.Rules) {
 		return errors.New("rules: the last rule must match default, so every destination has an action")
 	}
 	if d := s.Presets.Domestic; d != "" && !named[BlobGeoIP][d] {
@@ -420,6 +419,39 @@ func (s *Section) validateRules() error {
 		return fmt.Errorf("presets: no chain %q", c)
 	}
 	return nil
+}
+
+// listBlobKind is the blob kind a list-naming matcher's value names.
+func listBlobKind(k MatchKind) BlobKind {
+	if k == MatchGeoSite {
+		return BlobGeoSite
+	}
+	return BlobGeoIP
+}
+
+// NamesAList reports whether the matcher matches by the name of a list
+// blob (geoip, or geosite once specs carry them): a builder checks the
+// list is declared (validateRules: the section's named blobs; devmap's
+// spec checker: the spec's declared lists).
+func (m Match) NamesAList() bool { return m.Kind == MatchGeoIP || m.Kind == MatchGeoSite }
+
+// NamesAChain reports whether the action sends traffic through a chain by
+// name: a builder checks the chain is declared (validateRules: the
+// section's chains; devmap's spec checker: the spec's).
+func (a Action) NamesAChain() bool { return a.Kind == ActionChain }
+
+// NeedsDefault reports whether rules leave destinations with no action:
+// a non-empty rule set must end with the default matcher (validateRules;
+// devmap's spec checker shares it).
+func NeedsDefault(rules []Rule) bool {
+	return len(rules) > 0 && rules[len(rules)-1].Match.Kind != MatchDefault
+}
+
+// MayEndAChain reports whether a node of kind k with egress set may be a
+// chain's exit: only a server with egress on (chainsEndAtExits; devmap's
+// spec checker shares it).
+func MayEndAChain(k NodeKind, egress bool) bool {
+	return k == NodeServer && egress
 }
 
 // chainsEndAtExits is Build's check across sections that every chain ends
@@ -433,7 +465,7 @@ func chainsEndAtExits(recipients []Recipient) error {
 	}
 	for i, r := range recipients {
 		for _, c := range r.Section.Chains {
-			if exit, ok := nodes[c.Exit]; ok && (exit.Kind != NodeServer || !exit.AllowEgress) {
+			if exit, ok := nodes[c.Exit]; ok && !MayEndAChain(exit.Kind, exit.AllowEgress) {
 				return fmt.Errorf("recipient %d: chain %s ends at %v, not a server that allows egress", i, c.Name, c.Exit)
 			}
 		}
