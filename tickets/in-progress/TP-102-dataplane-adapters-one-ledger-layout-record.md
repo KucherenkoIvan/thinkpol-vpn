@@ -6,8 +6,8 @@ area: dataplane
 repo: thinkpol-vpn
 size: L
 depends_on: [TP-109]
-owner: ""
-branch: ""
+owner: "agent-claude"
+branch: "tp-102-dataplane-adapters-one-ledger-layout-record"
 ---
 
 ## Goal
@@ -19,11 +19,10 @@ netcfg, routetable, firewall, and dns adapters share one implementation of each 
 - `routetable/split.go` (~119): compute the route layout once per apply instead of three times via `Config`, `Ahead`, and `OverlayAhead` (`routetable.go` ~486, ~525).
 - `trusteddir.ReadFile` / `trusteddir.WriteFile` for the atomic record-plus-boot-session primitive, today in `netcfg/record_darwin.go`, `firewall/token_darwin.go`, and `dns/resolvconf.go` (~321–381).
 - Decompose `firewall/guard_darwin.go` `enable()` (~312–379) and `dns/handle.go` `answer()` (~42–158) into readable units without changing behaviour.
-- If TP-103 has already landed, add a `funlen` gate at about 80 lines to `.golangci.yml`.
+- Keep every function this ticket writes or touches at about 80 lines or fewer. The `funlen` gate itself is TP-083's: it lands last (tickets/ORCHESTRATION.md "Consolidation phase"); this ticket adds no gate.
 
 ## Out of scope
 - Darwin dropped errors on record read and DNS store read (TP-108).
-- Port types moving into `dataplane` core and depguard (TP-083).
 - Windows/Android adapters (TP-047).
 
 ## Acceptance
@@ -38,3 +37,5 @@ Must land before TP-047 so new OS adapters do not copy the current duplication.
 ## Log
 - 2026-10-18 created in backlog (code-quality review)
 - 2026-10-18 depends on TP-109 instead of TP-083: it needs the core-owned ports, and can then run alongside TP-083 (owner)
+- 2026-10-19 backlog → in-progress — owner: agent-claude, branch: tp-102-dataplane-adapters-one-ledger-layout-record
+- 2026-10-19 ticket corrected (orchestrator): the out-of-scope line on port types and depguard dropped (that was TP-109, done); the funlen bullet now says this ticket adds no gate (TP-083 lands last and adds it) and keeps the functions it writes or touches at about 80 lines or fewer
