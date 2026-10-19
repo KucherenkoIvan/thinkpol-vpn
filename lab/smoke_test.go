@@ -179,9 +179,11 @@ func TestSmoke(t *testing.T) {
 		}
 		wantNoLookup(t, device, "an outside name on a device", "getent", "hosts", "example.com")
 		// Asked directly, Docker's resolver answers a lab name (the
-		// control) and can only fail to forward an outside one: SERVFAIL,
-		// once its own forwarding times out (about 4s, measured), so the
-		// client waits longer. A timeout or any other rcode is no proof.
+		// control) and an outside one with SERVFAIL once its forward gets
+		// no answer (about 4s, measured), so the client waits longer. A
+		// tripwire, not a proof of the sealing (the routes and blackholes
+		// above are): SERVFAIL says no answer came back, not that nothing
+		// left. A timeout or any other rcode fails.
 		dockerDNS := func(name string) string {
 			t.Helper()
 			out, err := execRead(device, execTimeout, "labdns", "-server", "127.0.0.11:53", "-timeout", "20s", "-query", name)
