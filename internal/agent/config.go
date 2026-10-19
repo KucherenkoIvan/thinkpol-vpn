@@ -33,8 +33,7 @@ const (
 // command's flags override. The flag: and help: tags are the flags
 // (config.BindFlags), so a setting is named in one place.
 type Config struct {
-	// StateDir holds the node's keys and its map (see LoadState):
-	// DefaultStateDir when THINKPOL_STATE_DIR is unset.
+	// StateDir holds the node's keys and its map (see LoadState).
 	StateDir string `env:"THINKPOL_STATE_DIR" flag:"state" help:"state directory: node.key, space.pub and map.bin"`
 	// MapFile is the map's path; empty means map.bin in StateDir.
 	MapFile string `env:"THINKPOL_MAP" flag:"map" help:"the map file, if not map.bin in the state directory"`
@@ -55,9 +54,8 @@ type Config struct {
 	// otherwise it waits for the local API's Connect. A server always
 	// serves its spaces.
 	Connect bool `env:"THINKPOL_CONNECT" default:"true" flag:"connect" help:"a device connects when it starts; otherwise it waits for thinkpol connect"`
-	// APISocket is the local API's Unix socket, in a directory of its own
-	// (DefaultAPISocket when THINKPOL_API_SOCKET is unset); empty serves no
-	// local API.
+	// APISocket is the local API's Unix socket, in a directory of its own;
+	// empty serves no local API.
 	APISocket string `env:"THINKPOL_API_SOCKET" flag:"api-socket" help:"the local API's socket, in a directory of its own; empty: no local API"`
 	// APIGroup is the group (a name or a gid) whose members may use the
 	// local API besides root; if no such group exists, only root may.
@@ -98,10 +96,9 @@ func (c Config) EgressAllowedPrefixes() ([]netip.Prefix, error) {
 
 // LoadConfig reads the configuration from the environment. Unlike
 // go-kernel's usual setup it reads no .env files: a node's configuration
-// is its environment and its flags. It doesn't validate: flags may still
-// change it (see Validate). The platform defaults for what the
-// environment left unset are the `up` command's (cmd/thinkpol), which
-// fills StateDir and APISocket after the load.
+// is its environment and its flags. It neither validates nor fills the
+// platform defaults: what the environment left unset stays empty, and
+// DefaultStateDir and DefaultAPISocket are this OS's defaults for it.
 func LoadConfig() (Config, error) {
 	c, err := config.LoadWith[Config](config.WithoutEnvFiles(), config.DeferValidate())
 	if err != nil {
