@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/durationpb"
 
@@ -210,9 +209,6 @@ func (c *Client) explain(err error) error {
 		return fmt.Errorf("refused: %s", agent.Sanitize(remote.Code))
 	}
 	if st, ok := status.FromError(err); ok {
-		if st.Code() == codes.Unavailable && st.Message() != "" {
-			return errors.New(agent.Sanitize(st.Message()))
-		}
 		return fmt.Errorf("%s: %s", st.Code(), agent.Sanitize(st.Message()))
 	}
 	return err
