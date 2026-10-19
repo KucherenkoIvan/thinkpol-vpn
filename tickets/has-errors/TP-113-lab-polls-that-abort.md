@@ -54,6 +54,14 @@ A lab poll retries a failed read and fails only at its deadline; a one-shot chec
 - [x] R2.7 one untilAnswer(within, attempt) for pingCrosses, tcpCrosses and pollReceived; pollLog stays; reaches reuses tcpConnect + ncConnectFailed if it duplicates them
 - [x] R2.8 getentNotFound(res) beside the other classifiers, used by resolve and smoke's noAnswer; noAnswer folded into wantNoAnswer if the same
 - [x] R2.9 nits: smoke hermetic `ping ... && echo reached` classifies the blackhole route's real "no"; up_test.go `pgrep ... || true` treats only exit 1 as no match; serving() → waitServing()
+- [ ] R3.1 (round 4) up_test.go pgrep: "no match" only on exit 1 with empty stdout and stderr (docker exec also exits 1)
+- [ ] R3.2 smoke's link-local probe: a failed `ip -6 neigh show` fails the test instead of reading as "no neighbour"
+- [ ] R3.3 measured and logged: (a) whether smoke's Docker-resolver lookup passes on a real "not found" or a getent timeout, told apart or said plainly; (b) Docker gateways accept only the measured blackhole, link-local only " 0 received"
+- [ ] R3.4 pingNoReply's comment says why censor probes need it: the probe must have crossed the wire to call the path blocked
+- [ ] R3.5 pingAnswers and curlFrom docs: true for a reply / connected, false for the tool's own "no", anything else an error (an unknown state, never a pass)
+- [ ] R3.6 smoke's unreached folded into pingAnswers with a small classifier per case; pingBlackholed deleted if unused
+- [ ] R3.7 execReadResult → execResult(n, timeout, args...); execRead built on it; used in pingAnswers, ipv6Guard and wantTUNGone
+- [ ] R3.8 getentNotFound and tcpReaches move to netstate_test.go beside the other classifiers
 
 ## Log
 - 2026-10-19 created in backlog (TP-099 review round 6)
@@ -111,3 +119,4 @@ A lab poll retries a failed read and fails only at its deadline; a one-shot chec
 - 2026-10-19 origin/rewrite merged: already up to date (nothing new since d86166d's merge).
 - 2026-10-19 verified on the committed, pushed head 51448af with a clean tree, no other tplab containers (LAB_P=4): make lint exit 0 (17s), make test exit 0 (1s, Go's test cache), make lab-test exit 0 (123s; lab ok in 96.7s, censor matrix included; node phase 35 packages ok; no skips). The lab package also passed alone before the commit (124s).
 - 2026-10-19 in-progress → review
+- 2026-10-19 review → has-errors — round 4: R3.1-R3.8
