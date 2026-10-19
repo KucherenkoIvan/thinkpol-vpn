@@ -24,8 +24,8 @@ Unused types and packages are removed so exports and go.mod pins reflect real im
 - Refactors that only rename without deleting dead symbols.
 
 ## Acceptance
-- [ ] `go mod tidy` leaves go-kernel required; no broken imports
-- [ ] `make lint`, `make test`, `make lab-test` pass
+- [x] `go mod tidy` leaves go-kernel required; no broken imports — `go mod tidy` changed nothing (de8ec10); go-kernel v0.20.0 still required through real imports in `internal/agent` (app, config, grpckit, observability, ddd) and `cmd/thinkpol`
+- [x] `make lint`, `make test`, `make lab-test` pass — lint and test green at de8ec10; full lab run green at de8ec10, 34 packages, `LAB_P=1` (two other wave-0 tickets share Docker)
 
 ## Notes
 Origin: design and code-quality review of rewrite at 2fa1191 (2026-10-18).
@@ -33,3 +33,4 @@ Origin: design and code-quality review of rewrite at 2fa1191 (2026-10-18).
 ## Log
 - 2026-10-18 created in backlog (code-quality review)
 - 2026-10-19 backlog → in-progress — owner: agent-glm, branch: tp-106-remove-dead-code
+- 2026-10-19 in-progress → review — telemetry had only a doc.go and no importers; SendReporter had no consumer beyond udp's compile-time asserts (its `Sent` methods stay, tests call them on concrete types); Buckets had no non-test callers, moved to transporttest; kernel.go deleted, go-kernel pinned by real imports. make lint, make test and a full make lab-test (LAB_P=1, 34 packages) green at de8ec10. Nothing unverified: no device-only or platform-specific behaviour touched.
