@@ -41,7 +41,7 @@ func (r *runner) newResolver() *dns.Server {
 		if r.dp.Forward {
 			// workerUpstreams refused every one and logged each.
 			r.dp.Log.Warn("DNS: no upstream to ask: the worker's egress refuses every configured one; tunnel-bound names won't resolve")
-		} else {
+		} else if !r.upstreamsUnknown.Load() { // a failed read warned already
 			r.dp.Log.Warn("DNS: no upstream to ask; set one with -dns-upstream")
 		}
 	}

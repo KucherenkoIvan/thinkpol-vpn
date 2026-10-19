@@ -178,39 +178,40 @@ func TestAnEmptyStringRoundTrips(t *testing.T) {
 	}
 }
 
-// fakeScutil puts a script in scutil's place that prints out and exits
-// with code.
-func fakeScutil(t *testing.T, out string, code int) {
+// fakeScutil is scutil run as a script that prints out and exits with
+// code.
+func fakeScutil(t *testing.T, out string, code int) scutil {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "scutil")
 	script := fmt.Sprintf("#!/bin/sh\ncat >/dev/null\nprintf '%%s' '%s'\nexit %d\n", out, code)
 	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	old := scutilPath
-	scutilPath = path
-	t.Cleanup(func() { scutilPath = old })
+	return scutil{path: path}
 }
 
 // A failed read names the command and what it read, once: scutil's own
 // failure and an answer that doesn't parse alike.
 func TestScutilErrorsNameTheRead(t *testing.T) {
-	const key, pattern = "State:/Network/Global/IPv4", "State:/Network/Service/[^/]+/DNS"
-	fakeScutil(t, "garbage", 0)
-	if _, _, err := (scutil{}).get(key); err == nil || err.Error() != `scutil: show `+key+`: unexpected output "garbage"` {
+	const key, pattern = "State:/Network/thinkpol-test", "State:/Network/Service/[^/]+/DNS"
+	sc := fakeScutil(t, "garbage", 0)
+	if _, _, err := sc.get(key); err == nil || err.Error() != `scutil: show `+key+`: unexpected output "garbage"` {
 		t.Errorf("show, unparsable: %v", err)
 	}
-	if _, err := (scutil{}).keys(pattern); err == nil || err.Error() != `scutil: list `+pattern+`: unexpected line "garbage"` {
+	if _, err := sc.keys(pattern); err == nil || err.Error() != `scutil: list `+pattern+`: unexpected line "garbage"` {
 		t.Errorf("list, unparsable: %v", err)
 	}
-	fakeScutil(t, "broken", 1)
-	if _, _, err := (scutil{}).get(key); err == nil || err.Error() != "scutil: show "+key+": exit status 1: broken" {
+	sc = fakeScutil(t, "broken", 1)
+	if _, _, err := sc.get(key); err == nil || err.Error() != "scutil: show "+key+": exit status 1: broken" {
 		t.Errorf("show, failed: %v", err)
 	}
-	if _, err := (scutil{}).keys(pattern); err == nil || err.Error() != "scutil: list "+pattern+": exit status 1: broken" {
+	if _, err := sc.keys(pattern); err == nil || err.Error() != "scutil: list "+pattern+": exit status 1: broken" {
 		t.Errorf("list, failed: %v", err)
 	}
-	if err := (scutil{}).remove(key); err == nil || err.Error() != "scutil: remove "+key+": exit status 1: broken" {
+	if err := sc.remove(key); err == nil || err.Error() != "scutil: remove "+key+": exit status 1: broken" {
 		t.Errorf("remove, failed: %v", err)
+	}
+	if _, _, err := fakeScutil(t, "", 1).get(key); err == nil || err.Error() != "scutil: show "+key+": exit status 1" {
+		t.Errorf("show, failed silently: %v", err)
 	}
 }

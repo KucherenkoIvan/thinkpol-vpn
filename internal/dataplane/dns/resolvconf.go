@@ -36,7 +36,8 @@ type SystemConfig struct {
 	// UpstreamsUnknown says the caller's own read of the OS's resolvers
 	// failed, so it has none: on macOS the first good read tells Upstreams
 	// (nil when offline), and until then Problem reports
-	// ErrUpstreamsStale. Read when the configuration is first set.
+	// ErrUpstreamsStale. Linux ignores it: it tells only when resolv.conf
+	// changes. Read when the configuration is first set.
 	UpstreamsUnknown bool
 	// Log receives warnings from configuration watchers.
 	Log *slog.Logger
@@ -67,7 +68,8 @@ var ErrUnprotected = errors.New("dns: names may be resolved outside the node")
 // resolvers failed: the direct upstreams are the ones read before, so
 // `direct` names may not resolve. The OS still resolves through the
 // node, so on its own it is not unprotected; Unprotected sorts a joined
-// Problem.
+// Problem. Wrap a cause in it with %v: a %w'd cause is a part of its own,
+// and an untagged part is unprotected.
 var ErrUpstreamsStale = errors.New("dns: the direct upstreams may be stale")
 
 // Unprotected says whether a Problem leaves names resolving outside the
@@ -78,22 +80,33 @@ var ErrUpstreamsStale = errors.New("dns: the direct upstreams may be stale")
 // any of its parts is, so an untagged part beside a stale one isn't
 // hidden by it.
 func Unprotected(problem error) bool {
-	switch e := problem.(type) {
-	case nil:
+	if problem == nil {
 		return false
+	}
+	if errors.Is(problem, ErrUnprotected) {
+		return true
+	}
+	switch e := problem.(type) {
 	case interface{ Unwrap() []error }:
+		parts := 0
 		for _, part := range e.Unwrap() {
+			if part == nil {
+				continue
+			}
+			parts++
 			if Unprotected(part) {
 				return true
 			}
 		}
-		return false
+		if parts > 0 {
+			return false
+		}
 	case interface{ Unwrap() error }:
 		if inner := e.Unwrap(); inner != nil {
 			return Unprotected(inner)
 		}
 	}
-	return errors.Is(problem, ErrUnprotected) || !errors.Is(problem, ErrUpstreamsStale)
+	return !errors.Is(problem, ErrUpstreamsStale)
 }
 
 // A resolv.conf the node manages starts with resolvConfHeader and keeps

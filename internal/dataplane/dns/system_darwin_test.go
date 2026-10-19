@@ -965,7 +965,7 @@ func TestAFailedFirstReadIsStaleUntilAGoodReadTellsIt(t *testing.T) {
 
 // Offline, the first good read tells an empty answer and clears the
 // staleness all the same.
-func TestAFailedFirstReadThenOfflineTellsNothing(t *testing.T) {
+func TestAFailedFirstReadThenOfflineTellsAnEmptyAnswer(t *testing.T) {
 	f := aMac(t)
 	_ = f.remove("State:/Network/Service/D/DNS")
 	_ = f.remove("Setup:/Network/Service/B/DNS")
@@ -1000,7 +1000,7 @@ func TestAFailedFirstReadThenOfflineTellsNothing(t *testing.T) {
 
 // When the store's own first read works, it tells at once, without
 // waiting for a change or the backstop.
-func TestAFailedFirstReadIsToldTheStoresGoodRead(t *testing.T) {
+func TestAFailedFirstReadIsToldTheStoresFirstGoodReadAtOnce(t *testing.T) {
 	f := aMac(t)
 	u := newToldUpstreams()
 	c := nodeConfig
@@ -1016,5 +1016,26 @@ func TestAFailedFirstReadIsToldTheStoresGoodRead(t *testing.T) {
 	}
 	if p := s.Problem(); errors.Is(p, ErrUpstreamsStale) {
 		t.Errorf("stale after a good read: %v", p)
+	}
+}
+
+// The store's own good read at setup is told even if every read after it
+// fails: the agent has none until then.
+func TestTheStoresFirstGoodReadIsToldThoughTheNextFails(t *testing.T) {
+	f := aMac(t)
+	u := newToldUpstreams()
+	c := nodeConfig
+	c.Upstreams, c.UpstreamsUnknown = u.tell, true
+	s, err := setDynamicStore(f, c, nil, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Restore() }()
+	f.mu.Lock()
+	f.getErrs = map[string]error{"State:/Network/Global/IPv4": errors.New("read failed")}
+	f.mu.Unlock()
+	u.wait(t)
+	if told := u.all(); len(told) != 1 || fmt.Sprint(told[0]) != "[192.168.1.1]" {
+		t.Errorf("told %v, want the Wi-Fi servers read at setup", told)
 	}
 }

@@ -28,6 +28,12 @@ func TestUnprotectedSortsProblems(t *testing.T) {
 	if !Unprotected(errors.New("the store is unreadable")) {
 		t.Error("an untagged problem reads as protected")
 	}
+	if !Unprotected(fmt.Errorf("dns: %w; %w", nil, nil)) {
+		t.Error("a problem wrapping only nils reads as protected")
+	}
+	if !Unprotected(taggedUnprotected{fmt.Errorf("%w: read failed", ErrUpstreamsStale)}) {
+		t.Error("a wrapper that is ErrUnprotected around a stale problem reads as protected")
+	}
 	stale := fmt.Errorf("%w: read failed", ErrUpstreamsStale)
 	if !Unprotected(errors.Join(errors.New("the store is unreadable"), stale)) {
 		t.Error("an untagged problem joined with a stale one reads as protected")
@@ -368,3 +374,10 @@ func TestALeftoverIsRestoredAtStart(t *testing.T) {
 		t.Errorf("a file the node doesn't manage changed: %v", err)
 	}
 }
+
+// taggedUnprotected is ErrUnprotected itself, whatever it wraps.
+type taggedUnprotected struct{ inner error }
+
+func (e taggedUnprotected) Error() string        { return "unprotected: " + e.inner.Error() }
+func (e taggedUnprotected) Unwrap() error        { return e.inner }
+func (e taggedUnprotected) Is(target error) bool { return target == ErrUnprotected }

@@ -92,18 +92,19 @@ var errNoPrimary = errors.New("dns: no primary network service")
 // only, until Restore; it keeps doing so as the system republishes its
 // own configuration.
 func SetSystem(c SystemConfig) (System, error) {
-	return setDynamicStore(scutil{}, c, watchStore, checkEvery)
+	sc := scutil{path: scutilPath}
+	return setDynamicStore(sc, c, sc.watch, checkEvery)
 }
 
 // RestoreSystem puts back what a node that died while connected left
 // overridden. Call it when the node starts.
-func RestoreSystem() error { return restoreBackup(scutil{}) }
+func RestoreSystem() error { return restoreBackup(scutil{path: scutilPath}) }
 
 // SystemUpstreams are the resolvers the OS uses on its own: the primary
 // service's DNS servers (set by hand, else published), as they were
 // before the node overrode them. Addresses in exclude are left out.
 func SystemUpstreams(exclude []netip.Addr) ([]netip.Addr, error) {
-	return systemUpstreams(scutil{}, exclude)
+	return systemUpstreams(scutil{path: scutilPath}, exclude)
 }
 
 // original is a DNS key as the system had it before the override.
@@ -230,9 +231,17 @@ func setDynamicStore(st store, c SystemConfig, notify storeWatch, every time.Dur
 		untold: c.UpstreamsUnknown && c.Upstreams != nil}
 	s.mu.Lock()
 	err = s.apply()
-	s.primary, _ = s.primaryOriginal()
+	primary, read := s.primaryOriginal()
+	s.primary = primary
 	s.err = err
 	untold := s.untold
+	// A good read now is the first one the caller hears of: told below
+	// whatever a later read finds.
+	tellNow := untold && read
+	if tellNow {
+		s.untold = false
+	}
+	tell := s.cfg.Upstreams
 	s.mu.Unlock()
 	if err != nil && len(s.backup) == 0 {
 		_ = s.restore()
@@ -250,10 +259,12 @@ func setDynamicStore(st store, c SystemConfig, notify storeWatch, every time.Dur
 	}
 	go func() {
 		defer cancel()
-		if untold {
-			// Upstreams is told from this goroutine only: the first
-			// check is now, not a backstop later.
-			s.check()
+		// Upstreams is told from this goroutine only.
+		switch {
+		case tellNow:
+			tell(primary)
+		case untold:
+			s.check() // the first check is now, not a backstop later
 		}
 		s.watch(events, every)
 	}()
@@ -595,7 +606,7 @@ func (s *dynamicStore) Problem() error {
 	// Unprotected sorts a joined problem back out.
 	switch {
 	case s.untold:
-		errs = append(errs, fmt.Errorf("%w: the system's resolvers haven't been read since the first read failed", ErrUpstreamsStale))
+		errs = append(errs, fmt.Errorf("%w: no read of the system's resolvers has worked since the first one failed", ErrUpstreamsStale))
 	case s.primaryFailed:
 		errs = append(errs, fmt.Errorf("%w: reading the primary service's DNS servers failed at the last check", ErrUpstreamsStale))
 	}

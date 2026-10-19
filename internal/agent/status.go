@@ -302,8 +302,8 @@ const (
 	// resolver, so names may leave outside the tunnel.
 	ProblemDNSUnprotected = "dns_not_protected"
 	// ProblemDNSUpstreamsStale: the device's direct upstreams may be stale
-	// (the last read of the OS's own resolvers failed), so names outside
-	// the node may not resolve; the OS still resolves through the node.
+	// (the last read of the OS's own resolvers failed), so `direct` names
+	// may not resolve; the OS still resolves through the node.
 	ProblemDNSUpstreamsStale = "dns_upstreams_stale"
 	// ProblemDNSUpstreamRefused: resolver upstreams the worker's egress
 	// refuses (Status.DNSUpstreamsRefused counts them) aren't configured:

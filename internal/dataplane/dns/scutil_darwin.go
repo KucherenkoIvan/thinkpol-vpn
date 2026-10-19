@@ -63,19 +63,21 @@ type store interface {
 
 // scutil is the store through /usr/sbin/scutil's command language: pure
 // Go, no SystemConfiguration framework (cgo) needed.
-type scutil struct{}
+type scutil struct{ path string }
 
-// scutilPath is a variable so tests can run a fake in its place.
-var scutilPath = "/usr/sbin/scutil"
+const scutilPath = "/usr/sbin/scutil"
 
-func (scutil) run(script string) (string, error) {
+func (s scutil) run(script string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, scutilPath)
+	cmd := exec.CommandContext(ctx, s.path)
 	cmd.Stdin = strings.NewReader(script)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("%w: %s", err, bytes.TrimSpace(out))
+		if msg := bytes.TrimSpace(out); len(msg) > 0 {
+			return "", fmt.Errorf("%w: %s", err, msg)
+		}
+		return "", err
 	}
 	return string(out), nil
 }
@@ -140,11 +142,11 @@ func (s scutil) remove(key string) error {
 	return nil
 }
 
-// watchStore subscribes to changes of the store's keys matching patterns
+// watch subscribes to changes of the store's keys matching patterns
 // through a long-lived scutil (`n.add <pattern> pattern`, `n.watch`), which
 // prints a notification for every change: each line it prints signals.
 // It runs until ctx ends; the channel closes when scutil exits.
-func watchStore(ctx context.Context, patterns []string) (<-chan struct{}, error) {
+func (s scutil) watch(ctx context.Context, patterns []string) (<-chan struct{}, error) {
 	var script strings.Builder
 	for _, p := range patterns {
 		if err := checkToken(p); err != nil {
@@ -153,7 +155,7 @@ func watchStore(ctx context.Context, patterns []string) (<-chan struct{}, error)
 		fmt.Fprintf(&script, "n.add %s pattern\n", p)
 	}
 	script.WriteString("n.watch\n")
-	cmd := exec.CommandContext(ctx, scutilPath)
+	cmd := exec.CommandContext(ctx, s.path)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
