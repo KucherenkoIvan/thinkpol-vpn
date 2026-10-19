@@ -45,15 +45,15 @@ A lab poll retries a failed read and fails only at its deadline; a one-shot chec
 - [x] R1.11 (round 2b) censor_e2e and results probes (pingErr, tcpCrosses): "blocked" is only the tool's own failure exit (ping's exit 1 for no reply, the TCP probe's connect failure or timeout); any other failure fails the cell
 - [x] R1.12 (round 2c) the remaining one-shot "must not" checks in lab/ (smoke ping, egress curl, ipv6leak, ingress, dns resolvectl, localapi, and any others) count only the tool's own "no" (checked in the lab) as a pass; any other failure fails the test
 - [x] R1.13 (round 2c) internal/dataplane/blobs TestAPeerDroppedFromThePlanIsServedNoMore ("connection refused" in TP-109's lab-test): reproduce, then fix the cause or say it wasn't found
-- [ ] R2.1 (round 3) blobs_test.go `answer` pipes nc into wc, so a failed nsenter or nc counts as "gets nothing": make nc's own outcome visible, fail on anything but its measured "no"; a positive control (server-1's NotPeer rises) if possible
-- [ ] R2.2 one noPing(t, n, args...) built on pingAnswers in netstate_test.go, replacing up_test.go's copy and the three-branch checks in smoke, ipv6leak and routetable; the Log says why accepting no-route is sound there
-- [ ] R2.3 pingNoAnswer → pingNoReplyOrRoute; pingNoReply stays for pingCrosses
-- [ ] R2.4 the tryPing comment and the R1.12 Log line say what the code does: only ping's own outcome passes (a reply, none, or the sender's kernel refusing for want of a route)
-- [ ] R2.5 curl's exit 28 counts as "no connection" only for a connect-phase timeout (measured text, or --connect-timeout)
-- [ ] R2.6 one curlFrom(n, maxTime, args...) replacing egress fetch/noFetch and ipv6leak's copy
-- [ ] R2.7 one untilAnswer(within, attempt) for pingCrosses, tcpCrosses and pollReceived; pollLog stays; reaches reuses tcpConnect + ncConnectFailed if it duplicates them
-- [ ] R2.8 getentNotFound(res) beside the other classifiers, used by resolve and smoke's noAnswer; noAnswer folded into wantNoAnswer if the same
-- [ ] R2.9 nits: smoke hermetic `ping ... && echo reached` classifies the blackhole route's real "no"; up_test.go `pgrep ... || true` treats only exit 1 as no match; serving() → waitServing()
+- [x] R2.1 (round 3) blobs_test.go `answer` pipes nc into wc, so a failed nsenter or nc counts as "gets nothing": make nc's own outcome visible, fail on anything but its measured "no"; a positive control (server-1's NotPeer rises) if possible
+- [x] R2.2 one noPing(t, n, args...) built on pingAnswers in netstate_test.go, replacing up_test.go's copy and the three-branch checks in smoke, ipv6leak and routetable; the Log says why accepting no-route is sound there
+- [x] R2.3 pingNoAnswer → pingNoReplyOrRoute; pingNoReply stays for pingCrosses
+- [x] R2.4 the tryPing comment and the R1.12 Log line say what the code does: only ping's own outcome passes (a reply, none, or the sender's kernel refusing for want of a route)
+- [x] R2.5 curl's exit 28 counts as "no connection" only for a connect-phase timeout (measured text, or --connect-timeout)
+- [x] R2.6 one curlFrom(n, maxTime, args...) replacing egress fetch/noFetch and ipv6leak's copy
+- [x] R2.7 one untilAnswer(within, attempt) for pingCrosses, tcpCrosses and pollReceived; pollLog stays; reaches reuses tcpConnect + ncConnectFailed if it duplicates them
+- [x] R2.8 getentNotFound(res) beside the other classifiers, used by resolve and smoke's noAnswer; noAnswer folded into wantNoAnswer if the same
+- [x] R2.9 nits: smoke hermetic `ping ... && echo reached` classifies the blackhole route's real "no"; up_test.go `pgrep ... || true` treats only exit 1 as no match; serving() → waitServing()
 
 ## Log
 - 2026-10-19 created in backlog (TP-099 review round 6)
@@ -98,3 +98,16 @@ A lab poll retries a failed read and fails only at its deadline; a one-shot chec
 - 2026-10-19 in-progress → review
 - 2026-10-19 review → has-errors — round 3: R2.1-R2.9
 - 2026-10-19 has-errors → in-progress — owner: agent-claude, branch: tp-113-lab-polls-that-abort
+- 2026-10-19 round 3 measurements (a `make lab-up` lab, removed after): ping to a Docker gateway the sealing blackholes exits 2 with "connect: Invalid argument" (IPv4 and IPv6, from a device and the router); ping to an unanswered link-local address exits 1 with " 0 received"; curl's connect-phase timeout prints "(28) Connection timed out after" ("Failed to connect ... Timeout was reached" under --connect-timeout), a stall after connecting "(28) Operation timed out ... with 0 bytes received". In the lab test, the blob request from inside server-1's worker namespace gets nc exit 0 and 0 bytes (connected, closed without a word).
+- 2026-10-19 R2.1: blobs_test.go answer (:153) runs `nc ... > /tmp/blob.out && wc -c < /tmp/blob.out` under execTimeout and fails the test unless nc itself exited 0, so a failed nsenter, a refused or timed-out nc, or docker's failure is no longer "nothing"; nc's exit 0 is the positive control that the worker's listener took the connection. A NotPeer control isn't possible from a lab test: the node's status and logs don't carry the blob service's NotPeer, and adding it is a product change outside this ticket.
+- 2026-10-19 R2.2: one noPing(t, n, args...) (netstate_test.go:187) on pingAnswers (:170); up_test.go's copy is gone; callers: localapi (3), ingress, smoke (192.0.2.1 and the other lab), ipv6leak's three pings, routetable's IPv6-off ping. Accepting no route at the sender is sound for them: each checks that nothing reaches the target, and a kernel refusing for want of a route sends nothing (the old noPing's callers in localapi check a disconnected device, whose routes are gone either way).
+- 2026-10-19 R2.3: pingNoAnswer is pingNoReplyOrRoute (:154); pingNoReply stays for pingCrosses.
+- 2026-10-19 R2.4: correction to the R1.12 Log line on tryPing (the Log is append-only): tryPing (routetable_test.go:146) passes only on ping's own outcome, i.e. a reply, none, or the sender's kernel refusing for want of a route (which sends nothing); anything else fails the test. Its comment says so.
+- 2026-10-19 R2.5: curlNoConnection (:204) takes 28 only with the connect phase's own text ("Connection timed out after", or "Failed to connect" under --connect-timeout); a 28 after connecting fails the check.
+- 2026-10-19 R2.6: curlFrom(n, maxTime, args...) (:214) replaces egress's fetch/noFetch bodies (both now call it) and ipv6leak's copy.
+- 2026-10-19 R2.7: untilAnswer(within, attempt) (:232) runs pingCrosses (results_test.go:339), tcpCrosses (censor_e2e_test.go:276) and pollReceived (:315); pollLog stays separate. tcpConnect takes a port; tcpReaches (censor_e2e_test.go:263) is tcpConnect + ncConnectFailed, used by tcpCrosses and by blobs (reaches is gone; its poll's deadline is 45s for a 13s read).
+- 2026-10-19 R2.8: getentNotFound (dnscommon_test.go:101) beside the other classifiers; wantNoLookup(t, n, what, args...) (:133) is the one negative lookup, used by wantNoAnswer (:125, the dns checks) and smoke's two checks (noAnswer folded into it). resolve no longer classifies: only polls use it, and they retry every failure alike, so errNoAnswer is gone.
+- 2026-10-19 R2.9: smoke's hermetic pings to Docker's gateways and bridge link-local run in Go through unreached (smoke_test.go:95): pass only on no reply, no route or the blackhole's "Invalid argument" (pingBlackholed, netstate_test.go:163); anything else fails. up_test.go:210 pgrep: exit 1 is no match, any other failure fails the test. serving() is waitServing().
+- 2026-10-19 origin/rewrite merged: already up to date (nothing new since d86166d's merge).
+- 2026-10-19 verified on the committed, pushed head 51448af with a clean tree, no other tplab containers (LAB_P=4): make lint exit 0 (17s), make test exit 0 (1s, Go's test cache), make lab-test exit 0 (123s; lab ok in 96.7s, censor matrix included; node phase 35 packages ok; no skips). The lab package also passed alone before the commit (124s).
+- 2026-10-19 in-progress → review
