@@ -128,7 +128,7 @@ func TestDNSFollowsTheRules(t *testing.T) {
 		// device says DNS isn't protected, and says so no longer once it
 		// goes.
 		health := func() (string, error) {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), pollTimeout)
 			defer cancel()
 			res, err := devB.Exec(ctx, "thinkpol", "status")
 			return res.Stdout, err
@@ -217,8 +217,9 @@ func TestDNSFollowsTheRulesOnAServerExit(t *testing.T) {
 	// server with egress holds no overlay names, so its authoritative
 	// NXDOMAIN says the tunnel and the resolver are up. A fresh direct
 	// name proves the device's own resolver is alive, not the tunnel.
-	// Every name is asked once: the resolvers cache answers for 60 s.
-	// The positive control repeats the restart with the egress allowed.
+	// Each phase resolves names never asked before: the resolvers cache
+	// answers for 60 s. The positive control repeats the restart with
+	// the egress allowed.
 	restartExit := func(egressAllowed netip.Prefix) {
 		if err := exit.Stop(); err != nil {
 			t.Fatalf("the exit: %v\n%s", err, exit.Output())
@@ -233,7 +234,7 @@ func TestDNSFollowsTheRulesOnAServerExit(t *testing.T) {
 		t.Errorf("the exit didn't report refusing %s:5353:\n%s", inetIP, exit.Output())
 	}
 	lab.Eventually(t, 30*time.Second, func() error {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), pollTimeout)
 		defer cancel()
 		st, err := server.Exec(ctx, "thinkpol", "status")
 		if err != nil {

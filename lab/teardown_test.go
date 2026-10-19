@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"testing"
 	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/lab"
@@ -14,15 +13,38 @@ import (
 
 // What a stop (or a disconnect) must take away.
 
-// execTimeout bounds one-shot state reads, like lab's for MustExec;
-// polls pass 10 s so a hung exec doesn't eat the poll's deadline.
-const execTimeout = 2 * time.Minute
+// execTimeout bounds a one-shot check's execs: the check runs once and
+// fails with what it saw. pollTimeout bounds one read inside a poll: the
+// poll's deadline is what bounds the wait, a read leaves it room to retry.
+const (
+	execTimeout = 2 * time.Minute
+	pollTimeout = 10 * time.Second
+)
+
+// execRead runs one command in the node and returns its stdout; the
+// error carries the failure (a poll retries it, a one-shot fails with it).
+func execRead(n *lab.Node, timeout time.Duration, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	res, err := n.Exec(ctx, args...)
+	if err != nil {
+		return "", fmt.Errorf("%s: %v\nstdout:\n%s", strings.Join(args, " "), err, res.Stdout)
+	}
+	return res.Stdout, nil
+}
 
 // policyRules is the device's policy rules (both families), which a stop
 // or a failed start must put back exactly.
-func policyRules(t *testing.T, n *lab.Node) (v4, v6 string) {
-	t.Helper()
-	return n.MustExec(t, "ip", "rule"), n.MustExec(t, "ip", "-6", "rule")
+func policyRules(n *lab.Node, timeout time.Duration) (string, string, error) {
+	v4, err := execRead(n, timeout, "ip", "rule")
+	if err != nil {
+		return "", "", err
+	}
+	v6, err := execRead(n, timeout, "ip", "-6", "rule")
+	if err != nil {
+		return "", "", err
+	}
+	return v4, v6, nil
 }
 
 // routeTableRulesUp says whether the route table's own policy rules
@@ -33,10 +55,16 @@ func routeTableRulesUp(v4, v6 string) bool {
 
 // routeTableRoutes is everything in the routing tables of the route
 // table's protocol (86), IPv4 and IPv6.
-func routeTableRoutes(t *testing.T, n *lab.Node) (v4, v6 string) {
-	t.Helper()
-	return n.MustExec(t, "ip", "-4", "route", "show", "table", "all", "proto", "86"),
-		n.MustExec(t, "ip", "-6", "route", "show", "table", "all", "proto", "86")
+func routeTableRoutes(n *lab.Node, timeout time.Duration) (string, string, error) {
+	v4, err := execRead(n, timeout, "ip", "-4", "route", "show", "table", "all", "proto", "86")
+	if err != nil {
+		return "", "", err
+	}
+	v6, err := execRead(n, timeout, "ip", "-6", "route", "show", "table", "all", "proto", "86")
+	if err != nil {
+		return "", "", err
+	}
+	return v4, v6, nil
 }
 
 // guardState is the IPv6 leak guard's nftables table's state.
@@ -48,10 +76,9 @@ const (
 	guardAbsent  guardState = "absent"  // no table by that name at all
 )
 
-// ipv6Guard reads the state from one `nft list table` call: absent only
-// when nft says there is no such table, so a table vanishing mid-poll
-// retries; any other failure is an error (a poll retries it, a one-shot
-// check fails with it).
+// ipv6Guard reads the state from one `nft list table` call, so a table
+// vanishing mid-read is just absent; any other nft failure is an error
+// (a poll retries it, a one-shot check fails with it).
 func ipv6Guard(n *lab.Node, timeout time.Duration) (guardState, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()

@@ -146,7 +146,7 @@ func TestNoIPv6LeavesAroundTheTunnel(t *testing.T) {
 	// (Not `nft flush ruleset`: the lab's own tables must stay.)
 	dev.MustExec(t, "nft", "delete", "table", "inet", "thinkpol-guard")
 	start := time.Now()
-	lab.Eventually(t, 10*time.Second, func() error { return wantGuard(dev, 10*time.Second, guardPresent) })
+	lab.Eventually(t, 30*time.Second, func() error { return wantGuard(dev, pollTimeout, guardPresent) })
 	if took := time.Since(start); took > 3*time.Second {
 		t.Errorf("the guard came back after %v", took)
 	}
@@ -175,7 +175,7 @@ func TestNoIPv6LeavesAroundTheTunnel(t *testing.T) {
 	check("after a crash", func() { attempts("after a crash") })
 	up = dev.Start(t, "thinkpol", "up", "-map-poll", "1h", "-connect=false")
 	waitLog(t, up, `msg=starting`)
-	lab.Eventually(t, 15*time.Second, func() error { return wantGuard(dev, 10*time.Second, guardAbsent) })
+	lab.Eventually(t, 30*time.Second, func() error { return wantGuard(dev, pollTimeout, guardAbsent) })
 	// The negative control: disconnected, with no guard, the same
 	// attempts leave the physical side, and the capture shows them, ICMPv6
 	// and TCP from the device's own address to the foreign site.

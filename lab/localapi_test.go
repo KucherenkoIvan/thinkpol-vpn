@@ -251,9 +251,10 @@ func TestLocalAPI(t *testing.T) {
 // TestDisconnectLeavesNothingBehind is the teardown check behind the CLI
 // (TestLocalAPI checks only the TUN): with the DNS map (rules and DNS),
 // after `thinkpol disconnect` the TUN, the route table's rules and
-// routes, resolv.conf and the IPv6 guard table are all gone, and come
-// back on `connect` — both families' rules, the guard's chain with its
-// table, and AAAA resolution included. device-b carries on throughout.
+// routes and the IPv6 guard table are gone and resolv.conf is the
+// original; all come back on `connect` — both families' rules, the
+// guard's chain with its table, and AAAA resolution included. device-b
+// carries on throughout.
 func TestDisconnectLeavesNothingBehind(t *testing.T) {
 	t.Parallel()
 	l := lab.Start(t, lab.Standard())
@@ -268,7 +269,10 @@ func TestDisconnectLeavesNothingBehind(t *testing.T) {
 
 	original := osResolvConf(inetIP)
 	devA.WriteFile(t, "/etc/resolv.conf", original)
-	rulesBefore4, rulesBefore6 := policyRules(t, devA)
+	rulesBefore4, rulesBefore6, err := policyRules(devA, execTimeout)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	exit := startServerExit(t, server, inetIP, v1, netip.PrefixFrom(inetIP, 24).Masked())
 	devBUp := devB.Start(t, "thinkpol", "up")
@@ -276,7 +280,10 @@ func TestDisconnectLeavesNothingBehind(t *testing.T) {
 	waitLog(t, up, "mode=device")
 
 	wantConnected := func(connected bool) error {
-		rules4, rules6 := policyRules(t, devA)
+		rules4, rules6, err := policyRules(devA, pollTimeout)
+		if err != nil {
+			return err
+		}
 		if connected {
 			if !routeTableRulesUp(rules4, rules6) {
 				return fmt.Errorf("no route-table rules while connected:\n%s%s", rules4, rules6)
@@ -285,24 +292,30 @@ func TestDisconnectLeavesNothingBehind(t *testing.T) {
 			if rules4 != rulesBefore4 || rules6 != rulesBefore6 {
 				return fmt.Errorf("rules after disconnecting:\n%s\n%s\nwant\n%s\n%s", rules4, rules6, rulesBefore4, rulesBefore6)
 			}
-			if err := tunGone(devA, 10*time.Second); err != nil {
+			if err := tunGone(devA, pollTimeout); err != nil {
 				return err
 			}
 		}
-		routes4, routes6 := routeTableRoutes(t, devA)
+		routes4, routes6, err := routeTableRoutes(devA, pollTimeout)
+		if err != nil {
+			return err
+		}
 		if connected {
-			// Both families' tables hold unreachable routes whenever the
-			// route table is up (IPv4's unreachable 100.64.0.0/10, and
-			// 0.0.0.0/0 while the TUN is down; IPv6's ::/0,
-			// routetable.Table): only the TUN's own default in each
-			// family proves the routes came back.
+			// routetable.Table keeps unreachable routes in both families
+			// whenever it is up (each overlay network's, IPv4's
+			// 0.0.0.0/0 while the TUN is down, IPv6's ::/0): only the
+			// TUN's own default in each family proves the routes came
+			// back.
 			if !strings.Contains(routes4, "default dev thinkpol0") || !strings.Contains(routes6, "default dev thinkpol0") {
 				return fmt.Errorf("no TUN default in the route table's routes:\n%s\n%s", routes4, routes6)
 			}
 		} else if routes4 != "" || routes6 != "" {
 			return fmt.Errorf("the route table's routes after disconnecting:\n%s\n%s", routes4, routes6)
 		}
-		conf := devA.MustExec(t, "cat", "/etc/resolv.conf")
+		conf, err := execRead(devA, pollTimeout, "cat", "/etc/resolv.conf")
+		if err != nil {
+			return err
+		}
 		if connected {
 			if !strings.Contains(conf, "nameserver "+a4.String()+"\n") {
 				return fmt.Errorf("resolv.conf while connected:\n%s", conf)
@@ -314,7 +327,7 @@ func TestDisconnectLeavesNothingBehind(t *testing.T) {
 		if connected {
 			want = guardPresent
 		}
-		return wantGuard(devA, 10*time.Second, want)
+		return wantGuard(devA, pollTimeout, want)
 	}
 
 	res, err := cli(t, devA, as("", "", "connect"))

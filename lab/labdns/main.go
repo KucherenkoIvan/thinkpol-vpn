@@ -72,9 +72,7 @@ func main() {
 	log.Fatal(<-errs)
 }
 
-// ask asks one A question of the server and prints the reply's rcode,
-// with " aa" if the reply is authoritative; without a reply it exits
-// non-zero.
+// ask exits non-zero only when no reply arrives.
 func ask(server, name string) {
 	m := new(dns.Msg)
 	m.SetQuestion(dns.CanonicalName(name), dns.TypeA)

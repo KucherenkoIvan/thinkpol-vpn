@@ -102,12 +102,19 @@ func ping(t *testing.T, from *lab.Node, to netip.Addr) {
 	})
 }
 
+// noPing fails unless the ping got no reply (ping's exit code 1): any
+// other failure (an exec error, a timeout) is an unknown state and fails
+// with its reason — never proof the path is down.
 func noPing(t *testing.T, from *lab.Node, to netip.Addr) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if _, err := from.Exec(ctx, "ping", "-c", "2", "-W", "1", to.String()); err == nil {
+	res, err := from.Exec(ctx, "ping", "-c", "2", "-W", "1", to.String())
+	if err == nil {
 		t.Fatalf("%s answers %s", to, from.Name)
+	}
+	if res.ExitCode != 1 {
+		t.Fatalf("%s: ping %s says nothing about the path:\n%s\n%s", err, to, res.Stdout, res.Stderr)
 	}
 }
 

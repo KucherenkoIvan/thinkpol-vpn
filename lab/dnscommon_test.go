@@ -136,7 +136,7 @@ func mustResolve(t *testing.T, n *lab.Node, name string, v6 bool, want string) {
 func mustAsk(t *testing.T, n *lab.Node, resolver netip.Addr, name, want string) {
 	t.Helper()
 	lab.Eventually(t, 30*time.Second, func() error {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), pollTimeout)
 		defer cancel()
 		res, err := n.Exec(ctx, "labdns", "-server", resolver.String()+":53", "-query", name)
 		if err != nil {
