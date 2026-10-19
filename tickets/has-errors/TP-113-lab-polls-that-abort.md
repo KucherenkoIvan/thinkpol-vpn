@@ -43,6 +43,7 @@ A lab poll retries a failed read and fails only at its deadline; a one-shot chec
 - [x] R1.9 merge origin/rewrite at the end; if TP-075's note on transporttest ShapingRefused is in Notes, look at the test's timing and fix it or say why not
 - [x] R1.10 (round 2b) the one-shot negative DNS checks (dns_test.go and any other negative use of resolve) count only the resolver tool's own "no answer" exit as "didn't resolve"; a docker error, an exec timeout or a missing tool fails the test
 - [x] R1.11 (round 2b) censor_e2e and results probes (pingErr, tcpCrosses): "blocked" is only the tool's own failure exit (ping's exit 1 for no reply, the TCP probe's connect failure or timeout); any other failure fails the cell
+- [ ] R1.12 (round 2c) the remaining one-shot "must not" checks in lab/ (smoke ping, egress curl, ipv6leak, ingress, dns resolvectl, localapi, and any others) count only the tool's own "no" (checked in the lab) as a pass; any other failure fails the test
 
 ## Log
 - 2026-10-19 created in backlog (TP-099 review round 6)
@@ -78,3 +79,4 @@ A lab poll retries a failed read and fails only at its deadline; a one-shot chec
 - 2026-10-19 not changed, same fail-open class outside R1.10/R1.11 (one-shot "must not" checks that pass on any exec error): smoke_test.go :81 and :202 (ping), egress_test.go :119 and :148 (curl), ipv6leak_test.go :95, ingress_test.go:86, dns_test.go:153 (resolvectl), localapi_test.go:103.
 - 2026-10-19 verified on the committed, pushed head 51fa3b3 with a clean tree: make lint exit 0 (20s), make test exit 0 (1s, Go's test cache), make lab-test exit 0 (187s; lab ok in 165.2s, censor matrix included; node phase 35 packages ok; no skips). Another run's 4 tplab containers were up and LAB_P stayed at 4, against the LAB_P=1 rule.
 - 2026-10-19 in-progress → review
+- 2026-10-19 review → has-errors — round 2c: R1.12 (the remaining fail-open one-shot checks)
