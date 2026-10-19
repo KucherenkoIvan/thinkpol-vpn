@@ -270,7 +270,9 @@ func tcpCrosses(dev *lab.Node, dst netip.Addr, within time.Duration) error {
 
 // sendDatagram sends one size-byte UDP datagram from dev to dst:port and
 // returns how many bytes a listener on server-1 received within a few
-// seconds.
+// seconds. A failed read is retried; the count returned is always from a
+// read that succeeded at or after the deadline (or saw the whole
+// datagram), never a guess, and the test fails if no read succeeds.
 func sendDatagram(t *testing.T, dev, server *lab.Node, dst netip.Addr, port, size int) int {
 	t.Helper()
 	family := "-4"
@@ -292,17 +294,31 @@ func sendDatagram(t *testing.T, dev, server *lab.Node, dst netip.Addr, port, siz
 	// One write of size bytes, one datagram: nc sends what each read of
 	// the pipe returns, and a pipe write this small is atomic.
 	dev.MustExec(t, "sh", "-c", fmt.Sprintf("head -c %d /dev/zero | nc -u %s -w 1 %s %d", size, family, dst, port))
-	got := 0
+	got, err := pollReceived(server, out, size)
+	if err != nil {
+		t.Fatalf("what the listener on %s:%d got: %v", dst, port, err)
+	}
+	return got
+}
+
+// pollReceived is the size of file on server once it holds size bytes
+// or, at the latest, as a read after a few seconds finds it.
+func pollReceived(server *lab.Node, file string, size int) (int, error) {
 	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		n := strings.TrimSpace(server.MustExec(t, "sh", "-c", "wc -c < "+out))
-		_, _ = fmt.Sscan(n, &got)
-		if got >= size {
-			break
+	giveUp := deadline.Add(30 * time.Second)
+	for {
+		n, err := execRead(server, pollTimeout, "sh", "-c", "wc -c < "+file)
+		if err == nil {
+			got := 0
+			if _, err = fmt.Sscan(strings.TrimSpace(n), &got); err == nil && (got >= size || time.Now().After(deadline)) {
+				return got, nil
+			}
+		}
+		if err != nil && time.Now().After(giveUp) {
+			return 0, err
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	return got
 }
 
 // waitFragments requires device-a's datagrams to have reached the router
