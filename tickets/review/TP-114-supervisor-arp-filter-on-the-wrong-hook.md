@@ -52,3 +52,4 @@ Round 2 (2026-10-19): all three reviewers found the fix correct; test and commen
 - 2026-10-19 has-errors → in-progress — owner: agent-claude, branch: tp-114-supervisor-arp-filter-on-the-wrong-hook
 - 2026-10-19 review round 2 fixed (46d3b33, dc5c2b1): shared inNetns and nftDrops/awaitNftDrops helpers, sendForgedARP also sends a gratuitous request and a unicast reply; with arpHookIn set back to 1, input=true fails (0 drops) and input=false still learns the entry; make lint, make test, make lab-test (LAB_P=4, 35 node packages) exit 0 on dc5c2b1; goldens unchanged
 - 2026-10-19 in-progress → review
+- 2026-10-19 review round 2 (design reviewer; the fix had three merges in round 1): merge; the orchestrator applied its two nits (the ARP test reads the counter only when it waits on it; awaitNftDrops carries the explanation); make lint, make test and the ARP and golden lab tests green

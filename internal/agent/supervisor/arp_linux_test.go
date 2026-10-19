@@ -42,7 +42,10 @@ func TestForgedARPIsDropped(t *testing.T) {
 			space := netmap.NewSpaceID()
 			s := start(t, opts, space)
 			w, _ := info(s, space)
-			before := nftDrops(t, "arp", supervisor.ArpTableName, "input")
+			var before uint64
+			if onInput {
+				before = nftDrops(t, "arp", supervisor.ArpTableName, "input")
+			}
 			sendForgedARP(t, w.PID, w.Link, w.RootAddrs[0].Addr())
 
 			if !onInput {

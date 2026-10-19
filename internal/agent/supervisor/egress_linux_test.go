@@ -238,15 +238,15 @@ func nftDrops(t *testing.T, family, table, chain string) uint64 {
 
 var counterRE = regexp.MustCompile(`counter packets (\d+) bytes \d+`)
 
-// awaitDrops waits until the supervisor's inet chain has dropped at least
-// n more packets than before: proof that what a negative check waits for
-// was sent and refused.
+// awaitDrops is awaitNftDrops for one of the supervisor's inet chains.
 func awaitDrops(t *testing.T, chain string, before, n uint64) {
 	t.Helper()
 	awaitNftDrops(t, "inet", supervisor.TableName, chain, before, n)
 }
 
-// awaitNftDrops is awaitDrops for a chain of any table.
+// awaitNftDrops waits until a chain has dropped at least n more packets
+// than before: proof that what a negative check waits for was sent and
+// refused.
 func awaitNftDrops(t *testing.T, family, table, chain string, before, n uint64) {
 	t.Helper()
 	eventually(t, 15*time.Second, fmt.Sprintf("%d drops in %s %s %s", n, family, table, chain), func() error {
