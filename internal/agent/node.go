@@ -425,11 +425,11 @@ func (n *Node) runServer(ctx context.Context, reg *transport.Registry, maps chan
 	}()
 	// Cleared before the supervisor closes (deferred calls run last first).
 	n.report.set(func(p *report) { p.workers = sup })
-	defer n.report.set(func(p *report) { p.workers = nil })
+	defer n.report.set(func(p *report) { p.workers, p.dnsUpstreamsRefused = nil, 0 })
 	s := &serverSpaces{
 		sup: sup, reg: reg, log: n.logs.Logger, keys: n.state.Keys, trust: n.state.Trust,
 		iface: n.cfg.Interface, linkMTU: n.cfg.LinkMTU, cur: n.state.Map, section: n.state.Section,
-		dns: n.cfg.DNS, dnsUpstreams: n.dnsUpstreams, systemUpstreams: dns.SystemUpstreams,
+		dns: n.cfg.DNS, dnsUpstreams: n.dnsUpstreams, egressAllowed: allowed,
 		retryAfter: RetryAfter, report: &n.report, requests: n.requests, rulesRequests: n.rulesRequests,
 		stateDir: n.cfg.StateDir,
 	}
@@ -467,10 +467,17 @@ type serverSpaces struct {
 	// stateDir holds the seeds of the space's blobs (seedBlobs).
 	stateDir string
 	// dns runs the space's resolver in its worker, asking dnsUpstreams,
-	// else what systemUpstreams says the host uses.
-	dns             bool
-	dnsUpstreams    []netip.AddrPort
-	systemUpstreams func(exclude []netip.Addr) ([]netip.Addr, error)
+	// else the default public resolvers (defaultWorkerUpstreams).
+	// egressAllowed are the prefixes the worker's egress allows anyway
+	// (Options.EgressAllowed): an upstream outside them that the egress
+	// refuses is not configured.
+	dns           bool
+	dnsUpstreams  []netip.AddrPort
+	egressAllowed []netip.Prefix
+	// refusedLogged is the last set of upstreams the egress refused, so
+	// they are warned about once per change: apply reruns while
+	// listeners fail.
+	refusedLogged []netip.AddrPort
 
 	cur     *netmap.Map
 	section netmap.Section
@@ -496,6 +503,7 @@ func (e errListeners) Unwrap() error { return e.error }
 // served until hosting grants (TP-040) add guests.
 func (s *serverSpaces) apply() error {
 	if s.removed {
+		s.report.set(func(p *report) { p.dnsUpstreamsRefused = 0 })
 		if err := s.sup.SetListeners(nil); err != nil {
 			return errListeners{err}
 		}
@@ -654,24 +662,4 @@ func logOutput(l Logs) io.Writer {
 		return io.Discard
 	}
 	return l.out
-}
-
-// workerUpstreams are the upstreams a worker's resolver asks: the
-// configured ones, else the host's own resolvers, but none on loopback,
-// which a worker in its own namespace can't reach.
-func (s *serverSpaces) workerUpstreams() []netip.AddrPort {
-	if !s.dns || len(s.dnsUpstreams) > 0 {
-		return s.dnsUpstreams
-	}
-	host, err := s.systemUpstreams(nil)
-	if err != nil {
-		s.log.Warn("DNS: the host's resolvers are unknown; the space's resolver has no upstream", "err", err)
-	}
-	var out []netip.AddrPort
-	for _, a := range host {
-		if !a.IsLoopback() {
-			out = append(out, netip.AddrPortFrom(a, dns.Port))
-		}
-	}
-	return out
 }

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/supervisor"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/path"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
@@ -15,13 +16,17 @@ import (
 )
 
 // newResolver makes the node's resolver for a start of its data plane:
-// it asks the configured upstreams or, if there are none, the resolvers
-// the OS uses now (read before the OS is pointed at the resolver; what the
-// node itself wrote there is never taken for one). A device asks exits
-// through the overlay TUN only.
+// it asks the configured upstreams. A device with none asks the
+// resolvers the OS uses now (read before the OS is pointed at the
+// resolver; what the node itself wrote there is never taken for one); a
+// worker never falls back to those, because its sandbox can't read the
+// host's resolver configuration at all. A device asks exits through the
+// overlay TUN only.
 func (r *runner) newResolver() *dns.Server {
 	upstreams := r.dp.DNSUpstreams
-	if len(upstreams) == 0 {
+	// Forward is set only in a server's worker (serveSpace), never on a
+	// device: it is what "inside a worker" means here.
+	if len(upstreams) == 0 && !r.dp.Forward {
 		own := []netip.Addr{r.section.Node.IPv4, r.section.Node.IPv6}
 		host, err := r.dp.systemUpstreams(own)
 		if err != nil {
@@ -32,7 +37,12 @@ func (r *runner) newResolver() *dns.Server {
 		}
 	}
 	if len(upstreams) == 0 {
-		r.dp.Log.Warn("DNS: no upstream to ask; set one with -dns-upstream")
+		if r.dp.Forward {
+			// workerUpstreams refused every one and logged each.
+			r.dp.Log.Warn("DNS: no upstream to ask: the worker's egress refuses every configured one; tunnel-bound names won't resolve")
+		} else {
+			r.dp.Log.Warn("DNS: no upstream to ask; set one with -dns-upstream")
+		}
 	}
 	r.upstreams = slices.Clone(upstreams)
 	o := dns.Options{Upstreams: upstreams, Port: r.dp.dnsPort, Log: r.dp.Log}
@@ -175,4 +185,49 @@ func (r *runner) restoreSystem() {
 
 func sameSystem(a, b dns.SystemConfig) bool {
 	return a.Interface == b.Interface && slices.Equal(a.Servers, b.Servers) && slices.Equal(a.Search, b.Search)
+}
+
+// defaultWorkerUpstreams are the upstreams an exit's resolver asks when
+// -dns-upstream is unset: well-known public resolvers on both families.
+// The host's own resolvers are not used: on most clouds they sit on
+// private or link-local addresses, which the worker's egress refuses,
+// and widening the egress to reach them would open the provider's private
+// network (the cloud metadata services included) to every space.
+var defaultWorkerUpstreams = []netip.AddrPort{
+	netip.AddrPortFrom(netip.MustParseAddr("9.9.9.9"), dns.Port),
+	netip.AddrPortFrom(netip.MustParseAddr("2620:fe::fe"), dns.Port),
+	netip.AddrPortFrom(netip.MustParseAddr("1.1.1.1"), dns.Port),
+	netip.AddrPortFrom(netip.MustParseAddr("2606:4700:4700::1111"), dns.Port),
+}
+
+// workerUpstreams are the upstreams a worker's resolver asks: the
+// configured ones, else the default public resolvers; the host's own
+// resolvers are never used. One the worker's egress refuses is not
+// configured: it is logged once per change of the refused set and
+// counted in health, never silently dropped.
+func (s *serverSpaces) workerUpstreams() []netip.AddrPort {
+	if !s.dns {
+		return nil
+	}
+	ups := s.dnsUpstreams
+	if len(ups) == 0 {
+		ups = defaultWorkerUpstreams
+	}
+	var out, refused []netip.AddrPort
+	for _, a := range ups {
+		if supervisor.EgressRefused(a.Addr(), s.egressAllowed) {
+			refused = append(refused, a)
+			continue
+		}
+		out = append(out, a)
+	}
+	if !slices.Equal(refused, s.refusedLogged) {
+		for _, a := range refused {
+			s.log.Warn("DNS: the worker's egress refuses the upstream; not configured for the resolver",
+				"upstream", a, "hint", "-dns-upstream or -egress-allowed")
+		}
+		s.refusedLogged = refused
+	}
+	s.report.set(func(p *report) { p.dnsUpstreamsRefused = len(refused) })
+	return out
 }

@@ -71,8 +71,9 @@ type Config struct {
 	DNS bool `env:"THINKPOL_DNS" default:"true" flag:"dns" help:"run the node's resolver: a device's OS resolves through it while connected, an exit's serves devices through the tunnel"`
 	// DNSUpstream is what the node's resolver asks, comma-separated IPs
 	// (port 53) or IP:ports: a device's domestic resolver, an exit's
-	// upstream. Empty: the resolvers the OS used before.
-	DNSUpstream string `env:"THINKPOL_DNS_UPSTREAM" flag:"dns-upstream" help:"what the resolver asks, IPs or IP:ports, comma-separated: a device's domestic resolver, an exit's upstream; empty: what the OS used"`
+	// upstream. Empty: a device asks what the OS used, an exit the
+	// public resolvers (Quad9, then Cloudflare).
+	DNSUpstream string `env:"THINKPOL_DNS_UPSTREAM" flag:"dns-upstream" help:"what the resolver asks, IPs or IP:ports, comma-separated: a device's domestic resolver, an exit's upstream; empty: a device asks what the OS used, an exit the public resolvers (Quad9, then Cloudflare)"`
 	// EgressAllowed are prefixes (comma-separated) an exit's spaces may
 	// reach although they are private or provider networks, which egress
 	// otherwise refuses (supervisor.Options.EgressAllowed): a network that

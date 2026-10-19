@@ -24,8 +24,8 @@ type WorkerConfig struct {
 	Map       []byte
 	Interface string
 	LinkMTU   int
-	// DNS runs the space's resolver, asking DNSUpstreams: the worker can't
-	// read the host's resolver configuration, so the supervisor does.
+	// DNS runs the space's resolver, asking DNSUpstreams, which the node
+	// picks (serverSpaces.workerUpstreams); the worker never falls back.
 	DNS          bool
 	DNSUpstreams []netip.AddrPort
 }
