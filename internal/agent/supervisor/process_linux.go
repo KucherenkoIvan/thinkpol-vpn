@@ -73,6 +73,40 @@ func (s *Supervisor) run(w *worker, log *slog.Logger) error {
 	}
 	defer func() { _ = ends.Control.Close(); _ = ends.Data.Close() }()
 
+	p, err := s.startWorker(w, child)
+	if err != nil {
+		return err
+	}
+	// The namespace fd was opened before Wait could reap the process, so the
+	// pid can't have been recycled under it.
+	defer func() {
+		p.kill()
+		_ = p.netns.Close()
+	}()
+	log = s.markStarted(w, p, log)
+
+	wired, err := s.wire(w, p.netns)
+	defer func() {
+		if err := wired.unwire(); err != nil {
+			log.Error("unwiring the worker's namespace", "err", err)
+		}
+	}()
+	if err != nil {
+		return fmt.Errorf("wire the namespace: %w", err)
+	}
+
+	sn := &session{sup: s, w: w, p: p, control: ends.Control, data: ends.Data, log: log}
+	if stopped, err := sn.awaitReady(); stopped || err != nil {
+		return err
+	}
+	return sn.serve()
+}
+
+// startWorker builds the worker's command for its space and starts it: the
+// command is the supervisor's own with -space appended, the pair's child
+// fds are its ControlFD and DataFD. The worker is fork+exec'd (not cloned)
+// into a new user namespace with every other namespace created inside it.
+func (s *Supervisor) startWorker(w *worker, child [2]*os.File) (*process, error) {
 	cmd := exec.Command(s.opts.Command[0], append(slices.Clone(s.opts.Command[1:]), "-space", w.space.String())...)
 	if cmd.Path == selfExe {
 		cmd.Args[0] = "thinkpol"
@@ -122,14 +156,14 @@ func (s *Supervisor) run(w *worker, log *slog.Logger) error {
 		_ = f.Close()
 	}
 	if err != nil {
-		return fmt.Errorf("start: %w", err)
+		return nil, fmt.Errorf("start: %w", err)
 	}
-	// The namespace fd was opened before Wait could reap the process, so the
-	// pid can't have been recycled under it.
-	defer func() {
-		p.kill()
-		_ = p.netns.Close()
-	}()
+	return p, nil
+}
+
+// markStarted records the process as the worker's current incarnation and
+// logs it; from here on the log names the pid.
+func (s *Supervisor) markStarted(w *worker, p *process, log *slog.Logger) *slog.Logger {
 	w.mu.Lock()
 	w.pid = p.pid
 	w.starts++
@@ -138,144 +172,161 @@ func (s *Supervisor) run(w *worker, log *slog.Logger) error {
 	w.mu.Unlock()
 	log = log.With("pid", p.pid)
 	log.Info("worker started")
+	return log
+}
 
-	wired, err := s.wire(w, p.netns)
-	defer func() {
-		if err := wired.unwire(); err != nil {
-			log.Error("unwiring the worker's namespace", "err", err)
-		}
-	}()
-	if err != nil {
-		return fmt.Errorf("wire the namespace: %w", err)
-	}
+// session is one worker process and its sockets, from the Init message to
+// the event loop that keeps it current.
+type session struct {
+	sup     *Supervisor
+	w       *worker
+	p       *process
+	control *ipc.Conn
+	data    *ipc.Conn
+	log     *slog.Logger
+	ready   chan error // the worker's Ready
+	gone    chan error // anything on the control socket after Ready
+}
 
+// awaitReady sends the worker its Init message and waits for its Ready: a
+// read or protocol failure or the process's own exit end it before it is
+// ready, the ready timeout ends it after; a worker being stopped while not
+// yet ready is simply torn down (stopped, no error).
+func (sn *session) awaitReady() (stopped bool, err error) {
 	init, err := ipc.InitMessage(ipc.Init{
-		Space:     w.space.String(),
+		Space:     sn.w.space.String(),
 		Interface: SpaceInterface,
-		Addrs:     w.transit.space[:],
-		Gateways:  []netip.Addr{w.transit.root[0].Addr(), w.transit.root[1].Addr()},
-		UID:       w.uid,
-		GID:       w.uid,
-		PidsMax:   s.opts.PidsMax,
+		Addrs:     sn.w.transit.space[:],
+		Gateways:  []netip.Addr{sn.w.transit.root[0].Addr(), sn.w.transit.root[1].Addr()},
+		UID:       sn.w.uid,
+		GID:       sn.w.uid,
+		PidsMax:   sn.sup.opts.PidsMax,
 	})
 	if err != nil {
-		return err
+		return false, err
 	}
-	if err := ends.Control.Send(init); err != nil {
-		return err
+	if err := sn.control.Send(init); err != nil {
+		return false, err
 	}
-
-	ready, gone := make(chan error, 1), make(chan error, 1)
-	go readControl(ends.Control, ready, gone)
-	timer := time.NewTimer(s.opts.ReadyTimeout)
+	sn.ready, sn.gone = make(chan error, 1), make(chan error, 1)
+	go readControl(sn.control, sn.ready, sn.gone)
+	timer := time.NewTimer(sn.sup.opts.ReadyTimeout)
 	defer timer.Stop()
 	select {
-	case err := <-ready:
+	case err := <-sn.ready:
 		if err != nil {
-			return fmt.Errorf("before ready: %w", err)
+			return false, fmt.Errorf("before ready: %w", err)
 		}
-	case <-p.gone:
-		return fmt.Errorf("before ready: %w", p.exit())
+	case <-sn.p.gone:
+		return false, fmt.Errorf("before ready: %w", sn.p.exit())
 	case <-timer.C:
-		return fmt.Errorf("not ready after %v", s.opts.ReadyTimeout)
-	case <-w.ctx.Done():
-		return nil
+		return false, fmt.Errorf("not ready after %v", sn.sup.opts.ReadyTimeout)
+	case <-sn.w.ctx.Done():
+		return true, nil
 	}
-	w.mu.Lock()
-	w.ready = true
-	w.readyAt = s.opts.now()
-	w.mu.Unlock()
-	log.Info("worker ready")
+	sn.w.mu.Lock()
+	sn.w.ready = true
+	sn.w.readyAt = sn.sup.opts.now()
+	sn.w.mu.Unlock()
+	sn.log.Info("worker ready")
+	return false, nil
+}
 
+// serve is one ready worker process's event loop, until it stops or ends:
+// it keeps the listeners, the seeds and the config current, forwards the
+// shared listeners' counters, follows the space's egress and sends the
+// stop. It returns why the process ended: nil only when it exited cleanly
+// after Stop.
+func (sn *session) serve() error {
 	// A control send that can't finish within StopTimeout means the worker
 	// stopped reading its socket: it is killed (and restarted), so it can't
 	// hold up SetSpaces, SetListeners or Close.
 	stuck := func(what string, err error) error {
 		if !errors.Is(err, os.ErrDeadlineExceeded) {
 			// The worker is gone or going: its exit is the reason.
-			s.awaitExit(p)
-			return p.exit()
+			sn.sup.awaitExit(sn.p)
+			return sn.p.exit()
 		}
-		_ = ends.Control.Close()
-		p.kill()
+		_ = sn.control.Close()
+		sn.p.kill()
 		return fmt.Errorf("sending %s: %w", what, err)
 	}
 	// The listeners and the current config once, then whenever they
 	// change; datagrams and connections from now on.
-	if err := s.sendListeners(ends.Control); err != nil {
+	if err := sn.sup.sendListeners(sn.control); err != nil {
 		return stuck("listeners", err)
 	}
 	// Each seed once per process, ahead of the config that names it.
 	sent := map[[32]byte]bool{}
-	if err := s.sendSeeds(ends.Control, w, sent); err != nil {
+	if err := sn.sup.sendSeeds(sn.control, sn.w, sent); err != nil {
 		return stuck("blob seeds", err)
 	}
-	if err := s.sendConfig(ends.Control, w); err != nil {
+	if err := sn.sup.sendConfig(sn.control, sn.w); err != nil {
 		return stuck("config", err)
 	}
-	countersTick := time.NewTicker(s.opts.CountersInterval)
+	countersTick := time.NewTicker(sn.sup.opts.CountersInterval)
 	defer countersTick.Stop()
-	detach := s.shared.attach(transport.SpaceID(w.space), &workerSockets{data: ends.Data, control: ends.Control})
+	detach := sn.sup.shared.attach(transport.SpaceID(sn.w.space), &workerSockets{data: sn.data, control: sn.control})
 	defer detach()
 	dataGone := make(chan error, 1)
-	go s.readReplies(ends.Data, transport.SpaceID(w.space), dataGone)
+	go sn.sup.readReplies(sn.data, transport.SpaceID(sn.w.space), dataGone)
 	for {
 		select {
-		case <-p.gone:
-			return p.exit()
+		case <-sn.p.gone:
+			return sn.p.exit()
 		case err := <-dataGone:
 			if errors.Is(err, io.EOF) {
 				continue // the control socket or the exit tells why
 			}
-			_ = ends.Control.Close()
-			s.awaitExit(p)
+			_ = sn.control.Close()
+			sn.sup.awaitExit(sn.p)
 			return fmt.Errorf("data socket: %w", err)
-		case <-w.listenersChanged:
-			if err := s.sendListeners(ends.Control); err != nil {
+		case <-sn.w.listenersChanged:
+			if err := sn.sup.sendListeners(sn.control); err != nil {
 				return stuck("listeners", err)
 			}
 		case <-countersTick.C:
 			// For the worker's telemetry; skipped when the socket is full.
-			if m, err := ipc.CountersMessage(s.shared.counters(transport.SpaceID(w.space))); err == nil {
-				_ = ends.Control.TrySend(m)
+			if m, err := ipc.CountersMessage(sn.sup.shared.counters(transport.SpaceID(sn.w.space))); err == nil {
+				_ = sn.control.TrySend(m)
 			}
-		case err := <-gone:
+		case err := <-sn.gone:
 			if errors.Is(err, io.EOF) {
 				// The worker's control socket closed: it has exited or is
 				// exiting, so its own exit is the reason.
-				s.awaitExit(p)
-				return p.exit()
+				sn.sup.awaitExit(sn.p)
+				return sn.p.exit()
 			}
 			// A protocol break while the worker is still running: that is the
 			// reason, whatever its incidental exit code.
-			_ = ends.Control.Close()
-			s.awaitExit(p)
+			_ = sn.control.Close()
+			sn.sup.awaitExit(sn.p)
 			return fmt.Errorf("socket: %w", err)
-		case <-w.notify:
-			if err := s.sendSeeds(ends.Control, w, sent); err != nil {
+		case <-sn.w.notify:
+			if err := sn.sup.sendSeeds(sn.control, sn.w, sent); err != nil {
 				return stuck("blob seeds", err)
 			}
-			if err := s.sendConfig(ends.Control, w); err != nil {
+			if err := sn.sup.sendConfig(sn.control, sn.w); err != nil {
 				return stuck("config", err)
 			}
-		case <-w.egressChanged:
+		case <-sn.w.egressChanged:
 			// The root namespace's tables already follow the new egress,
 			// whatever this one does; a failure is retried with the next
 			// change, or in a fresh namespace.
-			if err := applySpaceTable(p.netns, w.transit, s.currentSpaceEgress(w)); err != nil {
-				log.Error("the space's egress table", "err", err)
+			if err := applySpaceTable(sn.p.netns, sn.w.transit, sn.sup.currentSpaceEgress(sn.w)); err != nil {
+				sn.log.Error("the space's egress table", "err", err)
 			}
-		case <-w.ctx.Done():
-			if err := ends.Control.SendTimeout(ipc.Message{Kind: ipc.KindStop}, s.opts.StopTimeout); err != nil {
-				log.Warn("sending stop", "err", err)
-				p.kill()
+		case <-sn.w.ctx.Done():
+			if err := sn.control.SendTimeout(ipc.Message{Kind: ipc.KindStop}, sn.sup.opts.StopTimeout); err != nil {
+				sn.log.Warn("sending stop", "err", err)
+				sn.p.kill()
 				return fmt.Errorf("killed: %w", err)
 			}
-			if !s.awaitExit(p) {
-				return fmt.Errorf("killed: still running %v after stop", s.opts.StopTimeout)
+			if !sn.sup.awaitExit(sn.p) {
+				return fmt.Errorf("killed: still running %v after stop", sn.sup.opts.StopTimeout)
 			}
-			if p.err != nil {
-				return p.err
+			if sn.p.err != nil {
+				return sn.p.err
 			}
 			return nil
 		}
