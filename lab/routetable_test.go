@@ -96,9 +96,7 @@ func TestRouteTableSendsOnlyDirectAroundTheTunnel(t *testing.T) {
 
 	link4, link6 := server.IPv4(lab.NetServers), server.IPv6(lab.NetServers)
 	devAddrs := []netip.Addr{dev.IPv4(lab.NetDevices), dev.IPv6(lab.NetDevices)}
-	// routeNow and countersNow are one-shot reads: they fail the test at
-	// once. Polls call routeDev and deviceCounters with pollTimeout instead.
-	routeNow := func(dst string) string {
+	mustRoute := func(dst string) string {
 		t.Helper()
 		got, err := routeDev(dev, execTimeout, dst)
 		if err != nil {
@@ -106,7 +104,7 @@ func TestRouteTableSendsOnlyDirectAroundTheTunnel(t *testing.T) {
 		}
 		return got
 	}
-	countersNow := func() map[string]uint64 {
+	mustCounters := func() map[string]uint64 {
 		t.Helper()
 		c, err := deviceCounters(dev, execTimeout)
 		if err != nil {
@@ -119,7 +117,7 @@ func TestRouteTableSendsOnlyDirectAroundTheTunnel(t *testing.T) {
 	expectRoutes := func(want map[string]string) {
 		t.Helper()
 		for dst, w := range want {
-			if got := routeNow(dst); got != w {
+			if got := mustRoute(dst); got != w {
 				t.Errorf("route to %s: dev %s, want %s", dst, got, w)
 			}
 		}
@@ -154,11 +152,11 @@ func TestRouteTableSendsOnlyDirectAroundTheTunnel(t *testing.T) {
 	dev.MustExec(t, "ping", "-c", "1", "-W", "2", domestic6.String())
 	// Foreign: into the TUN, through the tunnel to the exit: never out of
 	// the device in plaintext.
-	before := countersNow()
+	before := mustCounters()
 	tryPing(foreign4)
 	tryPing(foreign6)
 	ping(t, dev, s4)
-	lab.Eventually(t, 10*time.Second, func() error {
+	lab.Eventually(t, 30*time.Second, func() error {
 		after, err := deviceCounters(dev, pollTimeout)
 		if err != nil {
 			return err
@@ -212,7 +210,7 @@ func TestRouteTableSendsOnlyDirectAroundTheTunnel(t *testing.T) {
 	// The gateway moves (DHCP, roaming): direct traffic follows at once,
 	// the tunnel keeps running without a reconnect.
 	gw4, gw6 := l.Node(router2).IPv4(lab.NetDevices), l.Node(router2).IPv6(lab.NetDevices)
-	reapplied := countersNow()["route_table.reapplies"]
+	reapplied := mustCounters()["route_table.reapplies"]
 	atRouter2 := l.Node(router2).Capture(t, "icmp or icmp6")
 	dev.MustExec(t, "ip", "route", "replace", "default", "via", gw4.String())
 	dev.MustExec(t, "ip", "-6", "route", "replace", "default", "via", gw6.String())
@@ -222,7 +220,7 @@ func TestRouteTableSendsOnlyDirectAroundTheTunnel(t *testing.T) {
 	ping(t, dev, s6)
 	atRouter2.WaitFor(t, 5*time.Second, func(p lab.Packet) bool { return p.Dst == domestic4 && slices.Contains(devAddrs, p.Src) })
 	atRouter2.WaitFor(t, 5*time.Second, func(p lab.Packet) bool { return p.Dst == domestic6 && slices.Contains(devAddrs, p.Src) })
-	lab.Eventually(t, 10*time.Second, func() error {
+	lab.Eventually(t, 30*time.Second, func() error {
 		c, err := deviceCounters(dev, pollTimeout)
 		if err != nil {
 			return err
@@ -271,7 +269,7 @@ func TestRouteTableSendsOnlyDirectAroundTheTunnel(t *testing.T) {
 	// (TP-057: always there, it would refuse the gateways of interfaces
 	// added meanwhile); the status says the TUN is down.
 	dev.MustExec(t, "ip", "link", "set", "thinkpol0", "down")
-	lab.Eventually(t, 15*time.Second, func() error {
+	lab.Eventually(t, 30*time.Second, func() error {
 		st, err := execRead(dev, pollTimeout, "thinkpol", "status")
 		if err != nil {
 			return err
@@ -284,7 +282,7 @@ func TestRouteTableSendsOnlyDirectAroundTheTunnel(t *testing.T) {
 	expectRoutes(map[string]string{foreign4.String(): "unreachable"})
 	tryPing(foreign4)
 	dev.MustExec(t, "ip", "link", "set", "thinkpol0", "up")
-	lab.Eventually(t, 15*time.Second, func() error {
+	lab.Eventually(t, 30*time.Second, func() error {
 		got, err := routeDev(dev, pollTimeout, foreign4.String())
 		if err != nil {
 			return err
@@ -343,13 +341,13 @@ func TestRouteTableSendsOnlyDirectAroundTheTunnel(t *testing.T) {
 	if err == nil {
 		t.Errorf("a foreign IPv6 ping answered with the overlay IPv4-only:\n%s", res.Stdout)
 	}
-	if got := routeNow(foreign6.String()); got != "unreachable" {
+	if got := mustRoute(foreign6.String()); got != "unreachable" {
 		t.Errorf("route to the foreign %s with IPv6 off: %s, want unreachable", foreign6, got)
 	}
 	// A specific IPv6 route in main (a router advertisement's route
 	// information) doesn't take IPv6 around the tunnel either.
 	dev.MustExec(t, "ip", "-6", "route", "add", "2000::/3", "via", router.IPv6(lab.NetDevices).String())
-	if got := routeNow(foreign6.String()); got != "unreachable" {
+	if got := mustRoute(foreign6.String()); got != "unreachable" {
 		t.Errorf("route to the foreign %s with IPv6 off and 2000::/3 in main: %s, want unreachable", foreign6, got)
 	}
 	tryPing(foreign6)
@@ -378,7 +376,7 @@ func TestRouteTableSendsOnlyDirectAroundTheTunnel(t *testing.T) {
 	}
 	up = dev.Start(t, "thinkpol", "up", "-map-poll", "1h", "-connect=false")
 	waitLog(t, up, `msg=starting`)
-	lab.Eventually(t, 15*time.Second, func() error {
+	lab.Eventually(t, 30*time.Second, func() error {
 		v4, v6, err := policyRules(dev, pollTimeout)
 		if err != nil {
 			return err

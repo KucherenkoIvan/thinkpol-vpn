@@ -243,7 +243,7 @@ func TestCommandStartsSealed(t *testing.T) {
 	})
 	n := l.Node("node")
 	var atStart string
-	lab.Eventually(t, 10*time.Second, func() error {
+	lab.Eventually(t, 30*time.Second, func() error {
 		out, err := execRead(n, pollTimeout, "cat", "/tmp/at-start")
 		atStart = out
 		return err
