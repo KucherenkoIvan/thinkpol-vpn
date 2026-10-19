@@ -153,7 +153,7 @@ func TestBlobDistribution(t *testing.T) {
 		answer := func(n *lab.Node, prefix, addr string) int {
 			t.Helper()
 			n.WriteFile(t, "/tmp/blob.req", req)
-			res, err := execReadResult(n, "sh", "-c", prefix+"nc -w 3 "+addr+" 4717 < /tmp/blob.req > /tmp/blob.out && wc -c < /tmp/blob.out")
+			res, err := execResult(n, execTimeout, "sh", "-c", prefix+"nc -w 3 "+addr+" 4717 < /tmp/blob.req > /tmp/blob.out && wc -c < /tmp/blob.out")
 			if err != nil {
 				t.Fatalf("asking %s:4717 from %s: %v\n%s", addr, n.Name, err, res.Stderr)
 			}

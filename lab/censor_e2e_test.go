@@ -3,7 +3,6 @@
 package lab_test
 
 import (
-	"context"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -245,30 +244,6 @@ func listenTCP(t *testing.T, server *lab.Node) {
 		}
 		return nil
 	})
-}
-
-// tcpConnect opens and closes one TCP connection from dev to dst:port,
-// waiting at most wait seconds, and says how long it took.
-func tcpConnect(dev *lab.Node, dst netip.Addr, port, wait int) (lab.Result, time.Duration, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(wait+10)*time.Second)
-	defer cancel()
-	start := time.Now()
-	res, err := dev.Exec(ctx, "nc", "-v", "-z", "-w", fmt.Sprint(wait), dst.String(), fmt.Sprint(port))
-	return res, time.Since(start), err
-}
-
-// tcpReaches says whether a TCP connect from n to dst:port succeeds. Only
-// nc's own connect failure (ncConnectFailed) means it doesn't; any other
-// failure (an exec error, a timeout, no nc) is an error.
-func tcpReaches(n *lab.Node, dst netip.Addr, port, wait int) (bool, error) {
-	res, _, err := tcpConnect(n, dst, port, wait)
-	switch {
-	case err == nil:
-		return true, nil
-	case ncConnectFailed(res):
-		return false, nil
-	}
-	return false, fmt.Errorf("tcp from %s to %s: %w\n%s", n.Name, netip.AddrPortFrom(dst, uint16(port)), err, res.Stderr)
 }
 
 // tcpCrosses retries a TCP connect until one succeeds or within runs out

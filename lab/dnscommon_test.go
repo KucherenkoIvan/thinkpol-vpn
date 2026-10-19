@@ -94,12 +94,6 @@ func tunnelNamesAskedOnlyOfTheExit(t *testing.T, domestic, foreign *lab.Process,
 	}
 }
 
-// getentNotFound says whether a failed getent found nothing, by its own
-// account: exit 2, whether the resolver said so, refused or never
-// answered (measured in the lab). Exit 1 is a usage error, 127 no getent;
-// those and docker's failures say nothing about the name.
-func getentNotFound(res lab.Result) bool { return res.ExitCode == 2 }
-
 // resolve asks the node's OS resolver (glibc, through /etc/resolv.conf)
 // for a name's address of one family. Polls use it: every failure is
 // retried alike; one-shot "no answer" checks use wantNoLookup.
@@ -132,7 +126,7 @@ func wantNoAnswer(t *testing.T, n *lab.Node, name, what string) {
 // failed check, any other failure an unknown state that fails at once.
 func wantNoLookup(t *testing.T, n *lab.Node, what string, args ...string) {
 	t.Helper()
-	res, err := execReadResult(n, args...)
+	res, err := execResult(n, execTimeout, args...)
 	switch {
 	case err == nil:
 		t.Errorf("%s resolved:\n%s", what, res.Stdout)

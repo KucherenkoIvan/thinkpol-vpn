@@ -5,6 +5,7 @@ package lab_test
 import (
 	"context"
 	"fmt"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
@@ -22,23 +23,21 @@ const (
 	pollTimeout = 10 * time.Second
 )
 
-// execRead runs one command in the node and returns its stdout.
-func execRead(n *lab.Node, timeout time.Duration, args ...string) (string, error) {
+// execResult runs one command in the node, bounded by timeout, and
+// returns its whole result: for callers that classify the exit.
+func execResult(n *lab.Node, timeout time.Duration, args ...string) (lab.Result, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	res, err := n.Exec(ctx, args...)
+	return n.Exec(ctx, args...)
+}
+
+// execRead runs one command in the node and returns its stdout.
+func execRead(n *lab.Node, timeout time.Duration, args ...string) (string, error) {
+	res, err := execResult(n, timeout, args...)
 	if err != nil {
 		return "", fmt.Errorf("%w\nstdout:\n%s", err, res.Stdout)
 	}
 	return res.Stdout, nil
-}
-
-// execReadResult runs one command in the node, bounded by execTimeout,
-// and returns its whole result: for callers that classify the exit.
-func execReadResult(n *lab.Node, args ...string) (lab.Result, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), execTimeout)
-	defer cancel()
-	return n.Exec(ctx, args...)
 }
 
 // policyRules is the device's policy rules (both families), which a stop
@@ -88,9 +87,7 @@ const (
 // vanishing mid-read is just absent; any other nft failure is an error
 // (a poll retries it, a one-shot check fails with it).
 func ipv6Guard(n *lab.Node, timeout time.Duration) (guardState, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	res, err := n.Exec(ctx, "nft", "list", "table", "inet", "thinkpol-guard")
+	res, err := execResult(n, timeout, "nft", "list", "table", "inet", "thinkpol-guard")
 	if err != nil {
 		if strings.Contains(res.Stderr, "No such file or directory") {
 			return guardAbsent, nil
@@ -118,9 +115,7 @@ func wantGuard(n *lab.Node, timeout time.Duration, want guardState) error {
 // wantTUNGone returns nil only when the TUN is gone: only "does not exist"
 // from `ip link show` counts; any other failure is an unknown state.
 func wantTUNGone(n *lab.Node, timeout time.Duration) error {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	res, err := n.Exec(ctx, "ip", "link", "show", "thinkpol0")
+	res, err := execResult(n, timeout, "ip", "link", "show", "thinkpol0")
 	if err == nil {
 		return fmt.Errorf("the TUN is still there")
 	}
@@ -139,9 +134,41 @@ func ncConnectFailed(res lab.Result) bool {
 		(strings.Contains(res.Stderr, " failed") || strings.Contains(res.Stderr, " timed out"))
 }
 
+// getentNotFound says whether a failed getent found nothing, by its own
+// account: exit 2, whether the resolver said so, refused or never
+// answered (measured in the lab). Exit 1 is a usage error, 127 no getent;
+// those and docker's failures say nothing about the name.
+func getentNotFound(res lab.Result) bool { return res.ExitCode == 2 }
+
+// tcpConnect opens and closes one TCP connection from dev to dst:port,
+// waiting at most wait seconds, and says how long it took.
+func tcpConnect(dev *lab.Node, dst netip.Addr, port, wait int) (lab.Result, time.Duration, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(wait+10)*time.Second)
+	defer cancel()
+	start := time.Now()
+	res, err := dev.Exec(ctx, "nc", "-v", "-z", "-w", fmt.Sprint(wait), dst.String(), fmt.Sprint(port))
+	return res, time.Since(start), err
+}
+
+// tcpReaches says whether a TCP connect from n to dst:port succeeds. Only
+// nc's own connect failure (ncConnectFailed) means it doesn't; any other
+// failure (an exec error, a timeout, no nc) is an error.
+func tcpReaches(n *lab.Node, dst netip.Addr, port, wait int) (bool, error) {
+	res, _, err := tcpConnect(n, dst, port, wait)
+	switch {
+	case err == nil:
+		return true, nil
+	case ncConnectFailed(res):
+		return false, nil
+	}
+	return false, fmt.Errorf("tcp from %s to %s: %w\n%s", n.Name, netip.AddrPortFrom(dst, uint16(port)), err, res.Stderr)
+}
+
 // pingNoReply says whether a failed ping got no reply: exit 1 and ping's
-// own " 0 received" summary. Exit 2 (no route, a send error) and exec
-// failures are an unknown state, never proof the path is blocked.
+// own " 0 received" summary: the echo left and nothing came back. A censor
+// probe needs this one: to call a path blocked, the probe must have
+// crossed the wire, which a route the sender lacks (pingNoReplyOrRoute)
+// doesn't show. Exec failures are an unknown state.
 func pingNoReply(res lab.Result) bool {
 	return res.ExitCode == 1 && strings.Contains(res.Stdout, " 0 received")
 }
@@ -164,18 +191,17 @@ func pingBlackholed(res lab.Result) bool {
 	return res.ExitCode == 2 && strings.Contains(res.Stdout+res.Stderr, "connect: Invalid argument")
 }
 
-// pingAnswers pings from n (args after "ping") and says whether a reply
-// came; with what ping printed. Neither a reply nor ping's own "no"
-// (pingNoReplyOrRoute) is an error: an unknown state, never a pass.
-func pingAnswers(n *lab.Node, args ...string) (bool, string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), execTimeout)
-	defer cancel()
-	res, err := n.Exec(ctx, append([]string{"ping"}, args...)...)
+// pingAnswers pings from n (args after "ping"), with what ping printed:
+// true for a reply, false for ping's own "no" as no tells it (one of the
+// classifiers above, measured for the case), anything else an error (an
+// unknown state, never a pass).
+func pingAnswers(n *lab.Node, no func(lab.Result) bool, args ...string) (bool, string, error) {
+	res, err := execResult(n, execTimeout, append([]string{"ping"}, args...)...)
 	out := res.Stdout + res.Stderr
 	switch {
 	case err == nil:
 		return true, out, nil
-	case pingNoReplyOrRoute(res):
+	case no(res):
 		return false, out, nil
 	}
 	return false, out, fmt.Errorf("ping %s on %s says nothing about the path: %w\n%s", strings.Join(args, " "), n.Name, err, out)
@@ -186,7 +212,7 @@ func pingAnswers(n *lab.Node, args ...string) (bool, string, error) {
 // the sender's kernel lacks counts as no path: nothing is sent.
 func noPing(t *testing.T, n *lab.Node, args ...string) {
 	t.Helper()
-	answered, out, err := pingAnswers(n, args...)
+	answered, out, err := pingAnswers(n, pingNoReplyOrRoute, args...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,10 +233,10 @@ func curlNoConnection(res lab.Result) bool {
 		res.ExitCode == 28 && (strings.Contains(out, "Connection timed out after") || strings.Contains(out, "Failed to connect"))
 }
 
-// curlFrom runs `curl -sS` on n with args, giving up after maxTime, and
-// says whether it connected; with what curl printed. Neither a
-// connection nor curl's own "couldn't connect" (curlNoConnection) is an
-// error: an unknown state.
+// curlFrom runs `curl -sS` on n with args, giving up after maxTime, with
+// what curl printed: true if it connected, false for curl's own
+// "couldn't connect" (curlNoConnection), anything else an error (an
+// unknown state, never a pass).
 func curlFrom(n *lab.Node, maxTime time.Duration, args ...string) (bool, string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), maxTime+5*time.Second)
 	defer cancel()

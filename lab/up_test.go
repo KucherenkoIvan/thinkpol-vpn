@@ -207,10 +207,11 @@ func TestUpRunsTheM0Space(t *testing.T) {
 			if out := n.MustExec(t, "nft", "list", "tables"); strings.Contains(out, "thinkpol") {
 				t.Errorf("nftables tables left:\n%s", out)
 			}
-			// pgrep exits 1 for no match; 2 and 3 are its own errors.
-			if res, err := execReadResult(n, "pgrep", "-af", "thinkpol (up|worker)"); err == nil {
+			// pgrep exits 1, silently, for no match; 2 and 3 are its own
+			// errors, and docker exec also exits 1 when it fails, saying so.
+			if res, err := execResult(n, execTimeout, "pgrep", "-af", "thinkpol (up|worker)"); err == nil {
 				t.Errorf("processes left:\n%s", res.Stdout)
-			} else if res.ExitCode != 1 {
+			} else if res.ExitCode != 1 || res.Stdout != "" || res.Stderr != "" {
 				t.Fatalf("pgrep: %v\n%s", err, res.Stderr)
 			}
 			if out := n.MustExec(t, "ip", "netns", "list"); out != "" {

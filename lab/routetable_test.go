@@ -145,7 +145,7 @@ func TestRouteTableSendsOnlyDirectAroundTheTunnel(t *testing.T) {
 	// else (docker, a timeout, a usage error) fails the test.
 	tryPing := func(dst netip.Addr) {
 		t.Helper()
-		if _, _, err := pingAnswers(dev, "-c", "2", "-W", "1", dst.String()); err != nil {
+		if _, _, err := pingAnswers(dev, pingNoReplyOrRoute, "-c", "2", "-W", "1", dst.String()); err != nil {
 			t.Fatal(err)
 		}
 	}
