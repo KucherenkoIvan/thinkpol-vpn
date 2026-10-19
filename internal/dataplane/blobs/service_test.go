@@ -242,10 +242,10 @@ func (n node) plan(want []netmap.BlobRef, peers ...node) Plan {
 	return p
 }
 
-// serving waits until server holds ref and listens: Update starts the two
+// waitServing waits until server holds ref and listens: Update starts the two
 // apart (the blob's fetch and listenLoop), so a held blob says nothing
 // about the listener.
-func serving(t *testing.T, tn *testNet, server node, ref netmap.BlobRef) {
+func waitServing(t *testing.T, tn *testNet, server node, ref netmap.BlobRef) {
 	t.Helper()
 	eventually(t, "the server holding the blob", func() bool { _, ok := server.Get(ref.SHA256); return ok })
 	eventually(t, "the server listening", func() bool { return tn.listening(netip.AddrPortFrom(server.addr, Port)) })
@@ -439,7 +439,7 @@ func TestNothingIsServedThatIsNotHeld(t *testing.T) {
 	tn := newTestNet()
 	server := startNode(t, tn, 1, newMemStore(data), fast)
 	server.Update(server.plan([]netmap.BlobRef{ref}))
-	serving(t, tn, server, ref)
+	waitServing(t, tn, server, ref)
 
 	ask := func(req []byte) []byte {
 		t.Helper()
@@ -579,7 +579,7 @@ func TestBusyPastThePerPeerLimit(t *testing.T) {
 	tn := newTestNet()
 	server := startNode(t, tn, 1, newMemStore(data), limits)
 	server.Update(server.plan([]netmap.BlobRef{ref}))
-	serving(t, tn, server, ref)
+	waitServing(t, tn, server, ref)
 
 	// One connection that never sends its request holds the peer's slot.
 	hold, err := tn.dial(context.Background(), overlay(9), netip.AddrPortFrom(server.addr, Port))
@@ -669,7 +669,7 @@ func TestOnlyPeersAreServed(t *testing.T) {
 	p := server.plan([]netmap.BlobRef{ref})
 	p.Peers = nil
 	server.Update(p)
-	serving(t, tn, server, ref)
+	waitServing(t, tn, server, ref)
 	for _, local := range []netip.Addr{overlay(2), {}} {
 		c, err := tn.dial(context.Background(), local, netip.AddrPortFrom(server.addr, Port))
 		if err != nil {
@@ -703,7 +703,7 @@ func TestAPeerDroppedFromThePlanIsServedNoMore(t *testing.T) {
 	server := startNode(t, tn, 1, newMemStore(data), limits)
 	p := server.plan([]netmap.BlobRef{ref})
 	server.Update(p)
-	serving(t, tn, server, ref)
+	waitServing(t, tn, server, ref)
 
 	c, err := tn.dial(context.Background(), overlay(9), netip.AddrPortFrom(server.addr, Port))
 	if err != nil {
