@@ -28,7 +28,7 @@ func (r *runner) newResolver() *dns.Server {
 	// device: it is what "inside a worker" means here.
 	if len(upstreams) == 0 && !r.dp.Forward {
 		own := []netip.Addr{r.section.Node.IPv4, r.section.Node.IPv6}
-		host, err := r.dp.Platform.SystemUpstreams(own)
+		host, err := r.dp.Host.SystemUpstreams(own)
 		if err != nil {
 			r.dp.Log.Warn("DNS: the system's resolvers are unknown; direct names won't resolve", "err", err)
 		}
@@ -153,7 +153,7 @@ func (r *runner) pointSystem() {
 	if sys != nil {
 		err = sys.Update(want)
 	} else {
-		sys, err = r.dp.Platform.SetSystemDNS(want)
+		sys, err = r.dp.Host.SetSystemDNS(want)
 	}
 	if err != nil {
 		r.guard.set(true, sys, fmt.Errorf("%w: %v", dns.ErrUnprotected, err))

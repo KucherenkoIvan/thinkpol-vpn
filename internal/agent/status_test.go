@@ -12,8 +12,6 @@ import (
 	"testing"
 	"time"
 
-	wgtun "golang.zx2c4.com/wireguard/tun"
-
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/supervisor"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
@@ -43,27 +41,22 @@ func startDevice(t *testing.T, s *testSpace, reg *transport.Registry, connect bo
 		o(&cfg, nil)
 	}
 	rn := newRunningNode()
+	failTUN := make(chan struct{}, 1)
 	logs, err := NewLogs("debug", rn.log)
 	if err != nil {
 		t.Fatal(err)
 	}
-	n, err := Prepare(cfg, logs, testPlatform())
+	plat := testPlatform()
+	plat.Host.NewConfigurator = func(netcfg.Owner) (netcfg.Configurator, error) { return rn.ifc, nil }
+	plat.Host.NewTUN = rn.virtualTUN(failTUN)
+	n, err := Prepare(cfg, logs, plat)
 	if err != nil {
 		t.Fatal(err)
 	}
-	d := &deviceNode{runningNode: rn, node: n, failTUN: make(chan struct{}, 1)}
+	d := &deviceNode{runningNode: rn, node: n, failTUN: failTUN}
 	n.tweak = func(dp *DataPlane) {
-		virtual := rn.dataPlane(reg, s.b, n.state.Map)
-		dp.path, dp.retryAfter = virtual.path, virtual.retryAfter
+		dp.path, dp.retryAfter = fastPaths, testRetry
 		dp.RouteTable = false // virtual TUNs: the host's routing stays as it is
-		dp.Platform.NewTUN = func(name string) (wgtun.Device, netcfg.Configurator, error) {
-			select {
-			case <-d.failTUN:
-				return nil, nil, errors.New("no TUN today")
-			default:
-			}
-			return virtual.Platform.NewTUN(name)
-		}
 		for _, o := range opts {
 			o(nil, dp)
 		}
@@ -245,15 +238,16 @@ func TestARemovedDeviceConnectsOnceBack(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	n, err := Prepare(cfg, logs, testPlatform())
+	plat := testPlatform()
+	plat.Host.NewConfigurator = func(netcfg.Owner) (netcfg.Configurator, error) { return rn.ifc, nil }
+	plat.Host.NewTUN = rn.virtualTUN(nil)
+	n, err := Prepare(cfg, logs, plat)
 	if err != nil {
 		t.Fatal(err)
 	}
 	n.tweak = func(dp *DataPlane) {
-		virtual := rn.dataPlane(reg, s.b, n.state.Map)
-		dp.path, dp.retryAfter = virtual.path, virtual.retryAfter
+		dp.path, dp.retryAfter = fastPaths, testRetry
 		dp.RouteTable = false
-		dp.Platform.NewTUN = virtual.Platform.NewTUN
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -517,7 +511,8 @@ func TestAStartWhileDisconnectedClearsACrashedRunsRoutes(t *testing.T) {
 	_, reg := memoryRegistry(t)
 	cleared := make(chan netcfg.Owner, 4)
 	plat := testPlatform()
-	plat.ClearOwner = func(o netcfg.Owner) error { cleared <- o; return nil }
+	plat.Host.ClearConfig = func(o netcfg.Owner) error { cleared <- o; return nil }
+	plat.Host.ClearRouteTable = func(routetable.Guard) error { cleared <- netcfg.OwnerRouteTable; return nil }
 	rn := newRunningNode()
 	logs, err := NewLogs("info", rn.log)
 	if err != nil {
@@ -525,15 +520,15 @@ func TestAStartWhileDisconnectedClearsACrashedRunsRoutes(t *testing.T) {
 	}
 	cfg := testConfig(s.stateDir(t, s.b, 1))
 	cfg.Connect = false
+	plat.Host.NewConfigurator = func(netcfg.Owner) (netcfg.Configurator, error) { return rn.ifc, nil }
+	plat.Host.NewTUN = rn.virtualTUN(nil)
 	n, err := Prepare(cfg, logs, plat)
 	if err != nil {
 		t.Fatal(err)
 	}
 	n.tweak = func(dp *DataPlane) {
-		virtual := rn.dataPlane(reg, s.b, n.state.Map)
-		dp.path, dp.retryAfter = virtual.path, virtual.retryAfter
+		dp.path, dp.retryAfter = fastPaths, testRetry
 		dp.RouteTable = false
-		dp.Platform.NewTUN = virtual.Platform.NewTUN
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -559,26 +554,31 @@ func TestAStartWhileDisconnectedClearsACrashedRunsRoutes(t *testing.T) {
 }
 
 // Clearing one owner failing doesn't keep the other's leftovers; an OS
-// without an adapter for an owner has nothing to clear. (The hook is
-// Platform.ClearOwner, where the composition root builds the real one.)
+// without an adapter for an owner has nothing to clear.
 func TestClearingTheNetworkTriesBothOwners(t *testing.T) {
 	var owners []netcfg.Owner
-	plat := Platform{ClearOwner: func(o netcfg.Owner) error {
+	clear := func(o netcfg.Owner) error {
 		owners = append(owners, o)
 		if o == netcfg.OwnerRouteTable {
 			return errors.New("no routing socket today")
 		}
 		return nil
-	}}
-	err := plat.clearNetwork()
+	}
+	h := Host{
+		NewGuard:        func() routetable.Guard { return nil },
+		ClearRouteTable: func(routetable.Guard) error { return clear(netcfg.OwnerRouteTable) },
+		ClearConfig:     clear,
+	}
+	err := h.clearNetwork()
 	if !slices.Equal(owners, []netcfg.Owner{netcfg.OwnerRouteTable, netcfg.OwnerOverlay}) {
 		t.Errorf("cleared %v", owners)
 	}
 	if err == nil || !strings.Contains(err.Error(), "route-table: no routing socket today") {
 		t.Errorf("error %v", err)
 	}
-	plat.ClearOwner = func(netcfg.Owner) error { return fmt.Errorf("netcfg: %w", errors.ErrUnsupported) }
-	if err := plat.clearNetwork(); err != nil {
+	h.ClearRouteTable = func(routetable.Guard) error { return fmt.Errorf("netcfg: %w", errors.ErrUnsupported) }
+	h.ClearConfig = func(netcfg.Owner) error { return fmt.Errorf("netcfg: %w", errors.ErrUnsupported) }
+	if err := h.clearNetwork(); err != nil {
 		t.Errorf("unsupported: %v", err)
 	}
 }

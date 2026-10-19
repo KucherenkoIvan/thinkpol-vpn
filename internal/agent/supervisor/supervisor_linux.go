@@ -89,13 +89,12 @@ func New(opts Options) (*Supervisor, error) {
 		// version check confirms.
 		opts.Command = []string{selfExe, "worker"}
 	}
-	// The root namespace's own configurator: the composition root
-	// (cmd/thinkpol) builds it into the platform.
-	newRoot := opts.NewRoot
-	if newRoot == nil {
-		newRoot = func() (netcfg.Configurator, error) { return netcfg.New(netcfg.OwnerSupervisor) }
+	// NewRoot is required: the root namespace's owner is the caller's to
+	// provide, like every host adapter.
+	if opts.NewRoot == nil {
+		return nil, errors.New("supervisor: no NewRoot")
 	}
-	root, err := newRoot()
+	root, err := opts.NewRoot()
 	if err != nil {
 		return nil, fmt.Errorf("supervisor: %w", err)
 	}

@@ -12,6 +12,7 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/blobs"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/path"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/rules"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
@@ -73,10 +74,10 @@ type DataPlane struct {
 	DNS          bool
 	DNSUpstreams []netip.AddrPort
 
-	// Platform is what this data plane needs of its host: the adapters the
-	// composition root (cmd/thinkpol) builds for the OS it runs on, or a
-	// test's fakes.
-	Platform Platform
+	// Host is this data plane's part of the node's platform: what one
+	// data plane needs of its network stack, built by the composition
+	// root for the OS, or a test's fakes.
+	Host Host
 
 	// A device's (Node.run): where its status goes, its Connect and
 	// Disconnect requests, and whether it starts disconnected.
@@ -117,9 +118,6 @@ const statusEvery = 30 * time.Second
 func RunDataPlane(ctx context.Context, dp DataPlane) error {
 	if dp.Interface == "" {
 		dp.Interface = tun.DefaultName
-	}
-	if dp.Platform.NewTUN == nil {
-		return errors.New("agent: no platform: the composition root builds one for the OS (cmd/thinkpol), tests fake one")
 	}
 	if dp.retryAfter == 0 {
 		dp.retryAfter = RetryAfter
@@ -185,7 +183,7 @@ func (r *runner) clearRoutes() {
 	if !r.dp.RouteTable {
 		return
 	}
-	if err := r.dp.Platform.clearNetwork(); err != nil {
+	if err := r.dp.Host.clearNetwork(); err != nil {
 		r.dp.Log.Warn("removing a previous run's routes failed", "err", err)
 	}
 }
@@ -224,11 +222,23 @@ type runner struct {
 	retryAt time.Time
 }
 
+// tunMTU is the TUN's MTU: the overlay's, below the engine's per-link
+// MTU (LinkMTU).
+const tunMTU = 1420
+
 // start brings the data plane up on the current section. It fails with a
 // *StartError.
 func (r *runner) start(ctx context.Context) error {
-	dev, ifc, err := r.dp.Platform.NewTUN(r.dp.Interface)
+	ifc, err := r.dp.Host.NewConfigurator(netcfg.OwnerOverlay)
 	if err != nil {
+		r.clearRoutes() // a crashed run's table would block traffic meanwhile
+		return &StartError{Step: StepTUN, Err: err}
+	}
+	dev, err := r.dp.Host.NewTUN(r.dp.Interface, tunMTU)
+	if err != nil {
+		if ifc != nil {
+			_ = ifc.Close()
+		}
 		r.clearRoutes() // a crashed run's table would block traffic meanwhile
 		return &StartError{Step: StepTUN, Err: err}
 	}
@@ -237,7 +247,7 @@ func (r *runner) start(ctx context.Context) error {
 	}
 	var routes dataplane.RouteTable
 	if r.dp.RouteTable {
-		if routes, err = r.dp.Platform.NewRoutes(r.dp.Log, r.dp.Platform.NewGuard()); err != nil {
+		if routes, err = r.dp.Host.NewRouteTable(r.dp.Log, r.dp.Host.NewGuard()); err != nil {
 			if ifc != nil {
 				_ = ifc.Close()
 			}

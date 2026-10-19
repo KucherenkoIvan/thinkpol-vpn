@@ -124,7 +124,8 @@ type Options struct {
 	// Default: the running binary's `worker` command (/proc/self/exe).
 	Command []string
 	// NewRoot builds the supervisor's network configurator, the root
-	// namespace's owner. Default: netcfg.New(OwnerSupervisor).
+	// namespace's owner. Required: like every host adapter, the caller
+	// provides it.
 	NewRoot func() (netcfg.Configurator, error)
 	// Env is the workers' whole environment (default: empty).
 	Env []string

@@ -18,6 +18,7 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/supervisor"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/blobs"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/rules"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
@@ -249,7 +250,13 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 	h := n.state.Map.Header()
 	n.logs.Info("starting", "mode", n.mode, "space", h.SpaceID, "node", n.state.Keys.ID, "version", h.Version, "map", n.state.MapPath)
 	if n.mode != ModeServer && (n.state.Removed || !n.want) {
-		n.clearNetwork()
+		// What the data plane left in the host's routing when the node
+		// died connected (a crash, kill -9): a device that starts
+		// without connecting has nothing holding it, and connecting
+		// takes it over anyway.
+		if err := n.plat.clearNetwork(); err != nil {
+			n.logs.Warn("removing a previous run's routes failed", "err", err)
+		}
 	}
 	// A resolver configuration a crash left behind goes back first,
 	// whatever the node does next.
@@ -276,7 +283,7 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 		DNS:          n.cfg.DNS,
 		DNSUpstreams: n.dnsUpstreams,
 		RouteTable:   true,
-		Platform:     n.plat,
+		Host:         n.plat.Host,
 
 		report:        &n.report,
 		requests:      n.requests,
@@ -290,15 +297,6 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 		n.tweak(&dp)
 	}
 	return RunDataPlane(ctx, dp)
-}
-
-// clearNetwork removes what the data plane left in the host's routing
-// when the node died connected (a crash, kill -9), for a device that
-// starts without connecting: connecting takes it over anyway.
-func (n *Node) clearNetwork() {
-	if err := n.plat.clearNetwork(); err != nil {
-		n.logs.Warn("removing a previous run's routes failed", "err", err)
-	}
 }
 
 // awaitSection follows the space's maps while the node is removed from it,
@@ -358,7 +356,7 @@ func (n *Node) runServer(ctx context.Context, reg *transport.Registry, maps chan
 	if err != nil {
 		return err
 	}
-	sup, err := n.plat.NewSupervisor(supervisor.Options{
+	sup, err := supervisor.New(supervisor.Options{
 		Transports:    reg,
 		EgressAllowed: allowed,
 		Log:           n.logs.With("component", "supervisor"),
@@ -367,6 +365,9 @@ func (n *Node) runServer(ctx context.Context, reg *transport.Registry, maps chan
 		// node's log stream, never a guest's (DESIGN rule 6).
 		Env:    []string{"THINKPOL_LOG_LEVEL=" + level.String()},
 		Output: ownerOutput(own, out),
+		// The root namespace's owner, from the same host adapters the
+		// device's data plane would take.
+		NewRoot: func() (netcfg.Configurator, error) { return n.plat.NewConfigurator(netcfg.OwnerSupervisor) },
 	})
 	if err != nil {
 		return err
