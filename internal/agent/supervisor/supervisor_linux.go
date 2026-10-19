@@ -157,20 +157,9 @@ func linkList() ([]netlink.Link, error) {
 // for that), workers of new ones started. A space already served keeps its
 // worker; its configuration is updated and pushed to the running worker.
 func (s *Supervisor) SetSpaces(spaces []Space) error {
-	want := make(map[netmap.SpaceID]Space, len(spaces))
-	for _, sp := range spaces {
-		if sp.ID.IsZero() {
-			return errors.New("supervisor: zero space id")
-		}
-		for _, d := range sp.Dials {
-			if !d.Address.IsValid() || d.Address.Port() == 0 || d.Address.Addr().Zone() != "" || (d.Network != "udp" && d.Network != "tcp") {
-				return fmt.Errorf("supervisor: space %s: dial %v over %q", sp.ID, d.Address, d.Network)
-			}
-		}
-		if _, dup := want[sp.ID]; dup {
-			return fmt.Errorf("supervisor: space %s listed twice", sp.ID)
-		}
-		want[sp.ID] = sp
+	want, err := validateSpaces(spaces)
+	if err != nil {
+		return err
 	}
 	s.setMu.Lock()
 	defer s.setMu.Unlock()
@@ -245,6 +234,27 @@ func (s *Supervisor) SetSpaces(spaces []Space) error {
 		go s.supervise(w)
 	}
 	return nil
+}
+
+// validateSpaces checks the spaces' ids, dials and uniqueness, and returns
+// them by id.
+func validateSpaces(spaces []Space) (map[netmap.SpaceID]Space, error) {
+	want := make(map[netmap.SpaceID]Space, len(spaces))
+	for _, sp := range spaces {
+		if sp.ID.IsZero() {
+			return nil, errors.New("supervisor: zero space id")
+		}
+		for _, d := range sp.Dials {
+			if !d.Address.IsValid() || d.Address.Port() == 0 || d.Address.Addr().Zone() != "" || (d.Network != "udp" && d.Network != "tcp") {
+				return nil, fmt.Errorf("supervisor: space %s: dial %v over %q", sp.ID, d.Address, d.Network)
+			}
+		}
+		if _, dup := want[sp.ID]; dup {
+			return nil, fmt.Errorf("supervisor: space %s listed twice", sp.ID)
+		}
+		want[sp.ID] = sp
+	}
+	return want, nil
 }
 
 // applyTables rebuilds the root namespace's tables and forwarding for what
