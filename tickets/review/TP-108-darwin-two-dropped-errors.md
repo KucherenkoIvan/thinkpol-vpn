@@ -74,3 +74,4 @@ A corrupt record of another owner (the overlay's, say) keeps failing this node's
 - 2026-10-19 has-errors → in-progress — round 4 fixes start
 - 2026-10-19 R4.4 empty-string scutil syntax: the form `d.add Key ""` is shown round-tripping through parseShow (scutil prints it back as "Key : ", the same shape an empty array element prints), so the original is kept restorable, not removed at disconnect
 - 2026-10-19 in-progress → review — all round 4 findings fixed and checked (4416494), make lint/test/lab-test pass, the full lab run finished 2026-10-19; still not verified on real macOS hardware, only the fakes
+- 2026-10-19 in-progress → review (the board move af7bed5 announced, done by the orchestrator)
