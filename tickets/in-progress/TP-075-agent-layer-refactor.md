@@ -90,3 +90,4 @@ branch: "tp-075-agent-layer-refactor"
 - 2026-10-19 round 3: comments state constraints, not callers (platform.go, servespace.go, node.go, supervisor options and New, rollback test); agent.ApplyOSDefaults replaces cmd's applyPlatformDefaults; platform_{linux,darwin,other}.go renamed supported_*.go; TP-083 lists blobOptions and notes the Host the worker carries
 - 2026-10-19 in-progress → review — make lint, make test green; make lab-test green (exit 0, 35 packages PASS) at 1523831 (a first run hit a timing failure in transporttest ShapingRefused behind the supervisor; the package passed alone and the full rerun passed). Not verified here: the adapters' host-side paths outside the lab's Linux (macOS device on a real network: needs_human: macos)
 - 2026-10-19 review → has-errors — review round 4: R4.1–R4.9
+- 2026-10-19 has-errors → in-progress — review round 4 findings picked up (R4.1–R4.9)
