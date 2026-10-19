@@ -96,3 +96,4 @@ The device's connection lifecycle is one explicit state with transition methods 
 - 2026-10-19 make lint (exit 0) and make test (exit 0) at b47a0e8; make lab-test exit 0 at b47a0e8 (lab suite ok, 35 node packages PASS), 129 s with LAB_P=4 (no other lab running). Not verified here: the route-table and DNS events on a real macOS device
 - 2026-10-19 in-progress → review
 - 2026-10-20 review → has-errors — review round 3: R3.1–R3.4
+- 2026-10-20 has-errors → in-progress — review round 3 findings picked up (R3.1–R3.4)
