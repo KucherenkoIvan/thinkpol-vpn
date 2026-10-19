@@ -182,150 +182,189 @@ func (s *Supervisor) applyIsolation(st tableState) error {
 	if err != nil {
 		return fmt.Errorf("nftables: %w", err)
 	}
+	r := newRules(c)
+	r.addAntiSpoof(st)
+	r.addZones(st)
+	r.addForward(st)
+	r.addSpaceOut(st, s.opts)
+	r.addSpaceAccept(st)
+	r.addInput(st)
+	r.addMasquerade(s.opts)
+	r.addArp()
+	if err := c.Flush(); err != nil {
+		return fmt.Errorf("nftables: apply isolation (%d slots): %w", len(st.rules), err)
+	}
+	return nil
+}
 
-	inet := &nftables.Table{Family: nftables.TableFamilyINet, Name: TableName}
-	arp := &nftables.Table{Family: nftables.TableFamilyARP, Name: ArpTableName}
-	// Add-then-delete-then-add replaces each table atomically whether or not
-	// it (or a dead supervisor's) was there.
-	for _, t := range []*nftables.Table{inet, arp} {
+// rules assembles the supervisor's tables: the kernel connection, the two
+// tables and their chains, and where each per-chain builder below adds its
+// rules.
+type rules struct {
+	c                                                                                 *nftables.Conn
+	inet, arp                                                                         *nftables.Table
+	antiSpoof, ctPre, ctOut, forward, spaceOut, spaceAccept, input, nat, guard, arpIn *nftables.Chain
+}
+
+// newRules replaces the supervisor's tables atomically (add-then-delete-
+// then-add, whether or not they, or a dead supervisor's, were there) and
+// creates their chains.
+func newRules(c *nftables.Conn) *rules {
+	r := &rules{
+		c:    c,
+		inet: &nftables.Table{Family: nftables.TableFamilyINet, Name: TableName},
+		arp:  &nftables.Table{Family: nftables.TableFamilyARP, Name: ArpTableName},
+	}
+	for _, t := range []*nftables.Table{r.inet, r.arp} {
 		c.AddTable(t)
 		c.DelTable(t)
 		c.AddTable(t)
 	}
 	accept := nftables.ChainPolicyAccept
+	filter := nftables.ChainTypeFilter
 	base := func(table *nftables.Table, name string, typ nftables.ChainType, hook *nftables.ChainHook, prio nftables.ChainPriority) *nftables.Chain {
 		return c.AddChain(&nftables.Chain{
 			Name: name, Table: table, Type: typ,
 			Hooknum: hook, Priority: nftables.ChainPriorityRef(prio), Policy: &accept,
 		})
 	}
-	regular := func(name string) *nftables.Chain { return c.AddChain(&nftables.Chain{Name: name, Table: inet}) }
-	filter := nftables.ChainTypeFilter
-	antiSpoofChain := base(inet, "antispoof", filter, nftables.ChainHookPrerouting, *nftables.ChainPriorityRaw-10)
-	ctPre := base(inet, "ct_pre", filter, nftables.ChainHookPrerouting, *nftables.ChainPriorityRaw)
-	ctOut := base(inet, "ct_out", filter, nftables.ChainHookOutput, *nftables.ChainPriorityRaw)
-	forward := base(inet, "forward", filter, nftables.ChainHookForward, *nftables.ChainPriorityFilter)
-	spaceOut, spaceAccept := regular("space_out"), regular("space_accept")
-	input := base(inet, "input", filter, nftables.ChainHookInput, *nftables.ChainPriorityFilter)
-	nat := base(inet, "postrouting", nftables.ChainTypeNAT, nftables.ChainHookPostrouting, *nftables.ChainPriorityNATSource)
-	guard := base(inet, "postrouting_guard", filter, nftables.ChainHookPostrouting, *nftables.ChainPriorityNATSource+10)
+	regular := func(name string) *nftables.Chain { return c.AddChain(&nftables.Chain{Name: name, Table: r.inet}) }
+	r.antiSpoof = base(r.inet, "antispoof", filter, nftables.ChainHookPrerouting, *nftables.ChainPriorityRaw-10)
+	r.ctPre = base(r.inet, "ct_pre", filter, nftables.ChainHookPrerouting, *nftables.ChainPriorityRaw)
+	r.ctOut = base(r.inet, "ct_out", filter, nftables.ChainHookOutput, *nftables.ChainPriorityRaw)
+	r.forward = base(r.inet, "forward", filter, nftables.ChainHookForward, *nftables.ChainPriorityFilter)
+	r.spaceOut, r.spaceAccept = regular("space_out"), regular("space_accept")
+	r.input = base(r.inet, "input", filter, nftables.ChainHookInput, *nftables.ChainPriorityFilter)
+	r.nat = base(r.inet, "postrouting", nftables.ChainTypeNAT, nftables.ChainHookPostrouting, *nftables.ChainPriorityNATSource)
+	r.guard = base(r.inet, "postrouting_guard", filter, nftables.ChainHookPostrouting, *nftables.ChainPriorityNATSource+10)
 	// The arp family has input and output hooks only (ARP is link-local, not
 	// forwarded), so a space's ARP is dropped on input.
-	arpIn := base(arp, "input", filter, nftables.ChainHookInput, *nftables.ChainPriorityFilter)
+	r.arpIn = base(r.arp, "input", filter, nftables.ChainHookInput, *nftables.ChainPriorityFilter)
+	return r
+}
 
-	add := func(chain *nftables.Chain, exprs ...expr.Any) {
-		c.AddRule(&nftables.Rule{Table: chain.Table, Chain: chain, Exprs: exprs})
-	}
-	all := func(parts ...[]expr.Any) []expr.Any {
-		var out []expr.Any
-		for _, p := range parts {
-			out = append(out, p...)
-		}
-		return out
-	}
-	verdict := func(kind expr.VerdictKind) []expr.Any { return []expr.Any{&expr.Verdict{Kind: kind}} }
-	jump := func(to *nftables.Chain) []expr.Any {
-		return []expr.Any{&expr.Verdict{Kind: expr.VerdictGoto, Chain: to.Name}}
-	}
+// add adds one rule to a chain.
+func (r *rules) add(chain *nftables.Chain, exprs ...expr.Any) {
+	r.c.AddRule(&nftables.Rule{Table: chain.Table, Chain: chain, Exprs: exprs})
+}
 
-	// Per slot: anti-spoof before conntrack, then the zone of what is the
-	// root namespace's own business.
-	for _, r := range st.rules {
-		for _, a := range r.src {
-			add(antiSpoofChain, antiSpoof(r.link, a)...)
+// addAntiSpoof is, per slot, "source not the slot's transit address: drop",
+// before conntrack sees a packet.
+func (r *rules) addAntiSpoof(st tableState) {
+	for _, sr := range st.rules {
+		for _, a := range sr.src {
+			r.add(r.antiSpoof, antiSpoof(sr.link, a)...)
 		}
-		for _, gw := range r.gw {
-			add(ctPre, all(linkExact(expr.MetaKeyIIFNAME, r.link), daddrIn(netip.PrefixFrom(gw, gw.BitLen())), zone(r.zone))...)
-		}
-		add(ctPre, all(linkExact(expr.MetaKeyIIFNAME, r.link), notHost(), zone(r.zone))...)
-		add(ctOut, all(linkExact(expr.MetaKeyOIFNAME, r.link), zone(r.zone))...)
 	}
+}
 
-	// Forward: nothing conntrack can't place; replies to what each space
-	// sent on, bound to its slot; nothing else to a space; what a space
-	// sends goes by space_out; and, where the supervisor turned forwarding
-	// on, nothing else at all.
-	add(forward, drop(all(spaceLink(expr.MetaKeyIIFNAME), ctState(expr.CtStateBitINVALID|expr.CtStateBitUNTRACKED)))...)
-	for _, r := range st.rules {
-		for _, a := range r.src {
-			add(forward, all(spaceLinkNot(expr.MetaKeyIIFNAME), linkExact(expr.MetaKeyOIFNAME, r.link),
+// addZones puts what is the root namespace's own business (a space's
+// exchange with its end of the veth pair, and its broadcasts, and what the
+// root namespace sends a space) in the slot's own conntrack zone.
+func (r *rules) addZones(st tableState) {
+	for _, sr := range st.rules {
+		for _, gw := range sr.gw {
+			r.add(r.ctPre, all(linkExact(expr.MetaKeyIIFNAME, sr.link), daddrIn(netip.PrefixFrom(gw, gw.BitLen())), zone(sr.zone))...)
+		}
+		r.add(r.ctPre, all(linkExact(expr.MetaKeyIIFNAME, sr.link), notHost(), zone(sr.zone))...)
+		r.add(r.ctOut, all(linkExact(expr.MetaKeyOIFNAME, sr.link), zone(sr.zone))...)
+	}
+}
+
+// addForward decides what is forwarded at all: nothing conntrack can't
+// place; replies to what each space sent on, bound to its slot; nothing
+// else to a space; what a space sends goes by space_out; and, where the
+// supervisor turned forwarding on, nothing else at all.
+func (r *rules) addForward(st tableState) {
+	r.add(r.forward, drop(all(spaceLink(expr.MetaKeyIIFNAME), ctState(expr.CtStateBitINVALID|expr.CtStateBitUNTRACKED)))...)
+	for _, sr := range st.rules {
+		for _, a := range sr.src {
+			r.add(r.forward, all(spaceLinkNot(expr.MetaKeyIIFNAME), linkExact(expr.MetaKeyOIFNAME, sr.link),
 				ctState(expr.CtStateBitESTABLISHED|expr.CtStateBitRELATED), ctOriginal(expr.CtKeySRC, a), verdict(expr.VerdictAccept))...)
 		}
 	}
-	add(forward, drop(spaceLink(expr.MetaKeyOIFNAME))...)
-	add(forward, all(spaceLink(expr.MetaKeyIIFNAME), jump(spaceOut))...)
+	r.add(r.forward, drop(spaceLink(expr.MetaKeyOIFNAME))...)
+	r.add(r.forward, all(spaceLink(expr.MetaKeyIIFNAME), jump(r.spaceOut))...)
 	for i, nfproto := range []byte{unix.NFPROTO_IPV4, unix.NFPROTO_IPV6} {
 		if st.owned[i] {
-			add(forward, drop(all(spaceLinkNot(expr.MetaKeyIIFNAME), spaceLinkNot(expr.MetaKeyOIFNAME), nfprotoIs(nfproto)))...)
+			r.add(r.forward, drop(all(spaceLinkNot(expr.MetaKeyIIFNAME), spaceLinkNot(expr.MetaKeyOIFNAME), nfprotoIs(nfproto)))...)
 		}
 	}
+}
 
-	// space_out: the flow cap, then the destinations no space reaches.
+// addSpaceOut caps each space's new flows through the root (the flow cap),
+// then refuses the destinations no space reaches (egressBlocked and the
+// transit ranges, less what EgressAllowed names).
+func (r *rules) addSpaceOut(st tableState, opts Options) {
 	if st.maxFlows > 0 {
-		for _, r := range st.rules {
-			add(spaceOut, drop(all(linkExact(expr.MetaKeyIIFNAME, r.link), ctState(expr.CtStateBitNEW),
+		for _, sr := range st.rules {
+			r.add(r.spaceOut, drop(all(linkExact(expr.MetaKeyIIFNAME, sr.link), ctState(expr.CtStateBitNEW),
 				[]expr.Any{&expr.Connlimit{Count: uint32(st.maxFlows), Flags: connlimitOver}}))...)
 		}
 	}
-	for _, p := range s.opts.EgressAllowed {
-		add(spaceOut, all(daddrIn(p), jump(spaceAccept))...)
+	for _, p := range opts.EgressAllowed {
+		r.add(r.spaceOut, all(daddrIn(p), jump(r.spaceAccept))...)
 	}
-	for _, p := range append(egressBlocked, s.opts.TransitIPv4, s.opts.TransitIPv6) {
-		add(spaceOut, drop(daddrIn(p))...)
+	for _, p := range append(egressBlocked, opts.TransitIPv4, opts.TransitIPv6) {
+		r.add(r.spaceOut, drop(daddrIn(p))...)
 	}
-	add(spaceOut, jump(spaceAccept)...)
+	r.add(r.spaceOut, jump(r.spaceAccept)...)
+}
 
-	// space_accept: each slot's egress and dials, out of the uplink, for
-	// its own flows only.
+// addSpaceAccept opens, out of the uplink, each slot's egress and its
+// dials, for the slot's own flows only.
+func (r *rules) addSpaceAccept(st tableState) {
 	if st.uplink != "" {
-		for _, r := range st.rules {
-			for i, a := range r.src {
-				if r.egress[i] {
-					add(spaceAccept, all(linkExact(expr.MetaKeyIIFNAME, r.link), linkExact(expr.MetaKeyOIFNAME, st.uplink),
+		for _, sr := range st.rules {
+			for i, a := range sr.src {
+				if sr.egress[i] {
+					r.add(r.spaceAccept, all(linkExact(expr.MetaKeyIIFNAME, sr.link), linkExact(expr.MetaKeyOIFNAME, st.uplink),
 						ctOriginal(expr.CtKeySRC, a), verdict(expr.VerdictAccept))...)
 				}
 			}
-			for _, d := range r.dials {
-				a := r.src[0]
+			for _, d := range sr.dials {
+				a := sr.src[0]
 				if !d.Address.Addr().Unmap().Is4() {
-					a = r.src[1]
+					a = sr.src[1]
 				}
-				add(spaceAccept, all(linkExact(expr.MetaKeyIIFNAME, r.link), linkExact(expr.MetaKeyOIFNAME, st.uplink),
+				r.add(r.spaceAccept, all(linkExact(expr.MetaKeyIIFNAME, sr.link), linkExact(expr.MetaKeyOIFNAME, st.uplink),
 					dialMatch(d), ctOriginal(expr.CtKeySRC, a), verdict(expr.VerdictAccept))...)
 			}
 		}
 	}
-	add(spaceAccept, drop(nil)...)
+	r.add(r.spaceAccept, drop(nil)...)
+}
 
-	// Input: a space reaches nothing of the root namespace's own, past
-	// replies to what the root namespace started with it.
-	for _, r := range st.rules {
-		for _, a := range r.src {
+// addInput lets a space reach nothing of the root namespace's own, past
+// replies to what the root namespace started with it.
+func (r *rules) addInput(st tableState) {
+	for _, sr := range st.rules {
+		for _, a := range sr.src {
 			state := expr.CtStateBitESTABLISHED
 			if unboundAccepts {
 				state |= expr.CtStateBitRELATED
 			}
-			add(input, all(linkExact(expr.MetaKeyIIFNAME, r.link), ctState(state),
+			r.add(r.input, all(linkExact(expr.MetaKeyIIFNAME, sr.link), ctState(state),
 				ctOriginal(expr.CtKeyDST, a), verdict(expr.VerdictAccept))...)
 		}
 	}
-	add(input, drop(spaceLink(expr.MetaKeyIIFNAME))...)
+	r.add(r.input, drop(spaceLink(expr.MetaKeyIIFNAME))...)
+}
 
-	// Masquerade the transit ranges wherever they leave but to a space,
-	// within MasqueradePorts; anything still from a transit range after
-	// that is dropped.
-	for _, p := range []netip.Prefix{s.opts.TransitIPv4, s.opts.TransitIPv6} {
-		add(nat, masquerade(p)...)
-		add(guard, drop(all(spaceLinkNot(expr.MetaKeyOIFNAME), addrIn(p, srcOffset(p.Addr()))))...)
+// addMasquerade masquerades the transit ranges wherever they leave but to
+// a space, within MasqueradePorts; anything still from a transit range
+// after that is dropped.
+func (r *rules) addMasquerade(opts Options) {
+	for _, p := range []netip.Prefix{opts.TransitIPv4, opts.TransitIPv6} {
+		r.add(r.nat, masquerade(p)...)
+		r.add(r.guard, drop(all(spaceLinkNot(expr.MetaKeyOIFNAME), addrIn(p, srcOffset(p.Addr()))))...)
 	}
+}
 
-	// ARP from a space never reaches the root namespace's neighbour table.
-	add(arpIn, drop(spaceLink(expr.MetaKeyIIFNAME))...)
-
-	if err := c.Flush(); err != nil {
-		return fmt.Errorf("nftables: apply isolation (%d slots): %w", len(st.rules), err)
-	}
-	return nil
+// addArp keeps ARP from a space away from the root namespace's neighbour
+// table.
+func (r *rules) addArp() {
+	r.add(r.arpIn, drop(spaceLink(expr.MetaKeyIIFNAME))...)
 }
 
 // installIsolation sets up the tables with no slots yet.
@@ -472,6 +511,23 @@ func established(match []expr.Any) []expr.Any {
 
 func drop(match []expr.Any) []expr.Any {
 	return append(match, &expr.Counter{}, &expr.Verdict{Kind: expr.VerdictDrop})
+}
+
+// all is the concatenation of match groups into one rule's expressions.
+func all(parts ...[]expr.Any) []expr.Any {
+	var out []expr.Any
+	for _, p := range parts {
+		out = append(out, p...)
+	}
+	return out
+}
+
+// verdict is a bare accept-or-drop expression.
+func verdict(kind expr.VerdictKind) []expr.Any { return []expr.Any{&expr.Verdict{Kind: kind}} }
+
+// jump is "goto to".
+func jump(to *nftables.Chain) []expr.Any {
+	return []expr.Any{&expr.Verdict{Kind: expr.VerdictGoto, Chain: to.Name}}
 }
 
 // spaceLink matches packets whose interface (key: in or out) starts with the

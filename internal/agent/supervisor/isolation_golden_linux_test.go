@@ -31,7 +31,10 @@ func TestIsolationRulesetGolden(t *testing.T) {
 	if os.Getenv("THINKPOL_LAB") == "" {
 		t.Skip("needs the lab")
 	}
-	for _, tc := range []struct{ name string; unbound bool }{
+	for _, tc := range []struct {
+		name    string
+		unbound bool
+	}{
 		{"bound", false}, {"unbound", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
