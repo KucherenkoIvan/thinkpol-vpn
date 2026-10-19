@@ -118,8 +118,8 @@ func isDone(ch chan struct{}) bool {
 // openListener opens the listener for addr: the test's overlay, or the
 // node's real one, bound to the overlay's TUN (iface).
 func (s *Service) openListener(addr netip.AddrPort, iface string) (net.Listener, error) {
-	if s.listen != nil {
-		return s.listen(addr)
+	if s.net.Listen != nil {
+		return s.net.Listen(addr)
 	}
 	lc := net.ListenConfig{Control: bindTo(iface)}
 	return lc.Listen(context.Background(), "tcp", addr.String())

@@ -97,7 +97,9 @@ type DataPlane struct {
 	retryAfter   time.Duration
 	// newBlobs makes the blob service a worker serves its space's lists
 	// with (blobs.New; tests put it on a loopback overlay).
-	newBlobs func(blobs.Options) *blobs.Service // onEngine sees each engine the data plane starts.
+	newBlobs func(blobs.Options) *blobs.Service
+	// onEngine sees each engine the data plane starts (tests hold the
+	// latest one to read its status).
 	onEngine func(*dataplane.Engine)
 	// systemDNS points the OS at the resolver (dns.SetSystem), and
 	// systemUpstreams says what the OS used (dns.SystemUpstreams); dnsPort

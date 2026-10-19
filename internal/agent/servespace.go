@@ -119,10 +119,7 @@ func serveSpace(log *slog.Logger, base DataPlane) worker.Serve {
 		if newBlobs == nil {
 			newBlobs = blobs.New
 		}
-		bo := blobs.Options{Store: seedStore{seeds}, Log: log}
-		if bo.Limits.MaxHeld == 0 {
-			bo.Limits.MaxHeld = blobs.ServerMaxHeldSize
-		}
+		bo := blobs.Options{Store: seedStore{seeds}, Log: log, Limits: blobs.Limits{MaxHeld: blobs.ServerMaxHeldSize}}
 		dp.Blobs, dp.ServeBlobs = newBlobs(bo), true
 		dp.DNS, dp.DNSUpstreams = first.DNS, first.DNSUpstreams
 		// The space's own figures only (TP-041 seals them into its

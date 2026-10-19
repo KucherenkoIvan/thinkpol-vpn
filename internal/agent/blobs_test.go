@@ -297,7 +297,9 @@ func TestServerSeedsItsWorker(t *testing.T) {
 	w := newRunningNode()
 	base := w.dataPlane(reg, NodeKeys{}, nil)
 	base.newBlobs = func(o blobs.Options) *blobs.Service {
-		o.Limits = fastBlobs
+		fast := fastBlobs
+		fast.MaxHeld = o.Limits.MaxHeld // the worker's own bound survives
+		o.Limits = fast
 		return blobs.NewOnNet(o, blobs.Net{Listen: ov.listen, Dial: ov.dial})
 	}
 	sess := newFakeSession(s.id)

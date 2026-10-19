@@ -144,8 +144,8 @@ func (s *Service) fetchOnce(ctx context.Context, iface string, local netip.Addr,
 // node's real one, bound to the overlay's TUN (iface) and to the local
 // overlay address.
 func (s *Service) openConn(ctx context.Context, iface string, local netip.Addr, remote netip.AddrPort) (net.Conn, error) {
-	if s.dial != nil {
-		return s.dial(ctx, local, remote)
+	if s.net.Dial != nil {
+		return s.net.Dial(ctx, local, remote)
 	}
 	d := net.Dialer{LocalAddr: net.TCPAddrFromAddrPort(netip.AddrPortFrom(local, 0)), Control: bindTo(iface)}
 	return d.DialContext(ctx, "tcp", remote.String())
