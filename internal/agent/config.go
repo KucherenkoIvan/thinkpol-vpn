@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
-	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -97,19 +96,17 @@ func (c Config) EgressAllowedPrefixes() ([]netip.Prefix, error) {
 	return out, nil
 }
 
-// LoadConfig reads the configuration from the environment, with the
-// defaults above. Unlike go-kernel's usual setup it reads no .env files: a
-// node's configuration is its environment and its flags. It doesn't
-// validate: flags may still change it (see Validate).
+// LoadConfig reads the configuration from the environment. Unlike
+// go-kernel's usual setup it reads no .env files: a node's configuration
+// is its environment and its flags. It doesn't validate: flags may still
+// change it (see Validate). The platform defaults for what the
+// environment left unset are the `up` command's (cmd/thinkpol), which
+// fills StateDir and APISocket after the load.
 func LoadConfig() (Config, error) {
 	c, err := config.LoadWith[Config](config.WithoutEnvFiles(), config.DeferValidate())
 	if err != nil {
 		return Config{}, err
 	}
-	if _, ok := os.LookupEnv("THINKPOL_STATE_DIR"); !ok {
-		c.StateDir = DefaultStateDir
-	}
-	c.APISocket = APISocket()
 	return *c, nil
 }
 
@@ -127,15 +124,6 @@ func DefaultAPISocket() string {
 		return "/private/var/db/thinkpol-api/api.sock"
 	}
 	return "/run/thinkpol-api/api.sock"
-}
-
-// APISocket is the local API's socket: THINKPOL_API_SOCKET if set (empty
-// for none), else DefaultAPISocket.
-func APISocket() string {
-	if p, ok := os.LookupEnv("THINKPOL_API_SOCKET"); ok {
-		return p
-	}
-	return DefaultAPISocket()
 }
 
 // MapPath is the map file's path.

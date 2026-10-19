@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/devmap"
@@ -56,6 +57,39 @@ func TestUpReadsTheDevTooling(t *testing.T) {
 		if n.Mode() != mode {
 			t.Errorf("%s runs in %s mode, want %s", node, n.Mode(), mode)
 		}
+	}
+}
+
+// The platform defaults for what the environment left unset: the state
+// directory and the API socket of this OS, validated with the rest; a
+// set-empty socket stays (it means no local API).
+func TestUpAppliesThePlatformDefaults(t *testing.T) {
+	for _, k := range []string{"THINKPOL_STATE_DIR", "THINKPOL_API_SOCKET"} {
+		if old, ok := os.LookupEnv(k); ok {
+			t.Cleanup(func() { _ = os.Setenv(k, old) })
+			_ = os.Unsetenv(k)
+		}
+	}
+	cfg, err := agent.LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	applyPlatformDefaults(&cfg)
+	want := agent.Config{StateDir: agent.DefaultStateDir, Mode: agent.ModeAuto, LogLevel: "info", MapPoll: 5 * time.Second,
+		Connect: true, APISocket: agent.DefaultAPISocket(), APIGroup: "thinkpol", DNS: true}
+	if cfg != want {
+		t.Fatalf("defaults %+v", cfg)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("THINKPOL_API_SOCKET", "")
+	if cfg, err = agent.LoadConfig(); err != nil {
+		t.Fatal(err)
+	}
+	applyPlatformDefaults(&cfg)
+	if cfg.APISocket != "" || cfg.StateDir != agent.DefaultStateDir {
+		t.Fatalf("a set-empty socket must stay: %+v", cfg)
 	}
 }
 

@@ -81,17 +81,15 @@ func TestLoadConfig(t *testing.T) {
 			_ = os.Unsetenv(k)
 		}
 	}
+	// The platform defaults (state directory, API socket) are the `up`
+	// command's, applied after the load.
 	cfg, err := LoadConfig()
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := Config{StateDir: DefaultStateDir, Mode: ModeAuto, LogLevel: "info", MapPoll: 5 * time.Second,
-		Connect: true, APISocket: DefaultAPISocket(), APIGroup: "thinkpol", DNS: true}
-	if cfg != want || cfg.MapPath() != filepath.Join(DefaultStateDir, MapFileName) {
+	want := Config{Mode: ModeAuto, LogLevel: "info", MapPoll: 5 * time.Second, Connect: true, APIGroup: "thinkpol", DNS: true}
+	if cfg != want {
 		t.Fatalf("defaults %+v", cfg)
-	}
-	if err := cfg.Validate(); err != nil {
-		t.Fatal(err)
 	}
 	t.Setenv("THINKPOL_MODE", "device")
 	t.Setenv("THINKPOL_MAP", "/x/m.bin")

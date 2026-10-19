@@ -7,9 +7,12 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"os"
 	"slices"
 	"strings"
 	"text/tabwriter"
+
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent"
 )
 
 // command is one subcommand. Its path is space-separated ("version",
@@ -73,6 +76,15 @@ func parseFlags(fs *flag.FlagSet, e env, args []string) error {
 		return errUsagePrinted
 	}
 	return nil
+}
+
+// apiSocket is the local API's socket: THINKPOL_API_SOCKET if set (empty
+// for none), else the platform's default.
+func apiSocket() string {
+	if p, ok := os.LookupEnv("THINKPOL_API_SOCKET"); ok {
+		return p
+	}
+	return agent.DefaultAPISocket()
 }
 
 func run(ctx context.Context, e env, args []string) int {
