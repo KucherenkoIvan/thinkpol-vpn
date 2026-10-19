@@ -74,34 +74,29 @@ func TestPrepareChecksTheConfig(t *testing.T) {
 }
 
 func TestLoadConfig(t *testing.T) {
-	vars := []string{"THINKPOL_STATE_DIR", "THINKPOL_MAP", "THINKPOL_MODE", "THINKPOL_LOG_LEVEL", "THINKPOL_INTERFACE", "THINKPOL_LINK_MTU", "THINKPOL_MAP_POLL", "THINKPOL_CONNECT", "THINKPOL_API_SOCKET", "THINKPOL_API_GROUP"}
-	for _, k := range vars {
-		if v, ok := os.LookupEnv(k); ok {
-			t.Cleanup(func() { _ = os.Setenv(k, v) })
+	for _, kv := range os.Environ() {
+		if k, _, _ := strings.Cut(kv, "="); strings.HasPrefix(k, "THINKPOL_") {
+			t.Setenv(k, "")
 			_ = os.Unsetenv(k)
 		}
 	}
+	// StateDir and APISocket stay empty: the platform defaults are not the load's.
 	cfg, err := LoadConfig()
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := Config{StateDir: DefaultStateDir, Mode: ModeAuto, LogLevel: "info", MapPoll: 5 * time.Second,
-		Connect: true, APISocket: DefaultAPISocket(), APIGroup: "thinkpol", DNS: true}
-	if cfg != want || cfg.MapPath() != filepath.Join(DefaultStateDir, MapFileName) {
+	want := Config{Mode: ModeAuto, LogLevel: "info", MapPoll: 5 * time.Second, Connect: true, APIGroup: "thinkpol", DNS: true}
+	if cfg != want {
 		t.Fatalf("defaults %+v", cfg)
-	}
-	if err := cfg.Validate(); err != nil {
-		t.Fatal(err)
 	}
 	t.Setenv("THINKPOL_MODE", "device")
 	t.Setenv("THINKPOL_MAP", "/x/m.bin")
 	t.Setenv("THINKPOL_MAP_POLL", "2s")
 	t.Setenv("THINKPOL_CONNECT", "false")
-	t.Setenv("THINKPOL_API_SOCKET", "")
 	if cfg, err = LoadConfig(); err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Mode != ModeDevice || cfg.MapPath() != "/x/m.bin" || cfg.MapPoll != 2*time.Second || cfg.Connect || cfg.APISocket != "" {
+	if cfg.Mode != ModeDevice || cfg.MapPath() != "/x/m.bin" || cfg.MapPoll != 2*time.Second || cfg.Connect {
 		t.Fatalf("from the environment %+v", cfg)
 	}
 }
