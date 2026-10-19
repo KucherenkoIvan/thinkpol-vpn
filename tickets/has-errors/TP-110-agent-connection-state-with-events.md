@@ -52,6 +52,15 @@ The device's connection lifecycle is one explicit state with transition methods 
 - [x] R1.9 Subscribers run on the node's goroutine (documented, must return quickly); a panicking subscriber is recovered and logged at error level, so it can't kill the node.
 - [x] R1.10 runner.connect: a refused connection.connect has no side effects: it returns after logRefused, without starting the data plane.
 
+- [ ] R2.1 The route-table event is re-armed when the enforcer recovers on its own: both edges (route table, DNS unprotected) come from what the report shows at publish(), told when the problem goes from clear to set; a test with a table whose Status recovers on its own and fails again hears two events.
+- [ ] R2.2 The connection doesn't read connecting after the node returned: ctx ending during the first start and the first start failing are startFailed(false) then publish; ctx ending in awaitSection is disconnect; each tested; method guards fixed rather than refusals counted.
+- [ ] R2.3 publish tells events in the order queued (no Sort/Compact), so a double tell shows as a bug; events.go loses "in the order below".
+- [ ] R2.4 awaitSection answers a refused request with the error (logRefused, then req.done <- err).
+- [ ] R2.5 ErrRouteTableNotEnforced: its doc says why its text is "dataplane: route table" (existing messages unchanged).
+- [ ] R2.6 TestTheStatusShowsWhatAnEventSays waits until all five events were heard before checking.
+- [ ] R2.7 A test counts refusals on a worker's own connection (dp.conn nil).
+- [ ] R2.8 Ticket Notes and Log qualify what changed if R2.2 changes the claim.
+
 ## Log
 - 2026-10-18 created in backlog (split from TP-083, owner decision)
 - 2026-10-19 backlog → in-progress — owner: agent-claude, branch: tp-110-agent-connection-state-with-events
@@ -73,3 +82,4 @@ The device's connection lifecycle is one explicit state with transition methods 
 - 2026-10-19 merged origin/rewrite: nothing new (TP-109 not merged yet)
 - 2026-10-19 make lint (exit 0) and make test (exit 0) at 1c9c182; make lab-test exit 0 at 1c9c182 (lab suite ok, 35 node packages PASS), 153 s with LAB_P=4 (no other lab running). Not verified here: the route-table and DNS events on a real macOS device
 - 2026-10-19 in-progress → review
+- 2026-10-19 review → has-errors — review round 2: R2.1–R2.8
