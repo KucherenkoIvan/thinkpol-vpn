@@ -107,6 +107,15 @@ const (
 	ctDirOriginal = 0
 )
 
+// The arp family numbers its hooks apart from inet's: NF_ARP_IN is 0 and
+// NF_ARP_OUT is 1, which is NF_INET_LOCAL_IN, so nftables.ChainHookInput
+// on an arp chain attaches it to output, where no packet has an input
+// interface. Neither google/nftables nor x/sys/unix names the arp hooks.
+var (
+	arpHookIn  = nftables.ChainHookRef(0) // NF_ARP_IN
+	arpHookOut = nftables.ChainHookRef(1) // NF_ARP_OUT
+)
+
 // slotZone is slot n's conntrack zone: nonzero, so what a space exchanges
 // with the root namespace itself never shares conntrack with the root's own
 // flows (zone 0).
@@ -143,6 +152,9 @@ type tableState struct {
 	// unbound is Options.unboundAccepts (there): the forged-ICMP tests'
 	// negative control.
 	unbound bool
+	// arpOnOutput is Options.arpOnOutput (there): the forged-ARP test's
+	// negative control.
+	arpOnOutput bool
 }
 
 // tableState snapshots what the tables need; the caller holds s.mu.
@@ -151,7 +163,7 @@ func (s *Supervisor) tableState() tableState {
 		uplink: s.uplink.Name, owned: s.forwarding.owned(), maxFlows: s.maxFlows,
 		egressAllowed: s.opts.EgressAllowed,
 		transit4:      s.opts.TransitIPv4, transit6: s.opts.TransitIPv6,
-		unbound: s.opts.unboundAccepts,
+		unbound: s.opts.unboundAccepts, arpOnOutput: s.opts.arpOnOutput,
 	}
 	for _, w := range s.workers {
 		grant, dials := w.egressRules()
@@ -201,7 +213,7 @@ func buildIsolation(st tableState) error {
 	if err != nil {
 		return fmt.Errorf("nftables: %w", err)
 	}
-	r := newRules(c)
+	r := newRules(c, st)
 	r.addAntiSpoof(st)
 	r.addZones(st)
 	r.addForward(st)
@@ -229,7 +241,7 @@ type rules struct {
 // newRules replaces the supervisor's tables atomically (add-then-delete-
 // then-add, whether or not they, or a dead supervisor's, were there) and
 // creates their chains.
-func newRules(c *nftables.Conn) *rules {
+func newRules(c *nftables.Conn, st tableState) *rules {
 	r := &rules{
 		c:    c,
 		inet: &nftables.Table{Family: nftables.TableFamilyINet, Name: TableName},
@@ -258,8 +270,13 @@ func newRules(c *nftables.Conn) *rules {
 	r.nat = base(r.inet, "postrouting", nftables.ChainTypeNAT, nftables.ChainHookPostrouting, *nftables.ChainPriorityNATSource)
 	r.guard = base(r.inet, "postrouting_guard", filter, nftables.ChainHookPostrouting, *nftables.ChainPriorityNATSource+10)
 	// The arp family has input and output hooks only (ARP is link-local, not
-	// forwarded), so a space's ARP is dropped on input.
-	r.arpIn = base(r.arp, "input", filter, nftables.ChainHookInput, *nftables.ChainPriorityFilter)
+	// forwarded), so a space's ARP is dropped on input: NF_ARP_IN, not the
+	// inet constant (see arpHookIn).
+	arpHook := arpHookIn
+	if st.arpOnOutput {
+		arpHook = arpHookOut
+	}
+	r.arpIn = base(r.arp, "input", filter, arpHook, *nftables.ChainPriorityFilter)
 	return r
 }
 

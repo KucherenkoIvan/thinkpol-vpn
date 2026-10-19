@@ -192,6 +192,10 @@ type Options struct {
 	// atomically.
 	unboundAccepts bool           //nolint:unused // test-only, read in the linux build
 	failIsolation  *rebuildFailer //nolint:unused // test-only, read in the linux build
+	// arpOnOutput, test-only too, is the forged-ARP test's negative
+	// control: the arp chain goes back on the ARP output hook, where it
+	// once sat by mistake and never matched a space's ARP.
+	arpOnOutput bool //nolint:unused // test-only, read in the linux build
 	// now is an injectable clock for the backoff schedule in tests.
 	now func() time.Time
 }
