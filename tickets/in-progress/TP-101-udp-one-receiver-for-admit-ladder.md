@@ -6,8 +6,8 @@ area: dataplane/transport
 repo: thinkpol-vpn
 size: M
 depends_on: []
-owner: ""
-branch: ""
+owner: "agent-glm"
+branch: "tp-101-udp-one-receiver-for-admit-ladder"
 ---
 
 ## Goal
@@ -33,3 +33,4 @@ Must land before TP-087 so `reality` does not add a third copy of the admit ladd
 
 ## Log
 - 2026-10-18 created in backlog (code-quality review)
+- 2026-10-19 backlog → in-progress — owner: agent-glm, branch: tp-101-udp-one-receiver-for-admit-ladder
