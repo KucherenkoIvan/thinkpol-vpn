@@ -2,9 +2,10 @@
 // world (a domestic ISP's, an exit's upstream): it answers every A and
 // AAAA question with fixed addresses, so an answer tells which resolver it
 // came from, and prints every question it gets with its source, so a test
-// can tell who asked what. With -server it is instead a client that asks
-// one A question of -query and prints the reply's rcode (with ` aa` when
-// authoritative). Lab use only: a real node never logs names.
+// can tell who asked what. With -server and -query it is instead a client
+// that asks the server one A question for the name and prints the reply's
+// rcode (with ` aa` when authoritative). Lab use only: a real node never
+// logs names.
 package main
 
 import (

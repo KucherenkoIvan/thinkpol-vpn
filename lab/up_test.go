@@ -102,19 +102,20 @@ func ping(t *testing.T, from *lab.Node, to netip.Addr) {
 	})
 }
 
-// noPing fails unless the ping got no reply (ping's exit code 1): any
-// other failure (an exec error, a timeout) is an unknown state and fails
-// with its reason — never proof the path is down.
+// noPing fails unless the ping got no reply: ping's own exit code 1 and
+// its " 0 received" summary (docker exec's exit code alone also says
+// docker failed). Any other failure (an exec error, a timeout) is an
+// unknown state and fails with its reason — never proof the path is down.
 func noPing(t *testing.T, from *lab.Node, to netip.Addr) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), execTimeout)
 	defer cancel()
 	res, err := from.Exec(ctx, "ping", "-c", "2", "-W", "1", to.String())
 	if err == nil {
 		t.Fatalf("%s answers %s", to, from.Name)
 	}
-	if res.ExitCode != 1 {
-		t.Fatalf("%s: ping %s says nothing about the path:\n%s\n%s", err, to, res.Stdout, res.Stderr)
+	if res.ExitCode != 1 || !strings.Contains(res.Stdout, " 0 received") {
+		t.Fatalf("ping %s from %s says nothing about the path: %v\n%s", to, from.Name, err, res.Stdout)
 	}
 }
 

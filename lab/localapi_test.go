@@ -208,7 +208,7 @@ func TestLocalAPI(t *testing.T) {
 			t.Fatalf("disconnect: %v\n%s", err, res.Stdout)
 		}
 		noPing(t, devA, s4)
-		if err := tunGone(devA, execTimeout); err != nil {
+		if err := wantTUNGone(devA, execTimeout); err != nil {
 			t.Fatal(err)
 		}
 		ping(t, devB, s4) // the others carry on
@@ -292,7 +292,9 @@ func TestDisconnectLeavesNothingBehind(t *testing.T) {
 			if rules4 != rulesBefore4 || rules6 != rulesBefore6 {
 				return fmt.Errorf("rules after disconnecting:\n%s\n%s\nwant\n%s\n%s", rules4, rules6, rulesBefore4, rulesBefore6)
 			}
-			if err := tunGone(devA, pollTimeout); err != nil {
+		}
+		if !connected {
+			if err := wantTUNGone(devA, pollTimeout); err != nil {
 				return err
 			}
 		}

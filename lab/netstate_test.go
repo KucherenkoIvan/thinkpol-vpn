@@ -21,8 +21,7 @@ const (
 	pollTimeout = 10 * time.Second
 )
 
-// execRead runs one command in the node and returns its stdout; the
-// error carries the failure (a poll retries it, a one-shot fails with it).
+// execRead runs one command in the node and returns its stdout.
 func execRead(n *lab.Node, timeout time.Duration, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -87,7 +86,7 @@ func ipv6Guard(n *lab.Node, timeout time.Duration) (guardState, error) {
 		if strings.Contains(res.Stderr, "No such file or directory") {
 			return guardAbsent, nil
 		}
-		return "", fmt.Errorf("nft list table inet thinkpol-guard: %v: %s", err, res.Stderr)
+		return "", fmt.Errorf("nft list table inet thinkpol-guard: %v", err)
 	}
 	if strings.Contains(res.Stdout, "chain") {
 		return guardPresent, nil
@@ -95,8 +94,7 @@ func ipv6Guard(n *lab.Node, timeout time.Duration) (guardState, error) {
 	return guardEmpty, nil
 }
 
-// wantGuard returns an error unless the guard is in the wanted state: a
-// one-shot check fails with it, a poll retries it.
+// wantGuard returns an error unless the guard is in the wanted state.
 func wantGuard(n *lab.Node, timeout time.Duration, want guardState) error {
 	got, err := ipv6Guard(n, timeout)
 	if err != nil {
@@ -108,9 +106,9 @@ func wantGuard(n *lab.Node, timeout time.Duration, want guardState) error {
 	return nil
 }
 
-// tunGone returns nil only when the TUN is gone: only "does not exist"
+// wantTUNGone returns nil only when the TUN is gone: only "does not exist"
 // from `ip link show` counts; any other failure is an unknown state.
-func tunGone(n *lab.Node, timeout time.Duration) error {
+func wantTUNGone(n *lab.Node, timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	res, err := n.Exec(ctx, "ip", "link", "show", "thinkpol0")
@@ -118,7 +116,7 @@ func tunGone(n *lab.Node, timeout time.Duration) error {
 		return fmt.Errorf("the TUN is still there")
 	}
 	if !strings.Contains(res.Stderr, "does not exist") {
-		return fmt.Errorf("ip link show thinkpol0: %v: %s", err, res.Stderr)
+		return fmt.Errorf("ip link show thinkpol0: %v", err)
 	}
 	return nil
 }

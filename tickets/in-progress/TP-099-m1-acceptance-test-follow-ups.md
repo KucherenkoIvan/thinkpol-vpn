@@ -141,3 +141,5 @@ Origin: TP-023 review round 3 (2026-10-17), split under the three-round cap.
 - 2026-10-19 in-progress → review (agent, TP-099 branch)
 - 2026-10-19 review → has-errors (agent, TP-099 branch; round 7: review findings R7.1–R7.8)
 - 2026-10-19 has-errors → in-progress (agent, TP-099 branch; round 7)
+- 2026-10-19 correction (round 7): the 16-group limit is the kernel's xucred; peercred_darwin.go only copies it
+- 2026-10-19 unverified: that the directory gate admits a member past xucred's 16 groups or added since login is a macOS assumption, not device-checked (TP-094)

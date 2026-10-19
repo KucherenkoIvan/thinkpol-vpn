@@ -140,7 +140,7 @@ func mustAsk(t *testing.T, n *lab.Node, resolver netip.Addr, name, want string) 
 		defer cancel()
 		res, err := n.Exec(ctx, "labdns", "-server", resolver.String()+":53", "-query", name)
 		if err != nil {
-			return fmt.Errorf("labdns -server %s -query %s: %v\n%s%s", resolver, name, err, res.Stdout, res.Stderr)
+			return fmt.Errorf("labdns -server %s -query %s: %v\n%s", resolver, name, err, res.Stdout)
 		}
 		if got := strings.TrimSpace(res.Stdout); got != want {
 			return fmt.Errorf("%s asked of %s answered %q, want %q", name, resolver, got, want)

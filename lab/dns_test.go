@@ -103,7 +103,9 @@ func TestDNSFollowsTheRules(t *testing.T) {
 		devB.MustExec(t, "sh", "-ec", "mkdir -p /run/dbus && dbus-daemon --system --fork")
 		devB.Start(t, "/lib/systemd/systemd-resolved")
 		lab.Eventually(t, 20*time.Second, func() error {
-			_, err := devB.Exec(context.Background(), "resolvectl", "dns", link, inetIP.String())
+			ctx, cancel := context.WithTimeout(context.Background(), pollTimeout)
+			defer cancel()
+			_, err := devB.Exec(ctx, "resolvectl", "dns", link, inetIP.String())
 			return err
 		})
 		mustResolve(t, devB, "before.direct.test", false, domesticA)
@@ -127,20 +129,20 @@ func TestDNSFollowsTheRules(t *testing.T) {
 		// A domain on the physical link takes its names past the TUN: the
 		// device says DNS isn't protected, and says so no longer once it
 		// goes.
-		health := func() (string, error) {
-			ctx, cancel := context.WithTimeout(context.Background(), pollTimeout)
+		health := func(timeout time.Duration) (string, error) {
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
 			defer cancel()
 			res, err := devB.Exec(ctx, "thinkpol", "status")
 			return res.Stdout, err
 		}
-		if out, err := health(); err != nil {
+		if out, err := health(execTimeout); err != nil {
 			t.Fatal(err)
 		} else if strings.Contains(out, "dns_not_protected") {
 			t.Fatalf("not protected before any other domain:\n%s", out)
 		}
 		devB.MustExec(t, "resolvectl", "domain", link, "~example.org")
 		lab.Eventually(t, 20*time.Second, func() error {
-			out, err := health()
+			out, err := health(pollTimeout)
 			if err != nil {
 				return err
 			}
@@ -151,7 +153,7 @@ func TestDNSFollowsTheRules(t *testing.T) {
 		})
 		devB.MustExec(t, "resolvectl", "domain", link, "")
 		lab.Eventually(t, 20*time.Second, func() error {
-			out, err := health()
+			out, err := health(pollTimeout)
 			if err != nil {
 				return err
 			}
@@ -164,7 +166,9 @@ func TestDNSFollowsTheRules(t *testing.T) {
 		if err := up.Stop(); err != nil {
 			t.Errorf("thinkpol up: %v\n%s", err, up.Output())
 		}
-		if out, err := devB.Exec(context.Background(), "resolvectl", "dns", "thinkpol0"); err == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), execTimeout)
+		defer cancel()
+		if out, err := devB.Exec(ctx, "resolvectl", "dns", "thinkpol0"); err == nil {
 			t.Errorf("resolved still has the TUN: %s", out.Stdout)
 		}
 		if conf := devB.MustExec(t, "cat", "/etc/resolv.conf"); !strings.HasPrefix(conf, "nameserver 127.0.0.53\n") {

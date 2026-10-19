@@ -25,12 +25,15 @@ On macOS, a member of the `thinkpol` group can do what DESIGN.md says members ma
 
 ## Acceptance
 - [ ] unit tests: a member by Directory Services is allowed; a non-member is refused; a lookup that fails or times out is refused
+- [ ] unit tests: a member whose group is past xucred's first 16 is allowed through Directory Services
 - [ ] `make lint` and `make test` pass
 - [ ] device: `thinkpol status` as a fresh group member, without logging out, works; `thinkpol logs` stays root's only
 
 ## Notes
 - **Device evidence (2026-10-16, TP-078 session A, check 05b).** The socket's directory was `drwxr-x--- root thinkpol` and the owner (a member, added by the test kit) could connect. The service answered GetStatus with `permission_denied`, and the CLI showed "only root may do that". The CLI's wording for a member who lacks the rights is wrong too: fix it here ("permission denied: …").
 - Whether the client's terminal had logged in again after the group was created isn't recorded. Either way the two gates disagreed.
+- **xucred holds at most 16 groups** (peercred_darwin.go): a member whose thinkpol group is past the first 16 is refused the same way; the Directory Services fallback covers it.
 
 ## Log
 - 2026-10-16 created in backlog (TP-078 device session A)
+- 2026-10-19 docs (TP-099): the 16-group xucred limit is the second cause, in Notes and Acceptance
