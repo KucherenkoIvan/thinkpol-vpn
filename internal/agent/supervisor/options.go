@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/egress"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
@@ -118,11 +119,15 @@ var MasqueradePorts = [2]uint16{32768, 60999}
 // sysctls' own lifetime.
 const DefaultRuntimeDir = "/run/thinkpol"
 
-// Options configures a supervisor. Zero values take the defaults.
+// Options configures a supervisor. Zero values take the defaults; NewRoot
+// has none.
 type Options struct {
 	// Command starts a worker; the supervisor appends "-space <id>".
 	// Default: the running binary's `worker` command (/proc/self/exe).
 	Command []string
+	// NewRoot builds the supervisor's network configurator, the root
+	// namespace's owner. Required.
+	NewRoot func() (netcfg.Configurator, error)
 	// Env is the workers' whole environment (default: empty).
 	Env []string
 	// TransitIPv4 and TransitIPv6 are carved into one /30 and one /64 per
@@ -142,18 +147,16 @@ type Options struct {
 	// worker output never reaches a disk.
 	OutputBytes int
 	// Output, if set, gives a writer per space that gets its worker's
-	// output too, besides the ring (the node agent's own log stream,
-	// never a file); nil for a space whose output stays in its ring. The
-	// output is the space's: the writer must neutralize control bytes. A
-	// slow writer slows that worker's logging.
+	// output too, besides the ring; nil for a space whose output stays in
+	// its ring. Never a file. The output is the space's: the writer must
+	// neutralize control bytes. A slow writer slows that worker's logging.
 	Output func(space netmap.SpaceID) io.Writer
 	// MemoryMax and PidsMax cap a worker's cgroup (memory.max, pids.max);
 	// zero leaves that limit unset. Enforced where cgroup v2 is available,
 	// otherwise approximated by the worker's own rlimits.
 	MemoryMax int64
 	PidsMax   int64
-	// Log gets the supervisor's own events (default: discarded). The node
-	// agent points it at an in-memory ring.
+	// Log gets the supervisor's own events (default: discarded).
 	Log *slog.Logger
 	// Transports are the transports the shared listeners may use
 	// (SetListeners).

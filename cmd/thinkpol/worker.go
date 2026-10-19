@@ -44,5 +44,5 @@ func runWorker(ctx context.Context, e env, args []string) error {
 		return err
 	}
 	log := slog.New(slog.NewTextHandler(e.stderr, &slog.HandlerOptions{Level: level}))
-	return worker.Run(ctx, id, agent.ServeSpace(log))
+	return worker.Run(ctx, id, agent.ServeSpace(log, platform().Host))
 }

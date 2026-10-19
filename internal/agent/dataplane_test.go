@@ -62,17 +62,33 @@ func newRunningNode() *runningNode {
 	return n
 }
 
+// virtualTUN is the Host's NewTUN on virtual TUNs: a fresh one each
+// start, the stack answering pings and collecting replies. Receiving
+// from fail makes the start fail.
+func (n *runningNode) virtualTUN(fail <-chan struct{}) func(string, int) (wgtun.Device, error) {
+	return func(string, int) (wgtun.Device, error) {
+		select {
+		case <-fail:
+			return nil, errors.New("no TUN today")
+		default:
+		}
+		ch := tuntest.NewChannelTUN()
+		n.ch.Store(ch)
+		n.tuns.Add(1)
+		go n.stack(ch)
+		return ch.TUN(), nil
+	}
+}
+
 func (n *runningNode) dataPlane(reg *transport.Registry, keys NodeKeys, m *netmap.Map) DataPlane {
+	h := testHost()
+	h.NewConfigurator = func(netcfg.Owner) (netcfg.Configurator, error) { return n.ifc, nil }
+	h.NewTUN = n.virtualTUN(nil)
+	h.Transports = func(bool) (*transport.Registry, error) { return reg, nil }
 	return DataPlane{
 		Keys: keys, Map: m, Maps: n.maps, Registry: reg, Inbound: DirectInbound(reg),
-		Log: slog.New(slog.NewTextHandler(n.log, &slog.HandlerOptions{Level: slog.LevelDebug})),
-		newTUN: func(string) (wgtun.Device, netcfg.Configurator, error) {
-			ch := tuntest.NewChannelTUN()
-			n.ch.Store(ch)
-			n.tuns.Add(1)
-			go n.stack(ch)
-			return ch.TUN(), n.ifc, nil
-		},
+		Log:        slog.New(slog.NewTextHandler(n.log, &slog.HandlerOptions{Level: slog.LevelDebug})),
+		Host:       h,
 		path:       fastPaths,
 		retryAfter: testRetry,
 	}
@@ -420,12 +436,13 @@ func TestDataPlaneRefusesAMapWithoutTheNode(t *testing.T) {
 	_, reg := memoryRegistry(t)
 	stranger := NodeKeys{ID: netmap.NodeID{9}, Map: netmap.GenerateNodeKey(), WireGuard: netmap.GenerateWireGuardKey()}
 	created := false
+	h := testHost()
+	h.NewTUN = func(string, int) (wgtun.Device, error) {
+		created = true
+		return tuntest.NewChannelTUN().TUN(), nil
+	}
 	err := RunDataPlane(context.Background(), DataPlane{
-		Keys: stranger, Map: s.verified(t, 1), Registry: reg, Inbound: DirectInbound(reg),
-		newTUN: func(string) (wgtun.Device, netcfg.Configurator, error) {
-			created = true
-			return tuntest.NewChannelTUN().TUN(), nil, nil
-		},
+		Keys: stranger, Map: s.verified(t, 1), Registry: reg, Inbound: DirectInbound(reg), Host: h,
 	})
 	if err == nil || !strings.Contains(err.Error(), "no section for this node's key") {
 		t.Fatalf("got %v", err)
@@ -463,9 +480,9 @@ func TestAFailedStartClearsACrashedRunsRouteTable(t *testing.T) {
 	dp := n.dataPlane(reg, s.a, s.verified(t, 1))
 	dp.RouteTable = true
 	var cleared atomic.Int32
-	dp.clearNetwork = func() error { cleared.Add(1); return nil }
-	dp.newTUN = func(string) (wgtun.Device, netcfg.Configurator, error) { return nil, nil, errors.New("no TUN today") }
-	dp.newRoutes = func(*slog.Logger, routetable.Guard) (dataplane.RouteTable, error) { panic("not reached") }
+	dp.Host.ClearConfig = func(netcfg.Owner) error { cleared.Add(1); return nil }
+	dp.Host.NewTUN = func(string, int) (wgtun.Device, error) { return nil, errors.New("no TUN today") }
+	dp.Host.NewRouteTable = func(*slog.Logger, routetable.Guard) (dataplane.RouteTable, error) { panic("not reached") }
 	if err := RunDataPlane(n.ctx, dp); err == nil {
 		t.Fatal("RunDataPlane started without a TUN")
 	}

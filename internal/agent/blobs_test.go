@@ -277,7 +277,7 @@ func TestServerSeedsItsWorker(t *testing.T) {
 	writeFile(t, filepath.Join(dir, BlobDir, blobFileName(ref.SHA256)), ru, 0o600)
 
 	sup := &fakeSupervisor{}
-	r := runServerSpacesIn(t, s, sup, dir, nil)
+	runServerSpacesIn(t, s, sup, dir, nil)
 	eventually(t, func() bool { _, _, n := sup.last(); return n >= 1 })
 	sp, _, _ := sup.last()
 	if sp[0].Seeds == nil {
@@ -296,12 +296,8 @@ func TestServerSeedsItsWorker(t *testing.T) {
 	var ov loopbackOverlay
 	w := newRunningNode()
 	base := w.dataPlane(reg, NodeKeys{}, nil)
-	base.newBlobs = func(o blobs.Options) *blobs.Service {
-		fast := fastBlobs
-		fast.MaxHeld = o.Limits.MaxHeld // the worker's own bound survives
-		o.Limits = fast
-		return blobs.NewOnNet(o, blobs.Net{Listen: ov.listen, Dial: ov.dial})
-	}
+	base.blobOptions = blobs.Options{Limits: fastBlobs}
+	base.Host.BlobNet = blobs.Net{Listen: ov.listen, Dial: ov.dial}
 	sess := newFakeSession(s.id)
 	sess.Seeds = worker.NewSeeds()
 	sess.Seeds.Add(ru)
@@ -322,7 +318,6 @@ func TestServerSeedsItsWorker(t *testing.T) {
 	b.run(t, dpB)
 	eventually(t, func() bool { _, ok := dpB.Blobs.Get(ref.SHA256); return ok })
 	w.waitLog(t, `msg="blob loaded"`)
-	_ = r
 }
 
 // Map v1 named ru = A, which the device stored; v2 names ru = B. Restarted
@@ -368,14 +363,11 @@ func TestADisconnectedDeviceKeepsItsLists(t *testing.T) {
 	data, ref := s.withList(t, "ru", "192.0.2.0/24")
 	_, reg := memoryRegistry(t)
 	startNode(t, reg, s.a, s.verified(t, 1))
-	b := startDevice(t, s, reg, true, func(c *Config, _ *DataPlane) {
-		if c == nil {
-			return
-		}
+	b := startDevice(t, s, reg, true, deviceOpt{prepare: func(c *Config, _ *Platform) {
 		if err := (diskBlobs{dir: c.StateDir, log: slog.New(slog.DiscardHandler)}).Save(ref, data); err != nil {
 			t.Fatal(err)
 		}
-	})
+	}})
 	stored := filepath.Join(b.node.cfg.StateDir, BlobDir, blobFileName(ref.SHA256))
 	b.connection(t, Connected)
 	eventually(t, func() bool { return b.node.Status().DataPlane != nil })

@@ -29,6 +29,7 @@ A lab poll retries a failed read and fails only at its deadline; a one-shot chec
 ## Notes
 - Origin: TP-099's round-6 correctness review (2026-10-19). TP-099 fixed the same pattern in the DNS and disconnect tests; these are outside its scope.
 - Also seen flaking (2026-10-19, TP-101's run, passed on rerun and on rewrite): `internal/dataplane/blobs` `TestABlobInTheStoreNeedsNoPeer`. Look at its timing assumptions while here.
+- Also seen flaking (2026-10-19, TP-075's `make lab-test`, passed alone and on the full rerun): the transport conformance's `ShapingRefused` (`transporttest`) behind the supervisor's shared listeners (`internal/agent/supervisor`, shared_test.go), a timing failure. Look at its timing assumptions while here.
 
 ## Review findings
 - [ ] R1.1 (regression) lab/blobs_test.go `reaches` is hard-wired to pollTimeout, so the one-shot "must not reach" checks pass when the bound kills the exec: give it a timeout parameter (pollTimeout in the poll, execTimeout one-shot), and count only nc's exit status 1 as unreachable; any other failure fails the check (as noPing in lab/up_test.go)
@@ -53,3 +54,4 @@ A lab poll retries a failed read and fails only at its deadline; a one-shot chec
 - 2026-10-19 in-progress → review
 - 2026-10-19 review → has-errors — round 1 findings R1.1-R1.9
 - 2026-10-19 has-errors → in-progress — owner: agent-claude, branch: tp-113-lab-polls-that-abort
+- 2026-10-19 notes: a flaky transporttest ShapingRefused run behind the supervisor (TP-075)

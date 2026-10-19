@@ -27,8 +27,8 @@ func (r *runner) newResolver() *dns.Server {
 	// Forward is set only in a server's worker (serveSpace), never on a
 	// device: it is what "inside a worker" means here.
 	if len(upstreams) == 0 && !r.dp.Forward {
-		own := []netip.Addr{r.section.Node.IPv4, r.section.Node.IPv6}
-		host, err := r.dp.systemUpstreams(own)
+		own := []netip.Addr{r.follow.section.Node.IPv4, r.follow.section.Node.IPv6}
+		host, err := r.dp.Host.SystemUpstreams(own)
 		r.upstreamsUnknown.Store(err != nil)
 		if err != nil {
 			r.dp.Log.Warn("DNS: the system's resolvers are unknown; direct names won't resolve until a read of them works", "err", err)
@@ -47,7 +47,7 @@ func (r *runner) newResolver() *dns.Server {
 	}
 	r.upstreams = slices.Clone(upstreams)
 	o := dns.Options{Upstreams: upstreams, Port: r.dp.dnsPort, Log: r.dp.Log}
-	if r.section.Node.Kind == netmap.NodeDevice {
+	if r.follow.section.Node.Kind == netmap.NodeDevice {
 		o.TunnelControl = dns.BindToInterface(r.tun)
 	}
 	if r.dp.RouteTable {
@@ -107,18 +107,18 @@ func (g *dnsGuard) problem() error {
 // Unless upstreams are configured, the resolver follows the OS's own
 // resolvers when another program changes them.
 func (r *runner) systemConfig() (dns.SystemConfig, bool) {
-	if r.resolver == nil || r.section.Node.Kind != netmap.NodeDevice {
+	if r.resolver == nil || r.follow.section.Node.Kind != netmap.NodeDevice {
 		return dns.SystemConfig{}, false
 	}
-	c := dns.SystemConfig{Interface: r.tun, Servers: []netip.Addr{r.section.Node.IPv4}, Log: r.dp.Log}
+	c := dns.SystemConfig{Interface: r.tun, Servers: []netip.Addr{r.follow.section.Node.IPv4}, Log: r.dp.Log}
 	if r.engine.Status().IPv6 {
-		c.Servers = append(c.Servers, r.section.Node.IPv6)
+		c.Servers = append(c.Servers, r.follow.section.Node.IPv6)
 	}
-	if netmap.CheckLabel(r.section.SpaceName) == nil {
-		c.Search = []string{r.section.SpaceName + ".internal"}
+	if netmap.CheckLabel(r.follow.section.SpaceName) == nil {
+		c.Search = []string{r.follow.section.SpaceName + ".internal"}
 	}
 	if len(r.dp.DNSUpstreams) == 0 {
-		srv, own, log := r.resolver, []netip.Addr{r.section.Node.IPv4, r.section.Node.IPv6}, r.dp.Log
+		srv, own, log := r.resolver, []netip.Addr{r.follow.section.Node.IPv4, r.follow.section.Node.IPv6}, r.dp.Log
 		engine, routes, unknown := r.engine, r.dp.RouteTable, &r.upstreamsUnknown
 		c.UpstreamsUnknown = unknown.Load()
 		c.Upstreams = func(host []netip.Addr) {
@@ -158,7 +158,7 @@ func (r *runner) pointSystem() {
 	if sys != nil {
 		err = sys.Update(want)
 	} else {
-		sys, err = r.dp.systemDNS(want)
+		sys, err = r.dp.Host.SetSystemDNS(want)
 	}
 	if err != nil {
 		r.guard.set(true, sys, fmt.Errorf("%w: %v", dns.ErrUnprotected, err))

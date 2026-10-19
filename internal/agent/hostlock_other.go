@@ -2,6 +2,6 @@
 
 package agent
 
-// hostLock takes nothing here: no data plane on this OS yet (supported
+// HostLock takes nothing here: no data plane on this OS yet (supported
 // refuses before it is called).
-func hostLock() (func(), error) { return func() {}, nil }
+func HostLock() (func(), error) { return func() {}, nil }

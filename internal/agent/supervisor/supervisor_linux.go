@@ -71,7 +71,10 @@ func New(opts Options) (*Supervisor, error) {
 		// version check confirms.
 		opts.Command = []string{selfExe, "worker"}
 	}
-	root, err := netcfg.New(netcfg.OwnerSupervisor)
+	if opts.NewRoot == nil {
+		return nil, errors.New("supervisor: no NewRoot")
+	}
+	root, err := opts.NewRoot()
 	if err != nil {
 		return nil, fmt.Errorf("supervisor: %w", err)
 	}

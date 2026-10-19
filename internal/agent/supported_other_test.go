@@ -18,7 +18,7 @@ func TestRunRefusesAnUnsupportedHost(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, k := range []NodeKeys{s.a, s.b} {
-		n, err := Prepare(testConfig(s.stateDir(t, k, 1)), logs)
+		n, err := Prepare(testConfig(s.stateDir(t, k, 1)), logs, testPlatform())
 		if err != nil {
 			t.Fatal(err)
 		}
