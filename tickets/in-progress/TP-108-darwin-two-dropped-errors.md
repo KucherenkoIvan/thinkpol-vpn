@@ -71,3 +71,4 @@ A corrupt record of another owner (the overlay's, say) keeps failing this node's
 - 2026-10-19 in-progress → review — all round 3 findings fixed and checked (045c5f2), make lint/test/lab-test pass, the full lab run finished 2026-10-19 (`gotest: ok, 34 packages`); still not verified on real macOS hardware, only the fakes
 - 2026-10-19 R3.5 place picked: `Problem()` reports `dns.ErrUpstreamsStale` because the OS still resolves through the node (no `ErrUnprotected`), and the status had to follow — any non-nil `Problem()` read as `Status.DNSUnprotected` and failed `Connect`, which would have called staleness a leak; `internal/agent` (status.go, resolver.go, dataplane.go) is touched for that honesty only
 - 2026-10-19 review → has-errors — round 4 findings R4.1–R4.10
+- 2026-10-19 has-errors → in-progress — round 4 fixes start
