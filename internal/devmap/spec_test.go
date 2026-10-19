@@ -59,6 +59,8 @@ func TestSpecErrorsNameTheirLocation(t *testing.T) {
 		{"list without a name", "lists:\n  - file: ru.geoip\n" + nodes, []string{"spec.yaml:2:5: list without a name"}},
 		{"list without a file", "lists:\n  - name: ru\n" + nodes, []string{"spec.yaml:2:5: list ru: file is missing"}},
 		{"bad list name", "lists:\n  - {name: RU_1, file: x}\n" + nodes, []string{`spec.yaml:2:12: list name "RU_1": use 1-32`}},
+		// The list check is netmap.CheckListName since lists.CheckName
+		// (which only swapped the message) was dropped.
 		{"list twice", "lists:\n  - {name: ru, file: a}\n  - {name: ru, file: b}\n" + nodes, []string{`spec.yaml:3:12: list "ru" is declared twice`}},
 		{"list field", "lists:\n  - {name: ru, file: a, kind: geoip}\n" + nodes, []string{`unknown field "kind"`}},
 		{"node names an unknown list", "nodes:\n  - name: d\n    kind: device\n    lists: [ru]\n", []string{`spec.yaml:4:13: d: unknown list "ru"`}},
