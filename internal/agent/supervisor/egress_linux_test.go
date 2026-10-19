@@ -476,9 +476,9 @@ func TestForwardingTurnedOnForwardsOnlyTheSpaces(t *testing.T) {
 // go nowhere: conntrack takes them as related to that flow, but the
 // accepts are bound to the flows a slot started. A "port unreachable" or
 // "fragmentation needed" quoting a root socket's flow never reaches it (no
-// ECONNREFUSED, no lowered path MTU), and one sent on quoting another
-// space's flow never leaves. The negative control takes any established
-// or related flow, as before the binding, and lets them through.
+// socket error, no lowered path MTU), and one quoting another space's flow
+// never leaves the node. The negative control accepts any established or
+// related flow and lets them through.
 func TestForgedICMPErrorsAreRefused(t *testing.T) {
 	needsLab(t)
 	for _, bound := range []bool{true, false} {
@@ -535,13 +535,13 @@ func TestForgedICMPErrorsAreRefused(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			// refused reports whether a socket error reached the root's
-			// socket. The forger sends a port unreachable and a
+			// errorReached reports whether a socket error reached the
+			// root's socket. The forger sends a port unreachable and a
 			// fragmentation needed on the same flow, and the second
 			// usually overwrites the first in sk_err (EMSGSIZE over
-			// ECONNREFUSED), so any error either surfaces as is a leak;
-			// a read timeout is not one.
-			refused := func() bool {
+			// ECONNREFUSED), so whichever error surfaces counts; a read
+			// timeout is not one.
+			errorReached := func() bool {
 				if _, err := root.Write([]byte("root")); err != nil {
 					return true
 				}
@@ -553,23 +553,25 @@ func TestForgedICMPErrorsAreRefused(t *testing.T) {
 				var ne net.Error
 				return !errors.As(err, &ne) || !ne.Timeout()
 			}
-			// rootFlowTracked reports whether conntrack still has the
-			// root's flow, matched as the original direction's tuple:
-			// a forged error is refused only while the flow is tracked.
+			// rootFlowTracked reports whether conntrack has the root's
+			// flow, matched as its original direction's tuple. Only
+			// while it does are the forged errors related to it, so
+			// only then do the drops test the binding.
 			rootFlowTracked := func() bool {
 				out, err := os.ReadFile("/proc/thread-self/net/nf_conntrack")
 				if err != nil {
-					t.Fatalf("conntrack entries: %v", err)
+					t.Fatalf("conntrack entries: %v: the kernel needs CONFIG_NF_CONNTRACK_PROCFS", err)
 				}
 				// The trailing space keeps 4000 from matching 40001.
 				tuple := fmt.Sprintf("src=%s dst=%s sport=%d dport=%d ", upRoot4, internet4, rootPort, probePort)
 				return slices.ContainsFunc(strings.Split(string(out), "\n"), func(l string) bool {
-					return strings.Contains(l, "udp") && strings.Contains(l, tuple)
+					f := strings.Fields(l)
+					return len(f) > 2 && f[2] == "udp" && strings.Contains(l, tuple)
 				})
 			}
 			if !bound {
 				eventually(t, 15*time.Second, "the forged errors get through without the binding", func() error {
-					if !refused() {
+					if !errorReached() {
 						return fmt.Errorf("no socket error, sent on %d", icmps.count())
 					}
 					return nil
@@ -582,7 +584,7 @@ func TestForgedICMPErrorsAreRefused(t *testing.T) {
 				t.Fatal("the root's conntrack flow expired before the forged errors were counted: the test proves nothing")
 			}
 			for range 5 {
-				if refused() {
+				if errorReached() {
 					t.Fatal("a forged ICMP error reached the root's socket")
 				}
 			}
