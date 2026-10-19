@@ -7,8 +7,7 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
 
-// Resolver is the node's resolver (on a node, dns's Server): Update
-// replaces what it serves.
+// Resolver is the node's resolver: Update replaces what it serves.
 type Resolver interface {
 	Update(c ResolverConfig)
 }

@@ -11,11 +11,10 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/lists"
 )
 
-// RouteTable enforces the rules in the OS routing table (route-table mode;
-// on a node, routetable's Enforcer): everything but the direct
-// destinations and the links' endpoints into the TUN. Enforce puts w in
-// place, all or nothing, and keeps trying the last w it was given while
-// that fails; Close removes everything.
+// RouteTable enforces the rules in the OS routing table (route-table
+// mode): everything but the direct destinations and the links' endpoints
+// into the TUN. Enforce puts w in place, all or nothing, and keeps trying
+// the last w it was given while that fails; Close removes everything.
 type RouteTable interface {
 	Enforce(ctx context.Context, w RouteTableWant) error
 	Status() RouteTableStatus

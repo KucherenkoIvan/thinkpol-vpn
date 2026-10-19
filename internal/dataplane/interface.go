@@ -9,8 +9,7 @@ import (
 )
 
 // InterfaceConfigurator sets the overlay interface's addresses, MTU and
-// link state (on a node, netcfg's configurator of the overlay's owner).
-// Apply converges the interface to c, all or nothing; re-applying the same
+// link state. Apply converges the interface to c, all or nothing; re-applying the same
 // configuration changes nothing. Close removes the addresses it added and
 // restores what it changed. Safe for concurrent use.
 type InterfaceConfigurator interface {

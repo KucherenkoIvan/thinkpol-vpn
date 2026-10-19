@@ -33,7 +33,7 @@ var ErrEngineClosed = errors.New("dataplane: engine closed")
 const (
 	StepSection   = "section"   // the section can't run here: another node's (nothing changed), no IPv4 address, MTU
 	StepRemovals  = "removals"  // taking away peers the section no longer allows
-	StepInterface = "interface" // the TUN's addresses and MTU (netcfg)
+	StepInterface = "interface" // the TUN's addresses and MTU (the InterfaceConfigurator)
 	StepDevices   = "devices"   // WireGuard devices and their Binds' peers
 	StepRouter    = "router"    // the router's table
 	// StepRouteTable is the OS routing table (route-table mode).
