@@ -80,20 +80,6 @@ type ListenerInfo struct {
 type SharedCounters = ipc.SharedCounters
 
 const (
-	// replyWindow is how long a remote end a link's live datagram came from
-	// stays a destination for the worker's replies. It is refreshed by
-	// every authenticated, fresh, non-replayed datagram, so an active link
-	// never loses it: WireGuard sends at least every 2 minutes on a live
-	// session (rekeys, and keepalives when configured), and the path
-	// layer probes each link every 2 s. NAT mappings expire on a similar
-	// scale, so an address quiet for longer is likely gone anyway.
-	replyWindow = 2 * time.Minute
-	// replyPeersPerLink bounds the remote ends one link keeps; a new one
-	// evicts that link's oldest, never another link's.
-	replyPeersPerLink = 8
-	// replySweep is how often, at most, a space's expired remote ends are
-	// swept: expiry is exact to within this.
-	replySweep = 10 * time.Second
 	// streamRouteTimeout bounds how long a new connection may take to show
 	// the router who it is.
 	streamRouteTimeout = 10 * time.Second
@@ -152,46 +138,6 @@ func newShared(reg *transport.Registry, fair FairShare, log *slog.Logger, now fu
 	s.routes.Store(&map[transport.SpaceID]*route{})
 	s.byID.Store(&map[uint32]*publicListener{})
 	return s
-}
-
-// route is one space's way to its current worker, across the worker's
-// restarts, and the remote ends the worker may answer.
-type route struct {
-	space    transport.SpaceID
-	end      atomic.Pointer[workerSockets] // nil while no worker runs
-	counters counters
-
-	mu      sync.Mutex
-	links   map[transport.NodeID]*linkRemotes
-	remotes map[replyKey]*remote
-	swept   time.Time
-}
-
-// replyKey is a remote end as the worker names it: the listener, and the
-// address unmapped and without a zone (the IPC header carries neither).
-type replyKey struct {
-	listener uint32
-	addr     netip.AddrPort
-}
-
-func keyOf(listener uint32, a netip.AddrPort) replyKey {
-	return replyKey{listener, netip.AddrPortFrom(a.Addr().Unmap().WithZone(""), a.Port())}
-}
-
-// remote is a remote end some of the space's links came from.
-type remote struct {
-	holders int            // links holding it
-	at      time.Time      // its latest refresh by any of them
-	to      netip.AddrPort // as received, zone included: where replies go
-}
-
-// linkRemotes are one link's latest remote ends.
-type linkRemotes struct {
-	n       int
-	entries [replyPeersPerLink]struct {
-		key replyKey
-		at  time.Time
-	}
 }
 
 type counters struct {
@@ -539,128 +485,6 @@ func (s *shared) forward(r *route, listener uint32, node transport.NodeID, from 
 	r.remember(node, key, from, s.now())
 	if s.fair != nil {
 		s.fair.Charge(r.space, len(d))
-	}
-}
-
-// remember makes the remote end of a live datagram of link node a
-// destination for the space's replies for replyWindow. The link keeps its
-// latest replyPeersPerLink remote ends; a new one evicts the link's oldest.
-func (r *route) remember(node transport.NodeID, key replyKey, to netip.AddrPort, now time.Time) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.sweep(now)
-	lr := r.links[node]
-	if lr == nil {
-		lr = &linkRemotes{}
-		r.links[node] = lr
-	}
-	if rm := r.remotes[key]; rm != nil {
-		for i := range lr.n {
-			if lr.entries[i].key == key {
-				lr.entries[i].at = now
-				rm.at, rm.to = now, to
-				return
-			}
-		}
-	}
-	if lr.n == replyPeersPerLink {
-		oldest := 0
-		for i := 1; i < lr.n; i++ {
-			if lr.entries[i].at.Before(lr.entries[oldest].at) {
-				oldest = i
-			}
-		}
-		r.release(lr.entries[oldest].key)
-		lr.n--
-		lr.entries[oldest] = lr.entries[lr.n]
-		r.counters.replyPeersEvicted.Add(1)
-	}
-	lr.entries[lr.n].key, lr.entries[lr.n].at = key, now
-	lr.n++
-	rm := r.remotes[key]
-	if rm == nil {
-		rm = &remote{}
-		r.remotes[key] = rm
-	}
-	rm.holders++
-	rm.at, rm.to = now, to
-}
-
-// release drops one link's hold on a remote end; r.mu held.
-func (r *route) release(key replyKey) {
-	if rm := r.remotes[key]; rm != nil {
-		if rm.holders--; rm.holders <= 0 {
-			delete(r.remotes, key)
-		}
-	}
-}
-
-// sweep drops expired remote ends, at most once per replySweep; r.mu held.
-func (r *route) sweep(now time.Time) {
-	if now.Sub(r.swept) < replySweep {
-		return
-	}
-	r.swept = now
-	for node, lr := range r.links {
-		for i := 0; i < lr.n; {
-			if now.Sub(lr.entries[i].at) <= replyWindow {
-				i++
-				continue
-			}
-			r.release(lr.entries[i].key)
-			lr.n--
-			lr.entries[i] = lr.entries[lr.n]
-		}
-		if lr.n == 0 {
-			delete(r.links, node)
-		}
-	}
-}
-
-// replyTo is where a reply to key goes, if the worker may send one.
-func (r *route) replyTo(key replyKey, now time.Time) (netip.AddrPort, bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	rm := r.remotes[key]
-	if rm == nil || now.Sub(rm.at) > replyWindow {
-		return netip.AddrPort{}, false
-	}
-	return rm.to, true
-}
-
-// reply sends a datagram a space's worker wrote out through the public
-// socket it names. A worker may only answer: the destination must be a
-// remote end one of its own links' live (authenticated, fresh, not
-// replayed) datagrams came from, through that listener, within
-// replyWindow. So a worker can't use the node's public address to reach
-// anyone else, whatever egress its space has.
-func (s *shared) reply(space transport.SpaceID, h ipc.DatagramHeader, d []byte) {
-	r := (*s.routes.Load())[space]
-	if r == nil {
-		return
-	}
-	pl := (*s.byID.Load())[h.Listener]
-	if pl == nil || pl.udp == nil {
-		r.counters.repliesNoListener.Add(1)
-		return
-	}
-	to, ok := r.replyTo(keyOf(h.Listener, h.Remote), s.now())
-	if !ok {
-		r.counters.repliesNotAllowed.Add(1)
-		return
-	}
-	if s.fair != nil && !s.fair.Allow(space, len(d)) {
-		r.counters.repliesOverShare.Add(1)
-		return
-	}
-	if _, err := pl.udp.WriteToUDPAddrPort(d, to); err != nil {
-		r.counters.replyErrors.Add(1)
-		return
-	}
-	r.counters.replies.Add(1)
-	r.counters.replyBytes.Add(uint64(len(d)))
-	if s.fair != nil {
-		s.fair.Charge(space, len(d))
 	}
 }
 
