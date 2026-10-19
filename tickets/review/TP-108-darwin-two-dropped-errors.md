@@ -23,8 +23,8 @@ Every place in `internal/dataplane/netcfg/netcfg_darwin.go` and `internal/datapl
 - Broader netcfg ledger consolidation (TP-102).
 
 ## Acceptance
-- [x] fake-based unit tests for both failure paths — `TestACorruptRecordOfAnotherOwnerFailsTheSurveyAndDefaultRoute` (netcfg_darwin_test.go) writes a corrupt record of another owner and expects `Survey`/`DefaultRoute` to fail; `TestAFailedReadOfAnotherResolverIsReported` and `TestAFailedListingOfOtherResolversIsReported` (system_darwin_test.go) inject get/keys failures into the fake store and expect `Update` to fail and `Problem()` to report `ErrUnprotected`
-- [x] `make lint`, `make test`, `make lab-test` pass — all three on commit bd66bf9; the lab run (`LAB_P=1`, shared Docker) finished 2026-10-19 with `gotest: ok, 34 packages`
+- [x] fake-based unit tests for both failure paths — `TestACorruptRecordOfAnotherOwnerFailsTheSurveyAndDefaultRoute` (netcfg_darwin_test.go) writes a corrupt record of another owner and expects `Survey`/`DefaultRoute` to fail; `TestAFailedReadOfAnotherResolverIsReported` and `TestAFailedListingOfOtherResolversIsReported` (system_darwin_test.go) inject get/keys failures into the fake store and expect `Update` to fail and `Problem()` to report `ErrUnprotected`. Round 2 adds `TestAnUnreadableResolverDirectoryIsReported` and `TestAFailedPrimaryReadKeepsTheUpstreamsOfflineClearsThem` (system_darwin_test.go), and the corrupt-record test asserts the error names the record
+- [x] `make lint`, `make test`, `make lab-test` pass — all three on commit bd66bf9 (round 1) and on 705605e (round 2); the round-2 lab run (`LAB_P=1`, `GOFLAGS=-p=4`, TP-105's lab sharing Docker) finished 2026-10-19 with `gotest: ok, 34 packages`
 
 ## Review findings
 - [x] R2.1 BLOCKER: `TestAFailedListingOfOtherResolversIsReported` never reaches `otherResolvers`: `keysErr` fails every `keys` call, so `targets()` fails first. Make the fake fail per pattern (`keysErrs map[string]error`), name the DNS-state pattern in production code (`serviceDNSPattern` next to `serviceStatePattern`) and use it in both; the test fails only that pattern and asserts the error message names the listing ("listing the network services' DNS states"), so it can't pass on another error. Prove it: with the new keys check reverted, the test must fail. — fake fails per pattern, both places use `serviceDNSPattern`; with the keys check reverted the test fails (Update nil error, Problem nil), verified 2026-10-19 before restoring the check.
@@ -50,3 +50,4 @@ Also noticed in round 2, not fixed here (wasn't in the findings): `primaryServer
 - 2026-10-19 in-progress → review — both fixes landed, fake-based tests added, make lint/test/lab-test pass (bd66bf9); not verified on real macOS hardware, only the fakes
 - 2026-10-19 review → has-errors — round 2 findings R2.1–R2.7; scope widened to the whole class
 - 2026-10-19 has-errors → in-progress — round 2 fixes start
+- 2026-10-19 in-progress → review — all round 2 findings fixed and checked (705605e), make lint/test/lab-test pass, the full lab run finished 2026-10-19 (`gotest: ok, 34 packages`); still not verified on real macOS hardware, only the fakes
