@@ -58,7 +58,7 @@ func (s *Supervisor) wire(w *worker, ns *os.File) (*wiring, error) {
 	// The root end takes no router advertisements from the space: it has
 	// permanent neighbours and its own routes, and with IPv6 forwarding on
 	// accept_ra 1 would be ignored anyway, but 2 would not.
-	if err := writeSysctl("net/ipv6/conf/"+w.link+"/accept_ra", "0"); err != nil {
+	if err := s.opts.sysctls.Write("net/ipv6/conf/"+w.link+"/accept_ra", "0"); err != nil {
 		return wd, err
 	}
 	for _, p := range w.transit.root {

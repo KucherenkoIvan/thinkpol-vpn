@@ -4,6 +4,10 @@ package supervisor
 
 var SetNetSysctls = setNetSysctls
 
-// SetUnboundAccepts turns the negative control of the forged-ICMP tests on
-// or off (unboundAccepts).
-func SetUnboundAccepts(on bool) { unboundAccepts = on }
+// WithUnboundAccepts turns on the negative control of the forged-ICMP tests
+// (Options.unboundAccepts): the accepts take any established or related
+// flow, whoever owns it. Test-only: production never sets it.
+func WithUnboundAccepts(opts Options) Options {
+	opts.unboundAccepts = true
+	return opts
+}

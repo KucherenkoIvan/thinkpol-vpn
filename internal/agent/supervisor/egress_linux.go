@@ -27,6 +27,46 @@ type spaceEgress struct {
 	family [2]bool
 }
 
+// spaceTable is the space's own table: the kernel connection in its
+// namespace, the table and its chains.
+type spaceTable struct {
+	c            *nftables.Conn
+	forward, nat *nftables.Chain
+}
+
+// newSpaceTable replaces the space's table atomically (add-then-delete-
+// then-add, whether or not it, or a dead worker's, was there) and creates
+// its chains.
+func newSpaceTable(c *nftables.Conn) *spaceTable {
+	table := &nftables.Table{Family: nftables.TableFamilyINet, Name: SpaceTableName}
+	c.AddTable(table)
+	c.DelTable(table)
+	c.AddTable(table)
+	policyDrop, policyAccept := nftables.ChainPolicyDrop, nftables.ChainPolicyAccept
+	return &spaceTable{
+		c: c,
+		forward: c.AddChain(&nftables.Chain{
+			Name: "forward", Table: table, Type: nftables.ChainTypeFilter,
+			Hooknum: nftables.ChainHookForward, Priority: nftables.ChainPriorityFilter, Policy: &policyDrop,
+		}),
+		nat: c.AddChain(&nftables.Chain{
+			Name: "postrouting", Table: table, Type: nftables.ChainTypeNAT,
+			Hooknum: nftables.ChainHookPostrouting, Priority: nftables.ChainPriorityNATSource, Policy: &policyAccept,
+		}),
+	}
+}
+
+// add adds one rule to a chain.
+func (st *spaceTable) add(chain *nftables.Chain, exprs ...expr.Any) {
+	st.c.AddRule(&nftables.Rule{Table: chain.Table, Chain: chain, Exprs: exprs})
+}
+
+// established is "<match>; ct state established,related; accept".
+func established(match []expr.Any) []expr.Any {
+	return append(append(match, ctState(expr.CtStateBitESTABLISHED|expr.CtStateBitRELATED)...),
+		accept()...)
+}
+
 // applySpaceTable replaces the space's own egress table in the namespace ns:
 //
 //	table inet thinkpol-space {
@@ -54,37 +94,21 @@ func applySpaceTable(ns *os.File, t transit, e spaceEgress) error {
 	if err != nil {
 		return fmt.Errorf("nftables: %w", err)
 	}
-	table := &nftables.Table{Family: nftables.TableFamilyINet, Name: SpaceTableName}
-	c.AddTable(table)
-	c.DelTable(table)
-	c.AddTable(table)
-	policyDrop, policyAccept := nftables.ChainPolicyDrop, nftables.ChainPolicyAccept
-	forward := c.AddChain(&nftables.Chain{
-		Name: "forward", Table: table, Type: nftables.ChainTypeFilter,
-		Hooknum: nftables.ChainHookForward, Priority: nftables.ChainPriorityFilter, Policy: &policyDrop,
-	})
-	nat := c.AddChain(&nftables.Chain{
-		Name: "postrouting", Table: table, Type: nftables.ChainTypeNAT,
-		Hooknum: nftables.ChainHookPostrouting, Priority: nftables.ChainPriorityNATSource, Policy: &policyAccept,
-	})
-	add := func(chain *nftables.Chain, exprs ...expr.Any) {
-		c.AddRule(&nftables.Rule{Table: table, Chain: chain, Exprs: exprs})
-	}
-
-	add(forward, established(nil)...)
+	st := newSpaceTable(c)
+	st.add(st.forward, established(nil)...)
 	if e.on {
 		for i, p := range t.space {
 			out := append(linkExact(expr.MetaKeyOIFNAME, SpaceInterface), family(p.Addr())...)
 			if e.family[i] {
-				add(forward, append(out, &expr.Verdict{Kind: expr.VerdictAccept})...)
+				st.add(st.forward, append(out, accept()...)...)
 			} else {
-				add(forward, append(out, &expr.Counter{},
+				st.add(st.forward, append(out, &expr.Counter{},
 					&expr.Reject{Type: unix.NFT_REJECT_ICMPX_UNREACH, Code: unix.NFT_REJECT_ICMPX_NO_ROUTE})...)
 			}
 		}
 	}
 	for _, p := range t.space {
-		add(nat, snat(p.Addr())...)
+		st.add(st.nat, snat(p.Addr())...)
 	}
 	if err := c.Flush(); err != nil {
 		return fmt.Errorf("nftables: the space's egress table: %w", err)
@@ -134,7 +158,7 @@ func flushFlows(t transit) error {
 func (f *rootForwarding) on() [2]bool {
 	var out [2]bool
 	for i, key := range forwardingKeys {
-		v, err := readSysctl(key)
+		v, err := f.sys.Read(key)
 		out[i] = err == nil && v == "1"
 	}
 	return out
