@@ -45,3 +45,4 @@ Safe behaviour chosen (per the ticket's goal, "fail closed"): a record that can'
 - 2026-10-19 backlog → in-progress — owner: agent-glm, branch: tp-108-darwin-two-dropped-errors
 - 2026-10-19 in-progress → review — both fixes landed, fake-based tests added, make lint/test/lab-test pass (bd66bf9); not verified on real macOS hardware, only the fakes
 - 2026-10-19 review → has-errors — round 2 findings R2.1–R2.7; scope widened to the whole class
+- 2026-10-19 has-errors → in-progress — round 2 fixes start
