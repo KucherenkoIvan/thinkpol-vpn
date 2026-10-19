@@ -54,3 +54,4 @@ the router. No existing test changed; `inbox_test.go` is new coverage.
 - 2026-10-19 backlog → in-progress — owner: agent-glm, branch: tp-101-udp-one-receiver-for-admit-ladder
 - 2026-10-19 in-progress → review — make lint, make test and a full make lab-test (lab plus every package in a lab node) pass at f3a021e; the conformance suite and both transports' tests pass unchanged, so nothing was left unverified
 - 2026-10-19 review → has-errors — review round 2: R2.1–R2.8 in ## Review findings
+- 2026-10-19 has-errors → in-progress — picking up R2.1–R2.8
