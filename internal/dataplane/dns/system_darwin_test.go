@@ -1,9 +1,11 @@
 package dns
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -21,16 +23,16 @@ type fakeStore struct {
 	kv      map[string]dict
 	sets    int
 	setsLog []string
-	// keysErr fails every keys call; getErrs fails get for its keys.
-	keysErr error
-	getErrs map[string]error
+	// keysErrs fails keys for its patterns; getErrs fails get for its keys.
+	keysErrs map[string]error
+	getErrs  map[string]error
 }
 
 func (f *fakeStore) keys(pattern string) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.keysErr != nil {
-		return nil, f.keysErr
+	if err := f.keysErrs[pattern]; err != nil {
+		return nil, err
 	}
 	re := regexp.MustCompile("^" + pattern + "$")
 	var out []string
@@ -417,6 +419,29 @@ func TestResolverFilesAreOtherResolvers(t *testing.T) {
 	}
 }
 
+// A resolver directory that can't be read is not an empty one: what it
+// holds is unknown, so Update fails and Problem calls the node
+// unprotected. Only its absence reads as empty.
+func TestAnUnreadableResolverDirectoryIsReported(t *testing.T) {
+	f := aMac(t)
+	unreadable := filepath.Join(t.TempDir(), "resolver")
+	if err := os.WriteFile(unreadable, []byte("nameserver 10.9.9.9\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	resolverDir = unreadable
+	s, err := setDynamicStore(f, nodeConfig, nil, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Restore() }()
+	if err := s.Update(nodeConfig); err == nil {
+		t.Error("Update over an unreadable resolver directory: nil error")
+	}
+	if err := s.Problem(); !errors.Is(err, ErrUnprotected) || !strings.Contains(err.Error(), "reading "+unreadable) {
+		t.Errorf("problem: %v", err)
+	}
+}
+
 func TestManualServersAreTheUpstreams(t *testing.T) {
 	f := aMac(t)
 	f.put("Setup:/Network/Service/"+wifiService+"/DNS", dnsDict([]string{"1.1.1.1", "100.64.0.7"}, nil))
@@ -539,13 +564,52 @@ func TestAFailedListingOfOtherResolversIsReported(t *testing.T) {
 		t.Fatalf("problem before the failure: %v", err)
 	}
 	f.mu.Lock()
-	f.keysErr = errors.New("list failed")
+	f.keysErrs = map[string]error{serviceDNSPattern: errors.New("list failed")}
 	f.mu.Unlock()
 	if err := s.Update(nodeConfig); err == nil {
 		t.Error("Update over a failed listing: nil error")
 	}
-	if err := s.Problem(); !errors.Is(err, ErrUnprotected) {
+	if err := s.Problem(); !errors.Is(err, ErrUnprotected) || !strings.Contains(err.Error(), "listing the network services' DNS states") {
 		t.Errorf("problem: %v", err)
+	}
+}
+
+// One unreadable scutil answer is not an empty one: the last known
+// upstreams stay (warned about once, not at every check), and only the
+// node going offline (no primary network service) tells an empty answer.
+func TestAFailedPrimaryReadKeepsTheUpstreamsOfflineClearsThem(t *testing.T) {
+	f := aMac(t)
+	var log bytes.Buffer
+	var told [][]netip.Addr
+	c := nodeConfig
+	c.Log = slog.New(slog.NewTextHandler(&log, nil))
+	c.Upstreams = func(a []netip.Addr) { told = append(told, a) }
+	s, err := setDynamicStore(f, c, nil, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Restore() }()
+	f.mu.Lock()
+	f.getErrs = map[string]error{"State:/Network/Global/IPv4": errors.New("read failed")}
+	f.mu.Unlock()
+	s.check()
+	s.check()
+	if len(told) != 0 {
+		t.Errorf("a failed read told %v", told)
+	}
+	if n := strings.Count(log.String(), "level=WARN"); n != 1 {
+		t.Errorf("a failed read warned %d times, want once", n)
+	}
+	f.mu.Lock()
+	delete(f.getErrs, "State:/Network/Global/IPv4")
+	f.mu.Unlock()
+	_ = f.remove("State:/Network/Global/IPv4")
+	s.check()
+	if len(told) != 1 || told[0] != nil {
+		t.Errorf("offline told %v, want one empty answer", told)
+	}
+	if n := strings.Count(log.String(), "level=WARN"); n != 1 {
+		t.Errorf("warned %d times after recovery, want once", n)
 	}
 }
 

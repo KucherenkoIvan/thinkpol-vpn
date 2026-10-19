@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/netip"
 	"os"
 	"regexp"
@@ -69,9 +70,14 @@ const (
 
 var (
 	serviceStatePattern = `State:/Network/Service/[^/]+/(IPv4|IPv6|DNS)`
+	serviceDNSPattern   = `State:/Network/Service/[^/]+/DNS`
 	serviceKey          = regexp.MustCompile(`^(State|Setup):/Network/Service/([^/]+)/(IPv4|IPv6|DNS)$`)
 	resolverDir         = "/etc/resolver"
 )
+
+// errNoPrimary is the absence of a primary network service (offline): an
+// empty answer, not a failed read.
+var errNoPrimary = errors.New("dns: no primary network service")
 
 // SetSystem points the OS resolver at c.Servers, searching c.Search
 // only, until Restore; it keeps doing so as the system republishes its
@@ -185,6 +191,9 @@ type dynamicStore struct {
 	// primary is the primary service's original servers, last told to
 	// cfg.Upstreams.
 	primary []netip.Addr
+	// primaryFailed marks a read of the primary service's servers that
+	// failed and was warned about: warned once, not at every check.
+	primaryFailed bool
 }
 
 // storeWatch subscribes to changes of the store's keys matching patterns;
@@ -360,7 +369,12 @@ func (s *dynamicStore) apply() error {
 			continue
 		}
 		// Read back: a write the store took differently is no override.
-		if got, ok, err := s.st.get(c.key); err != nil || !ok || !isOverride(got) {
+		got, ok, err := s.st.get(c.key)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("dns: reading back %s: %w", c.key, err))
+			continue
+		}
+		if !ok || !isOverride(got) {
 			errs = append(errs, fmt.Errorf("dns: %s doesn't hold the override after setting it", c.key))
 		}
 	}
@@ -415,7 +429,7 @@ func (s *dynamicStore) putBack(k string) error {
 // error, not an empty answer: what can't be read may hold a resolver.
 func (s *dynamicStore) otherResolvers() ([]string, error) {
 	var out []string
-	keys, err := s.st.keys(`State:/Network/Service/[^/]+/DNS`)
+	keys, err := s.st.keys(serviceDNSPattern)
 	if err != nil {
 		return nil, fmt.Errorf("dns: listing the network services' DNS states: %w", err)
 	}
@@ -437,7 +451,12 @@ func (s *dynamicStore) otherResolvers() ([]string, error) {
 			out = append(out, dom)
 		}
 	}
-	if entries, err := os.ReadDir(resolverDir); err == nil {
+	entries, err := os.ReadDir(resolverDir)
+	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("dns: reading %s: %w", resolverDir, err)
+		}
+	} else {
 		for _, e := range entries {
 			if !strings.HasPrefix(e.Name(), ".") {
 				out = append(out, e.Name())
@@ -449,10 +468,29 @@ func (s *dynamicStore) otherResolvers() ([]string, error) {
 }
 
 // primaryOriginal is the primary service's servers as the system has
-// them: set by hand, else published; called with mu held.
+// them: set by hand, else published. A failed read is not an empty
+// answer: the last one is kept and the failure logged once, so one
+// unreadable scutil answer doesn't wipe the direct upstreams; no
+// primary network service (offline) is a real empty answer and is told
+// as such. Called with mu held.
 func (s *dynamicStore) primaryOriginal() []netip.Addr {
-	addrs, _ := primaryServers(s.st, s.backup)
-	return addrs
+	addrs, err := primaryServers(s.st, s.backup)
+	switch {
+	case err == nil || errors.Is(err, errNoPrimary):
+		s.primaryFailed = false
+		if errors.Is(err, errNoPrimary) {
+			return nil
+		}
+		return addrs
+	default:
+		if !s.primaryFailed {
+			s.primaryFailed = true
+			if s.cfg.Log != nil {
+				s.cfg.Log.Warn("DNS: reading the primary service's DNS servers failed; keeping the previous upstreams", "err", err)
+			}
+		}
+		return s.primary
+	}
 }
 
 func (s *dynamicStore) watch(events <-chan struct{}, every time.Duration) {
@@ -579,7 +617,7 @@ func primaryServers(st store, backup map[string]original) ([]netip.Addr, error) 
 		}
 	}
 	if id == "" {
-		return nil, errors.New("dns: no primary network service")
+		return nil, errNoPrimary
 	}
 	for _, k := range []string{"Setup:/Network/Service/" + id + "/DNS", "State:/Network/Service/" + id + "/DNS"} {
 		d, present, err := st.get(k)

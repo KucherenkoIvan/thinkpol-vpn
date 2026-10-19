@@ -779,11 +779,11 @@ func TestACorruptRecordOfAnotherOwnerFailsTheSurveyAndDefaultRoute(t *testing.T)
 	if err := os.WriteFile(corrupt, []byte("garbage\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := rt.Survey(ctx); err == nil {
-		t.Error("Survey over a corrupt record: nil error")
+	if _, err := rt.Survey(ctx); err == nil || !strings.Contains(err.Error(), "overlay's route record") {
+		t.Errorf("Survey over a corrupt record: %v", err)
 	}
-	if _, err := rt.DefaultRoute(ctx, IPv4); err == nil {
-		t.Error("DefaultRoute over a corrupt record: nil error")
+	if _, err := rt.DefaultRoute(ctx, IPv4); err == nil || !strings.Contains(err.Error(), "overlay's route record") {
+		t.Errorf("DefaultRoute over a corrupt record: %v", err)
 	}
 	if k.snapshot() != before {
 		t.Error("a corrupt record changed something")

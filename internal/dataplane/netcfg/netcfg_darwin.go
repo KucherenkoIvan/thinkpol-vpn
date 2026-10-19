@@ -202,7 +202,7 @@ func newDarwin(owner Owner, k kernel, path string) (*darwinConfigurator, error) 
 	if err != nil {
 		_ = lock.release()
 		_ = dir.Close()
-		return nil, fmt.Errorf("netcfg: %v: %w", owner, err)
+		return nil, fmt.Errorf("netcfg: reading %v's route record: %w", owner, err)
 	}
 	return &darwinConfigurator{
 		k: k, owner: owner, dir: dir, boot: boot, lock: lock, owned: owned, pinned: make(map[rkey]bool),
