@@ -20,9 +20,8 @@ lab: false
 
 space:                        # optional
   # The space's name: devices resolve each node they have as a peer as
-  # <node>.<space>.internal (overlay names), so with it every node name must
-  # be a DNS label (no dash at either end). Without it the map holds no
-  # names. Only devices' sections hold names.
+  # <node>.<space>.internal. Without it the map holds no names. Only
+  # devices' sections hold names.
   name: home
   # The overlay IPv4 network: 100.64.0.0/10 or a network inside it.
   ipv4: 100.64.0.0/10
@@ -41,8 +40,9 @@ lists:
     file: lists/ru.geoip
 
 nodes:
-  - name: server-1            # lowercase letters, digits, dashes; also names
-                              # the node's key files (server-1.key, .pub)
+  - name: server-1            # a DNS label: lowercase letters, digits and
+                              # dashes, none at either end; also names the
+                              # node's key files (server-1.key, .pub)
     kind: server              # server (relays, has endpoints) or device
                               # (dials servers: no endpoints, no listen)
     # Overlay addresses: optional. Nodes without one get the lowest free host

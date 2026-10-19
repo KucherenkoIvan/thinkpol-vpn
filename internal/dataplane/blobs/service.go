@@ -117,16 +117,6 @@ type Options struct {
 	// Log gets the service's events; local only.
 	Log    *slog.Logger
 	Limits Limits
-
-	// Listen and Dial replace the network (tests). By default the service
-	// listens on and dials from the node's overlay addresses, bound to
-	// Plan.Interface.
-	Listen func(addr netip.AddrPort) (net.Listener, error)
-	Dial   func(ctx context.Context, local netip.Addr, remote netip.AddrPort) (net.Conn, error)
-	// Port replaces Port (tests).
-	Port uint16
-	// Now replaces time.Now (tests of the rate limit).
-	Now func() time.Time
 }
 
 // Peer is a node the service may fetch from: a WireGuard peer, reached at
@@ -184,14 +174,24 @@ type Status struct {
 	Served, ServedBytes, NotHere, Busy, NotPeer uint64
 }
 
+// Net replaces the node's network for a service (tests and labs): a
+// loopback overlay stands in for the overlay's TUN, whose sockets Listen
+// and Dial would otherwise be bound to (see openListener and openConn).
+// The zero value is the node's real network.
+type Net struct {
+	Listen func(addr netip.AddrPort) (net.Listener, error)
+	Dial   func(ctx context.Context, local netip.Addr, remote netip.AddrPort) (net.Conn, error)
+}
+
 // Service holds, fetches and serves the blobs a node's map asks for.
 type Service struct {
-	o      Options
+	store  Store
 	limits Limits
 	log    *slog.Logger
-	port   uint16
-	now    func() time.Time
-	rate   *limiter
+	// net is the service's network: a loopback overlay in tests and labs,
+	// the node's real network (both functions nil) in production.
+	net  Net
+	rate *limiter
 
 	mu   sync.Mutex
 	plan Plan
@@ -222,14 +222,24 @@ type Service struct {
 	wakeFetch, wakeListen chan struct{}
 }
 
-// New makes a service holding nothing; Update gives it a plan, Run runs it.
+// New makes a service on the node's real network; Update gives it a plan,
+// Run runs it.
 func New(o Options) *Service {
+	return NewOnNet(o, Net{})
+}
+
+// NewOnNet is New on n instead of the node's real network: the listener
+// and dialer of a lab's loopback overlay. A Net with exactly one of the
+// two functions set has no meaning and panics.
+func NewOnNet(o Options, n Net) *Service {
+	if (n.Listen == nil) != (n.Dial == nil) {
+		panic("blobs: a Net sets both Listen and Dial, or neither")
+	}
 	s := &Service{
-		o:          o,
+		store:      o.Store,
 		limits:     o.Limits.withDefaults(),
 		log:        o.Log,
-		port:       o.Port,
-		now:        o.Now,
+		net:        n,
 		want:       map[[32]byte]netmap.BlobRef{},
 		held:       map[[32]byte]netmap.BlobRef{},
 		data:       map[[32]byte][]byte{},
@@ -242,13 +252,7 @@ func New(o Options) *Service {
 	if s.log == nil {
 		s.log = slog.New(slog.DiscardHandler)
 	}
-	if s.port == 0 {
-		s.port = Port
-	}
-	if s.now == nil {
-		s.now = time.Now
-	}
-	s.rate = newLimiter(s.limits.ServeRate, s.now)
+	s.rate = newLimiter(s.limits.ServeRate, time.Now)
 	return s
 }
 
@@ -614,8 +618,8 @@ func (s *Service) fetchLoop(ctx context.Context) {
 			}
 			if keep, ok := s.complete(gen); ok {
 				pruned = gen
-				if s.o.Store != nil {
-					if err := s.o.Store.Prune(keep); err != nil {
+				if s.store != nil {
+					if err := s.store.Prune(keep); err != nil {
 						s.log.Warn("pruning stored blobs", "err", err)
 					}
 				}
@@ -639,10 +643,10 @@ func (s *Service) loadStandIns(gen uint64) {
 	first := s.standIns != gen
 	s.standIns = gen
 	s.mu.Unlock()
-	if !first || s.o.Store == nil {
+	if !first || s.store == nil {
 		return
 	}
-	for _, ref := range s.o.Store.Index() {
+	for _, ref := range s.store.Index() {
 		if ref.Name == "" || !s.current(gen) {
 			continue
 		}
@@ -653,7 +657,7 @@ func (s *Service) loadStandIns(gen uint64) {
 		if !needed {
 			continue
 		}
-		data := s.o.Store.Load(ref)
+		data := s.store.Load(ref)
 		if data == nil || Check(ref, data) != nil {
 			continue
 		}
@@ -666,8 +670,8 @@ func (s *Service) loadStandIns(gen uint64) {
 // obtain gets one blob: from the store if it has a good copy, else from
 // the first peer that sends one that checks.
 func (s *Service) obtain(ctx context.Context, gen uint64, ref netmap.BlobRef) {
-	if s.o.Store != nil && s.firstLook(gen, ref) {
-		if data := s.o.Store.Load(ref); data != nil {
+	if s.store != nil && s.firstLook(gen, ref) {
+		if data := s.store.Load(ref); data != nil {
 			err := Check(ref, data)
 			switch {
 			case err == nil:
@@ -702,8 +706,8 @@ func (s *Service) obtain(ctx context.Context, gen uint64, ref netmap.BlobRef) {
 			}
 			s.count(func(st *Status) { st.Fetched++ })
 			s.log.Info("blob fetched", "blob", short(ref), "kind", ref.Kind, "name", ref.Name, "size", ref.Size, "peer", peer.ID)
-			if s.o.Store != nil && ref.Name != "" {
-				if err := s.o.Store.Save(ref, data); err != nil {
+			if s.store != nil && ref.Name != "" {
+				if err := s.store.Save(ref, data); err != nil {
 					s.log.Warn("storing a blob", "blob", short(ref), "err", err)
 				}
 			}

@@ -50,7 +50,7 @@ func (s *Service) listenLoop(ctx context.Context) {
 		now := time.Now()
 		want := map[netip.AddrPort]bool{}
 		for _, a := range p.Listen {
-			want[netip.AddrPortFrom(a, s.port)] = true
+			want[netip.AddrPortFrom(a, Port)] = true
 		}
 		for addr, l := range open {
 			switch {
@@ -78,7 +78,7 @@ func (s *Service) listenLoop(ctx context.Context) {
 				}
 				continue
 			}
-			ln, err := s.listen(addr, p.Interface)
+			ln, err := s.openListener(addr, p.Interface)
 			if err != nil {
 				at := now.Add(s.limits.ListenRetry)
 				retryAt[addr] = at
@@ -115,9 +115,11 @@ func isDone(ch chan struct{}) bool {
 	}
 }
 
-func (s *Service) listen(addr netip.AddrPort, iface string) (net.Listener, error) {
-	if s.o.Listen != nil {
-		return s.o.Listen(addr)
+// openListener opens the listener for addr: the test's overlay, or the
+// node's real one, bound to the overlay's TUN (iface).
+func (s *Service) openListener(addr netip.AddrPort, iface string) (net.Listener, error) {
+	if s.net.Listen != nil {
+		return s.net.Listen(addr)
 	}
 	lc := net.ListenConfig{Control: bindTo(iface)}
 	return lc.Listen(context.Background(), "tcp", addr.String())

@@ -14,7 +14,6 @@ import (
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/worker"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/blobs"
-	"github.com/KucherenkoIvan/thinkpol-vpn/internal/lists"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
 
@@ -129,7 +128,7 @@ func readBlobIndex(bd *trustedDir) []netmap.BlobRef {
 		kind, err1 := strconv.ParseUint(f[0], 10, 8)
 		sum, err2 := hex.DecodeString(f[2])
 		size, err3 := strconv.ParseUint(f[3], 10, 64)
-		if err1 != nil || err2 != nil || err3 != nil || len(sum) != sha256.Size || lists.CheckName(f[1]) != nil || size == 0 {
+		if err1 != nil || err2 != nil || err3 != nil || len(sum) != sha256.Size || netmap.CheckListName(f[1]) != nil || size == 0 {
 			continue
 		}
 		out = append(out, netmap.BlobRef{Kind: netmap.BlobKind(kind), Name: f[1], SHA256: [32]byte(sum), Size: size})
@@ -140,7 +139,7 @@ func readBlobIndex(bd *trustedDir) []netmap.BlobRef {
 func encodeBlobIndex(refs []netmap.BlobRef) []byte {
 	var b strings.Builder
 	for _, r := range refs {
-		if lists.CheckName(r.Name) != nil {
+		if netmap.CheckListName(r.Name) != nil {
 			continue // a name the index can't hold stands in for nothing
 		}
 		fmt.Fprintf(&b, "%d %s %s %d\n", r.Kind, r.Name, blobFileName(r.SHA256), r.Size)
