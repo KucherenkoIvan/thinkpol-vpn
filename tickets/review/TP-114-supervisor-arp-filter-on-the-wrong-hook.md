@@ -32,16 +32,16 @@ A space's ARP never reaches the root namespace's neighbour table, as DESIGN ("Se
 
 ## Review findings
 Round 2 (2026-10-19): all three reviewers found the fix correct; test and comment cleanup.
-- [ ] R2.1 `arp_linux_test.go` `arpDropped` copies `egress_linux_test.go` `dropped`: one `nftDrops(t, family, table, chain)` (with the comment on why it reads nft's listing); `dropped` calls it for the inet table; the ARP test's hand-rolled eventually uses a shared await helper
-- [ ] R2.2 `arp_linux_test.go` copies `inNamespace`: one `inNetns(t, path, fn)`; `inNamespace(t, name, fn)` and `inWorker(t, pid, fn)` call it
-- [ ] R2.3 `isolation_linux.go`: delete the comment in `newRules` that repeats `arpHookIn`'s
-- [ ] R2.4 `options.go`: fold `arpOnOutput` into the test-hooks comment block, without history
-- [ ] R2.5 `export_linux_test.go`: `WithArpOnOutput`'s doc without history
-- [ ] R2.6 `sendForgedARP` registers its own `t.Cleanup` instead of returning a stop func
-- [ ] R2.7 name the broadcast MAC once
-- [ ] R2.8 fail on the first `unix.Sendto` error instead of ignoring it
-- [ ] R2.9 (optional) also send a gratuitous ARP and a unicast reply with the forged sender
-- [ ] R2.10 (nits) rename the `arpIn` field; drop the trailing `// NF_ARP_IN` / `// NF_ARP_OUT` that repeat the block comment
+- [x] R2.1 `arp_linux_test.go` `arpDropped` copies `egress_linux_test.go` `dropped`: one `nftDrops(t, family, table, chain)` (with the comment on why it reads nft's listing); `dropped` calls it for the inet table; the ARP test's hand-rolled eventually uses a shared await helper
+- [x] R2.2 `arp_linux_test.go` copies `inNamespace`: one `inNetns(t, path, fn)`; `inNamespace(t, name, fn)` and `inWorker(t, pid, fn)` call it
+- [x] R2.3 `isolation_linux.go`: delete the comment in `newRules` that repeats `arpHookIn`'s
+- [x] R2.4 `options.go`: fold `arpOnOutput` into the test-hooks comment block, without history
+- [x] R2.5 `export_linux_test.go`: `WithArpOnOutput`'s doc without history
+- [x] R2.6 `sendForgedARP` registers its own `t.Cleanup` instead of returning a stop func
+- [x] R2.7 name the broadcast MAC once
+- [x] R2.8 fail on the first `unix.Sendto` error instead of ignoring it
+- [x] R2.9 (optional) also send a gratuitous ARP and a unicast reply with the forged sender
+- [x] R2.10 (nits) rename the `arpIn` field (to `arpChain`: `arp` is already the table field); drop the trailing `// NF_ARP_IN` / `// NF_ARP_OUT` that repeat the block comment
 
 ## Log
 - 2026-10-19 created in backlog (TP-103 review: security bug, high priority after TP-103)
@@ -50,3 +50,5 @@ Round 2 (2026-10-19): all three reviewers found the fix correct; test and commen
 - 2026-10-19 in-progress → review
 - 2026-10-19 review → has-errors — review round 2: test and comment cleanup (R2.1–R2.10)
 - 2026-10-19 has-errors → in-progress — owner: agent-claude, branch: tp-114-supervisor-arp-filter-on-the-wrong-hook
+- 2026-10-19 review round 2 fixed (46d3b33, dc5c2b1): shared inNetns and nftDrops/awaitNftDrops helpers, sendForgedARP also sends a gratuitous request and a unicast reply; with arpHookIn set back to 1, input=true fails (0 drops) and input=false still learns the entry; make lint, make test, make lab-test (LAB_P=4, 35 node packages) exit 0 on dc5c2b1; goldens unchanged
+- 2026-10-19 in-progress → review
