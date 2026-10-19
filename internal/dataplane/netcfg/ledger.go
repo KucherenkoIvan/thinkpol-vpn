@@ -109,17 +109,19 @@ func (l *ledger) configure(ctx context.Context, ops linkOps, ifcs []Interface, u
 
 // configureLink sets the MTU and brings the link up as asked. Zero values
 // leave the link alone; what was changed is restored when the interface
-// leaves the config or on Close.
+// leaves the config or on Close. The record is under the name the config
+// gives (on Linux it may be an altname of s).
 func (l *ledger) configureLink(ops linkOps, s linkState, ifc Interface, u *undoLog) error {
-	if ch, ok := l.links[s.name]; ok && ch.index != s.index {
-		l.dropLinkRecord(s.name, u) // a recreated interface: earlier changes went with the old one
+	name := ifc.Name
+	if ch, ok := l.links[name]; ok && ch.index != s.index {
+		l.dropLinkRecord(name, u) // a recreated interface: earlier changes went with the old one
 	}
 	if ifc.MTU != 0 && s.mtu != ifc.MTU {
 		old := s.mtu
 		if err := ops.setMTU(s, ifc.MTU); err != nil {
-			return fmt.Errorf("netcfg: MTU %d on %s: %w", ifc.MTU, s.name, err)
+			return fmt.Errorf("netcfg: MTU %d on %s: %w", ifc.MTU, name, err)
 		}
-		l.updateLinkRecord(s.name, s.index, func(ch *linkChange) {
+		l.updateLinkRecord(name, s.index, func(ch *linkChange) {
 			if ch.mtu == 0 {
 				ch.origMTU = old
 			}
@@ -128,9 +130,9 @@ func (l *ledger) configureLink(ops linkOps, s linkState, ifc Interface, u *undoL
 	}
 	if ifc.Up && !s.up {
 		if err := ops.setUp(s, true); err != nil {
-			return fmt.Errorf("netcfg: bring %s up: %w", s.name, err)
+			return fmt.Errorf("netcfg: bring %s up: %w", name, err)
 		}
-		l.updateLinkRecord(s.name, s.index, func(ch *linkChange) { ch.setUp = true },
+		l.updateLinkRecord(name, s.index, func(ch *linkChange) { ch.setUp = true },
 			u, func() error { return ops.setUp(s, false) })
 	}
 	return nil

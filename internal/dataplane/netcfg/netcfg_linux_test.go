@@ -1134,3 +1134,31 @@ func TestIPv6GoesAndComesBackWithTheMTU(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// An interface the config names by an altname keeps what Apply set: the
+// change is recorded under the config's name, so the same Apply never
+// takes it for an interface that left the config.
+func TestAnAltnameKeepsItsChanges(t *testing.T) {
+	n := newTestNS(t)
+	n.dummy(t, "ovl0")
+	n.ip(t, "link", "property", "add", "dev", "ovl0", "altname", "overlay-alt")
+	c := n.configurator(t)
+	cfg := netcfg.Config{Interfaces: []netcfg.Interface{{Name: "overlay-alt", MTU: 1380, Up: true}}}
+	for range 2 {
+		if err := c.Apply(context.Background(), cfg); err != nil {
+			t.Fatal(err)
+		}
+		l, err := n.h.LinkByName("ovl0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if l.Attrs().MTU != 1380 || l.Attrs().Flags&net.FlagUp == 0 {
+			t.Fatalf("ovl0 after Apply: mtu %d, flags %v; want 1380, up", l.Attrs().MTU, l.Attrs().Flags)
+		}
+	}
+	// Close doesn't restore it yet: restoreLink checks the name the
+	// kernel reports against the record's (TP-102 Notes).
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
