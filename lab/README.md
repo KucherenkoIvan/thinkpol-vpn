@@ -1,6 +1,6 @@
 # The lab
 
-Docker containers on separate networks, driven by Go tests: the censor lab of [DESIGN.md](../DESIGN.md#censor-lab) and the place where every Linux networking test runs. All it needs is Docker (with Compose v2) and Go; nothing in the lab touches the host's network stack.
+Docker containers on separate networks, driven by Go tests: the censor lab of [DESIGN.md](../DESIGN.md#censor-lab) and the place where every Linux networking test runs. All it needs is Docker (with Compose v2) and Go, and a kernel built with CONFIG_NF_CONNTRACK_PROCFS (the egress tests read /proc/net/nf_conntrack); nothing in the lab touches the host's network stack.
 
 ```sh
 make lab-test     # lab tests and every package's tests inside a lab node, at once, then tear down
