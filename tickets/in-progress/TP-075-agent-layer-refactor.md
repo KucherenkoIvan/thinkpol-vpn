@@ -73,3 +73,4 @@ branch: "tp-075-agent-layer-refactor"
 - 2026-10-19 round 2: one named map follower (follow) with markRemoved owning the removal warning; no warnKind (a kind held is the running node's, 0 is none); the node's back-in-space line carries its mode again; tests inject through Prepare's Platform; the private test hooks left (path, retryAfter, onEngine, dnsPort, tweak) are TP-083's scope
 - 2026-10-19 in-progress → review — make lint, make test green; make lab-test green (exit 0, 35 packages PASS) at d1e40b0. Not verified here: the adapters' host-side paths outside the lab's Linux (macOS device on a real network: needs_human: macos)
 - 2026-10-19 review → has-errors — review round 3: R3.1–R3.9
+- 2026-10-19 has-errors → in-progress — review round 3 findings picked up (R3.1–R3.9)
