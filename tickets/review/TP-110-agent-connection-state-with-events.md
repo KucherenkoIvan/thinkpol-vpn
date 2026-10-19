@@ -72,3 +72,4 @@ The device's connection lifecycle is one explicit state with transition methods 
 - 2026-10-19 docs: DESIGN.md "Engine and agent": events told once the status shows them, as edges, the route table's from ErrRouteTableNotEnforced
 - 2026-10-19 merged origin/rewrite: nothing new (TP-109 not merged yet)
 - 2026-10-19 make lint (exit 0) and make test (exit 0) at 1c9c182; make lab-test exit 0 at 1c9c182 (lab suite ok, 35 node packages PASS), 153 s with LAB_P=4 (no other lab running). Not verified here: the route-table and DNS events on a real macOS device
+- 2026-10-19 in-progress → review
