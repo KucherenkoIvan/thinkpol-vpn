@@ -51,3 +51,4 @@ Origin: design and code-quality review of rewrite at 2fa1191 (2026-10-18).
 - 2026-10-19 backlog → in-progress — owner: agent-glm, branch: tp-104-netmap-devmap-builder-policy-once
 - 2026-10-19 in-progress → review — e16652f; make lint, make test and make lab-test (34 packages, GOFLAGS=-p=4 LAB_P=1) pass. Two deliberate tightenings: lists.CheckName now refuses trailing dashes (netmap's rule), and devmap.CheckName refuses trailing-dash node names before the space-name check (nameRE allowed them); the one spec_test case that hit it says why.
 - 2026-10-19 review → has-errors — round-2 review: 13 findings (R2.1-R2.13), a false claim in this Log among them; production behaviour must not change.
+- 2026-10-19 has-errors → in-progress — picked up by the same agent; findings are fixed one commit at a time, each box checked against the code.
