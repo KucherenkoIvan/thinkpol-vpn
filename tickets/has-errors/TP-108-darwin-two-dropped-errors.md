@@ -15,7 +15,7 @@ Darwin netcfg and DNS adapters surface read failures instead of treating corrupt
 
 ## Scope
 Every place in `internal/dataplane/netcfg/netcfg_darwin.go` and `internal/dataplane/dns/system_darwin.go` where an unreadable answer is taken as empty — one ticket fixes the class, not single spots:
-- netcfg: propagate errors from `readRecord` when building `thinkpolRoutes`, so a corrupt owner record does not make that owner's routes look foreign; the same wording for the owner's own record read at start.
+- netcfg: propagate errors from `readRecord` when building `thinkpolRoutes`, so a corrupt owner record does not make that owner's routes look foreign; the same wording for the owner's own record read at start; the record reader (`record_darwin.go`) is included.
 - dns: propagate store errors from `otherResolvers` / `get`, so `Problem()` cannot report protected after a failed read; the resolver-directory read; the primary service's read (a failed read keeps the last upstreams, offline still clears them); the read-back after setting an override names its read failure.
 
 ## Out of scope
@@ -34,6 +34,13 @@ Every place in `internal/dataplane/netcfg/netcfg_darwin.go` and `internal/datapl
 - [x] R2.5 `internal/dataplane/netcfg/netcfg_darwin.go` ~205: match ~816's wording: "netcfg: reading %v's route record: %w".
 - [x] R2.6 `netcfg_darwin_test.go` ~782-787: assert the error names the record ("overlay's route record"), not just non-nil.
 - [x] R2.7 Notes: a corrupt record of another owner fails this node's route-table survey until someone deletes the file under /private/var/db/thinkpol/netcfg (only root can write there; the error names the path); recovery belongs with TP-102. — written into Notes.
+- [ ] R3.1 BLOCKER: `primaryServers`' IPv6 fallback (`system_darwin.go` ~614-618) drops the IPv6 global's read error, so a failed read on an IPv6-only network reads as "no primary network service" (offline) and wipes the direct upstreams. Return the error ("dns: reading State:/Network/Global/IPv6: …"); a missing IPv6 key stays "no primary". Test: the IPv4 global absent, the IPv6 global with a PrimaryService; fail the IPv6 get → no tell, one Warn across two checks; clear the error and remove the key → exactly one tell of nil. Remove the Notes paragraph that parked this.
+- [ ] R3.2 `errNoPrimary` escapes from the exported `SystemUpstreams` (~658-661): an offline Mac now logs "the system's resolvers are unknown … dns: no primary network service". Return nil, nil for `errNoPrimary` there, as before this branch. Test: aMac without the IPv4 global → `systemUpstreams` returns nil, nil.
+- [ ] R3.3 `scutil_darwin.go` `parseList` (~247-260): scutil reports a failed command as text and exits 0 (seen: `frobnicate: unknown, type "help" for command info`, exit 0), so today a failed list reads as an empty list. Accept only "  subKey [n] = <key>" lines as keys and "  no keys." (seen) as empty; any other non-blank line is an error. Real samples: "  subKey [0] = State:/Network/Global/DNS", "  no keys.", and for a missing key in show: "  No such key". Keep the existing fixtures passing; add tests for the error case.
+- [ ] R3.4 `parseShow` (~278-281): accept a top-level "Key :" line (an empty string value, trimmed of its trailing space) as an empty string, the way arrays already handle "0 : ", instead of failing the whole read. Test with a fixture.
+- [ ] R3.5 A primary read that keeps failing leaves stale upstreams with one Warn and nothing in status. Make it visible: while `primaryFailed` is set, `Problem()` (or the status the node reports) says the direct upstreams may be stale — the smallest honest place, not `ErrUnprotected` unless it is one; say in the Log why the place was picked.
+- [ ] R3.6 `primaryOriginal`'s switch: simplify per the design reviewer (`if err != nil && !errors.Is(err, errNoPrimary) { warn once; keep; return s.primary }`; then reset the flag, nil for offline, else the read). Name the Setup DNS pattern (`serviceSetupDNSPattern`) and use it in both places. Test that the warning re-arms after a good read (two episodes → two Warns).
+- [ ] R3.7 `netcfg/record_darwin.go`: an empty or comment-only record (no boot line) is corrupt, not empty ("%s: no boot session"); a Stat failure returns its error instead of "not a regular file". `netcfg_darwin_test.go` ~782 also checks the error names the path.
 
 ## Notes
 Origin: design and code-quality review of rewrite at 2fa1191 (2026-10-18).
@@ -42,8 +49,6 @@ Safe behaviour chosen (per the ticket's goal, "fail closed"): a record that can'
 
 A corrupt record of another owner (the overlay's, say) keeps failing this node's route-table survey until someone deletes the file under /private/var/db/thinkpol/netcfg — only root can write there, and the error names the path. Recovery belongs with TP-102.
 
-Also noticed in round 2, not fixed here (wasn't in the findings): `primaryServers`' IPv6 fallback (`system_darwin.go`, the `State:/Network/Global/IPv6` read) drops that read's error, so a failed read there reads as "no primary network service" — offline — and wipes the direct upstreams, the same wipe R2.3 fixed for the IPv4 read.
-
 ## Log
 - 2026-10-18 created in backlog (code-quality review)
 - 2026-10-19 backlog → in-progress — owner: agent-glm, branch: tp-108-darwin-two-dropped-errors
@@ -51,3 +56,4 @@ Also noticed in round 2, not fixed here (wasn't in the findings): `primaryServer
 - 2026-10-19 review → has-errors — round 2 findings R2.1–R2.7; scope widened to the whole class
 - 2026-10-19 has-errors → in-progress — round 2 fixes start
 - 2026-10-19 in-progress → review — all round 2 findings fixed and checked (705605e), make lint/test/lab-test pass, the full lab run finished 2026-10-19 (`gotest: ok, 34 packages`); still not verified on real macOS hardware, only the fakes
+- 2026-10-19 review → has-errors — round 3 findings R3.1–R3.7
