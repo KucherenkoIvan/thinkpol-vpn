@@ -11,13 +11,6 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/lists"
 )
 
-// ErrRouteTableNotEnforced is putting the compiled rules into the OS
-// routing table failing (Apply, SetRules, ReloadRules): the route table
-// keeps trying, Status.RouteTable says how it stands. Its text is the
-// prefix these errors had before it existed, so messages and logs read
-// as they did.
-var ErrRouteTableNotEnforced = errors.New("dataplane: route table")
-
 // RouteTable enforces the rules in the OS routing table (route-table
 // mode): everything but the direct destinations and the links' endpoints
 // into the TUN. Enforce puts w in place, all or nothing, and keeps trying
@@ -142,7 +135,7 @@ func (e *Engine) growRoutes(ctx context.Context, shrinkErr error) error {
 	err := e.enforce(ctx, w)
 	e.routesWant = &w // the route table keeps trying it
 	if err != nil {
-		return fmt.Errorf("%w: %w", ErrRouteTableNotEnforced, errors.Join(shrinkErr, err))
+		return fmt.Errorf("dataplane: route table: %w", errors.Join(shrinkErr, err))
 	}
 	return nil
 }

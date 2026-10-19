@@ -76,9 +76,9 @@ type DataPlane struct {
 
 	Host Host
 
-	// A device's (Node.run): where its status goes, its connection (nil:
-	// always meant to be up, a worker's), its Connect and Disconnect
-	// requests, and who hears its events.
+	// Its connection (required; a worker's is always meant to be up), and
+	// a device's (Node.run): where its status goes, its Connect and
+	// Disconnect requests, and who hears its events.
 	report   *report
 	conn     *connection
 	requests <-chan connectRequest
@@ -93,10 +93,8 @@ type DataPlane struct {
 	path        path.Options
 	retryAfter  time.Duration
 	blobOptions blobs.Options
-	// onEngine sees each engine the data plane starts, onConn the
-	// connection RunDataPlane makes when conn is nil.
+	// onEngine sees each engine the data plane starts.
 	onEngine func(*dataplane.Engine)
-	onConn   func(*connection)
 	// dnsPort is the resolver's port (0: 53).
 	dnsPort uint16
 }
@@ -124,20 +122,15 @@ func RunDataPlane(ctx context.Context, dp DataPlane) error {
 	if dp.Log == nil {
 		dp.Log = slog.New(slog.DiscardHandler)
 	}
+	if dp.conn == nil {
+		return errors.New("agent: a data plane needs its connection")
+	}
 	section, err := openSection(dp.Map, dp.Keys)
 	if err != nil {
 		return err
 	}
-	conn := dp.conn
-	if conn == nil {
-		c := newConnection(true, false)
-		conn = &c
-		if dp.onConn != nil {
-			dp.onConn(conn)
-		}
-	}
 	r := &runner{
-		dp: dp, maps: dp.Maps, conn: conn, guard: &dnsGuard{}, tun: dp.Interface,
+		dp: dp, maps: dp.Maps, conn: dp.conn, guard: &dnsGuard{}, tun: dp.Interface,
 		follow: mapFollower{
 			log: dp.Log, keys: dp.Keys, cur: dp.Map, section: section,
 			removedMsg: "the data plane stops until a map includes it again",

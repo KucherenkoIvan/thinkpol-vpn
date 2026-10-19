@@ -153,14 +153,14 @@ func TestRouteTableFollowsTheRules(t *testing.T) {
 	rt.mu.Lock()
 	rt.failing = 1
 	rt.mu.Unlock()
-	if err := a.engine.SetRules(rules.Local{}); !errors.Is(err, errKernel) || !errors.Is(err, dataplane.ErrRouteTableNotEnforced) {
+	if err := a.engine.SetRules(rules.Local{}); !errors.Is(err, errKernel) {
 		t.Fatalf("SetRules with the route table failing: %v", err)
 	}
 	a.section.Rules = a.section.Rules[1:] // local no longer direct
 	rt.mu.Lock()
 	rt.failing = 3
 	rt.mu.Unlock()
-	if err := a.engine.Apply(context.Background(), a.section); !errors.Is(err, dataplane.ErrRouteTableNotEnforced) {
+	if err := a.engine.Apply(context.Background(), a.section); !errors.Is(err, errKernel) {
 		t.Fatalf("Apply with the route table failing: %v", err)
 	}
 	if st := a.engine.Status(); st.LastApplyError != dataplane.StepRouteTable {

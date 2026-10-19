@@ -485,16 +485,21 @@ type wantsTable struct {
 	wants []routetable.Want
 	// failing fails that many Enforces; the status says the last one
 	// failed, as routetable's does. broken is the table failing to put
-	// the routes back on its own, and recovering, whatever Enforce did.
-	failing int
-	failed  bool
-	broken  bool
+	// the routes back on its own, and recovering, whatever Enforce did;
+	// nextBroken, if set, becomes broken once the next Enforce is done.
+	failing    int
+	failed     bool
+	broken     bool
+	nextBroken *bool
 }
 
 func (w *wantsTable) Enforce(_ context.Context, want routetable.Want) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.wants = append(w.wants, want)
+	if w.nextBroken != nil {
+		w.broken, w.nextBroken = *w.nextBroken, nil
+	}
 	w.failed = w.failing > 0
 	if w.failing > 0 {
 		w.failing--
@@ -517,10 +522,13 @@ func (w *wantsTable) Status() routetable.Status {
 
 func (w *wantsTable) Close() error { return nil }
 
-func (w *wantsTable) setBroken(broken bool) {
+// breakAtNextEnforce has the table fail to put the routes back on its
+// own (or recover) once the next Enforce is done: before the runner's
+// publish that follows it.
+func (w *wantsTable) breakAtNextEnforce(broken bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.broken = broken
+	w.nextBroken = &broken
 }
 
 func (w *wantsTable) upstreams() []netip.AddrPort {

@@ -327,14 +327,15 @@ func TestARouteTableNotEnforcedIsToldAgainAfterItRecovered(t *testing.T) {
 		dataPlane: func(dp *DataPlane) { dp.RouteTable = true },
 	})
 	b.connection(t, Connected)
-	table.setBroken(true)
+	// Each flip lands as the map's Apply enforces, before the publish
+	// after it; the runner takes the maps in order.
+	table.breakAtNextEnforce(true)
 	b.maps <- s.build(t, 2)
 	b.events.are(t, Event{EventConnected, 1}, Event{EventRouteTableNotEnforced, 2})
-	table.setBroken(false)
+	table.breakAtNextEnforce(false)
 	b.maps <- s.build(t, 3)
-	b.waitLog(t, `msg="map applied" .*version=3`)
-	eventually(t, func() bool { return b.node.Status().DataPlane.RouteTable.Error == "" })
-	table.setBroken(true)
+	eventually(t, func() bool { st := b.node.Status(); return st.MapVersion == 3 && st.DataPlane.RouteTable.Error == "" })
+	table.breakAtNextEnforce(true)
 	b.maps <- s.build(t, 4)
 	b.events.are(t, Event{EventConnected, 1}, Event{EventRouteTableNotEnforced, 2}, Event{EventRouteTableNotEnforced, 4})
 }

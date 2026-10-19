@@ -53,9 +53,8 @@ type runningNode struct {
 	done    chan error
 	// ifc, if set, is the configurator each TUN gets.
 	ifc netcfg.Configurator
-	// conn is the connection RunDataPlane made (onConn), read once it
-	// returned.
-	conn *connection
+	// conn is the data plane's connection, read once it returned.
+	conn connection
 }
 
 func newRunningNode() *runningNode {
@@ -87,13 +86,14 @@ func (n *runningNode) dataPlane(reg *transport.Registry, keys NodeKeys, m *netma
 	h.NewConfigurator = func(netcfg.Owner) (netcfg.Configurator, error) { return n.ifc, nil }
 	h.NewTUN = n.virtualTUN(nil)
 	h.Transports = func(bool) (*transport.Registry, error) { return reg, nil }
+	n.conn = newConnection(true, false)
 	return DataPlane{
 		Keys: keys, Map: m, Maps: n.maps, Registry: reg, Inbound: DirectInbound(reg),
 		Log:        slog.New(slog.NewTextHandler(n.log, &slog.HandlerOptions{Level: slog.LevelDebug})),
 		Host:       h,
 		path:       fastPaths,
 		retryAfter: testRetry,
-		onConn:     func(c *connection) { n.conn = c },
+		conn:       &n.conn,
 	}
 }
 
@@ -101,9 +101,7 @@ func (n *runningNode) dataPlane(reg *transport.Registry, keys NodeKeys, m *netma
 // it once RunDataPlane returned.
 func (n *runningNode) noRefusals(t *testing.T) {
 	t.Helper()
-	if n.conn == nil {
-		t.Error("RunDataPlane made no connection")
-	} else if n.conn.refused != 0 {
+	if n.conn.refused != 0 {
 		t.Errorf("the connection refused %d moves", n.conn.refused)
 	}
 }
@@ -382,7 +380,7 @@ func TestAShutdownDuringTheFirstApplyIsNoFailure(t *testing.T) {
 	if err := <-n.done; err != nil {
 		t.Fatalf("got %v", err)
 	}
-	// Its own connection (a worker's), down with it.
+	// Its connection is down with it.
 	n.noRefusals(t)
 	if n.conn.state != connDisconnected {
 		t.Errorf("connection %s after a shutdown during the first start", n.conn.state)
@@ -461,14 +459,30 @@ func TestDataPlaneRefusesAMapWithoutTheNode(t *testing.T) {
 		created = true
 		return tuntest.NewChannelTUN().TUN(), nil
 	}
+	conn := newConnection(true, false)
 	err := RunDataPlane(context.Background(), DataPlane{
-		Keys: stranger, Map: s.verified(t, 1), Registry: reg, Inbound: DirectInbound(reg), Host: h,
+		Keys: stranger, Map: s.verified(t, 1), Registry: reg, Inbound: DirectInbound(reg), Host: h, conn: &conn,
 	})
 	if err == nil || !strings.Contains(err.Error(), "no section for this node's key") {
 		t.Fatalf("got %v", err)
 	}
 	if created {
 		t.Fatal("a TUN was created for a map the node isn't in")
+	}
+}
+
+// A data plane without its connection doesn't run on a made-up one.
+func TestDataPlaneNeedsItsConnection(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	n := newRunningNode()
+	dp := n.dataPlane(reg, s.a, s.verified(t, 1))
+	dp.conn = nil
+	if err := RunDataPlane(n.ctx, dp); err == nil || !strings.Contains(err.Error(), "needs its connection") {
+		t.Fatalf("got %v", err)
+	}
+	if n.tuns.Load() != 0 {
+		t.Fatal("a TUN without a connection")
 	}
 }
 

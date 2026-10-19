@@ -21,11 +21,12 @@ const (
 	// goes on; again once it said otherwise or the data plane went down.
 	EventDNSUnprotected
 	// EventRouteTableNotEnforced: the status of a running data plane says
-	// the OS routing table doesn't hold its rules (DataPlane.RouteTable's
-	// Error: an Apply or a rule change failed to put them in place, or the
-	// route table failed to put them back on its own). Told when the
-	// status starts saying so, not while it goes on; again once it said
-	// otherwise or the data plane went down.
+	// the OS routing table doesn't hold its rules: any DataPlane.RouteTable
+	// Error, whether an Apply, a rule change or the direct DNS upstreams'
+	// update failed to put them in place, the route table failed to put
+	// them back on its own, the TUN is down, or the OS can't hold them.
+	// Told when the status starts saying so, not while it goes on; again
+	// once it said otherwise or the data plane went down.
 	EventRouteTableNotEnforced
 )
 
