@@ -94,11 +94,11 @@ func (c Config) EgressAllowedPrefixes() ([]netip.Prefix, error) {
 	return out, nil
 }
 
-// LoadConfig reads the configuration from the environment. Unlike
-// go-kernel's usual setup it reads no .env files: a node's configuration
-// is its environment and its flags. It neither validates nor fills the
-// platform defaults: what the environment left unset stays empty, and
-// DefaultStateDir and DefaultAPISocket are this OS's defaults for it.
+// LoadConfig reads the configuration from the environment and the default:
+// tags. Unlike go-kernel's usual setup it reads no .env files: a node's
+// configuration is its environment and its flags. It doesn't validate, and
+// StateDir and APISocket stay empty when unset: their defaults vary by OS
+// (DefaultStateDir, DefaultAPISocket), which a tag can't.
 func LoadConfig() (Config, error) {
 	c, err := config.LoadWith[Config](config.WithoutEnvFiles(), config.DeferValidate())
 	if err != nil {

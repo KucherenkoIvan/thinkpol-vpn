@@ -74,15 +74,13 @@ func TestPrepareChecksTheConfig(t *testing.T) {
 }
 
 func TestLoadConfig(t *testing.T) {
-	vars := []string{"THINKPOL_STATE_DIR", "THINKPOL_MAP", "THINKPOL_MODE", "THINKPOL_LOG_LEVEL", "THINKPOL_INTERFACE", "THINKPOL_LINK_MTU", "THINKPOL_MAP_POLL", "THINKPOL_CONNECT", "THINKPOL_API_GROUP"}
-	for _, k := range vars {
-		if v, ok := os.LookupEnv(k); ok {
-			t.Cleanup(func() { _ = os.Setenv(k, v) })
+	for _, kv := range os.Environ() {
+		if k, _, _ := strings.Cut(kv, "="); strings.HasPrefix(k, "THINKPOL_") {
+			t.Setenv(k, "")
 			_ = os.Unsetenv(k)
 		}
 	}
-	// Nothing fills what the environment left unset: the platform
-	// defaults are not the load's.
+	// StateDir and APISocket stay empty: the platform defaults are not the load's.
 	cfg, err := LoadConfig()
 	if err != nil {
 		t.Fatal(err)
