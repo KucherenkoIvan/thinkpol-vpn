@@ -671,10 +671,10 @@ func TestReplaysCostNothing(t *testing.T) {
 
 // remotesForTest lists the remote ends the space may answer.
 func (r *route) remotesForTest() map[replyKey]netip.AddrPort {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.peers.mu.Lock()
+	defer r.peers.mu.Unlock()
 	out := map[replyKey]netip.AddrPort{}
-	for k, rm := range r.remotes {
+	for k, rm := range r.peers.remotes {
 		out[k] = rm.to
 	}
 	return out
@@ -683,52 +683,55 @@ func (r *route) remotesForTest() map[replyKey]netip.AddrPort {
 // A link keeps its latest few remote ends; more evict its own oldest,
 // never another link's; ends expire with the window.
 func TestReplyPeersPerLink(t *testing.T) {
-	r := &route{links: map[transport.NodeID]*linkRemotes{}, remotes: map[replyKey]*remote{}}
+	r := &route{peers: newReplyPeers()}
 	at := time.Unix(1_000_000, 0)
 	addr := func(i int) netip.AddrPort {
 		return netip.AddrPortFrom(netip.AddrFrom4([4]byte{192, 0, 2, byte(i)}), uint16(1000+i))
 	}
 	quietLink, busyLink := transport.NodeID{1}, transport.NodeID{2}
-	r.remember(quietLink, keyOf(1, addr(0)), addr(0), at)
+	r.peers.remember(quietLink, keyOf(1, addr(0)), addr(0), at)
+	evicted := 0
 	for i := 1; i <= 100; i++ {
-		r.remember(busyLink, keyOf(1, addr(i)), addr(i), at.Add(time.Duration(i)*time.Millisecond))
+		if r.peers.remember(busyLink, keyOf(1, addr(i)), addr(i), at.Add(time.Duration(i)*time.Millisecond)) {
+			evicted++
+		}
 	}
 	now := at.Add(time.Second)
-	if _, ok := r.replyTo(keyOf(1, addr(0)), now); !ok {
+	if _, ok := r.peers.replyTo(keyOf(1, addr(0)), now); !ok {
 		t.Fatal("a busy link displaced another link's remote end")
 	}
 	for i := 1; i <= 100; i++ {
-		if _, ok := r.replyTo(keyOf(1, addr(i)), now); ok != (i > 100-replyPeersPerLink) {
+		if _, ok := r.peers.replyTo(keyOf(1, addr(i)), now); ok != (i > 100-replyPeersPerLink) {
 			t.Fatalf("remote %d: allowed %v", i, ok)
 		}
 	}
-	if got := r.counters.replyPeersEvicted.Load(); got != 100-replyPeersPerLink {
-		t.Fatalf("%d evictions counted, want %d", got, 100-replyPeersPerLink)
+	if got := evicted; got != 100-replyPeersPerLink {
+		t.Fatalf("%d evictions reported, want %d", got, 100-replyPeersPerLink)
 	}
 	// Held by both links: kept until both let go.
-	r.remember(quietLink, keyOf(1, addr(100)), addr(100), now)
+	r.peers.remember(quietLink, keyOf(1, addr(100)), addr(100), now)
 	for i := 200; i < 200+replyPeersPerLink; i++ {
-		r.remember(busyLink, keyOf(1, addr(i)), addr(i), now)
+		r.peers.remember(busyLink, keyOf(1, addr(i)), addr(i), now)
 	}
-	if _, ok := r.replyTo(keyOf(1, addr(100)), now); !ok {
+	if _, ok := r.peers.replyTo(keyOf(1, addr(100)), now); !ok {
 		t.Fatal("a remote end two links hold went with one of them")
 	}
 	// Expiry: refreshed ends stay, the rest go once the window passes.
 	later := now.Add(replyWindow + replySweep)
-	r.remember(quietLink, keyOf(1, addr(0)), addr(0), later)
-	if _, ok := r.replyTo(keyOf(1, addr(0)), later); !ok {
+	r.peers.remember(quietLink, keyOf(1, addr(0)), addr(0), later)
+	if _, ok := r.peers.replyTo(keyOf(1, addr(0)), later); !ok {
 		t.Fatal("a refreshed end expired")
 	}
-	if _, ok := r.replyTo(keyOf(1, addr(200)), later); ok {
+	if _, ok := r.peers.replyTo(keyOf(1, addr(200)), later); ok {
 		t.Fatal("an end past the window still allowed")
 	}
-	if len(r.links[busyLink].entriesForTest()) != 0 || len(r.remotes) != 1 {
-		t.Fatalf("after the sweep: %d remote ends left, want 1", len(r.remotes))
+	if len(r.peers.links[busyLink].entriesForTest()) != 0 || len(r.peers.remotes) != 1 {
+		t.Fatalf("after the sweep: %d remote ends left, want 1", len(r.peers.remotes))
 	}
 	// A link-local remote's zone is kept for the reply.
 	zoned := netip.MustParseAddrPort("[fe80::1%eth0]:51820")
-	r.remember(quietLink, keyOf(1, zoned), zoned, later)
-	if to, ok := r.replyTo(keyOf(1, netip.MustParseAddrPort("[fe80::1]:51820")), later); !ok || to != zoned {
+	r.peers.remember(quietLink, keyOf(1, zoned), zoned, later)
+	if to, ok := r.peers.replyTo(keyOf(1, netip.MustParseAddrPort("[fe80::1]:51820")), later); !ok || to != zoned {
 		t.Fatalf("a reply to a zoned remote goes to %v (%v)", to, ok)
 	}
 }

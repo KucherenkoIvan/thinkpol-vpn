@@ -28,16 +28,26 @@ const (
 )
 
 // route is one space's way to its current worker, across the worker's
-// restarts, and the remote ends the worker may answer.
+// restarts.
 type route struct {
 	space    transport.SpaceID
 	end      atomic.Pointer[workerSockets] // nil while no worker runs
 	counters counters
+	// peers is the reply tracker: where the worker's replies may go.
+	peers replyPeers
+}
 
+// replyPeers owns the space's reply tracker: the remote ends the worker
+// may answer, per link, bounded and expiring.
+type replyPeers struct {
 	mu      sync.Mutex
 	links   map[transport.NodeID]*linkRemotes
 	remotes map[replyKey]*remote
 	swept   time.Time
+}
+
+func newReplyPeers() replyPeers {
+	return replyPeers{links: map[transport.NodeID]*linkRemotes{}, remotes: map[replyKey]*remote{}}
 }
 
 // replyKey is a remote end as the worker names it: the listener, and the
@@ -69,22 +79,23 @@ type linkRemotes struct {
 
 // remember makes the remote end of a live datagram of link node a
 // destination for the space's replies for replyWindow. The link keeps its
-// latest replyPeersPerLink remote ends; a new one evicts the link's oldest.
-func (r *route) remember(node transport.NodeID, key replyKey, to netip.AddrPort, now time.Time) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.sweep(now)
-	lr := r.links[node]
+// latest replyPeersPerLink remote ends; a new one evicts the link's
+// oldest, which remember reports.
+func (p *replyPeers) remember(node transport.NodeID, key replyKey, to netip.AddrPort, now time.Time) (evicted bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.sweep(now)
+	lr := p.links[node]
 	if lr == nil {
 		lr = &linkRemotes{}
-		r.links[node] = lr
+		p.links[node] = lr
 	}
-	if rm := r.remotes[key]; rm != nil {
+	if rm := p.remotes[key]; rm != nil {
 		for i := range lr.n {
 			if lr.entries[i].key == key {
 				lr.entries[i].at = now
 				rm.at, rm.to = now, to
-				return
+				return false
 			}
 		}
 	}
@@ -95,58 +106,59 @@ func (r *route) remember(node transport.NodeID, key replyKey, to netip.AddrPort,
 				oldest = i
 			}
 		}
-		r.release(lr.entries[oldest].key)
+		p.release(lr.entries[oldest].key)
 		lr.n--
 		lr.entries[oldest] = lr.entries[lr.n]
-		r.counters.replyPeersEvicted.Add(1)
+		evicted = true
 	}
 	lr.entries[lr.n].key, lr.entries[lr.n].at = key, now
 	lr.n++
-	rm := r.remotes[key]
+	rm := p.remotes[key]
 	if rm == nil {
 		rm = &remote{}
-		r.remotes[key] = rm
+		p.remotes[key] = rm
 	}
 	rm.holders++
 	rm.at, rm.to = now, to
+	return evicted
 }
 
-// release drops one link's hold on a remote end; r.mu held.
-func (r *route) release(key replyKey) {
-	if rm := r.remotes[key]; rm != nil {
+// release drops one link's hold on a remote end; p.mu held.
+func (p *replyPeers) release(key replyKey) {
+	if rm := p.remotes[key]; rm != nil {
 		if rm.holders--; rm.holders <= 0 {
-			delete(r.remotes, key)
+			delete(p.remotes, key)
 		}
 	}
 }
 
-// sweep drops expired remote ends, at most once per replySweep; r.mu held.
-func (r *route) sweep(now time.Time) {
-	if now.Sub(r.swept) < replySweep {
+// sweep drops expired remote ends, at most once per replySweep; p.mu held.
+func (p *replyPeers) sweep(now time.Time) {
+	if now.Sub(p.swept) < replySweep {
 		return
 	}
-	r.swept = now
-	for node, lr := range r.links {
+	p.swept = now
+	for node, lr := range p.links {
 		for i := 0; i < lr.n; {
 			if now.Sub(lr.entries[i].at) <= replyWindow {
 				i++
 				continue
 			}
-			r.release(lr.entries[i].key)
+			p.release(lr.entries[i].key)
 			lr.n--
 			lr.entries[i] = lr.entries[lr.n]
 		}
 		if lr.n == 0 {
-			delete(r.links, node)
+			delete(p.links, node)
 		}
 	}
 }
 
 // replyTo is where a reply to key goes, if the worker may send one.
-func (r *route) replyTo(key replyKey, now time.Time) (netip.AddrPort, bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	rm := r.remotes[key]
+func (p *replyPeers) replyTo(key replyKey, now time.Time) (netip.AddrPort, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	rm := p.remotes[key]
 	if rm == nil || now.Sub(rm.at) > replyWindow {
 		return netip.AddrPort{}, false
 	}
@@ -169,7 +181,7 @@ func (s *shared) reply(space transport.SpaceID, h ipc.DatagramHeader, d []byte) 
 		r.counters.repliesNoListener.Add(1)
 		return
 	}
-	to, ok := r.replyTo(keyOf(h.Listener, h.Remote), s.now())
+	to, ok := r.peers.replyTo(keyOf(h.Listener, h.Remote), s.now())
 	if !ok {
 		r.counters.repliesNotAllowed.Add(1)
 		return

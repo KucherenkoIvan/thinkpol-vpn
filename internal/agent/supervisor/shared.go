@@ -192,7 +192,7 @@ func (s *shared) setSpaces(inbound map[transport.SpaceID]map[string][]transport.
 	for space := range inbound {
 		r := old[space]
 		if r == nil {
-			r = &route{space: space, links: map[transport.NodeID]*linkRemotes{}, remotes: map[replyKey]*remote{}}
+			r = &route{space: space, peers: newReplyPeers()}
 		}
 		routes[space] = r
 	}
@@ -482,7 +482,9 @@ func (s *shared) forward(r *route, listener uint32, node transport.NodeID, from 
 	}
 	r.counters.forwarded.Add(1)
 	r.counters.forwardedBytes.Add(uint64(len(d)))
-	r.remember(node, key, from, s.now())
+	if r.peers.remember(node, key, from, s.now()) {
+		r.counters.replyPeersEvicted.Add(1)
+	}
 	if s.fair != nil {
 		s.fair.Charge(r.space, len(d))
 	}
