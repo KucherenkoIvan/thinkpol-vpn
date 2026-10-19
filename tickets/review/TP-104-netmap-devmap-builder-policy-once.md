@@ -24,9 +24,9 @@ Map and device-plan validation rules live in one place so overlay-network, chain
 - lists package API beyond what devmap and netmap need to share.
 
 ## Acceptance
-- [ ] netmap and devmap tests pass; any moved validation covered by existing or new unit tests
-- [ ] `make lint`, `make test`, `make lab-test` pass
-- [ ] no behaviour change: existing tests pass unchanged, or each changed test says why
+- [x] netmap and devmap tests pass; any moved validation covered by existing or new unit tests
+- [x] `make lint`, `make test`, `make lab-test` pass
+- [x] no behaviour change: existing tests pass unchanged, or each changed test says why
 
 ## Notes
 Origin: design and code-quality review of rewrite at 2fa1191 (2026-10-18).
@@ -34,3 +34,4 @@ Origin: design and code-quality review of rewrite at 2fa1191 (2026-10-18).
 ## Log
 - 2026-10-18 created in backlog (code-quality review)
 - 2026-10-19 backlog → in-progress — owner: agent-glm, branch: tp-104-netmap-devmap-builder-policy-once
+- 2026-10-19 in-progress → review — e16652f; make lint, make test and make lab-test (34 packages, GOFLAGS=-p=4 LAB_P=1) pass. Two deliberate tightenings: lists.CheckName now refuses trailing dashes (netmap's rule), and devmap.CheckName refuses trailing-dash node names before the space-name check (nameRE allowed them); the one spec_test case that hit it says why.
