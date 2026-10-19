@@ -33,6 +33,12 @@ type SystemConfig struct {
 	// DHCP client rewriting resolv.conf, resolved's uplink servers). It is
 	// called from the configuration's own goroutine.
 	Upstreams func([]netip.Addr)
+	// UpstreamsUnknown says the caller's own read of the OS's resolvers
+	// failed, so it has none: on macOS the first good read tells Upstreams
+	// (nil when offline), and until then Problem reports
+	// ErrUpstreamsStale. Linux ignores it: it tells only when resolv.conf
+	// changes. Read when the configuration is first set.
+	UpstreamsUnknown bool
 	// Log receives warnings from configuration watchers.
 	Log *slog.Logger
 }
@@ -45,15 +51,63 @@ type System interface {
 	Update(SystemConfig) error
 	// Problem says why names may still be resolved outside the node's
 	// resolver (another link's domains in systemd-resolved, a rewrite that
-	// failed), nil when the OS resolves through it only.
+	// failed), nil when the OS resolves through it only. It may also
+	// report ErrUpstreamsStale, which is not unprotected.
 	Problem() error
 	// Restore puts back what was there before.
 	Restore() error
 }
 
-// ErrUnprotected wraps every Problem: the OS doesn't resolve only through
-// the node's resolver.
+// ErrUnprotected marks the Problems where the OS doesn't resolve only
+// through the node's resolver. A System's Problem may instead report
+// ErrUpstreamsStale, which is not unprotected; Unprotected tells the
+// two apart.
 var ErrUnprotected = errors.New("dns: names may be resolved outside the node")
+
+// ErrUpstreamsStale marks a Problem where the last read of the OS's own
+// resolvers failed: the direct upstreams are the ones read before, so
+// `direct` names may not resolve. The OS still resolves through the
+// node, so on its own it is not unprotected; Unprotected sorts a joined
+// Problem. Wrap a cause in it with %v: a %w'd cause is a part of its own,
+// and an untagged part is unprotected.
+var ErrUpstreamsStale = errors.New("dns: the direct upstreams may be stale")
+
+// Unprotected says whether a Problem leaves names resolving outside the
+// node's resolver: an ErrUnprotected problem, or anything else — a
+// System that reports a problem it doesn't name must read as
+// unprotected, never as protected. Only nil and a problem whose every
+// part is ErrUpstreamsStale are not: a joined problem is unprotected if
+// any of its parts is, so an untagged part beside a stale one isn't
+// hidden by it.
+func Unprotected(problem error) bool {
+	if problem == nil {
+		return false
+	}
+	if errors.Is(problem, ErrUnprotected) {
+		return true
+	}
+	switch e := problem.(type) {
+	case interface{ Unwrap() []error }:
+		parts := 0
+		for _, part := range e.Unwrap() {
+			if part == nil {
+				continue
+			}
+			parts++
+			if Unprotected(part) {
+				return true
+			}
+		}
+		if parts > 0 {
+			return false
+		}
+	case interface{ Unwrap() error }:
+		if inner := e.Unwrap(); inner != nil {
+			return Unprotected(inner)
+		}
+	}
+	return !errors.Is(problem, ErrUpstreamsStale)
+}
 
 // A resolv.conf the node manages starts with resolvConfHeader and keeps
 // what it replaced in comment lines, so it can be put back even after a

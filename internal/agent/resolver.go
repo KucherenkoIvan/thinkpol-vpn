@@ -29,8 +29,9 @@ func (r *runner) newResolver() *dns.Server {
 	if len(upstreams) == 0 && !r.dp.Forward {
 		own := []netip.Addr{r.section.Node.IPv4, r.section.Node.IPv6}
 		host, err := r.dp.systemUpstreams(own)
+		r.upstreamsUnknown.Store(err != nil)
 		if err != nil {
-			r.dp.Log.Warn("DNS: the system's resolvers are unknown; direct names won't resolve", "err", err)
+			r.dp.Log.Warn("DNS: the system's resolvers are unknown; direct names won't resolve until a read of them works", "err", err)
 		}
 		for _, a := range host {
 			upstreams = append(upstreams, netip.AddrPortFrom(a, dns.Port))
@@ -40,7 +41,7 @@ func (r *runner) newResolver() *dns.Server {
 		if r.dp.Forward {
 			// workerUpstreams refused every one and logged each.
 			r.dp.Log.Warn("DNS: no upstream to ask: the worker's egress refuses every configured one; tunnel-bound names won't resolve")
-		} else {
+		} else if !r.upstreamsUnknown.Load() { // a failed read warned already
 			r.dp.Log.Warn("DNS: no upstream to ask; set one with -dns-upstream")
 		}
 	}
@@ -84,7 +85,9 @@ func (g *dnsGuard) system() dns.System {
 }
 
 // problem says why the OS may resolve names outside the node while it
-// should not; nil when it doesn't, or when it isn't meant to.
+// should not (or that the direct upstreams may be stale,
+// dns.ErrUpstreamsStale, which isn't unprotected); nil when neither, or
+// when it isn't meant to.
 func (g *dnsGuard) problem() error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -116,8 +119,10 @@ func (r *runner) systemConfig() (dns.SystemConfig, bool) {
 	}
 	if len(r.dp.DNSUpstreams) == 0 {
 		srv, own, log := r.resolver, []netip.Addr{r.section.Node.IPv4, r.section.Node.IPv6}, r.dp.Log
-		engine, routes := r.engine, r.dp.RouteTable
+		engine, routes, unknown := r.engine, r.dp.RouteTable, &r.upstreamsUnknown
+		c.UpstreamsUnknown = unknown.Load()
 		c.Upstreams = func(host []netip.Addr) {
+			unknown.Store(false)
 			var ups []netip.AddrPort
 			for _, a := range host {
 				if !slices.Contains(own, a) && !a.IsUnspecified() {
@@ -165,7 +170,13 @@ func (r *runner) pointSystem() {
 	r.guard.set(true, sys, nil)
 	r.systemCfg, r.dnsRetryAt = want, time.Time{}
 	if p := sys.Problem(); p != nil {
-		r.dp.Log.Error("DNS: the system resolves through the node, but not only: names may leave outside the tunnel", "err", p)
+		if dns.Unprotected(p) {
+			r.dp.Log.Error("DNS: the system resolves through the node, but not only: names may leave outside the tunnel", "err", p)
+		} else {
+			// The OS configuration warned when the read failed: one
+			// warning an episode.
+			r.dp.Log.Info("DNS: the system resolves through the node; the direct upstreams may be stale", "err", p)
+		}
 		return
 	}
 	r.dp.Log.Info("DNS: the system resolves through the node", "servers", want.Servers)

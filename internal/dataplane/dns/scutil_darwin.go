@@ -63,18 +63,21 @@ type store interface {
 
 // scutil is the store through /usr/sbin/scutil's command language: pure
 // Go, no SystemConfiguration framework (cgo) needed.
-type scutil struct{}
+type scutil struct{ path string }
 
 const scutilPath = "/usr/sbin/scutil"
 
-func (scutil) run(script string) (string, error) {
+func (s scutil) run(script string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, scutilPath)
+	cmd := exec.CommandContext(ctx, s.path)
 	cmd.Stdin = strings.NewReader(script)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("scutil: %w: %s", err, bytes.TrimSpace(out))
+		if msg := bytes.TrimSpace(out); len(msg) > 0 {
+			return "", fmt.Errorf("%w: %s", err, msg)
+		}
+		return "", err
 	}
 	return string(out), nil
 }
@@ -85,9 +88,13 @@ func (s scutil) keys(pattern string) ([]string, error) {
 	}
 	out, err := s.run("list " + pattern + "\n")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("scutil: list %s: %w", pattern, err)
 	}
-	return parseList(out), nil
+	keys, err := parseList(out)
+	if err != nil {
+		return nil, fmt.Errorf("scutil: list %s: %w", pattern, err)
+	}
+	return keys, nil
 }
 
 func (s scutil) get(key string) (dict, bool, error) {
@@ -96,9 +103,13 @@ func (s scutil) get(key string) (dict, bool, error) {
 	}
 	out, err := s.run("show " + key + "\n")
 	if err != nil {
-		return dict{}, false, err
+		return dict{}, false, fmt.Errorf("scutil: show %s: %w", key, err)
 	}
-	return parseShow(out)
+	d, ok, err := parseShow(out)
+	if err != nil {
+		return dict{}, false, fmt.Errorf("scutil: show %s: %w", key, err)
+	}
+	return d, ok, nil
 }
 
 func (s scutil) set(key string, d dict) error {
@@ -108,7 +119,7 @@ func (s scutil) set(key string, d dict) error {
 	}
 	out, err := s.run(script)
 	if err != nil {
-		return err
+		return fmt.Errorf("scutil: set %s: %w", key, err)
 	}
 	// scutil says nothing when every command worked.
 	if out = strings.TrimSpace(out); out != "" {
@@ -123,7 +134,7 @@ func (s scutil) remove(key string) error {
 	}
 	out, err := s.run("remove " + key + "\n")
 	if err != nil {
-		return err
+		return fmt.Errorf("scutil: remove %s: %w", key, err)
 	}
 	if out = strings.TrimSpace(out); out != "" && !strings.Contains(out, "No such key") {
 		return fmt.Errorf("scutil: remove %s: %s", key, out)
@@ -131,11 +142,11 @@ func (s scutil) remove(key string) error {
 	return nil
 }
 
-// watchStore subscribes to changes of the store's keys matching patterns
+// watch subscribes to changes of the store's keys matching patterns
 // through a long-lived scutil (`n.add <pattern> pattern`, `n.watch`), which
 // prints a notification for every change: each line it prints signals.
 // It runs until ctx ends; the channel closes when scutil exits.
-func watchStore(ctx context.Context, patterns []string) (<-chan struct{}, error) {
+func (s scutil) watch(ctx context.Context, patterns []string) (<-chan struct{}, error) {
 	var script strings.Builder
 	for _, p := range patterns {
 		if err := checkToken(p); err != nil {
@@ -144,7 +155,7 @@ func watchStore(ctx context.Context, patterns []string) (<-chan struct{}, error)
 		fmt.Fprintf(&script, "n.add %s pattern\n", p)
 	}
 	script.WriteString("n.watch\n")
-	cmd := exec.CommandContext(ctx, scutilPath)
+	cmd := exec.CommandContext(ctx, s.path)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
@@ -197,8 +208,18 @@ func setScript(key string, d dict) (string, error) {
 	var b strings.Builder
 	b.WriteString("d.init\n")
 	for _, k := range sortedKeys(d.strs) {
+		if err := checkToken(k); err != nil {
+			return "", err
+		}
 		v := d.strs[k]
-		if err := errors.Join(checkToken(k), checkToken(v)); err != nil {
+		if v == "" && !numeric[k] {
+			// scutil reads "" as one empty string, as it does in
+			// arrays: a value that can't be written back would make
+			// the original unrestorable.
+			fmt.Fprintf(&b, `d.add %s ""`+"\n", k)
+			continue
+		}
+		if err := checkToken(v); err != nil {
 			return "", err
 		}
 		if numeric[k] {
@@ -243,30 +264,55 @@ func sortedKeys[V any](m map[string]V) []string {
 	return out
 }
 
-// parseList reads `list`'s output: "  subKey [0] = <key>" per key.
-func parseList(out string) []string {
+// parseList reads `list`'s output: "  subKey [0] = <key>" per key, or
+// "  no keys." when nothing matches (real scutil always prints it for
+// none, so completely empty output is a failed listing). scutil answers
+// a command it doesn't know in text and exits 0, so any other line is a
+// failed listing, not an empty one.
+func parseList(out string) ([]string, error) {
 	var keys []string
+	sawLine := false
 	sc := bufio.NewScanner(strings.NewReader(out))
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
-		if !strings.HasPrefix(line, "subKey [") {
-			continue
-		}
-		if _, k, ok := strings.Cut(line, "] = "); ok && k != "" {
+		switch {
+		case line == "":
+		case line == "no keys.":
+			sawLine = true
+		case strings.HasPrefix(line, "subKey ["):
+			sawLine = true
+			_, k, ok := strings.Cut(line, "] = ")
+			if !ok || k == "" {
+				return nil, fmt.Errorf("unexpected line %q", line)
+			}
 			keys = append(keys, k)
+		default:
+			return nil, fmt.Errorf("unexpected line %q", line)
 		}
 	}
-	return keys
+	if err := sc.Err(); err != nil {
+		return nil, fmt.Errorf("reading the list: %w", err)
+	}
+	if !sawLine {
+		return nil, errors.New("empty list output")
+	}
+	return keys, nil
 }
 
 // parseShow reads `show`'s output: a dictionary, or "No such key".
 func parseShow(out string) (dict, bool, error) {
 	trimmed := strings.TrimSpace(out)
-	if strings.Contains(trimmed, "No such key") {
+	// "No such key" names an absent key; a key whose value contains the
+	// phrase is present, so it is matched only outside a dictionary.
+	head := trimmed
+	if i := strings.Index(trimmed, "<dictionary> {"); i >= 0 {
+		head = trimmed[:i]
+	}
+	if strings.TrimSpace(head) == "No such key" {
 		return dict{}, false, nil
 	}
 	if !strings.HasPrefix(trimmed, "<dictionary> {") {
-		return dict{}, false, fmt.Errorf("scutil: unexpected output %q", firstLine(trimmed))
+		return dict{}, false, fmt.Errorf("unexpected output %q", firstLine(trimmed))
 	}
 	d := newDict()
 	lines := strings.Split(trimmed, "\n")[1:]
@@ -277,7 +323,11 @@ func parseShow(out string) (dict, bool, error) {
 		}
 		k, v, ok := strings.Cut(line, " : ")
 		if !ok {
-			return dict{}, false, fmt.Errorf("scutil: unexpected line %q", line)
+			if k, ok = strings.CutSuffix(line, " :"); ok { // "Key : " trimmed: an empty string value
+				d.strs[k] = ""
+				continue
+			}
+			return dict{}, false, fmt.Errorf("unexpected line %q", line)
 		}
 		switch {
 		case v == "<array> {":
@@ -287,11 +337,11 @@ func parseShow(out string) (dict, bool, error) {
 				if el == "}" {
 					break
 				}
-				if strings.HasSuffix(el, " :") { // "0 : " trimmed: an empty string
+				_, ev, ok := strings.Cut(el, " : ")
+				if !ok && strings.HasSuffix(el, " :") { // "0 : " trimmed: an empty string
 					arr = append(arr, "")
 					continue
 				}
-				_, ev, ok := strings.Cut(el, " : ")
 				if !ok || strings.HasPrefix(ev, "<") {
 					d.opaque = true // nested arrays or dictionaries, data
 					if strings.HasSuffix(ev, "{") {
@@ -311,7 +361,7 @@ func parseShow(out string) (dict, bool, error) {
 			d.strs[k] = v
 		}
 	}
-	return dict{}, false, errors.New("scutil: unterminated dictionary")
+	return dict{}, false, errors.New("unterminated dictionary")
 }
 
 // skipBlock returns the index of the line closing the block opened at i.

@@ -1,6 +1,8 @@
 package dns
 
 import (
+	"errors"
+	"fmt"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -9,6 +11,46 @@ import (
 	"testing"
 	"time"
 )
+
+// Unprotected sorts a Problem: an untagged error is unprotected (a
+// System that reports a problem it doesn't name fails closed), only nil
+// and ErrUpstreamsStale are not.
+func TestUnprotectedSortsProblems(t *testing.T) {
+	if Unprotected(nil) {
+		t.Error("nil is unprotected")
+	}
+	if !Unprotected(ErrUnprotected) || !Unprotected(fmt.Errorf("%w: rewrite failed", ErrUnprotected)) {
+		t.Error("an ErrUnprotected problem is not unprotected")
+	}
+	if Unprotected(fmt.Errorf("%w: read failed", ErrUpstreamsStale)) {
+		t.Error("stale upstreams are unprotected")
+	}
+	if !Unprotected(errors.New("the store is unreadable")) {
+		t.Error("an untagged problem reads as protected")
+	}
+	if !Unprotected(fmt.Errorf("dns: %w; %w", nil, nil)) {
+		t.Error("a problem wrapping only nils reads as protected")
+	}
+	if !Unprotected(taggedUnprotected{fmt.Errorf("%w: read failed", ErrUpstreamsStale)}) {
+		t.Error("a wrapper that is ErrUnprotected around a stale problem reads as protected")
+	}
+	stale := fmt.Errorf("%w: read failed", ErrUpstreamsStale)
+	if !Unprotected(errors.Join(errors.New("the store is unreadable"), stale)) {
+		t.Error("an untagged problem joined with a stale one reads as protected")
+	}
+	if !Unprotected(errors.Join(stale, fmt.Errorf("%w: rewrite failed", ErrUnprotected))) {
+		t.Error("an unprotected problem joined with a stale one reads as protected")
+	}
+	if !Unprotected(fmt.Errorf("checking: %w", errors.Join(stale, errors.New("the store is unreadable")))) {
+		t.Error("a wrapped join with an untagged part reads as protected")
+	}
+	if Unprotected(errors.Join(stale, fmt.Errorf("again: %w", ErrUpstreamsStale))) {
+		t.Error("two stale problems are unprotected")
+	}
+	if Unprotected(errors.Join(nil, nil)) {
+		t.Error("a join of nothing is unprotected")
+	}
+}
 
 var testSystem = SystemConfig{
 	Servers: []netip.Addr{netip.MustParseAddr("100.64.0.2"), netip.MustParseAddr("fd12:3456:789a::2")},
@@ -332,3 +374,10 @@ func TestALeftoverIsRestoredAtStart(t *testing.T) {
 		t.Errorf("a file the node doesn't manage changed: %v", err)
 	}
 }
+
+// taggedUnprotected is ErrUnprotected itself, whatever it wraps.
+type taggedUnprotected struct{ inner error }
+
+func (e taggedUnprotected) Error() string        { return "unprotected: " + e.inner.Error() }
+func (e taggedUnprotected) Unwrap() error        { return e.inner }
+func (e taggedUnprotected) Is(target error) bool { return target == ErrUnprotected }

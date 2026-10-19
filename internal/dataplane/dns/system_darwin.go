@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/netip"
 	"os"
 	"regexp"
@@ -69,26 +70,41 @@ const (
 
 var (
 	serviceStatePattern = `State:/Network/Service/[^/]+/(IPv4|IPv6|DNS)`
-	serviceKey          = regexp.MustCompile(`^(State|Setup):/Network/Service/([^/]+)/(IPv4|IPv6|DNS)$`)
-	resolverDir         = "/etc/resolver"
+	serviceDNSPattern   = `State:/Network/Service/[^/]+/DNS`
+	// serviceSetupDNSPattern is the Setup: twin of serviceDNSPattern:
+	// watched, and listed when counting the services whose DNS was set
+	// by hand.
+	serviceSetupDNSPattern = `Setup:/Network/Service/[^/]+/DNS`
+	globalIPv4Key          = "State:/Network/Global/IPv4"
+	globalIPv6Key          = "State:/Network/Global/IPv6"
+	// globalIPPattern is both globals, globalIPv4Key and globalIPv6Key:
+	// watched for the primary service.
+	globalIPPattern = `State:/Network/Global/IPv[46]`
+	serviceKey      = regexp.MustCompile(`^(State|Setup):/Network/Service/([^/]+)/(IPv4|IPv6|DNS)$`)
+	resolverDir     = "/etc/resolver"
 )
+
+// errNoPrimary is the absence of a primary network service (offline): an
+// empty answer, not a failed read.
+var errNoPrimary = errors.New("dns: no primary network service")
 
 // SetSystem points the OS resolver at c.Servers, searching c.Search
 // only, until Restore; it keeps doing so as the system republishes its
 // own configuration.
 func SetSystem(c SystemConfig) (System, error) {
-	return setDynamicStore(scutil{}, c, watchStore, checkEvery)
+	sc := scutil{path: scutilPath}
+	return setDynamicStore(sc, c, sc.watch, checkEvery)
 }
 
 // RestoreSystem puts back what a node that died while connected left
 // overridden. Call it when the node starts.
-func RestoreSystem() error { return restoreBackup(scutil{}) }
+func RestoreSystem() error { return restoreBackup(scutil{path: scutilPath}) }
 
 // SystemUpstreams are the resolvers the OS uses on its own: the primary
 // service's DNS servers (set by hand, else published), as they were
 // before the node overrode them. Addresses in exclude are left out.
 func SystemUpstreams(exclude []netip.Addr) ([]netip.Addr, error) {
-	return systemUpstreams(scutil{}, exclude)
+	return systemUpstreams(scutil{path: scutilPath}, exclude)
 }
 
 // original is a DNS key as the system had it before the override.
@@ -185,6 +201,15 @@ type dynamicStore struct {
 	// primary is the primary service's original servers, last told to
 	// cfg.Upstreams.
 	primary []netip.Addr
+	// primaryFailed marks a read of the primary service's servers that
+	// failed at the last check: warned about once, not at every check,
+	// and it drives Problem's ErrUpstreamsStale.
+	primaryFailed bool
+	// untold: cfg.Upstreams has no servers yet, its caller's own read
+	// having failed (UpstreamsUnknown). The first good read tells it,
+	// whether or not the servers changed; until then Problem reports
+	// ErrUpstreamsStale.
+	untold bool
 }
 
 // storeWatch subscribes to changes of the store's keys matching patterns;
@@ -192,7 +217,7 @@ type dynamicStore struct {
 type storeWatch func(ctx context.Context, patterns []string) (<-chan struct{}, error)
 
 // watchedKeys are what a check depends on.
-var watchedKeys = []string{serviceStatePattern, `Setup:/Network/Service/[^/]+/DNS`, `State:/Network/Global/IPv[46]`}
+var watchedKeys = []string{serviceStatePattern, serviceSetupDNSPattern, globalIPPattern}
 
 func setDynamicStore(st store, c SystemConfig, notify storeWatch, every time.Duration) (*dynamicStore, error) {
 	if len(c.Servers) == 0 {
@@ -202,11 +227,21 @@ func setDynamicStore(st store, c SystemConfig, notify storeWatch, every time.Dur
 	if err != nil {
 		return nil, err
 	}
-	s := &dynamicStore{st: st, cfg: c, backup: backup, stop: make(chan struct{}), done: make(chan struct{})}
+	s := &dynamicStore{st: st, cfg: c, backup: backup, stop: make(chan struct{}), done: make(chan struct{}),
+		untold: c.UpstreamsUnknown && c.Upstreams != nil}
 	s.mu.Lock()
 	err = s.apply()
-	s.primary = s.primaryOriginal()
+	primary, read := s.primaryOriginal()
+	s.primary = primary
 	s.err = err
+	untold := s.untold
+	// A good read now is the first one the caller hears of: told below
+	// whatever a later read finds.
+	tellNow := untold && read
+	if tellNow {
+		s.untold = false
+	}
+	tell := s.cfg.Upstreams
 	s.mu.Unlock()
 	if err != nil && len(s.backup) == 0 {
 		_ = s.restore()
@@ -224,6 +259,13 @@ func setDynamicStore(st store, c SystemConfig, notify storeWatch, every time.Dur
 	}
 	go func() {
 		defer cancel()
+		// Upstreams is told from this goroutine only.
+		switch {
+		case tellNow:
+			tell(primary)
+		case untold:
+			s.check() // the first check is now, not a backstop later
+		}
 		s.watch(events, every)
 	}()
 	return s, nil
@@ -265,7 +307,7 @@ func (s *dynamicStore) targets() (out []string, manual int, err error) {
 	if err != nil {
 		return nil, 0, err
 	}
-	setup, err := s.st.keys(`Setup:/Network/Service/[^/]+/DNS`)
+	setup, err := s.st.keys(serviceSetupDNSPattern)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -331,7 +373,7 @@ func (s *dynamicStore) apply() error {
 		}
 		have, present, err := s.st.get(k)
 		if err != nil {
-			errs = append(errs, err)
+			errs = append(errs, fmt.Errorf("dns: reading %s: %w", k, err))
 			continue
 		}
 		if present && isOverride(have) {
@@ -360,7 +402,12 @@ func (s *dynamicStore) apply() error {
 			continue
 		}
 		// Read back: a write the store took differently is no override.
-		if got, ok, err := s.st.get(c.key); err != nil || !ok || !isOverride(got) {
+		got, ok, err := s.st.get(c.key)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("dns: reading back %s: %w", c.key, err))
+			continue
+		}
+		if !ok || !isOverride(got) {
 			errs = append(errs, fmt.Errorf("dns: %s doesn't hold the override after setting it", c.key))
 		}
 	}
@@ -376,10 +423,14 @@ func (s *dynamicStore) apply() error {
 	}
 	if putBack {
 		if err := writeBackup(s.st, s.backup); err != nil {
-			errs = append(errs, err)
+			errs = append(errs, fmt.Errorf("dns: keeping the system's configuration: %w", err))
 		}
 	}
-	s.others = s.otherResolvers()
+	if others, err := s.otherResolvers(); err != nil {
+		errs = append(errs, err)
+	} else {
+		s.others = others
+	}
 	return errors.Join(errs...)
 }
 
@@ -389,7 +440,7 @@ func (s *dynamicStore) putBack(k string) error {
 	o := s.backup[k]
 	have, present, err := s.st.get(k)
 	if err != nil {
-		return err
+		return fmt.Errorf("dns: reading %s: %w", k, err)
 	}
 	if present && isOverride(have) {
 		if o.Present && !o.Unrestorable {
@@ -407,16 +458,23 @@ func (s *dynamicStore) putBack(k string) error {
 
 // otherResolvers are the domains other software sends to resolvers of
 // its own: supplemental match domains of services that aren't overridden
-// (another VPN's split DNS) and /etc/resolver files.
-func (s *dynamicStore) otherResolvers() []string {
+// (another VPN's split DNS) and /etc/resolver files. A failed read is an
+// error, not an empty answer: what can't be read may hold a resolver.
+func (s *dynamicStore) otherResolvers() ([]string, error) {
 	var out []string
-	keys, _ := s.st.keys(`State:/Network/Service/[^/]+/DNS`)
+	keys, err := s.st.keys(serviceDNSPattern)
+	if err != nil {
+		return nil, fmt.Errorf("dns: listing the network services' DNS states: %w", err)
+	}
 	for _, k := range keys {
 		if _, ours := s.backup[k]; ours {
 			continue
 		}
 		d, ok, err := s.st.get(k)
-		if err != nil || !ok || isOverride(d) {
+		if err != nil {
+			return nil, fmt.Errorf("dns: reading %s: %w", k, err)
+		}
+		if !ok || isOverride(d) {
 			continue
 		}
 		for _, dom := range d.array("SupplementalMatchDomains") {
@@ -426,7 +484,12 @@ func (s *dynamicStore) otherResolvers() []string {
 			out = append(out, dom)
 		}
 	}
-	if entries, err := os.ReadDir(resolverDir); err == nil {
+	entries, err := os.ReadDir(resolverDir)
+	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("dns: reading %s: %w", resolverDir, err)
+		}
+	} else {
 		for _, e := range entries {
 			if !strings.HasPrefix(e.Name(), ".") {
 				out = append(out, e.Name())
@@ -434,14 +497,37 @@ func (s *dynamicStore) otherResolvers() []string {
 		}
 	}
 	slices.Sort(out)
-	return slices.Compact(out)
+	return slices.Compact(out), nil
 }
 
 // primaryOriginal is the primary service's servers as the system has
-// them: set by hand, else published; called with mu held.
-func (s *dynamicStore) primaryOriginal() []netip.Addr {
-	addrs, _ := primaryServers(s.st, s.backup)
-	return addrs
+// them: set by hand, else published; read is false when reading them
+// failed. A failed read is not an empty answer: the last one is kept and
+// the failure logged once, so one unreadable scutil answer doesn't wipe
+// the direct upstreams; no primary network service (offline) is a real
+// empty answer and is told as such. Called with mu held.
+func (s *dynamicStore) primaryOriginal() (addrs []netip.Addr, read bool) {
+	if s.cfg.Upstreams == nil {
+		// The system's servers aren't used as the direct upstreams
+		// (-dns-upstream set): never read, and never stale.
+		s.primaryFailed, s.untold = false, false
+		return nil, true
+	}
+	addrs, err := primaryServers(s.st, s.backup)
+	if err != nil && !errors.Is(err, errNoPrimary) {
+		// While untold, the caller warned already: one warning for the
+		// episode.
+		if !s.primaryFailed && !s.untold && s.cfg.Log != nil {
+			s.cfg.Log.Warn("DNS: reading the primary service's DNS servers failed; keeping the previous upstreams", "err", err)
+		}
+		s.primaryFailed = true
+		return s.primary, false
+	}
+	s.primaryFailed = false
+	if errors.Is(err, errNoPrimary) {
+		return nil, true
+	}
+	return addrs, true
 }
 
 func (s *dynamicStore) watch(events <-chan struct{}, every time.Duration) {
@@ -471,7 +557,8 @@ func (s *dynamicStore) watch(events <-chan struct{}, every time.Duration) {
 }
 
 // check overrides again what the system published since, and tells
-// cfg.Upstreams when the primary service's own servers changed.
+// cfg.Upstreams when the primary service's own servers changed, or at
+// the first good read while it has none.
 func (s *dynamicStore) check() {
 	s.mu.Lock()
 	if s.stopped {
@@ -479,8 +566,11 @@ func (s *dynamicStore) check() {
 		return
 	}
 	s.err = s.apply()
-	primary := s.primaryOriginal()
-	changed := !slices.Equal(primary, s.primary)
+	primary, read := s.primaryOriginal()
+	changed := !slices.Equal(primary, s.primary) || (read && s.untold)
+	if read {
+		s.untold = false
+	}
 	s.primary = primary
 	tell := s.cfg.Upstreams
 	s.mu.Unlock()
@@ -503,15 +593,24 @@ func (s *dynamicStore) Update(c SystemConfig) error {
 func (s *dynamicStore) Problem() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	var errs []error
 	switch {
 	case s.err != nil:
-		return fmt.Errorf("%w: %v", ErrUnprotected, s.err)
+		errs = append(errs, fmt.Errorf("%w: %v", ErrUnprotected, s.err))
 	case len(s.others) > 0:
-		return fmt.Errorf("%w: other resolvers take the names under %d domains", ErrUnprotected, len(s.others))
+		errs = append(errs, fmt.Errorf("%w: other resolvers take the names under %d domains", ErrUnprotected, len(s.others)))
 	case s.manual > 0:
-		return fmt.Errorf("%w: %d network services have DNS set by hand, which stays their resolver (asked after the node's, and for questions scoped to their interface)", ErrUnprotected, s.manual)
+		errs = append(errs, fmt.Errorf("%w: %d network services have DNS set by hand, which stays their resolver (asked after the node's, and for questions scoped to their interface)", ErrUnprotected, s.manual))
 	}
-	return nil
+	// Not instead of the unprotected cause above but with it:
+	// Unprotected sorts a joined problem back out.
+	switch {
+	case s.untold:
+		errs = append(errs, fmt.Errorf("%w: no read of the system's resolvers has worked since the first one failed", ErrUpstreamsStale))
+	case s.primaryFailed:
+		errs = append(errs, fmt.Errorf("%w: reading the primary service's DNS servers failed at the last check", ErrUpstreamsStale))
+	}
+	return errors.Join(errs...)
 }
 
 func (s *dynamicStore) Restore() error {
@@ -540,7 +639,7 @@ func (s *dynamicStore) restore() error {
 		}
 	}
 	if err := writeBackup(s.st, s.backup); err != nil {
-		errs = append(errs, err)
+		errs = append(errs, fmt.Errorf("dns: keeping the system's configuration: %w", err))
 	}
 	return errors.Join(errs...)
 }
@@ -557,23 +656,27 @@ func restoreBackup(st store) error {
 // primaryServers are the primary service's DNS servers as the system has
 // them, the originals where the node overrode them.
 func primaryServers(st store, backup map[string]original) ([]netip.Addr, error) {
-	g, ok, err := st.get("State:/Network/Global/IPv4")
+	g, ok, err := st.get(globalIPv4Key)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("dns: reading %s: %w", globalIPv4Key, err)
 	}
 	id := g.strs["PrimaryService"]
 	if !ok || id == "" {
-		if g6, ok6, err := st.get("State:/Network/Global/IPv6"); err == nil && ok6 {
+		g6, ok6, err := st.get(globalIPv6Key)
+		if err != nil {
+			return nil, fmt.Errorf("dns: reading %s: %w", globalIPv6Key, err)
+		}
+		if ok6 {
 			id = g6.strs["PrimaryService"]
 		}
 	}
 	if id == "" {
-		return nil, errors.New("dns: no primary network service")
+		return nil, errNoPrimary
 	}
 	for _, k := range []string{"Setup:/Network/Service/" + id + "/DNS", "State:/Network/Service/" + id + "/DNS"} {
 		d, present, err := st.get(k)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("dns: reading %s: %w", k, err)
 		}
 		if present && isOverride(d) {
 			o, kept := backup[k]
@@ -607,7 +710,7 @@ func systemUpstreams(st store, exclude []netip.Addr) ([]netip.Addr, error) {
 		return nil, err
 	}
 	servers, err := primaryServers(st, backup)
-	if err != nil {
+	if err != nil && !errors.Is(err, errNoPrimary) {
 		return nil, err
 	}
 	var out []netip.Addr
