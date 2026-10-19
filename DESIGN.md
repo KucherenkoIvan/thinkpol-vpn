@@ -250,7 +250,7 @@ Versions only go up, and the envelope is signed by the space's **signing key**. 
 - Sharing: the node owner runs `thinkpol grant offer <node> --ingress --cap 50mbit`, and the guest admin runs `thinkpol grant accept <token>`.
 - Updates: signed release binaries, distributed through the network like list files. The update signing key is pinned on a server when it is provisioned over SSH, which is the anchor; a node whose update fails the signature check keeps running its current binary and never bricks.
 
-**Kernel usage.** `config`, `app`, `observability`, `sqlite` and `webui` for the controller; `grpckit` for the push channel to nodes, which needs **streaming RPCs** (missing in grpckit today: add server and client stream interceptors there first). The data plane uses plain ports and adapters with no DDD aggregates: packets aren't domain events.
+**Kernel usage.** `config`, `app`, `observability`, `sqlite` and `webui` for the controller; `grpckit` for the push channel to nodes, whose **streaming RPCs** the pinned version's server and client stream interceptors cover (the local API's WatchStatus and TailLogs already run through them). There is no DDD in the packet path, which is plain ports and adapters: packets aren't domain events.
 
 The node agent uses go-kernel's `config`, `app` and `observability`: `thinkpol up`'s environment variables and flags come from one tagged struct (no `.env` files, validated once after the flags), `app` runs it with the agent's logger and a second SIGINT/SIGTERM force-quits a hung shutdown, and its log is `observability`'s text logger writing to stderr and the in-memory ring at the node's own level, never `LOG_LEVEL`.
 

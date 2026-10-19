@@ -9,6 +9,7 @@ import (
 	"math"
 	"net"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -188,6 +189,9 @@ func (c *Client) explain(err error) error {
 	}
 	var remote *grpckit.RemoteDomainError
 	if errors.As(err, &remote) {
+		if step, ok := strings.CutPrefix(remote.Code, startFailedPrefix); ok {
+			return &clientError{fmt.Sprintf("starting the data plane failed at step %q; the service's log has the details", agent.Sanitize(step)), ErrStartFailed}
+		}
 		for _, e := range []struct {
 			err Error
 			msg string

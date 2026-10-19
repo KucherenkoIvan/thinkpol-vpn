@@ -179,8 +179,12 @@ func TestTheCLIControlsTheNode(t *testing.T) {
 	s.node.mu.Lock()
 	s.node.connectErr = &agent.StartError{Step: agent.StepTUN, Err: errors.New("detail 192.0.2.1 for the log only")}
 	s.node.mu.Unlock()
-	if _, err := c.Connect(ctx); err == nil || !strings.Contains(err.Error(), `step "tun"`) || strings.Contains(err.Error(), "192.0.2.1") {
+	_, err = c.Connect(ctx)
+	if err == nil || !strings.Contains(err.Error(), `step "tun"`) || strings.Contains(err.Error(), "192.0.2.1") {
 		t.Fatalf("got %v, want the step and no detail", err)
+	}
+	if !errors.Is(err, ErrStartFailed) {
+		t.Fatalf("got %v, want ErrStartFailed", err)
 	}
 	s.node.mu.Lock()
 	s.node.connectErr = agent.ErrServerMode

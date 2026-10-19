@@ -9,8 +9,6 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 
 	"github.com/KucherenkoIvan/go-kernel/app"
 	"github.com/KucherenkoIvan/go-kernel/grpckit"
@@ -200,7 +198,7 @@ func nodeError(err error) error {
 	case errors.Is(err, agent.ErrDNSUnprotected):
 		return ErrDNSUnprotected
 	case errors.As(err, &se):
-		return status.Errorf(codes.Unavailable, "starting the data plane failed at step %q; the service's log has the details", se.Step)
+		return startFailed(se.Step)
 	}
 	return err
 }

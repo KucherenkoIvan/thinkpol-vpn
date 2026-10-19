@@ -21,6 +21,10 @@ var (
 	ErrPresetUnavailable = Error{Code: "rule_preset_unavailable"}
 	ErrUnknownPreset     = Error{Code: "unknown_rule_preset"}
 	ErrDNSUnprotected    = Error{Code: "dns_not_protected"}
+	// ErrStartFailed is a data plane that failed to start on Connect; the
+	// code a client sees carries the step (startFailed), the only part of
+	// the failure safe to show.
+	ErrStartFailed = Error{Code: "start_failed"}
 
 	errorCodes = map[Error]codes.Code{
 		ErrPermissionDenied:  codes.PermissionDenied,
@@ -31,3 +35,11 @@ var (
 		ErrDNSUnprotected:    codes.FailedPrecondition,
 	}
 )
+
+// startFailedPrefix begins a start failure's code, before its step.
+const startFailedPrefix = "start_failed:"
+
+// startFailed is a start failure's refusal at step: the interceptor sends
+// the code alone, so the step rides in it; the detail is the service's
+// log's alone.
+func startFailed(step string) Error { return Error{Code: startFailedPrefix + step} }
