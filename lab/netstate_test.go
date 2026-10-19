@@ -120,3 +120,19 @@ func wantTUNGone(n *lab.Node, timeout time.Duration) error {
 	}
 	return nil
 }
+
+// ncConnectFailed says whether a failed `nc -v -z` run is nc's own connect
+// failure: exit 1 with its "connect to ... failed" (refused, unreachable)
+// or "connect to ... timed out" line. docker exec also exits 1 when docker
+// fails, without that line; that and any other failure is an unknown state.
+func ncConnectFailed(res lab.Result) bool {
+	return res.ExitCode == 1 && strings.Contains(res.Stderr, "connect to ") &&
+		(strings.Contains(res.Stderr, " failed") || strings.Contains(res.Stderr, " timed out"))
+}
+
+// pingNoReply says whether a failed ping got no reply: exit 1 and ping's
+// own " 0 received" summary. Exit 2 (no route, a send error) and exec
+// failures are an unknown state, never proof the path is blocked.
+func pingNoReply(res lab.Result) bool {
+	return res.ExitCode == 1 && strings.Contains(res.Stdout, " 0 received")
+}

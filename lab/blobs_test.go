@@ -144,10 +144,8 @@ func TestBlobDistribution(t *testing.T) {
 		s1v4, s1v6 := overlay(1)
 		dv4, dv6 := overlay(3)
 		// reaches says whether a TCP connect from n to addr:port succeeds.
-		// Only nc's own failure (exit 1 with its "connect to ... failed"
-		// line; docker exec also exits 1 when docker fails) means it
-		// doesn't; any other failure (an exec error, a timeout, no nc) is
-		// an unknown state and an error.
+		// Only nc's own connect failure means it doesn't; any other
+		// failure (an exec error, a timeout, no nc) is an error.
 		reaches := func(n *lab.Node, timeout time.Duration, addr, port string) (bool, error) {
 			ctx, cancel := context.WithTimeout(context.Background(), timeout)
 			defer cancel()
@@ -155,7 +153,7 @@ func TestBlobDistribution(t *testing.T) {
 			switch {
 			case err == nil:
 				return true, nil
-			case res.ExitCode == 1 && strings.Contains(res.Stderr, "connect to ") && strings.Contains(res.Stderr, " failed"):
+			case ncConnectFailed(res):
 				return false, nil
 			}
 			return false, fmt.Errorf("nc %s %s from %s: %w", addr, port, n.Name, err)

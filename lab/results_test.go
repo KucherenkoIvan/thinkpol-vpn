@@ -235,8 +235,8 @@ func setupPlainTCP(t *testing.T, l *lab.Lab) (probeTarget, error) {
 func probePlainTCP(t *testing.T, l *lab.Lab, to probeTarget, wantPass bool) crossed {
 	dev := l.Node(lab.DeviceA)
 	return crossed{
-		v4: tcpCrosses(dev, to.v4, window(wantPass)) == nil,
-		v6: tcpCrosses(dev, to.v6, window(wantPass)) == nil,
+		v4: mustProbe(t)(tcpCrosses(dev, to.v4, window(wantPass))),
+		v6: mustProbe(t)(tcpCrosses(dev, to.v6, window(wantPass))),
 	}
 }
 
@@ -280,8 +280,8 @@ func setupUDP(t *testing.T, l *lab.Lab) (probeTarget, error) {
 func probeUDP(t *testing.T, l *lab.Lab, to probeTarget, wantPass bool) crossed {
 	dev := l.Node(lab.DeviceA)
 	return crossed{
-		v4: pingErr(dev, to.v4, window(wantPass)) == nil,
-		v6: pingErr(dev, to.v6, window(wantPass)) == nil,
+		v4: mustProbe(t)(pingCrosses(dev, to.v4, window(wantPass))),
+		v6: mustProbe(t)(pingCrosses(dev, to.v6, window(wantPass))),
 	}
 }
 
@@ -334,19 +334,40 @@ func waitOutput(p *lab.Process, pattern string, timeout time.Duration) error {
 	}
 }
 
-func pingErr(from *lab.Node, to netip.Addr, within time.Duration) error {
+// pingCrosses pings until a reply comes or within runs out. "Doesn't
+// cross" is only ping's own "no reply", from an attempt after the
+// deadline; any other failure is retried, and an error if no attempt gets
+// an answer for 30s more.
+func pingCrosses(from *lab.Node, to netip.Addr, within time.Duration) (bool, error) {
 	deadline := time.Now().Add(within)
+	giveUp := deadline.Add(30 * time.Second)
 	for {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		_, err := from.Exec(ctx, "ping", "-c", "1", "-W", "1", to.String())
+		res, err := from.Exec(ctx, "ping", "-c", "1", "-W", "1", to.String())
 		cancel()
-		if err == nil {
-			return nil
-		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("ping %s from %s: %w", to, from.Name, err)
+		switch {
+		case err == nil:
+			return true, nil
+		case pingNoReply(res):
+			if time.Now().After(deadline) {
+				return false, nil
+			}
+		case time.Now().After(giveUp):
+			return false, fmt.Errorf("ping %s from %s: %w\n%s", to, from.Name, err, res.Stdout)
 		}
 		time.Sleep(300 * time.Millisecond)
+	}
+}
+
+// mustProbe passes a probe's answer on and fails the cell (an "error"
+// cell, not a blocked one) when the probe got none.
+func mustProbe(t *testing.T) func(bool, error) bool {
+	return func(crossed bool, err error) bool {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return crossed
 	}
 }
 

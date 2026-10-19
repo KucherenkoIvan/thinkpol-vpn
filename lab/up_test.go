@@ -113,7 +113,7 @@ func noPing(t *testing.T, from *lab.Node, to netip.Addr) {
 	if err == nil {
 		t.Fatalf("%s answers %s", to, from.Name)
 	}
-	if res.ExitCode != 1 || !strings.Contains(res.Stdout, " 0 received") {
+	if !pingNoReply(res) {
 		t.Fatalf("ping %s from %s says nothing about the path: %v\n%s", to, from.Name, err, res.Stdout)
 	}
 }

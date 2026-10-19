@@ -36,8 +36,10 @@ func TestCensorForwardsWhatNoModuleDecides(t *testing.T) {
 	// nothing about them.
 	routerCap := router.Capture(t, captureFrom(dev))
 	for _, dst := range serverAddrs(server) {
-		if err := tcpCrosses(dev, dst, 20*time.Second); err != nil {
-			t.Errorf("plain TCP with no module: %v", err)
+		if ok, err := tcpCrosses(dev, dst, 20*time.Second); err != nil {
+			t.Fatalf("plain TCP with no module: %v", err)
+		} else if !ok {
+			t.Errorf("plain TCP to %s with no module didn't cross", dst)
 		}
 		if got := sendDatagram(t, dev, server, dst, 19100, fragmentedSize); got != fragmentedSize {
 			t.Errorf("a %d-byte UDP datagram to %s arrived as %d bytes", fragmentedSize, dst, got)
@@ -163,8 +165,10 @@ func TestTCPThroughCensorDrop(t *testing.T) {
 
 	serverCap := server.Capture(t, fmt.Sprintf("tcp port %d", tcpProbePort))
 	for _, dst := range serverAddrs(server) {
-		if _, _, err := tcpConnect(dev, dst, 3); err == nil {
+		if res, _, err := tcpConnect(dev, dst, 3); err == nil {
 			t.Errorf("tcp to %s connected through a dropping censor", dst)
+		} else if !ncConnectFailed(res) {
+			t.Fatalf("tcp to %s says nothing about the path: %v", dst, err)
 		}
 	}
 	if err := serverCap.Complete(); err != nil {
@@ -254,15 +258,23 @@ func tcpConnect(dev *lab.Node, dst netip.Addr, wait int) (lab.Result, time.Durat
 }
 
 // tcpCrosses retries a TCP connect until one succeeds or within runs out.
-func tcpCrosses(dev *lab.Node, dst netip.Addr, within time.Duration) error {
+// "Doesn't cross" is only nc's own connect failure, from an attempt after
+// the deadline; any other failure is retried, and an error if no attempt
+// gets an answer for 30s more.
+func tcpCrosses(dev *lab.Node, dst netip.Addr, within time.Duration) (bool, error) {
 	deadline := time.Now().Add(within)
+	giveUp := deadline.Add(30 * time.Second)
 	for {
-		_, _, err := tcpConnect(dev, dst, 2)
-		if err == nil {
-			return nil
-		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("tcp to %s: %w", dst, err)
+		res, _, err := tcpConnect(dev, dst, 2)
+		switch {
+		case err == nil:
+			return true, nil
+		case ncConnectFailed(res):
+			if time.Now().After(deadline) {
+				return false, nil
+			}
+		case time.Now().After(giveUp):
+			return false, fmt.Errorf("tcp to %s: %w", dst, err)
 		}
 		time.Sleep(300 * time.Millisecond)
 	}
