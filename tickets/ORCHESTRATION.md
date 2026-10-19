@@ -70,7 +70,7 @@ Made by the project owner and the orchestrator. These are rules for running this
 Made by the project owner following an independent review.
 
 - For `needs_human: macos` or `windows` tickets, the real-device run happens after review round 1, not after the lab rounds; the device-test kit is built alongside the implementation.
-- At most 3 review → fix rounds per ticket; beyond that, split the rest into a new ticket.
+- ~~At most 3 review → fix rounds per ticket; beyond that, split the rest into a new ticket.~~ Replaced 2026-10-19 by the owner: a ticket keeps its review → fix rounds until its reviewers find nothing worth fixing; what's left goes to a new ticket only when it is outside the ticket's scope. After round 5 the orchestrator asks the owner whether to go on.
 - Decisions go into DESIGN.md; tickets carry pointers, not accreted design.
 - Security-sensitive code written by one model family gets a second-opinion review from a different family.
 - Merge order for the in-flight M1 branches: tp-021 before tp-019; tp-019 absorbs the conflict.
