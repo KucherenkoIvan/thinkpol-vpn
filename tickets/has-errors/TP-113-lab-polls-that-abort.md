@@ -30,6 +30,17 @@ A lab poll retries a failed read and fails only at its deadline; a one-shot chec
 - Origin: TP-099's round-6 correctness review (2026-10-19). TP-099 fixed the same pattern in the DNS and disconnect tests; these are outside its scope.
 - Also seen flaking (2026-10-19, TP-101's run, passed on rerun and on rewrite): `internal/dataplane/blobs` `TestABlobInTheStoreNeedsNoPeer`. Look at its timing assumptions while here.
 
+## Review findings
+- [ ] R1.1 (regression) lab/blobs_test.go `reaches` is hard-wired to pollTimeout, so the one-shot "must not reach" checks pass when the bound kills the exec: give it a timeout parameter (pollTimeout in the poll, execTimeout one-shot), and count only nc's exit status 1 as unreachable; any other failure fails the check (as noPing in lab/up_test.go)
+- [ ] R1.2 hand-written polls still abort on one failed read: censor_e2e_test.go sendDatagram (MustExec in its loop; retry, fail only if no read ever succeeded, never fail open), results_test.go censorRun.logged (MustExec in its poll, Fatalf on a half-written last line: parse only up to the last newline); grep lab/ for other deadline loops and put the grep in the Log
+- [ ] R1.3 polls whose deadline equals the read bound (routetable_test.go:161, :225, smoke_test.go:246) give a hung read no retry: raise them, and check every other poll whose deadline is not well above its read bound, resolve in dnscommon_test.go included
+- [ ] R1.4 lab/prototypes/reality xrayLogs runs `docker logs` with no bound inside a poll: bound it
+- [ ] R1.5 names: routeNow/countersNow → mustRoute/mustCounters, drop the comment explaining them; blobs hold's `counted` → `count`, with the doc "applying count to the status in the same critical section: a blob Get returns is already counted in Status"
+- [ ] R1.6 the systemd-resolved start-up in agentlock_test.go and dns_test.go becomes one helper, startResolved(t, n, dns), in dnscommon_test.go; health() in dns_test.go is replaced with execRead
+- [ ] R1.7 Log honesty: reproduce the blobs race on the pre-fix code (temporarily) and record N/300 before and 0/300 after, or say plainly it didn't reproduce; add review_test.go:61 to the Get-then-Status reads covered; say exactly what the "verified" line verified and the lab-test duration, and this round verify the committed head
+- [ ] R1.8 acceptance box 1 reads "no MustExec or Fatal reachable from inside a poll (lab.Eventually or a hand-written deadline loop)"
+- [ ] R1.9 merge origin/rewrite at the end; if TP-075's note on transporttest ShapingRefused is in Notes, look at the test's timing and fix it or say why not
+
 ## Log
 - 2026-10-19 created in backlog (TP-099 review round 6)
 - 2026-10-19 notes: a flaky blobs unit test to look at
@@ -40,3 +51,4 @@ A lab poll retries a failed read and fails only at its deadline; a one-shot chec
 - 2026-10-19 transporttest ShapingRefused: not looked at: TP-075 carries no note on it on this branch or on rewrite (TP-055 already replaced its post-Set sleep with connectAdmitted).
 - 2026-10-19 verified at 145a246: make lint exit 0, make test exit 0, make lab-test exit 0 (lab ok, node phase 35 packages ok).
 - 2026-10-19 in-progress → review
+- 2026-10-19 review → has-errors — round 1 findings R1.1-R1.9
