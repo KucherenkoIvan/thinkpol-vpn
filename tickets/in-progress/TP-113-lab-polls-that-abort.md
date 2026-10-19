@@ -71,3 +71,4 @@ A lab poll retries a failed read and fails only at its deadline; a one-shot chec
 - 2026-10-19 verified on the committed, pushed head d86166d with a clean tree: make lint exit 0 (19s), make test exit 0 (1s, Go's test cache), make lab-test exit 0 (154s; lab ok in 121.0s, node phase 35 packages ok, no skips).
 - 2026-10-19 in-progress → review
 - 2026-10-19 review → has-errors — round 2b: R1.10, R1.11 (fail-open negative checks)
+- 2026-10-19 has-errors → in-progress — owner: agent-claude, branch: tp-113-lab-polls-that-abort
