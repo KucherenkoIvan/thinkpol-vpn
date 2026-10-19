@@ -30,53 +30,38 @@ type Router struct {
 	t     *Transport
 	peers transport.Peers
 
-	mu       sync.Mutex
-	set      *peerSet
-	changed  <-chan struct{}
-	senders  map[string]*senders // by secret
-	retired  map[string]retiree  // senders of secrets gone from the table
-	scratch  []byte
-	counters counters
+	admitLadder
+
+	mu      sync.Mutex
+	set     *peerSet
+	changed <-chan struct{}
+	table   *senderHistories
+	scratch []byte
 }
 
 var _ transport.Router = (*Router)(nil)
 
 func newRouter(t *Transport, peers transport.Peers) *Router {
-	return &Router{t: t, peers: peers, senders: map[string]*senders{}, retired: map[string]retiree{}, scratch: make([]byte, 0, maxDatagram)}
+	return &Router{t: t, peers: peers, table: newSenderHistories(), scratch: make([]byte, 0, maxDatagram)}
 }
 
 // RouteDatagram implements transport.Router.
 func (r *Router) RouteDatagram(d []byte) (transport.Identity, transport.Verdict) {
-	id, ok := idOf(d)
-	if !ok {
-		r.counters.unauthenticated.Add(1)
-		return transport.Identity{}, transport.Unknown
-	}
 	now := r.t.now()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.refresh(now)
-	e := r.set.lookup(id, epochOf(now))
-	if e == nil {
-		r.counters.unauthenticated.Add(1)
+	e, o, v := r.admit(r.scratch[:0], r.set, r.table, d, now)
+	switch v {
+	case dropUnauthenticated:
+		// No connection id in the table, or the tag failed under the one
+		// it matched: not routed anywhere, and not named even when the
+		// id matched.
 		return transport.Identity{}, transport.Unknown
-	}
-	o, err := open(r.scratch[:0], e.recv, d)
-	switch {
-	case err != nil:
-		r.counters.unauthenticated.Add(1)
-		return transport.Identity{}, transport.Unknown
-	case !o.fresh(now):
-		r.counters.staleTimestamp.Add(1)
+	case dropStaleTimestamp, dropStale:
 		return e.link.Peer, transport.Stale
-	}
-	switch r.senders[string(e.link.Verifier)].admit(o.sender, o.counter, o.sent, now) {
 	case dropReplay:
-		r.counters.replayed.Add(1)
 		return e.link.Peer, transport.Replayed
-	case dropStale:
-		r.counters.staleSender.Add(1)
-		return e.link.Peer, transport.Stale
 	}
 	r.counters.received(o.packets)
 	return e.link.Peer, transport.Routed
@@ -113,26 +98,5 @@ func (r *Router) refresh(now time.Time) {
 	var links []transport.PeerLink
 	links, r.changed = r.peers.Snapshot()
 	r.set = indexPeers(links, epochOf(now))
-	for key, rt := range r.retired {
-		if !sentFresh(rt.senders.newest, now) {
-			delete(r.retired, key)
-		}
-	}
-	for key, s := range r.senders {
-		if r.set.bySecret[key] == nil {
-			r.retired[key] = retiree{senders: s}
-			delete(r.senders, key)
-		}
-	}
-	for key := range r.set.bySecret {
-		if r.senders[key] != nil {
-			continue
-		}
-		if rt, ok := r.retired[key]; ok {
-			r.senders[key] = rt.senders
-			delete(r.retired, key)
-			continue
-		}
-		r.senders[key] = &senders{}
-	}
+	r.table.follow(r.set, now)
 }

@@ -3,6 +3,7 @@ package udp
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"net"
 	"sync"
 	"testing"
@@ -232,14 +233,30 @@ func TestRouterRoutesAndRejects(t *testing.T) {
 		return seal(nil, newAEAD(p.Credential, dir), connIDFor(p.Credential, dir, epochOf(at)), newSenderID(at), at, 0, []byte("packet"), transport.Padding{})
 	}
 	now := c.now()
+	var first []byte
 	for _, p := range peers[:2] {
 		d := datagram(p, toListener, now)
+		if p.Peer == peers[0].Peer {
+			first = d
+		}
 		if id, v := r.RouteDatagram(d); v != transport.Routed || id != p.Peer {
 			t.Fatalf("routed %s's datagram to %v (%v)", p.Peer, id, v)
 		}
 		if id, v := r.RouteDatagram(d); v != transport.Replayed || id != p.Peer {
 			t.Fatalf("%s's datagram again: %v (%v), want a replay", p.Peer, id, v)
 		}
+	}
+	// A sender older than a credential's current one is turned away, with
+	// the datagram still named for the credential it matched.
+	current, err := open(nil, newAEAD(peers[0].Credential, toListener), first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	older := current.sender
+	binary.BigEndian.PutUint64(older[:8], uint64(current.sender.created()-int64(time.Hour)))
+	stale := seal(nil, newAEAD(peers[0].Credential, toListener), connIDFor(peers[0].Credential, toListener, epochOf(now)), older, now, 0, []byte("packet"), transport.Padding{})
+	if id, v := r.RouteDatagram(stale); v != transport.Stale || id != peers[0].Peer {
+		t.Errorf("an older sender's datagram: %v for %s", v, id)
 	}
 	forged := datagram(peers[0], toListener, now)
 	forged[clearSize] ^= 1
@@ -259,6 +276,15 @@ func TestRouterRoutesAndRejects(t *testing.T) {
 	}
 	if got := r.Counters().StaleTimestamp; got != 1 {
 		t.Errorf("counted %d stale timestamps, want 1", got)
+	}
+	if got := r.Counters().Unauthenticated; got != 5 {
+		t.Errorf("counted %d unauthenticated datagrams, want 5", got)
+	}
+	if got := r.Counters().Replayed; got != 2 {
+		t.Errorf("counted %d replays, want 2", got)
+	}
+	if got := r.Counters().StaleSender; got != 1 {
+		t.Errorf("counted %d stale senders, want 1", got)
 	}
 	if got := len(r.Rejected()); got != 2 {
 		t.Errorf("reported %d unusable peer links, want the 2 sharing a secret", got)
