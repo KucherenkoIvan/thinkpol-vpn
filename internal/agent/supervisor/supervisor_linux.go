@@ -71,8 +71,6 @@ func New(opts Options) (*Supervisor, error) {
 		// version check confirms.
 		opts.Command = []string{selfExe, "worker"}
 	}
-	// NewRoot is required: the root namespace's owner is the caller's to
-	// provide, like every host adapter.
 	if opts.NewRoot == nil {
 		return nil, errors.New("supervisor: no NewRoot")
 	}

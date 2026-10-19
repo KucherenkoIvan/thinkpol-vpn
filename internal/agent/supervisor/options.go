@@ -119,14 +119,14 @@ var MasqueradePorts = [2]uint16{32768, 60999}
 // sysctls' own lifetime.
 const DefaultRuntimeDir = "/run/thinkpol"
 
-// Options configures a supervisor. Zero values take the defaults.
+// Options configures a supervisor. Zero values take the defaults; NewRoot
+// has none.
 type Options struct {
 	// Command starts a worker; the supervisor appends "-space <id>".
 	// Default: the running binary's `worker` command (/proc/self/exe).
 	Command []string
 	// NewRoot builds the supervisor's network configurator, the root
-	// namespace's owner. Required: like every host adapter, the caller
-	// provides it.
+	// namespace's owner. Required.
 	NewRoot func() (netcfg.Configurator, error)
 	// Env is the workers' whole environment (default: empty).
 	Env []string

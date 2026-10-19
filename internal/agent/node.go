@@ -31,8 +31,7 @@ type Node struct {
 	state State
 	mode  Mode
 	logs  Logs
-	// plat is the node's platform: what the node needs of its host, its
-	// Host what one data plane needs (tests put fakes into it).
+	// plat is what the node needs of its host.
 	plat Platform
 	// want is set while a device is meant to be connected.
 	want bool

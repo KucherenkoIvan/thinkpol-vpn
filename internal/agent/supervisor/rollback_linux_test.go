@@ -25,8 +25,8 @@ import (
 // errInjected is the failure the tests inject into a table rebuild.
 var errInjected = errors.New("injected table rebuild failure")
 
-// testNewRoot takes the root namespace's owner: what the node passes
-// the supervisor in production.
+// testNewRoot takes the lab node's root namespace as the supervisor's
+// owner.
 func testNewRoot() (netcfg.Configurator, error) { return netcfg.New(netcfg.OwnerSupervisor) }
 
 // failRebuilds makes every rebuild with slots fail with errInjected (after

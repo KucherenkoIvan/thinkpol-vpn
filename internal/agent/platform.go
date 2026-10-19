@@ -16,9 +16,7 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 )
 
-// Host is what one data plane needs of its network stack: the adapters
-// for the OS it runs on, per OS. The agent sequences it and never
-// constructs it. The zero value's BlobNet is the node's real network.
+// Host is what one data plane needs of its network stack, per OS.
 type Host struct {
 	// NewConfigurator takes the network configuration of one owner (one
 	// owner per network namespace: a second node agent fails now, before
@@ -41,18 +39,17 @@ type Host struct {
 	// SystemUpstreams are the resolvers the OS used before the node
 	// pointed it at its own (dns.SystemUpstreams).
 	SystemUpstreams func(exclude []netip.Addr) ([]netip.Addr, error)
-	// Transports is the node's transport registry: every transport a map
-	// may name. markSockets asks for sockets marked past the route table
-	// where the host marks them; a sandboxed worker asks for none.
+	// Transports builds the node's transport registry; markSockets marks
+	// its sockets past the route table (routetable.SocketControl).
 	Transports func(markSockets bool) (*transport.Registry, error)
-	// BlobNet is the blob services' network: a loopback overlay in tests
-	// and labs, the node's real network when zero.
+	// BlobNet is the blob services' network; zero is the node's own
+	// sockets.
 	BlobNet blobs.Net
 }
 
 // Platform is what a node needs of its host: one data plane's Host, and
-// what touches the host outside one. internal/agent builds none of it and
-// only sequences what is here; tests put fakes into the same struct.
+// what touches the host outside one (the agent lock, a crashed run's
+// resolver configuration). The agent only sequences what is here.
 type Platform struct {
 	Host
 	// LockHost takes the agent lock: one node agent per host, held until

@@ -23,8 +23,8 @@ func ServeSpace(log *slog.Logger, h Host) worker.Serve {
 	return serveSpace(log, DataPlane{Host: h})
 }
 
-// serveSpace is ServeSpace with what tests swap in base (the transports'
-// network, the TUN, the blob service, the timing).
+// serveSpace is ServeSpace on base: its Host and private fields are kept,
+// the rest comes from the supervisor.
 func serveSpace(log *slog.Logger, base DataPlane) worker.Serve {
 	return func(ctx context.Context, s worker.Session) error {
 		var first WorkerConfig
@@ -48,9 +48,9 @@ func serveSpace(log *slog.Logger, base DataPlane) worker.Serve {
 		if err != nil {
 			return fmt.Errorf("the supervisor's map: %w", err)
 		}
+		// Unmarked: the worker's namespace routes nothing into a TUN, and
+		// marking needs CAP_NET_ADMIN over it.
 		reg, err := base.Host.Transports(false)
-		// The worker's own registry: its namespace routes nothing into a
-		// TUN, so its sockets carry no control.
 		if err != nil {
 			return err
 		}
