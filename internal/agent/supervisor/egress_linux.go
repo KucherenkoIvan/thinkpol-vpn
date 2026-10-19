@@ -27,28 +27,6 @@ type spaceEgress struct {
 	family [2]bool
 }
 
-// applySpaceTable replaces the space's own egress table in the namespace ns:
-//
-//	table inet thinkpol-space {
-//	  chain forward { hook forward priority filter; policy drop;
-//	    ct state established,related accept
-//	    per family with egress: oifname veth0 meta nfproto <family> accept
-//	    per family without, when the space has egress:
-//	      oifname veth0 meta nfproto <family> reject with icmpx no-route }
-//	  chain postrouting { type nat hook postrouting priority srcnat;
-//	    oifname veth0 ip saddr != <transit IPv4> snat to <transit IPv4>:MasqueradePorts fully-random
-//	    oifname veth0 ip6 saddr != <transit IPv6> snat to [<transit IPv6>]:MasqueradePorts fully-random }
-//	}
-//
-// Only what the worker's engine delivers to its TUN for the internet is
-// forwarded (it does so only on an exit), always out of veth0 to the root
-// namespace, which sees nothing but the space's transit address and
-// enforces the same egress again in its own table: the worker owns this
-// table's namespace and could change it. A family the node can't egress
-// is refused at once, so clients fall back to the other (IPv6 on a VPS
-// without it) instead of timing out; without egress at all, forwarded
-// traffic is dropped. The SNAT picks a fully random source port within the
-// range the root's masquerade keeps.
 // spaceTable is the space's own table: the kernel connection in its
 // namespace, the table and its chains.
 type spaceTable struct {
@@ -89,6 +67,28 @@ func established(match []expr.Any) []expr.Any {
 		accept()...)
 }
 
+// applySpaceTable replaces the space's own egress table in the namespace ns:
+//
+//	table inet thinkpol-space {
+//	  chain forward { hook forward priority filter; policy drop;
+//	    ct state established,related accept
+//	    per family with egress: oifname veth0 meta nfproto <family> accept
+//	    per family without, when the space has egress:
+//	      oifname veth0 meta nfproto <family> reject with icmpx no-route }
+//	  chain postrouting { type nat hook postrouting priority srcnat;
+//	    oifname veth0 ip saddr != <transit IPv4> snat to <transit IPv4>:MasqueradePorts fully-random
+//	    oifname veth0 ip6 saddr != <transit IPv6> snat to [<transit IPv6>]:MasqueradePorts fully-random }
+//	}
+//
+// Only what the worker's engine delivers to its TUN for the internet is
+// forwarded (it does so only on an exit), always out of veth0 to the root
+// namespace, which sees nothing but the space's transit address and
+// enforces the same egress again in its own table: the worker owns this
+// table's namespace and could change it. A family the node can't egress
+// is refused at once, so clients fall back to the other (IPv6 on a VPS
+// without it) instead of timing out; without egress at all, forwarded
+// traffic is dropped. The SNAT picks a fully random source port within the
+// range the root's masquerade keeps.
 func applySpaceTable(ns *os.File, t transit, e spaceEgress) error {
 	c, err := nftables.New(nftables.WithNetNSFd(int(ns.Fd())))
 	if err != nil {

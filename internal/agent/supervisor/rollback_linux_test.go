@@ -211,7 +211,7 @@ func TestEgressAppliedAfterAFailedTableRebuild(t *testing.T) {
 	if err := s.SetSpaces(want); !errors.Is(err, errInjected) {
 		t.Fatalf("SetSpaces with the rebuild failing: %v", err)
 	}
-	s.opts.failIsolation = nil
+	s.opts.failIsolation.disarm()
 	firstThenSecond := func() error {
 		if got := configsGot(s, space); len(got) != 2 || got[0] != sum(first) || got[1] != sum(second) {
 			return fmt.Errorf("configs the worker got %q, want the first then the second, once each", got)

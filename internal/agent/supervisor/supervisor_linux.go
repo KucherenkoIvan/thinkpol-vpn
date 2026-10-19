@@ -198,7 +198,7 @@ func (s *Supervisor) SetSpaces(spaces []Space) error {
 	// What each running space's table forwards now, before the uplink
 	// and the grants change: a space whose differs after is told.
 	before := s.spaceEgresses()
-	was := s.tablesInput()
+	was := s.saveEgress()
 	s.refreshUplinkLocked()
 	var started []*worker
 	for _, sp := range spaces {
@@ -227,7 +227,7 @@ func (s *Supervisor) SetSpaces(spaces []Space) error {
 	// difference and applies it.
 	if err := s.applyTables(before); err != nil {
 		s.rollback(started)
-		s.restoreTablesInput(was)
+		s.restoreEgress(was)
 		return err
 	}
 	for _, w := range started {
@@ -400,7 +400,7 @@ func (s *Supervisor) uplinkMoved() {
 		return
 	}
 	before := s.spaceEgresses()
-	was := s.tablesInput()
+	was := s.saveEgress()
 	changed := s.refreshUplinkLocked()
 	s.mu.Unlock()
 	if !changed {
@@ -408,7 +408,7 @@ func (s *Supervisor) uplinkMoved() {
 	}
 	if err := s.applyTables(before); err != nil {
 		s.log.Error("the uplink changed, and the tables couldn't follow", "err", err)
-		s.restoreTablesInput(was)
+		s.restoreEgress(was)
 	}
 }
 
@@ -426,10 +426,9 @@ func (s *Supervisor) Egress() EgressInfo {
 	return info
 }
 
-// tablesInput is what the root namespace's tables and the spaces' own are
-// built from, besides the slots: the uplink, and each worker's egress grant
-// and dials.
-type tablesInput struct {
+// egressBeforeRebuild is what a failed rebuild puts back: the uplink, and
+// each worker's egress grant and dials.
+type egressBeforeRebuild struct {
 	uplink    egress.Uplink
 	uplinkErr error
 	workers   map[*worker]workerEgress
@@ -440,10 +439,10 @@ type workerEgress struct {
 	dials []Dial
 }
 
-// tablesInput snapshots what the tables are built from; the caller holds
+// saveEgress snapshots what a failed rebuild puts back; the caller holds
 // s.mu.
-func (s *Supervisor) tablesInput() tablesInput {
-	in := tablesInput{uplink: s.uplink, uplinkErr: s.uplinkErr, workers: make(map[*worker]workerEgress, len(s.workers))}
+func (s *Supervisor) saveEgress() egressBeforeRebuild {
+	in := egressBeforeRebuild{uplink: s.uplink, uplinkErr: s.uplinkErr, workers: make(map[*worker]workerEgress, len(s.workers))}
 	for _, w := range s.workers {
 		grant, dials := w.egressRules()
 		in.workers[w] = workerEgress{grant: grant, dials: dials}
@@ -451,14 +450,14 @@ func (s *Supervisor) tablesInput() tablesInput {
 	return in
 }
 
-// restoreTablesInput puts back, after a failed rebuild, what the tables are
+// restoreEgress puts back, after a failed rebuild, what the tables are
 // built from to what they still enforce. Only that: a config and seeds
 // pushed meanwhile stay (the worker has them already; taken back, it would
 // drop the seeds only the new map names, and sendSeeds never sends a seed
 // twice to one process), and so do the inbound credentials (the worker
 // keeps the new map). A worker that restarted meanwhile wired its
 // namespace's table for what is being undone: its run loop rewrites it.
-func (s *Supervisor) restoreTablesInput(in tablesInput) {
+func (s *Supervisor) restoreEgress(in egressBeforeRebuild) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	wired := s.spaceEgresses()

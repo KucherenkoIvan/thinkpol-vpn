@@ -125,7 +125,6 @@ func (sn *session) serve() error {
 			if errors.Is(err, io.EOF) {
 				// The worker's control socket closed: it has exited or is
 				// exiting, so its own exit is the reason.
-				_ = sn.control.Close()
 				sn.sup.awaitExit(sn.p)
 				return sn.p.exit()
 			}

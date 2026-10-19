@@ -188,8 +188,8 @@ type Options struct {
 	// is the forged-ICMP tests' negative control: the accepts then take
 	// any established or related flow, whoever owns it. failIsolation is
 	// the failure injected into a table rebuild. Both are set at New and
-	// never written on a live supervisor: a test arms and disarms them
-	// atomically instead.
+	// never written afterwards; failIsolation is armed and disarmed
+	// atomically.
 	unboundAccepts bool           //nolint:unused // test-only, read in the linux build
 	failIsolation  *rebuildFailer //nolint:unused // test-only, read in the linux build
 	// now is an injectable clock for the backoff schedule in tests.
