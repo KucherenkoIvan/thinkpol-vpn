@@ -340,7 +340,8 @@ func TestUnprotectedDNSIsReportedAndRetried(t *testing.T) {
 	s := newTestSpace(t)
 	_, reg := memoryRegistry(t)
 	startNode(t, reg, s.a, s.verified(t, 1))
-	sys := &fakeSystem{failSets: 1}
+	// Failing twice: told once, when it starts.
+	sys := &fakeSystem{failSets: 2}
 	b := startDevice(t, s, reg, false, deviceOpt{
 		prepare: func(c *Config, p *Platform) {
 			c.DNS = true
@@ -359,7 +360,7 @@ func TestUnprotectedDNSIsReportedAndRetried(t *testing.T) {
 	if !st.DNSUnprotected || !slices.Contains(st.Health().Problems, ProblemDNSUnprotected) {
 		t.Errorf("status %+v, health %+v", st, st.Health())
 	}
-	b.events.are(t, Event{EventDNSUnprotected, 1}, Event{EventConnected, 1})
+	b.events.are(t, Event{EventConnected, 1}, Event{EventDNSUnprotected, 1})
 	// The retry points it.
 	eventually(t, func() bool { n, _ := sys.counts(); return n == 1 })
 	eventually(t, func() bool { return !b.node.Status().DNSUnprotected })

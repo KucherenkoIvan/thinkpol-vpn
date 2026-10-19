@@ -204,16 +204,26 @@ func (n *Node) Mode() Mode {
 	return n.report.mode
 }
 
-// Subscribe has f hear the node's events as they happen, on the goroutine
-// that runs the node: f must return quickly, and may read Status but not
-// call Connect, Disconnect or SetRulePreset, which wait for that
-// goroutine. Call it before the node runs.
+// Subscribe has f hear the node's events, each once Status shows what it
+// says, on the goroutine that runs the node: f must return quickly, and
+// may read Status but not call Connect, Disconnect or SetRulePreset, which
+// wait for that goroutine. A panic in f is logged, not the node's end.
+// Call it before the node runs.
 func (n *Node) Subscribe(f func(Event)) { n.subscribers = append(n.subscribers, f) }
 
 func (n *Node) emit(ev Event) {
 	for _, f := range n.subscribers {
-		f(ev)
+		n.tell(f, ev)
 	}
+}
+
+func (n *Node) tell(f func(Event), ev Event) {
+	defer func() {
+		if p := recover(); p != nil {
+			n.logs.Error("an event subscriber panicked", "event", ev.Kind, "panic", p)
+		}
+	}()
+	f(ev)
 }
 
 // State is what the node runs from.
@@ -315,10 +325,11 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 // while it was down starts this way instead of failing, which under a
 // service manager would only restart it over and over.
 func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
-	f := mapFollower{log: n.logs.Logger, keys: n.state.Keys, emit: n.emit,
+	f := mapFollower{log: n.logs.Logger, keys: n.state.Keys,
 		removedMsg: "waiting for a map that includes it"}
 	f.markRemoved(n.state.Map)
-	// The report gets the map, the connection and, once back, the mode.
+	// The report gets the map, the connection and, once back, the mode;
+	// the events are told after it shows them.
 	mode := ModeAuto
 	publish := func() {
 		n.report.set(func(p *report) {
@@ -328,6 +339,8 @@ func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
 			}
 		})
 	}
+	publish()
+	emitter(n.emit).emit(EventRemovedFromSpace, f.cur.Header().Version)
 	requested := false
 	for {
 		select {
@@ -339,15 +352,11 @@ func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
 		case req := <-n.requests:
 			// Kept for when the node is back in its space.
 			requested = true
-			var err error
 			switch {
-			case req.connect && n.conn.down():
-				err = n.conn.connect(false)
-			case !req.connect && !n.conn.down():
-				err = n.conn.disconnect()
-			}
-			if err != nil {
-				n.logs.Error("connection", "err", err)
+			case req.connect && n.conn.disconnected():
+				logRefused(n.logs.Logger, n.conn.connect(false))
+			case !req.connect && !n.conn.disconnected():
+				logRefused(n.logs.Logger, n.conn.disconnect())
 			}
 			publish()
 			req.done <- nil
@@ -356,7 +365,7 @@ func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
 				maps = nil
 				continue
 			}
-			taken, back := f.take(env)
+			taken, _, back := f.take(env)
 			if !taken {
 				continue
 			}
@@ -367,15 +376,14 @@ func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
 			n.state.Map, n.state.Section, n.state.Removed = f.cur, f.section, false
 			mode = n.resolveMode()
 			if mode != ModeServer && n.conn.state == connRemoved {
-				if err := n.conn.start(); err != nil {
-					n.logs.Error("connection", "err", err)
-				}
+				logRefused(n.logs.Logger, n.conn.resume())
 			}
 			publish()
 			if requested && mode == ModeServer {
 				n.logs.Warn("a connect or disconnect taken while removed is dropped: this node is a server, which always serves its spaces")
 			}
 			f.sayBack("mode", mode)
+			emitter(n.emit).emit(EventBackInSpace, f.cur.Header().Version)
 			return true
 		}
 	}
@@ -427,9 +435,10 @@ func (n *Node) runServer(ctx context.Context, reg *transport.Registry, maps chan
 		retryAfter: RetryAfter, report: &n.report, requests: n.requests, rulesRequests: n.rulesRequests,
 		stateDir: n.cfg.StateDir, log: n.logs.Logger,
 		follow: mapFollower{
-			log: n.logs.Logger, keys: n.state.Keys, cur: n.state.Map, section: n.state.Section, emit: n.emit,
+			log: n.logs.Logger, keys: n.state.Keys, cur: n.state.Map, section: n.state.Section,
 			removedMsg: serverRemovedMsg,
 		},
+		events: n.emit,
 	}
 	return s.run(ctx, maps)
 }
@@ -479,6 +488,8 @@ type serverSpaces struct {
 
 	// follow is the map the server follows (its section, its removals).
 	follow mapFollower
+	// events hears the server's removals and returns.
+	events emitter
 
 	// report gets the map's version and whether serving it failed;
 	// requests, a device's, are refused.
@@ -585,10 +596,16 @@ func (s *serverSpaces) run(ctx context.Context, maps <-chan []byte) error {
 		s.log.Warn("opening listeners failed, retrying", "in", s.retryAfter, "err", err)
 		retry = time.After(s.retryAfter)
 	}
+	// told are the events to tell once the report shows them.
+	var told []EventKind
 	for {
 		s.report.set(func(p *report) {
 			p.version, p.removed, p.retrying = s.follow.cur.Header().Version, s.follow.removed, retry != nil
 		})
+		for _, kind := range told {
+			s.events.emit(kind, s.follow.cur.Header().Version)
+		}
+		told = nil
 		select {
 		case <-ctx.Done():
 			return nil
@@ -604,12 +621,16 @@ func (s *serverSpaces) run(ctx context.Context, maps <-chan []byte) error {
 				maps = nil
 				continue
 			}
-			taken, back := s.follow.take(env)
+			taken, removed, back := s.follow.take(env)
 			if !taken {
 				continue
 			}
+			if removed {
+				told = append(told, EventRemovedFromSpace)
+			}
 			if back {
 				s.follow.sayBack()
+				told = append(told, EventBackInSpace)
 			}
 		}
 		if err := s.apply(); err != nil {

@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -33,11 +35,13 @@ type deviceNode struct {
 }
 
 // deviceOpt adjusts device b: prepare sets its config and platform
-// (every host fake) before it is prepared, dataPlane its data plane's
-// private test fields and RouteTable (off by default: virtual TUNs leave
-// the host's routing alone) before it runs.
+// (every host fake) before it is prepared, node sees the prepared node
+// before it runs, dataPlane sets its data plane's private test fields and
+// RouteTable (off by default: virtual TUNs leave the host's routing
+// alone) before it runs.
 type deviceOpt struct {
 	prepare   func(*Config, *Platform)
+	node      func(*Node)
 	dataPlane func(*DataPlane)
 }
 
@@ -64,8 +68,13 @@ func startDevice(t *testing.T, s *testSpace, reg *transport.Registry, connect bo
 	if err != nil {
 		t.Fatal(err)
 	}
-	d := &deviceNode{runningNode: rn, node: n, failTUN: failTUN, events: &heardEvents{}}
+	d := &deviceNode{runningNode: rn, node: n, failTUN: failTUN, events: newHeardEvents(t)}
 	n.Subscribe(d.events.add)
+	for _, o := range opts {
+		if o.node != nil {
+			o.node(n)
+		}
+	}
 	n.tweak = func(dp *DataPlane) {
 		dp.path, dp.retryAfter = fastPaths, testRetry
 		dp.RouteTable = false // virtual TUNs: the host's routing stays as it is
@@ -80,10 +89,12 @@ func startDevice(t *testing.T, s *testSpace, reg *transport.Registry, connect bo
 		rn.stop()
 		select {
 		case <-rn.done:
+			if n.conn.refused != 0 {
+				t.Errorf("the connection refused %d moves", n.conn.refused)
+			}
 		case <-time.After(10 * time.Second):
 			t.Error("the node didn't stop")
 		}
-		invalidTransitions(t, rn.log.String())
 		if t.Failed() {
 			t.Logf("log:\n%s", rn.log)
 		}
@@ -182,6 +193,9 @@ func TestADeviceConnectsAndDisconnects(t *testing.T) {
 	if err := <-b.done; err != nil {
 		t.Fatal(err)
 	}
+	if st := b.node.Status(); st.Connection != Disconnected || st.DataPlane != nil {
+		t.Fatalf("stopped: %+v", st)
+	}
 	b.done <- nil // for the cleanup
 	if err := b.node.Disconnect(ctx); !errors.Is(err, ErrNotRunning) {
 		t.Fatalf("got %v, want ErrNotRunning", err)
@@ -275,8 +289,8 @@ func TestARemovedDeviceConnectsOnceBack(t *testing.T) {
 	b.events.are(t, Event{EventRemovedFromSpace, 1}, Event{EventBackInSpace, 2}, Event{EventConnected, 2})
 }
 
-// A map whose rules the OS routing table can't take is an event; the
-// Apply is retried.
+// A map whose rules the OS routing table can't take is an event, told
+// once while it fails; the Apply is retried.
 func TestARouteTableNotEnforcedIsAnEvent(t *testing.T) {
 	s := newTestSpace(t)
 	_, reg := memoryRegistry(t)
@@ -290,11 +304,84 @@ func TestARouteTableNotEnforcedIsAnEvent(t *testing.T) {
 	})
 	b.connection(t, Connected)
 	table.mu.Lock()
-	table.failing = 1
+	table.failing = 2
 	table.mu.Unlock()
 	b.maps <- s.build(t, 2)
 	b.events.are(t, Event{EventConnected, 1}, Event{EventRouteTableNotEnforced, 2})
 	b.waitLog(t, `msg="map applied" .*version=2`)
+}
+
+// A subscriber that reads the status as it hears an event sees what the
+// event says.
+func TestTheStatusShowsWhatAnEventSays(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	startNode(t, reg, s.a, s.verified(t, 1))
+	sys := &fakeSystem{failSets: 1}
+	type seen struct {
+		ev Event
+		st Status
+	}
+	var mu sync.Mutex
+	var heard []seen
+	b := startDevice(t, s, reg, true, deviceOpt{
+		prepare: func(c *Config, p *Platform) {
+			c.DNS = true
+			p.SetSystemDNS = sys.Set
+			p.SystemUpstreams = func([]netip.Addr) ([]netip.Addr, error) { return nil, nil }
+		},
+		node: func(n *Node) {
+			n.Subscribe(func(ev Event) {
+				st := n.Status()
+				mu.Lock()
+				defer mu.Unlock()
+				heard = append(heard, seen{ev, st})
+			})
+		},
+		dataPlane: func(dp *DataPlane) { dp.dnsPort = 5353 },
+	})
+	b.events.are(t, Event{EventConnected, 1}, Event{EventDNSUnprotected, 1})
+	b.maps <- s.buildWithout(t, 2, s.b)
+	b.events.are(t, Event{EventConnected, 1}, Event{EventDNSUnprotected, 1}, Event{EventRemovedFromSpace, 2})
+	b.maps <- s.build(t, 3)
+	b.events.are(t, Event{EventConnected, 1}, Event{EventDNSUnprotected, 1}, Event{EventRemovedFromSpace, 2},
+		Event{EventBackInSpace, 3}, Event{EventConnected, 3})
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, h := range heard {
+		st := h.st
+		var shows bool
+		switch h.ev.Kind {
+		case EventConnected:
+			shows = st.Connection == Connected && st.DataPlane != nil
+		case EventDNSUnprotected:
+			shows = st.Connection == Connected && st.DNSUnprotected
+		case EventRemovedFromSpace:
+			shows = st.Removed && st.Connection == Connecting && st.DataPlane == nil
+		case EventBackInSpace:
+			shows = !st.Removed
+		}
+		if !shows || st.MapVersion != h.ev.MapVersion {
+			t.Errorf("%s at version %d, status %+v", h.ev.Kind, h.ev.MapVersion, st)
+		}
+	}
+}
+
+// A subscriber's panic is logged; the node goes on, and so do the other
+// subscribers.
+func TestAPanickingSubscriberDoesNotStopTheNode(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	startNode(t, reg, s.a, s.verified(t, 1))
+	b := startDevice(t, s, reg, true, deviceOpt{node: func(n *Node) {
+		n.Subscribe(func(Event) { panic("a subscriber's bug") })
+	}})
+	b.events.are(t, Event{EventConnected, 1})
+	b.waitLog(t, "an event subscriber panicked")
+	b4, _ := overlay(2)
+	a4, _ := overlay(1)
+	b.ping(t, b4, a4)
 }
 
 func TestAServerRefusesConnect(t *testing.T) {

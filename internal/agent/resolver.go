@@ -165,29 +165,30 @@ func (r *runner) pointSystem() {
 		r.dnsRetryAt = time.Now().Add(r.dp.retryAfter)
 		r.dp.Log.Error("DNS: the system doesn't resolve through the node: names may leave outside the tunnel; retrying",
 			"in", r.dp.retryAfter, "err", err)
-		r.dp.events.emit(EventDNSUnprotected, r.follow.cur.Header().Version)
+		r.raise(&r.dnsUnprotected, EventDNSUnprotected)
 		return
 	}
 	r.guard.set(true, sys, nil)
 	r.systemCfg, r.dnsRetryAt = want, time.Time{}
-	if p := sys.Problem(); p != nil {
-		if dns.Unprotected(p) {
-			r.dp.Log.Error("DNS: the system resolves through the node, but not only: names may leave outside the tunnel", "err", p)
-			r.dp.events.emit(EventDNSUnprotected, r.follow.cur.Header().Version)
-		} else {
-			// The OS configuration warned when the read failed: one
-			// warning an episode.
-			r.dp.Log.Info("DNS: the system resolves through the node; the direct upstreams may be stale", "err", p)
-		}
+	switch p := sys.Problem(); {
+	case dns.Unprotected(p):
+		r.dp.Log.Error("DNS: the system resolves through the node, but not only: names may leave outside the tunnel", "err", p)
+		r.raise(&r.dnsUnprotected, EventDNSUnprotected)
 		return
+	case p != nil:
+		// The OS configuration warned when the read failed: one warning
+		// an episode.
+		r.dp.Log.Info("DNS: the system resolves through the node; the direct upstreams may be stale", "err", p)
+	default:
+		r.dp.Log.Info("DNS: the system resolves through the node", "servers", want.Servers)
 	}
-	r.dp.Log.Info("DNS: the system resolves through the node", "servers", want.Servers)
+	r.dnsUnprotected = false
 }
 
 func (r *runner) restoreSystem() {
 	sys := r.guard.system()
 	r.guard.set(false, nil, nil)
-	r.systemCfg, r.dnsRetryAt = dns.SystemConfig{}, time.Time{}
+	r.systemCfg, r.dnsRetryAt, r.dnsUnprotected = dns.SystemConfig{}, time.Time{}, false
 	if sys == nil {
 		return
 	}

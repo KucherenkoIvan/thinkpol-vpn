@@ -54,6 +54,8 @@ type runningNode struct {
 	done    chan error
 	// ifc, if set, is the configurator each TUN gets.
 	ifc netcfg.Configurator
+	// conn is the data plane's connection, read once it returned.
+	conn connection
 }
 
 func newRunningNode() *runningNode {
@@ -85,7 +87,9 @@ func (n *runningNode) dataPlane(reg *transport.Registry, keys NodeKeys, m *netma
 	h.NewConfigurator = func(netcfg.Owner) (netcfg.Configurator, error) { return n.ifc, nil }
 	h.NewTUN = n.virtualTUN(nil)
 	h.Transports = func(bool) (*transport.Registry, error) { return reg, nil }
+	n.conn = newConnection(true, false)
 	return DataPlane{
+		conn: &n.conn,
 		Keys: keys, Map: m, Maps: n.maps, Registry: reg, Inbound: DirectInbound(reg),
 		Log:        slog.New(slog.NewTextHandler(n.log, &slog.HandlerOptions{Level: slog.LevelDebug})),
 		Host:       h,
@@ -107,10 +111,12 @@ func (n *runningNode) run(t *testing.T, dp DataPlane) {
 		n.stop()
 		select {
 		case <-n.done:
+			if n.conn.refused != 0 {
+				t.Errorf("the connection refused %d moves", n.conn.refused)
+			}
 		case <-time.After(10 * time.Second):
 			t.Error("the data plane didn't stop")
 		}
-		invalidTransitions(t, n.log.String())
 		if t.Failed() {
 			t.Logf("log:\n%s", n.log)
 		}

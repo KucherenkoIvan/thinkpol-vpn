@@ -232,8 +232,8 @@ func TestServerRetriesAFailedMap(t *testing.T) {
 func TestServerStopsTheSpaceWhileRemoved(t *testing.T) {
 	s := newTestSpace(t)
 	sup := &fakeSupervisor{}
-	heard := &heardEvents{}
-	r := runServerSpacesIn(t, s, sup, "", func(ss *serverSpaces) { ss.follow.emit = heard.add })
+	heard := newHeardEvents(t)
+	r := runServerSpacesIn(t, s, sup, "", func(ss *serverSpaces) { ss.events = heard.add })
 	eventually(t, func() bool { _, _, n := sup.last(); return n == 1 })
 	r.maps <- s.buildWithout(t, 2, s.a)
 	eventually(t, func() bool { _, _, n := sup.last(); return n == 2 })

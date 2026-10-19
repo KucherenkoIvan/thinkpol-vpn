@@ -154,7 +154,9 @@ type report struct {
 	version uint64
 	removed bool
 	// conn is a device's connection.
-	conn     connState
+	conn connState
+	// retrying: a start, an Apply (a connected device's too) or a
+	// server's map waits to be retried.
 	retrying bool
 	// engine is a device's running engine; it is cleared before the engine
 	// closes, and Status calls it under mu, so it is never used closed.
@@ -197,11 +199,10 @@ func (p *report) status() Status {
 	switch {
 	case p.mode == ModeServer:
 		s.Connection = Serving
-	case p.engine != nil:
+	case p.conn == connConnected:
 		s.Connection = Connected
 	case p.conn != connDisconnected:
-		// Meant to be up: starting, retrying, out of its space, or the
-		// node stopping.
+		// Meant to be up: starting, retrying, or out of its space.
 		s.Connection = Connecting
 	}
 	if p.engine != nil {

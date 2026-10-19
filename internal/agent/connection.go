@@ -3,7 +3,7 @@ package agent
 import (
 	"errors"
 	"fmt"
-	"slices"
+	"log/slog"
 )
 
 // connState is where a device's connection stands.
@@ -44,24 +44,13 @@ func (s connState) String() string {
 // can't make: a bug in what drives it.
 var errInvalidTransition = errors.New("agent: invalid connection transition")
 
-// connTransitions are the moves a connection can make, by the state it
-// is in.
-var connTransitions = map[connState][]connState{
-	connDisconnected: {connConnecting, connRemoved},
-	connConnecting:   {connConnected, connRetrying, connDisconnected},
-	connConnected:    {connDisconnected, connRemoved},
-	connRemoved:      {connConnecting, connDisconnected},
-	connRetrying:     {connConnecting, connDisconnected, connRemoved},
-}
-
 // connection is a device's connection. Its methods are the only way it
 // moves: each refuses a move its state can't make (errInvalidTransition)
 // and leaves it where it was.
 type connection struct {
 	state connState
-	// failTo is where a failed start leaves it: disconnected after a
-	// Connect from disconnected (the Connect says why), retrying otherwise.
-	failTo connState
+	// refused counts the moves refused.
+	refused int
 }
 
 // newConnection is a device's connection as the node starts: connecting
@@ -74,77 +63,94 @@ func newConnection(connect, removed bool) connection {
 	case removed:
 		return connection{state: connRemoved}
 	}
-	return connection{state: connConnecting, failTo: connRetrying}
+	return connection{state: connConnecting}
 }
 
-func (c *connection) move(to connState) error {
-	if !slices.Contains(connTransitions[c.state], to) {
-		return fmt.Errorf("%w: %s → %s", errInvalidTransition, c.state, to)
-	}
-	c.state = to
-	return nil
+func (c *connection) refuse(move string) error {
+	c.refused++
+	return fmt.Errorf("%w: %s while %s", errInvalidTransition, move, c.state)
 }
 
-// down is whether the device is disconnected on purpose.
-func (c *connection) down() bool { return c.state == connDisconnected }
+// disconnected is whether the device is down on purpose.
+func (c *connection) disconnected() bool { return c.state == connDisconnected }
 
 // connect is a Connect while the data plane isn't up: from disconnected it
 // starts, or waits for a map that has the node when it is out of its
 // space (inSpace false); from retrying it starts at once.
 func (c *connection) connect(inSpace bool) error {
-	from := c.state
-	if from != connDisconnected && (from != connRetrying || !inSpace) {
-		return fmt.Errorf("%w: connect while %s", errInvalidTransition, from)
-	}
-	to := connConnecting
-	if !inSpace {
-		to = connRemoved
-	}
-	if err := c.move(to); err != nil {
-		return err
-	}
-	c.failTo = connRetrying
-	if from == connDisconnected {
-		c.failTo = connDisconnected
+	switch {
+	case c.state == connDisconnected && !inSpace:
+		c.state = connRemoved
+	case c.state == connDisconnected, c.state == connRetrying && inSpace:
+		c.state = connConnecting
+	default:
+		return c.refuse("connect")
 	}
 	return nil
 }
 
-// start is a start nobody asked for: back in its space (removed), or a
-// retry (retrying). Failing, it is retried.
-func (c *connection) start() error {
-	if c.state != connRemoved && c.state != connRetrying {
-		return fmt.Errorf("%w: start while %s", errInvalidTransition, c.state)
+// resume starts a connection meant to be up that waited: back in its space
+// (removed), or a retry (retrying).
+func (c *connection) resume() error {
+	switch c.state {
+	case connRemoved, connRetrying:
+		c.state = connConnecting
+		return nil
 	}
-	if err := c.move(connConnecting); err != nil {
-		return err
-	}
-	c.failTo = connRetrying
-	return nil
+	return c.refuse("resume")
 }
 
 // started is a start that brought the data plane up.
-func (c *connection) started() error { return c.move(connConnected) }
-
-// startFailed is a start that failed: disconnected again after a Connect
-// from disconnected, retrying otherwise.
-func (c *connection) startFailed() error {
+func (c *connection) started() error {
 	if c.state != connConnecting {
-		return fmt.Errorf("%w: a start failed while %s", errInvalidTransition, c.state)
+		return c.refuse("started")
 	}
-	return c.move(c.failTo)
+	c.state = connConnected
+	return nil
 }
 
-// disconnect is a Disconnect: the data plane goes down, from whatever
-// state but disconnected.
-func (c *connection) disconnect() error { return c.move(connDisconnected) }
+// startFailed is a start that failed: retried (retrying), or down again
+// (disconnected, a Connect from disconnected that says why).
+func (c *connection) startFailed(retry bool) error {
+	if c.state != connConnecting {
+		return c.refuse("start failed")
+	}
+	c.state = connDisconnected
+	if retry {
+		c.state = connRetrying
+	}
+	return nil
+}
+
+// disconnect is a Disconnect, or the node stopping: the data plane goes
+// down.
+func (c *connection) disconnect() error {
+	switch c.state {
+	case connConnected, connRemoved, connRetrying:
+		c.state = connDisconnected
+		return nil
+	}
+	return c.refuse("disconnect")
+}
 
 // remove is the node removed from its space: a connection meant to be up
 // waits for a map that has the node again; one already waiting, or
 // disconnected, stays as it is.
 func (c *connection) remove() error {
-	if c.state == connRemoved || c.state == connDisconnected {
-		return nil
+	switch c.state {
+	case connConnected, connRetrying:
+		c.state = connRemoved
+	case connRemoved, connDisconnected:
+	default:
+		return c.refuse("remove")
 	}
-	return c.move(connRemoved)
+	return nil
+}
+
+// logRefused logs a move a connection refused: a bug, the connection
+// stays where it was.
+func logRefused(log *slog.Logger, err error) {
+	if err != nil {
+		log.Error("connection", "err", err)
+	}
 }

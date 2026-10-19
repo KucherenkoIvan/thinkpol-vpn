@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -200,6 +199,23 @@ func (s *testSpace) withList(t *testing.T, name string, prefixes ...string) ([]b
 type heardEvents struct {
 	mu  sync.Mutex
 	evs []Event
+	// asserted is the last list are matched: no other event may come.
+	asserted []Event
+	checked  bool
+}
+
+// newHeardEvents records events; once t's later cleanups ran (the node
+// stopped), the events heard must be the last list are matched.
+func newHeardEvents(t *testing.T) *heardEvents {
+	h := &heardEvents{}
+	t.Cleanup(func() {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		if h.checked && !slices.Equal(h.evs, h.asserted) {
+			t.Errorf("events %v, want %v and nothing more", h.evs, h.asserted)
+		}
+	})
+	return h
 }
 
 func (h *heardEvents) add(ev Event) {
@@ -214,10 +230,12 @@ func (h *heardEvents) get() []Event {
 	return slices.Clone(h.evs)
 }
 
-// are waits until the events heard are want, and fails if more come
-// meanwhile.
+// are waits until the events heard are want.
 func (h *heardEvents) are(t *testing.T, want ...Event) {
 	t.Helper()
+	h.mu.Lock()
+	h.asserted, h.checked = want, true
+	h.mu.Unlock()
 	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
 		got := h.get()
 		if slices.Equal(got, want) {
@@ -226,14 +244,5 @@ func (h *heardEvents) are(t *testing.T, want ...Event) {
 		if len(got) >= len(want) || time.Now().After(deadline) {
 			t.Fatalf("events %v, want %v", got, want)
 		}
-	}
-}
-
-// invalidTransitions fails t if log says a connection was asked to make a
-// move it can't.
-func invalidTransitions(t *testing.T, log string) {
-	t.Helper()
-	if strings.Contains(log, errInvalidTransition.Error()) {
-		t.Error("a connection was asked for a move it can't make")
 	}
 }
