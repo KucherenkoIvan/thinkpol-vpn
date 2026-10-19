@@ -52,3 +52,4 @@ The failed start's gRPC status code is now the interceptor's default `FailedPrec
 - 2026-10-19 the shutdown works by lab evidence: `TestUpRunsTheM0Space` stops `thinkpol up` (supervisor and device) with SIGTERM and requires a clean exit with nothing left behind; the second-signal force-quit itself wasn't run anywhere
 - 2026-10-19 in-progress → review — both acceptance boxes checked from this branch; nothing device-only to verify beyond the force-quit note above
 - 2026-10-19 review → has-errors — round 2: two reviewers said merge, the design reviewer's ten findings (R2.1–R2.10) recorded below
+- 2026-10-19 has-errors → in-progress — fixing R2.1–R2.10
