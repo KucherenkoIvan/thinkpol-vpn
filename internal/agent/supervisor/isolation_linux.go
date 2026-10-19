@@ -112,8 +112,8 @@ const (
 // on an arp chain attaches it to output, where no packet has an input
 // interface. Neither google/nftables nor x/sys/unix names the arp hooks.
 var (
-	arpHookIn  = nftables.ChainHookRef(0) // NF_ARP_IN
-	arpHookOut = nftables.ChainHookRef(1) // NF_ARP_OUT
+	arpHookIn  = nftables.ChainHookRef(0)
+	arpHookOut = nftables.ChainHookRef(1)
 )
 
 // slotZone is slot n's conntrack zone: nonzero, so what a space exchanges
@@ -235,7 +235,7 @@ type rules struct {
 	c         *nftables.Conn
 	inet, arp *nftables.Table
 
-	antiSpoof, ctPre, ctOut, forward, spaceOut, spaceAccept, input, nat, guard, arpIn *nftables.Chain
+	antiSpoof, ctPre, ctOut, forward, spaceOut, spaceAccept, input, nat, guard, arpChain *nftables.Chain
 }
 
 // newRules replaces the supervisor's tables atomically (add-then-delete-
@@ -269,14 +269,11 @@ func newRules(c *nftables.Conn, st tableState) *rules {
 	r.input = base(r.inet, "input", filter, nftables.ChainHookInput, *nftables.ChainPriorityFilter)
 	r.nat = base(r.inet, "postrouting", nftables.ChainTypeNAT, nftables.ChainHookPostrouting, *nftables.ChainPriorityNATSource)
 	r.guard = base(r.inet, "postrouting_guard", filter, nftables.ChainHookPostrouting, *nftables.ChainPriorityNATSource+10)
-	// The arp family has input and output hooks only (ARP is link-local, not
-	// forwarded), so a space's ARP is dropped on input: NF_ARP_IN, not the
-	// inet constant (see arpHookIn).
 	arpHook := arpHookIn
 	if st.arpOnOutput {
 		arpHook = arpHookOut
 	}
-	r.arpIn = base(r.arp, "input", filter, arpHook, *nftables.ChainPriorityFilter)
+	r.arpChain = base(r.arp, "input", filter, arpHook, *nftables.ChainPriorityFilter)
 	return r
 }
 
@@ -401,7 +398,7 @@ func (r *rules) addMasquerade(st tableState) {
 // addArp keeps ARP from a space away from the root namespace's neighbour
 // table.
 func (r *rules) addArp() {
-	r.add(r.arpIn, drop(spaceLink(expr.MetaKeyIIFNAME))...)
+	r.add(r.arpChain, drop(spaceLink(expr.MetaKeyIIFNAME))...)
 }
 
 // zone is "ct zone set <z>".

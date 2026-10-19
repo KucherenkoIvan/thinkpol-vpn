@@ -13,8 +13,8 @@ func WithUnboundAccepts(opts Options) Options {
 }
 
 // WithArpOnOutput turns on the negative control of the forged-ARP test
-// (Options.arpOnOutput): the arp chain sits on the ARP output hook, as it
-// did before the fix. Test-only: production never sets it.
+// (Options.arpOnOutput): the arp chain sits on the ARP output hook, where
+// a space's ARP never matches. Test-only: production never sets it.
 func WithArpOnOutput(opts Options) Options {
 	opts.arpOnOutput = true
 	return opts

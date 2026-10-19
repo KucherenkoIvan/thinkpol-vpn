@@ -183,19 +183,17 @@ type Options struct {
 	// sysctls are the root namespace's sysctls (the supervisor's own
 	// /proc/sys); tests stand in for the kernel.
 	sysctls netSysctls
-	// unboundAccepts and failIsolation are test-only hooks, and only the
-	// linux build reads them; production never sets them. unboundAccepts
-	// is the forged-ICMP tests' negative control: the accepts then take
-	// any established or related flow, whoever owns it. failIsolation is
-	// the failure injected into a table rebuild. Both are set at New and
-	// never written afterwards; failIsolation is armed and disarmed
-	// atomically.
+	// unboundAccepts, arpOnOutput and failIsolation are test-only hooks,
+	// and only the linux build reads them; production never sets them.
+	// unboundAccepts is the forged-ICMP tests' negative control: the
+	// accepts then take any established or related flow, whoever owns it.
+	// arpOnOutput is the forged-ARP test's: the arp chain goes on the ARP
+	// output hook, where a space's ARP never matches. failIsolation is the
+	// failure injected into a table rebuild. All are set at New and never
+	// written afterwards; failIsolation is armed and disarmed atomically.
 	unboundAccepts bool           //nolint:unused // test-only, read in the linux build
+	arpOnOutput    bool           //nolint:unused // test-only, read in the linux build
 	failIsolation  *rebuildFailer //nolint:unused // test-only, read in the linux build
-	// arpOnOutput, test-only too, is the forged-ARP test's negative
-	// control: the arp chain goes back on the ARP output hook, where it
-	// once sat by mistake and never matched a space's ARP.
-	arpOnOutput bool //nolint:unused // test-only, read in the linux build
 	// now is an injectable clock for the backoff schedule in tests.
 	now func() time.Time
 }
