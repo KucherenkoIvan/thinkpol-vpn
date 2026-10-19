@@ -49,6 +49,21 @@ linters:
           deny:
             - pkg: github.com/KucherenkoIvan/thinkpol-vpn/internal/agent
               desc: the agent drives the data plane; the data plane, the map and the lists never import it
+        # the engine owns its ports; the agent adapts the host's adapters to
+        # them (DESIGN.md "Engine and agent"). The package's own files only:
+        # its tests may drive real adapters.
+        dataplane-core-without-host-adapters:
+          list-mode: lax
+          files:
+            - "**/internal/dataplane/*.go"
+            - "!$test"
+          deny:
+            - pkg: github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable
+              desc: the engine's route table is its own RouteTable port; the agent adapts routetable to it
+            - pkg: github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns
+              desc: the engine's resolver is its own Resolver port; the agent adapts dns to it
+            - pkg: github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/tun
+              desc: the agent creates the TUN; the engine takes a tun.Device
         # pure Go packages that also build for Android
         mobile-without-kernel:
           list-mode: lax
