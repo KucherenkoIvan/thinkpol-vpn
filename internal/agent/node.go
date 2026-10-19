@@ -253,9 +253,7 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 		// died connected (a crash, kill -9): a device that starts
 		// without connecting has nothing holding it, and connecting
 		// takes it over anyway.
-		if err := n.plat.clearNetwork(); err != nil {
-			n.logs.Warn("removing a previous run's routes failed", "err", err)
-		}
+		n.plat.clearNetwork(n.logs.Logger)
 	}
 	// A resolver configuration a crash left behind goes back first,
 	// whatever the node does next.
@@ -324,7 +322,7 @@ func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
 				maps = nil
 				continue
 			}
-			if !f.take(env) {
+			if taken, _ := f.take(env); !taken {
 				continue
 			}
 			if f.removed {
@@ -338,7 +336,7 @@ func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
 			if requested && n.mode == ModeServer {
 				n.logs.Warn("a connect or disconnect taken while removed is dropped: this node is a server, which always serves its spaces")
 			}
-			n.logs.Info("back in space", "version", f.cur.Header().Version, "mode", n.mode)
+			f.sayBack("mode", n.mode)
 			return true
 		}
 	}
@@ -567,8 +565,12 @@ func (s *serverSpaces) run(ctx context.Context, maps <-chan []byte) error {
 				maps = nil
 				continue
 			}
-			if !s.follow.take(env) {
+			taken, back := s.follow.take(env)
+			if !taken {
 				continue
+			}
+			if back {
+				s.follow.sayBack()
 			}
 		}
 		if err := s.apply(); err != nil {

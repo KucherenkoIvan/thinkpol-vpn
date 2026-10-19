@@ -27,30 +27,31 @@ type mapFollower struct {
 }
 
 // take takes a newer map if it is one (valid, signed by the space,
-// newer), and reports whether it did. A taken map without a section for
-// the node (it was removed from the space) keeps the node's last section,
-// so a later one that has it again is a back-in-space; a taken section
-// logs a kind change first, against the last one held.
-func (f *mapFollower) take(envelope []byte) bool {
+// newer), and reports whether it did, and back when that map has the
+// node's section again after a removal: the caller says so (sayBack) once
+// it knows what the node is back as. A taken map without a section for
+// the node (it was removed from the space) keeps the node's last section;
+// a taken section logs a kind change first, against the last one held.
+func (f *mapFollower) take(envelope []byte) (taken, back bool) {
 	m, err := f.cur.Next(envelope)
 	if errors.Is(err, netmap.ErrNotNewer) {
 		f.log.Debug("map not newer, ignored", "version", f.cur.Header().Version)
-		return false
+		return false, false
 	}
 	if err != nil {
 		f.log.Warn("map refused, keeping the current one", "version", f.cur.Header().Version, "err", err)
-		return false
+		return false, false
 	}
 	section, err := openSection(m, f.keys)
 	if errors.Is(err, netmap.ErrNotRecipient) {
 		// A valid newer map without the node: it was removed. The map
 		// is taken, so no older one that has the node can come back.
 		f.markRemoved(m)
-		return true
+		return true, false
 	}
 	if err != nil {
 		f.log.Error("map refused, keeping the current one", "version", f.cur.Header().Version, "err", err)
-		return false
+		return false, false
 	}
 	// A kind held is the running node's: it can't change (it restarts
 	// to). Kind 0 is no kind held yet, a follower that starts while the
@@ -58,12 +59,15 @@ func (f *mapFollower) take(envelope []byte) bool {
 	if f.section.Node.Kind != 0 && section.Node.Kind != f.section.Node.Kind {
 		f.log.Warn("the map changes this node's kind; restart the node to change its mode", "kind", section.Node.Kind)
 	}
-	f.cur, f.section = m, section
-	if f.removed {
-		f.removed = false
-		f.log.Info("back in space", "version", m.Header().Version)
-	}
-	return true
+	back = f.removed
+	f.cur, f.section, f.removed = m, section, false
+	return true, back
+}
+
+// sayBack logs that the node is back in its space, at the current map's
+// version, with attrs.
+func (f *mapFollower) sayBack(attrs ...any) {
+	f.log.Info("back in space", append([]any{"version", f.cur.Header().Version}, attrs...)...)
 }
 
 // markRemoved takes m, a map without the node's section (a newer one in

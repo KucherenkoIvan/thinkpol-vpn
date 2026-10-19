@@ -67,8 +67,8 @@ type Platform struct {
 // this order: route-table enforcement's routes (its rejects outlive the
 // TUN) with its leak guard, then the overlay's (on macOS they go with the
 // utun, but stay in the overlay's record), each owner's record with them.
-// The second is cleared whatever the first says.
-func (h Host) clearNetwork() error {
+// The second is cleared whatever the first says; what failed is logged.
+func (h Host) clearNetwork(log *slog.Logger) {
 	var errs []error
 	if err := h.ClearRouteTable(h.NewGuard()); err != nil && !errors.Is(err, errors.ErrUnsupported) {
 		errs = append(errs, fmt.Errorf("%v: %w", netcfg.OwnerRouteTable, err))
@@ -76,5 +76,7 @@ func (h Host) clearNetwork() error {
 	if err := h.ClearConfig(netcfg.OwnerOverlay); err != nil && !errors.Is(err, errors.ErrUnsupported) {
 		errs = append(errs, fmt.Errorf("%v: %w", netcfg.OwnerOverlay, err))
 	}
-	return errors.Join(errs...)
+	if err := errors.Join(errs...); err != nil {
+		log.Warn("removing a previous run's routes failed", "err", err)
+	}
 }

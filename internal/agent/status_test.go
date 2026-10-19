@@ -1,9 +1,11 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -569,16 +571,21 @@ func TestClearingTheNetworkTriesBothOwners(t *testing.T) {
 		ClearRouteTable: func(routetable.Guard) error { return clear(netcfg.OwnerRouteTable) },
 		ClearConfig:     clear,
 	}
-	err := h.clearNetwork()
+	var out bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&out, nil))
+	h.clearNetwork(log)
 	if !slices.Equal(owners, []netcfg.Owner{netcfg.OwnerRouteTable, netcfg.OwnerOverlay}) {
 		t.Errorf("cleared %v", owners)
 	}
-	if err == nil || !strings.Contains(err.Error(), "route-table: no routing socket today") {
-		t.Errorf("error %v", err)
+	if got := out.String(); strings.Count(got, "removing a previous run's routes failed") != 1 ||
+		!strings.Contains(got, "route-table: no routing socket today") {
+		t.Errorf("log %q", got)
 	}
+	out.Reset()
 	h.ClearRouteTable = func(routetable.Guard) error { return fmt.Errorf("netcfg: %w", errors.ErrUnsupported) }
 	h.ClearConfig = func(netcfg.Owner) error { return fmt.Errorf("netcfg: %w", errors.ErrUnsupported) }
-	if err := h.clearNetwork(); err != nil {
-		t.Errorf("unsupported: %v", err)
+	h.clearNetwork(log)
+	if out.Len() != 0 {
+		t.Errorf("unsupported: %q", out.String())
 	}
 }

@@ -174,18 +174,6 @@ type rulesRequest struct {
 	done  chan<- error
 }
 
-// clearRoutes removes what a crashed run left in the host's routing, route
-// table (its leak guard included) and overlay, while nothing of this run
-// holds either.
-func (r *runner) clearRoutes() {
-	if !r.dp.RouteTable {
-		return
-	}
-	if err := r.dp.Host.clearNetwork(); err != nil {
-		r.dp.Log.Warn("removing a previous run's routes failed", "err", err)
-	}
-}
-
 // runner follows the space's maps (follow) and runs the data plane while
 // the node is in the space.
 type runner struct {
@@ -234,7 +222,9 @@ const tunMTU = 1420
 func (r *runner) start(ctx context.Context) error {
 	ifc, err := r.dp.Host.NewConfigurator(netcfg.OwnerOverlay)
 	if err != nil {
-		r.clearRoutes() // a crashed run's table would block traffic meanwhile
+		if r.dp.RouteTable { // a crashed run's table would block traffic meanwhile
+			r.dp.Host.clearNetwork(r.dp.Log)
+		}
 		return &StartError{Step: StepTUN, Err: err}
 	}
 	dev, err := r.dp.Host.NewTUN(r.dp.Interface, tunMTU)
@@ -242,7 +232,9 @@ func (r *runner) start(ctx context.Context) error {
 		if ifc != nil {
 			_ = ifc.Close()
 		}
-		r.clearRoutes() // a crashed run's table would block traffic meanwhile
+		if r.dp.RouteTable { // a crashed run's table would block traffic meanwhile
+			r.dp.Host.clearNetwork(r.dp.Log)
+		}
 		return &StartError{Step: StepTUN, Err: err}
 	}
 	if name, err := dev.Name(); err == nil && name != "" {
@@ -255,7 +247,7 @@ func (r *runner) start(ctx context.Context) error {
 				_ = ifc.Close()
 			}
 			_ = dev.Close()
-			r.clearRoutes()
+			r.dp.Host.clearNetwork(r.dp.Log)
 			return &StartError{Step: dataplane.StepRouteTable, Err: err}
 		}
 	}
@@ -332,7 +324,9 @@ func (r *runner) stop() {
 	if r.engine == nil {
 		// Down with nothing running (a start that failed, a node removed
 		// before it ran): what a crashed run left goes now.
-		r.clearRoutes()
+		if r.dp.RouteTable {
+			r.dp.Host.clearNetwork(r.dp.Log)
+		}
 		return
 	}
 	engine, listeners, resolver := r.engine, r.listeners, r.resolver
@@ -495,8 +489,12 @@ func (r *runner) retry(ctx context.Context) {
 // node stops the data plane, one with it applies it (or starts the data
 // plane on it).
 func (r *runner) next(ctx context.Context, envelope []byte) {
-	if !r.follow.take(envelope) {
+	taken, back := r.follow.take(envelope)
+	if !taken {
 		return
+	}
+	if back {
+		r.follow.sayBack()
 	}
 	if r.follow.removed {
 		r.stop()

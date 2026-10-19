@@ -168,11 +168,10 @@ func TestARemovedNodeWaitsForAMapWithIt(t *testing.T) {
 	if st := n.State(); st.Removed || st.Map.Header().Version != 3 || st.Section.Node.ID != s.b.ID || n.Mode() != ModeDevice {
 		t.Fatalf("removed %v, version %d, section of %v, mode %s", st.Removed, st.Map.Header().Version, st.Section.Node.ID, n.Mode())
 	}
-	// The back-in-space line says which mode the node came back as (the
-	// follower's own line has no mode).
-	if !strings.Contains(out.String(), "removed from space") ||
-		!strings.Contains(out.String(), "version=3 mode=device") {
-		t.Fatalf("log:\n%s", out.String())
+	// One back-in-space line, saying which mode the node came back as.
+	if got := out.String(); !strings.Contains(got, "removed from space") ||
+		strings.Count(got, "back in space") != 1 || !strings.Contains(got, "version=3 mode=device") {
+		t.Fatalf("log:\n%s", got)
 	}
 
 	// Stopping while waiting is a clean stop.
@@ -181,6 +180,41 @@ func TestARemovedNodeWaitsForAMapWithIt(t *testing.T) {
 	cancel()
 	if n.awaitSection(ctx, maps) {
 		t.Fatal("went on after the stop")
+	}
+}
+
+// A server removed while it was down drops a connect asked for meanwhile,
+// and says so before its one back-in-space line, which has its mode.
+func TestARemovedServerSaysTheDroppedConnectFirst(t *testing.T) {
+	s := newTestSpace(t)
+	dir := s.stateDir(t, s.a, 1)
+	writeFile(t, filepath.Join(dir, MapFileName), s.buildWithout(t, 1, s.a), 0o644)
+	var out bytes.Buffer
+	logs, err := NewLogs("info", &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := Prepare(testConfig(dir), logs, testPlatform())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	maps := make(chan []byte, 1)
+	result := make(chan bool, 1)
+	go func() { result <- n.awaitSection(ctx, maps) }()
+	if err := n.Connect(ctx); err != nil {
+		t.Fatal(err)
+	}
+	maps <- s.build(t, 2)
+	if !<-result {
+		t.Fatalf("gave up:\n%s", out.String())
+	}
+	got := out.String()
+	warn, back := strings.Index(got, "is dropped"), strings.Index(got, "back in space")
+	if strings.Count(got, "back in space") != 1 || warn < 0 || back < warn ||
+		!strings.Contains(got[back:], "version=2 mode=server") {
+		t.Fatalf("log:\n%s", got)
 	}
 }
 
