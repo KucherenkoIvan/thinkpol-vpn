@@ -70,3 +70,4 @@ Other cheap wins looked at, not done:
 - 2026-10-19 full `make lab-test` twice at b876e8c, defaults: pass, 197 s (3:17), 08:14 UTC, 0 `tplab-*` containers before and after (another run's labs appeared after it ended); pass, 154 s (2:34), 08:57 UTC, quiet machine (waited ~34 min, polling, for the other run's labs to clear; 0 before and after); `make lint`, `make test` green on this branch
 - 2026-10-19 in-progress → review
 - 2026-10-19 review → has-errors — round 5: review findings
+- 2026-10-19 has-errors → in-progress — round 5: review findings (owner: agent-opus)
