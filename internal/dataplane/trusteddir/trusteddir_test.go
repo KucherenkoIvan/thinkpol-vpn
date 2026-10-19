@@ -118,3 +118,59 @@ func TestLock(t *testing.T) {
 		t.Error("a FIFO was taken")
 	}
 }
+
+// Files in a trusted directory are read and replaced relative to it,
+// never through a symlink, and a reader never blocks on a fifo.
+func TestFilesAreReadAndReplacedInPlace(t *testing.T) {
+	path := tempDir(t)
+	d, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = d.Close() }()
+	if _, err := ReadFile(d, "rec"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a missing file: %v", err)
+	}
+	for _, data := range []string{"first\n", "second\n"} {
+		if err := WriteFile(d, "rec", []byte(data)); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := ReadFile(d, "rec"); err != nil || string(got) != data {
+			t.Errorf("read back %q, %v; want %q", got, err, data)
+		}
+	}
+	if fi, err := os.Lstat(filepath.Join(path, "rec")); err != nil || fi.Mode() != 0o600 {
+		t.Errorf("the file: %v, %v; want a regular file, 0600", fi, err)
+	}
+	// The temporary file is never followed out of the directory.
+	target := filepath.Join(path, "elsewhere")
+	if err := os.Symlink(target, filepath.Join(path, "rec.tmp")); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteFile(d, "rec", []byte("third\n")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the symlink's target was written: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(path, "rec"), filepath.Join(path, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadFile(d, "link"); !errors.Is(err, unix.ELOOP) {
+		t.Errorf("a symlink: %v, want ELOOP", err)
+	}
+	if err := unix.Mkfifo(filepath.Join(path, "fifo"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadFile(d, "fifo"); !errors.Is(err, ErrNotRegular) {
+		t.Errorf("a fifo: %v, want ErrNotRegular", err)
+	}
+	for range 2 {
+		if err := Remove(d, "rec"); err != nil {
+			t.Errorf("Remove: %v", err)
+		}
+	}
+	if _, err := os.Lstat(filepath.Join(path, "rec")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("removed: %v", err)
+	}
+}

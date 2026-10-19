@@ -5,11 +5,9 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"io"
-	"os"
+	"io/fs"
 	"strconv"
 	"strings"
-	"sync"
 
 	"golang.org/x/sys/unix"
 
@@ -32,20 +30,6 @@ type pfToken struct {
 	value uint64
 	pid   int
 }
-
-// bootSession names this boot of the machine. The state directory
-// outlives a reboot and pf's references don't: a record of another boot
-// holds nothing.
-var bootSession = sync.OnceValues(func() (string, error) {
-	s, err := unix.Sysctl("kern.bootsessionuuid")
-	if err == nil && s == "" {
-		err = errors.New("empty")
-	}
-	if err != nil {
-		return "", fmt.Errorf("firewall: kern.bootsessionuuid: %w", err)
-	}
-	return s, nil
-})
 
 // tokenStore keeps the record in dir (made 0700 if missing, opened
 // through trusteddir, every file reached relative to its descriptor).
@@ -74,31 +58,25 @@ func (s tokenStore) read() (pfToken, recordState, error) {
 		return pfToken{}, recordNone, err
 	}
 	defer func() { _ = d.Close() }()
-	path := d.Name() + "/" + tokenRecord
-	fd, err := unix.Openat(int(d.Fd()), tokenRecord, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+	data, err := trusteddir.ReadFile(d, tokenRecord)
 	switch {
-	case errors.Is(err, unix.ENOENT):
+	case errors.Is(err, fs.ErrNotExist):
 		return pfToken{}, recordNone, nil
-	case errors.Is(err, unix.ELOOP):
-		return pfToken{}, recordStale, nil // a symlink is never ours
+	case errors.Is(err, unix.ELOOP), errors.Is(err, trusteddir.ErrNotRegular):
+		return pfToken{}, recordStale, nil // a symlink or a fifo is never ours
 	case err != nil:
-		return pfToken{}, recordNone, &os.PathError{Op: "open", Path: path, Err: err}
+		return pfToken{}, recordNone, err
 	}
-	f := os.NewFile(uintptr(fd), path)
-	defer func() { _ = f.Close() }()
-	if fi, err := f.Stat(); err != nil || !fi.Mode().IsRegular() {
-		return pfToken{}, recordStale, nil
-	}
-	data, err := io.ReadAll(io.LimitReader(f, 4096))
-	if err != nil {
-		return pfToken{}, recordNone, &os.PathError{Op: "read", Path: path, Err: err}
-	}
-	t, recBoot, ok := parseRecord(data)
+	t, recBoot, ok := parseRecord(data[:min(len(data), maxTokenRecord)])
 	if !ok || recBoot != boot {
 		return pfToken{}, recordStale, nil
 	}
 	return t, recordHeld, nil
 }
+
+// maxTokenRecord is as much of the record as is parsed: a record of ours
+// is far shorter.
+const maxTokenRecord = 4096
 
 // parseRecord reads "boot <session>" then "token <value|unknown> pid
 // <pid>", comments and blank lines aside; anything else is no record.
@@ -154,27 +132,13 @@ func (s tokenStore) write(t pfToken) error {
 		return err
 	}
 	defer func() { _ = d.Close() }()
-	dirfd := int(d.Fd())
 	value := "unknown"
 	if t.value != 0 {
 		value = strconv.FormatUint(t.value, 10)
 	}
 	data := fmt.Sprintf("%s\nboot %s\ntoken %s pid %d\n", tokenHeader, boot, value, t.pid)
-	tmp := tokenRecord + ".tmp"
-	_ = unix.Unlinkat(dirfd, tmp, 0)
-	fd, err := unix.Openat(dirfd, tmp, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
-	if err != nil {
-		return &os.PathError{Op: "create", Path: d.Name() + "/" + tmp, Err: err}
-	}
-	f := os.NewFile(uintptr(fd), tmp)
-	err = errors.Join(func() error { _, err := f.Write([]byte(data)); return err }(), f.Sync())
-	err = errors.Join(err, f.Close())
-	if err == nil {
-		err = unix.Renameat(dirfd, tmp, dirfd, tokenRecord)
-	}
-	if err != nil {
-		_ = unix.Unlinkat(dirfd, tmp, 0)
-		return fmt.Errorf("firewall: %s/%s: %w", d.Name(), tokenRecord, err)
+	if err := trusteddir.WriteFile(d, tokenRecord, []byte(data)); err != nil {
+		return fmt.Errorf("firewall: %w", err)
 	}
 	return nil
 }
@@ -186,8 +150,5 @@ func (s tokenStore) remove() error {
 		return err
 	}
 	defer func() { _ = d.Close() }()
-	if err := unix.Unlinkat(int(d.Fd()), tokenRecord, 0); err != nil && !errors.Is(err, unix.ENOENT) {
-		return &os.PathError{Op: "remove", Path: d.Name() + "/" + tokenRecord, Err: err}
-	}
-	return nil
+	return trusteddir.Remove(d, tokenRecord)
 }

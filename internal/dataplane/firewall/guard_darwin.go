@@ -12,6 +12,7 @@ import (
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/trusteddir"
 )
 
 // guardPoll is how often Watch reads the guard back from pf: pf has no
@@ -106,7 +107,7 @@ var errClosed = errors.New("firewall: the IPv6 guard is closed")
 // Nothing is in place until Apply; Close removes what is there, a crashed
 // run's anchor and reference included.
 func NewIPv6Guard() *IPv6Guard {
-	return newIPv6Guard(execPfctl{path: pfctlPath, timeout: pfctlTimeout}, tokenStore{dir: netcfg.StateDir, boot: bootSession}, guardPoll, hostAddrs)
+	return newIPv6Guard(execPfctl{path: pfctlPath, timeout: pfctlTimeout}, tokenStore{dir: netcfg.StateDir, boot: trusteddir.BootSession}, guardPoll, hostAddrs)
 }
 
 func newIPv6Guard(pf pfctl, tokens tokenStore, poll time.Duration, own func() ([]netip.Addr, error)) *IPv6Guard {
