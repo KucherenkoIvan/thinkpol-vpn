@@ -39,6 +39,16 @@ Other cheap wins looked at, not done:
 - The lab image is already shared across checkouts by its Dockerfile+platform hash tag; the before-run in a fresh worktree rebuilt nothing.
 - The first ~10 s of the in-node phase (compiling its 34 test binaries) now overlaps the `lab/` phase's compile instead of adding on.
 
+## Review findings
+- [ ] R5.1 internal/agent/supervisor/egress_linux_test.go ~581-588: in bound=true the loop calls refused() (which writes on root, refreshing the conntrack flow) before rootFlow(), so the guard can't see an expired flow. Check the flow ONCE right after awaitDrops and before any write ("the root's conntrack flow expired before the forged errors were counted: the test proves nothing"); then the refused() loop.
+- [ ] R5.2 rootFlow: match the original direction's tuple exactly as one contiguous string with a trailing space ("src=<root> dst=<internet> sport=<port> dport=<port> ") on a udp line, so 4000 can't match 40001; rename it rootFlowTracked. Read /proc/thread-self/net/nf_conntrack (or explain why /proc/net is safe here: the supervisor's nsthread can put the main thread in another namespace).
+- [ ] R5.3 Each tick the forger sends port-unreachable then frag-needed to the same flow; frag-needed sets sk_err = EMSGSIZE and usually overwrites ECONNREFUSED. In bound=true treat ANY socket error from the write/read as a leak (or use IP_RECVERR and drain the error queue) — say which and why. In bound=false make sure the negative control doesn't depend on winning a wake-up race (count EMSGSIZE as "an error got through" too if that's what the control means). Update refused()'s comment to say what it really observes.
+- [ ] R5.4 The 7-line comment at ~493-499 keeps only the constraint: "The root's socket whose flow the forged errors quote. An unreplied UDP flow expires (nf_conntrack_udp_timeout), so it is opened just before the errors are sent."
+- [ ] R5.5 lab/results_test.go ~116-125: one string per gate used for both record and Fatal ("the off cell didn't run"; "the off cell didn't pass"), since the subtest path names transport and censor. Reflow the doc at ~25-27.
+- [ ] R5.6 lab/lab.go ~53-58 StartOwnSlot doc: "StartOwnSlot is Start with one slot per test or subtest (keyed by its full name) instead of one per top-level test, held until that test ends … Don't mix it with Start, or nest it under a test that holds a slot of its own: the parent holds its slot while its subtests wait here."
+- [ ] R5.7 Ticket Notes: one timing fact ("Timed make lab-test, same machine, no other lab running, defaults: 336.3 s at be6e24a before, 154 s at b876e8c after; per-round timings are in the Log."); the TestCensorMatrix paragraph states what is true now, no round history; "is not on the critical path", "overlaps"; one Notes line on why the supervisor's forged-ICMP test is fixed on this branch (its expired-flow flake failed this ticket's timed runs; the fix tightens what it asserts).
+- [ ] R5.8 Log line with "08:14 UTC"/"08:57 UTC": written in the round under review and not merged, so rewrite it once without clock times or narration: "- 2026-10-19 full make lab-test twice at b876e8c, defaults: pass in 197 s (3:17) and 154 s (2:34), no other lab running; make lint, make test green". Then check the whole ticket for any other clock time.
+
 ## Log
 - 2026-10-18 created in backlog (code-quality review)
 - 2026-10-18 backlog → in-progress — owner: agent-opus, branch: tp-100-faster-full-lab-suite
@@ -59,3 +69,4 @@ Other cheap wins looked at, not done:
 - 2026-10-19 proved the forged-ICMP fix with `net.netfilter.nf_conntrack_udp_timeout` lowered to 1 s in the node (temporary, uncommitted edit, `COUNT=3`): the old test failed `bound=false` all 3 times ("refused false" — the expired flow, not the binding) while `bound=true` passed vacuously; with the fix, both subtests pass 3 of 3
 - 2026-10-19 full `make lab-test` twice at b876e8c, defaults: pass, 197 s (3:17), 08:14 UTC, 0 `tplab-*` containers before and after (another run's labs appeared after it ended); pass, 154 s (2:34), 08:57 UTC, quiet machine (waited ~34 min, polling, for the other run's labs to clear; 0 before and after); `make lint`, `make test` green on this branch
 - 2026-10-19 in-progress → review
+- 2026-10-19 review → has-errors — round 5: review findings
