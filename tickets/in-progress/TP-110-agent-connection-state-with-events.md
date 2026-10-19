@@ -34,11 +34,11 @@ The device's connection lifecycle is one explicit state with transition methods 
 ## Notes
 - **Owner decision (2026-10-18):** explicit entity modelling without kernel persistence machinery; see PRD "Agent modelling (2026-10-18)".
 - TP-041 (telemetry) consumes these events; TP-083's log-scraping replacement builds on them.
-- **Where it lives (2026-10-19, round 2):** `internal/agent/connection.go` (the state and its methods, each guarding its own from-states; a refused move is `errInvalidTransition`, counted in `refused` and logged at error level by `logRefused`, the state unchanged); `internal/agent/events.go` (`Event`, `EventKind` with each kind's semantics, `Node.Subscribe`). The node owns the connection: `awaitSection` moves it while removed, the runner after; a server's worker runs a connection always meant to be up. The node stopping disconnects it (the next start reads `Config.Connect`).
-- **Events are told after the status shows them:** the runner queues the kinds and tells them at the end of `publish`, in `EventKind` order; `mapFollower.take` returns removals and returns, and its callers (runner, `awaitSection`, `serverSpaces.run`) tell them after their report. Subscribers run on the node's goroutine; a panic in one is recovered and logged.
-- **Route table not enforced comes from the engine's error, not a port:** `growRoutes` wraps its failure with `dataplane.ErrRouteTableNotEnforced`; the runner tells it for a running engine (Apply, SetRules, ReloadRules), never from a start. DNS unprotected and route table not enforced are edges: told when the problem starts, again only after it cleared or the data plane went down.
+- **Where it lives (2026-10-19, round 2):** `internal/agent/connection.go` (the state and its methods, each guarding its own from-states; a refused move is `errInvalidTransition`, counted in `refused` and logged at error level by `logRefused`, the state unchanged); `internal/agent/events.go` (`Event`, `EventKind` with each kind's semantics, `Node.Subscribe`). The node owns the connection: `awaitSection` moves it while removed, the runner after; a server's worker runs a connection always meant to be up. Every way a device's node returns disconnects it (round 3: a stop, a stop during the first start, a failed first start, a stop while it waits out of its space; round 2 covered only a stop after the first start), so a returned node reads disconnected; the next start reads `Config.Connect`.
+- **Events are told after the status shows them:** the runner queues the kinds and tells them at the end of `publish`, in the order queued; `mapFollower.take` returns removals and returns, and its callers (runner, `awaitSection`, `serverSpaces.run`) tell them after their report. Subscribers run on the node's goroutine; a panic in one is recovered and logged.
+- **Problem events come from what the status shows (round 3):** at each `publish` the runner tells DNS unprotected and route table not enforced when the status starts showing them (`Status.DNSUnprotected`, `DataPlane.RouteTable.Error`), so a route table that recovers on its own and fails again is told again, and its own failed reapply and a resolver configuration that turns unprotected are told at the next publish (round 2 told them from the engine's errors only). `growRoutes` still wraps its failure with `dataplane.ErrRouteTableNotEnforced`, whose text is the old prefix.
 - **`report.retrying` stays:** it is not `connRetrying` alone, it also covers a connected device's failed Apply and a server's failed map, both shown as `Status.Retrying`.
-- **Not events yet (for TP-083/TP-041):** the route table failing to be put back later (`routetable`'s own reapply, `ErrorReapply`) or the leak guard failing, which only the status shows; a resolver configuration whose `Problem` turns unprotected after it was pointed (another link's domains in systemd-resolved); `SetDirectUpstreams` failing; there is no disconnected or retrying event kind.
+- **Not events yet (for TP-083/TP-041):** a problem that appears and clears between two publishes (the runner publishes when something wakes it: a map, a request, a retry, a listener, the 30 s status tick), so the route table's own reapply or a resolver configuration turning unprotected is told late or not at all; the leak guard failing; `SetDirectUpstreams` failing; there is no disconnected or retrying event kind.
 
 ## Review findings
 - [x] R1.1 Drop the engine events port (internal/dataplane/events.go, EngineConfig.Events, pending/note/flushEvents and the deferred flushes); growRoutes' error is wrapped with a typed dataplane.ErrRouteTableNotEnforced, and the runner says EventRouteTableNotEnforced for a running engine only (apply's error, reloadRules, SetRules in the rules request), never from start(); the background reapply stays TP-083's note.
@@ -52,14 +52,14 @@ The device's connection lifecycle is one explicit state with transition methods 
 - [x] R1.9 Subscribers run on the node's goroutine (documented, must return quickly); a panicking subscriber is recovered and logged at error level, so it can't kill the node.
 - [x] R1.10 runner.connect: a refused connection.connect has no side effects: it returns after logRefused, without starting the data plane.
 
-- [ ] R2.1 The route-table event is re-armed when the enforcer recovers on its own: both edges (route table, DNS unprotected) come from what the report shows at publish(), told when the problem goes from clear to set; a test with a table whose Status recovers on its own and fails again hears two events.
-- [ ] R2.2 The connection doesn't read connecting after the node returned: ctx ending during the first start and the first start failing are startFailed(false) then publish; ctx ending in awaitSection is disconnect; each tested; method guards fixed rather than refusals counted.
-- [ ] R2.3 publish tells events in the order queued (no Sort/Compact), so a double tell shows as a bug; events.go loses "in the order below".
-- [ ] R2.4 awaitSection answers a refused request with the error (logRefused, then req.done <- err).
-- [ ] R2.5 ErrRouteTableNotEnforced: its doc says why its text is "dataplane: route table" (existing messages unchanged).
-- [ ] R2.6 TestTheStatusShowsWhatAnEventSays waits until all five events were heard before checking.
-- [ ] R2.7 A test counts refusals on a worker's own connection (dp.conn nil).
-- [ ] R2.8 Ticket Notes and Log qualify what changed if R2.2 changes the claim.
+- [x] R2.1 The route-table event is re-armed when the enforcer recovers on its own: both edges (route table, DNS unprotected) come from what the report shows at publish(), told when the problem goes from clear to set; a test with a table whose Status recovers on its own and fails again hears two events.
+- [x] R2.2 The connection doesn't read connecting after the node returned: ctx ending during the first start and the first start failing are startFailed(false) then publish; ctx ending in awaitSection is disconnect; each tested; method guards fixed rather than refusals counted.
+- [x] R2.3 publish tells events in the order queued (no Sort/Compact), so a double tell shows as a bug; events.go loses "in the order below".
+- [x] R2.4 awaitSection answers a refused request with the error (logRefused, then req.done <- err).
+- [x] R2.5 ErrRouteTableNotEnforced: its doc says why its text is "dataplane: route table" (existing messages unchanged).
+- [x] R2.6 TestTheStatusShowsWhatAnEventSays waits until all five events were heard before checking.
+- [x] R2.7 A test counts refusals on a worker's own connection (dp.conn nil).
+- [x] R2.8 Ticket Notes and Log qualify what changed if R2.2 changes the claim.
 
 ## Log
 - 2026-10-18 created in backlog (split from TP-083, owner decision)
@@ -84,3 +84,8 @@ The device's connection lifecycle is one explicit state with transition methods 
 - 2026-10-19 in-progress → review
 - 2026-10-19 review → has-errors — review round 2: R2.1–R2.8
 - 2026-10-19 has-errors → in-progress — review round 2 findings picked up (R2.1–R2.8)
+- 2026-10-19 merged origin/rewrite (TP-109): the engine's ports are its own types; the runner's routes go with its engine; ErrRouteTableNotEnforced still wraps growRoutes' failure, its doc says its text is the old prefix
+- 2026-10-19 round 2: DNS unprotected and route table not enforced are told when the published status starts showing them, no flags of their own (TestARouteTableNotEnforcedIsToldAgainAfterItRecovered: a table that recovers on its own and fails again, two events; the DNS test hears a configuration turning unprotected at the next map); queued events are told in their order
+- 2026-10-19 round 2: a returned node reads disconnected, which round 1's Log claimed for a stop only: a failed first start and a stop during it are startFailed(false), a stop while out of the space is disconnect (TestAStoppedNodeReadsDisconnected, TestAShutdownDuringTheFirstApplyIsNoFailure, TestAFailedStartClearsACrashedRunsRouteTable); awaitSection answers a refused request with the error; the runner tests run a worker's own connection (dp.conn nil) and assert it refused nothing; TestTheStatusShowsWhatAnEventSays waits for all five events
+- 2026-10-19 docs: DESIGN.md "Engine and agent": problem events as the status shows them; a returned device reads disconnected
+- 2026-10-19 make lint (exit 0) and make test (exit 0) at b47a0e8; make lab-test exit 0 at b47a0e8 (lab suite ok, 35 node packages PASS), 129 s with LAB_P=4 (no other lab running). Not verified here: the route-table and DNS events on a real macOS device
