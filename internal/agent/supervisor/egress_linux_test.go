@@ -490,16 +490,19 @@ func TestForgedICMPErrorsAreRefused(t *testing.T) {
 			listenIn(t, inet, probePort)
 			icmps := icmpListenIn(t, inet)
 
-			// The root's own flow to the internet.
+			// The root's own socket to the internet, whose flow the
+			// forged errors quote. Nothing is sent on it yet: an
+			// unreplied UDP conntrack entry lives 30 s
+			// (nf_conntrack_udp_timeout), so the flow is opened only
+			// when the errors are about to be sent and refreshed on
+			// every poll below — an expired flow makes bound=false fail
+			// and bound=true pass for the wrong reason.
 			root, err := net.DialUDP("udp", nil, net.UDPAddrFromAddrPort(netip.AddrPortFrom(internet4, probePort)))
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer func() { _ = root.Close() }()
 			rootPort := root.LocalAddr().(*net.UDPAddr).AddrPort().Port()
-			if _, err := root.Write([]byte("root")); err != nil {
-				t.Fatal(err)
-			}
 
 			s, err := supervisor.New(egressOptions(t))
 			if err != nil {
@@ -526,6 +529,9 @@ func TestForgedICMPErrorsAreRefused(t *testing.T) {
 					innerSrc: netip.AddrPortFrom(internet4, probePort), innerDst: netip.AddrPortFrom(victimAddr, probePort)}).String(),
 			}
 			inputDrops, acceptDrops := dropped(t, "input"), dropped(t, "space_accept")
+			if _, err := root.Write([]byte("root")); err != nil {
+				t.Fatal(err)
+			}
 			if err := s.SetSpaces([]supervisor.Space{
 				{ID: victim, Egress: grant, Config: []byte(internet4.String() + "#flow")},
 				{ID: forger, Egress: grant, Config: []byte(strings.Join(forged, "\n"))},
@@ -534,18 +540,37 @@ func TestForgedICMPErrorsAreRefused(t *testing.T) {
 			}
 
 			refused := func() bool {
+				// The write refreshes the flow and reports a pending
+				// ICMP error as ECONNREFUSED.
+				_, err := root.Write([]byte("root"))
+				if errors.Is(err, syscall.ECONNREFUSED) {
+					return true
+				}
 				_ = root.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
-				_, err := root.Read(make([]byte, 64))
+				_, err = root.Read(make([]byte, 64))
 				return errors.Is(err, syscall.ECONNREFUSED)
 			}
-			lowered := func() bool {
-				out, _ := exec.Command("ip", "route", "get", internet4.String()).CombinedOutput()
-				return strings.Contains(string(out), "mtu 576")
+			// rootFlow reports whether conntrack still has the root's
+			// flow: a forged error is refused only while it does, so the
+			// bound checks assert it while they check for leaks.
+			rootFlow := func() bool {
+				out, err := os.ReadFile("/proc/net/nf_conntrack")
+				if err != nil {
+					t.Fatalf("conntrack entries: %v", err)
+				}
+				return slices.ContainsFunc(strings.Split(string(out), "\n"), func(l string) bool {
+					return strings.Contains(l, "udp") &&
+						strings.Contains(l, "src="+upRoot4.String()) &&
+						strings.Contains(l, "dst="+internet4.String()) &&
+						strings.Contains(l, "sport="+strconv.Itoa(int(rootPort))) &&
+						strings.Contains(l, "dport="+strconv.Itoa(probePort))
+				})
 			}
 			if !bound {
 				eventually(t, 15*time.Second, "the forged errors get through without the binding", func() error {
-					if !refused() || icmps.count() == 0 {
-						return fmt.Errorf("refused %v, sent on %d", refused(), icmps.count())
+					got := refused()
+					if !got || icmps.count() == 0 {
+						return fmt.Errorf("refused %v, sent on %d", got, icmps.count())
 					}
 					return nil
 				})
@@ -557,6 +582,9 @@ func TestForgedICMPErrorsAreRefused(t *testing.T) {
 				if refused() {
 					t.Fatal("a forged port unreachable reached the root's socket")
 				}
+				if !rootFlow() {
+					t.Fatal("the root's conntrack flow is gone: the errors are refused for that, not for the binding")
+				}
 			}
 			if lowered() {
 				t.Error("a forged fragmentation needed lowered the root's path MTU")
@@ -566,6 +594,13 @@ func TestForgedICMPErrorsAreRefused(t *testing.T) {
 			}
 		})
 	}
+}
+
+// lowered reports whether the root's route to the internet carries a path
+// MTU a forged fragmentation needed could have set.
+func lowered() bool {
+	out, _ := exec.Command("ip", "route", "get", internet4.String()).CombinedOutput()
+	return strings.Contains(string(out), "mtu 576")
 }
 
 // icmpCounter counts ICMP destination-unreachable messages from the node
