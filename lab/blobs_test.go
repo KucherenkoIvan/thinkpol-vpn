@@ -91,7 +91,7 @@ func TestBlobDistribution(t *testing.T) {
 	server2.WriteFile(t, "/tmp/tampered.resp", resp)
 	tampering := server2.Start(t, "sh", "-c", "exec nc -l 4717 < /tmp/tampered.resp")
 	lab.Eventually(t, 30*time.Second, func() error {
-		_, err := server2.Exec(t.Context(), "sh", "-c", "ss -Htln 'sport = :4717' | grep -q .")
+		_, err := execRead(server2, pollTimeout, "sh", "-c", "ss -Htln 'sport = :4717' | grep -q .")
 		return err
 	})
 
@@ -126,7 +126,7 @@ func TestBlobDistribution(t *testing.T) {
 	waitLog(t, upA, `msg="stored blob rejected: it doesn't match the map; fetching it again" .*blob=\S+ kind=geoip name=ru`)
 	waitLog(t, upA, `msg="blob fetched" .*blob=\S+ kind=geoip name=ru`)
 	lab.Eventually(t, 30*time.Second, func() error {
-		_, err := devA.Exec(t.Context(), "sh", "-c", "sha256sum "+blobFile+" | grep -q ^"+hex.EncodeToString(sum[:]))
+		_, err := execRead(devA, pollTimeout, "sh", "-c", "sha256sum "+blobFile+" | grep -q ^"+hex.EncodeToString(sum[:]))
 		return err
 	})
 	t.Run("the blob port answers only peers through the tunnel", func(t *testing.T) {
@@ -143,7 +143,7 @@ func TestBlobDistribution(t *testing.T) {
 		s1v4, s1v6 := overlay(1)
 		dv4, dv6 := overlay(3)
 		reaches := func(n *lab.Node, addr, port string) bool {
-			_, err := n.Exec(t.Context(), "nc", "-z", "-w", "3", addr, port)
+			_, err := execRead(n, pollTimeout, "nc", "-z", "-w", "3", addr, port)
 			return err == nil
 		}
 		// A request for the list, as a peer sends it.

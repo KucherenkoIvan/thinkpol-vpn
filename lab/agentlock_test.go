@@ -52,7 +52,7 @@ func TestASecondAgentChangesNothing(t *testing.T) {
 		devB.MustExec(t, "sh", "-ec", "mkdir -p /run/dbus && dbus-daemon --system --fork")
 		devB.Start(t, "/lib/systemd/systemd-resolved")
 		lab.Eventually(t, 20*time.Second, func() error {
-			_, err := devB.Exec(context.Background(), "resolvectl", "dns", link, inetIP.String())
+			_, err := execRead(devB, pollTimeout, "resolvectl", "dns", link, inetIP.String())
 			return err
 		})
 		resolved := func() string {

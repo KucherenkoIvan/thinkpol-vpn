@@ -244,8 +244,8 @@ func TestCommandStartsSealed(t *testing.T) {
 	n := l.Node("node")
 	var atStart string
 	lab.Eventually(t, 10*time.Second, func() error {
-		res, err := n.Exec(t.Context(), "cat", "/tmp/at-start")
-		atStart = res.Stdout
+		out, err := execRead(n, pollTimeout, "cat", "/tmp/at-start")
+		atStart = out
 		return err
 	})
 	for _, want := range []string{"nameserver 127.0.0.1", "default via " + l.Node("gw").IPv4("net").String(), "table netdev tplab_"} {

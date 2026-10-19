@@ -232,7 +232,10 @@ func listenTCP(t *testing.T, server *lab.Node) {
 		server.Start(t, "nc", family, "-k", "-l", "-s", a.String(), "-p", fmt.Sprint(tcpProbePort))
 	}
 	lab.Eventually(t, 30*time.Second, func() error {
-		out := server.MustExec(t, "ss", "-H", "-lnt", fmt.Sprintf("sport = :%d", tcpProbePort))
+		out, err := execRead(server, pollTimeout, "ss", "-H", "-lnt", fmt.Sprintf("sport = :%d", tcpProbePort))
+		if err != nil {
+			return err
+		}
 		if n := len(strings.Split(strings.TrimSpace(out), "\n")); strings.TrimSpace(out) == "" || n < 2 {
 			return fmt.Errorf("listeners: %q", out)
 		}
@@ -277,7 +280,11 @@ func sendDatagram(t *testing.T, dev, server *lab.Node, dst netip.Addr, port, siz
 	out := fmt.Sprintf("/tmp/udp-%s-%d", strings.ReplaceAll(dst.String(), ":", "_"), port)
 	server.Start(t, "sh", "-c", fmt.Sprintf("exec nc -u %s -l -s %s -p %d > %s", family, dst, port, out))
 	lab.Eventually(t, 30*time.Second, func() error {
-		if strings.TrimSpace(server.MustExec(t, "ss", "-H", "-lnu", fmt.Sprintf("sport = :%d", port))) == "" {
+		out, err := execRead(server, pollTimeout, "ss", "-H", "-lnu", fmt.Sprintf("sport = :%d", port))
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(out) == "" {
 			return fmt.Errorf("no UDP listener on %d yet", port)
 		}
 		return nil

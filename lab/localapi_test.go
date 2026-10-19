@@ -108,7 +108,7 @@ func TestLocalAPI(t *testing.T) {
 	t.Run("the socket's directory admits root and the group", func(t *testing.T) {
 		for _, n := range []*lab.Node{server, devA} {
 			lab.Eventually(t, 30*time.Second, func() error {
-				_, err := cli(t, n, []string{"test", "-S", "/run/thinkpol-api/api.sock"})
+				_, err := execRead(n, pollTimeout, "test", "-S", "/run/thinkpol-api/api.sock")
 				return err
 			})
 			if got := n.MustExec(t, "stat", "-c", "%a %U %G", "/run/thinkpol-api", "/run/thinkpol-api/api.sock"); got != "750 root thinkpol\n660 root thinkpol\n" {
