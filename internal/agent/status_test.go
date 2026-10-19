@@ -29,9 +29,9 @@ type deviceNode struct {
 	failTUN chan struct{}
 }
 
-// deviceOpt adjusts device b: prepare its config and platform (every
-// host fake) before it is prepared, dataPlane its data plane's private
-// test fields before it runs.
+// deviceOpt adjusts device b: prepare sets its config and platform
+// (every host fake) before it is prepared, dataPlane its data plane's
+// private test fields before it runs.
 type deviceOpt struct {
 	prepare   func(*Config, *Platform)
 	dataPlane func(*DataPlane)
