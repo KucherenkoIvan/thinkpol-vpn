@@ -490,13 +490,9 @@ func TestForgedICMPErrorsAreRefused(t *testing.T) {
 			listenIn(t, inet, probePort)
 			icmps := icmpListenIn(t, inet)
 
-			// The root's own socket to the internet, whose flow the
-			// forged errors quote. Nothing is sent on it yet: an
-			// unreplied UDP conntrack entry lives 30 s
-			// (nf_conntrack_udp_timeout), so the flow is opened only
-			// when the errors are about to be sent and refreshed on
-			// every poll below — an expired flow makes bound=false fail
-			// and bound=true pass for the wrong reason.
+			// The root's socket whose flow the forged errors quote. An
+			// unreplied UDP flow expires (nf_conntrack_udp_timeout), so
+			// it is opened just before the errors are sent.
 			root, err := net.DialUDP("udp", nil, net.UDPAddrFromAddrPort(netip.AddrPortFrom(internet4, probePort)))
 			if err != nil {
 				t.Fatal(err)
@@ -539,38 +535,42 @@ func TestForgedICMPErrorsAreRefused(t *testing.T) {
 				t.Fatal(err)
 			}
 
+			// refused reports whether a socket error reached the root's
+			// socket. The forger sends a port unreachable and a
+			// fragmentation needed on the same flow, and the second
+			// usually overwrites the first in sk_err (EMSGSIZE over
+			// ECONNREFUSED), so any error either surfaces as is a leak;
+			// a read timeout is not one.
 			refused := func() bool {
-				// The write refreshes the flow and reports a pending
-				// ICMP error as ECONNREFUSED.
-				_, err := root.Write([]byte("root"))
-				if errors.Is(err, syscall.ECONNREFUSED) {
+				if _, err := root.Write([]byte("root")); err != nil {
 					return true
 				}
 				_ = root.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
-				_, err = root.Read(make([]byte, 64))
-				return errors.Is(err, syscall.ECONNREFUSED)
+				_, err := root.Read(make([]byte, 64))
+				if err == nil {
+					return false
+				}
+				var ne net.Error
+				return !errors.As(err, &ne) || !ne.Timeout()
 			}
-			// rootFlow reports whether conntrack still has the root's
-			// flow: a forged error is refused only while it does, so the
-			// bound checks assert it while they check for leaks.
-			rootFlow := func() bool {
-				out, err := os.ReadFile("/proc/net/nf_conntrack")
+			// rootFlowTracked reports whether conntrack still has the
+			// root's flow, matched as the original direction's tuple:
+			// a forged error is refused only while the flow is tracked.
+			rootFlowTracked := func() bool {
+				out, err := os.ReadFile("/proc/thread-self/net/nf_conntrack")
 				if err != nil {
 					t.Fatalf("conntrack entries: %v", err)
 				}
+				// The trailing space keeps 4000 from matching 40001.
+				tuple := fmt.Sprintf("src=%s dst=%s sport=%d dport=%d ", upRoot4, internet4, rootPort, probePort)
 				return slices.ContainsFunc(strings.Split(string(out), "\n"), func(l string) bool {
-					return strings.Contains(l, "udp") &&
-						strings.Contains(l, "src="+upRoot4.String()) &&
-						strings.Contains(l, "dst="+internet4.String()) &&
-						strings.Contains(l, "sport="+strconv.Itoa(int(rootPort))) &&
-						strings.Contains(l, "dport="+strconv.Itoa(probePort))
+					return strings.Contains(l, "udp") && strings.Contains(l, tuple)
 				})
 			}
 			if !bound {
 				eventually(t, 15*time.Second, "the forged errors get through without the binding", func() error {
-					got := refused()
-					if !got || icmps.count() == 0 {
-						return fmt.Errorf("refused %v, sent on %d", got, icmps.count())
+					if !refused() {
+						return fmt.Errorf("no socket error, sent on %d", icmps.count())
 					}
 					return nil
 				})
@@ -578,12 +578,12 @@ func TestForgedICMPErrorsAreRefused(t *testing.T) {
 			}
 			awaitDrops(t, "input", inputDrops, 20)
 			awaitDrops(t, "space_accept", acceptDrops, 10)
+			if !rootFlowTracked() {
+				t.Fatal("the root's conntrack flow expired before the forged errors were counted: the test proves nothing")
+			}
 			for range 5 {
 				if refused() {
-					t.Fatal("a forged port unreachable reached the root's socket")
-				}
-				if !rootFlow() {
-					t.Fatal("the root's conntrack flow is gone: the errors are refused for that, not for the binding")
+					t.Fatal("a forged ICMP error reached the root's socket")
 				}
 			}
 			if lowered() {

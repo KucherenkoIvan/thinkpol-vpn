@@ -23,9 +23,9 @@ import (
 // TestCensorMatrix scores every transport against every censor module
 // (PRD C4, success metric 1) and regenerates lab/RESULTS.md. Every cell is
 // probed in its own lab, and a transport's censored cells run in parallel:
-// a transport passes when its
-// data crossed the censor in the lab router over IPv4 and over IPv6, and
-// fails when it crossed over neither. A cell whose outcome contradicts what
+// a transport passes when its data crossed the censor in the lab router
+// over IPv4 and over IPv6, and fails when it crossed over neither. A cell
+// whose outcome contradicts what
 // its censor means to produce fails the test, and a cell whose censor can't
 // be trusted (censord died, the kernel dropped queued packets, the verdict
 // log doesn't show the probe's flows) is an error. RESULTS.md is written
@@ -116,12 +116,12 @@ func TestCensorMatrix(t *testing.T) {
 					if offResult == "" {
 						record(matrixCell{transport: tr.name, censor: cc.name,
 							result: "error", detail: "the off cell didn't run"})
-						t.Fatalf("%s without a censor: the off cell didn't run", tr.name)
+						t.Fatal("the off cell didn't run")
 					}
 					if offResult != "pass" {
 						record(matrixCell{transport: tr.name, censor: cc.name,
-							result: "error", detail: "the transport failed without a censor"})
-						t.Fatalf("the transport failed without a censor: %s can't be judged", cc.name)
+							result: "error", detail: "the off cell didn't pass"})
+						t.Fatal("the off cell didn't pass")
 					}
 					runCell(t, tr, cc)
 				})

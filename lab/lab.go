@@ -50,12 +50,12 @@ func Start(t testing.TB, topo Topology) *Lab {
 	return start(t, topo, "test:"+strings.SplitN(t.Name(), "/", 2)[0])
 }
 
-// StartOwnSlot is Start with the lab holding a slot of its own, keyed
-// "own:"+t.Name() after the test or subtest that starts it and held until
-// it ends: a test whose subtests each start one lab gets a slot per
-// subtest, so the cap bounds its labs like every other run's. Don't mix it
-// with Start in one top-level test: the parent holds its Start slot while
-// its subtests wait in StartOwnSlot, and they can wait on it.
+// StartOwnSlot is Start with one slot per test or subtest (keyed by its
+// full name) instead of one per top-level test, held until that test ends:
+// a test whose subtests each start one lab gives each subtest its own
+// slot, so the cap bounds its labs like every other run's. Don't mix it
+// with Start, or nest it under a test that holds a slot of its own: the
+// parent holds its slot while its subtests wait here.
 func StartOwnSlot(t testing.TB, topo Topology) *Lab {
 	return start(t, topo, "own:"+t.Name())
 }
