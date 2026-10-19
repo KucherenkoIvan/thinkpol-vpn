@@ -66,7 +66,7 @@ func TestGeneratedValuesAreRandom(t *testing.T) {
 	if a.ID == b.ID || a.IPv6Network == b.IPv6Network || a.Signing.Equal(b.Signing) {
 		t.Fatal("two spaces share values")
 	}
-	if !ula.Contains(a.IPv6Network.Addr()) || a.IPv6Network.Bits() != 48 || a.IPv6Network != a.IPv6Network.Masked() {
+	if !netmap.IsOverlayIPv6(a.IPv6Network) {
 		t.Fatalf("IPv6 network %v", a.IPv6Network)
 	}
 	m, _ := NewNodeKeys(nil)

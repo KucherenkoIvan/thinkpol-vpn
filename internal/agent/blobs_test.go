@@ -102,7 +102,7 @@ var fastBlobs = blobs.Limits{RetryMin: 20 * time.Millisecond, RetryMax: 100 * ti
 	DialTimeout: time.Second, IdleTimeout: 2 * time.Second}
 
 func (o *loopbackOverlay) service(store blobs.Store, log *slog.Logger) *blobs.Service {
-	return blobs.New(blobs.Options{Store: store, Log: log, Listen: o.listen, Dial: o.dial, Limits: fastBlobs})
+	return blobs.NewOnNet(blobs.Options{Store: store, Log: log, Limits: fastBlobs}, blobs.Net{Listen: o.listen, Dial: o.dial})
 }
 
 // Server a holds the list from its seed; device b, whose section names it,
@@ -296,7 +296,12 @@ func TestServerSeedsItsWorker(t *testing.T) {
 	var ov loopbackOverlay
 	w := newRunningNode()
 	base := w.dataPlane(reg, NodeKeys{}, nil)
-	base.blobOptions = blobs.Options{Listen: ov.listen, Dial: ov.dial, Limits: fastBlobs}
+	base.newBlobs = func(o blobs.Options) *blobs.Service {
+		fast := fastBlobs
+		fast.MaxHeld = o.Limits.MaxHeld // the worker's own bound survives
+		o.Limits = fast
+		return blobs.NewOnNet(o, blobs.Net{Listen: ov.listen, Dial: ov.dial})
+	}
 	sess := newFakeSession(s.id)
 	sess.Seeds = worker.NewSeeds()
 	sess.Seeds.Add(ru)
