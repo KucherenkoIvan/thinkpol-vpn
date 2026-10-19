@@ -79,8 +79,9 @@ func New(opts Options) (*Supervisor, error) {
 		opts: opts, log: opts.Log, root: root,
 		shared:  newShared(opts.Transports, opts.FairShare, opts.Log, opts.now),
 		workers: map[netmap.SpaceID]*worker{}, slots: map[int]bool{},
-		maxFlows:  maxFlows(opts.MaxFlowsPerSpace),
-		stopWatch: make(chan struct{}), watchDone: make(chan struct{}),
+		forwarding: rootForwarding{sys: opts.sysctls},
+		maxFlows:   maxFlows(opts.MaxFlowsPerSpace, opts.sysctls),
+		stopWatch:  make(chan struct{}), watchDone: make(chan struct{}),
 	}
 	// A predecessor's forwarding, if it died without restoring it: still
 	// the supervisor's to confine and put back, even if this start fails.

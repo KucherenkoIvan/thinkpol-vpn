@@ -179,6 +179,14 @@ type Options struct {
 	// RuntimeDir is where the supervisor records the forwarding sysctls it
 	// changed (DefaultRuntimeDir).
 	RuntimeDir string
+	// sysctls are the root namespace's sysctls (the supervisor's own
+	// /proc/sys); tests stand in for the kernel.
+	sysctls netSysctls
+	// unboundAccepts and failIsolation are test-only hooks: the forged-ICMP
+	// tests' negative control, and the failure injected into a table
+	// rebuild. Production never sets them; only the linux build reads them.
+	unboundAccepts bool                  //nolint:unused // test-only, read in the linux build
+	failIsolation  func(slots int) error //nolint:unused // test-only, read in the linux build
 	// now is an injectable clock for the backoff schedule in tests.
 	now func() time.Time
 }
@@ -228,6 +236,9 @@ func (o Options) withDefaults() (Options, error) {
 	}
 	if o.CountersInterval == 0 {
 		o.CountersInterval = 10 * time.Second
+	}
+	if o.sysctls == nil {
+		o.sysctls = procSysFS{root: "/proc/sys"}
 	}
 	if o.OutputBytes == 0 {
 		o.OutputBytes = 64 << 10

@@ -483,8 +483,6 @@ func TestForgedICMPErrorsAreRefused(t *testing.T) {
 	needsLab(t)
 	for _, bound := range []bool{true, false} {
 		t.Run(fmt.Sprintf("bound=%v", bound), func(t *testing.T) {
-			supervisor.SetUnboundAccepts(!bound)
-			defer supervisor.SetUnboundAccepts(false)
 			inet, _ := labInternet(t)
 			rootSysctls(t, "1", "net/ipv4/ip_forward")
 			listenIn(t, inet, probePort)
@@ -500,7 +498,11 @@ func TestForgedICMPErrorsAreRefused(t *testing.T) {
 			defer func() { _ = root.Close() }()
 			rootPort := root.LocalAddr().(*net.UDPAddr).AddrPort().Port()
 
-			s, err := supervisor.New(egressOptions(t))
+			opts := egressOptions(t)
+			if !bound {
+				opts = supervisor.WithUnboundAccepts(opts)
+			}
+			s, err := supervisor.New(opts)
 			if err != nil {
 				t.Fatal(err)
 			}

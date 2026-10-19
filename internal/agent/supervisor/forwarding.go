@@ -13,9 +13,56 @@ import (
 	"sync"
 )
 
-// procSys is where the root namespace's sysctls are (the supervisor's own
-// /proc: it runs in the root namespace).
-var procSys = "/proc/sys"
+// netSysctls are the root namespace's sysctls, keyed relative to /proc/sys.
+// The supervisor's own /proc is it (it runs in the root namespace); tests
+// stand in for the kernel.
+type netSysctls interface {
+	// Read is a sysctl's trimmed value.
+	Read(key string) (string, error)
+	// Write writes a sysctl.
+	Write(key, value string) error
+	// Glob matches keys by pattern.
+	Glob(pattern string) ([]string, error)
+	// ReadDir lists a sysctl directory's entries.
+	ReadDir(rel string) ([]os.DirEntry, error)
+}
+
+// procSysFS is the real sysctls: /proc/sys.
+type procSysFS struct{ root string }
+
+func (sys procSysFS) Read(key string) (string, error) {
+	b, err := os.ReadFile(filepath.Join(sys.root, key))
+	if err != nil {
+		return "", fmt.Errorf("sysctl %s: %w", key, err)
+	}
+	return strings.TrimSpace(string(b)), nil
+}
+
+// Write writes a sysctl; one whose interface went away meanwhile is nothing
+// to write.
+func (sys procSysFS) Write(key, value string) error {
+	err := os.WriteFile(filepath.Join(sys.root, key), []byte(value), 0)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("sysctl %s: %w", key, err)
+	}
+	return nil
+}
+
+func (sys procSysFS) Glob(pattern string) ([]string, error) {
+	matches, err := filepath.Glob(filepath.Join(sys.root, pattern))
+	if err != nil {
+		return nil, err
+	}
+	keys := make([]string, len(matches))
+	for i, m := range matches {
+		keys[i], _ = filepath.Rel(sys.root, m)
+	}
+	return keys, nil
+}
+
+func (sys procSysFS) ReadDir(rel string) ([]os.DirEntry, error) {
+	return os.ReadDir(filepath.Join(sys.root, rel))
+}
 
 // forwardingFile records, in Options.RuntimeDir, the forwarding sysctls the
 // supervisor changed, so a successor (after a crash) restores them.
@@ -38,6 +85,7 @@ const forwardingFile = "forwarding.json"
 // value is put back only if it still holds what the supervisor left there.
 type rootForwarding struct {
 	mu   sync.Mutex
+	sys  netSysctls
 	file string
 	fams [2]*forwardingChange // IPv4, IPv6; nil when not the supervisor's
 }
@@ -60,19 +108,18 @@ type sysctlChange struct {
 var forwardingKeys = [2]string{"net/ipv4/ip_forward", "net/ipv6/conf/all/forwarding"}
 
 // sideKeys are the sysctls writing a family's forwarding switch resets.
-func sideKeys(fam int) ([]string, error) {
+func (f *rootForwarding) sideKeys(fam int) ([]string, error) {
 	pattern := []string{"net/ipv4/conf/*/accept_redirects", "net/ipv4/conf/*/forwarding"}
 	if fam == 1 {
 		pattern = []string{"net/ipv6/conf/*/forwarding"}
 	}
 	var keys []string
 	for _, p := range pattern {
-		matches, err := filepath.Glob(filepath.Join(procSys, p))
+		matches, err := f.sys.Glob(p)
 		if err != nil {
 			return nil, err
 		}
-		for _, m := range matches {
-			key, _ := filepath.Rel(procSys, m)
+		for _, key := range matches {
 			if key != forwardingKeys[fam] {
 				keys = append(keys, key)
 			}
@@ -100,7 +147,7 @@ func (f *rootForwarding) load(dir string) error {
 	}
 	for i, c := range rec {
 		if c != nil && c.Main.Key == forwardingKeys[i] {
-			if v, err := readSysctl(c.Main.Key); err == nil && v == c.Main.Written {
+			if v, err := f.sys.Read(c.Main.Key); err == nil && v == c.Main.Written {
 				f.fams[i] = c
 			}
 		}
@@ -150,7 +197,7 @@ func (f *rootForwarding) willOwn(want [2]bool) [2]bool {
 	for i := range out {
 		out[i] = f.fams[i] != nil
 		if want[i] && !out[i] {
-			v, err := readSysctl(forwardingKeys[i])
+			v, err := f.sys.Read(forwardingKeys[i])
 			out[i] = err == nil && v != "1"
 		}
 	}
@@ -179,13 +226,13 @@ func (f *rootForwarding) ensure(want [2]bool) error {
 
 func (f *rootForwarding) enable(fam int) error {
 	main := forwardingKeys[fam]
-	was, err := readSysctl(main)
+	was, err := f.sys.Read(main)
 	if err != nil || was == "1" {
 		return err
 	}
 	c := &forwardingChange{Main: sysctlChange{Key: main, Original: was, Written: "1"}}
 	if fam == 1 {
-		dirs, err := os.ReadDir(filepath.Join(procSys, "net/ipv6/conf"))
+		dirs, err := f.sys.ReadDir("net/ipv6/conf")
 		if err != nil {
 			return err
 		}
@@ -194,25 +241,25 @@ func (f *rootForwarding) enable(fam int) error {
 				continue
 			}
 			key := "net/ipv6/conf/" + d.Name() + "/accept_ra"
-			if v, err := readSysctl(key); err == nil && v == "1" {
-				if err := writeSysctl(key, "2"); err != nil {
+			if v, err := f.sys.Read(key); err == nil && v == "1" {
+				if err := f.sys.Write(key, "2"); err != nil {
 					return err
 				}
 				c.Before = append(c.Before, sysctlChange{Key: key, Original: "1", Written: "2"})
 			}
 		}
 	}
-	keys, err := sideKeys(fam)
+	keys, err := f.sideKeys(fam)
 	if err != nil {
 		return err
 	}
 	before := map[string]string{}
 	for _, k := range keys {
-		if v, err := readSysctl(k); err == nil {
+		if v, err := f.sys.Read(k); err == nil {
 			before[k] = v
 		}
 	}
-	if err := writeSysctl(main, "1"); err != nil {
+	if err := f.sys.Write(main, "1"); err != nil {
 		f.fams[fam] = c // accept_ra may have changed: put it back with the rest
 		_ = f.restoreFamily(fam)
 		return err
@@ -220,7 +267,7 @@ func (f *rootForwarding) enable(fam int) error {
 	for _, k := range keys {
 		// Every one, changed or not: writing the switch back resets them
 		// all again.
-		if v, err := readSysctl(k); err == nil && before[k] != "" {
+		if v, err := f.sys.Read(k); err == nil && before[k] != "" {
 			c.Side = append(c.Side, sysctlChange{Key: k, Original: before[k], Written: v})
 		}
 	}
@@ -240,22 +287,22 @@ func (f *rootForwarding) restoreFamily(fam int) error {
 		return nil
 	}
 	held := func(s sysctlChange) bool {
-		v, err := readSysctl(s.Key)
+		v, err := f.sys.Read(s.Key)
 		return err == nil && v == s.Written
 	}
 	side := slices.DeleteFunc(slices.Clone(c.Side), func(s sysctlChange) bool { return !held(s) })
 	var errs []error
 	if held(c.Main) {
-		if err := writeSysctl(c.Main.Key, c.Main.Original); err != nil {
+		if err := f.sys.Write(c.Main.Key, c.Main.Original); err != nil {
 			return err
 		}
 		for _, s := range side {
-			errs = append(errs, writeSysctl(s.Key, s.Original))
+			errs = append(errs, f.sys.Write(s.Key, s.Original))
 		}
 	}
 	for _, s := range c.Before {
 		if held(s) {
-			errs = append(errs, writeSysctl(s.Key, s.Original))
+			errs = append(errs, f.sys.Write(s.Key, s.Original))
 		}
 	}
 	f.fams[fam] = nil
@@ -271,38 +318,16 @@ func (f *rootForwarding) restore() error {
 	return errors.Join(errs...)
 }
 
-func readSysctl(key string) (string, error) {
-	b, err := os.ReadFile(filepath.Join(procSys, key))
-	if err != nil {
-		return "", fmt.Errorf("sysctl %s: %w", key, err)
-	}
-	return strings.TrimSpace(string(b)), nil
-}
-
-// writeSysctl writes a sysctl (writeSysctlFile; tests stand in for the
-// kernel's side effects).
-var writeSysctl = writeSysctlFile
-
-// writeSysctlFile writes a sysctl; one whose interface went away meanwhile
-// is nothing to write.
-func writeSysctlFile(key, value string) error {
-	err := os.WriteFile(filepath.Join(procSys, key), []byte(value), 0)
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("sysctl %s: %w", key, err)
-	}
-	return nil
-}
-
 // maxFlows is the per-space flow cap: MaxFlowsPerSpace, or a quarter of
 // the node's conntrack table.
-func maxFlows(opt int) int {
+func maxFlows(opt int, sys netSysctls) int {
 	switch {
 	case opt < 0:
 		return 0
 	case opt > 0:
 		return opt
 	}
-	v, err := readSysctl("net/netfilter/nf_conntrack_max")
+	v, err := sys.Read("net/netfilter/nf_conntrack_max")
 	n, perr := strconv.Atoi(v)
 	if err != nil || perr != nil || n < 4 {
 		return 65536

@@ -99,16 +99,6 @@ import (
 // anti-spoof its ND (whose sources are link-local), so neither floods the
 // root's neighbour table.
 
-// failApplyIsolation, when set, is asked before each rebuild of the tables
-// (with how many slots it has) and fails it with what it returns: the tests
-// of a failed rebuild. Tests set it; it is never set in production.
-var failApplyIsolation func(slots int) error
-
-// unboundAccepts makes the accepts take any established or related flow,
-// whoever owns it: the negative control of the tests that forge ICMP errors.
-// Tests set it; it is never set in production.
-var unboundAccepts bool
-
 // connlimitOver is NFT_CONNLIMIT_F_INV: the connlimit expression matches
 // above its count. ctDirOriginal is IP_CT_DIR_ORIGINAL.
 const (
@@ -173,8 +163,8 @@ func (s *Supervisor) effective(grant EgressGrant) [2]bool {
 
 // applyIsolation rebuilds both tables in one flush.
 func (s *Supervisor) applyIsolation(st tableState) error {
-	if failApplyIsolation != nil {
-		if err := failApplyIsolation(len(st.rules)); err != nil {
+	if fn := s.opts.failIsolation; fn != nil {
+		if err := fn(len(st.rules)); err != nil {
 			return err
 		}
 	}
@@ -182,7 +172,7 @@ func (s *Supervisor) applyIsolation(st tableState) error {
 	if err != nil {
 		return fmt.Errorf("nftables: %w", err)
 	}
-	r := newRules(c)
+	r := newRules(c, s.opts.unboundAccepts)
 	r.addAntiSpoof(st)
 	r.addZones(st)
 	r.addForward(st)
@@ -199,9 +189,12 @@ func (s *Supervisor) applyIsolation(st tableState) error {
 
 // rules assembles the supervisor's tables: the kernel connection, the two
 // tables and their chains, and where each per-chain builder below adds its
-// rules.
+// rules. unboundAccepts is the forged-ICMP tests' negative control (Options
+// documents it); the accepts then take any established or related flow,
+// whoever owns it.
 type rules struct {
 	c                                                                                 *nftables.Conn
+	unboundAccepts                                                                    bool
 	inet, arp                                                                         *nftables.Table
 	antiSpoof, ctPre, ctOut, forward, spaceOut, spaceAccept, input, nat, guard, arpIn *nftables.Chain
 }
@@ -209,11 +202,12 @@ type rules struct {
 // newRules replaces the supervisor's tables atomically (add-then-delete-
 // then-add, whether or not they, or a dead supervisor's, were there) and
 // creates their chains.
-func newRules(c *nftables.Conn) *rules {
+func newRules(c *nftables.Conn, unboundAccepts bool) *rules {
 	r := &rules{
-		c:    c,
-		inet: &nftables.Table{Family: nftables.TableFamilyINet, Name: TableName},
-		arp:  &nftables.Table{Family: nftables.TableFamilyARP, Name: ArpTableName},
+		c:              c,
+		unboundAccepts: unboundAccepts,
+		inet:           &nftables.Table{Family: nftables.TableFamilyINet, Name: TableName},
+		arp:            &nftables.Table{Family: nftables.TableFamilyARP, Name: ArpTableName},
 	}
 	for _, t := range []*nftables.Table{r.inet, r.arp} {
 		c.AddTable(t)
@@ -280,7 +274,7 @@ func (r *rules) addForward(st tableState) {
 	for _, sr := range st.rules {
 		for _, a := range sr.src {
 			r.add(r.forward, all(spaceLinkNot(expr.MetaKeyIIFNAME), linkExact(expr.MetaKeyOIFNAME, sr.link),
-				ctState(expr.CtStateBitESTABLISHED|expr.CtStateBitRELATED), ctOriginal(expr.CtKeySRC, a), verdict(expr.VerdictAccept))...)
+				ctState(expr.CtStateBitESTABLISHED|expr.CtStateBitRELATED), r.ctOriginal(expr.CtKeySRC, a), verdict(expr.VerdictAccept))...)
 		}
 	}
 	r.add(r.forward, drop(spaceLink(expr.MetaKeyOIFNAME))...)
@@ -319,7 +313,7 @@ func (r *rules) addSpaceAccept(st tableState) {
 			for i, a := range sr.src {
 				if sr.egress[i] {
 					r.add(r.spaceAccept, all(linkExact(expr.MetaKeyIIFNAME, sr.link), linkExact(expr.MetaKeyOIFNAME, st.uplink),
-						ctOriginal(expr.CtKeySRC, a), verdict(expr.VerdictAccept))...)
+						r.ctOriginal(expr.CtKeySRC, a), verdict(expr.VerdictAccept))...)
 				}
 			}
 			for _, d := range sr.dials {
@@ -328,7 +322,7 @@ func (r *rules) addSpaceAccept(st tableState) {
 					a = sr.src[1]
 				}
 				r.add(r.spaceAccept, all(linkExact(expr.MetaKeyIIFNAME, sr.link), linkExact(expr.MetaKeyOIFNAME, st.uplink),
-					dialMatch(d), ctOriginal(expr.CtKeySRC, a), verdict(expr.VerdictAccept))...)
+					dialMatch(d), r.ctOriginal(expr.CtKeySRC, a), verdict(expr.VerdictAccept))...)
 			}
 		}
 	}
@@ -341,11 +335,11 @@ func (r *rules) addInput(st tableState) {
 	for _, sr := range st.rules {
 		for _, a := range sr.src {
 			state := expr.CtStateBitESTABLISHED
-			if unboundAccepts {
+			if r.unboundAccepts {
 				state |= expr.CtStateBitRELATED
 			}
 			r.add(r.input, all(linkExact(expr.MetaKeyIIFNAME, sr.link), ctState(state),
-				ctOriginal(expr.CtKeyDST, a), verdict(expr.VerdictAccept))...)
+				r.ctOriginal(expr.CtKeyDST, a), verdict(expr.VerdictAccept))...)
 		}
 	}
 	r.add(r.input, drop(spaceLink(expr.MetaKeyIIFNAME))...)
@@ -405,8 +399,8 @@ func ctState(bits uint32) []expr.Any {
 // kernel loads the whole 16-byte tuple address; an IPv4 one is its first 4
 // bytes. (google/nftables sends the direction as 4 bytes, of which the
 // kernel reads the first: 0, the original direction, is all this asks.)
-func ctOriginal(key expr.CtKey, a netip.Addr) []expr.Any {
-	if unboundAccepts {
+func (r *rules) ctOriginal(key expr.CtKey, a netip.Addr) []expr.Any {
+	if r.unboundAccepts {
 		return family(a)
 	}
 	return append(family(a),

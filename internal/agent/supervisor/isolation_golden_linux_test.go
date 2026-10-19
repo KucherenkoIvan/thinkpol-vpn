@@ -38,13 +38,12 @@ func TestIsolationRulesetGolden(t *testing.T) {
 		{"bound", false}, {"unbound", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			SetUnboundAccepts(tc.unbound)
-			defer SetUnboundAccepts(false)
 			s := &Supervisor{opts: Options{
-				TransitIPv4:   DefaultTransitIPv4,
-				TransitIPv6:   DefaultTransitIPv6,
-				EgressAllowed: []netip.Prefix{netip.MustParsePrefix("10.9.9.0/24")},
-				Log:           slog.New(slog.DiscardHandler),
+				TransitIPv4:    DefaultTransitIPv4,
+				TransitIPv6:    DefaultTransitIPv6,
+				EgressAllowed:  []netip.Prefix{netip.MustParsePrefix("10.9.9.0/24")},
+				Log:            slog.New(slog.DiscardHandler),
+				unboundAccepts: tc.unbound,
 			}}
 			opts, err := s.opts.withDefaults()
 			if err != nil {

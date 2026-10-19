@@ -134,7 +134,7 @@ func flushFlows(t transit) error {
 func (f *rootForwarding) on() [2]bool {
 	var out [2]bool
 	for i, key := range forwardingKeys {
-		v, err := readSysctl(key)
+		v, err := f.sys.Read(key)
 		out[i] = err == nil && v == "1"
 	}
 	return out
