@@ -54,14 +54,14 @@ A lab poll retries a failed read and fails only at its deadline; a one-shot chec
 - [x] R2.7 one untilAnswer(within, attempt) for pingCrosses, tcpCrosses and pollReceived; pollLog stays; reaches reuses tcpConnect + ncConnectFailed if it duplicates them
 - [x] R2.8 getentNotFound(res) beside the other classifiers, used by resolve and smoke's noAnswer; noAnswer folded into wantNoAnswer if the same
 - [x] R2.9 nits: smoke hermetic `ping ... && echo reached` classifies the blackhole route's real "no"; up_test.go `pgrep ... || true` treats only exit 1 as no match; serving() → waitServing()
-- [ ] R3.1 (round 4) up_test.go pgrep: "no match" only on exit 1 with empty stdout and stderr (docker exec also exits 1)
-- [ ] R3.2 smoke's link-local probe: a failed `ip -6 neigh show` fails the test instead of reading as "no neighbour"
-- [ ] R3.3 measured and logged: (a) whether smoke's Docker-resolver lookup passes on a real "not found" or a getent timeout, told apart or said plainly; (b) Docker gateways accept only the measured blackhole, link-local only " 0 received"
-- [ ] R3.4 pingNoReply's comment says why censor probes need it: the probe must have crossed the wire to call the path blocked
-- [ ] R3.5 pingAnswers and curlFrom docs: true for a reply / connected, false for the tool's own "no", anything else an error (an unknown state, never a pass)
-- [ ] R3.6 smoke's unreached folded into pingAnswers with a small classifier per case; pingBlackholed deleted if unused
-- [ ] R3.7 execReadResult → execResult(n, timeout, args...); execRead built on it; used in pingAnswers, ipv6Guard and wantTUNGone
-- [ ] R3.8 getentNotFound and tcpReaches move to netstate_test.go beside the other classifiers
+- [x] R3.1 (round 4) up_test.go pgrep: "no match" only on exit 1 with empty stdout and stderr (docker exec also exits 1)
+- [x] R3.2 smoke's link-local probe: a failed `ip -6 neigh show` fails the test instead of reading as "no neighbour"
+- [x] R3.3 measured and logged: (a) whether smoke's Docker-resolver lookup passes on a real "not found" or a getent timeout, told apart or said plainly; (b) Docker gateways accept only the measured blackhole, link-local only " 0 received"
+- [x] R3.4 pingNoReply's comment says why censor probes need it: the probe must have crossed the wire to call the path blocked
+- [x] R3.5 pingAnswers and curlFrom docs: true for a reply / connected, false for the tool's own "no", anything else an error (an unknown state, never a pass)
+- [x] R3.6 smoke's unreached folded into pingAnswers with a small classifier per case; pingBlackholed deleted if unused
+- [x] R3.7 execReadResult → execResult(n, timeout, args...); execRead built on it; used in pingAnswers, ipv6Guard and wantTUNGone
+- [x] R3.8 getentNotFound and tcpReaches move to netstate_test.go beside the other classifiers
 
 ## Log
 - 2026-10-19 created in backlog (TP-099 review round 6)
@@ -121,3 +121,14 @@ A lab poll retries a failed read and fails only at its deadline; a one-shot chec
 - 2026-10-19 in-progress → review
 - 2026-10-19 review → has-errors — round 4: R3.1-R3.8
 - 2026-10-19 has-errors → in-progress — owner: agent-claude, branch: tp-113-lab-polls-that-abort
+- 2026-10-19 round 4 measurements (a `make lab-up` lab, removed after): ping from each node to each Docker gateway: a gateway on one of the node's networks gets exit 2 "connect: Invalid argument" (its blackhole), the other network's gets exit 1 " 0 received" (it goes to the node's gateway, whose blackhole drops it); router, device-a and internet alike. Through Docker's resolver at 127.0.0.11: `router` answers NOERROR at once; `example.com` gets SERVFAIL after about 4s (Docker's forwarding out of the sealed node fails), so getent with timeout:2 gives up first (exit 2 after 4s, two queries) and with timeout:10 also exits 2 (after 8s): getent can't tell the two apart.
+- 2026-10-19 R3.3a: the old check passed on getent timing out, not on a reply. It now asks Docker's resolver directly with labdns (new client flag -timeout, labdns/main.go:31, 20s here), which prints the reply's rcode and fails when no reply arrives: `router` must be NOERROR (the control), `example.com` must be SERVFAIL (forwarding failed); a timeout or any other rcode fails (smoke_test.go:185). The device's own lookup (`getent hosts example.com` with the sealed resolv.conf) stays on wantNoLookup: the sealing's nameserver refuses at once, a real exit 2.
+- 2026-10-19 R3.3b/R3.6: smoke's gateway and link-local pings go through pingAnswers with the case's classifier (smoke_test.go:120: pingBlackholed for a gateway on the node's network, pingNoReply for the other network's and for the bridge's link-local); `unreached` is gone; pingBlackholed (netstate_test.go:190) stays, used there.
+- 2026-10-19 R3.1: up_test.go:210 pgrep's no match is exit 1 with empty stdout and stderr; anything else fails.
+- 2026-10-19 R3.2: the link-local probe runs in Go: ping (pingNoReply), tcpConnect (only nc's "timed out" passes; a refusal means the bridge answered) and `ip -6 neigh show` through execRead (smoke_test.go:161), whose failure fails the test.
+- 2026-10-19 R3.4/R3.5: pingNoReply (netstate_test.go:172) says a censor probe must have crossed the wire to call a path blocked; pingAnswers (:198) and curlFrom (:240) say true for a reply / connected, false for the tool's own "no", anything else an error (an unknown state, never a pass).
+- 2026-10-19 R3.7: execResult(n, timeout, args...) (:28) underlies execRead (:35) and is used by pingAnswers, ipv6Guard, wantTUNGone, blobs' answer, wantNoLookup and the pgrep check; execReadResult is gone.
+- 2026-10-19 R3.8: getentNotFound (:141), tcpConnect (:145) and tcpReaches (:156) are in netstate_test.go with the other classifiers.
+- 2026-10-20 origin/rewrite merged (d93d424, TP-109's merge; no conflicts; lint and test green on the merge before its commit).
+- 2026-10-20 verified on the committed, pushed head d93d424 with a clean tree, no other tplab containers (LAB_P=4): make lint exit 0 (24s), make test exit 0 (0s, Go's test cache), make lab-test exit 0 (136s; lab ok in 99.0s, censor matrix included; node phase 35 packages ok; no skips). The lab packages also passed before the commits (123s).
+- 2026-10-20 in-progress → review
