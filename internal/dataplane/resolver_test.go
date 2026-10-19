@@ -7,7 +7,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/rules"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport/memory"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
@@ -16,25 +16,25 @@ import (
 // dnsRecorder keeps the last configuration an engine gave its resolver.
 type dnsRecorder struct {
 	mu   sync.Mutex
-	last dns.Config
+	last dataplane.ResolverConfig
 	n    int
 }
 
-func (r *dnsRecorder) Update(c dns.Config) {
+func (r *dnsRecorder) Update(c dataplane.ResolverConfig) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.last, r.n = c, r.n+1
 }
 
-func (r *dnsRecorder) config() dns.Config {
+func (r *dnsRecorder) config() dataplane.ResolverConfig {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.last
 }
 
-func routeKind(c dns.Config, name string) (dns.RouteKind, []netip.Addr) {
+func routeKind(c dataplane.ResolverConfig, name string) (dataplane.NameRouteKind, []netip.Addr) {
 	if c.Route == nil {
-		return dns.RouteDirect, nil
+		return dataplane.ResolveDirect, nil
 	}
 	r := c.Route(name)
 	return r.Kind, r.Via
@@ -76,20 +76,20 @@ func TestTheResolverFollowsTheMapAndTheRules(t *testing.T) {
 	if !maps.EqualFunc(c.Names, wantNames, slices.Equal) {
 		t.Errorf("names %v", c.Names)
 	}
-	if k, _ := routeKind(c, "www.example.ru"); k != dns.RouteDirect {
+	if k, _ := routeKind(c, "www.example.ru"); k != dataplane.ResolveDirect {
 		t.Errorf("a direct name goes %v", k)
 	}
-	if k, via := routeKind(c, "example.com"); k != dns.RouteTunnel || !slices.Equal(via, []netip.Addr{s.v4, s.v6}) {
+	if k, via := routeKind(c, "example.com"); k != dataplane.ResolveTunnel || !slices.Equal(via, []netip.Addr{s.v4, s.v6}) {
 		t.Errorf("a tunnel name goes %v via %v", k, via)
 	}
 
 	if c.RouteAddr == nil {
 		t.Fatal("no routes for reverse names")
 	}
-	if r := c.RouteAddr(netip.MustParseAddr("192.168.1.1")); r.Kind != dns.RouteDirect {
+	if r := c.RouteAddr(netip.MustParseAddr("192.168.1.1")); r.Kind != dataplane.ResolveDirect {
 		t.Errorf("a local address's reverse name goes %v", r.Kind)
 	}
-	if r := c.RouteAddr(netip.MustParseAddr("192.0.2.1")); r.Kind != dns.RouteTunnel || !slices.Equal(r.Via, []netip.Addr{s.v4, s.v6}) {
+	if r := c.RouteAddr(netip.MustParseAddr("192.0.2.1")); r.Kind != dataplane.ResolveTunnel || !slices.Equal(r.Via, []netip.Addr{s.v4, s.v6}) {
 		t.Errorf("an internet address's reverse name goes %v via %v", r.Kind, r.Via)
 	}
 
@@ -98,7 +98,7 @@ func TestTheResolverFollowsTheMapAndTheRules(t *testing.T) {
 	}
 	if c := recs[b].config(); c.Zone != "" || len(c.Names) != 0 {
 		t.Errorf("a device without a space name has names: %+v", c)
-	} else if k, _ := routeKind(c, "example.com"); k != dns.RouteDirect {
+	} else if k, _ := routeKind(c, "example.com"); k != dataplane.ResolveDirect {
 		t.Errorf("without rules a name goes %v, as every address goes direct", k)
 	}
 
@@ -106,10 +106,10 @@ func TestTheResolverFollowsTheMapAndTheRules(t *testing.T) {
 	if err := a.engine.SetRules(rules.Local{Rules: []netmap.Rule{mustRule(t, "domain:example.com -> direct")}}); err != nil {
 		t.Fatal(err)
 	}
-	if k, _ := routeKind(recs[a].config(), "example.com"); k != dns.RouteDirect {
+	if k, _ := routeKind(recs[a].config(), "example.com"); k != dataplane.ResolveDirect {
 		t.Errorf("after SetRules: %v", k)
 	}
-	if k, _ := routeKind(recs[a].config(), "example.org"); k != dns.RouteTunnel {
+	if k, _ := routeKind(recs[a].config(), "example.org"); k != dataplane.ResolveTunnel {
 		t.Errorf("after SetRules, another name: %v", k)
 	}
 
@@ -122,7 +122,7 @@ func TestTheResolverFollowsTheMapAndTheRules(t *testing.T) {
 	if _, ok := c.Names["device-b"]; ok {
 		t.Errorf("a removed peer's name stays: %v", c.Names)
 	}
-	if k, _ := routeKind(c, "example.org"); k != dns.RouteBlock {
+	if k, _ := routeKind(c, "example.org"); k != dataplane.ResolveBlock {
 		t.Errorf("a chain without its exit: %v", k)
 	}
 
