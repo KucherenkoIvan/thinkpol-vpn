@@ -4,7 +4,6 @@ import (
 	"context"
 	"flag"
 
-	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/localapi"
 )
 
@@ -19,7 +18,7 @@ func init() {
 
 func runLogs(ctx context.Context, e env, args []string) error {
 	fs := flag.NewFlagSet("logs", flag.ContinueOnError)
-	socket := fs.String("socket", agent.APISocket(), "the local API's socket (THINKPOL_API_SOCKET)")
+	socket := fs.String("socket", apiSocket(), "the local API's socket (THINKPOL_API_SOCKET)")
 	lines := fs.Int("n", 100, "how many of the last lines to print")
 	follow := fs.Bool("f", false, "keep printing new lines until interrupted")
 	if err := parseFlags(fs, e, args); err != nil {
