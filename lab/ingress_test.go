@@ -79,13 +79,8 @@ func TestIngressOffAdmitsOnlyServers(t *testing.T) {
 	waitLog(t, up["server-1"], applied(version2))
 	waitLog(t, up["device-a"], applied(version2))
 
-	for i := range 5 {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		_, err := devB.Exec(ctx, "ping", "-c", "1", "-W", "1", server2.String())
-		cancel()
-		if err == nil {
-			t.Fatalf("ping %d: device-b reached server-2 with its ingress off", i)
-		}
+	for range 5 {
+		noPing(t, devB, "-c", "2", "-W", "1", server2.String()) // server-2's ingress is off
 	}
 	ping(t, devA, server2) // server-1 still relays to server-2
 

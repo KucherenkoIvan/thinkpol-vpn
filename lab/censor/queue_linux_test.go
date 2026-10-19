@@ -3,6 +3,7 @@
 package censor
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -115,26 +116,36 @@ table inet %s {
 // verdictFor reads the verdict log until an entry matches, briefly.
 func verdictFor(t *testing.T, path string, match func(*LogEntry) bool) *LogEntry {
 	t.Helper()
+	e, err := pollVerdicts(path, match)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return e
+}
+
+func pollVerdicts(path string, match func(*LogEntry) bool) (*LogEntry, error) {
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		b, err := os.ReadFile(path)
 		if err == nil {
-			for _, line := range strings.Split(string(b), "\n") {
+			// Up to the last newline: the rest is a write in progress.
+			whole := string(b[:bytes.LastIndexByte(b, '\n')+1])
+			for _, line := range strings.Split(whole, "\n") {
 				if line == "" {
 					continue
 				}
 				var e LogEntry
 				if err := json.Unmarshal([]byte(line), &e); err != nil {
-					t.Fatalf("verdict log line %q: %v", line, err)
+					return nil, fmt.Errorf("verdict log line %q: %w", line, err)
 				}
 				if match(&e) {
-					return &e
+					return &e, nil
 				}
 			}
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	return nil
+	return nil, nil
 }
 
 func runNFT(t *testing.T, rule string) {

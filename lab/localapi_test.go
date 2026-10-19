@@ -100,15 +100,18 @@ func TestLocalAPI(t *testing.T) {
 	t.Run("an API that can't serve leaves the VPN up", func(t *testing.T) {
 		waitLog(t, up["device-b"], `level=ERROR msg="the local API is down`)
 		ping(t, devB, s4)
-		if _, err := cli(t, devB, as("", "", "status", "-socket", "/run/foreign-api/api.sock")); err == nil {
+		// Only the CLI's own "not running" shows nothing serves there.
+		if res, err := cli(t, devB, as("", "", "status", "-socket", "/run/foreign-api/api.sock")); err == nil {
 			t.Fatal("status from an API that can't serve")
+		} else if res.ExitCode != 1 || !strings.Contains(res.Stderr, "the thinkpol service is not running") {
+			t.Fatalf("status from an API that can't serve: %v\n%s%s", err, res.Stdout, res.Stderr)
 		}
 	})
 
 	t.Run("the socket's directory admits root and the group", func(t *testing.T) {
 		for _, n := range []*lab.Node{server, devA} {
 			lab.Eventually(t, 30*time.Second, func() error {
-				_, err := cli(t, n, []string{"test", "-S", "/run/thinkpol-api/api.sock"})
+				_, err := execRead(n, pollTimeout, "test", "-S", "/run/thinkpol-api/api.sock")
 				return err
 			})
 			if got := n.MustExec(t, "stat", "-c", "%a %U %G", "/run/thinkpol-api", "/run/thinkpol-api/api.sock"); got != "750 root thinkpol\n660 root thinkpol\n" {
@@ -122,7 +125,7 @@ func TestLocalAPI(t *testing.T) {
 		if err != nil || !regexp.MustCompile(`state: +disconnected`).MatchString(res.Stdout) {
 			t.Fatalf("%v\n%s", err, res.Stdout)
 		}
-		noPing(t, devA, s4)
+		noPing(t, devA, "-c", "2", "-W", "1", s4.String())
 		res, err = cli(t, devA, as(aliceUID, apiGID, "connect"))
 		if err != nil || !regexp.MustCompile(`state: +connected`).MatchString(res.Stdout) {
 			t.Fatalf("connect: %v\n%s", err, res.Stdout)
@@ -207,7 +210,7 @@ func TestLocalAPI(t *testing.T) {
 		if err != nil || !regexp.MustCompile(`state: +disconnected`).MatchString(res.Stdout) {
 			t.Fatalf("disconnect: %v\n%s", err, res.Stdout)
 		}
-		noPing(t, devA, s4)
+		noPing(t, devA, "-c", "2", "-W", "1", s4.String())
 		if err := wantTUNGone(devA, execTimeout); err != nil {
 			t.Fatal(err)
 		}
@@ -351,7 +354,7 @@ func TestDisconnectLeavesNothingBehind(t *testing.T) {
 		t.Fatalf("disconnect: %v\n%s", err, res.Stdout)
 	}
 	lab.Eventually(t, 30*time.Second, func() error { return wantConnected(false) })
-	noPing(t, devA, s4)
+	noPing(t, devA, "-c", "2", "-W", "1", s4.String())
 	ping(t, devB, s4) // the others carry on
 
 	// And everything is back on connect.

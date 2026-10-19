@@ -102,22 +102,6 @@ func ping(t *testing.T, from *lab.Node, to netip.Addr) {
 	})
 }
 
-// noPing fails unless the ping got no reply: exit code 1 and ping's own
-// " 0 received" summary (docker exec also exits 1 when docker fails). Any other failure (an exec error, a timeout) is an
-// unknown state and fails with its reason — never proof the path is down.
-func noPing(t *testing.T, from *lab.Node, to netip.Addr) {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), execTimeout)
-	defer cancel()
-	res, err := from.Exec(ctx, "ping", "-c", "2", "-W", "1", to.String())
-	if err == nil {
-		t.Fatalf("%s answers %s", to, from.Name)
-	}
-	if res.ExitCode != 1 || !strings.Contains(res.Stdout, " 0 received") {
-		t.Fatalf("ping %s from %s says nothing about the path: %v\n%s", to, from.Name, err, res.Stdout)
-	}
-}
-
 func waitLog(t *testing.T, p *lab.Process, pattern string) {
 	t.Helper()
 	re := regexp.MustCompile(pattern)
@@ -223,8 +207,12 @@ func TestUpRunsTheM0Space(t *testing.T) {
 			if out := n.MustExec(t, "nft", "list", "tables"); strings.Contains(out, "thinkpol") {
 				t.Errorf("nftables tables left:\n%s", out)
 			}
-			if out := n.MustExec(t, "sh", "-c", "pgrep -af 'thinkpol (up|worker)' || true"); out != "" {
-				t.Errorf("processes left:\n%s", out)
+			// pgrep exits 1, silently, for no match; 2 and 3 are its own
+			// errors, and docker exec also exits 1 when it fails, saying so.
+			if res, err := execResult(n, execTimeout, "pgrep", "-af", "thinkpol (up|worker)"); err == nil {
+				t.Errorf("processes left:\n%s", res.Stdout)
+			} else if res.ExitCode != 1 || res.Stdout != "" || res.Stderr != "" {
+				t.Fatalf("pgrep: %v\n%s", err, res.Stderr)
 			}
 			if out := n.MustExec(t, "ip", "netns", "list"); out != "" {
 				t.Errorf("namespaces left:\n%s", out)

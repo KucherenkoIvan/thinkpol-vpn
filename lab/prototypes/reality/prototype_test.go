@@ -219,9 +219,13 @@ func startXray(t *testing.T, l *lab.Lab, node *lab.Node, serverKey []byte, short
 	return strings.TrimSpace(string(res))
 }
 
+// xrayLogs is xray's container log; it is read inside a poll, so the read
+// is bounded.
 func xrayLogs(t *testing.T, l *lab.Lab) string {
 	t.Helper()
-	out, err := exec.Command("docker", "logs", l.Project+"-"+xrayName).CombinedOutput()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "docker", "logs", l.Project+"-"+xrayName).CombinedOutput()
 	if err != nil {
 		return fmt.Sprintf("(no xray logs: %v)", err)
 	}

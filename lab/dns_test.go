@@ -57,21 +57,15 @@ func TestDNSFollowsTheRules(t *testing.T) {
 		mustResolve(t, devA, "www.direct.test", true, domesticAAAA)
 		mustResolve(t, devA, "www.tunnel.test", false, foreignA)
 		mustResolve(t, devA, "www.tunnel.test", true, foreignAAAA)
-		if got, err := resolve(devA, "blocked.test", false); err == nil {
-			t.Errorf("a blocked name resolved to %s", got)
-		}
-		if got, err := resolve(devA, "device-c.lab.internal.", false); err == nil {
-			t.Errorf("a name the map doesn't have resolved to %s", got)
-		}
+		wantNoAnswer(t, devA, "blocked.test", "a blocked name")
+		wantNoAnswer(t, devA, "device-c.lab.internal.", "a name the map doesn't have")
 
 		// With the exit down, a tunnel-bound name fails: it is never
 		// retried under a search domain, nor asked of anyone else.
 		if err := exit.Stop(); err != nil {
 			t.Errorf("the exit: %v", err)
 		}
-		if got, err := resolve(devA, "down.tunnel.test", false); err == nil {
-			t.Errorf("a tunnel-bound name resolved with the exit down: %s", got)
-		}
+		wantNoAnswer(t, devA, "down.tunnel.test", "a tunnel-bound name with the exit down")
 		exit = startDeviceExit(parent, server, inetIP, v1)
 
 		if err := capture.Complete(); err != nil {
@@ -99,15 +93,7 @@ func TestDNSFollowsTheRules(t *testing.T) {
 
 	t.Run("systemd-resolved", func(t *testing.T) {
 		link := devB.Interface(lab.NetDevices)
-		devB.WriteFile(t, "/etc/resolv.conf", []byte("nameserver 127.0.0.53\noptions edns0 trust-ad\nsearch .\n"))
-		devB.MustExec(t, "sh", "-ec", "mkdir -p /run/dbus && dbus-daemon --system --fork")
-		devB.Start(t, "/lib/systemd/systemd-resolved")
-		lab.Eventually(t, 20*time.Second, func() error {
-			ctx, cancel := context.WithTimeout(context.Background(), pollTimeout)
-			defer cancel()
-			_, err := devB.Exec(ctx, "resolvectl", "dns", link, inetIP.String())
-			return err
-		})
+		startResolved(t, devB, inetIP)
 		mustResolve(t, devB, "before.direct.test", false, domesticA)
 
 		capture := devB.Capture(t, "")
@@ -129,20 +115,14 @@ func TestDNSFollowsTheRules(t *testing.T) {
 		// A domain on the physical link takes its names past the TUN: the
 		// device says DNS isn't protected, and says so no longer once it
 		// goes.
-		health := func(timeout time.Duration) (string, error) {
-			ctx, cancel := context.WithTimeout(context.Background(), timeout)
-			defer cancel()
-			res, err := devB.Exec(ctx, "thinkpol", "status")
-			return res.Stdout, err
-		}
-		if out, err := health(execTimeout); err != nil {
+		if out, err := execRead(devB, execTimeout, "thinkpol", "status"); err != nil {
 			t.Fatal(err)
 		} else if strings.Contains(out, "dns_not_protected") {
 			t.Fatalf("not protected before any other domain:\n%s", out)
 		}
 		devB.MustExec(t, "resolvectl", "domain", link, "~example.org")
-		lab.Eventually(t, 20*time.Second, func() error {
-			out, err := health(pollTimeout)
+		lab.Eventually(t, 30*time.Second, func() error {
+			out, err := execRead(devB, pollTimeout, "thinkpol", "status")
 			if err != nil {
 				return err
 			}
@@ -152,8 +132,8 @@ func TestDNSFollowsTheRules(t *testing.T) {
 			return nil
 		})
 		devB.MustExec(t, "resolvectl", "domain", link, "")
-		lab.Eventually(t, 20*time.Second, func() error {
-			out, err := health(pollTimeout)
+		lab.Eventually(t, 30*time.Second, func() error {
+			out, err := execRead(devB, pollTimeout, "thinkpol", "status")
 			if err != nil {
 				return err
 			}
@@ -172,7 +152,7 @@ func TestDNSFollowsTheRules(t *testing.T) {
 		// dropped the TUN; any other failure (docker, a timeout) shows nothing.
 		if out, err := devB.Exec(ctx, "resolvectl", "dns", "thinkpol0"); err == nil {
 			t.Errorf("resolved still has the TUN: %s", out.Stdout)
-		} else if !strings.Contains(out.Stderr, "thinkpol0") {
+		} else if out.ExitCode != 1 || !strings.Contains(out.Stderr, `Failed to resolve interface "thinkpol0"`) {
 			t.Errorf("resolvectl dns thinkpol0 says nothing about the TUN: %v", err)
 		}
 		if conf := devB.MustExec(t, "cat", "/etc/resolv.conf"); !strings.HasPrefix(conf, "nameserver 127.0.0.53\n") {
@@ -212,9 +192,7 @@ func TestDNSFollowsTheRulesOnAServerExit(t *testing.T) {
 	mustResolve(t, devA, "www.direct.test", false, domesticA)
 	mustResolve(t, devA, "www.direct.test", true, domesticAAAA)
 	mustResolve(t, devA, "server-1.lab.internal", false, s4.String())
-	if got, err := resolve(devA, "blocked.test", false); err == nil {
-		t.Errorf("a blocked name resolved to %s", got)
-	}
+	wantNoAnswer(t, devA, "blocked.test", "a blocked name")
 	if err := capture.Complete(); err != nil {
 		t.Fatal(err)
 	}
@@ -253,9 +231,7 @@ func TestDNSFollowsTheRulesOnAServerExit(t *testing.T) {
 		}
 		return nil
 	})
-	if got, err := resolve(devA, "www2.tunnel.test", false); err == nil {
-		t.Errorf("a tunnel-bound name resolved with the resolver's upstream refused: %s", got)
-	}
+	wantNoAnswer(t, devA, "www2.tunnel.test", "a tunnel-bound name with the resolver's upstream refused")
 	mustResolve(t, devA, "www3.direct.test", false, domesticA)
 	restartExit(upstreamNet)
 	mustResolve(t, devA, "www4.tunnel.test", false, foreignA)

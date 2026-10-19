@@ -7,7 +7,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"net/netip"
-	"strings"
 	"testing"
 	"time"
 
@@ -92,13 +91,14 @@ func TestNoIPv6LeavesAroundTheTunnel(t *testing.T) {
 			{"ping", "-6", "-c", "1", "-W", "2", "-I", dev.IPv6(lab.NetDevices).String(), foreign6.String()}, // the physical source address
 			{"ping", "-6", "-c", "1", "-W", "2", foreign6.String()},                                          // unbound
 		} {
-			if out, err := run(10*time.Second, args...); err == nil {
-				t.Errorf("%s: %s answered:\n%s", when, strings.Join(args, " "), out)
-			}
+			noPing(t, dev, args[1:]...)
 		}
 		start := time.Now()
-		out, err := run(10*time.Second, "curl", "-6", "-sS", "-m", "5", "--interface", eth, "http://["+foreign6.String()+"]/")
-		if err == nil {
+		connected, out, err := curlFrom(dev, 5*time.Second, "-6", "--interface", eth, "http://["+foreign6.String()+"]/")
+		if err != nil {
+			t.Fatalf("%s: %v", when, err)
+		}
+		if connected {
 			t.Errorf("%s: curl bound to %s reached the foreign site:\n%s", when, eth, out)
 		}
 		if took := time.Since(start); took > 4*time.Second {

@@ -47,14 +47,7 @@ func TestASecondAgentChangesNothing(t *testing.T) {
 	})
 
 	t.Run("systemd-resolved", func(t *testing.T) {
-		link := devB.Interface(lab.NetDevices)
-		devB.WriteFile(t, "/etc/resolv.conf", []byte("nameserver 127.0.0.53\noptions edns0 trust-ad\nsearch .\n"))
-		devB.MustExec(t, "sh", "-ec", "mkdir -p /run/dbus && dbus-daemon --system --fork")
-		devB.Start(t, "/lib/systemd/systemd-resolved")
-		lab.Eventually(t, 20*time.Second, func() error {
-			_, err := devB.Exec(context.Background(), "resolvectl", "dns", link, inetIP.String())
-			return err
-		})
+		startResolved(t, devB, inetIP)
 		resolved := func() string {
 			return devB.MustExec(t, "sh", "-c", "resolvectl dns; resolvectl domain; resolvectl default-route thinkpol0")
 		}

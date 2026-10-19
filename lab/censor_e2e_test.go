@@ -3,7 +3,6 @@
 package lab_test
 
 import (
-	"context"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -36,8 +35,10 @@ func TestCensorForwardsWhatNoModuleDecides(t *testing.T) {
 	// nothing about them.
 	routerCap := router.Capture(t, captureFrom(dev))
 	for _, dst := range serverAddrs(server) {
-		if err := tcpCrosses(dev, dst, 20*time.Second); err != nil {
-			t.Errorf("plain TCP with no module: %v", err)
+		if ok, err := tcpCrosses(dev, dst, 20*time.Second); err != nil {
+			t.Fatalf("plain TCP with no module: %v", err)
+		} else if !ok {
+			t.Errorf("plain TCP to %s with no module didn't cross", dst)
 		}
 		if got := sendDatagram(t, dev, server, dst, 19100, fragmentedSize); got != fragmentedSize {
 			t.Errorf("a %d-byte UDP datagram to %s arrived as %d bytes", fragmentedSize, dst, got)
@@ -118,7 +119,7 @@ func TestTCPResetReachesClient(t *testing.T) {
 	devCap := dev.Capture(t, filter)
 	serverCap := server.Capture(t, filter)
 	for _, dst := range serverAddrs(server) {
-		res, took, err := tcpConnect(dev, dst, 5)
+		res, took, err := tcpConnect(dev, dst, tcpProbePort, 5)
 		if err == nil {
 			t.Errorf("tcp to %s connected through a reset censor", dst)
 			continue
@@ -163,8 +164,10 @@ func TestTCPThroughCensorDrop(t *testing.T) {
 
 	serverCap := server.Capture(t, fmt.Sprintf("tcp port %d", tcpProbePort))
 	for _, dst := range serverAddrs(server) {
-		if _, _, err := tcpConnect(dev, dst, 3); err == nil {
+		if res, _, err := tcpConnect(dev, dst, tcpProbePort, 3); err == nil {
 			t.Errorf("tcp to %s connected through a dropping censor", dst)
+		} else if !ncConnectFailed(res) {
+			t.Fatalf("tcp to %s says nothing about the path: %v", dst, err)
 		}
 	}
 	if err := serverCap.Complete(); err != nil {
@@ -232,7 +235,10 @@ func listenTCP(t *testing.T, server *lab.Node) {
 		server.Start(t, "nc", family, "-k", "-l", "-s", a.String(), "-p", fmt.Sprint(tcpProbePort))
 	}
 	lab.Eventually(t, 30*time.Second, func() error {
-		out := server.MustExec(t, "ss", "-H", "-lnt", fmt.Sprintf("sport = :%d", tcpProbePort))
+		out, err := execRead(server, pollTimeout, "ss", "-H", "-lnt", fmt.Sprintf("sport = :%d", tcpProbePort))
+		if err != nil {
+			return err
+		}
 		if n := len(strings.Split(strings.TrimSpace(out), "\n")); strings.TrimSpace(out) == "" || n < 2 {
 			return fmt.Errorf("listeners: %q", out)
 		}
@@ -240,34 +246,17 @@ func listenTCP(t *testing.T, server *lab.Node) {
 	})
 }
 
-// tcpConnect opens and closes one TCP connection from dev, waiting at most
-// wait seconds, and says how long it took.
-func tcpConnect(dev *lab.Node, dst netip.Addr, wait int) (lab.Result, time.Duration, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(wait+10)*time.Second)
-	defer cancel()
-	start := time.Now()
-	res, err := dev.Exec(ctx, "nc", "-v", "-z", "-w", fmt.Sprint(wait), dst.String(), fmt.Sprint(tcpProbePort))
-	return res, time.Since(start), err
-}
-
-// tcpCrosses retries a TCP connect until one succeeds or within runs out.
-func tcpCrosses(dev *lab.Node, dst netip.Addr, within time.Duration) error {
-	deadline := time.Now().Add(within)
-	for {
-		_, _, err := tcpConnect(dev, dst, 2)
-		if err == nil {
-			return nil
-		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("tcp to %s: %w", dst, err)
-		}
-		time.Sleep(300 * time.Millisecond)
-	}
+// tcpCrosses retries a TCP connect until one succeeds or within runs out
+// (untilAnswer): "doesn't cross" is only nc's own connect failure.
+func tcpCrosses(dev *lab.Node, dst netip.Addr, within time.Duration) (bool, error) {
+	return untilAnswer(within, func() (bool, error) { return tcpReaches(dev, dst, tcpProbePort, 2) })
 }
 
 // sendDatagram sends one size-byte UDP datagram from dev to dst:port and
 // returns how many bytes a listener on server-1 received within a few
-// seconds.
+// seconds. A failed read is retried; the count returned is always from a
+// read that succeeded at or after the deadline (or saw the whole
+// datagram), never a guess, and the test fails if no read succeeds.
 func sendDatagram(t *testing.T, dev, server *lab.Node, dst netip.Addr, port, size int) int {
 	t.Helper()
 	family := "-4"
@@ -277,7 +266,11 @@ func sendDatagram(t *testing.T, dev, server *lab.Node, dst netip.Addr, port, siz
 	out := fmt.Sprintf("/tmp/udp-%s-%d", strings.ReplaceAll(dst.String(), ":", "_"), port)
 	server.Start(t, "sh", "-c", fmt.Sprintf("exec nc -u %s -l -s %s -p %d > %s", family, dst, port, out))
 	lab.Eventually(t, 30*time.Second, func() error {
-		if strings.TrimSpace(server.MustExec(t, "ss", "-H", "-lnu", fmt.Sprintf("sport = :%d", port))) == "" {
+		out, err := execRead(server, pollTimeout, "ss", "-H", "-lnu", fmt.Sprintf("sport = :%d", port))
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(out) == "" {
 			return fmt.Errorf("no UDP listener on %d yet", port)
 		}
 		return nil
@@ -285,17 +278,28 @@ func sendDatagram(t *testing.T, dev, server *lab.Node, dst netip.Addr, port, siz
 	// One write of size bytes, one datagram: nc sends what each read of
 	// the pipe returns, and a pipe write this small is atomic.
 	dev.MustExec(t, "sh", "-c", fmt.Sprintf("head -c %d /dev/zero | nc -u %s -w 1 %s %d", size, family, dst, port))
-	got := 0
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		n := strings.TrimSpace(server.MustExec(t, "sh", "-c", "wc -c < "+out))
-		_, _ = fmt.Sscan(n, &got)
-		if got >= size {
-			break
-		}
-		time.Sleep(200 * time.Millisecond)
+	got, err := pollReceived(server, out, size)
+	if err != nil {
+		t.Fatalf("what the listener on %s:%d got: %v", dst, port, err)
 	}
 	return got
+}
+
+// pollReceived is the size of file on server once it holds size bytes
+// or, at the latest, as a read a few seconds on finds it (untilAnswer).
+func pollReceived(server *lab.Node, file string, size int) (int, error) {
+	got := 0
+	_, err := untilAnswer(3*time.Second, func() (bool, error) {
+		n, err := execRead(server, pollTimeout, "sh", "-c", "wc -c < "+file)
+		if err != nil {
+			return false, err
+		}
+		if _, err := fmt.Sscan(strings.TrimSpace(n), &got); err != nil {
+			return false, fmt.Errorf("wc -c < %s: %q: %w", file, n, err)
+		}
+		return got >= size, nil
+	})
+	return got, err
 }
 
 // waitFragments requires device-a's datagrams to have reached the router
