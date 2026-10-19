@@ -4,6 +4,9 @@ import (
 	"errors"
 	"log/slog"
 	"net/netip"
+	"slices"
+	"sync"
+	"testing"
 
 	wgtun "golang.zx2c4.com/wireguard/tun"
 
@@ -39,9 +42,7 @@ func testHost() Host {
 		SystemUpstreams: func([]netip.Addr) ([]netip.Addr, error) {
 			return nil, errors.New("no system upstreams in this test")
 		},
-		Transports: func(markSockets bool) (*transport.Registry, error) {
-			return Transports(markSockets)
-		},
+		Transports: Transports,
 	}
 }
 
@@ -51,4 +52,79 @@ func testPlatform() Platform {
 		LockHost:   func() (func(), error) { return func() {}, nil },
 		RestoreDNS: func() error { return nil },
 	}
+}
+
+// markAsks records the markSockets of each Transports call.
+type markAsks struct {
+	mu    sync.Mutex
+	marks []bool
+}
+
+// transports is a Host's Transports giving reg, recording what it was
+// asked for.
+func (a *markAsks) transports(reg *transport.Registry) func(bool) (*transport.Registry, error) {
+	return func(markSockets bool) (*transport.Registry, error) {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		a.marks = append(a.marks, markSockets)
+		return reg, nil
+	}
+}
+
+func (a *markAsks) got() []bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return slices.Clone(a.marks)
+}
+
+// A device's sockets and the supervisor's (the root namespace's) are
+// marked past the route table; a worker's, in its namespace, are not.
+func TestTransportsMarkSocketsPerMode(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	for _, tc := range []struct {
+		name string
+		keys NodeKeys
+		mode Mode
+	}{{"device", s.b, ModeDevice}, {"supervisor", s.a, ModeServer}} {
+		t.Run(tc.name, func(t *testing.T) {
+			var asks markAsks
+			plat := testPlatform()
+			plat.Transports = asks.transports(reg)
+			n, err := Prepare(testConfig(s.stateDir(t, tc.keys, 1)), Logs{}, plat)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if n.Mode() != tc.mode {
+				t.Fatalf("mode %s", n.Mode())
+			}
+			if _, err := n.Adapters(nil); errors.Is(err, ErrUnsupported) {
+				t.Skip(err)
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			if got := asks.got(); !slices.Equal(got, []bool{true}) {
+				t.Errorf("markSockets asked %v", got)
+			}
+		})
+	}
+	t.Run("worker", func(t *testing.T) {
+		w := newRunningNode()
+		defer w.stop()
+		var asks markAsks
+		base := w.dataPlane(reg, NodeKeys{}, nil)
+		base.Host.Transports = asks.transports(reg)
+		sess := newFakeSession(s.id)
+		sess.config <- s.workerConfig(t, s.a, 1)
+		done := make(chan error, 1)
+		go func() { done <- serveSpace(base.Log, base)(w.ctx, sess.Session) }()
+		w.waitLog(t, `msg="map applied"`)
+		w.stop()
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+		if got := asks.got(); !slices.Equal(got, []bool{false}) {
+			t.Errorf("markSockets asked %v", got)
+		}
+	})
 }
