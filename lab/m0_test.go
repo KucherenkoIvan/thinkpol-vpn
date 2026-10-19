@@ -40,7 +40,7 @@ func TestM0(t *testing.T) {
 const burstSize, burstCount = 1200, 20
 
 func testM0(t *testing.T, ipv6 bool) {
-	l := lab.Start(t, lab.Standard())
+	l := lab.StartOwnSlot(t, lab.Standard())
 	server, devA, devB, router := l.Node(lab.Server1), l.Node(lab.DeviceA), l.Node(lab.DeviceB), l.Node(lab.Router)
 	space := newM0Space(t, l.Node(lab.Internet), server)
 	underlay := func(n *lab.Node, network string) netip.Addr {
