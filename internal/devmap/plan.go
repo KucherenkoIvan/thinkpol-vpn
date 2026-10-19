@@ -79,13 +79,29 @@ func Plan(s *Spec, k Keys, version uint64, secrets Secrets) (netmap.Contents, Na
 		return netmap.Contents{}, nil, fmt.Errorf("map version %d: must be from 1 to %d", version, uint64(netmap.MaxVersion))
 	}
 	p := &planner{s: s, k: k, secrets: secrets}
-	for _, phase := range []func() error{
-		p.resolveNodes, p.resolveLinks, p.assignAddresses, p.writeSections,
-		p.addPeersAndRoutes, p.addLinkSecrets, p.addDeviceRules,
-	} {
-		if err := phase(); err != nil {
-			return netmap.Contents{}, nil, err
-		}
+	// Each phase needs what the one before it built.
+	if err := p.resolveNodes(); err != nil {
+		return netmap.Contents{}, nil, err
+	}
+	links, err := Links(s)
+	if err != nil {
+		return netmap.Contents{}, nil, err
+	}
+	p.links = links
+	if err := p.assignAddresses(); err != nil {
+		return netmap.Contents{}, nil, err
+	}
+	if err := p.writeSections(); err != nil {
+		return netmap.Contents{}, nil, err
+	}
+	if err := p.addPeersAndRoutes(); err != nil {
+		return netmap.Contents{}, nil, err
+	}
+	if err := p.addLinkSecrets(); err != nil {
+		return netmap.Contents{}, nil, err
+	}
+	if err := p.addDeviceSettings(); err != nil {
+		return netmap.Contents{}, nil, err
 	}
 
 	c := netmap.Contents{SpaceID: k.Space, Version: version, RecoveryKey: k.RecoveryKey, Blobs: p.header}
@@ -141,16 +157,6 @@ func (p *planner) resolveNodes() error {
 		p.ids[i] = pub.ID
 		p.names[pub.ID], p.keys[pub.Map] = n.Name, n.Name
 	}
-	return nil
-}
-
-// resolveLinks derives who dials whom from the spec's paths.
-func (p *planner) resolveLinks() error {
-	links, err := Links(p.s)
-	if err != nil {
-		return err
-	}
-	p.links = links
 	return nil
 }
 
@@ -279,9 +285,9 @@ func (p *planner) addLinkSecrets() error {
 	return nil
 }
 
-// addDeviceRules gives the devices their names, rules, presets and chains:
+// addDeviceSettings gives the devices their names, rules, presets and chains:
 // a server's section holds neither names nor rules.
-func (p *planner) addDeviceRules() error {
+func (p *planner) addDeviceSettings() error {
 	s := p.s
 	for i, n := range s.Nodes {
 		sec := &p.sections[i]
@@ -298,7 +304,7 @@ func (p *planner) addDeviceRules() error {
 			continue
 		}
 		for _, r := range s.Rules {
-			if r.Match.Kind == netmap.MatchGeoIP && !slices.ContainsFunc(n.Lists, func(l int) bool { return s.Lists[l].Name == r.Match.Value }) {
+			if r.Match.NamesAList() && !slices.ContainsFunc(n.Lists, func(l int) bool { return s.Lists[l].Name == r.Match.Value }) {
 				return p.fail(n, "rule %s needs the list: add it to the node's lists", r)
 			}
 		}

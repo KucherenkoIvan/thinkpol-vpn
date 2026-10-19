@@ -8,21 +8,31 @@ import (
 // maxLabel is a DNS label's longest form.
 const maxLabel = 63
 
-// CheckLabel reports whether name can be a node's or a space's overlay
-// name: one DNS label of 1-63 lowercase letters, digits and dashes, with
-// no dash at either end. The one rule for overlay names, at this limit:
-// devmap's node-name and key-file checks share it.
-func CheckLabel(name string) error {
-	if name == "" || len(name) > maxLabel || name[0] == '-' || name[len(name)-1] == '-' {
-		return fmt.Errorf("name %q: use 1-%d lowercase letters, digits and dashes, no dash at either end", name, maxLabel)
+// checkName is the shape behind CheckLabel, CheckListName and
+// CheckChainName: 1-maxLen lowercase letters, digits and dashes, a letter
+// or digit first. dashLast says the name may also end with a dash (a
+// list's or a chain's may, a DNS label may not).
+func checkName(name string, maxLen int, dashLast bool) bool {
+	if name == "" || len(name) > maxLen || name[0] == '-' || !dashLast && name[len(name)-1] == '-' {
+		return false
 	}
 	for _, c := range name {
 		if c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-' {
 			continue
 		}
-		return fmt.Errorf("name %q: use 1-%d lowercase letters, digits and dashes, no dash at either end", name, maxLabel)
+		return false
 	}
-	return nil
+	return true
+}
+
+// CheckLabel reports whether name can be a node's or a space's overlay
+// name: one DNS label of 1-63 lowercase letters, digits and dashes, with
+// no dash at either end.
+func CheckLabel(name string) error {
+	if checkName(name, maxLabel, false) {
+		return nil
+	}
+	return fmt.Errorf("name %q: use 1-%d lowercase letters, digits and dashes, no dash at either end", name, maxLabel)
 }
 
 // validateNames is Build's check of the overlay names: only a device's

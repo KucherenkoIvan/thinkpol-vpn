@@ -109,7 +109,22 @@ type NodeSettings struct {
 // check anyway, and a guest space's map is not the node owner's to trust).
 // Devices have no ingress setting.
 func (n *NodeSettings) AcceptsInbound(in InboundLink) bool {
-	return n.Kind != NodeServer || n.AllowIngress || in.PeerKind == NodeServer
+	return !n.HiddenFromDevices() || in.PeerKind == NodeServer
+}
+
+// HiddenFromDevices reports whether the server is kept out of devices'
+// reach: a server with ingress off has no links with devices, whichever
+// of them dials, and devices' sections hold no address of it.
+func (n *NodeSettings) HiddenFromDevices() bool {
+	return n.Kind == NodeServer && !n.AllowIngress
+}
+
+// MayLink reports whether a link between the two may be in the map: none
+// may, between a device and a server hidden from devices, whichever of
+// them dials.
+func MayLink(a, b *NodeSettings) bool {
+	return (a.Kind != NodeDevice || !b.HiddenFromDevices()) &&
+		(b.Kind != NodeDevice || !a.HiddenFromDevices())
 }
 
 // Listener is a transport a node listens on.
@@ -205,8 +220,7 @@ const (
 
 // CGNAT and ULA are the ranges a space's overlay networks live in: an
 // IPv4 prefix inside CGNAT (RFC 6598), and an IPv6 /48 inside the ULA
-// range (RFC 4193, locally assigned). devmap's spec checker shares the
-// policy with Build.
+// range (RFC 4193, locally assigned).
 var (
 	CGNAT = netip.MustParsePrefix("100.64.0.0/10")
 	ULA   = netip.MustParsePrefix("fd00::/8")
@@ -345,7 +359,7 @@ func (s *Section) validate(headerBlobs []BlobRef) error {
 	if err := s.validateNode(); err != nil {
 		return err
 	}
-	adjacent, err := s.validateDialing()
+	adjacent, err := s.validateLinks()
 	if err != nil {
 		return err
 	}
@@ -366,6 +380,13 @@ func (s *Section) validate(headerBlobs []BlobRef) error {
 
 // validateNode checks the node's own settings: its overlay networks and
 // addresses, its kind's settings, and its listeners.
+// transportAddr identifies a listener or an endpoint by transport and
+// address: the same pair twice is refused.
+type transportAddr struct {
+	transport string
+	address   netip.AddrPort
+}
+
 func (s *Section) validateNode() error {
 	n := &s.Node
 	if !IsOverlayIPv4(n.IPv4Network) {
@@ -386,10 +407,6 @@ func (s *Section) validateNode() error {
 		return errors.New("a device has no listeners")
 	}
 
-	type transportAddr struct {
-		transport string
-		address   netip.AddrPort
-	}
 	listeners := make(map[transportAddr]bool, len(n.Listeners))
 	for _, l := range n.Listeners {
 		if err := checkTransport(l.Transport); err != nil {
@@ -410,14 +427,10 @@ func (s *Section) validateNode() error {
 	return nil
 }
 
-// validateDialing checks the node's links and inbound links, and returns
+// validateLinks checks the node's links and inbound links, and returns
 // the set of adjacent nodes the two name together.
-func (s *Section) validateDialing() (map[NodeID]bool, error) {
+func (s *Section) validateLinks() (map[NodeID]bool, error) {
 	n := &s.Node
-	type transportAddr struct {
-		transport string
-		address   netip.AddrPort
-	}
 	adjacent := make(map[NodeID]bool, len(s.Links)+len(s.Inbound))
 	for _, l := range s.Links {
 		adjacent[l.Peer] = true

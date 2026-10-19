@@ -208,14 +208,6 @@ type Recipient struct {
 	Section Section
 }
 
-// ApartByIngress reports whether a link between the two is kept out of
-// the map: a device and a server with ingress off have none, whichever of
-// them dials (hiddenFromDevices; devmap's spec checker shares it).
-func ApartByIngress(a NodeKind, aIngress bool, b NodeKind, bIngress bool) bool {
-	return a == NodeDevice && b == NodeServer && !bIngress ||
-		b == NodeDevice && a == NodeServer && !aIngress
-}
-
 // hiddenFromDevices is Build's check across sections that a server with
 // ingress off stays out of devices' reach:
 //   - no link between a device and such a server, whichever of them dials
@@ -236,11 +228,9 @@ func hiddenFromDevices(recipients []Recipient) error {
 		n := &recipients[i].Section.Node
 		nodes[n.ID] = n
 	}
-	hidden := func(n *NodeSettings) bool { return n.Kind == NodeServer && !n.AllowIngress }
-	apart := func(a, b *NodeSettings) bool { return ApartByIngress(a.Kind, a.AllowIngress, b.Kind, b.AllowIngress) }
 	addrs := make(map[netip.Addr]bool)
 	for _, r := range recipients {
-		if n := &r.Section.Node; hidden(n) {
+		if n := &r.Section.Node; n.HiddenFromDevices() {
 			for _, l := range n.Listeners {
 				if !l.Address.Addr().IsUnspecified() {
 					addrs[l.Address.Addr()] = true
@@ -248,7 +238,7 @@ func hiddenFromDevices(recipients []Recipient) error {
 			}
 		}
 		for _, l := range r.Section.Links {
-			if to, ok := nodes[l.Peer]; ok && hidden(to) {
+			if to, ok := nodes[l.Peer]; ok && to.HiddenFromDevices() {
 				for _, e := range l.Endpoints {
 					addrs[e.Address.Addr()] = true
 				}
@@ -258,7 +248,7 @@ func hiddenFromDevices(recipients []Recipient) error {
 	for i, r := range recipients {
 		n := &r.Section.Node
 		for _, l := range r.Section.Links {
-			if to, ok := nodes[l.Peer]; ok && apart(n, to) {
+			if to, ok := nodes[l.Peer]; ok && !MayLink(n, to) {
 				return fmt.Errorf("recipient %d: a %v links to %v, a %v: no links between devices and servers with ingress off", i, n.Kind, l.Peer, to.Kind)
 			}
 			if n.Kind != NodeDevice {
@@ -276,7 +266,7 @@ func hiddenFromDevices(recipients []Recipient) error {
 			case !ok:
 			case from.Kind != in.PeerKind:
 				return fmt.Errorf("recipient %d: inbound link from %v as a %v, which is a %v", i, in.Peer, in.PeerKind, from.Kind)
-			case apart(n, from):
+			case !MayLink(n, from):
 				return fmt.Errorf("recipient %d: a %v accepts %v, a %v: no links between devices and servers with ingress off", i, n.Kind, in.Peer, from.Kind)
 			}
 		}

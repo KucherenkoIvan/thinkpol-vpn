@@ -76,13 +76,13 @@ var ErrUnknownName = errors.New("lists: no such list in the source")
 // counted in [Stats.Skipped] ([ErrMappedIPv6]): DB-IP's reserved ZZ range
 // ::–1fff:… is one. With only non-empty, it keeps
 // just those names and fails with [ErrUnknownName] if one is missing; other
-// entries are skipped unchecked. Without it, a name [CheckName] rejects fails
-// the import.
+// entries are skipped unchecked. Without it, a name netmap.CheckListName
+// rejects fails the import.
 func Import(r io.Reader, f Format, only []string) (map[string]*Builder, error) {
 	keep := func(string) bool { return true }
 	if len(only) > 0 {
 		for _, name := range only {
-			if err := CheckName(name); err != nil {
+			if err := netmap.CheckListName(name); err != nil {
 				return nil, err
 			}
 		}
@@ -120,17 +120,6 @@ func Import(r io.Reader, f Format, only []string) (map[string]*Builder, error) {
 		}
 	}
 	return out, nil
-}
-
-// CheckName rejects names a rule can't refer to: 1 to 32 characters of
-// a-z, 0-9 and '-', starting with a letter or digit. It is netmap's rule
-// for the names a map's rules refer to (netmap.CheckListName) at the same
-// limit; the message stays the lists package's.
-func CheckName(name string) error {
-	if netmap.CheckListName(name) != nil {
-		return fmt.Errorf("lists: bad list name %q", name)
-	}
-	return nil
 }
 
 // List is one built list: what `thinkpol dev lists build` writes and the map
@@ -211,7 +200,7 @@ func v2flyEntry(entry []byte, keep func(string) bool, out map[string]*Builder, e
 	if !keep(name) {
 		return nil
 	}
-	if err := CheckName(name); err != nil {
+	if err := netmap.CheckListName(name); err != nil {
 		return err
 	}
 	if reverse {
@@ -299,7 +288,7 @@ func importDBIP(r io.Reader, keep func(string) bool) (map[string]*Builder, error
 		if !keep(name) {
 			continue
 		}
-		if err := CheckName(name); err != nil {
+		if err := netmap.CheckListName(name); err != nil {
 			return nil, fmt.Errorf("lists: dbip line %d: %w", line, err)
 		}
 		first, err1 := netip.ParseAddr(rec[0])
