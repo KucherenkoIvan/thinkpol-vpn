@@ -61,6 +61,11 @@ The device's connection lifecycle is one explicit state with transition methods 
 - [x] R2.7 A test counts refusals on a worker's own connection (dp.conn nil).
 - [x] R2.8 Ticket Notes and Log qualify what changed if R2.2 changes the claim.
 
+- [ ] R3.1 No dataplane.ErrRouteTableNotEnforced: growRoutes says "dataplane: route table: %w" again; routetable_test asserts errKernel and LastApplyError; the Notes drop it.
+- [ ] R3.2 No DataPlane.onConn: ServeSpace makes the worker's connection (always meant to be up); RunDataPlane refuses a data plane without one; the runner tests hold the connection they pass and assert it refused nothing.
+- [ ] R3.3 TestARouteTableNotEnforcedIsToldAgainAfterItRecovered can't flake: the order is forced; run under -race -count=200, result in the Log.
+- [ ] R3.4 Docs: EventRouteTableNotEnforced says it fires on any Status.RouteTable.Error (TUN down, unsupported, a failed SetDirectUpstreams Enforce); the Notes don't say a failed SetDirectUpstreams is no event.
+
 ## Log
 - 2026-10-18 created in backlog (split from TP-083, owner decision)
 - 2026-10-19 backlog → in-progress — owner: agent-claude, branch: tp-110-agent-connection-state-with-events
@@ -90,3 +95,4 @@ The device's connection lifecycle is one explicit state with transition methods 
 - 2026-10-19 docs: DESIGN.md "Engine and agent": problem events as the status shows them; a returned device reads disconnected
 - 2026-10-19 make lint (exit 0) and make test (exit 0) at b47a0e8; make lab-test exit 0 at b47a0e8 (lab suite ok, 35 node packages PASS), 129 s with LAB_P=4 (no other lab running). Not verified here: the route-table and DNS events on a real macOS device
 - 2026-10-19 in-progress → review
+- 2026-10-20 review → has-errors — review round 3: R3.1–R3.4
