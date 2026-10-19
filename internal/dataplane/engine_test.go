@@ -20,6 +20,7 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/path"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport/memory"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport/transporttest"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
 
@@ -342,7 +343,7 @@ func TestReapplyKeepsSessionsAndDropsRemovedPeers(t *testing.T) {
 func TestIPv6IsOffBelowItsMinimumMTU(t *testing.T) {
 	net := memory.NewNetwork(memory.Datagram, memory.AcceptShaping())
 	a, s, _ := m0()
-	shaping, err := transport.Shaping{Padding: transport.Buckets(1000, 8000)}.Marshal()
+	shaping, err := transport.Shaping{Padding: transporttest.Buckets(1000, 8000)}.Marshal()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -421,7 +422,7 @@ func TestRevocationIsNotHeldBackByABadLink(t *testing.T) {
 	}
 	ping(t, b, a.v4)
 
-	tiny, err := transport.Shaping{Padding: transport.Buckets(400, 8000)}.Marshal()
+	tiny, err := transport.Shaping{Padding: transporttest.Buckets(400, 8000)}.Marshal()
 	if err != nil {
 		t.Fatal(err)
 	}

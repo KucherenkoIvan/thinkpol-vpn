@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport/transporttest"
 )
 
 func firstFrame(o opened) []byte {
@@ -45,7 +46,7 @@ func TestPaddingStaysInsideTheSeal(t *testing.T) {
 	now := time.Now()
 	id, sender := connIDFor(secret, toListener, epochOf(now)), newSenderID(now)
 	aead := newAEAD(secret, toListener)
-	buckets := transport.Buckets(128, 256, 1280)
+	buckets := transporttest.Buckets(128, 256, 1280)
 	for _, n := range []int{1, 50, 54, 55, 182, 183, 1206, 1207, 4000} {
 		packet := bytes.Repeat([]byte{0xab}, n)
 		d := seal(nil, aead, id, sender, now, 1, packet, buckets)

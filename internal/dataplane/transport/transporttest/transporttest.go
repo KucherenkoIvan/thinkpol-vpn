@@ -9,7 +9,8 @@
 // adapter's test calls Run with a Harness, once without shaping and once
 // per kind of shaping it implements; adapter-specific behaviour (wire
 // format, what shaping looks like on it, probes, clocks) is tested next to
-// the adapter.
+// the adapter. Buckets is the padding constructor tests across the data
+// plane and the map share.
 package transporttest
 
 import (
@@ -1142,7 +1143,7 @@ func testShapingChange(t *testing.T, h Harness) {
 // invalidShapings make no sense on any transport.
 func invalidShapings() []transport.Shaping {
 	return []transport.Shaping{
-		{Padding: transport.Buckets(512, 256)},
+		{Padding: Buckets(512, 256)},
 		{Padding: transport.Padding{Mode: transport.PadRandom, Min: 9, Max: 3}},
 		{Padding: transport.Padding{Mode: 99}},
 		{Jitter: -time.Millisecond},

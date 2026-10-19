@@ -17,6 +17,7 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport/transporttest"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport/udp"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/tun"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
@@ -187,7 +188,7 @@ func TestNamespacesPingOverTheOverlay(t *testing.T) {
 	// Links shaped down to less than IPv6's minimum turn IPv6 off on
 	// device-a, and back on when the shaping goes. Linux drops an
 	// interface's IPv6 addresses below 1280; Apply puts them back.
-	shaped, err := transport.Shaping{Padding: transport.Buckets(1000, 8000)}.Marshal()
+	shaped, err := transport.Shaping{Padding: transporttest.Buckets(1000, 8000)}.Marshal()
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -42,9 +42,8 @@
 // it, and a table change re-pads a live link's next reply. udp refuses
 // batching, timing jitter and cover traffic (transport.ErrUnsupportedShaping)
 // rather than ignore them. Overhead is 74 bytes, plus the largest random
-// padding; transport.MaxPacket gives the MTU budget under buckets.
-// The Listener and dial links are transport.SendReporters: what padding
-// costs. A table change to shaping udp refuses closes the live link with
+// padding; transport.MaxPacket gives the MTU budget under buckets. A table
+// change to shaping udp refuses closes the live link with
 // transport.ErrSettingsRefused.
 //
 // # What a receiver accepts

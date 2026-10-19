@@ -11,6 +11,7 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/path"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport/memory"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport/transporttest"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport/udp"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
@@ -27,7 +28,7 @@ func udpRegistry(t *testing.T) *transport.Registry {
 func TestOverlayMTU(t *testing.T) {
 	reg := udpRegistry(t)
 	secret := bytes.Repeat([]byte{7}, udp.MinSecretSize)
-	shaped, err := transport.Shaping{Padding: transport.Buckets(512, 1200, 1600)}.Marshal()
+	shaped, err := transport.Shaping{Padding: transporttest.Buckets(512, 1200, 1600)}.Marshal()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +65,7 @@ func TestOverlayMTU(t *testing.T) {
 	}
 
 	// A link that leaves less than the minimum is dropped, not the section.
-	tiny, err := transport.Shaping{Padding: transport.Buckets(400, 8000)}.Marshal()
+	tiny, err := transport.Shaping{Padding: transporttest.Buckets(400, 8000)}.Marshal()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +86,7 @@ func TestOverlayMTU(t *testing.T) {
 // overlay left out as the engine leaves them out.
 func TestAcceptedInbound(t *testing.T) {
 	reg := udpRegistry(t)
-	tiny, err := transport.Shaping{Padding: transport.Buckets(400, 8000)}.Marshal()
+	tiny, err := transport.Shaping{Padding: transporttest.Buckets(400, 8000)}.Marshal()
 	if err != nil {
 		t.Fatal(err)
 	}

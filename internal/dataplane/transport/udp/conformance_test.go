@@ -12,7 +12,7 @@ import (
 
 // Shapings udp implements, with the conformance suite run under each.
 var shapings = map[string]transport.Shaping{
-	"buckets": {Padding: transport.Buckets(128, 256, 512, 1024, 1452)},
+	"buckets": {Padding: transporttest.Buckets(128, 256, 512, 1024, 1452)},
 	"random":  {Padding: transport.Padding{Mode: transport.PadRandom, Min: 0, Max: MaxRandomPadding}},
 }
 
@@ -22,7 +22,7 @@ var refused = []transport.Shaping{
 	{Jitter: time.Millisecond},
 	{CoverInterval: time.Second},
 	{Padding: transport.Padding{Mode: transport.PadRandom, Max: MaxRandomPadding + 1}},
-	{Padding: transport.Buckets(1280, maxDatagram+1)},
+	{Padding: transporttest.Buckets(1280, maxDatagram+1)},
 }
 
 func harness(tr *Transport, address string, s transport.Shaping) transporttest.Harness {
