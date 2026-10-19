@@ -45,6 +45,15 @@ A lab poll retries a failed read and fails only at its deadline; a one-shot chec
 - [x] R1.11 (round 2b) censor_e2e and results probes (pingErr, tcpCrosses): "blocked" is only the tool's own failure exit (ping's exit 1 for no reply, the TCP probe's connect failure or timeout); any other failure fails the cell
 - [x] R1.12 (round 2c) the remaining one-shot "must not" checks in lab/ (smoke ping, egress curl, ipv6leak, ingress, dns resolvectl, localapi, and any others) count only the tool's own "no" (checked in the lab) as a pass; any other failure fails the test
 - [x] R1.13 (round 2c) internal/dataplane/blobs TestAPeerDroppedFromThePlanIsServedNoMore ("connection refused" in TP-109's lab-test): reproduce, then fix the cause or say it wasn't found
+- [ ] R2.1 (round 3) blobs_test.go `answer` pipes nc into wc, so a failed nsenter or nc counts as "gets nothing": make nc's own outcome visible, fail on anything but its measured "no"; a positive control (server-1's NotPeer rises) if possible
+- [ ] R2.2 one noPing(t, n, args...) built on pingAnswers in netstate_test.go, replacing up_test.go's copy and the three-branch checks in smoke, ipv6leak and routetable; the Log says why accepting no-route is sound there
+- [ ] R2.3 pingNoAnswer → pingNoReplyOrRoute; pingNoReply stays for pingCrosses
+- [ ] R2.4 the tryPing comment and the R1.12 Log line say what the code does: only ping's own outcome passes (a reply, none, or the sender's kernel refusing for want of a route)
+- [ ] R2.5 curl's exit 28 counts as "no connection" only for a connect-phase timeout (measured text, or --connect-timeout)
+- [ ] R2.6 one curlFrom(n, maxTime, args...) replacing egress fetch/noFetch and ipv6leak's copy
+- [ ] R2.7 one untilAnswer(within, attempt) for pingCrosses, tcpCrosses and pollReceived; pollLog stays; reaches reuses tcpConnect + ncConnectFailed if it duplicates them
+- [ ] R2.8 getentNotFound(res) beside the other classifiers, used by resolve and smoke's noAnswer; noAnswer folded into wantNoAnswer if the same
+- [ ] R2.9 nits: smoke hermetic `ping ... && echo reached` classifies the blackhole route's real "no"; up_test.go `pgrep ... || true` treats only exit 1 as no match; serving() → waitServing()
 
 ## Log
 - 2026-10-19 created in backlog (TP-099 review round 6)
@@ -87,3 +96,4 @@ A lab poll retries a failed read and fails only at its deadline; a one-shot chec
 - 2026-10-19 R1.13: cause found. Update starts the blob's fetch and listenLoop separately; the test waited until the server held the blob, then dialed at once, and testNet refuses an address not yet listened on. Same race in TestNothingIsServedThatIsNotHeld, TestBusyPastThePerPeerLimit and TestOnlyPeersAreServed. Reproduced on the old test code across the four tests: plain -count=200 2/800 ("connection refused" at the dial), -race -cpu 1 0/800, 20ms injected before the listen (temporary, not committed) 200/200. Fix (d78d423): serving() (service_test.go:248) waits for the held blob and the listener; with the fix: 20ms injected 0/200, plain 0/800.
 - 2026-10-19 verified on the committed, pushed head d78d423 with a clean tree, no other tplab containers (LAB_P=4): make lint exit 0 (16s), make test exit 0 (1s, Go's test cache), make lab-test exit 0 (140s; lab ok in 119.5s, censor matrix included; node phase 35 packages ok; no skips).
 - 2026-10-19 in-progress → review
+- 2026-10-19 review → has-errors — round 3: R2.1-R2.9
