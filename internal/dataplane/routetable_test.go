@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
-	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/rules"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport/memory"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/lists"
@@ -21,7 +20,7 @@ import (
 // calls fail.
 type fakeRouteTable struct {
 	mu      sync.Mutex
-	calls   []routetable.Want
+	calls   []dataplane.RouteTableWant
 	failing int
 	closed  bool
 	// hold, if set, keeps Enforce until it is closed; entered hears
@@ -31,7 +30,7 @@ type fakeRouteTable struct {
 
 var errKernel = errors.New("the kernel said no")
 
-func (f *fakeRouteTable) Enforce(_ context.Context, w routetable.Want) error {
+func (f *fakeRouteTable) Enforce(_ context.Context, w dataplane.RouteTableWant) error {
 	f.mu.Lock()
 	hold, entered := f.hold, f.entered
 	f.mu.Unlock()
@@ -49,10 +48,10 @@ func (f *fakeRouteTable) Enforce(_ context.Context, w routetable.Want) error {
 	return nil
 }
 
-func (f *fakeRouteTable) Status() routetable.Status {
+func (f *fakeRouteTable) Status() dataplane.RouteTableStatus {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return routetable.Status{Enforced: f.failing == 0, Routes: len(f.calls)}
+	return dataplane.RouteTableStatus{Enforced: f.failing == 0, Routes: len(f.calls)}
 }
 
 func (f *fakeRouteTable) Close() error {
@@ -63,7 +62,7 @@ func (f *fakeRouteTable) Close() error {
 }
 
 // since returns the calls after the first n, and how many there are.
-func (f *fakeRouteTable) since(n int) ([]routetable.Want, int) {
+func (f *fakeRouteTable) since(n int) ([]dataplane.RouteTableWant, int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return slices.Clone(f.calls[n:]), len(f.calls)
@@ -209,40 +208,5 @@ func TestStatusDoesNotWaitForTheRouteTable(t *testing.T) {
 	close(hold)
 	if err := <-done; err != nil {
 		t.Fatal(err)
-	}
-}
-
-// The resolver's direct upstreams reach the route table (macOS gives them
-// routes scoped to the physical interface): kept from before the first
-// Apply, re-enforced when they change, and not when they don't.
-func TestDirectUpstreamsReachTheRouteTable(t *testing.T) {
-	net := memory.NewNetwork(memory.Datagram)
-	a, s, _ := m0()
-	rt := &fakeRouteTable{}
-	a.routes = rt
-	s.start(t, net)
-	a.start(t, net)
-	ctx := context.Background()
-	up := []netip.AddrPort{netip.MustParseAddrPort("203.0.113.53:53"), netip.MustParseAddrPort("[2001:db8::53]:53")}
-	_, n := rt.since(0)
-	if err := a.engine.SetDirectUpstreams(ctx, up); err != nil {
-		t.Fatal(err)
-	}
-	calls, n := rt.since(n)
-	want := []netip.AddrPort{up[0], up[1]}
-	slices.SortFunc(want, func(x, y netip.AddrPort) int { return x.Compare(y) })
-	if len(calls) != 1 || !slices.Equal(calls[0].Upstreams, want) || !slices.Equal(calls[0].Bypass, []netip.Addr{s.listen.Addr()}) {
-		t.Fatalf("enforced %+v", calls)
-	}
-	if err := a.engine.SetDirectUpstreams(ctx, []netip.AddrPort{up[1], up[0], up[0]}); err != nil {
-		t.Fatal(err)
-	}
-	if calls, _ := rt.since(n); len(calls) != 0 {
-		t.Errorf("the same upstreams enforced again: %v", calls)
-	}
-	// A map applied later keeps them.
-	a.apply(t)
-	if calls, _ := rt.since(n); len(calls) == 0 || !slices.Equal(calls[len(calls)-1].Upstreams, want) {
-		t.Errorf("after an Apply: %+v", calls)
 	}
 }

@@ -13,7 +13,6 @@ import (
 
 	wgtun "golang.zx2c4.com/wireguard/tun"
 
-	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
@@ -34,7 +33,7 @@ func testHost() Host {
 			return nil, errors.New("no TUN in this test")
 		},
 		NewGuard: func() routetable.Guard { return nil },
-		NewRouteTable: func(*slog.Logger, routetable.Guard) (dataplane.RouteTable, error) {
+		NewRouteTable: func(*slog.Logger, routetable.Guard) (RouteEnforcer, error) {
 			return nil, errors.New("no route table in this test")
 		},
 		ClearConfig:     func(netcfg.Owner) error { return nil },
