@@ -47,8 +47,8 @@ func startDevice(t *testing.T, s *testSpace, reg *transport.Registry, connect bo
 		t.Fatal(err)
 	}
 	plat := testPlatform()
-	plat.Host.NewConfigurator = func(netcfg.Owner) (netcfg.Configurator, error) { return rn.ifc, nil }
-	plat.Host.NewTUN = rn.virtualTUN(failTUN)
+	plat.NewConfigurator = func(netcfg.Owner) (netcfg.Configurator, error) { return rn.ifc, nil }
+	plat.NewTUN = rn.virtualTUN(failTUN)
 	n, err := Prepare(cfg, logs, plat)
 	if err != nil {
 		t.Fatal(err)
@@ -239,8 +239,8 @@ func TestARemovedDeviceConnectsOnceBack(t *testing.T) {
 		t.Fatal(err)
 	}
 	plat := testPlatform()
-	plat.Host.NewConfigurator = func(netcfg.Owner) (netcfg.Configurator, error) { return rn.ifc, nil }
-	plat.Host.NewTUN = rn.virtualTUN(nil)
+	plat.NewConfigurator = func(netcfg.Owner) (netcfg.Configurator, error) { return rn.ifc, nil }
+	plat.NewTUN = rn.virtualTUN(nil)
 	n, err := Prepare(cfg, logs, plat)
 	if err != nil {
 		t.Fatal(err)
@@ -511,8 +511,8 @@ func TestAStartWhileDisconnectedClearsACrashedRunsRoutes(t *testing.T) {
 	_, reg := memoryRegistry(t)
 	cleared := make(chan netcfg.Owner, 4)
 	plat := testPlatform()
-	plat.Host.ClearConfig = func(o netcfg.Owner) error { cleared <- o; return nil }
-	plat.Host.ClearRouteTable = func(routetable.Guard) error { cleared <- netcfg.OwnerRouteTable; return nil }
+	plat.ClearConfig = func(o netcfg.Owner) error { cleared <- o; return nil }
+	plat.ClearRouteTable = func(routetable.Guard) error { cleared <- netcfg.OwnerRouteTable; return nil }
 	rn := newRunningNode()
 	logs, err := NewLogs("info", rn.log)
 	if err != nil {
@@ -520,8 +520,8 @@ func TestAStartWhileDisconnectedClearsACrashedRunsRoutes(t *testing.T) {
 	}
 	cfg := testConfig(s.stateDir(t, s.b, 1))
 	cfg.Connect = false
-	plat.Host.NewConfigurator = func(netcfg.Owner) (netcfg.Configurator, error) { return rn.ifc, nil }
-	plat.Host.NewTUN = rn.virtualTUN(nil)
+	plat.NewConfigurator = func(netcfg.Owner) (netcfg.Configurator, error) { return rn.ifc, nil }
+	plat.NewTUN = rn.virtualTUN(nil)
 	n, err := Prepare(cfg, logs, plat)
 	if err != nil {
 		t.Fatal(err)

@@ -278,7 +278,7 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 		Interface:    n.cfg.Interface,
 		LinkMTU:      n.cfg.LinkMTU,
 		Log:          log,
-		Blobs:        blobs.NewOnNet(blobs.Options{Store: diskBlobs{dir: n.cfg.StateDir, log: log}, Log: log}, n.plat.Host.BlobNet),
+		Blobs:        blobs.NewOnNet(blobs.Options{Store: diskBlobs{dir: n.cfg.StateDir, log: log}, Log: log}, n.plat.BlobNet),
 		DNS:          n.cfg.DNS,
 		DNSUpstreams: n.dnsUpstreams,
 		RouteTable:   true,
