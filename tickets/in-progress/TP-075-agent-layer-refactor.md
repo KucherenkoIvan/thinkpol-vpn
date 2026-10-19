@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: M
 depends_on: [TP-019]
 refs: [S1, DESIGN#desktop-client]
-owner: ""
-branch: ""
+owner: "agent-glm"
+branch: "tp-075-agent-layer-refactor"
 ---
 
 ## Goal
@@ -37,3 +37,4 @@ branch: ""
 - 2026-10-15 docs: board fix-ups (log order, refs, parked notes)
 - 2026-10-15 docs (backlog grooming): milestone M2; split — part 1 (composition root + map follower); TP-083 is part 2
 - 2026-10-15 docs (backlog grooming, review fixes): cites and up.go wording; follower semantics from TP-037; Windows dep wording
+- 2026-10-19 backlog → in-progress — owner: agent-glm, branch: tp-075-agent-layer-refactor
