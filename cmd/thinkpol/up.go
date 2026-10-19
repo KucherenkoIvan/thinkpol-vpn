@@ -17,11 +17,11 @@ import (
 
 func init() {
 	register(command{
-		path:    "up",
-		args:    "[-state dir] [-map file] [-mode auto|device|server] [flags]",
-		summary: "run this node from the keys and map in its state directory (environment: THINKPOL_*)",
-		service: true,
-		run:     runUp,
+		path:        "up",
+		args:        "[-state dir] [-map file] [-mode auto|device|server] [flags]",
+		summary:     "run this node from the keys and map in its state directory (environment: THINKPOL_*)",
+		ownsSignals: true,
+		run:         runUp,
 	})
 }
 
@@ -31,10 +31,12 @@ func applyPlatformDefaults(cfg *agent.Config) {
 	if _, ok := os.LookupEnv("THINKPOL_STATE_DIR"); !ok {
 		cfg.StateDir = agent.DefaultStateDir
 	}
-	cfg.APISocket = apiSocket()
+	if _, ok := os.LookupEnv("THINKPOL_API_SOCKET"); !ok {
+		cfg.APISocket = agent.DefaultAPISocket()
+	}
 }
 
-func runUp(_ context.Context, e env, args []string) error {
+func runUp(ctx context.Context, e env, args []string) error {
 	cfg, err := agent.LoadConfig()
 	if err != nil {
 		return err
@@ -76,7 +78,5 @@ func runUp(_ context.Context, e env, args []string) error {
 			Log: logs.With("component", "local API"),
 		}))
 	}
-	// With no NotifyContext above it, app's own signal handling runs: the
-	// first SIGINT/SIGTERM shuts down gracefully, a second one force-quits.
-	return app.RunWith(context.Background(), app.Options{Logger: logs.Logger}, adapters...)
+	return app.RunWith(ctx, app.Options{Logger: logs.Logger}, adapters...)
 }

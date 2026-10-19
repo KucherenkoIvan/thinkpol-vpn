@@ -19,12 +19,12 @@ import (
 // "dev map build"): a command group is nothing but a shared prefix, so
 // adding `dev lists build` is one new file that registers that path.
 type command struct {
-	path    string
-	args    string // argument synopsis, e.g. "[-out file] <spec.yaml>"
-	summary string
-	hidden  bool // runs, but is left out of the usage listings (internal commands)
-	service bool // long-running under app.RunWith, which owns SIGINT/SIGTERM: main installs no NotifyContext for it
-	run     func(ctx context.Context, e env, args []string) error
+	path        string
+	args        string // argument synopsis, e.g. "[-out file] <spec.yaml>"
+	summary     string
+	hidden      bool // runs, but is left out of the usage listings (internal commands)
+	ownsSignals bool // long-running under app.RunWith, which owns SIGINT/SIGTERM: main installs no NotifyContext for it
+	run         func(ctx context.Context, e env, args []string) error
 }
 
 // env is the process's standard streams, swapped for buffers in tests.

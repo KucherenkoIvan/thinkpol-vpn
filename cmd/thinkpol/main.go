@@ -20,7 +20,7 @@ func main() {
 	// A service command runs under app.RunWith, which owns SIGINT/SIGTERM:
 	// a second handler would swallow the signal that force-quits a hung
 	// shutdown. Plain commands take the NotifyContext.
-	if c, _, ok := matchCommand(args); ok && c.service {
+	if c, _, ok := matchCommand(args); ok && c.ownsSignals {
 		os.Exit(run(context.Background(), e, args))
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
