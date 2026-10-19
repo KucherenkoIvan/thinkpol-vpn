@@ -22,21 +22,29 @@ func TestDecode(t *testing.T) {
 	if !ok {
 		t.Fatal("ipv4 not decoded")
 	}
-	if h.Src != src || h.Dst != dst || h.Proto != 17 || !h.First || !bytes.Equal(h.Payload, udp[20:]) || !bytes.Equal(h.Whole, udp) {
+	if h.Src != src || h.Dst != dst || h.Proto != 17 || h.LaterFragment || !bytes.Equal(h.Payload, udp[20:]) || !bytes.Equal(h.Bytes, udp) {
 		t.Errorf("decoded %+v", h)
 	}
 
-	// A later fragment: decodable, but First is false.
+	// A first fragment (more fragments, offset 0) counts as first.
+	binary.BigEndian.PutUint16(udp[6:], 0x2000)
+	if h, ok := Decode(udp); !ok || h.LaterFragment {
+		t.Errorf("first fragment: ok=%v later=%v", ok, h.LaterFragment)
+	}
+	// A later fragment: decodable, without a transport header.
 	binary.BigEndian.PutUint16(udp[6:], 1)
-	if h, _ := Decode(udp); h.First {
-		t.Error("a later fragment decoded as first")
+	if h, ok := Decode(udp); !ok || !h.LaterFragment {
+		t.Errorf("later fragment: ok=%v later=%v", ok, h.LaterFragment)
 	}
 
-	if _, ok := Decode([]byte{4, 5}); ok {
-		t.Error("a short packet decoded")
+	if _, ok := Decode([]byte{0x45, 0}); ok {
+		t.Error("a short IPv4 packet decoded")
 	}
-	if _, ok := Decode([]byte{6, 0, 0, 0}); ok {
-		t.Error("junk decoded")
+	if _, ok := Decode([]byte{0x60, 0, 0, 0}); ok {
+		t.Error("a short IPv6 packet decoded")
+	}
+	if _, ok := Decode([]byte{0x10, 0, 0, 0}); ok {
+		t.Error("a non-IP packet decoded")
 	}
 }
 
@@ -56,7 +64,7 @@ func TestDecodeIPv6LaterFragmentBehindOptions(t *testing.T) {
 	if !ok {
 		t.Fatal("ipv6 not decoded")
 	}
-	if h.Src != src || h.Dst != dst || h.Proto != 17 || h.First {
+	if h.Src != src || h.Dst != dst || h.Proto != 17 || !h.LaterFragment {
 		t.Errorf("decoded %+v", h)
 	}
 }

@@ -123,7 +123,7 @@ func (p *pcapReader) next() (Packet, error) {
 // decodeFrame strips the link-layer header and decodes the IP packet.
 func decodeFrame(linkType uint32, frame []byte) (Packet, bool) {
 	var pkt Packet
-	var ip []byte
+	var b []byte
 	switch linkType {
 	case linkSLL2:
 		if len(frame) < 20 {
@@ -131,24 +131,24 @@ func decodeFrame(linkType uint32, frame []byte) (Packet, bool) {
 		}
 		pkt.Ifindex = int(binary.BigEndian.Uint32(frame[4:]))
 		pkt.Outgoing = frame[10] == 4
-		ip = frame[20:]
+		b = frame[20:]
 	case linkSLL:
 		if len(frame) < 16 {
 			return pkt, false
 		}
 		pkt.Outgoing = binary.BigEndian.Uint16(frame[0:]) == 4
-		ip = frame[16:]
+		b = frame[16:]
 	case linkEthernet:
 		if len(frame) < 14 {
 			return pkt, false
 		}
-		ip = frame[14:]
+		b = frame[14:]
 	case linkRaw:
-		ip = frame
+		b = frame
 	default:
 		return pkt, false
 	}
-	return pkt, decodeIP(&pkt, ip)
+	return pkt, decodeIP(&pkt, b)
 }
 
 func decodeIP(pkt *Packet, b []byte) bool {
@@ -157,8 +157,8 @@ func decodeIP(pkt *Packet, b []byte) bool {
 		return false
 	}
 	pkt.Src, pkt.Dst, pkt.Proto = h.Src, h.Dst, h.Proto
-	pkt.IP, pkt.Payload = h.Whole, h.Payload
-	if !h.First {
+	pkt.IP, pkt.Payload = h.Bytes, h.Payload
+	if h.LaterFragment {
 		return true
 	}
 	switch h.Proto {
