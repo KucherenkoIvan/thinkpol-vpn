@@ -51,10 +51,10 @@ type Status struct {
 	// link's domains in systemd-resolved): names may leave outside the
 	// tunnel.
 	DNSUnprotected bool
-	// DNSUpstreamsStale is set while a connected device's direct upstreams
-	// (the OS's own resolvers, as they were at the last good read) may be
-	// stale: the last read of them failed, so names outside the node may not
-	// resolve. The OS still resolves through the node.
+	// DNSUpstreamsStale is set while the last read of a connected
+	// device's OS's own resolvers failed: the direct upstreams are the
+	// ones read before, so `direct` names may not resolve. The OS still
+	// resolves through the node, so on its own it is not DNSUnprotected.
 	DNSUpstreamsStale bool
 	// DNSUpstreamsRefused is a server's: how many of the resolver
 	// upstreams the worker's egress refuses, so the resolver doesn't use
@@ -212,7 +212,7 @@ func (p *report) status() Status {
 		}
 		// Read once: both flags come from the same Problem.
 		s.DNSUnprotected = dns.Unprotected(problem)
-		s.DNSUpstreamsStale = problem != nil && errors.Is(problem, dns.ErrUpstreamsStale)
+		s.DNSUpstreamsStale = errors.Is(problem, dns.ErrUpstreamsStale)
 	}
 	if p.workers != nil {
 		for _, w := range p.workers.Workers() {

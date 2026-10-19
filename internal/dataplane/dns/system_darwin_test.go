@@ -722,7 +722,7 @@ func TestAnOfflineMacsUpstreamsAreEmpty(t *testing.T) {
 	}
 }
 
-// A primary read that keeps failing leaves the last upstreams in place:
+// A primary read that failed at the last check leaves the last upstreams in place:
 // not unprotected (the OS still resolves through the node), but the
 // direct upstreams may be stale, which Problem says without calling the
 // node unprotected.
@@ -884,5 +884,137 @@ func TestAFailedReadOfATargetNamesTheKey(t *testing.T) {
 	}
 	if p := s.Problem(); !Unprotected(p) {
 		t.Errorf("problem: %v", p)
+	}
+}
+
+// toldUpstreams collects what a store tells cfg.Upstreams, from its own
+// goroutine.
+type toldUpstreams struct {
+	mu   sync.Mutex
+	told [][]netip.Addr
+	ch   chan struct{}
+}
+
+func newToldUpstreams() *toldUpstreams { return &toldUpstreams{ch: make(chan struct{}, 16)} }
+
+func (u *toldUpstreams) tell(a []netip.Addr) {
+	u.mu.Lock()
+	u.told = append(u.told, a)
+	u.mu.Unlock()
+	u.ch <- struct{}{}
+}
+
+func (u *toldUpstreams) all() [][]netip.Addr {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return slices.Clone(u.told)
+}
+
+// wait waits for one more tell.
+func (u *toldUpstreams) wait(t *testing.T) {
+	t.Helper()
+	select {
+	case <-u.ch:
+	case <-time.After(5 * time.Second):
+		t.Fatal("never told")
+	}
+}
+
+// A store whose caller couldn't read the system's resolvers (its first
+// read failed) reports them stale and tells the first good read,
+// although nothing changed from the store's point of view.
+func TestAFailedFirstReadIsStaleUntilAGoodReadTellsIt(t *testing.T) {
+	f := aMac(t)
+	_ = f.remove("State:/Network/Service/D/DNS")
+	_ = f.remove("Setup:/Network/Service/B/DNS")
+	var log bytes.Buffer
+	u := newToldUpstreams()
+	c := nodeConfig
+	c.Log = slog.New(slog.NewTextHandler(&log, nil))
+	c.Upstreams, c.UpstreamsUnknown = u.tell, true
+	f.mu.Lock()
+	f.getErrs = map[string]error{globalIPv4Key: errors.New("read failed")}
+	f.mu.Unlock()
+	s, err := setDynamicStore(f, c, nil, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Restore() }()
+	s.check()
+	if p := s.Problem(); !errors.Is(p, ErrUpstreamsStale) || Unprotected(p) {
+		t.Errorf("problem after a failed first read: %v", p)
+	}
+	if told := u.all(); len(told) != 0 {
+		t.Errorf("a failed read told %v", told)
+	}
+	if strings.Contains(log.String(), "level=WARN") {
+		t.Errorf("warned again for the caller's episode: %s", log.String())
+	}
+	f.mu.Lock()
+	delete(f.getErrs, globalIPv4Key)
+	f.mu.Unlock()
+	s.check()
+	u.wait(t)
+	if told := u.all(); len(told) != 1 || fmt.Sprint(told[0]) != "[192.168.1.1]" {
+		t.Errorf("told %v, want the Wi-Fi servers once", told)
+	}
+	if p := s.Problem(); p != nil {
+		t.Errorf("problem after a good read: %v", p)
+	}
+}
+
+// Offline, the first good read tells an empty answer and clears the
+// staleness all the same.
+func TestAFailedFirstReadThenOfflineTellsNothing(t *testing.T) {
+	f := aMac(t)
+	_ = f.remove("State:/Network/Service/D/DNS")
+	_ = f.remove("Setup:/Network/Service/B/DNS")
+	u := newToldUpstreams()
+	c := nodeConfig
+	c.Upstreams, c.UpstreamsUnknown = u.tell, true
+	f.mu.Lock()
+	f.getErrs = map[string]error{globalIPv4Key: errors.New("read failed")}
+	f.mu.Unlock()
+	s, err := setDynamicStore(f, c, nil, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Restore() }()
+	s.check()
+	if p := s.Problem(); !errors.Is(p, ErrUpstreamsStale) {
+		t.Errorf("problem after a failed first read: %v", p)
+	}
+	f.mu.Lock()
+	delete(f.getErrs, globalIPv4Key)
+	f.mu.Unlock()
+	_ = f.remove(globalIPv4Key)
+	s.check()
+	u.wait(t)
+	if told := u.all(); len(told) != 1 || told[0] != nil {
+		t.Errorf("offline told %v, want one empty answer", told)
+	}
+	if p := s.Problem(); p != nil {
+		t.Errorf("problem offline: %v", p)
+	}
+}
+
+// When the store's own first read works, it tells at once, without
+// waiting for a change or the backstop.
+func TestAFailedFirstReadIsToldTheStoresGoodRead(t *testing.T) {
+	f := aMac(t)
+	u := newToldUpstreams()
+	c := nodeConfig
+	c.Upstreams, c.UpstreamsUnknown = u.tell, true
+	s, err := setDynamicStore(f, c, nil, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Restore() }()
+	u.wait(t)
+	if told := u.all(); len(told) != 1 || fmt.Sprint(told[0]) != "[192.168.1.1]" {
+		t.Errorf("told %v, want the Wi-Fi servers once", told)
+	}
+	if p := s.Problem(); errors.Is(p, ErrUpstreamsStale) {
+		t.Errorf("stale after a good read: %v", p)
 	}
 }

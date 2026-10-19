@@ -33,6 +33,11 @@ type SystemConfig struct {
 	// DHCP client rewriting resolv.conf, resolved's uplink servers). It is
 	// called from the configuration's own goroutine.
 	Upstreams func([]netip.Addr)
+	// UpstreamsUnknown says the caller's own read of the OS's resolvers
+	// failed, so it has none: on macOS the first good read tells Upstreams
+	// (nil when offline), and until then Problem reports
+	// ErrUpstreamsStale. Read when the configuration is first set.
+	UpstreamsUnknown bool
 	// Log receives warnings from configuration watchers.
 	Log *slog.Logger
 }
@@ -58,11 +63,11 @@ type System interface {
 // two apart.
 var ErrUnprotected = errors.New("dns: names may be resolved outside the node")
 
-// ErrUpstreamsStale is what a System's Problem reports (never wrapped by
-// ErrUnprotected) while the direct upstreams the OS's own resolvers were
-// last read as may be stale: the last read of them failed, so names
-// outside the node may not resolve. The OS still resolves through the
-// node, so it is not unprotected.
+// ErrUpstreamsStale marks a Problem where the last read of the OS's own
+// resolvers failed: the direct upstreams are the ones read before, so
+// `direct` names may not resolve. The OS still resolves through the
+// node, so on its own it is not unprotected; Unprotected sorts a joined
+// Problem.
 var ErrUpstreamsStale = errors.New("dns: the direct upstreams may be stale")
 
 // Unprotected says whether a Problem leaves names resolving outside the

@@ -242,6 +242,11 @@ type runner struct {
 	resolver  *dns.Server
 	// upstreams are the resolver's direct upstreams as it started.
 	upstreams []netip.AddrPort
+	// upstreamsUnknown is set while the OS's own resolvers, the direct
+	// upstreams, couldn't be read yet (newResolver's read failed): the OS
+	// configuration tells them at its first good read
+	// (dns.SystemConfig.UpstreamsUnknown), from its own goroutine.
+	upstreamsUnknown atomic.Bool
 	// tun is the running TUN's name (Interface until one runs).
 	tun string
 	// guard is the OS's resolver configuration while it should point at

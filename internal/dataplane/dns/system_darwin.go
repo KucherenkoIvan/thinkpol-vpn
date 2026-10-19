@@ -204,6 +204,11 @@ type dynamicStore struct {
 	// failed at the last check: warned about once, not at every check,
 	// and it drives Problem's ErrUpstreamsStale.
 	primaryFailed bool
+	// untold: cfg.Upstreams has no servers yet, its caller's own read
+	// having failed (UpstreamsUnknown). The first good read tells it,
+	// whether or not the servers changed; until then Problem reports
+	// ErrUpstreamsStale.
+	untold bool
 }
 
 // storeWatch subscribes to changes of the store's keys matching patterns;
@@ -221,11 +226,13 @@ func setDynamicStore(st store, c SystemConfig, notify storeWatch, every time.Dur
 	if err != nil {
 		return nil, err
 	}
-	s := &dynamicStore{st: st, cfg: c, backup: backup, stop: make(chan struct{}), done: make(chan struct{})}
+	s := &dynamicStore{st: st, cfg: c, backup: backup, stop: make(chan struct{}), done: make(chan struct{}),
+		untold: c.UpstreamsUnknown && c.Upstreams != nil}
 	s.mu.Lock()
 	err = s.apply()
-	s.primary = s.primaryOriginal()
+	s.primary, _ = s.primaryOriginal()
 	s.err = err
+	untold := s.untold
 	s.mu.Unlock()
 	if err != nil && len(s.backup) == 0 {
 		_ = s.restore()
@@ -243,6 +250,11 @@ func setDynamicStore(st store, c SystemConfig, notify storeWatch, every time.Dur
 	}
 	go func() {
 		defer cancel()
+		if untold {
+			// Upstreams is told from this goroutine only: the first
+			// check is now, not a backstop later.
+			s.check()
+		}
 		s.watch(events, every)
 	}()
 	return s, nil
@@ -478,33 +490,33 @@ func (s *dynamicStore) otherResolvers() ([]string, error) {
 }
 
 // primaryOriginal is the primary service's servers as the system has
-// them: set by hand, else published. A failed read is not an empty
-// answer: the last one is kept and the failure logged once, so one
-// unreadable scutil answer doesn't wipe the direct upstreams; no
-// primary network service (offline) is a real empty answer and is told
-// as such. Called with mu held.
-func (s *dynamicStore) primaryOriginal() []netip.Addr {
+// them: set by hand, else published; read is false when reading them
+// failed. A failed read is not an empty answer: the last one is kept and
+// the failure logged once, so one unreadable scutil answer doesn't wipe
+// the direct upstreams; no primary network service (offline) is a real
+// empty answer and is told as such. Called with mu held.
+func (s *dynamicStore) primaryOriginal() (addrs []netip.Addr, read bool) {
 	if s.cfg.Upstreams == nil {
 		// The system's servers aren't used as the direct upstreams
 		// (-dns-upstream set): never read, and never stale.
-		s.primaryFailed = false
-		return nil
+		s.primaryFailed, s.untold = false, false
+		return nil, true
 	}
 	addrs, err := primaryServers(s.st, s.backup)
 	if err != nil && !errors.Is(err, errNoPrimary) {
-		if !s.primaryFailed {
-			s.primaryFailed = true
-			if s.cfg.Log != nil {
-				s.cfg.Log.Warn("DNS: reading the primary service's DNS servers failed; keeping the previous upstreams", "err", err)
-			}
+		// While untold, the caller warned already: one warning for the
+		// episode.
+		if !s.primaryFailed && !s.untold && s.cfg.Log != nil {
+			s.cfg.Log.Warn("DNS: reading the primary service's DNS servers failed; keeping the previous upstreams", "err", err)
 		}
-		return s.primary
+		s.primaryFailed = true
+		return s.primary, false
 	}
 	s.primaryFailed = false
 	if errors.Is(err, errNoPrimary) {
-		return nil
+		return nil, true
 	}
-	return addrs
+	return addrs, true
 }
 
 func (s *dynamicStore) watch(events <-chan struct{}, every time.Duration) {
@@ -534,7 +546,8 @@ func (s *dynamicStore) watch(events <-chan struct{}, every time.Duration) {
 }
 
 // check overrides again what the system published since, and tells
-// cfg.Upstreams when the primary service's own servers changed.
+// cfg.Upstreams when the primary service's own servers changed, or at
+// the first good read while it has none.
 func (s *dynamicStore) check() {
 	s.mu.Lock()
 	if s.stopped {
@@ -542,8 +555,11 @@ func (s *dynamicStore) check() {
 		return
 	}
 	s.err = s.apply()
-	primary := s.primaryOriginal()
-	changed := !slices.Equal(primary, s.primary)
+	primary, read := s.primaryOriginal()
+	changed := !slices.Equal(primary, s.primary) || (read && s.untold)
+	if read {
+		s.untold = false
+	}
 	s.primary = primary
 	tell := s.cfg.Upstreams
 	s.mu.Unlock()
@@ -575,9 +591,12 @@ func (s *dynamicStore) Problem() error {
 	case s.manual > 0:
 		errs = append(errs, fmt.Errorf("%w: %d network services have DNS set by hand, which stays their resolver (asked after the node's, and for questions scoped to their interface)", ErrUnprotected, s.manual))
 	}
-	if s.primaryFailed {
-		// Not instead of the unprotected cause above but with it:
-		// Unprotected sorts a joined problem back out.
+	// Not instead of the unprotected cause above but with it:
+	// Unprotected sorts a joined problem back out.
+	switch {
+	case s.untold:
+		errs = append(errs, fmt.Errorf("%w: the system's resolvers haven't been read since the first read failed", ErrUpstreamsStale))
+	case s.primaryFailed:
 		errs = append(errs, fmt.Errorf("%w: reading the primary service's DNS servers failed at the last check", ErrUpstreamsStale))
 	}
 	return errors.Join(errs...)

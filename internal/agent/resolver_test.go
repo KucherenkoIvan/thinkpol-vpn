@@ -100,6 +100,9 @@ func TestADevicePointsTheSystemAtItsResolverWhileConnected(t *testing.T) {
 	if len(asked) != 1 || !slices.Contains(asked[0], b4) {
 		t.Errorf("the system's upstreams were asked for %v: without the node's own addresses", asked)
 	}
+	if got.Upstreams == nil || got.UpstreamsUnknown {
+		t.Errorf("the system's upstreams were read, but the configuration says unknown or follows nothing")
+	}
 
 	// Another map that changes nothing the OS needs leaves it alone.
 	b.maps <- s.build(t, 2)
@@ -368,6 +371,36 @@ func TestUnprotectedDNSIsReportedAndRetried(t *testing.T) {
 	}
 }
 
+// A device that couldn't read the system's resolvers before pointing the
+// OS at its resolver says so to the OS configuration, which tells it the
+// first good read.
+func TestAFailedFirstReadOfTheSystemsResolversIsPassedOn(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	startNode(t, reg, s.a, s.verified(t, 1))
+	sys := &fakeSystem{}
+	b := startDevice(t, s, reg, true, func(c *Config, dp *DataPlane) {
+		if c != nil {
+			c.DNS = true
+			return
+		}
+		dp.systemDNS = sys.Set
+		dp.systemUpstreams = func([]netip.Addr) ([]netip.Addr, error) { return nil, errors.New("the store is unreadable") }
+		dp.dnsPort = 5353
+	})
+	b.connection(t, Connected)
+	eventually(t, func() bool { n, _ := sys.counts(); return n == 1 })
+	sys.mu.Lock()
+	first := sys.set[0]
+	sys.mu.Unlock()
+	if !first.UpstreamsUnknown || first.Upstreams == nil {
+		t.Fatalf("the failed read isn't passed on: unknown %v", first.UpstreamsUnknown)
+	}
+	b.waitLog(t, `level=WARN msg="DNS: the system's resolvers are unknown`)
+	first.Upstreams([]netip.Addr{netip.MustParseAddr("192.0.2.53")})
+	b.waitLog(t, `msg="DNS: the system's own resolvers changed".* upstreams=1`)
+}
+
 // A system whose direct upstreams may be stale is degraded, not
 // unprotected: the status says staleness, health with it, and Connect
 // still succeeds.
@@ -390,7 +423,7 @@ func TestStaleUpstreamsAreDegradedNotUnprotected(t *testing.T) {
 		t.Fatalf("Connect while protected: %v", err)
 	}
 	sys.mu.Lock()
-	sys.problem = fmt.Errorf("%w: reading the primary service's DNS servers keeps failing", dns.ErrUpstreamsStale)
+	sys.problem = fmt.Errorf("%w: reading the primary service's DNS servers failed at the last check", dns.ErrUpstreamsStale)
 	sys.mu.Unlock()
 	if st := b.node.Status(); st.DNSUnprotected || !st.DNSUpstreamsStale || !slices.Contains(st.Health().Problems, ProblemDNSUpstreamsStale) {
 		t.Errorf("status %+v, health %+v", st, st.Health())
