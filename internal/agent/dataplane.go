@@ -470,7 +470,10 @@ func (r *runner) request(ctx context.Context, req connectRequest) {
 func (r *runner) connect(ctx context.Context, connect bool) error {
 	switch {
 	case !connect && !r.conn.disconnected():
-		logRefused(r.dp.Log, r.conn.disconnect())
+		if err := r.conn.disconnect(); err != nil {
+			logRefused(r.dp.Log, err)
+			return err
+		}
 		r.stop()
 		r.retryAt = time.Time{}
 		r.updateBlobs()
