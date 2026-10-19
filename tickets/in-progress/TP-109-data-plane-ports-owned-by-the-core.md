@@ -8,8 +8,8 @@ size: L
 depends_on: [TP-075]
 split_from: TP-083
 refs: [S1, DESIGN#desktop-client]
-owner: ""
-branch: ""
+owner: "agent-claude"
+branch: "tp-109-data-plane-ports-owned-by-the-core"
 ---
 
 ## Goal
@@ -35,3 +35,4 @@ The data-plane core owns its port types; netcfg, routetable and dns adapt to the
 
 ## Log
 - 2026-10-18 created in backlog (split from TP-083, owner decision)
+- 2026-10-19 backlog → in-progress — owner: agent-claude, branch: tp-109-data-plane-ports-owned-by-the-core
