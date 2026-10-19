@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -44,6 +45,15 @@ type Host struct {
 	// BlobNet is the blob services' network; zero is the node's own
 	// sockets.
 	BlobNet blobs.Net
+}
+
+// RouteEnforcer is route-table enforcement on the host
+// (routetable.Enforcer), which the agent adapts to the engine's
+// dataplane.RouteTable.
+type RouteEnforcer interface {
+	Enforce(ctx context.Context, w routetable.Want) error
+	Status() routetable.Status
+	Close() error
 }
 
 // Platform is what a node needs of its host: one data plane's Host, and

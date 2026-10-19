@@ -473,7 +473,8 @@ func TestAnUntaggedProblemIsUnprotected(t *testing.T) {
 	}
 }
 
-// wantsTable records what the engine enforces in the OS routing table.
+// wantsTable records what reaches the host's route table: the engine's
+// wants with the resolver's direct upstreams.
 type wantsTable struct {
 	mu    sync.Mutex
 	wants []routetable.Want

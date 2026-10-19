@@ -69,7 +69,7 @@ func TestDirectUpstreamsReachTheRouteTable(t *testing.T) {
 	if err := rt.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := rt.SetDirectUpstreams(ctx, up[:1]); !errors.Is(err, dataplane.ErrEngineClosed) {
+	if err := rt.SetDirectUpstreams(ctx, up[:1]); !errors.Is(err, errRouteTableClosed) {
 		t.Errorf("SetDirectUpstreams after Close: %v", err)
 	}
 }

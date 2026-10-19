@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/netip"
 	"slices"
@@ -16,14 +17,6 @@ import (
 // The engine's ports (dataplane.InterfaceConfigurator, dataplane.RouteTable,
 // dataplane.Resolver) over the host's adapters, which know nothing of the
 // engine.
-
-// RouteEnforcer is route-table enforcement on the host
-// (routetable.Enforcer).
-type RouteEnforcer interface {
-	Enforce(ctx context.Context, w routetable.Want) error
-	Status() routetable.Status
-	Close() error
-}
 
 // overlayInterface is netcfg's configurator of the overlay as the
 // engine's interface port.
@@ -51,11 +44,17 @@ type routeTable struct {
 	upstreams []netip.AddrPort
 }
 
+// errRouteTableClosed: SetDirectUpstreams after Close.
+var errRouteTableClosed = errors.New("route table closed")
+
 func newRouteTable(rt RouteEnforcer) *routeTable { return &routeTable{rt: rt} }
 
 func (t *routeTable) Enforce(ctx context.Context, w dataplane.RouteTableWant) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	// Kept for SetDirectUpstreams, whose callers run on other goroutines:
+	// a copy of the engine's slices.
+	w.Overlay, w.Bypass = slices.Clone(w.Overlay), slices.Clone(w.Bypass)
 	t.want = &w // the route table keeps trying it
 	return t.rt.Enforce(ctx, t.wantOf(w))
 }
@@ -75,7 +74,7 @@ func (t *routeTable) SetDirectUpstreams(ctx context.Context, addrs []netip.AddrP
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.closed {
-		return dataplane.ErrEngineClosed // the engine closes it
+		return errRouteTableClosed
 	}
 	addrs = slices.Clone(addrs)
 	slices.SortFunc(addrs, func(a, b netip.AddrPort) int { return a.Compare(b) })
