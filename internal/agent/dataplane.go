@@ -90,12 +90,11 @@ type DataPlane struct {
 	rulesRequests <-chan rulesRequest
 
 // What tests tune: the path layer's timing, how long to wait before
-	// retrying what failed.
-	path       path.Options
-	retryAfter time.Duration
-	// newBlobs makes the blob service a worker serves its space's lists
-	// with (blobs.New; tests put it on a loopback overlay).
-	newBlobs func(blobs.Options) *blobs.Service
+	// retrying what failed, and what a worker's blob service starts from
+	// (serveSpace; its limits, the network comes through Host.BlobNet).
+	path        path.Options
+	retryAfter  time.Duration
+	blobOptions blobs.Options
 	// onEngine sees each engine the data plane starts.
 	onEngine func(*dataplane.Engine)
 	// dnsPort is the resolver's port (0: 53).

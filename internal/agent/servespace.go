@@ -48,11 +48,11 @@ func serveSpace(log *slog.Logger, base DataPlane) worker.Serve {
 		if err != nil {
 			return fmt.Errorf("the supervisor's map: %w", err)
 		}
-		reg := base.Registry
-		if reg == nil {
-			if reg, err = Transports(false); err != nil {
-				return err
-			}
+		reg, err := base.Host.Transports(false)
+		// The worker's own registry: its namespace routes nothing into a
+		// TUN, so its sockets carry no control.
+		if err != nil {
+			return err
 		}
 
 		seeds := s.Seeds
@@ -118,12 +118,12 @@ func serveSpace(log *slog.Logger, base DataPlane) worker.Serve {
 		// The worker's namespace forwards and SNATs, and the supervisor's
 		// tables confine it, so a server allowing egress is an exit here.
 		dp.Forward = true
-		newBlobs := base.newBlobs
-		if newBlobs == nil {
-			newBlobs = blobs.New
+		bo := base.blobOptions
+		bo.Store, bo.Log = seedStore{seeds}, log
+		if bo.Limits.MaxHeld == 0 {
+			bo.Limits.MaxHeld = blobs.ServerMaxHeldSize
 		}
-		bo := blobs.Options{Store: seedStore{seeds}, Log: log, Limits: blobs.Limits{MaxHeld: blobs.ServerMaxHeldSize}}
-		dp.Blobs, dp.ServeBlobs = newBlobs(bo), true
+		dp.Blobs, dp.ServeBlobs = blobs.NewOnNet(bo, base.Host.BlobNet), true
 		dp.DNS, dp.DNSUpstreams = first.DNS, first.DNSUpstreams
 		// The space's own figures only (TP-041 seals them into its
 		// telemetry).

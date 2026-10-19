@@ -39,8 +39,8 @@ func testHost() Host {
 		SystemUpstreams: func([]netip.Addr) ([]netip.Addr, error) {
 			return nil, errors.New("no system upstreams in this test")
 		},
-		Transports: func(bool) (*transport.Registry, error) {
-			return nil, errors.New("no registry in this test")
+		Transports: func(markSockets bool) (*transport.Registry, error) {
+			return Transports(markSockets)
 		},
 	}
 }
