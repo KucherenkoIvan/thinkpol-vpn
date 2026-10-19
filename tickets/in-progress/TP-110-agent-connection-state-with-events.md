@@ -8,8 +8,8 @@ size: M
 depends_on: [TP-075]
 split_from: TP-083
 refs: [S1, DESIGN#desktop-client]
-owner: ""
-branch: ""
+owner: "agent-claude"
+branch: "tp-110-agent-connection-state-with-events"
 ---
 
 ## Goal
@@ -37,3 +37,4 @@ The device's connection lifecycle is one explicit state with transition methods 
 
 ## Log
 - 2026-10-18 created in backlog (split from TP-083, owner decision)
+- 2026-10-19 backlog → in-progress — owner: agent-claude, branch: tp-110-agent-connection-state-with-events
