@@ -41,6 +41,8 @@ A lab poll retries a failed read and fails only at its deadline; a one-shot chec
 - [x] R1.7 Log honesty: reproduce the blobs race on the pre-fix code (temporarily) and record N/300 before and 0/300 after, or say plainly it didn't reproduce; add review_test.go:61 to the Get-then-Status reads covered; say exactly what the "verified" line verified and the lab-test duration, and this round verify the committed head
 - [x] R1.8 acceptance box 1 reads "no MustExec or Fatal reachable from inside a poll (lab.Eventually or a hand-written deadline loop)"
 - [x] R1.9 merge origin/rewrite at the end; if TP-075's note on transporttest ShapingRefused is in Notes, look at the test's timing and fix it or say why not
+- [ ] R1.10 (round 2b) the one-shot negative DNS checks (dns_test.go and any other negative use of resolve) count only the resolver tool's own "no answer" exit as "didn't resolve"; a docker error, an exec timeout or a missing tool fails the test
+- [ ] R1.11 (round 2b) censor_e2e and results probes (pingErr, tcpCrosses): "blocked" is only the tool's own failure exit (ping's exit 1 for no reply, the TCP probe's connect failure or timeout); any other failure fails the cell
 
 ## Log
 - 2026-10-19 created in backlog (TP-099 review round 6)
@@ -68,3 +70,4 @@ A lab poll retries a failed read and fails only at its deadline; a one-shot chec
 - 2026-10-19 R1.9: merged origin/rewrite (d86166d); TP-075's ShapingRefused note came with it. The recorded failure is `TestConformanceBehindTheSupervisor/ShapingRefused/5` after 5.32s with only the summary lines kept: 20ms (post-Set sleep) + 300ms (expectNoAccept) + one 5s `wait` expiring, either `e.connect(good)`'s accept or connectAdmitted's deadline; which one, and so whether it is load or a link never admitted, the output doesn't say. The 20ms sleep can only make the test pass early (TP-055). Not reproduced: 100 runs with -race -cpu 1 behind the supervisor pass. Not changed: raising `wait` blindly could hide a link that is never admitted; the next failure should keep the transporttest.go line.
 - 2026-10-19 verified on the committed, pushed head d86166d with a clean tree: make lint exit 0 (19s), make test exit 0 (1s, Go's test cache), make lab-test exit 0 (154s; lab ok in 121.0s, node phase 35 packages ok, no skips).
 - 2026-10-19 in-progress → review
+- 2026-10-19 review → has-errors — round 2b: R1.10, R1.11 (fail-open negative checks)
