@@ -44,7 +44,7 @@ type routeTable struct {
 	upstreams []netip.AddrPort
 }
 
-// errRouteTableClosed: SetDirectUpstreams after Close.
+// errRouteTableClosed is SetDirectUpstreams's error after Close.
 var errRouteTableClosed = errors.New("route table closed")
 
 func newRouteTable(rt RouteEnforcer) *routeTable { return &routeTable{rt: rt} }

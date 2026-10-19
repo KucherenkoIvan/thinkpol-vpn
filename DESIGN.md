@@ -270,7 +270,7 @@ internal/
     ipc/                  # supervisor<->worker protocol over SOCK_SEQPACKET (control + data, SCM_RIGHTS)
     logring/              # in-memory, bounded agent/worker log ring (no logs on disk, S2)
     localapi/             # the local service API on a Unix socket: server, peer-credential policy, client, renderers
-  dataplane/              # the engine that wires the subpackages below, nothing else
+  dataplane/              # the engine: owns its ports, wires router, wg, path and transport; the agent adapts the rest
     tun/ router/ wg/ path/
     rules/                # routing rules: presets, the device's local file, compilation into prefixes
     transport/            # the transport port; adapters in transport/<name>/
