@@ -282,7 +282,7 @@ internal/
     firewall/             # IPv6 leak guard, kill switch (pf, nftables, WFP)
     egress/ dns/
     blobs/                # fetch-by-hash distribution of list files and releases between peers
-    telemetry/
+    telemetry/            # node side of TP-041: per-space in-memory ring, sealed per record (not yet)
   netmap/                 # the signed map: envelope, sealed sections, signing, verification, gossip
   lists/                  # GeoIP/geosite lists: importers, CIDR aggregation, the content-addressed blob format
   shaping/                # the rules of the map's shaping message, shared by netmap's builder and the transport port

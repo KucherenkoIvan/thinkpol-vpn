@@ -9,7 +9,8 @@
 // adapter's test calls Run with a Harness, once without shaping and once
 // per kind of shaping it implements; adapter-specific behaviour (wire
 // format, what shaping looks like on it, probes, clocks) is tested next to
-// the adapter.
+// the adapter. Buckets is the padding constructor tests across the data
+// plane and the map share.
 package transporttest
 
 import (

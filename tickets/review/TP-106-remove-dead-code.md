@@ -34,3 +34,4 @@ Origin: design and code-quality review of rewrite at 2fa1191 (2026-10-18).
 - 2026-10-18 created in backlog (code-quality review)
 - 2026-10-19 backlog → in-progress — owner: agent-glm, branch: tp-106-remove-dead-code
 - 2026-10-19 in-progress → review — telemetry had only a doc.go and no importers; SendReporter had no consumer beyond udp's compile-time asserts (its `Sent` methods stay, tests call them on concrete types); Buckets had no non-test callers, moved to transporttest; kernel.go deleted, go-kernel pinned by real imports. make lint, make test and a full make lab-test (LAB_P=1, 34 packages) green at de8ec10. Nothing unverified: no device-only or platform-specific behaviour touched.
+- 2026-10-19 review round 1: all three reviewers: merge; the orchestrator applied their doc items: Buckets is for tests (it imports testing), transporttest's package doc names it, DESIGN keeps telemetry/ as planned for TP-041; make lint, make test green
