@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/netip"
 	"slices"
@@ -364,6 +365,44 @@ func TestUnprotectedDNSIsReportedAndRetried(t *testing.T) {
 	sys.mu.Unlock()
 	if st := b.node.Status(); !st.DNSUnprotected {
 		t.Errorf("a problem the system reports isn't in the status")
+	}
+}
+
+// A system whose direct upstreams may be stale is degraded, not
+// unprotected: the status says staleness, health with it, and Connect
+// still succeeds.
+func TestStaleUpstreamsAreDegradedNotUnprotected(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	startNode(t, reg, s.a, s.verified(t, 1))
+	sys := &fakeSystem{}
+	b := startDevice(t, s, reg, true, func(c *Config, dp *DataPlane) {
+		if c != nil {
+			c.DNS = true
+			return
+		}
+		dp.systemDNS = sys.Set
+		dp.systemUpstreams = func([]netip.Addr) ([]netip.Addr, error) { return nil, nil }
+		dp.dnsPort = 5353
+	})
+	b.connection(t, Connected)
+	if err := b.node.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect while protected: %v", err)
+	}
+	sys.mu.Lock()
+	sys.problem = fmt.Errorf("%w: reading the primary service's DNS servers keeps failing", dns.ErrUpstreamsStale)
+	sys.mu.Unlock()
+	if st := b.node.Status(); st.DNSUnprotected || !st.DNSUpstreamsStale || !slices.Contains(st.Health().Problems, ProblemDNSUpstreamsStale) {
+		t.Errorf("status %+v, health %+v", st, st.Health())
+	}
+	if err := b.node.Connect(context.Background()); err != nil {
+		t.Errorf("Connect with stale upstreams: %v", err)
+	}
+	sys.mu.Lock()
+	sys.problem = nil
+	sys.mu.Unlock()
+	if st := b.node.Status(); st.DNSUpstreamsStale || slices.Contains(st.Health().Problems, ProblemDNSUpstreamsStale) {
+		t.Errorf("stale stays in the status after a good read: %+v", st.Health())
 	}
 }
 

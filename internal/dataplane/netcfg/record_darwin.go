@@ -58,7 +58,9 @@ var bootSession = sync.OnceValues(func() (string, error) {
 })
 
 // readRecord reads the record name in dir; a missing one, or one written
-// in another boot session than boot, is empty.
+// in another boot session than boot, is empty. A record without a boot
+// line (empty, or comments only) is corrupt, not empty: it was not
+// written by writeRecord.
 func readRecord(dir *os.File, name string, boot string) (map[rkey]bool, error) {
 	out := make(map[rkey]bool)
 	path := dir.Name() + "/" + name
@@ -71,7 +73,11 @@ func readRecord(dir *os.File, name string, boot string) (map[rkey]bool, error) {
 	}
 	f := os.NewFile(uintptr(fd), path)
 	defer func() { _ = f.Close() }()
-	if fi, err := f.Stat(); err != nil || !fi.Mode().IsRegular() {
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() {
 		return nil, fmt.Errorf("%s: not a regular file", path)
 	}
 	data, err := io.ReadAll(f)
@@ -102,7 +108,13 @@ func readRecord(dir *os.File, name string, boot string) (map[rkey]bool, error) {
 		}
 		out[k] = true
 	}
-	return out, sc.Err()
+	if err := sc.Err(); err != nil {
+		return nil, err
+	}
+	if !booted {
+		return nil, fmt.Errorf("%s: no boot session", path)
+	}
+	return out, nil
 }
 
 // writeRecord replaces the record name in dir atomically, stamped with

@@ -41,6 +41,13 @@ func TestScutilShowIsParsed(t *testing.T) {
 	if err != nil || !ok || !d.opaque || d.array("ServerAddresses")[0] != "10.0.0.1" {
 		t.Errorf("nested: %+v %v %v", d, ok, err)
 	}
+	// A value that is the empty string prints "Key : " (seen for an empty
+	// DomainName): parsed as "", not a failed read.
+	empty := "<dictionary> {\n  DomainName : \n  SearchOrder : 1\n}\n"
+	d, ok, err = parseShow(empty)
+	if err != nil || !ok || d.opaque || d.strs["DomainName"] != "" || d.strs["SearchOrder"] != "1" {
+		t.Errorf("empty value: %+v %v %v", d, ok, err)
+	}
 	for _, bad := range []string{"garbage", "<dictionary> {\n  A : b\n"} {
 		if _, _, err := parseShow(bad); err == nil {
 			t.Errorf("%q: no error", bad)
@@ -50,11 +57,22 @@ func TestScutilShowIsParsed(t *testing.T) {
 
 func TestScutilListIsParsed(t *testing.T) {
 	out := "  subKey [0] = State:/Network/Service/A/DNS\n  subKey [1] = State:/Network/Service/B/IPv4\n"
-	if got := parseList(out); strings.Join(got, ",") != "State:/Network/Service/A/DNS,State:/Network/Service/B/IPv4" {
-		t.Errorf("%v", got)
+	keys, err := parseList(out)
+	if err != nil || strings.Join(keys, ",") != "State:/Network/Service/A/DNS,State:/Network/Service/B/IPv4" {
+		t.Errorf("%v, %v", keys, err)
 	}
-	if got := parseList("  no keys.\n"); len(got) != 0 {
-		t.Errorf("%v", got)
+	if keys, err := parseList("  no keys.\n"); err != nil || len(keys) != 0 {
+		t.Errorf("%v, %v", keys, err)
+	}
+	// scutil answers a command it doesn't know in text and exits 0: a
+	// failed listing, not an empty one.
+	failed := "frobnicate: unknown, type \"help\" for command info\n"
+	if keys, err := parseList(failed); err == nil || !strings.Contains(err.Error(), "frobnicate") {
+		t.Errorf("%v, %v", keys, err)
+	}
+	// A subKey line without a key is malformed, not a key.
+	if _, err := parseList("  subKey [0] =\n"); err == nil {
+		t.Error("a keyless subKey line: no error")
 	}
 }
 

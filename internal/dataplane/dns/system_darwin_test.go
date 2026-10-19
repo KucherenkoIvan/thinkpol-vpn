@@ -611,6 +611,31 @@ func TestAFailedPrimaryReadKeepsTheUpstreamsOfflineClearsThem(t *testing.T) {
 	if n := strings.Count(log.String(), "level=WARN"); n != 1 {
 		t.Errorf("warned %d times after recovery, want once", n)
 	}
+	// A good read re-arms the warning: a second episode warns again.
+	f.put("State:/Network/Global/IPv4", globalDict())
+	s.check()
+	if len(told) != 2 || fmt.Sprint(told[1]) != "[192.168.1.1]" {
+		t.Errorf("recovered told %v, want the Wi-Fi servers", told)
+	}
+	f.mu.Lock()
+	f.getErrs = map[string]error{"State:/Network/Global/IPv4": errors.New("read failed")}
+	f.mu.Unlock()
+	s.check()
+	s.check()
+	if len(told) != 2 {
+		t.Errorf("a second failed read told %v", told)
+	}
+	if n := strings.Count(log.String(), "level=WARN"); n != 2 {
+		t.Errorf("warned %d times over two episodes, want twice", n)
+	}
+}
+
+// globalDict is the IPv4 global dictionary of aMac: Wi-Fi is the primary
+// service.
+func globalDict() dict {
+	g := newDict()
+	g.strs["PrimaryService"] = wifiService
+	return g
 }
 
 // An earlier version overrode Setup: keys too: a start puts such a
@@ -634,5 +659,94 @@ func TestASetupOverrideLeftByAnEarlierVersionGoesBack(t *testing.T) {
 	}
 	if _, ok, _ := f.get(resolverKey); ok {
 		t.Error("the node's service stays after Restore")
+	}
+}
+
+// The IPv6 fallback's read failure is not an empty answer either: on an
+// IPv6-only network (no IPv4 global) a failed IPv6 read keeps the last
+// upstreams, and only both globals being gone is offline.
+func TestAFailedIPv6ReadKeepsTheUpstreamsOfflineClearsThem(t *testing.T) {
+	f := aMac(t)
+	_ = f.remove("State:/Network/Global/IPv4")
+	ipv6 := newDict()
+	ipv6.strs["PrimaryService"] = wifiService
+	f.put("State:/Network/Global/IPv6", ipv6)
+	var log bytes.Buffer
+	var told [][]netip.Addr
+	c := nodeConfig
+	c.Log = slog.New(slog.NewTextHandler(&log, nil))
+	c.Upstreams = func(a []netip.Addr) { told = append(told, a) }
+	s, err := setDynamicStore(f, c, nil, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Restore() }()
+	f.mu.Lock()
+	f.getErrs = map[string]error{"State:/Network/Global/IPv6": errors.New("read failed")}
+	f.mu.Unlock()
+	s.check()
+	s.check()
+	if len(told) != 0 {
+		t.Errorf("a failed read told %v", told)
+	}
+	if n := strings.Count(log.String(), "level=WARN"); n != 1 {
+		t.Errorf("a failed read warned %d times, want once", n)
+	}
+	if !strings.Contains(log.String(), "State:/Network/Global/IPv6") {
+		t.Errorf("the warning doesn't name the read: %s", log.String())
+	}
+	f.mu.Lock()
+	delete(f.getErrs, "State:/Network/Global/IPv6")
+	f.mu.Unlock()
+	_ = f.remove("State:/Network/Global/IPv6")
+	s.check()
+	if len(told) != 1 || told[0] != nil {
+		t.Errorf("offline told %v, want one empty answer", told)
+	}
+	if n := strings.Count(log.String(), "level=WARN"); n != 1 {
+		t.Errorf("warned %d times after recovery, want once", n)
+	}
+}
+
+// An offline Mac (no primary network service) has no upstreams to
+// report: an empty answer, not an error.
+func TestAnOfflineMacsUpstreamsAreEmpty(t *testing.T) {
+	f := aMac(t)
+	_ = f.remove("State:/Network/Global/IPv4")
+	got, err := systemUpstreams(f, nil)
+	if err != nil || got != nil {
+		t.Errorf("upstreams: %v, %v", got, err)
+	}
+}
+
+// A primary read that keeps failing leaves the last upstreams in place:
+// not unprotected (the OS still resolves through the node), but the
+// direct upstreams may be stale, which Problem says without calling the
+// node unprotected.
+func TestStaleUpstreamsAreReportedNotUnprotected(t *testing.T) {
+	f := aMac(t)
+	_ = f.remove("State:/Network/Service/D/DNS")
+	_ = f.remove("Setup:/Network/Service/B/DNS")
+	s, err := setDynamicStore(f, nodeConfig, nil, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Restore() }()
+	if err := s.Problem(); err != nil {
+		t.Fatalf("problem before the failure: %v", err)
+	}
+	f.mu.Lock()
+	f.getErrs = map[string]error{"State:/Network/Global/IPv4": errors.New("read failed")}
+	f.mu.Unlock()
+	s.check()
+	if err := s.Problem(); !errors.Is(err, ErrUpstreamsStale) || errors.Is(err, ErrUnprotected) {
+		t.Errorf("problem: %v", err)
+	}
+	f.mu.Lock()
+	delete(f.getErrs, "State:/Network/Global/IPv4")
+	f.mu.Unlock()
+	s.check()
+	if err := s.Problem(); err != nil {
+		t.Errorf("problem after a good read: %v", err)
 	}
 }

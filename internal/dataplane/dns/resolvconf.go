@@ -45,7 +45,8 @@ type System interface {
 	Update(SystemConfig) error
 	// Problem says why names may still be resolved outside the node's
 	// resolver (another link's domains in systemd-resolved, a rewrite that
-	// failed), nil when the OS resolves through it only.
+	// failed), nil when the OS resolves through it only. It may also
+	// report ErrUpstreamsStale, which is not unprotected.
 	Problem() error
 	// Restore puts back what was there before.
 	Restore() error
@@ -54,6 +55,13 @@ type System interface {
 // ErrUnprotected wraps every Problem: the OS doesn't resolve only through
 // the node's resolver.
 var ErrUnprotected = errors.New("dns: names may be resolved outside the node")
+
+// ErrUpstreamsStale is what a System's Problem reports (never wrapped by
+// ErrUnprotected) while the direct upstreams the OS's own resolvers were
+// last read as may be stale: reading them keeps failing, so names
+// outside the node may not resolve. The OS still resolves through the
+// node, so it is not unprotected.
+var ErrUpstreamsStale = errors.New("dns: the direct upstreams may be stale")
 
 // A resolv.conf the node manages starts with resolvConfHeader and keeps
 // what it replaced in comment lines, so it can be put back even after a

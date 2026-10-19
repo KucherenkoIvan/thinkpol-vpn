@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/netip"
 	"slices"
@@ -84,7 +85,9 @@ func (g *dnsGuard) system() dns.System {
 }
 
 // problem says why the OS may resolve names outside the node while it
-// should not; nil when it doesn't, or when it isn't meant to.
+// should not (or that the direct upstreams may be stale,
+// dns.ErrUpstreamsStale, which isn't unprotected); nil when neither, or
+// when it isn't meant to.
 func (g *dnsGuard) problem() error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -165,7 +168,11 @@ func (r *runner) pointSystem() {
 	r.guard.set(true, sys, nil)
 	r.systemCfg, r.dnsRetryAt = want, time.Time{}
 	if p := sys.Problem(); p != nil {
-		r.dp.Log.Error("DNS: the system resolves through the node, but not only: names may leave outside the tunnel", "err", p)
+		if errors.Is(p, dns.ErrUpstreamsStale) {
+			r.dp.Log.Warn("DNS: the direct upstreams may be stale; reading the system's resolvers keeps failing", "err", p)
+		} else {
+			r.dp.Log.Error("DNS: the system resolves through the node, but not only: names may leave outside the tunnel", "err", p)
+		}
 		return
 	}
 	r.dp.Log.Info("DNS: the system resolves through the node", "servers", want.Servers)

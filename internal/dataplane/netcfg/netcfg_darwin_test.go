@@ -811,17 +811,31 @@ func TestRecordsRoundTrip(t *testing.T) {
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("an empty record stays: %v", err)
 	}
+	// A record without a boot line (empty, or comments only) is corrupt,
+	// not empty, and every failure names the record.
 	for name, data := range map[string]string{
 		"an unmasked prefix": "boot " + boot + "\n10.0.0.1/8\n",
 		"a bad scope":        "boot " + boot + "\n10.0.0.1/32 scope en0\n",
 		"no boot session":    "10.0.0.0/8\n",
+		"an empty record":    "",
+		"comments only":      recordHeader + "\n",
 	} {
 		if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := readRecord(d, "x.routes", boot); err == nil {
-			t.Errorf("%s: read", name)
+		if _, err := readRecord(d, "x.routes", boot); err == nil || !strings.Contains(err.Error(), path) {
+			t.Errorf("%s: %v", name, err)
 		}
+	}
+	// A record that isn't a regular file is refused, not read.
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := unix.Mkfifo(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readRecord(d, "x.routes", boot); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Errorf("a fifo: %v", err)
 	}
 	// The temporary file is never followed out of the directory.
 	target := filepath.Join(dir, "elsewhere")

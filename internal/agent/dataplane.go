@@ -474,7 +474,7 @@ func (r *runner) connect(ctx context.Context, connect bool) error {
 		r.dp.Log.Info("connected")
 	}
 	if connect && r.engine != nil {
-		if err := r.guard.problem(); err != nil {
+		if err := r.guard.problem(); errors.Is(err, dns.ErrUnprotected) {
 			return fmt.Errorf("%w: %v", ErrDNSUnprotected, err)
 		}
 	}

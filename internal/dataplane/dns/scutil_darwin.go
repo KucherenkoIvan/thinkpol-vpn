@@ -87,7 +87,7 @@ func (s scutil) keys(pattern string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	return parseList(out), nil
+	return parseList(out)
 }
 
 func (s scutil) get(key string) (dict, bool, error) {
@@ -243,20 +243,28 @@ func sortedKeys[V any](m map[string]V) []string {
 	return out
 }
 
-// parseList reads `list`'s output: "  subKey [0] = <key>" per key.
-func parseList(out string) []string {
+// parseList reads `list`'s output: "  subKey [0] = <key>" per key, or
+// "  no keys." when nothing matches. scutil answers a command it doesn't
+// know in text and exits 0, so any other line is a failed listing, not
+// an empty one.
+func parseList(out string) ([]string, error) {
 	var keys []string
 	sc := bufio.NewScanner(strings.NewReader(out))
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
-		if !strings.HasPrefix(line, "subKey [") {
-			continue
-		}
-		if _, k, ok := strings.Cut(line, "] = "); ok && k != "" {
+		switch {
+		case line == "", line == "no keys.":
+		case strings.HasPrefix(line, "subKey ["):
+			_, k, ok := strings.Cut(line, "] = ")
+			if !ok || k == "" {
+				return nil, fmt.Errorf("scutil: unexpected list line %q", line)
+			}
 			keys = append(keys, k)
+		default:
+			return nil, fmt.Errorf("scutil: unexpected list output %q", line)
 		}
 	}
-	return keys
+	return keys, nil
 }
 
 // parseShow reads `show`'s output: a dictionary, or "No such key".
@@ -274,6 +282,10 @@ func parseShow(out string) (dict, bool, error) {
 		line := strings.TrimSpace(lines[i])
 		if line == "}" {
 			return d, true, nil
+		}
+		if strings.HasSuffix(line, " :") { // "Key : " trimmed: an empty string value
+			d.strs[strings.TrimSuffix(line, " :")] = ""
+			continue
 		}
 		k, v, ok := strings.Cut(line, " : ")
 		if !ok {

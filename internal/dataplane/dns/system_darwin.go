@@ -71,8 +71,12 @@ const (
 var (
 	serviceStatePattern = `State:/Network/Service/[^/]+/(IPv4|IPv6|DNS)`
 	serviceDNSPattern   = `State:/Network/Service/[^/]+/DNS`
-	serviceKey          = regexp.MustCompile(`^(State|Setup):/Network/Service/([^/]+)/(IPv4|IPv6|DNS)$`)
-	resolverDir         = "/etc/resolver"
+	// serviceSetupDNSPattern is the Setup: twin of serviceDNSPattern:
+	// watched, and listed when counting the services whose DNS was set
+	// by hand.
+	serviceSetupDNSPattern = `Setup:/Network/Service/[^/]+/DNS`
+	serviceKey             = regexp.MustCompile(`^(State|Setup):/Network/Service/([^/]+)/(IPv4|IPv6|DNS)$`)
+	resolverDir            = "/etc/resolver"
 )
 
 // errNoPrimary is the absence of a primary network service (offline): an
@@ -201,7 +205,7 @@ type dynamicStore struct {
 type storeWatch func(ctx context.Context, patterns []string) (<-chan struct{}, error)
 
 // watchedKeys are what a check depends on.
-var watchedKeys = []string{serviceStatePattern, `Setup:/Network/Service/[^/]+/DNS`, `State:/Network/Global/IPv[46]`}
+var watchedKeys = []string{serviceStatePattern, serviceSetupDNSPattern, `State:/Network/Global/IPv[46]`}
 
 func setDynamicStore(st store, c SystemConfig, notify storeWatch, every time.Duration) (*dynamicStore, error) {
 	if len(c.Servers) == 0 {
@@ -274,7 +278,7 @@ func (s *dynamicStore) targets() (out []string, manual int, err error) {
 	if err != nil {
 		return nil, 0, err
 	}
-	setup, err := s.st.keys(`Setup:/Network/Service/[^/]+/DNS`)
+	setup, err := s.st.keys(serviceSetupDNSPattern)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -475,14 +479,7 @@ func (s *dynamicStore) otherResolvers() ([]string, error) {
 // as such. Called with mu held.
 func (s *dynamicStore) primaryOriginal() []netip.Addr {
 	addrs, err := primaryServers(s.st, s.backup)
-	switch {
-	case err == nil || errors.Is(err, errNoPrimary):
-		s.primaryFailed = false
-		if errors.Is(err, errNoPrimary) {
-			return nil
-		}
-		return addrs
-	default:
+	if err != nil && !errors.Is(err, errNoPrimary) {
 		if !s.primaryFailed {
 			s.primaryFailed = true
 			if s.cfg.Log != nil {
@@ -491,6 +488,11 @@ func (s *dynamicStore) primaryOriginal() []netip.Addr {
 		}
 		return s.primary
 	}
+	s.primaryFailed = false
+	if errors.Is(err, errNoPrimary) {
+		return nil
+	}
+	return addrs
 }
 
 func (s *dynamicStore) watch(events <-chan struct{}, every time.Duration) {
@@ -559,6 +561,8 @@ func (s *dynamicStore) Problem() error {
 		return fmt.Errorf("%w: other resolvers take the names under %d domains", ErrUnprotected, len(s.others))
 	case s.manual > 0:
 		return fmt.Errorf("%w: %d network services have DNS set by hand, which stays their resolver (asked after the node's, and for questions scoped to their interface)", ErrUnprotected, s.manual)
+	case s.primaryFailed:
+		return fmt.Errorf("%w: reading the primary service's DNS servers keeps failing", ErrUpstreamsStale)
 	}
 	return nil
 }
@@ -612,7 +616,11 @@ func primaryServers(st store, backup map[string]original) ([]netip.Addr, error) 
 	}
 	id := g.strs["PrimaryService"]
 	if !ok || id == "" {
-		if g6, ok6, err := st.get("State:/Network/Global/IPv6"); err == nil && ok6 {
+		g6, ok6, err := st.get("State:/Network/Global/IPv6")
+		if err != nil {
+			return nil, fmt.Errorf("dns: reading State:/Network/Global/IPv6: %w", err)
+		}
+		if ok6 {
 			id = g6.strs["PrimaryService"]
 		}
 	}
@@ -656,7 +664,7 @@ func systemUpstreams(st store, exclude []netip.Addr) ([]netip.Addr, error) {
 		return nil, err
 	}
 	servers, err := primaryServers(st, backup)
-	if err != nil {
+	if err != nil && !errors.Is(err, errNoPrimary) {
 		return nil, err
 	}
 	var out []netip.Addr
