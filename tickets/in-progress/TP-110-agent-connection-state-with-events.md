@@ -49,6 +49,7 @@ The device's connection lifecycle is one explicit state with transition methods 
 - [ ] R1.7 Comments: the worker's connection is "always meant to be up" (dataplane.go, Notes); DESIGN.md loses "the log lines say the same as before" and describes R1.1 and R1.2.
 - [ ] R1.8 Tests catch refused moves without log grepping (a refused count on the connection, asserted 0 after the run returns in startDevice and the runner tests); heardEvents.are fails on an extra or duplicate event after the expected list.
 - [ ] R1.9 Subscribers run on the node's goroutine (documented, must return quickly); a panicking subscriber is recovered and logged at error level, so it can't kill the node.
+- [ ] R1.10 runner.connect: a refused connection.connect has no side effects: it returns after logRefused, without starting the data plane.
 
 ## Log
 - 2026-10-18 created in backlog (split from TP-083, owner decision)
@@ -62,3 +63,4 @@ The device's connection lifecycle is one explicit state with transition methods 
 - 2026-10-19 in-progress → review
 - 2026-10-19 review → has-errors — review round 1: R1.1–R1.9
 - 2026-10-19 has-errors → in-progress — review round 1 findings picked up (R1.1–R1.9)
+- 2026-10-19 review round 1 addendum: R1.10
