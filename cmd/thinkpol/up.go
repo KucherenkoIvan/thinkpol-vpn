@@ -20,6 +20,7 @@ func init() {
 		path:    "up",
 		args:    "[-state dir] [-map file] [-mode auto|device|server] [flags]",
 		summary: "run this node from the keys and map in its state directory (environment: THINKPOL_*)",
+		service: true,
 		run:     runUp,
 	})
 }
@@ -33,7 +34,7 @@ func applyPlatformDefaults(cfg *agent.Config) {
 	cfg.APISocket = apiSocket()
 }
 
-func runUp(ctx context.Context, e env, args []string) error {
+func runUp(_ context.Context, e env, args []string) error {
 	cfg, err := agent.LoadConfig()
 	if err != nil {
 		return err
@@ -75,5 +76,7 @@ func runUp(ctx context.Context, e env, args []string) error {
 			Log: logs.With("component", "local API"),
 		}))
 	}
-	return app.RunWith(ctx, app.Options{Logger: logs.Logger}, adapters...)
+	// With no NotifyContext above it, app's own signal handling runs: the
+	// first SIGINT/SIGTERM shuts down gracefully, a second one force-quits.
+	return app.RunWith(context.Background(), app.Options{Logger: logs.Logger}, adapters...)
 }

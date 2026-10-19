@@ -23,6 +23,7 @@ type command struct {
 	args    string // argument synopsis, e.g. "[-out file] <spec.yaml>"
 	summary string
 	hidden  bool // runs, but is left out of the usage listings (internal commands)
+	service bool // long-running under app.RunWith, which owns SIGINT/SIGTERM: main installs no NotifyContext for it
 	run     func(ctx context.Context, e env, args []string) error
 }
 
@@ -87,6 +88,27 @@ func apiSocket() string {
 	return agent.DefaultAPISocket()
 }
 
+// commandWords counts args' leading words: the command path's candidate
+// words. Flags and arguments with spaces end a path.
+func commandWords(args []string) int {
+	words := 0
+	for words < len(args) && !strings.HasPrefix(args[words], "-") && !strings.ContainsAny(args[words], " \t\n") {
+		words++
+	}
+	return words
+}
+
+// matchCommand resolves args' leading words to a registered command,
+// with the arguments after its path.
+func matchCommand(args []string) (command, []string, bool) {
+	for n := commandWords(args); n > 0; n-- {
+		if c, ok := commands[strings.Join(args[:n], " ")]; ok {
+			return c, args[n:], true
+		}
+	}
+	return command{}, nil, false
+}
+
 func run(ctx context.Context, e env, args []string) int {
 	if len(args) == 0 {
 		listCommands(e.stderr, "")
@@ -97,19 +119,8 @@ func run(ctx context.Context, e env, args []string) int {
 		return 0
 	}
 
-	// The command path is the leading words; flags and arguments with
-	// spaces end it.
-	words := 0
-	for words < len(args) && !strings.HasPrefix(args[words], "-") && !strings.ContainsAny(args[words], " \t\n") {
-		words++
-	}
-
-	for n := words; n > 0; n-- {
-		c, ok := commands[strings.Join(args[:n], " ")]
-		if !ok {
-			continue
-		}
-		err := c.run(ctx, e, args[n:])
+	if c, rest, ok := matchCommand(args); ok {
+		err := c.run(ctx, e, rest)
 		switch {
 		case err == nil, errors.Is(err, flag.ErrHelp):
 			return 0
@@ -125,7 +136,7 @@ func run(ctx context.Context, e env, args []string) int {
 	}
 
 	// No command matched: list the longest group the words name, if any.
-	for n := words; n > 0; n-- {
+	for n := commandWords(args); n > 0; n-- {
 		group := strings.Join(args[:n], " ")
 		if !isGroup(group) {
 			continue
