@@ -140,10 +140,13 @@ func TestRouteTableSendsOnlyDirectAroundTheTunnel(t *testing.T) {
 	}
 	// tryPing pings without caring for an answer: the exit forwards IPv4
 	// (TP-014), but has no IPv6 uplink (its lab address is unique local).
+	// The checks that nothing showed at a router need the pings sent, so
+	// anything but ping's own outcome (pingAnswers) fails the test.
 	tryPing := func(dst netip.Addr) {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_, _ = dev.Exec(ctx, "ping", "-c", "2", "-W", "1", dst.String())
+		t.Helper()
+		if _, _, err := pingAnswers(dev, "-c", "2", "-W", "1", dst.String()); err != nil {
+			t.Fatal(err)
+		}
 	}
 	atRouter := router.Capture(t, "icmp or icmp6 or udp")
 	onDevice := dev.Capture(t, "icmp or icmp6 or udp")
@@ -335,11 +338,10 @@ func TestRouteTableSendsOnlyDirectAroundTheTunnel(t *testing.T) {
 	waitLog(t, up, applied(v1)+`.*ipv6_off=`)
 	ping(t, dev, s4)
 	atRouter = router.Capture(t, "icmp6")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	res, err := dev.Exec(ctx, "ping", "-6", "-c", "1", "-W", "2", foreign6.String())
-	cancel()
-	if err == nil {
-		t.Errorf("a foreign IPv6 ping answered with the overlay IPv4-only:\n%s", res.Stdout)
+	if answered, out, err := pingAnswers(dev, "-6", "-c", "1", "-W", "2", foreign6.String()); err != nil {
+		t.Fatal(err)
+	} else if answered {
+		t.Errorf("a foreign IPv6 ping answered with the overlay IPv4-only:\n%s", out)
 	}
 	if got := mustRoute(foreign6.String()); got != "unreachable" {
 		t.Errorf("route to the foreign %s with IPv6 off: %s, want unreachable", foreign6, got)

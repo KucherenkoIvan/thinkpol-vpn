@@ -136,3 +136,39 @@ func ncConnectFailed(res lab.Result) bool {
 func pingNoReply(res lab.Result) bool {
 	return res.ExitCode == 1 && strings.Contains(res.Stdout, " 0 received")
 }
+
+// pingNoAnswer says whether a failed ping shows, by ping's own account,
+// that the path doesn't work: no reply (pingNoReply) or no route at the
+// sender (exit 2 with the kernel's "Network is unreachable" or "No route
+// to host"). Ping's other exit-2 failures are usage errors (an unknown
+// interface) and say nothing.
+func pingNoAnswer(res lab.Result) bool {
+	out := res.Stdout + res.Stderr
+	return pingNoReply(res) ||
+		res.ExitCode == 2 && (strings.Contains(out, "Network is unreachable") || strings.Contains(out, "No route to host"))
+}
+
+// pingAnswers pings from n (args after "ping") and says whether a reply
+// came; with what ping printed. Neither a reply nor ping's own "no"
+// (pingNoAnswer) is an error: an unknown state, never a pass.
+func pingAnswers(n *lab.Node, args ...string) (bool, string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), execTimeout)
+	defer cancel()
+	res, err := n.Exec(ctx, append([]string{"ping"}, args...)...)
+	out := res.Stdout + res.Stderr
+	switch {
+	case err == nil:
+		return true, out, nil
+	case pingNoAnswer(res):
+		return false, out, nil
+	}
+	return false, out, fmt.Errorf("ping %s on %s says nothing about the path: %w\n%s", strings.Join(args, " "), n.Name, err, out)
+}
+
+// curlNoConnection says whether a failed curl couldn't connect, by curl's
+// own account: exit 7 (refused, unreachable, no route) or 28 (timed out).
+// Its other failures (45: can't bind the interface) and docker's say
+// nothing about the path.
+func curlNoConnection(res lab.Result) bool {
+	return res.ExitCode == 7 || res.ExitCode == 28
+}

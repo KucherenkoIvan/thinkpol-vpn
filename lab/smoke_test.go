@@ -79,9 +79,7 @@ func TestSmoke(t *testing.T) {
 				}
 			}
 		}
-		if _, err := device.Exec(t.Context(), "ping", "-c", "1", "-W", "1", "192.0.2.1"); err == nil {
-			t.Error("a device reached an address outside the lab")
-		}
+		noPing(t, device, netip.MustParseAddr("192.0.2.1")) // outside the lab
 		var gateways []string
 		for _, net := range []string{lab.NetDevices, lab.NetServers} {
 			gws := l.DockerGateways(net)
@@ -210,8 +208,10 @@ func TestLabsAreIsolated(t *testing.T) {
 	if a.IPv4("net") == b.IPv4("net") || a.IPv6("net") == b.IPv6("net") {
 		t.Fatalf("labs share addresses: %+v, %+v", a.Addr("net"), b.Addr("net"))
 	}
-	if _, err := a.Exec(t.Context(), "ping", "-c", "1", "-W", "1", b.IPv4("net").String()); err == nil {
-		t.Error("one lab reached the other")
+	if answered, out, err := pingAnswers(a, "-c", "1", "-W", "1", b.IPv4("net").String()); err != nil {
+		t.Fatal(err)
+	} else if answered {
+		t.Errorf("one lab reached the other:\n%s", out)
 	}
 	if err := first.Down(t.Context()); err != nil {
 		t.Fatal(err)

@@ -92,14 +92,21 @@ func TestNoIPv6LeavesAroundTheTunnel(t *testing.T) {
 			{"ping", "-6", "-c", "1", "-W", "2", "-I", dev.IPv6(lab.NetDevices).String(), foreign6.String()}, // the physical source address
 			{"ping", "-6", "-c", "1", "-W", "2", foreign6.String()},                                          // unbound
 		} {
-			if out, err := run(10*time.Second, args...); err == nil {
+			if answered, out, err := pingAnswers(dev, args[1:]...); err != nil {
+				t.Fatalf("%s: %v", when, err)
+			} else if answered {
 				t.Errorf("%s: %s answered:\n%s", when, strings.Join(args, " "), out)
 			}
 		}
 		start := time.Now()
-		out, err := run(10*time.Second, "curl", "-6", "-sS", "-m", "5", "--interface", eth, "http://["+foreign6.String()+"]/")
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		res, err := dev.Exec(ctx, "curl", "-6", "-sS", "-m", "5", "--interface", eth, "http://["+foreign6.String()+"]/")
+		cancel()
+		out := res.Stdout + res.Stderr
 		if err == nil {
 			t.Errorf("%s: curl bound to %s reached the foreign site:\n%s", when, eth, out)
+		} else if !curlNoConnection(res) {
+			t.Fatalf("%s: curl bound to %s says nothing about the path: %v\n%s", when, eth, err, out)
 		}
 		if took := time.Since(start); took > 4*time.Second {
 			t.Errorf("%s: curl bound to %s took %v to fail, want refused at once: %s", when, eth, took, out)
