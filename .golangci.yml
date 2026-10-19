@@ -62,8 +62,10 @@ linters:
               desc: the engine's route table is its own RouteTable port; the agent adapts routetable to it
             - pkg: github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns
               desc: the engine's resolver is its own Resolver port; the agent adapts dns to it
+            - pkg: github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg
+              desc: the engine's interface is its own InterfaceConfigurator port; the agent adapts netcfg to it
             - pkg: github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/tun
-              desc: the agent creates the TUN; the engine takes a tun.Device
+              desc: the agent creates the TUN; the engine takes golang.zx2c4.com/wireguard/tun's Device
         # pure Go packages that also build for Android
         mobile-without-kernel:
           list-mode: lax
