@@ -15,7 +15,6 @@ import (
 	"golang.zx2c4.com/wireguard/tun/tuntest"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
-	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport/memory"
 )
@@ -25,12 +24,12 @@ import (
 // the next call until it is closed (entered hears when it is held).
 type fakeInterface struct {
 	mu            sync.Mutex
-	applied       []netcfg.Config
+	applied       []dataplane.InterfaceConfig
 	failing       int
 	hold, entered chan struct{}
 }
 
-func (f *fakeInterface) Apply(_ context.Context, c netcfg.Config) error {
+func (f *fakeInterface) Apply(_ context.Context, c dataplane.InterfaceConfig) error {
 	f.mu.Lock()
 	hold, entered := f.hold, f.entered
 	f.hold = nil
@@ -55,22 +54,13 @@ func (f *fakeInterface) fail(n int) {
 	f.failing = n
 }
 
-func (f *fakeInterface) calls() []netcfg.Config {
+func (f *fakeInterface) calls() []dataplane.InterfaceConfig {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return slices.Clone(f.applied)
 }
 
-func (f *fakeInterface) DefaultRoute(context.Context, netcfg.Family) (netcfg.Route, error) {
-	return netcfg.Route{}, netcfg.ErrNoDefaultRoute
-}
-
-func (f *fakeInterface) Watch(context.Context) (<-chan struct{}, error) {
-	return nil, netcfg.ErrClosed
-}
-
-func (f *fakeInterface) Survey(context.Context) (netcfg.Survey, error) { return netcfg.Survey{}, nil }
-func (f *fakeInterface) Close() error                                  { return nil }
+func (f *fakeInterface) Close() error { return nil }
 
 // linkTUN is a virtual TUN whose link events the test sends.
 type linkTUN struct {
@@ -131,7 +121,7 @@ func startLinkEngine(t *testing.T, log *syncBuffer) (*dataplane.Engine, *node, *
 }
 
 // calledAtLeast waits until the fake interface has had n calls.
-func calledAtLeast(t *testing.T, ifc *fakeInterface, n int) []netcfg.Config {
+func calledAtLeast(t *testing.T, ifc *fakeInterface, n int) []dataplane.InterfaceConfig {
 	t.Helper()
 	for deadline := time.Now().Add(wait); ; time.Sleep(10 * time.Millisecond) {
 		if c := ifc.calls(); len(c) >= n {
@@ -166,10 +156,10 @@ func TestAReapplyCarriesTheConfigurationOfAnApplyRacingIt(t *testing.T) {
 	}
 	calls := calledAtLeast(t, ifc, 3)
 	want := netip.MustParsePrefix("100.64.0.9/16")
-	if got := calls[1].Interfaces[0]; !got.Up || !slices.Contains(got.Addrs, want) {
+	if got := calls[1]; !got.Up || !slices.Contains(got.Addrs, want) {
 		t.Fatalf("Apply configured %+v, want %v", got, want)
 	}
-	if got := calls[2].Interfaces[0]; got.Up || !slices.Contains(got.Addrs, want) {
+	if got := calls[2]; got.Up || !slices.Contains(got.Addrs, want) {
 		t.Fatalf("re-applied %+v, want the new section's %v", got, want)
 	}
 }
@@ -243,10 +233,10 @@ func TestALinkBounceReappliesTheInterface(t *testing.T) {
 		t.Fatal(err)
 	}
 	first := ifc.calls()
-	if len(first) != 1 || len(first[0].Interfaces) != 1 {
+	if len(first) != 1 {
 		t.Fatalf("Apply configured %+v, want the TUN", first)
 	}
-	want := first[0].Interfaces[0]
+	want := first[0]
 	if !want.Up || want.MTU == 0 || len(want.Addrs) != 2 {
 		t.Fatalf("Apply configured %+v, want both addresses, an MTU and the link up", want)
 	}
@@ -265,8 +255,8 @@ func TestALinkBounceReappliesTheInterface(t *testing.T) {
 	}
 	again := want
 	again.Up = false // the link is up already, and a link that went down again stays down
-	if got := calls[1].Interfaces; len(got) != 1 || got[0].Name != again.Name || got[0].MTU != again.MTU ||
-		got[0].Up || !slices.Equal(got[0].Addrs, again.Addrs) {
+	if got := calls[1]; got.Name != again.Name || got.MTU != again.MTU ||
+		got.Up || !slices.Equal(got.Addrs, again.Addrs) {
 		t.Fatalf("re-applied %+v, want %+v", got, again)
 	}
 	if n := e.Status().InterfaceReapplies; n != 1 {

@@ -44,6 +44,17 @@ func inNamespace(ns string, args ...string) ([]byte, error) {
 	return exec.Command("ip", append([]string{"netns", "exec", ns}, args...)...).CombinedOutput()
 }
 
+// overlayInterface is netcfg's configurator as the engine's interface
+// port (the agent's adapter, which this package can't import).
+type overlayInterface struct{ c netcfg.Configurator }
+
+func (o overlayInterface) Apply(ctx context.Context, c dataplane.InterfaceConfig) error {
+	ifc := netcfg.Interface{Name: c.Name, Addrs: c.Addrs, MTU: c.MTU, Up: c.Up}
+	return o.c.Apply(ctx, netcfg.Config{Interfaces: []netcfg.Interface{ifc}})
+}
+
+func (o overlayInterface) Close() error { return o.c.Close() }
+
 // labNode is a node of the space running in its own network namespace:
 // a real TUN there, configured by netcfg, under an engine whose links are
 // real udp sockets on the lab node's loopback.
@@ -65,7 +76,7 @@ func (nd *labNode) start(t *testing.T, reg *transport.Registry, tr *udp.Transpor
 		t.Fatal(err)
 	}
 	e, err := dataplane.NewEngine(dataplane.EngineConfig{
-		ID: nd.id, Space: testSpace, WireGuardKey: nd.key, Registry: reg, TUN: dev, Interface: cfg, Path: fastPaths,
+		ID: nd.id, Space: testSpace, WireGuardKey: nd.key, Registry: reg, TUN: dev, Interface: overlayInterface{cfg}, Path: fastPaths,
 	})
 	if err != nil {
 		// Still the caller's.

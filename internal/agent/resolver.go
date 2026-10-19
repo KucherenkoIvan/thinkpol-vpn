@@ -56,7 +56,7 @@ func (r *runner) newResolver() *dns.Server {
 		// macOS they are bound to the physical interface instead, which
 		// reaches only what a route on it reaches: the route table gives
 		// each upstream a route scoped to it, and the leak guard exempts
-		// them (Engine.SetDirectUpstreams, the one source of both).
+		// them (routeTable.SetDirectUpstreams, the one source of both).
 		o.Control = routetable.SocketControl()
 	}
 	return dns.New(o)
@@ -119,7 +119,7 @@ func (r *runner) systemConfig() (dns.SystemConfig, bool) {
 	}
 	if len(r.dp.DNSUpstreams) == 0 {
 		srv, own, log := r.resolver, []netip.Addr{r.follow.section.Node.IPv4, r.follow.section.Node.IPv6}, r.dp.Log
-		engine, routes, unknown := r.engine, r.dp.RouteTable, &r.upstreamsUnknown
+		routes, unknown := r.routes, &r.upstreamsUnknown
 		c.UpstreamsUnknown = unknown.Load()
 		c.Upstreams = func(host []netip.Addr) {
 			unknown.Store(false)
@@ -130,8 +130,8 @@ func (r *runner) systemConfig() (dns.SystemConfig, bool) {
 				}
 			}
 			srv.SetUpstreams(ups)
-			if routes {
-				if err := engine.SetDirectUpstreams(context.Background(), ups); err != nil {
+			if routes != nil {
+				if err := routes.SetDirectUpstreams(context.Background(), ups); err != nil {
 					log.Warn("DNS: keeping the direct upstreams reachable failed", "err", path.RedactError(err))
 				}
 			}

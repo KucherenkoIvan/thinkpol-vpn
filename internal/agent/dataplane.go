@@ -201,6 +201,9 @@ type runner struct {
 	engine    *dataplane.Engine
 	listeners *listenerSet
 	resolver  *dns.Server
+	// routes is the engine's route table in route-table mode (nil
+	// otherwise, and while stopped).
+	routes *routeTable
 	// upstreams are the resolver's direct upstreams as it started.
 	upstreams []netip.AddrPort
 	// upstreamsUnknown is set while the OS's own resolvers, the direct
@@ -250,9 +253,11 @@ func (r *runner) start(ctx context.Context) error {
 	if name, err := dev.Name(); err == nil && name != "" {
 		r.tun = name
 	}
-	var routes dataplane.RouteTable
+	var routes *routeTable
+	var routesPort dataplane.RouteTable // nil without one
 	if r.dp.RouteTable {
-		if routes, err = r.dp.Host.NewRouteTable(r.dp.Log, r.dp.Host.NewGuard()); err != nil {
+		rt, err := r.dp.Host.NewRouteTable(r.dp.Log, r.dp.Host.NewGuard())
+		if err != nil {
 			if ifc != nil {
 				_ = ifc.Close()
 			}
@@ -260,12 +265,18 @@ func (r *runner) start(ctx context.Context) error {
 			r.dp.Host.clearNetwork(r.dp.Log)
 			return &StartError{Step: dataplane.StepRouteTable, Err: err}
 		}
+		routes = newRouteTable(rt)
+		routesPort = routes
 	}
 	var resolver *dns.Server
-	var resolverIfc interface{ Update(dns.Config) } // nil without one
+	var resolverIfc dataplane.Resolver // nil without one
 	if r.dp.DNS {
 		resolver = r.newResolver()
-		resolverIfc = resolver
+		resolverIfc = dnsResolver{resolver}
+	}
+	var ifcPort dataplane.InterfaceConfigurator // nil without one
+	if ifc != nil {
+		ifcPort = overlayInterface{ifc}
 	}
 	cfg := dataplane.EngineConfig{
 		ID:           r.dp.Keys.ID,
@@ -273,13 +284,13 @@ func (r *runner) start(ctx context.Context) error {
 		WireGuardKey: r.dp.Keys.WireGuard,
 		Registry:     r.dp.Registry,
 		TUN:          dev,
-		Interface:    ifc,
+		Interface:    ifcPort,
 		LinkMTU:      r.dp.LinkMTU,
 		Path:         r.dp.path,
 		Log:          r.dp.Log,
 		Forward:      r.dp.Forward,
 		Rules:        r.dp.Rules,
-		RouteTable:   routes,
+		RouteTable:   routesPort,
 		DNS:          resolverIfc,
 	}
 	if b := r.dp.Blobs; b != nil {
@@ -310,9 +321,9 @@ func (r *runner) start(ctx context.Context) error {
 		_ = engine.Close()
 		return &StartError{Step: step, Err: fmt.Errorf("applying map version %d: %w", r.follow.cur.Header().Version, err)}
 	}
-	r.engine, r.resolver = engine, resolver
-	if resolver != nil && r.dp.RouteTable {
-		if err := engine.SetDirectUpstreams(ctx, r.upstreams); err != nil {
+	r.engine, r.resolver, r.routes = engine, resolver, routes
+	if resolver != nil && routes != nil {
+		if err := routes.SetDirectUpstreams(ctx, r.upstreams); err != nil {
 			r.dp.Log.Warn("DNS: keeping the direct upstreams reachable failed", "err", path.RedactError(err))
 		}
 	}
@@ -341,7 +352,7 @@ func (r *runner) stop() {
 		return
 	}
 	engine, listeners, resolver := r.engine, r.listeners, r.resolver
-	r.engine, r.listeners, r.resolver = nil, nil, nil
+	r.engine, r.listeners, r.resolver, r.routes = nil, nil, nil, nil
 	r.retryAt, r.routeTableFailing = time.Time{}, false
 	r.publish()
 	r.restoreSystem()

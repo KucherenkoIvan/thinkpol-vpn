@@ -298,7 +298,7 @@ func TestARouteTableNotEnforcedIsAnEvent(t *testing.T) {
 	table := &wantsTable{}
 	b := startDevice(t, s, reg, true, deviceOpt{
 		prepare: func(_ *Config, p *Platform) {
-			p.NewRouteTable = func(*slog.Logger, routetable.Guard) (dataplane.RouteTable, error) { return table, nil }
+			p.NewRouteTable = func(*slog.Logger, routetable.Guard) (RouteEnforcer, error) { return table, nil }
 		},
 		dataPlane: func(dp *DataPlane) { dp.RouteTable = true },
 	})

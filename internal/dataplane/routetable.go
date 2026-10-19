@@ -8,7 +8,7 @@ import (
 	"slices"
 	"time"
 
-	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/lists"
 )
 
 // ErrRouteTableNotEnforced is putting the compiled rules into the OS
@@ -16,13 +16,32 @@ import (
 // keeps trying, Status.RouteTable says how it stands.
 var ErrRouteTableNotEnforced = errors.New("dataplane: route table")
 
-// RouteTable enforces the rules in the OS routing table (route-table mode,
-// routetable.Enforcer): everything but the direct destinations and the
-// links' endpoints into the TUN.
+// RouteTable enforces the rules in the OS routing table (route-table
+// mode): everything but the direct destinations and the links' endpoints
+// into the TUN. Enforce puts w in place, all or nothing, and keeps trying
+// the last w it was given while that fails; Close removes everything.
 type RouteTable interface {
-	Enforce(ctx context.Context, w routetable.Want) error
-	Status() routetable.Status
+	Enforce(ctx context.Context, w RouteTableWant) error
+	Status() RouteTableStatus
 	Close() error
+}
+
+// RouteTableWant is what route-table enforcement puts in place.
+type RouteTableWant struct {
+	// TUN is the overlay interface: everything not direct goes there.
+	TUN string
+	// Overlay are the space's overlay networks, routed into the TUN ahead
+	// of everything else.
+	Overlay []netip.Prefix
+	// Direct are the destinations that go around the tunnel, through the
+	// physical default route (the rules' direct set). Nil is none.
+	Direct *lists.Set
+	// Bypass are the link endpoints: always around the tunnel, so links
+	// never loop into it.
+	Bypass []netip.Addr
+	// IPv6 says the TUN carries IPv6. Without it IPv6 is unreachable but
+	// for direct destinations and endpoints.
+	IPv6 bool
 }
 
 // RouteTableStatus is how route-table enforcement stands: numbers and
@@ -30,14 +49,14 @@ type RouteTable interface {
 type RouteTableStatus struct {
 	// Enforced says the OS routing table holds the rules now; false
 	// without a RouteTable, before its first enforcement, and while
-	// putting it (back) in place fails, which Error then says
-	// (routetable.ErrorApply, routetable.ErrorReapply).
+	// putting it (back) in place fails, which Error then says (a fixed
+	// text of the route table's).
 	Enforced bool
 	Error    string
-	// GuardEnforced says the leak guard is in place (routetable's Guard:
-	// what routing can't confine, interface-bound sockets); false without
-	// one, and while applying it fails, which GuardError then says
-	// (routetable.ErrorGuard, routetable.ErrorGuardUnsupported).
+	// GuardEnforced says the leak guard is in place (what routing can't
+	// confine, interface-bound sockets); false without one, and while
+	// applying it fails, which GuardError then says (a fixed text of the
+	// route table's).
 	GuardEnforced bool
 	GuardError    string
 	// Routes is how many routes the tunnel's table holds, LastApply how
@@ -111,13 +130,12 @@ func (e *Engine) growRoutes(ctx context.Context, shrinkErr error) error {
 	if e.cfg.RouteTable == nil || e.ruleTable == nil {
 		return nil
 	}
-	w := routetable.Want{
-		TUN:       e.tunName,
-		Overlay:   e.networks,
-		Direct:    e.ruleTable.Direct(),
-		Bypass:    e.endpoints,
-		IPv6:      e.mtu > 0 && e.ipv6Off == nil,
-		Upstreams: e.upstreams,
+	w := RouteTableWant{
+		TUN:     e.tunName,
+		Overlay: e.networks,
+		Direct:  e.ruleTable.Direct(),
+		Bypass:  e.endpoints,
+		IPv6:    e.mtu > 0 && e.ipv6Off == nil,
 	}
 	err := e.enforce(ctx, w)
 	e.routesWant = &w // the route table keeps trying it
@@ -127,54 +145,16 @@ func (e *Engine) growRoutes(ctx context.Context, shrinkErr error) error {
 	return nil
 }
 
-// SetDirectUpstreams says which direct DNS upstreams the node's resolver
-// asks, so the route table keeps them reachable from the sockets bound to
-// the physical interface (routetable.Want.Upstreams: macOS's scoped
-// routes). It re-enforces what is in place if they changed; before the
-// first Apply they are kept for it.
-func (e *Engine) SetDirectUpstreams(ctx context.Context, addrs []netip.AddrPort) error {
-	e.serial.Lock()
-	defer e.serial.Unlock()
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if e.closed {
-		return ErrEngineClosed
-	}
-	addrs = slices.Clone(addrs)
-	slices.SortFunc(addrs, func(a, b netip.AddrPort) int { return a.Compare(b) })
-	addrs = slices.Compact(addrs)
-	if slices.Equal(addrs, e.upstreams) {
-		return nil
-	}
-	e.upstreams = addrs
-	if e.cfg.RouteTable == nil || e.routesWant == nil {
-		return nil
-	}
-	w := *e.routesWant
-	w.Upstreams = addrs
-	err := e.enforce(ctx, w)
-	e.routesWant = &w // the route table keeps trying it
-	if err != nil {
-		return fmt.Errorf("dataplane: route table: %w", err)
-	}
-	return nil
-}
-
 func (e *Engine) routeTableStatus() RouteTableStatus {
 	if e.cfg.RouteTable == nil {
 		return RouteTableStatus{}
 	}
-	st := e.cfg.RouteTable.Status()
-	return RouteTableStatus{
-		Enforced: st.Enforced, Error: st.Error, GuardEnforced: st.GuardEnforced, GuardError: st.GuardError,
-		Routes: st.Routes, LastApply: st.LastApply,
-		Reapplies: st.Reapplies, RulesAhead: st.RulesAhead, OverlayAhead: st.OverlayAhead,
-	}
+	return e.cfg.RouteTable.Status()
 }
 
 // enforce puts w in place with e.mu let go meanwhile (e.serial keeps
 // everything else that changes the engine out).
-func (e *Engine) enforce(ctx context.Context, w routetable.Want) error {
+func (e *Engine) enforce(ctx context.Context, w RouteTableWant) error {
 	rt := e.cfg.RouteTable
 	e.mu.Unlock()
 	defer e.mu.Lock()
