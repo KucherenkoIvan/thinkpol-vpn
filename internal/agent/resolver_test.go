@@ -406,6 +406,34 @@ func TestStaleUpstreamsAreDegradedNotUnprotected(t *testing.T) {
 	}
 }
 
+// A problem a System doesn't tag is unprotected, not protected: a
+// future System's new kind of trouble fails closed.
+func TestAnUntaggedProblemIsUnprotected(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	startNode(t, reg, s.a, s.verified(t, 1))
+	sys := &fakeSystem{}
+	b := startDevice(t, s, reg, true, func(c *Config, dp *DataPlane) {
+		if c != nil {
+			c.DNS = true
+			return
+		}
+		dp.systemDNS = sys.Set
+		dp.systemUpstreams = func([]netip.Addr) ([]netip.Addr, error) { return nil, nil }
+		dp.dnsPort = 5353
+	})
+	b.connection(t, Connected)
+	sys.mu.Lock()
+	sys.problem = errors.New("the store is unreadable")
+	sys.mu.Unlock()
+	if err := b.node.Connect(context.Background()); !errors.Is(err, ErrDNSUnprotected) {
+		t.Errorf("Connect with an untagged problem: %v", err)
+	}
+	if st := b.node.Status(); !st.DNSUnprotected || st.DNSUpstreamsStale || !slices.Contains(st.Health().Problems, ProblemDNSUnprotected) {
+		t.Errorf("status %+v, health %+v", st, st.Health())
+	}
+}
+
 // wantsTable records what the engine enforces in the OS routing table.
 type wantsTable struct {
 	mu    sync.Mutex

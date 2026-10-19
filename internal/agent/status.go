@@ -53,7 +53,7 @@ type Status struct {
 	DNSUnprotected bool
 	// DNSUpstreamsStale is set while a connected device's direct upstreams
 	// (the OS's own resolvers, as they were at the last good read) may be
-	// stale: reading them keeps failing, so names outside the node may not
+	// stale: the last read of them failed, so names outside the node may not
 	// resolve. The OS still resolves through the node.
 	DNSUpstreamsStale bool
 	// DNSUpstreamsRefused is a server's: how many of the resolver
@@ -206,8 +206,13 @@ func (p *report) status() Status {
 		st := p.engine.Status()
 		s.DataPlane = &st
 		s.RulesEnforced, s.PresetUnavailable = true, st.Rules.PresetUnavailable
-		s.DNSUnprotected = p.dns != nil && errors.Is(p.dns(), dns.ErrUnprotected)
-		s.DNSUpstreamsStale = p.dns != nil && errors.Is(p.dns(), dns.ErrUpstreamsStale)
+		var problem error
+		if p.dns != nil {
+			problem = p.dns()
+		}
+		// Read once: both flags come from the same Problem.
+		s.DNSUnprotected = dns.Unprotected(problem)
+		s.DNSUpstreamsStale = problem != nil && errors.Is(problem, dns.ErrUpstreamsStale)
 	}
 	if p.workers != nil {
 		for _, w := range p.workers.Workers() {
@@ -297,8 +302,8 @@ const (
 	// resolver, so names may leave outside the tunnel.
 	ProblemDNSUnprotected = "dns_not_protected"
 	// ProblemDNSUpstreamsStale: the device's direct upstreams may be stale
-	// (reading the OS's own resolvers keeps failing), so names outside the
-	// node may not resolve; the OS still resolves through the node.
+	// (the last read of the OS's own resolvers failed), so names outside
+	// the node may not resolve; the OS still resolves through the node.
 	ProblemDNSUpstreamsStale = "dns_upstreams_stale"
 	// ProblemDNSUpstreamRefused: resolver upstreams the worker's egress
 	// refuses (Status.DNSUpstreamsRefused counts them) aren't configured:

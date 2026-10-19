@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/netip"
 	"slices"
@@ -168,10 +167,10 @@ func (r *runner) pointSystem() {
 	r.guard.set(true, sys, nil)
 	r.systemCfg, r.dnsRetryAt = want, time.Time{}
 	if p := sys.Problem(); p != nil {
-		if errors.Is(p, dns.ErrUpstreamsStale) {
-			r.dp.Log.Warn("DNS: the direct upstreams may be stale; reading the system's resolvers keeps failing", "err", p)
-		} else {
+		if dns.Unprotected(p) {
 			r.dp.Log.Error("DNS: the system resolves through the node, but not only: names may leave outside the tunnel", "err", p)
+		} else {
+			r.dp.Log.Warn("DNS: the direct upstreams may be stale; reading the system's resolvers failed at the last check", "err", p)
 		}
 		return
 	}
