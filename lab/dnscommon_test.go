@@ -5,6 +5,7 @@ package lab_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net/netip"
 	"strings"
@@ -94,8 +95,14 @@ func tunnelNamesAskedOnlyOfTheExit(t *testing.T, domestic, foreign *lab.Process,
 	}
 }
 
+// errNoAnswer is getent's own "not found" (exit 2): the name has no
+// answer, whether the resolver said so or never answered.
+var errNoAnswer = errors.New("no answer")
+
 // resolve asks the node's OS resolver (glibc, through /etc/resolv.conf)
-// for a name's address of one family.
+// for a name's address of one family. Only getent's own "not found" is
+// errNoAnswer; any other failure (docker, the exec's timeout, getent
+// itself) is an unknown state.
 func resolve(n *lab.Node, name string, v6 bool) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -105,6 +112,9 @@ func resolve(n *lab.Node, name string, v6 bool) (string, error) {
 	}
 	res, err := n.Exec(ctx, "getent", db, name)
 	if err != nil {
+		if res.ExitCode == 2 {
+			return "", fmt.Errorf("getent %s %s: %w", db, name, errNoAnswer)
+		}
 		return "", err
 	}
 	f := strings.Fields(res.Stdout)
@@ -112,6 +122,20 @@ func resolve(n *lab.Node, name string, v6 bool) (string, error) {
 		return "", fmt.Errorf("getent %s %s: nothing", db, name)
 	}
 	return f[0], nil
+}
+
+// wantNoAnswer fails unless name has no IPv4 answer on n: an answer is a
+// failed check, and so is a read that failed for any other reason than
+// getent's own "not found".
+func wantNoAnswer(t *testing.T, n *lab.Node, name, what string) {
+	t.Helper()
+	got, err := resolve(n, name, false)
+	switch {
+	case err == nil:
+		t.Errorf("%s (%s) resolved to %s", what, name, got)
+	case !errors.Is(err, errNoAnswer):
+		t.Fatalf("%s (%s): %v", what, name, err)
+	}
 }
 
 // startResolved makes n resolve through systemd-resolved (and its D-Bus),

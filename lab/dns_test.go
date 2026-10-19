@@ -57,21 +57,15 @@ func TestDNSFollowsTheRules(t *testing.T) {
 		mustResolve(t, devA, "www.direct.test", true, domesticAAAA)
 		mustResolve(t, devA, "www.tunnel.test", false, foreignA)
 		mustResolve(t, devA, "www.tunnel.test", true, foreignAAAA)
-		if got, err := resolve(devA, "blocked.test", false); err == nil {
-			t.Errorf("a blocked name resolved to %s", got)
-		}
-		if got, err := resolve(devA, "device-c.lab.internal.", false); err == nil {
-			t.Errorf("a name the map doesn't have resolved to %s", got)
-		}
+		wantNoAnswer(t, devA, "blocked.test", "a blocked name")
+		wantNoAnswer(t, devA, "device-c.lab.internal.", "a name the map doesn't have")
 
 		// With the exit down, a tunnel-bound name fails: it is never
 		// retried under a search domain, nor asked of anyone else.
 		if err := exit.Stop(); err != nil {
 			t.Errorf("the exit: %v", err)
 		}
-		if got, err := resolve(devA, "down.tunnel.test", false); err == nil {
-			t.Errorf("a tunnel-bound name resolved with the exit down: %s", got)
-		}
+		wantNoAnswer(t, devA, "down.tunnel.test", "a tunnel-bound name with the exit down")
 		exit = startDeviceExit(parent, server, inetIP, v1)
 
 		if err := capture.Complete(); err != nil {
@@ -198,9 +192,7 @@ func TestDNSFollowsTheRulesOnAServerExit(t *testing.T) {
 	mustResolve(t, devA, "www.direct.test", false, domesticA)
 	mustResolve(t, devA, "www.direct.test", true, domesticAAAA)
 	mustResolve(t, devA, "server-1.lab.internal", false, s4.String())
-	if got, err := resolve(devA, "blocked.test", false); err == nil {
-		t.Errorf("a blocked name resolved to %s", got)
-	}
+	wantNoAnswer(t, devA, "blocked.test", "a blocked name")
 	if err := capture.Complete(); err != nil {
 		t.Fatal(err)
 	}
@@ -239,9 +231,7 @@ func TestDNSFollowsTheRulesOnAServerExit(t *testing.T) {
 		}
 		return nil
 	})
-	if got, err := resolve(devA, "www2.tunnel.test", false); err == nil {
-		t.Errorf("a tunnel-bound name resolved with the resolver's upstream refused: %s", got)
-	}
+	wantNoAnswer(t, devA, "www2.tunnel.test", "a tunnel-bound name with the resolver's upstream refused")
 	mustResolve(t, devA, "www3.direct.test", false, domesticA)
 	restartExit(upstreamNet)
 	mustResolve(t, devA, "www4.tunnel.test", false, foreignA)

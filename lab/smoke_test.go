@@ -4,6 +4,7 @@ package lab_test
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"net/netip"
 	"strings"
@@ -145,17 +146,27 @@ func TestSmoke(t *testing.T) {
 		if out := device.MustExec(t, "getent", "ahostsv4", lab.Internet); !strings.HasPrefix(out, internet.IPv4(lab.NetServers).String()) {
 			t.Errorf("internet resolves to %q", out)
 		}
-		if _, err := device.Exec(t.Context(), "getent", "hosts", "example.com"); err == nil {
-			t.Error("a device resolved an outside name")
+		// Only getent's own "not found" (exit 2) is no answer; any other
+		// failure says nothing about the name.
+		noAnswer := func(what string, args ...string) {
+			t.Helper()
+			ctx, cancel := context.WithTimeout(context.Background(), execTimeout)
+			defer cancel()
+			res, err := device.Exec(ctx, args...)
+			switch {
+			case err == nil:
+				t.Error(what)
+			case res.ExitCode != 2:
+				t.Fatalf("checking that %s didn't happen: %v", what, err)
+			}
 		}
+		noAnswer("a device resolved an outside name", "getent", "hosts", "example.com")
 		viaDocker := `printf 'nameserver 127.0.0.11\noptions timeout:2 attempts:1\n' > /tmp/docker-dns && ` +
 			`exec unshare -m sh -c 'mount --bind /tmp/docker-dns /etc/resolv.conf && getent hosts "$0"' `
 		if _, err := device.Exec(t.Context(), "sh", "-c", viaDocker+lab.Router); err != nil {
 			t.Fatalf("Docker's resolver doesn't answer for lab names, so the next check proves nothing: %v", err)
 		}
-		if _, err := device.Exec(t.Context(), "sh", "-c", viaDocker+"example.com"); err == nil {
-			t.Error("Docker's resolver forwarded an outside name")
-		}
+		noAnswer("Docker's resolver forwarded an outside name", "sh", "-c", viaDocker+"example.com")
 	})
 
 	t.Run("processes", func(t *testing.T) {
