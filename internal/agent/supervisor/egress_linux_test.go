@@ -95,12 +95,26 @@ func labInternet(t *testing.T) (inet, lan string) {
 	return inet, lan
 }
 
-// inNamespace runs fn on a thread in the named network namespace, which
-// nsthread moves back afterwards; sockets fn opens stay there.
+// inNamespace runs fn on a thread in the named network namespace (see
+// inNetns).
 func inNamespace(t *testing.T, name string, fn func()) {
 	t.Helper()
+	inNetns(t, "/run/netns/"+name, fn)
+}
+
+// inWorker runs fn on a thread in the network namespace of the worker pid
+// (see inNetns).
+func inWorker(t *testing.T, pid int, fn func()) {
+	t.Helper()
+	inNetns(t, fmt.Sprintf("/proc/%d/ns/net", pid), fn)
+}
+
+// inNetns runs fn on a thread in the network namespace at path, which
+// nsthread moves back afterwards; sockets fn opens stay there.
+func inNetns(t *testing.T, path string, fn func()) {
+	t.Helper()
 	err := nsthread.Do(func() error {
-		ns, err := netns.GetFromName(name)
+		ns, err := netns.GetFromPath(path)
 		if err != nil {
 			return err
 		}
@@ -197,15 +211,22 @@ func egressOptions(t *testing.T) supervisor.Options {
 	return o
 }
 
-// dropped is the sum of the counters in one of the supervisor's chains
-// (only drops count). It reads nft's listing: google/nftables can't read
-// back a rule matching the original direction (it sends the direction as 4
-// bytes, the kernel answers with 1).
+// dropped is the sum of the counters in one of the supervisor's inet
+// chains (only drops count).
 func dropped(t *testing.T, chain string) uint64 {
 	t.Helper()
-	out, err := exec.Command("nft", "list", "chain", "inet", supervisor.TableName, chain).CombinedOutput()
+	return nftDrops(t, "inet", supervisor.TableName, chain)
+}
+
+// nftDrops is the sum of the counters in a chain of an nftables table. It
+// reads nft's listing: google/nftables can't read back a rule matching the
+// original direction (it sends the direction as 4 bytes, the kernel answers
+// with 1).
+func nftDrops(t *testing.T, family, table, chain string) uint64 {
+	t.Helper()
+	out, err := exec.Command("nft", "list", "chain", family, table, chain).CombinedOutput()
 	if err != nil {
-		t.Fatalf("nft list chain %s: %v: %s", chain, err, out)
+		t.Fatalf("nft list chain %s %s %s: %v: %s", family, table, chain, err, out)
 	}
 	var n uint64
 	for _, m := range counterRE.FindAllStringSubmatch(string(out), -1) {
@@ -217,12 +238,19 @@ func dropped(t *testing.T, chain string) uint64 {
 
 var counterRE = regexp.MustCompile(`counter packets (\d+) bytes \d+`)
 
-// awaitDrops waits until chain has dropped at least n more packets than
-// before: proof that what a negative check waits for was sent and refused.
+// awaitDrops waits until the supervisor's inet chain has dropped at least
+// n more packets than before: proof that what a negative check waits for
+// was sent and refused.
 func awaitDrops(t *testing.T, chain string, before, n uint64) {
 	t.Helper()
-	eventually(t, 15*time.Second, fmt.Sprintf("%d drops in %s", n, chain), func() error {
-		if got := dropped(t, chain); got < before+n {
+	awaitNftDrops(t, "inet", supervisor.TableName, chain, before, n)
+}
+
+// awaitNftDrops is awaitDrops for a chain of any table.
+func awaitNftDrops(t *testing.T, family, table, chain string, before, n uint64) {
+	t.Helper()
+	eventually(t, 15*time.Second, fmt.Sprintf("%d drops in %s %s %s", n, family, table, chain), func() error {
+		if got := nftDrops(t, family, table, chain); got < before+n {
 			return fmt.Errorf("%d so far", got-before)
 		}
 		return nil
