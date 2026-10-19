@@ -619,6 +619,7 @@ func runTestSupervisor() int {
 
 func options(env []string) supervisor.Options {
 	return supervisor.Options{
+		NewRoot:      func() (netcfg.Configurator, error) { return netcfg.New(netcfg.OwnerSupervisor) },
 		Env:          append([]string{envWorker + "=1"}, env...),
 		Backoff:      supervisor.Backoff{Initial: 50 * time.Millisecond, Max: 400 * time.Millisecond, ResetAfter: 10 * time.Second},
 		ReadyTimeout: 15 * time.Second,
