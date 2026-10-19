@@ -50,7 +50,7 @@ func TestUpReadsTheDevTooling(t *testing.T) {
 	for node, mode := range map[string]agent.Mode{"server-1": agent.ModeServer, "device-a": agent.ModeDevice} {
 		state, _ := m0State(t, node)
 		cfg := agent.Config{StateDir: state, Mode: agent.ModeAuto, LogLevel: "info", Interface: "thinkpol0", LinkMTU: 1500, MapPoll: 5e9, Connect: true}
-		n, err := agent.Prepare(cfg, agent.Logs{})
+		n, err := agent.Prepare(cfg, agent.Logs{}, platform())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -84,7 +84,7 @@ func TestUpAppliesThePlatformDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	applyPlatformDefaults(&cfg)
+	agent.ApplyOSDefaults(&cfg)
 	want := agent.Config{StateDir: agent.DefaultStateDir, Mode: agent.ModeAuto, LogLevel: "info", MapPoll: 5 * time.Second,
 		Connect: true, APISocket: agent.DefaultAPISocket(), APIGroup: "thinkpol", DNS: true}
 	if cfg != want {
@@ -97,7 +97,7 @@ func TestUpAppliesThePlatformDefaults(t *testing.T) {
 	if cfg, err = agent.LoadConfig(); err != nil {
 		t.Fatal(err)
 	}
-	applyPlatformDefaults(&cfg)
+	agent.ApplyOSDefaults(&cfg)
 	if cfg.APISocket != "" || cfg.StateDir != agent.DefaultStateDir {
 		t.Fatalf("a set-empty socket must stay: %+v", cfg)
 	}
@@ -108,7 +108,7 @@ func TestUpAppliesThePlatformDefaults(t *testing.T) {
 	if cfg, err = agent.LoadConfig(); err != nil {
 		t.Fatal(err)
 	}
-	applyPlatformDefaults(&cfg)
+	agent.ApplyOSDefaults(&cfg)
 	if cfg.StateDir != envState || cfg.APISocket != agent.DefaultAPISocket() {
 		t.Fatalf("an environment-set state directory must stay: got %q, want %q", cfg.StateDir, envState)
 	}

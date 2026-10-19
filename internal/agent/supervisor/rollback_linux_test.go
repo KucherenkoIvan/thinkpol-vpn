@@ -17,12 +17,17 @@ import (
 	"github.com/google/nftables"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/egress"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
 
 // errInjected is the failure the tests inject into a table rebuild.
 var errInjected = errors.New("injected table rebuild failure")
+
+// testNewRoot takes the lab node's root namespace as the supervisor's
+// owner.
+func testNewRoot() (netcfg.Configurator, error) { return netcfg.New(netcfg.OwnerSupervisor) }
 
 // failRebuilds makes every rebuild with slots fail with errInjected (after
 // before, if set) until the test ends or it is called again. The failure is
@@ -52,7 +57,7 @@ func TestSetSpacesRollsBackOnIsolationFailure(t *testing.T) {
 	if os.Getenv("THINKPOL_LAB") == "" {
 		t.Skip("needs the lab")
 	}
-	s, err := New(Options{Command: []string{"/bin/true"}, failIsolation: &rebuildFailer{err: errInjected}})
+	s, err := New(Options{Command: []string{"/bin/true"}, NewRoot: testNewRoot, failIsolation: &rebuildFailer{err: errInjected}})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -91,6 +96,7 @@ const egressAccept = "meta nfproto ipv4 accept"
 // the uplink: nothing is sent, only the tables are looked at.
 func probeOptions(t *testing.T) Options {
 	return Options{
+		NewRoot:       testNewRoot,
 		Env:           []string{"SUPERVISOR_TEST_WORKER=1", "SUPERVISOR_TEST_PROBE=1"},
 		Backoff:       Backoff{Initial: 50 * time.Millisecond, Max: 400 * time.Millisecond, ResetAfter: 10 * time.Second},
 		ReadyTimeout:  15 * time.Second,
@@ -316,6 +322,7 @@ func forwardingOff(t *testing.T) {
 // on for a space's egress.
 func servingWithEgress(t *testing.T, opts Options) *Supervisor {
 	t.Helper()
+	opts.NewRoot = testNewRoot
 	opts.Command = []string{"/bin/true"}
 	opts.Uplink = func() (egress.Uplink, error) { return egress.Uplink{Name: "lo", IPv4: true}, nil }
 	s, err := New(opts)
@@ -403,7 +410,7 @@ func TestForwardingCloseCannotTurnOffStaysConfined(t *testing.T) {
 
 	t.Run("adopted by the next supervisor", func(t *testing.T) {
 		leftOn(t)
-		s, err := New(Options{Command: []string{"/bin/true"}, RuntimeDir: run})
+		s, err := New(Options{Command: []string{"/bin/true"}, RuntimeDir: run, NewRoot: testNewRoot})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -422,6 +429,7 @@ func TestForwardingCloseCannotTurnOffStaysConfined(t *testing.T) {
 		if _, err := New(Options{
 			Command:       []string{"/bin/true"},
 			RuntimeDir:    run,
+			NewRoot:       testNewRoot,
 			failIsolation: f,
 		}); !errors.Is(err, errInjected) {
 			t.Fatalf("New with the tables failing: %v", err)

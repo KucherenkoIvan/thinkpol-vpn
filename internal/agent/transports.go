@@ -7,7 +7,7 @@ import (
 )
 
 // Transports is the node's transport registry: every transport a map may
-// name. Supervisor, worker and device build it the same way.
+// name.
 //
 // With markSockets, every link's socket carries routetable.Mark on Linux
 // and is bound to the physical interface on macOS

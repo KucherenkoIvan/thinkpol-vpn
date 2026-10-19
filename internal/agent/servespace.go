@@ -13,15 +13,16 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
 
-// ServeSpace is a server's data plane for one space, as `thinkpol worker`
-// serves it inside its sandbox (worker.Run): it waits for the supervisor's
-// WorkerConfig, then runs RunDataPlane on its own TUN in its namespace,
-// with the supervisor's shared listeners as its inbound, applying each
-// newer map the supervisor sends.
-func ServeSpace(log *slog.Logger) worker.Serve { return serveSpace(log, DataPlane{}) }
+// ServeSpace is a server's data plane for one space in its worker: it
+// waits for the supervisor's WorkerConfig, then runs RunDataPlane on its
+// own TUN with the supervisor's shared listeners as its inbound, applying
+// each newer map the supervisor sends.
+func ServeSpace(log *slog.Logger, h Host) worker.Serve {
+	return serveSpace(log, DataPlane{Host: h})
+}
 
-// serveSpace is ServeSpace with what tests swap in base (registry, TUN,
-// timing).
+// serveSpace is ServeSpace on base: its Host and private fields are kept,
+// the rest comes from the supervisor.
 func serveSpace(log *slog.Logger, base DataPlane) worker.Serve {
 	return func(ctx context.Context, s worker.Session) error {
 		var first WorkerConfig
@@ -45,11 +46,9 @@ func serveSpace(log *slog.Logger, base DataPlane) worker.Serve {
 		if err != nil {
 			return fmt.Errorf("the supervisor's map: %w", err)
 		}
-		reg := base.Registry
-		if reg == nil {
-			if reg, err = Transports(false); err != nil {
-				return err
-			}
+		reg, err := base.Host.Transports(false)
+		if err != nil {
+			return err
 		}
 
 		seeds := s.Seeds
@@ -115,12 +114,9 @@ func serveSpace(log *slog.Logger, base DataPlane) worker.Serve {
 		// The worker's namespace forwards and SNATs, and the supervisor's
 		// tables confine it, so a server allowing egress is an exit here.
 		dp.Forward = true
-		newBlobs := base.newBlobs
-		if newBlobs == nil {
-			newBlobs = blobs.New
-		}
-		bo := blobs.Options{Store: seedStore{seeds}, Log: log, Limits: blobs.Limits{MaxHeld: blobs.ServerMaxHeldSize}}
-		dp.Blobs, dp.ServeBlobs = newBlobs(bo), true
+		bo := base.blobOptions
+		bo.Store, bo.Log, bo.Limits.MaxHeld = seedStore{seeds}, log, blobs.ServerMaxHeldSize
+		dp.Blobs, dp.ServeBlobs = blobs.NewOnNet(bo, base.Host.BlobNet), true
 		dp.DNS, dp.DNSUpstreams = first.DNS, first.DNSUpstreams
 		// The space's own figures only (TP-041 seals them into its
 		// telemetry).

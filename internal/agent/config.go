@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -105,6 +106,18 @@ func LoadConfig() (Config, error) {
 		return Config{}, err
 	}
 	return *c, nil
+}
+
+// ApplyOSDefaults fills what the environment left unset (LoadConfig) with
+// this OS's defaults: a config tag can't vary by OS. A variable set empty
+// stays empty.
+func ApplyOSDefaults(cfg *Config) {
+	if _, ok := os.LookupEnv("THINKPOL_STATE_DIR"); !ok {
+		cfg.StateDir = DefaultStateDir
+	}
+	if _, ok := os.LookupEnv("THINKPOL_API_SOCKET"); !ok {
+		cfg.APISocket = DefaultAPISocket()
+	}
 }
 
 // DefaultAPISocket is where the local API listens by default; empty where

@@ -99,8 +99,13 @@ func runServerSpacesIn(t *testing.T, s *testSpace, sup *fakeSupervisor, stateDir
 		edit(&section)
 	}
 	ss := &serverSpaces{
-		sup: sup, reg: reg, log: slog.New(slog.NewTextHandler(r.log, nil)), keys: s.a, trust: s.trust(),
-		retryAfter: testRetry, cur: m, section: section,
+		sup: sup, reg: reg, trust: s.trust(), retryAfter: testRetry,
+		log: slog.New(slog.NewTextHandler(r.log, nil)),
+		follow: mapFollower{
+			log:  slog.New(slog.NewTextHandler(r.log, nil)),
+			keys: s.a, cur: m, section: section,
+			removedMsg: serverRemovedMsg,
+		},
 	}
 	ss.stateDir = stateDir
 	if tweak != nil {
