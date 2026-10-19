@@ -44,6 +44,24 @@ Product behaviour changes beyond what the tests and docs need to align.
 
 Origin: TP-023 review round 3 (2026-10-17), split under the three-round cap.
 
+## Review findings
+- [ ] R5.1 lab/dns_test.go ~221 and the health closure ~129: `MustExec` inside lab.Eventually aborts instead of retrying; use Exec and return the error.
+- [ ] R5.2 The server-exit test's doc (~162-167) claims the upstream queries leave through the worker's egress; since TP-098 nothing proves the resolver is the worker's. In the negative phase, assert the worker's own warning with its prefix, one regex on one line (`worker space=\S+ .*no upstream to ask: the worker's egress refuses`); match the parent's refusal line with one regex that pins the address (`refuses the upstream.*upstream=<ip>:5353`).
+- [ ] R5.3 Rewrite the negative-control comment (~201-210), ~6 lines: the readiness probe asks the exit's resolver itself (a server with egress holds no overlay names, so NXDOMAIN aa means the tunnel and the resolver are up); a fresh direct name proves the device's own resolver is alive (not the tunnel); every name is asked once because answers are cached for 60 s; the positive control repeats the restart with the egress allowed.
+- [ ] R5.4 A restartExit(egressAllowed netip.Prefix) closure replaces the two copied restart blocks (~211-216, ~230-235).
+- [ ] R5.5 The positive control polls (mustResolve) for www4; the negative stays one-shot for www2.
+- [ ] R5.6 Move tunnelNamesAskedOnlyOfTheExit to the end of the test so the domestic resolver's log covers www2 and www4 too.
+- [ ] R5.7 lab/teardown_test.go: tunGone drops its unused *testing.T, says "the TUN is still there"; ipv6Guard's doc drops "the same shape as tunGone"; the file header is just "What a stop (or a disconnect) must take away."; guardState's doc starts with its name. One-shot calls get a longer exec timeout (like lab's execTimeout, 2 min) than the 10 s now used, or the 10 s is kept only for polls — say which.
+- [ ] R5.8 A wantGuard(n, want) error helper next to ipv6Guard replaces the six read-and-compare copies in ipv6leak_test.go and localapi_test.go (make them consistently Fatalf for one-shots, Eventually for polls).
+- [ ] R5.9 lab/localapi_test.go ~303-306: both families' tables hold unreachable routes whenever the route table is up (IPv4's unreachable 100.64.0.0/10, and 0.0.0.0/0 when the TUN is down; IPv6's ::/0): only the TUN's own default in each proves the routes came back. Say "routetable.Table" not "(routetable.go)". The doc at ~260-265 lists the TUN among what's gone.
+- [ ] R5.10 noPing moves next to ping (lab/up_test.go) and takes a netip.Addr.
+- [ ] R5.11 lab/labdns/main.go: one check "-server and -query go together" ((server == "") != (query == "")) at the top; delete the half-check in ask; doc: "prints the reply's rcode (with ` aa` when authoritative)", drop "that ignores the resolver flags". lab/README.md to match.
+- [ ] R5.12 lab/dnscommon_test.go ~69-70: "The lab's addresses are private, which the worker's egress refuses unless egressAllowed covers them; the zero Prefix covers none."; mustAsk's error names both -server and -query.
+- [ ] R5.13 DESIGN.md ~174: "Not yet on macOS: the per-call check sees only the groups the caller's process got at login (LOCAL_PEERCRED), so a member added since, whom the directory's gate lets through, is refused every call; see TP-094."
+- [ ] R5.14 TP-085: the box stays record-only (what to capture and write down). Notes state what the agent checks afterwards: the direct name's query appears in the physical-interface capture (proving the capture saw DNS) and the tunnel-bound name's does not; that's R4's macOS DNS-leak evidence (PRD R4, DESIGN M1). Add DESIGN#milestones to refs. Append to its Log: "- 2026-10-19 docs (TP-099 rounds 3–5): the DNS-leak box records; Notes say what the agent checks".
+- [ ] R5.15 tickets/done/TP-023-m1-acceptance.md ~57: the gap describing every tunnel-bound name failing on cloud exits is outdated since TP-098 (exits default to public resolvers); ~56: say exactly which members are refused (as R5.13). Append a TP-023 Log line "- 2026-10-19 docs (TP-099): the exit-DNS gap closed by TP-098; the macOS members gap worded as TP-094".
+- [ ] R5.16 The acceptance box says `make lab-test LAB_P=1`: run it at the head and record the commit, or reword the box to the run actually recorded and say why.
+
 ## Log
 - 2026-10-17 created in backlog (TP-023 round 3 findings)
 - 2026-10-18 backlog → in-progress (agent, TP-099 branch)
@@ -84,3 +102,6 @@ Origin: TP-023 review round 3 (2026-10-17), split under the three-round cap.
 - 2026-10-19 items 11–12 (907ac1d, a60d2fc): TP-085's DNS-leak box records one direct and one tunnel-bound name with the capture (the Wi-Fi-change capture can be it), judging left to an agent, and its Log carries the round-4 line; DESIGN's local API macOS caveat names what is refused: group members whose membership the service can't see (TP-094)
 - 2026-10-19 full suite at commit a60d2fc: `make lint`, `make test` pass; `make lab-test LAB_P=4 GOFLAGS=-p=4` green (the lab package in 225 s, 34 in-node packages, no failures); the six changed tests rerun twice more (`go test -tags lab -count=1 -run 'TestDNSFollowsTheRules|TestUpRunsTheM0Space|TestDisconnectLeavesNothingBehind|TestLocalAPI|TestNoIPv6LeavesAroundTheTunnel'`), all green
 - 2026-10-19 in-progress → review (agent, TP-099 branch)
+- 2026-10-19 note (round 4): items in the round-4 lines are the round-4 review's findings, not Scope items
+- 2026-10-19 review → has-errors (agent, TP-099 branch; round 5: review findings R5.1–R5.16)
+- 2026-10-19 has-errors → in-progress (agent, TP-099 branch; round 5)
