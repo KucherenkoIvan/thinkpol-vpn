@@ -2,10 +2,9 @@
 // world (a domestic ISP's, an exit's upstream): it answers every A and
 // AAAA question with fixed addresses, so an answer tells which resolver it
 // came from, and prints every question it gets with its source, so a test
-// can tell who asked what. With -server it is instead a client that
-// ignores the resolver flags, asks one A question of a resolver and prints
-// its rcode (with ` aa` when authoritative). Lab use only: a real node
-// never logs names.
+// can tell who asked what. With -server it is instead a client that asks
+// one A question of -query and prints the reply's rcode (with ` aa` when
+// authoritative). Lab use only: a real node never logs names.
 package main
 
 import (
@@ -29,8 +28,8 @@ func main() {
 	server := flag.String("server", "", "client mode: ask this server (host:port) one A question for -query and exit")
 	query := flag.String("query", "", "the name the client asks (with -server)")
 	flag.Parse()
-	if *server == "" && *query != "" {
-		log.Fatal("-query needs -server")
+	if (*server == "") != (*query == "") {
+		log.Fatal("-server and -query go together")
 	}
 	if *server != "" {
 		ask(*server, *query)
@@ -77,9 +76,6 @@ func main() {
 // with " aa" if the reply is authoritative; without a reply it exits
 // non-zero.
 func ask(server, name string) {
-	if name == "" {
-		log.Fatal("no -query")
-	}
 	m := new(dns.Msg)
 	m.SetQuestion(dns.CanonicalName(name), dns.TypeA)
 	c := &dns.Client{Timeout: 5 * time.Second}

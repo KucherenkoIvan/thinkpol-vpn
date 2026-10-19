@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -126,20 +127,35 @@ func TestDNSFollowsTheRules(t *testing.T) {
 		// A domain on the physical link takes its names past the TUN: the
 		// device says DNS isn't protected, and says so no longer once it
 		// goes.
-		health := func() string { return devB.MustExec(t, "thinkpol", "status") }
-		if out := health(); strings.Contains(out, "dns_not_protected") {
+		health := func() (string, error) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			res, err := devB.Exec(ctx, "thinkpol", "status")
+			return res.Stdout, err
+		}
+		if out, err := health(); err != nil {
+			t.Fatal(err)
+		} else if strings.Contains(out, "dns_not_protected") {
 			t.Fatalf("not protected before any other domain:\n%s", out)
 		}
 		devB.MustExec(t, "resolvectl", "domain", link, "~example.org")
 		lab.Eventually(t, 20*time.Second, func() error {
-			if out := health(); !strings.Contains(out, "dns_not_protected") {
+			out, err := health()
+			if err != nil {
+				return err
+			}
+			if !strings.Contains(out, "dns_not_protected") {
 				return fmt.Errorf("status:\n%s", out)
 			}
 			return nil
 		})
 		devB.MustExec(t, "resolvectl", "domain", link, "")
 		lab.Eventually(t, 20*time.Second, func() error {
-			if out := health(); strings.Contains(out, "dns_not_protected") {
+			out, err := health()
+			if err != nil {
+				return err
+			}
+			if strings.Contains(out, "dns_not_protected") {
 				return fmt.Errorf("status:\n%s", out)
 			}
 			return nil
@@ -160,11 +176,10 @@ func TestDNSFollowsTheRules(t *testing.T) {
 }
 
 // TestDNSFollowsTheRulesOnAServerExit is the R4 leak check with the exit
-// running as a server: its resolver sits in the worker, and its upstream
-// queries leave through the worker's egress: the foreign resolver sees
-// them from the exit's own address. device-a resolves tunnel-bound names
-// through it and leaks nothing; the domestic resolver is never asked a
-// tunnel or overlay name.
+// running as a server: its resolver asks its upstream on the internet
+// node, and the foreign resolver sees the queries from the exit's own
+// address. device-a resolves tunnel-bound names through it and leaks
+// nothing; the domestic resolver is never asked a tunnel or overlay name.
 func TestDNSFollowsTheRulesOnAServerExit(t *testing.T) {
 	t.Parallel()
 	l := lab.Start(t, lab.Standard())
@@ -196,30 +211,36 @@ func TestDNSFollowsTheRulesOnAServerExit(t *testing.T) {
 		t.Fatal(err)
 	}
 	noLeaks(t, capture.Stop(), inetIP)
-	tunnelNamesAskedOnlyOfTheExit(t, domestic, foreign, server)
 
 	// The negative control: the same restart with the exit's egress
-	// closed. The private upstream is refused at config time, and the
-	// exit says so: its log names the refused upstream, and health
-	// counts dns_upstream_refused. With no upstream the tunnel-bound
-	// name fails, while the tunnel and its resolver work (mustAsk's
-	// authoritative NXDOMAIN to an overlay name; a direct name still
-	// resolves). The positive control — the same restart with the egress
-	// allowed, once more — passes the same readiness probe and resolves
-	// a fresh tunnel-bound name: the egress flag is the only difference
-	// between the two.
-	if err := exit.Stop(); err != nil {
-		t.Fatalf("the exit: %v\n%s", err, exit.Output())
+	// closed. The readiness probe asks the exit's resolver itself: a
+	// server with egress holds no overlay names, so its authoritative
+	// NXDOMAIN says the tunnel and the resolver are up. A fresh direct
+	// name proves the device's own resolver is alive, not the tunnel.
+	// Every name is asked once: the resolvers cache answers for 60 s.
+	// The positive control repeats the restart with the egress allowed.
+	restartExit := func(egressAllowed netip.Prefix) {
+		if err := exit.Stop(); err != nil {
+			t.Fatalf("the exit: %v\n%s", err, exit.Output())
+		}
+		exit = startServerExit(t, server, inetIP, v1, egressAllowed)
+		ping(t, devA, s4)
+		mustAsk(t, devA, s4, "server-1.lab.internal", "NXDOMAIN aa")
 	}
-	exit = startServerExit(t, server, inetIP, v1, netip.Prefix{})
-	ping(t, devA, s4)
-	mustAsk(t, devA, s4, "server-1.lab.internal", "NXDOMAIN aa")
-	if out := exit.Output(); !strings.Contains(out, "the worker's egress refuses the upstream") || !strings.Contains(out, inetIP.String()+":5353") {
-		t.Errorf("the exit didn't report the refused upstream %s:5353:\n%s", inetIP, out)
+	restartExit(netip.Prefix{})
+	waitLog(t, exit, `worker space=\S+ .*no upstream to ask: the worker's egress refuses`)
+	if refused := regexp.MustCompile(`refuses the upstream.*upstream=` + regexp.QuoteMeta(inetIP.String()) + `:5353`); !refused.MatchString(exit.Output()) {
+		t.Errorf("the exit didn't report refusing %s:5353:\n%s", inetIP, exit.Output())
 	}
 	lab.Eventually(t, 30*time.Second, func() error {
-		if st := server.MustExec(t, "thinkpol", "status"); !strings.Contains(st, "dns_upstream_refused") {
-			return fmt.Errorf("no dns_upstream_refused in the server's status:\n%s", st)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		st, err := server.Exec(ctx, "thinkpol", "status")
+		if err != nil {
+			return err
+		}
+		if !strings.Contains(st.Stdout, "dns_upstream_refused") {
+			return fmt.Errorf("no dns_upstream_refused in the server's status:\n%s", st.Stdout)
 		}
 		return nil
 	})
@@ -227,15 +248,8 @@ func TestDNSFollowsTheRulesOnAServerExit(t *testing.T) {
 		t.Errorf("a tunnel-bound name resolved with the resolver's upstream refused: %s", got)
 	}
 	mustResolve(t, devA, "www3.direct.test", false, domesticA)
-	if err := exit.Stop(); err != nil {
-		t.Fatalf("the exit: %v\n%s", err, exit.Output())
-	}
-	exit = startServerExit(t, server, inetIP, v1, upstreamNet)
-	ping(t, devA, s4)
-	mustAsk(t, devA, s4, "server-1.lab.internal", "NXDOMAIN aa")
-	if got, err := resolve(devA, "www4.tunnel.test", false); err != nil || got != foreignA {
-		t.Errorf("www4.tunnel.test resolved to (%q, %v), want %s", got, err, foreignA)
-	}
+	restartExit(upstreamNet)
+	mustResolve(t, devA, "www4.tunnel.test", false, foreignA)
 	// The resolver's log is ordered: once the positive control's query
 	// reached the foreign resolver, the absence of www2 says it never
 	// saw the refused name.
@@ -248,6 +262,7 @@ func TestDNSFollowsTheRulesOnAServerExit(t *testing.T) {
 	if out := foreign.Output(); strings.Contains(out, "www2") {
 		t.Errorf("the foreign resolver saw www2:\n%s", out)
 	}
+	tunnelNamesAskedOnlyOfTheExit(t, domestic, foreign, server)
 
 	if err := up.Stop(); err != nil {
 		t.Errorf("thinkpol up: %v\n%s", err, up.Output())

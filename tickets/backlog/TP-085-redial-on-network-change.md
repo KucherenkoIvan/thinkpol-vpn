@@ -7,7 +7,7 @@ repo: thinkpol-vpn
 size: S
 depends_on: [TP-019]
 split_from: TP-080
-refs: [N2, R4, D6, DESIGN#data-plane-every-node-one-binary]
+refs: [N2, R4, D6, DESIGN#milestones, DESIGN#data-plane-every-node-one-binary]
 needs_human: macos
 owner: ""
 branch: ""
@@ -29,7 +29,7 @@ From the 2026-10-15 macOS manual session: after sleep/wake or a network change, 
 - Split from TP-080 (backlog grooming 2026-10-15). Measured numbers from the macOS session: dead after 6 s probe timeout; recovery 1.4–3.5 s after the network returns.
 - Overlaps TP-019's sleep/wake checklist only where route survey already runs; this ticket is the fast redial policy.
 - Carried over from TP-019: during the Wi-Fi change, the capture covers step 8's items (during the join: nothing but DHCP and the link's own traffic on the old interface's filter; the new service's DNS republished with `ThinkpolOverride`), and the run records step 15b (whether `route -n get <a direct IP>` ever answers utunN during the change).
-- Carries R4's macOS DNS-leak proof (PRD R4, DESIGN M1): the Wi-Fi-change capture doubles as it, with a direct name as positive control.
+- Carries R4's macOS DNS-leak evidence (PRD R4, DESIGN M1): the agent checks afterwards that the direct name's query appears in the physical-interface capture (proving the capture saw DNS) and the tunnel-bound name's does not.
 
 ## Log
 - 2026-10-15 created in backlog (split from TP-080, backlog grooming)
@@ -38,3 +38,4 @@ From the 2026-10-15 macOS manual session: after sleep/wake or a network change, 
 - 2026-10-16 docs (TP-023 round 3): refs R4 and D6 added; the carried-over TP-019 items moved from Acceptance to Notes
 - 2026-10-18 docs (TP-099): acceptance gained the DNS-leak capture with a positive control
 - 2026-10-19 docs (TP-099 round 4): the DNS-leak box recorded, not judged; Notes carry R4's macOS capture
+- 2026-10-19 docs (TP-099 rounds 3–5): the DNS-leak box records; Notes say what the agent checks

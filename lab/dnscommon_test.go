@@ -66,8 +66,8 @@ func startDeviceExit(t *testing.T, server *lab.Node, upstream netip.Addr, versio
 
 // startServerExit starts server as a server-mode exit: its resolver runs
 // in the worker and asks upstream's :5353. The lab's addresses are
-// private, which the worker's egress refuses: the zero Prefix passes no
-// -egress-allowed, so the upstream is refused.
+// private, which the worker's egress refuses unless egressAllowed covers
+// them; the zero Prefix covers none.
 func startServerExit(t *testing.T, server *lab.Node, upstream netip.Addr, version string, egressAllowed netip.Prefix) *lab.Process {
 	t.Helper()
 	args := []string{"thinkpol", "up", "-dns-upstream", upstream.String() + ":5353"}
@@ -140,7 +140,7 @@ func mustAsk(t *testing.T, n *lab.Node, resolver netip.Addr, name, want string) 
 		defer cancel()
 		res, err := n.Exec(ctx, "labdns", "-server", resolver.String()+":53", "-query", name)
 		if err != nil {
-			return fmt.Errorf("labdns -query %s: %v\n%s%s", name, err, res.Stdout, res.Stderr)
+			return fmt.Errorf("labdns -server %s -query %s: %v\n%s%s", resolver, name, err, res.Stdout, res.Stderr)
 		}
 		if got := strings.TrimSpace(res.Stdout); got != want {
 			return fmt.Errorf("%s asked of %s answered %q, want %q", name, resolver, got, want)

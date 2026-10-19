@@ -102,6 +102,15 @@ func ping(t *testing.T, from *lab.Node, to netip.Addr) {
 	})
 }
 
+func noPing(t *testing.T, from *lab.Node, to netip.Addr) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := from.Exec(ctx, "ping", "-c", "2", "-W", "1", to.String()); err == nil {
+		t.Fatalf("%s answers %s", to, from.Name)
+	}
+}
+
 func waitLog(t *testing.T, p *lab.Process, pattern string) {
 	t.Helper()
 	re := regexp.MustCompile(pattern)
