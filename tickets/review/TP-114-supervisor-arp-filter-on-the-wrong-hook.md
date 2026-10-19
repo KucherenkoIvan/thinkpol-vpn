@@ -23,9 +23,9 @@ A space's ARP never reaches the root namespace's neighbour table, as DESIGN ("Se
 - Other isolation rules.
 
 ## Acceptance
-- [ ] the arp chain is on the ARP input hook (the golden says `"hook":"input"`)
-- [ ] lab: a space's forged ARP adds no neighbour entry in the root namespace; the negative control does
-- [ ] `make lint`, `make test`, `make lab-test` pass
+- [x] the arp chain is on the ARP input hook (the golden says `"hook":"input"`): `isolation_linux.go` `arpHookIn` (NF_ARP_IN, 0); the three `testdata/isolation-*.golden` regenerated from the kernel's listing, `TestIsolationRulesetGolden` passes (2023a9b)
+- [x] lab: a space's forged ARP adds no neighbour entry in the root namespace; the negative control does: `TestForgedARPIsDropped` (`arp_linux_test.go`), input=true: the arp chain's counter moves and `ip neigh` has no entry for the forged sender; input=false (test-only `Options.arpOnOutput`, the old hook): the root learns it. With the production hook set back to 1, input=true fails (0 drops)
+- [x] `make lint`, `make test`, `make lab-test` pass (exit 0 each, on 2023a9b; lab-test LAB_P=4, 35 node packages)
 
 ## Notes
 - Found by TP-103's correctness review (2026-10-19) from the isolation golden; present since the supervisor's isolation landed (pre-M1). Nothing crosses between spaces through it; a space can fill or poison the root's neighbour table.
@@ -33,3 +33,5 @@ A space's ARP never reaches the root namespace's neighbour table, as DESIGN ("Se
 ## Log
 - 2026-10-19 created in backlog (TP-103 review: security bug, high priority after TP-103)
 - 2026-10-19 backlog → in-progress — owner: agent-claude, branch: tp-114-supervisor-arp-filter-on-the-wrong-hook
+- 2026-10-19 fixed: the arp chain on NF_ARP_IN (google/nftables and x/sys/unix name no arp hooks, so a named constant); lab test with negative control; the three isolation goldens regenerated, and a diff against the old ones shows the arp chain's hook (output → input) as the only change; DESIGN "Server agent" already says what the fix makes true, left unchanged
+- 2026-10-19 in-progress → review
