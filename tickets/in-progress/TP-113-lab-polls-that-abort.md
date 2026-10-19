@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: [TP-099]
 refs: []
-owner: ""
-branch: ""
+owner: "agent-claude"
+branch: "tp-113-lab-polls-that-abort"
 ---
 
 ## Goal
@@ -33,3 +33,4 @@ A lab poll retries a failed read and fails only at its deadline; a one-shot chec
 ## Log
 - 2026-10-19 created in backlog (TP-099 review round 6)
 - 2026-10-19 notes: a flaky blobs unit test to look at
+- 2026-10-19 backlog → in-progress — owner: agent-claude, branch: tp-113-lab-polls-that-abort
