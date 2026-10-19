@@ -25,11 +25,10 @@ import (
 // probed in its own lab, and a transport's censored cells run in parallel:
 // a transport passes when its data crossed the censor in the lab router
 // over IPv4 and over IPv6, and fails when it crossed over neither. A cell
-// whose outcome contradicts what
-// its censor means to produce fails the test, and a cell whose censor can't
-// be trusted (censord died, the kernel dropped queued packets, the verdict
-// log doesn't show the probe's flows) is an error. RESULTS.md is written
-// only by a complete run with no error.
+// whose outcome contradicts what its censor means to produce fails the
+// test, and a cell whose censor can't be trusted (censord died, the kernel
+// dropped queued packets, the verdict log doesn't show the probe's flows)
+// is an error. RESULTS.md is written only by a complete run with no error.
 //
 // A transport's off cell (no censor) runs before its censored cells and
 // they read its result: against a censor it must still pass what it passed
@@ -113,15 +112,16 @@ func TestCensorMatrix(t *testing.T) {
 				}
 				t.Run(cc.name, func(t *testing.T) {
 					t.Parallel()
+					notRun, notPassed := "the off cell didn't run", "the off cell didn't pass"
 					if offResult == "" {
 						record(matrixCell{transport: tr.name, censor: cc.name,
-							result: "error", detail: "the off cell didn't run"})
-						t.Fatal("the off cell didn't run")
+							result: "error", detail: notRun})
+						t.Fatal(notRun)
 					}
 					if offResult != "pass" {
 						record(matrixCell{transport: tr.name, censor: cc.name,
-							result: "error", detail: "the off cell didn't pass"})
-						t.Fatal("the off cell didn't pass")
+							result: "error", detail: notPassed})
+						t.Fatal(notPassed)
 					}
 					runCell(t, tr, cc)
 				})
