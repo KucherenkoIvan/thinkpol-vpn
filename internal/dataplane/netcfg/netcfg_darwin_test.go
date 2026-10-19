@@ -779,10 +779,10 @@ func TestACorruptRecordOfAnotherOwnerFailsTheSurveyAndDefaultRoute(t *testing.T)
 	if err := os.WriteFile(corrupt, []byte("garbage\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := rt.Survey(ctx); err == nil || !strings.Contains(err.Error(), "overlay's route record") {
+	if _, err := rt.Survey(ctx); err == nil || !strings.Contains(err.Error(), "overlay's route record") || !strings.Contains(err.Error(), corrupt) {
 		t.Errorf("Survey over a corrupt record: %v", err)
 	}
-	if _, err := rt.DefaultRoute(ctx, IPv4); err == nil || !strings.Contains(err.Error(), "overlay's route record") {
+	if _, err := rt.DefaultRoute(ctx, IPv4); err == nil || !strings.Contains(err.Error(), "overlay's route record") || !strings.Contains(err.Error(), corrupt) {
 		t.Errorf("DefaultRoute over a corrupt record: %v", err)
 	}
 	if k.snapshot() != before {
@@ -812,18 +812,18 @@ func TestRecordsRoundTrip(t *testing.T) {
 		t.Errorf("an empty record stays: %v", err)
 	}
 	// A record without a boot line (empty, or comments only) is corrupt,
-	// not empty, and every failure names the record.
-	for name, data := range map[string]string{
-		"an unmasked prefix": "boot " + boot + "\n10.0.0.1/8\n",
-		"a bad scope":        "boot " + boot + "\n10.0.0.1/32 scope en0\n",
-		"no boot session":    "10.0.0.0/8\n",
-		"an empty record":    "",
-		"comments only":      recordHeader + "\n",
+	// not empty, and every failure names the record and its reason.
+	for name, tc := range map[string]struct{ data, want string }{
+		"an unmasked prefix":               {"boot " + boot + "\n10.0.0.1/8\n", `bad line "10.0.0.1/8": not a masked prefix`},
+		"a bad scope":                      {"boot " + boot + "\n10.0.0.1/32 scope en0\n", `bad line "10.0.0.1/32 scope en0": bad scope`},
+		"a data line before the boot line": {"10.0.0.0/8\n", `line "10.0.0.0/8" before the boot session`},
+		"an empty record":                  {"", "no boot session"},
+		"comments only":                    {recordHeader + "\n", "no boot session"},
 	} {
-		if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		if err := os.WriteFile(path, []byte(tc.data), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := readRecord(d, "x.routes", boot); err == nil || !strings.Contains(err.Error(), path) {
+		if _, err := readRecord(d, "x.routes", boot); err == nil || !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}

@@ -94,7 +94,7 @@ func readRecord(dir *os.File, name string, boot string) (map[rkey]bool, error) {
 		if !booted {
 			s, ok := strings.CutPrefix(line, "boot ")
 			if !ok {
-				return nil, fmt.Errorf("%s: no boot session", path)
+				return nil, fmt.Errorf("%s: line %q before the boot session", path, line)
 			}
 			if s != boot {
 				return out, nil // the routes went with that boot
@@ -104,7 +104,7 @@ func readRecord(dir *os.File, name string, boot string) (map[rkey]bool, error) {
 		}
 		k, err := parseRecordLine(line)
 		if err != nil {
-			return nil, fmt.Errorf("%s: bad line %q", path, line)
+			return nil, fmt.Errorf("%s: bad line %q: %v", path, line, err)
 		}
 		out[k] = true
 	}
