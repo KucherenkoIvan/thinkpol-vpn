@@ -54,10 +54,10 @@ type dialLink struct {
 	recv    cipher.AEAD
 	padding transport.Padding
 
-	counter  atomic.Uint64
-	closed   atomic.Bool
-	counters counters
-	meter    transport.SendMeter
+	counter atomic.Uint64
+	closed  atomic.Bool
+	receiver
+	meter transport.SendMeter
 
 	readMu  sync.Mutex
 	rbuf    []byte
@@ -111,21 +111,8 @@ func (dl *dialLink) receive(d []byte) []byte {
 		return nil
 	}
 	// Opened in place: nothing else needs the datagram.
-	o, err := open(d[clearSize:clearSize], dl.recv, d)
-	switch {
-	case err != nil:
-		dl.counters.unauthenticated.Add(1)
-		return nil
-	case !o.fresh(now):
-		dl.counters.staleTimestamp.Add(1)
-		return nil
-	}
-	switch dl.senders.admit(o.sender, o.counter, o.sent, now) {
-	case dropReplay:
-		dl.counters.replayed.Add(1)
-		return nil
-	case dropStale:
-		dl.counters.staleSender.Add(1)
+	o, v := dl.admitWith(d[clearSize:clearSize], &dl.senders, dl.recv, d, now)
+	if v < deliver {
 		return nil
 	}
 	dl.counters.received(o.packets)

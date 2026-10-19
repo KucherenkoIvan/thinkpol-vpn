@@ -18,7 +18,6 @@ import (
 	"crypto/subtle"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -133,7 +132,7 @@ func (n *Network) Listen(_ context.Context, cfg transport.ListenConfig) (transpo
 	}
 	l := &Listener{
 		net: n, addr: Addr(cfg.Address), peers: cfg.Peers, camo: transport.OrDrop(cfg.Camouflage),
-		accept: make(chan *end, acceptQueue),
+		accept: transport.NewInbox[*end](acceptQueue),
 		done:   make(chan struct{}),
 		live:   make(map[*end]transport.PeerLink),
 	}
@@ -170,7 +169,7 @@ type Listener struct {
 	peers transport.Peers
 	camo  transport.Camouflage
 
-	accept    chan *end
+	accept    *transport.Inbox[*end]
 	done      chan struct{}
 	closeOnce sync.Once
 
@@ -216,7 +215,7 @@ func (l *Listener) connect(ctx context.Context, local Addr, cred []byte) (transp
 	case <-ctx.Done():
 		_ = server.Close()
 		return nil, ctx.Err()
-	case l.accept <- server:
+	case l.accept.Queue() <- server:
 		// The older link goes only once the newer one is in.
 		l.mu.Lock()
 		for e, other := range l.live {
@@ -288,19 +287,11 @@ func (l *Listener) watchPeers(changed <-chan struct{}) {
 
 // Accept implements transport.Listener.
 func (l *Listener) Accept(ctx context.Context) (transport.Link, transport.Identity, error) {
-	if l.closed() {
-		return nil, transport.Identity{}, transport.ClosedError(nil)
+	e, err := l.accept.Recv(ctx)
+	if err != nil {
+		return nil, transport.Identity{}, err
 	}
-	select {
-	case <-l.done:
-	case <-ctx.Done():
-		return nil, transport.Identity{}, ctx.Err()
-	case e := <-l.accept:
-		if !l.closed() {
-			return e, e.peer, nil
-		}
-	}
-	return nil, transport.Identity{}, transport.ClosedError(nil)
+	return e, e.peer, nil
 }
 
 // Addr implements transport.Listener.
@@ -311,6 +302,7 @@ func (l *Listener) Close() error {
 	l.closeOnce.Do(func() {
 		l.mu.Lock()
 		close(l.done)
+		l.accept.Close(nil)
 		for e := range l.live {
 			e.shut(nil)
 			e.other.shut(nil)
@@ -333,40 +325,26 @@ type end struct {
 	camo          func([]byte) // where such a dialer's packets go
 	onClose       func()
 
-	in        chan []byte
-	done      chan struct{}
-	closeOnce sync.Once
-	closeErr  error
+	*transport.Inbox[[]byte]
 }
 
 func newEnd(sem Semantics, local, remote Addr) *end {
-	return &end{sem: sem, local: local, remote: remote, in: make(chan []byte, linkQueue), done: make(chan struct{})}
+	return &end{sem: sem, local: local, remote: remote, Inbox: transport.NewInbox[[]byte](linkQueue)}
 }
 
+// ReadPacket implements transport.Link: the packets the other end wrote.
 func (e *end) ReadPacket(p []byte) (int, error) {
-	select {
-	case <-e.done:
-		return 0, e.closeErr
-	default:
-	}
-	select {
-	case <-e.done:
-		return 0, e.closeErr
-	case packet := <-e.in:
-		if len(packet) > len(p) {
-			return 0, io.ErrShortBuffer
-		}
-		return copy(p, packet), nil
-	}
+	return transport.ReadPacket(e.Inbox, p)
 }
 
+// WritePacket implements transport.Link.
 func (e *end) WritePacket(p []byte) error {
 	if err := transport.CheckPacketSize(p); err != nil {
 		return err
 	}
 	select {
-	case <-e.done:
-		return e.closeErr
+	case <-e.Done():
+		return e.Err()
 	default:
 	}
 	c := append([]byte(nil), p...)
@@ -375,18 +353,15 @@ func (e *end) WritePacket(p []byte) error {
 		e.camo(c)
 	case e.sem == Stream:
 		select {
-		case e.other.in <- c:
-		case <-e.other.done: // closing one end closes both
+		case e.other.Queue() <- c:
+		case <-e.other.Done(): // closing one end closes both
 			e.shut(nil)
-			return e.closeErr
-		case <-e.done:
-			return e.closeErr
+			return e.Err()
+		case <-e.Done():
+			return e.Err()
 		}
 	default:
-		select {
-		case e.other.in <- c:
-		default: // reader too slow: drop, as the network would
-		}
+		e.other.TrySend(c) // reader too slow: drop, as the network would
 	}
 	return nil
 }
@@ -400,20 +375,16 @@ func (e *end) Close() error {
 }
 
 func (e *end) shut(reason error) {
-	first := false
-	e.closeOnce.Do(func() {
-		first = true
-		e.closeErr = transport.ClosedError(reason)
-		close(e.done)
-	})
-	if first && e.sem == Stream && e.other != nil {
-		e.other.shut(nil) // outside the Once: it comes back here
+	// Only the first closer propagates: the other end's shut comes back
+	// here, and its Inbox turns the second Close away.
+	if e.Inbox.Close(reason) && e.sem == Stream && e.other != nil {
+		e.other.shut(nil)
 	}
 }
 
 func (e *end) closed() bool {
 	select {
-	case <-e.done:
+	case <-e.Done():
 		return true
 	default:
 		return false

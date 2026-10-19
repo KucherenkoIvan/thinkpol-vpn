@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -25,24 +24,17 @@ type Listener struct {
 	peers transport.Peers
 	camo  transport.Camouflage
 
-	accept    chan *serverLink
+	accept    *transport.Inbox[*serverLink]
 	done      chan struct{}
 	closeOnce sync.Once
-	counters  counters
-	meter     transport.SendMeter
+	receiver
+	meter transport.SendMeter
 
 	mu      sync.Mutex
 	set     *peerSet
-	flows   map[string]*flow   // by secret
-	retired map[string]retiree // senders of flows gone from the table, by secret
-	scratch []byte             // packets are opened here, so camouflage sees datagrams intact
-}
-
-// retiree is a removed flow's sender history, kept while a datagram of it
-// could still be fresh, so taking a secret out of the table and putting it
-// back doesn't reopen it to replays.
-type retiree struct {
-	senders *senders
+	table   *senderTable
+	flows   map[string]*flow // by secret
+	scratch []byte           // packets are opened here, so camouflage sees datagrams intact
 }
 
 // flow is the listener's state for one credential. Its senders outlive the
@@ -60,10 +52,10 @@ func newListener(t *Transport, pc net.PacketConn, peers transport.Peers, camoufl
 		pc:      pc,
 		peers:   peers,
 		camo:    transport.OrDrop(camouflage),
-		accept:  make(chan *serverLink, acceptQueue),
+		accept:  transport.NewInbox[*serverLink](acceptQueue),
 		done:    make(chan struct{}),
+		table:   newSenderTable(),
 		flows:   make(map[string]*flow),
-		retired: make(map[string]retiree),
 		scratch: make([]byte, 0, maxDatagram),
 	}
 	links, changed := peers.Snapshot()
@@ -76,19 +68,11 @@ func newListener(t *Transport, pc net.PacketConn, peers transport.Peers, camoufl
 // Accept implements transport.Listener. A link is accepted when the first
 // datagram of its credential arrives.
 func (l *Listener) Accept(ctx context.Context) (transport.Link, transport.Identity, error) {
-	if l.closed() {
-		return nil, transport.Identity{}, transport.ClosedError(nil)
+	sl, err := l.accept.Recv(ctx)
+	if err != nil {
+		return nil, transport.Identity{}, err
 	}
-	select {
-	case <-l.done:
-	case <-ctx.Done():
-		return nil, transport.Identity{}, ctx.Err()
-	case sl := <-l.accept:
-		if !l.closed() {
-			return sl, sl.peer, nil
-		}
-	}
-	return nil, transport.Identity{}, transport.ClosedError(nil)
+	return sl, sl.peer, nil
 }
 
 // Addr implements transport.Listener.
@@ -113,12 +97,13 @@ func (l *Listener) Close() error {
 	var err error
 	l.closeOnce.Do(func() {
 		close(l.done)
+		l.accept.Close(nil)
 		err = l.pc.Close()
 		l.mu.Lock()
 		defer l.mu.Unlock()
 		for _, f := range l.flows {
 			if f.link != nil {
-				f.link.shut(nil)
+				f.link.Inbox.Close(nil)
 				f.link = nil
 			}
 		}
@@ -155,11 +140,7 @@ func (l *Listener) reindex(links []transport.PeerLink) {
 	set := indexPeers(links, epochOf(now))
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	for key, r := range l.retired {
-		if !sentFresh(r.senders.newest, now) {
-			delete(l.retired, key)
-		}
-	}
+	l.table.sync(set, now)
 	for key, f := range l.flows {
 		if e := set.bySecret[key]; e != nil && e.link.Peer == f.entry.Load().link.Peer {
 			f.entry.Store(e)
@@ -170,20 +151,15 @@ func (l *Listener) reindex(links []transport.PeerLink) {
 			if r, ok := set.refused[key]; ok && r.peer == f.entry.Load().link.Peer {
 				reason = fmt.Errorf("%w: %w", transport.ErrSettingsRefused, r.err)
 			}
-			f.link.shut(reason)
+			f.link.Inbox.Close(reason)
 		}
-		l.retired[key] = retiree{senders: f.senders}
 		delete(l.flows, key)
 	}
 	for key, e := range set.bySecret {
 		if _, ok := l.flows[key]; ok {
 			continue
 		}
-		f := &flow{senders: &senders{}}
-		if r, ok := l.retired[key]; ok {
-			f.senders = r.senders
-			delete(l.retired, key)
-		}
+		f := &flow{senders: l.table.history(key)}
 		f.entry.Store(e)
 		l.flows[key] = f
 	}
@@ -226,30 +202,11 @@ func (l *Listener) receive(d []byte, from net.Addr) bool {
 	if l.closed() {
 		return false
 	}
-	e := l.set.lookup(id, epochOf(now))
-	if e == nil {
-		l.counters.unauthenticated.Add(1)
+	e, o, v := l.admit(l.scratch[:0], l.set, l.table, id, d, now)
+	if v < deliver {
 		return false
 	}
 	f := l.flows[string(e.link.Verifier)]
-	o, err := open(l.scratch[:0], e.recv, d)
-	if err != nil {
-		l.counters.unauthenticated.Add(1)
-		return false
-	}
-	if !o.fresh(now) {
-		l.counters.staleTimestamp.Add(1)
-		return false
-	}
-	v := f.senders.admit(o.sender, o.counter, o.sent, now)
-	switch v {
-	case dropReplay:
-		l.counters.replayed.Add(1)
-		return false
-	case dropStale:
-		l.counters.staleSender.Add(1)
-		return false
-	}
 	if o.packets == 0 {
 		// Cover: it keeps a link's address current, as data does, but
 		// carries nothing to open one for.
@@ -270,12 +227,10 @@ func (l *Listener) receive(d []byte, from net.Addr) bool {
 			return false
 		}
 		link := newServerLink(l, f, from)
-		select {
-		case l.accept <- link:
-			f.link = link
-		default:
+		if !l.accept.TrySend(link) {
 			return true // nobody is accepting: dropped, as the network would
 		}
+		f.link = link
 	} else if v == deliverNewest {
 		// Only the current sender's newest counter moves the link: an
 		// on-path attacker can still race a datagram it holds ahead of the
@@ -299,17 +254,13 @@ type serverLink struct {
 	counter atomic.Uint64
 	remote  atomic.Pointer[net.Addr]
 
-	in        chan []byte
-	done      chan struct{}
-	closeOnce sync.Once
-	closeErr  error
+	*transport.Inbox[[]byte]
 }
 
 func newServerLink(l *Listener, f *flow, from net.Addr) *serverLink {
 	sl := &serverLink{
 		l: l, flow: f, peer: f.entry.Load().link.Peer, sender: newSenderID(l.t.now()),
-		in:   make(chan []byte, linkQueue),
-		done: make(chan struct{}),
+		Inbox: transport.NewInbox[[]byte](linkQueue),
 	}
 	sl.remote.Store(&from)
 	return sl
@@ -317,36 +268,22 @@ func newServerLink(l *Listener, f *flow, from net.Addr) *serverLink {
 
 // deliver queues a copy of a packet that lives in the listener's scratch.
 func (sl *serverLink) deliver(packet []byte) {
-	select {
-	case sl.in <- append([]byte(nil), packet...):
-	default: // reader too slow: drop, as the network would
-	}
+	sl.TrySend(append([]byte(nil), packet...))
 }
 
+// ReadPacket implements transport.Link: the packets the listener queued.
 func (sl *serverLink) ReadPacket(p []byte) (int, error) {
-	select {
-	case <-sl.done:
-		return 0, sl.closeErr
-	default:
-	}
-	select {
-	case <-sl.done:
-		return 0, sl.closeErr
-	case packet := <-sl.in:
-		if len(packet) > len(p) {
-			return 0, io.ErrShortBuffer
-		}
-		return copy(p, packet), nil
-	}
+	return transport.ReadPacket(sl.Inbox, p)
 }
 
+// WritePacket implements transport.Link.
 func (sl *serverLink) WritePacket(p []byte) error {
 	if err := transport.CheckPacketSize(p); err != nil {
 		return err
 	}
 	select {
-	case <-sl.done:
-		return sl.closeErr
+	case <-sl.Done():
+		return sl.Err()
 	default:
 	}
 	e := sl.flow.entry.Load()
@@ -356,8 +293,8 @@ func (sl *serverLink) WritePacket(p []byte) error {
 	*bp = seal((*bp)[:0], e.send, e.out.at(epochOf(now)), sl.sender, now, sl.counter.Add(1)-1, p, e.link.Shaping.Padding)
 	if _, err := sl.l.pc.WriteTo(*bp, *sl.remote.Load()); err != nil {
 		select {
-		case <-sl.done:
-			return sl.closeErr
+		case <-sl.Done():
+			return sl.Err()
 		default:
 		}
 		return writeError(err)
@@ -374,15 +311,8 @@ func (sl *serverLink) Close() error {
 		sl.flow.link = nil
 	}
 	sl.l.mu.Unlock()
-	sl.shut(nil)
+	sl.Inbox.Close(nil)
 	return nil
-}
-
-func (sl *serverLink) shut(reason error) {
-	sl.closeOnce.Do(func() {
-		sl.closeErr = transport.ClosedError(reason)
-		close(sl.done)
-	})
 }
 
 func (sl *serverLink) LocalAddr() net.Addr  { return sl.l.pc.LocalAddr() }
