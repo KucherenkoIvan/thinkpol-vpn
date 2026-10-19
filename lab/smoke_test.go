@@ -4,7 +4,6 @@ package lab_test
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"net/netip"
 	"strings"
@@ -79,7 +78,7 @@ func TestSmoke(t *testing.T) {
 				}
 			}
 		}
-		noPing(t, device, netip.MustParseAddr("192.0.2.1")) // outside the lab
+		noPing(t, device, "-c", "2", "-W", "1", "192.0.2.1") // outside the lab
 		var gateways []string
 		for _, net := range []string{lab.NetDevices, lab.NetServers} {
 			gws := l.DockerGateways(net)
@@ -90,17 +89,49 @@ func TestSmoke(t *testing.T) {
 				gateways = append(gateways, gw.String())
 			}
 		}
-		pingAll := `for gw; do (ping -c 1 -W 1 "$gw" >/dev/null 2>&1 && echo "reached $gw") & done; wait`
-		for _, n := range []*lab.Node{router, device, internet} {
-			if out := n.MustExec(t, append([]string{"sh", "-c", pingAll, "sh"}, gateways...)...); out != "" {
-				t.Errorf("%s reached Docker's gateways:\n%s", n.Name, out)
+		// unreached is "" when ping itself says dst can't be reached from
+		// n: no reply, no route, or a blackhole route (the sealing's); else
+		// what happened, an answer or an unknown state.
+		unreached := func(n *lab.Node, dst string) string {
+			args := []string{"ping", "-c", "1", "-W", "1", dst}
+			if strings.Contains(dst, ":") {
+				args = []string{"ping", "-6", "-c", "1", "-W", "1", dst}
 			}
+			res, err := execReadResult(n, args...)
+			switch {
+			case err == nil:
+				return "answered:\n" + res.Stdout
+			case pingNoReplyOrRoute(res) || pingBlackholed(res):
+				return ""
+			}
+			return fmt.Sprintf("says nothing about the path: %v\n%s%s", err, res.Stdout, res.Stderr)
+		}
+		var (
+			wg     sync.WaitGroup
+			mu     sync.Mutex
+			failed []string
+		)
+		for _, n := range []*lab.Node{router, device, internet} {
+			for _, gw := range gateways {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					if got := unreached(n, gw); got != "" {
+						mu.Lock()
+						failed = append(failed, fmt.Sprintf("%s to Docker's gateway %s: %s", n.Name, gw, got))
+						mu.Unlock()
+					}
+				}()
+			}
+		}
+		wg.Wait()
+		for _, f := range failed {
+			t.Error(f)
 		}
 		// Docker's bridge also has a link-local address, which no route
 		// covers; frames to and from its MAC are dropped. "Connection
 		// refused" would mean the bridge answered.
 		probeLinkLocal := `ll=$0; for ifname; do
-			ping -6 -c 1 -W 1 "$ll%$ifname" >/dev/null 2>&1 && echo "ping reached $ll%$ifname"
 			nc -6 -v -z -w 2 "$ll%$ifname" 12345 2>&1 | grep -v "timed out" | sed "s/^/tcp: /"
 			ip -6 neigh show "$ll" dev "$ifname" | grep lladdr | sed "s/^/neighbour: /"
 		done; true`
@@ -109,6 +140,7 @@ func TestSmoke(t *testing.T) {
 			net  string
 			out  string
 			err  error
+			ping string // unreached's answer
 		}
 		var probes []*probe
 		for _, net := range []string{lab.NetDevices, lab.NetServers} {
@@ -122,17 +154,21 @@ func TestSmoke(t *testing.T) {
 				}
 			}
 		}
-		var wg sync.WaitGroup
 		for _, p := range probes {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				res, err := p.node.Exec(t.Context(), "sh", "-c", probeLinkLocal, l.DockerBridge(p.net).LinkLocal.String(), p.node.Interface(p.net))
+				ll := l.DockerBridge(p.net).LinkLocal.String()
+				p.ping = unreached(p.node, ll+"%"+p.node.Interface(p.net))
+				res, err := p.node.Exec(t.Context(), "sh", "-c", probeLinkLocal, ll, p.node.Interface(p.net))
 				p.out, p.err = res.Stdout, err
 			}()
 		}
 		wg.Wait()
 		for _, p := range probes {
+			if p.ping != "" {
+				t.Errorf("%s pinging Docker's bridge on %s: %s", p.node.Name, p.net, p.ping)
+			}
 			if p.err != nil || p.out != "" {
 				t.Errorf("%s reached Docker's bridge on %s: %v\n%s", p.node.Name, p.net, p.err, p.out)
 			}
@@ -144,27 +180,13 @@ func TestSmoke(t *testing.T) {
 		if out := device.MustExec(t, "getent", "ahostsv4", lab.Internet); !strings.HasPrefix(out, internet.IPv4(lab.NetServers).String()) {
 			t.Errorf("internet resolves to %q", out)
 		}
-		// Only getent's own "not found" (exit 2) is no answer; any other
-		// failure says nothing about the name.
-		noAnswer := func(what string, args ...string) {
-			t.Helper()
-			ctx, cancel := context.WithTimeout(context.Background(), execTimeout)
-			defer cancel()
-			res, err := device.Exec(ctx, args...)
-			switch {
-			case err == nil:
-				t.Error(what)
-			case res.ExitCode != 2:
-				t.Fatalf("checking that %s didn't happen: %v", what, err)
-			}
-		}
-		noAnswer("a device resolved an outside name", "getent", "hosts", "example.com")
+		wantNoLookup(t, device, "an outside name on a device", "getent", "hosts", "example.com")
 		viaDocker := `printf 'nameserver 127.0.0.11\noptions timeout:2 attempts:1\n' > /tmp/docker-dns && ` +
 			`exec unshare -m sh -c 'mount --bind /tmp/docker-dns /etc/resolv.conf && getent hosts "$0"' `
 		if _, err := device.Exec(t.Context(), "sh", "-c", viaDocker+lab.Router); err != nil {
 			t.Fatalf("Docker's resolver doesn't answer for lab names, so the next check proves nothing: %v", err)
 		}
-		noAnswer("Docker's resolver forwarded an outside name", "sh", "-c", viaDocker+"example.com")
+		wantNoLookup(t, device, "an outside name through Docker's resolver", "sh", "-c", viaDocker+"example.com")
 	})
 
 	t.Run("processes", func(t *testing.T) {
@@ -208,11 +230,7 @@ func TestLabsAreIsolated(t *testing.T) {
 	if a.IPv4("net") == b.IPv4("net") || a.IPv6("net") == b.IPv6("net") {
 		t.Fatalf("labs share addresses: %+v, %+v", a.Addr("net"), b.Addr("net"))
 	}
-	if answered, out, err := pingAnswers(a, "-c", "1", "-W", "1", b.IPv4("net").String()); err != nil {
-		t.Fatal(err)
-	} else if answered {
-		t.Errorf("one lab reached the other:\n%s", out)
-	}
+	noPing(t, a, "-c", "1", "-W", "1", b.IPv4("net").String()) // the other lab
 	if err := first.Down(t.Context()); err != nil {
 		t.Fatal(err)
 	}

@@ -67,25 +67,25 @@ func TestEgressThroughAnExit(t *testing.T) {
 	// link endpoints into the TUN: its rule is "default -> chain:out".
 
 	web := inet.Capture(t, "tcp port 80")
+	// fetch is the page at url, or an error: curl didn't connect, or said
+	// nothing about the path.
 	fetch := func(url string, timeout time.Duration) (string, error) {
-		ctx, cancel := context.WithTimeout(context.Background(), timeout+5*time.Second)
-		defer cancel()
-		res, err := devA.Exec(ctx, "curl", "-gsS", "--max-time", fmt.Sprint(int(timeout.Seconds())), url)
-		return res.Stdout + res.Stderr, err
+		connected, out, err := curlFrom(devA, timeout, "-g", url)
+		if err == nil && !connected {
+			err = fmt.Errorf("no connection")
+		}
+		return out, err
 	}
 	// noFetch fails the test unless curl itself says it couldn't connect
-	// (curlNoConnection); it returns what curl printed.
+	// (curlFrom); it returns what curl printed.
 	noFetch := func(url string, timeout time.Duration) string {
 		t.Helper()
-		ctx, cancel := context.WithTimeout(context.Background(), timeout+5*time.Second)
-		defer cancel()
-		res, err := devA.Exec(ctx, "curl", "-gsS", "--max-time", fmt.Sprint(int(timeout.Seconds())), url)
-		out := res.Stdout + res.Stderr
-		if err == nil {
-			t.Fatalf("curl %s got through: %q", url, out)
+		connected, out, err := curlFrom(devA, timeout, "-g", url)
+		if err != nil {
+			t.Fatal(err)
 		}
-		if !curlNoConnection(res) {
-			t.Fatalf("curl %s says nothing about the path: %v\n%s", url, err, out)
+		if connected {
+			t.Fatalf("curl %s got through: %q", url, out)
 		}
 		return out
 	}

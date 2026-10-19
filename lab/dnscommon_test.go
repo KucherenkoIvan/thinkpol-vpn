@@ -5,7 +5,6 @@ package lab_test
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"net/netip"
 	"strings"
@@ -95,14 +94,15 @@ func tunnelNamesAskedOnlyOfTheExit(t *testing.T, domestic, foreign *lab.Process,
 	}
 }
 
-// errNoAnswer is getent's own "not found" (exit 2): the name has no
-// answer, whether the resolver said so or never answered.
-var errNoAnswer = errors.New("no answer")
+// getentNotFound says whether a failed getent found nothing, by its own
+// account: exit 2, whether the resolver said so, refused or never
+// answered (measured in the lab). Exit 1 is a usage error, 127 no getent;
+// those and docker's failures say nothing about the name.
+func getentNotFound(res lab.Result) bool { return res.ExitCode == 2 }
 
 // resolve asks the node's OS resolver (glibc, through /etc/resolv.conf)
-// for a name's address of one family. Only getent's own "not found" is
-// errNoAnswer; any other failure (docker, the exec's timeout, getent
-// itself) is an unknown state.
+// for a name's address of one family. Polls use it: every failure is
+// retried alike; one-shot "no answer" checks use wantNoLookup.
 func resolve(n *lab.Node, name string, v6 bool) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -112,9 +112,6 @@ func resolve(n *lab.Node, name string, v6 bool) (string, error) {
 	}
 	res, err := n.Exec(ctx, "getent", db, name)
 	if err != nil {
-		if res.ExitCode == 2 {
-			return "", fmt.Errorf("getent %s %s: %w", db, name, errNoAnswer)
-		}
 		return "", err
 	}
 	f := strings.Fields(res.Stdout)
@@ -124,17 +121,23 @@ func resolve(n *lab.Node, name string, v6 bool) (string, error) {
 	return f[0], nil
 }
 
-// wantNoAnswer fails unless name has no IPv4 answer on n: an answer is a
-// failed check, and so is a read that failed for any other reason than
-// getent's own "not found".
+// wantNoAnswer fails unless name has no IPv4 answer on n (wantNoLookup).
 func wantNoAnswer(t *testing.T, n *lab.Node, name, what string) {
 	t.Helper()
-	got, err := resolve(n, name, false)
+	wantNoLookup(t, n, what+" ("+name+")", "getent", "ahostsv4", name)
+}
+
+// wantNoLookup runs a lookup on n whose last step is getent and fails
+// unless getent itself found nothing (getentNotFound): an answer is a
+// failed check, any other failure an unknown state that fails at once.
+func wantNoLookup(t *testing.T, n *lab.Node, what string, args ...string) {
+	t.Helper()
+	res, err := execReadResult(n, args...)
 	switch {
 	case err == nil:
-		t.Errorf("%s (%s) resolved to %s", what, name, got)
-	case !errors.Is(err, errNoAnswer):
-		t.Fatalf("%s (%s): %v", what, name, err)
+		t.Errorf("%s resolved:\n%s", what, res.Stdout)
+	case !getentNotFound(res):
+		t.Fatalf("checking %s: %v\n%s", what, err, res.Stderr)
 	}
 }
 

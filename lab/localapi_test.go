@@ -125,7 +125,7 @@ func TestLocalAPI(t *testing.T) {
 		if err != nil || !regexp.MustCompile(`state: +disconnected`).MatchString(res.Stdout) {
 			t.Fatalf("%v\n%s", err, res.Stdout)
 		}
-		noPing(t, devA, s4)
+		noPing(t, devA, "-c", "2", "-W", "1", s4.String())
 		res, err = cli(t, devA, as(aliceUID, apiGID, "connect"))
 		if err != nil || !regexp.MustCompile(`state: +connected`).MatchString(res.Stdout) {
 			t.Fatalf("connect: %v\n%s", err, res.Stdout)
@@ -210,7 +210,7 @@ func TestLocalAPI(t *testing.T) {
 		if err != nil || !regexp.MustCompile(`state: +disconnected`).MatchString(res.Stdout) {
 			t.Fatalf("disconnect: %v\n%s", err, res.Stdout)
 		}
-		noPing(t, devA, s4)
+		noPing(t, devA, "-c", "2", "-W", "1", s4.String())
 		if err := wantTUNGone(devA, execTimeout); err != nil {
 			t.Fatal(err)
 		}
@@ -354,7 +354,7 @@ func TestDisconnectLeavesNothingBehind(t *testing.T) {
 		t.Fatalf("disconnect: %v\n%s", err, res.Stdout)
 	}
 	lab.Eventually(t, 30*time.Second, func() error { return wantConnected(false) })
-	noPing(t, devA, s4)
+	noPing(t, devA, "-c", "2", "-W", "1", s4.String())
 	ping(t, devB, s4) // the others carry on
 
 	// And everything is back on connect.

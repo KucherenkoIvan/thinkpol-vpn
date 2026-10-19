@@ -334,29 +334,21 @@ func waitOutput(p *lab.Process, pattern string, timeout time.Duration) error {
 	}
 }
 
-// pingCrosses pings until a reply comes or within runs out. "Doesn't
-// cross" is only ping's own "no reply", from an attempt after the
-// deadline; any other failure is retried, and an error if no attempt gets
-// an answer for 30s more.
+// pingCrosses pings until a reply comes or within runs out (untilAnswer):
+// "doesn't cross" is only ping's own "no reply".
 func pingCrosses(from *lab.Node, to netip.Addr, within time.Duration) (bool, error) {
-	deadline := time.Now().Add(within)
-	giveUp := deadline.Add(30 * time.Second)
-	for {
+	return untilAnswer(within, func() (bool, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
 		res, err := from.Exec(ctx, "ping", "-c", "1", "-W", "1", to.String())
-		cancel()
 		switch {
 		case err == nil:
 			return true, nil
 		case pingNoReply(res):
-			if time.Now().After(deadline) {
-				return false, nil
-			}
-		case time.Now().After(giveUp):
-			return false, fmt.Errorf("ping %s from %s: %w\n%s", to, from.Name, err, res.Stdout)
+			return false, nil
 		}
-		time.Sleep(300 * time.Millisecond)
-	}
+		return false, fmt.Errorf("ping %s from %s: %w\n%s", to, from.Name, err, res.Stdout)
+	})
 }
 
 // mustProbe passes a probe's answer on and fails the cell (an "error"

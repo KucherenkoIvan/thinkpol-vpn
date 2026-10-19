@@ -120,7 +120,7 @@ func TestTCPResetReachesClient(t *testing.T) {
 	devCap := dev.Capture(t, filter)
 	serverCap := server.Capture(t, filter)
 	for _, dst := range serverAddrs(server) {
-		res, took, err := tcpConnect(dev, dst, 5)
+		res, took, err := tcpConnect(dev, dst, tcpProbePort, 5)
 		if err == nil {
 			t.Errorf("tcp to %s connected through a reset censor", dst)
 			continue
@@ -165,7 +165,7 @@ func TestTCPThroughCensorDrop(t *testing.T) {
 
 	serverCap := server.Capture(t, fmt.Sprintf("tcp port %d", tcpProbePort))
 	for _, dst := range serverAddrs(server) {
-		if res, _, err := tcpConnect(dev, dst, 3); err == nil {
+		if res, _, err := tcpConnect(dev, dst, tcpProbePort, 3); err == nil {
 			t.Errorf("tcp to %s connected through a dropping censor", dst)
 		} else if !ncConnectFailed(res) {
 			t.Fatalf("tcp to %s says nothing about the path: %v", dst, err)
@@ -247,37 +247,34 @@ func listenTCP(t *testing.T, server *lab.Node) {
 	})
 }
 
-// tcpConnect opens and closes one TCP connection from dev, waiting at most
-// wait seconds, and says how long it took.
-func tcpConnect(dev *lab.Node, dst netip.Addr, wait int) (lab.Result, time.Duration, error) {
+// tcpConnect opens and closes one TCP connection from dev to dst:port,
+// waiting at most wait seconds, and says how long it took.
+func tcpConnect(dev *lab.Node, dst netip.Addr, port, wait int) (lab.Result, time.Duration, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(wait+10)*time.Second)
 	defer cancel()
 	start := time.Now()
-	res, err := dev.Exec(ctx, "nc", "-v", "-z", "-w", fmt.Sprint(wait), dst.String(), fmt.Sprint(tcpProbePort))
+	res, err := dev.Exec(ctx, "nc", "-v", "-z", "-w", fmt.Sprint(wait), dst.String(), fmt.Sprint(port))
 	return res, time.Since(start), err
 }
 
-// tcpCrosses retries a TCP connect until one succeeds or within runs out.
-// "Doesn't cross" is only nc's own connect failure, from an attempt after
-// the deadline; any other failure is retried, and an error if no attempt
-// gets an answer for 30s more.
-func tcpCrosses(dev *lab.Node, dst netip.Addr, within time.Duration) (bool, error) {
-	deadline := time.Now().Add(within)
-	giveUp := deadline.Add(30 * time.Second)
-	for {
-		res, _, err := tcpConnect(dev, dst, 2)
-		switch {
-		case err == nil:
-			return true, nil
-		case ncConnectFailed(res):
-			if time.Now().After(deadline) {
-				return false, nil
-			}
-		case time.Now().After(giveUp):
-			return false, fmt.Errorf("tcp to %s: %w", dst, err)
-		}
-		time.Sleep(300 * time.Millisecond)
+// tcpReaches says whether a TCP connect from n to dst:port succeeds. Only
+// nc's own connect failure (ncConnectFailed) means it doesn't; any other
+// failure (an exec error, a timeout, no nc) is an error.
+func tcpReaches(n *lab.Node, dst netip.Addr, port, wait int) (bool, error) {
+	res, _, err := tcpConnect(n, dst, port, wait)
+	switch {
+	case err == nil:
+		return true, nil
+	case ncConnectFailed(res):
+		return false, nil
 	}
+	return false, fmt.Errorf("tcp from %s to %s: %w\n%s", n.Name, netip.AddrPortFrom(dst, uint16(port)), err, res.Stderr)
+}
+
+// tcpCrosses retries a TCP connect until one succeeds or within runs out
+// (untilAnswer): "doesn't cross" is only nc's own connect failure.
+func tcpCrosses(dev *lab.Node, dst netip.Addr, within time.Duration) (bool, error) {
+	return untilAnswer(within, func() (bool, error) { return tcpReaches(dev, dst, tcpProbePort, 2) })
 }
 
 // sendDatagram sends one size-byte UDP datagram from dev to dst:port and
@@ -314,23 +311,20 @@ func sendDatagram(t *testing.T, dev, server *lab.Node, dst netip.Addr, port, siz
 }
 
 // pollReceived is the size of file on server once it holds size bytes
-// or, at the latest, as a read after a few seconds finds it.
+// or, at the latest, as a read a few seconds on finds it (untilAnswer).
 func pollReceived(server *lab.Node, file string, size int) (int, error) {
-	deadline := time.Now().Add(3 * time.Second)
-	giveUp := deadline.Add(30 * time.Second)
-	for {
+	got := 0
+	_, err := untilAnswer(3*time.Second, func() (bool, error) {
 		n, err := execRead(server, pollTimeout, "sh", "-c", "wc -c < "+file)
-		if err == nil {
-			got := 0
-			if _, err = fmt.Sscan(strings.TrimSpace(n), &got); err == nil && (got >= size || time.Now().After(deadline)) {
-				return got, nil
-			}
+		if err != nil {
+			return false, err
 		}
-		if err != nil && time.Now().After(giveUp) {
-			return 0, err
+		if _, err := fmt.Sscan(strings.TrimSpace(n), &got); err != nil {
+			return false, fmt.Errorf("wc -c < %s: %q: %w", file, n, err)
 		}
-		time.Sleep(200 * time.Millisecond)
-	}
+		return got >= size, nil
+	})
+	return got, err
 }
 
 // waitFragments requires device-a's datagrams to have reached the router

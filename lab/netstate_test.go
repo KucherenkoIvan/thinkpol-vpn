@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"testing"
 	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/lab"
@@ -30,6 +31,14 @@ func execRead(n *lab.Node, timeout time.Duration, args ...string) (string, error
 		return "", fmt.Errorf("%w\nstdout:\n%s", err, res.Stdout)
 	}
 	return res.Stdout, nil
+}
+
+// execReadResult runs one command in the node, bounded by execTimeout,
+// and returns its whole result: for callers that classify the exit.
+func execReadResult(n *lab.Node, args ...string) (lab.Result, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), execTimeout)
+	defer cancel()
+	return n.Exec(ctx, args...)
 }
 
 // policyRules is the device's policy rules (both families), which a stop
@@ -137,20 +146,27 @@ func pingNoReply(res lab.Result) bool {
 	return res.ExitCode == 1 && strings.Contains(res.Stdout, " 0 received")
 }
 
-// pingNoAnswer says whether a failed ping shows, by ping's own account,
-// that the path doesn't work: no reply (pingNoReply) or no route at the
-// sender (exit 2 with the kernel's "Network is unreachable" or "No route
-// to host"). Ping's other exit-2 failures are usage errors (an unknown
-// interface) and say nothing.
-func pingNoAnswer(res lab.Result) bool {
+// pingNoReplyOrRoute says whether a failed ping shows, by ping's own
+// account, that the path doesn't work: no reply (pingNoReply), or the
+// sender's kernel refusing for want of a route, which sends nothing (exit
+// 2 with "Network is unreachable" or "No route to host"). Ping's other
+// exit-2 failures are usage errors (an unknown interface) and say nothing.
+func pingNoReplyOrRoute(res lab.Result) bool {
 	out := res.Stdout + res.Stderr
 	return pingNoReply(res) ||
 		res.ExitCode == 2 && (strings.Contains(out, "Network is unreachable") || strings.Contains(out, "No route to host"))
 }
 
+// pingBlackholed says whether a failed ping met a blackhole route: the
+// kernel refuses the connect with EINVAL (exit 2, "connect: Invalid
+// argument", measured in the lab), so nothing is sent.
+func pingBlackholed(res lab.Result) bool {
+	return res.ExitCode == 2 && strings.Contains(res.Stdout+res.Stderr, "connect: Invalid argument")
+}
+
 // pingAnswers pings from n (args after "ping") and says whether a reply
 // came; with what ping printed. Neither a reply nor ping's own "no"
-// (pingNoAnswer) is an error: an unknown state, never a pass.
+// (pingNoReplyOrRoute) is an error: an unknown state, never a pass.
 func pingAnswers(n *lab.Node, args ...string) (bool, string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), execTimeout)
 	defer cancel()
@@ -159,16 +175,75 @@ func pingAnswers(n *lab.Node, args ...string) (bool, string, error) {
 	switch {
 	case err == nil:
 		return true, out, nil
-	case pingNoAnswer(res):
+	case pingNoReplyOrRoute(res):
 		return false, out, nil
 	}
 	return false, out, fmt.Errorf("ping %s on %s says nothing about the path: %w\n%s", strings.Join(args, " "), n.Name, err, out)
 }
 
+// noPing fails the test if ping (args after "ping") from n gets a reply,
+// and at once if ping says nothing about the path (pingAnswers). A route
+// the sender's kernel lacks counts as no path: nothing is sent.
+func noPing(t *testing.T, n *lab.Node, args ...string) {
+	t.Helper()
+	answered, out, err := pingAnswers(n, args...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answered {
+		t.Errorf("ping %s from %s answered:\n%s", strings.Join(args, " "), n.Name, out)
+	}
+}
+
 // curlNoConnection says whether a failed curl couldn't connect, by curl's
-// own account: exit 7 (refused, unreachable, no route) or 28 (timed out).
-// Its other failures (45: can't bind the interface) and docker's say
-// nothing about the path.
+// own account: exit 7 (refused, unreachable, no route), or 28 with the
+// connect phase's own text ("Connection timed out after", or "Failed to
+// connect" under --connect-timeout); a 28 after connecting ("Operation
+// timed out ... bytes received"), its other failures (45: can't bind the
+// interface) and docker's say nothing about the path.
 func curlNoConnection(res lab.Result) bool {
-	return res.ExitCode == 7 || res.ExitCode == 28
+	out := res.Stdout + res.Stderr
+	return res.ExitCode == 7 ||
+		res.ExitCode == 28 && (strings.Contains(out, "Connection timed out after") || strings.Contains(out, "Failed to connect"))
+}
+
+// curlFrom runs `curl -sS` on n with args, giving up after maxTime, and
+// says whether it connected; with what curl printed. Neither a
+// connection nor curl's own "couldn't connect" (curlNoConnection) is an
+// error: an unknown state.
+func curlFrom(n *lab.Node, maxTime time.Duration, args ...string) (bool, string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), maxTime+5*time.Second)
+	defer cancel()
+	res, err := n.Exec(ctx, append([]string{"curl", "-sS", "--max-time", fmt.Sprint(int(maxTime.Seconds()))}, args...)...)
+	out := res.Stdout + res.Stderr
+	switch {
+	case err == nil:
+		return true, out, nil
+	case curlNoConnection(res):
+		return false, out, nil
+	}
+	return false, out, fmt.Errorf("curl %s on %s says nothing about the path: %w\n%s", strings.Join(args, " "), n.Name, err, out)
+}
+
+// untilAnswer retries attempt every 300ms until it says yes or, once
+// within has passed, no. An attempt's error (an unknown state, not a no)
+// is retried too, and returned once no attempt has answered for 30s past
+// within.
+func untilAnswer(within time.Duration, attempt func() (bool, error)) (bool, error) {
+	deadline := time.Now().Add(within)
+	giveUp := deadline.Add(30 * time.Second)
+	for {
+		yes, err := attempt()
+		switch {
+		case err == nil && yes:
+			return true, nil
+		case err == nil:
+			if time.Now().After(deadline) {
+				return false, nil
+			}
+		case time.Now().After(giveUp):
+			return false, err
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
 }

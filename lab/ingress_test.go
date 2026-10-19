@@ -80,7 +80,7 @@ func TestIngressOffAdmitsOnlyServers(t *testing.T) {
 	waitLog(t, up["device-a"], applied(version2))
 
 	for range 5 {
-		noPing(t, devB, server2) // server-2's ingress is off
+		noPing(t, devB, "-c", "2", "-W", "1", server2.String()) // server-2's ingress is off
 	}
 	ping(t, devA, server2) // server-1 still relays to server-2
 

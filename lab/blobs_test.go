@@ -3,7 +3,6 @@
 package lab_test
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
@@ -143,29 +142,25 @@ func TestBlobDistribution(t *testing.T) {
 		}
 		s1v4, s1v6 := overlay(1)
 		dv4, dv6 := overlay(3)
-		// reaches says whether a TCP connect from n to addr:port succeeds.
-		// Only nc's own connect failure means it doesn't; any other
-		// failure (an exec error, a timeout, no nc) is an error.
-		reaches := func(n *lab.Node, timeout time.Duration, addr, port string) (bool, error) {
-			ctx, cancel := context.WithTimeout(context.Background(), timeout)
-			defer cancel()
-			res, err := n.Exec(ctx, "nc", "-v", "-z", "-w", "3", addr, port)
-			switch {
-			case err == nil:
-				return true, nil
-			case ncConnectFailed(res):
-				return false, nil
-			}
-			return false, fmt.Errorf("nc %s %s from %s: %w", addr, port, n.Name, err)
-		}
 		// A request for the list, as a peer sends it.
 		req := append([]byte("TPB\x01"), sum[:]...)
 		req = binary.BigEndian.AppendUint64(req, 0)
+		// answer sends it from n (prefix: what nc runs under) and is how
+		// many bytes came back. nc must have connected (exit 0: the
+		// listener took the connection, so "nothing" is its answer); a
+		// failed nsenter, a refused or timed-out nc, or docker's failure is
+		// an error, never "nothing".
 		answer := func(n *lab.Node, prefix, addr string) int {
+			t.Helper()
 			n.WriteFile(t, "/tmp/blob.req", req)
-			out := n.MustExec(t, "sh", "-c", prefix+"nc -w 3 "+addr+" 4717 < /tmp/blob.req | wc -c")
-			var got int
-			_, _ = fmt.Sscan(out, &got)
+			res, err := execReadResult(n, "sh", "-c", prefix+"nc -w 3 "+addr+" 4717 < /tmp/blob.req > /tmp/blob.out && wc -c < /tmp/blob.out")
+			if err != nil {
+				t.Fatalf("asking %s:4717 from %s: %v\n%s", addr, n.Name, err, res.Stderr)
+			}
+			got := 0
+			if _, err := fmt.Sscan(strings.TrimSpace(res.Stdout), &got); err != nil {
+				t.Fatalf("asking %s:4717 from %s: %q: %v", addr, n.Name, res.Stdout, err)
+			}
 			return got
 		}
 
@@ -200,21 +195,24 @@ func TestBlobDistribution(t *testing.T) {
 		router.MustExec(t, "ip", "-6", "route", "add", dv6+"/128", "via", devA.IPv6(lab.NetDevices).String())
 		control4 := devA.Start(t, "nc", "-4", "-l", "4718")
 		control6 := devA.Start(t, "nc", "-6", "-l", "4719")
-		for _, c := range []struct{ addr, port string }{{dv4, "4718"}, {dv6, "4719"}} {
-			lab.Eventually(t, 30*time.Second, func() error {
-				ok, err := reaches(router, pollTimeout, c.addr, c.port)
+		for _, c := range []struct {
+			addr string
+			port int
+		}{{dv4, 4718}, {dv6, 4719}} {
+			lab.Eventually(t, 45*time.Second, func() error {
+				ok, err := tcpReaches(router, netip.MustParseAddr(c.addr), c.port, 3)
 				if err != nil {
 					return err
 				}
 				if !ok {
-					return fmt.Errorf("the control listener at %s:%s is unreachable from the router", c.addr, c.port)
+					return fmt.Errorf("the control listener at %s:%d is unreachable from the router", c.addr, c.port)
 				}
 				return nil
 			})
 		}
 		_, _ = control4.Stop(), control6.Stop()
 		for _, addr := range []string{dv4, dv6} {
-			if ok, err := reaches(router, execTimeout, addr, "4717"); err != nil {
+			if ok, err := tcpReaches(router, netip.MustParseAddr(addr), 4717, 3); err != nil {
 				t.Fatal(err)
 			} else if ok {
 				t.Errorf("the router reaches device-a's %s:4717 outside the tunnel", addr)
@@ -225,7 +223,7 @@ func TestBlobDistribution(t *testing.T) {
 		builder.MustExec(t, "ip", "route", "add", s1v4+"/32", "via", server1.IPv4(lab.NetServers).String())
 		builder.MustExec(t, "ip", "-6", "route", "add", s1v6+"/128", "via", server1.IPv6(lab.NetServers).String())
 		for _, addr := range []string{s1v4, s1v6} {
-			if ok, err := reaches(builder, execTimeout, addr, "4717"); err != nil {
+			if ok, err := tcpReaches(builder, netip.MustParseAddr(addr), 4717, 3); err != nil {
 				t.Fatal(err)
 			} else if ok {
 				t.Errorf("a neighbour reaches server-1's %s:4717 outside the tunnel", addr)
