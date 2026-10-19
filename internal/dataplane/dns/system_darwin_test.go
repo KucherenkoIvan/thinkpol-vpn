@@ -864,3 +864,25 @@ func TestAFailedPrimaryServiceReadNamesTheKey(t *testing.T) {
 		t.Errorf("the warning doesn't name the read: %s", log.String())
 	}
 }
+
+// A target that can't be read before it is overridden names the key, and
+// the node is unprotected meanwhile.
+func TestAFailedReadOfATargetNamesTheKey(t *testing.T) {
+	f := aMac(t)
+	s, err := setDynamicStore(f, nodeConfig, nil, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Restore() }()
+	key := "State:/Network/Service/B/DNS"
+	f.mu.Lock()
+	f.getErrs = map[string]error{key: errors.New("read failed")}
+	f.mu.Unlock()
+	err = s.Update(nodeConfig)
+	if err == nil || !strings.Contains(err.Error(), "dns: reading "+key+": read failed") {
+		t.Errorf("update: %v", err)
+	}
+	if p := s.Problem(); !Unprotected(p) {
+		t.Errorf("problem: %v", p)
+	}
+}

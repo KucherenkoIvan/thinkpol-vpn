@@ -28,6 +28,22 @@ func TestUnprotectedSortsProblems(t *testing.T) {
 	if !Unprotected(errors.New("the store is unreadable")) {
 		t.Error("an untagged problem reads as protected")
 	}
+	stale := fmt.Errorf("%w: read failed", ErrUpstreamsStale)
+	if !Unprotected(errors.Join(errors.New("the store is unreadable"), stale)) {
+		t.Error("an untagged problem joined with a stale one reads as protected")
+	}
+	if !Unprotected(errors.Join(stale, fmt.Errorf("%w: rewrite failed", ErrUnprotected))) {
+		t.Error("an unprotected problem joined with a stale one reads as protected")
+	}
+	if !Unprotected(fmt.Errorf("checking: %w", errors.Join(stale, errors.New("the store is unreadable")))) {
+		t.Error("a wrapped join with an untagged part reads as protected")
+	}
+	if Unprotected(errors.Join(stale, fmt.Errorf("again: %w", ErrUpstreamsStale))) {
+		t.Error("two stale problems are unprotected")
+	}
+	if Unprotected(errors.Join(nil, nil)) {
+		t.Error("a join of nothing is unprotected")
+	}
 }
 
 var testSystem = SystemConfig{

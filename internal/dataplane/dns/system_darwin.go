@@ -77,8 +77,11 @@ var (
 	serviceSetupDNSPattern = `Setup:/Network/Service/[^/]+/DNS`
 	globalIPv4Key          = "State:/Network/Global/IPv4"
 	globalIPv6Key          = "State:/Network/Global/IPv6"
-	serviceKey             = regexp.MustCompile(`^(State|Setup):/Network/Service/([^/]+)/(IPv4|IPv6|DNS)$`)
-	resolverDir            = "/etc/resolver"
+	// globalIPPattern is both globals, globalIPv4Key and globalIPv6Key:
+	// watched for the primary service.
+	globalIPPattern = `State:/Network/Global/IPv[46]`
+	serviceKey      = regexp.MustCompile(`^(State|Setup):/Network/Service/([^/]+)/(IPv4|IPv6|DNS)$`)
+	resolverDir     = "/etc/resolver"
 )
 
 // errNoPrimary is the absence of a primary network service (offline): an
@@ -208,7 +211,7 @@ type dynamicStore struct {
 type storeWatch func(ctx context.Context, patterns []string) (<-chan struct{}, error)
 
 // watchedKeys are what a check depends on.
-var watchedKeys = []string{serviceStatePattern, serviceSetupDNSPattern, `State:/Network/Global/IPv[46]`}
+var watchedKeys = []string{serviceStatePattern, serviceSetupDNSPattern, globalIPPattern}
 
 func setDynamicStore(st store, c SystemConfig, notify storeWatch, every time.Duration) (*dynamicStore, error) {
 	if len(c.Servers) == 0 {
@@ -347,7 +350,7 @@ func (s *dynamicStore) apply() error {
 		}
 		have, present, err := s.st.get(k)
 		if err != nil {
-			errs = append(errs, err)
+			errs = append(errs, fmt.Errorf("dns: reading %s: %w", k, err))
 			continue
 		}
 		if present && isOverride(have) {
@@ -397,7 +400,7 @@ func (s *dynamicStore) apply() error {
 	}
 	if putBack {
 		if err := writeBackup(s.st, s.backup); err != nil {
-			errs = append(errs, err)
+			errs = append(errs, fmt.Errorf("dns: keeping the system's configuration: %w", err))
 		}
 	}
 	if others, err := s.otherResolvers(); err != nil {
@@ -414,7 +417,7 @@ func (s *dynamicStore) putBack(k string) error {
 	o := s.backup[k]
 	have, present, err := s.st.get(k)
 	if err != nil {
-		return err
+		return fmt.Errorf("dns: reading %s: %w", k, err)
 	}
 	if present && isOverride(have) {
 		if o.Present && !o.Unrestorable {
@@ -606,7 +609,7 @@ func (s *dynamicStore) restore() error {
 		}
 	}
 	if err := writeBackup(s.st, s.backup); err != nil {
-		errs = append(errs, err)
+		errs = append(errs, fmt.Errorf("dns: keeping the system's configuration: %w", err))
 	}
 	return errors.Join(errs...)
 }

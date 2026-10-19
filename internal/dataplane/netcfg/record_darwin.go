@@ -109,7 +109,7 @@ func readRecord(dir *os.File, name string, boot string) (map[rkey]bool, error) {
 		out[k] = true
 	}
 	if err := sc.Err(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	if !booted {
 		return nil, fmt.Errorf("%s: no boot session", path)

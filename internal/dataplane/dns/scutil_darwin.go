@@ -65,7 +65,8 @@ type store interface {
 // Go, no SystemConfiguration framework (cgo) needed.
 type scutil struct{}
 
-const scutilPath = "/usr/sbin/scutil"
+// scutilPath is a variable so tests can run a fake in its place.
+var scutilPath = "/usr/sbin/scutil"
 
 func (scutil) run(script string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -74,7 +75,7 @@ func (scutil) run(script string) (string, error) {
 	cmd.Stdin = strings.NewReader(script)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("scutil: %w: %s", err, bytes.TrimSpace(out))
+		return "", fmt.Errorf("%w: %s", err, bytes.TrimSpace(out))
 	}
 	return string(out), nil
 }
@@ -87,7 +88,11 @@ func (s scutil) keys(pattern string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("scutil: list %s: %w", pattern, err)
 	}
-	return parseList(out)
+	keys, err := parseList(out)
+	if err != nil {
+		return nil, fmt.Errorf("scutil: list %s: %w", pattern, err)
+	}
+	return keys, nil
 }
 
 func (s scutil) get(key string) (dict, bool, error) {
@@ -98,7 +103,11 @@ func (s scutil) get(key string) (dict, bool, error) {
 	if err != nil {
 		return dict{}, false, fmt.Errorf("scutil: show %s: %w", key, err)
 	}
-	return parseShow(out)
+	d, ok, err := parseShow(out)
+	if err != nil {
+		return dict{}, false, fmt.Errorf("scutil: show %s: %w", key, err)
+	}
+	return d, ok, nil
 }
 
 func (s scutil) set(key string, d dict) error {
@@ -108,7 +117,7 @@ func (s scutil) set(key string, d dict) error {
 	}
 	out, err := s.run(script)
 	if err != nil {
-		return err
+		return fmt.Errorf("scutil: set %s: %w", key, err)
 	}
 	// scutil says nothing when every command worked.
 	if out = strings.TrimSpace(out); out != "" {
@@ -123,7 +132,7 @@ func (s scutil) remove(key string) error {
 	}
 	out, err := s.run("remove " + key + "\n")
 	if err != nil {
-		return err
+		return fmt.Errorf("scutil: remove %s: %w", key, err)
 	}
 	if out = strings.TrimSpace(out); out != "" && !strings.Contains(out, "No such key") {
 		return fmt.Errorf("scutil: remove %s: %s", key, out)
@@ -197,6 +206,9 @@ func setScript(key string, d dict) (string, error) {
 	var b strings.Builder
 	b.WriteString("d.init\n")
 	for _, k := range sortedKeys(d.strs) {
+		if err := checkToken(k); err != nil {
+			return "", err
+		}
 		v := d.strs[k]
 		if v == "" && !numeric[k] {
 			// scutil reads "" as one empty string, as it does in
@@ -205,7 +217,7 @@ func setScript(key string, d dict) (string, error) {
 			fmt.Fprintf(&b, `d.add %s ""`+"\n", k)
 			continue
 		}
-		if err := errors.Join(checkToken(k), checkToken(v)); err != nil {
+		if err := checkToken(v); err != nil {
 			return "", err
 		}
 		if numeric[k] {
@@ -269,18 +281,18 @@ func parseList(out string) ([]string, error) {
 			sawLine = true
 			_, k, ok := strings.Cut(line, "] = ")
 			if !ok || k == "" {
-				return nil, fmt.Errorf("scutil: unexpected line %q", line)
+				return nil, fmt.Errorf("unexpected line %q", line)
 			}
 			keys = append(keys, k)
 		default:
-			return nil, fmt.Errorf("scutil: unexpected line %q", line)
+			return nil, fmt.Errorf("unexpected line %q", line)
 		}
 	}
 	if err := sc.Err(); err != nil {
-		return nil, fmt.Errorf("scutil: reading the list: %w", err)
+		return nil, fmt.Errorf("reading the list: %w", err)
 	}
 	if !sawLine {
-		return nil, errors.New("scutil: empty list output")
+		return nil, errors.New("empty list output")
 	}
 	return keys, nil
 }
@@ -298,7 +310,7 @@ func parseShow(out string) (dict, bool, error) {
 		return dict{}, false, nil
 	}
 	if !strings.HasPrefix(trimmed, "<dictionary> {") {
-		return dict{}, false, fmt.Errorf("scutil: unexpected output %q", firstLine(trimmed))
+		return dict{}, false, fmt.Errorf("unexpected output %q", firstLine(trimmed))
 	}
 	d := newDict()
 	lines := strings.Split(trimmed, "\n")[1:]
@@ -307,13 +319,13 @@ func parseShow(out string) (dict, bool, error) {
 		if line == "}" {
 			return d, true, nil
 		}
-		if strings.HasSuffix(line, " :") { // "Key : " trimmed: an empty string value
-			d.strs[strings.TrimSuffix(line, " :")] = ""
-			continue
-		}
 		k, v, ok := strings.Cut(line, " : ")
 		if !ok {
-			return dict{}, false, fmt.Errorf("scutil: unexpected line %q", line)
+			if k, ok = strings.CutSuffix(line, " :"); ok { // "Key : " trimmed: an empty string value
+				d.strs[k] = ""
+				continue
+			}
+			return dict{}, false, fmt.Errorf("unexpected line %q", line)
 		}
 		switch {
 		case v == "<array> {":
@@ -323,11 +335,11 @@ func parseShow(out string) (dict, bool, error) {
 				if el == "}" {
 					break
 				}
-				if strings.HasSuffix(el, " :") { // "0 : " trimmed: an empty string
+				_, ev, ok := strings.Cut(el, " : ")
+				if !ok && strings.HasSuffix(el, " :") { // "0 : " trimmed: an empty string
 					arr = append(arr, "")
 					continue
 				}
-				_, ev, ok := strings.Cut(el, " : ")
 				if !ok || strings.HasPrefix(ev, "<") {
 					d.opaque = true // nested arrays or dictionaries, data
 					if strings.HasSuffix(ev, "{") {
@@ -347,7 +359,7 @@ func parseShow(out string) (dict, bool, error) {
 			d.strs[k] = v
 		}
 	}
-	return dict{}, false, errors.New("scutil: unterminated dictionary")
+	return dict{}, false, errors.New("unterminated dictionary")
 }
 
 // skipBlock returns the index of the line closing the block opened at i.

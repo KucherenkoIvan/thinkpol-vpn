@@ -68,10 +68,27 @@ var ErrUpstreamsStale = errors.New("dns: the direct upstreams may be stale")
 // Unprotected says whether a Problem leaves names resolving outside the
 // node's resolver: an ErrUnprotected problem, or anything else — a
 // System that reports a problem it doesn't name must read as
-// unprotected, never as protected. Only nil and ErrUpstreamsStale are
-// not unprotected.
+// unprotected, never as protected. Only nil and a problem whose every
+// part is ErrUpstreamsStale are not: a joined problem is unprotected if
+// any of its parts is, so an untagged part beside a stale one isn't
+// hidden by it.
 func Unprotected(problem error) bool {
-	return problem != nil && (errors.Is(problem, ErrUnprotected) || !errors.Is(problem, ErrUpstreamsStale))
+	switch e := problem.(type) {
+	case nil:
+		return false
+	case interface{ Unwrap() []error }:
+		for _, part := range e.Unwrap() {
+			if Unprotected(part) {
+				return true
+			}
+		}
+		return false
+	case interface{ Unwrap() error }:
+		if inner := e.Unwrap(); inner != nil {
+			return Unprotected(inner)
+		}
+	}
+	return errors.Is(problem, ErrUnprotected) || !errors.Is(problem, ErrUpstreamsStale)
 }
 
 // A resolv.conf the node manages starts with resolvConfHeader and keeps
