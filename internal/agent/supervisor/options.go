@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/netip"
+	"sync/atomic"
 	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/egress"
@@ -184,8 +185,69 @@ type Options struct {
 	// RuntimeDir is where the supervisor records the forwarding sysctls it
 	// changed (DefaultRuntimeDir).
 	RuntimeDir string
+	// sysctls are the root namespace's sysctls (the supervisor's own
+	// /proc/sys); tests stand in for the kernel.
+	sysctls netSysctls
+	// unboundAccepts, arpOnOutput and failIsolation are test-only hooks,
+	// and only the linux build reads them; production never sets them.
+	// unboundAccepts is the forged-ICMP tests' negative control: the
+	// accepts then take any established or related flow, whoever owns it.
+	// arpOnOutput is the forged-ARP test's: the arp chain goes on the ARP
+	// output hook, where a space's ARP never matches. failIsolation is the
+	// failure injected into a table rebuild. All are set at New and never
+	// written afterwards; failIsolation is armed and disarmed atomically.
+	unboundAccepts bool           //nolint:unused // test-only, read in the linux build
+	arpOnOutput    bool           //nolint:unused // test-only, read in the linux build
+	failIsolation  *rebuildFailer //nolint:unused // test-only, read in the linux build
 	// now is an injectable clock for the backoff schedule in tests.
 	now func() time.Time
+}
+
+// rebuildFailer is the test-only Options.failIsolation: the injected
+// failure of an isolation-table rebuild. Like the field, the type and its
+// methods are read in the linux build only.
+//
+//nolint:unused // test-only, read in the linux build
+type rebuildFailer struct {
+	armed atomic.Bool
+	// err is what an armed rebuild fails with.
+	err error
+	// before, if set, runs just before the failure, to open a window.
+	before atomic.Pointer[func()]
+	// failEmpty fails the no-slot install too (New's), not only a rebuild
+	// for spaces: a test failing New itself needs that, while one failing
+	// a SetSpaces leaves it off, so a concurrent no-slot rebuild passes.
+	failEmpty bool
+}
+
+// arm fails every rebuild until disarm, running before just before
+// failing, if set.
+//
+//nolint:unused // test-only, read in the linux build
+func (f *rebuildFailer) arm(before func()) {
+	if before != nil {
+		f.before.Store(&before)
+	}
+	f.armed.Store(true)
+}
+
+//nolint:unused // test-only, read in the linux build
+func (f *rebuildFailer) disarm() {
+	f.armed.Store(false)
+	f.before.Store(nil)
+}
+
+// fail is what applyIsolation asks before it touches nftables.
+//
+//nolint:unused // test-only, read in the linux build
+func (f *rebuildFailer) fail(slots int) error {
+	if !f.armed.Load() || (slots == 0 && !f.failEmpty) {
+		return nil
+	}
+	if b := f.before.Load(); b != nil {
+		(*b)()
+	}
+	return f.err
 }
 
 // Backoff paces restarts: the first after Initial, each next one twice as
@@ -233,6 +295,9 @@ func (o Options) withDefaults() (Options, error) {
 	}
 	if o.CountersInterval == 0 {
 		o.CountersInterval = 10 * time.Second
+	}
+	if o.sysctls == nil {
+		o.sysctls = procSysFS{root: "/proc/sys"}
 	}
 	if o.OutputBytes == 0 {
 		o.OutputBytes = 64 << 10
@@ -282,8 +347,14 @@ type transit struct {
 }
 
 func (o Options) transit(slot int) transit {
-	v4 := nthAddr(o.TransitIPv4.Addr(), uint64(slot)*4) // the slot's /30 block base
-	v6 := nthAddr(o.TransitIPv6.Addr(), uint64(slot))   // the slot's /64 base
+	return transitOf(o.TransitIPv4, o.TransitIPv6, slot)
+}
+
+// transitOf is the address plan of slot n's veth pair under the transit
+// prefixes: the root end's and the space end's addresses, IPv4 and IPv6.
+func transitOf(transit4, transit6 netip.Prefix, slot int) transit {
+	v4 := nthAddr(transit4.Addr(), uint64(slot)*4) // the slot's /30 block base
+	v6 := nthAddr(transit6.Addr(), uint64(slot))   // the slot's /64 base
 	return transit{
 		root:  [2]netip.Prefix{netip.PrefixFrom(v4.Next(), 30), netip.PrefixFrom(offset6(v6, 1), 64)},
 		space: [2]netip.Prefix{netip.PrefixFrom(v4.Next().Next(), 30), netip.PrefixFrom(offset6(v6, 2), 64)},

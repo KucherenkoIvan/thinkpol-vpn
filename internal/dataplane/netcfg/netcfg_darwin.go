@@ -202,7 +202,7 @@ func newDarwin(owner Owner, k kernel, path string) (*darwinConfigurator, error) 
 	if err != nil {
 		_ = lock.release()
 		_ = dir.Close()
-		return nil, fmt.Errorf("netcfg: %v: %w", owner, err)
+		return nil, fmt.Errorf("netcfg: reading %v's route record: %w", owner, err)
 	}
 	return &darwinConfigurator{
 		k: k, owner: owner, dir: dir, boot: boot, lock: lock, owned: owned, pinned: make(map[rkey]bool),
@@ -797,19 +797,29 @@ func (c *darwinConfigurator) DefaultRoute(ctx context.Context, f Family) (Route,
 	if err != nil {
 		return Route{}, err
 	}
-	return defaultRoute(v, c.thinkpolRoutes(), f)
+	thinkpol, err := c.thinkpolRoutes()
+	if err != nil {
+		return Route{}, err
+	}
+	return defaultRoute(v, thinkpol, f)
 }
 
-// thinkpolRoutes are the identities every owner's record holds.
-func (c *darwinConfigurator) thinkpolRoutes() map[rkey]bool {
+// thinkpolRoutes are the identities every owner's record holds. A record
+// that can't be read is an error, not an empty one: with its owner's
+// identities unknown, the owner's routes must be left alone rather than
+// mistaken for foreign ones.
+func (c *darwinConfigurator) thinkpolRoutes() (map[rkey]bool, error) {
 	out := make(map[rkey]bool)
 	for _, o := range Owners {
-		rec, _ := readRecord(c.dir, recordName(o), c.boot)
+		rec, err := readRecord(c.dir, recordName(o), c.boot)
+		if err != nil {
+			return nil, fmt.Errorf("netcfg: reading %v's route record: %w", o, err)
+		}
 		for p := range rec {
 			out[p] = true
 		}
 	}
-	return out
+	return out, nil
 }
 
 func isThinkpol(r kroute, thinkpol map[rkey]bool) bool {
@@ -877,7 +887,11 @@ func (c *darwinConfigurator) Survey(ctx context.Context) (Survey, error) {
 	if err != nil {
 		return Survey{}, err
 	}
-	return survey(v, c.thinkpolRoutes()), nil
+	thinkpol, err := c.thinkpolRoutes()
+	if err != nil {
+		return Survey{}, err
+	}
+	return survey(v, thinkpol), nil
 }
 
 func survey(v view, thinkpol map[rkey]bool) Survey {

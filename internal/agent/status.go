@@ -7,6 +7,7 @@ import (
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/supervisor"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
@@ -50,6 +51,11 @@ type Status struct {
 	// link's domains in systemd-resolved): names may leave outside the
 	// tunnel.
 	DNSUnprotected bool
+	// DNSUpstreamsStale is set while the last read of a connected
+	// device's OS's own resolvers failed: the direct upstreams are the
+	// ones read before, so `direct` names may not resolve. The OS still
+	// resolves through the node, so on its own it is not DNSUnprotected.
+	DNSUpstreamsStale bool
 	// DNSUpstreamsRefused is a server's: how many of the resolver
 	// upstreams the worker's egress refuses, so the resolver doesn't use
 	// them (each is logged with its address).
@@ -200,7 +206,13 @@ func (p *report) status() Status {
 		st := p.engine.Status()
 		s.DataPlane = &st
 		s.RulesEnforced, s.PresetUnavailable = true, st.Rules.PresetUnavailable
-		s.DNSUnprotected = p.dns != nil && p.dns() != nil
+		var problem error
+		if p.dns != nil {
+			problem = p.dns()
+		}
+		// Read once: both flags come from the same Problem.
+		s.DNSUnprotected = dns.Unprotected(problem)
+		s.DNSUpstreamsStale = errors.Is(problem, dns.ErrUpstreamsStale)
 	}
 	if p.workers != nil {
 		for _, w := range p.workers.Workers() {
@@ -289,6 +301,10 @@ const (
 	// ProblemDNSUnprotected: the OS may resolve names outside the node's
 	// resolver, so names may leave outside the tunnel.
 	ProblemDNSUnprotected = "dns_not_protected"
+	// ProblemDNSUpstreamsStale: the device's direct upstreams may be stale
+	// (the last read of the OS's own resolvers failed), so `direct` names
+	// may not resolve; the OS still resolves through the node.
+	ProblemDNSUpstreamsStale = "dns_upstreams_stale"
 	// ProblemDNSUpstreamRefused: resolver upstreams the worker's egress
 	// refuses (Status.DNSUpstreamsRefused counts them) aren't configured:
 	// the resolver asks the rest, and with none left tunnel-bound names
@@ -379,6 +395,9 @@ func (s Status) Health() Health {
 		}
 		if s.DNSUnprotected {
 			add(HealthDegraded, ProblemDNSUnprotected)
+		}
+		if s.DNSUpstreamsStale {
+			add(HealthDegraded, ProblemDNSUpstreamsStale)
 		}
 	}
 	return h

@@ -30,19 +30,23 @@ var errInjected = errors.New("injected table rebuild failure")
 func testNewRoot() (netcfg.Configurator, error) { return netcfg.New(netcfg.OwnerSupervisor) }
 
 // failRebuilds makes every rebuild with slots fail with errInjected (after
-// before, if set) until the test ends or it is called again.
-func failRebuilds(t *testing.T, before func()) {
+// before, if set) until the test ends or it is called again. The failure is
+// injected through the supervisor's rebuild failer (Options.failIsolation,
+// set at New), which the rebuild asks before it touches nftables; the test
+// arms and disarms it, never writing the supervisor's options.
+func failRebuilds(t *testing.T, s *Supervisor, before func()) {
 	t.Helper()
-	failApplyIsolation = func(slots int) error {
-		if slots == 0 {
-			return nil
-		}
-		if before != nil {
-			before()
-		}
-		return errInjected
+	if s.opts.failIsolation == nil {
+		t.Fatal("the supervisor has no rebuild failer to arm")
 	}
-	t.Cleanup(func() { failApplyIsolation = nil })
+	s.opts.failIsolation.arm(before)
+	t.Cleanup(s.opts.failIsolation.disarm)
+}
+
+// realSysctl reads one of the root namespace's real sysctls, for the tests
+// that watch the real thing.
+func realSysctl(key string) (string, error) {
+	return procSysFS{root: "/proc/sys"}.Read(key)
 }
 
 // TestSetSpacesRollsBackOnIsolationFailure checks that when the isolation-table
@@ -53,11 +57,11 @@ func TestSetSpacesRollsBackOnIsolationFailure(t *testing.T) {
 	if os.Getenv("THINKPOL_LAB") == "" {
 		t.Skip("needs the lab")
 	}
-	s, err := New(Options{Command: []string{"/bin/true"}, NewRoot: testNewRoot})
+	s, err := New(Options{Command: []string{"/bin/true"}, NewRoot: testNewRoot, failIsolation: &rebuildFailer{err: errInjected}})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	failRebuilds(t, nil)
+	failRebuilds(t, s, nil)
 	if err := s.SetSpaces([]Space{{ID: netmap.NewSpaceID()}}); err == nil {
 		t.Fatal("SetSpaces returned nil despite the injected isolation failure")
 	}
@@ -92,15 +96,16 @@ const egressAccept = "meta nfproto ipv4 accept"
 // the uplink: nothing is sent, only the tables are looked at.
 func probeOptions(t *testing.T) Options {
 	return Options{
-		NewRoot:      testNewRoot,
-		Env:          []string{"SUPERVISOR_TEST_WORKER=1", "SUPERVISOR_TEST_PROBE=1"},
-		Backoff:      Backoff{Initial: 50 * time.Millisecond, Max: 400 * time.Millisecond, ResetAfter: 10 * time.Second},
-		ReadyTimeout: 15 * time.Second,
-		StopTimeout:  3 * time.Second,
-		PidsMax:      512,
-		MemoryMax:    256 << 20,
-		RuntimeDir:   t.TempDir(),
-		Uplink:       func() (egress.Uplink, error) { return egress.Uplink{Name: "lo", IPv4: true}, nil },
+		NewRoot:       testNewRoot,
+		Env:           []string{"SUPERVISOR_TEST_WORKER=1", "SUPERVISOR_TEST_PROBE=1"},
+		Backoff:       Backoff{Initial: 50 * time.Millisecond, Max: 400 * time.Millisecond, ResetAfter: 10 * time.Second},
+		ReadyTimeout:  15 * time.Second,
+		StopTimeout:   3 * time.Second,
+		PidsMax:       512,
+		MemoryMax:     256 << 20,
+		RuntimeDir:    t.TempDir(),
+		Uplink:        func() (egress.Uplink, error) { return egress.Uplink{Name: "lo", IPv4: true}, nil },
+		failIsolation: &rebuildFailer{err: errInjected},
 	}
 }
 
@@ -208,11 +213,11 @@ func TestEgressAppliedAfterAFailedTableRebuild(t *testing.T) {
 		ID: space, Config: second, Egress: EgressGrant{IPv4: true},
 		Inbound: map[string][]transport.PeerLink{"udp": nil},
 	}}
-	failRebuilds(t, nil)
+	failRebuilds(t, s, nil)
 	if err := s.SetSpaces(want); !errors.Is(err, errInjected) {
 		t.Fatalf("SetSpaces with the rebuild failing: %v", err)
 	}
-	failApplyIsolation = nil
+	s.opts.failIsolation.disarm()
 	firstThenSecond := func() error {
 		if got := configsGot(s, space); len(got) != 2 || got[0] != sum(first) || got[1] != sum(second) {
 			return fmt.Errorf("configs the worker got %q, want the first then the second, once each", got)
@@ -259,7 +264,7 @@ func TestRestartDuringAFailedRebuildKeepsTheSpaceTableInStep(t *testing.T) {
 	pid := readyPID(t, s, space, 0)
 
 	var restarted int
-	failRebuilds(t, func() {
+	failRebuilds(t, s, func() {
 		if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
 			t.Errorf("killing the worker: %v", err)
 			return
@@ -328,7 +333,7 @@ func servingWithEgress(t *testing.T, opts Options) *Supervisor {
 		_ = s.Close()
 		t.Fatal(err)
 	}
-	if v, _ := readSysctl(forwardingKeys[0]); v != "1" {
+	if v, _ := realSysctl(forwardingKeys[0]); v != "1" {
 		_ = s.Close()
 		t.Fatalf("forwarding %s while serving a space's egress", v)
 	}
@@ -342,23 +347,22 @@ func TestCloseTurnsForwardingOffWhileTheTablesStand(t *testing.T) {
 		t.Skip("needs the lab")
 	}
 	forwardingOff(t)
-	s := servingWithEgress(t, Options{RuntimeDir: t.TempDir()})
+	sys := &hookSysctls{procSysFS: procSysFS{root: "/proc/sys"}}
+	s := servingWithEgress(t, Options{RuntimeDir: t.TempDir(), sysctls: sys})
 	turnedOff, tablesThen := false, false
-	kernel := writeSysctl
-	writeSysctl = func(key, value string) error {
+	sys.arm(func(key, value string) error {
 		if key == forwardingKeys[0] && value == "0" {
 			turnedOff, tablesThen = true, hasRootTables(t)
 		}
-		return kernel(key, value)
-	}
-	t.Cleanup(func() { writeSysctl = kernel })
+		return nil
+	})
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
 	if !turnedOff || !tablesThen {
 		t.Fatalf("forwarding turned off: %v, with the isolation tables there: %v", turnedOff, tablesThen)
 	}
-	if v, _ := readSysctl(forwardingKeys[0]); v != "0" || hasRootTables(t) {
+	if v, _ := realSysctl(forwardingKeys[0]); v != "0" || hasRootTables(t) {
 		t.Fatalf("after Close: forwarding %s, tables there: %v", v, hasRootTables(t))
 	}
 }
@@ -373,24 +377,23 @@ func TestForwardingCloseCannotTurnOffStaysConfined(t *testing.T) {
 	forwardingOff(t)
 	run := t.TempDir()
 	record := filepath.Join(run, forwardingFile)
-	kernel := writeSysctl
-	t.Cleanup(func() { writeSysctl = kernel })
+	sys := &hookSysctls{procSysFS: procSysFS{root: "/proc/sys"}}
 	t.Cleanup(func() { _ = removeIsolation() })
 
 	leftOn := func(t *testing.T) {
 		t.Helper()
-		s := servingWithEgress(t, Options{RuntimeDir: run})
-		writeSysctl = func(key, value string) error {
+		s := servingWithEgress(t, Options{RuntimeDir: run, sysctls: sys})
+		sys.arm(func(key, value string) error {
 			if key == forwardingKeys[0] && value == "0" {
 				return errors.New("refused")
 			}
-			return kernel(key, value)
-		}
+			return nil
+		})
 		if err := s.Close(); err == nil {
 			t.Fatal("Close returned nil with the forwarding still on")
 		}
-		writeSysctl = kernel
-		v, _ := readSysctl(forwardingKeys[0])
+		sys.disarm()
+		v, _ := realSysctl(forwardingKeys[0])
 		_, recErr := os.Stat(record)
 		if v != "1" || !hasRootTables(t) || recErr != nil {
 			t.Fatalf("after a Close that couldn't turn forwarding off: forwarding %s, tables there: %v, record: %v", v, hasRootTables(t), recErr)
@@ -398,7 +401,7 @@ func TestForwardingCloseCannotTurnOffStaysConfined(t *testing.T) {
 	}
 	turnedOff := func(t *testing.T) {
 		t.Helper()
-		v, _ := readSysctl(forwardingKeys[0])
+		v, _ := realSysctl(forwardingKeys[0])
 		_, recErr := os.Stat(record)
 		if v != "0" || !errors.Is(recErr, os.ErrNotExist) {
 			t.Fatalf("forwarding %s, record: %v", v, recErr)
@@ -421,9 +424,14 @@ func TestForwardingCloseCannotTurnOffStaysConfined(t *testing.T) {
 	})
 	t.Run("turned off by a supervisor that fails to start", func(t *testing.T) {
 		leftOn(t)
-		failApplyIsolation = func(int) error { return errInjected }
-		t.Cleanup(func() { failApplyIsolation = nil })
-		if _, err := New(Options{Command: []string{"/bin/true"}, RuntimeDir: run, NewRoot: testNewRoot}); !errors.Is(err, errInjected) {
+		f := &rebuildFailer{err: errInjected, failEmpty: true}
+		f.arm(nil) // from New on: the no-slot install fails too
+		if _, err := New(Options{
+			Command:       []string{"/bin/true"},
+			RuntimeDir:    run,
+			NewRoot:       testNewRoot,
+			failIsolation: f,
+		}); !errors.Is(err, errInjected) {
 			t.Fatalf("New with the tables failing: %v", err)
 		}
 		turnedOff(t)

@@ -5,18 +5,72 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
+// hookSysctls is the real /proc/sys whose writes a test can watch or
+// refuse along the way. The hook is armed and disarmed atomically: the
+// fake is set at New (Options.sysctls) and never written afterwards.
+type hookSysctls struct {
+	procSysFS
+	hook atomic.Pointer[func(key, value string) error]
+}
+
+// arm runs hook before every write; disarm when the test is done with it.
+func (h *hookSysctls) arm(hook func(key, value string) error) { h.hook.Store(&hook) }
+
+func (h *hookSysctls) disarm() { h.hook.Store(nil) }
+
+func (h *hookSysctls) Write(key, value string) error {
+	if f := h.hook.Load(); f != nil {
+		if err := (*f)(key, value); err != nil {
+			return err
+		}
+	}
+	return h.procSysFS.Write(key, value)
+}
+
+// fakeKernelSys is hookSysctls with the kernel's side effects of writing
+// the forwarding switches.
+type fakeKernelSys struct {
+	hookSysctls
+}
+
+func (f *fakeKernelSys) Write(key, value string) error {
+	if err := f.hookSysctls.Write(key, value); err != nil {
+		return err
+	}
+	// The kernel: IPv4's switch resets accept_redirects and every
+	// interface's forwarding; IPv6's sets every interface's forwarding.
+	switch key {
+	case "net/ipv4/ip_forward":
+		f.set("net/ipv4/conf/*/forwarding", value)
+		redirects := "1"
+		if value == "1" {
+			redirects = "0"
+		}
+		f.set("net/ipv4/conf/all/accept_redirects", redirects)
+	case "net/ipv6/conf/all/forwarding":
+		f.set("net/ipv6/conf/*/forwarding", value)
+	}
+	return nil
+}
+
+func (f *fakeKernelSys) set(glob, value string) {
+	matches, _ := filepath.Glob(filepath.Join(f.root, glob))
+	for _, m := range matches {
+		_ = os.WriteFile(m, []byte(value), 0o644)
+	}
+}
+
 // fakeProcSys is a /proc/sys holding the forwarding sysctls of a node with
 // an RA-configured uplink eth0 and a space's veth end, whose forwarding
-// switches have the kernel's side effects.
-func fakeProcSys(t *testing.T) func(key string) string {
+// switches have the kernel's side effects. It returns the sysctls and a
+// getter for the tests' assertions.
+func fakeProcSys(t *testing.T) (*fakeKernelSys, func(key string) string) {
 	t.Helper()
 	dir := t.TempDir()
-	oldDir, oldWrite := procSys, writeSysctl
-	t.Cleanup(func() { procSys, writeSysctl = oldDir, oldWrite })
-	procSys = dir
 	files := map[string]string{
 		"net/ipv4/ip_forward":            "0",
 		"net/netfilter/nf_conntrack_max": "262144",
@@ -40,33 +94,9 @@ func fakeProcSys(t *testing.T) func(key string) string {
 			t.Fatal(err)
 		}
 	}
-	set := func(glob, value string) {
-		matches, _ := filepath.Glob(filepath.Join(dir, glob))
-		for _, m := range matches {
-			_ = os.WriteFile(m, []byte(value), 0o644)
-		}
-	}
-	// The kernel: IPv4's switch resets accept_redirects and every
-	// interface's forwarding; IPv6's sets every interface's forwarding.
-	writeSysctl = func(key, value string) error {
-		if err := writeSysctlFile(key, value); err != nil {
-			return err
-		}
-		switch key {
-		case "net/ipv4/ip_forward":
-			set("net/ipv4/conf/*/forwarding", value)
-			redirects := "1"
-			if value == "1" {
-				redirects = "0"
-			}
-			set("net/ipv4/conf/all/accept_redirects", redirects)
-		case "net/ipv6/conf/all/forwarding":
-			set("net/ipv6/conf/*/forwarding", value)
-		}
-		return nil
-	}
-	return func(key string) string {
-		v, err := readSysctl(key)
+	sys := &fakeKernelSys{hookSysctls{procSysFS: procSysFS{root: dir}}}
+	return sys, func(key string) string {
+		v, err := sys.Read(key)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -75,9 +105,9 @@ func fakeProcSys(t *testing.T) func(key string) string {
 }
 
 func TestForwardingIsTurnedOnRecordedAndPutBack(t *testing.T) {
-	get := fakeProcSys(t)
+	sys, get := fakeProcSys(t)
 	run := t.TempDir()
-	var f rootForwarding
+	f := rootForwarding{sys: sys}
 	if err := f.load(run); err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +133,7 @@ func TestForwardingIsTurnedOnRecordedAndPutBack(t *testing.T) {
 
 	// A successor adopts the record: the switches still hold what was
 	// written.
-	var next rootForwarding
+	next := rootForwarding{sys: sys}
 	if err := next.load(run); err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +141,7 @@ func TestForwardingIsTurnedOnRecordedAndPutBack(t *testing.T) {
 		t.Fatalf("successor owns %v", next.owned())
 	}
 	// Someone set eth0's accept_ra meanwhile: it isn't put back.
-	if err := writeSysctlFile("net/ipv6/conf/eth0/accept_ra", "0"); err != nil {
+	if err := sys.procSysFS.Write("net/ipv6/conf/eth0/accept_ra", "0"); err != nil {
 		t.Fatal(err)
 	}
 	if err := next.restore(); err != nil {
@@ -137,11 +167,11 @@ func TestForwardingIsTurnedOnRecordedAndPutBack(t *testing.T) {
 // Forwarding that was on already is the node's: neither owned nor turned
 // off; and the supervisor's is turned off once no space needs it.
 func TestForwardingOnAlreadyIsLeftAlone(t *testing.T) {
-	get := fakeProcSys(t)
-	if err := writeSysctl("net/ipv4/ip_forward", "1"); err != nil {
+	sys, get := fakeProcSys(t)
+	if err := sys.Write("net/ipv4/ip_forward", "1"); err != nil {
 		t.Fatal(err)
 	}
-	var f rootForwarding
+	f := rootForwarding{sys: sys}
 	if err := f.load(t.TempDir()); err != nil {
 		t.Fatal(err)
 	}
@@ -167,19 +197,20 @@ func TestForwardingOnAlreadyIsLeftAlone(t *testing.T) {
 
 // A record whose switch someone else changed since is not adopted.
 func TestForwardingRecordOfAChangedSwitchIsDropped(t *testing.T) {
-	get := fakeProcSys(t)
+	sys, get := fakeProcSys(t)
 	run := t.TempDir()
-	var f rootForwarding
+	f := rootForwarding{sys: sys}
 	if err := f.load(run); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.ensure([2]bool{true, false}); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeSysctlFile("net/ipv4/ip_forward", "0"); err != nil {
+	// Someone else's write, without the supervisor's switch's side effects.
+	if err := sys.procSysFS.Write("net/ipv4/ip_forward", "0"); err != nil {
 		t.Fatal(err)
 	}
-	var next rootForwarding
+	next := rootForwarding{sys: sys}
 	if err := next.load(run); err != nil {
 		t.Fatal(err)
 	}
@@ -198,22 +229,21 @@ func TestForwardingRecordOfAChangedSwitchIsDropped(t *testing.T) {
 // Forwarding that can't be turned off stays the supervisor's, recorded,
 // with IPv6's accept_ra still 2: a successor adopts it and turns it off.
 func TestForwardingThatCannotBeTurnedOffStaysRecorded(t *testing.T) {
-	get := fakeProcSys(t)
+	sys, get := fakeProcSys(t)
 	run := t.TempDir()
-	var f rootForwarding
+	f := rootForwarding{sys: sys}
 	if err := f.load(run); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.ensure([2]bool{true, true}); err != nil {
 		t.Fatal(err)
 	}
-	kernel := writeSysctl
-	writeSysctl = func(key, value string) error {
+	sys.arm(func(key, value string) error {
 		if key == forwardingKeys[1] && value == "0" {
 			return errors.New("refused")
 		}
-		return kernel(key, value)
-	}
+		return nil
+	})
 	if err := f.restore(); err == nil {
 		t.Fatal("restore returned nil with IPv6 forwarding still on")
 	}
@@ -229,9 +259,9 @@ func TestForwardingThatCannotBeTurnedOffStaysRecorded(t *testing.T) {
 			t.Errorf("after the failed restore: %s = %s, want %s", key, got, want)
 		}
 	}
-	writeSysctl = kernel
+	sys.disarm()
 
-	var next rootForwarding
+	next := rootForwarding{sys: sys}
 	if err := next.load(run); err != nil {
 		t.Fatal(err)
 	}
@@ -250,11 +280,11 @@ func TestForwardingThatCannotBeTurnedOffStaysRecorded(t *testing.T) {
 }
 
 func TestMaxFlowsDefaultsToAQuarterOfConntrack(t *testing.T) {
-	fakeProcSys(t)
-	if got := maxFlows(0); got != 262144/4 {
+	sys, _ := fakeProcSys(t)
+	if got := maxFlows(0, sys); got != 262144/4 {
 		t.Fatalf("default %d", got)
 	}
-	if maxFlows(-1) != 0 || maxFlows(10) != 10 {
+	if maxFlows(-1, sys) != 0 || maxFlows(10, sys) != 10 {
 		t.Fatal("explicit caps not kept")
 	}
 }
