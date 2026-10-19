@@ -8,14 +8,15 @@ import (
 	"google.golang.org/protobuf/encoding/protowire"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport/transporttest"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport/udp"
 )
 
 func TestShapingRoundTrip(t *testing.T) {
 	for _, s := range []transport.Shaping{
 		{},
-		{Padding: transport.Buckets(128, 256, 1452)},
-		{Padding: transport.Buckets(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 65535)},
+		{Padding: transporttest.Buckets(128, 256, 1452)},
+		{Padding: transporttest.Buckets(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 65535)},
 		{Padding: transport.Padding{Mode: transport.PadRandom, Min: 0, Max: 1}},
 		{Padding: transport.Padding{Mode: transport.PadRandom, Min: 7, Max: 7}},
 		{BatchWindow: 1500 * time.Microsecond, Jitter: time.Second, CoverInterval: time.Hour},
@@ -35,7 +36,7 @@ func TestShapingRoundTrip(t *testing.T) {
 }
 
 func TestParseShapingRefusesWhatItDoesNotKnow(t *testing.T) {
-	buckets, err := transport.Shaping{Padding: transport.Buckets(256)}.Marshal()
+	buckets, err := transport.Shaping{Padding: transporttest.Buckets(256)}.Marshal()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,12 +88,12 @@ func TestParseShapingRefusesWhatItDoesNotKnow(t *testing.T) {
 }
 
 func TestMarshalRefusesInvalidShaping(t *testing.T) {
-	gap := transport.Buckets(100, 200)
+	gap := transporttest.Buckets(100, 200)
 	gap.Buckets[1], gap.Buckets[2] = 0, 200
 	for name, s := range map[string]transport.Shaping{
-		"descending buckets":   {Padding: transport.Buckets(200, 100)},
+		"descending buckets":   {Padding: transporttest.Buckets(200, 100)},
 		"a gap in the buckets": {Padding: gap},
-		"buckets without mode": {Padding: transport.Padding{Buckets: transport.Buckets(1).Buckets}},
+		"buckets without mode": {Padding: transport.Padding{Buckets: transporttest.Buckets(1).Buckets}},
 		"random of nothing":    {Padding: transport.Padding{Mode: transport.PadRandom}},
 		"unknown mode":         {Padding: transport.Padding{Mode: 7}},
 		"negative jitter":      {Jitter: -time.Microsecond},
@@ -114,7 +115,7 @@ func TestMaxDelay(t *testing.T) {
 }
 
 func TestPaddingSize(t *testing.T) {
-	b := transport.Buckets(100, 200, 300)
+	b := transporttest.Buckets(100, 200, 300)
 	for size, want := range map[int]int{1: 100, 100: 100, 101: 200, 300: 300, 301: 301, 5000: 5000} {
 		if got := b.Size(size); got != want {
 			t.Errorf("buckets: %d pads to %d, want %d", size, got, want)
@@ -146,10 +147,10 @@ func TestMaxPacket(t *testing.T) {
 		want    int
 	}{
 		{"none", transport.Shaping{}, 1452, 1452 - udp.Overhead},
-		{"buckets all below", transport.Shaping{Padding: transport.Buckets(128, 1400)}, 1452, 1452 - udp.Overhead},
-		{"bucket at the unit", transport.Shaping{Padding: transport.Buckets(128, 1452)}, 1452, 1452 - udp.Overhead},
-		{"bucket above the unit", transport.Shaping{Padding: transport.Buckets(128, 1024, 1500)}, 1452, 1024 - udp.Overhead},
-		{"every bucket above", transport.Shaping{Padding: transport.Buckets(1500)}, 1452, 0},
+		{"buckets all below", transport.Shaping{Padding: transporttest.Buckets(128, 1400)}, 1452, 1452 - udp.Overhead},
+		{"bucket at the unit", transport.Shaping{Padding: transporttest.Buckets(128, 1452)}, 1452, 1452 - udp.Overhead},
+		{"bucket above the unit", transport.Shaping{Padding: transporttest.Buckets(128, 1024, 1500)}, 1452, 1024 - udp.Overhead},
+		{"every bucket above", transport.Shaping{Padding: transporttest.Buckets(1500)}, 1452, 0},
 		{"random", transport.Shaping{Padding: transport.Padding{Mode: transport.PadRandom, Max: 100}}, 1452, 1452 - udp.Overhead - 100},
 		{"tiny unit", transport.Shaping{}, 50, 0},
 		{"jumbo unit", transport.Shaping{}, 65000, transport.MaxPacketSize},
@@ -170,7 +171,7 @@ func TestMaxPacket(t *testing.T) {
 
 func TestShapingSupport(t *testing.T) {
 	padOnly := transport.ShapingSupport{Padding: true}
-	if err := padOnly.Check(transport.Shaping{Padding: transport.Buckets(512)}); err != nil {
+	if err := padOnly.Check(transport.Shaping{Padding: transporttest.Buckets(512)}); err != nil {
 		t.Errorf("padding refused: %v", err)
 	}
 	for _, s := range []transport.Shaping{
@@ -183,7 +184,7 @@ func TestShapingSupport(t *testing.T) {
 		}
 	}
 	all := transport.ShapingSupport{Padding: true, Batching: true, Jitter: true, Cover: true}
-	if err := all.Check(transport.Shaping{Padding: transport.Buckets(2, 1)}); !errors.Is(err, transport.ErrInvalidShaping) {
+	if err := all.Check(transport.Shaping{Padding: transporttest.Buckets(2, 1)}); !errors.Is(err, transport.ErrInvalidShaping) {
 		t.Errorf("descending buckets: %v, want ErrInvalidShaping", err)
 	}
 	if err := all.Check(transport.Shaping{Jitter: 1500 * time.Nanosecond}); !errors.Is(err, transport.ErrInvalidShaping) {

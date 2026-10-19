@@ -28,7 +28,7 @@ func wireguardLikeSizes() []int {
 
 // labBuckets is the bucket padding the measurements use: a coarse ladder
 // up to the largest IPv6 datagram a 1500-byte MTU leaves.
-var labBuckets = transport.Shaping{Padding: transport.Buckets(128, 256, 512, 1024, 1452)}
+var labBuckets = transport.Shaping{Padding: transporttest.Buckets(128, 256, 512, 1024, 1452)}
 
 // TestPaddingHidesPacketSizes is the measurement: the same packets sent
 // unshaped, padded to buckets and padded at random, as a censor's capture
@@ -173,7 +173,7 @@ func TestShapingChangeAppliesToReplies(t *testing.T) {
 	}
 	expectPacket(t, up, []byte("plain"))
 	shaped := f.peer
-	shaped.Shaping = transport.Shaping{Padding: transport.Buckets(1000)}
+	shaped.Shaping = transport.Shaping{Padding: transporttest.Buckets(1000)}
 	f.table.Set([]transport.PeerLink{shaped.PeerLink})
 	waitFor(t, "the new shaping", func() bool {
 		if err := server.WritePacket([]byte("padded")); err != nil {

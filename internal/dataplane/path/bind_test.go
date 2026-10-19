@@ -12,6 +12,7 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/path"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport/memory"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport/transporttest"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport/udp"
 )
 
@@ -279,7 +280,7 @@ func TestMessageBudget(t *testing.T) {
 		t.Fatalf("budget %d, want 0", got)
 	}
 	// Bucket padding: the largest bucket that fits the unit sets the budget.
-	shaped := transport.Shaping{Padding: transport.Buckets(256, 1024, 1500)}
+	shaped := transport.Shaping{Padding: transporttest.Buckets(256, 1024, 1500)}
 	if got := path.MessageBudget(memory.NewNetwork(memory.Datagram, memory.AcceptShaping()), shaped, 1452); got != 1024-path.HeaderSize {
 		t.Fatalf("shaped budget %d, want %d", got, 1024-path.HeaderSize)
 	}

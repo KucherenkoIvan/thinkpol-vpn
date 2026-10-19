@@ -1142,7 +1142,7 @@ func testShapingChange(t *testing.T, h Harness) {
 // invalidShapings make no sense on any transport.
 func invalidShapings() []transport.Shaping {
 	return []transport.Shaping{
-		{Padding: transport.Buckets(512, 256)},
+		{Padding: Buckets(512, 256)},
 		{Padding: transport.Padding{Mode: transport.PadRandom, Min: 9, Max: 3}},
 		{Padding: transport.Padding{Mode: 99}},
 		{Jitter: -time.Millisecond},

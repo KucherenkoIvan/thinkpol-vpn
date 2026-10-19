@@ -8,12 +8,13 @@ import (
 	"testing"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport/transporttest"
 )
 
 // Shaping as the controller encodes it: entries pad what they send to
 // devices to buckets, devices pad at random.
 var (
-	bucketShaping = mustMarshal(transport.Shaping{Padding: transport.Buckets(128, 256, 512, 1024, 1452)})
+	bucketShaping = mustMarshal(transport.Shaping{Padding: transporttest.Buckets(128, 256, 512, 1024, 1452)})
 	randomShaping = mustMarshal(transport.Shaping{Padding: transport.Padding{Mode: transport.PadRandom, Max: 64}})
 )
 
