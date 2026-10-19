@@ -11,7 +11,7 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/lab"
 )
 
-// What a stop (or a disconnect) must take away.
+// The node's network state after start, stop, connect and disconnect.
 
 // execTimeout bounds a one-shot check's execs: the check runs once and
 // fails with what it saw. pollTimeout bounds one read inside a poll: the
@@ -27,7 +27,7 @@ func execRead(n *lab.Node, timeout time.Duration, args ...string) (string, error
 	defer cancel()
 	res, err := n.Exec(ctx, args...)
 	if err != nil {
-		return "", fmt.Errorf("%s: %v\nstdout:\n%s", strings.Join(args, " "), err, res.Stdout)
+		return "", fmt.Errorf("%w\nstdout:\n%s", err, res.Stdout)
 	}
 	return res.Stdout, nil
 }
@@ -86,7 +86,7 @@ func ipv6Guard(n *lab.Node, timeout time.Duration) (guardState, error) {
 		if strings.Contains(res.Stderr, "No such file or directory") {
 			return guardAbsent, nil
 		}
-		return "", fmt.Errorf("nft list table inet thinkpol-guard: %v", err)
+		return "", err
 	}
 	if strings.Contains(res.Stdout, "chain") {
 		return guardPresent, nil
@@ -116,7 +116,7 @@ func wantTUNGone(n *lab.Node, timeout time.Duration) error {
 		return fmt.Errorf("the TUN is still there")
 	}
 	if !strings.Contains(res.Stderr, "does not exist") {
-		return fmt.Errorf("ip link show thinkpol0: %v", err)
+		return err
 	}
 	return nil
 }

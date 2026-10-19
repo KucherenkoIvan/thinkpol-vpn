@@ -102,9 +102,8 @@ func ping(t *testing.T, from *lab.Node, to netip.Addr) {
 	})
 }
 
-// noPing fails unless the ping got no reply: ping's own exit code 1 and
-// its " 0 received" summary (docker exec's exit code alone also says
-// docker failed). Any other failure (an exec error, a timeout) is an
+// noPing fails unless the ping got no reply: exit code 1 and ping's own
+// " 0 received" summary (docker exec also exits 1 when docker fails). Any other failure (an exec error, a timeout) is an
 // unknown state and fails with its reason — never proof the path is down.
 func noPing(t *testing.T, from *lab.Node, to netip.Addr) {
 	t.Helper()

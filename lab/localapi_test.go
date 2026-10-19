@@ -288,10 +288,8 @@ func TestDisconnectLeavesNothingBehind(t *testing.T) {
 			if !routeTableRulesUp(rules4, rules6) {
 				return fmt.Errorf("no route-table rules while connected:\n%s%s", rules4, rules6)
 			}
-		} else {
-			if rules4 != rulesBefore4 || rules6 != rulesBefore6 {
-				return fmt.Errorf("rules after disconnecting:\n%s\n%s\nwant\n%s\n%s", rules4, rules6, rulesBefore4, rulesBefore6)
-			}
+		} else if rules4 != rulesBefore4 || rules6 != rulesBefore6 {
+			return fmt.Errorf("rules after disconnecting:\n%s\n%s\nwant\n%s\n%s", rules4, rules6, rulesBefore4, rulesBefore6)
 		}
 		if !connected {
 			if err := wantTUNGone(devA, pollTimeout); err != nil {

@@ -168,8 +168,12 @@ func TestDNSFollowsTheRules(t *testing.T) {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), execTimeout)
 		defer cancel()
+		// Only resolvectl's own refusal, naming the link, shows resolved
+		// dropped the TUN; any other failure (docker, a timeout) shows nothing.
 		if out, err := devB.Exec(ctx, "resolvectl", "dns", "thinkpol0"); err == nil {
 			t.Errorf("resolved still has the TUN: %s", out.Stdout)
+		} else if !strings.Contains(out.Stderr, "thinkpol0") {
+			t.Errorf("resolvectl dns thinkpol0 says nothing about the TUN: %v", err)
 		}
 		if conf := devB.MustExec(t, "cat", "/etc/resolv.conf"); !strings.HasPrefix(conf, "nameserver 127.0.0.53\n") {
 			t.Errorf("resolv.conf was touched:\n%s", conf)
