@@ -455,17 +455,17 @@ func (s *Service) current(gen uint64) bool {
 	return s.gen == gen
 }
 
-// hold adds a checked blob if the current plan still wants it, and counts
-// it with counted under the same lock: a blob Get returns is already in
-// Status.
-func (s *Service) hold(ref netmap.BlobRef, data []byte, counted func(st *Status)) bool {
+// hold adds a checked blob if the current plan still wants it, applying
+// count to the status in the same critical section: a blob Get returns is
+// already counted in Status.
+func (s *Service) hold(ref netmap.BlobRef, data []byte, count func(st *Status)) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	w, ok := s.want[ref.SHA256]
 	if !ok || w.Kind != ref.Kind {
 		return false
 	}
-	counted(&s.st)
+	count(&s.st)
 	s.held[ref.SHA256], s.data[ref.SHA256] = w, data
 	// It replaces any stand-in of its kind and name.
 	for sha, old := range s.held {
