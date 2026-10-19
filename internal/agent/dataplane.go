@@ -74,8 +74,6 @@ type DataPlane struct {
 	DNS          bool
 	DNSUpstreams []netip.AddrPort
 
-	// Host is this data plane's part of the node's platform: what one
-	// data plane needs of its network stack (see Host).
 	Host Host
 
 	// A device's (Node.run): where its status goes, its Connect and
@@ -88,10 +86,8 @@ type DataPlane struct {
 	Rules         rules.Local
 	rulesRequests <-chan rulesRequest
 
-	// What tests tune: the path layer's timing, how long to wait before
-	// retrying what failed, and a worker's blob service's limits but
-	// MaxHeld, always the server's (its network comes through
-	// Host.BlobNet).
+	// What tests tune: the path layer's timing, the retry delay, and a
+	// worker's blob limits (MaxHeld is always blobs.ServerMaxHeldSize).
 	path        path.Options
 	retryAfter  time.Duration
 	blobOptions blobs.Options

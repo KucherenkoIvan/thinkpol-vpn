@@ -227,7 +227,7 @@ func (n *Node) Adapters(reload <-chan os.Signal) ([]app.Adapter, error) {
 	if err != nil {
 		return nil, err
 	}
-	reg, err := n.plat.Transports(true) // a device's, or the supervisor's in the root namespace
+	reg, err := n.plat.Transports(true)
 	if err != nil {
 		unlock()
 		return nil, err
@@ -300,7 +300,7 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 // while it was down starts this way instead of failing, which under a
 // service manager would only restart it over and over.
 func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
-	f := mapFollower{log: n.logs.Logger, keys: n.state.Keys, cur: n.state.Map,
+	f := mapFollower{log: n.logs.Logger, keys: n.state.Keys,
 		removedMsg: "waiting for a map that includes it"}
 	f.markRemoved(n.state.Map)
 	requested := false
@@ -321,10 +321,11 @@ func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
 				maps = nil
 				continue
 			}
-			if taken, _ := f.take(env); !taken {
+			taken, back := f.take(env)
+			if !taken {
 				continue
 			}
-			if f.removed {
+			if !back {
 				// Still out: the report gets the newer map's version.
 				n.report.set(func(p *report) { p.version = f.cur.Header().Version })
 				continue

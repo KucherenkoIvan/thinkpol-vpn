@@ -24,8 +24,8 @@ type Host struct {
 	NewConfigurator func(o netcfg.Owner) (netcfg.Configurator, error)
 	// NewTUN creates the overlay's TUN.
 	NewTUN func(name string, mtu int) (wgtun.Device, error)
-	// NewGuard is the host's leak guard for the route table (nil where
-	// the host has none yet: Windows' is TP-047/TP-048's).
+	// NewGuard returns the host's leak guard for the route table, or nil
+	// where the host has none yet (Windows: TP-047/TP-048). Required.
 	NewGuard func() routetable.Guard
 	// NewRouteTable takes route-table enforcement, with guard (nil: none).
 	NewRouteTable func(log *slog.Logger, guard routetable.Guard) (dataplane.RouteTable, error)
