@@ -44,15 +44,15 @@ branch: "tp-075-agent-layer-refactor"
 - [x] R2.9 hostlock_unix.go: one doc comment (no stacked old paragraph, no "who wires it").
 - [x] R2.10 The ticket's hook attribution: the remaining private test fields (path, retryAfter, onEngine, dnsPort, Node.tweak) — add a Scope bullet to TP-083 (tickets/backlog/TP-083-*.md, with a Log line) or correct this ticket's Log; blobOptions/newBlobs is this ticket's now (R2.5).
 - [x] R2.11 Nits: comments state constraints, not who calls (platform.go, node.go, dataplane.go, servespace.go, cmd platform.go, tests); validate the whole Platform/Host once in Prepare/ServeSpace or drop the partial nil check and its test-mentioning message; one name clearNetwork; rewrite Log line ~44: "Not verified here: the adapters' host-side paths outside the lab's Linux (macOS device on a real network: needs_human: macos)".
-- [ ] R3.1 One "back in space" line: a node that starts removed logs one line, with mode, after the dropped-connect warning (as before this ticket); runner and serverSpaces keep their own modeless line; test: strings.Count(out, "back in space") == 1 on the start-while-removed path, the line carries mode=, the warning comes first when a connect was requested.
-- [ ] R3.2 R2.8 was ticked but not done: tests still write Host fakes onto dp.Host from n.tweak after Prepare (status_test.go, resolver_test.go). Every Host/Platform fake goes into the Platform passed to Prepare (startDevice's opts get the *Platform before Prepare); n.tweak keeps only the private DataPlane fields (TP-083's). A Node.run that stopped copying plat.Host must fail a test.
-- [ ] R3.3 R2.1's Log line is missing: DESIGN.md "Engine and agent" changed.
-- [ ] R3.4 Comments state constraints, not callers: platform.go (Platform, Transports, BlobNet), servespace.go, node.go, supervisor/supervisor_linux.go, supervisor/options.go (NewRoot, "Zero values take the defaults"), rollback_linux_test.go.
-- [ ] R3.5 One name: runner.clearRoutes goes, the Host's clearNetwork logs its own warning; no duplicate "removing a previous run's routes failed" string.
-- [ ] R3.6 servespace.go: no conditional MaxHeld default (TP-104 set ServerMaxHeldSize directly); the test hook keeps the server's MaxHeld.
-- [ ] R3.7 A test pins markSockets per mode (device and supervisor true, worker false): the test helper's Transports records its argument.
-- [ ] R3.8 TP-083's ticket: its private-hooks list includes blobOptions; a Notes line that Host carries device-only adapters into the worker, kept off only by the Forward and RouteTable flags. Log line there.
-- [ ] R3.9 Nits: platform_test.go Transports closure → Transports; cmd/thinkpol/up.go applyPlatformDefaults moves into internal/agent (agent.ApplyOSDefaults) so cmd only calls it; optionally platform_{linux,darwin,other}.go → supported_*.go.
+- [x] R3.1 One "back in space" line: a node that starts removed logs one line, with mode, after the dropped-connect warning (as before this ticket); runner and serverSpaces keep their own modeless line; test: strings.Count(out, "back in space") == 1 on the start-while-removed path, the line carries mode=, the warning comes first when a connect was requested.
+- [x] R3.2 R2.8 was ticked but not done: tests still write Host fakes onto dp.Host from n.tweak after Prepare (status_test.go, resolver_test.go). Every Host/Platform fake goes into the Platform passed to Prepare (startDevice's opts get the *Platform before Prepare); n.tweak keeps only the private DataPlane fields (TP-083's). A Node.run that stopped copying plat.Host must fail a test.
+- [x] R3.3 R2.1's Log line is missing: DESIGN.md "Engine and agent" changed.
+- [x] R3.4 Comments state constraints, not callers: platform.go (Platform, Transports, BlobNet), servespace.go, node.go, supervisor/supervisor_linux.go, supervisor/options.go (NewRoot, "Zero values take the defaults"), rollback_linux_test.go.
+- [x] R3.5 One name: runner.clearRoutes goes, the Host's clearNetwork logs its own warning; no duplicate "removing a previous run's routes failed" string.
+- [x] R3.6 servespace.go: no conditional MaxHeld default (TP-104 set ServerMaxHeldSize directly); the test hook keeps the server's MaxHeld.
+- [x] R3.7 A test pins markSockets per mode (device and supervisor true, worker false): the test helper's Transports records its argument.
+- [x] R3.8 TP-083's ticket: its private-hooks list includes blobOptions; a Notes line that Host carries device-only adapters into the worker, kept off only by the Forward and RouteTable flags. Log line there.
+- [x] R3.9 Nits: platform_test.go Transports closure → Transports; cmd/thinkpol/up.go applyPlatformDefaults moves into internal/agent (agent.ApplyOSDefaults) so cmd only calls it; optionally platform_{linux,darwin,other}.go → supported_*.go.
 
 ## Log
 - 2026-10-15 created in backlog
@@ -74,3 +74,8 @@ branch: "tp-075-agent-layer-refactor"
 - 2026-10-19 in-progress → review — make lint, make test green; make lab-test green (exit 0, 35 packages PASS) at d1e40b0. Not verified here: the adapters' host-side paths outside the lab's Linux (macOS device on a real network: needs_human: macos)
 - 2026-10-19 review → has-errors — review round 3: R3.1–R3.9
 - 2026-10-19 has-errors → in-progress — review round 3 findings picked up (R3.1–R3.9)
+- 2026-10-19 merged origin/rewrite (TP-103, TP-104, TP-108, TP-114): TP-108's upstreamsUnknown stays, its system resolver calls go through r.dp.Host (SystemUpstreams, SetSystemDNS); the supervisor's lab tests pass NewRoot next to TP-103's rebuild failer
+- 2026-10-19 docs: DESIGN.md "Engine and agent": the node's host adapters are built by cmd/thinkpol per OS and handed to internal/agent (agent.Host for one data plane; agent.Platform adds the host-wide ones); the agent sequences them and never constructs them
+- 2026-10-19 round 3: take reports a node back in its space and the caller says so (sayBack): runner and serverSpaces at once, without mode, as before; a node that started removed once, with its mode, after the dropped-connect warning; Host.clearNetwork logs its own warning (runner.clearRoutes gone)
+- 2026-10-19 round 3: device tests put every host fake into the Platform passed to Prepare (startDevice's deviceOpt.prepare), n.tweak keeps only the private DataPlane fields; a test pins markSockets per mode (device and supervisor true, worker false); a worker's blob service always holds the server's MaxHeld
+- 2026-10-19 round 3: comments state constraints, not callers (platform.go, servespace.go, node.go, supervisor options and New, rollback test); agent.ApplyOSDefaults replaces cmd's applyPlatformDefaults; platform_{linux,darwin,other}.go renamed supported_*.go; TP-083 lists blobOptions and notes the Host the worker carries
