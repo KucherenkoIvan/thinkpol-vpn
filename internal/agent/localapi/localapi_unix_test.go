@@ -20,6 +20,9 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	"github.com/KucherenkoIvan/go-kernel/grpckit"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent"
@@ -179,6 +182,11 @@ func TestTheCLIControlsTheNode(t *testing.T) {
 	s.node.mu.Lock()
 	s.node.connectErr = &agent.StartError{Step: agent.StepTUN, Err: errors.New("detail 192.0.2.1 for the log only")}
 	s.node.mu.Unlock()
+	// The raw RPC's code: a failed start is a domain error not in the
+	// table, so the interceptor's default goes out.
+	if _, raw := c.api.Connect(ctx, &localapiv1.ConnectRequest{}); status.Code(raw) != codes.FailedPrecondition {
+		t.Fatalf("raw connect: %v, want %s", raw, codes.FailedPrecondition)
+	}
 	_, err = c.Connect(ctx)
 	if err == nil || !strings.Contains(err.Error(), `step "tun"`) || strings.Contains(err.Error(), "192.0.2.1") {
 		t.Fatalf("got %v, want the step and no detail", err)

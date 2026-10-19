@@ -74,15 +74,15 @@ func TestPrepareChecksTheConfig(t *testing.T) {
 }
 
 func TestLoadConfig(t *testing.T) {
-	vars := []string{"THINKPOL_STATE_DIR", "THINKPOL_MAP", "THINKPOL_MODE", "THINKPOL_LOG_LEVEL", "THINKPOL_INTERFACE", "THINKPOL_LINK_MTU", "THINKPOL_MAP_POLL", "THINKPOL_CONNECT", "THINKPOL_API_SOCKET", "THINKPOL_API_GROUP"}
+	vars := []string{"THINKPOL_STATE_DIR", "THINKPOL_MAP", "THINKPOL_MODE", "THINKPOL_LOG_LEVEL", "THINKPOL_INTERFACE", "THINKPOL_LINK_MTU", "THINKPOL_MAP_POLL", "THINKPOL_CONNECT", "THINKPOL_API_GROUP"}
 	for _, k := range vars {
 		if v, ok := os.LookupEnv(k); ok {
 			t.Cleanup(func() { _ = os.Setenv(k, v) })
 			_ = os.Unsetenv(k)
 		}
 	}
-	// The platform defaults (state directory, API socket) are the `up`
-	// command's, applied after the load.
+	// Nothing fills what the environment left unset: the platform
+	// defaults are not the load's.
 	cfg, err := LoadConfig()
 	if err != nil {
 		t.Fatal(err)
@@ -95,11 +95,10 @@ func TestLoadConfig(t *testing.T) {
 	t.Setenv("THINKPOL_MAP", "/x/m.bin")
 	t.Setenv("THINKPOL_MAP_POLL", "2s")
 	t.Setenv("THINKPOL_CONNECT", "false")
-	t.Setenv("THINKPOL_API_SOCKET", "")
 	if cfg, err = LoadConfig(); err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Mode != ModeDevice || cfg.MapPath() != "/x/m.bin" || cfg.MapPoll != 2*time.Second || cfg.Connect || cfg.APISocket != "" {
+	if cfg.Mode != ModeDevice || cfg.MapPath() != "/x/m.bin" || cfg.MapPoll != 2*time.Second || cfg.Connect {
 		t.Fatalf("from the environment %+v", cfg)
 	}
 }
