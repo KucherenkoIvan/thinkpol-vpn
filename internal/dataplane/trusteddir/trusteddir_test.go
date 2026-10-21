@@ -215,3 +215,32 @@ func TestRecordsAreReadOnlyInTheirBoot(t *testing.T) {
 		t.Errorf("a missing record: %v", err)
 	}
 }
+
+// WriteRecord writes only what ReadRecord reads back as written: a
+// header of one comment line and a session of one field.
+func TestARecordIsRefusedWhatWouldNotReadBack(t *testing.T) {
+	path := tempDir(t)
+	d, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = d.Close() }()
+	const header, boot = "# what this is", "6F1C0D2E-0000-4000-8000-000000000001"
+	for name, tc := range map[string]struct{ header, boot string }{
+		"a header that isn't a comment":  {"what this is", boot},
+		"a header of two lines":          {header + "\n# more", boot},
+		"a header ending in a newline":   {header + "\n", boot},
+		"an empty header":                {"", boot},
+		"an empty session":               {header, ""},
+		"a session of two fields":        {header, "a b"},
+		"a session with a space before":  {header, " " + boot},
+		"a session with a newline after": {header, boot + "\n"},
+	} {
+		if err := WriteRecord(d, "rec", tc.header, tc.boot, []byte("line 1\n")); err == nil {
+			t.Errorf("%s: written", name)
+		}
+		if _, err := os.Lstat(filepath.Join(path, "rec")); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s: a record left: %v", name, err)
+		}
+	}
+}

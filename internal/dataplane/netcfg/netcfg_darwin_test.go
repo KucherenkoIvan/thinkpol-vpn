@@ -857,7 +857,7 @@ func TestARecordOfAnEarlierBootOwnsNothing(t *testing.T) {
 	k, dir := newFakeKernel(), tempDir(t)
 	k.rs[pfx("10.0.0.0/8")] = kroute{dst: pfx("10.0.0.0/8"), gw: ip("192.168.1.1"), index: 11, flags: unix.RTF_UP | unix.RTF_GATEWAY | routeFlag}
 	before := k.snapshot()
-	if err := writeRecord(openDir(t, dir), recordName(OwnerRouteTable), "an earlier boot", map[rkey]bool{unscoped(pfx("10.0.0.0/8")): true}); err != nil {
+	if err := writeRecord(openDir(t, dir), recordName(OwnerRouteTable), "an-earlier-boot", map[rkey]bool{unscoped(pfx("10.0.0.0/8")): true}); err != nil {
 		t.Fatal(err)
 	}
 	c := newTestConfigurator(t, k, dir, OwnerRouteTable)

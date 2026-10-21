@@ -87,11 +87,18 @@ var ErrOtherBoot = errors.New("written in another boot session")
 var ErrNoBoot = errors.New("no boot session")
 
 // WriteRecord replaces the record name in dir (as WriteFile does) with
-// header, a comment line ('#'), then "boot <boot>", then body.
+// header, one comment line ('#'), then "boot <boot>", then body. boot is
+// one field, so ReadRecord reads back the session written.
 func WriteRecord(dir *os.File, name, header, boot string, body []byte) error {
-	data := make([]byte, 0, len(header)+len(boot)+len(body)+7)
-	data = append(data, header+"\nboot "+boot+"\n"...)
-	return WriteFile(dir, name, append(data, body...))
+	path := filepath.Join(dir.Name(), name)
+	if !strings.HasPrefix(header, "#") || strings.Contains(header, "\n") {
+		return fmt.Errorf("%s: header %q is not one comment line", path, header)
+	}
+	if f := strings.Fields(boot); len(f) != 1 || f[0] != boot {
+		return fmt.Errorf("%s: boot session %q is not one field", path, boot)
+	}
+	data := append([]byte(header+"\nboot "+boot+"\n"), body...)
+	return WriteFile(dir, name, data)
 }
 
 // ReadRecord reads the record name in dir (as ReadFile does) and returns
