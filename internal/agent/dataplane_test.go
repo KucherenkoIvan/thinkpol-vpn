@@ -16,6 +16,7 @@ import (
 	"golang.zx2c4.com/wireguard/tun/tuntest"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/logring"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/packettest"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/path"
@@ -333,7 +334,7 @@ func TestDataPlaneStopsWhileRemoved(t *testing.T) {
 // until ctx ends while blocking is set.
 type failingConfigurator struct {
 	failing, blocking atomic.Bool
-	applies           atomic.Int32
+	applies, closes   atomic.Int32
 }
 
 func (c *failingConfigurator) Apply(ctx context.Context, _ netcfg.Config) error {
@@ -360,7 +361,7 @@ func (c *failingConfigurator) Watch(context.Context) (<-chan struct{}, error) {
 	return nil, errors.ErrUnsupported
 }
 
-func (c *failingConfigurator) Close() error { return nil }
+func (c *failingConfigurator) Close() error { c.closes.Add(1); return nil }
 
 func TestAFailedApplyIsRetried(t *testing.T) {
 	s := newTestSpace(t)
@@ -543,5 +544,69 @@ func TestAFailedStartClearsACrashedRunsRouteTable(t *testing.T) {
 	}
 	if cleared.Load() == 0 {
 		t.Error("the failed start left a previous run's route table")
+	}
+}
+
+// closedTUN is a virtual TUN that counts its Closes.
+type closedTUN struct {
+	wgtun.Device
+	closes *atomic.Int32
+}
+
+func (c closedTUN) Close() error { c.closes.Add(1); return c.Device.Close() }
+
+// A failed start takes down what it opened, whichever step failed; until
+// the route table is the data plane's own, a crashed run's table goes
+// too.
+func TestAFailedStartUndoesWhatItOpened(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		step string
+		// tableOpens: the route table opens (and must be closed);
+		// applyFails: the first Apply fails at the interface.
+		tableOpens, applyFails bool
+		wantClear              bool
+	}{
+		{"route table", dataplane.StepRouteTable, false, false, true},
+		{"first apply", dataplane.StepInterface, true, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestSpace(t)
+			_, reg := memoryRegistry(t)
+			n := newRunningNode()
+			ifc := &failingConfigurator{}
+			n.ifc = ifc
+			dp := n.dataPlane(reg, s.a, s.verified(t, 1))
+			dp.RouteTable = true
+			var tunCloses, cleared atomic.Int32
+			virtual := dp.Host.NewTUN
+			dp.Host.NewTUN = func(name string, mtu int) (wgtun.Device, error) {
+				dev, err := virtual(name, mtu)
+				return closedTUN{dev, &tunCloses}, err
+			}
+			dp.Host.ClearConfig = func(netcfg.Owner) error { cleared.Add(1); return nil }
+			table := &wantsTable{}
+			dp.Host.NewRouteTable = func(*slog.Logger, routetable.Guard) (RouteEnforcer, error) {
+				if !tc.tableOpens {
+					return nil, errors.New("no route table today")
+				}
+				return table, nil
+			}
+			ifc.failing.Store(tc.applyFails)
+			var se *StartError
+			if err := RunDataPlane(n.ctx, dp); !errors.As(err, &se) || se.Step != tc.step {
+				t.Fatalf("got %v, want a StartError at %s", err, tc.step)
+			}
+			if tunCloses.Load() == 0 || ifc.closes.Load() != 1 {
+				t.Errorf("TUN closed %d times, configurator %d times", tunCloses.Load(), ifc.closes.Load())
+			}
+			if table.mu.Lock(); tc.tableOpens && table.closes != 1 {
+				t.Errorf("route table closed %d times", table.closes)
+			}
+			table.mu.Unlock()
+			if got := cleared.Load() > 0; got != tc.wantClear {
+				t.Errorf("a crashed run's table cleared: %v", got)
+			}
+		})
 	}
 }

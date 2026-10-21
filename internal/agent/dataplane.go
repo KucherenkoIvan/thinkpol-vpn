@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	wgtun "golang.zx2c4.com/wireguard/tun"
+
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/blobs"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
@@ -230,99 +232,38 @@ type runner struct {
 const tunMTU = 1420
 
 // start brings the data plane up on the current section. It fails with a
-// *StartError.
+// *StartError, having undone what it set up, last first.
 func (r *runner) start(ctx context.Context) error {
-	ifc, err := r.dp.Host.NewConfigurator(netcfg.OwnerOverlay)
+	var undo undoStack
+	ports, err := r.openPorts(&undo)
 	if err != nil {
-		if r.dp.RouteTable { // a crashed run's table would block traffic meanwhile
+		undo.run()
+		// The route table isn't the data plane's own: a crashed run's
+		// would block traffic meanwhile.
+		if r.dp.RouteTable {
 			r.dp.Host.clearNetwork(r.dp.Log)
 		}
-		return &StartError{Step: StepTUN, Err: err}
+		return err
 	}
-	dev, err := r.dp.Host.NewTUN(r.dp.Interface, tunMTU)
+	engine, err := dataplane.NewEngine(r.engineConfig(ports))
 	if err != nil {
-		if ifc != nil {
-			_ = ifc.Close()
-		}
-		if r.dp.RouteTable { // a crashed run's table would block traffic meanwhile
-			r.dp.Host.clearNetwork(r.dp.Log)
-		}
-		return &StartError{Step: StepTUN, Err: err}
-	}
-	if name, err := dev.Name(); err == nil && name != "" {
-		r.tun = name
-	}
-	var routes *routeTable
-	var routesPort dataplane.RouteTable // nil without one
-	if r.dp.RouteTable {
-		rt, err := r.dp.Host.NewRouteTable(r.dp.Log, r.dp.Host.NewGuard())
-		if err != nil {
-			if ifc != nil {
-				_ = ifc.Close()
-			}
-			_ = dev.Close()
-			r.dp.Host.clearNetwork(r.dp.Log)
-			return &StartError{Step: dataplane.StepRouteTable, Err: err}
-		}
-		routes = newRouteTable(rt)
-		routesPort = routes
-	}
-	var resolver *dns.Server
-	var resolverIfc dataplane.Resolver // nil without one
-	if r.dp.DNS {
-		resolver = r.newResolver()
-		resolverIfc = dnsResolver{resolver}
-	}
-	var ifcPort dataplane.InterfaceConfigurator // nil without one
-	if ifc != nil {
-		ifcPort = overlayInterface{ifc}
-	}
-	cfg := dataplane.EngineConfig{
-		ID:           r.dp.Keys.ID,
-		Space:        transport.SpaceID(r.follow.cur.Header().SpaceID),
-		WireGuardKey: r.dp.Keys.WireGuard,
-		Registry:     r.dp.Registry,
-		TUN:          dev,
-		Interface:    ifcPort,
-		LinkMTU:      r.dp.LinkMTU,
-		Path:         r.dp.path,
-		Log:          r.dp.Log,
-		Forward:      r.dp.Forward,
-		Rules:        r.dp.Rules,
-		RouteTable:   routesPort,
-		DNS:          resolverIfc,
-	}
-	if b := r.dp.Blobs; b != nil {
-		// The rules' lists: the current map's once held, the previous
-		// version until then. ReloadRules follows the service's changes.
-		cfg.Blobs = func(ref netmap.BlobRef) ([]byte, bool) { return b.Get(ref.SHA256) }
-		cfg.StandIn = b.Latest
-	}
-	engine, err := dataplane.NewEngine(cfg)
-	if err != nil {
-		if routes != nil {
-			_ = routes.Close()
-		}
-		if ifc != nil {
-			_ = ifc.Close()
-		}
-		_ = dev.Close()
-		if resolver != nil {
-			_ = resolver.Close()
-		}
+		undo.run()
 		return &StartError{Step: StepEngine, Err: err}
+	}
+	// The engine owns the TUN, its configurator and the route table now:
+	// its Close takes them down.
+	undo = undoStack{func() { _ = engine.Close() }}
+	if res := ports.resolver; res != nil {
+		undo.push(func() { _ = res.Close() })
 	}
 	if err := engine.Apply(ctx, r.follow.section); err != nil {
 		step := engine.Status().LastApplyError
-		if resolver != nil {
-			_ = resolver.Close()
-		}
-		_ = engine.Close()
+		undo.run()
 		return &StartError{Step: step, Err: fmt.Errorf("applying map version %d: %w", r.follow.cur.Header().Version, err)}
 	}
-	r.engine, r.resolver, r.routes = engine, resolver, routes
-	if resolver != nil && routes != nil {
-		if err := routes.SetDirectUpstreams(ctx, r.upstreams); err != nil {
+	r.engine, r.resolver, r.routes = engine, ports.resolver, ports.routes
+	if r.resolver != nil && r.routes != nil {
+		if err := r.routes.SetDirectUpstreams(ctx, r.upstreams); err != nil {
 			r.dp.Log.Warn("DNS: keeping the direct upstreams reachable failed", "err", path.RedactError(err))
 		}
 	}
@@ -334,6 +275,87 @@ func (r *runner) start(ctx context.Context) error {
 	r.retryAt = time.Time{}
 	r.applied()
 	return nil
+}
+
+// startPorts are what a start opens for its engine; a nil one is what the
+// data plane runs without (ifc: tests; routes, resolver: off).
+type startPorts struct {
+	tun      wgtun.Device
+	ifc      netcfg.Configurator
+	routes   *routeTable
+	resolver *dns.Server
+}
+
+// openPorts opens the TUN's configurator, the TUN, the route table and the
+// resolver, pushing each one's Close onto undo. It fails with a
+// *StartError, never once the route table is open.
+func (r *runner) openPorts(undo *undoStack) (startPorts, error) {
+	var p startPorts
+	ifc, err := r.dp.Host.NewConfigurator(netcfg.OwnerOverlay)
+	if err != nil {
+		return p, &StartError{Step: StepTUN, Err: err}
+	}
+	if ifc != nil {
+		p.ifc = ifc
+		undo.push(func() { _ = ifc.Close() })
+	}
+	dev, err := r.dp.Host.NewTUN(r.dp.Interface, tunMTU)
+	if err != nil {
+		return p, &StartError{Step: StepTUN, Err: err}
+	}
+	p.tun = dev
+	undo.push(func() { _ = dev.Close() })
+	if name, err := dev.Name(); err == nil && name != "" {
+		r.tun = name
+	}
+	if r.dp.RouteTable {
+		rt, err := r.dp.Host.NewRouteTable(r.dp.Log, r.dp.Host.NewGuard())
+		if err != nil {
+			return p, &StartError{Step: dataplane.StepRouteTable, Err: err}
+		}
+		routes := newRouteTable(rt)
+		p.routes = routes
+		undo.push(func() { _ = routes.Close() })
+	}
+	if r.dp.DNS {
+		res := r.newResolver()
+		p.resolver = res
+		undo.push(func() { _ = res.Close() })
+	}
+	return p, nil
+}
+
+// engineConfig is the engine's configuration on p, for the current map.
+// Only the ports p has go in: a nil adapter in a port would look set.
+func (r *runner) engineConfig(p startPorts) dataplane.EngineConfig {
+	cfg := dataplane.EngineConfig{
+		ID:           r.dp.Keys.ID,
+		Space:        transport.SpaceID(r.follow.cur.Header().SpaceID),
+		WireGuardKey: r.dp.Keys.WireGuard,
+		Registry:     r.dp.Registry,
+		TUN:          p.tun,
+		LinkMTU:      r.dp.LinkMTU,
+		Path:         r.dp.path,
+		Log:          r.dp.Log,
+		Forward:      r.dp.Forward,
+		Rules:        r.dp.Rules,
+	}
+	if p.ifc != nil {
+		cfg.Interface = overlayInterface{p.ifc}
+	}
+	if p.routes != nil {
+		cfg.RouteTable = p.routes
+	}
+	if p.resolver != nil {
+		cfg.DNS = dnsResolver{p.resolver}
+	}
+	if b := r.dp.Blobs; b != nil {
+		// The rules' lists: the current map's once held, the previous
+		// version until then. ReloadRules follows the service's changes.
+		cfg.Blobs = func(ref netmap.BlobRef) ([]byte, bool) { return b.Get(ref.SHA256) }
+		cfg.StandIn = b.Latest
+	}
+	return cfg
 }
 
 // stop takes the data plane down: listeners, engine, TUN and its

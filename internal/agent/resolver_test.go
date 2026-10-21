@@ -497,6 +497,7 @@ type wantsTable struct {
 	failed     bool
 	broken     bool
 	nextBroken *bool
+	closes     int
 }
 
 func (w *wantsTable) Enforce(_ context.Context, want routetable.Want) error {
@@ -526,7 +527,12 @@ func (w *wantsTable) Status() routetable.Status {
 	return routetable.Status{Enforced: true}
 }
 
-func (w *wantsTable) Close() error { return nil }
+func (w *wantsTable) Close() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.closes++
+	return nil
+}
 
 // breakAtNextEnforce has the table fail to put the routes back on its
 // own (or recover) once the next Enforce is done: before the runner's
