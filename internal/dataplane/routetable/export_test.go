@@ -2,6 +2,7 @@ package routetable
 
 import (
 	"context"
+	"log/slog"
 	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
@@ -19,8 +20,13 @@ func Ahead(w Want, s netcfg.Survey) int { return LayoutOf(w, s).Ahead }
 // OverlayAhead is LayoutOf's OverlayAhead.
 func OverlayAhead(w Want, s netcfg.Survey) int { return LayoutOf(w, s).OverlayAhead }
 
-// GuardApply is applyGuard; the warn rate limit's test drives it.
-func (e *Enforcer) GuardApply(ctx context.Context, w Want) { e.applyGuard(ctx, w) }
+// OpenWithClock is OpenWithGuard with now as the warn rate limit's clock.
+func OpenWithClock(c netcfg.Configurator, g Guard, log *slog.Logger, now func() time.Time) *Enforcer {
+	return openWithClock(c, g, log, now)
+}
 
-// SetNow replaces the enforcer's clock; the warn rate limit's test uses it.
-func SetNow(e *Enforcer, now func() time.Time) { e.now = now }
+// GuardApply is e's applyGuard.
+func GuardApply(ctx context.Context, e *Enforcer, w Want) { e.applyGuard(ctx, w) }
+
+// GuardWarnEvery is how far apart the guard's failures are warned.
+const GuardWarnEvery = guardWarnEvery

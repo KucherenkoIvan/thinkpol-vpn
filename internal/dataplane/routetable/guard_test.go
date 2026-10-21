@@ -443,13 +443,13 @@ func TestGuardFailuresAreWarnedAtMostAMinuteApart(t *testing.T) {
 	g := newFakeGuard(f)
 	g.setFail(errors.New("the guard's load was refused"))
 	var buf lockedBuffer
-	e := routetable.OpenWithGuard(f, g, slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
-	defer func() { _ = e.Close() }()
 	now := time.Unix(0, 0)
 	var mu sync.Mutex
-	routetable.SetNow(e, func() time.Time { mu.Lock(); defer mu.Unlock(); return now })
+	e := routetable.OpenWithClock(f, g, slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})),
+		func() time.Time { mu.Lock(); defer mu.Unlock(); return now })
+	defer func() { _ = e.Close() }()
 	advance := func(d time.Duration) { mu.Lock(); now = now.Add(d); mu.Unlock() }
-	apply := func() { e.GuardApply(context.Background(), routetable.Want{TUN: "thinkpol0"}) }
+	apply := func() { routetable.GuardApply(context.Background(), e, routetable.Want{TUN: "thinkpol0"}) }
 	warns := func() []string { return buf.lines("applying the leak guard failed") }
 
 	// The first failure warns.
@@ -465,7 +465,7 @@ func TestGuardFailuresAreWarnedAtMostAMinuteApart(t *testing.T) {
 		t.Fatalf("%d warns within the minute, want 1", n)
 	}
 	// Past the minute, one line with the silenced count.
-	advance(routetable.RetryAfter * 12)
+	advance(routetable.GuardWarnEvery)
 	apply()
 	if n := len(warns()); n != 2 {
 		t.Fatalf("%d warns after a minute, want 2", n)

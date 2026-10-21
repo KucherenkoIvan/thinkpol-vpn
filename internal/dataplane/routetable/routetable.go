@@ -274,6 +274,8 @@ type Enforcer struct {
 	cfg   netcfg.Configurator
 	guard Guard // nil: routes only
 	log   *slog.Logger
+	// now: the clock the warn rate limit reads.
+	now func() time.Time
 
 	// enforcing serializes Enforce and Close, which pause the watcher (it
 	// re-applies on its own goroutine, never at the same time): so the
@@ -305,9 +307,7 @@ type Enforcer struct {
 	// retried, one a minute is logged, with the count silenced.
 	guardWarnAt     time.Time
 	guardSuppressed int
-	// now: the clock the warn rate limit reads.
-	now    func() time.Time
-	status Status
+	status          Status
 }
 
 // Status is what an Enforcer reports: numbers and fixed texts only.
@@ -386,10 +386,16 @@ func Open(c netcfg.Configurator, log *slog.Logger) *Enforcer {
 // OpenWithGuard is Open with g enforced along with the routes (nil:
 // none); it owns g too.
 func OpenWithGuard(c netcfg.Configurator, g Guard, log *slog.Logger) *Enforcer {
+	return openWithClock(c, g, log, time.Now)
+}
+
+// openWithClock is OpenWithGuard with now as the clock the warn rate
+// limit reads.
+func openWithClock(c netcfg.Configurator, g Guard, log *slog.Logger, now func() time.Time) *Enforcer {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	e := &Enforcer{cfg: c, guard: g, log: log, now: time.Now}
+	e := &Enforcer{cfg: c, guard: g, log: log, now: now}
 	e.startWatching(false)
 	return e
 }
