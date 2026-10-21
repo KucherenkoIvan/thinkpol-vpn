@@ -158,6 +158,41 @@ func TestDNSFollowsTheRules(t *testing.T) {
 		if conf := devB.MustExec(t, "cat", "/etc/resolv.conf"); !strings.HasPrefix(conf, "nameserver 127.0.0.53\n") {
 			t.Errorf("resolv.conf was touched:\n%s", conf)
 		}
+
+		// A failed first read: the agent's own read of the system's
+		// resolvers fails while resolved's uplink file is missing, the
+		// status says the direct upstreams are stale until a read works,
+		// and resolved's watch makes that read when the file is written
+		// again.
+		devB.MustExec(t, "rm", "/run/systemd/resolve/resolv.conf")
+		up2 := devB.Start(t, "thinkpol", "up")
+		waitLog(t, up2, "the system resolves through the node")
+		lab.Eventually(t, 30*time.Second, func() error {
+			out, err := execRead(devB, pollTimeout, "thinkpol", "status")
+			if err != nil {
+				return err
+			}
+			if !strings.Contains(out, "dns_upstreams_stale") {
+				return fmt.Errorf("status:\n%s", out)
+			}
+			return nil
+		})
+		link = devB.Interface(lab.NetDevices)
+		devB.MustExec(t, "resolvectl", "dns", link, "")
+		devB.MustExec(t, "resolvectl", "dns", link, inetIP.String())
+		lab.Eventually(t, 30*time.Second, func() error {
+			out, err := execRead(devB, pollTimeout, "thinkpol", "status")
+			if err != nil {
+				return err
+			}
+			if strings.Contains(out, "dns_upstreams_stale") {
+				return fmt.Errorf("status:\n%s", out)
+			}
+			return nil
+		})
+		if err := up2.Stop(); err != nil {
+			t.Errorf("thinkpol up: %v\n%s", err, up2.Output())
+		}
 	})
 
 	tunnelNamesAskedOnlyOfTheExit(t, domestic, foreign, server)
