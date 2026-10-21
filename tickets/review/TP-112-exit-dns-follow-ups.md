@@ -73,3 +73,7 @@ Round 1 (2026-10-21): correctness, design and a second-opinion review.
 - 2026-10-21 R1.9 stale text: status.go calls DNSUpstreamsRefused an exit's in both places; TP-083's note names DataPlane.inWorker for the OS resolver configuration (fa6f180)
 - 2026-10-21 R1.10 nits: the comment above the inWorker check in newResolver dropped; buildEditing takes the node whose section to edit and build calls it; dnsWorkerConfig's comment says the resolver has none to ask; the test renamed to TestAnUpstreamTheEgressRefusesIsNotAskedAndNamed; the shared egressBlocked was already only combined by slices.Concat (which copies) at the review point, nothing to change (fa6f180)
 - 2026-10-21 mutation checks: the family sort disabled fails the uplink-family test; dropping the non-exit reset fails the loses-egress test; skipping egressMustStayClosed fails its test; the raw AllowEgress predicate fails the device case of the non-exit test
+- 2026-10-21 the lab test's waitLog on the exit's no-upstream warning follows R1.6's wording; the first full lab run caught the stale regex (741c77b)
+- 2026-10-21 make lint passes on the branch tip (the rewrite merge brought TP-116's go1.26.10, so vulncheck is green); make test passes (741c77b)
+- 2026-10-21 make lab-test passes on 741c77b: the lab suite and all 35 packages' tests in lab nodes. An earlier run had TestTwoSpacesShareAListener fail once under the parallel load (no reply for a dialer); it passed alone and in the final run, and touches nothing this branch changed
+- 2026-10-21 in-progress → review
