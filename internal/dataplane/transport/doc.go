@@ -54,29 +54,71 @@
 //
 // # The map and the engine
 //
-// What the map says about a link arrives as a [DialConfig] (dialing end) or
-// a [PeerLink] (listening end), and about a listener as a [ListenConfig].
-// Each transport's settings are its own protobuf messages in
-// proto/thinkpol/transport/v1: the controller encodes them, the adapter
-// decodes them, and everything else passes them as bytes. The conversion
-// from the map to these types is the data-plane engine's (package
-// dataplane), which checks every entry with the [Transport]'s
-// CheckEndpoint and CheckInbound and finds transports by name in a
-// [Registry] built in the composition root.
+// The map says, the engine converts, the transport decides. What the map
+// says about a link arrives as a [DialConfig] (dialing end) or a
+// [PeerLink] (listening end), and about a listener as a [ListenConfig].
+// Each transport's settings (listener, dial side, inbound side) are its own
+// protobuf messages in proto/thinkpol/transport/v1: the controller encodes
+// them, the adapter decodes them, and the map and everything between carry
+// them as opaque bytes. The conversion from the map to these types is the
+// data-plane engine's (package dataplane), not netmap's or the adapters':
+// it finds transports by name in a [Registry] built in the composition
+// root and checks every entry with the [Transport]'s CheckEndpoint and
+// CheckInbound before using it.
+//
+// Endpoints and listener addresses in the map are IP literals: the
+// controller resolves names, and nodes never ask DNS at dial time, past
+// the tunnel. Transports may rely on clocks: nodes' clocks must agree
+// within five minutes (udp drops datagrams sealed further than that from
+// its own clock).
 //
 // # Traffic shape
 //
-// Traffic shape (padding, batching, timing, cover traffic) belongs to the
-// transport, never to the layers above (C6). Each end of a link shapes
-// what it sends as its [Shaping] says; the map carries it per end, encoded
-// as thinkpol.transport.v1.Shaping, and the engine decodes it with
-// [ParseShaping]. Receivers undo shaping from the wire format alone, so
-// there is nothing to negotiate. An adapter refuses a link whose shaping it
-// can't honour ([ShapingSupport], [ErrUnsupportedShaping]) instead of
-// shaping less than the map asks. [MaxPacket] is the path layer's MTU
-// budget under a shaping. The layers above never pad, but they mark the
-// packets that only keep a link warm ([WriteControl]), so a transport can
-// fold their rhythm into its own.
+// WireGuard's fixed packet sizes and its rhythm (a rekey every 2 minutes,
+// keepalives) would show through any wrapper, and only the transport knows
+// what traffic it imitates. So traffic shape (padding, batching, timing,
+// cover traffic) is part of the transport's contract and never the layers
+// above's business (PRD C6): they never pad. The contract is [Shaping],
+// encoded in the map as thinkpol.transport.v1.Shaping, whose rules live in
+// package internal/shaping.
+//
+//   - What can be asked: padding of each unit on the wire (a datagram or a
+//     record) up to size buckets or by a random amount in a range
+//     ([Padding]), a batching window, timing jitter, and idle cover
+//     traffic. Sizes are what a capture sees.
+//   - Per end: each end of a link shapes what it sends. The map's endpoint
+//     carries the dialing end's shaping, its inbound link the listening
+//     end's, in a shaping field next to the transport's settings; the
+//     engine decodes it with [ParseShaping] and the adapter checks it.
+//     Receivers undo shaping from the wire format alone, so nothing is
+//     negotiated and the two ends need not agree.
+//   - Refuse, never weaken: an adapter refuses a link whose shaping it
+//     can't honour ([ShapingSupport], [ErrUnsupportedShaping]) rather
+//     than shape less than the map asks; CheckEndpoint and CheckInbound
+//     refuse it in the map, and a live link whose new shaping is refused
+//     closes with [ErrSettingsRefused]. Padding and cover units sit inside
+//     the transport's encryption, so they never touch its authentication
+//     or replay protection.
+//   - MTU: [Transport.Overhead] of a shaping is the fixed per-packet cost
+//     plus the most random padding adds. Under bucket padding a packet that
+//     fits the path can still round up past it, so the path layer budgets
+//     WireGuard's MTU with [MaxPacket] of the transport, the shaping and
+//     the largest unit the path takes.
+//   - Control packets: the layers above mark the packets that only keep a
+//     link warm or measure it (the path layer's probes and their replies)
+//     with [WriteControl]. A [ControlWriter] may fold their rhythm into its
+//     own: pad and jitter them like data, hold one up to [MaxControlHold]
+//     (500 ms) to ride with data or cover, or send it as cover. WireGuard's
+//     handshakes, keepalives and data never go that way. A round trip timed
+//     with control packets, or through batching or jitter, is an upper
+//     bound ([Shaping.MaxDelay]): liveness can rest on it, while latency
+//     comparisons are made on traffic nobody holds (WireGuard's handshake
+//     round trip, say).
+//
+// [SendStats] count what shaping costs on the wire, the overhead the lab
+// weighs against what shaping hides. udp implements padding and refuses
+// the rest; the lab measures how much shaping is enough per transport and
+// tunes the defaults, which are no shaping until it says otherwise.
 //
 // # Shared listeners
 //

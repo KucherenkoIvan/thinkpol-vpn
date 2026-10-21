@@ -16,9 +16,14 @@
 // changes hourly so a link isn't one constant tag forever. Rotation doesn't
 // unlink anything an observer can link by addresses and ports: a link's
 // datagrams share their 5-tuple across the change. Each direction of
-// a credential has one key (HKDF-SHA256) and every datagram a fresh random
-// 192-bit nonce: no session, epoch or nonce counter exists that a restart, a
-// redial or a table change could reuse.
+// a credential has one key (HKDF-SHA256 of the link's credential) and every
+// datagram a fresh random 192-bit nonce: no session, epoch or nonce counter
+// exists that a restart, a redial or a table change could reuse.
+//
+// The seal is an AEAD, XChaCha20-Poly1305, under a symmetric key both ends
+// of the link derive, which authenticates every datagram; not a NaCl
+// sealed box, which is only for what is sealed to a public key (such as the
+// map's sections).
 //
 // Inside the seal: the sender (its creation time in nanoseconds, strictly
 // increasing per process, and 4 random bytes; a new one per dial and per
@@ -52,8 +57,10 @@
 // the table, was sent within five minutes of the receiver's clock, and
 // passes the sender rules:
 //
-//   - each of the last 8 senders has a sliding replay window; a counter is
-//     accepted once, and not if it is too far behind the newest;
+//   - each of the last 8 senders of a credential has a sliding replay
+//     window of 1984 counters (a bitmap ring, as in RFC 6479); a counter
+//     is accepted once, and not if it is that far or further behind the
+//     newest;
 //   - an unknown sender older than the current one is dropped, unless the
 //     current one has been silent for 30 seconds (a dialer whose clock went
 //     back); a refused sender keeps its slot, with its counters recorded,
@@ -65,7 +72,13 @@
 //     datagram, so the memory runs out no sooner than the freshness check
 //     would — on the sealed send time, not on the receiver's clock alone,
 //     which a step of NTP could move — and past the memory a replay would
-//     come back as a "new" sender;
+//     come back as a "new" sender. A credential's evicted senders are at
+//     most 1024, the oldest forgotten first, so a dialer churning through
+//     senders can't make this grow, or cost more per datagram, without
+//     bound. A credential taken out of the table keeps its whole sender
+//     history (its slots and its evicted ids) until its newest sealed send
+//     time is no longer fresh, so taking it out and putting it back
+//     doesn't reopen it to replays;
 //   - only the current sender's newest counter opens a link or moves a
 //     link's reply address; an older counter of the current sender is
 //     delivered on an open link and dropped otherwise.
@@ -91,7 +104,12 @@
 //     (that is what a dialer whose clock went back looks like); with no
 //     link open it opens one toward the attacker's address, which lasts
 //     until DeadAfter; as with WireGuard's own roaming, it moves the link
-//     until the real dialer's next datagram.
+//     until the real dialer's next datagram;
+//   - a sender evicted from the slots and then pushed out of the evicted
+//     ids by more than 1024 further evictions while its datagrams could
+//     still be fresh is forgotten: it can take over again once the current
+//     sender has been silent for 30 seconds. Making those evictions takes
+//     the credential.
 //
 // # Links
 //
@@ -107,8 +125,14 @@
 // transport's Router finds each datagram's credential by connection id,
 // authenticates it (tag and timestamp) and filters replays per credential,
 // then names its space; the supervisor forwards it as is to that space's
-// worker, whose Listener (Transport.ListenOn over a net.PacketConn fed by
-// the supervisor) decrypts and filters again. A Router restart (a
-// supervisor restart) routes replays of the last ten minutes once more;
-// the worker's Listener, if it kept running, still drops them.
+// worker, whose Listener ([Transport.ListenForwarded] over a net.PacketConn
+// fed by the supervisor) decrypts and filters again. A replay, which
+// anyone with a passive tap can send, so never reaches a worker or costs
+// its space anything. The supervisor keeps one Router per transport, for
+// all its sockets and across their reopens, so a datagram replayed to
+// another listener is still a replay. A new Router (a supervisor restart)
+// routes replays of the last ten minutes (five, if the sender's clock was
+// right) once more; the worker's Listener, if it kept running, would
+// still drop them, but workers die with the supervisor, so today they are
+// delivered and answered (not yet handled; see TP-069).
 package udp

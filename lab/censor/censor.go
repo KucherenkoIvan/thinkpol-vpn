@@ -1,15 +1,3 @@
-// Package censor is the lab's pluggable censor (PRD C4): a program in the
-// lab router's container, censord, that nftables hands every forwarded
-// packet to through an NFQUEUE, and that decides each packet's fate with
-// switchable modules.
-//
-// A module is either passive, returning a verdict per packet or flow, or
-// active, acting on its own (the prober). The engine tracks per-flow state,
-// applies the verdicts through the queue, and writes every decision to a
-// verdict log tests read. Modules register from init, like cmd/thinkpol's
-// commands; a test picks them through the JSON config censord is started
-// with. The NFQUEUE glue is in queue_linux.go: the censor never runs
-// anywhere but inside a lab router.
 package censor
 
 import (
