@@ -230,7 +230,7 @@ func (c *linuxConfigurator) apply(ctx context.Context, cfg Config, u *undoLog) e
 	if err != nil {
 		return err
 	}
-	ops, err := c.netlinkOps()
+	ops, err := c.newNetlinkOps()
 	if err != nil {
 		return err
 	}
@@ -295,9 +295,10 @@ func (c *linuxConfigurator) reconcileRoutes(ctx context.Context, ops *netlinkOps
 	return nil
 }
 
-// netlinkOps is the ledger's linkOps on c's netlink handle, with the
-// addresses dumped once: every decision is made against the dump.
-func (c *linuxConfigurator) netlinkOps() (*netlinkOps, error) {
+// newNetlinkOps returns the ledger's linkOps for one Apply or Close: c's
+// netlink handle and the namespace's addresses, dumped once here, so every
+// decision is made against that dump.
+func (c *linuxConfigurator) newNetlinkOps() (*netlinkOps, error) {
 	kaddrs, err := c.kernelAddrs()
 	if err != nil {
 		return nil, err
@@ -371,7 +372,7 @@ func (o *netlinkOps) delAddr(index int, p netip.Prefix) error {
 // identity is someone else's (ours were in the dump), so that's a conflict.
 func (c *linuxConfigurator) addKernelRoute(r Route, nr netlink.Route, u *undoLog) error {
 	if err := c.h.RouteAdd(&nr); err != nil {
-		if errors.Is(err, unix.EEXIST) {
+		if exists(err) {
 			return fmt.Errorf("%w: route %v: another owner's or a foreign route has the same destination and metric", ErrConflict, r)
 		}
 		return fmt.Errorf("netcfg: add route %v: %w", r, err)
@@ -536,7 +537,7 @@ func (c *linuxConfigurator) removeOwned() error {
 	if err != nil {
 		return err
 	}
-	ops, err := c.netlinkOps()
+	ops, err := c.newNetlinkOps()
 	if err != nil {
 		return err
 	}

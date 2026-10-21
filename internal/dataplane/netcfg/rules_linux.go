@@ -229,7 +229,7 @@ func (c *linuxConfigurator) toNetlinkRule(r Rule) *netlink.Rule {
 func (c *linuxConfigurator) addKernelRule(r Rule, u *undoLog) error {
 	nr := c.toNetlinkRule(r)
 	if err := c.h.RuleAdd(nr); err != nil {
-		if errors.Is(err, unix.EEXIST) {
+		if exists(err) {
 			return fmt.Errorf("%w: rule %v: the same rule is there already", ErrConflict, r)
 		}
 		return fmt.Errorf("netcfg: add rule %v: %w", r, err)

@@ -510,7 +510,7 @@ func sameRoute(kr, want kroute) bool {
 
 func (c *darwinConfigurator) addRoute(r Route, k kroute, u *undoLog) error {
 	if err := c.k.add(k); err != nil {
-		if errors.Is(err, unix.EEXIST) {
+		if exists(err) {
 			delete(c.owned, k.key()) // whoever it is, it isn't ours
 			return fmt.Errorf("%w: route %v: another owner's or a foreign route has the same destination", ErrConflict, r)
 		}
