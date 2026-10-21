@@ -298,6 +298,100 @@ func TestARewrittenResolvConfFiltersStubUpstreams(t *testing.T) {
 	}
 }
 
+// Behind the stub, an unreadable uplink file is a failed read: a failed
+// first read over a stub resolv.conf stays stale, and the uplink file
+// appearing is the first good read and is told.
+func TestResolvConfAFailedFirstReadBehindTheStubWaitsForTheUplink(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "resolv.conf")
+	uplink := filepath.Join(dir, "uplink.conf") // missing: behind the stub, the read fails
+	if err := os.WriteFile(path, []byte("nameserver 127.0.0.53\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	told := make(chan []netip.Addr, 8)
+	c := testSystem
+	c.Upstreams, c.UpstreamsUnknown = func(a []netip.Addr) { told <- a }, true
+	r, err := setResolvConf(path, uplink, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = r.Restore() })
+	if p := r.Problem(); !errors.Is(p, ErrUpstreamsStale) || Unprotected(p) {
+		t.Errorf("problem after a read behind a stub with no uplink: %v", p)
+	}
+	applyOnce(t, r)
+	toldNothing(t, told)
+	if p := r.Problem(); !errors.Is(p, ErrUpstreamsStale) {
+		t.Errorf("problem after another failed read: %v", p)
+	}
+	if err := os.WriteFile(uplink, []byte("nameserver 198.51.100.53\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	applyOnce(t, r)
+	select {
+	case got := <-told:
+		if !slices.Equal(got, []netip.Addr{netip.MustParseAddr("198.51.100.53")}) {
+			t.Errorf("told %v, want 198.51.100.53", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("never told the first good read")
+	}
+	if p := r.Problem(); p != nil {
+		t.Errorf("problem after a good read: %v", p)
+	}
+}
+
+// A resolv.conf that is a dangling link at setup is managed with an
+// unknown original; while untold, the link's target is read on every
+// tick, so its appearing is the first good read and is told, and the
+// staleness clears.
+func TestResolvConfAFailedFirstReadOverADanglingLinkReadsItsTargetWhenItAppears(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "real.conf")
+	path := filepath.Join(dir, "resolv.conf")
+	if err := os.Symlink("real.conf", path); err != nil { // a relative link
+		t.Fatal(err)
+	}
+	told := make(chan []netip.Addr, 8)
+	c := testSystem
+	c.Upstreams, c.UpstreamsUnknown = func(a []netip.Addr) { told <- a }, true
+	r, err := setResolvConf(path, "", c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = r.Restore() })
+	if p := r.Problem(); !errors.Is(p, ErrUpstreamsStale) || Unprotected(p) {
+		t.Errorf("problem after a read of a dangling link: %v", p)
+	}
+	applyOnce(t, r)
+	toldNothing(t, told)
+	if p := r.Problem(); !errors.Is(p, ErrUpstreamsStale) {
+		t.Errorf("problem after another failed read: %v", p)
+	}
+	if err := os.WriteFile(target, []byte("nameserver 192.0.2.53\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	applyOnce(t, r)
+	select {
+	case got := <-told:
+		if !slices.Equal(got, []netip.Addr{netip.MustParseAddr("192.0.2.53")}) {
+			t.Errorf("told %v, want 192.0.2.53", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("never told the first good read")
+	}
+	if p := r.Problem(); p != nil {
+		t.Errorf("problem after a good read: %v", p)
+	}
+	// Restore puts the link back, whatever its target holds now.
+	if err := r.Restore(); err != nil {
+		t.Fatal(err)
+	}
+	if link, err := os.Readlink(path); err != nil || link != "real.conf" {
+		t.Errorf("restored link %q, %v", link, err)
+	}
+}
+
 func TestSystemUpstreams(t *testing.T) {
 	dir := t.TempDir()
 	etc, uplink := filepath.Join(dir, "resolv.conf"), filepath.Join(dir, "uplink.conf")
@@ -329,6 +423,12 @@ func TestSystemUpstreams(t *testing.T) {
 	write(etc, "nameserver 127.0.0.53\noptions edns0 trust-ad\n")
 	write(uplink, "nameserver 198.51.100.53\nnameserver 100.64.0.2\n")
 	check("through systemd-resolved, without the node's own", "198.51.100.53")
+	if err := os.Remove(uplink); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := upstreamsFrom(etc, uplink, own); err == nil {
+		t.Error("a stub resolv.conf with an unreadable uplink is a failed read, not an empty answer")
+	}
 }
 
 // A new configuration goes over the old one; the original stays.

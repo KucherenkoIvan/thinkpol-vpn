@@ -124,6 +124,9 @@ type resolved struct {
 	// uplink: resolved is the OS's resolver (resolv.conf names its stub),
 	// so its servers are the OS's own.
 	uplink bool
+	// uplinkFile is resolved's uplink resolv.conf (a field so tests can
+	// point it at a temporary file).
+	uplinkFile string
 
 	mu      sync.Mutex
 	cfg     SystemConfig
@@ -166,25 +169,17 @@ func setResolved(conn *dbus.Conn, c SystemConfig, uplink bool) (*resolved, error
 		_ = conn.Close()
 		return nil, err
 	}
-	r := &resolved{conn: conn, index: int32(ifc.Index), uplink: uplink, stop: make(chan struct{}), stopped: make(chan struct{}),
-		untold: uplink && startsUntold(c)}
-	var tellFirst []netip.Addr
-	tellNow := false
-	if b, err := os.ReadFile(resolvedUplink); err == nil {
-		r.servers = nameservers(b)
-		if r.untold {
-			// A good read now is the first one the caller hears of: told
-			// from the watch goroutine, whatever a later read finds.
-			r.untold = false
-			tellFirst, tellNow = upstreamsFromContent(b, resolvedUplink, c.Servers), true
-		}
-	}
+	r := &resolved{conn: conn, index: int32(ifc.Index), uplink: uplink, uplinkFile: resolvedUplink,
+		stop: make(chan struct{}), stopped: make(chan struct{}), untold: uplink && startsUntold(c)}
+	r.mu.Lock()
+	tell := r.firstRead()
+	r.mu.Unlock()
 	if err := r.Update(c); err != nil {
 		_ = r.call("RevertLink")
 		_ = conn.Close()
 		return nil, err
 	}
-	go r.watch(tellFirst, tellNow)
+	go r.watch(tell)
 	return r, nil
 }
 
@@ -282,13 +277,70 @@ func (r *resolved) check() error {
 	return nil
 }
 
-func (r *resolved) watch(tellFirst []netip.Addr, tellNow bool) {
+// read is a read of the uplink file: the servers it names, and ok false
+// when the file can't be read — a failed read, not an empty answer.
+// Called with r.mu held.
+func (r *resolved) read() (ups []netip.Addr, ok bool) {
+	if !r.uplink {
+		return nil, true
+	}
+	b, err := os.ReadFile(r.uplinkFile)
+	if err != nil {
+		return nil, false
+	}
+	return upstreamsFromContent(b, r.uplinkFile, r.cfg.Servers)
+}
+
+// firstRead is the read at setup: the tell for it, run after unlocking,
+// or nil. Called with r.mu held.
+func (r *resolved) firstRead() func() {
+	ups, ok := r.read()
+	if !ok {
+		return nil
+	}
+	r.servers = ups
+	if !r.untold {
+		return nil
+	}
+	// The first good read is told whatever it found: the caller has no
+	// upstreams of its own until one.
+	r.untold = false
+	tell := r.cfg.Upstreams
+	return func() { tell(ups) }
+}
+
+// apply is one watch tick's read: what to tell the caller, run after
+// unlocking, or nil. Called with r.mu held.
+func (r *resolved) apply() func() {
+	ups, ok := r.read()
+	if !ok {
+		// A failed read keeps the previous servers and, while untold,
+		// the stale report.
+		return nil
+	}
+	tell := r.cfg.Upstreams
+	changed := !slices.Equal(ups, r.servers)
+	firstGoodRead := r.untold
+	r.servers, r.untold = ups, false
+	switch {
+	case tell == nil:
+		return nil
+	case firstGoodRead:
+		// The first good read is told whatever it found: the caller has
+		// no upstreams of its own until one.
+		return func() { tell(ups) }
+	case changed:
+		// A good read, told or not, clears untold; after the first, a
+		// change alone is told.
+		return func() { tell(ups) }
+	}
+	return nil
+}
+
+func (r *resolved) watch(first func()) {
 	defer close(r.stopped)
-	r.mu.Lock()
-	upstreams := r.cfg.Upstreams
-	r.mu.Unlock()
-	if tellNow && upstreams != nil {
-		upstreams(tellFirst)
+	if first != nil {
+		first()
 	}
 	t := time.NewTicker(resolvedCheck)
 	defer t.Stop()
@@ -300,26 +352,10 @@ func (r *resolved) watch(tellFirst []netip.Addr, tellNow bool) {
 		}
 		r.mu.Lock()
 		r.problem = r.check()
-		var changed, found []netip.Addr
-		tellUntold := false
-		if b, err := os.ReadFile(resolvedUplink); err == nil && r.uplink {
-			servers := upstreamsFromContent(b, resolvedUplink, r.cfg.Servers)
-			found = servers
-			if !slices.Equal(servers, r.servers) {
-				r.servers, changed = servers, servers
-			}
-			// A good read, told or not: the next change alone is told.
-			tellUntold, r.untold = r.untold, false
-		}
-		upstreams := r.cfg.Upstreams
+		tell := r.apply()
 		r.mu.Unlock()
-		switch {
-		case changed != nil && upstreams != nil:
-			upstreams(changed)
-		case tellUntold && upstreams != nil:
-			// The first good read is told whatever it found: the caller
-			// has no upstreams of its own until one.
-			upstreams(found)
+		if tell != nil {
+			tell()
 		}
 	}
 }
