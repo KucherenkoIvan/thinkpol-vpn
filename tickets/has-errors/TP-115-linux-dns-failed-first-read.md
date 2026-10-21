@@ -40,6 +40,16 @@ Round 1 (2026-10-21): correctness, design and a second-opinion review.
 - [x] R1.10 Log: scope item 3 (`resolver.go`'s warning was already OS-neutral; `dataplane.go`'s comment loses "on macOS"). Re-run `make lint` once TP-116 (go1.26.10) is in `rewrite` and merged here: with go1.26.9 vulncheck fails on GO-2026-6809.
 
 Out of scope, filed as a new backlog ticket: an in-place writer (udhcpc, `cat >`) that empties `/etc/resolv.conf` then appends to it is read half-written and loses its lines to the managed rename (pre-existing; with this change a transient empty read also clears the stale report).
+Round 2 (2026-10-21): correctness, design and a second-opinion review.
+- [ ] R2.1 Blocker: `setResolved` runs `firstRead` before `Update(c)` sets `r.cfg`, so on a stub host whose uplink file appears between the agent's failed read and `SetSystem`, `firstRead` returns a closure over a nil `Upstreams` and the watch goroutine panics (the agent dies); the stored list is also filtered with nil `Servers`. One constructor (e.g. `newResolved(conn, index, c, uplink, uplinkFile)`) that sets `cfg` and `untold` the way `setResolved` needs, used by `setResolved` and by the tests (no hand-built `resolved{…}`), and a nil guard in `firstRead` like `apply`'s. A test for exactly this ordering (untold, uplink readable at setup → told once, no panic).
+- [ ] R2.2 A link whose target resolves to the managed path itself (`resolv.conf`, `./resolv.conf`, `foo/../../resolv.conf`): after the takeover the target read returns the node's own file, its servers are filtered out, and the first good read tells nil and clears stale. Skip a target that is the managed file (compare cleaned absolute paths, or `os.SameFile`). Test it.
+- [ ] R2.3 `toldNothing` checks the channel once, before the watch goroutine's setup tell can run, so a "tells at every setup" mutant passes most of the time. Wait a short while (e.g. 200 ms) before deciding nothing was told.
+- [ ] R2.4 `resolved.read` returns a good, empty read when `!r.uplink`, contradicting its comment. Read only when `uplink` (setup and watch check it), and drop that branch.
+- [ ] R2.5 `upstreamsFromContent`'s `ok bool` loses the cause: return an error (`dns: reading resolved's uplink %s: %w`) so the agent's warning tells ENOENT from EACCES.
+- [ ] R2.6 While untold, a stub target appearing with the uplink still missing logs "no upstream to ask; set one with -dns-upstream", though the agent already warned the resolvers are unknown. Don't log that while untold.
+- [ ] R2.7 The `Upstreams` contract still says "called from the configuration's own goroutine", but `resolvConf.Update` tells on its caller's goroutine (after unlocking). Reword: called without the configuration's lock held, from its own goroutine or from Update's caller.
+- [ ] R2.8 Text: the Log's "has-errors → in-progress" line belongs right after the round-1 "review → has-errors" line, not after "in-progress → review" (move it); DESIGN.md:146 drop "too" (nothing earlier in the Linux part says stale); say in DESIGN that a stub host whose resolved never writes its uplink file stays `dns_upstreams_stale`; the "told whatever it found" comment once (in `startsUntold`'s), not three times; the "clears untold" comment above the line that clears it; `system_linux_test.go` "the staleness cleared" on a test that never was stale.
+- [ ] R2.9 The lab subtest checks only that `dns_upstreams_stale` clears: also resolve a `direct` name after it, so it proves the upstreams were told.
 
 ## Log
 - 2026-10-19 created in backlog (TP-108 review round 5)
@@ -60,3 +70,4 @@ Out of scope, filed as a new backlog ticket: an in-place writer (udhcpc, `cat >`
 - 2026-10-21 make lint, make test green per commit; make lab-test green at 8aff73e (lab and node phases both ok, about 3 minutes)
 - 2026-10-21 in-progress → review
 - 2026-10-21 has-errors → in-progress (round 1 findings)
+- 2026-10-21 review → has-errors (round 2: R2.1–R2.9)
