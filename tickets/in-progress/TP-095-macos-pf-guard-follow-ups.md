@@ -93,3 +93,4 @@ Round 2 (2026-10-22): correctness (fix first), design (fix first), second opinio
 - 2026-10-22 round 1 checks: make lint and make test green before each commit; funlen with TP-083's config flags only splitRoutes and Linux Watch (untouched); merged origin/rewrite (TP-120); make lab-test (LAB_P=1) green on 7fd79ce. Not verified: real pfctl on a device (no pfctl run)
 - 2026-10-22 in-progress → review
 - 2026-10-22 review → has-errors (round 2: R2.1-R2.6)
+- 2026-10-22 has-errors → in-progress — owner: agent-tp-095, round 2 findings
