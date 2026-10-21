@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -26,25 +27,29 @@ import (
 // own).
 func testHost() Host {
 	return Host{
-		NewConfigurator: func(netcfg.Owner) (netcfg.Configurator, error) {
-			return nil, errors.New("no configurator in this test")
+		WorkerHost: WorkerHost{
+			NewConfigurator: func(netcfg.Owner) (netcfg.Configurator, error) {
+				return nil, errors.New("no configurator in this test")
+			},
+			NewTUN: func(string, int) (wgtun.Device, error) {
+				return nil, errors.New("no TUN in this test")
+			},
+			Transports: Transports,
 		},
-		NewTUN: func(string, int) (wgtun.Device, error) {
-			return nil, errors.New("no TUN in this test")
+		DeviceHost: DeviceHost{
+			NewGuard: func() routetable.Guard { return nil },
+			NewRouteTable: func(*slog.Logger, routetable.Guard) (RouteEnforcer, error) {
+				return noRouteTable{}, nil
+			},
+			ClearConfig:     func(netcfg.Owner) error { return nil },
+			ClearRouteTable: func(routetable.Guard) error { return nil },
+			SetSystemDNS: func(dns.SystemConfig) (dns.System, error) {
+				return nil, errors.New("no resolver configuration in this test")
+			},
+			SystemUpstreams: func([]netip.Addr) ([]netip.Addr, error) {
+				return nil, errors.New("no system upstreams in this test")
+			},
 		},
-		NewGuard: func() routetable.Guard { return nil },
-		NewRouteTable: func(*slog.Logger, routetable.Guard) (RouteEnforcer, error) {
-			return nil, errors.New("no route table in this test")
-		},
-		ClearConfig:     func(netcfg.Owner) error { return nil },
-		ClearRouteTable: func(routetable.Guard) error { return nil },
-		SetSystemDNS: func(dns.SystemConfig) (dns.System, error) {
-			return nil, errors.New("no resolver configuration in this test")
-		},
-		SystemUpstreams: func([]netip.Addr) ([]netip.Addr, error) {
-			return nil, errors.New("no system upstreams in this test")
-		},
-		Transports: Transports,
 	}
 }
 
@@ -115,12 +120,12 @@ func TestTransportsMarkSocketsPerMode(t *testing.T) {
 		defer w.stop()
 		var asks markAsks
 		base := w.dataPlane(reg, NodeKeys{}, nil)
-		base.Host.Transports = asks.transports(reg)
+		base.Namespace.Transports = asks.transports(reg)
 		sess := newFakeSession(s.id)
 		sess.config <- s.workerConfig(t, s.a, 1)
 		done := make(chan error, 1)
 		go func() { done <- serveSpace(base.Log, base)(w.ctx, sess.Session) }()
-		w.waitLog(t, `msg="map applied"`)
+		w.applied(t, 1)
 		w.stop()
 		if err := <-done; err != nil {
 			t.Fatal(err)
@@ -142,7 +147,7 @@ func TestClearingTheNetworkTriesBothOwners(t *testing.T) {
 		}
 		return nil
 	}
-	h := Host{
+	h := DeviceHost{
 		NewGuard:        func() routetable.Guard { return nil },
 		ClearRouteTable: func(routetable.Guard) error { return clearOwner(netcfg.OwnerRouteTable) },
 		ClearConfig:     clearOwner,
@@ -165,3 +170,12 @@ func TestClearingTheNetworkTriesBothOwners(t *testing.T) {
 		t.Errorf("unsupported: %q", out.String())
 	}
 }
+
+// noRouteTable is the test platform's route table: it takes every Want
+// and changes nothing, so a device's data plane runs in route-table mode,
+// as in production, and the host's routing stays as it is.
+type noRouteTable struct{}
+
+func (noRouteTable) Enforce(context.Context, routetable.Want) error { return nil }
+func (noRouteTable) Status() routetable.Status                      { return routetable.Status{Enforced: true} }
+func (noRouteTable) Close() error                                   { return nil }

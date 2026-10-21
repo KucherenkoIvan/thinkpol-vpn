@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	wgtun "golang.zx2c4.com/wireguard/tun"
+
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/blobs"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
@@ -55,9 +57,6 @@ type DataPlane struct {
 	// egress (dataplane.EngineConfig.Forward): set in a server's worker,
 	// whose namespace forwards and NATs, never on a device.
 	Forward bool
-	// inWorker says the data plane runs in a server's worker (set only
-	// by serveSpace): what "inside a worker" means to the resolver.
-	inWorker bool
 	// RouteTable enforces the rules in the OS routing table: everything
 	// but direct destinations and link endpoints into the TUN (a device;
 	// the transports' sockets must be marked, Transports(true)).
@@ -78,7 +77,12 @@ type DataPlane struct {
 	DNS          bool
 	DNSUpstreams []netip.AddrPort
 
-	Host Host
+	// Namespace is what the data plane needs of its network namespace;
+	// Device, a device's host adapters (required with RouteTable; nil in
+	// a server's worker, which then never asks or points the OS's
+	// resolvers).
+	Namespace WorkerHost
+	Device    *DeviceHost
 
 	// Its connection (required; a worker's is always meant to be up), and
 	// a device's (Node.run): where its status goes, its Connect and
@@ -95,15 +99,29 @@ type DataPlane struct {
 	// the data plane runs (serveSpace); latest-wins. Nil without one.
 	dnsUpstreams <-chan []netip.AddrPort
 
-	// What tests tune: the path layer's timing, the retry delay, and a
-	// worker's blob limits (MaxHeld is always blobs.ServerMaxHeldSize).
-	path        path.Options
-	retryAfter  time.Duration
+	// tuning is what tests change; production leaves it zero.
+	tuning tuning
+}
+
+// tuning is the one place a data plane differs in tests: the timing they
+// can't wait out and the port and addresses they can't bind. A node's
+// data plane gets its tuning from the node's (Node.tuning); everything
+// else a test changes is what production changes too (Config, Platform).
+// What tests check about a running data plane they read from its status
+// and events, not from hooks.
+type tuning struct {
+	// path is the path layer's timing; retryAfter the delay before a
+	// failed start, Apply or listener is retried (0: RetryAfter).
+	path       path.Options
+	retryAfter time.Duration
+	// blobOptions are a worker's blob limits (MaxHeld is always
+	// blobs.ServerMaxHeldSize).
 	blobOptions blobs.Options
-	// onEngine sees each engine the data plane starts.
-	onEngine func(*dataplane.Engine)
-	// dnsPort is the resolver's port (0: 53).
-	dnsPort uint16
+	// dnsPort is the resolver's port (0: 53); dnsListen, if valid, the
+	// one address it listens on and takes queries from, in place of the
+	// node's overlay addresses and clients.
+	dnsPort   uint16
+	dnsListen netip.Addr
 }
 
 // RetryAfter is how long a data plane waits before retrying an Apply, a
@@ -123,14 +141,17 @@ func RunDataPlane(ctx context.Context, dp DataPlane) error {
 	if dp.Interface == "" {
 		dp.Interface = tun.DefaultName
 	}
-	if dp.retryAfter == 0 {
-		dp.retryAfter = RetryAfter
+	if dp.tuning.retryAfter == 0 {
+		dp.tuning.retryAfter = RetryAfter
 	}
 	if dp.Log == nil {
 		dp.Log = slog.New(slog.DiscardHandler)
 	}
 	if dp.conn == nil {
 		return errors.New("agent: a data plane needs its connection")
+	}
+	if dp.RouteTable && dp.Device == nil {
+		return errors.New("agent: a route table needs a device's host")
 	}
 	section, err := openSection(dp.Map, dp.Keys)
 	if err != nil {
@@ -139,7 +160,7 @@ func RunDataPlane(ctx context.Context, dp DataPlane) error {
 	r := &runner{
 		dp: dp, maps: dp.Maps, conn: dp.conn, guard: &dnsGuard{}, tun: dp.Interface,
 		follow: mapFollower{
-			log: dp.Log, keys: dp.Keys, cur: dp.Map, section: section,
+			log: dp.Log, keys: dp.Keys, report: dp.report, cur: dp.Map, section: section,
 			removedMsg: "the data plane stops until a map includes it again",
 		},
 	}
@@ -237,67 +258,123 @@ type runner struct {
 const tunMTU = 1420
 
 // start brings the data plane up on the current section. It fails with a
-// *StartError.
+// *StartError, having undone what it set up, last first.
 func (r *runner) start(ctx context.Context) error {
-	ifc, err := r.dp.Host.NewConfigurator(netcfg.OwnerOverlay)
+	var undo undoStack
+	ports, err := r.openPorts(&undo)
 	if err != nil {
-		if r.dp.RouteTable { // a crashed run's table would block traffic meanwhile
-			r.dp.Host.clearNetwork(r.dp.Log)
+		undo.run()
+		// The route table isn't the data plane's own: a crashed run's
+		// would block traffic meanwhile.
+		if r.dp.RouteTable {
+			r.dp.Device.clearNetwork(r.dp.Log)
 		}
-		return &StartError{Step: StepTUN, Err: err}
+		return err
 	}
-	dev, err := r.dp.Host.NewTUN(r.dp.Interface, tunMTU)
+	// The resolver is the runner's, not the engine's: it is closed apart
+	// from what openPorts opened, first.
+	var resolver *dns.Server
+	if r.dp.DNS {
+		resolver = r.newResolver()
+	}
+	closeResolver := func() {
+		if resolver != nil {
+			_ = resolver.Close()
+		}
+	}
+	engine, err := dataplane.NewEngine(r.engineConfig(ports, resolver))
 	if err != nil {
-		if ifc != nil {
-			_ = ifc.Close()
-		}
-		if r.dp.RouteTable { // a crashed run's table would block traffic meanwhile
-			r.dp.Host.clearNetwork(r.dp.Log)
-		}
-		return &StartError{Step: StepTUN, Err: err}
+		closeResolver()
+		undo.run()
+		return &StartError{Step: StepEngine, Err: err}
 	}
+	// The engine owns all openPorts opened now (the TUN, its configurator
+	// and the route table): its Close takes them down.
+	undo = undoStack{func() { _ = engine.Close() }, closeResolver}
+	if err := engine.Apply(ctx, r.follow.section); err != nil {
+		step := engine.Status().LastApplyError
+		undo.run()
+		return &StartError{Step: step, Err: fmt.Errorf("applying map version %d: %w", r.follow.cur.Header().Version, err)}
+	}
+	r.engine, r.resolver, r.routes = engine, resolver, ports.routes
+	if r.resolver != nil && r.routes != nil {
+		if err := r.routes.SetDirectUpstreams(ctx, r.upstreams); err != nil {
+			r.dp.Log.Warn("DNS: keeping the direct upstreams reachable failed", "err", path.RedactError(err))
+		}
+	}
+	r.pointSystem()
+	r.listeners = newListenerSet(engine, r.dp.Log, r.dp.tuning.retryAfter)
+	r.retryAt = time.Time{}
+	r.applied()
+	return nil
+}
+
+// startPorts are what a start opens for its engine to own; a nil one is
+// what the data plane runs without (ifc: tests; routes: off).
+type startPorts struct {
+	tun    wgtun.Device
+	ifc    netcfg.Configurator
+	routes *routeTable
+}
+
+// openPorts opens the TUN's configurator, the TUN and the route table,
+// what the engine takes over, pushing each one's Close onto undo. It
+// fails with a *StartError, never once the route table is open.
+func (r *runner) openPorts(undo *undoStack) (startPorts, error) {
+	var p startPorts
+	ifc, err := r.dp.Namespace.NewConfigurator(netcfg.OwnerOverlay)
+	if err != nil {
+		return p, &StartError{Step: StepTUN, Err: err}
+	}
+	if ifc != nil {
+		p.ifc = ifc
+		undo.push(func() { _ = ifc.Close() })
+	}
+	dev, err := r.dp.Namespace.NewTUN(r.dp.Interface, tunMTU)
+	if err != nil {
+		return p, &StartError{Step: StepTUN, Err: err}
+	}
+	p.tun = dev
+	undo.push(func() { _ = dev.Close() })
 	if name, err := dev.Name(); err == nil && name != "" {
 		r.tun = name
 	}
-	var routes *routeTable
-	var routesPort dataplane.RouteTable // nil without one
 	if r.dp.RouteTable {
-		rt, err := r.dp.Host.NewRouteTable(r.dp.Log, r.dp.Host.NewGuard())
+		rt, err := r.dp.Device.NewRouteTable(r.dp.Log, r.dp.Device.NewGuard())
 		if err != nil {
-			if ifc != nil {
-				_ = ifc.Close()
-			}
-			_ = dev.Close()
-			r.dp.Host.clearNetwork(r.dp.Log)
-			return &StartError{Step: dataplane.StepRouteTable, Err: err}
+			return p, &StartError{Step: dataplane.StepRouteTable, Err: err}
 		}
-		routes = newRouteTable(rt)
-		routesPort = routes
+		routes := newRouteTable(rt)
+		p.routes = routes
+		undo.push(func() { _ = routes.Close() })
 	}
-	var resolver *dns.Server
-	var resolverIfc dataplane.Resolver // nil without one
-	if r.dp.DNS {
-		resolver = r.newResolver()
-		resolverIfc = dnsResolver{resolver}
-	}
-	var ifcPort dataplane.InterfaceConfigurator // nil without one
-	if ifc != nil {
-		ifcPort = overlayInterface{ifc}
-	}
+	return p, nil
+}
+
+// engineConfig is the engine's configuration on p and resolver, for the
+// current map. Only the ports there are go in: a nil adapter in a port
+// would look set.
+func (r *runner) engineConfig(p startPorts, resolver *dns.Server) dataplane.EngineConfig {
 	cfg := dataplane.EngineConfig{
 		ID:           r.dp.Keys.ID,
 		Space:        transport.SpaceID(r.follow.cur.Header().SpaceID),
 		WireGuardKey: r.dp.Keys.WireGuard,
 		Registry:     r.dp.Registry,
-		TUN:          dev,
-		Interface:    ifcPort,
+		TUN:          p.tun,
 		LinkMTU:      r.dp.LinkMTU,
-		Path:         r.dp.path,
+		Path:         r.dp.tuning.path,
 		Log:          r.dp.Log,
 		Forward:      r.dp.Forward,
 		Rules:        r.dp.Rules,
-		RouteTable:   routesPort,
-		DNS:          resolverIfc,
+	}
+	if p.ifc != nil {
+		cfg.Interface = overlayInterface{p.ifc}
+	}
+	if p.routes != nil {
+		cfg.RouteTable = p.routes
+	}
+	if resolver != nil {
+		cfg.DNS = dnsResolver{resolver, r.dp.tuning.dnsListen}
 	}
 	if b := r.dp.Blobs; b != nil {
 		// The rules' lists: the current map's once held, the previous
@@ -305,42 +382,7 @@ func (r *runner) start(ctx context.Context) error {
 		cfg.Blobs = func(ref netmap.BlobRef) ([]byte, bool) { return b.Get(ref.SHA256) }
 		cfg.StandIn = b.Latest
 	}
-	engine, err := dataplane.NewEngine(cfg)
-	if err != nil {
-		if routes != nil {
-			_ = routes.Close()
-		}
-		if ifc != nil {
-			_ = ifc.Close()
-		}
-		_ = dev.Close()
-		if resolver != nil {
-			_ = resolver.Close()
-		}
-		return &StartError{Step: StepEngine, Err: err}
-	}
-	if err := engine.Apply(ctx, r.follow.section); err != nil {
-		step := engine.Status().LastApplyError
-		if resolver != nil {
-			_ = resolver.Close()
-		}
-		_ = engine.Close()
-		return &StartError{Step: step, Err: fmt.Errorf("applying map version %d: %w", r.follow.cur.Header().Version, err)}
-	}
-	r.engine, r.resolver, r.routes = engine, resolver, routes
-	if resolver != nil && routes != nil {
-		if err := routes.SetDirectUpstreams(ctx, r.upstreams); err != nil {
-			r.dp.Log.Warn("DNS: keeping the direct upstreams reachable failed", "err", path.RedactError(err))
-		}
-	}
-	if r.dp.onEngine != nil {
-		r.dp.onEngine(engine)
-	}
-	r.pointSystem()
-	r.listeners = newListenerSet(engine, r.dp.Log, r.dp.retryAfter)
-	r.retryAt = time.Time{}
-	r.applied()
-	return nil
+	return cfg
 }
 
 // stop takes the data plane down: listeners, engine, TUN and its
@@ -353,7 +395,7 @@ func (r *runner) stop() {
 		// Down with nothing running (a start that failed, a node removed
 		// before it ran): what a crashed run left goes now.
 		if r.dp.RouteTable {
-			r.dp.Host.clearNetwork(r.dp.Log)
+			r.dp.Device.clearNetwork(r.dp.Log)
 		}
 		return
 	}
@@ -504,7 +546,7 @@ func (r *runner) connect(ctx context.Context, connect bool) error {
 		if err := r.start(ctx); err != nil {
 			logRefused(r.dp.Log, r.conn.startFailed(retry))
 			if retry {
-				r.retryAt = time.Now().Add(r.dp.retryAfter)
+				r.retryAt = time.Now().Add(r.dp.tuning.retryAfter)
 			}
 			r.dp.Log.Warn("connecting failed", "version", r.follow.cur.Header().Version, "err", err)
 			return err
@@ -594,8 +636,8 @@ func (r *runner) tryStart(ctx context.Context) {
 	}
 	if err := r.start(ctx); err != nil {
 		logRefused(r.dp.Log, r.conn.startFailed(true))
-		r.retryAt = time.Now().Add(r.dp.retryAfter)
-		r.dp.Log.Warn("starting the data plane failed, retrying", "version", r.follow.cur.Header().Version, "in", r.dp.retryAfter, "err", path.RedactError(err))
+		r.retryAt = time.Now().Add(r.dp.tuning.retryAfter)
+		r.dp.Log.Warn("starting the data plane failed, retrying", "version", r.follow.cur.Header().Version, "in", r.dp.tuning.retryAfter, "err", path.RedactError(err))
 		return
 	}
 	logRefused(r.dp.Log, r.conn.started())
@@ -604,9 +646,9 @@ func (r *runner) tryStart(ctx context.Context) {
 
 func (r *runner) apply(ctx context.Context) {
 	if err := r.engine.Apply(ctx, r.follow.section); err != nil {
-		r.retryAt = time.Now().Add(r.dp.retryAfter)
+		r.retryAt = time.Now().Add(r.dp.tuning.retryAfter)
 		r.dp.Log.Warn("applying the map failed, retrying", "version", r.follow.cur.Header().Version,
-			"step", r.engine.Status().LastApplyError, "in", r.dp.retryAfter, "err", path.RedactError(err))
+			"step", r.engine.Status().LastApplyError, "in", r.dp.tuning.retryAfter, "err", path.RedactError(err))
 		return
 	}
 	r.retryAt = time.Time{}

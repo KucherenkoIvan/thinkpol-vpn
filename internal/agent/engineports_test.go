@@ -106,3 +106,25 @@ func TestTheResolverGetsTheEnginesRoutes(t *testing.T) {
 		t.Errorf("an address: %+v", got)
 	}
 }
+
+// The route table's problems reach the engine's status as its codes,
+// each by name; one the engine has no code for is still a problem.
+func TestRouteTableProblemsAreTheEnginesCodes(t *testing.T) {
+	for _, tc := range []struct {
+		p    routetable.ErrorCode
+		want dataplane.RouteTableError
+	}{
+		{"", ""},
+		{routetable.ErrorApply, dataplane.RouteTableApplyFailed},
+		{routetable.ErrorReapply, dataplane.RouteTableReapplyFailed},
+		{routetable.ErrorUnsupported, dataplane.RouteTableUnsupported},
+		{routetable.ErrorTUNDown, dataplane.RouteTableTUNDown},
+		{routetable.ErrorGuard, dataplane.RouteTableGuardFailed},
+		{routetable.ErrorGuardUnsupported, dataplane.RouteTableGuardUnsupported},
+		{"a problem from a newer route table", dataplane.RouteTableApplyFailed},
+	} {
+		if got := routeTableError(tc.p); got != tc.want {
+			t.Errorf("%q: %q, want %q", tc.p, got, tc.want)
+		}
+	}
+}

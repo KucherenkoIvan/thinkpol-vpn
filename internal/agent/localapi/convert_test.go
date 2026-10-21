@@ -3,6 +3,7 @@ package localapi
 import (
 	"bytes"
 	"net/netip"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"golang.zx2c4.com/wireguard/tun/tuntest"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/supervisor"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/packettest"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/router"
@@ -93,26 +95,78 @@ func TestDeliveredPacketsReachTheStatus(t *testing.T) {
 	}
 }
 
+// Why a worker's process ended reaches the status and the CLI as its
+// code, never the error's text.
 func TestWorkerLastExitReachesStatusAndCLI(t *testing.T) {
-	const reason = "start: exec /nonexistent/thinkpol-worker: no such file"
 	st := agent.Status{
 		Connection: agent.Serving,
 		Workers: []agent.WorkerStatus{{
-			Space: netmap.SpaceID{0xab}, Ready: false, Starts: 1, LastExit: reason + "\x1b]0;pwned\x07",
+			Space: netmap.SpaceID{0xab}, Ready: false, Starts: 1, LastExit: supervisor.ExitSpawnFailed,
 		}},
 	}
 	out := statusProto(st)
-	if got := out.GetWorkers()[0].GetLastExit(); got != agent.Sanitize(reason+"\x1b]0;pwned\x07") {
+	if got := out.GetWorkers()[0].GetLastExit(); got != "spawn_failed" {
 		t.Fatalf("last_exit %q", got)
 	}
 	var text bytes.Buffer
 	if err := WriteStatus(&text, out, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(text.String(), reason) {
-		t.Fatalf("render missing spawn reason:\n%s", text.String())
+	if !strings.Contains(text.String(), "(spawn_failed)") {
+		t.Fatalf("render missing the exit's reason:\n%s", text.String())
 	}
-	if strings.Contains(text.String(), "\x1b") {
-		t.Fatalf("raw ESC in render:\n%s", text.String())
+}
+
+// Every router, path and route table counter reaches the status under a
+// name of its own, the route table's only in route-table mode.
+func TestEveryCounterHasAName(t *testing.T) {
+	var dp dataplane.Status
+	dp.RouteTable.Enforced = true
+	n := uint64(0)
+	for _, v := range []reflect.Value{reflect.ValueOf(&dp.Router).Elem(), reflect.ValueOf(&dp.Path).Elem(), reflect.ValueOf(&dp.RouteTable).Elem()} {
+		for i := range v.NumField() {
+			switch f := v.Field(i); f.Kind() {
+			case reflect.Uint64:
+				n++
+				f.SetUint(n)
+			case reflect.Int:
+				n++
+				f.SetInt(int64(n))
+			}
+		}
+	}
+	dp.InterfaceReapplies = n + 1
+	got := dataPlaneProto(&dp, 0).GetCounters()
+	seen := map[uint64]bool{}
+	for _, v := range got {
+		seen[v] = true
+	}
+	for v := uint64(1); v <= n+1; v++ {
+		if !seen[v] {
+			t.Errorf("counter %d of the status has no name", v)
+		}
+	}
+	dp.RouteTable.Enforced = false
+	for name := range dataPlaneProto(&dp, 0).GetCounters() {
+		if strings.HasPrefix(name, "route_table.") {
+			t.Errorf("%s outside route-table mode", name)
+		}
+	}
+}
+
+// The maps a node refused reach the status and the CLI; none, no line.
+func TestMapsRefusedReachStatusAndCLI(t *testing.T) {
+	for _, n := range []uint64{0, 3} {
+		out := statusProto(agent.Status{Connection: agent.Connected, MapsRefused: n})
+		if out.GetMapsRefused() != n {
+			t.Errorf("maps_refused %d, want %d", out.GetMapsRefused(), n)
+		}
+		var text bytes.Buffer
+		if err := WriteStatus(&text, out, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		if shown := strings.Contains(text.String(), "maps refused:"); shown != (n > 0) || (n > 0 && !strings.Contains(text.String(), "3 since")) {
+			t.Errorf("%d refused:\n%s", n, text.String())
+		}
 	}
 }

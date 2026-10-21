@@ -29,15 +29,19 @@ const OverlayDevice = "overlay"
 // ErrEngineClosed is returned by a closed engine.
 var ErrEngineClosed = errors.New("dataplane: engine closed")
 
-// The steps of Apply, as Status.LastApplyError names a failed one.
+// Step is a step of Apply, as Status.LastApplyError names a failed one: a
+// snake_case code, like every other code a status holds.
+type Step string
+
+// The steps of Apply.
 const (
-	StepSection   = "section"   // the section can't run here: another node's (nothing changed), no IPv4 address, MTU
-	StepRemovals  = "removals"  // taking away peers the section no longer allows
-	StepInterface = "interface" // the TUN's addresses and MTU (the InterfaceConfigurator)
-	StepDevices   = "devices"   // WireGuard devices and their Binds' peers
-	StepRouter    = "router"    // the router's table
+	StepSection   Step = "section"   // the section can't run here: another node's (nothing changed), no IPv4 address, MTU
+	StepRemovals  Step = "removals"  // taking away peers the section no longer allows
+	StepInterface Step = "interface" // the TUN's addresses and MTU (the InterfaceConfigurator)
+	StepDevices   Step = "devices"   // WireGuard devices and their Binds' peers
+	StepRouter    Step = "router"    // the router's table
 	// StepRouteTable is the OS routing table (route-table mode).
-	StepRouteTable = "route table"
+	StepRouteTable Step = "route_table"
 )
 
 // EngineConfig is what an engine runs on.
@@ -136,9 +140,13 @@ type Engine struct {
 	// (nil without an Interface).
 	interfaceWatched chan struct{}
 
-	mu      sync.Mutex
-	closed  bool
-	devices map[string]*egressDevice
+	mu     sync.Mutex
+	closed bool
+	// devices keeps each peer key on one device; routes keeps the OS
+	// table's direct routes shrinking before the router's table changes
+	// and growing after.
+	devices deviceSet
+	routes  osRoutes
 	inbound map[string]*transport.PeerTable
 	links   map[string][]transport.PeerLink // last applied, by transport
 
@@ -149,7 +157,7 @@ type Engine struct {
 	networks []netip.Prefix
 	exit     bool // the section allows egress and cfg.Forward is set
 	skipped  []Skip
-	lastErr  string
+	lastErr  Step
 	// routedExit is whether the router's table forwards (Status.Exit).
 	routedExit bool
 	// ifc is the overlay interface's configuration in place (nil before
@@ -173,11 +181,9 @@ type Engine struct {
 	ruleStatus   RuleStatus
 	geoipSets    map[[32]byte]*lists.Set // decoded, by hash
 
-	// Route-table mode: the links' endpoints, and what the OS routing
-	// table holds (nil before the first enforcement).
-	endpoints  []netip.Addr
-	routesWant *RouteTableWant
-	nameRules  *rules.Names // the rules compiled for DNS names
+	// Route-table mode: the links' endpoints.
+	endpoints []netip.Addr
+	nameRules *rules.Names // the rules compiled for DNS names
 
 	// What the resolver needs of the last section: the node's kind and
 	// egress setting, and the overlay names.
@@ -186,20 +192,6 @@ type Engine struct {
 	spaceName string
 	ownName   string
 	peerNames map[netmap.NodeID]string
-}
-
-// devicePeer is a peer of one device: the router sends it the peer's
-// overlay addresses, and WireGuard accepts AllowedIPs from it (a chain's
-// exit also has the default routes there).
-type devicePeer struct {
-	OverlayPeer
-	AllowedIPs []netip.Prefix
-}
-
-type egressDevice struct {
-	egress *router.Egress
-	wg     *wg.Device
-	peers  []devicePeer // what WireGuard has
 }
 
 // NewEngine starts an engine. It carries nothing until the first Apply.
@@ -234,7 +226,6 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 		tunName:   name,
 		node:      node,
 		router:    router.New(cfg.TUN),
-		devices:   make(map[string]*egressDevice),
 		inbound:   make(map[string]*transport.PeerTable),
 		links:     make(map[string][]transport.PeerLink),
 		ownRules:  cfg.Rules,
@@ -242,6 +233,8 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 		ifcTiming: defaultInterfaceTiming,
 	}
 	e.assign, e.rules = e.layout, e.ruleRoutes
+	e.devices = deviceSet{key: cfg.WireGuardKey, router: e.router, node: node, log: cfg.Log, byName: map[string]*egressDevice{}}
+	e.routes = osRoutes{table: cfg.RouteTable, mu: &e.mu, warn: e.warn}
 	e.ctx, e.cancel = context.WithCancel(context.Background())
 	if cfg.Interface != nil {
 		e.interfaceWatched = make(chan struct{})
@@ -301,7 +294,7 @@ func (e *Engine) Apply(ctx context.Context, s netmap.Section) error {
 	return err
 }
 
-func (e *Engine) apply(ctx context.Context, s netmap.Section) (string, error) {
+func (e *Engine) apply(ctx context.Context, s netmap.Section) (Step, error) {
 	if s.Node.ID != e.cfg.ID {
 		return StepSection, fmt.Errorf("dataplane: section of node %s, not %s", s.Node.ID, e.cfg.ID)
 	}
@@ -310,6 +303,31 @@ func (e *Engine) apply(ctx context.Context, s netmap.Section) (string, error) {
 	for _, p := range s.Peers {
 		e.peerNames[p.ID] = p.Name
 	}
+	pc, in, oc, ocErr := e.configsOf(s)
+	e.links = in.Links
+	for name, table := range e.inbound {
+		table.Set(in.Links[name])
+	}
+	e.node.Update(pc.Table)
+	if ocErr != nil {
+		if err := e.devices.remove(e.devices.sectionPeers(s), false, pc.Peers, e.setTable); err != nil {
+			return StepRemovals, err
+		}
+		return StepSection, ocErr
+	}
+	e.chainExit = chainExits(s.Chains, oc.Peers)
+	_ = e.compileRules(ruleInputOf(s), oc.Networks) // an unavailable preset is in Status
+	return e.routes.around(ctx, e.ruleTable.Direct(), func() (Step, error) {
+		e.overlay, e.paths = &oc, pc.Peers
+		e.endpoints = endpointsOf(pc)
+		return e.carry(ctx, s.Node, oc)
+	}, e.routeTableWant)
+}
+
+// configsOf is what s asks of the path layer, the listeners and the
+// overlay (its error: the section can't run here); what they skip is
+// recorded, and logged at debug level.
+func (e *Engine) configsOf(s netmap.Section) (PathConfig, InboundConfig, OverlayConfig, error) {
 	pc := PathConfigFrom(s, e.cfg.Registry)
 	in := AcceptedInbound(s, e.cfg.Registry, e.cfg.Space, e.cfg.LinkMTU)
 	mtu := OverlayMTU(&pc, &in, e.cfg.Registry, e.cfg.LinkMTU)
@@ -319,31 +337,16 @@ func (e *Engine) apply(ctx context.Context, s netmap.Section) (string, error) {
 		e.debug("skipped", "entry", d.Error())
 	}
 	e.skipped = skips(details)
+	return pc, in, oc, ocErr
+}
 
-	e.links = in.Links
-	for name, table := range e.inbound {
-		table.Set(in.Links[name])
-	}
-	e.node.Update(pc.Table)
-	var want map[string][]devicePeer
-	var shrinkErr error
-	if ocErr == nil {
-		e.chainExit = chainExits(s.Chains, oc.Peers)
-		_ = e.compileRules(ruleInputOf(s), oc.Networks) // an unavailable preset is in Status
-		shrinkErr = e.shrinkRoutes(ctx)
-		e.overlay, e.paths = &oc, pc.Peers
-		e.endpoints = endpointsOf(pc)
-		want = e.assign(oc)
-	} else {
-		want = sectionPeers(s, e.devices)
-	}
-	if err := e.removePeers(want, ocErr == nil, pc.Peers); err != nil {
+// carry makes the devices, the TUN's interface and the router's table
+// carry oc, the overlay of node's section, on e.paths: revocations first.
+func (e *Engine) carry(ctx context.Context, node netmap.NodeSettings, oc OverlayConfig) (Step, error) {
+	want := e.assign(oc)
+	if err := e.devices.remove(want, true, e.paths, e.setTable); err != nil {
 		return StepRemovals, err
 	}
-	if ocErr != nil {
-		return StepSection, ocErr
-	}
-
 	if e.cfg.Interface != nil {
 		ifc := InterfaceConfig{Name: e.tunName, Addrs: slices.Clone(oc.Addrs), MTU: oc.MTU, Up: true}
 		if err := e.cfg.Interface.Apply(ctx, ifc); err != nil {
@@ -352,137 +355,14 @@ func (e *Engine) apply(ctx context.Context, s netmap.Section) (string, error) {
 		e.ifc = &ifc
 	}
 	e.mtu, e.ipv6Off, e.local, e.networks = oc.MTU, oc.IPv6Off, oc.Local, oc.Networks
-	e.exit = e.cfg.Forward && s.Node.Kind == netmap.NodeServer && s.Node.AllowEgress
-
-	if err := e.addPeers(want, pc.Peers, oc.MTU); err != nil {
+	e.exit = e.cfg.Forward && node.Kind == netmap.NodeServer && node.AllowEgress
+	if err := e.devices.add(want, e.paths, oc.MTU); err != nil {
 		return StepDevices, err
 	}
 	if err := e.setTable(); err != nil {
 		return StepRouter, err
 	}
-	if err := e.growRoutes(ctx, shrinkErr); err != nil {
-		return StepRouteTable, err
-	}
 	return "", nil
-}
-
-// sectionPeers is what a section that can't run allows the running
-// devices: their peers whose id, key and addresses it still lists.
-func sectionPeers(s netmap.Section, devices map[string]*egressDevice) map[string][]devicePeer {
-	listed := make(map[netmap.NodeID]netmap.Peer, len(s.Peers))
-	for _, p := range s.Peers {
-		listed[p.ID] = p
-	}
-	want := make(map[string][]devicePeer, len(devices))
-	for name, d := range devices {
-		want[name] = nil
-		for _, p := range d.peers {
-			if q, ok := listed[p.ID]; ok && q.WireGuardKey == p.Key {
-				p.Addresses = slices.DeleteFunc(slices.Clone(p.Addresses), func(a netip.Addr) bool { return !slices.Contains(q.Addresses, a) })
-				p.AllowedIPs = slices.DeleteFunc(slices.Clone(p.AllowedIPs), func(a netip.Prefix) bool {
-					return a.IsSingleIP() && !slices.Contains(p.Addresses, a.Addr())
-				})
-				want[name] = append(want[name], p)
-			}
-		}
-	}
-	return want
-}
-
-// removePeers takes from every device the peers, and the addresses of
-// peers, that want no longer gives it, and closes the devices want has
-// none for (when known). Nothing is added.
-func (e *Engine) removePeers(want map[string][]devicePeer, known bool, paths []path.Peer) error {
-	departing := make(map[string]*egressDevice)
-	changed := false
-	for name, d := range e.devices {
-		next, stays := want[name]
-		if !stays && known {
-			departing[name] = d
-			continue
-		}
-		byID := make(map[netmap.NodeID]devicePeer, len(next))
-		for _, p := range next {
-			byID[p.ID] = p
-		}
-		var kept []devicePeer
-		for _, p := range d.peers {
-			q, ok := byID[p.ID]
-			if !ok || q.Key != p.Key {
-				continue
-			}
-			p.Addresses = slices.DeleteFunc(slices.Clone(p.Addresses), func(a netip.Addr) bool { return !slices.Contains(q.Addresses, a) })
-			p.AllowedIPs = slices.DeleteFunc(slices.Clone(p.AllowedIPs), func(a netip.Prefix) bool { return !slices.Contains(q.AllowedIPs, a) })
-			if len(p.AllowedIPs) > 0 {
-				kept = append(kept, p)
-			}
-		}
-		if samePeers(kept, d.peers) {
-			continue
-		}
-		if err := d.wg.Configure(e.cfg.WireGuardKey, wgPeers(kept)); err != nil {
-			return err
-		}
-		d.peers = kept
-		changed = true
-	}
-	if !changed && len(departing) == 0 {
-		return nil
-	}
-	binds := make(map[*path.Bind][]path.Peer, len(e.devices))
-	for name, d := range e.devices {
-		if departing[name] == nil {
-			binds[d.wg.Bind()] = pathPeers(d.peers, paths)
-		}
-	}
-	if err := e.node.SetPeers(binds); err != nil {
-		return err
-	}
-	// The router stops using departing egresses before their devices close.
-	for name := range departing {
-		delete(e.devices, name)
-	}
-	if err := e.setTable(); err != nil {
-		return err
-	}
-	var errs []error
-	for _, d := range departing {
-		errs = append(errs, d.wg.Close())
-	}
-	return errors.Join(errs...)
-}
-
-// addPeers gives each device all of want, creating the devices it lacks.
-// A peer key lives in one device at a time, and removePeers took peers off
-// the devices they leave, so every Bind's peers change in one step.
-func (e *Engine) addPeers(want map[string][]devicePeer, paths []path.Peer, mtu int) error {
-	for name := range want {
-		if e.devices[name] != nil {
-			continue
-		}
-		egress, err := e.router.NewEgress(name, mtu)
-		if err != nil {
-			return err
-		}
-		e.devices[name] = &egressDevice{egress: egress, wg: wg.New(name, egress, e.node.NewBind(), e.cfg.Log)}
-	}
-	binds := make(map[*path.Bind][]path.Peer, len(e.devices))
-	for name, d := range e.devices {
-		binds[d.wg.Bind()] = pathPeers(want[name], paths)
-	}
-	if err := e.node.SetPeers(binds); err != nil {
-		return err
-	}
-	for name, d := range e.devices {
-		if err := d.egress.SetMTU(mtu); err != nil {
-			return err
-		}
-		if err := d.wg.Configure(e.cfg.WireGuardKey, wgPeers(want[name])); err != nil {
-			return err
-		}
-		d.peers = want[name]
-	}
-	return nil
 }
 
 // reflectLocal: macOS routes the utun's own address into the utun (see
@@ -494,8 +374,8 @@ func (e *Engine) table() router.Table {
 	// A device never forwards the OS's traffic: only its own addresses
 	// may speak through it.
 	t := router.Table{Overlay: e.networks, Local: e.local, ReflectLocal: reflectLocal, LocalSourcesOnly: e.kind == netmap.NodeDevice}
-	egresses := make(map[string]*router.Egress, len(e.devices))
-	for name, d := range e.devices {
+	egresses := make(map[string]*router.Egress, e.devices.len())
+	for name, d := range e.devices.all() {
 		egresses[name] = d.egress
 		for _, p := range d.peers {
 			for _, a := range p.Addresses {
@@ -509,37 +389,10 @@ func (e *Engine) table() router.Table {
 	// The space's devices and servers are the overlay device's peers;
 	// a chain's exit device carries replies from its exit, never
 	// traffic for this node to forward.
-	if d := e.devices[OverlayDevice]; e.exit && d != nil {
+	if d := e.devices.get(OverlayDevice); e.exit && d != nil {
 		t.Forward = []*router.Egress{d.egress}
 	}
 	return t
-}
-
-func pathPeers(peers []devicePeer, paths []path.Peer) []path.Peer {
-	firstHops := make(map[path.NodeID][]path.NodeID, len(paths))
-	for _, p := range paths {
-		firstHops[p.ID] = p.FirstHops
-	}
-	out := make([]path.Peer, 0, len(peers))
-	for _, p := range peers {
-		id := path.NodeID(p.ID)
-		out = append(out, path.Peer{ID: id, FirstHops: firstHops[id]})
-	}
-	return out
-}
-
-func wgPeers(peers []devicePeer) []wg.Peer {
-	out := make([]wg.Peer, 0, len(peers))
-	for _, p := range peers {
-		out = append(out, wg.Peer{Key: p.Key, Node: path.NodeID(p.ID), AllowedIPs: p.AllowedIPs})
-	}
-	return out
-}
-
-func samePeers(a, b []devicePeer) bool {
-	return slices.EqualFunc(a, b, func(p, q devicePeer) bool {
-		return p.ID == q.ID && p.Key == q.Key && slices.Equal(p.Addresses, q.Addresses) && slices.Equal(p.AllowedIPs, q.AllowedIPs)
-	})
 }
 
 func (e *Engine) debug(msg string, args ...any) {
@@ -577,7 +430,7 @@ type Status struct {
 	MTU int
 	// IPv6 says whether the overlay carries IPv6, and IPv6Off why not.
 	IPv6    bool
-	IPv6Off string
+	IPv6Off IPv6Off
 	Peers   []PeerStatus
 	// Neighbors are the path layer's adjacent nodes and their links.
 	Neighbors []path.NeighborStatus
@@ -586,9 +439,9 @@ type Status struct {
 	// Skipped is what the last applied section held that the engine left
 	// out, and why.
 	Skipped []Skip
-	// LastApplyError is the step the last Apply failed at (Step*), empty
-	// if it succeeded.
-	LastApplyError string
+	// LastApplyError is the step the last Apply failed at, empty if it
+	// succeeded.
+	LastApplyError Step
 	Router         router.Counters
 	Path           path.Counters
 	// Rules is how the routing rules are enforced.
@@ -631,15 +484,15 @@ func (e *Engine) Status() Status {
 		Path:           e.node.Counters(),
 		Rules:          e.routedRules,
 		Exit:           e.routedExit,
-		RouteTable:     e.routeTableStatus(),
+		RouteTable:     e.routes.status(),
 
 		InterfaceReapplies: e.ifcReapplies,
 	}
 	s.Rules.Skipped = slices.Clone(s.Rules.Skipped)
 	if e.ipv6Off != nil {
-		s.IPv6Off = e.ipv6Off.Error()
+		s.IPv6Off = ipv6OffCode(e.ipv6Off)
 	}
-	for name, d := range e.devices {
+	for name, d := range e.devices.all() {
 		reported := make(map[netmap.WireGuardKey]wg.PeerStatus)
 		if peers, err := d.wg.Peers(); err == nil {
 			for _, p := range peers {
@@ -677,8 +530,7 @@ func (e *Engine) Close() error {
 		return nil
 	}
 	e.closed = true
-	devices := e.devices
-	e.devices = map[string]*egressDevice{}
+	devices := e.devices.take()
 	e.mu.Unlock()
 
 	var errs []error

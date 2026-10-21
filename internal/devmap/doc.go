@@ -1,6 +1,7 @@
 // Package devmap is development tooling: signed maps made by hand from a
 // YAML spec, until the controller builds them (M4). It backs `thinkpol dev
-// keygen` and `thinkpol dev map`.
+// keygen` and `thinkpol dev map`, and prints what `thinkpol dev lists
+// build` built (WriteListsReport).
 //
 // # Spec
 //

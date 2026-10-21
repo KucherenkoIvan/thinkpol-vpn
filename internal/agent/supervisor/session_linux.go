@@ -111,7 +111,7 @@ func (sn *session) serve() error {
 			}
 			_ = sn.control.Close()
 			sn.sup.awaitExit(sn.p)
-			return fmt.Errorf("data socket: %w", err)
+			return exitWith(ExitProtocolError, fmt.Errorf("data socket: %w", err))
 		case <-sn.w.listenersChanged:
 			if err := sn.sendListeners(); err != nil {
 				return sn.stuck("listeners", err)
@@ -132,7 +132,7 @@ func (sn *session) serve() error {
 			// reason, whatever its incidental exit code.
 			_ = sn.control.Close()
 			sn.sup.awaitExit(sn.p)
-			return fmt.Errorf("socket: %w", err)
+			return exitWith(ExitProtocolError, fmt.Errorf("socket: %w", err))
 		case <-sn.w.notify:
 			if err := sn.sendSeeds(); err != nil {
 				return sn.stuck("blob seeds", err)
@@ -178,10 +178,10 @@ func (sn *session) stop() error {
 	if err := sn.control.SendTimeout(ipc.Message{Kind: ipc.KindStop}, sn.sup.opts.StopTimeout); err != nil {
 		sn.log.Warn("sending stop", "err", err)
 		sn.p.kill()
-		return fmt.Errorf("killed: %w", err)
+		return exitWith(ExitKilled, fmt.Errorf("killed: %w", err))
 	}
 	if !sn.sup.awaitExit(sn.p) {
-		return fmt.Errorf("killed: still running %v after stop", sn.sup.opts.StopTimeout)
+		return exitWith(ExitKilled, fmt.Errorf("killed: still running %v after stop", sn.sup.opts.StopTimeout))
 	}
 	return sn.p.err
 }
@@ -197,7 +197,7 @@ func (sn *session) stuck(what string, err error) error {
 	}
 	_ = sn.control.Close()
 	sn.p.kill()
-	return fmt.Errorf("sending %s: %w", what, err)
+	return exitWith(ExitUnresponsive, fmt.Errorf("sending %s: %w", what, err))
 }
 
 // sendListeners tells a worker which shared listeners it is forwarded from.

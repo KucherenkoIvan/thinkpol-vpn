@@ -90,34 +90,47 @@ func (e *Engine) dnsConfig() ResolverConfig {
 	}
 
 	peers := make(map[netmap.NodeID][]netip.Addr)
-	for _, d := range e.devices {
+	for _, d := range e.devices.all() {
 		for _, p := range d.peers {
 			peers[p.ID] = slices.Clone(p.Addresses)
 		}
 	}
 	if netmap.CheckLabel(e.spaceName) == nil {
-		c.Zone = e.spaceName + ".internal"
-		c.Names = make(map[string][]netip.Addr)
-		claims := make(map[string]int)
-		add := func(name string, addrs []netip.Addr) {
-			if netmap.CheckLabel(name) != nil || len(addrs) == 0 {
-				return
-			}
-			claims[name]++
-			c.Names[name] = addrs
+		c.Zone, c.Names = e.spaceName+".internal", e.zoneNames(peers)
+	}
+	c.Route, c.RouteAddr = e.nameRoutes(peers)
+	return c
+}
+
+// zoneNames are the names of the space's zone a device may know: its own,
+// and its WireGuard peers' (peers, by id), each a single label; a name two
+// nodes claim names neither (Build never makes one).
+func (e *Engine) zoneNames(peers map[netmap.NodeID][]netip.Addr) map[string][]netip.Addr {
+	names := make(map[string][]netip.Addr)
+	claims := make(map[string]int)
+	add := func(name string, addrs []netip.Addr) {
+		if netmap.CheckLabel(name) != nil || len(addrs) == 0 {
+			return
 		}
-		add(e.ownName, slices.Clone(e.local))
-		for id, addrs := range peers {
-			add(e.peerNames[id], addrs)
-		}
-		// A name two nodes claim names neither (Build never makes one).
-		for name, n := range claims {
-			if n > 1 {
-				delete(c.Names, name)
-			}
+		claims[name]++
+		names[name] = addrs
+	}
+	add(e.ownName, slices.Clone(e.local))
+	for id, addrs := range peers {
+		add(e.peerNames[id], addrs)
+	}
+	for name, n := range claims {
+		if n > 1 {
+			delete(names, name)
 		}
 	}
+	return names
+}
 
+// nameRoutes route a name by the rules compiled for names, and a reverse
+// name where its address's packets go: direct, through a chain to the
+// resolver at its exit's overlay address (peers, by id), or blocked.
+func (e *Engine) nameRoutes(peers map[netmap.NodeID][]netip.Addr) (byName func(string) NameRoute, byAddr func(netip.Addr) NameRoute) {
 	names := e.nameRules
 	via := make(map[string][]netip.Addr, len(e.chainExit))
 	for chain, exit := range e.chainExit {
@@ -136,15 +149,14 @@ func (e *Engine) dnsConfig() ResolverConfig {
 		}
 		return NameRoute{Kind: ResolveBlock}
 	}
-	c.Route = func(name string) NameRoute {
+	byName = func(name string) NameRoute {
 		if names == nil {
 			return NameRoute{Kind: ResolveBlock}
 		}
 		return route(names.Lookup(name))
 	}
-	// A reverse name goes where its address's packets go.
 	table := e.ruleTable
-	c.RouteAddr = func(a netip.Addr) NameRoute {
+	byAddr = func(a netip.Addr) NameRoute {
 		if table == nil {
 			return NameRoute{Kind: ResolveBlock}
 		}
@@ -154,5 +166,5 @@ func (e *Engine) dnsConfig() ResolverConfig {
 		}
 		return route(action)
 	}
-	return c
+	return byName, byAddr
 }

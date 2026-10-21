@@ -51,8 +51,9 @@ type LocalServiceClient interface {
 	// Connect brings a device's data plane up on its latest map and returns
 	// once it is up. A device removed from its space connects once a map
 	// includes it again. Fails with FAILED_PRECONDITION "server_mode" on a
-	// server, UNAVAILABLE when the start failed (the message names the
-	// step).
+	// server, UNAVAILABLE when the start failed (the message is
+	// "start_failed:" and the step's code: "tun", "engine", or an Apply
+	// step as in DataPlane.last_apply_error).
 	Connect(ctx context.Context, in *ConnectRequest, opts ...grpc.CallOption) (*ConnectResponse, error)
 	// Disconnect takes a device's data plane down and returns once it is
 	// down; the device goes on following its space's maps.
@@ -181,8 +182,9 @@ type LocalServiceServer interface {
 	// Connect brings a device's data plane up on its latest map and returns
 	// once it is up. A device removed from its space connects once a map
 	// includes it again. Fails with FAILED_PRECONDITION "server_mode" on a
-	// server, UNAVAILABLE when the start failed (the message names the
-	// step).
+	// server, UNAVAILABLE when the start failed (the message is
+	// "start_failed:" and the step's code: "tun", "engine", or an Apply
+	// step as in DataPlane.last_apply_error).
 	Connect(context.Context, *ConnectRequest) (*ConnectResponse, error)
 	// Disconnect takes a device's data plane down and returns once it is
 	// down; the device goes on following its space's maps.

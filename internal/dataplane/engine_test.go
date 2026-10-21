@@ -124,7 +124,7 @@ func (nd *node) start(t *testing.T, net *memory.Network) {
 	nd.engine = e
 	nd.stack = newStack(t, ch)
 	if nd.listen.IsValid() {
-		l, err := net.Listen(context.Background(), transport.ListenConfig{Address: nd.listen.String(), Peers: e.Inbound(memory.Name)})
+		l, err := net.Listen(context.Background(), transport.ListenConfig{Address: nd.listen.String()}, transport.Admission{Peers: e.Inbound(memory.Name)})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -352,7 +352,7 @@ func TestIPv6IsOffBelowItsMinimumMTU(t *testing.T) {
 		nd.start(t, net)
 	}
 	st := a.engine.Status()
-	if want := 1000 - path.HeaderSize - 32; st.MTU != want || st.IPv6 || !strings.Contains(st.IPv6Off, "1280") {
+	if want := 1000 - path.HeaderSize - 32; st.MTU != want || st.IPv6 || st.IPv6Off != dataplane.IPv6OffMTU {
 		t.Fatalf("status %+v, want MTU %d without IPv6", st, want)
 	}
 	ping(t, a, s.v4)
@@ -508,6 +508,34 @@ func TestAPeerMovesBetweenDevices(t *testing.T) {
 	}
 
 	dataplane.PutPeerOnDeviceForTest(a.engine, netmap.NodeID{}, "")
+	a.apply(t)
+	if st := a.engine.Status(); len(st.Egresses) != 1 || st.Peers[1].Device != dataplane.OverlayDevice {
+		t.Fatalf("status %+v", st)
+	}
+	ping(t, a, b.v4)
+}
+
+// A device that leaves while the router can't take the table without it
+// stays the engine's: once the router can, the next Apply moves its peer
+// back and closes it, and the peer is reached again.
+func TestADepartingDeviceIsKeptWhileTheRouterRefusesTheTable(t *testing.T) {
+	net := memory.NewNetwork(memory.Datagram)
+	a, s, b := m0()
+	for _, nd := range []*node{s, a, b} {
+		nd.start(t, net)
+	}
+	dataplane.PutPeerOnDeviceForTest(a.engine, b.id, "chain-x")
+	a.apply(t)
+	ping(t, a, b.v4)
+
+	var fail atomic.Bool
+	dataplane.FailRouterTablesForTest(a.engine, &fail)
+	fail.Store(true)
+	dataplane.PutPeerOnDeviceForTest(a.engine, netmap.NodeID{}, "")
+	if err := a.engine.Apply(context.Background(), a.section); err == nil {
+		t.Fatal("the router took a table with another router's egress")
+	}
+	fail.Store(false)
 	a.apply(t)
 	if st := a.engine.Status(); len(st.Egresses) != 1 || st.Peers[1].Device != dataplane.OverlayDevice {
 		t.Fatalf("status %+v", st)

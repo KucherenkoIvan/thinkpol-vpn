@@ -16,16 +16,38 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 )
 
-// Host is what one data plane needs of its network stack, per OS.
+// Host is what a device's data plane needs of its network stack, per OS:
+// what any data plane needs (WorkerHost), and the adapters only a device
+// uses (DeviceHost).
 type Host struct {
+	WorkerHost
+	DeviceHost
+}
+
+// WorkerHost is what any data plane needs of its network stack, a
+// server's worker's included: its network namespace's.
+type WorkerHost struct {
 	// NewConfigurator takes the network configuration of one owner (one
 	// owner per network namespace: a second node agent fails now, before
 	// anything changed).
 	NewConfigurator func(o netcfg.Owner) (netcfg.Configurator, error)
 	// NewTUN creates the overlay's TUN.
 	NewTUN func(name string, mtu int) (wgtun.Device, error)
+	// Transports builds the node's transport registry; markSockets marks
+	// its sockets past the route table (routetable.SocketControl).
+	Transports func(markSockets bool) (*transport.Registry, error)
+	// BlobNet is the blob services' network; zero is the node's own
+	// sockets.
+	BlobNet blobs.Net
+}
+
+// DeviceHost is what only a device's data plane uses of the host: the
+// route table and its leak guard, clearing what a crashed run left, and
+// the OS's resolvers and their configuration. A server's worker never
+// gets one. Every field is set.
+type DeviceHost struct {
 	// NewGuard returns the host's leak guard for the route table, or nil
-	// where the host has none yet (Windows: TP-047/TP-048). Required.
+	// where the host has none yet (Windows: TP-047/TP-048).
 	NewGuard func() routetable.Guard
 	// NewRouteTable takes route-table enforcement, with guard (nil: none).
 	NewRouteTable func(log *slog.Logger, guard routetable.Guard) (RouteEnforcer, error)
@@ -39,12 +61,6 @@ type Host struct {
 	// SystemUpstreams are the resolvers the OS used before the node
 	// pointed it at its own (dns.SystemUpstreams).
 	SystemUpstreams func(exclude []netip.Addr) ([]netip.Addr, error)
-	// Transports builds the node's transport registry; markSockets marks
-	// its sockets past the route table (routetable.SocketControl).
-	Transports func(markSockets bool) (*transport.Registry, error)
-	// BlobNet is the blob services' network; zero is the node's own
-	// sockets.
-	BlobNet blobs.Net
 }
 
 // RouteEnforcer is route-table enforcement on the host
@@ -74,7 +90,7 @@ type Platform struct {
 // TUN) with its leak guard, then the overlay's (on macOS they go with the
 // utun, but stay in the overlay's record), each owner's record with them.
 // The second is cleared whatever the first says; what failed is logged.
-func (h Host) clearNetwork(log *slog.Logger) {
+func (h DeviceHost) clearNetwork(log *slog.Logger) {
 	var errs []error
 	if err := h.ClearRouteTable(h.NewGuard()); err != nil && !errors.Is(err, errors.ErrUnsupported) {
 		errs = append(errs, fmt.Errorf("%v: %w", netcfg.OwnerRouteTable, err))

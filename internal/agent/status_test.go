@@ -38,13 +38,13 @@ type deviceNode struct {
 
 // deviceOpt adjusts device b: prepare sets its config and platform
 // (every host fake) before it is prepared, node sees the prepared node
-// before it runs, dataPlane sets its data plane's private test fields and
-// RouteTable (off by default: virtual TUNs leave the host's routing
-// alone) before it runs.
+// before it runs, and tuning its data plane's tuning (fast paths and
+// retries already). It runs with a route table, as a device does: the
+// test platform's does nothing unless prepare gives it another.
 type deviceOpt struct {
-	prepare   func(*Config, *Platform)
-	node      func(*Node)
-	dataPlane func(*DataPlane)
+	prepare func(*Config, *Platform)
+	node    func(*Node)
+	tuning  func(*tuning)
 }
 
 // startDevice starts device b with opts.
@@ -70,6 +70,7 @@ func startDevice(t *testing.T, s *testSpace, reg *transport.Registry, connect bo
 	if err != nil {
 		t.Fatal(err)
 	}
+	rn.status = n.Status
 	d := &deviceNode{runningNode: rn, node: n, failTUN: failTUN, events: newHeardEvents(t)}
 	n.Subscribe(d.events.add)
 	for _, o := range opts {
@@ -77,13 +78,10 @@ func startDevice(t *testing.T, s *testSpace, reg *transport.Registry, connect bo
 			o.node(n)
 		}
 	}
-	n.tweak = func(dp *DataPlane) {
-		dp.path, dp.retryAfter = fastPaths, testRetry
-		dp.RouteTable = false // virtual TUNs: the host's routing stays as it is
-		for _, o := range opts {
-			if o.dataPlane != nil {
-				o.dataPlane(dp)
-			}
+	n.tuning = tuning{path: fastPaths, retryAfter: testRetry}
+	for _, o := range opts {
+		if o.tuning != nil {
+			o.tuning(&n.tuning)
 		}
 	}
 	go func() { rn.done <- n.run(rn.ctx, reg, rn.maps) }()
@@ -125,7 +123,7 @@ func TestADeviceConnectsAndDisconnects(t *testing.T) {
 	if st.DataPlane != nil || st.Mode != ModeDevice || st.Space != s.id || st.MapVersion != 1 {
 		t.Fatalf("status %+v", st)
 	}
-	if h := st.Health(); h.Level != HealthDown || !slices.Equal(h.Problems, []string{ProblemDisconnected}) {
+	if h := st.Health(); h.Level != HealthDown || !slices.Equal(h.Problems, []Problem{ProblemDisconnected}) {
 		t.Fatalf("health %+v", h)
 	}
 	b.maps <- s.build(t, 2)
@@ -173,7 +171,7 @@ func TestADeviceConnectsAndDisconnects(t *testing.T) {
 		t.Fatal(err)
 	}
 	b.ping(t, b4, a4)
-	b.waitLog(t, `msg="map applied" .*version=3`)
+	b.applied(t, 3)
 
 	// Removed while connected: it waits, and is back with the next map
 	// that has it.
@@ -302,7 +300,6 @@ func TestARouteTableNotEnforcedIsAnEvent(t *testing.T) {
 		prepare: func(_ *Config, p *Platform) {
 			p.NewRouteTable = func(*slog.Logger, routetable.Guard) (RouteEnforcer, error) { return table, nil }
 		},
-		dataPlane: func(dp *DataPlane) { dp.RouteTable = true },
 	})
 	b.connection(t, Connected)
 	table.mu.Lock()
@@ -310,7 +307,7 @@ func TestARouteTableNotEnforcedIsAnEvent(t *testing.T) {
 	table.mu.Unlock()
 	b.maps <- s.build(t, 2)
 	b.events.are(t, Event{EventConnected, 1}, Event{EventRouteTableNotEnforced, 2})
-	b.waitLog(t, `msg="map applied" .*version=2`)
+	b.applied(t, 2)
 }
 
 // The route table failing on its own is told as the status says so; once
@@ -324,7 +321,6 @@ func TestARouteTableNotEnforcedIsToldAgainAfterItRecovered(t *testing.T) {
 		prepare: func(_ *Config, p *Platform) {
 			p.NewRouteTable = func(*slog.Logger, routetable.Guard) (RouteEnforcer, error) { return table, nil }
 		},
-		dataPlane: func(dp *DataPlane) { dp.RouteTable = true },
 	})
 	b.connection(t, Connected)
 	// Each flip lands as the map's Apply enforces, before the publish
@@ -400,7 +396,7 @@ func TestTheStatusShowsWhatAnEventSays(t *testing.T) {
 				heard = append(heard, seen{ev, st})
 			})
 		},
-		dataPlane: func(dp *DataPlane) { dp.dnsPort = 5353 },
+		tuning: func(t *tuning) { t.dnsPort = 5353 },
 	})
 	b.events.are(t, Event{EventConnected, 1}, Event{EventDNSUnprotected, 1})
 	b.maps <- s.buildWithout(t, 2, s.b)
@@ -437,11 +433,18 @@ func TestAPanickingSubscriberDoesNotStopTheNode(t *testing.T) {
 	s := newTestSpace(t)
 	_, reg := memoryRegistry(t)
 	startNode(t, reg, s.a, s.verified(t, 1))
+	after := newHeardEvents(t)
 	b := startDevice(t, s, reg, true, deviceOpt{node: func(n *Node) {
 		n.Subscribe(func(Event) { panic("a subscriber's bug") })
+		n.Subscribe(after.add)
 	}})
 	b.events.are(t, Event{EventConnected, 1})
-	b.waitLog(t, "an event subscriber panicked")
+	// Told in order: the subscriber after the panicking one hears the
+	// event once the panic was logged.
+	after.are(t, Event{EventConnected, 1})
+	if !logMatches(b.log.String(), `level=ERROR msg="an event subscriber panicked"`) {
+		t.Error("the subscriber's panic isn't logged")
+	}
 	b4, _ := overlay(2)
 	a4, _ := overlay(1)
 	b.ping(t, b4, a4)
@@ -471,14 +474,16 @@ func (s stubWorkerReporter) Workers() []supervisor.WorkerInfo   { return s.worke
 func (stubWorkerReporter) Listeners() []supervisor.ListenerInfo { return nil }
 func (stubWorkerReporter) Egress() supervisor.EgressInfo        { return supervisor.EgressInfo{} }
 
+// The status carries why a worker's process ended as its code, not the
+// error's text.
 func TestWorkerLastExitInStatus(t *testing.T) {
-	const reason = "start: no such file"
 	space := netmap.SpaceID{0x01}
 	st := (&report{
-		mode:    ModeServer,
-		workers: stubWorkerReporter{workers: []supervisor.WorkerInfo{{Space: space, Ready: false, Starts: 1, LastExit: reason}}},
+		mode: ModeServer,
+		workers: stubWorkerReporter{workers: []supervisor.WorkerInfo{{Space: space, Ready: false, Starts: 1,
+			LastExit: "start: no such file", LastExitReason: supervisor.ExitSpawnFailed}}},
 	}).status()
-	if len(st.Workers) != 1 || st.Workers[0].LastExit != reason {
+	if len(st.Workers) != 1 || st.Workers[0].LastExit != supervisor.ExitSpawnFailed {
 		t.Fatalf("workers %+v", st.Workers)
 	}
 }
@@ -493,35 +498,35 @@ func TestHealth(t *testing.T) {
 	}{
 		{"connected", Status{Connection: Connected, DataPlane: &dataplane.Status{Neighbors: []path.NeighborStatus{up}}}, Health{}},
 		{"no neighbors yet", Status{Connection: Connected, DataPlane: &dataplane.Status{}}, Health{}},
-		{"disconnected", Status{Connection: Disconnected}, Health{HealthDown, []string{ProblemDisconnected}}},
-		{"starting", Status{Connection: Connecting}, Health{HealthDown, []string{ProblemStarting}}},
-		{"retrying", Status{Connection: Connecting, Retrying: true}, Health{HealthDown, []string{ProblemRetrying}}},
-		{"removed", Status{Connection: Connecting, Removed: true}, Health{HealthDown, []string{ProblemRemoved}}},
+		{"disconnected", Status{Connection: Disconnected}, Health{HealthDown, []Problem{ProblemDisconnected}}},
+		{"starting", Status{Connection: Connecting}, Health{HealthDown, []Problem{ProblemStarting}}},
+		{"retrying", Status{Connection: Connecting, Retrying: true}, Health{HealthDown, []Problem{ProblemRetrying}}},
+		{"removed", Status{Connection: Connecting, Removed: true}, Health{HealthDown, []Problem{ProblemRemoved}}},
 		{"no link up", Status{Connection: Connected, DataPlane: &dataplane.Status{Neighbors: []path.NeighborStatus{down, down}}},
-			Health{HealthDown, []string{ProblemNoLinkUp}}},
+			Health{HealthDown, []Problem{ProblemNoLinkUp}}},
 		{"one down", Status{Connection: Connected, DataPlane: &dataplane.Status{Neighbors: []path.NeighborStatus{up, down},
 			LastApplyError: dataplane.StepRouter, Skipped: []dataplane.Skip{{}}}},
-			Health{HealthDegraded, []string{ProblemApplyFailed, ProblemNeighborDown, ProblemSkipped}}},
+			Health{HealthDegraded, []Problem{ProblemApplyFailed, ProblemNeighborDown, ProblemSkipped}}},
 		{"route table not enforced", Status{Connection: Connected, DataPlane: &dataplane.Status{
-			RouteTable: dataplane.RouteTableStatus{Error: routetable.ErrorReapply, Routes: 9}}},
-			Health{HealthDown, []string{ProblemRouteTable}}},
+			RouteTable: dataplane.RouteTableStatus{Error: dataplane.RouteTableReapplyFailed, Routes: 9}}},
+			Health{HealthDown, []Problem{ProblemRouteTable}}},
 		{"rules ahead of the route table", Status{Connection: Connected, DataPlane: &dataplane.Status{
 			RouteTable: dataplane.RouteTableStatus{Enforced: true, Routes: 9, RulesAhead: 2}}},
-			Health{HealthDegraded, []string{ProblemRulesAhead}}},
+			Health{HealthDegraded, []Problem{ProblemRulesAhead}}},
 		{"overlay addresses taken around the route table", Status{Connection: Connected, DataPlane: &dataplane.Status{
 			RouteTable: dataplane.RouteTableStatus{Enforced: true, Routes: 9, OverlayAhead: 1}}},
-			Health{HealthDown, []string{ProblemOverlayRoutesAhead}}},
+			Health{HealthDown, []Problem{ProblemOverlayRoutesAhead}}},
 		{"leak guard failing, routes in place", Status{Connection: Connected, DataPlane: &dataplane.Status{
-			RouteTable: dataplane.RouteTableStatus{Enforced: true, Routes: 9, GuardError: routetable.ErrorGuard}}},
-			Health{HealthDegraded, []string{ProblemGuard}}},
+			RouteTable: dataplane.RouteTableStatus{Enforced: true, Routes: 9, GuardError: dataplane.RouteTableGuardFailed}}},
+			Health{HealthDegraded, []Problem{ProblemGuard}}},
 		{"no nf_tables: connected, a loud warning", Status{Connection: Connected, DataPlane: &dataplane.Status{
-			RouteTable: dataplane.RouteTableStatus{Enforced: true, Routes: 9, GuardError: routetable.ErrorGuardUnsupported}}},
-			Health{HealthDegraded, []string{ProblemGuardUnsupported}}},
+			RouteTable: dataplane.RouteTableStatus{Enforced: true, Routes: 9, GuardError: dataplane.RouteTableGuardUnsupported}}},
+			Health{HealthDegraded, []Problem{ProblemGuardUnsupported}}},
 		{"server", Status{Connection: Serving, Workers: []WorkerStatus{{Ready: true, Starts: 1}}}, Health{}},
 		{"server worker down", Status{Connection: Serving, Workers: []WorkerStatus{{Ready: true, Starts: 3}, {}},
 			PublicListeners: []PublicListenerStatus{{Rejected: 1}}},
-			Health{HealthDown, []string{ProblemWorkerDown, ProblemWorkerRestarts, ProblemLinksRejected}}},
-		{"server retrying", Status{Connection: Serving, Retrying: true}, Health{HealthDegraded, []string{ProblemRetrying}}},
+			Health{HealthDown, []Problem{ProblemWorkerDown, ProblemWorkerRestarts, ProblemLinksRejected}}},
+		{"server retrying", Status{Connection: Serving, Retrying: true}, Health{HealthDegraded, []Problem{ProblemRetrying}}},
 	} {
 		if got := tc.st.Health(); got.Level != tc.want.Level || !slices.Equal(got.Problems, tc.want.Problems) {
 			t.Errorf("%s: got %+v, want %+v", tc.name, got, tc.want)
