@@ -205,10 +205,9 @@ type dynamicStore struct {
 	// failed at the last check: warned about once, not at every check,
 	// and it drives Problem's ErrUpstreamsStale.
 	primaryFailed bool
-	// untold: cfg.Upstreams has no servers yet, its caller's own read
-	// having failed (UpstreamsUnknown). The first good read tells it,
-	// whether or not the servers changed; until then Problem reports
-	// ErrUpstreamsStale.
+	// untold: the caller has no upstreams yet (startsUntold): the first
+	// good read tells Upstreams whatever it found; until then Problem
+	// reports ErrUpstreamsStale.
 	untold bool
 }
 

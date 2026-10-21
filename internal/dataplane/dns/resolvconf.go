@@ -261,10 +261,9 @@ type resolvConf struct {
 	original []byte // the last original seen
 	seen     bool   // original is set
 	err      error  // the last apply's
-	// untold: cfg.Upstreams has no servers yet, its caller's own read
-	// having failed (UpstreamsUnknown). The first good read tells it,
-	// whether or not the original changed; until then Problem reports
-	// ErrUpstreamsStale.
+	// untold: the caller has no upstreams yet (startsUntold): the first
+	// good read tells Upstreams whatever it found; until then Problem
+	// reports ErrUpstreamsStale.
 	untold  bool
 	stop    chan struct{}
 	stopped chan struct{}

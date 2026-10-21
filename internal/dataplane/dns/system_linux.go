@@ -132,10 +132,9 @@ type resolved struct {
 	cfg     SystemConfig
 	problem error
 	servers []netip.Addr // the uplink servers last seen
-	// untold: cfg.Upstreams has no servers yet, its caller's own read
-	// having failed (UpstreamsUnknown). The first good read of the uplink
-	// tells it, whether or not the servers changed; until then Problem
-	// reports ErrUpstreamsStale.
+	// untold: the caller has no upstreams yet (startsUntold): the first
+	// good read of the uplink tells Upstreams whatever it found; until
+	// then Problem reports ErrUpstreamsStale.
 	untold  bool
 	stop    chan struct{}
 	stopped chan struct{}
