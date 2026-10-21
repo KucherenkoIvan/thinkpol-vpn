@@ -63,6 +63,11 @@ Round 2 (2026-10-22): correctness (fix first), design (fix first), second opinio
 - [x] R2.5 Nits: `TestPfctlsInputLineSurvivesRedaction` was inserted between `TestExecPfctl` and its doc comment (`guard_darwin_test.go` ~1372): move the comment back; the terminal `ErrUnsupported` warn in `reapply` drops the limiter's held-back count (say it, or note why not).
 - [x] R2.6 TP-083 is merged into rewrite (0efc39e): merge it here. Expect conflicts in `routetable.go` (`subscribe`, `subscribeGuard`, `reapply`, a line in `apply`) and its renames (`routetable.ErrorCode`, `RouteTableGuard*`); keep both sides' intent, and keep funlen green.
 
+Round 3 (2026-10-22): correctness (merge, with R3.1 as a nit), design (fix first), second opinion (fix first). All about held-back counts that are never said.
+- [ ] R3.1 `warnLimit` (`warnlimit.go` ~40-75): `heldBack` slots go to texts that never come back (a count in the text that changes every retry), so after the first window every held-back warn lands in `others`, which only `reset` says, and a failure that never clears logs four lines a minute with no count at all, against `warnEvery`'s comment and scope 3. At each window rollover, move the counts of texts not warned in the ending window into `others`, and say `others` with the next warn of any text (e.g. `suppressed_other=N` beside the text's own `suppressed`). Update the `warnEvery` and `warnLimit` comments. Test: a second window of fresh texts whose first warn carries the first window's overflow; update the R2.1 Log line and its mutations.
+- [ ] R3.2 The guard's terminal warn (`routetable.go` ~564-567, `ErrGuardUnsupported`) doesn't read `guardWarn`: a retryable guard failure's held-back repeats are never said, because `guardUnsupported` then returns early and `logCleared` never runs. Say and reset the count there, as the re-apply terminal path does (~762-764); a test that holds one back first.
+- [ ] R3.3 Nit: `guard_darwin_test.go` ~1386 slices `got[len(got)-20:]` in a failure message, which panics if `got` is shorter: print `got`.
+
 ## Notes
 
 ## Log
@@ -102,3 +107,4 @@ Round 2 (2026-10-22): correctness (fix first), design (fix first), second opinio
 - 2026-10-22 R2.5: TestExecPfctl's doc comment is back above it (in the R2.3 commit; no behaviour). The terminal ErrUnsupported warn in reapply now says the re-apply failures the limit held back (suppressed=N) and resets the limit. TestATerminalReapplyFailureIsAlwaysWarned holds one back first and expects suppressed=1 (mutation: dropping the count fails it)
 - 2026-10-22 round 2 checks: make lint (funlen now in it, from TP-083) and make test green before each commit; make lab-test (LAB_P=1, other labs running) green on 6710fd2; the merge after it, 326a5bb, brings in only a ticket file (TP-127). Not verified: real pfctl on a device (no pfctl run)
 - 2026-10-22 in-progress → review
+- 2026-10-22 review → has-errors (round 3: R3.1-R3.3)
