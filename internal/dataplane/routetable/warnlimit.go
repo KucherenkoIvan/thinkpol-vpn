@@ -56,3 +56,11 @@ func (e *Enforcer) warnRetry(l *warnLimit, msg, err string) {
 	}
 	e.log.Warn(msg, append(args, "err", err)...)
 }
+
+// cleared starts l over now that its failure is gone and, if warns of it
+// were held back since the last one, says how many: once, with msg.
+func (e *Enforcer) cleared(l *warnLimit, msg string) {
+	if n := l.reset(); n > 0 {
+		e.log.Info(msg, "suppressed", n)
+	}
+}

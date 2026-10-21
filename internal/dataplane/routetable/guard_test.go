@@ -525,16 +525,16 @@ func (c *fakeClock) advance(d time.Duration) {
 // failures held back counted with the next, a success starting over.
 func TestRetriedFailuresAreWarnedAtMostOnceAMinute(t *testing.T) {
 	for _, site := range []struct {
-		name, warn string
+		name, warn, cleared string
 		// fail makes the step fail with err, or succeed with nil.
 		fail func(f *fakeConfigurator, g *fakeGuard, err error)
 		step func(context.Context, *routetable.Enforcer)
 	}{
-		{"watching the routes", "watching routes failed",
+		{"watching the routes", "watching routes failed", "watching routes again",
 			func(f *fakeConfigurator, _ *fakeGuard, err error) { f.setWatchErr(err) }, routetable.Subscribe},
-		{"watching the guard", "watching the leak guard failed",
+		{"watching the guard", "watching the leak guard failed", "watching the leak guard again",
 			func(_ *fakeConfigurator, g *fakeGuard, err error) { g.setWatchErr(err) }, routetable.SubscribeGuard},
-		{"putting the routes back", "putting it back failed",
+		{"putting the routes back", "putting it back failed", "put back again",
 			func(f *fakeConfigurator, _ *fakeGuard, err error) { f.setFail(err != nil) }, routetable.Reapply},
 	} {
 		t.Run(site.name, func(t *testing.T) {
@@ -543,7 +543,7 @@ func TestRetriedFailuresAreWarnedAtMostOnceAMinute(t *testing.T) {
 			g := newFakeGuard(f)
 			var buf lockedBuffer
 			clock := &fakeClock{now: time.Unix(0, 0)}
-			e := routetable.OpenWithClock(f, g, slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})), clock.read)
+			e := routetable.OpenWithClock(f, g, slog.New(slog.NewTextHandler(&buf, nil)), clock.read)
 			defer func() { _ = e.Close() }()
 			if err := e.Enforce(ctx, routetable.Want{TUN: "thinkpol0"}); err != nil {
 				t.Fatal(err)
@@ -564,8 +564,14 @@ func TestRetriedFailuresAreWarnedAtMostOnceAMinute(t *testing.T) {
 			if w := warns(); len(w) != 2 || !strings.Contains(w[1], "suppressed=5") {
 				t.Fatalf("after the minute: %q, want a second warn with suppressed=5", w)
 			}
+			// A success says how many failures were held back since, once.
+			site.step(ctx, e)
 			site.fail(f, g, nil)
 			site.step(ctx, e)
+			site.step(ctx, e)
+			if c := buf.lines(site.cleared); len(c) != 1 || !strings.Contains(c[0], "suppressed=1") {
+				t.Fatalf("after a success: %q, want one line with suppressed=1", c)
+			}
 			site.fail(f, g, failure)
 			site.step(ctx, e)
 			if w := warns(); len(w) != 3 || strings.Contains(w[2], "suppressed=") {
@@ -603,5 +609,36 @@ func TestACancelledGuardApplyIsNotWarned(t *testing.T) {
 	routetable.GuardApply(context.Background(), e, w)
 	if w := warns(); len(w) != 1 || strings.Contains(w[0], "suppressed=") {
 		t.Fatalf("the first real failure: %q, want one warn, nothing suppressed", w)
+	}
+}
+
+// A success after failures whose warns were held back says how many
+// there were, once; one after failures that were all warned says
+// nothing.
+func TestAGuardSuccessSaysHowManyFailuresWereHeldBack(t *testing.T) {
+	f := &fakeConfigurator{}
+	g := newFakeGuard(f)
+	var buf lockedBuffer
+	e := routetable.OpenWithClock(f, g, slog.New(slog.NewTextHandler(&buf, nil)), (&fakeClock{now: time.Unix(0, 0)}).read)
+	defer func() { _ = e.Close() }()
+	apply := func() { routetable.GuardApply(context.Background(), e, routetable.Want{TUN: "thinkpol0"}) }
+	cleared := func() []string { return buf.lines("the leak guard is in place again") }
+
+	g.setFail(errors.New("the guard's load was refused"))
+	for range 4 {
+		apply() // one warned, three held back
+	}
+	g.setFail(nil)
+	apply()
+	apply()
+	if c := cleared(); len(c) != 1 || !strings.Contains(c[0], "suppressed=3") || !strings.Contains(c[0], "level=INFO") {
+		t.Fatalf("after the failures: %q, want one INFO line with suppressed=3", c)
+	}
+	g.setFail(errors.New("the guard's load was refused"))
+	apply() // warned, nothing held back
+	g.setFail(nil)
+	apply()
+	if c := cleared(); len(c) != 1 {
+		t.Errorf("a success after a failure that was warned: %q, want nothing more", c)
 	}
 }
