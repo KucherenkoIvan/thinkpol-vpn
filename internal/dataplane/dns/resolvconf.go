@@ -333,8 +333,14 @@ func (r *resolvConf) apply() (tell func(), err error) {
 				if !filepath.IsAbs(target) {
 					target = filepath.Join(filepath.Dir(r.path), target)
 				}
-				if b, rerr := os.ReadFile(target); rerr == nil {
-					m.original, read = b, true
+				// A link whose target is the managed file itself
+				// (resolv.conf, ./resolv.conf, foo/../../resolv.conf)
+				// reads back the node's own file: no original there.
+				self, _ := filepath.Abs(r.path)
+				if abs, _ := filepath.Abs(target); abs != self {
+					if b, rerr := os.ReadFile(target); rerr == nil {
+						m.original, read = b, true
+					}
 				}
 			}
 		}

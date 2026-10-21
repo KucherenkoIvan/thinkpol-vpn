@@ -392,6 +392,34 @@ func TestResolvConfAFailedFirstReadOverADanglingLinkReadsItsTargetWhenItAppears(
 	}
 }
 
+// A link whose target is the managed file itself (a self-link; the same
+// for ./resolv.conf or foo/../../resolv.conf): reading it back reads the
+// node's own file, which is no original, so the read is skipped and the
+// staleness stays.
+func TestResolvConfALinkToTheManagedFileItselfIsNotAGoodRead(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "resolv.conf")
+	if err := os.Symlink("resolv.conf", path); err != nil { // dangling: the target is the link
+		t.Fatal(err)
+	}
+	told := make(chan []netip.Addr, 8)
+	c := testSystem
+	c.Upstreams, c.UpstreamsUnknown = func(a []netip.Addr) { told <- a }, true
+	r, err := setResolvConf(path, "", c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = r.Restore() })
+	if p := r.Problem(); !errors.Is(p, ErrUpstreamsStale) || Unprotected(p) {
+		t.Errorf("problem after a read of a self-link: %v", p)
+	}
+	applyOnce(t, r)
+	toldNothing(t, told)
+	if p := r.Problem(); !errors.Is(p, ErrUpstreamsStale) {
+		t.Errorf("problem after a tick over a self-link: %v", p)
+	}
+}
+
 // The default Linux path (Upstreams set, UpstreamsUnknown false): a
 // setup tells nothing and reports nothing stale, and after a first apply
 // that wrote nothing, a real change is told.
