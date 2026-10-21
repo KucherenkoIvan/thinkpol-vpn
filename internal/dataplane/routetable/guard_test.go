@@ -717,24 +717,25 @@ func TestAWindowWarnsAtMostWarnTextsFailures(t *testing.T) {
 }
 
 // A subscription that fails because the watcher's context ended (Close or
-// Enforce pausing it) isn't warned, and doesn't take the warn window: the
-// next real failure warns at once.
+// Enforce pausing it) isn't warned, and doesn't take the warn window; one
+// that succeeds on an ended context recovers nothing, so it doesn't say
+// so, and the held-back count waits for a live one.
 func TestASubscriptionCutShortIsNotWarned(t *testing.T) {
 	for _, site := range []struct {
-		name, warn string
-		fail       func(f *fakeConfigurator, g *fakeGuard, err error)
-		step       func(context.Context, *routetable.Enforcer)
+		name, warn, cleared string
+		fail                func(f *fakeConfigurator, g *fakeGuard, err error)
+		step                func(context.Context, *routetable.Enforcer)
 	}{
-		{"routes", "watching routes failed",
+		{"routes", "watching routes failed", "watching routes again",
 			func(f *fakeConfigurator, _ *fakeGuard, err error) { f.setWatchErr(err) }, routetable.Subscribe},
-		{"guard", "watching the leak guard failed",
+		{"guard", "watching the leak guard failed", "watching the leak guard again",
 			func(_ *fakeConfigurator, g *fakeGuard, err error) { g.setWatchErr(err) }, routetable.SubscribeGuard},
 	} {
 		t.Run(site.name, func(t *testing.T) {
 			f := &fakeConfigurator{survey: up()}
 			g := newFakeGuard(f)
 			var buf lockedBuffer
-			e := routetable.OpenWithClock(f, g, slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})), (&fakeClock{now: time.Unix(0, 0)}).read)
+			e := routetable.OpenWithClock(f, g, slog.New(slog.NewTextHandler(&buf, nil)), (&fakeClock{now: time.Unix(0, 0)}).read)
 			defer func() { _ = e.Close() }()
 			routetable.PauseWatching(e)
 			stopped, cancel := context.WithCancel(t.Context())
@@ -746,8 +747,18 @@ func TestASubscriptionCutShortIsNotWarned(t *testing.T) {
 			}
 			site.fail(f, g, errors.New("the OS said no"))
 			site.step(t.Context(), e)
+			site.step(t.Context(), e)
 			if w := buf.lines(site.warn); len(w) != 1 || strings.Contains(w[0], "suppressed=") {
-				t.Fatalf("the first real failure: %q, want one warn, nothing suppressed", w)
+				t.Fatalf("the first real failures: %q, want one warn, nothing suppressed", w)
+			}
+			site.fail(f, g, nil) // the fake's Watch succeeds whatever its context
+			site.step(stopped, e)
+			if c := buf.lines(site.cleared); len(c) != 0 {
+				t.Fatalf("a stopped watcher's subscription said %q", c)
+			}
+			site.step(t.Context(), e)
+			if c := buf.lines(site.cleared); len(c) != 1 || !strings.Contains(c[0], "suppressed=1") {
+				t.Fatalf("the live subscription said %q, want suppressed=1", c)
 			}
 		})
 	}
