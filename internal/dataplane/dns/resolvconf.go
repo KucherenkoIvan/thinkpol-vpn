@@ -81,6 +81,13 @@ func staleUpstreams(untold bool) error {
 	return fmt.Errorf("%w: no read of the system's resolvers has worked since the first one failed", ErrUpstreamsStale)
 }
 
+// startsUntold says a new configuration starts untold: the caller's own
+// read of the OS's resolvers failed (UpstreamsUnknown) and it has none
+// of its own, so its first good read is told whatever it found.
+func startsUntold(c SystemConfig) bool {
+	return c.UpstreamsUnknown && c.Upstreams != nil
+}
+
 // Unprotected says whether a Problem leaves names resolving outside the
 // node's resolver: an ErrUnprotected problem, or anything else — a
 // System that reports a problem it doesn't name must read as
@@ -251,25 +258,26 @@ const resolvConfCheck = 2 * time.Second
 
 func setResolvConf(path string, uplink string, c SystemConfig) (*resolvConf, error) {
 	r := &resolvConf{path: path, uplink: uplink, cfg: c, stop: make(chan struct{}), stopped: make(chan struct{}),
-		untold: c.UpstreamsUnknown && c.Upstreams != nil}
+		untold: startsUntold(c)}
 	r.mu.Lock()
-	err := r.apply()
+	tell, err := r.apply()
 	r.mu.Unlock()
 	if err != nil {
 		return nil, err
 	}
-	go r.watch()
+	go r.watch(tell)
 	return r, nil
 }
 
 // apply writes the managed resolv.conf over whatever is there, keeping it
-// as the original unless it is the node's own (left by a crash). r.mu is
+// as the original unless it is the node's own (left by a crash). It
+// returns what to tell the caller, run after unlocking, or nil. r.mu is
 // held.
-func (r *resolvConf) apply() (err error) {
+func (r *resolvConf) apply() (tell func(), err error) {
 	defer func() { r.err = err }()
 	fi, err := os.Lstat(r.path)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return err
+		return nil, err
 	}
 	var current []byte
 	symlink := ""
@@ -278,7 +286,7 @@ func (r *resolvConf) apply() (err error) {
 	case err != nil: // the file isn't there: nothing was read
 	case fi.Mode()&fs.ModeSymlink != 0:
 		if symlink, err = os.Readlink(r.path); err != nil {
-			return err
+			return nil, err
 		}
 		var rerr error
 		if current, rerr = os.ReadFile(r.path); rerr == nil { // a dangling link is no original content
@@ -286,11 +294,11 @@ func (r *resolvConf) apply() (err error) {
 		}
 	case fi.Mode().IsRegular():
 		if current, err = os.ReadFile(r.path); err != nil {
-			return err
+			return nil, err
 		}
 		read = true
 	default:
-		return fmt.Errorf("dns: %s is not a file", r.path)
+		return nil, fmt.Errorf("dns: %s is not a file", r.path)
 	}
 	m := parseResolvConf(current)
 	if m.managed {
@@ -304,36 +312,41 @@ func (r *resolvConf) apply() (err error) {
 	content := render(r.cfg, m.original, symlink)
 	// Upstreams is told when the original changed, and at the first good
 	// read while the caller has none (untold), whatever it found.
-	firstRead := read && r.untold
+	firstGoodRead := read && r.untold
 	changed := r.seen && !bytes.Equal(r.original, m.original)
 	if read {
 		r.untold = false
 	}
 	r.original, r.seen = m.original, true
-	if r.cfg.Upstreams != nil && (changed || firstRead) {
+	upstreams := r.cfg.Upstreams
+	if upstreams != nil && (changed || firstGoodRead) {
 		ups := upstreamsFromContent(m.original, r.uplink, r.cfg.Servers)
 		switch {
 		case len(ups) > 0:
-			r.cfg.Upstreams(ups)
-		case firstRead:
+			tell = func() { upstreams(ups) }
+		case firstGoodRead:
 			// The first good read is told whatever it found: the caller
 			// has no upstreams of its own until one.
-			r.cfg.Upstreams(nil)
+			tell = func() { upstreams(nil) }
 		case r.cfg.Log != nil:
-			r.cfg.Log.Warn("DNS: no upstream to ask; set one with -dns-upstream")
+			log := r.cfg.Log
+			tell = func() { log.Warn("DNS: no upstream to ask; set one with -dns-upstream") }
 		}
 	}
 	if string(content) == string(current) {
-		return nil
+		return tell, nil
 	}
 	if fi != nil && fi.Mode().IsRegular() {
-		return writeFile(r.path, content)
+		return tell, writeFile(r.path, content)
 	}
-	return replace(r.path, func(tmp string) error { return writeNew(tmp, content) })
+	return tell, replace(r.path, func(tmp string) error { return writeNew(tmp, content) })
 }
 
-func (r *resolvConf) watch() {
+func (r *resolvConf) watch(first func()) {
 	defer close(r.stopped)
+	if first != nil {
+		first()
+	}
 	changes, closeWatch := watchFile(r.path)
 	defer closeWatch()
 	t := time.NewTicker(resolvConfCheck)
@@ -346,16 +359,23 @@ func (r *resolvConf) watch() {
 		case <-t.C:
 		}
 		r.mu.Lock()
-		_ = r.apply()
+		tell, _ := r.apply()
 		r.mu.Unlock()
+		if tell != nil {
+			tell()
+		}
 	}
 }
 
 func (r *resolvConf) Update(c SystemConfig) error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.cfg = c
-	return r.apply()
+	tell, err := r.apply()
+	r.mu.Unlock()
+	if tell != nil {
+		tell()
+	}
+	return err
 }
 
 func (r *resolvConf) Problem() error {

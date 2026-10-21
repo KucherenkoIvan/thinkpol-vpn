@@ -228,7 +228,7 @@ func setDynamicStore(st store, c SystemConfig, notify storeWatch, every time.Dur
 		return nil, err
 	}
 	s := &dynamicStore{st: st, cfg: c, backup: backup, stop: make(chan struct{}), done: make(chan struct{}),
-		untold: c.UpstreamsUnknown && c.Upstreams != nil}
+		untold: startsUntold(c)}
 	s.mu.Lock()
 	err = s.apply()
 	primary, read := s.primaryOriginal()

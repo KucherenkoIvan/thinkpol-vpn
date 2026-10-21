@@ -167,7 +167,7 @@ func setResolved(conn *dbus.Conn, c SystemConfig, uplink bool) (*resolved, error
 		return nil, err
 	}
 	r := &resolved{conn: conn, index: int32(ifc.Index), uplink: uplink, stop: make(chan struct{}), stopped: make(chan struct{}),
-		untold: uplink && c.UpstreamsUnknown && c.Upstreams != nil}
+		untold: uplink && startsUntold(c)}
 	var tellFirst []netip.Addr
 	tellNow := false
 	if b, err := os.ReadFile(resolvedUplink); err == nil {

@@ -382,12 +382,16 @@ func (e taggedUnprotected) Error() string        { return "unprotected: " + e.in
 func (e taggedUnprotected) Unwrap() error        { return e.inner }
 func (e taggedUnprotected) Is(target error) bool { return target == ErrUnprotected }
 
-// applyOnce runs one check as the watcher would.
+// applyOnce runs one check as the watcher would, telling what apply
+// returned.
 func applyOnce(t *testing.T, r *resolvConf) {
 	t.Helper()
 	r.mu.Lock()
-	_ = r.apply()
+	tell, _ := r.apply()
 	r.mu.Unlock()
+	if tell != nil {
+		tell()
+	}
 }
 
 // toldNothing says nothing was told to the callback yet.
