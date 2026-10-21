@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/lists"
 )
@@ -845,6 +847,62 @@ func TestApplyTakesACrashedRunsReferenceOver(t *testing.T) {
 	r.gone(t)
 	if r.pf.isOn() {
 		t.Error("pf left on")
+	}
+}
+
+// A token record that isn't one of ours (a symlink, even to a record of
+// this boot naming a live reference; a fifo; garbage) is stale: it
+// releases nothing, and it is removed, by a fresh guard's Close and by an
+// Apply, which records its own reference instead.
+func TestAStaleTokenRecordIsRemovedAndReleasesNothing(t *testing.T) {
+	stale := map[string]func(t *testing.T, r *rig, theirs pfToken){
+		"a symlink": func(t *testing.T, r *rig, theirs pfToken) {
+			target := filepath.Join(r.dir, "elsewhere")
+			data := "boot " + thisBoot + "\ntoken " + strconv.FormatUint(theirs.value, 10) + " pid " + strconv.Itoa(theirs.pid) + "\n"
+			if err := os.WriteFile(target, []byte(data), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(target, filepath.Join(r.dir, tokenRecord)); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"a fifo": func(t *testing.T, r *rig, _ pfToken) {
+			if err := unix.Mkfifo(filepath.Join(r.dir, tokenRecord), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"garbage": func(t *testing.T, r *rig, _ pfToken) { r.writeRecord(t, "\x00\x01 not a record\n") },
+	}
+	for name, plant := range stale {
+		for _, how := range []string{"Close", "Apply"} {
+			t.Run(name+", "+how, func(t *testing.T) {
+				r := newRig(t)
+				theirs := r.pf.takeRef()
+				plant(t, r, theirs)
+				g := r.guard()
+				if how == "Apply" {
+					if err := g.Apply(context.Background(), exempt(t)); err != nil {
+						t.Fatal(err)
+					}
+					if fi, err := os.Lstat(filepath.Join(r.dir, tokenRecord)); err != nil || !fi.Mode().IsRegular() {
+						t.Fatalf("the record after Apply: %v, %v; want a regular file", fi, err)
+					}
+					r.whole(t, exempt(t), theirs)
+				}
+				if err := g.Close(); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := os.Lstat(filepath.Join(r.dir, tokenRecord)); !errors.Is(err, os.ErrNotExist) {
+					t.Errorf("the stale record stays: %v", err)
+				}
+				if refs := r.pf.references(); !slices.Equal(refs, []pfToken{theirs}) {
+					t.Errorf("references %v, want theirs alone, %v", refs, theirs)
+				}
+				if _, err := os.Stat(filepath.Join(r.dir, "elsewhere")); name == "a symlink" && err != nil {
+					t.Errorf("the symlink's target: %v", err)
+				}
+			})
+		}
 	}
 }
 

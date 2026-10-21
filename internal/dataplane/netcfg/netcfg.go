@@ -391,9 +391,8 @@ func ConnectedRoutes(network netip.Prefix) []netip.Prefix {
 // errors.ErrUnsupported where this OS has no adapter for owner; ErrBusy
 // while a configurator of owner is alive.
 //
-// A Close that fails still frees the owner's place: what it left stays
-// tagged (and, on macOS, recorded) for the next configurator, as after a
-// crash, so a failed clear never keeps later starts out with ErrBusy.
+// A failed clear still frees the owner's place, as every failed Close
+// does, so it never keeps later starts out with ErrBusy.
 func Clear(owner Owner) error {
 	return ClearWith(func() (Configurator, error) { return New(owner) }, nil)
 }
@@ -413,19 +412,8 @@ func ClearWith(open func() (Configurator, error), held func() error) error {
 	if held != nil {
 		herr = held()
 	}
-	if err := c.Close(); err != nil {
-		if a, ok := c.(abandoner); ok {
-			a.abandon()
-		}
-		return errors.Join(herr, err)
-	}
-	return herr
+	return errors.Join(herr, c.Close())
 }
-
-// abandoner is a configurator whose failed Close may keep its owner's
-// place (Linux: a Close that fails is retried by calling it again); abandon
-// frees the place, leaving what it holds to the next configurator.
-type abandoner interface{ abandon() }
 
 // Survey is the OS's own routing, as route-table enforcement needs it.
 type Survey struct {
@@ -491,11 +479,12 @@ type Link struct {
 //     are restored, unless someone changed them again since.
 //   - Close removes every owned address, route and rule and restores every
 //     interface it changed; something already gone (an interface deleted by
-//     its owner) counts as removed. Close is idempotent; if it fails, what's
-//     left stays recorded and calling Close again retries it. Only a
-//     successful Close frees the owner's place in the namespace (Linux;
-//     on macOS a failed Close frees it too, and what is left stays in the
-//     owner's record for its next configurator to take over).
+//     its owner) counts as removed. Close is idempotent, and frees the
+//     owner's place in the namespace whether it succeeds or fails: what a
+//     failed Close leaves stays the owner's (on Linux by its route
+//     protocol, on macOS in its record), so the owner's next configurator
+//     takes it over, as after a crash. Addresses and interface changes it
+//     couldn't undo are forgotten.
 //
 // Methods are safe for concurrent use.
 type Configurator interface {

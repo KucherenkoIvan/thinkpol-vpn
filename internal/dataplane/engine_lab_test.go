@@ -254,6 +254,13 @@ func TestTheOverlayComesBackAfterALinkBounce(t *testing.T) {
 		}
 		return string(out)
 	}
+	link := func() string {
+		out, err := inNamespace(a.ns, "ip", "-o", "link", "show", "dev", tun.DefaultName)
+		if err != nil {
+			t.Fatalf("%v\n%s", err, out)
+		}
+		return string(out)
+	}
 	ipLink := func(args ...string) {
 		t.Helper()
 		if out, err := inNamespace(a.ns, append([]string{"ip", "link", "set", "dev", tun.DefaultName}, args...)...); err != nil {
@@ -267,13 +274,16 @@ func TestTheOverlayComesBackAfterALinkBounce(t *testing.T) {
 	}
 	ipLink("mtu", "1400")
 	ipLink("up")
-	for deadline := time.Now().Add(wait); !strings.Contains(addrs(), a.v6.String()+"/48"); time.Sleep(50 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatalf("IPv6 address not back after the bounce:\n%s", addrs())
-		}
+	// Wait for both: a re-apply already pending when the link went down may
+	// put the address back before the MTU was changed, and the one that
+	// fixes the MTU comes only after the re-apply cooldown.
+	back := func() bool {
+		return strings.Contains(addrs(), a.v6.String()+"/48") && strings.Contains(link(), "mtu 1328")
 	}
-	if out, err := inNamespace(a.ns, "ip", "-o", "link", "show", "dev", tun.DefaultName); err != nil || !strings.Contains(string(out), "mtu 1328") {
-		t.Fatalf("TUN link after the bounce, want MTU 1328: %v\n%s", err, out)
+	for deadline := time.Now().Add(wait); !back(); time.Sleep(50 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("TUN not back after the bounce, want its IPv6 address and MTU 1328:\n%s%s", addrs(), link())
+		}
 	}
 	a.ping(t, s.v4)
 	a.ping(t, s.v6)

@@ -9,26 +9,35 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/lists"
 )
 
-// Config is w as netcfg configuration for this OS's layout: policy
-// routing on Linux (PolicyRouting), split routes in the main table on
-// macOS (SplitRoutes).
-func Config(w Want, s netcfg.Survey) netcfg.Config {
-	if runtime.GOOS == "darwin" {
-		cfg, _, _ := splitRoutes(w, s)
-		return cfg
-	}
-	return PolicyRouting(w, s)
+// Layout is a Want laid out for this OS's routing, against a Survey:
+// policy routing on Linux (PolicyRouting), split routes in the main table
+// on macOS (SplitRoutes).
+type Layout struct {
+	Config netcfg.Config
+	// Ahead counts what other software has in place that may route
+	// traffic around the tunnel and the layout can't override: on Linux,
+	// policy rules ahead of the tunnel's; on macOS, foreign host routes
+	// over tunneled destinations (see SplitRoutes).
+	Ahead int
+	// OverlayAhead counts foreign host routes inside the overlay's
+	// networks that nothing can outrank (macOS: a DHCP server's classless
+	// host route to a peer's overlay address), which take that peer's
+	// traffic out of the tunnel in the clear. Linux looks the overlay up
+	// in a table of its own: always zero there.
+	OverlayAhead int
 }
 
-// Ahead counts what other software has in place that may route traffic
-// around the tunnel and the layout can't override: on Linux, policy rules
-// ahead of the tunnel's; on macOS, foreign host routes over tunneled
-// destinations (see SplitRoutes).
-func Ahead(w Want, s netcfg.Survey) int {
+// LayoutOf lays w out against s, once per apply.
+func LayoutOf(w Want, s netcfg.Survey) Layout {
 	if runtime.GOOS == "darwin" {
-		_, n, _ := splitRoutes(w, s)
-		return n
+		cfg, ahead, overlayAhead := splitRoutes(w, s)
+		return Layout{Config: cfg, Ahead: ahead, OverlayAhead: overlayAhead}
 	}
+	return Layout{Config: PolicyRouting(w, s), Ahead: rulesAhead(s)}
+}
+
+// rulesAhead counts the foreign policy rules ahead of the tunnel's.
+func rulesAhead(s netcfg.Survey) int {
 	n := 0
 	for _, p := range s.ForeignRules {
 		if p < PriorityTunnel {
@@ -73,19 +82,6 @@ func Ahead(w Want, s netcfg.Survey) int {
 func SplitRoutes(w Want, s netcfg.Survey) netcfg.Config {
 	cfg, _, _ := splitRoutes(w, s)
 	return cfg
-}
-
-// OverlayAhead counts foreign host routes inside the overlay's networks
-// that nothing can outrank (macOS: a DHCP server's classless host route
-// to a peer's overlay address), which take that peer's traffic out of
-// the tunnel in the clear. Linux looks the overlay up in a table of its
-// own: always zero there.
-func OverlayAhead(w Want, s netcfg.Survey) int {
-	if runtime.GOOS != "darwin" {
-		return 0
-	}
-	_, _, n := splitRoutes(w, s)
-	return n
 }
 
 // The ranges direct routes are never added for: the OS routes them on its

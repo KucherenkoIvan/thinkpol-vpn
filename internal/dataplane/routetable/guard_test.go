@@ -55,6 +55,8 @@ type fakeGuard struct {
 	after      []int
 	failErr    error
 	closed     bool
+	closes     int
+	closeErr   error           // what Close returns
 	order      *[]string       // what was closed, in order
 	watches    atomic.Int32    // subscriptions alive
 	released   atomic.Int32    // subscriptions fully torn down
@@ -123,10 +125,35 @@ func (g *fakeGuard) Close() error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.closed = true
+	g.closes++
 	if g.order != nil {
 		*g.order = append(*g.order, "guard")
 	}
-	return nil
+	return g.closeErr
+}
+
+// A Close that fails has let go of the owner lock all the same, so a
+// second Close must not remove the guard: by then it may be the next
+// run's.
+func TestASecondCloseLeavesTheGuardAlone(t *testing.T) {
+	f := &fakeConfigurator{events: make(chan struct{}), survey: up()}
+	g := newFakeGuard(f)
+	g.closeErr = errors.New("pfctl said no")
+	e := routetable.OpenWithGuard(f, g, nil)
+	if err := e.Enforce(context.Background(), routetable.Want{TUN: "thinkpol0"}); err != nil {
+		t.Fatalf("Enforce: %v", err)
+	}
+	if err := e.Close(); !errors.Is(err, g.closeErr) || !f.closed {
+		t.Fatalf("the first Close: %v, routes closed %v", err, f.closed)
+	}
+	if err := e.Close(); err != nil {
+		t.Errorf("the second Close: %v", err)
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.closes != 1 {
+		t.Errorf("the guard was closed %d times, want once", g.closes)
+	}
 }
 
 func TestEnforcerAppliesTheGuardWithTheRoutes(t *testing.T) {

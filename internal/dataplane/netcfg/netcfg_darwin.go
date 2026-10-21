@@ -164,20 +164,7 @@ type darwinConfigurator struct {
 	// pinned are routes an Apply's undo failed to remove: they stay in
 	// the record, whatever the write-ahead's undo says.
 	pinned map[rkey]bool
-	links  map[string]linkChange // interfaces whose MTU or state we changed
-	addrs  map[addrKey]int       // owned addresses → index they were added to
-}
-
-type linkChange struct {
-	index   int
-	origMTU int // before our first change
-	mtu     int // what we set; 0: MTU untouched
-	setUp   bool
-}
-
-type addrKey struct {
-	link   string
-	prefix netip.Prefix
+	links  ledger
 }
 
 // newDarwin takes owner's place in path (its lock and its record; the
@@ -185,7 +172,7 @@ type addrKey struct {
 // trusteddir, since the record decides which routes are deleted) and
 // returns its configurator on k.
 func newDarwin(owner Owner, k kernel, path string) (*darwinConfigurator, error) {
-	boot, err := bootSession()
+	boot, err := trusteddir.BootSession()
 	if err != nil {
 		return nil, fmt.Errorf("netcfg: %v: %w", owner, err)
 	}
@@ -206,28 +193,8 @@ func newDarwin(owner Owner, k kernel, path string) (*darwinConfigurator, error) 
 	}
 	return &darwinConfigurator{
 		k: k, owner: owner, dir: dir, boot: boot, lock: lock, owned: owned, pinned: make(map[rkey]bool),
-		links: make(map[string]linkChange), addrs: make(map[addrKey]int),
+		links: newLedger(),
 	}, nil
-}
-
-// undoLog collects the inverse of every change Apply makes, so a failed
-// Apply can put everything back. A nil log records nothing (Close).
-type undoLog []func() error
-
-func (u *undoLog) push(f func() error) {
-	if u != nil {
-		*u = append(*u, f)
-	}
-}
-
-func (u undoLog) run() error {
-	var errs []error
-	for i := len(u) - 1; i >= 0; i-- {
-		if err := u[i](); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	return errors.Join(errs...)
 }
 
 // checkDarwin rejects what macOS routing can't hold: there are no route
@@ -327,73 +294,67 @@ func (c *darwinConfigurator) apply(ctx context.Context, cfg Config, u *undoLog) 
 		}
 	}
 
-	wantLinks := make(map[string]bool)
-	wantAddrs := make(map[addrKey]bool)
+	ops := viewLinks{k: c.k, v: v}
+	kept, err := c.links.configure(ctx, ops, cfg.Interfaces, u)
+	if err != nil {
+		return err
+	}
 	routes := slices.Clone(cfg.Routes)
 	for _, ifc := range cfg.Interfaces {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		l, ok := v.ifcs[ifc.Name]
-		if !ok {
-			return fmt.Errorf("netcfg: interface %s: %w", ifc.Name, errNoInterface)
-		}
-		wantLinks[ifc.Name] = true
-		if err := c.configureLink(l, ifc, u); err != nil {
-			return err
-		}
-		have, err := c.k.addrs(l.index)
-		if err != nil {
-			return fmt.Errorf("netcfg: addresses of %s: %w", ifc.Name, err)
-		}
-		for _, p := range ifc.Addrs {
-			k := addrKey{ifc.Name, p}
-			wantAddrs[k] = true
-			present, other := findAddr(have, p)
-			if other.IsValid() {
-				return fmt.Errorf("%w: address %v on %s: it is there as %v", ErrConflict, p, ifc.Name, other)
-			}
-			owned := c.ownsAddr(k, l.index)
-			switch {
-			case present && owned:
-			case present: // someone else's: used, not owned
-				if _, recorded := c.addrs[k]; recorded {
-					c.dropAddrRecord(k, u)
-				}
-			default:
-				if err := c.addAddr(l, k, u); err != nil {
-					return err
-				}
-			}
-		}
-		routes = append(routes, c.connected(v, l, ifc)...)
+		routes = append(routes, c.connected(v, v.ifcs[ifc.Name], ifc)...)
 	}
+	p, err := c.planRoutes(v, routes)
+	if err != nil {
+		return err
+	}
+	if err := c.writeAhead(p, u); err != nil {
+		return err
+	}
+	if err := c.reconcileRoutes(ctx, v, p, u); err != nil {
+		return err
+	}
+	return c.links.release(ops, kept, u)
+}
 
-	desired := make(map[rkey]bool, len(routes))
-	wants := make([]kroute, len(routes))
+// routePlan is the routes one Apply wants, as the kernel's.
+type routePlan struct {
+	routes  []Route
+	wants   []kroute      // routes[i] as the kernel's route
+	desired map[rkey]bool // their identities
+	// prior is the record before this Apply: ownership is decided on it.
+	prior map[rkey]bool
+}
+
+func (p routePlan) ours(r kroute) bool { return r.flags&routeFlag != 0 && p.prior[r.key()] }
+
+// planRoutes turns routes into the kernel's. Two with one identity are an
+// error, and so is an identity someone else's route holds, before anything
+// is recorded: the record must never name another's route.
+func (c *darwinConfigurator) planRoutes(v view, routes []Route) (routePlan, error) {
+	p := routePlan{routes: routes, desired: make(map[rkey]bool, len(routes)), wants: make([]kroute, len(routes))}
 	for i, r := range routes {
 		want, err := c.toKernel(v, r)
 		if err != nil {
-			return err
+			return p, err
 		}
-		if desired[want.key()] {
-			return fmt.Errorf("netcfg: route %v: another route has the same destination", r)
+		if p.desired[want.key()] {
+			return p, fmt.Errorf("netcfg: route %v: another route has the same destination", r)
 		}
-		desired[want.key()], wants[i] = true, want
+		p.desired[want.key()], p.wants[i] = true, want
 	}
-	// Ownership is decided on what was recorded before this Apply, and
-	// an identity someone else's route holds is a conflict before
-	// anything is recorded: the record must never name another's route.
-	prior := maps.Clone(c.owned)
-	ours := func(r kroute) bool { return r.flags&routeFlag != 0 && prior[r.key()] }
+	p.prior = maps.Clone(c.owned)
 	for i, r := range routes {
-		if cur, ok := v.routes[wants[i].key()]; ok && !ours(cur) {
-			return fmt.Errorf("%w: route %v: another owner's or a foreign route has the same destination (%v)", ErrConflict, r, cur)
+		if cur, ok := v.routes[p.wants[i].key()]; ok && !p.ours(cur) {
+			return p, fmt.Errorf("%w: route %v: another owner's or a foreign route has the same destination (%v)", ErrConflict, r, cur)
 		}
 	}
-	// Write ahead: the record holds every route this Apply may leave, so a
-	// crash halfway leaves none unrecorded.
-	for k := range desired {
+	return p, nil
+}
+
+// writeAhead records every route p may leave before any is added, so a
+// crash halfway leaves none unrecorded.
+func (c *darwinConfigurator) writeAhead(p routePlan, u *undoLog) error {
+	for k := range p.desired {
 		if !c.owned[k] {
 			c.owned[k] = true
 			u.push(func() error {
@@ -404,15 +365,17 @@ func (c *darwinConfigurator) apply(ctx context.Context, cfg Config, u *undoLog) 
 			})
 		}
 	}
-	if err := c.saveRecord(); err != nil {
-		return err
-	}
+	return c.saveRecord()
+}
 
-	for i, r := range routes {
+// reconcileRoutes adds or changes the routes p wants and removes the
+// owner's routes it doesn't.
+func (c *darwinConfigurator) reconcileRoutes(ctx context.Context, v view, p routePlan, u *undoLog) error {
+	for i, r := range p.routes {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		want := wants[i]
+		want := p.wants[i]
 		if cur, ok := v.routes[want.key()]; ok {
 			if sameRoute(cur, want) {
 				continue
@@ -434,40 +397,18 @@ func (c *darwinConfigurator) apply(ctx context.Context, cfg Config, u *undoLog) 
 	// Ours but not wanted: dropped from the config, or a dead
 	// predecessor's leftovers.
 	for k := range c.owned {
-		if desired[k] {
+		if p.desired[k] {
 			continue
 		}
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if cur, ok := v.routes[k]; ok && ours(cur) {
+		if cur, ok := v.routes[k]; ok && p.ours(cur) {
 			if err := c.delRoute(cur, u); err != nil {
 				return err
 			}
 		}
 		c.forget(k, u)
-	}
-	for k, idx := range c.addrs {
-		if wantAddrs[k] {
-			continue
-		}
-		have, err := c.k.addrs(idx)
-		if err != nil && !gone(err) {
-			return fmt.Errorf("netcfg: addresses of %s: %w", k.link, err)
-		}
-		if present, _ := findAddr(have, k.prefix); present {
-			if err := c.delAddr(k, idx, v, u); err != nil {
-				return err
-			}
-		}
-		c.dropAddrRecord(k, u)
-	}
-	for name := range c.links {
-		if !wantLinks[name] {
-			if err := c.restoreLink(name, v, u); err != nil {
-				return err
-			}
-		}
 	}
 	return nil
 }
@@ -569,7 +510,7 @@ func sameRoute(kr, want kroute) bool {
 
 func (c *darwinConfigurator) addRoute(r Route, k kroute, u *undoLog) error {
 	if err := c.k.add(k); err != nil {
-		if errors.Is(err, unix.EEXIST) {
+		if exists(err) {
 			delete(c.owned, k.key()) // whoever it is, it isn't ours
 			return fmt.Errorf("%w: route %v: another owner's or a foreign route has the same destination", ErrConflict, r)
 		}
@@ -624,164 +565,6 @@ func (c *darwinConfigurator) forget(k rkey, u *undoLog) {
 	}
 	delete(c.owned, k)
 	u.push(func() error { c.owned[k] = true; return nil })
-}
-
-// configureLink sets the MTU and brings the link up as asked. Zero values
-// leave the link alone; what was changed is restored when the interface
-// leaves the config or on Close.
-func (c *darwinConfigurator) configureLink(l kifc, ifc Interface, u *undoLog) error {
-	if ch, ok := c.links[l.name]; ok && ch.index != l.index {
-		c.dropLinkRecord(l.name, u) // a recreated interface: earlier changes went with the old one
-	}
-	if ifc.MTU != 0 && l.mtu != ifc.MTU {
-		old := l.mtu
-		if err := c.k.setMTU(l.name, ifc.MTU); err != nil {
-			return fmt.Errorf("netcfg: MTU %d on %s: %w", ifc.MTU, l.name, err)
-		}
-		c.updateLinkRecord(l.name, l.index, func(ch *linkChange) {
-			if ch.mtu == 0 {
-				ch.origMTU = old
-			}
-			ch.mtu = ifc.MTU
-		}, u, func() error { return c.k.setMTU(l.name, old) })
-	}
-	if ifc.Up && !l.up {
-		if err := c.k.setUp(l.name, true); err != nil {
-			return fmt.Errorf("netcfg: bring %s up: %w", l.name, err)
-		}
-		c.updateLinkRecord(l.name, l.index, func(ch *linkChange) { ch.setUp = true },
-			u, func() error { return c.k.setUp(l.name, false) })
-	}
-	return nil
-}
-
-// restoreLink undoes our MTU and state changes on an interface, each only
-// if it still is what we set.
-func (c *darwinConfigurator) restoreLink(name string, v view, u *undoLog) error {
-	ch := c.links[name]
-	l, ok := v.byIdx[ch.index]
-	if !ok || l.name != name {
-		c.dropLinkRecord(name, u)
-		return nil
-	}
-	if ch.mtu != 0 && l.mtu == ch.mtu && ch.origMTU != ch.mtu {
-		if err := c.k.setMTU(name, ch.origMTU); err != nil && !gone(err) {
-			return fmt.Errorf("netcfg: restore MTU of %s: %w", name, err)
-		}
-		c.updateLinkRecord(name, ch.index, func(ch *linkChange) { ch.mtu, ch.origMTU = 0, 0 },
-			u, func() error { return c.k.setMTU(name, l.mtu) })
-	}
-	if ch.setUp && l.up {
-		if err := c.k.setUp(name, false); err != nil && !gone(err) {
-			return fmt.Errorf("netcfg: bring %s down: %w", name, err)
-		}
-		c.updateLinkRecord(name, ch.index, func(ch *linkChange) { ch.setUp = false },
-			u, func() error { return c.k.setUp(name, true) })
-	}
-	c.dropLinkRecord(name, u)
-	return nil
-}
-
-// updateLinkRecord records a change made to a link. Its undo reverts the
-// change and only then the record, so a failed revert keeps the record.
-func (c *darwinConfigurator) updateLinkRecord(name string, index int, change func(*linkChange), u *undoLog, revert func() error) {
-	prev, had := c.links[name]
-	ch := prev
-	if !had {
-		ch = linkChange{index: index}
-	}
-	change(&ch)
-	c.links[name] = ch
-	u.push(func() error {
-		if err := revert(); err != nil && !gone(err) {
-			return fmt.Errorf("netcfg: undo a change to %s: %w", name, err)
-		}
-		c.restoreLinkRecord(name, prev, had)
-		return nil
-	})
-}
-
-func (c *darwinConfigurator) dropLinkRecord(name string, u *undoLog) {
-	prev, had := c.links[name]
-	delete(c.links, name)
-	u.push(func() error { c.restoreLinkRecord(name, prev, had); return nil })
-}
-
-func (c *darwinConfigurator) restoreLinkRecord(name string, ch linkChange, had bool) {
-	if had {
-		c.links[name] = ch
-	} else {
-		delete(c.links, name)
-	}
-}
-
-func (c *darwinConfigurator) ownsAddr(k addrKey, index int) bool {
-	idx, ok := c.addrs[k]
-	return ok && idx == index
-}
-
-func (c *darwinConfigurator) addAddr(l kifc, k addrKey, u *undoLog) error {
-	if err := c.k.addAddr(l, k.prefix); err != nil {
-		if errors.Is(err, unix.EEXIST) {
-			return fmt.Errorf("%w: address %v on %s: %w", ErrConflict, k.prefix, k.link, err)
-		}
-		return fmt.Errorf("netcfg: add %v to %s: %w", k.prefix, k.link, err)
-	}
-	prev, had := c.addrs[k]
-	c.addrs[k] = l.index
-	u.push(func() error {
-		if err := c.k.delAddr(l, k.prefix); err != nil && !gone(err) {
-			return fmt.Errorf("netcfg: remove %v from %s: %w", k.prefix, k.link, err)
-		}
-		c.restoreAddrRecord(k, prev, had)
-		return nil
-	})
-	return nil
-}
-
-// delAddr deletes an address that is there; its undo adds it back.
-func (c *darwinConfigurator) delAddr(k addrKey, index int, v view, u *undoLog) error {
-	l, ok := v.byIdx[index]
-	if !ok {
-		return nil
-	}
-	err := c.k.delAddr(l, k.prefix)
-	if gone(err) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("netcfg: remove %v from %s: %w", k.prefix, k.link, err)
-	}
-	u.push(func() error { return c.k.addAddr(l, k.prefix) })
-	return nil
-}
-
-func (c *darwinConfigurator) dropAddrRecord(k addrKey, u *undoLog) {
-	prev, had := c.addrs[k]
-	delete(c.addrs, k)
-	u.push(func() error { c.restoreAddrRecord(k, prev, had); return nil })
-}
-
-func (c *darwinConfigurator) restoreAddrRecord(k addrKey, index int, had bool) {
-	if had {
-		c.addrs[k] = index
-	} else {
-		delete(c.addrs, k)
-	}
-}
-
-// findAddr reports whether p is in addrs, or else the same address with
-// another prefix length (a conflict: an address has one prefix length).
-func findAddr(addrs []netip.Prefix, p netip.Prefix) (present bool, other netip.Prefix) {
-	for _, a := range addrs {
-		if a == p {
-			return true, netip.Prefix{}
-		}
-		if a.Addr() == p.Addr() {
-			other = a
-		}
-	}
-	return false, other
 }
 
 func (c *darwinConfigurator) DefaultRoute(ctx context.Context, f Family) (Route, error) {
@@ -995,25 +778,7 @@ func (c *darwinConfigurator) Close() error {
 		}
 		delete(c.owned, k)
 	}
-	for k, idx := range c.addrs {
-		have, err := c.k.addrs(idx)
-		if err != nil && !gone(err) {
-			errs = append(errs, err)
-			continue
-		}
-		if present, _ := findAddr(have, k.prefix); present {
-			if err := c.delAddr(k, idx, v, nil); err != nil {
-				errs = append(errs, err)
-				continue
-			}
-		}
-		delete(c.addrs, k)
-	}
-	for name := range c.links {
-		if err := c.restoreLink(name, v, nil); err != nil {
-			errs = append(errs, err)
-		}
-	}
+	errs = append(errs, c.links.closeAll(viewLinks{k: c.k, v: v})...)
 	if err := c.saveRecord(); err != nil {
 		errs = append(errs, err)
 	}
@@ -1026,6 +791,60 @@ func (c *darwinConfigurator) saveRecord() error {
 	}
 	return nil
 }
+
+// viewLinks is the ledger's linkOps on the kernel, with the interfaces
+// as the view of one Apply or Close saw them.
+type viewLinks struct {
+	k kernel
+	v view
+}
+
+func (o viewLinks) ifc(index int) (kifc, error) {
+	if l, ok := o.v.byIdx[index]; ok {
+		return l, nil
+	}
+	return kifc{}, errNoInterface
+}
+
+func (l kifc) state() linkState {
+	return linkState{name: l.name, index: l.index, mtu: l.mtu, up: l.up}
+}
+
+func (o viewLinks) linkByName(name string) (linkState, error) {
+	l, ok := o.v.ifcs[name]
+	if !ok {
+		return linkState{}, fmt.Errorf("netcfg: interface %s: %w", name, errNoInterface)
+	}
+	return l.state(), nil
+}
+
+func (o viewLinks) linkByIndex(index int) (linkState, error) {
+	l, err := o.ifc(index)
+	return l.state(), err
+}
+
+func (o viewLinks) setMTU(l linkState, mtu int) error       { return o.k.setMTU(l.name, mtu) }
+func (o viewLinks) setUp(l linkState, up bool) error        { return o.k.setUp(l.name, up) }
+func (o viewLinks) addrs(index int) ([]netip.Prefix, error) { return o.k.addrs(index) }
+
+func (o viewLinks) addAddr(index int, p netip.Prefix) error {
+	l, err := o.ifc(index)
+	if err != nil {
+		return err
+	}
+	return o.k.addAddr(l, p)
+}
+
+func (o viewLinks) delAddr(index int, p netip.Prefix) error {
+	l, err := o.ifc(index)
+	if err != nil {
+		return err
+	}
+	return o.k.delAddr(l, p)
+}
+
+// exists reports an add's error meaning what it adds is there already.
+func exists(err error) bool { return errors.Is(err, unix.EEXIST) }
 
 // errNoInterface: the interface doesn't exist (any more).
 var errNoInterface = errors.New("no such interface")
