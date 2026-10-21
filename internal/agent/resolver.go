@@ -23,9 +23,7 @@ import (
 // asks exits through the overlay TUN only.
 func (r *runner) newResolver() *dns.Server {
 	upstreams := r.dp.DNSUpstreams
-	// InWorker is set only in a server's worker (serveSpace), never on a
-	// device: it is what "inside a worker" means here.
-	if len(upstreams) == 0 && !r.dp.InWorker {
+	if len(upstreams) == 0 && !r.dp.inWorker {
 		own := []netip.Addr{r.follow.section.Node.IPv4, r.follow.section.Node.IPv6}
 		host, err := r.dp.Host.SystemUpstreams(own)
 		r.upstreamsUnknown.Store(err != nil)
@@ -37,9 +35,11 @@ func (r *runner) newResolver() *dns.Server {
 		}
 	}
 	if len(upstreams) == 0 {
-		if r.dp.InWorker {
-			// workerUpstreams refused every one and logged each.
-			r.dp.Log.Warn("DNS: no upstream to ask: the worker's egress refuses every configured one; tunnel-bound names won't resolve")
+		if r.dp.inWorker {
+			// workerUpstreams dropped every one: the egress refuses each.
+			// An exit's are counted and logged there; a non-exit's
+			// resolver reports nothing about them.
+			r.dp.Log.Warn("DNS: no upstream to ask: the egress refuses every configured one; tunnel-bound names won't resolve")
 		} else if !r.upstreamsUnknown.Load() { // a failed read warned already
 			r.dp.Log.Warn("DNS: no upstream to ask; set one with -dns-upstream")
 		}
@@ -198,9 +198,10 @@ func sameSystem(a, b dns.SystemConfig) bool {
 }
 
 // defaultWorkerUpstreams are the upstreams an exit's resolver asks when
-// -dns-upstream is unset; why these, and why not the host's own, is in
-// DESIGN.md "Upstreams". IPv4 first, so an exit whose uplink lacks a
-// family gets a working upstream before a dead one.
+// -dns-upstream is unset: Quad9 then Cloudflare over IPv4, then both
+// over IPv6 (DESIGN.md "Upstreams"). workerUpstreams puts the family the
+// uplink carries first when it carries exactly one, so a single-family
+// exit doesn't wait out a dead family's timeout.
 var defaultWorkerUpstreams = []netip.AddrPort{
 	netip.AddrPortFrom(netip.MustParseAddr("9.9.9.9"), dns.Port),
 	netip.AddrPortFrom(netip.MustParseAddr("1.1.1.1"), dns.Port),
@@ -208,18 +209,40 @@ var defaultWorkerUpstreams = []netip.AddrPort{
 	netip.AddrPortFrom(netip.MustParseAddr("2606:4700:4700::1111"), dns.Port),
 }
 
+// uplinkFamilyOrder stable-sorts the defaults so the family the uplink
+// carries comes first when it carries exactly one, the static order kept
+// within a family; with both or neither carried, the static order stands.
+func uplinkFamilyOrder(ups []netip.AddrPort, e supervisor.EgressInfo) []netip.AddrPort {
+	if e.IPv4 == e.IPv6 {
+		return ups
+	}
+	out := slices.Clone(ups)
+	slices.SortStableFunc(out, func(a, b netip.AddrPort) int {
+		afirst, bfirst := a.Addr().Is4() == e.IPv4, b.Addr().Is4() == e.IPv4
+		switch {
+		case afirst && !bfirst:
+			return -1
+		case !afirst && bfirst:
+			return 1
+		}
+		return 0
+	})
+	return out
+}
+
 // workerUpstreams are the upstreams a worker's resolver asks: the
 // configured ones, else the default public resolvers (DESIGN.md
-// "Upstreams"). One the worker's egress refuses is not configured: only
-// an exit (its section allows egress) counts and logs them, since no
-// device asks another server's resolver.
+// "Upstreams"), ordered for the uplink's families. One the worker's
+// egress refuses is not configured: only an exit's (a server allowing
+// egress, MayEndAChain) are counted and logged, since no device asks
+// another server's resolver.
 func (s *serverSpaces) workerUpstreams() []netip.AddrPort {
 	if !s.dns {
 		return nil
 	}
 	ups := s.dnsUpstreams
 	if len(ups) == 0 {
-		ups = defaultWorkerUpstreams
+		ups = uplinkFamilyOrder(defaultWorkerUpstreams, s.sup.Egress())
 	}
 	var out, refused []netip.AddrPort
 	for _, a := range ups {
@@ -229,7 +252,7 @@ func (s *serverSpaces) workerUpstreams() []netip.AddrPort {
 		}
 		out = append(out, a)
 	}
-	if !s.follow.section.Node.AllowEgress {
+	if !s.follow.section.Node.MayEndAChain() {
 		// Nothing remembered as logged, so a map that makes the node an
 		// exit reports from scratch.
 		s.refusedLogged = nil
@@ -239,7 +262,7 @@ func (s *serverSpaces) workerUpstreams() []netip.AddrPort {
 	if !slices.Equal(refused, s.refusedLogged) {
 		for _, a := range refused {
 			hint := "-dns-upstream or -egress-allowed"
-			if neverOpenable(a.Addr()) {
+			if supervisor.EgressMustStayClosed(a.Addr()) {
 				hint = "-dns-upstream"
 			}
 			s.log.Warn("DNS: the worker's egress refuses the upstream; not configured for the resolver",
@@ -249,11 +272,4 @@ func (s *serverSpaces) workerUpstreams() []netip.AddrPort {
 	}
 	s.report.set(func(p *report) { p.dnsUpstreamsRefused = len(refused) })
 	return out
-}
-
-// neverOpenable says an address no egress should ever open to reach:
-// loopback, link-local (the metadata services among them), multicast,
-// the unspecified address, and anything zoned.
-func neverOpenable(a netip.Addr) bool {
-	return a.Zone() != "" || a.IsLoopback() || a.IsLinkLocalUnicast() || a.IsMulticast() || a.IsUnspecified()
 }

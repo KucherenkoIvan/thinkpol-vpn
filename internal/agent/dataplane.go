@@ -55,9 +55,9 @@ type DataPlane struct {
 	// egress (dataplane.EngineConfig.Forward): set in a server's worker,
 	// whose namespace forwards and NATs, never on a device.
 	Forward bool
-	// InWorker says the data plane runs in a server's worker (set only
+	// inWorker says the data plane runs in a server's worker (set only
 	// by serveSpace): what "inside a worker" means to the resolver.
-	InWorker bool
+	inWorker bool
 	// RouteTable enforces the rules in the OS routing table: everything
 	// but direct destinations and link endpoints into the TUN (a device;
 	// the transports' sockets must be marked, Transports(true)).

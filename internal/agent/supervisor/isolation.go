@@ -26,6 +26,35 @@ var egressBlocked = []netip.Prefix{
 	netip.MustParsePrefix("ff00::/8"),
 }
 
+// egressMustStayClosed are the destinations EgressAllowed may never name
+// to open a space's way to: the cloud metadata services (AWS's
+// fd00:ec2::254, Azure's 168.63.129.16, Alibaba's 100.100.100.200), whose
+// credentials no space may read by any route, and the never-routable
+// ranges. Each of the blocked ones is in egressBlocked besides.
+var egressMustStayClosed = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),
+	netip.MustParsePrefix("100.100.100.200/32"),
+	netip.MustParsePrefix("168.63.129.16/32"),
+	netip.MustParsePrefix("240.0.0.0/4"),
+	netip.MustParsePrefix("fd00:ec2::254/128"),
+}
+
+// EgressMustStayClosed says whether an address no egress may ever be
+// opened to reach: the metadata services and never-routable ranges above,
+// loopback, link-local, multicast, the unspecified address, and anything
+// zoned. EgressAllowed may still name the rest of egressBlocked.
+func EgressMustStayClosed(addr netip.Addr) bool {
+	if addr.Zone() != "" || addr.IsLoopback() || addr.IsLinkLocalUnicast() || addr.IsMulticast() || addr.IsUnspecified() {
+		return true
+	}
+	for _, p := range egressMustStayClosed {
+		if p.Contains(addr) {
+			return true
+		}
+	}
+	return false
+}
+
 // EgressRefused says whether the egress refuses a destination to the
 // spaces: it is in egressBlocked and EgressAllowed doesn't name it. It
 // says nothing of the transit ranges, which the supervisor refuses

@@ -87,22 +87,17 @@ func (s *testSpace) sections() (a, b netmap.Section) {
 // build signs a map of the space at version.
 func (s *testSpace) build(t *testing.T, version uint64) []byte {
 	t.Helper()
-	a, b := s.sections()
-	env, err := netmap.Build(s.signing, netmap.Contents{
-		SpaceID: s.id, Version: version, RecoveryKey: s.recovery, Blobs: s.blobs,
-		Recipients: []netmap.Recipient{{Key: s.a.Map.Public(), Section: a}, {Key: s.b.Map.Public(), Section: b}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return env
+	return s.buildEditing(t, version, s.a, func(*netmap.Section) {})
 }
 
-// buildEditing signs a map at version whose section for a is changed by
-// edit.
-func (s *testSpace) buildEditing(t *testing.T, version uint64, edit func(*netmap.Section)) []byte {
+// buildEditing signs a map at version whose section for who (a's or b's)
+// is changed by edit.
+func (s *testSpace) buildEditing(t *testing.T, version uint64, who NodeKeys, edit func(*netmap.Section)) []byte {
 	t.Helper()
 	a, b := s.sections()
+	if who == s.b {
+		a, b = b, a
+	}
 	edit(&a)
 	env, err := netmap.Build(s.signing, netmap.Contents{
 		SpaceID: s.id, Version: version, RecoveryKey: s.recovery, Blobs: s.blobs,

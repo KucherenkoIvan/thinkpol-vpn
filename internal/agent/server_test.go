@@ -268,7 +268,7 @@ func TestRejoiningTheSpaceLogsTheRefusedUpstreamsAgain(t *testing.T) {
 	}
 	r.maps <- s.buildWithout(t, 2, s.a)
 	eventually(t, func() bool { _, _, n := sup.last(); return n == 2 })
-	r.maps <- s.buildEditing(t, 3, func(sec *netmap.Section) { sec.Node.AllowEgress = true })
+	r.maps <- s.buildEditing(t, 3, s.a, func(sec *netmap.Section) { sec.Node.AllowEgress = true })
 	eventually(t, func() bool { return logMatches(r.log.String(), `msg="map applied" .*version=3`) })
 	if n := strings.Count(r.log.String(), "refuses the upstream"); n != 2 {
 		t.Errorf("after rejoining the refused upstream was logged %d times, want twice", n)
@@ -298,7 +298,7 @@ func (s *testSpace) workerConfig(t *testing.T, keys NodeKeys, version uint64) []
 }
 
 // dnsWorkerConfig is workerConfig with the space's resolver on, and no
-// upstream: what a worker's resolver falls back from.
+// upstream: a worker's resolver then has none to ask.
 func (s *testSpace) dnsWorkerConfig(t *testing.T, keys NodeKeys, version uint64) []byte {
 	t.Helper()
 	b, err := WorkerConfig{Keys: keys, Trust: s.trust(), Map: s.build(t, version), DNS: true}.Encode()
@@ -381,7 +381,7 @@ func TestServeSpace(t *testing.T) {
 		if asked {
 			t.Error("the worker's resolver asked for the host's resolvers")
 		}
-		if log := n.log.String(); !strings.Contains(log, "no upstream to ask: the worker's egress refuses every configured one") {
+		if log := n.log.String(); !strings.Contains(log, "no upstream to ask: the egress refuses every configured one") {
 			t.Errorf("the resolver doesn't run as a worker's:\n%s", log)
 		}
 	})
