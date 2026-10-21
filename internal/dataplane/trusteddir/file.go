@@ -3,11 +3,13 @@
 package trusteddir
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"golang.org/x/sys/unix"
 )
@@ -40,9 +42,13 @@ func ReadFile(dir *os.File, name string) ([]byte, error) {
 	return data, nil
 }
 
-// WriteFile replaces the file name in dir with data (0600) atomically: a
-// new file next to it, synced, then renamed over it. Neither it nor the
-// new file is ever reached through a symlink.
+// WriteFile replaces the file name in dir with data (0600): a new file
+// next to it, name+".tmp" (reserved for this), synced, then renamed over
+// it. Neither it nor the new file is ever reached through a symlink.
+// Callers serialise their writes to one name. The replacement is atomic
+// for readers and across a crash of the process, not durable across a
+// power loss (the directory isn't synced): what a reboot may lose is a
+// boot-scoped record, which the next boot ignores anyway.
 func WriteFile(dir *os.File, name string, data []byte) error {
 	dirfd := int(dir.Fd())
 	tmp := name + ".tmp"
@@ -70,4 +76,49 @@ func Remove(dir *os.File, name string) error {
 		return &os.PathError{Op: "remove", Path: filepath.Join(dir.Name(), name), Err: err}
 	}
 	return nil
+}
+
+// ErrOtherBoot: the record was written in another boot session than the
+// one it was read in.
+var ErrOtherBoot = errors.New("written in another boot session")
+
+// ErrNoBoot: the record has no boot line before its body, so WriteRecord
+// didn't write it.
+var ErrNoBoot = errors.New("no boot session")
+
+// WriteRecord replaces the record name in dir (as WriteFile does) with
+// header, a comment line ('#'), then "boot <boot>", then body.
+func WriteRecord(dir *os.File, name, header, boot string, body []byte) error {
+	data := make([]byte, 0, len(header)+len(boot)+len(body)+7)
+	data = append(data, header+"\nboot "+boot+"\n"...)
+	return WriteFile(dir, name, append(data, body...))
+}
+
+// ReadRecord reads the record name in dir (as ReadFile does) and returns
+// its body: what follows its boot line, which must come before anything
+// but blank and comment ('#') lines (ErrNoBoot otherwise) and name boot
+// (ErrOtherBoot otherwise).
+func ReadRecord(dir *os.File, name, boot string) ([]byte, error) {
+	data, err := ReadFile(dir, name)
+	if err != nil {
+		return nil, err
+	}
+	path := filepath.Join(dir.Name(), name)
+	for rest := data; len(rest) > 0; {
+		line, next, _ := bytes.Cut(rest, []byte("\n"))
+		rest = next
+		l := strings.TrimSpace(string(line))
+		if l == "" || l[0] == '#' {
+			continue
+		}
+		f := strings.Fields(l)
+		if f[0] != "boot" {
+			return nil, fmt.Errorf("%s: line %q before the boot session: %w", path, l, ErrNoBoot)
+		}
+		if strings.Join(f[1:], " ") != boot {
+			return nil, fmt.Errorf("%s: %w", path, ErrOtherBoot)
+		}
+		return rest, nil
+	}
+	return nil, fmt.Errorf("%s: %w", path, ErrNoBoot)
 }

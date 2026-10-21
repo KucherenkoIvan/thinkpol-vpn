@@ -58,67 +58,54 @@ func (s tokenStore) read() (pfToken, recordState, error) {
 		return pfToken{}, recordNone, err
 	}
 	defer func() { _ = d.Close() }()
-	data, err := trusteddir.ReadFile(d, tokenRecord)
+	body, err := trusteddir.ReadRecord(d, tokenRecord, boot)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		return pfToken{}, recordNone, nil
 	case errors.Is(err, unix.ELOOP), errors.Is(err, trusteddir.ErrNotRegular):
 		return pfToken{}, recordStale, nil // a symlink or a fifo is never ours
+	case errors.Is(err, trusteddir.ErrOtherBoot), errors.Is(err, trusteddir.ErrNoBoot):
+		return pfToken{}, recordStale, nil
 	case err != nil:
 		return pfToken{}, recordNone, err
 	}
-	t, recBoot, ok := parseRecord(data[:min(len(data), maxTokenRecord)])
-	if !ok || recBoot != boot {
+	t, ok := parseTokenRecord(body)
+	if !ok {
 		return pfToken{}, recordStale, nil
 	}
 	return t, recordHeld, nil
 }
 
-// maxTokenRecord is as much of the record as is parsed: a record of ours
-// is far shorter.
-const maxTokenRecord = 4096
-
-// parseRecord reads "boot <session>" then "token <value|unknown> pid
-// <pid>", comments and blank lines aside; anything else is no record.
-func parseRecord(data []byte) (pfToken, string, bool) {
-	var boot string
+// parseTokenRecord reads a record's body: "token <value|unknown> pid <pid>",
+// comments and blank lines aside; anything else is no record.
+func parseTokenRecord(body []byte) (pfToken, bool) {
 	var t pfToken
 	n := 0
-	sc := bufio.NewScanner(bytes.NewReader(data))
+	sc := bufio.NewScanner(bytes.NewReader(body))
 	for sc.Scan() {
 		l := strings.TrimSpace(sc.Text())
 		if l == "" || l[0] == '#' {
 			continue
 		}
 		f := strings.Fields(l)
-		switch n {
-		case 0:
-			if len(f) != 2 || f[0] != "boot" {
-				return pfToken{}, "", false
-			}
-			boot = f[1]
-		case 1:
-			if len(f) != 4 || f[0] != "token" || f[2] != "pid" {
-				return pfToken{}, "", false
-			}
-			var v uint64
-			var err1 error
-			if f[1] != "unknown" {
-				if v, err1 = strconv.ParseUint(f[1], 10, 64); v == 0 {
-					err1 = errors.New("zero")
-				}
-			}
-			pid, err2 := strconv.Atoi(f[3])
-			if err1 != nil || err2 != nil || pid <= 0 {
-				return pfToken{}, "", false
-			}
-			t = pfToken{value: v, pid: pid}
-		default:
-			return pfToken{}, "", false
+		if n > 0 || len(f) != 4 || f[0] != "token" || f[2] != "pid" {
+			return pfToken{}, false
 		}
+		var v uint64
+		var err1 error
+		if f[1] != "unknown" {
+			if v, err1 = strconv.ParseUint(f[1], 10, 64); v == 0 {
+				err1 = errors.New("zero")
+			}
+		}
+		pid, err2 := strconv.Atoi(f[3])
+		if err1 != nil || err2 != nil || pid <= 0 {
+			return pfToken{}, false
+		}
+		t = pfToken{value: v, pid: pid}
 		n++
 	}
-	return t, boot, n == 2 && sc.Err() == nil
+	return t, n == 1 && sc.Err() == nil
 }
 
 // write replaces the record with t, stamped with this boot, atomically.
@@ -136,8 +123,8 @@ func (s tokenStore) write(t pfToken) error {
 	if t.value != 0 {
 		value = strconv.FormatUint(t.value, 10)
 	}
-	data := fmt.Sprintf("%s\nboot %s\ntoken %s pid %d\n", tokenHeader, boot, value, t.pid)
-	if err := trusteddir.WriteFile(d, tokenRecord, []byte(data)); err != nil {
+	body := fmt.Sprintf("token %s pid %d\n", value, t.pid)
+	if err := trusteddir.WriteRecord(d, tokenRecord, tokenHeader, boot, []byte(body)); err != nil {
 		return fmt.Errorf("firewall: %w", err)
 	}
 	return nil

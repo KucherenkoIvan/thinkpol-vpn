@@ -118,7 +118,7 @@ func Lock(dir *os.File, name string) (*os.File, error) {
 	}
 	if st.Mode&unix.S_IFMT != unix.S_IFREG {
 		_ = f.Close()
-		return nil, fmt.Errorf("%s: not a regular file", path)
+		return nil, fmt.Errorf("%s: %w", path, ErrNotRegular)
 	}
 	if err := unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB); err != nil {
 		_ = f.Close()

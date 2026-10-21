@@ -35,46 +35,30 @@ func (l *ownerLock) release() error { return l.f.Close() }
 
 func recordName(owner Owner) string { return owner.String() + ".routes" }
 
-// recordHeader starts a record: the boot session it was written in, then
-// the identities of the routes an owner added, one per line: the
-// destination, and for a scoped route "scope <interface index>" (an
-// index names the same interface for the whole boot).
+// recordHeader starts a record. After it, trusteddir's boot line and the
+// identities of the routes an owner added, one per line: the destination,
+// and for a scoped route "scope <interface index>" (an index names the
+// same interface for the whole boot).
 const recordHeader = "# thinkpol netcfg: routes this owner added (RTF_PROTO2); rewritten on every change"
 
-// bootSession names this boot of the machine: LockDir outlives a reboot
-// and the routes don't, so a record of another boot session holds nothing.
-func bootSession() (string, error) { return trusteddir.BootSession() }
-
 // readRecord reads the record name in dir; a missing one, or one written
-// in another boot session than boot, is empty. A record without a boot
-// line (empty, or comments only) is corrupt, not empty: it was not
-// written by writeRecord.
+// in another boot session than boot, is empty: LockDir outlives a reboot
+// and the routes don't. A record without a boot line (empty, or comments
+// only) is corrupt, not empty: it was not written by writeRecord.
 func readRecord(dir *os.File, name string, boot string) (map[rkey]bool, error) {
 	out := make(map[rkey]bool)
-	path := dir.Name() + "/" + name
-	data, err := trusteddir.ReadFile(dir, name)
-	if errors.Is(err, fs.ErrNotExist) {
+	body, err := trusteddir.ReadRecord(dir, name, boot)
+	switch {
+	case errors.Is(err, fs.ErrNotExist), errors.Is(err, trusteddir.ErrOtherBoot):
 		return out, nil
-	}
-	if err != nil {
+	case err != nil:
 		return nil, err
 	}
-	sc := bufio.NewScanner(bytes.NewReader(data))
-	booted := false
+	path := dir.Name() + "/" + name
+	sc := bufio.NewScanner(bytes.NewReader(body))
 	for sc.Scan() {
 		line := sc.Text()
 		if line == "" || line[0] == '#' {
-			continue
-		}
-		if !booted {
-			s, ok := strings.CutPrefix(line, "boot ")
-			if !ok {
-				return nil, fmt.Errorf("%s: line %q before the boot session", path, line)
-			}
-			if s != boot {
-				return out, nil // the routes went with that boot
-			}
-			booted = true
 			continue
 		}
 		k, err := parseRecordLine(line)
@@ -85,9 +69,6 @@ func readRecord(dir *os.File, name string, boot string) (map[rkey]bool, error) {
 	}
 	if err := sc.Err(); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
-	}
-	if !booted {
-		return nil, fmt.Errorf("%s: no boot session", path)
 	}
 	return out, nil
 }
@@ -109,11 +90,10 @@ func writeRecord(dir *os.File, name string, boot string, owned map[rkey]bool) er
 		return a.scope - b.scope
 	})
 	var b bytes.Buffer
-	b.WriteString(recordHeader + "\nboot " + boot + "\n")
 	for _, k := range ks {
 		b.WriteString(k.String() + "\n")
 	}
-	return trusteddir.WriteFile(dir, name, b.Bytes())
+	return trusteddir.WriteRecord(dir, name, recordHeader, boot, b.Bytes())
 }
 
 // parseRecordLine reads a record's line: "<prefix>" or "<prefix> scope <index>".

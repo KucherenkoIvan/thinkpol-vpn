@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"golang.org/x/sys/unix"
@@ -114,14 +115,14 @@ func TestLock(t *testing.T) {
 	if err := unix.Mkfifo(filepath.Join(dir, "fifo.lock"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Lock(d, "fifo.lock"); err == nil {
-		t.Error("a FIFO was taken")
+	if _, err := Lock(d, "fifo.lock"); !errors.Is(err, ErrNotRegular) {
+		t.Errorf("a FIFO: %v, want ErrNotRegular", err)
 	}
 }
 
 // Files in a trusted directory are read and replaced relative to it,
 // never through a symlink, and a reader never blocks on a fifo.
-func TestFilesAreReadAndReplacedInPlace(t *testing.T) {
+func TestFilesAreReadAndReplacedInTheDirectory(t *testing.T) {
 	path := tempDir(t)
 	d, err := Open(path)
 	if err != nil {
@@ -172,5 +173,44 @@ func TestFilesAreReadAndReplacedInPlace(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(path, "rec")); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("removed: %v", err)
+	}
+}
+
+// A record carries the boot session it was written in, and reads back
+// only in that one: its body for this boot, ErrOtherBoot for another,
+// ErrNoBoot when no boot line comes first.
+func TestRecordsAreReadOnlyInTheirBoot(t *testing.T) {
+	path := tempDir(t)
+	d, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = d.Close() }()
+	const boot = "6F1C0D2E-0000-4000-8000-000000000001"
+	body := "# a comment of the body\nline 1\n"
+	if err := WriteRecord(d, "rec", "# what this is", boot, []byte(body)); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := ReadRecord(d, "rec", boot); err != nil || string(got) != body {
+		t.Errorf("this boot: %q, %v; want %q", got, err, body)
+	}
+	if _, err := ReadRecord(d, "rec", "6F1C0D2E-0000-4000-8000-000000000002"); !errors.Is(err, ErrOtherBoot) {
+		t.Errorf("another boot: %v, want ErrOtherBoot", err)
+	}
+	for name, data := range map[string]string{
+		"empty":                     "",
+		"comments only":             "# what this is\n\n",
+		"a line before the boot":    "line 1\nboot " + boot + "\n",
+		"a boot glued to its value": "boot" + boot + "\n",
+	} {
+		if err := os.WriteFile(filepath.Join(path, "rec"), []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ReadRecord(d, "rec", boot); !errors.Is(err, ErrNoBoot) || !strings.Contains(err.Error(), filepath.Join(path, "rec")) {
+			t.Errorf("%s: %v, want ErrNoBoot naming the record", name, err)
+		}
+	}
+	if _, err := ReadRecord(d, "missing", boot); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a missing record: %v", err)
 	}
 }

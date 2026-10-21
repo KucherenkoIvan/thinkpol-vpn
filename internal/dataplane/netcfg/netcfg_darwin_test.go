@@ -346,7 +346,7 @@ func openDir(t *testing.T, dir string) *os.File {
 
 func thisBoot(t *testing.T) string {
 	t.Helper()
-	boot, err := bootSession()
+	boot, err := trusteddir.BootSession()
 	if err != nil {
 		t.Fatal(err)
 	}

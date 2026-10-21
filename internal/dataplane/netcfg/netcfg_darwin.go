@@ -172,7 +172,7 @@ type darwinConfigurator struct {
 // trusteddir, since the record decides which routes are deleted) and
 // returns its configurator on k.
 func newDarwin(owner Owner, k kernel, path string) (*darwinConfigurator, error) {
-	boot, err := bootSession()
+	boot, err := trusteddir.BootSession()
 	if err != nil {
 		return nil, fmt.Errorf("netcfg: %v: %w", owner, err)
 	}
