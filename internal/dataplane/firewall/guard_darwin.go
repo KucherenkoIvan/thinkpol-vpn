@@ -525,10 +525,10 @@ func (g *IPv6Guard) flush(ctx context.Context) error {
 // reference the guard holds, or the one its record holds from this boot
 // (a fresh guard's Close is how a crashed run's guard goes), and removes
 // the record. A failure, a reference whose token can't be found included,
-// leaves the guard open and the record in place, so Close can be tried
-// again; the anchor goes before the reference, so pf is never left off
-// with the anchor still meant to be in place. With no pfctl at all there
-// is nothing to remove.
+// leaves the guard and its record in place for the next run's
+// routetable.Clear, under the route table's owner lock; the anchor goes
+// before the reference, so pf is never left off with the anchor still
+// meant to be in place. With no pfctl at all there is nothing to remove.
 func (g *IPv6Guard) Close() error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
