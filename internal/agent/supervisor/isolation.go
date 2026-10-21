@@ -4,11 +4,10 @@ import "net/netip"
 
 // egressBlocked are destinations no space reaches through the root
 // namespace, by egress or a dial, unless Options.EgressAllowed names them:
-// what is never routed to the internet, link-local networks with the cloud
-// metadata services (credentials and the node's own configuration live
-// there: 169.254.169.254, AWS's fd00:ec2::254, Azure's 168.63.129.16,
-// Alibaba's 100.100.100.200 in 100.64.0.0/10), and the private networks a
-// provider may run behind the node (RFC 1918, shared address space, ULA).
+// what is never routed to the internet, the link-local networks, the cloud
+// metadata services (EgressNotWorthAllowing names them; credentials and the
+// node's own configuration live there), and the private networks a provider
+// may run behind the node (RFC 1918, shared address space, ULA).
 var egressBlocked = []netip.Prefix{
 	netip.MustParsePrefix("0.0.0.0/8"),
 	netip.MustParsePrefix("10.0.0.0/8"),
@@ -24,6 +23,43 @@ var egressBlocked = []netip.Prefix{
 	netip.MustParsePrefix("fc00::/7"),
 	netip.MustParsePrefix("fe80::/10"),
 	netip.MustParsePrefix("ff00::/8"),
+}
+
+// egressNotWorthAllowing are the addresses the refusal hint never
+// suggests opening with -egress-allowed: the cloud metadata services
+// (AWS's fd00:ec2::254, Azure's 168.63.129.16, Alibaba's 100.100.100.200),
+// whose credentials no space should read by any route, and the
+// never-routable ranges. Each is also inside egressBlocked.
+var egressNotWorthAllowing = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),
+	netip.MustParsePrefix("100.100.100.200/32"),
+	netip.MustParsePrefix("168.63.129.16/32"),
+	netip.MustParsePrefix("240.0.0.0/4"),
+	netip.MustParsePrefix("fd00:ec2::254/128"),
+}
+
+// EgressNotWorthAllowing says whether an address the refusal hint never
+// suggests opening with -egress-allowed: the metadata services and
+// never-routable ranges above, loopback, link-local, multicast, the
+// unspecified address, and anything zoned. Nothing stops an operator from
+// allowing one of them anyway (Options.EgressAllowed takes any
+// prefixes); this only keeps the hint from suggesting it.
+func EgressNotWorthAllowing(addr netip.Addr) bool {
+	if addr.Zone() != "" {
+		// Before Unmap, which drops the zone and would leave a mapped
+		// zoned address hint-able.
+		return true
+	}
+	addr = addr.Unmap() // an IPv4-mapped form of one of these is the same address
+	if addr.IsLoopback() || addr.IsLinkLocalUnicast() || addr.IsMulticast() || addr.IsUnspecified() {
+		return true
+	}
+	for _, p := range egressNotWorthAllowing {
+		if p.Contains(addr) {
+			return true
+		}
+	}
+	return false
 }
 
 // EgressRefused says whether the egress refuses a destination to the
