@@ -132,8 +132,9 @@ var ErrDNSUnprotected = errors.New("agent: connected, but the system may resolve
 var ErrNotRunning = errors.New("agent: the node is not running")
 
 // StartError is a data plane that failed to start on Connect. Step names
-// what failed (dataplane.Step*, or StepTUN), safe to show anyone; Err is
-// the detail, for the node's own log.
+// what failed (StepTUN, StepEngine, or one of the engine's Apply steps,
+// dataplane.Step*), safe to show anyone; Err is the detail, for the
+// node's own log.
 type StartError struct {
 	Step dataplane.Step
 	Err  error

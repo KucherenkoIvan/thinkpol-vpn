@@ -162,14 +162,14 @@ func newSplitLayout(w Want, s netcfg.Survey) *splitLayout {
 		_ = ob.AddPrefix(p)
 	}
 	l.overlaySet, _ = ob.Build()
+	l.direct = w.Direct.Minus(l.overlaySet)
 	var tb lists.Builder
-	tb.AddSet(w.Direct.Minus(l.overlaySet))
+	tb.AddSet(l.direct)
 	for _, a := range bypass(w.Bypass) {
 		_ = tb.AddPrefix(netip.PrefixFrom(a, a.BitLen()))
 	}
 	l.thrownSet, _ = tb.Build()
 	l.thrown = l.thrownSet.Prefixes()
-	l.direct = w.Direct.Minus(l.overlaySet)
 	for _, p := range s.OnLink {
 		if p.Bits() > 0 && p.Bits() < p.Addr().BitLen() && TrustedOnLink(p, l.direct) && !overlaps(p, l.overlay) {
 			l.trusted = append(l.trusted, p)

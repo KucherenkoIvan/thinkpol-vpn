@@ -263,23 +263,32 @@ func (r *runner) start(ctx context.Context) error {
 		}
 		return err
 	}
-	engine, err := dataplane.NewEngine(r.engineConfig(ports))
+	// The resolver is the runner's, not the engine's: it is closed apart
+	// from what openPorts opened, first.
+	var resolver *dns.Server
+	if r.dp.DNS {
+		resolver = r.newResolver()
+	}
+	closeResolver := func() {
+		if resolver != nil {
+			_ = resolver.Close()
+		}
+	}
+	engine, err := dataplane.NewEngine(r.engineConfig(ports, resolver))
 	if err != nil {
+		closeResolver()
 		undo.run()
 		return &StartError{Step: StepEngine, Err: err}
 	}
-	// The engine owns the TUN, its configurator and the route table now:
-	// its Close takes them down.
-	undo = undoStack{func() { _ = engine.Close() }}
-	if res := ports.resolver; res != nil {
-		undo.push(func() { _ = res.Close() })
-	}
+	// The engine owns all openPorts opened now (the TUN, its configurator
+	// and the route table): its Close takes them down.
+	undo = undoStack{func() { _ = engine.Close() }, closeResolver}
 	if err := engine.Apply(ctx, r.follow.section); err != nil {
 		step := engine.Status().LastApplyError
 		undo.run()
 		return &StartError{Step: step, Err: fmt.Errorf("applying map version %d: %w", r.follow.cur.Header().Version, err)}
 	}
-	r.engine, r.resolver, r.routes = engine, ports.resolver, ports.routes
+	r.engine, r.resolver, r.routes = engine, resolver, ports.routes
 	if r.resolver != nil && r.routes != nil {
 		if err := r.routes.SetDirectUpstreams(ctx, r.upstreams); err != nil {
 			r.dp.Log.Warn("DNS: keeping the direct upstreams reachable failed", "err", path.RedactError(err))
@@ -292,18 +301,17 @@ func (r *runner) start(ctx context.Context) error {
 	return nil
 }
 
-// startPorts are what a start opens for its engine; a nil one is what the
-// data plane runs without (ifc: tests; routes, resolver: off).
+// startPorts are what a start opens for its engine to own; a nil one is
+// what the data plane runs without (ifc: tests; routes: off).
 type startPorts struct {
-	tun      wgtun.Device
-	ifc      netcfg.Configurator
-	routes   *routeTable
-	resolver *dns.Server
+	tun    wgtun.Device
+	ifc    netcfg.Configurator
+	routes *routeTable
 }
 
-// openPorts opens the TUN's configurator, the TUN, the route table and the
-// resolver, pushing each one's Close onto undo. It fails with a
-// *StartError, never once the route table is open.
+// openPorts opens the TUN's configurator, the TUN and the route table,
+// what the engine takes over, pushing each one's Close onto undo. It
+// fails with a *StartError, never once the route table is open.
 func (r *runner) openPorts(undo *undoStack) (startPorts, error) {
 	var p startPorts
 	ifc, err := r.dp.Host.NewConfigurator(netcfg.OwnerOverlay)
@@ -332,17 +340,13 @@ func (r *runner) openPorts(undo *undoStack) (startPorts, error) {
 		p.routes = routes
 		undo.push(func() { _ = routes.Close() })
 	}
-	if r.dp.DNS {
-		res := r.newResolver()
-		p.resolver = res
-		undo.push(func() { _ = res.Close() })
-	}
 	return p, nil
 }
 
-// engineConfig is the engine's configuration on p, for the current map.
-// Only the ports p has go in: a nil adapter in a port would look set.
-func (r *runner) engineConfig(p startPorts) dataplane.EngineConfig {
+// engineConfig is the engine's configuration on p and resolver, for the
+// current map. Only the ports there are go in: a nil adapter in a port
+// would look set.
+func (r *runner) engineConfig(p startPorts, resolver *dns.Server) dataplane.EngineConfig {
 	cfg := dataplane.EngineConfig{
 		ID:           r.dp.Keys.ID,
 		Space:        transport.SpaceID(r.follow.cur.Header().SpaceID),
@@ -361,8 +365,8 @@ func (r *runner) engineConfig(p startPorts) dataplane.EngineConfig {
 	if p.routes != nil {
 		cfg.RouteTable = p.routes
 	}
-	if p.resolver != nil {
-		cfg.DNS = dnsResolver{p.resolver}
+	if resolver != nil {
+		cfg.DNS = dnsResolver{resolver}
 	}
 	if b := r.dp.Blobs; b != nil {
 		// The rules' lists: the current map's once held, the previous

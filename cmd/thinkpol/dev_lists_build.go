@@ -5,6 +5,7 @@ import (
 	"flag"
 	"strings"
 
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/devmap"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/lists"
 )
 
@@ -18,7 +19,7 @@ func init() {
 }
 
 // runDevListsBuild builds the lists (lists.BuildFile) and prints their
-// table and the source's attribution (lists.WriteReport).
+// table and the source's attribution (devmap.WriteListsReport).
 func runDevListsBuild(_ context.Context, e env, args []string) error {
 	fs := flag.NewFlagSet("dev lists build", flag.ContinueOnError)
 	format := fs.String("format", "", "source format, v2fly or dbip (default: from the file name, *.dat or *.csv, optionally .gz)")
@@ -38,5 +39,5 @@ func runDevListsBuild(_ context.Context, e env, args []string) error {
 	if err != nil {
 		return err
 	}
-	return lists.WriteReport(e.stdout, e.stderr, f, built)
+	return devmap.WriteListsReport(e.stdout, e.stderr, f, built)
 }
