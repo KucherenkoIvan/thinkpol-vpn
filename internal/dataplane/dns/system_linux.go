@@ -291,7 +291,8 @@ func (r *resolved) read() (ups []netip.Addr, ok bool) {
 	if err != nil {
 		return nil, false
 	}
-	return upstreamsFromContent(b, r.uplinkFile, r.cfg.Servers)
+	ups, uerr := upstreamsFromContent(b, r.uplinkFile, r.cfg.Servers)
+	return ups, uerr == nil
 }
 
 // firstRead is the read at setup: the tell for it, run after unlocking,

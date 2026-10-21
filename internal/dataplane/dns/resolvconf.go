@@ -349,7 +349,9 @@ func (r *resolvConf) apply() (tell func(), err error) {
 	var ups []netip.Addr
 	ok := true // nothing read: no answer to lose
 	if read {
-		ups, ok = upstreamsFromContent(m.original, r.uplink, r.cfg.Servers)
+		var uerr error
+		ups, uerr = upstreamsFromContent(m.original, r.uplink, r.cfg.Servers)
+		ok = uerr == nil
 	}
 	// Upstreams is told when the original changed, and at the first good
 	// read while the caller has none (untold), whatever it found. Behind
@@ -542,22 +544,22 @@ func onlyStubs(servers []netip.Addr) bool {
 	return len(servers) > 0 && !slices.ContainsFunc(servers, func(a netip.Addr) bool { return !slices.Contains(resolvedStubs, a) })
 }
 
-// upstreamsFromContent are the servers a resolv.conf names, with the same
-// stub filtering and uplink fallback as upstreamsFrom. ok is false when
-// the conf names only resolved's stub and its uplink file can't be read:
-// no answer was had, not an empty one.
-func upstreamsFromContent(content []byte, uplink string, exclude []netip.Addr) ([]netip.Addr, bool) {
+// upstreamsFromContent are the servers a resolv.conf names, with the
+// same stub filtering and uplink fallback as upstreamsFrom. The error is
+// when the conf names only resolved's stub and its uplink file can't be
+// read: no answer was had, not an empty one, and the cause says which.
+func upstreamsFromContent(content []byte, uplink string, exclude []netip.Addr) ([]netip.Addr, error) {
 	servers := nameservers(content)
 	if onlyStubs(servers) {
 		b, err := os.ReadFile(uplink)
 		if err != nil {
-			return nil, false
+			return nil, fmt.Errorf("dns: reading resolved's uplink %s: %w", uplink, err)
 		}
 		servers = nameservers(b)
 	}
 	return slices.DeleteFunc(servers, func(a netip.Addr) bool {
 		return slices.Contains(exclude, a) || slices.Contains(resolvedStubs, a)
-	}), true
+	}), nil
 }
 
 // upstreamsFrom are the servers the resolv.conf at etc named before the
@@ -570,9 +572,9 @@ func upstreamsFrom(etc, uplink string, exclude []netip.Addr) ([]netip.Addr, erro
 	if err != nil {
 		return nil, err
 	}
-	ups, ok := upstreamsFromContent(content, uplink, exclude)
-	if !ok {
-		return nil, fmt.Errorf("dns: %s names only resolved's stub and its uplink file %s can't be read", etc, uplink)
+	ups, err := upstreamsFromContent(content, uplink, exclude)
+	if err != nil {
+		return nil, err
 	}
 	return ups, nil
 }

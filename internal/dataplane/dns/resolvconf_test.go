@@ -516,8 +516,8 @@ func TestSystemUpstreams(t *testing.T) {
 	if err := os.Remove(uplink); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := upstreamsFrom(etc, uplink, own); err == nil {
-		t.Error("a stub resolv.conf with an unreadable uplink is a failed read, not an empty answer")
+	if _, err := upstreamsFrom(etc, uplink, own); err == nil || !strings.Contains(err.Error(), "no such file") {
+		t.Errorf("a stub resolv.conf with an unreadable uplink: %v, want the read's cause", err)
 	}
 }
 
