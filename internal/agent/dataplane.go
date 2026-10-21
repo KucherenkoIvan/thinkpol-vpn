@@ -132,7 +132,7 @@ func RunDataPlane(ctx context.Context, dp DataPlane) error {
 	r := &runner{
 		dp: dp, maps: dp.Maps, conn: dp.conn, guard: &dnsGuard{}, tun: dp.Interface,
 		follow: mapFollower{
-			log: dp.Log, keys: dp.Keys, cur: dp.Map, section: section,
+			log: dp.Log, keys: dp.Keys, report: dp.report, cur: dp.Map, section: section,
 			removedMsg: "the data plane stops until a map includes it again",
 		},
 	}

@@ -70,6 +70,7 @@ func startDevice(t *testing.T, s *testSpace, reg *transport.Registry, connect bo
 	if err != nil {
 		t.Fatal(err)
 	}
+	rn.status = n.Status
 	d := &deviceNode{runningNode: rn, node: n, failTUN: failTUN, events: newHeardEvents(t)}
 	n.Subscribe(d.events.add)
 	for _, o := range opts {
@@ -173,7 +174,7 @@ func TestADeviceConnectsAndDisconnects(t *testing.T) {
 		t.Fatal(err)
 	}
 	b.ping(t, b4, a4)
-	b.waitLog(t, `msg="map applied" .*version=3`)
+	b.applied(t, 3)
 
 	// Removed while connected: it waits, and is back with the next map
 	// that has it.
@@ -310,7 +311,7 @@ func TestARouteTableNotEnforcedIsAnEvent(t *testing.T) {
 	table.mu.Unlock()
 	b.maps <- s.build(t, 2)
 	b.events.are(t, Event{EventConnected, 1}, Event{EventRouteTableNotEnforced, 2})
-	b.waitLog(t, `msg="map applied" .*version=2`)
+	b.applied(t, 2)
 }
 
 // The route table failing on its own is told as the status says so; once
@@ -437,11 +438,18 @@ func TestAPanickingSubscriberDoesNotStopTheNode(t *testing.T) {
 	s := newTestSpace(t)
 	_, reg := memoryRegistry(t)
 	startNode(t, reg, s.a, s.verified(t, 1))
+	after := newHeardEvents(t)
 	b := startDevice(t, s, reg, true, deviceOpt{node: func(n *Node) {
 		n.Subscribe(func(Event) { panic("a subscriber's bug") })
+		n.Subscribe(after.add)
 	}})
 	b.events.are(t, Event{EventConnected, 1})
-	b.waitLog(t, "an event subscriber panicked")
+	// Told in order: the subscriber after the panicking one hears the
+	// event once the panic was logged.
+	after.are(t, Event{EventConnected, 1})
+	if !logMatches(b.log.String(), `level=ERROR msg="an event subscriber panicked"`) {
+		t.Error("the subscriber's panic isn't logged")
+	}
 	b4, _ := overlay(2)
 	a4, _ := overlay(1)
 	b.ping(t, b4, a4)

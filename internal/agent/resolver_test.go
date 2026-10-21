@@ -106,7 +106,7 @@ func TestADevicePointsTheSystemAtItsResolverWhileConnected(t *testing.T) {
 
 	// Another map that changes nothing the OS needs leaves it alone.
 	b.maps <- s.build(t, 2)
-	b.waitLog(t, `msg="map applied" .*version=2`)
+	b.applied(t, 2)
 	if n, r := sys.counts(); n != 1 || r != 0 {
 		t.Errorf("after a map: set %d, restored %d", n, r)
 	}
@@ -405,9 +405,15 @@ func TestAFailedFirstReadOfTheSystemsResolversIsPassedOn(t *testing.T) {
 	if !first.UpstreamsUnknown || first.Upstreams == nil {
 		t.Fatalf("the failed read isn't passed on: unknown %v", first.UpstreamsUnknown)
 	}
-	b.waitLog(t, `level=WARN msg="DNS: the system's resolvers are unknown`)
+	// Warned before the OS was pointed at the resolver; the upstreams
+	// told are taken at once.
+	if !logMatches(b.log.String(), `level=WARN msg="DNS: the system's resolvers are unknown`) {
+		t.Error("the failed read isn't warned about")
+	}
 	first.Upstreams([]netip.Addr{netip.MustParseAddr("192.0.2.53")})
-	b.waitLog(t, `msg="DNS: the system's own resolvers changed".* upstreams=1`)
+	if !logMatches(b.log.String(), `msg="DNS: the system's own resolvers changed".* upstreams=1`) {
+		t.Error("the upstreams the OS configuration told aren't taken")
+	}
 }
 
 // A system whose direct upstreams may be stale is degraded, not

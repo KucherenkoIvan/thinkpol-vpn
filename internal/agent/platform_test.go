@@ -120,7 +120,7 @@ func TestTransportsMarkSocketsPerMode(t *testing.T) {
 		sess.config <- s.workerConfig(t, s.a, 1)
 		done := make(chan error, 1)
 		go func() { done <- serveSpace(base.Log, base)(w.ctx, sess.Session) }()
-		w.waitLog(t, `msg="map applied"`)
+		w.applied(t, 1)
 		w.stop()
 		if err := <-done; err != nil {
 			t.Fatal(err)

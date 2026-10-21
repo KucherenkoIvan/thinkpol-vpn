@@ -70,11 +70,19 @@ func (f *fakeSupervisor) last() ([]supervisor.Space, []supervisor.Listener, int)
 }
 
 type runningServer struct {
-	sup  *fakeSupervisor
-	log  *logring.Ring
-	maps chan []byte
-	done chan error
-	stop context.CancelFunc
+	sup    *fakeSupervisor
+	log    *logring.Ring
+	report report
+	maps   chan []byte
+	done   chan error
+	stop   context.CancelFunc
+}
+
+// served waits until the status says the server serves map version:
+// nothing to retry.
+func (r *runningServer) served(t *testing.T, version uint64) {
+	t.Helper()
+	eventually(t, func() bool { st := r.report.status(); return st.MapVersion == version && !st.Retrying })
 }
 
 // runServerSpaces serves s's map at version 1, its section changed by
@@ -100,10 +108,10 @@ func runServerSpacesIn(t *testing.T, s *testSpace, sup *fakeSupervisor, stateDir
 	}
 	ss := &serverSpaces{
 		sup: sup, reg: reg, trust: s.trust(), retryAfter: testRetry,
-		log: slog.New(slog.NewTextHandler(r.log, nil)),
+		log: slog.New(slog.NewTextHandler(r.log, nil)), report: &r.report,
 		follow: mapFollower{
 			log:  slog.New(slog.NewTextHandler(r.log, nil)),
-			keys: s.a, cur: m, section: section,
+			keys: s.a, report: &r.report, cur: m, section: section,
 			removedMsg: serverRemovedMsg,
 		},
 	}
@@ -167,7 +175,7 @@ func TestServerWithIngressOffAcceptsNoDevice(t *testing.T) {
 	s := newTestSpace(t)
 	sup := &fakeSupervisor{}
 	r := runServerSpaces(t, s, sup, func(sec *netmap.Section) { sec.Node.AllowIngress = false })
-	eventually(t, func() bool { return logMatches(r.log.String(), `msg="map applied" .*version=1`) })
+	r.served(t, 1)
 	if sp, _, _ := sup.last(); len(sp) != 1 || len(sp[0].Inbound["memory"]) != 0 {
 		t.Fatalf("spaces %+v: the device's link is accepted", sp)
 	}
@@ -176,7 +184,7 @@ func TestServerWithIngressOffAcceptsNoDevice(t *testing.T) {
 	}
 
 	r.maps <- s.build(t, 2)
-	eventually(t, func() bool { return logMatches(r.log.String(), `msg="map applied" .*version=2`) })
+	r.served(t, 2)
 	if sp, _, _ := sup.last(); len(sp) != 1 || len(sp[0].Inbound["memory"]) != 1 {
 		t.Fatalf("spaces %+v: the device's link is refused with ingress on", sp)
 	}
@@ -187,7 +195,13 @@ func TestServerRetriesListenersThatFailAtTheStart(t *testing.T) {
 	s := newTestSpace(t)
 	sup := &fakeSupervisor{failLists: 1}
 	r := runServerSpaces(t, s, sup)
-	eventually(t, func() bool { return strings.Contains(r.log.String(), `msg="map applied"`) })
+	// The failed SetListeners and the retry that served the map.
+	eventually(t, func() bool {
+		sup.mu.Lock()
+		defer sup.mu.Unlock()
+		return len(sup.listeners) == 2
+	})
+	r.served(t, 1)
 	if strings.Count(r.log.String(), "opening listeners failed, retrying") != 1 {
 		t.Fatalf("log:\n%s", r.log)
 	}
@@ -221,8 +235,8 @@ func TestServerRetriesAFailedMap(t *testing.T) {
 	sup.failSpaces = 1
 	sup.mu.Unlock()
 	r.maps <- s.build(t, 2)
-	eventually(t, func() bool { return strings.Contains(r.log.String(), "serving the map failed, retrying") })
-	eventually(t, func() bool { return logMatches(r.log.String(), `msg="map applied" .*version=2`) })
+	// Seen once retried: serving it failed first.
+	r.served(t, 2)
 	_, _, n := sup.last()
 	if n != 3 {
 		t.Fatalf("%d SetSpaces calls, want the first, the failed one and the retry", n)
@@ -246,9 +260,8 @@ func TestServerStopsTheSpaceWhileRemoved(t *testing.T) {
 		t.Fatalf("%d removal messages", c)
 	}
 	r.maps <- s.build(t, 4)
-	eventually(t, func() bool { return strings.Contains(r.log.String(), "back in space") })
-	eventually(t, func() bool { sp, _, _ := sup.last(); return len(sp) == 1 })
 	heard.are(t, Event{EventRemovedFromSpace, 2}, Event{EventBackInSpace, 4})
+	eventually(t, func() bool { sp, _, _ := sup.last(); return len(sp) == 1 })
 }
 
 // fakeSession is a worker's view of its supervisor, for ServeSpace.
@@ -299,9 +312,9 @@ func TestServeSpace(t *testing.T) {
 		sess := newFakeSession(s.id)
 		sess.config <- s.workerConfig(t, s.a, 1)
 		n, wait := serve(t, sess)
-		n.waitLog(t, `msg="map applied" .*version=1`)
+		n.applied(t, 1)
 		sess.config <- s.workerConfig(t, s.a, 2)
-		n.waitLog(t, `msg="map applied" .*version=2`)
+		n.applied(t, 2)
 		n.stop()
 		if err := wait(); err != nil {
 			t.Fatal(err)
@@ -319,7 +332,7 @@ func TestServeSpace(t *testing.T) {
 		sess := newFakeSession(s.id)
 		sess.config <- s.workerConfig(t, s.a, 1)
 		n, wait := serve(t, sess)
-		n.waitLog(t, `msg="map applied" .*version=1`)
+		n.applied(t, 1)
 		sess.config <- s.workerConfig(t, s.b, 2)
 		if err := wait(); err == nil || !strings.Contains(err.Error(), "changed the worker's keys or trust") {
 			t.Fatalf("got %v", err)
@@ -416,7 +429,7 @@ func TestServerEgressAndDials(t *testing.T) {
 			s := newTestSpace(t)
 			sup := &fakeSupervisor{egress: tc.info}
 			r := runServerSpaces(t, s, sup, withLinks, func(sec *netmap.Section) { sec.Node.AllowEgress = tc.egress })
-			eventually(t, func() bool { return logMatches(r.log.String(), `msg="map applied" .*version=1`) })
+			r.served(t, 1)
 			sp, _, _ := sup.last()
 			want := []supervisor.Dial{{Address: other, Network: "udp"}, {Address: netip.MustParseAddrPort("[2001:db8::7]:4500"), Network: "udp"}}
 			if len(sp) != 1 || sp[0].Egress != tc.want || !slices.Equal(sp[0].Dials, want) {

@@ -167,7 +167,7 @@ func TestTheDataPlaneFetchesAndKeepsBlobs(t *testing.T) {
 
 	without := s.buildWithout(t, 2, s.b)
 	b.maps <- without
-	b.waitLog(t, "removed from space")
+	eventually(t, func() bool { return b.status().Removed })
 	eventually(t, func() bool { st := dpB.Blobs.Status(); return st.Wanted == 0 && st.Held == 0 })
 	eventually(t, func() bool { _, err := os.Lstat(filepath.Join(stateB, BlobDir)); return os.IsNotExist(err) })
 }
@@ -316,8 +316,8 @@ func TestServerSeedsItsWorker(t *testing.T) {
 	dpB := b.dataPlane(reg, s.b, s.verified(t, 1))
 	dpB.Blobs = ov.service(nil, dpB.Log)
 	b.run(t, dpB)
+	// The worker, the device's one peer, had it from its seed alone.
 	eventually(t, func() bool { _, ok := dpB.Blobs.Get(ref.SHA256); return ok })
-	w.waitLog(t, `msg="blob loaded"`)
 }
 
 // Map v1 named ru = A, which the device stored; v2 names ru = B. Restarted

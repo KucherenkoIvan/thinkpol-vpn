@@ -23,6 +23,10 @@ type Status struct {
 	Space netmap.SpaceID
 	// MapVersion is the version of the map the node follows.
 	MapVersion uint64
+	// MapsRefused counts the maps the node was given and didn't take
+	// since it started: not newer than the one it follows, invalid, or
+	// not its space's.
+	MapsRefused uint64
 	// Removed is set while the map has no section for the node.
 	Removed    bool
 	Connection Connection
@@ -152,7 +156,9 @@ type report struct {
 	mode    Mode
 	space   netmap.SpaceID
 	version uint64
-	removed bool
+	// mapsRefused counts the maps the node's followers refused.
+	mapsRefused uint64
+	removed     bool
 	// conn is a device's connection.
 	conn connState
 	// retrying: a start, an Apply (a connected device's too) or a
@@ -192,7 +198,7 @@ func (p *report) set(f func(p *report)) {
 func (p *report) status() Status {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	s := Status{Mode: p.mode, Space: p.space, MapVersion: p.version, Removed: p.removed, Retrying: p.retrying, Listeners: p.listeners, DNSUpstreamsRefused: p.dnsUpstreamsRefused}
+	s := Status{Mode: p.mode, Space: p.space, MapVersion: p.version, MapsRefused: p.mapsRefused, Removed: p.removed, Retrying: p.retrying, Listeners: p.listeners, DNSUpstreamsRefused: p.dnsUpstreamsRefused}
 	if p.mode != ModeServer {
 		s.RulePreset = p.preset
 	}

@@ -55,11 +55,18 @@ type runningNode struct {
 	ifc netcfg.Configurator
 	// conn is the data plane's connection, read once it returned.
 	conn connection
+	// report and events are the data plane's status and events; status
+	// reads the status (the node's, for a node's data plane).
+	report report
+	events *heardEvents
+	status func() Status
 }
 
 func newRunningNode() *runningNode {
-	n := &runningNode{replies: make(chan packettest.Packet, 64), maps: make(chan []byte, 1), log: logring.New(1 << 20), done: make(chan error, 1)}
+	n := &runningNode{replies: make(chan packettest.Packet, 64), maps: make(chan []byte, 1), log: logring.New(1 << 20), done: make(chan error, 1),
+		events: &heardEvents{}}
 	n.ctx, n.stop = context.WithCancel(context.Background())
+	n.status = n.report.status
 	return n
 }
 
@@ -94,6 +101,8 @@ func (n *runningNode) dataPlane(reg *transport.Registry, keys NodeKeys, m *netma
 		path:       fastPaths,
 		retryAfter: testRetry,
 		conn:       &n.conn,
+		report:     &n.report,
+		events:     n.events.add,
 	}
 }
 
@@ -193,10 +202,20 @@ func (n *runningNode) ping(t *testing.T, src, dst netip.Addr) {
 	}
 }
 
-func (n *runningNode) waitLog(t *testing.T, pattern string) {
+// applied waits until the status says the data plane runs map version,
+// applied: nothing to retry, the last Apply good.
+func (n *runningNode) applied(t *testing.T, version uint64) {
 	t.Helper()
-	re := regexp.MustCompile(pattern)
-	eventually(t, func() bool { return re.MatchString(n.log.String()) })
+	eventually(t, func() bool {
+		st := n.status()
+		return st.MapVersion == version && st.DataPlane != nil && !st.Retrying && st.DataPlane.LastApplyError == ""
+	})
+}
+
+// refused waits until the status counts count maps refused.
+func (n *runningNode) refused(t *testing.T, count uint64) {
+	t.Helper()
+	eventually(t, func() bool { return n.status().MapsRefused == count })
 }
 
 // logMatches reports whether log has a line matching pattern.
@@ -232,7 +251,7 @@ func TestDataPlaneRunsAndFollowsTheMap(t *testing.T) {
 	v2 := s.build(t, 2)
 	a.maps <- v2
 	b.maps <- v2
-	a.waitLog(t, `msg="map applied" .*version=2`)
+	a.applied(t, 2)
 	eventually(t, func() bool { return canListen(net, old) })
 	b.ping(t, b4, a4)
 	if canListen(net, s.listen) {
@@ -241,11 +260,14 @@ func TestDataPlaneRunsAndFollowsTheMap(t *testing.T) {
 
 	// Older and tampered maps leave the node on version 2.
 	a.maps <- s.build(t, 1)
-	a.waitLog(t, "map not newer")
+	a.refused(t, 1)
 	bad := s.build(t, 3)
 	bad[len(bad)-1] ^= 1
 	a.maps <- bad
-	a.waitLog(t, "bad signature")
+	a.refused(t, 2)
+	if v := a.status().MapVersion; v != 2 {
+		t.Fatalf("on version %d after an older and a tampered map", v)
+	}
 	a.ping(t, a4, b4)
 
 	// A closed Maps channel only means no more maps.
@@ -277,25 +299,21 @@ func TestDataPlaneStopsWhileRemoved(t *testing.T) {
 	without := s.buildWithout(t, 2, s.a)
 	a.maps <- without
 	b.maps <- without
-	a.waitLog(t, "removed from space")
+	a.events.are(t, Event{EventConnected, 1}, Event{EventRemovedFromSpace, 2})
+	if st := a.status(); !st.Removed || st.DataPlane != nil {
+		t.Fatalf("removed: %+v", st)
+	}
 	eventually(t, func() bool { return canListen(net, s.listen) })
-	b.waitLog(t, `msg="map applied" .*version=2`)
+	b.applied(t, 2)
 	// Taken, so an older map with the node doesn't bring it back.
 	a.maps <- s.build(t, 1)
-	a.waitLog(t, "map not newer")
+	a.refused(t, 1)
 	if a.tuns.Load() != 1 {
 		t.Fatal("a restarted on an older map")
 	}
 	// Removed once, said once.
 	a.maps <- s.buildWithout(t, 3, s.a)
-	// A map not newer than 3 is refused only once 3 was taken.
-	eventually(t, func() bool {
-		select {
-		case a.maps <- s.build(t, 2):
-		default:
-		}
-		return strings.Count(a.log.String(), "map not newer") >= 2
-	})
+	eventually(t, func() bool { return a.status().MapVersion == 3 })
 	if c := strings.Count(a.log.String(), "removed from space"); c != 1 {
 		t.Fatalf("%d removal messages", c)
 	}
@@ -303,8 +321,8 @@ func TestDataPlaneStopsWhileRemoved(t *testing.T) {
 	v4 := s.build(t, 4)
 	a.maps <- v4
 	b.maps <- v4
-	a.waitLog(t, "back in space")
-	a.waitLog(t, `msg="map applied" .*version=4`)
+	a.events.are(t, Event{EventConnected, 1}, Event{EventRemovedFromSpace, 2}, Event{EventBackInSpace, 4}, Event{EventConnected, 4})
+	a.applied(t, 4)
 	b.ping(t, b4, a4)
 	if a.tuns.Load() != 2 {
 		t.Fatalf("%d TUNs, want the data plane started twice", a.tuns.Load())
@@ -351,14 +369,14 @@ func TestAFailedApplyIsRetried(t *testing.T) {
 	n := newRunningNode()
 	n.ifc = ifc
 	n.run(t, n.dataPlane(reg, s.a, s.verified(t, 1)))
-	n.waitLog(t, `msg="map applied" .*version=1`)
+	n.applied(t, 1)
 
 	ifc.failing.Store(true)
 	n.maps <- s.build(t, 2)
-	n.waitLog(t, `applying the map failed, retrying`)
+	eventually(t, func() bool { st := n.status(); return st.MapVersion == 2 && st.Retrying })
 	failedAt := time.Now()
 	ifc.failing.Store(false)
-	n.waitLog(t, `msg="map applied" .*version=2`)
+	n.applied(t, 2)
 	// Retried on the data plane's own retryAfter, not the default: a few
 	// testRetry on an idle machine, and still far below RetryAfter on one
 	// busy with other tests.
@@ -437,7 +455,6 @@ func TestAStoppedListenerIsReopenedAfterRetryAfter(t *testing.T) {
 	killed := time.Now()
 	_ = in.last.Close()
 	in.mu.Unlock()
-	a.waitLog(t, "listener stopped, reopening")
 	eventually(t, func() bool { return len(in.opens()) == 2 })
 	if gap := in.opens()[1].Sub(killed); gap < testRetry {
 		t.Fatalf("reopened %v after it stopped, before RetryAfter (%v)", gap, testRetry)
