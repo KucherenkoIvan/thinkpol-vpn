@@ -18,8 +18,8 @@ branch: "tp-116-go-toolchain-1-26-10"
 - `go.mod`: `toolchain go1.26.9` → `go1.26.10`. govulncheck reports GO-2026-6809 (`crypto/x509`) as reachable with go1.26.9 (through `lab/prototypes/reality`); go1.26.10 fixes it. The `go` floor stays 1.26.0.
 
 ## Acceptance
-- [ ] `make lint` passes (govulncheck: 0 reachable vulnerabilities on every OS)
-- [ ] `make test` and `make lab-test` pass
+- [x] `make lint` passes (govulncheck: 0 reachable vulnerabilities on every OS)
+- [x] `make test` and `make lab-test` pass
 
 ## Notes
 - Found by TP-112's implementer: `make lint` failed in vulncheck on a branch that didn't touch the code it flagged, so `rewrite` fails it too.
@@ -27,3 +27,5 @@ branch: "tp-116-go-toolchain-1-26-10"
 ## Log
 - 2026-10-21 created (TP-112's lint run)
 - 2026-10-21 backlog → in-progress — owner: orchestrator, branch: tp-116-go-toolchain-1-26-10
+- 2026-10-21 make lint green (govulncheck: 0 reachable on every OS), make test green, make lab-test green at 50ed43a (35 packages in the lab node)
+- 2026-10-21 in-progress → review
