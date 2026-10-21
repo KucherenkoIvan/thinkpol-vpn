@@ -71,3 +71,4 @@ Round 2 (2026-10-21): correctness, design and a second-opinion review.
 - 2026-10-21 in-progress → review
 - 2026-10-21 has-errors → in-progress (round 1 findings)
 - 2026-10-21 review → has-errors (round 2: R2.1–R2.9)
+- 2026-10-21 has-errors → in-progress (round 2 findings)
