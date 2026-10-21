@@ -539,6 +539,15 @@ func TestFairShareChargedAfterTheWorkerAccepts(t *testing.T) {
 		t.Fatal(err)
 	}
 	eventually(t, "the refusal", func() bool { return s.counters(space).OverShare == 1 })
+	// A refused datagram from a new address leaves no address to answer.
+	remotes := len((*s.routes.Load())[space].remotesForTest())
+	if err := dial(t, address, p).WritePacket(make([]byte, 1000)); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the second refusal", func() bool { return s.counters(space).OverShare == 2 })
+	if n := len((*s.routes.Load())[space].remotesForTest()); n != remotes {
+		t.Fatalf("%d addresses to answer after a refused datagram, want %d", n, remotes)
+	}
 	if got := m.of(space); got != 1500+2*udp.Overhead {
 		t.Fatalf("charged %d, want only what went through", got)
 	}
@@ -608,6 +617,36 @@ func TestWorkersOnlyAnswer(t *testing.T) {
 	s.reply(space, ipc.DatagramHeader{Listener: fromMine.Listener, Remote: mapped}, []byte("not a valid datagram"))
 	if c := s.counters(space); c.Replies != 1 {
 		t.Fatalf("a reply to the worker's own dialer: %+v", c)
+	}
+}
+
+// answeringWorker answers every datagram before the supervisor's hand-off
+// returns, as a worker process can.
+type answeringWorker struct {
+	*fakeWorker
+}
+
+func (w answeringWorker) TrySendDatagram(h ipc.DatagramHeader, d []byte) error {
+	w.s.reply(w.space, h, []byte("answer"))
+	return w.fakeWorker.TrySendDatagram(h, d)
+}
+
+// The worker is another process: its answer can reach the supervisor
+// before forwarding the question has returned, and still goes out.
+func TestAnAnswerMayBeatTheHandOff(t *testing.T) {
+	s := newTestShared(t, nil)
+	address := listenUDP(t, s, nil)
+	space := randomSpace()
+	p := transporttest.SymmetricPeer()
+	s.setSpaces(map[transport.SpaceID]map[string][]transport.PeerLink{space: {udp.Name: {p.PeerLink}}})
+	w := answeringWorker{newFakeWorker(s, space)}
+	s.attach(space, &workerSockets{data: w, control: w})
+	if err := dial(t, address, p).WritePacket([]byte("question")); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the question forwarded", func() bool { return s.counters(space).Forwarded == 1 })
+	if c := s.counters(space); c.Replies != 1 || c.RepliesNotAllowed != 0 {
+		t.Fatalf("counters %+v, want the answer sent", c)
 	}
 }
 
