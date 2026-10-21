@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: [TP-108]
 refs: [DESIGN#routing-rules-and-dns]
-owner: ""
-branch: ""
+owner: "cursor-glm-tp-115"
+branch: "tp-115-linux-dns-failed-first-read"
 ---
 
 ## Goal
@@ -28,3 +28,4 @@ On Linux, as on macOS since TP-108, a device whose first read of the OS's resolv
 
 ## Log
 - 2026-10-19 created in backlog (TP-108 review round 5)
+- 2026-10-21 backlog → in-progress — owner: cursor-glm-tp-115, branch: tp-115-linux-dns-failed-first-read
