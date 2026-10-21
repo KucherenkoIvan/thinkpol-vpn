@@ -215,7 +215,7 @@ func TestDNSFollowsTheRulesOnAServerExit(t *testing.T) {
 		mustAsk(t, devA, s4, "server-1.lab.internal", "NXDOMAIN aa")
 	}
 	restartExit(netip.Prefix{})
-	waitLog(t, exit, `worker space=\S+ .*no upstream to ask: the worker's egress refuses`)
+	waitLog(t, exit, `worker space=\S+ .*no upstream to ask: the egress refuses`)
 	if refused := regexp.MustCompile(`refuses the upstream.*upstream=` + regexp.QuoteMeta(inetIP.String()) + `:5353`); !refused.MatchString(exit.Output()) {
 		t.Errorf("the exit didn't report refusing %s:5353:\n%s", inetIP, exit.Output())
 	}
