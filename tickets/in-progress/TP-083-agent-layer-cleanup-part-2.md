@@ -8,8 +8,8 @@ size: L
 depends_on: [TP-075, TP-109, TP-110]
 split_from: TP-075
 refs: [S1, DESIGN#desktop-client]
-owner: ""
-branch: ""
+owner: "agent-tp-083"
+branch: "tp-083-agent-layer-cleanup-part-2"
 ---
 
 ## Goal
@@ -47,3 +47,4 @@ Finish the agent-layer refactor after TP-075, TP-109 and TP-110: teardown order,
 - 2026-10-18 split: port ownership → TP-109, connection state and events → TP-110; Engine split and local API tables added (owner)
 - 2026-10-19 docs (TP-075 review round 2): the remaining private test hooks on DataPlane and Node (path, retryAfter, onEngine, dnsPort, tweak) are this ticket's scope
 - 2026-10-19 docs (TP-075 review round 3): blobOptions joins the private test hooks; note that Host reaches the worker kept off its device-only adapters only by the Forward and RouteTable flags
+- 2026-10-21 backlog → in-progress — owner: agent-tp-083, branch: tp-083-agent-layer-cleanup-part-2
