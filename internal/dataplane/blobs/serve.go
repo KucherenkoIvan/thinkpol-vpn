@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"net/netip"
 	"sync"
@@ -29,16 +30,15 @@ func (s *Service) listenLoop(ctx context.Context) {
 	active := &activeConns{m: map[net.Conn]struct{}{}}
 	ended := make(chan struct{}, 1)
 	ls := &blobListeners{
-		s: s, open: map[netip.AddrPort]*listener{}, retryAt: map[netip.AddrPort]time.Time{},
+		open: map[netip.AddrPort]*listener{}, retryAt: map[netip.AddrPort]time.Time{},
+		retryAfter: s.limits.ListenRetry, log: s.log, listen: s.openListener,
 		serve: func(l *listener) { go s.accept(ctx, l, &conns, active, ended) },
 	}
 	retry := time.NewTimer(time.Hour)
 	retry.Stop()
 	defer func() {
 		retry.Stop()
-		for _, l := range ls.open {
-			l.close()
-		}
+		ls.closeAll()
 		active.closeAll()
 		conns.Wait()
 	}()
@@ -73,17 +73,26 @@ func (l *listener) close() {
 }
 
 // blobListeners are listenLoop's listeners: those open, by address, and
-// when to open again those that failed to open or stopped on their own;
-// serve serves what an opened one accepts.
+// when to open again, retryAfter on, those that failed to open or stopped
+// on their own; listen opens one, serve serves what it accepts.
 type blobListeners struct {
-	s       *Service
-	open    map[netip.AddrPort]*listener
-	retryAt map[netip.AddrPort]time.Time
-	serve   func(*listener)
+	open       map[netip.AddrPort]*listener
+	retryAt    map[netip.AddrPort]time.Time
+	retryAfter time.Duration
+	log        *slog.Logger
+	listen     func(addr netip.AddrPort, iface string) (net.Listener, error)
+	serve      func(*listener)
+}
+
+// closeAll closes every open listener.
+func (b *blobListeners) closeAll() {
+	for _, l := range b.open {
+		l.close()
+	}
 }
 
 // prune closes the open listeners not on want or not on iface, forgets
-// those that stopped on their own, retrying them after ListenRetry, and
+// those that stopped on their own, retrying them after retryAfter, and
 // forgets the pending retries of addresses not on want.
 func (b *blobListeners) prune(want map[netip.AddrPort]bool, iface string, now time.Time) {
 	for addr, l := range b.open {
@@ -93,7 +102,7 @@ func (b *blobListeners) prune(want map[netip.AddrPort]bool, iface string, now ti
 			delete(b.open, addr)
 		case isDone(l.done):
 			delete(b.open, addr)
-			b.retryAt[addr] = now.Add(b.s.limits.ListenRetry)
+			b.retryAt[addr] = now.Add(b.retryAfter)
 		}
 	}
 	for addr := range b.retryAt {
@@ -105,10 +114,10 @@ func (b *blobListeners) prune(want map[netip.AddrPort]bool, iface string, now ti
 
 // openWanted opens a listener on iface for each address on want that has
 // none and whose retry is due, and serves it; one that fails is retried
-// after ListenRetry. It returns when the earliest pending retry is due
+// after retryAfter. It returns when the earliest pending retry is due
 // (zero: none is).
 func (b *blobListeners) openWanted(want map[netip.AddrPort]bool, iface string, now time.Time) time.Time {
-	s, open, retryAt := b.s, b.open, b.retryAt
+	open, retryAt := b.open, b.retryAt
 	var next time.Time
 	for addr := range want {
 		if open[addr] != nil {
@@ -120,14 +129,14 @@ func (b *blobListeners) openWanted(want map[netip.AddrPort]bool, iface string, n
 			}
 			continue
 		}
-		ln, err := s.openListener(addr, iface)
+		ln, err := b.listen(addr, iface)
 		if err != nil {
-			at := now.Add(s.limits.ListenRetry)
+			at := now.Add(b.retryAfter)
 			retryAt[addr] = at
 			if next.IsZero() || at.Before(next) {
 				next = at
 			}
-			s.log.Warn("blob service: listening failed, retrying", "address", addr, "in", s.limits.ListenRetry, "err", err)
+			b.log.Warn("blob service: listening failed, retrying", "address", addr, "in", b.retryAfter, "err", err)
 			continue
 		}
 		delete(retryAt, addr)

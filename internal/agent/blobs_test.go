@@ -293,7 +293,7 @@ func TestServerSeedsItsWorker(t *testing.T) {
 	w := newRunningNode()
 	base := w.dataPlane(reg, NodeKeys{}, nil)
 	base.tuning.blobOptions = blobs.Options{Limits: fastBlobs}
-	base.Host.BlobNet = blobs.Net{Listen: ov.listen, Dial: ov.dial}
+	base.Namespace.BlobNet = blobs.Net{Listen: ov.listen, Dial: ov.dial}
 	sess := newFakeSession(s.id)
 	sess.Seeds = worker.NewSeeds()
 	sess.Seeds.Add(ru)

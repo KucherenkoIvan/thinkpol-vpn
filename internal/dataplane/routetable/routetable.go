@@ -318,14 +318,14 @@ type Status struct {
 	// Error says what is wrong with the routes: ErrorApply, ErrorReapply,
 	// ErrorUnsupported or ErrorTUNDown (then Enforced is false too); empty
 	// otherwise.
-	Error Problem
+	Error ErrorCode
 	// GuardEnforced says the leak guard for the last Want is in place:
 	// false without a Guard, before the first Enforce, and while applying
 	// it fails.
 	GuardEnforced bool
 	// GuardError says what is wrong with the guard: ErrorGuard or
 	// ErrorGuardUnsupported; empty otherwise (no Guard included).
-	GuardError Problem
+	GuardError ErrorCode
 	// Routes is how many routes the last applied Want put in Table.
 	Routes int
 	// LastApply is how long the last successful Apply took.
@@ -344,27 +344,27 @@ type Status struct {
 	OverlayAhead int
 }
 
-// Problem is what Status.Error and Status.GuardError say is wrong: a
+// ErrorCode is what Status.Error and Status.GuardError say is wrong: a
 // code; the log has the detail.
-type Problem string
+type ErrorCode string
 
-// The problems.
+// The error codes.
 const (
-	ErrorApply   Problem = "apply_failed"   // applying the route table failed
-	ErrorReapply Problem = "reapply_failed" // putting the route table back failed
+	ErrorApply   ErrorCode = "apply_failed"   // applying the route table failed
+	ErrorReapply ErrorCode = "reapply_failed" // putting the route table back failed
 	// ErrorUnsupported: the kernel can't hold the table (rules need
 	// Linux 4.17 or later); terminal.
-	ErrorUnsupported Problem = "unsupported"
+	ErrorUnsupported ErrorCode = "unsupported"
 	// ErrorTUNDown: the TUN is down or gone; everything but direct
 	// destinations is unreachable until it is back.
-	ErrorTUNDown Problem = "tun_down"
+	ErrorTUNDown ErrorCode = "tun_down"
 	// ErrorGuard: the routes may be in place, the leak guard isn't (or
 	// isn't up to date); retried every RetryAfter.
-	ErrorGuard Problem = "guard_failed"
+	ErrorGuard ErrorCode = "guard_failed"
 	// ErrorGuardUnsupported: the OS can't hold the leak guard (Linux: no
 	// nf_tables; macOS: pf's main ruleset has no `anchor "com.apple/*"`);
 	// terminal. Interface-bound sockets aren't confined.
-	ErrorGuardUnsupported Problem = "guard_unsupported"
+	ErrorGuardUnsupported ErrorCode = "guard_unsupported"
 )
 
 const (

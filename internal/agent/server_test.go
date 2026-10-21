@@ -17,6 +17,7 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/logring"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/supervisor"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/worker"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
@@ -593,6 +594,16 @@ func TestAWorkerOnADeviceSectionLeavesTheOSResolverAlone(t *testing.T) {
 	w := newRunningNode()
 	base := w.dataPlane(reg, NodeKeys{}, nil)
 	base.tuning.dnsPort = 5353
+	// Whatever the test base has, a worker has no device adapters:
+	// reaching one fails the test.
+	base.Device.SetSystemDNS = func(dns.SystemConfig) (dns.System, error) {
+		t.Error("a worker pointed the OS's resolver configuration")
+		return nil, errors.New("not a worker's")
+	}
+	base.Device.SystemUpstreams = func([]netip.Addr) ([]netip.Addr, error) {
+		t.Error("a worker asked for the OS's resolvers")
+		return nil, errors.New("not a worker's")
+	}
 	sess := newFakeSession(s.id)
 	config, err := WorkerConfig{
 		Keys: s.b, Trust: s.trust(), Map: s.build(t, 1), DNS: true,

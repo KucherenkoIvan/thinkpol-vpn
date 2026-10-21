@@ -120,7 +120,7 @@ func TestTransportsMarkSocketsPerMode(t *testing.T) {
 		defer w.stop()
 		var asks markAsks
 		base := w.dataPlane(reg, NodeKeys{}, nil)
-		base.Host.Transports = asks.transports(reg)
+		base.Namespace.Transports = asks.transports(reg)
 		sess := newFakeSession(s.id)
 		sess.config <- s.workerConfig(t, s.a, 1)
 		done := make(chan error, 1)

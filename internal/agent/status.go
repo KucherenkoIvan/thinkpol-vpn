@@ -427,7 +427,7 @@ func routeTableProblems(rt dataplane.RouteTableStatus, add func(HealthLevel, Pro
 	}
 	switch rt.GuardError {
 	case "":
-	case dataplane.GuardUnsupported:
+	case dataplane.RouteTableGuardUnsupported:
 		add(HealthDegraded, ProblemGuardUnsupported)
 	default:
 		add(HealthDegraded, ProblemGuard)

@@ -15,6 +15,11 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
 
+// inWorker says the data plane runs in a server's worker: the only one
+// without a Device (workerDataPlane), whose upstreams come from its
+// config as workerUpstreams kept them.
+func (dp *DataPlane) inWorker() bool { return dp.Device == nil }
+
 // newResolver makes the node's resolver for a start of its data plane:
 // it asks the configured upstreams. A device with none asks the
 // resolvers the OS uses now (read before the OS is pointed at the
@@ -35,7 +40,7 @@ func (r *runner) newResolver() *dns.Server {
 		}
 	}
 	if len(upstreams) == 0 {
-		if r.dp.Device == nil {
+		if r.dp.inWorker() {
 			// workerUpstreams dropped every one: the egress refuses each.
 			// An exit's are counted and logged there; a non-exit's
 			// resolver reports nothing about them (MayEndAChain: only an

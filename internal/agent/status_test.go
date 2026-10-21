@@ -517,10 +517,10 @@ func TestHealth(t *testing.T) {
 			RouteTable: dataplane.RouteTableStatus{Enforced: true, Routes: 9, OverlayAhead: 1}}},
 			Health{HealthDown, []Problem{ProblemOverlayRoutesAhead}}},
 		{"leak guard failing, routes in place", Status{Connection: Connected, DataPlane: &dataplane.Status{
-			RouteTable: dataplane.RouteTableStatus{Enforced: true, Routes: 9, GuardError: dataplane.GuardFailed}}},
+			RouteTable: dataplane.RouteTableStatus{Enforced: true, Routes: 9, GuardError: dataplane.RouteTableGuardFailed}}},
 			Health{HealthDegraded, []Problem{ProblemGuard}}},
 		{"no nf_tables: connected, a loud warning", Status{Connection: Connected, DataPlane: &dataplane.Status{
-			RouteTable: dataplane.RouteTableStatus{Enforced: true, Routes: 9, GuardError: dataplane.GuardUnsupported}}},
+			RouteTable: dataplane.RouteTableStatus{Enforced: true, Routes: 9, GuardError: dataplane.RouteTableGuardUnsupported}}},
 			Health{HealthDegraded, []Problem{ProblemGuardUnsupported}}},
 		{"server", Status{Connection: Serving, Workers: []WorkerStatus{{Ready: true, Starts: 1}}}, Health{}},
 		{"server worker down", Status{Connection: Serving, Workers: []WorkerStatus{{Ready: true, Starts: 3}, {}},

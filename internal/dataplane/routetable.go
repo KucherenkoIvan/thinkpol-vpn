@@ -78,10 +78,10 @@ const (
 	RouteTableReapplyFailed RouteTableError = "reapply_failed" // putting them back failed
 	RouteTableUnsupported   RouteTableError = "unsupported"    // the OS can't hold them
 	RouteTableTUNDown       RouteTableError = "tun_down"       // the TUN is down: traffic is blocked
-	GuardFailed             RouteTableError = "guard_failed"   // applying the leak guard failed
-	// GuardUnsupported: the OS can't hold the leak guard; interface-bound
-	// sockets aren't confined.
-	GuardUnsupported RouteTableError = "guard_unsupported"
+	RouteTableGuardFailed   RouteTableError = "guard_failed"   // applying the leak guard failed
+	// RouteTableGuardUnsupported: the OS can't hold the leak guard;
+	// interface-bound sockets aren't confined.
+	RouteTableGuardUnsupported RouteTableError = "guard_unsupported"
 )
 
 // endpointsOf are the addresses the node dials its links on.

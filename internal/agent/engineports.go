@@ -101,10 +101,10 @@ func (t *routeTable) Status() dataplane.RouteTableStatus {
 	}
 }
 
-// routeTableError is the engine's code for the route table's problem p:
+// routeTableError is the engine's code for the route table's error code p:
 // none for none, and a failed apply for one the table doesn't know, so a
 // problem is never lost.
-func routeTableError(p routetable.Problem) dataplane.RouteTableError {
+func routeTableError(p routetable.ErrorCode) dataplane.RouteTableError {
 	if p == "" {
 		return ""
 	}
@@ -115,13 +115,13 @@ func routeTableError(p routetable.Problem) dataplane.RouteTableError {
 }
 
 // routeTableErrors are the engine's codes for the route table's problems.
-var routeTableErrors = map[routetable.Problem]dataplane.RouteTableError{
+var routeTableErrors = map[routetable.ErrorCode]dataplane.RouteTableError{
 	routetable.ErrorApply:            dataplane.RouteTableApplyFailed,
 	routetable.ErrorReapply:          dataplane.RouteTableReapplyFailed,
 	routetable.ErrorUnsupported:      dataplane.RouteTableUnsupported,
 	routetable.ErrorTUNDown:          dataplane.RouteTableTUNDown,
-	routetable.ErrorGuard:            dataplane.GuardFailed,
-	routetable.ErrorGuardUnsupported: dataplane.GuardUnsupported,
+	routetable.ErrorGuard:            dataplane.RouteTableGuardFailed,
+	routetable.ErrorGuardUnsupported: dataplane.RouteTableGuardUnsupported,
 }
 
 func (t *routeTable) Close() error {

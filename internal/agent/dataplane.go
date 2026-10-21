@@ -77,11 +77,12 @@ type DataPlane struct {
 	DNS          bool
 	DNSUpstreams []netip.AddrPort
 
-	// Host is the data plane's network namespace's; Device, a device's
-	// host adapters (required with RouteTable; nil in a server's worker,
-	// which then never asks or points the OS's resolvers).
-	Host   WorkerHost
-	Device *DeviceHost
+	// Namespace is what the data plane needs of its network namespace;
+	// Device, a device's host adapters (required with RouteTable; nil in
+	// a server's worker, which then never asks or points the OS's
+	// resolvers).
+	Namespace WorkerHost
+	Device    *DeviceHost
 
 	// Its connection (required; a worker's is always meant to be up), and
 	// a device's (Node.run): where its status goes, its Connect and
@@ -318,7 +319,7 @@ type startPorts struct {
 // fails with a *StartError, never once the route table is open.
 func (r *runner) openPorts(undo *undoStack) (startPorts, error) {
 	var p startPorts
-	ifc, err := r.dp.Host.NewConfigurator(netcfg.OwnerOverlay)
+	ifc, err := r.dp.Namespace.NewConfigurator(netcfg.OwnerOverlay)
 	if err != nil {
 		return p, &StartError{Step: StepTUN, Err: err}
 	}
@@ -326,7 +327,7 @@ func (r *runner) openPorts(undo *undoStack) (startPorts, error) {
 		p.ifc = ifc
 		undo.push(func() { _ = ifc.Close() })
 	}
-	dev, err := r.dp.Host.NewTUN(r.dp.Interface, tunMTU)
+	dev, err := r.dp.Namespace.NewTUN(r.dp.Interface, tunMTU)
 	if err != nil {
 		return p, &StartError{Step: StepTUN, Err: err}
 	}

@@ -22,7 +22,7 @@ import (
 // (DeviceHost): whatever its section says, it never touches the host's
 // route table or resolver configuration.
 func ServeSpace(log *slog.Logger, h WorkerHost) worker.Serve {
-	return serveSpace(log, DataPlane{Host: h})
+	return serveSpace(log, DataPlane{Namespace: h})
 }
 
 // serveSpace is ServeSpace on base: its Host and private fields are kept,
@@ -33,7 +33,7 @@ func serveSpace(log *slog.Logger, base DataPlane) worker.Serve {
 		if err != nil || m == nil {
 			return err
 		}
-		reg, err := base.Host.Transports(false)
+		reg, err := base.Namespace.Transports(false)
 		if err != nil {
 			return err
 		}
@@ -210,7 +210,7 @@ func workerDataPlane(base DataPlane, first WorkerConfig, log *slog.Logger, seeds
 	dp.Forward = true
 	bo := base.tuning.blobOptions
 	bo.Store, bo.Log, bo.Limits.MaxHeld = seedStore{seeds}, log, blobs.ServerMaxHeldSize
-	dp.Blobs, dp.ServeBlobs = blobs.NewOnNet(bo, base.Host.BlobNet), true
+	dp.Blobs, dp.ServeBlobs = blobs.NewOnNet(bo, base.Namespace.BlobNet), true
 	dp.DNS, dp.DNSUpstreams = first.DNS, first.DNSUpstreams
 	conn := newConnection(true, false) // a worker's: always meant to be up
 	dp.conn = &conn

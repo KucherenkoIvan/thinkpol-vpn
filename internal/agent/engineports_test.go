@@ -111,7 +111,7 @@ func TestTheResolverGetsTheEnginesRoutes(t *testing.T) {
 // each by name; one the engine has no code for is still a problem.
 func TestRouteTableProblemsAreTheEnginesCodes(t *testing.T) {
 	for _, tc := range []struct {
-		p    routetable.Problem
+		p    routetable.ErrorCode
 		want dataplane.RouteTableError
 	}{
 		{"", ""},
@@ -119,8 +119,8 @@ func TestRouteTableProblemsAreTheEnginesCodes(t *testing.T) {
 		{routetable.ErrorReapply, dataplane.RouteTableReapplyFailed},
 		{routetable.ErrorUnsupported, dataplane.RouteTableUnsupported},
 		{routetable.ErrorTUNDown, dataplane.RouteTableTUNDown},
-		{routetable.ErrorGuard, dataplane.GuardFailed},
-		{routetable.ErrorGuardUnsupported, dataplane.GuardUnsupported},
+		{routetable.ErrorGuard, dataplane.RouteTableGuardFailed},
+		{routetable.ErrorGuardUnsupported, dataplane.RouteTableGuardUnsupported},
 		{"a problem from a newer route table", dataplane.RouteTableApplyFailed},
 	} {
 		if got := routeTableError(tc.p); got != tc.want {
