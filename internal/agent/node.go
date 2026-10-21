@@ -45,8 +45,8 @@ type Node struct {
 	subscribers []func(Event)
 	// stopped is closed once the node's adapter returned.
 	stopped chan struct{}
-	// tweak, if set, adjusts a device's DataPlane: what tests swap.
-	tweak func(*DataPlane)
+	// tuning is a device's data plane's (DataPlane.tuning): tests set it.
+	tuning tuning
 
 	// rulesMu serializes SetRulePreset; local is the device's last good
 	// rules, as LocalRulesFile holds them (read by run while it builds
@@ -303,7 +303,8 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 		DNS:          n.cfg.DNS,
 		DNSUpstreams: n.dnsUpstreams,
 		RouteTable:   true,
-		Host:         n.plat.Host,
+		Namespace:    n.plat.WorkerHost,
+		Device:       &n.plat.DeviceHost,
 
 		report:        &n.report,
 		conn:          &n.conn,
@@ -314,9 +315,7 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 	n.rulesMu.Lock()
 	dp.Rules = n.local
 	n.rulesMu.Unlock()
-	if n.tweak != nil {
-		n.tweak(&dp)
-	}
+	dp.tuning = n.tuning
 	return RunDataPlane(ctx, dp)
 }
 
@@ -325,7 +324,7 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 // while it was down starts this way instead of failing, which under a
 // service manager would only restart it over and over.
 func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
-	f := mapFollower{log: n.logs.Logger, keys: n.state.Keys,
+	f := mapFollower{log: n.logs.Logger, keys: n.state.Keys, report: &n.report,
 		removedMsg: "waiting for a map that includes it"}
 	f.markRemoved(n.state.Map)
 	// The report gets the map, the connection and, once back, the mode;
@@ -442,7 +441,7 @@ func (n *Node) runServer(ctx context.Context, reg *transport.Registry, maps chan
 		retryAfter: RetryAfter, report: &n.report, requests: n.requests, rulesRequests: n.rulesRequests,
 		stateDir: n.cfg.StateDir, log: n.logs.Logger,
 		follow: mapFollower{
-			log: n.logs.Logger, keys: n.state.Keys, cur: n.state.Map, section: n.state.Section,
+			log: n.logs.Logger, keys: n.state.Keys, report: &n.report, cur: n.state.Map, section: n.state.Section,
 			removedMsg: serverRemovedMsg,
 		},
 		events: n.emit,

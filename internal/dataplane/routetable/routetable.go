@@ -310,7 +310,7 @@ type Enforcer struct {
 	status Status
 }
 
-// Status is what an Enforcer reports: numbers and fixed texts only.
+// Status is what an Enforcer reports: numbers and codes only.
 type Status struct {
 	// Enforced says the last Want's routes are in place: false before the
 	// first Enforce and while putting them back fails.
@@ -318,14 +318,14 @@ type Status struct {
 	// Error says what is wrong with the routes: ErrorApply, ErrorReapply,
 	// ErrorUnsupported or ErrorTUNDown (then Enforced is false too); empty
 	// otherwise.
-	Error string
+	Error ErrorCode
 	// GuardEnforced says the leak guard for the last Want is in place:
 	// false without a Guard, before the first Enforce, and while applying
 	// it fails.
 	GuardEnforced bool
 	// GuardError says what is wrong with the guard: ErrorGuard or
 	// ErrorGuardUnsupported; empty otherwise (no Guard included).
-	GuardError string
+	GuardError ErrorCode
 	// Routes is how many routes the last applied Want put in Table.
 	Routes int
 	// LastApply is how long the last successful Apply took.
@@ -344,23 +344,27 @@ type Status struct {
 	OverlayAhead int
 }
 
-// What Status.Error and Status.GuardError say.
+// ErrorCode is what Status.Error and Status.GuardError say is wrong: a
+// code; the log has the detail.
+type ErrorCode string
+
+// The error codes.
 const (
-	ErrorApply   = "applying the route table failed"
-	ErrorReapply = "putting the route table back failed"
+	ErrorApply   ErrorCode = "apply_failed"   // applying the route table failed
+	ErrorReapply ErrorCode = "reapply_failed" // putting the route table back failed
 	// ErrorUnsupported: the kernel can't hold the table (rules need
 	// Linux 4.17 or later); terminal.
-	ErrorUnsupported = "the route table needs Linux 4.17 or later"
+	ErrorUnsupported ErrorCode = "unsupported"
 	// ErrorTUNDown: the TUN is down or gone; everything but direct
 	// destinations is unreachable until it is back.
-	ErrorTUNDown = "the TUN is down: traffic is blocked until it is back"
+	ErrorTUNDown ErrorCode = "tun_down"
 	// ErrorGuard: the routes may be in place, the leak guard isn't (or
 	// isn't up to date); retried every RetryAfter.
-	ErrorGuard = "applying the leak guard failed"
+	ErrorGuard ErrorCode = "guard_failed"
 	// ErrorGuardUnsupported: the OS can't hold the leak guard (Linux: no
 	// nf_tables; macOS: pf's main ruleset has no `anchor "com.apple/*"`);
 	// terminal. Interface-bound sockets aren't confined.
-	ErrorGuardUnsupported = "the leak guard is unsupported here: interface-bound sockets aren't confined"
+	ErrorGuardUnsupported ErrorCode = "guard_unsupported"
 )
 
 const (
@@ -464,7 +468,7 @@ func (e *Enforcer) Enforce(ctx context.Context, w Want) error {
 	unsupported := e.unsupported
 	e.mu.Unlock()
 	if unsupported {
-		return fmt.Errorf("routetable: %s: %w", ErrorUnsupported, errors.ErrUnsupported)
+		return fmt.Errorf("routetable: the route table needs Linux 4.17 or later: %w", errors.ErrUnsupported)
 	}
 	if same {
 		return nil
@@ -613,55 +617,19 @@ func (e *Enforcer) Close() error {
 // reports, every Backstop, and every RetryAfter while that fails; and the
 // guard alone after each burst of the guard's own Watch.
 func (e *Enforcer) watch(ctx context.Context, check bool) {
-	var ch, gch <-chan struct{}
-	var rewatch, regwatch <-chan time.Time
-	subscribe := func() {
-		var err error
-		ch, err = e.cfg.Watch(ctx)
-		switch {
-		case errors.Is(err, errors.ErrUnsupported):
-			ch, rewatch = nil, nil // the backstop alone
-		case err != nil:
-			e.log.Warn("route table: watching routes failed, retrying", "in", RetryAfter, "err", err)
-			ch, rewatch = nil, time.After(RetryAfter)
-		}
-	}
-	subscribeGuard := func() {
-		e.mu.Lock()
-		unsupported := e.guardUnsupported
-		e.mu.Unlock()
-		if e.guard == nil || unsupported {
-			gch, regwatch = nil, nil
-			return
-		}
-		var err error
-		gch, err = e.guard.Watch(ctx)
-		switch {
-		case errors.Is(err, errors.ErrUnsupported), errors.Is(err, ErrGuardUnsupported):
-			gch, regwatch = nil, nil // the backstop alone
-		case err != nil:
-			e.log.Warn("route table: watching the leak guard failed, retrying", "in", RetryAfter, "err", err)
-			gch, regwatch = nil, time.After(RetryAfter)
-		}
-	}
-	subscribe()
-	subscribeGuard()
+	var w watches
+	e.subscribe(ctx, &w)
+	e.subscribeGuard(ctx, &w)
 	if check {
 		// Subscribed first, so nothing falls between the check and the
 		// events.
-		if !e.settle(ctx, ch) {
+		if !e.settle(ctx, w.ch) {
 			return
 		}
 		e.reapply(ctx)
 	}
 	for {
-		wait := Backstop
-		e.mu.Lock()
-		if e.failing || e.guardFailing {
-			wait = RetryAfter
-		}
-		unsupported := e.unsupported
-		e.mu.Unlock()
+		wait, unsupported := e.backstop()
 		if unsupported {
 			return // nothing to retry: Close still removes what's left
 		}
@@ -670,38 +638,93 @@ func (e *Enforcer) watch(ctx context.Context, check bool) {
 		case <-ctx.Done():
 			timer.Stop()
 			return
-		case <-rewatch:
+		case <-w.rewatch:
 			timer.Stop()
-			subscribe()
+			e.subscribe(ctx, &w)
 			continue
-		case <-regwatch:
+		case <-w.regwatch:
 			timer.Stop()
-			subscribeGuard()
+			e.subscribeGuard(ctx, &w)
 			e.reapplyGuard(ctx) // whatever happened meanwhile
 			continue
-		case _, ok := <-gch:
+		case _, ok := <-w.gch:
 			timer.Stop()
 			if !ok {
 				// Events may have been lost: subscribe again, then check.
-				subscribeGuard()
-			} else if !e.settle(ctx, gch) {
+				e.subscribeGuard(ctx, &w)
+			} else if !e.settle(ctx, w.gch) {
 				return
 			}
 			e.reapplyGuard(ctx)
 			continue
 		case <-timer.C:
-		case _, ok := <-ch:
+		case _, ok := <-w.ch:
 			timer.Stop()
 			if !ok {
-				ch, rewatch = nil, time.After(RetryAfter)
+				w.ch, w.rewatch = nil, time.After(RetryAfter)
 				continue
 			}
-			if !e.settle(ctx, ch) {
+			if !e.settle(ctx, w.ch) {
 				return
 			}
 		}
 		e.reapply(ctx)
 	}
+}
+
+// watches are watch's subscriptions: the routes' changes (ch) and the
+// guard's (gch), each subscribed again once rewatch or regwatch fires
+// after a failure. A nil one is the backstop alone.
+type watches struct {
+	ch, gch           <-chan struct{}
+	rewatch, regwatch <-chan time.Time
+}
+
+// subscribe watches the routes' changes, or retries in RetryAfter.
+func (e *Enforcer) subscribe(ctx context.Context, w *watches) {
+	var err error
+	w.ch, err = e.cfg.Watch(ctx)
+	switch {
+	case errors.Is(err, errors.ErrUnsupported):
+		w.ch, w.rewatch = nil, nil // the backstop alone
+	case err != nil:
+		e.log.Warn("route table: watching routes failed, retrying", "in", RetryAfter, "err", err)
+		w.ch, w.rewatch = nil, time.After(RetryAfter)
+	}
+}
+
+// subscribeGuard watches the guard's changes, if there is a guard the OS
+// supports, or retries in RetryAfter.
+func (e *Enforcer) subscribeGuard(ctx context.Context, w *watches) {
+	e.mu.Lock()
+	unsupported := e.guardUnsupported
+	e.mu.Unlock()
+	if e.guard == nil || unsupported {
+		w.gch, w.regwatch = nil, nil
+		return
+	}
+	var err error
+	w.gch, err = e.guard.Watch(ctx)
+	switch {
+	case errors.Is(err, errors.ErrUnsupported), errors.Is(err, ErrGuardUnsupported):
+		w.gch, w.regwatch = nil, nil // the backstop alone
+	case err != nil:
+		e.log.Warn("route table: watching the leak guard failed, retrying", "in", RetryAfter, "err", err)
+		w.gch, w.regwatch = nil, time.After(RetryAfter)
+	}
+}
+
+// backstop is how long watch waits for a change before it re-applies
+// anyway: RetryAfter while the routes or the guard fail, else Backstop;
+// unsupported once the table can't be held at all.
+func (e *Enforcer) backstop() (wait time.Duration, unsupported bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	wait = Backstop
+	if e.failing || e.guardFailing {
+		wait = RetryAfter
+	}
+	return wait, e.unsupported
 }
 
 // settle waits until ch is quiet for debounce; false if ctx ended.

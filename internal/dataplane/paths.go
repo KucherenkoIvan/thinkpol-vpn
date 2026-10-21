@@ -26,79 +26,102 @@ type PathConfig struct {
 // left with no next hop. A peer whose first hops are all skipped stays,
 // with none: its packets are dropped until a map gives it a path.
 func PathConfigFrom(s netmap.Section, reg *transport.Registry) PathConfig {
-	var c PathConfig
-	self := s.Node.ID
-	skip := func(node netmap.NodeID, what Item, reason Reason, err error) {
-		c.Skipped = append(c.Skipped, skipOf(node, what, reason, err))
-	}
-
-	adjacent := make(map[netmap.NodeID]bool)
+	b := pathConfigBuilder{self: s.Node.ID, adjacent: make(map[netmap.NodeID]bool)}
 	for _, in := range s.Inbound {
 		if s.Node.AcceptsInbound(in) {
-			adjacent[in.Peer] = true
+			b.adjacent[in.Peer] = true
 		}
 	}
-	for _, l := range s.Links {
-		if l.Peer.IsZero() || l.Peer == self {
-			skip(l.Peer, ItemLink, ReasonNotANode, nil)
+	b.links(s.Links, reg)
+	b.routes(s.Routes)
+	b.peers(s.Peers)
+	return b.c
+}
+
+// pathConfigBuilder is PathConfigFrom's work: the node's own id, the nodes
+// adjacent to it (dialed, or allowed to connect), and the config so far.
+type pathConfigBuilder struct {
+	c        PathConfig
+	self     netmap.NodeID
+	adjacent map[netmap.NodeID]bool
+}
+
+func (b *pathConfigBuilder) skip(node netmap.NodeID, what Item, reason Reason, err error) {
+	b.c.Skipped = append(b.c.Skipped, skipOf(node, what, reason, err))
+}
+
+// links adds the links with a usable endpoint; their peers are adjacent.
+func (b *pathConfigBuilder) links(links []netmap.Link, reg *transport.Registry) {
+	for _, l := range links {
+		if l.Peer.IsZero() || l.Peer == b.self {
+			b.skip(l.Peer, ItemLink, ReasonNotANode, nil)
 			continue
 		}
 		link := path.Link{Node: path.NodeID(l.Peer)}
 		for i, e := range l.Endpoints {
 			ep, reason, err := pathEndpoint(e, reg)
 			if err != nil {
-				skip(l.Peer, ItemEndpoint, reason, fmt.Errorf("endpoint %d: %w", i, err))
+				b.skip(l.Peer, ItemEndpoint, reason, fmt.Errorf("endpoint %d: %w", i, err))
 				continue
 			}
 			link.Endpoints = append(link.Endpoints, ep)
 		}
 		if len(link.Endpoints) == 0 {
-			skip(l.Peer, ItemLink, ReasonNoEndpoint, nil)
+			b.skip(l.Peer, ItemLink, ReasonNoEndpoint, nil)
 			continue
 		}
-		adjacent[l.Peer] = true
-		c.Table.Links = append(c.Table.Links, link)
+		b.adjacent[l.Peer] = true
+		b.c.Table.Links = append(b.c.Table.Links, link)
 	}
+}
 
-	hops := func(of netmap.NodeID, ids []netmap.NodeID) []path.NodeID {
-		var out []path.NodeID
-		for _, h := range ids {
-			if h == self || !adjacent[h] {
-				skip(of, ItemHop, ReasonNotAdjacent, fmt.Errorf("hop %s", h))
-				continue
-			}
-			out = append(out, path.NodeID(h))
-		}
-		return out
-	}
-	for _, r := range s.Routes {
-		if r.Destination.IsZero() || r.Destination == self {
-			skip(r.Destination, ItemRoute, ReasonNotANode, nil)
+// hops are the ids of the adjacent nodes, other than the node itself, in
+// ids: the hops of of's route or paths.
+func (b *pathConfigBuilder) hops(of netmap.NodeID, ids []netmap.NodeID) []path.NodeID {
+	var out []path.NodeID
+	for _, h := range ids {
+		if h == b.self || !b.adjacent[h] {
+			b.skip(of, ItemHop, ReasonNotAdjacent, fmt.Errorf("hop %s", h))
 			continue
 		}
-		next := hops(r.Destination, r.NextHops)
+		out = append(out, path.NodeID(h))
+	}
+	return out
+}
+
+// routes adds the routes left with a next hop.
+func (b *pathConfigBuilder) routes(routes []netmap.Route) {
+	for _, r := range routes {
+		if r.Destination.IsZero() || r.Destination == b.self {
+			b.skip(r.Destination, ItemRoute, ReasonNotANode, nil)
+			continue
+		}
+		next := b.hops(r.Destination, r.NextHops)
 		if len(next) == 0 {
-			skip(r.Destination, ItemRoute, ReasonNoNextHop, nil)
+			b.skip(r.Destination, ItemRoute, ReasonNoNextHop, nil)
 			continue
 		}
-		c.Table.Routes = append(c.Table.Routes, path.Route{Destination: path.NodeID(r.Destination), NextHops: next})
+		b.c.Table.Routes = append(b.c.Table.Routes, path.Route{Destination: path.NodeID(r.Destination), NextHops: next})
 	}
-	for _, p := range s.Peers {
-		if p.ID.IsZero() || p.ID == self {
-			skip(p.ID, ItemPeer, ReasonNotANode, nil)
+}
+
+// peers adds the peers, each with its usable first hops (perhaps none).
+func (b *pathConfigBuilder) peers(peers []netmap.Peer) {
+	for _, p := range peers {
+		if p.ID.IsZero() || p.ID == b.self {
+			b.skip(p.ID, ItemPeer, ReasonNotANode, nil)
 			continue
 		}
 		first := make([]netmap.NodeID, 0, len(p.Paths))
 		for _, pp := range p.Paths {
 			first = append(first, pp.FirstHop)
 		}
-		peer := path.Peer{ID: path.NodeID(p.ID), FirstHops: hops(p.ID, first)}
+		peer := path.Peer{ID: path.NodeID(p.ID), FirstHops: b.hops(p.ID, first)}
 		if len(peer.FirstHops) == 0 {
-			skip(p.ID, ItemPeer, ReasonNoPath, nil)
+			b.skip(p.ID, ItemPeer, ReasonNoPath, nil)
 		}
-		c.Peers = append(c.Peers, peer)
+		b.c.Peers = append(b.c.Peers, peer)
 	}
-	return c
 }
 
 func pathEndpoint(e netmap.Endpoint, reg *transport.Registry) (path.Endpoint, Reason, error) {

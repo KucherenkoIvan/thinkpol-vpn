@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"flag"
 	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/localapi"
@@ -19,18 +18,11 @@ func init() {
 }
 
 func runStatus(ctx context.Context, e env, args []string) error {
-	fs := flag.NewFlagSet("status", flag.ContinueOnError)
-	socket := fs.String("socket", apiSocket(), "the local API's socket (THINKPOL_API_SOCKET)")
-	asJSON := fs.Bool("json", false, "print the status as JSON")
-	watch := fs.Bool("watch", false, "keep printing the status until interrupted")
-	interval := fs.Duration("interval", time.Second, "with -watch, how often")
-	if err := parseFlags(fs, e, args); err != nil {
-		return err
-	}
-	if fs.NArg() > 0 {
-		return errUsage
-	}
-	c, err := localapi.Dial(*socket)
+	cmd := newAPICommand("status")
+	asJSON := cmd.Bool("json", false, "print the status as JSON")
+	watch := cmd.Bool("watch", false, "keep printing the status until interrupted")
+	interval := cmd.Duration("interval", time.Second, "with -watch, how often")
+	c, err := cmd.dial(e, args, noArgs)
 	if err != nil {
 		return err
 	}

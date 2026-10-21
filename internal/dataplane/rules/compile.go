@@ -84,23 +84,83 @@ type Table struct {
 // route-table mode can't enforce and what it does instead).
 func Compile(entries []Entry, o Options) *Table {
 	t := &Table{overlay: setOf(o.Overlay)}
-	claimed := t.overlay
-	var actions []netmap.Action // in order of first use, so the result is deterministic
-	effective := make(map[netmap.Action]*lists.Builder)
-	claim := func(a netmap.Action, s *lists.Set) bool {
-		eff := s.Minus(claimed)
-		if eff.IsEmpty() {
-			return false
-		}
-		if effective[a] == nil {
-			actions = append(actions, a)
-			effective[a] = &lists.Builder{}
-		}
-		effective[a].AddSet(eff)
-		claimed = union(claimed, eff)
-		return true
+	p := newPartition(t.overlay)
+	t.claimRules(entries, o, p)
+	rest := netmap.Block
+	if len(entries) == 0 {
+		rest = netmap.Direct
 	}
+	p.claim(rest, lists.All())
 
+	// Per family, the action with the most prefixes becomes a /0 route,
+	// and the other actions' prefixes, disjoint, override it. A
+	// longest-prefix match still finds every address's action, from far
+	// fewer routes than the partition itself: the rest of the world around
+	// a country's list fragments into many times its prefixes.
+	for _, a := range p.actions {
+		if a.Kind == netmap.ActionChain {
+			t.chains = append(t.chains, a.Chain)
+		}
+	}
+	sets, counts := p.build()
+	t.direct = sets[netmap.Direct]
+	zero, background := backgroundRoutes(p.actions, counts)
+	t.routes = zero
+	specific := specificRoutes(p.actions, sets, background)
+	t.nzero = len(t.routes)
+	slices.SortFunc(specific, func(a, b Route) int { return a.Prefix.Addr().Compare(b.Prefix.Addr()) })
+	t.routes = append(t.routes, specific...)
+	if t.direct == nil {
+		t.direct = &lists.Set{}
+	}
+	return t
+}
+
+// partition gives each address the action of the first claim on it.
+type partition struct {
+	claimed   *lists.Set
+	actions   []netmap.Action // in order of first use, so the result is deterministic
+	effective map[netmap.Action]*lists.Builder
+}
+
+// newPartition is a partition with claimed (the overlay) already taken.
+func newPartition(claimed *lists.Set) *partition {
+	return &partition{claimed: claimed, effective: make(map[netmap.Action]*lists.Builder)}
+}
+
+// claim gives a the addresses of s no earlier claim took; false when
+// there were none.
+func (p *partition) claim(a netmap.Action, s *lists.Set) bool {
+	eff := s.Minus(p.claimed)
+	if eff.IsEmpty() {
+		return false
+	}
+	if p.effective[a] == nil {
+		p.actions = append(p.actions, a)
+		p.effective[a] = &lists.Builder{}
+	}
+	p.effective[a].AddSet(eff)
+	p.claimed = union(p.claimed, eff)
+	return true
+}
+
+// build is each action's addresses, and how many prefixes they take per
+// family (IPv4, IPv6).
+func (p *partition) build() (map[netmap.Action]*lists.Set, [2]map[netmap.Action]int) {
+	sets := make(map[netmap.Action]*lists.Set, len(p.actions))
+	var counts [2]map[netmap.Action]int
+	counts[0], counts[1] = make(map[netmap.Action]int), make(map[netmap.Action]int)
+	for _, a := range p.actions {
+		s, st := p.effective[a].Build()
+		sets[a] = s
+		counts[0][a], counts[1][a] = st.Prefixes4, st.Prefixes6
+	}
+	return sets, counts
+}
+
+// claimRules claims each rule's addresses for its action, in rule order,
+// and records the rules not enforced as written in t.skipped.
+func (t *Table) claimRules(entries []Entry, o Options, p *partition) {
 	unknown := false // a rule whose addresses aren't known came first
 	var byName []int // skips of name rules that don't go direct, not yet followed by a direct rule
 	for _, e := range entries {
@@ -133,39 +193,20 @@ func Compile(entries []Entry, o Options) *Table {
 			skip(ReasonAfterUnknown)
 			continue
 		}
-		if claim(action, set) && action == netmap.Direct {
+		if p.claim(action, set) && action == netmap.Direct {
 			for _, i := range byName {
 				t.skipped[i].Reason = ReasonByNameUndercut
 			}
 			byName = nil
 		}
 	}
-	rest := netmap.Block
-	if len(entries) == 0 {
-		rest = netmap.Direct
-	}
-	claim(rest, lists.All())
+}
 
-	// Per family, the action with the most prefixes becomes a /0 route,
-	// and the other actions' prefixes, disjoint, override it. A
-	// longest-prefix match still finds every address's action, from far
-	// fewer routes than the partition itself: the rest of the world around
-	// a country's list fragments into many times its prefixes.
-	for _, a := range actions {
-		if a.Kind == netmap.ActionChain {
-			t.chains = append(t.chains, a.Chain)
-		}
-	}
-	sets := make(map[netmap.Action]*lists.Set, len(actions))
-	var counts [2]map[netmap.Action]int // prefixes per family
-	counts[0], counts[1] = make(map[netmap.Action]int), make(map[netmap.Action]int)
-	for _, a := range actions {
-		s, st := effective[a].Build()
-		sets[a] = s
-		counts[0][a], counts[1][a] = st.Prefixes4, st.Prefixes6
-	}
-	t.direct = sets[netmap.Direct]
-	var background [2]*netmap.Action
+// backgroundRoutes are the /0 routes: per family (IPv4, IPv6), the
+// action with the most prefixes there, the first one on a tie; none for
+// a family no action has prefixes in. background is that action per
+// family, nil for none.
+func backgroundRoutes(actions []netmap.Action, counts [2]map[netmap.Action]int) (routes []Route, background [2]*netmap.Action) {
 	for f, zero := range []netip.Prefix{netip.PrefixFrom(netip.IPv4Unspecified(), 0), netip.PrefixFrom(netip.IPv6Unspecified(), 0)} {
 		most := 0
 		for _, a := range actions {
@@ -174,9 +215,15 @@ func Compile(entries []Entry, o Options) *Table {
 			}
 		}
 		if background[f] != nil {
-			t.routes = append(t.routes, Route{Prefix: zero, Action: *background[f]})
+			routes = append(routes, Route{Prefix: zero, Action: *background[f]})
 		}
 	}
+	return routes, background
+}
+
+// specificRoutes are the prefixes of every action but its family's
+// background, in action order.
+func specificRoutes(actions []netmap.Action, sets map[netmap.Action]*lists.Set, background [2]*netmap.Action) []Route {
 	var specific []Route
 	for _, a := range actions {
 		// The background's own prefixes are never listed, nor made.
@@ -193,13 +240,7 @@ func Compile(entries []Entry, o Options) *Table {
 			}
 		}
 	}
-	t.nzero = len(t.routes)
-	slices.SortFunc(specific, func(a, b Route) int { return a.Prefix.Addr().Compare(b.Prefix.Addr()) })
-	t.routes = append(t.routes, specific...)
-	if t.direct == nil {
-		t.direct = &lists.Set{}
-	}
-	return t
+	return specific
 }
 
 func (o Options) resolve(m netmap.Match) (*lists.Set, Reason) {

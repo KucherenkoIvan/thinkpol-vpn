@@ -35,10 +35,10 @@ type SharedListener struct {
 
 // Listen is the transport's listener for what the supervisor forwards on
 // this listener: the worker's counterpart of Transport.Listen, so the data
-// plane serves it like any other listener (cfg.Address and cfg.Settings
-// are unused). Listen once per listener: the listener ends when the
-// supervisor drops it (Done) and closing it is final.
-func (l SharedListener) Listen(reg *transport.Registry, cfg transport.ListenConfig) (transport.Listener, error) {
+// plane serves it like any other listener. Listen once per listener: the
+// listener ends when the supervisor drops it (Done) and closing it is
+// final.
+func (l SharedListener) Listen(reg *transport.Registry, admission transport.Admission) (transport.Listener, error) {
 	t, ok := reg.Get(l.Transport)
 	if !ok {
 		return nil, fmt.Errorf("worker: shared listener %d: unknown transport %q", l.ID, l.Transport)
@@ -48,13 +48,13 @@ func (l SharedListener) Listen(reg *transport.Registry, cfg transport.ListenConf
 		if !ok {
 			return nil, fmt.Errorf("worker: shared listener %d: %s isn't a datagram transport behind a shared listener", l.ID, l.Transport)
 		}
-		return pt.ListenForwarded(l.packets, cfg)
+		return pt.ListenForwarded(l.packets, admission)
 	}
 	st, ok := t.(transport.StreamRoutable)
 	if !ok {
 		return nil, fmt.Errorf("worker: shared listener %d: %s isn't a stream transport behind a shared listener", l.ID, l.Transport)
 	}
-	hl, err := st.Handoff(cfg)
+	hl, err := st.Handoff(admission)
 	if err != nil {
 		return nil, err
 	}

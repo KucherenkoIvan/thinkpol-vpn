@@ -278,8 +278,40 @@ func hiddenFromDevices(recipients []Recipient) error {
 // returns the envelope bytes. Every call seals afresh, so no section is
 // shared between two envelopes.
 func Build(signingKey ed25519.PrivateKey, c Contents) ([]byte, error) {
+	header, err := contentsHeader(signingKey, c)
+	if err != nil {
+		return nil, err
+	}
+	count := sectionCount(len(c.Recipients))
+	if count > maxSections {
+		return nil, fmt.Errorf("%w: %d sections, at most %d", ErrInvalidContents, len(c.Recipients), maxSections)
+	}
+	plain, err := encodeSections(c.Recipients, &header)
+	if err != nil {
+		return nil, err
+	}
+	if err := hiddenFromDevices(c.Recipients); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidContents, err)
+	}
+	if err := chainsEndAtExits(c.Recipients); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidContents, err)
+	}
+	size, err := paddedSectionSize(plain, count)
+	if err != nil {
+		return nil, err
+	}
+	sealed, err := sealSections(c.Recipients, plain, size, count)
+	if err != nil {
+		return nil, err
+	}
+	return signBody(signingKey, &header, sealed)
+}
+
+// contentsHeader is the validated header Build writes for c, signed with
+// signingKey.
+func contentsHeader(signingKey ed25519.PrivateKey, c Contents) (Header, error) {
 	if len(signingKey) != ed25519.PrivateKeySize {
-		return nil, fmt.Errorf("%w: signing key of %d bytes", ErrInvalidContents, len(signingKey))
+		return Header{}, fmt.Errorf("%w: signing key of %d bytes", ErrInvalidContents, len(signingKey))
 	}
 	header := Header{
 		SpaceID:     c.SpaceID,
@@ -290,18 +322,18 @@ func Build(signingKey ed25519.PrivateKey, c Contents) ([]byte, error) {
 		Blobs:       c.Blobs,
 	}
 	if err := header.validate(); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInvalidContents, err)
+		return Header{}, fmt.Errorf("%w: %v", ErrInvalidContents, err)
 	}
-	count := sectionCount(len(c.Recipients))
-	if count > maxSections {
-		return nil, fmt.Errorf("%w: %d sections, at most %d", ErrInvalidContents, len(c.Recipients), maxSections)
-	}
+	return header, nil
+}
 
-	keys := make(map[NodePublicKey]bool, len(c.Recipients))
-	nodes := make(map[NodeID]bool, len(c.Recipients))
-	plain := make([][]byte, len(c.Recipients))
-	largest := 0
-	for i, r := range c.Recipients {
+// encodeSections validates each recipient's key and section, checks that
+// no key or node repeats, and returns the encoded sections, unpadded.
+func encodeSections(recipients []Recipient, header *Header) ([][]byte, error) {
+	keys := make(map[NodePublicKey]bool, len(recipients))
+	nodes := make(map[NodeID]bool, len(recipients))
+	plain := make([][]byte, len(recipients))
+	for i, r := range recipients {
 		if err := r.Key.Check(); err != nil {
 			return nil, fmt.Errorf("%w: recipient %d: %v", ErrInvalidContents, i, err)
 		}
@@ -316,22 +348,26 @@ func Build(signingKey ed25519.PrivateKey, c Contents) ([]byte, error) {
 			return nil, fmt.Errorf("%w: recipient %d: node %v has two sections", ErrInvalidContents, i, r.Section.Node.ID)
 		}
 		nodes[r.Section.Node.ID] = true
-		b, err := proto.MarshalOptions{Deterministic: true}.Marshal(sectionToProto(&r.Section, &header))
+		b, err := proto.MarshalOptions{Deterministic: true}.Marshal(sectionToProto(&r.Section, header))
 		if err != nil {
 			return nil, fmt.Errorf("netmap: encoding section %d: %w", i, err)
 		}
 		plain[i] = b
+	}
+	return plain, nil
+}
+
+// paddedSectionSize is the size every section is padded to, given the
+// encoded sections and the section count, refused when the sections can't
+// fit in an envelope.
+func paddedSectionSize(plain [][]byte, count int) (int, error) {
+	largest := 0
+	for _, b := range plain {
 		largest = max(largest, len(b))
-	}
-	if err := hiddenFromDevices(c.Recipients); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInvalidContents, err)
-	}
-	if err := chainsEndAtExits(c.Recipients); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInvalidContents, err)
 	}
 	size := sectionSize(largest)
 	if size > maxSectionSize {
-		return nil, fmt.Errorf("%w: a section of %d bytes, at most %d", ErrInvalidContents, largest, maxSectionSize-1)
+		return 0, fmt.Errorf("%w: a section of %d bytes, at most %d", ErrInvalidContents, largest, maxSectionSize-1)
 	}
 	// The sealed sections alone, with their exact framing (a SealedSection
 	// field inside a Body field), are a lower bound of the envelope's size:
@@ -339,11 +375,16 @@ func Build(signingKey ed25519.PrivateKey, c Contents) ([]byte, error) {
 	// after signing covers the header and the outer framing.
 	sealedField := protowire.SizeTag(1) + protowire.SizeBytes(size+box.AnonymousOverhead)
 	if total := count * (protowire.SizeTag(3) + protowire.SizeBytes(sealedField)); total > MaxEnvelopeSize {
-		return nil, fmt.Errorf("%w: %w: %d sections of %d bytes take %d bytes", ErrInvalidContents, errSectionsExceedEnvelope, count, size, total)
+		return 0, fmt.Errorf("%w: %w: %d sections of %d bytes take %d bytes", ErrInvalidContents, errSectionsExceedEnvelope, count, size, total)
 	}
+	return size, nil
+}
 
+// sealSections pads and seals each section to its recipient, adds dummy
+// sections up to count and shuffles them all.
+func sealSections(recipients []Recipient, plain [][]byte, size, count int) ([][]byte, error) {
 	sealed := make([][]byte, 0, count)
-	for i, r := range c.Recipients {
+	for i, r := range recipients {
 		s, err := box.SealAnonymous(nil, pad(plain[i], size), (*[32]byte)(&r.Key), rand.Reader)
 		if err != nil {
 			return nil, fmt.Errorf("netmap: sealing section %d: %w", i, err)
@@ -364,7 +405,12 @@ func Build(signingKey ed25519.PrivateKey, c Contents) ([]byte, error) {
 	var seed [32]byte
 	_, _ = rand.Read(seed[:])
 	mrand.New(mrand.NewChaCha8(seed)).Shuffle(len(sealed), func(i, j int) { sealed[i], sealed[j] = sealed[j], sealed[i] })
+	return sealed, nil
+}
 
+// signBody encodes the body of header and the sealed sections, signs
+// it and returns the envelope bytes.
+func signBody(signingKey ed25519.PrivateKey, header *Header, sealed [][]byte) ([]byte, error) {
 	body := &netmapv1.Body{Format: Format, Header: header.toProto()}
 	for _, s := range sealed {
 		body.Sections = append(body.Sections, &netmapv1.SealedSection{Sealed: s})

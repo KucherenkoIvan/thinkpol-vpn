@@ -153,59 +153,62 @@ func readControl(control *ipc.Conn, shared *sharedListeners, ch channels, seeds 
 			cancel(err)
 			return
 		}
-		switch m.Kind {
-		case ipc.KindStop:
-			m.CloseFiles()
-			cancel(errStopped)
-			return
-		case ipc.KindConfig:
-			config, err := readConfig(m)
-			if err != nil {
-				cancel(fmt.Errorf("worker: config: %w", err))
-				return
-			}
-			latest(ch.config, config)
-		case ipc.KindBlob:
-			// Held before the next message (the config naming it) is read.
-			b, err := readBlob(m)
-			if err != nil {
-				cancel(fmt.Errorf("worker: blob: %w", err))
-				return
-			}
-			seeds.Add(b)
-		case ipc.KindListeners:
-			m.CloseFiles()
-			ls, err := ipc.DecodeListeners(m)
-			if err != nil {
-				cancel(fmt.Errorf("worker: %w", err))
-				return
-			}
-			latest(ch.listeners, shared.update(ls))
-		case ipc.KindCounters:
-			c, err := ipc.DecodeCounters(m)
-			if err != nil {
-				cancel(fmt.Errorf("worker: %w", err))
-				return
-			}
-			latest(ch.counters, c)
-		case ipc.KindStream:
-			id, f, consumed, err := ipc.DecodeStream(m)
-			if err != nil {
-				cancel(fmt.Errorf("worker: %w", err))
-				return
-			}
-			conn, err := net.FileConn(f)
-			_ = f.Close()
-			if err != nil {
-				continue // that connection is lost, the rest goes on
-			}
-			shared.stream(id, conn, consumed)
-		default:
-			m.CloseFiles()
-			cancel(fmt.Errorf("worker: unexpected %v message", m.Kind))
+		if err := deliver(m, shared, ch, seeds); err != nil {
+			cancel(err)
 			return
 		}
 	}
+}
+
+// deliver acts on one control message; an error ends the worker, with it
+// as the cause (errStopped on Stop).
+func deliver(m ipc.Message, shared *sharedListeners, ch channels, seeds *Seeds) error {
+	switch m.Kind {
+	case ipc.KindStop:
+		m.CloseFiles()
+		return errStopped
+	case ipc.KindConfig:
+		config, err := readConfig(m)
+		if err != nil {
+			return fmt.Errorf("worker: config: %w", err)
+		}
+		latest(ch.config, config)
+	case ipc.KindBlob:
+		// Held before the next message (the config naming it) is read.
+		b, err := readBlob(m)
+		if err != nil {
+			return fmt.Errorf("worker: blob: %w", err)
+		}
+		seeds.Add(b)
+	case ipc.KindListeners:
+		m.CloseFiles()
+		ls, err := ipc.DecodeListeners(m)
+		if err != nil {
+			return fmt.Errorf("worker: %w", err)
+		}
+		latest(ch.listeners, shared.update(ls))
+	case ipc.KindCounters:
+		c, err := ipc.DecodeCounters(m)
+		if err != nil {
+			return fmt.Errorf("worker: %w", err)
+		}
+		latest(ch.counters, c)
+	case ipc.KindStream:
+		id, f, consumed, err := ipc.DecodeStream(m)
+		if err != nil {
+			return fmt.Errorf("worker: %w", err)
+		}
+		conn, err := net.FileConn(f)
+		_ = f.Close()
+		if err != nil {
+			return nil // that connection is lost, the rest goes on
+		}
+		shared.stream(id, conn, consumed)
+	default:
+		m.CloseFiles()
+		return fmt.Errorf("worker: unexpected %v message", m.Kind)
+	}
+	return nil
 }
 
 // readConfig returns a config message's payload, reading it from the attached

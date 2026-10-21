@@ -16,15 +16,19 @@ import (
 func platform() agent.Platform {
 	return agent.Platform{
 		Host: agent.Host{
-			NewConfigurator: netcfg.New,
-			NewTUN:          tun.Create,
-			NewGuard:        newGuard,
-			NewRouteTable:   newRouteTable,
-			ClearConfig:     netcfg.Clear,
-			ClearRouteTable: routetable.Clear,
-			SetSystemDNS:    dns.SetSystem,
-			SystemUpstreams: dns.SystemUpstreams,
-			Transports:      agent.Transports,
+			WorkerHost: agent.WorkerHost{
+				NewConfigurator: netcfg.New,
+				NewTUN:          tun.Create,
+				Transports:      agent.Transports,
+			},
+			DeviceHost: agent.DeviceHost{
+				NewGuard:        newGuard,
+				NewRouteTable:   newRouteTable,
+				ClearConfig:     netcfg.Clear,
+				ClearRouteTable: routetable.Clear,
+				SetSystemDNS:    dns.SetSystem,
+				SystemUpstreams: dns.SystemUpstreams,
+			},
 		},
 		LockHost:   agent.HostLock,
 		RestoreDNS: dns.RestoreSystem,

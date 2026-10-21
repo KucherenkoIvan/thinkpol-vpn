@@ -21,11 +21,11 @@ func statusProto(st agent.Status) *localapiv1.Status {
 	out := &localapiv1.Status{
 		Mode:       modeProto(st.Mode),
 		SpaceId:    idString(st.Space),
-		MapVersion: st.MapVersion,
+		MapVersion: st.MapVersion, MapsRefused: st.MapsRefused,
 		Removed:    st.Removed,
 		Connection: connectionProto(st.Connection),
 		Retrying:   st.Retrying,
-		Health:     &localapiv1.Health{Level: healthProto(h.Level), Problems: h.Problems},
+		Health:     &localapiv1.Health{Level: healthProto(h.Level), Problems: problemCodes(h.Problems)},
 		RulePreset: st.RulePreset, RulesEnforced: st.RulesEnforced, RulePresetUnavailable: st.PresetUnavailable,
 	}
 	if dp := st.DataPlane; dp != nil {
@@ -35,13 +35,13 @@ func statusProto(st agent.Status) *localapiv1.Status {
 		out.Workers = append(out.Workers, &localapiv1.Worker{
 			SpaceId: idString(w.Space), Ready: w.Ready, Starts: uint32(w.Starts),
 			ReadySince: timestamp(w.ReadySince), RestartAt: timestamp(w.RestartAt),
-			LastExit: agent.Sanitize(w.LastExit),
+			LastExit: string(w.LastExit),
 		})
 	}
 	if e := st.Egress; e != nil {
 		out.Uplink = &localapiv1.Uplink{
 			Interface: agent.Sanitize(e.Uplink), Ipv4: e.IPv4, Ipv6: e.IPv6,
-			Forwarding4: e.Forwarding4, Forwarding6: e.Forwarding6, Error: agent.Sanitize(e.Err),
+			Forwarding4: e.Forwarding4, Forwarding6: e.Forwarding6, Error: string(e.Err),
 		}
 	}
 	for _, l := range st.PublicListeners {
@@ -53,31 +53,25 @@ func statusProto(st agent.Status) *localapiv1.Status {
 	return out
 }
 
+func problemCodes(ps []agent.Problem) []string {
+	out := make([]string, 0, len(ps))
+	for _, p := range ps {
+		out = append(out, string(p))
+	}
+	return out
+}
+
 func dataPlaneProto(dp *dataplane.Status, listeners int) *localapiv1.DataPlane {
 	out := &localapiv1.DataPlane{
-		Mtu: uint32(dp.MTU), Ipv6: dp.IPv6, Ipv6Off: dp.IPv6Off, LastApplyError: dp.LastApplyError,
+		Mtu: uint32(dp.MTU), Ipv6: dp.IPv6, Ipv6Off: string(dp.IPv6Off), LastApplyError: string(dp.LastApplyError),
 		Listeners: uint32(listeners),
-		Counters: map[string]uint64{
-			"router.routed": dp.Router.Routed, "router.delivered": dp.Router.Delivered,
-			"router.not_local": dp.Router.NotLocal, "router.forwarded": dp.Router.Forwarded, "router.no_route": dp.Router.NoRoute,
-			"router.blocked": dp.Router.Blocked, "router.malformed": dp.Router.Malformed,
-			"router.too_large": dp.Router.TooLarge, "router.queue_full": dp.Router.QueueFull,
-			"router.read_errors": dp.Router.ReadErrors, "router.direct": dp.Router.Direct, "router.reflected": dp.Router.Reflected,
-			"router.reflect_failed": dp.Router.ReflectFailed, "router.foreign_source": dp.Router.ForeignSource,
-			"path.sent": dp.Path.Sent, "path.delivered": dp.Path.Delivered, "path.forwarded": dp.Path.Forwarded,
-			"path.no_route": dp.Path.NoRoute, "path.spoofed": dp.Path.Spoofed, "path.hop_limit": dp.Path.HopLimit,
-			"path.no_path": dp.Path.NoPath, "path.unknown_peer": dp.Path.UnknownPeer,
-			"path.queue_full": dp.Path.QueueFull, "path.malformed": dp.Path.Malformed,
-			"path.other_space": dp.Path.OtherSpace, "path.too_large": dp.Path.TooLarge,
-			"path.write_failed": dp.Path.WriteFailed, "path.read_failed": dp.Path.ReadFailed,
-			"interface.reapplies": dp.InterfaceReapplies,
-		},
+		Counters:  map[string]uint64{},
 	}
-	if rt := dp.RouteTable; rt.Enforced || rt.Error != "" {
-		out.Counters["route_table.routes"] = uint64(rt.Routes)
-		out.Counters["route_table.reapplies"] = rt.Reapplies
-		out.Counters["route_table.rules_ahead"] = uint64(rt.RulesAhead)
-		out.Counters["route_table.overlay_routes_ahead"] = uint64(rt.OverlayAhead)
+	routeTable := dp.RouteTable.Enforced || dp.RouteTable.Error != ""
+	for _, c := range dataPlaneCounters {
+		if c.kind != routeTableCounter || routeTable {
+			out.Counters[c.name] = c.of(dp)
+		}
 	}
 	for _, p := range dp.Peers {
 		pp := &localapiv1.Peer{
@@ -112,6 +106,62 @@ func dataPlaneProto(dp *dataplane.Status, listeners int) *localapiv1.DataPlane {
 		out.Skipped = append(out.Skipped, &localapiv1.Skip{NodeId: idString(s.Node), Item: s.What.String(), Reason: s.Reason.String()})
 	}
 	return out
+}
+
+// counterKind is what a data plane counter counts.
+type counterKind uint8
+
+const (
+	// dropCounter counts what was dropped: WriteStatus lists the nonzero
+	// ones apart.
+	dropCounter counterKind = iota
+	// trafficCounter counts what went through, or is in place.
+	trafficCounter
+	// routeTableCounter is the route table's, sent only in route-table
+	// mode (enforced, or failing to be); WriteStatus shows them apart.
+	routeTableCounter
+)
+
+// dataPlaneCounters are the data plane's counters as the local API names
+// them.
+var dataPlaneCounters = []struct {
+	name string
+	kind counterKind
+	of   func(dp *dataplane.Status) uint64
+}{
+	{"router.routed", trafficCounter, func(dp *dataplane.Status) uint64 { return dp.Router.Routed }},
+	{"router.delivered", trafficCounter, func(dp *dataplane.Status) uint64 { return dp.Router.Delivered }},
+	{"router.not_local", dropCounter, func(dp *dataplane.Status) uint64 { return dp.Router.NotLocal }},
+	{"router.forwarded", trafficCounter, func(dp *dataplane.Status) uint64 { return dp.Router.Forwarded }},
+	{"router.no_route", dropCounter, func(dp *dataplane.Status) uint64 { return dp.Router.NoRoute }},
+	{"router.blocked", dropCounter, func(dp *dataplane.Status) uint64 { return dp.Router.Blocked }},
+	{"router.malformed", dropCounter, func(dp *dataplane.Status) uint64 { return dp.Router.Malformed }},
+	{"router.too_large", dropCounter, func(dp *dataplane.Status) uint64 { return dp.Router.TooLarge }},
+	{"router.queue_full", dropCounter, func(dp *dataplane.Status) uint64 { return dp.Router.QueueFull }},
+	{"router.read_errors", dropCounter, func(dp *dataplane.Status) uint64 { return dp.Router.ReadErrors }},
+	{"router.direct", dropCounter, func(dp *dataplane.Status) uint64 { return dp.Router.Direct }},
+	{"router.reflected", dropCounter, func(dp *dataplane.Status) uint64 { return dp.Router.Reflected }},
+	{"router.reflect_failed", dropCounter, func(dp *dataplane.Status) uint64 { return dp.Router.ReflectFailed }},
+	{"router.foreign_source", dropCounter, func(dp *dataplane.Status) uint64 { return dp.Router.ForeignSource }},
+	{"path.sent", trafficCounter, func(dp *dataplane.Status) uint64 { return dp.Path.Sent }},
+	{"path.delivered", trafficCounter, func(dp *dataplane.Status) uint64 { return dp.Path.Delivered }},
+	{"path.forwarded", trafficCounter, func(dp *dataplane.Status) uint64 { return dp.Path.Forwarded }},
+	{"path.no_route", dropCounter, func(dp *dataplane.Status) uint64 { return dp.Path.NoRoute }},
+	{"path.spoofed", dropCounter, func(dp *dataplane.Status) uint64 { return dp.Path.Spoofed }},
+	{"path.hop_limit", dropCounter, func(dp *dataplane.Status) uint64 { return dp.Path.HopLimit }},
+	{"path.no_path", dropCounter, func(dp *dataplane.Status) uint64 { return dp.Path.NoPath }},
+	{"path.unknown_peer", dropCounter, func(dp *dataplane.Status) uint64 { return dp.Path.UnknownPeer }},
+	{"path.queue_full", dropCounter, func(dp *dataplane.Status) uint64 { return dp.Path.QueueFull }},
+	{"path.malformed", dropCounter, func(dp *dataplane.Status) uint64 { return dp.Path.Malformed }},
+	{"path.other_space", dropCounter, func(dp *dataplane.Status) uint64 { return dp.Path.OtherSpace }},
+	{"path.too_large", dropCounter, func(dp *dataplane.Status) uint64 { return dp.Path.TooLarge }},
+	{"path.write_failed", dropCounter, func(dp *dataplane.Status) uint64 { return dp.Path.WriteFailed }},
+	{"path.read_failed", dropCounter, func(dp *dataplane.Status) uint64 { return dp.Path.ReadFailed }},
+	{"interface.reapplies", trafficCounter, func(dp *dataplane.Status) uint64 { return dp.InterfaceReapplies }},
+	{"route_table.routes", routeTableCounter, func(dp *dataplane.Status) uint64 { return uint64(dp.RouteTable.Routes) }},
+	{"route_table.reapplies", routeTableCounter, func(dp *dataplane.Status) uint64 { return dp.RouteTable.Reapplies }},
+	{"route_table.rules_ahead", routeTableCounter, func(dp *dataplane.Status) uint64 { return uint64(dp.RouteTable.RulesAhead) }},
+	{"route_table.overlay_routes_ahead", routeTableCounter, func(dp *dataplane.Status) uint64 { return uint64(dp.RouteTable.OverlayAhead) }},
 }
 
 // idString is an id in hex, empty for the zero id.

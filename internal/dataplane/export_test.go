@@ -2,7 +2,10 @@ package dataplane
 
 import (
 	"net/netip"
+	"sync/atomic"
 	"time"
+
+	"golang.zx2c4.com/wireguard/tun/tuntest"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/router"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
@@ -44,4 +47,25 @@ func SetInterfaceTimingForTest(e *Engine, debounce, cooldown, retry time.Duratio
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.ifcTiming = interfaceTiming{debounce: debounce, cooldown: cooldown, retry: retry}
+}
+
+// IPv6OffCodeForTest is ipv6OffCode.
+var IPv6OffCodeForTest = ipv6OffCode
+
+// FailRouterTablesForTest makes the router refuse every table while fail
+// is set: the table names an egress of another router.
+func FailRouterTablesForTest(e *Engine, fail *atomic.Bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	foreign, err := router.New(tuntest.NewChannelTUN().TUN()).NewEgress("foreign", 1280)
+	if err != nil {
+		panic(err)
+	}
+	rules := e.rules
+	e.rules = func(egresses map[string]*router.Egress) []router.Route {
+		if fail.Load() {
+			return []router.Route{{Prefix: netip.MustParsePrefix("0.0.0.0/0"), Egress: foreign}}
+		}
+		return rules(egresses)
+	}
 }

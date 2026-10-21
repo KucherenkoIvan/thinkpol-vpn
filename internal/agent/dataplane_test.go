@@ -16,6 +16,7 @@ import (
 	"golang.zx2c4.com/wireguard/tun/tuntest"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/logring"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/packettest"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/path"
@@ -55,11 +56,18 @@ type runningNode struct {
 	ifc netcfg.Configurator
 	// conn is the data plane's connection, read once it returned.
 	conn connection
+	// report and events are the data plane's status and events; status
+	// reads the status (the node's, for a node's data plane).
+	report report
+	events *heardEvents
+	status func() Status
 }
 
 func newRunningNode() *runningNode {
-	n := &runningNode{replies: make(chan packettest.Packet, 64), maps: make(chan []byte, 1), log: logring.New(1 << 20), done: make(chan error, 1)}
+	n := &runningNode{replies: make(chan packettest.Packet, 64), maps: make(chan []byte, 1), log: logring.New(1 << 20), done: make(chan error, 1),
+		events: &heardEvents{}}
 	n.ctx, n.stop = context.WithCancel(context.Background())
+	n.status = n.report.status
 	return n
 }
 
@@ -89,11 +97,13 @@ func (n *runningNode) dataPlane(reg *transport.Registry, keys NodeKeys, m *netma
 	n.conn = newConnection(true, false)
 	return DataPlane{
 		Keys: keys, Map: m, Maps: n.maps, Registry: reg, Inbound: DirectInbound(reg),
-		Log:        slog.New(slog.NewTextHandler(n.log, &slog.HandlerOptions{Level: slog.LevelDebug})),
-		Host:       h,
-		path:       fastPaths,
-		retryAfter: testRetry,
-		conn:       &n.conn,
+		Log:       slog.New(slog.NewTextHandler(n.log, &slog.HandlerOptions{Level: slog.LevelDebug})),
+		Namespace: h.WorkerHost,
+		Device:    &h.DeviceHost,
+		tuning:    tuning{path: fastPaths, retryAfter: testRetry},
+		conn:      &n.conn,
+		report:    &n.report,
+		events:    n.events.add,
 	}
 }
 
@@ -193,10 +203,20 @@ func (n *runningNode) ping(t *testing.T, src, dst netip.Addr) {
 	}
 }
 
-func (n *runningNode) waitLog(t *testing.T, pattern string) {
+// applied waits until the status says the data plane runs map version,
+// applied: nothing to retry, the last Apply good.
+func (n *runningNode) applied(t *testing.T, version uint64) {
 	t.Helper()
-	re := regexp.MustCompile(pattern)
-	eventually(t, func() bool { return re.MatchString(n.log.String()) })
+	eventually(t, func() bool {
+		st := n.status()
+		return st.MapVersion == version && st.DataPlane != nil && !st.Retrying && st.DataPlane.LastApplyError == ""
+	})
+}
+
+// refused waits until the status counts count maps refused.
+func (n *runningNode) refused(t *testing.T, count uint64) {
+	t.Helper()
+	eventually(t, func() bool { return n.status().MapsRefused == count })
 }
 
 // logMatches reports whether log has a line matching pattern.
@@ -232,20 +252,23 @@ func TestDataPlaneRunsAndFollowsTheMap(t *testing.T) {
 	v2 := s.build(t, 2)
 	a.maps <- v2
 	b.maps <- v2
-	a.waitLog(t, `msg="map applied" .*version=2`)
+	a.applied(t, 2)
 	eventually(t, func() bool { return canListen(net, old) })
 	b.ping(t, b4, a4)
 	if canListen(net, s.listen) {
 		t.Fatal("a doesn't listen on its new address")
 	}
 
-	// Older and tampered maps leave the node on version 2.
+	// Older and tampered maps leave the node on version 2; only the
+	// tampered one counts as refused, and the maps are taken in order.
 	a.maps <- s.build(t, 1)
-	a.waitLog(t, "map not newer")
 	bad := s.build(t, 3)
 	bad[len(bad)-1] ^= 1
 	a.maps <- bad
-	a.waitLog(t, "bad signature")
+	a.refused(t, 1)
+	if v := a.status().MapVersion; v != 2 {
+		t.Fatalf("on version %d after an older and a tampered map", v)
+	}
 	a.ping(t, a4, b4)
 
 	// A closed Maps channel only means no more maps.
@@ -263,6 +286,25 @@ func TestDataPlaneRunsAndFollowsTheMap(t *testing.T) {
 	}
 }
 
+// The same map given again (a SIGHUP, a touched file) is no refusal: the
+// count says only what was invalid or not the node's.
+func TestARepeatedMapIsNotARefusal(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	a := startNode(t, reg, s.a, s.verified(t, 1))
+	a.applied(t, 1)
+	a.maps <- s.build(t, 1)
+	bad := s.build(t, 2)
+	bad[len(bad)-1] ^= 1
+	a.maps <- bad
+	// Taken in order: version 2 is applied once both went before it.
+	a.maps <- s.build(t, 2)
+	a.applied(t, 2)
+	if n := a.status().MapsRefused; n != 1 {
+		t.Errorf("%d maps refused, want the tampered one alone", n)
+	}
+}
+
 // A node removed from its space stops its data plane and stays idle; a
 // later map that has it again brings it back.
 func TestDataPlaneStopsWhileRemoved(t *testing.T) {
@@ -277,25 +319,21 @@ func TestDataPlaneStopsWhileRemoved(t *testing.T) {
 	without := s.buildWithout(t, 2, s.a)
 	a.maps <- without
 	b.maps <- without
-	a.waitLog(t, "removed from space")
+	a.events.are(t, Event{EventConnected, 1}, Event{EventRemovedFromSpace, 2})
+	if st := a.status(); !st.Removed || st.DataPlane != nil {
+		t.Fatalf("removed: %+v", st)
+	}
 	eventually(t, func() bool { return canListen(net, s.listen) })
-	b.waitLog(t, `msg="map applied" .*version=2`)
-	// Taken, so an older map with the node doesn't bring it back.
+	b.applied(t, 2)
+	// Taken, so an older map with the node doesn't bring it back (the
+	// next map is taken once the older one was).
 	a.maps <- s.build(t, 1)
-	a.waitLog(t, "map not newer")
+	// Removed once, said once.
+	a.maps <- s.buildWithout(t, 3, s.a)
+	eventually(t, func() bool { return a.status().MapVersion == 3 })
 	if a.tuns.Load() != 1 {
 		t.Fatal("a restarted on an older map")
 	}
-	// Removed once, said once.
-	a.maps <- s.buildWithout(t, 3, s.a)
-	// A map not newer than 3 is refused only once 3 was taken.
-	eventually(t, func() bool {
-		select {
-		case a.maps <- s.build(t, 2):
-		default:
-		}
-		return strings.Count(a.log.String(), "map not newer") >= 2
-	})
 	if c := strings.Count(a.log.String(), "removed from space"); c != 1 {
 		t.Fatalf("%d removal messages", c)
 	}
@@ -303,8 +341,8 @@ func TestDataPlaneStopsWhileRemoved(t *testing.T) {
 	v4 := s.build(t, 4)
 	a.maps <- v4
 	b.maps <- v4
-	a.waitLog(t, "back in space")
-	a.waitLog(t, `msg="map applied" .*version=4`)
+	a.events.are(t, Event{EventConnected, 1}, Event{EventRemovedFromSpace, 2}, Event{EventBackInSpace, 4}, Event{EventConnected, 4})
+	a.applied(t, 4)
 	b.ping(t, b4, a4)
 	if a.tuns.Load() != 2 {
 		t.Fatalf("%d TUNs, want the data plane started twice", a.tuns.Load())
@@ -315,7 +353,7 @@ func TestDataPlaneStopsWhileRemoved(t *testing.T) {
 // until ctx ends while blocking is set.
 type failingConfigurator struct {
 	failing, blocking atomic.Bool
-	applies           atomic.Int32
+	applies, closes   atomic.Int32
 }
 
 func (c *failingConfigurator) Apply(ctx context.Context, _ netcfg.Config) error {
@@ -342,7 +380,7 @@ func (c *failingConfigurator) Watch(context.Context) (<-chan struct{}, error) {
 	return nil, errors.ErrUnsupported
 }
 
-func (c *failingConfigurator) Close() error { return nil }
+func (c *failingConfigurator) Close() error { c.closes.Add(1); return nil }
 
 func TestAFailedApplyIsRetried(t *testing.T) {
 	s := newTestSpace(t)
@@ -351,14 +389,14 @@ func TestAFailedApplyIsRetried(t *testing.T) {
 	n := newRunningNode()
 	n.ifc = ifc
 	n.run(t, n.dataPlane(reg, s.a, s.verified(t, 1)))
-	n.waitLog(t, `msg="map applied" .*version=1`)
+	n.applied(t, 1)
 
 	ifc.failing.Store(true)
 	n.maps <- s.build(t, 2)
-	n.waitLog(t, `applying the map failed, retrying`)
+	eventually(t, func() bool { st := n.status(); return st.MapVersion == 2 && st.Retrying })
 	failedAt := time.Now()
 	ifc.failing.Store(false)
-	n.waitLog(t, `msg="map applied" .*version=2`)
+	n.applied(t, 2)
 	// Retried on the data plane's own retryAfter, not the default: a few
 	// testRetry on an idle machine, and still far below RetryAfter on one
 	// busy with other tests.
@@ -399,7 +437,7 @@ type flakyInbound struct {
 
 func (f *flakyInbound) Listeners(netmap.Section) []Listener {
 	return []Listener{{Key: "flaky", Transport: memory.Name, Open: func(ctx context.Context, peers transport.Peers) (transport.Listener, error) {
-		l, err := f.net.Listen(ctx, transport.ListenConfig{Address: f.at, Peers: peers})
+		l, err := f.net.Listen(ctx, transport.ListenConfig{Address: f.at}, transport.Admission{Peers: peers})
 		if err == nil {
 			f.mu.Lock()
 			f.opened = append(f.opened, time.Now())
@@ -437,7 +475,6 @@ func TestAStoppedListenerIsReopenedAfterRetryAfter(t *testing.T) {
 	killed := time.Now()
 	_ = in.last.Close()
 	in.mu.Unlock()
-	a.waitLog(t, "listener stopped, reopening")
 	eventually(t, func() bool { return len(in.opens()) == 2 })
 	if gap := in.opens()[1].Sub(killed); gap < testRetry {
 		t.Fatalf("reopened %v after it stopped, before RetryAfter (%v)", gap, testRetry)
@@ -461,7 +498,7 @@ func TestDataPlaneRefusesAMapWithoutTheNode(t *testing.T) {
 	}
 	conn := newConnection(true, false)
 	err := RunDataPlane(context.Background(), DataPlane{
-		Keys: stranger, Map: s.verified(t, 1), Registry: reg, Inbound: DirectInbound(reg), Host: h, conn: &conn,
+		Keys: stranger, Map: s.verified(t, 1), Registry: reg, Inbound: DirectInbound(reg), Namespace: h.WorkerHost, Device: &h.DeviceHost, conn: &conn,
 	})
 	if err == nil || !strings.Contains(err.Error(), "no section for this node's key") {
 		t.Fatalf("got %v", err)
@@ -487,7 +524,7 @@ func TestDataPlaneNeedsItsConnection(t *testing.T) {
 }
 
 func canListen(net *memory.Network, at netip.AddrPort) bool {
-	l, err := net.Listen(context.Background(), transport.ListenConfig{Address: at.String(), Peers: transport.NewPeerTable()})
+	l, err := net.Listen(context.Background(), transport.ListenConfig{Address: at.String()}, transport.Admission{Peers: transport.NewPeerTable()})
 	if err != nil {
 		return false
 	}
@@ -514,9 +551,9 @@ func TestAFailedStartClearsACrashedRunsRouteTable(t *testing.T) {
 	dp := n.dataPlane(reg, s.a, s.verified(t, 1))
 	dp.RouteTable = true
 	var cleared atomic.Int32
-	dp.Host.ClearConfig = func(netcfg.Owner) error { cleared.Add(1); return nil }
-	dp.Host.NewTUN = func(string, int) (wgtun.Device, error) { return nil, errors.New("no TUN today") }
-	dp.Host.NewRouteTable = func(*slog.Logger, routetable.Guard) (RouteEnforcer, error) { panic("not reached") }
+	dp.Device.ClearConfig = func(netcfg.Owner) error { cleared.Add(1); return nil }
+	dp.Namespace.NewTUN = func(string, int) (wgtun.Device, error) { return nil, errors.New("no TUN today") }
+	dp.Device.NewRouteTable = func(*slog.Logger, routetable.Guard) (RouteEnforcer, error) { panic("not reached") }
 	if err := RunDataPlane(n.ctx, dp); err == nil {
 		t.Fatal("RunDataPlane started without a TUN")
 	}
@@ -526,5 +563,69 @@ func TestAFailedStartClearsACrashedRunsRouteTable(t *testing.T) {
 	}
 	if cleared.Load() == 0 {
 		t.Error("the failed start left a previous run's route table")
+	}
+}
+
+// closedTUN is a virtual TUN that counts its Closes.
+type closedTUN struct {
+	wgtun.Device
+	closes *atomic.Int32
+}
+
+func (c closedTUN) Close() error { c.closes.Add(1); return c.Device.Close() }
+
+// A failed start takes down what it opened, whichever step failed; until
+// the route table is the data plane's own, a crashed run's table goes
+// too.
+func TestAFailedStartUndoesWhatItOpened(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		step dataplane.Step
+		// tableOpens: the route table opens (and must be closed);
+		// applyFails: the first Apply fails at the interface.
+		tableOpens, applyFails bool
+		wantClear              bool
+	}{
+		{"route table", dataplane.StepRouteTable, false, false, true},
+		{"first apply", dataplane.StepInterface, true, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestSpace(t)
+			_, reg := memoryRegistry(t)
+			n := newRunningNode()
+			ifc := &failingConfigurator{}
+			n.ifc = ifc
+			dp := n.dataPlane(reg, s.a, s.verified(t, 1))
+			dp.RouteTable = true
+			var tunCloses, cleared atomic.Int32
+			virtual := dp.Namespace.NewTUN
+			dp.Namespace.NewTUN = func(name string, mtu int) (wgtun.Device, error) {
+				dev, err := virtual(name, mtu)
+				return closedTUN{dev, &tunCloses}, err
+			}
+			dp.Device.ClearConfig = func(netcfg.Owner) error { cleared.Add(1); return nil }
+			table := &wantsTable{}
+			dp.Device.NewRouteTable = func(*slog.Logger, routetable.Guard) (RouteEnforcer, error) {
+				if !tc.tableOpens {
+					return nil, errors.New("no route table today")
+				}
+				return table, nil
+			}
+			ifc.failing.Store(tc.applyFails)
+			var se *StartError
+			if err := RunDataPlane(n.ctx, dp); !errors.As(err, &se) || se.Step != tc.step {
+				t.Fatalf("got %v, want a StartError at %s", err, tc.step)
+			}
+			if tunCloses.Load() != 1 || ifc.closes.Load() != 1 {
+				t.Errorf("TUN closed %d times, configurator %d times", tunCloses.Load(), ifc.closes.Load())
+			}
+			if table.mu.Lock(); tc.tableOpens && table.closes != 1 {
+				t.Errorf("route table closed %d times", table.closes)
+			}
+			table.mu.Unlock()
+			if got := cleared.Load() > 0; got != tc.wantClear {
+				t.Errorf("a crashed run's table cleared: %v", got)
+			}
+		})
 	}
 }

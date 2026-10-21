@@ -192,7 +192,7 @@ func newFixture(t *testing.T) *fixture {
 
 func (f *fixture) listen(address string) {
 	f.t.Helper()
-	l, err := f.tr.Listen(context.Background(), transport.ListenConfig{Address: address, Peers: f.table, Camouflage: f.camo})
+	l, err := f.tr.Listen(context.Background(), transport.ListenConfig{Address: address}, transport.Admission{Peers: f.table, Camouflage: f.camo})
 	if err != nil {
 		f.t.Fatal(err)
 	}

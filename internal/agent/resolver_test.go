@@ -89,9 +89,7 @@ func TestADevicePointsTheSystemAtItsResolverWhileConnected(t *testing.T) {
 				return []netip.Addr{netip.MustParseAddr("192.0.2.53")}, nil
 			}
 		},
-		dataPlane: func(dp *DataPlane) {
-			dp.dnsPort = 5353
-		},
+		tuning: func(t *tuning) { t.dnsPort = 5353 },
 	})
 	b4, b6 := overlay(2)
 	b.connection(t, Connected)
@@ -113,7 +111,7 @@ func TestADevicePointsTheSystemAtItsResolverWhileConnected(t *testing.T) {
 
 	// Another map that changes nothing the OS needs leaves it alone.
 	b.maps <- s.build(t, 2)
-	b.waitLog(t, `msg="map applied" .*version=2`)
+	b.applied(t, 2)
 	if n, r := sys.counts(); n != 1 || r != 0 {
 		t.Errorf("after a map: set %d, restored %d", n, r)
 	}
@@ -250,15 +248,11 @@ func TestAWorkerWithEveryUpstreamRefusedHasNone(t *testing.T) {
 		t.Fatal(err)
 	}
 	section.Node.AllowEgress = true // an exit's worker: the resolver warns
-	asked := false
-	r := &runner{dp: DataPlane{DNS: true, DNSUpstreams: ups, inWorker: true, Log: s.log,
-		Host: Host{SystemUpstreams: func([]netip.Addr) ([]netip.Addr, error) { asked = true; return nil, nil }},
-	}, follow: mapFollower{section: section}}
+	// A worker has no Device: the host's resolvers aren't there to ask.
+	r := &runner{dp: DataPlane{DNS: true, DNSUpstreams: ups, Forward: true, Log: s.log},
+		follow: mapFollower{section: section}}
 	if res := r.newResolver(); res == nil {
 		t.Fatal("no resolver")
-	}
-	if asked {
-		t.Error("a worker's resolver asked for the host's resolvers")
 	}
 	if len(r.upstreams) != 0 {
 		t.Errorf("upstreams %v", r.upstreams)
@@ -284,7 +278,7 @@ func TestAServerSectionInDeviceModeFallsBackToTheSystemResolvers(t *testing.T) {
 	}
 	asked := false
 	r := &runner{dp: DataPlane{DNS: true, Log: slog.New(slog.DiscardHandler),
-		Host: Host{SystemUpstreams: func([]netip.Addr) ([]netip.Addr, error) {
+		Device: &DeviceHost{SystemUpstreams: func([]netip.Addr) ([]netip.Addr, error) {
 			asked = true
 			return []netip.Addr{netip.MustParseAddr("192.0.2.53")}, nil
 		}},
@@ -460,9 +454,7 @@ func TestUnprotectedDNSIsReportedAndRetried(t *testing.T) {
 			p.SetSystemDNS = sys.Set
 			p.SystemUpstreams = func([]netip.Addr) ([]netip.Addr, error) { return nil, nil }
 		},
-		dataPlane: func(dp *DataPlane) {
-			dp.dnsPort = 5353
-		},
+		tuning: func(t *tuning) { t.dnsPort = 5353 },
 	})
 	err := b.node.Connect(context.Background())
 	if !errors.Is(err, ErrDNSUnprotected) {
@@ -506,9 +498,7 @@ func TestAFailedFirstReadOfTheSystemsResolversIsPassedOn(t *testing.T) {
 			p.SetSystemDNS = sys.Set
 			p.SystemUpstreams = func([]netip.Addr) ([]netip.Addr, error) { return nil, errors.New("the store is unreadable") }
 		},
-		dataPlane: func(dp *DataPlane) {
-			dp.dnsPort = 5353
-		},
+		tuning: func(t *tuning) { t.dnsPort = 5353 },
 	})
 	b.connection(t, Connected)
 	eventually(t, func() bool { n, _ := sys.counts(); return n == 1 })
@@ -518,9 +508,15 @@ func TestAFailedFirstReadOfTheSystemsResolversIsPassedOn(t *testing.T) {
 	if !first.UpstreamsUnknown || first.Upstreams == nil {
 		t.Fatalf("the failed read isn't passed on: unknown %v", first.UpstreamsUnknown)
 	}
-	b.waitLog(t, `level=WARN msg="DNS: the system's resolvers are unknown`)
+	// Warned before the OS was pointed at the resolver; the upstreams
+	// told are taken at once.
+	if !logMatches(b.log.String(), `level=WARN msg="DNS: the system's resolvers are unknown`) {
+		t.Error("the failed read isn't warned about")
+	}
 	first.Upstreams([]netip.Addr{netip.MustParseAddr("192.0.2.53")})
-	b.waitLog(t, `msg="DNS: the system's own resolvers changed".* upstreams=1`)
+	if !logMatches(b.log.String(), `msg="DNS: the system's own resolvers changed".* upstreams=1`) {
+		t.Error("the upstreams the OS configuration told aren't taken")
+	}
 }
 
 // A system whose direct upstreams may be stale is degraded, not
@@ -537,9 +533,7 @@ func TestStaleUpstreamsAreDegradedNotUnprotected(t *testing.T) {
 			p.SetSystemDNS = sys.Set
 			p.SystemUpstreams = func([]netip.Addr) ([]netip.Addr, error) { return nil, nil }
 		},
-		dataPlane: func(dp *DataPlane) {
-			dp.dnsPort = 5353
-		},
+		tuning: func(t *tuning) { t.dnsPort = 5353 },
 	})
 	b.connection(t, Connected)
 	if err := b.node.Connect(context.Background()); err != nil {
@@ -575,9 +569,7 @@ func TestAnUntaggedProblemIsUnprotected(t *testing.T) {
 			p.SetSystemDNS = sys.Set
 			p.SystemUpstreams = func([]netip.Addr) ([]netip.Addr, error) { return nil, nil }
 		},
-		dataPlane: func(dp *DataPlane) {
-			dp.dnsPort = 5353
-		},
+		tuning: func(t *tuning) { t.dnsPort = 5353 },
 	})
 	b.connection(t, Connected)
 	sys.mu.Lock()
@@ -604,6 +596,7 @@ type wantsTable struct {
 	failed     bool
 	broken     bool
 	nextBroken *bool
+	closes     int
 }
 
 func (w *wantsTable) Enforce(_ context.Context, want routetable.Want) error {
@@ -633,7 +626,12 @@ func (w *wantsTable) Status() routetable.Status {
 	return routetable.Status{Enforced: true}
 }
 
-func (w *wantsTable) Close() error { return nil }
+func (w *wantsTable) Close() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.closes++
+	return nil
+}
 
 // breakAtNextEnforce has the table fail to put the routes back on its
 // own (or recover) once the next Enforce is done: before the runner's
@@ -671,10 +669,7 @@ func TestTheDirectUpstreamsReachTheRouteTable(t *testing.T) {
 				return []netip.Addr{netip.MustParseAddr("192.0.2.53")}, nil
 			}
 		},
-		dataPlane: func(dp *DataPlane) {
-			dp.RouteTable = true
-			dp.dnsPort = 5353
-		},
+		tuning: func(t *tuning) { t.dnsPort = 5353 },
 	})
 	b.connection(t, Connected)
 	eventually(t, func() bool {
@@ -705,10 +700,7 @@ func TestAConfiguredUpstreamReachesTheRouteTableWithItsPort(t *testing.T) {
 			p.NewRouteTable = func(*slog.Logger, routetable.Guard) (RouteEnforcer, error) { return table, nil }
 			p.SetSystemDNS = (&fakeSystem{}).Set
 		},
-		dataPlane: func(dp *DataPlane) {
-			dp.RouteTable = true
-			dp.dnsPort = 5353
-		},
+		tuning: func(t *tuning) { t.dnsPort = 5353 },
 	})
 	b.connection(t, Connected)
 	eventually(t, func() bool { return slices.Equal(table.upstreams(), []netip.AddrPort{up}) })
@@ -811,9 +803,11 @@ func TestTheResolverAsksTheLatestUpstreams(t *testing.T) {
 		t.Fatal(err)
 	}
 	logs := logring.New(1 << 20)
-	changed := make(chan []netip.AddrPort, 1)
+	// Unbuffered: a send returns once the loop took it, and a second
+	// one once the loop is done with the first.
+	changed := make(chan []netip.AddrPort)
 	r := &runner{
-		dp: DataPlane{DNS: true, DNSUpstreams: []netip.AddrPort{x.address}, dnsPort: freePort(t), dnsUpstreams: changed,
+		dp: DataPlane{DNS: true, DNSUpstreams: []netip.AddrPort{x.address}, tuning: tuning{dnsPort: freePort(t)}, dnsUpstreams: changed,
 			Log: slog.New(slog.NewTextHandler(logs, nil)), Inbound: nilInbound{}, conn: &connection{}},
 		follow: mapFollower{cur: s.verified(t, 1), section: section},
 	}
@@ -825,14 +819,14 @@ func TestTheResolverAsksTheLatestUpstreams(t *testing.T) {
 	go func() { defer close(looped); _ = r.loop(ctx) }()
 
 	// The resolver asks the first config's upstream.
-	if a := askTheResolver(t, r.dp.dnsPort); a != x.answer {
+	if a := askTheResolver(t, r.dp.tuning.dnsPort); a != x.answer {
 		t.Fatalf("the resolver's answer came from %v, want the first config's %v", a, x.answer)
 	}
 
 	// A later config's list is delivered by the loop and asked at once.
 	changed <- []netip.AddrPort{y.address}
-	eventually(t, func() bool { return strings.Contains(logs.String(), "the resolver's upstreams changed") })
-	if a := askTheResolver(t, r.dp.dnsPort); a != y.answer {
+	changed <- []netip.AddrPort{y.address}
+	if a := askTheResolver(t, r.dp.tuning.dnsPort); a != y.answer {
 		t.Fatalf("after the change the resolver's answer came from %v, want the later config's %v", a, y.answer)
 	}
 	if n := x.count(); n != 1 {
@@ -845,13 +839,13 @@ func TestTheResolverAsksTheLatestUpstreams(t *testing.T) {
 	<-looped
 	_ = r.resolver.Close()
 	r.resolver = nil
-	r.dp.dnsPort = freePort(t)
+	r.dp.tuning.dnsPort = freePort(t)
 	res := r.newResolver()
 	res.Update(dns.Config{Listen: []netip.Addr{netip.MustParseAddr("127.0.0.1")}, Clients: []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")}})
 	if !slices.Equal(r.upstreams, []netip.AddrPort{y.address}) {
 		t.Fatalf("the restarted resolver starts from %v", r.upstreams)
 	}
-	if a := askTheResolver(t, r.dp.dnsPort); a != y.answer {
+	if a := askTheResolver(t, r.dp.tuning.dnsPort); a != y.answer {
 		t.Fatalf("the restarted resolver's answer came from %v, want the later config's %v", a, y.answer)
 	}
 	if n := x.count(); n != 1 {
@@ -863,19 +857,33 @@ func TestTheResolverAsksTheLatestUpstreams(t *testing.T) {
 // the overlay, and returns the address its answer names.
 func askTheResolver(t *testing.T, port uint16) netip.Addr {
 	t.Helper()
+	a, err := resolverAnswer(port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a
+}
+
+// resolverAnswer is askTheResolver's answer, or why there is none (not
+// listening yet, no answer, not an address).
+func resolverAnswer(port uint16) (netip.Addr, error) {
 	m := new(mdns.Msg)
 	m.SetQuestion("name.example.", mdns.TypeA)
 	c := &mdns.Client{Net: "udp", UDPSize: 1232, Timeout: 2 * time.Second}
 	resp, _, err := c.Exchange(m, net.JoinHostPort("127.0.0.1", strconv.Itoa(int(port))))
 	if err != nil {
-		t.Fatal(err)
+		return netip.Addr{}, err
 	}
 	if len(resp.Answer) != 1 {
-		t.Fatalf("the resolver answered %+v", resp.Answer)
+		return netip.Addr{}, fmt.Errorf("the resolver answered %+v", resp.Answer)
 	}
-	a, ok := netip.AddrFromSlice(resp.Answer[0].(*mdns.A).A)
+	rr, ok := resp.Answer[0].(*mdns.A)
 	if !ok {
-		t.Fatalf("the resolver answered %v", resp.Answer[0])
+		return netip.Addr{}, fmt.Errorf("the resolver answered %v", resp.Answer[0])
 	}
-	return a
+	a, ok := netip.AddrFromSlice(rr.A)
+	if !ok {
+		return netip.Addr{}, fmt.Errorf("the resolver answered %v", resp.Answer[0])
+	}
+	return a.Unmap(), nil
 }

@@ -55,61 +55,9 @@ func run(ctx context.Context, args []string) error {
 		defer cancel()
 		return up(ctx, root)
 	case "down":
-		fs := flag.NewFlagSet("down", flag.ContinueOnError)
-		onlyTests := fs.Bool("tests", false, "only remove labs started by tests")
-		stale := fs.Bool("stale", false, "remove every lab whose checkout no longer exists")
-		if err := fs.Parse(args[1:]); err != nil {
-			return err
-		}
-		ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
-		defer cancel()
-		var removed []string
-		if *stale {
-			removed, err = lab.DownStale(ctx)
-		} else {
-			removed, err = lab.DownCheckout(ctx, root, *onlyTests)
-		}
-		for _, p := range removed {
-			fmt.Println("removed", p)
-		}
-		return err
+		return down(ctx, root, args[1:])
 	case "gotest":
-		fs := flag.NewFlagSet("gotest", flag.ContinueOnError)
-		runRe := fs.String("run", "", "run only tests matching the regexp")
-		count := fs.Int("count", 0, "run each test n times (the test binary's -test.count)")
-		timeout := fs.String("timeout", "", "the test binary's -test.timeout (default "+lab.DefaultTestTimeout+")")
-		verbose := fs.Bool("v", false, "verbose test output")
-		parallel := fs.Int("p", 4, "packages tested at once")
-		perf := fs.Bool("perf", false, "a perf run: wait until no other lab runs, keep others from starting, set "+lab.PerfEnv+"=1")
-		if err := fs.Parse(args[1:]); err != nil {
-			return err
-		}
-		ctx, cancel := context.WithTimeout(ctx, 60*time.Minute)
-		defer cancel()
-		var env []string
-		if *perf {
-			fmt.Println("gotest: waiting until no other lab runs")
-			release, err := lab.AcquirePerfLock(ctx)
-			if err != nil {
-				return err
-			}
-			defer release()
-			env = append(env, lab.PerfEnv+"=1")
-		}
-		var args []string
-		if *verbose {
-			args = append(args, "-test.v")
-		}
-		if *runRe != "" {
-			args = append(args, "-test.run", *runRe)
-		}
-		if *count > 0 {
-			args = append(args, fmt.Sprintf("-test.count=%d", *count))
-		}
-		if *timeout != "" {
-			args = append(args, "-test.timeout="+*timeout)
-		}
-		return gotest(ctx, root, *parallel, env, args, fs.Args())
+		return runGotest(ctx, root, args[1:])
 	case "project":
 		checkout, err := lab.CheckoutProject(root)
 		if err != nil {
@@ -121,6 +69,70 @@ func run(ctx context.Context, args []string) error {
 		fmt.Fprint(os.Stderr, usage)
 		return fmt.Errorf("unknown command %q", args[0])
 	}
+}
+
+// down removes this checkout's labs (or only its tests', or every stale
+// one) and prints what it removed.
+func down(ctx context.Context, root string, args []string) error {
+	fs := flag.NewFlagSet("down", flag.ContinueOnError)
+	onlyTests := fs.Bool("tests", false, "only remove labs started by tests")
+	stale := fs.Bool("stale", false, "remove every lab whose checkout no longer exists")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+	var removed []string
+	var err error
+	if *stale {
+		removed, err = lab.DownStale(ctx)
+	} else {
+		removed, err = lab.DownCheckout(ctx, root, *onlyTests)
+	}
+	for _, p := range removed {
+		fmt.Println("removed", p)
+	}
+	return err
+}
+
+// runGotest parses gotest's flags into the test binary's, and runs it.
+func runGotest(ctx context.Context, root string, args []string) error {
+	fs := flag.NewFlagSet("gotest", flag.ContinueOnError)
+	runRe := fs.String("run", "", "run only tests matching the regexp")
+	count := fs.Int("count", 0, "run each test n times (the test binary's -test.count)")
+	timeout := fs.String("timeout", "", "the test binary's -test.timeout (default "+lab.DefaultTestTimeout+")")
+	verbose := fs.Bool("v", false, "verbose test output")
+	parallel := fs.Int("p", 4, "packages tested at once")
+	perf := fs.Bool("perf", false, "a perf run: wait until no other lab runs, keep others from starting, set "+lab.PerfEnv+"=1")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 60*time.Minute)
+	defer cancel()
+	var env []string
+	if *perf {
+		fmt.Println("gotest: waiting until no other lab runs")
+		release, err := lab.AcquirePerfLock(ctx)
+		if err != nil {
+			return err
+		}
+		defer release()
+		env = append(env, lab.PerfEnv+"=1")
+	}
+	var testArgs []string
+	if *verbose {
+		testArgs = append(testArgs, "-test.v")
+	}
+	if *runRe != "" {
+		testArgs = append(testArgs, "-test.run", *runRe)
+	}
+	if *count > 0 {
+		testArgs = append(testArgs, fmt.Sprintf("-test.count=%d", *count))
+	}
+	if *timeout != "" {
+		testArgs = append(testArgs, "-test.timeout="+*timeout)
+	}
+	return gotest(ctx, root, *parallel, env, testArgs, fs.Args())
 }
 
 func up(ctx context.Context, root string) error {

@@ -95,10 +95,33 @@ func (t *routeTable) SetDirectUpstreams(ctx context.Context, addrs []netip.AddrP
 func (t *routeTable) Status() dataplane.RouteTableStatus {
 	st := t.rt.Status()
 	return dataplane.RouteTableStatus{
-		Enforced: st.Enforced, Error: st.Error, GuardEnforced: st.GuardEnforced, GuardError: st.GuardError,
+		Enforced: st.Enforced, Error: routeTableError(st.Error), GuardEnforced: st.GuardEnforced, GuardError: routeTableError(st.GuardError),
 		Routes: st.Routes, LastApply: st.LastApply,
 		Reapplies: st.Reapplies, RulesAhead: st.RulesAhead, OverlayAhead: st.OverlayAhead,
 	}
+}
+
+// routeTableError is the engine's code for the route table's error code p:
+// none for none, and a failed apply for one the table doesn't know, so a
+// problem is never lost.
+func routeTableError(p routetable.ErrorCode) dataplane.RouteTableError {
+	if p == "" {
+		return ""
+	}
+	if e, ok := routeTableErrors[p]; ok {
+		return e
+	}
+	return dataplane.RouteTableApplyFailed
+}
+
+// routeTableErrors are the engine's codes for the route table's problems.
+var routeTableErrors = map[routetable.ErrorCode]dataplane.RouteTableError{
+	routetable.ErrorApply:            dataplane.RouteTableApplyFailed,
+	routetable.ErrorReapply:          dataplane.RouteTableReapplyFailed,
+	routetable.ErrorUnsupported:      dataplane.RouteTableUnsupported,
+	routetable.ErrorTUNDown:          dataplane.RouteTableTUNDown,
+	routetable.ErrorGuard:            dataplane.RouteTableGuardFailed,
+	routetable.ErrorGuardUnsupported: dataplane.RouteTableGuardUnsupported,
 }
 
 func (t *routeTable) Close() error {
@@ -108,10 +131,22 @@ func (t *routeTable) Close() error {
 	return t.rt.Close()
 }
 
-// dnsResolver is dns's server as the engine's resolver port.
-type dnsResolver struct{ s *dns.Server }
+// dnsResolver is the node's resolver as the engine's Resolver; listen, if
+// valid, replaces where it listens and whom it answers (DataPlane's
+// tuning.dnsListen).
+type dnsResolver struct {
+	s      *dns.Server
+	listen netip.Addr
+}
 
-func (r dnsResolver) Update(c dataplane.ResolverConfig) { r.s.Update(dnsConfig(c)) }
+func (r dnsResolver) Update(c dataplane.ResolverConfig) {
+	d := dnsConfig(c)
+	if r.listen.IsValid() && len(d.Listen) > 0 {
+		d.Listen = []netip.Addr{r.listen}
+		d.Clients = []netip.Prefix{netip.PrefixFrom(r.listen, r.listen.BitLen())}
+	}
+	r.s.Update(d)
+}
 
 func dnsConfig(c dataplane.ResolverConfig) dns.Config {
 	d := dns.Config{Listen: c.Listen, Clients: c.Clients, Zone: c.Zone, Names: c.Names, Overlay: c.Overlay}

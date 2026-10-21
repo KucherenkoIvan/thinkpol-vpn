@@ -356,13 +356,34 @@ func (s *dynamicStore) apply() error {
 		return errors.New("dns: no active network service to point at the resolver")
 	}
 	s.manual = manual
-	override, resolver := s.override(), s.resolver()
-	type change struct {
-		key  string
-		want dict
+	writes, errs := s.pendingWrites(targets)
+	if len(writes) > 0 {
+		if err := writeBackup(s.st, s.backup); err != nil {
+			return errors.Join(append(errs, fmt.Errorf("dns: keeping the system's configuration: %w", err))...)
+		}
 	}
-	var changes []change
-	var errs []error
+	errs = append(errs, s.writeOverrides(writes)...)
+	errs = append(errs, s.putBackGone(targets)...)
+	if others, err := s.otherResolvers(); err != nil {
+		errs = append(errs, err)
+	} else {
+		s.others = others
+	}
+	return errors.Join(errs...)
+}
+
+// pendingWrite is a DNS key to set to want.
+type pendingWrite struct {
+	key  string
+	want dict
+}
+
+// pendingWrites are the targets whose key doesn't hold the override it
+// should: a key overridden with other servers (Update's), or one not
+// overridden yet, whose original goes into s.backup (in memory only).
+// mu held.
+func (s *dynamicStore) pendingWrites(targets []string) (writes []pendingWrite, errs []error) {
+	override, resolver := s.override(), s.resolver()
 	for _, k := range targets {
 		want := override
 		if k == resolverKey {
@@ -375,7 +396,7 @@ func (s *dynamicStore) apply() error {
 		}
 		if present && isOverride(have) {
 			if !have.equal(want) {
-				changes = append(changes, change{k, want}) // Update's new servers
+				writes = append(writes, pendingWrite{k, want}) // Update's new servers
 			}
 			continue
 		}
@@ -386,29 +407,35 @@ func (s *dynamicStore) apply() error {
 				Arrays: map[string][]string{"ServerAddresses": have.array("ServerAddresses")}}
 		}
 		s.backup[k] = o
-		changes = append(changes, change{k, want})
+		writes = append(writes, pendingWrite{k, want})
 	}
-	if len(changes) > 0 {
-		if err := writeBackup(s.st, s.backup); err != nil {
-			return errors.Join(append(errs, fmt.Errorf("dns: keeping the system's configuration: %w", err))...)
-		}
-	}
-	for _, c := range changes {
-		if err := s.st.set(c.key, c.want); err != nil {
-			errs = append(errs, fmt.Errorf("dns: overriding %s: %w", c.key, err))
+	return writes, errs
+}
+
+// writeOverrides sets each key, checking it reads back as an override.
+// mu held.
+func (s *dynamicStore) writeOverrides(writes []pendingWrite) (errs []error) {
+	for _, w := range writes {
+		if err := s.st.set(w.key, w.want); err != nil {
+			errs = append(errs, fmt.Errorf("dns: overriding %s: %w", w.key, err))
 			continue
 		}
 		// Read back: a write the store took differently is no override.
-		got, ok, err := s.st.get(c.key)
+		got, ok, err := s.st.get(w.key)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("dns: reading back %s: %w", c.key, err))
+			errs = append(errs, fmt.Errorf("dns: reading back %s: %w", w.key, err))
 			continue
 		}
 		if !ok || !isOverride(got) {
-			errs = append(errs, fmt.Errorf("dns: %s doesn't hold the override after setting it", c.key))
+			errs = append(errs, fmt.Errorf("dns: %s doesn't hold the override after setting it", w.key))
 		}
 	}
-	// Services that went (or went inactive): theirs goes back.
+	return errs
+}
+
+// putBackGone puts back the backed-up keys that are no longer targets:
+// services that went (or went inactive). mu held.
+func (s *dynamicStore) putBackGone(targets []string) (errs []error) {
 	putBack := false
 	for _, k := range restoreKeys(s.backup) {
 		if !slices.Contains(targets, k) {
@@ -423,12 +450,7 @@ func (s *dynamicStore) apply() error {
 			errs = append(errs, fmt.Errorf("dns: keeping the system's configuration: %w", err))
 		}
 	}
-	if others, err := s.otherResolvers(); err != nil {
-		errs = append(errs, err)
-	} else {
-		s.others = others
-	}
-	return errors.Join(errs...)
+	return errs
 }
 
 // putBack restores one key's original if the override is still there

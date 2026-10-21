@@ -113,129 +113,184 @@ func halves(p netip.Prefix) [2]netip.Prefix {
 func family(p netip.Prefix) netcfg.Family { return netcfg.FamilyOf(p.Addr()) }
 
 func splitRoutes(w Want, s netcfg.Survey) (cfg netcfg.Config, ahead, overlayAhead int) {
-	up := TUNUp(w, s)
-	overlay := prefixes(w.Overlay)
+	l := newSplitLayout(w, s)
+	l.tunnelRoutes()
+	l.directRoutes()
+	l.upstreamRoutes()
+	l.shadowForeign()
+	slices.SortStableFunc(l.cfg.Routes, func(a, b netcfg.Route) int {
+		if fa, fb := family(a.Dst), family(b.Dst); fa != fb {
+			return int(fa) - int(fb)
+		}
+		return 0
+	})
+	return l.cfg, l.ahead, l.overlayAhead
+}
+
+// splitLayout is splitRoutes' work: what it lays out against, and the
+// routes so far.
+type splitLayout struct {
+	w Want
+	s netcfg.Survey
+	// up: the TUN is up; overlay are its networks.
+	up         bool
+	overlay    []netip.Prefix
+	overlaySet *lists.Set
+	// thrown goes around the tunnel: the rules' direct set (never the
+	// overlay, direct) and the endpoints.
+	thrownSet *lists.Set
+	thrown    []netip.Prefix
+	direct    *lists.Set
+	// trusted are the on-link subnets that keep their routes; gateways
+	// the default routes by family, gatewayHosts those inside a trusted
+	// subnet.
+	trusted      []netip.Prefix
+	gateways     map[netcfg.Family]netcfg.Route
+	gatewayHosts []netip.Prefix
+	// taken are the identities other routes hold, ours those of the
+	// routes in cfg: ours must differ from theirs.
+	taken, ours map[netip.Prefix]bool
+
+	cfg                 netcfg.Config
+	ahead, overlayAhead int
+}
+
+func newSplitLayout(w Want, s netcfg.Survey) *splitLayout {
+	l := &splitLayout{w: w, s: s, up: TUNUp(w, s), overlay: prefixes(w.Overlay), ours: map[netip.Prefix]bool{}}
 	var ob lists.Builder
-	for _, p := range overlay {
+	for _, p := range l.overlay {
 		_ = ob.AddPrefix(p)
 	}
-	overlaySet, _ := ob.Build()
-
-	// What goes around the tunnel: the rules' direct set (never the
-	// overlay) and the endpoints.
+	l.overlaySet, _ = ob.Build()
+	l.direct = w.Direct.Minus(l.overlaySet)
 	var tb lists.Builder
-	tb.AddSet(w.Direct.Minus(overlaySet))
+	tb.AddSet(l.direct)
 	for _, a := range bypass(w.Bypass) {
 		_ = tb.AddPrefix(netip.PrefixFrom(a, a.BitLen()))
 	}
-	thrownSet, _ := tb.Build()
-	thrown := thrownSet.Prefixes()
-	direct := w.Direct.Minus(overlaySet)
-
-	// Trusted on-link subnets keep their routes; the others are shadowed.
-	var trusted []netip.Prefix
+	l.thrownSet, _ = tb.Build()
+	l.thrown = l.thrownSet.Prefixes()
 	for _, p := range s.OnLink {
-		if p.Bits() > 0 && p.Bits() < p.Addr().BitLen() && TrustedOnLink(p, direct) && !overlaps(p, overlay) {
-			trusted = append(trusted, p)
+		if p.Bits() > 0 && p.Bits() < p.Addr().BitLen() && TrustedOnLink(p, l.direct) && !overlaps(p, l.overlay) {
+			l.trusted = append(l.trusted, p)
 		}
 	}
-	// A default gateway stays reachable on-link only inside a trusted
-	// subnet: one a hostile network puts in the overlay's range or on a
-	// public "on-link" subnet would get that address in the clear. The
-	// links don't need it: they are bound to the physical interface and
-	// use its scoped routes; direct traffic via such a gateway enters the
-	// TUN instead (dropped, never leaked).
-	gateways := map[netcfg.Family]netcfg.Route{}
-	var gatewayHosts []netip.Prefix
-	for _, d := range s.Defaults {
-		gateways[family(d.Dst)] = d
-		if d.Gateway.IsValid() && within(netip.PrefixFrom(d.Gateway, d.Gateway.BitLen()), trusted) {
-			gatewayHosts = append(gatewayHosts, netip.PrefixFrom(d.Gateway, d.Gateway.BitLen()))
+	l.findGateways()
+	l.findTaken()
+	return l
+}
+
+// findGateways notes the default routes. A default gateway stays reachable
+// on-link only inside a trusted subnet: one a hostile network puts in the
+// overlay's range or on a public "on-link" subnet would get that address
+// in the clear. The links don't need it: they are bound to the physical
+// interface and use its scoped routes; direct traffic via such a gateway
+// enters the TUN instead (dropped, never leaked).
+func (l *splitLayout) findGateways() {
+	l.gateways = map[netcfg.Family]netcfg.Route{}
+	for _, d := range l.s.Defaults {
+		l.gateways[family(d.Dst)] = d
+		if d.Gateway.IsValid() && within(netip.PrefixFrom(d.Gateway, d.Gateway.BitLen()), l.trusted) {
+			l.gatewayHosts = append(l.gatewayHosts, netip.PrefixFrom(d.Gateway, d.Gateway.BitLen()))
 		}
 	}
+}
 
-	// Identities other routes hold: ours must differ.
-	taken := map[netip.Prefix]bool{}
-	for _, p := range s.OnLink {
-		taken[p] = true
+// findTaken notes the identities other routes hold: on-link subnets,
+// foreign routes, held ones, and the overlay configurator's routes into
+// the TUN.
+func (l *splitLayout) findTaken() {
+	l.taken = map[netip.Prefix]bool{}
+	for _, p := range l.s.OnLink {
+		l.taken[p] = true
 	}
-	for _, r := range s.Routes {
-		taken[r.Dst] = true
+	for _, r := range l.s.Routes {
+		l.taken[r.Dst] = true
 	}
-	for _, p := range s.Held {
-		taken[p] = true
+	for _, p := range l.s.Held {
+		l.taken[p] = true
 	}
-	for _, p := range overlay {
+	for _, p := range l.overlay {
 		for _, h := range netcfg.ConnectedRoutes(p) {
-			taken[h] = true // the overlay configurator's routes into the TUN
+			l.taken[h] = true
 		}
 	}
+}
 
-	ours := map[netip.Prefix]bool{}
-	add := func(r netcfg.Route) {
-		if !ours[r.Dst] {
-			ours[r.Dst] = true
-			cfg.Routes = append(cfg.Routes, r)
-		}
+func (l *splitLayout) add(r netcfg.Route) {
+	if !l.ours[r.Dst] {
+		l.ours[r.Dst] = true
+		l.cfg.Routes = append(l.cfg.Routes, r)
 	}
-	carried := func(p netip.Prefix) bool { return up && (p.Addr().Is4() || w.IPv6) }
-	tunnel := func(p netip.Prefix) netcfg.Route {
-		if carried(p) {
-			return netcfg.Route{Dst: p, Interface: w.TUN}
-		}
-		return netcfg.Route{Dst: p, Type: netcfg.RouteUnreachable}
-	}
+}
 
-	// hostAhead counts a foreign host route nothing can outrank: inside
-	// the overlay it hijacks a peer's address.
-	hostAhead := func(p netip.Prefix) {
-		if overlaps(p, overlay) {
-			overlayAhead++
-		} else {
-			ahead++
-		}
-	}
-	// cover routes p as route says, or, where another route holds p's
-	// identity (another VPN's split routes, someone's reject route), its
-	// halves, and so on: ours are always more specific, so they win
-	// without touching the other's. Pieces that go direct are left to the
-	// direct routes; a host route that can't be outranked counts as
-	// ahead.
-	var cover func(p netip.Prefix, route func(netip.Prefix) netcfg.Route)
-	cover = func(p netip.Prefix, route func(netip.Prefix) netcfg.Route) {
-		switch {
-		case within(p, thrown):
-		case !taken[p] && !ours[p]:
-			add(route(p))
-		case p.Bits() == p.Addr().BitLen():
-			hostAhead(p)
-		default:
-			for _, h := range halves(p) {
-				cover(h, route)
-			}
-		}
-	}
-	reject := func(p netip.Prefix) netcfg.Route { return netcfg.Route{Dst: p, Type: netcfg.RouteUnreachable} }
+// free reports whether no route, ours or another's, holds p's identity.
+func (l *splitLayout) free(p netip.Prefix) bool { return !l.taken[p] && !l.ours[p] }
 
+func (l *splitLayout) carried(p netip.Prefix) bool { return l.up && (p.Addr().Is4() || l.w.IPv6) }
+
+// tunnel routes p into the TUN, or rejects it while the TUN can't carry
+// it.
+func (l *splitLayout) tunnel(p netip.Prefix) netcfg.Route {
+	if l.carried(p) {
+		return netcfg.Route{Dst: p, Interface: l.w.TUN}
+	}
+	return reject(p)
+}
+
+func reject(p netip.Prefix) netcfg.Route { return netcfg.Route{Dst: p, Type: netcfg.RouteUnreachable} }
+
+// hostAhead counts a foreign host route nothing can outrank: inside the
+// overlay it hijacks a peer's address.
+func (l *splitLayout) hostAhead(p netip.Prefix) {
+	if overlaps(p, l.overlay) {
+		l.overlayAhead++
+	} else {
+		l.ahead++
+	}
+}
+
+// cover routes p as route says, or, where another route holds p's
+// identity (another VPN's split routes, someone's reject route), its
+// halves, and so on: ours are always more specific, so they win without
+// touching the other's. Pieces that go direct are left to the direct
+// routes; a host route that can't be outranked counts as ahead.
+func (l *splitLayout) cover(p netip.Prefix, route func(netip.Prefix) netcfg.Route) {
+	switch {
+	case within(p, l.thrown):
+	case l.free(p):
+		l.add(route(p))
+	case p.Bits() == p.Addr().BitLen():
+		l.hostAhead(p)
+	default:
+		for _, h := range halves(p) {
+			l.cover(h, route)
+		}
+	}
+}
+
+// tunnelRoutes are the split routes into the TUN, IPv6's reject routes
+// behind them, and the overlay networks' reject routes.
+func (l *splitLayout) tunnelRoutes() {
 	all4, all6 := netip.PrefixFrom(netip.IPv4Unspecified(), 0), netip.PrefixFrom(netip.IPv6Unspecified(), 0)
 	for _, h := range halves(all4) {
-		cover(h, tunnel)
+		l.cover(h, l.tunnel)
 	}
 	h6 := halves(all6)
-	if carried(all6) {
+	if l.carried(all6) {
 		for _, h := range h6 {
 			for _, q := range halves(h) {
-				cover(q, tunnel)
+				l.cover(q, l.tunnel)
 			}
 		}
 	}
 	for _, h := range h6 {
 		switch {
-		case within(h, thrown):
-		case !taken[h] && !ours[h]:
-			add(reject(h))
-		case !carried(all6):
-			cover(h, reject)
+		case within(h, l.thrown):
+		case l.free(h):
+			l.add(reject(h))
+		case !l.carried(all6):
+			l.cover(h, reject)
 			// Carried: the TUN's routes are more specific than whoever
 			// holds h; only the reject behind them, for a crash, is
 			// missing.
@@ -245,108 +300,114 @@ func splitRoutes(w Want, s netcfg.Survey) (cfg netcfg.Config, ahead, overlayAhea
 	// halves into the TUN: when the TUN is gone (a crash takes its routes
 	// along) overlay traffic, the DNS the OS was pointed at included, is
 	// dropped instead of following the physical default route.
-	for _, p := range overlay {
-		if !taken[p] && !ours[p] {
-			add(reject(p))
+	for _, p := range l.overlay {
+		if l.free(p) {
+			l.add(reject(p))
 		}
 	}
+}
 
-	for _, p := range thrown {
+// directRoutes send what goes around the tunnel via its family's default
+// gateway; a default route's worth as its halves.
+func (l *splitLayout) directRoutes() {
+	for _, p := range l.thrown {
 		ps := []netip.Prefix{p}
 		if p.Bits() == 0 {
 			h := halves(p)
 			ps = h[:]
 		}
 		for _, p := range ps {
-			gw, ok := gateways[family(p)]
-			if !ok || taken[p] || within(p, osScoped) || insideOnLink(p, s.OnLink) {
+			gw, ok := l.gateways[family(p)]
+			if !ok || l.taken[p] || within(p, osScoped) || insideOnLink(p, l.s.OnLink) {
 				continue
 			}
-			add(netcfg.Route{Dst: p, Gateway: gw.Gateway, Interface: gw.Interface})
+			l.add(netcfg.Route{Dst: p, Gateway: gw.Gateway, Interface: gw.Interface})
 		}
 	}
+}
 
-	// The direct DNS upstreams, for the resolver's sockets bound to the
-	// physical interface: a route scoped to it (RTF_IFSCOPE), via its
-	// gateway, which only sockets bound to it use, so nothing else goes
-	// around the tunnel to that address. Not for an upstream on-link
-	// (its subnet's route is on the interface already), on loopback or
-	// link-local, or in the overlay; for IPv6 only with an IPv6 default
-	// route; not where another route holds that identity.
+// upstreamRoutes are the direct DNS upstreams', for the resolver's
+// sockets bound to the physical interface: a route scoped to it
+// (RTF_IFSCOPE), via its gateway, which only sockets bound to it use, so
+// nothing else goes around the tunnel to that address. Not for an
+// upstream on-link (its subnet's route is on the interface already), on
+// loopback or link-local, or in the overlay; for IPv6 only with an IPv6
+// default route; not where another route holds that identity.
+func (l *splitLayout) upstreamRoutes() {
 	heldScoped := map[netcfg.Route]bool{}
-	for _, r := range s.HeldScoped {
+	for _, r := range l.s.HeldScoped {
 		heldScoped[netcfg.Route{Dst: r.Dst, Scope: r.Scope}] = true
 	}
-	for _, a := range upstreamAddrs(w.Upstreams) {
+	for _, a := range upstreamAddrs(l.w.Upstreams) {
 		p := netip.PrefixFrom(a, a.BitLen())
-		gw, ok := gateways[family(p)]
+		gw, ok := l.gateways[family(p)]
 		switch {
 		case !ok || !gw.Gateway.IsValid() || gw.Interface == "":
-		case within(p, osScoped) || overlaps(p, overlay) || insideOnLink(p, s.OnLink):
+		case within(p, osScoped) || overlaps(p, l.overlay) || insideOnLink(p, l.s.OnLink):
 		case heldScoped[netcfg.Route{Dst: p, Scope: gw.Interface}]:
 		default:
-			cfg.Routes = append(cfg.Routes, netcfg.Route{Dst: p, Gateway: gw.Gateway, Interface: gw.Interface, Scope: gw.Interface})
+			l.cfg.Routes = append(l.cfg.Routes, netcfg.Route{Dst: p, Gateway: gw.Gateway, Interface: gw.Interface, Scope: gw.Interface})
 		}
 	}
+}
 
-	shadow := func(c netip.Prefix) {
-		// The overlay configurator's halves already outrank a route less
-		// specific than them.
-		exempt := slices.Clone(gatewayHosts)
-		for _, p := range overlay {
-			if c.Bits() <= p.Bits() {
-				exempt = append(exempt, p)
-			}
-		}
-		rest, ok := uncovered(c, thrownSet, exempt)
-		if !ok {
-			return
-		}
-		if c.Bits() == c.Addr().BitLen() {
-			hostAhead(c) // nothing is more specific
-			return
-		}
-		// A piece must be more specific than c, and no other route's
-		// identity: else it is split again.
-		var place func(q netip.Prefix)
-		place = func(q netip.Prefix) {
-			switch {
-			case q != c && !taken[q] && !ours[q]:
-				add(tunnel(q))
-			case q.Bits() == q.Addr().BitLen():
-				hostAhead(q)
-			default:
-				for _, h := range halves(q) {
-					place(h)
-				}
-			}
-		}
-		for _, q := range rest {
-			place(q)
-		}
-	}
-	for _, p := range s.OnLink {
+// shadowForeign shadows every on-link subnet that isn't trusted and every
+// foreign route.
+func (l *splitLayout) shadowForeign() {
+	for _, p := range l.s.OnLink {
 		if p.Bits() == p.Addr().BitLen() || p.Bits() == 0 {
 			continue // an address's own entry, a broadcast entry
 		}
-		if TrustedOnLink(p, direct) && !overlaps(p, overlay) {
+		if TrustedOnLink(p, l.direct) && !overlaps(p, l.overlay) {
 			continue
 		}
-		shadow(p)
+		l.shadow(p)
 	}
-	for _, r := range s.Routes {
-		if r.Interface == w.TUN || r.Dst.Bits() == 0 || r.Type != netcfg.RouteUnicast {
+	for _, r := range l.s.Routes {
+		if r.Interface == l.w.TUN || r.Dst.Bits() == 0 || r.Type != netcfg.RouteUnicast {
 			continue
 		}
-		shadow(r.Dst)
+		l.shadow(r.Dst)
 	}
-	slices.SortStableFunc(cfg.Routes, func(a, b netcfg.Route) int {
-		if fa, fb := family(a.Dst), family(b.Dst); fa != fb {
-			return int(fa) - int(fb)
+}
+
+// shadow routes into the TUN, more specifically than c, what of c the
+// rules don't send direct, but for the default gateways and what the
+// overlay configurator's halves outrank already.
+func (l *splitLayout) shadow(c netip.Prefix) {
+	exempt := slices.Clone(l.gatewayHosts)
+	for _, p := range l.overlay {
+		if c.Bits() <= p.Bits() {
+			exempt = append(exempt, p)
 		}
-		return 0
-	})
-	return cfg, ahead, overlayAhead
+	}
+	rest, ok := uncovered(c, l.thrownSet, exempt)
+	if !ok {
+		return
+	}
+	if c.Bits() == c.Addr().BitLen() {
+		l.hostAhead(c) // nothing is more specific
+		return
+	}
+	for _, q := range rest {
+		l.place(c, q)
+	}
+}
+
+// place routes q, a piece of c, into the TUN: a piece must be more
+// specific than c, and no other route's identity, else it is split
+// again.
+func (l *splitLayout) place(c, q netip.Prefix) {
+	switch {
+	case q != c && l.free(q):
+		l.add(l.tunnel(q))
+	case q.Bits() == q.Addr().BitLen():
+		l.hostAhead(q)
+	default:
+		for _, h := range halves(q) {
+			l.place(c, h)
+		}
+	}
 }
 
 // insideOnLink reports whether p lies inside, and is smaller than, one of

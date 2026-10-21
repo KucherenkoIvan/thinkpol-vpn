@@ -249,8 +249,7 @@ var errUnknownKind = fmt.Errorf("%w: unknown node kind", ErrUnsupportedFormat)
 // can't, and keyed lists have no repeated keys. Lengths and canonical
 // encodings are checked when decoding. Policy is Build's (see validate).
 func (s *Section) wellFormed() error {
-	self := s.Node.ID
-	if self.IsZero() {
+	if s.Node.ID.IsZero() {
 		return errors.New("node id is zero")
 	}
 	switch {
@@ -259,19 +258,42 @@ func (s *Section) wellFormed() error {
 	case !s.Node.Kind.known():
 		return fmt.Errorf("%w %d", errUnknownKind, s.Node.Kind)
 	}
-	other := func(what string, id NodeID) error {
-		if id.IsZero() {
-			return fmt.Errorf("%s: node id is zero", what)
-		}
-		if id == self {
-			return fmt.Errorf("%s: names the node itself", what)
-		}
-		return nil
+	if err := s.peersWellFormed(); err != nil {
+		return err
 	}
+	if err := s.linksWellFormed(); err != nil {
+		return err
+	}
+	if err := s.inboundWellFormed(); err != nil {
+		return err
+	}
+	if err := s.routesWellFormed(); err != nil {
+		return err
+	}
+	if err := s.rulesWellFormed(); err != nil {
+		return err
+	}
+	return blobsWellFormed(s.Blobs)
+}
 
+// otherNode checks that id, named by what, is set and isn't the section's
+// own node.
+func (s *Section) otherNode(what string, id NodeID) error {
+	if id.IsZero() {
+		return fmt.Errorf("%s: node id is zero", what)
+	}
+	if id == s.Node.ID {
+		return fmt.Errorf("%s: names the node itself", what)
+	}
+	return nil
+}
+
+// peersWellFormed checks that peers and their paths' first hops name other
+// nodes, and that no peer is listed twice.
+func (s *Section) peersWellFormed() error {
 	peers := make(map[NodeID]bool, len(s.Peers))
 	for _, p := range s.Peers {
-		if err := other("peer", p.ID); err != nil {
+		if err := s.otherNode("peer", p.ID); err != nil {
 			return err
 		}
 		if peers[p.ID] {
@@ -279,14 +301,20 @@ func (s *Section) wellFormed() error {
 		}
 		peers[p.ID] = true
 		for _, path := range p.Paths {
-			if err := other("path", path.FirstHop); err != nil {
+			if err := s.otherNode("path", path.FirstHop); err != nil {
 				return fmt.Errorf("peer %v: %w", p.ID, err)
 			}
 		}
 	}
+	return nil
+}
+
+// linksWellFormed checks that links name other nodes, at most one link
+// each.
+func (s *Section) linksWellFormed() error {
 	links := make(map[NodeID]bool, len(s.Links))
 	for _, l := range s.Links {
-		if err := other("link", l.Peer); err != nil {
+		if err := s.otherNode("link", l.Peer); err != nil {
 			return err
 		}
 		if links[l.Peer] {
@@ -294,13 +322,19 @@ func (s *Section) wellFormed() error {
 		}
 		links[l.Peer] = true
 	}
+	return nil
+}
+
+// inboundWellFormed checks that inbound links come from other nodes, at
+// most one per peer and transport.
+func (s *Section) inboundWellFormed() error {
 	type inboundKey struct {
 		peer      NodeID
 		transport string
 	}
 	inbound := make(map[inboundKey]bool, len(s.Inbound))
 	for _, in := range s.Inbound {
-		if err := other("inbound link", in.Peer); err != nil {
+		if err := s.otherNode("inbound link", in.Peer); err != nil {
 			return err
 		}
 		k := inboundKey{in.Peer, in.Transport}
@@ -309,9 +343,15 @@ func (s *Section) wellFormed() error {
 		}
 		inbound[k] = true
 	}
+	return nil
+}
+
+// routesWellFormed checks that routes and their next hops name other
+// nodes, with no destination or next hop of a route listed twice.
+func (s *Section) routesWellFormed() error {
 	routes := make(map[NodeID]bool, len(s.Routes))
 	for _, r := range s.Routes {
-		if err := other("route", r.Destination); err != nil {
+		if err := s.otherNode("route", r.Destination); err != nil {
 			return err
 		}
 		if routes[r.Destination] {
@@ -320,7 +360,7 @@ func (s *Section) wellFormed() error {
 		routes[r.Destination] = true
 		hops := make(map[NodeID]bool, len(r.NextHops))
 		for _, h := range r.NextHops {
-			if err := other("next hop", h); err != nil {
+			if err := s.otherNode("next hop", h); err != nil {
 				return fmt.Errorf("route to %v: %w", r.Destination, err)
 			}
 			if hops[h] {
@@ -329,10 +369,7 @@ func (s *Section) wellFormed() error {
 			hops[h] = true
 		}
 	}
-	if err := s.rulesWellFormed(); err != nil {
-		return err
-	}
-	return blobsWellFormed(s.Blobs)
+	return nil
 }
 
 func blobsWellFormed(blobs []BlobRef) error {
@@ -679,91 +716,21 @@ func sectionFromProto(pb *netmapv1.Section) (Section, error) {
 		return s, errors.New("no node settings")
 	}
 	var err error
-	if s.Node.ID, err = toArray[NodeID]("node id", n.GetId()); err != nil {
+	if s.Node, err = nodeFromProto(n); err != nil {
 		return s, err
 	}
-	if s.Node.Kind, err = kindFromProto(n.GetKind()); err != nil {
+	s.SpaceName = pb.GetSpaceName()
+	if s.Peers, err = peersFromProto(pb.GetPeers()); err != nil {
 		return s, err
 	}
-	if s.Node.IPv4, err = parseAddr(n.GetIpv4()); err != nil {
+	if s.Links, err = linksFromProto(pb.GetLinks()); err != nil {
 		return s, err
 	}
-	if s.Node.IPv6, err = parseAddr(n.GetIpv6()); err != nil {
+	if s.Inbound, err = inboundFromProto(pb.GetInbound()); err != nil {
 		return s, err
 	}
-	if s.Node.IPv4Network, err = parsePrefix(n.GetIpv4Network()); err != nil {
+	if s.Routes, err = routesFromProto(pb.GetRoutes()); err != nil {
 		return s, err
-	}
-	if s.Node.IPv6Network, err = parsePrefix(n.GetIpv6Network()); err != nil {
-		return s, err
-	}
-	s.Node.AllowIngress, s.Node.AllowEgress = n.GetAllowIngress(), n.GetAllowEgress()
-	s.Node.Name, s.SpaceName = n.GetName(), pb.GetSpaceName()
-	for _, l := range n.GetListeners() {
-		addr, err := parseAddrPort(l.GetAddress())
-		if err != nil {
-			return s, fmt.Errorf("listener: %w", err)
-		}
-		s.Node.Listeners = append(s.Node.Listeners, Listener{Transport: l.GetTransport(), Address: addr, Settings: l.GetSettings()})
-	}
-	for _, pp := range pb.GetPeers() {
-		p := Peer{Name: pp.GetName()}
-		if p.ID, err = toArray[NodeID]("peer id", pp.GetId()); err != nil {
-			return s, err
-		}
-		if p.WireGuardKey, err = toArray[WireGuardKey]("WireGuard key", pp.GetWireguardPublicKey()); err != nil {
-			return s, err
-		}
-		for _, a := range pp.GetAddresses() {
-			addr, err := parseAddr(a)
-			if err != nil || !addr.IsValid() {
-				return s, fmt.Errorf("peer %v: address %q", p.ID, a)
-			}
-			p.Addresses = append(p.Addresses, addr)
-		}
-		for _, path := range pp.GetPaths() {
-			hop, err := toArray[NodeID]("first hop", path.GetFirstHop())
-			if err != nil {
-				return s, err
-			}
-			p.Paths = append(p.Paths, Path{FirstHop: hop})
-		}
-		s.Peers = append(s.Peers, p)
-	}
-	for _, pl := range pb.GetLinks() {
-		var l Link
-		if l.Peer, err = toArray[NodeID]("link peer", pl.GetPeer()); err != nil {
-			return s, err
-		}
-		for _, e := range pl.GetEndpoints() {
-			addr, err := parseAddrPort(e.GetAddress())
-			if err != nil {
-				return s, fmt.Errorf("link to %v: %w", l.Peer, err)
-			}
-			l.Endpoints = append(l.Endpoints, Endpoint{
-				Transport: e.GetTransport(), Address: addr, Credential: e.GetCredential(), Settings: e.GetSettings(), Shaping: e.GetShaping(),
-			})
-		}
-		s.Links = append(s.Links, l)
-	}
-	for _, pin := range pb.GetInbound() {
-		in := InboundLink{Transport: pin.GetTransport(), Credential: pin.GetCredential(), Settings: pin.GetSettings(), Shaping: pin.GetShaping()}
-		if in.Peer, err = toArray[NodeID]("inbound peer", pin.GetPeer()); err != nil {
-			return s, err
-		}
-		// An unknown peer kind is the builder's concern; a reader keeps it.
-		in.PeerKind = NodeKind(min(uint32(pin.GetPeerKind()), 255))
-		s.Inbound = append(s.Inbound, in)
-	}
-	for _, pr := range pb.GetRoutes() {
-		var r Route
-		if r.Destination, err = toArray[NodeID]("route destination", pr.GetDestination()); err != nil {
-			return s, err
-		}
-		if r.NextHops, err = toIDs(pr.GetNextHops()); err != nil {
-			return s, err
-		}
-		s.Routes = append(s.Routes, r)
 	}
 	if s.Blobs, err = blobsFromProto(pb.GetBlobs()); err != nil {
 		return s, err
@@ -772,6 +739,127 @@ func sectionFromProto(pb *netmapv1.Section) (Section, error) {
 		return s, err
 	}
 	return s, nil
+}
+
+// nodeFromProto decodes the node's own settings and listeners.
+func nodeFromProto(n *netmapv1.NodeSettings) (NodeSettings, error) {
+	var node NodeSettings
+	var err error
+	if node.ID, err = toArray[NodeID]("node id", n.GetId()); err != nil {
+		return node, err
+	}
+	if node.Kind, err = kindFromProto(n.GetKind()); err != nil {
+		return node, err
+	}
+	if node.IPv4, err = parseAddr(n.GetIpv4()); err != nil {
+		return node, err
+	}
+	if node.IPv6, err = parseAddr(n.GetIpv6()); err != nil {
+		return node, err
+	}
+	if node.IPv4Network, err = parsePrefix(n.GetIpv4Network()); err != nil {
+		return node, err
+	}
+	if node.IPv6Network, err = parsePrefix(n.GetIpv6Network()); err != nil {
+		return node, err
+	}
+	node.AllowIngress, node.AllowEgress = n.GetAllowIngress(), n.GetAllowEgress()
+	node.Name = n.GetName()
+	for _, l := range n.GetListeners() {
+		addr, err := parseAddrPort(l.GetAddress())
+		if err != nil {
+			return node, fmt.Errorf("listener: %w", err)
+		}
+		node.Listeners = append(node.Listeners, Listener{Transport: l.GetTransport(), Address: addr, Settings: l.GetSettings()})
+	}
+	return node, nil
+}
+
+// peersFromProto decodes the peers with their addresses and paths.
+func peersFromProto(pbs []*netmapv1.Peer) ([]Peer, error) {
+	var peers []Peer
+	var err error
+	for _, pp := range pbs {
+		p := Peer{Name: pp.GetName()}
+		if p.ID, err = toArray[NodeID]("peer id", pp.GetId()); err != nil {
+			return nil, err
+		}
+		if p.WireGuardKey, err = toArray[WireGuardKey]("WireGuard key", pp.GetWireguardPublicKey()); err != nil {
+			return nil, err
+		}
+		for _, a := range pp.GetAddresses() {
+			addr, err := parseAddr(a)
+			if err != nil || !addr.IsValid() {
+				return nil, fmt.Errorf("peer %v: address %q", p.ID, a)
+			}
+			p.Addresses = append(p.Addresses, addr)
+		}
+		for _, path := range pp.GetPaths() {
+			hop, err := toArray[NodeID]("first hop", path.GetFirstHop())
+			if err != nil {
+				return nil, err
+			}
+			p.Paths = append(p.Paths, Path{FirstHop: hop})
+		}
+		peers = append(peers, p)
+	}
+	return peers, nil
+}
+
+// linksFromProto decodes the outbound links with their endpoints.
+func linksFromProto(pbs []*netmapv1.Link) ([]Link, error) {
+	var links []Link
+	var err error
+	for _, pl := range pbs {
+		var l Link
+		if l.Peer, err = toArray[NodeID]("link peer", pl.GetPeer()); err != nil {
+			return nil, err
+		}
+		for _, e := range pl.GetEndpoints() {
+			addr, err := parseAddrPort(e.GetAddress())
+			if err != nil {
+				return nil, fmt.Errorf("link to %v: %w", l.Peer, err)
+			}
+			l.Endpoints = append(l.Endpoints, Endpoint{
+				Transport: e.GetTransport(), Address: addr, Credential: e.GetCredential(), Settings: e.GetSettings(), Shaping: e.GetShaping(),
+			})
+		}
+		links = append(links, l)
+	}
+	return links, nil
+}
+
+// inboundFromProto decodes the inbound links.
+func inboundFromProto(pbs []*netmapv1.InboundLink) ([]InboundLink, error) {
+	var inbound []InboundLink
+	var err error
+	for _, pin := range pbs {
+		in := InboundLink{Transport: pin.GetTransport(), Credential: pin.GetCredential(), Settings: pin.GetSettings(), Shaping: pin.GetShaping()}
+		if in.Peer, err = toArray[NodeID]("inbound peer", pin.GetPeer()); err != nil {
+			return nil, err
+		}
+		// An unknown peer kind is the builder's concern; a reader keeps it.
+		in.PeerKind = NodeKind(min(uint32(pin.GetPeerKind()), 255))
+		inbound = append(inbound, in)
+	}
+	return inbound, nil
+}
+
+// routesFromProto decodes the routes.
+func routesFromProto(pbs []*netmapv1.Route) ([]Route, error) {
+	var routes []Route
+	var err error
+	for _, pr := range pbs {
+		var r Route
+		if r.Destination, err = toArray[NodeID]("route destination", pr.GetDestination()); err != nil {
+			return nil, err
+		}
+		if r.NextHops, err = toIDs(pr.GetNextHops()); err != nil {
+			return nil, err
+		}
+		routes = append(routes, r)
+	}
+	return routes, nil
 }
 
 func kindFromProto(k netmapv1.NodeKind) (NodeKind, error) {

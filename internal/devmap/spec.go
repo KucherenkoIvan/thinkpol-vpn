@@ -429,8 +429,37 @@ func (c *checker) spaceName(s *Spec, raw *rawSpec) {
 
 // rules reads the space's rules and chains.
 func (c *checker) rules(s *Spec, raw *rawSpec, byName, listByName map[string]int) {
+	chains := c.chains(s, raw.Chains, byName)
+	for _, v := range raw.Rules {
+		text, ok := c.value(v)
+		if !ok {
+			continue
+		}
+		r, err := netmap.ParseRule(text)
+		switch {
+		case err != nil:
+			c.errorf(v.pos, "rule: %v", err)
+		case r.Match.Kind == netmap.MatchGeoSite:
+			c.errorf(v.pos, "rule %s: geosite lists aren't in specs yet", r)
+		case r.Match.NamesAList() && !hasKey(listByName, r.Match.Value):
+			c.errorf(v.pos, "rule %s: no list %s (declare it under lists)", r, r.Match.Value)
+		case r.Action.Kind == netmap.ActionChain && !chains[r.Action.Chain]:
+			c.errorf(v.pos, "rule %s: no chain %s (declare it under chains)", r, r.Action.Chain)
+		default:
+			s.Rules = append(s.Rules, r)
+		}
+	}
+	if n := len(raw.Rules); n > 0 && len(s.Rules) == n && !netmap.EndsWithDefault(s.Rules) {
+		c.errorf(raw.Rules[n-1].pos, "the last rule must match default, so every destination has an action")
+	}
+}
+
+// chains reads the space's chains and returns the names declared. A chain
+// whose exit is wrong still counts as declared, so the rules naming it
+// aren't reported too.
+func (c *checker) chains(s *Spec, raw []rawChain, byName map[string]int) map[string]bool {
 	chains := map[string]bool{}
-	for _, rc := range raw.Chains {
+	for _, rc := range raw {
 		ch := Chain{Pos: rc.pos}
 		name, nameOK := c.value(rc.Name)
 		switch {
@@ -467,28 +496,7 @@ func (c *checker) rules(s *Spec, raw *rawSpec, byName, listByName map[string]int
 			s.Chains = append(s.Chains, ch)
 		}
 	}
-	for _, v := range raw.Rules {
-		text, ok := c.value(v)
-		if !ok {
-			continue
-		}
-		r, err := netmap.ParseRule(text)
-		switch {
-		case err != nil:
-			c.errorf(v.pos, "rule: %v", err)
-		case r.Match.Kind == netmap.MatchGeoSite:
-			c.errorf(v.pos, "rule %s: geosite lists aren't in specs yet", r)
-		case r.Match.NamesAList() && !hasKey(listByName, r.Match.Value):
-			c.errorf(v.pos, "rule %s: no list %s (declare it under lists)", r, r.Match.Value)
-		case r.Action.Kind == netmap.ActionChain && !chains[r.Action.Chain]:
-			c.errorf(v.pos, "rule %s: no chain %s (declare it under chains)", r, r.Action.Chain)
-		default:
-			s.Rules = append(s.Rules, r)
-		}
-	}
-	if n := len(raw.Rules); n > 0 && len(s.Rules) == n && !netmap.EndsWithDefault(s.Rules) {
-		c.errorf(raw.Rules[n-1].pos, "the last rule must match default, so every destination has an action")
-	}
+	return chains
 }
 
 // lists checks the spec's lists and returns them by name.
@@ -548,73 +556,113 @@ func (c *checker) nodeLists(label string, raw []scalar, byName map[string]int) [
 
 func (c *checker) node(s *Spec, rn rawNode, ipv4s, ipv6s map[netip.Addr]string) Node {
 	n := Node{Pos: rn.pos}
+	var label string
+	n.Name, label = c.nodeName(rn)
+	n.Kind = c.nodeKind(label, rn)
+	n.IPv4 = c.nodeIPv4(s, label, rn.IPv4, ipv4s)
+	n.IPv6 = c.nodeIPv6(s, label, rn.IPv6, ipv6s)
+	n.Ingress = c.setting(label, "ingress", rn.Ingress, n.Kind)
+	n.Egress = c.setting(label, "egress", rn.Egress, n.Kind)
+	c.nodeAddresses(&n, label, rn)
+	return n
+}
+
+// nodeName reads a node's name, empty when it is missing or invalid, and
+// returns the label its errors are reported under.
+func (c *checker) nodeName(rn rawNode) (name, label string) {
 	if !rn.Name.set() {
 		c.errorf(rn.pos, "node without a name")
-	} else if name, ok := c.value(rn.Name); ok {
-		if err := CheckName(name); err != nil {
+	} else if text, ok := c.value(rn.Name); ok {
+		if err := CheckName(text); err != nil {
 			c.errorf(rn.Name.pos, "%v", err)
 		} else {
-			n.Name = name
+			name = text
 		}
 	}
-	label := n.Name
+	label = name
 	if label == "" {
 		label = "node"
 		if rn.Name.text != "" {
 			label = rn.Name.text
 		}
 	}
+	return name, label
+}
 
+// nodeKind reads a node's kind: server or device, unset when invalid.
+func (c *checker) nodeKind(label string, rn rawNode) netmap.NodeKind {
 	switch kind, ok := c.value(rn.Kind); {
 	case !rn.Kind.set():
 		c.errorf(rn.pos, "%s: kind is missing (server or device)", label)
 	case !ok:
 	case kind == "server":
-		n.Kind = netmap.NodeServer
+		return netmap.NodeServer
 	case kind == "device":
-		n.Kind = netmap.NodeDevice
+		return netmap.NodeDevice
 	default:
 		c.errorf(rn.Kind.pos, "%s: kind %q is neither server nor device", label, kind)
 	}
+	return 0
+}
 
-	if v := rn.IPv4; v.set() {
-		if text, ok := c.value(v); ok {
-			a, err := netip.ParseAddr(text)
-			switch {
-			case err != nil || !a.Is4():
-				c.errorf(v.pos, "%s: ipv4 %q is not an IPv4 address", label, text)
-			case !s.IPv4Network.Contains(a) || a == s.IPv4Network.Addr():
-				c.errorf(v.pos, "%s: ipv4 %v is not a host address in %v", label, a, s.IPv4Network)
-			case ipv4s[a] != "":
-				c.errorf(v.pos, "%s: ipv4 %v is taken by %s", label, a, ipv4s[a])
-			default:
-				n.IPv4 = a
-				ipv4s[a] = label
-			}
-		}
+// nodeIPv4 reads a node's fixed IPv4 address, a host address in the space
+// that no other node has, and records it in ipv4s. It is unset when absent
+// or invalid.
+func (c *checker) nodeIPv4(s *Spec, label string, v scalar, ipv4s map[netip.Addr]string) netip.Addr {
+	if !v.set() {
+		return netip.Addr{}
 	}
-	if v := rn.IPv6; v.set() {
-		if text, ok := c.value(v); ok {
-			a, err := netip.ParseAddr(text)
-			switch {
-			case err != nil || !a.Is6() || a.Is4In6() || a.Zone() != "":
-				c.errorf(v.pos, "%s: ipv6 %q is not an IPv6 address", label, text)
-			case !s.IPv6Network.IsValid():
-				c.errorf(v.pos, "%s: a fixed ipv6 needs the space's ipv6 network in the spec", label)
-			case !s.IPv6Network.Contains(a) || a == s.IPv6Network.Addr():
-				c.errorf(v.pos, "%s: ipv6 %v is not a host address in %v", label, a, s.IPv6Network)
-			case ipv6s[a] != "":
-				c.errorf(v.pos, "%s: ipv6 %v is taken by %s", label, a, ipv6s[a])
-			default:
-				n.IPv6 = a
-				ipv6s[a] = label
-			}
-		}
+	text, ok := c.value(v)
+	if !ok {
+		return netip.Addr{}
 	}
+	a, err := netip.ParseAddr(text)
+	switch {
+	case err != nil || !a.Is4():
+		c.errorf(v.pos, "%s: ipv4 %q is not an IPv4 address", label, text)
+	case !s.IPv4Network.Contains(a) || a == s.IPv4Network.Addr():
+		c.errorf(v.pos, "%s: ipv4 %v is not a host address in %v", label, a, s.IPv4Network)
+	case ipv4s[a] != "":
+		c.errorf(v.pos, "%s: ipv4 %v is taken by %s", label, a, ipv4s[a])
+	default:
+		ipv4s[a] = label
+		return a
+	}
+	return netip.Addr{}
+}
 
-	n.Ingress = c.setting(label, "ingress", rn.Ingress, n.Kind)
-	n.Egress = c.setting(label, "egress", rn.Egress, n.Kind)
+// nodeIPv6 reads a node's fixed IPv6 address, a host address in the
+// space's IPv6 network that no other node has, and records it in ipv6s. It
+// is unset when absent or invalid.
+func (c *checker) nodeIPv6(s *Spec, label string, v scalar, ipv6s map[netip.Addr]string) netip.Addr {
+	if !v.set() {
+		return netip.Addr{}
+	}
+	text, ok := c.value(v)
+	if !ok {
+		return netip.Addr{}
+	}
+	a, err := netip.ParseAddr(text)
+	switch {
+	case err != nil || !a.Is6() || a.Is4In6() || a.Zone() != "":
+		c.errorf(v.pos, "%s: ipv6 %q is not an IPv6 address", label, text)
+	case !s.IPv6Network.IsValid():
+		c.errorf(v.pos, "%s: a fixed ipv6 needs the space's ipv6 network in the spec", label)
+	case !s.IPv6Network.Contains(a) || a == s.IPv6Network.Addr():
+		c.errorf(v.pos, "%s: ipv6 %v is not a host address in %v", label, a, s.IPv6Network)
+	case ipv6s[a] != "":
+		c.errorf(v.pos, "%s: ipv6 %v is taken by %s", label, a, ipv6s[a])
+	default:
+		ipv6s[a] = label
+		return a
+	}
+	return netip.Addr{}
+}
 
+// nodeAddresses reads a server's endpoints and listeners into n. Listeners
+// not given are derived from the endpoints; given ones must cover every
+// endpoint's transport and address family. A device has neither.
+func (c *checker) nodeAddresses(n *Node, label string, rn rawNode) {
 	if n.Kind == netmap.NodeDevice && (rn.Endpoints != nil || rn.Listen != nil) {
 		at := rn.pos
 		if len(rn.Endpoints) > 0 {
@@ -623,12 +671,12 @@ func (c *checker) node(s *Spec, rn rawNode, ipv4s, ipv6s map[netip.Addr]string) 
 			at = rn.Listen[0].pos
 		}
 		c.errorf(at, "%s: a device has no endpoints or listeners: it dials servers", label)
-		return n
+		return
 	}
 	n.Endpoints = c.addresses(label, "endpoint", rn.Endpoints, true)
 	if rn.Listen == nil {
 		n.Listeners = listenersFor(n.Endpoints)
-		return n
+		return
 	}
 	n.Listeners = c.addresses(label, "listener", rn.Listen, false)
 	at := rn.pos
@@ -640,7 +688,6 @@ func (c *checker) node(s *Spec, rn rawNode, ipv4s, ipv6s map[netip.Addr]string) 
 			c.errorf(at, "%s: endpoint %v has no %s listener of its address family", label, e, e.Transport)
 		}
 	}
-	return n
 }
 
 // setting reads a server's on/off setting: true or false, off when absent.

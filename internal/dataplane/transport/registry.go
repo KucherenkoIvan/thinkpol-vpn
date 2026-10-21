@@ -7,13 +7,19 @@ import (
 	"slices"
 )
 
-// ListenConfig is what a node's map says about one of its listeners.
+// ListenConfig is what a node's map says about one of its listeners: where
+// it listens, and how.
 type ListenConfig struct {
 	// Address is the IP literal and port to listen on.
 	Address string
 	// Settings is the transport's own settings message for the listener
 	// (camouflage target, certificate source, …).
-	Settings   []byte
+	Settings []byte
+}
+
+// Admission is whom a listener accepts links from, and where the rest
+// goes.
+type Admission struct {
 	Peers      Peers
 	Camouflage Camouflage // nil drops everything unauthenticated
 }
@@ -27,7 +33,7 @@ type Transport interface {
 	// "tcp" (a server's firewall lets a space dial its endpoints in it).
 	Network() string
 	Dialer() Dialer
-	Listen(ctx context.Context, cfg ListenConfig) (Listener, error)
+	Listen(ctx context.Context, cfg ListenConfig, admission Admission) (Listener, error)
 	// CheckEndpoint reports whether a dial entry of the map is usable.
 	CheckEndpoint(endpoint string, cfg DialConfig) error
 	// CheckInbound reports whether an inbound entry of the map is usable.
@@ -77,26 +83,33 @@ func (r *Registry) Names() []string {
 	return names
 }
 
-// Router is a transport's half of a server node's shared listener (DESIGN.md
-// "Server agent: one worker per space"): the supervisor owns the public
-// address and asks the router whose link each datagram or connection is,
-// then hands it to that space's worker. Anything not ok goes to the
-// camouflage and never reaches a worker.
-type Router interface {
+// PacketRouter is a datagram transport's half of a server node's shared
+// listener (DESIGN.md "Server agent: one worker per space"): the supervisor
+// owns the public address and asks the router whose link each datagram is,
+// then hands it to that space's worker. Anything not Routed goes to the
+// camouflage and never reaches a worker. Rejected lists the peer links of
+// the table the router can't use, e.g. two sharing a secret (both are
+// dropped, not one guessed).
+type PacketRouter interface {
 	// RouteDatagram authenticates one datagram and reports whose link it
 	// belongs to and what to do with it: only a Routed one is forwarded,
 	// untouched. The identity is set for every verdict but Unknown.
 	RouteDatagram(d []byte) (Identity, Verdict)
-	// RouteStream reads the start of a new connection (for tls, the
-	// ClientHello) without terminating anything, and reports whose link it
-	// is and the bytes it consumed. Datagram transports report false.
-	RouteStream(conn net.Conn) (peer Identity, consumed []byte, ok bool)
-	// Rejected lists the peer links of the table the router can't use,
-	// e.g. two sharing a secret (both are dropped, not one guessed).
 	Rejected() []PeerError
 }
 
-// Verdict is a Router's decision on one datagram.
+// StreamRouter is a stream transport's half of a shared listener, as
+// PacketRouter is a datagram transport's: it says whose link each new
+// connection is.
+type StreamRouter interface {
+	// RouteStream reads the start of a new connection (for tls, the
+	// ClientHello) without terminating anything, and reports whose link it
+	// is and the bytes it consumed.
+	RouteStream(conn net.Conn) (peer Identity, consumed []byte, ok bool)
+	Rejected() []PeerError
+}
+
+// Verdict is a PacketRouter's decision on one datagram.
 type Verdict uint8
 
 const (
@@ -112,13 +125,6 @@ const (
 	Replayed
 )
 
-// Routable is a Transport that can sit behind a shared listener.
-type Routable interface {
-	Transport
-	// Router routes for peers, following their changes.
-	Router(peers Peers) Router
-}
-
 // HandoffListener is a worker's listener for a stream transport behind a
 // shared listener: the supervisor accepted and routed the connection and
 // passes it on with the bytes its router consumed.
@@ -129,32 +135,38 @@ type HandoffListener interface {
 
 // PacketRoutable is a datagram transport behind a shared listener. The
 // supervisor opens the public socket with ListenPacket, routes every datagram
-// it reads with the Router and forwards it untouched to its space's worker;
-// the worker serves what it is forwarded with ListenForwarded, whose replies
-// go back out through the supervisor's socket.
+// it reads with the PacketRouter and forwards it untouched to its space's
+// worker; the worker serves what it is forwarded with ListenForwarded, whose
+// replies go back out through the supervisor's socket.
 type PacketRoutable interface {
-	Routable
+	Transport
+	// PacketRouter routes for peers, following their changes.
+	PacketRouter(peers Peers) PacketRouter
 	// ListenPacket opens the public UDP socket a listener of the map
-	// describes (cfg.Address and cfg.Settings; Peers and Camouflage are
-	// unused), checking its settings as Listen would.
+	// describes, checking its settings as Listen would.
 	ListenPacket(ctx context.Context, cfg ListenConfig) (*net.UDPConn, error)
 	// ListenForwarded listens on pc, which it owns from then on:
 	// datagrams the supervisor routed to this worker in, replies out.
-	// cfg.Address and cfg.Settings are unused.
-	ListenForwarded(pc net.PacketConn, cfg ListenConfig) (Listener, error)
+	ListenForwarded(pc net.PacketConn, admission Admission) (Listener, error)
 }
 
 // StreamRoutable is a stream transport behind a shared listener. The
 // supervisor accepts connections on the public listener ListenStream opens,
-// routes each with the Router (which reads the start of the connection) and
-// passes the connection, with the bytes the router consumed, to its space's
-// worker, whose Handoff listener takes it from there.
+// routes each with the StreamRouter (which reads the start of the
+// connection) and passes the connection, with the bytes the router
+// consumed, to its space's worker, whose Handoff listener takes it from
+// there.
 type StreamRoutable interface {
-	Routable
+	Transport
+	// StreamRouter routes for peers, following their changes.
+	StreamRouter(peers Peers) StreamRouter
 	// ListenStream opens the public listener a listener of the map
-	// describes (cfg.Address and cfg.Settings).
+	// describes.
 	ListenStream(ctx context.Context, cfg ListenConfig) (net.Listener, error)
 	// Handoff is a worker's listener for the connections the supervisor
-	// passes on. cfg.Address is unused.
-	Handoff(cfg ListenConfig) (HandoffListener, error)
+	// passes on. The listener's settings stay with the supervisor's public
+	// listener (ListenStream): a worker's shared listener doesn't carry
+	// them yet, so a transport whose handoff needs them (tls, TP-028)
+	// adds them to the shared listener's message first.
+	Handoff(admission Admission) (HandoffListener, error)
 }

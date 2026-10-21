@@ -11,6 +11,7 @@ import (
 
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -25,8 +26,8 @@ func WriteStatus(w io.Writer, st *localapiv1.Status, now time.Time) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	line := func(format string, args ...any) { _, _ = fmt.Fprintf(tw, format+"\n", args...) }
 
-	line("state:\t%s", enumName(st.GetConnection(), "CONNECTION_"))
-	health := enumName(st.GetHealth().GetLevel(), "HEALTH_LEVEL_")
+	line("state:\t%s", displayName(st.GetConnection()))
+	health := displayName(st.GetHealth().GetLevel())
 	if p := st.GetHealth().GetProblems(); len(p) > 0 {
 		health += ": " + strings.Join(p, ", ")
 	}
@@ -36,7 +37,10 @@ func WriteStatus(w io.Writer, st *localapiv1.Status, now time.Time) error {
 		space += " (removed from it)"
 	}
 	line("space:\t%s, map version %d", space, st.GetMapVersion())
-	line("mode:\t%s", enumName(st.GetMode(), "MODE_"))
+	if n := st.GetMapsRefused(); n > 0 {
+		line("maps refused:\t%d since the node started (the service's log says why)", n)
+	}
+	line("mode:\t%s", displayName(st.GetMode()))
 	if p := st.GetRulePreset(); p != "" {
 		switch {
 		case st.GetRulePresetUnavailable():
@@ -104,65 +108,80 @@ func writeDataPlane(line func(string, ...any), dp *localapiv1.DataPlane, now tim
 		}
 		line("egresses:\t%s", strings.Join(names, ", "))
 	}
-	if ps := dp.GetPeers(); len(ps) > 0 {
-		line("peers:")
-		for _, p := range ps {
-			via := "no path yet"
-			if hop := p.GetFirstHop(); hop == p.GetNodeId() {
-				via = "direct"
-			} else if hop != "" {
-				via = "via " + hop
-			}
-			hs := "no handshake"
-			if p.GetLastHandshake() != nil {
-				hs = "handshake " + ago(p.GetLastHandshake(), now)
-			}
-			line("  %s\t%s\t%s\t%s\trx %s\ttx %s", p.GetNodeId(), strings.Join(p.GetAddresses(), " "), via, hs,
-				byteCount(p.GetRxBytes()), byteCount(p.GetTxBytes()))
-		}
-	}
-	if ns := dp.GetNeighbors(); len(ns) > 0 {
-		line("neighbors:")
-		for _, n := range ns {
-			state := "down"
-			if n.GetUp() {
-				state = "up " + round(n.GetUpFor().AsDuration()).String()
-			}
-			var links []string
-			for _, l := range n.GetLinks() {
-				var flags []string
-				if l.GetDialed() {
-					flags = append(flags, "dialed")
-				}
-				if l.GetActive() {
-					flags = append(flags, "active")
-				}
-				if l.GetUp() {
-					flags = append(flags, "up")
-				}
-				links = append(links, l.GetTransport()+" ("+strings.Join(flags, " ")+")")
-			}
-			line("  %s\t%s\trtt %s\t%s", n.GetNodeId(), state, rtt(n.GetRtt()), strings.Join(links, ", "))
-		}
-	}
+	writePeers(line, dp.GetPeers(), now)
+	writeNeighbors(line, dp.GetNeighbors())
 	if ss := dp.GetSkipped(); len(ss) > 0 {
 		line("skipped from the map:")
 		for _, s := range ss {
 			line("  %s %s:\t%s", s.GetItem(), s.GetNodeId(), s.GetReason())
 		}
 	}
-	if n := dp.GetCounters()["route_table.routes"]; n > 0 {
-		line("route table:\t%d routes, re-applied %d times", n, dp.GetCounters()["route_table.reapplies"])
-		if ahead := dp.GetCounters()["route_table.rules_ahead"]; ahead > 0 {
+	writeCounters(line, dp.GetCounters())
+}
+
+func writePeers(line func(string, ...any), ps []*localapiv1.Peer, now time.Time) {
+	if len(ps) == 0 {
+		return
+	}
+	line("peers:")
+	for _, p := range ps {
+		via := "no path yet"
+		if hop := p.GetFirstHop(); hop == p.GetNodeId() {
+			via = "direct"
+		} else if hop != "" {
+			via = "via " + hop
+		}
+		hs := "no handshake"
+		if p.GetLastHandshake() != nil {
+			hs = "handshake " + ago(p.GetLastHandshake(), now)
+		}
+		line("  %s\t%s\t%s\t%s\trx %s\ttx %s", p.GetNodeId(), strings.Join(p.GetAddresses(), " "), via, hs,
+			byteCount(p.GetRxBytes()), byteCount(p.GetTxBytes()))
+	}
+}
+
+func writeNeighbors(line func(string, ...any), ns []*localapiv1.Neighbor) {
+	if len(ns) == 0 {
+		return
+	}
+	line("neighbors:")
+	for _, n := range ns {
+		state := "down"
+		if n.GetUp() {
+			state = "up " + round(n.GetUpFor().AsDuration()).String()
+		}
+		var links []string
+		for _, l := range n.GetLinks() {
+			var flags []string
+			if l.GetDialed() {
+				flags = append(flags, "dialed")
+			}
+			if l.GetActive() {
+				flags = append(flags, "active")
+			}
+			if l.GetUp() {
+				flags = append(flags, "up")
+			}
+			links = append(links, l.GetTransport()+" ("+strings.Join(flags, " ")+")")
+		}
+		line("  %s\t%s\trtt %s\t%s", n.GetNodeId(), state, rtt(n.GetRtt()), strings.Join(links, ", "))
+	}
+}
+
+// writeCounters writes the route table's counters, and the nonzero drops.
+func writeCounters(line func(string, ...any), counters map[string]uint64) {
+	if n := counters["route_table.routes"]; n > 0 {
+		line("route table:\t%d routes, re-applied %d times", n, counters["route_table.reapplies"])
+		if ahead := counters["route_table.rules_ahead"]; ahead > 0 {
 			line("\t%d policy rules of other software come first and may route around the tunnel", ahead)
 		}
-		if ahead := dp.GetCounters()["route_table.overlay_routes_ahead"]; ahead > 0 {
+		if ahead := counters["route_table.overlay_routes_ahead"]; ahead > 0 {
 			line("\t%d routes of other software take overlay addresses around the tunnel", ahead)
 		}
 	}
 	var drops []string
-	for _, name := range slices.Sorted(maps.Keys(dp.GetCounters())) {
-		if v := dp.GetCounters()[name]; v > 0 && !trafficCounters[name] {
+	for _, name := range slices.Sorted(maps.Keys(counters)) {
+		if v := counters[name]; v > 0 && counterKinds[name] == dropCounter {
 			drops = append(drops, fmt.Sprintf("%s %d", name, v))
 		}
 	}
@@ -171,14 +190,15 @@ func writeDataPlane(line func(string, ...any), dp *localapiv1.DataPlane, now tim
 	}
 }
 
-// trafficCounters count what went through (or is in place), not what was
-// dropped.
-var trafficCounters = map[string]bool{
-	"router.routed": true, "router.delivered": true, "router.forwarded": true, "path.sent": true, "path.delivered": true, "path.forwarded": true,
-	"route_table.routes": true, "route_table.reapplies": true, "route_table.rules_ahead": true,
-	"route_table.overlay_routes_ahead": true,
-	"interface.reapplies":              true,
-}
+// counterKinds are dataPlaneCounters' kinds by name; a counter the table
+// doesn't know (a newer service's) is a drop.
+var counterKinds = func() map[string]counterKind {
+	m := make(map[string]counterKind, len(dataPlaneCounters))
+	for _, c := range dataPlaneCounters {
+		m[c.name] = c.kind
+	}
+	return m
+}()
 
 // WriteSpaces writes the spaces, the active one marked.
 func WriteSpaces(w io.Writer, spaces []*localapiv1.Space) error {
@@ -219,8 +239,29 @@ func WriteJSON(w io.Writer, m proto.Message) error {
 	return err
 }
 
-func enumName(e interface{ String() string }, prefix string) string {
-	return strings.ToLower(strings.ReplaceAll(strings.TrimPrefix(e.String(), prefix), "_", " "))
+// displayNames are what WriteStatus calls the status's enum values.
+var displayNames = map[protoreflect.Enum]string{
+	localapiv1.Connection_CONNECTION_UNSPECIFIED:    "unspecified",
+	localapiv1.Connection_CONNECTION_DISCONNECTED:   "disconnected",
+	localapiv1.Connection_CONNECTION_CONNECTING:     "connecting",
+	localapiv1.Connection_CONNECTION_CONNECTED:      "connected",
+	localapiv1.Connection_CONNECTION_SERVING:        "serving",
+	localapiv1.HealthLevel_HEALTH_LEVEL_UNSPECIFIED: "unspecified",
+	localapiv1.HealthLevel_HEALTH_LEVEL_OK:          "ok",
+	localapiv1.HealthLevel_HEALTH_LEVEL_DEGRADED:    "degraded",
+	localapiv1.HealthLevel_HEALTH_LEVEL_DOWN:        "down",
+	localapiv1.Mode_MODE_UNSPECIFIED:                "unspecified",
+	localapiv1.Mode_MODE_DEVICE:                     "device",
+	localapiv1.Mode_MODE_SERVER:                     "server",
+}
+
+// displayName is e's display name; a value the table doesn't know (a
+// newer service's) is "unknown".
+func displayName(e protoreflect.Enum) string {
+	if name, ok := displayNames[e]; ok {
+		return name
+	}
+	return "unknown"
 }
 
 func ago(t *timestamppb.Timestamp, now time.Time) string {

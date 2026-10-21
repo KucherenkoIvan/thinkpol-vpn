@@ -31,7 +31,7 @@ func harness(tr *Transport, address string, s transport.Shaping) transporttest.H
 			if addr == "" {
 				addr = address
 			}
-			l, err := tr.Listen(context.Background(), transport.ListenConfig{Address: addr, Peers: peers, Camouflage: camouflage})
+			l, err := tr.Listen(context.Background(), transport.ListenConfig{Address: addr}, transport.Admission{Peers: peers, Camouflage: camouflage})
 			if err != nil {
 				t.Fatal(err)
 			}
