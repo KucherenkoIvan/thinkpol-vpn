@@ -642,3 +642,33 @@ func TestAGuardSuccessSaysHowManyFailuresWereHeldBack(t *testing.T) {
 		t.Errorf("a success after a failure that was warned: %q, want nothing more", c)
 	}
 }
+
+// Within a warn window, a failure whose (redacted) text differs from the
+// last one warned is warned at once, with the count held back before it;
+// one that differs only in its addresses is the same failure.
+func TestADifferentFailureIsWarnedWithinTheWindow(t *testing.T) {
+	f := &fakeConfigurator{}
+	g := newFakeGuard(f)
+	var buf lockedBuffer
+	e := routetable.OpenWithClock(f, g, slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})), (&fakeClock{now: time.Unix(0, 0)}).read)
+	defer func() { _ = e.Close() }()
+	routetable.PauseWatching(e)
+	failWith := func(msg string) {
+		g.setFail(errors.New(msg))
+		routetable.GuardApply(t.Context(), e, routetable.Want{TUN: "thinkpol0"})
+	}
+	warns := func() []string { return buf.lines("applying the leak guard failed") }
+
+	failWith("pfctl -s rules: no answer within 15s")
+	failWith("pfctl -s rules: no answer within 15s")
+	failWith(`pf lists the guard's rule 4 as "pass out quick inet6 proto tcp from any to 2001:db8:53::1 port = 53 keep state", not stateless`)
+	failWith(`pf lists the guard's rule 4 as "pass out quick inet6 proto tcp from any to 2001:db8:53::2 port = 53 keep state", not stateless`)
+	w := warns()
+	if len(w) != 2 || !strings.Contains(w[1], "rule 4") || !strings.Contains(w[1], "suppressed=1") {
+		t.Fatalf("warns %q, want the second failure's rule at once, with suppressed=1, and its address-only change held back", w)
+	}
+	failWith("pfctl -s rules: no answer within 15s")
+	if w := warns(); len(w) != 3 || !strings.Contains(w[2], "no answer") || !strings.Contains(w[2], "suppressed=1") {
+		t.Fatalf("warns %q, want the first failure again, at once", w)
+	}
+}

@@ -553,7 +553,7 @@ func (e *Enforcer) applyGuard(ctx context.Context, w Want) {
 	switch {
 	case err == nil:
 		e.guardFailing, e.status.GuardEnforced, e.status.GuardError = false, true, ""
-		e.cleared(&e.guardWarn, "route table: the leak guard is in place again")
+		e.logCleared(&e.guardWarn, "route table: the leak guard is in place again")
 	case errors.Is(err, ErrGuardUnsupported):
 		e.guardFailing, e.guardUnsupported = false, true
 		e.status.GuardEnforced, e.status.GuardError = false, ErrorGuardUnsupported
@@ -677,7 +677,7 @@ func (e *Enforcer) subscribe(ctx context.Context, w *watches) {
 		e.warnRetry(&e.watchWarn, "route table: watching routes failed, retrying", err)
 		w.ch, w.rewatch = nil, time.After(RetryAfter)
 	default:
-		e.cleared(&e.watchWarn, "route table: watching routes again")
+		e.logCleared(&e.watchWarn, "route table: watching routes again")
 	}
 }
 
@@ -700,7 +700,7 @@ func (e *Enforcer) subscribeGuard(ctx context.Context, w *watches) {
 		e.warnRetry(&e.guardWatchWarn, "route table: watching the leak guard failed, retrying", err)
 		w.gch, w.regwatch = nil, time.After(RetryAfter)
 	default:
-		e.cleared(&e.guardWatchWarn, "route table: watching the leak guard again")
+		e.logCleared(&e.guardWatchWarn, "route table: watching the leak guard again")
 	}
 }
 
@@ -744,7 +744,7 @@ func (e *Enforcer) reapply(ctx context.Context) {
 	}
 	switch err := e.apply(ctx, *w, true); {
 	case err == nil:
-		e.cleared(&e.reapplyWarn, "route table: put back again")
+		e.logCleared(&e.reapplyWarn, "route table: put back again")
 	case ctx.Err() == nil:
 		e.warnRetry(&e.reapplyWarn, "route table: putting it back failed, retrying", err)
 	}
