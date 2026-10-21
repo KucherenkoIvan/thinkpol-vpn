@@ -46,6 +46,16 @@ Round 1 (2026-10-21): correctness, design and a second-opinion review.
 - [x] R1.8 The exit predicate is raw `AllowEgress`; the engine and netmap use `Kind == NodeServer && AllowEgress` (`MayEndAChain`). Use that.
 - [x] R1.9 Stale text: `status.go` (~59, ~171) calls `DNSUpstreamsRefused` "a server's" (now an exit's); `tickets/backlog/TP-083-…` (~42) says `DataPlane.Forward` keeps a worker off the host's resolvers (now `inWorker`).
 - [x] R1.10 Nits: drop the comment above the `InWorker` check in `newResolver` (it repeats the field's doc); `buildEditing` says it edits node a only (rename or take the node) and `build` calls it instead of copying it; `dnsWorkerConfig`'s comment says "falls back from" (a worker never falls back); rename `…IsReportedNotSilentlyDropped` to match DESIGN's "not asked".
+Round 2 (2026-10-21): correctness, design and a second-opinion review.
+- [ ] R2.1 `EgressMustStayClosed` is documented as a block ("EgressAllowed may never name", "stay closed even when EgressAllowed names them") that nothing enforces: config accepts such prefixes, `EgressRefused` checks `allowed` first, the root jumps to accept before the drops, and DESIGN says EgressAllowed may name exceptions. Keep this ticket's scope: rename it for what it is (e.g. `EgressNotWorthAllowing`: the addresses the refusal hint never suggests opening), make its comment and test comment say nothing stops an operator from allowing them, and point `egressBlocked`'s comment at it instead of listing the metadata hosts twice ("Each is also inside egressBlocked."). Enforcing it is a separate decision, filed as a backlog ticket.
+- [ ] R2.2 IPv4-mapped forms slip through: `::ffff:168.63.129.16` (and the other mapped metadata, loopback and link-local addresses) is refused but gets the `-egress-allowed` hint. `Unmap()` first. Test the mapped forms, and that widening a metadata host to its whole range would fail the test (e.g. an address in `100.64.0.0/10` other than `100.100.100.200` stays hint-able, or say why not).
+- [ ] R2.3 A test that every address the check names is inside `egressBlocked` (narrowing a blocked prefix must fail a test), and the agent's hint test covers a named metadata host, not only `169.254.169.254`.
+- [ ] R2.4 The family order never reaches a running worker: `serveSpace` takes `DNSUpstreams` from the first config only, so a later order (or a later `-dns-upstream` set) is dropped until the worker restarts. Pass a changed `DNSUpstreams` from later configs into the running resolver (`dns.Server.SetUpstreams`), with a test through `serveSpace`. An uplink change alone doesn't re-run `apply`: don't build that hook here; say in DESIGN and the Log that the order follows the uplink as of the last map applied.
+- [ ] R2.5 One `Egress()` read per `apply`, passed to both `workerUpstreams` and `egressAttrs`, so the order and the "map applied" log line agree.
+- [ ] R2.6 The non-exit's no-upstream warning still contradicts its comment and DESIGN ("reports nothing"): warn only when the section `MayEndAChain()`, debug otherwise, and update the comment and `TestServeSpace` to match.
+- [ ] R2.7 DESIGN.md "Upstreams": add "; the uplink's family first when it carries only one" (and R2.4's "as of the last map applied").
+- [ ] R2.8 `buildEditing(…, s.b, …)` swaps a and b and then sends the sections to the wrong keys. Edit a pointer to the chosen section instead of swapping.
+- [ ] R2.9 Nits: `uplinkFamilyOrder` → a verb name (e.g. `orderForUplink`) that always returns a copy; delete the parenthetical "(workerUpstreams refused every one and logged each)" in `resolver_test.go`; an `exitSpaces(t, ups...)` test helper instead of the same exit setup three times.
 
 ## Log
 - 2026-10-18 created in backlog (TP-098 review round 3)
@@ -77,3 +87,4 @@ Round 1 (2026-10-21): correctness, design and a second-opinion review.
 - 2026-10-21 make lint passes on the branch tip (the rewrite merge brought TP-116's go1.26.10, so vulncheck is green); make test passes (741c77b)
 - 2026-10-21 make lab-test passes on 741c77b: the lab suite and all 35 packages' tests in lab nodes. An earlier run had TestTwoSpacesShareAListener fail once under the parallel load (no reply for a dialer); it passed alone and in the final run, and touches nothing this branch changed
 - 2026-10-21 in-progress → review
+- 2026-10-21 review → has-errors (round 2: R2.1–R2.9)
