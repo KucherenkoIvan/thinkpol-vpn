@@ -107,3 +107,4 @@ Round 1 (2026-10-21): correctness (fix first), design (fix first), second opinio
 - 2026-10-22 round 2, R2.3 (9fafbf1): DataPlane.inWorker(), routetable.ErrorCode, RouteTableGuardFailed/RouteTableGuardUnsupported, blobListeners without the Service and with closeAll, DataPlane.Namespace, Notes; TestAWorkerOnADeviceSectionLeavesTheOSResolverAlone's device adapters fail the test if called, and keeping the base's Device in workerDataPlane fails it on SetSystemDNS
 - 2026-10-22 correction to the 2026-10-21 line on visible output: for an enum value the CLI doesn't know, `thinkpol status` printed the value's number (protobuf's String() of an unknown value, lowercased by enumName), and prints "unknown" now
 - 2026-10-22 round 2 checks at 9fafbf1: make lint and make test green; make lab-test green (LAB_P=4, 3m12s)
+- 2026-10-22 in-progress → review
