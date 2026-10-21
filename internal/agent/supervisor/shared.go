@@ -118,11 +118,12 @@ type shared struct {
 	nextID    uint32
 	listeners map[string]*publicListener // by transport and address
 	tables    map[string]*transport.PeerTable
-	// routers holds one Router per transport, shared by all its listeners
-	// and kept across their reopens: replay state is per credential, not
-	// per socket.
-	routers map[string]transport.Router
-	closed  bool
+	// packetRouters and streamRouters hold one router per transport,
+	// shared by all its listeners and kept across their reopens: replay
+	// state is per credential, not per socket.
+	packetRouters map[string]transport.PacketRouter
+	streamRouters map[string]transport.StreamRouter
+	closed        bool
 
 	// Read on every datagram, so swapped as a whole.
 	routes atomic.Pointer[map[transport.SpaceID]*route]
@@ -133,7 +134,7 @@ func newShared(reg *transport.Registry, fair FairShare, log *slog.Logger, now fu
 	s := &shared{
 		reg: reg, fair: fair, log: log, now: now, routingLimit: maxRoutingStreams,
 		listeners: map[string]*publicListener{}, tables: map[string]*transport.PeerTable{},
-		routers: map[string]transport.Router{},
+		packetRouters: map[string]transport.PacketRouter{}, streamRouters: map[string]transport.StreamRouter{},
 	}
 	s.routes.Store(&map[transport.SpaceID]*route{})
 	s.byID.Store(&map[uint32]*publicListener{})
@@ -164,20 +165,30 @@ type publicListener struct {
 	id       uint32
 	cfg      Listener
 	settings string
-	udp      *net.UDPConn // a datagram transport's
-	ln       net.Listener // a stream transport's
-	router   transport.Router
-	camo     atomic.Pointer[transport.Camouflage]
-	ctx      context.Context // ends when the listener closes
-	cancel   context.CancelFunc
-	closing  sync.Once
-	wg       sync.WaitGroup
-	routing  chan struct{} // a token per stream being routed
+	// A datagram transport's socket and router, or a stream transport's.
+	udp     *net.UDPConn
+	packets transport.PacketRouter
+	ln      net.Listener
+	streams transport.StreamRouter
+	camo    atomic.Pointer[transport.Camouflage]
+	ctx     context.Context // ends when the listener closes
+	cancel  context.CancelFunc
+	closing sync.Once
+	wg      sync.WaitGroup
+	routing chan struct{} // a token per stream being routed
 
 	routed, unauthenticated, noSpace, streamsOverloaded atomic.Uint64
 }
 
 func listenerKey(l Listener) string { return l.Transport + " " + l.Address }
+
+// rejected are the peer links the listener's router can't use.
+func (pl *publicListener) rejected() []transport.PeerError {
+	if pl.packets != nil {
+		return pl.packets.Rejected()
+	}
+	return pl.streams.Rejected()
+}
 
 // setSpaces makes the merged credential tables and the routes those of
 // inbound: per space, the links each transport accepts, from the space's
@@ -226,12 +237,24 @@ func (s *shared) table(name string) *transport.PeerTable {
 	return t
 }
 
-// router is the transport's one Router over its merged table; s.mu held.
-func (s *shared) router(name string, t transport.Routable) transport.Router {
-	r := s.routers[name]
+// packetRouter is the transport's one router over its merged table; s.mu
+// held.
+func (s *shared) packetRouter(name string, t transport.PacketRoutable) transport.PacketRouter {
+	r := s.packetRouters[name]
 	if r == nil {
-		r = t.Router(s.table(name))
-		s.routers[name] = r
+		r = t.PacketRouter(s.table(name))
+		s.packetRouters[name] = r
+	}
+	return r
+}
+
+// streamRouter is the transport's one router over its merged table; s.mu
+// held.
+func (s *shared) streamRouter(name string, t transport.StreamRoutable) transport.StreamRouter {
+	r := s.streamRouters[name]
+	if r == nil {
+		r = t.StreamRouter(s.table(name))
+		s.streamRouters[name] = r
 	}
 	return r
 }
@@ -307,14 +330,14 @@ func (s *shared) open(ctx context.Context, l Listener) (*publicListener, error) 
 			return nil, err
 		}
 		pl.udp = pc
-		pl.router = s.router(l.Transport, t)
+		pl.packets = s.packetRouter(l.Transport, t)
 	case transport.StreamRoutable:
 		ln, err := t.ListenStream(ctx, cfg)
 		if err != nil {
 			return nil, err
 		}
 		pl.ln = ln
-		pl.router = s.router(l.Transport, t)
+		pl.streams = s.streamRouter(l.Transport, t)
 	default:
 		return nil, errors.New("the transport can't sit behind a shared listener")
 	}
@@ -358,7 +381,7 @@ func (pl *publicListener) info() ListenerInfo {
 		ID: pl.id, Transport: pl.cfg.Transport, Address: pl.cfg.Address,
 		Routed: pl.routed.Load(), Unauthenticated: pl.unauthenticated.Load(), NoSpace: pl.noSpace.Load(),
 		StreamsOverloaded: pl.streamsOverloaded.Load(),
-		Rejected:          pl.router.Rejected(),
+		Rejected:          pl.rejected(),
 	}
 }
 
@@ -436,7 +459,7 @@ func (s *shared) serveDatagrams(pl *publicListener) {
 		}
 		pause = 0
 		d := buf[:n]
-		peer, verdict := pl.router.RouteDatagram(d)
+		peer, verdict := pl.packets.RouteDatagram(d)
 		var r *route
 		if verdict != transport.Unknown {
 			r = (*s.routes.Load())[peer.Space]
@@ -529,7 +552,7 @@ func (s *shared) serveStreams(pl *publicListener) {
 func (s *shared) routeStream(pl *publicListener, conn net.Conn) {
 	_ = conn.SetReadDeadline(s.now().Add(streamRouteTimeout))
 	stop := context.AfterFunc(pl.ctx, func() { _ = conn.SetReadDeadline(time.Unix(1, 0)) })
-	peer, consumed, ok := pl.router.RouteStream(conn)
+	peer, consumed, ok := pl.streams.RouteStream(conn)
 	stop()
 	_ = conn.SetReadDeadline(time.Time{})
 	var r *route

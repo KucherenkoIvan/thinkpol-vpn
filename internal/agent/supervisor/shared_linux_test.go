@@ -79,7 +79,7 @@ func sharedServe(ctx context.Context, s worker.Session) error {
 					continue
 				}
 				serving[l.ID] = true
-				tl, err := l.Listen(reg, transport.ListenConfig{Peers: peers})
+				tl, err := l.Listen(reg, transport.Accept{Peers: peers})
 				if err != nil {
 					return err
 				}

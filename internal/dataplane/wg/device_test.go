@@ -56,7 +56,7 @@ func newNode(t *testing.T, n *memory.Network, name string) *pnode {
 		t.Fatal(err)
 	}
 	p := &pnode{Node: node, name: name, peers: transport.NewPeerTable()}
-	l, err := n.Listen(context.Background(), transport.ListenConfig{Address: name, Peers: p.peers})
+	l, err := n.Listen(context.Background(), transport.ListenConfig{Address: name}, transport.Accept{Peers: p.peers})
 	if err != nil {
 		t.Fatal(err)
 	}

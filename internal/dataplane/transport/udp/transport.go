@@ -98,12 +98,12 @@ func parseEndpoint(endpoint string) (netip.AddrPort, error) {
 }
 
 // Listen implements transport.Transport.
-func (t *Transport) Listen(ctx context.Context, cfg transport.ListenConfig) (transport.Listener, error) {
+func (t *Transport) Listen(ctx context.Context, cfg transport.ListenConfig, accept transport.Accept) (transport.Listener, error) {
 	pc, err := t.ListenPacket(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
-	return t.ListenOn(pc, cfg), nil
+	return t.ListenOn(pc, accept), nil
 }
 
 // ListenPacket implements transport.PacketRoutable: the socket Listen would
@@ -125,8 +125,8 @@ func (t *Transport) ListenPacket(ctx context.Context, cfg transport.ListenConfig
 }
 
 // ListenForwarded implements transport.PacketRoutable with ListenOn.
-func (t *Transport) ListenForwarded(pc net.PacketConn, cfg transport.ListenConfig) (transport.Listener, error) {
-	return t.ListenOn(pc, cfg), nil
+func (t *Transport) ListenForwarded(pc net.PacketConn, accept transport.Accept) (transport.Listener, error) {
+	return t.ListenOn(pc, accept), nil
 }
 
 // listenNetwork binds one address family, as the map's listeners mean it:
@@ -139,16 +139,17 @@ func listenNetwork(ap netip.AddrPort) string {
 	return "udp6"
 }
 
-// ListenOn listens on pc, which it owns from now on; cfg.Address is
-// ignored. pc need not be a socket: a worker behind a shared listener reads
-// the datagrams the supervisor routed to it and writes replies back the
-// same way.
-func (t *Transport) ListenOn(pc net.PacketConn, cfg transport.ListenConfig) *Listener {
-	return newListener(t, pc, cfg.Peers, cfg.Camouflage)
+// ListenOn listens on pc, which it owns from now on. pc need not be a
+// socket: a worker behind a shared listener reads the datagrams the
+// supervisor routed to it and writes replies back the same way.
+func (t *Transport) ListenOn(pc net.PacketConn, accept transport.Accept) *Listener {
+	return newListener(t, pc, accept.Peers, accept.Camouflage)
 }
 
-// Router implements transport.Routable.
-func (t *Transport) Router(peers transport.Peers) transport.Router { return newRouter(t, peers) }
+// PacketRouter implements transport.PacketRoutable.
+func (t *Transport) PacketRouter(peers transport.Peers) transport.PacketRouter {
+	return newRouter(t, peers)
+}
 
 // Counters are what a udp receiver took in, dropped and why. Stale
 // timestamps are counted apart because they point at a clock that is off.

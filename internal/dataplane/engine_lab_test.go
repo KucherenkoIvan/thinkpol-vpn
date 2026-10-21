@@ -87,7 +87,7 @@ func (nd *labNode) start(t *testing.T, reg *transport.Registry, tr *udp.Transpor
 	nd.engine = e
 	t.Cleanup(func() { _ = e.Close() })
 	if listenOn != "" {
-		l, err := tr.Listen(context.Background(), transport.ListenConfig{Address: listenOn, Peers: e.Inbound("udp")})
+		l, err := tr.Listen(context.Background(), transport.ListenConfig{Address: listenOn}, transport.Accept{Peers: e.Inbound("udp")})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -152,7 +152,7 @@ func startM0InNamespaces(t *testing.T, prefix string) (*labNode, *labNode, *labN
 		nodes[nd] = &labNode{node: nd, ns: namespace(t, prefix+"-"+strings.TrimPrefix(nd.name, "device-"))}
 	}
 	nodes[s].start(t, reg, tr, ports[0].String())
-	l6, err := tr.Listen(context.Background(), transport.ListenConfig{Address: ports[1].String(), Peers: nodes[s].engine.Inbound("udp")})
+	l6, err := tr.Listen(context.Background(), transport.ListenConfig{Address: ports[1].String()}, transport.Accept{Peers: nodes[s].engine.Inbound("udp")})
 	if err != nil {
 		t.Fatal(err)
 	}

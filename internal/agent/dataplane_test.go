@@ -418,7 +418,7 @@ type flakyInbound struct {
 
 func (f *flakyInbound) Listeners(netmap.Section) []Listener {
 	return []Listener{{Key: "flaky", Transport: memory.Name, Open: func(ctx context.Context, peers transport.Peers) (transport.Listener, error) {
-		l, err := f.net.Listen(ctx, transport.ListenConfig{Address: f.at, Peers: peers})
+		l, err := f.net.Listen(ctx, transport.ListenConfig{Address: f.at}, transport.Accept{Peers: peers})
 		if err == nil {
 			f.mu.Lock()
 			f.opened = append(f.opened, time.Now())
@@ -505,7 +505,7 @@ func TestDataPlaneNeedsItsConnection(t *testing.T) {
 }
 
 func canListen(net *memory.Network, at netip.AddrPort) bool {
-	l, err := net.Listen(context.Background(), transport.ListenConfig{Address: at.String(), Peers: transport.NewPeerTable()})
+	l, err := net.Listen(context.Background(), transport.ListenConfig{Address: at.String()}, transport.Accept{Peers: transport.NewPeerTable()})
 	if err != nil {
 		return false
 	}
