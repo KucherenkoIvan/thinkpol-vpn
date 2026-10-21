@@ -584,13 +584,15 @@ func applyOnce(t *testing.T, r *resolvConf) {
 	}
 }
 
-// toldNothing says nothing was told to the callback yet.
+// toldNothing says nothing was told to the callback yet: it waits a
+// while first, so a tell that is only about to happen (the watch
+// goroutine's, at setup) is still caught.
 func toldNothing(t *testing.T, told <-chan []netip.Addr) {
 	t.Helper()
 	select {
 	case got := <-told:
 		t.Fatalf("told %v", got)
-	default:
+	case <-time.After(200 * time.Millisecond):
 	}
 }
 
