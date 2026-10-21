@@ -31,6 +31,9 @@ func GuardApply(ctx context.Context, e *Enforcer, w Want) { e.applyGuard(ctx, w)
 // WarnEvery is how far apart a failure's warns are.
 const WarnEvery = warnEvery
 
+// WarnTexts is how many distinct failures one site warns a window.
+const WarnTexts = warnTexts
+
 // PauseWatching stops e's watcher, so a test drives its steps alone.
 func PauseWatching(e *Enforcer) { e.pauseWatching() }
 

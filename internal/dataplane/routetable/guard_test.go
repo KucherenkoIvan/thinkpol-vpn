@@ -646,33 +646,73 @@ func TestAGuardSuccessSaysHowManyFailuresWereHeldBack(t *testing.T) {
 	}
 }
 
-// Within a warn window, a failure whose (redacted) text differs from the
-// last one warned is warned at once, with the count held back before it;
-// one that differs only in its addresses is the same failure.
-func TestADifferentFailureIsWarnedWithinTheWindow(t *testing.T) {
+// guardWarnRig is an Enforcer whose guard fails as told (an empty
+// message: succeeds), its watcher paused, on a clock the test moves.
+func guardWarnRig(t *testing.T) (fail func(msg string), buf *lockedBuffer, clock *fakeClock) {
 	f := &fakeConfigurator{}
 	g := newFakeGuard(f)
-	var buf lockedBuffer
-	e := routetable.OpenWithClock(f, g, slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})), (&fakeClock{now: time.Unix(0, 0)}).read)
-	defer func() { _ = e.Close() }()
+	buf = &lockedBuffer{}
+	clock = &fakeClock{now: time.Unix(0, 0)}
+	e := routetable.OpenWithClock(f, g, slog.New(slog.NewTextHandler(buf, nil)), clock.read)
+	t.Cleanup(func() { _ = e.Close() })
 	routetable.PauseWatching(e)
-	failWith := func(msg string) {
-		g.setFail(errors.New(msg))
+	fail = func(msg string) {
+		var err error
+		if msg != "" {
+			err = errors.New(msg)
+		}
+		g.setFail(err)
 		routetable.GuardApply(t.Context(), e, routetable.Want{TUN: "thinkpol0"})
 	}
-	warns := func() []string { return buf.lines("applying the leak guard failed") }
+	return fail, buf, clock
+}
 
-	failWith("pfctl -s rules: no answer within 15s")
-	failWith("pfctl -s rules: no answer within 15s")
-	failWith(`pf lists the guard's rule 4 as "pass out quick inet6 proto tcp from any to 2001:db8:53::1 port = 53 keep state", not stateless`)
-	failWith(`pf lists the guard's rule 4 as "pass out quick inet6 proto tcp from any to 2001:db8:53::2 port = 53 keep state", not stateless`)
-	w := warns()
-	if len(w) != 2 || !strings.Contains(w[1], "rule 4") || !strings.Contains(w[1], "suppressed=1") {
-		t.Fatalf("warns %q, want the second failure's rule at once, with suppressed=1, and its address-only change held back", w)
+func guardWarns(buf *lockedBuffer) []string { return buf.lines("applying the leak guard failed") }
+
+// Within a window each distinct (redacted) failure is warned once, so two
+// that alternate warn once each; one that differs only in its addresses
+// is the same failure. What was held back goes with the next warn of the
+// same text.
+func TestEachFailureIsWarnedOnceAWindow(t *testing.T) {
+	fail, buf, clock := guardWarnRig(t)
+	warns := func() []string { return guardWarns(buf) }
+	const a = "pfctl -s rules: no answer within 15s"
+	b := func(addr string) string {
+		return `pf lists the guard's rule 4 as "pass out quick inet6 proto tcp from any to ` + addr + ` port = 53 keep state", not stateless`
 	}
-	failWith("pfctl -s rules: no answer within 15s")
-	if w := warns(); len(w) != 3 || !strings.Contains(w[2], "no answer") || !strings.Contains(w[2], "suppressed=1") {
-		t.Fatalf("warns %q, want the first failure again, at once", w)
+	fail(a)
+	fail(b("2001:db8:53::1"))
+	fail(a)
+	fail(b("2001:db8:53::2"))
+	fail(a)
+	if w := warns(); len(w) != 2 || !strings.Contains(w[0], "no answer") || !strings.Contains(w[1], "rule 4") {
+		t.Fatalf("warns %q, want A then B, once each", w)
+	}
+	clock.advance(routetable.WarnEvery)
+	fail(b("2001:db8:53::3"))
+	fail(a)
+	w := warns()
+	if len(w) != 4 || !strings.Contains(w[2], "rule 4") || !strings.Contains(w[2], "suppressed=1") ||
+		!strings.Contains(w[3], "no answer") || !strings.Contains(w[3], "suppressed=2") {
+		t.Fatalf("warns %q, want B with suppressed=1, then A with suppressed=2", w[2:])
+	}
+}
+
+// A text that changes on every retry warns at most WarnTexts times a
+// window; every failure held back is still counted when it clears.
+func TestAWindowWarnsAtMostWarnTextsFailures(t *testing.T) {
+	fail, buf, _ := guardWarnRig(t)
+	const n = 2*routetable.WarnTexts + 1
+	for i := range n {
+		fail(fmt.Sprintf("pf's table holds %d entries unlike the 99 loaded", i))
+	}
+	if w := len(guardWarns(buf)); w != routetable.WarnTexts {
+		t.Fatalf("%d warns of %d distinct failures, want %d", w, n, routetable.WarnTexts)
+	}
+	fail("")
+	want := fmt.Sprintf("suppressed=%d", n-routetable.WarnTexts)
+	if c := buf.lines("the leak guard is in place again"); len(c) != 1 || !strings.Contains(c[0], want) {
+		t.Errorf("cleared: %q, want %s", c, want)
 	}
 }
 
