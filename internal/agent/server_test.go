@@ -463,20 +463,38 @@ func TestServeSpace(t *testing.T) {
 			t.Errorf("the resolver doesn't run as a worker's:\n%s", log)
 		}
 	})
-	// Which lists reach the resolver is upstreamChanges' test, and the
-	// resolver taking them TestTheResolverAsksTheLatestUpstreams'.
-	t.Run("a worker serves on as later configs change its upstreams", func(t *testing.T) {
+	// A later config's upstreams reach the worker's running resolver: its
+	// answer comes from the new upstream.
+	t.Run("a later config's upstreams reach the running resolver", func(t *testing.T) {
+		x := startTestUpstream(t, netip.MustParseAddr("192.0.2.10"))
+		y := startTestUpstream(t, netip.MustParseAddr("192.0.2.11"))
+		// An exit's section, whose resolver serves; the worker config's
+		// upstreams are what the supervisor's egress allowed.
+		config := func(version uint64, ups ...netip.AddrPort) []byte {
+			b, err := WorkerConfig{Keys: s.a, Trust: s.trust(), DNS: true, DNSUpstreams: ups,
+				Map: s.buildEditing(t, version, s.a, func(sec *netmap.Section) { sec.Node.AllowEgress = true })}.Encode()
+			if err != nil {
+				t.Fatal(err)
+			}
+			return b
+		}
 		sess := newFakeSession(s.id)
-		sess.config <- s.dnsWorkerConfig(t, s.a, 1,
-			netip.MustParseAddrPort("198.51.100.53:53"), netip.MustParseAddrPort("203.0.113.53:53"))
-		n, wait := serve(t, sess)
+		sess.config <- config(1, x.address)
+		n := newRunningNode()
+		base := n.dataPlane(reg, NodeKeys{}, nil)
+		base.tuning.dnsPort, base.tuning.dnsListen = freePort(t), netip.MustParseAddr("127.0.0.1")
+		done := make(chan error, 1)
+		go func() { done <- serveSpace(base.Log, base)(n.ctx, sess.Session) }()
 		n.applied(t, 1)
-		sess.config <- s.dnsWorkerConfig(t, s.a, 2, netip.MustParseAddrPort("198.51.100.53:53"))
+		answers := func(from netip.Addr) func() bool {
+			return func() bool { a, err := resolverAnswer(base.tuning.dnsPort); return err == nil && a == from }
+		}
+		eventually(t, answers(x.answer))
+		sess.config <- config(2, y.address)
 		n.applied(t, 2)
-		sess.config <- s.dnsWorkerConfig(t, s.a, 3, netip.MustParseAddrPort("198.51.100.53:53"))
-		n.applied(t, 3)
+		eventually(t, answers(y.answer))
 		n.stop()
-		if err := wait(); err != nil {
+		if err := <-done; err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -589,39 +607,47 @@ func TestServerEgressAndDials(t *testing.T) {
 // it with its resolver on, and never reaches for the OS's resolver
 // configuration, which a worker doesn't have.
 func TestAWorkerOnADeviceSectionLeavesTheOSResolverAlone(t *testing.T) {
-	s := newTestSpace(t)
-	_, reg := memoryRegistry(t)
-	w := newRunningNode()
-	base := w.dataPlane(reg, NodeKeys{}, nil)
-	base.tuning.dnsPort = 5353
-	// Whatever the test base has, a worker has no device adapters:
-	// reaching one fails the test.
-	base.Device.SetSystemDNS = func(dns.SystemConfig) (dns.System, error) {
-		t.Error("a worker pointed the OS's resolver configuration")
-		return nil, errors.New("not a worker's")
-	}
-	base.Device.SystemUpstreams = func([]netip.Addr) ([]netip.Addr, error) {
-		t.Error("a worker asked for the OS's resolvers")
-		return nil, errors.New("not a worker's")
-	}
-	sess := newFakeSession(s.id)
-	config, err := WorkerConfig{
-		Keys: s.b, Trust: s.trust(), Map: s.build(t, 1), DNS: true,
-		DNSUpstreams: []netip.AddrPort{netip.MustParseAddrPort("192.0.2.53:53")},
-	}.Encode()
-	if err != nil {
-		t.Fatal(err)
-	}
-	sess.config <- config
-	done := make(chan error, 1)
-	go func() { done <- serveSpace(base.Log, base)(w.ctx, sess.Session) }()
-	w.applied(t, 1)
-	if st := w.status(); st.DNSUnprotected || st.DNSUpstreamsStale {
-		t.Errorf("a worker's status speaks of the OS's resolvers: %+v", st)
-	}
-	w.stop()
-	if err := <-done; err != nil {
-		t.Fatal(err)
+	for _, tc := range []struct {
+		name string
+		ups  []netip.AddrPort
+	}{
+		{"configured upstreams", []netip.AddrPort{netip.MustParseAddrPort("192.0.2.53:53")}},
+		// None configured: a device's resolver would ask the OS's.
+		{"no upstreams", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestSpace(t)
+			_, reg := memoryRegistry(t)
+			w := newRunningNode()
+			base := w.dataPlane(reg, NodeKeys{}, nil)
+			base.tuning.dnsPort = freePort(t)
+			// Whatever the test base has, a worker has no device
+			// adapters: reaching one fails the test.
+			base.Device.SetSystemDNS = func(dns.SystemConfig) (dns.System, error) {
+				t.Error("a worker pointed the OS's resolver configuration")
+				return nil, errors.New("not a worker's")
+			}
+			base.Device.SystemUpstreams = func([]netip.Addr) ([]netip.Addr, error) {
+				t.Error("a worker asked for the OS's resolvers")
+				return nil, errors.New("not a worker's")
+			}
+			sess := newFakeSession(s.id)
+			config, err := WorkerConfig{Keys: s.b, Trust: s.trust(), Map: s.build(t, 1), DNS: true, DNSUpstreams: tc.ups}.Encode()
+			if err != nil {
+				t.Fatal(err)
+			}
+			sess.config <- config
+			done := make(chan error, 1)
+			go func() { done <- serveSpace(base.Log, base)(w.ctx, sess.Session) }()
+			w.applied(t, 1)
+			if st := w.status(); st.DNSUnprotected || st.DNSUpstreamsStale {
+				t.Errorf("a worker's status speaks of the OS's resolvers: %+v", st)
+			}
+			w.stop()
+			if err := <-done; err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 

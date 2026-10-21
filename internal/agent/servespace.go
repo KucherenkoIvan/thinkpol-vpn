@@ -25,8 +25,9 @@ func ServeSpace(log *slog.Logger, h WorkerHost) worker.Serve {
 	return serveSpace(log, DataPlane{Namespace: h})
 }
 
-// serveSpace is ServeSpace on base: its Host and private fields are kept,
-// the rest comes from the supervisor.
+// serveSpace is ServeSpace on base: its Namespace and private fields are
+// kept (workerDataPlane drops a Device, which no worker has), the rest
+// comes from the supervisor.
 func serveSpace(log *slog.Logger, base DataPlane) worker.Serve {
 	return func(ctx context.Context, s worker.Session) error {
 		first, m, err := firstConfig(ctx, s)

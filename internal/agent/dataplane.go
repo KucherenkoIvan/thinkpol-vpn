@@ -104,7 +104,7 @@ type DataPlane struct {
 }
 
 // tuning is the one place a data plane differs in tests: the timing they
-// can't wait out and the port they can't bind. A node's data plane gets
+// can't wait out and the port and addresses they can't bind. A node's data plane gets
 // its tuning from the node's (Node.tuning); everything else a test
 // changes is what production changes too (Config, Platform). What tests
 // check about a running data plane they read from its status and events,
@@ -117,8 +117,11 @@ type tuning struct {
 	// blobOptions are a worker's blob limits (MaxHeld is always
 	// blobs.ServerMaxHeldSize).
 	blobOptions blobs.Options
-	// dnsPort is the resolver's port (0: 53).
-	dnsPort uint16
+	// dnsPort is the resolver's port (0: 53); dnsListen, if valid, the
+	// one address it listens on and takes queries from, in place of the
+	// node's overlay addresses and clients.
+	dnsPort   uint16
+	dnsListen netip.Addr
 }
 
 // RetryAfter is how long a data plane waits before retrying an Apply, a
@@ -371,7 +374,7 @@ func (r *runner) engineConfig(p startPorts, resolver *dns.Server) dataplane.Engi
 		cfg.RouteTable = p.routes
 	}
 	if resolver != nil {
-		cfg.DNS = dnsResolver{resolver}
+		cfg.DNS = dnsResolver{resolver, r.dp.tuning.dnsListen}
 	}
 	if b := r.dp.Blobs; b != nil {
 		// The rules' lists: the current map's once held, the previous

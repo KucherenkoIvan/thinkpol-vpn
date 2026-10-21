@@ -857,19 +857,33 @@ func TestTheResolverAsksTheLatestUpstreams(t *testing.T) {
 // the overlay, and returns the address its answer names.
 func askTheResolver(t *testing.T, port uint16) netip.Addr {
 	t.Helper()
+	a, err := resolverAnswer(port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a
+}
+
+// resolverAnswer is askTheResolver's answer, or why there is none (not
+// listening yet, no answer, not an address).
+func resolverAnswer(port uint16) (netip.Addr, error) {
 	m := new(mdns.Msg)
 	m.SetQuestion("name.example.", mdns.TypeA)
 	c := &mdns.Client{Net: "udp", UDPSize: 1232, Timeout: 2 * time.Second}
 	resp, _, err := c.Exchange(m, net.JoinHostPort("127.0.0.1", strconv.Itoa(int(port))))
 	if err != nil {
-		t.Fatal(err)
+		return netip.Addr{}, err
 	}
 	if len(resp.Answer) != 1 {
-		t.Fatalf("the resolver answered %+v", resp.Answer)
+		return netip.Addr{}, fmt.Errorf("the resolver answered %+v", resp.Answer)
 	}
-	a, ok := netip.AddrFromSlice(resp.Answer[0].(*mdns.A).A)
+	rr, ok := resp.Answer[0].(*mdns.A)
 	if !ok {
-		t.Fatalf("the resolver answered %v", resp.Answer[0])
+		return netip.Addr{}, fmt.Errorf("the resolver answered %v", resp.Answer[0])
 	}
-	return a
+	a, ok := netip.AddrFromSlice(rr.A)
+	if !ok {
+		return netip.Addr{}, fmt.Errorf("the resolver answered %v", resp.Answer[0])
+	}
+	return a.Unmap(), nil
 }

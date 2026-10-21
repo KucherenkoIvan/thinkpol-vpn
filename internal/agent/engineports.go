@@ -132,9 +132,22 @@ func (t *routeTable) Close() error {
 }
 
 // dnsResolver is dns's server as the engine's resolver port.
-type dnsResolver struct{ s *dns.Server }
+// dnsResolver is the node's resolver as the engine's Resolver; listen, if
+// valid, replaces where it listens and whom it answers (DataPlane's
+// tuning.dnsListen).
+type dnsResolver struct {
+	s      *dns.Server
+	listen netip.Addr
+}
 
-func (r dnsResolver) Update(c dataplane.ResolverConfig) { r.s.Update(dnsConfig(c)) }
+func (r dnsResolver) Update(c dataplane.ResolverConfig) {
+	d := dnsConfig(c)
+	if r.listen.IsValid() && len(d.Listen) > 0 {
+		d.Listen = []netip.Addr{r.listen}
+		d.Clients = []netip.Prefix{netip.PrefixFrom(r.listen, r.listen.BitLen())}
+	}
+	r.s.Update(d)
+}
 
 func dnsConfig(c dataplane.ResolverConfig) dns.Config {
 	d := dns.Config{Listen: c.Listen, Clients: c.Clients, Zone: c.Zone, Names: c.Names, Overlay: c.Overlay}
