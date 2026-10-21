@@ -5,9 +5,7 @@ import (
 	"testing"
 )
 
-// fakeConfigurator closes as told and records being closed. (TP-102: a
-// failed Close frees the owner's place on every OS, so a clear no longer
-// abandons a configurator; these tests check the Close instead.)
+// fakeConfigurator closes as told and records being closed.
 type fakeConfigurator struct {
 	Configurator
 	closeErr error

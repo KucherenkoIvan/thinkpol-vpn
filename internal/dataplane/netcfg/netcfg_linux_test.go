@@ -956,11 +956,46 @@ func TestScopedRoutesAreRefused(t *testing.T) {
 // starts aren't refused with ErrBusy until the process restarts.
 func TestAFailedClearFreesTheNamespace(t *testing.T) {
 	n := newTestNS(t)
-	n.dummy(t, "ovl0") // TP-102: the Close fails for real now, restoring ovl0's MTU, not in a stub
+	n.dummy(t, "ovl0") // the MTU the failing Close can't restore
 	if err := netcfg.ClearFailingClose(n.path, netcfg.OwnerOverlay, "ovl0"); err == nil || !strings.Contains(err.Error(), "restore MTU of ovl0") {
 		t.Fatalf("the failed Close: %v, want the MTU restore's error", err)
 	}
 	n.configurator(t) // the place is free
+}
+
+// A Close that fails at its first dump has removed nothing, and frees the
+// owner's place all the same: a second Close returns nil, and the owner's
+// next configurator takes over what was left (its protocol says whose
+// it is) and removes it on its own Close.
+func TestAFailedCloseLeavesItsRoutesToTheOwnersNext(t *testing.T) {
+	n := newTestNS(t)
+	n.dummy(t, "ovl0")
+	c, kill, err := netcfg.NewInNamespaceToKill(n.path, netcfg.OwnerOverlay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Apply(context.Background(), fullConfig()); err != nil {
+		t.Fatal(err)
+	}
+	applied := snapshot(t, n.h)
+	if err := kill(); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Close(); err == nil {
+		t.Fatal("Close succeeded without netlink")
+	}
+	if err := c.Close(); err != nil {
+		t.Errorf("the second Close: %v", err)
+	}
+	requireSame(t, "namespace after the failed Close", applied, snapshot(t, n.h))
+	next, err := netcfg.NewInNamespace(n.path, netcfg.OwnerOverlay)
+	if err != nil {
+		t.Fatalf("the owner's next configurator: %v", err)
+	}
+	if err := next.Close(); err != nil {
+		t.Fatal(err)
+	}
+	requireSame(t, "routes after the next configurator's Close", nil, ownRoutes(t, n.h))
 }
 
 func TestOwnersNeverTouchEachOther(t *testing.T) {
@@ -1156,8 +1191,8 @@ func TestAnAltnameKeepsItsChanges(t *testing.T) {
 			t.Fatalf("ovl0 after Apply: mtu %d, flags %v; want 1380, up", l.Attrs().MTU, l.Attrs().Flags)
 		}
 	}
-	// Close doesn't restore it yet: restoreLink checks the name the
-	// kernel reports against the record's (TP-102 Notes).
+	// Close succeeds; what it doesn't do yet is restore an interface
+	// named by an altname (TP-119), so its MTU and state aren't checked.
 	if err := c.Close(); err != nil {
 		t.Fatal(err)
 	}
