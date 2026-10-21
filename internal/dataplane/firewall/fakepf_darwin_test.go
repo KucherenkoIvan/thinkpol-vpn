@@ -44,6 +44,8 @@ type fakePF struct {
 	oddReferences bool
 	// loadHook, if set, changes what a load puts in place.
 	loadHook func(*fakeAnchor)
+	// skip: the names `set skip on` gave.
+	skip []string
 }
 
 type fakeRef struct {
@@ -77,6 +79,13 @@ type fakeState struct {
 
 // stockMain is the main ruleset as macOS loads it from /etc/pf.conf.
 var stockMain = []string{`scrub-anchor "com.apple/*" all fragment reassemble`, `anchor "com.apple/*" all`}
+
+// stockApple are the anchors under com.apple that macOS loads from
+// /etc/pf.anchors/com.apple.
+var stockApple = []string{"200.AirDrop", "250.ApplicationFirewall"}
+
+// fakeInterfaces are the host's interfaces as pf knows them.
+var fakeInterfaces = []string{"all", "en0", "en1", "lo0", "utun7"}
 
 func newFakePF() *fakePF {
 	return &fakePF{main: stockMain, anchors: map[string]*fakeAnchor{}, next: 9000000000000000001, pid: 4000, fail: map[string]error{}}
@@ -247,6 +256,24 @@ func (f *fakePF) run(ctx context.Context, stdin []byte, args ...string) (pfOutpu
 		}
 		for _, l := range a.rules {
 			b.WriteString(l + "\n")
+		}
+	case slices.Equal(args, []string{"-s", "Interfaces", "-v"}) && anchor == "":
+		for _, name := range slices.Compact(slices.Sorted(slices.Values(append(slices.Clone(fakeInterfaces), f.skip...)))) {
+			if slices.Contains(f.skip, name) {
+				name += " (skip)"
+			}
+			b.WriteString(name + "\n")
+		}
+	case slices.Equal(args, []string{"-s", "Anchors"}) && anchor == appleAnchor:
+		children := slices.Clone(stockApple)
+		for name := range f.anchors {
+			if child, ok := strings.CutPrefix(name, appleAnchor+"/"); ok && !strings.Contains(child, "/") {
+				children = append(children, child)
+			}
+		}
+		slices.Sort(children)
+		for _, c := range children {
+			b.WriteString("  " + appleAnchor + "/" + c + "\n")
 		}
 	case slices.Equal(args, []string{"-s", "info"}):
 		status := "Disabled"

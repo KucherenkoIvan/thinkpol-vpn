@@ -31,6 +31,8 @@ const (
 	// appleHook is the main ruleset's anchor rule that evaluates every
 	// anchor under com.apple, ours included.
 	appleHook = `"com.apple/*"`
+	// appleAnchor is the anchor the hook evaluates the children of.
+	appleAnchor = "com.apple"
 )
 
 // pfctlPath is pfctl, by its absolute path: the guard never looks it up.
@@ -162,6 +164,41 @@ func hooked(rules []byte) hook {
 		}
 	}
 	return hookMissing
+}
+
+// skipped reads `pfctl -s Interfaces -v`, one interface (or name `set
+// skip on` gave) a line, "(skip)" after a skipped one, as the skipped
+// names but lo0 and tun, which the anchor passes anyway: pf evaluates no
+// rule for a skipped interface's packets, and `-s rules` doesn't show it.
+func skipped(ifaces []byte, tun string) []string {
+	var out []string
+	for _, l := range lines(ifaces) {
+		f := strings.Fields(l)
+		if len(f) == 2 && f[1] == "(skip)" && f[0] != "lo0" && f[0] != tun {
+			out = append(out, f[0])
+		}
+	}
+	return out
+}
+
+// anchorsBefore reads `pfctl -a com.apple -s Anchors`, the anchors under
+// com.apple a line ("  com.apple/200.AirDrop"), as those whose name sorts
+// before the guard's: the hook evaluates them in name order (pf keeps
+// them sorted by path), so theirs run first, and a quick pass in one
+// ends evaluation before the guard's. It reads every line, not lines':
+// an anchor may be named anything, "ALTQ" in it included (pfctl's ALTQ
+// chatter sorts after the guard's anyway).
+func anchorsBefore(anchors []byte) []string {
+	ours := strings.TrimPrefix(GuardAnchor, appleAnchor+"/")
+	var out []string
+	for _, l := range strings.Split(string(anchors), "\n") {
+		l = strings.TrimSpace(l)
+		name := strings.TrimPrefix(l, appleAnchor+"/")
+		if name != "" && !strings.Contains(name, "/") && name < ours {
+			out = append(out, l)
+		}
+	}
+	return out
 }
 
 // tokenLine is how `pfctl -E` prints the reference it took.

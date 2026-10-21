@@ -1,12 +1,14 @@
 package firewall
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"net"
 	"net/netip"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,7 +20,7 @@ import (
 // guardPoll is how often Watch reads the guard back from pf: pf has no
 // event stream, so a flush, a disabled pf or a replaced main ruleset is
 // seen within guardPoll (and a debounce) rather than at once as on Linux.
-// Each poll runs pfctl four times.
+// Each poll runs pfctl six times.
 const guardPoll = 10 * time.Second
 
 // IPv6Guard is routetable's Guard on macOS: it keeps IPv6 from leaving
@@ -34,7 +36,9 @@ const guardPoll = 10 * time.Second
 // ruleset still has the hook (without it the guard is unsupported, and the
 // health says ipv6_guard_unsupported; /etc/pf.conf is never edited), and
 // that no quick pass above it ends evaluation first (an ordinary failure:
-// ipv6_guard_not_enforced, retried). pf is enabled by reference (`pfctl
+// ipv6_guard_not_enforced, retried); last, that pf skips no interface but
+// lo0 and the utun and no anchor under com.apple runs before the guard's
+// (checkBypass, the same failure). pf is enabled by reference (`pfctl
 // -E`), so the guard neither turns off a pf someone else enabled nor
 // leaves pf on after it: the token goes to a record in the state directory
 // first thing (by the pfctl's pid if its token can't be read, and then
@@ -178,7 +182,7 @@ func (g *IPv6Guard) Apply(ctx context.Context, e routetable.Exempt) (err error) 
 		}
 		g.killStates = false
 	}
-	return nil
+	return g.checkBypass(ctx, e.TUN)
 }
 
 // checkHook fails with routetable.ErrGuardUnsupported when the main
@@ -195,6 +199,32 @@ func (g *IPv6Guard) checkHook(ctx context.Context) error {
 		return fmt.Errorf("%w: pf's main ruleset has no `anchor %s` (was /etc/pf.conf replaced?)", routetable.ErrGuardUnsupported, appleHook)
 	case hookBypassed:
 		return fmt.Errorf("firewall: a `pass ... quick` rule above `anchor %s` in pf's main ruleset lets IPv6 past the guard", appleHook)
+	}
+	return nil
+}
+
+// checkBypass fails with an ordinary error while pf lets outgoing IPv6
+// past the anchor though the hook is there: it skips an interface but lo0
+// and tun (`set skip on`), or an anchor under com.apple sorts before the
+// guard's. Apply checks it last, so the interfaces pf does filter are
+// guarded meanwhile.
+func (g *IPv6Guard) checkBypass(ctx context.Context, tun string) error {
+	out, err := g.pf.run(ctx, nil, "-s", "Interfaces", "-v")
+	if err != nil {
+		return err
+	}
+	if s := skipped(out.stdout, tun); len(s) > 0 {
+		return fmt.Errorf("firewall: pf skips %s (`set skip on`), so the IPv6 guard never sees its packets", strings.Join(s, ", "))
+	}
+	out, err = g.pf.run(ctx, nil, "-a", appleAnchor, "-s", "Anchors")
+	if err != nil {
+		if invalidArgument(out) || bytes.Contains(out.stderr, []byte("not found")) {
+			return nil // nothing under com.apple, the guard's anchor neither
+		}
+		return err
+	}
+	if a := anchorsBefore(out.stdout); len(a) > 0 {
+		return fmt.Errorf("firewall: pf evaluates %s before the IPv6 guard's anchor: a quick pass there lets IPv6 past it", strings.Join(a, ", "))
 	}
 	return nil
 }
@@ -577,9 +607,9 @@ func (g *IPv6Guard) forget() error {
 
 // Watch polls the guard every guardPoll and signals, coalesced, when it
 // isn't whole any more: the last Apply failed (so a retry is due even
-// without the Enforcer's own), or, applied, the hook is gone or bypassed,
-// pf is off, the anchor's rules or table changed. pf has no event
-// stream. The channel closes when ctx ends.
+// without the Enforcer's own), or, applied, the hook is gone or bypassed
+// (checkBypass included), pf is off, the anchor's rules or table changed.
+// pf has no event stream. The channel closes when ctx ends.
 func (g *IPv6Guard) Watch(ctx context.Context) (<-chan struct{}, error) {
 	g.mu.Lock()
 	closed := g.closed
@@ -623,7 +653,7 @@ func (g *IPv6Guard) broken(ctx context.Context) bool {
 	if g.applied == nil {
 		return false
 	}
-	if g.checkHook(ctx) != nil || !g.intact(ctx, g.applied) {
+	if g.checkHook(ctx) != nil || g.checkBypass(ctx, g.applied.exempt.TUN) != nil || !g.intact(ctx, g.applied) {
 		return true
 	}
 	on, err := g.enabled(ctx)
