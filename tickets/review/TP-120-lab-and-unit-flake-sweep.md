@@ -40,3 +40,4 @@ For each: reproduce under load (e.g. `-count` with `-p` raised, `stress`-style p
 - 2026-10-21 out of scope, for the orchestrator: supervisor TestDeafWorkerHoldsNothingUp fails without closing its supervisor, so every later supervisor test in the binary fails with "a configurator of this owner is already alive in the namespace" (seen after an unrelated failure); its supervisor wants a t.Cleanup Close. Also: two lab-gotest runs from one checkout rebuild the same lab/bin/tests binary under each other ("fork/exec /proc/self/exe: no such file").
 - 2026-10-21 not verified: none of the flakes reproduced on the old code under bounded load (each was shown by injecting its stall or delay instead); merged origin/rewrite at ce88ea7.
 - 2026-10-21 make lint, make test and make lab-test (LAB_P=4, no other lab at the start; both phases ok, 35 packages in nodes) pass at ce88ea7
+- 2026-10-21 in-progress → review
