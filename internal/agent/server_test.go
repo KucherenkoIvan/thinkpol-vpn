@@ -462,26 +462,18 @@ func TestServeSpace(t *testing.T) {
 			t.Errorf("the resolver doesn't run as a worker's:\n%s", log)
 		}
 	})
-	t.Run("a later config's upstreams follow the running resolver", func(t *testing.T) {
+	// Which lists reach the resolver is upstreamChanges' test, and the
+	// resolver taking them TestTheResolverAsksTheLatestUpstreams'.
+	t.Run("a worker serves on as later configs change its upstreams", func(t *testing.T) {
 		sess := newFakeSession(s.id)
 		sess.config <- s.dnsWorkerConfig(t, s.a, 1,
 			netip.MustParseAddrPort("198.51.100.53:53"), netip.MustParseAddrPort("203.0.113.53:53"))
 		n, wait := serve(t, sess)
 		n.applied(t, 1)
-		if l := n.log.String(); strings.Contains(l, "upstreams changed") {
-			t.Errorf("the first config was logged as a change:\n%s", l)
-		}
 		sess.config <- s.dnsWorkerConfig(t, s.a, 2, netip.MustParseAddrPort("198.51.100.53:53"))
 		n.applied(t, 2)
-		eventually(t, func() bool {
-			return logMatches(n.log.String(), `msg="DNS: the resolver's upstreams changed" .*upstreams=1`)
-		})
-		// The same upstreams again change nothing.
 		sess.config <- s.dnsWorkerConfig(t, s.a, 3, netip.MustParseAddrPort("198.51.100.53:53"))
 		n.applied(t, 3)
-		if n := strings.Count(n.log.String(), "upstreams changed"); n != 1 {
-			t.Errorf("the resolver's upstreams changed %d times, want once", n)
-		}
 		n.stop()
 		if err := wait(); err != nil {
 			t.Fatal(err)
@@ -619,5 +611,40 @@ func TestAWorkerOnADeviceSectionLeavesTheOSResolverAlone(t *testing.T) {
 	w.stop()
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A worker passes its resolver a later config's upstreams only when they
+// changed: not the first config's again, and a list once.
+func TestUpstreamChangesPassOnlyChangedLists(t *testing.T) {
+	a := netip.MustParseAddrPort("198.51.100.53:53")
+	b := netip.MustParseAddrPort("203.0.113.53:53")
+	u := newUpstreamChanges([]netip.AddrPort{a, b})
+	passed := func() ([]netip.AddrPort, bool) {
+		select {
+		case ups := <-u.changed:
+			return ups, true
+		default:
+			return nil, false
+		}
+	}
+	u.offer(WorkerConfig{DNSUpstreams: []netip.AddrPort{a, b}})
+	if ups, ok := passed(); ok {
+		t.Errorf("the first config's list again was passed: %v", ups)
+	}
+	u.offer(WorkerConfig{DNSUpstreams: []netip.AddrPort{a}})
+	if ups, ok := passed(); !ok || !slices.Equal(ups, []netip.AddrPort{a}) {
+		t.Errorf("a changed list passed as %v, %v", ups, ok)
+	}
+	u.offer(WorkerConfig{DNSUpstreams: []netip.AddrPort{a}})
+	if ups, ok := passed(); ok {
+		t.Errorf("the same list again was passed: %v", ups)
+	}
+	// Latest wins: two changes before the resolver takes one leave the
+	// later.
+	u.offer(WorkerConfig{DNSUpstreams: []netip.AddrPort{b}})
+	u.offer(WorkerConfig{DNSUpstreams: nil})
+	if ups, ok := passed(); !ok || ups != nil {
+		t.Errorf("after two changes, passed %v, %v; want the later, none", ups, ok)
 	}
 }

@@ -53,21 +53,9 @@ func serveSpace(log *slog.Logger, base DataPlane) worker.Serve {
 		// itself, so a map that stops and starts it doesn't bring the
 		// first config's back. The order is the uplink's as of the last
 		// map applied: an uplink change alone re-runs nothing here.
-		ups := make(chan []netip.AddrPort, 1)
-		last := first.DNSUpstreams
-		forward := func(c WorkerConfig) {
-			if slices.Equal(c.DNSUpstreams, last) {
-				return
-			}
-			last = c.DNSUpstreams
-			select {
-			case <-ups:
-			default:
-			}
-			ups <- c.DNSUpstreams
-		}
+		ups := newUpstreamChanges(first.DNSUpstreams)
 		go func() {
-			if err := followConfigs(ctx, s, first, seeds, maps, forward); err != nil {
+			if err := followConfigs(ctx, s, first, seeds, maps, ups.offer); err != nil {
 				badConfig.Store(&err)
 				cancel()
 			}
@@ -78,7 +66,7 @@ func serveSpace(log *slog.Logger, base DataPlane) worker.Serve {
 		dp := workerDataPlane(base, first, log, seeds)
 		dp.Map, dp.Maps, dp.Registry = m, maps, reg
 		dp.Inbound = SharedInbound(ctx, reg, s.Listeners)
-		dp.dnsUpstreams = ups
+		dp.dnsUpstreams = ups.changed
 		// The space's own figures only (TP-041 seals them into its
 		// telemetry).
 		dp.StatusAttrs = func() []any { return sharedAttrs(s, counters.Load()) }
@@ -88,6 +76,31 @@ func serveSpace(log *slog.Logger, base DataPlane) worker.Serve {
 		}
 		return err
 	}
+}
+
+// upstreamChanges passes the upstream lists of a worker's later configs
+// to its data plane (changed, latest-wins): a list only when it differs
+// from the last one passed, the first config's to begin with.
+type upstreamChanges struct {
+	last    []netip.AddrPort
+	changed chan []netip.AddrPort
+}
+
+func newUpstreamChanges(first []netip.AddrPort) *upstreamChanges {
+	return &upstreamChanges{last: first, changed: make(chan []netip.AddrPort, 1)}
+}
+
+// offer passes c's upstreams on if they changed; one goroutine offers.
+func (u *upstreamChanges) offer(c WorkerConfig) {
+	if slices.Equal(c.DNSUpstreams, u.last) {
+		return
+	}
+	u.last = c.DNSUpstreams
+	select {
+	case <-u.changed:
+	default:
+	}
+	u.changed <- c.DNSUpstreams
 }
 
 // firstConfig waits for the supervisor's first WorkerConfig and checks it
