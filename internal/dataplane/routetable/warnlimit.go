@@ -3,6 +3,8 @@ package routetable
 import (
 	"sync"
 	"time"
+
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/path"
 )
 
 // warnEvery: a failure that keeps coming back (each retried every
@@ -43,9 +45,9 @@ func (l *warnLimit) reset() int {
 	return n
 }
 
-// warnRetry warns msg, a failure retried in RetryAfter, through l; err
-// is what went wrong.
-func (e *Enforcer) warnRetry(l *warnLimit, msg, err string) {
+// warnRetry warns msg, a failure retried in RetryAfter, through l, with
+// err's text, its addresses redacted (logs may leave the device).
+func (e *Enforcer) warnRetry(l *warnLimit, msg string, err error) {
 	ok, suppressed := l.allow(e.now())
 	if !ok {
 		return
@@ -54,7 +56,7 @@ func (e *Enforcer) warnRetry(l *warnLimit, msg, err string) {
 	if suppressed > 0 {
 		args = append(args, "suppressed", suppressed)
 	}
-	e.log.Warn(msg, append(args, "err", err)...)
+	e.log.Warn(msg, append(args, "err", path.RedactError(err))...)
 }
 
 // cleared starts l over now that its failure is gone and, if warns of it

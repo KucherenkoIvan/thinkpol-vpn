@@ -1,19 +1,23 @@
 package firewall
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"golang.org/x/sys/unix"
 
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/lists"
 )
@@ -1113,6 +1117,66 @@ func TestARefusedLoadStaysInPlace(t *testing.T) {
 			t.Errorf("pf on %v with references %v for a refused load", r.pf.isOn(), r.pf.references())
 		}
 	})
+}
+
+// routesOnly is a route table's configurator that takes every Apply and
+// can't watch: all the guard's warn needs of it.
+type routesOnly struct{}
+
+func (routesOnly) Apply(context.Context, netcfg.Config) error { return nil }
+func (routesOnly) DefaultRoute(context.Context, netcfg.Family) (netcfg.Route, error) {
+	return netcfg.Route{}, netcfg.ErrNoDefaultRoute
+}
+func (routesOnly) Watch(context.Context) (<-chan struct{}, error) { return nil, errors.ErrUnsupported }
+func (routesOnly) Survey(context.Context) (netcfg.Survey, error)  { return netcfg.Survey{}, nil }
+func (routesOnly) Close() error                                   { return nil }
+
+// logSink is a log a test reads while the route table's watcher writes.
+type logSink struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *logSink) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *logSink) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+// The route table's warn of a load the guard refuses quotes the rule as
+// pf listed it, the shape that tells why, with the addresses redacted:
+// here an upstream's DNS rule listed with state.
+func TestTheWarnOfARefusedLoadQuotesTheRuleWithoutItsAddresses(t *testing.T) {
+	r := newRig(t)
+	r.pf.loadHook = func(a *fakeAnchor) {
+		for i, l := range a.rules {
+			if strings.Contains(l, "port = 53") {
+				a.rules[i] = strings.Replace(l, "no state", "keep state", 1)
+			}
+		}
+	}
+	var log logSink
+	e := routetable.OpenWithGuard(routesOnly{}, r.guard(), slog.New(slog.NewTextHandler(&log, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	defer func() { _ = e.Close() }()
+	w := routetable.Want{TUN: "utun7", Direct: set(t, "2001:db8:d0::/48"), Upstreams: aps("[2001:db8:53::1]:53")}
+	if err := e.Enforce(context.Background(), w); err != nil {
+		t.Fatal(err)
+	}
+	const want = `level=WARN msg="route table: applying the leak guard failed, retrying" in=5s ` +
+		`err="firewall: pf lists the guard's rule 4 as \"pass out quick inet6 proto tcp from any to <addr> port = 53 keep state\", not stateless"` + "\n"
+	got := log.String()
+	if !strings.HasSuffix(got, want) || strings.Count(got, "level=WARN") != 1 {
+		t.Errorf("logged\n%s\nwant one line ending\n%s", got, want)
+	}
+	if strings.Contains(got, "2001:db8") {
+		t.Errorf("an address in the log: %s", got)
+	}
 }
 
 // `pfctl -E` that prints no token took a reference all the same: it is

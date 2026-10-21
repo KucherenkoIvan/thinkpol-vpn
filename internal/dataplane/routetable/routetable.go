@@ -557,11 +557,11 @@ func (e *Enforcer) applyGuard(ctx context.Context, w Want) {
 	case errors.Is(err, ErrGuardUnsupported):
 		e.guardFailing, e.guardUnsupported = false, true
 		e.status.GuardEnforced, e.status.GuardError = false, ErrorGuardUnsupported
-		e.log.Warn("route table: the OS can't hold the leak guard; sockets bound to an interface aren't confined", "err", err)
+		e.log.Warn("route table: the OS can't hold the leak guard; sockets bound to an interface aren't confined", "err", path.RedactError(err))
 	default:
 		if ctx.Err() == nil {
 			// One cut short by its context says nothing of the guard.
-			e.warnRetry(&e.guardWarn, "route table: applying the leak guard failed, retrying", err.Error())
+			e.warnRetry(&e.guardWarn, "route table: applying the leak guard failed, retrying", err)
 		}
 		e.guardFailing = true
 		e.status.GuardEnforced, e.status.GuardError = false, ErrorGuard
@@ -674,7 +674,7 @@ func (e *Enforcer) subscribe(ctx context.Context, w *watches) {
 	case errors.Is(err, errors.ErrUnsupported):
 		w.ch, w.rewatch = nil, nil // the backstop alone
 	case err != nil:
-		e.warnRetry(&e.watchWarn, "route table: watching routes failed, retrying", err.Error())
+		e.warnRetry(&e.watchWarn, "route table: watching routes failed, retrying", err)
 		w.ch, w.rewatch = nil, time.After(RetryAfter)
 	default:
 		e.cleared(&e.watchWarn, "route table: watching routes again")
@@ -697,7 +697,7 @@ func (e *Enforcer) subscribeGuard(ctx context.Context, w *watches) {
 	case errors.Is(err, errors.ErrUnsupported), errors.Is(err, ErrGuardUnsupported):
 		w.gch, w.regwatch = nil, nil // the backstop alone
 	case err != nil:
-		e.warnRetry(&e.guardWatchWarn, "route table: watching the leak guard failed, retrying", err.Error())
+		e.warnRetry(&e.guardWatchWarn, "route table: watching the leak guard failed, retrying", err)
 		w.gch, w.regwatch = nil, time.After(RetryAfter)
 	default:
 		e.cleared(&e.guardWatchWarn, "route table: watching the leak guard again")
@@ -746,7 +746,7 @@ func (e *Enforcer) reapply(ctx context.Context) {
 	case err == nil:
 		e.cleared(&e.reapplyWarn, "route table: put back again")
 	case ctx.Err() == nil:
-		e.warnRetry(&e.reapplyWarn, "route table: putting it back failed, retrying", path.RedactError(err))
+		e.warnRetry(&e.reapplyWarn, "route table: putting it back failed, retrying", err)
 	}
 }
 
