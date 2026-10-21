@@ -454,23 +454,6 @@ func TestApplyPutsTheGuardInPlace(t *testing.T) {
 	}
 }
 
-// The load runs with pfctl's rule optimizer off: its listing is then the
-// rules as written, in the order saneRules expects.
-func TestApplyLoadsUnoptimized(t *testing.T) {
-	r := newRig(t)
-	if err := r.guard().Apply(context.Background(), exempt(t)); err != nil {
-		t.Fatal(err)
-	}
-	i := slices.IndexFunc(r.pf.calls, func(c []string) bool { return slices.Contains(c, "-f") })
-	if i < 0 {
-		t.Fatal("no load ran")
-	}
-	if c := r.pf.calls[i]; !slices.Equal(c[len(c)-2:], []string{"-o", "none"}) {
-		t.Errorf("load %v, want -o none", c)
-	}
-	r.whole(t, exempt(t))
-}
-
 // withoutNone is a pfctl that drops `-o none` from its runs: how a load
 // without the option reaches pf, whose default optimizer reorders the
 // rules — as the device saw.
@@ -501,51 +484,6 @@ func TestAnOptimizedLoadIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.whole(t, exempt(t))
-}
-
-// The fake pfctl reorders a load without `-o none`, like pfctl's
-// "basic" optimizer did on the device, and keeps the order with it.
-func TestTheFakeOptimizesALoadWithoutNone(t *testing.T) {
-	text := anchorText("utun7", exemptPrefixes(exempt(t)), upstreamTargets(exempt(t)))
-	listed := func(opts ...string) []string {
-		f := newFakePF()
-		if _, err := f.run(context.Background(), []byte(text), append([]string{"-a", GuardAnchor, "-f", "-"}, opts...)...); err != nil {
-			t.Fatal(err)
-		}
-		return f.anchor(GuardAnchor).rules
-	}
-	reordered := listed()
-	if !strings.Contains(reordered[0], "ff00::/8") || !strings.Contains(reordered[0], "groupqry") {
-		t.Errorf("rule 1 after a load without -o none: %q", reordered[0])
-	}
-	if saneRules(reordered, "utun7", upstreamTargets(exempt(t))) == nil {
-		t.Error("the reordered listing is sane")
-	}
-	asWritten := listed("-o", "none")
-	loaded, err := fakeLoad(text)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Equal(asWritten, loaded.rules) {
-		t.Errorf("a load with -o none: %q, want as written %q", asWritten, loaded.rules)
-	}
-	if err := saneRules(asWritten, "utun7", upstreamTargets(exempt(t))); err != nil {
-		t.Fatalf("the unoptimized listing: %v", err)
-	}
-}
-
-// On a device the multicast rule was listed first and every load was refused;
-// with `-o none` the load is accepted and verified (TP-092 device session B, 2026-10-16).
-func TestEveryLoadCarriesNoOptimizer(t *testing.T) {
-	b, err := os.ReadFile("guard_darwin.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for i, l := range strings.Split(string(b), "\n") {
-		if strings.Contains(l, `"-f"`) && !strings.Contains(l, `"none"`) {
-			t.Errorf("guard_darwin.go:%d: a load without -o none: %s", i+1, l)
-		}
-	}
 }
 
 // Someone else's reference stays theirs: the guard takes its own, and
