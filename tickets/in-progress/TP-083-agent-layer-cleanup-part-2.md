@@ -79,3 +79,4 @@ Round 1 (2026-10-21): correctness (fix first), design (fix first), second opinio
 - 2026-10-21 checks at bf80b89: make lint and make test green; make lab-test green (LAB_P=4, 4m05s)
 - 2026-10-21 in-progress → review
 - 2026-10-21 review → has-errors (round 1: R1.1–R1.10)
+- 2026-10-21 has-errors → in-progress (round 1 findings)
