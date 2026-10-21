@@ -261,8 +261,10 @@
 // the public socket it names, but only to a source address that one of
 // the space's own authenticated, fresh, non-replayed datagrams came from,
 // through that listener, in the last 2 minutes (the address is refreshed
-// by each such datagram the worker's socket took; expiry is swept every
-// 10 s, and checked exactly on send). Each link keeps its latest 8 such
+// by each such datagram, remembered before the hand-off, since the worker
+// is another process and may answer before the hand-off returns, and kept
+// even when the worker's socket refuses the datagram; expiry is swept
+// every 10 s, and checked exactly on send). Each link keeps its latest 8 such
 // addresses, a new one evicting that link's oldest, so no link can
 // displace another's. A worker can answer its peers, never use the node's
 // public address to reach anyone else, whatever egress its space has.
