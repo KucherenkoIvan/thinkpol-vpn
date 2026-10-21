@@ -205,10 +205,7 @@ type dynamicStore struct {
 	// failed at the last check: warned about once, not at every check,
 	// and it drives Problem's ErrUpstreamsStale.
 	primaryFailed bool
-	// untold: cfg.Upstreams has no servers yet, its caller's own read
-	// having failed (UpstreamsUnknown). The first good read tells it,
-	// whether or not the servers changed; until then Problem reports
-	// ErrUpstreamsStale.
+	// untold: the first good read is still owed (startsUntold).
 	untold bool
 }
 
@@ -228,7 +225,7 @@ func setDynamicStore(st store, c SystemConfig, notify storeWatch, every time.Dur
 		return nil, err
 	}
 	s := &dynamicStore{st: st, cfg: c, backup: backup, stop: make(chan struct{}), done: make(chan struct{}),
-		untold: c.UpstreamsUnknown && c.Upstreams != nil}
+		untold: startsUntold(c)}
 	s.mu.Lock()
 	err = s.apply()
 	primary, read := s.primaryOriginal()
@@ -604,10 +601,9 @@ func (s *dynamicStore) Problem() error {
 	}
 	// Not instead of the unprotected cause above but with it:
 	// Unprotected sorts a joined problem back out.
-	switch {
-	case s.untold:
-		errs = append(errs, fmt.Errorf("%w: no read of the system's resolvers has worked since the first one failed", ErrUpstreamsStale))
-	case s.primaryFailed:
+	if err := staleUpstreams(s.untold); err != nil {
+		errs = append(errs, err)
+	} else if s.primaryFailed {
 		errs = append(errs, fmt.Errorf("%w: reading the primary service's DNS servers failed at the last check", ErrUpstreamsStale))
 	}
 	return errors.Join(errs...)
