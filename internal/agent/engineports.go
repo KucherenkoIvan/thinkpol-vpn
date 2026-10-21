@@ -131,7 +131,6 @@ func (t *routeTable) Close() error {
 	return t.rt.Close()
 }
 
-// dnsResolver is dns's server as the engine's resolver port.
 // dnsResolver is the node's resolver as the engine's Resolver; listen, if
 // valid, replaces where it listens and whom it answers (DataPlane's
 // tuning.dnsListen).
