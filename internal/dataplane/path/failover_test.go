@@ -83,6 +83,7 @@ func TestSwitchesPathWhenTheRelayCloses(t *testing.T) {
 		a, b := twoRelays(t, f, r1r2, r1r2)
 		toB := a.endpoint(t, "B")
 		keepSending(t, a, b, toB, "before")
+		reachesHop(t, a, toB, "B", "R1")
 		_ = f.node("R1").Close()
 		keepSending(t, a, b, toB, "after")
 		reachesHop(t, a, toB, "B", "R2")
