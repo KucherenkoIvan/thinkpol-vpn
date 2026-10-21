@@ -219,15 +219,11 @@ func TestAWorkerWithEveryUpstreamRefusedHasNone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	asked := false
-	r := &runner{dp: DataPlane{DNS: true, DNSUpstreams: ups, Forward: true, Log: log,
-		Host: Host{SystemUpstreams: func([]netip.Addr) ([]netip.Addr, error) { asked = true; return nil, nil }},
-	}, follow: mapFollower{section: section}}
+	// A worker has no Device: the host's resolvers aren't there to ask.
+	r := &runner{dp: DataPlane{DNS: true, DNSUpstreams: ups, Forward: true, Log: log},
+		follow: mapFollower{section: section}}
 	if res := r.newResolver(); res == nil {
 		t.Fatal("no resolver")
-	}
-	if asked {
-		t.Error("a worker's resolver asked for the host's resolvers")
 	}
 	if len(r.upstreams) != 0 {
 		t.Errorf("upstreams %v", r.upstreams)
@@ -253,7 +249,7 @@ func TestAServerSectionInDeviceModeFallsBackToTheSystemResolvers(t *testing.T) {
 	}
 	asked := false
 	r := &runner{dp: DataPlane{DNS: true, Log: slog.New(slog.DiscardHandler),
-		Host: Host{SystemUpstreams: func([]netip.Addr) ([]netip.Addr, error) {
+		Device: &DeviceHost{SystemUpstreams: func([]netip.Addr) ([]netip.Addr, error) {
 			asked = true
 			return []netip.Addr{netip.MustParseAddr("192.0.2.53")}, nil
 		}},

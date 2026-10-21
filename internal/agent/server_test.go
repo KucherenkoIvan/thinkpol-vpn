@@ -17,7 +17,6 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/logring"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/supervisor"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/worker"
-	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/blobs"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
@@ -443,17 +442,33 @@ func TestServerEgressAndDials(t *testing.T) {
 	}
 }
 
-// A worker's data plane gets its namespace's adapters and none of a
-// device's.
-func TestAWorkerGetsNoDeviceAdapter(t *testing.T) {
-	h := testHost()
-	h.BlobNet = blobs.Net{Listen: (&loopbackOverlay{}).listen}
-	w := workerHost(h)
-	if w.NewGuard != nil || w.NewRouteTable != nil || w.ClearConfig != nil || w.ClearRouteTable != nil ||
-		w.SetSystemDNS != nil || w.SystemUpstreams != nil {
-		t.Error("a device-only adapter reaches the worker")
+// A worker whose section says device (a server run with -mode server on
+// a device's section, or a map changing a running server's kind) serves
+// it with its resolver on, and never reaches for the OS's resolver
+// configuration, which a worker doesn't have.
+func TestAWorkerOnADeviceSectionLeavesTheOSResolverAlone(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	w := newRunningNode()
+	base := w.dataPlane(reg, NodeKeys{}, nil)
+	base.tuning.dnsPort = 5353
+	sess := newFakeSession(s.id)
+	config, err := WorkerConfig{
+		Keys: s.b, Trust: s.trust(), Map: s.build(t, 1), DNS: true,
+		DNSUpstreams: []netip.AddrPort{netip.MustParseAddrPort("192.0.2.53:53")},
+	}.Encode()
+	if err != nil {
+		t.Fatal(err)
 	}
-	if w.NewConfigurator == nil || w.NewTUN == nil || w.Transports == nil || w.BlobNet.Listen == nil {
-		t.Error("the worker lost an adapter of its own")
+	sess.config <- config
+	done := make(chan error, 1)
+	go func() { done <- serveSpace(base.Log, base)(w.ctx, sess.Session) }()
+	w.applied(t, 1)
+	if st := w.status(); st.DNSUnprotected || st.DNSUpstreamsStale {
+		t.Errorf("a worker's status speaks of the OS's resolvers: %+v", st)
+	}
+	w.stop()
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }

@@ -19,16 +19,14 @@ import (
 // it asks the configured upstreams. A device with none asks the
 // resolvers the OS uses now (read before the OS is pointed at the
 // resolver; what the node itself wrote there is never taken for one); a
-// worker never falls back to those, because its sandbox can't read the
-// host's resolver configuration at all. A device asks exits through the
-// overlay TUN only.
+// worker (no Device) never falls back to those, because its sandbox
+// can't read the host's resolver configuration at all. A device asks
+// exits through the overlay TUN only.
 func (r *runner) newResolver() *dns.Server {
 	upstreams := r.dp.DNSUpstreams
-	// Forward is set only in a server's worker (serveSpace), never on a
-	// device: it is what "inside a worker" means here.
-	if len(upstreams) == 0 && !r.dp.Forward {
+	if len(upstreams) == 0 && r.dp.Device != nil {
 		own := []netip.Addr{r.follow.section.Node.IPv4, r.follow.section.Node.IPv6}
-		host, err := r.dp.Host.SystemUpstreams(own)
+		host, err := r.dp.Device.SystemUpstreams(own)
 		r.upstreamsUnknown.Store(err != nil)
 		if err != nil {
 			r.dp.Log.Warn("DNS: the system's resolvers are unknown; direct names won't resolve until a read of them works", "err", err)
@@ -38,7 +36,7 @@ func (r *runner) newResolver() *dns.Server {
 		}
 	}
 	if len(upstreams) == 0 {
-		if r.dp.Forward {
+		if r.dp.Device == nil {
 			// workerUpstreams refused every one and logged each.
 			r.dp.Log.Warn("DNS: no upstream to ask: the worker's egress refuses every configured one; tunnel-bound names won't resolve")
 		} else if !r.upstreamsUnknown.Load() { // a failed read warned already
@@ -105,9 +103,10 @@ func (g *dnsGuard) problem() error {
 // systemConfig is how a device's OS should resolve now: through the
 // resolver on its overlay addresses, short names in the space's zone.
 // Unless upstreams are configured, the resolver follows the OS's own
-// resolvers when another program changes them.
+// resolvers when another program changes them. A worker (no Device)
+// leaves the OS alone whatever its section's kind.
 func (r *runner) systemConfig() (dns.SystemConfig, bool) {
-	if r.resolver == nil || r.follow.section.Node.Kind != netmap.NodeDevice {
+	if r.dp.Device == nil || r.resolver == nil || r.follow.section.Node.Kind != netmap.NodeDevice {
 		return dns.SystemConfig{}, false
 	}
 	c := dns.SystemConfig{Interface: r.tun, Servers: []netip.Addr{r.follow.section.Node.IPv4}, Log: r.dp.Log}
@@ -158,7 +157,7 @@ func (r *runner) pointSystem() {
 	if sys != nil {
 		err = sys.Update(want)
 	} else {
-		sys, err = r.dp.Host.SetSystemDNS(want)
+		sys, err = r.dp.Device.SetSystemDNS(want)
 	}
 	if err != nil {
 		r.guard.set(true, sys, fmt.Errorf("%w: %v", dns.ErrUnprotected, err))

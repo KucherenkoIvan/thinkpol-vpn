@@ -26,25 +26,29 @@ import (
 // own).
 func testHost() Host {
 	return Host{
-		NewConfigurator: func(netcfg.Owner) (netcfg.Configurator, error) {
-			return nil, errors.New("no configurator in this test")
+		WorkerHost: WorkerHost{
+			NewConfigurator: func(netcfg.Owner) (netcfg.Configurator, error) {
+				return nil, errors.New("no configurator in this test")
+			},
+			NewTUN: func(string, int) (wgtun.Device, error) {
+				return nil, errors.New("no TUN in this test")
+			},
+			Transports: Transports,
 		},
-		NewTUN: func(string, int) (wgtun.Device, error) {
-			return nil, errors.New("no TUN in this test")
+		DeviceHost: DeviceHost{
+			NewGuard: func() routetable.Guard { return nil },
+			NewRouteTable: func(*slog.Logger, routetable.Guard) (RouteEnforcer, error) {
+				return nil, errors.New("no route table in this test")
+			},
+			ClearConfig:     func(netcfg.Owner) error { return nil },
+			ClearRouteTable: func(routetable.Guard) error { return nil },
+			SetSystemDNS: func(dns.SystemConfig) (dns.System, error) {
+				return nil, errors.New("no resolver configuration in this test")
+			},
+			SystemUpstreams: func([]netip.Addr) ([]netip.Addr, error) {
+				return nil, errors.New("no system upstreams in this test")
+			},
 		},
-		NewGuard: func() routetable.Guard { return nil },
-		NewRouteTable: func(*slog.Logger, routetable.Guard) (RouteEnforcer, error) {
-			return nil, errors.New("no route table in this test")
-		},
-		ClearConfig:     func(netcfg.Owner) error { return nil },
-		ClearRouteTable: func(routetable.Guard) error { return nil },
-		SetSystemDNS: func(dns.SystemConfig) (dns.System, error) {
-			return nil, errors.New("no resolver configuration in this test")
-		},
-		SystemUpstreams: func([]netip.Addr) ([]netip.Addr, error) {
-			return nil, errors.New("no system upstreams in this test")
-		},
-		Transports: Transports,
 	}
 }
 
@@ -142,7 +146,7 @@ func TestClearingTheNetworkTriesBothOwners(t *testing.T) {
 		}
 		return nil
 	}
-	h := Host{
+	h := DeviceHost{
 		NewGuard:        func() routetable.Guard { return nil },
 		ClearRouteTable: func(routetable.Guard) error { return clearOwner(netcfg.OwnerRouteTable) },
 		ClearConfig:     clearOwner,

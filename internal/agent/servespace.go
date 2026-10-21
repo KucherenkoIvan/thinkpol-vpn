@@ -16,19 +16,11 @@ import (
 // ServeSpace is a server's data plane for one space in its worker: it
 // waits for the supervisor's WorkerConfig, then runs RunDataPlane on its
 // own TUN with the supervisor's shared listeners as its inbound, applying
-// each newer map the supervisor sends. Of h it takes only what a worker
-// uses (workerHost).
-func ServeSpace(log *slog.Logger, h Host) worker.Serve {
-	return serveSpace(log, DataPlane{Host: workerHost(h)})
-}
-
-// workerHost is what a worker's data plane may use of h: its namespace's
-// network configuration and TUN, the transports and the blob network.
-// The device-only adapters (the route table and its leak guard, clearing
-// a crashed run's routes, the OS's resolvers and their configuration)
-// stay out, so a worker can't reach them whatever its flags say.
-func workerHost(h Host) Host {
-	return Host{NewConfigurator: h.NewConfigurator, NewTUN: h.NewTUN, Transports: h.Transports, BlobNet: h.BlobNet}
+// each newer map the supervisor sends. A worker has no device adapters
+// (DeviceHost): whatever its section says, it never touches the host's
+// route table or resolver configuration.
+func ServeSpace(log *slog.Logger, h WorkerHost) worker.Serve {
+	return serveSpace(log, DataPlane{Host: h})
 }
 
 // serveSpace is ServeSpace on base: its Host and private fields are kept,
@@ -170,9 +162,11 @@ func sharedAttrs(s worker.Session, counters *ipc.SharedCounters) []any {
 
 // workerDataPlane is base as a worker's data plane on first: its keys,
 // interface, resolver and blobs (served from seeds), an exit when its
-// section allows egress, always meant to be up.
+// section allows egress, always meant to be up, and never with a
+// device's host adapters.
 func workerDataPlane(base DataPlane, first WorkerConfig, log *slog.Logger, seeds *worker.Seeds) DataPlane {
 	dp := base
+	dp.Device, dp.RouteTable = nil, false
 	dp.Keys = first.Keys
 	dp.Interface, dp.LinkMTU, dp.Log = first.Interface, first.LinkMTU, log
 	// The worker's namespace forwards and SNATs, and the supervisor's

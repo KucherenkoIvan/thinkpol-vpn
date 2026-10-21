@@ -304,7 +304,8 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 		DNS:          n.cfg.DNS,
 		DNSUpstreams: n.dnsUpstreams,
 		RouteTable:   true,
-		Host:         n.plat.Host,
+		Host:         n.plat.WorkerHost,
+		Device:       &n.plat.DeviceHost,
 
 		report:        &n.report,
 		conn:          &n.conn,

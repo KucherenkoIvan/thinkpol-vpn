@@ -76,7 +76,11 @@ type DataPlane struct {
 	DNS          bool
 	DNSUpstreams []netip.AddrPort
 
-	Host Host
+	// Host is the data plane's network namespace's; Device, a device's
+	// host adapters (required with RouteTable; nil in a server's worker,
+	// which then never asks or points the OS's resolvers).
+	Host   WorkerHost
+	Device *DeviceHost
 
 	// Its connection (required; a worker's is always meant to be up), and
 	// a device's (Node.run): where its status goes, its Connect and
@@ -135,6 +139,9 @@ func RunDataPlane(ctx context.Context, dp DataPlane) error {
 	}
 	if dp.conn == nil {
 		return errors.New("agent: a data plane needs its connection")
+	}
+	if dp.RouteTable && dp.Device == nil {
+		return errors.New("agent: a route table needs a device's host")
 	}
 	section, err := openSection(dp.Map, dp.Keys)
 	if err != nil {
@@ -250,7 +257,7 @@ func (r *runner) start(ctx context.Context) error {
 		// The route table isn't the data plane's own: a crashed run's
 		// would block traffic meanwhile.
 		if r.dp.RouteTable {
-			r.dp.Host.clearNetwork(r.dp.Log)
+			r.dp.Device.clearNetwork(r.dp.Log)
 		}
 		return err
 	}
@@ -315,7 +322,7 @@ func (r *runner) openPorts(undo *undoStack) (startPorts, error) {
 		r.tun = name
 	}
 	if r.dp.RouteTable {
-		rt, err := r.dp.Host.NewRouteTable(r.dp.Log, r.dp.Host.NewGuard())
+		rt, err := r.dp.Device.NewRouteTable(r.dp.Log, r.dp.Device.NewGuard())
 		if err != nil {
 			return p, &StartError{Step: dataplane.StepRouteTable, Err: err}
 		}
@@ -374,7 +381,7 @@ func (r *runner) stop() {
 		// Down with nothing running (a start that failed, a node removed
 		// before it ran): what a crashed run left goes now.
 		if r.dp.RouteTable {
-			r.dp.Host.clearNetwork(r.dp.Log)
+			r.dp.Device.clearNetwork(r.dp.Log)
 		}
 		return
 	}

@@ -98,7 +98,8 @@ func (n *runningNode) dataPlane(reg *transport.Registry, keys NodeKeys, m *netma
 	return DataPlane{
 		Keys: keys, Map: m, Maps: n.maps, Registry: reg, Inbound: DirectInbound(reg),
 		Log:    slog.New(slog.NewTextHandler(n.log, &slog.HandlerOptions{Level: slog.LevelDebug})),
-		Host:   h,
+		Host:   h.WorkerHost,
+		Device: &h.DeviceHost,
 		tuning: tuning{path: fastPaths, retryAfter: testRetry},
 		conn:   &n.conn,
 		report: &n.report,
@@ -478,7 +479,7 @@ func TestDataPlaneRefusesAMapWithoutTheNode(t *testing.T) {
 	}
 	conn := newConnection(true, false)
 	err := RunDataPlane(context.Background(), DataPlane{
-		Keys: stranger, Map: s.verified(t, 1), Registry: reg, Inbound: DirectInbound(reg), Host: h, conn: &conn,
+		Keys: stranger, Map: s.verified(t, 1), Registry: reg, Inbound: DirectInbound(reg), Host: h.WorkerHost, Device: &h.DeviceHost, conn: &conn,
 	})
 	if err == nil || !strings.Contains(err.Error(), "no section for this node's key") {
 		t.Fatalf("got %v", err)
@@ -531,9 +532,9 @@ func TestAFailedStartClearsACrashedRunsRouteTable(t *testing.T) {
 	dp := n.dataPlane(reg, s.a, s.verified(t, 1))
 	dp.RouteTable = true
 	var cleared atomic.Int32
-	dp.Host.ClearConfig = func(netcfg.Owner) error { cleared.Add(1); return nil }
+	dp.Device.ClearConfig = func(netcfg.Owner) error { cleared.Add(1); return nil }
 	dp.Host.NewTUN = func(string, int) (wgtun.Device, error) { return nil, errors.New("no TUN today") }
-	dp.Host.NewRouteTable = func(*slog.Logger, routetable.Guard) (RouteEnforcer, error) { panic("not reached") }
+	dp.Device.NewRouteTable = func(*slog.Logger, routetable.Guard) (RouteEnforcer, error) { panic("not reached") }
 	if err := RunDataPlane(n.ctx, dp); err == nil {
 		t.Fatal("RunDataPlane started without a TUN")
 	}
@@ -583,9 +584,9 @@ func TestAFailedStartUndoesWhatItOpened(t *testing.T) {
 				dev, err := virtual(name, mtu)
 				return closedTUN{dev, &tunCloses}, err
 			}
-			dp.Host.ClearConfig = func(netcfg.Owner) error { cleared.Add(1); return nil }
+			dp.Device.ClearConfig = func(netcfg.Owner) error { cleared.Add(1); return nil }
 			table := &wantsTable{}
-			dp.Host.NewRouteTable = func(*slog.Logger, routetable.Guard) (RouteEnforcer, error) {
+			dp.Device.NewRouteTable = func(*slog.Logger, routetable.Guard) (RouteEnforcer, error) {
 				if !tc.tableOpens {
 					return nil, errors.New("no route table today")
 				}
