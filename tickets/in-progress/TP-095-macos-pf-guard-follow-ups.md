@@ -108,3 +108,4 @@ Round 3 (2026-10-22): correctness (merge, with R3.1 as a nit), design (fix first
 - 2026-10-22 round 2 checks: make lint (funlen now in it, from TP-083) and make test green before each commit; make lab-test (LAB_P=1, other labs running) green on 6710fd2; the merge after it, 326a5bb, brings in only a ticket file (TP-127). Not verified: real pfctl on a device (no pfctl run)
 - 2026-10-22 in-progress → review
 - 2026-10-22 review → has-errors (round 3: R3.1-R3.3)
+- 2026-10-22 has-errors → in-progress — owner: agent-tp-095, round 3 findings
