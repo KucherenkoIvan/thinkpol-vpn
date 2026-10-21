@@ -5,14 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"slices"
-	"sync"
 	"sync/atomic"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/ipc"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/worker"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/blobs"
-	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
 
@@ -66,26 +65,22 @@ func serveSpace(log *slog.Logger, base DataPlane) worker.Serve {
 		maps := make(chan []byte, 1)
 		// A later config's changed upstreams follow into the running
 		// resolver (the supervisor recomputes them for every map); a
-		// resolver started later gets the latest, so a map that stops
-		// and starts the data plane doesn't bring the first config's
-		// back. The order is the uplink's as of the last map applied: an
-		// uplink change alone re-runs nothing here.
-		var upsMu sync.Mutex
-		ups := first.DNSUpstreams
-		var res atomic.Pointer[dns.Server]
+		// resolver started later gets the latest from the data plane
+		// itself, so a map that stops and starts it doesn't bring the
+		// first config's back. The order is the uplink's as of the last
+		// map applied: an uplink change alone re-runs nothing here.
+		ups := make(chan []netip.AddrPort, 1)
+		last := first.DNSUpstreams
 		forward := func(c WorkerConfig) {
-			upsMu.Lock()
-			changed := !slices.Equal(c.DNSUpstreams, ups)
-			if changed {
-				ups = c.DNSUpstreams
+			if slices.Equal(c.DNSUpstreams, last) {
+				return
 			}
-			upsMu.Unlock()
-			if changed {
-				if resolver := res.Load(); resolver != nil {
-					resolver.SetUpstreams(c.DNSUpstreams)
-					log.Info("DNS: the resolver's upstreams changed", "upstreams", len(c.DNSUpstreams))
-				}
+			last = c.DNSUpstreams
+			select {
+			case <-ups:
+			default:
 			}
+			ups <- c.DNSUpstreams
 		}
 		go func() {
 			for {
@@ -146,12 +141,7 @@ func serveSpace(log *slog.Logger, base DataPlane) worker.Serve {
 		bo.Store, bo.Log, bo.Limits.MaxHeld = seedStore{seeds}, log, blobs.ServerMaxHeldSize
 		dp.Blobs, dp.ServeBlobs = blobs.NewOnNet(bo, base.Host.BlobNet), true
 		dp.DNS, dp.DNSUpstreams = first.DNS, first.DNSUpstreams
-		dp.onResolver = func(resolver *dns.Server) {
-			res.Store(resolver)
-			upsMu.Lock()
-			defer upsMu.Unlock()
-			resolver.SetUpstreams(ups)
-		}
+		dp.dnsUpstreams = ups
 		// The space's own figures only (TP-041 seals them into its
 		// telemetry).
 		dp.StatusAttrs = func() []any {

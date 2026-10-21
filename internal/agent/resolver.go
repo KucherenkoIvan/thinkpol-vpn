@@ -66,6 +66,19 @@ func (r *runner) newResolver() *dns.Server {
 	return dns.New(o)
 }
 
+// upstreamsChanged gives the data plane a later config's upstream list:
+// a resolver started later reads it (newResolver), a running one is
+// switched to it at once.
+func (r *runner) upstreamsChanged(ups []netip.AddrPort) {
+	r.dp.DNSUpstreams = ups
+	if r.resolver == nil {
+		return
+	}
+	r.resolver.SetUpstreams(ups)
+	r.upstreams = ups
+	r.dp.Log.Info("DNS: the resolver's upstreams changed", "upstreams", len(ups))
+}
+
 // dnsGuard is a device's OS resolver configuration while it should
 // resolve through the node, and why it may not: read by the status from
 // any goroutine.

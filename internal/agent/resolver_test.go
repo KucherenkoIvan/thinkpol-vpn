@@ -6,11 +6,16 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/netip"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	mdns "github.com/miekg/dns"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/supervisor"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
@@ -708,4 +713,168 @@ func TestAConfiguredUpstreamReachesTheRouteTableWithItsPort(t *testing.T) {
 	})
 	b.connection(t, Connected)
 	eventually(t, func() bool { return slices.Equal(table.upstreams(), []netip.AddrPort{up}) })
+}
+
+// testUpstream is a fake resolver on 127.0.0.1 that answers every A
+// question with one address and counts what it was asked.
+type testUpstream struct {
+	pc      *net.UDPConn
+	address netip.AddrPort
+	answer  netip.Addr
+
+	mu    sync.Mutex
+	asked int
+}
+
+func startTestUpstream(t *testing.T, answer netip.Addr) *testUpstream {
+	t.Helper()
+	pc, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	u := &testUpstream{
+		pc:      pc,
+		address: netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), uint16(pc.LocalAddr().(*net.UDPAddr).Port)),
+		answer:  answer,
+	}
+	done := make(chan struct{})
+	t.Cleanup(func() { _ = pc.Close(); <-done })
+	go func() {
+		defer close(done)
+		buf := make([]byte, 1500)
+		for {
+			n, from, err := pc.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			q := new(mdns.Msg)
+			if q.Unpack(buf[:n]) != nil {
+				continue
+			}
+			u.mu.Lock()
+			u.asked++
+			u.mu.Unlock()
+			m := new(mdns.Msg)
+			m.SetReply(q)
+			a := u.answer.As4()
+			m.Answer = []mdns.RR{&mdns.A{Hdr: mdns.RR_Header{Name: q.Question[0].Name, Rrtype: mdns.TypeA, Class: mdns.ClassINET, Ttl: 300}, A: a[:]}}
+			if b, err := m.Pack(); err == nil {
+				_, _ = pc.WriteToUDP(b, from)
+			}
+		}
+	}()
+	return u
+}
+
+func (u *testUpstream) count() int {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.asked
+}
+
+// nilInbound lists no listeners and never changes: a runner loop that
+// serves none.
+type nilInbound struct{}
+
+func (nilInbound) Listeners(netmap.Section) []Listener { return nil }
+func (nilInbound) Changed() <-chan struct{}            { return nil }
+
+// freePort finds a port free for UDP and TCP on 127.0.0.1.
+func freePort(t *testing.T) uint16 {
+	t.Helper()
+	for range 20 {
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		port := l.Addr().(*net.TCPAddr).Port
+		pc, err := net.ListenPacket("udp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+		_ = l.Close()
+		if err == nil {
+			_ = pc.Close()
+			return uint16(port)
+		}
+	}
+	t.Fatal("no free port")
+	return 0
+}
+
+// The running resolver asks the latest upstreams a later config delivers
+// (a real query goes to the new one), and a resolver started after the
+// data plane stopped (a removal, then a return) starts from the latest
+// too, without a delivery of its own.
+func TestTheResolverAsksTheLatestUpstreams(t *testing.T) {
+	x := startTestUpstream(t, netip.MustParseAddr("192.0.2.10"))
+	y := startTestUpstream(t, netip.MustParseAddr("192.0.2.11"))
+	s := newTestSpace(t)
+	section, err := openSection(s.verified(t, 1), s.a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	changed := make(chan []netip.AddrPort, 1)
+	r := &runner{
+		dp: DataPlane{DNS: true, DNSUpstreams: []netip.AddrPort{x.address}, dnsPort: freePort(t), dnsUpstreams: changed,
+			Log: slog.New(slog.NewTextHandler(&buf, nil)), Inbound: nilInbound{}, conn: &connection{}},
+		follow: mapFollower{cur: s.verified(t, 1), section: section},
+	}
+	r.resolver = r.newResolver()
+	r.resolver.Update(dns.Config{Listen: []netip.Addr{netip.MustParseAddr("127.0.0.1")}, Clients: []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")}})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = r.loop(ctx) }()
+
+	// The resolver asks the first config's upstream.
+	if a := askTheResolver(t, r.dp.dnsPort); a != x.answer {
+		t.Fatalf("the resolver's answer came from %v, want the first config's %v", a, x.answer)
+	}
+
+	// A later config's list is delivered by the loop and asked at once.
+	changed <- []netip.AddrPort{y.address}
+	eventually(t, func() bool { return strings.Contains(buf.String(), "the resolver's upstreams changed") })
+	if a := askTheResolver(t, r.dp.dnsPort); a != y.answer {
+		t.Fatalf("after the change the resolver's answer came from %v, want the later config's %v", a, y.answer)
+	}
+	if n := x.count(); n != 1 {
+		t.Errorf("the old upstream was asked %d times, want once", n)
+	}
+
+	// Stopped (a removal) and started again: the new resolver starts
+	// from the latest list, with nothing delivered meanwhile.
+	cancel()
+	_ = r.resolver.Close()
+	r.resolver = nil
+	r.dp.dnsPort = freePort(t)
+	res := r.newResolver()
+	res.Update(dns.Config{Listen: []netip.Addr{netip.MustParseAddr("127.0.0.1")}, Clients: []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")}})
+	if !slices.Equal(r.upstreams, []netip.AddrPort{y.address}) {
+		t.Fatalf("the restarted resolver starts from %v", r.upstreams)
+	}
+	if a := askTheResolver(t, r.dp.dnsPort); a != y.answer {
+		t.Fatalf("the restarted resolver's answer came from %v, want the later config's %v", a, y.answer)
+	}
+	if n := x.count(); n != 1 {
+		t.Errorf("the old upstream was asked %d times, want once", n)
+	}
+}
+
+// askTheResolver asks the resolver on 127.0.0.1:port for a name outside
+// the overlay, and returns the address its answer names.
+func askTheResolver(t *testing.T, port uint16) netip.Addr {
+	t.Helper()
+	m := new(mdns.Msg)
+	m.SetQuestion("name.example.", mdns.TypeA)
+	c := &mdns.Client{Net: "udp", UDPSize: 1232, Timeout: 2 * time.Second}
+	resp, _, err := c.Exchange(m, net.JoinHostPort("127.0.0.1", strconv.Itoa(int(port))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Answer) != 1 {
+		t.Fatalf("the resolver answered %+v", resp.Answer)
+	}
+	a, ok := netip.AddrFromSlice(resp.Answer[0].(*mdns.A).A)
+	if !ok {
+		t.Fatalf("the resolver answered %v", resp.Answer[0])
+	}
+	return a
 }
