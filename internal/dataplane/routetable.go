@@ -41,20 +41,18 @@ type RouteTableWant struct {
 }
 
 // RouteTableStatus is how route-table enforcement stands: numbers and
-// fixed texts only.
+// codes only.
 type RouteTableStatus struct {
 	// Enforced says the OS routing table holds the rules now; false
 	// without a RouteTable, before its first enforcement, and while
-	// putting it (back) in place fails, which Error then says (a fixed
-	// text of the route table's).
+	// putting it (back) in place fails, which Error then says.
 	Enforced bool
-	Error    string
+	Error    RouteTableError
 	// GuardEnforced says the leak guard is in place (what routing can't
 	// confine, interface-bound sockets); false without one, and while
-	// applying it fails, which GuardError then says (a fixed text of the
-	// route table's).
+	// applying it fails, which GuardError then says.
 	GuardEnforced bool
-	GuardError    string
+	GuardError    RouteTableError
 	// Routes is how many routes the tunnel's table holds, LastApply how
 	// long putting the last change in place took, Reapplies how often a
 	// routing change (a link, a gateway, an outside removal) or the
@@ -70,6 +68,21 @@ type RouteTableStatus struct {
 	// clear.
 	OverlayAhead int
 }
+
+// RouteTableError says what is wrong with the OS routing table or its
+// leak guard (RouteTableStatus): a code; the log has the detail.
+type RouteTableError string
+
+const (
+	RouteTableApplyFailed   RouteTableError = "apply_failed"   // putting the rules in place failed
+	RouteTableReapplyFailed RouteTableError = "reapply_failed" // putting them back failed
+	RouteTableUnsupported   RouteTableError = "unsupported"    // the OS can't hold them
+	RouteTableTUNDown       RouteTableError = "tun_down"       // the TUN is down: traffic is blocked
+	GuardFailed             RouteTableError = "guard_failed"   // applying the leak guard failed
+	// GuardUnsupported: the OS can't hold the leak guard; interface-bound
+	// sockets aren't confined.
+	GuardUnsupported RouteTableError = "guard_unsupported"
+)
 
 // endpointsOf are the addresses the node dials its links on.
 func endpointsOf(pc PathConfig) []netip.Addr {

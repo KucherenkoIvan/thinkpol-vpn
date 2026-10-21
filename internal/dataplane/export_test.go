@@ -45,3 +45,6 @@ func SetInterfaceTimingForTest(e *Engine, debounce, cooldown, retry time.Duratio
 	defer e.mu.Unlock()
 	e.ifcTiming = interfaceTiming{debounce: debounce, cooldown: cooldown, retry: retry}
 }
+
+// IPv6OffCodeForTest is ipv6OffCode.
+var IPv6OffCodeForTest = ipv6OffCode

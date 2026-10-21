@@ -25,7 +25,7 @@ func statusProto(st agent.Status) *localapiv1.Status {
 		Removed:    st.Removed,
 		Connection: connectionProto(st.Connection),
 		Retrying:   st.Retrying,
-		Health:     &localapiv1.Health{Level: healthProto(h.Level), Problems: h.Problems},
+		Health:     &localapiv1.Health{Level: healthProto(h.Level), Problems: problemCodes(h.Problems)},
 		RulePreset: st.RulePreset, RulesEnforced: st.RulesEnforced, RulePresetUnavailable: st.PresetUnavailable,
 	}
 	if dp := st.DataPlane; dp != nil {
@@ -49,6 +49,14 @@ func statusProto(st agent.Status) *localapiv1.Status {
 			Transport: agent.Sanitize(l.Transport), Routed: l.Routed, Unauthenticated: l.Unauthenticated, NoSpace: l.NoSpace,
 			StreamsOverloaded: l.StreamsOverloaded, Rejected: uint32(l.Rejected),
 		})
+	}
+	return out
+}
+
+func problemCodes(ps []agent.Problem) []string {
+	out := make([]string, 0, len(ps))
+	for _, p := range ps {
+		out = append(out, string(p))
 	}
 	return out
 }

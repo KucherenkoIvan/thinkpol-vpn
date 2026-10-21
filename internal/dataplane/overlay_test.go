@@ -3,6 +3,7 @@ package dataplane_test
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"net/netip"
 	"slices"
 	"testing"
@@ -305,5 +306,22 @@ func TestAcceptedInboundHonoursIngress(t *testing.T) {
 	}
 	if pc := dataplane.PathConfigFrom(s, reg); len(pc.Table.Routes) != 1 {
 		t.Fatalf("routes %+v, want the one to the device", pc.Table.Routes)
+	}
+}
+
+// Why IPv6 is off is a code, whatever wraps the reason; a reason without
+// one of its own is "other", never empty.
+func TestIPv6OffIsACode(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want dataplane.IPv6Off
+	}{
+		{fmt.Errorf("overlay: %w", dataplane.ErrIPv6MTU), dataplane.IPv6OffMTU},
+		{dataplane.ErrNoIPv6Address, dataplane.IPv6OffNoAddress},
+		{errors.New("a reason without a code"), dataplane.IPv6OffOther},
+	} {
+		if got := dataplane.IPv6OffCodeForTest(tc.err); got != tc.want {
+			t.Errorf("%v: %q, want %q", tc.err, got, tc.want)
+		}
 	}
 }

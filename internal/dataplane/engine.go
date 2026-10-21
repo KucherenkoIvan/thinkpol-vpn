@@ -490,7 +490,7 @@ func (e *Engine) Status() Status {
 	}
 	s.Rules.Skipped = slices.Clone(s.Rules.Skipped)
 	if e.ipv6Off != nil {
-		s.IPv6Off = ipv6OffCodes[e.ipv6Off]
+		s.IPv6Off = ipv6OffCode(e.ipv6Off)
 	}
 	for name, d := range e.devices.byName {
 		reported := make(map[netmap.WireGuardKey]wg.PeerStatus)

@@ -8,7 +8,6 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/supervisor"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
-	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
 
@@ -268,63 +267,66 @@ func (l HealthLevel) String() string {
 // Health is a node's health and what is wrong, worst first.
 type Health struct {
 	Level    HealthLevel
-	Problems []string
+	Problems []Problem
 }
+
+// Problem is what Health says is wrong: a code.
+type Problem string
 
 // The problems Health names.
 const (
-	ProblemDisconnected   = "disconnected"
-	ProblemRemoved        = "removed_from_space"
-	ProblemStarting       = "starting"
-	ProblemRetrying       = "retrying"
-	ProblemApplyFailed    = "apply_failed"    // the last Apply failed; DataPlane.LastApplyError says where
-	ProblemNoLinkUp       = "no_link_up"      // no adjacent node answers
-	ProblemNeighborDown   = "neighbor_down"   // some adjacent node doesn't answer
-	ProblemSkipped        = "entries_skipped" // the map holds entries the node can't use
-	ProblemWorkerDown     = "worker_down"     // a space's worker isn't ready
-	ProblemWorkerRestarts = "worker_restarted"
-	ProblemLinksRejected  = "links_rejected" // a public listener refused peer links
+	ProblemDisconnected   Problem = "disconnected"
+	ProblemRemoved        Problem = "removed_from_space"
+	ProblemStarting       Problem = "starting"
+	ProblemRetrying       Problem = "retrying"
+	ProblemApplyFailed    Problem = "apply_failed"    // the last Apply failed; DataPlane.LastApplyError says where
+	ProblemNoLinkUp       Problem = "no_link_up"      // no adjacent node answers
+	ProblemNeighborDown   Problem = "neighbor_down"   // some adjacent node doesn't answer
+	ProblemSkipped        Problem = "entries_skipped" // the map holds entries the node can't use
+	ProblemWorkerDown     Problem = "worker_down"     // a space's worker isn't ready
+	ProblemWorkerRestarts Problem = "worker_restarted"
+	ProblemLinksRejected  Problem = "links_rejected" // a public listener refused peer links
 	// ProblemPresetUnavailable: the map can't build the device's rule
 	// preset, so it is enforced failing closed (no internet but the local
 	// ranges' direct routes).
-	ProblemPresetUnavailable = "rule_preset_unavailable"
+	ProblemPresetUnavailable Problem = "rule_preset_unavailable"
 	// ProblemRouteTable: the OS routing table doesn't hold the rules now
 	// (putting it back failed): traffic may go around the tunnel.
-	ProblemRouteTable = "route_table_not_enforced"
+	ProblemRouteTable Problem = "route_table_not_enforced"
 	// ProblemRulesAhead: other software's policy rules come before the
 	// route table's and may route traffic around the tunnel.
-	ProblemRulesAhead = "policy_rules_ahead"
+	ProblemRulesAhead Problem = "policy_rules_ahead"
 	// ProblemOverlayRoutesAhead: other routes the route table can't
 	// outrank take overlay addresses (a hostile network's host routes,
 	// macOS): those peers' traffic leaves around the tunnel.
-	ProblemOverlayRoutesAhead = "overlay_routes_ahead"
+	ProblemOverlayRoutesAhead Problem = "overlay_routes_ahead"
 	// ProblemGuard: the leak guard isn't in place now (applying it
 	// failed; retried): IPv6 from interface-bound sockets may go around
 	// the tunnel.
-	ProblemGuard = "ipv6_guard_not_enforced"
+	ProblemGuard Problem = "ipv6_guard_not_enforced"
 	// ProblemGuardUnsupported: the OS can't hold the leak guard (Linux:
 	// no nf_tables; macOS: no `anchor "com.apple/*"` in pf's main
 	// ruleset): the device connects, but IPv6 from interface-bound
 	// sockets isn't confined.
-	ProblemGuardUnsupported = "ipv6_guard_unsupported"
+	ProblemGuardUnsupported Problem = "ipv6_guard_unsupported"
 	// ProblemDNSUnprotected: the OS may resolve names outside the node's
 	// resolver, so names may leave outside the tunnel.
-	ProblemDNSUnprotected = "dns_not_protected"
+	ProblemDNSUnprotected Problem = "dns_not_protected"
 	// ProblemDNSUpstreamsStale: the device's direct upstreams may be stale
 	// (the last read of the OS's own resolvers failed), so `direct` names
 	// may not resolve; the OS still resolves through the node.
-	ProblemDNSUpstreamsStale = "dns_upstreams_stale"
+	ProblemDNSUpstreamsStale Problem = "dns_upstreams_stale"
 	// ProblemDNSUpstreamRefused: resolver upstreams the worker's egress
 	// refuses (Status.DNSUpstreamsRefused counts them) aren't configured:
 	// the resolver asks the rest, and with none left tunnel-bound names
 	// fail.
-	ProblemDNSUpstreamRefused = "dns_upstream_refused"
+	ProblemDNSUpstreamRefused Problem = "dns_upstream_refused"
 )
 
 // Health grades the status.
 func (s Status) Health() Health {
 	var h Health
-	add := func(level HealthLevel, problem string) {
+	add := func(level HealthLevel, problem Problem) {
 		h.Level = max(h.Level, level)
 		h.Problems = append(h.Problems, problem)
 	}
@@ -351,7 +353,7 @@ func (s Status) Health() Health {
 
 // serverProblems adds a server's problems: its map, workers, listeners
 // and resolver upstreams.
-func (s Status) serverProblems(add func(HealthLevel, string)) {
+func (s Status) serverProblems(add func(HealthLevel, Problem)) {
 	if s.Retrying {
 		add(HealthDegraded, ProblemRetrying)
 	}
@@ -379,7 +381,7 @@ func (s Status) serverProblems(add func(HealthLevel, string)) {
 
 // dataPlaneProblems adds a running data plane's problems: its map, links,
 // rules, route table and DNS.
-func (s Status) dataPlaneProblems(add func(HealthLevel, string)) {
+func (s Status) dataPlaneProblems(add func(HealthLevel, Problem)) {
 	dp := s.DataPlane
 	if dp.LastApplyError != "" {
 		add(HealthDegraded, ProblemApplyFailed)
@@ -413,7 +415,7 @@ func (s Status) dataPlaneProblems(add func(HealthLevel, string)) {
 
 // routeTableProblems adds the OS routing table's problems and its leak
 // guard's.
-func routeTableProblems(rt dataplane.RouteTableStatus, add func(HealthLevel, string)) {
+func routeTableProblems(rt dataplane.RouteTableStatus, add func(HealthLevel, Problem)) {
 	if rt.Error != "" {
 		add(HealthDown, ProblemRouteTable)
 	} else if rt.Enforced && rt.RulesAhead > 0 {
@@ -424,7 +426,7 @@ func routeTableProblems(rt dataplane.RouteTableStatus, add func(HealthLevel, str
 	}
 	switch rt.GuardError {
 	case "":
-	case routetable.ErrorGuardUnsupported:
+	case dataplane.GuardUnsupported:
 		add(HealthDegraded, ProblemGuardUnsupported)
 	default:
 		add(HealthDegraded, ProblemGuard)

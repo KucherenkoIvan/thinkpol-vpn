@@ -95,10 +95,33 @@ func (t *routeTable) SetDirectUpstreams(ctx context.Context, addrs []netip.AddrP
 func (t *routeTable) Status() dataplane.RouteTableStatus {
 	st := t.rt.Status()
 	return dataplane.RouteTableStatus{
-		Enforced: st.Enforced, Error: st.Error, GuardEnforced: st.GuardEnforced, GuardError: st.GuardError,
+		Enforced: st.Enforced, Error: routeTableError(st.Error), GuardEnforced: st.GuardEnforced, GuardError: routeTableError(st.GuardError),
 		Routes: st.Routes, LastApply: st.LastApply,
 		Reapplies: st.Reapplies, RulesAhead: st.RulesAhead, OverlayAhead: st.OverlayAhead,
 	}
+}
+
+// routeTableError is the engine's code for the route table's problem p:
+// none for none, and a failed apply for one the table doesn't know, so a
+// problem is never lost.
+func routeTableError(p routetable.Problem) dataplane.RouteTableError {
+	if p == "" {
+		return ""
+	}
+	if e, ok := routeTableErrors[p]; ok {
+		return e
+	}
+	return dataplane.RouteTableApplyFailed
+}
+
+// routeTableErrors are the engine's codes for the route table's problems.
+var routeTableErrors = map[routetable.Problem]dataplane.RouteTableError{
+	routetable.ErrorApply:            dataplane.RouteTableApplyFailed,
+	routetable.ErrorReapply:          dataplane.RouteTableReapplyFailed,
+	routetable.ErrorUnsupported:      dataplane.RouteTableUnsupported,
+	routetable.ErrorTUNDown:          dataplane.RouteTableTUNDown,
+	routetable.ErrorGuard:            dataplane.GuardFailed,
+	routetable.ErrorGuardUnsupported: dataplane.GuardUnsupported,
 }
 
 func (t *routeTable) Close() error {

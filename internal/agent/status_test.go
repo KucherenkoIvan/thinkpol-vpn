@@ -123,7 +123,7 @@ func TestADeviceConnectsAndDisconnects(t *testing.T) {
 	if st.DataPlane != nil || st.Mode != ModeDevice || st.Space != s.id || st.MapVersion != 1 {
 		t.Fatalf("status %+v", st)
 	}
-	if h := st.Health(); h.Level != HealthDown || !slices.Equal(h.Problems, []string{ProblemDisconnected}) {
+	if h := st.Health(); h.Level != HealthDown || !slices.Equal(h.Problems, []Problem{ProblemDisconnected}) {
 		t.Fatalf("health %+v", h)
 	}
 	b.maps <- s.build(t, 2)
@@ -496,35 +496,35 @@ func TestHealth(t *testing.T) {
 	}{
 		{"connected", Status{Connection: Connected, DataPlane: &dataplane.Status{Neighbors: []path.NeighborStatus{up}}}, Health{}},
 		{"no neighbors yet", Status{Connection: Connected, DataPlane: &dataplane.Status{}}, Health{}},
-		{"disconnected", Status{Connection: Disconnected}, Health{HealthDown, []string{ProblemDisconnected}}},
-		{"starting", Status{Connection: Connecting}, Health{HealthDown, []string{ProblemStarting}}},
-		{"retrying", Status{Connection: Connecting, Retrying: true}, Health{HealthDown, []string{ProblemRetrying}}},
-		{"removed", Status{Connection: Connecting, Removed: true}, Health{HealthDown, []string{ProblemRemoved}}},
+		{"disconnected", Status{Connection: Disconnected}, Health{HealthDown, []Problem{ProblemDisconnected}}},
+		{"starting", Status{Connection: Connecting}, Health{HealthDown, []Problem{ProblemStarting}}},
+		{"retrying", Status{Connection: Connecting, Retrying: true}, Health{HealthDown, []Problem{ProblemRetrying}}},
+		{"removed", Status{Connection: Connecting, Removed: true}, Health{HealthDown, []Problem{ProblemRemoved}}},
 		{"no link up", Status{Connection: Connected, DataPlane: &dataplane.Status{Neighbors: []path.NeighborStatus{down, down}}},
-			Health{HealthDown, []string{ProblemNoLinkUp}}},
+			Health{HealthDown, []Problem{ProblemNoLinkUp}}},
 		{"one down", Status{Connection: Connected, DataPlane: &dataplane.Status{Neighbors: []path.NeighborStatus{up, down},
 			LastApplyError: dataplane.StepRouter, Skipped: []dataplane.Skip{{}}}},
-			Health{HealthDegraded, []string{ProblemApplyFailed, ProblemNeighborDown, ProblemSkipped}}},
+			Health{HealthDegraded, []Problem{ProblemApplyFailed, ProblemNeighborDown, ProblemSkipped}}},
 		{"route table not enforced", Status{Connection: Connected, DataPlane: &dataplane.Status{
-			RouteTable: dataplane.RouteTableStatus{Error: routetable.ErrorReapply, Routes: 9}}},
-			Health{HealthDown, []string{ProblemRouteTable}}},
+			RouteTable: dataplane.RouteTableStatus{Error: dataplane.RouteTableReapplyFailed, Routes: 9}}},
+			Health{HealthDown, []Problem{ProblemRouteTable}}},
 		{"rules ahead of the route table", Status{Connection: Connected, DataPlane: &dataplane.Status{
 			RouteTable: dataplane.RouteTableStatus{Enforced: true, Routes: 9, RulesAhead: 2}}},
-			Health{HealthDegraded, []string{ProblemRulesAhead}}},
+			Health{HealthDegraded, []Problem{ProblemRulesAhead}}},
 		{"overlay addresses taken around the route table", Status{Connection: Connected, DataPlane: &dataplane.Status{
 			RouteTable: dataplane.RouteTableStatus{Enforced: true, Routes: 9, OverlayAhead: 1}}},
-			Health{HealthDown, []string{ProblemOverlayRoutesAhead}}},
+			Health{HealthDown, []Problem{ProblemOverlayRoutesAhead}}},
 		{"leak guard failing, routes in place", Status{Connection: Connected, DataPlane: &dataplane.Status{
-			RouteTable: dataplane.RouteTableStatus{Enforced: true, Routes: 9, GuardError: routetable.ErrorGuard}}},
-			Health{HealthDegraded, []string{ProblemGuard}}},
+			RouteTable: dataplane.RouteTableStatus{Enforced: true, Routes: 9, GuardError: dataplane.GuardFailed}}},
+			Health{HealthDegraded, []Problem{ProblemGuard}}},
 		{"no nf_tables: connected, a loud warning", Status{Connection: Connected, DataPlane: &dataplane.Status{
-			RouteTable: dataplane.RouteTableStatus{Enforced: true, Routes: 9, GuardError: routetable.ErrorGuardUnsupported}}},
-			Health{HealthDegraded, []string{ProblemGuardUnsupported}}},
+			RouteTable: dataplane.RouteTableStatus{Enforced: true, Routes: 9, GuardError: dataplane.GuardUnsupported}}},
+			Health{HealthDegraded, []Problem{ProblemGuardUnsupported}}},
 		{"server", Status{Connection: Serving, Workers: []WorkerStatus{{Ready: true, Starts: 1}}}, Health{}},
 		{"server worker down", Status{Connection: Serving, Workers: []WorkerStatus{{Ready: true, Starts: 3}, {}},
 			PublicListeners: []PublicListenerStatus{{Rejected: 1}}},
-			Health{HealthDown, []string{ProblemWorkerDown, ProblemWorkerRestarts, ProblemLinksRejected}}},
-		{"server retrying", Status{Connection: Serving, Retrying: true}, Health{HealthDegraded, []string{ProblemRetrying}}},
+			Health{HealthDown, []Problem{ProblemWorkerDown, ProblemWorkerRestarts, ProblemLinksRejected}}},
+		{"server retrying", Status{Connection: Serving, Retrying: true}, Health{HealthDegraded, []Problem{ProblemRetrying}}},
 	} {
 		if got := tc.st.Health(); got.Level != tc.want.Level || !slices.Equal(got.Problems, tc.want.Problems) {
 			t.Errorf("%s: got %+v, want %+v", tc.name, got, tc.want)

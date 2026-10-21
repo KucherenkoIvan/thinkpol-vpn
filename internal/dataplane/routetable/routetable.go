@@ -310,7 +310,7 @@ type Enforcer struct {
 	status Status
 }
 
-// Status is what an Enforcer reports: numbers and fixed texts only.
+// Status is what an Enforcer reports: numbers and codes only.
 type Status struct {
 	// Enforced says the last Want's routes are in place: false before the
 	// first Enforce and while putting them back fails.
@@ -318,14 +318,14 @@ type Status struct {
 	// Error says what is wrong with the routes: ErrorApply, ErrorReapply,
 	// ErrorUnsupported or ErrorTUNDown (then Enforced is false too); empty
 	// otherwise.
-	Error string
+	Error Problem
 	// GuardEnforced says the leak guard for the last Want is in place:
 	// false without a Guard, before the first Enforce, and while applying
 	// it fails.
 	GuardEnforced bool
 	// GuardError says what is wrong with the guard: ErrorGuard or
 	// ErrorGuardUnsupported; empty otherwise (no Guard included).
-	GuardError string
+	GuardError Problem
 	// Routes is how many routes the last applied Want put in Table.
 	Routes int
 	// LastApply is how long the last successful Apply took.
@@ -344,24 +344,27 @@ type Status struct {
 	OverlayAhead int
 }
 
-// What Status.Error and Status.GuardError say: codes, the log has the
-// detail.
+// Problem is what Status.Error and Status.GuardError say is wrong: a
+// code; the log has the detail.
+type Problem string
+
+// The problems.
 const (
-	ErrorApply   = "apply_failed"   // applying the route table failed
-	ErrorReapply = "reapply_failed" // putting the route table back failed
+	ErrorApply   Problem = "apply_failed"   // applying the route table failed
+	ErrorReapply Problem = "reapply_failed" // putting the route table back failed
 	// ErrorUnsupported: the kernel can't hold the table (rules need
 	// Linux 4.17 or later); terminal.
-	ErrorUnsupported = "unsupported"
+	ErrorUnsupported Problem = "unsupported"
 	// ErrorTUNDown: the TUN is down or gone; everything but direct
 	// destinations is unreachable until it is back.
-	ErrorTUNDown = "tun_down"
+	ErrorTUNDown Problem = "tun_down"
 	// ErrorGuard: the routes may be in place, the leak guard isn't (or
 	// isn't up to date); retried every RetryAfter.
-	ErrorGuard = "guard_failed"
+	ErrorGuard Problem = "guard_failed"
 	// ErrorGuardUnsupported: the OS can't hold the leak guard (Linux: no
 	// nf_tables; macOS: pf's main ruleset has no `anchor "com.apple/*"`);
 	// terminal. Interface-bound sockets aren't confined.
-	ErrorGuardUnsupported = "guard_unsupported"
+	ErrorGuardUnsupported Problem = "guard_unsupported"
 )
 
 const (
