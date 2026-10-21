@@ -74,3 +74,4 @@ Round 1 (2026-10-22): correctness (fix first), design (fix first), second opinio
 - 2026-10-21 out of scope (for the orchestrator): a refused reload replaces the previous, verified guard with the unverified one, which may exempt more if its table grew (the table check refuses then); reloading the last good guard would close that
 - 2026-10-21 in-progress → review
 - 2026-10-22 review → has-errors (round 1: R1.1-R1.7)
+- 2026-10-22 has-errors → in-progress — owner: agent-tp-095, round 1 findings
