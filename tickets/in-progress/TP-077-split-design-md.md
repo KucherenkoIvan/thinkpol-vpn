@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: L
 depends_on: [TP-023]
 refs: [DESIGN]
-owner: ""
-branch: ""
+owner: "agent-tp-077"
+branch: "tp-077-split-design-md"
 ---
 
 ## Goal
@@ -33,3 +33,4 @@ DESIGN.md keeps the model, invariants and decisions. Mechanism moves into packag
 
 ## Log
 - 2026-10-15 created in backlog
+- 2026-10-21 backlog → in-progress — owner: agent-tp-077, branch: tp-077-split-design-md
