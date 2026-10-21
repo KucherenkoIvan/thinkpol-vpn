@@ -190,6 +190,9 @@ func TestDNSFollowsTheRules(t *testing.T) {
 			}
 			return nil
 		})
+		// The staleness cleared because the read was told: a direct name
+		// goes to the domestic resolver again.
+		mustResolve(t, devB, "www.direct.test", false, domesticA)
 		if err := up2.Stop(); err != nil {
 			t.Errorf("thinkpol up: %v\n%s", err, up2.Output())
 		}
