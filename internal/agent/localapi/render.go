@@ -37,6 +37,9 @@ func WriteStatus(w io.Writer, st *localapiv1.Status, now time.Time) error {
 		space += " (removed from it)"
 	}
 	line("space:\t%s, map version %d", space, st.GetMapVersion())
+	if n := st.GetMapsRefused(); n > 0 {
+		line("maps refused:\t%d since the node started (the service's log says why)", n)
+	}
 	line("mode:\t%s", displayName(st.GetMode()))
 	if p := st.GetRulePreset(); p != "" {
 		switch {

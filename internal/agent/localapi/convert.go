@@ -21,7 +21,7 @@ func statusProto(st agent.Status) *localapiv1.Status {
 	out := &localapiv1.Status{
 		Mode:       modeProto(st.Mode),
 		SpaceId:    idString(st.Space),
-		MapVersion: st.MapVersion,
+		MapVersion: st.MapVersion, MapsRefused: st.MapsRefused,
 		Removed:    st.Removed,
 		Connection: connectionProto(st.Connection),
 		Retrying:   st.Retrying,

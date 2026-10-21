@@ -877,7 +877,11 @@ type Status struct {
 	// enforced failing closed until it can.
 	RulePresetUnavailable bool `protobuf:"varint,13,opt,name=rule_preset_unavailable,json=rulePresetUnavailable,proto3" json:"rule_preset_unavailable,omitempty"`
 	// A server's uplink and what it carries.
-	Uplink        *Uplink `protobuf:"bytes,14,opt,name=uplink,proto3" json:"uplink,omitempty"`
+	Uplink *Uplink `protobuf:"bytes,14,opt,name=uplink,proto3" json:"uplink,omitempty"`
+	// The maps the node was given and didn't take since it started: not
+	// newer than the one it follows, invalid, or not its space's. One
+	// that keeps growing is someone handing it maps it refuses.
+	MapsRefused   uint64 `protobuf:"varint,15,opt,name=maps_refused,json=mapsRefused,proto3" json:"maps_refused,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1008,6 +1012,13 @@ func (x *Status) GetUplink() *Uplink {
 		return x.Uplink
 	}
 	return nil
+}
+
+func (x *Status) GetMapsRefused() uint64 {
+	if x != nil {
+		return x.MapsRefused
+	}
+	return 0
 }
 
 // Uplink is a server's way to the internet, for its spaces that allow
@@ -1975,7 +1986,7 @@ const file_thinkpol_localapi_v1_localapi_proto_rawDesc = "" +
 	"\x06missed\x18\x02 \x01(\x04R\x06missed\"/\n" +
 	"\x05Space\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x16\n" +
-	"\x06active\x18\x02 \x01(\bR\x06active\"\xa1\x05\n" +
+	"\x06active\x18\x02 \x01(\bR\x06active\"\xc4\x05\n" +
 	"\x06Status\x12.\n" +
 	"\x04mode\x18\x01 \x01(\x0e2\x1a.thinkpol.localapi.v1.ModeR\x04mode\x12\x19\n" +
 	"\bspace_id\x18\x02 \x01(\tR\aspaceId\x12\x1f\n" +
@@ -1996,7 +2007,8 @@ const file_thinkpol_localapi_v1_localapi_proto_rawDesc = "" +
 	"rulePreset\x12%\n" +
 	"\x0erules_enforced\x18\f \x01(\bR\rrulesEnforced\x126\n" +
 	"\x17rule_preset_unavailable\x18\r \x01(\bR\x15rulePresetUnavailable\x124\n" +
-	"\x06uplink\x18\x0e \x01(\v2\x1c.thinkpol.localapi.v1.UplinkR\x06uplink\"\xa8\x01\n" +
+	"\x06uplink\x18\x0e \x01(\v2\x1c.thinkpol.localapi.v1.UplinkR\x06uplink\x12!\n" +
+	"\fmaps_refused\x18\x0f \x01(\x04R\vmapsRefused\"\xa8\x01\n" +
 	"\x06Uplink\x12\x1c\n" +
 	"\tinterface\x18\x01 \x01(\tR\tinterface\x12\x12\n" +
 	"\x04ipv4\x18\x02 \x01(\bR\x04ipv4\x12\x12\n" +

@@ -135,6 +135,10 @@ message Status {
   bool rule_preset_unavailable = 13;
   // A server's uplink and what it carries.
   Uplink uplink = 14;
+  // The maps the node was given and didn't take since it started: not
+  // newer than the one it follows, invalid, or not its space's. One
+  // that keeps growing is someone handing it maps it refuses.
+  uint64 maps_refused = 15;
 }
 
 // Uplink is a server's way to the internet, for its spaces that allow

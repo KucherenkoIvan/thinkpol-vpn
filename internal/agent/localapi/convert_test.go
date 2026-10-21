@@ -153,3 +153,20 @@ func TestEveryCounterHasAName(t *testing.T) {
 		}
 	}
 }
+
+// The maps a node refused reach the status and the CLI; none, no line.
+func TestMapsRefusedReachStatusAndCLI(t *testing.T) {
+	for _, n := range []uint64{0, 3} {
+		out := statusProto(agent.Status{Connection: agent.Connected, MapsRefused: n})
+		if out.GetMapsRefused() != n {
+			t.Errorf("maps_refused %d, want %d", out.GetMapsRefused(), n)
+		}
+		var text bytes.Buffer
+		if err := WriteStatus(&text, out, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		if shown := strings.Contains(text.String(), "maps refused:"); shown != (n > 0) || (n > 0 && !strings.Contains(text.String(), "3 since")) {
+			t.Errorf("%d refused:\n%s", n, text.String())
+		}
+	}
+}
