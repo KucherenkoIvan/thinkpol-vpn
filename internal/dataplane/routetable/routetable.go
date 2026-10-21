@@ -674,7 +674,9 @@ func (e *Enforcer) subscribe(ctx context.Context, w *watches) {
 	case errors.Is(err, errors.ErrUnsupported):
 		w.ch, w.rewatch = nil, nil // the backstop alone
 	case err != nil:
-		e.warnRetry(&e.watchWarn, "route table: watching routes failed, retrying", err)
+		if ctx.Err() == nil { // a watcher stopping says nothing of the subscription
+			e.warnRetry(&e.watchWarn, "route table: watching routes failed, retrying", err)
+		}
 		w.ch, w.rewatch = nil, time.After(RetryAfter)
 	default:
 		e.logCleared(&e.watchWarn, "route table: watching routes again")
@@ -697,7 +699,9 @@ func (e *Enforcer) subscribeGuard(ctx context.Context, w *watches) {
 	case errors.Is(err, errors.ErrUnsupported), errors.Is(err, ErrGuardUnsupported):
 		w.gch, w.regwatch = nil, nil // the backstop alone
 	case err != nil:
-		e.warnRetry(&e.guardWatchWarn, "route table: watching the leak guard failed, retrying", err)
+		if ctx.Err() == nil { // a watcher stopping says nothing of the subscription
+			e.warnRetry(&e.guardWatchWarn, "route table: watching the leak guard failed, retrying", err)
+		}
 		w.gch, w.regwatch = nil, time.After(RetryAfter)
 	default:
 		e.logCleared(&e.guardWatchWarn, "route table: watching the leak guard again")

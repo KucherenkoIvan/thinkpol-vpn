@@ -672,3 +672,40 @@ func TestADifferentFailureIsWarnedWithinTheWindow(t *testing.T) {
 		t.Fatalf("warns %q, want the first failure again, at once", w)
 	}
 }
+
+// A subscription that fails because the watcher's context ended (Close or
+// Enforce pausing it) isn't warned, and doesn't take the warn window: the
+// next real failure warns at once.
+func TestASubscriptionCutShortIsNotWarned(t *testing.T) {
+	for _, site := range []struct {
+		name, warn string
+		fail       func(f *fakeConfigurator, g *fakeGuard, err error)
+		step       func(context.Context, *routetable.Enforcer)
+	}{
+		{"routes", "watching routes failed",
+			func(f *fakeConfigurator, _ *fakeGuard, err error) { f.setWatchErr(err) }, routetable.Subscribe},
+		{"guard", "watching the leak guard failed",
+			func(_ *fakeConfigurator, g *fakeGuard, err error) { g.setWatchErr(err) }, routetable.SubscribeGuard},
+	} {
+		t.Run(site.name, func(t *testing.T) {
+			f := &fakeConfigurator{survey: up()}
+			g := newFakeGuard(f)
+			var buf lockedBuffer
+			e := routetable.OpenWithClock(f, g, slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})), (&fakeClock{now: time.Unix(0, 0)}).read)
+			defer func() { _ = e.Close() }()
+			routetable.PauseWatching(e)
+			stopped, cancel := context.WithCancel(t.Context())
+			cancel()
+			site.fail(f, g, context.Canceled)
+			site.step(stopped, e)
+			if w := buf.lines(site.warn); len(w) != 0 {
+				t.Fatalf("warned %q for a stopped watcher", w)
+			}
+			site.fail(f, g, errors.New("the OS said no"))
+			site.step(t.Context(), e)
+			if w := buf.lines(site.warn); len(w) != 1 || strings.Contains(w[0], "suppressed=") {
+				t.Fatalf("the first real failure: %q, want one warn, nothing suppressed", w)
+			}
+		})
+	}
+}
