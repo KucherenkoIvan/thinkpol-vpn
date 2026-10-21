@@ -74,7 +74,10 @@ func newFakeGuard(f *fakeConfigurator) *fakeGuard {
 	return &fakeGuard{f: f, events: make(chan struct{})}
 }
 
-func (g *fakeGuard) Apply(_ context.Context, e routetable.Exempt) error {
+func (g *fakeGuard) Apply(ctx context.Context, e routetable.Exempt) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	n := g.f.count()
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -569,5 +572,36 @@ func TestRetriedFailuresAreWarnedAtMostOnceAMinute(t *testing.T) {
 				t.Fatalf("after a success: %q, want a third warn at once, nothing suppressed", w)
 			}
 		})
+	}
+}
+
+// A guard Apply that failed because its context was cancelled is neither
+// warned nor counted against the limit: the next real failure warns at
+// once, with nothing suppressed. The guard is still retried.
+func TestACancelledGuardApplyIsNotWarned(t *testing.T) {
+	f := &fakeConfigurator{}
+	g := newFakeGuard(f)
+	var buf lockedBuffer
+	clock := &fakeClock{now: time.Unix(0, 0)}
+	e := routetable.OpenWithClock(f, g, slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})), clock.read)
+	defer func() { _ = e.Close() }()
+	warns := func() []string { return buf.lines("applying the leak guard failed") }
+	w := routetable.Want{TUN: "thinkpol0"}
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	for range 3 {
+		routetable.GuardApply(cancelled, e, w)
+	}
+	if n := len(warns()); n != 0 {
+		t.Fatalf("%d warns of cancelled applies, want none", n)
+	}
+	if st := e.Status(); st.GuardEnforced || st.GuardError != routetable.ErrorGuard {
+		t.Errorf("status after a cancelled apply: %+v", st)
+	}
+	g.setFail(errors.New("the guard's load was refused"))
+	routetable.GuardApply(context.Background(), e, w)
+	if w := warns(); len(w) != 1 || strings.Contains(w[0], "suppressed=") {
+		t.Fatalf("the first real failure: %q, want one warn, nothing suppressed", w)
 	}
 }

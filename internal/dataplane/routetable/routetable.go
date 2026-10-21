@@ -559,7 +559,10 @@ func (e *Enforcer) applyGuard(ctx context.Context, w Want) {
 		e.status.GuardEnforced, e.status.GuardError = false, ErrorGuardUnsupported
 		e.log.Warn("route table: the OS can't hold the leak guard; sockets bound to an interface aren't confined", "err", err)
 	default:
-		e.warnRetry(&e.guardWarn, "route table: applying the leak guard failed, retrying", err.Error())
+		if ctx.Err() == nil {
+			// One cut short by its context says nothing of the guard.
+			e.warnRetry(&e.guardWarn, "route table: applying the leak guard failed, retrying", err.Error())
+		}
 		e.guardFailing = true
 		e.status.GuardEnforced, e.status.GuardError = false, ErrorGuard
 	}
