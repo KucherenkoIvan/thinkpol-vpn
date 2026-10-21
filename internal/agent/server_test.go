@@ -17,6 +17,7 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/logring"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/supervisor"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/worker"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/blobs"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
@@ -439,5 +440,20 @@ func TestServerEgressAndDials(t *testing.T) {
 				t.Fatalf("log, want %q:\n%s", tc.wantLog, r.log)
 			}
 		})
+	}
+}
+
+// A worker's data plane gets its namespace's adapters and none of a
+// device's.
+func TestAWorkerGetsNoDeviceAdapter(t *testing.T) {
+	h := testHost()
+	h.BlobNet = blobs.Net{Listen: (&loopbackOverlay{}).listen}
+	w := workerHost(h)
+	if w.NewGuard != nil || w.NewRouteTable != nil || w.ClearConfig != nil || w.ClearRouteTable != nil ||
+		w.SetSystemDNS != nil || w.SystemUpstreams != nil {
+		t.Error("a device-only adapter reaches the worker")
+	}
+	if w.NewConfigurator == nil || w.NewTUN == nil || w.Transports == nil || w.BlobNet.Listen == nil {
+		t.Error("the worker lost an adapter of its own")
 	}
 }

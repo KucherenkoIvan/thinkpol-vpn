@@ -16,9 +16,19 @@ import (
 // ServeSpace is a server's data plane for one space in its worker: it
 // waits for the supervisor's WorkerConfig, then runs RunDataPlane on its
 // own TUN with the supervisor's shared listeners as its inbound, applying
-// each newer map the supervisor sends.
+// each newer map the supervisor sends. Of h it takes only what a worker
+// uses (workerHost).
 func ServeSpace(log *slog.Logger, h Host) worker.Serve {
-	return serveSpace(log, DataPlane{Host: h})
+	return serveSpace(log, DataPlane{Host: workerHost(h)})
+}
+
+// workerHost is what a worker's data plane may use of h: its namespace's
+// network configuration and TUN, the transports and the blob network.
+// The device-only adapters (the route table and its leak guard, clearing
+// a crashed run's routes, the OS's resolvers and their configuration)
+// stay out, so a worker can't reach them whatever its flags say.
+func workerHost(h Host) Host {
+	return Host{NewConfigurator: h.NewConfigurator, NewTUN: h.NewTUN, Transports: h.Transports, BlobNet: h.BlobNet}
 }
 
 // serveSpace is ServeSpace on base: its Host and private fields are kept,
