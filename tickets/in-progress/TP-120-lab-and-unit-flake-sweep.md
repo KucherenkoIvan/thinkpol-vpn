@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: M
 depends_on: []
 refs: []
-owner: ""
-branch: ""
+owner: "agent-tp-120"
+branch: "tp-120-flake-sweep"
 ---
 
 ## Goal
@@ -29,3 +29,4 @@ For each: reproduce under load (e.g. `-count` with `-p` raised, `stress`-style p
 
 ## Log
 - 2026-10-21 created in backlog (flakes seen during TP-112, TP-102 and TP-116 runs)
+- 2026-10-21 backlog → in-progress — owner: agent-tp-120, branch: tp-120-flake-sweep
