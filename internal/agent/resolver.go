@@ -19,9 +19,8 @@ import (
 // it asks the configured upstreams. A device with none asks the
 // resolvers the OS uses now (read before the OS is pointed at the
 // resolver; what the node itself wrote there is never taken for one); a
-// worker never falls back to those, because its sandbox can't read the
-// host's resolver configuration at all. A device asks exits through the
-// overlay TUN only.
+// worker never falls back to those (see DESIGN.md "Upstreams"). A device
+// asks exits through the overlay TUN only.
 func (r *runner) newResolver() *dns.Server {
 	upstreams := r.dp.DNSUpstreams
 	// InWorker is set only in a server's worker (serveSpace), never on a
@@ -199,11 +198,9 @@ func sameSystem(a, b dns.SystemConfig) bool {
 }
 
 // defaultWorkerUpstreams are the upstreams an exit's resolver asks when
-// -dns-upstream is unset: well-known public resolvers on both families.
-// The host's own resolvers are not used: on most clouds they sit on
-// private or link-local addresses, which the worker's egress refuses,
-// and widening the egress to reach them would open the provider's private
-// network (the cloud metadata services included) to every space.
+// -dns-upstream is unset; why these, and why not the host's own, is in
+// DESIGN.md "Upstreams". IPv4 first, so an exit whose uplink lacks a
+// family gets a working upstream before a dead one.
 var defaultWorkerUpstreams = []netip.AddrPort{
 	netip.AddrPortFrom(netip.MustParseAddr("9.9.9.9"), dns.Port),
 	netip.AddrPortFrom(netip.MustParseAddr("2620:fe::fe"), dns.Port),
@@ -212,10 +209,9 @@ var defaultWorkerUpstreams = []netip.AddrPort{
 }
 
 // workerUpstreams are the upstreams a worker's resolver asks: the
-// configured ones, else the default public resolvers; the host's own
-// resolvers are never used. One the worker's egress refuses is not
-// configured: it is logged once per change of the refused set and
-// counted in health, never silently dropped.
+// configured ones, else the default public resolvers (DESIGN.md
+// "Upstreams"). One the worker's egress refuses is not configured: it is
+// logged once per change of the refused set and counted in health.
 func (s *serverSpaces) workerUpstreams() []netip.AddrPort {
 	if !s.dns {
 		return nil
