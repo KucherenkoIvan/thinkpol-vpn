@@ -54,7 +54,7 @@ func tricklingPeer(t *testing.T, tn *testNet, at netip.Addr, size int) trickle {
 	return trickle{started: started, cut: cut}
 }
 
-// The trickle (20 bytes, 4 s) is first in the plan; the device's window is
+// The trickle (one byte per 200 ms, seconds in all) is first in the plan; the device's window is
 // 0.3 s. Load can make the good peer miss that window too, and a later
 // round fetch from it: what holds either way is the trickle cut short and
 // the list fetched.
@@ -96,12 +96,13 @@ func TestANewMapAbandonsAStalledTransfer(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the device never asked the trickling peer")
 	}
-	start := time.Now()
 	device.Update(device.plan([]netmap.BlobRef{ref}, good))
-	eventually(t, "the new map's list", func() bool { _, ok := device.Get(ref.SHA256); return ok })
-	if d := time.Since(start); d > 4*time.Second {
-		t.Errorf("the new map waited %v for the stalled transfer", d)
+	select {
+	case <-trickling.cut:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the new map never abandoned the stalled transfer")
 	}
+	eventually(t, "the new map's list", func() bool { _, ok := device.Get(ref.SHA256); return ok })
 	if st := device.Status(); st.Abandoned != 1 {
 		t.Errorf("status %+v", st)
 	}

@@ -29,7 +29,7 @@ func TestSwitchesPathWhenTheFirstHopGoesSilent(t *testing.T) {
 		a, b := twoRelays(t, f, r1r2, r1r2)
 		toB := a.endpoint(t, "B")
 		keepSending(t, a, b, toB, "before")
-		settlesOn(t, a, toB, "B", "R1")
+		reachesHop(t, a, toB, "B", "R1")
 
 		// R1 dies without a word: nothing reports it, its links just go quiet.
 		f.silence("A", "R1", true)
@@ -37,9 +37,9 @@ func TestSwitchesPathWhenTheFirstHopGoesSilent(t *testing.T) {
 		start := time.Now()
 		got := keepSending(t, a, b, toB, "after")
 		took := time.Since(start)
-		settlesOn(t, a, toB, "B", "R2")
+		reachesHop(t, a, toB, "B", "R2")
 		keepSending(t, b, a, got.ep, "and back")
-		settlesOn(t, b, got.ep, "A", "R2")
+		reachesHop(t, b, got.ep, "A", "R2")
 		if limit := 10 * f.opts.DeadAfter; took > limit {
 			t.Fatalf("switching took %v, more than %v", took, limit)
 		}
@@ -85,7 +85,7 @@ func TestSwitchesPathWhenTheRelayCloses(t *testing.T) {
 		keepSending(t, a, b, toB, "before")
 		_ = f.node("R1").Close()
 		keepSending(t, a, b, toB, "after")
-		settlesOn(t, a, toB, "B", "R2")
+		reachesHop(t, a, toB, "B", "R2")
 	})
 }
 

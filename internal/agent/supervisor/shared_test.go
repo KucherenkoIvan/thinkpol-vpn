@@ -539,6 +539,15 @@ func TestFairShareChargedAfterTheWorkerAccepts(t *testing.T) {
 		t.Fatal(err)
 	}
 	eventually(t, "the refusal", func() bool { return s.counters(space).OverShare == 1 })
+	// A refused datagram from a new address leaves no address to answer.
+	remotes := len((*s.routes.Load())[space].remotesForTest())
+	if err := dial(t, address, p).WritePacket(make([]byte, 1000)); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the second refusal", func() bool { return s.counters(space).OverShare == 2 })
+	if n := len((*s.routes.Load())[space].remotesForTest()); n != remotes {
+		t.Fatalf("%d addresses to answer after a refused datagram, want %d", n, remotes)
+	}
 	if got := m.of(space); got != 1500+2*udp.Overhead {
 		t.Fatalf("charged %d, want only what went through", got)
 	}

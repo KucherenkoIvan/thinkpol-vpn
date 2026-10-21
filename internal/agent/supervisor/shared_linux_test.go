@@ -312,7 +312,7 @@ func TestTwoSpacesShareAListener(t *testing.T) {
 					t.Fatalf("dialer %s got %q", d.Node, r)
 				}
 			case <-time.After(5 * time.Second):
-				t.Fatalf("no reply for dialer %s", d.Node)
+				t.Fatalf("no reply for dialer %s; shared counters %+v", d.Node, sharedOf(s, sp.ID))
 			}
 		}
 	}
@@ -780,4 +780,15 @@ func medianThroughput(a, b, c throughput) throughput {
 		oneWay:     med(a.oneWay, b.oneWay, c.oneWay),
 		echo:       med(a.echo, b.echo, c.echo),
 	}
+}
+
+// sharedOf is what the shared listeners did for space, as the supervisor
+// reports it.
+func sharedOf(s *supervisor.Supervisor, space netmap.SpaceID) supervisor.SharedCounters {
+	for _, w := range s.Workers() {
+		if w.Space == space {
+			return w.Shared
+		}
+	}
+	return supervisor.SharedCounters{}
 }
