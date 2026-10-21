@@ -1,6 +1,6 @@
 # Agent instructions
 
-What the project is: [README.md](README.md). [PRD.md](PRD.md) says what it must do and [DESIGN.md](DESIGN.md) says how: the model, its invariants and its accepted residual risks. The mechanism (numbers, paths, OS details) is in each package's `doc.go`, linked from DESIGN.md. They are the source of truth. Don't contradict them in code: if they're wrong, fix them in the same branch and say so in the ticket's log. A change to mechanism updates its package doc; a change that moves an invariant or adds a residual risk updates DESIGN.md.
+What the project is: [README.md](README.md). The source of truth is four sets of docs: [PRD.md](PRD.md) says what it must do; [DESIGN.md](DESIGN.md) says how, as the model and its invariants; [RESIDUAL-RISKS.md](RESIDUAL-RISKS.md) lists what the design accepts falling short of; and each package's `doc.go`, linked from DESIGN.md's index, holds that package's mechanism. Don't contradict them in code: if they're wrong, fix them in the same branch and say so in the ticket's log. Which change updates which: mechanism → its package doc; an invariant or decision → DESIGN.md; a residual added, narrowed or removed → its row in RESIDUAL-RISKS.md, and the PRD requirement its Breaks column names.
 
 Your task's prompt may override the workflow and conventions below, never the hard rules. If your prompt conflicts with this file, say so in your report.
 
