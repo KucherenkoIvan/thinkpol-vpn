@@ -82,9 +82,7 @@ func TestADevicePointsTheSystemAtItsResolverWhileConnected(t *testing.T) {
 				return []netip.Addr{netip.MustParseAddr("192.0.2.53")}, nil
 			}
 		},
-		dataPlane: func(dp *DataPlane) {
-			dp.tuning.dnsPort = 5353
-		},
+		tuning: func(t *tuning) { t.dnsPort = 5353 },
 	})
 	b4, b6 := overlay(2)
 	b.connection(t, Connected)
@@ -343,9 +341,7 @@ func TestUnprotectedDNSIsReportedAndRetried(t *testing.T) {
 			p.SetSystemDNS = sys.Set
 			p.SystemUpstreams = func([]netip.Addr) ([]netip.Addr, error) { return nil, nil }
 		},
-		dataPlane: func(dp *DataPlane) {
-			dp.tuning.dnsPort = 5353
-		},
+		tuning: func(t *tuning) { t.dnsPort = 5353 },
 	})
 	err := b.node.Connect(context.Background())
 	if !errors.Is(err, ErrDNSUnprotected) {
@@ -389,9 +385,7 @@ func TestAFailedFirstReadOfTheSystemsResolversIsPassedOn(t *testing.T) {
 			p.SetSystemDNS = sys.Set
 			p.SystemUpstreams = func([]netip.Addr) ([]netip.Addr, error) { return nil, errors.New("the store is unreadable") }
 		},
-		dataPlane: func(dp *DataPlane) {
-			dp.tuning.dnsPort = 5353
-		},
+		tuning: func(t *tuning) { t.dnsPort = 5353 },
 	})
 	b.connection(t, Connected)
 	eventually(t, func() bool { n, _ := sys.counts(); return n == 1 })
@@ -426,9 +420,7 @@ func TestStaleUpstreamsAreDegradedNotUnprotected(t *testing.T) {
 			p.SetSystemDNS = sys.Set
 			p.SystemUpstreams = func([]netip.Addr) ([]netip.Addr, error) { return nil, nil }
 		},
-		dataPlane: func(dp *DataPlane) {
-			dp.tuning.dnsPort = 5353
-		},
+		tuning: func(t *tuning) { t.dnsPort = 5353 },
 	})
 	b.connection(t, Connected)
 	if err := b.node.Connect(context.Background()); err != nil {
@@ -464,9 +456,7 @@ func TestAnUntaggedProblemIsUnprotected(t *testing.T) {
 			p.SetSystemDNS = sys.Set
 			p.SystemUpstreams = func([]netip.Addr) ([]netip.Addr, error) { return nil, nil }
 		},
-		dataPlane: func(dp *DataPlane) {
-			dp.tuning.dnsPort = 5353
-		},
+		tuning: func(t *tuning) { t.dnsPort = 5353 },
 	})
 	b.connection(t, Connected)
 	sys.mu.Lock()
@@ -566,10 +556,7 @@ func TestTheDirectUpstreamsReachTheRouteTable(t *testing.T) {
 				return []netip.Addr{netip.MustParseAddr("192.0.2.53")}, nil
 			}
 		},
-		dataPlane: func(dp *DataPlane) {
-			dp.RouteTable = true
-			dp.tuning.dnsPort = 5353
-		},
+		tuning: func(t *tuning) { t.dnsPort = 5353 },
 	})
 	b.connection(t, Connected)
 	eventually(t, func() bool {
@@ -600,10 +587,7 @@ func TestAConfiguredUpstreamReachesTheRouteTableWithItsPort(t *testing.T) {
 			p.NewRouteTable = func(*slog.Logger, routetable.Guard) (RouteEnforcer, error) { return table, nil }
 			p.SetSystemDNS = (&fakeSystem{}).Set
 		},
-		dataPlane: func(dp *DataPlane) {
-			dp.RouteTable = true
-			dp.tuning.dnsPort = 5353
-		},
+		tuning: func(t *tuning) { t.dnsPort = 5353 },
 	})
 	b.connection(t, Connected)
 	eventually(t, func() bool { return slices.Equal(table.upstreams(), []netip.AddrPort{up}) })

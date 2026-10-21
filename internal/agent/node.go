@@ -45,9 +45,8 @@ type Node struct {
 	subscribers []func(Event)
 	// stopped is closed once the node's adapter returned.
 	stopped chan struct{}
-	// tweak, if set, adjusts a device's DataPlane: how tests set its
-	// tuning.
-	tweak func(*DataPlane)
+	// tuning is a device's data plane's (DataPlane.tuning): tests set it.
+	tuning tuning
 
 	// rulesMu serializes SetRulePreset; local is the device's last good
 	// rules, as LocalRulesFile holds them (read by run while it builds
@@ -316,9 +315,7 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 	n.rulesMu.Lock()
 	dp.Rules = n.local
 	n.rulesMu.Unlock()
-	if n.tweak != nil {
-		n.tweak(&dp)
-	}
+	dp.tuning = n.tuning
 	return RunDataPlane(ctx, dp)
 }
 

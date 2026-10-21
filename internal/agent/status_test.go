@@ -38,13 +38,13 @@ type deviceNode struct {
 
 // deviceOpt adjusts device b: prepare sets its config and platform
 // (every host fake) before it is prepared, node sees the prepared node
-// before it runs, dataPlane sets its data plane's private test fields and
-// RouteTable (off by default: virtual TUNs leave the host's routing
-// alone) before it runs.
+// before it runs, and tuning its data plane's tuning (fast paths and
+// retries already). It runs with a route table, as a device does: the
+// test platform's does nothing unless prepare gives it another.
 type deviceOpt struct {
-	prepare   func(*Config, *Platform)
-	node      func(*Node)
-	dataPlane func(*DataPlane)
+	prepare func(*Config, *Platform)
+	node    func(*Node)
+	tuning  func(*tuning)
 }
 
 // startDevice starts device b with opts.
@@ -78,13 +78,10 @@ func startDevice(t *testing.T, s *testSpace, reg *transport.Registry, connect bo
 			o.node(n)
 		}
 	}
-	n.tweak = func(dp *DataPlane) {
-		dp.tuning = tuning{path: fastPaths, retryAfter: testRetry}
-		dp.RouteTable = false // virtual TUNs: the host's routing stays as it is
-		for _, o := range opts {
-			if o.dataPlane != nil {
-				o.dataPlane(dp)
-			}
+	n.tuning = tuning{path: fastPaths, retryAfter: testRetry}
+	for _, o := range opts {
+		if o.tuning != nil {
+			o.tuning(&n.tuning)
 		}
 	}
 	go func() { rn.done <- n.run(rn.ctx, reg, rn.maps) }()
@@ -303,7 +300,6 @@ func TestARouteTableNotEnforcedIsAnEvent(t *testing.T) {
 		prepare: func(_ *Config, p *Platform) {
 			p.NewRouteTable = func(*slog.Logger, routetable.Guard) (RouteEnforcer, error) { return table, nil }
 		},
-		dataPlane: func(dp *DataPlane) { dp.RouteTable = true },
 	})
 	b.connection(t, Connected)
 	table.mu.Lock()
@@ -325,7 +321,6 @@ func TestARouteTableNotEnforcedIsToldAgainAfterItRecovered(t *testing.T) {
 		prepare: func(_ *Config, p *Platform) {
 			p.NewRouteTable = func(*slog.Logger, routetable.Guard) (RouteEnforcer, error) { return table, nil }
 		},
-		dataPlane: func(dp *DataPlane) { dp.RouteTable = true },
 	})
 	b.connection(t, Connected)
 	// Each flip lands as the map's Apply enforces, before the publish
@@ -401,7 +396,7 @@ func TestTheStatusShowsWhatAnEventSays(t *testing.T) {
 				heard = append(heard, seen{ev, st})
 			})
 		},
-		dataPlane: func(dp *DataPlane) { dp.tuning.dnsPort = 5353 },
+		tuning: func(t *tuning) { t.dnsPort = 5353 },
 	})
 	b.events.are(t, Event{EventConnected, 1}, Event{EventDNSUnprotected, 1})
 	b.maps <- s.buildWithout(t, 2, s.b)

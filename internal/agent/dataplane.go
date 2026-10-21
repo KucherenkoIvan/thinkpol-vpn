@@ -100,8 +100,10 @@ type DataPlane struct {
 
 // tuning is the one place a data plane differs in tests: the timing they
 // can't wait out and the port they can't bind. A node's data plane gets
-// its tuning from Node.tweak. What tests check about a running data plane
-// they read from its status and events, not from hooks.
+// its tuning from the node's (Node.tuning); everything else a test
+// changes is what production changes too (Config, Platform). What tests
+// check about a running data plane they read from its status and events,
+// not from hooks.
 type tuning struct {
 	// path is the path layer's timing; retryAfter the delay before a
 	// failed start, Apply or listener is retried (0: RetryAfter).

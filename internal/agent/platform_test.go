@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -38,7 +39,7 @@ func testHost() Host {
 		DeviceHost: DeviceHost{
 			NewGuard: func() routetable.Guard { return nil },
 			NewRouteTable: func(*slog.Logger, routetable.Guard) (RouteEnforcer, error) {
-				return nil, errors.New("no route table in this test")
+				return noRouteTable{}, nil
 			},
 			ClearConfig:     func(netcfg.Owner) error { return nil },
 			ClearRouteTable: func(routetable.Guard) error { return nil },
@@ -169,3 +170,12 @@ func TestClearingTheNetworkTriesBothOwners(t *testing.T) {
 		t.Errorf("unsupported: %q", out.String())
 	}
 }
+
+// noRouteTable is the test platform's route table: it takes every Want
+// and changes nothing, so a device's data plane runs in route-table mode,
+// as in production, and the host's routing stays as it is.
+type noRouteTable struct{}
+
+func (noRouteTable) Enforce(context.Context, routetable.Want) error { return nil }
+func (noRouteTable) Status() routetable.Status                      { return routetable.Status{Enforced: true} }
+func (noRouteTable) Close() error                                   { return nil }
