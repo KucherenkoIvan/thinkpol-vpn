@@ -100,3 +100,4 @@ Round 1 (2026-10-21): correctness (fix first), design (fix first), second opinio
 - 2026-10-21 round 1 checks at 8a0bd5d: make lint and make test green; make lab-test green (LAB_P=1, another checkout's lab running, 6m24s)
 - 2026-10-21 in-progress → review
 - 2026-10-22 review → has-errors (round 2: R2.1-R2.3)
+- 2026-10-22 has-errors → in-progress (round 2 findings)
