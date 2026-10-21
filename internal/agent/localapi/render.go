@@ -105,65 +105,80 @@ func writeDataPlane(line func(string, ...any), dp *localapiv1.DataPlane, now tim
 		}
 		line("egresses:\t%s", strings.Join(names, ", "))
 	}
-	if ps := dp.GetPeers(); len(ps) > 0 {
-		line("peers:")
-		for _, p := range ps {
-			via := "no path yet"
-			if hop := p.GetFirstHop(); hop == p.GetNodeId() {
-				via = "direct"
-			} else if hop != "" {
-				via = "via " + hop
-			}
-			hs := "no handshake"
-			if p.GetLastHandshake() != nil {
-				hs = "handshake " + ago(p.GetLastHandshake(), now)
-			}
-			line("  %s\t%s\t%s\t%s\trx %s\ttx %s", p.GetNodeId(), strings.Join(p.GetAddresses(), " "), via, hs,
-				byteCount(p.GetRxBytes()), byteCount(p.GetTxBytes()))
-		}
-	}
-	if ns := dp.GetNeighbors(); len(ns) > 0 {
-		line("neighbors:")
-		for _, n := range ns {
-			state := "down"
-			if n.GetUp() {
-				state = "up " + round(n.GetUpFor().AsDuration()).String()
-			}
-			var links []string
-			for _, l := range n.GetLinks() {
-				var flags []string
-				if l.GetDialed() {
-					flags = append(flags, "dialed")
-				}
-				if l.GetActive() {
-					flags = append(flags, "active")
-				}
-				if l.GetUp() {
-					flags = append(flags, "up")
-				}
-				links = append(links, l.GetTransport()+" ("+strings.Join(flags, " ")+")")
-			}
-			line("  %s\t%s\trtt %s\t%s", n.GetNodeId(), state, rtt(n.GetRtt()), strings.Join(links, ", "))
-		}
-	}
+	writePeers(line, dp.GetPeers(), now)
+	writeNeighbors(line, dp.GetNeighbors())
 	if ss := dp.GetSkipped(); len(ss) > 0 {
 		line("skipped from the map:")
 		for _, s := range ss {
 			line("  %s %s:\t%s", s.GetItem(), s.GetNodeId(), s.GetReason())
 		}
 	}
-	if n := dp.GetCounters()["route_table.routes"]; n > 0 {
-		line("route table:\t%d routes, re-applied %d times", n, dp.GetCounters()["route_table.reapplies"])
-		if ahead := dp.GetCounters()["route_table.rules_ahead"]; ahead > 0 {
+	writeCounters(line, dp.GetCounters())
+}
+
+func writePeers(line func(string, ...any), ps []*localapiv1.Peer, now time.Time) {
+	if len(ps) == 0 {
+		return
+	}
+	line("peers:")
+	for _, p := range ps {
+		via := "no path yet"
+		if hop := p.GetFirstHop(); hop == p.GetNodeId() {
+			via = "direct"
+		} else if hop != "" {
+			via = "via " + hop
+		}
+		hs := "no handshake"
+		if p.GetLastHandshake() != nil {
+			hs = "handshake " + ago(p.GetLastHandshake(), now)
+		}
+		line("  %s\t%s\t%s\t%s\trx %s\ttx %s", p.GetNodeId(), strings.Join(p.GetAddresses(), " "), via, hs,
+			byteCount(p.GetRxBytes()), byteCount(p.GetTxBytes()))
+	}
+}
+
+func writeNeighbors(line func(string, ...any), ns []*localapiv1.Neighbor) {
+	if len(ns) == 0 {
+		return
+	}
+	line("neighbors:")
+	for _, n := range ns {
+		state := "down"
+		if n.GetUp() {
+			state = "up " + round(n.GetUpFor().AsDuration()).String()
+		}
+		var links []string
+		for _, l := range n.GetLinks() {
+			var flags []string
+			if l.GetDialed() {
+				flags = append(flags, "dialed")
+			}
+			if l.GetActive() {
+				flags = append(flags, "active")
+			}
+			if l.GetUp() {
+				flags = append(flags, "up")
+			}
+			links = append(links, l.GetTransport()+" ("+strings.Join(flags, " ")+")")
+		}
+		line("  %s\t%s\trtt %s\t%s", n.GetNodeId(), state, rtt(n.GetRtt()), strings.Join(links, ", "))
+	}
+}
+
+// writeCounters writes the route table's counters, and the nonzero drops.
+func writeCounters(line func(string, ...any), counters map[string]uint64) {
+	if n := counters["route_table.routes"]; n > 0 {
+		line("route table:\t%d routes, re-applied %d times", n, counters["route_table.reapplies"])
+		if ahead := counters["route_table.rules_ahead"]; ahead > 0 {
 			line("\t%d policy rules of other software come first and may route around the tunnel", ahead)
 		}
-		if ahead := dp.GetCounters()["route_table.overlay_routes_ahead"]; ahead > 0 {
+		if ahead := counters["route_table.overlay_routes_ahead"]; ahead > 0 {
 			line("\t%d routes of other software take overlay addresses around the tunnel", ahead)
 		}
 	}
 	var drops []string
-	for _, name := range slices.Sorted(maps.Keys(dp.GetCounters())) {
-		if v := dp.GetCounters()[name]; v > 0 && counterKinds[name] == dropCounter {
+	for _, name := range slices.Sorted(maps.Keys(counters)) {
+		if v := counters[name]; v > 0 && counterKinds[name] == dropCounter {
 			drops = append(drops, fmt.Sprintf("%s %d", name, v))
 		}
 	}

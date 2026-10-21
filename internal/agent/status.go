@@ -341,73 +341,92 @@ func (s Status) Health() Health {
 			add(HealthDown, ProblemStarting)
 		}
 	case Serving:
-		if s.Retrying {
-			add(HealthDegraded, ProblemRetrying)
-		}
-		down, restarted := false, false
-		for _, w := range s.Workers {
-			down = down || !w.Ready
-			restarted = restarted || w.Starts > 1
-		}
-		if down {
-			add(HealthDown, ProblemWorkerDown)
-		}
-		if restarted {
-			add(HealthDegraded, ProblemWorkerRestarts)
-		}
-		for _, l := range s.PublicListeners {
-			if l.Rejected > 0 {
-				add(HealthDegraded, ProblemLinksRejected)
-				break
-			}
-		}
-		if s.DNSUpstreamsRefused > 0 {
-			add(HealthDegraded, ProblemDNSUpstreamRefused)
-		}
+		s.serverProblems(add)
 	}
-	if dp := s.DataPlane; dp != nil {
-		if dp.LastApplyError != "" {
-			add(HealthDegraded, ProblemApplyFailed)
-		}
-		up := 0
-		for _, n := range dp.Neighbors {
-			if n.Up {
-				up++
-			}
-		}
-		switch {
-		case len(dp.Neighbors) > 0 && up == 0:
-			add(HealthDown, ProblemNoLinkUp)
-		case up < len(dp.Neighbors):
-			add(HealthDegraded, ProblemNeighborDown)
-		}
-		if len(dp.Skipped) > 0 {
-			add(HealthDegraded, ProblemSkipped)
-		}
-		if s.PresetUnavailable {
-			add(HealthDegraded, ProblemPresetUnavailable)
-		}
-		if rt := dp.RouteTable; rt.Error != "" {
-			add(HealthDown, ProblemRouteTable)
-		} else if rt.Enforced && rt.RulesAhead > 0 {
-			add(HealthDegraded, ProblemRulesAhead)
-		}
-		if rt := dp.RouteTable; rt.Error == "" && rt.OverlayAhead > 0 {
-			add(HealthDown, ProblemOverlayRoutesAhead)
-		}
-		switch dp.RouteTable.GuardError {
-		case "":
-		case routetable.ErrorGuardUnsupported:
-			add(HealthDegraded, ProblemGuardUnsupported)
-		default:
-			add(HealthDegraded, ProblemGuard)
-		}
-		if s.DNSUnprotected {
-			add(HealthDegraded, ProblemDNSUnprotected)
-		}
-		if s.DNSUpstreamsStale {
-			add(HealthDegraded, ProblemDNSUpstreamsStale)
-		}
+	if s.DataPlane != nil {
+		s.dataPlaneProblems(add)
 	}
 	return h
+}
+
+// serverProblems adds a server's problems: its map, workers, listeners
+// and resolver upstreams.
+func (s Status) serverProblems(add func(HealthLevel, string)) {
+	if s.Retrying {
+		add(HealthDegraded, ProblemRetrying)
+	}
+	down, restarted := false, false
+	for _, w := range s.Workers {
+		down = down || !w.Ready
+		restarted = restarted || w.Starts > 1
+	}
+	if down {
+		add(HealthDown, ProblemWorkerDown)
+	}
+	if restarted {
+		add(HealthDegraded, ProblemWorkerRestarts)
+	}
+	for _, l := range s.PublicListeners {
+		if l.Rejected > 0 {
+			add(HealthDegraded, ProblemLinksRejected)
+			break
+		}
+	}
+	if s.DNSUpstreamsRefused > 0 {
+		add(HealthDegraded, ProblemDNSUpstreamRefused)
+	}
+}
+
+// dataPlaneProblems adds a running data plane's problems: its map, links,
+// rules, route table and DNS.
+func (s Status) dataPlaneProblems(add func(HealthLevel, string)) {
+	dp := s.DataPlane
+	if dp.LastApplyError != "" {
+		add(HealthDegraded, ProblemApplyFailed)
+	}
+	up := 0
+	for _, n := range dp.Neighbors {
+		if n.Up {
+			up++
+		}
+	}
+	switch {
+	case len(dp.Neighbors) > 0 && up == 0:
+		add(HealthDown, ProblemNoLinkUp)
+	case up < len(dp.Neighbors):
+		add(HealthDegraded, ProblemNeighborDown)
+	}
+	if len(dp.Skipped) > 0 {
+		add(HealthDegraded, ProblemSkipped)
+	}
+	if s.PresetUnavailable {
+		add(HealthDegraded, ProblemPresetUnavailable)
+	}
+	routeTableProblems(dp.RouteTable, add)
+	if s.DNSUnprotected {
+		add(HealthDegraded, ProblemDNSUnprotected)
+	}
+	if s.DNSUpstreamsStale {
+		add(HealthDegraded, ProblemDNSUpstreamsStale)
+	}
+}
+
+// routeTableProblems adds the OS routing table's problems and its leak
+// guard's.
+func routeTableProblems(rt dataplane.RouteTableStatus, add func(HealthLevel, string)) {
+	if rt.Error != "" {
+		add(HealthDown, ProblemRouteTable)
+	} else if rt.Enforced && rt.RulesAhead > 0 {
+		add(HealthDegraded, ProblemRulesAhead)
+	}
+	if rt.Error == "" && rt.OverlayAhead > 0 {
+		add(HealthDown, ProblemOverlayRoutesAhead)
+	}
+	switch rt.GuardError {
+	case "":
+	case routetable.ErrorGuardUnsupported:
+		add(HealthDegraded, ProblemGuardUnsupported)
+	default:
+		add(HealthDegraded, ProblemGuard)
+	}
 }
