@@ -576,7 +576,20 @@ func (b *rawBind) drain() (received, bool) {
 	}
 }
 
-// keepSending sends msg every few milliseconds until it arrives.
+// settlesOn sends from b to ep until b's hop toward peer is hop. The hop is
+// chosen per Send, and on the wall clock a load stall past DeadAfter can
+// leave every hop unproven for a moment: Failover then takes the first hop
+// with any link, or none (ErrNoPath), until probes are answered again.
+func settlesOn(t *testing.T, b *rawBind, ep conn.Endpoint, peer, hop string) {
+	t.Helper()
+	eventually(t, "the hop toward "+peer+" is "+hop, func() bool {
+		_ = b.Send([][]byte{wgMsg("settle")}, ep)
+		return b.current(peer) == hop
+	})
+}
+
+// keepSending sends msg every few milliseconds until it arrives: on the wall
+// clock a send can find no path (see settlesOn) or be lost with its link.
 func keepSending(t *testing.T, from, to *rawBind, ep conn.Endpoint, msg string) received {
 	t.Helper()
 	deadline := time.Now().Add(wait)
