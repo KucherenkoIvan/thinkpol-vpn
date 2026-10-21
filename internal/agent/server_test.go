@@ -414,6 +414,13 @@ func TestServeSpace(t *testing.T) {
 		if asked {
 			t.Error("the worker's resolver asked for the host's resolvers")
 		}
+		// The section allows no egress: not an exit's resolver, so it
+		// says this at debug, nothing warned.
+		for _, l := range strings.Split(n.log.String(), "\n") {
+			if strings.Contains(l, "no upstream to ask: the egress refuses every configured one") && !strings.Contains(l, "level=DEBUG") {
+				t.Errorf("a non-exit's resolver warned about its upstreams: %s", l)
+			}
+		}
 		if log := n.log.String(); !strings.Contains(log, "no upstream to ask: the egress refuses every configured one") {
 			t.Errorf("the resolver doesn't run as a worker's:\n%s", log)
 		}

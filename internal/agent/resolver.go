@@ -38,8 +38,13 @@ func (r *runner) newResolver() *dns.Server {
 		if r.dp.inWorker {
 			// workerUpstreams dropped every one: the egress refuses each.
 			// An exit's are counted and logged there; a non-exit's
-			// resolver reports nothing about them.
-			r.dp.Log.Warn("DNS: no upstream to ask: the egress refuses every configured one; tunnel-bound names won't resolve")
+			// resolver reports nothing about them (MayEndAChain: only an
+			// exit's resolver do devices ask), so it says this at debug.
+			say := r.dp.Log.Warn
+			if !r.follow.section.Node.MayEndAChain() {
+				say = r.dp.Log.Debug
+			}
+			say("DNS: no upstream to ask: the egress refuses every configured one; tunnel-bound names won't resolve")
 		} else if !r.upstreamsUnknown.Load() { // a failed read warned already
 			r.dp.Log.Warn("DNS: no upstream to ask; set one with -dns-upstream")
 		}

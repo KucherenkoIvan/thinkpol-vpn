@@ -245,6 +245,7 @@ func TestAWorkerWithEveryUpstreamRefusedHasNone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	section.Node.AllowEgress = true // an exit's worker: the resolver warns
 	asked := false
 	r := &runner{dp: DataPlane{DNS: true, DNSUpstreams: ups, inWorker: true, Log: log,
 		Host: Host{SystemUpstreams: func([]netip.Addr) ([]netip.Addr, error) { asked = true; return nil, nil }},
