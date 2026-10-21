@@ -119,11 +119,11 @@ func newLinux(ns netns.NsHandle, name string, current bool, owner Owner) (Config
 		return nil, fmt.Errorf("netcfg: netlink in %s: %w", name, err)
 	}
 	return &linuxConfigurator{
-		h:      h,
-		ns:     netns.NsHandle(watchNS),
-		lock:   lock,
-		proto:  owner.RouteProtocol(),
-		ledger: newLedger(),
+		h:     h,
+		ns:    netns.NsHandle(watchNS),
+		lock:  lock,
+		proto: owner.RouteProtocol(),
+		links: newLedger(),
 	}, nil
 }
 
@@ -162,7 +162,7 @@ type linuxConfigurator struct {
 	closed bool
 
 	// Every route with proto is ours, so routes need no records.
-	ledger
+	links ledger
 }
 
 // routeKey is a route's identity in the kernel: two routes with the same
@@ -234,7 +234,7 @@ func (c *linuxConfigurator) apply(ctx context.Context, cfg Config, u *undoLog) e
 	if err != nil {
 		return err
 	}
-	want, err := c.configure(ctx, ops, cfg.Interfaces, u)
+	want, err := c.links.configure(ctx, ops, cfg.Interfaces, u)
 	if err != nil {
 		return err
 	}
@@ -245,12 +245,12 @@ func (c *linuxConfigurator) apply(ctx context.Context, cfg Config, u *undoLog) e
 	if err := c.reconcileRules(ctx, cfg.Rules, krules, u); err != nil {
 		return err
 	}
-	return c.release(ops, want, u)
+	return c.links.release(ops, want, u)
 }
 
 // reconcileRoutes adds or changes the routes cfg wants and removes the
 // owner's routes it doesn't.
-func (c *linuxConfigurator) reconcileRoutes(ctx context.Context, ops *netlinkLinks, routes []Route, kroutes map[routeKey]netlink.Route, u *undoLog) error {
+func (c *linuxConfigurator) reconcileRoutes(ctx context.Context, ops *netlinkOps, routes []Route, kroutes map[routeKey]netlink.Route, u *undoLog) error {
 	wantRoutes := make(map[routeKey]bool)
 	for _, r := range routes {
 		if err := ctx.Err(); err != nil {
@@ -297,23 +297,23 @@ func (c *linuxConfigurator) reconcileRoutes(ctx context.Context, ops *netlinkLin
 
 // netlinkOps is the ledger's linkOps on c's netlink handle, with the
 // addresses dumped once: every decision is made against the dump.
-func (c *linuxConfigurator) netlinkOps() (*netlinkLinks, error) {
+func (c *linuxConfigurator) netlinkOps() (*netlinkOps, error) {
 	kaddrs, err := c.kernelAddrs()
 	if err != nil {
 		return nil, err
 	}
-	return &netlinkLinks{h: c.h, kaddrs: kaddrs, byName: make(map[string]netlink.Link)}, nil
+	return &netlinkOps{h: c.h, kaddrs: kaddrs, byName: make(map[string]netlink.Link)}, nil
 }
 
-// netlinkLinks is linkOps over netlink for one Apply or Close.
-type netlinkLinks struct {
+// netlinkOps is linkOps over netlink for one Apply or Close.
+type netlinkOps struct {
 	h      *netlink.Handle
 	kaddrs map[int][]netip.Prefix // the namespace's addresses by interface index
 	byName map[string]netlink.Link
 }
 
 // link looks an interface up by name once per Apply.
-func (o *netlinkLinks) link(name string) (netlink.Link, error) {
+func (o *netlinkOps) link(name string) (netlink.Link, error) {
 	if l, ok := o.byName[name]; ok {
 		return l, nil
 	}
@@ -330,7 +330,7 @@ func stateOf(l netlink.Link) linkState {
 	return linkState{name: a.Name, index: a.Index, mtu: a.MTU, up: a.Flags&net.FlagUp != 0}
 }
 
-func (o *netlinkLinks) linkByName(name string) (linkState, error) {
+func (o *netlinkOps) linkByName(name string) (linkState, error) {
 	l, err := o.link(name)
 	if err != nil {
 		return linkState{}, err
@@ -338,7 +338,7 @@ func (o *netlinkLinks) linkByName(name string) (linkState, error) {
 	return stateOf(l), nil
 }
 
-func (o *netlinkLinks) linkByIndex(index int) (linkState, error) {
+func (o *netlinkOps) linkByIndex(index int) (linkState, error) {
 	l, err := o.h.LinkByIndex(index)
 	if err != nil {
 		return linkState{}, err
@@ -346,24 +346,24 @@ func (o *netlinkLinks) linkByIndex(index int) (linkState, error) {
 	return stateOf(l), nil
 }
 
-func (o *netlinkLinks) setMTU(l linkState, mtu int) error {
+func (o *netlinkOps) setMTU(l linkState, mtu int) error {
 	return o.h.LinkSetMTU(linkAt(l.index), mtu)
 }
 
-func (o *netlinkLinks) setUp(l linkState, up bool) error {
+func (o *netlinkOps) setUp(l linkState, up bool) error {
 	if up {
 		return o.h.LinkSetUp(linkAt(l.index))
 	}
 	return o.h.LinkSetDown(linkAt(l.index))
 }
 
-func (o *netlinkLinks) addrs(index int) ([]netip.Prefix, error) { return o.kaddrs[index], nil }
+func (o *netlinkOps) addrs(index int) ([]netip.Prefix, error) { return o.kaddrs[index], nil }
 
-func (o *netlinkLinks) addAddr(index int, p netip.Prefix) error {
+func (o *netlinkOps) addAddr(index int, p netip.Prefix) error {
 	return o.h.AddrAdd(linkAt(index), toNetlinkAddr(p))
 }
 
-func (o *netlinkLinks) delAddr(index int, p netip.Prefix) error {
+func (o *netlinkOps) delAddr(index int, p netip.Prefix) error {
 	return o.h.AddrDel(linkAt(index), toNetlinkAddr(p))
 }
 
@@ -555,7 +555,7 @@ func (c *linuxConfigurator) removeOwned() error {
 			errs = append(errs, err)
 		}
 	}
-	errs = append(errs, c.closeAll(ops)...)
+	errs = append(errs, c.links.closeAll(ops)...)
 	return errors.Join(errs...)
 }
 
@@ -587,6 +587,9 @@ func gone(err error) bool {
 		errors.Is(err, unix.ENODEV) || errors.Is(err, unix.EADDRNOTAVAIL) ||
 		errors.Is(err, unix.ENXIO)
 }
+
+// exists reports an add's error meaning what it adds is there already.
+func exists(err error) bool { return errors.Is(err, unix.EEXIST) }
 
 func linkAt(index int) netlink.Link {
 	return &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Index: index}}

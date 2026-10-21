@@ -164,7 +164,7 @@ type darwinConfigurator struct {
 	// pinned are routes an Apply's undo failed to remove: they stay in
 	// the record, whatever the write-ahead's undo says.
 	pinned map[rkey]bool
-	ledger
+	links  ledger
 }
 
 // newDarwin takes owner's place in path (its lock and its record; the
@@ -193,7 +193,7 @@ func newDarwin(owner Owner, k kernel, path string) (*darwinConfigurator, error) 
 	}
 	return &darwinConfigurator{
 		k: k, owner: owner, dir: dir, boot: boot, lock: lock, owned: owned, pinned: make(map[rkey]bool),
-		ledger: newLedger(),
+		links: newLedger(),
 	}, nil
 }
 
@@ -295,7 +295,7 @@ func (c *darwinConfigurator) apply(ctx context.Context, cfg Config, u *undoLog) 
 	}
 
 	ops := viewLinks{k: c.k, v: v}
-	kept, err := c.configure(ctx, ops, cfg.Interfaces, u)
+	kept, err := c.links.configure(ctx, ops, cfg.Interfaces, u)
 	if err != nil {
 		return err
 	}
@@ -313,7 +313,7 @@ func (c *darwinConfigurator) apply(ctx context.Context, cfg Config, u *undoLog) 
 	if err := c.reconcileRoutes(ctx, v, p, u); err != nil {
 		return err
 	}
-	return c.release(ops, kept, u)
+	return c.links.release(ops, kept, u)
 }
 
 // routePlan is the routes one Apply wants, as the kernel's.
@@ -778,7 +778,7 @@ func (c *darwinConfigurator) Close() error {
 		}
 		delete(c.owned, k)
 	}
-	errs = append(errs, c.closeAll(viewLinks{k: c.k, v: v})...)
+	errs = append(errs, c.links.closeAll(viewLinks{k: c.k, v: v})...)
 	if err := c.saveRecord(); err != nil {
 		errs = append(errs, err)
 	}
@@ -842,6 +842,9 @@ func (o viewLinks) delAddr(index int, p netip.Prefix) error {
 	}
 	return o.k.delAddr(l, p)
 }
+
+// exists reports an add's error meaning what it adds is there already.
+func exists(err error) bool { return errors.Is(err, unix.EEXIST) }
 
 // errNoInterface: the interface doesn't exist (any more).
 var errNoInterface = errors.New("no such interface")

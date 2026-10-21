@@ -7,8 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
-
-	"golang.org/x/sys/unix"
 )
 
 // undoLog collects the inverse of every change Apply makes, so a failed
@@ -40,7 +38,8 @@ type linkState struct {
 
 // linkOps is what the ledger asks of the OS about interfaces and their
 // addresses, for one Apply or Close. Errors that mean the interface or
-// address is gone satisfy gone.
+// address is gone satisfy gone; addAddr's for an address that is there
+// already satisfies exists.
 type linkOps interface {
 	// linkByName's error names the interface.
 	linkByName(name string) (linkState, error)
@@ -48,7 +47,8 @@ type linkOps interface {
 	setMTU(l linkState, mtu int) error
 	setUp(l linkState, up bool) error
 	// addrs are the addresses of the interface with index, with their
-	// prefix lengths.
+	// prefix lengths. Addresses go by index: an owned address's index is
+	// all the ledger keeps of where it was added.
 	addrs(index int) ([]netip.Prefix, error)
 	addAddr(index int, p netip.Prefix) error
 	delAddr(index int, p netip.Prefix) error
@@ -58,8 +58,8 @@ type linkOps interface {
 // state, and the addresses it owns. Routes aren't in it: each OS knows
 // its own routes apart (Linux by their protocol, macOS by its record).
 type ledger struct {
-	links map[string]linkChange // interfaces whose MTU or state we changed
-	addrs map[addrKey]int       // owned addresses → index they were added to
+	changed    map[string]linkChange // interfaces whose MTU or state we changed
+	ownedAddrs map[addrKey]int       // owned addresses → index they were added to
 }
 
 type linkChange struct {
@@ -75,17 +75,18 @@ type addrKey struct {
 }
 
 func newLedger() ledger {
-	return ledger{links: make(map[string]linkChange), addrs: make(map[addrKey]int)}
+	return ledger{changed: make(map[string]linkChange), ownedAddrs: make(map[addrKey]int)}
 }
 
-// wanted is what a config keeps of the ledger: its interfaces and their
-// addresses.
+// wanted are the interfaces and addresses a config names: release keeps
+// what the ledger has of them and gives the rest up.
 type wanted struct {
 	links map[string]bool
 	addrs map[addrKey]bool
 }
 
-// configure configures every interface of ifcs and its addresses.
+// configure sets the MTU and state of each interface of ifcs and adds its
+// addresses (configureLink, configureAddrs), and returns what ifcs name.
 func (l *ledger) configure(ctx context.Context, ops linkOps, ifcs []Interface, u *undoLog) (wanted, error) {
 	w := wanted{links: make(map[string]bool), addrs: make(map[addrKey]bool)}
 	for _, ifc := range ifcs {
@@ -113,7 +114,7 @@ func (l *ledger) configure(ctx context.Context, ops linkOps, ifcs []Interface, u
 // gives (on Linux it may be an altname of s).
 func (l *ledger) configureLink(ops linkOps, s linkState, ifc Interface, u *undoLog) error {
 	name := ifc.Name
-	if ch, ok := l.links[name]; ok && ch.index != s.index {
+	if ch, ok := l.changed[name]; ok && ch.index != s.index {
 		l.dropLinkRecord(name, u) // a recreated interface: earlier changes went with the old one
 	}
 	if ifc.MTU != 0 && s.mtu != ifc.MTU {
@@ -155,7 +156,7 @@ func (l *ledger) configureAddrs(ops linkOps, index int, ifc Interface, want map[
 		switch {
 		case present && l.ownsAddr(k, index):
 		case present: // someone else's: used, not owned
-			if _, recorded := l.addrs[k]; recorded {
+			if _, recorded := l.ownedAddrs[k]; recorded {
 				l.dropAddrRecord(k, u)
 			}
 		default:
@@ -170,7 +171,7 @@ func (l *ledger) configureAddrs(ops linkOps, index int, ifc Interface, want map[
 // release removes the owned addresses and restores the interfaces w
 // doesn't keep.
 func (l *ledger) release(ops linkOps, w wanted, u *undoLog) error {
-	for k, idx := range l.addrs {
+	for k, idx := range l.ownedAddrs {
 		if w.addrs[k] {
 			continue
 		}
@@ -185,7 +186,7 @@ func (l *ledger) release(ops linkOps, w wanted, u *undoLog) error {
 		}
 		l.dropAddrRecord(k, u)
 	}
-	for name := range l.links {
+	for name := range l.changed {
 		if !w.links[name] {
 			if err := l.restoreLink(ops, name, u); err != nil {
 				return err
@@ -199,7 +200,7 @@ func (l *ledger) release(ops linkOps, w wanted, u *undoLog) error {
 // going on past failures; what fails stays in the ledger.
 func (l *ledger) closeAll(ops linkOps) []error {
 	var errs []error
-	for k, idx := range l.addrs {
+	for k, idx := range l.ownedAddrs {
 		have, err := ops.addrs(idx)
 		if err != nil && !gone(err) {
 			errs = append(errs, err)
@@ -211,9 +212,9 @@ func (l *ledger) closeAll(ops linkOps) []error {
 				continue
 			}
 		}
-		delete(l.addrs, k)
+		delete(l.ownedAddrs, k)
 	}
-	for name := range l.links {
+	for name := range l.changed {
 		if err := l.restoreLink(ops, name, nil); err != nil {
 			errs = append(errs, err)
 		}
@@ -224,7 +225,7 @@ func (l *ledger) closeAll(ops linkOps) []error {
 // restoreLink undoes our MTU and state changes on an interface, each only if
 // it still is what we set.
 func (l *ledger) restoreLink(ops linkOps, name string, u *undoLog) error {
-	ch := l.links[name]
+	ch := l.changed[name]
 	s, err := ops.linkByIndex(ch.index)
 	if gone(err) || (err == nil && s.name != name) {
 		l.dropLinkRecord(name, u)
@@ -254,13 +255,13 @@ func (l *ledger) restoreLink(ops linkOps, name string, u *undoLog) error {
 // updateLinkRecord records a change made to a link. Its undo reverts the
 // change and only then the record, so a failed revert keeps the record.
 func (l *ledger) updateLinkRecord(name string, index int, change func(*linkChange), u *undoLog, revert func() error) {
-	prev, had := l.links[name]
+	prev, had := l.changed[name]
 	ch := prev
 	if !had {
 		ch = linkChange{index: index}
 	}
 	change(&ch)
-	l.links[name] = ch
+	l.changed[name] = ch
 	u.push(func() error {
 		if err := revert(); err != nil && !gone(err) {
 			return fmt.Errorf("netcfg: undo a change to %s: %w", name, err)
@@ -271,33 +272,33 @@ func (l *ledger) updateLinkRecord(name string, index int, change func(*linkChang
 }
 
 func (l *ledger) dropLinkRecord(name string, u *undoLog) {
-	prev, had := l.links[name]
-	delete(l.links, name)
+	prev, had := l.changed[name]
+	delete(l.changed, name)
 	u.push(func() error { l.restoreLinkRecord(name, prev, had); return nil })
 }
 
 func (l *ledger) restoreLinkRecord(name string, ch linkChange, had bool) {
 	if had {
-		l.links[name] = ch
+		l.changed[name] = ch
 	} else {
-		delete(l.links, name)
+		delete(l.changed, name)
 	}
 }
 
 func (l *ledger) ownsAddr(k addrKey, index int) bool {
-	idx, ok := l.addrs[k]
+	idx, ok := l.ownedAddrs[k]
 	return ok && idx == index
 }
 
 func (l *ledger) addAddr(ops linkOps, k addrKey, index int, u *undoLog) error {
 	if err := ops.addAddr(index, k.prefix); err != nil {
-		if errors.Is(err, unix.EEXIST) {
+		if exists(err) {
 			return fmt.Errorf("%w: address %v on %s: %w", ErrConflict, k.prefix, k.link, err)
 		}
 		return fmt.Errorf("netcfg: add %v to %s: %w", k.prefix, k.link, err)
 	}
-	prev, had := l.addrs[k]
-	l.addrs[k] = index
+	prev, had := l.ownedAddrs[k]
+	l.ownedAddrs[k] = index
 	u.push(func() error {
 		if err := ops.delAddr(index, k.prefix); err != nil && !gone(err) {
 			return fmt.Errorf("netcfg: remove %v from %s: %w", k.prefix, k.link, err) // still there: keep owning it
@@ -322,16 +323,16 @@ func (l *ledger) delAddr(ops linkOps, k addrKey, index int, u *undoLog) error {
 }
 
 func (l *ledger) dropAddrRecord(k addrKey, u *undoLog) {
-	prev, had := l.addrs[k]
-	delete(l.addrs, k)
+	prev, had := l.ownedAddrs[k]
+	delete(l.ownedAddrs, k)
 	u.push(func() error { l.restoreAddrRecord(k, prev, had); return nil })
 }
 
 func (l *ledger) restoreAddrRecord(k addrKey, index int, had bool) {
 	if had {
-		l.addrs[k] = index
+		l.ownedAddrs[k] = index
 	} else {
-		delete(l.addrs, k)
+		delete(l.ownedAddrs, k)
 	}
 }
 
