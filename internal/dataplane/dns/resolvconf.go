@@ -84,7 +84,8 @@ func staleUpstreams(untold bool) error {
 
 // startsUntold says a new configuration starts untold: the caller's own
 // read of the OS's resolvers failed (UpstreamsUnknown) and it has none
-// of its own, so its first good read is told whatever it found.
+// of its own, so its first good read is told whatever it found, and
+// until then Problem reports ErrUpstreamsStale.
 func startsUntold(c SystemConfig) bool {
 	return c.UpstreamsUnknown && c.Upstreams != nil
 }
@@ -262,9 +263,7 @@ type resolvConf struct {
 	original []byte // the last original seen
 	seen     bool   // original is set
 	err      error  // the last apply's
-	// untold: the caller has no upstreams yet (startsUntold): the first
-	// good read tells Upstreams whatever it found; until then Problem
-	// reports ErrUpstreamsStale.
+	// untold: the first good read is still owed (startsUntold).
 	untold  bool
 	stop    chan struct{}
 	stopped chan struct{}

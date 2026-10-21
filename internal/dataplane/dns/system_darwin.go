@@ -205,9 +205,7 @@ type dynamicStore struct {
 	// failed at the last check: warned about once, not at every check,
 	// and it drives Problem's ErrUpstreamsStale.
 	primaryFailed bool
-	// untold: the caller has no upstreams yet (startsUntold): the first
-	// good read tells Upstreams whatever it found; until then Problem
-	// reports ErrUpstreamsStale.
+	// untold: the first good read is still owed (startsUntold).
 	untold bool
 }
 
