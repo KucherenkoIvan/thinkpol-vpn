@@ -372,7 +372,7 @@ func (r *resolvConf) apply() (tell func(), err error) {
 			// The first good read is told whatever it found: the caller
 			// has no upstreams of its own until one.
 			tell = func() { upstreams(nil) }
-		case r.cfg.Log != nil:
+		case r.cfg.Log != nil && !r.untold:
 			log := r.cfg.Log
 			tell = func() { log.Warn("DNS: no upstream to ask; set one with -dns-upstream") }
 		}

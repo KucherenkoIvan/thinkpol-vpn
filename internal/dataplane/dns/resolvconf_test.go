@@ -1,8 +1,10 @@
 package dns
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -417,6 +419,58 @@ func TestResolvConfALinkToTheManagedFileItselfIsNotAGoodRead(t *testing.T) {
 	toldNothing(t, told)
 	if p := r.Problem(); !errors.Is(p, ErrUpstreamsStale) {
 		t.Errorf("problem after a tick over a self-link: %v", p)
+	}
+}
+
+// While untold, a read that works but loses (a link target appearing
+// with only resolved's stub in it, the uplink file still missing) warns
+// nothing: the agent already said the resolvers are unknown, and the
+// staleness says it until a read answers.
+func TestResolvConfWhileUntoldAStubTargetWithoutUplinkWarnsNothing(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "real.conf")
+	path := filepath.Join(dir, "resolv.conf")
+	if err := os.Symlink("real.conf", path); err != nil { // dangling at setup
+		t.Fatal(err)
+	}
+	var log bytes.Buffer
+	told := make(chan []netip.Addr, 8)
+	c := testSystem
+	c.Upstreams, c.UpstreamsUnknown = func(a []netip.Addr) { told <- a }, true
+	c.Log = slog.New(slog.NewTextHandler(&log, nil))
+	uplink := filepath.Join(dir, "uplink.conf") // missing until the last phase
+	r, err := setResolvConf(path, uplink, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = r.Restore() })
+	if p := r.Problem(); !errors.Is(p, ErrUpstreamsStale) {
+		t.Errorf("problem after a read of a dangling link: %v", p)
+	}
+	// The target appears, naming only resolved's stub: a read that
+	// answers nothing, not a good one.
+	if err := os.WriteFile(target, []byte("nameserver 127.0.0.53\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	applyOnce(t, r)
+	if strings.Contains(log.String(), "no upstream to ask") {
+		t.Errorf("warned while untold:\n%s", log.String())
+	}
+	if p := r.Problem(); !errors.Is(p, ErrUpstreamsStale) {
+		t.Errorf("problem after a stub target with no uplink: %v", p)
+	}
+	// The uplink file appears: the first good read, told.
+	if err := os.WriteFile(uplink, []byte("nameserver 198.51.100.53\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	applyOnce(t, r)
+	select {
+	case got := <-told:
+		if !slices.Equal(got, []netip.Addr{netip.MustParseAddr("198.51.100.53")}) {
+			t.Errorf("told %v, want 198.51.100.53", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("never told the first good read")
 	}
 }
 
