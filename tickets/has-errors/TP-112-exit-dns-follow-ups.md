@@ -34,6 +34,19 @@ The exit-DNS code says what it does and handles the cases the review found.
 ## Notes
 Origin: TP-098's final review round (2026-10-18), split under the three-round cap.
 
+## Review findings
+Round 1 (2026-10-21): correctness, design and a second-opinion review.
+- [ ] R1.1 `neverOpenable` (resolver.go) misses the metadata services `supervisor/isolation.go` names: `fd00:ec2::254`, `168.63.129.16` (also Azure's DNS, the likeliest `-dns-upstream`), `100.100.100.200`; and never-routable `0.0.0.0/8`, `240.0.0.0/4`. Move the check into the supervisor next to `egressBlocked` (e.g. an exported `EgressMustStayClosed(addr)`) so it can't drift from the policy; the hint offers `-egress-allowed` only when it is false. Its comment must not claim the metadata services are link-local. Test each named address and a private one.
+- [ ] R1.2 Family order: an IPv6-only exit now waits 2 × 2 s on two dead IPv4 entries. Ordering (not filtering) can't empty the list: when `s.sup.Egress()` reports exactly one family, stable-sort the defaults so it comes first; otherwise keep the static order. Test IPv4-only, IPv6-only and both. Fix the comment ("an exit whose uplink lacks a family") to match.
+- [ ] R1.3 `DataPlane.InWorker` → unexported `inWorker`: "set only by serveSpace" is then enforced by the package.
+- [ ] R1.4 The `make lint` box is ticked while the Log says lint fails. TP-116 (toolchain go1.26.10) fixes vulncheck; once it is in `rewrite`, merge `rewrite` into this branch and record a green `make lint`.
+- [ ] R1.5 DESIGN.md "Upstreams": a refused upstream is named in health and the log on an exit only (a server without egress reports nothing); the defaults read "Quad9 then Cloudflare over IPv4, then both over IPv6, port 53"; keep "(on Linux and macOS; elsewhere they fail)" for the TUN-bound sockets (`ifbind_other.go`).
+- [ ] R1.6 A non-exit with every configured upstream refused still warns "the worker's egress refuses every configured one" on each start (`newResolver`), and the comment "workerUpstreams refused every one and logged each" is false there. Make the warning and comment true for both cases.
+- [ ] R1.7 Untested: an exit that loses `AllowEgress` with a refused set clears the count and `refusedLogged` (deleting those two resets fails no test). Add it.
+- [ ] R1.8 The exit predicate is raw `AllowEgress`; the engine and netmap use `Kind == NodeServer && AllowEgress` (`MayEndAChain`). Use that.
+- [ ] R1.9 Stale text: `status.go` (~59, ~171) calls `DNSUpstreamsRefused` "a server's" (now an exit's); `tickets/backlog/TP-083-…` (~42) says `DataPlane.Forward` keeps a worker off the host's resolvers (now `inWorker`).
+- [ ] R1.10 Nits: drop the comment above the `InWorker` check in `newResolver` (it repeats the field's doc); `buildEditing` says it edits node a only (rename or take the node) and `build` calls it instead of copying it; `dnsWorkerConfig`'s comment says "falls back from" (a worker never falls back); rename `…IsReportedNotSilentlyDropped` to match DESIGN's "not asked".
+
 ## Log
 - 2026-10-18 created in backlog (TP-098 review round 3)
 - 2026-10-21 backlog → in-progress — owner: cursor-glm-tp-112, branch: tp-112-exit-dns-follow-ups
@@ -47,3 +60,4 @@ Origin: TP-098's final review round (2026-10-18), split under the three-round ca
 - 2026-10-21 mutation checks: wrong family order fails the exact-list test; dropping the reset fails the rejoin test; dropping the exit guard fails the non-exit test; neverOpenable returning false fails the hint test
 - 2026-10-21 make test and make lab-test pass (lab run on 43d19e4, 35 packages); make lint passes everything but vulncheck, which fails on a pre-existing Go stdlib vulnerability (GO-2026-6809, crypto/x509 of the local go1.26.9 toolchain, reached from lab/prototypes/reality, untouched by this branch; fixed in go1.26.10) — bumping the pinned toolchain is outside this ticket
 - 2026-10-21 in-progress → review
+- 2026-10-21 review → has-errors (round 1: R1.1–R1.10)
