@@ -124,11 +124,16 @@ type resolved struct {
 	// uplink: resolved is the OS's resolver (resolv.conf names its stub),
 	// so its servers are the OS's own.
 	uplink bool
+	// uplinkFile is resolved's uplink resolv.conf (a field so tests can
+	// point it at a temporary file).
+	uplinkFile string
 
 	mu      sync.Mutex
 	cfg     SystemConfig
 	problem error
 	servers []netip.Addr // the uplink servers last seen
+	// untold: the first good read is still owed (startsUntold).
+	untold  bool
 	stop    chan struct{}
 	stopped chan struct{}
 }
@@ -161,17 +166,24 @@ func setResolved(conn *dbus.Conn, c SystemConfig, uplink bool) (*resolved, error
 		_ = conn.Close()
 		return nil, err
 	}
-	r := &resolved{conn: conn, index: int32(ifc.Index), uplink: uplink, stop: make(chan struct{}), stopped: make(chan struct{})}
-	if b, err := os.ReadFile(resolvedUplink); err == nil {
-		r.servers = nameservers(b)
-	}
+	r := newResolved(conn, int32(ifc.Index), c, uplink, resolvedUplink)
+	r.mu.Lock()
+	tell := r.firstRead()
+	r.mu.Unlock()
 	if err := r.Update(c); err != nil {
 		_ = r.call("RevertLink")
 		_ = conn.Close()
 		return nil, err
 	}
-	go r.watch()
+	go r.watch(tell)
 	return r, nil
+}
+
+// newResolved builds the link's configuration with cfg set: the read at
+// setup filters by cfg.Servers and tells cfg.Upstreams.
+func newResolved(conn *dbus.Conn, index int32, c SystemConfig, uplink bool, uplinkFile string) *resolved {
+	return &resolved{conn: conn, index: index, uplink: uplink, uplinkFile: uplinkFile,
+		cfg: c, stop: make(chan struct{}), stopped: make(chan struct{}), untold: uplink && startsUntold(c)}
 }
 
 // Update configures the link: the resolver's addresses, every name
@@ -268,8 +280,69 @@ func (r *resolved) check() error {
 	return nil
 }
 
-func (r *resolved) watch() {
+// read is a read of the uplink file: the servers it names, and ok false
+// when the file can't be read — a failed read, not an empty answer.
+// Called with r.mu held, only when uplink.
+func (r *resolved) read() (ups []netip.Addr, ok bool) {
+	b, err := os.ReadFile(r.uplinkFile)
+	if err != nil {
+		return nil, false
+	}
+	ups, uerr := upstreamsFromContent(b, r.uplinkFile, r.cfg.Servers)
+	return ups, uerr == nil
+}
+
+// firstRead is the read at setup: the tell for it, run after unlocking,
+// or nil. Called with r.mu held.
+func (r *resolved) firstRead() func() {
+	if !r.uplink {
+		return nil
+	}
+	ups, ok := r.read()
+	if !ok {
+		return nil
+	}
+	r.servers = ups
+	if !r.untold {
+		return nil
+	}
+	r.untold = false
+	tell := r.cfg.Upstreams
+	if tell == nil {
+		return nil
+	}
+	return func() { tell(ups) }
+}
+
+// apply is one watch tick's read: what to tell the caller, run after
+// unlocking, or nil. Called with r.mu held.
+func (r *resolved) apply() func() {
+	if !r.uplink {
+		return nil
+	}
+	ups, ok := r.read()
+	if !ok {
+		// A failed read keeps the previous servers and, while untold,
+		// the stale report.
+		return nil
+	}
+	tell := r.cfg.Upstreams
+	// After the first good read, a change alone is told.
+	changed := !slices.Equal(ups, r.servers)
+	firstGoodRead := r.untold
+	// A good read clears untold, told or not.
+	r.servers, r.untold = ups, false
+	if tell == nil || (!firstGoodRead && !changed) {
+		return nil
+	}
+	return func() { tell(ups) }
+}
+
+func (r *resolved) watch(first func()) {
 	defer close(r.stopped)
+	if first != nil {
+		first()
+	}
 	t := time.NewTicker(resolvedCheck)
 	defer t.Stop()
 	for {
@@ -280,17 +353,10 @@ func (r *resolved) watch() {
 		}
 		r.mu.Lock()
 		r.problem = r.check()
-		var changed []netip.Addr
-		if b, err := os.ReadFile(resolvedUplink); err == nil && r.uplink {
-			servers := upstreamsFromContent(b, resolvedUplink, r.cfg.Servers)
-			if !slices.Equal(servers, r.servers) {
-				r.servers, changed = servers, servers
-			}
-		}
-		upstreams := r.cfg.Upstreams
+		tell := r.apply()
 		r.mu.Unlock()
-		if changed != nil && upstreams != nil {
-			upstreams(changed)
+		if tell != nil {
+			tell()
 		}
 	}
 }
@@ -298,7 +364,7 @@ func (r *resolved) watch() {
 func (r *resolved) Problem() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.problem
+	return errors.Join(r.problem, staleUpstreams(r.untold))
 }
 
 // Restore reverts the link's configuration (resolved also drops it when

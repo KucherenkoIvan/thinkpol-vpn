@@ -1,8 +1,10 @@
 package dns
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -298,6 +300,261 @@ func TestARewrittenResolvConfFiltersStubUpstreams(t *testing.T) {
 	}
 }
 
+// Behind the stub, an unreadable uplink file is a failed read: a failed
+// first read over a stub resolv.conf stays stale, and the uplink file
+// appearing is the first good read and is told.
+func TestResolvConfAFailedFirstReadBehindTheStubWaitsForTheUplink(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "resolv.conf")
+	uplink := filepath.Join(dir, "uplink.conf") // missing: behind the stub, the read fails
+	if err := os.WriteFile(path, []byte("nameserver 127.0.0.53\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	told := make(chan []netip.Addr, 8)
+	c := testSystem
+	c.Upstreams, c.UpstreamsUnknown = func(a []netip.Addr) { told <- a }, true
+	r, err := setResolvConf(path, uplink, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = r.Restore() })
+	if p := r.Problem(); !errors.Is(p, ErrUpstreamsStale) || Unprotected(p) {
+		t.Errorf("problem after a read behind a stub with no uplink: %v", p)
+	}
+	applyOnce(t, r)
+	toldNothing(t, told)
+	if p := r.Problem(); !errors.Is(p, ErrUpstreamsStale) {
+		t.Errorf("problem after another failed read: %v", p)
+	}
+	if err := os.WriteFile(uplink, []byte("nameserver 198.51.100.53\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	applyOnce(t, r)
+	select {
+	case got := <-told:
+		if !slices.Equal(got, []netip.Addr{netip.MustParseAddr("198.51.100.53")}) {
+			t.Errorf("told %v, want 198.51.100.53", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("never told the first good read")
+	}
+	if p := r.Problem(); p != nil {
+		t.Errorf("problem after a good read: %v", p)
+	}
+}
+
+// A resolv.conf that is a dangling link at setup is managed with an
+// unknown original; while untold, the link's target is read on every
+// tick, so its appearing is the first good read and is told, and the
+// staleness clears.
+func TestResolvConfAFailedFirstReadOverADanglingLinkReadsItsTargetWhenItAppears(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "real.conf")
+	path := filepath.Join(dir, "resolv.conf")
+	if err := os.Symlink("real.conf", path); err != nil { // a relative link
+		t.Fatal(err)
+	}
+	told := make(chan []netip.Addr, 8)
+	c := testSystem
+	c.Upstreams, c.UpstreamsUnknown = func(a []netip.Addr) { told <- a }, true
+	r, err := setResolvConf(path, "", c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = r.Restore() })
+	if p := r.Problem(); !errors.Is(p, ErrUpstreamsStale) || Unprotected(p) {
+		t.Errorf("problem after a read of a dangling link: %v", p)
+	}
+	applyOnce(t, r)
+	toldNothing(t, told)
+	if p := r.Problem(); !errors.Is(p, ErrUpstreamsStale) {
+		t.Errorf("problem after another failed read: %v", p)
+	}
+	if err := os.WriteFile(target, []byte("nameserver 192.0.2.53\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	applyOnce(t, r)
+	select {
+	case got := <-told:
+		if !slices.Equal(got, []netip.Addr{netip.MustParseAddr("192.0.2.53")}) {
+			t.Errorf("told %v, want 192.0.2.53", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("never told the first good read")
+	}
+	if p := r.Problem(); p != nil {
+		t.Errorf("problem after a good read: %v", p)
+	}
+	// Restore puts the link back, whatever its target holds now.
+	if err := r.Restore(); err != nil {
+		t.Fatal(err)
+	}
+	if link, err := os.Readlink(path); err != nil || link != "real.conf" {
+		t.Errorf("restored link %q, %v", link, err)
+	}
+}
+
+// A link whose target reads back as the managed file (a self-link, or a
+// loop through another link): reading it reads the node's own file,
+// which is no original, so the read is skipped and the staleness stays.
+func TestResolvConfALinkToTheManagedFileItselfIsNotAGoodRead(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		links func(dir string) error
+	}{
+		{"self", func(dir string) error {
+			return os.Symlink("resolv.conf", filepath.Join(dir, "resolv.conf"))
+		}},
+		{"through another link", func(dir string) error {
+			if err := os.Mkdir(filepath.Join(dir, "run"), 0o755); err != nil {
+				return err
+			}
+			if err := os.Symlink("../resolv.conf", filepath.Join(dir, "run", "resolv.conf")); err != nil {
+				return err
+			}
+			return os.Symlink("run/resolv.conf", filepath.Join(dir, "resolv.conf"))
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "resolv.conf")
+			if err := tc.links(dir); err != nil { // a loop: dangling at setup
+				t.Fatal(err)
+			}
+			told := make(chan []netip.Addr, 8)
+			c := testSystem
+			c.Upstreams, c.UpstreamsUnknown = func(a []netip.Addr) { told <- a }, true
+			r, err := setResolvConf(path, "", c)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = r.Restore() })
+			if p := r.Problem(); !errors.Is(p, ErrUpstreamsStale) || Unprotected(p) {
+				t.Errorf("problem after a read of the link: %v", p)
+			}
+			applyOnce(t, r)
+			toldNothing(t, told)
+			if p := r.Problem(); !errors.Is(p, ErrUpstreamsStale) {
+				t.Errorf("problem after a tick over the link: %v", p)
+			}
+		})
+	}
+}
+
+// While untold, a read that works but loses (a link target appearing
+// with only resolved's stub in it, the uplink file still missing) warns
+// nothing: the agent already said the resolvers are unknown, and the
+// staleness says it until a read answers.
+func TestResolvConfWhileUntoldAStubTargetWithoutUplinkWarnsNothing(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "real.conf")
+	path := filepath.Join(dir, "resolv.conf")
+	if err := os.Symlink("real.conf", path); err != nil { // dangling at setup
+		t.Fatal(err)
+	}
+	var log bytes.Buffer
+	told := make(chan []netip.Addr, 8)
+	c := testSystem
+	c.Upstreams, c.UpstreamsUnknown = func(a []netip.Addr) { told <- a }, true
+	c.Log = slog.New(slog.NewTextHandler(&log, nil))
+	uplink := filepath.Join(dir, "uplink.conf") // missing until the last phase
+	r, err := setResolvConf(path, uplink, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = r.Restore() })
+	if p := r.Problem(); !errors.Is(p, ErrUpstreamsStale) {
+		t.Errorf("problem after a read of a dangling link: %v", p)
+	}
+	// The target appears, naming only resolved's stub: a read that
+	// answers nothing, not a good one.
+	if err := os.WriteFile(target, []byte("nameserver 127.0.0.53\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	applyOnce(t, r)
+	if strings.Contains(log.String(), "no upstream to ask") {
+		t.Errorf("warned while untold:\n%s", log.String())
+	}
+	if p := r.Problem(); !errors.Is(p, ErrUpstreamsStale) {
+		t.Errorf("problem after a stub target with no uplink: %v", p)
+	}
+	// The uplink file appears: the first good read, told.
+	if err := os.WriteFile(uplink, []byte("nameserver 198.51.100.53\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	applyOnce(t, r)
+	select {
+	case got := <-told:
+		if !slices.Equal(got, []netip.Addr{netip.MustParseAddr("198.51.100.53")}) {
+			t.Errorf("told %v, want 198.51.100.53", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("never told the first good read")
+	}
+}
+
+// The default Linux path (Upstreams set, UpstreamsUnknown false): a
+// setup tells nothing and reports nothing stale, and after a first apply
+// that wrote nothing, a real change is told.
+func TestResolvConfTheDefaultPathTellsNothingUntilAChange(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "resolv.conf")
+	if err := os.WriteFile(path, render(testSystem, []byte(isp), ""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	told := make(chan []netip.Addr, 8)
+	c := testSystem
+	c.Upstreams = func(a []netip.Addr) { told <- a }
+	r, err := setResolvConf(path, "", c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = r.Restore() })
+	toldNothing(t, told)
+	if p := r.Problem(); p != nil {
+		t.Errorf("problem at setup: %v", p)
+	}
+	applyOnce(t, r) // the first apply wrote nothing: still nothing
+	toldNothing(t, told)
+	if err := os.WriteFile(path, []byte("nameserver 192.0.2.99\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	applyOnce(t, r)
+	select {
+	case got := <-told:
+		if !slices.Equal(got, []netip.Addr{netip.MustParseAddr("192.0.2.99")}) {
+			t.Errorf("told %v, want 192.0.2.99", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("never told the change")
+	}
+	if p := r.Problem(); p != nil {
+		t.Errorf("problem after a change: %v", p)
+	}
+}
+
+// An original without a trailing newline: the managed copy adds one, and
+// the next tick must not read the same original as changed because of it.
+func TestResolvConfAnOriginalWithoutATrailingNewlineIsNotAChange(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "resolv.conf")
+	if err := os.WriteFile(path, []byte("nameserver 192.0.2.53"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	told := make(chan []netip.Addr, 8)
+	c := testSystem
+	c.Upstreams = func(a []netip.Addr) { told <- a }
+	r, err := setResolvConf(path, "", c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = r.Restore() })
+	toldNothing(t, told)
+	applyOnce(t, r)
+	toldNothing(t, told)
+	if p := r.Problem(); p != nil {
+		t.Errorf("problem after a same-original read: %v", p)
+	}
+}
+
 func TestSystemUpstreams(t *testing.T) {
 	dir := t.TempDir()
 	etc, uplink := filepath.Join(dir, "resolv.conf"), filepath.Join(dir, "uplink.conf")
@@ -329,6 +586,12 @@ func TestSystemUpstreams(t *testing.T) {
 	write(etc, "nameserver 127.0.0.53\noptions edns0 trust-ad\n")
 	write(uplink, "nameserver 198.51.100.53\nnameserver 100.64.0.2\n")
 	check("through systemd-resolved, without the node's own", "198.51.100.53")
+	if err := os.Remove(uplink); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := upstreamsFrom(etc, uplink, own); err == nil || !strings.Contains(err.Error(), "no such file") {
+		t.Errorf("a stub resolv.conf with an unreadable uplink: %v, want the read's cause", err)
+	}
 }
 
 // A new configuration goes over the old one; the original stays.
@@ -381,3 +644,192 @@ type taggedUnprotected struct{ inner error }
 func (e taggedUnprotected) Error() string        { return "unprotected: " + e.inner.Error() }
 func (e taggedUnprotected) Unwrap() error        { return e.inner }
 func (e taggedUnprotected) Is(target error) bool { return target == ErrUnprotected }
+
+// applyOnce runs one check as the watcher would, telling what apply
+// returned.
+func applyOnce(t *testing.T, r *resolvConf) {
+	t.Helper()
+	r.mu.Lock()
+	tell, _ := r.apply()
+	r.mu.Unlock()
+	if tell != nil {
+		tell()
+	}
+}
+
+// toldNothing says nothing was told to the callback yet: it waits a
+// while first, so a tell that is only about to happen (the watch
+// goroutine's, at setup) is still caught.
+func toldNothing(t *testing.T, told <-chan []netip.Addr) {
+	t.Helper()
+	select {
+	case got := <-told:
+		t.Fatalf("told %v", got)
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+// The caller's own read of the OS's resolvers failed (UpstreamsUnknown):
+// a resolv.conf taken over while the file was missing reports them stale
+// and tells the first good read, though nothing changed from the file's
+// point of view.
+func TestResolvConfAFailedFirstReadIsStaleUntilAGoodReadTellsIt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "resolv.conf") // missing: the first read fails
+	told := make(chan []netip.Addr, 8)
+	c := testSystem
+	c.Upstreams, c.UpstreamsUnknown = func(a []netip.Addr) { told <- a }, true
+	r, err := setResolvConf(path, "", c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = r.Restore() })
+	if p := r.Problem(); !errors.Is(p, ErrUpstreamsStale) || Unprotected(p) {
+		t.Errorf("problem after a failed first read: %v", p)
+	}
+	// A later read that still fails keeps it stale and tells nothing.
+	applyOnce(t, r)
+	toldNothing(t, told)
+	if p := r.Problem(); !errors.Is(p, ErrUpstreamsStale) || Unprotected(p) {
+		t.Errorf("problem after another failed read: %v", p)
+	}
+	// The file appears (a DHCP client wrote it): the read works, and the
+	// first one is told whether or not it changed.
+	if err := os.WriteFile(path, []byte("nameserver 192.0.2.53\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	applyOnce(t, r)
+	select {
+	case got := <-told:
+		if !slices.Equal(got, []netip.Addr{netip.MustParseAddr("192.0.2.53")}) {
+			t.Errorf("told %v, want 192.0.2.53", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("never told the first good read")
+	}
+	if p := r.Problem(); p != nil {
+		t.Errorf("problem after a good read: %v", p)
+	}
+	// Nothing further: an unchanged read tells nothing.
+	applyOnce(t, r)
+	toldNothing(t, told)
+}
+
+// The first good read is told whatever it found: a resolv.conf with no
+// nameservers tells an empty answer and clears the staleness all the
+// same.
+func TestResolvConfAFailedFirstReadThenEmptyTellsAnEmptyAnswer(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "resolv.conf") // missing: the first read fails
+	told := make(chan []netip.Addr, 8)
+	c := testSystem
+	c.Upstreams, c.UpstreamsUnknown = func(a []netip.Addr) { told <- a }, true
+	r, err := setResolvConf(path, "", c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = r.Restore() })
+	if p := r.Problem(); !errors.Is(p, ErrUpstreamsStale) {
+		t.Errorf("problem after a failed first read: %v", p)
+	}
+	if err := os.WriteFile(path, []byte("options timeout:1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	applyOnce(t, r)
+	select {
+	case got := <-told:
+		if got != nil {
+			t.Errorf("told %v, want one empty answer", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("never told the first good read")
+	}
+	if p := r.Problem(); p != nil {
+		t.Errorf("problem after a good read: %v", p)
+	}
+}
+
+// When the file is readable at setup, its read is the first good one: it
+// is told at once, without waiting for the file to change.
+func TestResolvConfTheFirstGoodReadAtSetupIsToldAtOnce(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "resolv.conf")
+	if err := os.WriteFile(path, []byte(isp), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	told := make(chan []netip.Addr, 8)
+	c := testSystem
+	c.Upstreams, c.UpstreamsUnknown = func(a []netip.Addr) { told <- a }, true
+	r, err := setResolvConf(path, "", c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = r.Restore() })
+	select {
+	case got := <-told:
+		want := []netip.Addr{netip.MustParseAddr("192.0.2.53"), netip.MustParseAddr("2001:db8::53")}
+		if !slices.Equal(got, want) {
+			t.Errorf("told %v, want %v", got, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("never told the read at setup")
+	}
+	if p := r.Problem(); p != nil {
+		t.Errorf("problem after a good read: %v", p)
+	}
+}
+
+// Without Upstreams to tell, UpstreamsUnknown is nothing to report: a
+// failed first read is no stale problem.
+func TestResolvConfUpstreamsUnknownWithoutUpstreamsIsNeverStale(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "resolv.conf") // missing: the read fails
+	c := testSystem
+	c.UpstreamsUnknown = true
+	r, err := setResolvConf(path, "", c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = r.Restore() })
+	if p := r.Problem(); p != nil {
+		t.Errorf("problem without Upstreams: %v", p)
+	}
+}
+
+// A resolv.conf that is a symlink to a file that isn't there is no good
+// read: a failed first read over one stays stale and tells nothing, and
+// the first good read of a real file is told.
+func TestResolvConfAFailedFirstReadOverADanglingSymlinkStaysStale(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "resolv.conf")
+	if err := os.Symlink(filepath.Join(dir, "gone"), path); err != nil {
+		t.Fatal(err)
+	}
+	told := make(chan []netip.Addr, 8)
+	c := testSystem
+	c.Upstreams, c.UpstreamsUnknown = func(a []netip.Addr) { told <- a }, true
+	r, err := setResolvConf(path, "", c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = r.Restore() })
+	if p := r.Problem(); !errors.Is(p, ErrUpstreamsStale) || Unprotected(p) {
+		t.Errorf("problem after a read of a dangling link: %v", p)
+	}
+	applyOnce(t, r) // the managed file keeps an unknown original
+	toldNothing(t, told)
+	if p := r.Problem(); !errors.Is(p, ErrUpstreamsStale) {
+		t.Errorf("problem after another failed read: %v", p)
+	}
+	if err := os.WriteFile(path, []byte("nameserver 192.0.2.53\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	applyOnce(t, r)
+	select {
+	case got := <-told:
+		if !slices.Equal(got, []netip.Addr{netip.MustParseAddr("192.0.2.53")}) {
+			t.Errorf("told %v, want 192.0.2.53", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("never told the first good read")
+	}
+	if p := r.Problem(); p != nil {
+		t.Errorf("problem after a good read: %v", p)
+	}
+}
