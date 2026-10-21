@@ -7,7 +7,14 @@ linters:
     - misspell
     - depguard
     - forbidigo
+    - funlen
   settings:
+    # A function longer than this does more than one thing: split it by
+    # what its parts do. Comments don't count; tests are exempt (below).
+    funlen:
+      lines: 80
+      statements: 50
+      ignore-comments: true
     # Only in internal/dataplane/path (see exclusions): the path layer is
     # WireGuard's Bind and never opens or holds a socket of its own.
     forbidigo:
@@ -138,6 +145,16 @@ linters:
     rules:
       - path-except: internal/dataplane/path/
         linters: [forbidigo]
+      - path: _test\.go
+        linters: [funlen]
+      # TP-102 rewrites these (the netcfg ledger, the resolver's steps):
+      # drop the exclusions when it merges.
+      - path: internal/dataplane/netcfg/netcfg_(darwin|linux)\.go
+        text: "Function 'apply'"
+        linters: [funlen]
+      - path: internal/dataplane/dns/handle\.go
+        text: "Function 'answer'"
+        linters: [funlen]
 
 formatters:
   enable:
