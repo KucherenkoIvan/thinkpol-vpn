@@ -588,15 +588,17 @@ func (e *Enforcer) Status() Status {
 // Close stops watching and removes everything in place: the guard first,
 // then the routes and rules, whose configurator lets go of the owner lock
 // last, even when it fails (what it leaves is the owner's next
-// configurator's). Close may be called again after a failure: that
-// retries the guard's removal.
+// configurator's). A second Close returns nil and touches nothing: the
+// guard is removed only while the owner lock is held, and after the
+// first Close the next run's live guard may be in its place.
 func (e *Enforcer) Close() error {
 	e.enforcing.Lock()
 	defer e.enforcing.Unlock()
-	if !e.closed {
-		e.closed = true
-		e.pauseWatching()
+	if e.closed {
+		return nil
 	}
+	e.closed = true
+	e.pauseWatching()
 	e.mu.Lock()
 	e.want, e.applied, e.status = nil, nil, Status{}
 	e.mu.Unlock()
