@@ -26,7 +26,7 @@ A foreign change that turns the IPv6 leak guard off is repaired (or reported as 
 - Fix the residual-risks row on foreign changes (TP-077's table: "repaired within about 1 s"), so it says what is and isn't repaired.
 
 ## Acceptance
-- [ ] lab tests: a dormant guard table, and a foreign base chain in the guard's table, are each repaired, and the leak test then blocks. Mutation: dropping either new check fails its test
+- [x] lab tests: a dormant guard table, and a foreign base chain in the guard's table, are each repaired, and the leak test then blocks. Mutation: dropping either new check fails its test
 - [ ] macOS: each suspicion is confirmed with a fake-pfctl test and fixed, or shown not to apply, with the reason in the Log
 - [ ] `make lint`, `make test`, `make lab-test` pass
 
@@ -41,3 +41,4 @@ A foreign change that turns the IPv6 leak guard off is repaired (or reported as 
 ## Log
 - 2026-10-22 created in backlog (lab-confirmed gap from TP-077's review)
 - 2026-10-22 backlog → in-progress — owner: agent-tp-126, branch: tp-126-guard-blind-spots
+- 2026-10-22 Linux: `touchesGuard` watches NEWTABLE and NEWCHAIN; `whole()` wants the table's flags 0 and its only chain `output` (one dump of the inet chains). New lab test `TestIPv6GuardRepairsItsTableTurnedOff`: a dormant table, a foreign base chain setting the links' mark (each shown leaking first), and a policy set on `output` are each signalled and repaired, and a ping bound to eth0 is refused again. On the old code it fails (no signals, both leaks stay). Mutations, each run in the lab and each failing the test: NEWTABLE dropped (no signal for dormant), the flags check dropped (dormant still leaks after the re-apply), NEWCHAIN dropped (no signal for the chain or the policy), the one-chain check dropped (the mark chain still leaks). The rebuild of a dormant table (add, delete, add in one batch) works on the lab's kernel. DESIGN.md's Linux guard text says what the re-apply compares and what the watch sees

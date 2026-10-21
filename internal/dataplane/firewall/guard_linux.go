@@ -231,14 +231,19 @@ func (g *IPv6Guard) Apply(ctx context.Context, e routetable.Exempt) error {
 }
 
 // whole reports whether the table holds exactly what Apply put there for
-// e: the chain as hooked, each rule's expressions (counters aside) in
-// order, and the set's elements, an element added (a leak) or removed (a
-// refusal) included. It dumps the set: tens of milliseconds for a
-// country-sized one, on each re-apply.
+// e: no flags (a dormant table's chains are unhooked: no guard at all),
+// its one chain as hooked (another base chain in it, one setting the
+// links' mark, would run before ours), each rule's expressions (counters
+// aside) in order, and the set's elements, an element added (a leak) or
+// removed (a refusal) included. It dumps the set: tens of milliseconds
+// for a country-sized one, on each re-apply.
 func whole(c *nftables.Conn, e routetable.Exempt) bool {
-	table := &nftables.Table{Family: nftables.TableFamilyINet, Name: GuardTable}
-	chain, err := c.ListChain(table, guardChain)
-	if err != nil || chain.Hooknum == nil || *chain.Hooknum != *nftables.ChainHookOutput ||
+	table, err := c.ListTableOfFamily(GuardTable, nftables.TableFamilyINet)
+	if err != nil || table.Flags != 0 {
+		return false
+	}
+	chain, ok := onlyChain(c)
+	if !ok || chain.Hooknum == nil || *chain.Hooknum != *nftables.ChainHookOutput ||
 		chain.Priority == nil || *chain.Priority != guardPriority || chain.Policy == nil || *chain.Policy != nftables.ChainPolicyAccept {
 		return false
 	}
@@ -258,6 +263,25 @@ func whole(c *nftables.Conn, e routetable.Exempt) bool {
 	}
 	elems, err := c.GetSetElements(set)
 	return err == nil && sameElements(elems, intervals(e.Ranges6()))
+}
+
+// onlyChain is the guard table's chain when it is the only one and is
+// guardChain.
+func onlyChain(c *nftables.Conn) (*nftables.Chain, bool) {
+	chains, err := c.ListChainsOfTableFamily(nftables.TableFamilyINet)
+	if err != nil {
+		return nil, false
+	}
+	var ours []*nftables.Chain
+	for _, ch := range chains {
+		if ch.Table != nil && ch.Table.Name == GuardTable {
+			ours = append(ours, ch)
+		}
+	}
+	if len(ours) != 1 || ours[0].Name != guardChain {
+		return nil, false
+	}
+	return ours[0], true
 }
 
 // sameExprs compares a rule as the kernel dumps it with one as Apply
@@ -355,7 +379,8 @@ const recheckAfterOverflow = time.Second
 
 // Watch signals, coalesced, when anything of the guard's table changes
 // from outside: a deletion (`nft flush ruleset`, a firewall service's
-// reload), a rule added or replaced, a set element added or deleted; and
+// reload), the table updated (made dormant), a chain added or updated (a
+// policy), a rule added or replaced, a set element added or deleted; and
 // when events may have been lost (the socket overflowed: at once and
 // again recheckAfterOverflow later). The guard's own Apply shows up too,
 // and finds the table whole. The channel closes when ctx ends or the
@@ -469,16 +494,18 @@ func receiveGuardEvents(ctx context.Context, nl *netlink.Conn, signal, recheck f
 }
 
 // touchesGuard says whether m, an nftables event, changes the guard's
-// table: deletes something of it, adds or replaces a rule (a replacement
-// is a NEWRULE too), adds or deletes set elements. Each of these messages
-// starts with the family (nfgenmsg) and has the table's name as
-// attribute 1.
+// table: deletes something of it, adds or updates the table (its flags:
+// dormant) or a chain (another base chain, a policy), adds or replaces a
+// rule (a replacement is a NEWRULE too), adds or deletes set elements.
+// Each of these messages starts with the family (nfgenmsg) and has the
+// table's name as attribute 1.
 func touchesGuard(m netlink.Message) bool {
 	if m.Header.Type>>8 != unix.NFNL_SUBSYS_NFTABLES || len(m.Data) < 4 || m.Data[0] != unix.NFPROTO_INET {
 		return false
 	}
 	switch m.Header.Type & 0xff {
 	case unix.NFT_MSG_DELTABLE, unix.NFT_MSG_DELCHAIN, unix.NFT_MSG_DELRULE, unix.NFT_MSG_DELSET,
+		unix.NFT_MSG_NEWTABLE, unix.NFT_MSG_NEWCHAIN,
 		unix.NFT_MSG_NEWRULE, unix.NFT_MSG_NEWSETELEM, unix.NFT_MSG_DELSETELEM:
 	default:
 		return false

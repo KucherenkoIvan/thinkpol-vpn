@@ -232,9 +232,7 @@ func TestIPv6GuardRefusesWhatRoutingCantConfine(t *testing.T) {
 	}
 	nft := func(args ...string) {
 		t.Helper()
-		if out, err := exec.Command("ip", append([]string{"netns", "exec", p.dev, "nft"}, args...)...).CombinedOutput(); err != nil {
-			t.Fatalf("nft %s: %v: %s", strings.Join(args, " "), err, out)
-		}
+		p.nft(t, args...)
 	}
 	signalled := func(what string) {
 		t.Helper()
@@ -342,6 +340,85 @@ func TestIPv6GuardRefusesWhatRoutingCantConfine(t *testing.T) {
 	}
 	if err := g.Apply(ctx, e); err == nil {
 		t.Error("Apply after Close succeeded")
+	}
+}
+
+// The guard's table turned off from inside is seen, and the next Apply
+// rebuilds it: made dormant (the kernel unhooks a dormant table's chains),
+// or given a base chain of someone else's that marks packets as the
+// links' before ours runs. A policy set on the guard's chain is seen too
+// (it fails closed: every IPv6 packet meets a rule first).
+func TestIPv6GuardRepairsItsTableTurnedOff(t *testing.T) {
+	p := newPair(t)
+	g := p.guard(t)
+	e := routetable.Exempt{TUN: "thinkpol0", Mark: 0x7470, Direct: set(t, "2001:db8:d0::/48")}
+	ctx := context.Background()
+	if err := g.Apply(ctx, e); err != nil {
+		t.Fatal(err)
+	}
+	wctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	events, err := g.Watch(wctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// quiet takes the signals of the guard's own Apply.
+	quiet := func() {
+		for {
+			select {
+			case <-events:
+			case <-time.After(500 * time.Millisecond):
+				return
+			}
+		}
+	}
+	change := func(what string, args ...string) {
+		t.Helper()
+		quiet()
+		p.nft(t, args...)
+		select {
+		case <-events:
+		case <-time.After(2 * time.Second):
+			t.Errorf("Watch didn't signal %s", what)
+		}
+	}
+	leaks := func(what string) {
+		t.Helper()
+		if !p.ping(t, foreign6, "-I", "eth0") {
+			t.Fatalf("%s didn't let a ping bound to eth0 out: the test proves nothing", what)
+		}
+	}
+	repaired := func(what string) {
+		t.Helper()
+		if err := g.Apply(ctx, e); err != nil {
+			t.Fatalf("re-apply after %s: %v", what, err)
+		}
+		if p.ping(t, foreign6, "-I", "eth0") {
+			t.Errorf("re-applied after %s: a ping bound to eth0 still leaves", what)
+		}
+		if !p.ping(t, domestic6, "-I", "eth0") {
+			t.Errorf("re-applied after %s: a direct site refused", what)
+		}
+	}
+
+	change("the table made dormant", "add", "table", "inet", firewall.GuardTable, "{ flags dormant; }")
+	leaks("a dormant table")
+	repaired("the table was made dormant")
+
+	change("a base chain added", "add", "chain", "inet", firewall.GuardTable, "pre", "{ type filter hook output priority 0; }")
+	change("a rule in it", "add", "rule", "inet", firewall.GuardTable, "pre", "meta", "mark", "set", "0x7470")
+	leaks("a chain setting the links' mark")
+	repaired("a mark-setting chain was added")
+
+	change("the chain's policy", "chain", "inet", firewall.GuardTable, "output", "{ policy drop; }")
+	repaired("the chain's policy was changed")
+}
+
+// nft runs nft in the device's namespace.
+func (p *pair) nft(t *testing.T, args ...string) {
+	t.Helper()
+	if out, err := exec.Command("ip", append([]string{"netns", "exec", p.dev, "nft"}, args...)...).CombinedOutput(); err != nil {
+		t.Fatalf("nft %s: %v: %s", strings.Join(args, " "), err, out)
 	}
 }
 
