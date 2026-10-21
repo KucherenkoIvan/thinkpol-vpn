@@ -669,6 +669,33 @@ func guardWarnRig(t *testing.T) (fail func(msg string), buf *lockedBuffer, clock
 
 func guardWarns(buf *lockedBuffer) []string { return buf.lines("applying the leak guard failed") }
 
+// A failure whose text changes on every retry never clears and never
+// repeats a text: what one window held back is said with the next
+// window's first warn, of whatever text.
+func TestHeldBackTextsThatDontComeBackAreSaid(t *testing.T) {
+	fail, buf, clock := guardWarnRig(t)
+	const n = 2*routetable.WarnTexts + 1
+	retry := 0
+	failOnce := func() {
+		fail(fmt.Sprintf("pf's table holds %d entries unlike the 999 loaded", retry))
+		retry++
+	}
+	for range n {
+		failOnce()
+	}
+	clock.advance(routetable.WarnEvery)
+	failOnce()
+	w := guardWarns(buf)
+	want := fmt.Sprintf("suppressed_other=%d", n-routetable.WarnTexts)
+	if len(w) != routetable.WarnTexts+1 || !strings.Contains(w[len(w)-1], want) || strings.Contains(w[len(w)-1], "suppressed=") {
+		t.Fatalf("the next window's first warn: %q, want %s and no count of its own", w[len(w)-1], want)
+	}
+	failOnce()
+	if w := guardWarns(buf); strings.Contains(w[len(w)-1], "suppressed_other") {
+		t.Errorf("said twice: %q", w[len(w)-1])
+	}
+}
+
 // Within a window each distinct (redacted) failure is warned once, so two
 // that alternate warn once each; one that differs only in its addresses
 // is the same failure. What was held back goes with the next warn of the
