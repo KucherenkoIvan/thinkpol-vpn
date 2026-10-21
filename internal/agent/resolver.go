@@ -46,7 +46,7 @@ func (r *runner) newResolver() *dns.Server {
 		}
 	}
 	r.upstreams = slices.Clone(upstreams)
-	o := dns.Options{Upstreams: upstreams, Port: r.dp.dnsPort, Log: r.dp.Log}
+	o := dns.Options{Upstreams: upstreams, Port: r.dp.tuning.dnsPort, Log: r.dp.Log}
 	if r.follow.section.Node.Kind == netmap.NodeDevice {
 		o.TunnelControl = dns.BindToInterface(r.tun)
 	}
@@ -162,9 +162,9 @@ func (r *runner) pointSystem() {
 	}
 	if err != nil {
 		r.guard.set(true, sys, fmt.Errorf("%w: %v", dns.ErrUnprotected, err))
-		r.dnsRetryAt = time.Now().Add(r.dp.retryAfter)
+		r.dnsRetryAt = time.Now().Add(r.dp.tuning.retryAfter)
 		r.dp.Log.Error("DNS: the system doesn't resolve through the node: names may leave outside the tunnel; retrying",
-			"in", r.dp.retryAfter, "err", err)
+			"in", r.dp.tuning.retryAfter, "err", err)
 		return
 	}
 	r.guard.set(true, sys, nil)

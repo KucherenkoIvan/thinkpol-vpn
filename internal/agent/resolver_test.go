@@ -83,7 +83,7 @@ func TestADevicePointsTheSystemAtItsResolverWhileConnected(t *testing.T) {
 			}
 		},
 		dataPlane: func(dp *DataPlane) {
-			dp.dnsPort = 5353
+			dp.tuning.dnsPort = 5353
 		},
 	})
 	b4, b6 := overlay(2)
@@ -348,7 +348,7 @@ func TestUnprotectedDNSIsReportedAndRetried(t *testing.T) {
 			p.SystemUpstreams = func([]netip.Addr) ([]netip.Addr, error) { return nil, nil }
 		},
 		dataPlane: func(dp *DataPlane) {
-			dp.dnsPort = 5353
+			dp.tuning.dnsPort = 5353
 		},
 	})
 	err := b.node.Connect(context.Background())
@@ -394,7 +394,7 @@ func TestAFailedFirstReadOfTheSystemsResolversIsPassedOn(t *testing.T) {
 			p.SystemUpstreams = func([]netip.Addr) ([]netip.Addr, error) { return nil, errors.New("the store is unreadable") }
 		},
 		dataPlane: func(dp *DataPlane) {
-			dp.dnsPort = 5353
+			dp.tuning.dnsPort = 5353
 		},
 	})
 	b.connection(t, Connected)
@@ -431,7 +431,7 @@ func TestStaleUpstreamsAreDegradedNotUnprotected(t *testing.T) {
 			p.SystemUpstreams = func([]netip.Addr) ([]netip.Addr, error) { return nil, nil }
 		},
 		dataPlane: func(dp *DataPlane) {
-			dp.dnsPort = 5353
+			dp.tuning.dnsPort = 5353
 		},
 	})
 	b.connection(t, Connected)
@@ -469,7 +469,7 @@ func TestAnUntaggedProblemIsUnprotected(t *testing.T) {
 			p.SystemUpstreams = func([]netip.Addr) ([]netip.Addr, error) { return nil, nil }
 		},
 		dataPlane: func(dp *DataPlane) {
-			dp.dnsPort = 5353
+			dp.tuning.dnsPort = 5353
 		},
 	})
 	b.connection(t, Connected)
@@ -572,7 +572,7 @@ func TestTheDirectUpstreamsReachTheRouteTable(t *testing.T) {
 		},
 		dataPlane: func(dp *DataPlane) {
 			dp.RouteTable = true
-			dp.dnsPort = 5353
+			dp.tuning.dnsPort = 5353
 		},
 	})
 	b.connection(t, Connected)
@@ -606,7 +606,7 @@ func TestAConfiguredUpstreamReachesTheRouteTableWithItsPort(t *testing.T) {
 		},
 		dataPlane: func(dp *DataPlane) {
 			dp.RouteTable = true
-			dp.dnsPort = 5353
+			dp.tuning.dnsPort = 5353
 		},
 	})
 	b.connection(t, Connected)

@@ -90,13 +90,22 @@ type DataPlane struct {
 	Rules         rules.Local
 	rulesRequests <-chan rulesRequest
 
-	// What tests tune: the path layer's timing, the retry delay, and a
-	// worker's blob limits (MaxHeld is always blobs.ServerMaxHeldSize).
-	path        path.Options
-	retryAfter  time.Duration
+	// tuning is what tests change; production leaves it zero.
+	tuning tuning
+}
+
+// tuning is the one place a data plane differs in tests: the timing they
+// can't wait out and the port they can't bind. A node's data plane gets
+// its tuning from Node.tweak. What tests check about a running data plane
+// they read from its status and events, not from hooks.
+type tuning struct {
+	// path is the path layer's timing; retryAfter the delay before a
+	// failed start, Apply or listener is retried (0: RetryAfter).
+	path       path.Options
+	retryAfter time.Duration
+	// blobOptions are a worker's blob limits (MaxHeld is always
+	// blobs.ServerMaxHeldSize).
 	blobOptions blobs.Options
-	// onEngine sees each engine the data plane starts.
-	onEngine func(*dataplane.Engine)
 	// dnsPort is the resolver's port (0: 53).
 	dnsPort uint16
 }
@@ -118,8 +127,8 @@ func RunDataPlane(ctx context.Context, dp DataPlane) error {
 	if dp.Interface == "" {
 		dp.Interface = tun.DefaultName
 	}
-	if dp.retryAfter == 0 {
-		dp.retryAfter = RetryAfter
+	if dp.tuning.retryAfter == 0 {
+		dp.tuning.retryAfter = RetryAfter
 	}
 	if dp.Log == nil {
 		dp.Log = slog.New(slog.DiscardHandler)
@@ -267,11 +276,8 @@ func (r *runner) start(ctx context.Context) error {
 			r.dp.Log.Warn("DNS: keeping the direct upstreams reachable failed", "err", path.RedactError(err))
 		}
 	}
-	if r.dp.onEngine != nil {
-		r.dp.onEngine(engine)
-	}
 	r.pointSystem()
-	r.listeners = newListenerSet(engine, r.dp.Log, r.dp.retryAfter)
+	r.listeners = newListenerSet(engine, r.dp.Log, r.dp.tuning.retryAfter)
 	r.retryAt = time.Time{}
 	r.applied()
 	return nil
@@ -335,7 +341,7 @@ func (r *runner) engineConfig(p startPorts) dataplane.EngineConfig {
 		Registry:     r.dp.Registry,
 		TUN:          p.tun,
 		LinkMTU:      r.dp.LinkMTU,
-		Path:         r.dp.path,
+		Path:         r.dp.tuning.path,
 		Log:          r.dp.Log,
 		Forward:      r.dp.Forward,
 		Rules:        r.dp.Rules,
@@ -517,7 +523,7 @@ func (r *runner) connect(ctx context.Context, connect bool) error {
 		if err := r.start(ctx); err != nil {
 			logRefused(r.dp.Log, r.conn.startFailed(retry))
 			if retry {
-				r.retryAt = time.Now().Add(r.dp.retryAfter)
+				r.retryAt = time.Now().Add(r.dp.tuning.retryAfter)
 			}
 			r.dp.Log.Warn("connecting failed", "version", r.follow.cur.Header().Version, "err", err)
 			return err
@@ -607,8 +613,8 @@ func (r *runner) tryStart(ctx context.Context) {
 	}
 	if err := r.start(ctx); err != nil {
 		logRefused(r.dp.Log, r.conn.startFailed(true))
-		r.retryAt = time.Now().Add(r.dp.retryAfter)
-		r.dp.Log.Warn("starting the data plane failed, retrying", "version", r.follow.cur.Header().Version, "in", r.dp.retryAfter, "err", path.RedactError(err))
+		r.retryAt = time.Now().Add(r.dp.tuning.retryAfter)
+		r.dp.Log.Warn("starting the data plane failed, retrying", "version", r.follow.cur.Header().Version, "in", r.dp.tuning.retryAfter, "err", path.RedactError(err))
 		return
 	}
 	logRefused(r.dp.Log, r.conn.started())
@@ -617,9 +623,9 @@ func (r *runner) tryStart(ctx context.Context) {
 
 func (r *runner) apply(ctx context.Context) {
 	if err := r.engine.Apply(ctx, r.follow.section); err != nil {
-		r.retryAt = time.Now().Add(r.dp.retryAfter)
+		r.retryAt = time.Now().Add(r.dp.tuning.retryAfter)
 		r.dp.Log.Warn("applying the map failed, retrying", "version", r.follow.cur.Header().Version,
-			"step", r.engine.Status().LastApplyError, "in", r.dp.retryAfter, "err", path.RedactError(err))
+			"step", r.engine.Status().LastApplyError, "in", r.dp.tuning.retryAfter, "err", path.RedactError(err))
 		return
 	}
 	r.retryAt = time.Time{}

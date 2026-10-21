@@ -45,7 +45,8 @@ type Node struct {
 	subscribers []func(Event)
 	// stopped is closed once the node's adapter returned.
 	stopped chan struct{}
-	// tweak, if set, adjusts a device's DataPlane: what tests swap.
+	// tweak, if set, adjusts a device's DataPlane: how tests set its
+	// tuning.
 	tweak func(*DataPlane)
 
 	// rulesMu serializes SetRulePreset; local is the device's last good

@@ -79,7 +79,7 @@ func startDevice(t *testing.T, s *testSpace, reg *transport.Registry, connect bo
 		}
 	}
 	n.tweak = func(dp *DataPlane) {
-		dp.path, dp.retryAfter = fastPaths, testRetry
+		dp.tuning = tuning{path: fastPaths, retryAfter: testRetry}
 		dp.RouteTable = false // virtual TUNs: the host's routing stays as it is
 		for _, o := range opts {
 			if o.dataPlane != nil {
@@ -401,7 +401,7 @@ func TestTheStatusShowsWhatAnEventSays(t *testing.T) {
 				heard = append(heard, seen{ev, st})
 			})
 		},
-		dataPlane: func(dp *DataPlane) { dp.dnsPort = 5353 },
+		dataPlane: func(dp *DataPlane) { dp.tuning.dnsPort = 5353 },
 	})
 	b.events.are(t, Event{EventConnected, 1}, Event{EventDNSUnprotected, 1})
 	b.maps <- s.buildWithout(t, 2, s.b)

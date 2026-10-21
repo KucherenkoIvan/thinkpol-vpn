@@ -97,13 +97,12 @@ func (n *runningNode) dataPlane(reg *transport.Registry, keys NodeKeys, m *netma
 	n.conn = newConnection(true, false)
 	return DataPlane{
 		Keys: keys, Map: m, Maps: n.maps, Registry: reg, Inbound: DirectInbound(reg),
-		Log:        slog.New(slog.NewTextHandler(n.log, &slog.HandlerOptions{Level: slog.LevelDebug})),
-		Host:       h,
-		path:       fastPaths,
-		retryAfter: testRetry,
-		conn:       &n.conn,
-		report:     &n.report,
-		events:     n.events.add,
+		Log:    slog.New(slog.NewTextHandler(n.log, &slog.HandlerOptions{Level: slog.LevelDebug})),
+		Host:   h,
+		tuning: tuning{path: fastPaths, retryAfter: testRetry},
+		conn:   &n.conn,
+		report: &n.report,
+		events: n.events.add,
 	}
 }
 

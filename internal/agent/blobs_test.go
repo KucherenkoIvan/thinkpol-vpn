@@ -11,13 +11,11 @@ import (
 	"path/filepath"
 	"slices"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/worker"
-	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/blobs"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
@@ -133,15 +131,13 @@ func TestTheDataPlaneFetchesAndKeepsBlobs(t *testing.T) {
 	b := newRunningNode()
 	dpB := b.dataPlane(reg, s.b, s.verified(t, 1))
 	dpB.Blobs = ov.service(diskBlobs{dir: stateB, log: dpB.Log}, dpB.Log)
-	var engineB atomic.Pointer[dataplane.Engine]
-	dpB.onEngine = func(e *dataplane.Engine) { engineB.Store(e) }
 	b.run(t, dpB)
 
 	eventually(t, func() bool { _, ok := dpB.Blobs.Get(ref.SHA256); return ok })
 	// The rules take the list as it arrives.
 	eventually(t, func() bool {
-		e := engineB.Load()
-		return e != nil && e.Status().Rules.Direct4 == 1 && e.Status().Rules.Direct6 == 1
+		dp := b.status().DataPlane
+		return dp != nil && dp.Rules.Direct4 == 1 && dp.Rules.Direct6 == 1
 	})
 	if r, got, ok := dpB.Blobs.Latest(netmap.BlobGeoIP, "ru"); !ok || r != ref || !bytes.Equal(got, data) {
 		t.Errorf("device: Latest(geoip, ru) = %v, %v", r, ok)
@@ -296,7 +292,7 @@ func TestServerSeedsItsWorker(t *testing.T) {
 	var ov loopbackOverlay
 	w := newRunningNode()
 	base := w.dataPlane(reg, NodeKeys{}, nil)
-	base.blobOptions = blobs.Options{Limits: fastBlobs}
+	base.tuning.blobOptions = blobs.Options{Limits: fastBlobs}
 	base.Host.BlobNet = blobs.Net{Listen: ov.listen, Dial: ov.dial}
 	sess := newFakeSession(s.id)
 	sess.Seeds = worker.NewSeeds()
