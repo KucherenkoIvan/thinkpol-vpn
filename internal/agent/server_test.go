@@ -286,11 +286,14 @@ func TestTheEgressLineSaysWhatTheTablesEnforce(t *testing.T) {
 func TestAnUplinkFoundBySetSpacesIsNotWarnedAbout(t *testing.T) {
 	s := newTestSpace(t)
 	sup := &fakeSupervisor{egressSeq: []supervisor.EgressInfo{
-		{Err: "no default route"}, {Uplink: "eth9", IPv4: true},
+		{Err: supervisor.EgressNoDefaultRoute}, {Uplink: "eth9", IPv4: true},
 	}}
 	r := runServerSpacesIn(t, s, sup, "", func(ss *serverSpaces) { ss.dns = true },
 		func(sec *netmap.Section) { sec.Node.AllowEgress = true })
-	eventually(t, func() bool { return logMatches(r.log.String(), `msg="map applied" .*uplink=eth9 `) })
+	r.served(t, 1)
+	if !logMatches(r.log.String(), `msg="map applied" .*uplink=eth9 `) {
+		t.Errorf("the map applied line doesn't name the tables' uplink:\n%s", r.log.String())
+	}
 	if strings.Contains(r.log.String(), "has no uplink") {
 		t.Errorf("the node was warned about an uplink the tables carry:\n%s", r.log.String())
 	}
@@ -335,7 +338,7 @@ func TestRejoiningTheSpaceLogsTheRefusedUpstreamsAgain(t *testing.T) {
 	r.maps <- s.buildWithout(t, 2, s.a)
 	eventually(t, func() bool { _, _, n := sup.last(); return n == 2 })
 	r.maps <- s.buildEditing(t, 3, s.a, func(sec *netmap.Section) { sec.Node.AllowEgress = true })
-	eventually(t, func() bool { return logMatches(r.log.String(), `msg="map applied" .*version=3`) })
+	r.served(t, 3)
 	if n := strings.Count(r.log.String(), "refuses the upstream"); n != 2 {
 		t.Errorf("after rejoining the refused upstream was logged %d times, want twice", n)
 	}

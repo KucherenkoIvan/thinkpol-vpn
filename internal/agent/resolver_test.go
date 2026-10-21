@@ -803,7 +803,9 @@ func TestTheResolverAsksTheLatestUpstreams(t *testing.T) {
 		t.Fatal(err)
 	}
 	logs := logring.New(1 << 20)
-	changed := make(chan []netip.AddrPort, 1)
+	// Unbuffered: a send returns once the loop took it, and a second
+	// one once the loop is done with the first.
+	changed := make(chan []netip.AddrPort)
 	r := &runner{
 		dp: DataPlane{DNS: true, DNSUpstreams: []netip.AddrPort{x.address}, tuning: tuning{dnsPort: freePort(t)}, dnsUpstreams: changed,
 			Log: slog.New(slog.NewTextHandler(logs, nil)), Inbound: nilInbound{}, conn: &connection{}},
@@ -823,7 +825,7 @@ func TestTheResolverAsksTheLatestUpstreams(t *testing.T) {
 
 	// A later config's list is delivered by the loop and asked at once.
 	changed <- []netip.AddrPort{y.address}
-	eventually(t, func() bool { return strings.Contains(logs.String(), "the resolver's upstreams changed") })
+	changed <- []netip.AddrPort{y.address}
 	if a := askTheResolver(t, r.dp.tuning.dnsPort); a != y.answer {
 		t.Fatalf("after the change the resolver's answer came from %v, want the later config's %v", a, y.answer)
 	}

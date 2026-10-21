@@ -34,7 +34,7 @@ Finish the agent-layer refactor after TP-075, TP-109 and TP-110: teardown order,
 ## Acceptance
 - [x] behaviour unchanged: `make lint`, `make test`, `make lab-test` green
 - [x] the depguard rule from TP-109 stays green
-- [x] no `waitLog` on log text left in `internal/agent` tests (one exception: `localapi`'s `TestAnAPIFailureLeavesTheNodeRunning` waits for the local API adapter's retry warnings, which only the log reports)
+- [x] no `waitLog` on log text left in `internal/agent` tests (two exceptions, each waiting for what only the log reports: `localapi`'s `TestAnAPIFailureLeavesTheNodeRunning`, the local API adapter's retry warnings; `TestServeSpace`'s later-upstreams subtest from TP-112, a worker resolver's changed upstreams)
 - [x] `funlen` on in `.golangci.yml` (lines ~80, statements ~50), the long functions split by what their parts do
 
 ## Notes
