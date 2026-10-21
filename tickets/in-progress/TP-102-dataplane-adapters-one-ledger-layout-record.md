@@ -64,3 +64,4 @@ Round 1 (2026-10-21): correctness (merge), second opinion (merge), design (fix f
 - 2026-10-20 checks at f25c9f0 (`git merge origin/rewrite`: already up to date): make lint exit 0, make test exit 0, make lab-test exit 0 in 396s (LAB_P=1, another lab running; 35 node packages ok, lab suite ok). Earlier make lab-test at 0e45c30: exit 0 in 143s (LAB_P=4)
 - 2026-10-20 in-progress → review — not verified here: macOS on a device (netcfg's ledger and route record through the real routing socket, the pf guard's token record and enable path, the resolver's answers); they ran only through their unit tests with fakes and `make lint`'s darwin vet
 - 2026-10-21 review → has-errors (round 1: R1.1–R1.11)
+- 2026-10-21 has-errors → in-progress (round 1 findings)
