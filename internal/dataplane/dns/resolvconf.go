@@ -292,62 +292,99 @@ func setResolvConf(path string, uplink string, c SystemConfig) (*resolvConf, err
 // held.
 func (r *resolvConf) apply() (tell func(), err error) {
 	defer func() { r.err = err }()
-	fi, err := os.Lstat(r.path)
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+	f, err := readResolvConfFile(r.path)
+	if err != nil {
 		return nil, err
 	}
-	var current []byte
-	symlink := ""
-	read := false // the OS's own resolvers were read
-	switch {
-	case err != nil: // the file isn't there: nothing was read
-	case fi.Mode()&fs.ModeSymlink != 0:
-		if symlink, err = os.Readlink(r.path); err != nil {
-			return nil, err
-		}
-		var rerr error
-		if current, rerr = os.ReadFile(r.path); rerr == nil { // a dangling link is no original content
-			read = true
-		}
-	case fi.Mode().IsRegular():
-		if current, err = os.ReadFile(r.path); err != nil {
-			return nil, err
-		}
-		read = true
-	default:
-		return nil, fmt.Errorf("dns: %s is not a file", r.path)
-	}
-	m := parseResolvConf(current)
+	m := parseResolvConf(f.content)
+	symlink, read := f.symlink, f.read
 	if m.managed {
 		symlink = m.symlink
 		if len(m.original) == 0 {
 			// Taken over while the file was missing, or over an empty
 			// one — a missing and an empty original look the same in the
 			// managed file: what the OS used before is unknown, not an
-			// empty answer. While untold, the original may have been a
-			// link whose target is named here and reads now (a dangling
-			// link's target may have appeared since).
+			// empty answer.
 			read = false
-			if r.untold && symlink != "" {
-				target := symlink
-				if !filepath.IsAbs(target) {
-					target = filepath.Join(filepath.Dir(r.path), target)
-				}
-				// A target that reads back as the node's own managed
-				// file (a link to itself, directly or through another
-				// link) holds no original.
-				if b, rerr := os.ReadFile(target); rerr == nil && !parseResolvConf(b).managed {
-					m.original, read = b, true
-				}
+			if b, ok := r.linkedOriginal(symlink); ok {
+				m.original, read = b, true
 			}
 		}
 	}
 	content := render(r.cfg, m.original, symlink)
+	tell = r.recordOriginal(m.original, read)
+	return tell, rewriteResolvConf(r.path, f, content)
+}
+
+// resolvConfFile is what is at a resolv.conf's path.
+type resolvConfFile struct {
+	info    fs.FileInfo // nil: there is no file
+	content []byte
+	symlink string // the file is a symlink to this
+	read    bool   // content was read: the OS's own resolvers
+}
+
+// readResolvConfFile reads the resolv.conf at path, a file or a symlink.
+// A missing file and a dangling link are no content, not an error.
+func readResolvConfFile(path string) (resolvConfFile, error) {
+	fi, err := os.Lstat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return resolvConfFile{}, nil // the file isn't there: nothing was read
+	}
+	if err != nil {
+		return resolvConfFile{}, err
+	}
+	f := resolvConfFile{info: fi}
+	switch {
+	case fi.Mode()&fs.ModeSymlink != 0:
+		if f.symlink, err = os.Readlink(path); err != nil {
+			return f, err
+		}
+		var rerr error
+		if f.content, rerr = os.ReadFile(path); rerr == nil { // a dangling link is no original content
+			f.read = true
+		}
+	case fi.Mode().IsRegular():
+		if f.content, err = os.ReadFile(path); err != nil {
+			return f, err
+		}
+		f.read = true
+	default:
+		return f, fmt.Errorf("dns: %s is not a file", path)
+	}
+	return f, nil
+}
+
+// linkedOriginal is the original behind the link a managed file with no
+// original content names: while untold, the original may have been a
+// link whose target reads now (a dangling link's target may have
+// appeared since). A target that reads back as the node's own managed
+// file (a link to itself, directly or through another link) holds no
+// original. r.mu is held.
+func (r *resolvConf) linkedOriginal(symlink string) ([]byte, bool) {
+	if !r.untold || symlink == "" {
+		return nil, false
+	}
+	target := symlink
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(filepath.Dir(r.path), target)
+	}
+	b, err := os.ReadFile(target)
+	if err != nil || parseResolvConf(b).managed {
+		return nil, false
+	}
+	return b, true
+}
+
+// recordOriginal keeps original as the last one seen and returns what to
+// tell Upstreams about it, or nil; read says original is the OS's own
+// resolvers, read just now. r.mu is held.
+func (r *resolvConf) recordOriginal(original []byte, read bool) (tell func()) {
 	var ups []netip.Addr
 	ok := true // nothing read: no answer to lose
 	if read {
 		var uerr error
-		ups, uerr = upstreamsFromContent(m.original, r.uplink, r.cfg.Servers)
+		ups, uerr = upstreamsFromContent(original, r.uplink, r.cfg.Servers)
 		ok = uerr == nil
 	}
 	// Upstreams is told when the original changed, and at the first good
@@ -355,11 +392,11 @@ func (r *resolvConf) apply() (tell func(), err error) {
 	// unreadable uplink file is a failed read: no answer was had, so
 	// while untold it clears nothing.
 	firstGoodRead := read && ok && r.untold
-	changed := r.seen && !originalEqual(r.original, m.original)
+	changed := r.seen && !originalEqual(r.original, original)
 	if read && ok {
 		r.untold = false
 	}
-	r.original, r.seen = m.original, true
+	r.original, r.seen = original, true
 	upstreams := r.cfg.Upstreams
 	if upstreams != nil && (changed || firstGoodRead) {
 		switch {
@@ -372,13 +409,20 @@ func (r *resolvConf) apply() (tell func(), err error) {
 			tell = func() { log.Warn("DNS: no upstream to ask; set one with -dns-upstream") }
 		}
 	}
-	if string(content) == string(current) {
-		return tell, nil
+	return tell
+}
+
+// rewriteResolvConf puts content at path unless f, what is there, holds
+// it already: in place of a regular file, else (no file, a symlink) as a
+// new file replacing what is there.
+func rewriteResolvConf(path string, f resolvConfFile, content []byte) error {
+	if string(content) == string(f.content) {
+		return nil
 	}
-	if fi != nil && fi.Mode().IsRegular() {
-		return tell, writeFile(r.path, content)
+	if f.info != nil && f.info.Mode().IsRegular() {
+		return writeFile(path, content)
 	}
-	return tell, replace(r.path, func(tmp string) error { return writeNew(tmp, content) })
+	return replace(path, func(tmp string) error { return writeNew(tmp, content) })
 }
 
 func (r *resolvConf) watch(first func()) {

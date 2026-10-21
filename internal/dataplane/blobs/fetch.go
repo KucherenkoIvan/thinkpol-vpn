@@ -99,6 +99,16 @@ func (s *Service) fetchOnce(ctx context.Context, iface string, local netip.Addr,
 	if _, err := conn.Write(req[:]); err != nil {
 		return err
 	}
+	if err := readResponseHeader(conn, ref, offset); err != nil {
+		return err
+	}
+	return readBlob(conn, ref.Size, buf, idle)
+}
+
+// readResponseHeader reads the answer to a request for ref from offset
+// on: its status, as an error unless OK, then the length to follow, which
+// must be what is left of ref.
+func readResponseHeader(conn net.Conn, ref netmap.BlobRef, offset uint64) error {
 	var st [1]byte
 	if _, err := io.ReadFull(conn, st[:]); err != nil {
 		return err
@@ -119,20 +129,26 @@ func (s *Service) fetchOnce(ctx context.Context, iface string, local netip.Addr,
 	if length := binary.BigEndian.Uint64(n[:]); length != ref.Size-offset {
 		return fmt.Errorf("%w: %d bytes announced from offset %d of a %d-byte blob", errProtocol, length, offset, ref.Size)
 	}
+	return nil
+}
+
+// readBlob appends what conn sends to *buf until it holds size bytes,
+// calling idle before each read to push the connection's deadline on.
+func readBlob(conn net.Conn, size uint64, buf *[]byte, idle func()) error {
 	if *buf == nil {
-		*buf = make([]byte, 0, min(ref.Size, 64<<10))
+		*buf = make([]byte, 0, min(size, 64<<10))
 	}
 	chunk := make([]byte, 32<<10)
-	for uint64(len(*buf)) < ref.Size {
+	for uint64(len(*buf)) < size {
 		idle()
-		want := min(uint64(len(chunk)), ref.Size-uint64(len(*buf)))
+		want := min(uint64(len(chunk)), size-uint64(len(*buf)))
 		k, err := conn.Read(chunk[:want])
 		*buf = append(*buf, chunk[:k]...)
 		if err != nil {
-			if errors.Is(err, io.EOF) && uint64(len(*buf)) < ref.Size {
+			if errors.Is(err, io.EOF) && uint64(len(*buf)) < size {
 				return io.ErrUnexpectedEOF
 			}
-			if uint64(len(*buf)) < ref.Size {
+			if uint64(len(*buf)) < size {
 				return err
 			}
 		}

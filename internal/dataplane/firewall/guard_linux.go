@@ -361,22 +361,38 @@ const recheckAfterOverflow = time.Second
 // subscription breaks. On a kernel without nf_tables it fails with
 // routetable.ErrGuardUnsupported.
 func (g *IPv6Guard) Watch(ctx context.Context) (<-chan struct{}, error) {
+	ns, err := g.watchNamespace()
+	if err != nil {
+		return nil, err
+	}
+	nl, err := dialTableEvents(ns)
+	if err != nil {
+		return nil, err
+	}
+	return guardChanges(ctx, nl), nil
+}
+
+// watchNamespace is the namespace fd Watch subscribes in, once the guard
+// is open and the probe saw nf_tables. It takes g.mu.
+func (g *IPv6Guard) watchNamespace() (int, error) {
 	g.mu.Lock()
-	ns, closed := g.netns, g.closed
-	var perr error
-	if !closed {
-		var c *nftables.Conn
-		if c, perr = g.conn(); perr == nil {
-			perr = g.probe(c)
-		}
+	defer g.mu.Unlock()
+	if g.closed {
+		return 0, errClosed
 	}
-	g.mu.Unlock()
-	if closed {
-		return nil, errClosed
+	c, err := g.conn()
+	if err == nil {
+		err = g.probe(c)
 	}
-	if perr != nil {
-		return nil, perr
+	if err != nil {
+		return 0, err
 	}
+	return g.netns, nil
+}
+
+// dialTableEvents subscribes to the nftables events of the namespace ns
+// (-1: the calling thread's).
+func dialTableEvents(ns int) (*netlink.Conn, error) {
 	cfg := &netlink.Config{}
 	if ns >= 0 {
 		cfg.NetNS = ns
@@ -389,6 +405,12 @@ func (g *IPv6Guard) Watch(ctx context.Context) (<-chan struct{}, error) {
 		_ = nl.Close()
 		return nil, fmt.Errorf("firewall: watch: %w", err)
 	}
+	return nl, nil
+}
+
+// guardChanges is Watch's channel over the subscription nl, which it
+// owns and closes when ctx ends or the subscription breaks.
+func guardChanges(ctx context.Context, nl *netlink.Conn) <-chan struct{} {
 	out := make(chan struct{}, 1)
 	signal := func() {
 		select {
@@ -415,26 +437,34 @@ func (g *IPv6Guard) Watch(ctx context.Context) (<-chan struct{}, error) {
 		}()
 		defer stop()
 		defer func() { _ = nl.Close() }()
-		for {
-			msgs, err := nl.Receive()
-			switch {
-			case ctx.Err() != nil:
-				return
-			case errors.Is(err, unix.ENOBUFS):
-				signal() // something may have been lost
-				time.AfterFunc(recheckAfterOverflow, recheck)
-				continue
-			case err != nil:
-				return
-			}
-			for _, m := range msgs {
-				if touchesGuard(m) {
-					signal()
-				}
+		receiveGuardEvents(ctx, nl, signal, recheck)
+	}()
+	return out
+}
+
+// receiveGuardEvents reads nl until ctx ends or the subscription breaks,
+// calling signal for each event that touches the guard's table, and when
+// the socket overflowed signal at once and recheck after
+// recheckAfterOverflow.
+func receiveGuardEvents(ctx context.Context, nl *netlink.Conn, signal, recheck func()) {
+	for {
+		msgs, err := nl.Receive()
+		switch {
+		case ctx.Err() != nil:
+			return
+		case errors.Is(err, unix.ENOBUFS):
+			signal() // something may have been lost
+			time.AfterFunc(recheckAfterOverflow, recheck)
+			continue
+		case err != nil:
+			return
+		}
+		for _, m := range msgs {
+			if touchesGuard(m) {
+				signal()
 			}
 		}
-	}()
-	return out, nil
+	}
 }
 
 // touchesGuard says whether m, an nftables event, changes the guard's
