@@ -474,14 +474,16 @@ func (s stubWorkerReporter) Workers() []supervisor.WorkerInfo   { return s.worke
 func (stubWorkerReporter) Listeners() []supervisor.ListenerInfo { return nil }
 func (stubWorkerReporter) Egress() supervisor.EgressInfo        { return supervisor.EgressInfo{} }
 
+// The status carries why a worker's process ended as its code, not the
+// error's text.
 func TestWorkerLastExitInStatus(t *testing.T) {
-	const reason = "start: no such file"
 	space := netmap.SpaceID{0x01}
 	st := (&report{
-		mode:    ModeServer,
-		workers: stubWorkerReporter{workers: []supervisor.WorkerInfo{{Space: space, Ready: false, Starts: 1, LastExit: reason}}},
+		mode: ModeServer,
+		workers: stubWorkerReporter{workers: []supervisor.WorkerInfo{{Space: space, Ready: false, Starts: 1,
+			LastExit: "start: no such file", LastExitReason: supervisor.ExitSpawnFailed}}},
 	}).status()
-	if len(st.Workers) != 1 || st.Workers[0].LastExit != reason {
+	if len(st.Workers) != 1 || st.Workers[0].LastExit != supervisor.ExitSpawnFailed {
 		t.Fatalf("workers %+v", st.Workers)
 	}
 }
