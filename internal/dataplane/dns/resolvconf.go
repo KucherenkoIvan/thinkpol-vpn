@@ -30,8 +30,9 @@ type SystemConfig struct {
 	Search []string
 	// Upstreams, if set, is told the resolvers the OS would use on its
 	// own whenever another program changes them while the node runs (a
-	// DHCP client rewriting resolv.conf, resolved's uplink servers). It is
-	// called from the configuration's own goroutine.
+	// DHCP client rewriting resolv.conf, resolved's uplink servers). It
+	// is called without the configuration's lock held, from the
+	// configuration's own goroutine or from Update's caller.
 	Upstreams func([]netip.Addr)
 	// UpstreamsUnknown says the caller's own read of the OS's resolvers
 	// failed, so it has none: the first good read tells Upstreams, and
@@ -354,9 +355,9 @@ func (r *resolvConf) apply() (tell func(), err error) {
 		ok = uerr == nil
 	}
 	// Upstreams is told when the original changed, and at the first good
-	// read while the caller has none (untold), whatever it found. Behind
-	// the stub, an unreadable uplink file is a failed read: no answer was
-	// had, so while untold it clears nothing.
+	// read while the caller has none (untold). Behind the stub, an
+	// unreadable uplink file is a failed read: no answer was had, so
+	// while untold it clears nothing.
 	firstGoodRead := read && ok && r.untold
 	changed := r.seen && !originalEqual(r.original, m.original)
 	if read && ok {
@@ -369,8 +370,6 @@ func (r *resolvConf) apply() (tell func(), err error) {
 		case len(ups) > 0:
 			tell = func() { upstreams(ups) }
 		case firstGoodRead:
-			// The first good read is told whatever it found: the caller
-			// has no upstreams of its own until one.
 			tell = func() { upstreams(nil) }
 		case r.cfg.Log != nil && !r.untold:
 			log := r.cfg.Log

@@ -309,8 +309,6 @@ func (r *resolved) firstRead() func() {
 	if !r.untold {
 		return nil
 	}
-	// The first good read is told whatever it found: the caller has no
-	// upstreams of its own until one.
 	r.untold = false
 	tell := r.cfg.Upstreams
 	if tell == nil {
@@ -334,17 +332,15 @@ func (r *resolved) apply() func() {
 	tell := r.cfg.Upstreams
 	changed := !slices.Equal(ups, r.servers)
 	firstGoodRead := r.untold
+	// A good read clears untold, told or not.
 	r.servers, r.untold = ups, false
 	switch {
 	case tell == nil:
 		return nil
 	case firstGoodRead:
-		// The first good read is told whatever it found: the caller has
-		// no upstreams of its own until one.
 		return func() { tell(ups) }
 	case changed:
-		// A good read, told or not, clears untold; after the first, a
-		// change alone is told.
+		// After the first, a change alone is told.
 		return func() { tell(ups) }
 	}
 	return nil

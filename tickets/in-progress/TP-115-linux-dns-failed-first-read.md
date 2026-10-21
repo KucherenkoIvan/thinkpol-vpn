@@ -60,6 +60,7 @@ Round 2 (2026-10-21): correctness, design and a second-opinion review.
 - 2026-10-21 make lint, make test green; make lab-test green at 112c351 (first run failed on lab-infrastructure route flake, rerun clean)
 - 2026-10-21 in-progress → review
 - 2026-10-21 review → has-errors (round 1: R1.1–R1.10)
+- 2026-10-21 has-errors → in-progress (round 1 findings)
 - 2026-10-21 round 1: apply returns the tell and callers run it after unlocking, setup hands the first one to the watch goroutine (R1.1); startsUntold once in the OS-neutral file, resolved's tell names resolvConf's, firstRead → firstGoodRead (R1.9)
 - 2026-10-21 an unreadable uplink file is a failed read in SystemUpstreams, resolvConf's untold read and resolved's; where a read already happened, the previous upstreams are kept (R1.2); while untold over a managed file with a recorded link target, the target is read relative to the file's directory (R1.3)
 - 2026-10-21 resolved's uplink path is a field and its reads are firstRead and apply, unit-tested (missing → stale, appears → told, unchanged → silent) and covered in the lab's systemd-resolved case (R1.4), correcting the earlier "not verified in unit tests" line; resolved stores the filtered list, so the first tick doesn't tell the same servers again (R1.5)
@@ -69,6 +70,5 @@ Round 2 (2026-10-21): correctness, design and a second-opinion review.
 - 2026-10-21 mutation checks (unit): upstreamsFromContent answering empty on an unreadable uplink, dropping the link-target read, resolved's read treating a failed read as good, resolved's read returning the raw list, originalEqual → bytes.Equal, and untold: c.Upstreams != nil each fail the new tests; (lab) upstreamsFrom swallowing the failed read fails the systemd-resolved case's new scenario
 - 2026-10-21 make lint, make test green per commit; make lab-test green at 8aff73e (lab and node phases both ok, about 3 minutes)
 - 2026-10-21 in-progress → review
-- 2026-10-21 has-errors → in-progress (round 1 findings)
 - 2026-10-21 review → has-errors (round 2: R2.1–R2.9)
 - 2026-10-21 has-errors → in-progress (round 2 findings)
