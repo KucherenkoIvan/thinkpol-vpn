@@ -17,8 +17,9 @@ import (
 type mapFollower struct {
 	log  *slog.Logger
 	keys NodeKeys
-	// report counts the maps refused (Status.MapsRefused); nil counts
-	// nowhere.
+	// report counts the maps refused (Status.MapsRefused): invalid ones
+	// and those not for this node, never one merely not newer (the same
+	// map read again); nil counts nowhere.
 	report *report
 
 	cur     *netmap.Map
@@ -42,7 +43,6 @@ func (f *mapFollower) take(envelope []byte) (taken, removed, back bool) {
 	m, err := f.cur.Next(envelope)
 	if errors.Is(err, netmap.ErrNotNewer) {
 		f.log.Debug("map not newer, ignored", "version", f.cur.Header().Version)
-		f.refused()
 		return false, false, false
 	}
 	if err != nil {

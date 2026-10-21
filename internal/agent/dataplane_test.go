@@ -259,13 +259,13 @@ func TestDataPlaneRunsAndFollowsTheMap(t *testing.T) {
 		t.Fatal("a doesn't listen on its new address")
 	}
 
-	// Older and tampered maps leave the node on version 2.
+	// Older and tampered maps leave the node on version 2; only the
+	// tampered one counts as refused, and the maps are taken in order.
 	a.maps <- s.build(t, 1)
-	a.refused(t, 1)
 	bad := s.build(t, 3)
 	bad[len(bad)-1] ^= 1
 	a.maps <- bad
-	a.refused(t, 2)
+	a.refused(t, 1)
 	if v := a.status().MapVersion; v != 2 {
 		t.Fatalf("on version %d after an older and a tampered map", v)
 	}
@@ -283,6 +283,25 @@ func TestDataPlaneRunsAndFollowsTheMap(t *testing.T) {
 	a.done <- nil // for the cleanup
 	if !canListen(net, s.listen) {
 		t.Fatal("a's listener outlived the data plane")
+	}
+}
+
+// The same map given again (a SIGHUP, a touched file) is no refusal: the
+// count says only what was invalid or not the node's.
+func TestARepeatedMapIsNotARefusal(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	a := startNode(t, reg, s.a, s.verified(t, 1))
+	a.applied(t, 1)
+	a.maps <- s.build(t, 1)
+	bad := s.build(t, 2)
+	bad[len(bad)-1] ^= 1
+	a.maps <- bad
+	// Taken in order: version 2 is applied once both went before it.
+	a.maps <- s.build(t, 2)
+	a.applied(t, 2)
+	if n := a.status().MapsRefused; n != 1 {
+		t.Errorf("%d maps refused, want the tampered one alone", n)
 	}
 }
 
@@ -306,15 +325,15 @@ func TestDataPlaneStopsWhileRemoved(t *testing.T) {
 	}
 	eventually(t, func() bool { return canListen(net, s.listen) })
 	b.applied(t, 2)
-	// Taken, so an older map with the node doesn't bring it back.
+	// Taken, so an older map with the node doesn't bring it back (the
+	// next map is taken once the older one was).
 	a.maps <- s.build(t, 1)
-	a.refused(t, 1)
-	if a.tuns.Load() != 1 {
-		t.Fatal("a restarted on an older map")
-	}
 	// Removed once, said once.
 	a.maps <- s.buildWithout(t, 3, s.a)
 	eventually(t, func() bool { return a.status().MapVersion == 3 })
+	if a.tuns.Load() != 1 {
+		t.Fatal("a restarted on an older map")
+	}
 	if c := strings.Count(a.log.String(), "removed from space"); c != 1 {
 		t.Fatalf("%d removal messages", c)
 	}

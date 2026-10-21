@@ -22,9 +22,9 @@ type Status struct {
 	Space netmap.SpaceID
 	// MapVersion is the version of the map the node follows.
 	MapVersion uint64
-	// MapsRefused counts the maps the node was given and didn't take
-	// since it started: not newer than the one it follows, invalid, or
-	// not its space's.
+	// MapsRefused counts the maps the node was given and refused since
+	// it started: invalid, or not its space's. One merely not newer than
+	// the map it follows (the same file read again) isn't counted.
 	MapsRefused uint64
 	// Removed is set while the map has no section for the node.
 	Removed    bool

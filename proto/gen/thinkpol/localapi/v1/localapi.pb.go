@@ -878,9 +878,10 @@ type Status struct {
 	RulePresetUnavailable bool `protobuf:"varint,13,opt,name=rule_preset_unavailable,json=rulePresetUnavailable,proto3" json:"rule_preset_unavailable,omitempty"`
 	// A server's uplink and what it carries.
 	Uplink *Uplink `protobuf:"bytes,14,opt,name=uplink,proto3" json:"uplink,omitempty"`
-	// The maps the node was given and didn't take since it started: not
-	// newer than the one it follows, invalid, or not its space's. One
-	// that keeps growing is someone handing it maps it refuses.
+	// The maps the node was given and refused since it started: invalid,
+	// or not its space's (one merely not newer, the same map read again,
+	// isn't counted). One that keeps growing is someone handing it maps it
+	// refuses.
 	MapsRefused   uint64 `protobuf:"varint,15,opt,name=maps_refused,json=mapsRefused,proto3" json:"maps_refused,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
