@@ -17,8 +17,9 @@ type ListenConfig struct {
 	Settings []byte
 }
 
-// Accept is whom a listener accepts links from, and where the rest goes.
-type Accept struct {
+// Admission is whom a listener accepts links from, and where the rest
+// goes.
+type Admission struct {
 	Peers      Peers
 	Camouflage Camouflage // nil drops everything unauthenticated
 }
@@ -32,7 +33,7 @@ type Transport interface {
 	// "tcp" (a server's firewall lets a space dial its endpoints in it).
 	Network() string
 	Dialer() Dialer
-	Listen(ctx context.Context, cfg ListenConfig, accept Accept) (Listener, error)
+	Listen(ctx context.Context, cfg ListenConfig, admission Admission) (Listener, error)
 	// CheckEndpoint reports whether a dial entry of the map is usable.
 	CheckEndpoint(endpoint string, cfg DialConfig) error
 	// CheckInbound reports whether an inbound entry of the map is usable.
@@ -146,7 +147,7 @@ type PacketRoutable interface {
 	ListenPacket(ctx context.Context, cfg ListenConfig) (*net.UDPConn, error)
 	// ListenForwarded listens on pc, which it owns from then on:
 	// datagrams the supervisor routed to this worker in, replies out.
-	ListenForwarded(pc net.PacketConn, accept Accept) (Listener, error)
+	ListenForwarded(pc net.PacketConn, admission Admission) (Listener, error)
 }
 
 // StreamRoutable is a stream transport behind a shared listener. The
@@ -163,6 +164,9 @@ type StreamRoutable interface {
 	// describes.
 	ListenStream(ctx context.Context, cfg ListenConfig) (net.Listener, error)
 	// Handoff is a worker's listener for the connections the supervisor
-	// passes on.
-	Handoff(accept Accept) (HandoffListener, error)
+	// passes on. The listener's settings stay with the supervisor's public
+	// listener (ListenStream): a worker's shared listener doesn't carry
+	// them yet, so a transport whose handoff needs them (tls, TP-028)
+	// adds them to the shared listener's message first.
+	Handoff(admission Admission) (HandoffListener, error)
 }

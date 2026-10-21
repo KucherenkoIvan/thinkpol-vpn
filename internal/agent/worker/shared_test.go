@@ -144,7 +144,7 @@ func TestListenServesTheTransport(t *testing.T) {
 		{ID: 2, Transport: "udp", Stream: true, Address: "192.0.2.1:443"},
 		{ID: 3, Transport: "tls", Address: "192.0.2.1:443"},
 	})
-	l, err := ls[0].Listen(reg, transport.Accept{Peers: transport.NewPeerTable()})
+	l, err := ls[0].Listen(reg, transport.Admission{Peers: transport.NewPeerTable()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +153,7 @@ func TestListenServesTheTransport(t *testing.T) {
 		t.Fatalf("listened with a %T on %v", l, l.Addr())
 	}
 	for _, bad := range ls[1:] {
-		if _, err := bad.Listen(reg, transport.Accept{}); err == nil {
+		if _, err := bad.Listen(reg, transport.Admission{}); err == nil {
 			t.Errorf("listener %d (%s, stream %v) listened", bad.ID, bad.Transport, bad.Stream)
 		}
 	}

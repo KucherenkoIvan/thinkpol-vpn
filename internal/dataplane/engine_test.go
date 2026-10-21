@@ -124,7 +124,7 @@ func (nd *node) start(t *testing.T, net *memory.Network) {
 	nd.engine = e
 	nd.stack = newStack(t, ch)
 	if nd.listen.IsValid() {
-		l, err := net.Listen(context.Background(), transport.ListenConfig{Address: nd.listen.String()}, transport.Accept{Peers: e.Inbound(memory.Name)})
+		l, err := net.Listen(context.Background(), transport.ListenConfig{Address: nd.listen.String()}, transport.Admission{Peers: e.Inbound(memory.Name)})
 		if err != nil {
 			t.Fatal(err)
 		}

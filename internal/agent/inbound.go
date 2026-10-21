@@ -55,7 +55,7 @@ func (d directInbound) Listeners(s netmap.Section) []Listener {
 				if !ok {
 					return nil, fmt.Errorf("unknown transport %q", l.Transport)
 				}
-				return t.Listen(ctx, cfg, transport.Accept{Peers: peers})
+				return t.Listen(ctx, cfg, transport.Admission{Peers: peers})
 			},
 		})
 	}
@@ -108,7 +108,7 @@ func (s *sharedInbound) Listeners(netmap.Section) []Listener {
 			Key:       "shared " + strconv.FormatUint(uint64(l.ID), 10),
 			Transport: l.Transport,
 			Open: func(_ context.Context, peers transport.Peers) (transport.Listener, error) {
-				return l.Listen(s.reg, transport.Accept{Peers: peers})
+				return l.Listen(s.reg, transport.Admission{Peers: peers})
 			},
 			Done: l.Done,
 		})

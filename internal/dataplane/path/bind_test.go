@@ -204,7 +204,7 @@ func TestProbeRepliesMustMatch(t *testing.T) {
 	f := newFakeFabric(t, 0)
 	f.add("A")
 	table := transport.NewPeerTable(transport.PeerLink{Peer: transport.Identity{Node: id("A")}, Verifier: []byte("secret A>Z")})
-	l, err := f.tr.Listen(context.Background(), transport.ListenConfig{Address: "Z"}, transport.Accept{Peers: table})
+	l, err := f.tr.Listen(context.Background(), transport.ListenConfig{Address: "Z"}, transport.Admission{Peers: table})
 	if err != nil {
 		t.Fatal(err)
 	}

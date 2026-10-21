@@ -186,7 +186,7 @@ func randomSpace() transport.SpaceID {
 // serve runs a worker's udp listener on w for space's links.
 func serve(t *testing.T, w *fakeWorker, links ...transport.PeerLink) transport.Listener {
 	t.Helper()
-	l, err := udp.New(udp.Options{}).ListenForwarded(w, transport.Accept{Peers: transport.NewPeerTable(links...)})
+	l, err := udp.New(udp.Options{}).ListenForwarded(w, transport.Admission{Peers: transport.NewPeerTable(links...)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1015,7 +1015,7 @@ func TestConformanceBehindTheSupervisor(t *testing.T) {
 					follow(links)
 				}
 			}()
-			l, err := tr.ListenForwarded(&closingWorker{fakeWorker: w, s: s}, transport.Accept{Peers: peers, Camouflage: camouflage})
+			l, err := tr.ListenForwarded(&closingWorker{fakeWorker: w, s: s}, transport.Admission{Peers: peers, Camouflage: camouflage})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1052,14 +1052,14 @@ func (lineTransport) Overhead(transport.Shaping) int                   { return 
 func (lineTransport) Network() string                                  { return "tcp" }
 func (lineTransport) CheckEndpoint(string, transport.DialConfig) error { return nil }
 func (lineTransport) CheckInbound(transport.PeerLink) error            { return nil }
-func (lineTransport) Listen(context.Context, transport.ListenConfig, transport.Accept) (transport.Listener, error) {
+func (lineTransport) Listen(context.Context, transport.ListenConfig, transport.Admission) (transport.Listener, error) {
 	return nil, errors.ErrUnsupported
 }
 func (lineTransport) ListenStream(ctx context.Context, cfg transport.ListenConfig) (net.Listener, error) {
 	var lc net.ListenConfig
 	return lc.Listen(ctx, "tcp", cfg.Address)
 }
-func (lineTransport) Handoff(transport.Accept) (transport.HandoffListener, error) {
+func (lineTransport) Handoff(transport.Admission) (transport.HandoffListener, error) {
 	return nil, errors.ErrUnsupported
 }
 func (lineTransport) StreamRouter(peers transport.Peers) transport.StreamRouter {

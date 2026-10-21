@@ -124,18 +124,18 @@ func (n *Network) CheckInbound(pl transport.PeerLink) error {
 }
 
 // Listen implements transport.Transport: cfg.Address is any free name.
-func (n *Network) Listen(_ context.Context, cfg transport.ListenConfig, accept transport.Accept) (transport.Listener, error) {
+func (n *Network) Listen(_ context.Context, cfg transport.ListenConfig, admission transport.Admission) (transport.Listener, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if _, taken := n.listeners[cfg.Address]; taken {
 		return nil, fmt.Errorf("memory: %s already in use", cfg.Address)
 	}
 	l := &Listener{
-		net: n, addr: Addr(cfg.Address), peers: accept.Peers, camo: transport.OrDrop(accept.Camouflage),
+		net: n, addr: Addr(cfg.Address), peers: admission.Peers, camo: transport.OrDrop(admission.Camouflage),
 		accept: transport.NewInbox[*end](acceptQueue),
 		live:   make(map[*end]transport.PeerLink),
 	}
-	links, changed := accept.Peers.Snapshot()
+	links, changed := admission.Peers.Snapshot()
 	l.links = links
 	n.listeners[cfg.Address] = l
 	go l.watchPeers(changed)

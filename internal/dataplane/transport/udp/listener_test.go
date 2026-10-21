@@ -341,7 +341,7 @@ func TestUnusablePeerLinksAreReported(t *testing.T) {
 	badSettings.Settings = []byte{0xff}
 	table := transport.NewPeerTable(good.PeerLink, dupA.PeerLink, dupB.PeerLink, short, badSettings)
 	tr := New(Options{})
-	l := tr.ListenOn(mustListenPacket(t), transport.Accept{Peers: table})
+	l := tr.ListenOn(mustListenPacket(t), transport.Admission{Peers: table})
 	defer func() { _ = l.Close() }()
 	rejected := map[transport.Identity]bool{}
 	for _, pe := range l.Rejected() {

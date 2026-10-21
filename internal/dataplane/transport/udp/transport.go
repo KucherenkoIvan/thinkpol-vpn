@@ -98,12 +98,12 @@ func parseEndpoint(endpoint string) (netip.AddrPort, error) {
 }
 
 // Listen implements transport.Transport.
-func (t *Transport) Listen(ctx context.Context, cfg transport.ListenConfig, accept transport.Accept) (transport.Listener, error) {
+func (t *Transport) Listen(ctx context.Context, cfg transport.ListenConfig, admission transport.Admission) (transport.Listener, error) {
 	pc, err := t.ListenPacket(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
-	return t.ListenOn(pc, accept), nil
+	return t.ListenOn(pc, admission), nil
 }
 
 // ListenPacket implements transport.PacketRoutable: the socket Listen would
@@ -125,8 +125,8 @@ func (t *Transport) ListenPacket(ctx context.Context, cfg transport.ListenConfig
 }
 
 // ListenForwarded implements transport.PacketRoutable with ListenOn.
-func (t *Transport) ListenForwarded(pc net.PacketConn, accept transport.Accept) (transport.Listener, error) {
-	return t.ListenOn(pc, accept), nil
+func (t *Transport) ListenForwarded(pc net.PacketConn, admission transport.Admission) (transport.Listener, error) {
+	return t.ListenOn(pc, admission), nil
 }
 
 // listenNetwork binds one address family, as the map's listeners mean it:
@@ -142,8 +142,8 @@ func listenNetwork(ap netip.AddrPort) string {
 // ListenOn listens on pc, which it owns from now on. pc need not be a
 // socket: a worker behind a shared listener reads the datagrams the
 // supervisor routed to it and writes replies back the same way.
-func (t *Transport) ListenOn(pc net.PacketConn, accept transport.Accept) *Listener {
-	return newListener(t, pc, accept.Peers, accept.Camouflage)
+func (t *Transport) ListenOn(pc net.PacketConn, admission transport.Admission) *Listener {
+	return newListener(t, pc, admission.Peers, admission.Camouflage)
 }
 
 // PacketRouter implements transport.PacketRoutable.

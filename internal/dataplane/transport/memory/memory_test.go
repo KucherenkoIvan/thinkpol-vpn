@@ -25,7 +25,7 @@ func TestConformance(t *testing.T) {
 					if address == "" {
 						address = fmt.Sprintf("listener-%d", endpoints.Add(1))
 					}
-					l, err := network.Listen(context.Background(), transport.ListenConfig{Address: address}, transport.Accept{Peers: peers, Camouflage: camouflage})
+					l, err := network.Listen(context.Background(), transport.ListenConfig{Address: address}, transport.Admission{Peers: peers, Camouflage: camouflage})
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -57,7 +57,7 @@ func TestConformanceAcceptShaping(t *testing.T) {
 					if address == "" {
 						address = fmt.Sprintf("listener-%d", endpoints.Add(1))
 					}
-					l, err := network.Listen(context.Background(), transport.ListenConfig{Address: address}, transport.Accept{Peers: peers, Camouflage: camouflage})
+					l, err := network.Listen(context.Background(), transport.ListenConfig{Address: address}, transport.Admission{Peers: peers, Camouflage: camouflage})
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -103,7 +103,7 @@ func TestRegistry(t *testing.T) {
 // be seen.
 func TestConcurrentClosesFreeTheEndpoint(t *testing.T) {
 	peer := transporttest.SymmetricPeer()
-	cfg, accept := transport.ListenConfig{Address: "endpoint"}, transport.Accept{Peers: transport.NewPeerTable(peer.PeerLink)}
+	cfg, accept := transport.ListenConfig{Address: "endpoint"}, transport.Admission{Peers: transport.NewPeerTable(peer.PeerLink)}
 	dial := transport.DialConfig{Credential: peer.Credential}
 	network := memory.NewNetwork(memory.Datagram)
 	for range 50 {

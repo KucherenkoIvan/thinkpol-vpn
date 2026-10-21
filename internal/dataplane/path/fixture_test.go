@@ -154,7 +154,7 @@ func (f *fabric) add(names ...string) {
 			f.t.Fatal(err)
 		}
 		n := &fnode{Node: node, name: name, peers: transport.NewPeerTable()}
-		l, err := f.tr.Listen(context.Background(), transport.ListenConfig{Address: name}, transport.Accept{Peers: n.peers})
+		l, err := f.tr.Listen(context.Background(), transport.ListenConfig{Address: name}, transport.Admission{Peers: n.peers})
 		if err != nil {
 			f.t.Fatal(err)
 		}

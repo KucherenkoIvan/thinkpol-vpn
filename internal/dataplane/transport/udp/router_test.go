@@ -66,7 +66,7 @@ func (s *supervisor) worker(tr *Transport, space *transport.SpaceID, peers trans
 		s.workers[*space] = fc
 	}
 	s.mu.Unlock()
-	return tr.ListenOn(fc, transport.Accept{Peers: peers, Camouflage: camo})
+	return tr.ListenOn(fc, transport.Admission{Peers: peers, Camouflage: camo})
 }
 
 type forwarded struct {
