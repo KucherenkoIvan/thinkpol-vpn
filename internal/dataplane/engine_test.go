@@ -515,6 +515,34 @@ func TestAPeerMovesBetweenDevices(t *testing.T) {
 	ping(t, a, b.v4)
 }
 
+// A device that leaves while the router can't take the table without it
+// stays the engine's: once the router can, the next Apply moves its peer
+// back and closes it, and the peer is reached again.
+func TestADepartingDeviceIsKeptWhileTheRouterRefusesTheTable(t *testing.T) {
+	net := memory.NewNetwork(memory.Datagram)
+	a, s, b := m0()
+	for _, nd := range []*node{s, a, b} {
+		nd.start(t, net)
+	}
+	dataplane.PutPeerOnDeviceForTest(a.engine, b.id, "chain-x")
+	a.apply(t)
+	ping(t, a, b.v4)
+
+	var fail atomic.Bool
+	dataplane.FailRouterTablesForTest(a.engine, &fail)
+	fail.Store(true)
+	dataplane.PutPeerOnDeviceForTest(a.engine, netmap.NodeID{}, "")
+	if err := a.engine.Apply(context.Background(), a.section); err == nil {
+		t.Fatal("the router took a table with another router's egress")
+	}
+	fail.Store(false)
+	a.apply(t)
+	if st := a.engine.Status(); len(st.Egresses) != 1 || st.Peers[1].Device != dataplane.OverlayDevice {
+		t.Fatalf("status %+v", st)
+	}
+	ping(t, a, b.v4)
+}
+
 // A server with ingress off serves other servers only: a device holding a
 // valid credential for it is refused, while the server still takes relayed
 // traffic from another server. Turning ingress on lets the same device in.

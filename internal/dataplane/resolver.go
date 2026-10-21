@@ -90,7 +90,7 @@ func (e *Engine) dnsConfig() ResolverConfig {
 	}
 
 	peers := make(map[netmap.NodeID][]netip.Addr)
-	for _, d := range e.devices.byName {
+	for _, d := range e.devices.all() {
 		for _, p := range d.peers {
 			peers[p.ID] = slices.Clone(p.Addresses)
 		}

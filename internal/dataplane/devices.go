@@ -2,7 +2,9 @@ package dataplane
 
 import (
 	"errors"
+	"iter"
 	"log/slog"
+	"maps"
 	"net/netip"
 	"slices"
 
@@ -65,7 +67,8 @@ func (ds *deviceSet) sectionPeers(s netmap.Section) map[string][]devicePeer {
 // remove takes from every device the peers, and the addresses of peers,
 // that want no longer gives it, and closes the devices want has none for
 // (when known). Nothing is added. setTable gives the router the table
-// without the departing devices, before they close.
+// without the departing devices, before they close; when it fails they
+// stay in the set, still open, for the next remove to take away.
 func (ds *deviceSet) remove(want map[string][]devicePeer, known bool, paths []path.Peer, setTable func() error) error {
 	departing, changed, err := ds.shrink(want, known)
 	if err != nil {
@@ -88,6 +91,7 @@ func (ds *deviceSet) remove(want map[string][]devicePeer, known bool, paths []pa
 		delete(ds.byName, name)
 	}
 	if err := setTable(); err != nil {
+		maps.Copy(ds.byName, departing)
 		return err
 	}
 	var errs []error
@@ -174,6 +178,15 @@ func (ds *deviceSet) add(want map[string][]devicePeer, paths []path.Peer, mtu in
 	}
 	return nil
 }
+
+// all are the devices by name.
+func (ds *deviceSet) all() iter.Seq2[string, *egressDevice] { return maps.All(ds.byName) }
+
+// get is the device named name, nil if there is none.
+func (ds *deviceSet) get(name string) *egressDevice { return ds.byName[name] }
+
+// len is how many devices there are.
+func (ds *deviceSet) len() int { return len(ds.byName) }
 
 // take empties the set and returns its devices, for the caller to close.
 func (ds *deviceSet) take() map[string]*egressDevice {

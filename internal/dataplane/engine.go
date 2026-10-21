@@ -374,8 +374,8 @@ func (e *Engine) table() router.Table {
 	// A device never forwards the OS's traffic: only its own addresses
 	// may speak through it.
 	t := router.Table{Overlay: e.networks, Local: e.local, ReflectLocal: reflectLocal, LocalSourcesOnly: e.kind == netmap.NodeDevice}
-	egresses := make(map[string]*router.Egress, len(e.devices.byName))
-	for name, d := range e.devices.byName {
+	egresses := make(map[string]*router.Egress, e.devices.len())
+	for name, d := range e.devices.all() {
 		egresses[name] = d.egress
 		for _, p := range d.peers {
 			for _, a := range p.Addresses {
@@ -389,7 +389,7 @@ func (e *Engine) table() router.Table {
 	// The space's devices and servers are the overlay device's peers;
 	// a chain's exit device carries replies from its exit, never
 	// traffic for this node to forward.
-	if d := e.devices.byName[OverlayDevice]; e.exit && d != nil {
+	if d := e.devices.get(OverlayDevice); e.exit && d != nil {
 		t.Forward = []*router.Egress{d.egress}
 	}
 	return t
@@ -492,7 +492,7 @@ func (e *Engine) Status() Status {
 	if e.ipv6Off != nil {
 		s.IPv6Off = ipv6OffCode(e.ipv6Off)
 	}
-	for name, d := range e.devices.byName {
+	for name, d := range e.devices.all() {
 		reported := make(map[netmap.WireGuardKey]wg.PeerStatus)
 		if peers, err := d.wg.Peers(); err == nil {
 			for _, p := range peers {
