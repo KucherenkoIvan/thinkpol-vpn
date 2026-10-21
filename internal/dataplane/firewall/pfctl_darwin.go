@@ -103,11 +103,17 @@ func detail(stderr []byte) string {
 		return ""
 	}
 	s := inputLine.ReplaceAllString(strings.Join(l, "; "), "stdin line $1:")
-	if len(s) > 300 {
-		s = s[:300] + "..."
+	if len(s) > detailMax {
+		// Back to a space: a word cut through (an address) would escape
+		// the redaction of addresses whoever logs this does.
+		s = s[:detailMax]
+		s = s[:max(strings.LastIndexByte(s, ' '), 0)] + "..."
 	}
 	return ": " + s
 }
+
+// detailMax is how much of pfctl's stderr an error quotes.
+const detailMax = 300
 
 // lines are b's non-empty lines, trimmed, without pfctl's ALTQ chatter
 // ("No ALTQ support in kernel", "ALTQ related functions disabled"),

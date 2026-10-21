@@ -1376,8 +1376,17 @@ func TestWatchSignalsWhenTheGuardBreaks(t *testing.T) {
 	}
 }
 
-// pfctl runs are bounded, take their input, and name their process; a
-// missing pfctl is unsupported. /bin/cat and /bin/sleep stand in for it.
+// pfctl's stderr past what an error quotes is cut at a word, so an
+// address the limit falls inside goes whole, and nothing of it escapes
+// the redaction.
+func TestDetailNeverCutsThroughAnAddress(t *testing.T) {
+	head := strings.Repeat("x", detailMax-7) + " " // the limit falls in "2001:d|b8:..."
+	got := path.RedactError(errors.New(detail([]byte(head + "2001:db8:53::1 unknown\n"))))
+	if strings.Contains(got, "2001") || !strings.HasSuffix(got, strings.TrimSpace(head)+"...") {
+		t.Errorf("detail %q, want it cut before the address", got[len(got)-20:])
+	}
+}
+
 // A syntax error pfctl reports keeps the line it names through the
 // redaction of addresses, and the addresses still go.
 func TestPfctlsInputLineSurvivesRedaction(t *testing.T) {
@@ -1389,6 +1398,8 @@ func TestPfctlsInputLineSurvivesRedaction(t *testing.T) {
 	}
 }
 
+// pfctl runs are bounded, take their input, and name their process; a
+// missing pfctl is unsupported. /bin/cat and /bin/sleep stand in for it.
 func TestExecPfctl(t *testing.T) {
 	out, err := execPfctl{path: "/bin/cat", timeout: 5 * time.Second}.run(context.Background(), []byte("table <x> { }\n"))
 	if err != nil || string(out.stdout) != "table <x> { }\n" || out.pid <= 0 {
