@@ -59,3 +59,4 @@ Round 1 (2026-10-22): correctness (merge), design (fix first), second opinion (m
 - 2026-10-22 out of scope, for the orchestrator: (a) Linux: a base chain in *another* table that sets the links' mark before the guard's chain leaks the same way; the guard trusts the mark by design, so only its own table is checked here. (b) macOS: a quick pass in an anchor the main ruleset evaluates before the hook is still unseen (DESIGN names it); it could be reported the same way as an earlier com.apple anchor. (c) open question: a skip on a name that is no real interface (`set skip on lo`, a group) also reports not enforced; strict on purpose, a device run would show whether stock software does that
 - 2026-10-22 in-progress → review
 - 2026-10-22 review → has-errors (round 1: R1.1-R1.8)
+- 2026-10-22 has-errors → in-progress — owner: agent-tp-126, round 1 findings
