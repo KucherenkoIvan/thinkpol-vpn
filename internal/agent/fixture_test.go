@@ -94,6 +94,9 @@ func (s *testSpace) build(t *testing.T, version uint64) []byte {
 // is changed by edit.
 func (s *testSpace) buildEditing(t *testing.T, version uint64, who NodeKeys, edit func(*netmap.Section)) []byte {
 	t.Helper()
+	if who != s.a && who != s.b {
+		t.Fatalf("the edited node %v is neither of the space's two", who.ID)
+	}
 	a, b := s.sections()
 	edited := &a
 	if who == s.b {

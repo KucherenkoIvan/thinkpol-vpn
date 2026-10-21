@@ -240,25 +240,33 @@ func TestServerRetriesAFailedMap(t *testing.T) {
 	}
 }
 
-// The worker config's upstream order and the "map applied" line are read
-// from one snapshot of the supervisor's egress: two reads could disagree
-// about the uplink's families (here the first says IPv4, the second
-// IPv6).
-func TestTheUpstreamOrderAndTheEgressLineShareOneEgressRead(t *testing.T) {
+// The "map applied" line's egress is read again once SetSpaces has found
+// the uplink again and built the tables on it, so a first read that found
+// none doesn't warn about an uplink the tables carry, and the line says
+// what they forward. The worker config's upstream order keeps the read
+// taken before SetSpaces: it is built before then (here the first says
+// IPv6, the second IPv4).
+func TestTheEgressLineSaysWhatTheTablesEnforce(t *testing.T) {
 	s := newTestSpace(t)
 	sup := &fakeSupervisor{egressSeq: []supervisor.EgressInfo{
-		{Uplink: "eth9", IPv4: true}, {Uplink: "eth0", IPv6: true},
+		{Uplink: "eth0", IPv6: true}, {Uplink: "eth9", IPv4: true},
 	}}
 	r := runServerSpacesIn(t, s, sup, "", func(ss *serverSpaces) { ss.dns = true },
 		func(sec *netmap.Section) { sec.Node.AllowEgress = true })
-	eventually(t, func() bool { return logMatches(r.log.String(), `msg="map applied" .*egress_ipv6=off`) })
+	eventually(t, func() bool {
+		return logMatches(r.log.String(), `msg="map applied" .*uplink=eth9 .*egress_ipv4=on .*egress_ipv6=off`)
+	})
+	if strings.Contains(r.log.String(), "has no uplink") {
+		t.Errorf("the node was warned about an uplink the tables carry:\n%s", r.log.String())
+	}
+	// The config's order keeps the first read's family.
 	sp, _, _ := sup.last()
 	c, err := DecodeWorkerConfig(sp[0].Config)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(c.DNSUpstreams) == 0 || c.DNSUpstreams[0] != netip.MustParseAddrPort("9.9.9.9:53") {
-		t.Fatalf("the defaults follow the first snapshot's family: %v", c.DNSUpstreams)
+	if len(c.DNSUpstreams) == 0 || c.DNSUpstreams[0] != netip.MustParseAddrPort("[2620:fe::fe]:53") {
+		t.Fatalf("the defaults follow the first read's family: %v", c.DNSUpstreams)
 	}
 }
 

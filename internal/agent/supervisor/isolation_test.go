@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"net/netip"
+	"slices"
 	"testing"
 )
 
@@ -60,6 +61,9 @@ func TestEgressNotWorthAllowing(t *testing.T) {
 		"fe80::1%eth0",
 		// IPv4-mapped forms of the same addresses.
 		"::ffff:168.63.129.16", "::ffff:169.254.169.254", "::ffff:127.0.0.1", "::ffff:240.0.0.1",
+		// A zoned address stays never-suggested with its zone kept
+		// (Unmap would drop it and leave the mapped form hint-able).
+		"::ffff:192.0.2.1%eth0", "::ffff:169.254.169.254%eth0",
 	} {
 		if !EgressNotWorthAllowing(netip.MustParseAddr(a)) {
 			t.Errorf("the hint suggests opening %s", a)
@@ -83,27 +87,8 @@ func TestEgressNotWorthAllowing(t *testing.T) {
 // this test.
 func TestEgressNotWorthAllowingStaysInsideTheBlockedRanges(t *testing.T) {
 	for _, p := range egressNotWorthAllowing {
-		if inside := blockedContains(p); !inside {
+		if inside := slices.ContainsFunc(egressBlocked, func(b netip.Prefix) bool { return b.Bits() <= p.Bits() && b.Contains(p.Addr()) }); !inside {
 			t.Errorf("%s is not inside egressBlocked", p)
 		}
 	}
-}
-
-// blockedContains says whether one of egressBlocked holds p whole.
-func blockedContains(p netip.Prefix) bool {
-	a := p.Addr().Unmap().As16()
-	last := a
-	bits := p.Bits()
-	if p.Addr().Unmap().Is4() {
-		bits += 96
-	}
-	for i := bits; i < 128; i++ {
-		last[i/8] |= 0x80 >> (i % 8)
-	}
-	for _, b := range egressBlocked {
-		if b.Contains(p.Addr()) && b.Contains(netip.AddrFrom16(last).Unmap()) {
-			return true
-		}
-	}
-	return false
 }

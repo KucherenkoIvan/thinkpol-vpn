@@ -254,8 +254,8 @@ func orderForUplink(ups []netip.AddrPort, e supervisor.EgressInfo) []netip.AddrP
 // "Upstreams"), ordered for the uplink's families. One the worker's
 // egress refuses is not configured: only an exit's (a server allowing
 // egress, MayEndAChain) are counted and logged, since no device asks
-// another server's resolver. e is the uplink snapshot the caller's apply
-// goes on, so the order and the "map applied" line agree.
+// another server's resolver. e is the uplink snapshot the caller's
+// config is built from.
 func (s *serverSpaces) workerUpstreams(e supervisor.EgressInfo) []netip.AddrPort {
 	if !s.dns {
 		return nil

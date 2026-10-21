@@ -525,8 +525,9 @@ func (s *serverSpaces) apply() error {
 		return s.sup.SetSpaces(nil)
 	}
 	id := s.follow.cur.Header().SpaceID
-	// One read: the worker config's upstream order and the "map applied"
-	// line are read from the same snapshot of the uplink.
+	// One read of the egress for the worker config: the upstream order
+	// comes from the snapshot taken before SetSpaces finds the uplink
+	// again.
 	e := s.sup.Egress()
 	config, err := WorkerConfig{
 		Keys: s.follow.keys, Trust: s.trust, Map: s.follow.cur.Bytes(), Interface: s.iface, LinkMTU: s.linkMTU,
@@ -557,8 +558,12 @@ func (s *serverSpaces) apply() error {
 	if err := s.sup.SetListeners(ls); err != nil {
 		return errListeners{err}
 	}
+	// The line says what the tables enforce: SetSpaces finds the uplink
+	// again before building them, so the egress is read once more, for
+	// this line alone (the config's order keeps the snapshot taken
+	// before).
 	s.log.Info("map applied", append(append([]any{"version", s.follow.cur.Header().Version, "listeners", len(ls), "inbound_skipped", len(inbound.Skipped)},
-		serverSettings(s.follow.section.Node)...), append(s.egressAttrs(e), "blobs", len(s.follow.cur.Header().Blobs))...)...)
+		serverSettings(s.follow.section.Node)...), append(s.egressAttrs(s.sup.Egress()), "blobs", len(s.follow.cur.Header().Blobs))...)...)
 	return nil
 }
 

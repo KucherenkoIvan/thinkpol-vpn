@@ -160,23 +160,23 @@ func TestParseUpstreams(t *testing.T) {
 // worker's egress; with -dns-upstream, the configured ones. The uplink
 // here carries neither family, so the static order stands.
 func TestAWorkerResolvesThroughTheDefaultPublicUpstreams(t *testing.T) {
-	s := &serverSpaces{dns: true, sup: &fakeSupervisor{}, follow: mapFollower{log: slog.New(slog.DiscardHandler)}}
+	s := &serverSpaces{dns: true, follow: mapFollower{log: slog.New(slog.DiscardHandler)}}
 	want := []netip.AddrPort{
 		netip.MustParseAddrPort("9.9.9.9:53"),
 		netip.MustParseAddrPort("1.1.1.1:53"),
 		netip.MustParseAddrPort("[2620:fe::fe]:53"),
 		netip.MustParseAddrPort("[2606:4700:4700::1111]:53"),
 	}
-	if got := s.workerUpstreams(s.sup.Egress()); !slices.Equal(got, want) {
+	if got := s.workerUpstreams(supervisor.EgressInfo{}); !slices.Equal(got, want) {
 		t.Fatalf("defaults: %v, want %v", got, want)
 	}
 	s.dnsUpstreams = []netip.AddrPort{netip.MustParseAddrPort("198.51.100.53:53")}
-	if got := s.workerUpstreams(s.sup.Egress()); !slices.Equal(got, s.dnsUpstreams) {
+	if got := s.workerUpstreams(supervisor.EgressInfo{}); !slices.Equal(got, s.dnsUpstreams) {
 		t.Errorf("configured: %v", got)
 	}
 	s.dns = false
 	s.dnsUpstreams = nil
-	if got := s.workerUpstreams(s.sup.Egress()); got != nil {
+	if got := s.workerUpstreams(supervisor.EgressInfo{}); got != nil {
 		t.Errorf("without DNS: %v", got)
 	}
 }
@@ -204,8 +204,7 @@ func TestTheDefaultUpstreamsFollowTheUplinkFamily(t *testing.T) {
 		{"no uplink", supervisor.EgressInfo{Err: "no default route"}, static},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			s := &serverSpaces{dns: true, sup: &fakeSupervisor{egress: tc.egress},
-				follow: mapFollower{log: slog.New(slog.DiscardHandler)}}
+			s := &serverSpaces{dns: true, follow: mapFollower{log: slog.New(slog.DiscardHandler)}}
 			if got := s.workerUpstreams(tc.egress); !slices.Equal(got, tc.want) {
 				t.Fatalf("%s: %v, want %v", tc.name, got, tc.want)
 			}
@@ -232,7 +231,6 @@ func exitSpaces(t *testing.T, ups ...netip.AddrPort) (*serverSpaces, *bytes.Buff
 // -dns-upstream, which was set and refused.
 func TestAWorkerWithEveryUpstreamRefusedHasNone(t *testing.T) {
 	s, buf := exitSpaces(t, netip.MustParseAddrPort("192.168.1.53:53"), netip.MustParseAddrPort("169.254.169.254:53"))
-	log := slog.New(slog.NewTextHandler(buf, nil))
 	ups := s.workerUpstreams(supervisor.EgressInfo{})
 	if ups != nil {
 		t.Fatalf("all refused, kept: %v", ups)
@@ -252,7 +250,7 @@ func TestAWorkerWithEveryUpstreamRefusedHasNone(t *testing.T) {
 	}
 	section.Node.AllowEgress = true // an exit's worker: the resolver warns
 	asked := false
-	r := &runner{dp: DataPlane{DNS: true, DNSUpstreams: ups, inWorker: true, Log: log,
+	r := &runner{dp: DataPlane{DNS: true, DNSUpstreams: ups, inWorker: true, Log: s.log,
 		Host: Host{SystemUpstreams: func([]netip.Addr) ([]netip.Addr, error) { asked = true; return nil, nil }},
 	}, follow: mapFollower{section: section}}
 	if res := r.newResolver(); res == nil {
