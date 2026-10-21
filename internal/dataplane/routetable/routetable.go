@@ -302,12 +302,13 @@ type Enforcer struct {
 	// guardFailing: the guard's last Apply failed (retried every
 	// RetryAfter); guardUnsupported: the OS can't hold it (terminal).
 	guardFailing, guardUnsupported bool
-	// guardWarnAt, guardSuppressed: the last warn of the guard's failing
-	// apply, and the failures silenced since it; every failure is
-	// retried, one a minute is logged, with the count silenced.
-	guardWarnAt     time.Time
-	guardSuppressed int
-	status          Status
+
+	status Status
+
+	// The warns of the failures retried every RetryAfter, each limited on
+	// its own (warnLimit): the guard's apply, the routes' re-apply, and
+	// subscribing to the routes' and the guard's changes.
+	guardWarn, reapplyWarn, watchWarn, guardWatchWarn warnLimit
 }
 
 // Status is what an Enforcer reports: numbers and fixed texts only.
@@ -372,9 +373,6 @@ const (
 	// RetryAfter re-applies while the last attempt failed (a TUN that is
 	// down can't take its route back).
 	RetryAfter = 5 * time.Second
-	// guardWarnEvery: at most one warn of the guard's failing apply a
-	// minute; the failures since the last one are counted, not logged.
-	guardWarnEvery = time.Minute
 )
 
 // Open starts enforcing routes only through c, which it owns from now on
@@ -555,33 +553,16 @@ func (e *Enforcer) applyGuard(ctx context.Context, w Want) {
 	switch {
 	case err == nil:
 		e.guardFailing, e.status.GuardEnforced, e.status.GuardError = false, true, ""
-		e.guardWarnAt, e.guardSuppressed = time.Time{}, 0
+		e.guardWarn.reset()
 	case errors.Is(err, ErrGuardUnsupported):
 		e.guardFailing, e.guardUnsupported = false, true
 		e.status.GuardEnforced, e.status.GuardError = false, ErrorGuardUnsupported
 		e.log.Warn("route table: the OS can't hold the leak guard; sockets bound to an interface aren't confined", "err", err)
 	default:
-		e.warnGuard(err)
+		e.warnRetry(&e.guardWarn, "route table: applying the leak guard failed, retrying", err.Error())
 		e.guardFailing = true
 		e.status.GuardEnforced, e.status.GuardError = false, ErrorGuard
 	}
-}
-
-// warnGuard logs the guard's failing apply, at most one line a minute:
-// the failures since the last line are counted and said with it, not
-// kept silent. Every failure is still retried.
-func (e *Enforcer) warnGuard(err error) {
-	now := e.now()
-	if !e.guardWarnAt.IsZero() && now.Sub(e.guardWarnAt) < guardWarnEvery {
-		e.guardSuppressed++
-		return
-	}
-	args := []any{"in", RetryAfter}
-	if e.guardSuppressed > 0 {
-		args = append(args, "suppressed", e.guardSuppressed)
-	}
-	e.log.Warn("route table: applying the leak guard failed, retrying", append(args, "err", err)...)
-	e.guardWarnAt, e.guardSuppressed = now, 0
 }
 
 // Status reports the enforcer's state; it never waits for an Apply.
@@ -619,55 +600,19 @@ func (e *Enforcer) Close() error {
 // reports, every Backstop, and every RetryAfter while that fails; and the
 // guard alone after each burst of the guard's own Watch.
 func (e *Enforcer) watch(ctx context.Context, check bool) {
-	var ch, gch <-chan struct{}
-	var rewatch, regwatch <-chan time.Time
-	subscribe := func() {
-		var err error
-		ch, err = e.cfg.Watch(ctx)
-		switch {
-		case errors.Is(err, errors.ErrUnsupported):
-			ch, rewatch = nil, nil // the backstop alone
-		case err != nil:
-			e.log.Warn("route table: watching routes failed, retrying", "in", RetryAfter, "err", err)
-			ch, rewatch = nil, time.After(RetryAfter)
-		}
-	}
-	subscribeGuard := func() {
-		e.mu.Lock()
-		unsupported := e.guardUnsupported
-		e.mu.Unlock()
-		if e.guard == nil || unsupported {
-			gch, regwatch = nil, nil
-			return
-		}
-		var err error
-		gch, err = e.guard.Watch(ctx)
-		switch {
-		case errors.Is(err, errors.ErrUnsupported), errors.Is(err, ErrGuardUnsupported):
-			gch, regwatch = nil, nil // the backstop alone
-		case err != nil:
-			e.log.Warn("route table: watching the leak guard failed, retrying", "in", RetryAfter, "err", err)
-			gch, regwatch = nil, time.After(RetryAfter)
-		}
-	}
-	subscribe()
-	subscribeGuard()
+	var w watches
+	e.subscribe(ctx, &w)
+	e.subscribeGuard(ctx, &w)
 	if check {
 		// Subscribed first, so nothing falls between the check and the
 		// events.
-		if !e.settle(ctx, ch) {
+		if !e.settle(ctx, w.ch) {
 			return
 		}
 		e.reapply(ctx)
 	}
 	for {
-		wait := Backstop
-		e.mu.Lock()
-		if e.failing || e.guardFailing {
-			wait = RetryAfter
-		}
-		unsupported := e.unsupported
-		e.mu.Unlock()
+		wait, unsupported := e.backstop()
 		if unsupported {
 			return // nothing to retry: Close still removes what's left
 		}
@@ -676,38 +621,97 @@ func (e *Enforcer) watch(ctx context.Context, check bool) {
 		case <-ctx.Done():
 			timer.Stop()
 			return
-		case <-rewatch:
+		case <-w.rewatch:
 			timer.Stop()
-			subscribe()
+			e.subscribe(ctx, &w)
 			continue
-		case <-regwatch:
+		case <-w.regwatch:
 			timer.Stop()
-			subscribeGuard()
+			e.subscribeGuard(ctx, &w)
 			e.reapplyGuard(ctx) // whatever happened meanwhile
 			continue
-		case _, ok := <-gch:
+		case _, ok := <-w.gch:
 			timer.Stop()
 			if !ok {
 				// Events may have been lost: subscribe again, then check.
-				subscribeGuard()
-			} else if !e.settle(ctx, gch) {
+				e.subscribeGuard(ctx, &w)
+			} else if !e.settle(ctx, w.gch) {
 				return
 			}
 			e.reapplyGuard(ctx)
 			continue
 		case <-timer.C:
-		case _, ok := <-ch:
+		case _, ok := <-w.ch:
 			timer.Stop()
 			if !ok {
-				ch, rewatch = nil, time.After(RetryAfter)
+				w.ch, w.rewatch = nil, time.After(RetryAfter)
 				continue
 			}
-			if !e.settle(ctx, ch) {
+			if !e.settle(ctx, w.ch) {
 				return
 			}
 		}
 		e.reapply(ctx)
 	}
+}
+
+// watches are watch's subscriptions: the routes' changes (ch) and the
+// guard's (gch), each subscribed again once rewatch or regwatch fires
+// after a failure. A nil one is the backstop alone.
+type watches struct {
+	ch, gch           <-chan struct{}
+	rewatch, regwatch <-chan time.Time
+}
+
+// subscribe watches the routes' changes, or retries in RetryAfter.
+func (e *Enforcer) subscribe(ctx context.Context, w *watches) {
+	var err error
+	w.ch, err = e.cfg.Watch(ctx)
+	switch {
+	case errors.Is(err, errors.ErrUnsupported):
+		w.ch, w.rewatch = nil, nil // the backstop alone
+	case err != nil:
+		e.warnRetry(&e.watchWarn, "route table: watching routes failed, retrying", err.Error())
+		w.ch, w.rewatch = nil, time.After(RetryAfter)
+	default:
+		e.watchWarn.reset()
+	}
+}
+
+// subscribeGuard watches the guard's changes, if there is a guard the OS
+// supports, or retries in RetryAfter.
+func (e *Enforcer) subscribeGuard(ctx context.Context, w *watches) {
+	e.mu.Lock()
+	unsupported := e.guardUnsupported
+	e.mu.Unlock()
+	if e.guard == nil || unsupported {
+		w.gch, w.regwatch = nil, nil
+		return
+	}
+	var err error
+	w.gch, err = e.guard.Watch(ctx)
+	switch {
+	case errors.Is(err, errors.ErrUnsupported), errors.Is(err, ErrGuardUnsupported):
+		w.gch, w.regwatch = nil, nil // the backstop alone
+	case err != nil:
+		e.warnRetry(&e.guardWatchWarn, "route table: watching the leak guard failed, retrying", err.Error())
+		w.gch, w.regwatch = nil, time.After(RetryAfter)
+	default:
+		e.guardWatchWarn.reset()
+	}
+}
+
+// backstop is how long watch waits for a change before it re-applies
+// anyway: RetryAfter while the routes or the guard fail, else Backstop;
+// unsupported once the table can't be held at all.
+func (e *Enforcer) backstop() (wait time.Duration, unsupported bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	wait = Backstop
+	if e.failing || e.guardFailing {
+		wait = RetryAfter
+	}
+	return wait, e.unsupported
 }
 
 // settle waits until ch is quiet for debounce; false if ctx ended.
@@ -735,8 +739,11 @@ func (e *Enforcer) reapply(ctx context.Context) {
 	if w == nil || unsupported || ctx.Err() != nil {
 		return
 	}
-	if err := e.apply(ctx, *w, true); err != nil && ctx.Err() == nil {
-		e.log.Warn("route table: putting it back failed, retrying", "in", RetryAfter, "err", path.RedactError(err))
+	switch err := e.apply(ctx, *w, true); {
+	case err == nil:
+		e.reapplyWarn.reset()
+	case ctx.Err() == nil:
+		e.warnRetry(&e.reapplyWarn, "route table: putting it back failed, retrying", path.RedactError(err))
 	}
 }
 

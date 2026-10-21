@@ -28,5 +28,17 @@ func OpenWithClock(c netcfg.Configurator, g Guard, log *slog.Logger, now func() 
 // GuardApply is e's applyGuard.
 func GuardApply(ctx context.Context, e *Enforcer, w Want) { e.applyGuard(ctx, w) }
 
-// GuardWarnEvery is how far apart the guard's failures are warned.
-const GuardWarnEvery = guardWarnEvery
+// WarnEvery is how far apart a failure's warns are.
+const WarnEvery = warnEvery
+
+// PauseWatching stops e's watcher, so a test drives its steps alone.
+func PauseWatching(e *Enforcer) { e.pauseWatching() }
+
+// Subscribe is e's subscribe to the routes' changes.
+func Subscribe(ctx context.Context, e *Enforcer) { e.subscribe(ctx, &watches{}) }
+
+// SubscribeGuard is e's subscribe to the guard's changes.
+func SubscribeGuard(ctx context.Context, e *Enforcer) { e.subscribeGuard(ctx, &watches{}) }
+
+// Reapply is e's re-apply of the last Want.
+func Reapply(ctx context.Context, e *Enforcer) { e.reapply(ctx) }

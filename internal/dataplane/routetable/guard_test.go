@@ -61,6 +61,13 @@ type fakeGuard struct {
 	watches    atomic.Int32    // subscriptions alive
 	released   atomic.Int32    // subscriptions fully torn down
 	subscribed []chan struct{} // closed when each Watch goroutine is listening
+	watchErr   error           // what Watch returns; nil: it watches
+}
+
+func (g *fakeGuard) setWatchErr(err error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.watchErr = err
 }
 
 func newFakeGuard(f *fakeConfigurator) *fakeGuard {
@@ -83,6 +90,10 @@ func (g *fakeGuard) Watch(ctx context.Context) (<-chan struct{}, error) {
 	out := make(chan struct{})
 	ready := make(chan struct{})
 	g.mu.Lock()
+	if err := g.watchErr; err != nil {
+		g.mu.Unlock()
+		return nil, err
+	}
 	g.subscribed = append(g.subscribed, ready)
 	g.mu.Unlock()
 	g.watches.Add(1)
@@ -443,12 +454,9 @@ func TestGuardFailuresAreWarnedAtMostAMinuteApart(t *testing.T) {
 	g := newFakeGuard(f)
 	g.setFail(errors.New("the guard's load was refused"))
 	var buf lockedBuffer
-	now := time.Unix(0, 0)
-	var mu sync.Mutex
-	e := routetable.OpenWithClock(f, g, slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})),
-		func() time.Time { mu.Lock(); defer mu.Unlock(); return now })
+	clock := &fakeClock{now: time.Unix(0, 0)}
+	e := routetable.OpenWithClock(f, g, slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})), clock.read)
 	defer func() { _ = e.Close() }()
-	advance := func(d time.Duration) { mu.Lock(); now = now.Add(d); mu.Unlock() }
 	apply := func() { routetable.GuardApply(context.Background(), e, routetable.Want{TUN: "thinkpol0"}) }
 	warns := func() []string { return buf.lines("applying the leak guard failed") }
 
@@ -465,7 +473,7 @@ func TestGuardFailuresAreWarnedAtMostAMinuteApart(t *testing.T) {
 		t.Fatalf("%d warns within the minute, want 1", n)
 	}
 	// Past the minute, one line with the silenced count.
-	advance(routetable.GuardWarnEvery)
+	clock.advance(routetable.WarnEvery)
 	apply()
 	if n := len(warns()); n != 2 {
 		t.Fatalf("%d warns after a minute, want 2", n)
@@ -488,5 +496,78 @@ func TestGuardFailuresAreWarnedAtMostAMinuteApart(t *testing.T) {
 	}
 	if strings.Contains(warns()[2], "suppressed=") {
 		t.Errorf("the warn after a success counts what wasn't silenced: %q", warns()[2])
+	}
+}
+
+// fakeClock is a clock a test moves.
+type fakeClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (c *fakeClock) read() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *fakeClock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(d)
+}
+
+// Every other failure retried every RetryAfter is warned through a limit
+// of its own, as the guard's apply is: one line per WarnEvery, the
+// failures held back counted with the next, a success starting over.
+func TestRetriedFailuresAreWarnedAtMostOnceAMinute(t *testing.T) {
+	for _, site := range []struct {
+		name, warn string
+		// fail makes the step fail with err, or succeed with nil.
+		fail func(f *fakeConfigurator, g *fakeGuard, err error)
+		step func(context.Context, *routetable.Enforcer)
+	}{
+		{"watching the routes", "watching routes failed",
+			func(f *fakeConfigurator, _ *fakeGuard, err error) { f.setWatchErr(err) }, routetable.Subscribe},
+		{"watching the guard", "watching the leak guard failed",
+			func(_ *fakeConfigurator, g *fakeGuard, err error) { g.setWatchErr(err) }, routetable.SubscribeGuard},
+		{"putting the routes back", "putting it back failed",
+			func(f *fakeConfigurator, _ *fakeGuard, err error) { f.setFail(err != nil) }, routetable.Reapply},
+	} {
+		t.Run(site.name, func(t *testing.T) {
+			ctx := context.Background()
+			f := &fakeConfigurator{survey: up()}
+			g := newFakeGuard(f)
+			var buf lockedBuffer
+			clock := &fakeClock{now: time.Unix(0, 0)}
+			e := routetable.OpenWithClock(f, g, slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})), clock.read)
+			defer func() { _ = e.Close() }()
+			if err := e.Enforce(ctx, routetable.Want{TUN: "thinkpol0"}); err != nil {
+				t.Fatal(err)
+			}
+			routetable.PauseWatching(e)
+			warns := func() []string { return buf.lines(site.warn) }
+			failure := errors.New("the OS said no")
+
+			site.fail(f, g, failure)
+			for range 6 {
+				site.step(ctx, e)
+			}
+			if n := len(warns()); n != 1 {
+				t.Fatalf("%d warns of 6 failures within the minute, want 1", n)
+			}
+			clock.advance(routetable.WarnEvery)
+			site.step(ctx, e)
+			if w := warns(); len(w) != 2 || !strings.Contains(w[1], "suppressed=5") {
+				t.Fatalf("after the minute: %q, want a second warn with suppressed=5", w)
+			}
+			site.fail(f, g, nil)
+			site.step(ctx, e)
+			site.fail(f, g, failure)
+			site.step(ctx, e)
+			if w := warns(); len(w) != 3 || strings.Contains(w[2], "suppressed=") {
+				t.Fatalf("after a success: %q, want a third warn at once, nothing suppressed", w)
+			}
+		})
 	}
 }

@@ -236,6 +236,14 @@ type fakeConfigurator struct {
 	survey  netcfg.Survey
 	events  chan struct{}
 	order   *[]string // what was closed, in order
+	// watchErr: what Watch returns; nil: it watches.
+	watchErr error
+}
+
+func (f *fakeConfigurator) setWatchErr(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.watchErr = err
 }
 
 func (f *fakeConfigurator) Apply(_ context.Context, cfg netcfg.Config) error {
@@ -274,6 +282,12 @@ func (f *fakeConfigurator) Survey(context.Context) (netcfg.Survey, error) {
 }
 
 func (f *fakeConfigurator) Watch(ctx context.Context) (<-chan struct{}, error) {
+	f.mu.Lock()
+	err := f.watchErr
+	f.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
 	out := make(chan struct{})
 	go func() {
 		defer close(out)
