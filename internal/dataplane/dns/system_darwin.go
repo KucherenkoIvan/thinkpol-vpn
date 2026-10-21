@@ -604,10 +604,9 @@ func (s *dynamicStore) Problem() error {
 	}
 	// Not instead of the unprotected cause above but with it:
 	// Unprotected sorts a joined problem back out.
-	switch {
-	case s.untold:
-		errs = append(errs, fmt.Errorf("%w: no read of the system's resolvers has worked since the first one failed", ErrUpstreamsStale))
-	case s.primaryFailed:
+	if err := staleUpstreams(s.untold); err != nil {
+		errs = append(errs, err)
+	} else if s.primaryFailed {
 		errs = append(errs, fmt.Errorf("%w: reading the primary service's DNS servers failed at the last check", ErrUpstreamsStale))
 	}
 	return errors.Join(errs...)

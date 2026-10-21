@@ -129,6 +129,11 @@ type resolved struct {
 	cfg     SystemConfig
 	problem error
 	servers []netip.Addr // the uplink servers last seen
+	// untold: cfg.Upstreams has no servers yet, its caller's own read
+	// having failed (UpstreamsUnknown). The first good read of the uplink
+	// tells it, whether or not the servers changed; until then Problem
+	// reports ErrUpstreamsStale.
+	untold  bool
 	stop    chan struct{}
 	stopped chan struct{}
 }
@@ -161,16 +166,25 @@ func setResolved(conn *dbus.Conn, c SystemConfig, uplink bool) (*resolved, error
 		_ = conn.Close()
 		return nil, err
 	}
-	r := &resolved{conn: conn, index: int32(ifc.Index), uplink: uplink, stop: make(chan struct{}), stopped: make(chan struct{})}
+	r := &resolved{conn: conn, index: int32(ifc.Index), uplink: uplink, stop: make(chan struct{}), stopped: make(chan struct{}),
+		untold: uplink && c.UpstreamsUnknown && c.Upstreams != nil}
+	var tellFirst []netip.Addr
+	tellNow := false
 	if b, err := os.ReadFile(resolvedUplink); err == nil {
 		r.servers = nameservers(b)
+		if r.untold {
+			// A good read now is the first one the caller hears of: told
+			// from the watch goroutine, whatever a later read finds.
+			r.untold = false
+			tellFirst, tellNow = upstreamsFromContent(b, resolvedUplink, c.Servers), true
+		}
 	}
 	if err := r.Update(c); err != nil {
 		_ = r.call("RevertLink")
 		_ = conn.Close()
 		return nil, err
 	}
-	go r.watch()
+	go r.watch(tellFirst, tellNow)
 	return r, nil
 }
 
@@ -268,8 +282,14 @@ func (r *resolved) check() error {
 	return nil
 }
 
-func (r *resolved) watch() {
+func (r *resolved) watch(tellFirst []netip.Addr, tellNow bool) {
 	defer close(r.stopped)
+	r.mu.Lock()
+	upstreams := r.cfg.Upstreams
+	r.mu.Unlock()
+	if tellNow && upstreams != nil {
+		upstreams(tellFirst)
+	}
 	t := time.NewTicker(resolvedCheck)
 	defer t.Stop()
 	for {
@@ -280,17 +300,26 @@ func (r *resolved) watch() {
 		}
 		r.mu.Lock()
 		r.problem = r.check()
-		var changed []netip.Addr
+		var changed, found []netip.Addr
+		tellUntold := false
 		if b, err := os.ReadFile(resolvedUplink); err == nil && r.uplink {
 			servers := upstreamsFromContent(b, resolvedUplink, r.cfg.Servers)
+			found = servers
 			if !slices.Equal(servers, r.servers) {
 				r.servers, changed = servers, servers
 			}
+			// A good read, told or not: the next change alone is told.
+			tellUntold, r.untold = r.untold, false
 		}
 		upstreams := r.cfg.Upstreams
 		r.mu.Unlock()
-		if changed != nil && upstreams != nil {
+		switch {
+		case changed != nil && upstreams != nil:
 			upstreams(changed)
+		case tellUntold && upstreams != nil:
+			// The first good read is told whatever it found: the caller
+			// has no upstreams of its own until one.
+			upstreams(found)
 		}
 	}
 }
@@ -298,7 +327,7 @@ func (r *resolved) watch() {
 func (r *resolved) Problem() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.problem
+	return errors.Join(r.problem, staleUpstreams(r.untold))
 }
 
 // Restore reverts the link's configuration (resolved also drops it when

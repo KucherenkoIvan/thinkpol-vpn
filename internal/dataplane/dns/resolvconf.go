@@ -34,10 +34,9 @@ type SystemConfig struct {
 	// called from the configuration's own goroutine.
 	Upstreams func([]netip.Addr)
 	// UpstreamsUnknown says the caller's own read of the OS's resolvers
-	// failed, so it has none: on macOS the first good read tells Upstreams
-	// (nil when offline), and until then Problem reports
-	// ErrUpstreamsStale. Linux ignores it: it tells only when resolv.conf
-	// changes. Read when the configuration is first set.
+	// failed, so it has none: the first good read tells Upstreams, and
+	// until then Problem reports ErrUpstreamsStale. Read when the
+	// configuration is first set.
 	UpstreamsUnknown bool
 	// Log receives warnings from configuration watchers.
 	Log *slog.Logger
@@ -71,6 +70,16 @@ var ErrUnprotected = errors.New("dns: names may be resolved outside the node")
 // Problem. Wrap a cause in it with %v: a %w'd cause is a part of its own,
 // and an untagged part is unprotected.
 var ErrUpstreamsStale = errors.New("dns: the direct upstreams may be stale")
+
+// staleUpstreams is the Problem while no read of the OS's own resolvers
+// has worked since the first one failed (UpstreamsUnknown); nil once one
+// has.
+func staleUpstreams(untold bool) error {
+	if !untold {
+		return nil
+	}
+	return fmt.Errorf("%w: no read of the system's resolvers has worked since the first one failed", ErrUpstreamsStale)
+}
 
 // Unprotected says whether a Problem leaves names resolving outside the
 // node's resolver: an ErrUnprotected problem, or anything else — a
@@ -227,8 +236,13 @@ type resolvConf struct {
 	original []byte // the last original seen
 	seen     bool   // original is set
 	err      error  // the last apply's
-	stop     chan struct{}
-	stopped  chan struct{}
+	// untold: cfg.Upstreams has no servers yet, its caller's own read
+	// having failed (UpstreamsUnknown). The first good read tells it,
+	// whether or not the original changed; until then Problem reports
+	// ErrUpstreamsStale.
+	untold  bool
+	stop    chan struct{}
+	stopped chan struct{}
 }
 
 // resolvConfCheck is how often a managed resolv.conf is checked for
@@ -236,7 +250,8 @@ type resolvConf struct {
 const resolvConfCheck = 2 * time.Second
 
 func setResolvConf(path string, uplink string, c SystemConfig) (*resolvConf, error) {
-	r := &resolvConf{path: path, uplink: uplink, cfg: c, stop: make(chan struct{}), stopped: make(chan struct{})}
+	r := &resolvConf{path: path, uplink: uplink, cfg: c, stop: make(chan struct{}), stopped: make(chan struct{}),
+		untold: c.UpstreamsUnknown && c.Upstreams != nil}
 	r.mu.Lock()
 	err := r.apply()
 	r.mu.Unlock()
@@ -258,39 +273,59 @@ func (r *resolvConf) apply() (err error) {
 	}
 	var current []byte
 	symlink := ""
+	read := false // the OS's own resolvers were read
 	switch {
-	case err != nil:
+	case err != nil: // the file isn't there: nothing was read
 	case fi.Mode()&fs.ModeSymlink != 0:
 		if symlink, err = os.Readlink(r.path); err != nil {
 			return err
 		}
-		current, _ = os.ReadFile(r.path) // a dangling link is no original content
+		var rerr error
+		if current, rerr = os.ReadFile(r.path); rerr == nil { // a dangling link is no original content
+			read = true
+		}
 	case fi.Mode().IsRegular():
 		if current, err = os.ReadFile(r.path); err != nil {
 			return err
 		}
+		read = true
 	default:
 		return fmt.Errorf("dns: %s is not a file", r.path)
 	}
 	m := parseResolvConf(current)
 	if m.managed {
 		symlink = m.symlink
+		if len(m.original) == 0 {
+			// Taken over while the file was missing: what the OS used
+			// before is unknown, not an empty answer.
+			read = false
+		}
 	}
 	content := render(r.cfg, m.original, symlink)
+	// Upstreams is told when the original changed, and at the first good
+	// read while the caller has none (untold), whatever it found.
+	firstRead := read && r.untold
+	changed := r.seen && !bytes.Equal(r.original, m.original)
+	if read {
+		r.untold = false
+	}
+	r.original, r.seen = m.original, true
+	if r.cfg.Upstreams != nil && (changed || firstRead) {
+		ups := upstreamsFromContent(m.original, r.uplink, r.cfg.Servers)
+		switch {
+		case len(ups) > 0:
+			r.cfg.Upstreams(ups)
+		case firstRead:
+			// The first good read is told whatever it found: the caller
+			// has no upstreams of its own until one.
+			r.cfg.Upstreams(nil)
+		case r.cfg.Log != nil:
+			r.cfg.Log.Warn("DNS: no upstream to ask; set one with -dns-upstream")
+		}
+	}
 	if string(content) == string(current) {
 		return nil
 	}
-	if r.seen && !bytes.Equal(r.original, m.original) && r.cfg.Upstreams != nil {
-		ups := upstreamsFromContent(m.original, r.uplink, r.cfg.Servers)
-		if len(ups) == 0 {
-			if r.cfg.Log != nil {
-				r.cfg.Log.Warn("DNS: no upstream to ask; set one with -dns-upstream")
-			}
-		} else {
-			r.cfg.Upstreams(ups)
-		}
-	}
-	r.original, r.seen = m.original, true
 	if fi != nil && fi.Mode().IsRegular() {
 		return writeFile(r.path, content)
 	}
@@ -326,10 +361,14 @@ func (r *resolvConf) Update(c SystemConfig) error {
 func (r *resolvConf) Problem() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	var errs []error
 	if r.err != nil {
-		return fmt.Errorf("%w: rewriting %s: %v", ErrUnprotected, r.path, r.err)
+		errs = append(errs, fmt.Errorf("%w: rewriting %s: %v", ErrUnprotected, r.path, r.err))
 	}
-	return nil
+	if err := staleUpstreams(r.untold); err != nil {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
 }
 
 // Restore puts the original back, as a file or the symlink it was. A
