@@ -352,16 +352,25 @@ func (g *IPv6Guard) resolveToken(ctx context.Context) error {
 	if g.token == nil || g.token.value != 0 {
 		return nil
 	}
-	v, ok, err := g.resolve(ctx, *g.token)
+	t, err := g.resolvedToken(ctx, g.token)
 	if err != nil {
 		return err
 	}
-	if ok {
-		g.token, g.recorded = &pfToken{value: v, pid: g.token.pid}, false
-	} else {
-		g.token = nil // gone: the record is replaced below
-	}
+	g.token, g.recorded = t, false
 	return nil
+}
+
+// resolvedToken is t with its token found when t is known by its pid
+// only; nil when pf no longer lists that pid's reference (or t is nil).
+func (g *IPv6Guard) resolvedToken(ctx context.Context, t *pfToken) (*pfToken, error) {
+	if t == nil || t.value != 0 {
+		return t, nil
+	}
+	v, ok, err := g.resolve(ctx, *t)
+	if err != nil || !ok {
+		return nil, err
+	}
+	return &pfToken{value: v, pid: t.pid}, nil
 }
 
 // recordToken writes the guard's reference to the record, unless it is
@@ -545,16 +554,9 @@ func (g *IPv6Guard) Close() error {
 			t = &rec
 		}
 	}
-	if t != nil && t.value == 0 {
-		v, ok, err := g.resolve(ctx, *t)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			t = nil // gone
-		} else {
-			t = &pfToken{value: v, pid: t.pid}
-		}
+	t, err = g.resolvedToken(ctx, t)
+	if err != nil {
+		return err
 	}
 	if t != nil {
 		if err := g.release(ctx, *t); err != nil {
