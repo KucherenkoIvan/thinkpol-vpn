@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: [TP-092]
 refs: [DESIGN#ipv6]
-owner: ""
-branch: ""
+owner: "agent-tp-095"
+branch: "tp-095-macos-pf-guard-follow-ups"
 ---
 
 ## Goal
@@ -50,3 +50,4 @@ Device runs on a network with native IPv6 (TP-096).
 ## Log
 - 2026-10-16 created (TP-078/TP-092 device sessions)
 - 2026-10-16 docs: TP-092's design review findings (S1-S6, N1-N6) added as scope 6-10; Grok's second opinion found nothing beyond this list
+- 2026-10-21 backlog → in-progress — owner: agent-tp-095, branch: tp-095-macos-pf-guard-follow-ups
