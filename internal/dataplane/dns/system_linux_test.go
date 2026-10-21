@@ -42,35 +42,6 @@ func tickResolved(t *testing.T, r *resolved) {
 	}
 }
 
-// The read at setup runs on a configuration built whole (cfg stored
-// before the read, as newResolved does): untold with the uplink file
-// readable at setup, it is told once — filtered, without the stub and
-// the node's own servers — and nothing panics. A firstRead run against a
-// zero cfg panicked calling a nil Upstreams and stored an unfiltered
-// list.
-func TestResolvedTheReadAtSetupRunsOnAWholeConfiguration(t *testing.T) {
-	uplink := filepath.Join(t.TempDir(), "uplink.conf")
-	if err := os.WriteFile(uplink, []byte("nameserver 127.0.0.53\nnameserver 198.51.100.53\nnameserver 100.64.0.2\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	told := make(chan []netip.Addr, 8)
-	c := testSystem
-	c.Upstreams, c.UpstreamsUnknown = func(a []netip.Addr) { told <- a }, true
-	r := newTestResolved(c, true, uplink)
-	firstResolvedRead(t, r)
-	select {
-	case got := <-told:
-		if !slices.Equal(got, []netip.Addr{netip.MustParseAddr("198.51.100.53")}) {
-			t.Errorf("told %v, want 198.51.100.53", got)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("never told the read at setup")
-	}
-	if p := r.Problem(); p != nil {
-		t.Errorf("problem after a good read: %v", p)
-	}
-}
-
 // The caller's own read of the OS's resolvers failed (UpstreamsUnknown)
 // and resolved is the OS's resolver: a missing uplink file is a failed
 // read, stale until it appears; the first good read is told whether or

@@ -181,9 +181,8 @@ func setResolved(conn *dbus.Conn, c SystemConfig, uplink bool) (*resolved, error
 	return r, nil
 }
 
-// newResolved builds the link's configuration whole, before the first
-// read: cfg is stored first, so the read at setup sees what to filter
-// and what to tell, not a zero configuration.
+// newResolved builds the link's configuration with cfg set: the read at
+// setup filters by cfg.Servers and tells cfg.Upstreams.
 func newResolved(conn *dbus.Conn, index int32, c SystemConfig, uplink bool, uplinkFile string) *resolved {
 	return &resolved{conn: conn, index: index, uplink: uplink, uplinkFile: uplinkFile,
 		cfg: c, stop: make(chan struct{}), stopped: make(chan struct{}), untold: uplink && startsUntold(c)}
@@ -330,20 +329,15 @@ func (r *resolved) apply() func() {
 		return nil
 	}
 	tell := r.cfg.Upstreams
+	// After the first good read, a change alone is told.
 	changed := !slices.Equal(ups, r.servers)
 	firstGoodRead := r.untold
 	// A good read clears untold, told or not.
 	r.servers, r.untold = ups, false
-	switch {
-	case tell == nil:
+	if tell == nil || (!firstGoodRead && !changed) {
 		return nil
-	case firstGoodRead:
-		return func() { tell(ups) }
-	case changed:
-		// After the first, a change alone is told.
-		return func() { tell(ups) }
 	}
-	return nil
+	return func() { tell(ups) }
 }
 
 func (r *resolved) watch(first func()) {

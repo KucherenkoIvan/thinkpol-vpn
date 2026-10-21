@@ -334,14 +334,11 @@ func (r *resolvConf) apply() (tell func(), err error) {
 				if !filepath.IsAbs(target) {
 					target = filepath.Join(filepath.Dir(r.path), target)
 				}
-				// A link whose target is the managed file itself
-				// (resolv.conf, ./resolv.conf, foo/../../resolv.conf)
-				// reads back the node's own file: no original there.
-				self, _ := filepath.Abs(r.path)
-				if abs, _ := filepath.Abs(target); abs != self {
-					if b, rerr := os.ReadFile(target); rerr == nil {
-						m.original, read = b, true
-					}
+				// A target that reads back as the node's own managed
+				// file (a link to itself, directly or through another
+				// link) holds no original.
+				if b, rerr := os.ReadFile(target); rerr == nil && !parseResolvConf(b).managed {
+					m.original, read = b, true
 				}
 			}
 		}
@@ -571,9 +568,5 @@ func upstreamsFrom(etc, uplink string, exclude []netip.Addr) ([]netip.Addr, erro
 	if err != nil {
 		return nil, err
 	}
-	ups, err := upstreamsFromContent(content, uplink, exclude)
-	if err != nil {
-		return nil, err
-	}
-	return ups, nil
+	return upstreamsFromContent(content, uplink, exclude)
 }
