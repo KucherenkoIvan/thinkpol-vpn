@@ -225,8 +225,8 @@
 //
 // `thinkpol up` writes nothing else there (a device's blobs/ aside). A
 // server's workers get their keys and map from the supervisor over their
-// sockets, since they can't read the directory. No pid or log file is
-// kept anywhere.
+// sockets, since they can't read the directory. The agent writes no pid
+// or log file.
 //
 // # Outside the state directory
 //

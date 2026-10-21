@@ -68,11 +68,13 @@
 // underlay, what TLS-shaped transports ride, crosses the censor and is
 // seen by it.
 //
-// # Not yet
+// # Limits
 //
-// What the framework doesn't do yet, and the modules of TP-025, TP-026 and
-// TP-032 need, is TP-089's: TCP stream reassembly, linking a flow to its
-// replies (a [FlowKey] is one direction), payload retention, modules that
-// are passive and active at once, and verdict composition across modules
-// (today the first passive module that decides wins).
+// The framework judges packets, not streams: it doesn't reassemble TCP,
+// so a module sees a handshake split across segments only in pieces; a
+// [FlowKey] is one direction, so nothing links a flow to its replies; no
+// payload is kept past the packet; a module is passive or active, never
+// both; and verdicts don't compose: the first passive module that decides
+// wins. Modules that need any of these (stream fingerprints, the prober's
+// follow-ups) wait for them (TP-089).
 package censor

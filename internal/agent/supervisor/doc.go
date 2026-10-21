@@ -253,25 +253,27 @@
 // then the supervisor forwards it, untouched, to the space's current
 // worker over the worker's data socket without blocking: a full socket
 // drops the datagram (counted as WorkerFull), so a stuck worker stalls
-// only its own space. A replay needs only a passive tap to capture, so it
-// is dropped before it reaches a worker or costs its space anything. The
-// worker decrypts and filters again.
+// only its own space. A replay needs only a passive tap to capture, so
+// within one supervisor's lifetime it is dropped before it reaches a
+// worker or costs its space anything (RESIDUAL-RISKS.md RR34). The worker
+// decrypts and filters again.
 //
 // The worker's replies come back over the same socket and leave through
-// the public socket it names, but only to a source address that one of
-// the space's own authenticated, fresh, non-replayed datagrams came from,
+// the public socket it names, but only to a source address that one of the
+// space's own authenticated, fresh, non-replayed datagrams came from,
 // through that listener, in the last 2 minutes (the address is refreshed
 // by each such datagram, remembered before the hand-off, since the worker
 // is another process and may answer before the hand-off returns, and kept
 // even when the worker's socket refuses the datagram; expiry is swept
-// every 10 s, and checked exactly on send). Each link keeps its latest 8 such
-// addresses, a new one evicting that link's oldest, so no link can
+// every 10 s, and checked exactly on send). Each link keeps its latest 8
+// such addresses, a new one evicting that link's oldest, so no link can
 // displace another's. A worker can answer its peers, never use the node's
 // public address to reach anyone else, whatever egress its space has.
 //
-// Not yet after a supervisor restart: Routers and reply addresses live in
-// memory, the workers die with the supervisor, and a replay of the last
-// few minutes' datagrams is routed and answered again; see TP-069.
+// Not after a supervisor restart: Routers and reply addresses live in
+// memory, the workers die with the supervisor, and a replay of datagrams
+// sent in the last five minutes (ten, if the sender's clock ran ahead) is
+// routed and answered again (RESIDUAL-RISKS.md RR34; TP-069).
 //
 // # Streams
 //

@@ -112,6 +112,14 @@
 // the guard, so it is right again within about a second. The guard's own
 // Apply shows up too, and finds the table whole.
 //
+// What the comparison and the watch don't catch today (TP-126, and
+// RESIDUAL-RISKS.md RR11): the table's flags, so a table made dormant
+// (`flags dormant`) keeps its rules but no longer filters, and is never
+// repaired; chains other than its own, so a base chain someone adds to the
+// guard's table, which can accept before the guard's chain, is never
+// repaired; and a change of the output chain's policy, which is repaired
+// only by the route table's one-minute backstop.
+//
 // The guard's first request is a dump of the inet tables. Its answer, and
 // only its answer, can make the guard unsupported: an error meaning no
 // nf_tables in the kernel (EPROTONOSUPPORT, EAFNOSUPPORT, EOPNOTSUPP,
@@ -245,13 +253,15 @@
 //
 // # macOS: polling
 //
-// pf has no event stream, so [IPv6Guard.Watch] polls every 10 s: the
-// hook, the anchor's rules and table, and pf enabled (four pfctl runs,
-// each bounded at 15 s), and whether its last apply failed, so a retry is
-// due. The Enforcer then puts back what changed: `pfctl -d`, a flush, an
-// entry added, a replaced main ruleset that still has the hook are undone
-// within about 10 s, not a second as on Linux. A main ruleset replaced
-// without the hook makes the guard unsupported.
+// pf has no event stream, so [IPv6Guard.Watch] polls every 10 s: the hook,
+// the anchor's rules and table, and pf enabled (four pfctl runs, each
+// bounded at 15 s), and whether its last apply failed, so a retry is due.
+// The Enforcer then puts back what changed: `pfctl -d`, a flush, an entry
+// added, a replaced main ruleset that still has the hook are undone within
+// about 10 s, not a second as on Linux. Suspected but not proven to be
+// missed (TP-126): `set skip on <interface>`, and a `pass quick` in
+// another com.apple anchor evaluated before the guard's. A main ruleset
+// replaced without the hook makes the guard unsupported.
 //
 // # macOS: crashes and reboots
 //
