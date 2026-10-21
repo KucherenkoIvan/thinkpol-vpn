@@ -57,4 +57,6 @@ Out of scope, filed as a new backlog ticket: an in-place writer (udhcpc, `cat >`
 - 2026-10-21 DESIGN's Linux DNS states the failed-first-read rule (R1.8)
 - 2026-10-21 R1.10: resolver.go's warning was already OS-neutral and dataplane.go's comment lost "on macOS" in 112c351; TP-116 (go1.26.10) merged from origin/rewrite, make lint green
 - 2026-10-21 mutation checks (unit): upstreamsFromContent answering empty on an unreadable uplink, dropping the link-target read, resolved's read treating a failed read as good, resolved's read returning the raw list, originalEqual → bytes.Equal, and untold: c.Upstreams != nil each fail the new tests; (lab) upstreamsFrom swallowing the failed read fails the systemd-resolved case's new scenario
+- 2026-10-21 make lint, make test green per commit; make lab-test green at 8aff73e (lab and node phases both ok, about 3 minutes)
+- 2026-10-21 in-progress → review
 - 2026-10-21 has-errors → in-progress (round 1 findings)
