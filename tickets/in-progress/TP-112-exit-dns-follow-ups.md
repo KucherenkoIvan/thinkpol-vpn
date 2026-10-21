@@ -110,3 +110,4 @@ Round 3 (2026-10-21): correctness (merge), second opinion (merge), design (fix f
 - 2026-10-21 in-progress → review
 - 2026-10-21 docs: the duplicate TP-118 the round-2 run filed on this branch removed; the enforcement question is TP-118 on rewrite (egress-allowed and metadata services)
 - 2026-10-21 review → has-errors (round 3: R3.1–R3.5)
+- 2026-10-21 has-errors → in-progress (round 3 findings)
