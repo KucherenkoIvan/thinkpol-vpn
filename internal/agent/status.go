@@ -56,7 +56,7 @@ type Status struct {
 	// ones read before, so `direct` names may not resolve. The OS still
 	// resolves through the node, so on its own it is not DNSUnprotected.
 	DNSUpstreamsStale bool
-	// DNSUpstreamsRefused is a server's: how many of the resolver
+	// DNSUpstreamsRefused is an exit's: how many of the resolver
 	// upstreams the worker's egress refuses, so the resolver doesn't use
 	// them (each is logged with its address).
 	DNSUpstreamsRefused int
@@ -168,7 +168,7 @@ type report struct {
 	preset string
 	// dns says why a device's OS may resolve outside its resolver.
 	dns func() error
-	// dnsUpstreamsRefused is a server's count of resolver upstreams the
+	// dnsUpstreamsRefused is an exit's count of resolver upstreams the
 	// worker's egress refuses (Status.DNSUpstreamsRefused).
 	dnsUpstreamsRefused int
 }

@@ -162,7 +162,8 @@ func New(o Options) *Server {
 }
 
 // SetUpstreams replaces the direct upstreams (the OS's own resolvers
-// changed), dropping what the old ones answered.
+// changed, or a worker's config named others), dropping what the old
+// ones answered.
 func (s *Server) SetUpstreams(u []netip.AddrPort) {
 	u = slices.Clone(u)
 	if old := s.upstreams.Swap(&u); old != nil && !slices.Equal(*old, u) {

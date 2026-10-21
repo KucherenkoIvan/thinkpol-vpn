@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/netip"
+	"slices"
 	"sync/atomic"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/ipc"
@@ -61,6 +63,25 @@ func serveSpace(log *slog.Logger, base DataPlane) worker.Serve {
 		defer cancel()
 		var badConfig atomic.Pointer[error]
 		maps := make(chan []byte, 1)
+		// A later config's changed upstreams follow into the running
+		// resolver (the supervisor recomputes them for every map); a
+		// resolver started later gets the latest from the data plane
+		// itself, so a map that stops and starts it doesn't bring the
+		// first config's back. The order is the uplink's as of the last
+		// map applied: an uplink change alone re-runs nothing here.
+		ups := make(chan []netip.AddrPort, 1)
+		last := first.DNSUpstreams
+		forward := func(c WorkerConfig) {
+			if slices.Equal(c.DNSUpstreams, last) {
+				return
+			}
+			last = c.DNSUpstreams
+			select {
+			case <-ups:
+			default:
+			}
+			ups <- c.DNSUpstreams
+		}
 		go func() {
 			for {
 				select {
@@ -79,6 +100,7 @@ func serveSpace(log *slog.Logger, base DataPlane) worker.Serve {
 						cancel()
 						return
 					}
+					forward(c)
 					// Seeds the new map doesn't name go; the ones it
 					// names came ahead of this config.
 					if next, err := netmap.Verify(c.Map, first.Trust); err == nil {
@@ -114,10 +136,12 @@ func serveSpace(log *slog.Logger, base DataPlane) worker.Serve {
 		// The worker's namespace forwards and SNATs, and the supervisor's
 		// tables confine it, so a server allowing egress is an exit here.
 		dp.Forward = true
+		dp.inWorker = true
 		bo := base.blobOptions
 		bo.Store, bo.Log, bo.Limits.MaxHeld = seedStore{seeds}, log, blobs.ServerMaxHeldSize
 		dp.Blobs, dp.ServeBlobs = blobs.NewOnNet(bo, base.Host.BlobNet), true
 		dp.DNS, dp.DNSUpstreams = first.DNS, first.DNSUpstreams
+		dp.dnsUpstreams = ups
 		// The space's own figures only (TP-041 seals them into its
 		// telemetry).
 		dp.StatusAttrs = func() []any {
