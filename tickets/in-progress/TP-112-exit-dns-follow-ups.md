@@ -88,3 +88,4 @@ Round 2 (2026-10-21): correctness, design and a second-opinion review.
 - 2026-10-21 make lab-test passes on 741c77b: the lab suite and all 35 packages' tests in lab nodes. An earlier run had TestTwoSpacesShareAListener fail once under the parallel load (no reply for a dialer); it passed alone and in the final run, and touches nothing this branch changed
 - 2026-10-21 in-progress → review
 - 2026-10-21 review → has-errors (round 2: R2.1–R2.9)
+- 2026-10-21 has-errors → in-progress (round 2 findings)
