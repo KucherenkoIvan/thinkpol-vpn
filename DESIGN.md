@@ -277,7 +277,7 @@ internal/
     netcfg/               # interface addresses, MTU, routes, policy rules
     routetable/           # route-table rule enforcement on top of netcfg; the link sockets' mark (Linux) or interface binding (macOS)
     ifbind/               # binds sockets to an interface (SO_BINDTODEVICE, IP_BOUND_IF)
-    trusteddir/           # opens directories no one but root or the node's user can change (a walk from /, no symlinks), and locks in them
+    trusteddir/           # opens directories no one but root or the node's user can change (a walk from /, no symlinks); locks, reads and atomically replaces files in them, and stamps records with the boot session (macOS)
     nsthread/             # runs a function on an OS thread inside another namespace and moves the thread back
     firewall/             # IPv6 leak guard, kill switch (pf, nftables, WFP)
     egress/ dns/

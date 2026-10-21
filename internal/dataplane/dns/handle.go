@@ -45,11 +45,11 @@ func (s *Server) answer(cfg *Config, src netip.Addr, req *dns.Msg) *dns.Msg {
 	}
 	labels := dns.SplitDomainName(strings.ToLower(req.Question[0].Name))
 	name := strings.Join(labels, ".")
-	route, m := s.route(cfg, req, labels, name)
+	route, m := s.routeOrAnswer(cfg, req, labels, name)
 	if m != nil {
 		return m
 	}
-	ups, ok := s.upstreamsFor(route)
+	ups, ok := s.pickUpstreams(route)
 	if !ok {
 		return reply(req, dns.RcodeServerFailure)
 	}
@@ -76,10 +76,10 @@ func (s *Server) refuse(cfg *Config, src netip.Addr, req *dns.Msg) *dns.Msg {
 	return nil
 }
 
-// route says where the name with labels goes, or answers it here (a
-// non-nil message): the overlay's names, the resolver's own, the
+// routeOrAnswer says where the name with labels goes, or answers it here
+// (a non-nil message): the overlay's names, the resolver's own, the
 // overlay's reverse names.
-func (s *Server) route(cfg *Config, req *dns.Msg, labels []string, name string) (Route, *dns.Msg) {
+func (s *Server) routeOrAnswer(cfg *Config, req *dns.Msg, labels []string, name string) (Route, *dns.Msg) {
 	// Anything with an `internal` label is the overlay's or a search-list
 	// retry of an overlay name: never forwarded.
 	if slices.Contains(labels, "internal") {
@@ -131,9 +131,9 @@ type upstreamSet struct {
 	control func(string, string, syscall.RawConn) error
 }
 
-// upstreamsFor are the servers route sends a query to; false for a route
-// that blocks it.
-func (s *Server) upstreamsFor(route Route) (upstreamSet, bool) {
+// pickUpstreams counts the query under its route's kind and picks the
+// servers the route sends it to; false for a route that blocks it.
+func (s *Server) pickUpstreams(route Route) (upstreamSet, bool) {
 	switch route.Kind {
 	case RouteDirect:
 		s.n.direct.Add(1)
