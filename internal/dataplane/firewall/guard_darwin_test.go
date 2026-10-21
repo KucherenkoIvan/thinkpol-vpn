@@ -1053,72 +1053,58 @@ func TestAFailedReloadKeepsTheOldGuard(t *testing.T) {
 	r.whole(t, e2)
 }
 
-// pf holding other than what was loaded fails the Apply.
+// A first load pf holds other than as loaded fails the Apply, and stays
+// in pf, not flushed (its rules still end in the block), with pf left off:
+// only a guard read back whole takes a reference.
 func TestALoadPfDoesntHoldFails(t *testing.T) {
 	for name, hook := range map[string]func(a *fakeAnchor){
 		"an entry dropped": func(a *fakeAnchor) { a.tables[exemptTable] = a.tables[exemptTable][1:] },
 		"a pass with state": func(a *fakeAnchor) {
 			a.rules[0] = strings.Replace(a.rules[0], "no state", "keep state", 1)
 		},
+		"reordered": func(a *fakeAnchor) { a.rules = reorderLikeBasic(a.rules) },
 	} {
 		r := newRig(t)
 		r.pf.loadHook = hook
 		if err := r.guard().Apply(context.Background(), exempt(t)); err == nil {
 			t.Errorf("%s: applied", name)
 		}
-		if r.pf.isOn() {
-			t.Errorf("%s: pf enabled for a guard that isn't in place", name)
+		if a := r.pf.anchor(GuardAnchor); len(a.rules) != rulesFor || a.rules[len(a.rules)-1] != "block return out quick inet6 all" {
+			t.Errorf("%s: rules %q, want the refused load's", name, a.rules)
+		}
+		if r.pf.isOn() || len(r.pf.references()) != 0 {
+			t.Errorf("%s: pf on %v with references %v for a guard that isn't in place", name, r.pf.isOn(), r.pf.references())
 		}
 	}
 }
 
-// A load pf took but the guard refuses on reading it back stays in pf,
-// not flushed: its rules still end in the block. pf stays as it was: on
-// with the guard's reference after an earlier good load, off before any.
-func TestARefusedLoadStaysInPlace(t *testing.T) {
-	refuse := func(a *fakeAnchor) { a.rules = reorderLikeBasic(a.rules) }
+// A reload pf took but the guard refuses on reading it back stays in pf,
+// not flushed, and pf goes on enforcing it on the guard's reference.
+func TestARefusedReloadStaysInPlace(t *testing.T) {
+	r := newRig(t)
+	g := r.guard()
 	e := exempt(t)
+	if err := g.Apply(context.Background(), e); err != nil {
+		t.Fatal(err)
+	}
+	before := r.pf.references()
+	r.pf.set(func(f *fakePF) { f.loadHook = func(a *fakeAnchor) { a.rules = reorderLikeBasic(a.rules) } })
 	e2 := e
 	e2.Direct = set(t, "2001:db8:f0::/44")
-	loaded := func(e routetable.Exempt) []string {
-		a, err := fakeLoad(anchorText(e.TUN, exemptPrefixes(e), upstreamTargets(e)))
-		if err != nil {
-			t.Fatal(err)
-		}
-		return reorderLikeBasic(a.rules)
+	if err := g.Apply(context.Background(), e2); err == nil {
+		t.Fatal("applied")
 	}
-	t.Run("after a good load", func(t *testing.T) {
-		r := newRig(t)
-		g := r.guard()
-		if err := g.Apply(context.Background(), e); err != nil {
-			t.Fatal(err)
-		}
-		before := r.pf.references()
-		r.pf.set(func(f *fakePF) { f.loadHook = refuse })
-		if err := g.Apply(context.Background(), e2); err == nil {
-			t.Fatal("applied")
-		}
-		a := r.pf.anchor(GuardAnchor)
-		if !slices.Equal(a.rules, loaded(e2)) || !slices.Equal(tableOf(a, exemptTable), exemptPrefixes(e2)) {
-			t.Errorf("anchor %+v, want the refused load's", a)
-		}
-		if !r.pf.isOn() || !slices.Equal(r.pf.references(), before) {
-			t.Errorf("pf on %v, references %v, want on with %v", r.pf.isOn(), r.pf.references(), before)
-		}
-	})
-	t.Run("the first load", func(t *testing.T) {
-		r := newRig(t)
-		r.pf.loadHook = refuse
-		if err := r.guard().Apply(context.Background(), e); err == nil {
-			t.Fatal("applied")
-		}
-		if a := r.pf.anchor(GuardAnchor); !slices.Equal(a.rules, loaded(e)) {
-			t.Errorf("rules %q, want the refused load's", a.rules)
-		}
-		if r.pf.isOn() || len(r.pf.references()) != 0 {
-			t.Errorf("pf on %v with references %v for a refused load", r.pf.isOn(), r.pf.references())
-		}
-	})
+	loaded, err := fakeLoad(anchorText(e2.TUN, exemptPrefixes(e2), upstreamTargets(e2)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := r.pf.anchor(GuardAnchor)
+	if !slices.Equal(a.rules, reorderLikeBasic(loaded.rules)) || !slices.Equal(tableOf(a, exemptTable), exemptPrefixes(e2)) {
+		t.Errorf("anchor %+v, want the refused load's", a)
+	}
+	if !r.pf.isOn() || !slices.Equal(r.pf.references(), before) {
+		t.Errorf("pf on %v, references %v, want on with %v", r.pf.isOn(), r.pf.references(), before)
+	}
 }
 
 // routesOnly is a route table's configurator that takes every Apply and

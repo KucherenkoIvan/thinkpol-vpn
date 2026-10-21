@@ -9,7 +9,7 @@ import (
 )
 
 // ClearWith is Clear with the owner's configurator from open.
-var ClearWith = clearWith
+func ClearWith(open func() (netcfg.Configurator, error), g Guard) error { return clearWith(open, g) }
 
 // Config is LayoutOf's Config.
 func Config(w Want, s netcfg.Survey) netcfg.Config { return LayoutOf(w, s).Config }

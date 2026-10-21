@@ -460,7 +460,8 @@ func TestGuardFailuresAreWarnedAtMostAMinuteApart(t *testing.T) {
 	clock := &fakeClock{now: time.Unix(0, 0)}
 	e := routetable.OpenWithClock(f, g, slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})), clock.read)
 	defer func() { _ = e.Close() }()
-	apply := func() { routetable.GuardApply(context.Background(), e, routetable.Want{TUN: "thinkpol0"}) }
+	routetable.PauseWatching(e)
+	apply := func() { routetable.GuardApply(t.Context(), e, routetable.Want{TUN: "thinkpol0"}) }
 	warns := func() []string { return buf.lines("applying the leak guard failed") }
 
 	// The first failure warns.
@@ -538,7 +539,7 @@ func TestRetriedFailuresAreWarnedAtMostOnceAMinute(t *testing.T) {
 			func(f *fakeConfigurator, _ *fakeGuard, err error) { f.setFail(err != nil) }, routetable.Reapply},
 	} {
 		t.Run(site.name, func(t *testing.T) {
-			ctx := context.Background()
+			ctx := t.Context()
 			f := &fakeConfigurator{survey: up()}
 			g := newFakeGuard(f)
 			var buf lockedBuffer
@@ -594,7 +595,8 @@ func TestACancelledGuardApplyIsNotWarned(t *testing.T) {
 	warns := func() []string { return buf.lines("applying the leak guard failed") }
 	w := routetable.Want{TUN: "thinkpol0"}
 
-	cancelled, cancel := context.WithCancel(context.Background())
+	routetable.PauseWatching(e)
+	cancelled, cancel := context.WithCancel(t.Context())
 	cancel()
 	for range 3 {
 		routetable.GuardApply(cancelled, e, w)
@@ -606,7 +608,7 @@ func TestACancelledGuardApplyIsNotWarned(t *testing.T) {
 		t.Errorf("status after a cancelled apply: %+v", st)
 	}
 	g.setFail(errors.New("the guard's load was refused"))
-	routetable.GuardApply(context.Background(), e, w)
+	routetable.GuardApply(t.Context(), e, w)
 	if w := warns(); len(w) != 1 || strings.Contains(w[0], "suppressed=") {
 		t.Fatalf("the first real failure: %q, want one warn, nothing suppressed", w)
 	}
@@ -621,7 +623,8 @@ func TestAGuardSuccessSaysHowManyFailuresWereHeldBack(t *testing.T) {
 	var buf lockedBuffer
 	e := routetable.OpenWithClock(f, g, slog.New(slog.NewTextHandler(&buf, nil)), (&fakeClock{now: time.Unix(0, 0)}).read)
 	defer func() { _ = e.Close() }()
-	apply := func() { routetable.GuardApply(context.Background(), e, routetable.Want{TUN: "thinkpol0"}) }
+	routetable.PauseWatching(e)
+	apply := func() { routetable.GuardApply(t.Context(), e, routetable.Want{TUN: "thinkpol0"}) }
 	cleared := func() []string { return buf.lines("the leak guard is in place again") }
 
 	g.setFail(errors.New("the guard's load was refused"))

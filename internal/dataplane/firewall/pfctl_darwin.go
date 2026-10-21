@@ -468,7 +468,8 @@ func anchorText(tun string, exempt []netip.Prefix, upstreams []netip.AddrPort) s
 // later check compares the anchor with it exactly. A refusal quotes the
 // rule as pf listed it, on purpose: its order and shape are what tell why
 // pf holds other than what was loaded (an optimizer reordering the
-// rules). The route table's warn redacts the addresses in it.
+// rules). It can name an upstream's address: whoever logs this error must
+// redact its addresses.
 func saneRules(listed []string, tun string, upstreams []netip.AddrPort) error {
 	i := 0
 	for _, r := range guardRules(tun, upstreams) {
