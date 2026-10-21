@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/netip"
 	"os"
@@ -18,6 +19,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/path"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/lists"
 )
@@ -1383,6 +1385,17 @@ func TestWatchSignalsWhenTheGuardBreaks(t *testing.T) {
 
 // pfctl runs are bounded, take their input, and name their process; a
 // missing pfctl is unsupported. /bin/cat and /bin/sleep stand in for it.
+// A syntax error pfctl reports keeps the line it names through the
+// redaction of addresses, and the addresses still go.
+func TestPfctlsInputLineSurvivesRedaction(t *testing.T) {
+	err := fmt.Errorf("firewall: pfctl -a %s -f -: exit status 1%s", GuardAnchor,
+		detail([]byte(altq+"stdin:5: syntax error\nstdin:7: host 2001:db8:53::1 port 53 unknown\n")))
+	const want = "firewall: pfctl -a com.apple/000.thinkpol -f -: exit status 1: stdin line 5: syntax error; stdin line 7: host <addr> port 53 unknown"
+	if got := path.RedactError(err); got != want {
+		t.Errorf("redacted\n%s\nwant\n%s", got, want)
+	}
+}
+
 func TestExecPfctl(t *testing.T) {
 	out, err := execPfctl{path: "/bin/cat", timeout: 5 * time.Second}.run(context.Background(), []byte("table <x> { }\n"))
 	if err != nil || string(out.stdout) != "table <x> { }\n" || out.pid <= 0 {

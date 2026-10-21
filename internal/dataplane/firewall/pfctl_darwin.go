@@ -90,13 +90,19 @@ func (x execPfctl) run(ctx context.Context, stdin []byte, args ...string) (pfOut
 	return out, nil
 }
 
-// detail is what pfctl said on stderr, but its ALTQ chatter, as one line.
+// inputLine is how pfctl names a line of its input, "stdin:5:": two
+// colons around a number, which redacting an error's addresses would
+// take for an IPv6 address.
+var inputLine = regexp.MustCompile(`\bstdin:([0-9]+):`)
+
+// detail is what pfctl said on stderr, but its ALTQ chatter, as one line,
+// a line of its input named "stdin line N:".
 func detail(stderr []byte) string {
 	l := lines(stderr)
 	if len(l) == 0 {
 		return ""
 	}
-	s := strings.Join(l, "; ")
+	s := inputLine.ReplaceAllString(strings.Join(l, "; "), "stdin line $1:")
 	if len(s) > 300 {
 		s = s[:300] + "..."
 	}
