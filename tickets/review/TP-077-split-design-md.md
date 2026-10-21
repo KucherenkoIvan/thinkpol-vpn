@@ -75,3 +75,4 @@ Round 1 (2026-10-22): correctness (fix first), design (fix first), second opinio
 - 2026-10-22 acceptance: size box (49,779 bytes; no "not yet"/"until TP-x" sentence restates a row, each cites it); every doc.go this ticket changed is linked from the index (checked by script); every [doc link] in the changed doc.go files resolves (checked with go doc for linux and darwin)
 - 2026-10-22 for filing: RR14 (a failed shrink leaves dropped direct destinations direct) has no ticket; rows owned only by a done ticket's decision (TP-015, TP-018, TP-019, TP-020, TP-021, TP-054, TP-057, TP-070, TP-078, TP-003, TP-010) have no open owner by design
 - 2026-10-22 make lint and make test exit 0 before each commit; make lab-test green on 2c458a4 (LAB_P=4); documentation only, no tests added or changed
+- 2026-10-22 in-progress → review
