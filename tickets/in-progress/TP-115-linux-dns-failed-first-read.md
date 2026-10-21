@@ -50,3 +50,4 @@ Out of scope, filed as a new backlog ticket: an in-place writer (udhcpc, `cat >`
 - 2026-10-21 make lint, make test green; make lab-test green at 112c351 (first run failed on lab-infrastructure route flake, rerun clean)
 - 2026-10-21 in-progress → review
 - 2026-10-21 review → has-errors (round 1: R1.1–R1.10)
+- 2026-10-21 has-errors → in-progress (round 1 findings)
