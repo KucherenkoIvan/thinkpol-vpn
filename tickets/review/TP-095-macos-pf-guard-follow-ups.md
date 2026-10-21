@@ -62,3 +62,4 @@ Device runs on a network with native IPv6 (TP-096).
 - 2026-10-21 checks: make lint and make test green before each commit. funlen with TP-083's config on routetable and firewall flags only splitRoutes and Linux Watch, which TP-083 splits and this branch doesn't touch. Merged origin/rewrite (TP-112). make lab-test (LAB_P=1, other labs running) green on 5d0fcfc
 - 2026-10-21 not verified: real pfctl on a device (no pfctl run): the 131/132 names in a live listing, and a refused load staying in place. Expect a conflict in routetable.go when TP-083 lands: the watch split is identical, but the warn lines in subscribe and subscribeGuard differ, and TP-083's Error* codes are untouched here
 - 2026-10-21 out of scope (for the orchestrator): a refused reload replaces the previous, verified guard with the unverified one, which may exempt more if its table grew (the table check refuses then); reloading the last good guard would close that
+- 2026-10-21 in-progress → review
