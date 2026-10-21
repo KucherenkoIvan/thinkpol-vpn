@@ -222,6 +222,24 @@ func nameservers(content []byte) []netip.Addr {
 	return out
 }
 
+// originalEqual says two originals are the same configuration: an
+// original parsed back from the managed file always ends in a newline,
+// one read from a file may not, and that is not a change.
+func originalEqual(a, b []byte) bool {
+	return string(originalLines(a)) == string(originalLines(b))
+}
+
+// originalLines are an original's lines joined back, so it is the same
+// with and without a trailing newline.
+func originalLines(b []byte) []byte {
+	var lines []string
+	sc := bufio.NewScanner(bytes.NewReader(b))
+	for sc.Scan() {
+		lines = append(lines, sc.Text())
+	}
+	return []byte(strings.Join(lines, "\n"))
+}
+
 // originalResolvConf is the resolv.conf at path as it was before the node
 // managed it.
 func originalResolvConf(path string) ([]byte, error) {
@@ -333,7 +351,7 @@ func (r *resolvConf) apply() (tell func(), err error) {
 	// the stub, an unreadable uplink file is a failed read: no answer was
 	// had, so while untold it clears nothing.
 	firstGoodRead := read && ok && r.untold
-	changed := r.seen && !bytes.Equal(r.original, m.original)
+	changed := r.seen && !originalEqual(r.original, m.original)
 	if read && ok {
 		r.untold = false
 	}

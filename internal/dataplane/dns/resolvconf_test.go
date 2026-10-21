@@ -392,6 +392,68 @@ func TestResolvConfAFailedFirstReadOverADanglingLinkReadsItsTargetWhenItAppears(
 	}
 }
 
+// The default Linux path (Upstreams set, UpstreamsUnknown false): a
+// setup tells nothing and reports nothing stale, and after a first apply
+// that wrote nothing, a real change is told.
+func TestResolvConfTheDefaultPathTellsNothingUntilAChange(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "resolv.conf")
+	if err := os.WriteFile(path, render(testSystem, []byte(isp), ""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	told := make(chan []netip.Addr, 8)
+	c := testSystem
+	c.Upstreams = func(a []netip.Addr) { told <- a }
+	r, err := setResolvConf(path, "", c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = r.Restore() })
+	toldNothing(t, told)
+	if p := r.Problem(); p != nil {
+		t.Errorf("problem at setup: %v", p)
+	}
+	applyOnce(t, r) // the first apply wrote nothing: still nothing
+	toldNothing(t, told)
+	if err := os.WriteFile(path, []byte("nameserver 192.0.2.99\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	applyOnce(t, r)
+	select {
+	case got := <-told:
+		if !slices.Equal(got, []netip.Addr{netip.MustParseAddr("192.0.2.99")}) {
+			t.Errorf("told %v, want 192.0.2.99", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("never told the change")
+	}
+	if p := r.Problem(); p != nil {
+		t.Errorf("problem after a change: %v", p)
+	}
+}
+
+// An original without a trailing newline: the managed copy adds one, and
+// the next tick must not read the same original as changed because of it.
+func TestResolvConfAnOriginalWithoutATrailingNewlineIsNotAChange(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "resolv.conf")
+	if err := os.WriteFile(path, []byte("nameserver 192.0.2.53"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	told := make(chan []netip.Addr, 8)
+	c := testSystem
+	c.Upstreams = func(a []netip.Addr) { told <- a }
+	r, err := setResolvConf(path, "", c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = r.Restore() })
+	toldNothing(t, told)
+	applyOnce(t, r)
+	toldNothing(t, told)
+	if p := r.Problem(); p != nil {
+		t.Errorf("problem after a same-original read: %v", p)
+	}
+}
+
 func TestSystemUpstreams(t *testing.T) {
 	dir := t.TempDir()
 	etc, uplink := filepath.Join(dir, "resolv.conf"), filepath.Join(dir, "uplink.conf")
