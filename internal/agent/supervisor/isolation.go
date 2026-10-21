@@ -47,6 +47,7 @@ var egressNotWorthAllowing = []netip.Prefix{
 // allowing one of them anyway (Options.EgressAllowed takes any
 // prefixes); this only keeps the hint from suggesting it.
 func EgressNotWorthAllowing(addr netip.Addr) bool {
+	addr = addr.Unmap() // an IPv4-mapped form of one of these is the same address
 	if addr.Zone() != "" || addr.IsLoopback() || addr.IsLinkLocalUnicast() || addr.IsMulticast() || addr.IsUnspecified() {
 		return true
 	}

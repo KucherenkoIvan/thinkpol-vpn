@@ -296,27 +296,32 @@ func TestAnUpstreamTheEgressRefusesIsNotAskedAndNamed(t *testing.T) {
 	var buf bytes.Buffer
 	private := netip.MustParseAddrPort("192.168.1.53:53")
 	metadata := netip.MustParseAddrPort("169.254.169.254:53")
+	// Azure's resolver, a metadata service EgressNotWorthAllowing names
+	// and the likeliest host resolver on a cloud.
+	azure := netip.MustParseAddrPort("168.63.129.16:53")
+	// The mapped form of a metadata address is refused like its own.
+	mappedMetadata := netip.MustParseAddrPort("[::ffff:169.254.169.254]:53")
 	public := netip.MustParseAddrPort("9.9.9.9:53")
 	s := &serverSpaces{dns: true, report: &report{mode: ModeServer},
-		dnsUpstreams: []netip.AddrPort{private, public, metadata}}
+		dnsUpstreams: []netip.AddrPort{private, public, metadata, azure, mappedMetadata}}
 	s.follow.section.Node.Kind = netmap.NodeServer
 	s.follow.section.Node.AllowEgress = true
 	s.log = slog.New(slog.NewTextHandler(&buf, nil))
 	if got := s.workerUpstreams(); !slices.Equal(got, []netip.AddrPort{public}) {
 		t.Fatalf("kept: %v", got)
 	}
-	for _, a := range []string{"192.168.1.53:53", "169.254.169.254:53"} {
+	for _, a := range []string{"192.168.1.53:53", "169.254.169.254:53", "[::ffff:169.254.169.254]:53", "168.63.129.16:53"} {
 		if !strings.Contains(buf.String(), a) {
 			t.Errorf("the log doesn't name the refused upstream %s:\n%s", a, buf.String())
 		}
 	}
 	// The hint suggests -egress-allowed for a private upstream, never
-	// for a metadata one.
+	// for a metadata one, mapped form included.
 	for _, l := range strings.Split(buf.String(), "\n") {
 		if !strings.Contains(l, "refuses the upstream") {
 			continue
 		}
-		if strings.Contains(l, "169.254.169.254:53") {
+		if strings.Contains(l, "169.254.169.254") || strings.Contains(l, "168.63.129.16") {
 			if strings.Contains(l, "egress-allowed") {
 				t.Errorf("the hint suggests opening a metadata address: %s", l)
 			}
@@ -324,7 +329,7 @@ func TestAnUpstreamTheEgressRefusesIsNotAskedAndNamed(t *testing.T) {
 			t.Errorf("the hint for a private upstream doesn't name -egress-allowed: %s", l)
 		}
 	}
-	if st := s.report.status(); st.DNSUpstreamsRefused != 2 {
+	if st := s.report.status(); st.DNSUpstreamsRefused != 4 {
 		t.Fatalf("status: %d", st.DNSUpstreamsRefused)
 	} else if h := st.Health(); h.Level != HealthDegraded || !slices.Contains(h.Problems, ProblemDNSUpstreamRefused) {
 		t.Fatalf("health %+v", h)
@@ -345,7 +350,7 @@ func TestAnUpstreamTheEgressRefusesIsNotAskedAndNamed(t *testing.T) {
 	if got := s.workerUpstreams(); !slices.Equal(got, []netip.AddrPort{private, public}) {
 		t.Fatalf("with -egress-allowed kept: %v", got)
 	}
-	if st := s.report.status(); st.DNSUpstreamsRefused != 1 {
+	if st := s.report.status(); st.DNSUpstreamsRefused != 3 {
 		t.Fatalf("with -egress-allowed status: %d", st.DNSUpstreamsRefused)
 	}
 	if got := buf.String(); got == before {
