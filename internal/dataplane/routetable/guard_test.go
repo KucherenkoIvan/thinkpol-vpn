@@ -792,7 +792,8 @@ func TestAnEnforceEndsAReapplyFailure(t *testing.T) {
 }
 
 // A re-apply that finds the OS can't hold the table at all is warned
-// whatever the limit holds back: nothing is retried after it.
+// whatever the limit holds back, with the count it held back: nothing is
+// retried after it.
 func TestATerminalReapplyFailureIsAlwaysWarned(t *testing.T) {
 	f := &fakeConfigurator{survey: up()}
 	var buf lockedBuffer
@@ -805,9 +806,10 @@ func TestATerminalReapplyFailureIsAlwaysWarned(t *testing.T) {
 	// The same text as the terminal one, so only its kind tells them apart.
 	f.setFailErr(errors.New("rules: " + errors.ErrUnsupported.Error()))
 	routetable.Reapply(t.Context(), e)
+	routetable.Reapply(t.Context(), e) // held back
 	f.setFailErr(fmt.Errorf("rules: %w", errors.ErrUnsupported))
 	routetable.Reapply(t.Context(), e)
-	if l := buf.lines("level=WARN"); len(l) != 2 || !strings.Contains(l[1], "can't hold the route table") {
-		t.Fatalf("warns %q, want the terminal failure warned too", l)
+	if l := buf.lines("level=WARN"); len(l) != 2 || !strings.Contains(l[1], "can't hold the route table") || !strings.Contains(l[1], "suppressed=1") {
+		t.Fatalf("warns %q, want the terminal failure warned too, with the one held back", l)
 	}
 }

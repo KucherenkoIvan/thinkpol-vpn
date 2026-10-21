@@ -756,8 +756,13 @@ func (e *Enforcer) reapply(ctx context.Context) {
 	switch err := e.apply(ctx, *w, true); {
 	case err == nil:
 	case errors.Is(err, errors.ErrUnsupported):
-		// Terminal: watch stops, so this is the last word on it.
-		e.log.Warn("route table: the OS can't hold the route table, not retrying", "err", path.RedactError(err))
+		// Terminal: watch stops, so this is the last word on it, and on the
+		// re-apply failures held back before it.
+		args := []any{"err", path.RedactError(err)}
+		if n := e.reapplyWarn.reset(); n > 0 {
+			args = append(args, "suppressed", n)
+		}
+		e.log.Warn("route table: the OS can't hold the route table, not retrying", args...)
 	case ctx.Err() == nil:
 		e.warnRetry(&e.reapplyWarn, "route table: putting it back failed, retrying", err)
 	}
