@@ -110,19 +110,19 @@ func (l *ledger) configure(ctx context.Context, ops linkOps, ifcs []Interface, u
 
 // configureLink sets the MTU and brings the link up as asked. Zero values
 // leave the link alone; what was changed is restored when the interface
-// leaves the config or on Close. The record is under the name the config
-// gives (on Linux it may be an altname of s).
+// leaves the config or on Close. The change is kept under the name the
+// config gives (on Linux it may be an altname of s).
 func (l *ledger) configureLink(ops linkOps, s linkState, ifc Interface, u *undoLog) error {
 	name := ifc.Name
 	if ch, ok := l.changed[name]; ok && ch.index != s.index {
-		l.dropLinkRecord(name, u) // a recreated interface: earlier changes went with the old one
+		l.dropLinkChange(name, u) // a recreated interface: earlier changes went with the old one
 	}
 	if ifc.MTU != 0 && s.mtu != ifc.MTU {
 		old := s.mtu
 		if err := ops.setMTU(s, ifc.MTU); err != nil {
 			return fmt.Errorf("netcfg: MTU %d on %s: %w", ifc.MTU, name, err)
 		}
-		l.updateLinkRecord(name, s.index, func(ch *linkChange) {
+		l.updateLinkChange(name, s.index, func(ch *linkChange) {
 			if ch.mtu == 0 {
 				ch.origMTU = old
 			}
@@ -133,7 +133,7 @@ func (l *ledger) configureLink(ops linkOps, s linkState, ifc Interface, u *undoL
 		if err := ops.setUp(s, true); err != nil {
 			return fmt.Errorf("netcfg: bring %s up: %w", name, err)
 		}
-		l.updateLinkRecord(name, s.index, func(ch *linkChange) { ch.setUp = true },
+		l.updateLinkChange(name, s.index, func(ch *linkChange) { ch.setUp = true },
 			u, func() error { return ops.setUp(s, false) })
 	}
 	return nil
@@ -156,8 +156,8 @@ func (l *ledger) configureAddrs(ops linkOps, index int, ifc Interface, want map[
 		switch {
 		case present && l.ownsAddr(k, index):
 		case present: // someone else's: used, not owned
-			if _, recorded := l.ownedAddrs[k]; recorded {
-				l.dropAddrRecord(k, u)
+			if _, owned := l.ownedAddrs[k]; owned {
+				l.dropOwnedAddr(k, u)
 			}
 		default:
 			if err := l.addAddr(ops, k, index, u); err != nil {
@@ -184,7 +184,7 @@ func (l *ledger) release(ops linkOps, w wanted, u *undoLog) error {
 				return err
 			}
 		}
-		l.dropAddrRecord(k, u)
+		l.dropOwnedAddr(k, u)
 	}
 	for name := range l.changed {
 		if !w.links[name] {
@@ -228,7 +228,7 @@ func (l *ledger) restoreLink(ops linkOps, name string, u *undoLog) error {
 	ch := l.changed[name]
 	s, err := ops.linkByIndex(ch.index)
 	if gone(err) || (err == nil && s.name != name) {
-		l.dropLinkRecord(name, u)
+		l.dropLinkChange(name, u)
 		return nil
 	}
 	if err != nil {
@@ -238,23 +238,23 @@ func (l *ledger) restoreLink(ops linkOps, name string, u *undoLog) error {
 		if err := ops.setMTU(s, ch.origMTU); err != nil && !gone(err) {
 			return fmt.Errorf("netcfg: restore MTU of %s: %w", name, err)
 		}
-		l.updateLinkRecord(name, ch.index, func(ch *linkChange) { ch.mtu, ch.origMTU = 0, 0 },
+		l.updateLinkChange(name, ch.index, func(ch *linkChange) { ch.mtu, ch.origMTU = 0, 0 },
 			u, func() error { return ops.setMTU(s, s.mtu) })
 	}
 	if ch.setUp && s.up {
 		if err := ops.setUp(s, false); err != nil && !gone(err) {
 			return fmt.Errorf("netcfg: bring %s down: %w", name, err)
 		}
-		l.updateLinkRecord(name, ch.index, func(ch *linkChange) { ch.setUp = false },
+		l.updateLinkChange(name, ch.index, func(ch *linkChange) { ch.setUp = false },
 			u, func() error { return ops.setUp(s, true) })
 	}
-	l.dropLinkRecord(name, u)
+	l.dropLinkChange(name, u)
 	return nil
 }
 
-// updateLinkRecord records a change made to a link. Its undo reverts the
-// change and only then the record, so a failed revert keeps the record.
-func (l *ledger) updateLinkRecord(name string, index int, change func(*linkChange), u *undoLog, revert func() error) {
+// updateLinkChange notes a change made to a link in l.changed. Its undo
+// reverts the change and only then the note, so a failed revert keeps it.
+func (l *ledger) updateLinkChange(name string, index int, change func(*linkChange), u *undoLog, revert func() error) {
 	prev, had := l.changed[name]
 	ch := prev
 	if !had {
@@ -266,18 +266,18 @@ func (l *ledger) updateLinkRecord(name string, index int, change func(*linkChang
 		if err := revert(); err != nil && !gone(err) {
 			return fmt.Errorf("netcfg: undo a change to %s: %w", name, err)
 		}
-		l.restoreLinkRecord(name, prev, had)
+		l.restoreLinkChange(name, prev, had)
 		return nil
 	})
 }
 
-func (l *ledger) dropLinkRecord(name string, u *undoLog) {
+func (l *ledger) dropLinkChange(name string, u *undoLog) {
 	prev, had := l.changed[name]
 	delete(l.changed, name)
-	u.push(func() error { l.restoreLinkRecord(name, prev, had); return nil })
+	u.push(func() error { l.restoreLinkChange(name, prev, had); return nil })
 }
 
-func (l *ledger) restoreLinkRecord(name string, ch linkChange, had bool) {
+func (l *ledger) restoreLinkChange(name string, ch linkChange, had bool) {
 	if had {
 		l.changed[name] = ch
 	} else {
@@ -303,7 +303,7 @@ func (l *ledger) addAddr(ops linkOps, k addrKey, index int, u *undoLog) error {
 		if err := ops.delAddr(index, k.prefix); err != nil && !gone(err) {
 			return fmt.Errorf("netcfg: remove %v from %s: %w", k.prefix, k.link, err) // still there: keep owning it
 		}
-		l.restoreAddrRecord(k, prev, had)
+		l.restoreOwnedAddr(k, prev, had)
 		return nil
 	})
 	return nil
@@ -322,13 +322,13 @@ func (l *ledger) delAddr(ops linkOps, k addrKey, index int, u *undoLog) error {
 	return nil
 }
 
-func (l *ledger) dropAddrRecord(k addrKey, u *undoLog) {
+func (l *ledger) dropOwnedAddr(k addrKey, u *undoLog) {
 	prev, had := l.ownedAddrs[k]
 	delete(l.ownedAddrs, k)
-	u.push(func() error { l.restoreAddrRecord(k, prev, had); return nil })
+	u.push(func() error { l.restoreOwnedAddr(k, prev, had); return nil })
 }
 
-func (l *ledger) restoreAddrRecord(k addrKey, index int, had bool) {
+func (l *ledger) restoreOwnedAddr(k addrKey, index int, had bool) {
 	if had {
 		l.ownedAddrs[k] = index
 	} else {
