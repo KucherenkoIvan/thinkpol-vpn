@@ -191,19 +191,9 @@ func (c *Client) explain(err error) error {
 		if step, ok := strings.CutPrefix(remote.Code, startFailedPrefix); ok {
 			return &clientError{fmt.Sprintf("starting the data plane failed at step %q; the service's log has the details", agent.Sanitize(step)), ErrStartFailed}
 		}
-		for _, e := range []struct {
-			err Error
-			msg string
-		}{
-			{ErrPermissionDenied, "permission denied: only root may do that"},
-			{ErrServerMode, "this node is a server: it serves its spaces whenever it runs"},
-			{ErrNotRunning, "the node is not running"},
-			{ErrPresetUnavailable, "this space can't build that preset (no chain, or no domestic list): it is kept, and enforced failing closed"},
-			{ErrUnknownPreset, "no such rule preset: space, everything or all-but-domestic"},
-			{ErrDNSUnprotected, "connected, but DNS is not protected: the system may resolve names outside the tunnel (the service's log says why); the tunnel stays up"},
-		} {
-			if remote.Code == e.err.Code {
-				return &clientError{e.msg, e.err}
+		for _, r := range refusals {
+			if remote.Code == r.err.Code {
+				return &clientError{r.msg, r.err}
 			}
 		}
 		return fmt.Errorf("refused: %s", agent.Sanitize(remote.Code))

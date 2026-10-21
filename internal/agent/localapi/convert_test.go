@@ -3,6 +3,7 @@ package localapi
 import (
 	"bytes"
 	"net/netip"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -114,5 +115,42 @@ func TestWorkerLastExitReachesStatusAndCLI(t *testing.T) {
 	}
 	if strings.Contains(text.String(), "\x1b") {
 		t.Fatalf("raw ESC in render:\n%s", text.String())
+	}
+}
+
+// Every router, path and route table counter reaches the status under a
+// name of its own, the route table's only in route-table mode.
+func TestEveryCounterHasAName(t *testing.T) {
+	var dp dataplane.Status
+	dp.RouteTable.Enforced = true
+	n := uint64(0)
+	for _, v := range []reflect.Value{reflect.ValueOf(&dp.Router).Elem(), reflect.ValueOf(&dp.Path).Elem(), reflect.ValueOf(&dp.RouteTable).Elem()} {
+		for i := range v.NumField() {
+			switch f := v.Field(i); f.Kind() {
+			case reflect.Uint64:
+				n++
+				f.SetUint(n)
+			case reflect.Int:
+				n++
+				f.SetInt(int64(n))
+			}
+		}
+	}
+	dp.InterfaceReapplies = n + 1
+	got := dataPlaneProto(&dp, 0).GetCounters()
+	seen := map[uint64]bool{}
+	for _, v := range got {
+		seen[v] = true
+	}
+	for v := uint64(1); v <= n+1; v++ {
+		if !seen[v] {
+			t.Errorf("counter %d of the status has no name", v)
+		}
+	}
+	dp.RouteTable.Enforced = false
+	for name := range dataPlaneProto(&dp, 0).GetCounters() {
+		if strings.HasPrefix(name, "route_table.") {
+			t.Errorf("%s outside route-table mode", name)
+		}
 	}
 }

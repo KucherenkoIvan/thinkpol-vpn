@@ -11,6 +11,7 @@ import (
 
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -25,8 +26,8 @@ func WriteStatus(w io.Writer, st *localapiv1.Status, now time.Time) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	line := func(format string, args ...any) { _, _ = fmt.Fprintf(tw, format+"\n", args...) }
 
-	line("state:\t%s", enumName(st.GetConnection(), "CONNECTION_"))
-	health := enumName(st.GetHealth().GetLevel(), "HEALTH_LEVEL_")
+	line("state:\t%s", displayName(st.GetConnection()))
+	health := displayName(st.GetHealth().GetLevel())
 	if p := st.GetHealth().GetProblems(); len(p) > 0 {
 		health += ": " + strings.Join(p, ", ")
 	}
@@ -36,7 +37,7 @@ func WriteStatus(w io.Writer, st *localapiv1.Status, now time.Time) error {
 		space += " (removed from it)"
 	}
 	line("space:\t%s, map version %d", space, st.GetMapVersion())
-	line("mode:\t%s", enumName(st.GetMode(), "MODE_"))
+	line("mode:\t%s", displayName(st.GetMode()))
 	if p := st.GetRulePreset(); p != "" {
 		switch {
 		case st.GetRulePresetUnavailable():
@@ -162,7 +163,7 @@ func writeDataPlane(line func(string, ...any), dp *localapiv1.DataPlane, now tim
 	}
 	var drops []string
 	for _, name := range slices.Sorted(maps.Keys(dp.GetCounters())) {
-		if v := dp.GetCounters()[name]; v > 0 && !trafficCounters[name] {
+		if v := dp.GetCounters()[name]; v > 0 && counterKinds[name] == dropCounter {
 			drops = append(drops, fmt.Sprintf("%s %d", name, v))
 		}
 	}
@@ -171,14 +172,15 @@ func writeDataPlane(line func(string, ...any), dp *localapiv1.DataPlane, now tim
 	}
 }
 
-// trafficCounters count what went through (or is in place), not what was
-// dropped.
-var trafficCounters = map[string]bool{
-	"router.routed": true, "router.delivered": true, "router.forwarded": true, "path.sent": true, "path.delivered": true, "path.forwarded": true,
-	"route_table.routes": true, "route_table.reapplies": true, "route_table.rules_ahead": true,
-	"route_table.overlay_routes_ahead": true,
-	"interface.reapplies":              true,
-}
+// counterKinds are dataPlaneCounters' kinds by name; a counter the table
+// doesn't know (a newer service's) is a drop.
+var counterKinds = func() map[string]counterKind {
+	m := make(map[string]counterKind, len(dataPlaneCounters))
+	for _, c := range dataPlaneCounters {
+		m[c.name] = c.kind
+	}
+	return m
+}()
 
 // WriteSpaces writes the spaces, the active one marked.
 func WriteSpaces(w io.Writer, spaces []*localapiv1.Space) error {
@@ -219,8 +221,29 @@ func WriteJSON(w io.Writer, m proto.Message) error {
 	return err
 }
 
-func enumName(e interface{ String() string }, prefix string) string {
-	return strings.ToLower(strings.ReplaceAll(strings.TrimPrefix(e.String(), prefix), "_", " "))
+// displayNames are what WriteStatus calls the status's enum values.
+var displayNames = map[protoreflect.Enum]string{
+	localapiv1.Connection_CONNECTION_UNSPECIFIED:    "unspecified",
+	localapiv1.Connection_CONNECTION_DISCONNECTED:   "disconnected",
+	localapiv1.Connection_CONNECTION_CONNECTING:     "connecting",
+	localapiv1.Connection_CONNECTION_CONNECTED:      "connected",
+	localapiv1.Connection_CONNECTION_SERVING:        "serving",
+	localapiv1.HealthLevel_HEALTH_LEVEL_UNSPECIFIED: "unspecified",
+	localapiv1.HealthLevel_HEALTH_LEVEL_OK:          "ok",
+	localapiv1.HealthLevel_HEALTH_LEVEL_DEGRADED:    "degraded",
+	localapiv1.HealthLevel_HEALTH_LEVEL_DOWN:        "down",
+	localapiv1.Mode_MODE_UNSPECIFIED:                "unspecified",
+	localapiv1.Mode_MODE_DEVICE:                     "device",
+	localapiv1.Mode_MODE_SERVER:                     "server",
+}
+
+// displayName is e's display name; a value the table doesn't know (a
+// newer service's) is "unknown".
+func displayName(e protoreflect.Enum) string {
+	if name, ok := displayNames[e]; ok {
+		return name
+	}
+	return "unknown"
 }
 
 func ago(t *timestamppb.Timestamp, now time.Time) string {
