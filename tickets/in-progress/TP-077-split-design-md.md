@@ -84,3 +84,4 @@ Round 2 (2026-10-22): correctness (fix first), design (fix first), second opinio
 - 2026-10-22 make lint and make test exit 0 before each commit; make lab-test green on 2c458a4 (LAB_P=4); documentation only, no tests added or changed
 - 2026-10-22 in-progress → review
 - 2026-10-22 review → has-errors (round 2: R2.1-R2.5)
+- 2026-10-22 has-errors → in-progress — owner: agent-tp-077, branch: tp-077-split-design-md
