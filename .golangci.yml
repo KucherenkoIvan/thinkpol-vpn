@@ -57,7 +57,7 @@ linters:
             - pkg: github.com/KucherenkoIvan/thinkpol-vpn/internal/agent
               desc: the agent drives the data plane; the data plane, the map and the lists never import it
         # the engine owns its ports; the agent adapts the host's adapters to
-        # them (DESIGN.md "Engine and agent"). The package's own files only:
+        # them (DESIGN.md "Node agent"). The package's own files only:
         # its tests may drive real adapters.
         dataplane-core-without-host-adapters:
           list-mode: lax

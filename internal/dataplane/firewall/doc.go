@@ -194,8 +194,7 @@
 // least as strict as either. The rule optimizer is off: pf.conf(5)'s
 // default, `basic`, re-orders rules (and may merge them into a table),
 // and the guard checks the listing it reads back in the order and shape
-// it wrote (TP-092: on a device pfctl listed the multicast rule first and
-// every load was refused). A table defined with a list gets exactly that
+// it wrote, so a re-ordered listing would fail every load. A table defined with a list gets exactly that
 // list on every load. It isn't `const`: that would stop `pfctl -T add`,
 // but OpenBSD's pf refuses to change a const table in place, and a reload
 // that can't narrow the table would leave a wide preset's exemptions

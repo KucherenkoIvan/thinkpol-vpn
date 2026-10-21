@@ -2,7 +2,7 @@
 // Lite country CSV), CIDR aggregation and the content-addressed blob the map
 // references (DESIGN.md "Lists"). Built offline by `thinkpol dev lists
 // build` (later by the controller), distributed by dataplane/blobs, read by
-// the router. Pure Go, buildable for Android.
+// the rules (dataplane/rules), whose compiled table the router enforces. Pure Go, buildable for Android.
 //
 // # Sources
 //

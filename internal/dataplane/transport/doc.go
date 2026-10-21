@@ -132,4 +132,79 @@
 // (ListenForwarded); a [StreamRoutable] stream transport opens the public
 // listener (ListenStream) and gives the worker a [HandoffListener] for the
 // connections passed to it.
+//
+// # Stream transports (planned)
+//
+// No stream transport exists yet; what follows is the design the port's
+// stream side ([StreamRoutable], [StreamRouter], [HandoffListener]) is
+// shaped for, and what TP-087 (`reality`, M2) and TP-028 (`tls`, after the
+// MVP) build to.
+//
+// `tls` is TLS 1.3 with a browser fingerprint (uTLS), for node-to-node
+// links. The client's auth token rides in the ClientHello, so a server
+// tells its clients from probes before answering anything: probes are
+// proxied whole to the real site and see its certificate. The node's own
+// certificate comes from a pluggable certificate source: self-signed and
+// pinned by the client first; ACME with a real domain is optional, since
+// probes never see it (TP-052).
+//
+// `reality` is REALITY's handshake, the disguised transport for client to
+// entry: a uTLS browser ClientHello whose session id seals the client's
+// short id; failed authentication is spliced to a real target site. Its
+// disguise is borrowed from that site: probes complete a handshake with
+// the target and see its certificate, and there is no certificate of our
+// own. The credential is the device's short id, a shared secret; the
+// listener holds an X25519 private key. Stock VLESS clients and servers
+// are not supported (TP-064's findings).
+//
+// Both authenticate in the ClientHello, in the legacy session id via
+// uTLS. For `tls` the token is an HMAC of the credential and a coarse
+// timestamp, checked by peeking at the ClientHello without terminating
+// TLS, against a replay cache; for `reality` it is the short id and the
+// time sealed to the listener's key, and the connection is handed over
+// once its TLS session is established. An authenticated connection's file
+// descriptor and the bytes already read go to the space's worker (over its
+// Unix socket, package supervisor); with `tls` the worker terminates TLS
+// with its own certificate, self-signed and pinned by the client. Anything
+// else is proxied as a whole to the camouflage target, so a probe
+// completes a handshake with the real site and sees its certificate.
+//
+// A replayed ClientHello takes exactly the camouflage path. A token
+// already in the replay cache, one outside the timestamp window and one
+// that doesn't verify are all the same thing, an unauthenticated
+// connection: proxied whole to the camouflage target, with the same
+// upstream connection and the same timing. A censor that captured a
+// member's ClientHello and replays it learns nothing from the difference;
+// dropping or resetting a replay instead would make replay an
+// active-probing oracle. The token window is both the replay window (how
+// long a captured ClientHello can be replayed at all, and how long the
+// cache must remember a token) and the clock-skew margin (how far a
+// client's clock may be off before it is locked out): a wider window means
+// fewer outages and a longer replay opportunity, a narrower one the
+// opposite. It starts at the five minutes nodes' clocks must already agree
+// within, and the lab tunes it. The `tls` replay cache holds a token only
+// for the token window, and has a bound of its own that sends a
+// connection to the camouflage when reached.
+//
+// The camouflage target is chosen per node, not defaulted fleet-wide: one
+// default shared by every node is a fingerprint of the fleet, and the
+// target should be plausible for the node's address and network.
+// Provisioning (TP-038) picks it, and its documentation says the choice
+// is security-relevant.
+//
+// Server-side tells. uTLS covers the client and the camouflage site's
+// certificate covers what a probe sees, but not the server's own hello: a
+// worker terminating TLS with Go's stack has a JA3S/JA4S, extension order
+// and ALPN that differ from the camouflage site's, a stable discriminator
+// for a censor that fingerprints responses. A second tell: every probe
+// makes the entry open an upstream connection to the camouflage target,
+// which an ordinary server doesn't. `reality` changes less than it seems:
+// a probe is spliced to the target and gets its handshake byte for byte,
+// as a probe proxied by `tls` did; an authenticated session's ServerHello
+// is still ours (REALITY's stack, not the target's), so the first tell
+// remains for a censor that compares members' sessions with the site's;
+// and every failed probe still dials the target, the same upstream tell as
+// `tls`'s proxying. What it removes is a certificate of our own to manage.
+// The lab's prober measures both tells (TP-026, TP-032), for `reality`
+// too, and the matrix shows them.
 package transport

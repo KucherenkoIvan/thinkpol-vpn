@@ -84,5 +84,5 @@
 //
 // The header's hashes are visible to every node holding the envelope. For
 // public lists that tells a node only that the space uses, say, a Russian
-// GeoIP list: an accepted leak (DESIGN.md "Residual risks").
+// GeoIP list: an accepted leak (RESIDUAL-RISKS.md RR45).
 package blobs

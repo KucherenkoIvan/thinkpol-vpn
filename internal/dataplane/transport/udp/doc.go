@@ -93,11 +93,17 @@
 // clock was a full skew ahead — and within one listener's lifetime a
 // datagram it has seen, or a sender it has seen, never delivers twice or
 // moves a link. What remains:
-//   - the receiver's memory is per process: after a listener restart, a
-//     replay of datagrams sent in the last ten minutes (five, if the
-//     sender's clock was right) opens a link (to the replayer's address,
-//     until the real dialer's next datagram moves it back) and delivers
-//     each of their packets once more; WireGuard drops them;
+//   - the receiver's memory is per process. A listener restarted behind a
+//     Router that keeps running (a server's worker under its supervisor)
+//     loses nothing: the Router still drops the replays. Where the memory
+//     goes with the process that holds the WireGuard devices too (a
+//     supervisor restart, whose workers die with it, or a node in device
+//     mode restarting), a replay of datagrams sent in the last ten minutes
+//     (five, if the sender's clock was right) opens a link (to the
+//     replayer's address, until the real dialer's next datagram moves it
+//     back) and delivers each of their packets once more, to a fresh
+//     WireGuard device that answers a replayed handshake initiation
+//     (RESIDUAL-RISKS.md RR34; TP-069);
 //   - an on-path attacker can hold back the newest datagram the listener
 //     never saw and show it later: ahead of the original, or, from an
 //     older sender, once the current sender has been quiet for 30 seconds

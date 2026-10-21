@@ -35,8 +35,8 @@
 // The socket is [agent.Config.APISocket] (-api-socket), by default
 // [agent.DefaultAPISocket]: /run/thinkpol-api/api.sock on Linux, and on
 // macOS /private/var/db/thinkpol-api/api.sock. Not under macOS's /var/run,
-// which is group-writable (root:daemon 0775) and fails the parent check
-// below, and beside netcfg's /private/var/db/thinkpol rather than in it:
+// which fails the parent check below (package trusteddir says why a
+// directory others can write to can't be trusted), and beside netcfg's /private/var/db/thinkpol rather than in it:
 // that one is 0700, so the group couldn't reach the socket. Windows will
 // use a named pipe (TP-047); until then [Listen] refuses there. An empty
 // socket path serves no API.

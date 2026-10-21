@@ -224,10 +224,10 @@
 // The supervisor owns the node's public address, the scarce resource, and
 // listens on the node owner's map's listeners for every space it serves
 // ([Supervisor.SetListeners]; guest spaces never open ports). It accepts
-// whatever arrives, runs the transport's authentication (its
-// [transport.Router], one per transport, shared by all its listeners and
-// kept across their reopens, so replay state is per credential, not per
-// socket), maps the credential to a space and hands the traffic to that
+// whatever arrives, runs the transport's authentication (its router, a
+// [transport.PacketRouter] or [transport.StreamRouter], one per transport,
+// shared by all its listeners and kept across their reopens, so replay
+// state is per credential, not per socket), maps the credential to a space and hands the traffic to that
 // space's worker. The credential tables are the spaces' [Space.Inbound],
 // each dataplane.AcceptedInbound of the space's own section, merged per
 // transport, with each entry's Space stamped with the space whose map it
@@ -295,4 +295,29 @@
 // uploads need policing (tc ingress, or an IFB device) or a read-rate
 // limit. Not yet: production builds pass no FairShare; see TP-040
 // (parked).
+//
+// # The gatekeeper (planned)
+//
+// Today the supervisor, a root process holding every space's credential
+// tables, parses unauthenticated bytes itself: datagram authentication,
+// timestamp and replay filtering, and the start of each stream
+// connection. That is the known weakness of the current design. Planned:
+// everything that parses unauthenticated bytes (the ClientHello peek,
+// datagram authentication, timestamp and replay filtering) moves to an
+// unprivileged gatekeeper process, sandboxed like a worker, with no space
+// keys beyond what verification needs, so a memory-safety bug in that path
+// costs the gatekeeper, not the supervisor. The gatekeeper hands what it
+// authenticates to the worker the way the supervisor does today (file
+// descriptors, forwarded datagrams); the supervisor keeps the namespaces,
+// the root firewall and fair share.
+//
+// What the gatekeeper holds depends on the transport. For `tls` the
+// credentials should be asymmetric (the map gives listeners a public key
+// to verify, not a shared secret), so a listener's holder can't forge a
+// client. A symmetric transport (`udp`) still needs a secret per
+// credential, and the gatekeeper is where it lives. `reality` is the
+// exception: opening its session id needs the listener's X25519 private
+// key, so a `reality` listener's gatekeeper holds that key. In order:
+// TP-063 for `udp` (M2), TP-088 for `reality`, and `tls`'s part with
+// TP-028 (after the MVP).
 package supervisor

@@ -87,7 +87,7 @@
 // by the rules. The alternative, resolving the chain's tunnel-bound tail
 // again through the exit's resolver, was weighed: it hides the target but
 // takes a second lookup per aliased name and splits one answer between
-// two resolvers. The leak is accepted (DESIGN.md "Residual risks").
+// two resolvers. The leak is accepted (RESIDUAL-RISKS.md RR1).
 //
 // # Upstreams
 //
@@ -232,9 +232,8 @@
 // copies an entity's interface onto the service's resolver, and
 // mDNSResponder sends to an interface's resolver bound to that interface
 // (IP_BOUND_IF), which can't reach the overlay address, which only the
-// utun routes. That is what broke the first device run, whose override
-// sat on en0's service: no query arrived. Tailscale publishes the same
-// kind of key. What the OS sends to the overlay address comes back out of
+// utun routes: a resolver published on a physical interface's service
+// gets no query at all. What the OS sends to the overlay address comes back out of
 // the utun; the router writes it back in (router.Table.ReflectLocal).
 //
 // Failing closed, every active service's (one with an IPv4 or IPv6

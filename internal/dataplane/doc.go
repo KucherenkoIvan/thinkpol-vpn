@@ -13,13 +13,12 @@
 // holding only what it means: the overlay interface's configuration
 // ([InterfaceConfigurator]), the route table's want and status
 // ([RouteTable]) and what the resolver serves ([Resolver]). netcfg,
-// routetable and dns know nothing of them: the agent adapts them, and
-// creates the TUN, builds the transport registry, watches for maps and
-// runs the listeners (DESIGN.md "Engine and agent"). So the engine's own
-// files (this directory's, tests aside, which may drive real adapters)
-// import none of dataplane/netcfg, dataplane/routetable, dataplane/dns and
-// dataplane/tun, and nothing here imports the agent; depguard enforces
-// both.
+// routetable and dns know nothing of them; the agent adapts them and does
+// everything else around the engine (package agent; DESIGN.md "Node
+// agent"). So the engine's own files (this directory's, tests aside, which
+// may drive real adapters) import none of dataplane/netcfg,
+// dataplane/routetable, dataplane/dns and dataplane/tun, and nothing here
+// imports the agent; depguard enforces both.
 //
 // # The overlay's MTU
 //

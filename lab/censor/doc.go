@@ -39,9 +39,8 @@
 //     the queue wait: a new flow an active module has no room for is
 //     counted ([Engine.Unnoticed]) and skipped.
 //
-// New modules join by registering themselves. block-ip, the framework's
-// end-to-end proof, decides packets by destination; the real modules are
-// TP-025's, TP-026's and TP-032's.
+// New modules join by registering themselves. block-ip decides packets by
+// destination: it is what proves the framework end to end.
 //
 // # Whole datagrams
 //

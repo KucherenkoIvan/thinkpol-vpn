@@ -7,26 +7,29 @@
 //
 // # Engine and agent
 //
-// The data-plane engine ([dataplane.Engine]) is in-process wiring,
-// configured by one [dataplane.Engine.Apply] per map. Everything around it
-// is the agent's: watching for maps and applying each, building the
+// The engine ([dataplane.Engine]) is in-process wiring configured by one
+// Apply per map, and owns the ports it drives (package dataplane says
+// which, and why it imports none of the host adapters). Everything around
+// it is the agent's: watching for maps and applying each, building the
 // transport registry ([Transports], whose sockets carry the host's
-// marking), and opening, serving and closing the listeners. The engine
-// owns the ports it drives ([dataplane.InterfaceConfigurator],
-// [dataplane.RouteTable], [dataplane.Resolver]); netcfg, routetable and
-// dns know nothing of them, and the agent adapts them, adding what only an
+// marking), opening, serving and closing the listeners, and adapting
+// netcfg, routetable and dns to the engine's ports, adding what only an
 // adapter means, such as the resolver's direct upstreams, which the route
 // table keeps reachable.
 //
 // The node's host adapters are chosen and wired per OS by the composition
 // root (cmd/thinkpol) and handed over as a [Platform]. Its [Host] is what
-// one data plane needs: the TUN and its configurator, the route table with
-// the host's leak guard (package firewall's adapter for routetable's Guard
-// port; routetable never imports firewall), the resolver configuration and
-// the transport registry. The Platform adds what is host-wide: the host's
-// agent lock and putting back a resolver configuration a crashed run left.
-// Some of them are this package's own functions ([HostLock],
-// [Transports]). The agent only sequences them.
+// one data plane needs, in two parts: a [WorkerHost], what any data plane
+// needs of its network namespace (a configurator per owner, the TUN, the
+// transport registry, the blob services' network), and a [DeviceHost],
+// what only a device's uses, which a server's worker never gets: the
+// route table with the host's leak guard (package firewall's adapter for
+// routetable's Guard port; routetable never imports firewall), clearing
+// what a crashed run left, and the OS's resolvers and their
+// configuration. The Platform adds what is host-wide: the host's agent
+// lock and putting back a resolver configuration a crashed run left. Some
+// of them are this package's own functions ([HostLock], [Transports]).
+// The agent only sequences them.
 //
 // [Prepare] reads and checks what the node runs from, touching nothing on
 // the host; [Node.Adapters] then returns the node's adapters (the map
@@ -49,13 +52,15 @@
 // The agent's log ([NewLogs]) is observability's text logger, writing to
 // stderr and to an in-memory [logring.Ring] of [LogRingSize], at the
 // node's own level ([Config.LogLevel]: -log-level, THINKPOL_LOG_LEVEL),
-// never go-kernel's LOG_LEVEL. It never goes to a file (PRD S2); under
-// systemd stderr is the journal, which provisioning makes volatile. The
-// local API serves the ring to root only, since debug lines may quote the
-// map. A server's workers log at the node's level; only the node owner's
-// space's worker output joins the node's log, line by line, prefixed with
-// its space and sanitized ([Sanitize]), while a guest space's stays in its
-// own ring in the supervisor.
+// never go-kernel's LOG_LEVEL. The agent writes it to no file (PRD S2),
+// but under systemd stderr is the journal, which keeps it on disk unless
+// the journal is volatile: nothing sets that yet (provisioning will,
+// TP-038; RESIDUAL-RISKS.md RR40). The local API serves the ring to root
+// only, since debug lines may quote the map. A server's workers log at the
+// node's level; only the node owner's space's worker output joins the
+// node's log, line by line, prefixed with its space and sanitized
+// ([Sanitize]), while a guest space's stays in its own ring in the
+// supervisor.
 //
 // # One agent per host
 //
@@ -67,14 +72,9 @@
 // /private/var/db/thinkpol/agent.lock on macOS, next to netcfg's locks,
 // close-on-exec so no worker inherits it, and released when the node
 // stops or the process dies. Its directory is opened through
-// [trusteddir], which needs every directory on the way to be root's (or
-// the agent user's) and writable by no one else, so no one can rename the
-// lock's directory away from under a running agent and have the next one
-// lock a fresh file. That rules out macOS's /var/run (root:daemon 0775,
-// not sticky); /private/var/db is root's alone all the way up. The walk
-// also refuses symlinks such as macOS's /var, so every macOS default names
-// the real path under /private: the state directory and the lock, and the
-// local API's socket too.
+// [trusteddir], so no one can rename it away from under a running agent
+// and have the next one lock a fresh file (trusteddir says why every
+// directory on the way counts, and why that rules out macOS's /var/run).
 //
 // A second `thinkpol up` exits with "another thinkpol agent is running on
 // this host" and changes nothing. Its start-time cleanups (putting back a
@@ -95,11 +95,30 @@
 // that either way. A node that starts removed from its space has no kind
 // yet: it picks its mode when a map includes it again. A newer map that
 // changes the running node's kind is logged; the mode changes only with a
-// restart. Not yet: the node's own configuration as a ceiling over what
-// the map asks of it (TP-111). Until then the map's kind picks how a node
-// runs and -mode overrides it either way: a server section that allows
-// egress, run in device mode, is no exit (it forwards nothing, and says so
-// in the log), yet its resolver serves the space's overlay like an exit's.
+// restart. The map's kind picks how a node runs and -mode overrides it
+// either way: a server section that allows egress, run in device mode, is
+// no exit (it forwards nothing, and says so in the log), yet its resolver
+// serves the space's overlay like an exit's.
+//
+// Planned (TP-111): the node's own configuration as a ceiling over what
+// the map asks of it (DESIGN.md "Server agent: one worker per space").
+// Until it exists, a signed map alone decides a node's role
+// (RESIDUAL-RISKS.md RR42). The ceiling is a preset, device or server,
+// and within server each capability on its own: ingress (public
+// listeners), egress (forwarding to the internet, with EgressAllowed) and
+// relaying; later, serving guest spaces and their caps. A fresh install
+// is a device; anything more is opted into locally (provisioning does it
+// with the operator's consent, TP-038). To a node, a map is two things:
+// what the others are (peers, keys, revocations, routes), which it always
+// takes from a newer signed map, and what this node is asked to do. At
+// start, a map that asks this node for more than its ceiling leaves it
+// down: health says why, and it carries no traffic. While running, it
+// keeps its last accepted capabilities, takes the rest of the newer map,
+// and reports the refusal in health and in the log; it saves only what it
+// accepted, so a restart comes back to that. The same holds when the
+// owner lowers the ceiling under a running map. With the controller (M4),
+// nodes advertise their ceiling and the builder refuses to publish a map
+// that asks for more; each node still enforces it.
 //
 // # Taking a new map
 //
@@ -160,9 +179,10 @@
 //
 // # The state directory
 //
-// On disk a node keeps its state directory ([DefaultStateDir]:
-// /var/lib/thinkpol, /private/var/lib/thinkpol on macOS; -state) and
-// nothing else (PRD S1). [LoadState] reads it:
+// Of its own, a node keeps its state directory ([DefaultStateDir]:
+// /var/lib/thinkpol, /private/var/lib/thinkpol on macOS; -state) on disk,
+// and on macOS the records listed under "Outside the state directory"
+// (PRD S1). [LoadState] reads it:
 //
 //   - node.key ([NodeKeyFile]): the node's id and private keys, 0600,
 //     written once, on the node, when it is provisioned;
@@ -205,16 +225,34 @@
 //
 // `thinkpol up` writes nothing else there (a device's blobs/ aside). A
 // server's workers get their keys and map from the supervisor over their
-// sockets, since they can't read the directory. No pid, lock or log file
-// is kept there or anywhere else on disk: the agent's, netcfg's and the
-// local API's locks are on /run, a tmpfs (on macOS, which has none, under
-// /private/var/db).
+// sockets, since they can't read the directory. No pid or log file is
+// kept anywhere.
 //
-// Outside it, a connected device points the OS's resolver at its own
-// (package dns): on Linux it rewrites /etc/resolv.conf (unless the OS
-// resolves through systemd-resolved) with the overlay resolver's addresses
-// and the space's zone, keeping the original inside the file and putting
-// it back when the device disconnects or stops; on macOS it overrides the
-// network services' DNS in configd's in-memory store instead, keeping the
-// originals there.
+// # Outside the state directory
+//
+// What else a node changes on the host, each owned so that a crashed run's
+// is found and undone or taken over at the next start:
+//
+//   - Locks, recorded nowhere else: the agent's lock (above), netcfg's
+//     owner locks and the local API's lock next to its socket. On Linux
+//     they are under /run (/run/thinkpol, /run/thinkpol-api), a tmpfs; on
+//     macOS, which has none, under /private/var/db (thinkpol,
+//     thinkpol-api), on disk.
+//   - On macOS, records under /private/var/db/thinkpol: netcfg's route
+//     records (netcfg/<owner>.routes, next to <owner>.lock), which list
+//     the routes it added, the link endpoints' addresses among them, and
+//     the leak guard's pf enable reference (pf-guard.token). They outlive
+//     a crash on purpose, and are stamped with the boot session, so a
+//     record of an earlier boot owns nothing.
+//   - Routes and policy rules (package routetable and netcfg), and the
+//     leak guard: an nftables table on Linux; a pf anchor and an enable
+//     reference on macOS (package firewall).
+//   - The OS's resolver configuration (package dns): on Linux
+//     systemd-resolved's link for the TUN, or /etc/resolv.conf rewritten
+//     with the overlay resolver's addresses and the space's zone, the
+//     original kept inside the file and put back when the device
+//     disconnects or stops; on macOS overrides in configd's in-memory
+//     store, the originals kept there.
+//   - On a server, the supervisor's nftables tables and the forwarding it
+//     turned on, recorded in /run/thinkpol (package supervisor).
 package agent
