@@ -256,8 +256,19 @@ const minIPv6MTU = 1280
 // Validate reports the first problem that makes c impossible to apply, so a
 // bad config is rejected before anything is changed.
 func (c Config) Validate() error {
-	names := make(map[string]bool, len(c.Interfaces))
-	for _, ifc := range c.Interfaces {
+	if err := validateInterfaces(c.Interfaces); err != nil {
+		return err
+	}
+	if err := validateRoutes(c.Routes); err != nil {
+		return err
+	}
+	return validateRules(c.Rules)
+}
+
+// validateInterfaces checks the interfaces' names, MTUs and addresses.
+func validateInterfaces(ifcs []Interface) error {
+	names := make(map[string]bool, len(ifcs))
+	for _, ifc := range ifcs {
 		if ifc.Name == "" {
 			return errors.New("netcfg: interface without a name")
 		}
@@ -285,44 +296,21 @@ func (c Config) Validate() error {
 			}
 		}
 	}
+	return nil
+}
+
+// validateRoutes checks each route, and that no two share a table,
+// metric, destination and scope.
+func validateRoutes(rs []Route) error {
 	type key struct {
 		table, metric int
 		dst           netip.Prefix
 		scope         string
 	}
-	routes := make(map[key]bool, len(c.Routes))
-	for _, r := range c.Routes {
-		if !r.Dst.IsValid() || r.Dst != r.Dst.Masked() || r.Dst.Addr().Is4In6() {
-			return fmt.Errorf("netcfg: route %v: destination must be a masked prefix", r)
-		}
-		if err := checkTable(r.Table); err != nil {
-			return fmt.Errorf("netcfg: route %v: %w", r, err)
-		}
-		switch {
-		case r.Type == RouteThrow || r.Type == RouteUnreachable:
-			if r.Gateway.IsValid() || r.Interface != "" {
-				return fmt.Errorf("netcfg: route %v: a %v route has no gateway or interface", r, r.Type)
-			}
-		case r.Type != RouteUnicast:
-			return fmt.Errorf("netcfg: route %v: unknown type", r)
-		case r.Gateway.IsValid():
-			if FamilyOf(r.Gateway) != r.Family() || r.Gateway.Is4In6() {
-				return fmt.Errorf("netcfg: route %v: gateway is not in the destination's family", r)
-			}
-			if r.Gateway.IsUnspecified() || r.Gateway.Zone() != "" {
-				return fmt.Errorf("netcfg: route %v: unspecified or zoned gateway", r)
-			}
-			if r.Gateway.Is6() && r.Gateway.IsLinkLocalUnicast() && r.Interface == "" {
-				return fmt.Errorf("netcfg: route %v: a link-local gateway needs an interface", r)
-			}
-		case r.Interface == "":
-			return fmt.Errorf("netcfg: route %v: needs a gateway or an interface", r)
-		}
-		if r.Metric < 0 || uint64(r.Metric) > math.MaxUint32 {
-			return fmt.Errorf("netcfg: route %v: metric out of range", r)
-		}
-		if r.Scope != "" && r.Type != RouteUnicast {
-			return fmt.Errorf("netcfg: route %v: only a unicast route can be scoped", r)
+	routes := make(map[key]bool, len(rs))
+	for _, r := range rs {
+		if err := validateRoute(r); err != nil {
+			return err
 		}
 		k := key{r.Table, r.Metric, r.Dst, r.Scope}
 		if routes[k] {
@@ -330,8 +318,52 @@ func (c Config) Validate() error {
 		}
 		routes[k] = true
 	}
-	rules := make(map[Rule]bool, len(c.Rules))
-	for _, r := range c.Rules {
+	return nil
+}
+
+// validateRoute checks one route: its destination, table, type and where
+// it goes, metric and scope.
+func validateRoute(r Route) error {
+	if !r.Dst.IsValid() || r.Dst != r.Dst.Masked() || r.Dst.Addr().Is4In6() {
+		return fmt.Errorf("netcfg: route %v: destination must be a masked prefix", r)
+	}
+	if err := checkTable(r.Table); err != nil {
+		return fmt.Errorf("netcfg: route %v: %w", r, err)
+	}
+	switch {
+	case r.Type == RouteThrow || r.Type == RouteUnreachable:
+		if r.Gateway.IsValid() || r.Interface != "" {
+			return fmt.Errorf("netcfg: route %v: a %v route has no gateway or interface", r, r.Type)
+		}
+	case r.Type != RouteUnicast:
+		return fmt.Errorf("netcfg: route %v: unknown type", r)
+	case r.Gateway.IsValid():
+		if FamilyOf(r.Gateway) != r.Family() || r.Gateway.Is4In6() {
+			return fmt.Errorf("netcfg: route %v: gateway is not in the destination's family", r)
+		}
+		if r.Gateway.IsUnspecified() || r.Gateway.Zone() != "" {
+			return fmt.Errorf("netcfg: route %v: unspecified or zoned gateway", r)
+		}
+		if r.Gateway.Is6() && r.Gateway.IsLinkLocalUnicast() && r.Interface == "" {
+			return fmt.Errorf("netcfg: route %v: a link-local gateway needs an interface", r)
+		}
+	case r.Interface == "":
+		return fmt.Errorf("netcfg: route %v: needs a gateway or an interface", r)
+	}
+	if r.Metric < 0 || uint64(r.Metric) > math.MaxUint32 {
+		return fmt.Errorf("netcfg: route %v: metric out of range", r)
+	}
+	if r.Scope != "" && r.Type != RouteUnicast {
+		return fmt.Errorf("netcfg: route %v: only a unicast route can be scoped", r)
+	}
+	return nil
+}
+
+// validateRules checks each rule's family, priority, table and
+// destination, and that none is listed twice.
+func validateRules(rs []Rule) error {
+	rules := make(map[Rule]bool, len(rs))
+	for _, r := range rs {
 		if r.Family != IPv4 && r.Family != IPv6 {
 			return fmt.Errorf("netcfg: rule %v: unknown family", r)
 		}

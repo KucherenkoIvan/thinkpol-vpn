@@ -165,10 +165,29 @@ type OverlayPeer struct {
 // networks or of the node itself, and every peer of a key or an address
 // that two peers claim (either might be the wrong one).
 func OverlayConfigFrom(s netmap.Section, own netmap.WireGuardKey, mtu int) (OverlayConfig, error) {
+	c, err := nodeOverlay(s.Node, mtu)
+	if err != nil {
+		return OverlayConfig{}, err
+	}
+	var candidates []OverlayPeer
+	for _, p := range s.Peers {
+		op, skip, ok := c.peer(p, s.Node, own)
+		if !ok {
+			c.Skipped = append(c.Skipped, skip)
+			continue
+		}
+		candidates = append(candidates, op)
+	}
+	c.addUnclaimed(candidates)
+	return c, nil
+}
+
+// nodeOverlay is the overlay of node n at mtu, without its peers: the
+// node's addresses and the overlay networks, IPv6 off when it can't run.
+func nodeOverlay(n netmap.NodeSettings, mtu int) (OverlayConfig, error) {
 	if mtu < MinOverlayMTU {
 		return OverlayConfig{}, fmt.Errorf("%w: %d, less than %d", ErrMTUTooSmall, mtu, MinOverlayMTU)
 	}
-	n := s.Node
 	c := OverlayConfig{MTU: mtu}
 	if !usable(n.IPv4, n.IPv4Network, true) {
 		return OverlayConfig{}, errors.New("dataplane: no usable overlay IPv4 address")
@@ -188,67 +207,72 @@ func OverlayConfigFrom(s netmap.Section, own netmap.WireGuardKey, mtu int) (Over
 		c.Addrs = append(c.Addrs, netip.PrefixFrom(n.IPv6, n.IPv6Network.Bits()))
 		c.Local = append(c.Local, n.IPv6)
 	}
-	inOverlay := func(a netip.Addr) bool {
-		for _, p := range c.Networks {
-			if p.Contains(a) {
-				return true
-			}
-		}
-		return false
-	}
+	return c, nil
+}
 
-	skip := func(p netmap.NodeID, reason Reason, err error) {
-		c.Skipped = append(c.Skipped, skipOf(p, ItemPeer, reason, err))
+// peer is p as a peer of node n, whose WireGuard key is own, on c's
+// overlay, with the addresses of the families c carries; or why it is
+// skipped (false).
+func (c *OverlayConfig) peer(p netmap.Peer, n netmap.NodeSettings, own netmap.WireGuardKey) (OverlayPeer, SkipDetail, bool) {
+	skip := func(reason Reason, err error) (OverlayPeer, SkipDetail, bool) {
+		return OverlayPeer{}, skipOf(p.ID, ItemPeer, reason, err), false
 	}
-	var candidates []OverlayPeer
+	switch {
+	case p.ID.IsZero() || p.ID == n.ID:
+		return skip(ReasonNotANode, nil)
+	case p.WireGuardKey.IsZero():
+		return skip(ReasonZeroKey, nil)
+	case p.WireGuardKey == own:
+		return skip(ReasonOwnKey, nil)
+	}
+	op := OverlayPeer{ID: p.ID, Key: p.WireGuardKey}
+	for _, a := range p.Addresses {
+		switch {
+		case a.IsValid() && a.Is6() && !a.Is4In6() && c.IPv6Off != nil:
+			continue // the overlay doesn't carry it
+		case !a.IsValid() || a.Zone() != "" || !c.inOverlay(a):
+			return skip(ReasonOutsideOverlay, fmt.Errorf("address %s", a))
+		case a == n.IPv4 || a == n.IPv6:
+			return skip(ReasonOwnAddress, fmt.Errorf("address %s", a))
+		}
+		op.Addresses = append(op.Addresses, a)
+	}
+	if len(op.Addresses) == 0 {
+		return skip(ReasonNoAddress, nil)
+	}
+	return op, SkipDetail{}, true
+}
+
+func (c *OverlayConfig) inOverlay(a netip.Addr) bool {
+	for _, p := range c.Networks {
+		if p.Contains(a) {
+			return true
+		}
+	}
+	return false
+}
+
+// addUnclaimed adds the candidates whose key and addresses no other
+// candidate claims, and skips the rest: either claimant might be the
+// wrong one.
+func (c *OverlayConfig) addUnclaimed(candidates []OverlayPeer) {
 	keys := make(map[netmap.WireGuardKey]int)
 	claims := make(map[netip.Addr]int)
-peers:
-	for _, p := range s.Peers {
-		switch {
-		case p.ID.IsZero() || p.ID == n.ID:
-			skip(p.ID, ReasonNotANode, nil)
-			continue
-		case p.WireGuardKey.IsZero():
-			skip(p.ID, ReasonZeroKey, nil)
-			continue
-		case p.WireGuardKey == own:
-			skip(p.ID, ReasonOwnKey, nil)
-			continue
-		}
-		op := OverlayPeer{ID: p.ID, Key: p.WireGuardKey}
-		for _, a := range p.Addresses {
-			switch {
-			case a.IsValid() && a.Is6() && !a.Is4In6() && c.IPv6Off != nil:
-				continue // the overlay doesn't carry it
-			case !a.IsValid() || a.Zone() != "" || !inOverlay(a):
-				skip(p.ID, ReasonOutsideOverlay, fmt.Errorf("address %s", a))
-				continue peers
-			case a == n.IPv4 || a == n.IPv6:
-				skip(p.ID, ReasonOwnAddress, fmt.Errorf("address %s", a))
-				continue peers
-			}
-			op.Addresses = append(op.Addresses, a)
-		}
-		if len(op.Addresses) == 0 {
-			skip(p.ID, ReasonNoAddress, nil)
-			continue
-		}
+	for _, op := range candidates {
 		keys[op.Key]++
 		for _, a := range op.Addresses {
 			claims[a]++
 		}
-		candidates = append(candidates, op)
 	}
 	for _, op := range candidates {
 		if keys[op.Key] > 1 {
-			skip(op.ID, ReasonKeyClaimed, fmt.Errorf("key %s", op.Key))
+			c.Skipped = append(c.Skipped, skipOf(op.ID, ItemPeer, ReasonKeyClaimed, fmt.Errorf("key %s", op.Key)))
 			continue
 		}
 		shared := false
 		for _, a := range op.Addresses {
 			if claims[a] > 1 {
-				skip(op.ID, ReasonAddressClaimed, fmt.Errorf("address %s", a))
+				c.Skipped = append(c.Skipped, skipOf(op.ID, ItemPeer, ReasonAddressClaimed, fmt.Errorf("address %s", a)))
 				shared = true
 				break
 			}
@@ -257,7 +281,6 @@ peers:
 			c.Peers = append(c.Peers, op)
 		}
 	}
-	return c, nil
 }
 
 // usable reports whether a is an address of the right family inside
