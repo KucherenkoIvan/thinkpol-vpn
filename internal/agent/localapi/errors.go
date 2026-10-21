@@ -3,6 +3,8 @@ package localapi
 import (
 	"github.com/KucherenkoIvan/go-kernel/ddd"
 	"google.golang.org/grpc/codes"
+
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
 )
 
 // Error is an expected refusal, sent to clients by its code.
@@ -42,4 +44,4 @@ var startFailedPrefix = ErrStartFailed.Code + ":"
 // startFailed is a start failure's refusal at step: the interceptor sends
 // the code alone, so the step rides in the code and the detail stays in
 // the service's log.
-func startFailed(step string) Error { return Error{Code: startFailedPrefix + step} }
+func startFailed(step dataplane.Step) Error { return Error{Code: startFailedPrefix + string(step)} }

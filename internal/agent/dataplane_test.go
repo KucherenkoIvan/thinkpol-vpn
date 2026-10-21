@@ -561,7 +561,7 @@ func (c closedTUN) Close() error { c.closes.Add(1); return c.Device.Close() }
 func TestAFailedStartUndoesWhatItOpened(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		step string
+		step dataplane.Step
 		// tableOpens: the route table opens (and must be closed);
 		// applyFails: the first Apply fails at the interface.
 		tableOpens, applyFails bool

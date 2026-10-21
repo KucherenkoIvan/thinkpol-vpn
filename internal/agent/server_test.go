@@ -420,7 +420,7 @@ func TestServerEgressAndDials(t *testing.T) {
 	}{
 		{"egress on", true, supervisor.EgressInfo{Uplink: "eth9", IPv4: true},
 			supervisor.EgressGrant{IPv4: true, IPv6: true}, "egress=on uplink=eth9 egress_ipv4=on egress_ipv6=off"},
-		{"no uplink", true, supervisor.EgressInfo{Err: "no default route"},
+		{"no uplink", true, supervisor.EgressInfo{Err: supervisor.EgressNoDefaultRoute},
 			supervisor.EgressGrant{IPv4: true, IPv6: true}, "egress=on uplink=none"},
 		{"egress off", false, supervisor.EgressInfo{Uplink: "eth9", IPv4: true},
 			supervisor.EgressGrant{}, "egress=off blobs="},

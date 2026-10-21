@@ -34,6 +34,16 @@ var (
 	ErrNoIPv6Address = errors.New("no usable overlay IPv6 address")
 )
 
+// IPv6Off says why an overlay carries no IPv6 (Status.IPv6Off): a code.
+type IPv6Off string
+
+const (
+	IPv6OffMTU       IPv6Off = "mtu_below_1280"  // ErrIPv6MTU
+	IPv6OffNoAddress IPv6Off = "no_ipv6_address" // ErrNoIPv6Address
+)
+
+var ipv6OffCodes = map[error]IPv6Off{ErrIPv6MTU: IPv6OffMTU, ErrNoIPv6Address: IPv6OffNoAddress}
+
 // OverlayMTU is the TUN MTU a node's links allow: the smallest WireGuard
 // message budget (path.MessageBudget) over every endpoint it dials and every
 // link it accepts, each with its own transport and shaping, less WireGuard's

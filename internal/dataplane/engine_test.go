@@ -352,7 +352,7 @@ func TestIPv6IsOffBelowItsMinimumMTU(t *testing.T) {
 		nd.start(t, net)
 	}
 	st := a.engine.Status()
-	if want := 1000 - path.HeaderSize - 32; st.MTU != want || st.IPv6 || !strings.Contains(st.IPv6Off, "1280") {
+	if want := 1000 - path.HeaderSize - 32; st.MTU != want || st.IPv6 || st.IPv6Off != dataplane.IPv6OffMTU {
 		t.Fatalf("status %+v, want MTU %d without IPv6", st, want)
 	}
 	ping(t, a, s.v4)

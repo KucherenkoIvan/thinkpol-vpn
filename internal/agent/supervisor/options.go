@@ -106,8 +106,39 @@ type EgressInfo struct {
 	Uplink                   string
 	IPv4, IPv6               bool
 	Forwarding4, Forwarding6 bool
-	Err                      string
+	Err                      EgressError
 }
+
+// EgressError says why a node has no uplink: a code, the supervisor's log
+// has the detail.
+type EgressError string
+
+const (
+	EgressNoDefaultRoute EgressError = "no_default_route" // egress.ErrNoUplink
+	// EgressUplinkUnusable: the default route's interface has a name the
+	// tables can't match exactly.
+	EgressUplinkUnusable EgressError = "uplink_unusable"
+	EgressUplinkUnknown  EgressError = "uplink_unknown" // finding it failed
+	EgressUnsupported    EgressError = "unsupported"    // no supervisor here
+)
+
+// egressError is err's code.
+func egressError(err error) EgressError {
+	switch {
+	case err == nil:
+		return ""
+	case errors.Is(err, egress.ErrNoUplink):
+		return EgressNoDefaultRoute
+	case errors.Is(err, errUplinkUnusable):
+		return EgressUplinkUnusable
+	case errors.Is(err, egress.ErrUnsupported), errors.Is(err, ErrUnsupported):
+		return EgressUnsupported
+	}
+	return EgressUplinkUnknown
+}
+
+// errUplinkUnusable is an uplink whose name the tables can't match.
+var errUplinkUnusable = errors.New("not an interface name the tables can match")
 
 // MasqueradePorts is the source port range masqueraded flows get (fully
 // random within it). Listeners can't bind inside it, so no reply to a space's

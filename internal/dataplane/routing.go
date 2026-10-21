@@ -265,7 +265,7 @@ func (e *Engine) recompileRules() error {
 		return nil // the first Apply that can run compiles them
 	}
 	unavailable := e.compileRules(e.ruleInput, e.ruleNetworks)
-	_, err := e.routes.around(e.ctx, e.ruleTable.Direct(), func() (string, error) {
+	_, err := e.routes.around(e.ctx, e.ruleTable.Direct(), func() (Step, error) {
 		want := e.assign(*e.overlay)
 		if err := e.devices.remove(want, true, e.paths, e.setTable); err != nil {
 			return "", err

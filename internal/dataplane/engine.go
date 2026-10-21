@@ -29,15 +29,19 @@ const OverlayDevice = "overlay"
 // ErrEngineClosed is returned by a closed engine.
 var ErrEngineClosed = errors.New("dataplane: engine closed")
 
-// The steps of Apply, as Status.LastApplyError names a failed one.
+// Step is a step of Apply, as Status.LastApplyError names a failed one: a
+// snake_case code, like every other code a status holds.
+type Step string
+
+// The steps of Apply.
 const (
-	StepSection   = "section"   // the section can't run here: another node's (nothing changed), no IPv4 address, MTU
-	StepRemovals  = "removals"  // taking away peers the section no longer allows
-	StepInterface = "interface" // the TUN's addresses and MTU (the InterfaceConfigurator)
-	StepDevices   = "devices"   // WireGuard devices and their Binds' peers
-	StepRouter    = "router"    // the router's table
+	StepSection   Step = "section"   // the section can't run here: another node's (nothing changed), no IPv4 address, MTU
+	StepRemovals  Step = "removals"  // taking away peers the section no longer allows
+	StepInterface Step = "interface" // the TUN's addresses and MTU (the InterfaceConfigurator)
+	StepDevices   Step = "devices"   // WireGuard devices and their Binds' peers
+	StepRouter    Step = "router"    // the router's table
 	// StepRouteTable is the OS routing table (route-table mode).
-	StepRouteTable = "route table"
+	StepRouteTable Step = "route_table"
 )
 
 // EngineConfig is what an engine runs on.
@@ -153,7 +157,7 @@ type Engine struct {
 	networks []netip.Prefix
 	exit     bool // the section allows egress and cfg.Forward is set
 	skipped  []Skip
-	lastErr  string
+	lastErr  Step
 	// routedExit is whether the router's table forwards (Status.Exit).
 	routedExit bool
 	// ifc is the overlay interface's configuration in place (nil before
@@ -290,7 +294,7 @@ func (e *Engine) Apply(ctx context.Context, s netmap.Section) error {
 	return err
 }
 
-func (e *Engine) apply(ctx context.Context, s netmap.Section) (string, error) {
+func (e *Engine) apply(ctx context.Context, s netmap.Section) (Step, error) {
 	if s.Node.ID != e.cfg.ID {
 		return StepSection, fmt.Errorf("dataplane: section of node %s, not %s", s.Node.ID, e.cfg.ID)
 	}
@@ -313,7 +317,7 @@ func (e *Engine) apply(ctx context.Context, s netmap.Section) (string, error) {
 	}
 	e.chainExit = chainExits(s.Chains, oc.Peers)
 	_ = e.compileRules(ruleInputOf(s), oc.Networks) // an unavailable preset is in Status
-	return e.routes.around(ctx, e.ruleTable.Direct(), func() (string, error) {
+	return e.routes.around(ctx, e.ruleTable.Direct(), func() (Step, error) {
 		e.overlay, e.paths = &oc, pc.Peers
 		e.endpoints = endpointsOf(pc)
 		return e.carry(ctx, s.Node, oc)
@@ -338,7 +342,7 @@ func (e *Engine) configsOf(s netmap.Section) (PathConfig, InboundConfig, Overlay
 
 // carry makes the devices, the TUN's interface and the router's table
 // carry oc, the overlay of node's section, on e.paths: revocations first.
-func (e *Engine) carry(ctx context.Context, node netmap.NodeSettings, oc OverlayConfig) (string, error) {
+func (e *Engine) carry(ctx context.Context, node netmap.NodeSettings, oc OverlayConfig) (Step, error) {
 	want := e.assign(oc)
 	if err := e.devices.remove(want, true, e.paths, e.setTable); err != nil {
 		return StepRemovals, err
@@ -426,7 +430,7 @@ type Status struct {
 	MTU int
 	// IPv6 says whether the overlay carries IPv6, and IPv6Off why not.
 	IPv6    bool
-	IPv6Off string
+	IPv6Off IPv6Off
 	Peers   []PeerStatus
 	// Neighbors are the path layer's adjacent nodes and their links.
 	Neighbors []path.NeighborStatus
@@ -435,9 +439,9 @@ type Status struct {
 	// Skipped is what the last applied section held that the engine left
 	// out, and why.
 	Skipped []Skip
-	// LastApplyError is the step the last Apply failed at (Step*), empty
-	// if it succeeded.
-	LastApplyError string
+	// LastApplyError is the step the last Apply failed at, empty if it
+	// succeeded.
+	LastApplyError Step
 	Router         router.Counters
 	Path           path.Counters
 	// Rules is how the routing rules are enforced.
@@ -486,7 +490,7 @@ func (e *Engine) Status() Status {
 	}
 	s.Rules.Skipped = slices.Clone(s.Rules.Skipped)
 	if e.ipv6Off != nil {
-		s.IPv6Off = e.ipv6Off.Error()
+		s.IPv6Off = ipv6OffCodes[e.ipv6Off]
 	}
 	for name, d := range e.devices.byName {
 		reported := make(map[netmap.WireGuardKey]wg.PeerStatus)

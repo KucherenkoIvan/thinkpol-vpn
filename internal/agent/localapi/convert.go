@@ -41,7 +41,7 @@ func statusProto(st agent.Status) *localapiv1.Status {
 	if e := st.Egress; e != nil {
 		out.Uplink = &localapiv1.Uplink{
 			Interface: agent.Sanitize(e.Uplink), Ipv4: e.IPv4, Ipv6: e.IPv6,
-			Forwarding4: e.Forwarding4, Forwarding6: e.Forwarding6, Error: agent.Sanitize(e.Err),
+			Forwarding4: e.Forwarding4, Forwarding6: e.Forwarding6, Error: string(e.Err),
 		}
 	}
 	for _, l := range st.PublicListeners {
@@ -55,7 +55,7 @@ func statusProto(st agent.Status) *localapiv1.Status {
 
 func dataPlaneProto(dp *dataplane.Status, listeners int) *localapiv1.DataPlane {
 	out := &localapiv1.DataPlane{
-		Mtu: uint32(dp.MTU), Ipv6: dp.IPv6, Ipv6Off: dp.IPv6Off, LastApplyError: dp.LastApplyError,
+		Mtu: uint32(dp.MTU), Ipv6: dp.IPv6, Ipv6Off: string(dp.IPv6Off), LastApplyError: string(dp.LastApplyError),
 		Listeners: uint32(listeners),
 		Counters: map[string]uint64{
 			"router.routed": dp.Router.Routed, "router.delivered": dp.Router.Delivered,

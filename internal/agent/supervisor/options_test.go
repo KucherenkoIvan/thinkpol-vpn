@@ -1,9 +1,13 @@
 package supervisor
 
 import (
+	"errors"
+	"fmt"
 	"net/netip"
 	"testing"
 	"time"
+
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/egress"
 )
 
 func TestBackoffDoublesAndResets(t *testing.T) {
@@ -74,6 +78,25 @@ func TestOptionsAreChecked(t *testing.T) {
 	} {
 		if _, err := o.withDefaults(); err == nil {
 			t.Errorf("accepted %+v", o)
+		}
+	}
+}
+
+// Why a node has no uplink is a code; the error's own text stays in the
+// log.
+func TestEgressErrorIsACode(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want EgressError
+	}{
+		{nil, ""},
+		{fmt.Errorf("finding the uplink: %w", egress.ErrNoUplink), EgressNoDefaultRoute},
+		{fmt.Errorf("uplink %q: %w", "a b", errUplinkUnusable), EgressUplinkUnusable},
+		{egress.ErrUnsupported, EgressUnsupported},
+		{errors.New("netlink: a socket said no"), EgressUplinkUnknown},
+	} {
+		if got := egressError(tc.err); got != tc.want {
+			t.Errorf("%v: %q, want %q", tc.err, got, tc.want)
 		}
 	}
 }

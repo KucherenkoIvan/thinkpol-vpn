@@ -101,7 +101,7 @@ type osRoutes struct {
 // around changes the router's table (change, failing at the step it
 // returns) between shrinking the OS table's direct routes to what direct
 // keeps and putting want in place, read once change is done.
-func (o *osRoutes) around(ctx context.Context, direct *lists.Set, change func() (string, error), want func() RouteTableWant) (string, error) {
+func (o *osRoutes) around(ctx context.Context, direct *lists.Set, change func() (Step, error), want func() RouteTableWant) (Step, error) {
 	shrinkErr := o.shrink(ctx, direct)
 	if step, err := change(); err != nil {
 		return step, err

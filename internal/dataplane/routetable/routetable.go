@@ -344,23 +344,24 @@ type Status struct {
 	OverlayAhead int
 }
 
-// What Status.Error and Status.GuardError say.
+// What Status.Error and Status.GuardError say: codes, the log has the
+// detail.
 const (
-	ErrorApply   = "applying the route table failed"
-	ErrorReapply = "putting the route table back failed"
+	ErrorApply   = "apply_failed"   // applying the route table failed
+	ErrorReapply = "reapply_failed" // putting the route table back failed
 	// ErrorUnsupported: the kernel can't hold the table (rules need
 	// Linux 4.17 or later); terminal.
-	ErrorUnsupported = "the route table needs Linux 4.17 or later"
+	ErrorUnsupported = "unsupported"
 	// ErrorTUNDown: the TUN is down or gone; everything but direct
 	// destinations is unreachable until it is back.
-	ErrorTUNDown = "the TUN is down: traffic is blocked until it is back"
+	ErrorTUNDown = "tun_down"
 	// ErrorGuard: the routes may be in place, the leak guard isn't (or
 	// isn't up to date); retried every RetryAfter.
-	ErrorGuard = "applying the leak guard failed"
+	ErrorGuard = "guard_failed"
 	// ErrorGuardUnsupported: the OS can't hold the leak guard (Linux: no
 	// nf_tables; macOS: pf's main ruleset has no `anchor "com.apple/*"`);
 	// terminal. Interface-bound sockets aren't confined.
-	ErrorGuardUnsupported = "the leak guard is unsupported here: interface-bound sockets aren't confined"
+	ErrorGuardUnsupported = "guard_unsupported"
 )
 
 const (
@@ -464,7 +465,7 @@ func (e *Enforcer) Enforce(ctx context.Context, w Want) error {
 	unsupported := e.unsupported
 	e.mu.Unlock()
 	if unsupported {
-		return fmt.Errorf("routetable: %s: %w", ErrorUnsupported, errors.ErrUnsupported)
+		return fmt.Errorf("routetable: the route table needs Linux 4.17 or later: %w", errors.ErrUnsupported)
 	}
 	if same {
 		return nil

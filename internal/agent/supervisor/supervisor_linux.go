@@ -345,7 +345,7 @@ func (s *Supervisor) refreshUplink() {
 func (s *Supervisor) refreshUplinkLocked() bool {
 	up, err := s.opts.Uplink()
 	if err == nil && (up.Name == "" || len(up.Name) >= unix.IFNAMSIZ || strings.ContainsAny(up.Name, "\x00/ ") || strings.HasPrefix(up.Name, LinkPrefix)) {
-		err = fmt.Errorf("uplink %q: not an interface name the tables can match", up.Name)
+		err = fmt.Errorf("uplink %q: %w", up.Name, errUplinkUnusable)
 	}
 	if err != nil {
 		up = egress.Uplink{}
@@ -422,11 +422,7 @@ func (s *Supervisor) Egress() EgressInfo {
 	up, err := s.uplink, s.uplinkErr
 	s.mu.Unlock()
 	on := s.forwarding.on()
-	info := EgressInfo{Uplink: up.Name, IPv4: up.IPv4, IPv6: up.IPv6, Forwarding4: on[0], Forwarding6: on[1]}
-	if err != nil {
-		info.Err = err.Error()
-	}
-	return info
+	return EgressInfo{Uplink: up.Name, IPv4: up.IPv4, IPv6: up.IPv6, Forwarding4: on[0], Forwarding6: on[1], Err: egressError(err)}
 }
 
 // egressBeforeRebuild is what a failed rebuild puts back: the uplink, and
