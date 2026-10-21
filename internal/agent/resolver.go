@@ -15,17 +15,22 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
 
+// inWorker says the data plane runs in a server's worker: the only one
+// without a Device (workerDataPlane), whose upstreams come from its
+// config as workerUpstreams kept them.
+func (dp *DataPlane) inWorker() bool { return dp.Device == nil }
+
 // newResolver makes the node's resolver for a start of its data plane:
 // it asks the configured upstreams. A device with none asks the
 // resolvers the OS uses now (read before the OS is pointed at the
 // resolver; what the node itself wrote there is never taken for one); a
-// worker never falls back to those (see DESIGN.md "Upstreams"). A device
-// asks exits through the overlay TUN only.
+// worker (no Device) never falls back to those (see DESIGN.md
+// "Upstreams"). A device asks exits through the overlay TUN only.
 func (r *runner) newResolver() *dns.Server {
 	upstreams := r.dp.DNSUpstreams
-	if len(upstreams) == 0 && !r.dp.inWorker {
+	if len(upstreams) == 0 && r.dp.Device != nil {
 		own := []netip.Addr{r.follow.section.Node.IPv4, r.follow.section.Node.IPv6}
-		host, err := r.dp.Host.SystemUpstreams(own)
+		host, err := r.dp.Device.SystemUpstreams(own)
 		r.upstreamsUnknown.Store(err != nil)
 		if err != nil {
 			r.dp.Log.Warn("DNS: the system's resolvers are unknown; direct names won't resolve until a read of them works", "err", err)
@@ -35,7 +40,7 @@ func (r *runner) newResolver() *dns.Server {
 		}
 	}
 	if len(upstreams) == 0 {
-		if r.dp.inWorker {
+		if r.dp.inWorker() {
 			// workerUpstreams dropped every one: the egress refuses each.
 			// An exit's are counted and logged there; a non-exit's
 			// resolver reports nothing about them (MayEndAChain: only an
@@ -50,7 +55,7 @@ func (r *runner) newResolver() *dns.Server {
 		}
 	}
 	r.upstreams = slices.Clone(upstreams)
-	o := dns.Options{Upstreams: upstreams, Port: r.dp.dnsPort, Log: r.dp.Log}
+	o := dns.Options{Upstreams: upstreams, Port: r.dp.tuning.dnsPort, Log: r.dp.Log}
 	if r.follow.section.Node.Kind == netmap.NodeDevice {
 		o.TunnelControl = dns.BindToInterface(r.tun)
 	}
@@ -122,9 +127,10 @@ func (g *dnsGuard) problem() error {
 // systemConfig is how a device's OS should resolve now: through the
 // resolver on its overlay addresses, short names in the space's zone.
 // Unless upstreams are configured, the resolver follows the OS's own
-// resolvers when another program changes them.
+// resolvers when another program changes them. A worker (no Device)
+// leaves the OS alone whatever its section's kind.
 func (r *runner) systemConfig() (dns.SystemConfig, bool) {
-	if r.resolver == nil || r.follow.section.Node.Kind != netmap.NodeDevice {
+	if r.dp.Device == nil || r.resolver == nil || r.follow.section.Node.Kind != netmap.NodeDevice {
 		return dns.SystemConfig{}, false
 	}
 	c := dns.SystemConfig{Interface: r.tun, Servers: []netip.Addr{r.follow.section.Node.IPv4}, Log: r.dp.Log}
@@ -175,13 +181,13 @@ func (r *runner) pointSystem() {
 	if sys != nil {
 		err = sys.Update(want)
 	} else {
-		sys, err = r.dp.Host.SetSystemDNS(want)
+		sys, err = r.dp.Device.SetSystemDNS(want)
 	}
 	if err != nil {
 		r.guard.set(true, sys, fmt.Errorf("%w: %v", dns.ErrUnprotected, err))
-		r.dnsRetryAt = time.Now().Add(r.dp.retryAfter)
+		r.dnsRetryAt = time.Now().Add(r.dp.tuning.retryAfter)
 		r.dp.Log.Error("DNS: the system doesn't resolve through the node: names may leave outside the tunnel; retrying",
-			"in", r.dp.retryAfter, "err", err)
+			"in", r.dp.tuning.retryAfter, "err", err)
 		return
 	}
 	r.guard.set(true, sys, nil)

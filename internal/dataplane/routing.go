@@ -265,19 +265,17 @@ func (e *Engine) recompileRules() error {
 		return nil // the first Apply that can run compiles them
 	}
 	unavailable := e.compileRules(e.ruleInput, e.ruleNetworks)
-	ctx := e.ctx
-	shrinkErr := e.shrinkRoutes(ctx)
-	want := e.assign(*e.overlay)
-	if err := e.removePeers(want, true, e.paths); err != nil {
-		return err
-	}
-	if err := e.addPeers(want, e.paths, e.mtu); err != nil {
-		return err
-	}
-	if err := e.setTable(); err != nil {
-		return err
-	}
-	if err := e.growRoutes(ctx, shrinkErr); err != nil {
+	_, err := e.routes.around(e.ctx, e.ruleTable.Direct(), func() (Step, error) {
+		want := e.assign(*e.overlay)
+		if err := e.devices.remove(want, true, e.paths, e.setTable); err != nil {
+			return "", err
+		}
+		if err := e.devices.add(want, e.paths, e.mtu); err != nil {
+			return "", err
+		}
+		return "", e.setTable()
+	}, e.routeTableWant)
+	if err != nil {
 		return err
 	}
 	return unavailable

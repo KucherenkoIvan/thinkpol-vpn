@@ -1,7 +1,6 @@
 package udp
 
 import (
-	"net"
 	"sync"
 	"time"
 
@@ -39,13 +38,13 @@ type Router struct {
 	scratch []byte
 }
 
-var _ transport.Router = (*Router)(nil)
+var _ transport.PacketRouter = (*Router)(nil)
 
 func newRouter(t *Transport, peers transport.Peers) *Router {
 	return &Router{t: t, peers: peers, table: newSenderHistories(), scratch: make([]byte, 0, maxDatagram)}
 }
 
-// RouteDatagram implements transport.Router.
+// RouteDatagram implements transport.PacketRouter.
 func (r *Router) RouteDatagram(d []byte) (transport.Identity, transport.Verdict) {
 	now := r.t.now()
 	r.mu.Lock()
@@ -67,16 +66,11 @@ func (r *Router) RouteDatagram(d []byte) (transport.Identity, transport.Verdict)
 	return e.link.Peer, transport.Routed
 }
 
-// RouteStream implements transport.Router: udp has no streams.
-func (r *Router) RouteStream(net.Conn) (transport.Identity, []byte, bool) {
-	return transport.Identity{}, nil, false
-}
-
 // Counters reports what the router routed (Delivered and Cover, as a
 // listener counts them) and what it turned away and why.
 func (r *Router) Counters() Counters { return r.counters.snapshot() }
 
-// Rejected implements transport.Router.
+// Rejected implements transport.PacketRouter.
 func (r *Router) Rejected() []transport.PeerError {
 	r.mu.Lock()
 	defer r.mu.Unlock()

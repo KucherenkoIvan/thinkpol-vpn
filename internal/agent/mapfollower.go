@@ -17,6 +17,10 @@ import (
 type mapFollower struct {
 	log  *slog.Logger
 	keys NodeKeys
+	// report counts the maps refused (Status.MapsRefused): invalid ones
+	// and those not for this node, never one merely not newer (the same
+	// map read again); nil counts nowhere.
+	report *report
 
 	cur     *netmap.Map
 	section netmap.Section
@@ -43,6 +47,7 @@ func (f *mapFollower) take(envelope []byte) (taken, removed, back bool) {
 	}
 	if err != nil {
 		f.log.Warn("map refused, keeping the current one", "version", f.cur.Header().Version, "err", err)
+		f.refused()
 		return false, false, false
 	}
 	section, err := openSection(m, f.keys)
@@ -53,6 +58,7 @@ func (f *mapFollower) take(envelope []byte) (taken, removed, back bool) {
 	}
 	if err != nil {
 		f.log.Error("map refused, keeping the current one", "version", f.cur.Header().Version, "err", err)
+		f.refused()
 		return false, false, false
 	}
 	// A kind held is the running node's: it can't change (it restarts
@@ -65,6 +71,9 @@ func (f *mapFollower) take(envelope []byte) (taken, removed, back bool) {
 	f.cur, f.section, f.removed = m, section, false
 	return true, false, back
 }
+
+// refused counts a map not taken in the report.
+func (f *mapFollower) refused() { f.report.set(func(p *report) { p.mapsRefused++ }) }
 
 // sayBack logs that the node is back in its space, at the current map's
 // version, with attrs.

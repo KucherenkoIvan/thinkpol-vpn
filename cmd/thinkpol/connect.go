@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"flag"
 	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/localapi"
@@ -18,15 +17,8 @@ func init() {
 }
 
 func runConnect(ctx context.Context, e env, args []string) error {
-	fs := flag.NewFlagSet("connect", flag.ContinueOnError)
-	socket := fs.String("socket", apiSocket(), "the local API's socket (THINKPOL_API_SOCKET)")
-	if err := parseFlags(fs, e, args); err != nil {
-		return err
-	}
-	if fs.NArg() > 0 {
-		return errUsage
-	}
-	c, err := localapi.Dial(*socket)
+	cmd := newAPICommand("connect")
+	c, err := cmd.dial(e, args, noArgs)
 	if err != nil {
 		return err
 	}

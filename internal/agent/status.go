@@ -8,7 +8,6 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/supervisor"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
-	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
 
@@ -23,6 +22,10 @@ type Status struct {
 	Space netmap.SpaceID
 	// MapVersion is the version of the map the node follows.
 	MapVersion uint64
+	// MapsRefused counts the maps the node was given and refused since
+	// it started: invalid, or not its space's. One merely not newer than
+	// the map it follows (the same file read again) isn't counted.
+	MapsRefused uint64
 	// Removed is set while the map has no section for the node.
 	Removed    bool
 	Connection Connection
@@ -101,9 +104,9 @@ type WorkerStatus struct {
 	// ReadySince is when the running process became ready; RestartAt when
 	// a restart after a crash is due (zero when not applicable).
 	ReadySince, RestartAt time.Time
-	// LastExit is why the previous process ended (spawn or exit); the local
-	// API sanitizes it before the wire.
-	LastExit string
+	// LastExit is why the previous process ended, a code; the
+	// supervisor's log has the detail.
+	LastExit supervisor.ExitReason
 }
 
 // PublicListenerStatus is one of a server's public listeners: what it
@@ -129,17 +132,18 @@ var ErrDNSUnprotected = errors.New("agent: connected, but the system may resolve
 var ErrNotRunning = errors.New("agent: the node is not running")
 
 // StartError is a data plane that failed to start on Connect. Step names
-// what failed from a fixed vocabulary (dataplane.Step*, or StepTUN), safe
-// to show anyone; Err is the detail, for the node's own log.
+// what failed (StepTUN, StepEngine, or one of the engine's Apply steps,
+// dataplane.Step*), safe to show anyone; Err is the detail, for the
+// node's own log.
 type StartError struct {
-	Step string
+	Step dataplane.Step
 	Err  error
 }
 
-// The steps of a start before the engine's own (dataplane.Step*).
+// The steps of a start before the engine's own.
 const (
-	StepTUN    = "tun"    // creating the TUN or taking the overlay's network configuration
-	StepEngine = "engine" // starting the engine
+	StepTUN    dataplane.Step = "tun"    // creating the TUN or taking the overlay's network configuration
+	StepEngine dataplane.Step = "engine" // starting the engine
 )
 
 func (e *StartError) Error() string { return e.Err.Error() }
@@ -152,7 +156,9 @@ type report struct {
 	mode    Mode
 	space   netmap.SpaceID
 	version uint64
-	removed bool
+	// mapsRefused counts the maps the node's followers refused.
+	mapsRefused uint64
+	removed     bool
 	// conn is a device's connection.
 	conn connState
 	// retrying: a start, an Apply (a connected device's too) or a
@@ -192,7 +198,7 @@ func (p *report) set(f func(p *report)) {
 func (p *report) status() Status {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	s := Status{Mode: p.mode, Space: p.space, MapVersion: p.version, Removed: p.removed, Retrying: p.retrying, Listeners: p.listeners, DNSUpstreamsRefused: p.dnsUpstreamsRefused}
+	s := Status{Mode: p.mode, Space: p.space, MapVersion: p.version, MapsRefused: p.mapsRefused, Removed: p.removed, Retrying: p.retrying, Listeners: p.listeners, DNSUpstreamsRefused: p.dnsUpstreamsRefused}
 	if p.mode != ModeServer {
 		s.RulePreset = p.preset
 	}
@@ -221,7 +227,7 @@ func (p *report) status() Status {
 		for _, w := range p.workers.Workers() {
 			s.Workers = append(s.Workers, WorkerStatus{
 				Space: w.Space, Ready: w.Ready, Starts: w.Starts, ReadySince: w.ReadyAt, RestartAt: w.NextStart,
-				LastExit: w.LastExit,
+				LastExit: w.LastExitReason,
 			})
 		}
 		e := p.workers.Egress()
@@ -262,63 +268,66 @@ func (l HealthLevel) String() string {
 // Health is a node's health and what is wrong, worst first.
 type Health struct {
 	Level    HealthLevel
-	Problems []string
+	Problems []Problem
 }
+
+// Problem is what Health says is wrong: a code.
+type Problem string
 
 // The problems Health names.
 const (
-	ProblemDisconnected   = "disconnected"
-	ProblemRemoved        = "removed_from_space"
-	ProblemStarting       = "starting"
-	ProblemRetrying       = "retrying"
-	ProblemApplyFailed    = "apply_failed"    // the last Apply failed; DataPlane.LastApplyError says where
-	ProblemNoLinkUp       = "no_link_up"      // no adjacent node answers
-	ProblemNeighborDown   = "neighbor_down"   // some adjacent node doesn't answer
-	ProblemSkipped        = "entries_skipped" // the map holds entries the node can't use
-	ProblemWorkerDown     = "worker_down"     // a space's worker isn't ready
-	ProblemWorkerRestarts = "worker_restarted"
-	ProblemLinksRejected  = "links_rejected" // a public listener refused peer links
+	ProblemDisconnected   Problem = "disconnected"
+	ProblemRemoved        Problem = "removed_from_space"
+	ProblemStarting       Problem = "starting"
+	ProblemRetrying       Problem = "retrying"
+	ProblemApplyFailed    Problem = "apply_failed"    // the last Apply failed; DataPlane.LastApplyError says where
+	ProblemNoLinkUp       Problem = "no_link_up"      // no adjacent node answers
+	ProblemNeighborDown   Problem = "neighbor_down"   // some adjacent node doesn't answer
+	ProblemSkipped        Problem = "entries_skipped" // the map holds entries the node can't use
+	ProblemWorkerDown     Problem = "worker_down"     // a space's worker isn't ready
+	ProblemWorkerRestarts Problem = "worker_restarted"
+	ProblemLinksRejected  Problem = "links_rejected" // a public listener refused peer links
 	// ProblemPresetUnavailable: the map can't build the device's rule
 	// preset, so it is enforced failing closed (no internet but the local
 	// ranges' direct routes).
-	ProblemPresetUnavailable = "rule_preset_unavailable"
+	ProblemPresetUnavailable Problem = "rule_preset_unavailable"
 	// ProblemRouteTable: the OS routing table doesn't hold the rules now
 	// (putting it back failed): traffic may go around the tunnel.
-	ProblemRouteTable = "route_table_not_enforced"
+	ProblemRouteTable Problem = "route_table_not_enforced"
 	// ProblemRulesAhead: other software's policy rules come before the
 	// route table's and may route traffic around the tunnel.
-	ProblemRulesAhead = "policy_rules_ahead"
+	ProblemRulesAhead Problem = "policy_rules_ahead"
 	// ProblemOverlayRoutesAhead: other routes the route table can't
 	// outrank take overlay addresses (a hostile network's host routes,
 	// macOS): those peers' traffic leaves around the tunnel.
-	ProblemOverlayRoutesAhead = "overlay_routes_ahead"
+	ProblemOverlayRoutesAhead Problem = "overlay_routes_ahead"
 	// ProblemGuard: the leak guard isn't in place now (applying it
 	// failed; retried): IPv6 from interface-bound sockets may go around
 	// the tunnel.
-	ProblemGuard = "ipv6_guard_not_enforced"
+	ProblemGuard Problem = "ipv6_guard_not_enforced"
 	// ProblemGuardUnsupported: the OS can't hold the leak guard (Linux:
 	// no nf_tables; macOS: no `anchor "com.apple/*"` in pf's main
 	// ruleset): the device connects, but IPv6 from interface-bound
 	// sockets isn't confined.
-	ProblemGuardUnsupported = "ipv6_guard_unsupported"
+	ProblemGuardUnsupported Problem = "ipv6_guard_unsupported"
 	// ProblemDNSUnprotected: the OS may resolve names outside the node's
 	// resolver, so names may leave outside the tunnel.
-	ProblemDNSUnprotected = "dns_not_protected"
+	ProblemDNSUnprotected Problem = "dns_not_protected"
 	// ProblemDNSUpstreamsStale: the device's direct upstreams may be stale
 	// (the last read of the OS's own resolvers failed), so `direct` names
 	// may not resolve; the OS still resolves through the node.
-	ProblemDNSUpstreamsStale = "dns_upstreams_stale"
+	ProblemDNSUpstreamsStale Problem = "dns_upstreams_stale"
 	// ProblemDNSUpstreamRefused: resolver upstreams the worker's egress
 	// refuses (Status.DNSUpstreamsRefused counts them) aren't configured:
 	// the resolver asks the rest, and with none left tunnel-bound names
 	// fail.
-	ProblemDNSUpstreamRefused = "dns_upstream_refused"
+	ProblemDNSUpstreamRefused Problem = "dns_upstream_refused"
 )
 
 // Health grades the status.
 func (s Status) Health() Health {
 	var h Health
-	add := func(level HealthLevel, problem string) {
+	add := func(level HealthLevel, problem Problem) {
 		h.Level = max(h.Level, level)
 		h.Problems = append(h.Problems, problem)
 	}
@@ -335,73 +344,92 @@ func (s Status) Health() Health {
 			add(HealthDown, ProblemStarting)
 		}
 	case Serving:
-		if s.Retrying {
-			add(HealthDegraded, ProblemRetrying)
-		}
-		down, restarted := false, false
-		for _, w := range s.Workers {
-			down = down || !w.Ready
-			restarted = restarted || w.Starts > 1
-		}
-		if down {
-			add(HealthDown, ProblemWorkerDown)
-		}
-		if restarted {
-			add(HealthDegraded, ProblemWorkerRestarts)
-		}
-		for _, l := range s.PublicListeners {
-			if l.Rejected > 0 {
-				add(HealthDegraded, ProblemLinksRejected)
-				break
-			}
-		}
-		if s.DNSUpstreamsRefused > 0 {
-			add(HealthDegraded, ProblemDNSUpstreamRefused)
-		}
+		s.serverProblems(add)
 	}
-	if dp := s.DataPlane; dp != nil {
-		if dp.LastApplyError != "" {
-			add(HealthDegraded, ProblemApplyFailed)
-		}
-		up := 0
-		for _, n := range dp.Neighbors {
-			if n.Up {
-				up++
-			}
-		}
-		switch {
-		case len(dp.Neighbors) > 0 && up == 0:
-			add(HealthDown, ProblemNoLinkUp)
-		case up < len(dp.Neighbors):
-			add(HealthDegraded, ProblemNeighborDown)
-		}
-		if len(dp.Skipped) > 0 {
-			add(HealthDegraded, ProblemSkipped)
-		}
-		if s.PresetUnavailable {
-			add(HealthDegraded, ProblemPresetUnavailable)
-		}
-		if rt := dp.RouteTable; rt.Error != "" {
-			add(HealthDown, ProblemRouteTable)
-		} else if rt.Enforced && rt.RulesAhead > 0 {
-			add(HealthDegraded, ProblemRulesAhead)
-		}
-		if rt := dp.RouteTable; rt.Error == "" && rt.OverlayAhead > 0 {
-			add(HealthDown, ProblemOverlayRoutesAhead)
-		}
-		switch dp.RouteTable.GuardError {
-		case "":
-		case routetable.ErrorGuardUnsupported:
-			add(HealthDegraded, ProblemGuardUnsupported)
-		default:
-			add(HealthDegraded, ProblemGuard)
-		}
-		if s.DNSUnprotected {
-			add(HealthDegraded, ProblemDNSUnprotected)
-		}
-		if s.DNSUpstreamsStale {
-			add(HealthDegraded, ProblemDNSUpstreamsStale)
-		}
+	if s.DataPlane != nil {
+		s.dataPlaneProblems(add)
 	}
 	return h
+}
+
+// serverProblems adds a server's problems: its map, workers, listeners
+// and resolver upstreams.
+func (s Status) serverProblems(add func(HealthLevel, Problem)) {
+	if s.Retrying {
+		add(HealthDegraded, ProblemRetrying)
+	}
+	down, restarted := false, false
+	for _, w := range s.Workers {
+		down = down || !w.Ready
+		restarted = restarted || w.Starts > 1
+	}
+	if down {
+		add(HealthDown, ProblemWorkerDown)
+	}
+	if restarted {
+		add(HealthDegraded, ProblemWorkerRestarts)
+	}
+	for _, l := range s.PublicListeners {
+		if l.Rejected > 0 {
+			add(HealthDegraded, ProblemLinksRejected)
+			break
+		}
+	}
+	if s.DNSUpstreamsRefused > 0 {
+		add(HealthDegraded, ProblemDNSUpstreamRefused)
+	}
+}
+
+// dataPlaneProblems adds a running data plane's problems: its map, links,
+// rules, route table and DNS.
+func (s Status) dataPlaneProblems(add func(HealthLevel, Problem)) {
+	dp := s.DataPlane
+	if dp.LastApplyError != "" {
+		add(HealthDegraded, ProblemApplyFailed)
+	}
+	up := 0
+	for _, n := range dp.Neighbors {
+		if n.Up {
+			up++
+		}
+	}
+	switch {
+	case len(dp.Neighbors) > 0 && up == 0:
+		add(HealthDown, ProblemNoLinkUp)
+	case up < len(dp.Neighbors):
+		add(HealthDegraded, ProblemNeighborDown)
+	}
+	if len(dp.Skipped) > 0 {
+		add(HealthDegraded, ProblemSkipped)
+	}
+	if s.PresetUnavailable {
+		add(HealthDegraded, ProblemPresetUnavailable)
+	}
+	routeTableProblems(dp.RouteTable, add)
+	if s.DNSUnprotected {
+		add(HealthDegraded, ProblemDNSUnprotected)
+	}
+	if s.DNSUpstreamsStale {
+		add(HealthDegraded, ProblemDNSUpstreamsStale)
+	}
+}
+
+// routeTableProblems adds the OS routing table's problems and its leak
+// guard's.
+func routeTableProblems(rt dataplane.RouteTableStatus, add func(HealthLevel, Problem)) {
+	if rt.Error != "" {
+		add(HealthDown, ProblemRouteTable)
+	} else if rt.Enforced && rt.RulesAhead > 0 {
+		add(HealthDegraded, ProblemRulesAhead)
+	}
+	if rt.Error == "" && rt.OverlayAhead > 0 {
+		add(HealthDown, ProblemOverlayRoutesAhead)
+	}
+	switch rt.GuardError {
+	case "":
+	case dataplane.RouteTableGuardUnsupported:
+		add(HealthDegraded, ProblemGuardUnsupported)
+	default:
+		add(HealthDegraded, ProblemGuard)
+	}
 }

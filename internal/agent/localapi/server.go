@@ -102,8 +102,8 @@ func NewGRPCServer(shutdown context.Context, o Options, p Policy) *grpc.Server {
 	if o.Log != nil {
 		opts = append(opts, grpckit.WithLogger(o.Log))
 	}
-	for e, code := range errorCodes {
-		opts = append(opts, grpckit.WithErrorCode(e.Code, code))
+	for _, r := range refusals {
+		opts = append(opts, grpckit.WithErrorCode(r.err.Code, r.code))
 	}
 	srv := grpckit.NewServer(opts...)
 	localapiv1.RegisterLocalServiceServer(srv, &server{node: o.Node, logs: o.Logs, shutdown: shutdown.Done()})

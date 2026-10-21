@@ -166,17 +166,45 @@ func (s *Supervisor) SetSpaces(spaces []Space) error {
 	}
 	s.setMu.Lock()
 	defer s.setMu.Unlock()
+	stopping, err := s.leaveSpaces(want)
+	if err != nil {
+		return err
+	}
+	s.stopAll(stopping)
+	before, was, started, err := s.updateWorkers(spaces)
+	if err != nil {
+		return err
+	}
+	// Rebuild the isolation tables for the current slots, their egress and
+	// dials, before any new worker's veth carries a packet. On failure the
+	// just-started workers are rolled back: none has a goroutine yet, so a
+	// later Close must not wait on them. What the tables are built from is
+	// put back to what they still enforce, so the next SetSpaces sees the
+	// difference and applies it.
+	if err := s.applyTables(before); err != nil {
+		s.rollback(started)
+		s.restoreEgress(was)
+		return err
+	}
+	for _, w := range started {
+		go s.supervise(w)
+	}
+	return nil
+}
+
+// leaveSpaces makes the credential tables want's, and takes the workers
+// of the spaces want doesn't list out of the supervisor's, for the caller
+// to stop: a space leaving is unreachable before its worker stops, and a
+// new one routable once its worker is ready.
+func (s *Supervisor) leaveSpaces(want map[netmap.SpaceID]Space) ([]*worker, error) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.closed {
-		s.mu.Unlock()
-		return errors.New("supervisor: closed")
+		return nil, errors.New("supervisor: closed")
 	}
 	if len(want) > s.opts.slots() {
-		s.mu.Unlock()
-		return fmt.Errorf("supervisor: %d spaces, room for %d", len(want), s.opts.slots())
+		return nil, fmt.Errorf("supervisor: %d spaces, room for %d", len(want), s.opts.slots())
 	}
-	// The credential tables first: a space leaving is unreachable before
-	// its worker stops, and a new one routable once its worker is ready.
 	inbound := make(map[transport.SpaceID]map[string][]transport.PeerLink, len(want))
 	for id, sp := range want {
 		inbound[transport.SpaceID(id)] = sp.Inbound
@@ -189,21 +217,24 @@ func (s *Supervisor) SetSpaces(spaces []Space) error {
 			delete(s.workers, id)
 		}
 	}
-	s.mu.Unlock()
+	return stopping, nil
+}
 
-	s.stopAll(stopping)
-
+// updateWorkers pushes each served space's new configuration to its
+// worker and creates the new spaces' workers in free slots, not yet
+// supervised (started). It returns what each running space's table
+// forwarded before the uplink and the grants changed (a space whose
+// differs after is told), and the egress state to put back if the tables
+// can't follow.
+func (s *Supervisor) updateWorkers(spaces []Space) (before map[*worker]spaceEgress, was egressBeforeRebuild, started []*worker, err error) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.closed {
-		s.mu.Unlock()
-		return errors.New("supervisor: closed")
+		return nil, was, nil, errors.New("supervisor: closed")
 	}
-	// What each running space's table forwards now, before the uplink
-	// and the grants change: a space whose differs after is told.
-	before := s.spaceEgresses()
-	was := s.saveEgress()
+	before = s.spaceEgresses()
+	was = s.saveEgress()
 	s.refreshUplinkLocked()
-	var started []*worker
 	for _, sp := range spaces {
 		if w, ok := s.workers[sp.ID]; ok {
 			w.inbound = sp.Inbound
@@ -220,23 +251,7 @@ func (s *Supervisor) SetSpaces(spaces []Space) error {
 		s.workers[sp.ID] = w
 		started = append(started, w)
 	}
-	s.mu.Unlock()
-
-	// Rebuild the isolation tables for the current slots, their egress and
-	// dials, before any new worker's veth carries a packet. On failure the
-	// just-started workers are rolled back: none has a goroutine yet, so a
-	// later Close must not wait on them. What the tables are built from is
-	// put back to what they still enforce, so the next SetSpaces sees the
-	// difference and applies it.
-	if err := s.applyTables(before); err != nil {
-		s.rollback(started)
-		s.restoreEgress(was)
-		return err
-	}
-	for _, w := range started {
-		go s.supervise(w)
-	}
-	return nil
+	return before, was, started, nil
 }
 
 // validateSpaces checks the spaces' ids, dials and uniqueness, and returns
@@ -345,7 +360,7 @@ func (s *Supervisor) refreshUplink() {
 func (s *Supervisor) refreshUplinkLocked() bool {
 	up, err := s.opts.Uplink()
 	if err == nil && (up.Name == "" || len(up.Name) >= unix.IFNAMSIZ || strings.ContainsAny(up.Name, "\x00/ ") || strings.HasPrefix(up.Name, LinkPrefix)) {
-		err = fmt.Errorf("uplink %q: not an interface name the tables can match", up.Name)
+		err = fmt.Errorf("uplink %q: %w", up.Name, errUplinkUnusable)
 	}
 	if err != nil {
 		up = egress.Uplink{}
@@ -422,11 +437,7 @@ func (s *Supervisor) Egress() EgressInfo {
 	up, err := s.uplink, s.uplinkErr
 	s.mu.Unlock()
 	on := s.forwarding.on()
-	info := EgressInfo{Uplink: up.Name, IPv4: up.IPv4, IPv6: up.IPv6, Forwarding4: on[0], Forwarding6: on[1]}
-	if err != nil {
-		info.Err = err.Error()
-	}
-	return info
+	return EgressInfo{Uplink: up.Name, IPv4: up.IPv4, IPv6: up.IPv6, Forwarding4: on[0], Forwarding6: on[1], Err: egressError(err)}
 }
 
 // egressBeforeRebuild is what a failed rebuild puts back: the uplink, and

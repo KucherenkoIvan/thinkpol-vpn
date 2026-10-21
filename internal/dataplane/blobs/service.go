@@ -308,22 +308,37 @@ func (s *Service) Update(p Plan) {
 		s.cancelFetch = nil
 	}
 	s.plan = p
-	s.peerOf = map[netip.Addr]string{}
-	for _, peer := range p.Peers {
-		for _, a := range peer.Addrs {
-			if _, dup := s.peerOf[a.Unmap()]; !dup {
-				s.peerOf[a.Unmap()] = peer.ID.String()
-			}
-		}
-	}
+	s.peerOf = peersByAddr(p.Peers)
 	s.gen++
 	previous := s.want
 	s.want = map[[32]byte]netmap.BlobRef{}
 	s.failed = map[[32]byte]bool{}
 	s.stored = map[[32]byte]bool{}
 	s.skipped = 0
+	s.wantLocked(p.Want)
+	s.dropUnwantedLocked(previous)
+}
+
+// peersByAddr maps each peer's overlay addresses, unmapped, to its ID; an
+// address two peers list stays the first one's.
+func peersByAddr(peers []Peer) map[netip.Addr]string {
+	byAddr := map[netip.Addr]string{}
+	for _, peer := range peers {
+		for _, a := range peer.Addrs {
+			if _, dup := byAddr[a.Unmap()]; !dup {
+				byAddr[a.Unmap()] = peer.ID.String()
+			}
+		}
+	}
+	return byAddr
+}
+
+// wantLocked adds refs to s.want in order, skipping a blob larger than
+// MaxBlob and those past MaxHeld together, and gives what is held of them
+// their current kind and name; s.mu held.
+func (s *Service) wantLocked(refs []netmap.BlobRef) {
 	var total int64
-	for _, ref := range p.Want {
+	for _, ref := range refs {
 		if _, dup := s.want[ref.SHA256]; dup {
 			continue
 		}
@@ -351,9 +366,13 @@ func (s *Service) Update(p Plan) {
 			s.changedLocked()
 		}
 	}
-	// What the new plan doesn't want stays only as a stand-in: a named
-	// blob while the plan wants one of its kind and name, an unnamed one
-	// (a server's) for one plan.
+}
+
+// dropUnwantedLocked drops the held blobs the new plan doesn't want unless
+// they stand in: a named blob while the plan wants one of its kind and
+// name, an unnamed one (a server's) for one plan, previous being the
+// plan's before; s.mu held.
+func (s *Service) dropUnwantedLocked(previous map[[32]byte]netmap.BlobRef) {
 	for sha, ref := range s.held {
 		if _, ok := s.want[sha]; ok {
 			continue

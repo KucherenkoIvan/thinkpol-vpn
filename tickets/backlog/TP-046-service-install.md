@@ -23,6 +23,7 @@ The client runs as a proper background service on macOS and Linux (Windows: TP-0
 ## Acceptance
 - [ ] install, reboot, uninstall on macOS and Linux leave the system clean
 - [ ] connect-on-boot is off by default after install (PRD D5); the toggle enables it
+- [ ] macOS: an agent the launchd daemon starts at boot before the system has loaded `/etc/pf.conf` doesn't run without its IPv6 guard: it waits for the `com.apple/*` hook (or retries until it is there) and stays fail-closed meanwhile; a boot test on a device shows it
 - [ ] after a simulated crash the service restarts the agent and restores the persisted connect state; fail-closed during the gap is verified in TP-048
 
 ## Notes
@@ -32,6 +33,7 @@ The client runs as a proper background service on macOS and Linux (Windows: TP-0
   - Create the `thinkpol` group and add the installing user; run the service as root. Leave `/run/thinkpol-api` to the service (it creates it 0750 root:thinkpol and fixes a leftover of its own); don't use systemd's `RuntimeDirectory=` for it unless it ends up exactly that.
 - **Crash posture (independent design review, 2026-10-13; TP-062).** The service must restart after a crash and the device must stay fail-closed until it does (default for the "everything" and "all but domestic" presets, opt-out; the guard is TP-048's). The persisted connect state above tells a crash from a deliberate disconnect, which still follows the kill-switch toggle (PRD D4). macOS must meet this too (launchd's restart and the pf guard).
 - **Host lock needs a stable inode (TP-060).** The agent lock `/run/thinkpol/agent.lock` only works while its inode survives. Do NOT use `RuntimeDirectory=thinkpol`: systemd deletes the directory when the unit stops, including when the unit stops because it lost the lock, and a later agent would then lock a fresh inode while the old holder still runs. Create `/run/thinkpol` yourself (the agent does, root 0700), or set `RuntimeDirectoryPreserve=yes`.
+- **pf boot race (DESIGN, "The leak guard on macOS").** The guard's anchor hangs under Apple's `anchor "com.apple/*"` hook from `/etc/pf.conf`. An agent started at boot before the system loads that file finds no hook; DESIGN hands this race to this ticket.
 
 ## Log
 - 2026-10-10 created in backlog
@@ -40,3 +42,4 @@ The client runs as a proper background service on macOS and Linux (Windows: TP-0
 - 2026-10-15 docs (independent review 2026-10-15): depends on TP-075 (agent refactor before service install)
 - 2026-10-15 docs (backlog grooming): milestone M2; Windows service moved to TP-047; connect-on-boot and crash acceptance added
 - 2026-10-15 docs (backlog grooming, review fixes): Goal scoped to macOS/Linux; crash acceptance decoupled from TP-048 fail-closed check
+- 2026-10-22 docs (TP-077 residual-risks research): the macOS pf boot race, which DESIGN hands to this ticket, added to Notes and Acceptance

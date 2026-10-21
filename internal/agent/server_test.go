@@ -17,6 +17,7 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/logring"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/supervisor"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/worker"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
@@ -81,11 +82,19 @@ func (f *fakeSupervisor) last() ([]supervisor.Space, []supervisor.Listener, int)
 }
 
 type runningServer struct {
-	sup  *fakeSupervisor
-	log  *logring.Ring
-	maps chan []byte
-	done chan error
-	stop context.CancelFunc
+	sup    *fakeSupervisor
+	log    *logring.Ring
+	report report
+	maps   chan []byte
+	done   chan error
+	stop   context.CancelFunc
+}
+
+// served waits until the status says the server serves map version:
+// nothing to retry.
+func (r *runningServer) served(t *testing.T, version uint64) {
+	t.Helper()
+	eventually(t, func() bool { st := r.report.status(); return st.MapVersion == version && !st.Retrying })
 }
 
 // runServerSpaces serves s's map at version 1, its section changed by
@@ -111,10 +120,10 @@ func runServerSpacesIn(t *testing.T, s *testSpace, sup *fakeSupervisor, stateDir
 	}
 	ss := &serverSpaces{
 		sup: sup, reg: reg, trust: s.trust(), retryAfter: testRetry,
-		log: slog.New(slog.NewTextHandler(r.log, nil)),
+		log: slog.New(slog.NewTextHandler(r.log, nil)), report: &r.report,
 		follow: mapFollower{
 			log:  slog.New(slog.NewTextHandler(r.log, nil)),
-			keys: s.a, cur: m, section: section,
+			keys: s.a, report: &r.report, cur: m, section: section,
 			removedMsg: serverRemovedMsg,
 		},
 	}
@@ -178,7 +187,7 @@ func TestServerWithIngressOffAcceptsNoDevice(t *testing.T) {
 	s := newTestSpace(t)
 	sup := &fakeSupervisor{}
 	r := runServerSpaces(t, s, sup, func(sec *netmap.Section) { sec.Node.AllowIngress = false })
-	eventually(t, func() bool { return logMatches(r.log.String(), `msg="map applied" .*version=1`) })
+	r.served(t, 1)
 	if sp, _, _ := sup.last(); len(sp) != 1 || len(sp[0].Inbound["memory"]) != 0 {
 		t.Fatalf("spaces %+v: the device's link is accepted", sp)
 	}
@@ -187,7 +196,7 @@ func TestServerWithIngressOffAcceptsNoDevice(t *testing.T) {
 	}
 
 	r.maps <- s.build(t, 2)
-	eventually(t, func() bool { return logMatches(r.log.String(), `msg="map applied" .*version=2`) })
+	r.served(t, 2)
 	if sp, _, _ := sup.last(); len(sp) != 1 || len(sp[0].Inbound["memory"]) != 1 {
 		t.Fatalf("spaces %+v: the device's link is refused with ingress on", sp)
 	}
@@ -198,7 +207,13 @@ func TestServerRetriesListenersThatFailAtTheStart(t *testing.T) {
 	s := newTestSpace(t)
 	sup := &fakeSupervisor{failLists: 1}
 	r := runServerSpaces(t, s, sup)
-	eventually(t, func() bool { return strings.Contains(r.log.String(), `msg="map applied"`) })
+	// The failed SetListeners and the retry that served the map.
+	eventually(t, func() bool {
+		sup.mu.Lock()
+		defer sup.mu.Unlock()
+		return len(sup.listeners) == 2
+	})
+	r.served(t, 1)
 	if strings.Count(r.log.String(), "opening listeners failed, retrying") != 1 {
 		t.Fatalf("log:\n%s", r.log)
 	}
@@ -232,8 +247,8 @@ func TestServerRetriesAFailedMap(t *testing.T) {
 	sup.failSpaces = 1
 	sup.mu.Unlock()
 	r.maps <- s.build(t, 2)
-	eventually(t, func() bool { return strings.Contains(r.log.String(), "serving the map failed, retrying") })
-	eventually(t, func() bool { return logMatches(r.log.String(), `msg="map applied" .*version=2`) })
+	// Seen once retried: serving it failed first.
+	r.served(t, 2)
 	_, _, n := sup.last()
 	if n != 3 {
 		t.Fatalf("%d SetSpaces calls, want the first, the failed one and the retry", n)
@@ -272,11 +287,14 @@ func TestTheEgressLineSaysWhatTheTablesEnforce(t *testing.T) {
 func TestAnUplinkFoundBySetSpacesIsNotWarnedAbout(t *testing.T) {
 	s := newTestSpace(t)
 	sup := &fakeSupervisor{egressSeq: []supervisor.EgressInfo{
-		{Err: "no default route"}, {Uplink: "eth9", IPv4: true},
+		{Err: supervisor.EgressNoDefaultRoute}, {Uplink: "eth9", IPv4: true},
 	}}
 	r := runServerSpacesIn(t, s, sup, "", func(ss *serverSpaces) { ss.dns = true },
 		func(sec *netmap.Section) { sec.Node.AllowEgress = true })
-	eventually(t, func() bool { return logMatches(r.log.String(), `msg="map applied" .*uplink=eth9 `) })
+	r.served(t, 1)
+	if !logMatches(r.log.String(), `msg="map applied" .*uplink=eth9 `) {
+		t.Errorf("the map applied line doesn't name the tables' uplink:\n%s", r.log.String())
+	}
 	if strings.Contains(r.log.String(), "has no uplink") {
 		t.Errorf("the node was warned about an uplink the tables carry:\n%s", r.log.String())
 	}
@@ -299,9 +317,8 @@ func TestServerStopsTheSpaceWhileRemoved(t *testing.T) {
 		t.Fatalf("%d removal messages", c)
 	}
 	r.maps <- s.build(t, 4)
-	eventually(t, func() bool { return strings.Contains(r.log.String(), "back in space") })
-	eventually(t, func() bool { sp, _, _ := sup.last(); return len(sp) == 1 })
 	heard.are(t, Event{EventRemovedFromSpace, 2}, Event{EventBackInSpace, 4})
+	eventually(t, func() bool { sp, _, _ := sup.last(); return len(sp) == 1 })
 }
 
 // Removing the node from its space clears the refused upstreams together
@@ -322,7 +339,7 @@ func TestRejoiningTheSpaceLogsTheRefusedUpstreamsAgain(t *testing.T) {
 	r.maps <- s.buildWithout(t, 2, s.a)
 	eventually(t, func() bool { _, _, n := sup.last(); return n == 2 })
 	r.maps <- s.buildEditing(t, 3, s.a, func(sec *netmap.Section) { sec.Node.AllowEgress = true })
-	eventually(t, func() bool { return logMatches(r.log.String(), `msg="map applied" .*version=3`) })
+	r.served(t, 3)
 	if n := strings.Count(r.log.String(), "refuses the upstream"); n != 2 {
 		t.Errorf("after rejoining the refused upstream was logged %d times, want twice", n)
 	}
@@ -388,9 +405,9 @@ func TestServeSpace(t *testing.T) {
 		sess := newFakeSession(s.id)
 		sess.config <- s.workerConfig(t, s.a, 1)
 		n, wait := serve(t, sess)
-		n.waitLog(t, `msg="map applied" .*version=1`)
+		n.applied(t, 1)
 		sess.config <- s.workerConfig(t, s.a, 2)
-		n.waitLog(t, `msg="map applied" .*version=2`)
+		n.applied(t, 2)
 		n.stop()
 		if err := wait(); err != nil {
 			t.Fatal(err)
@@ -408,7 +425,7 @@ func TestServeSpace(t *testing.T) {
 		sess := newFakeSession(s.id)
 		sess.config <- s.workerConfig(t, s.a, 1)
 		n, wait := serve(t, sess)
-		n.waitLog(t, `msg="map applied" .*version=1`)
+		n.applied(t, 1)
 		sess.config <- s.workerConfig(t, s.b, 2)
 		if err := wait(); err == nil || !strings.Contains(err.Error(), "changed the worker's keys or trust") {
 			t.Fatalf("got %v", err)
@@ -420,14 +437,14 @@ func TestServeSpace(t *testing.T) {
 		n := newRunningNode()
 		asked := false
 		base := n.dataPlane(reg, NodeKeys{}, nil)
-		base.dnsPort = 5353
-		base.Host.SystemUpstreams = func([]netip.Addr) ([]netip.Addr, error) {
+		base.tuning.dnsPort = 5353
+		base.Device.SystemUpstreams = func([]netip.Addr) ([]netip.Addr, error) {
 			asked = true
 			return nil, nil
 		}
 		done := make(chan error, 1)
 		go func() { done <- serveSpace(base.Log, base)(n.ctx, sess.Session) }()
-		n.waitLog(t, `msg="map applied" .*version=1`)
+		n.applied(t, 1)
 		n.stop()
 		if err := <-done; err != nil {
 			t.Fatal(err)
@@ -446,26 +463,38 @@ func TestServeSpace(t *testing.T) {
 			t.Errorf("the resolver doesn't run as a worker's:\n%s", log)
 		}
 	})
-	t.Run("a later config's upstreams follow the running resolver", func(t *testing.T) {
+	// A later config's upstreams reach the worker's running resolver: its
+	// answer comes from the new upstream.
+	t.Run("a later config's upstreams reach the running resolver", func(t *testing.T) {
+		x := startTestUpstream(t, netip.MustParseAddr("192.0.2.10"))
+		y := startTestUpstream(t, netip.MustParseAddr("192.0.2.11"))
+		// An exit's section, whose resolver serves; the worker config's
+		// upstreams are what the supervisor's egress allowed.
+		config := func(version uint64, ups ...netip.AddrPort) []byte {
+			b, err := WorkerConfig{Keys: s.a, Trust: s.trust(), DNS: true, DNSUpstreams: ups,
+				Map: s.buildEditing(t, version, s.a, func(sec *netmap.Section) { sec.Node.AllowEgress = true })}.Encode()
+			if err != nil {
+				t.Fatal(err)
+			}
+			return b
+		}
 		sess := newFakeSession(s.id)
-		sess.config <- s.dnsWorkerConfig(t, s.a, 1,
-			netip.MustParseAddrPort("198.51.100.53:53"), netip.MustParseAddrPort("203.0.113.53:53"))
-		n, wait := serve(t, sess)
-		n.waitLog(t, `msg="map applied" .*version=1`)
-		if l := n.log.String(); strings.Contains(l, "upstreams changed") {
-			t.Errorf("the first config was logged as a change:\n%s", l)
+		sess.config <- config(1, x.address)
+		n := newRunningNode()
+		base := n.dataPlane(reg, NodeKeys{}, nil)
+		base.tuning.dnsPort, base.tuning.dnsListen = freePort(t), netip.MustParseAddr("127.0.0.1")
+		done := make(chan error, 1)
+		go func() { done <- serveSpace(base.Log, base)(n.ctx, sess.Session) }()
+		n.applied(t, 1)
+		answers := func(from netip.Addr) func() bool {
+			return func() bool { a, err := resolverAnswer(base.tuning.dnsPort); return err == nil && a == from }
 		}
-		sess.config <- s.dnsWorkerConfig(t, s.a, 2, netip.MustParseAddrPort("198.51.100.53:53"))
-		n.waitLog(t, `msg="map applied" .*version=2`)
-		n.waitLog(t, `msg="DNS: the resolver's upstreams changed" .*upstreams=1`)
-		// The same upstreams again change nothing.
-		sess.config <- s.dnsWorkerConfig(t, s.a, 3, netip.MustParseAddrPort("198.51.100.53:53"))
-		n.waitLog(t, `msg="map applied" .*version=3`)
-		if n := strings.Count(n.log.String(), "upstreams changed"); n != 1 {
-			t.Errorf("the resolver's upstreams changed %d times, want once", n)
-		}
+		eventually(t, answers(x.answer))
+		sess.config <- config(2, y.address)
+		n.applied(t, 2)
+		eventually(t, answers(y.answer))
 		n.stop()
-		if err := wait(); err != nil {
+		if err := <-done; err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -551,7 +580,7 @@ func TestServerEgressAndDials(t *testing.T) {
 	}{
 		{"egress on", true, supervisor.EgressInfo{Uplink: "eth9", IPv4: true},
 			supervisor.EgressGrant{IPv4: true, IPv6: true}, "egress=on uplink=eth9 egress_ipv4=on egress_ipv6=off"},
-		{"no uplink", true, supervisor.EgressInfo{Err: "no default route"},
+		{"no uplink", true, supervisor.EgressInfo{Err: supervisor.EgressNoDefaultRoute},
 			supervisor.EgressGrant{IPv4: true, IPv6: true}, "egress=on uplink=none"},
 		{"egress off", false, supervisor.EgressInfo{Uplink: "eth9", IPv4: true},
 			supervisor.EgressGrant{}, "egress=off blobs="},
@@ -560,7 +589,7 @@ func TestServerEgressAndDials(t *testing.T) {
 			s := newTestSpace(t)
 			sup := &fakeSupervisor{egress: tc.info}
 			r := runServerSpaces(t, s, sup, withLinks, func(sec *netmap.Section) { sec.Node.AllowEgress = tc.egress })
-			eventually(t, func() bool { return logMatches(r.log.String(), `msg="map applied" .*version=1`) })
+			r.served(t, 1)
 			sp, _, _ := sup.last()
 			want := []supervisor.Dial{{Address: other, Network: "udp"}, {Address: netip.MustParseAddrPort("[2001:db8::7]:4500"), Network: "udp"}}
 			if len(sp) != 1 || sp[0].Egress != tc.want || !slices.Equal(sp[0].Dials, want) {
@@ -570,5 +599,89 @@ func TestServerEgressAndDials(t *testing.T) {
 				t.Fatalf("log, want %q:\n%s", tc.wantLog, r.log)
 			}
 		})
+	}
+}
+
+// A worker whose section says device (a server run with -mode server on
+// a device's section, or a map changing a running server's kind) serves
+// it with its resolver on, and never reaches for the OS's resolver
+// configuration, which a worker doesn't have.
+func TestAWorkerOnADeviceSectionLeavesTheOSResolverAlone(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		ups  []netip.AddrPort
+	}{
+		{"configured upstreams", []netip.AddrPort{netip.MustParseAddrPort("192.0.2.53:53")}},
+		// None configured: a device's resolver would ask the OS's.
+		{"no upstreams", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestSpace(t)
+			_, reg := memoryRegistry(t)
+			w := newRunningNode()
+			base := w.dataPlane(reg, NodeKeys{}, nil)
+			base.tuning.dnsPort = freePort(t)
+			// Whatever the test base has, a worker has no device
+			// adapters: reaching one fails the test.
+			base.Device.SetSystemDNS = func(dns.SystemConfig) (dns.System, error) {
+				t.Error("a worker pointed the OS's resolver configuration")
+				return nil, errors.New("not a worker's")
+			}
+			base.Device.SystemUpstreams = func([]netip.Addr) ([]netip.Addr, error) {
+				t.Error("a worker asked for the OS's resolvers")
+				return nil, errors.New("not a worker's")
+			}
+			sess := newFakeSession(s.id)
+			config, err := WorkerConfig{Keys: s.b, Trust: s.trust(), Map: s.build(t, 1), DNS: true, DNSUpstreams: tc.ups}.Encode()
+			if err != nil {
+				t.Fatal(err)
+			}
+			sess.config <- config
+			done := make(chan error, 1)
+			go func() { done <- serveSpace(base.Log, base)(w.ctx, sess.Session) }()
+			w.applied(t, 1)
+			if st := w.status(); st.DNSUnprotected || st.DNSUpstreamsStale {
+				t.Errorf("a worker's status speaks of the OS's resolvers: %+v", st)
+			}
+			w.stop()
+			if err := <-done; err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+// A worker passes its resolver a later config's upstreams only when they
+// changed: not the first config's again, and a list once.
+func TestUpstreamChangesPassOnlyChangedLists(t *testing.T) {
+	a := netip.MustParseAddrPort("198.51.100.53:53")
+	b := netip.MustParseAddrPort("203.0.113.53:53")
+	u := newUpstreamChanges([]netip.AddrPort{a, b})
+	passed := func() ([]netip.AddrPort, bool) {
+		select {
+		case ups := <-u.changed:
+			return ups, true
+		default:
+			return nil, false
+		}
+	}
+	u.offer(WorkerConfig{DNSUpstreams: []netip.AddrPort{a, b}})
+	if ups, ok := passed(); ok {
+		t.Errorf("the first config's list again was passed: %v", ups)
+	}
+	u.offer(WorkerConfig{DNSUpstreams: []netip.AddrPort{a}})
+	if ups, ok := passed(); !ok || !slices.Equal(ups, []netip.AddrPort{a}) {
+		t.Errorf("a changed list passed as %v, %v", ups, ok)
+	}
+	u.offer(WorkerConfig{DNSUpstreams: []netip.AddrPort{a}})
+	if ups, ok := passed(); ok {
+		t.Errorf("the same list again was passed: %v", ups)
+	}
+	// Latest wins: two changes before the resolver takes one leave the
+	// later.
+	u.offer(WorkerConfig{DNSUpstreams: []netip.AddrPort{b}})
+	u.offer(WorkerConfig{DNSUpstreams: nil})
+	if ups, ok := passed(); !ok || ups != nil {
+		t.Errorf("after two changes, passed %v, %v; want the later, none", ups, ok)
 	}
 }

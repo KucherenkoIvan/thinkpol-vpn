@@ -15,11 +15,11 @@ import (
 
 // supervisor is the shared listener of DESIGN.md "Server agent", reduced to
 // what the transport has to support: it owns the public socket, routes each
-// datagram with the transport's Router, and forwards it untouched to the
+// datagram with the transport's PacketRouter, and forwards it untouched to the
 // worker of its space; workers reply through the public socket.
 type supervisor struct {
 	public  net.PacketConn
-	router  transport.Router
+	router  transport.PacketRouter
 	camo    transport.Camouflage
 	mu      sync.Mutex
 	workers map[transport.SpaceID]*forwardedConn
@@ -31,7 +31,7 @@ func newSupervisor(t *testing.T, tr *Transport, address string, peers transport.
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &supervisor{public: public, router: tr.Router(peers), camo: transport.OrDrop(camo), workers: map[transport.SpaceID]*forwardedConn{}}
+	s := &supervisor{public: public, router: tr.PacketRouter(peers), camo: transport.OrDrop(camo), workers: map[transport.SpaceID]*forwardedConn{}}
 	go func() {
 		buf := make([]byte, 65536)
 		for {
@@ -66,7 +66,7 @@ func (s *supervisor) worker(tr *Transport, space *transport.SpaceID, peers trans
 		s.workers[*space] = fc
 	}
 	s.mu.Unlock()
-	return tr.ListenOn(fc, transport.ListenConfig{Peers: peers, Camouflage: camo})
+	return tr.ListenOn(fc, transport.Admission{Peers: peers, Camouflage: camo})
 }
 
 type forwarded struct {
@@ -228,7 +228,7 @@ func TestRouterRoutesAndRejects(t *testing.T) {
 	twin := peers[2]
 	twin.Peer = transporttest.RandomIdentity()
 	table := transport.NewPeerTable(peers[0].PeerLink, peers[1].PeerLink, peers[2].PeerLink, twin.PeerLink)
-	r := tr.Router(table).(*Router)
+	r := tr.PacketRouter(table).(*Router)
 	datagram := func(p transporttest.Peer, dir direction, at time.Time) []byte {
 		return seal(nil, newAEAD(p.Credential, dir), connIDFor(p.Credential, dir, epochOf(at)), newSenderID(at), at, 0, []byte("packet"), transport.Padding{})
 	}
@@ -288,9 +288,6 @@ func TestRouterRoutesAndRejects(t *testing.T) {
 	}
 	if got := len(r.Rejected()); got != 2 {
 		t.Errorf("reported %d unusable peer links, want the 2 sharing a secret", got)
-	}
-	if _, _, ok := r.RouteStream(nil); ok {
-		t.Error("udp routed a stream")
 	}
 	table.Set([]transport.PeerLink{peers[1].PeerLink})
 	if _, v := r.RouteDatagram(datagram(peers[0], toListener, now)); v != transport.Unknown {

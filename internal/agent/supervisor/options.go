@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/netip"
+	"os/exec"
 	"sync/atomic"
 	"time"
 
@@ -106,8 +107,39 @@ type EgressInfo struct {
 	Uplink                   string
 	IPv4, IPv6               bool
 	Forwarding4, Forwarding6 bool
-	Err                      string
+	Err                      EgressError
 }
+
+// EgressError says why a node has no uplink: a code, the supervisor's log
+// has the detail.
+type EgressError string
+
+const (
+	EgressNoDefaultRoute EgressError = "no_default_route" // egress.ErrNoUplink
+	// EgressUplinkUnusable: the default route's interface has a name the
+	// tables can't match exactly.
+	EgressUplinkUnusable EgressError = "uplink_unusable"
+	EgressUplinkUnknown  EgressError = "uplink_unknown" // finding it failed
+	EgressUnsupported    EgressError = "unsupported"    // no supervisor here
+)
+
+// egressError is err's code.
+func egressError(err error) EgressError {
+	switch {
+	case err == nil:
+		return ""
+	case errors.Is(err, egress.ErrNoUplink):
+		return EgressNoDefaultRoute
+	case errors.Is(err, errUplinkUnusable):
+		return EgressUplinkUnusable
+	case errors.Is(err, egress.ErrUnsupported), errors.Is(err, ErrUnsupported):
+		return EgressUnsupported
+	}
+	return EgressUplinkUnknown
+}
+
+// errUplinkUnusable is an uplink whose name the tables can't match.
+var errUplinkUnusable = errors.New("not an interface name the tables can match")
 
 // MasqueradePorts is the source port range masqueraded flows get (fully
 // random within it). Listeners can't bind inside it, so no reply to a space's
@@ -415,12 +447,65 @@ type WorkerInfo struct {
 	// ready; NextStart is when a restart is due after a crash (all zero when
 	// not applicable).
 	StartedAt, ReadyAt, NextStart time.Time
-	// LastExit is why the previous process ended ("" before any did).
-	LastExit string
+	// LastExit is why the previous process ended ("" before any did), for
+	// the log; LastExitReason says it as a code, for anyone.
+	LastExit       string
+	LastExitReason ExitReason
 	// OutputDropped counts lines dropped from the worker's output ring.
 	OutputDropped uint64
 	// Shared is what the shared listeners forwarded to the space's workers
 	// and sent for them, and what they dropped; the worker gets the same
 	// figures for its telemetry.
 	Shared SharedCounters
+}
+
+// ExitReason says why a worker's process ended: a code; the error itself
+// (WorkerInfo.LastExit) is for the supervisor's log.
+type ExitReason string
+
+const (
+	// ExitSpawnFailed: it didn't start, or its namespace couldn't be wired.
+	ExitSpawnFailed ExitReason = "spawn_failed"
+	// ExitNotReady: it ended or broke its protocol before it was ready,
+	// or wasn't ready in time.
+	ExitNotReady ExitReason = "not_ready"
+	// ExitUnresponsive: it stopped reading its control socket and was
+	// killed.
+	ExitUnresponsive ExitReason = "unresponsive"
+	// ExitProtocolError: it broke the control or data socket's protocol.
+	ExitProtocolError ExitReason = "protocol_error"
+	// ExitKilled: a signal ended it (a stop it didn't finish in time
+	// included).
+	ExitKilled ExitReason = "killed"
+	// ExitExited: it exited on its own.
+	ExitExited ExitReason = "exited"
+)
+
+// exitError is why a worker's process ended, with its reason's code.
+type exitError struct {
+	reason ExitReason
+	err    error
+}
+
+func (e *exitError) Error() string { return e.err.Error() }
+func (e *exitError) Unwrap() error { return e.err }
+
+// exitWith gives err, if any, its reason.
+func exitWith(reason ExitReason, err error) error {
+	if err == nil {
+		return nil
+	}
+	return &exitError{reason: reason, err: err}
+}
+
+// exitReason is err's reason: the one it was given (exitWith), else what
+// the process's own end says, a signal or an exit.
+func exitReason(err error) ExitReason {
+	if e := (*exitError)(nil); errors.As(err, &e) {
+		return e.reason
+	}
+	if e := (*exec.ExitError)(nil); errors.As(err, &e) && e.ExitCode() == -1 {
+		return ExitKilled
+	}
+	return ExitExited
 }

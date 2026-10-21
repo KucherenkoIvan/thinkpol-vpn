@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"net/netip"
 	"sync"
@@ -27,21 +28,17 @@ type listener struct {
 func (s *Service) listenLoop(ctx context.Context) {
 	var conns sync.WaitGroup
 	active := &activeConns{m: map[net.Conn]struct{}{}}
-	open := map[netip.AddrPort]*listener{}
-	retryAt := map[netip.AddrPort]time.Time{}
 	ended := make(chan struct{}, 1)
+	ls := &blobListeners{
+		open: map[netip.AddrPort]*listener{}, retryAt: map[netip.AddrPort]time.Time{},
+		retryAfter: s.limits.ListenRetry, log: s.log, listen: s.openListener,
+		serve: func(l *listener) { go s.accept(ctx, l, &conns, active, ended) },
+	}
 	retry := time.NewTimer(time.Hour)
 	retry.Stop()
-	closeListener := func(l *listener) {
-		l.closed.Store(true)
-		_ = l.l.Close()
-		<-l.done
-	}
 	defer func() {
 		retry.Stop()
-		for _, l := range open {
-			closeListener(l)
-		}
+		ls.closeAll()
 		active.closeAll()
 		conns.Wait()
 	}()
@@ -52,47 +49,8 @@ func (s *Service) listenLoop(ctx context.Context) {
 		for _, a := range p.Listen {
 			want[netip.AddrPortFrom(a, Port)] = true
 		}
-		for addr, l := range open {
-			switch {
-			case !want[addr] || l.iface != p.Interface:
-				closeListener(l)
-				delete(open, addr)
-			case isDone(l.done):
-				delete(open, addr)
-				retryAt[addr] = now.Add(s.limits.ListenRetry)
-			}
-		}
-		var next time.Time
-		for addr := range retryAt {
-			if !want[addr] {
-				delete(retryAt, addr)
-			}
-		}
-		for addr := range want {
-			if open[addr] != nil {
-				continue
-			}
-			if at, ok := retryAt[addr]; ok && now.Before(at) {
-				if next.IsZero() || at.Before(next) {
-					next = at
-				}
-				continue
-			}
-			ln, err := s.openListener(addr, p.Interface)
-			if err != nil {
-				at := now.Add(s.limits.ListenRetry)
-				retryAt[addr] = at
-				if next.IsZero() || at.Before(next) {
-					next = at
-				}
-				s.log.Warn("blob service: listening failed, retrying", "address", addr, "in", s.limits.ListenRetry, "err", err)
-				continue
-			}
-			delete(retryAt, addr)
-			l := &listener{l: ln, iface: p.Interface, done: make(chan struct{})}
-			open[addr] = l
-			go s.accept(ctx, l, &conns, active, ended)
-		}
+		ls.prune(want, p.Interface, now)
+		next := ls.openWanted(want, p.Interface, now)
 		if !next.IsZero() {
 			retry.Reset(time.Until(next))
 		}
@@ -104,6 +62,89 @@ func (s *Service) listenLoop(ctx context.Context) {
 		case <-ended:
 		}
 	}
+}
+
+// close closes l for listenLoop, so its end isn't taken for a failure, and
+// waits for its accept loop to end.
+func (l *listener) close() {
+	l.closed.Store(true)
+	_ = l.l.Close()
+	<-l.done
+}
+
+// blobListeners are listenLoop's listeners: those open, by address, and
+// when to open again, retryAfter on, those that failed to open or stopped
+// on their own; listen opens one, serve serves what it accepts.
+type blobListeners struct {
+	open       map[netip.AddrPort]*listener
+	retryAt    map[netip.AddrPort]time.Time
+	retryAfter time.Duration
+	log        *slog.Logger
+	listen     func(addr netip.AddrPort, iface string) (net.Listener, error)
+	serve      func(*listener)
+}
+
+// closeAll closes every open listener.
+func (b *blobListeners) closeAll() {
+	for _, l := range b.open {
+		l.close()
+	}
+}
+
+// prune closes the open listeners not on want or not on iface, forgets
+// those that stopped on their own, retrying them after retryAfter, and
+// forgets the pending retries of addresses not on want.
+func (b *blobListeners) prune(want map[netip.AddrPort]bool, iface string, now time.Time) {
+	for addr, l := range b.open {
+		switch {
+		case !want[addr] || l.iface != iface:
+			l.close()
+			delete(b.open, addr)
+		case isDone(l.done):
+			delete(b.open, addr)
+			b.retryAt[addr] = now.Add(b.retryAfter)
+		}
+	}
+	for addr := range b.retryAt {
+		if !want[addr] {
+			delete(b.retryAt, addr)
+		}
+	}
+}
+
+// openWanted opens a listener on iface for each address on want that has
+// none and whose retry is due, and serves it; one that fails is retried
+// after retryAfter. It returns when the earliest pending retry is due
+// (zero: none is).
+func (b *blobListeners) openWanted(want map[netip.AddrPort]bool, iface string, now time.Time) time.Time {
+	open, retryAt := b.open, b.retryAt
+	var next time.Time
+	for addr := range want {
+		if open[addr] != nil {
+			continue
+		}
+		if at, ok := retryAt[addr]; ok && now.Before(at) {
+			if next.IsZero() || at.Before(next) {
+				next = at
+			}
+			continue
+		}
+		ln, err := b.listen(addr, iface)
+		if err != nil {
+			at := now.Add(b.retryAfter)
+			retryAt[addr] = at
+			if next.IsZero() || at.Before(next) {
+				next = at
+			}
+			b.log.Warn("blob service: listening failed, retrying", "address", addr, "in", b.retryAfter, "err", err)
+			continue
+		}
+		delete(retryAt, addr)
+		l := &listener{l: ln, iface: iface, done: make(chan struct{})}
+		open[addr] = l
+		b.serve(l)
+	}
+	return next
 }
 
 func isDone(ch chan struct{}) bool {
@@ -266,14 +307,37 @@ func (s *Service) serveConn(ctx context.Context, c net.Conn) {
 	}
 	defer s.release(key)
 
+	req, rest, ok := s.readRequest(c)
+	if !ok {
+		return
+	}
+	// A peer that reads slowly holds its slot no longer than a transfer
+	// at the minimum rate (or its share of the serving rate) takes.
+	rate := min(s.limits.MinRate, max(1, s.limits.ServeRate/int64(s.limits.MaxConns)))
+	tctx, cancel := context.WithTimeout(ctx, s.limits.transferTimeout(uint64(len(rest)), rate))
+	defer cancel()
+	ctx = tctx
+	stop := context.AfterFunc(ctx, func() { _ = c.Close() })
+	defer stop()
+	if !s.sendBlob(ctx, c, remote, key, rest, idle) {
+		return
+	}
+	s.count(func(st *Status) { st.Served++ })
+	s.log.Debug("blob served", "blob", hex.EncodeToString(req.sha256[:6]), "peer", remote)
+}
+
+// readRequest reads c's request and returns it with the part of the held
+// blob it asks for; when that can't be served it answers c itself (bad
+// request, not here) or not at all (read failed), and returns false.
+func (s *Service) readRequest(c net.Conn) (request, []byte, bool) {
 	var b [requestSize]byte
 	if _, err := io.ReadFull(c, b[:]); err != nil {
-		return
+		return request{}, nil, false
 	}
 	req, err := decodeRequest(b)
 	if err != nil {
 		_, _ = c.Write([]byte{byte(statusBadRequest)})
-		return
+		return request{}, nil, false
 	}
 	s.mu.Lock()
 	data, ok := s.data[req.sha256]
@@ -284,45 +348,42 @@ func (s *Service) serveConn(ctx context.Context, c net.Conn) {
 	switch {
 	case !ok:
 		_, _ = c.Write([]byte{byte(statusNotHere)})
-		return
+		return request{}, nil, false
 	case req.offset > uint64(len(data)):
 		_, _ = c.Write([]byte{byte(statusBadRequest)})
-		return
+		return request{}, nil, false
 	}
-	rest := data[req.offset:]
-	// A peer that reads slowly holds its slot no longer than a transfer
-	// at the minimum rate (or its share of the serving rate) takes.
-	rate := min(s.limits.MinRate, max(1, s.limits.ServeRate/int64(s.limits.MaxConns)))
-	tctx, cancel := context.WithTimeout(ctx, s.limits.transferTimeout(uint64(len(rest)), rate))
-	defer cancel()
-	ctx = tctx
-	stop := context.AfterFunc(ctx, func() { _ = c.Close() })
-	defer stop()
+	return req, data[req.offset:], true
+}
+
+// sendBlob writes the OK header and then rest to c in chunks, at the
+// serving rate and only while remote still is key's (else c is aborted),
+// calling idle before each chunk. False: it stopped short.
+func (s *Service) sendBlob(ctx context.Context, c net.Conn, remote netip.Addr, key string, rest []byte, idle func()) bool {
 	var head [responseHeaderSize]byte
 	head[0] = byte(statusOK)
 	binary.BigEndian.PutUint64(head[1:], uint64(len(rest)))
 	if _, err := c.Write(head[:]); err != nil {
-		return
+		return false
 	}
 	const chunk = 16 << 10
 	for len(rest) > 0 {
 		n := min(chunk, len(rest))
 		if err := s.rate.wait(ctx, n); err != nil {
-			return
+			return false
 		}
 		if !s.stillPeer(remote, key) {
 			abort(c)
-			return
+			return false
 		}
 		idle()
 		if _, err := c.Write(rest[:n]); err != nil {
-			return
+			return false
 		}
 		rest = rest[n:]
 		s.count(func(st *Status) { st.ServedBytes += uint64(n) })
 	}
-	s.count(func(st *Status) { st.Served++ })
-	s.log.Debug("blob served", "blob", hex.EncodeToString(req.sha256[:6]), "peer", remote)
+	return true
 }
 
 // abort closes c with a reset where it can (no linger), so what is still

@@ -45,6 +45,8 @@ type worker struct {
 	readyAt   time.Time
 	nextStart time.Time
 	lastExit  string
+	// lastExitReason is lastExit's code.
+	lastExitReason ExitReason
 }
 
 func (s *Supervisor) newWorker(sp Space, slot int) *worker {
@@ -131,18 +133,19 @@ func (w *worker) info() WorkerInfo {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return WorkerInfo{
-		Space:         w.space,
-		Link:          w.link,
-		RootAddrs:     slices.Clone(w.transit.root[:]),
-		SpaceAddrs:    slices.Clone(w.transit.space[:]),
-		UID:           w.uid,
-		PID:           w.pid,
-		Ready:         w.ready,
-		Starts:        w.starts,
-		StartedAt:     w.startedAt,
-		ReadyAt:       w.readyAt,
-		NextStart:     w.nextStart,
-		LastExit:      w.lastExit,
-		OutputDropped: w.output.Dropped(),
+		Space:          w.space,
+		Link:           w.link,
+		RootAddrs:      slices.Clone(w.transit.root[:]),
+		SpaceAddrs:     slices.Clone(w.transit.space[:]),
+		UID:            w.uid,
+		PID:            w.pid,
+		Ready:          w.ready,
+		Starts:         w.starts,
+		StartedAt:      w.startedAt,
+		ReadyAt:        w.readyAt,
+		NextStart:      w.nextStart,
+		LastExit:       w.lastExit,
+		LastExitReason: w.lastExitReason,
+		OutputDropped:  w.output.Dropped(),
 	}
 }

@@ -32,13 +32,13 @@ func TestListenWildcardsOfBothFamiliesOnOnePort(t *testing.T) {
 	ctx := context.Background()
 	tr := New(Options{})
 	peers := transport.NewPeerTable()
-	v4, err := tr.Listen(ctx, transport.ListenConfig{Address: "0.0.0.0:0", Peers: peers})
+	v4, err := tr.Listen(ctx, transport.ListenConfig{Address: "0.0.0.0:0"}, transport.Admission{Peers: peers})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = v4.Close() }()
 	port := netip.MustParseAddrPort(v4.Addr().String()).Port()
-	v6, err := tr.Listen(ctx, transport.ListenConfig{Address: netip.AddrPortFrom(netip.IPv6Unspecified(), port).String(), Peers: peers})
+	v6, err := tr.Listen(ctx, transport.ListenConfig{Address: netip.AddrPortFrom(netip.IPv6Unspecified(), port).String()}, transport.Admission{Peers: peers})
 	if err != nil {
 		t.Fatalf("[::]:%d next to 0.0.0.0:%d: %v", port, port, err)
 	}

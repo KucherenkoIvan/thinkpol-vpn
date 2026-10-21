@@ -61,7 +61,7 @@ Round 2 (2026-10-22): correctness (fix first), design (fix first), second opinio
 - [ ] R2.3 `detail()` (`pfctl_darwin.go` ~105-108) cuts pfctl's stderr at 300 bytes before `RedactError` runs, so an address cut through (`192.0.2`, `2001:db8`) matches no alternative and is logged; R1.6's rewrite adds 5 bytes per `stdin:N:` line, moving the cut. Redact before cutting (or cut back to a space), with a test whose address straddles the limit.
 - [ ] R2.4 `subscribe`/`subscribeGuard` (`routetable.go` ~684, ~709) check `ctx.Err()` only when `Watch` fails, but the host watches return a channel and nil on a cancelled context: when `Enforce` or `Close` cancels in the same select that takes `rewatch`, the success branch logs "watching routes again" with `suppressed=N` though nothing recovered. Log the recovery only while the context is live; a test whose fake Watch succeeds on a cancelled context.
 - [ ] R2.5 Nits: `TestPfctlsInputLineSurvivesRedaction` was inserted between `TestExecPfctl` and its doc comment (`guard_darwin_test.go` ~1372): move the comment back; the terminal `ErrUnsupported` warn in `reapply` drops the limiter's held-back count (say it, or note why not).
-- [ ] R2.6 TP-083 is merged into rewrite (0efc39e): merge it here. Expect conflicts in `routetable.go` (`subscribe`, `subscribeGuard`, `reapply`, a line in `apply`) and its renames (`routetable.ErrorCode`, `RouteTableGuard*`); keep both sides' intent, and keep funlen green.
+- [x] R2.6 TP-083 is merged into rewrite (0efc39e): merge it here. Expect conflicts in `routetable.go` (`subscribe`, `subscribeGuard`, `reapply`, a line in `apply`) and its renames (`routetable.ErrorCode`, `RouteTableGuard*`); keep both sides' intent, and keep funlen green.
 
 ## Notes
 
@@ -94,3 +94,4 @@ Round 2 (2026-10-22): correctness (fix first), design (fix first), second opinio
 - 2026-10-22 in-progress → review
 - 2026-10-22 review → has-errors (round 2: R2.1-R2.6)
 - 2026-10-22 has-errors → in-progress — owner: agent-tp-095, round 2 findings
+- 2026-10-22 R2.6: merged origin/rewrite with TP-083 (0efc39e). The only conflicts were subscribe and subscribeGuard in routetable.go: TP-083 kept the old warn lines, this branch the limited ones; kept this side, whose watch split is TP-083's verbatim. The ErrorCode renames merged cleanly. make lint now runs funlen from the merged .golangci.yml and is green; routetable and firewall tests pass on the merge

@@ -41,7 +41,7 @@ func (s *Supervisor) supervise(w *worker) {
 		w.mu.Lock()
 		w.pid, w.ready = 0, false
 		if err != nil {
-			w.lastExit = err.Error()
+			w.lastExit, w.lastExitReason = err.Error(), exitReason(err)
 		}
 		w.mu.Unlock()
 		if w.ctx.Err() != nil {
@@ -66,13 +66,13 @@ func (s *Supervisor) supervise(w *worker) {
 func (s *Supervisor) run(w *worker, log *slog.Logger) error {
 	ends, child, err := ipc.NewPair()
 	if err != nil {
-		return err
+		return exitWith(ExitSpawnFailed, err)
 	}
 	defer func() { _ = ends.Control.Close(); _ = ends.Data.Close() }()
 
 	p, err := s.startWorker(w, child)
 	if err != nil {
-		return err
+		return exitWith(ExitSpawnFailed, err)
 	}
 	// The namespace fd was opened before Wait could reap the process, so the
 	// pid can't have been recycled under it.
@@ -89,12 +89,12 @@ func (s *Supervisor) run(w *worker, log *slog.Logger) error {
 		}
 	}()
 	if err != nil {
-		return fmt.Errorf("wire the namespace: %w", err)
+		return exitWith(ExitSpawnFailed, fmt.Errorf("wire the namespace: %w", err))
 	}
 
 	sn := newSession(s, w, p, ends.Control, ends.Data, log)
 	if stopped, err := sn.awaitReady(); stopped || err != nil {
-		return err
+		return exitWith(ExitNotReady, err)
 	}
 	return sn.serve()
 }
