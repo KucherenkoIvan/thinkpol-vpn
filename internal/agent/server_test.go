@@ -331,10 +331,11 @@ func (s *testSpace) workerConfig(t *testing.T, keys NodeKeys, version uint64) []
 }
 
 // dnsWorkerConfig is workerConfig with the space's resolver on, and no
-// upstream: a worker's resolver then has none to ask.
-func (s *testSpace) dnsWorkerConfig(t *testing.T, keys NodeKeys, version uint64) []byte {
+// upstream: a worker's resolver then has none to ask. With ups, they are
+// the resolver's.
+func (s *testSpace) dnsWorkerConfig(t *testing.T, keys NodeKeys, version uint64, ups ...netip.AddrPort) []byte {
 	t.Helper()
-	b, err := WorkerConfig{Keys: keys, Trust: s.trust(), Map: s.build(t, version), DNS: true}.Encode()
+	b, err := WorkerConfig{Keys: keys, Trust: s.trust(), Map: s.build(t, version), DNS: true, DNSUpstreams: ups}.Encode()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -423,6 +424,29 @@ func TestServeSpace(t *testing.T) {
 		}
 		if log := n.log.String(); !strings.Contains(log, "no upstream to ask: the egress refuses every configured one") {
 			t.Errorf("the resolver doesn't run as a worker's:\n%s", log)
+		}
+	})
+	t.Run("a later config's upstreams follow the running resolver", func(t *testing.T) {
+		sess := newFakeSession(s.id)
+		sess.config <- s.dnsWorkerConfig(t, s.a, 1,
+			netip.MustParseAddrPort("198.51.100.53:53"), netip.MustParseAddrPort("203.0.113.53:53"))
+		n, wait := serve(t, sess)
+		n.waitLog(t, `msg="map applied" .*version=1`)
+		if l := n.log.String(); strings.Contains(l, "upstreams changed") {
+			t.Errorf("the first config was logged as a change:\n%s", l)
+		}
+		sess.config <- s.dnsWorkerConfig(t, s.a, 2, netip.MustParseAddrPort("198.51.100.53:53"))
+		n.waitLog(t, `msg="map applied" .*version=2`)
+		n.waitLog(t, `msg="DNS: the resolver's upstreams changed" .*upstreams=1`)
+		// The same upstreams again change nothing.
+		sess.config <- s.dnsWorkerConfig(t, s.a, 3, netip.MustParseAddrPort("198.51.100.53:53"))
+		n.waitLog(t, `msg="map applied" .*version=3`)
+		if n := strings.Count(n.log.String(), "upstreams changed"); n != 1 {
+			t.Errorf("the resolver's upstreams changed %d times, want once", n)
+		}
+		n.stop()
+		if err := wait(); err != nil {
+			t.Fatal(err)
 		}
 	})
 }

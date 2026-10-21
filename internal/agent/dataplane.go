@@ -58,6 +58,9 @@ type DataPlane struct {
 	// inWorker says the data plane runs in a server's worker (set only
 	// by serveSpace): what "inside a worker" means to the resolver.
 	inWorker bool
+	// onResolver sees each resolver the data plane starts (serveSpace
+	// passes a later config's DNSUpstreams into it). Nil without one.
+	onResolver func(*dns.Server)
 	// RouteTable enforces the rules in the OS routing table: everything
 	// but direct destinations and link endpoints into the TUN (a device;
 	// the transports' sockets must be marked, Transports(true)).
@@ -324,6 +327,9 @@ func (r *runner) start(ctx context.Context) error {
 		return &StartError{Step: step, Err: fmt.Errorf("applying map version %d: %w", r.follow.cur.Header().Version, err)}
 	}
 	r.engine, r.resolver, r.routes = engine, resolver, routes
+	if resolver != nil && r.dp.onResolver != nil {
+		r.dp.onResolver(resolver)
+	}
 	if resolver != nil && routes != nil {
 		if err := routes.SetDirectUpstreams(ctx, r.upstreams); err != nil {
 			r.dp.Log.Warn("DNS: keeping the direct upstreams reachable failed", "err", path.RedactError(err))
