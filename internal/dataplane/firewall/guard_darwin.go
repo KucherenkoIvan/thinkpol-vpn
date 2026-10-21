@@ -139,14 +139,13 @@ func hostAddrs() ([]netip.Addr, error) {
 // enabled) and reloads if anything differs. A failed load leaves what was
 // there (a pf transaction), a guard at least as strict as either. A load
 // pf took but load refuses on reading it back stays, unverified, and the
-// Apply fails and is retried: after an earlier good load pf enforces it
-// on the guard's reference, before one not at all (a reference is taken
-// only for a guard read back whole). Flushing it would leave an empty
-// anchor, which passes all IPv6; the rules are all quick and end in the
-// block, so a reordered listing is never wider than the rules written.
-// Reloading the last verified guard instead would guard the previous
-// Exempt (an address a preset moved from direct to tunnelled would stay
-// exempt), and its read-back can be refused the same way.
+// Apply fails and is retried. pf enforces it whenever pf is on (on the
+// guard's reference after an earlier good load, or on another enabler's);
+// the guard takes no reference for it. Flushing it would leave an empty
+// anchor, which passes all IPv6. DESIGN.md (IPv6, the leak guard on
+// macOS) has the reasoning: why it is never wider than the rules written
+// but for a table someone widened, and why the last verified guard isn't
+// reloaded instead.
 func (g *IPv6Guard) Apply(ctx context.Context, e routetable.Exempt) (err error) {
 	if !validInterface.MatchString(e.TUN) {
 		return fmt.Errorf("firewall: TUN %q isn't an interface name", e.TUN)

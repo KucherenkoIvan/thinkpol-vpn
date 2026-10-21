@@ -1054,8 +1054,9 @@ func TestAFailedReloadKeepsTheOldGuard(t *testing.T) {
 }
 
 // A first load pf holds other than as loaded fails the Apply, and stays
-// in pf, not flushed (its rules still end in the block), with pf left off:
-// only a guard read back whole takes a reference.
+// in pf, not flushed (its rules still end in the block). The guard takes
+// no reference for it: pf stays off, or on with only another enabler's
+// references, which then enforce it.
 func TestALoadPfDoesntHoldFails(t *testing.T) {
 	for name, hook := range map[string]func(a *fakeAnchor){
 		"an entry dropped": func(a *fakeAnchor) { a.tables[exemptTable] = a.tables[exemptTable][1:] },
@@ -1064,16 +1065,22 @@ func TestALoadPfDoesntHoldFails(t *testing.T) {
 		},
 		"reordered": func(a *fakeAnchor) { a.rules = reorderLikeBasic(a.rules) },
 	} {
-		r := newRig(t)
-		r.pf.loadHook = hook
-		if err := r.guard().Apply(context.Background(), exempt(t)); err == nil {
-			t.Errorf("%s: applied", name)
-		}
-		if a := r.pf.anchor(GuardAnchor); len(a.rules) != rulesFor || a.rules[len(a.rules)-1] != "block return out quick inet6 all" {
-			t.Errorf("%s: rules %q, want the refused load's", name, a.rules)
-		}
-		if r.pf.isOn() || len(r.pf.references()) != 0 {
-			t.Errorf("%s: pf on %v with references %v for a guard that isn't in place", name, r.pf.isOn(), r.pf.references())
+		for _, othersOn := range []bool{false, true} {
+			r := newRig(t)
+			var theirs []pfToken
+			if othersOn {
+				theirs = append(theirs, r.pf.takeRef())
+			}
+			r.pf.loadHook = hook
+			if err := r.guard().Apply(context.Background(), exempt(t)); err == nil {
+				t.Errorf("%s, others on %v: applied", name, othersOn)
+			}
+			if a := r.pf.anchor(GuardAnchor); len(a.rules) != rulesFor || a.rules[len(a.rules)-1] != "block return out quick inet6 all" {
+				t.Errorf("%s, others on %v: rules %q, want the refused load's", name, othersOn, a.rules)
+			}
+			if r.pf.isOn() != othersOn || !slices.Equal(r.pf.references(), theirs) {
+				t.Errorf("%s, others on %v: pf on %v with references %v, want exactly %v", name, othersOn, r.pf.isOn(), r.pf.references(), theirs)
+			}
 		}
 	}
 }
