@@ -98,6 +98,22 @@ func (s *testSpace) build(t *testing.T, version uint64) []byte {
 	return env
 }
 
+// buildEditing signs a map at version whose section for a is changed by
+// edit.
+func (s *testSpace) buildEditing(t *testing.T, version uint64, edit func(*netmap.Section)) []byte {
+	t.Helper()
+	a, b := s.sections()
+	edit(&a)
+	env, err := netmap.Build(s.signing, netmap.Contents{
+		SpaceID: s.id, Version: version, RecoveryKey: s.recovery, Blobs: s.blobs,
+		Recipients: []netmap.Recipient{{Key: s.a.Map.Public(), Section: a}, {Key: s.b.Map.Public(), Section: b}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return env
+}
+
 // buildWithout signs a map at version from which gone was removed: the
 // other node alone, without its links to gone.
 func (s *testSpace) buildWithout(t *testing.T, version uint64, gone NodeKeys) []byte {

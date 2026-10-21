@@ -516,6 +516,8 @@ func (e errListeners) Unwrap() error { return e.error }
 // served until hosting grants (TP-040) add guests.
 func (s *serverSpaces) apply() error {
 	if s.follow.removed {
+		// Rejoining with the same refused set warns about it again.
+		s.refusedLogged = nil
 		s.report.set(func(p *report) { p.dnsUpstreamsRefused = 0 })
 		if err := s.sup.SetListeners(nil); err != nil {
 			return errListeners{err}

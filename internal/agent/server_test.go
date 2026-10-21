@@ -251,6 +251,30 @@ func TestServerStopsTheSpaceWhileRemoved(t *testing.T) {
 	heard.are(t, Event{EventRemovedFromSpace, 2}, Event{EventBackInSpace, 4})
 }
 
+// Removing the node from its space clears the refused upstreams together
+// with the record of having logged them: rejoining with the same refused
+// set warns about them again.
+func TestRejoiningTheSpaceLogsTheRefusedUpstreamsAgain(t *testing.T) {
+	s := newTestSpace(t)
+	sup := &fakeSupervisor{}
+	r := runServerSpacesIn(t, s, sup, "", func(ss *serverSpaces) {
+		ss.dns = true
+		ss.dnsUpstreams = []netip.AddrPort{netip.MustParseAddrPort("192.168.1.53:53")}
+		ss.follow.section.Node.AllowEgress = true
+	})
+	eventually(t, func() bool { _, _, n := sup.last(); return n == 1 })
+	if n := strings.Count(r.log.String(), "refuses the upstream"); n != 1 {
+		t.Fatalf("the refused upstream was logged %d times, want once", n)
+	}
+	r.maps <- s.buildWithout(t, 2, s.a)
+	eventually(t, func() bool { _, _, n := sup.last(); return n == 2 })
+	r.maps <- s.buildEditing(t, 3, func(sec *netmap.Section) { sec.Node.AllowEgress = true })
+	eventually(t, func() bool { return logMatches(r.log.String(), `msg="map applied" .*version=3`) })
+	if n := strings.Count(r.log.String(), "refuses the upstream"); n != 2 {
+		t.Errorf("after rejoining the refused upstream was logged %d times, want twice", n)
+	}
+}
+
 // fakeSession is a worker's view of its supervisor, for ServeSpace.
 type fakeSession struct {
 	worker.Session

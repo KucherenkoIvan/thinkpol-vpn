@@ -203,15 +203,16 @@ func sameSystem(a, b dns.SystemConfig) bool {
 // family gets a working upstream before a dead one.
 var defaultWorkerUpstreams = []netip.AddrPort{
 	netip.AddrPortFrom(netip.MustParseAddr("9.9.9.9"), dns.Port),
-	netip.AddrPortFrom(netip.MustParseAddr("2620:fe::fe"), dns.Port),
 	netip.AddrPortFrom(netip.MustParseAddr("1.1.1.1"), dns.Port),
+	netip.AddrPortFrom(netip.MustParseAddr("2620:fe::fe"), dns.Port),
 	netip.AddrPortFrom(netip.MustParseAddr("2606:4700:4700::1111"), dns.Port),
 }
 
 // workerUpstreams are the upstreams a worker's resolver asks: the
 // configured ones, else the default public resolvers (DESIGN.md
-// "Upstreams"). One the worker's egress refuses is not configured: it is
-// logged once per change of the refused set and counted in health.
+// "Upstreams"). One the worker's egress refuses is not configured: only
+// an exit (its section allows egress) counts and logs them, since no
+// device asks another server's resolver.
 func (s *serverSpaces) workerUpstreams() []netip.AddrPort {
 	if !s.dns {
 		return nil
@@ -228,13 +229,31 @@ func (s *serverSpaces) workerUpstreams() []netip.AddrPort {
 		}
 		out = append(out, a)
 	}
+	if !s.follow.section.Node.AllowEgress {
+		// Nothing remembered as logged, so a map that makes the node an
+		// exit reports from scratch.
+		s.refusedLogged = nil
+		s.report.set(func(p *report) { p.dnsUpstreamsRefused = 0 })
+		return out
+	}
 	if !slices.Equal(refused, s.refusedLogged) {
 		for _, a := range refused {
+			hint := "-dns-upstream or -egress-allowed"
+			if neverOpenable(a.Addr()) {
+				hint = "-dns-upstream"
+			}
 			s.log.Warn("DNS: the worker's egress refuses the upstream; not configured for the resolver",
-				"upstream", a, "hint", "-dns-upstream or -egress-allowed")
+				"upstream", a, "hint", hint)
 		}
 		s.refusedLogged = refused
 	}
 	s.report.set(func(p *report) { p.dnsUpstreamsRefused = len(refused) })
 	return out
+}
+
+// neverOpenable says an address no egress should ever open to reach:
+// loopback, link-local (the metadata services among them), multicast,
+// the unspecified address, and anything zoned.
+func neverOpenable(a netip.Addr) bool {
+	return a.Zone() != "" || a.IsLoopback() || a.IsLinkLocalUnicast() || a.IsMulticast() || a.IsUnspecified()
 }

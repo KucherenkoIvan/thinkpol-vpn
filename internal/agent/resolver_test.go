@@ -12,7 +12,6 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/supervisor"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
 )
@@ -150,35 +149,18 @@ func TestParseUpstreams(t *testing.T) {
 }
 
 // With no -dns-upstream an exit's resolver asks the default public
-// resolvers: both families, port 53, every one passing the worker's
-// egress; with -dns-upstream, the configured ones.
+// resolvers: both families, IPv4 first, port 53, every one passing the
+// worker's egress; with -dns-upstream, the configured ones.
 func TestAWorkerResolvesThroughTheDefaultPublicUpstreams(t *testing.T) {
 	s := &serverSpaces{dns: true, follow: mapFollower{log: slog.New(slog.DiscardHandler)}}
 	want := []netip.AddrPort{
 		netip.MustParseAddrPort("9.9.9.9:53"),
-		netip.MustParseAddrPort("[2620:fe::fe]:53"),
 		netip.MustParseAddrPort("1.1.1.1:53"),
+		netip.MustParseAddrPort("[2620:fe::fe]:53"),
 		netip.MustParseAddrPort("[2606:4700:4700::1111]:53"),
 	}
 	if got := s.workerUpstreams(); !slices.Equal(got, want) {
 		t.Fatalf("defaults: %v, want %v", got, want)
-	}
-	var v4, v6 bool
-	for _, a := range s.workerUpstreams() {
-		if a.Port() != dns.Port {
-			t.Errorf("%v: not port %d", a, dns.Port)
-		}
-		if a.Addr().Is4() {
-			v4 = true
-		} else if !a.Addr().Is4In6() {
-			v6 = true
-		}
-		if supervisor.EgressRefused(a.Addr(), nil) {
-			t.Errorf("default %v refused by the egress", a)
-		}
-	}
-	if !v4 || !v6 {
-		t.Errorf("both families: %v", s.workerUpstreams())
 	}
 	s.dnsUpstreams = []netip.AddrPort{netip.MustParseAddrPort("198.51.100.53:53")}
 	if got := s.workerUpstreams(); !slices.Equal(got, s.dnsUpstreams) {
@@ -201,6 +183,7 @@ func TestAWorkerWithEveryUpstreamRefusedHasNone(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(&buf, nil))
 	s := &serverSpaces{dns: true, report: &report{mode: ModeServer},
 		dnsUpstreams: []netip.AddrPort{netip.MustParseAddrPort("192.168.1.53:53"), netip.MustParseAddrPort("169.254.169.254:53")}}
+	s.follow.section.Node.AllowEgress = true
 	s.log = log
 	ups := s.workerUpstreams()
 	if ups != nil {
@@ -280,6 +263,7 @@ func TestAnUpstreamTheEgressRefusesIsReportedNotSilentlyDropped(t *testing.T) {
 	public := netip.MustParseAddrPort("9.9.9.9:53")
 	s := &serverSpaces{dns: true, report: &report{mode: ModeServer},
 		dnsUpstreams: []netip.AddrPort{private, public, metadata}}
+	s.follow.section.Node.AllowEgress = true
 	s.log = slog.New(slog.NewTextHandler(&buf, nil))
 	if got := s.workerUpstreams(); !slices.Equal(got, []netip.AddrPort{public}) {
 		t.Fatalf("kept: %v", got)
@@ -287,6 +271,20 @@ func TestAnUpstreamTheEgressRefusesIsReportedNotSilentlyDropped(t *testing.T) {
 	for _, a := range []string{"192.168.1.53:53", "169.254.169.254:53"} {
 		if !strings.Contains(buf.String(), a) {
 			t.Errorf("the log doesn't name the refused upstream %s:\n%s", a, buf.String())
+		}
+	}
+	// The hint suggests -egress-allowed for a private upstream, never
+	// for a metadata one.
+	for _, l := range strings.Split(buf.String(), "\n") {
+		if !strings.Contains(l, "refuses the upstream") {
+			continue
+		}
+		if strings.Contains(l, "169.254.169.254:53") {
+			if strings.Contains(l, "egress-allowed") {
+				t.Errorf("the hint suggests opening a metadata address: %s", l)
+			}
+		} else if !strings.Contains(l, "hint=\"-dns-upstream or -egress-allowed\"") {
+			t.Errorf("the hint for a private upstream doesn't name -egress-allowed: %s", l)
 		}
 	}
 	if st := s.report.status(); st.DNSUpstreamsRefused != 2 {
@@ -330,6 +328,25 @@ func TestAnUpstreamTheEgressRefusesIsReportedNotSilentlyDropped(t *testing.T) {
 	}
 	if st := s.report.status(); st.DNSUpstreamsRefused != 0 || slices.Contains(st.Health().Problems, ProblemDNSUpstreamRefused) {
 		t.Fatalf("after clearing: %d, %v", st.DNSUpstreamsRefused, st.Health())
+	}
+}
+
+// A server whose section allows no egress is not an exit: no device asks
+// its resolver, so refused upstreams are neither counted in health nor
+// logged, though the resolver still gets none of them.
+func TestAServerWithoutEgressReportsNoRefusedUpstreams(t *testing.T) {
+	var buf bytes.Buffer
+	s := &serverSpaces{dns: true, report: &report{mode: ModeServer},
+		dnsUpstreams: []netip.AddrPort{netip.MustParseAddrPort("192.168.1.53:53"), netip.MustParseAddrPort("9.9.9.9:53")}}
+	s.log = slog.New(slog.NewTextHandler(&buf, nil))
+	if got := s.workerUpstreams(); !slices.Equal(got, []netip.AddrPort{netip.MustParseAddrPort("9.9.9.9:53")}) {
+		t.Fatalf("kept: %v", got)
+	}
+	if st := s.report.status(); st.DNSUpstreamsRefused != 0 || slices.Contains(st.Health().Problems, ProblemDNSUpstreamRefused) {
+		t.Fatalf("a non-exit's status says refused upstreams: %+v", st.Health())
+	}
+	if strings.Contains(buf.String(), "refuses the upstream") {
+		t.Errorf("a non-exit reported a refused upstream:\n%s", buf.String())
 	}
 }
 
