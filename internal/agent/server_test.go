@@ -273,6 +273,17 @@ func (s *testSpace) workerConfig(t *testing.T, keys NodeKeys, version uint64) []
 	return b
 }
 
+// dnsWorkerConfig is workerConfig with the space's resolver on, and no
+// upstream: what a worker's resolver falls back from.
+func (s *testSpace) dnsWorkerConfig(t *testing.T, keys NodeKeys, version uint64) []byte {
+	t.Helper()
+	b, err := WorkerConfig{Keys: keys, Trust: s.trust(), Map: s.build(t, version), DNS: true}.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
 func TestServeSpace(t *testing.T) {
 	s := newTestSpace(t)
 	_, reg := memoryRegistry(t)
@@ -323,6 +334,31 @@ func TestServeSpace(t *testing.T) {
 		sess.config <- s.workerConfig(t, s.b, 2)
 		if err := wait(); err == nil || !strings.Contains(err.Error(), "changed the worker's keys or trust") {
 			t.Fatalf("got %v", err)
+		}
+	})
+	t.Run("the worker's resolver is inside a worker", func(t *testing.T) {
+		sess := newFakeSession(s.id)
+		sess.config <- s.dnsWorkerConfig(t, s.a, 1)
+		n := newRunningNode()
+		asked := false
+		base := n.dataPlane(reg, NodeKeys{}, nil)
+		base.dnsPort = 5353
+		base.Host.SystemUpstreams = func([]netip.Addr) ([]netip.Addr, error) {
+			asked = true
+			return nil, nil
+		}
+		done := make(chan error, 1)
+		go func() { done <- serveSpace(base.Log, base)(n.ctx, sess.Session) }()
+		n.waitLog(t, `msg="map applied" .*version=1`)
+		n.stop()
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+		if asked {
+			t.Error("the worker's resolver asked for the host's resolvers")
+		}
+		if log := n.log.String(); !strings.Contains(log, "no upstream to ask: the worker's egress refuses every configured one") {
+			t.Errorf("the resolver doesn't run as a worker's:\n%s", log)
 		}
 	})
 }

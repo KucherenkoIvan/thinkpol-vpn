@@ -24,9 +24,9 @@ import (
 // overlay TUN only.
 func (r *runner) newResolver() *dns.Server {
 	upstreams := r.dp.DNSUpstreams
-	// Forward is set only in a server's worker (serveSpace), never on a
+	// InWorker is set only in a server's worker (serveSpace), never on a
 	// device: it is what "inside a worker" means here.
-	if len(upstreams) == 0 && !r.dp.Forward {
+	if len(upstreams) == 0 && !r.dp.InWorker {
 		own := []netip.Addr{r.follow.section.Node.IPv4, r.follow.section.Node.IPv6}
 		host, err := r.dp.Host.SystemUpstreams(own)
 		r.upstreamsUnknown.Store(err != nil)
@@ -38,7 +38,7 @@ func (r *runner) newResolver() *dns.Server {
 		}
 	}
 	if len(upstreams) == 0 {
-		if r.dp.Forward {
+		if r.dp.InWorker {
 			// workerUpstreams refused every one and logged each.
 			r.dp.Log.Warn("DNS: no upstream to ask: the worker's egress refuses every configured one; tunnel-bound names won't resolve")
 		} else if !r.upstreamsUnknown.Load() { // a failed read warned already

@@ -220,7 +220,7 @@ func TestAWorkerWithEveryUpstreamRefusedHasNone(t *testing.T) {
 		t.Fatal(err)
 	}
 	asked := false
-	r := &runner{dp: DataPlane{DNS: true, DNSUpstreams: ups, Forward: true, Log: log,
+	r := &runner{dp: DataPlane{DNS: true, DNSUpstreams: ups, InWorker: true, Log: log,
 		Host: Host{SystemUpstreams: func([]netip.Addr) ([]netip.Addr, error) { asked = true; return nil, nil }},
 	}, follow: mapFollower{section: section}}
 	if res := r.newResolver(); res == nil {
