@@ -455,14 +455,17 @@ func (s *Service) current(gen uint64) bool {
 	return s.gen == gen
 }
 
-// hold adds a checked blob if the current plan still wants it.
-func (s *Service) hold(ref netmap.BlobRef, data []byte) bool {
+// hold adds a checked blob if the current plan still wants it, applying
+// count to the status in the same critical section: a blob Get returns is
+// already counted in Status.
+func (s *Service) hold(ref netmap.BlobRef, data []byte, count func(st *Status)) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	w, ok := s.want[ref.SHA256]
 	if !ok || w.Kind != ref.Kind {
 		return false
 	}
+	count(&s.st)
 	s.held[ref.SHA256], s.data[ref.SHA256] = w, data
 	// It replaces any stand-in of its kind and name.
 	for sha, old := range s.held {
@@ -675,8 +678,7 @@ func (s *Service) obtain(ctx context.Context, gen uint64, ref netmap.BlobRef) {
 			err := Check(ref, data)
 			switch {
 			case err == nil:
-				if s.hold(ref, data) {
-					s.count(func(st *Status) { st.Loaded++ })
+				if s.hold(ref, data, func(st *Status) { st.Loaded++ }) {
 					s.log.Debug("blob loaded", "blob", short(ref), "kind", ref.Kind, "name", ref.Name)
 				}
 				return
@@ -701,10 +703,9 @@ func (s *Service) obtain(ctx context.Context, gen uint64, ref netmap.BlobRef) {
 		}
 		switch {
 		case err == nil:
-			if !s.hold(ref, data) {
+			if !s.hold(ref, data, func(st *Status) { st.Fetched++ }) {
 				return
 			}
-			s.count(func(st *Status) { st.Fetched++ })
 			s.log.Info("blob fetched", "blob", short(ref), "kind", ref.Kind, "name", ref.Name, "size", ref.Size, "peer", peer.ID)
 			if s.store != nil && ref.Name != "" {
 				if err := s.store.Save(ref, data); err != nil {

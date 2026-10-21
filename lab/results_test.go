@@ -235,8 +235,8 @@ func setupPlainTCP(t *testing.T, l *lab.Lab) (probeTarget, error) {
 func probePlainTCP(t *testing.T, l *lab.Lab, to probeTarget, wantPass bool) crossed {
 	dev := l.Node(lab.DeviceA)
 	return crossed{
-		v4: tcpCrosses(dev, to.v4, window(wantPass)) == nil,
-		v6: tcpCrosses(dev, to.v6, window(wantPass)) == nil,
+		v4: mustProbe(t)(tcpCrosses(dev, to.v4, window(wantPass))),
+		v6: mustProbe(t)(tcpCrosses(dev, to.v6, window(wantPass))),
 	}
 }
 
@@ -280,8 +280,8 @@ func setupUDP(t *testing.T, l *lab.Lab) (probeTarget, error) {
 func probeUDP(t *testing.T, l *lab.Lab, to probeTarget, wantPass bool) crossed {
 	dev := l.Node(lab.DeviceA)
 	return crossed{
-		v4: pingErr(dev, to.v4, window(wantPass)) == nil,
-		v6: pingErr(dev, to.v6, window(wantPass)) == nil,
+		v4: mustProbe(t)(pingCrosses(dev, to.v4, window(wantPass))),
+		v6: mustProbe(t)(pingCrosses(dev, to.v6, window(wantPass))),
 	}
 }
 
@@ -334,19 +334,32 @@ func waitOutput(p *lab.Process, pattern string, timeout time.Duration) error {
 	}
 }
 
-func pingErr(from *lab.Node, to netip.Addr, within time.Duration) error {
-	deadline := time.Now().Add(within)
-	for {
+// pingCrosses pings until a reply comes or within runs out (untilAnswer):
+// "doesn't cross" is only ping's own "no reply".
+func pingCrosses(from *lab.Node, to netip.Addr, within time.Duration) (bool, error) {
+	return untilAnswer(within, func() (bool, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		_, err := from.Exec(ctx, "ping", "-c", "1", "-W", "1", to.String())
-		cancel()
-		if err == nil {
-			return nil
+		defer cancel()
+		res, err := from.Exec(ctx, "ping", "-c", "1", "-W", "1", to.String())
+		switch {
+		case err == nil:
+			return true, nil
+		case pingNoReply(res):
+			return false, nil
 		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("ping %s from %s: %w", to, from.Name, err)
+		return false, fmt.Errorf("ping %s from %s: %w\n%s", to, from.Name, err, res.Stdout)
+	})
+}
+
+// mustProbe passes a probe's answer on and fails the cell (an "error"
+// cell, not a blocked one) when the probe got none.
+func mustProbe(t *testing.T) func(bool, error) bool {
+	return func(crossed bool, err error) bool {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
 		}
-		time.Sleep(300 * time.Millisecond)
+		return crossed
 	}
 }
 
@@ -379,15 +392,19 @@ func startCensor(t *testing.T, l *lab.Lab, modules []censor.ModuleConfig) *censo
 		return nil
 	})
 	c := &censorRun{router: router, proc: p}
-	if c.start, err = c.stats(t); err != nil {
+	if c.start, err = c.stats(); err != nil {
 		t.Fatal(err)
 	}
 	t.Logf("queue %d when censord was ready: %+v", censorQueue, c.start)
 	return c
 }
 
-func (c *censorRun) stats(t *testing.T) (censor.QueueStats, error) {
-	return censor.ParseQueueStats(c.router.MustExec(t, "cat", "/proc/net/netfilter/nfnetlink_queue"), censorQueue)
+func (c *censorRun) stats() (censor.QueueStats, error) {
+	out, err := execRead(c.router, execTimeout, "cat", "/proc/net/netfilter/nfnetlink_queue")
+	if err != nil {
+		return censor.QueueStats{}, err
+	}
+	return censor.ParseQueueStats(out, censorQueue)
 }
 
 // healthy is nil when censord is still running and the kernel dropped
@@ -398,7 +415,7 @@ func (c *censorRun) healthy(t *testing.T) error {
 		return fmt.Errorf("censord exited: %v\n%s", c.proc.Err(), c.proc.Output())
 	default:
 	}
-	now, err := c.stats(t)
+	now, err := c.stats()
 	if err != nil {
 		return err
 	}
@@ -416,33 +433,69 @@ type verdictLine struct {
 }
 
 // logged reports whether a verdict log entry matches, waiting briefly for
-// the log to catch up.
+// the log to catch up. A failed read is retried; "no" comes only from a
+// read that succeeded after the deadline, and the test fails if none
+// does. A whole line that doesn't parse fails the test (censord writes
+// whole lines); the part after the last newline is a write in progress,
+// left for the next read.
 func (c *censorRun) logged(t *testing.T, match func(verdictLine) bool) bool {
 	t.Helper()
+	found, err := c.pollLog(match)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return found
+}
+
+func (c *censorRun) pollLog(match func(verdictLine) bool) (bool, error) {
 	deadline := time.Now().Add(3 * time.Second)
+	giveUp := deadline.Add(30 * time.Second)
 	for {
-		for _, line := range strings.Split(c.router.MustExec(t, "cat", censorLogPath), "\n") {
-			if line == "" {
-				continue
+		log, err := execRead(c.router, pollTimeout, "cat", censorLogPath)
+		if err == nil {
+			found, err := matchVerdicts(completeLines(log), match)
+			switch {
+			case err != nil:
+				return false, err // a whole line: not transient
+			case found:
+				return true, nil
+			case time.Now().After(deadline):
+				return false, nil
 			}
-			var e verdictLine
-			if err := json.Unmarshal([]byte(line), &e.LogEntry); err != nil {
-				t.Fatalf("verdict log line %q: %v", line, err)
-			}
-			key, err := censor.ParseFlowKey(e.Flow)
-			if err != nil {
-				continue // not TCP or UDP
-			}
-			e.Key = key
-			if match(e) {
-				return true
-			}
-		}
-		if time.Now().After(deadline) {
-			return false
+		} else if time.Now().After(giveUp) {
+			return false, fmt.Errorf("reading the verdict log: %w", err)
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
+}
+
+// completeLines is s up to its last newline: what a reader racing the
+// writer can trust.
+func completeLines(s string) string {
+	return s[:strings.LastIndexByte(s, '\n')+1]
+}
+
+// matchVerdicts says whether a line of log matches; a line that isn't a
+// verdict entry is an error.
+func matchVerdicts(log string, match func(verdictLine) bool) (bool, error) {
+	for _, line := range strings.Split(log, "\n") {
+		if line == "" {
+			continue
+		}
+		var e verdictLine
+		if err := json.Unmarshal([]byte(line), &e.LogEntry); err != nil {
+			return false, fmt.Errorf("verdict log line %q: %w", line, err)
+		}
+		key, err := censor.ParseFlowKey(e.Flow)
+		if err != nil {
+			continue // not TCP or UDP
+		}
+		e.Key = key
+		if match(e) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func writeResults(t *testing.T, cells []matrixCell, expected int) {

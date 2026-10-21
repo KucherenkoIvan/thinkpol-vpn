@@ -67,11 +67,27 @@ func TestEgressThroughAnExit(t *testing.T) {
 	// link endpoints into the TUN: its rule is "default -> chain:out".
 
 	web := inet.Capture(t, "tcp port 80")
+	// fetch is the page at url, or an error: curl didn't connect, or said
+	// nothing about the path.
 	fetch := func(url string, timeout time.Duration) (string, error) {
-		ctx, cancel := context.WithTimeout(context.Background(), timeout+5*time.Second)
-		defer cancel()
-		res, err := devA.Exec(ctx, "curl", "-gsS", "--max-time", fmt.Sprint(int(timeout.Seconds())), url)
-		return res.Stdout + res.Stderr, err
+		connected, out, err := curlFrom(devA, timeout, "-g", url)
+		if err == nil && !connected {
+			err = fmt.Errorf("no connection")
+		}
+		return out, err
+	}
+	// noFetch fails the test unless curl itself says it couldn't connect
+	// (curlFrom); it returns what curl printed.
+	noFetch := func(url string, timeout time.Duration) string {
+		t.Helper()
+		connected, out, err := curlFrom(devA, timeout, "-g", url)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if connected {
+			t.Fatalf("curl %s got through: %q", url, out)
+		}
+		return out
 	}
 	url4, url6 := "http://"+inet4.String()+"/", "http://["+inet6.String()+"]/"
 	for _, url := range []string{url4, url6} {
@@ -116,9 +132,8 @@ func TestEgressThroughAnExit(t *testing.T) {
 		return nil
 	})
 	start := time.Now()
-	if out, err := fetch(url6, 10*time.Second); err == nil {
-		t.Fatalf("IPv6 through an exit without IPv6: %q", out)
-	} else if took := time.Since(start); took > 3*time.Second {
+	out := noFetch(url6, 10*time.Second) // IPv6 through an exit without IPv6
+	if took := time.Since(start); took > 3*time.Second {
 		t.Errorf("IPv6 refused after %v, want at once: %s", took, out)
 	}
 	if out, err := fetch(url4, 5*time.Second); err != nil || strings.TrimSpace(out) != "egress-ok" {
@@ -144,10 +159,8 @@ func TestEgressThroughAnExit(t *testing.T) {
 	waitLog(t, up["server-2"], `msg="map applied" .*version=`+version3+` .*ingress=off egress=off`)
 	waitLog(t, up["server-1"], applied(version3))
 	web = inet.Capture(t, "tcp port 80 or icmp")
-	for i := range 3 {
-		if out, err := fetch(url4, 3*time.Second); err == nil {
-			t.Fatalf("fetch %d through server-2 with its egress off: %q", i, out)
-		}
+	for range 3 {
+		noFetch(url4, 3*time.Second) // through server-2 with its egress off
 	}
 	server2 := netip.AddrFrom4([4]byte{100, 64, 0, 2}) // overlay addresses go in spec order
 	ping(t, devA, server2)                             // the overlay through server-1 still works

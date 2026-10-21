@@ -91,7 +91,7 @@ func TestBlobDistribution(t *testing.T) {
 	server2.WriteFile(t, "/tmp/tampered.resp", resp)
 	tampering := server2.Start(t, "sh", "-c", "exec nc -l 4717 < /tmp/tampered.resp")
 	lab.Eventually(t, 30*time.Second, func() error {
-		_, err := server2.Exec(t.Context(), "sh", "-c", "ss -Htln 'sport = :4717' | grep -q .")
+		_, err := execRead(server2, pollTimeout, "sh", "-c", "ss -Htln 'sport = :4717' | grep -q .")
 		return err
 	})
 
@@ -126,7 +126,7 @@ func TestBlobDistribution(t *testing.T) {
 	waitLog(t, upA, `msg="stored blob rejected: it doesn't match the map; fetching it again" .*blob=\S+ kind=geoip name=ru`)
 	waitLog(t, upA, `msg="blob fetched" .*blob=\S+ kind=geoip name=ru`)
 	lab.Eventually(t, 30*time.Second, func() error {
-		_, err := devA.Exec(t.Context(), "sh", "-c", "sha256sum "+blobFile+" | grep -q ^"+hex.EncodeToString(sum[:]))
+		_, err := execRead(devA, pollTimeout, "sh", "-c", "sha256sum "+blobFile+" | grep -q ^"+hex.EncodeToString(sum[:]))
 		return err
 	})
 	t.Run("the blob port answers only peers through the tunnel", func(t *testing.T) {
@@ -142,18 +142,25 @@ func TestBlobDistribution(t *testing.T) {
 		}
 		s1v4, s1v6 := overlay(1)
 		dv4, dv6 := overlay(3)
-		reaches := func(n *lab.Node, addr, port string) bool {
-			_, err := n.Exec(t.Context(), "nc", "-z", "-w", "3", addr, port)
-			return err == nil
-		}
 		// A request for the list, as a peer sends it.
 		req := append([]byte("TPB\x01"), sum[:]...)
 		req = binary.BigEndian.AppendUint64(req, 0)
+		// answer sends it from n (prefix: what nc runs under) and is how
+		// many bytes came back. nc must have connected (exit 0: the
+		// listener took the connection, so "nothing" is its answer); a
+		// failed nsenter, a refused or timed-out nc, or docker's failure is
+		// an error, never "nothing".
 		answer := func(n *lab.Node, prefix, addr string) int {
+			t.Helper()
 			n.WriteFile(t, "/tmp/blob.req", req)
-			out := n.MustExec(t, "sh", "-c", prefix+"nc -w 3 "+addr+" 4717 < /tmp/blob.req | wc -c")
-			var got int
-			_, _ = fmt.Sscan(out, &got)
+			res, err := execResult(n, execTimeout, "sh", "-c", prefix+"nc -w 3 "+addr+" 4717 < /tmp/blob.req > /tmp/blob.out && wc -c < /tmp/blob.out")
+			if err != nil {
+				t.Fatalf("asking %s:4717 from %s: %v\n%s", addr, n.Name, err, res.Stderr)
+			}
+			got := 0
+			if _, err := fmt.Sscan(strings.TrimSpace(res.Stdout), &got); err != nil {
+				t.Fatalf("asking %s:4717 from %s: %q: %v", addr, n.Name, res.Stdout, err)
+			}
 			return got
 		}
 
@@ -188,17 +195,26 @@ func TestBlobDistribution(t *testing.T) {
 		router.MustExec(t, "ip", "-6", "route", "add", dv6+"/128", "via", devA.IPv6(lab.NetDevices).String())
 		control4 := devA.Start(t, "nc", "-4", "-l", "4718")
 		control6 := devA.Start(t, "nc", "-6", "-l", "4719")
-		for _, c := range []struct{ addr, port string }{{dv4, "4718"}, {dv6, "4719"}} {
-			lab.Eventually(t, 30*time.Second, func() error {
-				if !reaches(router, c.addr, c.port) {
-					return fmt.Errorf("the control listener at %s:%s is unreachable from the router", c.addr, c.port)
+		for _, c := range []struct {
+			addr string
+			port int
+		}{{dv4, 4718}, {dv6, 4719}} {
+			lab.Eventually(t, 45*time.Second, func() error {
+				ok, err := tcpReaches(router, netip.MustParseAddr(c.addr), c.port, 3)
+				if err != nil {
+					return err
+				}
+				if !ok {
+					return fmt.Errorf("the control listener at %s:%d is unreachable from the router", c.addr, c.port)
 				}
 				return nil
 			})
 		}
 		_, _ = control4.Stop(), control6.Stop()
 		for _, addr := range []string{dv4, dv6} {
-			if reaches(router, addr, "4717") {
+			if ok, err := tcpReaches(router, netip.MustParseAddr(addr), 4717, 3); err != nil {
+				t.Fatal(err)
+			} else if ok {
 				t.Errorf("the router reaches device-a's %s:4717 outside the tunnel", addr)
 			}
 		}
@@ -207,7 +223,9 @@ func TestBlobDistribution(t *testing.T) {
 		builder.MustExec(t, "ip", "route", "add", s1v4+"/32", "via", server1.IPv4(lab.NetServers).String())
 		builder.MustExec(t, "ip", "-6", "route", "add", s1v6+"/128", "via", server1.IPv6(lab.NetServers).String())
 		for _, addr := range []string{s1v4, s1v6} {
-			if reaches(builder, addr, "4717") {
+			if ok, err := tcpReaches(builder, netip.MustParseAddr(addr), 4717, 3); err != nil {
+				t.Fatal(err)
+			} else if ok {
 				t.Errorf("a neighbour reaches server-1's %s:4717 outside the tunnel", addr)
 			}
 		}

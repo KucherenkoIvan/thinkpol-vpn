@@ -95,7 +95,8 @@ func tunnelNamesAskedOnlyOfTheExit(t *testing.T, domestic, foreign *lab.Process,
 }
 
 // resolve asks the node's OS resolver (glibc, through /etc/resolv.conf)
-// for a name's address of one family.
+// for a name's address of one family. Polls use it: every failure is
+// retried alike; one-shot "no answer" checks use wantNoLookup.
 func resolve(n *lab.Node, name string, v6 bool) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -114,11 +115,45 @@ func resolve(n *lab.Node, name string, v6 bool) (string, error) {
 	return f[0], nil
 }
 
+// wantNoAnswer fails unless name has no IPv4 answer on n (wantNoLookup).
+func wantNoAnswer(t *testing.T, n *lab.Node, name, what string) {
+	t.Helper()
+	wantNoLookup(t, n, what+" ("+name+")", "getent", "ahostsv4", name)
+}
+
+// wantNoLookup runs a lookup on n whose last step is getent and fails
+// unless getent itself found nothing (getentNotFound): an answer is a
+// failed check, any other failure an unknown state that fails at once.
+func wantNoLookup(t *testing.T, n *lab.Node, what string, args ...string) {
+	t.Helper()
+	res, err := execResult(n, execTimeout, args...)
+	switch {
+	case err == nil:
+		t.Errorf("%s resolved:\n%s", what, res.Stdout)
+	case !getentNotFound(res):
+		t.Fatalf("checking %s: %v\n%s", what, err, res.Stderr)
+	}
+}
+
+// startResolved makes n resolve through systemd-resolved (and its D-Bus),
+// with dns as the server of n's devices-network link.
+func startResolved(t *testing.T, n *lab.Node, dns netip.Addr) {
+	t.Helper()
+	link := n.Interface(lab.NetDevices)
+	n.WriteFile(t, "/etc/resolv.conf", []byte("nameserver 127.0.0.53\noptions edns0 trust-ad\nsearch .\n"))
+	n.MustExec(t, "sh", "-ec", "mkdir -p /run/dbus && dbus-daemon --system --fork")
+	n.Start(t, "/lib/systemd/systemd-resolved")
+	lab.Eventually(t, 30*time.Second, func() error {
+		_, err := execRead(n, pollTimeout, "resolvectl", "dns", link, dns.String())
+		return err
+	})
+}
+
 // mustResolve resolves through the node's OS resolver until the name
 // answers with want (a new or changed answer can take a poll to appear).
 func mustResolve(t *testing.T, n *lab.Node, name string, v6 bool, want string) {
 	t.Helper()
-	lab.Eventually(t, 30*time.Second, func() error {
+	lab.Eventually(t, 60*time.Second, func() error {
 		got, err := resolve(n, name, v6)
 		if err != nil {
 			return err
