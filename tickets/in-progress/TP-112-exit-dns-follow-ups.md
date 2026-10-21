@@ -61,3 +61,4 @@ Round 1 (2026-10-21): correctness, design and a second-opinion review.
 - 2026-10-21 make test and make lab-test pass (lab run on 43d19e4, 35 packages); make lint passes everything but vulncheck, which fails on a pre-existing Go stdlib vulnerability (GO-2026-6809, crypto/x509 of the local go1.26.9 toolchain, reached from lab/prototypes/reality, untouched by this branch; fixed in go1.26.10) — bumping the pinned toolchain is outside this ticket
 - 2026-10-21 in-progress → review
 - 2026-10-21 review → has-errors (round 1: R1.1–R1.10)
+- 2026-10-21 has-errors → in-progress (round 1 findings)
