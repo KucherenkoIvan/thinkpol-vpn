@@ -302,6 +302,10 @@ func TestSkipped(t *testing.T) {
 		{"en0 (skip)\nen1 (skip)\nbridge0 (skip)\n", []string{"en0", "en1", "bridge0"}},
 		{"utun3 (skip)\nutun7 (skip)\n", []string{"utun3"}}, // another utun: another VPN's
 		{"  en0   (skip)  \n", []string{"en0"}},
+		// Strict on purpose: a skipped name no interface has (`set skip on
+		// lo`, a group) counts too; one could come, and macOS's pf doesn't
+		// say which names a group covers.
+		{"lo (skip)\n", []string{"lo"}},
 	} {
 		if got := skipped([]byte(c.ifaces), "utun7"); !slices.Equal(got, c.want) {
 			t.Errorf("%q: %q, want %q", c.ifaces, got, c.want)
@@ -326,6 +330,20 @@ func TestAnchorsBefore(t *testing.T) {
 	} {
 		if got := anchorsBefore([]byte(c.anchors)); !slices.Equal(got, c.want) {
 			t.Errorf("%q: %q, want %q", c.anchors, got, c.want)
+		}
+	}
+}
+
+// The fake holds every anchor it lists under com.apple.
+func TestTheFakeHoldsTheAnchorsItLists(t *testing.T) {
+	f := newFakePF()
+	out, err := f.run(context.Background(), nil, "-a", appleAnchor, "-s", "Anchors")
+	if err != nil || len(lines(out.stdout)) != len(stockApple) {
+		t.Fatalf("%q: %v, want %d anchors", out.stdout, err, len(stockApple))
+	}
+	for _, l := range lines(out.stdout) {
+		if _, err := f.run(context.Background(), nil, "-a", l, "-s", "rules"); err != nil {
+			t.Errorf("%s listed but not held: %v", l, err)
 		}
 	}
 }
@@ -1050,8 +1068,8 @@ func TestWithoutTheAppleHookTheGuardIsUnsupported(t *testing.T) {
 }
 
 // A quick pass above the hook ends evaluation before the anchor: the
-// guard isn't enforced (an ordinary failure, retried), and is again once
-// it is gone.
+// guard isn't enforced (an ordinary failure, retried), though in place
+// for whatever the pass doesn't match, and is again once it is gone.
 func TestAQuickPassAboveTheHookIsNotEnforced(t *testing.T) {
 	r := newRig(t)
 	r.pf.main = []string{"pass out quick inet6 all no state", `anchor "com.apple/*" all`}
@@ -1060,6 +1078,7 @@ func TestAQuickPassAboveTheHookIsNotEnforced(t *testing.T) {
 	if err == nil || errors.Is(err, routetable.ErrGuardUnsupported) {
 		t.Fatalf("%v, want an ordinary failure", err)
 	}
+	r.whole(t, exempt(t))
 	r.pf.set(func(f *fakePF) { f.main = stockMain })
 	if err := g.Apply(context.Background(), exempt(t)); err != nil {
 		t.Fatal(err)
@@ -1072,6 +1091,10 @@ func TestAQuickPassAboveTheHookIsNotEnforced(t *testing.T) {
 // enforced while pf skips one it doesn't pass anyway (an ordinary
 // failure, retried), though it is in place for the others; and is again
 // once pf skips only lo0 and the utun.
+//
+// While the bypass lasts, the retries don't kill states over and over
+// (the bypass makes them again); the Apply after it ends kills those it
+// let be made.
 func TestASkippedInterfaceIsNotEnforced(t *testing.T) {
 	r := newRig(t)
 	r.pf.skip = []string{"en0", "lo0"}
@@ -1081,11 +1104,25 @@ func TestASkippedInterfaceIsNotEnforced(t *testing.T) {
 		t.Fatalf("%v, want an ordinary failure naming en0", err)
 	}
 	r.whole(t, exempt(t)) // en1 is guarded meanwhile
+	foreign := fakeState{"tcp", netip.MustParseAddrPort("[2001:db8:1::10]:51000"), netip.MustParseAddrPort("[2001:db8:ab::7]:443"), true}
+	r.pf.set(func(f *fakePF) { f.states = append(f.states, foreign) })
+	r.pf.forget()
+	for range 3 {
+		if err := g.Apply(context.Background(), exempt(t)); err == nil {
+			t.Fatal("applied while en0 is skipped")
+		}
+	}
+	if n := r.pf.ran("states") + r.pf.ran("-k"); n != 0 {
+		t.Errorf("the retries under the same bypass read or killed states %d times", n)
+	}
 	r.pf.set(func(f *fakePF) { f.skip = []string{"lo0", "utun7"} })
 	if err := g.Apply(context.Background(), exempt(t)); err != nil {
 		t.Fatal(err)
 	}
 	r.whole(t, exempt(t))
+	if slices.Contains(r.pf.stateList(), foreign) {
+		t.Error("a state made while en0 was skipped survived")
+	}
 }
 
 // An anchor under com.apple whose name sorts before the guard's runs
@@ -1109,6 +1146,12 @@ func TestAnAnchorBeforeOursIsNotEnforced(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.whole(t, exempt(t))
+	// A listing pf refuses tells nothing: no anchor before ours isn't
+	// what it says.
+	r.pf.failOn("Anchors", errors.New("DIOCGETRULESETS: Invalid argument"))
+	if err := g.Apply(context.Background(), exempt(t)); err == nil {
+		t.Error("enforced although pf refused to list the anchors")
+	}
 }
 
 // The hook going away under an applied guard makes it unsupported too;

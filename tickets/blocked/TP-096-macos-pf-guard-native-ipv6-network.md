@@ -23,6 +23,7 @@ Lab emulation of native IPv6 on the host (host network stack is off limits).
 
 ## Acceptance
 - [ ] steps 0–10 of TP-078's device checklist pass on a network with global IPv6 and a default IPv6 route, results in Notes
+- [ ] TP-126's pfctl parsers, read from pfctl's source, not a Mac (needs no native IPv6): on a stock Mac, run `sudo pfctl -s Interfaces -v` and `sudo pfctl -a com.apple -s Anchors` and save both outputs in Notes; with the guard applied, it reports neither a skipped interface nor an anchor before `000.thinkpol` (health not `ipv6_guard_not_enforced`); then load a main ruleset with `set skip on lo` (no such interface) and record whether `pfctl -s Interfaces -v` shows `lo (skip)`, then restore the stock rules with `sudo pfctl -f /etc/pf.conf`
 - [ ] `make lint` and `make test` pass (no code change required if the run is docs-only)
 
 ## Blocked by
@@ -35,3 +36,4 @@ The owner has no network with native IPv6 available now. Unblock when one is.
 - 2026-10-16 created (TP-078/TP-092 device sessions)
 - 2026-10-16 docs: can run in TP-097's VM lab (a router VM gives native IPv6), so it depends on TP-097
 - 2026-10-16 docs: TP-097 cancelled; this waits for a network with native IPv6 again
+- 2026-10-22 TP-126: an acceptance item for the pfctl listings its bypass check parses (`-s Interfaces -v`, `-a com.apple -s Anchors`)

@@ -410,8 +410,14 @@ func TestIPv6GuardRepairsItsTableTurnedOff(t *testing.T) {
 	leaks("a chain setting the links' mark")
 	repaired("a mark-setting chain was added")
 
+	// No packet tells this repair: every IPv6 packet meets a rule of the
+	// guard's before the policy. The chain does.
 	change("the chain's policy", "chain", "inet", firewall.GuardTable, "output", "{ policy drop; }")
 	repaired("the chain's policy was changed")
+	out, err := exec.Command("ip", "netns", "exec", p.dev, "nft", "list", "chain", "inet", firewall.GuardTable, "output").CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "policy accept;") {
+		t.Errorf("re-applied after the policy was changed: %v:\n%s", err, out)
+	}
 }
 
 // nft runs nft in the device's namespace.
