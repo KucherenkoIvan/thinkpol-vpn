@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: []
 refs: []
-owner: ""
-branch: ""
+owner: "agent-tp-126"
+branch: "tp-126-guard-blind-spots"
 ---
 
 ## Goal
@@ -40,3 +40,4 @@ A foreign change that turns the IPv6 leak guard off is repaired (or reported as 
 
 ## Log
 - 2026-10-22 created in backlog (lab-confirmed gap from TP-077's review)
+- 2026-10-22 backlog → in-progress — owner: agent-tp-126, branch: tp-126-guard-blind-spots
