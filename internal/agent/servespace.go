@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/netip"
+	"slices"
 	"sync/atomic"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/ipc"
@@ -45,8 +47,27 @@ func serveSpace(log *slog.Logger, base DataPlane) worker.Serve {
 		defer cancel()
 		var badConfig atomic.Pointer[error]
 		maps := make(chan []byte, 1)
+		// A later config's changed upstreams follow into the running
+		// resolver (the supervisor recomputes them for every map); a
+		// resolver started later gets the latest from the data plane
+		// itself, so a map that stops and starts it doesn't bring the
+		// first config's back. The order is the uplink's as of the last
+		// map applied: an uplink change alone re-runs nothing here.
+		ups := make(chan []netip.AddrPort, 1)
+		last := first.DNSUpstreams
+		forward := func(c WorkerConfig) {
+			if slices.Equal(c.DNSUpstreams, last) {
+				return
+			}
+			last = c.DNSUpstreams
+			select {
+			case <-ups:
+			default:
+			}
+			ups <- c.DNSUpstreams
+		}
 		go func() {
-			if err := followConfigs(ctx, s, first, seeds, maps); err != nil {
+			if err := followConfigs(ctx, s, first, seeds, maps, forward); err != nil {
 				badConfig.Store(&err)
 				cancel()
 			}
@@ -57,6 +78,7 @@ func serveSpace(log *slog.Logger, base DataPlane) worker.Serve {
 		dp := workerDataPlane(base, first, log, seeds)
 		dp.Map, dp.Maps, dp.Registry = m, maps, reg
 		dp.Inbound = SharedInbound(ctx, reg, s.Listeners)
+		dp.dnsUpstreams = ups
 		// The space's own figures only (TP-041 seals them into its
 		// telemetry).
 		dp.StatusAttrs = func() []any { return sharedAttrs(s, counters.Load()) }
@@ -96,10 +118,10 @@ func firstConfig(ctx context.Context, s worker.Session) (WorkerConfig, *netmap.M
 	return first, m, nil
 }
 
-// followConfigs passes each later config's map to maps, latest-wins, until
-// ctx ends or the configs do; a config that doesn't decode, or changes the
-// worker's keys or trust, is its error.
-func followConfigs(ctx context.Context, s worker.Session, first WorkerConfig, seeds *worker.Seeds, maps chan []byte) error {
+// followConfigs passes each later config to forward and its map to maps,
+// latest-wins, until ctx ends or the configs do; a config that doesn't
+// decode, or changes the worker's keys or trust, is its error.
+func followConfigs(ctx context.Context, s worker.Session, first WorkerConfig, seeds *worker.Seeds, maps chan []byte, forward func(WorkerConfig)) error {
 	for {
 		select {
 		case <-ctx.Done():
@@ -115,6 +137,7 @@ func followConfigs(ctx context.Context, s worker.Session, first WorkerConfig, se
 			if err != nil {
 				return err
 			}
+			forward(c)
 			// Seeds the new map doesn't name go; the ones it names came
 			// ahead of this config.
 			if next, err := netmap.Verify(c.Map, first.Trust); err == nil {

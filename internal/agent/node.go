@@ -515,6 +515,8 @@ func (e errListeners) Unwrap() error { return e.error }
 // served until hosting grants (TP-040) add guests.
 func (s *serverSpaces) apply() error {
 	if s.follow.removed {
+		// Rejoining with the same refused set warns about it again.
+		s.refusedLogged = nil
 		s.report.set(func(p *report) { p.dnsUpstreamsRefused = 0 })
 		if err := s.sup.SetListeners(nil); err != nil {
 			return errListeners{err}
@@ -522,9 +524,12 @@ func (s *serverSpaces) apply() error {
 		return s.sup.SetSpaces(nil)
 	}
 	id := s.follow.cur.Header().SpaceID
+	// The worker config's upstream order comes from this snapshot, taken
+	// before SetSpaces finds the uplink again.
+	e := s.sup.Egress()
 	config, err := WorkerConfig{
 		Keys: s.follow.keys, Trust: s.trust, Map: s.follow.cur.Bytes(), Interface: s.iface, LinkMTU: s.linkMTU,
-		DNS: s.dns, DNSUpstreams: s.workerUpstreams(),
+		DNS: s.dns, DNSUpstreams: s.workerUpstreams(e),
 	}.Encode()
 	if err != nil {
 		return err
@@ -551,18 +556,21 @@ func (s *serverSpaces) apply() error {
 	if err := s.sup.SetListeners(ls); err != nil {
 		return errListeners{err}
 	}
+	// The line says what the tables enforce: SetSpaces finds the uplink
+	// again before building them, so the egress is read once more, for
+	// this line alone (the config's order keeps the snapshot taken
+	// before).
 	s.log.Info("map applied", append(append([]any{"version", s.follow.cur.Header().Version, "listeners", len(ls), "inbound_skipped", len(inbound.Skipped)},
-		serverSettings(s.follow.section.Node)...), append(s.egressAttrs(), "blobs", len(s.follow.cur.Header().Blobs))...)...)
+		serverSettings(s.follow.section.Node)...), append(s.egressAttrs(s.sup.Egress()), "blobs", len(s.follow.cur.Header().Blobs))...)...)
 	return nil
 }
 
 // egressAttrs say, for a section allowing egress, what the node can give
 // it: the uplink and its families, never a destination.
-func (s *serverSpaces) egressAttrs() []any {
+func (s *serverSpaces) egressAttrs(e supervisor.EgressInfo) []any {
 	if !s.follow.section.Node.AllowEgress {
 		return nil
 	}
-	e := s.sup.Egress()
 	if e.Uplink == "" {
 		s.log.Warn("egress is on but the node has no uplink: the space's internet traffic is dropped", "err", e.Err)
 		return []any{"uplink", "none"}

@@ -71,8 +71,9 @@ type DataPlane struct {
 	// DNS runs the node's resolver on its overlay addresses (see
 	// dataplane's dnsConfig for what it serves), asking DNSUpstreams: a
 	// device with none asks the resolvers the OS used before, a worker
-	// never falls back to those. On a device the OS resolves through it
-	// while the data plane runs.
+	// never falls back to those (see DESIGN.md "Upstreams"). On a device
+	// the OS resolves through it while the data plane runs. A worker's
+	// follows its later configs (dnsUpstreams).
 	DNS          bool
 	DNSUpstreams []netip.AddrPort
 
@@ -93,6 +94,9 @@ type DataPlane struct {
 	// rulesRequests replace them while it runs.
 	Rules         rules.Local
 	rulesRequests <-chan rulesRequest
+	// dnsUpstreams delivers a later config's changed upstream list while
+	// the data plane runs (serveSpace); latest-wins. Nil without one.
+	dnsUpstreams <-chan []netip.AddrPort
 
 	// tuning is what tests change; production leaves it zero.
 	tuning tuning
@@ -453,6 +457,8 @@ func (r *runner) loop(ctx context.Context) error {
 			r.logStatus()
 		case req := <-r.dp.requests:
 			r.request(ctx, req)
+		case ups := <-r.dp.dnsUpstreams:
+			r.setUpstreams(ups)
 		case req := <-r.dp.rulesRequests:
 			r.dp.Rules = req.rules
 			var err error
