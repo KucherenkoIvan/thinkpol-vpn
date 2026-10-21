@@ -310,8 +310,9 @@ func sameElements(got, want []nftables.SetElement) bool {
 }
 
 // Close removes the table and lets go of the namespace. A failure leaves
-// the guard open, so Close can be tried again. On a kernel without
-// nf_tables there is nothing to remove.
+// the guard in place for the next run's routetable.Clear, under the route
+// table's owner lock. On a kernel without nf_tables there is nothing to
+// remove.
 func (g *IPv6Guard) Close() error {
 	g.mu.Lock()
 	defer g.mu.Unlock()

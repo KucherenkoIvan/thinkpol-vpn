@@ -334,12 +334,12 @@ type Status struct {
 	// change nothing).
 	Reapplies uint64
 	// RulesAhead counts what other software has in place that may route
-	// around the tunnel and the layout can't override (Ahead): policy
+	// around the tunnel and the layout can't override (Layout.Ahead): policy
 	// rules before ours (a mesh VPN's, say) on Linux, host routes over
 	// tunneled destinations on macOS.
 	RulesAhead int
 	// OverlayAhead counts foreign host routes inside the overlay's
-	// networks that nothing outranks (macOS, OverlayAhead): a peer's
+	// networks that nothing outranks (macOS, Layout.OverlayAhead): a peer's
 	// traffic leaves around the tunnel.
 	OverlayAhead int
 }
@@ -413,7 +413,7 @@ func New(g Guard, log *slog.Logger) (*Enforcer, error) {
 // owner lock: whatever keeps netcfg from taking it (another live run,
 // or any failure on the way) may mean the guard there is live, so it is
 // left alone and the error returned. A Close of the routes that fails
-// still lets go of the lock (netcfg.Clear).
+// still lets go of the lock (netcfg.Configurator).
 func Clear(g Guard) error {
 	return clearWith(func() (netcfg.Configurator, error) { return netcfg.New(netcfg.OwnerRouteTable) }, g)
 }
@@ -482,10 +482,10 @@ func (e *Enforcer) Enforce(ctx context.Context, w Want) error {
 func (e *Enforcer) apply(ctx context.Context, w Want, again bool) error {
 	start := time.Now()
 	s, err := e.cfg.Survey(ctx)
-	var cfg netcfg.Config
+	var l Layout
 	if err == nil {
-		cfg = Config(w, s)
-		err = e.cfg.Apply(ctx, cfg)
+		l = LayoutOf(w, s)
+		err = e.cfg.Apply(ctx, l.Config)
 	}
 	took := time.Since(start)
 	if err == nil {
@@ -523,12 +523,12 @@ func (e *Enforcer) apply(ctx context.Context, w Want, again bool) error {
 	if !TUNUp(w, s) {
 		e.status.Enforced, e.status.Error = false, ErrorTUNDown
 	}
-	e.status.RulesAhead, e.status.OverlayAhead = Ahead(w, s), OverlayAhead(w, s)
-	if !again || e.status.Routes != len(cfg.Routes) {
-		e.log.Info("route table applied", "routes", len(cfg.Routes), "took", took.Round(time.Millisecond))
+	e.status.RulesAhead, e.status.OverlayAhead = l.Ahead, l.OverlayAhead
+	if !again || e.status.Routes != len(l.Config.Routes) {
+		e.log.Info("route table applied", "routes", len(l.Config.Routes), "took", took.Round(time.Millisecond))
 		e.status.LastApply = took
 	}
-	e.status.Routes = len(cfg.Routes)
+	e.status.Routes = len(l.Config.Routes)
 	return nil
 }
 
@@ -588,14 +588,18 @@ func (e *Enforcer) Status() Status {
 
 // Close stops watching and removes everything in place: the guard first,
 // then the routes and rules, whose configurator lets go of the owner lock
-// last. Close may be called again after a failure.
+// last, even when it fails (what it leaves is the owner's next
+// configurator's). A second Close returns nil and touches nothing: the
+// guard is removed only while the owner lock is held, and after the
+// first Close the next run's live guard may be in its place.
 func (e *Enforcer) Close() error {
 	e.enforcing.Lock()
 	defer e.enforcing.Unlock()
-	if !e.closed {
-		e.closed = true
-		e.pauseWatching()
+	if e.closed {
+		return nil
 	}
+	e.closed = true
+	e.pauseWatching()
 	e.mu.Lock()
 	e.want, e.applied, e.status = nil, nil, Status{}
 	e.mu.Unlock()

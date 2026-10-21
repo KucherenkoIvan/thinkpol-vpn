@@ -2,22 +2,86 @@
 
 package netcfg
 
-import "errors"
+import (
+	"os"
+	"strconv"
 
-// failingClose is a real configurator whose Close fails before doing
-// anything.
-type failingClose struct{ *linuxConfigurator }
+	"golang.org/x/sys/unix"
+)
 
-func (failingClose) Close() error { return errors.New("netlink gone") }
-
-// ClearFailingClose clears owner in the namespace at path with a Close
-// that fails.
-func ClearFailingClose(path string, owner Owner) error {
+// ClearFailingClose clears owner in the namespace at path with a real
+// Close that fails: the ledger says link's MTU was changed from one the
+// kernel refuses to set back.
+func ClearFailingClose(path string, owner Owner, link string) error {
 	return ClearWith(func() (Configurator, error) {
 		c, err := NewInNamespace(path, owner)
 		if err != nil {
 			return nil, err
 		}
-		return failingClose{c.(*linuxConfigurator)}, nil
+		lc := c.(*linuxConfigurator)
+		l, err := lc.h.LinkByName(link)
+		if err != nil {
+			_ = c.Close()
+			return nil, err
+		}
+		lc.links.changed[link] = linkChange{index: l.Attrs().Index, origMTU: -1, mtu: l.Attrs().MTU}
+		return c, nil
 	}, nil)
+}
+
+// NewInNamespaceToKill is NewInNamespace, and a kill that puts /dev/null
+// in place of the configurator's netlink socket: from then on every
+// netlink request it makes fails, the first dump of a Close included.
+// It tells the configurator's sockets by scanning the process's netlink
+// sockets before and after NewInNamespace, so no other goroutine may open
+// a netlink socket between the two scans.
+func NewInNamespaceToKill(path string, owner Owner) (Configurator, func() error, error) {
+	before, err := netlinkFDs()
+	if err != nil {
+		return nil, nil, err
+	}
+	c, err := NewInNamespace(path, owner)
+	if err != nil {
+		return nil, nil, err
+	}
+	after, err := netlinkFDs()
+	if err != nil {
+		_ = c.Close()
+		return nil, nil, err
+	}
+	kill := func() error {
+		null, err := unix.Open(os.DevNull, unix.O_RDWR|unix.O_CLOEXEC, 0)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = unix.Close(null) }()
+		for fd := range after {
+			if !before[fd] {
+				if err := unix.Dup3(null, fd, unix.O_CLOEXEC); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	return c, kill, nil
+}
+
+// netlinkFDs are the process's open netlink sockets.
+func netlinkFDs() (map[int]bool, error) {
+	ents, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[int]bool)
+	for _, e := range ents {
+		fd, err := strconv.Atoi(e.Name())
+		if err != nil {
+			continue
+		}
+		if d, err := unix.GetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_DOMAIN); err == nil && d == unix.AF_NETLINK {
+			out[fd] = true
+		}
+	}
+	return out, nil
 }

@@ -102,30 +102,16 @@ func check(fd int, path string, last bool) error {
 // descriptor is close-on-exec, so no process this one starts holds the
 // lock after it.
 func Lock(dir *os.File, name string) (*os.File, error) {
-	path := filepath.Join(dir.Name(), name)
-	fd, err := unix.Openat(int(dir.Fd()), name, unix.O_RDWR|unix.O_CREAT|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0o600)
+	f, err := openRegular(dir, name, unix.O_RDWR|unix.O_CREAT, 0o600)
 	if err != nil {
-		if errors.Is(err, unix.ELOOP) {
-			return nil, fmt.Errorf("%s: a symlink is refused", path)
-		}
-		return nil, &os.PathError{Op: "open", Path: path, Err: err}
+		return nil, err
 	}
-	f := os.NewFile(uintptr(fd), path)
-	var st unix.Stat_t
-	if err := unix.Fstat(fd, &st); err != nil {
-		_ = f.Close()
-		return nil, &os.PathError{Op: "stat", Path: path, Err: err}
-	}
-	if st.Mode&unix.S_IFMT != unix.S_IFREG {
-		_ = f.Close()
-		return nil, fmt.Errorf("%s: not a regular file", path)
-	}
-	if err := unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB); err != nil {
+	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
 		_ = f.Close()
 		if errors.Is(err, unix.EWOULDBLOCK) {
-			return nil, fmt.Errorf("%s: %w", path, ErrLocked)
+			return nil, fmt.Errorf("%s: %w", f.Name(), ErrLocked)
 		}
-		return nil, &os.PathError{Op: "flock", Path: path, Err: err}
+		return nil, &os.PathError{Op: "flock", Path: f.Name(), Err: err}
 	}
 	return f, nil
 }
