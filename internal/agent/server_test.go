@@ -256,9 +256,6 @@ func TestTheEgressLineSaysWhatTheTablesEnforce(t *testing.T) {
 	eventually(t, func() bool {
 		return logMatches(r.log.String(), `msg="map applied" .*uplink=eth9 .*egress_ipv4=on .*egress_ipv6=off`)
 	})
-	if strings.Contains(r.log.String(), "has no uplink") {
-		t.Errorf("the node was warned about an uplink the tables carry:\n%s", r.log.String())
-	}
 	// The config's order keeps the first read's family.
 	sp, _, _ := sup.last()
 	c, err := DecodeWorkerConfig(sp[0].Config)
@@ -267,6 +264,21 @@ func TestTheEgressLineSaysWhatTheTablesEnforce(t *testing.T) {
 	}
 	if len(c.DNSUpstreams) == 0 || c.DNSUpstreams[0] != netip.MustParseAddrPort("[2620:fe::fe]:53") {
 		t.Fatalf("the defaults follow the first read's family: %v", c.DNSUpstreams)
+	}
+}
+
+// A first read that finds no uplink doesn't warn when SetSpaces' own
+// probe finds one: the line says the uplink the tables were built on.
+func TestAnUplinkFoundBySetSpacesIsNotWarnedAbout(t *testing.T) {
+	s := newTestSpace(t)
+	sup := &fakeSupervisor{egressSeq: []supervisor.EgressInfo{
+		{Err: "no default route"}, {Uplink: "eth9", IPv4: true},
+	}}
+	r := runServerSpacesIn(t, s, sup, "", func(ss *serverSpaces) { ss.dns = true },
+		func(sec *netmap.Section) { sec.Node.AllowEgress = true })
+	eventually(t, func() bool { return logMatches(r.log.String(), `msg="map applied" .*uplink=eth9 `) })
+	if strings.Contains(r.log.String(), "has no uplink") {
+		t.Errorf("the node was warned about an uplink the tables carry:\n%s", r.log.String())
 	}
 }
 

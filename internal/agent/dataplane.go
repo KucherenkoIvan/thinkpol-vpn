@@ -73,7 +73,8 @@ type DataPlane struct {
 	// dataplane's dnsConfig for what it serves), asking DNSUpstreams: a
 	// device with none asks the resolvers the OS used before, a worker
 	// never falls back to those (see DESIGN.md "Upstreams"). On a device
-	// the OS resolves through it while the data plane runs.
+	// the OS resolves through it while the data plane runs. A worker's
+	// follows its later configs (dnsUpstreams).
 	DNS          bool
 	DNSUpstreams []netip.AddrPort
 
@@ -419,7 +420,7 @@ func (r *runner) loop(ctx context.Context) error {
 		case req := <-r.dp.requests:
 			r.request(ctx, req)
 		case ups := <-r.dp.dnsUpstreams:
-			r.upstreamsChanged(ups)
+			r.setUpstreams(ups)
 		case req := <-r.dp.rulesRequests:
 			r.dp.Rules = req.rules
 			var err error

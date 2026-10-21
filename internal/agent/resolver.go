@@ -66,16 +66,16 @@ func (r *runner) newResolver() *dns.Server {
 	return dns.New(o)
 }
 
-// upstreamsChanged gives the data plane a later config's upstream list:
-// a resolver started later reads it (newResolver), a running one is
+// setUpstreams gives the data plane a later config's upstream list: a
+// resolver started later reads it (newResolver), a running one is
 // switched to it at once.
-func (r *runner) upstreamsChanged(ups []netip.AddrPort) {
+func (r *runner) setUpstreams(ups []netip.AddrPort) {
 	r.dp.DNSUpstreams = ups
 	if r.resolver == nil {
 		return
 	}
 	r.resolver.SetUpstreams(ups)
-	r.upstreams = ups
+	r.upstreams = slices.Clone(ups)
 	r.dp.Log.Info("DNS: the resolver's upstreams changed", "upstreams", len(ups))
 }
 

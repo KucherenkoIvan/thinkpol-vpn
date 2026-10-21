@@ -17,6 +17,7 @@ import (
 
 	mdns "github.com/miekg/dns"
 
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/logring"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/supervisor"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
@@ -809,18 +810,19 @@ func TestTheResolverAsksTheLatestUpstreams(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var buf bytes.Buffer
+	logs := logring.New(1 << 20)
 	changed := make(chan []netip.AddrPort, 1)
 	r := &runner{
 		dp: DataPlane{DNS: true, DNSUpstreams: []netip.AddrPort{x.address}, dnsPort: freePort(t), dnsUpstreams: changed,
-			Log: slog.New(slog.NewTextHandler(&buf, nil)), Inbound: nilInbound{}, conn: &connection{}},
+			Log: slog.New(slog.NewTextHandler(logs, nil)), Inbound: nilInbound{}, conn: &connection{}},
 		follow: mapFollower{cur: s.verified(t, 1), section: section},
 	}
 	r.resolver = r.newResolver()
 	r.resolver.Update(dns.Config{Listen: []netip.Addr{netip.MustParseAddr("127.0.0.1")}, Clients: []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")}})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go func() { _ = r.loop(ctx) }()
+	looped := make(chan struct{})
+	go func() { defer close(looped); _ = r.loop(ctx) }()
 
 	// The resolver asks the first config's upstream.
 	if a := askTheResolver(t, r.dp.dnsPort); a != x.answer {
@@ -829,7 +831,7 @@ func TestTheResolverAsksTheLatestUpstreams(t *testing.T) {
 
 	// A later config's list is delivered by the loop and asked at once.
 	changed <- []netip.AddrPort{y.address}
-	eventually(t, func() bool { return strings.Contains(buf.String(), "the resolver's upstreams changed") })
+	eventually(t, func() bool { return strings.Contains(logs.String(), "the resolver's upstreams changed") })
 	if a := askTheResolver(t, r.dp.dnsPort); a != y.answer {
 		t.Fatalf("after the change the resolver's answer came from %v, want the later config's %v", a, y.answer)
 	}
@@ -837,9 +839,10 @@ func TestTheResolverAsksTheLatestUpstreams(t *testing.T) {
 		t.Errorf("the old upstream was asked %d times, want once", n)
 	}
 
-	// Stopped (a removal) and started again: the new resolver starts
-	// from the latest list, with nothing delivered meanwhile.
+	// The next start's newResolver reads the latest list, with nothing
+	// delivered meanwhile.
 	cancel()
+	<-looped
 	_ = r.resolver.Close()
 	r.resolver = nil
 	r.dp.dnsPort = freePort(t)

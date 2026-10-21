@@ -525,9 +525,8 @@ func (s *serverSpaces) apply() error {
 		return s.sup.SetSpaces(nil)
 	}
 	id := s.follow.cur.Header().SpaceID
-	// One read of the egress for the worker config: the upstream order
-	// comes from the snapshot taken before SetSpaces finds the uplink
-	// again.
+	// The worker config's upstream order comes from this snapshot, taken
+	// before SetSpaces finds the uplink again.
 	e := s.sup.Egress()
 	config, err := WorkerConfig{
 		Keys: s.follow.keys, Trust: s.trust, Map: s.follow.cur.Bytes(), Interface: s.iface, LinkMTU: s.linkMTU,
