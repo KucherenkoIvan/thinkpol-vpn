@@ -24,8 +24,9 @@ service LocalService {
   // Connect brings a device's data plane up on its latest map and returns
   // once it is up. A device removed from its space connects once a map
   // includes it again. Fails with FAILED_PRECONDITION "server_mode" on a
-  // server, UNAVAILABLE when the start failed (the message names the
-  // step).
+  // server, UNAVAILABLE when the start failed (the message is
+  // "start_failed:" and the step's code: "tun", "engine", or an Apply
+  // step as in DataPlane.last_apply_error).
   rpc Connect(ConnectRequest) returns (ConnectResponse);
   // Disconnect takes a device's data plane down and returns once it is
   // down; the device goes on following its space's maps.
@@ -147,6 +148,8 @@ message Uplink {
   // Whether the node forwards each family.
   bool forwarding4 = 4;
   bool forwarding6 = 5;
+  // Why there is no uplink, a code: "no_default_route",
+  // "uplink_unusable", "uplink_unknown", "unsupported".
   string error = 6;
 }
 
@@ -183,11 +186,13 @@ enum HealthLevel {
 message DataPlane {
   // The overlay's MTU.
   uint32 mtu = 1;
-  // Whether the overlay carries IPv6, and if not, why.
+  // Whether the overlay carries IPv6, and if not, why, a code:
+  // "mtu_below_1280", "no_ipv6_address", "other".
   bool ipv6 = 2;
   string ipv6_off = 3;
-  // The step the last Apply failed at ("section", "removals",
-  // "interface", "devices", "router"), empty if it succeeded.
+  // The step the last Apply failed at, a code ("section", "removals",
+  // "interface", "devices", "router", "route_table"), empty if it
+  // succeeded.
   string last_apply_error = 4;
   repeated Peer peers = 5;
   repeated Neighbor neighbors = 6;
@@ -278,7 +283,9 @@ message Worker {
   google.protobuf.Timestamp ready_since = 4;
   // When a restart after a crash is due.
   google.protobuf.Timestamp restart_at = 5;
-  // Why the last process ended (spawn or exit); sanitized on the wire.
+  // Why the last process ended, a code: "spawn_failed", "not_ready",
+  // "unresponsive", "protocol_error", "killed", "exited". The service's
+  // log has the detail.
   string last_exit = 6;
 }
 

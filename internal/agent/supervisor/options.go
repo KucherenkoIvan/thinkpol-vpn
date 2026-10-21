@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/netip"
+	"os/exec"
 	"sync/atomic"
 	"time"
 
@@ -446,12 +447,65 @@ type WorkerInfo struct {
 	// ready; NextStart is when a restart is due after a crash (all zero when
 	// not applicable).
 	StartedAt, ReadyAt, NextStart time.Time
-	// LastExit is why the previous process ended ("" before any did).
-	LastExit string
+	// LastExit is why the previous process ended ("" before any did), for
+	// the log; LastExitReason says it as a code, for anyone.
+	LastExit       string
+	LastExitReason ExitReason
 	// OutputDropped counts lines dropped from the worker's output ring.
 	OutputDropped uint64
 	// Shared is what the shared listeners forwarded to the space's workers
 	// and sent for them, and what they dropped; the worker gets the same
 	// figures for its telemetry.
 	Shared SharedCounters
+}
+
+// ExitReason says why a worker's process ended: a code; the error itself
+// (WorkerInfo.LastExit) is for the supervisor's log.
+type ExitReason string
+
+const (
+	// ExitSpawnFailed: it didn't start, or its namespace couldn't be wired.
+	ExitSpawnFailed ExitReason = "spawn_failed"
+	// ExitNotReady: it ended or broke its protocol before it was ready,
+	// or wasn't ready in time.
+	ExitNotReady ExitReason = "not_ready"
+	// ExitUnresponsive: it stopped reading its control socket and was
+	// killed.
+	ExitUnresponsive ExitReason = "unresponsive"
+	// ExitProtocolError: it broke the control or data socket's protocol.
+	ExitProtocolError ExitReason = "protocol_error"
+	// ExitKilled: a signal ended it (a stop it didn't finish in time
+	// included).
+	ExitKilled ExitReason = "killed"
+	// ExitExited: it exited on its own.
+	ExitExited ExitReason = "exited"
+)
+
+// exitError is why a worker's process ended, with its reason's code.
+type exitError struct {
+	reason ExitReason
+	err    error
+}
+
+func (e *exitError) Error() string { return e.err.Error() }
+func (e *exitError) Unwrap() error { return e.err }
+
+// exitWith gives err, if any, its reason.
+func exitWith(reason ExitReason, err error) error {
+	if err == nil {
+		return nil
+	}
+	return &exitError{reason: reason, err: err}
+}
+
+// exitReason is err's reason: the one it was given (exitWith), else what
+// the process's own end says, a signal or an exit.
+func exitReason(err error) ExitReason {
+	if e := (*exitError)(nil); errors.As(err, &e) {
+		return e.reason
+	}
+	if e := (*exec.ExitError)(nil); errors.As(err, &e) && e.ExitCode() == -1 {
+		return ExitKilled
+	}
+	return ExitExited
 }

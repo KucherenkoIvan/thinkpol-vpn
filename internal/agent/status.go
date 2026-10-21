@@ -104,9 +104,9 @@ type WorkerStatus struct {
 	// ReadySince is when the running process became ready; RestartAt when
 	// a restart after a crash is due (zero when not applicable).
 	ReadySince, RestartAt time.Time
-	// LastExit is why the previous process ended (spawn or exit); the local
-	// API sanitizes it before the wire.
-	LastExit string
+	// LastExit is why the previous process ended, a code; the
+	// supervisor's log has the detail.
+	LastExit supervisor.ExitReason
 }
 
 // PublicListenerStatus is one of a server's public listeners: what it
@@ -226,7 +226,7 @@ func (p *report) status() Status {
 		for _, w := range p.workers.Workers() {
 			s.Workers = append(s.Workers, WorkerStatus{
 				Space: w.Space, Ready: w.Ready, Starts: w.Starts, ReadySince: w.ReadyAt, RestartAt: w.NextStart,
-				LastExit: w.LastExit,
+				LastExit: w.LastExitReason,
 			})
 		}
 		e := p.workers.Egress()

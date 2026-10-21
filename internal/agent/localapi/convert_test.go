@@ -12,6 +12,7 @@ import (
 	"golang.zx2c4.com/wireguard/tun/tuntest"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/supervisor"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/packettest"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/router"
@@ -94,27 +95,25 @@ func TestDeliveredPacketsReachTheStatus(t *testing.T) {
 	}
 }
 
+// Why a worker's process ended reaches the status and the CLI as its
+// code, never the error's text.
 func TestWorkerLastExitReachesStatusAndCLI(t *testing.T) {
-	const reason = "start: exec /nonexistent/thinkpol-worker: no such file"
 	st := agent.Status{
 		Connection: agent.Serving,
 		Workers: []agent.WorkerStatus{{
-			Space: netmap.SpaceID{0xab}, Ready: false, Starts: 1, LastExit: reason + "\x1b]0;pwned\x07",
+			Space: netmap.SpaceID{0xab}, Ready: false, Starts: 1, LastExit: supervisor.ExitSpawnFailed,
 		}},
 	}
 	out := statusProto(st)
-	if got := out.GetWorkers()[0].GetLastExit(); got != agent.Sanitize(reason+"\x1b]0;pwned\x07") {
+	if got := out.GetWorkers()[0].GetLastExit(); got != "spawn_failed" {
 		t.Fatalf("last_exit %q", got)
 	}
 	var text bytes.Buffer
 	if err := WriteStatus(&text, out, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(text.String(), reason) {
-		t.Fatalf("render missing spawn reason:\n%s", text.String())
-	}
-	if strings.Contains(text.String(), "\x1b") {
-		t.Fatalf("raw ESC in render:\n%s", text.String())
+	if !strings.Contains(text.String(), "(spawn_failed)") {
+		t.Fatalf("render missing the exit's reason:\n%s", text.String())
 	}
 }
 

@@ -35,7 +35,7 @@ func statusProto(st agent.Status) *localapiv1.Status {
 		out.Workers = append(out.Workers, &localapiv1.Worker{
 			SpaceId: idString(w.Space), Ready: w.Ready, Starts: uint32(w.Starts),
 			ReadySince: timestamp(w.ReadySince), RestartAt: timestamp(w.RestartAt),
-			LastExit: agent.Sanitize(w.LastExit),
+			LastExit: string(w.LastExit),
 		})
 	}
 	if e := st.Egress; e != nil {

@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"os/exec"
+	"runtime"
 	"testing"
 	"time"
 
@@ -98,5 +100,36 @@ func TestEgressErrorIsACode(t *testing.T) {
 		if got := egressError(tc.err); got != tc.want {
 			t.Errorf("%v: %q, want %q", tc.err, got, tc.want)
 		}
+	}
+}
+
+// Why a worker's process ended is a code: the reason it was given, else
+// what the process's own end says; the error's text is kept as it was.
+func TestExitReasonIsACode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("needs sh")
+	}
+	exited := exec.Command("sh", "-c", "exit 3").Run()
+	killed := exec.Command("sh", "-c", "kill -9 $$").Run()
+	notReady := exitWith(ExitNotReady, fmt.Errorf("before ready: %w", exited))
+	for _, tc := range []struct {
+		err  error
+		want ExitReason
+	}{
+		{exited, ExitExited},
+		{killed, ExitKilled},
+		{errors.New("exited"), ExitExited},
+		{notReady, ExitNotReady},
+		{exitWith(ExitUnresponsive, errors.New("sending config: i/o timeout")), ExitUnresponsive},
+	} {
+		if got := exitReason(tc.err); got != tc.want {
+			t.Errorf("%v: %q, want %q", tc.err, got, tc.want)
+		}
+	}
+	if notReady.Error() != "before ready: exit status 3" {
+		t.Errorf("the error's text changed: %q", notReady)
+	}
+	if exitWith(ExitKilled, nil) != nil {
+		t.Error("no error got a reason")
 	}
 }

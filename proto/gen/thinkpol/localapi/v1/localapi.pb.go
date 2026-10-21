@@ -1020,8 +1020,10 @@ type Uplink struct {
 	Ipv4      bool   `protobuf:"varint,2,opt,name=ipv4,proto3" json:"ipv4,omitempty"`
 	Ipv6      bool   `protobuf:"varint,3,opt,name=ipv6,proto3" json:"ipv6,omitempty"`
 	// Whether the node forwards each family.
-	Forwarding4   bool   `protobuf:"varint,4,opt,name=forwarding4,proto3" json:"forwarding4,omitempty"`
-	Forwarding6   bool   `protobuf:"varint,5,opt,name=forwarding6,proto3" json:"forwarding6,omitempty"`
+	Forwarding4 bool `protobuf:"varint,4,opt,name=forwarding4,proto3" json:"forwarding4,omitempty"`
+	Forwarding6 bool `protobuf:"varint,5,opt,name=forwarding6,proto3" json:"forwarding6,omitempty"`
+	// Why there is no uplink, a code: "no_default_route",
+	// "uplink_unusable", "uplink_unknown", "unsupported".
 	Error         string `protobuf:"bytes,6,opt,name=error,proto3" json:"error,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1157,11 +1159,13 @@ type DataPlane struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The overlay's MTU.
 	Mtu uint32 `protobuf:"varint,1,opt,name=mtu,proto3" json:"mtu,omitempty"`
-	// Whether the overlay carries IPv6, and if not, why.
+	// Whether the overlay carries IPv6, and if not, why, a code:
+	// "mtu_below_1280", "no_ipv6_address", "other".
 	Ipv6    bool   `protobuf:"varint,2,opt,name=ipv6,proto3" json:"ipv6,omitempty"`
 	Ipv6Off string `protobuf:"bytes,3,opt,name=ipv6_off,json=ipv6Off,proto3" json:"ipv6_off,omitempty"`
-	// The step the last Apply failed at ("section", "removals",
-	// "interface", "devices", "router"), empty if it succeeded.
+	// The step the last Apply failed at, a code ("section", "removals",
+	// "interface", "devices", "router", "route_table"), empty if it
+	// succeeded.
 	LastApplyError string      `protobuf:"bytes,4,opt,name=last_apply_error,json=lastApplyError,proto3" json:"last_apply_error,omitempty"`
 	Peers          []*Peer     `protobuf:"bytes,5,rep,name=peers,proto3" json:"peers,omitempty"`
 	Neighbors      []*Neighbor `protobuf:"bytes,6,rep,name=neighbors,proto3" json:"neighbors,omitempty"`
@@ -1772,7 +1776,9 @@ type Worker struct {
 	ReadySince *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=ready_since,json=readySince,proto3" json:"ready_since,omitempty"`
 	// When a restart after a crash is due.
 	RestartAt *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=restart_at,json=restartAt,proto3" json:"restart_at,omitempty"`
-	// Why the last process ended (spawn or exit); sanitized on the wire.
+	// Why the last process ended, a code: "spawn_failed", "not_ready",
+	// "unresponsive", "protocol_error", "killed", "exited". The service's
+	// log has the detail.
 	LastExit      string `protobuf:"bytes,6,opt,name=last_exit,json=lastExit,proto3" json:"last_exit,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
