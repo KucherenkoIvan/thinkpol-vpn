@@ -24,8 +24,9 @@ type fakeRouteTable struct {
 	failing int
 	closed  bool
 	// hold, if set, keeps Enforce until it is closed; entered hears
-	// when an Enforce is held.
+	// when an Enforce is held, held is the Want it holds.
 	hold, entered chan struct{}
+	held          dataplane.RouteTableWant
 }
 
 var errKernel = errors.New("the kernel said no")
@@ -33,6 +34,7 @@ var errKernel = errors.New("the kernel said no")
 func (f *fakeRouteTable) Enforce(_ context.Context, w dataplane.RouteTableWant) error {
 	f.mu.Lock()
 	hold, entered := f.hold, f.entered
+	f.held = w
 	f.mu.Unlock()
 	if hold != nil {
 		entered <- struct{}{}
@@ -224,9 +226,15 @@ func TestDirectRoutesShrinkBeforeTheRouterChangesAndGrowAfter(t *testing.T) {
 	s.start(t, net)
 	a.start(t, net)
 	dst := netip.MustParseAddr("198.51.100.7")
+	// during is one held Enforce: where the router sends dst meanwhile,
+	// and whether the Want being enforced sends it direct.
+	type during struct {
+		route  string
+		direct bool
+	}
 	// set switches the rules to l, holding each Enforce while it checks
-	// where the router sends dst: during, one per Enforce.
-	set := func(l rules.Local, during ...string) {
+	// the router and the Want against steps, one per Enforce.
+	set := func(l rules.Local, steps ...during) {
 		t.Helper()
 		hold, entered := make(chan struct{}), make(chan struct{}, 8)
 		rt.mu.Lock()
@@ -240,25 +248,32 @@ func TestDirectRoutesShrinkBeforeTheRouterChangesAndGrowAfter(t *testing.T) {
 				t.Fatal(err)
 			}
 			if n := len(entered); n > 0 {
-				t.Errorf("%v: %d more Enforce calls than %d", l.Preset, n, len(during))
+				t.Errorf("%v: %d more Enforce calls than %d", l.Preset, n, len(steps))
 			}
 		}()
-		for i, want := range during {
+		for i, want := range steps {
 			select {
 			case <-entered:
 			case <-time.After(5 * time.Second):
-				t.Errorf("%v: %d Enforce calls, want %d", l.Preset, i, len(during))
+				t.Errorf("%v: %d Enforce calls, want %d", l.Preset, i, len(steps))
 				return
 			}
-			if got := routeOf(t, a, dst); got != want {
-				t.Errorf("%v, Enforce %d: the router sends %v %s, want %s", l.Preset, i+1, dst, got, want)
+			rt.mu.Lock()
+			direct := rt.held.Direct.Contains(dst)
+			rt.mu.Unlock()
+			if direct != want.direct {
+				t.Errorf("%v, Enforce %d: the OS table sends %v direct: %v, want %v", l.Preset, i+1, dst, direct, want.direct)
+			}
+			if got := routeOf(t, a, dst); got != want.route {
+				t.Errorf("%v, Enforce %d: the router sends %v %s, want %s", l.Preset, i+1, dst, got, want.route)
 			}
 			hold <- struct{}{}
 		}
 	}
-	// Shrinking: still direct while the country's routes go, then the
-	// chain's exit as the final set goes in.
-	set(rules.Local{Preset: rules.PresetEverything}, sentDirect, exitOf(s))
-	// Growing: direct before the country's routes come back.
-	set(rules.Local{}, sentDirect)
+	// Shrinking: the OS table stops sending it direct while the router
+	// still does, then the router sends it to the chain's exit as the
+	// final set goes in.
+	set(rules.Local{Preset: rules.PresetEverything}, during{sentDirect, false}, during{exitOf(s), false})
+	// Growing: the router sends it direct before the OS table does.
+	set(rules.Local{}, during{sentDirect, true})
 }

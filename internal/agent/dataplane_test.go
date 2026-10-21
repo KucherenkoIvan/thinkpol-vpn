@@ -597,7 +597,7 @@ func TestAFailedStartUndoesWhatItOpened(t *testing.T) {
 			if err := RunDataPlane(n.ctx, dp); !errors.As(err, &se) || se.Step != tc.step {
 				t.Fatalf("got %v, want a StartError at %s", err, tc.step)
 			}
-			if tunCloses.Load() == 0 || ifc.closes.Load() != 1 {
+			if tunCloses.Load() != 1 || ifc.closes.Load() != 1 {
 				t.Errorf("TUN closed %d times, configurator %d times", tunCloses.Load(), ifc.closes.Load())
 			}
 			if table.mu.Lock(); tc.tableOpens && table.closes != 1 {
