@@ -27,11 +27,22 @@ type fakeSupervisor struct {
 	spaces                [][]supervisor.Space
 	listeners             [][]supervisor.Listener
 	failSpaces, failLists int // calls left to fail
-	// egress is what Egress reports.
-	egress supervisor.EgressInfo
+	// egress is what Egress reports; egressSeq, if set, gives one
+	// snapshot per read, then egress.
+	egress    supervisor.EgressInfo
+	egressSeq []supervisor.EgressInfo
 }
 
-func (f *fakeSupervisor) Egress() supervisor.EgressInfo { return f.egress }
+func (f *fakeSupervisor) Egress() supervisor.EgressInfo {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.egressSeq) > 0 {
+		e := f.egressSeq[0]
+		f.egressSeq = f.egressSeq[1:]
+		return e
+	}
+	return f.egress
+}
 
 func (f *fakeSupervisor) SetSpaces(sp []supervisor.Space) error {
 	f.mu.Lock()
@@ -226,6 +237,28 @@ func TestServerRetriesAFailedMap(t *testing.T) {
 	_, _, n := sup.last()
 	if n != 3 {
 		t.Fatalf("%d SetSpaces calls, want the first, the failed one and the retry", n)
+	}
+}
+
+// The worker config's upstream order and the "map applied" line are read
+// from one snapshot of the supervisor's egress: two reads could disagree
+// about the uplink's families (here the first says IPv4, the second
+// IPv6).
+func TestTheUpstreamOrderAndTheEgressLineShareOneEgressRead(t *testing.T) {
+	s := newTestSpace(t)
+	sup := &fakeSupervisor{egressSeq: []supervisor.EgressInfo{
+		{Uplink: "eth9", IPv4: true}, {Uplink: "eth0", IPv6: true},
+	}}
+	r := runServerSpacesIn(t, s, sup, "", func(ss *serverSpaces) { ss.dns = true },
+		func(sec *netmap.Section) { sec.Node.AllowEgress = true })
+	eventually(t, func() bool { return logMatches(r.log.String(), `msg="map applied" .*egress_ipv6=off`) })
+	sp, _, _ := sup.last()
+	c, err := DecodeWorkerConfig(sp[0].Config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.DNSUpstreams) == 0 || c.DNSUpstreams[0] != netip.MustParseAddrPort("9.9.9.9:53") {
+		t.Fatalf("the defaults follow the first snapshot's family: %v", c.DNSUpstreams)
 	}
 }
 

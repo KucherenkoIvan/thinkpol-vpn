@@ -209,14 +209,15 @@ var defaultWorkerUpstreams = []netip.AddrPort{
 	netip.AddrPortFrom(netip.MustParseAddr("2606:4700:4700::1111"), dns.Port),
 }
 
-// uplinkFamilyOrder stable-sorts the defaults so the family the uplink
-// carries comes first when it carries exactly one, the static order kept
-// within a family; with both or neither carried, the static order stands.
-func uplinkFamilyOrder(ups []netip.AddrPort, e supervisor.EgressInfo) []netip.AddrPort {
-	if e.IPv4 == e.IPv6 {
-		return ups
-	}
+// orderForUplink returns the defaults stable-sorted so the family the
+// uplink carries comes first when it carries exactly one, the static
+// order kept within a family; with both or neither carried, the static
+// order stands. It always returns a copy.
+func orderForUplink(ups []netip.AddrPort, e supervisor.EgressInfo) []netip.AddrPort {
 	out := slices.Clone(ups)
+	if e.IPv4 == e.IPv6 {
+		return out
+	}
 	slices.SortStableFunc(out, func(a, b netip.AddrPort) int {
 		afirst, bfirst := a.Addr().Is4() == e.IPv4, b.Addr().Is4() == e.IPv4
 		switch {
@@ -235,14 +236,15 @@ func uplinkFamilyOrder(ups []netip.AddrPort, e supervisor.EgressInfo) []netip.Ad
 // "Upstreams"), ordered for the uplink's families. One the worker's
 // egress refuses is not configured: only an exit's (a server allowing
 // egress, MayEndAChain) are counted and logged, since no device asks
-// another server's resolver.
-func (s *serverSpaces) workerUpstreams() []netip.AddrPort {
+// another server's resolver. e is the uplink snapshot the caller's apply
+// goes on, so the order and the "map applied" line agree.
+func (s *serverSpaces) workerUpstreams(e supervisor.EgressInfo) []netip.AddrPort {
 	if !s.dns {
 		return nil
 	}
 	ups := s.dnsUpstreams
 	if len(ups) == 0 {
-		ups = uplinkFamilyOrder(defaultWorkerUpstreams, s.sup.Egress())
+		ups = orderForUplink(defaultWorkerUpstreams, e)
 	}
 	var out, refused []netip.AddrPort
 	for _, a := range ups {

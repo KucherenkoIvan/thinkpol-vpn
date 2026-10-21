@@ -162,16 +162,16 @@ func TestAWorkerResolvesThroughTheDefaultPublicUpstreams(t *testing.T) {
 		netip.MustParseAddrPort("[2620:fe::fe]:53"),
 		netip.MustParseAddrPort("[2606:4700:4700::1111]:53"),
 	}
-	if got := s.workerUpstreams(); !slices.Equal(got, want) {
+	if got := s.workerUpstreams(s.sup.Egress()); !slices.Equal(got, want) {
 		t.Fatalf("defaults: %v, want %v", got, want)
 	}
 	s.dnsUpstreams = []netip.AddrPort{netip.MustParseAddrPort("198.51.100.53:53")}
-	if got := s.workerUpstreams(); !slices.Equal(got, s.dnsUpstreams) {
+	if got := s.workerUpstreams(s.sup.Egress()); !slices.Equal(got, s.dnsUpstreams) {
 		t.Errorf("configured: %v", got)
 	}
 	s.dns = false
 	s.dnsUpstreams = nil
-	if got := s.workerUpstreams(); got != nil {
+	if got := s.workerUpstreams(s.sup.Egress()); got != nil {
 		t.Errorf("without DNS: %v", got)
 	}
 }
@@ -201,27 +201,34 @@ func TestTheDefaultUpstreamsFollowTheUplinkFamily(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			s := &serverSpaces{dns: true, sup: &fakeSupervisor{egress: tc.egress},
 				follow: mapFollower{log: slog.New(slog.DiscardHandler)}}
-			if got := s.workerUpstreams(); !slices.Equal(got, tc.want) {
+			if got := s.workerUpstreams(tc.egress); !slices.Equal(got, tc.want) {
 				t.Fatalf("%s: %v, want %v", tc.name, got, tc.want)
 			}
 		})
 	}
 }
 
+// exitSpaces is a serverSpaces of an exit (a server whose section allows
+// egress) with ups as its configured upstreams; its log goes to the
+// returned buffer.
+func exitSpaces(t *testing.T, ups ...netip.AddrPort) (*serverSpaces, *bytes.Buffer) {
+	t.Helper()
+	var buf bytes.Buffer
+	s := &serverSpaces{dns: true, report: &report{mode: ModeServer}, dnsUpstreams: ups}
+	s.follow.section.Node.Kind = netmap.NodeServer
+	s.follow.section.Node.AllowEgress = true
+	s.log = slog.New(slog.NewTextHandler(&buf, nil))
+	return s, &buf
+}
+
 // An exit whose every upstream the worker's egress refuses resolves
 // nothing rather than asking the host's resolvers: only a worker may
 // not fall back to those. The log says so without pointing at
-// -dns-upstream, which was set and refused (workerUpstreams refused
-// every one and logged each).
+// -dns-upstream, which was set and refused.
 func TestAWorkerWithEveryUpstreamRefusedHasNone(t *testing.T) {
-	var buf bytes.Buffer
-	log := slog.New(slog.NewTextHandler(&buf, nil))
-	s := &serverSpaces{dns: true, report: &report{mode: ModeServer},
-		dnsUpstreams: []netip.AddrPort{netip.MustParseAddrPort("192.168.1.53:53"), netip.MustParseAddrPort("169.254.169.254:53")}}
-	s.follow.section.Node.Kind = netmap.NodeServer
-	s.follow.section.Node.AllowEgress = true
-	s.log = log
-	ups := s.workerUpstreams()
+	s, buf := exitSpaces(t, netip.MustParseAddrPort("192.168.1.53:53"), netip.MustParseAddrPort("169.254.169.254:53"))
+	log := slog.New(slog.NewTextHandler(buf, nil))
+	ups := s.workerUpstreams(supervisor.EgressInfo{})
 	if ups != nil {
 		t.Fatalf("all refused, kept: %v", ups)
 	}
@@ -293,7 +300,6 @@ func TestAServerSectionInDeviceModeFallsBackToTheSystemResolvers(t *testing.T) {
 // opens it. The log says each refused address once per change of the
 // refused set, not on every apply.
 func TestAnUpstreamTheEgressRefusesIsNotAskedAndNamed(t *testing.T) {
-	var buf bytes.Buffer
 	private := netip.MustParseAddrPort("192.168.1.53:53")
 	metadata := netip.MustParseAddrPort("169.254.169.254:53")
 	// Azure's resolver, a metadata service EgressNotWorthAllowing names
@@ -302,12 +308,8 @@ func TestAnUpstreamTheEgressRefusesIsNotAskedAndNamed(t *testing.T) {
 	// The mapped form of a metadata address is refused like its own.
 	mappedMetadata := netip.MustParseAddrPort("[::ffff:169.254.169.254]:53")
 	public := netip.MustParseAddrPort("9.9.9.9:53")
-	s := &serverSpaces{dns: true, report: &report{mode: ModeServer},
-		dnsUpstreams: []netip.AddrPort{private, public, metadata, azure, mappedMetadata}}
-	s.follow.section.Node.Kind = netmap.NodeServer
-	s.follow.section.Node.AllowEgress = true
-	s.log = slog.New(slog.NewTextHandler(&buf, nil))
-	if got := s.workerUpstreams(); !slices.Equal(got, []netip.AddrPort{public}) {
+	s, buf := exitSpaces(t, private, public, metadata, azure, mappedMetadata)
+	if got := s.workerUpstreams(supervisor.EgressInfo{}); !slices.Equal(got, []netip.AddrPort{public}) {
 		t.Fatalf("kept: %v", got)
 	}
 	for _, a := range []string{"192.168.1.53:53", "169.254.169.254:53", "[::ffff:169.254.169.254]:53", "168.63.129.16:53"} {
@@ -338,7 +340,7 @@ func TestAnUpstreamTheEgressRefusesIsNotAskedAndNamed(t *testing.T) {
 	// The same inputs again log nothing: the warning is once per change
 	// of the refused set, not on every apply.
 	before := buf.String()
-	if got := s.workerUpstreams(); !slices.Equal(got, []netip.AddrPort{public}) {
+	if got := s.workerUpstreams(supervisor.EgressInfo{}); !slices.Equal(got, []netip.AddrPort{public}) {
 		t.Fatalf("kept: %v", got)
 	}
 	if n := strings.Count(buf.String(), "192.168.1.53:53"); n != 1 {
@@ -347,7 +349,7 @@ func TestAnUpstreamTheEgressRefusesIsNotAskedAndNamed(t *testing.T) {
 
 	// A change of the refused set logs the refused ones again.
 	s.egressAllowed = []netip.Prefix{netip.MustParsePrefix("192.168.0.0/16")}
-	if got := s.workerUpstreams(); !slices.Equal(got, []netip.AddrPort{private, public}) {
+	if got := s.workerUpstreams(supervisor.EgressInfo{}); !slices.Equal(got, []netip.AddrPort{private, public}) {
 		t.Fatalf("with -egress-allowed kept: %v", got)
 	}
 	if st := s.report.status(); st.DNSUpstreamsRefused != 3 {
@@ -365,7 +367,7 @@ func TestAnUpstreamTheEgressRefusesIsNotAskedAndNamed(t *testing.T) {
 
 	// Nothing refused clears the problem.
 	s.dnsUpstreams = []netip.AddrPort{public}
-	if got := s.workerUpstreams(); !slices.Equal(got, []netip.AddrPort{public}) {
+	if got := s.workerUpstreams(supervisor.EgressInfo{}); !slices.Equal(got, []netip.AddrPort{public}) {
 		t.Fatalf("kept: %v", got)
 	}
 	if st := s.report.status(); st.DNSUpstreamsRefused != 0 || slices.Contains(st.Health().Problems, ProblemDNSUpstreamRefused) {
@@ -383,7 +385,7 @@ func TestAServerWithoutEgressReportsNoRefusedUpstreams(t *testing.T) {
 		dnsUpstreams: []netip.AddrPort{netip.MustParseAddrPort("192.168.1.53:53"), netip.MustParseAddrPort("9.9.9.9:53")}}
 	s.log = slog.New(slog.NewTextHandler(&buf, nil))
 	s.follow.section.Node.Kind = netmap.NodeServer
-	if got := s.workerUpstreams(); !slices.Equal(got, []netip.AddrPort{netip.MustParseAddrPort("9.9.9.9:53")}) {
+	if got := s.workerUpstreams(supervisor.EgressInfo{}); !slices.Equal(got, []netip.AddrPort{netip.MustParseAddrPort("9.9.9.9:53")}) {
 		t.Fatalf("kept: %v", got)
 	}
 	if st := s.report.status(); st.DNSUpstreamsRefused != 0 || slices.Contains(st.Health().Problems, ProblemDNSUpstreamRefused) {
@@ -396,7 +398,7 @@ func TestAServerWithoutEgressReportsNoRefusedUpstreams(t *testing.T) {
 	// A device's AllowEgress doesn't make its worker an exit's either.
 	s.follow.section.Node.Kind = netmap.NodeDevice
 	s.follow.section.Node.AllowEgress = true
-	if got := s.workerUpstreams(); !slices.Equal(got, []netip.AddrPort{netip.MustParseAddrPort("9.9.9.9:53")}) {
+	if got := s.workerUpstreams(supervisor.EgressInfo{}); !slices.Equal(got, []netip.AddrPort{netip.MustParseAddrPort("9.9.9.9:53")}) {
 		t.Fatalf("a device's kept: %v", got)
 	}
 	if st := s.report.status(); st.DNSUpstreamsRefused != 0 || slices.Contains(st.Health().Problems, ProblemDNSUpstreamRefused) {
@@ -411,13 +413,8 @@ func TestAServerWithoutEgressReportsNoRefusedUpstreams(t *testing.T) {
 // is cleared and the logged set forgotten, so egress allowed again warns
 // about the same refused set from scratch.
 func TestAnExitLosingEgressReportsNothingFurther(t *testing.T) {
-	var buf bytes.Buffer
-	s := &serverSpaces{dns: true, report: &report{mode: ModeServer},
-		dnsUpstreams: []netip.AddrPort{netip.MustParseAddrPort("192.168.1.53:53")}}
-	s.follow.section.Node.Kind = netmap.NodeServer
-	s.follow.section.Node.AllowEgress = true
-	s.log = slog.New(slog.NewTextHandler(&buf, nil))
-	if got := s.workerUpstreams(); got != nil {
+	s, buf := exitSpaces(t, netip.MustParseAddrPort("192.168.1.53:53"))
+	if got := s.workerUpstreams(supervisor.EgressInfo{}); got != nil {
 		t.Fatalf("the exit kept: %v", got)
 	}
 	if st := s.report.status(); st.DNSUpstreamsRefused != 1 {
@@ -425,7 +422,7 @@ func TestAnExitLosingEgressReportsNothingFurther(t *testing.T) {
 	}
 
 	s.follow.section.Node.AllowEgress = false
-	if got := s.workerUpstreams(); got != nil {
+	if got := s.workerUpstreams(supervisor.EgressInfo{}); got != nil {
 		t.Fatalf("the non-exit kept: %v", got)
 	}
 	if st := s.report.status(); st.DNSUpstreamsRefused != 0 || slices.Contains(st.Health().Problems, ProblemDNSUpstreamRefused) {
@@ -433,7 +430,7 @@ func TestAnExitLosingEgressReportsNothingFurther(t *testing.T) {
 	}
 
 	s.follow.section.Node.AllowEgress = true
-	if got := s.workerUpstreams(); got != nil {
+	if got := s.workerUpstreams(supervisor.EgressInfo{}); got != nil {
 		t.Fatalf("an exit again kept: %v", got)
 	}
 	if st := s.report.status(); st.DNSUpstreamsRefused != 1 {

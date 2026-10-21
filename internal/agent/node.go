@@ -525,9 +525,12 @@ func (s *serverSpaces) apply() error {
 		return s.sup.SetSpaces(nil)
 	}
 	id := s.follow.cur.Header().SpaceID
+	// One read: the worker config's upstream order and the "map applied"
+	// line are read from the same snapshot of the uplink.
+	e := s.sup.Egress()
 	config, err := WorkerConfig{
 		Keys: s.follow.keys, Trust: s.trust, Map: s.follow.cur.Bytes(), Interface: s.iface, LinkMTU: s.linkMTU,
-		DNS: s.dns, DNSUpstreams: s.workerUpstreams(),
+		DNS: s.dns, DNSUpstreams: s.workerUpstreams(e),
 	}.Encode()
 	if err != nil {
 		return err
@@ -555,17 +558,16 @@ func (s *serverSpaces) apply() error {
 		return errListeners{err}
 	}
 	s.log.Info("map applied", append(append([]any{"version", s.follow.cur.Header().Version, "listeners", len(ls), "inbound_skipped", len(inbound.Skipped)},
-		serverSettings(s.follow.section.Node)...), append(s.egressAttrs(), "blobs", len(s.follow.cur.Header().Blobs))...)...)
+		serverSettings(s.follow.section.Node)...), append(s.egressAttrs(e), "blobs", len(s.follow.cur.Header().Blobs))...)...)
 	return nil
 }
 
 // egressAttrs say, for a section allowing egress, what the node can give
 // it: the uplink and its families, never a destination.
-func (s *serverSpaces) egressAttrs() []any {
+func (s *serverSpaces) egressAttrs(e supervisor.EgressInfo) []any {
 	if !s.follow.section.Node.AllowEgress {
 		return nil
 	}
-	e := s.sup.Egress()
 	if e.Uplink == "" {
 		s.log.Warn("egress is on but the node has no uplink: the space's internet traffic is dropped", "err", e.Err)
 		return []any{"uplink", "none"}
