@@ -483,7 +483,8 @@ func (s *shared) serveDatagrams(pl *publicListener) {
 }
 
 // forward hands one live datagram of link node to r's worker, without
-// blocking, and charges r's fair share once the worker's socket took it.
+// blocking, remembers its source as an address the worker may answer,
+// and charges r's fair share once the worker's socket took it.
 func (s *shared) forward(r *route, listener uint32, node transport.NodeID, from netip.AddrPort, d []byte) {
 	ws := r.end.Load()
 	if ws == nil {
@@ -495,6 +496,13 @@ func (s *shared) forward(r *route, listener uint32, node transport.NodeID, from 
 		return
 	}
 	key := keyOf(listener, from)
+	// Remembered before the worker has the datagram: the worker is another
+	// process and may answer before TrySendDatagram returns. A failed
+	// hand-off still counts: the datagram was authenticated, fresh and
+	// not replayed, which is all the reply rule asks.
+	if r.peers.remember(node, key, from, s.now()) {
+		r.counters.replyPeersEvicted.Add(1)
+	}
 	if err := ws.data.TrySendDatagram(ipc.DatagramHeader{Listener: listener, Remote: key.addr}, d); err != nil {
 		if errors.Is(err, ipc.ErrFull) {
 			r.counters.workerFull.Add(1)
@@ -505,9 +513,6 @@ func (s *shared) forward(r *route, listener uint32, node transport.NodeID, from 
 	}
 	r.counters.forwarded.Add(1)
 	r.counters.forwardedBytes.Add(uint64(len(d)))
-	if r.peers.remember(node, key, from, s.now()) {
-		r.counters.replyPeersEvicted.Add(1)
-	}
 	if s.fair != nil {
 		s.fair.Charge(r.space, len(d))
 	}

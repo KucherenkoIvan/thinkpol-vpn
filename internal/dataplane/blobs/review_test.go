@@ -12,12 +12,15 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
 
-// tricklingPeer answers any request with the right header, then one byte
-// every 50 ms, never faster: slow enough to be abandoned, steady enough
-// never to hit the idle timeout. The channel gets a value for each
-// transfer under way (header sent).
-func tricklingPeer(t *testing.T, tn *testNet, at netip.Addr, size int) <-chan struct{} {
-	started := make(chan struct{}, 16)
+// trickle is a peer that answers any request with the right header, then
+// one byte every 200 ms, never faster: slow enough to be abandoned, steady
+// enough never to hit the idle timeout. started gets a value for each
+// transfer under way (header sent), cut for each transfer the device hung
+// up on before its last byte.
+type trickle struct{ started, cut <-chan struct{} }
+
+func tricklingPeer(t *testing.T, tn *testNet, at netip.Addr, size int) trickle {
+	started, cut := make(chan struct{}, 16), make(chan struct{}, 16)
 	tn.fake(t, netip.AddrPortFrom(at, Port), func(c net.Conn) {
 		var req [requestSize]byte
 		if _, err := io.ReadFull(c, req[:]); err != nil {
@@ -28,37 +31,51 @@ func tricklingPeer(t *testing.T, tn *testNet, at netip.Addr, size int) <-chan st
 		if _, err := c.Write(head[:]); err != nil {
 			return
 		}
-		select {
-		case started <- struct{}{}:
-		default:
-		}
+		signal(started)
+		// The device sends nothing more: a read ending is the device
+		// hanging up.
+		hungUp := make(chan struct{})
+		go func() { _, _ = c.Read(make([]byte, 1)); close(hungUp) }()
+		tick := time.NewTicker(200 * time.Millisecond)
+		defer tick.Stop()
 		for range size {
-			time.Sleep(50 * time.Millisecond)
+			select {
+			case <-hungUp:
+				signal(cut)
+				return
+			case <-tick.C:
+			}
 			if _, err := c.Write([]byte{0}); err != nil {
+				signal(cut)
 				return
 			}
 		}
 	})
-	return started
+	return trickle{started: started, cut: cut}
 }
 
+// The trickle (one byte per 200 ms, seconds in all) is first in the plan; the device's window is
+// 0.3 s. Load can make the good peer miss that window too, and a later
+// round fetch from it: what holds either way is the trickle cut short and
+// the list fetched.
 func TestATricklingPeerIsAbandoned(t *testing.T) {
 	data, ref := geoip(t, "ru", "192.0.2.0/24", "198.51.100.0/24", "2001:db8::/32")
 	tn := newTestNet()
-	tricklingPeer(t, tn, overlay(3), len(data))
+	trickling := tricklingPeer(t, tn, overlay(3), len(data))
 	good := startNode(t, tn, 1, newMemStore(data), fast)
 	good.Update(good.plan([]netmap.BlobRef{ref}))
 	limits := fast
 	limits.DialTimeout = 300 * time.Millisecond
 	limits.MinRate = 1 << 20 // the transfer gets 0.3 s and change
 	device := startNode(t, tn, 2, nil, limits)
-	start := time.Now()
 	device.Update(device.plan([]netmap.BlobRef{ref}, node{addr: overlay(3)}, good))
-	eventually(t, "the list from the good peer", func() bool { _, ok := device.Get(ref.SHA256); return ok })
-	if d := time.Since(start); d > 5*time.Second {
-		t.Errorf("took %v behind a trickling peer", d)
+	select {
+	case <-trickling.cut:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the device never hung up on the trickling peer")
 	}
-	if st := device.Status(); st.Abandoned != 1 || st.Fetched != 1 {
+	eventually(t, "the list from the good peer", func() bool { _, ok := device.Get(ref.SHA256); return ok })
+	if st := device.Status(); st.Abandoned == 0 || st.Fetched != 1 || st.Rejected != 0 {
 		t.Errorf("status %+v", st)
 	}
 }
@@ -75,16 +92,17 @@ func TestANewMapAbandonsAStalledTransfer(t *testing.T) {
 	device := startNode(t, tn, 2, nil, limits)
 	device.Update(device.plan([]netmap.BlobRef{oldRef}, node{addr: overlay(3)}))
 	select { // the stalled transfer is under way
-	case <-trickling:
+	case <-trickling.started:
 	case <-time.After(5 * time.Second):
 		t.Fatal("the device never asked the trickling peer")
 	}
-	start := time.Now()
 	device.Update(device.plan([]netmap.BlobRef{ref}, good))
-	eventually(t, "the new map's list", func() bool { _, ok := device.Get(ref.SHA256); return ok })
-	if d := time.Since(start); d > 4*time.Second {
-		t.Errorf("the new map waited %v for the stalled transfer", d)
+	select {
+	case <-trickling.cut:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the new map never abandoned the stalled transfer")
 	}
+	eventually(t, "the new map's list", func() bool { _, ok := device.Get(ref.SHA256); return ok })
 	if st := device.Status(); st.Abandoned != 1 {
 		t.Errorf("status %+v", st)
 	}

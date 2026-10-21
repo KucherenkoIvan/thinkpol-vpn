@@ -28,11 +28,8 @@ func TestSwitchesPathWhenTheFirstHopGoesSilent(t *testing.T) {
 	eachSemantics(t, func(t *testing.T, f *fabric) {
 		a, b := twoRelays(t, f, r1r2, r1r2)
 		toB := a.endpoint(t, "B")
-		a.send(t, toB, "before")
-		b.expect(t, "before")
-		if hop := a.current("B"); hop != "R1" {
-			t.Fatalf("A starts on %q, want R1", hop)
-		}
+		keepSending(t, a, b, toB, "before")
+		reachesHop(t, a, toB, "B", "R1")
 
 		// R1 dies without a word: nothing reports it, its links just go quiet.
 		f.silence("A", "R1", true)
@@ -40,14 +37,9 @@ func TestSwitchesPathWhenTheFirstHopGoesSilent(t *testing.T) {
 		start := time.Now()
 		got := keepSending(t, a, b, toB, "after")
 		took := time.Since(start)
-		if hop := a.current("B"); hop != "R2" {
-			t.Fatalf("A now sends through %q, want R2", hop)
-		}
-		b.send(t, got.ep, "and back")
-		a.expect(t, "and back")
-		if hop := b.current("A"); hop != "R2" {
-			t.Fatalf("B now sends through %q, want R2", hop)
-		}
+		reachesHop(t, a, toB, "B", "R2")
+		keepSending(t, b, a, got.ep, "and back")
+		reachesHop(t, b, got.ep, "A", "R2")
 		if limit := 10 * f.opts.DeadAfter; took > limit {
 			t.Fatalf("switching took %v, more than %v", took, limit)
 		}
@@ -90,13 +82,11 @@ func TestSwitchesPathWhenTheRelayCloses(t *testing.T) {
 	eachSemantics(t, func(t *testing.T, f *fabric) {
 		a, b := twoRelays(t, f, r1r2, r1r2)
 		toB := a.endpoint(t, "B")
-		a.send(t, toB, "before")
-		b.expect(t, "before")
+		keepSending(t, a, b, toB, "before")
+		reachesHop(t, a, toB, "B", "R1")
 		_ = f.node("R1").Close()
 		keepSending(t, a, b, toB, "after")
-		if hop := a.current("B"); hop != "R2" {
-			t.Fatalf("A now sends through %q, want R2", hop)
-		}
+		reachesHop(t, a, toB, "B", "R2")
 	})
 }
 

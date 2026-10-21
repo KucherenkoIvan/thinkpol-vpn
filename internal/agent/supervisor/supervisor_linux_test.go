@@ -511,6 +511,7 @@ func TestDeafWorkerHoldsNothingUp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = s.Close() })
 	if err := s.SetSpaces([]supervisor.Space{{ID: space, Config: []byte("first")}}); err != nil {
 		t.Fatal(err)
 	}
@@ -1277,6 +1278,7 @@ func TestCloseRemovesEverything(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = s.Close() })
 	if err := s.SetSpaces(spacesOf(a, b)); err != nil {
 		t.Fatal(err)
 	}
