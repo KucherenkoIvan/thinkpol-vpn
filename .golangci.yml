@@ -147,14 +147,6 @@ linters:
         linters: [forbidigo]
       - path: _test\.go
         linters: [funlen]
-      # TP-102 rewrites these (the netcfg ledger, the resolver's steps):
-      # drop the exclusions when it merges.
-      - path: internal/dataplane/netcfg/netcfg_(darwin|linux)\.go
-        text: "Function 'apply'"
-        linters: [funlen]
-      - path: internal/dataplane/dns/handle\.go
-        text: "Function 'answer'"
-        linters: [funlen]
 
 formatters:
   enable:
