@@ -227,8 +227,8 @@
 // whatever arrives, runs the transport's authentication (its router, a
 // [transport.PacketRouter] or [transport.StreamRouter], one per transport,
 // shared by all its listeners and kept across their reopens, so replay
-// state is per credential, not per socket), maps the credential to a space and hands the traffic to that
-// space's worker. The credential tables are the spaces' [Space.Inbound],
+// state is per credential, not per socket), maps the credential to a
+// space and hands the traffic to that space's worker. The credential tables are the spaces' [Space.Inbound],
 // each dataplane.AcceptedInbound of the space's own section, merged per
 // transport, with each entry's Space stamped with the space whose map it
 // came from, never what the map says. Two links sharing a secret, in one

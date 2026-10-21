@@ -132,9 +132,9 @@
 // authenticates it (tag and timestamp) and filters replays per credential,
 // then names its space; the supervisor forwards it as is to that space's
 // worker, whose Listener ([Transport.ListenForwarded] over a net.PacketConn
-// fed by the supervisor) decrypts and filters again. A replay, which
-// anyone with a passive tap can send, so never reaches a worker or costs
-// its space anything. The supervisor keeps one Router per transport, for
+// fed by the supervisor) decrypts and filters again. So a replay, which
+// anyone with a passive tap can send, never reaches a worker or costs its
+// space anything while that supervisor runs. The supervisor keeps one Router per transport, for
 // all its sockets and across their reopens, so a datagram replayed to
 // another listener is still a replay. A new Router (a supervisor restart)
 // routes replays of the last ten minutes (five, if the sender's clock was

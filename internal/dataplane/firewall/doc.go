@@ -116,9 +116,10 @@
 // RESIDUAL-RISKS.md RR11): the table's flags, so a table made dormant
 // (`flags dormant`) keeps its rules but no longer filters, and is never
 // repaired; chains other than its own, so a base chain someone adds to the
-// guard's table, which can accept before the guard's chain, is never
-// repaired; and a change of the output chain's policy, which is repaired
-// only by the route table's one-minute backstop.
+// guard's table, which can set the links' mark before the guard's chain
+// sees the packet, is never repaired; and, for the watch only, a change of
+// the output chain's policy: the comparison catches it, but nothing calls
+// Apply until the route table's one-minute backstop.
 //
 // The guard's first request is a dump of the inet tables. Its answer, and
 // only its answer, can make the guard unsupported: an error meaning no
