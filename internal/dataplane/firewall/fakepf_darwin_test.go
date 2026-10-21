@@ -185,10 +185,12 @@ var errFake = errors.New("exit status 1")
 
 const altq = "No ALTQ support in kernel\nALTQ related functions disabled\n"
 
-// fakeOptimize is pfctl's default rule optimizer, "basic", as the device
-// saw it on a load without `-o none`: the multicast icmp6 rules are
-// listed first, the rest keep their order.
-func fakeOptimize(rules []string) []string {
+// reorderLikeBasic reproduces only the reordering pfctl's default rule
+// optimizer, "basic", makes of the guard's rules on a Mac: the multicast
+// icmp6 rules first, the rest in order. "basic" reorders the ruleset pf
+// evaluates, not just its listing, and can do more than this (merge
+// rules into a table).
+func reorderLikeBasic(rules []string) []string {
 	var multi, rest []string
 	for _, r := range rules {
 		if strings.Contains(r, "ff00::/8") {
@@ -219,8 +221,9 @@ func (f *fakePF) run(ctx context.Context, stdin []byte, args ...string) (pfOutpu
 			return fail("pfctl: " + err.Error())
 		}
 	}
-	// pfctl's options: the optimizer's level is what a load's listing
-	// depends on (none: as written; anything else: "basic" reordered).
+	// pfctl's options: the optimizer's level decides the order of the
+	// rules a load puts in (none: as written; anything else: "basic"
+	// reordered).
 	optimize := ""
 	rest := slices.Clone(args)
 	for i := 0; i+1 < len(rest); i++ {
@@ -329,9 +332,8 @@ func (f *fakePF) run(ctx context.Context, stdin []byte, args ...string) (pfOutpu
 			return fail("pfctl: " + err.Error())
 		}
 		if optimize != "none" {
-			// pfctl's rule optimizer: the rules go in as written, its
-			// listing is reordered.
-			loaded.rules = fakeOptimize(loaded.rules)
+			// The fake's ruleset is its listing: what pf evaluates.
+			loaded.rules = reorderLikeBasic(loaded.rules)
 		}
 		if f.loadHook != nil {
 			f.loadHook(loaded)
@@ -400,8 +402,11 @@ func fakeNet(s string) (netip.Prefix, error) {
 	return netip.PrefixFrom(a, a.BitLen()), nil
 }
 
-// icmp6Names are pfctl's names for some ICMPv6 types.
-var icmp6Names = map[string]string{"133": "routersol", "134": "routeradv", "135": "neighbrsol", "136": "neighbradv", "137": "redir", "130": "groupqry", "131": "listenrep", "132": "listendone"}
+// icmp6Names are the names pfctl lists some ICMPv6 types by: the first
+// entry for the number in its icmp6 type table, which names 130-132
+// twice (groupqry/listqry, grouprep/listenrep, groupterm/listendone)
+// and has no name for 143.
+var icmp6Names = map[string]string{"130": "groupqry", "131": "grouprep", "132": "groupterm", "133": "routersol", "134": "routeradv", "135": "neighbrsol", "136": "neighbradv", "137": "redir"}
 
 var portNumber = regexp.MustCompile(`\bport ([0-9]+)\b`)
 
@@ -436,8 +441,8 @@ func fakeLoad(text string) (*fakeAnchor, error) {
 }
 
 // fakeExpand is one rule as pfctl lists it: one rule per item of each
-// `{ ... }` list, `port = N`, ICMPv6 types by name. `from any to` stays:
-// the device's listing prints it (2026-10-16).
+// `{ ... }` list, `port = N`, ICMPv6 types by name, `from any to` kept
+// as pfctl lists it.
 func fakeExpand(rule string) []string {
 	i := strings.Index(rule, "{ ")
 	if i < 0 {

@@ -436,6 +436,20 @@ func TestSaneRules(t *testing.T) {
 	}
 }
 
+// The fake lists an ICMPv6 type by the first name pfctl's icmp6 type
+// table has for its number (130-132 have two each), and 143, which has
+// none, by its number.
+func TestTheFakeNamesICMPv6TypesAsPfctl(t *testing.T) {
+	got := fakeExpand("pass out quick inet6 proto ipv6-icmp from any to ff00::/8 icmp6-type { 130, 131, 132, 143 } no state")
+	var want []string
+	for _, name := range []string{"groupqry", "grouprep", "groupterm", "143"} {
+		want = append(want, "pass out quick inet6 proto ipv6-icmp from any to ff00::/8 icmp6-type "+name+" no state")
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("listed\n%q\nwant\n%q", got, want)
+	}
+}
+
 func TestApplyPutsTheGuardInPlace(t *testing.T) {
 	r := newRig(t)
 	g := r.guard()
@@ -454,9 +468,8 @@ func TestApplyPutsTheGuardInPlace(t *testing.T) {
 	}
 }
 
-// withoutNone is a pfctl that drops `-o none` from its runs: how a load
-// without the option reaches pf, whose default optimizer reorders the
-// rules — as the device saw.
+// withoutNone is a pfctl that drops `-o none` from its runs: a load then
+// goes in with pfctl's default optimizer, which reorders the rules.
 type withoutNone struct{ pf pfctl }
 
 func (w withoutNone) run(ctx context.Context, stdin []byte, args ...string) (pfOutput, error) {
@@ -466,8 +479,8 @@ func (w withoutNone) run(ctx context.Context, stdin []byte, args ...string) (pfO
 	return w.pf.run(ctx, stdin, args...)
 }
 
-// A load the optimizer reordered is refused, with the device's error:
-// rule 1 is then the multicast one, not the one naming an interface.
+// A load the optimizer reordered is refused: rule 1 is then the
+// multicast one, not the one naming an interface.
 func TestAnOptimizedLoadIsRefused(t *testing.T) {
 	r := newRig(t)
 	g := newIPv6Guard(withoutNone{r.pf}, r.store(), time.Hour, ownAddrs)
