@@ -202,6 +202,7 @@ func TestRecordsAreReadOnlyInTheirBoot(t *testing.T) {
 		"comments only":             "# what this is\n\n",
 		"a line before the boot":    "line 1\nboot " + boot + "\n",
 		"a boot glued to its value": "boot" + boot + "\n",
+		"a boot without a session":  "# what this is\nboot \nline 1\n",
 	} {
 		if err := os.WriteFile(filepath.Join(path, "rec"), []byte(data), 0o600); err != nil {
 			t.Fatal(err)
