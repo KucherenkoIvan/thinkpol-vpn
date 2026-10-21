@@ -210,3 +210,55 @@ func TestStatusDoesNotWaitForTheRouteTable(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// The OS table's direct routes shrink while the router still routes the
+// old rules, and grow once it routes the new ones: a destination the
+// rules stop sending direct never leaves around the tunnel meanwhile.
+func TestDirectRoutesShrinkBeforeTheRouterChangesAndGrowAfter(t *testing.T) {
+	net := memory.NewNetwork(memory.Datagram)
+	a, s, _ := m0()
+	withChain(t, a, s, "local -> direct", "cidr:198.51.100.0/24 -> direct", "default -> chain:nl")
+	a.section.Presets = netmap.RulePresets{Chain: "nl"}
+	rt := &fakeRouteTable{}
+	a.routes = rt
+	s.start(t, net)
+	a.start(t, net)
+	dst := netip.MustParseAddr("198.51.100.7")
+	// set switches the rules to l, holding each Enforce while it checks
+	// where the router sends dst: during, one per Enforce.
+	set := func(l rules.Local, during ...string) {
+		t.Helper()
+		hold, entered := make(chan struct{}), make(chan struct{}, 8)
+		rt.mu.Lock()
+		rt.hold, rt.entered = hold, entered
+		rt.mu.Unlock()
+		done := make(chan error, 1)
+		go func() { done <- a.engine.SetRules(l) }()
+		defer func() {
+			close(hold) // whatever else it enforces goes through
+			if err := <-done; err != nil {
+				t.Fatal(err)
+			}
+			if n := len(entered); n > 0 {
+				t.Errorf("%v: %d more Enforce calls than %d", l.Preset, n, len(during))
+			}
+		}()
+		for i, want := range during {
+			select {
+			case <-entered:
+			case <-time.After(5 * time.Second):
+				t.Errorf("%v: %d Enforce calls, want %d", l.Preset, i, len(during))
+				return
+			}
+			if got := routeOf(t, a, dst); got != want {
+				t.Errorf("%v, Enforce %d: the router sends %v %s, want %s", l.Preset, i+1, dst, got, want)
+			}
+			hold <- struct{}{}
+		}
+	}
+	// Shrinking: still direct while the country's routes go, then the
+	// chain's exit as the final set goes in.
+	set(rules.Local{Preset: rules.PresetEverything}, sentDirect, exitOf(s))
+	// Growing: direct before the country's routes come back.
+	set(rules.Local{}, sentDirect)
+}

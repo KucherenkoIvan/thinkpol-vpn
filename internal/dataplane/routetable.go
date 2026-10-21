@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/netip"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/lists"
@@ -84,76 +85,104 @@ func endpointsOf(pc PathConfig) []netip.Addr {
 	return slices.Compact(out)
 }
 
-// shrinkRoutes takes out of the OS routing table, before the router's
-// table changes, the direct prefixes the newly compiled rules no longer
-// send around the tunnel, so they never leave in the clear once the rules
-// say otherwise. If that fails it falls back to nothing direct (everything
-// into the TUN, where the router drops what it calls direct): fail closed.
-// What is still wrong is returned, for the step that grows them back.
-func (e *Engine) shrinkRoutes(ctx context.Context) error {
-	if e.cfg.RouteTable == nil || e.routesWant == nil || e.ruleTable == nil {
+// osRoutes is the engine's side of the OS routing table: its RouteTable
+// (nil leaves the OS routing alone) and the last Want it was given. It
+// keeps one order: the direct routes shrink before the router's table
+// changes and grow after (around), so a destination the rules stop
+// sending direct never leaves in the clear meanwhile.
+type osRoutes struct {
+	table RouteTable
+	want  *RouteTableWant
+	// mu is the engine's, let go while the table changes; warn logs.
+	mu   *sync.Mutex
+	warn func(msg string, err error)
+}
+
+// around changes the router's table (change, failing at the step it
+// returns) between shrinking the OS table's direct routes to what direct
+// keeps and putting want in place, read once change is done.
+func (o *osRoutes) around(ctx context.Context, direct *lists.Set, change func() (string, error), want func() RouteTableWant) (string, error) {
+	shrinkErr := o.shrink(ctx, direct)
+	if step, err := change(); err != nil {
+		return step, err
+	}
+	if err := o.grow(ctx, want(), shrinkErr); err != nil {
+		return StepRouteTable, err
+	}
+	return "", nil
+}
+
+// shrink takes out of the OS routing table the direct prefixes direct no
+// longer holds. If that fails it falls back to nothing direct (everything
+// into the TUN, where the router drops what it calls direct): fail
+// closed. What is still wrong is returned, for grow.
+func (o *osRoutes) shrink(ctx context.Context, direct *lists.Set) error {
+	if o.table == nil || o.want == nil {
 		return nil
 	}
-	old := e.routesWant.Direct
-	gone := old.Minus(e.ruleTable.Direct())
+	old := o.want.Direct
+	gone := old.Minus(direct)
 	if gone.IsEmpty() {
 		return nil
 	}
-	w := *e.routesWant
+	w := *o.want
 	w.Direct = old.Minus(gone)
-	err := e.enforce(ctx, w)
+	err := o.enforce(ctx, w)
 	if err == nil {
-		e.routesWant = &w
+		o.want = &w
 		return nil
 	}
 	w.Direct = nil
-	ferr := e.enforce(ctx, w)
+	ferr := o.enforce(ctx, w)
 	// The route table keeps trying the last Want it was given: that is
 	// what the OS holds, or soon will.
-	e.routesWant = &w
+	o.want = &w
 	if ferr == nil {
-		e.warn("route table: removing direct routes failed; nothing goes direct until the next Apply", err)
+		o.warn("route table: removing direct routes failed; nothing goes direct until the next Apply", err)
 		return err
 	}
-	e.warn("route table: removing direct routes failed; destinations the rules no longer send direct still go direct", errors.Join(err, ferr))
+	o.warn("route table: removing direct routes failed; destinations the rules no longer send direct still go direct", errors.Join(err, ferr))
 	return errors.Join(err, ferr)
 }
 
-// growRoutes puts the compiled rules into the OS routing table, after the
-// router enforces them.
-func (e *Engine) growRoutes(ctx context.Context, shrinkErr error) error {
-	if e.cfg.RouteTable == nil || e.ruleTable == nil {
+// grow puts w, the compiled rules, into the OS routing table.
+func (o *osRoutes) grow(ctx context.Context, w RouteTableWant, shrinkErr error) error {
+	if o.table == nil {
 		return nil
 	}
-	w := RouteTableWant{
-		TUN:     e.tunName,
-		Overlay: e.networks,
-		Direct:  e.ruleTable.Direct(),
-		Bypass:  e.endpoints,
-		IPv6:    e.mtu > 0 && e.ipv6Off == nil,
-	}
-	err := e.enforce(ctx, w)
-	e.routesWant = &w // the route table keeps trying it
+	err := o.enforce(ctx, w)
+	o.want = &w // the route table keeps trying it
 	if err != nil {
 		return fmt.Errorf("dataplane: route table: %w", errors.Join(shrinkErr, err))
 	}
 	return nil
 }
 
-func (e *Engine) routeTableStatus() RouteTableStatus {
-	if e.cfg.RouteTable == nil {
+func (o *osRoutes) status() RouteTableStatus {
+	if o.table == nil {
 		return RouteTableStatus{}
 	}
-	return e.cfg.RouteTable.Status()
+	return o.table.Status()
 }
 
-// enforce puts w in place with e.mu let go meanwhile (e.serial keeps
-// everything else that changes the engine out).
-func (e *Engine) enforce(ctx context.Context, w RouteTableWant) error {
-	rt := e.cfg.RouteTable
-	e.mu.Unlock()
-	defer e.mu.Lock()
-	return rt.Enforce(ctx, w)
+// enforce puts w in place with mu let go meanwhile (the engine's serial
+// keeps everything else that changes it out).
+func (o *osRoutes) enforce(ctx context.Context, w RouteTableWant) error {
+	o.mu.Unlock()
+	defer o.mu.Lock()
+	return o.table.Enforce(ctx, w)
+}
+
+// routeTableWant is what the OS routing table should hold for what runs
+// now.
+func (e *Engine) routeTableWant() RouteTableWant {
+	return RouteTableWant{
+		TUN:     e.tunName,
+		Overlay: e.networks,
+		Direct:  e.ruleTable.Direct(),
+		Bypass:  e.endpoints,
+		IPv6:    e.mtu > 0 && e.ipv6Off == nil,
+	}
 }
 
 // warn logs msg, and err (which may quote the map) at debug level only.
