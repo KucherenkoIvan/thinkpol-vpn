@@ -62,3 +62,4 @@ Round 1 (2026-10-22): correctness (fix first), design (fix first), second opinio
 - 2026-10-22 in-progress → review
 - 2026-10-22 acceptance amended by the orchestrator: DESIGN.md at most 50,000 bytes with the residual table in RESIDUAL-RISKS.md (the design review's target: the control-plane aggregates and signed-map invariants are model with no package to go to; a third would cut them); the reachability box reworded to what Scope asks
 - 2026-10-22 review → has-errors (round 1: R1.1-R1.8)
+- 2026-10-22 has-errors → in-progress — owner: agent-tp-077, branch: tp-077-split-design-md
