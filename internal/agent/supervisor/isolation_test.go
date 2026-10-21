@@ -46,24 +46,26 @@ func TestTheEgressRefusesWhatTheIsolationDropsUnlessAllowed(t *testing.T) {
 	}
 }
 
-// The addresses no egress may be opened to reach stay closed even when
-// EgressAllowed names them: the metadata services (each routed its own
-// way, none of them link-local), the never-routable ranges, and the
-// local ones. A private network stays openable by -egress-allowed.
-func TestEgressMustStayClosed(t *testing.T) {
+// The addresses the refusal hint never suggests opening with
+// -egress-allowed: the metadata services (each routed its own way, none
+// of them link-local), the never-routable ranges, and the local ones.
+// Nothing stops an operator from allowing any of them anyway; the test
+// only pins what the hint suggests. A private network stays openable by
+// -egress-allowed.
+func TestEgressNotWorthAllowing(t *testing.T) {
 	for _, a := range []string{
 		"fd00:ec2::254", "168.63.129.16", "100.100.100.200",
 		"0.0.0.0", "0.0.0.53", "240.0.0.1",
 		"169.254.169.254", "127.0.0.1", "::1", "fe80::1", "ff02::1", "::",
 		"fe80::1%eth0",
 	} {
-		if !EgressMustStayClosed(netip.MustParseAddr(a)) {
-			t.Errorf("%s not must-stay-closed", a)
+		if !EgressNotWorthAllowing(netip.MustParseAddr(a)) {
+			t.Errorf("the hint suggests opening %s", a)
 		}
 	}
 	for _, a := range []string{"192.168.1.53", "10.0.0.53", "fd00::53", "192.0.2.53"} {
-		if EgressMustStayClosed(netip.MustParseAddr(a)) {
-			t.Errorf("%s must stay closed", a)
+		if EgressNotWorthAllowing(netip.MustParseAddr(a)) {
+			t.Errorf("%s not worth allowing", a)
 		}
 	}
 }

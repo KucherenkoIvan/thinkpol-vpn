@@ -262,7 +262,7 @@ func (s *serverSpaces) workerUpstreams() []netip.AddrPort {
 	if !slices.Equal(refused, s.refusedLogged) {
 		for _, a := range refused {
 			hint := "-dns-upstream or -egress-allowed"
-			if supervisor.EgressMustStayClosed(a.Addr()) {
+			if supervisor.EgressNotWorthAllowing(a.Addr()) {
 				hint = "-dns-upstream"
 			}
 			s.log.Warn("DNS: the worker's egress refuses the upstream; not configured for the resolver",
