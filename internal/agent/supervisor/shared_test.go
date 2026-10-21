@@ -611,6 +611,36 @@ func TestWorkersOnlyAnswer(t *testing.T) {
 	}
 }
 
+// answeringWorker answers every datagram before the supervisor's hand-off
+// returns, as a worker process can.
+type answeringWorker struct {
+	*fakeWorker
+}
+
+func (w answeringWorker) TrySendDatagram(h ipc.DatagramHeader, d []byte) error {
+	w.s.reply(w.space, h, []byte("answer"))
+	return w.fakeWorker.TrySendDatagram(h, d)
+}
+
+// The worker is another process: its answer can reach the supervisor
+// before forwarding the question has returned, and still goes out.
+func TestAnAnswerMayBeatTheHandOff(t *testing.T) {
+	s := newTestShared(t, nil)
+	address := listenUDP(t, s, nil)
+	space := randomSpace()
+	p := transporttest.SymmetricPeer()
+	s.setSpaces(map[transport.SpaceID]map[string][]transport.PeerLink{space: {udp.Name: {p.PeerLink}}})
+	w := answeringWorker{newFakeWorker(s, space)}
+	s.attach(space, &workerSockets{data: w, control: w})
+	if err := dial(t, address, p).WritePacket([]byte("question")); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the question forwarded", func() bool { return s.counters(space).Forwarded == 1 })
+	if c := s.counters(space); c.Replies != 1 || c.RepliesNotAllowed != 0 {
+		t.Fatalf("counters %+v, want the answer sent", c)
+	}
+}
+
 // A replay of a link's genuine datagram, from anywhere, is dropped before
 // it reaches the worker, costs its space nothing and gives the worker no
 // new address to send to.
