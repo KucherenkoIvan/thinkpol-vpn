@@ -137,7 +137,11 @@ func hostAddrs() ([]netip.Addr, error) {
 // refused killed. Applying what is in place again only reads it back (the
 // hook, the rules exactly as listed after the load, every table entry, pf
 // enabled) and reloads if anything differs. A failed load leaves what was
-// there (a pf transaction), a guard at least as strict as either.
+// there (a pf transaction), a guard at least as strict as either. A load
+// pf took but load refuses on reading it back stays, unverified, and the
+// Apply fails: flushing it would leave an empty anchor, which passes all
+// IPv6, where the rules that went in still end in the block. pf is
+// enabled only for a guard that was read back whole.
 func (g *IPv6Guard) Apply(ctx context.Context, e routetable.Exempt) (err error) {
 	if !validInterface.MatchString(e.TUN) {
 		return fmt.Errorf("firewall: TUN %q isn't an interface name", e.TUN)

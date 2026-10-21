@@ -1066,6 +1066,55 @@ func TestALoadPfDoesntHoldFails(t *testing.T) {
 	}
 }
 
+// A load pf took but the guard refuses on reading it back stays in pf,
+// not flushed: its rules still end in the block. pf stays as it was: on
+// with the guard's reference after an earlier good load, off before any.
+func TestARefusedLoadStaysInPlace(t *testing.T) {
+	refuse := func(a *fakeAnchor) { a.rules = reorderLikeBasic(a.rules) }
+	e := exempt(t)
+	e2 := e
+	e2.Direct = set(t, "2001:db8:f0::/44")
+	loaded := func(e routetable.Exempt) []string {
+		a, err := fakeLoad(anchorText(e.TUN, exemptPrefixes(e), upstreamTargets(e)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return reorderLikeBasic(a.rules)
+	}
+	t.Run("after a good load", func(t *testing.T) {
+		r := newRig(t)
+		g := r.guard()
+		if err := g.Apply(context.Background(), e); err != nil {
+			t.Fatal(err)
+		}
+		before := r.pf.references()
+		r.pf.set(func(f *fakePF) { f.loadHook = refuse })
+		if err := g.Apply(context.Background(), e2); err == nil {
+			t.Fatal("applied")
+		}
+		a := r.pf.anchor(GuardAnchor)
+		if !slices.Equal(a.rules, loaded(e2)) || !slices.Equal(tableOf(a, exemptTable), exemptPrefixes(e2)) {
+			t.Errorf("anchor %+v, want the refused load's", a)
+		}
+		if !r.pf.isOn() || !slices.Equal(r.pf.references(), before) {
+			t.Errorf("pf on %v, references %v, want on with %v", r.pf.isOn(), r.pf.references(), before)
+		}
+	})
+	t.Run("the first load", func(t *testing.T) {
+		r := newRig(t)
+		r.pf.loadHook = refuse
+		if err := r.guard().Apply(context.Background(), e); err == nil {
+			t.Fatal("applied")
+		}
+		if a := r.pf.anchor(GuardAnchor); !slices.Equal(a.rules, loaded(e)) {
+			t.Errorf("rules %q, want the refused load's", a.rules)
+		}
+		if r.pf.isOn() || len(r.pf.references()) != 0 {
+			t.Errorf("pf on %v with references %v for a refused load", r.pf.isOn(), r.pf.references())
+		}
+	})
+}
+
 // `pfctl -E` that prints no token took a reference all the same: it is
 // found by the pfctl's pid and recorded; until it is, the record names the
 // pid, Apply fails, no second reference is taken, and Close can't finish.
