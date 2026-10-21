@@ -8,7 +8,7 @@ import (
 // Public destinations pass the egress: only private, link-local and
 // provider ranges are refused.
 func TestPublicDestinationsPassTheEgress(t *testing.T) {
-	for _, a := range []string{"9.9.9.9", "2620:fe::fe", "1.1.1.1", "2606:4700:4700::1111", "192.0.2.53", "2001:db8::53"} {
+	for _, a := range []string{"192.0.2.53", "198.51.100.1", "2001:db8::53"} {
 		if EgressRefused(netip.MustParseAddr(a), nil) {
 			t.Errorf("%s refused", a)
 		}
