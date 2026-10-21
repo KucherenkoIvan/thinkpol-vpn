@@ -534,7 +534,7 @@ func TestRetriedFailuresAreWarnedAtMostOnceAMinute(t *testing.T) {
 			func(f *fakeConfigurator, _ *fakeGuard, err error) { f.setWatchErr(err) }, routetable.Subscribe},
 		{"watching the guard", "watching the leak guard failed", "watching the leak guard again",
 			func(_ *fakeConfigurator, g *fakeGuard, err error) { g.setWatchErr(err) }, routetable.SubscribeGuard},
-		{"putting the routes back", "putting it back failed", "put back again",
+		{"putting the routes back", "putting it back failed", "the routes are in place again",
 			func(f *fakeConfigurator, _ *fakeGuard, err error) { f.setFail(err != nil) }, routetable.Reapply},
 	} {
 		t.Run(site.name, func(t *testing.T) {
@@ -707,5 +707,53 @@ func TestASubscriptionCutShortIsNotWarned(t *testing.T) {
 				t.Fatalf("the first real failure: %q, want one warn, nothing suppressed", w)
 			}
 		})
+	}
+}
+
+// A successful Enforce ends a re-apply failure: the next re-apply failure,
+// within a minute of the old one's warn, is warned at once.
+func TestAnEnforceEndsAReapplyFailure(t *testing.T) {
+	f := &fakeConfigurator{survey: up()}
+	var buf lockedBuffer
+	e := routetable.OpenWithClock(f, nil, slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})), (&fakeClock{now: time.Unix(0, 0)}).read)
+	defer func() { _ = e.Close() }()
+	w := routetable.Want{TUN: "thinkpol0"}
+	if err := e.Enforce(t.Context(), w); err != nil {
+		t.Fatal(err)
+	}
+	routetable.PauseWatching(e)
+	warns := func() []string { return buf.lines("putting it back failed") }
+	f.setFail(true)
+	routetable.Reapply(t.Context(), e)
+	f.setFail(false)
+	if err := e.Enforce(t.Context(), w); err != nil {
+		t.Fatal(err)
+	}
+	routetable.PauseWatching(e) // before its check re-applies, a debounce later
+	f.setFail(true)
+	routetable.Reapply(t.Context(), e)
+	if w := warns(); len(w) != 2 {
+		t.Fatalf("warns %q, want the new failure warned at once", w)
+	}
+}
+
+// A re-apply that finds the OS can't hold the table at all is warned
+// whatever the limit holds back: nothing is retried after it.
+func TestATerminalReapplyFailureIsAlwaysWarned(t *testing.T) {
+	f := &fakeConfigurator{survey: up()}
+	var buf lockedBuffer
+	e := routetable.OpenWithClock(f, nil, slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})), (&fakeClock{now: time.Unix(0, 0)}).read)
+	defer func() { _ = e.Close() }()
+	if err := e.Enforce(t.Context(), routetable.Want{TUN: "thinkpol0"}); err != nil {
+		t.Fatal(err)
+	}
+	routetable.PauseWatching(e)
+	// The same text as the terminal one, so only its kind tells them apart.
+	f.setFailErr(errors.New("rules: " + errors.ErrUnsupported.Error()))
+	routetable.Reapply(t.Context(), e)
+	f.setFailErr(fmt.Errorf("rules: %w", errors.ErrUnsupported))
+	routetable.Reapply(t.Context(), e)
+	if l := buf.lines("level=WARN"); len(l) != 2 || !strings.Contains(l[1], "can't hold the route table") {
+		t.Fatalf("warns %q, want the terminal failure warned too", l)
 	}
 }

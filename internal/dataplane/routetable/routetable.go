@@ -523,6 +523,9 @@ func (e *Enforcer) apply(ctx context.Context, w Want, again bool) error {
 		return fmt.Errorf("routetable: %w", err)
 	}
 	e.status.Error = ""
+	// Whoever applied them, the routes are in: a re-apply failing next is
+	// a failure of its own.
+	e.logCleared(&e.reapplyWarn, "route table: the routes are in place again")
 	if !TUNUp(w, s) {
 		e.status.Enforced, e.status.Error = false, ErrorTUNDown
 	}
@@ -748,7 +751,9 @@ func (e *Enforcer) reapply(ctx context.Context) {
 	}
 	switch err := e.apply(ctx, *w, true); {
 	case err == nil:
-		e.logCleared(&e.reapplyWarn, "route table: put back again")
+	case errors.Is(err, errors.ErrUnsupported):
+		// Terminal: watch stops, so this is the last word on it.
+		e.log.Warn("route table: the OS can't hold the route table, not retrying", "err", path.RedactError(err))
 	case ctx.Err() == nil:
 		e.warnRetry(&e.reapplyWarn, "route table: putting it back failed, retrying", err)
 	}

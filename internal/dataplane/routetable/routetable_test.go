@@ -240,6 +240,13 @@ type fakeConfigurator struct {
 	watchErr error
 }
 
+// setFailErr makes Apply fail with err.
+func (f *fakeConfigurator) setFailErr(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.fail, f.failErr = true, err
+}
+
 func (f *fakeConfigurator) setWatchErr(err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
