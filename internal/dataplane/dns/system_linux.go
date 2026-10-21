@@ -285,11 +285,8 @@ func (r *resolved) check() error {
 
 // read is a read of the uplink file: the servers it names, and ok false
 // when the file can't be read — a failed read, not an empty answer.
-// Called with r.mu held.
+// Called with r.mu held, only when uplink.
 func (r *resolved) read() (ups []netip.Addr, ok bool) {
-	if !r.uplink {
-		return nil, true
-	}
 	b, err := os.ReadFile(r.uplinkFile)
 	if err != nil {
 		return nil, false
@@ -300,6 +297,9 @@ func (r *resolved) read() (ups []netip.Addr, ok bool) {
 // firstRead is the read at setup: the tell for it, run after unlocking,
 // or nil. Called with r.mu held.
 func (r *resolved) firstRead() func() {
+	if !r.uplink {
+		return nil
+	}
 	ups, ok := r.read()
 	if !ok {
 		return nil
@@ -321,6 +321,9 @@ func (r *resolved) firstRead() func() {
 // apply is one watch tick's read: what to tell the caller, run after
 // unlocking, or nil. Called with r.mu held.
 func (r *resolved) apply() func() {
+	if !r.uplink {
+		return nil
+	}
 	ups, ok := r.read()
 	if !ok {
 		// A failed read keeps the previous servers and, while untold,
