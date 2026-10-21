@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: [TP-098]
 refs: [R4, DESIGN#dns]
-owner: ""
-branch: ""
+owner: "cursor-glm-tp-112"
+branch: "tp-112-exit-dns-follow-ups"
 ---
 
 ## Goal
@@ -36,3 +36,4 @@ Origin: TP-098's final review round (2026-10-18), split under the three-round ca
 
 ## Log
 - 2026-10-18 created in backlog (TP-098 review round 3)
+- 2026-10-21 backlog → in-progress — owner: cursor-glm-tp-112, branch: tp-112-exit-dns-follow-ups
