@@ -87,7 +87,22 @@ func (s *testSpace) sections() (a, b netmap.Section) {
 // build signs a map of the space at version.
 func (s *testSpace) build(t *testing.T, version uint64) []byte {
 	t.Helper()
+	return s.buildEditing(t, version, s.a, func(*netmap.Section) {})
+}
+
+// buildEditing signs a map at version whose section for who (a's or b's)
+// is changed by edit.
+func (s *testSpace) buildEditing(t *testing.T, version uint64, who NodeKeys, edit func(*netmap.Section)) []byte {
+	t.Helper()
+	if who != s.a && who != s.b {
+		t.Fatalf("the edited node %v is neither of the space's two", who.ID)
+	}
 	a, b := s.sections()
+	edited := &a
+	if who == s.b {
+		edited = &b
+	}
+	edit(edited)
 	env, err := netmap.Build(s.signing, netmap.Contents{
 		SpaceID: s.id, Version: version, RecoveryKey: s.recovery, Blobs: s.blobs,
 		Recipients: []netmap.Recipient{{Key: s.a.Map.Public(), Section: a}, {Key: s.b.Map.Public(), Section: b}},
@@ -244,5 +259,29 @@ func (h *heardEvents) are(t *testing.T, want ...Event) {
 		if len(got) >= len(want) || time.Now().After(deadline) {
 			t.Fatalf("events %v, want %v", got, want)
 		}
+	}
+}
+
+// buildEditing edits the section of the node it names and no other's:
+// an edit of b changes b's section, a's stays as it was.
+func TestBuildEditingEditsTheNamedNode(t *testing.T) {
+	s := newTestSpace(t)
+	m, err := netmap.Verify(s.buildEditing(t, 2, s.b, func(sec *netmap.Section) { sec.Node.IPv4 = netip.MustParseAddr("100.64.0.9") }), s.trust())
+	if err != nil {
+		t.Fatal(err)
+	}
+	aSec, err := openSection(m, s.a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bSec, err := openSection(m, s.b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bSec.Node.IPv4 != netip.MustParseAddr("100.64.0.9") {
+		t.Error("the edit didn't reach b's section")
+	}
+	if aSec.Node.IPv4 == netip.MustParseAddr("100.64.0.9") {
+		t.Error("the edit reached a's section")
 	}
 }
