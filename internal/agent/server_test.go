@@ -27,11 +27,22 @@ type fakeSupervisor struct {
 	spaces                [][]supervisor.Space
 	listeners             [][]supervisor.Listener
 	failSpaces, failLists int // calls left to fail
-	// egress is what Egress reports.
-	egress supervisor.EgressInfo
+	// egress is what Egress reports; egressSeq, if set, gives one
+	// snapshot per read, then egress.
+	egress    supervisor.EgressInfo
+	egressSeq []supervisor.EgressInfo
 }
 
-func (f *fakeSupervisor) Egress() supervisor.EgressInfo { return f.egress }
+func (f *fakeSupervisor) Egress() supervisor.EgressInfo {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.egressSeq) > 0 {
+		e := f.egressSeq[0]
+		f.egressSeq = f.egressSeq[1:]
+		return e
+	}
+	return f.egress
+}
 
 func (f *fakeSupervisor) SetSpaces(sp []supervisor.Space) error {
 	f.mu.Lock()
@@ -229,6 +240,48 @@ func TestServerRetriesAFailedMap(t *testing.T) {
 	}
 }
 
+// The "map applied" line's egress is read again once SetSpaces has found
+// the uplink again and built the tables on it, so a first read that found
+// none doesn't warn about an uplink the tables carry, and the line says
+// what they forward. The worker config's upstream order keeps the read
+// taken before SetSpaces: it is built before then (here the first says
+// IPv6, the second IPv4).
+func TestTheEgressLineSaysWhatTheTablesEnforce(t *testing.T) {
+	s := newTestSpace(t)
+	sup := &fakeSupervisor{egressSeq: []supervisor.EgressInfo{
+		{Uplink: "eth0", IPv6: true}, {Uplink: "eth9", IPv4: true},
+	}}
+	r := runServerSpacesIn(t, s, sup, "", func(ss *serverSpaces) { ss.dns = true },
+		func(sec *netmap.Section) { sec.Node.AllowEgress = true })
+	eventually(t, func() bool {
+		return logMatches(r.log.String(), `msg="map applied" .*uplink=eth9 .*egress_ipv4=on .*egress_ipv6=off`)
+	})
+	// The config's order keeps the first read's family.
+	sp, _, _ := sup.last()
+	c, err := DecodeWorkerConfig(sp[0].Config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.DNSUpstreams) == 0 || c.DNSUpstreams[0] != netip.MustParseAddrPort("[2620:fe::fe]:53") {
+		t.Fatalf("the defaults follow the first read's family: %v", c.DNSUpstreams)
+	}
+}
+
+// A first read that finds no uplink doesn't warn when SetSpaces' own
+// probe finds one: the line says the uplink the tables were built on.
+func TestAnUplinkFoundBySetSpacesIsNotWarnedAbout(t *testing.T) {
+	s := newTestSpace(t)
+	sup := &fakeSupervisor{egressSeq: []supervisor.EgressInfo{
+		{Err: "no default route"}, {Uplink: "eth9", IPv4: true},
+	}}
+	r := runServerSpacesIn(t, s, sup, "", func(ss *serverSpaces) { ss.dns = true },
+		func(sec *netmap.Section) { sec.Node.AllowEgress = true })
+	eventually(t, func() bool { return logMatches(r.log.String(), `msg="map applied" .*uplink=eth9 `) })
+	if strings.Contains(r.log.String(), "has no uplink") {
+		t.Errorf("the node was warned about an uplink the tables carry:\n%s", r.log.String())
+	}
+}
+
 func TestServerStopsTheSpaceWhileRemoved(t *testing.T) {
 	s := newTestSpace(t)
 	sup := &fakeSupervisor{}
@@ -251,6 +304,30 @@ func TestServerStopsTheSpaceWhileRemoved(t *testing.T) {
 	heard.are(t, Event{EventRemovedFromSpace, 2}, Event{EventBackInSpace, 4})
 }
 
+// Removing the node from its space clears the refused upstreams together
+// with the record of having logged them: rejoining with the same refused
+// set warns about them again.
+func TestRejoiningTheSpaceLogsTheRefusedUpstreamsAgain(t *testing.T) {
+	s := newTestSpace(t)
+	sup := &fakeSupervisor{}
+	r := runServerSpacesIn(t, s, sup, "", func(ss *serverSpaces) {
+		ss.dns = true
+		ss.dnsUpstreams = []netip.AddrPort{netip.MustParseAddrPort("192.168.1.53:53")}
+		ss.follow.section.Node.AllowEgress = true
+	})
+	eventually(t, func() bool { _, _, n := sup.last(); return n == 1 })
+	if n := strings.Count(r.log.String(), "refuses the upstream"); n != 1 {
+		t.Fatalf("the refused upstream was logged %d times, want once", n)
+	}
+	r.maps <- s.buildWithout(t, 2, s.a)
+	eventually(t, func() bool { _, _, n := sup.last(); return n == 2 })
+	r.maps <- s.buildEditing(t, 3, s.a, func(sec *netmap.Section) { sec.Node.AllowEgress = true })
+	eventually(t, func() bool { return logMatches(r.log.String(), `msg="map applied" .*version=3`) })
+	if n := strings.Count(r.log.String(), "refuses the upstream"); n != 2 {
+		t.Errorf("after rejoining the refused upstream was logged %d times, want twice", n)
+	}
+}
+
 // fakeSession is a worker's view of its supervisor, for ServeSpace.
 type fakeSession struct {
 	worker.Session
@@ -267,6 +344,18 @@ func newFakeSession(space netmap.SpaceID) *fakeSession {
 func (s *testSpace) workerConfig(t *testing.T, keys NodeKeys, version uint64) []byte {
 	t.Helper()
 	b, err := WorkerConfig{Keys: keys, Trust: s.trust(), Map: s.build(t, version)}.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// dnsWorkerConfig is workerConfig with the space's resolver on, and no
+// upstream: a worker's resolver then has none to ask. With ups, they are
+// the resolver's.
+func (s *testSpace) dnsWorkerConfig(t *testing.T, keys NodeKeys, version uint64, ups ...netip.AddrPort) []byte {
+	t.Helper()
+	b, err := WorkerConfig{Keys: keys, Trust: s.trust(), Map: s.build(t, version), DNS: true, DNSUpstreams: ups}.Encode()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -323,6 +412,61 @@ func TestServeSpace(t *testing.T) {
 		sess.config <- s.workerConfig(t, s.b, 2)
 		if err := wait(); err == nil || !strings.Contains(err.Error(), "changed the worker's keys or trust") {
 			t.Fatalf("got %v", err)
+		}
+	})
+	t.Run("the worker's resolver is inside a worker", func(t *testing.T) {
+		sess := newFakeSession(s.id)
+		sess.config <- s.dnsWorkerConfig(t, s.a, 1)
+		n := newRunningNode()
+		asked := false
+		base := n.dataPlane(reg, NodeKeys{}, nil)
+		base.dnsPort = 5353
+		base.Host.SystemUpstreams = func([]netip.Addr) ([]netip.Addr, error) {
+			asked = true
+			return nil, nil
+		}
+		done := make(chan error, 1)
+		go func() { done <- serveSpace(base.Log, base)(n.ctx, sess.Session) }()
+		n.waitLog(t, `msg="map applied" .*version=1`)
+		n.stop()
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+		if asked {
+			t.Error("the worker's resolver asked for the host's resolvers")
+		}
+		// The section allows no egress: not an exit's resolver, so it
+		// says this at debug, nothing warned.
+		for _, l := range strings.Split(n.log.String(), "\n") {
+			if strings.Contains(l, "no upstream to ask: the egress refuses every configured one") && !strings.Contains(l, "level=DEBUG") {
+				t.Errorf("a non-exit's resolver warned about its upstreams: %s", l)
+			}
+		}
+		if log := n.log.String(); !strings.Contains(log, "no upstream to ask: the egress refuses every configured one") {
+			t.Errorf("the resolver doesn't run as a worker's:\n%s", log)
+		}
+	})
+	t.Run("a later config's upstreams follow the running resolver", func(t *testing.T) {
+		sess := newFakeSession(s.id)
+		sess.config <- s.dnsWorkerConfig(t, s.a, 1,
+			netip.MustParseAddrPort("198.51.100.53:53"), netip.MustParseAddrPort("203.0.113.53:53"))
+		n, wait := serve(t, sess)
+		n.waitLog(t, `msg="map applied" .*version=1`)
+		if l := n.log.String(); strings.Contains(l, "upstreams changed") {
+			t.Errorf("the first config was logged as a change:\n%s", l)
+		}
+		sess.config <- s.dnsWorkerConfig(t, s.a, 2, netip.MustParseAddrPort("198.51.100.53:53"))
+		n.waitLog(t, `msg="map applied" .*version=2`)
+		n.waitLog(t, `msg="DNS: the resolver's upstreams changed" .*upstreams=1`)
+		// The same upstreams again change nothing.
+		sess.config <- s.dnsWorkerConfig(t, s.a, 3, netip.MustParseAddrPort("198.51.100.53:53"))
+		n.waitLog(t, `msg="map applied" .*version=3`)
+		if n := strings.Count(n.log.String(), "upstreams changed"); n != 1 {
+			t.Errorf("the resolver's upstreams changed %d times, want once", n)
+		}
+		n.stop()
+		if err := wait(); err != nil {
+			t.Fatal(err)
 		}
 	})
 }
