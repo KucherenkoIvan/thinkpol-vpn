@@ -13,6 +13,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/localapi"
 )
 
 // command is one subcommand. Its path is space-separated ("version",
@@ -87,6 +88,35 @@ func apiSocket() string {
 	}
 	return agent.DefaultAPISocket()
 }
+
+// apiCommand is the flag set of a command that talks to the running
+// node's local API: its own flags, and the API's -socket.
+type apiCommand struct {
+	*flag.FlagSet
+	socket *string
+}
+
+func newAPICommand(name string) apiCommand {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	return apiCommand{fs, fs.String("socket", apiSocket(), "the local API's socket (THINKPOL_API_SOCKET)")}
+}
+
+// dial parses args, refuses them (errUsage) unless argsOK says the
+// command takes what they hold, and dials the local API. The caller
+// closes the client.
+func (c apiCommand) dial(e env, args []string, argsOK func(*flag.FlagSet) bool) (*localapi.Client, error) {
+	if err := parseFlags(c.FlagSet, e, args); err != nil {
+		return nil, err
+	}
+	if !argsOK(c.FlagSet) {
+		return nil, errUsage
+	}
+	return localapi.Dial(*c.socket)
+}
+
+// noArgs and oneArg are apiCommand.dial's usual argsOK.
+func noArgs(fs *flag.FlagSet) bool { return fs.NArg() == 0 }
+func oneArg(fs *flag.FlagSet) bool { return fs.NArg() == 1 }
 
 // commandWords counts args' leading words: the command path's candidate
 // words. Flags and arguments with spaces end a path.

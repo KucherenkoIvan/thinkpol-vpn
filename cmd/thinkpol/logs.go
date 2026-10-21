@@ -17,17 +17,10 @@ func init() {
 }
 
 func runLogs(ctx context.Context, e env, args []string) error {
-	fs := flag.NewFlagSet("logs", flag.ContinueOnError)
-	socket := fs.String("socket", apiSocket(), "the local API's socket (THINKPOL_API_SOCKET)")
-	lines := fs.Int("n", 100, "how many of the last lines to print")
-	follow := fs.Bool("f", false, "keep printing new lines until interrupted")
-	if err := parseFlags(fs, e, args); err != nil {
-		return err
-	}
-	if fs.NArg() > 0 || *lines < 1 {
-		return errUsage
-	}
-	c, err := localapi.Dial(*socket)
+	cmd := newAPICommand("logs")
+	lines := cmd.Int("n", 100, "how many of the last lines to print")
+	follow := cmd.Bool("f", false, "keep printing new lines until interrupted")
+	c, err := cmd.dial(e, args, func(fs *flag.FlagSet) bool { return fs.NArg() == 0 && *lines >= 1 })
 	if err != nil {
 		return err
 	}
