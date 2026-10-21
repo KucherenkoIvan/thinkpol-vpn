@@ -168,8 +168,7 @@ func setResolved(conn *dbus.Conn, c SystemConfig, uplink bool) (*resolved, error
 		_ = conn.Close()
 		return nil, err
 	}
-	r := &resolved{conn: conn, index: int32(ifc.Index), uplink: uplink, uplinkFile: resolvedUplink,
-		stop: make(chan struct{}), stopped: make(chan struct{}), untold: uplink && startsUntold(c)}
+	r := newResolved(conn, int32(ifc.Index), c, uplink, resolvedUplink)
 	r.mu.Lock()
 	tell := r.firstRead()
 	r.mu.Unlock()
@@ -180,6 +179,14 @@ func setResolved(conn *dbus.Conn, c SystemConfig, uplink bool) (*resolved, error
 	}
 	go r.watch(tell)
 	return r, nil
+}
+
+// newResolved builds the link's configuration whole, before the first
+// read: cfg is stored first, so the read at setup sees what to filter
+// and what to tell, not a zero configuration.
+func newResolved(conn *dbus.Conn, index int32, c SystemConfig, uplink bool, uplinkFile string) *resolved {
+	return &resolved{conn: conn, index: index, uplink: uplink, uplinkFile: uplinkFile,
+		cfg: c, stop: make(chan struct{}), stopped: make(chan struct{}), untold: uplink && startsUntold(c)}
 }
 
 // Update configures the link: the resolver's addresses, every name
@@ -305,6 +312,9 @@ func (r *resolved) firstRead() func() {
 	// upstreams of its own until one.
 	r.untold = false
 	tell := r.cfg.Upstreams
+	if tell == nil {
+		return nil
+	}
 	return func() { tell(ups) }
 }
 

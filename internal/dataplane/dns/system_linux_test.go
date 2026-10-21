@@ -24,6 +24,12 @@ func firstResolvedRead(t *testing.T, r *resolved) {
 	}
 }
 
+// newTestResolved builds the configuration as setResolved does, without
+// D-Bus (nil conn): the read and tell paths never touch it.
+func newTestResolved(c SystemConfig, uplink bool, uplinkFile string) *resolved {
+	return newResolved(nil, 0, c, uplink, uplinkFile)
+}
+
 // tickResolved runs one watch tick's read as the watcher would, telling
 // what it returned.
 func tickResolved(t *testing.T, r *resolved) {
@@ -36,6 +42,35 @@ func tickResolved(t *testing.T, r *resolved) {
 	}
 }
 
+// The read at setup runs on a configuration built whole (cfg stored
+// before the read, as newResolved does): untold with the uplink file
+// readable at setup, it is told once — filtered, without the stub and
+// the node's own servers — and nothing panics. A firstRead run against a
+// zero cfg panicked calling a nil Upstreams and stored an unfiltered
+// list.
+func TestResolvedTheReadAtSetupRunsOnAWholeConfiguration(t *testing.T) {
+	uplink := filepath.Join(t.TempDir(), "uplink.conf")
+	if err := os.WriteFile(uplink, []byte("nameserver 127.0.0.53\nnameserver 198.51.100.53\nnameserver 100.64.0.2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	told := make(chan []netip.Addr, 8)
+	c := testSystem
+	c.Upstreams, c.UpstreamsUnknown = func(a []netip.Addr) { told <- a }, true
+	r := newTestResolved(c, true, uplink)
+	firstResolvedRead(t, r)
+	select {
+	case got := <-told:
+		if !slices.Equal(got, []netip.Addr{netip.MustParseAddr("198.51.100.53")}) {
+			t.Errorf("told %v, want 198.51.100.53", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("never told the read at setup")
+	}
+	if p := r.Problem(); p != nil {
+		t.Errorf("problem after a good read: %v", p)
+	}
+}
+
 // The caller's own read of the OS's resolvers failed (UpstreamsUnknown)
 // and resolved is the OS's resolver: a missing uplink file is a failed
 // read, stale until it appears; the first good read is told whether or
@@ -44,8 +79,8 @@ func TestResolvedAFailedFirstReadIsStaleUntilTheUplinkAppears(t *testing.T) {
 	uplink := filepath.Join(t.TempDir(), "uplink.conf") // missing: the first read fails
 	told := make(chan []netip.Addr, 8)
 	c := testSystem
-	c.Upstreams = func(a []netip.Addr) { told <- a }
-	r := &resolved{uplink: true, uplinkFile: uplink, cfg: c, untold: true}
+	c.Upstreams, c.UpstreamsUnknown = func(a []netip.Addr) { told <- a }, true
+	r := newTestResolved(c, true, uplink)
 	firstResolvedRead(t, r)
 	if p := r.Problem(); !errors.Is(p, ErrUpstreamsStale) || Unprotected(p) {
 		t.Errorf("problem after a failed first read: %v", p)
@@ -89,7 +124,7 @@ func TestResolvedTheFirstGoodReadAtSetupIsToldAtOnce(t *testing.T) {
 	told := make(chan []netip.Addr, 8)
 	c := testSystem
 	c.Upstreams, c.UpstreamsUnknown = func(a []netip.Addr) { told <- a }, true
-	r := &resolved{uplink: true, uplinkFile: uplink, cfg: c, untold: true}
+	r := newTestResolved(c, true, uplink)
 	firstResolvedRead(t, r)
 	select {
 	case got := <-told:
@@ -119,7 +154,7 @@ func TestResolvedAFailedReadKeepsThePreviousServers(t *testing.T) {
 	told := make(chan []netip.Addr, 8)
 	c := testSystem
 	c.Upstreams = func(a []netip.Addr) { told <- a }
-	r := &resolved{uplink: true, uplinkFile: uplink, cfg: c}
+	r := newTestResolved(c, true, uplink)
 	firstResolvedRead(t, r)
 	toldNothing(t, told)
 
@@ -144,7 +179,7 @@ func TestResolvedAFailedReadKeepsThePreviousServers(t *testing.T) {
 	tickResolved(t, r)
 	toldNothing(t, told)
 
-	// It is back, unchanged: told nothing, the staleness cleared.
+	// It is back, unchanged: told nothing.
 	if err := os.WriteFile(uplink, []byte("nameserver 198.51.100.99\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
