@@ -109,8 +109,8 @@ func TestLock(t *testing.T) {
 	if err := os.Symlink(filepath.Join(dir, "elsewhere"), filepath.Join(dir, "link.lock")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Lock(d, "link.lock"); err == nil {
-		t.Error("a symlink was followed")
+	if _, err := Lock(d, "link.lock"); !errors.Is(err, unix.ELOOP) {
+		t.Errorf("a symlink: %v, want ELOOP", err)
 	}
 	if err := unix.Mkfifo(filepath.Join(dir, "fifo.lock"), 0o600); err != nil {
 		t.Fatal(err)

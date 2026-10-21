@@ -17,27 +17,40 @@ import (
 // ErrNotRegular: the file is not a regular one (a fifo, a directory).
 var ErrNotRegular = errors.New("not a regular file")
 
-// ReadFile reads the regular file name in dir. It never follows a
-// symlink (ELOOP) nor blocks on a fifo (ErrNotRegular); a missing file is
-// fs.ErrNotExist.
-func ReadFile(dir *os.File, name string) ([]byte, error) {
+// openRegular opens the file name in dir with flags (perm if it creates
+// it), close-on-exec, never through a symlink (ELOOP) nor blocking on a
+// fifo, and only if it is a regular file (ErrNotRegular otherwise).
+func openRegular(dir *os.File, name string, flags int, perm uint32) (*os.File, error) {
 	path := filepath.Join(dir.Name(), name)
-	fd, err := unix.Openat(int(dir.Fd()), name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+	fd, err := unix.Openat(int(dir.Fd()), name, flags|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, perm)
 	if err != nil {
 		return nil, &os.PathError{Op: "open", Path: path, Err: err}
 	}
 	f := os.NewFile(uintptr(fd), path)
-	defer func() { _ = f.Close() }()
-	fi, err := f.Stat()
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil {
+		_ = f.Close()
+		return nil, &os.PathError{Op: "stat", Path: path, Err: err}
+	}
+	if st.Mode&unix.S_IFMT != unix.S_IFREG {
+		_ = f.Close()
+		return nil, fmt.Errorf("%s: %w", path, ErrNotRegular)
+	}
+	return f, nil
+}
+
+// ReadFile reads the regular file name in dir. It never follows a
+// symlink (ELOOP) nor blocks on a fifo (ErrNotRegular); a missing file is
+// fs.ErrNotExist.
+func ReadFile(dir *os.File, name string) ([]byte, error) {
+	f, err := openRegular(dir, name, unix.O_RDONLY, 0)
 	if err != nil {
 		return nil, err
 	}
-	if !fi.Mode().IsRegular() {
-		return nil, fmt.Errorf("%s: %w", path, ErrNotRegular)
-	}
+	defer func() { _ = f.Close() }()
 	data, err := io.ReadAll(f)
 	if err != nil {
-		return nil, &os.PathError{Op: "read", Path: path, Err: err}
+		return nil, &os.PathError{Op: "read", Path: f.Name(), Err: err}
 	}
 	return data, nil
 }
