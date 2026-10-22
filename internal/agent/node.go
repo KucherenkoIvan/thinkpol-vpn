@@ -33,8 +33,12 @@ type Node struct {
 	// plat is what the node needs of its host.
 	plat Platform
 	// conn is a device's connection, moved only by the goroutine that
-	// runs the node.
-	conn connection
+	// runs the node. bootChoice: it started as configured, with a local
+	// API and no record of this boot, so its start records that choice
+	// (a restart in this boot then follows it, whatever the configuration
+	// says by then).
+	conn       connection
+	bootChoice bool
 	// dnsUpstreams are cfg.DNSUpstream's.
 	dnsUpstreams []netip.AddrPort
 
@@ -88,9 +92,11 @@ func Prepare(cfg Config, logs Logs, plat Platform) (*Node, error) {
 		return nil, errors.New("agent: the platform keeps no connect record")
 	}
 	n := &Node{
-		cfg: cfg, state: st, logs: logs, plat: plat, conn: newConnection(startConnected(cfg, plat.ConnectRecord, logs), st.Removed), dnsUpstreams: upstreams,
+		cfg: cfg, state: st, logs: logs, plat: plat, dnsUpstreams: upstreams,
 		requests: make(chan connectRequest), stopped: make(chan struct{}), rulesRequests: make(chan rulesRequest),
 	}
+	connect, recorded := startConnected(cfg, plat.ConnectRecord, logs)
+	n.conn, n.bootChoice = newConnection(connect, st.Removed), !recorded && cfg.APISocket != ""
 	n.local = st.LocalRules
 	mode := cfg.Mode
 	if !st.Removed {
@@ -104,25 +110,24 @@ func Prepare(cfg Config, logs Logs, plat Platform) (*Node, error) {
 	return n, nil
 }
 
-// startConnected is whether a device starts connected: as its last
-// connect request of this boot asked, if the local API took one, else as
-// configured (Config.Connect). Without a local API nothing can ask, so
-// the configuration decides. A record that can't be read is logged and
-// the configuration decides.
-func startConnected(cfg Config, rec ConnectRecord, logs Logs) bool {
+// startConnected is whether a device starts connected: as recorded in
+// this boot (recorded true), else as configured (Config.Connect). Without
+// a local API nothing can ask, so the configuration decides. A record
+// that can't be read is logged and the configuration decides.
+func startConnected(cfg Config, rec ConnectRecord, logs Logs) (connect, recorded bool) {
 	if cfg.APISocket == "" {
-		return cfg.Connect
+		return cfg.Connect, false
 	}
 	connect, ok, err := rec.Load()
 	switch {
 	case err != nil:
 		logs.Warn("the last connect request can't be read: starting as configured", "connect", cfg.Connect, "err", err)
-		return cfg.Connect
+		return cfg.Connect, false
 	case !ok:
-		return cfg.Connect
+		return cfg.Connect, false
 	}
-	logs.Info("starting as the last connect request of this boot asked", "connect", connect)
-	return connect
+	logs.Info("starting as recorded in this boot", "connect", connect)
+	return connect, true
 }
 
 // remember records a connect request (ConnectRecord) before it is acted
@@ -303,6 +308,9 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 	defer close(n.stopped)
 	h := n.state.Map.Header()
 	n.logs.Info("starting", "mode", n.Mode(), "space", h.SpaceID, "node", n.state.Keys.ID, "version", h.Version, "map", n.state.MapPath)
+	if n.bootChoice && n.Mode() != ModeServer {
+		n.remember(!n.conn.disconnected())
+	}
 	if n.Mode() != ModeServer && n.conn.state != connConnecting {
 		// What the data plane left in the host's routing when the node
 		// died connected (a crash, kill -9): a device that starts

@@ -9,9 +9,10 @@ import (
 )
 
 // A device's restart in the same boot (a crash and its service's restart)
-// comes back as the member last asked through the local API, whatever the
-// configuration says; a boot starts as configured (connect-on-boot), and
-// without a local API the configuration always decides.
+// comes back as the member last asked through the local API, or as the
+// boot's first start came up, whatever the configuration says; a boot
+// starts as configured (connect-on-boot), and without a local API the
+// configuration always decides.
 func TestARestartInTheSameBootKeepsTheLastConnectRequest(t *testing.T) {
 	s := newTestSpace(t)
 	_, reg := memoryRegistry(t)
@@ -60,12 +61,20 @@ func TestARestartInTheSameBootKeepsTheLastConnectRequest(t *testing.T) {
 	b.connection(t, Connected)
 	restart(b)
 
-	// The next boot starts as configured, either way.
-	b = startDevice(t, s, reg, false, inBoot("boot-2"))
-	b.connection(t, Disconnected)
-	restart(b)
+	// The next boot starts as configured, and its first start records
+	// that: a restart in the boot keeps it, whatever the configuration
+	// says by then (connect-on-boot turned off since).
 	b = startDevice(t, s, reg, true, inBoot("boot-2"))
 	b.connection(t, Connected)
+	restart(b)
+	b = startDevice(t, s, reg, false, inBoot("boot-2"))
+	b.connection(t, Connected)
+	restart(b)
+	b = startDevice(t, s, reg, false, inBoot("boot-3"))
+	b.connection(t, Disconnected)
+	restart(b)
+	b = startDevice(t, s, reg, true, inBoot("boot-3"))
+	b.connection(t, Disconnected)
 }
 
 // A request taken while the device is out of its space is recorded too:

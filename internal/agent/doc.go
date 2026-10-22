@@ -160,17 +160,19 @@
 // refuses both ([ErrServerMode]). A device whose node returned (stopped,
 // or its first start failed) reads disconnected.
 //
-// Each Connect and Disconnect is recorded before it is acted on
-// ([ConnectRecord]: [ConnectRecordFile] next to the host's agent lock,
-// stamped with the boot session), and a start in the same boot takes the
-// record over -connect: a crash and its service's restart neither drop a
-// connected member (whose traffic would go direct) nor undo their
-// disconnect, and a restart by hand does the same. A boot (no record, or
-// one of an earlier boot) starts as configured: -connect is
-// connect-on-boot, which the service install sets off (PRD D5). Without a
-// local API nothing can ask, so -connect alone decides. A record that
-// can't be written is logged and the request goes ahead; one that can't
-// be read is logged and -connect decides.
+// A device's connect choice for the boot is recorded ([ConnectRecord]:
+// [ConnectRecordFile] next to the host's agent lock, stamped with the
+// boot session): the first start of a boot (no record, or one of an
+// earlier boot) starts as configured and records that, and each Connect
+// and Disconnect is recorded before it is acted on. A later start in the
+// same boot takes the record over -connect: a crash and its service's
+// restart neither drop a connected member (whose traffic would go direct)
+// nor undo their disconnect, whatever the configuration says by then, and
+// a restart by hand does the same. So -connect is connect-on-boot, which
+// the service install sets off (PRD D5). Without a local API nothing can
+// ask, so -connect alone decides and nothing is recorded. A record that
+// can't be written is logged and the node goes ahead; one that can't be
+// read is logged and -connect decides.
 //
 // A rule preset chosen through the local API ([Node.SetRulePreset]) is
 // stored in [LocalRulesFile] in the state directory, then handed to the
@@ -250,8 +252,8 @@
 //     they are under /run (/run/thinkpol, /run/thinkpol-api), a tmpfs; on
 //     macOS, which has none, under /private/var/db (thinkpol,
 //     thinkpol-api), on disk.
-//   - A device's last connect request ([ConnectRecordFile], above), next
-//     to the agent's lock, stamped with the boot session.
+//   - A device's connect choice for the boot ([ConnectRecordFile],
+//     above), next to the agent's lock, stamped with the boot session.
 //   - On macOS, records under /private/var/db/thinkpol: netcfg's route
 //     records (netcfg/<owner>.routes, next to <owner>.lock), which list
 //     the routes it added, the link endpoints' addresses among them, and

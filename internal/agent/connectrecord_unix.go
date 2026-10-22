@@ -70,7 +70,7 @@ func (r fileConnectRecord) Save(connect bool) error {
 	return trusteddir.WriteRecord(d, ConnectRecordFile, connectRecordHeader, boot, connectRecordBody(connect))
 }
 
-const connectRecordHeader = "# thinkpol agent: the device's last connect request through the local API in this boot"
+const connectRecordHeader = "# thinkpol agent: the device's connect choice for this boot: its first start's, then each local API request"
 
 // The record's body: one line.
 var (
