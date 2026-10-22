@@ -6,7 +6,7 @@ area: docs
 repo: thinkpol-vpn
 size: L
 depends_on: [TP-023]
-refs: [DESIGN]
+refs: [DESIGN.md#where-the-mechanism-lives]
 owner: "agent-tp-077"
 branch: "tp-077-split-design-md"
 ---

@@ -468,7 +468,8 @@ func (n *Node) runServer(ctx context.Context, reg *transport.Registry, maps chan
 		Log:           n.logs.With("component", "supervisor"),
 		// Workers log at the node's level. Their output goes to their
 		// space's ring; only the node owner's space's also goes into the
-		// node's log stream, never a guest's (DESIGN rule 6).
+		// node's log stream, never a guest's
+		// (docs/design/security.md "Rules", rule 6).
 		Env:    []string{"THINKPOL_LOG_LEVEL=" + level.String()},
 		Output: ownerOutput(own, out),
 		// The root namespace's owner, from the same host adapters the

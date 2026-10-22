@@ -6,7 +6,7 @@ area: agent
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-019]
-refs: [S1, DESIGN#desktop-client]
+refs: [S1, docs/design/desktop-client.md#desktop-client]
 owner: "agent-glm"
 branch: "tp-075-agent-layer-refactor"
 ---

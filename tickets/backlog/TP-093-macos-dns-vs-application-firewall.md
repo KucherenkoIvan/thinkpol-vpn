@@ -6,7 +6,7 @@ area: dataplane/dns
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-019]
-refs: [DESIGN#dns]
+refs: [docs/design/routing.md#dns]
 needs_human: macos
 owner: ""
 branch: ""

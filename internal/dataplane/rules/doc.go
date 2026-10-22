@@ -1,5 +1,5 @@
 // Package rules turns a device's routing rules into what enforces them
-// (DESIGN.md "Routing rules and DNS"). The rule format itself (netmap.Rule,
+// (docs/design/routing.md "Routing rules and DNS"). The rule format itself (netmap.Rule,
 // netmap.ParseRule) is the map's.
 //
 // # Rules

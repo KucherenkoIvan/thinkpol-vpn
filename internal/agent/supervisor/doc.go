@@ -4,7 +4,7 @@
 // restarted with backoff when it dies, and never outliving the supervisor.
 // It also owns the node's public listeners for every space at once, and the
 // root namespace's firewall that keeps the spaces apart and lets their
-// egress out. See DESIGN.md "Server agent: one worker per space".
+// egress out. See docs/design/server-agent.md "Server agent: one worker per space".
 //
 // # Slots and wiring
 //

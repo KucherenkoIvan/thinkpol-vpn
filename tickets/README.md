@@ -27,7 +27,8 @@ area: dataplane/transport
 repo: thinkpol-vpn        # or go-kernel
 size: M                   # S | M | L | epic
 depends_on: [TP-001]
-refs: [C1, C6]            # PRD requirement ids and DESIGN.md sections
+refs: [C1, C6]            # PRD requirement ids (or RR rows), and DESIGN.md#anchor
+                          # or docs/design/<file>.md#anchor sections
 needs_human: macos        # optional: decision | macos | windows | person
 owner: ""                 # set when moved to in-progress
 branch: ""                # set when moved to in-progress
@@ -65,8 +66,8 @@ Always `git mv`, and append a line to `## Log` in the same commit:
 | From → to | Allowed when |
 |---|---|
 | backlog → in-progress | every `depends_on` ticket is in `done/`; `owner` and `branch` are set |
-| in-progress → review | every acceptance box is checked, each with evidence produced in the ticket's branch; the Log says what couldn't be verified (device-only behaviour, platform assumptions); `make lint` and `make test` pass (and the lab checks the ticket names) |
-| review → done | review found nothing blocking, and the branch is merged into `rewrite` |
+| in-progress → review | every acceptance box is checked, each with evidence produced in the ticket's branch, except boxes that depend on a `needs_human` checklist: they stay unchecked, with the checklist in `## Notes`; the Log says what couldn't be verified (device-only behaviour, platform assumptions); `make lint` and `make test` pass (and the lab checks the ticket names) |
+| review → done | review found nothing blocking, every box is checked (a box that waits on a device run may stay open only if the owner agreed to merge before the run; the Log says so), and the branch is merged into `rewrite` |
 | review → has-errors | review found problems; they are written into a `## Review findings` section as checkboxes |
 | has-errors → in-progress | someone picks the findings up; every finding is checked before review again |
 | any → blocked | a `## Blocked by` section says exactly what is missing and who can provide it |
@@ -86,4 +87,4 @@ Create the children with new ids and `split_from: <epic id>` in their frontmatte
 
 ## Source of truth
 
-Tickets implement [PRD.md](../PRD.md) and [DESIGN.md](../DESIGN.md), with [RESIDUAL-RISKS.md](../RESIDUAL-RISKS.md) and the package docs DESIGN.md links. If a ticket and the docs disagree, the docs win; if the docs are wrong, fix them in the same branch and say so in the ticket's log.
+Tickets implement [PRD.md](../PRD.md) and the design files ([DESIGN.md](../DESIGN.md) and `docs/design/*.md`), with [RESIDUAL-RISKS.md](../RESIDUAL-RISKS.md) and the package docs' links. If a ticket and the docs disagree, the docs win; if the docs are wrong, fix them in the same branch and say so in the ticket's log.

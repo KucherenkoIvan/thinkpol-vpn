@@ -1,6 +1,6 @@
 // Package blobs fetches content-addressed files (lists, later releases)
 // from peers by hash, verifies, caches and serves them, with no outside
-// server (PRD R9, A9; DESIGN.md "Lists").
+// server (PRD R9, A9; docs/design/routing.md "Lists").
 //
 // The signed map says which blobs exist: its header lists every blob the
 // space uses (the availability set servers hold and pass on), and each

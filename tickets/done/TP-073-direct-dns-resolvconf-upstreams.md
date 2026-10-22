@@ -6,7 +6,7 @@ area: dataplane/dns
 repo: thinkpol-vpn
 size: S
 depends_on: []
-refs: [N3, R4, DESIGN#routing-rules-and-dns]
+refs: [N3, R4, docs/design/routing.md#routing-rules-and-dns]
 owner: agent-composer
 branch: tp-073-resolvconf-upstreams
 ---

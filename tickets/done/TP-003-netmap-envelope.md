@@ -6,7 +6,7 @@ area: netmap
 repo: thinkpol-vpn
 size: L
 depends_on: [TP-001]
-refs: [S1, S6, A5, A11, DESIGN#the-signed-map]
+refs: [S1, S6, A5, A11, docs/design/control-plane.md#the-signed-map]
 owner: agent-tp-003
 branch: tp-003-netmap-envelope
 ---

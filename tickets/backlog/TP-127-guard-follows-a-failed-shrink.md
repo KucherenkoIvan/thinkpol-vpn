@@ -6,7 +6,7 @@ area: dataplane
 repo: thinkpol-vpn
 size: S
 depends_on: []
-refs: [DESIGN#routing-rules-and-dns]
+refs: [docs/design/routing.md#routing-rules-and-dns]
 owner: ""
 branch: ""
 ---

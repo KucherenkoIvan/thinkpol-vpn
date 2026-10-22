@@ -1,4 +1,4 @@
-// Package path is the path layer (DESIGN.md "Data plane"): a WireGuard
+// Package path is the path layer (docs/design/overlay.md "Data plane"): a WireGuard
 // conn.Bind that gives WireGuard one stable endpoint per peer and picks
 // between the peer's candidate paths underneath, and the relay that moves
 // other nodes' packets along. It opens no socket (a lint rule holds it to

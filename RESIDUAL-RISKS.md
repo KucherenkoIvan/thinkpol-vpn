@@ -1,6 +1,6 @@
 # thinkpol-vpn — Residual risks
 
-What the design accepts, on purpose or until a named ticket: the leaks, windows and unprotected cases inside the ground [DESIGN.md](DESIGN.md#threat-model) defends, and last, for completeness, what the threat model leaves undefended. [PRD.md](PRD.md) states its requirements against this table: a requirement holds except for the rows whose **Breaks** column names it; a DESIGN rule named there ("DESIGN rule N") cites its rows the same way.
+What the design accepts, on purpose or until a named ticket: the leaks, windows and unprotected cases inside the ground [security.md](docs/design/security.md#threat-model) defends, and last, for completeness, what the threat model leaves undefended. [PRD.md](PRD.md) states its requirements against this table: a requirement holds except for the rows whose **Breaks** column names it; a DESIGN rule named there ("DESIGN rule N"; the rules are in [security.md](docs/design/security.md)) cites its rows the same way.
 
 A change that adds, narrows or removes a residual updates its row here, in the same branch, and the PRD requirement its Breaks column names. Rows are numbered once and never renumbered; a row that no longer holds is struck through with the ticket that closed it.
 

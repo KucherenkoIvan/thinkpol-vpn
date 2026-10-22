@@ -6,7 +6,7 @@ area: netmap
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-036, KRN-002]
-refs: [A5, DESIGN#control-plane-the-controller-on-go-kernel]
+refs: [A5, docs/design/control-plane.md#control-plane-the-controller-on-go-kernel]
 owner: ""
 branch: ""
 ---

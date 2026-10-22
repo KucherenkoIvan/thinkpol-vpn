@@ -10,7 +10,7 @@ import (
 	netmapv1 "github.com/KucherenkoIvan/thinkpol-vpn/proto/gen/thinkpol/netmap/v1"
 )
 
-// Rule is one routing rule, `match → action` (DESIGN.md "Routing rules and
+// Rule is one routing rule, `match → action` (docs/design/routing.md "Routing rules and
 // DNS"). Rules are ordered and the first that matches a destination
 // decides it. Its text form is `<match> -> <action>`, e.g.
 // `geoip:ru -> direct`; see ParseRule.

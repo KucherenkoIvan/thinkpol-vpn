@@ -20,6 +20,86 @@ COLUMNS = ["backlog", "in-progress", "blocked", "review", "has-errors", "done"]
 REQUIRED = ["id", "title", "milestone", "area", "repo", "size", "depends_on"]
 SIZES = {"S", "M", "L", "epic"}
 NEEDS_HUMAN = {"decision", "macos", "windows", "person"}
+DESIGN_REF = re.compile(r"(.+)#([\w-]+)$")
+RESIDUALS = "RESIDUAL-RISKS.md"
+
+
+def gh_slug(heading):
+    """A heading's anchor slug the way GitHub computes it."""
+    s = heading.strip().lower()
+    s = re.sub(r"[^\w\- ]", "", s, flags=re.UNICODE)
+    return s.replace(" ", "-")
+
+
+def strip_fences(text):
+    lines, fenced = [], False
+    for line in text.splitlines():
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+            continue
+        if not fenced:
+            lines.append(line)
+    return "\n".join(lines)
+
+
+def anchors_of(text):
+    """A file's heading anchors as GitHub computes them: fenced code blocks
+    hold no headings, and a repeated heading's anchor gets -1, -2, ..."""
+    anchors, seen = set(), {}
+    for m in re.finditer(r"^#{1,6}\s+(.+?)\s*$", strip_fences(text), re.M):
+        slug = gh_slug(m.group(1))
+        n = seen.get(slug, 0)
+        seen[slug] = n + 1
+        anchors.add(slug if n == 0 else f"{slug}-{n}")
+    return anchors
+
+
+def ref_targets(root):
+    """Files a `refs:` entry may point into, with each one's heading anchors."""
+    heads = {}
+    for rel in ["DESIGN.md", "PRD.md", RESIDUALS] + sorted(
+        f"docs/design/{p.name}" for p in (root / "docs" / "design").glob("*.md")
+    ):
+        path = root / rel
+        if not path.exists():
+            continue
+        heads[rel] = anchors_of(path.read_text())
+    return heads
+
+
+def requirement_ids(root):
+    """The PRD's requirement ids, from the first column of its requirement
+    tables; M0-M5 are milestones, not requirements."""
+    text = (root / "PRD.md").read_text()
+    return {m.group(1) for m in re.finditer(r"^\|\s*([A-Z]\d+)\s*\|", text, re.M)
+            if not m.group(1).startswith("M")}
+
+
+def residual_rows(root):
+    """The residual-risks table's row ids."""
+    path = root / RESIDUALS
+    if not path.exists():
+        return set()
+    text = path.read_text()
+    return {m.group(1) for m in re.finditer(r"^\|\s*(RR\d+)\s*\|", text, re.M)}
+
+
+def check_ref(ref, heads, prd, rr):
+    """Return an error message for an invalid `refs:` entry, or None."""
+    if ref in prd:
+        return None
+    if re.fullmatch(r"RR\d+", ref):
+        return None if ref in rr else "names no residual-risks row"
+    target, sep, anchor = ref.partition("#")
+    if target in ("DESIGN", "PRD"):
+        target += ".md"
+    if target not in heads:
+        return "names neither a PRD requirement id, an RR row, nor a design file"
+    if not sep:
+        return "names a file without an anchor; a ref points at a heading"
+    if anchor not in heads[target]:
+        return "dangles"
+    return None
 
 
 def parse(path):
@@ -93,6 +173,9 @@ def ready(tickets):
 
 def check(tickets):
     problems = []
+    heads = ref_targets(ROOT.parent)
+    prd = requirement_ids(ROOT.parent)
+    rr = residual_rows(ROOT.parent)
     for t in tickets.values():
         for key in REQUIRED:
             if key not in t:
@@ -106,6 +189,10 @@ def check(tickets):
         for dep in t.get("depends_on", []):
             if dep not in tickets:
                 problems.append(f"{t['id']}: depends on unknown {dep}")
+        for ref in t.get("refs", []):
+            err = check_ref(ref, heads, prd, rr)
+            if err:
+                problems.append(f"{t['id']}: ref {ref} {err}")
         if t["column"] == "in-progress" and not (t.get("owner") and t.get("branch")):
             problems.append(f"{t['id']}: in progress without owner/branch")
     # dependency cycles

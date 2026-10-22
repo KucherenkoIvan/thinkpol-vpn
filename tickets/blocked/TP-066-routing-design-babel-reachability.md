@@ -6,7 +6,7 @@ area: dataplane/path
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-006]
-refs: [R5, R6, R7, DESIGN#data-plane-every-node-one-binary]
+refs: [R5, R6, R7, docs/design/overlay.md#data-plane-every-node-one-binary]
 owner: ""
 branch: ""
 ---
@@ -24,7 +24,7 @@ A written design, with no code, for how nodes learn reachability beyond their ow
 - **Transport and shaping.** Routing messages ride inside the transports like any other control traffic (`transport.WriteControl`, TP-027), so they are shaped with the rest and carry no extra framing a censor could match. Say what rate they may use and how a flood of them is bounded.
 - **Bounded state.** Maximum routes per node, per neighbour and per destination; maximum hold timers; what is evicted first when a limit is hit.
 - **Attack analysis.** At least: a compromised node advertising false reachability (shorter metric to a destination, a destination it may not originate, a next hop that is not in the signed map, a withdrawal storm); a compromised relay blackholing traffic it is allowed to carry; replayed old advertisements. For each: the mitigation, or the residual risk we accept.
-- **VRF framing.** Add to DESIGN that each space's namespace on a shared node is in effect a VRF: its own routes, its own forwarding table (`netmap.Section.Routes`), no leaking between spaces.
+- **VRF framing.** Add to docs/design/server-agent.md that each space's namespace on a shared node is in effect a VRF: its own routes, its own forwarding table (`netmap.Section.Routes`), no leaking between spaces.
 
 ## Out of scope
 - Real OSPF, BGP, FRR or bird, and any integration with them.
@@ -33,12 +33,12 @@ A written design, with no code, for how nodes learn reachability beyond their ow
 - Changing the map format beyond the fields the design shows it needs; those changes go in a follow-up ticket with their own review.
 
 ## Acceptance
-- [ ] DESIGN.md has a section on routing within signed paths (under Architecture, next to "Routing rules and DNS") that covers the protocol messages, the feasibility rule, withdrawals, hold timers and damping, origin validation, per-flow hashing for `spread`, what each node learns, bounded state, and the attack analysis
-- [ ] DESIGN.md states the VRF framing (each space's namespace on a shared node is a VRF)
+- [ ] docs/design/routing.md has a section on routing within signed paths (next to "Routing rules and DNS") that covers the protocol messages, the feasibility rule, withdrawals, hold timers and damping, origin validation, per-flow hashing for `spread`, what each node learns, bounded state, and the attack analysis
+- [ ] docs/design/server-agent.md states the VRF framing (each space's namespace on a shared node is a VRF)
 - [ ] the Babel-versus-hop-groups-and-failover comparison is in Notes, and each rule we take or drop has its reason written next to it
 - [ ] every decision made here is recorded in Notes as one line with its why
 - [ ] every attack in the scope list has a stated mitigation or an accepted residual risk
-- [ ] TP-030 and TP-031 notes point at the new DESIGN section; TP-031's end-to-end probe item is either replaced by the withdrawal design or kept with a reason
+- [ ] TP-030 and TP-031 notes point at the new docs/design/routing.md section; TP-031's end-to-end probe item is either replaced by the withdrawal design or kept with a reason
 - [ ] follow-up implementation tickets are proposed in Notes, with the frame kinds they add and what each one depends on
 
 ## Blocked by

@@ -5,8 +5,9 @@ tooling and copied to the nodes by hand. This is the runbook for that
 period: rotating the map, restarting a node after a reboot, updating a
 binary, and keeping the nodes' clocks in agreement. Everything the
 controller will automate (SSH provisioning, map gossip, signed updates,
-dashboards) is out of scope here; the design refs are PRD A4/A5 and DESIGN
-"The signed map" and "Server agent".
+dashboards) is out of scope here; the design refs are PRD A4/A5,
+[docs/design/control-plane.md](design/control-plane.md#the-signed-map) and
+[docs/design/server-agent.md](design/server-agent.md#server-agent-one-worker-per-space).
 
 ## What lives where
 
@@ -173,7 +174,7 @@ refuses to start twice on one host, so a stray manual run changes nothing.
 
 Transports rely on clocks: nodes' clocks must agree within five minutes,
 and `udp` drops datagrams sealed further from its own clock than that
-(DESIGN, "The map says, the engine converts, the transport decides"). A
+(docs/design/transports.md, "The map says, the engine converts, the transport decides"). A
 node whose clock is off by more cannot link to its peers.
 
 - **Linux nodes:** install and enable chrony (any NTP client will do;

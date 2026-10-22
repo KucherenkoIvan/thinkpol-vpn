@@ -13,7 +13,7 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport/transporttest"
 )
 
-// supervisor is the shared listener of DESIGN.md "Server agent", reduced to
+// supervisor is the shared listener of docs/design/server-agent.md "Server agent", reduced to
 // what the transport has to support: it owns the public socket, routes each
 // datagram with the transport's PacketRouter, and forwards it untouched to the
 // worker of its space; workers reply through the public socket.

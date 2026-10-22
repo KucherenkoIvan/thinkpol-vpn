@@ -6,13 +6,13 @@ area: lab
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-029, TP-031, TP-032]
-refs: [DESIGN#milestones]
+refs: [docs/design/milestones.md#milestones]
 owner: ""
 branch: ""
 ---
 
 ## Goal
-M3's "done when": chains get past the lab's whitelist mode through an allowlisted entry, and survive losing an entry. The lab models an allowlisted entry; obtaining one in the real world is not promised (DESIGN.md, "Whitelists").
+M3's "done when": chains get past the lab's whitelist mode through an allowlisted entry, and survive losing an entry. The lab models an allowlisted entry; obtaining one in the real world is not promised (docs/design/security.md, "Whitelists").
 
 ## Scope
 - `ru-entries → nl-exit` works with whitelist mode on (entries allow-listed, exit not).

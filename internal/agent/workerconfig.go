@@ -26,7 +26,7 @@ type WorkerConfig struct {
 	LinkMTU   int
 	// DNS runs the space's resolver, asking DNSUpstreams, which the node
 	// picks (serverSpaces.workerUpstreams); the worker never falls back
-	// (see DESIGN.md "Upstreams").
+	// (see docs/design/routing.md "Upstreams").
 	DNS          bool
 	DNSUpstreams []netip.AddrPort
 }

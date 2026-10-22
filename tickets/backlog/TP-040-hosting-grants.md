@@ -6,7 +6,7 @@ area: features/hosting
 repo: thinkpol-vpn
 size: epic
 depends_on: [TP-036, TP-010]
-refs: [A10, N5, N6, N7, DESIGN#server-agent-one-worker-per-space]
+refs: [A10, N5, N6, N7, docs/design/server-agent.md#server-agent-one-worker-per-space]
 owner: ""
 branch: ""
 ---
