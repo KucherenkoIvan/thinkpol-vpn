@@ -75,3 +75,4 @@ Round 1 (2026-10-22): correctness (fix first), design (fix first), second opinio
 - 2026-10-22 done: `thinkpol diag` with a versioned snapshot (status, TUN, owners' routes and rules, the leak guard, the resolvers, the last Apply's steps), host parts root only; slices 1–5 above. `make lint`, `make test` and one full `make lab-test` (LAB_P=4: lab phase and 35 packages in nodes) pass on daabfa6. Not verified: nothing on a Mac ran pfctl or scutil; the pf and scutil parsers are tested on fixtures built from the fake pf's formats, pfctl's source and TP-019's checklist, not on recorded listings (the device run in Notes records them); a snapshot after a crash needs a running agent (out-of-scope finding: an agent-less read for that case)
 - 2026-10-22 in-progress → review
 - 2026-10-22 review → has-errors (round 1: R1.1-R1.11)
+- 2026-10-22 has-errors → in-progress — owner: agent-tp-091, round 2 (R1.1–R1.11)
