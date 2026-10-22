@@ -119,8 +119,16 @@ const detailMax = 300
 
 // lines are b's non-empty lines, trimmed, without pfctl's ALTQ chatter
 // ("No ALTQ support in kernel", "ALTQ related functions disabled"),
-// whichever stream it lands on.
+// whichever stream it lands on; a listing cut short by a line too long to
+// read ends there (readLines says so).
 func lines(b []byte) []string {
+	l, _ := readLines(b)
+	return l
+}
+
+// readLines is lines, and an error if a line was too long to read: the
+// listing is cut there.
+func readLines(b []byte) ([]string, error) {
 	var out []string
 	sc := bufio.NewScanner(bytes.NewReader(b))
 	sc.Buffer(nil, 1<<20)
@@ -129,7 +137,10 @@ func lines(b []byte) []string {
 			out = append(out, l)
 		}
 	}
-	return out
+	if err := sc.Err(); err != nil {
+		return out, fmt.Errorf("firewall: pfctl's listing cut at line %d: %w", len(out)+1, err)
+	}
+	return out, nil
 }
 
 // invalidArgument: pfctl's answer about an anchor that doesn't exist
@@ -178,19 +189,38 @@ func hooked(rules []byte) hook {
 	return hookMissing
 }
 
-// skipped reads `pfctl -s Interfaces -v`, one interface (or name `set
-// skip on` gave) a line, "(skip)" after a skipped one, as the skipped
-// names but lo0 and tun, which the anchor passes anyway: pf evaluates no
-// rule for a skipped interface's packets, and `-s rules` doesn't show it.
-func skipped(ifaces []byte, tun string) []string {
+// skippedNames reads `pfctl -s Interfaces -v`, one interface (or name
+// `set skip on` gave) a line, "(skip)" after a skipped one, as every
+// skipped name: pf evaluates no rule for a skipped interface's packets,
+// and `-s rules` doesn't show it.
+func skippedNames(ifaces []byte) []string {
 	var out []string
 	for _, l := range lines(ifaces) {
 		f := strings.Fields(l)
-		if len(f) == 2 && f[1] == "(skip)" && f[0] != "lo0" && f[0] != tun {
+		if len(f) == 2 && f[1] == "(skip)" {
 			out = append(out, f[0])
 		}
 	}
 	return out
+}
+
+// skipped are the skipped names but lo0 and tun, which the anchor passes
+// anyway: the ones that let IPv6 past the guard.
+func skipped(ifaces []byte, tun string) []string {
+	return slices.DeleteFunc(skippedNames(ifaces), func(n string) bool { return n == "lo0" || n == tun })
+}
+
+// mainUpToHook is the main ruleset's lines up to the hook, the evidence
+// of hooked's verdict: all of them without one.
+func mainUpToHook(rules []byte) []string {
+	ls := lines(rules)
+	for i, l := range ls {
+		f := strings.Fields(l)
+		if len(f) >= 2 && f[0] == "anchor" && f[1] == appleHook && (len(f) == 2 || len(f) == 3 && f[2] == "all") {
+			return ls[:i+1]
+		}
+	}
+	return ls
 }
 
 // anchorsBefore reads `pfctl -a com.apple -s Anchors`, the anchors under
@@ -253,9 +283,11 @@ func parseEnabled(info []byte) (bool, error) {
 }
 
 // referenceLine is one reference in `pfctl -s References`: the enabler's
-// pid, its process name (one word), the token, then the timestamp, e.g.
-// "618 socketfilterfw 9813589183660731843 0 days 00:03:31".
-var referenceLine = regexp.MustCompile(`^([0-9]+)\s+\S+\s+([0-9]+)\s+`)
+// pid, its process name (which may hold spaces), the token, then the
+// timestamp, e.g. "618 socketfilterfw 9813589183660731843 0 days
+// 00:03:31". The timestamp's form ("<n> days") is what tells the token
+// from a name ending in digits.
+var referenceLine = regexp.MustCompile(`^([0-9]+)\s+(.+?)\s+([0-9]+)\s+[0-9]+ days? `)
 
 // pfReference is one line of `pfctl -s References`.
 type pfReference struct {
@@ -264,25 +296,32 @@ type pfReference struct {
 }
 
 // parseReferences reads `pfctl -s References`. understood says the
-// listing is one the guard can read: a reference line, or the header
-// ("PID ... TOKEN ...") of an empty list. Not understood, the absence of
-// a reference proves nothing.
+// listing is one the guard can read: reference lines, or the header
+// ("PID ... TOKEN ...") of an empty list, and no line it can't place.
+// Not understood, the absence of a reference proves nothing.
 func parseReferences(out []byte) (refs []pfReference, understood bool) {
-	for _, l := range lines(out) {
+	ls, err := readLines(out)
+	odd := err != nil
+	for _, l := range ls {
 		if m := referenceLine.FindStringSubmatch(l); m != nil {
 			pid, err1 := strconv.Atoi(m[1])
-			token, err2 := strconv.ParseUint(m[2], 10, 64)
-			if err1 == nil && err2 == nil {
-				refs = append(refs, pfReference{pid: pid, token: token})
-				understood = true
+			token, err2 := strconv.ParseUint(m[3], 10, 64)
+			if err1 != nil || err2 != nil {
+				odd = true
+				continue
 			}
+			refs = append(refs, pfReference{pid: pid, token: token})
+			understood = true
 			continue
 		}
-		if f := strings.Fields(l); slices.Contains(f, "PID") && slices.Contains(f, "TOKEN") {
+		switch f := strings.Fields(l); {
+		case slices.Contains(f, "PID") && slices.Contains(f, "TOKEN"):
 			understood = true
+		case l != "TOKENS:":
+			odd = true
 		}
 	}
-	return refs, understood
+	return refs, understood && !odd
 }
 
 // reference is what `pfctl -s References` says of a token.

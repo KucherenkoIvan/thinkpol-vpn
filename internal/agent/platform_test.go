@@ -59,7 +59,9 @@ func testPlatform() Platform {
 		LockHost:   func() (func(), error) { return func() {}, nil },
 		RestoreDNS: func() error { return nil },
 		Inspect: Inspector{
-			Interface: func(string) InterfaceReport { return InterfaceReport{Unreadable: "no interfaces in this test"} },
+			Interface: func(string) netcfg.InterfaceReport {
+				return netcfg.InterfaceReport{Unreadable: "no interfaces in this test"}
+			},
 			Routes: func() netcfg.Inspection {
 				return netcfg.Inspection{RoutesUnreadable: "no routes in this test", RulesUnreadable: "no rules in this test"}
 			},

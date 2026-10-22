@@ -6,6 +6,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net/netip"
 	"slices"
@@ -62,14 +63,12 @@ func (g *IPv6Guard) inspect() routetable.GuardReport {
 	table := tables[i]
 	r.Present = true
 	r.NFTables = &routetable.NFTablesReport{Dormant: tableFlags(table)&unix.NFT_TABLE_F_DORMANT != 0}
-	chains, err := c.ListChainsOfTableFamily(nftables.TableFamilyINet)
+	chains, err := guardChains(c)
 	if err != nil {
-		r.RulesUnreadable = "nftables chains: " + err.Error()
+		r.NFTables.ChainsUnreadable = "nftables chains: " + err.Error()
+		r.RulesUnreadable = r.NFTables.ChainsUnreadable
 	}
 	for _, ch := range chains {
-		if ch.Table == nil || ch.Table.Name != GuardTable {
-			continue
-		}
 		r.NFTables.Chains = append(r.NFTables.Chains, chainReport(ch))
 		if r.RulesUnreadable != "" {
 			continue
@@ -129,9 +128,12 @@ func hookName(h nftables.ChainHook) string {
 // exemptSet reads the guard's interval set as the fewest prefixes. An
 // interval set dumps each interval as its first address and, flagged as
 // its end, the address after its last; an interval without an end runs to
-// the top.
+// the top. A table without the set exempts nothing.
 func exemptSet(c *nftables.Conn, table *nftables.Table) ([]netip.Prefix, string) {
 	set, err := c.GetSetByName(table, guardSet)
+	if errors.Is(err, unix.ENOENT) {
+		return nil, ""
+	}
 	if err != nil {
 		return nil, fmt.Sprintf("nftables set %s: %v", guardSet, err)
 	}
@@ -193,8 +195,8 @@ func boolInt(b bool) int {
 	return 0
 }
 
-// ruleReport is a rule as the kernel holds it: its expressions in nft's
-// syntax, and its counter's values.
+// ruleReport is a rule as the kernel holds it: its expressions rendered
+// nft-like, and its counter's values.
 func ruleReport(chain string, exprs []expr.Any) routetable.GuardRuleReport {
 	r := routetable.GuardRuleReport{Chain: chain, Text: ruleText(exprs)}
 	for _, x := range exprs {
@@ -207,8 +209,8 @@ func ruleReport(chain string, exprs []expr.Any) routetable.GuardRuleReport {
 	return r
 }
 
-// ruleText renders exprs in nft's syntax as far as the guard's own rules
-// need it: what a meta key or a payload loads, then compared, looked up
+// ruleText renders exprs nft-like, as far as the guard's own rules need
+// it (the text is a reading aid, not nft input): what a meta key or a payload loads, then compared, looked up
 // or ranged, and the statements. A raw payload is nft's `@base,offset,len`
 // in bits; an expression it doesn't know shows as its type. A counter
 // shows without its values, which the report carries apart.

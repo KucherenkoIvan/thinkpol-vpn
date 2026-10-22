@@ -23,8 +23,9 @@ import (
 
 // diagSnapshot is the part of `thinkpol diag`'s JSON the lab checks.
 type diagSnapshot struct {
-	SchemaVersion int    `json:"schemaVersion"`
+	SchemaVersion int    `json:"schema_version"`
 	Os            string `json:"os"`
+	HostParts     bool   `json:"host_parts"`
 	Status        struct {
 		Connection string `json:"connection"`
 	} `json:"status"`
@@ -61,13 +62,14 @@ type diagSnapshot struct {
 			Mark              uint32 `json:"mark"`
 			Mask              uint32 `json:"mask"`
 			Invert            bool   `json:"invert"`
-			SuppressPrefixlen *int   `json:"suppressPrefixlen"`
+			SuppressPrefixlen *int   `json:"suppress_prefixlen"`
+			Action            string `json:"action"`
 		} `json:"rules"`
-	} `json:"rules"`
+	} `json:"policy_rules"`
 	Guard struct {
 		Unreadable string `json:"unreadable"`
 		Where      string `json:"where"`
-		Present    bool   `json:"present"`
+		Present    *bool  `json:"present"`
 		Rules      struct {
 			Unreadable string `json:"unreadable"`
 			Rules      []struct {
@@ -82,8 +84,9 @@ type diagSnapshot struct {
 			Prefixes   []string `json:"prefixes"`
 		} `json:"exempt"`
 		Nftables struct {
-			Dormant bool `json:"dormant"`
-			Chains  []struct {
+			Dormant          bool   `json:"dormant"`
+			ChainsUnreadable string `json:"chains_unreadable"`
+			Chains           []struct {
 				Name     string `json:"name"`
 				Hook     string `json:"hook"`
 				Priority int    `json:"priority"`
@@ -101,7 +104,7 @@ type diagSnapshot struct {
 			Took   string `json:"took"`
 			Failed bool   `json:"failed"`
 		} `json:"steps"`
-	} `json:"lastApply"`
+	} `json:"last_apply"`
 	DNS struct {
 		Unreadable string `json:"unreadable"`
 		Sources    []struct {
@@ -114,7 +117,7 @@ type diagSnapshot struct {
 				Domains     []string `json:"domains"`
 				Search      []string `json:"search"`
 				Options     []string `json:"options"`
-				NodeWritten bool     `json:"nodeWritten"`
+				NodeWritten bool     `json:"node_written"`
 			} `json:"resolvers"`
 		} `json:"sources"`
 	} `json:"dns"`
@@ -221,7 +224,17 @@ func hostRules(t *testing.T, n *lab.Node) []string {
 			}
 			length, _ := r["dstlen"].(float64)
 			_, not := r["not"]
-			out = append(out, fmt.Sprintf("%s %s %v table %d to %q oif %q fwmark %q not %v suppress %q", owner, fam, r["priority"],
+			// ip names a lookup's table, and any other action by its own key.
+			action := "?"
+			for _, a := range []string{"blackhole", "prohibit", "unreachable", "goto", "nop"} {
+				if _, ok := r[a]; ok {
+					action = a
+				}
+			}
+			if _, ok := r["table"]; ok && action == "?" {
+				action = "lookup"
+			}
+			out = append(out, fmt.Sprintf("%s %s %v %s table %d to %q oif %q fwmark %q not %v suppress %q", owner, fam, r["priority"], action,
 				ipTable(str("table")), ipPrefix(str("dst"), fam, int(length)), str("oif"), str("fwmark"), not, str("suppress_prefixlen")))
 		}
 	}
@@ -383,7 +396,7 @@ func TestDiagShowsWhatTheHostHolds(t *testing.T) {
 		if err := json.Unmarshal([]byte(out), &d); err != nil {
 			t.Fatalf("diag's JSON: %v\n%s", err, out)
 		}
-		if d.SchemaVersion != 1 || d.Os != "linux" || d.Status.Connection != "CONNECTION_CONNECTED" {
+		if d.SchemaVersion != 1 || d.Os != "linux" || d.Status.Connection != "CONNECTION_CONNECTED" || d.HostParts != !slices.Contains(args, "setpriv") {
 			t.Fatalf("diag: %+v", d)
 		}
 		return d, out
@@ -433,10 +446,7 @@ func TestDiagShowsWhatTheHostHolds(t *testing.T) {
 			if r.SuppressPrefixlen != nil && *r.SuppressPrefixlen >= 0 {
 				suppress = strconv.Itoa(*r.SuppressPrefixlen)
 			}
-			if r.SuppressPrefixlen == nil {
-				suppress = "0" // protojson leaves a zero out
-			}
-			rules = append(rules, fmt.Sprintf("%s %s %d table %d to %q oif %q fwmark %q not %v suppress %q", r.Owner, r.Family, r.Priority, r.Table, r.Destination, r.Oif, mark, r.Invert, suppress))
+			rules = append(rules, fmt.Sprintf("%s %s %d %s table %d to %q oif %q fwmark %q not %v suppress %q", r.Owner, r.Family, r.Priority, r.Action, r.Table, r.Destination, r.Oif, mark, r.Invert, suppress))
 		}
 		slices.Sort(rules)
 		// A route-table device holds a table of its own with a default into
@@ -461,7 +471,7 @@ func TestDiagShowsWhatTheHostHolds(t *testing.T) {
 		d, out := diag(t, as("", "", "diag")...)
 		counters, exempt, chain := hostGuard(t, dev)
 		g := d.Guard
-		if g.Unreadable != "" || !g.Present || g.Rules.Unreadable != "" || g.Exempt.Unreadable != "" || g.Nftables.Dormant ||
+		if g.Unreadable != "" || g.Present == nil || !*g.Present || g.Rules.Unreadable != "" || g.Exempt.Unreadable != "" || g.Nftables.Dormant || g.Nftables.ChainsUnreadable != "" ||
 			g.Where != "nftables table inet thinkpol-guard" {
 			t.Fatalf("guard: %s", out)
 		}
@@ -543,8 +553,8 @@ func TestDiagShowsWhatTheHostHolds(t *testing.T) {
 			t.Fatal(err)
 		}
 		const rootOnly = "root only: it names public addresses"
-		if d.Tun.Name != "thinkpol0" || d.Routes.Unreadable != rootOnly || d.Rules.Unreadable != rootOnly ||
-			d.Guard.Unreadable != rootOnly || len(d.Routes.Routes) != 0 || d.Guard.Present || d.DNS.Unreadable != rootOnly || len(d.DNS.Sources) != 0 {
+		if d.HostParts || d.Tun.Name != "thinkpol0" || d.Routes.Unreadable != rootOnly || d.Rules.Unreadable != rootOnly ||
+			d.Guard.Unreadable != rootOnly || len(d.Routes.Routes) != 0 || d.Guard.Present != nil || d.DNS.Unreadable != rootOnly || len(d.DNS.Sources) != 0 {
 			t.Errorf("the group's snapshot:\n%s", res.Stdout)
 		}
 		for _, a := range []netip.Addr{server.IPv4(lab.NetServers), server.IPv6(lab.NetServers)} {

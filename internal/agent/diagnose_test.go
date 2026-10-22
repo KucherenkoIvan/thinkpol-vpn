@@ -21,7 +21,7 @@ import (
 type inspected struct {
 	mu     sync.Mutex
 	asked  []string
-	report InterfaceReport
+	report netcfg.InterfaceReport
 	// hostReads counts the reads of the routes and the guard.
 	hostReads int
 	routes    netcfg.Inspection
@@ -31,7 +31,7 @@ type inspected struct {
 
 func (i *inspected) inspector() Inspector {
 	return Inspector{
-		Interface: func(name string) InterfaceReport {
+		Interface: func(name string) netcfg.InterfaceReport {
 			i.mu.Lock()
 			defer i.mu.Unlock()
 			i.asked = append(i.asked, name)
@@ -85,13 +85,13 @@ func TestTheHostPartsAreRoots(t *testing.T) {
 	ctx := context.Background()
 
 	d := b.node.Diagnose(ctx, false)
-	if insp.reads() != 0 || d.Routes.RoutesUnreadable != UnreadableRootOnly || d.Routes.RulesUnreadable != UnreadableRootOnly ||
+	if insp.reads() != 0 || d.HostParts || d.Routes.RoutesUnreadable != UnreadableRootOnly || d.Routes.RulesUnreadable != UnreadableRootOnly ||
 		d.Routes.Routes != nil || d.Guard.Unreadable != UnreadableRootOnly || d.Guard.Present || d.DNS.Unreadable != UnreadableRootOnly || d.DNS.Sources != nil {
 		t.Fatalf("not root: %d reads, %+v, %+v", insp.reads(), d.Routes, d.Guard)
 	}
 	// Disconnected, what is left on the host still shows: a crash's.
 	d = b.node.Diagnose(ctx, true)
-	if insp.reads() != 3 || len(d.Routes.Routes) != 1 || d.Routes.RoutesUnreadable != "" || !d.Guard.Present || len(d.Guard.Exempt) != 1 ||
+	if insp.reads() != 3 || !d.HostParts || len(d.Routes.Routes) != 1 || d.Routes.RoutesUnreadable != "" || !d.Guard.Present || len(d.Guard.Exempt) != 1 ||
 		d.DNS.Unreadable != "" || len(d.DNS.Sources) != 1 {
 		t.Fatalf("root: %d reads, %+v, %+v", insp.reads(), d.Routes, d.Guard)
 	}
@@ -111,7 +111,7 @@ func TestDiagnoseReadsTheTUNTheDataPlaneRuns(t *testing.T) {
 	s := newTestSpace(t)
 	_, reg := memoryRegistry(t)
 	startNode(t, reg, s.a, s.verified(t, 1))
-	insp := &inspected{report: InterfaceReport{Index: 7, MTU: 1328, Up: true, Running: true, Addrs: []netip.Prefix{netip.MustParsePrefix("100.64.0.2/10")}}}
+	insp := &inspected{report: netcfg.InterfaceReport{Index: 7, MTU: 1328, Up: true, Running: true, Addrs: []netip.Prefix{netip.MustParsePrefix("100.64.0.2/10")}}}
 	b := startDevice(t, s, reg, false, withInspector(insp))
 	ctx := context.Background()
 
@@ -151,7 +151,7 @@ func TestDiagnoseReadsTheTUNTheDataPlaneRuns(t *testing.T) {
 	}
 
 	// What the host couldn't show comes through as the reader said it.
-	insp.report = InterfaceReport{Unreadable: "route ip+net: no such network interface"}
+	insp.report = netcfg.InterfaceReport{Unreadable: "route ip+net: no such network interface"}
 	if d = b.node.Diagnose(ctx, true); d.TUN.Unreadable != insp.report.Unreadable || d.TUN.Name != "" {
 		t.Fatalf("an unreadable TUN: %+v", d.TUN)
 	}
@@ -164,7 +164,7 @@ func TestDiagnosticsHoldNoSecret(t *testing.T) {
 	s := newTestSpace(t)
 	_, reg := memoryRegistry(t)
 	startNode(t, reg, s.a, s.verified(t, 1))
-	insp := &inspected{report: InterfaceReport{MTU: 1328, Up: true}}
+	insp := &inspected{report: netcfg.InterfaceReport{MTU: 1328, Up: true}}
 	b := startDevice(t, s, reg, true, withInspector(insp))
 	b.connection(t, Connected)
 	d := b.node.Diagnose(context.Background(), true)
@@ -239,4 +239,23 @@ func snapshotLeaves(v reflect.Value) []string {
 		return out
 	}
 	return []string{fmt.Sprint(v.Interface())}
+}
+
+// TestAServersSnapshotSaysItIsOne: a server's data planes run in its
+// workers, so its TUN and last Apply say so, not "the data plane is
+// down"; its host parts are read like a device's.
+func TestAServersSnapshotSaysItIsOne(t *testing.T) {
+	s := newTestSpace(t)
+	plat := testPlatform()
+	insp := &inspected{}
+	plat.Inspect = insp.inspector()
+	n, err := Prepare(testConfig(s.stateDir(t, s.a, 1)), Logs{}, plat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := n.Diagnose(context.Background(), true)
+	if d.Status.Mode != ModeServer || d.TUN.Unreadable != UnreadableServer || d.LastApply.Unreadable != UnreadableServer ||
+		len(insp.names()) != 0 || !d.HostParts || insp.reads() != 3 {
+		t.Fatalf("%+v; TUN asked for %q, %d host reads", d, insp.names(), insp.reads())
+	}
 }

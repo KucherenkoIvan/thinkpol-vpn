@@ -125,20 +125,30 @@ func TestTheOtherFixturesParse(t *testing.T) {
 	}
 }
 
-// readOnly says what of pfctl's runs since the last forget changed
-// anything: inspecting runs only listings.
+// readOnly says whether every pfctl run since the last forget was a
+// listing: `-s <what>` (with -v), or a table's `-T show`, in an anchor or
+// not. Anything else (a load, -E, -X, -F, -k, -z zeroing the counters)
+// changes pf.
 func readOnly(f *fakePF) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	listing := func(args []string) bool {
+		if len(args) >= 2 && args[0] == "-a" {
+			args = args[2:]
+		}
+		switch {
+		case len(args) == 2 && args[0] == "-s":
+			return true
+		case len(args) == 3 && args[0] == "-s" && args[2] == "-v":
+			return true
+		case len(args) == 4 && args[0] == "-t" && args[2] == "-T" && args[3] == "show":
+			return true
+		}
+		return false
+	}
 	for _, c := range f.calls {
-		for _, a := range c {
-			switch a {
-			case "-f", "-E", "-e", "-X", "-d", "-F", "-k", "-K", "-T":
-				if a == "-T" && slices.Contains(c, "show") {
-					continue
-				}
-				return fmt.Errorf("inspecting ran pfctl %s", strings.Join(c, " "))
-			}
+		if !listing(c) {
+			return fmt.Errorf("inspecting ran pfctl %s", strings.Join(c, " "))
 		}
 	}
 	if len(f.calls) == 0 {
@@ -158,7 +168,8 @@ func TestInspectReadsTheGuardAsPfListsIt(t *testing.T) {
 	if got.Unreadable != "" || got.Present || got.Rules != nil || got.RulesUnreadable != "" || got.Exempt != nil || got.ExemptUnreadable != "" {
 		t.Fatalf("before: %+v", got)
 	}
-	if pf := got.PF; pf == nil || pf.Enabled || pf.EnabledUnreadable != "" || pf.Hook != "ok" || pf.Reference == nil || pf.Reference.Recorded {
+	if pf := got.PF; pf == nil || pf.Enabled || pf.EnabledUnreadable != "" || pf.GuardCheck != "hooked" || pf.Reference == nil || pf.Reference.Recorded ||
+		!slices.Equal(pf.MainRules, stockMain) {
 		t.Fatalf("before: pf %+v", got.PF)
 	}
 	if err := readOnly(r.pf); err != nil {
@@ -197,8 +208,8 @@ func TestInspectReadsTheGuardAsPfListsIt(t *testing.T) {
 		t.Errorf("exempt %v", got.Exempt)
 	}
 	want := routetable.PFReferenceReport{Recorded: true, Pid: refs[0].pid, Held: true}
-	if pf := got.PF; !pf.Enabled || pf.Hook != "ok" || len(pf.Skipped) != 0 || len(pf.AnchorsBefore) != 0 || pf.Reference == nil || *pf.Reference != want ||
-		pf.EnabledUnreadable != "" || pf.HookUnreadable != "" || pf.ReferenceUnreadable != "" {
+	if pf := got.PF; !pf.Enabled || pf.GuardCheck != "hooked" || len(pf.Skipped) != 0 || len(pf.AnchorsBefore) != 0 || pf.Reference == nil || *pf.Reference != want ||
+		pf.EnabledUnreadable != "" || pf.GuardCheckUnreadable != "" || pf.ReferenceUnreadable != "" || got.PresentUnknown {
 		t.Fatalf("applied: pf %+v, reference %+v", got.PF, got.PF.Reference)
 	}
 
@@ -211,14 +222,17 @@ func TestInspectReadsTheGuardAsPfListsIt(t *testing.T) {
 	r.pf.set(func(f *fakePF) { f.oddReferences = false })
 
 	// Someone turns pf off and bypasses the hook: the snapshot shows it,
-	// the reference recorded but no longer held.
+	// with the main ruleset's lines up to the hook, every skipped name
+	// (lo0 and the utun too: recorded, not judged), the reference recorded
+	// but no longer held.
 	r.pf.disable()
 	r.pf.set(func(f *fakePF) {
 		f.main = append([]string{"pass out quick all"}, stockMain...)
-		f.skip = []string{"en0"}
+		f.skip = []string{"en0", "lo0", "utun7"}
 	})
 	got = g.inspect(ctx)
-	if pf := got.PF; pf.Enabled || pf.Hook != "bypassed" || !slices.Equal(pf.Skipped, []string{"en0"}) || !pf.Reference.Recorded || pf.Reference.Held {
+	if pf := got.PF; pf.Enabled || pf.GuardCheck != "bypassed" || !slices.Equal(pf.Skipped, []string{"en0", "lo0", "utun7"}) ||
+		!slices.Equal(pf.MainRules, append([]string{"pass out quick all"}, stockMain...)) || !pf.Reference.Recorded || pf.Reference.Held {
 		t.Fatalf("disabled: pf %+v, reference %+v", got.PF, got.PF.Reference)
 	}
 
@@ -227,7 +241,7 @@ func TestInspectReadsTheGuardAsPfListsIt(t *testing.T) {
 	odd := saved.clone()
 	odd.rules = append(odd.rules, "pfctl: DIOCGETRULE: Device busy")
 	r.pf.setAnchor(GuardAnchor, odd)
-	if got = g.inspect(ctx); !strings.Contains(got.RulesUnreadable, "not a rule") || got.Rules != nil || got.Present {
+	if got = g.inspect(ctx); !strings.Contains(got.RulesUnreadable, "not a rule") || got.Rules != nil || got.Present || !got.PresentUnknown {
 		t.Fatalf("an odd listing: %+v", got)
 	}
 	r.pf.setAnchor(GuardAnchor, saved)
@@ -268,5 +282,90 @@ func TestInspectWithoutPfctlSaysSo(t *testing.T) {
 	got := g.inspect(context.Background())
 	if !strings.Contains(got.Unreadable, "no such file") || got.Present || got.PF != nil || got.Where == "" {
 		t.Fatalf("%+v", got)
+	}
+}
+
+// TestInspectReadsTheRecordWithoutQuotingIt: only a record of another
+// boot is stale; one without a boot line, a body that isn't one token
+// line, or a symlink is unreadable, in words that never quote the record
+// (it may hold a token).
+func TestInspectReadsTheRecordWithoutQuotingIt(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	const token = "9000000000000000001"
+	for name, c := range map[string]struct {
+		content string
+		stale   bool
+		why     staleWhy
+	}{
+		"another boot":      {"boot 00000000-0000-4000-8000-000000000000\ntoken " + token + " pid 4001\n", true, ""},
+		"no boot line":      {"token " + token + " pid 4001\n", false, staleNoBoot},
+		"a body unreadable": {"boot " + thisBoot + "\ntoken " + token + " pid four\n", false, staleBody},
+	} {
+		r.writeRecord(t, c.content)
+		ref, why := r.guard().inspectReference(ctx)
+		switch {
+		case c.stale && (ref == nil || !ref.Stale || why != ""):
+			t.Errorf("%s: %+v, %q", name, ref, why)
+		case !c.stale && (ref != nil || why != "the guard's record: "+string(c.why)):
+			t.Errorf("%s: %+v, %q", name, ref, why)
+		case strings.Contains(why, token):
+			t.Errorf("%s: the token in %q", name, why)
+		}
+	}
+	path := filepath.Join(r.dir, tokenRecord)
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(r.dir, "elsewhere"), path); err != nil {
+		t.Fatal(err)
+	}
+	if ref, why := r.guard().inspectReference(ctx); ref != nil || why != "the guard's record: "+string(staleNotRegular) {
+		t.Errorf("a symlink: %+v, %q", ref, why)
+	}
+}
+
+// TestInspectReferenceByPidAlone: a record by pid alone is held when pf
+// lists one reference for that pid, unreadable when it lists more.
+func TestInspectReferenceByPidAlone(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	r.writeRecord(t, "boot "+thisBoot+"\ntoken unknown pid 4321\n")
+	ref, why := r.guard().inspectReference(ctx)
+	if why != "" || ref == nil || !ref.Recorded || !ref.PidOnly || ref.Held || ref.HeldUnreadable != "" {
+		t.Fatalf("no reference listed: %+v, %q", ref, why)
+	}
+	r.pf.set(func(f *fakePF) { f.refs = append(f.refs, fakeRef{pfToken{value: 11, pid: 4321}, "pfctl"}) })
+	if ref, _ = r.guard().inspectReference(ctx); !ref.Held || ref.HeldUnreadable != "" {
+		t.Fatalf("one listed: %+v", ref)
+	}
+	r.pf.set(func(f *fakePF) { f.refs = append(f.refs, fakeRef{pfToken{value: 12, pid: 4321}, "pfctl"}) })
+	if ref, _ = r.guard().inspectReference(ctx); ref.Held || !strings.Contains(ref.HeldUnreadable, "2 references") {
+		t.Fatalf("two listed: %+v", ref)
+	}
+}
+
+func TestParseReferencesTakesSpacedNamesAndRefusesOddLines(t *testing.T) {
+	refs, understood := parseReferences(fixture(t, "references-spaced.txt"))
+	if !understood || !slices.Equal(refs, []pfReference{{618, 9813589183660731843}, {702, 9000000000000000015}, {4130, 9000000000000000008}}) {
+		t.Fatalf("%v, %v", refs, understood)
+	}
+	odd := append(fixture(t, "references.txt"), "a line pfctl never printed\n"...)
+	if _, understood := parseReferences(odd); understood {
+		t.Fatal("a listing with a line it can't place understood")
+	}
+}
+
+func TestACutOrOverflowingListingIsUnreadable(t *testing.T) {
+	long := "pass out quick inet6 all no state " + strings.Repeat("x", 1<<20) + "\n"
+	if _, err := parseVerboseRules([]byte(long)); err == nil || !strings.Contains(err.Error(), "cut") {
+		t.Errorf("a cut listing: %v", err)
+	}
+	over := "pass out quick inet6 all no state\n  [ Evaluations: 18446744073709551616  Packets: 0  Bytes: 0  States: 0 ]\n"
+	if _, err := parseVerboseRules([]byte(over)); err == nil || !strings.Contains(err.Error(), "doesn't fit") {
+		t.Errorf("a counter past uint64: %v", err)
+	}
+	if _, understood := parseReferences([]byte("TOKENS:\nPID TOKEN\n" + strings.Repeat("y", 1<<20) + "\n")); understood {
+		t.Error("a cut References listing understood")
 	}
 }

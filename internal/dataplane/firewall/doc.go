@@ -135,11 +135,13 @@
 // [InspectIPv6Guard] reads the table as the kernel holds it, for
 // diagnostics, whether or not a guard runs: its flags (a dormant table
 // guards nothing; the kernel sends the flags big-endian, which nftables
-// decodes in the host's order), its chains as hooked, each rule's
-// expressions rendered in nft's syntax with raw payloads in nft's
-// `@base,offset,length` bits and its counter's values, and the exempt
-// set's intervals as the fewest prefixes. No table is no guard, not an
-// unreadable one; a kernel without nf_tables is unreadable.
+// decodes in the host's order), its chains as hooked (unreadable on their
+// own if they can't be listed), each rule's expressions rendered nft-like
+// (raw payloads in nft's `@base,offset,length` bits; an expression the
+// renderer doesn't know shows as its type, so the text is no nft input)
+// with its counter's values, and the exempt set's intervals as the fewest
+// prefixes. No table is no guard, and a table without the set exempts
+// nothing: neither is unreadable; a kernel without nf_tables is.
 //
 // # macOS: a pf anchor
 //
@@ -345,18 +347,23 @@
 // # macOS: reading it back
 //
 // [InspectIPv6Guard] reads the guard as pf holds it, for diagnostics,
-// running listings only (never -f, -E, -X, -F, -k or -d) and opening the
-// record's directory without making it: the anchor's rules with their
-// counters (`-s rules -v`: each rule's line, its "[ Evaluations: ...
-// Packets: ... Bytes: ... States: ... ]" line, and the optional
-// "[ Inserted: ... ]" line, with or without "State Creations"), the
-// exempt table, `-s info`'s Status line, the hook and what bypasses it
-// (as checkBypass reads them, every skipped interface but lo0), and the
-// record's reference with whether `-s References` lists it as taken by
-// that pid (the snapshot names it by its pid; the token stays in the
-// record). A listing with a line it can't read (no rule, counters out of
-// place or unreadable, a rule without counters) is unreadable as a whole,
-// naming the line: half a listing could hide the rule that matters. A
+// running listings only (`-s ...`, a table's `-T show`; never a load,
+// -E, -X, -F, -k, -d or -z) and opening the record's directory without
+// making it: the anchor's rules with their counters (`-s rules -v`: each
+// rule's line, its "[ Evaluations: ... Packets: ... Bytes: ... States:
+// ... ]" line, and the optional "[ Inserted: ... ]" line, with or without
+// "State Creations"), the exempt table, `-s info`'s Status line, and what
+// the guard's check reads (readBypass, shared with checkBypass): its
+// verdict on the main ruleset with the lines up to the hook as evidence,
+// every name pf skips, the anchors before the guard's. Then the record's
+// reference, by its pid, with whether `-s References` lists it as taken by
+// that pid; the token stays in the record. A listing with a line it can't
+// read (no rule, counters out of place, unreadable or past uint64, a rule
+// without counters, a line too long to read; in References, a line it
+// can't place) is unreadable as a whole, naming the line: half a listing
+// could hide the rule that matters. A record of another boot is stale;
+// one that isn't a regular file or can't be parsed is unreadable, said in
+// fixed words (trusteddir's errors never quote a record either). A
 // missing anchor is an empty one, and with no pfctl at all everything is
 // unreadable. The parsers are tested on listings in testdata/pfctl, built
 // from the fake pf's formats and pfctl's source until a device run

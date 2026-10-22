@@ -2,9 +2,6 @@ package agent
 
 import (
 	"context"
-	"net"
-	"net/netip"
-	"slices"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
@@ -19,19 +16,22 @@ import (
 // apart.
 type Diagnostics struct {
 	Status Status
-	// TUN is the overlay's interface as the host reports it.
-	TUN InterfaceReport
-	// LastApply is the running data plane's last Apply, its steps with
-	// their timings.
+	// TUN is a device's overlay interface as the host reports it.
+	TUN netcfg.InterfaceReport
+	// LastApply is a device's running data plane's last Apply, its steps
+	// with their timings.
 	LastApply ApplyReport
+	// HostParts says Routes, Guard and DNS were read: they name public
+	// addresses (the entries', the direct destinations', the gateway's,
+	// the upstreams'), so they are taken only for root.
+	HostParts bool
 	// Routes are the routes and rules the agent's owners hold, and Guard
 	// the leak guard, as the host holds them, whatever the data plane's
-	// state (a crashed run's show too). They name public addresses (the
-	// entries', the direct destinations', the gateway's): root's only.
+	// state (a crashed run's show too).
 	Routes netcfg.Inspection
 	Guard  routetable.GuardReport
 	// DNS is the resolvers the host uses, for the overlay's names and the
-	// rest (the direct upstream's address among them): root's only too.
+	// rest.
 	DNS dns.HostReport
 }
 
@@ -43,6 +43,9 @@ const (
 	// UnreadableNoApply: the data plane is down, or hasn't applied a map
 	// yet.
 	UnreadableNoApply = "no Apply: the data plane is down or hasn't applied a map yet"
+	// UnreadableServer: a server's data planes run in its workers, one per
+	// space, with no TUN of the host's (the status has the workers).
+	UnreadableServer = "a server: its data planes run in its workers"
 	// UnreadableRootOnly: a part that names public addresses, taken for a
 	// caller who isn't root.
 	UnreadableRootOnly = "root only: it names public addresses"
@@ -55,26 +58,12 @@ type ApplyReport struct {
 	Trace      dataplane.ApplyTrace
 }
 
-// InterfaceReport is an interface as the host reports it.
-type InterfaceReport struct {
-	// Unreadable says why the interface couldn't be read; the rest is
-	// then empty.
-	Unreadable string
-	Name       string
-	Index      int
-	MTU        int
-	// Up and Running are the OS's IFF_UP and IFF_RUNNING.
-	Up, Running bool
-	// Addrs are its addresses with their prefix lengths, sorted.
-	Addrs []netip.Prefix
-}
-
 // Inspector reads what the host shows of the node's changes, for
 // Diagnose. Its readers only read; each says in its report why it
 // couldn't. Every field is set.
 type Inspector struct {
-	// Interface reads an interface by name (InspectInterface).
-	Interface func(name string) InterfaceReport
+	// Interface reads an interface by name (netcfg.InspectInterface).
+	Interface func(name string) netcfg.InterfaceReport
 	// Routes reads the routes and rules the owners hold (netcfg.Inspect).
 	Routes func() netcfg.Inspection
 	// Guard reads the leak guard (firewall.InspectIPv6Guard).
@@ -83,53 +72,30 @@ type Inspector struct {
 	DNS func(ctx context.Context) dns.HostReport
 }
 
-// InspectInterface reads the interface name from the OS.
-func InspectInterface(name string) InterfaceReport {
-	ifc, err := net.InterfaceByName(name)
-	if err != nil {
-		return InterfaceReport{Unreadable: err.Error()}
-	}
-	addrs, err := ifc.Addrs()
-	if err != nil {
-		return InterfaceReport{Unreadable: err.Error()}
-	}
-	r := InterfaceReport{
-		Name: ifc.Name, Index: ifc.Index, MTU: ifc.MTU,
-		Up: ifc.Flags&net.FlagUp != 0, Running: ifc.Flags&net.FlagRunning != 0,
-	}
-	for _, a := range addrs {
-		if n, ok := a.(*net.IPNet); ok {
-			ip, ok := netip.AddrFromSlice(n.IP)
-			ones, _ := n.Mask.Size()
-			if ok {
-				r.Addrs = append(r.Addrs, netip.PrefixFrom(ip.Unmap(), ones))
-			}
-		}
-	}
-	slices.SortFunc(r.Addrs, func(a, b netip.Prefix) int { return a.Addr().Compare(b.Addr()) })
-	return r
-}
-
-// Diagnose takes the node's diagnostics; host leaves out the parts that
-// name public addresses (each then says it is root's). Its status, TUN
-// and last Apply are taken together, so the TUN read is the one the
-// status's data plane runs on (unless it stopped meanwhile: the read then
-// says so).
-func (n *Node) Diagnose(ctx context.Context, host bool) Diagnostics {
+// Diagnose takes the node's diagnostics, with the host parts only when
+// withHostParts (otherwise each says it is root's, unread). The status,
+// the data plane's TUN name and its last Apply are one read; the TUN
+// itself is read from the host after it, so a data plane stopping in
+// between shows as a TUN that can't be read.
+func (n *Node) Diagnose(ctx context.Context, withHostParts bool) Diagnostics {
 	st, tun, last := n.report.forDiagnostics()
-	d := Diagnostics{Status: st, TUN: InterfaceReport{Unreadable: UnreadableNoTUN}, LastApply: ApplyReport{Unreadable: UnreadableNoApply}}
-	if tun != "" {
+	d := Diagnostics{Status: st, TUN: netcfg.InterfaceReport{Unreadable: UnreadableNoTUN}, LastApply: ApplyReport{Unreadable: UnreadableNoApply}}
+	switch {
+	case st.Mode == ModeServer:
+		d.TUN.Unreadable, d.LastApply.Unreadable = UnreadableServer, UnreadableServer
+	case tun != "":
 		d.TUN = n.plat.Inspect.Interface(tun)
 	}
 	if last != nil {
 		d.LastApply = ApplyReport{Trace: *last}
 	}
-	if !host {
+	if !withHostParts {
 		d.Routes = netcfg.Inspection{RoutesUnreadable: UnreadableRootOnly, RulesUnreadable: UnreadableRootOnly}
 		d.Guard = routetable.GuardReport{Unreadable: UnreadableRootOnly}
 		d.DNS = dns.HostReport{Unreadable: UnreadableRootOnly}
 		return d
 	}
+	d.HostParts = true
 	d.Routes = n.plat.Inspect.Routes()
 	d.Guard = n.plat.Inspect.Guard(ctx)
 	d.DNS = n.plat.Inspect.DNS(ctx)

@@ -118,15 +118,24 @@ func (p Policy) allow(ctx context.Context, method string) error {
 	if !ok {
 		need = AccessAdmin
 	}
-	pr, ok := peer.FromContext(ctx)
-	if !ok {
-		return ErrPermissionDenied
-	}
-	c, ok := pr.AuthInfo.(Caller)
-	if !ok || p.Access(c) < need {
+	if p.callerAccess(ctx) < need {
 		return ErrPermissionDenied
 	}
 	return nil
+}
+
+// callerAccess is what the caller of ctx may do: nothing without the
+// credentials the transport recorded.
+func (p Policy) callerAccess(ctx context.Context) Access {
+	pr, ok := peer.FromContext(ctx)
+	if !ok {
+		return AccessNone
+	}
+	c, ok := pr.AuthInfo.(Caller)
+	if !ok {
+		return AccessNone
+	}
+	return p.Access(c)
 }
 
 // serverOptions are the policy's interceptors, unary and streaming, and

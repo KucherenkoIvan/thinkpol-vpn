@@ -9,15 +9,15 @@ import (
 func init() {
 	register(command{
 		path:    "diag",
-		args:    "[-socket path] [-o file]",
-		summary: "print a JSON snapshot of what the node changed on the host (root sees all of it)",
+		args:    "[-socket path] [-o file|-]",
+		summary: "print a JSON snapshot of what the node changed on the host (root's names entry and other public addresses)",
 		run:     runDiag,
 	})
 }
 
 func runDiag(ctx context.Context, e env, args []string) error {
 	cmd := newAPICommand("diag")
-	out := cmd.String("o", "", "write the snapshot to this file, mode 0600, instead of printing it")
+	out := cmd.String("o", "-", "write the snapshot to this file, mode 0600 (- prints it)")
 	c, err := cmd.dial(e, args, noArgs)
 	if err != nil {
 		return err
@@ -27,8 +27,8 @@ func runDiag(ctx context.Context, e env, args []string) error {
 	if err != nil {
 		return err
 	}
-	if *out != "" {
-		return localapi.WriteJSONFile(*out, d)
+	if *out != "-" && *out != "" {
+		return localapi.WriteDiagnosticsFile(*out, d)
 	}
-	return localapi.WriteJSON(e.stdout, d)
+	return localapi.WriteDiagnostics(e.stdout, d)
 }

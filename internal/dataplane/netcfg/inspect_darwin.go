@@ -12,9 +12,11 @@ import (
 )
 
 // Inspect reads the owners' routes from the routing table: those carrying
-// routeFlag that their owner's record names, as the kernel holds them.
-// macOS has no policy rules, so that list is always empty. It opens
-// LockDir without making it, and takes no lock.
+// routeFlag that their owner's record names, as the kernel holds them,
+// and apart the ones carrying it that no record names (another program's,
+// or an agent's it didn't record). macOS has no policy rules, so that
+// list is always empty. It opens LockDir without making it, and takes no
+// lock.
 func Inspect() Inspection {
 	k, err := openKernel()
 	if err != nil {
@@ -46,18 +48,25 @@ func inspectDarwin(k kernel, dirPath string) Inspection {
 		if r.ignored() || !r.dst.IsValid() || r.flags&routeFlag == 0 {
 			continue
 		}
+		recorded := false
 		for _, o := range Owners {
 			if recs[o][r.key()] {
 				out.Routes = append(out.Routes, darwinHostRoute(o, r, names))
+				recorded = true
 			}
 		}
-	}
-	slices.SortFunc(out.Routes, func(a, b HostRoute) int {
-		if c := comparePrefixes(a.Dst, b.Dst); c != 0 {
-			return c
+		if !recorded {
+			out.UnrecordedProto2 = append(out.UnrecordedProto2, darwinHostRoute(0, r, names))
 		}
-		return int(a.Owner) - int(b.Owner)
-	})
+	}
+	for _, rs := range [][]HostRoute{out.Routes, out.UnrecordedProto2} {
+		slices.SortFunc(rs, func(a, b HostRoute) int {
+			if c := comparePrefixes(a.Dst, b.Dst); c != 0 {
+				return c
+			}
+			return int(a.Owner) - int(b.Owner)
+		})
+	}
 	return out
 }
 

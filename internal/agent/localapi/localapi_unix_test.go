@@ -56,7 +56,7 @@ func (n *fakeNode) Diagnose(_ context.Context, host bool) agent.Diagnostics {
 	defer n.mu.Unlock()
 	n.host = &host
 	d := n.diag
-	d.Status = n.st
+	d.Status, d.HostParts = n.st, host
 	return d
 }
 

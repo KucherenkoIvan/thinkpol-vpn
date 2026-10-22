@@ -114,35 +114,43 @@ message DiagnoseResponse {
 }
 
 // Diagnostics is `thinkpol diag`'s snapshot: the evidence a device run
-// records. A part the agent couldn't read has `unreadable` set to why,
+// records. `thinkpol diag` writes it as JSON with these field names
+// (snake_case) and every field present, unset ones as their zero value
+// or null. A part the agent couldn't read has `unreadable` set to why,
 // and nothing else; a part without it was read, and what it lists is all
 // there is. No key, token or session id is in it; endpoints and
-// addresses are, in the root-only parts.
+// addresses are, in the host parts, which only root gets.
 message Diagnostics {
-  // The snapshot's schema; bumped when a field is removed or changes
-  // meaning, not when one is added.
+  // The schema. Bumped when a field is removed or renamed or its type or
+  // meaning changes; not when a field is added. `unreadable` texts are
+  // free-form, and the values of enumerated strings (a route's type, an
+  // Apply's step) may grow without a bump.
   uint32 schema_version = 1;
   google.protobuf.Timestamp taken_at = 2;
   // The agent's OS ("linux", "darwin") and version.
   string os = 3;
   string agent_version = 4;
+  // The caller got the host parts (routes, policy_rules, guard, dns):
+  // root and the service's user do; the group's snapshot has them
+  // unreadable.
+  bool host_parts = 5;
   // The status GetStatus serves.
-  Status status = 5;
+  Status status = 6;
   // The overlay's TUN as the host reports it.
-  DiagInterface tun = 6;
+  DiagInterface tun = 7;
+  // The device's data plane's last Apply: its steps with their timings.
+  DiagApply last_apply = 8;
   // The routes and policy rules the agent's owners hold, as the kernel
   // reports them, whether or not the data plane runs (a crash's show
-  // too). Root only.
-  DiagRoutes routes = 7;
-  DiagRules rules = 8;
-  // The IPv6 leak guard as the host holds it. Root only.
-  DiagGuard guard = 9;
+  // too). Host parts.
+  DiagRoutes routes = 9;
+  DiagRules policy_rules = 10;
+  // The IPv6 leak guard as the host holds it. A host part.
+  DiagGuard guard = 11;
   // The resolvers the host uses, for the overlay's names and the rest, as
   // it reports them (Linux: resolv.conf and systemd-resolved; macOS:
-  // scutil --dns). Root only.
-  DiagDns dns = 10;
-  // The running data plane's last Apply: its steps with their timings.
-  DiagApply last_apply = 11;
+  // scutil --dns). A host part.
+  DiagDns dns = 12;
 }
 
 // An interface as the host reports it.
@@ -158,9 +166,35 @@ message DiagInterface {
   repeated string addresses = 7;
 }
 
+// An Apply of a map's section by a device's data plane.
+message DiagApply {
+  string unreadable = 1;
+  google.protobuf.Timestamp started = 2;
+  google.protobuf.Duration took = 3;
+  // The step it failed at, as DataPlane.last_apply_error; "" when it
+  // didn't.
+  string failed = 4;
+  // In the order they ran; a step's time runs from the end of the one
+  // before it.
+  repeated DiagApplyStep steps = 5;
+}
+
+message DiagApplyStep {
+  // A step of DataPlane.last_apply_error's vocabulary, or "rules"
+  // (compiling the routing rules) or "route_table_shrink" (the direct
+  // routes taken out first), neither of which fails an Apply.
+  string step = 1;
+  google.protobuf.Duration took = 2;
+  bool failed = 3;
+}
+
 message DiagRoutes {
   string unreadable = 1;
   repeated DiagRoute routes = 2;
+  // macOS: routes carrying RTF_PROTO2, the flag the agent's owners mark
+  // theirs with, that no owner's record names: another program's, or
+  // what an agent left without recording it (owner "").
+  repeated DiagRoute unrecorded_proto2 = 3;
 }
 
 // A route one of the agent's owners holds.
@@ -201,9 +235,12 @@ message DiagRule {
   bool invert = 9;
   // `suppress_prefixlength`; -1 without one.
   int32 suppress_prefixlen = 10;
-  // The rule has a selector or action the agent never sets, which this
-  // doesn't show.
-  bool other = 11;
+  // What the rule does: "lookup" (in table), "goto", "nop", "blackhole",
+  // "unreachable", "prohibit", or the kernel's number.
+  string action = 11;
+  // The rule has a selector the agent never sets, which this doesn't
+  // show.
+  bool other = 12;
 }
 
 // The IPv6 leak guard as the host holds it.
@@ -212,8 +249,9 @@ message DiagGuard {
   // "nftables table inet thinkpol-guard", "pf anchor
   // com.apple/000.thinkpol".
   string where = 2;
-  // The host holds the guard (the table exists; the anchor has rules).
-  bool present = 3;
+  // The host holds the guard (the table exists; the anchor lists rules).
+  // Left out when that couldn't be told (the anchor's rules unreadable).
+  optional bool present = 3;
   DiagGuardRules rules = 4;
   // What the guard lets out by destination, as the fewest prefixes.
   DiagPrefixes exempt = 5;
@@ -230,7 +268,9 @@ message DiagGuardRules {
 message DiagGuardRule {
   // The nftables chain (Linux).
   string chain = 1;
-  // pfctl's line (macOS); the expressions in nft's syntax (Linux).
+  // pfctl's line (macOS); on Linux the expressions rendered nft-like
+  // (raw payloads as `@nh,192,128`; an expression it doesn't know shows
+  // as its type).
   string text = 2;
   // The rule has counters (Linux: a counter expression).
   bool counted = 3;
@@ -246,11 +286,12 @@ message DiagPrefixes {
   repeated string prefixes = 2;
 }
 
-// The guard table's own state.
+// The guard table's own state (Linux).
 message DiagNftables {
   // The table's chains are unhooked: it guards nothing.
   bool dormant = 1;
-  repeated DiagNftChain chains = 2;
+  string chains_unreadable = 2;
+  repeated DiagNftChain chains = 3;
 }
 
 message DiagNftChain {
@@ -264,7 +305,7 @@ message DiagNftChain {
 // pf's state as it concerns the guard (macOS).
 message DiagPf {
   DiagPfEnabled enabled = 1;
-  DiagPfHook hook = 2;
+  DiagPfGuardCheck guard_check = 2;
   DiagPfReference reference = 3;
 }
 
@@ -273,16 +314,20 @@ message DiagPfEnabled {
   bool enabled = 2;
 }
 
-message DiagPfHook {
+// What pf's listings show of how its main ruleset reaches the anchor.
+message DiagPfGuardCheck {
   string unreadable = 1;
-  // How the main ruleset evaluates the anchor: "ok", "missing" (no
-  // `anchor "com.apple/*"`), "bypassed" (a quick pass above it).
+  // The guard's own check of the main ruleset: "hooked" (`anchor
+  // "com.apple/*"` reached), "bypassed" (a quick pass above it may end
+  // evaluation first), "missing" (no such anchor rule).
   string state = 2;
-  // The interfaces pf skips (`set skip on`) but lo0, the TUN's among
-  // them, and the anchors under com.apple that sort before the guard's:
-  // either lets IPv6 past it (but the TUN, which it passes anyway).
-  repeated string skipped = 3;
-  repeated string anchors_before = 4;
+  // Its evidence: the main ruleset's lines up to the hook (all of them
+  // without one).
+  repeated string main_rules = 3;
+  // Every interface pf skips (`set skip on`), and the anchors under
+  // com.apple that sort before the guard's.
+  repeated string skipped = 4;
+  repeated string anchors_before = 5;
 }
 
 // The guard's `pfctl -E` reference, by the pid of the pfctl that took it.
@@ -290,15 +335,14 @@ message DiagPfReference {
   string unreadable = 1;
   // The guard's record names a reference.
   bool recorded = 2;
-  // A record that holds nothing this boot can release (an earlier
-  // boot's, or one that can't be read).
-  bool stale = 6;
-  uint32 pid = 3;
+  // A record of another boot session: it holds nothing now.
+  bool stale = 3;
+  uint32 pid = 4;
   // The record names it by the pid alone (its value not read yet).
-  bool pid_only = 4;
+  bool pid_only = 5;
   // pf lists it as taken by that pid; held_unreadable says why pf's
   // listing couldn't tell.
-  bool held = 5;
+  bool held = 6;
   string held_unreadable = 7;
 }
 
@@ -325,9 +369,11 @@ message DiagResolver {
   // scutil lists it for queries scoped to the interface only.
   bool scoped = 2;
   repeated string servers = 3;
-  // The names it is asked for: systemd-resolved's domains ("~" before a
-  // routing-only one; "~." takes every name), scutil's match domain.
+  // The names it is asked for: systemd-resolved's domains as it reports
+  // them ("~" before a routing-only one; "~." takes every name);
+  // scutil's match domain.
   repeated string domains = 4;
+  // Search domains (resolv.conf, scutil).
   repeated string search = 5;
   // scutil's order, flags and reach; resolv.conf's or scutil's options.
   uint32 order = 6;
@@ -336,28 +382,6 @@ message DiagResolver {
   repeated string options = 9;
   // resolv.conf is the node's own rewrite (the original in comments).
   bool node_written = 10;
-}
-
-// An Apply of a map's section by the data plane.
-message DiagApply {
-  string unreadable = 1;
-  google.protobuf.Timestamp started = 2;
-  google.protobuf.Duration took = 3;
-  // The step it failed at, as DataPlane.last_apply_error; "" when it
-  // didn't.
-  string failed = 4;
-  // In the order they ran; a step's time runs from the end of the one
-  // before it.
-  repeated DiagApplyStep steps = 5;
-}
-
-message DiagApplyStep {
-  // A step of DataPlane.last_apply_error's vocabulary, or "rules"
-  // (compiling the routing rules) or "route_table_shrink" (the direct
-  // routes taken out first), neither of which fails an Apply.
-  string step = 1;
-  google.protobuf.Duration took = 2;
-  bool failed = 3;
 }
 
 // A space the node is enrolled in. Names are the controller's: a node

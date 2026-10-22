@@ -1,14 +1,11 @@
 package dns
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
-	"time"
 )
 
 // Inspect reads the resolvers the OS uses as `scutil --dns` lists them:
@@ -16,18 +13,17 @@ import (
 // services' (overridden or not) and other software's (another VPN's,
 // /etc/resolver files) included. scutil only prints it.
 func Inspect(ctx context.Context) HostReport {
+	return inspectWith(ctx, scutil{path: scutilPath})
+}
+
+func inspectWith(ctx context.Context, s scutil) HostReport {
 	src := HostSource{Name: "scutil --dns"}
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, scutilPath, "--dns")
-	cmd.Env = []string{"LC_ALL=C"}
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	if err := cmd.Run(); err != nil {
-		src.Unreadable = fmt.Sprintf("scutil --dns: %v %s", err, strings.TrimSpace(stderr.String()))
+	out, err := s.exec(ctx, "", "--dns")
+	if err != nil {
+		src.Unreadable = "scutil --dns: " + err.Error()
 		return HostReport{Sources: []HostSource{src}}
 	}
-	resolvers, err := parseScutilDNS(stdout.Bytes())
+	resolvers, err := parseScutilDNS([]byte(out))
 	if err != nil {
 		src.Unreadable = err.Error()
 		return HostReport{Sources: []HostSource{src}}

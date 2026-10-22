@@ -1,6 +1,10 @@
 package netcfg
 
-import "net/netip"
+import (
+	"net"
+	"net/netip"
+	"slices"
+)
 
 // Inspection is what the host holds of the owners' routes and rules, as
 // its kernel reports them, for diagnostics (`thinkpol diag`): read with
@@ -9,6 +13,10 @@ import "net/netip"
 type Inspection struct {
 	Routes           []HostRoute
 	RoutesUnreadable string
+	// UnrecordedProto2 are, on macOS, the routes carrying routeFlag
+	// (RTF_PROTO2) that no owner's record names (Owner 0): another
+	// program's, or an agent's it didn't record.
+	UnrecordedProto2 []HostRoute
 	Rules            []HostRule
 	RulesUnreadable  string
 }
@@ -46,7 +54,52 @@ type HostRule struct {
 	Invert     bool
 	// SuppressPrefixlen is `suppress_prefixlength`, -1 without one.
 	SuppressPrefixlen int
+	// Action is what the rule does: "lookup" (in Table), "goto", "nop",
+	// "blackhole", "unreachable", "prohibit", or the kernel's number.
+	Action string
 	// Other: the rule has a selector or action netcfg never sets (an
 	// iif, a source, a goto...), so this report doesn't show all of it.
 	Other bool
+}
+
+// InterfaceReport is an interface as the host reports it.
+type InterfaceReport struct {
+	// Unreadable says why the interface couldn't be read; the rest is
+	// then empty.
+	Unreadable string
+	Name       string
+	Index      int
+	MTU        int
+	// Up and Running are the OS's IFF_UP and IFF_RUNNING.
+	Up, Running bool
+	// Addrs are its addresses with their prefix lengths, sorted.
+	Addrs []netip.Prefix
+}
+
+// InspectInterface reads the interface name from the OS, changing
+// nothing.
+func InspectInterface(name string) InterfaceReport {
+	ifc, err := net.InterfaceByName(name)
+	if err != nil {
+		return InterfaceReport{Unreadable: err.Error()}
+	}
+	addrs, err := ifc.Addrs()
+	if err != nil {
+		return InterfaceReport{Unreadable: err.Error()}
+	}
+	r := InterfaceReport{
+		Name: ifc.Name, Index: ifc.Index, MTU: ifc.MTU,
+		Up: ifc.Flags&net.FlagUp != 0, Running: ifc.Flags&net.FlagRunning != 0,
+	}
+	for _, a := range addrs {
+		if n, ok := a.(*net.IPNet); ok {
+			ip, ok := netip.AddrFromSlice(n.IP)
+			ones, _ := n.Mask.Size()
+			if ok {
+				r.Addrs = append(r.Addrs, netip.PrefixFrom(ip.Unmap(), ones))
+			}
+		}
+	}
+	slices.SortFunc(r.Addrs, func(a, b netip.Prefix) int { return a.Addr().Compare(b.Addr()) })
+	return r
 }

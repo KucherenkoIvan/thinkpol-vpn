@@ -93,6 +93,13 @@ func TestInspectReadsTheGuardAsTheKernelHoldsIt(t *testing.T) {
 	if err := g.Close(); err != nil {
 		t.Fatal(err)
 	}
+	// A table without the set (someone else's, or half made) exempts
+	// nothing: not there, not unreadable.
+	p.nft(t, "add", "table", "inet", firewall.GuardTable)
+	if r := firewall.InspectIPv6GuardInNamespace(ns); !r.Present || r.ExemptUnreadable != "" || r.Exempt != nil || r.NFTables.ChainsUnreadable != "" || len(r.Rules) != 0 {
+		t.Fatalf("a table without its set: %+v", r)
+	}
+	p.nft(t, "delete", "table", "inet", firewall.GuardTable)
 	if r := firewall.InspectIPv6GuardInNamespace(ns); r.Unreadable != "" || r.Present || len(r.Rules) != 0 {
 		t.Fatalf("closed: %+v", r)
 	}

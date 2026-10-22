@@ -238,26 +238,42 @@ func (g *IPv6Guard) checkBypass(ctx context.Context, main []byte, tun string) er
 	if hooked(main) == hookBypassed {
 		found = append(found, fmt.Sprintf("a `pass ... quick` rule above `anchor %s` in pf's main ruleset lets IPv6 past the guard", appleHook))
 	}
-	out, err := g.pf.run(ctx, nil, "-s", "Interfaces", "-v")
+	b, err := g.readBypass(ctx)
 	if err != nil {
 		return err
 	}
-	if s := skipped(out.stdout, tun); len(s) > 0 {
+	if s := slices.DeleteFunc(b.skipped, func(n string) bool { return n == "lo0" || n == tun }); len(s) > 0 {
 		found = append(found, fmt.Sprintf("pf skips %s (`set skip on`), so the IPv6 guard never sees its packets", strings.Join(s, ", ")))
 	}
-	// Run after a load into com.apple, so com.apple exists: any failure
-	// is one.
-	out, err = g.pf.run(ctx, nil, "-a", appleAnchor, "-s", "Anchors")
-	if err != nil {
-		return err
-	}
-	if a := anchorsBefore(out.stdout); len(a) > 0 {
+	if a := b.before; len(a) > 0 {
 		found = append(found, fmt.Sprintf("pf evaluates %s before the IPv6 guard's anchor: a quick pass there lets IPv6 past it", strings.Join(a, ", ")))
 	}
 	if len(found) == 0 {
 		return nil
 	}
 	return errors.New("firewall: " + strings.Join(found, "; "))
+}
+
+// bypassListing is what pf lists of the ways past the anchor but the
+// main ruleset: every name it skips, and the anchors under com.apple that
+// sort before the guard's.
+type bypassListing struct {
+	skipped, before []string
+}
+
+// readBypass reads them, for checkBypass and for diagnostics. Any
+// listing pf refuses is a failure: com.apple holds Apple's anchors on
+// every Mac (and the guard's after a load), so no answer isn't "none".
+func (g *IPv6Guard) readBypass(ctx context.Context) (bypassListing, error) {
+	ifcs, err := g.pf.run(ctx, nil, "-s", "Interfaces", "-v")
+	if err != nil {
+		return bypassListing{}, err
+	}
+	anchors, err := g.pf.run(ctx, nil, "-a", appleAnchor, "-s", "Anchors")
+	if err != nil {
+		return bypassListing{}, err
+	}
+	return bypassListing{skipped: skippedNames(ifcs.stdout), before: anchorsBefore(anchors.stdout)}, nil
 }
 
 // load loads e's anchor and reads it back. The load runs with pfctl's

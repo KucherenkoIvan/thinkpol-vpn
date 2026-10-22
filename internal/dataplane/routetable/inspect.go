@@ -14,9 +14,10 @@ type GuardReport struct {
 	// Where names the guard's place on the host: "nftables table inet
 	// thinkpol-guard", "pf anchor com.apple/000.thinkpol".
 	Where string
-	// Present: the host holds the guard (the table exists; the anchor has
-	// rules). Without it the rest is empty.
-	Present bool
+	// Present: the host holds the guard (the table exists; the anchor
+	// lists rules). Without it the rest is empty. PresentUnknown: that
+	// couldn't be told (the anchor's rules unreadable).
+	Present, PresentUnknown bool
 	// Rules are the guard's rules in order, as the host lists them, with
 	// their counters.
 	Rules           []GuardRuleReport
@@ -36,8 +37,9 @@ type GuardRuleReport struct {
 	// Chain is the nftables chain it is in (Linux).
 	Chain string
 	// Text is the rule as the host lists it: pfctl's line on macOS; on
-	// Linux its expressions rendered in nft's syntax (raw payloads as
-	// `@nh,192,128`).
+	// Linux its expressions rendered nft-like (raw payloads as
+	// `@nh,192,128`; an expression the renderer doesn't know shows as its
+	// type).
 	Text string
 	// Counted: the rule has counters (on Linux only the rules with a
 	// counter expression; on macOS every rule, read with -v).
@@ -50,8 +52,9 @@ type GuardRuleReport struct {
 // NFTablesReport is the guard table's own state.
 type NFTablesReport struct {
 	// Dormant: the table's chains are unhooked, so it guards nothing.
-	Dormant bool
-	Chains  []NFTChainReport
+	Dormant          bool
+	ChainsUnreadable string
+	Chains           []NFTChainReport
 }
 
 // NFTChainReport is a chain of the guard's table.
@@ -69,16 +72,17 @@ type NFTChainReport struct {
 type PFReport struct {
 	Enabled           bool
 	EnabledUnreadable string
-	// Hook is how the main ruleset evaluates the guard's anchor: "ok",
-	// "missing" (no `anchor "com.apple/*"`), "bypassed" (a quick pass above
-	// it).
-	Hook string
-	// Skipped are the interfaces pf skips (`set skip on`) but lo0, the
-	// TUN's among them; AnchorsBefore the anchors under com.apple that
-	// sort before the guard's. Either lets IPv6 past the guard (but the
-	// TUN, which the anchor passes anyway).
+	// GuardCheck is the guard's own check of the main ruleset: "hooked"
+	// (`anchor "com.apple/*"` reached), "bypassed" (a quick pass above it),
+	// "missing"; MainRules its evidence, the main ruleset's lines up to
+	// the hook (all of them without one).
+	GuardCheck string
+	MainRules  []string
+	// Skipped is every name pf lists as skipped (`set skip on`);
+	// AnchorsBefore the anchors under com.apple that sort before the
+	// guard's.
 	Skipped, AnchorsBefore []string
-	HookUnreadable         string
+	GuardCheckUnreadable   string
 	// Reference is the `pfctl -E` reference the guard's record names, and
 	// whether pf still lists it as taken by that process;
 	// ReferenceUnreadable says why the record couldn't be read.
@@ -93,8 +97,9 @@ type PFReferenceReport struct {
 	// Recorded: the guard's record names a reference (false: none, and
 	// the rest is empty).
 	Recorded bool
-	// Stale: there is a record, but it holds nothing this boot can
-	// release (an earlier boot's, or one that can't be read).
+	// Stale: the record is of another boot session, and holds nothing
+	// now. (A record that isn't a regular file or can't be parsed is
+	// unreadable.)
 	Stale bool
 	Pid   int
 	// PidOnly: the record names it by the pid alone (`pfctl -E` printed

@@ -33,7 +33,7 @@ func platform() agent.Platform {
 		LockHost:   agent.HostLock,
 		RestoreDNS: dns.RestoreSystem,
 		Inspect: agent.Inspector{
-			Interface: agent.InspectInterface,
+			Interface: netcfg.InspectInterface,
 			Routes:    netcfg.Inspect,
 			Guard:     inspectGuard,
 			DNS:       dns.Inspect,

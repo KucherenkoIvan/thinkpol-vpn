@@ -1,6 +1,7 @@
 package dns
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -72,5 +73,31 @@ func TestParseScutilDNS(t *testing.T) {
 		if rs, err := parseScutilDNS([]byte(in)); err == nil || !strings.Contains(err.Error(), want) || rs != nil {
 			t.Errorf("%q: %v, %v; want %q", in, rs, err, want)
 		}
+	}
+}
+
+// TestInspectRunsScutilDNS runs Inspect on a stand-in for scutil, a
+// script printing a fixture, never scutil itself.
+func TestInspectRunsScutilDNS(t *testing.T) {
+	dir := t.TempDir()
+	fake := filepath.Join(dir, "scutil")
+	fixture := filepath.Join(dir, "out.txt")
+	if err := os.WriteFile(fixture, scutilFixture(t, "dns-other-vpn.txt"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\n[ \"$*\" = --dns ] || { echo \"unexpected $*\" >&2; exit 2; }\ncat " + fixture + "\n"
+	if err := os.WriteFile(fake, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	r := inspectWith(context.Background(), scutil{path: fake})
+	if len(r.Sources) != 1 || r.Sources[0].Unreadable != "" || !r.Sources[0].Present || len(r.Sources[0].Resolvers) != 2 ||
+		r.Sources[0].Resolvers[1].Interface != "utun4" {
+		t.Fatalf("%+v", r)
+	}
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\necho no >&2\nexit 1\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if r := inspectWith(context.Background(), scutil{path: fake}); r.Sources[0].Unreadable == "" || r.Sources[0].Present {
+		t.Fatalf("a failing scutil: %+v", r)
 	}
 }

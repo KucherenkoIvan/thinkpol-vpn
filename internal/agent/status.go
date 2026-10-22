@@ -209,14 +209,19 @@ func (p *report) forDiagnostics() (Status, string, *dataplane.ApplyTrace) {
 	if p.engine == nil {
 		return p.statusLocked(), "", nil
 	}
+	st, tr, ok := p.engine.StatusAndLastApply()
 	var last *dataplane.ApplyTrace
-	if tr, ok := p.engine.LastApply(); ok {
+	if ok {
 		last = &tr
 	}
-	return p.statusLocked(), p.engine.TUNName(), last
+	return p.statusWith(&st), p.engine.TUNName(), last
 }
 
-func (p *report) statusLocked() Status {
+func (p *report) statusLocked() Status { return p.statusWith(nil) }
+
+// statusWith is the status, with dp as the engine's if it was read
+// already (nil: read it now).
+func (p *report) statusWith(dp *dataplane.Status) Status {
 	s := Status{Mode: p.mode, Space: p.space, MapVersion: p.version, MapsRefused: p.mapsRefused, Removed: p.removed, Retrying: p.retrying, Listeners: p.listeners, DNSUpstreamsRefused: p.dnsUpstreamsRefused}
 	if p.mode != ModeServer {
 		s.RulePreset = p.preset
@@ -231,7 +236,11 @@ func (p *report) statusLocked() Status {
 		s.Connection = Connecting
 	}
 	if p.engine != nil {
-		st := p.engine.Status()
+		if dp == nil {
+			st := p.engine.Status()
+			dp = &st
+		}
+		st := *dp
 		s.DataPlane = &st
 		s.RulesEnforced, s.PresetUnavailable = true, st.Rules.PresetUnavailable
 		var problem error

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -39,7 +40,7 @@ func (g *IPv6Guard) inspect(ctx context.Context) routetable.GuardReport {
 			r.Rules, r.RulesUnreadable = nil, err.Error()
 		}
 	}
-	r.Present = len(r.Rules) > 0
+	r.Present, r.PresentUnknown = len(r.Rules) > 0, r.RulesUnreadable != ""
 	r.Exempt, err = g.listTable(ctx, exemptTable)
 	if err != nil && !errors.Is(err, errNoTable) {
 		r.Exempt, r.ExemptUnreadable = nil, err.Error()
@@ -49,49 +50,54 @@ func (g *IPv6Guard) inspect(ctx context.Context) routetable.GuardReport {
 	} else {
 		r.PF.Enabled = on
 	}
-	r.PF.Hook, r.PF.Skipped, r.PF.AnchorsBefore, r.PF.HookUnreadable = g.inspectHook(ctx)
+	g.inspectGuardCheck(ctx, r.PF)
 	r.PF.Reference, r.PF.ReferenceUnreadable = g.inspectReference(ctx)
 	return r
 }
 
-// inspectHook reads how the main ruleset reaches the anchor (hooked), and
-// what lets IPv6 past it (checkBypass's other two): the interfaces pf
-// skips but lo0 (the TUN's among them, which the anchor passes anyway),
-// and the anchors that sort before the guard's.
-func (g *IPv6Guard) inspectHook(ctx context.Context) (hook string, skips, before []string, unreadable string) {
+// inspectGuardCheck reads what the guard's check reads: the main ruleset
+// (its verdict, and its lines up to the hook as the evidence), every name
+// pf skips, and the anchors that sort before the guard's.
+func (g *IPv6Guard) inspectGuardCheck(ctx context.Context, pf *routetable.PFReport) {
 	main, err := g.pf.run(ctx, nil, "-s", "rules")
 	if err != nil {
-		return "", nil, nil, err.Error()
+		pf.GuardCheckUnreadable = err.Error()
+		return
+	}
+	if _, err := readLines(main.stdout); err != nil {
+		pf.GuardCheckUnreadable = err.Error()
+		return
+	}
+	b, err := g.readBypass(ctx)
+	if err != nil {
+		pf.GuardCheckUnreadable = err.Error()
+		return
 	}
 	switch hooked(main.stdout) {
 	case hookOK:
-		hook = "ok"
+		pf.GuardCheck = "hooked"
 	case hookBypassed:
-		hook = "bypassed"
+		pf.GuardCheck = "bypassed"
 	default:
-		hook = "missing"
+		pf.GuardCheck = "missing"
 	}
-	ifcs, err := g.pf.run(ctx, nil, "-s", "Interfaces", "-v")
-	if err != nil {
-		return "", nil, nil, err.Error()
-	}
-	anchors, err := g.pf.run(ctx, nil, "-a", appleAnchor, "-s", "Anchors")
-	if err != nil && !invalidArgument(anchors) {
-		return "", nil, nil, err.Error()
-	}
-	return hook, skipped(ifcs.stdout, ""), anchorsBefore(anchors.stdout), ""
+	pf.MainRules, pf.Skipped, pf.AnchorsBefore = mainUpToHook(main.stdout), b.skipped, b.before
 }
 
 // inspectReference reads the guard's record (without making its
 // directory) and, if it names a reference, whether pf lists it as taken
-// by that pid.
+// by that pid. Only a record of another boot is stale; one that isn't a
+// regular file or can't be read is unreadable, said in fixed words (a
+// record's content never leaves it: it may hold a token).
 func (g *IPv6Guard) inspectReference(ctx context.Context) (*routetable.PFReferenceReport, string) {
-	t, state, err := g.tokens.peek()
+	t, state, why, err := g.tokens.peek()
 	switch {
 	case err != nil:
 		return nil, err.Error()
-	case state == recordStale:
+	case state == recordStale && why == staleOtherBoot:
 		return &routetable.PFReferenceReport{Stale: true}, ""
+	case state == recordStale:
+		return nil, "the guard's record: " + string(why)
 	case state == recordNone:
 		return &routetable.PFReferenceReport{}, ""
 	}
@@ -105,10 +111,16 @@ func (g *IPv6Guard) inspectReference(ctx context.Context) (*routetable.PFReferen
 		ref.HeldUnreadable = "pfctl -s References: a listing this agent can't read"
 		return ref, ""
 	}
-	if t.value == 0 {
-		_, ref.Held = byPid(refs, t.pid)
-	} else {
+	if t.value != 0 {
 		ref.Held = referenced(refs, t) == refOurs
+		return ref, ""
+	}
+	switch n := len(slices.DeleteFunc(slices.Clone(refs), func(r pfReference) bool { return r.pid != t.pid })); n {
+	case 0:
+	case 1:
+		ref.Held = true
+	default:
+		ref.HeldUnreadable = fmt.Sprintf("pf lists %d references for that pid", n)
 	}
 	return ref, ""
 }
@@ -146,17 +158,25 @@ func parseVerboseRules(b []byte) ([]routetable.GuardRuleReport, error) {
 		afterCounters
 	)
 	at := wantRule
-	for i, l := range lines(b) {
+	ls, err := readLines(b)
+	if err != nil {
+		return nil, err
+	}
+	for i, l := range ls {
 		n := i + 1
 		switch {
 		case strings.HasPrefix(l, "["):
 			if m := counterLine.FindStringSubmatch(l); m != nil && at == wantCounters {
 				r := &out[len(out)-1]
+				var errs [4]error
 				r.Counted = true
-				r.Evaluations, _ = strconv.ParseUint(m[1], 10, 64)
-				r.Packets, _ = strconv.ParseUint(m[2], 10, 64)
-				r.Bytes, _ = strconv.ParseUint(m[3], 10, 64)
-				r.States, _ = strconv.ParseUint(m[4], 10, 64)
+				r.Evaluations, errs[0] = strconv.ParseUint(m[1], 10, 64)
+				r.Packets, errs[1] = strconv.ParseUint(m[2], 10, 64)
+				r.Bytes, errs[2] = strconv.ParseUint(m[3], 10, 64)
+				r.States, errs[3] = strconv.ParseUint(m[4], 10, 64)
+				if err := errors.Join(errs[:]...); err != nil {
+					return nil, fmt.Errorf("pfctl -s rules -v: line %d: a counter that doesn't fit: %w", n, err)
+				}
 				at = afterCounters
 				continue
 			}

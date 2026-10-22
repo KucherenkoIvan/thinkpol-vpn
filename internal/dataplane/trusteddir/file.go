@@ -117,23 +117,27 @@ func WriteRecord(dir *os.File, name, header, boot string, body []byte) error {
 // ReadRecord reads the record name in dir (as ReadFile does) and returns
 // its body: what follows its boot line, which must come before anything
 // but blank and comment ('#') lines and name a session (ErrNoBoot
-// otherwise), and name boot (ErrOtherBoot otherwise).
+// otherwise), and name boot (ErrOtherBoot otherwise). Its errors never
+// quote the record's content: a record may hold what must not leave it
+// (the pf guard's token), and its errors reach logs and diagnostics.
 func ReadRecord(dir *os.File, name, boot string) ([]byte, error) {
 	data, err := ReadFile(dir, name)
 	if err != nil {
 		return nil, err
 	}
 	path := filepath.Join(dir.Name(), name)
+	n := 0
 	for rest := data; len(rest) > 0; {
 		line, next, _ := bytes.Cut(rest, []byte("\n"))
 		rest = next
+		n++
 		l := strings.TrimSpace(string(line))
 		if l == "" || l[0] == '#' {
 			continue
 		}
 		f := strings.Fields(l)
 		if f[0] != "boot" {
-			return nil, fmt.Errorf("%s: line %q before the boot session: %w", path, l, ErrNoBoot)
+			return nil, fmt.Errorf("%s: line %d, before the boot session, is no boot line: %w", path, n, ErrNoBoot)
 		}
 		if len(f) == 1 {
 			return nil, fmt.Errorf("%s: a boot line without a session: %w", path, ErrNoBoot)

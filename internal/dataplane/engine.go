@@ -305,6 +305,10 @@ func (e *Engine) Apply(ctx context.Context, s netmap.Section) error {
 func (e *Engine) LastApply() (ApplyTrace, bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	return e.lastApplyLocked()
+}
+
+func (e *Engine) lastApplyLocked() (ApplyTrace, bool) {
 	if e.lastApply == nil {
 		return ApplyTrace{}, false
 	}
@@ -506,6 +510,19 @@ type PeerStatus struct {
 func (e *Engine) Status() Status {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	return e.statusLocked()
+}
+
+// StatusAndLastApply is Status and LastApply in one read: the status as
+// of the last Apply's end, or of whatever changed since.
+func (e *Engine) StatusAndLastApply() (Status, ApplyTrace, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	tr, ok := e.lastApplyLocked()
+	return e.statusLocked(), tr, ok
+}
+
+func (e *Engine) statusLocked() Status {
 	s := Status{
 		MTU:            e.mtu,
 		IPv6:           e.mtu > 0 && e.ipv6Off == nil,

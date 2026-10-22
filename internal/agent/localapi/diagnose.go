@@ -2,6 +2,10 @@ package localapi
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
 	"math"
 	"net/netip"
 	"os"
@@ -9,8 +13,7 @@ import (
 	"runtime"
 	"time"
 
-	"google.golang.org/grpc/peer"
-	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -22,28 +25,17 @@ import (
 )
 
 // DiagSchemaVersion is the schema of Diagnose's snapshot
-// (Diagnostics.schema_version): bumped when a field is removed or changes
-// meaning, not when one is added.
+// (Diagnostics.schema_version). It is bumped when a field is removed or
+// renamed or its type or meaning changes, not when one is added;
+// `unreadable` texts are free-form, and enumerated string values (a
+// route's type, an Apply's step) may grow without a bump.
 const DiagSchemaVersion = 1
 
 // Diagnose serves the snapshot: whole to root and the service's user, to
 // the group without the parts that name public addresses.
 func (s *server) Diagnose(ctx context.Context, _ *localapiv1.DiagnoseRequest) (*localapiv1.DiagnoseResponse, error) {
-	d := s.node.Diagnose(ctx, callerAccess(ctx, s.policy) >= AccessAdmin)
+	d := s.node.Diagnose(ctx, s.policy.callerAccess(ctx) >= AccessAdmin)
 	return &localapiv1.DiagnoseResponse{Diagnostics: diagnosticsProto(d, time.Now(), s.version)}, nil
-}
-
-// callerAccess is what the caller of ctx may do under p.
-func callerAccess(ctx context.Context, p Policy) Access {
-	pr, ok := peer.FromContext(ctx)
-	if !ok {
-		return AccessNone
-	}
-	c, ok := pr.AuthInfo.(Caller)
-	if !ok {
-		return AccessNone
-	}
-	return p.Access(c)
 }
 
 // diagnosticsProto is d on the wire, taken at now by an agent of version.
@@ -53,13 +45,14 @@ func diagnosticsProto(d agent.Diagnostics, now time.Time, version string) *local
 		TakenAt:       timestamppb.New(now),
 		Os:            runtime.GOOS,
 		AgentVersion:  version,
+		HostParts:     d.HostParts,
 		Status:        statusProto(d.Status),
 		Tun:           interfaceProto(d.TUN),
+		LastApply:     applyProto(d.LastApply),
 		Routes:        routesProto(d.Routes),
-		Rules:         rulesProto(d.Routes),
+		PolicyRules:   rulesProto(d.Routes),
 		Guard:         guardProto(d.Guard),
 		Dns:           dnsProto(d.DNS),
-		LastApply:     applyProto(d.LastApply),
 	}
 }
 
@@ -101,13 +94,24 @@ func routesProto(in netcfg.Inspection) *localapiv1.DiagRoutes {
 	}
 	out := &localapiv1.DiagRoutes{}
 	for _, r := range in.Routes {
-		out.Routes = append(out.Routes, &localapiv1.DiagRoute{
-			Owner: r.Owner.String(), Family: r.Family.String(), Destination: prefixString(r.Dst), Type: r.Type,
-			Gateway: addrString(r.Gateway), Interface: r.Interface, Metric: uint32(max(r.Metric, 0)),
-			Table: uint32(max(r.Table, 0)), Scope: r.Scope,
-		})
+		out.Routes = append(out.Routes, routeProto(r))
+	}
+	for _, r := range in.UnrecordedProto2 {
+		out.UnrecordedProto2 = append(out.UnrecordedProto2, routeProto(r))
 	}
 	return out
+}
+
+func routeProto(r netcfg.HostRoute) *localapiv1.DiagRoute {
+	owner := ""
+	if r.Owner != 0 {
+		owner = r.Owner.String()
+	}
+	return &localapiv1.DiagRoute{
+		Owner: owner, Family: r.Family.String(), Destination: prefixString(r.Dst), Type: r.Type,
+		Gateway: addrString(r.Gateway), Interface: r.Interface, Metric: uint32(max(r.Metric, 0)),
+		Table: uint32(max(r.Table, 0)), Scope: r.Scope,
+	}
 }
 
 func rulesProto(in netcfg.Inspection) *localapiv1.DiagRules {
@@ -119,40 +123,42 @@ func rulesProto(in netcfg.Inspection) *localapiv1.DiagRules {
 		out.Rules = append(out.Rules, &localapiv1.DiagRule{
 			Owner: r.Owner.String(), Family: r.Family.String(), Priority: uint32(max(r.Priority, 0)),
 			Table: uint32(max(r.Table, 0)), Destination: prefixString(r.Dst), Oif: r.Oif, Mark: r.Mark, Mask: r.Mask,
-			Invert: r.Invert, SuppressPrefixlen: int32(max(min(r.SuppressPrefixlen, math.MaxInt32), -1)), Other: r.Other,
+			Invert: r.Invert, SuppressPrefixlen: int32(max(min(r.SuppressPrefixlen, math.MaxInt32), -1)), Action: r.Action, Other: r.Other,
 		})
 	}
 	return out
 }
 
+// guardProto is g on the wire. A guard read in part has each part as it
+// was read: rules and exempt are there (empty when there is no guard),
+// present left out when it couldn't be told.
 func guardProto(g routetable.GuardReport) *localapiv1.DiagGuard {
 	if g.Unreadable != "" {
 		return &localapiv1.DiagGuard{Unreadable: g.Unreadable, Where: g.Where}
 	}
-	out := &localapiv1.DiagGuard{Where: g.Where, Present: g.Present}
-	// An absent guard has no rules or table to show, unless reading them
-	// failed (or, on macOS, left a table behind).
-	if g.Present || g.RulesUnreadable != "" {
-		out.Rules = &localapiv1.DiagGuardRules{Unreadable: g.RulesUnreadable}
-		if g.RulesUnreadable == "" {
-			for _, r := range g.Rules {
-				out.Rules.Rules = append(out.Rules.Rules, &localapiv1.DiagGuardRule{
-					Chain: r.Chain, Text: r.Text, Counted: r.Counted, Packets: r.Packets, Bytes: r.Bytes,
-					Evaluations: r.Evaluations, States: r.States,
-				})
-			}
+	out := &localapiv1.DiagGuard{
+		Where:  g.Where,
+		Rules:  &localapiv1.DiagGuardRules{Unreadable: g.RulesUnreadable},
+		Exempt: &localapiv1.DiagPrefixes{Unreadable: g.ExemptUnreadable},
+	}
+	if !g.PresentUnknown {
+		out.Present = &g.Present
+	}
+	if g.RulesUnreadable == "" {
+		for _, r := range g.Rules {
+			out.Rules.Rules = append(out.Rules.Rules, &localapiv1.DiagGuardRule{
+				Chain: r.Chain, Text: r.Text, Counted: r.Counted, Packets: r.Packets, Bytes: r.Bytes,
+				Evaluations: r.Evaluations, States: r.States,
+			})
 		}
 	}
-	if g.Present || g.ExemptUnreadable != "" || len(g.Exempt) > 0 {
-		out.Exempt = &localapiv1.DiagPrefixes{Unreadable: g.ExemptUnreadable}
-		if g.ExemptUnreadable == "" {
-			for _, p := range g.Exempt {
-				out.Exempt.Prefixes = append(out.Exempt.Prefixes, p.String())
-			}
+	if g.ExemptUnreadable == "" {
+		for _, p := range g.Exempt {
+			out.Exempt.Prefixes = append(out.Exempt.Prefixes, p.String())
 		}
 	}
 	if nf := g.NFTables; nf != nil {
-		out.Nftables = &localapiv1.DiagNftables{Dormant: nf.Dormant}
+		out.Nftables = &localapiv1.DiagNftables{Dormant: nf.Dormant, ChainsUnreadable: nf.ChainsUnreadable}
 		for _, c := range nf.Chains {
 			out.Nftables.Chains = append(out.Nftables.Chains, &localapiv1.DiagNftChain{
 				Name: c.Name, Hook: c.Hook, Priority: int32(max(min(c.Priority, math.MaxInt32), math.MinInt32)), Policy: c.Policy,
@@ -167,15 +173,16 @@ func guardProto(g routetable.GuardReport) *localapiv1.DiagGuard {
 
 func pfProto(pf *routetable.PFReport) *localapiv1.DiagPf {
 	out := &localapiv1.DiagPf{
-		Enabled:   &localapiv1.DiagPfEnabled{Unreadable: pf.EnabledUnreadable},
-		Hook:      &localapiv1.DiagPfHook{Unreadable: pf.HookUnreadable},
-		Reference: &localapiv1.DiagPfReference{Unreadable: pf.ReferenceUnreadable},
+		Enabled:    &localapiv1.DiagPfEnabled{Unreadable: pf.EnabledUnreadable},
+		GuardCheck: &localapiv1.DiagPfGuardCheck{Unreadable: pf.GuardCheckUnreadable},
+		Reference:  &localapiv1.DiagPfReference{Unreadable: pf.ReferenceUnreadable},
 	}
 	if pf.EnabledUnreadable == "" {
 		out.Enabled.Enabled = pf.Enabled
 	}
-	if pf.HookUnreadable == "" {
-		out.Hook.State, out.Hook.Skipped, out.Hook.AnchorsBefore = pf.Hook, pf.Skipped, pf.AnchorsBefore
+	if pf.GuardCheckUnreadable == "" {
+		c := out.GuardCheck
+		c.State, c.MainRules, c.Skipped, c.AnchorsBefore = pf.GuardCheck, pf.MainRules, pf.Skipped, pf.AnchorsBefore
 	}
 	if r := pf.Reference; pf.ReferenceUnreadable == "" && r != nil {
 		out.Reference.Recorded, out.Reference.Stale, out.Reference.Pid, out.Reference.PidOnly = r.Recorded, r.Stale, uint32(max(r.Pid, 0)), r.PidOnly
@@ -202,7 +209,7 @@ func addrString(a netip.Addr) string {
 	return a.String()
 }
 
-func interfaceProto(r agent.InterfaceReport) *localapiv1.DiagInterface {
+func interfaceProto(r netcfg.InterfaceReport) *localapiv1.DiagInterface {
 	if r.Unreadable != "" {
 		return &localapiv1.DiagInterface{Unreadable: r.Unreadable}
 	}
@@ -224,11 +231,32 @@ func (c *Client) Diagnose(ctx context.Context) (*localapiv1.Diagnostics, error) 
 	return sanitized(resp).GetDiagnostics(), nil
 }
 
-// WriteJSONFile writes m as WriteJSON does to a new file at path, mode
-// 0600, replacing what is there (a symlink itself, never its target): it
-// is written beside path and renamed over it, so a reader never sees half
-// of it.
-func WriteJSONFile(path string, m proto.Message) (err error) {
+// WriteDiagnostics writes d as `thinkpol diag` prints it, the snapshot's
+// v1 form: JSON with the schema's own field names (snake_case) and every
+// field present, an unset one as its zero value or null.
+func WriteDiagnostics(w io.Writer, d *localapiv1.Diagnostics) error {
+	b, err := protojson.MarshalOptions{Multiline: true, UseProtoNames: true, EmitUnpopulated: true}.Marshal(d)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(w, "%s\n", b)
+	return err
+}
+
+// ErrNotAFile: -o names something there that is neither a regular file
+// nor a symlink (a device, /dev/null, a directory): replacing it would
+// change the host.
+var ErrNotAFile = errors.New("not a regular file: refusing to replace it")
+
+// WriteDiagnosticsFile writes d as WriteDiagnostics does to a new file at
+// path, mode 0600, synced, replacing what is there: a regular file, or a
+// symlink itself, never its target. Anything else there is refused
+// (ErrNotAFile). It is written beside path and renamed over it, so a
+// reader never sees half of it.
+func WriteDiagnosticsFile(path string, d *localapiv1.Diagnostics) (err error) {
+	if fi, err := os.Lstat(path); err == nil && !fi.Mode().IsRegular() && fi.Mode()&fs.ModeSymlink == 0 {
+		return fmt.Errorf("%s: %w", path, ErrNotAFile)
+	}
 	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
 	if err != nil {
 		return err
@@ -242,7 +270,10 @@ func WriteJSONFile(path string, m proto.Message) (err error) {
 	if err := f.Chmod(0o600); err != nil {
 		return err
 	}
-	if err := WriteJSON(f, m); err != nil {
+	if err := WriteDiagnostics(f, d); err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
 		return err
 	}
 	if err := f.Close(); err != nil {

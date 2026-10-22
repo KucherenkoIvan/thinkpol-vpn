@@ -67,6 +67,11 @@ func TestInspectReadsTheRecordedRoutes(t *testing.T) {
 	if in.RoutesUnreadable != "" || in.RulesUnreadable != "" || len(in.Rules) != 0 {
 		t.Fatalf("%+v", in)
 	}
+	// Someone else's RTF_PROTO2 route is shown apart; the kernel's clone
+	// carrying the flag isn't a route at all.
+	if u := in.UnrecordedProto2; len(u) != 1 || u[0].Dst != pfx("198.51.100.0/24") || u[0].Owner != 0 || u[0].Gateway != ip("192.168.1.1") {
+		t.Fatalf("unrecorded %+v", u)
+	}
 	got := strings.Join(inspectedLines(in), "\n")
 	want := strings.Join([]string{
 		"route-table IPv4 unicast 0.0.0.0/1 dev utun7",

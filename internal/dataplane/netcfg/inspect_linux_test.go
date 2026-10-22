@@ -31,7 +31,7 @@ func inspectedRoutes(in netcfg.Inspection) []string {
 func inspectedRules(in netcfg.Inspection) []string {
 	var out []string
 	for _, r := range in.Rules {
-		s := fmt.Sprintf("%v %v %d table %d", r.Owner, r.Family, r.Priority, r.Table)
+		s := fmt.Sprintf("%v %v %d %s table %d", r.Owner, r.Family, r.Priority, r.Action, r.Table)
 		if r.Dst.IsValid() {
 			s += " to " + r.Dst.String()
 		}
@@ -109,6 +109,10 @@ func TestInspectReadsTheOwnersRoutesAndRules(t *testing.T) {
 	n.ip(t, "route", "add", "198.51.100.128/25", "via", "203.0.113.1", "table", "4242")
 	n.ip(t, "rule", "add", "priority", "100", "table", "4242")
 	n.ip(t, "rule", "add", "priority", "5302", "iif", "ovl0", "table", "4242", "protocol", "86")
+	// An owner's rule turned into a blackhole by someone: its action
+	// shows, not a lookup.
+	n.ip(t, "rule", "add", "priority", "5303", "blackhole", "protocol", "86")
+	n.ip(t, "-6", "rule", "add", "priority", "5303", "prohibit", "protocol", "86")
 
 	in := netcfg.InspectInNamespace(n.path)
 	if in.RoutesUnreadable != "" || in.RulesUnreadable != "" {
@@ -124,14 +128,16 @@ func TestInspectReadsTheOwnersRoutesAndRules(t *testing.T) {
 		"route-table IPv6 unreachable ::/0 table 4242 metric 2048",
 	}, inspectedRoutes(in))
 	requireSame(t, "rules", []string{
-		"route-table IPv4 5298 table 254 oif ovl0 suppress 0",
-		"route-table IPv4 5299 table 254 to 192.0.2.128/25",
-		"route-table IPv4 5300 table 254 suppress 0",
-		"route-table IPv4 5301 table 4242 fwmark 0x4242/0xffffffff not",
-		"route-table IPv4 5302 table 4242 other",
-		"route-table IPv6 5299 table 254 to 2001:db8:51::/48",
-		"route-table IPv6 5300 table 254 suppress 0",
-		"route-table IPv6 5301 table 4242 fwmark 0x4242/0xffffffff not",
+		"route-table IPv4 5298 lookup table 254 oif ovl0 suppress 0",
+		"route-table IPv4 5299 lookup table 254 to 192.0.2.128/25",
+		"route-table IPv4 5300 lookup table 254 suppress 0",
+		"route-table IPv4 5301 lookup table 4242 fwmark 0x4242/0xffffffff not",
+		"route-table IPv4 5302 lookup table 4242 other",
+		"route-table IPv4 5303 blackhole table 0",
+		"route-table IPv6 5299 lookup table 254 to 2001:db8:51::/48",
+		"route-table IPv6 5300 lookup table 254 suppress 0",
+		"route-table IPv6 5301 lookup table 4242 fwmark 0x4242/0xffffffff not",
+		"route-table IPv6 5303 prohibit table 0",
 	}, inspectedRules(in))
 	for i, r := range in.Rules[1:] {
 		if r.Priority < in.Rules[i].Priority {
