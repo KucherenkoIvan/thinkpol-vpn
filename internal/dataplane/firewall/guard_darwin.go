@@ -155,7 +155,8 @@ func hostAddrs() ([]netip.Addr, error) {
 // an empty anchor, which passes all IPv6. The package doc (macOS: loading
 // and checking) has the reasoning: why it is never wider than the rules
 // written but for what someone changed in the anchor between the load and
-// the read-back, and why the last verified guard isn't reloaded instead.
+// the read-back (or a pfctl that optimized it anyway), and why the last
+// verified guard isn't reloaded instead.
 func (g *IPv6Guard) Apply(ctx context.Context, e routetable.Exempt) (err error) {
 	if !validInterface.MatchString(e.TUN) {
 		return fmt.Errorf("firewall: TUN %q isn't an interface name", e.TUN)
