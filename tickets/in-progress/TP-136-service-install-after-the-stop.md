@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: [TP-046]
 refs: [docs/design/security.md#kill-switch]
-owner: ""
-branch: ""
+owner: "agent-tp-136"
+branch: "tp-136-service-install-after-the-stop"
 ---
 
 ## Goal
@@ -33,3 +33,4 @@ From TP-046's round-4 second opinion, which arrived after the merge.
 
 ## Log
 - 2026-10-23 created in backlog (TP-046 round-4 second opinion, after the merge)
+- 2026-10-23 backlog → in-progress — owner: agent-tp-136, branch: tp-136-service-install-after-the-stop
