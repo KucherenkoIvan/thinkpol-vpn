@@ -39,3 +39,4 @@ DESIGN.md stops being one file at its size limit. Security has its own document,
 ## Log
 - 2026-10-22 created in backlog (owner's rule on splitting DESIGN.md)
 - 2026-10-22 backlog → in-progress — owner: agent-tp-131, branch: tp-131-split-design-md
+- 2026-10-22 proposed file list, per the ticket's candidates read against the file: `docs/design/security.md` (threat model, rules, IPv6 leak guard, node safety), `overlay.md` (data plane, direct paths), `transports.md`, `server-agent.md` (server agent + egress), `routing.md` (rules, route table, DNS, lists), `desktop-client.md` (client, local API, kill switch, node agent), `control-plane.md` (controller, signed map, joining, kernel usage), `lab.md` (censor lab), `milestones.md` (milestones, out of scope); DESIGN.md keeps the intro, the architecture overview, "Where the mechanism lives", repository layout, open questions and the index of design files
