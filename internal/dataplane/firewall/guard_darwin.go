@@ -47,7 +47,8 @@ const guardPoll = 10 * time.Second
 // the record names. States pf already holds would pass without a rule
 // (pf's state policy is floating): after a load, an enable, or a failed
 // Apply (a quick pass above the hook may have made some meanwhile), Apply
-// kills the IPv6 ones whose other end isn't in the exempt table.
+// kills the IPv6 ones whose other end isn't in the exempt table; while
+// the same bypasses last, only once.
 //
 // The anchor and the reference stay when the process dies: a crash leaves
 // IPv6 confined, as the route table's rejects do. The next start's
@@ -77,10 +78,11 @@ type IPv6Guard struct {
 	// killStates: pf's states still need checking against applied (after
 	// a load, an enable, or a failed Apply).
 	killStates bool
-	// bypassKilled: the states were killed while checkBypass failed; until
-	// it passes, the anchor is reloaded or pf is enabled anew, they aren't
+	// killedUnder: the bypasses (checkBypass's error) under which the
+	// states were last killed, "" for none. While the same ones last, and
+	// the anchor isn't reloaded nor pf enabled anew, they aren't killed
 	// again.
-	bypassKilled bool
+	killedUnder string
 	// failing: the last Apply failed (but for unsupported); Watch says so.
 	failing bool
 	closed  bool
@@ -142,9 +144,9 @@ func hostAddrs() ([]netip.Addr, error) {
 // Apply puts e in place: the anchor (rules and tables in one load), then
 // pf enabled by a reference of its own, then whatever lets IPv6 past the
 // anchor checked (checkBypass), then states the anchor would have refused
-// killed. Applying what is in place again only reads it back (the hook,
-// the rules exactly as listed after the load, every table entry, pf
-// enabled) and reloads if anything differs. A failed load leaves what was
+// killed. Applying what is in place again only reads it back (the hook
+// and what bypasses it, the rules exactly as listed after the load, every
+// table entry, pf enabled) and reloads if the anchor or pf differ. A failed load leaves what was
 // there (a pf transaction), a guard at least as strict as either. A load
 // pf took but load refuses on reading it back stays, unverified, and the
 // Apply fails and is retried. pf enforces it whenever pf is on (on the
@@ -183,7 +185,7 @@ func (g *IPv6Guard) Apply(ctx context.Context, e routetable.Exempt) (err error) 
 		if err != nil {
 			return err
 		}
-		g.applied, g.killStates, g.bypassKilled = a, true, false
+		g.applied, g.killStates, g.killedUnder = a, true, ""
 	}
 	// After the load, so pf comes on with the guard in place; a failure
 	// here leaves the anchor applied, and the retry only enables.
@@ -193,16 +195,19 @@ func (g *IPv6Guard) Apply(ctx context.Context, e routetable.Exempt) (err error) 
 	// Last, so the interfaces pf does filter are guarded while something
 	// lets IPv6 past the rest.
 	bypass := g.checkBypass(ctx, main, e.TUN)
-	if bypass == nil {
-		g.bypassKilled = false
+	under := ""
+	if bypass != nil {
+		under = bypass.Error()
 	}
-	// While one bypass lasts, states are killed once, not on every retry:
-	// it makes them again; they all go on the Apply after it ends.
-	if g.killStates && !g.bypassKilled {
+	// What a bypass lets through needs no state, and the anchor lets
+	// nothing else make one, so while the same bypasses last the retries
+	// don't kill again; any change to them (one more, one gone, or all)
+	// does, taking what the one gone let be made.
+	if g.killStates && (under == "" || under != g.killedUnder) {
 		if err := g.kill(ctx, g.applied); err != nil {
 			return err
 		}
-		g.killStates, g.bypassKilled = false, bypass != nil
+		g.killStates, g.killedUnder = false, under
 	}
 	return bypass
 }
@@ -222,20 +227,22 @@ func (g *IPv6Guard) checkHook(ctx context.Context) ([]byte, error) {
 }
 
 // checkBypass fails with an ordinary error (the guard isn't enforced)
-// while pf evaluates the hook but lets outgoing IPv6 past the anchor: a
-// quick pass above the hook in main, pf's main ruleset (hooked); an
-// interface but lo0 and tun skipped (`set skip on`); an anchor under
-// com.apple that sorts before the guard's.
+// while pf evaluates the hook but lets outgoing IPv6 past the anchor, the
+// error naming every way it does: a quick pass above the hook (hooked
+// reads main, the main ruleset's listing); an interface but lo0 and tun
+// skipped (`set skip on`); an anchor under com.apple that sorts before the
+// guard's.
 func (g *IPv6Guard) checkBypass(ctx context.Context, main []byte, tun string) error {
+	var found []string
 	if hooked(main) == hookBypassed {
-		return fmt.Errorf("firewall: a `pass ... quick` rule above `anchor %s` in pf's main ruleset lets IPv6 past the guard", appleHook)
+		found = append(found, fmt.Sprintf("a `pass ... quick` rule above `anchor %s` in pf's main ruleset lets IPv6 past the guard", appleHook))
 	}
 	out, err := g.pf.run(ctx, nil, "-s", "Interfaces", "-v")
 	if err != nil {
 		return err
 	}
 	if s := skipped(out.stdout, tun); len(s) > 0 {
-		return fmt.Errorf("firewall: pf skips %s (`set skip on`), so the IPv6 guard never sees its packets", strings.Join(s, ", "))
+		found = append(found, fmt.Sprintf("pf skips %s (`set skip on`), so the IPv6 guard never sees its packets", strings.Join(s, ", ")))
 	}
 	// Run after a load into com.apple, so com.apple exists: any failure
 	// is one.
@@ -244,9 +251,12 @@ func (g *IPv6Guard) checkBypass(ctx context.Context, main []byte, tun string) er
 		return err
 	}
 	if a := anchorsBefore(out.stdout); len(a) > 0 {
-		return fmt.Errorf("firewall: pf evaluates %s before the IPv6 guard's anchor: a quick pass there lets IPv6 past it", strings.Join(a, ", "))
+		found = append(found, fmt.Sprintf("pf evaluates %s before the IPv6 guard's anchor: a quick pass there lets IPv6 past it", strings.Join(a, ", ")))
 	}
-	return nil
+	if len(found) == 0 {
+		return nil
+	}
+	return errors.New("firewall: " + strings.Join(found, "; "))
 }
 
 // load loads e's anchor and reads it back. The load runs with pfctl's
@@ -443,7 +453,7 @@ func (g *IPv6Guard) takeReference(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("firewall: enable pf: %w", err)
 	}
-	g.killStates, g.bypassKilled = true, false // states made while pf was off
+	g.killStates, g.killedUnder = true, "" // states made while pf was off
 	t := pfToken{pid: out.pid}
 	v, perr := parseToken(out)
 	if perr == nil {

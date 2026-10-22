@@ -414,18 +414,19 @@ func TestIPv6GuardRepairsItsTableTurnedOff(t *testing.T) {
 	// guard's before the policy. The chain does.
 	change("the chain's policy", "chain", "inet", firewall.GuardTable, "output", "{ policy drop; }")
 	repaired("the chain's policy was changed")
-	out, err := exec.Command("ip", "netns", "exec", p.dev, "nft", "list", "chain", "inet", firewall.GuardTable, "output").CombinedOutput()
-	if err != nil || !strings.Contains(string(out), "policy accept;") {
-		t.Errorf("re-applied after the policy was changed: %v:\n%s", err, out)
+	if out := p.nft(t, "list", "chain", "inet", firewall.GuardTable, "output"); !strings.Contains(out, "policy accept;") {
+		t.Errorf("re-applied after the policy was changed:\n%s", out)
 	}
 }
 
-// nft runs nft in the device's namespace.
-func (p *pair) nft(t *testing.T, args ...string) {
+// nft runs nft in the device's namespace, and returns what it printed.
+func (p *pair) nft(t *testing.T, args ...string) string {
 	t.Helper()
-	if out, err := exec.Command("ip", append([]string{"netns", "exec", p.dev, "nft"}, args...)...).CombinedOutput(); err != nil {
+	out, err := exec.Command("ip", append([]string{"netns", "exec", p.dev, "nft"}, args...)...).CombinedOutput()
+	if err != nil {
 		t.Fatalf("nft %s: %v: %s", strings.Join(args, " "), err, out)
 	}
+	return string(out)
 }
 
 // A country-sized direct set (RU's IPv6: ~10k prefixes) goes into one

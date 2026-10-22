@@ -120,9 +120,7 @@
 // other tables. The guard trusts the links' mark, and checks only its own
 // table for who sets it, so a base chain in another table that sets the
 // mark at output before the guard's chain lets IPv6 out of a physical
-// interface, and isn't seen. (TP-126 added the table's flags, its other
-// chains and the policy's events; before, a dormant table and a foreign
-// chain in it were never repaired.)
+// interface, and isn't seen.
 //
 // The guard's first request is a dump of the inet tables. Its answer, and
 // only its answer, can make the guard unsupported: an error meaning no
@@ -160,12 +158,15 @@
 //   - an interface pf skips (`set skip on`) but lo0 and the utun, which
 //     the anchor passes anyway: pf evaluates no rule for its packets, and
 //     `-s rules` doesn't show it; `pfctl -s Interfaces -v` lists it as
-//     "<name> (skip)". A skipped name no interface has (`set skip on lo`,
-//     a group) counts too, on purpose: one could come;
+//     "<name> (skip)". The guard counts every name listed so, on purpose:
+//     whether pf lists a name no interface has (`set skip on lo`, a
+//     group), or marks the interfaces it prefixes (lo0), is for TP-096 to
+//     check on a Mac;
 //   - an anchor under com.apple whose name sorts before the guard's
 //     (`pfctl -a com.apple -s Anchors`): pf keeps anchors sorted by path,
 //     so it runs first, and a quick pass in it ends evaluation there. Its
-//     existence counts, not its rules; a stock Mac has only Apple's two.
+//     existence counts, not its rules; a stock Mac is expected to have
+//     only Apple's two (TP-096 checks).
 //
 // These are checked last in every apply, after the load and the enable,
 // so what pf does filter stays guarded meanwhile, and in every poll. The
@@ -257,20 +258,25 @@
 // the tunnel; and its own read-back can be refused the same way.
 //
 // pf passes a packet that matches a state without evaluating any rule
-// (its state policy is floating). So after a load, after enabling pf, and
-// after any apply that follows a failed one (a quick pass above the hook
-// keeps state by default, and its states outlive it) the guard lists the
-// states (`pfctl -s states`) and kills the IPv6 ones whose other end
-// isn't in the exempt table, each by its two ends, `pfctl -k <host's end>
-// -k <other end>` and the reverse; states to exempt destinations and IPv4
-// ones are left alone. An upstream's address isn't exempt for this: `-k`
-// names hosts, not ports, so its states go too, and DNS goes on through
-// its stateless rule. Killing a tunnelled connection's state is harmless
-// the same way: the anchor passes it statelessly. States made between two
-// polls while something bypassed the guard are killed at its next
-// successful apply, not at once. While one bypass lasts, the retries
-// don't kill states again (the bypass makes them anew) unless the anchor
-// is reloaded or pf enabled anew; the apply after it ends kills them.
+// (its state policy is floating). So the guard lists the states (`pfctl
+// -s states`) and kills the IPv6 ones whose other end isn't in the exempt
+// table, each by its two ends, `pfctl -k <host's end> -k <other end>` and
+// the reverse; states to exempt destinations and IPv4 ones are left
+// alone. An upstream's address isn't exempt for this: `-k` names hosts,
+// not ports, so its states go too, and DNS goes on through its stateless
+// rule. Killing a tunnelled connection's state is harmless the same way:
+// the anchor passes it statelessly.
+//
+// It kills them after a load and after enabling pf (states from before),
+// and after an apply that failed (a quick pass above the hook keeps state
+// by default, and its states outlive it), with one exception: while the
+// same bypasses last (checkBypass's verdict unchanged), the retries don't
+// kill again. What a bypass lets through needs no state, and the anchor
+// lets nothing else make one, so a kill would only take what the bypass
+// makes anew. A change to the bypasses (one more, one gone, all gone)
+// kills them, taking what the one gone let be made. A bypass that comes
+// and goes between two polls is seen by no apply, and its states live on
+// (RESIDUAL-RISKS.md RR11).
 //
 // # macOS: enabling pf by reference
 //
@@ -325,7 +331,8 @@
 //
 //   - Match MLD's hop limit (above).
 //   - See a quick pass inside an anchor the main ruleset evaluates before
-//     the hook (only one under com.apple that sorts first).
+//     the hook (TP-129). An anchor under com.apple that sorts before the
+//     guard's is seen (above).
 //   - Undo what lets IPv6 past it (above): it reports it.
 //   - Confine IPv4: that is the kill switch's (TP-048).
 //   - Find the hook when the agent starts at boot before the system loads

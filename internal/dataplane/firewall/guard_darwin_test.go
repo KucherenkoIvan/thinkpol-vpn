@@ -1049,35 +1049,54 @@ func TestAQuickPassAboveTheHookIsNotEnforced(t *testing.T) {
 // failure, retried), though it is in place for the others; and is again
 // once pf skips only lo0 and the utun.
 //
-// While the bypass lasts, the retries don't kill states over and over
-// (the bypass makes them again); the Apply after it ends kills those it
-// let be made.
+// While the same bypass lasts, the retries leave states alone (what it
+// lets through needs none, and it would make them again); a change to
+// the bypasses (another one coming, then going) kills them, and so does
+// the Apply after the last one ends.
 func TestASkippedInterfaceIsNotEnforced(t *testing.T) {
 	r := newRig(t)
 	r.pf.skip = []string{"en0", "lo0"}
 	g := r.guard()
-	err := g.Apply(context.Background(), exempt(t))
-	if err == nil || errors.Is(err, routetable.ErrGuardUnsupported) || !strings.Contains(err.Error(), "en0") {
-		t.Fatalf("%v, want an ordinary failure naming en0", err)
-	}
-	r.whole(t, exempt(t)) // en1 is guarded meanwhile
-	foreign := fakeState{"tcp", netip.MustParseAddrPort("[2001:db8:1::10]:51000"), netip.MustParseAddrPort("[2001:db8:ab::7]:443"), true}
-	r.pf.set(func(f *fakePF) { f.states = append(f.states, foreign) })
-	r.pf.forget()
-	for range 3 {
-		if err := g.Apply(context.Background(), exempt(t)); err == nil {
-			t.Fatal("applied while en0 is skipped")
+	apply := func(want bool, when string) {
+		t.Helper()
+		err := g.Apply(context.Background(), exempt(t))
+		if want && err != nil {
+			t.Fatalf("%s: %v", when, err)
+		}
+		if !want && (err == nil || errors.Is(err, routetable.ErrGuardUnsupported) || !strings.Contains(err.Error(), "en0")) {
+			t.Fatalf("%s: %v, want an ordinary failure naming en0", when, err)
 		}
 	}
-	if n := r.pf.ran("states") + r.pf.ran("-k"); n != 0 {
-		t.Errorf("the retries under the same bypass read or killed states %d times", n)
+	state := func(port uint16) fakeState {
+		s := fakeState{"tcp", netip.MustParseAddrPort("[2001:db8:1::10]:51000"), netip.MustParseAddrPort("[2001:db8:ab::7]:443"), true}
+		s.local = netip.AddrPortFrom(s.local.Addr(), port)
+		r.pf.set(func(f *fakePF) { f.states = append(f.states, s) })
+		return s
 	}
+	alive := func(s fakeState) bool { return slices.Contains(r.pf.stateList(), s) }
+
+	apply(false, "en0 skipped")
+	r.whole(t, exempt(t)) // en1 is guarded meanwhile
+	a := state(51001)
+	apply(false, "a retry")
+	apply(false, "another retry")
+	if !alive(a) {
+		t.Error("the retries under the same bypass killed states")
+	}
+	// Another bypass comes, and goes while the skip lasts.
+	r.pf.setAnchor("com.apple/0.before", &fakeAnchor{})
+	apply(false, "an anchor before ours too")
+	b := state(51002)
+	r.pf.set(func(f *fakePF) { delete(f.anchors, "com.apple/0.before") })
+	apply(false, "the anchor gone, the skip still there")
+	if alive(b) {
+		t.Error("a state made while the earlier anchor was there survived it")
+	}
+	c := state(51003)
 	r.pf.set(func(f *fakePF) { f.skip = []string{"lo0", "utun7"} })
-	if err := g.Apply(context.Background(), exempt(t)); err != nil {
-		t.Fatal(err)
-	}
+	apply(true, "the skip gone")
 	r.whole(t, exempt(t))
-	if slices.Contains(r.pf.stateList(), foreign) {
+	if alive(c) {
 		t.Error("a state made while en0 was skipped survived")
 	}
 }
