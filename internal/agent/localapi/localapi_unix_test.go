@@ -38,6 +38,14 @@ type fakeNode struct {
 	mu         sync.Mutex
 	st         agent.Status
 	connectErr error
+	// tun is what Diagnose reports of the TUN.
+	tun agent.InterfaceReport
+}
+
+func (n *fakeNode) Diagnose(context.Context) agent.Diagnostics {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return agent.Diagnostics{Status: n.st, TUN: n.tun}
 }
 
 func (n *fakeNode) SetRulePreset(_ context.Context, preset string) error {
@@ -111,7 +119,7 @@ func serve(t *testing.T, p Policy) *served {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	s.stop = cancel
-	srv := NewGRPCServer(ctx, Options{Node: s.node, Logs: s.logs, Log: slog.New(slog.DiscardHandler)}, p)
+	srv := NewGRPCServer(ctx, Options{Node: s.node, Logs: s.logs, Log: slog.New(slog.DiscardHandler), Version: testVersion}, p)
 	go func() { s.done <- grpckit.Serve(ctx, srv, l) }()
 	t.Cleanup(func() {
 		cancel()
@@ -346,10 +354,17 @@ func TestCallersAreCheckedByTheirCredentials(t *testing.T) {
 		t.Fatalf("stranger's logs: %v", err)
 	}
 
+	if _, err := c.Diagnose(ctx); !errors.Is(err, ErrPermissionDenied) {
+		t.Fatalf("stranger's diagnostics: %v", err)
+	}
+
 	member := serve(t, Policy{ServiceUID: uint32(os.Geteuid()) + 1, Group: uint32(os.Getegid()), HasGroup: true})
 	c = dial(t, member.socket)
 	if _, err := c.Connect(ctx); err != nil {
 		t.Fatalf("member's connect: %v", err)
+	}
+	if d, err := c.Diagnose(ctx); err != nil || d.GetSchemaVersion() != DiagSchemaVersion {
+		t.Fatalf("member's diagnostics: %v, %v", d, err)
 	}
 	err = c.TailLogs(ctx, 1, false, func([]string, uint64) error { return nil })
 	if !errors.Is(err, ErrPermissionDenied) {

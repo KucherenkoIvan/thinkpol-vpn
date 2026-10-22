@@ -198,6 +198,22 @@ func (p *report) set(f func(p *report)) {
 func (p *report) status() Status {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	return p.statusLocked()
+}
+
+// statusAndTUN is the status and its running data plane's TUN ("" while
+// it is down), taken together.
+func (p *report) statusAndTUN() (Status, string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	tun := ""
+	if p.engine != nil {
+		tun = p.engine.TUNName()
+	}
+	return p.statusLocked(), tun
+}
+
+func (p *report) statusLocked() Status {
 	s := Status{Mode: p.mode, Space: p.space, MapVersion: p.version, MapsRefused: p.mapsRefused, Removed: p.removed, Retrying: p.retrying, Listeners: p.listeners, DNSUpstreamsRefused: p.dnsUpstreamsRefused}
 	if p.mode != ModeServer {
 		s.RulePreset = p.preset

@@ -24,6 +24,7 @@ type Node interface {
 	Connect(ctx context.Context) error
 	Disconnect(ctx context.Context) error
 	SetRulePreset(ctx context.Context, preset string) error
+	Diagnose(ctx context.Context) agent.Diagnostics
 }
 
 // Options are what the local API serves, and where.
@@ -41,6 +42,8 @@ type Options struct {
 	// RetryAfter is how long to wait before serving again after the API
 	// failed; 0 is DefaultRetryAfter.
 	RetryAfter time.Duration
+	// Version is the agent's, for Diagnose's snapshot.
+	Version string
 }
 
 // DefaultRetryAfter paces the local API's attempts to serve again.
@@ -106,7 +109,7 @@ func NewGRPCServer(shutdown context.Context, o Options, p Policy) *grpc.Server {
 		opts = append(opts, grpckit.WithErrorCode(r.err.Code, r.code))
 	}
 	srv := grpckit.NewServer(opts...)
-	localapiv1.RegisterLocalServiceServer(srv, &server{node: o.Node, logs: o.Logs, shutdown: shutdown.Done()})
+	localapiv1.RegisterLocalServiceServer(srv, &server{node: o.Node, logs: o.Logs, version: o.Version, shutdown: shutdown.Done()})
 	return srv
 }
 
@@ -114,6 +117,7 @@ type server struct {
 	localapiv1.UnimplementedLocalServiceServer
 	node     Node
 	logs     *logring.Ring
+	version  string
 	shutdown <-chan struct{}
 
 	// The status watchers share: taken at most once per

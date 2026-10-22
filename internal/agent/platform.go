@@ -83,6 +83,8 @@ type Platform struct {
 	// RestoreDNS puts back what a crashed run left in the OS's resolver
 	// configuration, before anything of the node runs.
 	RestoreDNS func() error
+	// Inspect reads what the host shows of the node, for Diagnose.
+	Inspect Inspector
 }
 
 // clearNetwork removes what a crashed run left in the host's routing, in

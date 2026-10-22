@@ -184,6 +184,7 @@ Status, connect and disconnect, spaces, rule presets and the in-memory log, for 
 - **The API never takes the VPN down.** If it can't serve, the node runs on without it, retrying.
 - **A rule preset chosen through the API** is stored by the service and nothing else writes it; one that can't be read stops the node from starting rather than reading as "no rules".
 - **Nothing the API reports is a public address, a key or a secret** (S1, S4): ids are opaque, addresses are the overlay's, failures are named from fixed vocabularies. Clients sanitize every string they receive before showing it.
+- **`diag`** returns a versioned snapshot (its host parts, which name public addresses, are root's); see [`agent/localapi`](internal/agent/localapi/doc.go).
 
 #### Kill switch
 

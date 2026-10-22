@@ -515,6 +515,9 @@ func (e *Engine) Status() Status {
 	return s
 }
 
+// TUNName is the overlay interface's name, as the OS gave it.
+func (e *Engine) TUNName() string { return e.tunName }
+
 // Close stops the engine: the WireGuard devices, the router and the TUN,
 // the path layer, and the TUN's configuration.
 func (e *Engine) Close() error {

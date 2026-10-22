@@ -5,7 +5,7 @@ syntax = "proto3";
 // (DESIGN.md "Desktop client"). Nothing in it is a public address, a key
 // or a secret (PRD S1, S4): nodes and spaces are opaque ids (hex),
 // addresses are the overlay's, and what failed is named from fixed
-// vocabularies.
+// vocabularies. The exception is Diagnose's host parts, root's only.
 //
 // Who may call what is the service's: the socket's directory admits root
 // and the `thinkpol` group; every call checks the caller's credentials
@@ -45,6 +45,11 @@ service LocalService {
   // following, every new line until the client goes away or the service
   // stops. Root only: debug lines may quote the map.
   rpc TailLogs(TailLogsRequest) returns (stream TailLogsResponse);
+  // Diagnose takes a snapshot of what the node changed on the host and
+  // what the host shows of it (`thinkpol diag`), changing nothing. The
+  // group gets the parts without public addresses; the rest are root's,
+  // and the group's snapshot marks them unreadable.
+  rpc Diagnose(DiagnoseRequest) returns (DiagnoseResponse);
 }
 
 message GetStatusRequest {}
@@ -100,6 +105,44 @@ message TailLogsResponse {
   repeated string lines = 1;
   // Lines dropped from the ring before they could be sent.
   uint64 missed = 2;
+}
+
+message DiagnoseRequest {}
+
+message DiagnoseResponse {
+  Diagnostics diagnostics = 1;
+}
+
+// Diagnostics is `thinkpol diag`'s snapshot: the evidence a device run
+// records. A part the agent couldn't read has `unreadable` set to why,
+// and nothing else; a part without it was read, and what it lists is all
+// there is. No key, token or session id is in it; endpoints and
+// addresses are, in the root-only parts.
+message Diagnostics {
+  // The snapshot's schema; bumped when a field is removed or changes
+  // meaning, not when one is added.
+  uint32 schema_version = 1;
+  google.protobuf.Timestamp taken_at = 2;
+  // The agent's OS ("linux", "darwin") and version.
+  string os = 3;
+  string agent_version = 4;
+  // The status GetStatus serves.
+  Status status = 5;
+  // The overlay's TUN as the host reports it.
+  DiagInterface tun = 6;
+}
+
+// An interface as the host reports it.
+message DiagInterface {
+  string unreadable = 1;
+  string name = 2;
+  uint32 index = 3;
+  uint32 mtu = 4;
+  // Administratively up, and running (the OS's IFF_UP, IFF_RUNNING).
+  bool up = 5;
+  bool running = 6;
+  // Its addresses, each with its prefix length.
+  repeated string addresses = 7;
 }
 
 // A space the node is enrolled in. Names are the controller's: a node

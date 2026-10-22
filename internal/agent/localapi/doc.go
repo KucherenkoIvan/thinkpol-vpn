@@ -20,6 +20,8 @@
 //   - SetRulePreset.
 //   - TailLogs: the agent's in-memory log, its last lines and then, if
 //     asked, what follows.
+//   - Diagnose: a snapshot of what the node changed on the host and what
+//     the host shows of it (below).
 //
 // Connect and Disconnect bring a device's data plane up and down while the
 // service keeps running and keeps following its space's maps
@@ -93,6 +95,31 @@
 // rather than reading as no rules. A preset the map can't build is kept
 // and enforced failing closed, and the API says so
 // (`rule_preset_unavailable`, and the status).
+//
+// # Diagnostics
+//
+// Diagnose (`thinkpol diag`, `-o FILE` to write it at mode 0600) is the
+// evidence a device run records and is judged by afterwards (TP-091): one
+// JSON snapshot, protojson of [localapiv1.Diagnostics], in which every
+// part says why if the agent couldn't read it (`unreadable`), so "nothing
+// there" and "couldn't look" stay apart. Its schema has a version,
+// [DiagSchemaVersion], bumped when a field is removed or changes meaning;
+// a field added doesn't bump it, and a reader ignores fields it doesn't
+// know. Taking it changes nothing on the host. It holds:
+//
+//   - the schema version, when it was taken, the agent's OS and version;
+//   - the status GetStatus serves;
+//   - the overlay's TUN as the host reports it (its name, index, MTU, up
+//     and running flags, addresses), unreadable while the data plane is
+//     down.
+//
+// The snapshot holds no key, token or session id: what it carries comes
+// from the status, which holds none, and from reading the host, which
+// holds none of the node's. A test walks its schema for fields named for
+// one, and another looks for a device's keys and its links' credentials
+// in a real node's snapshot. The file is written beside its path and
+// renamed over it, so root writing into a directory others can write to
+// replaces a symlink there instead of following it.
 //
 // # What it reports
 //

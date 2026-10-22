@@ -27,7 +27,7 @@ const (
 	// AccessNone: nothing.
 	AccessNone Access = iota
 	// AccessControl: the status, the spaces, connect and disconnect, rule
-	// presets.
+	// presets, the diagnostics' parts without public addresses.
 	AccessControl
 	// AccessAdmin: everything, the agent's log too.
 	AccessAdmin
@@ -42,6 +42,7 @@ var methodAccess = map[string]Access{
 	localapiv1.LocalService_Connect_FullMethodName:       AccessControl,
 	localapiv1.LocalService_Disconnect_FullMethodName:    AccessControl,
 	localapiv1.LocalService_SetRulePreset_FullMethodName: AccessControl,
+	localapiv1.LocalService_Diagnose_FullMethodName:      AccessControl,
 	localapiv1.LocalService_TailLogs_FullMethodName:      AccessAdmin,
 }
 

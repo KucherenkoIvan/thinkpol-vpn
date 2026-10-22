@@ -58,6 +58,9 @@ func testPlatform() Platform {
 		Host:       testHost(),
 		LockHost:   func() (func(), error) { return func() {}, nil },
 		RestoreDNS: func() error { return nil },
+		Inspect: Inspector{
+			Interface: func(string) InterfaceReport { return InterfaceReport{Unreadable: "no interfaces in this test"} },
+		},
 	}
 }
 
