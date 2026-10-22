@@ -28,7 +28,7 @@ A recorded decision on the independent design review's point (2026-10-13, sectio
   - The seal's secret is per link: only the link's two ends hold it, plus the controller that built the map. So a datagram that authenticates proves "one of the two ends", and the sender id inside the seal is a claim.
   - An outsider gets nothing: an unknown connection id is dropped before any decryption, no worker is woken and nothing answers.
   - A replay is dropped, except after a supervisor restart (RR34, TP-069).
-  - A holder of one link's secret can abuse only that link: churn its reply addresses, spend its own space's share, get probe answers. WireGuard still authenticates every peer.
+  - A holder of one link's secret can, before WireGuard, take that link's reply address (while it keeps sending, if its sender's creation time is later), get probe answers, have frames relayed under a source id the node knows, and spend the listener's decryption, which every space on the node shares. WireGuard still authenticates every peer, so nothing forged gets into the tunnel.
   - A signature per datagram (option B) would not stop a stolen device, which holds the key, nor a copied datagram racing the original. It would add a second public-key layer and about 64 bytes per datagram.
   - The one place verify-without-forge matters is a gatekeeper that verifies for every space: noted in TP-063.
 - From TP-077's residual-risks research (2026-10-22). TP-062's Notes: "not among the owner's decisions and isn't written down".
