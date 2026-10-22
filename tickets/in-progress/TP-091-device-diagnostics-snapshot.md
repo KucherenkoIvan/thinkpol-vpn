@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: M
 depends_on: [TP-078]
 refs: [DESIGN#the-local-api]
-owner: ""
-branch: ""
+owner: "agent-tp-091"
+branch: "tp-091-device-diagnostics-snapshot"
 ---
 
 ## Goal
@@ -44,3 +44,4 @@ branch: ""
 
 ## Log
 - 2026-10-16 created in backlog (device-test kit rethink)
+- 2026-10-22 backlog → in-progress — owner: agent-tp-091, branch: tp-091-device-diagnostics-snapshot
