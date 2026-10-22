@@ -6,7 +6,7 @@
 
 // The local service API: how the CLI and the tray app control the node
 // agent on the same machine, over a Unix socket in a directory of its own
-// (DESIGN.md "Desktop client"). Nothing in it is a public address, a key
+// (docs/design/desktop-client.md "Desktop client"). Nothing in it is a public address, a key
 // or a secret (PRD S1, S4): nodes and spaces are opaque ids (hex),
 // addresses are the overlay's, and what failed is named from fixed
 // vocabularies.

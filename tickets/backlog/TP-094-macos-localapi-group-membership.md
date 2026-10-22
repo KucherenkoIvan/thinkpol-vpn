@@ -6,7 +6,7 @@ area: agent
 repo: thinkpol-vpn
 size: S
 depends_on: []
-refs: [DESIGN#the-local-api]
+refs: [docs/design/desktop-client.md#the-local-api]
 needs_human: macos
 owner: ""
 branch: ""

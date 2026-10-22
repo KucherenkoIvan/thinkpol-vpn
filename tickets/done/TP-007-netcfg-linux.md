@@ -6,7 +6,7 @@ area: dataplane/netcfg
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-001]
-refs: [N1, DESIGN#ipv6]
+refs: [N1, docs/design/security.md#ipv6]
 owner: "agent-tp-007"
 branch: "tp-007-netcfg-linux"
 ---

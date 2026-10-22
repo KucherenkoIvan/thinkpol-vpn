@@ -6,7 +6,7 @@ area: ui
 repo: thinkpol-vpn
 size: M
 depends_on: []
-refs: [A6, A7, A8, D2, D3, DESIGN#desktop-client, DESIGN#control-plane-the-controller-on-go-kernel]
+refs: [A6, A7, A8, D2, D3, docs/design/desktop-client.md#desktop-client, docs/design/control-plane.md#control-plane-the-controller-on-go-kernel]
 needs_human: decision
 owner: ""
 branch: ""

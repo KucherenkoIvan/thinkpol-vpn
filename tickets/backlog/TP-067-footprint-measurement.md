@@ -6,7 +6,7 @@ area: lab
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-012]
-refs: [PRD#non-functional-requirements, DESIGN#server-agent-one-worker-per-space]
+refs: [PRD#non-functional-requirements, docs/design/server-agent.md#server-agent-one-worker-per-space]
 owner: ""
 branch: ""
 ---

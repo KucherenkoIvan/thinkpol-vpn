@@ -6,7 +6,7 @@ area: cmd
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-003]
-refs: [DESIGN#joining]
+refs: [docs/design/control-plane.md#joining]
 owner: agent-tp-004
 branch: tp-004-dev-map-tooling
 ---

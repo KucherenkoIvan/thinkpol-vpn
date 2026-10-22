@@ -6,7 +6,7 @@ area: agent/supervisor
 repo: thinkpol-vpn
 size: S
 depends_on: []
-refs: [R1, DESIGN#ipv6]
+refs: [R1, docs/design/security.md#ipv6]
 owner: agent-opus
 branch: tp-072-stale-egress
 ---

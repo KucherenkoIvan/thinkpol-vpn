@@ -6,7 +6,7 @@ area: lab
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-029, TP-031, TP-032]
-refs: [DESIGN#milestones]
+refs: [docs/design/milestones.md#milestones]
 owner: ""
 branch: ""
 ---

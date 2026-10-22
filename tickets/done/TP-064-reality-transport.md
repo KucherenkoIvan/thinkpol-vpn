@@ -6,7 +6,7 @@ area: dataplane/transport
 repo: thinkpol-vpn
 size: L
 depends_on: []
-refs: [C2, DESIGN#transports]
+refs: [C2, docs/design/transports.md#transports]
 owner: "glm-tp064"
 branch: "tp-064-reality-prototype"
 ---

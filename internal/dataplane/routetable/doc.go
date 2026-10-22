@@ -1,5 +1,5 @@
 // Package routetable enforces routing rules in the OS routing table
-// (DESIGN.md "Routing rules and DNS", route-table mode): everything enters
+// (docs/design/routing.md "Routing rules and DNS", route-table mode): everything enters
 // the TUN except the rules' direct destinations and the links' endpoints,
 // which leave through the physical default route. It matches by IP only
 // (geoip, cidr); domain rules are skipped with a warning.
@@ -272,5 +272,5 @@
 // After a crash IPv6 stays unreachable but for direct destinations until
 // the agent starts again, bound sockets included (the guard stays too);
 // IPv4 flows, as with the kill switch off. That is the M1 behaviour; the
-// decided posture is stricter (DESIGN.md "Kill switch").
+// decided posture is stricter (docs/design/desktop-client.md "Kill switch").
 package routetable

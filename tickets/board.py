@@ -20,6 +20,29 @@ COLUMNS = ["backlog", "in-progress", "blocked", "review", "has-errors", "done"]
 REQUIRED = ["id", "title", "milestone", "area", "repo", "size", "depends_on"]
 SIZES = {"S", "M", "L", "epic"}
 NEEDS_HUMAN = {"decision", "macos", "windows", "person"}
+PRD_REF = re.compile(r"[A-Z]\d+$")
+DESIGN_REF = re.compile(r"(.+)#([\w-]+)$")
+
+
+def gh_slug(heading):
+    """A heading's anchor slug the way GitHub computes it."""
+    s = heading.strip().lower()
+    s = re.sub(r"[^\w\- ]", "", s, flags=re.UNICODE)
+    return s.replace(" ", "-")
+
+
+def ref_targets():
+    """Files a `refs:` entry may point into, with each one's heading anchors."""
+    heads = {}
+    for rel in ["DESIGN.md", "PRD.md"] + sorted(
+        f"docs/design/{p.name}" for p in (ROOT.parent / "docs" / "design").glob("*.md")
+    ):
+        path = ROOT.parent / rel
+        if not path.exists():
+            continue
+        heads[rel] = {gh_slug(m.group(1))
+                      for m in re.finditer(r"^#{1,6}\s+(.+)$", path.read_text(), re.M)}
+    return heads
 
 
 def parse(path):
@@ -93,6 +116,7 @@ def ready(tickets):
 
 def check(tickets):
     problems = []
+    heads = ref_targets()
     for t in tickets.values():
         for key in REQUIRED:
             if key not in t:
@@ -106,6 +130,17 @@ def check(tickets):
         for dep in t.get("depends_on", []):
             if dep not in tickets:
                 problems.append(f"{t['id']}: depends on unknown {dep}")
+        for ref in t.get("refs", []):
+            if PRD_REF.fullmatch(ref):
+                continue
+            m = DESIGN_REF.match(ref)
+            target = m.group(1) if m else ref
+            if target in ("DESIGN", "PRD"):
+                target += ".md"
+            if target not in heads:
+                problems.append(f"{t['id']}: ref {ref} names neither a PRD requirement nor a design file's anchor")
+            elif m and m.group(2) not in heads[target]:
+                problems.append(f"{t['id']}: ref {ref} dangles")
         if t["column"] == "in-progress" and not (t.get("owner") and t.get("branch")):
             problems.append(f"{t['id']}: in progress without owner/branch")
     # dependency cycles

@@ -1,5 +1,5 @@
 // Package transport is the port for one link between two adjacent nodes:
-// authentication, framing and traffic shape (DESIGN.md "Data plane",
+// authentication, framing and traffic shape (docs/design/overlay.md "Data plane",
 // "Transports own traffic shape"). Each transport is an adapter in its own
 // subpackage, transport/<name>; transport/transporttest is the conformance
 // suite every adapter passes, and transport/memory is an in-process adapter
@@ -123,7 +123,7 @@
 // # Shared listeners
 //
 // On a server node the supervisor owns the public address for every space
-// (DESIGN.md "Server agent: one worker per space"). A transport that can
+// (docs/design/server-agent.md "Server agent: one worker per space"). A transport that can
 // sit behind it gives it a router ([PacketRouter], [StreamRouter]), which
 // authenticates each datagram or the start of each connection and says
 // which space's worker it belongs to. A [PacketRoutable] datagram

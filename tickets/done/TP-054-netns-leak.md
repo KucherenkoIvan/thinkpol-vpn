@@ -6,7 +6,7 @@ area: agent
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-009, TP-002]
-refs: [DESIGN#repository-layout]
+refs: [DESIGN.md#repository-layout]
 owner: "agent-tp-054"
 branch: "tp-054-netns-leak"
 ---

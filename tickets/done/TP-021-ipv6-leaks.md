@@ -6,7 +6,7 @@ area: dataplane
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-018, TP-019]
-refs: [D6, DESIGN#ipv6]
+refs: [D6, docs/design/security.md#ipv6]
 owner: "agent-tp-021"
 branch: "tp-021-ipv6-leaks"
 ---

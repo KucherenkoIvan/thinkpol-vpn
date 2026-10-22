@@ -6,7 +6,7 @@ area: features
 repo: thinkpol-vpn
 size: epic
 depends_on: [TP-023]
-refs: [A1, A2, A6, DESIGN#control-plane-the-controller-on-go-kernel]
+refs: [A1, A2, A6, docs/design/control-plane.md#control-plane-the-controller-on-go-kernel]
 owner: ""
 branch: ""
 ---

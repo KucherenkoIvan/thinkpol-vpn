@@ -26,7 +26,7 @@ const (
 	// and sockets.
 	ModeDevice Mode = "device"
 	// ModeServer runs a supervisor that owns the public listeners and one
-	// sandboxed worker per space (DESIGN.md "Server agent").
+	// sandboxed worker per space (docs/design/server-agent.md "Server agent").
 	ModeServer Mode = "server"
 )
 
@@ -61,7 +61,7 @@ type Config struct {
 	// APIGroup is the group (a name or a gid) whose members may use the
 	// local API besides root; if no such group exists, only root may.
 	APIGroup string `env:"THINKPOL_API_GROUP" default:"thinkpol" flag:"api-group" help:"the group whose members may use the local API besides root"`
-	// DNS runs the node's resolver (DESIGN.md "DNS is routing"): a
+	// DNS runs the node's resolver (docs/design/routing.md "DNS is routing"): a
 	// device's answers its overlay names and resolves the rest by its
 	// rules, and the OS resolves through it while the device is
 	// connected; an exit's is the resolver devices ask through the

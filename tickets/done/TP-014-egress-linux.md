@@ -6,7 +6,7 @@ area: dataplane/egress
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-009, TP-013]
-refs: [R1, DESIGN#ipv6]
+refs: [R1, docs/design/security.md#ipv6]
 owner: "agent-tp-014"
 branch: "tp-014-egress-linux"
 ---

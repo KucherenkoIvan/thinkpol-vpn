@@ -7,7 +7,7 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
 
-// Names is a rule list compiled for DNS names (DESIGN.md "DNS is
+// Names is a rule list compiled for DNS names (docs/design/routing.md "DNS is
 // routing"): the action of the first rule that matches a name, which
 // decides where the name is resolved: direct names by the domestic
 // upstream, a chain's through the tunnel at its exit, blocked ones

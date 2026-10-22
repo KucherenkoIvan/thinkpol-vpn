@@ -1,5 +1,5 @@
 // Package shaping holds the rules of the map's shaping message,
-// thinkpol.transport.v1.Shaping (PRD C6, DESIGN.md "Transports own traffic
+// thinkpol.transport.v1.Shaping (PRD C6, docs/design/transports.md "Transports own traffic
 // shape"), in one place for both its users: netmap's builder, which never
 // publishes shaping no node could read, and the transport port
 // (internal/dataplane/transport), which turns it into a transport.Shaping

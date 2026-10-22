@@ -7,7 +7,7 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 )
 
-// Router routes datagrams for a shared listener (DESIGN.md "Server agent:
+// Router routes datagrams for a shared listener (docs/design/server-agent.md "Server agent:
 // one worker per space"): it finds the credential by connection id,
 // authenticates the datagram, checks its timestamp and filters replays per
 // credential exactly as a Listener does, then the supervisor forwards it

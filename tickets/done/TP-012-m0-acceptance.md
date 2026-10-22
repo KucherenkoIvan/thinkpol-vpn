@@ -6,7 +6,7 @@ area: lab
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-002, TP-011]
-refs: [C1, DESIGN#milestones]
+refs: [C1, docs/design/milestones.md#milestones]
 owner: "agent-tp-012"
 branch: "tp-012-m0-acceptance"
 ---

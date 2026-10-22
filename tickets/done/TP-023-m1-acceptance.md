@@ -6,7 +6,7 @@ area: lab
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-013, TP-014, TP-017, TP-019, TP-020, TP-021, TP-022, TP-078, TP-079, TP-092]
-refs: [N3, N8, R1, R2, R3, R4, R9, D1, D6, D8, DESIGN#milestones]
+refs: [N3, N8, R1, R2, R3, R4, R9, D1, D6, D8, docs/design/milestones.md#milestones]
 needs_human: macos
 owner: glm-tp023
 branch: tp-023-m1-acceptance

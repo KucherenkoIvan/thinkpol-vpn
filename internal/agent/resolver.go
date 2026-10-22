@@ -223,7 +223,7 @@ func sameSystem(a, b dns.SystemConfig) bool {
 
 // defaultWorkerUpstreams are the upstreams an exit's resolver asks when
 // -dns-upstream is unset: Quad9 then Cloudflare over IPv4, then both
-// over IPv6 (DESIGN.md "Upstreams"). workerUpstreams puts the family the
+// over IPv6 (docs/design/routing.md "Upstreams"). workerUpstreams puts the family the
 // uplink carries first when it carries exactly one, so a single-family
 // exit doesn't wait out a dead family's timeout.
 var defaultWorkerUpstreams = []netip.AddrPort{

@@ -4,7 +4,7 @@
 // default route, so each egress gets a device of its own: the overlay
 // device for device-to-device peers and every peer that isn't a chain's
 // exit, and one device for each exit that a chain the routing rules use
-// sends traffic to (see package dataplane's layout and DESIGN.md "Routing
+// sends traffic to (see package dataplane's layout and docs/design/routing.md "Routing
 // rules and DNS").
 //
 // WireGuard is the inner layer only and never touches the network: each

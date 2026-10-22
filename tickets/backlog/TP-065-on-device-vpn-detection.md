@@ -6,7 +6,7 @@ area: research
 repo: thinkpol-vpn
 size: M
 depends_on: []
-refs: [DESIGN#threat-model]
+refs: [docs/design/security.md#threat-model]
 owner: ""
 branch: ""
 ---

@@ -84,7 +84,7 @@ func (r *Registry) Names() []string {
 }
 
 // PacketRouter is a datagram transport's half of a server node's shared
-// listener (DESIGN.md "Server agent: one worker per space"): the supervisor
+// listener (docs/design/server-agent.md "Server agent: one worker per space"): the supervisor
 // owns the public address and asks the router whose link each datagram is,
 // then hands it to that space's worker. Anything not Routed goes to the
 // camouflage and never reaches a worker. Rejected lists the peer links of

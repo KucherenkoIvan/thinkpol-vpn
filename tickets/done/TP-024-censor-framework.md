@@ -6,7 +6,7 @@ area: lab/censor
 repo: thinkpol-vpn
 size: L
 depends_on: [TP-012]
-refs: [C4, DESIGN#censor-lab]
+refs: [C4, docs/design/lab.md#censor-lab]
 owner: "claude-tp024-r3"
 branch: "tp-024-censor-framework"
 ---

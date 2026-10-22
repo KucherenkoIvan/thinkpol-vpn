@@ -6,7 +6,7 @@ area: dataplane
 repo: thinkpol-vpn
 size: L
 depends_on: [TP-006, TP-007]
-refs: [N1, N2, C1, DESIGN#data-plane-every-node-one-binary]
+refs: [N1, N2, C1, docs/design/overlay.md#data-plane-every-node-one-binary]
 owner: agent-tp-008
 branch: tp-008-tun-wireguard-router
 ---

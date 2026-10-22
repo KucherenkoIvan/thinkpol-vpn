@@ -1,5 +1,5 @@
 // Package router sits between the overlay interface (the TUN) and the
-// WireGuard devices, one per egress (DESIGN.md "Data plane"). It reads every
+// WireGuard devices, one per egress (docs/design/overlay.md "Data plane"). It reads every
 // packet the TUN hands it, classifies it by destination with a
 // longest-prefix match, and queues it on the chosen egress: a virtual
 // tun.Device that one WireGuard device reads as its own TUN. Packets a

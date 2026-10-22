@@ -6,7 +6,7 @@ area: agent
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-078]
-refs: [DESIGN#the-local-api]
+refs: [docs/design/desktop-client.md#the-local-api]
 owner: ""
 branch: ""
 ---

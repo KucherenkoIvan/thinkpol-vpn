@@ -7,7 +7,7 @@ import (
 )
 
 // LocalRulesFile, in a device's state directory, is the device's own
-// routing choice (DESIGN.md "Routing rules and DNS"): a rules.Local in its
+// routing choice (docs/design/routing.md "Routing rules and DNS"): a rules.Local in its
 // text form, the preset its rules start from and its own rules ahead of
 // it. Only the service writes it, when the local API asks
 // (SetRulePreset); it is read like the node's other files, owned by the

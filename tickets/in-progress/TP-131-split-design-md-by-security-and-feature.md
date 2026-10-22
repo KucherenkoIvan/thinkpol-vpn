@@ -23,7 +23,7 @@ DESIGN.md stops being one file at its size limit. Security has its own document,
   - `docs/design/security.md`: threat model, rules (including rule 7 and its exceptions), the leak guard and fail-closed invariants, node safety.
   - One file per feature area. Candidates: the overlay and the signed map; transports and the server agent; routing, rules and DNS; the control plane, joining and recovery; the desktop client and the local API; the censor lab; milestones.
   - DESIGN.md keeps: what the system is, the architecture overview, the index of design files and of package docs ("Where the mechanism lives"), and the links to RESIDUAL-RISKS.md and PRD.md.
-- Every `DESIGN#anchor` cited in tickets, code comments, PRD.md, RESIDUAL-RISKS.md, AGENTS.md, README.md, lab docs and package docs is updated to the new file and heading. A script lists every reference before and after, and none dangles.
+- Every design-section citation in tickets, code comments, PRD.md, RESIDUAL-RISKS.md, AGENTS.md, README.md, lab docs and package docs is updated to the new file and heading. A script lists every reference before and after, and none dangles.
 - AGENTS.md and tickets/README.md say which file a change updates.
 - Docs only: no text is rewritten except to fit the move. Moved sections keep their words.
 

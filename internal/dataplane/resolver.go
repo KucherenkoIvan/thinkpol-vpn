@@ -61,7 +61,7 @@ func (e *Engine) updateDNS() {
 	}
 }
 
-// dnsConfig is what the node's resolver serves now (DESIGN.md "DNS is
+// dnsConfig is what the node's resolver serves now (docs/design/routing.md "DNS is
 // routing"):
 //
 //   - a device's, on its overlay addresses, for itself only: the names of

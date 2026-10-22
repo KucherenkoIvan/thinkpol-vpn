@@ -6,7 +6,7 @@ area: agent
 repo: thinkpol-vpn
 size: L
 depends_on: []
-refs: [C2, N6, S1, DESIGN#server-agent-one-worker-per-space]
+refs: [C2, N6, S1, docs/design/server-agent.md#server-agent-one-worker-per-space]
 owner: ""
 branch: ""
 ---

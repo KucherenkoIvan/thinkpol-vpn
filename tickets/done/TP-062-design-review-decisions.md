@@ -6,7 +6,7 @@ area: docs
 repo: thinkpol-vpn
 size: M
 depends_on: []
-refs: [DESIGN#threat-model, DESIGN#server-agent-one-worker-per-space, A2, D4]
+refs: [docs/design/security.md#threat-model, docs/design/server-agent.md#server-agent-one-worker-per-space, A2, D4]
 owner: "agent-design-decisions"
 branch: "tp-062-design-review-decisions"
 ---

@@ -6,7 +6,7 @@ area: dataplane/netcfg
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-007, TP-015, TP-016]
-refs: [R2, DESIGN#routing-rules-and-dns]
+refs: [R2, docs/design/routing.md#routing-rules-and-dns]
 owner: "agent-tp-018"
 branch: "tp-018-route-table-linux"
 ---

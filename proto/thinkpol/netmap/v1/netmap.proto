@@ -1,4 +1,4 @@
-// The signed network map (DESIGN.md "The signed map"). Only internal/netmap
+// The signed network map (docs/design/control-plane.md "The signed map"). Only internal/netmap
 // reads or writes it (depguard enforces this); it owns the invariants below.
 syntax = "proto3";
 
@@ -107,7 +107,7 @@ message Section {
   // The blobs this node uses, named; each is in the header.
   repeated BlobRef blobs = 10;
   // The space's default routing rules, in order: the first that matches a
-  // destination decides it (DESIGN.md "Routing rules and DNS"). A device
+  // destination decides it (docs/design/routing.md "Routing rules and DNS"). A device
   // may override them locally. Older readers ignore rules, chains and
   // presets, and route nothing outside the overlay through the tunnel.
   repeated Rule rules = 11;
@@ -116,9 +116,9 @@ message Section {
   // What a device's rule presets are built from.
   RulePresets presets = 13;
   // The space's name, the zone of its overlay names
-  // (`<node>.<space>.internal`, DESIGN.md "Routing rules and DNS"). Only
+  // (`<node>.<space>.internal`, docs/design/routing.md "Routing rules and DNS"). Only
   // devices' sections have names: a server's holds no member names
-  // (DESIGN.md "Node safety"). Empty: no overlay names.
+  // (docs/design/security.md "Node safety"). Empty: no overlay names.
   string space_name = 14;
 }
 
