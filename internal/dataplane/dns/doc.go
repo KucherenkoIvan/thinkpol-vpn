@@ -187,8 +187,14 @@
 // the OS's resolver and its uplink servers
 // (/run/systemd/resolve/resolv.conf) are the OS's own: they are read
 // again every 5 s and become the domestic upstream when they change. A
-// missing or unreadable uplink file is a failed read: a stub host whose
-// resolved never writes that file stays stale.
+// missing, unreadable or empty uplink file is a failed read: a stub host
+// whose resolved never writes that file stays stale. An empty one is
+// never an answer with no upstreams: resolved's writer writes its header
+// comment even when it knows no servers, and replaces the file
+// atomically (a temporary file renamed over it), so a zero-byte uplink
+// is a file caught mid-write or truncated, and the rule assumes
+// resolved's writer. An empty /etc/resolv.conf itself is still a good
+// read (TP-117 owns that case).
 //
 // # Linux: /etc/resolv.conf
 //
@@ -212,7 +218,7 @@
 // resolved's uplink file, and if that yields nothing the previous
 // upstreams are kept (and the log says to set `-dns-upstream`). Behind
 // the stub, a read of the OS's resolvers is a read of the uplink file;
-// a missing file or a dangling link is a failed read.
+// a missing file, a dangling link or an empty one is a failed read.
 //
 // # macOS: configd's dynamic store
 //

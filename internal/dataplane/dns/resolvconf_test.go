@@ -71,15 +71,14 @@ func readString(t *testing.T, path string) string {
 }
 
 // writeFileAtomic puts content at a file the way the product's own
-// writers do — a temporary file, then a rename — so a watcher reading
-// the file never sees os.WriteFile's empty intermediate state.
+// writers do (replace with writeNew: a new file, then a rename), so a
+// watcher reading the file never sees a half-written intermediate state.
+// Every test write to a file a watcher reads goes through it; writes to
+// files nothing watches may write directly.
 func writeFileAtomic(t *testing.T, path, content string) {
 	t.Helper()
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
+	err := replace(path, func(tmp string) error { return writeNew(tmp, []byte(content)) })
+	if err != nil {
 		t.Fatal(err)
 	}
 }
@@ -491,8 +490,10 @@ func TestResolvConfWhileUntoldAStubTargetWithoutUplinkWarnsNothing(t *testing.T)
 
 // An existing but empty uplink file is a failed read, not a good read
 // with no upstreams: a zero-byte read cannot be told from a half-written
-// file, and while untold a false "no upstreams" would clear the
-// staleness for good, while a failed read only waits for the next tick.
+// file. On this path a false "no upstreams" told as the first good read
+// clears the staleness for good — a later read of the same resolv.conf
+// tells nothing, however the uplink file reads — while a failed read
+// only waits for the next tick.
 func TestResolvConfAnEmptyUplinkFileIsAFailedRead(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "real.conf")
@@ -514,8 +515,8 @@ func TestResolvConfAnEmptyUplinkFileIsAFailedRead(t *testing.T) {
 	writeFileAtomic(t, target, "nameserver 127.0.0.53\n")
 	applyOnce(t, r)
 	toldNothing(t, told)
-	// The uplink file is there but empty — what a half-written one looks
-	// like finished: still no answer.
+	// The uplink file is there but empty, as a file caught mid-write
+	// reads: no answer yet.
 	writeFileAtomic(t, uplink, "")
 	applyOnce(t, r)
 	toldNothing(t, told)
@@ -629,6 +630,15 @@ func TestSystemUpstreams(t *testing.T) {
 	write(etc, "nameserver 127.0.0.53\noptions edns0 trust-ad\n")
 	write(uplink, "nameserver 198.51.100.53\nnameserver 100.64.0.2\n")
 	check("through systemd-resolved, without the node's own", "198.51.100.53")
+	// An existing but empty uplink file is a failed read, not a good
+	// read with no upstreams: SystemUpstreams then errors, so a startup
+	// while resolved is mid-write reports the resolvers unknown instead
+	// of answering none.
+	write(etc, "nameserver 127.0.0.53\n")
+	write(uplink, "")
+	if _, err := upstreamsFrom(etc, uplink, own); err == nil || !strings.Contains(err.Error(), "is empty") {
+		t.Errorf("a stub resolv.conf with an empty uplink: %v, want the failed read", err)
+	}
 	if err := os.Remove(uplink); err != nil {
 		t.Fatal(err)
 	}

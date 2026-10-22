@@ -163,8 +163,10 @@ func TestResolvedAFailedReadKeepsThePreviousServers(t *testing.T) {
 
 // An existing but empty uplink file is a failed read, not a good read
 // with no upstreams: a zero-byte read cannot be told from a half-written
-// file, and while untold a false "no upstreams" would clear the
-// staleness for good, while a failed read only waits for the next tick.
+// file. Unlike the resolv.conf path, a later tick here compares against
+// the servers last seen and tells on the next change, so the harm is the
+// false "no upstreams" itself: it is told as the first good read and
+// stands until the uplink file's next change.
 func TestResolvedAnEmptyUplinkFileIsAFailedRead(t *testing.T) {
 	uplink := filepath.Join(t.TempDir(), "uplink.conf") // missing: the first read fails
 	told := make(chan []netip.Addr, 8)
@@ -175,8 +177,8 @@ func TestResolvedAnEmptyUplinkFileIsAFailedRead(t *testing.T) {
 	if p := r.Problem(); !errors.Is(p, ErrUpstreamsStale) {
 		t.Errorf("problem after a failed first read: %v", p)
 	}
-	// The file is there but empty — what a half-written one looks like
-	// finished: still no answer.
+	// The file is there but empty, as a file caught mid-write reads: no
+	// answer yet.
 	if err := os.WriteFile(uplink, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}

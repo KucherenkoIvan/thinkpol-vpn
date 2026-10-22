@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
-	"os"
 	"slices"
 	"sync"
 	"time"
@@ -280,13 +279,12 @@ func (r *resolved) check() error {
 	return nil
 }
 
-// read is a read of the uplink file: the servers it names, and ok false
-// when the file can't be read or is empty — a zero-byte read cannot be
-// told from a half-written file. A failed read, not an empty answer.
+// read is a read of the uplink file through readUplink: a missing,
+// unreadable or empty file is a failed read, not an empty answer.
 // Called with r.mu held, only when uplink.
 func (r *resolved) read() (ups []netip.Addr, ok bool) {
-	b, err := os.ReadFile(r.uplinkFile)
-	if err != nil || len(b) == 0 {
+	b, err := readUplink(r.uplinkFile)
+	if err != nil {
 		return nil, false
 	}
 	ups, uerr := upstreamsFromContent(b, r.uplinkFile, r.cfg.Servers)
