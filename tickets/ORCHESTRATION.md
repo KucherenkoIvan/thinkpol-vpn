@@ -109,7 +109,7 @@ Made by the project owner after a design and code-quality review of `rewrite` at
 Made by the project owner at the end of the consolidation phase.
 
 - **Install and diagnostics first:** service install (TP-046) and `thinkpol diag` (TP-091). Then the disguised transport (TP-087, `reality`) and the censor lab (TP-089, then TP-025, TP-026, TP-032).
-- **Iterate until proven to work.** Each lane lands in small slices that are each shown working in the lab (and on a device where the ticket needs one) before the next slice starts.
+- **Iterate until proven to work.** Each lane lands in small slices, each shown working in the lab before the next starts. A device run takes the owner's time, so it happens once per ticket, at its end, after review round 1 (Decisions, 2026-10-15), unless a slice can't be shown working without one.
 - **Device harness (TP-082):** design first. The owner reviews the design before any prototype.
 
 ## Design documents (2026-10-22)
