@@ -4,33 +4,11 @@ A self-hosted virtual network that survives a censor: your devices and VPS nodes
 
 Built for taste, not for a deadline: every layer is a port with swappable adapters, so the interesting parts (transports, routing policy, path selection) stay easy to change. Product name **thinkpol-vpn**; the binary is **`thinkpol`** (split into `thinkpol-<role>` binaries only if a real need appears). Requirements, users and the release plan are in [PRD.md](PRD.md); this document is how.
 
-This document is the model: what must stay true, and why. The mechanism (numbers, paths, OS details) is in the package docs, listed in [Where the mechanism lives](#where-the-mechanism-lives). What the design accepts falling short of is in [RESIDUAL-RISKS.md](RESIDUAL-RISKS.md), each case with its ticket (none for what the threat model leaves undefended); `RRn` below names its rows.
+This document is the model: what must stay true, and why. The mechanism (numbers, paths, OS details) is in the package docs, listed in [Where the mechanism lives](#where-the-mechanism-lives). What the design accepts falling short of is in [RESIDUAL-RISKS.md](RESIDUAL-RISKS.md), each case with its ticket (none for what the threat model leaves undefended).
 
-## Threat model
+## Security
 
-The censor this is built against, and the feature that answers each technique:
-
-| Censor technique | Answer |
-|---|---|
-| **DPI** — protocol fingerprints (WireGuard, OpenVPN), SNI and IP blocklists | WireGuard is never on the wire; links between nodes use **transports** that look like ordinary traffic |
-| **Active probing** — connecting to a suspected server to see what answers | Transports authenticate before revealing anything; unauthenticated connections are forwarded to a real site (camouflage target; not yet: RR30) |
-| **Profiling** — traffic shape, packet sizes and timing, TLS-in-TLS patterns, TLS fingerprints (JA3/JA4) | Browser-grade TLS fingerprints (uTLS); padding, batching and timing in the transport (the shaping contract; tuned by the lab) |
-| **Whitelists** — only approved destinations reachable | **Chains**: the first hop is a whitelisted (typically domestic) VPS, which relays to a foreign exit. Disguise alone can't pass a whitelist. Whitelisted addresses are scarce, so **one entry serves several spaces**. An allowlisted entry exists only where someone already controls an approved address (PRD Decisions, "Whitelist scope"): thinkpol uses one when it exists and doesn't promise a way past whitelist mode without one. Under whitelist mode only TCP passes, even to listed addresses |
-| **Seizure or inspection of a node** — in-country entries sit in the censor's jurisdiction | **Nodes know only what they need**: their own part of the map, opaque ids, no logs on disk, telemetry only in memory and sealed (see Node safety) |
-| **Seizure or compromise of a member device** — it sits in the censor's jurisdiction and keeps its key on disk | Not prevented; bounded. The device holds valid credentials, so an entry can't tell the censor from the member, and nothing in telemetry detects it. Its section shows its entries' endpoints, its chains, rules and peer ids, and it reaches whatever the member could. **Per-device grants (A3)** bound the damage: only the chains and devices it was granted. **Revocation** is a new map without the device and spreads by gossip as soon as one honest entry is reachable |
-| **Apps on a member's device** — government-affiliated apps that probe whether blocked services answer and look for VPN state: interfaces, routes, DNS, reachability | Partly hidden, honestly. Can't be hidden: a TUN (`utun`) interface and its routes are visible to every local app, so is the resolver's configuration, and a blocked service that answers shows that something carries it; Android's VpnService is detectable by design. What helps: "all but domestic" keeps domestic apps' traffic on the domestic path (not the interface or the routes). Per-app split tunnelling in userspace mode is the later mitigation |
-
-Not defended against: a censor that blocks everything foreign, a node owner abusing what an entry inherently sees (member IPs and traffic volume on its links) or running a modified binary (what the PRD says a node owner never sees holds for an owner running the honest one), and traffic analysis by a global observer (RESIDUAL-RISKS.md, Not defended).
-
-## Rules
-
-1. **WireGuard is the inner layer only.** It provides end-to-end crypto, per-peer routing and rekeying; it never touches the network directly. Everything it emits goes through the path layer and a transport; on macOS a foreign host route to a peer's overlay address bypasses it (RR23).
-2. **The controller is never a runtime dependency.** Configuration is a **signed network map**, not a live API. Nodes keep the last valid map indefinitely; with the controller switched off, the network keeps working and only stops changing.
-3. **Chains are core, not an add-on.** A route to the internet is an ordered list of hops, chosen per destination by routing rules.
-4. **No home-made crypto.** WireGuard (via wireguard-go), standard TLS, and NaCl-style sealed boxes. The project's own code decides *where* bytes go and *what they look like*, never how they are encrypted.
-5. **Nodes know only what they need.** Every node can read only its own part of the map, and keeps nothing on disk it could do without.
-6. **Spaces never touch.** On a shared node, each space gets its own network stack; nothing (packets, routes, DNS, telemetry) crosses between them.
-7. **What a node can't resolve fails closed, with named exceptions.** A list not fetched, a matcher, action or shaping field it doesn't know, a preset the map can't build: none of them widens what goes direct or what a transport reveals; they block or refuse, and health says so. The exceptions are decisions, each a residual row: a section without rules, or with rules its node can't read, sends everything direct (RR28); an OS that can't host the IPv6 leak guard still connects (RR10, RR12); and until the node's own ceiling exists, the map alone decides a node's role (RR42).
+The threat model, the rules, the IPv6 leak guard, the kill switch and node safety are in [security](docs/design/security.md). Read it first: every other design file assumes it.
 
 ## Architecture
 
@@ -40,12 +18,12 @@ Each area's design is a file of its own under `docs/design/`; this file is the e
 
 | File | Topic |
 |---|---|
-| [Security](docs/design/security.md) | the threat model, the rules, the IPv6 leak guard, node safety |
-| [Overlay](docs/design/overlay.md) | the data plane, destination routing, direct paths |
+| [Security](docs/design/security.md) | the threat model, the rules, the IPv6 leak guard, the kill switch, node safety |
+| [Overlay](docs/design/overlay.md) | the data plane, IPv6 addressing, destination routing, direct paths, the node agent |
 | [Transports](docs/design/transports.md) | the transport port and traffic shape |
 | [Server agent](docs/design/server-agent.md) | the supervisor, one worker per space, egress |
 | [Routing](docs/design/routing.md) | routing rules, the route table, DNS, lists |
-| [Desktop client](docs/design/desktop-client.md) | the client, the local API, the kill switch, the node agent |
+| [Desktop client](docs/design/desktop-client.md) | the client and the local API |
 | [Control plane](docs/design/control-plane.md) | the controller, the signed map, joining, kernel usage |
 | [Censor lab](docs/design/lab.md) | the lab and its censor modules |
 | [Milestones](docs/design/milestones.md) | the done-when checks, out of scope |

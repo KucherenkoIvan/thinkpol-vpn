@@ -1,8 +1,8 @@
 # thinkpol-vpn — Server agent design
 
-Server nodes: the supervisor, one worker per space, and egress. The entry point is [DESIGN.md](../../DESIGN.md).
+Server nodes: the supervisor, one worker per space, and egress. The entry point is [DESIGN.md](../../DESIGN.md); `RRn` are rows of [RESIDUAL-RISKS.md](../../RESIDUAL-RISKS.md).
 
-### Server agent: one worker per space
+## Server agent: one worker per space
 
 Server nodes run a **supervisor** and **one worker process per space**, from M0 on, even while a node serves only one space.
 
@@ -15,10 +15,6 @@ Server nodes run a **supervisor** and **one worker process per space**, from M0 
 - **A replay must not be an oracle.** In the planned stream transports a replayed handshake takes exactly the camouflage path, with the same upstream connection and timing: dropping or resetting it would tell a member's handshake from a stranger's. `udp` drops replays, but answers one after a supervisor or device-mode restart (RR34).
 - **Bounded state.** Everything kept about unauthenticated or replayable traffic is bounded, so no peer can grow a node's state without limit; a bound that is hit refuses rather than forgets wherever forgetting would let a replay back in (`udp`'s memory of evicted senders forgets: RR36).
 - **The camouflage target is chosen per node**, not defaulted fleet-wide: one default shared by every node is a fingerprint of the fleet, and the target should be plausible for the node's address and network (RR32).
-- **Egress:** all spaces exit from the node's public IP. A space's traffic reaches the internet only for the families its map grants and the uplink carries, never the destinations no space should reach (metadata services, private networks), enforced in its namespace and again in the root. Forwarding the supervisor turns on carries only the spaces' traffic and is put back when no space needs it or the supervisor closes; a host that already forwards is left alone, its forwarding unconfined.
+- **Egress:** all spaces exit from the node's public IP. A space's traffic reaches the internet only for the families its map grants and the uplink carries, never the destinations no space should reach (metadata services, private networks), enforced in its namespace and again in the root. Forwarding the supervisor turns on carries only the spaces' traffic and is put back when no space needs it or the supervisor closes; a host that already forwards is left alone, its forwarding unconfined. Egress is a Linux server's worker forwarding and masquerading its space's internet traffic (NAT66 for IPv6); a node in device mode never forwards, whatever its section says.
 - **Fair share:** the supervisor enforces each guest space's bandwidth cap and splits spare capacity under load (not wired yet: RR38).
-- **The node's own configuration is a ceiling over the map** (planned, TP-111; until then RR42; PRD Decisions). What a machine may do is allowed on the machine, by whoever runs it: `device`, or `server` with ingress, egress and relaying each opted into locally, the way a Tailscale device advertises itself as an exit node before an admin can use it. The space's signed map acts within the ceiling and can never widen it: peers, keys and revocations are always taken from a newer map, a role beyond the ceiling never is, and the node says so. Nodes need no agreement among themselves: to the space, a node that refuses a role is like one that is down, which hop groups route around. Each node enforces it even once the controller checks it: a controller can be compromised.
-- **Node-level control** (updates, which spaces it serves, caps) is the **node owner's**, within the node's ceiling; a guest space configures only its own worker, through its own map.
-
-
-**Egress** is a Linux server's worker forwarding and masquerading its space's internet traffic (NAT66 for IPv6); a node in device mode never forwards, whatever its section says.
+- **Node-level control** (updates, which spaces it serves, caps) is the **node owner's**, within the node's ceiling (see [overlay](overlay.md)); a guest space configures only its own worker, through its own map.

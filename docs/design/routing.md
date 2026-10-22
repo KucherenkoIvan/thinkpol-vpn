@@ -1,8 +1,8 @@
 # thinkpol-vpn — Routing design
 
-Routing: the rule list, the route table, DNS and the lists. The entry point is [DESIGN.md](../../DESIGN.md).
+Routing: the rule list, the route table, DNS and the lists. The entry point is [DESIGN.md](../../DESIGN.md); `RRn` are rows of [RESIDUAL-RISKS.md](../../RESIDUAL-RISKS.md).
 
-### Routing rules and DNS
+## Routing rules and DNS
 
 An ordered rule list; first match wins:
 
@@ -28,7 +28,7 @@ Two ways to enforce the same rules:
 | **Route table** (first) | Install `direct` IP ranges as OS routes to the physical gateway, everything else into TUN | IP only (`geoip`, `cidr`); domain rules are skipped with a warning |
 | **Userspace** (later) | Everything enters TUN; a userspace TCP/IP stack opens each connection itself, `direct` or tunneled | IP, domain (DNS interception, SNI), per app |
 
-#### Route table
+## Route table
 
 What route-table mode guarantees on every OS:
 
@@ -40,7 +40,7 @@ What route-table mode guarantees on every OS:
 - **Sockets the routing table can't hold** (bound to an interface, or routed by their source address) are the firewall's: the IPv6 leak guard confines them now; IPv4's wait for the kill switch (RR21).
 - **The table is kept in place**: re-applied on every change of links, addresses or routes and periodically; health says when it isn't enforced.
 
-#### DNS
+## DNS
 
 **DNS is routing.** A resolver on the node's overlay address answers overlay names (`<device>.<space>.internal`; `.internal` is reserved for private use, so a space name can never shadow a real domain), sends `direct` names to a domestic upstream, and everything else through the tunnel to a resolver at the exit. So GeoIP isn't fed CDN answers from the wrong country, and names don't leak, but for the rows whose Breaks column names R4.
 
@@ -51,6 +51,6 @@ What route-table mode guarantees on every OS:
 - **The OS resolves through the node while it is connected**, and gets its own configuration back when the device disconnects, stops or restarts after a crash. Where the OS can't be made to, it is never assumed: health and `thinkpol connect` say so while the tunnel stays up (RR2).
 - **Nothing is logged about a query**: no names or answers in any log or on disk; the resolver keeps counters only.
 
-#### Lists
+## Lists
 
 GeoIP lists are blobs the map references by content hash: one list per blob in a canonical encoding, so the same addresses always give the same hash. They are built from files the operator downloads (no third-party data lives in the repo) and travel between peers inside WireGuard: nodes never fetch from outside the network. A node uses a blob only once it matches the map, and replaces a list in use only once its successor is verified. Servers serve only blobs a signed map of their space listed, so they are no oracle beyond that set; the hashes themselves are visible to every holder of the envelope (RR45).

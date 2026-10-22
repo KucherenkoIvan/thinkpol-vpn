@@ -1,6 +1,6 @@
 # thinkpol-vpn — Censor lab design
 
-The censor lab: the test suite and the definition of done for a transport. The entry point is [DESIGN.md](../../DESIGN.md).
+The censor lab: the test suite and the definition of done for a transport. The entry point is [DESIGN.md](../../DESIGN.md); `RRn` are rows of [RESIDUAL-RISKS.md](../../RESIDUAL-RISKS.md).
 
 ## Censor lab
 

@@ -1,8 +1,8 @@
 # thinkpol-vpn — Transport design
 
-The transports: what a link looks like on the wire, and the traffic shape each transport owns. The entry point is [DESIGN.md](../../DESIGN.md).
+The transports: what a link looks like on the wire, and the traffic shape each transport owns. The entry point is [DESIGN.md](../../DESIGN.md); `RRn` are rows of [RESIDUAL-RISKS.md](../../RESIDUAL-RISKS.md).
 
-#### Transports
+## Transports
 
 Roughly in order of how hard they are to catch:
 

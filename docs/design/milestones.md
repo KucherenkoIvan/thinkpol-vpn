@@ -1,6 +1,6 @@
 # thinkpol-vpn — Milestones
 
-The milestones' technical done-when checks, and what is out of scope for now. Scope per milestone is in the PRD's release plan. The entry point is [DESIGN.md](../../DESIGN.md).
+The milestones' technical done-when checks, and what is out of scope for now. The entry point is [DESIGN.md](../../DESIGN.md); `RRn` are rows of [RESIDUAL-RISKS.md](../../RESIDUAL-RISKS.md).
 
 ## Milestones
 
