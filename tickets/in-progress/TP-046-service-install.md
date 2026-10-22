@@ -84,3 +84,4 @@ Round 1 (2026-10-22): correctness (fix first), design (fix first), second opinio
 - 2026-10-22 out of scope, for the orchestrator: RR2 names TP-046 for NetworkManager's `~.`, which this ticket's scope never had; DESIGN.md is 50104 bytes (TP-131); the unit has no sandboxing (ProtectSystem= and the like) and the journal keeps stderr on disk (RR40, TP-038); a device whose first start fails is restarted by the service every 5 s (the first map must run), with no backoff; the tray's connect-on-boot toggle (M5) needs a way for an unprivileged client to change the definition
 - 2026-10-22 in-progress → review
 - 2026-10-22 review → has-errors (round 1: R1.1-R1.12)
+- 2026-10-22 has-errors → in-progress — owner: agent-tp-046, round 1 fixes (R1.1-R1.12)
