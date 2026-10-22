@@ -30,7 +30,7 @@
 // the main table's default route until the kill switch (TP-048), a
 // separate owner with its own table or anchor. The guard is the
 // connection's, in place while a device is connected, not the kill
-// switch (DESIGN.md "Kill switch"). Forwarded traffic isn't its business:
+// switch (docs/design/security.md "Kill switch"). Forwarded traffic isn't its business:
 // nothing forwarded is bound to an interface, and routing (rule 5301 on
 // Linux) keeps it in the tunnel.
 //

@@ -7,7 +7,7 @@ repo: thinkpol-vpn
 size: M
 depends_on: [TP-024]
 split_from: TP-024
-refs: [C4, DESIGN#censor-lab]
+refs: [C4, docs/design/lab.md#censor-lab]
 owner: ""
 branch: ""
 ---

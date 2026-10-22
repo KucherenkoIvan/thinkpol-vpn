@@ -6,7 +6,7 @@ area: research
 repo: thinkpol-vpn
 size: M
 depends_on: []
-refs: [DESIGN#threat-model]
+refs: [docs/design/security.md#threat-model]
 owner: ""
 branch: ""
 ---
@@ -24,7 +24,7 @@ Government-affiliated apps installed on members' devices can probe whether block
 
 ## Acceptance
 - [ ] a findings note in Notes: per OS, what is observable and what is mitigable
-- [ ] DESIGN.md's threat-model row on apps on a member's device and the PRD risk are updated to match
+- [ ] docs/design/security.md's threat-model row on apps on a member's device and the PRD risk are updated to match
 
 ## Log
 - 2026-10-13 created in backlog (TP-062)

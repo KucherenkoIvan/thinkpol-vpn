@@ -1,5 +1,5 @@
 // Package ipc is the protocol between a server's supervisor and a space's
-// worker (DESIGN.md "Server agent: one worker per space").
+// worker (docs/design/server-agent.md "Server agent: one worker per space").
 //
 // Each worker has two AF_UNIX SOCK_SEQPACKET sockets, both halves of pairs
 // the supervisor makes, inherited as file descriptors:

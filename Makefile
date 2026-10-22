@@ -44,6 +44,7 @@ test-race: ## unit tests with the race detector (needs cgo)
 	CGO_ENABLED=1 go test -race ./...
 
 lint: $(TOOLS_STAMP) ## gofmt, then go vet + golangci-lint per OS (lab tests included), the Android build, the no-cgo check and vulncheck
+	@python3 tickets/test_board.py -q 2>&1 | tail -1 | grep -qx OK || { python3 tickets/test_board.py; exit 1; }
 	@out=$$(gofmt -l . 2>&1) || { echo "$$out"; exit 1; }; \
 	if [ -n "$$out" ]; then echo "gofmt needed:"; echo "$$out"; exit 1; fi
 	@for os in $(LINT_GOOS); do \

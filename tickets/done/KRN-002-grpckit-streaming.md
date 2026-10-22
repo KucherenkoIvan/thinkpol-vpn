@@ -6,7 +6,7 @@ area: grpckit
 repo: go-kernel
 size: M
 depends_on: []
-refs: [DESIGN#control-plane-the-controller-on-go-kernel]
+refs: [docs/design/control-plane.md#control-plane-the-controller-on-go-kernel]
 owner: "agent-krn-002"
 branch: "krn-002-grpckit-streaming"
 ---

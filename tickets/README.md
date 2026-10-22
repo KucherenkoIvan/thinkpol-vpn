@@ -27,7 +27,8 @@ area: dataplane/transport
 repo: thinkpol-vpn        # or go-kernel
 size: M                   # S | M | L | epic
 depends_on: [TP-001]
-refs: [C1, C6]            # PRD requirement ids and DESIGN.md sections
+refs: [C1, C6]            # PRD requirement ids (or RR rows), and DESIGN.md#anchor
+                          # or docs/design/<file>.md#anchor sections
 needs_human: macos        # optional: decision | macos | windows | person
 owner: ""                 # set when moved to in-progress
 branch: ""                # set when moved to in-progress
@@ -86,4 +87,4 @@ Create the children with new ids and `split_from: <epic id>` in their frontmatte
 
 ## Source of truth
 
-Tickets implement [PRD.md](../PRD.md) and [DESIGN.md](../DESIGN.md), with [RESIDUAL-RISKS.md](../RESIDUAL-RISKS.md) and the package docs DESIGN.md links. If a ticket and the docs disagree, the docs win; if the docs are wrong, fix them in the same branch and say so in the ticket's log.
+Tickets implement [PRD.md](../PRD.md) and the design files ([DESIGN.md](../DESIGN.md) and `docs/design/*.md`), with [RESIDUAL-RISKS.md](../RESIDUAL-RISKS.md) and the package docs' links. If a ticket and the docs disagree, the docs win; if the docs are wrong, fix them in the same branch and say so in the ticket's log.

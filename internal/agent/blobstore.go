@@ -196,7 +196,7 @@ func (d diskBlobs) Prune(keep []netmap.BlobRef) error {
 // seedBlobs reads the blobs of header a server's state directory holds,
 // put there by whoever provisions the node: checked against the map, and
 // within the limits a worker holds. A server keeps no blob it fetched on
-// disk (DESIGN "Node safety"); these are its seeds, read and never written.
+// disk (docs/design/security.md "Node safety"); these are its seeds, read and never written.
 func seedBlobs(stateDir string, header []netmap.BlobRef, log *slog.Logger) [][]byte {
 	var out [][]byte
 	var total uint64

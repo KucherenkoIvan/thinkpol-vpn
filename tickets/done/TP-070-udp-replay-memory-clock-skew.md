@@ -6,7 +6,7 @@ area: dataplane/transport
 repo: thinkpol-vpn
 size: S
 depends_on: []
-refs: [C1, C3, C6, DESIGN#transports]
+refs: [C1, C3, C6, docs/design/transports.md#transports]
 owner: "glm-tp070"
 branch: "tp-070-udp-replay-skew"
 ---

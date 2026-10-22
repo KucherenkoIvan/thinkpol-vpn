@@ -7,7 +7,7 @@ repo: thinkpol-vpn
 size: L
 depends_on: [TP-075, TP-109, TP-110]
 split_from: TP-075
-refs: [S1, DESIGN#desktop-client]
+refs: [S1, docs/design/desktop-client.md#desktop-client]
 owner: "agent-tp-083"
 branch: "tp-083-agent-layer-cleanup-part-2"
 ---

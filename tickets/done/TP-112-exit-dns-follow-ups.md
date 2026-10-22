@@ -6,7 +6,7 @@ area: agent
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-098]
-refs: [R4, DESIGN#dns]
+refs: [R4, docs/design/routing.md#dns]
 owner: "cursor-glm-tp-112"
 branch: "tp-112-exit-dns-follow-ups"
 ---

@@ -46,7 +46,7 @@ type Listener struct {
 // reply, and charges what the worker's socket accepted or what went out.
 // Both are called from several goroutines and on every datagram, so they
 // must be cheap and never block. Handed-over streams never pass through
-// here (DESIGN.md "Fair share").
+// here (docs/design/server-agent.md "Fair share").
 type FairShare interface {
 	// Allow reports whether space may move n more bytes now.
 	Allow(space transport.SpaceID, n int) bool

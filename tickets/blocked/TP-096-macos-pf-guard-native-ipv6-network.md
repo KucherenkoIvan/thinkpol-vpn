@@ -6,7 +6,7 @@ area: dataplane/firewall
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-078, TP-092]
-refs: [DESIGN#ipv6]
+refs: [docs/design/security.md#ipv6]
 needs_human: macos
 owner: ""
 branch: ""

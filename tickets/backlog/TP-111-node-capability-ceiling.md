@@ -6,7 +6,7 @@ area: agent
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-046]
-refs: [DESIGN#server-agent-one-worker-per-space]
+refs: [docs/design/overlay.md#node-agent]
 owner: ""
 branch: ""
 ---
@@ -27,14 +27,14 @@ A node does only what it was allowed to on the machine itself. The space's signe
 
 ## Out of scope
 - Nodes advertising their ceiling to the controller, and the builder refusing to publish a map that asks for more: M4 (TP-034, TP-038).
-- Devices as exits or as routers into a home network: after the MVP (DESIGN, Out of scope).
+- Devices as exits or as routers into a home network: after the MVP (docs/design/milestones.md, Out of scope).
 
 ## Acceptance
 - [ ] lab: a node whose map asks for more than its ceiling at start is down, with the health problem, and carries no traffic
 - [ ] lab: a running node given a newer map that asks for more keeps its capabilities, takes the map's other changes (a revoked peer is refused), reports the refusal, and comes back to the same state after a restart
 - [ ] lab: the owner lowering the ceiling under a running map is refused the same way
 - [ ] unit tests: the preset defaults to `device`; each capability is checked on its own
-- [ ] DESIGN's "not yet" pointing here is removed
+- [ ] docs/design/overlay.md's "planned, TP-111" on the ceiling is removed
 - [ ] `make lint`, `make test`, `make lab-test` pass
 
 ## Notes

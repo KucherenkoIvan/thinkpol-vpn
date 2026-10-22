@@ -19,7 +19,7 @@ Hop groups, chains and rule sets live in the controller with their invariants en
 
 ## Acceptance
 - [ ] invalid chains (first hop without ingress, last hop without egress, a hop group member without them) are rejected with domain errors
-- [ ] hop groups enforce DESIGN "Control plane" (`topology`) and PRD R6 (members plus an allowed selection policy: `failover`, `lowest-latency`, `spread`)
+- [ ] hop groups enforce docs/design/control-plane.md (`topology`) and PRD R6 (members plus an allowed selection policy: `failover`, `lowest-latency`, `spread`)
 - [ ] a rule set that references chains or matchers the domain does not allow is rejected with domain errors
 
 ## Notes

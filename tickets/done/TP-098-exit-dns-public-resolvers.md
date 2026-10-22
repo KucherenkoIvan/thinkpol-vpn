@@ -6,7 +6,7 @@ area: dataplane/dns
 repo: thinkpol-vpn
 size: S
 depends_on: []
-refs: [R4, DESIGN#dns]
+refs: [R4, docs/design/routing.md#dns]
 owner: "claude-tp098"
 branch: "tp-098-exit-dns-public-resolvers"
 ---

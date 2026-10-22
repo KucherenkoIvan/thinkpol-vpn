@@ -6,7 +6,7 @@ area: dataplane/transport
 repo: thinkpol-vpn
 size: L
 depends_on: [TP-064, TP-010, TP-027, TP-101]
-refs: [C2, C6, DESIGN#transports]
+refs: [C2, C6, docs/design/transports.md#transports]
 owner: ""
 branch: ""
 ---
@@ -35,7 +35,7 @@ The disguised transport for client → entry links: thinkpol speaks REALITY's ha
 - [ ] the censor-lab matrix has rows for `reality`
 
 ## Notes
-- Findings and wire format: TP-064 Notes. Decision: PRD "Decisions" (2026-10-15), DESIGN "Transports".
+- Findings and wire format: TP-064 Notes. Decision: PRD "Decisions" (2026-10-15), docs/design/transports.md.
 - From TP-101's review (2026-10-19): the five-minute skew window (`maxClockSkew`) and the wrap-safe `sentFresh` live in udp/wire.go; move them to the transport port before building reality's replay checks on copies of them.
 
 ## Log

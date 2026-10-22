@@ -7,7 +7,7 @@ repo: thinkpol-vpn
 size: S
 depends_on: [TP-019, TP-080]
 split_from: TP-080
-refs: [N2, DESIGN#data-plane-every-node-one-binary]
+refs: [N2, docs/design/overlay.md#data-plane-every-node-one-binary]
 needs_human: macos
 owner: ""
 branch: ""

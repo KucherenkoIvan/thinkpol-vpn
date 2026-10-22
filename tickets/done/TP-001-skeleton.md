@@ -6,7 +6,7 @@ area: repo
 repo: thinkpol-vpn
 size: M
 depends_on: []
-refs: [DESIGN#repository-layout]
+refs: [DESIGN.md#repository-layout]
 owner: agent-tp-001
 branch: tp-001-skeleton
 ---

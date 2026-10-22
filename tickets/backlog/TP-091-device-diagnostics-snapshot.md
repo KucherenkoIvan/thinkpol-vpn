@@ -6,7 +6,7 @@ area: agent
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-078]
-refs: [DESIGN#the-local-api]
+refs: [docs/design/desktop-client.md#the-local-api]
 owner: ""
 branch: ""
 ---
@@ -36,7 +36,7 @@ branch: ""
 - [ ] `thinkpol diag` on Linux in the lab: the guard table, routes, rules and resolvers match what `nft`/`ip` report, in a test
 - [ ] macOS: the pf parts are parsed from `pfctl` output by functions tested on recorded fixtures, including an unparseable line (→ `unreadable`) and an empty anchor
 - [ ] a test checks that no secret field from the config or status reaches the snapshot
-- [ ] the snapshot carries a schema version; DESIGN.md's local API section describes it
+- [ ] the snapshot carries a schema version; docs/design/desktop-client.md "The local API" describes it
 
 ## Notes
 - **Origin (2026-10-16).** The private device-test kit for TP-078 grew to about 10,000 lines of bash against about 3,000 lines of product change (tests included), most of it judgement logic: parsing tcpdump and pfctl output and deciding PASS or UNKNOWN. Its stub tests could never reach real root, routes or tcpdump, so every review round found new ways a check could PASS wrongly. See ORCHESTRATION.md "Device testing (2026-10-16)".

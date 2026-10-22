@@ -6,7 +6,7 @@ area: dataplane/transport
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-074]
-refs: [A4, S2, DESIGN#data-plane-every-node-one-binary]
+refs: [A4, S2, docs/design/overlay.md#data-plane-every-node-one-binary]
 owner: ""
 branch: ""
 ---
