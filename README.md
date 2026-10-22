@@ -5,7 +5,8 @@ A self-hosted virtual network for people behind a censor. Your devices and a few
 Work in progress: the project is being rewritten from scratch.
 
 - [PRD.md](PRD.md): what it must do
-- [DESIGN.md](DESIGN.md): how it works
+- [DESIGN.md](DESIGN.md): how it works (the model; each package's `doc.go` has its mechanism)
+- [RESIDUAL-RISKS.md](RESIDUAL-RISKS.md): what the design accepts falling short of
 - [docs/runbook-pre-controller.md](docs/runbook-pre-controller.md): running a space by hand, before the controller
 - [tickets/](tickets/README.md): the board (`python3 tickets/board.py`)
 

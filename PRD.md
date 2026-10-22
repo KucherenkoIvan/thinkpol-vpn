@@ -110,7 +110,7 @@ Milestones as in [Release plan](#release-plan). Priority: **must** for the MVP, 
 | R1 | Nodes that allow egress forward internet traffic for the space (IPv4; IPv6 if the VPS has it) | must | M1 |
 | R2 | Ordered rules with actions `direct`, `chain:<name>`, `block`; matchers `default`, `cidr`, `geoip` | must | M1 |
 | R3 | Space-wide default rules plus per-device overrides; presets "everything" and "all but domestic" | must | M1 (presets per device); M4 (per-device custom rules, set by the controller) |
-| R4 | DNS follows the rules: `direct` domains go to a domestic resolver, everything else through the tunnel; no DNS leaks | must | M1 (Linux lab; macOS: no DNS leak proven yet, TP-085) |
+| R4 | DNS follows the rules: `direct` domains go to a domestic resolver, everything else through the tunnel; no DNS leaks, but for the rows of [RESIDUAL-RISKS.md](RESIDUAL-RISKS.md) whose Breaks column names R4 | must | M1 (Linux lab; macOS: no DNS leak proven yet, TP-085) |
 | R5 | Chains of two or more hops; hops can be hop groups | must | M3 |
 | R6 | Hop group policies `failover`, `lowest-latency`, `spread` | must: failover; should: others | M3 |
 | R7 | Switching entries keeps the exit, so open connections survive | must | M3 |
@@ -148,7 +148,7 @@ Milestones as in [Release plan](#release-plan). Priority: **must** for the MVP, 
 | D3 | Tray: connect/disconnect, status (chain, entry in use, health), space switcher, rule preset switcher | must | M5 |
 | D4 | Kill switch toggle (default off): when on and the tunnel is down, nothing leaves except traffic to entry nodes; allow-LAN option; temporary pause. After an agent crash the device **fails closed by default** under the "everything" and "all but domestic" presets (opt-out); a deliberate disconnect follows the toggle | must | M2 (macOS, Linux), M5 (Windows) |
 | D5 | Connect-on-boot toggle (default off) | must | M2 (macOS, Linux), M5 (tray toggle, Windows) |
-| D6 | No IPv6 leaks: IPv6 goes through the tunnel or is blocked while connected | must | M1 (Linux); macOS device proof once a network with native IPv6 is available (TP-096) |
+| D6 | No IPv6 leaks: IPv6 goes through the tunnel or is blocked while connected, and stays blocked after a crash, but for the rows of [RESIDUAL-RISKS.md](RESIDUAL-RISKS.md) whose Breaks column names D6 | must | M1 (Linux); macOS device proof once a network with native IPv6 is available (TP-096) |
 | D7 | Join a space from an invite link or QR code without a terminal; the device stays pending until the admin approves it | must | M5 |
 | D8 | CLI covering everything the tray does | must | M1 |
 | D9 | Enrolled in several spaces, one active at a time | must | M5 |

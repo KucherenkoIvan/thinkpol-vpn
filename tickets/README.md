@@ -86,4 +86,4 @@ Create the children with new ids and `split_from: <epic id>` in their frontmatte
 
 ## Source of truth
 
-Tickets implement [PRD.md](../PRD.md) and [DESIGN.md](../DESIGN.md). If a ticket and the docs disagree, the docs win; if the docs are wrong, fix them in the same branch and say so in the ticket's log.
+Tickets implement [PRD.md](../PRD.md) and [DESIGN.md](../DESIGN.md), with [RESIDUAL-RISKS.md](../RESIDUAL-RISKS.md) and the package docs DESIGN.md links. If a ticket and the docs disagree, the docs win; if the docs are wrong, fix them in the same branch and say so in the ticket's log.
