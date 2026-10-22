@@ -49,3 +49,4 @@ Round 1 (2026-10-22): correctness (merge), design (fix first), second opinion (m
 - 2026-10-22 out of scope, for another ticket: an empty resolv.conf read while unmanaged (a DHCP client rewriting it in place) is still a good read with no upstreams on the resolv.conf path itself; the same reasoning would make it a failed read too
 - 2026-10-22 in-progress → review
 - 2026-10-22 review → has-errors (round 1: R1.1-R1.6)
+- 2026-10-22 has-errors → in-progress — fixing R1.1-R1.6 (round 1)
