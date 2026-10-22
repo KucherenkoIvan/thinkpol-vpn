@@ -486,18 +486,21 @@ func (l *Lab) configureNode(ctx context.Context, spec NodeSpec) error {
 func (l *Lab) checkSealed(ctx context.Context, n *Node) error {
 	spec := l.Topology.Nodes[l.Topology.nodeIndex(n.Name)]
 	var problems []string
-	addrs, err := n.Exec(ctx, "ip", "-o", "addr", "show")
-	if err != nil {
-		return err
-	}
 	routes, err := n.Exec(ctx, "sh", "-c", "ip -4 route show; ip -6 route show")
 	if err != nil {
 		return err
 	}
 	for _, net := range spec.Networks {
 		a, ifname, b := n.addrs[net], n.ifnames[net], l.bridges[net]
+		// Each address on its own interface: the filters below are per
+		// interface, so interfaces that swapped would leave them on the
+		// wrong network.
+		addrs, err := n.Exec(ctx, "ip", "-o", "addr", "show", "dev", ifname)
+		if err != nil {
+			return err
+		}
 		if !strings.Contains(addrs.Stdout, " "+a.IPv4.String()+"/") || a.IPv6.IsValid() && !strings.Contains(addrs.Stdout, " "+a.IPv6.String()+"/") {
-			problems = append(problems, fmt.Sprintf("%s: not at %s, %s any more", net, a.IPv4, a.IPv6))
+			problems = append(problems, fmt.Sprintf("%s: %s is not at %s, %s any more", net, ifname, a.IPv4, a.IPv6))
 		}
 		if _, err := n.Exec(ctx, "nft", "list", "table", "netdev", "tplab_"+ifname); err != nil {
 			problems = append(problems, fmt.Sprintf("%s: no frame filter tplab_%s", net, ifname))

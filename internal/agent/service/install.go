@@ -93,7 +93,7 @@ var (
 	// (edited by hand).
 	ErrDefinitionChanged = errors.New("the service's definition was changed by hand")
 	// errAgentRuns: an agent holds the host lock where none may run.
-	errAgentRuns = errors.New("a thinkpol agent runs outside the service (it holds the host lock): stop it first")
+	errAgentRuns = errors.New("a thinkpol agent runs outside the service (it holds the host lock): stop it, then run this again")
 )
 
 func (in Installer) path(p string) string { return filepath.Join(in.Root, p) }
@@ -107,9 +107,10 @@ func (in Installer) say(format string, args ...any) {
 // Install copies the binary, makes the group (adding opts.User), writes
 // the definition and (re)starts the service. Run again, it replaces the
 // binary and restarts the service, keeping connect-on-boot unless opts
-// sets it. Before changing anything it checks the manager runs the host,
-// the node can run, and, with no service installed, that no agent runs
-// by hand (the service's would only restart against its lock).
+// sets it. Before changing anything it checks the manager runs the host
+// and the node can run; then it stops a service already installed and,
+// whether or not there was one, refuses while an agent holds the host
+// lock (one run by hand: the service's would only restart against it).
 func (in Installer) Install(ctx context.Context, opts Options) error {
 	if err := in.System.Present(in.Root); err != nil {
 		return err
@@ -123,14 +124,19 @@ func (in Installer) Install(ctx context.Context, opts Options) error {
 	case err == nil:
 		connect = d.ConnectOnBoot
 	case errors.Is(err, ErrNotInstalled):
-		if err := in.noAgent(); err != nil {
-			return err
-		}
 	default:
 		in.say("warning: %v; installing anew, connect-on-boot off unless -connect-on-boot says otherwise", err)
 	}
 	if opts.ConnectOnBoot != nil {
 		connect = *opts.ConnectOnBoot
+	}
+	if _, err := os.Lstat(in.path(in.System.DefinitionPath())); err == nil {
+		if err := in.System.Stop(ctx, in.Run); err != nil {
+			return fmt.Errorf("stopping the installed service: %w", err)
+		}
+	}
+	if err := in.noAgent(); err != nil {
+		return err
 	}
 	if err := in.installBinary(); err != nil {
 		return err
@@ -266,8 +272,8 @@ func (in Installer) writeDefinition(d Definition) error {
 }
 
 // installBinary copies the running binary to BinaryPath, unless that is
-// already a regular file of root's (this process's user) that no one
-// else can write, and the same file: a symlink or anyone else's file
+// already a regular file of root's (this process's user), 0755, and the
+// same file: a symlink or anyone else's file
 // there is replaced, so root's service never runs what a user could
 // change. Its directory must be one no one else can change (trusteddir).
 func (in Installer) installBinary() error {
@@ -282,7 +288,7 @@ func (in Installer) installBinary() error {
 	if err != nil {
 		return err
 	}
-	if cur, err := os.Lstat(dst); err == nil && ownedSafely(cur) && os.SameFile(src, cur) {
+	if cur, err := os.Lstat(dst); err == nil && ownedSafely(cur) && cur.Mode().Perm() == 0o755 && os.SameFile(src, cur) {
 		return nil
 	}
 	data, err := os.ReadFile(in.Executable)

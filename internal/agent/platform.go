@@ -89,9 +89,6 @@ type Platform struct {
 	ConnectRecord ConnectRecord
 }
 
-// ErrAnotherAgent: another node agent holds the host's agent lock.
-var ErrAnotherAgent = errors.New("another thinkpol agent is running on this host")
-
 // ClearHost undoes what a crashed run left on the host, as a start that
 // doesn't connect does: the routing (clearNetwork) and the OS's resolver
 // configuration. Both are tried; what failed is returned. The caller

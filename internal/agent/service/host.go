@@ -42,7 +42,7 @@ func HostInstaller(out io.Writer, plat agent.Platform) (Installer, error) {
 		Run:         runTool,
 		Executable:  exe,
 		Ready:       nodeReady,
-		LockHost:    agent.HostLock,
+		LockHost:    plat.LockHost,
 		ClearHost:   plat.ClearHost,
 		RuntimeDirs: []string{agent.HostLockDir(), filepath.Dir(agent.DefaultAPISocket())},
 		Out:         out,

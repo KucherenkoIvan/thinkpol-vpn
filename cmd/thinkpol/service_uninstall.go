@@ -10,7 +10,7 @@ import (
 func init() {
 	register(command{
 		path:    "service uninstall",
-		summary: "stop the service and remove it, its binary and its group (the node's keys and map stay); as root",
+		summary: "stop the service and remove it and its binary (its group and the node's keys and map stay); as root",
 		run:     runServiceUninstall,
 	})
 }

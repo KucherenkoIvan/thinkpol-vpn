@@ -34,11 +34,15 @@ func runServiceConnectOnBoot(ctx context.Context, e env, args []string) error {
 		}
 		_, err = fmt.Fprintf(e.stdout, "connect-on-boot: %s\n", service.OnOff(on))
 		return err
-	case fs.NArg() == 1 && (fs.Arg(0) == service.OnOff(true) || fs.Arg(0) == service.OnOff(false)):
+	case fs.NArg() == 1:
+		on, err := service.ParseOnOff(fs.Arg(0))
+		if err != nil || on == nil {
+			return errUsage
+		}
 		if err := service.CheckRoot(); err != nil {
 			return err
 		}
-		return in.SetConnectOnBoot(ctx, fs.Arg(0) == service.OnOff(true))
+		return in.SetConnectOnBoot(ctx, *on)
 	}
 	return errUsage
 }

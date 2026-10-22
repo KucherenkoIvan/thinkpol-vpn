@@ -166,12 +166,26 @@ func TestServiceUnderSystemd(t *testing.T) {
 	// agent: what the dead agent left (its guard, routes and resolver
 	// configuration) is undone. Nothing of the service is left, nor after
 	// a reboot.
+	// The restart is held off (a drop-in of the test's, in /run, which the
+	// reboot below clears), so the uninstall meets the dead agent's
+	// leftovers rather than a restarted agent that took them down itself.
+	dev.WriteFile(t, "/run/systemd/system/thinkpol.service.d/lab-hold.conf", []byte("[Service]\nRestartSec=1h\n"))
+	dev.MustExec(t, "systemctl", "daemon-reload")
 	dev.MustExec(t, "systemctl", "kill", "-s", "KILL", "thinkpol.service")
+	lab.Eventually(t, 30*time.Second, func() error {
+		got, err := execRead(dev, pollTimeout, "systemctl", "show", "-p", "SubState", "--value", "thinkpol.service")
+		if err != nil || got != "auto-restart\n" {
+			return fmt.Errorf("SubState %q: %v", got, err)
+		}
+		return nil
+	})
 	if err := wantGuard(dev, execTimeout, guardPresent); err != nil {
 		t.Fatalf("no guard left by the crash: the uninstall below proves nothing: %v", err)
 	}
 	out = dev.MustExec(t, "thinkpol", "service", "uninstall")
 	t.Logf("uninstall:\n%s", out)
+	dev.MustExec(t, "rm", "-r", "/run/systemd/system/thinkpol.service.d")
+	dev.MustExec(t, "systemctl", "daemon-reload")
 	wantNoService := func() {
 		t.Helper()
 		for _, p := range []string{"/etc/systemd/system/thinkpol.service", "/usr/local/bin/thinkpol", "/run/thinkpol", "/run/thinkpol-api"} {

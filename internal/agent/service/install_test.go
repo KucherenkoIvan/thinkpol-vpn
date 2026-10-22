@@ -40,6 +40,10 @@ type fakeHost struct {
 	loadedFrom           []byte
 	booting, goneAfter   int
 	disabled, overridden bool
+	// bootoutFails: bootout reports an error ("Operation now in
+	// progress") though the teardown goes on; printFails: print fails
+	// for another reason than no such service.
+	bootoutFails, printFails bool
 	// cleared counts ClearHost's runs, and heldWhileCleared whether the
 	// host lock was held at each.
 	cleared, heldWhileCleared int
@@ -100,6 +104,8 @@ func (h *fakeHost) systemctl(args []string) (string, error) {
 
 func (h *fakeHost) launchctl(args []string) (string, error) {
 	switch {
+	case slices.Equal(args, []string{"print", target}) && h.printFails:
+		return "", errors.New("launchctl: Operation not permitted")
 	case slices.Equal(args, []string{"print", target}):
 		if h.booting > 0 {
 			h.booting--
@@ -110,6 +116,9 @@ func (h *fakeHost) launchctl(args []string) (string, error) {
 		}
 	case slices.Equal(args, []string{"bootout", target}) && h.loaded:
 		h.loaded, h.loadedFrom, h.booting = false, nil, h.goneAfter
+		if h.bootoutFails {
+			return "", errors.New("Boot-out failed: 36: Operation now in progress")
+		}
 	case slices.Equal(args, []string{"print-disabled", "system"}):
 		v := "enabled"
 		if h.disabled {
@@ -199,8 +208,12 @@ func (h *fakeHost) installer(sys System) (Installer, *bytes.Buffer) {
 		LockHost: h.lock,
 		ClearHost: func() error {
 			h.cleared++
-			if _, err := h.lock(); errors.Is(err, agent.ErrAnotherAgent) {
+			unlock, err := h.lock()
+			switch {
+			case errors.Is(err, agent.ErrAnotherAgent):
 				h.heldWhileCleared++
+			case err == nil:
+				unlock()
 			}
 			return nil
 		},
@@ -363,7 +376,6 @@ func TestNothingIsTakenFromARunningAgent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer unlockAgain()
 	if err := in.Uninstall(ctx); !errors.Is(err, errAgentRuns) {
 		t.Fatalf("uninstall: %v", err)
 	}
@@ -372,6 +384,29 @@ func TestNothingIsTakenFromARunningAgent(t *testing.T) {
 	}
 	if _, _, ok := h.file(BinaryPath); !ok {
 		t.Fatal("the binary was removed")
+	}
+	unlockAgain()
+
+	// The service stopped by hand and an agent run by hand: a reinstall
+	// stops nothing more, replaces nothing and starts nothing, since its
+	// service would only restart against the agent's lock.
+	if err := in.Install(ctx, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	h.unitRunning = nil // systemctl stop
+	byHand, err := h.lock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer byHand()
+	if err := os.WriteFile(in.Executable, []byte("a newer thinkpol"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := in.Install(ctx, Options{}); !errors.Is(err, errAgentRuns) {
+		t.Fatalf("reinstall: %v", err)
+	}
+	if bin, _, _ := h.file(BinaryPath); string(bin) != "the thinkpol binary" || h.unitRunning != nil {
+		t.Fatalf("binary %q, running %q", bin, h.unitRunning)
 	}
 }
 
@@ -462,6 +497,26 @@ func TestLaunchdWaitsForTheDaemonToGo(t *testing.T) {
 	}
 	if _, _, ok := h.file(PlistPath); !ok {
 		t.Fatal("the plist was removed under a daemon still loaded")
+	}
+
+	// A bootout that says "in progress" while the daemon goes all the
+	// same: the wait decides, and the reinstall goes on.
+	h.failNext["launchctl bootout"] = 0
+	h.bootoutFails, h.goneAfter = true, 2
+	if err := in.Install(ctx, Options{}); err != nil || !h.loaded {
+		t.Fatalf("after a slow bootout: %v, loaded %v", err, h.loaded)
+	}
+	// A print that fails for another reason isn't "gone": the stop fails,
+	// and uninstall leaves the plist and the binary.
+	h.bootoutFails, h.printFails = false, true
+	if err := in.Uninstall(ctx); err == nil || !strings.Contains(err.Error(), "not permitted") {
+		t.Fatalf("got %v", err)
+	}
+	if _, _, ok := h.file(PlistPath); !ok {
+		t.Fatal("the plist was removed while launchd couldn't be asked")
+	}
+	if _, _, ok := h.file(BinaryPath); !ok {
+		t.Fatal("the binary was removed while launchd couldn't be asked")
 	}
 }
 
@@ -564,6 +619,16 @@ func TestInstallReplacesABinaryOthersCouldChange(t *testing.T) {
 		if !os.SameFile(before, after) {
 			t.Fatal("root's own binary was copied over itself")
 		}
+		// One that isn't 0755 is replaced with one that is.
+		if err := os.Chmod(in.Executable, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := in.Install(ctx, Options{}); err != nil {
+			t.Fatal(err)
+		}
+		if cur, _ := os.Lstat(in.Executable); os.SameFile(after, cur) || cur.Mode().Perm() != 0o755 {
+			t.Fatalf("kept a binary %v", cur.Mode())
+		}
 	})
 }
 
@@ -605,5 +670,21 @@ func TestTheGroupIsTheLocalAPIsDefault(t *testing.T) {
 	}
 	if cfg.APIGroup != Group {
 		t.Fatalf("the agent's default group %q, install's %q", cfg.APIGroup, Group)
+	}
+}
+
+func TestConnectOnBootIsSpelledOnOrOff(t *testing.T) {
+	for in, want := range map[string]string{"": "nil", "on": "true", "off": "false", "yes": "error", "true": "error", "ON": "error"} {
+		got, err := ParseOnOff(in)
+		s := "error"
+		switch {
+		case err == nil && got == nil:
+			s = "nil"
+		case err == nil:
+			s = fmt.Sprint(*got)
+		}
+		if s != want {
+			t.Errorf("%q: %s, want %s", in, s, want)
+		}
 	}
 }

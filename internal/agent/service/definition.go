@@ -122,3 +122,16 @@ func OnOff(on bool) string {
 	}
 	return agent.ConnectOnBootOff
 }
+
+// ParseOnOff reads connect-on-boot as OnOff spells it: nil for "" (not
+// given), an error for anything but on and off.
+func ParseOnOff(s string) (*bool, error) {
+	switch s {
+	case "":
+		return nil, nil
+	case OnOff(true), OnOff(false):
+		on := s == OnOff(true)
+		return &on, nil
+	}
+	return nil, fmt.Errorf("connect-on-boot %q: want %s or %s", s, OnOff(true), OnOff(false))
+}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -74,12 +75,15 @@ func disabled(out string) bool {
 func (Launchd) Reload(context.Context, Runner) error { return nil }
 
 // Stop boots the daemon out (SIGTERM to the agent, SIGKILL after
-// ExitTimeOut) and waits until launchd no longer has it: bootout may
-// return before the job is gone. A daemon that wasn't loaded is stopped;
-// a bootout that failed with the daemon still there is the error.
+// ExitTimeOut) and waits until launchd no longer has it, whatever bootout
+// said: it may return before the job is gone, or fail with a slow exit
+// ("Operation now in progress") that ends all the same. bootout's error
+// is reported only if the daemon outlives the wait; a `launchctl print`
+// that fails for another reason than no such service fails the stop.
 func (l Launchd) Stop(ctx context.Context, run Runner) error {
-	if !loaded(ctx, run) {
-		return nil
+	there, err := present(ctx, run)
+	if err != nil || !there {
+		return err
 	}
 	_, bootErr := run(ctx, "launchctl", "bootout", target)
 	wait := l.StopWait
@@ -87,11 +91,15 @@ func (l Launchd) Stop(ctx context.Context, run Runner) error {
 		wait = (StopTimeoutSeconds + 15) * time.Second
 	}
 	deadline := time.Now().Add(wait)
-	for loaded(ctx, run) {
-		if bootErr != nil {
-			return bootErr
+	for {
+		there, err := present(ctx, run)
+		if err != nil || !there {
+			return err
 		}
 		if time.Now().After(deadline) {
+			if bootErr != nil {
+				return fmt.Errorf("launchd still has %s after %v: %w", target, wait, bootErr)
+			}
 			return fmt.Errorf("launchd still has %s after %v", target, wait)
 		}
 		select {
@@ -100,12 +108,30 @@ func (l Launchd) Stop(ctx context.Context, run Runner) error {
 		case <-time.After(l.Poll):
 		}
 	}
-	return nil
 }
 
-func loaded(ctx context.Context, run Runner) bool {
-	_, err := run(ctx, "launchctl", "print", target)
-	return err == nil
+// present says whether launchd has the daemon (`launchctl print`): no
+// such service is false; any other failure (a cancelled context, a
+// timeout, launchctl itself) is the error.
+func present(ctx context.Context, run Runner) (bool, error) {
+	out, err := run(ctx, "launchctl", "print", target)
+	switch {
+	case err == nil:
+		return true, nil
+	case noSuchService(out, err):
+		return false, nil
+	}
+	return false, fmt.Errorf("asking launchd for %s: %w", target, err)
+}
+
+// noSuchService says whether a failed `launchctl print` found no such
+// service: exit status 113, or launchctl's "Could not find service".
+func noSuchService(out string, err error) bool {
+	var x *exec.ExitError
+	if errors.As(err, &x) && x.ExitCode() == 113 {
+		return true
+	}
+	return strings.Contains(strings.ToLower(out+" "+err.Error()), "could not find service")
 }
 
 func (Launchd) Forget(context.Context, Runner) error { return nil }
