@@ -7,6 +7,7 @@ repo: thinkpol-vpn
 size: M
 depends_on: [TP-078]
 refs: [docs/design/desktop-client.md#the-local-api]
+needs_human: macos
 owner: "agent-tp-091"
 branch: "tp-091-device-diagnostics-snapshot"
 ---
@@ -34,7 +35,8 @@ branch: "tp-091-device-diagnostics-snapshot"
 
 ## Acceptance
 - [x] `thinkpol diag` on Linux in the lab: the guard table, routes, rules and resolvers match what `nft`/`ip` report, in a test (lab `TestDiagShowsWhatTheHostHolds`: `ip -j route`/`rule`, `nft -j`, `resolvectl`, resolv.conf)
-- [x] macOS: the pf parts are parsed from `pfctl` output by functions tested on recorded fixtures, including an unparseable line (→ `unreadable`) and an empty anchor (`TestParseVerboseRules`, `TestInspectReadsTheGuardAsPfListsIt` on `firewall/testdata/pfctl`; the fixtures are built from the fake pf's formats and pfctl's source, not recorded on a Mac: Notes, "Device run")
+- [ ] macOS: the pf parts are parsed from `pfctl` output by functions tested on recorded fixtures, including an unparseable line (→ `unreadable`) and an empty anchor (built fixtures pass: `TestParseVerboseRules`, `TestInspectReadsTheGuardAsPfListsIt` on `firewall/testdata/pfctl`, from the fake pf's formats and pfctl's source; recorded ones wait on the device run in Notes)
+- [ ] macOS: `scutil --dns` is parsed by a function tested on recorded listings (built fixtures pass: `TestParseScutilDNS`, `TestInspectRunsScutilDNS` on `dns/testdata/scutil`; recorded ones wait on the device run)
 - [x] a test checks that no secret field from the config or status reaches the snapshot (`TestDiagnosticsHoldNoSecret`, `TestTheSnapshotHasNoSecretField`, and the lab test's key check)
 - [x] the snapshot carries a schema version; docs/design/desktop-client.md "The local API" describes it (`schema_version` 1, `localapi.DiagSchemaVersion`; its one line points to the localapi package doc, which holds the mechanism)
 
@@ -55,13 +57,15 @@ Round 1 (2026-10-22): correctness (fix first), design (fix first), second opinio
 ## Notes
 - **Origin (2026-10-16).** The private device-test kit for TP-078 grew to about 10,000 lines of bash against about 3,000 lines of product change (tests included), most of it judgement logic: parsing tcpdump and pfctl output and deciding PASS or UNKNOWN. Its stub tests could never reach real root, routes or tcpdump, so every review round found new ways a check could PASS wrongly. See ORCHESTRATION.md "Device testing (2026-10-16)".
 - After this ticket, TP-078's checks 08 and 10 reduce to `thinkpol diag` before, during and after, plus a capture.
-- **Where it lives.** The mechanism is in `internal/agent/localapi/doc.go` ("Diagnostics"), with each reader in its package's doc: `netcfg` ("Reading back"), `firewall` ("Linux: reading it back", "macOS: reading it back"), `dns` ("Reading back"), `dataplane` ("The last Apply's steps"). DESIGN.md has one line in "The local API".
+- **Where it lives.** The mechanism is in `internal/agent/localapi/doc.go` ("Diagnostics"), with each reader in its package's doc: `netcfg` ("Reading back"), `firewall` ("Linux: reading it back", "macOS: reading it back"), `dns` ("Reading back"), `dataplane` ("The last Apply's steps"). docs/design/desktop-client.md "The local API" names `diag` as the one exception to "nothing the API reports is a public address", and docs/design/security.md's local API line says the same.
 - **Root only.** The routes, rules, guard and resolvers name public addresses, so the group's snapshot has them unreadable ("root only") and the agent doesn't read them for it; the status, the TUN and the last Apply are the group's too. The pf reference shows by its pid; its token stays in the record.
-- **Device run (the owner's, after review round 1).** Nothing here ran pfctl or scutil. On the Mac, connected with the guard applied, as root, save each output to a file:
-  1. `sudo ./bin/thinkpol diag -o diag-connected.json`, and as a non-root member of `thinkpol`, `./bin/thinkpol diag > diag-member.json`.
-  2. `sudo pfctl -a com.apple/000.thinkpol -s rules -v`, `sudo pfctl -a com.apple/000.thinkpol -t thinkpol_exempt6 -T show`, `sudo pfctl -s info`, `sudo pfctl -s References`, `sudo pfctl -s rules`, `sudo pfctl -s Interfaces -v`, `sudo pfctl -a com.apple -s Anchors`, and `scutil --dns` (all listings).
+- **Device run (the owner's, after review round 1).** Nothing here ran pfctl or scutil. On the Mac, connected with the guard applied, record: before each step `date -u +%FT%TZ >> times.txt`, and once after the last.
+  1. `sudo ./bin/thinkpol diag -o diag-connected.json`; as a non-root member of `thinkpol`, `./bin/thinkpol diag > diag-member.json 2> diag-member.err` (on macOS the member may be refused, TP-094: keep the stderr either way).
+  2. Each to its own file: `sudo pfctl -a com.apple/000.thinkpol -s rules -v`, `sudo pfctl -a com.apple/000.thinkpol -t thinkpol_exempt6 -T show`, `sudo pfctl -s info`, `sudo pfctl -s References`, `sudo pfctl -s rules`, `sudo pfctl -s Interfaces -v`, `sudo pfctl -a com.apple -s Anchors`, and `scutil --dns` (all listings).
   3. `sudo ./bin/thinkpol disconnect`, then `sudo ./bin/thinkpol diag -o diag-disconnected.json` and step 2's `-s rules -v`, `-s info` and `-s References` again.
-  Expected: no `unreadable` in `guard`, `routes`, `dns` (`rules` empty); `guard.rules` the same lines as `-s rules -v`, its counters the same within the seconds between them; `guard.exempt` the `-T show` entries; `pf.reference` held while connected and not recorded after the disconnect; `dns` the resolvers `scutil --dns` lists; the member's snapshot has the host parts "root only". The listings go into `firewall/testdata/pfctl` and `dns/testdata/scutil`, replacing the built ones, and any parse failure is a finding.
+  4. `sudo chown "$USER" diag-*.json` (written 0600 by root), so the owner and the judging agent can read them.
+  **Judged afterwards, by an agent, not during the run:** no `unreadable` in `guard`, `routes`, `dns` (`policy_rules` empty); `guard.rules` the same lines as `-s rules -v`, their counters the same within the seconds between them; `guard.exempt` the `-T show` entries; `pf.guard_check.main_rules` what `-s rules` lists up to the hook; `pf.reference` held while connected and not recorded after the disconnect; `dns` the resolvers `scutil --dns` lists; the member's snapshot `host_parts: false` with the host parts "root only", or its refusal in the stderr. The listings go into `firewall/testdata/pfctl` and `dns/testdata/scutil`, replacing the built ones; a parse failure is a finding. Then the two macOS boxes can be ticked.
+- **Decisions (round 2).** The JSON is v1 with the proto's own names (snake_case) and every field, written by `WriteDiagnostics` for `diag` only: `status -json` keeps its camelCase form. The TUN reader lives in `netcfg` (`InspectInterface`), the host side of the overlay. A server's TUN and last Apply say so (`UnreadableServer`): its data planes run in its workers, which the status lists. The pf token never enters the snapshot.
 
 ## Log
 - 2026-10-16 created in backlog (device-test kit rethink)
