@@ -90,18 +90,30 @@ func (x execPfctl) run(ctx context.Context, stdin []byte, args ...string) (pfOut
 	return out, nil
 }
 
-// detail is what pfctl said on stderr, but its ALTQ chatter, as one line.
+// inputLine is how pfctl names a line of its input, "stdin:5:": two
+// colons around a number, which redacting an error's addresses would
+// take for an IPv6 address.
+var inputLine = regexp.MustCompile(`\bstdin:([0-9]+):`)
+
+// detail is what pfctl said on stderr, but its ALTQ chatter, as one line,
+// a line of its input named "stdin line N:".
 func detail(stderr []byte) string {
 	l := lines(stderr)
 	if len(l) == 0 {
 		return ""
 	}
-	s := strings.Join(l, "; ")
-	if len(s) > 300 {
-		s = s[:300] + "..."
+	s := inputLine.ReplaceAllString(strings.Join(l, "; "), "stdin line $1:")
+	if len(s) > detailMax {
+		// Back to a space: a word cut through (an address) would escape
+		// the redaction of addresses whoever logs this does.
+		s = s[:detailMax]
+		s = s[:max(strings.LastIndexByte(s, ' '), 0)] + "..."
 	}
 	return ": " + s
 }
+
+// detailMax is how much of pfctl's stderr an error quotes.
+const detailMax = 300
 
 // lines are b's non-empty lines, trimmed, without pfctl's ALTQ chatter
 // ("No ALTQ support in kernel", "ALTQ related functions disabled"),
@@ -459,7 +471,11 @@ func anchorText(tun string, exempt []netip.Prefix, upstreams []netip.AddrPort) s
 // with the words it must hold, every pass stateless. pfctl prints a rule
 // its own way (protocol and ICMPv6 type names, implied options), so this
 // is no comparison of text; the listing it accepts is kept, and every
-// later check compares the anchor with it exactly.
+// later check compares the anchor with it exactly. A refusal quotes the
+// rule as pf listed it, on purpose: its order and shape are what tell why
+// pf holds other than what was loaded (an optimizer reordering the
+// rules). It can name an upstream's address: whoever logs this error must
+// redact its addresses.
 func saneRules(listed []string, tun string, upstreams []netip.AddrPort) error {
 	i := 0
 	for _, r := range guardRules(tun, upstreams) {

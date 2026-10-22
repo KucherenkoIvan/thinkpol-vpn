@@ -25,6 +25,12 @@ A DHCP client that rewrites `/etc/resolv.conf` in place while the node manages i
 
 ## Notes
 - Found by TP-115's round-1 correctness review (2026-10-21). The loss predates TP-115.
+- From TP-128's round-1 review (2026-10-22), more cases with the same cause:
+  - The 2 s poll can read the file empty mid-rewrite. The empty content is then recorded as the original, so `Restore` would put back an empty resolv.conf.
+  - While the first read is owed, a managed link's target that reads empty (`linkedOriginal`) counts as a good read, the same ambiguity TP-128 settled the other way for resolved's uplink file.
+  - An empty /etc/resolv.conf can be a valid configuration, so the rule here needs its own decision in the dns package doc, not a copy of the uplink rule.
+  - RESIDUAL-RISKS RR5 should name losing the original, not only stale upstreams.
 
 ## Log
 - 2026-10-21 created in backlog (TP-115 review round 1)
+- 2026-10-22 docs (TP-128 review): the empty-read cases, Restore putting back an empty file, and RR5

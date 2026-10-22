@@ -25,7 +25,8 @@ const guardPoll = 10 * time.Second
 // around the tunnel (routetable.Exempt) with a pf anchor, GuardAnchor,
 // under Apple's `anchor "com.apple/*"` (guardRules lists its rules), and
 // the anchor's table, loaded together by one `pfctl -a
-// com.apple/000.thinkpol -f - -o none` (the optimizer off, below):
+// com.apple/000.thinkpol -f - -o none`, pfctl's rule optimizer off so
+// that pf holds the rules in the order written (load):
 //
 //	table <thinkpol_exempt6> persist { <Exempt.Direct's IPv6>, LinkScoped }
 //
@@ -136,7 +137,15 @@ func hostAddrs() ([]netip.Addr, error) {
 // refused killed. Applying what is in place again only reads it back (the
 // hook, the rules exactly as listed after the load, every table entry, pf
 // enabled) and reloads if anything differs. A failed load leaves what was
-// there (a pf transaction), a guard at least as strict as either.
+// there (a pf transaction), a guard at least as strict as either. A load
+// pf took but load refuses on reading it back stays, unverified, and the
+// Apply fails and is retried. pf enforces it whenever pf is on (on the
+// guard's reference after an earlier good load, or on another enabler's);
+// the guard takes no reference for it. Flushing it would leave an empty
+// anchor, which passes all IPv6. The package doc (macOS: loading and
+// checking) has the reasoning: why it is never wider than the rules
+// written but for what someone changed in the anchor between the load and
+// the read-back, and why the last verified guard isn't reloaded instead.
 func (g *IPv6Guard) Apply(ctx context.Context, e routetable.Exempt) (err error) {
 	if !validInterface.MatchString(e.TUN) {
 		return fmt.Errorf("firewall: TUN %q isn't an interface name", e.TUN)
@@ -202,8 +211,7 @@ func (g *IPv6Guard) checkHook(ctx context.Context) error {
 // load loads e's anchor and reads it back. The load runs with pfctl's
 // rule optimizer off (`-o none`): the default, `basic`, re-orders rules
 // (and may merge them into a table), and saneRules expects the listing
-// in the order and shape the guard wrote — as a device showed, where
-// pfctl listed the multicast rule first and every load was refused.
+// in the order and shape the guard wrote.
 func (g *IPv6Guard) load(ctx context.Context, e routetable.Exempt) (*appliedGuard, error) {
 	table, upstreams := exemptPrefixes(e), upstreamTargets(e)
 	if _, err := g.pf.run(ctx, []byte(anchorText(e.TUN, table, upstreams)), "-a", GuardAnchor, "-f", "-", "-o", "none"); err != nil {
