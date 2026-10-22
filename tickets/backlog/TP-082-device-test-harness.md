@@ -43,3 +43,4 @@ Per-round lessons from the kit work: stub-only tests gave false greens; bash `$B
 ## Log
 - 2026-10-15 created in backlog (device run 3 and 4 findings)
 - 2026-10-15 docs: kit bugs found in device run 4 analysis
+- 2026-10-23 design reviewed and approved by the owner (orchestrator's draft, kept private while it names the owner's setup). Stack: Go, in `lab/devicetest`. Answers to the 14 questions are recorded in the design's decision log. Prototype scope: the safety core, the capture self-test, the evidence folder (`~/thinkpol-evidence/<date>-<ticket>/`, captures kept privately), and TP-096's pfctl plan. Changing the safety core takes its own ticket and the owner's approval. Reboot tests use a printed recovery sheet. Follow-ups: TP-133 (diag without an agent) and TP-134 (`thinkpol rollback`)
