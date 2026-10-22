@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
-	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/path"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/lists"
 )
 
@@ -564,13 +563,8 @@ func (e *Enforcer) applyGuard(ctx context.Context, w Want) {
 	case errors.Is(err, ErrGuardUnsupported):
 		e.guardFailing, e.guardUnsupported = false, true
 		e.status.GuardEnforced, e.status.GuardError = false, ErrorGuardUnsupported
-		// Terminal: nothing retries the guard, so this is the last word on
-		// it, and on the failures held back before it.
-		args := []any{"err", path.RedactError(err)}
-		if n := e.guardWarn.reset(); n > 0 {
-			args = append(args, "suppressed", n)
-		}
-		e.log.Warn("route table: the OS can't hold the leak guard; sockets bound to an interface aren't confined", args...)
+		// Terminal: nothing retries the guard.
+		e.warnTerminal(&e.guardWarn, "route table: the OS can't hold the leak guard; sockets bound to an interface aren't confined", err)
 	default:
 		if ctx.Err() == nil {
 			// One cut short by its context says nothing of the guard.
@@ -762,13 +756,8 @@ func (e *Enforcer) reapply(ctx context.Context) {
 	switch err := e.apply(ctx, *w, true); {
 	case err == nil:
 	case errors.Is(err, errors.ErrUnsupported):
-		// Terminal: watch stops, so this is the last word on it, and on the
-		// re-apply failures held back before it.
-		args := []any{"err", path.RedactError(err)}
-		if n := e.reapplyWarn.reset(); n > 0 {
-			args = append(args, "suppressed", n)
-		}
-		e.log.Warn("route table: the OS can't hold the route table, not retrying", args...)
+		// Terminal: watch stops.
+		e.warnTerminal(&e.reapplyWarn, "route table: the OS can't hold the route table, not retrying", err)
 	case ctx.Err() == nil:
 		e.warnRetry(&e.reapplyWarn, "route table: putting it back failed, retrying", err)
 	}

@@ -144,8 +144,8 @@ func hostAddrs() ([]netip.Addr, error) {
 // the guard takes no reference for it. Flushing it would leave an empty
 // anchor, which passes all IPv6. The package doc (macOS: loading and
 // checking) has the reasoning: why it is never wider than the rules
-// written but for a table someone widened, and why the last verified
-// guard isn't reloaded instead.
+// written but for what someone changed in the anchor between the load and
+// the read-back, and why the last verified guard isn't reloaded instead.
 func (g *IPv6Guard) Apply(ctx context.Context, e routetable.Exempt) (err error) {
 	if !validInterface.MatchString(e.TUN) {
 		return fmt.Errorf("firewall: TUN %q isn't an interface name", e.TUN)

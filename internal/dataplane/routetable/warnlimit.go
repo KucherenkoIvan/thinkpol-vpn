@@ -108,6 +108,16 @@ func (e *Enforcer) warnRetry(l *warnLimit, msg string, err error) {
 	e.log.Warn(msg, append(args, "err", text)...)
 }
 
+// warnTerminal warns a failure nothing retries, with what l held back
+// before it (the last word on both), and starts l over.
+func (e *Enforcer) warnTerminal(l *warnLimit, msg string, err error) {
+	args := []any{"err", path.RedactError(err)}
+	if n := l.reset(); n > 0 {
+		args = append(args, "suppressed", n)
+	}
+	e.log.Warn(msg, args...)
+}
+
 // logCleared starts l over now that its failure is gone and, if warns of
 // it were held back, says how many: once, with msg.
 func (e *Enforcer) logCleared(l *warnLimit, msg string) {

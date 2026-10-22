@@ -206,10 +206,10 @@
 // and the guard checks the listing it reads back in the order and shape
 // it wrote, so a re-ordered listing would fail every load. A table
 // defined with a list gets exactly that list on every load. It isn't
-// `const`: that would stop `pfctl -T add`,
-// but OpenBSD's pf refuses to change a const table in place, and a reload
-// that can't narrow the table would leave a wide preset's exemptions
-// behind; the guard's poll undoes a `-T add` instead.
+// `const`: that would stop `pfctl -T add`, but OpenBSD's pf refuses to
+// change a const table in place, and a reload that can't narrow the table
+// would leave a wide preset's exemptions behind; the guard's poll undoes a
+// `-T add` instead.
 //
 // After a load the guard reads the anchor back: its rules, which pfctl
 // lists its own way (protocol and ICMPv6 type names, implied options, a
@@ -226,9 +226,10 @@
 // another enabler's (the Application Firewall's); the guard never takes a
 // reference for it. Flushing would leave an empty anchor, which passes
 // all IPv6. The guard's rules are all `quick` and end in the block, so a
-// re-ordered listing is never wider than the rules written; a table pf
-// holds wider than the one loaded is enforced as it is until a retry
-// reads the anchor back whole. Reloading the last verified guard instead
+// re-ordered listing is never wider than the rules written; anything wider
+// (a rule missing a word, a pass with state, a table wider than the one
+// loaded) takes someone changing the anchor between the load and the
+// read-back, and is enforced as it is until a retry reads it back whole. Reloading the last verified guard instead
 // was rejected: it guards the previous Exempt, so after a preset moves an
 // address from direct to tunnelled it would exempt that address around
 // the tunnel; its own read-back can be refused the same way; and a table
