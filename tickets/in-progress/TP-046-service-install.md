@@ -8,8 +8,8 @@ size: L
 depends_on: [TP-022, TP-075]
 refs: [D2, D5]
 needs_human: macos
-owner: ""
-branch: ""
+owner: "agent-tp-046"
+branch: "tp-046-service-install"
 ---
 
 ## Goal
@@ -43,3 +43,5 @@ The client runs as a proper background service on macOS and Linux (Windows: TP-0
 - 2026-10-15 docs (backlog grooming): milestone M2; Windows service moved to TP-047; connect-on-boot and crash acceptance added
 - 2026-10-15 docs (backlog grooming, review fixes): Goal scoped to macOS/Linux; crash acceptance decoupled from TP-048 fail-closed check
 - 2026-10-22 docs (TP-077 residual-risks research): the macOS pf boot race, which DESIGN hands to this ticket, added to Notes and Acceptance
+- 2026-10-22 backlog → in-progress — owner: agent-tp-046, branch: tp-046-service-install
+- 2026-10-22 plan, one slice at a time, each shown working before the next: (1) the persisted connect request, stamped with the boot, and its tests; (2) the systemd unit and `service install`/`uninstall` on Linux, proven in a lab node running systemd (install, crash-restart, reboot, uninstall); (3) the launchd plist and its install/uninstall as files and commands, tested as files (`plutil -lint` on a copy) and with a fake launchctl; (4) the pf boot race: a missing `com.apple/*` hook early in a boot is retried, not terminal (fake pfctl tests); (5) the connect-on-boot toggle, docs, RESIDUAL-RISKS rows, the device checklist
