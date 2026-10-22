@@ -160,3 +160,47 @@ func TestResolvedAFailedReadKeepsThePreviousServers(t *testing.T) {
 		t.Errorf("problem after the file returned: %v", p)
 	}
 }
+
+// An existing but empty uplink file is a failed read, not a good read
+// with no upstreams: a zero-byte read cannot be told from a half-written
+// file. Unlike the resolv.conf path, a later tick here compares against
+// the servers last seen and tells on the next change, so the harm is the
+// false "no upstreams" itself: it is told as the first good read and
+// stands until the uplink file's next change.
+func TestResolvedAnEmptyUplinkFileIsAFailedRead(t *testing.T) {
+	uplink := filepath.Join(t.TempDir(), "uplink.conf") // missing: the first read fails
+	told := make(chan []netip.Addr, 8)
+	c := testSystem
+	c.Upstreams, c.UpstreamsUnknown = func(a []netip.Addr) { told <- a }, true
+	r := newTestResolved(c, true, uplink)
+	firstResolvedRead(t, r)
+	if p := r.Problem(); !errors.Is(p, ErrUpstreamsStale) {
+		t.Errorf("problem after a failed first read: %v", p)
+	}
+	// The file is there but empty, as a file caught mid-write reads: no
+	// answer yet.
+	if err := os.WriteFile(uplink, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tickResolved(t, r)
+	toldNothing(t, told)
+	if p := r.Problem(); !errors.Is(p, ErrUpstreamsStale) {
+		t.Errorf("problem after an empty uplink file: %v", p)
+	}
+	// Written, the uplink file is the first good read, told.
+	if err := os.WriteFile(uplink, []byte("nameserver 198.51.100.53\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tickResolved(t, r)
+	select {
+	case got := <-told:
+		if !slices.Equal(got, []netip.Addr{netip.MustParseAddr("198.51.100.53")}) {
+			t.Errorf("told %v, want 198.51.100.53", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("never told the first good read")
+	}
+	if p := r.Problem(); p != nil {
+		t.Errorf("problem after a good read: %v", p)
+	}
+}

@@ -389,8 +389,8 @@ func (r *resolvConf) recordOriginal(original []byte, read bool) (tell func()) {
 	}
 	// Upstreams is told when the original changed, and at the first good
 	// read while the caller has none (untold). Behind the stub, an
-	// unreadable uplink file is a failed read: no answer was had, so
-	// while untold it clears nothing.
+	// unreadable or empty uplink file is a failed read: no answer was
+	// had, so while untold it clears nothing.
 	firstGoodRead := read && ok && r.untold
 	changed := r.seen && !originalEqual(r.original, original)
 	if read && ok {
@@ -583,16 +583,33 @@ func onlyStubs(servers []netip.Addr) bool {
 	return len(servers) > 0 && !slices.ContainsFunc(servers, func(a netip.Addr) bool { return !slices.Contains(resolvedStubs, a) })
 }
 
+// readUplink reads resolved's uplink resolv.conf. A missing or unreadable
+// file is an error, and so is an empty one: a zero-byte read cannot be
+// told from a half-written file, and resolved's own writer writes its
+// header comment even with no servers and replaces the file atomically,
+// so an empty uplink is never an answer with no upstreams.
+func readUplink(path string) ([]byte, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("dns: reading resolved's uplink %s: %w", path, err)
+	}
+	if len(b) == 0 {
+		return nil, fmt.Errorf("dns: resolved's uplink %s is empty", path)
+	}
+	return b, nil
+}
+
 // upstreamsFromContent are the servers a resolv.conf names, with the
-// same stub filtering and uplink fallback as upstreamsFrom. The error is
-// when the conf names only resolved's stub and its uplink file can't be
-// read: no answer was had, not an empty one, and the cause says which.
+// same stub filtering and uplink fallback as upstreamsFrom. A conf that
+// names only resolved's stub is decided by the uplink file's read
+// (readUplink): a missing, unreadable or empty uplink is a failed read,
+// and the error names the cause.
 func upstreamsFromContent(content []byte, uplink string, exclude []netip.Addr) ([]netip.Addr, error) {
 	servers := nameservers(content)
 	if onlyStubs(servers) {
-		b, err := os.ReadFile(uplink)
+		b, err := readUplink(uplink)
 		if err != nil {
-			return nil, fmt.Errorf("dns: reading resolved's uplink %s: %w", uplink, err)
+			return nil, err
 		}
 		servers = nameservers(b)
 	}
@@ -603,9 +620,9 @@ func upstreamsFromContent(content []byte, uplink string, exclude []netip.Addr) (
 
 // upstreamsFrom are the servers the resolv.conf at etc named before the
 // node managed it or, if those are systemd-resolved's stub, the servers
-// in resolved's own list at uplink; never the stub or exclude. An
-// unreadable uplink behind the stub is a failed read, not an empty
-// answer.
+// in resolved's own list at uplink; never the stub or exclude. A missing,
+// unreadable or empty uplink behind the stub is a failed read, not an
+// empty answer (readUplink).
 func upstreamsFrom(etc, uplink string, exclude []netip.Addr) ([]netip.Addr, error) {
 	content, err := originalResolvConf(etc)
 	if err != nil {

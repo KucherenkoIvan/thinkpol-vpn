@@ -70,6 +70,19 @@ func readString(t *testing.T, path string) string {
 	return string(b)
 }
 
+// writeFileAtomic puts content at a file the way the product's own
+// writers do (replace with writeNew: a new file, then a rename), so a
+// watcher reading the file never sees a half-written intermediate state.
+// Every test write to a file a watcher reads goes through it; writes to
+// files nothing watches may write directly.
+func writeFileAtomic(t *testing.T, path, content string) {
+	t.Helper()
+	err := replace(path, func(tmp string) error { return writeNew(tmp, []byte(content)) })
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestResolvConfIsReplacedAndRestored(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "resolv.conf")
 	if err := os.WriteFile(path, []byte(isp), 0o644); err != nil {
@@ -180,9 +193,7 @@ func TestAResolvConfRewrittenMeanwhileIsTakenBack(t *testing.T) {
 	r.cfg.Upstreams = func(a []netip.Addr) { upstreams <- a }
 	r.mu.Unlock()
 	renewed := "nameserver 192.0.2.99\n"
-	if err := os.WriteFile(path, []byte(renewed), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeFileAtomic(t, path, renewed)
 	deadline := time.Now().Add(3 * resolvConfCheck)
 	for !slices.Equal(nameservers([]byte(readString(t, path))), testSystem.Servers) {
 		if time.Now().After(deadline) {
@@ -231,9 +242,7 @@ func TestARewrittenResolvConfFiltersStubUpstreams(t *testing.T) {
 	r.mu.Unlock()
 
 	mixed := "nameserver 127.0.0.53\nnameserver 192.0.2.88\n"
-	if err := os.WriteFile(path, []byte(mixed), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeFileAtomic(t, path, mixed)
 	deadline := time.Now().Add(3 * resolvConfCheck)
 	for !slices.Equal(nameservers([]byte(readString(t, path))), testSystem.Servers) {
 		if time.Now().After(deadline) {
@@ -251,13 +260,9 @@ func TestARewrittenResolvConfFiltersStubUpstreams(t *testing.T) {
 		t.Fatal("mixed stub and real: not told upstreams changed")
 	}
 
-	if err := os.WriteFile(uplink, []byte("nameserver 198.51.100.53\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeFileAtomic(t, uplink, "nameserver 198.51.100.53\n")
 	stubOnly := "nameserver 127.0.0.53\n"
-	if err := os.WriteFile(path, []byte(stubOnly), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeFileAtomic(t, path, stubOnly)
 	deadline = time.Now().Add(3 * resolvConfCheck)
 	for !slices.Equal(nameservers([]byte(readString(t, path))), testSystem.Servers) {
 		if time.Now().After(deadline) {
@@ -279,9 +284,7 @@ func TestARewrittenResolvConfFiltersStubUpstreams(t *testing.T) {
 		t.Fatal(err)
 	}
 	stubOnlyOther := "nameserver 127.0.0.54\noptions edns0\n"
-	if err := os.WriteFile(path, []byte(stubOnlyOther), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeFileAtomic(t, path, stubOnlyOther)
 	deadline = time.Now().Add(3 * resolvConfCheck)
 	for !slices.Equal(nameservers([]byte(readString(t, path))), testSystem.Servers) {
 		if time.Now().After(deadline) {
@@ -326,9 +329,7 @@ func TestResolvConfAFailedFirstReadBehindTheStubWaitsForTheUplink(t *testing.T) 
 	if p := r.Problem(); !errors.Is(p, ErrUpstreamsStale) {
 		t.Errorf("problem after another failed read: %v", p)
 	}
-	if err := os.WriteFile(uplink, []byte("nameserver 198.51.100.53\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeFileAtomic(t, uplink, "nameserver 198.51.100.53\n")
 	applyOnce(t, r)
 	select {
 	case got := <-told:
@@ -370,9 +371,7 @@ func TestResolvConfAFailedFirstReadOverADanglingLinkReadsItsTargetWhenItAppears(
 	if p := r.Problem(); !errors.Is(p, ErrUpstreamsStale) {
 		t.Errorf("problem after another failed read: %v", p)
 	}
-	if err := os.WriteFile(target, []byte("nameserver 192.0.2.53\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeFileAtomic(t, target, "nameserver 192.0.2.53\n")
 	applyOnce(t, r)
 	select {
 	case got := <-told:
@@ -468,9 +467,7 @@ func TestResolvConfWhileUntoldAStubTargetWithoutUplinkWarnsNothing(t *testing.T)
 	}
 	// The target appears, naming only resolved's stub: a read that
 	// answers nothing, not a good one.
-	if err := os.WriteFile(target, []byte("nameserver 127.0.0.53\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeFileAtomic(t, target, "nameserver 127.0.0.53\n")
 	applyOnce(t, r)
 	if strings.Contains(log.String(), "no upstream to ask") {
 		t.Errorf("warned while untold:\n%s", log.String())
@@ -479,9 +476,7 @@ func TestResolvConfWhileUntoldAStubTargetWithoutUplinkWarnsNothing(t *testing.T)
 		t.Errorf("problem after a stub target with no uplink: %v", p)
 	}
 	// The uplink file appears: the first good read, told.
-	if err := os.WriteFile(uplink, []byte("nameserver 198.51.100.53\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeFileAtomic(t, uplink, "nameserver 198.51.100.53\n")
 	applyOnce(t, r)
 	select {
 	case got := <-told:
@@ -490,6 +485,57 @@ func TestResolvConfWhileUntoldAStubTargetWithoutUplinkWarnsNothing(t *testing.T)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("never told the first good read")
+	}
+}
+
+// An existing but empty uplink file is a failed read, not a good read
+// with no upstreams: a zero-byte read cannot be told from a half-written
+// file. On this path a false "no upstreams" told as the first good read
+// clears the staleness for good — a later read of the same resolv.conf
+// tells nothing, however the uplink file reads — while a failed read
+// only waits for the next tick.
+func TestResolvConfAnEmptyUplinkFileIsAFailedRead(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "real.conf")
+	path := filepath.Join(dir, "resolv.conf")
+	if err := os.Symlink("real.conf", path); err != nil { // dangling at setup
+		t.Fatal(err)
+	}
+	uplink := filepath.Join(dir, "uplink.conf") // missing until the last phase
+	told := make(chan []netip.Addr, 8)
+	c := testSystem
+	c.Upstreams, c.UpstreamsUnknown = func(a []netip.Addr) { told <- a }, true
+	r, err := setResolvConf(path, uplink, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = r.Restore() })
+	// The target appears, naming only resolved's stub: behind the stub,
+	// the missing uplink is a failed read.
+	writeFileAtomic(t, target, "nameserver 127.0.0.53\n")
+	applyOnce(t, r)
+	toldNothing(t, told)
+	// The uplink file is there but empty, as a file caught mid-write
+	// reads: no answer yet.
+	writeFileAtomic(t, uplink, "")
+	applyOnce(t, r)
+	toldNothing(t, told)
+	if p := r.Problem(); !errors.Is(p, ErrUpstreamsStale) {
+		t.Errorf("problem after an empty uplink file: %v", p)
+	}
+	// Written, the uplink file is the first good read, told.
+	writeFileAtomic(t, uplink, "nameserver 198.51.100.53\n")
+	applyOnce(t, r)
+	select {
+	case got := <-told:
+		if !slices.Equal(got, []netip.Addr{netip.MustParseAddr("198.51.100.53")}) {
+			t.Errorf("told %v, want 198.51.100.53", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("never told the first good read")
+	}
+	if p := r.Problem(); p != nil {
+		t.Errorf("problem after a good read: %v", p)
 	}
 }
 
@@ -515,9 +561,7 @@ func TestResolvConfTheDefaultPathTellsNothingUntilAChange(t *testing.T) {
 	}
 	applyOnce(t, r) // the first apply wrote nothing: still nothing
 	toldNothing(t, told)
-	if err := os.WriteFile(path, []byte("nameserver 192.0.2.99\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeFileAtomic(t, path, "nameserver 192.0.2.99\n")
 	applyOnce(t, r)
 	select {
 	case got := <-told:
@@ -586,6 +630,15 @@ func TestSystemUpstreams(t *testing.T) {
 	write(etc, "nameserver 127.0.0.53\noptions edns0 trust-ad\n")
 	write(uplink, "nameserver 198.51.100.53\nnameserver 100.64.0.2\n")
 	check("through systemd-resolved, without the node's own", "198.51.100.53")
+	// An existing but empty uplink file is a failed read, not a good
+	// read with no upstreams: SystemUpstreams then errors, so a startup
+	// that reads an empty uplink (caught mid-write or truncated) reports
+	// the resolvers unknown instead of answering none.
+	write(etc, "nameserver 127.0.0.53\n")
+	write(uplink, "")
+	if _, err := upstreamsFrom(etc, uplink, own); err == nil || !strings.Contains(err.Error(), "is empty") {
+		t.Errorf("a stub resolv.conf with an empty uplink: %v, want the failed read", err)
+	}
 	if err := os.Remove(uplink); err != nil {
 		t.Fatal(err)
 	}
@@ -694,9 +747,7 @@ func TestResolvConfAFailedFirstReadIsStaleUntilAGoodReadTellsIt(t *testing.T) {
 	}
 	// The file appears (a DHCP client wrote it): the read works, and the
 	// first one is told whether or not it changed.
-	if err := os.WriteFile(path, []byte("nameserver 192.0.2.53\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeFileAtomic(t, path, "nameserver 192.0.2.53\n")
 	applyOnce(t, r)
 	select {
 	case got := <-told:
@@ -730,9 +781,7 @@ func TestResolvConfAFailedFirstReadThenEmptyTellsAnEmptyAnswer(t *testing.T) {
 	if p := r.Problem(); !errors.Is(p, ErrUpstreamsStale) {
 		t.Errorf("problem after a failed first read: %v", p)
 	}
-	if err := os.WriteFile(path, []byte("options timeout:1\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeFileAtomic(t, path, "options timeout:1\n")
 	applyOnce(t, r)
 	select {
 	case got := <-told:
@@ -817,9 +866,7 @@ func TestResolvConfAFailedFirstReadOverADanglingSymlinkStaysStale(t *testing.T) 
 	if p := r.Problem(); !errors.Is(p, ErrUpstreamsStale) {
 		t.Errorf("problem after another failed read: %v", p)
 	}
-	if err := os.WriteFile(path, []byte("nameserver 192.0.2.53\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeFileAtomic(t, path, "nameserver 192.0.2.53\n")
 	applyOnce(t, r)
 	select {
 	case got := <-told:
