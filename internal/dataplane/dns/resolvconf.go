@@ -594,7 +594,7 @@ func readUplink(path string) ([]byte, error) {
 		return nil, fmt.Errorf("dns: reading resolved's uplink %s: %w", path, err)
 	}
 	if len(b) == 0 {
-		return nil, fmt.Errorf("dns: %s is empty: a half-written uplink is no answer", path)
+		return nil, fmt.Errorf("dns: resolved's uplink %s is empty", path)
 	}
 	return b, nil
 }

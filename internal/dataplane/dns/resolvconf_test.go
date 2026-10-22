@@ -632,8 +632,8 @@ func TestSystemUpstreams(t *testing.T) {
 	check("through systemd-resolved, without the node's own", "198.51.100.53")
 	// An existing but empty uplink file is a failed read, not a good
 	// read with no upstreams: SystemUpstreams then errors, so a startup
-	// while resolved is mid-write reports the resolvers unknown instead
-	// of answering none.
+	// that reads an empty uplink (caught mid-write or truncated) reports
+	// the resolvers unknown instead of answering none.
 	write(etc, "nameserver 127.0.0.53\n")
 	write(uplink, "")
 	if _, err := upstreamsFrom(etc, uplink, own); err == nil || !strings.Contains(err.Error(), "is empty") {

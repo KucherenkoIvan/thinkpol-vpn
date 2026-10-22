@@ -218,7 +218,8 @@
 // resolved's uplink file, and if that yields nothing the previous
 // upstreams are kept (and the log says to set `-dns-upstream`). Behind
 // the stub, a read of the OS's resolvers is a read of the uplink file;
-// a missing file, a dangling link or an empty one is a failed read.
+// a missing uplink file, a dangling link or an empty file is a failed
+// read.
 //
 // # macOS: configd's dynamic store
 //
