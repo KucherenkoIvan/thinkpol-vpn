@@ -28,8 +28,10 @@ The macOS IPv6 guard reports itself not enforced while a `pass ... quick` that c
 
 ## Notes
 - From TP-126's round-2 design review (2026-10-22). Of TP-126's out-of-scope items, the orchestrator decided:
-  - A mark-setting chain in another nftables table (Linux) is accepted. Setting the guard's links mark takes root and the mark's private value. The guard can only police its own table without owning the whole ruleset, and a root process that deliberately forges the mark has already won.
+  - A mark-setting chain in another nftables table (Linux) is accepted. Setting a mark takes CAP_NET_ADMIN (root), as adding a chain does, and the guard compares the whole value (0x7470), which no other known software sets. The guard can only police its own table without owning the whole ruleset, and a root process that deliberately forges the mark has already won.
   - This macOS case gets a ticket, because ordinary third-party software does it.
+- From TP-126's round-3 design review: `killedUnder` uses `checkBypass`'s error text as the bypass's identity. A failure to read pf counts as "the same bypass" and skips the kill. Two quick passes above the hook, or an earlier anchor's rules changing under one name, don't change the text. Since this ticket reworks the bypass check, key the kill on the findings (a list of bypasses plus an error for "couldn't read pf") instead of the text.
 
 ## Log
 - 2026-10-22 created in backlog (TP-126 review round 2)
+- 2026-10-22 docs: the mark-chain reason corrected (the mark value is public); TP-126 round 3's bypass-identity note added
