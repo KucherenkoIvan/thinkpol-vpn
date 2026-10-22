@@ -113,3 +113,4 @@ Round 2 (2026-10-23): correctness (merge), design (fix first), second opinion (f
 - 2026-10-23 round 1 done: R1.1-R1.12 fixed; `make lint` and `make test` green; full `make lab-test` green on 60cd463 (the lab package with TestServiceUnderSystemd, 36 packages in lab nodes). Still unverified: everything on a Mac (the macOS boxes, checklist steps 1-8), and Linux on a real host rather than a container (the boot id stays the Docker VM's; systemd 252 only)
 - 2026-10-23 in-progress → review
 - 2026-10-23 review → has-errors (round 2: R2.1-R2.8)
+- 2026-10-23 has-errors → in-progress — owner: agent-tp-046, round 2 fixes (R2.1-R2.8)
