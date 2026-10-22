@@ -101,3 +101,4 @@ Round 2 (2026-10-23): correctness (fix first), design (fix first), second opinio
 - 2026-10-23 round 2 done: R1.1–R1.11 fixed. Still not verified: nothing ran pfctl or scutil on a Mac; the macOS parsers pass on built fixtures only (the two open boxes); a snapshot after a crash still needs a running agent
 - 2026-10-23 in-progress → review
 - 2026-10-23 review → has-errors (round 2: R2.1-R2.5)
+- 2026-10-23 has-errors → in-progress — owner: agent-tp-091, round 3 (R2.1–R2.5)
