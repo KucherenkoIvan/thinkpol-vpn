@@ -25,6 +25,16 @@
 // sealed box, which is only for what is sealed to a public key (such as the
 // map's sections).
 //
+// A datagram that authenticates proves that one of the link's two ends (or
+// the controller that made the link) sealed it, not which one: the secret
+// is the link's, and the sender inside the seal is a claim. Decided
+// (TP-125): no signature per datagram. A holder of the secret can abuse
+// only its own link (its reply addresses, its space's share) before
+// WireGuard, which authenticates every peer, drops what it forged; a
+// signature would cost a second public-key layer and about 64 bytes on
+// every datagram, a size a censor could profile, and still not stop a
+// stolen device, which holds the key. RESIDUAL-RISKS.md RR33.
+//
 // Inside the seal: the sender (its creation time in nanoseconds, strictly
 // increasing per process, and 4 random bytes; a new one per dial and per
 // listener-side link), the time the datagram was sent (Unix seconds, a

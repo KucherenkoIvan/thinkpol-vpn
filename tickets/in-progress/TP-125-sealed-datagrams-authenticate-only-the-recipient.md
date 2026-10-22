@@ -20,11 +20,20 @@ A recorded decision on the independent design review's point (2026-10-13, sectio
 - Write it in DESIGN.md (or the `udp` package doc for the mechanism) and file implementation tickets if any.
 
 ## Acceptance
-- [ ] the decision and its reasons are written down; a residual-risks row exists if anything is accepted
+- [x] the decision and its reasons are written down; a residual-risks row exists if anything is accepted
 
 ## Notes
+- **Decision (owner, 2026-10-23): A, accept.** No signature per datagram.
+- **The analysis behind it:**
+  - The seal's secret is per link: only the link's two ends hold it, plus the controller that built the map. So a datagram that authenticates proves "one of the two ends", and the sender id inside the seal is a claim.
+  - An outsider gets nothing: an unknown connection id is dropped before any decryption, no worker is woken and nothing answers.
+  - A replay is dropped, except after a supervisor restart (RR34, TP-069).
+  - A holder of one link's secret can abuse only that link: churn its reply addresses, spend its own space's share, get probe answers. WireGuard still authenticates every peer.
+  - A signature per datagram (option B) would not stop a stolen device, which holds the key, nor a copied datagram racing the original. It would add a second public-key layer and about 64 bytes per datagram.
+  - The one place verify-without-forge matters is a gatekeeper that verifies for every space: noted in TP-063.
 - From TP-077's residual-risks research (2026-10-22). TP-062's Notes: "not among the owner's decisions and isn't written down".
 
 ## Log
 - 2026-10-22 created in backlog (TP-077 out-of-scope note)
 - 2026-10-23 backlog → in-progress — owner: orchestrator, branch: tp-125-sealed-datagrams-decision
+- 2026-10-23 the decision is in the `udp` package doc (the seal) and RESIDUAL-RISKS.md RR33 (decided); TP-063 carries the gatekeeper's verify-only question; make lint and make test pass
