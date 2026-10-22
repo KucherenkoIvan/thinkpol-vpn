@@ -1383,7 +1383,7 @@ func TestDetailNeverCutsThroughAnAddress(t *testing.T) {
 	head := strings.Repeat("x", detailMax-7) + " " // the limit falls in "2001:d|b8:..."
 	got := path.RedactError(errors.New(detail([]byte(head + "2001:db8:53::1 unknown\n"))))
 	if strings.Contains(got, "2001") || !strings.HasSuffix(got, strings.TrimSpace(head)+"...") {
-		t.Errorf("detail %q, want it cut before the address", got[len(got)-20:])
+		t.Errorf("detail %q, want it cut before the address", got)
 	}
 }
 
