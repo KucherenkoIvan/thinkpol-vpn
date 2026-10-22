@@ -72,10 +72,16 @@ type PFReport struct {
 	// Hook is how the main ruleset evaluates the guard's anchor: "ok",
 	// "missing" (no `anchor "com.apple/*"`), "bypassed" (a quick pass above
 	// it).
-	Hook           string
-	HookUnreadable string
+	Hook string
+	// Skipped are the interfaces pf skips (`set skip on`) but lo0, the
+	// TUN's among them; AnchorsBefore the anchors under com.apple that
+	// sort before the guard's. Either lets IPv6 past the guard (but the
+	// TUN, which the anchor passes anyway).
+	Skipped, AnchorsBefore []string
+	HookUnreadable         string
 	// Reference is the `pfctl -E` reference the guard's record names, and
-	// whether pf still lists it as taken by that process.
+	// whether pf still lists it as taken by that process;
+	// ReferenceUnreadable says why the record couldn't be read.
 	Reference           *PFReferenceReport
 	ReferenceUnreadable string
 }
@@ -87,10 +93,15 @@ type PFReferenceReport struct {
 	// Recorded: the guard's record names a reference (false: none, and
 	// the rest is empty).
 	Recorded bool
-	Pid      int
+	// Stale: there is a record, but it holds nothing this boot can
+	// release (an earlier boot's, or one that can't be read).
+	Stale bool
+	Pid   int
 	// PidOnly: the record names it by the pid alone (`pfctl -E` printed
 	// no readable token and the lookup by pid hasn't found it yet).
 	PidOnly bool
-	// Held: pf lists the token as taken by that pid.
-	Held bool
+	// Held: pf lists the token as taken by that pid; HeldUnreadable says
+	// why pf's listing couldn't tell.
+	Held           bool
+	HeldUnreadable string
 }

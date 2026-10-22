@@ -272,6 +272,11 @@ message DiagPfHook {
   // How the main ruleset evaluates the anchor: "ok", "missing" (no
   // `anchor "com.apple/*"`), "bypassed" (a quick pass above it).
   string state = 2;
+  // The interfaces pf skips (`set skip on`) but lo0, the TUN's among
+  // them, and the anchors under com.apple that sort before the guard's:
+  // either lets IPv6 past it (but the TUN, which it passes anyway).
+  repeated string skipped = 3;
+  repeated string anchors_before = 4;
 }
 
 // The guard's `pfctl -E` reference, by the pid of the pfctl that took it.
@@ -279,11 +284,16 @@ message DiagPfReference {
   string unreadable = 1;
   // The guard's record names a reference.
   bool recorded = 2;
+  // A record that holds nothing this boot can release (an earlier
+  // boot's, or one that can't be read).
+  bool stale = 6;
   uint32 pid = 3;
   // The record names it by the pid alone (its value not read yet).
   bool pid_only = 4;
-  // pf lists it as taken by that pid.
+  // pf lists it as taken by that pid; held_unreadable says why pf's
+  // listing couldn't tell.
   bool held = 5;
+  string held_unreadable = 7;
 }
 
 // A space the node is enrolled in. Names are the controller's: a node

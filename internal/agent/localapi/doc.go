@@ -116,8 +116,10 @@
 //     as the kernel reports them ([netcfg.Inspect]);
 //   - the IPv6 leak guard as the host holds it
 //     ([firewall.InspectIPv6Guard]): on Linux the nftables table's flags,
-//     chain, rules with their counters and exempt set (macOS's isn't read
-//     yet: it says so).
+//     chain, rules with their counters and exempt set; on macOS the pf
+//     anchor's rules with their counters, its exempt table, pf's enabled
+//     state, how the main ruleset reaches the anchor and what bypasses it,
+//     and the guard's `pfctl -E` reference and whether pf still holds it.
 //
 // The routes, rules and guard are read from the host whatever the data
 // plane's state, so a snapshot after a crash or a stop shows what was
@@ -128,7 +130,8 @@
 //
 // The snapshot holds no key, token or session id: what it carries comes
 // from the status, which holds none, and from reading the host, which
-// holds none of the node's. A test walks its schema for fields named for
+// holds none of the node's (the pf reference shows by its pid; its token
+// stays in the guard's record). A test walks its schema for fields named for
 // one, and another looks for a device's keys and its links' credentials
 // in a real node's snapshot. The file is written beside its path and
 // renamed over it, so root writing into a directory others can write to

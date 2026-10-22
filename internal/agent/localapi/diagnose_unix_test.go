@@ -250,6 +250,29 @@ func TestDiagnoseCarriesTheHostParts(t *testing.T) {
 	if d, err = c.Diagnose(ctx); err != nil || !proto.Equal(d.GetGuard(), &localapiv1.DiagGuard{Where: "nftables table inet thinkpol-guard"}) {
 		t.Fatalf("no guard: %v, %v", d.GetGuard(), err)
 	}
+	// macOS after a stop: no rules, but pf's state and a reference that
+	// pf no longer lists (unreadable listing: held not claimed).
+	s.node.mu.Lock()
+	s.node.diag.Guard = routetable.GuardReport{Where: "pf anchor com.apple/000.thinkpol", PF: &routetable.PFReport{
+		Enabled: true, Hook: "bypassed", Skipped: []string{"en0"}, AnchorsBefore: []string{"com.apple/0.other"},
+		Reference: &routetable.PFReferenceReport{Recorded: true, Pid: 4130, Held: true, HeldUnreadable: "pfctl -s References: odd"},
+	}}
+	s.node.mu.Unlock()
+	wantPf := &localapiv1.DiagGuard{Where: "pf anchor com.apple/000.thinkpol", Pf: &localapiv1.DiagPf{
+		Enabled:   &localapiv1.DiagPfEnabled{Enabled: true},
+		Hook:      &localapiv1.DiagPfHook{State: "bypassed", Skipped: []string{"en0"}, AnchorsBefore: []string{"com.apple/0.other"}},
+		Reference: &localapiv1.DiagPfReference{HeldUnreadable: "pfctl -s References: odd", Recorded: true, Pid: 4130},
+	}}
+	if d, err = c.Diagnose(ctx); err != nil || !proto.Equal(d.GetGuard(), wantPf) {
+		t.Fatalf("pf: %v, %v", d.GetGuard(), err)
+	}
+	// A record that can't be read: unreadable, and nothing else.
+	s.node.mu.Lock()
+	s.node.diag.Guard.PF.ReferenceUnreadable = "trusteddir: permission denied"
+	s.node.mu.Unlock()
+	if d, err = c.Diagnose(ctx); err != nil || !proto.Equal(d.GetGuard().GetPf().GetReference(), &localapiv1.DiagPfReference{Unreadable: "trusteddir: permission denied"}) {
+		t.Fatalf("an unreadable record: %v, %v", d.GetGuard().GetPf(), err)
+	}
 	s.node.mu.Lock()
 	s.node.diag.Guard = routetable.GuardReport{Where: "pf anchor com.apple/000.thinkpol", Unreadable: "no pfctl", Present: true}
 	s.node.mu.Unlock()

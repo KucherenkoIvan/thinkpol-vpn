@@ -48,6 +48,9 @@ type fakePF struct {
 	// an interface has the name or not (pfctl's source; unverified on a
 	// Mac, TP-096).
 	skip []string
+	// hits are packets each rule of the guard's anchor matched, by index,
+	// as `-s rules -v` counts them.
+	hits map[int]uint64
 }
 
 type fakeRef struct {
@@ -265,6 +268,16 @@ func (f *fakePF) run(ctx context.Context, stdin []byte, args ...string) (pfOutpu
 		}
 		for _, l := range a.rules {
 			b.WriteString(l + "\n")
+		}
+	case slices.Equal(args, []string{"-s", "rules", "-v"}) && anchor != "":
+		// The counters' layout is pfctl's source's (pfctl_print_rule_counters),
+		// as testdata/pfctl/rules-v.txt has it.
+		if a == nil {
+			return fail("pfctl: DIOCGETRULES: Invalid argument")
+		}
+		for i, l := range a.rules {
+			n := f.hits[i]
+			fmt.Fprintf(&b, "%s\n  [ Evaluations: %-8d  Packets: %-8d  Bytes: %-10d  States: %-6d]\n  [ Inserted: uid 0 pid %d ]\n", l, n+40, n, n*84, 0, 4000)
 		}
 	case slices.Equal(args, []string{"-s", "Interfaces", "-v"}) && anchor == "":
 		for _, name := range slices.Compact(slices.Sorted(slices.Values(append(slices.Clone(fakeInterfaces), f.skip...)))) {

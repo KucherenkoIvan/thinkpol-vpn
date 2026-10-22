@@ -1981,7 +1981,12 @@ type DiagPfHook struct {
 	Unreadable string                 `protobuf:"bytes,1,opt,name=unreadable,proto3" json:"unreadable,omitempty"`
 	// How the main ruleset evaluates the anchor: "ok", "missing" (no
 	// `anchor "com.apple/*"`), "bypassed" (a quick pass above it).
-	State         string `protobuf:"bytes,2,opt,name=state,proto3" json:"state,omitempty"`
+	State string `protobuf:"bytes,2,opt,name=state,proto3" json:"state,omitempty"`
+	// The interfaces pf skips (`set skip on`) but lo0, the TUN's among
+	// them, and the anchors under com.apple that sort before the guard's:
+	// either lets IPv6 past it (but the TUN, which it passes anyway).
+	Skipped       []string `protobuf:"bytes,3,rep,name=skipped,proto3" json:"skipped,omitempty"`
+	AnchorsBefore []string `protobuf:"bytes,4,rep,name=anchors_before,json=anchorsBefore,proto3" json:"anchors_before,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2030,19 +2035,38 @@ func (x *DiagPfHook) GetState() string {
 	return ""
 }
 
+func (x *DiagPfHook) GetSkipped() []string {
+	if x != nil {
+		return x.Skipped
+	}
+	return nil
+}
+
+func (x *DiagPfHook) GetAnchorsBefore() []string {
+	if x != nil {
+		return x.AnchorsBefore
+	}
+	return nil
+}
+
 // The guard's `pfctl -E` reference, by the pid of the pfctl that took it.
 type DiagPfReference struct {
 	state      protoimpl.MessageState `protogen:"open.v1"`
 	Unreadable string                 `protobuf:"bytes,1,opt,name=unreadable,proto3" json:"unreadable,omitempty"`
 	// The guard's record names a reference.
-	Recorded bool   `protobuf:"varint,2,opt,name=recorded,proto3" json:"recorded,omitempty"`
-	Pid      uint32 `protobuf:"varint,3,opt,name=pid,proto3" json:"pid,omitempty"`
+	Recorded bool `protobuf:"varint,2,opt,name=recorded,proto3" json:"recorded,omitempty"`
+	// A record that holds nothing this boot can release (an earlier
+	// boot's, or one that can't be read).
+	Stale bool   `protobuf:"varint,6,opt,name=stale,proto3" json:"stale,omitempty"`
+	Pid   uint32 `protobuf:"varint,3,opt,name=pid,proto3" json:"pid,omitempty"`
 	// The record names it by the pid alone (its value not read yet).
 	PidOnly bool `protobuf:"varint,4,opt,name=pid_only,json=pidOnly,proto3" json:"pid_only,omitempty"`
-	// pf lists it as taken by that pid.
-	Held          bool `protobuf:"varint,5,opt,name=held,proto3" json:"held,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// pf lists it as taken by that pid; held_unreadable says why pf's
+	// listing couldn't tell.
+	Held           bool   `protobuf:"varint,5,opt,name=held,proto3" json:"held,omitempty"`
+	HeldUnreadable string `protobuf:"bytes,7,opt,name=held_unreadable,json=heldUnreadable,proto3" json:"held_unreadable,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *DiagPfReference) Reset() {
@@ -2089,6 +2113,13 @@ func (x *DiagPfReference) GetRecorded() bool {
 	return false
 }
 
+func (x *DiagPfReference) GetStale() bool {
+	if x != nil {
+		return x.Stale
+	}
+	return false
+}
+
 func (x *DiagPfReference) GetPid() uint32 {
 	if x != nil {
 		return x.Pid
@@ -2108,6 +2139,13 @@ func (x *DiagPfReference) GetHeld() bool {
 		return x.Held
 	}
 	return false
+}
+
+func (x *DiagPfReference) GetHeldUnreadable() string {
+	if x != nil {
+		return x.HeldUnreadable
+	}
+	return ""
 }
 
 // A space the node is enrolled in. Names are the controller's: a node
@@ -3399,21 +3437,25 @@ const file_thinkpol_localapi_v1_localapi_proto_rawDesc = "" +
 	"\n" +
 	"unreadable\x18\x01 \x01(\tR\n" +
 	"unreadable\x12\x18\n" +
-	"\aenabled\x18\x02 \x01(\bR\aenabled\"B\n" +
+	"\aenabled\x18\x02 \x01(\bR\aenabled\"\x83\x01\n" +
 	"\n" +
 	"DiagPfHook\x12\x1e\n" +
 	"\n" +
 	"unreadable\x18\x01 \x01(\tR\n" +
 	"unreadable\x12\x14\n" +
-	"\x05state\x18\x02 \x01(\tR\x05state\"\x8e\x01\n" +
+	"\x05state\x18\x02 \x01(\tR\x05state\x12\x18\n" +
+	"\askipped\x18\x03 \x03(\tR\askipped\x12%\n" +
+	"\x0eanchors_before\x18\x04 \x03(\tR\ranchorsBefore\"\xcd\x01\n" +
 	"\x0fDiagPfReference\x12\x1e\n" +
 	"\n" +
 	"unreadable\x18\x01 \x01(\tR\n" +
 	"unreadable\x12\x1a\n" +
-	"\brecorded\x18\x02 \x01(\bR\brecorded\x12\x10\n" +
+	"\brecorded\x18\x02 \x01(\bR\brecorded\x12\x14\n" +
+	"\x05stale\x18\x06 \x01(\bR\x05stale\x12\x10\n" +
 	"\x03pid\x18\x03 \x01(\rR\x03pid\x12\x19\n" +
 	"\bpid_only\x18\x04 \x01(\bR\apidOnly\x12\x12\n" +
-	"\x04held\x18\x05 \x01(\bR\x04held\"/\n" +
+	"\x04held\x18\x05 \x01(\bR\x04held\x12'\n" +
+	"\x0fheld_unreadable\x18\a \x01(\tR\x0eheldUnreadable\"/\n" +
 	"\x05Space\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x16\n" +
 	"\x06active\x18\x02 \x01(\bR\x06active\"\xc4\x05\n" +

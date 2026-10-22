@@ -1,0 +1,9 @@
+pass out quick on lo0 inet6 all no state
+  [ Evaluations: 5120      Packets: 0         Bytes: 0           States: 0     ]
+  [ Inserted: uid 0 pid 4127 State Creations: 0     ]
+pass out quick on utun7 inet6 all no state
+  [ Evaluations: 5120      Packets: 4210      Bytes: 612344      States: 0     ]
+  [ Inserted: uid 0 pid 4127 State Creations: 0     ]
+pass out quick inet6 from any to <thinkpol_exempt6> no state
+  [ Evaluations: 910       Packets: 37        Bytes: 4180        States: 0     ]
+  [ Inserted: uid 0 pid 4127 State Creations: 0     ]

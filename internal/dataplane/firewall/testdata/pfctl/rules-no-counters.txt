@@ -1,0 +1,3 @@
+pass out quick on lo0 inet6 all no state
+pass out quick on utun7 inet6 all no state
+pass out quick inet6 from any to <thinkpol_exempt6> no state

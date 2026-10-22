@@ -94,7 +94,10 @@
 // routes and both families' rules carrying an owner's protocol (84 to
 // 86), with the kernel's own table numbers, metrics and types; a rule
 // with a selector netcfg never sets is shown as far as [HostRule] goes and
-// flagged. Where netcfg has no adapter, both lists are unreadable.
+// flagged. On macOS it is the routes carrying RTF_PROTO2 that an owner's
+// record names, as the routing table holds them, reading the records
+// without making LockDir or taking a lock; macOS has no rules. Where
+// netcfg has no adapter, both lists are unreadable.
 //
 // # Watching
 //

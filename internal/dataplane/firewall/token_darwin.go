@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
 	"strconv"
 	"strings"
 
@@ -49,15 +50,34 @@ const (
 
 // read reads the record. A stale one should be removed.
 func (s tokenStore) read() (pfToken, recordState, error) {
-	boot, err := s.boot()
-	if err != nil {
-		return pfToken{}, recordNone, err
-	}
 	d, err := trusteddir.Make(s.dir)
 	if err != nil {
 		return pfToken{}, recordNone, err
 	}
 	defer func() { _ = d.Close() }()
+	return s.readIn(d)
+}
+
+// peek is read without making the record's directory: one that isn't
+// there holds no record.
+func (s tokenStore) peek() (pfToken, recordState, error) {
+	d, err := trusteddir.Open(s.dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return pfToken{}, recordNone, nil
+	}
+	if err != nil {
+		return pfToken{}, recordNone, err
+	}
+	defer func() { _ = d.Close() }()
+	return s.readIn(d)
+}
+
+// readIn reads the record in d.
+func (s tokenStore) readIn(d *os.File) (pfToken, recordState, error) {
+	boot, err := s.boot()
+	if err != nil {
+		return pfToken{}, recordNone, err
+	}
 	body, err := trusteddir.ReadRecord(d, tokenRecord, boot)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):

@@ -342,6 +342,26 @@
 // [IPv6Guard.Apply] and [IPv6Guard.Close] change pf, and only the
 // Enforcer calls them, holding its owner lock; Watch only reads.
 //
+// # macOS: reading it back
+//
+// [InspectIPv6Guard] reads the guard as pf holds it, for diagnostics,
+// running listings only (never -f, -E, -X, -F, -k or -d) and opening the
+// record's directory without making it: the anchor's rules with their
+// counters (`-s rules -v`: each rule's line, its "[ Evaluations: ...
+// Packets: ... Bytes: ... States: ... ]" line, and the optional
+// "[ Inserted: ... ]" line, with or without "State Creations"), the
+// exempt table, `-s info`'s Status line, the hook and what bypasses it
+// (as checkBypass reads them, every skipped interface but lo0), and the
+// record's reference with whether `-s References` lists it as taken by
+// that pid (the snapshot names it by its pid; the token stays in the
+// record). A listing with a line it can't read (no rule, counters out of
+// place or unreadable, a rule without counters) is unreadable as a whole,
+// naming the line: half a listing could hide the rule that matters. A
+// missing anchor is an empty one, and with no pfctl at all everything is
+// unreadable. The parsers are tested on listings in testdata/pfctl, built
+// from the fake pf's formats and pfctl's source until a device run
+// records real ones.
+//
 // # What the macOS guard doesn't do
 //
 //   - Match MLD's hop limit (above).

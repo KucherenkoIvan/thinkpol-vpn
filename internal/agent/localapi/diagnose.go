@@ -94,22 +94,25 @@ func guardProto(g routetable.GuardReport) *localapiv1.DiagGuard {
 		return &localapiv1.DiagGuard{Unreadable: g.Unreadable, Where: g.Where}
 	}
 	out := &localapiv1.DiagGuard{Where: g.Where, Present: g.Present}
-	if !g.Present {
-		return out
-	}
-	out.Rules = &localapiv1.DiagGuardRules{Unreadable: g.RulesUnreadable}
-	if g.RulesUnreadable == "" {
-		for _, r := range g.Rules {
-			out.Rules.Rules = append(out.Rules.Rules, &localapiv1.DiagGuardRule{
-				Chain: r.Chain, Text: r.Text, Counted: r.Counted, Packets: r.Packets, Bytes: r.Bytes,
-				Evaluations: r.Evaluations, States: r.States,
-			})
+	// An absent guard has no rules or table to show, unless reading them
+	// failed (or, on macOS, left a table behind).
+	if g.Present || g.RulesUnreadable != "" {
+		out.Rules = &localapiv1.DiagGuardRules{Unreadable: g.RulesUnreadable}
+		if g.RulesUnreadable == "" {
+			for _, r := range g.Rules {
+				out.Rules.Rules = append(out.Rules.Rules, &localapiv1.DiagGuardRule{
+					Chain: r.Chain, Text: r.Text, Counted: r.Counted, Packets: r.Packets, Bytes: r.Bytes,
+					Evaluations: r.Evaluations, States: r.States,
+				})
+			}
 		}
 	}
-	out.Exempt = &localapiv1.DiagPrefixes{Unreadable: g.ExemptUnreadable}
-	if g.ExemptUnreadable == "" {
-		for _, p := range g.Exempt {
-			out.Exempt.Prefixes = append(out.Exempt.Prefixes, p.String())
+	if g.Present || g.ExemptUnreadable != "" || len(g.Exempt) > 0 {
+		out.Exempt = &localapiv1.DiagPrefixes{Unreadable: g.ExemptUnreadable}
+		if g.ExemptUnreadable == "" {
+			for _, p := range g.Exempt {
+				out.Exempt.Prefixes = append(out.Exempt.Prefixes, p.String())
+			}
 		}
 	}
 	if nf := g.NFTables; nf != nil {
@@ -136,10 +139,14 @@ func pfProto(pf *routetable.PFReport) *localapiv1.DiagPf {
 		out.Enabled.Enabled = pf.Enabled
 	}
 	if pf.HookUnreadable == "" {
-		out.Hook.State = pf.Hook
+		out.Hook.State, out.Hook.Skipped, out.Hook.AnchorsBefore = pf.Hook, pf.Skipped, pf.AnchorsBefore
 	}
 	if r := pf.Reference; pf.ReferenceUnreadable == "" && r != nil {
-		out.Reference.Recorded, out.Reference.Pid, out.Reference.PidOnly, out.Reference.Held = r.Recorded, uint32(max(r.Pid, 0)), r.PidOnly, r.Held
+		out.Reference.Recorded, out.Reference.Stale, out.Reference.Pid, out.Reference.PidOnly = r.Recorded, r.Stale, uint32(max(r.Pid, 0)), r.PidOnly
+		out.Reference.HeldUnreadable = r.HeldUnreadable
+		if r.HeldUnreadable == "" {
+			out.Reference.Held = r.Held
+		}
 	}
 	return out
 }
