@@ -118,8 +118,9 @@
 // repaired; chains other than its own, so a base chain someone adds to the
 // guard's table, which can set the links' mark before the guard's chain
 // sees the packet, is never repaired; and, for the watch only, a change of
-// the output chain's policy: the comparison catches it, but nothing calls
-// Apply until the route table's one-minute backstop.
+// the output chain's policy: the comparison catches it, but the guard is
+// re-applied only with the next routing event, at the latest by the route
+// table's one-minute backstop.
 //
 // The guard's first request is a dump of the inet tables. Its answer, and
 // only its answer, can make the guard unsupported: an error meaning no
