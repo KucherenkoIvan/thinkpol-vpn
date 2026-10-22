@@ -95,10 +95,13 @@
 // prefixes) is one transaction of tens of milliseconds: its elements go
 // in messages of 1024 (one netlink attribute stays under its 64 KiB
 // limit), over sockets whose buffers are forced to 8 MiB. Applying what
-// is in place again compares the table with what it wants (the chain as
-// hooked, every rule's expressions in order, counters aside, and every
-// set element, in any order: an element added is a leak, one removed a
-// refusal) and rebuilds it if anything differs. The table stays when the
+// is in place again compares the table with what it wants and rebuilds it
+// if anything differs: its flags, none (a dormant table keeps its rules
+// but its chains are unhooked: no guard at all); its chains, exactly one,
+// `output` as hooked (another base chain in it could set the links' mark
+// before the guard's sees the packet); every rule's expressions in order,
+// counters aside; and every set element, in any order (an element added
+// is a leak, one removed a refusal). The table stays when the
 // process dies, so a crash leaves IPv6 confined as the route table's
 // unreachable default does; [IPv6Guard.Close] removes it, and a fresh
 // guard's Close removes a crashed run's.
@@ -106,21 +109,20 @@
 // [IPv6Guard.Watch] subscribes to nftables' events and signals, coalesced,
 // whenever something of the guard's table changes from outside: a
 // deletion (a table, chain, rule or set: `nft flush ruleset`, a firewall
-// service's reload), a rule added or replaced, a set element added or
+// service's reload), the table updated (made dormant), a chain added or
+// updated (its policy), a rule added or replaced, a set element added or
 // removed. When the socket overflows (events may have been lost) it
 // signals at once and again a second later. The Enforcer then re-applies
 // the guard, so it is right again within about a second. The guard's own
 // Apply shows up too, and finds the table whole.
 //
-// What the comparison and the watch don't catch today (TP-126, and
-// RESIDUAL-RISKS.md RR11): the table's flags, so a table made dormant
-// (`flags dormant`) keeps its rules but no longer filters, and is never
-// repaired; chains other than its own, so a base chain someone adds to the
-// guard's table, which can set the links' mark before the guard's chain
-// sees the packet, is never repaired; and, for the watch only, a change of
-// the output chain's policy: the comparison catches it, but the guard is
-// re-applied only with the next routing event, at the latest by the route
-// table's one-minute backstop.
+// What the comparison and the watch don't catch (RESIDUAL-RISKS.md RR11):
+// other tables. The guard trusts the links' mark, and checks only its own
+// table for who sets it, so a base chain in another table that sets the
+// mark at output before the guard's chain lets IPv6 out of a physical
+// interface, and isn't seen. (TP-126 added the table's flags, its other
+// chains and the policy's events; before, a dormant table and a foreign
+// chain in it were never repaired.)
 //
 // The guard's first request is a dump of the inet tables. Its answer, and
 // only its answer, can make the guard unsupported: an error meaning no
@@ -147,10 +149,27 @@
 // `anchor "com.apple/*"`, alone or with `all` (a narrowed one, `in`, `on
 // en0`, `inet`, doesn't count), the guard is unsupported
 // (`ipv6_guard_unsupported`, terminal for the connection, as a kernel
-// without nf_tables is on Linux). With a `pass ... quick` above the hook
-// that an outgoing IPv6 packet could match (not `in` only, not `inet`
-// only) the guard isn't enforced (`ipv6_guard_not_enforced`, retried),
-// since evaluation ends there.
+// without nf_tables is on Linux), and nothing is loaded.
+//
+// With the hook there, three things still let IPv6 past the anchor, and
+// while one lasts the guard isn't enforced (`ipv6_guard_not_enforced`,
+// retried):
+//
+//   - a `pass ... quick` above the hook that an outgoing IPv6 packet could
+//     match (not `in` only, not `inet` only): evaluation ends there;
+//   - an interface pf skips (`set skip on`) but lo0 and the utun, which
+//     the anchor passes anyway: pf evaluates no rule for its packets, and
+//     `-s rules` doesn't show it; `pfctl -s Interfaces -v` lists it as
+//     "<name> (skip)". A skipped name no interface has (`set skip on lo`,
+//     a group) counts too, on purpose: one could come;
+//   - an anchor under com.apple whose name sorts before the guard's
+//     (`pfctl -a com.apple -s Anchors`): pf keeps anchors sorted by path,
+//     so it runs first, and a quick pass in it ends evaluation there. Its
+//     existence counts, not its rules; a stock Mac has only Apple's two.
+//
+// These are checked last in every apply, after the load and the enable,
+// so what pf does filter stays guarded meanwhile, and in every poll. The
+// guard reports them; it doesn't undo other software's pf settings.
 //
 // The anchor's rules are IPv6 only (IPv4's decisions stay whoever
 // else's), outgoing only and stateless: pf keeps at most 10000 states by
@@ -230,7 +249,9 @@
 // its stateless rule. Killing a tunnelled connection's state is harmless
 // the same way: the anchor passes it statelessly. States made between two
 // polls while something bypassed the guard are killed at its next
-// successful apply, not at once.
+// successful apply, not at once. While one bypass lasts, the retries
+// don't kill states again (the bypass makes them anew) unless the anchor
+// is reloaded or pf enabled anew; the apply after it ends kills them.
 //
 // # macOS: enabling pf by reference
 //
@@ -256,14 +277,14 @@
 // # macOS: polling
 //
 // pf has no event stream, so [IPv6Guard.Watch] polls every 10 s: the hook,
-// the anchor's rules and table, and pf enabled (four pfctl runs, each
+// what bypasses it (the skipped interfaces, the anchors under com.apple),
+// the anchor's rules and table, and pf enabled (six pfctl runs, each
 // bounded at 15 s), and whether its last apply failed, so a retry is due.
 // The Enforcer then puts back what changed: `pfctl -d`, a flush, an entry
 // added, a replaced main ruleset that still has the hook are undone within
-// about 10 s, not a second as on Linux. Suspected but not proven to be
-// missed (TP-126): `set skip on <interface>`, and a `pass quick` in
-// another com.apple anchor evaluated before the guard's. A main ruleset
-// replaced without the hook makes the guard unsupported.
+// about 10 s, not a second as on Linux; a bypass is reported within as
+// long. A main ruleset replaced without the hook makes the guard
+// unsupported.
 //
 // # macOS: crashes and reboots
 //
@@ -285,7 +306,8 @@
 //
 //   - Match MLD's hop limit (above).
 //   - See a quick pass inside an anchor the main ruleset evaluates before
-//     the hook.
+//     the hook (only one under com.apple that sorts first).
+//   - Undo what lets IPv6 past it (above): it reports it.
 //   - Confine IPv4: that is the kill switch's (TP-048).
 //   - Find the hook when the agent starts at boot before the system loads
 //     /etc/pf.conf: a race for TP-046's service install to check.
