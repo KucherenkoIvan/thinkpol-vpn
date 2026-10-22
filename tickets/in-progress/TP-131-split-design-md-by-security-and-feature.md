@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: [TP-077]
 refs: []
-owner: ""
-branch: ""
+owner: agent-tp-131
+branch: tp-131-split-design-md
 ---
 
 ## Goal
@@ -38,3 +38,4 @@ DESIGN.md stops being one file at its size limit. Security has its own document,
 
 ## Log
 - 2026-10-22 created in backlog (owner's rule on splitting DESIGN.md)
+- 2026-10-22 backlog → in-progress — owner: agent-tp-131, branch: tp-131-split-design-md
