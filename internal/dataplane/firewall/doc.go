@@ -149,6 +149,18 @@
 // (`ipv6_guard_unsupported`, terminal for the connection, as a kernel
 // without nf_tables is on Linux), and nothing is loaded.
 //
+// But not early in a boot: the system loads /etc/pf.conf as it boots,
+// and an agent its service starts then (connect-on-boot) may come first.
+// Within 5 minutes of the boot (bootGrace, by Darwin's monotonic clock,
+// which counts from the boot) a missing hook is an ordinary failure:
+// nothing is loaded or enabled, the health says `ipv6_guard_not_enforced`,
+// and the route table retries (every 5 s, and on the guard's 10 s poll,
+// which reports a failed apply), so the guard goes in within seconds of
+// the system loading the hook. The device stays connected meanwhile, its
+// routes in place: only interface-bound IPv6 is unconfined until then,
+// where waiting to connect would send everything direct. Past the grace a
+// hook still missing is unsupported, as above.
+//
 // With the hook there, three things still let IPv6 past the anchor, and
 // while one lasts the guard isn't enforced (`ipv6_guard_not_enforced`,
 // retried):
@@ -339,8 +351,8 @@
 //     guard's is seen (above).
 //   - Undo what lets IPv6 past it (above): it reports it.
 //   - Confine IPv4: that is the kill switch's (TP-048).
-//   - Find the hook when the agent starts at boot before the system loads
-//     /etc/pf.conf: a race for TP-046's service install to check.
+//   - Confine interface-bound IPv6 early in a boot, before the system has
+//     loaded /etc/pf.conf (above): it waits for the hook.
 //
 // On a device the guard loads and passes its own check; that it blocks
 // its leak paths is not yet proven on a device (TP-096).

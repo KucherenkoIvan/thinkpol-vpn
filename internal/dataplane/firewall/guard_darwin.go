@@ -11,10 +11,18 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/trusteddir"
 )
+
+// bootGrace is how long after the system booted a main ruleset without
+// the hook is taken for one the system hasn't loaded yet (/etc/pf.conf, at
+// boot): an ordinary failure, retried, rather than the guard unsupported
+// for good. An agent started at boot (connect-on-boot) may come first.
+const bootGrace = 5 * time.Minute
 
 // guardPoll is how often Watch reads the guard back from pf: pf has no
 // event stream, so a flush, a disabled pf or a replaced main ruleset is
@@ -66,6 +74,8 @@ type IPv6Guard struct {
 	poll   time.Duration
 	// own lists the host's addresses, to tell a state's local end.
 	own func() ([]netip.Addr, error)
+	// sinceBoot is how long ago the system booted (nil: long ago).
+	sinceBoot func() (time.Duration, error)
 
 	// applied is what the last good load put in place, nil until then
 	// and after a failed one.
@@ -117,7 +127,19 @@ var errClosed = errors.New("firewall: the IPv6 guard is closed")
 // Nothing is in place until Apply; Close removes what is there, a crashed
 // run's anchor and reference included.
 func NewIPv6Guard() *IPv6Guard {
-	return newIPv6Guard(execPfctl{path: pfctlPath, timeout: pfctlTimeout}, tokenStore{dir: netcfg.StateDir, boot: trusteddir.BootSession}, guardPoll, hostAddrs)
+	g := newIPv6Guard(execPfctl{path: pfctlPath, timeout: pfctlTimeout}, tokenStore{dir: netcfg.StateDir, boot: trusteddir.BootSession}, guardPoll, hostAddrs)
+	g.sinceBoot = sinceBoot
+	return g
+}
+
+// sinceBoot is the time since the system booted: Darwin's CLOCK_MONOTONIC
+// counts from the boot, sleep included, whatever the wall clock does.
+func sinceBoot() (time.Duration, error) {
+	var ts unix.Timespec
+	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &ts); err != nil {
+		return 0, err
+	}
+	return time.Duration(ts.Nano()), nil
 }
 
 func newIPv6Guard(pf pfctl, tokens tokenStore, poll time.Duration, own func() ([]netip.Addr, error)) *IPv6Guard {
@@ -215,13 +237,20 @@ func (g *IPv6Guard) Apply(ctx context.Context, e routetable.Exempt) (err error) 
 
 // checkHook reads pf's main ruleset (`pfctl -s rules`) and fails with
 // routetable.ErrGuardUnsupported when it doesn't evaluate the anchors
-// under com.apple.
+// under com.apple. Within bootGrace of the boot that is an ordinary
+// failure instead, retried: the system may not have loaded /etc/pf.conf
+// yet.
 func (g *IPv6Guard) checkHook(ctx context.Context) ([]byte, error) {
 	out, err := g.pf.run(ctx, nil, "-s", "rules")
 	if err != nil {
 		return nil, err
 	}
 	if hooked(out.stdout) == hookMissing {
+		if g.sinceBoot != nil {
+			if up, err := g.sinceBoot(); err == nil && up < bootGrace {
+				return nil, fmt.Errorf("firewall: pf's main ruleset has no `anchor %s` yet, %v after the boot: waiting for the system to load /etc/pf.conf", appleHook, up.Round(time.Second))
+			}
+		}
 		return nil, fmt.Errorf("%w: pf's main ruleset has no `anchor %s` (was /etc/pf.conf replaced?)", routetable.ErrGuardUnsupported, appleHook)
 	}
 	return out.stdout, nil
