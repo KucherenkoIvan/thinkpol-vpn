@@ -489,6 +489,55 @@ func TestResolvConfWhileUntoldAStubTargetWithoutUplinkWarnsNothing(t *testing.T)
 	}
 }
 
+// An existing but empty uplink file is a failed read, not a good read
+// with no upstreams: a zero-byte read cannot be told from a half-written
+// file, and while untold a false "no upstreams" would clear the
+// staleness for good, while a failed read only waits for the next tick.
+func TestResolvConfAnEmptyUplinkFileIsAFailedRead(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "real.conf")
+	path := filepath.Join(dir, "resolv.conf")
+	if err := os.Symlink("real.conf", path); err != nil { // dangling at setup
+		t.Fatal(err)
+	}
+	uplink := filepath.Join(dir, "uplink.conf") // missing until the last phase
+	told := make(chan []netip.Addr, 8)
+	c := testSystem
+	c.Upstreams, c.UpstreamsUnknown = func(a []netip.Addr) { told <- a }, true
+	r, err := setResolvConf(path, uplink, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = r.Restore() })
+	// The target appears, naming only resolved's stub: behind the stub,
+	// the missing uplink is a failed read.
+	writeFileAtomic(t, target, "nameserver 127.0.0.53\n")
+	applyOnce(t, r)
+	toldNothing(t, told)
+	// The uplink file is there but empty — what a half-written one looks
+	// like finished: still no answer.
+	writeFileAtomic(t, uplink, "")
+	applyOnce(t, r)
+	toldNothing(t, told)
+	if p := r.Problem(); !errors.Is(p, ErrUpstreamsStale) {
+		t.Errorf("problem after an empty uplink file: %v", p)
+	}
+	// Written, the uplink file is the first good read, told.
+	writeFileAtomic(t, uplink, "nameserver 198.51.100.53\n")
+	applyOnce(t, r)
+	select {
+	case got := <-told:
+		if !slices.Equal(got, []netip.Addr{netip.MustParseAddr("198.51.100.53")}) {
+			t.Errorf("told %v, want 198.51.100.53", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("never told the first good read")
+	}
+	if p := r.Problem(); p != nil {
+		t.Errorf("problem after a good read: %v", p)
+	}
+}
+
 // The default Linux path (Upstreams set, UpstreamsUnknown false): a
 // setup tells nothing and reports nothing stale, and after a first apply
 // that wrote nothing, a real change is told.

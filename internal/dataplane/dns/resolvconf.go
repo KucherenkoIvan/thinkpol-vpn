@@ -586,13 +586,17 @@ func onlyStubs(servers []netip.Addr) bool {
 // upstreamsFromContent are the servers a resolv.conf names, with the
 // same stub filtering and uplink fallback as upstreamsFrom. The error is
 // when the conf names only resolved's stub and its uplink file can't be
-// read: no answer was had, not an empty one, and the cause says which.
+// read or is empty — a zero-byte read cannot be told from a half-written
+// file: no answer was had, not an empty one, and the cause says which.
 func upstreamsFromContent(content []byte, uplink string, exclude []netip.Addr) ([]netip.Addr, error) {
 	servers := nameservers(content)
 	if onlyStubs(servers) {
 		b, err := os.ReadFile(uplink)
 		if err != nil {
 			return nil, fmt.Errorf("dns: reading resolved's uplink %s: %w", uplink, err)
+		}
+		if len(b) == 0 {
+			return nil, fmt.Errorf("dns: %s is empty: a half-written uplink is no answer", uplink)
 		}
 		servers = nameservers(b)
 	}

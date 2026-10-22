@@ -281,11 +281,12 @@ func (r *resolved) check() error {
 }
 
 // read is a read of the uplink file: the servers it names, and ok false
-// when the file can't be read — a failed read, not an empty answer.
+// when the file can't be read or is empty — a zero-byte read cannot be
+// told from a half-written file. A failed read, not an empty answer.
 // Called with r.mu held, only when uplink.
 func (r *resolved) read() (ups []netip.Addr, ok bool) {
 	b, err := os.ReadFile(r.uplinkFile)
-	if err != nil {
+	if err != nil || len(b) == 0 {
 		return nil, false
 	}
 	ups, uerr := upstreamsFromContent(b, r.uplinkFile, r.cfg.Servers)
