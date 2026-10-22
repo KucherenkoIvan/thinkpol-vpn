@@ -25,6 +25,12 @@
 // sealed box, which is only for what is sealed to a public key (such as the
 // map's sections).
 //
+// A datagram that authenticates proves that the link's secret sealed it,
+// not which of its holders did: the two ends, whoever built the map, and
+// whoever opens either end's section. The sender inside the seal is a
+// claim. WireGuard, inside, authenticates the peer. No signature per
+// datagram (docs/design/transports.md, RESIDUAL-RISKS.md RR33).
+//
 // Inside the seal: the sender (its creation time in nanoseconds, strictly
 // increasing per process, and 4 random bytes; a new one per dial and per
 // listener-side link), the time the datagram was sent (Unix seconds, a
