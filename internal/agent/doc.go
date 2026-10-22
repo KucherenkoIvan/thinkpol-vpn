@@ -101,7 +101,7 @@
 // serves the space's overlay like an exit's.
 //
 // Planned (TP-111): the node's own configuration as a ceiling over what
-// the map asks of it (docs/design/server-agent.md "Server agent: one worker per space").
+// the map asks of it (docs/design/overlay.md "Node agent").
 // Until it exists, a signed map alone decides a node's role
 // (RESIDUAL-RISKS.md RR42). The ceiling is a preset, device or server,
 // and within server each capability on its own: ingress (public

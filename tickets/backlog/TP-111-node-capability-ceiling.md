@@ -6,7 +6,7 @@ area: agent
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-046]
-refs: [docs/design/server-agent.md#server-agent-one-worker-per-space]
+refs: [docs/design/overlay.md#node-agent]
 owner: ""
 branch: ""
 ---
@@ -34,7 +34,7 @@ A node does only what it was allowed to on the machine itself. The space's signe
 - [ ] lab: a running node given a newer map that asks for more keeps its capabilities, takes the map's other changes (a revoked peer is refused), reports the refusal, and comes back to the same state after a restart
 - [ ] lab: the owner lowering the ceiling under a running map is refused the same way
 - [ ] unit tests: the preset defaults to `device`; each capability is checked on its own
-- [ ] docs/design/overlay.md's "not yet" pointing here is removed
+- [ ] docs/design/overlay.md's "planned, TP-111" on the ceiling is removed
 - [ ] `make lint`, `make test`, `make lab-test` pass
 
 ## Notes
