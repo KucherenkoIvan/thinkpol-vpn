@@ -33,14 +33,21 @@ branch: "tp-091-device-diagnostics-snapshot"
 - Windows (TP-047 adds its parts).
 
 ## Acceptance
-- [ ] `thinkpol diag` on Linux in the lab: the guard table, routes, rules and resolvers match what `nft`/`ip` report, in a test
-- [ ] macOS: the pf parts are parsed from `pfctl` output by functions tested on recorded fixtures, including an unparseable line (→ `unreadable`) and an empty anchor
-- [ ] a test checks that no secret field from the config or status reaches the snapshot
-- [ ] the snapshot carries a schema version; DESIGN.md's local API section describes it
+- [x] `thinkpol diag` on Linux in the lab: the guard table, routes, rules and resolvers match what `nft`/`ip` report, in a test (lab `TestDiagShowsWhatTheHostHolds`: `ip -j route`/`rule`, `nft -j`, `resolvectl`, resolv.conf)
+- [x] macOS: the pf parts are parsed from `pfctl` output by functions tested on recorded fixtures, including an unparseable line (→ `unreadable`) and an empty anchor (`TestParseVerboseRules`, `TestInspectReadsTheGuardAsPfListsIt` on `firewall/testdata/pfctl`; the fixtures are built from the fake pf's formats and pfctl's source, not recorded on a Mac: Notes, "Device run")
+- [x] a test checks that no secret field from the config or status reaches the snapshot (`TestDiagnosticsHoldNoSecret`, `TestTheSnapshotHasNoSecretField`, and the lab test's key check)
+- [x] the snapshot carries a schema version; DESIGN.md's local API section describes it (`schema_version` 1, `localapi.DiagSchemaVersion`; DESIGN.md's one line points to the localapi package doc, which holds the mechanism)
 
 ## Notes
 - **Origin (2026-10-16).** The private device-test kit for TP-078 grew to about 10,000 lines of bash against about 3,000 lines of product change (tests included), most of it judgement logic: parsing tcpdump and pfctl output and deciding PASS or UNKNOWN. Its stub tests could never reach real root, routes or tcpdump, so every review round found new ways a check could PASS wrongly. See ORCHESTRATION.md "Device testing (2026-10-16)".
 - After this ticket, TP-078's checks 08 and 10 reduce to `thinkpol diag` before, during and after, plus a capture.
+- **Where it lives.** The mechanism is in `internal/agent/localapi/doc.go` ("Diagnostics"), with each reader in its package's doc: `netcfg` ("Reading back"), `firewall` ("Linux: reading it back", "macOS: reading it back"), `dns` ("Reading back"), `dataplane` ("The last Apply's steps"). DESIGN.md has one line in "The local API".
+- **Root only.** The routes, rules, guard and resolvers name public addresses, so the group's snapshot has them unreadable ("root only") and the agent doesn't read them for it; the status, the TUN and the last Apply are the group's too. The pf reference shows by its pid; its token stays in the record.
+- **Device run (the owner's, after review round 1).** Nothing here ran pfctl or scutil. On the Mac, connected with the guard applied, as root, save each output to a file:
+  1. `sudo ./bin/thinkpol diag -o diag-connected.json`, and as a non-root member of `thinkpol`, `./bin/thinkpol diag > diag-member.json`.
+  2. `sudo pfctl -a com.apple/000.thinkpol -s rules -v`, `sudo pfctl -a com.apple/000.thinkpol -t thinkpol_exempt6 -T show`, `sudo pfctl -s info`, `sudo pfctl -s References`, `sudo pfctl -s rules`, `sudo pfctl -s Interfaces -v`, `sudo pfctl -a com.apple -s Anchors`, and `scutil --dns` (all listings).
+  3. `sudo ./bin/thinkpol disconnect`, then `sudo ./bin/thinkpol diag -o diag-disconnected.json` and step 2's `-s rules -v`, `-s info` and `-s References` again.
+  Expected: no `unreadable` in `guard`, `routes`, `dns` (`rules` empty); `guard.rules` the same lines as `-s rules -v`, its counters the same within the seconds between them; `guard.exempt` the `-T show` entries; `pf.reference` held while connected and not recorded after the disconnect; `dns` the resolvers `scutil --dns` lists; the member's snapshot has the host parts "root only". The listings go into `firewall/testdata/pfctl` and `dns/testdata/scutil`, replacing the built ones, and any parse failure is a finding.
 
 ## Log
 - 2026-10-16 created in backlog (device-test kit rethink)
