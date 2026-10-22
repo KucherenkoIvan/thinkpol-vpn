@@ -16,7 +16,7 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/lab"
 )
 
-// TestM0 is M0's "done when" (DESIGN.md, Milestones; lab/M0.md): with
+// TestM0 is M0's "done when" (docs/design/milestones.md, Milestones; lab/M0.md): with
 // `thinkpol up` on server-1, device-a and device-b and a map made by
 // `thinkpol dev`, devices ping server-1 directly and each other through
 // server-1 as relay, over overlay IPv4 and IPv6; server-1 runs the space in

@@ -272,5 +272,5 @@
 // After a crash IPv6 stays unreachable but for direct destinations until
 // the agent starts again, bound sockets included (the guard stays too);
 // IPv4 flows, as with the kill switch off. That is the M1 behaviour; the
-// decided posture is stricter (docs/design/desktop-client.md "Kill switch").
+// decided posture is stricter (docs/design/security.md "Kill switch").
 package routetable

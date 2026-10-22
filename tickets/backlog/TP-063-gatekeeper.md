@@ -32,7 +32,7 @@ Everything that parses unauthenticated, attacker-controlled bytes runs in an unp
 - [ ] the two spaces on one listener tests (TP-010) pass unchanged
 
 ## Notes
-- Source: DESIGN "Server agent" (pre-authentication parsing moves out of the root supervisor); the supervisor's shape today is in TP-010's ticket.
+- Source: docs/design/server-agent.md (pre-authentication parsing moves out of the root supervisor); the supervisor's shape today is in TP-010's ticket.
 - Split before starting, with the `udp` move first.
 - **TP-069 and TP-070:** their tests should move with the filter into the gatekeeper; name them here so implementers re-home tests instead of rewriting from scratch. No `depends_on` between those tickets and this one.
 

@@ -598,8 +598,8 @@ func (x *SealedSection) GetSealed() []byte {
 	return nil
 }
 
-// Section is one node's need-to-know part of the map (DESIGN.md "Node
-// safety"): only what that node uses, with every node known by an opaque id.
+// Section is one node's need-to-know part of the map
+// (docs/design/security.md "Node safety"): only what that node uses, with every node known by an opaque id.
 // Before sealing it is padded ISO/IEC 7816-4 style (0x80, then zeros) to the
 // length shared by every section of the envelope.
 type Section struct {

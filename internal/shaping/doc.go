@@ -33,8 +33,8 @@
 // link rather than ignore the setting and shape less than the map asks.
 // That is safe only because the controller never asks a node for shaping
 // it can't do: it puts a shaping, or a new shaping field or value, into a
-// link only once both ends' nodes reported supporting it (DESIGN.md
-// "Transports own traffic shape"). The builder decodes every shaping it
+// link only once both ends' nodes reported supporting it
+// (docs/design/transports.md "Transports own traffic shape"). The builder decodes every shaping it
 // publishes with the same rules, so a map never carries shaping that every
 // node would refuse.
 package shaping

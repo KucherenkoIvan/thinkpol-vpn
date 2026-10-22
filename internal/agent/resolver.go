@@ -24,8 +24,9 @@ func (dp *DataPlane) inWorker() bool { return dp.Device == nil }
 // it asks the configured upstreams. A device with none asks the
 // resolvers the OS uses now (read before the OS is pointed at the
 // resolver; what the node itself wrote there is never taken for one); a
-// worker (no Device) never falls back to those (see DESIGN.md
-// "Upstreams"). A device asks exits through the overlay TUN only.
+// worker (no Device) never falls back to those
+// (see docs/design/routing.md "Upstreams"). A device asks exits through the
+// overlay TUN only.
 func (r *runner) newResolver() *dns.Server {
 	upstreams := r.dp.DNSUpstreams
 	if len(upstreams) == 0 && r.dp.Device != nil {
@@ -256,8 +257,8 @@ func orderForUplink(ups []netip.AddrPort, e supervisor.EgressInfo) []netip.AddrP
 }
 
 // workerUpstreams are the upstreams a worker's resolver asks: the
-// configured ones, else the default public resolvers (DESIGN.md
-// "Upstreams"), ordered for the uplink's families. One the worker's
+// configured ones, else the default public resolvers
+// (docs/design/routing.md "Upstreams"), ordered for the uplink's families. One the worker's
 // egress refuses is not configured: only an exit's (a server allowing
 // egress, MayEndAChain) are counted and logged, since no device asks
 // another server's resolver. e is the uplink snapshot the caller's

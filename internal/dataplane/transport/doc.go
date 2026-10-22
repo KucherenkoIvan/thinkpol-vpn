@@ -1,6 +1,6 @@
 // Package transport is the port for one link between two adjacent nodes:
 // authentication, framing and traffic shape (docs/design/overlay.md "Data plane",
-// "Transports own traffic shape"). Each transport is an adapter in its own
+// docs/design/transports.md "Transports own traffic shape"). Each transport is an adapter in its own
 // subpackage, transport/<name>; transport/transporttest is the conformance
 // suite every adapter passes, and transport/memory is an in-process adapter
 // for tests of the layers above.

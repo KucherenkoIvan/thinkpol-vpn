@@ -18,8 +18,8 @@
 // A utun is point-to-point with its own IPv4 address as the peer, so
 // macOS routes what it sends to that address into the utun instead of
 // delivering it: without help, the node's own processes never reach a
-// service on its overlay address, its resolver included (DESIGN.md
-// "DNS"). With [Table.ReflectLocal] (set on macOS only; elsewhere the OS
+// service on its overlay address, its resolver included
+// (docs/design/routing.md "DNS"). With [Table.ReflectLocal] (set on macOS only; elsewhere the OS
 // never hands the TUN such packets), the router writes a packet read
 // from the TUN whose source and destination are both the node's own
 // addresses back into the TUN, and the OS takes it in as its own, the

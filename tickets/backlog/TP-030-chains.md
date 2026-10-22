@@ -15,7 +15,7 @@ branch: ""
 Internet traffic can leave through ordered chains of hops, with several egress nodes in use at once.
 
 ## Scope
-- Chain definitions in the map, validated by the map builder (N9: first hop allows ingress, last allows egress). The builder also rejects a rule set that uses two chains ending at the same exit: WireGuard holds one session per exit and the path layer uses one path per exit at a time (DESIGN "Routing rules and DNS").
+- Chain definitions in the map, validated by the map builder (N9: first hop allows ingress, last allows egress). The builder also rejects a rule set that uses two chains ending at the same exit: WireGuard holds one session per exit and the path layer uses one path per exit at a time (docs/design/routing.md).
 - Multi-relay chains by destination routing (A → B → exit): the device knows its candidate first hops, each relay only its next hop toward the exit (`netmap.Section.Routes`).
 - Router `chain:<name>` actions with one WireGuard device per egress.
 
