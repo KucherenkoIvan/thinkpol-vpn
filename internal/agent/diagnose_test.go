@@ -10,6 +10,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
 )
 
 // inspected records what the test's inspector was asked to read.
@@ -17,19 +20,70 @@ type inspected struct {
 	mu     sync.Mutex
 	asked  []string
 	report InterfaceReport
+	// hostReads counts the reads of the routes and the guard.
+	hostReads int
+	routes    netcfg.Inspection
+	guard     routetable.GuardReport
 }
 
 func (i *inspected) inspector() Inspector {
-	return Inspector{Interface: func(name string) InterfaceReport {
-		i.mu.Lock()
-		defer i.mu.Unlock()
-		i.asked = append(i.asked, name)
-		r := i.report
-		if r.Unreadable == "" {
-			r.Name = name
-		}
-		return r
-	}}
+	return Inspector{
+		Interface: func(name string) InterfaceReport {
+			i.mu.Lock()
+			defer i.mu.Unlock()
+			i.asked = append(i.asked, name)
+			r := i.report
+			if r.Unreadable == "" {
+				r.Name = name
+			}
+			return r
+		},
+		Routes: func() netcfg.Inspection {
+			i.mu.Lock()
+			defer i.mu.Unlock()
+			i.hostReads++
+			return i.routes
+		},
+		Guard: func(context.Context) routetable.GuardReport {
+			i.mu.Lock()
+			defer i.mu.Unlock()
+			i.hostReads++
+			return i.guard
+		},
+	}
+}
+
+func (i *inspected) reads() int {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return i.hostReads
+}
+
+// TestTheHostPartsAreRoots: without host, the routes and the guard aren't
+// read at all, and say they are root's; with it, they are what the host's
+// readers said, whatever the data plane's state.
+func TestTheHostPartsAreRoots(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	startNode(t, reg, s.a, s.verified(t, 1))
+	insp := &inspected{
+		routes: netcfg.Inspection{Routes: []netcfg.HostRoute{{Owner: netcfg.OwnerRouteTable, Family: netcfg.IPv6, Dst: netip.MustParsePrefix("::/0"), Type: "unreachable"}}},
+		guard:  routetable.GuardReport{Where: "test", Present: true, Exempt: []netip.Prefix{netip.MustParsePrefix("2001:db8:d0::/48")}},
+	}
+	b := startDevice(t, s, reg, false, withInspector(insp))
+	b.connection(t, Disconnected)
+	ctx := context.Background()
+
+	d := b.node.Diagnose(ctx, false)
+	if insp.reads() != 0 || d.Routes.RoutesUnreadable != UnreadableRootOnly || d.Routes.RulesUnreadable != UnreadableRootOnly ||
+		d.Routes.Routes != nil || d.Guard.Unreadable != UnreadableRootOnly || d.Guard.Present {
+		t.Fatalf("not root: %d reads, %+v, %+v", insp.reads(), d.Routes, d.Guard)
+	}
+	// Disconnected, what is left on the host still shows: a crash's.
+	d = b.node.Diagnose(ctx, true)
+	if insp.reads() != 2 || len(d.Routes.Routes) != 1 || d.Routes.RoutesUnreadable != "" || !d.Guard.Present || len(d.Guard.Exempt) != 1 {
+		t.Fatalf("root: %d reads, %+v, %+v", insp.reads(), d.Routes, d.Guard)
+	}
 }
 
 func (i *inspected) names() []string {
@@ -53,7 +107,7 @@ func TestDiagnoseReadsTheTUNTheDataPlaneRuns(t *testing.T) {
 	// Disconnected: no TUN to read, and the snapshot says so rather than
 	// showing an empty one.
 	b.connection(t, Disconnected)
-	d := b.node.Diagnose(ctx)
+	d := b.node.Diagnose(ctx, true)
 	if d.TUN.Unreadable != UnreadableNoTUN || d.TUN.Name != "" || len(insp.names()) != 0 {
 		t.Fatalf("disconnected: TUN %+v, inspector asked for %q", d.TUN, insp.names())
 	}
@@ -65,7 +119,7 @@ func TestDiagnoseReadsTheTUNTheDataPlaneRuns(t *testing.T) {
 		t.Fatal(err)
 	}
 	b.connection(t, Connected)
-	d = b.node.Diagnose(ctx)
+	d = b.node.Diagnose(ctx, true)
 	if d.Status.Connection != Connected || d.Status.DataPlane == nil {
 		t.Fatalf("connected: status %+v", d.Status)
 	}
@@ -79,7 +133,7 @@ func TestDiagnoseReadsTheTUNTheDataPlaneRuns(t *testing.T) {
 
 	// What the host couldn't show comes through as the reader said it.
 	insp.report = InterfaceReport{Unreadable: "route ip+net: no such network interface"}
-	if d = b.node.Diagnose(ctx); d.TUN.Unreadable != insp.report.Unreadable || d.TUN.Name != "" {
+	if d = b.node.Diagnose(ctx, true); d.TUN.Unreadable != insp.report.Unreadable || d.TUN.Name != "" {
 		t.Fatalf("an unreadable TUN: %+v", d.TUN)
 	}
 }
@@ -94,7 +148,7 @@ func TestDiagnosticsHoldNoSecret(t *testing.T) {
 	insp := &inspected{report: InterfaceReport{MTU: 1328, Up: true}}
 	b := startDevice(t, s, reg, true, withInspector(insp))
 	b.connection(t, Connected)
-	d := b.node.Diagnose(context.Background())
+	d := b.node.Diagnose(context.Background(), true)
 	if d.Status.DataPlane == nil || d.TUN.Name == "" {
 		t.Fatalf("the snapshot holds no data plane to look in: %+v", d)
 	}

@@ -60,6 +60,12 @@ func testPlatform() Platform {
 		RestoreDNS: func() error { return nil },
 		Inspect: Inspector{
 			Interface: func(string) InterfaceReport { return InterfaceReport{Unreadable: "no interfaces in this test"} },
+			Routes: func() netcfg.Inspection {
+				return netcfg.Inspection{RoutesUnreadable: "no routes in this test", RulesUnreadable: "no rules in this test"}
+			},
+			Guard: func(context.Context) routetable.GuardReport {
+				return routetable.GuardReport{Unreadable: "no guard in this test"}
+			},
 		},
 	}
 }

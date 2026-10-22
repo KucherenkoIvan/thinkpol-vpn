@@ -86,6 +86,16 @@
 // asks the kernel for the default route's interface on each call
 // (RTM_GET), for sockets bound to it.
 //
+// # Reading back
+//
+// [Inspect] reads, for diagnostics (`thinkpol diag`), the routes and
+// rules the owners hold as the kernel reports them, changing nothing and
+// whether or not a configurator runs. On Linux that is every table's
+// routes and both families' rules carrying an owner's protocol (84 to
+// 86), with the kernel's own table numbers, metrics and types; a rule
+// with a selector netcfg never sets is shown as far as [HostRule] goes and
+// flagged. Where netcfg has no adapter, both lists are unreadable.
+//
 // # Watching
 //
 // [Configurator.Watch] signals, coalesced, the events that may call for

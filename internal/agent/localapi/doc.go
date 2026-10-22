@@ -64,9 +64,9 @@
 // recorded at connect time (SO_PEERCRED and SO_PEERGROUPS on Linux,
 // LOCAL_PEERCRED on macOS), against the call's level ([Policy]): root and
 // the service's own user may do everything; members of the group see the
-// status and the spaces and control the node (Connect, Disconnect,
-// SetRulePreset); the log is root's only, because its debug lines may
-// quote the map. A call not listed needs everything. Not yet on macOS: the
+// status and the spaces, control the node (Connect, Disconnect,
+// SetRulePreset) and take the diagnostics without their host parts; the
+// log is root's only, because its debug lines may quote the map. A call not listed needs everything. Not yet on macOS: the
 // per-call check sees only the groups the caller's process got at login,
 // and only the first 16 of those (LOCAL_PEERCRED's xucred), so a member
 // added since, or one whose `thinkpol` group is past the first 16, is
@@ -111,7 +111,20 @@
 //   - the status GetStatus serves;
 //   - the overlay's TUN as the host reports it (its name, index, MTU, up
 //     and running flags, addresses), unreadable while the data plane is
-//     down.
+//     down;
+//   - the routes (every table) and policy rules the agent's owners hold,
+//     as the kernel reports them ([netcfg.Inspect]);
+//   - the IPv6 leak guard as the host holds it
+//     ([firewall.InspectIPv6Guard]): on Linux the nftables table's flags,
+//     chain, rules with their counters and exempt set (macOS's isn't read
+//     yet: it says so).
+//
+// The routes, rules and guard are read from the host whatever the data
+// plane's state, so a snapshot after a crash or a stop shows what was
+// left. They name public addresses (the entries', the direct
+// destinations', the gateway's), so they are root's: the group's
+// snapshot has each of them unreadable, "root only", and the agent
+// doesn't read them for it.
 //
 // The snapshot holds no key, token or session id: what it carries comes
 // from the status, which holds none, and from reading the host, which
@@ -124,7 +137,7 @@
 // # What it reports
 //
 // Nothing the API reports is a public address, a key or a secret (PRD
-// S1, S4): nodes and spaces are opaque ids, addresses are the overlay's,
+// S1, S4), but Diagnose's root-only parts, which name public addresses: nodes and spaces are opaque ids, addresses are the overlay's,
 // links name their endpoint by its index, and a server's listeners are
 // shown without their addresses. Failures are named from fixed
 // vocabularies: refusals are [Error] values (go-kernel ddd.DomainError

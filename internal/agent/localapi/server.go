@@ -24,7 +24,7 @@ type Node interface {
 	Connect(ctx context.Context) error
 	Disconnect(ctx context.Context) error
 	SetRulePreset(ctx context.Context, preset string) error
-	Diagnose(ctx context.Context) agent.Diagnostics
+	Diagnose(ctx context.Context, host bool) agent.Diagnostics
 }
 
 // Options are what the local API serves, and where.
@@ -109,7 +109,7 @@ func NewGRPCServer(shutdown context.Context, o Options, p Policy) *grpc.Server {
 		opts = append(opts, grpckit.WithErrorCode(r.err.Code, r.code))
 	}
 	srv := grpckit.NewServer(opts...)
-	localapiv1.RegisterLocalServiceServer(srv, &server{node: o.Node, logs: o.Logs, version: o.Version, shutdown: shutdown.Done()})
+	localapiv1.RegisterLocalServiceServer(srv, &server{node: o.Node, logs: o.Logs, version: o.Version, policy: p, shutdown: shutdown.Done()})
 	return srv
 }
 
@@ -118,6 +118,7 @@ type server struct {
 	node     Node
 	logs     *logring.Ring
 	version  string
+	policy   Policy
 	shutdown <-chan struct{}
 
 	// The status watchers share: taken at most once per

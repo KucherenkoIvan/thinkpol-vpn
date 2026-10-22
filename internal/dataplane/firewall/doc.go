@@ -130,6 +130,17 @@
 // is an ordinary failure, retried; until the dump succeeds once, each
 // request asks again. On such a kernel Close has nothing to remove.
 //
+// # Linux: reading it back
+//
+// [InspectIPv6Guard] reads the table as the kernel holds it, for
+// diagnostics, whether or not a guard runs: its flags (a dormant table
+// guards nothing; the kernel sends the flags big-endian, which nftables
+// decodes in the host's order), its chains as hooked, each rule's
+// expressions rendered in nft's syntax with raw payloads in nft's
+// `@base,offset,length` bits and its counter's values, and the exempt
+// set's intervals as the fewest prefixes. No table is no guard, not an
+// unreadable one; a kernel without nf_tables is unreadable.
+//
 // # macOS: a pf anchor
 //
 // On macOS the guard is a pf anchor, `com.apple/000.thinkpol`

@@ -38,14 +38,26 @@ type fakeNode struct {
 	mu         sync.Mutex
 	st         agent.Status
 	connectErr error
-	// tun is what Diagnose reports of the TUN.
-	tun agent.InterfaceReport
+	// diag is what Diagnose reports besides the status; host records
+	// what it was last asked for.
+	diag agent.Diagnostics
+	host *bool
 }
 
-func (n *fakeNode) Diagnose(context.Context) agent.Diagnostics {
+// askedHost is what the last Diagnose was asked for: nil before any.
+func (n *fakeNode) askedHost() *bool {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	return agent.Diagnostics{Status: n.st, TUN: n.tun}
+	return n.host
+}
+
+func (n *fakeNode) Diagnose(_ context.Context, host bool) agent.Diagnostics {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.host = &host
+	d := n.diag
+	d.Status = n.st
+	return d
 }
 
 func (n *fakeNode) SetRulePreset(_ context.Context, preset string) error {
@@ -365,6 +377,10 @@ func TestCallersAreCheckedByTheirCredentials(t *testing.T) {
 	}
 	if d, err := c.Diagnose(ctx); err != nil || d.GetSchemaVersion() != DiagSchemaVersion {
 		t.Fatalf("member's diagnostics: %v, %v", d, err)
+	}
+	// Without the parts that name public addresses: those are root's.
+	if h := member.node.askedHost(); h == nil || *h {
+		t.Fatal("a member was given the host parts")
 	}
 	err = c.TailLogs(ctx, 1, false, func([]string, uint64) error { return nil })
 	if !errors.Is(err, ErrPermissionDenied) {

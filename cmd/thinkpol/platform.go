@@ -34,6 +34,8 @@ func platform() agent.Platform {
 		RestoreDNS: dns.RestoreSystem,
 		Inspect: agent.Inspector{
 			Interface: agent.InspectInterface,
+			Routes:    netcfg.Inspect,
+			Guard:     inspectGuard,
 		},
 	}
 }

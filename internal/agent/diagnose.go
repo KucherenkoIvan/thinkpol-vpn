@@ -5,6 +5,9 @@ import (
 	"net"
 	"net/netip"
 	"slices"
+
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
 )
 
 // Diagnostics is a snapshot of what the node changed on the host and what
@@ -16,6 +19,12 @@ type Diagnostics struct {
 	Status Status
 	// TUN is the overlay's interface as the host reports it.
 	TUN InterfaceReport
+	// Routes are the routes and rules the agent's owners hold, and Guard
+	// the leak guard, as the host holds them, whatever the data plane's
+	// state (a crashed run's show too). They name public addresses (the
+	// entries', the direct destinations', the gateway's): root's only.
+	Routes netcfg.Inspection
+	Guard  routetable.GuardReport
 }
 
 // Why a part of Diagnostics is unreadable, when the agent says so itself
@@ -23,6 +32,9 @@ type Diagnostics struct {
 const (
 	// UnreadableNoTUN: the data plane is down, so there is no TUN to read.
 	UnreadableNoTUN = "no TUN: the data plane is down"
+	// UnreadableRootOnly: a part that names public addresses, taken for a
+	// caller who isn't root.
+	UnreadableRootOnly = "root only: it names public addresses"
 )
 
 // InterfaceReport is an interface as the host reports it.
@@ -45,6 +57,10 @@ type InterfaceReport struct {
 type Inspector struct {
 	// Interface reads an interface by name (InspectInterface).
 	Interface func(name string) InterfaceReport
+	// Routes reads the routes and rules the owners hold (netcfg.Inspect).
+	Routes func() netcfg.Inspection
+	// Guard reads the leak guard (firewall.InspectIPv6Guard).
+	Guard func(ctx context.Context) routetable.GuardReport
 }
 
 // InspectInterface reads the interface name from the OS.
@@ -74,14 +90,22 @@ func InspectInterface(name string) InterfaceReport {
 	return r
 }
 
-// Diagnose takes the node's diagnostics. Its status and TUN are taken
-// together, so the TUN read is the one the status's data plane runs on
-// (unless it stopped meanwhile: the read then says so).
-func (n *Node) Diagnose(_ context.Context) Diagnostics {
+// Diagnose takes the node's diagnostics; host leaves out the parts that
+// name public addresses (each then says it is root's). Its status and TUN
+// are taken together, so the TUN read is the one the status's data plane
+// runs on (unless it stopped meanwhile: the read then says so).
+func (n *Node) Diagnose(ctx context.Context, host bool) Diagnostics {
 	st, tun := n.report.statusAndTUN()
 	d := Diagnostics{Status: st, TUN: InterfaceReport{Unreadable: UnreadableNoTUN}}
 	if tun != "" {
 		d.TUN = n.plat.Inspect.Interface(tun)
 	}
+	if !host {
+		d.Routes = netcfg.Inspection{RoutesUnreadable: UnreadableRootOnly, RulesUnreadable: UnreadableRootOnly}
+		d.Guard = routetable.GuardReport{Unreadable: UnreadableRootOnly}
+		return d
+	}
+	d.Routes = n.plat.Inspect.Routes()
+	d.Guard = n.plat.Inspect.Guard(ctx)
 	return d
 }

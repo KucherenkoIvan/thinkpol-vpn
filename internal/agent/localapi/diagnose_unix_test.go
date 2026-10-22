@@ -18,6 +18,8 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
 	localapiv1 "github.com/KucherenkoIvan/thinkpol-vpn/proto/gen/thinkpol/localapi/v1"
 )
 
@@ -27,7 +29,7 @@ func TestDiagnoseServesAVersionedSnapshot(t *testing.T) {
 	s := serve(t, me())
 	c := dial(t, s.socket)
 	ctx := context.Background()
-	s.node.tun = agent.InterfaceReport{Name: "utun9", Index: 21, MTU: 1328, Up: true, Running: true,
+	s.node.diag.TUN = agent.InterfaceReport{Name: "utun9", Index: 21, MTU: 1328, Up: true, Running: true,
 		Addrs: []netip.Prefix{netip.MustParsePrefix("100.64.0.2/10"), netip.MustParsePrefix("fd00:1:2::2/48")}}
 	before := time.Now()
 	d, err := c.Diagnose(ctx)
@@ -68,7 +70,7 @@ func TestDiagnoseServesAVersionedSnapshot(t *testing.T) {
 
 	// A part the agent couldn't read says why, and holds nothing else.
 	s.node.mu.Lock()
-	s.node.tun = agent.InterfaceReport{Unreadable: agent.UnreadableNoTUN, Name: "stale", MTU: 1}
+	s.node.diag.TUN = agent.InterfaceReport{Unreadable: agent.UnreadableNoTUN, Name: "stale", MTU: 1}
 	s.node.mu.Unlock()
 	if d, err = c.Diagnose(ctx); err != nil || !proto.Equal(d.GetTun(), &localapiv1.DiagInterface{Unreadable: agent.UnreadableNoTUN}) {
 		t.Fatalf("an unreadable TUN: %v, %v", d.GetTun(), err)
@@ -173,5 +175,85 @@ func TestWriteJSONFileIsTheOwnersOnly(t *testing.T) {
 	}
 	if err := WriteJSONFile(filepath.Join(dir, "no-such-dir", "diag.json"), d); err == nil {
 		t.Fatal("wrote into a directory that doesn't exist")
+	}
+}
+
+func TestDiagnoseCarriesTheHostParts(t *testing.T) {
+	s := serve(t, me())
+	c := dial(t, s.socket)
+	ctx := context.Background()
+	pfx := netip.MustParsePrefix
+	s.node.mu.Lock()
+	s.node.diag.Routes = netcfg.Inspection{
+		Routes: []netcfg.HostRoute{
+			{Owner: netcfg.OwnerRouteTable, Family: netcfg.IPv4, Dst: pfx("198.51.100.0/24"), Type: "throw", Table: 29808},
+			{Owner: netcfg.OwnerOverlay, Family: netcfg.IPv6, Dst: pfx("fd00:1:2::/48"), Type: "unicast", Interface: "thinkpol0", Metric: 1024, Table: 254,
+				Gateway: netip.MustParseAddr("fe80::1")},
+		},
+		Rules: []netcfg.HostRule{{Owner: netcfg.OwnerRouteTable, Family: netcfg.IPv4, Priority: 5301, Table: 29808, Mark: 0x7470, Mask: 0xffffffff,
+			Invert: true, SuppressPrefixlen: -1}},
+	}
+	s.node.diag.Guard = routetable.GuardReport{
+		Where: "nftables table inet thinkpol-guard", Present: true,
+		Rules:    []routetable.GuardRuleReport{{Chain: "output", Text: "counter reject with icmpx admin-prohibited", Counted: true, Packets: 3, Bytes: 312}},
+		Exempt:   []netip.Prefix{pfx("2001:db8:d0::/48")},
+		NFTables: &routetable.NFTablesReport{Chains: []routetable.NFTChainReport{{Name: "output", Hook: "output", Priority: 2147483647, Policy: "accept"}}},
+	}
+	s.node.mu.Unlock()
+
+	d, err := c.Diagnose(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h := s.node.askedHost(); h == nil || !*h {
+		t.Fatal("the service's own user wasn't given the host parts")
+	}
+	wantRoutes := &localapiv1.DiagRoutes{Routes: []*localapiv1.DiagRoute{
+		{Owner: "route-table", Family: "IPv4", Destination: "198.51.100.0/24", Type: "throw", Table: 29808},
+		{Owner: "overlay", Family: "IPv6", Destination: "fd00:1:2::/48", Type: "unicast", Gateway: "fe80::1", Interface: "thinkpol0", Metric: 1024, Table: 254},
+	}}
+	wantRules := &localapiv1.DiagRules{Rules: []*localapiv1.DiagRule{{Owner: "route-table", Family: "IPv4", Priority: 5301, Table: 29808,
+		Mark: 0x7470, Mask: 0xffffffff, Invert: true, SuppressPrefixlen: -1}}}
+	wantGuard := &localapiv1.DiagGuard{
+		Where: "nftables table inet thinkpol-guard", Present: true,
+		Rules: &localapiv1.DiagGuardRules{Rules: []*localapiv1.DiagGuardRule{{Chain: "output", Text: "counter reject with icmpx admin-prohibited",
+			Counted: true, Packets: 3, Bytes: 312}}},
+		Exempt:   &localapiv1.DiagPrefixes{Prefixes: []string{"2001:db8:d0::/48"}},
+		Nftables: &localapiv1.DiagNftables{Chains: []*localapiv1.DiagNftChain{{Name: "output", Hook: "output", Priority: 2147483647, Policy: "accept"}}},
+	}
+	for what, pair := range map[string][2]proto.Message{
+		"routes": {d.GetRoutes(), wantRoutes}, "rules": {d.GetRules(), wantRules}, "guard": {d.GetGuard(), wantGuard},
+	} {
+		if !proto.Equal(pair[0], pair[1]) {
+			t.Errorf("%s: %v, want %v", what, pair[0], pair[1])
+		}
+	}
+
+	// Parts that couldn't be read say why and hold nothing else; a guard
+	// the host doesn't hold is only where it would be.
+	s.node.mu.Lock()
+	s.node.diag.Routes.RoutesUnreadable, s.node.diag.Routes.RulesUnreadable = "netlink: permission denied", "netlink: permission denied"
+	s.node.diag.Guard.RulesUnreadable, s.node.diag.Guard.ExemptUnreadable = "nftables rules: EPERM", "nftables set: EPERM"
+	s.node.mu.Unlock()
+	if d, err = c.Diagnose(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !proto.Equal(d.GetRoutes(), &localapiv1.DiagRoutes{Unreadable: "netlink: permission denied"}) ||
+		!proto.Equal(d.GetRules(), &localapiv1.DiagRules{Unreadable: "netlink: permission denied"}) ||
+		!proto.Equal(d.GetGuard().GetRules(), &localapiv1.DiagGuardRules{Unreadable: "nftables rules: EPERM"}) ||
+		!proto.Equal(d.GetGuard().GetExempt(), &localapiv1.DiagPrefixes{Unreadable: "nftables set: EPERM"}) {
+		t.Fatalf("unreadable parts: %v", d)
+	}
+	s.node.mu.Lock()
+	s.node.diag.Guard = routetable.GuardReport{Where: "nftables table inet thinkpol-guard", Rules: s.node.diag.Guard.Rules}
+	s.node.mu.Unlock()
+	if d, err = c.Diagnose(ctx); err != nil || !proto.Equal(d.GetGuard(), &localapiv1.DiagGuard{Where: "nftables table inet thinkpol-guard"}) {
+		t.Fatalf("no guard: %v, %v", d.GetGuard(), err)
+	}
+	s.node.mu.Lock()
+	s.node.diag.Guard = routetable.GuardReport{Where: "pf anchor com.apple/000.thinkpol", Unreadable: "no pfctl", Present: true}
+	s.node.mu.Unlock()
+	if d, err = c.Diagnose(ctx); err != nil || !proto.Equal(d.GetGuard(), &localapiv1.DiagGuard{Where: "pf anchor com.apple/000.thinkpol", Unreadable: "no pfctl"}) {
+		t.Fatalf("an unreadable guard: %v, %v", d.GetGuard(), err)
 	}
 }

@@ -130,6 +130,13 @@ message Diagnostics {
   Status status = 5;
   // The overlay's TUN as the host reports it.
   DiagInterface tun = 6;
+  // The routes and policy rules the agent's owners hold, as the kernel
+  // reports them, whether or not the data plane runs (a crash's show
+  // too). Root only.
+  DiagRoutes routes = 7;
+  DiagRules rules = 8;
+  // The IPv6 leak guard as the host holds it. Root only.
+  DiagGuard guard = 9;
 }
 
 // An interface as the host reports it.
@@ -143,6 +150,140 @@ message DiagInterface {
   bool running = 6;
   // Its addresses, each with its prefix length.
   repeated string addresses = 7;
+}
+
+message DiagRoutes {
+  string unreadable = 1;
+  repeated DiagRoute routes = 2;
+}
+
+// A route one of the agent's owners holds.
+message DiagRoute {
+  // "overlay", "supervisor", "route-table".
+  string owner = 1;
+  // "IPv4", "IPv6".
+  string family = 2;
+  string destination = 3;
+  // The kernel's type: "unicast", "throw", "unreachable", "blackhole",
+  // "prohibit", or its number.
+  string type = 4;
+  string gateway = 5;
+  string interface = 6;
+  // The kernel's metric and table (Linux: 254 is main); 0 on macOS.
+  uint32 metric = 7;
+  uint32 table = 8;
+  // The interface a scoped route (macOS RTF_IFSCOPE) is scoped to.
+  string scope = 9;
+}
+
+message DiagRules {
+  string unreadable = 1;
+  repeated DiagRule rules = 2;
+}
+
+// A policy rule one of the agent's owners holds (Linux; macOS has none).
+message DiagRule {
+  string owner = 1;
+  string family = 2;
+  uint32 priority = 3;
+  uint32 table = 4;
+  string destination = 5;
+  string oif = 6;
+  // `fwmark mark/mask`.
+  uint32 mark = 7;
+  uint32 mask = 8;
+  bool invert = 9;
+  // `suppress_prefixlength`; -1 without one.
+  int32 suppress_prefixlen = 10;
+  // The rule has a selector or action the agent never sets, which this
+  // doesn't show.
+  bool other = 11;
+}
+
+// The IPv6 leak guard as the host holds it.
+message DiagGuard {
+  string unreadable = 1;
+  // "nftables table inet thinkpol-guard", "pf anchor
+  // com.apple/000.thinkpol".
+  string where = 2;
+  // The host holds the guard (the table exists; the anchor has rules).
+  bool present = 3;
+  DiagGuardRules rules = 4;
+  // What the guard lets out by destination, as the fewest prefixes.
+  DiagPrefixes exempt = 5;
+  DiagNftables nftables = 6;
+  DiagPf pf = 7;
+}
+
+message DiagGuardRules {
+  string unreadable = 1;
+  repeated DiagGuardRule rules = 2;
+}
+
+// A rule of the guard as the host lists it, with its counters.
+message DiagGuardRule {
+  // The nftables chain (Linux).
+  string chain = 1;
+  // pfctl's line (macOS); the expressions in nft's syntax (Linux).
+  string text = 2;
+  // The rule has counters (Linux: a counter expression).
+  bool counted = 3;
+  uint64 packets = 4;
+  uint64 bytes = 5;
+  // pf's (macOS).
+  uint64 evaluations = 6;
+  uint64 states = 7;
+}
+
+message DiagPrefixes {
+  string unreadable = 1;
+  repeated string prefixes = 2;
+}
+
+// The guard table's own state.
+message DiagNftables {
+  // The table's chains are unhooked: it guards nothing.
+  bool dormant = 1;
+  repeated DiagNftChain chains = 2;
+}
+
+message DiagNftChain {
+  string name = 1;
+  // A base chain's hook ("output"), priority and policy.
+  string hook = 2;
+  int32 priority = 3;
+  string policy = 4;
+}
+
+// pf's state as it concerns the guard (macOS).
+message DiagPf {
+  DiagPfEnabled enabled = 1;
+  DiagPfHook hook = 2;
+  DiagPfReference reference = 3;
+}
+
+message DiagPfEnabled {
+  string unreadable = 1;
+  bool enabled = 2;
+}
+
+message DiagPfHook {
+  string unreadable = 1;
+  // How the main ruleset evaluates the anchor: "ok", "missing" (no
+  // `anchor "com.apple/*"`), "bypassed" (a quick pass above it).
+  string state = 2;
+}
+
+// The guard's `pfctl -E` reference, by the pid of the pfctl that took it.
+message DiagPfReference {
+  string unreadable = 1;
+  // The guard's record names a reference.
+  bool recorded = 2;
+  uint32 pid = 3;
+  // The record names it by the pid alone (its value not read yet).
+  bool pid_only = 4;
+  // pf lists it as taken by that pid.
+  bool held = 5;
 }
 
 // A space the node is enrolled in. Names are the controller's: a node
