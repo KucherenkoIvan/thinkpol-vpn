@@ -272,9 +272,13 @@
 // by default, and its states outlive it), with one exception: while the
 // same bypasses last (checkBypass's verdict unchanged), the retries don't
 // kill again. What a bypass lets through needs no state, and the anchor
-// lets nothing else make one, so a kill would only take what the bypass
-// makes anew. A change to the bypasses (one more, one gone, all gone)
-// kills them, taking what the one gone let be made. A bypass that comes
+// lets nothing outgoing make one, so a kill would only take what the
+// bypass makes anew. A change checkBypass's verdict shows (a kind of
+// bypass more or gone, a skipped interface or an earlier anchor more or
+// gone, all gone) kills them, taking what the one gone let be made; a
+// second quick pass above the hook, or an earlier anchor's rules changing
+// under the same name, doesn't change the verdict, and its states live on
+// until the verdict changes, a reload or an enable. A bypass that comes
 // and goes between two polls is seen by no apply, and its states live on
 // (RESIDUAL-RISKS.md RR11).
 //

@@ -141,19 +141,19 @@ func hostAddrs() ([]netip.Addr, error) {
 	return out, nil
 }
 
-// Apply puts e in place: the anchor (rules and tables in one load), then
-// pf enabled by a reference of its own, then whatever lets IPv6 past the
-// anchor checked (checkBypass), then states the anchor would have refused
-// killed. Applying what is in place again only reads it back (the hook
-// and what bypasses it, the rules exactly as listed after the load, every
-// table entry, pf enabled) and reloads if the anchor or pf differ. A failed load leaves what was
-// there (a pf transaction), a guard at least as strict as either. A load
-// pf took but load refuses on reading it back stays, unverified, and the
-// Apply fails and is retried. pf enforces it whenever pf is on (on the
-// guard's reference after an earlier good load, or on another enabler's);
-// the guard takes no reference for it. Flushing it would leave an empty
-// anchor, which passes all IPv6. The package doc (macOS: loading and
-// checking) has the reasoning: why it is never wider than the rules
+// Apply puts e in place: the anchor (rules and tables in one load), then pf
+// enabled by a reference of its own, then whatever lets IPv6 past the anchor
+// checked (checkBypass), then states the anchor would have refused killed.
+// Applying what is in place again only reads it back (the hook and what
+// bypasses it, the rules exactly as listed after the load, every table
+// entry, pf enabled) and reloads if the anchor or pf differ. A failed load
+// leaves what was there (a pf transaction), a guard at least as strict as
+// either. A load pf took but load refuses on reading it back stays,
+// unverified, and the Apply fails and is retried. pf enforces it whenever pf
+// is on (on the guard's reference after an earlier good load, or on another
+// enabler's); the guard takes no reference for it. Flushing it would leave
+// an empty anchor, which passes all IPv6. The package doc (macOS: loading
+// and checking) has the reasoning: why it is never wider than the rules
 // written but for what someone changed in the anchor between the load and
 // the read-back, and why the last verified guard isn't reloaded instead.
 func (g *IPv6Guard) Apply(ctx context.Context, e routetable.Exempt) (err error) {

@@ -1050,7 +1050,7 @@ func TestAQuickPassAboveTheHookIsNotEnforced(t *testing.T) {
 // once pf skips only lo0 and the utun.
 //
 // While the same bypass lasts, the retries leave states alone (what it
-// lets through needs none, and it would make them again); a change to
+// lets through needs none, and the anchor lets nothing outgoing make one); a change to
 // the bypasses (another one coming, then going) kills them, and so does
 // the Apply after the last one ends.
 func TestASkippedInterfaceIsNotEnforced(t *testing.T) {
