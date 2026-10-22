@@ -314,7 +314,8 @@
 // value can come back as someone else's; both matching is as close as pf
 // lets anyone tell. If the guard finds pf off (someone ran `pfctl -d`), it
 // takes a new reference first, then releases the old one if pf still
-// lists it.
+// lists it; if that release fails, the Apply says so (the record names
+// the new reference, and the old one is left to pf).
 //
 // `pfctl -s References` is read by the columns its header names: a line's
 // first field is the pid, and the token is the field where the header's

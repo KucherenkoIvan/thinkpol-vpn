@@ -158,10 +158,12 @@
 // device's keys and its links' credentials in a real node's snapshot.
 //
 // `diag -o FILE` ([WriteDiagnosticsFile]) writes a new file beside the
-// path, mode 0600, synced, and renames it over the path, so root writing
-// into a directory others can write to replaces a symlink there instead
-// of following it; anything there but a regular file or a symlink (a
-// device such as /dev/null, a directory) is refused. `-o -` prints it.
+// path, mode 0600, synced, and renames it over the path, replacing only a
+// regular file: anything else there is refused, a device such as
+// /dev/null, a directory, and any symlink whatever it points to
+// (/dev/stdout is a link through /proc/self/fd/1 to whatever stdout is,
+// a file included), so root writing into a directory others can write to
+// never follows or replaces their link. `-o -` prints it.
 //
 // # What it reports
 //

@@ -422,9 +422,13 @@ func sortedPrefixes(ps []netip.Prefix) []netip.Prefix {
 // 2001:db8::10[51000] -> 2001:db8:ab::7[443]  ESTABLISHED:ESTABLISHED"),
 // as the IPv6 addresses each line names (its ends, and a translation's in
 // parentheses), whatever their order. Lines naming none are skipped.
-func parseStateAddrs(states []byte) [][]netip.Addr {
+func parseStateAddrs(states []byte) ([][]netip.Addr, error) {
+	ls, err := readLines(states)
+	if err != nil {
+		return nil, err
+	}
 	var out [][]netip.Addr
-	for _, l := range lines(states) {
+	for _, l := range ls {
 		var addrs []netip.Addr
 		for _, f := range strings.Fields(l) {
 			f = strings.Trim(f, "(),")
@@ -439,7 +443,7 @@ func parseStateAddrs(states []byte) [][]netip.Addr {
 			out = append(out, addrs)
 		}
 	}
-	return out
+	return out, nil
 }
 
 // exemptPrefixes is the main table's content for e, as the fewest

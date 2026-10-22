@@ -6,7 +6,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"math"
 	"net/netip"
 	"slices"
 	"strconv"
@@ -139,8 +138,8 @@ func dumpRulesOnce(ns netns.NsHandle, fam int) ([]rawRule, error) {
 			interrupted = interrupted || m.Header.Flags&unix.NLM_F_DUMP_INTR != 0
 			switch m.Header.Type {
 			case unix.NLMSG_DONE:
-				if interrupted {
-					return nil, errDumpInterrupted
+				if err := dumpDone(m.Data, interrupted); err != nil {
+					return nil, err
 				}
 				return out, nil
 			case unix.NLMSG_ERROR:
@@ -163,9 +162,27 @@ func dumpRulesOnce(ns netns.NsHandle, fam int) ([]rawRule, error) {
 	}
 }
 
+// dumpDone is what a dump's NLMSG_DONE says: a dump that failed partway
+// says so in its payload (an errno), one the kernel interrupted in its
+// flags.
+func dumpDone(data []byte, interrupted bool) error {
+	if len(data) >= 4 {
+		if errno := -int32(binary.NativeEndian.Uint32(data)); errno != 0 {
+			return fmt.Errorf("netcfg: list rules: the dump failed: %w", unix.Errno(errno))
+		}
+	}
+	if interrupted {
+		return errDumpInterrupted
+	}
+	return nil
+}
+
 // parseRawRule reads a rule message: a fib_rule_hdr (family, dst_len,
 // src_len, tos, table, two reserved bytes, action, flags) and its
-// attributes. A selector or action netcfg never sets marks it Other.
+// attributes. Only the attributes netcfg sets, or the kernel dumps for
+// every rule, are read; any other (a source, an iif, ports, a DSCP of a
+// newer kernel...) marks the rule Other, as does anything plainRule
+// refuses. A destination that can't be read fails the read.
 func parseRawRule(b []byte) (rawRule, error) {
 	if len(b) < unix.SizeofRtMsg {
 		return rawRule{}, errors.New("netcfg: list rules: a rule message too short")
@@ -180,7 +197,6 @@ func parseRawRule(b []byte) (rawRule, error) {
 		return rawRule{}, fmt.Errorf("netcfg: list rules: %w", err)
 	}
 	out := rawRule{}
-	maskSeen := false
 	for _, at := range attrs {
 		v := at.Value
 		u32 := func() uint32 {
@@ -195,40 +211,32 @@ func parseRawRule(b []byte) (rawRule, error) {
 		case unix.FRA_TABLE:
 			r.Table = int(u32())
 		case unix.FRA_DST:
-			if a, ok := netip.AddrFromSlice(v); ok {
-				if r.Family == IPv4 {
-					a = a.Unmap()
-				}
-				r.Dst = netip.PrefixFrom(a, int(b[1]))
+			a, ok := netip.AddrFromSlice(v)
+			want := 4
+			if r.Family == IPv6 {
+				want = 16
 			}
+			if !ok || len(v) != want || int(b[1]) > 8*want {
+				return rawRule{}, fmt.Errorf("netcfg: list rules: a rule's destination of %d bytes, /%d", len(v), b[1])
+			}
+			r.Dst = netip.PrefixFrom(a, int(b[1]))
 		case unix.FRA_OIFNAME:
 			r.Oif = strings.TrimRight(string(v), "\x00")
 		case unix.FRA_FWMARK:
 			r.Mark = u32()
 		case unix.FRA_FWMASK:
-			r.Mask, maskSeen = u32(), true
+			r.Mask = u32()
 		case unix.FRA_SUPPRESS_PREFIXLEN:
 			r.SuppressPrefixlen = int(int32(u32()))
 		case unix.FRA_PROTOCOL:
 			if len(v) == 1 {
 				out.protocol = v[0]
 			}
-		case unix.FRA_SRC, unix.FRA_IIFNAME, unix.FRA_GOTO, unix.FRA_FLOW, unix.FRA_TUN_ID, unix.FRA_L3MDEV,
-			unix.FRA_UID_RANGE, unix.FRA_IP_PROTO, unix.FRA_SPORT_RANGE, unix.FRA_DPORT_RANGE:
+		default:
 			r.Other = true
-		case unix.FRA_SUPPRESS_IFGROUP:
-			r.Other = r.Other || int32(u32()) != -1
 		}
 	}
-	if r.SuppressPrefixlen != -1 && r.SuppressPrefixlen != 0 {
-		r.Other = true
-	}
-	// netcfg sets a mark whole (mask 0xffffffff) or none.
-	whole := r.Mark != 0 && r.Mask == math.MaxUint32
-	none := r.Mark == 0 && r.Mask == 0
-	if maskSeen && !whole && !none {
-		r.Other = true
-	}
+	r.Other = !plainRule(r, "")
 	out.rule = r
 	return out, nil
 }

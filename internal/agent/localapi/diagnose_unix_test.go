@@ -179,50 +179,33 @@ func TestWriteDiagnosticsFileIsTheOwnersOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	check(t)
-
-	// A symlink there is replaced, its target left alone: root writing
-	// into a directory others can write to never follows their link.
-	target := filepath.Join(dir, "target")
-	if err := os.WriteFile(target, []byte("theirs"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Remove(path); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(target, path); err != nil {
-		t.Fatal(err)
-	}
-	if err := WriteDiagnosticsFile(path, d); err != nil {
-		t.Fatal(err)
-	}
-	check(t)
-	if b, _ := os.ReadFile(target); string(b) != "theirs" {
-		t.Fatalf("the link's target now holds %q", b)
-	}
-
-	entries, _ := os.ReadDir(dir)
-	if len(entries) != 2 {
-		t.Fatalf("left behind: %v", entries)
-	}
 	if err := WriteDiagnosticsFile(filepath.Join(dir, "no-such-dir", "diag.json"), d); err == nil {
 		t.Fatal("wrote into a directory that doesn't exist")
 	}
 
-	// Nothing but a regular file or a symlink is replaced: as root,
-	// `-o /dev/null` would turn the device into a file. A fifo and a
-	// directory stand in for it here.
-	fifo := filepath.Join(dir, "fifo")
+	// Nothing but a regular file is replaced, and no symlink, whatever it
+	// points to: as root, `-o /dev/null` would turn the device into a file,
+	// and `-o /dev/stdout > snap.json` (a link through /proc/self/fd/1 to
+	// that very file) the system's link. A fifo and a directory stand in
+	// for devices; whoever means to replace a link removes it first.
+	fifo, target := filepath.Join(dir, "fifo"), filepath.Join(dir, "target")
 	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// Nor a symlink to one: /dev/stdout and /dev/fd are such links.
-	toFifo, toDir := filepath.Join(dir, "to-fifo"), filepath.Join(dir, "to-dir")
-	for link, target := range map[string]string{toFifo: fifo, toDir: dir} {
-		if err := os.Symlink(target, link); err != nil {
+	if err := os.WriteFile(target, []byte("theirs"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	links := map[string]string{"to-file": target, "to-fifo": fifo, "to-dir": dir, "dangling": filepath.Join(dir, "nothing")}
+	for name, to := range links {
+		if err := os.Symlink(to, filepath.Join(dir, name)); err != nil {
 			t.Fatal(err)
 		}
 	}
-	for _, p := range []string{fifo, dir, toFifo, toDir} {
+	refused := []string{fifo, dir}
+	for name := range links {
+		refused = append(refused, filepath.Join(dir, name))
+	}
+	for _, p := range refused {
 		if err := WriteDiagnosticsFile(p, d); !errors.Is(err, ErrNotAFile) {
 			t.Errorf("%s: %v", p, err)
 		}
@@ -230,24 +213,16 @@ func TestWriteDiagnosticsFileIsTheOwnersOnly(t *testing.T) {
 	if fi, err := os.Lstat(fifo); err != nil || fi.Mode()&os.ModeNamedPipe == 0 {
 		t.Fatalf("the fifo: %v, %v", fi, err)
 	}
-	for _, link := range []string{toFifo, toDir} {
-		if fi, err := os.Lstat(link); err != nil || fi.Mode()&os.ModeSymlink == 0 {
-			t.Fatalf("%s: %v, %v", link, fi, err)
+	for name, to := range links {
+		if got, err := os.Readlink(filepath.Join(dir, name)); err != nil || got != to {
+			t.Errorf("%s: now %q, %v", name, got, err)
 		}
 	}
-	if entries, _ := os.ReadDir(dir); len(entries) != 5 {
+	if b, _ := os.ReadFile(target); string(b) != "theirs" {
+		t.Fatalf("the link's target now holds %q", b)
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 7 {
 		t.Fatalf("left behind: %v", entries)
-	}
-	// A dangling symlink is replaced, as one to a regular file is.
-	dangling := filepath.Join(dir, "dangling")
-	if err := os.Symlink(filepath.Join(dir, "nothing"), dangling); err != nil {
-		t.Fatal(err)
-	}
-	if err := WriteDiagnosticsFile(dangling, d); err != nil {
-		t.Fatal(err)
-	}
-	if fi, err := os.Lstat(dangling); err != nil || !fi.Mode().IsRegular() {
-		t.Fatalf("dangling: %v, %v", fi, err)
 	}
 }
 
@@ -364,7 +339,10 @@ func TestDiagnoseCarriesTheHostParts(t *testing.T) {
 	var parsed struct {
 		Guard map[string]json.RawMessage `json:"guard"`
 	}
-	if _, there := parsed.Guard["present"]; json.Unmarshal(out.Bytes(), &parsed) != nil || there || parsed.Guard["where"] == nil {
+	if err := json.Unmarshal(out.Bytes(), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if _, there := parsed.Guard["present"]; there || parsed.Guard["where"] == nil {
 		t.Fatalf("present: %q, %v\n%s", parsed.Guard["present"], err, out.String())
 	}
 	// A record that can't be read: unreadable, and nothing else.

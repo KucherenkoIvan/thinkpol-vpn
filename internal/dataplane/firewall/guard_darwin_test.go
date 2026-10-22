@@ -452,12 +452,15 @@ func TestParseTable(t *testing.T) {
 }
 
 func TestParseStateAddrs(t *testing.T) {
-	got := parseStateAddrs([]byte(altq +
+	got, err := parseStateAddrs([]byte(altq +
 		"ALL tcp 2001:db8:1::10[51000] -> 2001:db8:ab::7[443]       ESTABLISHED:ESTABLISHED\n" +
 		"ALL udp 2001:db8:1::10[5353] <- 2001:db8:ab::8[53]       SINGLE:NO_TRAFFIC\n" +
 		"en0 tcp 2001:db8:1::10[1] (2001:db8:1::11[2]) -> 2001:db8:ab::9[3]   X\n" +
 		"ALL tcp 192.0.2.10:51000 -> 198.51.100.7:443       ESTABLISHED:ESTABLISHED\n" +
 		"ALL ipv6-icmp fe80::1%en0[3] -> ff02::1[0]       0:0\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	want := [][]netip.Addr{
 		{ownV6, netip.MustParseAddr("2001:db8:ab::7")},
 		{ownV6, netip.MustParseAddr("2001:db8:ab::8")},
@@ -1687,5 +1690,42 @@ func TestCutListingsAreUnreadable(t *testing.T) {
 	r.pf.set(func(f *fakePF) { f.main = append(slices.Clone(stockMain), strings.Repeat("x", 1<<20)) })
 	if err := r.guard().Apply(context.Background(), exempt(t)); err == nil || errors.Is(err, routetable.ErrGuardUnsupported) || !strings.Contains(err.Error(), "cut") {
 		t.Errorf("a cut main ruleset: %v, want an ordinary failure", err)
+	}
+}
+
+// TestAFailedReleaseOfTheOldReferenceIsTold: pf was turned off while pf
+// kept the guard's reference listed; enabling it anew takes a new one, and
+// when the old one can't be released (a References listing the guard
+// can't read) Apply says so instead of dropping it, the record naming the
+// new reference.
+func TestAFailedReleaseOfTheOldReferenceIsTold(t *testing.T) {
+	r := newRig(t)
+	r.pf.set(func(f *fakePF) { f.keepRefs = true })
+	g := r.guard()
+	if err := g.Apply(context.Background(), exempt(t)); err != nil {
+		t.Fatal(err)
+	}
+	old := r.pf.references()[0]
+	r.pf.disable()
+	r.pf.set(func(f *fakePF) { f.oddReferences = true })
+	err := g.Apply(context.Background(), exempt(t))
+	if !errors.Is(err, errUnreadReferences) || !strings.Contains(err.Error(), "releasing the reference it held before") {
+		t.Fatalf("Apply: %v", err)
+	}
+	refs := r.pf.references()
+	if len(refs) != 2 || refs[0] != old || !strings.Contains(r.record(t), fmt.Sprintf("token %d pid %d", refs[1].value, refs[1].pid)) {
+		t.Fatalf("references %v, record %q", refs, r.record(t))
+	}
+}
+
+func TestCutStateAndRuleListingsAreUnreadable(t *testing.T) {
+	cut := "\n" + strings.Repeat("x", 1<<20) + "\n"
+	if _, err := parseStateAddrs([]byte("ALL tcp 2001:db8:1::10[1] -> 2001:db8:ab::7[443] X" + cut)); err == nil {
+		t.Error("states")
+	}
+	r := newRig(t)
+	r.pf.setAnchor(GuardAnchor, &fakeAnchor{rules: []string{"block return out quick inet6 all", strings.Repeat("x", 1<<20)}})
+	if _, err := r.guard().listRules(context.Background()); err == nil || !strings.Contains(err.Error(), "cut") {
+		t.Errorf("the anchor's rules: %v", err)
 	}
 }

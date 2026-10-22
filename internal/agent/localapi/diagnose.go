@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"math"
 	"net/netip"
 	"os"
@@ -243,25 +242,22 @@ func WriteDiagnostics(w io.Writer, d *localapiv1.Diagnostics) error {
 	return err
 }
 
-// ErrNotAFile: -o names something there that is neither a regular file
-// nor a symlink (a device, /dev/null, a directory): replacing it would
-// change the host.
+// ErrNotAFile: -o names something there that isn't a regular file (a
+// device, /dev/null, a directory, a symlink): replacing it could change
+// the host.
 var ErrNotAFile = errors.New("not a regular file: refusing to replace it")
 
 // WriteDiagnosticsFile writes d as WriteDiagnostics does to a new file at
-// path, mode 0600, synced, replacing what is there: a regular file, or a
-// symlink itself (never its target) to a regular file or to nothing.
-// Anything else there, or a symlink to anything else (/dev/stdout, /dev/fd
-// are symlinks to devices), is refused (ErrNotAFile). It is written beside
-// path and renamed over it, so a reader never sees half of it.
+// path, mode 0600, synced, replacing what is there only if that is a
+// regular file. Anything else there is refused (ErrNotAFile): a device
+// (/dev/null), a directory, and any symlink, whatever it points to
+// (/dev/stdout is a link through /proc/self/fd/1 to whatever stdout is,
+// a file included); whoever means to replace a link removes it first. It
+// is written beside path and renamed over it, so a reader never sees half
+// of it.
 func WriteDiagnosticsFile(path string, d *localapiv1.Diagnostics) (err error) {
-	if fi, err := os.Lstat(path); err == nil {
-		if fi.Mode()&fs.ModeSymlink != 0 {
-			fi, err = os.Stat(path)
-		}
-		if err == nil && !fi.Mode().IsRegular() {
-			return fmt.Errorf("%s: %w", path, ErrNotAFile)
-		}
+	if fi, err := os.Lstat(path); err == nil && !fi.Mode().IsRegular() {
+		return fmt.Errorf("%s: %w", path, ErrNotAFile)
 	}
 	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
 	if err != nil {
