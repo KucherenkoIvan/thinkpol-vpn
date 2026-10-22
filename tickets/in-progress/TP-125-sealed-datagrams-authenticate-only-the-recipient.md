@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: []
 refs: []
-owner: ""
-branch: ""
+owner: "orchestrator"
+branch: "tp-125-sealed-datagrams-decision"
 ---
 
 ## Goal
@@ -27,3 +27,4 @@ A recorded decision on the independent design review's point (2026-10-13, sectio
 
 ## Log
 - 2026-10-22 created in backlog (TP-077 out-of-scope note)
+- 2026-10-23 backlog → in-progress — owner: orchestrator, branch: tp-125-sealed-datagrams-decision
