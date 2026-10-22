@@ -116,3 +116,4 @@ Round 3 (2026-10-23): correctness (fix first), design (fix first), second opinio
 - 2026-10-23 round 3 done: R2.1–R2.5 fixed (bc435e3), origin/rewrite merged (db32184: TP-133 now files the agent-less diag). `make lint` and `make test` before each commit; the full `make lab-test` (LAB_P=4: the lab phase and 35 packages in nodes) passes on db32184. Still not verified: nothing ran pfctl or scutil on a Mac (the two macOS boxes wait on the device run); the References columns are pfctl's as the fake and the review's transcripts lay them out, so a Mac printing them otherwise makes Close fail and keep the record, not forget the reference: the device run's judged list covers it
 - 2026-10-23 in-progress → review
 - 2026-10-23 review → has-errors (round 3: R3.1-R3.4)
+- 2026-10-23 has-errors → in-progress — owner: agent-tp-091, round 4 (R3.1–R3.4)
