@@ -42,3 +42,7 @@ func lockHostAt(path string) (func(), error) {
 	}
 	return func() { _ = f.Close() }, nil
 }
+
+// HostLockDir is the directory of the host's agent lock, where the agent
+// keeps its other host-wide locks and boot records too.
+func HostLockDir() string { return filepath.Dir(hostLockPath) }

@@ -114,6 +114,44 @@ func (n *Node) ExportFS(ctx context.Context, w io.Writer) error {
 	return nil
 }
 
+// Restart restarts a node that runs systemd (NodeSpec.Systemd), as a
+// reboot: systemd halts what runs, the container starts again with a
+// fresh /run, seals itself before systemd starts, and Restart returns once
+// systemd has booted (its state running or degraded). Its network
+// namespace is a new one; processes Start ran in the node are gone.
+func (n *Node) Restart(ctx context.Context) error {
+	if !n.lab.Topology.Nodes[n.lab.Topology.nodeIndex(n.Name)].Systemd {
+		return fmt.Errorf("%s: Restart is for a node that runs systemd", n.Name)
+	}
+	if _, err := docker(ctx, "restart", "-t", "60", n.Container); err != nil {
+		return fmt.Errorf("%s: docker restart: %w", n.Name, err)
+	}
+	return n.WaitBooted(ctx)
+}
+
+// WaitBooted waits until systemd in a node that runs it has booted: its
+// state is running or degraded (a unit failed). Any other state is an
+// error.
+func (n *Node) WaitBooted(ctx context.Context) error {
+	for {
+		// --wait returns once the boot is done; it fails until systemd
+		// answers on its bus at all.
+		res, _ := n.Exec(ctx, "systemctl", "is-system-running", "--wait")
+		switch state := strings.TrimSpace(res.Stdout); state {
+		case "running", "degraded":
+			return nil
+		case "", "offline", "unknown":
+		default:
+			return fmt.Errorf("%s: systemd booted %s", n.Name, state)
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("%s: systemd not booted: %w", n.Name, ctx.Err())
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+}
+
 var processSeq atomic.Uint64
 
 // Process is a command running in a node in the background.

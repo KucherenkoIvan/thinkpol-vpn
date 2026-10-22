@@ -42,6 +42,13 @@ type NodeSpec struct {
 	// and tests start their own processes with Node.Start.
 	Command []string
 	Env     map[string]string
+	// Systemd runs systemd as the node's PID 1 instead of Command, for
+	// tests of a service under systemd. /run is a tmpfs, and the node
+	// seals itself again when it starts after Node.Restart, before systemd
+	// runs: a restart is a reboot but for the kernel's boot id, which is
+	// the Docker VM's. systemd-resolved, systemd-networkd and nginx are
+	// masked.
+	Systemd bool
 }
 
 // Names used by Standard.
@@ -134,6 +141,9 @@ func (t Topology) Validate() error {
 		}
 		if len(n.Networks) == 0 {
 			return fmt.Errorf("lab topology: node %q is on no network", n.Name)
+		}
+		if n.Systemd && len(n.Command) > 0 {
+			return fmt.Errorf("lab topology: node %q runs systemd, which takes the place of its command", n.Name)
 		}
 		for _, net := range n.Networks {
 			if !seen[net] {

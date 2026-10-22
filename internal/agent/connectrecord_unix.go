@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"path/filepath"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/trusteddir"
 )
@@ -16,7 +15,7 @@ import (
 // host lock's directory (/run/thinkpol, /private/var/db/thinkpol on
 // macOS), stamped with trusteddir.BootSession.
 func HostConnectRecord() ConnectRecord {
-	return fileConnectRecord{dir: filepath.Dir(hostLockPath), boot: trusteddir.BootSession}
+	return fileConnectRecord{dir: HostLockDir(), boot: trusteddir.BootSession}
 }
 
 // fileConnectRecord is ConnectRecordFile in dir, reached through

@@ -468,6 +468,11 @@ func (l *Lab) configureNode(ctx context.Context, spec NodeSpec) error {
 	fmt.Fprintf(&script, "cat > /etc/hosts <<'EOF'\n%sEOF\n", l.hostsFor(spec))
 	script.WriteString("mount --bind /proc/sys/net /proc/sys/net && mount -o remount,bind,rw /proc/sys/net\n")
 	fmt.Fprintf(&script, "mkdir -p %s && touch %s\n", path.Dir(sealedMarker), sealedMarker)
+	if spec.Systemd {
+		// Kept for the node's next start, which runs it before systemd.
+		fmt.Fprintf(&script, "mkdir -p %s && cat > %s <<'SEAL' && chmod 700 %[2]s\n#!/bin/sh\nset -e\n%sSEAL\n",
+			path.Dir(sealScript), sealScript, script.String())
+	}
 	_, err = n.Exec(ctx, "sh", "-ec", script.String())
 	return err
 }

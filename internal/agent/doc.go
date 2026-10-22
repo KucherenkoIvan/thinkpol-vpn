@@ -1,9 +1,9 @@
 // Package agent is the node agent, on servers and devices alike: it
 // follows its space's maps and applies each, runs the data plane, and
 // hands `thinkpol up` what runs the node next to the local API (package
-// localapi). Server-only parts live in agent/supervisor and agent/worker.
-// Not yet: installing itself as a service (TP-046) and updating itself
-// (TP-044).
+// localapi). Server-only parts live in agent/supervisor and agent/worker;
+// installing it as the host's service is agent/service's. Not yet:
+// updating itself (TP-044).
 //
 // # Engine and agent
 //
