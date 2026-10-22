@@ -81,3 +81,4 @@ Round 1 (2026-10-22): correctness (merge), design (fix first), second opinion (m
 - 2026-10-22 round 1 done: `make lint` and `make test` pass; `make lab-test` passes on 0427970 (LAB_P=4: 35 packages in lab nodes, and the lab/ suite). A first run on 0427970 under another checkout's lab load (LAB_P=1) failed once in `dns` (`TestResolvConfWhileUntoldAStubTargetWithoutUplinkWarnsNothing`: told [] before the good read), a package this branch doesn't touch; it passed 20 of 20 alone in the lab, and the re-run was green. A flake for the orchestrator to look at
 - 2026-10-22 in-progress → review
 - 2026-10-22 review → has-errors (round 2: R2.1-R2.6)
+- 2026-10-22 has-errors → in-progress — owner: agent-tp-126, round 2 findings
