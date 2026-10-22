@@ -14,9 +14,9 @@
 // is done relative to its descriptor.
 //
 // Its users are what decides a node's trust or ownership on disk: the
-// agent's state directory and host lock (package agent), netcfg's route
-// records and owner locks on macOS, and the leak guard's pf records on
-// macOS (package firewall).
+// agent's state directory, host lock and connect record (package agent),
+// netcfg's route records and owner locks on macOS, and the leak guard's
+// pf records on macOS (package firewall).
 //
 // # Why every directory on the way
 //
@@ -44,8 +44,8 @@
 // synced and renamed over it). [Lock] takes an exclusive flock,
 // close-on-exec, so no process this one starts holds it after it.
 // [WriteRecord] and [ReadRecord] stamp a file with the boot session it
-// was written in ([BootSession], macOS's kern.bootsessionuuid): a
-// directory outlives a reboot and what its records name (routes, pf
-// references) doesn't, so a record of another boot holds nothing
-// ([ErrOtherBoot]).
+// was written in ([BootSession]: macOS's kern.bootsessionuuid, Linux's
+// boot id): a directory outlives a reboot and what its records name
+// (routes, pf references, a connect request) doesn't, so a record of
+// another boot holds nothing ([ErrOtherBoot]).
 package trusteddir

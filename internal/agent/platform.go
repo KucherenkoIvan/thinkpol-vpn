@@ -74,7 +74,8 @@ type RouteEnforcer interface {
 
 // Platform is what a node needs of its host: one data plane's Host, and
 // what touches the host outside one (the agent lock, a crashed run's
-// resolver configuration). The agent only sequences what is here.
+// resolver configuration, the last connect request). The agent only
+// sequences what is here. Every field is set.
 type Platform struct {
 	Host
 	// LockHost takes the agent lock: one node agent per host, held until
@@ -83,6 +84,9 @@ type Platform struct {
 	// RestoreDNS puts back what a crashed run left in the OS's resolver
 	// configuration, before anything of the node runs.
 	RestoreDNS func() error
+	// ConnectRecord keeps a device's last connect request of this boot
+	// (HostConnectRecord).
+	ConnectRecord ConnectRecord
 }
 
 // clearNetwork removes what a crashed run left in the host's routing, in

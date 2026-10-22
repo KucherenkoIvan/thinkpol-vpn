@@ -86,10 +86,12 @@ type DataPlane struct {
 
 	// Its connection (required; a worker's is always meant to be up), and
 	// a device's (Node.run): where its status goes, its Connect and
-	// Disconnect requests, and who hears its events.
+	// Disconnect requests and what records each before it is acted on
+	// (Node.remember; nil: nothing), and who hears its events.
 	report   *report
 	conn     *connection
 	requests <-chan connectRequest
+	remember func(connect bool)
 	events   emitter
 	// Rules are the device's own rule choice (LocalRulesFile), and
 	// rulesRequests replace them while it runs.
@@ -514,6 +516,9 @@ func (r *runner) tell(kind EventKind) { r.told = append(r.told, kind) }
 // removed from its space connects once a map includes it again. The
 // report is up to date before the requester hears back.
 func (r *runner) request(ctx context.Context, req connectRequest) {
+	if r.dp.remember != nil {
+		r.dp.remember(req.connect)
+	}
 	err := r.connect(ctx, req.connect)
 	r.publish()
 	req.done <- err

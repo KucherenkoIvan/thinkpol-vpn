@@ -26,7 +26,9 @@
 // ([agent.Node.Connect]). Connect returns once the data plane is up, or
 // the step its start failed at; a device connected while its OS may
 // resolve names outside the node's resolver hears `dns_not_protected`.
-// `thinkpol up -connect=false` starts a device disconnected. A server
+// `thinkpol up -connect=false` starts a device disconnected; a start in
+// the same boot as the last Connect or Disconnect comes back as it asked
+// ([agent.ConnectRecord]). A server
 // serves its spaces whenever it runs: it reports its workers and public
 // listeners and refuses Connect, Disconnect and SetRulePreset.
 //

@@ -52,9 +52,11 @@ type Config struct {
 	// checks it at once.
 	MapPoll time.Duration `env:"THINKPOL_MAP_POLL" default:"5s" flag:"map-poll" help:"how often to check the map file for a change; SIGHUP checks at once"`
 	// Connect brings a device's data plane up when the node starts;
-	// otherwise it waits for the local API's Connect. A server always
-	// serves its spaces.
-	Connect bool `env:"THINKPOL_CONNECT" default:"true" flag:"connect" help:"a device connects when it starts; otherwise it waits for thinkpol connect"`
+	// otherwise it waits for the local API's Connect. A start in the same
+	// boot as the last Connect or Disconnect follows that request instead
+	// (ConnectRecord), so under a service this is connect-on-boot. A
+	// server always serves its spaces.
+	Connect bool `env:"THINKPOL_CONNECT" default:"true" flag:"connect" help:"a device connects when it starts (connect-on-boot), unless the last thinkpol connect or disconnect of this boot said otherwise; otherwise it waits for thinkpol connect"`
 	// APISocket is the local API's Unix socket, in a directory of its own;
 	// empty serves no local API.
 	APISocket string `env:"THINKPOL_API_SOCKET" flag:"api-socket" help:"the local API's socket, in a directory of its own; empty: no local API"`

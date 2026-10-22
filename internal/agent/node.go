@@ -84,8 +84,11 @@ func Prepare(cfg Config, logs Logs, plat Platform) (*Node, error) {
 	if st.OwnMapUnused {
 		logs.Warn("the state directory's map.bin is not used: the map comes from elsewhere", "map", st.MapPath)
 	}
+	if plat.ConnectRecord == nil {
+		return nil, errors.New("agent: the platform keeps no connect record")
+	}
 	n := &Node{
-		cfg: cfg, state: st, logs: logs, plat: plat, conn: newConnection(cfg.Connect, st.Removed), dnsUpstreams: upstreams,
+		cfg: cfg, state: st, logs: logs, plat: plat, conn: newConnection(startConnected(cfg, plat.ConnectRecord, logs), st.Removed), dnsUpstreams: upstreams,
 		requests: make(chan connectRequest), stopped: make(chan struct{}), rulesRequests: make(chan rulesRequest),
 	}
 	n.local = st.LocalRules
@@ -99,6 +102,35 @@ func Prepare(cfg Config, logs Logs, plat Platform) (*Node, error) {
 		return nil, errors.New("a device that starts disconnected needs the local API to connect: set an API socket")
 	}
 	return n, nil
+}
+
+// startConnected is whether a device starts connected: as its last
+// connect request of this boot asked, if the local API took one, else as
+// configured (Config.Connect). Without a local API nothing can ask, so
+// the configuration decides. A record that can't be read is logged and
+// the configuration decides.
+func startConnected(cfg Config, rec ConnectRecord, logs Logs) bool {
+	if cfg.APISocket == "" {
+		return cfg.Connect
+	}
+	connect, ok, err := rec.Load()
+	switch {
+	case err != nil:
+		logs.Warn("the last connect request can't be read: starting as configured", "connect", cfg.Connect, "err", err)
+		return cfg.Connect
+	case !ok:
+		return cfg.Connect
+	}
+	logs.Info("starting as the last connect request of this boot asked", "connect", connect)
+	return connect
+}
+
+// remember records a connect request (ConnectRecord) before it is acted
+// on; a failure is logged, and the request goes ahead.
+func (n *Node) remember(connect bool) {
+	if err := n.plat.ConnectRecord.Save(connect); err != nil {
+		n.logs.Error("recording the connect request failed: a restart in this boot starts as configured", "connect", connect, "err", err)
+	}
 }
 
 // resolveMode is the node's mode, ModeAuto decided by its kind in its
@@ -309,6 +341,7 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 		report:        &n.report,
 		conn:          &n.conn,
 		requests:      n.requests,
+		remember:      n.remember,
 		events:        n.emit,
 		rulesRequests: n.rulesRequests,
 	}
@@ -356,6 +389,7 @@ func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
 		case req := <-n.requests:
 			// Kept for when the node is back in its space.
 			requested = true
+			n.remember(req.connect)
 			var err error
 			switch {
 			case req.connect && n.conn.disconnected():
