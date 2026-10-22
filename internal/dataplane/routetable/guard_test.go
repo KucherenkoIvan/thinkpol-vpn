@@ -61,13 +61,23 @@ type fakeGuard struct {
 	watches    atomic.Int32    // subscriptions alive
 	released   atomic.Int32    // subscriptions fully torn down
 	subscribed []chan struct{} // closed when each Watch goroutine is listening
+	watchErr   error           // what Watch returns; nil: it watches
+}
+
+func (g *fakeGuard) setWatchErr(err error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.watchErr = err
 }
 
 func newFakeGuard(f *fakeConfigurator) *fakeGuard {
 	return &fakeGuard{f: f, events: make(chan struct{})}
 }
 
-func (g *fakeGuard) Apply(_ context.Context, e routetable.Exempt) error {
+func (g *fakeGuard) Apply(ctx context.Context, e routetable.Exempt) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	n := g.f.count()
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -83,6 +93,10 @@ func (g *fakeGuard) Watch(ctx context.Context) (<-chan struct{}, error) {
 	out := make(chan struct{})
 	ready := make(chan struct{})
 	g.mu.Lock()
+	if err := g.watchErr; err != nil {
+		g.mu.Unlock()
+		return nil, err
+	}
 	g.subscribed = append(g.subscribed, ready)
 	g.mu.Unlock()
 	g.watches.Add(1)
@@ -443,13 +457,11 @@ func TestGuardFailuresAreWarnedAtMostAMinuteApart(t *testing.T) {
 	g := newFakeGuard(f)
 	g.setFail(errors.New("the guard's load was refused"))
 	var buf lockedBuffer
-	e := routetable.OpenWithGuard(f, g, slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	clock := &fakeClock{now: time.Unix(0, 0)}
+	e := routetable.OpenWithClock(f, g, slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})), clock.read)
 	defer func() { _ = e.Close() }()
-	now := time.Unix(0, 0)
-	var mu sync.Mutex
-	routetable.SetNow(e, func() time.Time { mu.Lock(); defer mu.Unlock(); return now })
-	advance := func(d time.Duration) { mu.Lock(); now = now.Add(d); mu.Unlock() }
-	apply := func() { e.GuardApply(context.Background(), routetable.Want{TUN: "thinkpol0"}) }
+	routetable.PauseWatching(e)
+	apply := func() { routetable.GuardApply(t.Context(), e, routetable.Want{TUN: "thinkpol0"}) }
 	warns := func() []string { return buf.lines("applying the leak guard failed") }
 
 	// The first failure warns.
@@ -465,7 +477,7 @@ func TestGuardFailuresAreWarnedAtMostAMinuteApart(t *testing.T) {
 		t.Fatalf("%d warns within the minute, want 1", n)
 	}
 	// Past the minute, one line with the silenced count.
-	advance(routetable.RetryAfter * 12)
+	clock.advance(routetable.WarnEvery)
 	apply()
 	if n := len(warns()); n != 2 {
 		t.Fatalf("%d warns after a minute, want 2", n)
@@ -488,5 +500,364 @@ func TestGuardFailuresAreWarnedAtMostAMinuteApart(t *testing.T) {
 	}
 	if strings.Contains(warns()[2], "suppressed=") {
 		t.Errorf("the warn after a success counts what wasn't silenced: %q", warns()[2])
+	}
+}
+
+// fakeClock is a clock a test moves.
+type fakeClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (c *fakeClock) read() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *fakeClock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(d)
+}
+
+// Every other failure retried every RetryAfter is warned through a limit
+// of its own, as the guard's apply is: one line per WarnEvery, the
+// failures held back counted with the next, a success starting over.
+func TestRetriedFailuresAreWarnedAtMostOnceAMinute(t *testing.T) {
+	for _, site := range []struct {
+		name, warn, cleared string
+		// fail makes the step fail with err, or succeed with nil.
+		fail func(f *fakeConfigurator, g *fakeGuard, err error)
+		step func(context.Context, *routetable.Enforcer)
+	}{
+		{"watching the routes", "watching routes failed", "watching routes again",
+			func(f *fakeConfigurator, _ *fakeGuard, err error) { f.setWatchErr(err) }, routetable.Subscribe},
+		{"watching the guard", "watching the leak guard failed", "watching the leak guard again",
+			func(_ *fakeConfigurator, g *fakeGuard, err error) { g.setWatchErr(err) }, routetable.SubscribeGuard},
+		{"putting the routes back", "putting it back failed", "the routes are in place again",
+			func(f *fakeConfigurator, _ *fakeGuard, err error) { f.setFail(err != nil) }, routetable.Reapply},
+	} {
+		t.Run(site.name, func(t *testing.T) {
+			ctx := t.Context()
+			f := &fakeConfigurator{survey: up()}
+			g := newFakeGuard(f)
+			var buf lockedBuffer
+			clock := &fakeClock{now: time.Unix(0, 0)}
+			e := routetable.OpenWithClock(f, g, slog.New(slog.NewTextHandler(&buf, nil)), clock.read)
+			defer func() { _ = e.Close() }()
+			if err := e.Enforce(ctx, routetable.Want{TUN: "thinkpol0"}); err != nil {
+				t.Fatal(err)
+			}
+			routetable.PauseWatching(e)
+			warns := func() []string { return buf.lines(site.warn) }
+			failure := errors.New("the OS said no")
+
+			site.fail(f, g, failure)
+			for range 6 {
+				site.step(ctx, e)
+			}
+			if n := len(warns()); n != 1 {
+				t.Fatalf("%d warns of 6 failures within the minute, want 1", n)
+			}
+			clock.advance(routetable.WarnEvery)
+			site.step(ctx, e)
+			if w := warns(); len(w) != 2 || !strings.Contains(w[1], "suppressed=5") {
+				t.Fatalf("after the minute: %q, want a second warn with suppressed=5", w)
+			}
+			// A success says how many failures were held back since, once.
+			site.step(ctx, e)
+			site.fail(f, g, nil)
+			site.step(ctx, e)
+			site.step(ctx, e)
+			if c := buf.lines(site.cleared); len(c) != 1 || !strings.Contains(c[0], "suppressed=1") {
+				t.Fatalf("after a success: %q, want one line with suppressed=1", c)
+			}
+			site.fail(f, g, failure)
+			site.step(ctx, e)
+			if w := warns(); len(w) != 3 || strings.Contains(w[2], "suppressed=") {
+				t.Fatalf("after a success: %q, want a third warn at once, nothing suppressed", w)
+			}
+		})
+	}
+}
+
+// A guard Apply that failed because its context was cancelled is neither
+// warned nor counted against the limit: the next real failure warns at
+// once, with nothing suppressed. The guard is still retried.
+func TestACancelledGuardApplyIsNotWarned(t *testing.T) {
+	f := &fakeConfigurator{}
+	g := newFakeGuard(f)
+	var buf lockedBuffer
+	clock := &fakeClock{now: time.Unix(0, 0)}
+	e := routetable.OpenWithClock(f, g, slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})), clock.read)
+	defer func() { _ = e.Close() }()
+	warns := func() []string { return buf.lines("applying the leak guard failed") }
+	w := routetable.Want{TUN: "thinkpol0"}
+
+	routetable.PauseWatching(e)
+	cancelled, cancel := context.WithCancel(t.Context())
+	cancel()
+	for range 3 {
+		routetable.GuardApply(cancelled, e, w)
+	}
+	if n := len(warns()); n != 0 {
+		t.Fatalf("%d warns of cancelled applies, want none", n)
+	}
+	if st := e.Status(); st.GuardEnforced || st.GuardError != routetable.ErrorGuard {
+		t.Errorf("status after a cancelled apply: %+v", st)
+	}
+	g.setFail(errors.New("the guard's load was refused"))
+	routetable.GuardApply(t.Context(), e, w)
+	if w := warns(); len(w) != 1 || strings.Contains(w[0], "suppressed=") {
+		t.Fatalf("the first real failure: %q, want one warn, nothing suppressed", w)
+	}
+}
+
+// A success after failures whose warns were held back says how many
+// there were, once; one after failures that were all warned says
+// nothing.
+func TestAGuardSuccessSaysHowManyFailuresWereHeldBack(t *testing.T) {
+	f := &fakeConfigurator{}
+	g := newFakeGuard(f)
+	var buf lockedBuffer
+	e := routetable.OpenWithClock(f, g, slog.New(slog.NewTextHandler(&buf, nil)), (&fakeClock{now: time.Unix(0, 0)}).read)
+	defer func() { _ = e.Close() }()
+	routetable.PauseWatching(e)
+	apply := func() { routetable.GuardApply(t.Context(), e, routetable.Want{TUN: "thinkpol0"}) }
+	cleared := func() []string { return buf.lines("the leak guard is in place again") }
+
+	g.setFail(errors.New("the guard's load was refused"))
+	for range 4 {
+		apply() // one warned, three held back
+	}
+	g.setFail(nil)
+	apply()
+	apply()
+	if c := cleared(); len(c) != 1 || !strings.Contains(c[0], "suppressed=3") || !strings.Contains(c[0], "level=INFO") {
+		t.Fatalf("after the failures: %q, want one INFO line with suppressed=3", c)
+	}
+	g.setFail(errors.New("the guard's load was refused"))
+	apply() // warned, nothing held back
+	g.setFail(nil)
+	apply()
+	if c := cleared(); len(c) != 1 {
+		t.Errorf("a success after a failure that was warned: %q, want nothing more", c)
+	}
+}
+
+// guardWarnRig is an Enforcer whose guard fails as told (an empty
+// message: succeeds), its watcher paused, on a clock the test moves.
+func guardWarnRig(t *testing.T) (fail func(msg string), buf *lockedBuffer, clock *fakeClock) {
+	f := &fakeConfigurator{}
+	g := newFakeGuard(f)
+	buf = &lockedBuffer{}
+	clock = &fakeClock{now: time.Unix(0, 0)}
+	e := routetable.OpenWithClock(f, g, slog.New(slog.NewTextHandler(buf, nil)), clock.read)
+	t.Cleanup(func() { _ = e.Close() })
+	routetable.PauseWatching(e)
+	fail = func(msg string) {
+		var err error
+		if msg != "" {
+			err = errors.New(msg)
+		}
+		g.setFail(err)
+		routetable.GuardApply(t.Context(), e, routetable.Want{TUN: "thinkpol0"})
+	}
+	return fail, buf, clock
+}
+
+func guardWarns(buf *lockedBuffer) []string { return buf.lines("applying the leak guard failed") }
+
+// A failure whose text changes on every retry never clears and never
+// repeats a text: what one window held back is said with the next
+// window's first warn, of whatever text.
+func TestHeldBackTextsThatDontComeBackAreSaid(t *testing.T) {
+	fail, buf, clock := guardWarnRig(t)
+	const n = 2*routetable.WarnTexts + 1
+	retry := 0
+	failOnce := func() {
+		fail(fmt.Sprintf("pf's table holds %d entries unlike the 999 loaded", retry))
+		retry++
+	}
+	for range n {
+		failOnce()
+	}
+	clock.advance(routetable.WarnEvery)
+	failOnce()
+	w := guardWarns(buf)
+	want := fmt.Sprintf("suppressed_other=%d", n-routetable.WarnTexts)
+	if len(w) != routetable.WarnTexts+1 || !strings.Contains(w[len(w)-1], want) || strings.Contains(w[len(w)-1], "suppressed=") {
+		t.Fatalf("the next window's first warn: %q, want %s and no count of its own", w[len(w)-1], want)
+	}
+	failOnce()
+	if w := guardWarns(buf); strings.Contains(w[len(w)-1], "suppressed_other") {
+		t.Errorf("said twice: %q", w[len(w)-1])
+	}
+}
+
+// Within a window each distinct (redacted) failure is warned once, so two
+// that alternate warn once each; one that differs only in its addresses
+// is the same failure. What was held back goes with the next warn of the
+// same text.
+func TestEachFailureIsWarnedOnceAWindow(t *testing.T) {
+	fail, buf, clock := guardWarnRig(t)
+	warns := func() []string { return guardWarns(buf) }
+	const a = "pfctl -s rules: no answer within 15s"
+	b := func(addr string) string {
+		return `pf lists the guard's rule 4 as "pass out quick inet6 proto tcp from any to ` + addr + ` port = 53 keep state", not stateless`
+	}
+	fail(a)
+	fail(b("2001:db8:53::1"))
+	fail(a)
+	fail(b("2001:db8:53::2"))
+	fail(a)
+	if w := warns(); len(w) != 2 || !strings.Contains(w[0], "no answer") || !strings.Contains(w[1], "rule 4") {
+		t.Fatalf("warns %q, want A then B, once each", w)
+	}
+	clock.advance(routetable.WarnEvery)
+	fail(b("2001:db8:53::3"))
+	fail(a)
+	w := warns()
+	if len(w) != 4 || !strings.Contains(w[2], "rule 4") || !strings.Contains(w[2], "suppressed=1") ||
+		!strings.Contains(w[3], "no answer") || !strings.Contains(w[3], "suppressed=2") {
+		t.Fatalf("warns %q, want B with suppressed=1, then A with suppressed=2", w[2:])
+	}
+}
+
+// A text that changes on every retry warns at most WarnTexts times a
+// window; every failure held back is still counted when it clears.
+func TestAWindowWarnsAtMostWarnTextsFailures(t *testing.T) {
+	fail, buf, _ := guardWarnRig(t)
+	const n = 2*routetable.WarnTexts + 1
+	for i := range n {
+		fail(fmt.Sprintf("pf's table holds %d entries unlike the 99 loaded", i))
+	}
+	if w := len(guardWarns(buf)); w != routetable.WarnTexts {
+		t.Fatalf("%d warns of %d distinct failures, want %d", w, n, routetable.WarnTexts)
+	}
+	fail("")
+	want := fmt.Sprintf("suppressed=%d", n-routetable.WarnTexts)
+	if c := buf.lines("the leak guard is in place again"); len(c) != 1 || !strings.Contains(c[0], want) {
+		t.Errorf("cleared: %q, want %s", c, want)
+	}
+}
+
+// A subscription that fails because the watcher's context ended (Close or
+// Enforce pausing it) isn't warned, and doesn't take the warn window; one
+// that succeeds on an ended context recovers nothing, so it doesn't say
+// so, and the held-back count waits for a live one.
+func TestASubscriptionCutShortIsNotWarned(t *testing.T) {
+	for _, site := range []struct {
+		name, warn, cleared string
+		fail                func(f *fakeConfigurator, g *fakeGuard, err error)
+		step                func(context.Context, *routetable.Enforcer)
+	}{
+		{"routes", "watching routes failed", "watching routes again",
+			func(f *fakeConfigurator, _ *fakeGuard, err error) { f.setWatchErr(err) }, routetable.Subscribe},
+		{"guard", "watching the leak guard failed", "watching the leak guard again",
+			func(_ *fakeConfigurator, g *fakeGuard, err error) { g.setWatchErr(err) }, routetable.SubscribeGuard},
+	} {
+		t.Run(site.name, func(t *testing.T) {
+			f := &fakeConfigurator{survey: up()}
+			g := newFakeGuard(f)
+			var buf lockedBuffer
+			e := routetable.OpenWithClock(f, g, slog.New(slog.NewTextHandler(&buf, nil)), (&fakeClock{now: time.Unix(0, 0)}).read)
+			defer func() { _ = e.Close() }()
+			routetable.PauseWatching(e)
+			stopped, cancel := context.WithCancel(t.Context())
+			cancel()
+			site.fail(f, g, context.Canceled)
+			site.step(stopped, e)
+			if w := buf.lines(site.warn); len(w) != 0 {
+				t.Fatalf("warned %q for a stopped watcher", w)
+			}
+			site.fail(f, g, errors.New("the OS said no"))
+			site.step(t.Context(), e)
+			site.step(t.Context(), e)
+			if w := buf.lines(site.warn); len(w) != 1 || strings.Contains(w[0], "suppressed=") {
+				t.Fatalf("the first real failures: %q, want one warn, nothing suppressed", w)
+			}
+			site.fail(f, g, nil) // the fake's Watch succeeds whatever its context
+			site.step(stopped, e)
+			if c := buf.lines(site.cleared); len(c) != 0 {
+				t.Fatalf("a stopped watcher's subscription said %q", c)
+			}
+			site.step(t.Context(), e)
+			if c := buf.lines(site.cleared); len(c) != 1 || !strings.Contains(c[0], "suppressed=1") {
+				t.Fatalf("the live subscription said %q, want suppressed=1", c)
+			}
+		})
+	}
+}
+
+// A successful Enforce ends a re-apply failure: the next re-apply failure,
+// within a minute of the old one's warn, is warned at once.
+func TestAnEnforceEndsAReapplyFailure(t *testing.T) {
+	f := &fakeConfigurator{survey: up()}
+	var buf lockedBuffer
+	e := routetable.OpenWithClock(f, nil, slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})), (&fakeClock{now: time.Unix(0, 0)}).read)
+	defer func() { _ = e.Close() }()
+	w := routetable.Want{TUN: "thinkpol0"}
+	if err := e.Enforce(t.Context(), w); err != nil {
+		t.Fatal(err)
+	}
+	routetable.PauseWatching(e)
+	warns := func() []string { return buf.lines("putting it back failed") }
+	f.setFail(true)
+	routetable.Reapply(t.Context(), e)
+	f.setFail(false)
+	if err := e.Enforce(t.Context(), w); err != nil {
+		t.Fatal(err)
+	}
+	routetable.PauseWatching(e) // before its check re-applies, a debounce later
+	f.setFail(true)
+	routetable.Reapply(t.Context(), e)
+	if w := warns(); len(w) != 2 {
+		t.Fatalf("warns %q, want the new failure warned at once", w)
+	}
+}
+
+// A re-apply that finds the OS can't hold the table at all is warned
+// whatever the limit holds back, with the count it held back: nothing is
+// retried after it.
+func TestATerminalReapplyFailureIsAlwaysWarned(t *testing.T) {
+	f := &fakeConfigurator{survey: up()}
+	var buf lockedBuffer
+	e := routetable.OpenWithClock(f, nil, slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})), (&fakeClock{now: time.Unix(0, 0)}).read)
+	defer func() { _ = e.Close() }()
+	if err := e.Enforce(t.Context(), routetable.Want{TUN: "thinkpol0"}); err != nil {
+		t.Fatal(err)
+	}
+	routetable.PauseWatching(e)
+	// The same text as the terminal one, so only its kind tells them apart.
+	f.setFailErr(errors.New("rules: " + errors.ErrUnsupported.Error()))
+	routetable.Reapply(t.Context(), e)
+	routetable.Reapply(t.Context(), e) // held back
+	f.setFailErr(fmt.Errorf("rules: %w", errors.ErrUnsupported))
+	routetable.Reapply(t.Context(), e)
+	if l := buf.lines("level=WARN"); len(l) != 2 || !strings.Contains(l[1], "can't hold the route table") || !strings.Contains(l[1], "suppressed=1") {
+		t.Fatalf("warns %q, want the terminal failure warned too, with the one held back", l)
+	}
+}
+
+// The guard turning out unsupported is warned with the failures its limit
+// held back before: nothing retries the guard after it.
+func TestAnUnsupportedGuardSaysWhatWasHeldBack(t *testing.T) {
+	f := &fakeConfigurator{}
+	g := newFakeGuard(f)
+	var buf lockedBuffer
+	e := routetable.OpenWithClock(f, g, slog.New(slog.NewTextHandler(&buf, nil)), (&fakeClock{now: time.Unix(0, 0)}).read)
+	defer func() { _ = e.Close() }()
+	routetable.PauseWatching(e)
+	failWith := func(err error) {
+		g.setFail(err)
+		routetable.GuardApply(t.Context(), e, routetable.Want{TUN: "thinkpol0"})
+	}
+	failWith(errors.New("pfctl -s rules: no answer within 15s"))
+	failWith(errors.New("pfctl -s rules: no answer within 15s")) // held back
+	failWith(fmt.Errorf("%w: pf's main ruleset has no anchor", routetable.ErrGuardUnsupported))
+	if l := buf.lines("can't hold the leak guard"); len(l) != 1 || !strings.Contains(l[0], "suppressed=1") {
+		t.Fatalf("logged %q, want the unsupported warn with suppressed=1", l)
 	}
 }

@@ -1,19 +1,25 @@
 package firewall
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"golang.org/x/sys/unix"
 
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/path"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/lists"
 )
@@ -495,6 +501,20 @@ func TestSaneRules(t *testing.T) {
 	}
 }
 
+// The fake lists an ICMPv6 type by the first name pfctl's icmp6 type
+// table has for its number (130-132 have two each), and 143, which has
+// none, by its number.
+func TestTheFakeNamesICMPv6TypesAsPfctl(t *testing.T) {
+	got := fakeExpand("pass out quick inet6 proto ipv6-icmp from any to ff00::/8 icmp6-type { 130, 131, 132, 143 } no state")
+	var want []string
+	for _, name := range []string{"groupqry", "grouprep", "groupterm", "143"} {
+		want = append(want, "pass out quick inet6 proto ipv6-icmp from any to ff00::/8 icmp6-type "+name+" no state")
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("listed\n%q\nwant\n%q", got, want)
+	}
+}
+
 func TestApplyPutsTheGuardInPlace(t *testing.T) {
 	r := newRig(t)
 	g := r.guard()
@@ -513,26 +533,8 @@ func TestApplyPutsTheGuardInPlace(t *testing.T) {
 	}
 }
 
-// The load runs with pfctl's rule optimizer off: its listing is then the
-// rules as written, in the order saneRules expects.
-func TestApplyLoadsUnoptimized(t *testing.T) {
-	r := newRig(t)
-	if err := r.guard().Apply(context.Background(), exempt(t)); err != nil {
-		t.Fatal(err)
-	}
-	i := slices.IndexFunc(r.pf.calls, func(c []string) bool { return slices.Contains(c, "-f") })
-	if i < 0 {
-		t.Fatal("no load ran")
-	}
-	if c := r.pf.calls[i]; !slices.Equal(c[len(c)-2:], []string{"-o", "none"}) {
-		t.Errorf("load %v, want -o none", c)
-	}
-	r.whole(t, exempt(t))
-}
-
-// withoutNone is a pfctl that drops `-o none` from its runs: how a load
-// without the option reaches pf, whose default optimizer reorders the
-// rules — as the device saw.
+// withoutNone is a pfctl that drops `-o none` from its runs: a load then
+// goes in with pfctl's default optimizer, which reorders the rules.
 type withoutNone struct{ pf pfctl }
 
 func (w withoutNone) run(ctx context.Context, stdin []byte, args ...string) (pfOutput, error) {
@@ -542,8 +544,8 @@ func (w withoutNone) run(ctx context.Context, stdin []byte, args ...string) (pfO
 	return w.pf.run(ctx, stdin, args...)
 }
 
-// A load the optimizer reordered is refused, with the device's error:
-// rule 1 is then the multicast one, not the one naming an interface.
+// A load the optimizer reordered is refused: rule 1 is then the
+// multicast one, not the one naming an interface.
 func TestAnOptimizedLoadIsRefused(t *testing.T) {
 	r := newRig(t)
 	g := newIPv6Guard(withoutNone{r.pf}, r.store(), time.Hour, ownAddrs)
@@ -560,51 +562,6 @@ func TestAnOptimizedLoadIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.whole(t, exempt(t))
-}
-
-// The fake pfctl reorders a load without `-o none`, like pfctl's
-// "basic" optimizer did on the device, and keeps the order with it.
-func TestTheFakeOptimizesALoadWithoutNone(t *testing.T) {
-	text := anchorText("utun7", exemptPrefixes(exempt(t)), upstreamTargets(exempt(t)))
-	listed := func(opts ...string) []string {
-		f := newFakePF()
-		if _, err := f.run(context.Background(), []byte(text), append([]string{"-a", GuardAnchor, "-f", "-"}, opts...)...); err != nil {
-			t.Fatal(err)
-		}
-		return f.anchor(GuardAnchor).rules
-	}
-	reordered := listed()
-	if !strings.Contains(reordered[0], "ff00::/8") || !strings.Contains(reordered[0], "groupqry") {
-		t.Errorf("rule 1 after a load without -o none: %q", reordered[0])
-	}
-	if saneRules(reordered, "utun7", upstreamTargets(exempt(t))) == nil {
-		t.Error("the reordered listing is sane")
-	}
-	asWritten := listed("-o", "none")
-	loaded, err := fakeLoad(text)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Equal(asWritten, loaded.rules) {
-		t.Errorf("a load with -o none: %q, want as written %q", asWritten, loaded.rules)
-	}
-	if err := saneRules(asWritten, "utun7", upstreamTargets(exempt(t))); err != nil {
-		t.Fatalf("the unoptimized listing: %v", err)
-	}
-}
-
-// On a device the multicast rule was listed first and every load was refused;
-// with `-o none` the load is accepted and verified (TP-092 device session B, 2026-10-16).
-func TestEveryLoadCarriesNoOptimizer(t *testing.T) {
-	b, err := os.ReadFile("guard_darwin.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for i, l := range strings.Split(string(b), "\n") {
-		if strings.Contains(l, `"-f"`) && !strings.Contains(l, `"none"`) {
-			t.Errorf("guard_darwin.go:%d: a load without -o none: %s", i+1, l)
-		}
-	}
 }
 
 // Someone else's reference stays theirs: the guard takes its own, and
@@ -1224,22 +1181,124 @@ func TestAFailedReloadKeepsTheOldGuard(t *testing.T) {
 	r.whole(t, e2)
 }
 
-// pf holding other than what was loaded fails the Apply.
+// A first load pf holds other than as loaded fails the Apply, and stays
+// in pf, not flushed (its rules still end in the block). The guard takes
+// no reference for it: pf stays off, or on with only another enabler's
+// references, which then enforce it.
 func TestALoadPfDoesntHoldFails(t *testing.T) {
 	for name, hook := range map[string]func(a *fakeAnchor){
 		"an entry dropped": func(a *fakeAnchor) { a.tables[exemptTable] = a.tables[exemptTable][1:] },
 		"a pass with state": func(a *fakeAnchor) {
 			a.rules[0] = strings.Replace(a.rules[0], "no state", "keep state", 1)
 		},
+		"reordered": func(a *fakeAnchor) { a.rules = reorderLikeBasic(a.rules) },
 	} {
-		r := newRig(t)
-		r.pf.loadHook = hook
-		if err := r.guard().Apply(context.Background(), exempt(t)); err == nil {
-			t.Errorf("%s: applied", name)
+		for _, othersOn := range []bool{false, true} {
+			r := newRig(t)
+			var theirs []pfToken
+			if othersOn {
+				theirs = append(theirs, r.pf.takeRef())
+			}
+			r.pf.loadHook = hook
+			if err := r.guard().Apply(context.Background(), exempt(t)); err == nil {
+				t.Errorf("%s, others on %v: applied", name, othersOn)
+			}
+			if a := r.pf.anchor(GuardAnchor); len(a.rules) != rulesFor || a.rules[len(a.rules)-1] != "block return out quick inet6 all" {
+				t.Errorf("%s, others on %v: rules %q, want the refused load's", name, othersOn, a.rules)
+			}
+			if r.pf.isOn() != othersOn || !slices.Equal(r.pf.references(), theirs) {
+				t.Errorf("%s, others on %v: pf on %v with references %v, want exactly %v", name, othersOn, r.pf.isOn(), r.pf.references(), theirs)
+			}
 		}
-		if r.pf.isOn() {
-			t.Errorf("%s: pf enabled for a guard that isn't in place", name)
+	}
+}
+
+// A reload pf took but the guard refuses on reading it back stays in pf,
+// not flushed, and pf goes on enforcing it on the guard's reference.
+func TestARefusedReloadStaysInPlace(t *testing.T) {
+	r := newRig(t)
+	g := r.guard()
+	e := exempt(t)
+	if err := g.Apply(context.Background(), e); err != nil {
+		t.Fatal(err)
+	}
+	before := r.pf.references()
+	r.pf.set(func(f *fakePF) { f.loadHook = func(a *fakeAnchor) { a.rules = reorderLikeBasic(a.rules) } })
+	e2 := e
+	e2.Direct = set(t, "2001:db8:f0::/44")
+	if err := g.Apply(context.Background(), e2); err == nil {
+		t.Fatal("applied")
+	}
+	loaded, err := fakeLoad(anchorText(e2.TUN, exemptPrefixes(e2), upstreamTargets(e2)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := r.pf.anchor(GuardAnchor)
+	if !slices.Equal(a.rules, reorderLikeBasic(loaded.rules)) || !slices.Equal(tableOf(a, exemptTable), exemptPrefixes(e2)) {
+		t.Errorf("anchor %+v, want the refused load's", a)
+	}
+	if !r.pf.isOn() || !slices.Equal(r.pf.references(), before) {
+		t.Errorf("pf on %v, references %v, want on with %v", r.pf.isOn(), r.pf.references(), before)
+	}
+}
+
+// routesOnly is a route table's configurator that takes every Apply and
+// can't watch: all the guard's warn needs of it.
+type routesOnly struct{}
+
+func (routesOnly) Apply(context.Context, netcfg.Config) error { return nil }
+func (routesOnly) DefaultRoute(context.Context, netcfg.Family) (netcfg.Route, error) {
+	return netcfg.Route{}, netcfg.ErrNoDefaultRoute
+}
+func (routesOnly) Watch(context.Context) (<-chan struct{}, error) { return nil, errors.ErrUnsupported }
+func (routesOnly) Survey(context.Context) (netcfg.Survey, error)  { return netcfg.Survey{}, nil }
+func (routesOnly) Close() error                                   { return nil }
+
+// logSink is a log a test reads while the route table's watcher writes.
+type logSink struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *logSink) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *logSink) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+// The route table's warn of a load the guard refuses quotes the rule as
+// pf listed it, the shape that tells why, with the addresses redacted:
+// here an upstream's DNS rule listed with state.
+func TestTheWarnOfARefusedLoadQuotesTheRuleWithoutItsAddresses(t *testing.T) {
+	r := newRig(t)
+	r.pf.loadHook = func(a *fakeAnchor) {
+		for i, l := range a.rules {
+			if strings.Contains(l, "port = 53") {
+				a.rules[i] = strings.Replace(l, "no state", "keep state", 1)
+			}
 		}
+	}
+	var log logSink
+	e := routetable.OpenWithGuard(routesOnly{}, r.guard(), slog.New(slog.NewTextHandler(&log, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	defer func() { _ = e.Close() }()
+	w := routetable.Want{TUN: "utun7", Direct: set(t, "2001:db8:d0::/48"), Upstreams: aps("[2001:db8:53::1]:53")}
+	if err := e.Enforce(context.Background(), w); err != nil {
+		t.Fatal(err)
+	}
+	const want = `level=WARN msg="route table: applying the leak guard failed, retrying" in=5s ` +
+		`err="firewall: pf lists the guard's rule 4 as \"pass out quick inet6 proto tcp from any to <addr> port = 53 keep state\", not stateless"` + "\n"
+	got := log.String()
+	if !strings.HasSuffix(got, want) || strings.Count(got, "level=WARN") != 1 {
+		t.Errorf("logged\n%s\nwant one line ending\n%s", got, want)
+	}
+	if strings.Contains(got, "2001:db8") {
+		t.Errorf("an address in the log: %s", got)
 	}
 }
 
@@ -1447,6 +1506,28 @@ func TestWatchSignalsWhenTheGuardBreaks(t *testing.T) {
 	}
 	cancel()
 	for range ch {
+	}
+}
+
+// pfctl's stderr past what an error quotes is cut at a word, so an
+// address the limit falls inside goes whole, and nothing of it escapes
+// the redaction.
+func TestDetailNeverCutsThroughAnAddress(t *testing.T) {
+	head := strings.Repeat("x", detailMax-7) + " " // the limit falls in "2001:d|b8:..."
+	got := path.RedactError(errors.New(detail([]byte(head + "2001:db8:53::1 unknown\n"))))
+	if strings.Contains(got, "2001") || !strings.HasSuffix(got, strings.TrimSpace(head)+"...") {
+		t.Errorf("detail %q, want it cut before the address", got)
+	}
+}
+
+// A syntax error pfctl reports keeps the line it names through the
+// redaction of addresses, and the addresses still go.
+func TestPfctlsInputLineSurvivesRedaction(t *testing.T) {
+	err := fmt.Errorf("firewall: pfctl -a %s -f -: exit status 1%s", GuardAnchor,
+		detail([]byte(altq+"stdin:5: syntax error\nstdin:7: host 2001:db8:53::1 port 53 unknown\n")))
+	const want = "firewall: pfctl -a com.apple/000.thinkpol -f -: exit status 1: stdin line 5: syntax error; stdin line 7: host <addr> port 53 unknown"
+	if got := path.RedactError(err); got != want {
+		t.Errorf("redacted\n%s\nwant\n%s", got, want)
 	}
 }
 

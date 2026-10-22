@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
-	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/path"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/lists"
 )
 
@@ -274,6 +273,8 @@ type Enforcer struct {
 	cfg   netcfg.Configurator
 	guard Guard // nil: routes only
 	log   *slog.Logger
+	// now: the clock the warn rate limit reads.
+	now func() time.Time
 
 	// enforcing serializes Enforce and Close, which pause the watcher (it
 	// re-applies on its own goroutine, never at the same time): so the
@@ -300,14 +301,13 @@ type Enforcer struct {
 	// guardFailing: the guard's last Apply failed (retried every
 	// RetryAfter); guardUnsupported: the OS can't hold it (terminal).
 	guardFailing, guardUnsupported bool
-	// guardWarnAt, guardSuppressed: the last warn of the guard's failing
-	// apply, and the failures silenced since it; every failure is
-	// retried, one a minute is logged, with the count silenced.
-	guardWarnAt     time.Time
-	guardSuppressed int
-	// now: the clock the warn rate limit reads.
-	now    func() time.Time
+
 	status Status
+
+	// The warns of the failures retried every RetryAfter, each limited on
+	// its own (warnLimit): the guard's apply, the routes' re-apply, and
+	// subscribing to the routes' and the guard's changes.
+	guardWarn, reapplyWarn, watchWarn, guardWatchWarn warnLimit
 }
 
 // Status is what an Enforcer reports: numbers and codes only.
@@ -376,9 +376,6 @@ const (
 	// RetryAfter re-applies while the last attempt failed (a TUN that is
 	// down can't take its route back).
 	RetryAfter = 5 * time.Second
-	// guardWarnEvery: at most one warn of the guard's failing apply a
-	// minute; the failures since the last one are counted, not logged.
-	guardWarnEvery = time.Minute
 )
 
 // Open starts enforcing routes only through c, which it owns from now on
@@ -390,10 +387,16 @@ func Open(c netcfg.Configurator, log *slog.Logger) *Enforcer {
 // OpenWithGuard is Open with g enforced along with the routes (nil:
 // none); it owns g too.
 func OpenWithGuard(c netcfg.Configurator, g Guard, log *slog.Logger) *Enforcer {
+	return openWithClock(c, g, log, time.Now)
+}
+
+// openWithClock is OpenWithGuard with now as the clock the warn rate
+// limit reads.
+func openWithClock(c netcfg.Configurator, g Guard, log *slog.Logger, now func() time.Time) *Enforcer {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	e := &Enforcer{cfg: c, guard: g, log: log, now: time.Now}
+	e := &Enforcer{cfg: c, guard: g, log: log, now: now}
 	e.startWatching(false)
 	return e
 }
@@ -523,6 +526,9 @@ func (e *Enforcer) apply(ctx context.Context, w Want, again bool) error {
 		return fmt.Errorf("routetable: %w", err)
 	}
 	e.status.Error = ""
+	// Whoever applied them, the routes are in: a re-apply failing next is
+	// a failure of its own.
+	e.logCleared(&e.reapplyWarn, "route table: the routes are in place again")
 	if !TUNUp(w, s) {
 		e.status.Enforced, e.status.Error = false, ErrorTUNDown
 	}
@@ -553,33 +559,20 @@ func (e *Enforcer) applyGuard(ctx context.Context, w Want) {
 	switch {
 	case err == nil:
 		e.guardFailing, e.status.GuardEnforced, e.status.GuardError = false, true, ""
-		e.guardWarnAt, e.guardSuppressed = time.Time{}, 0
+		e.logCleared(&e.guardWarn, "route table: the leak guard is in place again")
 	case errors.Is(err, ErrGuardUnsupported):
 		e.guardFailing, e.guardUnsupported = false, true
 		e.status.GuardEnforced, e.status.GuardError = false, ErrorGuardUnsupported
-		e.log.Warn("route table: the OS can't hold the leak guard; sockets bound to an interface aren't confined", "err", err)
+		// Terminal: nothing retries the guard.
+		e.warnTerminal(&e.guardWarn, "route table: the OS can't hold the leak guard; sockets bound to an interface aren't confined", err)
 	default:
-		e.warnGuard(err)
+		if ctx.Err() == nil {
+			// One cut short by its context says nothing of the guard.
+			e.warnRetry(&e.guardWarn, "route table: applying the leak guard failed, retrying", err)
+		}
 		e.guardFailing = true
 		e.status.GuardEnforced, e.status.GuardError = false, ErrorGuard
 	}
-}
-
-// warnGuard logs the guard's failing apply, at most one line a minute:
-// the failures since the last line are counted and said with it, not
-// kept silent. Every failure is still retried.
-func (e *Enforcer) warnGuard(err error) {
-	now := e.now()
-	if !e.guardWarnAt.IsZero() && now.Sub(e.guardWarnAt) < guardWarnEvery {
-		e.guardSuppressed++
-		return
-	}
-	args := []any{"in", RetryAfter}
-	if e.guardSuppressed > 0 {
-		args = append(args, "suppressed", e.guardSuppressed)
-	}
-	e.log.Warn("route table: applying the leak guard failed, retrying", append(args, "err", err)...)
-	e.guardWarnAt, e.guardSuppressed = now, 0
 }
 
 // Status reports the enforcer's state; it never waits for an Apply.
@@ -688,8 +681,12 @@ func (e *Enforcer) subscribe(ctx context.Context, w *watches) {
 	case errors.Is(err, errors.ErrUnsupported):
 		w.ch, w.rewatch = nil, nil // the backstop alone
 	case err != nil:
-		e.log.Warn("route table: watching routes failed, retrying", "in", RetryAfter, "err", err)
+		if ctx.Err() == nil { // a watcher stopping says nothing of the subscription
+			e.warnRetry(&e.watchWarn, "route table: watching routes failed, retrying", err)
+		}
 		w.ch, w.rewatch = nil, time.After(RetryAfter)
+	case ctx.Err() == nil: // a watcher stopping recovers nothing
+		e.logCleared(&e.watchWarn, "route table: watching routes again")
 	}
 }
 
@@ -709,8 +706,12 @@ func (e *Enforcer) subscribeGuard(ctx context.Context, w *watches) {
 	case errors.Is(err, errors.ErrUnsupported), errors.Is(err, ErrGuardUnsupported):
 		w.gch, w.regwatch = nil, nil // the backstop alone
 	case err != nil:
-		e.log.Warn("route table: watching the leak guard failed, retrying", "in", RetryAfter, "err", err)
+		if ctx.Err() == nil { // a watcher stopping says nothing of the subscription
+			e.warnRetry(&e.guardWatchWarn, "route table: watching the leak guard failed, retrying", err)
+		}
 		w.gch, w.regwatch = nil, time.After(RetryAfter)
+	case ctx.Err() == nil: // a watcher stopping recovers nothing
+		e.logCleared(&e.guardWatchWarn, "route table: watching the leak guard again")
 	}
 }
 
@@ -752,8 +753,13 @@ func (e *Enforcer) reapply(ctx context.Context) {
 	if w == nil || unsupported || ctx.Err() != nil {
 		return
 	}
-	if err := e.apply(ctx, *w, true); err != nil && ctx.Err() == nil {
-		e.log.Warn("route table: putting it back failed, retrying", "in", RetryAfter, "err", path.RedactError(err))
+	switch err := e.apply(ctx, *w, true); {
+	case err == nil:
+	case errors.Is(err, errors.ErrUnsupported):
+		// Terminal: watch stops.
+		e.warnTerminal(&e.reapplyWarn, "route table: the OS can't hold the route table, not retrying", err)
+	case ctx.Err() == nil:
+		e.warnRetry(&e.reapplyWarn, "route table: putting it back failed, retrying", err)
 	}
 }
 
