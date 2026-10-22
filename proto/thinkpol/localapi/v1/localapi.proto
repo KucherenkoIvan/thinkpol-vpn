@@ -137,6 +137,10 @@ message Diagnostics {
   DiagRules rules = 8;
   // The IPv6 leak guard as the host holds it. Root only.
   DiagGuard guard = 9;
+  // The resolvers the host uses, for the overlay's names and the rest, as
+  // it reports them (Linux: resolv.conf and systemd-resolved; macOS:
+  // scutil --dns). Root only.
+  DiagDns dns = 10;
 }
 
 // An interface as the host reports it.
@@ -294,6 +298,42 @@ message DiagPfReference {
   // listing couldn't tell.
   bool held = 5;
   string held_unreadable = 7;
+}
+
+message DiagDns {
+  string unreadable = 1;
+  repeated DiagDnsSource sources = 2;
+}
+
+// One place the OS keeps resolvers: "resolv.conf", "systemd-resolved",
+// "scutil --dns".
+message DiagDnsSource {
+  string name = 1;
+  string unreadable = 2;
+  // The source is there (systemd-resolved runs; resolv.conf exists).
+  bool present = 3;
+  repeated DiagResolver resolvers = 4;
+}
+
+// A resolver configuration the OS holds.
+message DiagResolver {
+  // The link it is for (a systemd-resolved link, scutil's if_index); ""
+  // for a global one.
+  string interface = 1;
+  // scutil lists it for queries scoped to the interface only.
+  bool scoped = 2;
+  repeated string servers = 3;
+  // The names it is asked for: systemd-resolved's domains ("~" before a
+  // routing-only one; "~." takes every name), scutil's match domain.
+  repeated string domains = 4;
+  repeated string search = 5;
+  // scutil's order, flags and reach; resolv.conf's or scutil's options.
+  uint32 order = 6;
+  string flags = 7;
+  string reach = 8;
+  repeated string options = 9;
+  // resolv.conf is the node's own rewrite (the original in comments).
+  bool node_written = 10;
 }
 
 // A space the node is enrolled in. Names are the controller's: a node

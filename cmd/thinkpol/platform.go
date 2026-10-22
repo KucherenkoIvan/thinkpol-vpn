@@ -36,6 +36,7 @@ func platform() agent.Platform {
 			Interface: agent.InspectInterface,
 			Routes:    netcfg.Inspect,
 			Guard:     inspectGuard,
+			DNS:       dns.Inspect,
 		},
 	}
 }

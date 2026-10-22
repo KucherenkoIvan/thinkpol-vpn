@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
 )
@@ -24,6 +25,7 @@ type inspected struct {
 	hostReads int
 	routes    netcfg.Inspection
 	guard     routetable.GuardReport
+	dns       dns.HostReport
 }
 
 func (i *inspected) inspector() Inspector {
@@ -50,6 +52,12 @@ func (i *inspected) inspector() Inspector {
 			i.hostReads++
 			return i.guard
 		},
+		DNS: func(context.Context) dns.HostReport {
+			i.mu.Lock()
+			defer i.mu.Unlock()
+			i.hostReads++
+			return i.dns
+		},
 	}
 }
 
@@ -69,6 +77,7 @@ func TestTheHostPartsAreRoots(t *testing.T) {
 	insp := &inspected{
 		routes: netcfg.Inspection{Routes: []netcfg.HostRoute{{Owner: netcfg.OwnerRouteTable, Family: netcfg.IPv6, Dst: netip.MustParsePrefix("::/0"), Type: "unreachable"}}},
 		guard:  routetable.GuardReport{Where: "test", Present: true, Exempt: []netip.Prefix{netip.MustParsePrefix("2001:db8:d0::/48")}},
+		dns:    dns.HostReport{Sources: []dns.HostSource{{Name: "resolv.conf", Present: true, Resolvers: []dns.HostResolver{{Servers: []string{"192.0.2.53"}}}}}},
 	}
 	b := startDevice(t, s, reg, false, withInspector(insp))
 	b.connection(t, Disconnected)
@@ -76,12 +85,13 @@ func TestTheHostPartsAreRoots(t *testing.T) {
 
 	d := b.node.Diagnose(ctx, false)
 	if insp.reads() != 0 || d.Routes.RoutesUnreadable != UnreadableRootOnly || d.Routes.RulesUnreadable != UnreadableRootOnly ||
-		d.Routes.Routes != nil || d.Guard.Unreadable != UnreadableRootOnly || d.Guard.Present {
+		d.Routes.Routes != nil || d.Guard.Unreadable != UnreadableRootOnly || d.Guard.Present || d.DNS.Unreadable != UnreadableRootOnly || d.DNS.Sources != nil {
 		t.Fatalf("not root: %d reads, %+v, %+v", insp.reads(), d.Routes, d.Guard)
 	}
 	// Disconnected, what is left on the host still shows: a crash's.
 	d = b.node.Diagnose(ctx, true)
-	if insp.reads() != 2 || len(d.Routes.Routes) != 1 || d.Routes.RoutesUnreadable != "" || !d.Guard.Present || len(d.Guard.Exempt) != 1 {
+	if insp.reads() != 3 || len(d.Routes.Routes) != 1 || d.Routes.RoutesUnreadable != "" || !d.Guard.Present || len(d.Guard.Exempt) != 1 ||
+		d.DNS.Unreadable != "" || len(d.DNS.Sources) != 1 {
 		t.Fatalf("root: %d reads, %+v, %+v", insp.reads(), d.Routes, d.Guard)
 	}
 }

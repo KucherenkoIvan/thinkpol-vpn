@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/netip"
 	"regexp"
 	"slices"
@@ -89,6 +90,41 @@ type diagSnapshot struct {
 			} `json:"chains"`
 		} `json:"nftables"`
 	} `json:"guard"`
+	DNS struct {
+		Unreadable string `json:"unreadable"`
+		Sources    []struct {
+			Name       string `json:"name"`
+			Unreadable string `json:"unreadable"`
+			Present    bool   `json:"present"`
+			Resolvers  []struct {
+				Interface   string   `json:"interface"`
+				Servers     []string `json:"servers"`
+				Domains     []string `json:"domains"`
+				Search      []string `json:"search"`
+				Options     []string `json:"options"`
+				NodeWritten bool     `json:"nodeWritten"`
+			} `json:"resolvers"`
+		} `json:"sources"`
+	} `json:"dns"`
+}
+
+// resolvectlLinks reads `resolvectl dns` or `resolvectl domain`: per link
+// ("" for global), its entries, sorted; links without any left out.
+func resolvectlLinks(t *testing.T, n *lab.Node, what string) map[string][]string {
+	t.Helper()
+	out := map[string][]string{}
+	line := regexp.MustCompile(`^(?:Global|Link [0-9]+ \((.+)\)):\s*(.*)$`)
+	for _, l := range strings.Split(n.MustExec(t, "resolvectl", what), "\n") {
+		m := line.FindStringSubmatch(strings.TrimSpace(l))
+		if m == nil {
+			continue
+		}
+		if f := strings.Fields(m[2]); len(f) > 0 {
+			slices.Sort(f)
+			out[m[1]] = f
+		}
+	}
+	return out
 }
 
 // ipTable is a table as ip names it, by number.
@@ -295,6 +331,9 @@ func TestDiagShowsWhatTheHostHolds(t *testing.T) {
 	server.WriteFile(t, seed, list)
 	server.MustExec(t, "chmod", "600", seed)
 	dev.MustExec(t, "groupadd", "-g", apiGID, "thinkpol")
+	// The device resolves through systemd-resolved: the snapshot shows its
+	// links and resolv.conf (its stub).
+	startResolved(t, dev, internet.IPv4(lab.NetServers))
 
 	srv := server.Start(t, "thinkpol", "up", "-map-poll", "1s")
 	up := dev.Start(t, "thinkpol", "up", "-map-poll", "1s")
@@ -441,6 +480,47 @@ func TestDiagShowsWhatTheHostHolds(t *testing.T) {
 		}
 	})
 
+	t.Run("the resolvers are as resolvectl and resolv.conf show them", func(t *testing.T) {
+		d, out := diag(t, as("", "", "diag")...)
+		if d.DNS.Unreadable != "" || len(d.DNS.Sources) != 2 {
+			t.Fatalf("dns: %s", out)
+		}
+		conf, resolved := d.DNS.Sources[0], d.DNS.Sources[1]
+		if conf.Name != "resolv.conf" || conf.Unreadable != "" || !conf.Present || len(conf.Resolvers) != 1 || conf.Resolvers[0].NodeWritten ||
+			resolved.Name != "systemd-resolved" || resolved.Unreadable != "" || !resolved.Present {
+			t.Fatalf("dns: %s", out)
+		}
+		var want []string
+		for _, l := range strings.Split(dev.MustExec(t, "cat", "/etc/resolv.conf"), "\n") {
+			if f := strings.Fields(l); len(f) == 2 && f[0] == "nameserver" {
+				want = append(want, f[1])
+			}
+		}
+		if !slices.Equal(conf.Resolvers[0].Servers, want) || len(want) == 0 {
+			t.Errorf("resolv.conf's servers %q, the file's %q", conf.Resolvers[0].Servers, want)
+		}
+		servers, domains := map[string][]string{}, map[string][]string{}
+		for _, r := range resolved.Resolvers {
+			if len(r.Servers) > 0 {
+				servers[r.Interface] = slices.Sorted(slices.Values(r.Servers))
+			}
+			if all := slices.Concat(r.Domains, r.Search); len(all) > 0 {
+				domains[r.Interface] = slices.Sorted(slices.Values(all))
+			}
+		}
+		// The TUN takes every name ("~.") and searches the space's zone;
+		// the device's own link keeps its server.
+		if !slices.Contains(domains["thinkpol0"], "~.") || len(servers["thinkpol0"]) == 0 || len(servers[dev.Interface(lab.NetDevices)]) == 0 {
+			t.Errorf("resolved's links: servers %q, domains %q", servers, domains)
+		}
+		if host := resolvectlLinks(t, dev, "dns"); !maps.EqualFunc(servers, host, slices.Equal) {
+			t.Errorf("servers %q, resolvectl %q", servers, host)
+		}
+		if host := resolvectlLinks(t, dev, "domain"); !maps.EqualFunc(domains, host, slices.Equal) {
+			t.Errorf("domains %q, resolvectl %q", domains, host)
+		}
+	})
+
 	t.Run("the group gets all but the host parts", func(t *testing.T) {
 		res, err := cli(t, dev, as(aliceUID, apiGID, "diag"))
 		if err != nil {
@@ -452,7 +532,7 @@ func TestDiagShowsWhatTheHostHolds(t *testing.T) {
 		}
 		const rootOnly = "root only: it names public addresses"
 		if d.Tun.Name != "thinkpol0" || d.Routes.Unreadable != rootOnly || d.Rules.Unreadable != rootOnly ||
-			d.Guard.Unreadable != rootOnly || len(d.Routes.Routes) != 0 || d.Guard.Present {
+			d.Guard.Unreadable != rootOnly || len(d.Routes.Routes) != 0 || d.Guard.Present || d.DNS.Unreadable != rootOnly || len(d.DNS.Sources) != 0 {
 			t.Errorf("the group's snapshot:\n%s", res.Stdout)
 		}
 		for _, a := range []netip.Addr{server.IPv4(lab.NetServers), server.IPv6(lab.NetServers)} {

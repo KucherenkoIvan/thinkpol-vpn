@@ -901,7 +901,11 @@ type Diagnostics struct {
 	Routes *DiagRoutes `protobuf:"bytes,7,opt,name=routes,proto3" json:"routes,omitempty"`
 	Rules  *DiagRules  `protobuf:"bytes,8,opt,name=rules,proto3" json:"rules,omitempty"`
 	// The IPv6 leak guard as the host holds it. Root only.
-	Guard         *DiagGuard `protobuf:"bytes,9,opt,name=guard,proto3" json:"guard,omitempty"`
+	Guard *DiagGuard `protobuf:"bytes,9,opt,name=guard,proto3" json:"guard,omitempty"`
+	// The resolvers the host uses, for the overlay's names and the rest, as
+	// it reports them (Linux: resolv.conf and systemd-resolved; macOS:
+	// scutil --dns). Root only.
+	Dns           *DiagDns `protobuf:"bytes,10,opt,name=dns,proto3" json:"dns,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -995,6 +999,13 @@ func (x *Diagnostics) GetRules() *DiagRules {
 func (x *Diagnostics) GetGuard() *DiagGuard {
 	if x != nil {
 		return x.Guard
+	}
+	return nil
+}
+
+func (x *Diagnostics) GetDns() *DiagDns {
+	if x != nil {
+		return x.Dns
 	}
 	return nil
 }
@@ -2148,6 +2159,253 @@ func (x *DiagPfReference) GetHeldUnreadable() string {
 	return ""
 }
 
+type DiagDns struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Unreadable    string                 `protobuf:"bytes,1,opt,name=unreadable,proto3" json:"unreadable,omitempty"`
+	Sources       []*DiagDnsSource       `protobuf:"bytes,2,rep,name=sources,proto3" json:"sources,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DiagDns) Reset() {
+	*x = DiagDns{}
+	mi := &file_thinkpol_localapi_v1_localapi_proto_msgTypes[32]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DiagDns) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DiagDns) ProtoMessage() {}
+
+func (x *DiagDns) ProtoReflect() protoreflect.Message {
+	mi := &file_thinkpol_localapi_v1_localapi_proto_msgTypes[32]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DiagDns.ProtoReflect.Descriptor instead.
+func (*DiagDns) Descriptor() ([]byte, []int) {
+	return file_thinkpol_localapi_v1_localapi_proto_rawDescGZIP(), []int{32}
+}
+
+func (x *DiagDns) GetUnreadable() string {
+	if x != nil {
+		return x.Unreadable
+	}
+	return ""
+}
+
+func (x *DiagDns) GetSources() []*DiagDnsSource {
+	if x != nil {
+		return x.Sources
+	}
+	return nil
+}
+
+// One place the OS keeps resolvers: "resolv.conf", "systemd-resolved",
+// "scutil --dns".
+type DiagDnsSource struct {
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	Name       string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Unreadable string                 `protobuf:"bytes,2,opt,name=unreadable,proto3" json:"unreadable,omitempty"`
+	// The source is there (systemd-resolved runs; resolv.conf exists).
+	Present       bool            `protobuf:"varint,3,opt,name=present,proto3" json:"present,omitempty"`
+	Resolvers     []*DiagResolver `protobuf:"bytes,4,rep,name=resolvers,proto3" json:"resolvers,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DiagDnsSource) Reset() {
+	*x = DiagDnsSource{}
+	mi := &file_thinkpol_localapi_v1_localapi_proto_msgTypes[33]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DiagDnsSource) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DiagDnsSource) ProtoMessage() {}
+
+func (x *DiagDnsSource) ProtoReflect() protoreflect.Message {
+	mi := &file_thinkpol_localapi_v1_localapi_proto_msgTypes[33]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DiagDnsSource.ProtoReflect.Descriptor instead.
+func (*DiagDnsSource) Descriptor() ([]byte, []int) {
+	return file_thinkpol_localapi_v1_localapi_proto_rawDescGZIP(), []int{33}
+}
+
+func (x *DiagDnsSource) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *DiagDnsSource) GetUnreadable() string {
+	if x != nil {
+		return x.Unreadable
+	}
+	return ""
+}
+
+func (x *DiagDnsSource) GetPresent() bool {
+	if x != nil {
+		return x.Present
+	}
+	return false
+}
+
+func (x *DiagDnsSource) GetResolvers() []*DiagResolver {
+	if x != nil {
+		return x.Resolvers
+	}
+	return nil
+}
+
+// A resolver configuration the OS holds.
+type DiagResolver struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The link it is for (a systemd-resolved link, scutil's if_index); ""
+	// for a global one.
+	Interface string `protobuf:"bytes,1,opt,name=interface,proto3" json:"interface,omitempty"`
+	// scutil lists it for queries scoped to the interface only.
+	Scoped  bool     `protobuf:"varint,2,opt,name=scoped,proto3" json:"scoped,omitempty"`
+	Servers []string `protobuf:"bytes,3,rep,name=servers,proto3" json:"servers,omitempty"`
+	// The names it is asked for: systemd-resolved's domains ("~" before a
+	// routing-only one; "~." takes every name), scutil's match domain.
+	Domains []string `protobuf:"bytes,4,rep,name=domains,proto3" json:"domains,omitempty"`
+	Search  []string `protobuf:"bytes,5,rep,name=search,proto3" json:"search,omitempty"`
+	// scutil's order, flags and reach; resolv.conf's or scutil's options.
+	Order   uint32   `protobuf:"varint,6,opt,name=order,proto3" json:"order,omitempty"`
+	Flags   string   `protobuf:"bytes,7,opt,name=flags,proto3" json:"flags,omitempty"`
+	Reach   string   `protobuf:"bytes,8,opt,name=reach,proto3" json:"reach,omitempty"`
+	Options []string `protobuf:"bytes,9,rep,name=options,proto3" json:"options,omitempty"`
+	// resolv.conf is the node's own rewrite (the original in comments).
+	NodeWritten   bool `protobuf:"varint,10,opt,name=node_written,json=nodeWritten,proto3" json:"node_written,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DiagResolver) Reset() {
+	*x = DiagResolver{}
+	mi := &file_thinkpol_localapi_v1_localapi_proto_msgTypes[34]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DiagResolver) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DiagResolver) ProtoMessage() {}
+
+func (x *DiagResolver) ProtoReflect() protoreflect.Message {
+	mi := &file_thinkpol_localapi_v1_localapi_proto_msgTypes[34]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DiagResolver.ProtoReflect.Descriptor instead.
+func (*DiagResolver) Descriptor() ([]byte, []int) {
+	return file_thinkpol_localapi_v1_localapi_proto_rawDescGZIP(), []int{34}
+}
+
+func (x *DiagResolver) GetInterface() string {
+	if x != nil {
+		return x.Interface
+	}
+	return ""
+}
+
+func (x *DiagResolver) GetScoped() bool {
+	if x != nil {
+		return x.Scoped
+	}
+	return false
+}
+
+func (x *DiagResolver) GetServers() []string {
+	if x != nil {
+		return x.Servers
+	}
+	return nil
+}
+
+func (x *DiagResolver) GetDomains() []string {
+	if x != nil {
+		return x.Domains
+	}
+	return nil
+}
+
+func (x *DiagResolver) GetSearch() []string {
+	if x != nil {
+		return x.Search
+	}
+	return nil
+}
+
+func (x *DiagResolver) GetOrder() uint32 {
+	if x != nil {
+		return x.Order
+	}
+	return 0
+}
+
+func (x *DiagResolver) GetFlags() string {
+	if x != nil {
+		return x.Flags
+	}
+	return ""
+}
+
+func (x *DiagResolver) GetReach() string {
+	if x != nil {
+		return x.Reach
+	}
+	return ""
+}
+
+func (x *DiagResolver) GetOptions() []string {
+	if x != nil {
+		return x.Options
+	}
+	return nil
+}
+
+func (x *DiagResolver) GetNodeWritten() bool {
+	if x != nil {
+		return x.NodeWritten
+	}
+	return false
+}
+
 // A space the node is enrolled in. Names are the controller's: a node
 // knows its spaces by id.
 type Space struct {
@@ -2160,7 +2418,7 @@ type Space struct {
 
 func (x *Space) Reset() {
 	*x = Space{}
-	mi := &file_thinkpol_localapi_v1_localapi_proto_msgTypes[32]
+	mi := &file_thinkpol_localapi_v1_localapi_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2172,7 +2430,7 @@ func (x *Space) String() string {
 func (*Space) ProtoMessage() {}
 
 func (x *Space) ProtoReflect() protoreflect.Message {
-	mi := &file_thinkpol_localapi_v1_localapi_proto_msgTypes[32]
+	mi := &file_thinkpol_localapi_v1_localapi_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2185,7 +2443,7 @@ func (x *Space) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Space.ProtoReflect.Descriptor instead.
 func (*Space) Descriptor() ([]byte, []int) {
-	return file_thinkpol_localapi_v1_localapi_proto_rawDescGZIP(), []int{32}
+	return file_thinkpol_localapi_v1_localapi_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *Space) GetId() string {
@@ -2240,7 +2498,7 @@ type Status struct {
 
 func (x *Status) Reset() {
 	*x = Status{}
-	mi := &file_thinkpol_localapi_v1_localapi_proto_msgTypes[33]
+	mi := &file_thinkpol_localapi_v1_localapi_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2252,7 +2510,7 @@ func (x *Status) String() string {
 func (*Status) ProtoMessage() {}
 
 func (x *Status) ProtoReflect() protoreflect.Message {
-	mi := &file_thinkpol_localapi_v1_localapi_proto_msgTypes[33]
+	mi := &file_thinkpol_localapi_v1_localapi_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2265,7 +2523,7 @@ func (x *Status) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Status.ProtoReflect.Descriptor instead.
 func (*Status) Descriptor() ([]byte, []int) {
-	return file_thinkpol_localapi_v1_localapi_proto_rawDescGZIP(), []int{33}
+	return file_thinkpol_localapi_v1_localapi_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *Status) GetMode() Mode {
@@ -2394,7 +2652,7 @@ type Uplink struct {
 
 func (x *Uplink) Reset() {
 	*x = Uplink{}
-	mi := &file_thinkpol_localapi_v1_localapi_proto_msgTypes[34]
+	mi := &file_thinkpol_localapi_v1_localapi_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2406,7 +2664,7 @@ func (x *Uplink) String() string {
 func (*Uplink) ProtoMessage() {}
 
 func (x *Uplink) ProtoReflect() protoreflect.Message {
-	mi := &file_thinkpol_localapi_v1_localapi_proto_msgTypes[34]
+	mi := &file_thinkpol_localapi_v1_localapi_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2419,7 +2677,7 @@ func (x *Uplink) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Uplink.ProtoReflect.Descriptor instead.
 func (*Uplink) Descriptor() ([]byte, []int) {
-	return file_thinkpol_localapi_v1_localapi_proto_rawDescGZIP(), []int{34}
+	return file_thinkpol_localapi_v1_localapi_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *Uplink) GetInterface() string {
@@ -2476,7 +2734,7 @@ type Health struct {
 
 func (x *Health) Reset() {
 	*x = Health{}
-	mi := &file_thinkpol_localapi_v1_localapi_proto_msgTypes[35]
+	mi := &file_thinkpol_localapi_v1_localapi_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2488,7 +2746,7 @@ func (x *Health) String() string {
 func (*Health) ProtoMessage() {}
 
 func (x *Health) ProtoReflect() protoreflect.Message {
-	mi := &file_thinkpol_localapi_v1_localapi_proto_msgTypes[35]
+	mi := &file_thinkpol_localapi_v1_localapi_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2501,7 +2759,7 @@ func (x *Health) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Health.ProtoReflect.Descriptor instead.
 func (*Health) Descriptor() ([]byte, []int) {
-	return file_thinkpol_localapi_v1_localapi_proto_rawDescGZIP(), []int{35}
+	return file_thinkpol_localapi_v1_localapi_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *Health) GetLevel() HealthLevel {
@@ -2551,7 +2809,7 @@ type DataPlane struct {
 
 func (x *DataPlane) Reset() {
 	*x = DataPlane{}
-	mi := &file_thinkpol_localapi_v1_localapi_proto_msgTypes[36]
+	mi := &file_thinkpol_localapi_v1_localapi_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2563,7 +2821,7 @@ func (x *DataPlane) String() string {
 func (*DataPlane) ProtoMessage() {}
 
 func (x *DataPlane) ProtoReflect() protoreflect.Message {
-	mi := &file_thinkpol_localapi_v1_localapi_proto_msgTypes[36]
+	mi := &file_thinkpol_localapi_v1_localapi_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2576,7 +2834,7 @@ func (x *DataPlane) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DataPlane.ProtoReflect.Descriptor instead.
 func (*DataPlane) Descriptor() ([]byte, []int) {
-	return file_thinkpol_localapi_v1_localapi_proto_rawDescGZIP(), []int{36}
+	return file_thinkpol_localapi_v1_localapi_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *DataPlane) GetMtu() uint32 {
@@ -2669,7 +2927,7 @@ type Peer struct {
 
 func (x *Peer) Reset() {
 	*x = Peer{}
-	mi := &file_thinkpol_localapi_v1_localapi_proto_msgTypes[37]
+	mi := &file_thinkpol_localapi_v1_localapi_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2681,7 +2939,7 @@ func (x *Peer) String() string {
 func (*Peer) ProtoMessage() {}
 
 func (x *Peer) ProtoReflect() protoreflect.Message {
-	mi := &file_thinkpol_localapi_v1_localapi_proto_msgTypes[37]
+	mi := &file_thinkpol_localapi_v1_localapi_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2694,7 +2952,7 @@ func (x *Peer) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Peer.ProtoReflect.Descriptor instead.
 func (*Peer) Descriptor() ([]byte, []int) {
-	return file_thinkpol_localapi_v1_localapi_proto_rawDescGZIP(), []int{37}
+	return file_thinkpol_localapi_v1_localapi_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *Peer) GetNodeId() string {
@@ -2762,7 +3020,7 @@ type Neighbor struct {
 
 func (x *Neighbor) Reset() {
 	*x = Neighbor{}
-	mi := &file_thinkpol_localapi_v1_localapi_proto_msgTypes[38]
+	mi := &file_thinkpol_localapi_v1_localapi_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2774,7 +3032,7 @@ func (x *Neighbor) String() string {
 func (*Neighbor) ProtoMessage() {}
 
 func (x *Neighbor) ProtoReflect() protoreflect.Message {
-	mi := &file_thinkpol_localapi_v1_localapi_proto_msgTypes[38]
+	mi := &file_thinkpol_localapi_v1_localapi_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2787,7 +3045,7 @@ func (x *Neighbor) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Neighbor.ProtoReflect.Descriptor instead.
 func (*Neighbor) Descriptor() ([]byte, []int) {
-	return file_thinkpol_localapi_v1_localapi_proto_rawDescGZIP(), []int{38}
+	return file_thinkpol_localapi_v1_localapi_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *Neighbor) GetNodeId() string {
@@ -2855,7 +3113,7 @@ type Link struct {
 
 func (x *Link) Reset() {
 	*x = Link{}
-	mi := &file_thinkpol_localapi_v1_localapi_proto_msgTypes[39]
+	mi := &file_thinkpol_localapi_v1_localapi_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2867,7 +3125,7 @@ func (x *Link) String() string {
 func (*Link) ProtoMessage() {}
 
 func (x *Link) ProtoReflect() protoreflect.Message {
-	mi := &file_thinkpol_localapi_v1_localapi_proto_msgTypes[39]
+	mi := &file_thinkpol_localapi_v1_localapi_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2880,7 +3138,7 @@ func (x *Link) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Link.ProtoReflect.Descriptor instead.
 func (*Link) Descriptor() ([]byte, []int) {
-	return file_thinkpol_localapi_v1_localapi_proto_rawDescGZIP(), []int{39}
+	return file_thinkpol_localapi_v1_localapi_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *Link) GetTransport() string {
@@ -2984,7 +3242,7 @@ type Egress struct {
 
 func (x *Egress) Reset() {
 	*x = Egress{}
-	mi := &file_thinkpol_localapi_v1_localapi_proto_msgTypes[40]
+	mi := &file_thinkpol_localapi_v1_localapi_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2996,7 +3254,7 @@ func (x *Egress) String() string {
 func (*Egress) ProtoMessage() {}
 
 func (x *Egress) ProtoReflect() protoreflect.Message {
-	mi := &file_thinkpol_localapi_v1_localapi_proto_msgTypes[40]
+	mi := &file_thinkpol_localapi_v1_localapi_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3009,7 +3267,7 @@ func (x *Egress) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Egress.ProtoReflect.Descriptor instead.
 func (*Egress) Descriptor() ([]byte, []int) {
-	return file_thinkpol_localapi_v1_localapi_proto_rawDescGZIP(), []int{40}
+	return file_thinkpol_localapi_v1_localapi_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *Egress) GetName() string {
@@ -3080,7 +3338,7 @@ type Skip struct {
 
 func (x *Skip) Reset() {
 	*x = Skip{}
-	mi := &file_thinkpol_localapi_v1_localapi_proto_msgTypes[41]
+	mi := &file_thinkpol_localapi_v1_localapi_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3092,7 +3350,7 @@ func (x *Skip) String() string {
 func (*Skip) ProtoMessage() {}
 
 func (x *Skip) ProtoReflect() protoreflect.Message {
-	mi := &file_thinkpol_localapi_v1_localapi_proto_msgTypes[41]
+	mi := &file_thinkpol_localapi_v1_localapi_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3105,7 +3363,7 @@ func (x *Skip) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Skip.ProtoReflect.Descriptor instead.
 func (*Skip) Descriptor() ([]byte, []int) {
-	return file_thinkpol_localapi_v1_localapi_proto_rawDescGZIP(), []int{41}
+	return file_thinkpol_localapi_v1_localapi_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *Skip) GetNodeId() string {
@@ -3149,7 +3407,7 @@ type Worker struct {
 
 func (x *Worker) Reset() {
 	*x = Worker{}
-	mi := &file_thinkpol_localapi_v1_localapi_proto_msgTypes[42]
+	mi := &file_thinkpol_localapi_v1_localapi_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3161,7 +3419,7 @@ func (x *Worker) String() string {
 func (*Worker) ProtoMessage() {}
 
 func (x *Worker) ProtoReflect() protoreflect.Message {
-	mi := &file_thinkpol_localapi_v1_localapi_proto_msgTypes[42]
+	mi := &file_thinkpol_localapi_v1_localapi_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3174,7 +3432,7 @@ func (x *Worker) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Worker.ProtoReflect.Descriptor instead.
 func (*Worker) Descriptor() ([]byte, []int) {
-	return file_thinkpol_localapi_v1_localapi_proto_rawDescGZIP(), []int{42}
+	return file_thinkpol_localapi_v1_localapi_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *Worker) GetSpaceId() string {
@@ -3235,7 +3493,7 @@ type PublicListener struct {
 
 func (x *PublicListener) Reset() {
 	*x = PublicListener{}
-	mi := &file_thinkpol_localapi_v1_localapi_proto_msgTypes[43]
+	mi := &file_thinkpol_localapi_v1_localapi_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3247,7 +3505,7 @@ func (x *PublicListener) String() string {
 func (*PublicListener) ProtoMessage() {}
 
 func (x *PublicListener) ProtoReflect() protoreflect.Message {
-	mi := &file_thinkpol_localapi_v1_localapi_proto_msgTypes[43]
+	mi := &file_thinkpol_localapi_v1_localapi_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3260,7 +3518,7 @@ func (x *PublicListener) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PublicListener.ProtoReflect.Descriptor instead.
 func (*PublicListener) Descriptor() ([]byte, []int) {
-	return file_thinkpol_localapi_v1_localapi_proto_rawDescGZIP(), []int{43}
+	return file_thinkpol_localapi_v1_localapi_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *PublicListener) GetTransport() string {
@@ -3338,7 +3596,7 @@ const file_thinkpol_localapi_v1_localapi_proto_rawDesc = "" +
 	"\x06missed\x18\x02 \x01(\x04R\x06missed\"\x11\n" +
 	"\x0fDiagnoseRequest\"W\n" +
 	"\x10DiagnoseResponse\x12C\n" +
-	"\vdiagnostics\x18\x01 \x01(\v2!.thinkpol.localapi.v1.DiagnosticsR\vdiagnostics\"\xb5\x03\n" +
+	"\vdiagnostics\x18\x01 \x01(\v2!.thinkpol.localapi.v1.DiagnosticsR\vdiagnostics\"\xe6\x03\n" +
 	"\vDiagnostics\x12%\n" +
 	"\x0eschema_version\x18\x01 \x01(\rR\rschemaVersion\x125\n" +
 	"\btaken_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\atakenAt\x12\x0e\n" +
@@ -3348,7 +3606,9 @@ const file_thinkpol_localapi_v1_localapi_proto_rawDesc = "" +
 	"\x03tun\x18\x06 \x01(\v2#.thinkpol.localapi.v1.DiagInterfaceR\x03tun\x128\n" +
 	"\x06routes\x18\a \x01(\v2 .thinkpol.localapi.v1.DiagRoutesR\x06routes\x125\n" +
 	"\x05rules\x18\b \x01(\v2\x1f.thinkpol.localapi.v1.DiagRulesR\x05rules\x125\n" +
-	"\x05guard\x18\t \x01(\v2\x1f.thinkpol.localapi.v1.DiagGuardR\x05guard\"\xb3\x01\n" +
+	"\x05guard\x18\t \x01(\v2\x1f.thinkpol.localapi.v1.DiagGuardR\x05guard\x12/\n" +
+	"\x03dns\x18\n" +
+	" \x01(\v2\x1d.thinkpol.localapi.v1.DiagDnsR\x03dns\"\xb3\x01\n" +
 	"\rDiagInterface\x12\x1e\n" +
 	"\n" +
 	"unreadable\x18\x01 \x01(\tR\n" +
@@ -3455,7 +3715,31 @@ const file_thinkpol_localapi_v1_localapi_proto_rawDesc = "" +
 	"\x03pid\x18\x03 \x01(\rR\x03pid\x12\x19\n" +
 	"\bpid_only\x18\x04 \x01(\bR\apidOnly\x12\x12\n" +
 	"\x04held\x18\x05 \x01(\bR\x04held\x12'\n" +
-	"\x0fheld_unreadable\x18\a \x01(\tR\x0eheldUnreadable\"/\n" +
+	"\x0fheld_unreadable\x18\a \x01(\tR\x0eheldUnreadable\"h\n" +
+	"\aDiagDns\x12\x1e\n" +
+	"\n" +
+	"unreadable\x18\x01 \x01(\tR\n" +
+	"unreadable\x12=\n" +
+	"\asources\x18\x02 \x03(\v2#.thinkpol.localapi.v1.DiagDnsSourceR\asources\"\x9f\x01\n" +
+	"\rDiagDnsSource\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1e\n" +
+	"\n" +
+	"unreadable\x18\x02 \x01(\tR\n" +
+	"unreadable\x12\x18\n" +
+	"\apresent\x18\x03 \x01(\bR\apresent\x12@\n" +
+	"\tresolvers\x18\x04 \x03(\v2\".thinkpol.localapi.v1.DiagResolverR\tresolvers\"\x8f\x02\n" +
+	"\fDiagResolver\x12\x1c\n" +
+	"\tinterface\x18\x01 \x01(\tR\tinterface\x12\x16\n" +
+	"\x06scoped\x18\x02 \x01(\bR\x06scoped\x12\x18\n" +
+	"\aservers\x18\x03 \x03(\tR\aservers\x12\x18\n" +
+	"\adomains\x18\x04 \x03(\tR\adomains\x12\x16\n" +
+	"\x06search\x18\x05 \x03(\tR\x06search\x12\x14\n" +
+	"\x05order\x18\x06 \x01(\rR\x05order\x12\x14\n" +
+	"\x05flags\x18\a \x01(\tR\x05flags\x12\x14\n" +
+	"\x05reach\x18\b \x01(\tR\x05reach\x12\x18\n" +
+	"\aoptions\x18\t \x03(\tR\aoptions\x12!\n" +
+	"\fnode_written\x18\n" +
+	" \x01(\bR\vnodeWritten\"/\n" +
 	"\x05Space\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x16\n" +
 	"\x06active\x18\x02 \x01(\bR\x06active\"\xc4\x05\n" +
@@ -3610,7 +3894,7 @@ func file_thinkpol_localapi_v1_localapi_proto_rawDescGZIP() []byte {
 }
 
 var file_thinkpol_localapi_v1_localapi_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_thinkpol_localapi_v1_localapi_proto_msgTypes = make([]protoimpl.MessageInfo, 45)
+var file_thinkpol_localapi_v1_localapi_proto_msgTypes = make([]protoimpl.MessageInfo, 48)
 var file_thinkpol_localapi_v1_localapi_proto_goTypes = []any{
 	(Mode)(0),                     // 0: thinkpol.localapi.v1.Mode
 	(Connection)(0),               // 1: thinkpol.localapi.v1.Connection
@@ -3647,90 +3931,96 @@ var file_thinkpol_localapi_v1_localapi_proto_goTypes = []any{
 	(*DiagPfEnabled)(nil),         // 32: thinkpol.localapi.v1.DiagPfEnabled
 	(*DiagPfHook)(nil),            // 33: thinkpol.localapi.v1.DiagPfHook
 	(*DiagPfReference)(nil),       // 34: thinkpol.localapi.v1.DiagPfReference
-	(*Space)(nil),                 // 35: thinkpol.localapi.v1.Space
-	(*Status)(nil),                // 36: thinkpol.localapi.v1.Status
-	(*Uplink)(nil),                // 37: thinkpol.localapi.v1.Uplink
-	(*Health)(nil),                // 38: thinkpol.localapi.v1.Health
-	(*DataPlane)(nil),             // 39: thinkpol.localapi.v1.DataPlane
-	(*Peer)(nil),                  // 40: thinkpol.localapi.v1.Peer
-	(*Neighbor)(nil),              // 41: thinkpol.localapi.v1.Neighbor
-	(*Link)(nil),                  // 42: thinkpol.localapi.v1.Link
-	(*Egress)(nil),                // 43: thinkpol.localapi.v1.Egress
-	(*Skip)(nil),                  // 44: thinkpol.localapi.v1.Skip
-	(*Worker)(nil),                // 45: thinkpol.localapi.v1.Worker
-	(*PublicListener)(nil),        // 46: thinkpol.localapi.v1.PublicListener
-	nil,                           // 47: thinkpol.localapi.v1.DataPlane.CountersEntry
-	(*durationpb.Duration)(nil),   // 48: google.protobuf.Duration
-	(*timestamppb.Timestamp)(nil), // 49: google.protobuf.Timestamp
+	(*DiagDns)(nil),               // 35: thinkpol.localapi.v1.DiagDns
+	(*DiagDnsSource)(nil),         // 36: thinkpol.localapi.v1.DiagDnsSource
+	(*DiagResolver)(nil),          // 37: thinkpol.localapi.v1.DiagResolver
+	(*Space)(nil),                 // 38: thinkpol.localapi.v1.Space
+	(*Status)(nil),                // 39: thinkpol.localapi.v1.Status
+	(*Uplink)(nil),                // 40: thinkpol.localapi.v1.Uplink
+	(*Health)(nil),                // 41: thinkpol.localapi.v1.Health
+	(*DataPlane)(nil),             // 42: thinkpol.localapi.v1.DataPlane
+	(*Peer)(nil),                  // 43: thinkpol.localapi.v1.Peer
+	(*Neighbor)(nil),              // 44: thinkpol.localapi.v1.Neighbor
+	(*Link)(nil),                  // 45: thinkpol.localapi.v1.Link
+	(*Egress)(nil),                // 46: thinkpol.localapi.v1.Egress
+	(*Skip)(nil),                  // 47: thinkpol.localapi.v1.Skip
+	(*Worker)(nil),                // 48: thinkpol.localapi.v1.Worker
+	(*PublicListener)(nil),        // 49: thinkpol.localapi.v1.PublicListener
+	nil,                           // 50: thinkpol.localapi.v1.DataPlane.CountersEntry
+	(*durationpb.Duration)(nil),   // 51: google.protobuf.Duration
+	(*timestamppb.Timestamp)(nil), // 52: google.protobuf.Timestamp
 }
 var file_thinkpol_localapi_v1_localapi_proto_depIdxs = []int32{
-	36, // 0: thinkpol.localapi.v1.GetStatusResponse.status:type_name -> thinkpol.localapi.v1.Status
-	48, // 1: thinkpol.localapi.v1.WatchStatusRequest.interval:type_name -> google.protobuf.Duration
-	36, // 2: thinkpol.localapi.v1.WatchStatusResponse.status:type_name -> thinkpol.localapi.v1.Status
-	36, // 3: thinkpol.localapi.v1.ConnectResponse.status:type_name -> thinkpol.localapi.v1.Status
-	36, // 4: thinkpol.localapi.v1.DisconnectResponse.status:type_name -> thinkpol.localapi.v1.Status
-	35, // 5: thinkpol.localapi.v1.ListSpacesResponse.spaces:type_name -> thinkpol.localapi.v1.Space
-	36, // 6: thinkpol.localapi.v1.SetRulePresetResponse.status:type_name -> thinkpol.localapi.v1.Status
+	39, // 0: thinkpol.localapi.v1.GetStatusResponse.status:type_name -> thinkpol.localapi.v1.Status
+	51, // 1: thinkpol.localapi.v1.WatchStatusRequest.interval:type_name -> google.protobuf.Duration
+	39, // 2: thinkpol.localapi.v1.WatchStatusResponse.status:type_name -> thinkpol.localapi.v1.Status
+	39, // 3: thinkpol.localapi.v1.ConnectResponse.status:type_name -> thinkpol.localapi.v1.Status
+	39, // 4: thinkpol.localapi.v1.DisconnectResponse.status:type_name -> thinkpol.localapi.v1.Status
+	38, // 5: thinkpol.localapi.v1.ListSpacesResponse.spaces:type_name -> thinkpol.localapi.v1.Space
+	39, // 6: thinkpol.localapi.v1.SetRulePresetResponse.status:type_name -> thinkpol.localapi.v1.Status
 	19, // 7: thinkpol.localapi.v1.DiagnoseResponse.diagnostics:type_name -> thinkpol.localapi.v1.Diagnostics
-	49, // 8: thinkpol.localapi.v1.Diagnostics.taken_at:type_name -> google.protobuf.Timestamp
-	36, // 9: thinkpol.localapi.v1.Diagnostics.status:type_name -> thinkpol.localapi.v1.Status
+	52, // 8: thinkpol.localapi.v1.Diagnostics.taken_at:type_name -> google.protobuf.Timestamp
+	39, // 9: thinkpol.localapi.v1.Diagnostics.status:type_name -> thinkpol.localapi.v1.Status
 	20, // 10: thinkpol.localapi.v1.Diagnostics.tun:type_name -> thinkpol.localapi.v1.DiagInterface
 	21, // 11: thinkpol.localapi.v1.Diagnostics.routes:type_name -> thinkpol.localapi.v1.DiagRoutes
 	23, // 12: thinkpol.localapi.v1.Diagnostics.rules:type_name -> thinkpol.localapi.v1.DiagRules
 	25, // 13: thinkpol.localapi.v1.Diagnostics.guard:type_name -> thinkpol.localapi.v1.DiagGuard
-	22, // 14: thinkpol.localapi.v1.DiagRoutes.routes:type_name -> thinkpol.localapi.v1.DiagRoute
-	24, // 15: thinkpol.localapi.v1.DiagRules.rules:type_name -> thinkpol.localapi.v1.DiagRule
-	26, // 16: thinkpol.localapi.v1.DiagGuard.rules:type_name -> thinkpol.localapi.v1.DiagGuardRules
-	28, // 17: thinkpol.localapi.v1.DiagGuard.exempt:type_name -> thinkpol.localapi.v1.DiagPrefixes
-	29, // 18: thinkpol.localapi.v1.DiagGuard.nftables:type_name -> thinkpol.localapi.v1.DiagNftables
-	31, // 19: thinkpol.localapi.v1.DiagGuard.pf:type_name -> thinkpol.localapi.v1.DiagPf
-	27, // 20: thinkpol.localapi.v1.DiagGuardRules.rules:type_name -> thinkpol.localapi.v1.DiagGuardRule
-	30, // 21: thinkpol.localapi.v1.DiagNftables.chains:type_name -> thinkpol.localapi.v1.DiagNftChain
-	32, // 22: thinkpol.localapi.v1.DiagPf.enabled:type_name -> thinkpol.localapi.v1.DiagPfEnabled
-	33, // 23: thinkpol.localapi.v1.DiagPf.hook:type_name -> thinkpol.localapi.v1.DiagPfHook
-	34, // 24: thinkpol.localapi.v1.DiagPf.reference:type_name -> thinkpol.localapi.v1.DiagPfReference
-	0,  // 25: thinkpol.localapi.v1.Status.mode:type_name -> thinkpol.localapi.v1.Mode
-	1,  // 26: thinkpol.localapi.v1.Status.connection:type_name -> thinkpol.localapi.v1.Connection
-	38, // 27: thinkpol.localapi.v1.Status.health:type_name -> thinkpol.localapi.v1.Health
-	39, // 28: thinkpol.localapi.v1.Status.data_plane:type_name -> thinkpol.localapi.v1.DataPlane
-	45, // 29: thinkpol.localapi.v1.Status.workers:type_name -> thinkpol.localapi.v1.Worker
-	46, // 30: thinkpol.localapi.v1.Status.public_listeners:type_name -> thinkpol.localapi.v1.PublicListener
-	37, // 31: thinkpol.localapi.v1.Status.uplink:type_name -> thinkpol.localapi.v1.Uplink
-	2,  // 32: thinkpol.localapi.v1.Health.level:type_name -> thinkpol.localapi.v1.HealthLevel
-	40, // 33: thinkpol.localapi.v1.DataPlane.peers:type_name -> thinkpol.localapi.v1.Peer
-	41, // 34: thinkpol.localapi.v1.DataPlane.neighbors:type_name -> thinkpol.localapi.v1.Neighbor
-	43, // 35: thinkpol.localapi.v1.DataPlane.egresses:type_name -> thinkpol.localapi.v1.Egress
-	44, // 36: thinkpol.localapi.v1.DataPlane.skipped:type_name -> thinkpol.localapi.v1.Skip
-	47, // 37: thinkpol.localapi.v1.DataPlane.counters:type_name -> thinkpol.localapi.v1.DataPlane.CountersEntry
-	49, // 38: thinkpol.localapi.v1.Peer.last_handshake:type_name -> google.protobuf.Timestamp
-	48, // 39: thinkpol.localapi.v1.Neighbor.up_for:type_name -> google.protobuf.Duration
-	48, // 40: thinkpol.localapi.v1.Neighbor.rtt:type_name -> google.protobuf.Duration
-	42, // 41: thinkpol.localapi.v1.Neighbor.links:type_name -> thinkpol.localapi.v1.Link
-	48, // 42: thinkpol.localapi.v1.Link.up_for:type_name -> google.protobuf.Duration
-	48, // 43: thinkpol.localapi.v1.Link.rtt:type_name -> google.protobuf.Duration
-	49, // 44: thinkpol.localapi.v1.Worker.ready_since:type_name -> google.protobuf.Timestamp
-	49, // 45: thinkpol.localapi.v1.Worker.restart_at:type_name -> google.protobuf.Timestamp
-	3,  // 46: thinkpol.localapi.v1.LocalService.GetStatus:input_type -> thinkpol.localapi.v1.GetStatusRequest
-	5,  // 47: thinkpol.localapi.v1.LocalService.WatchStatus:input_type -> thinkpol.localapi.v1.WatchStatusRequest
-	7,  // 48: thinkpol.localapi.v1.LocalService.Connect:input_type -> thinkpol.localapi.v1.ConnectRequest
-	9,  // 49: thinkpol.localapi.v1.LocalService.Disconnect:input_type -> thinkpol.localapi.v1.DisconnectRequest
-	11, // 50: thinkpol.localapi.v1.LocalService.ListSpaces:input_type -> thinkpol.localapi.v1.ListSpacesRequest
-	13, // 51: thinkpol.localapi.v1.LocalService.SetRulePreset:input_type -> thinkpol.localapi.v1.SetRulePresetRequest
-	15, // 52: thinkpol.localapi.v1.LocalService.TailLogs:input_type -> thinkpol.localapi.v1.TailLogsRequest
-	17, // 53: thinkpol.localapi.v1.LocalService.Diagnose:input_type -> thinkpol.localapi.v1.DiagnoseRequest
-	4,  // 54: thinkpol.localapi.v1.LocalService.GetStatus:output_type -> thinkpol.localapi.v1.GetStatusResponse
-	6,  // 55: thinkpol.localapi.v1.LocalService.WatchStatus:output_type -> thinkpol.localapi.v1.WatchStatusResponse
-	8,  // 56: thinkpol.localapi.v1.LocalService.Connect:output_type -> thinkpol.localapi.v1.ConnectResponse
-	10, // 57: thinkpol.localapi.v1.LocalService.Disconnect:output_type -> thinkpol.localapi.v1.DisconnectResponse
-	12, // 58: thinkpol.localapi.v1.LocalService.ListSpaces:output_type -> thinkpol.localapi.v1.ListSpacesResponse
-	14, // 59: thinkpol.localapi.v1.LocalService.SetRulePreset:output_type -> thinkpol.localapi.v1.SetRulePresetResponse
-	16, // 60: thinkpol.localapi.v1.LocalService.TailLogs:output_type -> thinkpol.localapi.v1.TailLogsResponse
-	18, // 61: thinkpol.localapi.v1.LocalService.Diagnose:output_type -> thinkpol.localapi.v1.DiagnoseResponse
-	54, // [54:62] is the sub-list for method output_type
-	46, // [46:54] is the sub-list for method input_type
-	46, // [46:46] is the sub-list for extension type_name
-	46, // [46:46] is the sub-list for extension extendee
-	0,  // [0:46] is the sub-list for field type_name
+	35, // 14: thinkpol.localapi.v1.Diagnostics.dns:type_name -> thinkpol.localapi.v1.DiagDns
+	22, // 15: thinkpol.localapi.v1.DiagRoutes.routes:type_name -> thinkpol.localapi.v1.DiagRoute
+	24, // 16: thinkpol.localapi.v1.DiagRules.rules:type_name -> thinkpol.localapi.v1.DiagRule
+	26, // 17: thinkpol.localapi.v1.DiagGuard.rules:type_name -> thinkpol.localapi.v1.DiagGuardRules
+	28, // 18: thinkpol.localapi.v1.DiagGuard.exempt:type_name -> thinkpol.localapi.v1.DiagPrefixes
+	29, // 19: thinkpol.localapi.v1.DiagGuard.nftables:type_name -> thinkpol.localapi.v1.DiagNftables
+	31, // 20: thinkpol.localapi.v1.DiagGuard.pf:type_name -> thinkpol.localapi.v1.DiagPf
+	27, // 21: thinkpol.localapi.v1.DiagGuardRules.rules:type_name -> thinkpol.localapi.v1.DiagGuardRule
+	30, // 22: thinkpol.localapi.v1.DiagNftables.chains:type_name -> thinkpol.localapi.v1.DiagNftChain
+	32, // 23: thinkpol.localapi.v1.DiagPf.enabled:type_name -> thinkpol.localapi.v1.DiagPfEnabled
+	33, // 24: thinkpol.localapi.v1.DiagPf.hook:type_name -> thinkpol.localapi.v1.DiagPfHook
+	34, // 25: thinkpol.localapi.v1.DiagPf.reference:type_name -> thinkpol.localapi.v1.DiagPfReference
+	36, // 26: thinkpol.localapi.v1.DiagDns.sources:type_name -> thinkpol.localapi.v1.DiagDnsSource
+	37, // 27: thinkpol.localapi.v1.DiagDnsSource.resolvers:type_name -> thinkpol.localapi.v1.DiagResolver
+	0,  // 28: thinkpol.localapi.v1.Status.mode:type_name -> thinkpol.localapi.v1.Mode
+	1,  // 29: thinkpol.localapi.v1.Status.connection:type_name -> thinkpol.localapi.v1.Connection
+	41, // 30: thinkpol.localapi.v1.Status.health:type_name -> thinkpol.localapi.v1.Health
+	42, // 31: thinkpol.localapi.v1.Status.data_plane:type_name -> thinkpol.localapi.v1.DataPlane
+	48, // 32: thinkpol.localapi.v1.Status.workers:type_name -> thinkpol.localapi.v1.Worker
+	49, // 33: thinkpol.localapi.v1.Status.public_listeners:type_name -> thinkpol.localapi.v1.PublicListener
+	40, // 34: thinkpol.localapi.v1.Status.uplink:type_name -> thinkpol.localapi.v1.Uplink
+	2,  // 35: thinkpol.localapi.v1.Health.level:type_name -> thinkpol.localapi.v1.HealthLevel
+	43, // 36: thinkpol.localapi.v1.DataPlane.peers:type_name -> thinkpol.localapi.v1.Peer
+	44, // 37: thinkpol.localapi.v1.DataPlane.neighbors:type_name -> thinkpol.localapi.v1.Neighbor
+	46, // 38: thinkpol.localapi.v1.DataPlane.egresses:type_name -> thinkpol.localapi.v1.Egress
+	47, // 39: thinkpol.localapi.v1.DataPlane.skipped:type_name -> thinkpol.localapi.v1.Skip
+	50, // 40: thinkpol.localapi.v1.DataPlane.counters:type_name -> thinkpol.localapi.v1.DataPlane.CountersEntry
+	52, // 41: thinkpol.localapi.v1.Peer.last_handshake:type_name -> google.protobuf.Timestamp
+	51, // 42: thinkpol.localapi.v1.Neighbor.up_for:type_name -> google.protobuf.Duration
+	51, // 43: thinkpol.localapi.v1.Neighbor.rtt:type_name -> google.protobuf.Duration
+	45, // 44: thinkpol.localapi.v1.Neighbor.links:type_name -> thinkpol.localapi.v1.Link
+	51, // 45: thinkpol.localapi.v1.Link.up_for:type_name -> google.protobuf.Duration
+	51, // 46: thinkpol.localapi.v1.Link.rtt:type_name -> google.protobuf.Duration
+	52, // 47: thinkpol.localapi.v1.Worker.ready_since:type_name -> google.protobuf.Timestamp
+	52, // 48: thinkpol.localapi.v1.Worker.restart_at:type_name -> google.protobuf.Timestamp
+	3,  // 49: thinkpol.localapi.v1.LocalService.GetStatus:input_type -> thinkpol.localapi.v1.GetStatusRequest
+	5,  // 50: thinkpol.localapi.v1.LocalService.WatchStatus:input_type -> thinkpol.localapi.v1.WatchStatusRequest
+	7,  // 51: thinkpol.localapi.v1.LocalService.Connect:input_type -> thinkpol.localapi.v1.ConnectRequest
+	9,  // 52: thinkpol.localapi.v1.LocalService.Disconnect:input_type -> thinkpol.localapi.v1.DisconnectRequest
+	11, // 53: thinkpol.localapi.v1.LocalService.ListSpaces:input_type -> thinkpol.localapi.v1.ListSpacesRequest
+	13, // 54: thinkpol.localapi.v1.LocalService.SetRulePreset:input_type -> thinkpol.localapi.v1.SetRulePresetRequest
+	15, // 55: thinkpol.localapi.v1.LocalService.TailLogs:input_type -> thinkpol.localapi.v1.TailLogsRequest
+	17, // 56: thinkpol.localapi.v1.LocalService.Diagnose:input_type -> thinkpol.localapi.v1.DiagnoseRequest
+	4,  // 57: thinkpol.localapi.v1.LocalService.GetStatus:output_type -> thinkpol.localapi.v1.GetStatusResponse
+	6,  // 58: thinkpol.localapi.v1.LocalService.WatchStatus:output_type -> thinkpol.localapi.v1.WatchStatusResponse
+	8,  // 59: thinkpol.localapi.v1.LocalService.Connect:output_type -> thinkpol.localapi.v1.ConnectResponse
+	10, // 60: thinkpol.localapi.v1.LocalService.Disconnect:output_type -> thinkpol.localapi.v1.DisconnectResponse
+	12, // 61: thinkpol.localapi.v1.LocalService.ListSpaces:output_type -> thinkpol.localapi.v1.ListSpacesResponse
+	14, // 62: thinkpol.localapi.v1.LocalService.SetRulePreset:output_type -> thinkpol.localapi.v1.SetRulePresetResponse
+	16, // 63: thinkpol.localapi.v1.LocalService.TailLogs:output_type -> thinkpol.localapi.v1.TailLogsResponse
+	18, // 64: thinkpol.localapi.v1.LocalService.Diagnose:output_type -> thinkpol.localapi.v1.DiagnoseResponse
+	57, // [57:65] is the sub-list for method output_type
+	49, // [49:57] is the sub-list for method input_type
+	49, // [49:49] is the sub-list for extension type_name
+	49, // [49:49] is the sub-list for extension extendee
+	0,  // [0:49] is the sub-list for field type_name
 }
 
 func init() { file_thinkpol_localapi_v1_localapi_proto_init() }
@@ -3744,7 +4034,7 @@ func file_thinkpol_localapi_v1_localapi_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_thinkpol_localapi_v1_localapi_proto_rawDesc), len(file_thinkpol_localapi_v1_localapi_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   45,
+			NumMessages:   48,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

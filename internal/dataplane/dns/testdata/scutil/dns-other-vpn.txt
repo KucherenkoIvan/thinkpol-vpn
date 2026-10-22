@@ -1,0 +1,16 @@
+DNS configuration
+
+resolver #1
+  search domain[0] : lab.internal
+  nameserver[0] : 100.64.0.2
+  flags    : Supplemental, Request A records, Request AAAA records
+  reach    : 0x00000002 (Reachable)
+  order    : 100000
+
+resolver #2
+  domain   : corp.example.net
+  nameserver[0] : 198.51.100.53
+  if_index : 23 (utun4)
+  flags    : Supplemental, Request A records
+  reach    : 0x00000003 (Reachable,Transient Connection)
+  order    : 102400

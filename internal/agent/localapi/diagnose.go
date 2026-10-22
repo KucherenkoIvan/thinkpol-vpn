@@ -14,6 +14,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
 	localapiv1 "github.com/KucherenkoIvan/thinkpol-vpn/proto/gen/thinkpol/localapi/v1"
@@ -56,7 +57,29 @@ func diagnosticsProto(d agent.Diagnostics, now time.Time, version string) *local
 		Routes:        routesProto(d.Routes),
 		Rules:         rulesProto(d.Routes),
 		Guard:         guardProto(d.Guard),
+		Dns:           dnsProto(d.DNS),
 	}
+}
+
+func dnsProto(r dns.HostReport) *localapiv1.DiagDns {
+	if r.Unreadable != "" {
+		return &localapiv1.DiagDns{Unreadable: r.Unreadable}
+	}
+	out := &localapiv1.DiagDns{}
+	for _, s := range r.Sources {
+		src := &localapiv1.DiagDnsSource{Name: s.Name, Unreadable: s.Unreadable}
+		if s.Unreadable == "" {
+			src.Present = s.Present
+			for _, res := range s.Resolvers {
+				src.Resolvers = append(src.Resolvers, &localapiv1.DiagResolver{
+					Interface: res.Interface, Scoped: res.Scoped, Servers: res.Servers, Domains: res.Domains, Search: res.Search,
+					Order: uint32(max(res.Order, 0)), Flags: res.Flags, Reach: res.Reach, Options: res.Options, NodeWritten: res.NodeWritten,
+				})
+			}
+		}
+		out.Sources = append(out.Sources, src)
+	}
+	return out
 }
 
 func routesProto(in netcfg.Inspection) *localapiv1.DiagRoutes {

@@ -288,6 +288,20 @@
 // Windows and Android have no [SetSystem] yet: it fails, and
 // [SystemUpstreams] is not known.
 //
+// # Reading back
+//
+// [Inspect] reads, for diagnostics (`thinkpol diag`), the resolvers the
+// host uses as it reports them, changing nothing: on Linux /etc/resolv.conf
+// (its servers, search domains and options, and whether it is the node's
+// rewrite; the original's comment lines aren't read as servers) and,
+// while it runs, systemd-resolved's servers and domains per link and
+// global, over D-Bus (no system bus socket is no resolved, not a failure);
+// on macOS `scutil --dns`, configd's resolvers as mDNSResponder uses them,
+// scoped ones apart, with their match domains, interface, order, flags
+// and reach. A `scutil --dns` line it can't place makes the listing
+// unreadable, naming the line. The scutil parser is tested on listings in
+// testdata/scutil laid out as TP-019's device checklist describes them.
+//
 // # Protection is checked, never assumed
 //
 // [System.Problem] says why names may still be resolved outside the

@@ -18,6 +18,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
 	localapiv1 "github.com/KucherenkoIvan/thinkpol-vpn/proto/gen/thinkpol/localapi/v1"
@@ -193,6 +194,12 @@ func TestDiagnoseCarriesTheHostParts(t *testing.T) {
 		Rules: []netcfg.HostRule{{Owner: netcfg.OwnerRouteTable, Family: netcfg.IPv4, Priority: 5301, Table: 29808, Mark: 0x7470, Mask: 0xffffffff,
 			Invert: true, SuppressPrefixlen: -1}},
 	}
+	s.node.diag.DNS = dns.HostReport{Sources: []dns.HostSource{
+		{Name: "resolv.conf", Present: true, Resolvers: []dns.HostResolver{{Servers: []string{"100.64.0.2"}, Search: []string{"lab.internal"}, Options: []string{"edns0"}, NodeWritten: true}}},
+		{Name: "systemd-resolved", Unreadable: "the system bus: refused", Present: true, Resolvers: []dns.HostResolver{{Servers: []string{"192.0.2.53"}}}},
+		{Name: "scutil --dns", Present: true, Resolvers: []dns.HostResolver{{Interface: "en0", Scoped: true, Servers: []string{"192.0.2.1"}, Domains: []string{"local"},
+			Order: 300000, Flags: "Scoped", Reach: "0x00000002 (Reachable)"}}},
+	}}
 	s.node.diag.Guard = routetable.GuardReport{
 		Where: "nftables table inet thinkpol-guard", Present: true,
 		Rules:    []routetable.GuardRuleReport{{Chain: "output", Text: "counter reject with icmpx admin-prohibited", Counted: true, Packets: 3, Bytes: 312}},
@@ -221,8 +228,14 @@ func TestDiagnoseCarriesTheHostParts(t *testing.T) {
 		Exempt:   &localapiv1.DiagPrefixes{Prefixes: []string{"2001:db8:d0::/48"}},
 		Nftables: &localapiv1.DiagNftables{Chains: []*localapiv1.DiagNftChain{{Name: "output", Hook: "output", Priority: 2147483647, Policy: "accept"}}},
 	}
+	wantDNS := &localapiv1.DiagDns{Sources: []*localapiv1.DiagDnsSource{
+		{Name: "resolv.conf", Present: true, Resolvers: []*localapiv1.DiagResolver{{Servers: []string{"100.64.0.2"}, Search: []string{"lab.internal"}, Options: []string{"edns0"}, NodeWritten: true}}},
+		{Name: "systemd-resolved", Unreadable: "the system bus: refused"},
+		{Name: "scutil --dns", Present: true, Resolvers: []*localapiv1.DiagResolver{{Interface: "en0", Scoped: true, Servers: []string{"192.0.2.1"}, Domains: []string{"local"},
+			Order: 300000, Flags: "Scoped", Reach: "0x00000002 (Reachable)"}}},
+	}}
 	for what, pair := range map[string][2]proto.Message{
-		"routes": {d.GetRoutes(), wantRoutes}, "rules": {d.GetRules(), wantRules}, "guard": {d.GetGuard(), wantGuard},
+		"routes": {d.GetRoutes(), wantRoutes}, "rules": {d.GetRules(), wantRules}, "guard": {d.GetGuard(), wantGuard}, "dns": {d.GetDns(), wantDNS},
 	} {
 		if !proto.Equal(pair[0], pair[1]) {
 			t.Errorf("%s: %v, want %v", what, pair[0], pair[1])

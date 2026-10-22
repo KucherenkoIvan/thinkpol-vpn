@@ -1,0 +1,6 @@
+DNS configuration
+
+resolver #1
+  nameserver[0] : 100.64.0.2
+  this line is no entry
+  order    : 100000

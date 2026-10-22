@@ -119,14 +119,17 @@
 //     chain, rules with their counters and exempt set; on macOS the pf
 //     anchor's rules with their counters, its exempt table, pf's enabled
 //     state, how the main ruleset reaches the anchor and what bypasses it,
-//     and the guard's `pfctl -E` reference and whether pf still holds it.
+//     and the guard's `pfctl -E` reference and whether pf still holds it;
+//   - the resolvers the host uses, for the overlay's names and the rest
+//     ([dns.Inspect]): resolv.conf and systemd-resolved's links on Linux,
+//     `scutil --dns` on macOS.
 //
-// The routes, rules and guard are read from the host whatever the data
-// plane's state, so a snapshot after a crash or a stop shows what was
-// left. They name public addresses (the entries', the direct
-// destinations', the gateway's), so they are root's: the group's
-// snapshot has each of them unreadable, "root only", and the agent
-// doesn't read them for it.
+// The routes, rules, guard and resolvers are read from the host whatever
+// the data plane's state, so a snapshot after a crash or a stop shows
+// what was left. They name public addresses (the entries', the direct
+// destinations', the gateway's, the upstreams'), so they are root's: the
+// group's snapshot has each of them unreadable, "root only", and the
+// agent doesn't read them for it.
 //
 // The snapshot holds no key, token or session id: what it carries comes
 // from the status, which holds none, and from reading the host, which

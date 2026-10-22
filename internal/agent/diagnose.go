@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"slices"
 
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
 )
@@ -25,6 +26,9 @@ type Diagnostics struct {
 	// entries', the direct destinations', the gateway's): root's only.
 	Routes netcfg.Inspection
 	Guard  routetable.GuardReport
+	// DNS is the resolvers the host uses, for the overlay's names and the
+	// rest (the direct upstream's address among them): root's only too.
+	DNS dns.HostReport
 }
 
 // Why a part of Diagnostics is unreadable, when the agent says so itself
@@ -61,6 +65,8 @@ type Inspector struct {
 	Routes func() netcfg.Inspection
 	// Guard reads the leak guard (firewall.InspectIPv6Guard).
 	Guard func(ctx context.Context) routetable.GuardReport
+	// DNS reads the host's resolvers (dns.Inspect).
+	DNS func(ctx context.Context) dns.HostReport
 }
 
 // InspectInterface reads the interface name from the OS.
@@ -103,9 +109,11 @@ func (n *Node) Diagnose(ctx context.Context, host bool) Diagnostics {
 	if !host {
 		d.Routes = netcfg.Inspection{RoutesUnreadable: UnreadableRootOnly, RulesUnreadable: UnreadableRootOnly}
 		d.Guard = routetable.GuardReport{Unreadable: UnreadableRootOnly}
+		d.DNS = dns.HostReport{Unreadable: UnreadableRootOnly}
 		return d
 	}
 	d.Routes = n.plat.Inspect.Routes()
 	d.Guard = n.plat.Inspect.Guard(ctx)
+	d.DNS = n.plat.Inspect.DNS(ctx)
 	return d
 }
