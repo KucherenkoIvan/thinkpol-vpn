@@ -71,6 +71,13 @@ func TestServiceUnderSystemd(t *testing.T) {
 	if got := dev.MustExec(t, "thinkpol", "service", "connect-on-boot"); got != "connect-on-boot: off\n" {
 		t.Fatalf("connect-on-boot: %q", got)
 	}
+	// A reload is SIGHUP to the agent: it reads the map again, and runs on.
+	dev.MustExec(t, "systemctl", "reload", "thinkpol.service")
+	for prop, want := range map[string]string{"NRestarts": "0\n", "ActiveState": "active\n"} {
+		if got := dev.MustExec(t, "systemctl", "show", "-p", prop, "--value", "thinkpol.service"); got != want {
+			t.Fatalf("after a reload, %s %q", prop, got)
+		}
+	}
 
 	// alice reaches the local API through the group install gave her.
 	asAlice := func(args ...string) []string {

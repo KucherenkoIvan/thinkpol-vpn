@@ -110,7 +110,7 @@ func TestTheSystemdUnitRunsTheAgentAndRestartsIt(t *testing.T) {
 		}
 		want := map[string]map[string]string{
 			"[Unit]": {"StartLimitIntervalSec": "0"},
-			"[Service]": {"ExecStart": BinaryPath + " up", "Restart": "always", "RestartSec": "5", "KillMode": "mixed",
+			"[Service]": {"ExecStart": BinaryPath + " up", "ExecReload": "/bin/kill -HUP $MAINPID", "Restart": "always", "RestartSec": "5", "KillMode": "mixed",
 				"Environment": "THINKPOL_CONNECT=" + map[bool]string{true: "true", false: "false"}[on]},
 			"[Install]": {"WantedBy": "multi-user.target"},
 		}

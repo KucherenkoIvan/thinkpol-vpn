@@ -203,7 +203,7 @@ What a censor finds on a seized or inspected server node:
 | Logs | None written by the agent: they go to an in-memory ring that only root reads, through the local API. Under systemd, stderr reaches the journal, which provisioning is to make volatile (RR40) |
 | Telemetry | Only in memory, per space, bounded (on the order of 15 minutes and tens of kilobytes); **each record sealed to the space's telemetry key as it's written**, so neither a memory dump nor swap yields readable data; oldest dropped first; gone on reboot |
 
-On disk a node keeps its state directory: its keys, the space's public keys, the space's map, a device's rule choice, and public lists named by hash. It, and every directory above it, can be changed only by root or the node's user: whoever could replace the space's keys would choose the maps the node trusts, and whoever could replace the map could roll the node back (RR46). Workers can't read it; the supervisor hands them what they need. Outside it a node keeps only what it must find again after a crash, recorded so the next start undoes or takes it over: its locks, routes and leak guard, the OS's resolver configuration, on a server the supervisor's nftables tables and forwarding record, and on macOS route records, which name the entries' addresses, and a pf reference record (RR52).
+On disk a node keeps its state directory: its keys, the space's public keys, the space's map, a device's rule choice, and public lists named by hash. It, and every directory above it, can be changed only by root or the node's user: whoever could replace the space's keys would choose the maps the node trusts, and whoever could replace the map could roll the node back (RR46). Workers can't read it; the supervisor hands them what they need. Outside it a node keeps only what it must find again after a crash, recorded so the next start undoes or takes it over: its locks, a device's connect choice for the boot, routes and leak guard, the OS's resolver configuration, on a server the supervisor's nftables tables and forwarding record, and on macOS route records, which name the entries' addresses, and a pf reference record (RR52).
 
 Telemetry records are aggregates per link and per device id (rates, byte counts, path and transport in use, handshake failures), **never public IP addresses or destinations**. History lives only on the controller.
 
@@ -274,7 +274,7 @@ Each package's `doc.go` holds its mechanism; this table is the way in.
 |---|---|
 | `cmd/thinkpol` | the one binary (`up`, CLI, `admin serve`, dev tools); composition roots |
 | `cmd/thinkpol-tray` | the tray app, a local API client |
-| [`agent`](internal/agent/doc.go) | the node agent: maps, modes, host lock, connection, events, what a node keeps |
+| [`agent`](internal/agent/doc.go), [`agent/service`](internal/agent/service/doc.go) | the node agent: maps, modes, host lock, connection, events, what a node keeps; the service install |
 | [`agent/supervisor`](internal/agent/supervisor/doc.go) | servers: shared listeners, isolation, egress; the planned gatekeeper |
 | [`agent/worker`](internal/agent/worker/doc.go), [`agent/ipc`](internal/agent/ipc/doc.go) | a space's sandboxed data plane and its protocol |
 | [`agent/localapi`](internal/agent/localapi/doc.go) | the local API: socket, gates, limits |

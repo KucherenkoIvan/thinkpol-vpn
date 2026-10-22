@@ -50,6 +50,9 @@ StartLimitIntervalSec=0
 
 [Service]
 ExecStart=%s up
+# SIGHUP to the agent alone re-reads the map at once; a server's workers
+# don't handle it, so never signal the whole unit.
+ExecReload=/bin/kill -HUP $MAINPID
 Environment=THINKPOL_CONNECT=%t
 Restart=always
 RestartSec=%d

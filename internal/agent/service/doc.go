@@ -53,6 +53,9 @@
 //     group);
 //   - uses KillMode=mixed: SIGTERM goes to the agent alone, which stops a
 //     server's workers itself; whatever is left is killed after it;
+//   - reloads with SIGHUP to the agent alone (`systemctl reload thinkpol`),
+//     which reads the map file at once; a server's workers don't handle
+//     SIGHUP. Under launchd: `launchctl kill HUP system/org.thinkpol.agent`;
 //   - starts after network.target and systemd-resolved (if there), and
 //     so stops before them, with the network still there to undo its
 //     routes and resolver configuration against.
