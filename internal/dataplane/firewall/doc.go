@@ -226,15 +226,16 @@
 // another enabler's (the Application Firewall's); the guard never takes a
 // reference for it. Flushing would leave an empty anchor, which passes
 // all IPv6. The guard's rules are all `quick` and end in the block, so a
-// re-ordered listing is never wider than the rules written; anything wider
-// (a rule missing a word, a pass with state, a table wider than the one
-// loaded) takes someone changing the anchor between the load and the
-// read-back, and is enforced as it is until a retry reads it back whole. Reloading the last verified guard instead
-// was rejected: it guards the previous Exempt, so after a preset moves an
+// re-ordered listing is never wider than the rules written. A listing
+// with other rules than those written (a pass that lost a word, a pass
+// with state) or a table wider than the one loaded takes more than the
+// written load: someone changing the anchor between the load and the
+// read-back, or a pfctl that optimized it anyway (`basic` may merge rules
+// into a table); either is enforced as it is until a retry reads the
+// anchor back whole. Reloading the last verified guard instead was
+// rejected: it guards the previous Exempt, so after a preset moves an
 // address from direct to tunnelled it would exempt that address around
-// the tunnel; its own read-back can be refused the same way; and a table
-// wider than the one loaded takes a root process changing the anchor
-// between the load and the read-back.
+// the tunnel; and its own read-back can be refused the same way.
 //
 // pf passes a packet that matches a state without evaluating any rule
 // (its state policy is floating). So after a load, after enabling pf, and
