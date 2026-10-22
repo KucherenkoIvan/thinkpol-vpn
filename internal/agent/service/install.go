@@ -41,7 +41,8 @@ type System interface {
 	// error).
 	Stop(ctx context.Context, run Runner) error
 	// Remove stops the service and has it start no more: Stop, and
-	// disabled (systemd); launchd forgets a booted-out daemon anyway.
+	// disabled (systemd); launchd forgets a booted-out daemon until the
+	// next boot, so uninstall removes its plist.
 	Remove(ctx context.Context, run Runner) error
 	// Forget is called once the definition is gone.
 	Forget(ctx context.Context, run Runner) error
@@ -111,15 +112,17 @@ func (in Installer) say(format string, args ...any) {
 // Install copies the binary, makes the group (adding opts.User), writes
 // the definition and (re)starts the service. Run again, it replaces the
 // binary and restarts the service, keeping connect-on-boot unless opts
-// sets it. Every step that can fail runs before anything is stopped, so
-// a failed install leaves a working service as it was: the binary is
-// renamed over (the old agent runs on from its file), and the definition
-// is read by the manager only at Start. With no service installed, an
+// sets it. The binary directory's trust check, the group steps, then the
+// binary, then the definition, all run before anything is stopped: a failure there leaves the installed
+// service running and enabled (a failure after the binary leaves the new
+// binary for the old definition's next restart; the binary is renamed
+// over, so the old agent runs on from its file, and the definition is
+// read by the manager only at Start). With no service installed, an
 // agent holding the host lock (one run by hand) refuses the install
-// before anything changes; with one, its agent holds the lock, so the
-// check comes after the service is stopped (kept enabled), and refuses
-// before Start: the service's agent would only restart against the
-// hand-run one's lock.
+// before anything changes. With one, its agent holds the lock, so the
+// check comes after the stop: a refusal there, or a failed start, leaves
+// the service stopped and still enabled (launchd: booted out until the
+// next boot, which bootstraps the plist again).
 func (in Installer) Install(ctx context.Context, opts Options) error {
 	if err := in.System.Present(in.Root); err != nil {
 		return err
@@ -146,7 +149,7 @@ func (in Installer) Install(ctx context.Context, opts Options) error {
 	if opts.ConnectOnBoot != nil {
 		connect = *opts.ConnectOnBoot
 	}
-	if err := in.installBinary(); err != nil {
+	if err := in.binaryDirTrusted(); err != nil {
 		return err
 	}
 	if err := in.System.EnsureGroup(ctx, in.Run, Group); err != nil {
@@ -157,6 +160,9 @@ func (in Installer) Install(ctx context.Context, opts Options) error {
 			return fmt.Errorf("adding %s to group %s: %w", opts.User, Group, err)
 		}
 		in.say("%s is in group %s: the local API is theirs from their next login", opts.User, Group)
+	}
+	if err := in.installBinary(); err != nil {
+		return err
 	}
 	if err := in.writeDefinition(Definition{Binary: BinaryPath, ConnectOnBoot: connect}); err != nil {
 		return err
@@ -292,13 +298,24 @@ func (in Installer) writeDefinition(d Definition) error {
 // same file: a symlink or anyone else's file
 // there is replaced, so root's service never runs what a user could
 // change. Its directory must be one no one else can change (trusteddir).
-func (in Installer) installBinary() error {
-	dst := in.path(BinaryPath)
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+// binaryDirTrusted makes the binary's directory if it is missing and
+// refuses one others can change: whoever could replace the binary would
+// run as root. Install checks it before changing anything else.
+func (in Installer) binaryDirTrusted() error {
+	dir := filepath.Dir(in.path(BinaryPath))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	if err := checkTrusted(filepath.Dir(dst)); err != nil {
+	if err := checkTrusted(dir); err != nil {
 		return fmt.Errorf("the service's binary would be in a directory others can change: %w", err)
+	}
+	return nil
+}
+
+func (in Installer) installBinary() error {
+	dst := in.path(BinaryPath)
+	if err := in.binaryDirTrusted(); err != nil {
+		return err
 	}
 	src, err := os.Stat(in.Executable)
 	if err != nil {

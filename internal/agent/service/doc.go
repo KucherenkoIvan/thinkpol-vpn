@@ -109,30 +109,30 @@
 // # What uninstall leaves
 //
 // Nothing of the service but its group. It stops the service, disabled
-// (systemctl disable --now; launchd's bootout), and waits for the agent
-// to exit (which takes its data plane down: TUN, routes, leak guard, the
-// resolver configuration), then takes the host's agent lock: while an agent still holds it (one run by hand, one the stop
-// didn't end) uninstall refuses before it touches a lock or a record,
-// since removing them would let the next agent lock a fresh inode beside
-// the running one. Holding the lock, it undoes what a crashed device
-// agent left (the agent's start-time cleanup without a connect: the
-// route table's routes and leak guard, the overlay's routes, the
-// resolver configuration, a missing resolv.conf being nothing to put
-// back; a stop that timed out leaves them too), and only then removes the
-// definition (systemd forgets the unit), the binary, and in the agent's
-// runtime directories (its lock's directory, the local API's) the locks,
-// the boot's connect record and stale sockets, then the directories left
-// empty. It removes agent.lock while it holds it: the service can't start
-// an agent in between (systemd's is disabled and stopped, launchd's
-// booted out), and one started by hand afterwards makes a fresh lock with
-// nothing to share. Anything else
-// there is reported and left: on macOS a crashed run's route or pf
-// records; on a server, the supervisor's forwarding.json. A server's crash
-// leftovers (the supervisor's nftables tables and the forwarding it
+// (systemctl disable --now; launchd's bootout), and waits for the agent to
+// exit (which takes its data plane down: TUN, routes, leak guard, the
+// resolver configuration), then takes the host's agent lock: while an
+// agent still holds it (one run by hand, one the stop didn't end)
+// uninstall refuses before it touches a lock or a record, since removing
+// them would let the next agent lock a fresh inode beside the running one.
+// Holding the lock, it undoes what a crashed device agent left (the
+// agent's start-time cleanup without a connect: the route table's routes
+// and leak guard, the overlay's routes, the resolver configuration, a
+// missing resolv.conf being nothing to put back; a stop that timed out
+// leaves them too), and only then removes the definition (systemd forgets
+// the unit), the binary, and in the agent's runtime directories (its
+// lock's directory, the local API's) the locks, the boot's connect record
+// and stale sockets, then the directories left empty. It removes
+// agent.lock while it holds it: the service can't start an agent in
+// between (systemd's is disabled and stopped, launchd's booted out), and
+// one started by hand afterwards makes a fresh lock with nothing to share.
+// Anything else there is reported and left: on macOS a crashed run's route
+// or pf records; on a server, the supervisor's forwarding.json. A server's
+// crash leftovers (the supervisor's nftables tables and the forwarding it
 // turned on) stay until a reboot: uninstall runs a device's cleanup only
 // (TP-132). The group stays: it may be older than the service, or
-// someone's group for other reasons; remove it by hand if nothing uses
-// it. So does the node's state directory, its keys and map.
+// someone's group for other reasons; remove it by hand if nothing uses it.
+// So does the node's state directory, its keys and map.
 //
 // # Where it is proven
 //

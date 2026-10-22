@@ -395,9 +395,10 @@ func TestNothingIsTakenFromARunningAgent(t *testing.T) {
 	}
 	unlockAgain()
 
-	// The service stopped by hand and an agent run by hand: a reinstall
-	// stops nothing more, replaces nothing and starts nothing, since its
-	// service would only restart against the agent's lock.
+	// The service stopped by hand and an agent run by hand: the reinstall
+	// replaces the binary and the definition (the next boot runs them),
+	// stops nothing more and starts nothing, since its service would only
+	// restart against the agent's lock.
 	if err := in.Install(ctx, Options{}); err != nil {
 		t.Fatal(err)
 	}
@@ -413,8 +414,8 @@ func TestNothingIsTakenFromARunningAgent(t *testing.T) {
 	if err := in.Install(ctx, Options{}); !errors.Is(err, errAgentRuns) {
 		t.Fatalf("reinstall: %v", err)
 	}
-	if h.unitRunning != nil || !h.enabled {
-		t.Fatalf("running %q, enabled %v: want stopped and still enabled", h.unitRunning, h.enabled)
+	if bin, _, _ := h.file(BinaryPath); string(bin) != "a newer thinkpol" || h.unitRunning != nil || !h.enabled {
+		t.Fatalf("binary %q, running %q, enabled %v: want the new binary, stopped and still enabled", bin, h.unitRunning, h.enabled)
 	}
 }
 
@@ -431,12 +432,21 @@ func TestAFailedReinstallLeavesTheServiceAsItWas(t *testing.T) {
 			t.Fatal(err)
 		}
 		running := h.unitRunning
+		oldBin, _, _ := h.file(BinaryPath)
+		if err := os.WriteFile(in.Executable, []byte("a newer thinkpol"), 0o755); err != nil {
+			t.Fatal(err)
+		}
 		h.failNext["usermod -a"] = 1
 		if err := in.Install(ctx, Options{User: "nosuchuser", ConnectOnBoot: &on}); err == nil {
 			t.Fatal("installed")
 		}
 		if !h.enabled || !bytes.Equal(h.unitRunning, running) {
 			t.Fatalf("enabled %v, running %q, want %q", h.enabled, h.unitRunning, running)
+		}
+		// The group step fails before the binary is replaced: the old
+		// definition's next restart runs the binary it was written for.
+		if bin, _, _ := h.file(BinaryPath); !bytes.Equal(bin, oldBin) {
+			t.Fatalf("binary %q after a failed group step, want %q", bin, oldBin)
 		}
 	})
 	t.Run("launchd", func(t *testing.T) {
