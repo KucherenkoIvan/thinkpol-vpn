@@ -880,9 +880,9 @@ func (x *DiagnoseResponse) GetDiagnostics() *Diagnostics {
 // Diagnostics is `thinkpol diag`'s snapshot: the evidence a device run
 // records. `thinkpol diag` writes it as JSON with these field names
 // (snake_case) and every field present, unset ones as their zero value
-// or null. A part the agent couldn't read has `unreadable` set to why,
-// and nothing else; a part without it was read, and what it lists is all
-// there is. No key, token or session id is in it; endpoints and
+// or null, but a guard's `present`, left out when it couldn't be told. A
+// part the agent couldn't read has `unreadable` set to why, and nothing
+// else; a part without it was read, and what it lists is all there is. No key, token or session id is in it; endpoints and
 // addresses are, in the host parts, which only root gets.
 type Diagnostics struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -1650,7 +1650,8 @@ type DiagGuard struct {
 	// com.apple/000.thinkpol".
 	Where string `protobuf:"bytes,2,opt,name=where,proto3" json:"where,omitempty"`
 	// The host holds the guard (the table exists; the anchor lists rules).
-	// Left out when that couldn't be told (the anchor's rules unreadable).
+	// Unset, and left out of the JSON, when that couldn't be told (the
+	// anchor's rules unreadable).
 	Present *bool           `protobuf:"varint,3,opt,name=present,proto3,oneof" json:"present,omitempty"`
 	Rules   *DiagGuardRules `protobuf:"bytes,4,opt,name=rules,proto3" json:"rules,omitempty"`
 	// What the guard lets out by destination, as the fewest prefixes.

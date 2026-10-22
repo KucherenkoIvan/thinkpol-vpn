@@ -316,6 +316,16 @@
 // takes a new reference first, then releases the old one if pf still
 // lists it.
 //
+// `pfctl -s References` is read by the columns its header names: a line's
+// first field is the pid, and the token is the field where the header's
+// TOKEN starts, whatever the process name (spaces included) and the
+// timestamp look like. A listing without the header, with a line out of
+// those columns, or cut short is one the guard can't read, and a
+// reference not found in it proves nothing: looking a token up by pid and
+// releasing both fail, so the record stays and the next Close (or
+// routetable.Clear's) tries again. pf stays enabled on that reference
+// meanwhile, rather than the guard forgetting a reference pf still holds.
+//
 // # macOS: polling
 //
 // pf has no event stream, so [IPv6Guard.Watch] polls every 10 s: the hook,
@@ -359,8 +369,8 @@
 // reference, by its pid, with whether `-s References` lists it as taken by
 // that pid; the token stays in the record. A listing with a line it can't
 // read (no rule, counters out of place, unreadable or past uint64, a rule
-// without counters, a line too long to read; in References, a line it
-// can't place) is unreadable as a whole, naming the line: half a listing
+// without counters, a line too long to read; in References, as the guard
+// reads it, above) is unreadable as a whole, naming the line: half a listing
 // could hide the rule that matters. A record of another boot is stale;
 // one that isn't a regular file or can't be parsed is unreadable, said in
 // fixed words (trusteddir's errors never quote a record either). A

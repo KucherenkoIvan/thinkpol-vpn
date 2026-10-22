@@ -18,7 +18,8 @@ func Inspect(ctx context.Context) HostReport {
 
 func inspectWith(ctx context.Context, s scutil) HostReport {
 	src := HostSource{Name: "scutil --dns"}
-	out, err := s.exec(ctx, "", "--dns")
+	// The C locale: the listing parsed below is its.
+	out, err := s.exec(ctx, "", []string{"LC_ALL=C"}, "--dns")
 	if err != nil {
 		src.Unreadable = "scutil --dns: " + err.Error()
 		return HostReport{Sources: []HostSource{src}}

@@ -110,7 +110,8 @@
 // Its JSON is the v1 contract ([WriteDiagnostics]; `status -json` is
 // not): the schema's own field names (snake_case: `schema_version`,
 // `last_apply`) and every field present, an unset one as its zero value
-// or null, but a guard's `present`, left out when it couldn't be told.
+// or null; only a guard's `present` is left out, when it couldn't be told
+// (protojson omits an unset proto3 optional field even then).
 // [DiagSchemaVersion] is bumped when a field is removed or renamed or its
 // type or meaning changes, not when one is added; `unreadable` texts are
 // free-form, and enumerated string values (a route's type, an Apply's
@@ -168,8 +169,8 @@
 // S1, S4), but Diagnose's host parts, root's only, which name public
 // addresses (never a key or a secret). Elsewhere nodes and spaces are
 // opaque ids, addresses are the overlay's, links name their endpoint by
-// its index, and a server's listeners are
-// shown without their addresses. Failures are named from fixed
+// its index, and a server's listeners are shown without their addresses.
+// Failures are named from fixed
 // vocabularies: refusals are [Error] values (go-kernel ddd.DomainError
 // values that grpckit's interceptor sends by their code), and a failed
 // Connect names only its step (`start_failed:<step>`), the detail going to

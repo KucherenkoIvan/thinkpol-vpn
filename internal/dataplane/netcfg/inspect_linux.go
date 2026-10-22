@@ -6,9 +6,12 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"net/netip"
 	"slices"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netlink/nl"
@@ -58,42 +61,28 @@ func inspectWith(h *netlink.Handle, ns netns.NsHandle, err error) Inspection {
 			}
 		}
 	}
-	out.Rules, err = ownedRules(c, ns)
+	out.Rules, err = ownedRules(ns)
 	if err != nil {
 		out.Rules, out.RulesUnreadable = nil, err.Error()
 	}
 	return out
 }
 
-// ownedRules are both families' rules carrying an owner's protocol, with
-// their actions, which vishvananda/netlink's dump doesn't read: a second,
-// raw dump gives them, by the rules' order; dumps that disagree (the rules
-// changed in between) are read again, and then unreadable.
-func ownedRules(c *linuxConfigurator, ns netns.NsHandle) ([]HostRule, error) {
+// ownedRules are both families' rules carrying an owner's protocol, read
+// from one raw RTM_GETRULE dump per family: vishvananda/netlink's dump
+// doesn't read a rule's action, and pairing its rules with a second dump
+// can't be done safely (many rules share a priority and a protocol).
+func ownedRules(ns netns.NsHandle) ([]HostRule, error) {
 	var out []HostRule
 	for _, fam := range []int{netlink.FAMILY_V4, netlink.FAMILY_V6} {
-		var rules []netlink.Rule
-		var actions []ruleAction
-		var err error
-		for try := 0; ; try++ {
-			if rules, err = c.listRules(fam); err != nil {
-				return nil, err
-			}
-			if actions, err = ruleActions(ns, fam); err != nil {
-				return nil, err
-			}
-			if sameRules(rules, actions) {
-				break
-			}
-			if try == 2 {
-				return nil, errors.New("netcfg: the rules changed while they were read")
-			}
+		rules, err := dumpRules(ns, fam)
+		if err != nil {
+			return nil, err
 		}
-		for i, r := range rules {
-			if o, ok := ownerOf(netlink.RouteProtocol(r.Protocol)); ok {
-				hr := hostRule(o, r)
-				hr.Action = actionName(actions[i].action)
-				out = append(out, hr)
+		for _, r := range rules {
+			if o, ok := ownerOf(netlink.RouteProtocol(r.protocol)); ok {
+				r.rule.Owner = o
+				out = append(out, r.rule)
 			}
 		}
 	}
@@ -101,51 +90,57 @@ func ownedRules(c *linuxConfigurator, ns netns.NsHandle) ([]HostRule, error) {
 	return out, nil
 }
 
-// ruleAction is what a raw rule dump gives of a rule: its priority and
-// protocol, to match it with netlink's, and its action.
-type ruleAction struct {
-	priority uint32
+// rawRule is a rule as the raw dump gives it.
+type rawRule struct {
 	protocol uint8
-	action   uint8
+	rule     HostRule
 }
 
-func sameRules(rules []netlink.Rule, actions []ruleAction) bool {
-	if len(rules) != len(actions) {
-		return false
-	}
-	for i, r := range rules {
-		if uint32(max(r.Priority, 0)) != actions[i].priority || r.Protocol != actions[i].protocol {
-			return false
+// ruleDumpTimeout bounds each receive of the raw dump.
+const ruleDumpTimeout = 5 * time.Second
+
+// dumpRules dumps fam's rules in ns. A kernel without the family (no
+// IPv6) has none; a dump the kernel interrupted (the rules changed
+// meanwhile) is taken again, then fails.
+func dumpRules(ns netns.NsHandle, fam int) ([]rawRule, error) {
+	for try := 0; ; try++ {
+		rules, err := dumpRulesOnce(ns, fam)
+		if !errors.Is(err, errDumpInterrupted) || try == 2 {
+			return rules, err
 		}
 	}
-	return true
 }
 
-// ruleActions dumps fam's rules in ns: a fib_rule_hdr's action is its
-// eighth byte, where an rtmsg has its type. A kernel without the family
-// (no IPv6) has none.
-func ruleActions(ns netns.NsHandle, fam int) ([]ruleAction, error) {
+var errDumpInterrupted = errors.New("netcfg: list rules: the dump was interrupted (the rules changed while they were read)")
+
+func dumpRulesOnce(ns netns.NsHandle, fam int) ([]rawRule, error) {
 	s, err := nl.GetNetlinkSocketAt(ns, netns.None(), unix.NETLINK_ROUTE)
 	if err != nil {
 		return nil, fmt.Errorf("netcfg: list rules: %w", err)
 	}
 	defer s.Close()
+	tv := unix.NsecToTimeval(ruleDumpTimeout.Nanoseconds())
+	if err := s.SetReceiveTimeout(&tv); err != nil {
+		return nil, fmt.Errorf("netcfg: list rules: %w", err)
+	}
 	req := nl.NewNetlinkRequest(unix.RTM_GETRULE, unix.NLM_F_DUMP)
 	req.AddData(nl.NewIfInfomsg(fam))
 	if err := s.Send(req); err != nil {
 		return nil, fmt.Errorf("netcfg: list rules: %w", err)
 	}
-	var out []ruleAction
+	var out []rawRule
+	interrupted := false
 	for {
 		msgs, _, err := s.Receive()
 		if err != nil {
 			return nil, fmt.Errorf("netcfg: list rules: %w", err)
 		}
 		for _, m := range msgs {
+			interrupted = interrupted || m.Header.Flags&unix.NLM_F_DUMP_INTR != 0
 			switch m.Header.Type {
 			case unix.NLMSG_DONE:
-				if m.Header.Flags&unix.NLM_F_DUMP_INTR != 0 {
-					return nil, errors.New("netcfg: list rules: the dump was interrupted")
+				if interrupted {
+					return nil, errDumpInterrupted
 				}
 				return out, nil
 			case unix.NLMSG_ERROR:
@@ -158,26 +153,84 @@ func ruleActions(ns netns.NsHandle, fam int) ([]ruleAction, error) {
 					}
 				}
 			case unix.RTM_NEWRULE:
-				if len(m.Data) < unix.SizeofRtMsg {
-					return nil, errors.New("netcfg: list rules: a rule message too short")
-				}
-				a := ruleAction{action: m.Data[7]}
-				attrs, err := nl.ParseRouteAttr(m.Data[unix.SizeofRtMsg:])
+				r, err := parseRawRule(m.Data)
 				if err != nil {
-					return nil, fmt.Errorf("netcfg: list rules: %w", err)
+					return nil, err
 				}
-				for _, at := range attrs {
-					switch {
-					case at.Attr.Type == unix.FRA_PRIORITY && len(at.Value) == 4:
-						a.priority = binary.NativeEndian.Uint32(at.Value)
-					case at.Attr.Type == unix.FRA_PROTOCOL && len(at.Value) == 1:
-						a.protocol = at.Value[0]
-					}
-				}
-				out = append(out, a)
+				out = append(out, r)
 			}
 		}
 	}
+}
+
+// parseRawRule reads a rule message: a fib_rule_hdr (family, dst_len,
+// src_len, tos, table, two reserved bytes, action, flags) and its
+// attributes. A selector or action netcfg never sets marks it Other.
+func parseRawRule(b []byte) (rawRule, error) {
+	if len(b) < unix.SizeofRtMsg {
+		return rawRule{}, errors.New("netcfg: list rules: a rule message too short")
+	}
+	r := HostRule{Family: IPv4, Table: int(b[4]), Action: actionName(b[7]), SuppressPrefixlen: -1,
+		Invert: binary.NativeEndian.Uint32(b[8:12])&unix.FIB_RULE_INVERT != 0, Other: b[2] != 0 || b[3] != 0}
+	if b[0] == unix.AF_INET6 {
+		r.Family = IPv6
+	}
+	attrs, err := nl.ParseRouteAttr(b[unix.SizeofRtMsg:])
+	if err != nil {
+		return rawRule{}, fmt.Errorf("netcfg: list rules: %w", err)
+	}
+	out := rawRule{}
+	maskSeen := false
+	for _, at := range attrs {
+		v := at.Value
+		u32 := func() uint32 {
+			if len(v) < 4 {
+				return 0
+			}
+			return binary.NativeEndian.Uint32(v)
+		}
+		switch at.Attr.Type {
+		case unix.FRA_PRIORITY:
+			r.Priority = int(u32())
+		case unix.FRA_TABLE:
+			r.Table = int(u32())
+		case unix.FRA_DST:
+			if a, ok := netip.AddrFromSlice(v); ok {
+				if r.Family == IPv4 {
+					a = a.Unmap()
+				}
+				r.Dst = netip.PrefixFrom(a, int(b[1]))
+			}
+		case unix.FRA_OIFNAME:
+			r.Oif = strings.TrimRight(string(v), "\x00")
+		case unix.FRA_FWMARK:
+			r.Mark = u32()
+		case unix.FRA_FWMASK:
+			r.Mask, maskSeen = u32(), true
+		case unix.FRA_SUPPRESS_PREFIXLEN:
+			r.SuppressPrefixlen = int(int32(u32()))
+		case unix.FRA_PROTOCOL:
+			if len(v) == 1 {
+				out.protocol = v[0]
+			}
+		case unix.FRA_SRC, unix.FRA_IIFNAME, unix.FRA_GOTO, unix.FRA_FLOW, unix.FRA_TUN_ID, unix.FRA_L3MDEV,
+			unix.FRA_UID_RANGE, unix.FRA_IP_PROTO, unix.FRA_SPORT_RANGE, unix.FRA_DPORT_RANGE:
+			r.Other = true
+		case unix.FRA_SUPPRESS_IFGROUP:
+			r.Other = r.Other || int32(u32()) != -1
+		}
+	}
+	if r.SuppressPrefixlen != -1 && r.SuppressPrefixlen != 0 {
+		r.Other = true
+	}
+	// netcfg sets a mark whole (mask 0xffffffff) or none.
+	whole := r.Mark != 0 && r.Mask == math.MaxUint32
+	none := r.Mark == 0 && r.Mask == 0
+	if maskSeen && !whole && !none {
+		r.Other = true
+	}
+	out.rule = r
+	return out, nil
 }
 
 func actionName(a uint8) string {
@@ -255,22 +308,4 @@ func routeType(t int) string {
 		return "prohibit"
 	}
 	return strconv.Itoa(t)
-}
-
-func hostRule(o Owner, kr netlink.Rule) HostRule {
-	r, plain := ruleOf(kr)
-	hr := HostRule{
-		Owner: o, Family: r.Family, Priority: kr.Priority, Table: kr.Table, Dst: r.Dst, Oif: kr.OifName,
-		Mark: kr.Mark, Invert: kr.Invert, SuppressPrefixlen: kr.SuppressPrefixlen, Other: !plain,
-	}
-	if kr.Mask != nil {
-		hr.Mask = *kr.Mask
-	}
-	if hr.Family == 0 {
-		hr.Family = IPv4
-		if kr.Family == netlink.FAMILY_V6 {
-			hr.Family = IPv6
-		}
-	}
-	return hr
 }

@@ -113,6 +113,11 @@ func TestInspectReadsTheOwnersRoutesAndRules(t *testing.T) {
 	// shows, not a lookup.
 	n.ip(t, "rule", "add", "priority", "5303", "blackhole", "protocol", "86")
 	n.ip(t, "-6", "rule", "add", "priority", "5303", "prohibit", "protocol", "86")
+	// Rules sharing a priority and a protocol keep their own actions and
+	// selectors; a partial mark mask is a selector netcfg never sets.
+	n.ip(t, "rule", "add", "priority", "5304", "to", "198.51.100.0/24", "table", "4242", "protocol", "86")
+	n.ip(t, "rule", "add", "priority", "5304", "to", "203.0.113.0/24", "unreachable", "protocol", "86")
+	n.ip(t, "rule", "add", "priority", "5305", "fwmark", "0x10/0xf0", "table", "4242", "protocol", "86")
 
 	in := netcfg.InspectInNamespace(n.path)
 	if in.RoutesUnreadable != "" || in.RulesUnreadable != "" {
@@ -134,6 +139,9 @@ func TestInspectReadsTheOwnersRoutesAndRules(t *testing.T) {
 		"route-table IPv4 5301 lookup table 4242 fwmark 0x4242/0xffffffff not",
 		"route-table IPv4 5302 lookup table 4242 other",
 		"route-table IPv4 5303 blackhole table 0",
+		"route-table IPv4 5304 lookup table 4242 to 198.51.100.0/24",
+		"route-table IPv4 5304 unreachable table 0 to 203.0.113.0/24",
+		"route-table IPv4 5305 lookup table 4242 fwmark 0x10/0xf0 other",
 		"route-table IPv6 5299 lookup table 254 to 2001:db8:51::/48",
 		"route-table IPv6 5300 lookup table 254 suppress 0",
 		"route-table IPv6 5301 lookup table 4242 fwmark 0x4242/0xffffffff not",

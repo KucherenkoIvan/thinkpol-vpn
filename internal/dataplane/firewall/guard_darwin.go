@@ -221,6 +221,9 @@ func (g *IPv6Guard) checkHook(ctx context.Context) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if _, err := readLines(out.stdout); err != nil {
+		return nil, err
+	}
 	if hooked(out.stdout) == hookMissing {
 		return nil, fmt.Errorf("%w: pf's main ruleset has no `anchor %s` (was /etc/pf.conf replaced?)", routetable.ErrGuardUnsupported, appleHook)
 	}
@@ -273,7 +276,11 @@ func (g *IPv6Guard) readBypass(ctx context.Context) (bypassListing, error) {
 	if err != nil {
 		return bypassListing{}, err
 	}
-	return bypassListing{skipped: skippedNames(ifcs.stdout), before: anchorsBefore(anchors.stdout)}, nil
+	skips, err := skippedNames(ifcs.stdout)
+	if err != nil {
+		return bypassListing{}, err
+	}
+	return bypassListing{skipped: skips, before: anchorsBefore(anchors.stdout)}, nil
 }
 
 // load loads e's anchor and reads it back. The load runs with pfctl's
@@ -372,14 +379,21 @@ func (g *IPv6Guard) resolve(ctx context.Context, t pfToken) (uint64, bool, error
 	if err != nil {
 		return 0, false, err
 	}
+	if !understood {
+		return 0, false, fmt.Errorf("%w (pfctl pid %d): %w", errUnreadToken, t.pid, errUnreadReferences)
+	}
 	if v, ok := byPid(refs, t.pid); ok {
 		return v, true, nil
 	}
-	if !understood || slices.ContainsFunc(refs, func(r pfReference) bool { return r.pid == t.pid }) {
+	if slices.ContainsFunc(refs, func(r pfReference) bool { return r.pid == t.pid }) {
 		return 0, false, fmt.Errorf("%w (pfctl pid %d)", errUnreadToken, t.pid)
 	}
 	return 0, false, nil
 }
+
+// errUnreadReferences: `pfctl -s References` printed a listing the guard
+// can't read, in which a reference's absence proves nothing.
+var errUnreadReferences = errors.New("firewall: pf's references listed in a form the guard can't read")
 
 // enable makes sure pf is on with a reference of the guard's, and the
 // record names it: kept while pf is on; taken over from the record (a
@@ -499,9 +513,14 @@ func (g *IPv6Guard) takeReference(ctx context.Context) error {
 // lists it as taken by the pfctl the guard recorded, nothing if it isn't
 // listed (gone already) or is someone else's (the value was reused).
 func (g *IPv6Guard) release(ctx context.Context, t pfToken) error {
-	refs, _, err := g.references(ctx)
+	refs, understood, err := g.references(ctx)
 	if err != nil {
 		return err
+	}
+	if !understood {
+		// Not listed in a listing the guard can't read proves nothing:
+		// fail, so Close keeps the record and a later one retries.
+		return errUnreadReferences
 	}
 	if referenced(refs, t) != refOurs {
 		return nil

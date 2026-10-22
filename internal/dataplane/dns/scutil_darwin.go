@@ -68,16 +68,17 @@ type scutil struct{ path string }
 const scutilPath = "/usr/sbin/scutil"
 
 func (s scutil) run(script string) (string, error) {
-	return s.exec(context.Background(), script)
+	return s.exec(context.Background(), script, nil)
 }
 
-// exec runs scutil with args and stdin, bounded at 10 s and by ctx, and
+// exec runs scutil with args and stdin, bounded at 10 s and by ctx, in
+// env (nil: the agent's own, as the store's commands always ran), and
 // returns what it printed.
-func (s scutil) exec(ctx context.Context, stdin string, args ...string) (string, error) {
+func (s scutil) exec(ctx context.Context, stdin string, env []string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, s.path, args...)
-	cmd.Env = []string{"LC_ALL=C"}
+	cmd.Env = env
 	cmd.Stdin = strings.NewReader(stdin)
 	out, err := cmd.CombinedOutput()
 	if err != nil {

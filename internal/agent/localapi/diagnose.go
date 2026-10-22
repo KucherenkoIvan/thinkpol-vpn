@@ -131,7 +131,7 @@ func rulesProto(in netcfg.Inspection) *localapiv1.DiagRules {
 
 // guardProto is g on the wire. A guard read in part has each part as it
 // was read: rules and exempt are there (empty when there is no guard),
-// present left out when it couldn't be told.
+// present unset (left out of the JSON) when it couldn't be told.
 func guardProto(g routetable.GuardReport) *localapiv1.DiagGuard {
 	if g.Unreadable != "" {
 		return &localapiv1.DiagGuard{Unreadable: g.Unreadable, Where: g.Where}
@@ -250,12 +250,18 @@ var ErrNotAFile = errors.New("not a regular file: refusing to replace it")
 
 // WriteDiagnosticsFile writes d as WriteDiagnostics does to a new file at
 // path, mode 0600, synced, replacing what is there: a regular file, or a
-// symlink itself, never its target. Anything else there is refused
-// (ErrNotAFile). It is written beside path and renamed over it, so a
-// reader never sees half of it.
+// symlink itself (never its target) to a regular file or to nothing.
+// Anything else there, or a symlink to anything else (/dev/stdout, /dev/fd
+// are symlinks to devices), is refused (ErrNotAFile). It is written beside
+// path and renamed over it, so a reader never sees half of it.
 func WriteDiagnosticsFile(path string, d *localapiv1.Diagnostics) (err error) {
-	if fi, err := os.Lstat(path); err == nil && !fi.Mode().IsRegular() && fi.Mode()&fs.ModeSymlink == 0 {
-		return fmt.Errorf("%s: %w", path, ErrNotAFile)
+	if fi, err := os.Lstat(path); err == nil {
+		if fi.Mode()&fs.ModeSymlink != 0 {
+			fi, err = os.Stat(path)
+		}
+		if err == nil && !fi.Mode().IsRegular() {
+			return fmt.Errorf("%s: %w", path, ErrNotAFile)
+		}
 	}
 	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
 	if err != nil {

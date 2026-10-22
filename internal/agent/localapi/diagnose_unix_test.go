@@ -215,7 +215,14 @@ func TestWriteDiagnosticsFileIsTheOwnersOnly(t *testing.T) {
 	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	for _, p := range []string{fifo, dir} {
+	// Nor a symlink to one: /dev/stdout and /dev/fd are such links.
+	toFifo, toDir := filepath.Join(dir, "to-fifo"), filepath.Join(dir, "to-dir")
+	for link, target := range map[string]string{toFifo: fifo, toDir: dir} {
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, p := range []string{fifo, dir, toFifo, toDir} {
 		if err := WriteDiagnosticsFile(p, d); !errors.Is(err, ErrNotAFile) {
 			t.Errorf("%s: %v", p, err)
 		}
@@ -223,8 +230,24 @@ func TestWriteDiagnosticsFileIsTheOwnersOnly(t *testing.T) {
 	if fi, err := os.Lstat(fifo); err != nil || fi.Mode()&os.ModeNamedPipe == 0 {
 		t.Fatalf("the fifo: %v, %v", fi, err)
 	}
-	if entries, _ := os.ReadDir(dir); len(entries) != 3 {
+	for _, link := range []string{toFifo, toDir} {
+		if fi, err := os.Lstat(link); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+			t.Fatalf("%s: %v, %v", link, fi, err)
+		}
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 5 {
 		t.Fatalf("left behind: %v", entries)
+	}
+	// A dangling symlink is replaced, as one to a regular file is.
+	dangling := filepath.Join(dir, "dangling")
+	if err := os.Symlink(filepath.Join(dir, "nothing"), dangling); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteDiagnosticsFile(dangling, d); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Lstat(dangling); err != nil || !fi.Mode().IsRegular() {
+		t.Fatalf("dangling: %v, %v", fi, err)
 	}
 }
 
@@ -331,6 +354,18 @@ func TestDiagnoseCarriesTheHostParts(t *testing.T) {
 		}}
 	if d, err = c.Diagnose(ctx); err != nil || !proto.Equal(d.GetGuard(), wantPf) {
 		t.Fatalf("pf: %v, %v", d.GetGuard(), err)
+	}
+	// In the JSON, a presence that couldn't be told is left out: protojson
+	// omits an unset proto3 optional field even with EmitUnpopulated.
+	var out bytes.Buffer
+	if err := WriteDiagnostics(&out, d); err != nil {
+		t.Fatal(err)
+	}
+	var parsed struct {
+		Guard map[string]json.RawMessage `json:"guard"`
+	}
+	if _, there := parsed.Guard["present"]; json.Unmarshal(out.Bytes(), &parsed) != nil || there || parsed.Guard["where"] == nil {
+		t.Fatalf("present: %q, %v\n%s", parsed.Guard["present"], err, out.String())
 	}
 	// A record that can't be read: unreadable, and nothing else.
 	s.node.mu.Lock()

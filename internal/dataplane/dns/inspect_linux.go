@@ -112,7 +112,7 @@ func resolvedLinks(servers []resolvedLinkAddr, domains []resolvedLinkDomain) ([]
 		a, ok := netip.AddrFromSlice(s.Address)
 		if !ok || s.Family == unix.AF_INET && !a.Unmap().Is4() || s.Family == unix.AF_INET6 && len(s.Address) != 16 ||
 			s.Family != unix.AF_INET && s.Family != unix.AF_INET6 {
-			return nil, fmt.Errorf("systemd-resolved lists a server it can't be read: family %d, %d bytes", s.Family, len(s.Address))
+			return nil, fmt.Errorf("systemd-resolved lists a server that can't be read: family %d, %d bytes", s.Family, len(s.Address))
 		}
 		if s.Family == unix.AF_INET {
 			a = a.Unmap()
