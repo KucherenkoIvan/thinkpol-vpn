@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
@@ -124,6 +125,9 @@ func TestDiagnoseReadsTheTUNTheDataPlaneRuns(t *testing.T) {
 	if d.Status.Connection != Disconnected || d.Status.Space != s.id {
 		t.Fatalf("disconnected: status %+v", d.Status)
 	}
+	if d.LastApply.Unreadable != UnreadableNoApply || len(d.LastApply.Trace.Steps) != 0 {
+		t.Fatalf("disconnected: last apply %+v", d.LastApply)
+	}
 
 	if err := b.node.Connect(ctx); err != nil {
 		t.Fatal(err)
@@ -139,6 +143,11 @@ func TestDiagnoseReadsTheTUNTheDataPlaneRuns(t *testing.T) {
 	}
 	if d.TUN.Unreadable != "" || d.TUN.Name != asked[0] || d.TUN.MTU != 1328 || d.TUN.Index != 7 || !d.TUN.Up || len(d.TUN.Addrs) != 1 {
 		t.Fatalf("connected: TUN %+v", d.TUN)
+	}
+	// The data plane's map applied: its steps, the route table's last.
+	if a := d.LastApply; a.Unreadable != "" || a.Trace.Failed != "" || len(a.Trace.Steps) < 5 ||
+		a.Trace.Steps[0].Step != dataplane.StepSection || a.Trace.Steps[len(a.Trace.Steps)-1].Step != dataplane.StepRouteTable || a.Trace.Started.IsZero() {
+		t.Fatalf("connected: last apply %+v", a)
 	}
 
 	// What the host couldn't show comes through as the reader said it.

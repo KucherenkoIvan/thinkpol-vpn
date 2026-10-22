@@ -201,16 +201,19 @@ func (p *report) status() Status {
 	return p.statusLocked()
 }
 
-// statusAndTUN is the status and its running data plane's TUN ("" while
-// it is down), taken together.
-func (p *report) statusAndTUN() (Status, string) {
+// forDiagnostics is the status and its running data plane's TUN ("" while
+// it is down) and last Apply (nil before one), taken together.
+func (p *report) forDiagnostics() (Status, string, *dataplane.ApplyTrace) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	tun := ""
-	if p.engine != nil {
-		tun = p.engine.TUNName()
+	if p.engine == nil {
+		return p.statusLocked(), "", nil
 	}
-	return p.statusLocked(), tun
+	var last *dataplane.ApplyTrace
+	if tr, ok := p.engine.LastApply(); ok {
+		last = &tr
+	}
+	return p.statusLocked(), p.engine.TUNName(), last
 }
 
 func (p *report) statusLocked() Status {

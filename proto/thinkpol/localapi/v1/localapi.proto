@@ -141,6 +141,8 @@ message Diagnostics {
   // it reports them (Linux: resolv.conf and systemd-resolved; macOS:
   // scutil --dns). Root only.
   DiagDns dns = 10;
+  // The running data plane's last Apply: its steps with their timings.
+  DiagApply last_apply = 11;
 }
 
 // An interface as the host reports it.
@@ -334,6 +336,28 @@ message DiagResolver {
   repeated string options = 9;
   // resolv.conf is the node's own rewrite (the original in comments).
   bool node_written = 10;
+}
+
+// An Apply of a map's section by the data plane.
+message DiagApply {
+  string unreadable = 1;
+  google.protobuf.Timestamp started = 2;
+  google.protobuf.Duration took = 3;
+  // The step it failed at, as DataPlane.last_apply_error; "" when it
+  // didn't.
+  string failed = 4;
+  // In the order they ran; a step's time runs from the end of the one
+  // before it.
+  repeated DiagApplyStep steps = 5;
+}
+
+message DiagApplyStep {
+  // A step of DataPlane.last_apply_error's vocabulary, or "rules"
+  // (compiling the routing rules) or "route_table_shrink" (the direct
+  // routes taken out first), neither of which fails an Apply.
+  string step = 1;
+  google.protobuf.Duration took = 2;
+  bool failed = 3;
 }
 
 // A space the node is enrolled in. Names are the controller's: a node

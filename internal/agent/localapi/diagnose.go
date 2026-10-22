@@ -11,6 +11,7 @@ import (
 
 	"google.golang.org/grpc/peer"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent"
@@ -58,7 +59,19 @@ func diagnosticsProto(d agent.Diagnostics, now time.Time, version string) *local
 		Rules:         rulesProto(d.Routes),
 		Guard:         guardProto(d.Guard),
 		Dns:           dnsProto(d.DNS),
+		LastApply:     applyProto(d.LastApply),
 	}
+}
+
+func applyProto(a agent.ApplyReport) *localapiv1.DiagApply {
+	if a.Unreadable != "" {
+		return &localapiv1.DiagApply{Unreadable: a.Unreadable}
+	}
+	out := &localapiv1.DiagApply{Started: timestamp(a.Trace.Started), Took: durationpb.New(a.Trace.Took), Failed: string(a.Trace.Failed)}
+	for _, s := range a.Trace.Steps {
+		out.Steps = append(out.Steps, &localapiv1.DiagApplyStep{Step: string(s.Step), Took: durationpb.New(s.Took), Failed: s.Failed})
+	}
+	return out
 }
 
 func dnsProto(r dns.HostReport) *localapiv1.DiagDns {

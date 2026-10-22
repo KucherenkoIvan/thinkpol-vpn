@@ -18,6 +18,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
@@ -69,12 +70,29 @@ func TestDiagnoseServesAVersionedSnapshot(t *testing.T) {
 		t.Fatalf("JSON %+v, %v:\n%s", parsed, err, out.String())
 	}
 
+	// The last Apply: its steps with their timings.
+	started := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+	s.node.mu.Lock()
+	s.node.diag.LastApply = agent.ApplyReport{Trace: dataplane.ApplyTrace{Started: started, Took: 30 * time.Millisecond, Failed: dataplane.StepRouteTable,
+		Steps: []dataplane.ApplyStep{{Step: dataplane.StepSection, Took: time.Millisecond}, {Step: dataplane.StepRouteTable, Took: 29 * time.Millisecond, Failed: true}}}}
+	s.node.mu.Unlock()
+	if d, err = c.Diagnose(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if a := d.GetLastApply(); a.GetUnreadable() != "" || !a.GetStarted().AsTime().Equal(started) || a.GetTook().AsDuration() != 30*time.Millisecond ||
+		a.GetFailed() != "route_table" || len(a.GetSteps()) != 2 || a.GetSteps()[1].GetStep() != "route_table" || !a.GetSteps()[1].GetFailed() ||
+		a.GetSteps()[1].GetTook().AsDuration() != 29*time.Millisecond || a.GetSteps()[0].GetFailed() {
+		t.Fatalf("last apply %v", a)
+	}
+
 	// A part the agent couldn't read says why, and holds nothing else.
 	s.node.mu.Lock()
+	s.node.diag.LastApply = agent.ApplyReport{Unreadable: agent.UnreadableNoApply, Trace: s.node.diag.LastApply.Trace}
 	s.node.diag.TUN = agent.InterfaceReport{Unreadable: agent.UnreadableNoTUN, Name: "stale", MTU: 1}
 	s.node.mu.Unlock()
-	if d, err = c.Diagnose(ctx); err != nil || !proto.Equal(d.GetTun(), &localapiv1.DiagInterface{Unreadable: agent.UnreadableNoTUN}) {
-		t.Fatalf("an unreadable TUN: %v, %v", d.GetTun(), err)
+	if d, err = c.Diagnose(ctx); err != nil || !proto.Equal(d.GetTun(), &localapiv1.DiagInterface{Unreadable: agent.UnreadableNoTUN}) ||
+		!proto.Equal(d.GetLastApply(), &localapiv1.DiagApply{Unreadable: agent.UnreadableNoApply}) {
+		t.Fatalf("an unreadable TUN and Apply: %v, %v, %v", d.GetTun(), d.GetLastApply(), err)
 	}
 }
 

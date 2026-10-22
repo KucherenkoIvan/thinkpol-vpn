@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/lists"
 	"github.com/KucherenkoIvan/thinkpol-vpn/lab"
@@ -90,6 +91,17 @@ type diagSnapshot struct {
 			} `json:"chains"`
 		} `json:"nftables"`
 	} `json:"guard"`
+	LastApply struct {
+		Unreadable string `json:"unreadable"`
+		Started    string `json:"started"`
+		Took       string `json:"took"`
+		Failed     string `json:"failed"`
+		Steps      []struct {
+			Step   string `json:"step"`
+			Took   string `json:"took"`
+			Failed bool   `json:"failed"`
+		} `json:"steps"`
+	} `json:"lastApply"`
 	DNS struct {
 		Unreadable string `json:"unreadable"`
 		Sources    []struct {
@@ -539,6 +551,25 @@ func TestDiagShowsWhatTheHostHolds(t *testing.T) {
 			if strings.Contains(res.Stdout, a.String()) {
 				t.Errorf("the group's snapshot names the entry's %s", a)
 			}
+		}
+	})
+
+	t.Run("the last Apply's steps", func(t *testing.T) {
+		d, out := diag(t, as("", "", "diag")...)
+		a := d.LastApply
+		var steps []string
+		for _, s := range a.Steps {
+			if _, err := time.ParseDuration(s.Took); s.Failed || (s.Took != "" && err != nil) {
+				t.Errorf("step %+v", s)
+			}
+			steps = append(steps, s.Step)
+		}
+		want := []string{"section", "rules", "route_table_shrink", "removals", "interface", "devices", "router", "route_table"}
+		if a.Unreadable != "" || a.Failed != "" || !slices.Equal(steps, want) {
+			t.Errorf("last apply %q, want %q:\n%s", steps, want, out)
+		}
+		if started, err := time.Parse(time.RFC3339Nano, a.Started); err != nil || time.Since(started) > 10*time.Minute {
+			t.Errorf("started %q: %v", a.Started, err)
 		}
 	})
 

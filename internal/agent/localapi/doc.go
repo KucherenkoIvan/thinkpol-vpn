@@ -112,6 +112,9 @@
 //   - the overlay's TUN as the host reports it (its name, index, MTU, up
 //     and running flags, addresses), unreadable while the data plane is
 //     down;
+//   - the data plane's last Apply: when it started, how long it took, the
+//     step it failed at, and its steps with their timings
+//     ([dataplane.Engine.LastApply]);
 //   - the routes (every table) and policy rules the agent's owners hold,
 //     as the kernel reports them ([netcfg.Inspect]);
 //   - the IPv6 leak guard as the host holds it
