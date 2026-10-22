@@ -44,6 +44,9 @@ type fakeHost struct {
 	// progress") though the teardown goes on; printFails: print fails
 	// for another reason than no such service.
 	bootoutFails, printFails bool
+	// bootstrapEIO: bootstraps refused with launchd's EIO before one is
+	// taken.
+	bootstrapEIO int
 	// cleared counts ClearHost's runs, and heldWhileCleared whether the
 	// host lock was held at each.
 	cleared, heldWhileCleared int
@@ -93,6 +96,8 @@ func (h *fakeHost) systemctl(args []string) (string, error) {
 		h.enabled = true
 	case slices.Equal(args, []string{"restart", UnitName}) && h.unitLoaded != nil:
 		h.unitRunning = h.unitLoaded
+	case slices.Equal(args, []string{"stop", UnitName}) && h.unitLoaded != nil:
+		h.unitRunning = nil
 	case slices.Equal(args, []string{"disable", "--now", UnitName}) && h.unitLoaded != nil:
 		h.enabled, h.unitRunning = false, nil
 	case slices.Equal(args, []string{"reset-failed", UnitName}):
@@ -130,6 +135,9 @@ func (h *fakeHost) launchctl(args []string) (string, error) {
 		return fmt.Sprintf("disabled services = {\n\t\"com.example.other\" => disabled\n\t%q => %s\n}\n", Label, v), nil
 	case slices.Equal(args, []string{"enable", target}):
 		h.disabled, h.overridden = false, true
+	case slices.Equal(args, []string{"bootstrap", "system", PlistPath}) && h.bootstrapEIO > 0:
+		h.bootstrapEIO--
+		return "Bootstrap failed: 5: Input/output error", errors.New("exit status 5")
 	case slices.Equal(args, []string{"bootstrap", "system", PlistPath}) && !h.loaded && h.booting == 0 && !h.disabled:
 		data, err := os.ReadFile(filepath.Join(h.root, PlistPath))
 		if err != nil {
@@ -405,8 +413,63 @@ func TestNothingIsTakenFromARunningAgent(t *testing.T) {
 	if err := in.Install(ctx, Options{}); !errors.Is(err, errAgentRuns) {
 		t.Fatalf("reinstall: %v", err)
 	}
-	if bin, _, _ := h.file(BinaryPath); string(bin) != "the thinkpol binary" || h.unitRunning != nil {
-		t.Fatalf("binary %q, running %q", bin, h.unitRunning)
+	if h.unitRunning != nil || !h.enabled {
+		t.Fatalf("running %q, enabled %v: want stopped and still enabled", h.unitRunning, h.enabled)
+	}
+}
+
+// Every step of a reinstall that can fail runs before the service is
+// stopped: one that fails (a user the group can't take) leaves the
+// installed service running from its definition and, for systemd,
+// enabled.
+func TestAFailedReinstallLeavesTheServiceAsItWas(t *testing.T) {
+	ctx := context.Background()
+	t.Run("systemd", func(t *testing.T) {
+		h := newFakeHost(t)
+		in, _ := h.installer(Systemd{})
+		if err := in.Install(ctx, Options{}); err != nil {
+			t.Fatal(err)
+		}
+		running := h.unitRunning
+		h.failNext["usermod -a"] = 1
+		if err := in.Install(ctx, Options{User: "nosuchuser", ConnectOnBoot: &on}); err == nil {
+			t.Fatal("installed")
+		}
+		if !h.enabled || !bytes.Equal(h.unitRunning, running) {
+			t.Fatalf("enabled %v, running %q, want %q", h.enabled, h.unitRunning, running)
+		}
+	})
+	t.Run("launchd", func(t *testing.T) {
+		h := newFakeHost(t)
+		in, _ := h.installer(Launchd{})
+		if err := in.Install(ctx, Options{}); err != nil {
+			t.Fatal(err)
+		}
+		loaded := h.loadedFrom
+		h.groups[Group] = nil
+		h.failNext["dseditgroup -o"] = 2 // the group calls fail
+		if err := in.Install(ctx, Options{User: "nosuchuser", ConnectOnBoot: &on}); err == nil {
+			t.Fatal("installed")
+		}
+		if !h.loaded || !bytes.Equal(h.loadedFrom, loaded) {
+			t.Fatalf("loaded %v from %q", h.loaded, h.loadedFrom)
+		}
+	})
+}
+
+// launchd may refuse a bootstrap just after the job it replaces is gone
+// (EIO): retried; another refusal isn't.
+func TestLaunchdRetriesABootstrapRefusedWithEIO(t *testing.T) {
+	h := newFakeHost(t)
+	in, _ := h.installer(Launchd{Poll: time.Millisecond})
+	ctx := context.Background()
+	h.bootstrapEIO = 2
+	if err := in.Install(ctx, Options{}); err != nil || !h.loaded {
+		t.Fatalf("%v, loaded %v", err, h.loaded)
+	}
+	h.failNext["launchctl bootstrap"] = 1
+	if err := in.Install(ctx, Options{}); err == nil || h.loaded {
+		t.Fatalf("%v, loaded %v: want the refusal", err, h.loaded)
 	}
 }
 

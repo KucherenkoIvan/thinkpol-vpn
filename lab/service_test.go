@@ -166,9 +166,10 @@ func TestServiceUnderSystemd(t *testing.T) {
 	// agent: what the dead agent left (its guard, routes and resolver
 	// configuration) is undone. Nothing of the service is left, nor after
 	// a reboot.
-	// The restart is held off (a drop-in of the test's, in /run, which the
-	// reboot below clears), so the uninstall meets the dead agent's
-	// leftovers rather than a restarted agent that took them down itself.
+	// The restart is held off (a drop-in of the test's, in /run, removed
+	// right after the uninstall, before the checks), so the uninstall
+	// meets the dead agent's leftovers rather than a restarted agent that
+	// took them down itself.
 	dev.WriteFile(t, "/run/systemd/system/thinkpol.service.d/lab-hold.conf", []byte("[Service]\nRestartSec=1h\n"))
 	dev.MustExec(t, "systemctl", "daemon-reload")
 	dev.MustExec(t, "systemctl", "kill", "-s", "KILL", "thinkpol.service")

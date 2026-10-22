@@ -53,8 +53,33 @@ func (l Launchd) Start(ctx context.Context, run Runner) error {
 			return err
 		}
 	}
-	_, err = run(ctx, "launchctl", "bootstrap", "system", PlistPath)
-	return err
+	// launchd may refuse a bootstrap just after the job it replaces is
+	// gone ("Bootstrap failed: 5: Input/output error"): retried briefly;
+	// any other refusal is the error.
+	for try := 0; ; try++ {
+		out, err := run(ctx, "launchctl", "bootstrap", "system", PlistPath)
+		if err == nil || try == bootstrapTries-1 || !inputOutputError(out, err) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(l.Poll):
+		}
+	}
+}
+
+// bootstrapTries bounds Start's bootstraps refused with EIO.
+const bootstrapTries = 5
+
+// inputOutputError says whether a failed bootstrap was launchd's EIO:
+// exit status 5, or its "Input/output error".
+func inputOutputError(out string, err error) bool {
+	var x *exec.ExitError
+	if errors.As(err, &x) && x.ExitCode() == 5 {
+		return true
+	}
+	return strings.Contains(out+" "+err.Error(), "Input/output error")
 }
 
 // disabled says whether `launchctl print-disabled system` lists the
@@ -109,6 +134,10 @@ func (l Launchd) Stop(ctx context.Context, run Runner) error {
 		}
 	}
 }
+
+// Remove is Stop: a daemon booted out isn't launchd's any more until the
+// plist is bootstrapped again (at boot, if it is still there).
+func (l Launchd) Remove(ctx context.Context, run Runner) error { return l.Stop(ctx, run) }
 
 // present says whether launchd has the daemon (`launchctl print`): no
 // such service is false; any other failure (a cancelled context, a

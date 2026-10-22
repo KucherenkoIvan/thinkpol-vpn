@@ -36,9 +36,13 @@ type System interface {
 	// Reload has the manager take a changed definition at the service's
 	// next start, without restarting it.
 	Reload(ctx context.Context, run Runner) error
-	// Stop stops and unloads the service, and returns once its agent has
-	// exited (or the stop timed out, an error).
+	// Stop stops the service, keeping it enabled (it starts at boot), and
+	// returns once its agent has exited (or the stop timed out, an
+	// error).
 	Stop(ctx context.Context, run Runner) error
+	// Remove stops the service and has it start no more: Stop, and
+	// disabled (systemd); launchd forgets a booted-out daemon anyway.
+	Remove(ctx context.Context, run Runner) error
 	// Forget is called once the definition is gone.
 	Forget(ctx context.Context, run Runner) error
 	// EnsureGroup makes the group if it is missing; AddToGroup adds a
@@ -107,16 +111,28 @@ func (in Installer) say(format string, args ...any) {
 // Install copies the binary, makes the group (adding opts.User), writes
 // the definition and (re)starts the service. Run again, it replaces the
 // binary and restarts the service, keeping connect-on-boot unless opts
-// sets it. Before changing anything it checks the manager runs the host
-// and the node can run; then it stops a service already installed and,
-// whether or not there was one, refuses while an agent holds the host
-// lock (one run by hand: the service's would only restart against it).
+// sets it. Every step that can fail runs before anything is stopped, so
+// a failed install leaves a working service as it was: the binary is
+// renamed over (the old agent runs on from its file), and the definition
+// is read by the manager only at Start. With no service installed, an
+// agent holding the host lock (one run by hand) refuses the install
+// before anything changes; with one, its agent holds the lock, so the
+// check comes after the service is stopped (kept enabled), and refuses
+// before Start: the service's agent would only restart against the
+// hand-run one's lock.
 func (in Installer) Install(ctx context.Context, opts Options) error {
 	if err := in.System.Present(in.Root); err != nil {
 		return err
 	}
 	if err := in.Ready(); err != nil {
 		return fmt.Errorf("this node can't run yet: %w", err)
+	}
+	_, err := os.Lstat(in.path(in.System.DefinitionPath()))
+	defined := err == nil
+	if !defined {
+		if err := in.noAgent(); err != nil {
+			return err
+		}
 	}
 	connect := false
 	d, err := in.installed()
@@ -129,14 +145,6 @@ func (in Installer) Install(ctx context.Context, opts Options) error {
 	}
 	if opts.ConnectOnBoot != nil {
 		connect = *opts.ConnectOnBoot
-	}
-	if _, err := os.Lstat(in.path(in.System.DefinitionPath())); err == nil {
-		if err := in.System.Stop(ctx, in.Run); err != nil {
-			return fmt.Errorf("stopping the installed service: %w", err)
-		}
-	}
-	if err := in.noAgent(); err != nil {
-		return err
 	}
 	if err := in.installBinary(); err != nil {
 		return err
@@ -152,6 +160,14 @@ func (in Installer) Install(ctx context.Context, opts Options) error {
 	}
 	if err := in.writeDefinition(Definition{Binary: BinaryPath, ConnectOnBoot: connect}); err != nil {
 		return err
+	}
+	if defined {
+		if err := in.System.Stop(ctx, in.Run); err != nil {
+			return fmt.Errorf("stopping the installed service: %w", err)
+		}
+		if err := in.noAgent(); err != nil {
+			return fmt.Errorf("%w (the service is installed, stopped and still enabled)", err)
+		}
 	}
 	if err := in.System.Start(ctx, in.Run); err != nil {
 		return fmt.Errorf("starting the service: %w", err)
@@ -207,7 +223,7 @@ func (in Installer) SetConnectOnBoot(ctx context.Context, on bool) error {
 func (in Installer) Uninstall(ctx context.Context) error {
 	_, err := os.Lstat(in.path(in.System.DefinitionPath()))
 	defined := err == nil
-	if err := in.System.Stop(ctx, in.Run); err != nil && defined {
+	if err := in.System.Remove(ctx, in.Run); err != nil && defined {
 		return fmt.Errorf("stopping the service: %w", err)
 	}
 	unlock, err := in.LockHost()

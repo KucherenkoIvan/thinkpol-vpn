@@ -41,9 +41,15 @@ func (Systemd) Reload(ctx context.Context, run Runner) error {
 	return err
 }
 
-// Stop disables the unit and stops it, waiting for the agent to exit
+// Stop stops the unit, still enabled, waiting for the agent to exit
 // (TimeoutStopSec, then systemd kills it).
 func (Systemd) Stop(ctx context.Context, run Runner) error {
+	_, err := run(ctx, "systemctl", "stop", UnitName)
+	return err
+}
+
+// Remove disables the unit and stops it, as Stop waits.
+func (Systemd) Remove(ctx context.Context, run Runner) error {
 	_, err := run(ctx, "systemctl", "disable", "--now", UnitName)
 	return err
 }
