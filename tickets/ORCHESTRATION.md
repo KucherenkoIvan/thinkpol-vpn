@@ -103,3 +103,16 @@ Made by the project owner after a design and code-quality review of `rewrite` at
 
 - **At every milestone tag,** the owner holds a code-health review session. The orchestrator brings a factual brief: lab suite time, lint gates, the longest functions, code that exists in more than one copy, and the code the next milestone's tickets will touch. The session's findings come to the orchestrator, who files them; what the next milestone needs first becomes a consolidation phase before its features start.
 - **Refactors that touch macOS or Windows code** end with a run of that platform's device checklist; the lab covers Linux only.
+
+## M2 order (2026-10-22)
+
+Made by the project owner at the end of the consolidation phase.
+
+- **Install and diagnostics first:** service install (TP-046) and `thinkpol diag` (TP-091). Then the disguised transport (TP-087, `reality`) and the censor lab (TP-089, then TP-025, TP-026, TP-032).
+- **Iterate until proven to work.** Each lane lands in small slices that are each shown working in the lab (and on a device where the ticket needs one) before the next slice starts.
+- **Device harness (TP-082):** design first. The owner reviews the design before any prototype.
+
+## Design documents (2026-10-22)
+
+- DESIGN.md holds the model, invariants and decisions, under 50 KB. Mechanism lives in package docs, residuals in RESIDUAL-RISKS.md.
+- **When DESIGN.md would pass 50 KB, split it:** security (threat model, rules, the guard and leak invariants) in its own file, the design by feature in a file each, and DESIGN.md linking all of them (TP-131).
