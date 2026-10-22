@@ -3,6 +3,12 @@
 // WireGuard devices only ever see the router's virtual TUNs. Addresses, MTU
 // and routes are netcfg's (OwnerOverlay).
 //
+// The agent creates the TUN (its Host's NewTUN) and hands it to the
+// engine, whose own files never import this package. The TUN's link
+// events reach the engine through the router: Linux drops a TUN's IPv6
+// addresses when its link goes down, so the engine re-applies the
+// addresses and MTU when the link comes up again (see package dataplane).
+//
 // Desktop and server Linux (linux && !android) and macOS (utun) are
 // implemented. Windows's Wintun is TP-047; until then, and on Android,
 // whose TUN comes from VpnService, Create returns ErrUnsupported. The

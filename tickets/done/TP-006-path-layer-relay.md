@@ -6,7 +6,7 @@ area: dataplane/path
 repo: thinkpol-vpn
 size: L
 depends_on: [TP-003, TP-005]
-refs: [N2, DESIGN#data-plane]
+refs: [N2, DESIGN#data-plane-every-node-one-binary]
 owner: "agent-tp-006"
 branch: "tp-006-path-layer-relay"
 ---

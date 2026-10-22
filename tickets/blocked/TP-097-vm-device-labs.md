@@ -6,7 +6,7 @@ area: lab
 repo: thinkpol-vpn
 size: L
 depends_on: []
-refs: [DESIGN#lab]
+refs: [DESIGN#censor-lab]
 owner: ""
 branch: ""
 ---

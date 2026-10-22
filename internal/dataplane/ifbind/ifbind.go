@@ -1,13 +1,3 @@
-// Package ifbind binds sockets to a network interface, so what they send
-// leaves through it or not at all, whatever the routing table says: the
-// tunnel's own sockets to the TUN (DNS to an exit, blob fetches), and on
-// macOS the links' and the direct DNS upstream's sockets to the physical
-// interface, which is how they bypass the TUN there (DESIGN.md "Route
-// table on macOS").
-//
-// Linux uses SO_BINDTODEVICE (by name), macOS IP_BOUND_IF and
-// IPV6_BOUND_IF (by index); elsewhere binding fails, so a socket that must
-// be bound never opens unbound.
 package ifbind
 
 import (

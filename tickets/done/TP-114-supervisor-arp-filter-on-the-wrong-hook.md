@@ -6,7 +6,7 @@ area: agent
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-103]
-refs: [DESIGN#server-agent]
+refs: [DESIGN#server-agent-one-worker-per-space]
 owner: "agent-claude"
 branch: "tp-114-supervisor-arp-filter-on-the-wrong-hook"
 ---

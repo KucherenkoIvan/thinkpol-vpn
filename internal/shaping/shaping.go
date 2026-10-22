@@ -1,10 +1,3 @@
-// Package shaping holds the rules of the map's shaping message,
-// thinkpol.transport.v1.Shaping (PRD C6, DESIGN.md "Transports own traffic
-// shape"), in one place for both its users: netmap's builder, which
-// refuses a map carrying shaping no node could read, and the transport
-// port (internal/dataplane/transport), which turns it into a
-// transport.Shaping. It imports only the generated message, so the map
-// and the control plane can use it without depending on the data plane.
 package shaping
 
 import (
