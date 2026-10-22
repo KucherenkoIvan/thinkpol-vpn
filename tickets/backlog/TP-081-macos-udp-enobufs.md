@@ -5,7 +5,7 @@ milestone: M2
 area: dataplane/transport
 repo: thinkpol-vpn
 size: S
-depends_on: [TP-019]
+depends_on: [TP-019, TP-087]
 refs: [C1, C3, C6, docs/design/transports.md#transports]
 needs_human: macos
 owner: ""
@@ -32,3 +32,4 @@ On darwin, set a larger `SO_SNDBUF` on the link socket (check what is set today)
 - 2026-10-15 created in backlog (device run 3 and 4 findings)
 - 2026-10-15 docs: ENOBUFS count corrected
 - 2026-10-15 docs (backlog grooming): depends on TP-019 for the device acceptance box
+- 2026-10-23 docs: waits for the `reality` transport (TP-087): the owner doesn't want plain `udp` load on the network for speed tests (TP-082 question 6)
