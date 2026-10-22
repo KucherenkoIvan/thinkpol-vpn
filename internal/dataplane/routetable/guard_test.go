@@ -840,3 +840,24 @@ func TestATerminalReapplyFailureIsAlwaysWarned(t *testing.T) {
 		t.Fatalf("warns %q, want the terminal failure warned too, with the one held back", l)
 	}
 }
+
+// The guard turning out unsupported is warned with the failures its limit
+// held back before: nothing retries the guard after it.
+func TestAnUnsupportedGuardSaysWhatWasHeldBack(t *testing.T) {
+	f := &fakeConfigurator{}
+	g := newFakeGuard(f)
+	var buf lockedBuffer
+	e := routetable.OpenWithClock(f, g, slog.New(slog.NewTextHandler(&buf, nil)), (&fakeClock{now: time.Unix(0, 0)}).read)
+	defer func() { _ = e.Close() }()
+	routetable.PauseWatching(e)
+	failWith := func(err error) {
+		g.setFail(err)
+		routetable.GuardApply(t.Context(), e, routetable.Want{TUN: "thinkpol0"})
+	}
+	failWith(errors.New("pfctl -s rules: no answer within 15s"))
+	failWith(errors.New("pfctl -s rules: no answer within 15s")) // held back
+	failWith(fmt.Errorf("%w: pf's main ruleset has no anchor", routetable.ErrGuardUnsupported))
+	if l := buf.lines("can't hold the leak guard"); len(l) != 1 || !strings.Contains(l[0], "suppressed=1") {
+		t.Fatalf("logged %q, want the unsupported warn with suppressed=1", l)
+	}
+}
