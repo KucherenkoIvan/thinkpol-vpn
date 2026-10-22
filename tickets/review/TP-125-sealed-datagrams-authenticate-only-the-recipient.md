@@ -37,3 +37,4 @@ A recorded decision on the independent design review's point (2026-10-13, sectio
 - 2026-10-22 created in backlog (TP-077 out-of-scope note)
 - 2026-10-23 backlog → in-progress — owner: orchestrator, branch: tp-125-sealed-datagrams-decision
 - 2026-10-23 the decision is in the `udp` package doc (the seal) and RESIDUAL-RISKS.md RR33 (decided); TP-063 carries the gatekeeper's verify-only question; make lint and make test pass
+- 2026-10-23 in-progress → review
