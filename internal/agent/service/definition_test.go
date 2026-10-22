@@ -70,9 +70,9 @@ func TestTheLaunchdPlistRunsTheAgentAndRestartsIt(t *testing.T) {
 		if got := strings.Join(d["ProgramArguments"].strings(), " "); got != "string:"+BinaryPath+" string:up" {
 			t.Errorf("ProgramArguments: %s", got)
 		}
-		wantEnv := "key:THINKPOL_CONNECT string:false"
+		wantEnv := "key:THINKPOL_CONNECT string:false key:THINKPOL_KEEP_CONNECT string:true"
 		if on {
-			wantEnv = "key:THINKPOL_CONNECT string:true"
+			wantEnv = "key:THINKPOL_CONNECT string:true key:THINKPOL_KEEP_CONNECT string:true"
 		}
 		if got := strings.Join(d["EnvironmentVariables"].strings(), " "); got != wantEnv {
 			t.Errorf("EnvironmentVariables: %s, want %s", got, wantEnv)
@@ -111,7 +111,7 @@ func TestTheSystemdUnitRunsTheAgentAndRestartsIt(t *testing.T) {
 		want := map[string]map[string]string{
 			"[Unit]": {"StartLimitIntervalSec": "0"},
 			"[Service]": {"ExecStart": BinaryPath + " up", "ExecReload": "/bin/kill -HUP $MAINPID", "Restart": "always", "RestartSec": "5", "KillMode": "mixed",
-				"Environment": "THINKPOL_CONNECT=" + map[bool]string{true: "true", false: "false"}[on]},
+				"Environment": "THINKPOL_CONNECT=" + map[bool]string{true: "true", false: "false"}[on] + " THINKPOL_KEEP_CONNECT=true"},
 			"[Install]": {"WantedBy": "multi-user.target"},
 		}
 		for s, kv := range want {

@@ -52,11 +52,16 @@ type Config struct {
 	// checks it at once.
 	MapPoll time.Duration `env:"THINKPOL_MAP_POLL" default:"5s" flag:"map-poll" help:"how often to check the map file for a change; SIGHUP checks at once"`
 	// Connect brings a device's data plane up when the node starts;
-	// otherwise it waits for the local API's Connect. Only a boot's first
-	// start reads it: a later start in the same boot follows the boot's
-	// recorded choice (ConnectRecord), so under a service this is
-	// connect-on-boot. A server always serves its spaces.
-	Connect bool `env:"THINKPOL_CONNECT" default:"true" flag:"connect" help:"a device connects at the boot's first start (connect-on-boot); a later start in the same boot comes back as it was last asked to be; otherwise it waits for thinkpol connect"`
+	// otherwise it waits for the local API's Connect. With KeepConnect
+	// only a boot's first start reads it (connect-on-boot). A server
+	// always serves its spaces.
+	Connect bool `env:"THINKPOL_CONNECT" default:"true" flag:"connect" help:"a device connects when it starts; otherwise it waits for thinkpol connect (with -keep-connect: at the boot's first start only)"`
+	// KeepConnect has a device keep its connect choice for the boot
+	// (ConnectRecord): a later start in the same boot comes back connected
+	// or disconnected as the device was left, whatever Connect says. The
+	// service sets it; it needs the local API, without which nothing can
+	// change the choice.
+	KeepConnect bool `env:"THINKPOL_KEEP_CONNECT" default:"false" flag:"keep-connect" help:"a later start in the same boot comes back connected or disconnected as the device was left (the service sets it)"`
 	// APISocket is the local API's Unix socket, in a directory of its own;
 	// empty serves no local API.
 	APISocket string `env:"THINKPOL_API_SOCKET" flag:"api-socket" help:"the local API's socket, in a directory of its own; empty: no local API"`

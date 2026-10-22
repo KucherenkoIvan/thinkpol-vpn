@@ -59,7 +59,7 @@ func TestServiceUnderSystemd(t *testing.T) {
 	out := dev.MustExec(t, "env", "SUDO_USER=alice", "/opt/thinkpol/bin/thinkpol", "service", "install")
 	t.Logf("install:\n%s", out)
 	unit := dev.MustExec(t, "cat", "/etc/systemd/system/thinkpol.service")
-	if !strings.Contains(unit, "Environment=THINKPOL_CONNECT=false\n") || !strings.Contains(unit, "ExecStart=/usr/local/bin/thinkpol up\n") {
+	if !strings.Contains(unit, "Environment=THINKPOL_CONNECT=false THINKPOL_KEEP_CONNECT=true\n") || !strings.Contains(unit, "ExecStart=/usr/local/bin/thinkpol up\n") {
 		t.Fatalf("the unit:\n%s", unit)
 	}
 	if got := dev.MustExec(t, "systemctl", "is-enabled", "thinkpol.service"); got != "enabled\n" {

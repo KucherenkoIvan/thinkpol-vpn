@@ -178,7 +178,7 @@ func TestInstallUnderSystemd(t *testing.T) {
 	if !ok || mode.Perm() != 0o644 || !bytes.Equal(unit, SystemdUnit(Definition{Binary: BinaryPath})) {
 		t.Fatalf("the unit (%v, %v):\n%s", ok, mode, unit)
 	}
-	if !bytes.Contains(unit, []byte("Environment=THINKPOL_CONNECT=false\n")) {
+	if !bytes.Contains(unit, []byte("Environment=THINKPOL_CONNECT=false THINKPOL_KEEP_CONNECT=true\n")) {
 		t.Fatalf("connect-on-boot isn't off by default:\n%s", unit)
 	}
 	bin, mode, ok := h.file(BinaryPath)

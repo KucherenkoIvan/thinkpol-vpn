@@ -29,7 +29,8 @@ const (
 )
 
 // Definition is what the service runs: the agent (`thinkpol up`, with the
-// node's defaults) and whether it connects at boot.
+// node's defaults, keeping a device's connect choice for the boot:
+// THINKPOL_KEEP_CONNECT) and whether it connects at boot.
 type Definition struct {
 	// Binary is the thinkpol binary's absolute path.
 	Binary string
@@ -53,7 +54,7 @@ ExecStart=%s up
 # SIGHUP to the agent alone re-reads the map at once; a server's workers
 # don't handle it, so never signal the whole unit.
 ExecReload=/bin/kill -HUP $MAINPID
-Environment=THINKPOL_CONNECT=%t
+Environment=THINKPOL_CONNECT=%t THINKPOL_KEEP_CONNECT=true
 Restart=always
 RestartSec=%d
 KillMode=mixed
@@ -87,6 +88,8 @@ func LaunchdPlist(d Definition) []byte {
 	<dict>
 		<key>THINKPOL_CONNECT</key>
 		<string>` + strconv.FormatBool(d.ConnectOnBoot) + `</string>
+		<key>THINKPOL_KEEP_CONNECT</key>
+		<string>true</string>
 	</dict>
 	<key>RunAtLoad</key>
 	<true/>

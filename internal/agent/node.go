@@ -33,10 +33,10 @@ type Node struct {
 	// plat is what the node needs of its host.
 	plat Platform
 	// conn is a device's connection, moved only by the goroutine that
-	// runs the node. bootChoice: it started as configured, with a local
-	// API and no record of this boot, so its start records that choice
-	// (a restart in this boot then follows it, whatever the configuration
-	// says by then).
+	// runs the node. bootChoice: it keeps its connect choice and started
+	// as configured, with no record of this boot, so its start records
+	// that choice (a restart in this boot then follows it, whatever the
+	// configuration says by then).
 	conn       connection
 	bootChoice bool
 	// dnsUpstreams are cfg.DNSUpstream's.
@@ -96,7 +96,7 @@ func Prepare(cfg Config, logs Logs, plat Platform) (*Node, error) {
 		requests: make(chan connectRequest), stopped: make(chan struct{}), rulesRequests: make(chan rulesRequest),
 	}
 	connect, recorded := startConnected(cfg, plat.ConnectRecord, logs)
-	n.conn, n.bootChoice = newConnection(connect, st.Removed), !recorded && cfg.APISocket != ""
+	n.conn, n.bootChoice = newConnection(connect, st.Removed), !recorded && keepsConnect(cfg)
 	n.local = st.LocalRules
 	mode := cfg.Mode
 	if !st.Removed {
@@ -110,12 +110,17 @@ func Prepare(cfg Config, logs Logs, plat Platform) (*Node, error) {
 	return n, nil
 }
 
+// keepsConnect is whether the node keeps its connect choice for the boot
+// (Config.KeepConnect): only with a local API, without which nothing can
+// change it.
+func keepsConnect(cfg Config) bool { return cfg.KeepConnect && cfg.APISocket != "" }
+
 // startConnected is whether a device starts connected: as recorded in
-// this boot (recorded true), else as configured (Config.Connect). Without
-// a local API nothing can ask, so the configuration decides. A record
-// that can't be read is logged and the configuration decides.
+// this boot (recorded true) when it keeps the choice, else as configured
+// (Config.Connect). A record that can't be read is logged and the
+// configuration decides.
 func startConnected(cfg Config, rec ConnectRecord, logs Logs) (connect, recorded bool) {
-	if cfg.APISocket == "" {
+	if !keepsConnect(cfg) {
 		return cfg.Connect, false
 	}
 	connect, ok, err := rec.Load()
@@ -130,9 +135,13 @@ func startConnected(cfg Config, rec ConnectRecord, logs Logs) (connect, recorded
 	return connect, true
 }
 
-// remember records a connect request (ConnectRecord) before it is acted
-// on; a failure is logged, and the request goes ahead.
+// remember records a connect choice (ConnectRecord), when the node keeps
+// it, before it is acted on; a failure is logged, and the node goes
+// ahead.
 func (n *Node) remember(connect bool) {
+	if !keepsConnect(n.cfg) {
+		return
+	}
 	if err := n.plat.ConnectRecord.Save(connect); err != nil {
 		n.logs.Error("recording the connect request failed: a restart in this boot starts as configured", "connect", connect, "err", err)
 	}

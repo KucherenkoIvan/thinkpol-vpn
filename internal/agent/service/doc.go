@@ -35,9 +35,11 @@
 //
 // # The definitions
 //
-// Both run `thinkpol up` with the node's defaults and one setting,
-// THINKPOL_CONNECT, connect-on-boot: false unless the member turns it on
-// (PRD D5). Both restart the agent whenever it exits, after
+// Both run `thinkpol up` with the node's defaults and two settings:
+// THINKPOL_CONNECT, connect-on-boot, false unless the member turns it on
+// (PRD D5); and THINKPOL_KEEP_CONNECT, so a start in the same boot (after
+// a crash, a restart) comes back as the device was left, whatever
+// connect-on-boot says (package agent, "A device's connection"). Both restart the agent whenever it exits, after
 // [RestartAfter] seconds, without a limit (crash posture: DESIGN.md
 // "Kill switch"): systemd's Restart=always with StartLimitIntervalSec=0;
 // launchd's KeepAlive with ThrottleInterval. A stop waits 60 s for the

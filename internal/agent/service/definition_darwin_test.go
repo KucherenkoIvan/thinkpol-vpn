@@ -40,7 +40,7 @@ func TestPlutilReadsTheLaunchdPlist(t *testing.T) {
 		}
 		connect := map[bool]string{true: "true", false: "false"}[on]
 		if got.Label != Label || len(got.ProgramArguments) != 2 || got.ProgramArguments[0] != BinaryPath || got.ProgramArguments[1] != "up" ||
-			len(got.Env) != 1 || got.Env["THINKPOL_CONNECT"] != connect || !got.RunAtLoad || !got.KeepAlive ||
+			len(got.Env) != 2 || got.Env["THINKPOL_CONNECT"] != connect || got.Env["THINKPOL_KEEP_CONNECT"] != "true" || !got.RunAtLoad || !got.KeepAlive ||
 			got.ThrottleInterval != RestartAfter || got.ExitTimeOut != 60 {
 			t.Fatalf("plutil reads %+v", got)
 		}

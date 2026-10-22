@@ -8,23 +8,27 @@ import (
 	"testing"
 )
 
-// A device's restart in the same boot (a crash and its service's restart)
-// comes back as the member last asked through the local API, or as the
-// boot's first start came up, whatever the configuration says; a boot
-// starts as configured (connect-on-boot), and without a local API the
-// configuration always decides.
+// A device that keeps its connect choice (the service's) comes back, in
+// the same boot (a crash and its service's restart), as the member last
+// asked through the local API, or as the boot's first start came up,
+// whatever the configuration says; a boot starts as configured
+// (connect-on-boot). Without a local API, or run by hand without
+// -keep-connect, the configuration always decides.
 func TestARestartInTheSameBootKeepsTheLastConnectRequest(t *testing.T) {
 	s := newTestSpace(t)
 	_, reg := memoryRegistry(t)
 	startNode(t, reg, s.a, s.verified(t, 1))
 	ctx := context.Background()
 	dir := filepath.Join(tempDir(t), "thinkpol")
+	// Run as the service runs it: keeping the connect choice.
 	inBoot := func(boot string) deviceOpt {
-		return deviceOpt{prepare: func(_ *Config, p *Platform) {
+		return deviceOpt{prepare: func(c *Config, p *Platform) {
+			c.KeepConnect = true
 			p.ConnectRecord = fileConnectRecord{dir: dir, boot: bootOf(boot)}
 		}}
 	}
 	withoutAPI := deviceOpt{prepare: func(c *Config, _ *Platform) { c.APISocket = "" }}
+	byHand := deviceOpt{prepare: func(c *Config, _ *Platform) { c.KeepConnect = false }}
 	restart := func(b *deviceNode) {
 		t.Helper()
 		b.stop()
@@ -60,6 +64,17 @@ func TestARestartInTheSameBootKeepsTheLastConnectRequest(t *testing.T) {
 	b = startDevice(t, s, reg, true, inBoot("boot-1"), withoutAPI)
 	b.connection(t, Connected)
 	restart(b)
+	// Run by hand, without -keep-connect: the flags decide, and nothing
+	// is recorded (the service's start below still finds the disconnect).
+	b = startDevice(t, s, reg, true, inBoot("boot-1"), byHand)
+	b.connection(t, Connected)
+	if err := b.node.Connect(ctx); err != nil {
+		t.Fatal(err)
+	}
+	restart(b)
+	b = startDevice(t, s, reg, true, inBoot("boot-1"))
+	b.connection(t, Disconnected)
+	restart(b)
 
 	// The next boot starts as configured, and its first start records
 	// that: a restart in the boot keeps it, whatever the configuration
@@ -85,6 +100,7 @@ func TestARequestWhileRemovedIsRecorded(t *testing.T) {
 	rec := &memConnectRecord{}
 	b := startDevice(t, s, reg, false, deviceOpt{prepare: func(c *Config, p *Platform) {
 		writeFile(t, filepath.Join(c.StateDir, MapFileName), s.buildWithout(t, 1, s.b), 0o644)
+		c.KeepConnect = true
 		p.ConnectRecord = rec
 	}})
 	if err := b.node.Connect(context.Background()); err != nil {
