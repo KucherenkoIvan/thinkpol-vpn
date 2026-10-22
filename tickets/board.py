@@ -77,7 +77,10 @@ def requirement_ids(root):
 
 def residual_rows(root):
     """The residual-risks table's row ids."""
-    text = (root / RESIDUALS).read_text()
+    path = root / RESIDUALS
+    if not path.exists():
+        return set()
+    text = path.read_text()
     return {m.group(1) for m in re.finditer(r"^\|\s*(RR\d+)\s*\|", text, re.M)}
 
 

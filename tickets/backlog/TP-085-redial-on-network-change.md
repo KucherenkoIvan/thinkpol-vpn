@@ -29,7 +29,7 @@ From the 2026-10-15 macOS manual session: after sleep/wake or a network change, 
 - Split from TP-080 (backlog grooming 2026-10-15). Measured numbers from the macOS session: dead after 6 s probe timeout; recovery 1.4–3.5 s after the network returns.
 - Overlaps TP-019's sleep/wake checklist only where route survey already runs; this ticket is the fast redial policy.
 - Carried over from TP-019: during the Wi-Fi change, the capture covers step 8's items (during the join: nothing but DHCP and the link's own traffic on the old interface's filter; the new service's DNS republished with `ThinkpolOverride`), and the run records step 15b (whether `route -n get <a direct IP>` ever answers utunN during the change).
-- Carries R4's macOS DNS-leak evidence (PRD R4, DESIGN M1): the agent checks afterwards that the direct name's query appears in the physical-interface capture (proving the capture saw DNS) and the tunnel-bound name's does not.
+- Carries R4's macOS DNS-leak evidence (PRD R4, docs/design/milestones.md M1): the agent checks afterwards that the direct name's query appears in the physical-interface capture (proving the capture saw DNS) and the tunnel-bound name's does not.
 
 ## Log
 - 2026-10-15 created in backlog (split from TP-080, backlog grooming)

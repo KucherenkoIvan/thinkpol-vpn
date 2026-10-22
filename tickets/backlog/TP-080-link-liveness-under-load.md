@@ -25,7 +25,7 @@ Implement so a link must not be declared dead while it is still receiving authen
 - [ ] device checklist: a tunnel speed test shows no "link closed" mid-test
 
 ## Notes
-DESIGN.md has the 6 s dead interval in its path-layer section; check that the change agrees with DESIGN, and update DESIGN in the same branch.
+The path package doc (internal/dataplane/path/doc.go) has the 6 s dead interval; check that the change agrees with it, and update it in the same branch.
 - **Split (backlog grooming 2026-10-15):** NAT rebind / source-port change → TP-084; fast redial on network change → TP-085.
 - **Run 4 itself:** the link stayed up through the speed test (status `links_up=1` before and after on both sides).
 

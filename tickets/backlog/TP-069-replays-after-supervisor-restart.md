@@ -19,7 +19,7 @@ After a supervisor restart, datagram replays within the freshness window do not 
 - Pick one approach (implementer chooses; record the decision in docs/design/server-agent.md):
   - persist per-credential sender state across restarts;
   - hold listeners closed for one clock window after a start;
-  - document the caveat in docs/design/server-agent.md and docs/design/security.md.
+  - document the caveat in docs/design/server-agent.md and RESIDUAL-RISKS.md RR34.
 
 ## Out of scope
 - TLS stream replay cache behaviour (separate transport path).
