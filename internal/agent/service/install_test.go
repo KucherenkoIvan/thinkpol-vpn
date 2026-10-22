@@ -13,6 +13,10 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/trusteddir"
 )
 
 // fakeHost is a host's service manager and groups, in memory: what the
@@ -23,19 +27,22 @@ type fakeHost struct {
 
 	mu sync.Mutex
 	// groups and their members.
-	groups map[string][]string
-	// systemd: units enabled, and how often each was (re)started; reloads
-	// counts daemon-reloads.
-	enabled  map[string]bool
-	active   map[string]bool
-	starts   map[string]int
-	reloads  int
+	groups   map[string][]string
 	failNext map[string]int // tool+" "+first arg: fail that many runs
-	// launchd: the daemon loaded, and from which plist (read when it was
-	// bootstrapped).
-	loaded     bool
-	loadedFrom []byte
-	disabled   bool
+	// systemd: the unit as daemon-reload last read it (nil: unknown), the
+	// unit the running agent was started from (nil: not running), enabled.
+	unitLoaded, unitRunning []byte
+	enabled                 bool
+	// launchd: the daemon loaded, from which plist; goneAfter: prints that
+	// still show it after a bootout; disabled: an override someone set;
+	// overridden: an override was written (enable or disable).
+	loaded               bool
+	loadedFrom           []byte
+	booting, goneAfter   int
+	disabled, overridden bool
+	// cleared counts ClearHost's runs, and heldWhileCleared whether the
+	// host lock was held at each.
+	cleared, heldWhileCleared int
 }
 
 func newFakeHost(t *testing.T) *fakeHost {
@@ -43,8 +50,7 @@ func newFakeHost(t *testing.T) *fakeHost {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &fakeHost{t: t, root: root, groups: map[string][]string{}, enabled: map[string]bool{},
-		active: map[string]bool{}, starts: map[string]int{}, failNext: map[string]int{}}
+	return &fakeHost{t: t, root: root, groups: map[string][]string{}, failNext: map[string]int{}}
 }
 
 func (h *fakeHost) run(_ context.Context, tool string, args ...string) (string, error) {
@@ -60,28 +66,32 @@ func (h *fakeHost) run(_ context.Context, tool string, args ...string) (string, 
 		return h.systemctl(args)
 	case "launchctl":
 		return h.launchctl(args)
-	case "groupadd", "usermod", "getent", "groupdel", "dseditgroup":
+	case "groupadd", "usermod", "dseditgroup":
 		return h.group(tool, args)
 	}
 	h.t.Errorf("unexpected tool %s %v", tool, args)
 	return "", errors.New("no such tool")
 }
 
-func (h *fakeHost) systemctl(args []string) (string, error) {
-	unitFile := func(u string) bool {
-		_, err := os.Stat(filepath.Join(h.root, "/etc/systemd/system", u))
-		return err == nil
+func (h *fakeHost) unitFile() []byte {
+	data, err := os.ReadFile(filepath.Join(h.root, UnitPath))
+	if err != nil {
+		return nil
 	}
+	return data
+}
+
+func (h *fakeHost) systemctl(args []string) (string, error) {
 	switch {
 	case slices.Equal(args, []string{"daemon-reload"}):
-		h.reloads++
-	case len(args) == 2 && args[0] == "enable" && unitFile(args[1]):
-		h.enabled[args[1]] = true
-	case len(args) == 2 && args[0] == "restart" && unitFile(args[1]):
-		h.active[args[1]], h.starts[args[1]] = true, h.starts[args[1]]+1
-	case len(args) == 3 && args[0] == "disable" && args[1] == "--now" && unitFile(args[2]):
-		h.enabled[args[2]], h.active[args[2]] = false, false
-	case len(args) == 2 && args[0] == "reset-failed":
+		h.unitLoaded = h.unitFile()
+	case slices.Equal(args, []string{"enable", UnitName}) && h.unitLoaded != nil:
+		h.enabled = true
+	case slices.Equal(args, []string{"restart", UnitName}) && h.unitLoaded != nil:
+		h.unitRunning = h.unitLoaded
+	case slices.Equal(args, []string{"disable", "--now", UnitName}) && h.unitLoaded != nil:
+		h.enabled, h.unitRunning = false, nil
+	case slices.Equal(args, []string{"reset-failed", UnitName}):
 	default:
 		return "", fmt.Errorf("systemctl %v: refused", args)
 	}
@@ -90,17 +100,33 @@ func (h *fakeHost) systemctl(args []string) (string, error) {
 
 func (h *fakeHost) launchctl(args []string) (string, error) {
 	switch {
+	case slices.Equal(args, []string{"print", target}):
+		if h.booting > 0 {
+			h.booting--
+			return "", nil
+		}
+		if !h.loaded {
+			return "", errors.New("could not find service")
+		}
 	case slices.Equal(args, []string{"bootout", target}) && h.loaded:
-		h.loaded, h.loadedFrom = false, nil
+		h.loaded, h.loadedFrom, h.booting = false, nil, h.goneAfter
+	case slices.Equal(args, []string{"print-disabled", "system"}):
+		v := "enabled"
+		if h.disabled {
+			v = "disabled"
+		}
+		if !h.overridden {
+			return "disabled services = {\n}\n", nil
+		}
+		return fmt.Sprintf("disabled services = {\n\t\"com.example.other\" => disabled\n\t%q => %s\n}\n", Label, v), nil
 	case slices.Equal(args, []string{"enable", target}):
-		h.disabled = false
-	case slices.Equal(args, []string{"bootstrap", "system", PlistPath}) && !h.loaded && !h.disabled:
+		h.disabled, h.overridden = false, true
+	case slices.Equal(args, []string{"bootstrap", "system", PlistPath}) && !h.loaded && h.booting == 0 && !h.disabled:
 		data, err := os.ReadFile(filepath.Join(h.root, PlistPath))
 		if err != nil {
 			return "", err
 		}
 		h.loaded, h.loadedFrom = true, data
-	case slices.Equal(args, []string{"print", target}) && h.loaded:
 	default:
 		return "", fmt.Errorf("launchctl %v: refused", args)
 	}
@@ -109,21 +135,22 @@ func (h *fakeHost) launchctl(args []string) (string, error) {
 
 func (h *fakeHost) group(tool string, args []string) (string, error) {
 	name := args[len(args)-1]
-	_, exists := h.groups[name]
+	members, exists := h.groups[name]
 	switch {
 	case tool == "groupadd" && slices.Equal(args[:2], []string{"-f", "-r"}):
 		if !exists {
 			h.groups[name] = nil
 		}
-	case tool == "dseditgroup" && slices.Equal(args[:2], []string{"-o", "create"}) && !exists:
+	case tool == "dseditgroup" && args[1] == "create" && !exists:
 		h.groups[name] = nil
-	case (tool == "getent" && args[0] == "group" || tool == "dseditgroup" && args[1] == "read") && exists:
-	case (tool == "groupdel" || tool == "dseditgroup" && args[1] == "delete") && exists:
-		delete(h.groups, name)
+	case tool == "dseditgroup" && args[1] == "read" && exists:
+	case tool == "dseditgroup" && args[1] == "checkmember" && slices.Contains(members, args[3]):
 	case tool == "usermod" && slices.Equal(args[:2], []string{"-a", "-G"}) && h.hasGroup(args[2]):
-		h.groups[args[2]] = append(h.groups[args[2]], args[3])
-	case tool == "dseditgroup" && args[1] == "edit" && args[2] == "-a" && exists:
-		h.groups[name] = append(h.groups[name], args[3])
+		if !slices.Contains(h.groups[args[2]], args[3]) {
+			h.groups[args[2]] = append(h.groups[args[2]], args[3])
+		}
+	case tool == "dseditgroup" && args[1] == "edit" && args[2] == "-a" && exists && !slices.Contains(members, args[3]):
+		h.groups[name] = append(members, args[3])
 	default:
 		return "", fmt.Errorf("%s %v: refused", tool, args)
 	}
@@ -132,12 +159,33 @@ func (h *fakeHost) group(tool string, args []string) (string, error) {
 
 func (h *fakeHost) hasGroup(name string) bool { _, ok := h.groups[name]; return ok }
 
-// installer is an Installer on h for sys, with a binary to copy and a
-// node that is ready.
+// lockPath is the host lock in the test's root.
+func (h *fakeHost) lockPath() string { return filepath.Join(h.root, "run/thinkpol/agent.lock") }
+
+// lock takes the host lock as agent.HostLock does, with its error.
+func (h *fakeHost) lock() (func(), error) {
+	d, err := trusteddir.Make(filepath.Dir(h.lockPath()))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = d.Close() }()
+	f, err := trusteddir.Lock(d, filepath.Base(h.lockPath()))
+	if errors.Is(err, trusteddir.ErrLocked) {
+		return nil, agent.ErrAnotherAgent
+	}
+	if err != nil {
+		return nil, err
+	}
+	return func() { _ = f.Close() }, nil
+}
+
+// installer is an Installer on h for sys, with a binary to copy, a node
+// that is ready, the host lock in h's root, and a ClearHost that counts.
 func (h *fakeHost) installer(sys System) (Installer, *bytes.Buffer) {
 	exe := filepath.Join(h.root, "home", "thinkpol")
-	// The host has its manager's directory, and somewhere to copy from.
-	for _, dir := range []string{filepath.Dir(exe), filepath.Join(h.root, filepath.Dir(sys.DefinitionPath()))} {
+	// The host has its manager, and somewhere to copy from.
+	for _, dir := range []string{filepath.Dir(exe), filepath.Join(h.root, filepath.Dir(sys.DefinitionPath())),
+		filepath.Join(h.root, "run/systemd/system")} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			h.t.Fatal(err)
 		}
@@ -148,6 +196,14 @@ func (h *fakeHost) installer(sys System) (Installer, *bytes.Buffer) {
 	var out bytes.Buffer
 	return Installer{
 		Root: h.root, System: sys, Run: h.run, Executable: exe, Ready: func() error { return nil },
+		LockHost: h.lock,
+		ClearHost: func() error {
+			h.cleared++
+			if _, err := h.lock(); errors.Is(err, agent.ErrAnotherAgent) {
+				h.heldWhileCleared++
+			}
+			return nil
+		},
 		RuntimeDirs: []string{"/run/thinkpol", "/run/thinkpol-api"}, Out: &out,
 	}, &out
 }
@@ -156,6 +212,9 @@ func (h *fakeHost) file(p string) ([]byte, os.FileMode, bool) {
 	fi, err := os.Lstat(filepath.Join(h.root, p))
 	if err != nil {
 		return nil, 0, false
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, fi.Mode(), true
 	}
 	data, err := os.ReadFile(filepath.Join(h.root, p))
 	if err != nil {
@@ -185,28 +244,30 @@ func TestInstallUnderSystemd(t *testing.T) {
 	if !ok || mode.Perm() != 0o755 || string(bin) != "the thinkpol binary" {
 		t.Fatalf("the binary: %v %v %q", ok, mode, bin)
 	}
-	if !h.enabled[UnitName] || !h.active[UnitName] || !slices.Equal(h.groups[Group], []string{"alice"}) {
-		t.Fatalf("enabled %v, active %v, group %v", h.enabled, h.active, h.groups)
+	// systemd read the unit, enabled it and runs the agent from it.
+	if !h.enabled || !bytes.Equal(h.unitLoaded, unit) || !bytes.Equal(h.unitRunning, unit) || !slices.Equal(h.groups[Group], []string{"alice"}) {
+		t.Fatalf("enabled %v, loaded %q, running %q, group %v", h.enabled, h.unitLoaded, h.unitRunning, h.groups)
 	}
 	if c, err := in.ConnectOnBoot(); err != nil || c {
 		t.Fatalf("connect-on-boot: %v %v", c, err)
 	}
 
-	// The toggle rewrites the unit for the next boot, without a restart.
-	reloads := h.reloads
+	// The toggle: systemd has the new unit for the next start, the running
+	// agent isn't restarted.
 	if err := in.SetConnectOnBoot(ctx, true); err != nil {
 		t.Fatal(err)
 	}
-	if c, err := in.ConnectOnBoot(); err != nil || !c || h.starts[UnitName] != 1 || h.reloads != reloads+1 {
-		t.Fatalf("connect-on-boot %v %v, %d starts, %d reloads", c, err, h.starts[UnitName], h.reloads)
+	toggled, _, _ := h.file(UnitPath)
+	if c, err := in.ConnectOnBoot(); err != nil || !c || !bytes.Equal(h.unitLoaded, toggled) || !bytes.Equal(h.unitRunning, unit) {
+		t.Fatalf("connect-on-boot %v %v, loaded %q, running %q", c, err, h.unitLoaded, h.unitRunning)
 	}
-	// Installed again (a new binary): restarted, the toggle kept unless
-	// the install sets it.
-	if err := in.Install(ctx, Options{}); err != nil {
+	// Installed again (a new binary): restarted on the unit, the toggle
+	// kept unless the install sets it.
+	if err := in.Install(ctx, Options{User: "alice"}); err != nil {
 		t.Fatal(err)
 	}
-	if c, _ := in.ConnectOnBoot(); !c || h.starts[UnitName] != 2 {
-		t.Fatalf("after a reinstall: connect-on-boot %v, %d starts", c, h.starts[UnitName])
+	if c, _ := in.ConnectOnBoot(); !c || !bytes.Equal(h.unitRunning, toggled) || !slices.Equal(h.groups[Group], []string{"alice"}) {
+		t.Fatalf("after a reinstall: connect-on-boot %v, running %q, group %v", c, h.unitRunning, h.groups)
 	}
 	if err := in.Install(ctx, Options{ConnectOnBoot: &off}); err != nil {
 		t.Fatal(err)
@@ -227,7 +288,7 @@ func TestUninstallLeavesNothingOfTheService(t *testing.T) {
 			}
 			// What a stopped agent leaves, and what it doesn't: a crashed
 			// run's route record stays, and is reported.
-			for _, f := range []string{"/run/thinkpol/agent.lock", "/run/thinkpol/connect", "/run/thinkpol/netcfg/overlay.lock",
+			for _, f := range []string{"/run/thinkpol/agent.lock", "/run/thinkpol/" + agent.ConnectRecordFile, "/run/thinkpol/netcfg/overlay.lock",
 				"/run/thinkpol-api/api.lock", "/run/thinkpol/netcfg/overlay.routes", "/var/lib/thinkpol/node.key"} {
 				if err := os.MkdirAll(filepath.Join(h.root, filepath.Dir(f)), 0o700); err != nil {
 					t.Fatal(err)
@@ -241,7 +302,7 @@ func TestUninstallLeavesNothingOfTheService(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, p := range []string{sys.DefinitionPath(), BinaryPath, "/run/thinkpol-api", "/run/thinkpol/agent.lock",
-				"/run/thinkpol/connect", "/run/thinkpol/netcfg/overlay.lock"} {
+				"/run/thinkpol/" + agent.ConnectRecordFile, "/run/thinkpol/netcfg/overlay.lock"} {
 				if _, _, ok := h.file(p); ok {
 					t.Errorf("%s is left", p)
 				}
@@ -254,8 +315,14 @@ func TestUninstallLeavesNothingOfTheService(t *testing.T) {
 			if !strings.Contains(out.String(), "overlay.routes") {
 				t.Errorf("the record left isn't reported:\n%s", out)
 			}
-			if h.hasGroup(Group) || h.loaded || h.active[UnitName] || h.enabled[UnitName] {
-				t.Fatalf("group %v, launchd loaded %v, systemd active %v enabled %v", h.groups, h.loaded, h.active, h.enabled)
+			// A crashed agent's leftovers undone, under the host lock.
+			if h.cleared != 1 || h.heldWhileCleared != 1 {
+				t.Errorf("ClearHost ran %d times, %d under the lock", h.cleared, h.heldWhileCleared)
+			}
+			// The group stays: it may be older than the service.
+			if !h.hasGroup(Group) || h.loaded || h.overridden || h.unitRunning != nil || h.enabled || h.unitLoaded != nil {
+				t.Fatalf("group %v, launchd loaded %v override %v, systemd running %q enabled %v loaded %q",
+					h.groups, h.loaded, h.overridden, h.unitRunning, h.enabled, h.unitLoaded)
 			}
 			if _, err := in.ConnectOnBoot(); !errors.Is(err, ErrNotInstalled) {
 				t.Fatalf("connect-on-boot after uninstall: %v", err)
@@ -268,12 +335,68 @@ func TestUninstallLeavesNothingOfTheService(t *testing.T) {
 	}
 }
 
+// An agent that holds the host lock (one run by hand, or one the stop
+// didn't end) keeps everything it uses: uninstall refuses before it
+// removes a lock or clears anything, and install refuses to start a
+// service that would only restart against it.
+func TestNothingIsTakenFromARunningAgent(t *testing.T) {
+	h := newFakeHost(t)
+	in, _ := h.installer(Systemd{})
+	ctx := context.Background()
+	unlock, err := h.lock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	if err := in.Install(ctx, Options{}); !errors.Is(err, errAgentRuns) {
+		t.Fatalf("install: %v", err)
+	}
+	if _, _, ok := h.file(BinaryPath); ok || h.hasGroup(Group) {
+		t.Fatal("install changed something")
+	}
+
+	unlock()
+	if err := in.Install(ctx, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	unlockAgain, err := h.lock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlockAgain()
+	if err := in.Uninstall(ctx); !errors.Is(err, errAgentRuns) {
+		t.Fatalf("uninstall: %v", err)
+	}
+	if _, _, ok := h.file("/run/thinkpol/agent.lock"); !ok || h.cleared != 0 {
+		t.Fatalf("the lock file was removed (%v) or the host cleared (%d)", !ok, h.cleared)
+	}
+	if _, _, ok := h.file(BinaryPath); !ok {
+		t.Fatal("the binary was removed")
+	}
+}
+
+// A ClearHost that fails stops uninstall before it removes the binary
+// that could clear the host again.
+func TestUninstallKeepsTheBinaryWhileTheHostIsntClear(t *testing.T) {
+	h := newFakeHost(t)
+	in, _ := h.installer(Systemd{})
+	ctx := context.Background()
+	if err := in.Install(ctx, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	in.ClearHost = func() error { return errors.New("routes stuck") }
+	if err := in.Uninstall(ctx); err == nil || !strings.Contains(err.Error(), "routes stuck") {
+		t.Fatalf("got %v", err)
+	}
+	if _, _, ok := h.file(BinaryPath); !ok {
+		t.Fatal("the binary was removed")
+	}
+}
+
 func TestInstallUnderLaunchd(t *testing.T) {
 	h := newFakeHost(t)
 	in, _ := h.installer(Launchd{})
 	ctx := context.Background()
-	// A daemon just booted out may still be going: bootstrap is retried.
-	h.failNext["launchctl bootstrap"] = 2
 	if err := in.Install(ctx, Options{User: "alice"}); err != nil {
 		t.Fatal(err)
 	}
@@ -281,8 +404,9 @@ func TestInstallUnderLaunchd(t *testing.T) {
 	if !ok || mode.Perm() != 0o644 || !bytes.Equal(plist, LaunchdPlist(Definition{Binary: BinaryPath})) {
 		t.Fatalf("the plist (%v, %v):\n%s", ok, mode, plist)
 	}
-	if !h.loaded || !bytes.Equal(h.loadedFrom, plist) || !slices.Equal(h.groups[Group], []string{"alice"}) {
-		t.Fatalf("loaded %v, group %v", h.loaded, h.groups)
+	// Loaded from the plist, and no override written on a clean host.
+	if !h.loaded || !bytes.Equal(h.loadedFrom, plist) || h.overridden || !slices.Equal(h.groups[Group], []string{"alice"}) {
+		t.Fatalf("loaded %v, override %v, group %v", h.loaded, h.overridden, h.groups)
 	}
 	// The toggle is for the next boot: the loaded daemon keeps its plist.
 	if err := in.SetConnectOnBoot(ctx, true); err != nil {
@@ -291,55 +415,163 @@ func TestInstallUnderLaunchd(t *testing.T) {
 	if c, err := in.ConnectOnBoot(); err != nil || !c || !bytes.Equal(h.loadedFrom, plist) {
 		t.Fatalf("connect-on-boot %v %v", c, err)
 	}
-	// Installed again: booted out and in, on the new plist.
+	// Installed again over the running daemon, which launchd still shows
+	// for a while after the bootout: Start waits, then loads the new plist.
+	// alice, a member already, isn't added twice.
+	h.goneAfter = 3
+	if err := in.Install(ctx, Options{User: "alice"}); err != nil {
+		t.Fatal(err)
+	}
+	if !h.loaded || !bytes.Contains(h.loadedFrom, []byte("<string>on</string>")) || !slices.Equal(h.groups[Group], []string{"alice"}) {
+		t.Fatalf("reinstalled: loaded %v, group %v, from\n%s", h.loaded, h.groups, h.loadedFrom)
+	}
+	// A daemon someone disabled is enabled again.
+	h.overridden, h.disabled = true, true
+	if err := in.Install(ctx, Options{}); err != nil || !h.loaded || h.disabled {
+		t.Fatalf("a disabled daemon: %v, loaded %v, disabled %v", err, h.loaded, h.disabled)
+	}
+}
+
+// launchd keeps showing a booted-out daemon until its agent exits; a stop
+// that outlasts the wait, or a bootout that fails with the daemon still
+// there, is an error, and nothing is bootstrapped over it.
+func TestLaunchdWaitsForTheDaemonToGo(t *testing.T) {
+	h := newFakeHost(t)
+	l := Launchd{StopWait: 50 * time.Millisecond, Poll: time.Millisecond}
+	in, _ := h.installer(l)
+	ctx := context.Background()
 	if err := in.Install(ctx, Options{}); err != nil {
 		t.Fatal(err)
 	}
-	if !h.loaded || !bytes.Contains(h.loadedFrom, []byte("<string>on</string>")) {
-		t.Fatalf("reinstalled: loaded %v from\n%s", h.loaded, h.loadedFrom)
+	h.goneAfter = 1 << 30
+	if err := in.Install(ctx, Options{}); err == nil || !strings.Contains(err.Error(), "still has") {
+		t.Fatalf("got %v", err)
 	}
-	// A disabled daemon is enabled again.
-	h.disabled = true
-	if err := in.Install(ctx, Options{}); err != nil || !h.loaded {
-		t.Fatalf("a disabled daemon: %v, loaded %v", err, h.loaded)
+	if h.loaded {
+		t.Fatal("bootstrapped over a daemon still going")
+	}
+
+	h = newFakeHost(t)
+	in, _ = h.installer(l)
+	if err := in.Install(ctx, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	h.failNext["launchctl bootout"] = 1
+	if err := in.Uninstall(ctx); err == nil || !strings.Contains(err.Error(), "bootout") {
+		t.Fatalf("got %v", err)
+	}
+	if _, _, ok := h.file(PlistPath); !ok {
+		t.Fatal("the plist was removed under a daemon still loaded")
 	}
 }
 
 func TestInstallRefusesBeforeChangingAnything(t *testing.T) {
-	t.Run("a node that can't run", func(t *testing.T) {
+	for name, change := range map[string]func(*fakeHost, *Installer){
+		"a node that can't run": func(_ *fakeHost, in *Installer) {
+			in.Ready = func() error { return errors.New("no node.key") }
+		},
+		"a host without systemd": func(h *fakeHost, _ *Installer) {
+			if err := os.Remove(filepath.Join(h.root, "run/systemd/system")); err != nil {
+				h.t.Fatal(err)
+			}
+		},
+		"a binary directory others can write to": func(h *fakeHost, _ *Installer) {
+			dir := filepath.Join(h.root, filepath.Dir(BinaryPath))
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				h.t.Fatal(err)
+			}
+			if err := os.Chmod(dir, 0o777); err != nil {
+				h.t.Fatal(err)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newFakeHost(t)
+			in, _ := h.installer(Systemd{})
+			change(h, &in)
+			err := in.Install(context.Background(), Options{User: "alice"})
+			if err == nil {
+				t.Fatal("installed")
+			}
+			want := map[string]string{"a node that can't run": "no node.key", "a host without systemd": "doesn't run systemd",
+				"a binary directory others can write to": "others can change"}[name]
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("got %v, want %q", err, want)
+			}
+			if _, _, ok := h.file(BinaryPath); ok || h.hasGroup(Group) || h.unitRunning != nil {
+				t.Fatal("installed something")
+			}
+		})
+	}
+}
+
+// Root's service never runs a binary a user could change: a symlink at
+// BinaryPath to the running binary, or that binary writable by others,
+// is replaced with a copy; root's own file there, the running one, stays.
+func TestInstallReplacesABinaryOthersCouldChange(t *testing.T) {
+	ctx := context.Background()
+	t.Run("a symlink to the running binary", func(t *testing.T) {
 		h := newFakeHost(t)
 		in, _ := h.installer(Systemd{})
-		in.Ready = func() error { return errors.New("no node.key") }
-		if err := in.Install(context.Background(), Options{User: "alice"}); err == nil || !strings.Contains(err.Error(), "no node.key") {
-			t.Fatalf("got %v", err)
+		dst := filepath.Join(h.root, BinaryPath)
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			t.Fatal(err)
 		}
-		if _, _, ok := h.file(BinaryPath); ok || h.hasGroup(Group) {
-			t.Fatal("installed something")
+		if err := os.Symlink(in.Executable, dst); err != nil {
+			t.Fatal(err)
+		}
+		if err := in.Install(ctx, Options{}); err != nil {
+			t.Fatal(err)
+		}
+		if data, mode, _ := h.file(BinaryPath); !mode.IsRegular() || mode.Perm() != 0o755 || string(data) != "the thinkpol binary" {
+			t.Fatalf("the binary: %v %q", mode, data)
 		}
 	})
-	t.Run("a binary directory others can write to", func(t *testing.T) {
+	t.Run("the running binary, writable by others", func(t *testing.T) {
 		h := newFakeHost(t)
 		in, _ := h.installer(Systemd{})
-		dir := filepath.Join(h.root, filepath.Dir(BinaryPath))
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		dst := filepath.Join(h.root, BinaryPath)
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.Chmod(dir, 0o777); err != nil {
+		if err := os.Link(in.Executable, dst); err != nil {
 			t.Fatal(err)
 		}
-		if err := in.Install(context.Background(), Options{}); err == nil {
-			t.Fatal("installed into a directory others can write to")
+		if err := os.Chmod(in.Executable, 0o777); err != nil {
+			t.Fatal(err)
 		}
-		if _, _, ok := h.file(BinaryPath); ok {
-			t.Fatal("the binary was copied")
+		if err := in.Install(ctx, Options{}); err != nil {
+			t.Fatal(err)
+		}
+		cur, _ := os.Lstat(dst)
+		src, _ := os.Stat(in.Executable)
+		if os.SameFile(cur, src) || cur.Mode().Perm() != 0o755 {
+			t.Fatalf("still the user's file, or %v", cur.Mode())
+		}
+	})
+	t.Run("root's own, installed and running", func(t *testing.T) {
+		h := newFakeHost(t)
+		in, _ := h.installer(Systemd{})
+		if err := in.Install(ctx, Options{}); err != nil {
+			t.Fatal(err)
+		}
+		in.Executable = filepath.Join(h.root, BinaryPath)
+		before, _ := os.Lstat(in.Executable)
+		if err := in.Install(ctx, Options{}); err != nil {
+			t.Fatal(err)
+		}
+		after, _ := os.Lstat(in.Executable)
+		if !os.SameFile(before, after) {
+			t.Fatal("root's own binary was copied over itself")
 		}
 	})
 }
 
-func TestADefinitionChangedByHandIsNotInstalled(t *testing.T) {
+func TestADefinitionChangedByHandIsReported(t *testing.T) {
 	h := newFakeHost(t)
-	in, _ := h.installer(Systemd{})
-	if err := in.Install(context.Background(), Options{}); err != nil {
+	in, out := h.installer(Systemd{})
+	ctx := context.Background()
+	if err := in.Install(ctx, Options{ConnectOnBoot: &on}); err != nil {
 		t.Fatal(err)
 	}
 	unit, _, _ := h.file(UnitPath)
@@ -347,10 +579,31 @@ func TestADefinitionChangedByHandIsNotInstalled(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(h.root, UnitPath), edited, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := in.SetConnectOnBoot(context.Background(), true); !errors.Is(err, ErrNotInstalled) {
+	if err := in.SetConnectOnBoot(ctx, true); !errors.Is(err, ErrDefinitionChanged) {
 		t.Fatalf("got %v", err)
 	}
 	if now, _, _ := h.file(UnitPath); !bytes.Equal(now, edited) {
 		t.Fatal("the edited unit was rewritten")
+	}
+	// Installed over it: anew, with a warning that connect-on-boot is off.
+	if err := in.Install(ctx, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if c, err := in.ConnectOnBoot(); err != nil || c || !strings.Contains(out.String(), "warning: ") {
+		t.Fatalf("connect-on-boot %v %v, said\n%s", c, err, out)
+	}
+}
+
+// The group install makes is the one the agent's local API admits.
+func TestTheGroupIsTheLocalAPIsDefault(t *testing.T) {
+	if _, ok := os.LookupEnv("THINKPOL_API_GROUP"); ok {
+		t.Skip("THINKPOL_API_GROUP is set")
+	}
+	cfg, err := agent.LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.APIGroup != Group {
+		t.Fatalf("the agent's default group %q, install's %q", cfg.APIGroup, Group)
 	}
 }

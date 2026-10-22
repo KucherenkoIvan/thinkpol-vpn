@@ -41,7 +41,7 @@ func TestPlutilReadsTheLaunchdPlist(t *testing.T) {
 		connect := map[bool]string{true: "on", false: "off"}[on]
 		if got.Label != Label || len(got.ProgramArguments) != 2 || got.ProgramArguments[0] != BinaryPath || got.ProgramArguments[1] != "up" ||
 			len(got.Env) != 1 || got.Env["THINKPOL_CONNECT_ON_BOOT"] != connect || !got.RunAtLoad || !got.KeepAlive ||
-			got.ThrottleInterval != RestartAfter || got.ExitTimeOut != 60 {
+			got.ThrottleInterval != RestartAfterSeconds || got.ExitTimeOut != StopTimeoutSeconds {
 			t.Fatalf("plutil reads %+v", got)
 		}
 	}

@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent"
 )
 
 // Runner runs one of the host's tools (by name: systemctl, launchctl,
@@ -19,26 +21,30 @@ import (
 type Runner func(ctx context.Context, tool string, args ...string) (string, error)
 
 // System is a service manager: systemd or launchd. Its methods change
-// the host only through run.
+// the host only through run, but for Present, which only reads.
 type System interface {
+	// Present says whether the manager runs this host (root is the
+	// host's root path), before anything is changed.
+	Present(root string) error
 	// DefinitionPath is where the definition goes.
 	DefinitionPath() string
 	// Render is the definition as this manager reads it.
 	Render(d Definition) []byte
-	// Start loads the definition just written and (re)starts the service.
+	// Start loads the definition just written and (re)starts the service;
+	// an agent it ran before has exited first.
 	Start(ctx context.Context, run Runner) error
 	// Reload has the manager take a changed definition at the service's
 	// next start, without restarting it.
 	Reload(ctx context.Context, run Runner) error
-	// Stop stops and unloads the service; done once it isn't loaded.
+	// Stop stops and unloads the service, and returns once its agent has
+	// exited (or the stop timed out, an error).
 	Stop(ctx context.Context, run Runner) error
 	// Forget is called once the definition is gone.
 	Forget(ctx context.Context, run Runner) error
 	// EnsureGroup makes the group if it is missing; AddToGroup adds a
-	// user to it; DeleteGroup removes it if it is there.
+	// user to it unless they are in it.
 	EnsureGroup(ctx context.Context, run Runner, group string) error
 	AddToGroup(ctx context.Context, run Runner, user, group string) error
-	DeleteGroup(ctx context.Context, run Runner, group string) error
 }
 
 // Installer installs, changes and removes the service on a host.
@@ -56,6 +62,12 @@ type Installer struct {
 	// Ready says whether the node can run (its state directory), checked
 	// before anything is installed.
 	Ready func() error
+	// LockHost takes the host's agent lock (agent.HostLock), failing with
+	// agent.ErrAnotherAgent while an agent holds it.
+	LockHost func() (func(), error)
+	// ClearHost undoes what a crashed agent left on the host
+	// (agent.Platform.ClearHost), under the host lock.
+	ClearHost func() error
 	// RuntimeDirs are where the agent keeps its locks and boot records
 	// (the agent's lock directory, the local API's): uninstall removes
 	// what a stopped agent leaves there.
@@ -74,8 +86,15 @@ type Options struct {
 	User string
 }
 
-// ErrNotInstalled: no service definition, or not one install wrote.
-var ErrNotInstalled = errors.New("the service is not installed")
+var (
+	// ErrNotInstalled: no service definition.
+	ErrNotInstalled = errors.New("the service is not installed")
+	// ErrDefinitionChanged: a definition that isn't what install writes
+	// (edited by hand).
+	ErrDefinitionChanged = errors.New("the service's definition was changed by hand")
+	// errAgentRuns: an agent holds the host lock where none may run.
+	errAgentRuns = errors.New("a thinkpol agent runs outside the service (it holds the host lock): stop it first")
+)
 
 func (in Installer) path(p string) string { return filepath.Join(in.Root, p) }
 
@@ -88,16 +107,30 @@ func (in Installer) say(format string, args ...any) {
 // Install copies the binary, makes the group (adding opts.User), writes
 // the definition and (re)starts the service. Run again, it replaces the
 // binary and restarts the service, keeping connect-on-boot unless opts
-// sets it.
+// sets it. Before changing anything it checks the manager runs the host,
+// the node can run, and, with no service installed, that no agent runs
+// by hand (the service's would only restart against its lock).
 func (in Installer) Install(ctx context.Context, opts Options) error {
+	if err := in.System.Present(in.Root); err != nil {
+		return err
+	}
 	if err := in.Ready(); err != nil {
 		return fmt.Errorf("this node can't run yet: %w", err)
 	}
 	connect := false
+	d, err := in.installed()
+	switch {
+	case err == nil:
+		connect = d.ConnectOnBoot
+	case errors.Is(err, ErrNotInstalled):
+		if err := in.noAgent(); err != nil {
+			return err
+		}
+	default:
+		in.say("warning: %v; installing anew, connect-on-boot off unless -connect-on-boot says otherwise", err)
+	}
 	if opts.ConnectOnBoot != nil {
 		connect = *opts.ConnectOnBoot
-	} else if d, err := in.installed(); err == nil {
-		connect = d.ConnectOnBoot
 	}
 	if err := in.installBinary(); err != nil {
 		return err
@@ -109,7 +142,7 @@ func (in Installer) Install(ctx context.Context, opts Options) error {
 		if err := in.System.AddToGroup(ctx, in.Run, opts.User, Group); err != nil {
 			return fmt.Errorf("adding %s to group %s: %w", opts.User, Group, err)
 		}
-		in.say("added %s to group %s: the local API is theirs from their next login", opts.User, Group)
+		in.say("%s is in group %s: the local API is theirs from their next login", opts.User, Group)
 	}
 	if err := in.writeDefinition(Definition{Binary: BinaryPath, ConnectOnBoot: connect}); err != nil {
 		return err
@@ -118,6 +151,19 @@ func (in Installer) Install(ctx context.Context, opts Options) error {
 		return fmt.Errorf("starting the service: %w", err)
 	}
 	in.say("installed and started %s (connect-on-boot %s)", in.System.DefinitionPath(), OnOff(connect))
+	return nil
+}
+
+// noAgent fails while an agent holds the host lock.
+func (in Installer) noAgent() error {
+	unlock, err := in.LockHost()
+	if errors.Is(err, agent.ErrAnotherAgent) {
+		return errAgentRuns
+	}
+	if err != nil {
+		return err
+	}
+	unlock()
 	return nil
 }
 
@@ -147,14 +193,27 @@ func (in Installer) SetConnectOnBoot(ctx context.Context, on bool) error {
 }
 
 // Uninstall stops the service (the agent takes its data plane down as it
-// stops), removes the definition, the binary and the group, and what the
-// stopped agent left in its runtime directories. The node's state
-// directory (its keys and map) stays.
+// stops), then, holding the host lock (refused while an agent still holds
+// it), undoes what a crashed agent left on the host (ClearHost), removes
+// the definition, the binary, and what the stopped agent left in its
+// runtime directories. The group stays (it may be older than the
+// service); so does the node's state directory, its keys and map.
 func (in Installer) Uninstall(ctx context.Context) error {
 	_, err := os.Lstat(in.path(in.System.DefinitionPath()))
 	defined := err == nil
 	if err := in.System.Stop(ctx, in.Run); err != nil && defined {
 		return fmt.Errorf("stopping the service: %w", err)
+	}
+	unlock, err := in.LockHost()
+	if errors.Is(err, agent.ErrAnotherAgent) {
+		return errAgentRuns
+	}
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if err := in.ClearHost(); err != nil {
+		return fmt.Errorf("undoing what a crashed agent left: %w", err)
 	}
 	if defined {
 		if err := os.Remove(in.path(in.System.DefinitionPath())); err != nil {
@@ -168,9 +227,6 @@ func (in Installer) Uninstall(ctx context.Context) error {
 	if err := os.Remove(in.path(BinaryPath)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
-	if err := in.System.DeleteGroup(ctx, in.Run, Group); err != nil {
-		return fmt.Errorf("group %s: %w", Group, err)
-	}
 	for _, dir := range in.RuntimeDirs {
 		left, err := clearRuntimeDir(in.path(dir))
 		if err != nil {
@@ -180,11 +236,13 @@ func (in Installer) Uninstall(ctx context.Context) error {
 			in.say("left in %s, not the agent's locks or boot records: %s", dir, strings.Join(left, ", "))
 		}
 	}
+	in.say("the group %s stays; remove it yourself if nothing else uses it", Group)
 	return nil
 }
 
 // installed reads the installed definition: exactly what install writes,
-// connect-on-boot on or off; anything else is ErrNotInstalled.
+// connect-on-boot on or off; none is ErrNotInstalled, anything else
+// ErrDefinitionChanged.
 func (in Installer) installed() (Definition, error) {
 	data, err := os.ReadFile(in.path(in.System.DefinitionPath()))
 	if errors.Is(err, fs.ErrNotExist) {
@@ -199,7 +257,7 @@ func (in Installer) installed() (Definition, error) {
 			return d, nil
 		}
 	}
-	return Definition{}, fmt.Errorf("%w: %s isn't what thinkpol service install writes; install again", ErrNotInstalled, in.System.DefinitionPath())
+	return Definition{}, fmt.Errorf("%w: %s isn't what thinkpol service install writes; install again", ErrDefinitionChanged, in.System.DefinitionPath())
 }
 
 // writeDefinition replaces the definition atomically, 0644.
@@ -207,9 +265,11 @@ func (in Installer) writeDefinition(d Definition) error {
 	return replaceFile(in.path(in.System.DefinitionPath()), in.System.Render(d), 0o644)
 }
 
-// installBinary copies the running binary to BinaryPath, unless it is
-// that file. Root runs it, so its directory must be one no one else can
-// change (trusteddir): whoever could replace the binary would run as root.
+// installBinary copies the running binary to BinaryPath, unless that is
+// already a regular file of root's (this process's user) that no one
+// else can write, and the same file: a symlink or anyone else's file
+// there is replaced, so root's service never runs what a user could
+// change. Its directory must be one no one else can change (trusteddir).
 func (in Installer) installBinary() error {
 	dst := in.path(BinaryPath)
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
@@ -222,7 +282,7 @@ func (in Installer) installBinary() error {
 	if err != nil {
 		return err
 	}
-	if cur, err := os.Stat(dst); err == nil && os.SameFile(src, cur) {
+	if cur, err := os.Lstat(dst); err == nil && ownedSafely(cur) && os.SameFile(src, cur) {
 		return nil
 	}
 	data, err := os.ReadFile(in.Executable)
@@ -257,7 +317,7 @@ func replaceFile(path string, data []byte, perm os.FileMode) error {
 // socket there is a stopped service's too.
 func runtimeFile(name string) bool {
 	name = strings.TrimSuffix(name, ".tmp")
-	return strings.HasSuffix(name, ".lock") || name == "connect"
+	return strings.HasSuffix(name, ".lock") || name == agent.ConnectRecordFile
 }
 
 // clearRuntimeDir removes the runtime files and sockets in dir and in its

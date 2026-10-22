@@ -7,31 +7,44 @@
 //
 // # What install does
 //
-// As root, and only once the node can run (its state directory reads as
+// As root, and only once the host runs the manager (systemd: there is a
+// /run/systemd/system; OpenRC, a container or WSL1 is refused before
+// anything changes), the node can run (its state directory reads as
 // `thinkpol up` would read it: without keys and a map the service would
-// only restart):
+// only restart), and, with no service installed yet, no agent holds the
+// host lock (one run by hand: the service's would only restart against
+// it):
 //
 //   - copies the running binary to [BinaryPath], /usr/local/bin/thinkpol,
 //     which the service runs as root. Its directory, and every one above
 //     it, must be root's and writable by no one else (trusteddir), or
 //     install refuses: whoever could replace the binary would run as root
-//     (a /usr/local/bin a package manager gave a user, say);
+//     (a /usr/local/bin a package manager gave a user, say). What is at
+//     BinaryPath is kept only if it is root's own regular file, writable
+//     by no one else, and the running binary itself; a symlink, or a file
+//     anyone else could change, is replaced with a copy;
 //   - makes the local API's group, [Group] (`thinkpol`, the agent's
 //     default -api-group), if it is missing (groupadd -r; dseditgroup in
 //     Directory Services on macOS), and adds the user who ran sudo
-//     (SUDO_USER; -user names another, empty no one). A member gets the
-//     group from their next login (RESIDUAL-RISKS.md RR43 for macOS);
+//     (SUDO_USER; -user names another, empty no one) unless they are in
+//     it. A member gets the group from their next login
+//     (RESIDUAL-RISKS.md RR43 for macOS);
 //   - writes the definition ([SystemdUnit] at [UnitPath], [LaunchdPlist]
 //     at [PlistPath]), 0644, replaced atomically, and (re)starts the
-//     service: `systemctl enable` and `restart`; `launchctl bootout`,
-//     `enable` and `bootstrap` (retried while a daemon just booted out is
-//     still going).
+//     service: `systemctl daemon-reload`, `enable` and `restart`; under
+//     launchd a loaded daemon is booted out first and Start waits until
+//     `launchctl print` no longer shows it (bootout may return before the
+//     agent has exited; up to [StopTimeoutSeconds] and a margin), then
+//     `bootstrap`. `launchctl enable` runs only if someone disabled the
+//     daemon, so a clean install writes no launchd override.
 //
 // Installing again replaces the binary and restarts the agent, keeping
 // connect-on-boot unless -connect-on-boot says otherwise. The agent comes
 // back as the member left it, since a start in the same boot follows the
 // boot's recorded connect choice (package agent, "A device's
-// connection").
+// connection"). A definition that isn't what install writes (edited by
+// hand, or unreadable) is replaced with a warning, connect-on-boot off
+// unless -connect-on-boot says otherwise.
 //
 // # The definitions
 //
@@ -41,10 +54,11 @@
 // start in the same boot (after a crash, a restart) comes back as the
 // device was left, whatever connect-on-boot says (package agent, "A
 // device's connection"). Both restart the agent whenever it exits, after
-// [RestartAfter] seconds, without a limit (crash posture:
-// docs/design/security.md "Kill switch"): systemd's Restart=always with StartLimitIntervalSec=0;
-// launchd's KeepAlive with ThrottleInterval. A stop waits 60 s for the
-// agent to take its data plane down (TimeoutStopSec, ExitTimeOut).
+// [RestartAfterSeconds] seconds, without a limit (crash posture:
+// docs/design/security.md "Kill switch"): systemd's Restart=always with
+// StartLimitIntervalSec=0; launchd's KeepAlive with ThrottleInterval. A
+// stop waits [StopTimeoutSeconds] for the agent to take its data plane
+// down (TimeoutStopSec, ExitTimeOut).
 //
 // The systemd unit:
 //
@@ -70,29 +84,42 @@
 // # Connect-on-boot
 //
 // `thinkpol service connect-on-boot on|off` rewrites the definition with
-// the other THINKPOL_CONNECT_ON_BOOT and has the manager take it at the next start
-// (systemd's daemon-reload; launchd reads the plist when it boots), without
-// restarting the agent: only a boot's first start reads it. Without an
-// argument it prints the setting. A definition that isn't exactly what
-// install writes (edited by hand) is [ErrNotInstalled]: install again.
+// the other THINKPOL_CONNECT_ON_BOOT and has the manager take it at the
+// next start (systemd's daemon-reload; launchd reads the plist when it
+// boots), without restarting the agent: only a boot's first start reads
+// it. Without an argument it prints the setting. No definition is
+// [ErrNotInstalled]; one that isn't exactly what install writes (edited by
+// hand) is [ErrDefinitionChanged]: install again.
 //
 // # What uninstall leaves
 //
-// Nothing of the service: it stops it (the agent takes its data plane
-// down: TUN, routes, leak guard, the resolver configuration), removes the
-// definition (systemd forgets the unit), the binary and the group, and
-// in the agent's runtime directories (its lock's directory, the local
+// Nothing of the service but its group. It stops the service and waits
+// for the agent to exit (which takes its data plane down: TUN, routes,
+// leak guard, the resolver configuration), then takes the host's agent
+// lock: while an agent still holds it (one run by hand, one the stop
+// didn't end) uninstall refuses before it touches a lock or a record,
+// since removing them would let the next agent lock a fresh inode beside
+// the running one. Holding the lock, it undoes what a crashed agent left
+// (the agent's start-time cleanup without a connect: the route table's
+// routes and leak guard, the overlay's routes, the resolver
+// configuration; a stop that timed out leaves them too), and only then
+// removes the definition (systemd forgets the unit), the binary, and in
+// the agent's runtime directories (its lock's directory, the local
 // API's) the locks, the boot's connect record and stale sockets, then the
 // directories left empty. Anything else there (a crashed run's route or
-// pf records, on macOS) is reported and left. The node's state directory,
-// its keys and map, stays.
+// pf records, on macOS) is reported and left. The group stays: it may be
+// older than the service, or someone's group for other reasons; remove
+// it by hand if nothing uses it. So does the node's state directory, its
+// keys and map. A server's crash leftovers (the supervisor's nftables
+// tables) are its next start's to undo, not uninstall's.
 //
 // # Where it is proven
 //
 // The lab runs a device under systemd (lab TestServiceUnderSystemd):
-// install, a crash restarted and back as the member left it, connect-on-boot
-// off then on across reboots, uninstall leaving nothing, before and after a
-// reboot. launchd is tested as files and with a fake launchctl here; the
+// install, a reinstall over the running connected agent, a crash
+// restarted and back as the member left it, connect-on-boot off then on
+// across reboots, uninstall right after a crash and uninstall leaving
+// nothing, before and after a reboot. launchd is tested as files and with a fake launchctl here; the
 // install, reboot and uninstall on a Mac are the owner's device steps
 // (TP-046's checklist).
 package service

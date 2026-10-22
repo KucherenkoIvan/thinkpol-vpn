@@ -10,9 +10,6 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/trusteddir"
 )
 
-// errAnotherAgent: another node agent holds the host's agent lock.
-var errAnotherAgent = errors.New("another thinkpol agent is running on this host")
-
 // HostLock takes the host's agent lock: an exclusive flock on the host's
 // lock path, held until the release or the process dies. A node agent
 // changes host-wide state outside any namespace (routes, the resolver
@@ -35,7 +32,7 @@ func lockHostAt(path string) (func(), error) {
 	defer func() { _ = dir.Close() }()
 	f, err := trusteddir.Lock(dir, filepath.Base(path))
 	if errors.Is(err, trusteddir.ErrLocked) {
-		return nil, fmt.Errorf("%w (it holds %s)", errAnotherAgent, path)
+		return nil, fmt.Errorf("%w (it holds %s)", ErrAnotherAgent, path)
 	}
 	if err != nil {
 		return nil, err

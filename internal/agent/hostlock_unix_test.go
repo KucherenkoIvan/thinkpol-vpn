@@ -62,7 +62,7 @@ func TestAStartTakesTheHostLockOnce(t *testing.T) {
 		t.Fatalf("the node stopped: %v", err)
 	default:
 	}
-	if _, err := lockHostAt(path); !errors.Is(err, errAnotherAgent) {
+	if _, err := lockHostAt(path); !errors.Is(err, ErrAnotherAgent) {
 		t.Errorf("a second agent while the node runs: %v", err)
 	}
 	cancel()
@@ -91,7 +91,7 @@ func TestOneAgentHoldsTheHostLock(t *testing.T) {
 		t.Fatalf("the lock's directory: %v %v", fi, err)
 	}
 	_, err = lockHostAt(path)
-	if !errors.Is(err, errAnotherAgent) || !strings.Contains(err.Error(), path) {
+	if !errors.Is(err, ErrAnotherAgent) || !strings.Contains(err.Error(), path) {
 		t.Fatalf("a second lock: %v", err)
 	}
 	unlock()
@@ -131,7 +131,7 @@ func TestTheHostLockRefusesAPlaceOthersControl(t *testing.T) {
 		if err := os.Chmod(dir, 0o777); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := lockHostAt(filepath.Join(dir, "agent.lock")); err == nil || errors.Is(err, errAnotherAgent) {
+		if _, err := lockHostAt(filepath.Join(dir, "agent.lock")); err == nil || errors.Is(err, ErrAnotherAgent) {
 			t.Fatalf("got %v", err)
 		}
 	})
@@ -143,7 +143,7 @@ func TestTheHostLockRefusesAPlaceOthersControl(t *testing.T) {
 		if err := os.Symlink("real", filepath.Join(base, "thinkpol")); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := lockHostAt(filepath.Join(base, "thinkpol", "agent.lock")); err == nil || errors.Is(err, errAnotherAgent) {
+		if _, err := lockHostAt(filepath.Join(base, "thinkpol", "agent.lock")); err == nil || errors.Is(err, ErrAnotherAgent) {
 			t.Fatalf("got %v", err)
 		}
 	})
@@ -153,7 +153,7 @@ func TestTheHostLockRefusesAPlaceOthersControl(t *testing.T) {
 		if err := os.Symlink(target, filepath.Join(dir, "agent.lock")); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := lockHostAt(filepath.Join(dir, "agent.lock")); err == nil || errors.Is(err, errAnotherAgent) {
+		if _, err := lockHostAt(filepath.Join(dir, "agent.lock")); err == nil || errors.Is(err, ErrAnotherAgent) {
 			t.Fatalf("got %v", err)
 		}
 		if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {

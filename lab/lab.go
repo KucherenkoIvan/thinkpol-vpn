@@ -477,6 +477,60 @@ func (l *Lab) configureNode(ctx context.Context, spec NodeSpec) error {
 	return err
 }
 
+// checkSealed checks from inside a node that it is sealed as
+// configureNode left it, for a node that sealed itself again on a restart
+// rather than trusting Docker to give back what it had: its addresses the
+// ones the lab knows (other nodes' /etc/hosts name them), each network's
+// frame filter and blackholed bridge, and no default route but the
+// gateway's.
+func (l *Lab) checkSealed(ctx context.Context, n *Node) error {
+	spec := l.Topology.Nodes[l.Topology.nodeIndex(n.Name)]
+	var problems []string
+	addrs, err := n.Exec(ctx, "ip", "-o", "addr", "show")
+	if err != nil {
+		return err
+	}
+	routes, err := n.Exec(ctx, "sh", "-c", "ip -4 route show; ip -6 route show")
+	if err != nil {
+		return err
+	}
+	for _, net := range spec.Networks {
+		a, ifname, b := n.addrs[net], n.ifnames[net], l.bridges[net]
+		if !strings.Contains(addrs.Stdout, " "+a.IPv4.String()+"/") || a.IPv6.IsValid() && !strings.Contains(addrs.Stdout, " "+a.IPv6.String()+"/") {
+			problems = append(problems, fmt.Sprintf("%s: not at %s, %s any more", net, a.IPv4, a.IPv6))
+		}
+		if _, err := n.Exec(ctx, "nft", "list", "table", "netdev", "tplab_"+ifname); err != nil {
+			problems = append(problems, fmt.Sprintf("%s: no frame filter tplab_%s", net, ifname))
+		}
+		for _, br := range []netip.Addr{b.IPv4, b.IPv6} {
+			if br.IsValid() && !strings.Contains(routes.Stdout, "blackhole "+br.String()+" ") && !strings.Contains(routes.Stdout, "blackhole "+br.String()+"\n") {
+				problems = append(problems, fmt.Sprintf("%s: the bridge %s isn't blackholed", net, br))
+			}
+		}
+	}
+	var want []string
+	if spec.Gateway != "" {
+		gw := l.Topology.Nodes[l.Topology.nodeIndex(spec.Gateway)]
+		addr := l.nodes[gw.Name].addrs[sharedNetwork(spec, gw)]
+		want = append(want, "default via "+addr.IPv4.String()+" ")
+		if addr.IPv6.IsValid() {
+			want = append(want, "default via "+addr.IPv6.String()+" ")
+		}
+	}
+	for _, line := range strings.Split(routes.Stdout, "\n") {
+		if !strings.HasPrefix(line, "default ") {
+			continue
+		}
+		if !slices.ContainsFunc(want, func(w string) bool { return strings.HasPrefix(line, w) }) {
+			problems = append(problems, "a default route that isn't the gateway's: "+line)
+		}
+	}
+	if len(problems) > 0 {
+		return fmt.Errorf("%s: not sealed after its restart: %s", n.Name, strings.Join(problems, "; "))
+	}
+	return nil
+}
+
 // hostsFor is reader's /etc/hosts: every node by name, at its address on the
 // first network it shares with reader, or else on its first network.
 func (l *Lab) hostsFor(reader NodeSpec) string {

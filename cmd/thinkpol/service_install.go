@@ -29,7 +29,7 @@ func runServiceInstall(ctx context.Context, e env, args []string) error {
 	if err := service.CheckRoot(); err != nil {
 		return err
 	}
-	in, err := service.HostInstaller(e.stdout)
+	in, err := service.HostInstaller(e.stdout, platform())
 	if err != nil {
 		return err
 	}

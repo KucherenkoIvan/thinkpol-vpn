@@ -25,9 +25,13 @@ const (
 	// Group is the local API's group (agent.Config.APIGroup's default):
 	// install creates it and adds the installing user.
 	Group = "thinkpol"
-	// RestartAfter is how long the service manager waits before it starts
-	// the agent again after it exited.
-	RestartAfter = 5
+	// RestartAfterSeconds is how long the service manager waits before it
+	// starts the agent again after it exited.
+	RestartAfterSeconds = 5
+	// StopTimeoutSeconds is how long a stop waits for the agent to take
+	// its data plane down before it is killed (TimeoutStopSec, launchd's
+	// ExitTimeOut).
+	StopTimeoutSeconds = 60
 )
 
 // Definition is what the service runs: the agent (`thinkpol up`, with the
@@ -60,11 +64,11 @@ Environment=THINKPOL_CONNECT_ON_BOOT=%s
 Restart=always
 RestartSec=%d
 KillMode=mixed
-TimeoutStopSec=60
+TimeoutStopSec=%d
 
 [Install]
 WantedBy=multi-user.target
-`, d.Binary, OnOff(d.ConnectOnBoot), RestartAfter)
+`, d.Binary, OnOff(d.ConnectOnBoot), RestartAfterSeconds, StopTimeoutSeconds)
 	return b.Bytes()
 }
 
@@ -96,9 +100,9 @@ func LaunchdPlist(d Definition) []byte {
 	<key>KeepAlive</key>
 	<true/>
 	<key>ThrottleInterval</key>
-	<integer>` + strconv.Itoa(RestartAfter) + `</integer>
+	<integer>` + strconv.Itoa(RestartAfterSeconds) + `</integer>
 	<key>ExitTimeOut</key>
-	<integer>60</integer>
+	<integer>` + strconv.Itoa(StopTimeoutSeconds) + `</integer>
 </dict>
 </plist>
 `)

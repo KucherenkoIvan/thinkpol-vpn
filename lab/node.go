@@ -126,7 +126,10 @@ func (n *Node) Restart(ctx context.Context) error {
 	if _, err := docker(ctx, "restart", "-t", "60", n.Container); err != nil {
 		return fmt.Errorf("%s: docker restart: %w", n.Name, err)
 	}
-	return n.WaitBooted(ctx)
+	if err := n.WaitBooted(ctx); err != nil {
+		return err
+	}
+	return n.lab.checkSealed(ctx, n)
 }
 
 // WaitBooted waits until systemd in a node that runs it has booted: its

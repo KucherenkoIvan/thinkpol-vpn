@@ -44,8 +44,9 @@ and starts the agent. It starts at every boot, and systemd starts it again
 5 s after any exit. `systemctl reload thinkpol` sends SIGHUP to the agent
 alone, which re-reads the map at once; the per-space workers it runs don't
 handle SIGHUP, so never signal the whole unit. `thinkpol service uninstall`
-stops it and removes the unit, the binary and the group; the state
-directory stays. Package `agent/service` has the unit and why it is so.
+stops it, undoes what a crashed agent left, and removes the unit and the
+binary; the `thinkpol` group and the state directory stay. Both refuse
+while an agent you started by hand holds the host lock: stop it first. Package `agent/service` has the unit and why it is so.
 
 When systemd captures the agent's stderr, journald stores it on disk;
 keeping the journal volatile is part of provisioning (TP-038), not of this

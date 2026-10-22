@@ -15,11 +15,12 @@ import (
 
 // TestServiceUnderSystemd installs device-a as a service in a node that
 // runs systemd, and checks what PRD D5 and the crash posture ask of it:
-// it starts at boot, connect-on-boot is off until turned on, a crash is
-// restarted and comes back as the member left it in that boot, and
-// uninstall leaves nothing of the service, also across a reboot. A reboot
-// is the node's restart: a fresh /run, systemd booting again (the kernel's
-// boot id is the Docker VM's and stays).
+// it starts at boot, connect-on-boot is off until turned on, a reinstall
+// over the running agent and a crash both come back as the member left it
+// in that boot, and uninstall, right after a crash, leaves nothing of the
+// service but its group, also across a reboot. A reboot is the node's
+// restart: a fresh /run, systemd booting again (the kernel's boot id is
+// the Docker VM's and stays), the node checked sealed again.
 func TestServiceUnderSystemd(t *testing.T) {
 	t.Parallel()
 	topo := lab.Topology{
@@ -103,26 +104,37 @@ func TestServiceUnderSystemd(t *testing.T) {
 	}
 	ping(t, dev, s4)
 
+	// The runbook's binary update: installed again over the running,
+	// connected agent, which comes back connected.
+	out = dev.MustExec(t, "/opt/thinkpol/bin/thinkpol", "service", "install")
+	t.Logf("reinstall:\n%s", out)
+	state("connected")
+	ping(t, dev, s4)
+
 	// A crash: systemd restarts the agent, connected as alice left it.
-	crash := func(restarts string) {
+	restarts := func() string {
 		t.Helper()
+		return dev.MustExec(t, "systemctl", "show", "-p", "NRestarts", "--value", "thinkpol.service")
+	}
+	crash := func() {
+		t.Helper()
+		before := restarts()
 		dev.MustExec(t, "systemctl", "kill", "-s", "KILL", "thinkpol.service")
 		lab.Eventually(t, 60*time.Second, func() error {
-			got, err := execRead(dev, pollTimeout, "systemctl", "show", "-p", "NRestarts", "--value", "thinkpol.service")
-			if err != nil || got != restarts+"\n" {
-				return fmt.Errorf("NRestarts %q: %v", got, err)
+			if got := restarts(); got == before {
+				return fmt.Errorf("NRestarts still %q", got)
 			}
 			return nil
 		})
 	}
-	crash("1")
+	crash()
 	state("connected")
 	ping(t, dev, s4)
 	// A disconnect is kept across a crash too.
 	if res, err := execResult(dev, execTimeout, asAlice("disconnect")...); err != nil {
 		t.Fatalf("disconnect: %v\n%s%s", err, res.Stdout, res.Stderr)
 	}
-	crash("2")
+	crash()
 	state("disconnected")
 
 	// A reboot starts the service, disconnected: connect-on-boot is off,
@@ -150,7 +162,14 @@ func TestServiceUnderSystemd(t *testing.T) {
 	state("connected")
 	ping(t, dev, s4)
 
-	// Uninstalled: nothing of the service is left, nor after a reboot.
+	// Uninstalled at once after a crash, before systemd restarts the
+	// agent: what the dead agent left (its guard, routes and resolver
+	// configuration) is undone. Nothing of the service is left, nor after
+	// a reboot.
+	dev.MustExec(t, "systemctl", "kill", "-s", "KILL", "thinkpol.service")
+	if err := wantGuard(dev, execTimeout, guardPresent); err != nil {
+		t.Fatalf("no guard left by the crash: the uninstall below proves nothing: %v", err)
+	}
 	out = dev.MustExec(t, "thinkpol", "service", "uninstall")
 	t.Logf("uninstall:\n%s", out)
 	wantNoService := func() {
@@ -163,9 +182,8 @@ func TestServiceUnderSystemd(t *testing.T) {
 		if res, _ := execResult(dev, execTimeout, "systemctl", "list-unit-files", "--no-legend", "thinkpol.service"); strings.TrimSpace(res.Stdout) != "" {
 			t.Errorf("systemd still knows the unit: %s", res.Stdout)
 		}
-		if res, err := execResult(dev, execTimeout, "getent", "group", "thinkpol"); err == nil || !getentNotFound(res) {
-			t.Errorf("the group is left: %v %s", err, res.Stdout)
-		}
+		// The group stays (it may be older than the service).
+		dev.MustExec(t, "getent", "group", "thinkpol")
 		if res, err := execResult(dev, execTimeout, "pgrep", "-x", "thinkpol"); err == nil {
 			t.Errorf("thinkpol runs: %s", res.Stdout)
 		}

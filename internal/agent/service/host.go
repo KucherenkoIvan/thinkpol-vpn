@@ -1,4 +1,4 @@
-//go:build linux || darwin
+//go:build (linux && !android) || darwin
 
 package service
 
@@ -20,14 +20,15 @@ import (
 // runs as root.
 var toolDirs = []string{"/usr/sbin", "/usr/bin", "/sbin", "/bin"}
 
-// toolTimeout bounds one tool's run; stopping the agent can take its
-// TimeoutStopSec (60 s) and launchd's ExitTimeOut (60 s).
-const toolTimeout = 2 * time.Minute
+// toolTimeout bounds one tool's run; stopping the agent can take
+// StopTimeoutSeconds.
+const toolTimeout = 2 * StopTimeoutSeconds * time.Second
 
 // HostInstaller is the Installer for this host: its service manager, the
-// running binary, the node's default state directory and the agent's
-// runtime directories.
-func HostInstaller(out io.Writer) (Installer, error) {
+// running binary, the node's default state directory, the host's agent
+// lock and plat's cleanup of a crashed agent, and the agent's runtime
+// directories.
+func HostInstaller(out io.Writer, plat agent.Platform) (Installer, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return Installer{}, err
@@ -41,6 +42,8 @@ func HostInstaller(out io.Writer) (Installer, error) {
 		Run:         runTool,
 		Executable:  exe,
 		Ready:       nodeReady,
+		LockHost:    agent.HostLock,
+		ClearHost:   plat.ClearHost,
 		RuntimeDirs: []string{agent.HostLockDir(), filepath.Dir(agent.DefaultAPISocket())},
 		Out:         out,
 	}, nil
