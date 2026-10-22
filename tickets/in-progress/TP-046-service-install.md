@@ -130,3 +130,4 @@ Round 3 (2026-10-23): correctness (fix first), design (fix first), second opinio
 - 2026-10-23 round 2 done: R2.1-R2.8 fixed; `make lint` and `make test` green; full `make lab-test` green on 659fbd6 (the lab package with TestServiceUnderSystemd, 36 packages in lab nodes). Still unverified: everything on a Mac (the macOS boxes, checklist steps 1-8); Linux on a real host rather than a container
 - 2026-10-23 in-progress → review
 - 2026-10-23 review → has-errors (round 3: R3.1-R3.2)
+- 2026-10-23 has-errors → in-progress — owner: agent-tp-046, round 3 fixes (R3.1-R3.2)
