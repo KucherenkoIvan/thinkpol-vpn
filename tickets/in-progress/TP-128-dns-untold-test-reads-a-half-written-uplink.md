@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: []
 refs: []
-owner: ""
-branch: ""
+owner: "agent-tp-128"
+branch: "tp-128-dns-untold-test"
 ---
 
 ## Goal
@@ -30,3 +30,4 @@ branch: ""
 
 ## Log
 - 2026-10-22 created in backlog (flake seen in TP-126's lab run)
+- 2026-10-22 backlog → in-progress — owner: agent-tp-128, branch: tp-128-dns-untold-test
