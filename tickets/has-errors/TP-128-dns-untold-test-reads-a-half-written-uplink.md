@@ -25,6 +25,15 @@ branch: "tp-128-dns-untold-test"
 - [x] the test is fixed, and `go test -count=200 -run TestResolvConfWhileUntold ./internal/dataplane/dns/` passes under `stress` or parallel load in the lab
 - [x] `make lint`, `make test` pass
 
+## Review findings
+Round 1 (2026-10-22): correctness (merge), design (fix first), second opinion (merge). The cause and the product change hold; the decision and its evidence need writing down properly.
+- [ ] R1.1 The decision isn't where decisions live: `dns/doc.go` (~189-191, ~213-215) still names only missing/unreadable (resolved) and missing/dangling (resolv.conf) as failed reads. Add the empty uplink file and its reason. Check systemd-resolved's uplink writer (`write_uplink_resolv_conf`): it writes its header comment even with no servers, and writes atomically. If so, say so: a zero-byte uplink is a file caught mid-write or truncated, never an answer; the rule assumes resolved's atomic writer. Add that an empty /etc/resolv.conf itself is still a good read (TP-117 owns that case). Update the comments at `resolvconf.go` ~390-393 and ~608-612 ("unreadable or empty").
+- [ ] R1.2 The "under load" box is ticked on a run with no load (and on b138a96, not head). Re-run `-count=200 -run TestResolvConfWhileUntold` in the lab while something loads the host (e.g. a parallel `make lab-test`, or `stress` in the node), say what the load was, and name the commit; or untick the box.
+- [ ] R1.3 One definition of "empty is a failed read": `resolved.read` checks `len(b) == 0` and `upstreamsFromContent` checks again. Pull it into one helper (e.g. `readUplink(path) ([]byte, error)`) used by both. The error says "is empty", not "a half-written uplink is no answer", which the code doesn't know.
+- [ ] R1.4 Reasons and mechanism: the "clears the staleness for good" reason holds for the resolv.conf path, not resolved's (whose next tick compares against `r.servers` and tells within 5 s): write one comment per test, for what that test shows, and correct the Log. The Log's mechanism: the watcher's apply woken by the test's own rewrite of resolv.conf (inotify on the name, `watch_linux.go`), or its 2 s ticker, read the uplink between create and write; say that.
+- [ ] R1.5 `SystemUpstreams` at startup now treats an empty uplink as a failed read (resolvers unknown, `dns_upstreams_stale`) where it used to give an empty list: add a case to `TestSystemUpstreams` and a Log line.
+- [ ] R1.6 Nits: `writeFileAtomic` should use the product's own writer (`replace` with `writeNew`), with a comment saying when to use it, and the Log should say "every write while a watcher runs" (the resolved tests and `TestSystemUpstreams` have none); the garbled test comment "what a half-written one looks like finished" → "Empty, as a file caught mid-write reads: no answer yet."; `upstreamsFromContent`'s run-on doc comment; the Log's out-of-scope resolv.conf case now lives in TP-117 (empty reads mid-rewrite, an empty link target while untold) and the failed uplink read on a change in TP-130: cite them.
+
 ## Notes
 - From TP-126's lab run (2026-10-22). The test came with TP-115.
 
@@ -39,3 +48,4 @@ branch: "tp-128-dns-untold-test"
 - 2026-10-22 not verified: a half-written uplink file caught in the product itself — resolved writes its own uplink file atomically, so the empty-read decision rests on the reasoning and the new tests, not on an observed occurrence
 - 2026-10-22 out of scope, for another ticket: an empty resolv.conf read while unmanaged (a DHCP client rewriting it in place) is still a good read with no upstreams on the resolv.conf path itself; the same reasoning would make it a failed read too
 - 2026-10-22 in-progress → review
+- 2026-10-22 review → has-errors (round 1: R1.1-R1.6)
