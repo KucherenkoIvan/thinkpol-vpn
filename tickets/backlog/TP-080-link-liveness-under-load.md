@@ -6,7 +6,7 @@ area: dataplane/path
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-019]
-refs: [N2, DESIGN#data-plane]
+refs: [N2, DESIGN#data-plane-every-node-one-binary]
 needs_human: macos
 owner: ""
 branch: ""

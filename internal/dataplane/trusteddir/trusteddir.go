@@ -1,17 +1,5 @@
 //go:build unix
 
-// Package trusteddir opens directories whose contents a process may
-// believe: the directory and every directory on its path are owned by the
-// process's user (or root), none is a symlink, and none is writable by
-// anyone else. The path is walked from / one component at a time with
-// openat(O_NOFOLLOW), each checked on its open descriptor, so nothing on
-// the way can be swapped for a symlink between the check and the use, and
-// no one else can rename a directory on the way while it is used. An
-// ancestor writable by others is passed through only when it is sticky
-// (like /tmp): there others can add entries but not rename or remove ours,
-// and a foreign entry on the path fails the owner check. The directory
-// itself is never sticky or writable by others. Whatever is done inside it
-// is done relative to its descriptor.
 package trusteddir
 
 import (

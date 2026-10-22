@@ -1,5 +1,3 @@
-// Package logring keeps an agent's logs in memory only (PRD S2): a bounded
-// ring of lines, oldest dropped first, gone when the process exits.
 package logring
 
 import (

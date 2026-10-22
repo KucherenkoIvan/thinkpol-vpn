@@ -13,10 +13,28 @@
 // egress blocks, and a Direct route drops what route tables should have
 // kept out of the TUN.
 //
-// On macOS a packet for the node's own overlay address comes out of the
-// utun (the OS routes the point-to-point interface's own address into it):
-// the router writes it back into the TUN, so the OS delivers it to itself
-// (Table.ReflectLocal), the way Tailscale does on macOS.
+// # Local reflection (macOS)
+//
+// A utun is point-to-point with its own IPv4 address as the peer, so
+// macOS routes what it sends to that address into the utun instead of
+// delivering it: without help, the node's own processes never reach a
+// service on its overlay address, its resolver included (DESIGN.md
+// "DNS"). With [Table.ReflectLocal] (set on macOS only; elsewhere the OS
+// never hands the TUN such packets), the router writes a packet read
+// from the TUN whose source and destination are both the node's own
+// addresses back into the TUN, and the OS takes it in as its own, the
+// way Tailscale does on macOS. Anything else for a local address (a
+// source injected on the TUN, a peer's address) is never delivered as if
+// WireGuard had authenticated it.
+//
+// macOS can hand the utun such packets with incomplete transport
+// checksums, so they are recomputed on the way back ([checksum.Fix]): the
+// IPv4 header checksum always, the TCP, UDP or ICMP(v6) checksum when the
+// packet is whole. Fragmented IPv4 keeps its transport checksum (its
+// header checksum is still fixed); IPv6 with a fragment header is left
+// completely unchanged. Reflected packets are written one at a time (a
+// TUN with offloads may coalesce a batch in place) and counted
+// ([Counters].Reflected, [Counters].ReflectFailed).
 //
 // The router owns the TUN: closing it closes the TUN. It never looks at
 // what a WireGuard device writes back: WireGuard already dropped anything

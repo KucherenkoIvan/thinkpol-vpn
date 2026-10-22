@@ -6,7 +6,7 @@ area: agent
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-020]
-refs: [DESIGN#engine-and-agent]
+refs: [DESIGN#node-agent]
 owner: agent-small-fixes
 branch: tp-056-status-stop-order
 ---

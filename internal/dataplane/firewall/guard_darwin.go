@@ -142,10 +142,10 @@ func hostAddrs() ([]netip.Addr, error) {
 // Apply fails and is retried. pf enforces it whenever pf is on (on the
 // guard's reference after an earlier good load, or on another enabler's);
 // the guard takes no reference for it. Flushing it would leave an empty
-// anchor, which passes all IPv6. DESIGN.md (IPv6, the leak guard on
-// macOS) has the reasoning: why it is never wider than the rules written
-// but for a table someone widened, and why the last verified guard isn't
-// reloaded instead.
+// anchor, which passes all IPv6. The package doc (macOS: loading and
+// checking) has the reasoning: why it is never wider than the rules
+// written but for a table someone widened, and why the last verified
+// guard isn't reloaded instead.
 func (g *IPv6Guard) Apply(ctx context.Context, e routetable.Exempt) (err error) {
 	if !validInterface.MatchString(e.TUN) {
 		return fmt.Errorf("firewall: TUN %q isn't an interface name", e.TUN)
