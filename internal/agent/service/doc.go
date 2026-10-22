@@ -41,8 +41,8 @@
 // start in the same boot (after a crash, a restart) comes back as the
 // device was left, whatever connect-on-boot says (package agent, "A
 // device's connection"). Both restart the agent whenever it exits, after
-// [RestartAfter] seconds, without a limit (crash posture: DESIGN.md
-// "Kill switch"): systemd's Restart=always with StartLimitIntervalSec=0;
+// [RestartAfter] seconds, without a limit (crash posture:
+// docs/design/security.md "Kill switch"): systemd's Restart=always with StartLimitIntervalSec=0;
 // launchd's KeepAlive with ThrottleInterval. A stop waits 60 s for the
 // agent to take its data plane down (TimeoutStopSec, ExitTimeOut).
 //

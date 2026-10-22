@@ -37,6 +37,7 @@ Each package's `doc.go` holds its mechanism; this table is the way in.
 | `cmd/thinkpol` | the one binary (`up`, CLI, `admin serve`, dev tools); composition roots |
 | `cmd/thinkpol-tray` | the tray app, a local API client |
 | [`agent`](internal/agent/doc.go) | the node agent: maps, modes, host lock, connection, events, what a node keeps |
+| [`agent/service`](internal/agent/service/doc.go) | installing the agent as the host's service: the systemd unit, the launchd daemon, connect-on-boot |
 | [`agent/supervisor`](internal/agent/supervisor/doc.go) | servers: shared listeners, isolation, egress; the planned gatekeeper |
 | [`agent/worker`](internal/agent/worker/doc.go), [`agent/ipc`](internal/agent/ipc/doc.go) | a space's sandboxed data plane and its protocol |
 | [`agent/localapi`](internal/agent/localapi/doc.go) | the local API: socket, gates, limits |
