@@ -6,7 +6,7 @@ area: agent/supervisor
 repo: thinkpol-vpn
 size: S
 depends_on: []
-refs: [N5, DESIGN#server-agent-one-worker-per-space]
+refs: [N5, docs/design/server-agent.md#server-agent-one-worker-per-space]
 owner: agent-composer
 branch: tp-068-supervisor-spawn-hang
 ---

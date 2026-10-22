@@ -6,7 +6,7 @@ area: config
 repo: go-kernel
 size: S
 depends_on: []
-refs: [DESIGN#kernel-usage]
+refs: [docs/design/control-plane.md#kernel-usage]
 owner: "agent-krn"
 branch: "krn-003-config-env-files-flags"
 ---

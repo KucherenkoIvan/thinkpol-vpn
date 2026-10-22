@@ -1,5 +1,5 @@
 // Package dns is the resolver on the node's overlay address, and what
-// points the OS's resolver at it (DESIGN.md "DNS").
+// points the OS's resolver at it (docs/design/routing.md "DNS").
 //
 // DNS is routing: [Server] answers the space's overlay names itself,
 // `<device>.<space>.internal` (`.internal` is reserved for private use,
@@ -322,7 +322,7 @@
 //
 // # Nothing is logged about a query
 //
-// Names and answers never reach a log or the disk (DESIGN.md "Node
+// Names and answers never reach a log or the disk (docs/design/security.md "Node
 // safety"): [Options.Log] gets failures to listen only, and
 // [Server.Counters] are the only figures the resolver keeps.
 package dns

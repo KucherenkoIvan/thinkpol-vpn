@@ -6,7 +6,7 @@ area: dataplane/router
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-008]
-refs: [R2, R3, DESIGN#routing-rules-and-dns]
+refs: [R2, R3, docs/design/routing.md#routing-rules-and-dns]
 owner: "agent-tp-015"
 branch: "tp-015-rule-engine"
 ---

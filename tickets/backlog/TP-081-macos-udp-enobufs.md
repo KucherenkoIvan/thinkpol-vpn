@@ -6,7 +6,7 @@ area: dataplane/transport
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-019]
-refs: [C1, C3, C6, DESIGN#transports]
+refs: [C1, C3, C6, docs/design/transports.md#transports]
 needs_human: macos
 owner: ""
 branch: ""

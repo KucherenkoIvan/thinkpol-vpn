@@ -6,7 +6,7 @@ area: agent
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-078]
-refs: [DESIGN#the-local-api]
+refs: [docs/design/desktop-client.md#the-local-api]
 owner: "agent-tp-091"
 branch: "tp-091-device-diagnostics-snapshot"
 ---
@@ -36,7 +36,7 @@ branch: "tp-091-device-diagnostics-snapshot"
 - [x] `thinkpol diag` on Linux in the lab: the guard table, routes, rules and resolvers match what `nft`/`ip` report, in a test (lab `TestDiagShowsWhatTheHostHolds`: `ip -j route`/`rule`, `nft -j`, `resolvectl`, resolv.conf)
 - [x] macOS: the pf parts are parsed from `pfctl` output by functions tested on recorded fixtures, including an unparseable line (→ `unreadable`) and an empty anchor (`TestParseVerboseRules`, `TestInspectReadsTheGuardAsPfListsIt` on `firewall/testdata/pfctl`; the fixtures are built from the fake pf's formats and pfctl's source, not recorded on a Mac: Notes, "Device run")
 - [x] a test checks that no secret field from the config or status reaches the snapshot (`TestDiagnosticsHoldNoSecret`, `TestTheSnapshotHasNoSecretField`, and the lab test's key check)
-- [x] the snapshot carries a schema version; DESIGN.md's local API section describes it (`schema_version` 1, `localapi.DiagSchemaVersion`; DESIGN.md's one line points to the localapi package doc, which holds the mechanism)
+- [x] the snapshot carries a schema version; docs/design/desktop-client.md "The local API" describes it (`schema_version` 1, `localapi.DiagSchemaVersion`; its one line points to the localapi package doc, which holds the mechanism)
 
 ## Review findings
 Round 1 (2026-10-22): correctness (fix first), design (fix first), second opinion (fix first). Secrets, access and read-only hold on the normal path; the v1 contract and a few parsers need fixing before the owner's device run records v1.

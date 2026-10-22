@@ -15,7 +15,7 @@ branch: ""
 The lab reproduces whitelist mode, TLS fingerprint filtering and volume throttling.
 
 ## Scope
-- Whitelist mode, as DESIGN.md's lab section describes it: drop everything whose destination address isn't listed, then check the handshake's name (SNI) on what's left; drop UDP even to listed addresses; variants that throttle the rest to about 14 kb/s, reset it, or let it time out. A name-only check (address not checked) is a separate, weaker module.
+- Whitelist mode, as docs/design/lab.md describes it: drop everything whose destination address isn't listed, then check the handshake's name (SNI) on what's left; drop UDP even to listed addresses; variants that throttle the rest to about 14 kb/s, reset it, or let it time out. A name-only check (address not checked) is a separate, weaker module.
 - JA3/JA4 computation with an allow-list of common browser fingerprints.
 - Volume throttling: flows to non-domestic addresses slowed or frozen after N kilobytes.
 - Server hello fingerprints (JA3S/JA4S): TP-026; this module consumes them for the matrix.

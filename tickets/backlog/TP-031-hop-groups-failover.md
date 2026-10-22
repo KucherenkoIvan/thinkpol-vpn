@@ -6,7 +6,7 @@ area: dataplane/path
 repo: thinkpol-vpn
 size: L
 depends_on: [TP-030]
-refs: [R6, R7, DESIGN#data-plane-every-node-one-binary]
+refs: [R6, R7, docs/design/overlay.md#data-plane-every-node-one-binary]
 owner: ""
 branch: ""
 ---

@@ -71,7 +71,7 @@ type DataPlane struct {
 	// DNS runs the node's resolver on its overlay addresses (see
 	// dataplane's dnsConfig for what it serves), asking DNSUpstreams: a
 	// device with none asks the resolvers the OS used before, a worker
-	// never falls back to those (see DESIGN.md "Upstreams"). On a device
+	// never falls back to those (see docs/design/routing.md "Upstreams"). On a device
 	// the OS resolves through it while the data plane runs. A worker's
 	// follows its later configs (dnsUpstreams).
 	DNS          bool

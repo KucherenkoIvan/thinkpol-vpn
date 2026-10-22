@@ -6,7 +6,7 @@ area: lab
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-001]
-refs: [DESIGN#censor-lab]
+refs: [docs/design/lab.md#censor-lab]
 owner: "agent-tp-002"
 branch: "tp-002-lab-harness"
 ---

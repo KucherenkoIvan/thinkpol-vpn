@@ -105,7 +105,7 @@ type EngineConfig struct {
 	DNS Resolver
 }
 
-// Engine is one space's data plane on a node (DESIGN.md "Data plane"): the
+// Engine is one space's data plane on a node (docs/design/overlay.md "Data plane"): the
 // TUN, the router, one WireGuard device per egress, and the path layer
 // under them, configured from the node's section of the map.
 //

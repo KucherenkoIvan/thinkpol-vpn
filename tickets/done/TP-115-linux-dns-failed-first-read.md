@@ -6,7 +6,7 @@ area: dataplane
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-108]
-refs: [DESIGN#routing-rules-and-dns]
+refs: [docs/design/routing.md#routing-rules-and-dns]
 owner: "cursor-glm-tp-115"
 branch: "tp-115-linux-dns-failed-first-read"
 ---

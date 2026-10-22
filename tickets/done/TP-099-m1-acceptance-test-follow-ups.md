@@ -6,7 +6,7 @@ area: lab
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-023]
-refs: [R4, D6, DESIGN#milestones, DESIGN#dns]
+refs: [R4, D6, docs/design/milestones.md#milestones, docs/design/routing.md#dns]
 owner: claude-tp099
 branch: tp-099-m1-acceptance-test-follow-ups
 ---

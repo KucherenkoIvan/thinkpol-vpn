@@ -6,7 +6,7 @@ area: dataplane/routetable
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-018]
-refs: [R2, D6, DESIGN#routing-rules-and-dns]
+refs: [R2, D6, docs/design/routing.md#routing-rules-and-dns]
 owner: "agent-tp-018"
 branch: "tp-057-tunnelvision-localnet"
 ---

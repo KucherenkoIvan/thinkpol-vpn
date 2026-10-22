@@ -6,7 +6,7 @@ area: observability
 repo: go-kernel
 size: S
 depends_on: []
-refs: [DESIGN#kernel-usage]
+refs: [docs/design/control-plane.md#kernel-usage]
 owner: "agent-krn"
 branch: "krn-005-observability-options"
 ---

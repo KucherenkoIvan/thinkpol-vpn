@@ -6,7 +6,7 @@ area: agent
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-087, TP-063]
-refs: [DESIGN#server-agent-one-worker-per-space]
+refs: [docs/design/server-agent.md#server-agent-one-worker-per-space]
 owner: ""
 branch: ""
 ---
@@ -16,7 +16,7 @@ The `reality` transport's pre-authentication parsing runs in the gatekeeper, not
 
 ## Scope
 - The session-id open and the splice to the target run in the gatekeeper.
-- The listener's X25519 private key is the documented exception to "verifiers only" (DESIGN "Server agent").
+- The listener's X25519 private key is the documented exception to "verifiers only" (docs/design/server-agent.md).
 
 ## Out of scope
 - The transport itself: TP-087.

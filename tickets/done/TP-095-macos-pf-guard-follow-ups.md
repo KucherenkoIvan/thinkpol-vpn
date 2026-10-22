@@ -6,7 +6,7 @@ area: dataplane/firewall
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-092]
-refs: [DESIGN#ipv6]
+refs: [docs/design/security.md#ipv6]
 owner: "agent-tp-095"
 branch: "tp-095-macos-pf-guard-follow-ups"
 ---

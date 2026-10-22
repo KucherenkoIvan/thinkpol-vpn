@@ -6,7 +6,7 @@ area: dataplane/transport
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-005]
-refs: [C6, DESIGN#transports]
+refs: [C6, docs/design/transports.md#transports]
 owner: "agent-tp-027"
 branch: "tp-027-transport-shaping"
 ---

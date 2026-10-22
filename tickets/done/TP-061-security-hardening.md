@@ -6,7 +6,7 @@ area: security
 repo: thinkpol-vpn
 size: M
 depends_on: []
-refs: [DESIGN#routing-rules-and-dns, DESIGN#desktop-client]
+refs: [docs/design/routing.md#routing-rules-and-dns, docs/design/desktop-client.md#desktop-client]
 owner: "agent-hardening"
 branch: "tp-061-security-hardening"
 ---

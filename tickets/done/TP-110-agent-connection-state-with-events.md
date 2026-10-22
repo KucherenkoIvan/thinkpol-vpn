@@ -7,7 +7,7 @@ repo: thinkpol-vpn
 size: M
 depends_on: [TP-075]
 split_from: TP-083
-refs: [S1, DESIGN#desktop-client]
+refs: [S1, docs/design/desktop-client.md#desktop-client]
 owner: "agent-claude"
 branch: "tp-110-agent-connection-state-with-events"
 ---

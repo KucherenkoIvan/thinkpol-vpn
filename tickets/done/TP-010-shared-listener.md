@@ -6,7 +6,7 @@ area: agent
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-005, TP-009]
-refs: [N6, DESIGN#server-agent-one-worker-per-space]
+refs: [N6, docs/design/server-agent.md#server-agent-one-worker-per-space]
 owner: "agent-tp-010"
 branch: "tp-010-shared-listener"
 ---

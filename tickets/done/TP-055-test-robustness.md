@@ -6,7 +6,7 @@ area: lab
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-002, TP-012]
-refs: [DESIGN#censor-lab]
+refs: [docs/design/lab.md#censor-lab]
 owner: "agent-flakes"
 branch: "tp-055-test-robustness"
 ---

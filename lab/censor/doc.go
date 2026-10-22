@@ -1,5 +1,5 @@
-// Package censor is the lab's pluggable censor (PRD C4, TP-024; DESIGN.md
-// "Censor lab"): a program in the lab router's container, censord, that
+// Package censor is the lab's pluggable censor (PRD C4, TP-024;
+// docs/design/lab.md "Censor lab"): a program in the lab router's container, censord, that
 // nftables hands every forwarded packet to through an NFQUEUE, and that
 // decides each packet's fate with switchable modules.
 //

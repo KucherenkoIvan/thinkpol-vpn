@@ -1,6 +1,6 @@
 // Package worker runs one space's data plane on a server node, inside that
 // space's own namespaces, as `thinkpol worker -space <id>` started by the
-// supervisor (see package supervisor and DESIGN.md "Server agent: one worker
+// supervisor (see package supervisor and docs/design/server-agent.md "Server agent: one worker
 // per space").
 //
 // A worker starts as the root of a fresh user namespace, with fresh

@@ -6,7 +6,7 @@ area: dataplane/path
 repo: thinkpol-vpn
 size: S
 depends_on: []
-refs: [N2, DESIGN#data-plane-every-node-one-binary]
+refs: [N2, docs/design/overlay.md#data-plane-every-node-one-binary]
 owner: agent-composer
 branch: tp-071-data-frame-mod16
 ---

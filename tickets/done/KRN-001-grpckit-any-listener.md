@@ -6,7 +6,7 @@ area: grpckit
 repo: go-kernel
 size: S
 depends_on: []
-refs: [DESIGN#desktop-client]
+refs: [docs/design/desktop-client.md#desktop-client]
 owner: agent-krn-001
 branch: krn-001-grpckit-any-listener
 ---

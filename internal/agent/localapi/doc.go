@@ -1,4 +1,4 @@
-// Package localapi is the node agent's local service API (DESIGN.md "The
+// Package localapi is the node agent's local service API (docs/design/desktop-client.md "The
 // local API"): a gRPC service (proto/thinkpol/localapi/v1) on a Unix
 // socket that the CLI and the tray app use to see and control the node
 // running on the same machine. `thinkpol up` serves it as one of its app

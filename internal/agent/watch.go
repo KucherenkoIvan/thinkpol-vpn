@@ -9,7 +9,8 @@ import (
 
 // mapWatcher notices a new map: the file at path changed (checked every
 // interval: replaced, resized or touched), or reload fired (SIGHUP). The
-// map is all a node takes; it never asks a controller (DESIGN.md rule 2).
+// map is all a node takes; it never asks a controller
+// (docs/design/security.md "Rules", rule 2).
 type mapWatcher struct {
 	path     string
 	interval time.Duration

@@ -6,7 +6,7 @@ area: cmd
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-004, TP-008, TP-010]
-refs: [S1, DESIGN#desktop-client]
+refs: [S1, docs/design/desktop-client.md#desktop-client]
 owner: agent-tp-011
 branch: tp-011-thinkpol-up
 ---
