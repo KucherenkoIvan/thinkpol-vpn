@@ -71,7 +71,7 @@ Made by the project owner following an independent review.
 
 - For `needs_human: macos` or `windows` tickets, the real-device run happens after review round 1, not after the lab rounds; the device-test kit is built alongside the implementation.
 - ~~At most 3 review → fix rounds per ticket; beyond that, split the rest into a new ticket.~~ Replaced 2026-10-19 by the owner: a ticket keeps its review → fix rounds until its reviewers find nothing worth fixing; what's left goes to a new ticket only when it is outside the ticket's scope. After round 5 the orchestrator asks the owner whether to go on.
-- Decisions go into DESIGN.md; tickets carry pointers, not accreted design.
+- Decisions go into the design file for their topic, under `docs/design/` (DESIGN.md indexes them); tickets carry pointers, not accreted design.
 - Security-sensitive code written by one model family gets a second-opinion review from a different family.
 - Merge order for the in-flight M1 branches: tp-021 before tp-019; tp-019 absorbs the conflict.
 - Critical path after M1: agent-layer refactor part 1 (TP-075), with the Reality evaluation (TP-064) and the censor framework (TP-024) running alongside it; then service install (TP-046), then the macOS/Linux kill switch (TP-048); then the `reality` transport (TP-087) and the censor modules (TP-025, TP-026, TP-032) after TP-064. Daily use starts after M2.
@@ -114,5 +114,5 @@ Made by the project owner at the end of the consolidation phase.
 
 ## Design documents (2026-10-22)
 
-- DESIGN.md holds the model, invariants and decisions, under 50 KB. Mechanism lives in package docs, residuals in RESIDUAL-RISKS.md.
-- **When DESIGN.md would pass 50 KB, split it:** security (threat model, rules, the guard and leak invariants) in its own file, the design by feature in a file each, and DESIGN.md linking all of them (TP-131).
+- DESIGN.md is the entry point and index; the design files under `docs/design/` hold the model, invariants and decisions by topic, each under 50 KB. Mechanism lives in package docs, residuals in RESIDUAL-RISKS.md.
+- **When a design file would pass 50 KB, split it by subtopic** into its own file, and index the new file from DESIGN.md (TP-131).

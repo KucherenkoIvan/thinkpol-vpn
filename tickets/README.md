@@ -27,7 +27,8 @@ area: dataplane/transport
 repo: thinkpol-vpn        # or go-kernel
 size: M                   # S | M | L | epic
 depends_on: [TP-001]
-refs: [C1, C6]            # PRD requirement ids and DESIGN.md sections
+refs: [C1, C6]            # PRD requirement ids (or RR rows), and DESIGN.md#anchor
+                          # or docs/design/<file>.md#anchor sections
 needs_human: macos        # optional: decision | macos | windows | person
 owner: ""                 # set when moved to in-progress
 branch: ""                # set when moved to in-progress
