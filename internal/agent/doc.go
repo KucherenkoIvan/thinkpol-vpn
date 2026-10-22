@@ -160,21 +160,22 @@
 // refuses both ([ErrServerMode]). A device whose node returned (stopped,
 // or its first start failed) reads disconnected.
 //
-// With -keep-connect (THINKPOL_KEEP_CONNECT), which the service sets, a
-// device keeps its connect choice for the boot ([ConnectRecord]:
-// [ConnectRecordFile] next to the host's agent lock, stamped with the
-// boot session): the first start of a boot (no record, or one of an
-// earlier boot) starts as -connect says and records that, and each
-// Connect and Disconnect is recorded before it is acted on. A later start
-// in the same boot takes the record over -connect: a crash and the
-// service's restart neither drop a connected member (whose traffic would
-// go direct) nor undo their disconnect, whatever the configuration says
-// by then. So under the service -connect is connect-on-boot, which the
-// install sets off (PRD D5). Without -keep-connect, or without a local
-// API (nothing could change the choice), -connect decides every start and
-// nothing is recorded: a node run by hand starts as its flags say. A
-// record that can't be written is logged and the node goes ahead; one
-// that can't be read is logged and -connect decides.
+// The service sets -connect-on-boot (THINKPOL_CONNECT_ON_BOOT, on or
+// off; PRD D5: off unless the member turns it on). With it a device keeps
+// its connect choice for the boot ([ConnectRecord]: [ConnectRecordFile]
+// next to the host's agent lock, stamped with the boot session): the
+// first start of a boot (no record, or one of an earlier boot) connects
+// if connect-on-boot is on and records that; each Connect and Disconnect
+// is recorded before it is acted on, and a Connect that fails, leaving the
+// device down, records it down again. A later start in the same boot
+// follows the record: a crash and the service's restart neither drop a
+// connected member (whose traffic would go direct) nor undo their
+// disconnect, whatever connect-on-boot says by then. Connect-on-boot needs
+// the local API, without which nothing could change the choice (Validate
+// refuses it). Run by hand, without it, -connect decides every start and
+// nothing is recorded. A record that can't be written is logged and the
+// node goes ahead; one that can't be read is logged and connect-on-boot
+// decides.
 //
 // A rule preset chosen through the local API ([Node.SetRulePreset]) is
 // stored in [LocalRulesFile] in the state directory, then handed to the
@@ -254,9 +255,9 @@
 //     they are under /run (/run/thinkpol, /run/thinkpol-api), a tmpfs; on
 //     macOS, which has none, under /private/var/db (thinkpol,
 //     thinkpol-api), on disk.
-//   - With -keep-connect, a device's connect choice for the boot
-//     ([ConnectRecordFile], above), next to the agent's lock, stamped
-//     with the boot session.
+//   - Under the service (-connect-on-boot), a device's connect choice for
+//     the boot ([ConnectRecordFile], above), next to the agent's lock,
+//     stamped with the boot session.
 //   - On macOS, records under /private/var/db/thinkpol: netcfg's route
 //     records (netcfg/<owner>.routes, next to <owner>.lock), which list
 //     the routes it added, the link endpoints' addresses among them, and

@@ -550,6 +550,11 @@ func (r *runner) connect(ctx context.Context, connect bool) error {
 		}
 		if err := r.start(ctx); err != nil {
 			logRefused(r.dp.Log, r.conn.startFailed(retry))
+			if r.conn.disconnected() && r.dp.remember != nil {
+				// The Connect failed and the device is down: that is what
+				// a restart in this boot comes back to.
+				r.dp.remember(false)
+			}
 			if retry {
 				r.retryAt = time.Now().Add(r.dp.tuning.retryAfter)
 			}

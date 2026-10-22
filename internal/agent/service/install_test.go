@@ -178,7 +178,7 @@ func TestInstallUnderSystemd(t *testing.T) {
 	if !ok || mode.Perm() != 0o644 || !bytes.Equal(unit, SystemdUnit(Definition{Binary: BinaryPath})) {
 		t.Fatalf("the unit (%v, %v):\n%s", ok, mode, unit)
 	}
-	if !bytes.Contains(unit, []byte("Environment=THINKPOL_CONNECT=false THINKPOL_KEEP_CONNECT=true\n")) {
+	if !bytes.Contains(unit, []byte("Environment=THINKPOL_CONNECT_ON_BOOT=off\n")) {
 		t.Fatalf("connect-on-boot isn't off by default:\n%s", unit)
 	}
 	bin, mode, ok := h.file(BinaryPath)
@@ -295,7 +295,7 @@ func TestInstallUnderLaunchd(t *testing.T) {
 	if err := in.Install(ctx, Options{}); err != nil {
 		t.Fatal(err)
 	}
-	if !h.loaded || !bytes.Contains(h.loadedFrom, []byte("<string>true</string>")) {
+	if !h.loaded || !bytes.Contains(h.loadedFrom, []byte("<string>on</string>")) {
 		t.Fatalf("reinstalled: loaded %v from\n%s", h.loaded, h.loadedFrom)
 	}
 	// A disabled daemon is enabled again.

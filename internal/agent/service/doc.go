@@ -35,11 +35,12 @@
 //
 // # The definitions
 //
-// Both run `thinkpol up` with the node's defaults and two settings:
-// THINKPOL_CONNECT, connect-on-boot, false unless the member turns it on
-// (PRD D5); and THINKPOL_KEEP_CONNECT, so a start in the same boot (after
-// a crash, a restart) comes back as the device was left, whatever
-// connect-on-boot says (package agent, "A device's connection"). Both restart the agent whenever it exits, after
+// Both run `thinkpol up` with the node's defaults and one setting,
+// THINKPOL_CONNECT_ON_BOOT: off unless the member turns it on (PRD D5).
+// Set, it also has a device keep its connect choice for the boot, so a
+// start in the same boot (after a crash, a restart) comes back as the
+// device was left, whatever connect-on-boot says (package agent, "A
+// device's connection"). Both restart the agent whenever it exits, after
 // [RestartAfter] seconds, without a limit (crash posture: DESIGN.md
 // "Kill switch"): systemd's Restart=always with StartLimitIntervalSec=0;
 // launchd's KeepAlive with ThrottleInterval. A stop waits 60 s for the
@@ -69,7 +70,7 @@
 // # Connect-on-boot
 //
 // `thinkpol service connect-on-boot on|off` rewrites the definition with
-// the other THINKPOL_CONNECT and has the manager take it at the next start
+// the other THINKPOL_CONNECT_ON_BOOT and has the manager take it at the next start
 // (systemd's daemon-reload; launchd reads the plist when it boots), without
 // restarting the agent: only a boot's first start reads it. Without an
 // argument it prints the setting. A definition that isn't exactly what

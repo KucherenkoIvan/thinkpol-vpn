@@ -32,13 +32,13 @@ func runServiceConnectOnBoot(ctx context.Context, e env, args []string) error {
 		if err != nil {
 			return err
 		}
-		_, err = fmt.Fprintf(e.stdout, "connect-on-boot: %s\n", map[bool]string{true: "on", false: "off"}[on])
+		_, err = fmt.Fprintf(e.stdout, "connect-on-boot: %s\n", service.OnOff(on))
 		return err
-	case fs.NArg() == 1 && (fs.Arg(0) == "on" || fs.Arg(0) == "off"):
+	case fs.NArg() == 1 && (fs.Arg(0) == service.OnOff(true) || fs.Arg(0) == service.OnOff(false)):
 		if err := service.CheckRoot(); err != nil {
 			return err
 		}
-		return in.SetConnectOnBoot(ctx, fs.Arg(0) == "on")
+		return in.SetConnectOnBoot(ctx, fs.Arg(0) == service.OnOff(true))
 	}
 	return errUsage
 }

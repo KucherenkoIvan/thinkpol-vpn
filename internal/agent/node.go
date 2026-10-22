@@ -110,26 +110,27 @@ func Prepare(cfg Config, logs Logs, plat Platform) (*Node, error) {
 	return n, nil
 }
 
-// keepsConnect is whether the node keeps its connect choice for the boot
-// (Config.KeepConnect): only with a local API, without which nothing can
-// change it.
-func keepsConnect(cfg Config) bool { return cfg.KeepConnect && cfg.APISocket != "" }
+// keepsConnect is whether the node keeps its connect choice for the boot:
+// the service's connect-on-boot is set (Validate refuses it without a
+// local API).
+func keepsConnect(cfg Config) bool { return cfg.ConnectOnBoot != "" }
 
-// startConnected is whether a device starts connected: as recorded in
-// this boot (recorded true) when it keeps the choice, else as configured
-// (Config.Connect). A record that can't be read is logged and the
-// configuration decides.
+// startConnected is whether a device starts connected: when it keeps its
+// choice, as recorded in this boot (recorded true), else as
+// connect-on-boot says; run by hand, as Config.Connect says. A record
+// that can't be read is logged and connect-on-boot decides.
 func startConnected(cfg Config, rec ConnectRecord, logs Logs) (connect, recorded bool) {
 	if !keepsConnect(cfg) {
 		return cfg.Connect, false
 	}
+	onBoot := cfg.ConnectOnBoot == ConnectOnBootOn
 	connect, ok, err := rec.Load()
 	switch {
 	case err != nil:
-		logs.Warn("the last connect request can't be read: starting as configured", "connect", cfg.Connect, "err", err)
-		return cfg.Connect, false
+		logs.Warn("the connect choice of this boot can't be read: starting as connect-on-boot says", "connect_on_boot", cfg.ConnectOnBoot, "err", err)
+		return onBoot, false
 	case !ok:
-		return cfg.Connect, false
+		return onBoot, false
 	}
 	logs.Info("starting as recorded in this boot", "connect", connect)
 	return connect, true

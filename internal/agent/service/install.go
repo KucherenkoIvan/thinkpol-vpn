@@ -117,7 +117,7 @@ func (in Installer) Install(ctx context.Context, opts Options) error {
 	if err := in.System.Start(ctx, in.Run); err != nil {
 		return fmt.Errorf("starting the service: %w", err)
 	}
-	in.say("installed and started %s (connect-on-boot %s)", in.System.DefinitionPath(), onOff(connect))
+	in.say("installed and started %s (connect-on-boot %s)", in.System.DefinitionPath(), OnOff(connect))
 	return nil
 }
 
@@ -142,7 +142,7 @@ func (in Installer) SetConnectOnBoot(ctx context.Context, on bool) error {
 	if err := in.System.Reload(ctx, in.Run); err != nil {
 		return err
 	}
-	in.say("connect-on-boot %s: from the next boot", onOff(on))
+	in.say("connect-on-boot %s: from the next boot", OnOff(on))
 	return nil
 }
 
@@ -304,11 +304,4 @@ func clearRuntimeDir(dir string) ([]string, error) {
 	}
 	slices.Sort(left)
 	return left, nil
-}
-
-func onOff(on bool) string {
-	if on {
-		return "on"
-	}
-	return "off"
 }

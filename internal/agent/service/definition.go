@@ -5,6 +5,8 @@ import (
 	"encoding/xml"
 	"fmt"
 	"strconv"
+
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent"
 )
 
 // The service's names and paths on the host.
@@ -29,13 +31,13 @@ const (
 )
 
 // Definition is what the service runs: the agent (`thinkpol up`, with the
-// node's defaults, keeping a device's connect choice for the boot:
-// THINKPOL_KEEP_CONNECT) and whether it connects at boot.
+// node's defaults) and whether it connects at boot (THINKPOL_CONNECT_ON_BOOT,
+// which also has it keep a device's connect choice for the boot).
 type Definition struct {
 	// Binary is the thinkpol binary's absolute path.
 	Binary string
-	// ConnectOnBoot is THINKPOL_CONNECT: whether a device connects at
-	// the boot's first start (PRD D5: off unless the member turns it on).
+	// ConnectOnBoot is THINKPOL_CONNECT_ON_BOOT: whether a device connects
+	// at the boot's first start (PRD D5: off unless the member turns it on).
 	ConnectOnBoot bool
 }
 
@@ -54,7 +56,7 @@ ExecStart=%s up
 # SIGHUP to the agent alone re-reads the map at once; a server's workers
 # don't handle it, so never signal the whole unit.
 ExecReload=/bin/kill -HUP $MAINPID
-Environment=THINKPOL_CONNECT=%t THINKPOL_KEEP_CONNECT=true
+Environment=THINKPOL_CONNECT_ON_BOOT=%s
 Restart=always
 RestartSec=%d
 KillMode=mixed
@@ -62,7 +64,7 @@ TimeoutStopSec=60
 
 [Install]
 WantedBy=multi-user.target
-`, d.Binary, d.ConnectOnBoot, RestartAfter)
+`, d.Binary, OnOff(d.ConnectOnBoot), RestartAfter)
 	return b.Bytes()
 }
 
@@ -86,10 +88,8 @@ func LaunchdPlist(d Definition) []byte {
 	</array>
 	<key>EnvironmentVariables</key>
 	<dict>
-		<key>THINKPOL_CONNECT</key>
-		<string>` + strconv.FormatBool(d.ConnectOnBoot) + `</string>
-		<key>THINKPOL_KEEP_CONNECT</key>
-		<string>true</string>
+		<key>THINKPOL_CONNECT_ON_BOOT</key>
+		<string>` + OnOff(d.ConnectOnBoot) + `</string>
 	</dict>
 	<key>RunAtLoad</key>
 	<true/>
@@ -109,4 +109,12 @@ func escape(s string) string {
 	var b bytes.Buffer
 	_ = xml.EscapeText(&b, []byte(s))
 	return b.String()
+}
+
+// OnOff is connect-on-boot as THINKPOL_CONNECT_ON_BOOT spells it.
+func OnOff(on bool) string {
+	if on {
+		return agent.ConnectOnBootOn
+	}
+	return agent.ConnectOnBootOff
 }

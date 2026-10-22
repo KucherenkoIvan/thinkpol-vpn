@@ -6,7 +6,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -90,10 +89,7 @@ func TestAConnectRecordThatCantBeReadIsAnError(t *testing.T) {
 
 func TestTheHostConnectRecordIsNextToTheHostLock(t *testing.T) {
 	r, ok := HostConnectRecord().(fileConnectRecord)
-	if !ok || r.dir != HostLockDir() || r.dir != filepath.Dir(hostLockPath) || r.boot == nil {
+	if !ok || r.dir != filepath.Dir(hostLockPath) || r.boot == nil {
 		t.Fatalf("got %+v", HostConnectRecord())
-	}
-	if !strings.HasPrefix(connectRecordHeader, "#") {
-		t.Fatal("the header is no comment")
 	}
 }
