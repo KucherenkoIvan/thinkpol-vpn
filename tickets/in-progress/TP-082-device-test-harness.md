@@ -186,3 +186,4 @@ Round 4 (2026-10-23): correctness, style and design: fix first; second opinion: 
 - 2026-10-23 lab: `make lab-test` (LAB_P=4) green on af8cf76: the core's root tests and the whole runs through the real launch script in a lab node
 - 2026-10-23 in-progress → review
 - 2026-10-23 review → has-errors (round 4: R4.1–R4.8)
+- 2026-10-23 has-errors → in-progress — round 4 findings R4.1–R4.8, owner: agent-tp-082
