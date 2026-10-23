@@ -74,7 +74,8 @@ type RouteEnforcer interface {
 
 // Platform is what a node needs of its host: one data plane's Host, and
 // what touches the host outside one (the agent lock, a crashed run's
-// resolver configuration). The agent only sequences what is here.
+// resolver configuration, the last connect request). The agent only
+// sequences what is here. Every field is set.
 type Platform struct {
 	Host
 	// LockHost takes the agent lock: one node agent per host, held until
@@ -83,14 +84,33 @@ type Platform struct {
 	// RestoreDNS puts back what a crashed run left in the OS's resolver
 	// configuration, before anything of the node runs.
 	RestoreDNS func() error
+	// ConnectRecord keeps a device's last connect request of this boot
+	// (HostConnectRecord).
+	ConnectRecord ConnectRecord
 }
 
-// clearNetwork removes what a crashed run left in the host's routing, in
+// ClearHost undoes what a crashed run left on the host, as a start that
+// doesn't connect does: the routing (clearNetwork) and the OS's resolver
+// configuration. Both are tried; what failed is returned. The caller
+// holds the host's agent lock, so no running agent's state is taken.
+func (p Platform) ClearHost() error {
+	return errors.Join(p.clearRouting(), p.RestoreDNS())
+}
+
+// clearNetwork removes what a crashed run left in the host's routing
+// (clearRouting); what failed is logged.
+func (h DeviceHost) clearNetwork(log *slog.Logger) {
+	if err := h.clearRouting(); err != nil {
+		log.Warn("removing a previous run's routes failed", "err", err)
+	}
+}
+
+// clearRouting removes what a crashed run left in the host's routing, in
 // this order: route-table enforcement's routes (its rejects outlive the
 // TUN) with its leak guard, then the overlay's (on macOS they go with the
 // utun, but stay in the overlay's record), each owner's record with them.
-// The second is cleared whatever the first says; what failed is logged.
-func (h DeviceHost) clearNetwork(log *slog.Logger) {
+// The second is cleared whatever the first says.
+func (h DeviceHost) clearRouting() error {
 	var errs []error
 	if err := h.ClearRouteTable(h.NewGuard()); err != nil && !errors.Is(err, errors.ErrUnsupported) {
 		errs = append(errs, fmt.Errorf("%v: %w", netcfg.OwnerRouteTable, err))
@@ -98,7 +118,5 @@ func (h DeviceHost) clearNetwork(log *slog.Logger) {
 	if err := h.ClearConfig(netcfg.OwnerOverlay); err != nil && !errors.Is(err, errors.ErrUnsupported) {
 		errs = append(errs, fmt.Errorf("%v: %w", netcfg.OwnerOverlay, err))
 	}
-	if err := errors.Join(errs...); err != nil {
-		log.Warn("removing a previous run's routes failed", "err", err)
-	}
+	return errors.Join(errs...)
 }

@@ -33,8 +33,12 @@ type Node struct {
 	// plat is what the node needs of its host.
 	plat Platform
 	// conn is a device's connection, moved only by the goroutine that
-	// runs the node.
-	conn connection
+	// runs the node. bootChoice: it keeps its connect choice and started
+	// as configured, with no record of this boot, so its start records
+	// that choice (a restart in this boot then follows it, whatever the
+	// configuration says by then).
+	conn       connection
+	bootChoice bool
 	// dnsUpstreams are cfg.DNSUpstream's.
 	dnsUpstreams []netip.AddrPort
 
@@ -84,10 +88,15 @@ func Prepare(cfg Config, logs Logs, plat Platform) (*Node, error) {
 	if st.OwnMapUnused {
 		logs.Warn("the state directory's map.bin is not used: the map comes from elsewhere", "map", st.MapPath)
 	}
+	if plat.ConnectRecord == nil {
+		return nil, errors.New("agent: the platform keeps no connect record")
+	}
 	n := &Node{
-		cfg: cfg, state: st, logs: logs, plat: plat, conn: newConnection(cfg.Connect, st.Removed), dnsUpstreams: upstreams,
+		cfg: cfg, state: st, logs: logs, plat: plat, dnsUpstreams: upstreams,
 		requests: make(chan connectRequest), stopped: make(chan struct{}), rulesRequests: make(chan rulesRequest),
 	}
+	connect, recorded := startConnected(cfg, plat.ConnectRecord, logs)
+	n.conn, n.bootChoice = newConnection(connect, st.Removed), !recorded && keepsConnect(cfg)
 	n.local = st.LocalRules
 	mode := cfg.Mode
 	if !st.Removed {
@@ -99,6 +108,44 @@ func Prepare(cfg Config, logs Logs, plat Platform) (*Node, error) {
 		return nil, errors.New("a device that starts disconnected needs the local API to connect: set an API socket")
 	}
 	return n, nil
+}
+
+// keepsConnect is whether the node keeps its connect choice for the boot:
+// the service's connect-on-boot is set (Validate refuses it without a
+// local API).
+func keepsConnect(cfg Config) bool { return cfg.ConnectOnBoot != "" }
+
+// startConnected is whether a device starts connected: when it keeps its
+// choice, as recorded in this boot (recorded true), else as
+// connect-on-boot says; run by hand, as Config.Connect says. A record
+// that can't be read is logged and connect-on-boot decides.
+func startConnected(cfg Config, rec ConnectRecord, logs Logs) (connect, recorded bool) {
+	if !keepsConnect(cfg) {
+		return cfg.Connect, false
+	}
+	onBoot := cfg.ConnectOnBoot == ConnectOnBootOn
+	connect, ok, err := rec.Load()
+	switch {
+	case err != nil:
+		logs.Warn("the connect choice of this boot can't be read: starting as connect-on-boot says", "connect_on_boot", cfg.ConnectOnBoot, "err", err)
+		return onBoot, false
+	case !ok:
+		return onBoot, false
+	}
+	logs.Info("starting as recorded in this boot", "connect", connect)
+	return connect, true
+}
+
+// remember records a connect choice (ConnectRecord), when the node keeps
+// it, before it is acted on; a failure is logged, and the node goes
+// ahead.
+func (n *Node) remember(connect bool) {
+	if !keepsConnect(n.cfg) {
+		return
+	}
+	if err := n.plat.ConnectRecord.Save(connect); err != nil {
+		n.logs.Error("recording the connect request failed: a restart in this boot starts as configured", "connect", connect, "err", err)
+	}
 }
 
 // resolveMode is the node's mode, ModeAuto decided by its kind in its
@@ -271,6 +318,9 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 	defer close(n.stopped)
 	h := n.state.Map.Header()
 	n.logs.Info("starting", "mode", n.Mode(), "space", h.SpaceID, "node", n.state.Keys.ID, "version", h.Version, "map", n.state.MapPath)
+	if n.bootChoice && n.Mode() != ModeServer {
+		n.remember(!n.conn.disconnected())
+	}
 	if n.Mode() != ModeServer && n.conn.state != connConnecting {
 		// What the data plane left in the host's routing when the node
 		// died connected (a crash, kill -9): a device that starts
@@ -309,6 +359,7 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 		report:        &n.report,
 		conn:          &n.conn,
 		requests:      n.requests,
+		remember:      n.remember,
 		events:        n.emit,
 		rulesRequests: n.rulesRequests,
 	}
@@ -356,6 +407,7 @@ func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
 		case req := <-n.requests:
 			// Kept for when the node is back in its space.
 			requested = true
+			n.remember(req.connect)
 			var err error
 			switch {
 			case req.connect && n.conn.disconnected():

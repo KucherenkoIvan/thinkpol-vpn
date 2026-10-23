@@ -36,26 +36,17 @@ node that could sign maps breaks the trust model. A node needs only its own
 
 The server agent is `thinkpol up`, run as root on the VPS. It serves the
 space whenever it runs; its log goes to stderr and an in-memory ring
-(`thinkpol logs`, root only), never to disk by the agent's own hand. There
-is no service unit from us yet (that is TP-046); run it under your own
-service manager, for example a unit named `thinkpol.service`:
-
-```ini
-[Unit]
-Description=thinkpol node agent
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-ExecStart=/usr/local/bin/thinkpol up
-# SIGHUP to the agent alone: it re-reads the map at once. The per-space
-# workers it runs don't handle SIGHUP, so never signal the whole unit.
-ExecReload=/bin/kill -HUP $MAINPID
-Restart=on-failure
-
-[Install]
-WantedBy=multi-user.target
-```
+(`thinkpol logs`, root only), never to disk by the agent's own hand. Run it
+as a service: `thinkpol service install`, as root, copies the binary to
+`/usr/local/bin/thinkpol`, writes the systemd unit `thinkpol.service`,
+makes the `thinkpol` group (the local API's; `-user` adds someone to it)
+and starts the agent. It starts at every boot, and systemd starts it again
+5 s after any exit. `systemctl reload thinkpol` sends SIGHUP to the agent
+alone, which re-reads the map at once; the per-space workers it runs don't
+handle SIGHUP, so never signal the whole unit. `thinkpol service uninstall`
+stops it, undoes what a crashed agent left, and removes the unit and the
+binary; the `thinkpol` group and the state directory stay. Both refuse
+while an agent you started by hand holds the host lock: stop it first. Package `agent/service` has the unit and why it is so.
 
 When systemd captures the agent's stderr, journald stores it on disk;
 keeping the journal volatile is part of provisioning (TP-038), not of this
@@ -115,7 +106,7 @@ every node.
 4. Each node takes the new map within its map poll (5 s by default,
    `THINKPOL_MAP_POLL`) and says so in `thinkpol status` (the map
    version). To take it at once, `ssh root@<node> systemctl reload
-   thinkpol` with the unit above, which sends SIGHUP to the agent's main
+   thinkpol` with the service's unit, which sends SIGHUP to the agent's main
    process only. Don't use `systemctl kill -s HUP thinkpol`: it signals
    every process in the unit's cgroup, and a per-space worker there dies
    of the SIGHUP it doesn't handle (the agent restarts it, an outage for
@@ -143,7 +134,8 @@ The state directory survives; everything else the node knew is in memory
 on purpose (no logs, no state on disk). Recovery is starting the agent
 again:
 
-1. Start it the way you run it (for example `systemctl start thinkpol`).
+1. The service starts the agent at boot (with your own service manager,
+   start it the way you run it).
 2. Check `thinkpol status`: serving, its workers ready.
 
 Nothing else to do. The agent re-derives its firewall and network setup on
@@ -166,11 +158,12 @@ Signed updates distributed through the network arrive with the controller
    ssh root@<node> "\"$staging/thinkpol\" version"
    ```
 
-2. Swap the binary in with a rename (an agent restarted mid-copy never
-   runs a half-written file) and restart the agent:
+2. Install the staged binary as the service: it copies itself over
+   `/usr/local/bin/thinkpol` with a rename (an agent restarted mid-copy
+   never runs a half-written file) and restarts the agent:
 
    ```sh
-   ssh root@<node> "install -m 755 -o root -g root \"$staging/thinkpol\" /usr/local/bin/.thinkpol.new && mv -f /usr/local/bin/.thinkpol.new /usr/local/bin/thinkpol && rm -rf \"$staging\" && systemctl restart thinkpol"
+   ssh root@<node> "\"$staging/thinkpol\" service install && rm -rf \"$staging\""
    ```
 
 3. `ssh root@<node> thinkpol status`: serving again, workers ready.

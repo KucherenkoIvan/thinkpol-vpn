@@ -58,6 +58,9 @@ type composeService struct {
 	Hostname    string              `json:"hostname"`
 	Init        bool                `json:"init"`
 	Command     []string            `json:"command"`
+	StopSignal  string              `json:"stop_signal,omitempty"`
+	Tmpfs       []string            `json:"tmpfs,omitempty"`
+	Cgroup      string              `json:"cgroup,omitempty"`
 	Privileged  bool                `json:"privileged,omitempty"`
 	CapAdd      []string            `json:"cap_add"`
 	SecurityOpt []string            `json:"security_opt"`
@@ -119,11 +122,14 @@ func renderCompose(project string, topo Topology, img image, root string, subnet
 		}
 		// Nothing of the node's own runs before Up has sealed it.
 		cmd = append([]string{"sh", "-c", `while [ ! -e ` + sealedMarker + ` ]; do sleep 0.1; done; exec "$@"`, "wait-for-seal"}, cmd...)
+		if n.Systemd {
+			cmd = systemdCommand
+		}
 		svc := composeService{
 			Image:      img.ref,
 			Platform:   img.platform,
 			Hostname:   n.Name,
-			Init:       true,
+			Init:       !n.Systemd,
 			Command:    cmd,
 			Privileged: n.Privileged,
 			// NET_ADMIN for links, routes and nftables, NET_RAW for ping and
@@ -142,6 +148,11 @@ func renderCompose(project string, topo Topology, img image, root string, subnet
 			},
 			Networks: map[string]struct{}{},
 		}
+		if n.Systemd {
+			// systemd halts on SIGRTMIN+3; /run is a tmpfs, as a host's is;
+			// its own cgroup namespace, which the command makes writable.
+			svc.StopSignal, svc.Tmpfs, svc.Cgroup = "SIGRTMIN+3", []string{"/run", "/run/lock"}, "private"
+		}
 		if n.Forward {
 			svc.Sysctls = map[string]string{
 				"net.ipv4.ip_forward":          "1",
@@ -154,4 +165,21 @@ func renderCompose(project string, topo Topology, img image, root string, subnet
 		f.Services[n.Name] = svc
 	}
 	return json.MarshalIndent(f, "", "  ")
+}
+
+// sealScript, in a systemd node, is its sealing script (configureNode),
+// kept for the node's next start: /run, where the marker is, is a tmpfs.
+const sealScript = "/etc/lab/seal.sh"
+
+// systemdCommand is a systemd node's main process: sealed again first
+// when the node restarts (Node.Restart), else waiting for Up to seal it,
+// then its cgroups made writable (Docker mounts them read-only in an
+// unprivileged container) and systemd exec'd as PID 1. In a container
+// systemd reads its arguments as the kernel's command line.
+var systemdCommand = []string{"sh", "-c",
+	`if [ -x ` + sealScript + ` ]; then ` + sealScript + ` || exit 1; fi; ` +
+		`while [ ! -e ` + sealedMarker + ` ]; do sleep 0.1; done; ` +
+		`mount -o remount,rw /sys/fs/cgroup || exit 1; exec "$@"`,
+	"wait-for-seal", "/lib/systemd/systemd",
+	"systemd.mask=systemd-resolved.service", "systemd.mask=systemd-networkd.service", "systemd.mask=nginx.service",
 }

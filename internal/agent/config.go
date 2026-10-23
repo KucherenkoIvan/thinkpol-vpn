@@ -52,9 +52,16 @@ type Config struct {
 	// checks it at once.
 	MapPoll time.Duration `env:"THINKPOL_MAP_POLL" default:"5s" flag:"map-poll" help:"how often to check the map file for a change; SIGHUP checks at once"`
 	// Connect brings a device's data plane up when the node starts;
-	// otherwise it waits for the local API's Connect. A server always
-	// serves its spaces.
-	Connect bool `env:"THINKPOL_CONNECT" default:"true" flag:"connect" help:"a device connects when it starts; otherwise it waits for thinkpol connect"`
+	// otherwise it waits for the local API's Connect. Not read when
+	// ConnectOnBoot is set. A server always serves its spaces.
+	Connect bool `env:"THINKPOL_CONNECT" default:"true" flag:"connect" help:"a device connects when it starts; otherwise it waits for thinkpol connect (not read with -connect-on-boot)"`
+	// ConnectOnBoot is the service's setting (ConnectOnBootOn, Off), empty
+	// for a node run by hand. Set, a device keeps its connect choice for
+	// the boot (ConnectRecord): the boot's first start connects if it is
+	// on and records that, and a later start in the same boot comes back
+	// connected or disconnected as the device was left. It needs the
+	// local API, without which nothing could change the choice.
+	ConnectOnBoot string `env:"THINKPOL_CONNECT_ON_BOOT" flag:"connect-on-boot" help:"on or off: the service's connect-on-boot; a later start in the same boot comes back as the device was left; empty (by hand): -connect decides every start"`
 	// APISocket is the local API's Unix socket, in a directory of its own;
 	// empty serves no local API.
 	APISocket string `env:"THINKPOL_API_SOCKET" flag:"api-socket" help:"the local API's socket, in a directory of its own; empty: no local API"`
@@ -78,6 +85,12 @@ type Config struct {
 	// is this node's internet.
 	EgressAllowed string `env:"THINKPOL_EGRESS_ALLOWED" flag:"egress-allowed" help:"comma-separated private prefixes an exit's spaces may still reach"`
 }
+
+// ConnectOnBoot's values.
+const (
+	ConnectOnBootOn  = "on"
+	ConnectOnBootOff = "off"
+)
 
 // EgressAllowedPrefixes parses EgressAllowed.
 func (c Config) EgressAllowedPrefixes() ([]netip.Prefix, error) {
@@ -167,6 +180,14 @@ func (c Config) Validate() error {
 	// Below 576 plus a link's overhead nothing fits.
 	if c.LinkMTU != 0 && (c.LinkMTU < 576 || c.LinkMTU > 65535) {
 		errs = append(errs, fmt.Errorf("link MTU %d: want 576 to 65535, or 0 for the default", c.LinkMTU))
+	}
+	switch c.ConnectOnBoot {
+	case "", ConnectOnBootOn, ConnectOnBootOff:
+	default:
+		errs = append(errs, fmt.Errorf("connect-on-boot %q: want %s, %s or empty", c.ConnectOnBoot, ConnectOnBootOn, ConnectOnBootOff))
+	}
+	if c.ConnectOnBoot != "" && c.APISocket == "" {
+		errs = append(errs, errors.New("connect-on-boot keeps the device's connect choice, which only the local API changes: set an API socket"))
 	}
 	if c.Mode == ModeDevice && !c.Connect && c.APISocket == "" {
 		errs = append(errs, errors.New("a device that starts disconnected needs the local API to connect: set an API socket"))

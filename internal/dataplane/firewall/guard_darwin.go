@@ -33,8 +33,9 @@ const guardPoll = 10 * time.Second
 //
 // and DNS to each IPv6 direct upstream (Exempt.Upstreams) on its port.
 // An anchor nothing evaluates guards nothing: Apply first checks the main
-// ruleset still has the hook (without it the guard is unsupported, and the
-// health says ipv6_guard_unsupported; /etc/pf.conf is never edited), and
+// ruleset still has the hook (without it the guard fails, retried, and the
+// health says ipv6_guard_not_enforced until the hook is there; /etc/pf.conf
+// is never edited), and
 // last, once the anchor is in place, that nothing lets IPv6 past it: a
 // quick pass above the hook, an interface pf skips, an anchor under
 // com.apple pf runs first (checkBypass: an ordinary failure,
@@ -213,16 +214,17 @@ func (g *IPv6Guard) Apply(ctx context.Context, e routetable.Exempt) (err error) 
 	return bypass
 }
 
-// checkHook reads pf's main ruleset (`pfctl -s rules`) and fails with
-// routetable.ErrGuardUnsupported when it doesn't evaluate the anchors
-// under com.apple.
+// checkHook reads pf's main ruleset (`pfctl -s rules`) and fails with an
+// ordinary error, retried, when it doesn't evaluate the anchors under
+// com.apple: the system may not have loaded /etc/pf.conf yet (an agent
+// started at boot), or someone replaced it and may put the hook back.
 func (g *IPv6Guard) checkHook(ctx context.Context) ([]byte, error) {
 	out, err := g.pf.run(ctx, nil, "-s", "rules")
 	if err != nil {
 		return nil, err
 	}
 	if hooked(out.stdout) == hookMissing {
-		return nil, fmt.Errorf("%w: pf's main ruleset has no `anchor %s` (was /etc/pf.conf replaced?)", routetable.ErrGuardUnsupported, appleHook)
+		return nil, fmt.Errorf("firewall: pf's main ruleset has no `anchor %s`: the system hasn't loaded /etc/pf.conf yet, or it was replaced; waiting for the hook", appleHook)
 	}
 	return out.stdout, nil
 }
