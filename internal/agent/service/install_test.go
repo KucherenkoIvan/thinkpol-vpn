@@ -855,7 +855,7 @@ func TestANeverLoadedUnitCountsAsStopped(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.failNext["systemctl stop"] = 1
-	if err := in.Install(ctx, Options{}); err == nil || !strings.Contains(err.Error(), "stopping the installed service") {
+	if err := in.Install(ctx, Options{}); err == nil || !strings.Contains(err.Error(), "the new binary and definition are on disk; stopping the installed service failed") {
 		t.Fatalf("a stop that failed: %v", err)
 	}
 }
@@ -960,5 +960,69 @@ func TestLaunchdTakesAnEIOBootstrapThatLoadedTheJob(t *testing.T) {
 	h.bootstrapEIOLoaded = 1
 	if err := in.Install(context.Background(), Options{}); err != nil || !h.loaded {
 		t.Fatalf("%v, loaded %v", err, h.loaded)
+	}
+}
+
+// systemd's state is read only from the words systemd answers with, on
+// the output's last line; anything else is said to be unread, never
+// passed off as a state.
+func TestSystemdStateIsOnlyWhatSystemdSaid(t *testing.T) {
+	answers := func(enabled, active string, enabledErr, activeErr error) Runner {
+		return func(_ context.Context, tool string, args ...string) (string, error) {
+			if tool != "systemctl" || len(args) != 2 || args[1] != UnitName {
+				return "", fmt.Errorf("unexpected %s %v", tool, args)
+			}
+			if args[0] == "is-enabled" {
+				return enabled, enabledErr
+			}
+			return active, activeErr
+		}
+	}
+	bus := errors.New("exit status 1")
+	missing := errors.New("systemctl: not found in /usr/sbin, /usr/bin, /sbin, /bin")
+	for name, tc := range map[string]struct {
+		run  Runner
+		want string
+	}{
+		"no bus": {answers("Failed to get unit file state for thinkpol.service: Failed to connect to bus: No such file or directory\n",
+			"Failed to connect to bus: No such file or directory\n", bus, bus), "systemd couldn't be asked about the unit"},
+		"no systemctl": {answers("", "", missing, missing), "systemd couldn't be asked about the unit"},
+		"a warning first": {answers("Warning: The unit file, source configuration file or drop-ins of thinkpol.service changed on disk. Run 'systemctl daemon-reload' to reload units.\nenabled\n",
+			"inactive\n", nil, exitError(t, 3)), "systemd reports the unit enabled and inactive"},
+		"activating": {answers("enabled\n", "activating\n", nil, exitError(t, 3)), "systemd reports the unit enabled and activating (Restart=always retries it)"},
+		"one unread": {answers("disabled\n", "Failed to connect to bus: No such file or directory\n", exitError(t, 1), bus),
+			"systemd reports the unit disabled; whether it runs couldn't be read"},
+	} {
+		if got := (Systemd{}).State(context.Background(), tc.run); got != tc.want {
+			t.Errorf("%s: %q, want %q", name, got, tc.want)
+		}
+	}
+}
+
+// The state is asked within a short wait of its own: a wedged manager
+// doesn't hold the real error back, and an install whose context ended
+// still asks.
+func TestTheStateHasAWaitOfItsOwn(t *testing.T) {
+	wedged := Installer{System: Systemd{}, Run: func(ctx context.Context, _ string, _ ...string) (string, error) {
+		<-ctx.Done()
+		return "", ctx.Err()
+	}}
+	start := time.Now()
+	if got := wedged.leftAfter(context.Background(), false); !strings.Contains(got, "couldn't be asked") || time.Since(start) > 3*stateWait {
+		t.Fatalf("%q after %v", got, time.Since(start))
+	}
+	answering := Installer{System: Systemd{}, Run: func(ctx context.Context, _ string, args ...string) (string, error) {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		if args[0] == "is-enabled" {
+			return "enabled\n", nil
+		}
+		return "inactive\n", nil
+	}}
+	ended, cancel := context.WithCancel(context.Background())
+	cancel()
+	if got := answering.leftAfter(ended, true); !strings.Contains(got, "systemd reports the unit enabled and inactive") {
+		t.Fatalf("with the install's context ended: %q", got)
 	}
 }

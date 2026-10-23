@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent"
 )
@@ -172,10 +173,10 @@ func (in Installer) Install(ctx context.Context, opts Options) error {
 	}
 	if defined {
 		if err := in.System.Stop(ctx, in.Run); err != nil {
-			return fmt.Errorf("stopping the installed service: %w", err)
+			return fmt.Errorf("the new binary and definition are on disk; stopping the installed service failed: %w", err)
 		}
 		if err := in.noAgent(); err != nil {
-			return fmt.Errorf("%s: %w", in.leftAfter(ctx, defined), err)
+			return fmt.Errorf("%s: %w", in.leftAfter(ctx, true), err)
 		}
 	}
 	if err := in.System.Start(ctx, in.Run); err != nil {
@@ -186,17 +187,22 @@ func (in Installer) Install(ctx context.Context, opts Options) error {
 }
 
 // leftAfter says what an install that stops short of a start leaves, as
-// far as it knows: the installed service stopped (stopped: there was
-// one, stopped above), the definition on disk, and what the manager reports
-// of the service now (System.State), which install doesn't claim
-// otherwise.
-func (in Installer) leftAfter(ctx context.Context, stopped bool) string {
+// far as it knows: the installed service stopped (stoppedOne: install
+// stopped one above), the definition on disk, and what the manager
+// reports of the service now (System.State), asked within stateWait of
+// its own, so a wedged manager doesn't hold the real error back.
+func (in Installer) leftAfter(ctx context.Context, stoppedOne bool) string {
 	what := "the definition is on disk"
-	if stopped {
+	if stoppedOne {
 		what = "the installed service was stopped and the new definition is on disk"
 	}
-	return fmt.Sprintf("%s (%s); %s", what, in.System.DefinitionPath(), in.System.State(ctx, in.Run))
+	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), stateWait)
+	defer cancel()
+	return fmt.Sprintf("%s (%s); %s", what, in.System.DefinitionPath(), in.System.State(sctx, in.Run))
 }
+
+// stateWait bounds the reads of leftAfter's state.
+const stateWait = 5 * time.Second
 
 // noAgent fails while an agent holds the host lock.
 func (in Installer) noAgent() error {

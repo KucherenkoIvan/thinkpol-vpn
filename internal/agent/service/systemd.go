@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -79,24 +80,45 @@ func notLoaded(out string, err error) bool {
 	return strings.Contains(out+" "+err.Error(), " not loaded")
 }
 
-// State reads `systemctl is-enabled` and `is-active` (each prints its
-// state with a non-zero exit too). A unit whose start failed may be
-// started again by systemd itself (Restart=always): "activating" says so.
+// State reads `systemctl is-enabled` and `is-active`. Each prints its
+// state with a non-zero exit too, on the output's last line (a warning,
+// such as a unit file changed on disk, may come before it); only a word
+// systemd uses for that read counts, anything else (no systemctl, no
+// bus) is said to be unread. A unit whose start failed may be started
+// again by systemd itself (Restart=always): "activating" says so.
 func (Systemd) State(ctx context.Context, run Runner) string {
-	read := func(verb string) string {
+	read := func(verb string, words []string) (string, bool) {
 		out, _ := run(ctx, "systemctl", verb, UnitName)
-		if f := strings.Fields(out); len(f) > 0 {
-			return f[0]
-		}
-		return "unknown"
+		lines := strings.Split(strings.TrimSpace(out), "\n")
+		last := strings.TrimSpace(lines[len(lines)-1])
+		return last, slices.Contains(words, last)
 	}
-	enabled, active := read("is-enabled"), read("is-active")
-	s := fmt.Sprintf("systemd reports the unit %s and %s", enabled, active)
-	if active == "activating" {
-		s += " (Restart=always retries it)"
+	enabled, okEnabled := read("is-enabled", enabledStates)
+	active, okActive := read("is-active", activeStates)
+	switch {
+	case !okEnabled && !okActive:
+		return "systemd couldn't be asked about the unit"
+	case !okEnabled:
+		return fmt.Sprintf("systemd reports the unit %s; whether it is enabled couldn't be read", active) + retried(active)
+	case !okActive:
+		return fmt.Sprintf("systemd reports the unit %s; whether it runs couldn't be read", enabled)
 	}
-	return s
+	return fmt.Sprintf("systemd reports the unit %s and %s", enabled, active) + retried(active)
 }
+
+func retried(active string) string {
+	if active == "activating" {
+		return " (Restart=always retries it)"
+	}
+	return ""
+}
+
+// The words `systemctl is-enabled` and `is-active` answer with.
+var (
+	enabledStates = []string{"enabled", "enabled-runtime", "linked", "linked-runtime", "alias", "masked", "masked-runtime",
+		"static", "indirect", "disabled", "generated", "transient", "bad", "not-found"}
+	activeStates = []string{"active", "reloading", "inactive", "failed", "activating", "deactivating", "maintenance", "refreshing"}
+)
 
 // Forget reloads the units without it, and forgets a failed state it had.
 func (Systemd) Forget(ctx context.Context, run Runner) error {

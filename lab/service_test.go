@@ -62,14 +62,13 @@ func TestServiceUnderSystemd(t *testing.T) {
 		t.Fatalf("stopping a unit systemd doesn't have: exit %d, %v\n%s", res.ExitCode, err, res.Stderr)
 	}
 	// A unit file an install wrote and then died before starting: on
-	// disk, never daemon-reloaded. Recorded: what systemd answers a stop
-	// of it, which the installer must read as stopped (exit 0, or 5 with
-	// "not loaded"); then the install below stops it the same way.
+	// disk, never daemon-reloaded. systemd 252 loads it for the stop and
+	// answers 0 (the image is pinned by digest, so a systemd that answers
+	// otherwise is a change to notice here, and the installer's reading
+	// of "not loaded" to check); the install below stops it the same way.
 	dev.WriteFile(t, "/etc/systemd/system/thinkpol.service", []byte("[Service]\nExecStart=/bin/true\n"))
-	res, err := execResult(dev, execTimeout, "systemctl", "stop", "thinkpol.service")
-	t.Logf("systemctl stop of a unit file never reloaded: exit %d, %v, stderr %q", res.ExitCode, err, res.Stderr)
-	if err != nil && (res.ExitCode != 5 || !strings.Contains(res.Stderr, " not loaded")) {
-		t.Fatalf("stopping a unit never reloaded: exit %d\n%s", res.ExitCode, res.Stderr)
+	if res, err := execResult(dev, execTimeout, "systemctl", "stop", "thinkpol.service"); err != nil {
+		t.Fatalf("stopping a unit never reloaded: exit %d, %v\n%s", res.ExitCode, err, res.Stderr)
 	}
 
 	// alice ran sudo: she joins the group.
