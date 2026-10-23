@@ -21,10 +21,11 @@ The Linux configurator's check of its own policy rules notices an owner's rule t
 
 ## Acceptance
 - [ ] lab: an owner's lookup rule replaced by `ip rule add … blackhole` at the same priority and protocol is put back by the next apply, and a test fails if the action isn't read
+- [ ] one list of the selectors netcfg never sets: `ruleOf` is gone, and the configurator and diagnostics both read rules through `parseRawRule`
 - [ ] `make lint`, `make test`, `make lab-test` pass
 
 ## Notes
-- From TP-091's round-3 design review (2026-10-23). Predates TP-091.
+- From TP-091's round-3 and round-4 design reviews (2026-10-23). Predates TP-091.
 
 ## Log
 - 2026-10-23 created in backlog (TP-091 review round 3)
