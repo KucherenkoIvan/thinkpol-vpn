@@ -56,11 +56,20 @@ func TestServiceUnderSystemd(t *testing.T) {
 	dev.MustExec(t, "useradd", "-M", "-u", aliceUID, "alice")
 	resolvConf := dev.MustExec(t, "cat", "/etc/resolv.conf")
 
-	// What the installer reads as stopped: systemd's answer to a stop of
-	// a unit it doesn't have (exit 5, "not loaded"), as the unit tests'
-	// fake gives it.
+	// What systemd answers a stop of a unit it doesn't have at all: exit
+	// 5, "not loaded", which the installer reads as stopped.
 	if res, err := execResult(dev, execTimeout, "systemctl", "stop", "thinkpol.service"); err == nil || res.ExitCode != 5 || !strings.Contains(res.Stderr, " not loaded") {
 		t.Fatalf("stopping a unit systemd doesn't have: exit %d, %v\n%s", res.ExitCode, err, res.Stderr)
+	}
+	// A unit file an install wrote and then died before starting: on
+	// disk, never daemon-reloaded. Recorded: what systemd answers a stop
+	// of it, which the installer must read as stopped (exit 0, or 5 with
+	// "not loaded"); then the install below stops it the same way.
+	dev.WriteFile(t, "/etc/systemd/system/thinkpol.service", []byte("[Service]\nExecStart=/bin/true\n"))
+	res, err := execResult(dev, execTimeout, "systemctl", "stop", "thinkpol.service")
+	t.Logf("systemctl stop of a unit file never reloaded: exit %d, %v, stderr %q", res.ExitCode, err, res.Stderr)
+	if err != nil && (res.ExitCode != 5 || !strings.Contains(res.Stderr, " not loaded")) {
+		t.Fatalf("stopping a unit never reloaded: exit %d\n%s", res.ExitCode, res.Stderr)
 	}
 
 	// alice ran sudo: she joins the group.

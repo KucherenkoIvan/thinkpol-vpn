@@ -44,6 +44,9 @@ type System interface {
 	// disabled (systemd); launchd forgets a booted-out daemon until the
 	// next boot, so uninstall removes its plist.
 	Remove(ctx context.Context, run Runner) error
+	// State is what the manager reports of the service now, a sentence
+	// for an error (what it couldn't be asked is said so).
+	State(ctx context.Context, run Runner) string
 	// Forget is called once the definition is gone.
 	Forget(ctx context.Context, run Runner) error
 	// EnsureGroup makes the group if it is missing; AddToGroup adds a
@@ -114,15 +117,15 @@ func (in Installer) say(format string, args ...any) {
 // binary and restarts the service, keeping connect-on-boot unless opts
 // sets it. The binary directory's trust check, the group steps, then the
 // binary, then the definition, all run before anything is stopped: a
-// failure there leaves the installed service running and enabled (a
+// failure there leaves the installed service running as it was (a
 // failure after the binary leaves the new binary for the old definition's
 // next restart; the binary is renamed over, so the old agent runs on from
 // its file, and the definition is read by the manager only at Start). With
 // no service installed, an agent holding the host lock (one run by hand)
 // refuses the install before anything changes. With one, its agent holds
-// the lock, so the check comes after the stop: a refusal there, or a
-// failed start, leaves the service stopped and still enabled (launchd:
-// booted out until the next boot, which bootstraps the plist again).
+// the lock, so the check comes after the stop. A refusal there, or a
+// failed start, says what install knows first (leftAfter): the installed
+// service stopped, the definition on disk, what the manager reports now.
 func (in Installer) Install(ctx context.Context, opts Options) error {
 	if err := in.System.Present(in.Root); err != nil {
 		return err
@@ -172,17 +175,27 @@ func (in Installer) Install(ctx context.Context, opts Options) error {
 			return fmt.Errorf("stopping the installed service: %w", err)
 		}
 		if err := in.noAgent(); err != nil {
-			return fmt.Errorf("%w (the service is installed, stopped and still enabled)", err)
+			return fmt.Errorf("%s: %w", in.leftAfter(ctx, defined), err)
 		}
 	}
 	if err := in.System.Start(ctx, in.Run); err != nil {
-		if defined {
-			return fmt.Errorf("starting the service: %w (the service is installed, stopped and still enabled; under launchd, booted out until the next boot)", err)
-		}
-		return fmt.Errorf("starting the service: %w (the service is installed, not running)", err)
+		return fmt.Errorf("%s; starting it failed: %w", in.leftAfter(ctx, defined), err)
 	}
 	in.say("installed and started %s (connect-on-boot %s)", in.System.DefinitionPath(), OnOff(connect))
 	return nil
+}
+
+// leftAfter says what an install that stops short of a start leaves, as
+// far as it knows: the installed service stopped (stopped: there was
+// one, stopped above), the definition on disk, and what the manager reports
+// of the service now (System.State), which install doesn't claim
+// otherwise.
+func (in Installer) leftAfter(ctx context.Context, stopped bool) string {
+	what := "the definition is on disk"
+	if stopped {
+		what = "the installed service was stopped and the new definition is on disk"
+	}
+	return fmt.Sprintf("%s (%s); %s", what, in.System.DefinitionPath(), in.System.State(ctx, in.Run))
 }
 
 // noAgent fails while an agent holds the host lock.

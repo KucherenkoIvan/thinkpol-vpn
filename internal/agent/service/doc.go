@@ -13,16 +13,24 @@
 // `thinkpol up` would read it: without keys and a map the service would
 // only restart). Every step that can fail but the start runs before
 // anything is stopped, so a reinstall that fails there leaves a working
-// service running and enabled; one refused by the host lock after the
-// stop, or whose start fails, leaves it stopped and still enabled
-// (launchd: booted out until the next boot), and says so. A unit systemd
-// hasn't loaded (an install that died between writing it and starting it)
-// counts as stopped. With no service installed, install refuses while an
-// agent holds the host lock (one run by hand, which the service's agent
-// would only restart against, every RestartAfterSeconds, forever); with
-// one, whose agent holds the lock itself, the check comes after the
-// service is stopped (systemctl stop, still enabled; launchd's bootout)
-// and before it is started again. It:
+// service running as it was. One refused by the host lock after the stop,
+// or whose start fails, says first what install knows: whether it stopped
+// the installed service, that the definition is on disk, and what the
+// manager reports of the service now (systemd's `is-enabled` and
+// `is-active`, "activating" meaning Restart=always retries it; whether
+// launchd has the daemon and whether an override disables it), then the
+// manager's own error. It claims nothing else: a unit an earlier install
+// wrote but never enabled reads "disabled". A first install whose start
+// fails leaves the definition on disk and, under systemd, the unit enabled
+// if `enable` ran. A unit file an install wrote and then died before
+// starting (never daemon-reloaded) doesn't block the next one: systemd 252
+// loads it for the stop (seen in the lab), and one that doesn't answers
+// "not loaded" (exit 5), read as stopped. With no service installed,
+// install refuses while an agent holds the host lock (one run by hand,
+// which the service's agent would only restart against, every
+// RestartAfterSeconds, forever); with one, whose agent holds the lock
+// itself, the check comes after the service is stopped (systemctl stop,
+// still enabled; launchd's bootout) and before it is started again. It:
 //
 //   - copies the running binary to [BinaryPath], /usr/local/bin/thinkpol,
 //     which the service runs as root. Its directory, and every one above
@@ -43,8 +51,11 @@
 //     only when started below;
 //   - stops an installed service, checks the host lock, and (re)starts
 //     it: `systemctl daemon-reload`, `enable` and `restart`; `launchctl
-//     bootstrap`, retried briefly when launchd refuses it with EIO just
-//     after the job it replaces is gone. `launchctl enable` runs only if
+//     bootstrap`. launchd may refuse a bootstrap with EIO just after the
+//     job it replaces is gone, and may say EIO of one that loaded the job:
+//     after an EIO, a job `launchctl print` shows counts as started; else
+//     the bootstrap is retried briefly (5 tries), and a print that fails
+//     then is reported with the EIO. `launchctl enable` runs only if
 //     someone disabled the daemon, so a clean install writes no launchd
 //     override.
 //

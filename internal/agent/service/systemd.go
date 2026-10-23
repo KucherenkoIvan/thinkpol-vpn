@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -44,21 +45,22 @@ func (Systemd) Reload(ctx context.Context, run Runner) error {
 }
 
 // Stop stops the unit, still enabled, waiting for the agent to exit
-// (TimeoutStopSec, then systemd kills it). A unit systemd hasn't loaded
-// (an install that died between writing it and starting it) runs
-// nothing: it is stopped.
+// (TimeoutStopSec, then systemd kills it). systemd loads a unit file it
+// hasn't read yet for the stop (an install that died between writing it
+// and starting it): systemd 252 answers 0 (seen in the lab). One that
+// doesn't load it answers "Unit … not loaded" (exit 5): nothing of the
+// unit runs, which is what was asked.
 func (Systemd) Stop(ctx context.Context, run Runner) error {
 	return stopped(run(ctx, "systemctl", "stop", UnitName))
 }
 
-// Remove disables the unit and stops it, as Stop waits; a unit systemd
-// hasn't loaded is disabled (systemctl disables first) and stopped.
+// Remove disables the unit and stops it, as Stop waits and reads "not
+// loaded".
 func (Systemd) Remove(ctx context.Context, run Runner) error {
 	return stopped(run(ctx, "systemctl", "disable", "--now", UnitName))
 }
 
-// stopped is a stop's outcome: systemd's "Unit … not loaded" (exit
-// status 5) means nothing of the unit runs, which is what was asked.
+// stopped is a stop's outcome, "not loaded" read as stopped.
 func stopped(out string, err error) error {
 	if err == nil || notLoaded(out, err) {
 		return nil
@@ -66,12 +68,34 @@ func stopped(out string, err error) error {
 	return err
 }
 
+// notLoaded says whether systemctl failed for a unit it doesn't have:
+// exit status 5; its " not loaded" text counts only when no exit status
+// is known.
 func notLoaded(out string, err error) bool {
 	var x *exec.ExitError
-	if errors.As(err, &x) && x.ExitCode() == 5 {
-		return true
+	if errors.As(err, &x) {
+		return x.ExitCode() == 5
 	}
 	return strings.Contains(out+" "+err.Error(), " not loaded")
+}
+
+// State reads `systemctl is-enabled` and `is-active` (each prints its
+// state with a non-zero exit too). A unit whose start failed may be
+// started again by systemd itself (Restart=always): "activating" says so.
+func (Systemd) State(ctx context.Context, run Runner) string {
+	read := func(verb string) string {
+		out, _ := run(ctx, "systemctl", verb, UnitName)
+		if f := strings.Fields(out); len(f) > 0 {
+			return f[0]
+		}
+		return "unknown"
+	}
+	enabled, active := read("is-enabled"), read("is-active")
+	s := fmt.Sprintf("systemd reports the unit %s and %s", enabled, active)
+	if active == "activating" {
+		s += " (Restart=always retries it)"
+	}
+	return s
 }
 
 // Forget reloads the units without it, and forgets a failed state it had.

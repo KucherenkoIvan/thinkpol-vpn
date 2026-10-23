@@ -63,8 +63,12 @@ func (l Launchd) Start(ctx context.Context, run Runner) error {
 		if err == nil || !inputOutputError(out, err) {
 			return err
 		}
-		if there, perr := present(ctx, run); perr != nil || there {
-			return perr
+		there, perr := present(ctx, run)
+		if perr != nil {
+			return errors.Join(err, perr)
+		}
+		if there {
+			return nil
 		}
 		if try == bootstrapTries-1 {
 			return err
@@ -141,6 +145,27 @@ func (l Launchd) Stop(ctx context.Context, run Runner) error {
 		case <-time.After(l.Poll):
 		}
 	}
+}
+
+// State reads whether launchd has the daemon (`launchctl print`) and
+// whether an override disables it (`launchctl print-disabled`): a daemon
+// launchd doesn't have is bootstrapped at the next boot unless disabled.
+func (Launchd) State(ctx context.Context, run Runner) string {
+	loaded := "can't say whether launchd has the daemon"
+	if there, err := present(ctx, run); err == nil {
+		loaded = "launchd doesn't have the daemon loaded"
+		if there {
+			loaded = "launchd has the daemon loaded"
+		}
+	}
+	override := "its overrides couldn't be read"
+	if out, err := run(ctx, "launchctl", "print-disabled", "system"); err == nil {
+		override = "no override disables it"
+		if disabled(out) {
+			override = "an override disables it"
+		}
+	}
+	return loaded + ", " + override
 }
 
 // Remove is Stop: a daemon booted out isn't launchd's any more until the
