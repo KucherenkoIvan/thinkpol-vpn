@@ -814,9 +814,9 @@ func TestRecordsRoundTrip(t *testing.T) {
 	// A record without a boot line (empty, or comments only) is corrupt,
 	// not empty, and every failure names the record and its reason.
 	for name, tc := range map[string]struct{ data, want string }{
-		"an unmasked prefix":               {"boot " + boot + "\n10.0.0.1/8\n", `bad line "10.0.0.1/8": not a masked prefix`},
-		"a bad scope":                      {"boot " + boot + "\n10.0.0.1/32 scope en0\n", `bad line "10.0.0.1/32 scope en0": bad scope`},
-		"a data line before the boot line": {"10.0.0.0/8\n", `line "10.0.0.0/8" before the boot session`},
+		"an unmasked prefix":               {"boot " + boot + "\n10.0.0.1/8\n", `bad line 1 after the boot line: not a masked prefix`},
+		"a bad scope":                      {"boot " + boot + "\n10.0.0.1/32 scope en0\n", `bad line 1 after the boot line: bad scope`},
+		"a data line before the boot line": {"10.0.0.0/8\n", `line 1, before the boot session, is no boot line`},
 		"an empty record":                  {"", "no boot session"},
 		"comments only":                    {recordHeader + "\n", "no boot session"},
 	} {

@@ -198,6 +198,30 @@ func (p *report) set(f func(p *report)) {
 func (p *report) status() Status {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	return p.statusLocked()
+}
+
+// forDiagnostics is the status and its running data plane's TUN ("" while
+// it is down) and last Apply (nil before one), taken together.
+func (p *report) forDiagnostics() (Status, string, *dataplane.ApplyTrace) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.engine == nil {
+		return p.statusLocked(), "", nil
+	}
+	st, tr, ok := p.engine.StatusAndLastApply()
+	var last *dataplane.ApplyTrace
+	if ok {
+		last = &tr
+	}
+	return p.statusWith(&st), p.engine.TUNName(), last
+}
+
+func (p *report) statusLocked() Status { return p.statusWith(nil) }
+
+// statusWith is the status, with dp as the engine's if it was read
+// already (nil: read it now).
+func (p *report) statusWith(dp *dataplane.Status) Status {
 	s := Status{Mode: p.mode, Space: p.space, MapVersion: p.version, MapsRefused: p.mapsRefused, Removed: p.removed, Retrying: p.retrying, Listeners: p.listeners, DNSUpstreamsRefused: p.dnsUpstreamsRefused}
 	if p.mode != ModeServer {
 		s.RulePreset = p.preset
@@ -212,7 +236,11 @@ func (p *report) status() Status {
 		s.Connection = Connecting
 	}
 	if p.engine != nil {
-		st := p.engine.Status()
+		if dp == nil {
+			st := p.engine.Status()
+			dp = &st
+		}
+		st := *dp
 		s.DataPlane = &st
 		s.RulesEnforced, s.PresetUnavailable = true, st.Rules.PresetUnavailable
 		var problem error

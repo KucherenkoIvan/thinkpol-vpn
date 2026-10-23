@@ -10,3 +10,6 @@ import (
 // newGuard is the host's IPv6 leak guard (nftables on Linux, a pf anchor
 // on macOS).
 func newGuard() routetable.Guard { return firewall.NewIPv6Guard() }
+
+// inspectGuard reads the host's leak guard as the host holds it.
+var inspectGuard = firewall.InspectIPv6Guard

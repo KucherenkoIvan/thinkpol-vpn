@@ -38,6 +38,26 @@ type fakeNode struct {
 	mu         sync.Mutex
 	st         agent.Status
 	connectErr error
+	// diag is what Diagnose reports besides the status; host records
+	// what it was last asked for.
+	diag agent.Diagnostics
+	host *bool
+}
+
+// askedHost is what the last Diagnose was asked for: nil before any.
+func (n *fakeNode) askedHost() *bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.host
+}
+
+func (n *fakeNode) Diagnose(_ context.Context, host bool) agent.Diagnostics {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.host = &host
+	d := n.diag
+	d.Status, d.HostParts = n.st, host
+	return d
 }
 
 func (n *fakeNode) SetRulePreset(_ context.Context, preset string) error {
@@ -111,7 +131,7 @@ func serve(t *testing.T, p Policy) *served {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	s.stop = cancel
-	srv := NewGRPCServer(ctx, Options{Node: s.node, Logs: s.logs, Log: slog.New(slog.DiscardHandler)}, p)
+	srv := NewGRPCServer(ctx, Options{Node: s.node, Logs: s.logs, Log: slog.New(slog.DiscardHandler), Version: testVersion}, p)
 	go func() { s.done <- grpckit.Serve(ctx, srv, l) }()
 	t.Cleanup(func() {
 		cancel()
@@ -346,10 +366,21 @@ func TestCallersAreCheckedByTheirCredentials(t *testing.T) {
 		t.Fatalf("stranger's logs: %v", err)
 	}
 
+	if _, err := c.Diagnose(ctx); !errors.Is(err, ErrPermissionDenied) {
+		t.Fatalf("stranger's diagnostics: %v", err)
+	}
+
 	member := serve(t, Policy{ServiceUID: uint32(os.Geteuid()) + 1, Group: uint32(os.Getegid()), HasGroup: true})
 	c = dial(t, member.socket)
 	if _, err := c.Connect(ctx); err != nil {
 		t.Fatalf("member's connect: %v", err)
+	}
+	if d, err := c.Diagnose(ctx); err != nil || d.GetSchemaVersion() != DiagSchemaVersion {
+		t.Fatalf("member's diagnostics: %v, %v", d, err)
+	}
+	// Without the parts that name public addresses: those are root's.
+	if h := member.node.askedHost(); h == nil || *h {
+		t.Fatal("a member was given the host parts")
 	}
 	err = c.TailLogs(ctx, 1, false, func([]string, uint64) error { return nil })
 	if !errors.Is(err, ErrPermissionDenied) {

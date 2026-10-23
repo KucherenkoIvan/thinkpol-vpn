@@ -452,12 +452,15 @@ func TestParseTable(t *testing.T) {
 }
 
 func TestParseStateAddrs(t *testing.T) {
-	got := parseStateAddrs([]byte(altq +
+	got, err := parseStateAddrs([]byte(altq +
 		"ALL tcp 2001:db8:1::10[51000] -> 2001:db8:ab::7[443]       ESTABLISHED:ESTABLISHED\n" +
 		"ALL udp 2001:db8:1::10[5353] <- 2001:db8:ab::8[53]       SINGLE:NO_TRAFFIC\n" +
 		"en0 tcp 2001:db8:1::10[1] (2001:db8:1::11[2]) -> 2001:db8:ab::9[3]   X\n" +
 		"ALL tcp 192.0.2.10:51000 -> 198.51.100.7:443       ESTABLISHED:ESTABLISHED\n" +
 		"ALL ipv6-icmp fe80::1%en0[3] -> ff02::1[0]       0:0\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	want := [][]netip.Addr{
 		{ownV6, netip.MustParseAddr("2001:db8:ab::7")},
 		{ownV6, netip.MustParseAddr("2001:db8:ab::8")},
@@ -1534,5 +1537,165 @@ func TestExecPfctl(t *testing.T) {
 	g := newIPv6Guard(execPfctl{path: "/nonexistent-tp078/pfctl", timeout: time.Second}, newRig(t).store(), time.Hour, ownAddrs)
 	if err := g.Close(); err != nil {
 		t.Errorf("Close without pfctl: %v", err)
+	}
+}
+
+// TestCloseKeepsAReferenceItCantSeeListed: a References listing the guard
+// can't read proves nothing about the reference it holds, so Close fails
+// and keeps the record (pf stays enabled on it) rather than forgetting a
+// reference pf still lists; once the listing reads again, Close releases
+// it.
+func TestCloseKeepsAReferenceItCantSeeListed(t *testing.T) {
+	r := newRig(t)
+	g := r.guard()
+	if err := g.Apply(context.Background(), exempt(t)); err != nil {
+		t.Fatal(err)
+	}
+	held := r.pf.references()
+	if len(held) != 1 {
+		t.Fatalf("references %v", held)
+	}
+	record := r.record(t)
+	r.pf.set(func(f *fakePF) { f.oddReferences = true })
+	if err := g.Close(); !errors.Is(err, errUnreadReferences) {
+		t.Fatalf("Close over an unreadable listing: %v", err)
+	}
+	if got := r.record(t); got != record || !slices.Equal(r.pf.references(), held) || r.pf.ran("-X") != 0 {
+		t.Fatalf("after a failed Close: record %q, references %v, %d releases", got, r.pf.references(), r.pf.ran("-X"))
+	}
+	r.pf.set(func(f *fakePF) { f.oddReferences = false })
+	if err := g.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if r.record(t) != "" || len(r.pf.references()) != 0 {
+		t.Fatalf("after Close: record %q, references %v", r.record(t), r.pf.references())
+	}
+}
+
+// TestParseReferencesByTheHeadersColumns: the token is read where the
+// header's TOKEN starts, whatever the name and the timestamp look like; a
+// line out of those columns, or no header, is a listing not understood.
+func TestParseReferencesByTheHeadersColumns(t *testing.T) {
+	head := "TOKENS:\nPID      Process Name                 TOKEN                 TIMESTAMP\n"
+	refs, understood := parseReferences([]byte(head +
+		"618      Network Filter Daemon 2      9813589183660731843   Thu Oct 22 12:00:01 2026\n" +
+		"4130     pfctl                        9000000000000000008   5s\n"))
+	if !understood || !slices.Equal(refs, []pfReference{{618, 9813589183660731843}, {4130, 9000000000000000008}}) {
+		t.Fatalf("%v, %v", refs, understood)
+	}
+	for name, l := range map[string]string{
+		"a name past its column": "702      A process name much longer than its column 9000000000000000015 0 days\n",
+		"no token":               "702      pfctl\n",
+		// A number in the name runs across the TOKEN column: its tail
+		// there is no token.
+		"digits across the column": "702      worker 9999999999999999999999999 9000000000000000015 0 days\n",
+		// Shifted by one: no field starts at the column.
+		"a token off its column": "702      pfctl                         9000000000000000015  0 days\n",
+		"no pid":                 "         pfctl                        9000000000000000015   0 days\n",
+	} {
+		if _, understood := parseReferences([]byte(head + l)); understood {
+			t.Errorf("%s: understood", name)
+		}
+	}
+	if _, understood := parseReferences([]byte("618 socketfilterfw 9813589183660731843 0 days 00:03:31\n")); understood {
+		t.Error("no header: understood")
+	}
+}
+
+// cannedPfctl answers every run with the same listing.
+type cannedPfctl struct{ out []byte }
+
+func (c cannedPfctl) run(context.Context, []byte, ...string) (pfOutput, error) {
+	return pfOutput{stdout: c.out}, nil
+}
+
+// TestResolveReadsNoTokenFromAListingItCantRead: a listing cut short
+// (a line too long to read) lists the pid's reference before the cut, and
+// still isn't taken.
+func TestResolveReadsNoTokenFromAListingItCantRead(t *testing.T) {
+	cut := "TOKENS:\nPID      Process Name                 TOKEN                 TIMESTAMP\n" +
+		"4130     pfctl                        9000000000000000008   0 days 00:00:05\n" + strings.Repeat("x", 1<<20) + "\n"
+	g := newIPv6Guard(cannedPfctl{[]byte(cut)}, newRig(t).store(), time.Hour, ownAddrs)
+	if v, ok, err := g.resolve(context.Background(), pfToken{pid: 4130}); ok || v != 0 || !errors.Is(err, errUnreadReferences) {
+		t.Fatalf("%d, %v, %v", v, ok, err)
+	}
+	if err := g.release(context.Background(), pfToken{value: 9000000000000000008, pid: 4130}); !errors.Is(err, errUnreadReferences) {
+		t.Fatalf("release: %v", err)
+	}
+}
+
+// skipped is what checkBypass counts of a `-s Interfaces -v` listing:
+// the skipped names but lo0 and tun.
+func skipped(ifaces []byte, tun string) []string {
+	names, err := skippedNames(ifaces)
+	if err != nil {
+		return []string{"unreadable: " + err.Error()}
+	}
+	return slices.DeleteFunc(names, func(n string) bool { return n == "lo0" || n == tun })
+}
+
+// TestCutListingsAreUnreadable: a line too long to read cuts a listing,
+// and none of the guard's readers takes what came before it as the whole.
+func TestCutListingsAreUnreadable(t *testing.T) {
+	cut := "\n" + strings.Repeat("x", 1<<20) + "\n"
+	if _, err := skippedNames([]byte("en0 (skip)" + cut)); err == nil {
+		t.Error("Interfaces")
+	}
+	if _, err := parseEnabled([]byte("Status: Enabled for 0 days" + cut)); err == nil {
+		t.Error("info")
+	}
+	if _, err := parseTable([]byte("2001:db8::/32" + cut)); err == nil {
+		t.Error("table")
+	}
+	r := newRig(t)
+	r.pf.set(func(f *fakePF) { f.main = append(slices.Clone(stockMain), strings.Repeat("x", 1<<20)) })
+	if err := r.guard().Apply(context.Background(), exempt(t)); err == nil || errors.Is(err, routetable.ErrGuardUnsupported) || !strings.Contains(err.Error(), "cut") {
+		t.Errorf("a cut main ruleset: %v, want an ordinary failure", err)
+	}
+}
+
+// TestAFailedReleaseOfTheOldReferenceIsTold: pf was turned off while pf
+// kept the guard's reference listed; enabling it anew takes a new one, and
+// when the old one can't be released (a References listing the guard
+// can't read) Apply says so instead of dropping it, the record naming the
+// new reference.
+func TestAFailedReleaseOfTheOldReferenceIsTold(t *testing.T) {
+	r := newRig(t)
+	r.pf.set(func(f *fakePF) { f.keepRefs = true })
+	g := r.guard()
+	if err := g.Apply(context.Background(), exempt(t)); err != nil {
+		t.Fatal(err)
+	}
+	old := r.pf.references()[0]
+	r.pf.disable()
+	// A state made while pf was off, to a destination the guard refuses:
+	// that same Apply still kills it before it tells the failed release.
+	foreign := fakeState{"tcp", netip.AddrPortFrom(ownV6, 51000), netip.MustParseAddrPort("[2001:db8:ab::7]:443"), true}
+	r.pf.set(func(f *fakePF) {
+		f.oddReferences = true
+		f.states = append(f.states, foreign)
+	})
+	err := g.Apply(context.Background(), exempt(t))
+	if !errors.Is(err, errUnreadReferences) || !strings.Contains(err.Error(), "releasing the reference it held before") {
+		t.Fatalf("Apply: %v", err)
+	}
+	if slices.Contains(r.pf.stateList(), foreign) {
+		t.Fatal("the Apply that told the failed release left a state made while pf was off")
+	}
+	refs := r.pf.references()
+	if len(refs) != 2 || refs[0] != old || !strings.Contains(r.record(t), fmt.Sprintf("token %d pid %d", refs[1].value, refs[1].pid)) {
+		t.Fatalf("references %v, record %q", refs, r.record(t))
+	}
+}
+
+func TestCutStateAndRuleListingsAreUnreadable(t *testing.T) {
+	cut := "\n" + strings.Repeat("x", 1<<20) + "\n"
+	if _, err := parseStateAddrs([]byte("ALL tcp 2001:db8:1::10[1] -> 2001:db8:ab::7[443] X" + cut)); err == nil {
+		t.Error("states")
+	}
+	r := newRig(t)
+	r.pf.setAnchor(GuardAnchor, &fakeAnchor{rules: []string{"block return out quick inet6 all", strings.Repeat("x", 1<<20)}})
+	if _, err := r.guard().listRules(context.Background()); err == nil || !strings.Contains(err.Error(), "cut") {
+		t.Errorf("the anchor's rules: %v", err)
 	}
 }

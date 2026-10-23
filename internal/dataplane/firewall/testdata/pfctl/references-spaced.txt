@@ -1,0 +1,5 @@
+TOKENS:
+PID      Process Name                 TOKEN                 TIMESTAMP
+618      socketfilterfw               9813589183660731843   0 days 00:03:31
+702      Network Filter Daemon 2      9000000000000000015   0 days 00:01:10
+4130     pfctl                        9000000000000000008   0 days 00:00:05

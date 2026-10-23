@@ -187,21 +187,13 @@ func ruleOf(kr netlink.Rule) (Rule, bool) {
 		}
 		r.Dst = netip.PrefixFrom(a, ones)
 	}
-	extra := kr.Src != nil || kr.IifName != "" || kr.Tos != 0 ||
-		kr.TunID != 0 || kr.Goto >= 0 || kr.Flow >= 0 || kr.IPProto != 0 || kr.Dport != nil ||
-		kr.Sport != nil || kr.UIDRange != nil || kr.SuppressIfgroup >= 0 ||
-		(kr.SuppressPrefixlen != -1 && kr.SuppressPrefixlen != 0)
-	mask := uint32(0)
+	hr := HostRule{Mark: kr.Mark, SuppressPrefixlen: kr.SuppressPrefixlen,
+		Other: kr.Src != nil || kr.IifName != "" || kr.Tos != 0 || kr.TunID != 0 || kr.Goto >= 0 || kr.Flow >= 0 ||
+			kr.IPProto != 0 || kr.Dport != nil || kr.Sport != nil || kr.UIDRange != nil || kr.SuppressIfgroup >= 0}
 	if kr.Mask != nil {
-		mask = *kr.Mask
+		hr.Mask = *kr.Mask
 	}
-	switch {
-	case kr.Mark == 0 && mask == 0:
-	case kr.Mark != 0 && mask == math.MaxUint32:
-	default:
-		extra = true
-	}
-	return r, !extra
+	return r, plainRule(hr, "")
 }
 
 func (c *linuxConfigurator) toNetlinkRule(r Rule) *netlink.Rule {
@@ -255,4 +247,19 @@ func (c *linuxConfigurator) delKernelRule(kr netlink.Rule, u *undoLog) error {
 	}
 	u.push(func() error { return c.h.RuleAdd(&kr) })
 	return nil
+}
+
+// plainRule says whether r is a rule netcfg could have added: no selector
+// it never sets (r.Other), suppress_prefixlength none or 0, a mark set
+// whole (mask 0xffffffff) or none, and a lookup ("" when the reader can't
+// tell the action: the configurator, until TP-135). The configurator's
+// reconcile and diagnostics share it for the mask, suppress and action
+// rules only: which selectors count as never set (r.Other) is still each
+// reader's own list, ruleOf's netlink.Rule fields and parseRawRule's
+// attribute switch, until TP-135 moves the configurator onto the raw dump
+// and the list exists once.
+func plainRule(r HostRule, action string) bool {
+	return !r.Other && (action == "" || action == "lookup") &&
+		(r.SuppressPrefixlen == -1 || r.SuppressPrefixlen == 0) &&
+		(r.Mark == 0 && r.Mask == 0 || r.Mark != 0 && r.Mask == math.MaxUint32)
 }

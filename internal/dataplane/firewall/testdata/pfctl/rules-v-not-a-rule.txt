@@ -1,0 +1,4 @@
+pass out quick on lo0 inet6 all no state
+  [ Evaluations: 5120      Packets: 0         Bytes: 0           States: 0     ]
+  [ Inserted: uid 0 pid 4127 ]
+pfctl: DIOCGETRULE: Device busy
