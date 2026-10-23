@@ -123,3 +123,4 @@ Round 2 (2026-10-23): correctness, style, design and second opinion: fix first. 
 - 2026-10-23 lab: `make lab-test` (LAB_P=4) green on 23d11f3: the core's root tests in a lab node (the root copy, a capture undone through the journal) and the whole runs through the launch script, the helper's refusal removing its root copy included
 - 2026-10-23 in-progress → review
 - 2026-10-23 review → has-errors (round 2: R2.1–R2.14)
+- 2026-10-23 has-errors → in-progress — round 2 findings R2.1–R2.14, owner: agent-tp-082
