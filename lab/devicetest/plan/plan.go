@@ -1,11 +1,11 @@
 // Package plan is what a device-test plan is written in: data, not code.
 // A plan lists its steps, and each step its operations: a root read (a
-// listing the core allows), a change (an action of the core's, named by
-// kind), or undoing the newest change now. The runner (lab/devicetest)
-// does exactly what the plan lists and nothing else; a plan can't run a
-// command or reach the core itself (depguard), so its listing is
-// everything a run may do. A plan records and never judges: what a run
-// saw is judged afterwards, from the evidence.
+// listing the core allows), a change (one of the core's kinds), or undoing
+// the newest change now. The runner (lab/devicetest) does exactly what
+// the plan lists and nothing else; a plan can't run a command or reach
+// the core (depguard), so its listing is everything a run may do. A plan
+// records and never judges: what a run saw is judged afterwards, from
+// the evidence.
 package plan
 
 import (
@@ -24,12 +24,10 @@ type Plan struct {
 	// Budget is the run's deadline: past it the dead-man restores the
 	// host unless a restore is making progress.
 	Budget time.Duration
-	// Captures run from the self-test to the end of the run.
-	Captures []Capture
-	// NeedsExit says the run needs the exit server (and so the private
-	// config file that names it).
-	NeedsExit bool
-	Steps     []Step
+	// Capture runs from the self-test to the end of the run; an empty
+	// Iface is none. One a plan: the self-test checks it in 10 s.
+	Capture Capture
+	Steps   []Step
 }
 
 // Capture is a capture on one interface, with a tcpdump filter ("" for
@@ -48,16 +46,16 @@ type Step struct {
 	Ops  []Op
 }
 
-// OpKind is what an operation does.
+// OpKind is what an operation does; the names are the helper's.
 type OpKind int
 
 const (
-	// RootRead runs a listing as root and saves its output.
-	RootRead OpKind = iota + 1
-	// Do makes a change: an action of the core's, journaled with its undo.
-	Do
-	// UndoNewest undoes the newest change now, not only at the end.
-	UndoNewest
+	// OpRead runs a listing as root and saves its output.
+	OpRead OpKind = iota + 1
+	// OpDo makes a change, journaled with its undo.
+	OpDo
+	// OpUndoLast undoes the plan's newest change now, not only at the end.
+	OpUndoLast
 )
 
 // Op is one operation.
@@ -67,25 +65,25 @@ type Op struct {
 	Change Change
 }
 
-// Change names an action of the core's by kind, with its parameters.
+// Change names one of the core's kinds of change, with its parameters.
 type Change struct {
 	Kind   string
 	Params map[string]string
 }
 
-// Root is a root read of argv (a bare command name first).
-func Root(argv ...string) Op { return Op{Kind: RootRead, Argv: argv} }
+// Read is a root read of argv (a bare command name first).
+func Read(argv ...string) Op { return Op{Kind: OpRead, Argv: argv} }
 
-// Make is a change.
-func Make(c Change) Op { return Op{Kind: Do, Change: c} }
+// Do makes a change.
+func Do(c Change) Op { return Op{Kind: OpDo, Change: c} }
 
-// UndoLast undoes the newest change now.
-func UndoLast() Op { return Op{Kind: UndoNewest} }
+// UndoLast undoes the plan's newest change now.
+func UndoLast() Op { return Op{Kind: OpUndoLast} }
 
-// PfMain loads pf's main ruleset as one line, then the stock rules
-// (/etc/pf.conf). Its undo loads the stock rules.
-func PfMain(prepend string) Change {
-	return Change{Kind: "pf-main", Params: map[string]string{"prepend": prepend}}
+// PfSkip loads `set skip on iface` before the stock pf rules
+// (/etc/pf.conf); its undo loads the stock rules.
+func PfSkip(iface string) Change {
+	return Change{Kind: "pf-skip", Params: map[string]string{"iface": iface}}
 }
 
 var (
@@ -94,7 +92,8 @@ var (
 )
 
 // Validate checks the plan's shape; what a change or read may be is the
-// core's to check.
+// core's to check. An undo needs a change of the plan's own still made
+// before it: it would undo the run's capture otherwise.
 func (p Plan) Validate() error {
 	if !ticketID.MatchString(p.Ticket) {
 		return fmt.Errorf("plan %q: ticket id", p.Ticket)
@@ -102,67 +101,37 @@ func (p Plan) Validate() error {
 	if p.Budget <= 0 || p.Budget > time.Hour {
 		return fmt.Errorf("plan %s: budget %v (up to an hour)", p.Ticket, p.Budget)
 	}
-	seen := map[string]bool{}
+	seen, made := map[string]bool{}, 0
 	for _, s := range p.Steps {
 		if !stepName.MatchString(s.Name) || seen[s.Name] {
 			return fmt.Errorf("plan %s: step name %q", p.Ticket, s.Name)
 		}
 		seen[s.Name] = true
 		for _, op := range s.Ops {
-			if err := op.validate(); err != nil {
-				return fmt.Errorf("plan %s, step %s: %w", p.Ticket, s.Name, err)
+			switch {
+			case op.Kind == OpRead && len(op.Argv) == 0:
+				return fmt.Errorf("plan %s, step %s: an empty root read", p.Ticket, s.Name)
+			case op.Kind == OpDo && op.Change.Kind == "":
+				return fmt.Errorf("plan %s, step %s: a change without a kind", p.Ticket, s.Name)
+			case op.Kind == OpDo:
+				made++
+			case op.Kind == OpUndoLast && made == 0:
+				return fmt.Errorf("plan %s, step %s: an undo with no change of the plan's before it", p.Ticket, s.Name)
+			case op.Kind == OpUndoLast:
+				made--
+			case op.Kind != OpRead:
+				return fmt.Errorf("plan %s, step %s: operation kind %d", p.Ticket, s.Name, op.Kind)
 			}
 		}
 	}
 	return nil
 }
 
-func (op Op) validate() error {
-	switch op.Kind {
-	case RootRead:
-		if len(op.Argv) == 0 {
-			return fmt.Errorf("an empty root read")
-		}
-	case Do:
-		if op.Change.Kind == "" {
-			return fmt.Errorf("a change without a kind")
-		}
-	case UndoNewest:
-	default:
-		return fmt.Errorf("operation kind %d", op.Kind)
+// Lookup is the plan for ticket (any case) among plans.
+func Lookup(plans []Plan, ticket string) (Plan, bool) {
+	i := slices.IndexFunc(plans, func(p Plan) bool { return strings.EqualFold(p.Ticket, ticket) })
+	if i < 0 {
+		return Plan{}, false
 	}
-	return nil
-}
-
-var registry = map[string]Plan{}
-
-// Register adds a plan; an invalid or second plan for a ticket panics.
-func Register(p Plan) {
-	if err := p.Validate(); err != nil {
-		panic(err)
-	}
-	if _, dup := registry[p.Ticket]; dup {
-		panic("plan: a second plan for " + p.Ticket)
-	}
-	registry[p.Ticket] = p
-}
-
-// Lookup is the plan for ticket (any case).
-func Lookup(ticket string) (Plan, bool) {
-	t := strings.ToUpper(ticket)
-	if strings.EqualFold(ticket, "selftest") {
-		t = "selftest"
-	}
-	p, ok := registry[t]
-	return p, ok
-}
-
-// All are the plans, by ticket.
-func All() []Plan {
-	var out []Plan
-	for _, p := range registry {
-		out = append(out, p)
-	}
-	slices.SortFunc(out, func(a, b Plan) int { return strings.Compare(a.Ticket, b.Ticket) })
-	return out
+	return plans[i], true
 }

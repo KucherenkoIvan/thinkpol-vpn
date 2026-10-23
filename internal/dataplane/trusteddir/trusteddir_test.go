@@ -97,6 +97,11 @@ func TestOpenOwnedByChecksThatUser(t *testing.T) {
 		if _, err := OpenOwnedBy(dir, os.Geteuid()+4321); err == nil || !strings.Contains(err.Error(), "owned by uid") {
 			t.Errorf("another user's view of this user's directory: %v", err)
 		}
+		// Root's directories pass the walk on the way, never as the
+		// directory itself.
+		if _, err := OpenOwnedBy("/usr", os.Geteuid()); err == nil {
+			t.Error("a directory of root's was opened as this user's")
+		}
 		return
 	}
 	// As root (the lab): a user's directory is that user's, not root's.

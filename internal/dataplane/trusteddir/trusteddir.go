@@ -16,19 +16,21 @@ import (
 var ErrLocked = errors.New("locked by another process")
 
 // Open opens the directory at path, checked on the way.
-func Open(path string) (*os.File, error) { return walk(path, false, os.Geteuid()) }
+func Open(path string) (*os.File, error) { return walk(path, false, os.Geteuid(), false) }
 
 // Make is Open, making each missing directory on the way first (0700, as
 // the umask allows), checked like the rest.
-func Make(path string) (*os.File, error) { return walk(path, true, os.Geteuid()) }
+func Make(path string) (*os.File, error) { return walk(path, true, os.Geteuid(), false) }
 
-// OpenOwnedBy is Open for a directory of user uid's, checked as that user
-// would check it (every directory on the way uid's or root's): for root
-// writing what a user keeps, as the device-test harness's helper writes
-// the owner's evidence (lab/devicetest).
-func OpenOwnedBy(path string, uid int) (*os.File, error) { return walk(path, false, uid) }
+// OpenOwnedBy is Open for a directory of user uid's: the directory itself
+// is uid's (never root's), every directory on the way uid's or root's.
+// It is for root writing what a user keeps, as the device-test harness's
+// helper writes the owner's evidence (lab/devicetest).
+func OpenOwnedBy(path string, uid int) (*os.File, error) { return walk(path, false, uid, true) }
 
-func walk(path string, create bool, uid int) (*os.File, error) {
+// walk opens path, each directory on the way root's or uid's; with
+// lastUID, the directory itself uid's alone.
+func walk(path string, create bool, uid int, lastUID bool) (*os.File, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return nil, err
@@ -44,7 +46,7 @@ func walk(path string, create bool, uid int) (*os.File, error) {
 	walked := "/"
 	for i := 0; ; i++ {
 		last := i == len(components)
-		if err := check(fd, walked, last, uid); err != nil {
+		if err := check(fd, walked, last, uid, last && lastUID); err != nil {
 			_ = unix.Close(fd)
 			return nil, err
 		}
@@ -74,14 +76,15 @@ func openDir(dirfd int, name string) (int, error) {
 	return unix.Openat(dirfd, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 }
 
-// check checks one directory of the walk: root's or uid's.
-func check(fd int, path string, last bool, uid int) error {
+// check checks one directory of the walk: root's or uid's (uid's alone
+// with onlyUID).
+func check(fd int, path string, last bool, uid int, onlyUID bool) error {
 	var st unix.Stat_t
 	if err := unix.Fstat(fd, &st); err != nil {
 		return &os.PathError{Op: "stat", Path: path, Err: err}
 	}
-	if owner := int(st.Uid); owner != 0 && owner != uid {
-		return fmt.Errorf("%s: owned by uid %d, not by uid %d or root", path, owner, uid)
+	if owner := int(st.Uid); owner != uid && (owner != 0 || onlyUID) {
+		return fmt.Errorf("%s: owned by uid %d, not by uid %d", path, owner, uid)
 	}
 	perm := os.FileMode(st.Mode) & os.ModePerm
 	if perm&0o022 != 0 && (last || st.Mode&unix.S_ISVTX == 0) {

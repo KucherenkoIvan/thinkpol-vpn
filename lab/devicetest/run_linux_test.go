@@ -82,8 +82,10 @@ func runAsRoot(t *testing.T, p plan.Plan, phys string) labRun {
 	if res.record.Restore == nil || res.record.Restore.Verdict != safety.Clean {
 		t.Errorf("the restore: %+v\n%s", res.record.Restore, term.String())
 	}
-	if active, err := (safety.StateConfig{Dir: safety.DefaultStateDir}).Active(); err != nil || active != "" {
-		t.Errorf("a run left active: %q %v", active, err)
+	for _, f := range []string{"active", "left"} {
+		if _, err := os.Stat(filepath.Join(safety.DefaultStateDir, f)); !os.IsNotExist(err) {
+			t.Errorf("a run is still pending (%s): %v", f, err)
+		}
 	}
 	if out, _ := exec.Command("pgrep", "-x", "tcpdump").Output(); len(out) != 0 {
 		t.Errorf("tcpdump left running: %s", out)
@@ -94,25 +96,25 @@ func runAsRoot(t *testing.T, p plan.Plan, phys string) labRun {
 func TestARunAsRoot(t *testing.T) {
 	iface := labInterface(t)
 	p := plan.Plan{Ticket: "TP-900", Title: "a lab run", Budget: 2 * time.Minute,
-		Captures: []plan.Capture{{Iface: plan.Physical, Filter: "ip6"}},
+		Capture: plan.Capture{Iface: plan.Physical, Filter: "ip6"},
 		Steps: []plan.Step{{Name: "reads", Ops: []plan.Op{
-			plan.Root("ip", "route", "show"),
-			plan.Make(plan.Change{Kind: safety.KindFile, Params: map[string]string{"name": "lab-step", "content": "x"}}),
-			plan.Root("ip", "-o", "link", "show"),
+			plan.Read("ip", "route", "show"),
+			plan.Do(plan.Change{Kind: safety.KindFile, Params: map[string]string{"name": "lab-step", "content": "x"}}),
+			plan.Read("ip", "-o", "link", "show"),
 		}}}}
 	got := runAsRoot(t, p, iface)
 	if got.err != nil || got.record.SelfTest != "ok" || got.record.Steps != 1 {
 		t.Fatalf("run: %v %+v\n%s", got.err, got.record, got.term)
 	}
 	var st struct {
-		Captures []captureCheck `json:"captures"`
+		Capture captureCheck `json:"capture"`
 	}
 	b, _ := os.ReadFile(filepath.Join(got.path, "selftest", "selftest.json"))
-	if err := json.Unmarshal(b, &st); err != nil || len(st.Captures) != 1 || !st.Captures[0].OK {
+	if err := json.Unmarshal(b, &st); err != nil || !st.Capture.OK || st.Capture.Tries != 1 {
 		t.Fatalf("selftest.json: %s %v", b, err)
 	}
-	decoded, _ := os.ReadFile(filepath.Join(got.path, st.Captures[0].Decode))
-	if !bytes.Contains(decoded, []byte(st.Captures[0].Positive)) {
+	decoded, _ := os.ReadFile(filepath.Join(got.path, st.Capture.Decode))
+	if !bytes.Contains(decoded, []byte(st.Capture.Positive)) {
 		t.Errorf("the decode lacks the marker:\n%s", decoded)
 	}
 	for _, f := range []string{"captures/" + iface + ".pcap", "captures/markers.jsonl", "steps/01-reads/cmd-001.ip-route-show.out",
@@ -132,9 +134,9 @@ func TestARunAsRoot(t *testing.T) {
 func TestABrokenCaptureStopsTheRunWithin10s(t *testing.T) {
 	iface := labInterface(t)
 	broken := func(capture plan.Capture) plan.Plan {
-		return plan.Plan{Ticket: "TP-901", Title: "a broken capture", Budget: 2 * time.Minute, Captures: []plan.Capture{capture},
+		return plan.Plan{Ticket: "TP-901", Title: "a broken capture", Budget: 2 * time.Minute, Capture: capture,
 			Steps: []plan.Step{{Name: "never", Ops: []plan.Op{
-				plan.Make(plan.Change{Kind: safety.KindFile, Params: map[string]string{"name": "never", "content": "x"}}),
+				plan.Do(plan.Change{Kind: safety.KindFile, Params: map[string]string{"name": "never", "content": "x"}}),
 			}}}}
 	}
 	t.Run("it sees nothing", func(t *testing.T) {
@@ -152,15 +154,15 @@ func TestABrokenCaptureStopsTheRunWithin10s(t *testing.T) {
 		nft("add", "chain", "netdev", "tpdt_test", "out", "{ type filter hook egress device \""+iface+"\" priority 0 ; }")
 		nft("add", "rule", "netdev", "tpdt_test", "out", "udp", "dport", "9", "drop")
 		got := runAsRoot(t, broken(plan.Capture{Iface: plan.Physical, Filter: "ip6"}), iface)
-		assertStoppedBySelfTest(t, got, "wasn't captured")
+		assertStoppedBySelfTest(t, got, "wasn't captured", 2)
 	})
 	t.Run("no such interface", func(t *testing.T) {
 		got := runAsRoot(t, broken(plan.Capture{Iface: "nosuch0"}), iface)
-		assertStoppedBySelfTest(t, got, "nosuch0")
+		assertStoppedBySelfTest(t, got, "nosuch0", 0)
 	})
 }
 
-func assertStoppedBySelfTest(t *testing.T, got labRun, why string) {
+func assertStoppedBySelfTest(t *testing.T, got labRun, why string, tries int) {
 	t.Helper()
 	if got.err == nil || got.record.SelfTest == "ok" || !strings.Contains(got.record.SelfTest, why) || got.record.Steps != 0 {
 		t.Fatalf("run: %v %+v\n%s", got.err, got.record, got.term)
@@ -169,13 +171,16 @@ func assertStoppedBySelfTest(t *testing.T, got labRun, why string) {
 	// restore, which have nothing to do with the capture.
 	b, _ := os.ReadFile(filepath.Join(got.path, "selftest", "selftest.json"))
 	var st struct {
-		Captures []captureCheck `json:"captures"`
+		Capture captureCheck `json:"capture"`
 	}
-	if err := json.Unmarshal(b, &st); err != nil || len(st.Captures) != 1 {
+	if err := json.Unmarshal(b, &st); err != nil {
 		t.Fatalf("selftest.json: %s %v", b, err)
 	}
-	if took, err := time.ParseDuration(st.Captures[0].Took); err != nil || took > selfTestBudget {
-		t.Errorf("the failing check took %s", st.Captures[0].Took)
+	if took, err := time.ParseDuration(st.Capture.Took); err != nil || took > selfTestBudget {
+		t.Errorf("the failing check took %s", st.Capture.Took)
+	}
+	if st.Capture.Tries != tries {
+		t.Errorf("tries %d, want %d (markers sent: see captures/markers.jsonl)", st.Capture.Tries, tries)
 	}
 	if _, err := os.Stat(filepath.Join(got.path, "steps")); !os.IsNotExist(err) {
 		t.Errorf("a step ran after the self-test failed: %v", err)

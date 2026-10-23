@@ -15,8 +15,10 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -54,19 +56,12 @@ func cmdRun(ctx context.Context, args []string) error {
 	iface := fs.String("iface", "", "the physical interface (default: the IPv4 default route's)")
 	thinkpol := fs.String("thinkpol", "", "a thinkpol binary: `thinkpol diag` is saved after each step")
 	base := fs.String("evidence", "", "where evidence folders go (default ~/thinkpol-evidence)")
-	config := fs.String("config", "", "the private config file (read only by plans that need the exit server)")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
-	p, ok := plan.Lookup(args[0])
+	p, ok := plan.Lookup(allPlans(), args[0])
 	if !ok {
 		return fmt.Errorf("no plan for %s (devicetest plans)", args[0])
-	}
-	if p.NeedsExit {
-		if _, err := loadPrivateConfig(*config); err != nil {
-			return err
-		}
-		return errors.New("this plan needs the exit server, and the exit driver isn't built yet")
 	}
 	phys := *iface
 	if phys == "" {
@@ -90,7 +85,7 @@ type runRecord struct {
 	Ticket       string         `json:"ticket"`
 	Title        string         `json:"title"`
 	Run          string         `json:"run"`
-	PlanSHA256   string         `json:"plan_sha256"`
+	ListingHash  string         `json:"listing_sha256"`
 	Tool         string         `json:"tool"`
 	SafetyFrozen string         `json:"safety_frozen_sha256"`
 	OS           string         `json:"os"`
@@ -124,7 +119,7 @@ func (r *runner) run(ctx context.Context, base string) error {
 	rec := r.record(list, start)
 	if err := r.startHelper(); err != nil {
 		ev.Logf("the helper didn't start: %v; nothing changed", err)
-		return err
+		return errReported
 	}
 	r.watchSignals()
 	steps, err := 0, r.selfTest(ctx)
@@ -140,10 +135,31 @@ func (r *runner) run(ctx context.Context, base string) error {
 	}
 	rec.Steps = steps
 	res, rerr := r.c.restore()
-	rec.Restore, rec.Ended = &res, time.Now().UTC()
+	if res == nil {
+		res = r.resultFromEvidence()
+	}
+	rec.Restore, rec.Ended = res, time.Now().UTC()
 	_ = ev.WriteJSON("run.json", rec)
-	r.report(res, rerr, steps, rec.SelfTest)
-	return errors.Join(err, rerr)
+	r.report(*res, rerr, steps, rec.SelfTest)
+	if err != nil || rerr != nil || res.Verdict != safety.Clean {
+		return errReported
+	}
+	return nil
+}
+
+// resultFromEvidence is the newest restore result in the evidence (the
+// dead-man's, when the helper was killed), or UNKNOWN.
+func (r *runner) resultFromEvidence() *safety.Result {
+	m, _ := filepath.Glob(filepath.Join(r.ev.Path, "restore", "result-*.json"))
+	slices.Sort(m) // named by the time they were written
+	if len(m) > 0 {
+		var res safety.Result
+		if b, err := os.ReadFile(m[len(m)-1]); err == nil && json.Unmarshal(b, &res) == nil {
+			return &res
+		}
+	}
+	return &safety.Result{Verdict: "UNKNOWN", By: "nobody: the helper gave no result and the evidence has none",
+		Notes: []string{"run devicetest restore"}}
 }
 
 func (r *runner) record(list string, start time.Time) runRecord {
@@ -162,7 +178,7 @@ func (r *runner) record(list string, start time.Time) runRecord {
 		kernel = unix.ByteSliceToString(u.Release[:])
 	}
 	r.runID = start.UTC().Format("20060102T150405Z") + "-" + strings.ToLower(r.plan.Ticket)
-	return runRecord{Ticket: r.plan.Ticket, Title: r.plan.Title, Run: r.runID, PlanSHA256: hex.EncodeToString(sum[:]),
+	return runRecord{Ticket: r.plan.Ticket, Title: r.plan.Title, Run: r.runID, ListingHash: hex.EncodeToString(sum[:]),
 		Tool: tool, SafetyFrozen: safety.FrozenSum(), OS: runtime.GOOS + "/" + runtime.GOARCH, Kernel: kernel,
 		Physical: r.phys, Budget: r.plan.Budget.String(), Started: start.UTC()}
 }
@@ -172,11 +188,11 @@ func (r *runner) startHelper() error {
 		"-gid", strconv.Itoa(os.Getgid()), "-budget", r.plan.Budget.String()}
 	mk := r.helperCommand
 	if mk == nil {
-		self, err := os.Executable()
+		root, err := rootBinary()
 		if err != nil {
 			return err
 		}
-		mk = func(args []string) (*exec.Cmd, error) { return safety.RootCommand(self, args) }
+		mk = func(args []string) (*exec.Cmd, error) { return safety.RootCommand(root, args) }
 	}
 	cmd, err := mk(args)
 	if err != nil {
@@ -246,20 +262,20 @@ func (r *runner) step(ctx context.Context, dir string, st plan.Step) error {
 
 func (r *runner) op(dir string, n int, op plan.Op) error {
 	switch op.Kind {
-	case plan.RootRead:
+	case plan.OpRead:
 		name := fmt.Sprintf("%s/cmd-%03d.%s", dir, n, slug(op.Argv))
 		resp, err := r.c.call(safety.Request{Op: safety.OpRead, Argv: op.Argv, Name: name})
 		r.ev.Logf("  root read: %s (exit %d) -> %s.out", strings.Join(op.Argv, " "), resp.Code, name)
 		return err
-	case plan.Do:
+	case plan.OpDo:
 		spec, err := changeSpec(op.Change)
 		if err != nil {
 			return err
 		}
-		resp, err := r.c.call(safety.Request{Op: safety.OpDo, Action: &spec})
+		resp, err := r.c.call(safety.Request{Op: safety.OpDo, Change: &spec})
 		r.ev.Logf("  change %d: %s", resp.Seq, describeOp(op))
 		return err
-	case plan.UndoNewest:
+	case plan.OpUndoLast:
 		_, err := r.c.call(safety.Request{Op: safety.OpUndoLast})
 		r.ev.Logf("  undone: the newest change")
 		return err
@@ -319,13 +335,14 @@ func (r *runner) report(res safety.Result, err error, steps int, selfTest string
 		r.plan.Ticket, steps, len(r.plan.Steps), selfTest, res.Verdict, r.ev.Path)
 }
 
-// cmdRestore finishes an unfinished run from its journal, as root.
+// cmdRestore restores the run pending a restore from its journal, as
+// root.
 func cmdRestore() error {
-	self, err := os.Executable()
+	root, err := rootBinary()
 	if err != nil {
 		return err
 	}
-	cmd, err := safety.RootCommand(self, []string{"root-restore"})
+	cmd, err := safety.RootCommand(root, []string{"root-restore"})
 	if err != nil {
 		return err
 	}

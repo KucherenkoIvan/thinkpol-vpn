@@ -13,15 +13,13 @@ import (
 	"os/exec"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/lab/pcap"
 )
-
-// KindCapture is CaptureAction's kind.
-const KindCapture = "capture"
 
 // MarkerPrefix starts the payload of a self-test marker: "tpdt-marker
 // <run> <nonce>".
@@ -34,10 +32,10 @@ const (
 	captureCount   = 200000
 )
 
-// CaptureAction is a tcpdump on one interface, run by the helper as root:
+// captureAction is a tcpdump on one interface, run by the helper as root:
 // the helper reads its stream, writes the pcap into the evidence itself
 // and watches it for the self-test's markers. Its undo stops the process.
-type CaptureAction struct {
+type captureAction struct {
 	Iface  string `json:"iface"`
 	Filter string `json:"filter"`
 	// PID and Start name the process once it runs.
@@ -47,23 +45,25 @@ type CaptureAction struct {
 
 var ifaceName = regexp.MustCompile(`^[a-z][a-z0-9]{0,14}$`)
 
-func (a *CaptureAction) validate() error {
+func (a *captureAction) validate() error {
 	if !ifaceName.MatchString(a.Iface) {
 		return fmt.Errorf("capture: bad interface %q", a.Iface)
 	}
-	if len(a.Filter) > 400 || bytes.ContainsAny([]byte(a.Filter), "\n\r\x00") {
-		return errors.New("capture: bad filter")
+	// The filter follows `--`, and one that looks like an option is
+	// refused anyway: `-w FILE` would have root's tcpdump write anywhere.
+	if len(a.Filter) > 400 || strings.HasPrefix(strings.TrimSpace(a.Filter), "-") || strings.ContainsAny(a.Filter, "\n\r\x00") {
+		return fmt.Errorf("capture: bad filter %q", a.Filter)
 	}
 	return nil
 }
 
-func (*CaptureAction) Kind() string       { return KindCapture }
-func (*CaptureAction) Lifetime() Lifetime { return Volatile }
-func (a *CaptureAction) Does() string     { return fmt.Sprintf("capture on %s (%q)", a.Iface, a.Filter) }
-func (a *CaptureAction) UndoText() string { return "stop that tcpdump" }
+func (*captureAction) kind() string       { return KindCapture }
+func (*captureAction) lifetime() lifetime { return volatile }
+func (a *captureAction) does() string     { return fmt.Sprintf("capture on %s (%q)", a.Iface, a.Filter) }
+func (a *captureAction) undoText() string { return "stop that tcpdump" }
 
-// Pre refuses a capture that names a process: only Apply learns one.
-func (a *CaptureAction) Pre(_ context.Context, h *Host) error {
+// pre refuses a capture that names a process: only apply learns one.
+func (a *captureAction) pre(_ context.Context, h *host) error {
 	if a.PID != 0 || a.Start != 0 {
 		return errors.New("a capture names no process before it starts")
 	}
@@ -73,18 +73,30 @@ func (a *CaptureAction) Pre(_ context.Context, h *Host) error {
 	return nil
 }
 
-func (a *CaptureAction) Apply(ctx context.Context, h *Host) (json.RawMessage, error) {
-	c, err := h.captures.start(ctx, a.Iface, a.Filter)
+// apply starts tcpdump and journals its pid and start time at once, before
+// waiting for it to listen: a helper killed in between leaves a process
+// the undo knows.
+func (a *captureAction) apply(ctx context.Context, h *host, learnt func(json.RawMessage) error) error {
+	c, err := h.captures.start(a.Iface, a.Filter)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	return json.Marshal(CaptureAction{Iface: a.Iface, Filter: a.Filter, PID: c.pid, Start: c.start})
+	params, err := json.Marshal(captureAction{Iface: a.Iface, Filter: a.Filter, PID: c.pid, Start: c.start})
+	if err == nil {
+		err = learnt(params)
+	}
+	if err != nil {
+		h.captures.stop(a.Iface)
+		return err
+	}
+	return c.waitHeader(ctx, 5*time.Second)
 }
 
-// Undo stops the capture: the helper's own, or by its pid if it is still
-// the process that started then (a dead-man's restore).
-func (a *CaptureAction) Undo(_ context.Context, h *Host) error {
-	if h.captures != nil && h.captures.stop(a.Iface, a.PID) {
+// undo stops the capture: the helper's own (whatever the journal says),
+// or by its pid if that is still the process that started then (a
+// dead-man's or a later restore).
+func (a *captureAction) undo(_ context.Context, h *host) error {
+	if h.captures != nil && h.captures.stop(a.Iface) {
 		return nil
 	}
 	if a.PID == 0 || !sameProcess(a.PID, a.Start) {
@@ -93,14 +105,21 @@ func (a *CaptureAction) Undo(_ context.Context, h *Host) error {
 	return terminate(a.PID, a.Start)
 }
 
-// terminate stops pid: TERM, then KILL after 3 s.
+// terminate stops pid if it is still the process that started at start:
+// TERM, then KILL after 3 s.
 func terminate(pid int, start int64) error {
+	if !sameProcess(pid, start) {
+		return nil
+	}
 	_ = syscall.Kill(pid, syscall.SIGTERM)
 	for range 30 {
-		if !sameProcess(pid, start) {
+		if !sameProcess(pid, start) || zombie(pid) {
 			return nil
 		}
 		time.Sleep(100 * time.Millisecond)
+	}
+	if !sameProcess(pid, start) {
+		return nil
 	}
 	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
 		return fmt.Errorf("kill %d: %w", pid, err)
@@ -108,11 +127,22 @@ func terminate(pid int, start int64) error {
 	return nil
 }
 
+// tcpdumpArgv is the capture's command: promiscuous mode off, the filter
+// after `--`. The core's tests replace it with a process that never
+// listens.
+var tcpdumpArgv = func(iface, filter string) []string {
+	argv := []string{Tcpdump(), "-i", iface, "-n", "-p", "-U", "-s", strconv.Itoa(captureSnaplen), "-c", strconv.Itoa(captureCount), "-w", "-", "--"}
+	if filter != "" {
+		argv = append(argv, filter)
+	}
+	return argv
+}
+
 // captures are the helper's running captures, by interface.
 type captures struct {
 	mu   sync.Mutex
 	live map[string]*liveCapture
-	ev   *Evidence
+	ev   *evidence
 }
 
 // liveCapture is one running tcpdump and the reader of its stream.
@@ -129,11 +159,16 @@ type liveCapture struct {
 	cut     *os.File
 	nonces  map[string]bool
 	changed chan struct{}
-	records int
 	err     error
 }
 
-func (cs *captures) start(ctx context.Context, iface, filter string) (*liveCapture, error) {
+func newLiveCapture(iface string, main *os.File) *liveCapture {
+	return &liveCapture{iface: iface, done: make(chan struct{}), main: main, nonces: map[string]bool{}, changed: make(chan struct{})}
+}
+
+// start starts tcpdump on iface; it is in the table, and stoppable, from
+// the moment it runs. A start time that can't be read fails it.
+func (cs *captures) start(iface, filter string) (*liveCapture, error) {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 	if cs.live[iface] != nil {
@@ -142,54 +177,41 @@ func (cs *captures) start(ctx context.Context, iface, filter string) (*liveCaptu
 	if cs.ev == nil {
 		return nil, errors.New("no evidence folder to write the capture to")
 	}
-	main, err := cs.ev.Create("captures/" + iface + ".pcap")
+	main, err := cs.ev.create("captures/" + iface + ".pcap")
 	if err != nil {
 		return nil, err
 	}
-	stderr, err := cs.ev.Create("captures/" + iface + ".tcpdump.err")
-	if err != nil {
-		_ = main.Close()
-		return nil, err
-	}
-	c, err := startTcpdump(iface, filter, main, stderr)
-	_ = stderr.Close()
+	stderr, err := cs.ev.create("captures/" + iface + ".tcpdump.err")
 	if err != nil {
 		_ = main.Close()
 		return nil, err
 	}
-	if err := c.waitHeader(ctx, 5*time.Second); err != nil {
+	defer func() { _ = stderr.Close() }()
+	c := newLiveCapture(iface, main)
+	argv := tcpdumpArgv(iface, filter)
+	c.cmd = exec.Command(argv[0], argv[1:]...)
+	c.cmd.Env, c.cmd.Stderr = []string{"LC_ALL=C"}, stderr
+	stdout, err := c.cmd.StdoutPipe()
+	if err == nil {
+		err = c.cmd.Start()
+	}
+	if err != nil {
+		_ = main.Close()
+		return nil, fmt.Errorf("tcpdump on %s: %w", iface, err)
+	}
+	c.pid = c.cmd.Process.Pid
+	go c.read(stdout)
+	if c.start, err = startTime(c.pid); err != nil {
 		c.kill()
-		return nil, err
+		return nil, fmt.Errorf("tcpdump on %s: its start time: %w", iface, err)
 	}
 	cs.live[iface] = c
 	return c, nil
 }
 
-func startTcpdump(iface, filter string, main, stderr *os.File) (*liveCapture, error) {
-	argv := []string{tcpdump(), "-i", iface, "-n", "-U", "-s", strconv.Itoa(captureSnaplen), "-c", strconv.Itoa(captureCount), "-w", "-"}
-	if filter != "" {
-		argv = append(argv, filter)
-	}
-	cmd := exec.Command(argv[0], argv[1:]...)
-	cmd.Env = []string{"LC_ALL=C"}
-	cmd.Stderr = stderr
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, err
-	}
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("tcpdump on %s: %w", iface, err)
-	}
-	c := &liveCapture{iface: iface, cmd: cmd, pid: cmd.Process.Pid, done: make(chan struct{}), main: main,
-		nonces: map[string]bool{}, changed: make(chan struct{})}
-	c.start, _ = startTime(c.pid)
-	go c.read(stdout)
-	return c, nil
-}
-
 // read copies the stream into the pcap file record by record, and notes
 // the markers it carries.
-func (c *liveCapture) read(r io.ReadCloser) {
+func (c *liveCapture) read(r io.Reader) {
 	defer close(c.done)
 	defer func() { _, _ = io.Copy(io.Discard, r) }()
 	pr, err := pcap.NewReader(r)
@@ -200,8 +222,8 @@ func (c *liveCapture) read(r io.ReadCloser) {
 	c.mu.Lock()
 	c.header = pr.Header()
 	_, err = c.main.Write(c.header)
+	c.broadcastLocked()
 	c.mu.Unlock()
-	c.notify()
 	for err == nil {
 		var rec pcap.Record
 		if rec, err = pr.NextRecord(); err == nil {
@@ -216,7 +238,6 @@ func (c *liveCapture) read(r io.ReadCloser) {
 func (c *liveCapture) write(rec pcap.Record) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.records++
 	if c.cut != nil {
 		if _, err := c.cut.Write(rec.Raw); err != nil {
 			return err
@@ -228,8 +249,7 @@ func (c *liveCapture) write(rec pcap.Record) error {
 	if p := rec.Packet; rec.IsIP && p.Proto == pcap.ProtoUDP && bytes.HasPrefix(p.Payload, []byte(MarkerPrefix)) {
 		f := bytes.Fields(p.Payload)
 		c.nonces[string(f[len(f)-1])] = true
-		close(c.changed)
-		c.changed = make(chan struct{})
+		c.broadcastLocked()
 	}
 	return nil
 }
@@ -240,13 +260,11 @@ func (c *liveCapture) fail(err error) {
 	if c.err == nil {
 		c.err = err
 	}
-	close(c.changed)
-	c.changed = make(chan struct{})
+	c.broadcastLocked()
 }
 
-func (c *liveCapture) notify() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+// broadcastLocked wakes every waiter; c.mu is held.
+func (c *liveCapture) broadcastLocked() {
 	close(c.changed)
 	c.changed = make(chan struct{})
 }
@@ -289,22 +307,22 @@ func (c *liveCapture) waitFor(ctx context.Context, timeout time.Duration, cond f
 	}
 }
 
-// Seen waits up to timeout for a marker with nonce.
-func (c *liveCapture) Seen(ctx context.Context, nonce string, timeout time.Duration) bool {
+// seen waits up to timeout for a marker with nonce.
+func (c *liveCapture) seen(ctx context.Context, nonce string, timeout time.Duration) bool {
 	return c.waitFor(ctx, timeout, func() bool { return c.nonces[nonce] }) == nil
 }
 
 // cutStart starts a copy of the stream from here (header first) in rel.
-func (c *liveCapture) cutStart(ev *Evidence, rel string) error {
-	f, err := ev.Create(rel)
+func (c *liveCapture) cutStart(ev *evidence, rel string) error {
+	f, err := ev.create(rel)
 	if err != nil {
 		return err
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.cut != nil {
+	if c.cut != nil || c.header == nil {
 		_ = f.Close()
-		return errors.New("a copy is being cut already")
+		return errors.New("a copy is being cut already, or the capture isn't listening")
 	}
 	if _, err := f.Write(c.header); err != nil {
 		_ = f.Close()
@@ -345,16 +363,16 @@ func (c *liveCapture) kill() {
 	_ = c.main.Close()
 }
 
-// stop stops the capture on iface if it is the helper's and runs as pid.
-func (cs *captures) stop(iface string, pid int) bool {
+// stop stops the helper's capture on iface, whatever the journal says of
+// it; false when there is none.
+func (cs *captures) stop(iface string) bool {
 	cs.mu.Lock()
 	c := cs.live[iface]
-	if c == nil || c.pid != pid {
-		cs.mu.Unlock()
-		return false
-	}
 	delete(cs.live, iface)
 	cs.mu.Unlock()
+	if c == nil {
+		return false
+	}
 	c.kill()
 	return true
 }

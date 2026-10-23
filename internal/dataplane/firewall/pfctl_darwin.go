@@ -178,19 +178,25 @@ func hooked(rules []byte) hook {
 	return hookMissing
 }
 
-// skipped reads `pfctl -s Interfaces -v`, one interface (or name `set
-// skip on` gave) a line, "(skip)" after a skipped one, as the skipped
-// names but lo0 and tun, which the anchor passes anyway: pf evaluates no
-// rule for a skipped interface's packets, and `-s rules` doesn't show it.
-func skipped(ifaces []byte, tun string) []string {
+// skippedNames reads `pfctl -s Interfaces -v`, one interface (or name
+// `set skip on` gave) a line, "(skip)" after a skipped one, as every
+// skipped name: pf evaluates no rule for a skipped interface's packets,
+// and `-s rules` doesn't show it.
+func skippedNames(ifaces []byte) []string {
 	var out []string
 	for _, l := range lines(ifaces) {
 		f := strings.Fields(l)
-		if len(f) == 2 && f[1] == "(skip)" && f[0] != "lo0" && f[0] != tun {
+		if len(f) == 2 && f[1] == "(skip)" {
 			out = append(out, f[0])
 		}
 	}
 	return out
+}
+
+// skipped are the skipped names but lo0 and tun, which the anchor passes
+// anyway: the ones that let IPv6 past the guard.
+func skipped(ifaces []byte, tun string) []string {
+	return slices.DeleteFunc(skippedNames(ifaces), func(n string) bool { return n == "lo0" || n == tun })
 }
 
 // anchorsBefore reads `pfctl -a com.apple -s Anchors`, the anchors under

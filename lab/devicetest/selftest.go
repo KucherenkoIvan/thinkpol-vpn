@@ -14,7 +14,6 @@ import (
 	"net/netip"
 	"os/exec"
 	"path/filepath"
-	"sync"
 	"syscall"
 	"time"
 
@@ -47,40 +46,33 @@ type captureCheck struct {
 }
 
 // selfTest checks the machinery before any change: one harmless change
-// goes into the journal and out through it, then every capture must see a
-// marker, must not see one its filter excludes, and must decode through
-// the evidence path (`tcpdump -n -A -r`), all within selfTestBudget.
+// goes into the journal and out through it, then the plan's capture must
+// see a marker, must not see one its filter excludes, and must decode
+// through the evidence path (`tcpdump -n -A -r`), within selfTestBudget.
 func (r *runner) selfTest(ctx context.Context) error {
 	start := time.Now()
 	if err := r.harmlessChange(); err != nil {
 		return fmt.Errorf("a harmless change through the journal: %w", err)
 	}
+	if r.plan.Capture.Iface == "" {
+		r.ev.Logf("self-test ok: the plan has no capture")
+		return nil
+	}
 	ctx, cancel := context.WithTimeout(ctx, selfTestBudget)
 	defer cancel()
-	checks := make([]captureCheck, len(r.plan.Captures))
-	var wg sync.WaitGroup
-	for i, c := range r.plan.Captures {
-		wg.Go(func() { checks[i] = r.checkCapture(ctx, c) })
-	}
-	wg.Wait()
+	check := r.checkCapture(ctx, r.plan.Capture)
 	took := time.Since(start)
-	_ = r.ev.WriteJSON("selftest/selftest.json", map[string]any{"took": took.String(), "budget": selfTestBudget.String(), "captures": checks})
-	var errs []error
-	for _, c := range checks {
-		if !c.OK {
-			errs = append(errs, fmt.Errorf("the capture on %s: %s", c.Iface, c.Why))
-		}
+	_ = r.ev.WriteJSON("selftest/selftest.json", map[string]any{"took": took.String(), "budget": selfTestBudget.String(), "capture": check})
+	if !check.OK {
+		return fmt.Errorf("the capture on %s: %s", check.Iface, check.Why)
 	}
-	if err := errors.Join(errs...); err != nil {
-		return err
-	}
-	r.ev.Logf("self-test ok in %v: %d captures see their markers, miss the filtered ones, decode", took.Round(time.Millisecond), len(checks))
+	r.ev.Logf("self-test ok in %v: the capture sees its marker, misses the filtered one, decodes", took.Round(time.Millisecond))
 	return nil
 }
 
 func (r *runner) harmlessChange() error {
-	params, _ := json.Marshal(safety.FileAction{Name: "selftest-" + nonce(), Content: r.runID})
-	if _, err := r.c.call(safety.Request{Op: safety.OpDo, Action: &safety.Spec{Kind: safety.KindFile, Params: params}}); err != nil {
+	params, _ := json.Marshal(map[string]string{"name": "selftest-" + nonce(), "content": r.runID})
+	if _, err := r.c.call(safety.Request{Op: safety.OpDo, Change: &safety.Spec{Kind: safety.KindFile, Params: params}}); err != nil {
 		return err
 	}
 	_, err := r.c.call(safety.Request{Op: safety.OpUndoLast})
@@ -140,7 +132,8 @@ func (r *runner) sendMarkers(ctx context.Context, res *captureCheck, bcast netip
 	if err := r.sendMarker(neg, bcast, res, res.Negative, "negative"); err != nil {
 		return false, false, err
 	}
-	for res.Tries = 1; res.Tries <= 2 && !seen; res.Tries++ {
+	for !seen && res.Tries < 2 && ctx.Err() == nil {
+		res.Tries++
 		res.Positive = nonce()
 		if err := r.sendMarker(pos, bcast, res, res.Positive, "positive"); err != nil {
 			return false, false, err
@@ -150,11 +143,7 @@ func (r *runner) sendMarkers(ctx context.Context, res *captureCheck, bcast netip
 			return false, false, err
 		}
 		seen = resp.Seen
-		if ctx.Err() != nil {
-			break
-		}
 	}
-	res.Tries--
 	resp, err := r.c.call(safety.Request{Op: safety.OpCaptureSeen, Iface: res.Iface, Nonce: res.Negative, TimeoutMS: 100})
 	return seen, resp.Seen, err
 }
@@ -175,7 +164,7 @@ func (r *runner) sendMarker(conn *net.UDPConn, to netip.AddrPort, res *captureCh
 // negative not.
 func (r *runner) checkDecode(ctx context.Context, res *captureCheck) error {
 	res.Decode = "selftest/decode-" + res.Iface + ".txt"
-	cmd := exec.CommandContext(ctx, tcpdumpPath, "-n", "-A", "-r", filepath.Join(r.ev.Path, res.Copy))
+	cmd := exec.CommandContext(ctx, safety.Tcpdump(), "-n", "-A", "-r", filepath.Join(r.ev.Path, res.Copy))
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()

@@ -2,26 +2,14 @@
 
 package safety
 
-import (
-	"errors"
-
-	"golang.org/x/sys/unix"
-)
-
-// alive says pid is a process that hasn't exited: a zombie its parent
-// hasn't reaped yet is gone.
-func alive(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	if err := unix.Kill(pid, 0); err != nil && !errors.Is(err, unix.EPERM) {
-		return false
-	}
-	return !zombie(pid)
+// running says pid is still the process that started at start and hasn't
+// exited: a pid can be reused, and a zombie its parent hasn't reaped yet
+// is gone.
+func running(pid int, start int64) bool {
+	return pid > 0 && sameProcess(pid, start) && !zombie(pid)
 }
 
-// sameProcess says pid is still the process that started at start (a pid
-// can be reused).
+// sameProcess says pid is still the process that started at start.
 func sameProcess(pid int, start int64) bool {
 	got, err := startTime(pid)
 	return err == nil && got == start

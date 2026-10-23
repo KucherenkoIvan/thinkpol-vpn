@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -19,13 +18,13 @@ import (
 )
 
 // The test binary is also the core's child processes: with childEnv set it
-// runs the mode its first argument names (as devicetest's main does), so
+// runs the mode its first argument names (as devicetest-root does), so
 // the tests drive real processes, signals and kill -9.
 const (
 	childEnv   = "TPDT_TEST_CHILD"
 	stateEnv   = "TPDT_TEST_STATE"   // the state directory
 	surfaceEnv = "TPDT_TEST_SURFACE" // the file the test surface reads
-	nonRootEnv = "TPDT_TEST_NONROOT" // AllowNonRoot
+	nonRootEnv = "TPDT_TEST_NONROOT" // allowNonRoot
 )
 
 func TestMain(m *testing.M) {
@@ -39,21 +38,27 @@ func TestMain(m *testing.M) {
 	os.Exit(0)
 }
 
+func childState() stateConfig {
+	state := stateConfig{dir: os.Getenv(stateEnv), allowNonRoot: os.Getenv(nonRootEnv) != ""}
+	if p := os.Getenv(surfaceEnv); p != "" {
+		state.surfaces = testSurfaces(p)
+	}
+	return state
+}
+
 func child(mode string, args []string) error {
 	ctx := context.Background()
-	state := StateConfig{Dir: os.Getenv(stateEnv), AllowNonRoot: os.Getenv(nonRootEnv) != ""}
-	if p := os.Getenv(surfaceEnv); p != "" {
-		state.Surfaces = testSurfaces(p)
-	}
 	switch mode {
 	case "helper":
-		return HelperMain(ctx, args, state, os.Stdin, os.Stdout, os.Stderr)
+		return helperMain(ctx, args, childState(), os.Stdin, os.Stdout, os.Stderr)
 	case "deadman":
-		return DeadmanMain(ctx, args, state)
+		return deadmanMain(ctx, args, childState())
 	case "restore":
-		return RestoreMain(ctx, args, state, os.Stdout)
+		return restoreMain(ctx, args, childState(), os.Stdout)
 	case "journal-child":
 		return journalChild(args[0])
+	case "capture-child":
+		return captureChild(args[0])
 	case "rootcheck":
 		return rootCheck(args)
 	}
@@ -62,21 +67,15 @@ func child(mode string, args []string) error {
 
 // testSurfaces read one file of the test's with cat: a real command over
 // a real file, never the host's pf.
-func testSurfaces(path string) []Surface {
-	return []Surface{{Name: "test-file", Argv: []string{"/bin/cat", path}, Norm: catLines, Next: "put the file back"}}
+func testSurfaces(path string) []surface {
+	return []surface{{name: "test-file", argv: []string{"/bin/cat", path}, norm: catLines, next: "put the file back"}}
 }
 
 func catLines(out output) ([]string, error) {
 	if out.Code != 0 || out.Err != "" {
 		return nil, fmt.Errorf("cat: exit %d %s", out.Code, out.Err)
 	}
-	lines := []string{}
-	for _, l := range strings.Split(strings.TrimSpace(string(out.Stdout)), "\n") {
-		if l != "" {
-			lines = append(lines, l)
-		}
-	}
-	return lines, nil
+	return listingLines(out.Stdout), nil
 }
 
 // tempDir is a directory trusteddir accepts (macOS's temp dir is reached
@@ -101,27 +100,32 @@ func openDir(t *testing.T, path string) *os.File {
 }
 
 func fileSpec(name, content string) Spec {
-	p, _ := json.Marshal(FileAction{Name: name, Content: content})
+	p, _ := json.Marshal(fileAction{Name: name, Content: content})
 	return Spec{Kind: KindFile, Params: p}
 }
 
 func notArmed() error { return fmt.Errorf("not armed") }
 func isArmed() error  { return nil }
 
-// testHost is a Host over a run directory of the test's, its surface a
+// testHost is a host over a run directory of the test's, its surface a
 // file of the test's, the baseline taken.
-func testHost(t *testing.T, boot string) (*Host, string) {
+func testHost(t *testing.T, boot string) (*host, string) {
 	t.Helper()
 	dir := tempDir(t)
 	surface := filepath.Join(dir, "surface.txt")
 	writeFile(t, surface, "route a\nroute b\n")
-	h := &Host{RunDir: openDir(t, filepath.Join(dir, "run")), Boot: boot, Surfaces: testSurfaces(surface)}
-	base, err := h.Snapshot(t.Context(), "00-baseline")
+	h := &host{runDir: openDir(t, filepath.Join(dir, "run")), boot: boot, surfaces: testSurfaces(surface)}
+	base, err := h.snapshot(t.Context(), baselineName)
 	if err != nil {
 		t.Fatal(err)
 	}
-	h.Baseline = base
+	h.baseline = base
 	return h, surface
+}
+
+// noSurfaces is a host that compares nothing: for tests of the journal.
+func noSurfaces(dir *os.File, boot string) *host {
+	return &host{runDir: dir, boot: boot, surfaces: []surface{}, baseline: &snapshot{Lines: map[string][]string{}}}
 }
 
 func writeFile(t *testing.T, path, data string) {
@@ -158,7 +162,7 @@ func eventually(t *testing.T, timeout time.Duration, what string, cond func() bo
 
 // startSleep starts a harmless process of the test's, reaped as soon as it
 // ends (a zombie still has its pid).
-func startSleep(t *testing.T) *exec.Cmd {
+func startSleep(t *testing.T) (*exec.Cmd, int64) {
 	t.Helper()
 	sleep := exec.Command("sleep", "60")
 	if err := sleep.Start(); err != nil {
@@ -166,7 +170,11 @@ func startSleep(t *testing.T) *exec.Cmd {
 	}
 	go func() { _ = sleep.Wait() }()
 	t.Cleanup(func() { _ = sleep.Process.Kill() })
-	return sleep
+	start, err := startTime(sleep.Process.Pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sleep, start
 }
 
 func rootCheck(args []string) error {
@@ -176,9 +184,17 @@ func rootCheck(args []string) error {
 			dir = args[i+1]
 		}
 	}
-	if err := CheckRootCopy(dir); err != nil {
+	if err := checkRootCopy(dir); err != nil {
 		return err
 	}
 	fmt.Println("root copy ok")
 	return removeRootCopy(dir)
+}
+
+func mustJSON(v any) json.RawMessage {
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	return b
 }

@@ -24,13 +24,13 @@ func TestTheEvidenceWriterNeverFollowsASymlink(t *testing.T) {
 	if err := os.Symlink(victim, filepath.Join(folder, "a.out")); err != nil {
 		t.Fatal(err)
 	}
-	ev, err := OpenEvidence(folder, os.Getuid(), os.Getgid())
+	ev, err := openEvidence(folder, os.Getuid(), os.Getgid())
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = ev.Close() }()
+	defer func() { _ = ev.close() }()
 	for _, rel := range []string{"captures/en0.pcap", "a.out", "../x", "/abs", "a/../b", "", "steps//x"} {
-		if err := ev.WriteFile(rel, []byte("written")); err == nil {
+		if err := ev.writeFile(rel, []byte("written")); err == nil {
 			t.Errorf("%q was written", rel)
 		}
 	}
@@ -40,10 +40,10 @@ func TestTheEvidenceWriterNeverFollowsASymlink(t *testing.T) {
 	if _, err := os.Lstat(filepath.Join(elsewhere, "en0.pcap")); err == nil {
 		t.Error("a file was made through a symlinked directory")
 	}
-	if err := ev.WriteFile("steps/01-stock/cmd-001.out", []byte("x")); err != nil {
+	if err := ev.writeFile("steps/01-stock/cmd-001.out", []byte("x")); err != nil {
 		t.Fatal(err)
 	}
-	if err := ev.WriteFile("steps/01-stock/cmd-001.out", []byte("y")); err == nil {
+	if err := ev.writeFile("steps/01-stock/cmd-001.out", []byte("y")); err == nil {
 		t.Error("an existing file was replaced")
 	}
 	if b, _ := os.ReadFile(filepath.Join(folder, "steps/01-stock/cmd-001.out")); string(b) != "x" {
@@ -60,16 +60,14 @@ func TestTheEvidenceFolderMustBeTheUsers(t *testing.T) {
 	if err := os.Symlink(folder, filepath.Join(base, "link")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := OpenEvidence(filepath.Join(base, "link"), os.Getuid(), os.Getgid()); err == nil {
+	if _, err := openEvidence(filepath.Join(base, "link"), os.Getuid(), os.Getgid()); err == nil {
 		t.Error("opened through a symlink")
 	}
-	if _, err := OpenEvidence(folder, os.Getuid()+4321, os.Getgid()); err == nil {
+	if _, err := openEvidence(folder, os.Getuid()+4321, os.Getgid()); err == nil {
 		t.Error("opened as another user's")
 	}
-	// Root's directories pass trusteddir's walk; the folder itself must
-	// be the user's, or root would write into one of its own.
 	if os.Getuid() != 0 {
-		if _, err := OpenEvidence("/usr", os.Getuid(), os.Getgid()); err == nil {
+		if _, err := openEvidence("/usr", os.Getuid(), os.Getgid()); err == nil {
 			t.Error("a directory of root's was taken for the user's folder")
 		}
 	}

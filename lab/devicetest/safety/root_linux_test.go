@@ -73,8 +73,21 @@ func TestTheRootCopyIsRootsAndChecked(t *testing.T) {
 		t.Errorf("a refused copy was left: %d, before %d", n, before)
 	}
 
+	// A helper refused before its run starts removes its root copy.
+	refused, err := RootCommand(self, []string{"helper", "-run", "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	refused.Env = append(os.Environ(), childEnv+"=1", nonRootEnv+"=")
+	if out, err := refused.CombinedOutput(); err == nil {
+		t.Fatalf("a helper without its flags ran: %s", out)
+	}
+	if n := len(rootCopies(t)); n != before {
+		t.Errorf("a refused helper left its root copy: %d, before %d", n, before)
+	}
+
 	// The checks themselves: a directory that isn't a root copy's.
-	if err := CheckRootCopy(t.TempDir()); err == nil {
+	if err := checkRootCopy(t.TempDir()); err == nil {
 		t.Error("a test directory passed as a root copy")
 	}
 }
@@ -129,23 +142,23 @@ func TestACaptureIsUndoneThroughTheJournal(t *testing.T) {
 	needsLabRoot(t)
 	iface, n := nodeInterface(t)
 	h, _ := testHost(t, "boot-a")
-	evidence := tempDir(t)
-	ev, err := OpenEvidence(evidence, 0, 0)
+	evidenceDir := tempDir(t)
+	ev, err := openEvidence(evidenceDir, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	h.Evidence, h.captures = ev, &captures{live: map[string]*liveCapture{}, ev: ev}
-	j, err := CreateJournal(h.RunDir, "r", "boot-a")
+	h.evidence, h.captures = ev, &captures{live: map[string]*liveCapture{}, ev: ev}
+	j, err := createJournal(h.runDir, "r", "boot-a")
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := NewEngine(h, j, isArmed)
-	params, _ := json.Marshal(CaptureAction{Iface: iface, Filter: "not (udp src port 40002) and udp dst port 9"})
-	if _, err := e.Do(t.Context(), Spec{Kind: KindCapture, Params: params}); err != nil {
+	e := &engine{h: h, j: j, armed: isArmed}
+	params, _ := json.Marshal(captureAction{Iface: iface, Filter: "not (udp src port 40002) and udp dst port 9"})
+	if _, err := e.do(t.Context(), Spec{Kind: KindCapture, Params: params}); err != nil {
 		t.Fatal(err)
 	}
-	var applied CaptureAction
-	if err := json.Unmarshal(j.Entries()[0].Params, &applied); err != nil || !sameProcess(applied.PID, applied.Start) {
+	var applied captureAction
+	if err := json.Unmarshal(j.entries()[0].Params, &applied); err != nil || !running(applied.PID, applied.Start) {
 		t.Fatalf("the journal doesn't name the running tcpdump: %+v %v", applied, err)
 	}
 	c, err := h.captures.get(iface)
@@ -154,19 +167,23 @@ func TestACaptureIsUndoneThroughTheJournal(t *testing.T) {
 	}
 	sendMarker(t, n, 40002, MarkerPrefix+"r filtered")
 	sendMarker(t, n, 40001, MarkerPrefix+"r seen")
-	if !c.Seen(t.Context(), "seen", 5*time.Second) {
+	if !c.seen(t.Context(), "seen", 5*time.Second) {
 		t.Fatal("the marker wasn't seen")
 	}
-	if c.Seen(t.Context(), "filtered", 200*time.Millisecond) {
+	if c.seen(t.Context(), "filtered", 200*time.Millisecond) {
 		t.Error("the filtered marker was seen: the filter isn't applied")
 	}
-	if err := e.UndoLast(t.Context()); err != nil {
-		t.Fatal(err)
+	// A plan can't end the run's capture; the restore does.
+	if err := e.undoLast(t.Context()); err == nil {
+		t.Fatal("undoLast ended the capture")
 	}
-	if sameProcess(applied.PID, applied.Start) {
+	if res := e.restore(t.Context(), "test"); res.Verdict != Clean {
+		t.Fatalf("restore: %+v", res)
+	}
+	if running(applied.PID, applied.Start) {
 		t.Error("tcpdump outlived its undo")
 	}
-	assertPcapHas(t, filepath.Join(evidence, "captures", iface+".pcap"), "seen", "filtered")
+	assertPcapHas(t, filepath.Join(evidenceDir, "captures", iface+".pcap"), "seen", "filtered")
 }
 
 // assertPcapHas reads a pcap file back: the marker with nonce want is in

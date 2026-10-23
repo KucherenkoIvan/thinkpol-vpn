@@ -91,15 +91,17 @@ func (c *client) call(req safety.Request) (safety.Response, error) {
 	return r, nil
 }
 
-// restore asks the helper to restore and end the run.
-func (c *client) restore() (safety.Result, error) {
+// restore asks the helper to restore and end the run. A helper that
+// answers nothing (it was killed, and its dead-man restored) leaves no
+// result: the caller reads the evidence's.
+func (c *client) restore() (*safety.Result, error) {
 	r, err := c.call(safety.Request{Op: safety.OpRestore})
 	_ = c.in.Close()
 	werr := c.cmd.Wait()
 	if r.Result == nil {
-		return safety.Result{}, errors.Join(err, werr, errors.New("no result from the helper"))
+		return nil, errors.Join(err, werr)
 	}
-	return *r.Result, err
+	return r.Result, err
 }
 
 // abandon closes the helper's input: it restores by itself.

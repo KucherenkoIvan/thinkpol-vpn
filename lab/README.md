@@ -139,7 +139,7 @@ Several checkouts can run `make lab-test` at once, and `make lab-down` only remo
 | [`pcap`](pcap/pcap.go), [`ip`](ip/ip.go) | the pcap reader and IP decoder every capture is read with: the lab's and the device-test harness's |
 | [`censor`](censor/doc.go), `censord` | the censor framework and its daemon |
 | `labdns` | the stand-in for resolvers out in the world |
-| [`devicetest`](devicetest/doc.go) | the device-test harness for real Macs, run by the owner only: what a run guarantees, how a plan is written; its frozen core in [`devicetest/safety`](devicetest/safety/doc.go). Its core's root tests run in lab nodes like any package's |
+| [`devicetest`](devicetest/doc.go), `devicetest/devicetest-root` | the device-test harness for real Macs, run by the owner only: what a run guarantees, how a plan is written; its root side, a binary of its own linking only the frozen core in [`devicetest/safety`](devicetest/safety/doc.go). The core's root tests run in lab nodes like any package's |
 
 ## Environment
 

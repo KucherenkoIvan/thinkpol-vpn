@@ -1,7 +1,6 @@
 package safety
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"strings"
@@ -9,8 +8,7 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/firewall"
 )
 
-// What to do when a surface differs after the restore (the phase-end
-// runbook's rollback, kept because it worked).
+// What to do when a surface differs after the restore.
 const (
 	nextPfReload = "load the stock rules once more (sudo pfctl -f /etc/pf.conf); still different: reboot. " +
 		"Never flush (pfctl -F) or disable (pfctl -d) pf: that turns off other apps' rules"
@@ -22,26 +20,27 @@ const (
 		"ThinkpolOverride, only then remove State:/Network/thinkpol/DNS and flush the cache"
 )
 
-// surfaces are what the core records of a Mac: the pf checks of the
-// phase-end runbook (its pfcheck and pfrestore) and DNS. pf is read with
-// the guard's own readers (package firewall).
-func surfaces() []Surface {
-	anchor := func(name, next string) Surface {
-		return Surface{Name: "pf-anchor-" + name, Argv: []string{pfctlPath, "-a", "com.apple/" + name, "-s", "rules"}, Norm: pfAnchor, Next: next}
+// surfaces are what the core compares of a Mac with its baseline: pf's
+// main rules, nat rules, skipped interfaces, its state, Apple's AirDrop
+// and Application Firewall anchors and thinkpol's guard anchor, every line
+// of each; and DNS, a difference there reported only. References and the
+// list of anchors are recorded, not compared: other apps take and drop
+// references, and a flushed anchor's name stays listed until a reboot.
+func surfaces() []surface {
+	anchor := func(name, next string) surface {
+		return surface{name: "pf-anchor-" + name, argv: []string{pfctlPath, "-a", "com.apple/" + name, "-s", "rules"}, norm: pfAnchor, next: next}
 	}
-	return []Surface{
-		{Name: "pf-info", Argv: []string{pfctlPath, "-s", "info"}, Norm: pfStatus, Next: nextPfState},
-		{Name: "pf-rules", Argv: []string{pfctlPath, "-s", "rules"}, Norm: pfListing, Next: nextPfReload},
-		{Name: "pf-nat", Argv: []string{pfctlPath, "-s", "nat"}, Norm: pfListing, Next: nextPfReload},
-		{Name: "pf-skip", Argv: []string{pfctlPath, "-s", "Interfaces", "-v"}, Norm: pfSkips, Next: nextPfReload},
+	return []surface{
+		{name: "pf-info", argv: []string{pfctlPath, "-s", "info"}, norm: pfStatus, next: nextPfState},
+		{name: "pf-rules", argv: []string{pfctlPath, "-s", "rules"}, norm: pfListing, next: nextPfReload},
+		{name: "pf-nat", argv: []string{pfctlPath, "-s", "nat"}, norm: pfListing, next: nextPfReload},
+		{name: "pf-skip", argv: []string{pfctlPath, "-s", "Interfaces", "-v"}, norm: pfSkips, next: nextPfReload},
 		anchor("250.ApplicationFirewall", nextPfAnchors),
 		anchor("200.AirDrop", nextPfAnchors),
 		anchor(strings.TrimPrefix(firewall.GuardAnchor, "com.apple/"), nextGuard),
-		// Recorded only: other apps take and drop references, and a
-		// flushed anchor's name stays listed until a reboot.
-		{Name: "pf-references", Argv: []string{pfctlPath, "-s", "References"}},
-		{Name: "pf-anchors", Argv: []string{pfctlPath, "-a", "com.apple", "-s", "Anchors"}},
-		{Name: "dns", Argv: []string{scutilPath, "--dns"}, Norm: dnsWithoutReach, Info: true, Next: nextDNS},
+		{name: "pf-references", argv: []string{pfctlPath, "-s", "References"}},
+		{name: "pf-anchors", argv: []string{pfctlPath, "-a", "com.apple", "-s", "Anchors"}},
+		{name: "dns", argv: []string{scutilPath, "--dns"}, norm: dnsWithoutReach, info: true, next: nextDNS},
 	}
 }
 
@@ -49,15 +48,15 @@ func failed(out output) error {
 	if out.Err != "" {
 		return errors.New(out.Err)
 	}
-	return fmt.Errorf("exit %d: %s", out.Code, strings.Join(firewall.ListingLines(out.Stderr), "; "))
+	return fmt.Errorf("exit %d: %s", out.Code, strings.Join(listingLines(out.Stderr), "; "))
 }
 
-// pfStatus is `pfctl -s info`'s Status.
+// pfStatus is `pfctl -s info`'s Status, as the guard reads it.
 func pfStatus(out output) ([]string, error) {
-	if out.Code != 0 {
+	if out.Code != 0 || out.Err != "" {
 		return nil, failed(out)
 	}
-	on, err := firewall.PfEnabled(out.Stdout)
+	on, err := firewall.ParsePfEnabled(out.Stdout)
 	if err != nil {
 		return nil, err
 	}
@@ -67,45 +66,40 @@ func pfStatus(out output) ([]string, error) {
 	return []string{"Status: Disabled"}, nil
 }
 
+// pfListing is every line of a listing.
 func pfListing(out output) ([]string, error) {
-	if out.Code != 0 {
+	if out.Code != 0 || out.Err != "" {
 		return nil, failed(out)
 	}
-	return firewall.ListingLines(out.Stdout), nil
+	return listingLines(out.Stdout), nil
 }
 
-// pfAnchor is an anchor's rules; one that doesn't exist holds none.
+// pfAnchor is an anchor's rules; only pfctl's answer about an anchor that
+// doesn't exist reads as none.
 func pfAnchor(out output) ([]string, error) {
-	if out.Code != 0 && bytes.Contains(out.Stderr, []byte("Invalid argument")) {
+	if out.Code != 0 && out.Err == "" && firewall.AnchorMissing(out.Stderr) {
 		return []string{}, nil
 	}
 	return pfListing(out)
 }
 
-// pfSkips are the lines of `pfctl -s Interfaces -v` for skipped names.
+// pfSkips are the names pf skips, lo0 included, as the guard reads them.
 func pfSkips(out output) ([]string, error) {
-	lines, err := pfListing(out)
-	if err != nil {
-		return nil, err
+	if out.Code != 0 || out.Err != "" {
+		return nil, failed(out)
 	}
-	skips := []string{}
-	for _, l := range lines {
-		if strings.Contains(l, "(skip)") {
-			skips = append(skips, l)
-		}
-	}
-	return skips, nil
+	return append([]string{}, firewall.SkippedNames(out.Stdout)...), nil
 }
 
 // dnsWithoutReach is `scutil --dns` without its reachability lines, which
 // change by themselves.
 func dnsWithoutReach(out output) ([]string, error) {
-	if out.Code != 0 {
+	if out.Code != 0 || out.Err != "" {
 		return nil, failed(out)
 	}
 	lines := []string{}
-	for _, l := range strings.Split(string(out.Stdout), "\n") {
-		if l = strings.TrimSpace(l); l != "" && !strings.Contains(l, "reach") {
+	for _, l := range listingLines(out.Stdout) {
+		if !strings.Contains(l, "reach") {
 			lines = append(lines, l)
 		}
 	}

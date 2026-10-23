@@ -130,19 +130,39 @@ linters:
           deny:
             - pkg: github.com/KucherenkoIvan/thinkpol-vpn/internal/devmap
               desc: development tooling, used only by cmd/thinkpol's dev commands
-        # device-test plans are data: every command goes through the
-        # runner, every change through the frozen safety core
-        # (lab/devicetest/doc.go)
-        devicetest-plans-record-only:
-          list-mode: lax
+        # device-test plans are data: nothing but their own types and a
+        # few standard packages, so no plan runs a command or reaches the
+        # safety core (lab/devicetest/doc.go)
+        devicetest-plan-is-data:
+          list-mode: strict
           files:
-            - "**/lab/devicetest/plan/**"
-            - "**/lab/devicetest/plans/**"
-          deny:
-            - pkg: github.com/KucherenkoIvan/thinkpol-vpn/lab/devicetest/safety
-              desc: plans name changes through lab/devicetest/plan; only the runner talks to the safety core
-            - pkg: os/exec
-              desc: a plan runs nothing itself; its root reads go through the recorder
+            - "**/lab/devicetest/plan/*.go"
+            - "!$test"
+          allow:
+            - fmt
+            - regexp
+            - slices
+            - strings
+            - time
+        devicetest-plans-are-data:
+          list-mode: strict
+          files:
+            - "**/lab/devicetest/plans/*.go"
+            - "!$test"
+          allow:
+            - time
+            - github.com/KucherenkoIvan/thinkpol-vpn/lab/devicetest/plan
+        # the root binary links the safety core and nothing of the user
+        # side's: no plan code runs as root
+        devicetest-root-links-only-the-core:
+          list-mode: strict
+          files:
+            - "**/lab/devicetest/devicetest-root/*.go"
+          allow:
+            - context
+            - fmt
+            - os
+            - github.com/KucherenkoIvan/thinkpol-vpn/lab/devicetest/safety
         # Each feature adds a rule denying the other features, e.g.:
         # feature-spaces:
         #   list-mode: lax

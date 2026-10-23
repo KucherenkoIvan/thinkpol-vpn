@@ -5,73 +5,114 @@ package safety
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/trusteddir"
 )
 
-// Surface is one part of the host a snapshot records, read with one
+// surface is one part of the host a snapshot records, read with one
 // command.
-type Surface struct {
-	Name string
-	Argv []string
-	// Norm reads the output into the lines compared with the baseline;
+type surface struct {
+	name string
+	argv []string
+	// norm reads the output into the lines compared with the baseline;
 	// nil records the output only.
-	Norm func(output) ([]string, error)
-	// Info: a difference is reported but doesn't count as left over (the
+	norm func(output) ([]string, error)
+	// info: a difference is reported but doesn't count as left over (the
 	// system changes it by itself, or the core doesn't own it).
-	Info bool
-	// Next is what to do when it differs.
-	Next string
+	info bool
+	// next is what to do when it differs.
+	next string
 }
 
-// Snapshot is the host's surfaces at one moment, normalised. The raw
+// snapshot is the host's surfaces at one moment, normalised. The raw
 // output is in the evidence folder (snapshots/<name>/).
-type Snapshot struct {
+type snapshot struct {
 	Name       string              `json:"name"`
 	Taken      time.Time           `json:"taken"`
 	Lines      map[string][]string `json:"lines"`
 	Unreadable map[string]string   `json:"unreadable,omitempty"`
 }
 
-// Snapshot reads every surface, saves the raw output as evidence (when
-// there is somewhere to write it), and keeps the normalised form in the
-// run's directory, where a later restore finds the baseline.
-func (h *Host) Snapshot(ctx context.Context, name string) (*Snapshot, error) {
-	s := &Snapshot{Name: name, Taken: time.Now().UTC(), Lines: map[string][]string{}, Unreadable: map[string]string{}}
-	for _, sf := range h.surfaceList() {
-		out := run(ctx, sf.Argv, nil)
-		h.saveOutput("snapshots/"+name+"/"+sf.Name, sf.Argv, out)
-		if sf.Norm == nil {
-			continue
-		}
-		lines, err := sf.Norm(out)
-		if err != nil {
-			s.Unreadable[sf.Name] = err.Error()
-			continue
-		}
-		s.Lines[sf.Name] = lines
-	}
-	h.beat()
-	b, err := json.MarshalIndent(s, "", "  ")
+// The snapshots' names: only the core chooses them.
+const (
+	baselineName = "00-baseline"
+	afterName    = "99-after-restore"
+)
+
+// snapshot reads every surface and keeps the normalised form in the run's
+// directory (where a later restore finds the baseline), written once: a
+// baseline that exists is never replaced, and an after-restore snapshot
+// of a later restore takes the next free name (-2, -3...). The raw output
+// goes to the evidence when there is somewhere to write it.
+func (h *host) snapshot(ctx context.Context, base string) (*snapshot, error) {
+	f, name, err := h.reserveSnapshot(base)
 	if err != nil {
 		return nil, err
 	}
-	return s, trusteddir.WriteFile(h.RunDir, snapshotFile(name), b)
+	defer func() { _ = f.Close() }()
+	s := &snapshot{Name: name, Taken: time.Now().UTC(), Lines: map[string][]string{}, Unreadable: map[string]string{}}
+	for _, sf := range h.surfaceList() {
+		out := run(ctx, sf.argv, nil)
+		h.saveOutput("snapshots/"+name+"/"+sf.name, sf.argv, out)
+		if sf.norm == nil {
+			continue
+		}
+		lines, err := sf.norm(out)
+		if err != nil {
+			s.Unreadable[sf.name] = err.Error()
+			continue
+		}
+		s.Lines[sf.name] = lines
+	}
+	h.beat()
+	b, err := json.MarshalIndent(s, "", "  ")
+	if err == nil {
+		_, err = f.Write(b)
+	}
+	if err = errors.Join(err, f.Sync()); err != nil {
+		return nil, fmt.Errorf("snapshot %s: %w", name, err)
+	}
+	return s, nil
+}
+
+// reserveSnapshot creates the snapshot's file in the run's directory,
+// exclusively: base itself for the baseline, the first free of base,
+// base-2, base-3... otherwise.
+func (h *host) reserveSnapshot(base string) (*os.File, string, error) {
+	for i := 1; i < 100; i++ {
+		name := base
+		if i > 1 {
+			name = fmt.Sprintf("%s-%d", base, i)
+		}
+		fd, err := unix.Openat(int(h.runDir.Fd()), snapshotFile(name), unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
+		if err == nil {
+			return os.NewFile(uintptr(fd), filepath.Join(h.runDir.Name(), snapshotFile(name))), name, nil
+		}
+		if !errors.Is(err, unix.EEXIST) || base == baselineName {
+			return nil, "", fmt.Errorf("snapshot %s: %w", name, err)
+		}
+	}
+	return nil, "", fmt.Errorf("snapshot %s: no free name", base)
 }
 
 func snapshotFile(name string) string { return "snapshot-" + name + ".json" }
 
 // loadSnapshot reads a snapshot back from the run's directory.
-func loadSnapshot(h *Host, name string) (*Snapshot, error) {
-	b, err := trusteddir.ReadFile(h.RunDir, snapshotFile(name))
+func loadSnapshot(h *host, name string) (*snapshot, error) {
+	b, err := trusteddir.ReadFile(h.runDir, snapshotFile(name))
 	if err != nil {
 		return nil, err
 	}
-	var s Snapshot
+	var s snapshot
 	if err := json.Unmarshal(b, &s); err != nil {
 		return nil, fmt.Errorf("%s: %w", snapshotFile(name), err)
 	}
@@ -81,8 +122,8 @@ func loadSnapshot(h *Host, name string) (*Snapshot, error) {
 // saveOutput saves what one command printed: base.out, base.err, and
 // base.json with the command, its exit status and why it failed. stderr is
 // never dropped.
-func (h *Host) saveOutput(base string, argv []string, out output) {
-	if h.Evidence == nil {
+func (h *host) saveOutput(base string, argv []string, out output) {
+	if h.evidence == nil {
 		return
 	}
 	meta, _ := json.MarshalIndent(struct {
@@ -92,10 +133,19 @@ func (h *Host) saveOutput(base string, argv []string, out output) {
 		At   time.Time `json:"at"`
 	}{argv, out.Code, out.Err, time.Now().UTC()}, "", "  ")
 	for suffix, data := range map[string][]byte{".out": out.Stdout, ".err": out.Stderr, ".json": meta} {
-		if err := h.Evidence.WriteFile(base+suffix, data); err != nil {
+		if err := h.evidence.writeFile(base+suffix, data); err != nil {
 			h.log("evidence: %v", err)
 		}
 	}
+}
+
+// surfaceList is what h's snapshots read: the OS's surfaces unless a test
+// gave its own.
+func (h *host) surfaceList() []surface {
+	if h.surfaces != nil {
+		return h.surfaces
+	}
+	return surfaces()
 }
 
 // Difference is how a surface differs from the baseline.
@@ -116,22 +166,22 @@ func (d Difference) String() string {
 		strings.Join(append(slices.Clone(d.Missing), d.Extra...), " | "))
 }
 
-// Diff compares now with base, surface by surface: the lines in order. A
+// diff compares now with base, surface by surface: the lines in order. A
 // surface unreadable in either is a difference: it can't be shown equal.
-func Diff(sfs []Surface, base, now *Snapshot) []Difference {
+func diff(sfs []surface, base, now *snapshot) []Difference {
 	var out []Difference
 	for _, sf := range sfs {
-		if sf.Norm == nil {
+		if sf.norm == nil {
 			continue
 		}
-		d := Difference{Surface: sf.Name, Info: sf.Info, Next: sf.Next}
-		b, bok := base.Lines[sf.Name]
-		n, nok := now.Lines[sf.Name]
+		d := Difference{Surface: sf.name, Info: sf.info, Next: sf.next}
+		b, bok := base.Lines[sf.name]
+		n, nok := now.Lines[sf.name]
 		switch {
 		case !bok:
-			d.Unreadable = "at the baseline: " + base.Unreadable[sf.Name]
+			d.Unreadable = "at the baseline: " + base.Unreadable[sf.name]
 		case !nok:
-			d.Unreadable = now.Unreadable[sf.Name]
+			d.Unreadable = now.Unreadable[sf.name]
 		case slices.Equal(b, n):
 			continue
 		default:
@@ -168,11 +218,14 @@ func lineDiff(a, b []string) (missing, extra []string) {
 	return missing, extra
 }
 
-// surfaceList is what h's snapshots read: the OS's surfaces unless a test
-// gave its own.
-func (h *Host) surfaceList() []Surface {
-	if h.Surfaces != nil {
-		return h.Surfaces
+// listingLines are a listing's non-empty lines, trimmed: every line kept,
+// so a comparison drops nothing.
+func listingLines(b []byte) []string {
+	lines := []string{}
+	for _, l := range strings.Split(string(b), "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			lines = append(lines, l)
+		}
 	}
-	return surfaces()
+	return lines
 }

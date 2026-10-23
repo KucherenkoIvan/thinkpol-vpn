@@ -26,11 +26,11 @@ import (
 type Request struct {
 	ID int    `json:"id"`
 	Op string `json:"op"`
-	// Name is the evidence file's base for a read's output, or a
-	// snapshot's or cut's name.
+	// Name is the evidence file's base for a read's output, or the name
+	// of a capture's copy.
 	Name      string   `json:"name,omitempty"`
 	Argv      []string `json:"argv,omitempty"`
-	Action    *Spec    `json:"action,omitempty"`
+	Change    *Spec    `json:"change,omitempty"`
 	Iface     string   `json:"iface,omitempty"`
 	Filter    string   `json:"filter,omitempty"`
 	Nonce     string   `json:"nonce,omitempty"`
@@ -40,13 +40,12 @@ type Request struct {
 // The helper's operations.
 const (
 	OpRead         = "read"          // a root read (RootRead), its output saved
-	OpDo           = "do"            // an action, through the journal
-	OpUndoLast     = "undo_last"     // undo the newest action now
-	OpCaptureStart = "capture_start" // a capture (an action)
+	OpDo           = "do"            // a change, through the journal
+	OpUndoLast     = "undo_last"     // undo the newest change now (never a capture)
+	OpCaptureStart = "capture_start" // a capture (a change)
 	OpCaptureSeen  = "capture_seen"  // did a capture see a marker's nonce
 	OpCutStart     = "cut_start"     // start a copy of a capture's stream
 	OpCutEnd       = "cut_end"       // end it at a record's end
-	OpSnapshot     = "snapshot"      // a snapshot of the host
 	OpRestore      = "restore"       // restore and end the run
 )
 
@@ -56,52 +55,47 @@ type Response struct {
 	OK     bool    `json:"ok"`
 	Err    string  `json:"err,omitempty"`
 	Code   int     `json:"code,omitempty"`
-	Stdout string  `json:"stdout,omitempty"`
 	Seq    int     `json:"seq,omitempty"`
 	Seen   bool    `json:"seen,omitempty"`
-	Run    string  `json:"run,omitempty"`
 	Result *Result `json:"result,omitempty"`
 }
 
-// stdoutMax is how much of a read's output a response carries; the file
-// has all of it.
-const stdoutMax = 64 << 10
-
-// HelperConfig is a run's helper.
-type HelperConfig struct {
-	State    StateConfig
-	Run      string
-	Evidence string
-	UID, GID int
-	// Budget is the dead-man's deadline.
-	Budget   time.Duration
-	RootCopy string
-	// DeadmanCommand makes the dead-man's process from its arguments
-	// (default: this binary's "deadman" mode).
-	DeadmanCommand func(args []string) (*exec.Cmd, error)
-	In             io.Reader
-	Out            io.Writer
-	Log            io.Writer
+// helperConfig is a run's helper.
+type helperConfig struct {
+	state    stateConfig
+	run      string
+	evidence string
+	uid, gid int
+	// budget is the dead-man's deadline.
+	budget   time.Duration
+	rootCopy string
+	in       io.Reader
+	out      io.Writer
+	log      io.Writer
 }
 
-// Helper runs a run's root side: it starts the run (journal, dead-man,
+// errNotStarted wraps why a helper refused a run before it started: then
+// nothing of the run exists, and its root copy is removed by the caller.
+var errNotStarted = errors.New("the run didn't start")
+
+// helper runs a run's root side: it starts the run (journal, dead-man,
 // baseline), answers the user side's requests, and restores when asked or
 // when its input ends (the user side was closed or killed). It ignores
 // the terminal's signals: a Ctrl-C reaches the user side, which asks for
 // the restore, and never cuts a restore short.
-func Helper(ctx context.Context, cfg HelperConfig) error {
+func helper(ctx context.Context, cfg helperConfig) error {
 	signal.Ignore(syscall.SIGINT, syscall.SIGHUP, syscall.SIGTERM, syscall.SIGQUIT)
 	signal.Notify(make(chan os.Signal, 1), syscall.SIGPIPE) // a gone reader is a write error, not death
-	enc := json.NewEncoder(cfg.Out)
+	enc := json.NewEncoder(cfg.out)
 	r, err := startRun(ctx, cfg)
 	if err != nil {
 		_ = enc.Encode(Response{Err: err.Error()})
 		return err
 	}
-	_ = enc.Encode(Response{OK: true, Run: cfg.Run})
+	_ = enc.Encode(Response{OK: true})
 	by := "the helper: its user side is gone (input ended)"
 	last := 0
-	sc := bufio.NewScanner(cfg.In)
+	sc := bufio.NewScanner(cfg.in)
 	sc.Buffer(nil, 1<<20)
 	for sc.Scan() {
 		var req Request
@@ -115,8 +109,8 @@ func Helper(ctx context.Context, cfg HelperConfig) error {
 		}
 		_ = enc.Encode(r.serve(ctx, req))
 	}
-	res := r.engine.Restore(ctx, by)
-	err = finish(r.state, r.h, r.j, r.info, res)
+	res := r.engine.restore(ctx, by)
+	err = finish(r.state, r.openedRun, &res)
 	resp := Response{ID: last, OK: err == nil, Result: &res}
 	if err != nil {
 		resp.Err = err.Error()
@@ -126,22 +120,36 @@ func Helper(ctx context.Context, cfg HelperConfig) error {
 }
 
 type runState struct {
+	openedRun
 	state  *os.File
 	lock   *os.File
-	h      *Host
-	j      *Journal
-	engine *Engine
-	info   runInfo
+	engine *engine
 }
 
 // startRun starts a run: refused while another helper runs or a run is
-// unfinished; then the run's directory, the active pointer, the journal,
-// the dead-man (armed before anything else) and the baseline.
-func startRun(ctx context.Context, cfg HelperConfig) (*runState, error) {
-	if err := cfg.checkUser(); err != nil {
-		return nil, err
+// pending a restore; then the old runs pruned, the run's directory, its
+// journal, the active pointer, the dead-man (armed before anything else)
+// and the baseline.
+func startRun(ctx context.Context, cfg helperConfig) (*runState, error) {
+	r, err := openRunState(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", errNotStarted, err)
 	}
-	state, err := cfg.State.open()
+	if err := r.armAndBaseline(ctx, cfg); err != nil {
+		res := Result{Verdict: Clean, By: "the helper: the run didn't start", Notes: []string{err.Error()}}
+		return nil, errors.Join(err, finish(r.state, r.openedRun, &res))
+	}
+	return r, nil
+}
+
+func openRunState(cfg helperConfig) (*runState, error) {
+	if s := os.Getenv("SUDO_UID"); s != "" && s != strconv.Itoa(cfg.uid) {
+		return nil, fmt.Errorf("-uid %d is not sudo's caller (%s)", cfg.uid, s)
+	}
+	if !runID.MatchString(cfg.run) {
+		return nil, fmt.Errorf("bad run id %q", cfg.run)
+	}
+	state, err := cfg.state.open()
 	if err != nil {
 		return nil, err
 	}
@@ -149,116 +157,92 @@ func startRun(ctx context.Context, cfg HelperConfig) (*runState, error) {
 	if err != nil {
 		return nil, fmt.Errorf("another devicetest helper runs: %w", err)
 	}
-	if run, err := cfg.State.Active(); err != nil || run != "" {
-		return nil, fmt.Errorf("run %s did not finish restoring: run `devicetest restore` first (%v)", run, err)
+	if run, err := pendingRun(state); err != nil || run != "" {
+		return nil, fmt.Errorf("run %q is pending a restore: run `devicetest restore` first (%v)", run, err)
 	}
-	ev, err := OpenEvidence(cfg.Evidence, cfg.UID, cfg.GID)
+	ev, err := openEvidence(cfg.evidence, cfg.uid, cfg.gid)
 	if err != nil {
 		return nil, fmt.Errorf("the evidence folder: %w", err)
 	}
 	r := &runState{state: state, lock: lk}
-	if err := r.open(cfg, ev); err != nil {
-		return nil, err
+	if err := prune(state, ""); err != nil {
+		_, _ = fmt.Fprintf(cfg.logWriter(), "helper: pruning old runs: %v\n", err)
 	}
-	if err := r.armAndBaseline(ctx, cfg); err != nil {
-		res := Result{Verdict: Clean, By: "the helper: the run didn't start", Notes: []string{err.Error()}}
-		return nil, errors.Join(err, finish(state, r.h, r.j, r.info, res))
-	}
-	return r, nil
+	return r, r.open(cfg, ev)
 }
 
-// checkUser checks the evidence's user is sudo's caller, when sudo ran it.
-func (cfg HelperConfig) checkUser() error {
-	if s := os.Getenv("SUDO_UID"); s != "" && s != strconv.Itoa(cfg.UID) {
-		return fmt.Errorf("-uid %d is not sudo's caller (%s)", cfg.UID, s)
+func (cfg helperConfig) logWriter() io.Writer {
+	if cfg.log == nil {
+		return io.Discard
 	}
-	return nil
+	return cfg.log
 }
 
-func (r *runState) open(cfg HelperConfig, ev *Evidence) error {
-	boot, err := bootSession()
+// open makes the run's directory, its record and its journal (synced),
+// and only then the active pointer: it never names a run with no journal.
+func (r *runState) open(cfg helperConfig, ev *evidence) error {
+	boot, err := trusteddir.BootSession()
 	if err != nil {
 		return err
 	}
-	if !runID.MatchString(cfg.Run) {
-		return fmt.Errorf("bad run id %q", cfg.Run)
-	}
-	if err := unix.Mkdirat(int(r.state.Fd()), "run-"+cfg.Run, 0o700); err != nil {
+	if err := unix.Mkdirat(int(r.state.Fd()), "run-"+cfg.run, 0o700); err != nil {
 		return fmt.Errorf("the run's directory: %w", err)
 	}
-	runDir, err := trusteddir.Open(filepath.Join(cfg.State.Dir, "run-"+cfg.Run))
+	runDir, err := trusteddir.Open(filepath.Join(cfg.state.dir, "run-"+cfg.run))
 	if err != nil {
 		return err
 	}
-	r.info = runInfo{Run: cfg.Run, Evidence: ev.Path(), UID: cfg.UID, GID: cfg.GID, RootCopy: cfg.RootCopy, Boot: boot, Started: time.Now().UTC()}
+	r.info = runInfo{Run: cfg.run, Evidence: ev.path(), UID: cfg.uid, GID: cfg.gid, RootCopy: cfg.rootCopy, Boot: boot, Started: time.Now().UTC()}
 	b, _ := json.MarshalIndent(r.info, "", "  ")
 	if err := trusteddir.WriteFile(runDir, runInfoFile, b); err != nil {
 		return err
 	}
-	if err := trusteddir.WriteFile(r.state, activeFile, []byte(cfg.Run+"\n")); err != nil {
+	if r.j, err = createJournal(runDir, cfg.run, boot); err != nil {
 		return err
 	}
-	if err := unix.Fsync(int(r.state.Fd())); err != nil {
+	if err := errors.Join(trusteddir.WriteFile(r.state, activeFile, []byte(cfg.run+"\n")), unix.Fsync(int(r.state.Fd()))); err != nil {
 		return err
 	}
-	j, err := CreateJournal(runDir, cfg.Run, boot)
-	if err != nil {
-		_ = trusteddir.Remove(r.state, activeFile)
-		return err
-	}
-	logf := func(format string, a ...any) {
-		if cfg.Log != nil {
-			_, _ = fmt.Fprintf(cfg.Log, "helper: "+format+"\n", a...)
-		}
-	}
-	r.j = j
-	r.h = &Host{RunDir: runDir, Evidence: ev, Boot: boot, Surfaces: cfg.State.Surfaces,
+	logf := func(format string, a ...any) { _, _ = fmt.Fprintf(cfg.logWriter(), "helper: "+format+"\n", a...) }
+	r.h = &host{runDir: runDir, evidence: ev, boot: boot, surfaces: cfg.state.surfaces,
 		captures: &captures{live: map[string]*liveCapture{}, ev: ev}, logf: logf}
-	r.engine = NewEngine(r.h, j, func() error { return armed(runDir) })
+	r.engine = &engine{h: r.h, j: r.j, armed: func() error { return armed(runDir) }}
 	return nil
 }
 
-// armAndBaseline starts the dead-man, waits for it to be armed, and takes
-// the baseline.
-func (r *runState) armAndBaseline(ctx context.Context, cfg HelperConfig) error {
-	args := []string{"deadman", "-run", cfg.Run, "-helper-pid", strconv.Itoa(os.Getpid()), "-deadline", cfg.Budget.String()}
-	mk := cfg.DeadmanCommand
-	if mk == nil {
-		mk = selfCommand
-	}
-	cmd, err := mk(args)
+// armAndBaseline starts the dead-man in a session of its own (nothing that
+// signals the run's process group or terminal reaches it), waits for it
+// to be armed, and takes the baseline.
+func (r *runState) armAndBaseline(ctx context.Context, cfg helperConfig) error {
+	start, err := startTime(os.Getpid())
 	if err != nil {
 		return err
 	}
-	// A session of its own: nothing that signals the run's process group
-	// or terminal reaches it.
+	self, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command(self, "deadman", "-run", cfg.run, "-helper-pid", strconv.Itoa(os.Getpid()),
+		"-helper-start", strconv.FormatInt(start, 10), "-deadline", cfg.budget.String())
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("the dead-man: %w", err)
 	}
 	go func() { _ = cmd.Wait() }()
 	deadline := time.Now().Add(10 * time.Second)
-	for armed(r.h.RunDir) != nil {
+	for armed(r.h.runDir) != nil {
 		if time.Now().After(deadline) {
 			_ = cmd.Process.Kill()
 			return errors.New("the dead-man didn't arm within 10 s")
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	base, err := r.h.Snapshot(ctx, "00-baseline")
+	base, err := r.h.snapshot(ctx, baselineName)
 	if err != nil {
 		return fmt.Errorf("the baseline: %w", err)
 	}
-	r.h.Baseline = base
+	r.h.baseline = base
 	return nil
-}
-
-func selfCommand(args []string) (*exec.Cmd, error) {
-	self, err := os.Executable()
-	if err != nil {
-		return nil, err
-	}
-	return exec.Command(self, args...), nil
 }
 
 func (r *runState) serve(ctx context.Context, req Request) Response {
@@ -266,57 +250,54 @@ func (r *runState) serve(ctx context.Context, req Request) Response {
 	var err error
 	switch req.Op {
 	case OpRead:
-		resp, err = r.read(ctx, req)
+		resp.Code, err = r.read(ctx, req)
 	case OpDo:
-		if req.Action == nil {
-			err = errors.New("no action")
+		if req.Change == nil {
+			err = errors.New("no change")
 			break
 		}
-		resp.Seq, err = r.engine.Do(ctx, *req.Action)
+		resp.Seq, err = r.engine.do(ctx, *req.Change)
 	case OpUndoLast:
-		err = r.engine.UndoLast(ctx)
+		err = r.engine.undoLast(ctx)
 	case OpCaptureStart:
-		params, _ := json.Marshal(CaptureAction{Iface: req.Iface, Filter: req.Filter})
-		resp.Seq, err = r.engine.Do(ctx, Spec{Kind: KindCapture, Params: params})
+		params, _ := json.Marshal(captureAction{Iface: req.Iface, Filter: req.Filter})
+		resp.Seq, err = r.engine.do(ctx, Spec{Kind: KindCapture, Params: params})
 	case OpCaptureSeen, OpCutStart, OpCutEnd:
-		resp, err = r.capture(ctx, req)
-	case OpSnapshot:
-		_, err = r.h.Snapshot(ctx, req.Name)
+		resp.Seen, err = r.capture(ctx, req)
 	default:
 		err = fmt.Errorf("no operation %q", req.Op)
 	}
-	resp.ID, resp.OK = req.ID, err == nil
+	resp.OK = err == nil
 	if err != nil {
 		resp.Err = err.Error()
 	}
 	return resp
 }
 
-func (r *runState) read(ctx context.Context, req Request) (Response, error) {
+func (r *runState) read(ctx context.Context, req Request) (int, error) {
 	argv, err := RootRead(req.Argv)
 	if err != nil {
-		return Response{}, err
+		return 0, err
 	}
 	out := run(ctx, argv, nil)
 	r.h.saveOutput(req.Name, argv, out)
-	resp := Response{Code: out.Code, Stdout: string(out.Stdout[:min(len(out.Stdout), stdoutMax)])}
 	if out.Err != "" {
-		return resp, errors.New(out.Err)
+		return out.Code, errors.New(out.Err)
 	}
-	return resp, nil
+	return out.Code, nil
 }
 
-func (r *runState) capture(ctx context.Context, req Request) (Response, error) {
+func (r *runState) capture(ctx context.Context, req Request) (bool, error) {
 	c, err := r.h.captures.get(req.Iface)
 	if err != nil {
-		return Response{}, err
+		return false, err
 	}
 	switch req.Op {
 	case OpCaptureSeen:
-		return Response{Seen: c.Seen(ctx, req.Nonce, time.Duration(req.TimeoutMS)*time.Millisecond)}, nil
+		return c.seen(ctx, req.Nonce, time.Duration(req.TimeoutMS)*time.Millisecond), nil
 	case OpCutStart:
-		return Response{}, c.cutStart(r.h.Evidence, req.Name)
+		return false, c.cutStart(r.h.evidence, req.Name)
 	default:
-		return Response{}, c.cutEnd()
+		return false, c.cutEnd()
 	}
 }

@@ -3,32 +3,23 @@ package safety
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/firewall"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 )
 
-// DefaultStateDir is root's directory for runs' journals: root's alone all
-// the way up.
-const DefaultStateDir = "/private/var/db/thinkpol-devicetest"
-
-// rootCopyBase is where the root copy of the binary goes.
-const rootCopyBase = "/private/tmp"
-
-// settle waits for the host to settle after the undos, in the runbook's
-// order: no thinkpol agent runs (its Close releases its pf reference
-// last, and that can turn pf off), the guard's reference is released,
-// and only then pf is turned back on if the baseline had it on.
-func settle(ctx context.Context, h *Host) []string {
-	notes := []string{waitStop(ctx, h), waitRelease(ctx, h)}
-	return append(notes, pfRestore(ctx, h)...)
+// settle waits for the host to settle after the undos, in this order: no
+// thinkpol process runs (an agent's close releases its pf reference last,
+// and that release can turn pf off), the guard's pf reference is
+// released, and only then pf goes back on if the baseline had it on.
+func settle(ctx context.Context, h *host) []string {
+	notes := []string{waitNoAgent(ctx, h), waitGuardReleased(ctx, h)}
+	return append(notes, pfBackOn(ctx, h)...)
 }
 
-// waitStop waits up to 60 s for no thinkpol process to run.
-func waitStop(ctx context.Context, h *Host) string {
+// waitNoAgent waits up to 60 s for no thinkpol process to run.
+func waitNoAgent(ctx context.Context, h *host) string {
 	for i := 0; ; i++ {
 		pids, err := processesNamed("thinkpol")
 		switch {
@@ -44,38 +35,44 @@ func waitStop(ctx context.Context, h *Host) string {
 	}
 }
 
-// waitRelease waits up to 30 s for the guard's record of its pf
-// reference to go.
-func waitRelease(ctx context.Context, h *Host) string {
-	path := filepath.Join(netcfg.StateDir, firewall.TokenRecordName)
+// waitGuardReleased waits up to 30 s for the guard's record to name no
+// reference of this boot (one of an earlier boot holds nothing).
+func waitGuardReleased(ctx context.Context, h *host) string {
 	for i := 0; ; i++ {
-		if _, err := os.Lstat(path); os.IsNotExist(err) {
-			return "the guard's pf reference is released"
-		}
-		if i >= 30 || ctx.Err() != nil {
-			return path + " is still there after 30 s: run thinkpol's rollback (thinkpol up -connect=false, then stop it)"
+		held, err := firewall.GuardReferenceHeld(netcfg.StateDir)
+		switch {
+		case err != nil:
+			return "the guard's record is unreadable: " + err.Error()
+		case !held:
+			return "the guard holds no pf reference"
+		case i >= 30 || ctx.Err() != nil:
+			return "the guard still holds a pf reference after 30 s: run thinkpol's rollback (thinkpol up -connect=false, then stop it)"
 		}
 		h.beat()
 		time.Sleep(time.Second)
 	}
 }
 
-// pfRestore turns pf back on if the baseline had it on and it is off
-// now. It never turns pf off.
-func pfRestore(ctx context.Context, h *Host) []string {
-	if h.Baseline == nil {
+// pfBackOn turns pf back on if the baseline had it on and it is off now:
+// the one change a restore makes that no journal entry names, since it
+// puts back what the baseline recorded. It never turns pf off.
+func pfBackOn(ctx context.Context, h *host) []string {
+	if h.baseline == nil {
 		return nil
 	}
 	now, err := h.read(ctx, "pf-info")
 	if err != nil {
 		return []string{"pf's state: " + err.Error()}
 	}
-	base := h.Baseline.Lines["pf-info"]
+	base := h.baseline.Lines["pf-info"]
 	if len(base) != 1 || base[0] != "Status: Enabled" || len(now) != 1 || now[0] != "Status: Disabled" {
 		return []string{fmt.Sprintf("pf at the baseline: %v; now: %v", base, now)}
 	}
 	argv := []string{pfctlPath, "-e"}
 	out := run(ctx, argv, nil)
 	h.saveOutput(fmt.Sprintf("restore/pfctl-e-%d", time.Now().UnixNano()), argv, out)
+	if out.Code != 0 || out.Err != "" {
+		return []string{"pf was off and the baseline had it on; pfctl -e failed: " + failed(out).Error()}
+	}
 	return []string{"pf was off and the baseline had it on: turned back on (pfctl -e)"}
 }

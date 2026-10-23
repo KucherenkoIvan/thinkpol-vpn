@@ -14,82 +14,25 @@ import (
 	"time"
 )
 
-// Action is one typed change to the host, with its own undo. The set of
-// kinds is closed (Decode): a plan names one, it can't add one.
-type Action interface {
-	Kind() string
-	Lifetime() Lifetime
-	// Does and UndoText describe the change and its undo, for the plan's
-	// listing and the journal.
-	Does() string
-	UndoText() string
-	// Pre refuses the action when its undo couldn't put the host back.
-	Pre(ctx context.Context, h *Host) error
-	// Apply makes the change. It returns what it learnt that the undo
-	// needs (a pid), as the action's new parameters, or nil.
-	Apply(ctx context.Context, h *Host) (json.RawMessage, error)
-	// Undo removes the change; it checks first whether the change is
-	// there, so it is safe to repeat.
-	Undo(ctx context.Context, h *Host) error
-}
-
-// Spec is an action as a plan names it and the journal keeps it.
-type Spec struct {
-	Kind   string          `json:"kind"`
-	Params json.RawMessage `json:"params"`
-}
-
-// Decode is the action spec names. Only the kinds here exist.
-func Decode(spec Spec) (Action, error) {
-	switch spec.Kind {
-	case KindFile:
-		return decodeStrict[*FileAction](spec.Params)
-	case KindCapture:
-		return decodeStrict[*CaptureAction](spec.Params)
-	case KindPfMain:
-		return decodePfMain(spec.Params)
-	}
-	return nil, fmt.Errorf("no action of kind %q", spec.Kind)
-}
-
-func decodeStrict[T interface {
-	Action
-	validate() error
-}](params json.RawMessage) (Action, error) {
-	var a T
-	d := json.NewDecoder(bytes.NewReader(params))
-	d.DisallowUnknownFields()
-	if err := d.Decode(&a); err != nil {
-		return nil, fmt.Errorf("action parameters: %w", err)
-	}
-	if any(a) == nil {
-		return nil, errors.New("action parameters: none")
-	}
-	if err := a.validate(); err != nil {
-		return nil, err
-	}
-	return a, nil
-}
-
-// Host is what actions, snapshots and the restore work with.
-type Host struct {
-	// RunDir is the run's root-owned directory: journal, baseline,
+// host is what changes, snapshots and the restore work with.
+type host struct {
+	// runDir is the run's root-owned directory: journal, snapshots,
 	// heartbeat, the dead-man's files.
-	RunDir *os.File
-	// Evidence is where raw output goes; nil when there is nowhere.
-	Evidence *Evidence
-	Boot     string
-	// Baseline is the snapshot taken before any change; nil before it.
-	Baseline *Snapshot
-	// Surfaces are what a snapshot reads; nil: the OS's (the core's
-	// tests give their own, so they never read the real host's pf).
-	Surfaces []Surface
+	runDir *os.File
+	// evidence is where raw output goes; nil when there is nowhere.
+	evidence *evidence
+	boot     string
+	// baseline is the snapshot taken before any change; nil before it.
+	baseline *snapshot
+	// surfaces are what a snapshot reads; nil: the OS's (the core's tests
+	// give their own, so they never read the real host's pf).
+	surfaces []surface
 	captures *captures
 	beats    int
 	logf     func(format string, a ...any)
 }
 
-func (h *Host) log(format string, a ...any) {
+func (h *host) log(format string, a ...any) {
 	if h.logf != nil {
 		h.logf(format, a...)
 	}
@@ -129,85 +72,86 @@ func run(ctx context.Context, argv []string, stdin []byte) output {
 	return out
 }
 
-// Engine applies actions through the journal: nothing changes on the host
+// engine applies changes through the journal: nothing changes on the host
 // without a restore plan for it.
-type Engine struct {
-	h *Host
-	j *Journal
+type engine struct {
+	h *host
+	j *journal
 	// armed says the dead-man is watching.
 	armed func() error
 }
 
-// NewEngine is an engine over h and j; armed says whether a dead-man
-// watches the run.
-func NewEngine(h *Host, j *Journal, armed func() error) *Engine {
-	return &Engine{h: h, j: j, armed: armed}
-}
-
-// ErrNoRestorePlan: an action was refused before anything changed, because
+// errNoRestorePlan: a change was refused before anything changed, because
 // what would put the host back isn't in place.
-var ErrNoRestorePlan = errors.New("refused: no restore plan")
+var errNoRestorePlan = errors.New("refused: no restore plan")
 
-// Do applies spec: refused unless the baseline is taken, the dead-man is
-// armed and the action's undo is synced to the journal first. An apply
+// refuseChanges is a restore's armed: a restore makes no new change.
+func refuseChanges() error { return errors.New("a restore makes no change") }
+
+// do applies spec: refused unless the baseline is taken, the dead-man is
+// armed and the change's undo is synced to the journal first. A change
 // that fails is undone at once.
-func (e *Engine) Do(ctx context.Context, spec Spec) (int, error) {
-	if e.h.Baseline == nil {
-		return 0, fmt.Errorf("%w: no baseline of the host yet", ErrNoRestorePlan)
+func (e *engine) do(ctx context.Context, spec Spec) (int, error) {
+	if e.h.baseline == nil {
+		return 0, fmt.Errorf("%w: no baseline of the host yet", errNoRestorePlan)
 	}
 	if err := e.armed(); err != nil {
-		return 0, fmt.Errorf("%w: the dead-man: %w", ErrNoRestorePlan, err)
+		return 0, fmt.Errorf("%w: the dead-man: %w", errNoRestorePlan, err)
 	}
-	a, err := Decode(spec)
+	a, err := decode(spec)
 	if err != nil {
 		return 0, err
 	}
-	if err := a.Pre(ctx, e.h); err != nil {
-		return 0, fmt.Errorf("%s: refused: %w", a.Does(), err)
+	if err := a.pre(ctx, e.h); err != nil {
+		return 0, fmt.Errorf("%s: refused: %w", a.does(), err)
 	}
-	seq, err := e.j.Intent(a, spec.Params)
+	seq, err := e.j.intent(a, spec.Params)
 	if err != nil {
-		return 0, fmt.Errorf("%w: the journal: %w", ErrNoRestorePlan, err)
+		return 0, fmt.Errorf("%w: the journal: %w", errNoRestorePlan, err)
 	}
-	learnt, err := a.Apply(ctx, e.h)
-	if err != nil {
-		e.h.log("%s failed: %v; undoing it", a.Does(), err)
+	learnt := func(params json.RawMessage) error { return e.j.mark(seq, stateApplied, params, nil) }
+	if err := a.apply(ctx, e.h, learnt); err != nil {
+		e.h.log("%s failed: %v; undoing it", a.does(), err)
 		return seq, errors.Join(err, e.undo(ctx, e.entry(seq)))
 	}
-	return seq, e.j.Mark(seq, StateApplied, learnt, nil)
+	return seq, e.j.mark(seq, stateApplied, nil, nil)
 }
 
-// UndoLast undoes the newest action still on the host.
-func (e *Engine) UndoLast(ctx context.Context) error {
-	p := e.j.Pending()
+// undoLast undoes the newest change still on the host. A capture isn't a
+// plan's to undo: it ends with the run.
+func (e *engine) undoLast(ctx context.Context) error {
+	p := e.j.pending()
 	if len(p) == 0 {
 		return errors.New("nothing to undo")
+	}
+	if p[0].Kind == KindCapture {
+		return errors.New("the newest change is a capture: a capture ends with the run")
 	}
 	return e.undo(ctx, p[0])
 }
 
-func (e *Engine) entry(seq int) Entry {
-	for _, en := range e.j.Entries() {
+func (e *engine) entry(seq int) entry {
+	for _, en := range e.j.entries() {
 		if en.Seq == seq {
 			return en
 		}
 	}
-	return Entry{Seq: seq}
+	return entry{Seq: seq}
 }
 
-// undo undoes one journaled action. A volatile one of an earlier boot is
+// undo undoes one journaled change. A volatile one of an earlier boot is
 // gone with that boot and isn't touched.
-func (e *Engine) undo(ctx context.Context, en Entry) error {
-	if en.Lifetime == Volatile && en.Boot != e.h.Boot {
-		return e.j.Mark(en.Seq, StateGoneWithBoot, nil, nil)
+func (e *engine) undo(ctx context.Context, en entry) error {
+	if en.Lifetime == volatile && en.Boot != e.h.boot {
+		return e.j.mark(en.Seq, stateGoneWithBoot, nil, nil)
 	}
-	a, err := Decode(Spec{Kind: en.Kind, Params: en.Params})
+	a, err := decode(Spec{Kind: en.Kind, Params: en.Params})
 	if err == nil {
-		err = a.Undo(ctx, e.h)
+		err = a.undo(ctx, e.h)
 	}
 	e.h.beat()
 	if err != nil {
-		return errors.Join(fmt.Errorf("undo %d (%s): %w", en.Seq, en.Does, err), e.j.Mark(en.Seq, StateUndoFailed, nil, err))
+		return errors.Join(fmt.Errorf("undo %d (%s): %w", en.Seq, en.Does, err), e.j.mark(en.Seq, stateUndoFailed, nil, err))
 	}
-	return e.j.Mark(en.Seq, StateUndone, nil, nil)
+	return e.j.mark(en.Seq, stateUndone, nil, nil)
 }

@@ -12,12 +12,12 @@ import (
 
 func cmdPlans(args []string) error {
 	if len(args) == 0 {
-		for _, p := range plan.All() {
+		for _, p := range allPlans() {
 			fmt.Printf("%-9s %s\n", p.Ticket, p.Title)
 		}
 		return nil
 	}
-	p, ok := plan.Lookup(args[0])
+	p, ok := plan.Lookup(allPlans(), args[0])
 	if !ok {
 		return fmt.Errorf("no plan for %s", args[0])
 	}
@@ -35,25 +35,21 @@ func listing(p plan.Plan, phys string) string {
 	var b strings.Builder
 	w := func(format string, a ...any) { fmt.Fprintf(&b, format+"\n", a...) }
 	w("%s: %s", p.Ticket, p.Title)
-	exit := "not needed"
-	if p.NeedsExit {
-		exit = "needed (the private config file names it)"
-	}
-	w("budget %v: past it the dead-man restores the Mac; exit server: %s", p.Budget, exit)
+	w("budget %v: past it the dead-man restores the Mac", p.Budget)
 	w("first, the self-test (%v, before any change): one harmless change through the journal and back,", selfTestBudget)
-	w("  then each capture must see a marker, miss one its filter excludes, and decode with tcpdump -n -A -r")
-	for _, c := range p.Captures {
+	w("  then the capture must see a marker, miss one its filter excludes, and decode with tcpdump -n -A -r")
+	if c := p.Capture; c.Iface != "" {
 		iface := c.Iface
 		if iface == plan.Physical {
 			iface = "the physical interface (" + phys + ")"
 		}
-		w("capture: %s, filter %q, kept in the evidence until the run ends", iface, c.Filter)
+		w("capture: %s, filter %q, running until the run ends; its pcap is kept in the evidence", iface, c.Filter)
 	}
 	for i, st := range p.Steps {
 		w("step %d %s", i+1, st.Name)
 		for _, op := range st.Ops {
 			w("  %s", describeOp(op))
-			if op.Kind == plan.Do {
+			if op.Kind == plan.OpDo {
 				w("    undo: %s", undoText(op.Change))
 			}
 		}
@@ -65,30 +61,30 @@ func listing(p plan.Plan, phys string) string {
 
 func describeOp(op plan.Op) string {
 	switch op.Kind {
-	case plan.RootRead:
+	case plan.OpRead:
 		return "root read: " + strings.Join(op.Argv, " ")
-	case plan.Do:
-		if a, err := changeAction(op.Change); err == nil {
-			return "change:    " + a.Does()
+	case plan.OpDo:
+		if does, _, err := describeChange(op.Change); err == nil {
+			return "change:    " + does
 		}
-		return "change:    " + op.Change.Kind + " (this OS has no such action)"
-	case plan.UndoNewest:
-		return "undo now:  the newest change"
+		return "change:    " + op.Change.Kind + " (this OS has no such change)"
+	case plan.OpUndoLast:
+		return "undo now:  the plan's newest change"
 	}
 	return fmt.Sprintf("operation %d", op.Kind)
 }
 
 func undoText(c plan.Change) string {
-	if a, err := changeAction(c); err == nil {
-		return a.UndoText()
+	if _, undo, err := describeChange(c); err == nil {
+		return undo
 	}
 	return "?"
 }
 
-func changeAction(c plan.Change) (safety.Action, error) {
+func describeChange(c plan.Change) (does, undo string, err error) {
 	spec, err := changeSpec(c)
 	if err != nil {
-		return nil, err
+		return "", "", err
 	}
-	return safety.Decode(spec)
+	return safety.Describe(spec)
 }

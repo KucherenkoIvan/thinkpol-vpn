@@ -3,8 +3,8 @@
 package main
 
 import (
+	"context"
 	"os"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -13,23 +13,33 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/lab/devicetest/safety"
 )
 
-// childEnv makes the test binary devicetest itself: the lab's tests run
-// the real launch script, which runs this binary's root modes.
+// childEnv makes the test binary devicetest-root: the lab's tests run the
+// real launch script, which runs the root modes of the binary it copies.
 const childEnv = "TPDT_MAIN_CHILD"
 
 func TestMain(m *testing.M) {
 	if os.Getenv(childEnv) == "" {
 		os.Exit(m.Run())
 	}
-	if err := dispatch(os.Args[1], os.Args[2:]); err != nil {
-		_, _ = os.Stderr.WriteString("devicetest: " + err.Error() + "\n")
+	ctx, args := context.Background(), os.Args[2:]
+	var err error
+	switch os.Args[1] {
+	case "helper":
+		err = safety.HelperMain(ctx, args, os.Stdin, os.Stdout, os.Stderr)
+	case "deadman":
+		err = safety.DeadmanMain(ctx, args)
+	case "root-restore":
+		err = safety.RestoreMain(ctx, args, os.Stdout)
+	}
+	if err != nil {
+		_, _ = os.Stderr.WriteString("devicetest-root: " + err.Error() + "\n")
 		os.Exit(1)
 	}
 	os.Exit(0)
 }
 
 func TestTheTP096ListingIsEverythingTheRunMayDo(t *testing.T) {
-	p, ok := plan.Lookup("tp-096")
+	p, ok := plan.Lookup(allPlans(), "tp-096")
 	if !ok {
 		t.Fatal("no TP-096 plan")
 	}
@@ -37,11 +47,10 @@ func TestTheTP096ListingIsEverythingTheRunMayDo(t *testing.T) {
 	for _, want := range []string{
 		"TP-096: ",
 		"budget 5m0s",
-		"exit server: not needed",
-		`capture: the physical interface (en7), filter "ip6"`,
+		`capture: the physical interface (en7), filter "ip6", running until the run ends; its pcap is kept in the evidence`,
 		"step 1 stock\n  root read: pfctl -s Interfaces -v\n  root read: pfctl -a com.apple -s Anchors\n  root read: pfctl -s References\n",
 		"step 2 skip-on-lo\n  change:    ",
-		"  undo now:  the newest change\n  root read: pfctl -s Interfaces -v\n  root read: pfctl -s rules\n",
+		"  undo now:  the plan's newest change\n  root read: pfctl -s Interfaces -v\n  root read: pfctl -s rules\n",
 		"every change undone, newest first",
 	} {
 		if !strings.Contains(got, want) {
@@ -57,77 +66,29 @@ func TestTheTP096ListingIsEverythingTheRunMayDo(t *testing.T) {
 	}
 }
 
-func TestEveryPlanIsValidAndItsReadsAndChangesAreTheCores(t *testing.T) {
-	if len(plan.All()) < 2 {
-		t.Fatalf("plans: %v", plan.All())
+func TestEveryPlansReadsAndChangesAreTheCores(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("the plans are macOS's")
 	}
-	for _, p := range plan.All() {
-		if err := p.Validate(); err != nil {
-			t.Error(err)
-		}
+	for _, p := range allPlans() {
 		for _, st := range p.Steps {
 			for _, op := range st.Ops {
-				switch {
-				case runtime.GOOS != "darwin":
-				case op.Kind == plan.RootRead:
-					if _, err := safety.RootRead(op.Argv); err != nil {
-						t.Errorf("%s %s: %v", p.Ticket, st.Name, err)
-					}
-				case op.Kind == plan.Do:
-					if _, err := changeAction(op.Change); err != nil {
-						t.Errorf("%s %s: %v", p.Ticket, st.Name, err)
-					}
+				var err error
+				switch op.Kind {
+				case plan.OpRead:
+					_, err = safety.RootRead(op.Argv)
+				case plan.OpDo:
+					_, _, err = describeChange(op.Change)
+				}
+				if err != nil {
+					t.Errorf("%s %s: %v", p.Ticket, st.Name, err)
 				}
 			}
 		}
 	}
 }
 
-func TestThePrivateConfigIsTheUsersAlone(t *testing.T) {
-	base, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	write := func(path string, mode os.FileMode) string {
-		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, []byte("exit:\n  ssh: exit-host\n"), mode); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Chmod(path, mode); err != nil {
-			t.Fatal(err)
-		}
-		return path
-	}
-	good := write(filepath.Join(base, "cfg", "config.yaml"), 0o600)
-	if _, err := loadPrivateConfig(good); err != nil {
-		t.Errorf("a 0600 file of the user's: %v", err)
-	}
-	if err := os.Symlink(good, filepath.Join(base, "link.yaml")); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(base, "repo", ".git"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	for name, path := range map[string]string{
-		"readable by others": write(filepath.Join(base, "open.yaml"), 0o644),
-		"a symlink":          filepath.Join(base, "link.yaml"),
-		"in a git checkout":  write(filepath.Join(base, "repo", "private", "config.yaml"), 0o600),
-		"missing":            filepath.Join(base, "none.yaml"),
-	} {
-		if _, err := loadPrivateConfig(path); err == nil {
-			t.Errorf("%s: read", name)
-		}
-	}
-	t.Setenv("THINKPOL_DEVICETEST_CONFIG", "")
-	t.Setenv("XDG_CONFIG_HOME", base)
-	if p, _ := privateConfigPath(""); p != filepath.Join(base, "thinkpol-devicetest", "config.yaml") {
-		t.Errorf("default path %s", p)
-	}
-}
-
-func TestTheSelfTestControls(t *testing.T) {
+func TestTheFilterLetsThePositiveMarkerThroughAndNeverTheNegative(t *testing.T) {
 	if f := controlFilter("ip6", 40002); f != "not (udp src port 40002) and ((ip6) or (udp dst port 9))" {
 		t.Errorf("filter %q", f)
 	}
