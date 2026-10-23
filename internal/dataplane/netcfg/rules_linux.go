@@ -253,8 +253,11 @@ func (c *linuxConfigurator) delKernelRule(kr netlink.Rule, u *undoLog) error {
 // it never sets (r.Other), suppress_prefixlength none or 0, a mark set
 // whole (mask 0xffffffff) or none, and a lookup ("" when the reader can't
 // tell the action: the configurator, until TP-135). The configurator's
-// reconcile and diagnostics both judge rules by it, so a selector netcfg
-// starts setting is added in one place.
+// reconcile and diagnostics share it for the mask, suppress and action
+// rules only: which selectors count as never set (r.Other) is still each
+// reader's own list, ruleOf's netlink.Rule fields and parseRawRule's
+// attribute switch, until TP-135 moves the configurator onto the raw dump
+// and the list exists once.
 func plainRule(r HostRule, action string) bool {
 	return !r.Other && (action == "" || action == "lookup") &&
 		(r.SuppressPrefixlen == -1 || r.SuppressPrefixlen == 0) &&

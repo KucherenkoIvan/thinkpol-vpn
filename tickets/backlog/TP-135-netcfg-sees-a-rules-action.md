@@ -16,7 +16,7 @@ The Linux configurator's check of its own policy rules notices an owner's rule t
 
 ## Scope
 - `ruleOf` (`netcfg/rules_linux.go`) says it rejects "another … action", but vishvananda/netlink's rule dump never fills the rule type, so it can't see one: a rule changed from lookup to blackhole looks like the configurator's own and stays.
-- TP-091 reads rules from a raw `RTM_GETRULE` dump that carries the action, and (after its round 3) one shared judge of "a plain rule" (`plainRule`). Use the same raw dump, or that judge fed with the raw action, in the configurator's survey, so a changed action counts as foreign and is repaired.
+- TP-091 reads rules from a raw `RTM_GETRULE` dump that carries the action (`dumpRules`/`parseRawRule`), and (after its round 3) one shared judge of "a plain rule" (`plainRule`) for the mask, suppress and action rules. Read the configurator's survey through `dumpRules`/`parseRawRule` too, so a changed action counts as foreign and is repaired, and the list of selectors netcfg never sets exists once: `ruleOf` (and its netlink.Rule field list) goes.
 - Say in the netcfg doc what the survey compares.
 
 ## Acceptance

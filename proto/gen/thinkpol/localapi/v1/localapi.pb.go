@@ -1521,8 +1521,9 @@ type DiagRule struct {
 	// What the rule does: "lookup" (in table), "goto", "nop", "blackhole",
 	// "unreachable", "prohibit", or the kernel's number.
 	Action string `protobuf:"bytes,11,opt,name=action,proto3" json:"action,omitempty"`
-	// The rule has a selector the agent never sets, which this doesn't
-	// show.
+	// The rule has something the agent never sets: a selector this
+	// doesn't show (an iif, a source, ports...), a partial mark mask, or a
+	// suppress_prefixlength other than 0; the action is apart.
 	Other         bool `protobuf:"varint,12,opt,name=other,proto3" json:"other,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

@@ -1668,10 +1668,19 @@ func TestAFailedReleaseOfTheOldReferenceIsTold(t *testing.T) {
 	}
 	old := r.pf.references()[0]
 	r.pf.disable()
-	r.pf.set(func(f *fakePF) { f.oddReferences = true })
+	// A state made while pf was off, to a destination the guard refuses:
+	// that same Apply still kills it before it tells the failed release.
+	foreign := fakeState{"tcp", netip.AddrPortFrom(ownV6, 51000), netip.MustParseAddrPort("[2001:db8:ab::7]:443"), true}
+	r.pf.set(func(f *fakePF) {
+		f.oddReferences = true
+		f.states = append(f.states, foreign)
+	})
 	err := g.Apply(context.Background(), exempt(t))
 	if !errors.Is(err, errUnreadReferences) || !strings.Contains(err.Error(), "releasing the reference it held before") {
 		t.Fatalf("Apply: %v", err)
+	}
+	if slices.Contains(r.pf.stateList(), foreign) {
+		t.Fatal("the Apply that told the failed release left a state made while pf was off")
 	}
 	refs := r.pf.references()
 	if len(refs) != 2 || refs[0] != old || !strings.Contains(r.record(t), fmt.Sprintf("token %d pid %d", refs[1].value, refs[1].pid)) {

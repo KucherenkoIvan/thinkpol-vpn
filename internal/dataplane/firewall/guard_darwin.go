@@ -190,9 +190,12 @@ func (g *IPv6Guard) Apply(ctx context.Context, e routetable.Exempt) (err error) 
 		g.applied, g.killStates, g.killedUnder = a, true, ""
 	}
 	// After the load, so pf comes on with the guard in place; a failure
-	// here leaves the anchor applied, and the retry only enables.
-	if err := g.enable(ctx); err != nil {
-		return err
+	// here leaves the anchor applied, and the retry only enables. A
+	// failed release of a reference held before (oldRelease) doesn't stop
+	// enforcing: it is told at the end.
+	oldRelease, err := g.enable(ctx)
+	if err != nil {
+		return errors.Join(err, oldRelease)
 	}
 	// Last, so the interfaces pf does filter are guarded while something
 	// lets IPv6 past the rest.
@@ -207,11 +210,11 @@ func (g *IPv6Guard) Apply(ctx context.Context, e routetable.Exempt) (err error) 
 	// does, taking what the one gone let be made.
 	if g.killStates && (under == "" || under != g.killedUnder) {
 		if err := g.kill(ctx, g.applied); err != nil {
-			return err
+			return errors.Join(err, oldRelease)
 		}
 		g.killStates, g.killedUnder = false, under
 	}
-	return bypass
+	return errors.Join(bypass, oldRelease)
 }
 
 // checkHook reads pf's main ruleset (`pfctl -s rules`) and fails with an
@@ -401,20 +404,22 @@ var errUnreadReferences = errors.New("firewall: pf's references listed in a form
 // record names it: kept while pf is on; taken over from the record (a
 // crashed run's, this boot); taken anew when the guard has none, or when
 // pf is off (someone ran `pfctl -d`), the old one then released if pf
-// still lists it.
-func (g *IPv6Guard) enable(ctx context.Context) error {
+// still lists it. oldRelease is that release's failure, which leaves pf
+// on and the guard's reference recorded: the caller goes on enforcing
+// and tells it after.
+func (g *IPv6Guard) enable(ctx context.Context) (oldRelease, err error) {
 	on, err := g.enabled(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := g.adoptRecord(); err != nil {
-		return err
+		return nil, err
 	}
 	if err := g.resolveToken(ctx); err != nil {
-		return err
+		return nil, err
 	}
 	if on && g.token != nil {
-		return g.recordToken()
+		return nil, g.recordToken()
 	}
 	return g.takeReference(ctx)
 }
@@ -479,12 +484,13 @@ func (g *IPv6Guard) recordToken() error {
 }
 
 // takeReference turns pf on with a new reference (`pfctl -E`) and
-// records it, then releases the one the guard held, if pf still lists it.
-func (g *IPv6Guard) takeReference(ctx context.Context) error {
+// records it, then releases the one the guard held, if pf still lists it:
+// that release's failure is oldRelease, apart from err.
+func (g *IPv6Guard) takeReference(ctx context.Context) (oldRelease, err error) {
 	old := g.token
 	out, err := g.pf.run(ctx, nil, "-E")
 	if err != nil {
-		return fmt.Errorf("firewall: enable pf: %w", err)
+		return nil, fmt.Errorf("firewall: enable pf: %w", err)
 	}
 	g.killStates, g.killedUnder = true, "" // states made while pf was off
 	t := pfToken{pid: out.pid}
@@ -496,24 +502,23 @@ func (g *IPv6Guard) takeReference(ctx context.Context) error {
 	}
 	g.token, g.recorded = &t, false
 	if err := g.recordToken(); err != nil {
-		return err
+		return nil, err
 	}
-	var oldErr error
 	if old != nil {
 		// pf was off although the guard held a reference. If pfctl -d
 		// left it listed, release it now that pf is on again (pf refuses
 		// -X while off); best effort: the new one is the record's, and
-		// enforcing comes first. A release that fails (a References
-		// listing it can't read) is told, not dropped: the record now
-		// names the new reference only.
+		// enforcing goes on first. A release that fails (a References
+		// listing it can't read) is told after, not dropped: the record
+		// now names the new reference only.
 		if err := g.release(ctx, *old); err != nil {
-			oldErr = fmt.Errorf("firewall: pf enabled anew, but releasing the reference it held before failed (pid %d): %w", old.pid, err)
+			oldRelease = fmt.Errorf("firewall: pf enabled anew, but releasing the reference it held before failed (pid %d): %w", old.pid, err)
 		}
 	}
 	if t.value == 0 {
-		return errors.Join(fmt.Errorf("%w (pfctl pid %d): %w", errUnreadToken, t.pid, perr), oldErr)
+		return oldRelease, fmt.Errorf("%w (pfctl pid %d): %w", errUnreadToken, t.pid, perr)
 	}
-	return oldErr
+	return oldRelease, nil
 }
 
 // release lets go of t, a reference with a known token: `pfctl -X` if pf

@@ -57,8 +57,9 @@ type HostRule struct {
 	// Action is what the rule does: "lookup" (in Table), "goto", "nop",
 	// "blackhole", "unreachable", "prohibit", or the kernel's number.
 	Action string
-	// Other: the rule has a selector or action netcfg never sets (an
-	// iif, a source, a goto...), so this report doesn't show all of it.
+	// Other: the rule has something netcfg never sets: a selector this
+	// doesn't show (an iif, a source, ports...), a partial mark mask, or a
+	// suppress_prefixlength other than 0; the action is apart.
 	Other bool
 }
 

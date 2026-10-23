@@ -343,7 +343,7 @@ func TestDiagnoseCarriesTheHostParts(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, there := parsed.Guard["present"]; there || parsed.Guard["where"] == nil {
-		t.Fatalf("present: %q, %v\n%s", parsed.Guard["present"], err, out.String())
+		t.Fatalf("present: %q\n%s", parsed.Guard["present"], out.String())
 	}
 	// A record that can't be read: unreadable, and nothing else.
 	s.node.mu.Lock()
