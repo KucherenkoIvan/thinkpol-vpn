@@ -129,3 +129,4 @@ Round 4 (2026-10-23): correctness (merge), design (fix first), second opinion (m
 - 2026-10-23 round 4 done: R3.1–R3.4 fixed (0fa40eb); origin/rewrite merged (c6ea8c3: TP-046's `ConnectRecord` and diag's `Inspect` both join `agent.Platform`), `make lint` and `make test` passing on the merge too. The full `make lab-test` (LAB_P=4: the lab phase and 36 packages in nodes) passes on c6ea8c3. Still not verified: nothing ran pfctl or scutil on a Mac (the two macOS boxes wait on the device run)
 - 2026-10-23 in-progress → review
 - 2026-10-23 review → has-errors (round 4: R4.1–R4.3)
+- 2026-10-23 has-errors → in-progress — owner: agent-tp-091, round 5 (R4.1–R4.3)
