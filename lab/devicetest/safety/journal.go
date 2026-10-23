@@ -30,12 +30,12 @@ const (
 type state string
 
 const (
-	stateIntent     state = "intent"  // its undo is on disk; it may have been applied in part
-	stateApplied    state = "applied" // applied
+	stateIntent     state = "intent" // its undo is on disk; it may have been applied in part
+	stateApplied    state = "applied"
 	stateUndone     state = "undone"
 	stateUndoFailed state = "undo-failed"
-	// stateGoneWithBoot: a volatile change of an earlier boot, which that
-	// reboot removed; the snapshot diff checks it is gone.
+	// stateGoneWithBoot: a volatile change of an earlier boot whose undo
+	// checked it went with that boot.
 	stateGoneWithBoot state = "gone-with-reboot"
 )
 
@@ -194,10 +194,6 @@ func (j *journal) fold(l line) {
 	e.State, e.Err = l.State, l.Err
 	j.seq = max(j.seq, l.Seq)
 }
-
-// closed says the journal was closed: a restore, or -forget, closed its
-// run (closes).
-func (j *journal) closed() bool { return j.done }
 
 // intent writes a's intent, its undo included, and syncs it: only then may
 // a be applied.

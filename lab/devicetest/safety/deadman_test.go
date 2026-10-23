@@ -30,6 +30,7 @@ type watched struct {
 // startWatch runs watch on dir, bounded at 10 s so a broken dead-man
 // fails the test instead of hanging it.
 func startWatch(t *testing.T, dir *os.File, cfg deadmanConfig) <-chan watched {
+	t.Helper()
 	out := make(chan watched, 1)
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
@@ -309,7 +310,7 @@ func assertClosed(t *testing.T, h *helperRun) {
 		return pendingFile(d, activeFile) == "" && pendingFile(d, leftFile) == ""
 	})
 	dir := h.runDir()
-	if j, err := openJournal(dir, ""); err != nil || !j.closed() || len(j.pending()) != 0 {
+	if j, err := openJournal(dir, ""); err != nil || !j.done || len(j.pending()) != 0 {
 		t.Errorf("journal: %v", err)
 	}
 	if !present(dir, stopFile) {

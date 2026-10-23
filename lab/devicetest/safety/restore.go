@@ -32,8 +32,9 @@ const (
 	// core won't remove it by other means, and a reboot clears it.
 	// Pending, like Left.
 	Reboot = "REBOOT"
-	// Nothing: there was nothing to restore (no run pending, or a run
-	// that didn't start); nothing was compared.
+	// Nothing: there was nothing to restore: no run pending; a run that
+	// didn't start; or one killed before it had a baseline it could
+	// compare with or made a change. Nothing was compared.
 	Nothing = "NOTHING-TO-RESTORE"
 	// ResetByReboot: a pending run restored in a later boot, with no
 	// change of its own left in its journal (each undone, or checked gone
@@ -90,7 +91,7 @@ func (e *engine) restore(ctx context.Context, by string) Result {
 			res.Undone = append(res.Undone, line)
 		}
 	}
-	if e.h.baseline == nil && len(e.j.entries()) == 0 {
+	if len(e.j.entries()) == 0 && (e.h.baseline == nil || unreadableCompared(e.h.surfaceList(), e.h.baseline) != nil) {
 		res.Verdict = Nothing
 		res.Notes = append(res.Notes, "no baseline was taken and nothing was changed: nothing to compare")
 		return res
@@ -240,9 +241,9 @@ type runInfo struct {
 
 // restoreRun restores the pending run from its journal: the dead-man's
 // (only, its own run: only names it) and `devicetest restore`'s way (only
-// ""). A run of an earlier boot has its volatile changes skipped (gone
-// with that boot) and its persistent ones undone; a run left not clean is
-// compared with its baseline again. A run of an earlier boot with no
+// ""). A run of an earlier boot has its volatile changes checked gone
+// with that boot (nothing is changed in this one) and its persistent ones
+// undone; a run left not clean is compared with its baseline again. A run of an earlier boot with no
 // change of its own left pending is closed, RESET-BY-REBOOT, when it
 // isn't CLEAN.
 func restoreRun(ctx context.Context, cfg stateConfig, by, only string) (Result, error) {

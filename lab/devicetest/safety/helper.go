@@ -74,9 +74,11 @@ type helperConfig struct {
 	log      io.Writer
 }
 
-// errNotStarted wraps why a helper refused a run before its directory
-// existed (a bad flag, the lock held, a run pending, the evidence folder):
-// nothing of the run exists, and the caller removes its root copy.
+// errNotStarted wraps why a helper refused a run before it became pending
+// (before its active pointer): a bad flag, the lock held, a run pending,
+// the evidence folder, or its directory, record or journal failing. The
+// caller removes its root copy; a run directory made before the failure
+// stays, with no pointer to it, and is pruned like any old run.
 var errNotStarted = errors.New("the run didn't start")
 
 // helper runs a run's root side: it starts the run (journal, dead-man,
@@ -130,8 +132,9 @@ type runState struct {
 // startRun starts a run: refused while another helper runs or a run is
 // pending a restore; then the old runs pruned, the run's directory, its
 // record, its journal and the active pointer, then the dead-man (armed
-// before any snapshot or change) and the baseline. A run refused after its
-// directory exists ends through finish, NOTHING-TO-RESTORE.
+// before any snapshot or change) and the baseline. A run refused once it
+// is pending (the dead-man or the baseline failing) ends through finish,
+// NOTHING-TO-RESTORE; one refused before is errNotStarted.
 func startRun(ctx context.Context, cfg helperConfig) (*runState, error) {
 	r, err := openRunState(cfg)
 	if err != nil {
@@ -249,10 +252,8 @@ func (r *runState) armAndBaseline(ctx context.Context, cfg helperConfig) error {
 	if err != nil {
 		return fmt.Errorf("the baseline: %w", err)
 	}
-	for _, sf := range r.h.surfaceList() {
-		if why, bad := base.Unreadable[sf.name]; bad && !sf.info {
-			return fmt.Errorf("the baseline can't read %s: %s (raw output: snapshots/%s/%s.* in the evidence)", sf.name, why, baselineName, sf.name)
-		}
+	if err := unreadableCompared(r.h.surfaceList(), base); err != nil {
+		return err
 	}
 	r.h.baseline = base
 	return nil

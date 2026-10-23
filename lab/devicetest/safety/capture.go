@@ -93,23 +93,24 @@ func (a *captureAction) apply(ctx context.Context, h *host, learnt func(json.Raw
 }
 
 // undo stops the capture. In the helper that started it, its table says
-// what runs, whatever the journal says. Elsewhere (the dead-man, a later
-// restore) by the journaled pid, if that is still the process that
-// started then. In a later boot it is gone: no process outlives a reboot,
-// so no pid and start time of an earlier boot match one. In its own boot,
-// an intent with no pid is a tcpdump that may have started in the moment
-// before its pid was journaled, which nothing can find now: an undo
-// failure, until the reboot that ends it.
+// what runs, whatever the journal says. In a later boot it is gone: no
+// process outlives a reboot, and its pid isn't looked at (on Linux a start
+// time counts from boot, so another boot's process can match it; on macOS
+// it is wall-clock time and can't). Otherwise (the dead-man, a later
+// restore in its boot) by the journaled pid, if that is still the process
+// that started then; an intent with no pid is a tcpdump that may have
+// started in the moment before its pid was journaled, which nothing can
+// find now: an undo failure, until the reboot that ends it.
 func (a *captureAction) undo(_ context.Context, h *host, laterBoot bool) (string, error) {
 	if h.captures != nil {
 		h.captures.stop(a.Iface)
 		return "stopped", nil
 	}
 	switch {
-	case a.PID != 0 && running(a.PID, a.Start):
-		return "stopped by its pid", terminate(a.PID, a.Start)
 	case laterBoot:
 		return "gone with its boot: no process outlives a reboot", nil
+	case a.PID != 0 && running(a.PID, a.Start):
+		return "stopped by its pid", terminate(a.PID, a.Start)
 	case a.PID == 0:
 		return "", errors.New("its pid was never journaled: whether that tcpdump runs can't be shown; a reboot ends it")
 	}

@@ -25,8 +25,9 @@ func TestTheMacSurfacesReadPfctlAndScutil(t *testing.T) {
 		out  output
 		want []string
 	}{
-		{"enabled", pfStatus, ok(pfInfoEnabled), []string{"Status: Enabled"}},
-		{"disabled", pfStatus, ok(pfInfoDisabled), []string{"Status: Disabled"}},
+		{"enabled, its debug level kept", pfStatus, ok(pfInfoEnabled), []string{"Status: Enabled", "Debug: Urgent"}},
+		{"disabled", pfStatus, ok(pfInfoDisabled), []string{"Status: Disabled", "Debug: Urgent"}},
+		{"no debug level printed", pfStatus, ok("Status: Enabled for 0 days 00:00:01\n"), []string{"Status: Enabled"}},
 		{"skips, lo0 included", pfSkips, ok(pfInterfaces), []string{"lo", "lo0"}},
 		{"no skips", pfSkips, ok("en0\nutun3\n"), []string{}},
 		{"every line of the main rules, one naming ALTQ included", outputLines, ok(pfMainStock + "anchor \"ALTQ-test\" all\n"),

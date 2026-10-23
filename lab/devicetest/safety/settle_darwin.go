@@ -70,7 +70,7 @@ func pfBackOn(ctx context.Context, h *host) []string {
 		return []string{"pf's state: " + err.Error()}
 	}
 	base := h.baseline.Lines["pf-info"]
-	if len(base) != 1 || base[0] != "Status: Enabled" || len(now) != 1 || now[0] != "Status: Disabled" {
+	if len(base) == 0 || base[0] != "Status: Enabled" || len(now) == 0 || now[0] != "Status: Disabled" {
 		return []string{fmt.Sprintf("pf at the baseline: %v; now: %v", base, now)}
 	}
 	argv := []string{pfctlPath, "-e"}

@@ -167,8 +167,21 @@ type Difference struct {
 	Next       string   `json:"next,omitempty"`
 }
 
+// unreadableCompared is why base can't be compared with: a surface it
+// compares (not information only) that it couldn't read; nil if none.
+func unreadableCompared(sfs []surface, base *snapshot) error {
+	for _, sf := range sfs {
+		if why, bad := base.Unreadable[sf.name]; bad && sf.norm != nil && !sf.info {
+			return fmt.Errorf("the baseline can't read %s: %s (raw output: snapshots/%s/%s.* in the evidence)", sf.name, why, base.Name, sf.name)
+		}
+	}
+	return nil
+}
+
 // diff compares now with base, surface by surface: the lines in order. A
-// surface unreadable in either is a difference: it can't be shown equal.
+// surface unreadable in either is a difference: it can't be shown equal;
+// one that is information only and unreadable the same way in both is
+// none.
 func diff(sfs []surface, base, now *snapshot) []Difference {
 	var out []Difference
 	for _, sf := range sfs {
@@ -179,6 +192,8 @@ func diff(sfs []surface, base, now *snapshot) []Difference {
 		b, bok := base.Lines[sf.name]
 		n, nok := now.Lines[sf.name]
 		switch {
+		case !bok && !nok && sf.info && base.Unreadable[sf.name] == now.Unreadable[sf.name]:
+			continue
 		case !bok:
 			d.Unreadable = "at the baseline: " + base.Unreadable[sf.name]
 		case !nok:

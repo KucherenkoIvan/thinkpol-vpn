@@ -95,6 +95,7 @@ func helperMain(ctx context.Context, args []string, state stateConfig, in io.Rea
 func deadmanMain(ctx context.Context, args []string, state stateConfig) error {
 	signal.Ignore(syscall.SIGINT, syscall.SIGHUP, syscall.SIGTERM, syscall.SIGQUIT)
 	fs := flag.NewFlagSet("deadman", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
 	run := fs.String("run", "", "the run's id")
 	pid := fs.Int("helper-pid", 0, "the helper it watches")
 	start := fs.Int64("helper-start", 0, "the helper's start time, as the kernel records it")

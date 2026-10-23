@@ -127,7 +127,7 @@ func TestSnapshotsAreWrittenOnceUnderTheCoresNames(t *testing.T) {
 
 // REBOOT is only for the core's own pf change surviving its undo
 // (pfSurvived); anything else failed or left over is LEFT.
-func TestOnlyTheCoresOwnPfChangeSurvivingIsAReboot(t *testing.T) {
+func TestTheVerdictTable(t *testing.T) {
 	for _, tc := range []struct {
 		r          Result
 		pfSurvived bool

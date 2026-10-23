@@ -64,6 +64,9 @@ func forgetRun(ctx context.Context, cfg stateConfig, run, by string) (Result, er
 		}
 	} else {
 		res = Result{By: by, Notes: append([]string{"the journal doesn't read back: " + o.journalErr.Error()}, o.notes...)}
+		if o.h.surfaces == nil {
+			res.Notes = append(res.Notes, settle(ctx, o.h)...)
+		}
 		(&engine{h: o.h}).compare(ctx, &res)
 		if o.j, err = appendOnlyJournal(o.h.runDir, run, o.h.boot); err != nil {
 			return res, err
@@ -104,11 +107,11 @@ func journalSays(runDir *os.File) []string {
 }
 
 // appendOnlyJournal opens a journal that doesn't read back, only to close
-// it: a newline first ends a torn last line, so the closing line is a
-// line of its own.
+// it, or makes one if it is missing: a newline first ends a torn last
+// line, so the closing line is a line of its own.
 func appendOnlyJournal(runDir *os.File, run, boot string) (*journal, error) {
 	path := filepath.Join(runDir.Name(), journalName)
-	fd, err := unix.Openat(int(runDir.Fd()), journalName, unix.O_WRONLY|unix.O_APPEND|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	fd, err := unix.Openat(int(runDir.Fd()), journalName, unix.O_WRONLY|unix.O_APPEND|unix.O_CREAT|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
 	if err != nil {
 		return nil, &os.PathError{Op: "open", Path: path, Err: err}
 	}

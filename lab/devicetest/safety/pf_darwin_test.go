@@ -2,6 +2,7 @@ package safety
 
 import (
 	"context"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -13,10 +14,12 @@ import (
 
 // fakePf answers the core's pfctl and scutil commands from a model of pf,
 // so the pf code runs in a test with no pfctl run. Loading a ruleset from
-// stdin applies its first line, `set skip on X`, as the kernel does: a
-// name ending in a letter is a prefix, so `lo` skips lo0. Loading
-// /etc/pf.conf puts back its state, nothing skipped (unless sticky: a
-// skip no reload clears). calls records what ran.
+// stdin applies its `set skip on X` lines as the kernel does (a name
+// ending in a letter is a prefix of names with a number after it, so `lo`
+// skips lo0) and its other lines as the main rules; /etc/pf.conf's text
+// (what the core appends) loads the stock rules. Loading /etc/pf.conf puts
+// back its state, nothing skipped (unless sticky: a skip no reload
+// clears). calls records what ran.
 type fakePf struct {
 	mu      sync.Mutex
 	ifaces  []string
@@ -24,12 +27,18 @@ type fakePf struct {
 	sticky  bool
 	rules   string
 	airdrop string
+	debug   string
 	enabled bool
-	calls   []string
+	// reloadRules, when set, is what loading /etc/pf.conf loads: a
+	// pf.conf changed after it was last loaded.
+	reloadRules string
+	conf        string
+	calls       []string
 }
 
 func newFakePf() *fakePf {
-	return &fakePf{ifaces: []string{"en0", "lo0", "utun3"}, rules: pfMainStock, enabled: true}
+	conf, _ := os.ReadFile(pfConfPath)
+	return &fakePf{ifaces: []string{"en0", "lo0", "utun3"}, rules: pfMainStock, debug: "Urgent", enabled: true, conf: string(conf)}
 }
 
 // skipped are the interfaces `set skip on name` flags, as the kernel
@@ -38,11 +47,32 @@ func (f *fakePf) skipped(name string) []string {
 	var out []string
 	prefix := name != "" && unicode.IsLetter(rune(name[len(name)-1]))
 	for _, ifc := range f.ifaces {
-		if ifc == name || prefix && strings.HasPrefix(ifc, name) {
+		numbered := len(ifc) > len(name) && unicode.IsDigit(rune(ifc[len(name)]))
+		if ifc == name || prefix && strings.HasPrefix(ifc, name) && numbered {
 			out = append(out, ifc)
 		}
 	}
 	return out
+}
+
+// load applies a ruleset given on stdin.
+func (f *fakePf) load(text string) {
+	f.skip = nil
+	var rules []string
+	rest := text
+	for _, l := range strings.Split(text, "\n") {
+		if name, found := strings.CutPrefix(l, "set skip on "); found {
+			f.skip = append(f.skip, f.skipped(name)...)
+			rest = strings.TrimPrefix(rest, l+"\n")
+		} else if l != "" {
+			rules = append(rules, l)
+		}
+	}
+	if f.conf != "" && rest == f.conf {
+		f.rules = pfMainStock
+		return
+	}
+	f.rules = strings.Join(rules, "\n") + "\n"
 }
 
 func (f *fakePf) run(_ context.Context, argv []string, stdin []byte) output {
@@ -54,9 +84,9 @@ func (f *fakePf) run(_ context.Context, argv []string, stdin []byte) output {
 	switch args {
 	case "-s info":
 		if f.enabled {
-			return ok("Status: Enabled for 0 days 00:00:01           Debug: Urgent\n")
+			return ok("Status: Enabled for 0 days 00:00:01           Debug: " + f.debug + "\n")
 		}
-		return ok("Status: Disabled for 0 days 00:00:00           Debug: Urgent\n")
+		return ok("Status: Disabled for 0 days 00:00:00           Debug: " + f.debug + "\n")
 	case "-s rules":
 		return ok(f.rules)
 	case "-s Interfaces -v":
@@ -80,17 +110,16 @@ func (f *fakePf) run(_ context.Context, argv []string, stdin []byte) output {
 	case "-n -v -f " + pfConfPath:
 		return ok(pfMainStock)
 	case "-f -":
-		first, _, _ := strings.Cut(string(stdin), "\n")
-		if name, found := strings.CutPrefix(first, "set skip on "); found {
-			f.skip = f.skipped(name)
-		}
-		f.rules = pfMainStock
+		f.load(string(stdin))
 		return ok("")
 	case "-f " + pfConfPath:
 		if !f.sticky {
 			f.skip = nil
 		}
 		f.rules = pfMainStock
+		if f.reloadRules != "" {
+			f.rules = f.reloadRules
+		}
 		return ok("")
 	case "-e":
 		f.enabled = true
@@ -121,11 +150,9 @@ func pfHost(t *testing.T, pf *fakePf, boot, runBoot string) *host {
 	return h
 }
 
-// TP-096's step: `set skip on lo` loaded (the kernel skips lo0), then
-// undone by the plan's UndoLast, then the restore: pf is the baseline's
-// again, and the result says the undo loaded pf.conf. (Matching the skip
-// by name, as round 2 did, finds no "lo" listed, does nothing, and ends
-// REBOOT.)
+// `set skip on lo` loaded (the kernel skips lo0), then undone by a plan's
+// UndoLast, then the restore: pf is the baseline's again. The undo goes by
+// the skipped interfaces, never by the name, which pf never lists.
 func TestTP096sSkipOnLoIsUndoneThoughTheKernelListsLo0(t *testing.T) {
 	pf := newFakePf()
 	h := pfHost(t, pf, "boot-a", "boot-a")
@@ -213,7 +240,7 @@ func TestRebootIsOnlyTheCoresPfChangeSurvivingItsUndo(t *testing.T) {
 	}
 }
 
-// TP-096's skip left pending: in its own boot, its undo loads pf.conf, and
+// `set skip on lo` left pending: in its own boot, its undo loads pf.conf, and
 // an AirDrop line changed meanwhile is LEFT with a reboot to do (the
 // system's change); in a later boot, with the skip gone with that boot,
 // the run is reset by the reboot and nothing is loaded; in a later boot
@@ -301,6 +328,101 @@ func TestPfLimitsAndTimeoutsAreCompared(t *testing.T) {
 	}
 	res := (&engine{h: h, j: j, armed: refuseChanges}).restore(t.Context(), "test")
 	if res.Verdict != Left || len(res.Left) != 1 || res.Left[0].Surface != "pf-limits" {
+		t.Errorf("%+v", res)
+	}
+}
+
+// Another app's ruleset loaded after the run's (a kill switch that skips
+// lo0 itself) is never wiped: the undo sees pf's rules aren't what the
+// run's load left, loads nothing, and fails LEFT.
+func TestThePfSkipUndoNeverWipesAnotherAppsRuleset(t *testing.T) {
+	pf := newFakePf()
+	h := pfHost(t, pf, "boot-a", "boot-a")
+	j, err := createJournal(h.runDir, "r", "boot-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := &engine{h: h, j: j, armed: isArmed}
+	if _, err := e.do(t.Context(), skipSpec("lo")); err != nil {
+		t.Fatal(err)
+	}
+	pf.run(t.Context(), []string{pfctlPath, "-f", "-"}, []byte("set skip on lo0\nblock drop out all\npass out quick on utun3 all\n"))
+	pf.calls = nil
+	res := e.restore(t.Context(), "test")
+	if res.Verdict != Left || pf.ran("-f "+pfConfPath) || !strings.Contains(strings.Join(res.Failed, " "), "another ruleset was loaded since") {
+		t.Errorf("restore: %+v (%v)", res, pf.calls)
+	}
+	if !strings.Contains(pf.rules, "pass out quick on utun3 all") {
+		t.Errorf("the app's ruleset was replaced: %q", pf.rules)
+	}
+}
+
+// pf's settings a load resets are compared (a change is LEFT), and an
+// information-only listing that can't be read at either end is no item.
+func TestWhatALoadResetsIsComparedAndAnUnreadableInfoListingIsNoItem(t *testing.T) {
+	for _, tc := range []struct {
+		name, args, stdout string
+		debug              string
+		left               string
+	}{
+		{"limits", "-s memory", "states        hard limit    20000\n", "", "pf-limits"},
+		{"timeouts", "-s timeouts", "tcp.first                    30s\n", "", "pf-timeouts"},
+		{"debug level", "", "", "Loud", "pf-info"},
+		{"dummynet unreadable at both ends", "", "", "", ""},
+	} {
+		pf := newFakePf()
+		dummynet := func(ctx context.Context, argv []string, stdin []byte) output {
+			if strings.Join(argv[1:], " ") == "-s dummynet" {
+				return output{Code: 1, Stderr: []byte("pfctl: Unknown show modifier 'dummynet'\n")}
+			}
+			return pf.run(ctx, argv, stdin)
+		}
+		h := &host{runDir: openDir(t, tempDir(t)), boot: "boot-a", runBoot: "boot-a", surfaces: surfaces(), exec: dummynet}
+		var err error
+		if h.baseline, err = h.snapshot(t.Context(), baselineName); err != nil {
+			t.Fatal(err)
+		}
+		j, err := createJournal(h.runDir, "r", "boot-a")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tc.debug != "" {
+			pf.debug = tc.debug
+		}
+		if tc.args != "" {
+			h.exec = func(ctx context.Context, argv []string, stdin []byte) output {
+				if strings.Join(argv[1:], " ") == tc.args {
+					return output{Stdout: []byte(tc.stdout)}
+				}
+				return dummynet(ctx, argv, stdin)
+			}
+		}
+		res := (&engine{h: h, j: j, armed: refuseChanges}).restore(t.Context(), "test")
+		switch {
+		case tc.left == "" && (res.Verdict != Clean || len(res.Info) != 0):
+			t.Errorf("%s: %+v", tc.name, res)
+		case tc.left != "" && (res.Verdict != Left || len(res.Left) != 1 || res.Left[0].Surface != tc.left):
+			t.Errorf("%s: %+v", tc.name, res)
+		}
+	}
+}
+
+// After the loads the skip is gone but pf's rules differ (a pf.conf
+// changed since it was last loaded): LEFT, saying which, never REBOOT.
+func TestASkipGoneButRulesDifferAfterTheLoadsIsLeft(t *testing.T) {
+	pf := newFakePf()
+	h := pfHost(t, pf, "boot-a", "boot-a")
+	j, err := createJournal(h.runDir, "r", "boot-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := &engine{h: h, j: j, armed: isArmed}
+	if _, err := e.do(t.Context(), skipSpec("lo")); err != nil {
+		t.Fatal(err)
+	}
+	pf.reloadRules = pfMainStock + "pass in quick on en0 proto tcp to any port 22\n"
+	res := e.restore(t.Context(), "test")
+	if res.Verdict != Left || len(pf.skip) != 0 || !strings.Contains(strings.Join(res.Failed, " "), "the skip is gone, but [pf-rules] differ") {
 		t.Errorf("%+v", res)
 	}
 }

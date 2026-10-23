@@ -133,7 +133,8 @@ func TestARunThatCantBeRestoredIsForgottenOnlyInALaterBoot(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		corrupt bool
-	}{{"a change that can't be undone", false}, {"a journal that doesn't read back", true}} {
+		gone    bool
+	}{{"a change that can't be undone", false, false}, {"a journal that doesn't read back", true, false}, {"a journal that's gone", true, true}} {
 		t.Run(tc.name, func(t *testing.T) {
 			surface := filepath.Join(tempDir(t), "surface.txt")
 			writeFile(t, surface, "route a\n")
@@ -145,6 +146,11 @@ func TestARunThatCantBeRestoredIsForgottenOnlyInALaterBoot(t *testing.T) {
 					_, _ = f.j.f.WriteString("{\"seq\":9,\"sta\n")
 				}
 				f.killed()
+				if tc.gone {
+					if err := os.Remove(filepath.Join(f.state, "run-"+f.run, journalName)); err != nil {
+						t.Fatal(err)
+					}
+				}
 				// A restore that fails still names its run, for -forget.
 				if res, err := f.restore(); tc.corrupt != (err != nil) || err == nil && res.Verdict != Left || res.Run != f.run {
 					t.Fatalf("restore: %+v %v", res, err)
@@ -181,14 +187,14 @@ func TestARunThatCantBeRestoredIsForgottenOnlyInALaterBoot(t *testing.T) {
 					t.Errorf("the undos before forgetting: %+v", res.Failed)
 				}
 				says := strings.Join(res.Notes, "\n")
-				if !strings.Contains(says, "journal: change 1") || tc.corrupt != strings.Contains(says, "doesn't read") {
+				if !tc.gone && (!strings.Contains(says, "journal: change 1") || tc.corrupt != strings.Contains(says, "doesn't read")) {
 					t.Errorf("what the journal still says:\n%s", says)
 				}
 				if !strings.Contains(f.runFile(resultFile), Forgotten) || len(f.evidenceResults()) == 0 {
 					t.Errorf("the result isn't kept: %s %v", f.runFile(resultFile), f.evidenceResults())
 				}
 				if !tc.corrupt {
-					if j, err := openJournal(f.h.runDir, ""); err != nil || !j.closed() {
+					if j, err := openJournal(f.h.runDir, ""); err != nil || !j.done {
 						t.Errorf("the journal isn't closed: %v", err)
 					}
 				}
@@ -391,5 +397,35 @@ func TestARunRecordWithNoBootIsRefused(t *testing.T) {
 		if res, err := do(); err == nil || !strings.Contains(err.Error(), "no boot") || f.pointer(leftFile) != f.run {
 			t.Errorf("%s: %+v %v", name, res, err)
 		}
+	}
+}
+
+// Only a compared surface unreadable at the baseline stops a run; one
+// that is information only (pfctl may lack the listing) never does.
+func TestOnlyAComparedSurfaceUnreadableAtTheBaselineStopsARun(t *testing.T) {
+	sfs := []surface{
+		{name: "compared", norm: catLines},
+		{name: "info", norm: catLines, info: true},
+		{name: "recorded"},
+	}
+	for _, tc := range []struct {
+		unreadable string
+		refused    bool
+	}{{"compared", true}, {"info", false}, {"recorded", false}} {
+		base := &snapshot{Name: baselineName, Lines: map[string][]string{}, Unreadable: map[string]string{tc.unreadable: "exit 1"}}
+		if err := unreadableCompared(sfs, base); (err != nil) != tc.refused {
+			t.Errorf("%s unreadable: %v", tc.unreadable, err)
+		}
+	}
+}
+
+// A run killed before its first change, whose baseline couldn't read a
+// compared surface, has nothing to compare: NOTHING-TO-RESTORE.
+func TestABaselineWithAnUnreadableSurfaceAndNoChangeIsNothingToRestore(t *testing.T) {
+	missing := filepath.Join(tempDir(t), "missing.txt")
+	f := newPendingRun(t, testSurfaces(missing), nil, thisBoot(t))
+	f.killed()
+	if res, err := f.restore(); err != nil || res.Verdict != Nothing || f.pointer(leftFile) != "" {
+		t.Errorf("restore: %+v %v", res, err)
 	}
 }

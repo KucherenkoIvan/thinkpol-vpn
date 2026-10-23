@@ -94,7 +94,7 @@ func TestAKilledRunIsUndoneFromItsJournal(t *testing.T) {
 		t.Fatal(err)
 	}
 	again, err := openJournal(dir, "boot-a")
-	if err != nil || !again.closed() || len(again.pending()) != 0 {
+	if err != nil || !again.done || len(again.pending()) != 0 {
 		t.Errorf("read back after the restore: %v", err)
 	}
 }
@@ -158,10 +158,10 @@ func TestAfterAPowerLossOnlyPersistentChangesAreUndone(t *testing.T) {
 		startSkew   int64
 		processLeft bool
 	}{
-		// A pid of an earlier boot is someone else's now, started at
-		// another time: never killed, and the capture is gone with its
-		// boot.
-		{"another boot", "boot-b", 1, true},
+		// A capture of an earlier boot is gone with it, whatever process
+		// has its pid now: never looked at, never killed, even when the
+		// start time matches (on Linux it counts from boot and can).
+		{"another boot", "boot-b", 0, true},
 		{"the same boot", "boot-a", 0, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
