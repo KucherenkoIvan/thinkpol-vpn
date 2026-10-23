@@ -71,3 +71,5 @@ Round 2 (2026-10-23): correctness (merge), design (fix first), second opinion (f
 - 2026-10-23 R2.3: a failed stop on reinstall says the new binary and definition are on disk (TestANeverLoadedUnitCountsAsStopped asserts it); the lab requires exit 0 for a stop of a never-reloaded unit (the image is pinned by digest: a change is noticed, not tolerated); leftAfter's parameter is stoppedOne, passed true inside the `if defined` block
 - 2026-10-23 round 2 done: R2.1-R2.3 fixed; `make lint` and `make test` green; the lab's TestServiceUnderSystemd green on a0840a3. Not verified on a Mac: launchd's answers are tested with the fake
 - 2026-10-23 in-progress → review
+- 2026-10-23 review round 3: correctness, design and second opinion: merge, no findings
+- 2026-10-23 review → done
