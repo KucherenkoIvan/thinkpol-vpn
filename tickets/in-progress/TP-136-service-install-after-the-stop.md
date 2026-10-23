@@ -47,3 +47,4 @@ Round 1 (2026-10-23): correctness (merge), design (fix first), second opinion (f
 - 2026-10-23 done: `make lint` and `make test` green; TestServiceUnderSystemd green; full `make lab-test` green on b58f91a (LAB_P=1, other labs running). Not verified on a Mac: launchd's EIO-but-loaded case is the reviewer's suspicion, tested only with the fake
 - 2026-10-23 in-progress → review
 - 2026-10-23 review → has-errors (round 1: R1.1–R1.4)
+- 2026-10-23 has-errors → in-progress — owner: agent-tp-136, round 1 fixes (R1.1-R1.4)
