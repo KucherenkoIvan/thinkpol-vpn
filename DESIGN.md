@@ -25,7 +25,7 @@ Each area's design is a file of its own under `docs/design/`; this file is the e
 | [Routing](docs/design/routing.md) | routing rules, the route table, DNS, lists |
 | [Desktop client](docs/design/desktop-client.md) | the client and the local API |
 | [Control plane](docs/design/control-plane.md) | the controller, the signed map, joining, kernel usage |
-| [Censor lab](docs/design/lab.md) | the lab and its censor modules |
+| [Censor lab](docs/design/lab.md) | the lab and its censor modules; device testing |
 | [Milestones](docs/design/milestones.md) | the done-when checks, out of scope |
 
 ## Where the mechanism lives
@@ -59,6 +59,7 @@ Each package's `doc.go` holds its mechanism; this table is the way in.
 | [`features`](internal/features/doc.go), [`shared`](internal/shared/doc.go) | the controller; the planned canvas |
 | `proto` | the buf module; `gen/` is generated |
 | [`lab/censor`](lab/censor/doc.go), [lab/README.md](lab/README.md) | the censor framework and the lab |
+| [`lab/devicetest`](lab/devicetest/doc.go), [`lab/devicetest/safety`](lab/devicetest/safety/doc.go) | the device-test harness: what a run guarantees, how a plan is written, and its frozen safety core |
 
 ### Repository layout
 

@@ -16,7 +16,9 @@
 // Its users are what decides a node's trust or ownership on disk: the
 // agent's state directory and host lock (package agent), netcfg's route
 // records and owner locks on macOS, and the leak guard's pf records on
-// macOS (package firewall).
+// macOS (package firewall). [OpenOwnedBy] checks a directory as another
+// user would: the device-test harness's root helper writes its owner's
+// evidence through it (lab/devicetest).
 //
 // # Why every directory on the way
 //

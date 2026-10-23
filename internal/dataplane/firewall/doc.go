@@ -344,4 +344,9 @@
 //
 // On a device the guard loads and passes its own check; that it blocks
 // its leak paths is not yet proven on a device (TP-096).
+//
+// The guard's pf readers ([ListingLines], [PfEnabled]) and its record's
+// name ([TokenRecordName]) are exported for the device-test harness
+// (lab/devicetest), which compares pf with its baseline through them:
+// one reading of a listing wherever it is read.
 package firewall
