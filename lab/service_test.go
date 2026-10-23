@@ -56,6 +56,13 @@ func TestServiceUnderSystemd(t *testing.T) {
 	dev.MustExec(t, "useradd", "-M", "-u", aliceUID, "alice")
 	resolvConf := dev.MustExec(t, "cat", "/etc/resolv.conf")
 
+	// What the installer reads as stopped: systemd's answer to a stop of
+	// a unit it doesn't have (exit 5, "not loaded"), as the unit tests'
+	// fake gives it.
+	if res, err := execResult(dev, execTimeout, "systemctl", "stop", "thinkpol.service"); err == nil || res.ExitCode != 5 || !strings.Contains(res.Stderr, " not loaded") {
+		t.Fatalf("stopping a unit systemd doesn't have: exit %d, %v\n%s", res.ExitCode, err, res.Stderr)
+	}
+
 	// alice ran sudo: she joins the group.
 	out := dev.MustExec(t, "env", "SUDO_USER=alice", "/opt/thinkpol/bin/thinkpol", "service", "install")
 	t.Logf("install:\n%s", out)

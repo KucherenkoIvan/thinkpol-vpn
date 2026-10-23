@@ -54,11 +54,19 @@ func (l Launchd) Start(ctx context.Context, run Runner) error {
 		}
 	}
 	// launchd may refuse a bootstrap just after the job it replaces is
-	// gone ("Bootstrap failed: 5: Input/output error"): retried briefly;
-	// any other refusal is the error.
+	// gone ("Bootstrap failed: 5: Input/output error"), and may say so of
+	// a bootstrap that loaded the job all the same: after an EIO, a job
+	// launchd shows is started; else it is retried briefly. Any other
+	// refusal is the error.
 	for try := 0; ; try++ {
 		out, err := run(ctx, "launchctl", "bootstrap", "system", PlistPath)
-		if err == nil || try == bootstrapTries-1 || !inputOutputError(out, err) {
+		if err == nil || !inputOutputError(out, err) {
+			return err
+		}
+		if there, perr := present(ctx, run); perr != nil || there {
+			return perr
+		}
+		if try == bootstrapTries-1 {
 			return err
 		}
 		select {

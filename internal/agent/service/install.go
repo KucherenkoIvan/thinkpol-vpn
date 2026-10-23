@@ -113,16 +113,16 @@ func (in Installer) say(format string, args ...any) {
 // the definition and (re)starts the service. Run again, it replaces the
 // binary and restarts the service, keeping connect-on-boot unless opts
 // sets it. The binary directory's trust check, the group steps, then the
-// binary, then the definition, all run before anything is stopped: a failure there leaves the installed
-// service running and enabled (a failure after the binary leaves the new
-// binary for the old definition's next restart; the binary is renamed
-// over, so the old agent runs on from its file, and the definition is
-// read by the manager only at Start). With no service installed, an
-// agent holding the host lock (one run by hand) refuses the install
-// before anything changes. With one, its agent holds the lock, so the
-// check comes after the stop: a refusal there, or a failed start, leaves
-// the service stopped and still enabled (launchd: booted out until the
-// next boot, which bootstraps the plist again).
+// binary, then the definition, all run before anything is stopped: a
+// failure there leaves the installed service running and enabled (a
+// failure after the binary leaves the new binary for the old definition's
+// next restart; the binary is renamed over, so the old agent runs on from
+// its file, and the definition is read by the manager only at Start). With
+// no service installed, an agent holding the host lock (one run by hand)
+// refuses the install before anything changes. With one, its agent holds
+// the lock, so the check comes after the stop: a refusal there, or a
+// failed start, leaves the service stopped and still enabled (launchd:
+// booted out until the next boot, which bootstraps the plist again).
 func (in Installer) Install(ctx context.Context, opts Options) error {
 	if err := in.System.Present(in.Root); err != nil {
 		return err
@@ -176,7 +176,10 @@ func (in Installer) Install(ctx context.Context, opts Options) error {
 		}
 	}
 	if err := in.System.Start(ctx, in.Run); err != nil {
-		return fmt.Errorf("starting the service: %w", err)
+		if defined {
+			return fmt.Errorf("starting the service: %w (the service is installed, stopped and still enabled; under launchd, booted out until the next boot)", err)
+		}
+		return fmt.Errorf("starting the service: %w (the service is installed, not running)", err)
 	}
 	in.say("installed and started %s (connect-on-boot %s)", in.System.DefinitionPath(), OnOff(connect))
 	return nil

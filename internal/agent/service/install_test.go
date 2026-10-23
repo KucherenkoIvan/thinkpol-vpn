@@ -45,8 +45,8 @@ type fakeHost struct {
 	// for another reason than no such service.
 	bootoutFails, printFails bool
 	// bootstrapEIO: bootstraps refused with launchd's EIO before one is
-	// taken.
-	bootstrapEIO int
+	// taken; bootstrapEIOLoaded: ones that say EIO but load the job.
+	bootstrapEIO, bootstrapEIOLoaded int
 	// cleared counts ClearHost's runs, and heldWhileCleared whether the
 	// host lock was held at each.
 	cleared, heldWhileCleared int
@@ -100,6 +100,12 @@ func (h *fakeHost) systemctl(args []string) (string, error) {
 		h.unitRunning = nil
 	case slices.Equal(args, []string{"disable", "--now", UnitName}) && h.unitLoaded != nil:
 		h.enabled, h.unitRunning = false, nil
+	case slices.Equal(args, []string{"disable", "--now", UnitName}) && h.unitFile() != nil:
+		// disable acts on the file; the stop finds no unit loaded.
+		h.enabled = false
+		return "Failed to stop thinkpol.service: Unit thinkpol.service not loaded.", errors.New("exit status 5")
+	case slices.Equal(args, []string{"stop", UnitName}):
+		return "Failed to stop thinkpol.service: Unit thinkpol.service not loaded.", errors.New("exit status 5")
 	case slices.Equal(args, []string{"reset-failed", UnitName}):
 	default:
 		return "", fmt.Errorf("systemctl %v: refused", args)
@@ -135,6 +141,14 @@ func (h *fakeHost) launchctl(args []string) (string, error) {
 		return fmt.Sprintf("disabled services = {\n\t\"com.example.other\" => disabled\n\t%q => %s\n}\n", Label, v), nil
 	case slices.Equal(args, []string{"enable", target}):
 		h.disabled, h.overridden = false, true
+	case slices.Equal(args, []string{"bootstrap", "system", PlistPath}) && h.bootstrapEIOLoaded > 0 && !h.loaded:
+		h.bootstrapEIOLoaded--
+		data, err := os.ReadFile(filepath.Join(h.root, PlistPath))
+		if err != nil {
+			return "", err
+		}
+		h.loaded, h.loadedFrom = true, data
+		return "Bootstrap failed: 5: Input/output error", errors.New("exit status 5")
 	case slices.Equal(args, []string{"bootstrap", "system", PlistPath}) && h.bootstrapEIO > 0:
 		h.bootstrapEIO--
 		return "Bootstrap failed: 5: Input/output error", errors.New("exit status 5")
@@ -759,5 +773,76 @@ func TestConnectOnBootIsSpelledOnOrOff(t *testing.T) {
 		if s != want {
 			t.Errorf("%q: %s, want %s", in, s, want)
 		}
+	}
+}
+
+// A unit systemd never loaded (an install that died between writing it
+// and starting it) runs nothing: the next install's stop finds it
+// stopped, and the install starts the service; uninstall removes it. A
+// stop that fails otherwise still stops the install.
+func TestANeverLoadedUnitCountsAsStopped(t *testing.T) {
+	ctx := context.Background()
+	h := newFakeHost(t)
+	in, _ := h.installer(Systemd{})
+	unit := SystemdUnit(Definition{Binary: BinaryPath})
+	if err := os.WriteFile(filepath.Join(h.root, UnitPath), unit, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := in.Install(ctx, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if !h.enabled || !bytes.Equal(h.unitRunning, unit) {
+		t.Fatalf("enabled %v, running %q", h.enabled, h.unitRunning)
+	}
+
+	h.failNext["systemctl stop"] = 1
+	if err := in.Install(ctx, Options{}); err == nil || !strings.Contains(err.Error(), "stopping the installed service") {
+		t.Fatalf("a stop that failed: %v", err)
+	}
+
+	h = newFakeHost(t)
+	in, _ = h.installer(Systemd{})
+	if err := os.WriteFile(filepath.Join(h.root, UnitPath), unit, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := in.Uninstall(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := h.file(UnitPath); ok {
+		t.Fatal("the unit is left")
+	}
+}
+
+// A start that fails says what it left: after the stop, the service
+// stopped and still enabled; on a first install, installed and not
+// running.
+func TestAFailedStartSaysWhatItLeft(t *testing.T) {
+	ctx := context.Background()
+	h := newFakeHost(t)
+	in, _ := h.installer(Systemd{})
+	h.failNext["systemctl restart"] = 1
+	if err := in.Install(ctx, Options{}); err == nil || !strings.Contains(err.Error(), "installed, not running") {
+		t.Fatalf("a first install: %v", err)
+	}
+	if err := in.Install(ctx, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	h.failNext["systemctl restart"] = 1
+	if err := in.Install(ctx, Options{}); err == nil || !strings.Contains(err.Error(), "stopped and still enabled") {
+		t.Fatalf("a reinstall: %v", err)
+	}
+	if h.unitRunning != nil || !h.enabled {
+		t.Fatalf("running %q, enabled %v", h.unitRunning, h.enabled)
+	}
+}
+
+// launchd may say EIO of a bootstrap that loaded the job: a job it then
+// shows is started, not bootstrapped again.
+func TestLaunchdTakesAnEIOBootstrapThatLoadedTheJob(t *testing.T) {
+	h := newFakeHost(t)
+	in, _ := h.installer(Launchd{Poll: time.Millisecond})
+	h.bootstrapEIOLoaded = 1
+	if err := in.Install(context.Background(), Options{}); err != nil || !h.loaded {
+		t.Fatalf("%v, loaded %v", err, h.loaded)
 	}
 }

@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 // Systemd is the service manager of most Linux distributions: the unit
@@ -42,16 +44,34 @@ func (Systemd) Reload(ctx context.Context, run Runner) error {
 }
 
 // Stop stops the unit, still enabled, waiting for the agent to exit
-// (TimeoutStopSec, then systemd kills it).
+// (TimeoutStopSec, then systemd kills it). A unit systemd hasn't loaded
+// (an install that died between writing it and starting it) runs
+// nothing: it is stopped.
 func (Systemd) Stop(ctx context.Context, run Runner) error {
-	_, err := run(ctx, "systemctl", "stop", UnitName)
+	return stopped(run(ctx, "systemctl", "stop", UnitName))
+}
+
+// Remove disables the unit and stops it, as Stop waits; a unit systemd
+// hasn't loaded is disabled (systemctl disables first) and stopped.
+func (Systemd) Remove(ctx context.Context, run Runner) error {
+	return stopped(run(ctx, "systemctl", "disable", "--now", UnitName))
+}
+
+// stopped is a stop's outcome: systemd's "Unit … not loaded" (exit
+// status 5) means nothing of the unit runs, which is what was asked.
+func stopped(out string, err error) error {
+	if err == nil || notLoaded(out, err) {
+		return nil
+	}
 	return err
 }
 
-// Remove disables the unit and stops it, as Stop waits.
-func (Systemd) Remove(ctx context.Context, run Runner) error {
-	_, err := run(ctx, "systemctl", "disable", "--now", UnitName)
-	return err
+func notLoaded(out string, err error) bool {
+	var x *exec.ExitError
+	if errors.As(err, &x) && x.ExitCode() == 5 {
+		return true
+	}
+	return strings.Contains(out+" "+err.Error(), " not loaded")
 }
 
 // Forget reloads the units without it, and forgets a failed state it had.

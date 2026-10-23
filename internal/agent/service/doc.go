@@ -11,14 +11,18 @@
 // /run/systemd/system; OpenRC, a container or WSL1 is refused before
 // anything changes) and the node can run (its state directory reads as
 // `thinkpol up` would read it: without keys and a map the service would
-// only restart). Every step that can fail runs before anything is
-// stopped, so a failed reinstall leaves a working service running and
-// enabled. With no service installed, install refuses while an agent
-// holds the host lock (one run by hand, which the service's agent would
-// only restart against, every RestartAfterSeconds, forever); with one,
-// whose agent holds the lock itself, the check comes after the service
-// is stopped (systemctl stop, still enabled; launchd's bootout) and before
-// it is started again. It:
+// only restart). Every step that can fail but the start runs before
+// anything is stopped, so a reinstall that fails there leaves a working
+// service running and enabled; one refused by the host lock after the
+// stop, or whose start fails, leaves it stopped and still enabled
+// (launchd: booted out until the next boot), and says so. A unit systemd
+// hasn't loaded (an install that died between writing it and starting it)
+// counts as stopped. With no service installed, install refuses while an
+// agent holds the host lock (one run by hand, which the service's agent
+// would only restart against, every RestartAfterSeconds, forever); with
+// one, whose agent holds the lock itself, the check comes after the
+// service is stopped (systemctl stop, still enabled; launchd's bootout)
+// and before it is started again. It:
 //
 //   - copies the running binary to [BinaryPath], /usr/local/bin/thinkpol,
 //     which the service runs as root. Its directory, and every one above
