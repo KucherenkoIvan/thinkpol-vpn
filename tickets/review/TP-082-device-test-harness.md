@@ -173,3 +173,5 @@ Round 3 (2026-10-23): correctness, style, design and second opinion: fix first. 
 - 2026-10-23 the out-of-scope Log line above about a run left pending whose baseline couldn't be taken is out of date: R2.1 refuses such a run before it starts, and R2.3 closes a pending run in a later boot (RESET-BY-REBOOT, or -forget)
 - 2026-10-23 mutation rule kept: pf only through fakePf, every other host tool refused outside the lab; one capture mutant could reach only the test's own sleep. FROZEN regenerated once for round 3 (c724b6f), after all its core changes
 - 2026-10-23 not verified (Mac only): the kernel's prefix rule as a real Mac lists it (`lo` → `lo0 (skip)`, which checklist step 3's judge reads), whether `-s dummynet` exists (step 2), and everything listed for round 2
+- 2026-10-23 lab: `make lab-test` (LAB_P=4) green on af8cf76: the core's root tests and the whole runs through the real launch script in a lab node
+- 2026-10-23 in-progress → review
