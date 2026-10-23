@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/lab/devicetest/evidence"
+	"github.com/KucherenkoIvan/thinkpol-vpn/lab/devicetest/plan"
+	"github.com/KucherenkoIvan/thinkpol-vpn/lab/devicetest/safety"
 )
 
 // A helper killed mid-run answers nothing; its dead-man's result lands in
@@ -49,5 +51,26 @@ func TestWithoutTheHelpersAnswerTheEvidenceSays(t *testing.T) {
 	start := time.Now()
 	if res := r.resultFromEvidence(); res.Verdict != "LEFT" || time.Since(start) > 5*time.Second {
 		t.Errorf("a result written while waiting: %+v after %v", res, time.Since(start))
+	}
+}
+
+// The last line says "recorded" only when every evidence file was written.
+func TestTheLastLineSaysIncompleteWhenEvidenceFailed(t *testing.T) {
+	var term bytes.Buffer
+	ev, err := evidence.Create(t.TempDir(), "TP-900", time.Now(), &term)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &runner{ev: ev, plan: plan.Plan{Ticket: "TP-900"}}
+	r.report(safety.Result{Verdict: safety.Clean, Run: "r1"}, nil, 0, "ok")
+	if !strings.Contains(term.String(), "TP-900 recorded:") {
+		t.Errorf("all written:\n%s", term.String())
+	}
+	_ = ev.WriteFile("plan.txt", nil)
+	_ = ev.WriteFile("plan.txt", nil) // exists: fails
+	term.Reset()
+	r.report(safety.Result{Verdict: safety.Clean, Run: "r1"}, nil, 0, "ok")
+	if !strings.Contains(term.String(), "TP-900 INCOMPLETE (1 evidence files failed):") {
+		t.Errorf("one failed:\n%s", term.String())
 	}
 }

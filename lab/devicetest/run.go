@@ -351,13 +351,17 @@ func (r *runner) report(res safety.Result, err error, steps int, selfTest string
 		r.ev.Logf("the restore reported: %v", err)
 	}
 	if res.Verdict != safety.Clean {
-		r.ev.Logf("THE MAC ISN'T AS IT WAS (%s): do what each item's \"next\" says, then run devicetest restore", res.Verdict)
+		r.ev.Logf("THE MAC ISN'T AS IT WAS (%s): %s", res.Verdict, stillPending(res.Run))
 	}
 	if selfTest != "ok" {
 		selfTest = "FAILED"
 	}
-	r.ev.Logf("devicetest %s recorded: %d of %d steps, selftest %s, restore %s -> %s",
-		r.plan.Ticket, steps, len(r.plan.Steps), selfTest, res.Verdict, r.ev.Path)
+	recorded := "recorded"
+	if n := r.ev.Failed(); n > 0 {
+		recorded = fmt.Sprintf("INCOMPLETE (%d evidence files failed)", n)
+	}
+	r.ev.Logf("devicetest %s %s: %d of %d steps, selftest %s, restore %s -> %s",
+		r.plan.Ticket, recorded, steps, len(r.plan.Steps), selfTest, res.Verdict, r.ev.Path)
 }
 
 // cmdRestore restores the run pending a restore from its journal, as
@@ -388,6 +392,17 @@ func cmdRestore(args []string) error {
 	return reportRestore(os.Stdout, out, err)
 }
 
+// stillPending says how a run left pending gets closed.
+func stillPending(run string) string {
+	name, forget := "run "+run, run
+	if run == "" {
+		name, forget = "the run", "RUN (the run devicetest restore names)"
+	}
+	return fmt.Sprintf("do what each item's \"next\" says, then run devicetest restore again. %s stays pending, and no run starts, "+
+		"until a restore says CLEAN, or RESET-BY-REBOOT when run after a reboot; if it still says LEFT or REBOOT after a reboot, "+
+		"devicetest restore -forget %s closes it (FORGOTTEN, never CLEAN)", name, forget)
+}
+
 // reportRestore prints root-restore's answer (out) for the owner: the
 // result, then what it means. CLEAN, nothing pending, RESET-BY-REBOOT and
 // FORGOTTEN let the next run start, each said for what it is; any other
@@ -398,12 +413,18 @@ func reportRestore(w io.Writer, out []byte, runErr error) error {
 		_, _ = w.Write(out)
 		return errors.Join(fmt.Errorf("root-restore gave no result: %q", out), runErr)
 	}
-	b, _ := json.MarshalIndent(resp.Result, "", "  ")
-	_, _ = fmt.Fprintf(w, "%s\n", b)
 	res := resp.Result
+	if res.Verdict != "" {
+		b, _ := json.MarshalIndent(res, "", "  ")
+		_, _ = fmt.Fprintf(w, "%s\n", b)
+	}
 	switch {
 	case !resp.OK:
 		_, _ = fmt.Fprintf(w, "devicetest restore failed: %s\n", resp.Err)
+		if res.Run != "" {
+			_, _ = fmt.Fprintf(w, "run %s stays pending; if a restore after a reboot fails like this again, "+
+				"devicetest restore -forget %s closes it (FORGOTTEN, never CLEAN)\n", res.Run, res.Run)
+		}
 	case res.Verdict == safety.Clean:
 		_, _ = fmt.Fprintf(w, "devicetest restore: CLEAN, run %s restored; a new run may start\n", res.Run)
 		return nil
@@ -419,8 +440,7 @@ func reportRestore(w io.Writer, out []byte, runErr error) error {
 			"a new run may start\n", res.Verdict, res.Run)
 		return nil
 	default:
-		_, _ = fmt.Fprintf(w, "THE MAC ISN'T AS IT WAS (%s): do what each item's \"next\" says, then run devicetest restore again; "+
-			"no run starts until one says CLEAN\n", res.Verdict)
+		_, _ = fmt.Fprintf(w, "THE MAC ISN'T AS IT WAS (%s): %s\n", res.Verdict, stillPending(res.Run))
 	}
 	return errReported
 }

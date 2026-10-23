@@ -49,10 +49,32 @@ func gitCheckout(path string) string {
 
 // Folder is one run's evidence folder.
 type Folder struct {
-	Path string
-	out  io.Writer
-	mu   sync.Mutex
-	log  *os.File
+	Path   string
+	out    io.Writer
+	mu     sync.Mutex
+	log    *os.File
+	failed int
+}
+
+// Failed is how many evidence writes failed (each said in the transcript):
+// a run with any isn't recorded in full.
+func (f *Folder) Failed() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.failed
+}
+
+// counted counts err, a failed write of rel, and says it in the
+// transcript.
+func (f *Folder) counted(rel string, err error) error {
+	if err == nil {
+		return nil
+	}
+	f.mu.Lock()
+	f.failed++
+	f.mu.Unlock()
+	f.Logf("evidence: %s not written: %v", rel, err)
+	return err
 }
 
 // Create makes the folder for a run of ticket started at now:
@@ -119,8 +141,13 @@ func (f *Folder) Ask(in *bufio.Reader, question string) (string, error) {
 	return answer, nil
 }
 
-// WriteFile writes rel (its directories made), which must not exist.
+// WriteFile writes rel (its directories made), which must not exist. A
+// failure is counted (Failed).
 func (f *Folder) WriteFile(rel string, data []byte) error {
+	return f.counted(rel, f.writeFile(rel, data))
+}
+
+func (f *Folder) writeFile(rel string, data []byte) error {
 	path, err := f.path(rel)
 	if err != nil {
 		return err
@@ -136,22 +163,22 @@ func (f *Folder) WriteFile(rel string, data []byte) error {
 	return errors.Join(err, w.Close())
 }
 
-// WriteJSON writes v, indented, to rel.
+// WriteJSON writes v, indented, to rel. A failure is counted (Failed).
 func (f *Folder) WriteJSON(rel string, v any) error {
 	b, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
-		return err
+		return f.counted(rel, err)
 	}
 	return f.WriteFile(rel, append(b, '\n'))
 }
 
-// AppendJSONL appends v as one line to rel.
+// AppendJSONL appends v as one line to rel. A failure is counted (Failed).
 func (f *Folder) AppendJSONL(rel string, v any) error {
 	b, err := json.Marshal(v)
-	if err != nil {
-		return err
+	if err == nil {
+		err = f.appendFile(rel, append(b, '\n'))
 	}
-	return f.appendFile(rel, append(b, '\n'))
+	return f.counted(rel, err)
 }
 
 func (f *Folder) appendFile(rel string, data []byte) error {

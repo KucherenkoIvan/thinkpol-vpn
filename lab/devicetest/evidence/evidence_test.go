@@ -78,3 +78,23 @@ func TestOneTerminalWithTimestamps(t *testing.T) {
 		t.Error("replaced a file")
 	}
 }
+
+// A write that fails is counted and named in the transcript: "recorded"
+// can't be claimed over a missing file.
+func TestAFailedWriteIsCountedAndSaid(t *testing.T) {
+	var term bytes.Buffer
+	f, err := Create(t.TempDir(), "TP-900", time.Now(), &term)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	if err := f.WriteFile("a.txt", []byte("1")); err != nil || f.Failed() != 0 {
+		t.Fatalf("a write: %v, failed %d", err, f.Failed())
+	}
+	_ = f.WriteFile("a.txt", []byte("2"))             // exists already
+	_ = f.WriteJSON("b.json", func() {})              // doesn't marshal
+	_ = f.AppendJSONL("../c.jsonl", map[string]int{}) // a bad name
+	if f.Failed() != 3 || !strings.Contains(term.String(), "evidence: a.txt not written") {
+		t.Errorf("failed %d:\n%s", f.Failed(), term.String())
+	}
+}

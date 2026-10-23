@@ -13,11 +13,13 @@ import (
 // All are the plans.
 func All() []plan.Plan { return []plan.Plan{selfTest(), tp096()} }
 
-// selfTest is the self-test alone: the capture checked, nothing changed.
+// selfTest is the self-test alone: the capture checked, no change of a
+// plan's (the self-test's own harmless change goes through the journal and
+// back).
 func selfTest() plan.Plan {
 	return plan.Plan{
 		Ticket:  "selftest",
-		Title:   "the self-test alone: the capture on the physical interface checked, nothing changed",
+		Title:   "the self-test alone: the capture on the physical interface checked, no change of a plan's",
 		Budget:  2 * time.Minute,
 		Capture: plan.Capture{Iface: plan.Physical},
 	}

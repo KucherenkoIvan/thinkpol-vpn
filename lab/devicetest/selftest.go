@@ -149,11 +149,11 @@ func (r *runner) sendMarkers(ctx context.Context, res *captureCheck, bcast netip
 	return seen, resp.Seen, err
 }
 
-func (r *runner) sendMarker(conn *net.UDPConn, to netip.AddrPort, res *captureCheck, nonce, control string) error {
-	payload := fmt.Sprintf("%s%s %s", safety.MarkerPrefix, r.runID, nonce)
+func (r *runner) sendMarker(conn *net.UDPConn, to netip.AddrPort, res *captureCheck, n, control string) error {
+	payload := fmt.Sprintf("%s%s %s", safety.MarkerPrefix, r.runID, n)
 	_, err := conn.WriteToUDPAddrPort([]byte(payload), to)
 	_ = r.ev.AppendJSONL("captures/markers.jsonl", map[string]any{"time": time.Now().UTC(), "iface": res.Iface,
-		"control": control, "nonce": nonce, "to": to.String(), "error": errString(err)})
+		"control": control, "nonce": n, "to": to.String(), "error": errString(err)})
 	if err != nil {
 		return fmt.Errorf("sending the %s marker: %w", control, err)
 	}
@@ -228,6 +228,9 @@ func markerSockets(ctx context.Context, iface string) (netip.AddrPort, *net.UDPC
 		for i := range conns {
 			pc, err := lc.ListenPacket(ctx, "udp4", netip.AddrPortFrom(local, 0).String())
 			if err != nil {
+				if conns[0] != nil {
+					_ = conns[0].Close()
+				}
 				return netip.AddrPort{}, nil, nil, err
 			}
 			conns[i] = pc.(*net.UDPConn)

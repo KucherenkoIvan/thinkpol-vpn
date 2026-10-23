@@ -56,7 +56,8 @@ func listing(p plan.Plan, phys string) string {
 		}
 	}
 	w("then, and on Ctrl-C, a closed terminal or a crash: every change undone, newest first,")
-	w("  and the Mac compared with its baseline (CLEAN, LEFT with what to do, or REBOOT)")
+	w("  and the Mac compared with its baseline: CLEAN, LEFT with what to do, or REBOOT; a run left pending is closed")
+	w("  by a later restore: CLEAN, or after a reboot RESET-BY-REBOOT, or devicetest restore -forget RUN (FORGOTTEN)")
 	return b.String()
 }
 

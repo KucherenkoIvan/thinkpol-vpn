@@ -57,9 +57,12 @@
 //     the evidence is the owner's, kept privately. Root's own state
 //     directory keeps the newest 10 runs' journals and snapshots.
 //
-// "recorded" in the last line means the evidence is complete, never that
-// anything passed: an agent judges the folder against the ticket's
-// checklist afterwards. Reboot tests print a recovery sheet for the owner
+// "recorded" in the last line means every evidence file the user side
+// wrote was written, never that anything passed: an agent judges the
+// folder against the ticket's checklist afterwards. Any write that failed
+// is named in harness.log, and the last line says "INCOMPLETE (N evidence
+// files failed)" instead. The root side's own evidence writes that fail
+// are said in the helper's log on the terminal. Reboot tests print a recovery sheet for the owner
 // instead of installing anything that acts at boot.
 //
 // # How a plan is written
