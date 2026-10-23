@@ -85,3 +85,4 @@ Round 1 (2026-10-23): correctness (fix first), style (fix first), design (fix fi
 - 2026-10-23 lab: `make lab-test` (LAB_P=4) green on bebc261
 - 2026-10-23 in-progress → review
 - 2026-10-23 review → has-errors (round 1: R1.1–R1.13); acceptance box 3 unticked until checklist step 2 is recorded
+- 2026-10-23 has-errors → in-progress — round 1 findings R1.1–R1.13, owner: agent-tp-082
