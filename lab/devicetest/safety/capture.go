@@ -94,28 +94,32 @@ func (a *captureAction) apply(ctx context.Context, h *host, learnt func(json.Raw
 
 // undo stops the capture. In the helper that started it, its table says
 // what runs, whatever the journal says. Elsewhere (the dead-man, a later
-// restore) by the journaled pid if that is still the process that started
-// then; an intent with no pid is a tcpdump that may have started in the
-// moment before its pid was journaled, which nothing can find now: an
-// undo failure, until the reboot that ends it (volatile).
-func (a *captureAction) undo(_ context.Context, h *host) error {
+// restore) by the journaled pid, if that is still the process that
+// started then. In a later boot it is gone: no process outlives a reboot,
+// so no pid and start time of an earlier boot match one. In its own boot,
+// an intent with no pid is a tcpdump that may have started in the moment
+// before its pid was journaled, which nothing can find now: an undo
+// failure, until the reboot that ends it.
+func (a *captureAction) undo(_ context.Context, h *host, laterBoot bool) (string, error) {
 	if h.captures != nil {
 		h.captures.stop(a.Iface)
-		return nil
+		return "stopped", nil
 	}
-	if a.PID == 0 {
-		return errors.New("its pid was never journaled: whether that tcpdump runs can't be shown; a reboot ends it")
+	switch {
+	case a.PID != 0 && running(a.PID, a.Start):
+		return "stopped by its pid", terminate(a.PID, a.Start)
+	case laterBoot:
+		return "gone with its boot: no process outlives a reboot", nil
+	case a.PID == 0:
+		return "", errors.New("its pid was never journaled: whether that tcpdump runs can't be shown; a reboot ends it")
 	}
-	if !sameProcess(a.PID, a.Start) {
-		return nil // gone (its reader's end closed, it died of SIGPIPE)
-	}
-	return terminate(a.PID, a.Start)
+	return "gone already (it ended when its reader did)", nil
 }
 
 // terminate stops pid if it is still the process that started at start:
 // TERM, then KILL after 3 s.
 func terminate(pid int, start int64) error {
-	if !sameProcess(pid, start) {
+	if !running(pid, start) {
 		return nil
 	}
 	_ = syscall.Kill(pid, syscall.SIGTERM)
@@ -377,18 +381,16 @@ func (c *liveCapture) kill() {
 	_ = c.main.Close()
 }
 
-// stop stops the helper's capture on iface, whatever the journal says of
-// it; false when there is none.
-func (cs *captures) stop(iface string) bool {
+// stop stops the helper's capture on iface, if one runs, whatever the
+// journal says of it.
+func (cs *captures) stop(iface string) {
 	cs.mu.Lock()
 	c := cs.live[iface]
 	delete(cs.live, iface)
 	cs.mu.Unlock()
-	if c == nil {
-		return false
+	if c != nil {
+		c.kill()
 	}
-	c.kill()
-	return true
 }
 
 // get is the running capture on iface.

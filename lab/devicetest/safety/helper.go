@@ -74,8 +74,9 @@ type helperConfig struct {
 	log      io.Writer
 }
 
-// errNotStarted wraps why a helper refused a run before it started: then
-// nothing of the run exists, and its root copy is removed by the caller.
+// errNotStarted wraps why a helper refused a run before its directory
+// existed (a bad flag, the lock held, a run pending, the evidence folder):
+// nothing of the run exists, and the caller removes its root copy.
 var errNotStarted = errors.New("the run didn't start")
 
 // helper runs a run's root side: it starts the run (journal, dead-man,
@@ -128,8 +129,9 @@ type runState struct {
 
 // startRun starts a run: refused while another helper runs or a run is
 // pending a restore; then the old runs pruned, the run's directory, its
-// journal, the active pointer, the dead-man (armed before anything else)
-// and the baseline.
+// record, its journal and the active pointer, then the dead-man (armed
+// before any snapshot or change) and the baseline. A run refused after its
+// directory exists ends through finish, NOTHING-TO-RESTORE.
 func startRun(ctx context.Context, cfg helperConfig) (*runState, error) {
 	r, err := openRunState(cfg)
 	if err != nil {

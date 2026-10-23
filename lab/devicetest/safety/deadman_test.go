@@ -55,6 +55,7 @@ func beat(dir *os.File, every, until time.Duration) {
 
 func TestTheDeadmanFiresWhenItMustAndOnlyThen(t *testing.T) {
 	fast := func(t *testing.T) deadmanConfig {
+		t.Helper()
 		helper, start := startSleep(t)
 		return deadmanConfig{helperPID: helper.Process.Pid, helperStart: start, deadline: time.Hour, poll: 20 * time.Millisecond}
 	}
@@ -255,7 +256,7 @@ func pendingFile(d testDirs, name string) string {
 	return strings.TrimSpace(string(b))
 }
 
-func TestTheHelperRestores(t *testing.T) {
+func TestTheHelperRestoresOnInputEndOrRequestNeverOnSignals(t *testing.T) {
 	t.Run("when its input ends", func(t *testing.T) {
 		d := newHelperDirs(t)
 		h, hello := startHelper(t, d, runName())

@@ -16,14 +16,16 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/trusteddir"
 )
 
-// forgetRun closes the pending run, named by the owner, that no restore
-// can close: its journal doesn't read back, or a change of its own can't
-// be undone. Only in a later boot than the run's (in its own boot,
-// `devicetest restore` is the way, or a reboot first). The result,
-// FORGOTTEN, shows what the journal can still say and how the host
-// compares with the baseline now, and proves nothing; it is kept in the
-// run's directory and the evidence like any result, the journal is
-// closed and the run cleared.
+// forgetRun closes the pending run, named by the owner, in a later boot
+// than the run's (in its own boot, `devicetest restore` is the way, or a
+// reboot first). When the journal reads back, the restore runs first, so
+// only what no undo could close is forgotten: a change of its own that
+// can't be undone. When it doesn't, the host is compared and the journal
+// closed as it is. The result, FORGOTTEN, keeps what the undos did, what
+// the journal still says and the comparison, and proves nothing; it is
+// kept in the run's directory and the evidence like any result. A run
+// whose record or directory can't be opened is beyond it (safety's
+// doc.go, "Verdicts").
 func forgetRun(ctx context.Context, cfg stateConfig, run, by string) (Result, error) {
 	state, err := cfg.open()
 	if err != nil {
@@ -44,50 +46,32 @@ func forgetRun(ctx context.Context, cfg stateConfig, run, by string) (Result, er
 	case pending != run:
 		return Result{}, fmt.Errorf("the run pending a restore is %s, not %s", pending, run)
 	}
-	boot, err := trusteddir.BootSession()
+	o, err := openRunForRestore(cfg, run)
 	if err != nil {
-		return Result{}, err
+		return Result{By: by, Run: run}, err
 	}
-	runDir, err := cfg.openRun(run)
-	if err != nil {
-		return Result{}, err
+	if o.info.Boot == o.h.boot {
+		return Result{By: by, Run: run}, fmt.Errorf("run %s started in this boot: run devicetest restore, or reboot first (a run is forgotten only in a later boot)", run)
 	}
-	var info runInfo
-	b, err := trusteddir.ReadFile(runDir, runInfoFile)
-	if err == nil {
-		err = json.Unmarshal(b, &info)
-	}
-	if err != nil {
-		return Result{}, fmt.Errorf("%s: %w: which boot the run was in is unknown, so it isn't forgotten", runInfoFile, err)
-	}
-	if info.Boot == boot {
-		return Result{}, fmt.Errorf("run %s started in this boot: run devicetest restore, or reboot first (a run is forgotten only in a later boot)", run)
-	}
-	o := openedRun{info: info, h: &host{runDir: runDir, boot: boot, runBoot: info.Boot, surfaces: cfg.surfaces, exec: cfg.exec}}
-	if ev, err := openEvidence(info.Evidence, info.UID, info.GID); err == nil {
-		o.h.evidence = ev
-	}
-	res := Result{Verdict: Forgotten, By: by}
-	res.Notes = append(res.Notes, "forgotten at the owner's request, in a later boot than the run's: nothing here was proven")
-	res.Notes = append(res.Notes, journalSays(runDir)...)
-	if o.h.baseline, err = loadSnapshot(o.h, baselineName); err != nil {
-		res.Notes = append(res.Notes, "no comparison: the baseline can't be read back: "+err.Error())
-	} else if after, err := o.h.snapshot(ctx, afterName); err != nil {
-		res.Notes = append(res.Notes, "no comparison: the snapshot now: "+err.Error())
-	} else {
-		for _, d := range diff(o.h.surfaceList(), o.h.baseline, after) {
-			if d.Info {
-				res.Info = append(res.Info, d)
-			} else {
-				res.Left = append(res.Left, d)
-			}
+	var res Result
+	if o.journalErr == nil {
+		res = (&engine{h: o.h, j: o.j, armed: refuseChanges}).restore(ctx, by)
+		res.Notes = append(res.Notes, o.notes...)
+		o.resetByReboot(&res)
+		if closes(res.Verdict) {
+			res.Notes = append(res.Notes, "the restore closed the run itself: nothing was forgotten")
+			return res, finish(state, o, &res)
 		}
-	}
-	if o.j, err = openJournal(runDir, boot); err != nil {
-		if o.j, err = appendOnlyJournal(runDir, run, boot); err != nil {
+	} else {
+		res = Result{By: by, Notes: append([]string{"the journal doesn't read back: " + o.journalErr.Error()}, o.notes...)}
+		(&engine{h: o.h}).compare(ctx, &res)
+		if o.j, err = appendOnlyJournal(o.h.runDir, run, o.h.boot); err != nil {
 			return res, err
 		}
 	}
+	res.Verdict = Forgotten
+	res.Notes = append(res.Notes, "forgotten at the owner's request, in a later boot than the run's: nothing here was proven")
+	res.Notes = append(res.Notes, journalSays(o.h.runDir)...)
 	return res, finish(state, o, &res)
 }
 

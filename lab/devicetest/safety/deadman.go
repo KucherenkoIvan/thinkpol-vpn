@@ -152,8 +152,8 @@ func deadman(ctx context.Context, cfg stateConfig, run string, dm deadmanConfig)
 	if err != nil {
 		return err
 	}
-	if res.Verdict != Clean {
-		return fmt.Errorf("the dead-man restored: %s", res.Verdict)
+	if !closes(res.Verdict) {
+		return fmt.Errorf("the dead-man's restore: %s", res.Verdict)
 	}
 	return nil
 }

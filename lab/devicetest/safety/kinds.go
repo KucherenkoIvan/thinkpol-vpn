@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 )
 
@@ -21,6 +22,11 @@ const (
 	// (macOS).
 	kindPfSkip = "pf-skip"
 )
+
+// errPfSurvivedReload: the pf-skip undo loaded /etc/pf.conf twice and what
+// that sets still differs from the baseline: the core's own pf change
+// survived its undo, the one case a restore calls REBOOT.
+var errPfSurvivedReload = errors.New("pf still differs from the baseline after two loads of /etc/pf.conf")
 
 // Spec is a change as a plan names it and the journal keeps it.
 type Spec struct {
@@ -49,9 +55,11 @@ type action interface {
 	// apply makes the change. learnt journals, before apply goes on,
 	// what the undo needs that only the change tells (a pid).
 	apply(ctx context.Context, h *host, learnt func(json.RawMessage) error) error
-	// undo removes the change; it checks first whether the change is
-	// there, so it is safe to repeat.
-	undo(ctx context.Context, h *host) error
+	// undo removes the change and says what it did; it checks first
+	// whether the change is there, so it is safe to repeat. laterBoot: the
+	// change was made in an earlier boot than this one, so undo checks a
+	// volatile change went with that boot and changes nothing in this one.
+	undo(ctx context.Context, h *host, laterBoot bool) (string, error)
 }
 
 func decode(spec Spec) (action, error) {

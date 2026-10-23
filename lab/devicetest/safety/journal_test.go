@@ -155,11 +155,14 @@ func TestACompleteLineThatDoesntParseIsCorruption(t *testing.T) {
 func TestAfterAPowerLossOnlyPersistentChangesAreUndone(t *testing.T) {
 	for _, tc := range []struct {
 		name, boot  string
+		startSkew   int64
 		processLeft bool
 	}{
-		// A pid of an earlier boot is someone else's now: never killed.
-		{"another boot", "boot-b", true},
-		{"the same boot", "boot-a", false},
+		// A pid of an earlier boot is someone else's now, started at
+		// another time: never killed, and the capture is gone with its
+		// boot.
+		{"another boot", "boot-b", 1, true},
+		{"the same boot", "boot-a", 0, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			sleep, start := startSleep(t)
@@ -177,7 +180,7 @@ func TestAfterAPowerLossOnlyPersistentChangesAreUndone(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := j.mark(seq, stateApplied, mustJSON(captureAction{Iface: "en9", PID: sleep.Process.Pid, Start: start}), nil); err != nil {
+			if err := j.mark(seq, stateApplied, mustJSON(captureAction{Iface: "en9", PID: sleep.Process.Pid, Start: start + tc.startSkew}), nil); err != nil {
 				t.Fatal(err)
 			}
 			_ = j.release()

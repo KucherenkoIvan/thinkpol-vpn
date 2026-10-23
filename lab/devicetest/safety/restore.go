@@ -25,23 +25,27 @@ const (
 	// Clean: every change undone, and the host matches the baseline.
 	Clean = "CLEAN"
 	// Left: something differs or failed to undo; Result says what and
-	// what to do. The run stays pending until a restore finds it clean.
+	// what to do. The run stays pending until a restore closes it (closes).
 	Left = "LEFT"
-	// Reboot: what is left lives only in the kernel and the core won't
-	// remove it by hand (pf): a reboot clears it. Pending, like Left.
+	// Reboot: the core's own pf change survived its undo (pf-skip's two
+	// loads of /etc/pf.conf left what that sets unlike the baseline); the
+	// core won't remove it by other means, and a reboot clears it.
+	// Pending, like Left.
 	Reboot = "REBOOT"
 	// Nothing: there was nothing to restore (no run pending, or a run
 	// that didn't start); nothing was compared.
 	Nothing = "NOTHING-TO-RESTORE"
 	// ResetByReboot: a pending run restored in a later boot, with no
-	// change of its own left in its journal: each was undone or went with
-	// the boot it was made in. What still differs from the baseline is the
-	// new boot's, not the run's. Never CLEAN; the run is closed.
+	// change of its own left in its journal (each undone, or checked gone
+	// with the boot it was made in) and the host not shown equal to the
+	// baseline: what differs is the new boot's, not the run's. Never
+	// CLEAN; the run is closed.
 	ResetByReboot = "RESET-BY-REBOOT"
 	// Forgotten: a pending run the owner closed by name in a later boot
-	// (`devicetest restore -forget RUN`), after being shown what its
-	// journal and the comparison still say. Nothing was proven; the run
-	// is closed.
+	// (`devicetest restore -forget RUN`) that no restore could close: the
+	// restore's undos ran first when its journal read back, and the result
+	// shows what they did, what the journal still says and how the host
+	// compares. Nothing was proven; the run is closed.
 	Forgotten = "FORGOTTEN"
 )
 
@@ -64,24 +68,29 @@ type Result struct {
 	Notes          []string     `json:"notes,omitempty"`
 }
 
-// restore undoes every pending change, newest first, lets the host settle
-// (the OS's waits go with the OS's surfaces), and compares it with the
-// baseline in a fresh snapshot.
+// restore undoes every pending change, newest first, each with what its
+// undo did, lets the host settle (the OS's waits go with the OS's
+// surfaces), and compares it with the baseline in a fresh snapshot. A run
+// with no change journaled and no baseline (or one cut short: the helper
+// was killed while taking it) has nothing to compare.
 func (e *engine) restore(ctx context.Context, by string) Result {
 	res := Result{By: by}
 	e.h.beat()
+	pfSurvived := false
 	for _, en := range e.j.pending() {
-		err := e.undo(ctx, en)
+		what, err := e.undo(ctx, en)
+		line := fmt.Sprintf("%d: %s: %s", en.Seq, en.Does, what)
 		switch {
 		case err != nil:
 			res.Failed = append(res.Failed, err.Error())
+			pfSurvived = pfSurvived || errors.Is(err, errPfSurvivedReload)
 		case e.entry(en.Seq).State == stateGoneWithBoot:
-			res.GoneWithReboot = append(res.GoneWithReboot, fmt.Sprintf("%d: %s", en.Seq, en.Does))
+			res.GoneWithReboot = append(res.GoneWithReboot, line)
 		default:
-			res.Undone = append(res.Undone, fmt.Sprintf("%d: %s", en.Seq, en.Does))
+			res.Undone = append(res.Undone, line)
 		}
 	}
-	if e.h.baseline == nil && e.h.baselineErr == nil && len(e.j.entries()) == 0 {
+	if e.h.baseline == nil && len(e.j.entries()) == 0 {
 		res.Verdict = Nothing
 		res.Notes = append(res.Notes, "no baseline was taken and nothing was changed: nothing to compare")
 		return res
@@ -90,7 +99,7 @@ func (e *engine) restore(ctx context.Context, by string) Result {
 		res.Notes = append(res.Notes, settle(ctx, e.h)...)
 	}
 	e.compare(ctx, &res)
-	res.Verdict = verdict(res)
+	res.Verdict = verdict(res, pfSurvived)
 	return res
 }
 
@@ -108,22 +117,27 @@ func (e *engine) compare(ctx context.Context, res *Result) {
 		res.Failed = append(res.Failed, "the snapshot after the restore: "+err.Error())
 		return
 	}
-	for _, d := range diff(e.h.surfaceList(), e.h.baseline, after) {
+	res.addDiffs(diff(e.h.surfaceList(), e.h.baseline, after))
+}
+
+// addDiffs files each difference as left over, or information only.
+func (r *Result) addDiffs(ds []Difference) {
+	for _, d := range ds {
 		if d.Info {
-			res.Info = append(res.Info, d)
+			r.Info = append(r.Info, d)
 		} else {
-			res.Left = append(res.Left, d)
+			r.Left = append(r.Left, d)
 		}
 	}
 }
 
-func verdict(r Result) string {
-	for _, d := range r.Left {
-		if d.reboot {
-			return Reboot
-		}
-	}
-	if len(r.Failed) > 0 || len(r.Left) > 0 {
+// verdict is REBOOT only when the core's own pf change survived its undo
+// (pfSurvived), else LEFT for anything failed or left over, else CLEAN.
+func verdict(r Result, pfSurvived bool) string {
+	switch {
+	case pfSurvived:
+		return Reboot
+	case len(r.Failed) > 0 || len(r.Left) > 0:
 		return Left
 	}
 	return Clean
@@ -147,8 +161,8 @@ func defaultState() stateConfig { return stateConfig{dir: defaultStateDir} }
 const (
 	// activeFile names the run that started and isn't restored yet.
 	activeFile = "active"
-	// leftFile names the run whose restore wasn't CLEAN: it stays pending
-	// until a restore finds the host clean.
+	// leftFile names the run whose restore didn't close it (closes): it
+	// stays pending until one does.
 	leftFile    = "left"
 	lockFile    = "devicetest.lock"
 	runInfoFile = "run.json"
@@ -253,27 +267,40 @@ func restoreRun(ctx context.Context, cfg stateConfig, by, only string) (Result, 
 		return Result{Verdict: Nothing, By: by, Notes: []string{fmt.Sprintf("the run pending a restore is %s, not %s: left to devicetest restore", run, only)}}, nil
 	}
 	o, err := openRunForRestore(cfg, run)
+	if err == nil {
+		err = o.journalErr
+	}
 	if err != nil {
-		return Result{}, err
+		return Result{By: by, Run: run}, err
 	}
 	res := (&engine{h: o.h, j: o.j, armed: refuseChanges}).restore(ctx, by)
 	res.Notes = append(res.Notes, o.notes...)
-	if !closes(res.Verdict) && o.info.Boot != o.h.boot && len(o.j.pending()) == 0 {
-		res.Verdict = ResetByReboot
-		res.Notes = append(res.Notes, fmt.Sprintf("the run was in another boot (%s) and no change of its own is left in its journal: "+
-			"each was undone or went with that boot, so what differs is this boot's, not the run's", o.info.Boot))
-	}
+	o.resetByReboot(&res)
 	err = finish(state, o, &res)
 	return res, err
 }
 
+// resetByReboot closes, RESET-BY-REBOOT, a restore that didn't close the
+// run when the run was in an earlier boot and no change of its own is
+// left pending: each was undone or checked gone with that boot.
+func (o openedRun) resetByReboot(res *Result) {
+	if closes(res.Verdict) || o.info.Boot == o.h.boot || len(o.j.pending()) > 0 {
+		return
+	}
+	res.Verdict = ResetByReboot
+	res.Notes = append(res.Notes, fmt.Sprintf("the run was in another boot (%s) and no change of its own is left in its journal: "+
+		"each was undone or checked gone with that boot, so what differs is this boot's, not the run's", o.info.Boot))
+}
+
 // openedRun is a run's directory, journal and record, open; notes say
-// what couldn't be opened on the way.
+// what couldn't be opened on the way, and journalErr why the journal
+// doesn't read back (j is nil then).
 type openedRun struct {
-	h     *host
-	j     *journal
-	info  runInfo
-	notes []string
+	h          *host
+	j          *journal
+	journalErr error
+	info       runInfo
+	notes      []string
 }
 
 func openRunForRestore(cfg stateConfig, run string) (openedRun, error) {
@@ -293,6 +320,9 @@ func openRunForRestore(cfg stateConfig, run string) (openedRun, error) {
 	if err != nil {
 		return openedRun{}, fmt.Errorf("%s: %w", runInfoFile, err)
 	}
+	if info.Boot == "" {
+		return openedRun{}, fmt.Errorf("%s names no boot session: whether the run was in this boot is unknown", runInfoFile)
+	}
 	o := openedRun{info: info}
 	h := &host{runDir: runDir, boot: boot, runBoot: info.Boot, surfaces: cfg.surfaces, exec: cfg.exec}
 	if ev, err := openEvidence(info.Evidence, info.UID, info.GID); err == nil {
@@ -304,11 +334,8 @@ func openRunForRestore(cfg stateConfig, run string) (openedRun, error) {
 	if errors.Is(h.baselineErr, fs.ErrNotExist) {
 		h.baselineErr = nil // never taken: the run stopped before it
 	}
-	j, err := openJournal(runDir, boot)
-	if err != nil {
-		return openedRun{}, err
-	}
-	o.h, o.j = h, j
+	o.h = h
+	o.j, o.journalErr = openJournal(runDir, boot)
 	return o, nil
 }
 

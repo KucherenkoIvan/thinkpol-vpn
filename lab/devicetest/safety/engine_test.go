@@ -98,7 +98,7 @@ func TestTheRestoreComparesWithTheBaseline(t *testing.T) {
 		t.Errorf("difference: %+v", d)
 	}
 	writeFile(t, surface, "route b\nroute a\n")
-	if res := e.restore(t.Context(), "test"); res.Verdict != Left || !strings.Contains(res.Left[0].String(), "another order") {
+	if res := e.restore(t.Context(), "test"); res.Verdict != Left || len(res.Left) != 1 || !strings.Contains(strings.Join(res.Left[0].Extra, " "), "another order") {
 		t.Errorf("the same lines reordered: %+v", res)
 	}
 	writeFile(t, surface, "route a\nroute b\n")
@@ -125,22 +125,23 @@ func TestSnapshotsAreWrittenOnceUnderTheCoresNames(t *testing.T) {
 	}
 }
 
-// REBOOT is only for a surface whose difference is the core's own change
-// surviving its undo (surface.reboot; on macOS, what loading pf.conf sets).
-func TestOnlyTheCoresOwnChangeLeftOverIsAReboot(t *testing.T) {
+// REBOOT is only for the core's own pf change surviving its undo
+// (pfSurvived); anything else failed or left over is LEFT.
+func TestOnlyTheCoresOwnPfChangeSurvivingIsAReboot(t *testing.T) {
 	for _, tc := range []struct {
-		r    Result
-		want string
+		r          Result
+		pfSurvived bool
+		want       string
 	}{
-		{Result{}, Clean},
-		{Result{Info: []Difference{{Surface: "dns"}}}, Clean},
-		{Result{Failed: []string{"undo 1"}}, Left},
-		{Result{Left: []Difference{{Surface: "pf-info"}}}, Left},
-		{Result{Left: []Difference{{Surface: "pf-anchor-200.AirDrop"}}}, Left},
-		{Result{Left: []Difference{{Surface: "pf-anchor-200.AirDrop"}, {Surface: "pf-skip", reboot: true}}}, Reboot},
+		{Result{}, false, Clean},
+		{Result{Info: []Difference{{Surface: "dns"}}}, false, Clean},
+		{Result{Failed: []string{"undo 1"}}, false, Left},
+		{Result{Left: []Difference{{Surface: "pf-skip"}}}, false, Left},
+		{Result{Left: []Difference{{Surface: "pf-anchor-200.AirDrop"}}}, false, Left},
+		{Result{Failed: []string{"undo 1"}, Left: []Difference{{Surface: "pf-skip"}}}, true, Reboot},
 	} {
-		if got := verdict(tc.r); got != tc.want {
-			t.Errorf("%+v: %s, want %s", tc.r, got, tc.want)
+		if got := verdict(tc.r, tc.pfSurvived); got != tc.want {
+			t.Errorf("%+v, pf survived %v: %s, want %s", tc.r, tc.pfSurvived, got, tc.want)
 		}
 	}
 }

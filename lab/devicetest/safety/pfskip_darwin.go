@@ -12,9 +12,10 @@ import (
 )
 
 // pfSkipAction loads pf's main ruleset as `set skip on <Iface>` followed
-// by the stock rules (/etc/pf.conf), which keeps Apple's hook: a skip on
-// a name no interface has, to see what pf and the guard make of it. Its
-// undo loads /etc/pf.conf, so the change is refused unless the rules
+// by the stock rules (/etc/pf.conf, Apple's hook included). The kernel
+// takes a name ending in a letter as a prefix, so `set skip on lo` skips
+// lo0: TP-096 skips lo to see what pf and the guard make of it. Its undo
+// loads /etc/pf.conf, so the change is refused unless the rules
 // loaded now are the baseline's, nothing is skipped (loading pf.conf
 // would drop a skip someone else loaded), and every rule the baseline
 // had is one /etc/pf.conf loads (`pfctl -n`). That checks the baseline's
@@ -103,21 +104,31 @@ func (a *pfSkipAction) apply(ctx context.Context, h *host, _ func(json.RawMessag
 	return nil
 }
 
-// undo does nothing once Iface isn't skipped: the skip is gone (a reboot,
-// or another app's load of its own rules, took it), and loading pf.conf
-// now would replace what was loaded since. While it is skipped, it loads
-// /etc/pf.conf until what that sets matches the baseline, at most twice;
-// the restore's comparison judges everything else.
-func (a *pfSkipAction) undo(ctx context.Context, h *host) error {
+// undo decides by the skipped interfaces against the baseline (which pre
+// required to be pf.conf's, with nothing skipped), never by the name: the
+// kernel's prefix rule lists `set skip on lo` as lo0. Skipped as at the
+// baseline, there is nothing to undo (a reboot, or another app's load,
+// took the skip away), and loading pf.conf now would replace what was
+// loaded since. Otherwise, in the run's boot, it loads /etc/pf.conf until
+// what that sets matches the baseline, at most twice; in a later boot it
+// loads nothing (that boot isn't the run's to change) and fails, so the
+// run isn't reset by the reboot. The restore's comparison judges the rest.
+func (a *pfSkipAction) undo(ctx context.Context, h *host, laterBoot bool) (string, error) {
+	if h.baseline == nil {
+		return "", errors.New("no baseline to compare pf with: run sudo pfctl -f /etc/pf.conf by hand")
+	}
 	skips, err := h.readSurface(ctx, "pf-skip")
 	if err != nil {
-		return fmt.Errorf("pf's skipped interfaces: %w", err)
+		return "", fmt.Errorf("pf's skipped interfaces: %w", err)
 	}
-	if !slices.Contains(skips, a.Iface) {
-		return nil
-	}
-	if h.baseline == nil {
-		return errors.New("no baseline to compare pf with: run sudo pfctl -f /etc/pf.conf by hand")
+	base := h.baseline.Lines["pf-skip"]
+	switch {
+	case slices.Equal(skips, base) && laterBoot:
+		return "gone with its boot: pf skips what it did at the baseline", nil
+	case slices.Equal(skips, base):
+		return "nothing to do: pf skips what it did at the baseline (the skip was gone already)", nil
+	case laterBoot:
+		return "", fmt.Errorf("pf skips %v, not the baseline's %v, in a later boot than the run's: nothing loaded in a boot the run never touched; reboot, or devicetest restore -forget", skips, base)
 	}
 	for range 2 {
 		argv := []string{pfctlPath, "-f", pfConfPath}
@@ -125,10 +136,24 @@ func (a *pfSkipAction) undo(ctx context.Context, h *host) error {
 		h.saveOutput(fmt.Sprintf("actions/pf-skip-%d.restore", time.Now().UnixNano()), argv, out)
 		h.beat()
 		if d := h.differs(ctx, pfConfControls); len(d) == 0 {
-			return nil
+			return "loaded " + pfConfPath, nil
 		}
 	}
-	return fmt.Errorf("pf differs from the baseline after two loads of %s (%v): %s", pfConfPath, h.differs(ctx, pfConfControls), nextPfReload)
+	return "", fmt.Errorf("%w (%v): %s", errPfSurvivedReload, h.differs(ctx, pfConfControls), nextPfReload)
+}
+
+// rootFile checks path is a regular file of root's that no one else may
+// write.
+func rootFile(path string) error {
+	fi, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !fi.Mode().IsRegular() || !ok || st.Uid != 0 || fi.Mode().Perm()&0o022 != 0 {
+		return fmt.Errorf("%s: not a regular file only root may write", path)
+	}
+	return nil
 }
 
 // readSurface reads one surface now.
@@ -152,18 +177,4 @@ func (h *host) differs(ctx context.Context, names []string) []string {
 		}
 	}
 	return out
-}
-
-// rootFile checks path is a regular file of root's that no one else may
-// write.
-func rootFile(path string) error {
-	fi, err := os.Lstat(path)
-	if err != nil {
-		return err
-	}
-	st, ok := fi.Sys().(*syscall.Stat_t)
-	if !fi.Mode().IsRegular() || !ok || st.Uid != 0 || fi.Mode().Perm()&0o022 != 0 {
-		return fmt.Errorf("%s: not a regular file only root may write", path)
-	}
-	return nil
 }

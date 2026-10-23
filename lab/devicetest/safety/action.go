@@ -160,7 +160,8 @@ func (e *engine) do(ctx context.Context, spec Spec) (int, error) {
 	learnt := func(params json.RawMessage) error { return e.j.mark(seq, stateApplied, params, nil) }
 	if err := a.apply(ctx, e.h, learnt); err != nil {
 		e.h.log("%s failed: %v; undoing it", a.does(), err)
-		return seq, errors.Join(err, e.undo(ctx, e.entry(seq)))
+		_, uerr := e.undo(ctx, e.entry(seq))
+		return seq, errors.Join(err, uerr)
 	}
 	return seq, e.j.mark(seq, stateApplied, nil, nil)
 }
@@ -175,7 +176,8 @@ func (e *engine) undoLast(ctx context.Context) error {
 	if p[0].Kind == kindCapture {
 		return errors.New("the newest change is a capture: a capture ends with the run")
 	}
-	return e.undo(ctx, p[0])
+	_, err := e.undo(ctx, p[0])
+	return err
 }
 
 func (e *engine) entry(seq int) entry {
@@ -187,19 +189,24 @@ func (e *engine) entry(seq int) entry {
 	return entry{Seq: seq}
 }
 
-// undo undoes one journaled change. A volatile one of an earlier boot is
-// gone with that boot and isn't touched.
-func (e *engine) undo(ctx context.Context, en entry) error {
-	if en.Lifetime == volatile && en.Boot != e.h.boot {
-		return e.j.mark(en.Seq, stateGoneWithBoot, nil, nil)
-	}
+// undo undoes one journaled change and says what it did. A volatile
+// change of an earlier boot isn't assumed gone with that boot: its undo
+// checks it is, changing nothing in this boot, and it is journaled
+// gone-with-reboot only then.
+func (e *engine) undo(ctx context.Context, en entry) (string, error) {
+	laterBoot := en.Boot != e.h.boot
 	a, err := decode(Spec{Kind: en.Kind, Params: en.Params})
+	what := ""
 	if err == nil {
-		err = a.undo(ctx, e.h)
+		what, err = a.undo(ctx, e.h, laterBoot)
 	}
 	e.h.beat()
 	if err != nil {
-		return errors.Join(fmt.Errorf("undo %d (%s): %w", en.Seq, en.Does, err), e.j.mark(en.Seq, stateUndoFailed, nil, err))
+		return "", errors.Join(fmt.Errorf("undo %d (%s): %w", en.Seq, en.Does, err), e.j.mark(en.Seq, stateUndoFailed, nil, err))
 	}
-	return e.j.mark(en.Seq, stateUndone, nil, nil)
+	s := stateUndone
+	if laterBoot && en.Lifetime == volatile {
+		s = stateGoneWithBoot
+	}
+	return what, e.j.mark(en.Seq, s, nil, nil)
 }

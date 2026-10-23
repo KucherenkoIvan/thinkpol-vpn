@@ -65,15 +65,15 @@ func (a *fileAction) apply(_ context.Context, h *host, _ func(json.RawMessage) e
 	return errors.Join(werr, fullSync(f), f.Close())
 }
 
-func (a *fileAction) undo(_ context.Context, h *host) error {
+func (a *fileAction) undo(_ context.Context, h *host, _ bool) (string, error) {
 	got, err := trusteddir.ReadFile(h.runDir, a.path())
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
-		return nil
+		return "nothing to do: the file is gone", nil
 	case err != nil:
-		return err
+		return "", err
 	case !bytes.Equal(got, []byte(a.Content)):
-		return fmt.Errorf("%s holds something else: left as it is", a.path())
+		return "", fmt.Errorf("%s holds something else: left as it is", a.path())
 	}
-	return trusteddir.Remove(h.runDir, a.path())
+	return "removed", trusteddir.Remove(h.runDir, a.path())
 }

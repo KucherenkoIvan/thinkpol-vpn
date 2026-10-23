@@ -46,7 +46,7 @@ func waitGuardReleased(ctx context.Context, h *host) string {
 		case !held:
 			return "the guard holds no pf reference"
 		case i >= 30 || ctx.Err() != nil:
-			return "the guard still holds a pf reference after 30 s: run thinkpol's rollback (thinkpol up -connect=false, then stop it)"
+			return "the guard still holds a pf reference after 30 s: a reboot clears it; or start thinkpol and stop it again (thinkpol up -connect=false, then stop it)"
 		}
 		h.beat()
 		time.Sleep(time.Second)

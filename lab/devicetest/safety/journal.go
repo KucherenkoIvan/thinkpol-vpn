@@ -195,7 +195,8 @@ func (j *journal) fold(l line) {
 	j.seq = max(j.seq, l.Seq)
 }
 
-// closed says the journal was closed: its run restored clean.
+// closed says the journal was closed: a restore, or -forget, closed its
+// run (closes).
 func (j *journal) closed() bool { return j.done }
 
 // intent writes a's intent, its undo included, and syncs it: only then may

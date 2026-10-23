@@ -15,7 +15,7 @@ import (
 
 // pendingFixture is a run pending a restore, built in the test's own
 // directories: its record, baseline, journal and left pointer, as a run
-// killed in boot leaves them.
+// killed in the boot it records leaves them.
 type pendingFixture struct {
 	t        *testing.T
 	cfg      stateConfig
@@ -96,7 +96,7 @@ func (f *pendingFixture) evidenceResults() []string {
 	return m
 }
 
-func TestARunPendingInAnEarlierBootIsResetByTheReboot(t *testing.T) {
+func TestAPendingRunIsLeftInItsOwnBootAndResetByALaterOne(t *testing.T) {
 	for _, tc := range []struct {
 		name, boot, want string
 		cleared          bool
@@ -145,7 +145,8 @@ func TestARunThatCantBeRestoredIsForgottenOnlyInALaterBoot(t *testing.T) {
 					_, _ = f.j.f.WriteString("{\"seq\":9,\"sta\n")
 				}
 				f.killed()
-				if res, err := f.restore(); err == nil && res.Verdict != Left {
+				// A restore that fails still names its run, for -forget.
+				if res, err := f.restore(); tc.corrupt != (err != nil) || err == nil && res.Verdict != Left || res.Run != f.run {
 					t.Fatalf("restore: %+v %v", res, err)
 				}
 				if f.pointer(leftFile) != f.run {
@@ -173,6 +174,11 @@ func TestARunThatCantBeRestoredIsForgottenOnlyInALaterBoot(t *testing.T) {
 				}
 				if err != nil || res.Verdict != Forgotten || f.pointer(leftFile) != "" || f.pointer(activeFile) != "" {
 					t.Fatalf("forget in a later boot: %+v %v, left %q", res, err, f.pointer(leftFile))
+				}
+				// The journal read back: the restore's undos ran first, and
+				// the one that can't be undone is what was forgotten.
+				if !tc.corrupt && (len(res.Failed) != 1 || !strings.Contains(res.Failed[0], "holds something else")) {
+					t.Errorf("the undos before forgetting: %+v", res.Failed)
 				}
 				says := strings.Join(res.Notes, "\n")
 				if !strings.Contains(says, "journal: change 1") || tc.corrupt != strings.Contains(says, "doesn't read") {
@@ -353,5 +359,37 @@ func TestABaselineThatDoesntReadBackSaysRebootThenRestore(t *testing.T) {
 	if err != nil || res.Verdict != Left || !strings.Contains(strings.Join(res.Failed, " "), "can't be read back") ||
 		!strings.Contains(strings.Join(res.Failed, " "), "reboot, then run devicetest restore") {
 		t.Errorf("restore: %+v %v", res, err)
+	}
+}
+
+// A helper killed while it took the baseline leaves a cut one and no
+// change: nothing to compare, NOTHING-TO-RESTORE, the run closed.
+func TestACutBaselineWithNoChangeIsNothingToRestore(t *testing.T) {
+	surface := filepath.Join(tempDir(t), "surface.txt")
+	writeFile(t, surface, "route a\n")
+	f := newPendingRun(t, testSurfaces(surface), nil, thisBoot(t))
+	f.killed()
+	writeFile(t, filepath.Join(f.state, "run-"+f.run, snapshotFile(baselineName)), "")
+	if res, err := f.restore(); err != nil || res.Verdict != Nothing || f.pointer(leftFile) != "" {
+		t.Errorf("restore: %+v %v", res, err)
+	}
+}
+
+// A run record that names no boot is never taken for another boot's.
+func TestARunRecordWithNoBootIsRefused(t *testing.T) {
+	surface := filepath.Join(tempDir(t), "surface.txt")
+	writeFile(t, surface, "route a\n")
+	f := newPendingRun(t, testSurfaces(surface), nil, thisBoot(t))
+	f.killed()
+	if err := trusteddir.WriteFile(f.h.runDir, runInfoFile, mustJSON(runInfo{Run: f.run, Evidence: f.evidence})); err != nil {
+		t.Fatal(err)
+	}
+	for name, do := range map[string]func() (Result, error){
+		"restore": f.restore,
+		"forget":  func() (Result, error) { return forgetRun(t.Context(), f.cfg, f.run, "test") },
+	} {
+		if res, err := do(); err == nil || !strings.Contains(err.Error(), "no boot") || f.pointer(leftFile) != f.run {
+			t.Errorf("%s: %+v %v", name, res, err)
+		}
 	}
 }

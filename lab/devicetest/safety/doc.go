@@ -51,9 +51,10 @@
 //     pointer stay in root's state directory, and every later run is
 //     refused until `devicetest restore` replays the journal. A volatile
 //     change (kernel state: a capture, pf's rules) of an earlier boot is
-//     gone with that boot and isn't touched, its pid someone else's now; a
-//     persistent one is undone. The journal and the state directory are
-//     synced with F_FULLFSYNC on macOS, past the drive's cache.
+//     checked gone with that boot, never assumed, and nothing is changed
+//     in a boot the run never touched; a persistent one is undone. The
+//     journal and the state directory are synced with F_FULLFSYNC on
+//     macOS, past the drive's cache.
 //   - A result that doesn't close the run leaves it pending (a "left"
 //     pointer, on disk before the active one goes): no run starts until a
 //     restore closes it.
@@ -62,22 +63,28 @@
 //
 // CLEAN: every change undone and the host equal to the baseline. LEFT:
 // something differs or failed to undo, each item with what to do next.
-// REBOOT: what loading /etc/pf.conf controls (the main rules, nat rules
-// and skipped interfaces) still differs after the undo, the core's own pf
-// change surviving it; pf's state, Apple's anchors and thinkpol's guard
-// anchor are the system's and other apps', so a difference there is LEFT
-// with what to do, and DNS is reported only. Both keep the run pending.
-// NOTHING-TO-RESTORE: no run was pending, or the run didn't start (its
-// result says why); nothing was compared. RESET-BY-REBOOT: a pending run
-// restored in a later boot with no change of its own left in its journal
-// (each undone, or gone with the boot it was made in, as every volatile
-// change is) and the host still unlike the baseline: what differs is the
+// REBOOT: the core's own pf change survived its undo (the pf-skip undo's
+// two loads of /etc/pf.conf left what that sets unlike the baseline); any
+// other difference, whoever made it, is LEFT, and DNS is reported only.
+// Both keep the run pending. NOTHING-TO-RESTORE: no run was pending, or
+// the run didn't start (its result says why), or it was killed before it
+// took a baseline or made a change; nothing was compared. RESET-BY-REBOOT:
+// a pending run restored in a later boot, with no change of its own left
+// in its journal (each undone, or checked gone with the boot it was made
+// in) and the host not shown equal to the baseline: what differs is the
 // new boot's. FORGOTTEN: `devicetest restore -forget RUN`, the owner
-// naming a pending run in a later boot than its own, for what can't be
-// proven otherwise (a journal that doesn't read back, a baseline that
-// can't, a persistent change that can't be undone): it shows what the
-// journal still says and how the host compares now. The last four close
-// the run; only CLEAN says the host is as it was.
+// naming a pending run in a later boot than its own: the restore's undos
+// run first when its journal reads back, so only what no undo could
+// close is forgotten (a change of its own that can't be undone), and a
+// journal that doesn't read back is closed as it is; the result shows
+// what the undos did, what the journal still says and how the host
+// compares now, and proves nothing. CLEAN and the last three close the
+// run; only CLEAN says the host is as it was.
+//
+// One run is beyond both: one whose record (run.json) or directory can't
+// be opened, which no restore can replay and nothing can tell the boot of.
+// That is disk corruption, and root removes `active` and `left` from the
+// state directory by hand: the only step the harness leaves to a hand.
 //
 // # The pieces
 //
@@ -108,10 +115,12 @@
 // chooses, each written once: the baseline is never replaced, and a later
 // restore's snapshot takes a name of its own. On macOS they compare every
 // line of pf's main rules, nat rules, skipped interfaces (lo0 included),
+// pool limits and global timeouts (a ruleset load replaces those too),
 // Apple's AirDrop and Application Firewall anchors and thinkpol's guard
-// anchor, and pf's state; `scutil --dns` without its reach lines is
-// compared too, a difference there reported only. pf's references and its
-// list of anchors are recorded only. Before the comparison the restore
+// anchor, and pf's state; `scutil --dns` without its reach lines, and the
+// dummynet rules (whether pfctl lists them is for a device run to show),
+// are compared too, a difference there reported only. pf's references and
+// its list of anchors are recorded only. Before the comparison the restore
 // waits, in this order, for no thinkpol process (up to 60 s; an agent
 // releases its pf reference last, and that can turn pf off), then for the
 // guard's record to hold no reference of this boot (up to 30 s), and only
@@ -134,10 +143,13 @@
 // the stock rules, refused unless the rules loaded now are the baseline's,
 // they are among what /etc/pf.conf loads (`pfctl -n -v -f`; a pf.conf
 // edited and not loaded yet gives a false REBOOT, never a false CLEAN),
-// and nothing is skipped already. Its undo does nothing once the name
-// isn't skipped (a reboot or another app's load took it); while it is, it
-// loads /etc/pf.conf until what that sets matches the baseline, at most
-// twice.
+// and nothing is skipped already. The kernel takes a name ending in a
+// letter as a prefix (`lo` skips lo0), so its undo goes by the skipped
+// interfaces against the baseline, never by the name: skipped as at the
+// baseline, there is nothing to do (a reboot or another app's load took
+// the skip); otherwise, in the run's boot, it loads /etc/pf.conf until
+// what that sets matches the baseline, at most twice, and in a later boot
+// it loads nothing and fails.
 //
 // Its tests drive real processes, kill -9 and fsync, and in lab nodes
 // real root and tcpdump; on a Mac every host tool goes through a fake

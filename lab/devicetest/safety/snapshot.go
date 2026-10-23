@@ -31,9 +31,6 @@ type surface struct {
 	info bool
 	// next is what to do when it differs.
 	next string
-	// reboot: a difference left here is the core's own change surviving
-	// its undo, which only a reboot is sure to clear (REBOOT).
-	reboot bool
 }
 
 // snapshot is the host's surfaces at one moment, normalised. The raw
@@ -168,15 +165,6 @@ type Difference struct {
 	Unreadable string   `json:"unreadable,omitempty"`
 	Info       bool     `json:"info,omitempty"`
 	Next       string   `json:"next,omitempty"`
-	reboot     bool
-}
-
-func (d Difference) String() string {
-	if d.Unreadable != "" {
-		return fmt.Sprintf("%s: unreadable: %s", d.Surface, d.Unreadable)
-	}
-	return fmt.Sprintf("%s: %d lines gone, %d new (%s)", d.Surface, len(d.Missing), len(d.Extra),
-		strings.Join(append(slices.Clone(d.Missing), d.Extra...), " | "))
 }
 
 // diff compares now with base, surface by surface: the lines in order. A
@@ -187,7 +175,7 @@ func diff(sfs []surface, base, now *snapshot) []Difference {
 		if sf.norm == nil {
 			continue
 		}
-		d := Difference{Surface: sf.name, Info: sf.info, Next: sf.next, reboot: sf.reboot}
+		d := Difference{Surface: sf.name, Info: sf.info, Next: sf.next}
 		b, bok := base.Lines[sf.name]
 		n, nok := now.Lines[sf.name]
 		switch {

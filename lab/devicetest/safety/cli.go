@@ -76,7 +76,7 @@ func helperMain(ctx context.Context, args []string, state stateConfig, in io.Rea
 	if err == nil {
 		err = checkLaunched(*rootCopy, state)
 	}
-	if err == nil && (*uid < 0 || *gid < 0 || *budget <= 0 || *ev == "") {
+	if err == nil && (*run == "" || *uid < 0 || *gid < 0 || *budget <= 0 || *ev == "") {
 		err = errors.New("helper: -run, -evidence, -uid, -gid and -budget are needed")
 	}
 	if err == nil {

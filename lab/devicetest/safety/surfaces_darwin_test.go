@@ -60,9 +60,9 @@ func TestTheMacSurfacesReadPfctlAndScutil(t *testing.T) {
 	}
 }
 
-// What the restore makes of pf left with TP-096's skip: a reboot, never
-// a flush.
-func TestASkipLeftOverIsARebootAndDNSOnlyInformation(t *testing.T) {
+// A skip left over is LEFT with the reload to do (REBOOT is the undo's to
+// say), and DNS is information only.
+func TestASkipLeftOverSaysToReloadAndDNSIsOnlyInformation(t *testing.T) {
 	base := &snapshot{Lines: map[string][]string{}}
 	for _, sf := range surfaces() {
 		if sf.norm != nil {
@@ -75,21 +75,12 @@ func TestASkipLeftOverIsARebootAndDNSOnlyInformation(t *testing.T) {
 	for k, v := range base.Lines {
 		now.Lines[k] = v
 	}
-	now.Lines["pf-skip"] = []string{"lo"}
+	now.Lines["pf-skip"] = []string{"lo0"}
 	now.Lines["dns"] = []string{"resolver #1", "resolver #2"}
 	var res Result
-	for _, d := range diff(surfaces(), base, now) {
-		if d.Info {
-			res.Info = append(res.Info, d)
-		} else {
-			res.Left = append(res.Left, d)
-		}
-	}
+	res.addDiffs(diff(surfaces(), base, now))
 	if len(res.Left) != 1 || res.Left[0].Surface != "pf-skip" || res.Left[0].Next != nextPfReload || len(res.Info) != 1 {
 		t.Fatalf("%+v", res)
-	}
-	if v := verdict(res); v != Reboot {
-		t.Errorf("verdict %s", v)
 	}
 }
 
