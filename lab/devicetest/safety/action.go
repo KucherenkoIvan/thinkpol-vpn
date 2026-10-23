@@ -41,7 +41,8 @@ func (h *host) log(format string, a ...any) {
 // commandTimeout bounds every command the core runs.
 const commandTimeout = 30 * time.Second
 
-// output is what one command printed.
+// output is what one command printed. Err says it couldn't run or didn't
+// finish in time; an exit status is only Code.
 type output struct {
 	Stdout, Stderr []byte
 	Code           int
@@ -66,10 +67,18 @@ func run(ctx context.Context, argv []string, stdin []byte) output {
 	switch {
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
 		out.Err = fmt.Sprintf("%s: no answer within %v", strings.Join(argv, " "), commandTimeout)
-	case err != nil:
+	case err != nil && !errors.As(err, new(*exec.ExitError)):
 		out.Err = fmt.Sprintf("%s: %v", strings.Join(argv, " "), err)
 	}
 	return out
+}
+
+// failed is why out isn't a successful command's.
+func failed(out output) error {
+	if out.Err != "" {
+		return errors.New(out.Err)
+	}
+	return fmt.Errorf("exit %d: %s", out.Code, strings.Join(listingLines(out.Stderr), "; "))
 }
 
 // engine applies changes through the journal: nothing changes on the host

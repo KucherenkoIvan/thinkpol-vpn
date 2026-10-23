@@ -1,8 +1,6 @@
 package safety
 
 import (
-	"errors"
-	"fmt"
 	"strings"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/firewall"
@@ -42,13 +40,6 @@ func surfaces() []surface {
 		{name: "pf-anchors", argv: []string{pfctlPath, "-a", "com.apple", "-s", "Anchors"}},
 		{name: "dns", argv: []string{scutilPath, "--dns"}, norm: dnsWithoutReach, info: true, next: nextDNS},
 	}
-}
-
-func failed(out output) error {
-	if out.Err != "" {
-		return errors.New(out.Err)
-	}
-	return fmt.Errorf("exit %d: %s", out.Code, strings.Join(listingLines(out.Stderr), "; "))
 }
 
 // pfStatus is `pfctl -s info`'s Status, as the guard reads it.

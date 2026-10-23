@@ -120,3 +120,22 @@ func TestPfSkipIsRefusedWhenItsUndoWouldDropSomeonesRules(t *testing.T) {
 		}
 	}
 }
+
+// Through the command runner, as a snapshot reads it: pfctl's answer about
+// a missing anchor exits 1 and is an empty anchor; any other failure is
+// unreadable, never empty.
+func TestAMissingAnchorIsEmptyAndNothingElseIs(t *testing.T) {
+	sh := func(script string) output { return run(t.Context(), []string{"/bin/sh", "-c", script}, nil) }
+	if got, err := pfAnchor(sh(`echo "pfctl: DIOCGETRULES: Invalid argument" >&2; exit 1`)); err != nil || len(got) != 0 {
+		t.Errorf("the missing anchor's answer: %q %v", got, err)
+	}
+	for _, script := range []string{
+		`echo "pfctl: Operation not permitted" >&2; exit 1`,
+		`echo "pfctl: DIOCGETRULESETS: Invalid argument" >&2; exit 1`,
+		`exit 1`,
+	} {
+		if got, err := pfAnchor(sh(script)); err == nil {
+			t.Errorf("%s read as %q", script, got)
+		}
+	}
+}

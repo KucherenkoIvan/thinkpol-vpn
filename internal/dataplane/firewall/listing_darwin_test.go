@@ -13,8 +13,17 @@ func TestTheExportedReadersReadAsTheGuardDoes(t *testing.T) {
 	if got := SkippedNames([]byte("en0\nlo (skip)\nlo0 (skip)\nutun3\n")); !slices.Equal(got, []string{"lo", "lo0"}) {
 		t.Errorf("skipped names %q", got)
 	}
-	if !AnchorMissing([]byte("pfctl: DIOCGETRULES: Invalid argument\n")) || AnchorMissing([]byte("pfctl: Operation not permitted\n")) {
-		t.Error("the missing anchor's answer")
+	for stderr, missing := range map[string]bool{
+		"pfctl: DIOCGETRULES: Invalid argument\n":                                                             true,
+		"No ALTQ support in kernel\nALTQ related functions disabled\npfctl: DIOCGETRULES: Invalid argument\n": true,
+		"pfctl: Operation not permitted\n":                                                                    false,
+		"pfctl: DIOCGETRULESETS: Invalid argument\n":                                                          false,
+		"pfctl: DIOCGETRULES: Invalid argument\npfctl: DIOCGETADDRS: Invalid argument\n":                      false,
+		"": false,
+	} {
+		if got := AnchorMissing([]byte(stderr)); got != missing {
+			t.Errorf("%q read as a missing anchor: %v", stderr, got)
+		}
 	}
 	if on, err := ParsePfEnabled([]byte("Status: Disabled for 0 days 00:00:00\n")); err != nil || on {
 		t.Errorf("disabled: %v %v", on, err)
@@ -53,6 +62,13 @@ func TestAGuardReferenceIsHeldOnlyByThisBootsRecord(t *testing.T) {
 		if held, err := GuardReferenceHeld(dir); err != nil || held != tc.held {
 			t.Errorf("%s: held %v %v", tc.name, held, err)
 		}
+	}
+	odd := filepath.Join(base, "odd")
+	if err := os.MkdirAll(filepath.Join(odd, tokenRecord), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if held, err := GuardReferenceHeld(odd); err != nil || held {
+		t.Errorf("a record that is a directory: %v %v", held, err)
 	}
 	link := filepath.Join(base, "link")
 	if err := os.Mkdir(link, 0o700); err != nil {

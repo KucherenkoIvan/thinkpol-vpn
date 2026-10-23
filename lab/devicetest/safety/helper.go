@@ -281,8 +281,8 @@ func (r *runState) read(ctx context.Context, req Request) (int, error) {
 	}
 	out := run(ctx, argv, nil)
 	r.h.saveOutput(req.Name, argv, out)
-	if out.Err != "" {
-		return out.Code, errors.New(out.Err)
+	if out.Code != 0 || out.Err != "" {
+		return out.Code, failed(out)
 	}
 	return out.Code, nil
 }

@@ -22,14 +22,19 @@ func ParsePfEnabled(info []byte) (bool, error) { return parseEnabled(info) }
 // included.
 func SkippedNames(ifaces []byte) []string { return skippedNames(ifaces) }
 
-// AnchorMissing says pfctl's stderr is its answer about an anchor that
-// doesn't exist, which holds no rules.
-func AnchorMissing(stderr []byte) bool { return invalidArgument(pfOutput{stderr: stderr}) }
+// AnchorMissing says pfctl's stderr for `-a ANCHOR -s rules` is its
+// answer about an anchor that doesn't exist, and nothing else (ALTQ
+// chatter aside): such an anchor holds no rules. Any other failure, an
+// "Invalid argument" of another ioctl included, isn't that answer.
+func AnchorMissing(stderr []byte) bool {
+	l := lines(stderr)
+	return len(l) == 1 && l[0] == "pfctl: DIOCGETRULES: Invalid argument"
+}
 
 // GuardReferenceHeld says the guard's record in dir names a pf reference
 // taken in this boot: a missing directory or record, a record of another
-// boot, a symlink, a non-regular file or an unreadable record holds
-// nothing. It only reads: the directory is never made.
+// boot, a symlink, a non-regular file or a record that doesn't parse
+// holds nothing. It only reads: the directory is never made.
 func GuardReferenceHeld(dir string) (bool, error) {
 	boot, err := trusteddir.BootSession()
 	if err != nil {
