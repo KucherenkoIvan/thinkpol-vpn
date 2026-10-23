@@ -158,3 +158,4 @@ Round 3 (2026-10-23): correctness, style, design and second opinion: fix first. 
 - 2026-10-23 lab: `make lab-test` (LAB_P=4) green on 6012d17: the core's root tests in a lab node, and the whole runs through the real launch script and RootMain, the lab's run test asking root-restore for NOTHING-TO-RESTORE afterwards
 - 2026-10-23 in-progress → review
 - 2026-10-23 review → has-errors (round 3: R3.1–R3.11)
+- 2026-10-23 has-errors → in-progress — round 3 findings R3.1–R3.11, owner: agent-tp-082
