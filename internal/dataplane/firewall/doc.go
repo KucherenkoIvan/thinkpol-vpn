@@ -158,9 +158,16 @@
 // An anchor nothing evaluates guards nothing, so every apply and every
 // check reads the main ruleset (`pfctl -s rules`) first. Without a line
 // `anchor "com.apple/*"`, alone or with `all` (a narrowed one, `in`, `on
-// en0`, `inet`, doesn't count), the guard is unsupported
-// (`ipv6_guard_unsupported`, terminal for the connection, as a kernel
-// without nf_tables is on Linux), and nothing is loaded.
+// en0`, `inet`, doesn't count), nothing is loaded or enabled and the
+// apply fails, an ordinary failure: the health says
+// `ipv6_guard_not_enforced`, and the route table retries (every 5 s, and
+// on the guard's 10 s poll, which reports a failed apply), so the guard
+// goes in within seconds of the hook being there. The system loads
+// /etc/pf.conf as it boots, and an agent its service starts then
+// (connect-on-boot) may come first; a main ruleset replaced without the
+// hook may get it back. The device stays connected meanwhile, its routes
+// in place: only interface-bound IPv6 is unconfined until the hook is
+// there, where waiting to connect would send everything direct.
 //
 // With the hook there, three things still let IPv6 past the anchor, and
 // while one lasts the guard isn't enforced (`ipv6_guard_not_enforced`,
@@ -336,8 +343,8 @@
 // The Enforcer then puts back what changed: `pfctl -d`, a flush, an entry
 // added, a replaced main ruleset that still has the hook are undone within
 // about 10 s, not a second as on Linux; a bypass is reported within as
-// long. A main ruleset replaced without the hook makes the guard
-// unsupported.
+// long. A main ruleset replaced without the hook fails the guard until the
+// hook is back.
 //
 // # macOS: crashes and reboots
 //
@@ -388,8 +395,9 @@
 //     guard's is seen (above).
 //   - Undo what lets IPv6 past it (above): it reports it.
 //   - Confine IPv4: that is the kill switch's (TP-048).
-//   - Find the hook when the agent starts at boot before the system loads
-//     /etc/pf.conf: a race for TP-046's service install to check.
+//   - Confine interface-bound IPv6 while the main ruleset has no hook (at
+//     boot, before the system has loaded /etc/pf.conf; or replaced): it
+//     waits for the hook.
 //
 // On a device the guard loads and passes its own check; that it blocks
 // its leak paths is not yet proven on a device (TP-096).

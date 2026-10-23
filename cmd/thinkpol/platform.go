@@ -30,8 +30,9 @@ func platform() agent.Platform {
 				SystemUpstreams: dns.SystemUpstreams,
 			},
 		},
-		LockHost:   agent.HostLock,
-		RestoreDNS: dns.RestoreSystem,
+		LockHost:      agent.HostLock,
+		RestoreDNS:    dns.RestoreSystem,
+		ConnectRecord: agent.HostConnectRecord(),
 		Inspect: agent.Inspector{
 			Interface: netcfg.InspectInterface,
 			Routes:    netcfg.Inspect,

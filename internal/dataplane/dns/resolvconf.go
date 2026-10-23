@@ -490,9 +490,13 @@ func (r *resolvConf) Restore() error {
 }
 
 // restoreResolvConf puts back the original a managed resolv.conf holds;
-// any other file is left alone.
+// any other file is left alone, and so is none at all: nothing to put
+// back.
 func restoreResolvConf(path string) error {
 	fi, err := os.Lstat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
 	if err != nil || !fi.Mode().IsRegular() {
 		return err
 	}

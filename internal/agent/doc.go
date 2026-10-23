@@ -1,9 +1,9 @@
 // Package agent is the node agent, on servers and devices alike: it
 // follows its space's maps and applies each, runs the data plane, and
 // hands `thinkpol up` what runs the node next to the local API (package
-// localapi). Server-only parts live in agent/supervisor and agent/worker.
-// Not yet: installing itself as a service (TP-046) and updating itself
-// (TP-044).
+// localapi). Server-only parts live in agent/supervisor and agent/worker;
+// installing it as the host's service is agent/service's. Not yet:
+// updating itself (TP-044).
 //
 // # Engine and agent
 //
@@ -160,6 +160,23 @@
 // refuses both ([ErrServerMode]). A device whose node returned (stopped,
 // or its first start failed) reads disconnected.
 //
+// The service sets -connect-on-boot (THINKPOL_CONNECT_ON_BOOT, on or
+// off; PRD D5: off unless the member turns it on). With it a device keeps
+// its connect choice for the boot ([ConnectRecord]: [ConnectRecordFile]
+// next to the host's agent lock, stamped with the boot session): the
+// first start of a boot (no record, or one of an earlier boot) connects
+// if connect-on-boot is on and records that; each Connect and Disconnect
+// is recorded before it is acted on, and a Connect that fails, leaving the
+// device down, records it down again. A later start in the same boot
+// follows the record: a crash and the service's restart neither drop a
+// connected member (whose traffic would go direct) nor undo their
+// disconnect, whatever connect-on-boot says by then. Connect-on-boot needs
+// the local API, without which nothing could change the choice (Validate
+// refuses it). Run by hand, without it, -connect decides every start and
+// nothing is recorded. A record that can't be written is logged and the
+// node goes ahead; one that can't be read is logged and connect-on-boot
+// decides.
+//
 // A rule preset chosen through the local API ([Node.SetRulePreset]) is
 // stored in [LocalRulesFile] in the state directory, then handed to the
 // engine ([dataplane.Engine.SetRules]); every start takes it as
@@ -238,6 +255,9 @@
 //     they are under /run (/run/thinkpol, /run/thinkpol-api), a tmpfs; on
 //     macOS, which has none, under /private/var/db (thinkpol,
 //     thinkpol-api), on disk.
+//   - Under the service (-connect-on-boot), a device's connect choice for
+//     the boot ([ConnectRecordFile], above), next to the agent's lock,
+//     stamped with the boot session.
 //   - On macOS, records under /private/var/db/thinkpol: netcfg's route
 //     records (netcfg/<owner>.routes, next to <owner>.lock), which list
 //     the routes it added, the link endpoints' addresses among them, and

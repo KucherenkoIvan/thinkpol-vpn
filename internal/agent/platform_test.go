@@ -55,9 +55,10 @@ func testHost() Host {
 
 func testPlatform() Platform {
 	return Platform{
-		Host:       testHost(),
-		LockHost:   func() (func(), error) { return func() {}, nil },
-		RestoreDNS: func() error { return nil },
+		Host:          testHost(),
+		LockHost:      func() (func(), error) { return func() {}, nil },
+		RestoreDNS:    func() error { return nil },
+		ConnectRecord: &memConnectRecord{},
 		Inspect: Inspector{
 			Interface: func(string) netcfg.InterfaceReport {
 				return netcfg.InterfaceReport{Unreadable: "no interfaces in this test"}
@@ -191,3 +192,23 @@ type noRouteTable struct{}
 func (noRouteTable) Enforce(context.Context, routetable.Want) error { return nil }
 func (noRouteTable) Status() routetable.Status                      { return routetable.Status{Enforced: true} }
 func (noRouteTable) Close() error                                   { return nil }
+
+// memConnectRecord is a ConnectRecord in memory, of one boot.
+type memConnectRecord struct {
+	mu      sync.Mutex
+	connect bool
+	ok      bool
+}
+
+func (r *memConnectRecord) Load() (bool, bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.connect, r.ok, nil
+}
+
+func (r *memConnectRecord) Save(connect bool) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.connect, r.ok = connect, true
+	return nil
+}

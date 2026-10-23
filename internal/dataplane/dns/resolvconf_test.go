@@ -689,6 +689,14 @@ func TestALeftoverIsRestoredAtStart(t *testing.T) {
 	if err := restoreResolvConf(path); err != nil || readString(t, path) != isp {
 		t.Errorf("a file the node doesn't manage changed: %v", err)
 	}
+	// No file at all: nothing to put back, and none made.
+	missing := filepath.Join(t.TempDir(), "resolv.conf")
+	if err := restoreResolvConf(missing); err != nil {
+		t.Errorf("no resolv.conf: %v", err)
+	}
+	if _, err := os.Lstat(missing); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a resolv.conf was made: %v", err)
+	}
 }
 
 // taggedUnprotected is ErrUnprotected itself, whatever it wraps.

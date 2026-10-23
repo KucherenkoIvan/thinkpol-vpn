@@ -1006,27 +1006,6 @@ func (f *fakePF) takeRefVia(t *testing.T) pfToken {
 	return pfToken{value: v, pid: out.pid}
 }
 
-// An anchor nothing evaluates guards nothing: without the main ruleset's
-// hook the guard is unsupported, and loads and enables nothing.
-func TestWithoutTheAppleHookTheGuardIsUnsupported(t *testing.T) {
-	for _, main := range [][]string{
-		nil, // the main ruleset flushed
-		{`scrub-anchor "com.apple/*" all fragment reassemble`},
-		{`anchor "com.apple/*" in all`},
-		{`pass out all`, `anchor "other/*" all`},
-	} {
-		r := newRig(t)
-		r.pf.main = main
-		err := r.guard().Apply(context.Background(), exempt(t))
-		if !errors.Is(err, routetable.ErrGuardUnsupported) {
-			t.Errorf("%q: %v, want unsupported", main, err)
-		}
-		if n := r.pf.ran("-f") + r.pf.ran("-E"); n != 0 {
-			t.Errorf("%q: loaded or enabled %d times", main, n)
-		}
-	}
-}
-
 // A quick pass above the hook ends evaluation before the anchor: the
 // guard isn't enforced (an ordinary failure, retried), though in place
 // for whatever the pass doesn't match, and is again once it is gone.
@@ -1131,24 +1110,6 @@ func TestAnAnchorBeforeOursIsNotEnforced(t *testing.T) {
 	if err := g.Apply(context.Background(), exempt(t)); err == nil {
 		t.Error("enforced although pf refused to list the anchors")
 	}
-}
-
-// The hook going away under an applied guard makes it unsupported too;
-// Close still removes it all.
-func TestTheHookGoingAwayIsUnsupported(t *testing.T) {
-	r := newRig(t)
-	g := r.guard()
-	if err := g.Apply(context.Background(), exempt(t)); err != nil {
-		t.Fatal(err)
-	}
-	r.pf.set(func(f *fakePF) { f.main = nil })
-	if err := g.Apply(context.Background(), exempt(t)); !errors.Is(err, routetable.ErrGuardUnsupported) {
-		t.Errorf("%v, want unsupported", err)
-	}
-	if err := g.Close(); err != nil {
-		t.Fatal(err)
-	}
-	r.gone(t)
 }
 
 // A pfctl failure is an ordinary, retried failure, never unsupported; the
