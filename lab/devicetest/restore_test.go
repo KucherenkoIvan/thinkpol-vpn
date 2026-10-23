@@ -1,0 +1,40 @@
+//go:build darwin || linux
+
+package main
+
+import (
+	"bytes"
+	"errors"
+	"strings"
+	"testing"
+)
+
+// What `devicetest restore` tells the owner: only CLEAN, or nothing
+// pending, ends well; a verdict that keeps the run pending is an error.
+func TestTheRestoreSaysWhetherTheNextRunMayStart(t *testing.T) {
+	for _, tc := range []struct {
+		name, out, says string
+		ok              bool
+	}{
+		{"clean", `{"id":0,"ok":true,"result":{"verdict":"CLEAN","by":"x","run":"r1"}}`, "CLEAN, run r1 restored", true},
+		{"nothing pending", `{"id":0,"ok":true,"result":{"verdict":"NOTHING-TO-RESTORE","by":"x"}}`, "nothing was compared", true},
+		{"left", `{"id":0,"ok":true,"result":{"verdict":"LEFT","by":"x","run":"r1"}}`, "THE MAC ISN'T AS IT WAS (LEFT)", false},
+		{"reboot", `{"id":0,"ok":true,"result":{"verdict":"REBOOT","by":"x","run":"r1"}}`, "THE MAC ISN'T AS IT WAS (REBOOT)", false},
+		{"an error", `{"id":0,"ok":false,"err":"left: is a directory","result":{"verdict":"","by":""}}`, "failed: left: is a directory", false},
+		{"no answer", ``, "", false},
+	} {
+		var w bytes.Buffer
+		err := reportRestore(&w, []byte(tc.out), nil)
+		if (err == nil) != tc.ok || !strings.Contains(w.String(), tc.says) {
+			t.Errorf("%s: %v\n%s", tc.name, err, w.String())
+		}
+		if tc.out != "" && !tc.ok && !errors.Is(err, errReported) {
+			t.Errorf("%s: printed, yet main would print %v again", tc.name, err)
+		}
+	}
+	var w bytes.Buffer
+	_ = reportRestore(&w, []byte(`{"id":0,"ok":true,"result":{"verdict":"CLEAN","by":"x"}}`), nil)
+	if !strings.Contains(w.String(), `"verdict": "CLEAN"`) {
+		t.Errorf("the result isn't printed as the checklist reads it:\n%s", w.String())
+	}
+}

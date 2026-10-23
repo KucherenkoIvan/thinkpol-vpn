@@ -157,8 +157,12 @@ func openRunState(cfg helperConfig) (*runState, error) {
 	if err != nil {
 		return nil, fmt.Errorf("another devicetest helper runs: %w", err)
 	}
-	if run, err := pendingRun(state); err != nil || run != "" {
-		return nil, fmt.Errorf("run %q is pending a restore: run `devicetest restore` first (%v)", run, err)
+	run, err := pendingRun(state)
+	if err != nil {
+		return nil, fmt.Errorf("the run pending a restore: %w", err)
+	}
+	if run != "" {
+		return nil, fmt.Errorf("run %q is pending a restore: run `devicetest restore` first", run)
 	}
 	ev, err := openEvidence(cfg.evidence, cfg.uid, cfg.gid)
 	if err != nil {

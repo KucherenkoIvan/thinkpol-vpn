@@ -63,6 +63,9 @@ func cmdRun(ctx context.Context, args []string) error {
 	if !ok {
 		return fmt.Errorf("no plan for %s (devicetest plans)", args[0])
 	}
+	if err := p.Validate(); err != nil {
+		return err
+	}
 	phys := *iface
 	if phys == "" {
 		var err error
@@ -348,6 +351,33 @@ func cmdRestore() error {
 	}
 	cmd.Stderr = os.Stderr
 	out, err := cmd.Output()
-	_, _ = os.Stdout.Write(out)
-	return err
+	return reportRestore(os.Stdout, out, err)
+}
+
+// reportRestore prints root-restore's answer (out) for the owner: the
+// result, then what it means. Only CLEAN and nothing pending end well; any
+// other verdict keeps the run pending and blocks the next.
+func reportRestore(w io.Writer, out []byte, runErr error) error {
+	var resp safety.Response
+	if jerr := json.Unmarshal(out, &resp); jerr != nil || resp.Result == nil {
+		_, _ = w.Write(out)
+		return errors.Join(fmt.Errorf("root-restore gave no result: %q", out), runErr)
+	}
+	b, _ := json.MarshalIndent(resp.Result, "", "  ")
+	_, _ = fmt.Fprintf(w, "%s\n", b)
+	res := resp.Result
+	switch {
+	case !resp.OK:
+		_, _ = fmt.Fprintf(w, "devicetest restore failed: %s\n", resp.Err)
+	case res.Verdict == safety.Clean:
+		_, _ = fmt.Fprintf(w, "devicetest restore: CLEAN, run %s restored; a new run may start\n", res.Run)
+		return nil
+	case res.Verdict == safety.Nothing:
+		_, _ = fmt.Fprintf(w, "devicetest restore: %s, no run was pending; nothing was compared\n", res.Verdict)
+		return nil
+	default:
+		_, _ = fmt.Fprintf(w, "THE MAC ISN'T AS IT WAS (%s): do what each item's \"next\" says, then run devicetest restore again; "+
+			"no run starts until one says CLEAN\n", res.Verdict)
+	}
+	return errReported
 }
