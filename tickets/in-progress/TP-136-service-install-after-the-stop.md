@@ -60,3 +60,4 @@ Round 2 (2026-10-23): correctness (merge), design (fix first), second opinion (f
 - 2026-10-23 round 1 done: R1.1-R1.4 fixed; `make lint` and `make test` green; the lab's TestServiceUnderSystemd green on b2f6da1. Not verified on a Mac: launchd's answers (EIO on a bootstrap that loaded the job, print's exit 113) are tested with the fake
 - 2026-10-23 in-progress → review
 - 2026-10-23 review → has-errors (round 2: R2.1–R2.3)
+- 2026-10-23 has-errors → in-progress — owner: agent-tp-136, round 2 fixes (R2.1-R2.3)
