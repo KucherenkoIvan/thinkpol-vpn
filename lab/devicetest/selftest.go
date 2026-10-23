@@ -63,7 +63,7 @@ func (r *runner) selfTest(ctx context.Context) error {
 	defer cancel()
 	check := r.checkCapture(ctx, r.plan.Capture)
 	took := time.Since(start)
-	_ = r.ev.WriteJSON("selftest/selftest.json", map[string]any{"took": took.String(), "budget": selfTestBudget.String(), "capture": check})
+	r.ev.WriteJSON("selftest/selftest.json", map[string]any{"took": took.String(), "budget": selfTestBudget.String(), "capture": check})
 	if !check.OK {
 		return fmt.Errorf("the capture on %s: %s", check.Iface, check.Why)
 	}
@@ -152,7 +152,7 @@ func (r *runner) sendMarkers(ctx context.Context, res *captureCheck, bcast netip
 func (r *runner) sendMarker(conn *net.UDPConn, to netip.AddrPort, res *captureCheck, n, control string) error {
 	payload := fmt.Sprintf("%s%s %s", safety.MarkerPrefix, r.runID, n)
 	_, err := conn.WriteToUDPAddrPort([]byte(payload), to)
-	_ = r.ev.AppendJSONL("captures/markers.jsonl", map[string]any{"time": time.Now().UTC(), "iface": res.Iface,
+	r.ev.AppendJSONL("captures/markers.jsonl", map[string]any{"time": time.Now().UTC(), "iface": res.Iface,
 		"control": control, "nonce": n, "to": to.String(), "error": errString(err)})
 	if err != nil {
 		return fmt.Errorf("sending the %s marker: %w", control, err)
@@ -169,8 +169,8 @@ func (r *runner) checkDecode(ctx context.Context, res *captureCheck) error {
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
-	_ = r.ev.WriteFile(res.Decode, stdout.Bytes())
-	_ = r.ev.WriteFile(res.Decode+".err", stderr.Bytes())
+	r.ev.WriteFile(res.Decode, stdout.Bytes())
+	r.ev.WriteFile(res.Decode+".err", stderr.Bytes())
 	return decodedMarkers(stdout.Bytes(), res.Positive, res.Negative, err)
 }
 

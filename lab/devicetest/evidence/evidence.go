@@ -65,16 +65,15 @@ func (f *Folder) Failed() int {
 }
 
 // counted counts err, a failed write of rel, and says it in the
-// transcript.
-func (f *Folder) counted(rel string, err error) error {
+// transcript: the one place a failed write is handled.
+func (f *Folder) counted(rel string, err error) {
 	if err == nil {
-		return nil
+		return
 	}
 	f.mu.Lock()
 	f.failed++
 	f.mu.Unlock()
 	f.Logf("evidence: %s not written: %v", rel, err)
-	return err
 }
 
 // Create makes the folder for a run of ticket started at now:
@@ -132,9 +131,7 @@ func (f *Folder) Ask(in *bufio.Reader, question string) (string, error) {
 	answer = strings.TrimSpace(answer)
 	f.Logf("asked: %s answered: %q", question, answer)
 	note := fmt.Sprintf("- %s %s: %q\n", time.Now().UTC().Format(time.RFC3339), question, answer)
-	if werr := f.appendFile("notes.md", []byte(note)); werr != nil {
-		f.Logf("notes.md: %v", werr)
-	}
+	f.counted("notes.md", f.appendFile("notes.md", []byte(note)))
 	if err != nil && answer == "" {
 		return "", err
 	}
@@ -142,9 +139,9 @@ func (f *Folder) Ask(in *bufio.Reader, question string) (string, error) {
 }
 
 // WriteFile writes rel (its directories made), which must not exist. A
-// failure is counted (Failed).
-func (f *Folder) WriteFile(rel string, data []byte) error {
-	return f.counted(rel, f.writeFile(rel, data))
+// failure is counted (Failed) and named in the transcript.
+func (f *Folder) WriteFile(rel string, data []byte) {
+	f.counted(rel, f.writeFile(rel, data))
 }
 
 func (f *Folder) writeFile(rel string, data []byte) error {
@@ -164,21 +161,21 @@ func (f *Folder) writeFile(rel string, data []byte) error {
 }
 
 // WriteJSON writes v, indented, to rel. A failure is counted (Failed).
-func (f *Folder) WriteJSON(rel string, v any) error {
+func (f *Folder) WriteJSON(rel string, v any) {
 	b, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		return f.counted(rel, err)
+	if err == nil {
+		err = f.writeFile(rel, append(b, '\n'))
 	}
-	return f.WriteFile(rel, append(b, '\n'))
+	f.counted(rel, err)
 }
 
 // AppendJSONL appends v as one line to rel. A failure is counted (Failed).
-func (f *Folder) AppendJSONL(rel string, v any) error {
+func (f *Folder) AppendJSONL(rel string, v any) {
 	b, err := json.Marshal(v)
 	if err == nil {
 		err = f.appendFile(rel, append(b, '\n'))
 	}
-	return f.counted(rel, err)
+	f.counted(rel, err)
 }
 
 func (f *Folder) appendFile(rel string, data []byte) error {

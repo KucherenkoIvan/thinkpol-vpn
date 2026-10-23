@@ -55,15 +55,18 @@
 //     restore, raw); actions/ (what each change ran); restore/ and
 //     journal/. Captures keep 128 bytes a packet and are never deleted:
 //     the evidence is the owner's, kept privately. Root's own state
-//     directory keeps the newest 10 runs' journals and snapshots.
+//     directory keeps the newest 10 runs' journals and snapshots;
+//   - nothing that acts at boot: reboot tests print a recovery sheet for
+//     the owner instead.
 //
 // "recorded" in the last line means every evidence file the user side
 // wrote was written, never that anything passed: an agent judges the
 // folder against the ticket's checklist afterwards. Any write that failed
 // is named in harness.log, and the last line says "INCOMPLETE (N evidence
-// files failed)" instead. The root side's own evidence writes that fail
-// are said in the helper's log on the terminal. Reboot tests print a recovery sheet for the owner
-// instead of installing anything that acts at boot.
+// files failed)" instead; the root side's own failed writes are said in
+// the helper's log on the terminal. A run whose helper gave no result
+// waits up to 2 minutes for its dead-man's, and says UNKNOWN (run
+// devicetest restore) when none comes.
 //
 // # How a plan is written
 //

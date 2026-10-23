@@ -68,14 +68,14 @@ func TestOneTerminalWithTimestamps(t *testing.T) {
 	if notes, _ := os.ReadFile(filepath.Join(f.Path, "notes.md")); !bytes.Contains(notes, []byte(`Type yes:: "yes"`)) {
 		t.Errorf("notes.md: %s", notes)
 	}
-	if err := f.WriteFile("../out", nil); err == nil {
-		t.Error("wrote outside the folder")
+	f.WriteFile("../out", nil)
+	if _, err := os.Stat(filepath.Join(filepath.Dir(f.Path), "out")); err == nil || f.Failed() != 1 {
+		t.Errorf("wrote outside the folder: failed %d", f.Failed())
 	}
-	if err := f.WriteFile("steps/01-stock/a.out", []byte("x")); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.WriteFile("steps/01-stock/a.out", []byte("y")); err == nil {
-		t.Error("replaced a file")
+	f.WriteFile("steps/01-stock/a.out", []byte("x"))
+	f.WriteFile("steps/01-stock/a.out", []byte("y"))
+	if b, _ := os.ReadFile(filepath.Join(f.Path, "steps/01-stock/a.out")); string(b) != "x" || f.Failed() != 2 {
+		t.Errorf("replaced a file: %q, failed %d", b, f.Failed())
 	}
 }
 
@@ -88,13 +88,20 @@ func TestAFailedWriteIsCountedAndSaid(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = f.Close() }()
-	if err := f.WriteFile("a.txt", []byte("1")); err != nil || f.Failed() != 0 {
-		t.Fatalf("a write: %v, failed %d", err, f.Failed())
+	if f.WriteFile("a.txt", []byte("1")); f.Failed() != 0 {
+		t.Fatalf("a write failed %d", f.Failed())
 	}
-	_ = f.WriteFile("a.txt", []byte("2"))             // exists already
-	_ = f.WriteJSON("b.json", func() {})              // doesn't marshal
-	_ = f.AppendJSONL("../c.jsonl", map[string]int{}) // a bad name
+	f.WriteFile("a.txt", []byte("2"))             // exists already
+	f.WriteJSON("b.json", func() {})              // doesn't marshal
+	f.AppendJSONL("../c.jsonl", map[string]int{}) // a bad name
 	if f.Failed() != 3 || !strings.Contains(term.String(), "evidence: a.txt not written") {
 		t.Errorf("failed %d:\n%s", f.Failed(), term.String())
+	}
+	// The owner's answer goes to notes.md too: that write counts.
+	if err := os.Mkdir(filepath.Join(f.Path, "notes.md"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Ask(bufio.NewReader(strings.NewReader("yes\n")), "Type yes:"); err != nil || f.Failed() != 4 {
+		t.Errorf("notes.md unwritable: %v, failed %d", err, f.Failed())
 	}
 }

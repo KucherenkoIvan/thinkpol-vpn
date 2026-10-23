@@ -30,7 +30,7 @@ func TestTheRestoreSaysWhetherTheNextRunMayStart(t *testing.T) {
 		{"no answer", ``, "", false},
 	} {
 		var w bytes.Buffer
-		err := reportRestore(&w, []byte(tc.out), nil)
+		err := reportRestore(&w, []byte(tc.out), nil, false)
 		if (err == nil) != tc.ok || !strings.Contains(w.String(), tc.says) {
 			t.Errorf("%s: %v\n%s", tc.name, err, w.String())
 		}
@@ -42,8 +42,30 @@ func TestTheRestoreSaysWhetherTheNextRunMayStart(t *testing.T) {
 		}
 	}
 	var w bytes.Buffer
-	_ = reportRestore(&w, []byte(`{"id":0,"ok":true,"result":{"verdict":"CLEAN","by":"x"}}`), nil)
+	_ = reportRestore(&w, []byte(`{"id":0,"ok":true,"result":{"verdict":"CLEAN","by":"x"}}`), nil, false)
 	if !strings.Contains(w.String(), `"verdict": "CLEAN"`) {
 		t.Errorf("the result isn't printed as the checklist reads it:\n%s", w.String())
+	}
+}
+
+// What the restore says when a run closed with nothing to compare, when a
+// step after a closing verdict failed, and when -forget itself failed.
+func TestTheRestoreSaysWhatClosedAndWhatFailed(t *testing.T) {
+	for _, tc := range []struct {
+		name, out, says string
+		forget, ok      bool
+	}{
+		{"a run with nothing to compare", `{"id":0,"ok":true,"result":{"verdict":"NOTHING-TO-RESTORE","by":"x","run":"r1"}}`,
+			"run r1 closed: it made no change and had no baseline to compare with", false, true},
+		{"a closing verdict, a step failed", `{"id":0,"ok":false,"err":"remove /private/tmp/tpdt.x: busy","result":{"verdict":"CLEAN","by":"x","run":"r1"}}`,
+			"CLEAN, run r1 closed; one step after it failed: remove /private/tmp/tpdt.x: busy", false, false},
+		{"-forget failed", `{"id":0,"ok":false,"err":"run.json: no such file","result":{"verdict":"","by":"x","run":"r1"}}`,
+			`see lab/devicetest/safety/doc.go, "Verdicts"`, true, false},
+	} {
+		var w bytes.Buffer
+		err := reportRestore(&w, []byte(tc.out), nil, tc.forget)
+		if (err == nil) != tc.ok || !strings.Contains(w.String(), tc.says) || strings.Contains(w.String(), "stays pending") {
+			t.Errorf("%s: %v\n%s", tc.name, err, w.String())
+		}
 	}
 }

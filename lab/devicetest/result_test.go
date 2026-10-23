@@ -66,8 +66,8 @@ func TestTheLastLineSaysIncompleteWhenEvidenceFailed(t *testing.T) {
 	if !strings.Contains(term.String(), "TP-900 recorded:") {
 		t.Errorf("all written:\n%s", term.String())
 	}
-	_ = ev.WriteFile("plan.txt", nil)
-	_ = ev.WriteFile("plan.txt", nil) // exists: fails
+	ev.WriteFile("plan.txt", nil)
+	ev.WriteFile("plan.txt", nil) // exists: fails
 	term.Reset()
 	r.report(safety.Result{Verdict: safety.Clean, Run: "r1"}, nil, 0, "ok")
 	if !strings.Contains(term.String(), "TP-900 INCOMPLETE (1 evidence files failed):") {

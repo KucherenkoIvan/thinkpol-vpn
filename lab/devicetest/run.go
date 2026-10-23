@@ -124,7 +124,7 @@ func (r *runner) run(ctx context.Context, base string) error {
 	}
 	defer func() { _ = ev.Close() }()
 	r.ev = ev
-	_ = ev.WriteFile("plan.txt", []byte(list))
+	ev.WriteFile("plan.txt", []byte(list))
 	answer, err := ev.Ask(r.in, "Type yes to run it (sudo asks for your password next):")
 	if err != nil || answer != "yes" {
 		ev.Logf("not run: nothing changed")
@@ -153,7 +153,7 @@ func (r *runner) run(ctx context.Context, base string) error {
 		res = r.resultFromEvidence()
 	}
 	rec.Restore, rec.Ended = res, time.Now().UTC()
-	_ = ev.WriteJSON("run.json", rec)
+	ev.WriteJSON("run.json", rec)
 	r.report(*res, rerr, steps, rec.SelfTest)
 	if err != nil || rerr != nil || res.Verdict != safety.Clean {
 		return errReported
@@ -256,9 +256,9 @@ func (r *runner) steps(ctx context.Context) (int, error) {
 	for i, st := range r.plan.Steps {
 		dir := fmt.Sprintf("steps/%02d-%s", i+1, st.Name)
 		r.ev.Logf("step %d %s", i+1, st.Name)
-		_ = r.ev.AppendJSONL("captures/markers.jsonl", map[string]any{"time": time.Now().UTC(), "step": st.Name, "event": "start"})
+		r.ev.AppendJSONL("captures/markers.jsonl", map[string]any{"time": time.Now().UTC(), "step": st.Name, "event": "start"})
 		err := r.step(ctx, dir, st)
-		_ = r.ev.AppendJSONL("captures/markers.jsonl", map[string]any{"time": time.Now().UTC(), "step": st.Name, "event": "end"})
+		r.ev.AppendJSONL("captures/markers.jsonl", map[string]any{"time": time.Now().UTC(), "step": st.Name, "event": "end"})
 		r.saveDiag(ctx, dir)
 		if err != nil {
 			return i, err
@@ -328,7 +328,7 @@ func slug(argv []string) string {
 // none (never an empty file).
 func (r *runner) saveDiag(ctx context.Context, dir string) {
 	if r.thinkpol == "" {
-		_ = r.ev.WriteFile(dir+"/diag.error", []byte("not available: no -thinkpol binary given\n"))
+		r.ev.WriteFile(dir+"/diag.error", []byte("not available: no -thinkpol binary given\n"))
 		return
 	}
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
@@ -338,10 +338,10 @@ func (r *runner) saveDiag(ctx context.Context, dir string) {
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil || len(out) == 0 {
-		_ = r.ev.WriteFile(dir+"/diag.error", fmt.Appendf(nil, "thinkpol diag: %v\n%s", err, stderr.String()))
+		r.ev.WriteFile(dir+"/diag.error", fmt.Appendf(nil, "thinkpol diag: %v\n%s", err, stderr.String()))
 		return
 	}
-	_ = r.ev.WriteFile(dir+"/diag.json", out)
+	r.ev.WriteFile(dir+"/diag.json", out)
 }
 
 func (r *runner) report(res safety.Result, err error, steps int, selfTest string) {
@@ -389,7 +389,12 @@ func cmdRestore(args []string) error {
 	}
 	cmd.Stderr = os.Stderr
 	out, err := cmd.Output()
-	return reportRestore(os.Stdout, out, err)
+	return reportRestore(os.Stdout, out, err, *forget != "")
+}
+
+// closesRun says verdict v closes the run it names (the core's closes).
+func closesRun(v string) bool {
+	return v == safety.Clean || v == safety.Nothing || v == safety.ResetByReboot || v == safety.Forgotten
 }
 
 // stillPending says how a run left pending gets closed.
@@ -407,7 +412,7 @@ func stillPending(run string) string {
 // result, then what it means. CLEAN, nothing pending, RESET-BY-REBOOT and
 // FORGOTTEN let the next run start, each said for what it is; any other
 // verdict keeps the run pending and blocks the next.
-func reportRestore(w io.Writer, out []byte, runErr error) error {
+func reportRestore(w io.Writer, out []byte, runErr error, forget bool) error {
 	var resp safety.Response
 	if jerr := json.Unmarshal(out, &resp); jerr != nil || resp.Result == nil {
 		_, _ = w.Write(out)
@@ -419,6 +424,12 @@ func reportRestore(w io.Writer, out []byte, runErr error) error {
 		_, _ = fmt.Fprintf(w, "%s\n", b)
 	}
 	switch {
+	case !resp.OK && closesRun(res.Verdict):
+		_, _ = fmt.Fprintf(w, "devicetest restore: %s, run %s closed; one step after it failed: %s\n", res.Verdict, res.Run, resp.Err)
+	case !resp.OK && forget:
+		_, _ = fmt.Fprintf(w, "devicetest restore -forget failed: %s\n", resp.Err)
+		_, _ = fmt.Fprintln(w, "if it fails this way after a reboot too, because the run's record or directory can't be opened, "+
+			"see lab/devicetest/safety/doc.go, \"Verdicts\": the one case neither a restore nor -forget can close")
 	case !resp.OK:
 		_, _ = fmt.Fprintf(w, "devicetest restore failed: %s\n", resp.Err)
 		if res.Run != "" {
@@ -427,6 +438,9 @@ func reportRestore(w io.Writer, out []byte, runErr error) error {
 		}
 	case res.Verdict == safety.Clean:
 		_, _ = fmt.Fprintf(w, "devicetest restore: CLEAN, run %s restored; a new run may start\n", res.Run)
+		return nil
+	case res.Verdict == safety.Nothing && res.Run != "":
+		_, _ = fmt.Fprintf(w, "devicetest restore: %s, run %s closed: it made no change and had no baseline to compare with\n", res.Verdict, res.Run)
 		return nil
 	case res.Verdict == safety.Nothing:
 		_, _ = fmt.Fprintf(w, "devicetest restore: %s, no run was pending; nothing was compared\n", res.Verdict)
