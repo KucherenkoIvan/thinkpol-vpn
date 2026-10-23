@@ -56,6 +56,21 @@ func TestServiceUnderSystemd(t *testing.T) {
 	dev.MustExec(t, "useradd", "-M", "-u", aliceUID, "alice")
 	resolvConf := dev.MustExec(t, "cat", "/etc/resolv.conf")
 
+	// What systemd answers a stop of a unit it doesn't have at all: exit
+	// 5, "not loaded", which the installer reads as stopped.
+	if res, err := execResult(dev, execTimeout, "systemctl", "stop", "thinkpol.service"); err == nil || res.ExitCode != 5 || !strings.Contains(res.Stderr, " not loaded") {
+		t.Fatalf("stopping a unit systemd doesn't have: exit %d, %v\n%s", res.ExitCode, err, res.Stderr)
+	}
+	// A unit file an install wrote and then died before starting: on
+	// disk, never daemon-reloaded. systemd 252 loads it for the stop and
+	// answers 0 (the image is pinned by digest, so a systemd that answers
+	// otherwise is a change to notice here, and the installer's reading
+	// of "not loaded" to check); the install below stops it the same way.
+	dev.WriteFile(t, "/etc/systemd/system/thinkpol.service", []byte("[Service]\nExecStart=/bin/true\n"))
+	if res, err := execResult(dev, execTimeout, "systemctl", "stop", "thinkpol.service"); err != nil {
+		t.Fatalf("stopping a unit never reloaded: exit %d, %v\n%s", res.ExitCode, err, res.Stderr)
+	}
+
 	// alice ran sudo: she joins the group.
 	out := dev.MustExec(t, "env", "SUDO_USER=alice", "/opt/thinkpol/bin/thinkpol", "service", "install")
 	t.Logf("install:\n%s", out)
