@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
 	"strconv"
 	"strings"
 
@@ -49,31 +50,64 @@ const (
 
 // read reads the record. A stale one should be removed.
 func (s tokenStore) read() (pfToken, recordState, error) {
-	boot, err := s.boot()
-	if err != nil {
-		return pfToken{}, recordNone, err
-	}
 	d, err := trusteddir.Make(s.dir)
 	if err != nil {
 		return pfToken{}, recordNone, err
 	}
 	defer func() { _ = d.Close() }()
+	t, state, _, err := s.readIn(d)
+	return t, state, err
+}
+
+// peek is read without making the record's directory (one that isn't
+// there holds no record), saying why a stale record is stale.
+func (s tokenStore) peek() (pfToken, recordState, staleWhy, error) {
+	d, err := trusteddir.Open(s.dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return pfToken{}, recordNone, "", nil
+	}
+	if err != nil {
+		return pfToken{}, recordNone, "", err
+	}
+	defer func() { _ = d.Close() }()
+	return s.readIn(d)
+}
+
+// staleWhy is why a record holds nothing: fixed text, never its content
+// (it may hold a token).
+type staleWhy string
+
+const (
+	staleOtherBoot  staleWhy = "written in another boot session"
+	staleNotRegular staleWhy = "not a regular file (a symlink or a fifo is never the guard's)"
+	staleNoBoot     staleWhy = "no boot line before its body"
+	staleBody       staleWhy = "a body that isn't one token line"
+)
+
+// readIn reads the record in d.
+func (s tokenStore) readIn(d *os.File) (pfToken, recordState, staleWhy, error) {
+	boot, err := s.boot()
+	if err != nil {
+		return pfToken{}, recordNone, "", err
+	}
 	body, err := trusteddir.ReadRecord(d, tokenRecord, boot)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
-		return pfToken{}, recordNone, nil
+		return pfToken{}, recordNone, "", nil
 	case errors.Is(err, unix.ELOOP), errors.Is(err, trusteddir.ErrNotRegular):
-		return pfToken{}, recordStale, nil // a symlink or a fifo is never ours
-	case errors.Is(err, trusteddir.ErrOtherBoot), errors.Is(err, trusteddir.ErrNoBoot):
-		return pfToken{}, recordStale, nil
+		return pfToken{}, recordStale, staleNotRegular, nil
+	case errors.Is(err, trusteddir.ErrOtherBoot):
+		return pfToken{}, recordStale, staleOtherBoot, nil
+	case errors.Is(err, trusteddir.ErrNoBoot):
+		return pfToken{}, recordStale, staleNoBoot, nil
 	case err != nil:
-		return pfToken{}, recordNone, err
+		return pfToken{}, recordNone, "", err
 	}
 	t, ok := parseTokenRecord(body)
 	if !ok {
-		return pfToken{}, recordStale, nil
+		return pfToken{}, recordStale, staleBody, nil
 	}
-	return t, recordHeld, nil
+	return t, recordHeld, "", nil
 }
 
 // parseTokenRecord reads a record's body: "token <value|unknown> pid <pid>",

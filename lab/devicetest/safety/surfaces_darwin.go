@@ -79,7 +79,11 @@ func pfSkips(out output) ([]string, error) {
 	if out.Code != 0 || out.Err != "" {
 		return nil, failed(out)
 	}
-	return append([]string{}, firewall.SkippedNames(out.Stdout)...), nil
+	names, err := firewall.SkippedNames(out.Stdout)
+	if err != nil {
+		return nil, err
+	}
+	return append([]string{}, names...), nil
 }
 
 // dnsWithoutReach is `scutil --dns` without its reachability lines, which

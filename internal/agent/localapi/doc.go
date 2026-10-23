@@ -1,6 +1,6 @@
-// Package localapi is the node agent's local service API (docs/design/desktop-client.md "The
-// local API"): a gRPC service (proto/thinkpol/localapi/v1) on a Unix
-// socket that the CLI and the tray app use to see and control the node
+// Package localapi is the node agent's local service API
+// (docs/design/desktop-client.md "The local API"): a gRPC service
+// (proto/thinkpol/localapi/v1) on a Unix socket that the CLI and the tray app use to see and control the node
 // running on the same machine. `thinkpol up` serves it as one of its app
 // adapters ([Adapter]), next to the node's.
 //
@@ -20,6 +20,8 @@
 //   - SetRulePreset.
 //   - TailLogs: the agent's in-memory log, its last lines and then, if
 //     asked, what follows.
+//   - Diagnose: a snapshot of what the node changed on the host and what
+//     the host shows of it (below).
 //
 // Connect and Disconnect bring a device's data plane up and down while the
 // service keeps running and keeps following its space's maps
@@ -39,8 +41,9 @@
 // [agent.DefaultAPISocket]: /run/thinkpol-api/api.sock on Linux, and on
 // macOS /private/var/db/thinkpol-api/api.sock. Not under macOS's /var/run,
 // which fails the parent check below (package trusteddir says why a
-// directory others can write to can't be trusted), and beside netcfg's /private/var/db/thinkpol rather than in it:
-// that one is 0700, so the group couldn't reach the socket. Windows will
+// directory others can write to can't be trusted), and beside netcfg's
+// /private/var/db/thinkpol rather than in it: that one is 0700, so the
+// group couldn't reach the socket. Windows will
 // use a named pipe (TP-047); until then [Listen] refuses there. An empty
 // socket path serves no API.
 //
@@ -65,9 +68,10 @@
 // recorded at connect time (SO_PEERCRED and SO_PEERGROUPS on Linux,
 // LOCAL_PEERCRED on macOS), against the call's level ([Policy]): root and
 // the service's own user may do everything; members of the group see the
-// status and the spaces and control the node (Connect, Disconnect,
-// SetRulePreset); the log is root's only, because its debug lines may
-// quote the map. A call not listed needs everything. Not yet on macOS: the
+// status and the spaces, control the node (Connect, Disconnect,
+// SetRulePreset) and take the diagnostics without their host parts; the
+// log is root's only, because its debug lines may quote the map. A call
+// not listed needs everything. Not yet on macOS: the
 // per-call check sees only the groups the caller's process got at login,
 // and only the first 16 of those (LOCAL_PEERCRED's xucred), so a member
 // added since, or one whose `thinkpol` group is past the first 16, is
@@ -97,12 +101,81 @@
 // and enforced failing closed, and the API says so
 // (`rule_preset_unavailable`, and the status).
 //
+// # Diagnostics
+//
+// Diagnose (`thinkpol diag`) is the evidence a device run records and is
+// judged by afterwards (TP-091): one snapshot, [localapiv1.Diagnostics],
+// in which every part says why if the agent couldn't read it
+// (`unreadable`, free text, with nothing else set), so "nothing there"
+// and "couldn't look" stay apart. It records; it doesn't judge: the
+// guard's own check of pf comes with its evidence.
+//
+// Its JSON is the v1 contract ([WriteDiagnostics]; `status -json` is
+// not): the schema's own field names (snake_case: `schema_version`,
+// `last_apply`) and every field present, an unset one as its zero value
+// or null; only a guard's `present` is left out, when it couldn't be told
+// (protojson omits an unset proto3 optional field even then).
+// [DiagSchemaVersion] is bumped when a field is removed or renamed or its
+// type or meaning changes, not when one is added; `unreadable` texts are
+// free-form, and enumerated string values (a route's type, an Apply's
+// step) may grow without a bump. Taking it changes nothing on the host.
+// It holds:
+//
+//   - the schema version, when it was taken, the agent's OS and version,
+//     and `host_parts`: whether the caller got the host parts;
+//   - the status GetStatus serves;
+//   - a device's TUN as the host reports it ([netcfg.InspectInterface]:
+//     name, index, MTU, up and running flags, addresses), unreadable while
+//     the data plane is down, and on a server, whose data planes run in
+//     its workers;
+//   - the data plane's last Apply: when it started, how long it took, the
+//     step it failed at, and its steps with their timings
+//     ([dataplane.Engine.LastApply]);
+//   - the routes (every table) and policy rules, with their actions, the
+//     agent's owners hold, as the kernel reports them ([netcfg.Inspect]);
+//     on macOS also the RTF_PROTO2 routes no owner's record names;
+//   - the IPv6 leak guard as the host holds it
+//     ([firewall.InspectIPv6Guard]): on Linux the nftables table's flags,
+//     chains, rules (rendered nft-like) with their counters and exempt
+//     set; on macOS the pf anchor's rules with their counters, its exempt
+//     table, pf's enabled state, the guard's check of the main ruleset with
+//     its lines up to the hook, every skipped interface and the anchors
+//     before the guard's, and the guard's `pfctl -E` reference and whether
+//     pf still holds it;
+//   - the resolvers the host uses, for the overlay's names and the rest
+//     ([dns.Inspect]): resolv.conf and systemd-resolved's links on Linux,
+//     `scutil --dns` on macOS.
+//
+// The routes, rules, guard and resolvers are read from the host whatever
+// the data plane's state, so a snapshot after a crash or a stop shows
+// what was left. They name public addresses (the entries', the direct
+// destinations', the gateway's, the upstreams'), so they are root's: the
+// group's snapshot has each of them unreadable, "root only", and the
+// agent doesn't read them for it.
+//
+// The snapshot holds no key, token or session id: what it carries comes
+// from the status, which holds none, and from reading the host, which
+// holds none of the node's. The pf reference shows by its pid; its token
+// stays in the guard's record, whose errors never quote it. A test walks
+// the schema for fields named for a secret, and another looks for a
+// device's keys and its links' credentials in a real node's snapshot.
+//
+// `diag -o FILE` ([WriteDiagnosticsFile]) writes a new file beside the
+// path, mode 0600, synced, and renames it over the path, replacing only a
+// regular file: anything else there is refused, a device such as
+// /dev/null, a directory, and any symlink whatever it points to
+// (/dev/stdout is a link through /proc/self/fd/1 to whatever stdout is,
+// a file included), so root writing into a directory others can write to
+// never follows or replaces their link. `-o -` prints it.
+//
 // # What it reports
 //
 // Nothing the API reports is a public address, a key or a secret (PRD
-// S1, S4): nodes and spaces are opaque ids, addresses are the overlay's,
-// links name their endpoint by its index, and a server's listeners are
-// shown without their addresses. Failures are named from fixed
+// S1, S4), but Diagnose's host parts, root's only, which name public
+// addresses (never a key or a secret). Elsewhere nodes and spaces are
+// opaque ids, addresses are the overlay's, links name their endpoint by
+// its index, and a server's listeners are shown without their addresses.
+// Failures are named from fixed
 // vocabularies: refusals are [Error] values (go-kernel ddd.DomainError
 // values that grpckit's interceptor sends by their code), and a failed
 // Connect names only its step (`start_failed:<step>`), the detail going to

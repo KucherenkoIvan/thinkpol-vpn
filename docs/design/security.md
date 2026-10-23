@@ -70,4 +70,4 @@ Security invariants that stay with their feature's design:
 - [DNS](routing.md#dns): names go where their rule sends them, answers never cross routes.
 - [The server agent](server-agent.md#server-agent-one-worker-per-space): a worker answers its peers, never anyone else; a replay must not be an oracle.
 - [The signed map](control-plane.md#the-signed-map): sections carry no recipient id, and maps only move forward.
-- [The local API](desktop-client.md#the-local-api): nothing it reports is a public address, a key or a secret.
+- [The local API](desktop-client.md#the-local-api): nothing it reports is a public address, a key or a secret, but root's half of `diag`, whose host parts name public addresses (never a key or a secret).

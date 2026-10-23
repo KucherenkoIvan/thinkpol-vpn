@@ -87,6 +87,8 @@ type Platform struct {
 	// ConnectRecord keeps a device's last connect request of this boot
 	// (HostConnectRecord).
 	ConnectRecord ConnectRecord
+	// Inspect reads what the host shows of the node, for Diagnose.
+	Inspect Inspector
 }
 
 // ClearHost undoes what a crashed run left on the host, as a start that

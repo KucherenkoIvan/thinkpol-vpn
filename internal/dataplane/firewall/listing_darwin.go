@@ -19,8 +19,8 @@ import (
 func ParsePfEnabled(info []byte) (bool, error) { return parseEnabled(info) }
 
 // SkippedNames reads `pfctl -s Interfaces -v` as every name pf skips, lo0
-// included.
-func SkippedNames(ifaces []byte) []string { return skippedNames(ifaces) }
+// included; an error when a line too long to read cuts the listing.
+func SkippedNames(ifaces []byte) ([]string, error) { return skippedNames(ifaces) }
 
 // AnchorMissing says pfctl's stderr for `-a ANCHOR -s rules` is its
 // answer about an anchor that doesn't exist, and nothing else (ALTQ

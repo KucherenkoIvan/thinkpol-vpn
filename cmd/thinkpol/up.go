@@ -64,7 +64,7 @@ func runUp(ctx context.Context, e env, args []string) error {
 	if cfg.APISocket != "" {
 		adapters = append(adapters, localapi.Adapter(localapi.Options{
 			Socket: cfg.APISocket, Group: cfg.APIGroup, Node: node, Logs: logs.Ring,
-			Log: logs.With("component", "local API"),
+			Log: logs.With("component", "local API"), Version: resolveVersion(),
 		}))
 	}
 	return app.RunWith(ctx, app.Options{Logger: logs.Logger}, adapters...)

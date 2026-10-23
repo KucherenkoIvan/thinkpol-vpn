@@ -59,6 +59,18 @@ func testPlatform() Platform {
 		LockHost:      func() (func(), error) { return func() {}, nil },
 		RestoreDNS:    func() error { return nil },
 		ConnectRecord: &memConnectRecord{},
+		Inspect: Inspector{
+			Interface: func(string) netcfg.InterfaceReport {
+				return netcfg.InterfaceReport{Unreadable: "no interfaces in this test"}
+			},
+			Routes: func() netcfg.Inspection {
+				return netcfg.Inspection{RoutesUnreadable: "no routes in this test", RulesUnreadable: "no rules in this test"}
+			},
+			Guard: func(context.Context) routetable.GuardReport {
+				return routetable.GuardReport{Unreadable: "no guard in this test"}
+			},
+			DNS: func(context.Context) dns.HostReport { return dns.HostReport{Unreadable: "no resolvers in this test"} },
+		},
 	}
 }
 

@@ -9,7 +9,7 @@
 // (docs/design/desktop-client.md "Desktop client"). Nothing in it is a public address, a key
 // or a secret (PRD S1, S4): nodes and spaces are opaque ids (hex),
 // addresses are the overlay's, and what failed is named from fixed
-// vocabularies.
+// vocabularies. The exception is Diagnose's host parts, root's only.
 //
 // Who may call what is the service's: the socket's directory admits root
 // and the `thinkpol` group; every call checks the caller's credentials
@@ -37,6 +37,7 @@ const (
 	LocalService_ListSpaces_FullMethodName    = "/thinkpol.localapi.v1.LocalService/ListSpaces"
 	LocalService_SetRulePreset_FullMethodName = "/thinkpol.localapi.v1.LocalService/SetRulePreset"
 	LocalService_TailLogs_FullMethodName      = "/thinkpol.localapi.v1.LocalService/TailLogs"
+	LocalService_Diagnose_FullMethodName      = "/thinkpol.localapi.v1.LocalService/Diagnose"
 )
 
 // LocalServiceClient is the client API for LocalService service.
@@ -72,6 +73,11 @@ type LocalServiceClient interface {
 	// following, every new line until the client goes away or the service
 	// stops. Root only: debug lines may quote the map.
 	TailLogs(ctx context.Context, in *TailLogsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[TailLogsResponse], error)
+	// Diagnose takes a snapshot of what the node changed on the host and
+	// what the host shows of it (`thinkpol diag`), changing nothing. The
+	// group gets the parts without public addresses; the rest are root's,
+	// and the group's snapshot marks them unreadable.
+	Diagnose(ctx context.Context, in *DiagnoseRequest, opts ...grpc.CallOption) (*DiagnoseResponse, error)
 }
 
 type localServiceClient struct {
@@ -170,6 +176,16 @@ func (c *localServiceClient) TailLogs(ctx context.Context, in *TailLogsRequest, 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type LocalService_TailLogsClient = grpc.ServerStreamingClient[TailLogsResponse]
 
+func (c *localServiceClient) Diagnose(ctx context.Context, in *DiagnoseRequest, opts ...grpc.CallOption) (*DiagnoseResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DiagnoseResponse)
+	err := c.cc.Invoke(ctx, LocalService_Diagnose_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // LocalServiceServer is the server API for LocalService service.
 // All implementations must embed UnimplementedLocalServiceServer
 // for forward compatibility.
@@ -203,6 +219,11 @@ type LocalServiceServer interface {
 	// following, every new line until the client goes away or the service
 	// stops. Root only: debug lines may quote the map.
 	TailLogs(*TailLogsRequest, grpc.ServerStreamingServer[TailLogsResponse]) error
+	// Diagnose takes a snapshot of what the node changed on the host and
+	// what the host shows of it (`thinkpol diag`), changing nothing. The
+	// group gets the parts without public addresses; the rest are root's,
+	// and the group's snapshot marks them unreadable.
+	Diagnose(context.Context, *DiagnoseRequest) (*DiagnoseResponse, error)
 	mustEmbedUnimplementedLocalServiceServer()
 }
 
@@ -233,6 +254,9 @@ func (UnimplementedLocalServiceServer) SetRulePreset(context.Context, *SetRulePr
 }
 func (UnimplementedLocalServiceServer) TailLogs(*TailLogsRequest, grpc.ServerStreamingServer[TailLogsResponse]) error {
 	return status.Error(codes.Unimplemented, "method TailLogs not implemented")
+}
+func (UnimplementedLocalServiceServer) Diagnose(context.Context, *DiagnoseRequest) (*DiagnoseResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Diagnose not implemented")
 }
 func (UnimplementedLocalServiceServer) mustEmbedUnimplementedLocalServiceServer() {}
 func (UnimplementedLocalServiceServer) testEmbeddedByValue()                      {}
@@ -367,6 +391,24 @@ func _LocalService_TailLogs_Handler(srv interface{}, stream grpc.ServerStream) e
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type LocalService_TailLogsServer = grpc.ServerStreamingServer[TailLogsResponse]
 
+func _LocalService_Diagnose_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DiagnoseRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LocalServiceServer).Diagnose(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LocalService_Diagnose_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LocalServiceServer).Diagnose(ctx, req.(*DiagnoseRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // LocalService_ServiceDesc is the grpc.ServiceDesc for LocalService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -393,6 +435,10 @@ var LocalService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SetRulePreset",
 			Handler:    _LocalService_SetRulePreset_Handler,
+		},
+		{
+			MethodName: "Diagnose",
+			Handler:    _LocalService_Diagnose_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

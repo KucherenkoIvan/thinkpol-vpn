@@ -241,12 +241,19 @@ func TestRecordsAreReadOnlyInTheirBoot(t *testing.T) {
 		"a line before the boot":    "line 1\nboot " + boot + "\n",
 		"a boot glued to its value": "boot" + boot + "\n",
 		"a boot without a session":  "# what this is\nboot \nline 1\n",
+		"a token before the boot":   "token 9000000000000000001 pid 4001\nboot " + boot + "\n",
 	} {
 		if err := os.WriteFile(filepath.Join(path, "rec"), []byte(data), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := ReadRecord(d, "rec", boot); !errors.Is(err, ErrNoBoot) || !strings.Contains(err.Error(), filepath.Join(path, "rec")) {
+		_, err := ReadRecord(d, "rec", boot)
+		if !errors.Is(err, ErrNoBoot) || !strings.Contains(err.Error(), filepath.Join(path, "rec")) {
 			t.Errorf("%s: %v, want ErrNoBoot naming the record", name, err)
+		}
+		// Never the record's content: it may hold a secret, and the error
+		// reaches logs and diagnostics.
+		if err != nil && (strings.Contains(err.Error(), "9000000000000000001") || strings.Contains(err.Error(), "line 1\"")) {
+			t.Errorf("%s: the error quotes the record: %v", name, err)
 		}
 	}
 	if _, err := ReadRecord(d, "missing", boot); !errors.Is(err, os.ErrNotExist) {

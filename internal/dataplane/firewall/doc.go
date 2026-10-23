@@ -130,6 +130,19 @@
 // is an ordinary failure, retried; until the dump succeeds once, each
 // request asks again. On such a kernel Close has nothing to remove.
 //
+// # Linux: reading it back
+//
+// [InspectIPv6Guard] reads the table as the kernel holds it, for
+// diagnostics, whether or not a guard runs: its flags (a dormant table
+// guards nothing; the kernel sends the flags big-endian, which nftables
+// decodes in the host's order), its chains as hooked (unreadable on their
+// own if they can't be listed), each rule's expressions rendered nft-like
+// (raw payloads in nft's `@base,offset,length` bits; an expression the
+// renderer doesn't know shows as its type, so the text is no nft input)
+// with its counter's values, and the exempt set's intervals as the fewest
+// prefixes. No table is no guard, and a table without the set exempts
+// nothing: neither is unreadable; a kernel without nf_tables is.
+//
 // # macOS: a pf anchor
 //
 // On macOS the guard is a pf anchor, `com.apple/000.thinkpol`
@@ -308,7 +321,19 @@
 // value can come back as someone else's; both matching is as close as pf
 // lets anyone tell. If the guard finds pf off (someone ran `pfctl -d`), it
 // takes a new reference first, then releases the old one if pf still
-// lists it.
+// lists it; if that release fails, the Apply finishes enforcing (the
+// bypass check, the state kill), then says so (the record names the new
+// reference, and the old one is left to pf).
+//
+// `pfctl -s References` is read by the columns its header names: a line's
+// first field is the pid, and the token is the field where the header's
+// TOKEN starts, whatever the process name (spaces included) and the
+// timestamp look like. A listing without the header, with a line out of
+// those columns, or cut short is one the guard can't read, and a
+// reference not found in it proves nothing: looking a token up by pid and
+// releasing both fail, so the record stays and the next Close (or
+// routetable.Clear's) tries again. pf stays enabled on that reference
+// meanwhile, rather than the guard forgetting a reference pf still holds.
 //
 // # macOS: polling
 //
@@ -338,6 +363,31 @@
 // [IPv6Guard.Apply] and [IPv6Guard.Close] change pf, and only the
 // Enforcer calls them, holding its owner lock; Watch only reads.
 //
+// # macOS: reading it back
+//
+// [InspectIPv6Guard] reads the guard as pf holds it, for diagnostics,
+// running listings only (`-s ...`, a table's `-T show`; never a load,
+// -E, -X, -F, -k, -d or -z) and opening the record's directory without
+// making it: the anchor's rules with their counters (`-s rules -v`: each
+// rule's line, its "[ Evaluations: ... Packets: ... Bytes: ... States:
+// ... ]" line, and the optional "[ Inserted: ... ]" line, with or without
+// "State Creations"), the exempt table, `-s info`'s Status line, and what
+// the guard's check reads (readBypass, shared with checkBypass): its
+// verdict on the main ruleset with the lines up to the hook as evidence,
+// every name pf skips, the anchors before the guard's. Then the record's
+// reference, by its pid, with whether `-s References` lists it as taken by
+// that pid; the token stays in the record. A listing with a line it can't
+// read (no rule, counters out of place, unreadable or past uint64, a rule
+// without counters, a line too long to read; in References, as the guard
+// reads it, above) is unreadable as a whole, naming the line: half a listing
+// could hide the rule that matters. A record of another boot is stale;
+// one that isn't a regular file or can't be parsed is unreadable, said in
+// fixed words (trusteddir's errors never quote a record either). A
+// missing anchor is an empty one, and with no pfctl at all everything is
+// unreadable. The parsers are tested on listings in testdata/pfctl, built
+// from the fake pf's formats and pfctl's source until a device run
+// records real ones.
+//
 // # What the macOS guard doesn't do
 //
 //   - Match MLD's hop limit (above).
@@ -358,4 +408,7 @@
 // a symlink or a non-regular file holds nothing) are exported for the
 // device-test harness (lab/devicetest), which compares pf with its
 // baseline through them: a listing means one thing wherever it is read.
+// [AnchorMissing] is narrower than the guard's own test for a missing
+// anchor (any "Invalid argument"): a restore must never take a failed
+// listing for an empty anchor.
 package firewall

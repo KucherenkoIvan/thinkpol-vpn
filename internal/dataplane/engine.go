@@ -158,6 +158,10 @@ type Engine struct {
 	exit     bool // the section allows egress and cfg.Forward is set
 	skipped  []Skip
 	lastErr  Step
+	// tracing is the Apply in progress, nil between them; lastApply the
+	// last one's trace.
+	tracing   *applyTrace
+	lastApply *ApplyTrace
 	// routedExit is whether the router's table forwards (Status.Exit).
 	routedExit bool
 	// ifc is the overlay interface's configuration in place (nil before
@@ -284,19 +288,40 @@ func (e *Engine) Apply(ctx context.Context, s netmap.Section) error {
 	if e.closed {
 		return ErrEngineClosed
 	}
+	e.tracing = newApplyTrace(time.Now())
 	step, err := e.apply(ctx, s)
 	e.lastErr = ""
 	if err != nil {
 		e.lastErr = step
 		e.debug("apply failed", "step", step, "err", err)
 	}
+	tr := e.tracing.done(e.lastErr)
+	e.tracing, e.lastApply = nil, &tr
 	e.updateDNS()
 	return err
 }
 
+// LastApply is the last Apply's trace; false before the first.
+func (e *Engine) LastApply() (ApplyTrace, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.lastApplyLocked()
+}
+
+func (e *Engine) lastApplyLocked() (ApplyTrace, bool) {
+	if e.lastApply == nil {
+		return ApplyTrace{}, false
+	}
+	tr := *e.lastApply
+	tr.Steps = slices.Clone(tr.Steps)
+	return tr, true
+}
+
 func (e *Engine) apply(ctx context.Context, s netmap.Section) (Step, error) {
 	if s.Node.ID != e.cfg.ID {
-		return StepSection, fmt.Errorf("dataplane: section of node %s, not %s", s.Node.ID, e.cfg.ID)
+		err := fmt.Errorf("dataplane: section of node %s, not %s", s.Node.ID, e.cfg.ID)
+		e.tracing.mark(StepSection, err)
+		return StepSection, err
 	}
 	e.kind, e.egress, e.spaceName, e.ownName = s.Node.Kind, s.Node.AllowEgress, s.SpaceName, s.Node.Name
 	e.peerNames = make(map[netmap.NodeID]string, len(s.Peers))
@@ -309,19 +334,23 @@ func (e *Engine) apply(ctx context.Context, s netmap.Section) (Step, error) {
 		table.Set(in.Links[name])
 	}
 	e.node.Update(pc.Table)
+	e.tracing.mark(StepSection, ocErr)
 	if ocErr != nil {
-		if err := e.devices.remove(e.devices.sectionPeers(s), false, pc.Peers, e.setTable); err != nil {
+		err := e.devices.remove(e.devices.sectionPeers(s), false, pc.Peers, e.setTable)
+		e.tracing.mark(StepRemovals, err)
+		if err != nil {
 			return StepRemovals, err
 		}
 		return StepSection, ocErr
 	}
 	e.chainExit = chainExits(s.Chains, oc.Peers)
 	_ = e.compileRules(ruleInputOf(s), oc.Networks) // an unavailable preset is in Status
+	e.tracing.mark(StepRules, nil)
 	return e.routes.around(ctx, e.ruleTable.Direct(), func() (Step, error) {
 		e.overlay, e.paths = &oc, pc.Peers
 		e.endpoints = endpointsOf(pc)
 		return e.carry(ctx, s.Node, oc)
-	}, e.routeTableWant)
+	}, e.routeTableWant, e.tracing)
 }
 
 // configsOf is what s asks of the path layer, the listeners and the
@@ -344,22 +373,30 @@ func (e *Engine) configsOf(s netmap.Section) (PathConfig, InboundConfig, Overlay
 // carry oc, the overlay of node's section, on e.paths: revocations first.
 func (e *Engine) carry(ctx context.Context, node netmap.NodeSettings, oc OverlayConfig) (Step, error) {
 	want := e.assign(oc)
-	if err := e.devices.remove(want, true, e.paths, e.setTable); err != nil {
+	err := e.devices.remove(want, true, e.paths, e.setTable)
+	e.tracing.mark(StepRemovals, err)
+	if err != nil {
 		return StepRemovals, err
 	}
 	if e.cfg.Interface != nil {
 		ifc := InterfaceConfig{Name: e.tunName, Addrs: slices.Clone(oc.Addrs), MTU: oc.MTU, Up: true}
-		if err := e.cfg.Interface.Apply(ctx, ifc); err != nil {
+		err := e.cfg.Interface.Apply(ctx, ifc)
+		e.tracing.mark(StepInterface, err)
+		if err != nil {
 			return StepInterface, fmt.Errorf("dataplane: overlay interface: %w", err)
 		}
 		e.ifc = &ifc
 	}
 	e.mtu, e.ipv6Off, e.local, e.networks = oc.MTU, oc.IPv6Off, oc.Local, oc.Networks
 	e.exit = e.cfg.Forward && node.Kind == netmap.NodeServer && node.AllowEgress
-	if err := e.devices.add(want, e.paths, oc.MTU); err != nil {
+	err = e.devices.add(want, e.paths, oc.MTU)
+	e.tracing.mark(StepDevices, err)
+	if err != nil {
 		return StepDevices, err
 	}
-	if err := e.setTable(); err != nil {
+	err = e.setTable()
+	e.tracing.mark(StepRouter, err)
+	if err != nil {
 		return StepRouter, err
 	}
 	return "", nil
@@ -473,6 +510,19 @@ type PeerStatus struct {
 func (e *Engine) Status() Status {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	return e.statusLocked()
+}
+
+// StatusAndLastApply is Status and LastApply in one read: the status as
+// of the last Apply's end, or of whatever changed since.
+func (e *Engine) StatusAndLastApply() (Status, ApplyTrace, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	tr, ok := e.lastApplyLocked()
+	return e.statusLocked(), tr, ok
+}
+
+func (e *Engine) statusLocked() Status {
 	s := Status{
 		MTU:            e.mtu,
 		IPv6:           e.mtu > 0 && e.ipv6Off == nil,
@@ -514,6 +564,9 @@ func (e *Engine) Status() Status {
 	slices.SortFunc(s.Peers, func(a, b PeerStatus) int { return slices.Compare(a.ID[:], b.ID[:]) })
 	return s
 }
+
+// TUNName is the overlay interface's name, as the OS gave it.
+func (e *Engine) TUNName() string { return e.tunName }
 
 // Close stops the engine: the WireGuard devices, the router and the TUN,
 // the path layer, and the TUN's configuration.

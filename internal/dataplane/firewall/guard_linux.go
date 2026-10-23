@@ -265,12 +265,11 @@ func whole(c *nftables.Conn, e routetable.Exempt) bool {
 	return err == nil && sameElements(elems, intervals(e.Ranges6()))
 }
 
-// onlyChain is the guard table's chain when it is the only one and is
-// guardChain.
-func onlyChain(c *nftables.Conn) (*nftables.Chain, bool) {
+// guardChains are the chains of the guard's table.
+func guardChains(c *nftables.Conn) ([]*nftables.Chain, error) {
 	chains, err := c.ListChainsOfTableFamily(nftables.TableFamilyINet)
 	if err != nil {
-		return nil, false
+		return nil, err
 	}
 	var ours []*nftables.Chain
 	for _, ch := range chains {
@@ -278,7 +277,14 @@ func onlyChain(c *nftables.Conn) (*nftables.Chain, bool) {
 			ours = append(ours, ch)
 		}
 	}
-	if len(ours) != 1 || ours[0].Name != guardChain {
+	return ours, nil
+}
+
+// onlyChain is the guard table's chain when it is the only one and is
+// guardChain.
+func onlyChain(c *nftables.Conn) (*nftables.Chain, bool) {
+	ours, err := guardChains(c)
+	if err != nil || len(ours) != 1 || ours[0].Name != guardChain {
 		return nil, false
 	}
 	return ours[0], true

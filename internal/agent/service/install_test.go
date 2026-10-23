@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -45,8 +46,13 @@ type fakeHost struct {
 	// for another reason than no such service.
 	bootoutFails, printFails bool
 	// bootstrapEIO: bootstraps refused with launchd's EIO before one is
-	// taken.
-	bootstrapEIO int
+	// taken; bootstrapEIOLoaded: ones that say EIO but load the job.
+	bootstrapEIO, bootstrapEIOLoaded int
+	// oldSystemd: a systemd that doesn't load a unit file for a stop.
+	oldSystemd bool
+	// printFailsAfterEIO: print starts failing once a bootstrap was
+	// refused with EIO.
+	printFailsAfterEIO bool
 	// cleared counts ClearHost's runs, and heldWhileCleared whether the
 	// host lock was held at each.
 	cleared, heldWhileCleared int
@@ -89,6 +95,16 @@ func (h *fakeHost) unitFile() []byte {
 }
 
 func (h *fakeHost) systemctl(args []string) (string, error) {
+	// systemd 252 loads a unit file it hasn't read yet for a stop (seen in
+	// the lab); one that doesn't (oldSystemd) answers "not loaded".
+	if (slices.Equal(args, []string{"stop", UnitName}) || slices.Equal(args, []string{"disable", "--now", UnitName})) &&
+		h.unitLoaded == nil && h.unitFile() != nil && !h.oldSystemd {
+		h.unitLoaded = h.unitFile()
+	}
+	notLoaded := func() (string, error) {
+		out := "Failed to stop thinkpol.service: Unit thinkpol.service not loaded."
+		return out, fmt.Errorf("systemctl %v: %w: %s", args, exitError(h.t, 5), out)
+	}
 	switch {
 	case slices.Equal(args, []string{"daemon-reload"}):
 		h.unitLoaded = h.unitFile()
@@ -100,6 +116,21 @@ func (h *fakeHost) systemctl(args []string) (string, error) {
 		h.unitRunning = nil
 	case slices.Equal(args, []string{"disable", "--now", UnitName}) && h.unitLoaded != nil:
 		h.enabled, h.unitRunning = false, nil
+	case slices.Equal(args, []string{"disable", "--now", UnitName}) && h.unitFile() != nil:
+		h.enabled = false // disable acts on the file; the stop finds no unit
+		return notLoaded()
+	case slices.Equal(args, []string{"stop", UnitName}):
+		return notLoaded()
+	case slices.Equal(args, []string{"is-enabled", UnitName}) && h.unitFile() != nil:
+		if h.enabled {
+			return "enabled\n", nil
+		}
+		return "disabled\n", fmt.Errorf("systemctl is-enabled: %w", exitError(h.t, 1))
+	case slices.Equal(args, []string{"is-active", UnitName}):
+		if h.unitRunning != nil {
+			return "active\n", nil
+		}
+		return "inactive\n", fmt.Errorf("systemctl is-active: %w", exitError(h.t, 3))
 	case slices.Equal(args, []string{"reset-failed", UnitName}):
 	default:
 		return "", fmt.Errorf("systemctl %v: refused", args)
@@ -107,17 +138,28 @@ func (h *fakeHost) systemctl(args []string) (string, error) {
 	return "", nil
 }
 
+// exitError is a real *exec.ExitError with code, as runTool wraps one.
+func exitError(t *testing.T, code int) error {
+	err := exec.Command("sh", "-c", fmt.Sprintf("exit %d", code)).Run()
+	var x *exec.ExitError
+	if !errors.As(err, &x) || x.ExitCode() != code {
+		t.Fatalf("no exit error %d: %v", code, err)
+	}
+	return err
+}
+
 func (h *fakeHost) launchctl(args []string) (string, error) {
 	switch {
 	case slices.Equal(args, []string{"print", target}) && h.printFails:
-		return "", errors.New("launchctl: Operation not permitted")
+		return "launchctl: Operation not permitted", fmt.Errorf("launchctl print: %w: Operation not permitted", exitError(h.t, 1))
 	case slices.Equal(args, []string{"print", target}):
 		if h.booting > 0 {
 			h.booting--
 			return "", nil
 		}
 		if !h.loaded {
-			return "", errors.New("could not find service")
+			out := "Could not find service \"" + Label + "\" in domain for system"
+			return out, fmt.Errorf("launchctl print: %w: %s", exitError(h.t, 113), out)
 		}
 	case slices.Equal(args, []string{"bootout", target}) && h.loaded:
 		h.loaded, h.loadedFrom, h.booting = false, nil, h.goneAfter
@@ -135,9 +177,18 @@ func (h *fakeHost) launchctl(args []string) (string, error) {
 		return fmt.Sprintf("disabled services = {\n\t\"com.example.other\" => disabled\n\t%q => %s\n}\n", Label, v), nil
 	case slices.Equal(args, []string{"enable", target}):
 		h.disabled, h.overridden = false, true
+	case slices.Equal(args, []string{"bootstrap", "system", PlistPath}) && h.bootstrapEIOLoaded > 0 && !h.loaded:
+		h.bootstrapEIOLoaded--
+		data, err := os.ReadFile(filepath.Join(h.root, PlistPath))
+		if err != nil {
+			return "", err
+		}
+		h.loaded, h.loadedFrom = true, data
+		return "Bootstrap failed: 5: Input/output error", fmt.Errorf("launchctl bootstrap: %w: Bootstrap failed: 5: Input/output error", exitError(h.t, 5))
 	case slices.Equal(args, []string{"bootstrap", "system", PlistPath}) && h.bootstrapEIO > 0:
 		h.bootstrapEIO--
-		return "Bootstrap failed: 5: Input/output error", errors.New("exit status 5")
+		h.printFails = h.printFails || h.printFailsAfterEIO
+		return "Bootstrap failed: 5: Input/output error", fmt.Errorf("launchctl bootstrap: %w: Bootstrap failed: 5: Input/output error", exitError(h.t, 5))
 	case slices.Equal(args, []string{"bootstrap", "system", PlistPath}) && !h.loaded && h.booting == 0 && !h.disabled:
 		data, err := os.ReadFile(filepath.Join(h.root, PlistPath))
 		if err != nil {
@@ -759,5 +810,219 @@ func TestConnectOnBootIsSpelledOnOrOff(t *testing.T) {
 		if s != want {
 			t.Errorf("%q: %s, want %s", in, s, want)
 		}
+	}
+}
+
+// A unit file an install wrote and then died before starting (on disk,
+// never daemon-reloaded) doesn't block the next install, which starts the
+// service, nor uninstall: systemd 252 loads it for the stop (seen in the
+// lab), and one that doesn't answers "not loaded" (exit 5), read as
+// stopped. A stop that fails otherwise still stops the install.
+func TestANeverLoadedUnitCountsAsStopped(t *testing.T) {
+	ctx := context.Background()
+	unit := SystemdUnit(Definition{Binary: BinaryPath})
+	for _, old := range []bool{false, true} {
+		h := newFakeHost(t)
+		h.oldSystemd = old
+		in, _ := h.installer(Systemd{})
+		if err := os.WriteFile(filepath.Join(h.root, UnitPath), unit, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := in.Install(ctx, Options{}); err != nil {
+			t.Fatalf("old systemd %v: %v", old, err)
+		}
+		if !h.enabled || !bytes.Equal(h.unitRunning, unit) {
+			t.Fatalf("old systemd %v: enabled %v, running %q", old, h.enabled, h.unitRunning)
+		}
+
+		h = newFakeHost(t)
+		h.oldSystemd = old
+		in, _ = h.installer(Systemd{})
+		if err := os.WriteFile(filepath.Join(h.root, UnitPath), unit, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := in.Uninstall(ctx); err != nil {
+			t.Fatalf("old systemd %v: %v", old, err)
+		}
+		if _, _, ok := h.file(UnitPath); ok {
+			t.Fatal("the unit is left")
+		}
+	}
+
+	h := newFakeHost(t)
+	in, _ := h.installer(Systemd{})
+	if err := in.Install(ctx, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	h.failNext["systemctl stop"] = 1
+	if err := in.Install(ctx, Options{}); err == nil || !strings.Contains(err.Error(), "the new binary and definition are on disk; stopping the installed service failed") {
+		t.Fatalf("a stop that failed: %v", err)
+	}
+}
+
+// A start that fails says what install knows, first, before the
+// manager's own words: whether it stopped the installed service, that the
+// definition is on disk, and what the manager reports now; never a state
+// it doesn't know.
+func TestAFailedStartSaysWhatItLeft(t *testing.T) {
+	ctx := context.Background()
+	stateFirst := func(t *testing.T, err error, want ...string) {
+		t.Helper()
+		if err == nil {
+			t.Fatal("installed")
+		}
+		msg := err.Error()
+		for _, w := range want {
+			if !strings.Contains(msg, w) {
+				t.Errorf("no %q in %q", w, msg)
+			}
+		}
+		if i, j := strings.Index(msg, want[len(want)-1]), strings.Index(msg, "failing on purpose"); i < 0 || j < 0 || i > j {
+			t.Errorf("the state isn't before the manager's error: %q", msg)
+		}
+	}
+	t.Run("systemd", func(t *testing.T) {
+		h := newFakeHost(t)
+		in, _ := h.installer(Systemd{})
+		h.failNext["systemctl restart"] = 1
+		err := in.Install(ctx, Options{})
+		stateFirst(t, err, "the definition is on disk", "systemd reports the unit enabled and inactive")
+		if strings.Contains(err.Error(), "launchd") || strings.Contains(err.Error(), "stopped") {
+			t.Errorf("says what it doesn't know: %q", err)
+		}
+		if err := in.Install(ctx, Options{}); err != nil {
+			t.Fatal(err)
+		}
+		h.failNext["systemctl restart"] = 1
+		stateFirst(t, in.Install(ctx, Options{}), "the installed service was stopped", "systemd reports the unit enabled and inactive")
+
+		// A unit never enabled (written by an install that died), whose
+		// daemon-reload fails: not enabled, and not said to be.
+		h = newFakeHost(t)
+		in, _ = h.installer(Systemd{})
+		if err := os.WriteFile(filepath.Join(h.root, UnitPath), SystemdUnit(Definition{Binary: BinaryPath}), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		h.failNext["systemctl daemon-reload"] = 1
+		err = in.Install(ctx, Options{})
+		stateFirst(t, err, "systemd reports the unit disabled and inactive")
+		if strings.Contains(err.Error(), " enabled") {
+			t.Errorf("says enabled: %q", err)
+		}
+	})
+	t.Run("launchd", func(t *testing.T) {
+		h := newFakeHost(t)
+		in, _ := h.installer(Launchd{})
+		h.failNext["launchctl bootstrap"] = 1
+		err := in.Install(ctx, Options{})
+		stateFirst(t, err, "the definition is on disk", "launchd doesn't have the daemon loaded, no override disables it")
+		if strings.Contains(err.Error(), "systemd") {
+			t.Errorf("names systemd: %q", err)
+		}
+	})
+}
+
+// What decides a tool's answer is its exit status, as runTool wraps a real
+// *exec.ExitError; the text counts only without one.
+func TestTheExitStatusDecides(t *testing.T) {
+	wrap := func(code int) error { return fmt.Errorf("tool: %w: stderr", exitError(t, code)) }
+	for name, got := range map[string]bool{
+		"not loaded, exit 5":            notLoaded("", wrap(5)),
+		"not loaded text, no exit code": notLoaded("Unit x not loaded.", errors.New("tool failed")),
+		"no such service, exit 113":     noSuchService("", wrap(113)),
+		"EIO, exit 5":                   inputOutputError("", wrap(5)),
+	} {
+		if !got {
+			t.Errorf("%s: false", name)
+		}
+	}
+	if notLoaded("Unit x not loaded.", wrap(4)) {
+		t.Error("the text read as not loaded under exit 4")
+	}
+}
+
+// A print that fails after a bootstrap refused with EIO reports both.
+func TestAnEIOThenAFailedPrintSaysBoth(t *testing.T) {
+	h := newFakeHost(t)
+	in, _ := h.installer(Launchd{Poll: time.Millisecond})
+	h.bootstrapEIO, h.printFailsAfterEIO = 1, true
+	err := in.Install(context.Background(), Options{})
+	if err == nil || !strings.Contains(err.Error(), "Input/output error") || !strings.Contains(err.Error(), "not permitted") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+// launchd may say EIO of a bootstrap that loaded the job: a job it then
+// shows is started, not bootstrapped again.
+func TestLaunchdTakesAnEIOBootstrapThatLoadedTheJob(t *testing.T) {
+	h := newFakeHost(t)
+	in, _ := h.installer(Launchd{Poll: time.Millisecond})
+	h.bootstrapEIOLoaded = 1
+	if err := in.Install(context.Background(), Options{}); err != nil || !h.loaded {
+		t.Fatalf("%v, loaded %v", err, h.loaded)
+	}
+}
+
+// systemd's state is read only from the words systemd answers with, on
+// the output's last line; anything else is said to be unread, never
+// passed off as a state.
+func TestSystemdStateIsOnlyWhatSystemdSaid(t *testing.T) {
+	answers := func(enabled, active string, enabledErr, activeErr error) Runner {
+		return func(_ context.Context, tool string, args ...string) (string, error) {
+			if tool != "systemctl" || len(args) != 2 || args[1] != UnitName {
+				return "", fmt.Errorf("unexpected %s %v", tool, args)
+			}
+			if args[0] == "is-enabled" {
+				return enabled, enabledErr
+			}
+			return active, activeErr
+		}
+	}
+	bus := errors.New("exit status 1")
+	missing := errors.New("systemctl: not found in /usr/sbin, /usr/bin, /sbin, /bin")
+	for name, tc := range map[string]struct {
+		run  Runner
+		want string
+	}{
+		"no bus": {answers("Failed to get unit file state for thinkpol.service: Failed to connect to bus: No such file or directory\n",
+			"Failed to connect to bus: No such file or directory\n", bus, bus), "systemd couldn't be asked about the unit"},
+		"no systemctl": {answers("", "", missing, missing), "systemd couldn't be asked about the unit"},
+		"a warning first": {answers("Warning: The unit file, source configuration file or drop-ins of thinkpol.service changed on disk. Run 'systemctl daemon-reload' to reload units.\nenabled\n",
+			"inactive\n", nil, exitError(t, 3)), "systemd reports the unit enabled and inactive"},
+		"activating": {answers("enabled\n", "activating\n", nil, exitError(t, 3)), "systemd reports the unit enabled and activating (Restart=always retries it)"},
+		"one unread": {answers("disabled\n", "Failed to connect to bus: No such file or directory\n", exitError(t, 1), bus),
+			"systemd reports the unit disabled; whether it runs couldn't be read"},
+	} {
+		if got := (Systemd{}).State(context.Background(), tc.run); got != tc.want {
+			t.Errorf("%s: %q, want %q", name, got, tc.want)
+		}
+	}
+}
+
+// The state is asked within a short wait of its own: a wedged manager
+// doesn't hold the real error back, and an install whose context ended
+// still asks.
+func TestTheStateHasAWaitOfItsOwn(t *testing.T) {
+	wedged := Installer{System: Systemd{}, Run: func(ctx context.Context, _ string, _ ...string) (string, error) {
+		<-ctx.Done()
+		return "", ctx.Err()
+	}}
+	start := time.Now()
+	if got := wedged.leftAfter(context.Background(), false); !strings.Contains(got, "couldn't be asked") || time.Since(start) > 3*stateWait {
+		t.Fatalf("%q after %v", got, time.Since(start))
+	}
+	answering := Installer{System: Systemd{}, Run: func(ctx context.Context, _ string, args ...string) (string, error) {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		if args[0] == "is-enabled" {
+			return "enabled\n", nil
+		}
+		return "inactive\n", nil
+	}}
+	ended, cancel := context.WithCancel(context.Background())
+	cancel()
+	if got := answering.leftAfter(ended, true); !strings.Contains(got, "systemd reports the unit enabled and inactive") {
+		t.Fatalf("with the install's context ended: %q", got)
 	}
 }

@@ -274,7 +274,7 @@ func (e *Engine) recompileRules() error {
 			return "", err
 		}
 		return "", e.setTable()
-	}, e.routeTableWant)
+	}, e.routeTableWant, nil)
 	if err != nil {
 		return err
 	}

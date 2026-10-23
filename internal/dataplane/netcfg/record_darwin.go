@@ -56,14 +56,15 @@ func readRecord(dir *os.File, name string, boot string) (map[rkey]bool, error) {
 	}
 	path := dir.Name() + "/" + name
 	sc := bufio.NewScanner(bytes.NewReader(body))
-	for sc.Scan() {
+	for n := 1; sc.Scan(); n++ {
 		line := sc.Text()
 		if line == "" || line[0] == '#' {
 			continue
 		}
 		k, err := parseRecordLine(line)
 		if err != nil {
-			return nil, fmt.Errorf("%s: bad line %q: %v", path, line, err)
+			// By its number in the body: errors reach diagnostics.
+			return nil, fmt.Errorf("%s: bad line %d after the boot line: %v", path, n, err)
 		}
 		out[k] = true
 	}

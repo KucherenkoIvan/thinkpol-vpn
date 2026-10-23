@@ -54,11 +54,23 @@ func (l Launchd) Start(ctx context.Context, run Runner) error {
 		}
 	}
 	// launchd may refuse a bootstrap just after the job it replaces is
-	// gone ("Bootstrap failed: 5: Input/output error"): retried briefly;
-	// any other refusal is the error.
+	// gone ("Bootstrap failed: 5: Input/output error"), and may say so of
+	// a bootstrap that loaded the job all the same: after an EIO, a job
+	// launchd shows is started; else it is retried briefly. Any other
+	// refusal is the error.
 	for try := 0; ; try++ {
 		out, err := run(ctx, "launchctl", "bootstrap", "system", PlistPath)
-		if err == nil || try == bootstrapTries-1 || !inputOutputError(out, err) {
+		if err == nil || !inputOutputError(out, err) {
+			return err
+		}
+		there, perr := present(ctx, run)
+		if perr != nil {
+			return errors.Join(err, perr)
+		}
+		if there {
+			return nil
+		}
+		if try == bootstrapTries-1 {
 			return err
 		}
 		select {
@@ -133,6 +145,27 @@ func (l Launchd) Stop(ctx context.Context, run Runner) error {
 		case <-time.After(l.Poll):
 		}
 	}
+}
+
+// State reads whether launchd has the daemon (`launchctl print`) and
+// whether an override disables it (`launchctl print-disabled`): a daemon
+// launchd doesn't have is bootstrapped at the next boot unless disabled.
+func (Launchd) State(ctx context.Context, run Runner) string {
+	loaded := "can't say whether launchd has the daemon"
+	if there, err := present(ctx, run); err == nil {
+		loaded = "launchd doesn't have the daemon loaded"
+		if there {
+			loaded = "launchd has the daemon loaded"
+		}
+	}
+	override := "its overrides couldn't be read"
+	if out, err := run(ctx, "launchctl", "print-disabled", "system"); err == nil {
+		override = "no override disables it"
+		if disabled(out) {
+			override = "an override disables it"
+		}
+	}
+	return loaded + ", " + override
 }
 
 // Remove is Stop: a daemon booted out isn't launchd's any more until the

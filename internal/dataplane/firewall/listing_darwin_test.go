@@ -10,8 +10,8 @@ import (
 )
 
 func TestTheExportedReadersReadAsTheGuardDoes(t *testing.T) {
-	if got := SkippedNames([]byte("en0\nlo (skip)\nlo0 (skip)\nutun3\n")); !slices.Equal(got, []string{"lo", "lo0"}) {
-		t.Errorf("skipped names %q", got)
+	if got, err := SkippedNames([]byte("en0\nlo (skip)\nlo0 (skip)\nutun3\n")); err != nil || !slices.Equal(got, []string{"lo", "lo0"}) {
+		t.Errorf("skipped names %q %v", got, err)
 	}
 	for stderr, missing := range map[string]bool{
 		"pfctl: DIOCGETRULES: Invalid argument\n":                                                             true,
