@@ -1,0 +1,3 @@
+scrub-anchor "com.apple/*" all fragment reassemble
+pass out quick all
+anchor "com.apple/*" all

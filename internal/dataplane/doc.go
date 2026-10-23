@@ -20,6 +20,19 @@
 // dataplane/routetable, dataplane/dns and dataplane/tun, and nothing here
 // imports the agent; depguard enforces both.
 //
+// # The last Apply's steps
+//
+// Each Apply records its steps as they end ([Engine.LastApply], for `thinkpol
+// diag`): the section read ("section"), the rules compiled ("rules"), with
+// a route table the direct routes taken out first ("route_table_shrink"),
+// the revocations ("removals"), the overlay interface ("interface", where
+// the engine has one), the WireGuard devices ("devices"), the router's table
+// ("router") and the route table's final set ("route_table"), each with its
+// time from the end of the one before, failed or not, and the step the
+// Apply failed at, as Status.LastApplyError. A section that can't run here
+// ends after its revocations. Re-compiling the rules outside an Apply
+// (SetRules) records nothing.
+//
 // # The overlay's MTU
 //
 // The overlay's MTU ([OverlayMTU]) is what the node's links leave after

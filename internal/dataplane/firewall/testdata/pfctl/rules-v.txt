@@ -1,0 +1,36 @@
+pass out quick on lo0 inet6 all no state
+  [ Evaluations: 5120      Packets: 0         Bytes: 0           States: 0     ]
+  [ Inserted: uid 0 pid 4127 ]
+pass out quick on utun7 inet6 all no state
+  [ Evaluations: 5120      Packets: 4210      Bytes: 612344      States: 0     ]
+  [ Inserted: uid 0 pid 4127 ]
+pass out quick inet6 from any to <thinkpol_exempt6> no state
+  [ Evaluations: 910       Packets: 37        Bytes: 4180        States: 0     ]
+  [ Inserted: uid 0 pid 4127 ]
+pass out quick inet6 proto tcp from any to 2001:db8:53::1 port = 53 no state
+  [ Evaluations: 873       Packets: 6         Bytes: 420         States: 0     ]
+  [ Inserted: uid 0 pid 4127 ]
+pass out quick inet6 proto udp from any to 2001:db8:53::1 port = 53 no state
+  [ Evaluations: 867       Packets: 12        Bytes: 864         States: 0     ]
+  [ Inserted: uid 0 pid 4127 ]
+pass out quick inet6 proto ipv6-icmp from any to 2001:db8:53::1 icmp6-type neighbrsol no state
+  [ Evaluations: 855       Packets: 0         Bytes: 0           States: 0     ]
+  [ Inserted: uid 0 pid 4127 ]
+pass out quick inet6 proto ipv6-icmp from any to 2001:db8:53::1 icmp6-type neighbradv no state
+  [ Evaluations: 855       Packets: 0         Bytes: 0           States: 0     ]
+  [ Inserted: uid 0 pid 4127 ]
+pass out quick inet6 proto ipv6-icmp from any to ff00::/8 icmp6-type groupqry no state
+  [ Evaluations: 855       Packets: 0         Bytes: 0           States: 0     ]
+  [ Inserted: uid 0 pid 4127 ]
+pass out quick inet6 proto ipv6-icmp from any to ff00::/8 icmp6-type grouprep no state
+  [ Evaluations: 855       Packets: 0         Bytes: 0           States: 0     ]
+  [ Inserted: uid 0 pid 4127 ]
+pass out quick inet6 proto ipv6-icmp from any to ff00::/8 icmp6-type groupterm no state
+  [ Evaluations: 855       Packets: 0         Bytes: 0           States: 0     ]
+  [ Inserted: uid 0 pid 4127 ]
+pass out quick inet6 proto ipv6-icmp from any to ff00::/8 icmp6-type 143 no state
+  [ Evaluations: 855       Packets: 3         Bytes: 240         States: 0     ]
+  [ Inserted: uid 0 pid 4127 ]
+block return out quick inet6 all
+  [ Evaluations: 852       Packets: 9         Bytes: 756         States: 0     ]
+  [ Inserted: uid 0 pid 4127 ]

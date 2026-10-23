@@ -33,6 +33,12 @@ func platform() agent.Platform {
 		LockHost:      agent.HostLock,
 		RestoreDNS:    dns.RestoreSystem,
 		ConnectRecord: agent.HostConnectRecord(),
+		Inspect: agent.Inspector{
+			Interface: netcfg.InspectInterface,
+			Routes:    netcfg.Inspect,
+			Guard:     inspectGuard,
+			DNS:       dns.Inspect,
+		},
 	}
 }
 
