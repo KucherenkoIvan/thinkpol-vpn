@@ -29,10 +29,10 @@ func DefaultBase() (string, error) {
 	return filepath.Join(home, "thinkpol-evidence"), nil
 }
 
-// GitCheckout is the git checkout path is in (the nearest directory up
-// from it holding .git), "" if none: evidence and private config never
-// go into one, so they can't be committed by accident.
-func GitCheckout(path string) string {
+// gitCheckout is the git checkout path is in (the nearest directory up
+// from it holding .git), "" if none: evidence never goes into one, so it
+// can't be committed by accident.
+func gitCheckout(path string) string {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return ""
@@ -59,7 +59,7 @@ type Folder struct {
 // <base>/<date>-<ticket>, or -2, -3... after it if that exists. out is
 // the terminal.
 func Create(base, ticket string, now time.Time, out io.Writer) (*Folder, error) {
-	if repo := GitCheckout(base); repo != "" {
+	if repo := gitCheckout(base); repo != "" {
 		return nil, fmt.Errorf("%s is inside the git checkout %s: evidence never goes into one", base, repo)
 	}
 	if err := os.MkdirAll(base, 0o700); err != nil {

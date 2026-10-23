@@ -14,6 +14,7 @@ import (
 	"net/netip"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -100,7 +101,7 @@ func (r *runner) runCaptureCheck(ctx context.Context, filter string, res *captur
 		return err
 	}
 	defer func() { _ = neg.Close(); _ = pos.Close() }()
-	res.Filter = controlFilter(filter, neg.LocalAddr().(*net.UDPAddr).Port)
+	res.Filter = controlFilter(filter, strconv.Itoa(neg.LocalAddr().(*net.UDPAddr).Port))
 	if _, err := r.c.call(safety.Request{Op: safety.OpCaptureStart, Iface: res.Iface, Filter: res.Filter}); err != nil {
 		return fmt.Errorf("start: %w", err)
 	}
@@ -189,11 +190,11 @@ func decodedMarkers(text []byte, positive, negative string, runErr error) error 
 
 // controlFilter is the plan's filter with the self-test's controls: the
 // positive marker always passes it, the negative never does.
-func controlFilter(filter string, negativePort int) string {
+func controlFilter(filter, negativePort string) string {
 	if filter == "" {
-		return fmt.Sprintf("not (udp src port %d)", negativePort)
+		return fmt.Sprintf("not (udp src port %s)", negativePort)
 	}
-	return fmt.Sprintf("not (udp src port %d) and ((%s) or (udp dst port %d))", negativePort, filter, markerPort)
+	return fmt.Sprintf("not (udp src port %s) and ((%s) or (udp dst port %d))", negativePort, filter, markerPort)
 }
 
 // markerSockets are two UDP sockets on iface's IPv4 address, bound to

@@ -23,8 +23,10 @@ const usage = `devicetest: the device-test harness (run by the owner only)
         -evidence DIR    where evidence folders go (default ~/thinkpol-evidence)
   devicetest selftest [-iface IF] [-thinkpol PATH] [-evidence DIR]
         the self-test alone
-  devicetest restore
+  devicetest restore [-forget RUN]
         restore the run pending a restore (unfinished, or left not CLEAN)
+        -forget RUN      close the pending run RUN, which no restore can close,
+                         in a later boot than its own (FORGOTTEN, never CLEAN)
 
 devicetest-root, built beside devicetest, is its root side: sudo runs a
 checked copy of it.
@@ -61,7 +63,7 @@ func dispatch(ctx context.Context, mode string, args []string) error {
 	case "selftest":
 		return cmdRun(ctx, append([]string{"selftest"}, args...))
 	case "restore":
-		return cmdRestore()
+		return cmdRestore(args)
 	}
 	fmt.Fprint(os.Stderr, usage)
 	return fmt.Errorf("no command %q", mode)

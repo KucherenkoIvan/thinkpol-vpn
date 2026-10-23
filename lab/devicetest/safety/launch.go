@@ -17,10 +17,11 @@ import (
 
 // launchScript is the one command sudo runs. It checks the temporary
 // directory is root's and sticky (not a symlink: find doesn't follow
-// one), copies the binary into a fresh directory of root's (0700) there, checks the copy's hash against the one
-// the user side computed before asking for sudo, and runs the copy: a file
-// the user can write is never executed as root, and a binary swapped
-// between the hash and the copy is refused.
+// one), copies the binary into a fresh directory of root's (0700) there,
+// checks the copy's hash against the one the user side computed before
+// asking for sudo, and runs the copy: a file the user can write is never
+// executed as root, and a binary swapped between the hash and the copy is
+// refused.
 const launchScript = `set -eu
 src=$1; sum=$2; base=$3; hasher=$4; shift 4
 umask 077
@@ -40,9 +41,9 @@ fi
 exec "$d/devicetest" "$@" -root-copy "$d"
 `
 
-// RootCommand runs a root mode of the root binary at self (a mode, then its flags)
-// through the launch script: under sudo, or directly when the caller is
-// root already (the lab).
+// RootCommand builds the command that runs a root mode of the root binary
+// at self (args: a mode, then its flags) through the launch script: under
+// sudo, or directly when the caller is root already (the lab).
 func RootCommand(self string, args []string) (*exec.Cmd, error) {
 	sum, err := fileSHA256(self)
 	if err != nil {

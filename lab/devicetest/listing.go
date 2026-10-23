@@ -43,7 +43,8 @@ func listing(p plan.Plan, phys string) string {
 		if iface == plan.Physical {
 			iface = "the physical interface (" + phys + ")"
 		}
-		w("capture: %s, filter %q, running until the run ends; its pcap is kept in the evidence", iface, c.Filter)
+		w("capture: %s, filter %q, running until the run ends; its pcap is kept in the evidence", iface, controlFilter(c.Filter, "N"))
+		w("  (the plan's filter %q with the self-test's controls: N is the negative marker's source port)", c.Filter)
 	}
 	for i, st := range p.Steps {
 		w("step %d %s", i+1, st.Name)
@@ -64,10 +65,11 @@ func describeOp(op plan.Op) string {
 	case plan.OpRead:
 		return "root read: " + strings.Join(op.Argv, " ")
 	case plan.OpDo:
-		if does, _, err := describeChange(op.Change); err == nil {
-			return "change:    " + does
+		does, _, err := describeChange(op.Change)
+		if err != nil {
+			return fmt.Sprintf("change:    %s, refused: %v", op.Change.Kind, err)
 		}
-		return "change:    " + op.Change.Kind + " (this OS has no such change)"
+		return "change:    " + does
 	case plan.OpUndoLast:
 		return "undo now:  the plan's newest change"
 	}

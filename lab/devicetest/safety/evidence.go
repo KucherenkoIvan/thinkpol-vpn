@@ -37,9 +37,6 @@ func openEvidence(path string, uid, gid int) (*evidence, error) {
 // path is the folder's path.
 func (e *evidence) path() string { return e.dir.Name() }
 
-// close closes the folder.
-func (e *evidence) close() error { return e.dir.Close() }
-
 var relPath = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)*$`)
 
 // create makes the file rel (a relative path, its directories made as

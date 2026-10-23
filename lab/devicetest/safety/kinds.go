@@ -15,11 +15,11 @@ const (
 	// KindFile writes a file of the run's own in its run directory: the
 	// self-test's harmless change.
 	KindFile = "file"
-	// KindCapture runs a tcpdump the helper reads (OpCaptureStart).
-	KindCapture = "capture"
-	// KindPfSkip loads `set skip on <name>` before the stock pf rules
+	// kindCapture runs a tcpdump the helper reads (OpCaptureStart).
+	kindCapture = "capture"
+	// kindPfSkip loads `set skip on <name>` before the stock pf rules
 	// (macOS).
-	KindPfSkip = "pf-skip"
+	kindPfSkip = "pf-skip"
 )
 
 // Spec is a change as a plan names it and the journal keeps it.
@@ -58,9 +58,9 @@ func decode(spec Spec) (action, error) {
 	switch spec.Kind {
 	case KindFile:
 		return decodeStrict[fileAction](spec.Params)
-	case KindCapture:
+	case kindCapture:
 		return decodeStrict[captureAction](spec.Params)
-	case KindPfSkip:
+	case kindPfSkip:
 		return decodePfSkip(spec.Params)
 	}
 	return nil, fmt.Errorf("no change of kind %q", spec.Kind)

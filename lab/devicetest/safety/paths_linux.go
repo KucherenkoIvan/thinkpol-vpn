@@ -2,8 +2,8 @@ package safety
 
 import "os"
 
-// DefaultStateDir is root's directory for runs' journals.
-const DefaultStateDir = "/var/lib/thinkpol-devicetest"
+// defaultStateDir is root's directory for runs' journals.
+const defaultStateDir = "/var/lib/thinkpol-devicetest"
 
 const (
 	rootCopyBase = "/tmp"

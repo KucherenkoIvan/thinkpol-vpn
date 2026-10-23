@@ -20,7 +20,7 @@ import (
 // The live reader on a capture tcpdump recorded in a lab node (a dummy
 // interface on 192.0.2.1/24; the self-test's filter, so the negative
 // marker, 0123456789abcdef, was filtered out by tcpdump itself).
-func TestTheLiveReaderOnARecordedCapture(t *testing.T) {
+func TestTheLiveReaderCopiesTheStreamAndSeesOnlyItsMarkers(t *testing.T) {
 	recorded, err := os.ReadFile("testdata/marker.pcap")
 	if err != nil {
 		t.Fatal(err)
@@ -80,15 +80,15 @@ func TestParametersRootWouldMisreadAreRefused(t *testing.T) {
 		{Kind: KindFile, Params: []byte(`{"name":"../x","content":""}`)},
 		{Kind: KindFile, Params: []byte(`{"name":"x","content":"","extra":1}`)},
 		{Kind: KindFile, Params: []byte(`null`)},
-		{Kind: KindCapture, Params: []byte(`null`)},
-		{Kind: KindPfSkip, Params: []byte(`null`)},
-		{Kind: KindCapture, Params: []byte(`{"iface":"en0; true","filter":""}`)},
+		{Kind: kindCapture, Params: []byte(`null`)},
+		{Kind: kindPfSkip, Params: []byte(`null`)},
+		{Kind: kindCapture, Params: []byte(`{"iface":"en0; true","filter":""}`)},
 		// After `--` or not, a filter that looks like an option is
 		// refused: -w would have root's tcpdump write any file.
-		{Kind: KindCapture, Params: []byte(`{"iface":"en0","filter":"-w/etc/pf.conf"}`)},
-		{Kind: KindCapture, Params: []byte(`{"iface":"en0","filter":" -wfile"}`)},
-		{Kind: KindPfSkip, Params: []byte(`{"iface":"lo\nanchor \"x\""}`)},
-		{Kind: KindPfSkip, Params: []byte(`{"prepend":"pass quick all"}`)},
+		{Kind: kindCapture, Params: []byte(`{"iface":"en0","filter":"-w/etc/pf.conf"}`)},
+		{Kind: kindCapture, Params: []byte(`{"iface":"en0","filter":" -wfile"}`)},
+		{Kind: kindPfSkip, Params: []byte(`{"iface":"lo\nanchor \"x\""}`)},
+		{Kind: kindPfSkip, Params: []byte(`{"prepend":"pass quick all"}`)},
 	} {
 		if _, _, err := Describe(s); err == nil {
 			t.Errorf("%s %s accepted", s.Kind, s.Params)
@@ -120,7 +120,7 @@ func captureChild(path string) error {
 	}
 	h := &host{runDir: dir, boot: "boot-a", baseline: &snapshot{}, evidence: ev, captures: &captures{live: map[string]*liveCapture{}, ev: ev}}
 	params, _ := json.Marshal(captureAction{Iface: "en0"})
-	_, err = (&engine{h: h, j: j, armed: isArmed}).do(context.Background(), Spec{Kind: KindCapture, Params: params})
+	_, err = (&engine{h: h, j: j, armed: isArmed}).do(context.Background(), Spec{Kind: kindCapture, Params: params})
 	return err
 }
 

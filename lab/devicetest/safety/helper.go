@@ -39,7 +39,7 @@ type Request struct {
 
 // The helper's operations.
 const (
-	OpRead         = "read"          // a root read (RootRead), its output saved
+	OpRead         = "read"          // a root read (rootRead), its output saved
 	OpDo           = "do"            // a change, through the journal
 	OpUndoLast     = "undo_last"     // undo the newest change now (never a capture)
 	OpCaptureStart = "capture_start" // a capture (a change)
@@ -90,7 +90,7 @@ func helper(ctx context.Context, cfg helperConfig) error {
 	r, err := startRun(ctx, cfg)
 	if err != nil {
 		_ = enc.Encode(Response{Err: err.Error()})
-		return err
+		return answered(err)
 	}
 	_ = enc.Encode(Response{OK: true})
 	by := "the helper: its user side is gone (input ended)"
@@ -116,7 +116,7 @@ func helper(ctx context.Context, cfg helperConfig) error {
 		resp.Err = err.Error()
 	}
 	_ = enc.Encode(resp)
-	return err
+	return answered(err)
 }
 
 type runState struct {
@@ -136,7 +136,7 @@ func startRun(ctx context.Context, cfg helperConfig) (*runState, error) {
 		return nil, fmt.Errorf("%w: %w", errNotStarted, err)
 	}
 	if err := r.armAndBaseline(ctx, cfg); err != nil {
-		res := Result{Verdict: Clean, By: "the helper: the run didn't start", Notes: []string{err.Error()}}
+		res := Result{Verdict: Nothing, By: "the helper", Notes: []string{"the run didn't start: " + err.Error()}}
 		return nil, errors.Join(err, finish(r.state, r.openedRun, &res))
 	}
 	return r, nil
@@ -169,7 +169,7 @@ func openRunState(cfg helperConfig) (*runState, error) {
 		return nil, fmt.Errorf("the evidence folder: %w", err)
 	}
 	r := &runState{state: state, lock: lk}
-	if err := prune(state, ""); err != nil {
+	if err := prune(state); err != nil {
 		_, _ = fmt.Fprintf(cfg.logWriter(), "helper: pruning old runs: %v\n", err)
 	}
 	return r, r.open(cfg, ev)
@@ -204,11 +204,11 @@ func (r *runState) open(cfg helperConfig, ev *evidence) error {
 	if r.j, err = createJournal(runDir, cfg.run, boot); err != nil {
 		return err
 	}
-	if err := errors.Join(trusteddir.WriteFile(r.state, activeFile, []byte(cfg.run+"\n")), unix.Fsync(int(r.state.Fd()))); err != nil {
+	if err := errors.Join(trusteddir.WriteFile(r.state, activeFile, []byte(cfg.run+"\n")), fullSync(r.state)); err != nil {
 		return err
 	}
 	logf := func(format string, a ...any) { _, _ = fmt.Fprintf(cfg.logWriter(), "helper: "+format+"\n", a...) }
-	r.h = &host{runDir: runDir, evidence: ev, boot: boot, surfaces: cfg.state.surfaces,
+	r.h = &host{runDir: runDir, evidence: ev, boot: boot, runBoot: boot, surfaces: cfg.state.surfaces, exec: cfg.state.exec,
 		captures: &captures{live: map[string]*liveCapture{}, ev: ev}, logf: logf}
 	r.engine = &engine{h: r.h, j: r.j, armed: func() error { return armed(runDir) }}
 	return nil
@@ -216,7 +216,9 @@ func (r *runState) open(cfg helperConfig, ev *evidence) error {
 
 // armAndBaseline starts the dead-man in a session of its own (nothing that
 // signals the run's process group or terminal reaches it), waits for it
-// to be armed, and takes the baseline.
+// to be armed, and takes the baseline. A baseline that can't read a
+// surface it compares stops the run before anything changes: no restore
+// could ever show the host equal to it.
 func (r *runState) armAndBaseline(ctx context.Context, cfg helperConfig) error {
 	start, err := startTime(os.Getpid())
 	if err != nil {
@@ -245,6 +247,11 @@ func (r *runState) armAndBaseline(ctx context.Context, cfg helperConfig) error {
 	if err != nil {
 		return fmt.Errorf("the baseline: %w", err)
 	}
+	for _, sf := range r.h.surfaceList() {
+		if why, bad := base.Unreadable[sf.name]; bad && !sf.info {
+			return fmt.Errorf("the baseline can't read %s: %s (raw output: snapshots/%s/%s.* in the evidence)", sf.name, why, baselineName, sf.name)
+		}
+	}
 	r.h.baseline = base
 	return nil
 }
@@ -265,7 +272,7 @@ func (r *runState) serve(ctx context.Context, req Request) Response {
 		err = r.engine.undoLast(ctx)
 	case OpCaptureStart:
 		params, _ := json.Marshal(captureAction{Iface: req.Iface, Filter: req.Filter})
-		resp.Seq, err = r.engine.do(ctx, Spec{Kind: KindCapture, Params: params})
+		resp.Seq, err = r.engine.do(ctx, Spec{Kind: kindCapture, Params: params})
 	case OpCaptureSeen, OpCutStart, OpCutEnd:
 		resp.Seen, err = r.capture(ctx, req)
 	default:
@@ -279,16 +286,13 @@ func (r *runState) serve(ctx context.Context, req Request) Response {
 }
 
 func (r *runState) read(ctx context.Context, req Request) (int, error) {
-	argv, err := RootRead(req.Argv)
+	argv, err := rootRead(req.Argv)
 	if err != nil {
 		return 0, err
 	}
-	out := run(ctx, argv, nil)
+	out := r.h.run(ctx, argv, nil)
 	r.h.saveOutput(req.Name, argv, out)
-	if out.Code != 0 || out.Err != "" {
-		return out.Code, failed(out)
-	}
-	return out.Code, nil
+	return out.Code, checked(out)
 }
 
 func (r *runState) capture(ctx context.Context, req Request) (bool, error) {

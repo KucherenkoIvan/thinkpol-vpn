@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -28,14 +29,38 @@ const (
 )
 
 func TestMain(m *testing.M) {
+	refuseHostTools()
 	if os.Getenv(childEnv) == "" {
 		os.Exit(m.Run())
+	}
+	switch mode := os.Args[1]; mode {
+	case "helper", "deadman", "root-restore":
+		os.Exit(rootMain(context.Background(), os.Args[1:], childState(), os.Stdin, os.Stdout, os.Stderr))
 	}
 	if err := child(os.Args[1], os.Args[2:]); err != nil {
 		fmt.Fprintln(os.Stderr, "child:", err)
 		os.Exit(1)
 	}
 	os.Exit(0)
+}
+
+// testTools are all a core test may run on a Mac: nothing that reads or
+// changes the host's network. Outside the lab every other command is
+// refused before it runs, in the test and in each child it starts, so no
+// test, nor a mutant of one, reaches pfctl, tcpdump or the launch script's
+// sudo there. pf goes through fakePf.
+var testTools = []string{"/bin/cat", "/bin/sh", "/bin/sleep", "/bin/echo"}
+
+func refuseHostTools() {
+	if os.Getenv("THINKPOL_LAB") != "" {
+		return
+	}
+	execGuard = func(path string) error {
+		if slices.Contains(testTools, path) {
+			return nil
+		}
+		return fmt.Errorf("%s: the core's tests run no host tool outside the lab", path)
+	}
 }
 
 func childState() stateConfig {
@@ -47,14 +72,7 @@ func childState() stateConfig {
 }
 
 func child(mode string, args []string) error {
-	ctx := context.Background()
 	switch mode {
-	case "helper":
-		return helperMain(ctx, args, childState(), os.Stdin, os.Stdout, os.Stderr)
-	case "deadman":
-		return deadmanMain(ctx, args, childState())
-	case "restore":
-		return restoreMain(ctx, args, childState(), os.Stdout)
 	case "journal-child":
 		return journalChild(args[0])
 	case "capture-child":

@@ -82,10 +82,16 @@ func runAsRoot(t *testing.T, p plan.Plan, phys string) labRun {
 	if res.record.Restore == nil || res.record.Restore.Verdict != safety.Clean {
 		t.Errorf("the restore: %+v\n%s", res.record.Restore, term.String())
 	}
-	for _, f := range []string{"active", "left"} {
-		if _, err := os.Stat(filepath.Join(safety.DefaultStateDir, f)); !os.IsNotExist(err) {
-			t.Errorf("a run is still pending (%s): %v", f, err)
-		}
+	// Nothing is pending: `devicetest restore`'s root side has nothing to do.
+	cmd, err := safety.RootCommand(self, []string{"root-restore"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd.Env = append(os.Environ(), childEnv+"=1")
+	out, _ := cmd.Output()
+	var resp safety.Response
+	if err := json.Unmarshal(out, &resp); err != nil || resp.Result == nil || resp.Result.Verdict != safety.Nothing {
+		t.Errorf("a run is still pending: %s %v", out, err)
 	}
 	if out, _ := exec.Command("pgrep", "-x", "tcpdump").Output(); len(out) != 0 {
 		t.Errorf("tcpdump left running: %s", out)
@@ -93,7 +99,7 @@ func runAsRoot(t *testing.T, p plan.Plan, phys string) labRun {
 	return res
 }
 
-func TestARunAsRoot(t *testing.T) {
+func TestAWholeRunRecordsItsEvidenceAndRestoresClean(t *testing.T) {
 	iface := labInterface(t)
 	p := plan.Plan{Ticket: "TP-900", Title: "a lab run", Budget: 2 * time.Minute,
 		Capture: plan.Capture{Iface: plan.Physical, Filter: "ip6"},

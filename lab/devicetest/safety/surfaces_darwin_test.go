@@ -29,7 +29,7 @@ func TestTheMacSurfacesReadPfctlAndScutil(t *testing.T) {
 		{"disabled", pfStatus, ok(pfInfoDisabled), []string{"Status: Disabled"}},
 		{"skips, lo0 included", pfSkips, ok(pfInterfaces), []string{"lo", "lo0"}},
 		{"no skips", pfSkips, ok("en0\nutun3\n"), []string{}},
-		{"every line of the main rules, one naming ALTQ included", pfListing, ok(pfMainStock + "anchor \"ALTQ-test\" all\n"),
+		{"every line of the main rules, one naming ALTQ included", outputLines, ok(pfMainStock + "anchor \"ALTQ-test\" all\n"),
 			[]string{`scrub-anchor "com.apple/*" all fragment reassemble`, `anchor "com.apple/*" all`, `anchor "ALTQ-test" all`}},
 		{"an anchor that doesn't exist", pfAnchor, output{Code: 1, Stderr: []byte("pfctl: DIOCGETRULES: Invalid argument\n")}, []string{}},
 		{"dns without reach", dnsWithoutReach, ok(scutilDNS),

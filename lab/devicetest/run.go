@@ -46,7 +46,18 @@ type runner struct {
 	// helperCommand makes the helper's command (default: the launch
 	// script under sudo); the lab's tests run it as root without sudo.
 	helperCommand func(args []string) (*exec.Cmd, error)
+	// deadmanWait is how long a run with no answer from its helper waits
+	// for the dead-man's result (default deadmanResultWait).
+	deadmanWait time.Duration
 }
+
+// verdictUnknown: neither the helper nor the dead-man gave a result.
+const verdictUnknown = "UNKNOWN"
+
+// deadmanResultWait is how long the user side waits for the dead-man's
+// result when the helper gave none: it notices a gone helper within a
+// second, and its restore reads every surface once more.
+const deadmanResultWait = 2 * time.Minute
 
 func cmdRun(ctx context.Context, args []string) error {
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
@@ -150,18 +161,29 @@ func (r *runner) run(ctx context.Context, base string) error {
 	return nil
 }
 
-// resultFromEvidence is the newest restore result in the evidence (the
-// dead-man's, when the helper was killed), or UNKNOWN.
+// resultFromEvidence is the newest restore result in the evidence: the
+// dead-man's, when the helper was killed, waited for up to deadmanWait;
+// else UNKNOWN.
 func (r *runner) resultFromEvidence() *safety.Result {
-	m, _ := filepath.Glob(filepath.Join(r.ev.Path, "restore", "result-*.json"))
-	slices.Sort(m) // named by the time they were written
-	if len(m) > 0 {
-		var res safety.Result
-		if b, err := os.ReadFile(m[len(m)-1]); err == nil && json.Unmarshal(b, &res) == nil {
-			return &res
+	wait := r.deadmanWait
+	if wait == 0 {
+		wait = deadmanResultWait
+	}
+	r.ev.Logf("the helper gave no result: waiting up to %v for its dead-man's", wait)
+	for deadline := time.Now().Add(wait); ; time.Sleep(500 * time.Millisecond) {
+		m, _ := filepath.Glob(filepath.Join(r.ev.Path, "restore", "result-*.json"))
+		slices.Sort(m) // named by the time they were written
+		if len(m) > 0 {
+			var res safety.Result
+			if b, err := os.ReadFile(m[len(m)-1]); err == nil && json.Unmarshal(b, &res) == nil {
+				return &res
+			}
+		}
+		if time.Now().After(deadline) {
+			break
 		}
 	}
-	return &safety.Result{Verdict: "UNKNOWN", By: "nobody: the helper gave no result and the evidence has none",
+	return &safety.Result{Verdict: verdictUnknown, By: fmt.Sprintf("nobody: the helper gave no result, nor its dead-man within %v", wait),
 		Notes: []string{"run devicetest restore"}}
 }
 
@@ -339,13 +361,25 @@ func (r *runner) report(res safety.Result, err error, steps int, selfTest string
 }
 
 // cmdRestore restores the run pending a restore from its journal, as
-// root.
-func cmdRestore() error {
+// root; with -forget RUN, closes that run in a later boot than its own.
+func cmdRestore(args []string) error {
+	fs := flag.NewFlagSet("restore", flag.ContinueOnError)
+	forget := fs.String("forget", "", "close the pending run RUN, in a later boot than its own")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("restore takes no argument %q", fs.Arg(0))
+	}
+	rootArgs := []string{"root-restore"}
+	if *forget != "" {
+		rootArgs = append(rootArgs, "-forget", *forget)
+	}
 	root, err := rootBinary()
 	if err != nil {
 		return err
 	}
-	cmd, err := safety.RootCommand(root, []string{"root-restore"})
+	cmd, err := safety.RootCommand(root, rootArgs)
 	if err != nil {
 		return err
 	}
@@ -355,8 +389,9 @@ func cmdRestore() error {
 }
 
 // reportRestore prints root-restore's answer (out) for the owner: the
-// result, then what it means. Only CLEAN and nothing pending end well; any
-// other verdict keeps the run pending and blocks the next.
+// result, then what it means. CLEAN, nothing pending, RESET-BY-REBOOT and
+// FORGOTTEN let the next run start, each said for what it is; any other
+// verdict keeps the run pending and blocks the next.
 func reportRestore(w io.Writer, out []byte, runErr error) error {
 	var resp safety.Response
 	if jerr := json.Unmarshal(out, &resp); jerr != nil || resp.Result == nil {
@@ -374,6 +409,14 @@ func reportRestore(w io.Writer, out []byte, runErr error) error {
 		return nil
 	case res.Verdict == safety.Nothing:
 		_, _ = fmt.Fprintf(w, "devicetest restore: %s, no run was pending; nothing was compared\n", res.Verdict)
+		return nil
+	case res.Verdict == safety.ResetByReboot:
+		_, _ = fmt.Fprintf(w, "devicetest restore: %s, run %s closed: every change it made was undone or went with its boot; "+
+			"the Mac wasn't shown equal to its baseline (see \"left\": this boot's differences); a new run may start\n", res.Verdict, res.Run)
+		return nil
+	case res.Verdict == safety.Forgotten:
+		_, _ = fmt.Fprintf(w, "devicetest restore: %s, run %s closed at your request; nothing was proven (see the notes and \"left\"); "+
+			"a new run may start\n", res.Verdict, res.Run)
 		return nil
 	default:
 		_, _ = fmt.Fprintf(w, "THE MAC ISN'T AS IT WAS (%s): do what each item's \"next\" says, then run devicetest restore again; "+

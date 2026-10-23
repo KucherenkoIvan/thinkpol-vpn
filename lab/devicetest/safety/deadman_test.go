@@ -242,7 +242,7 @@ func runName() string { return fmt.Sprintf("test-%02d", runs.Add(1)) }
 // restoreChild runs `devicetest restore`'s root mode as a child.
 func restoreChild(t *testing.T, d testDirs, args ...string) (Response, error) {
 	t.Helper()
-	out, err := childCommand(t, d.env(), "restore", args...).Output()
+	out, err := childCommand(t, d.env(), "root-restore", args...).Output()
 	var resp Response
 	if jerr := json.Unmarshal(out, &resp); jerr != nil {
 		t.Fatalf("restore printed %q: %v (%v)", out, jerr, err)
@@ -418,30 +418,40 @@ func TestARestoreAfterARebootFindsTheRootCopyGone(t *testing.T) {
 }
 
 func TestOldRunsArePrunedPendingOnesNever(t *testing.T) {
-	state := openDir(t, tempDir(t))
-	mk := func(name string) {
-		p := filepath.Join(state.Name(), name)
+	d := newHelperDirs(t)
+	state := openDir(t, d.state)
+	for i := range 12 {
+		p := filepath.Join(d.state, fmt.Sprintf("run-202610%02dT000000Z-tp-096", i+1))
 		if err := os.Mkdir(p, 0o700); err != nil {
 			t.Fatal(err)
 		}
 		writeFile(t, filepath.Join(p, journalName), "{}\n")
 	}
-	for i := range 12 {
-		mk(fmt.Sprintf("run-202610%02dT000000Z-tp-096", i+1))
+	runs := func() []string { m, _ := filepath.Glob(filepath.Join(d.state, "run-*")); return m }
+
+	// A run pending a restore (the oldest): no run starts, so nothing is
+	// pruned, the pending one least of all.
+	writeFile(t, filepath.Join(d.state, leftFile), "20261001T000000Z-tp-096\n")
+	if _, hello := startHelper(t, d, runName()); hello.OK || len(runs()) != 12 {
+		t.Fatalf("a run started, or runs were pruned, while one is pending: %+v %v", hello, runs())
 	}
-	pending := "20261001T000000Z-tp-096"
-	odd := filepath.Join(state.Name(), "run-20261002T000000Z-tp-096")
+	if err := os.Remove(filepath.Join(d.state, leftFile)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Nothing pending: the oldest go, but a directory holding anything but
+	// regular files is left, and nothing is followed out of it.
+	odd := filepath.Join(d.state, "run-20261001T000000Z-tp-096")
 	if err := os.Symlink("/etc/hosts", filepath.Join(odd, "link")); err != nil {
 		t.Fatal(err)
 	}
-	err := prune(state, pending)
+	err := prune(state)
 	if err == nil || !strings.Contains(err.Error(), "isn't a regular file") {
 		t.Errorf("a run directory holding a symlink: %v", err)
 	}
-	m, _ := filepath.Glob(filepath.Join(state.Name(), "run-*"))
-	// 12 runs: the pending one and the one holding a symlink stay, and of
-	// the other 10 the newest 9 make room for the run starting.
-	if len(m) != 11 || !present(state, "run-"+pending) || !present(state, filepath.Base(odd)) || present(state, "run-20261003T000000Z-tp-096") {
+	// 12 runs: the newest 9 make room for the run starting, and the one
+	// holding a symlink stays.
+	if m := runs(); len(m) != 10 || !present(state, filepath.Base(odd)) || present(state, "run-20261003T000000Z-tp-096") {
 		t.Errorf("after pruning: %v", m)
 	}
 	if _, err := os.Stat("/etc/hosts"); err != nil {

@@ -22,14 +22,34 @@ type host struct {
 	// evidence is where raw output goes; nil when there is nowhere.
 	evidence *evidence
 	boot     string
-	// baseline is the snapshot taken before any change; nil before it.
-	baseline *snapshot
+	// baseline is the snapshot taken before any change; nil before it, or
+	// when it can't be read back (baselineErr says why).
+	baseline    *snapshot
+	baselineErr error
 	// surfaces are what a snapshot reads; nil: the OS's (the core's tests
 	// give their own, so they never read the real host's pf).
 	surfaces []surface
 	captures *captures
 	beats    int
 	logf     func(format string, a ...any)
+	// exec runs every command the core runs on the host; nil: run. The
+	// core's tests give a fake, so no test runs pfctl.
+	exec runner
+	// runBoot is the boot session the run started in; a restore in
+	// another boot changes nothing no journal entry names.
+	runBoot string
+}
+
+// runner runs one command: argv (an absolute path first), stdin (nil:
+// none).
+type runner func(ctx context.Context, argv []string, stdin []byte) output
+
+// run runs argv through h's runner.
+func (h *host) run(ctx context.Context, argv []string, stdin []byte) output {
+	if h.exec != nil {
+		return h.exec(ctx, argv, stdin)
+	}
+	return run(ctx, argv, stdin)
 }
 
 func (h *host) log(format string, a ...any) {
@@ -52,6 +72,9 @@ type output struct {
 // run runs argv (an absolute path first) with stdin (nil: none), in the C
 // locale, bounded by commandTimeout.
 func run(ctx context.Context, argv []string, stdin []byte) output {
+	if err := execGuard(argv[0]); err != nil {
+		return output{Code: -1, Err: err.Error()}
+	}
 	ctx, cancel := context.WithTimeout(ctx, commandTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
@@ -73,12 +96,28 @@ func run(ctx context.Context, argv []string, stdin []byte) output {
 	return out
 }
 
-// failed is why out isn't a successful command's.
-func failed(out output) error {
-	if out.Err != "" {
+// execGuard may refuse a command before it runs: the core's tests refuse
+// every host tool outside the lab, so no test, nor a mutant of one, runs
+// pfctl or tcpdump on a developer's Mac. Nothing is refused in a run.
+var execGuard = func(string) error { return nil }
+
+// checked is nil for a command that ran and exited 0, else why not.
+func checked(out output) error {
+	switch {
+	case out.Err != "":
 		return errors.New(out.Err)
+	case out.Code != 0:
+		return fmt.Errorf("exit %d: %s", out.Code, strings.Join(listingLines(out.Stderr), "; "))
 	}
-	return fmt.Errorf("exit %d: %s", out.Code, strings.Join(listingLines(out.Stderr), "; "))
+	return nil
+}
+
+// outputLines are a successful listing's lines (listingLines).
+func outputLines(out output) ([]string, error) {
+	if err := checked(out); err != nil {
+		return nil, err
+	}
+	return listingLines(out.Stdout), nil
 }
 
 // engine applies changes through the journal: nothing changes on the host
@@ -133,7 +172,7 @@ func (e *engine) undoLast(ctx context.Context) error {
 	if len(p) == 0 {
 		return errors.New("nothing to undo")
 	}
-	if p[0].Kind == KindCapture {
+	if p[0].Kind == kindCapture {
 		return errors.New("the newest change is a capture: a capture ends with the run")
 	}
 	return e.undo(ctx, p[0])

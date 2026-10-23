@@ -31,6 +31,9 @@ type surface struct {
 	info bool
 	// next is what to do when it differs.
 	next string
+	// reboot: a difference left here is the core's own change surviving
+	// its undo, which only a reboot is sure to clear (REBOOT).
+	reboot bool
 }
 
 // snapshot is the host's surfaces at one moment, normalised. The raw
@@ -61,24 +64,24 @@ func (h *host) snapshot(ctx context.Context, base string) (*snapshot, error) {
 	defer func() { _ = f.Close() }()
 	s := &snapshot{Name: name, Taken: time.Now().UTC(), Lines: map[string][]string{}, Unreadable: map[string]string{}}
 	for _, sf := range h.surfaceList() {
-		out := run(ctx, sf.argv, nil)
+		out := h.run(ctx, sf.argv, nil)
+		h.beat() // each surface may take commandTimeout: a slow one is progress
 		h.saveOutput("snapshots/"+name+"/"+sf.name, sf.argv, out)
 		if sf.norm == nil {
 			continue
 		}
 		lines, err := sf.norm(out)
 		if err != nil {
-			s.Unreadable[sf.name] = err.Error()
+			s.Unreadable[sf.name] = fmt.Sprintf("%v (exit %d, stdout %q, stderr %q)", err, out.Code, clip(out.Stdout), clip(out.Stderr))
 			continue
 		}
 		s.Lines[sf.name] = lines
 	}
-	h.beat()
 	b, err := json.MarshalIndent(s, "", "  ")
 	if err == nil {
 		_, err = f.Write(b)
 	}
-	if err = errors.Join(err, f.Sync()); err != nil {
+	if err = errors.Join(err, fullSync(f), fullSync(h.runDir)); err != nil {
 		return nil, fmt.Errorf("snapshot %s: %w", name, err)
 	}
 	return s, nil
@@ -105,6 +108,15 @@ func (h *host) reserveSnapshot(base string) (*os.File, string, error) {
 }
 
 func snapshotFile(name string) string { return "snapshot-" + name + ".json" }
+
+// clip is b's start, enough to quote in a result.
+func clip(b []byte) string {
+	const max = 300
+	if len(b) > max {
+		return string(b[:max]) + "…"
+	}
+	return string(b)
+}
 
 // loadSnapshot reads a snapshot back from the run's directory.
 func loadSnapshot(h *host, name string) (*snapshot, error) {
@@ -156,6 +168,7 @@ type Difference struct {
 	Unreadable string   `json:"unreadable,omitempty"`
 	Info       bool     `json:"info,omitempty"`
 	Next       string   `json:"next,omitempty"`
+	reboot     bool
 }
 
 func (d Difference) String() string {
@@ -174,7 +187,7 @@ func diff(sfs []surface, base, now *snapshot) []Difference {
 		if sf.norm == nil {
 			continue
 		}
-		d := Difference{Surface: sf.name, Info: sf.info, Next: sf.next}
+		d := Difference{Surface: sf.name, Info: sf.info, Next: sf.next, reboot: sf.reboot}
 		b, bok := base.Lines[sf.name]
 		n, nok := now.Lines[sf.name]
 		switch {

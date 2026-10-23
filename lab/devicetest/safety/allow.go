@@ -16,10 +16,10 @@ type readShape struct {
 	args *regexp.Regexp
 }
 
-// RootRead is the command the helper runs for a plan's root read (argv
+// rootRead is the command the helper runs for a plan's root read (argv
 // with a bare command name first). Only read-only listings of the shapes
 // in reads are allowed: a plan changes the host only through an action.
-func RootRead(argv []string) ([]string, error) {
+func rootRead(argv []string) ([]string, error) {
 	if len(argv) == 0 {
 		return nil, errors.New("an empty command")
 	}

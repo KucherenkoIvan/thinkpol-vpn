@@ -14,10 +14,14 @@ import (
 // pfSkipAction loads pf's main ruleset as `set skip on <Iface>` followed
 // by the stock rules (/etc/pf.conf), which keeps Apple's hook: a skip on
 // a name no interface has, to see what pf and the guard make of it. Its
-// undo loads /etc/pf.conf, so it is
-// refused unless the rules loaded now are the baseline's, those are what
-// /etc/pf.conf loads, and nothing is skipped (the undo would drop a skip
-// someone else loaded). It never flushes, disables or edits anything.
+// undo loads /etc/pf.conf, so the change is refused unless the rules
+// loaded now are the baseline's, nothing is skipped (loading pf.conf
+// would drop a skip someone else loaded), and every rule the baseline
+// had is one /etc/pf.conf loads (`pfctl -n`). That checks the baseline's
+// rules are among pf.conf's, not that they are all of them: a pf.conf
+// edited and not loaded yet makes the undo load rules the baseline didn't
+// have, a false REBOOT, never a false CLEAN. It never flushes, disables
+// or edits anything.
 type pfSkipAction struct {
 	Iface string `json:"iface"`
 }
@@ -34,22 +38,23 @@ func (a *pfSkipAction) validate() error {
 }
 
 func (a *pfSkipAction) line() string     { return "set skip on " + a.Iface }
-func (*pfSkipAction) kind() string       { return KindPfSkip }
+func (*pfSkipAction) kind() string       { return kindPfSkip }
 func (*pfSkipAction) lifetime() lifetime { return volatile }
 func (a *pfSkipAction) does() string {
 	return fmt.Sprintf("load pf's main ruleset: %q, then %s", a.line(), pfConfPath)
 }
-func (*pfSkipAction) undoText() string {
-	return "pfctl -f " + pfConfPath + ", once more if pf still differs from the baseline; never a flush"
+func (a *pfSkipAction) undoText() string {
+	return fmt.Sprintf("while %s is skipped: pfctl -f %s, once more if pf still differs from the baseline; never a flush", a.Iface, pfConfPath)
 }
 
-// pfStock are the surfaces a load of /etc/pf.conf must put back.
-var pfStock = []string{"pf-rules", "pf-nat", "pf-skip", "pf-anchor-250.ApplicationFirewall", "pf-anchor-200.AirDrop"}
+// pfConfControls are the surfaces loading /etc/pf.conf sets: the undo
+// reloads until they match the baseline.
+var pfConfControls = []string{"pf-rules", "pf-nat", "pf-skip"}
 
 // pre refuses unless the loaded rules are the baseline's, nothing is
-// skipped, and the baseline's rules are what /etc/pf.conf loads (`pfctl -n`
-// parses it and loads nothing): otherwise the undo would replace someone's
-// rules or skips.
+// skipped, and the baseline's rules are among what /etc/pf.conf loads
+// (`pfctl -n` parses it and loads nothing): otherwise the undo would
+// replace someone's rules or skips.
 func (a *pfSkipAction) pre(ctx context.Context, h *host) error {
 	if h.baseline == nil {
 		return errors.New("no baseline")
@@ -57,8 +62,8 @@ func (a *pfSkipAction) pre(ctx context.Context, h *host) error {
 	if err := rootFile(pfConfPath); err != nil {
 		return err
 	}
-	for _, name := range []string{"pf-rules", "pf-nat", "pf-skip"} {
-		now, err := h.read(ctx, name)
+	for _, name := range pfConfControls {
+		now, err := h.readSurface(ctx, name)
 		if err != nil {
 			return err
 		}
@@ -70,10 +75,10 @@ func (a *pfSkipAction) pre(ctx context.Context, h *host) error {
 		return fmt.Errorf("pf skips %v already: loading %s back would drop it", skips, pfConfPath)
 	}
 	argv := []string{pfctlPath, "-n", "-v", "-f", pfConfPath}
-	out := run(ctx, argv, nil)
+	out := h.run(ctx, argv, nil)
 	h.saveOutput(fmt.Sprintf("actions/pf-skip-%d.stock-parse", time.Now().UnixNano()), argv, out)
-	if out.Code != 0 || out.Err != "" {
-		return fmt.Errorf("pfctl -n -f %s: %w", pfConfPath, failed(out))
+	if err := checked(out); err != nil {
+		return fmt.Errorf("pfctl -n -f %s: %w", pfConfPath, err)
 	}
 	stock := listingLines(out.Stdout)
 	for _, l := range append(slices.Clone(h.baseline.Lines["pf-rules"]), h.baseline.Lines["pf-nat"]...) {
@@ -90,32 +95,63 @@ func (a *pfSkipAction) apply(ctx context.Context, h *host, _ func(json.RawMessag
 		return err
 	}
 	argv := []string{pfctlPath, "-f", "-"}
-	out := run(ctx, argv, append([]byte(a.line()+"\n"), conf...))
+	out := h.run(ctx, argv, append([]byte(a.line()+"\n"), conf...))
 	h.saveOutput(fmt.Sprintf("actions/pf-skip-%d.load", time.Now().UnixNano()), argv, out)
-	if out.Code != 0 || out.Err != "" {
-		return fmt.Errorf("pfctl -f -: %w", failed(out))
+	if err := checked(out); err != nil {
+		return fmt.Errorf("pfctl -f -: %w", err)
 	}
 	return nil
 }
 
-// undo loads the stock rules until pf matches the baseline, at most twice.
+// undo does nothing once Iface isn't skipped: the skip is gone (a reboot,
+// or another app's load of its own rules, took it), and loading pf.conf
+// now would replace what was loaded since. While it is skipped, it loads
+// /etc/pf.conf until what that sets matches the baseline, at most twice;
+// the restore's comparison judges everything else.
 func (a *pfSkipAction) undo(ctx context.Context, h *host) error {
+	skips, err := h.readSurface(ctx, "pf-skip")
+	if err != nil {
+		return fmt.Errorf("pf's skipped interfaces: %w", err)
+	}
+	if !slices.Contains(skips, a.Iface) {
+		return nil
+	}
 	if h.baseline == nil {
 		return errors.New("no baseline to compare pf with: run sudo pfctl -f /etc/pf.conf by hand")
 	}
 	for range 2 {
-		if d := h.differs(ctx, pfStock); len(d) == 0 {
-			return nil
-		}
 		argv := []string{pfctlPath, "-f", pfConfPath}
-		out := run(ctx, argv, nil)
+		out := h.run(ctx, argv, nil)
 		h.saveOutput(fmt.Sprintf("actions/pf-skip-%d.restore", time.Now().UnixNano()), argv, out)
 		h.beat()
+		if d := h.differs(ctx, pfConfControls); len(d) == 0 {
+			return nil
+		}
 	}
-	if d := h.differs(ctx, pfStock); len(d) > 0 {
-		return fmt.Errorf("pf differs from the baseline after two loads of %s (%v): %s", pfConfPath, d, nextPfReload)
+	return fmt.Errorf("pf differs from the baseline after two loads of %s (%v): %s", pfConfPath, h.differs(ctx, pfConfControls), nextPfReload)
+}
+
+// readSurface reads one surface now.
+func (h *host) readSurface(ctx context.Context, name string) ([]string, error) {
+	for _, sf := range h.surfaceList() {
+		if sf.name == name && sf.norm != nil {
+			return sf.norm(h.run(ctx, sf.argv, nil))
+		}
 	}
-	return nil
+	return nil, fmt.Errorf("no surface %q", name)
+}
+
+// differs are those of the surfaces names that differ from the baseline
+// now (or can't be read).
+func (h *host) differs(ctx context.Context, names []string) []string {
+	var out []string
+	for _, n := range names {
+		now, err := h.readSurface(ctx, n)
+		if err != nil || !slices.Equal(now, h.baseline.Lines[n]) {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 // rootFile checks path is a regular file of root's that no one else may
@@ -130,27 +166,4 @@ func rootFile(path string) error {
 		return fmt.Errorf("%s: not a regular file only root may write", path)
 	}
 	return nil
-}
-
-// read reads one surface now.
-func (h *host) read(ctx context.Context, name string) ([]string, error) {
-	for _, sf := range h.surfaceList() {
-		if sf.name == name && sf.norm != nil {
-			return sf.norm(run(ctx, sf.argv, nil))
-		}
-	}
-	return nil, fmt.Errorf("no surface %q", name)
-}
-
-// differs are those of the surfaces names that differ from the baseline
-// now (or can't be read).
-func (h *host) differs(ctx context.Context, names []string) []string {
-	var out []string
-	for _, n := range names {
-		now, err := h.read(ctx, n)
-		if err != nil || !slices.Equal(now, h.baseline.Lines[n]) {
-			out = append(out, n)
-		}
-	}
-	return out
 }

@@ -148,7 +148,7 @@ func deadman(ctx context.Context, cfg stateConfig, run string, dm deadmanConfig)
 	if running(dm.helperPID, dm.helperStart) {
 		_ = syscall.Kill(dm.helperPID, syscall.SIGKILL)
 	}
-	res, err := restoreRun(ctx, cfg, "the dead-man: "+why)
+	res, err := restoreRun(ctx, cfg, "the dead-man: "+why, run)
 	if err != nil {
 		return err
 	}

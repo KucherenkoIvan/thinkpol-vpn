@@ -125,7 +125,9 @@ func TestSnapshotsAreWrittenOnceUnderTheCoresNames(t *testing.T) {
 	}
 }
 
-func TestOnlyPfLeftOverIsAReboot(t *testing.T) {
+// REBOOT is only for a surface whose difference is the core's own change
+// surviving its undo (surface.reboot; on macOS, what loading pf.conf sets).
+func TestOnlyTheCoresOwnChangeLeftOverIsAReboot(t *testing.T) {
 	for _, tc := range []struct {
 		r    Result
 		want string
@@ -134,7 +136,8 @@ func TestOnlyPfLeftOverIsAReboot(t *testing.T) {
 		{Result{Info: []Difference{{Surface: "dns"}}}, Clean},
 		{Result{Failed: []string{"undo 1"}}, Left},
 		{Result{Left: []Difference{{Surface: "pf-info"}}}, Left},
-		{Result{Left: []Difference{{Surface: "pf-skip"}}}, Reboot},
+		{Result{Left: []Difference{{Surface: "pf-anchor-200.AirDrop"}}}, Left},
+		{Result{Left: []Difference{{Surface: "pf-anchor-200.AirDrop"}, {Surface: "pf-skip", reboot: true}}}, Reboot},
 	} {
 		if got := verdict(tc.r); got != tc.want {
 			t.Errorf("%+v: %s, want %s", tc.r, got, tc.want)

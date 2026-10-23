@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"os"
 	"os/signal"
@@ -15,28 +16,56 @@ import (
 	"time"
 )
 
-// The root modes' entry points, for devicetest-root's main: the arguments
-// after the mode's name. The state directory is never an argument.
+// errAnswered marks an error the user side has already, as the protocol's
+// answer: devicetest-root doesn't print it again.
+var errAnswered = errors.New("answered")
 
-// HelperMain is the "helper" mode, which the launch script starts.
-func HelperMain(ctx context.Context, args []string, in io.Reader, out, log io.Writer) error {
-	return helperMain(ctx, args, defaultState(), in, out, log)
+// answered is err, marked as sent to the user side (nil stays nil).
+func answered(err error) error {
+	if err == nil {
+		return nil
+	}
+	return errors.Join(errAnswered, err)
 }
 
-// DeadmanMain is the "deadman" mode, which the helper starts.
-func DeadmanMain(ctx context.Context, args []string) error {
-	return deadmanMain(ctx, args, defaultState())
+// RootMain is devicetest-root: args are a mode and its flags. "helper"
+// (the launch script starts it for a run), "deadman" (the helper starts
+// it) and "root-restore" (the launch script starts it for `devicetest
+// restore`). The state directory is never an argument. It returns the
+// exit status, and prints an error to log unless the user side has it as
+// an answer already.
+func RootMain(ctx context.Context, args []string, in io.Reader, out, log io.Writer) int {
+	return rootMain(ctx, args, defaultState(), in, out, log)
 }
 
-// RestoreMain is the "root-restore" mode, which the launch script starts
-// for `devicetest restore`: it restores the run pending a restore and
-// prints the result as one Response line.
-func RestoreMain(ctx context.Context, args []string, out io.Writer) error {
-	return restoreMain(ctx, args, defaultState(), out)
+func rootMain(ctx context.Context, args []string, state stateConfig, in io.Reader, out, log io.Writer) int {
+	if len(args) == 0 {
+		_, _ = fmt.Fprintln(log, "devicetest-root: started by devicetest, never by hand")
+		return 2
+	}
+	var err error
+	switch mode, rest := args[0], args[1:]; mode {
+	case "helper":
+		err = helperMain(ctx, rest, state, in, out, log)
+	case "deadman":
+		err = deadmanMain(ctx, rest, state)
+	case "root-restore":
+		err = restoreMain(ctx, rest, state, out)
+	default:
+		err = fmt.Errorf("no mode %q", mode)
+	}
+	if err == nil {
+		return 0
+	}
+	if !errors.Is(err, errAnswered) {
+		_, _ = fmt.Fprintln(log, "devicetest-root:", err)
+	}
+	return 1
 }
 
 func helperMain(ctx context.Context, args []string, state stateConfig, in io.Reader, out, log io.Writer) error {
 	fs := flag.NewFlagSet("helper", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
 	run := fs.String("run", "", "the run's id")
 	ev := fs.String("evidence", "", "the run's evidence folder (the user's)")
 	uid := fs.Int("uid", -1, "the evidence folder's owner")
@@ -56,6 +85,9 @@ func helperMain(ctx context.Context, args []string, state stateConfig, in io.Rea
 		if !errors.Is(err, errNotStarted) {
 			return err // a run that started removes its root copy when it ends
 		}
+	} else {
+		_ = json.NewEncoder(out).Encode(Response{Err: err.Error()})
+		err = answered(err)
 	}
 	return errors.Join(err, removeRootCopy(*rootCopy))
 }
@@ -82,23 +114,33 @@ func deadmanMain(ctx context.Context, args []string, state stateConfig) error {
 	return deadman(ctx, state, *run, deadmanConfig{helperPID: *pid, helperStart: *start, deadline: *deadline})
 }
 
+// restoreMain restores the run pending a restore, or with -forget closes
+// it by name, and prints the result as one Response line.
 func restoreMain(ctx context.Context, args []string, state stateConfig, out io.Writer) error {
 	signal.Ignore(syscall.SIGINT, syscall.SIGHUP, syscall.SIGTERM, syscall.SIGQUIT)
 	fs := flag.NewFlagSet("restore", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
 	rootCopy := fs.String("root-copy", "", "the launch script's directory (it adds this)")
-	if err := fs.Parse(args); err != nil {
-		return err
+	forget := fs.String("forget", "", "close the pending run RUN in a later boot than its own")
+	err := fs.Parse(args)
+	if err == nil {
+		err = checkLaunched(*rootCopy, state)
 	}
-	if err := checkLaunched(*rootCopy, state); err != nil {
-		return errors.Join(err, removeRootCopy(*rootCopy))
+	var res Result
+	if err == nil {
+		by := "devicetest restore, at " + time.Now().UTC().Format(time.RFC3339)
+		if *forget != "" {
+			res, err = forgetRun(ctx, state, *forget, by+", -forget "+*forget)
+		} else {
+			res, err = restoreRun(ctx, state, by, "")
+		}
 	}
-	res, err := restoreRun(ctx, state, "devicetest restore, at "+time.Now().UTC().Format(time.RFC3339))
 	resp := Response{OK: err == nil, Result: &res}
 	if err != nil {
 		resp.Err = err.Error()
 	}
 	_ = json.NewEncoder(out).Encode(resp)
-	return errors.Join(err, removeRootCopy(*rootCopy))
+	return errors.Join(answered(err), removeRootCopy(*rootCopy))
 }
 
 // checkLaunched refuses a root mode that the launch script didn't start

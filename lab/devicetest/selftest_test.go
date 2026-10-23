@@ -10,7 +10,7 @@ import (
 
 // The judge's decode, as tcpdump -n -A -r printed it in a lab node for the
 // recorded capture (lab/devicetest/safety/testdata/marker.pcap).
-func TestTheDecodeCheckOnARecordedDecode(t *testing.T) {
+func TestTheDecodeCheckNeedsThePositiveMarkerAndNotTheNegative(t *testing.T) {
 	text, err := os.ReadFile("testdata/selftest/marker.txt")
 	if err != nil {
 		t.Fatal(err)

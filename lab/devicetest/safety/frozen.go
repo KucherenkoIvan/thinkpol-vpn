@@ -6,7 +6,8 @@ import (
 	"encoding/hex"
 )
 
-// frozen is FROZEN: the sha256 of each of the package's files.
+// frozen is FROZEN: the sha256 of each of the package's files, then the
+// packages its code imports.
 //
 //go:embed FROZEN
 var frozen []byte

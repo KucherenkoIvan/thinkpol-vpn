@@ -9,8 +9,9 @@ import (
 	"testing"
 )
 
-// What `devicetest restore` tells the owner: only CLEAN, or nothing
-// pending, ends well; a verdict that keeps the run pending is an error.
+// What `devicetest restore` tells the owner: CLEAN, nothing pending,
+// RESET-BY-REBOOT and FORGOTTEN let the next run start, each said for
+// what it is; a verdict that keeps the run pending is an error.
 func TestTheRestoreSaysWhetherTheNextRunMayStart(t *testing.T) {
 	for _, tc := range []struct {
 		name, out, says string
@@ -18,6 +19,8 @@ func TestTheRestoreSaysWhetherTheNextRunMayStart(t *testing.T) {
 	}{
 		{"clean", `{"id":0,"ok":true,"result":{"verdict":"CLEAN","by":"x","run":"r1"}}`, "CLEAN, run r1 restored", true},
 		{"nothing pending", `{"id":0,"ok":true,"result":{"verdict":"NOTHING-TO-RESTORE","by":"x"}}`, "nothing was compared", true},
+		{"reset by a reboot", `{"id":0,"ok":true,"result":{"verdict":"RESET-BY-REBOOT","by":"x","run":"r1"}}`, "RESET-BY-REBOOT, run r1 closed", true},
+		{"forgotten", `{"id":0,"ok":true,"result":{"verdict":"FORGOTTEN","by":"x","run":"r1"}}`, "FORGOTTEN, run r1 closed at your request; nothing was proven", true},
 		{"left", `{"id":0,"ok":true,"result":{"verdict":"LEFT","by":"x","run":"r1"}}`, "THE MAC ISN'T AS IT WAS (LEFT)", false},
 		{"reboot", `{"id":0,"ok":true,"result":{"verdict":"REBOOT","by":"x","run":"r1"}}`, "THE MAC ISN'T AS IT WAS (REBOOT)", false},
 		{"an error", `{"id":0,"ok":false,"err":"left: is a directory","result":{"verdict":"","by":""}}`, "failed: left: is a directory", false},

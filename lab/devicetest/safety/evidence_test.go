@@ -28,7 +28,7 @@ func TestTheEvidenceWriterNeverFollowsASymlink(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = ev.close() }()
+	defer func() { _ = ev.dir.Close() }()
 	for _, rel := range []string{"captures/en0.pcap", "a.out", "../x", "/abs", "a/../b", "", "steps//x"} {
 		if err := ev.writeFile(rel, []byte("written")); err == nil {
 			t.Errorf("%q was written", rel)

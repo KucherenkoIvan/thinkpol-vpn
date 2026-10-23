@@ -407,8 +407,8 @@
 // and of its own record ([GuardReferenceHeld]: a record of another boot,
 // a symlink or a non-regular file holds nothing) are exported for the
 // device-test harness (lab/devicetest), which compares pf with its
-// baseline through them: a listing means one thing wherever it is read.
-// [AnchorMissing] is narrower than the guard's own test for a missing
-// anchor (any "Invalid argument"): a restore must never take a failed
-// listing for an empty anchor.
+// baseline through them. [AnchorMissing] is narrower than the guard's own
+// test for a missing anchor, which still takes any "Invalid argument" for
+// one: a restore must never take a failed listing for an empty anchor.
+// The guard moves to [AnchorMissing] in TP-138.
 package firewall

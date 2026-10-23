@@ -57,7 +57,7 @@ func (a *captureAction) validate() error {
 	return nil
 }
 
-func (*captureAction) kind() string       { return KindCapture }
+func (*captureAction) kind() string       { return kindCapture }
 func (*captureAction) lifetime() lifetime { return volatile }
 func (a *captureAction) does() string     { return fmt.Sprintf("capture on %s (%q)", a.Iface, a.Filter) }
 func (a *captureAction) undoText() string { return "stop that tcpdump" }
@@ -92,15 +92,22 @@ func (a *captureAction) apply(ctx context.Context, h *host, learnt func(json.Raw
 	return c.waitHeader(ctx, 5*time.Second)
 }
 
-// undo stops the capture: the helper's own (whatever the journal says),
-// or by its pid if that is still the process that started then (a
-// dead-man's or a later restore).
+// undo stops the capture. In the helper that started it, its table says
+// what runs, whatever the journal says. Elsewhere (the dead-man, a later
+// restore) by the journaled pid if that is still the process that started
+// then; an intent with no pid is a tcpdump that may have started in the
+// moment before its pid was journaled, which nothing can find now: an
+// undo failure, until the reboot that ends it (volatile).
 func (a *captureAction) undo(_ context.Context, h *host) error {
-	if h.captures != nil && h.captures.stop(a.Iface) {
+	if h.captures != nil {
+		h.captures.stop(a.Iface)
 		return nil
 	}
-	if a.PID == 0 || !sameProcess(a.PID, a.Start) {
-		return nil // never started, or gone (its reader's end closed, it died of SIGPIPE)
+	if a.PID == 0 {
+		return errors.New("its pid was never journaled: whether that tcpdump runs can't be shown; a reboot ends it")
+	}
+	if !sameProcess(a.PID, a.Start) {
+		return nil // gone (its reader's end closed, it died of SIGPIPE)
 	}
 	return terminate(a.PID, a.Start)
 }
@@ -189,8 +196,15 @@ func (cs *captures) start(iface, filter string) (*liveCapture, error) {
 	defer func() { _ = stderr.Close() }()
 	c := newLiveCapture(iface, main)
 	argv := tcpdumpArgv(iface, filter)
+	if err := execGuard(argv[0]); err != nil {
+		_ = main.Close()
+		return nil, err
+	}
 	c.cmd = exec.Command(argv[0], argv[1:]...)
 	c.cmd.Env, c.cmd.Stderr = []string{"LC_ALL=C"}, stderr
+	// A group of its own: a Ctrl-C on the terminal reaches the user side,
+	// whose restore ends the capture; never tcpdump first.
+	c.cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	stdout, err := c.cmd.StdoutPipe()
 	if err == nil {
 		err = c.cmd.Start()

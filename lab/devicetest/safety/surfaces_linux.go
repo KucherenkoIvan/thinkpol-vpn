@@ -4,12 +4,5 @@ package safety
 // it, to test the core as root, so only the IPv4 main table (a fresh
 // node's IPv6 link-local routes still come and go while it settles).
 func surfaces() []surface {
-	return []surface{{name: "routes", argv: []string{ipPath(), "-4", "route", "show", "table", "main"}, norm: textLines, next: "delete the route by hand"}}
-}
-
-func textLines(out output) ([]string, error) {
-	if out.Code != 0 || out.Err != "" {
-		return nil, failed(out)
-	}
-	return listingLines(out.Stdout), nil
+	return []surface{{name: "routes", argv: []string{ipPath(), "-4", "route", "show", "table", "main"}, norm: outputLines, next: "delete the route by hand"}}
 }

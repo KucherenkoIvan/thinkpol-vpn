@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
 	"regexp"
 
 	"golang.org/x/sys/unix"
@@ -60,7 +61,8 @@ func (a *fileAction) apply(_ context.Context, h *host, _ func(json.RawMessage) e
 		return fmt.Errorf("create %s: %w", a.path(), err)
 	}
 	_, werr := unix.Write(fd, []byte(a.Content))
-	return errors.Join(werr, unix.Fsync(fd), unix.Close(fd))
+	f := os.NewFile(uintptr(fd), a.path())
+	return errors.Join(werr, fullSync(f), f.Close())
 }
 
 func (a *fileAction) undo(_ context.Context, h *host) error {

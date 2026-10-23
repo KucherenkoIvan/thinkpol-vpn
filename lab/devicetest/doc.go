@@ -8,7 +8,7 @@
 //	devicetest plans [TICKET]        the plans, or everything one's run may do
 //	devicetest run TICKET            self-test, the plan's steps, restore
 //	devicetest selftest              the self-test alone
-//	devicetest restore               restore the run pending a restore
+//	devicetest restore [-forget RUN] restore the run pending a restore
 //
 // # What a run guarantees
 //
@@ -28,9 +28,13 @@
 //   - the Mac is put back after a normal end, Ctrl-C, a closed terminal, a
 //     crash or kill of either process, and a power loss (at the next
 //     `devicetest restore`, which every later run waits for); the result
-//     is CLEAN, LEFT with what to do for each item, or REBOOT, and a
-//     result that isn't CLEAN keeps the run pending until a restore finds
-//     the Mac clean;
+//     is CLEAN, LEFT with what to do for each item, or REBOOT, and LEFT
+//     or REBOOT keeps the run pending until a restore closes it: CLEAN; or
+//     in a later boot, with every change of the run's undone or gone with
+//     its boot, RESET-BY-REBOOT; or, for what no restore can show, the
+//     owner's `devicetest restore -forget RUN` in a later boot, FORGOTTEN.
+//     Only CLEAN says the Mac is as it was (safety's doc.go, "Verdicts");
+//     a run whose baseline can't read what it compares doesn't start;
 //   - before any change, the self-test: one harmless change goes through
 //     the journal and back, then the plan's capture must see a marker (one
 //     UDP datagram from the interface's address to its IPv4 broadcast

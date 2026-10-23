@@ -1,0 +1,357 @@
+//go:build darwin || linux
+
+package safety
+
+import (
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/trusteddir"
+)
+
+// pendingFixture is a run pending a restore, built in the test's own
+// directories: its record, baseline, journal and left pointer, as a run
+// killed in boot leaves them.
+type pendingFixture struct {
+	t        *testing.T
+	cfg      stateConfig
+	state    string
+	evidence string
+	run      string
+	h        *host
+	j        *journal
+}
+
+// thisBoot is the boot session the test runs in.
+func thisBoot(t *testing.T) string {
+	t.Helper()
+	b, err := trusteddir.BootSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func newPendingRun(t *testing.T, sfs []surface, exec runner, boot string) *pendingFixture {
+	t.Helper()
+	base := tempDir(t)
+	f := &pendingFixture{t: t, state: filepath.Join(base, "state"), evidence: filepath.Join(base, "evidence"), run: runName()}
+	f.cfg = stateConfig{dir: f.state, allowNonRoot: true, surfaces: sfs, exec: exec}
+	if err := os.Mkdir(f.evidence, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	state := openDir(t, f.state)
+	runDir := openDir(t, filepath.Join(f.state, "run-"+f.run))
+	info := runInfo{Run: f.run, Evidence: f.evidence, UID: os.Getuid(), GID: os.Getgid(), Boot: boot}
+	if err := trusteddir.WriteFile(runDir, runInfoFile, mustJSON(info)); err != nil {
+		t.Fatal(err)
+	}
+	ev, err := openEvidence(f.evidence, os.Getuid(), os.Getgid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.h = &host{runDir: runDir, boot: boot, runBoot: boot, surfaces: sfs, exec: exec, evidence: ev}
+	if f.h.baseline, err = f.h.snapshot(t.Context(), baselineName); err != nil {
+		t.Fatal(err)
+	}
+	if f.j, err = createJournal(runDir, f.run, boot); err != nil {
+		t.Fatal(err)
+	}
+	if err := trusteddir.WriteFile(state, leftFile, []byte(f.run+"\n")); err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
+// do makes a change through the journal, as the run did.
+func (f *pendingFixture) do(spec Spec) {
+	f.t.Helper()
+	if _, err := (&engine{h: f.h, j: f.j, armed: isArmed}).do(f.t.Context(), spec); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+// killed leaves the journal as a killed helper does: open for a restore.
+func (f *pendingFixture) killed() { _ = f.j.release() }
+
+func (f *pendingFixture) restore() (Result, error) {
+	return restoreRun(f.t.Context(), f.cfg, "test", "")
+}
+
+func (f *pendingFixture) pointer(name string) string {
+	return pendingFile(testDirs{state: f.state}, name)
+}
+
+func (f *pendingFixture) runFile(name string) string {
+	b, _ := os.ReadFile(filepath.Join(f.state, "run-"+f.run, name))
+	return string(b)
+}
+
+func (f *pendingFixture) evidenceResults() []string {
+	m, _ := filepath.Glob(filepath.Join(f.evidence, "restore", "result-*.json"))
+	return m
+}
+
+func TestARunPendingInAnEarlierBootIsResetByTheReboot(t *testing.T) {
+	for _, tc := range []struct {
+		name, boot, want string
+		cleared          bool
+	}{
+		{"the run's own boot", "", Left, false},
+		{"a later boot", "an-earlier-boot", ResetByReboot, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			surface := filepath.Join(tempDir(t), "surface.txt")
+			writeFile(t, surface, "route a\n")
+			boot := tc.boot
+			if boot == "" {
+				boot = thisBoot(t)
+			}
+			f := newPendingRun(t, testSurfaces(surface), nil, boot)
+			f.do(fileSpec("one", "1"))
+			f.killed()
+			writeFile(t, surface, "route a\nroute z\n") // not the run's: still differs after its undo
+			res, err := f.restore()
+			if err != nil || res.Verdict != tc.want || present(f.h.runDir, "file-one") {
+				t.Fatalf("restore: %+v %v", res, err)
+			}
+			if cleared := f.pointer(leftFile) == ""; cleared != tc.cleared {
+				t.Errorf("left %q", f.pointer(leftFile))
+			}
+			if !strings.Contains(f.runFile(resultFile), tc.want) || len(f.evidenceResults()) != 1 {
+				t.Errorf("the result isn't in the run directory and the evidence: %s %v", f.runFile(resultFile), f.evidenceResults())
+			}
+		})
+	}
+}
+
+func TestARunThatCantBeRestoredIsForgottenOnlyInALaterBoot(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		corrupt bool
+	}{{"a change that can't be undone", false}, {"a journal that doesn't read back", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			surface := filepath.Join(tempDir(t), "surface.txt")
+			writeFile(t, surface, "route a\n")
+			for _, boot := range []string{thisBoot(t), "an-earlier-boot"} {
+				f := newPendingRun(t, testSurfaces(surface), nil, boot)
+				f.do(fileSpec("one", "1"))
+				writeFile(t, filepath.Join(f.state, "run-"+f.run, "file-one"), "someone else's") // the undo refuses it
+				if tc.corrupt {
+					_, _ = f.j.f.WriteString("{\"seq\":9,\"sta\n")
+				}
+				f.killed()
+				if res, err := f.restore(); err == nil && res.Verdict != Left {
+					t.Fatalf("restore: %+v %v", res, err)
+				}
+				if f.pointer(leftFile) != f.run {
+					t.Fatalf("not pending: left %q", f.pointer(leftFile))
+				}
+				// Another run, of a later boot too, isn't the pending one.
+				other := openDir(t, filepath.Join(f.state, "run-other"))
+				if err := trusteddir.WriteFile(other, runInfoFile, mustJSON(runInfo{Run: "other", Boot: "an-earlier-boot"})); err != nil {
+					t.Fatal(err)
+				}
+				if oj, err := createJournal(other, "other", "an-earlier-boot"); err != nil {
+					t.Fatal(err)
+				} else {
+					_ = oj.release()
+				}
+				if _, err := forgetRun(t.Context(), f.cfg, "other", "test"); err == nil || f.pointer(leftFile) != f.run {
+					t.Errorf("another run's name forgot this one: %v", err)
+				}
+				res, err := forgetRun(t.Context(), f.cfg, f.run, "test")
+				if boot == thisBoot(t) {
+					if err == nil || !strings.Contains(err.Error(), "this boot") || f.pointer(leftFile) != f.run {
+						t.Errorf("forgotten in its own boot: %+v %v", res, err)
+					}
+					continue
+				}
+				if err != nil || res.Verdict != Forgotten || f.pointer(leftFile) != "" || f.pointer(activeFile) != "" {
+					t.Fatalf("forget in a later boot: %+v %v, left %q", res, err, f.pointer(leftFile))
+				}
+				says := strings.Join(res.Notes, "\n")
+				if !strings.Contains(says, "journal: change 1") || tc.corrupt != strings.Contains(says, "doesn't read") {
+					t.Errorf("what the journal still says:\n%s", says)
+				}
+				if !strings.Contains(f.runFile(resultFile), Forgotten) || len(f.evidenceResults()) == 0 {
+					t.Errorf("the result isn't kept: %s %v", f.runFile(resultFile), f.evidenceResults())
+				}
+				if !tc.corrupt {
+					if j, err := openJournal(f.h.runDir, ""); err != nil || !j.closed() {
+						t.Errorf("the journal isn't closed: %v", err)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestARunStaysActiveWhenItsLeftPointerCantBeWritten(t *testing.T) {
+	surface := filepath.Join(tempDir(t), "surface.txt")
+	writeFile(t, surface, "route a\n")
+	f := newPendingRun(t, testSurfaces(surface), nil, thisBoot(t))
+	f.do(fileSpec("one", "1"))
+	f.killed()
+	state := openDir(t, f.state)
+	// Killed mid-run: active names it, left doesn't exist yet.
+	if err := errors.Join(trusteddir.Remove(state, leftFile), trusteddir.WriteFile(state, activeFile, []byte(f.run+"\n"))); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, surface, "route a\nroute z\n")
+	if err := os.Mkdir(filepath.Join(f.state, leftFile+".tmp"), 0o700); err != nil { // trusteddir.WriteFile's temporary
+		t.Fatal(err)
+	}
+	res, err := f.restore()
+	if err == nil || res.Verdict != Left || f.pointer(activeFile) != f.run || f.pointer(leftFile) != "" {
+		t.Fatalf("left unwritable: %+v %v, active %q", res, err, f.pointer(activeFile))
+	}
+	if err := os.Remove(filepath.Join(f.state, leftFile+".tmp")); err != nil {
+		t.Fatal(err)
+	}
+	if res, err := f.restore(); err != nil || res.Verdict != Left || f.pointer(leftFile) != f.run || f.pointer(activeFile) != "" {
+		t.Errorf("left writable again: %+v %v", res, err)
+	}
+}
+
+func TestARestoreWithoutItsEvidenceFolderSaysSo(t *testing.T) {
+	surface := filepath.Join(tempDir(t), "surface.txt")
+	writeFile(t, surface, "route a\n")
+	f := newPendingRun(t, testSurfaces(surface), nil, thisBoot(t))
+	f.killed()
+	if err := os.RemoveAll(f.evidence); err != nil {
+		t.Fatal(err)
+	}
+	res, err := f.restore()
+	if err != nil || !strings.Contains(strings.Join(res.Notes, "\n"), "won't open") || !strings.Contains(f.runFile(resultFile), "won't open") {
+		t.Errorf("restore: %+v %v", res, err)
+	}
+}
+
+func TestADeadmanRestoresOnlyItsOwnRun(t *testing.T) {
+	surface := filepath.Join(tempDir(t), "surface.txt")
+	writeFile(t, surface, "route a\n")
+	f := newPendingRun(t, testSurfaces(surface), nil, thisBoot(t))
+	f.do(fileSpec("one", "1"))
+	f.killed()
+	res, err := restoreRun(t.Context(), f.cfg, "the dead-man of another run", "another-run")
+	if err != nil || res.Verdict != Nothing || f.pointer(leftFile) != f.run || !present(f.h.runDir, "file-one") {
+		t.Errorf("another run's dead-man: %+v %v", res, err)
+	}
+}
+
+func TestABaselineThatCantReadASurfaceStopsTheRun(t *testing.T) {
+	d := newHelperDirs(t)
+	if err := os.Remove(d.surface); err != nil { // cat fails: the surface can't be read
+		t.Fatal(err)
+	}
+	run := runName()
+	_, hello := startHelper(t, d, run)
+	if hello.OK || !strings.Contains(hello.Err, "can't read test-file") || !strings.Contains(hello.Err, "stderr") {
+		t.Fatalf("a run started on an unreadable baseline: %+v", hello)
+	}
+	var res Result
+	b, err := os.ReadFile(filepath.Join(d.state, "run-"+run, resultFile))
+	if err == nil {
+		err = json.Unmarshal(b, &res)
+	}
+	if err != nil || res.Verdict != Nothing || !strings.Contains(strings.Join(res.Notes, " "), "didn't start") {
+		t.Errorf("the didn't-start result: %+v %v", res, err)
+	}
+	if pendingFile(d, activeFile) != "" || pendingFile(d, leftFile) != "" {
+		t.Error("a run that didn't start is pending")
+	}
+}
+
+// Outside the helper that started it, a capture whose pid never reached
+// the journal can't be shown gone: LEFT, until the reboot that ends it.
+func TestACaptureWithNoJournaledPidIsLeftUntilAReboot(t *testing.T) {
+	for _, tc := range []struct {
+		boot, want string
+	}{{"boot-a", Left}, {"boot-b", Clean}} {
+		dir := openDir(t, filepath.Join(tempDir(t), "run"))
+		j, err := createJournal(dir, "r", "boot-a")
+		if err != nil {
+			t.Fatal(err)
+		}
+		capture := &captureAction{Iface: "en9"}
+		if _, err := j.intent(capture, mustJSON(capture)); err != nil {
+			t.Fatal(err)
+		}
+		_ = j.release()
+		if j, err = openJournal(dir, tc.boot); err != nil {
+			t.Fatal(err)
+		}
+		res := (&engine{h: noSurfaces(dir, tc.boot), j: j, armed: refuseChanges}).restore(t.Context(), "test")
+		if res.Verdict != tc.want || (tc.want == Left) != (len(j.pending()) == 1) {
+			t.Errorf("restored in %s: %+v", tc.boot, res)
+		}
+	}
+}
+
+func TestNoBaselineAndNoChangeIsNothingToRestore(t *testing.T) {
+	dir := openDir(t, filepath.Join(tempDir(t), "run"))
+	j, err := createJournal(dir, "r", "boot-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := (&engine{h: &host{runDir: dir, boot: "boot-a", surfaces: []surface{}}, j: j, armed: refuseChanges}).restore(t.Context(), "test")
+	if res.Verdict != Nothing {
+		t.Errorf("%+v", res)
+	}
+}
+
+// Each surface a snapshot reads is progress for the dead-man: a slow one
+// can't make a healthy restore look hung.
+func TestASnapshotBeatsAfterEachSurface(t *testing.T) {
+	dir := tempDir(t)
+	var sfs []surface
+	for _, n := range []string{"a", "b", "c"} {
+		writeFile(t, filepath.Join(dir, n), n+"\n")
+		sfs = append(sfs, surface{name: n, argv: []string{"/bin/cat", filepath.Join(dir, n)}, norm: catLines})
+	}
+	h := &host{runDir: openDir(t, filepath.Join(dir, "run")), surfaces: sfs}
+	if _, err := h.snapshot(t.Context(), afterName); err != nil {
+		t.Fatal(err)
+	}
+	if h.beats != len(sfs) {
+		t.Errorf("%d beats for %d surfaces", h.beats, len(sfs))
+	}
+}
+
+// One root entry point, and an answer already sent over the protocol
+// isn't printed again.
+func TestTheRootSidePrintsAnErrorOnce(t *testing.T) {
+	var out, log strings.Builder
+	state := stateConfig{dir: filepath.Join(tempDir(t), "state"), allowNonRoot: true}
+	if code := rootMain(t.Context(), []string{"helper", "-run", "x"}, state, strings.NewReader(""), &out, &log); code != 1 {
+		t.Errorf("exit %d", code)
+	}
+	if !strings.Contains(out.String(), `"err":"helper: -run`) || log.Len() != 0 {
+		t.Errorf("answered %q, printed %q", out.String(), log.String())
+	}
+	out.Reset()
+	if code := rootMain(t.Context(), []string{"no-such-mode"}, state, nil, &out, &log); code != 1 || !strings.Contains(log.String(), "no mode") {
+		t.Errorf("an unknown mode: exit %d, printed %q", code, log.String())
+	}
+}
+
+// A baseline on disk that doesn't read back says so, and what to do: it
+// was taken, so "no baseline was taken" would be untrue.
+func TestABaselineThatDoesntReadBackSaysRebootThenRestore(t *testing.T) {
+	surface := filepath.Join(tempDir(t), "surface.txt")
+	writeFile(t, surface, "route a\n")
+	f := newPendingRun(t, testSurfaces(surface), nil, thisBoot(t))
+	f.do(fileSpec("one", "1"))
+	f.killed()
+	writeFile(t, filepath.Join(f.state, "run-"+f.run, snapshotFile(baselineName)), "{cut")
+	res, err := f.restore()
+	if err != nil || res.Verdict != Left || !strings.Contains(strings.Join(res.Failed, " "), "can't be read back") ||
+		!strings.Contains(strings.Join(res.Failed, " "), "reboot, then run devicetest restore") {
+		t.Errorf("restore: %+v %v", res, err)
+	}
+}

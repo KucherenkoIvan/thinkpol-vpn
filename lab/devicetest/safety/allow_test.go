@@ -40,12 +40,12 @@ func TestOnlyListingsRunAsRoot(t *testing.T) {
 		{"ip", "link", "set", "lo", "down"},
 	}
 	for _, argv := range allowed[runtime.GOOS] {
-		if got, err := RootRead(argv); err != nil || got[0][0] != '/' {
+		if got, err := rootRead(argv); err != nil || got[0][0] != '/' {
 			t.Errorf("%q refused: %v %v", argv, got, err)
 		}
 	}
 	for _, argv := range refused {
-		if got, err := RootRead(argv); err == nil {
+		if got, err := rootRead(argv); err == nil {
 			t.Errorf("%q allowed: %q", argv, got)
 		}
 	}

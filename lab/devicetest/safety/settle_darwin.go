@@ -55,12 +55,17 @@ func waitGuardReleased(ctx context.Context, h *host) string {
 
 // pfBackOn turns pf back on if the baseline had it on and it is off now:
 // the one change a restore makes that no journal entry names, since it
-// puts back what the baseline recorded. It never turns pf off.
+// puts back what the baseline recorded. Only in the run's own boot: in a
+// later one pf's state is that boot's, which the run never touched. It
+// never turns pf off.
 func pfBackOn(ctx context.Context, h *host) []string {
 	if h.baseline == nil {
 		return nil
 	}
-	now, err := h.read(ctx, "pf-info")
+	if h.runBoot != h.boot {
+		return []string{"pf's state is left as this boot has it: the run was in another boot"}
+	}
+	now, err := h.readSurface(ctx, "pf-info")
 	if err != nil {
 		return []string{"pf's state: " + err.Error()}
 	}
@@ -69,10 +74,10 @@ func pfBackOn(ctx context.Context, h *host) []string {
 		return []string{fmt.Sprintf("pf at the baseline: %v; now: %v", base, now)}
 	}
 	argv := []string{pfctlPath, "-e"}
-	out := run(ctx, argv, nil)
+	out := h.run(ctx, argv, nil)
 	h.saveOutput(fmt.Sprintf("restore/pfctl-e-%d", time.Now().UnixNano()), argv, out)
-	if out.Code != 0 || out.Err != "" {
-		return []string{"pf was off and the baseline had it on; pfctl -e failed: " + failed(out).Error()}
+	if err := checked(out); err != nil {
+		return []string{"pf was off and the baseline had it on; pfctl -e failed: " + err.Error()}
 	}
 	return []string{"pf was off and the baseline had it on: turned back on (pfctl -e)"}
 }

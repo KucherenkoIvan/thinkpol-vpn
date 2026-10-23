@@ -21,21 +21,7 @@ func TestMain(m *testing.M) {
 	if os.Getenv(childEnv) == "" {
 		os.Exit(m.Run())
 	}
-	ctx, args := context.Background(), os.Args[2:]
-	var err error
-	switch os.Args[1] {
-	case "helper":
-		err = safety.HelperMain(ctx, args, os.Stdin, os.Stdout, os.Stderr)
-	case "deadman":
-		err = safety.DeadmanMain(ctx, args)
-	case "root-restore":
-		err = safety.RestoreMain(ctx, args, os.Stdout)
-	}
-	if err != nil {
-		_, _ = os.Stderr.WriteString("devicetest-root: " + err.Error() + "\n")
-		os.Exit(1)
-	}
-	os.Exit(0)
+	os.Exit(safety.RootMain(context.Background(), os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 }
 
 func TestTheTP096ListingIsEverythingTheRunMayDo(t *testing.T) {
@@ -47,7 +33,7 @@ func TestTheTP096ListingIsEverythingTheRunMayDo(t *testing.T) {
 	for _, want := range []string{
 		"TP-096: ",
 		"budget 5m0s",
-		`capture: the physical interface (en7), filter "ip6", running until the run ends; its pcap is kept in the evidence`,
+		`capture: the physical interface (en7), filter "not (udp src port N) and ((ip6) or (udp dst port 9))", running until the run ends; its pcap is kept in the evidence`,
 		"step 1 stock\n  root read: pfctl -s Interfaces -v\n  root read: pfctl -a com.apple -s Anchors\n  root read: pfctl -s References\n",
 		"step 2 skip-on-lo\n  change:    ",
 		"  undo now:  the plan's newest change\n  root read: pfctl -s Interfaces -v\n  root read: pfctl -s rules\n",
@@ -58,7 +44,7 @@ func TestTheTP096ListingIsEverythingTheRunMayDo(t *testing.T) {
 		}
 	}
 	if runtime.GOOS == "darwin" && (!strings.Contains(got, `load pf's main ruleset: "set skip on lo", then /etc/pf.conf`) ||
-		!strings.Contains(got, "undo: pfctl -f /etc/pf.conf")) {
+		!strings.Contains(got, "undo: while lo is skipped: pfctl -f /etc/pf.conf")) {
 		t.Errorf("the change and its undo:\n%s", got)
 	}
 	if n := strings.Count(got, "root read:"); n != 9 {
@@ -66,33 +52,18 @@ func TestTheTP096ListingIsEverythingTheRunMayDo(t *testing.T) {
 	}
 }
 
-func TestEveryPlansReadsAndChangesAreTheCores(t *testing.T) {
-	if runtime.GOOS != "darwin" {
-		t.Skip("the plans are macOS's")
+func TestTheFilterLetsThePositiveMarkerThroughAndNeverTheNegative(t *testing.T) {
+	if f := controlFilter("ip6", "40002"); f != "not (udp src port 40002) and ((ip6) or (udp dst port 9))" {
+		t.Errorf("filter %q", f)
 	}
-	for _, p := range allPlans() {
-		for _, st := range p.Steps {
-			for _, op := range st.Ops {
-				var err error
-				switch op.Kind {
-				case plan.OpRead:
-					_, err = safety.RootRead(op.Argv)
-				case plan.OpDo:
-					_, _, err = describeChange(op.Change)
-				}
-				if err != nil {
-					t.Errorf("%s %s: %v", p.Ticket, st.Name, err)
-				}
-			}
-		}
+	if f := controlFilter("", "40002"); f != "not (udp src port 40002)" {
+		t.Errorf("filter %q", f)
 	}
 }
 
-func TestTheFilterLetsThePositiveMarkerThroughAndNeverTheNegative(t *testing.T) {
-	if f := controlFilter("ip6", 40002); f != "not (udp src port 40002) and ((ip6) or (udp dst port 9))" {
-		t.Errorf("filter %q", f)
-	}
-	if f := controlFilter("", 40002); f != "not (udp src port 40002)" {
-		t.Errorf("filter %q", f)
+// A change the core refuses is listed with the core's reason.
+func TestAChangeTheCoreRefusesIsListedWithItsReason(t *testing.T) {
+	if got := describeOp(plan.Do(plan.PfSkip("lo; anchor x"))); !strings.Contains(got, "pf-skip, refused: ") {
+		t.Errorf("listed as %q", got)
 	}
 }

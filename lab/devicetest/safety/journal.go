@@ -113,7 +113,7 @@ func createJournal(dir *os.File, run, boot string) (*journal, error) {
 		_ = j.f.Close()
 		return nil, err
 	}
-	if err := unix.Fsync(int(dir.Fd())); err != nil {
+	if err := fullSync(dir); err != nil {
 		_ = j.f.Close()
 		return nil, fmt.Errorf("journal: sync %s: %w", dir.Name(), err)
 	}
@@ -138,7 +138,7 @@ func openJournal(dir *os.File, boot string) (*journal, error) {
 	}
 	j.f, j.boot = os.NewFile(uintptr(fd), path), boot
 	if j.torn {
-		if err := errors.Join(j.f.Truncate(int64(complete)), j.f.Sync()); err != nil {
+		if err := errors.Join(j.f.Truncate(int64(complete)), fullSync(j.f)); err != nil {
 			_ = j.f.Close()
 			return nil, fmt.Errorf("%s: cutting off the torn line: %w", path, err)
 		}
@@ -281,7 +281,7 @@ func (j *journal) append(l *line) error {
 	if _, err := j.f.Write(append(b, '\n')); err != nil {
 		return fmt.Errorf("journal: %w", err)
 	}
-	if err := j.f.Sync(); err != nil {
+	if err := fullSync(j.f); err != nil {
 		return fmt.Errorf("journal: sync: %w", err)
 	}
 	return nil

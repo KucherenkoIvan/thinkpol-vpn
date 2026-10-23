@@ -154,7 +154,7 @@ func TestACaptureIsUndoneThroughTheJournal(t *testing.T) {
 	}
 	e := &engine{h: h, j: j, armed: isArmed}
 	params, _ := json.Marshal(captureAction{Iface: iface, Filter: "not (udp src port 40002) and udp dst port 9"})
-	if _, err := e.do(t.Context(), Spec{Kind: KindCapture, Params: params}); err != nil {
+	if _, err := e.do(t.Context(), Spec{Kind: kindCapture, Params: params}); err != nil {
 		t.Fatal(err)
 	}
 	var applied captureAction

@@ -8,31 +8,11 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"os"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/lab/devicetest/safety"
 )
 
 func main() {
-	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "devicetest-root: started by devicetest, never by hand")
-		os.Exit(2)
-	}
-	ctx := context.Background()
-	var err error
-	switch mode, args := os.Args[1], os.Args[2:]; mode {
-	case "helper":
-		err = safety.HelperMain(ctx, args, os.Stdin, os.Stdout, os.Stderr)
-	case "deadman":
-		err = safety.DeadmanMain(ctx, args)
-	case "root-restore":
-		err = safety.RestoreMain(ctx, args, os.Stdout)
-	default:
-		err = fmt.Errorf("no mode %q", mode)
-	}
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "devicetest-root:", err)
-		os.Exit(1)
-	}
+	os.Exit(safety.RootMain(context.Background(), os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 }
