@@ -134,3 +134,4 @@ Round 4 (2026-10-23): correctness (merge), design (fix first), second opinion (m
 - 2026-10-23 R4.2: R3.3's one judge, `plainRule`, covers the mask, suppress and action rules; the selectors netcfg never sets are still listed twice (`ruleOf`'s netlink.Rule fields, `parseRawRule`'s attribute switch) and merge in TP-135, whose scope now reads the configurator's survey through `dumpRules`/`parseRawRule` so `ruleOf` goes; `plainRule`'s comment says so
 - 2026-10-23 R4.3: `Other`'s comments (netcfg/inspect.go, the proto) name what it covers (a selector this doesn't show, a partial mark mask, a suppress_prefixlength other than 0; the action apart); the `present` check's Fatalf no longer prints a stale err
 - 2026-10-23 round 5 done: R4.1–R4.3 fixed; `make lint` and `make test` pass, and the firewall and netcfg packages pass in lab nodes (`labctl gotest -p 1`, other labs running)
+- 2026-10-23 in-progress → review
