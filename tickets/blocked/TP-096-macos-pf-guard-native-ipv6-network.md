@@ -23,7 +23,7 @@ Lab emulation of native IPv6 on the host (host network stack is off limits).
 
 ## Acceptance
 - [ ] steps 0–10 of TP-078's device checklist pass on a network with global IPv6 and a default IPv6 route, results in Notes
-- [ ] TP-126's pfctl parsers, read from pfctl's source, not a Mac (needs no native IPv6): on a stock Mac, run `sudo pfctl -s Interfaces -v` and `sudo pfctl -a com.apple -s Anchors` and save both outputs in Notes; with the guard applied, it reports neither a skipped interface nor an anchor before `000.thinkpol` (health not `ipv6_guard_not_enforced`). Then, still connected, load the stock rules with a skip on a name no interface has, keeping the hook: `(echo 'set skip on lo'; cat /etc/pf.conf) | sudo pfctl -f -`; record whether `sudo pfctl -s Interfaces -v` shows `lo (skip)` (or marks `lo0` instead), and what health says within 10 s; then restore with `sudo pfctl -f /etc/pf.conf`
+- [x] TP-126's pfctl parsers, read from pfctl's source, not a Mac (needs no native IPv6): on a stock Mac, run `sudo pfctl -s Interfaces -v` and `sudo pfctl -a com.apple -s Anchors` and save both outputs in Notes; with the guard applied, it reports neither a skipped interface nor an anchor before `000.thinkpol` (health not `ipv6_guard_not_enforced`). Then, still connected, load the stock rules with a skip on a name no interface has, keeping the hook: `(echo 'set skip on lo'; cat /etc/pf.conf) | sudo pfctl -f -`; record whether `sudo pfctl -s Interfaces -v` shows `lo (skip)` (or marks `lo0` instead), and what health says within 10 s; then restore with `sudo pfctl -f /etc/pf.conf` (device 2026-10-24, steps 6, 20)
 - [ ] `make lint` and `make test` pass (no code change required if the run is docs-only)
 
 ## Blocked by
@@ -38,3 +38,4 @@ The owner has no network with native IPv6 available now. Unblock when one is.
 - 2026-10-16 docs: TP-097 cancelled; this waits for a network with native IPv6 again
 - 2026-10-22 TP-126: an acceptance item for the pfctl listings its bypass check parses (`-s Interfaces -v`, `-a com.apple -s Anchors`)
 - 2026-10-22 TP-126 round 2: the `set skip on lo` step keeps the hook (prepended to the stock rules) and records what health says
+- 2026-10-24: macOS device run; ticked pfctl-listings box (steps 6, 20: no skip line shown, health ok); still open: native-IPv6 steps (no IPv6 network), lint/test box (not run).
