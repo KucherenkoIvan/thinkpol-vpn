@@ -26,6 +26,8 @@ A corrupt route record under `/private/var/db/thinkpol/netcfg` doesn't leave a d
 
 ## Notes
 - From TP-077's residual-risks research (2026-10-22); TP-108 R2.7 handed recovery to TP-102, which didn't add it.
+- **Order (owner, 2026-10-24).** In the before-M2 list: done before the M2 lanes start. TP-108 made another owner's corrupt route record a hard connect failure, with no recovery but deleting the file by hand. The 2026-10-24 macOS device run's corrupt-record step was inconclusive; TP-144's re-run checks it again.
 
 ## Log
 - 2026-10-22 created in backlog (TP-077 out-of-scope note)
+- 2026-10-24 docs: in the before-M2 list (TP-108 made a foreign corrupt record a hard connect failure)

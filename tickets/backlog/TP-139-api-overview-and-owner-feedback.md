@@ -82,6 +82,8 @@ The owner sees the whole user-facing surface of thinkpol as it is today in one r
 
 ## Notes
 - The owner's session has not been held yet. Verdicts go here, one line per finding: keep, change, or drop. Each "change" line names its follow-up ticket.
+- **Order (owner, 2026-10-24).** In the before-M2 list: done before the M2 lanes start, so the CLI's shape is reviewed before the kill-switch toggle and the transport settings are added to it.
 
 ## Log
 - 2026-10-23 created in backlog (owner: review the API's shape early, before more is built on it)
+- 2026-10-24 docs: in the before-M2 list, ahead of the kill-switch and transport settings
