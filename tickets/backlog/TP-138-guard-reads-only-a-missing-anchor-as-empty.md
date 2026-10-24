@@ -38,8 +38,9 @@ The pf guard on macOS treats only pfctl's missing-anchor answer as an empty anch
 - The third box waits on that Mac run; it stays unchecked until the result is written here.
 - The move to `firewall.AnchorMissing` waits for TP-082 to merge. This ticket has no `depends_on` entry for it, so the ordering is by hand.
 - **Device evidence (the 2026-10-24 macOS device run).** `pfctl: DIOCGETRULES: Invalid argument` was seen for the missing guard anchor after uninstall and after a reboot. `No pf starter references held` was the whole References listing after every reboot (this Mac's `socketfilterfw` reference doesn't come back) and after the uninstall. The guard's Close at uninstall still removed its record, so the misread path wasn't hit there.
-- **Order (owner, 2026-10-24).** In the before-M2 list: done before the M2 lanes start. Both are pfctl answers the guard misreads, both now seen on a Mac, and the guard's record and Close feed the kill switch (TP-048).
+- **Order (owner, 2026-10-24).** In the before-M2 list (wave 1, Guard): done before the M2 lanes start. Both are pfctl answers the guard misreads, both now seen on a Mac, and the guard's record and Close feed the kill switch (TP-048).
 
 ## Log
 - 2026-10-23 created in backlog (TP-082 round 2: the guard's missing-anchor check accepts any Invalid argument)
 - 2026-10-24 scope widened (2026-10-24 macOS device run): `No pf starter references held` read as an empty listing; the recorded listings committed as sanitized fixtures, closing TP-091's two fixture boxes; before-M2 list
+- 2026-10-24 docs: slotted in the pre-M2 phase (wave 1, Guard)

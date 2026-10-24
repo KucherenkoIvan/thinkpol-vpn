@@ -26,6 +26,8 @@ When pf was turned off under the guard, the Apply that turns it back on kills th
 
 ## Notes
 - From TP-091's round-5 design review (2026-10-23).
+- **Slot (pre-M2 phase, 2026-10-24).** Wave 1, Guard lane: last, after TP-129 (the same two pf files).
 
 ## Log
 - 2026-10-23 created in backlog (TP-091 review round 5)
+- 2026-10-24 docs: slotted in the pre-M2 phase (wave 1, Guard)

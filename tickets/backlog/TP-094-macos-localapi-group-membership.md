@@ -34,9 +34,10 @@ On macOS, a member of the `thinkpol` group can do what DESIGN.md says members ma
 - Whether the client's terminal had logged in again after the group was created isn't recorded. Either way the two gates disagreed.
 - **xucred holds at most 16 groups** (peercred_darwin.go): a member whose thinkpol group is past the first 16 is refused the same way; the Directory Services fallback covers it.
 - **Device evidence (the 2026-10-24 macOS device run, service install steps 2 and 3).** The member was still refused after logging out and in: `thinkpol status` and `thinkpol diag` both said `permission denied: only root may do that`. The owner is in 19 groups, and the check reads only the first 16 (`cred.Groups[:n]`, n ≤ 16, `peercred_darwin.go` ~19–25). On 2026-10-16 the group was the owner's 2nd and the member was refused too, so the 16-group cut may not be the whole cause: have a refusal log the caller's uid and gids, so the next run can tell. `id -Gn` already lists the group before the re-login, because it asks Directory Services: it can't show what the session holds.
-- **Order (owner, 2026-10-24).** In the before-M2 list: done before the M2 lanes start. It fails every device run's member checks.
+- **Order (owner, 2026-10-24).** In the before-M2 list (wave 1, macOS): done before the M2 lanes start. It fails every device run's member checks.
 
 ## Log
 - 2026-10-16 created in backlog (TP-078 device session A)
 - 2026-10-19 docs (TP-099): the 16-group xucred limit is the second cause, in Notes and Acceptance
 - 2026-10-24 docs: device evidence from the 2026-10-24 macOS device run (refused after re-login; 19 groups, 16 read); before-M2 list
+- 2026-10-24 docs: slotted in the pre-M2 phase (wave 1, macOS)

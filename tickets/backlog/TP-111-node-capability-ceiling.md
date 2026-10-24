@@ -40,6 +40,8 @@ A node does only what it was allowed to on the machine itself. The space's signe
 ## Notes
 - Owner decisions 2026-10-18: default `device`, opted into locally (Tailscale's model); a mismatch at start brings the node down; a mismatch at runtime keeps the last accepted capabilities and reports, never blocking the rest of the map (refusing a whole map would also refuse revocations and key rotations).
 - Found through TP-098's review: a server section run with `-mode device` had no upstreams and logged a false reason.
+- **Slot (pre-M2 phase, 2026-10-24).** Wave 1, Agent lane: after TP-140. Starts only after the owner's TP-139 session, whose verdicts on its planned surface go into this ticket first. Keeps its 2026-10-18 decisions.
 
 ## Log
 - 2026-10-18 created in backlog (owner decision: the node's configuration caps the map)
+- 2026-10-24 docs: slotted in the pre-M2 phase (wave 1, Agent)

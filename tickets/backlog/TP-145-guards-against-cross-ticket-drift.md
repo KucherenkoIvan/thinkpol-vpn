@@ -32,10 +32,11 @@ Two things a review fixed and a later ticket undid can't come back unnoticed: en
 - [ ] `make lint`, `make test` pass
 
 ## Notes
-- **Order (owner, 2026-10-24).** In the before-M2 list: done before the M2 lanes start, since every lane lands in the agent and the Engine.
+- **Order (owner, 2026-10-24).** In the before-M2 list (wave 1, Hygiene): done before the M2 lanes start, since every lane lands in the agent and the Engine.
 - TP-105 (`e1d96fb`) moved the env reads to `cmd/thinkpol/up.go`; TP-075 round 3 (`da8b8a8`) moved them back the same day, and two more reads came in with TP-046 and TP-091. Reviews didn't check earlier tickets' acceptance against later merges.
 - `.golangci.yml` already runs forbidigo, but only for `internal/dataplane/path` (an exclusion `path-except: internal/dataplane/path/` turns it off elsewhere). The new rule needs its own scoping, or depguard-style rules per path, without loosening the path layer's.
 - From the 2026-10-24 code-health review (the Engine finding was "partly fixed": `deviceSet` and `osRoutes` were added beside the old fields, and the struct never shrank).
 
 ## Log
 - 2026-10-24 created in backlog (2026-10-24 code-health review: before-M2 list)
+- 2026-10-24 docs: slotted in the pre-M2 phase (wave 1, Hygiene)

@@ -36,7 +36,7 @@ When a device's agent dies under the service (a panic, a runtime fatal error), i
 - [ ] `make lint`, `make test` pass
 
 ## Notes
-- **Order (owner, 2026-10-24).** In the before-M2 list: done before the M2 lanes start. TP-048's fail-closed-after-crash design rests on the connect-on-boot path, and a crash on it can't be diagnosed today (TP-142).
+- **Order (owner, 2026-10-24).** In the before-M2 list (wave 1, Agent): done before the M2 lanes start. TP-048's fail-closed-after-crash design rests on the connect-on-boot path, and a crash on it can't be diagnosed today (TP-142).
 - **Device evidence (the 2026-10-24 macOS device run, the connect-on-boot reboot).** launchctl showed `runs = 2`, `last exit code = 2`. `up` exits 2 only on a usage error, which the plist's fixed arguments can't cause, so it was almost certainly a Go panic or fatal error. Nothing of it was kept.
 - Under KeepAlive launchd restarts the agent within ThrottleInterval (5 s), so the read-then-overwrite order matters: overwrite first and the trace is gone before anyone looks.
 - If the agent's log handler also writes to stderr, the file holds the whole run's log, not only the trace. The decision allows the agent's stderr; say in Notes what lands there and whether it needs a size cap.
@@ -44,3 +44,4 @@ When a device's agent dies under the service (a panic, a runtime fatal error), i
 
 ## Log
 - 2026-10-24 created in backlog (2026-10-24 macOS device run; owner decision on a device crash trace and PRD S2)
+- 2026-10-24 docs: slotted in the pre-M2 phase (wave 1, Agent)

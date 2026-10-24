@@ -31,10 +31,11 @@ A device whose dialed exit never linked says so in its health, instead of `conne
 - [ ] `make lint`, `make test`, `make lab-test` pass
 
 ## Notes
-- **Order (owner, 2026-10-24).** In the before-M2 list: done before the M2 lanes (disguise, censor lab, kill switch) start. M2's job is links that censors break, so health that says ok with no link makes every lab verdict unreliable.
+- **Order (owner, 2026-10-24).** In the before-M2 list (wave 1, Agent): done before the M2 lanes (disguise, censor lab, kill switch) start. M2's job is links that censors break, so health that says ok with no link makes every lab verdict unreliable.
 - **Device evidence (the 2026-10-24 macOS device run, the connect-on-boot reboot).** Wi-Fi had no link during that boot. The agent logged `dial failed … netcfg: no default route (IPv4)` and `DNS: no upstream to ask`, the peer showed `no path yet  no handshake  rx 0 B`, the exit saw no handshake, and `thinkpol status` said `connected, health: ok`.
 - The same logic was in place before the consolidation phase, so this isn't a regression; it was never seen because the link always came up.
 - TP-144's device re-run checks the fix on the Mac (the connect-on-boot reboot with no link).
 
 ## Log
 - 2026-10-24 created in backlog (2026-10-24 macOS device run and code-health review: before-M2 list)
+- 2026-10-24 docs: slotted in the pre-M2 phase (wave 1, Agent)

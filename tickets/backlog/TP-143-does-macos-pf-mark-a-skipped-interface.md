@@ -31,10 +31,11 @@ What RESIDUAL-RISKS.md says about a skipped interface on macOS is true. Either t
 - [ ] `make lint`, `make test` pass
 
 ## Notes
-- **Order (owner, 2026-10-24).** In the before-M2 list: done before the M2 lanes start. RR12 is a published safety claim, and TP-048's kill switch is built on the same pf reads.
+- **Order (owner, 2026-10-24).** In the before-M2 list (wave 3): done before the M2 lanes start. RR12 is a published safety claim, and TP-048's kill switch is built on the same pf reads.
 - **Device evidence (the 2026-10-24 macOS device run, steps 1, 6 and 20).** The listing was identical before connecting, with the guard applied, and after `set skip on lo`: bare names, no `lo (skip)` and no marked `lo0`. Health stayed ok at 20 s and 77 s. The listings are in TP-096's Notes.
 - TP-096 recorded the listing and ticked its box; the question whether macOS marks skips at all moved here.
 - Depends on TP-144 for the `lo0` run.
 
 ## Log
 - 2026-10-24 created in backlog (2026-10-24 macOS device run, step 20: before-M2 list)
+- 2026-10-24 docs: slotted in the pre-M2 phase (wave 3)

@@ -99,6 +99,30 @@ Made by the project owner after a design and code-quality review of `rewrite` at
 - **Done when:** TP-109's depguard rule passes, `funlen` is on, no test-only globals in the production build, each duplicated security path has one implementation, and a full lab run takes about 3 minutes. The phase touches macOS code (TP-102, TP-108, TP-109), so it also ends with one run of the macOS device checklist by the owner.
 - Refactors change no behaviour: existing tests pass unchanged, or each changed test says why.
 
+## Pre-M2 phase (2026-10-24)
+
+Made by the project owner after the macOS device run of the consolidation phase.
+
+- **Why.** The consolidation phase is a net improvement, and its macOS device run (2026-10-24) found no regression. But health and the guard don't always tell the truth: health said ok when no exit was ever reached, a boot crash left no trace, and pfctl output the guard misreads or may never get. M2's disguise and kill-switch work rests on both, so these come first.
+- **Order, in waves:**
+  - wave 0: a full `make lab-test` on `rewrite` (red means fix first); TP-121; TP-139.
+    - TP-139's overview also covers the surface that TP-111, TP-141, TP-133 and TP-140 plan to add.
+    - The owner's session is held early, and its verdicts go into those tickets before they start.
+  - wave 1: parallel lanes, at most 4 implementers at a time. Each lane owns separate files.
+    - Guard: TP-138 → TP-127 → TP-129 → TP-137 (the same two pf files).
+    - Agent: TP-141 → TP-133 → TP-140, then TP-111. Starts only after the owner's TP-139 session.
+    - macOS: TP-094, TP-124, TP-135.
+    - Hygiene: TP-145, after TP-141 touches the config.
+    - Harness: TP-082 round 6 (one fix round, then a correctness-only re-check), on its own branch.
+  - wave 2: a full lab-test on the result. Then kit fixes and a runbook in the owner's format (navigation table, one linear path, Do / What happens / Expect, every command in a code block). Then the owner runs TP-144, with TP-082's first run folded in if it is ready. Analysis only afterwards.
+  - wave 3: TP-142 and TP-143 from the re-run's results; TP-082 merges if its harness passed.
+- **Done when:** every ticket above is in done; the lab is green; TP-144 has no FAIL or INCONCLUSIVE left; RESIDUAL-RISKS.md RR12 matches what macOS shows. Then the orchestrator brings the M2 lane plan (lanes, package ownership, merge order, review and quota budget) for the owner's approval.
+- **Owner decisions recorded 2026-10-24:**
+  - A crash trace is kept on devices only: one root-only file, read before each start overwrites it. Servers and entry nodes keep no disk logs (TP-141 amends PRD S2).
+  - TP-046's hook-retry box is closed by accepting the fake-pfctl tests.
+  - TP-111 keeps its 2026-10-18 decisions.
+- **No M2 feature ticket starts until this phase ends.**
+
 ## Code health between milestones (2026-10-18)
 
 - **At every milestone tag,** the owner holds a code-health review session. The orchestrator brings a factual brief: lab suite time, lint gates, the longest functions, code that exists in more than one copy, and the code the next milestone's tickets will touch. The session's findings come to the orchestrator, who files them; what the next milestone needs first becomes a consolidation phase before its features start.

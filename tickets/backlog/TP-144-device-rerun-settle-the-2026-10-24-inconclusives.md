@@ -52,7 +52,7 @@ One owner session on the Mac, about 45 minutes, settles what the 2026-10-24 macO
 - [ ] the results are copied into TP-142, TP-143 and the other tickets they serve, and new findings are filed and named in the Log
 
 ## Notes
-- **Order (owner, 2026-10-24).** In the before-M2 list: done before the M2 lanes start. The phase rule says macOS refactors end with a clean device run, and the 2026-10-24 run came back with two FAILs and several INCONCLUSIVEs.
+- **Order (owner, 2026-10-24).** In the before-M2 list (wave 2): done before the M2 lanes start. The phase rule says macOS refactors end with a clean device run, and the 2026-10-24 run came back with two FAILs and several INCONCLUSIVEs.
 - **Dependencies.** Depends on TP-140 and TP-141, which change what the run checks (health with no link, the crash trace). TP-142 and TP-143 depend on this run, not the reverse: they read its results. TP-138 and TP-124 aren't dependencies; if they land first, the run checks their behaviour too.
 - **Why each item (device evidence, the 2026-10-24 macOS device run):**
   - step 14: Ctrl-C didn't stop the agent and the log has no `shutting down`; the five Ctrl-Cs in fresh sessions all worked, and before the phase the kit's `kill -INT` always did;
@@ -67,3 +67,4 @@ One owner session on the Mac, about 45 minutes, settles what the 2026-10-24 macO
 
 ## Log
 - 2026-10-24 created in backlog (2026-10-24 macOS device run and code-health review: before-M2 list)
+- 2026-10-24 docs: slotted in the pre-M2 phase (wave 2)
