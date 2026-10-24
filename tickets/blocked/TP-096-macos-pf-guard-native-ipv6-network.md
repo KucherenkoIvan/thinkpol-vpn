@@ -32,6 +32,39 @@ The owner has no network with native IPv6 available now. Unblock when one is.
 ## Notes
 - The device-test kit's session B (08a, 08, 09, 10) is ready for this run.
 
+### Device run 2026-10-24: pfctl listings
+
+Commands as recorded: step 1 (stock, before connecting) ran
+`sudo pfctl -a com.apple -s Anchors` and `sudo pfctl -s Interfaces -v`; step 6
+(guard applied) ran the same two with stderr kept apart (only the "No ALTQ
+support in kernel" noise went there).
+
+`pfctl -a com.apple -s Anchors`, step 1 and step 6 (identical):
+
+```
+  com.apple/000.thinkpol
+  com.apple/200.AirDrop
+  com.apple/250.ApplicationFirewall
+```
+
+`pfctl -s Interfaces -v`, step 1 and step 6 (identical), one name per line in
+the original, compacted here:
+
+```
+ALL anpi0 anpi1 ap1 awdl0 bridge0 en0 en1 en2 en3 en4 gif0 llw0 lo0 stf0
+utun0–utun30
+```
+
+Even with `-v` the listing has no per-interface flags: every line is a bare
+name, with no `(skip)` marker and no counters. Before and after (steps 1 and
+6) are identical, for both listings.
+
+Step 20 (`(echo 'set skip on lo'; cat /etc/pf.conf) | sudo pfctl -f -`): the
+listing was byte-identical to the one above, with no `lo (skip)` and no marked
+`lo0`. There is no health snapshot inside 10 s (the first was taken at 20 s);
+health read `health: ok` at 20 s and at 77 s (`HEALTH_LEVEL_OK`), the guard
+log had no warns, and the restore with `sudo pfctl -f /etc/pf.conf` was clean.
+
 ## Log
 - 2026-10-16 created (TP-078/TP-092 device sessions)
 - 2026-10-16 docs: can run in TP-097's VM lab (a router VM gives native IPv6), so it depends on TP-097
