@@ -150,7 +150,8 @@ func altqChatter(l string) bool {
 }
 
 // pfctl's answers of absence, each a line alone on its stream (ALTQ
-// chatter aside), recorded on a Mac (testdata/pfctl/recorded-*).
+// chatter aside); all but answerNoRuleset recorded on a Mac
+// (testdata/pfctl/recorded-*).
 const (
 	// answerNoAnchor: `-a ANCHOR -s rules` of an anchor that doesn't
 	// exist, on stderr.
