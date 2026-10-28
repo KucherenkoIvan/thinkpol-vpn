@@ -10,10 +10,11 @@
 // touches what isn't the lab's.
 //
 // The binaries are per run, not per lab: each process that starts labs (a
-// lab test binary, labctl gotest) builds thinkpol, the lab's tools and,
-// once per package, the test binaries GoTest runs into lab/bin/run-*, a
-// directory of its own that its labs mount at BinDir, so two runs from one
-// checkout never rebuild a binary the other's containers run. The run holds
+// lab test binary, labctl gotest) builds them into lab/bin/run-*, a
+// directory of its own that its labs mount at BinDir: thinkpol and the
+// lab's tools once, and each package's tests the first time GoTest runs
+// them. So two runs from one checkout never rebuild a binary the other's
+// containers run. The run holds
 // a lock file inside the directory and removes the directory when it ends
 // (Main, RemoveRunBinaries); creating, sweeping and removing run
 // directories are serialized by a lock in the checkout's lab/.run. A

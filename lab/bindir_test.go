@@ -91,6 +91,34 @@ func TestTheNextRunSweepsWhatEndedRunsLeft(t *testing.T) {
 	}
 }
 
+// A leftover the sweep can't remove doesn't stop the next run.
+func TestALeftoverTheSweepCantRemoveDoesntStopTheNextRun(t *testing.T) {
+	ctx := t.Context()
+	root := t.TempDir()
+	dead, err := newRunBinaries(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = dead.lock.Close()
+	stuck := filepath.Join(dead.path, "tests")
+	if err := os.MkdirAll(stuck, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stuck, "x.test"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(stuck, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(stuck, 0o755) })
+
+	next, err := newRunBinaries(ctx, root)
+	if err != nil {
+		t.Fatalf("the next run with an unremovable leftover: %v", err)
+	}
+	_ = next.remove(ctx)
+}
+
 func noLabUp(string) bool { return false }
 
 // A kept lab's binaries outlive its run and the next run's sweep, and go
