@@ -51,6 +51,24 @@ Round 1 (paranoid, torvalds, go-style, auto second opinion, 2026-10-28): the flo
 - [x] R1.19 labctl usage overstates `-stale`: it removes no binaries (go-style 8, auto)
 - [x] R1.20 bindir_lab_test.go copies the sweep's liveness check; share one helper (torvalds 13)
 
+Round 2 (paranoid, torvalds, 2026-10-28): the R1 fixes hold, but labctl down's sweep still takes a kept lab's binaries while the lab is up; `Up` skips R1.3's check, and the build cache keeps failures.
+- [ ] R2.1 labctl down's sweep removes kept directories whose labs are still up (another `THINKPOL_LAB_PROJECT`, Docker failing partway, two spellings of one checkout): record each kept lab's project in `.kept`, remove a kept directory only when none of its projects is up; test `DownCheckout`'s sweep with two kept projects, one still up (paranoid 1, torvalds S1)
+- [ ] R2.2 a `-timeout` hang with `THINKPOL_LAB_KEEP` leaves no `.kept`: mark at creation when KEEP is set, unmark in `remove` if no lab was kept (paranoid 2)
+- [ ] R2.3 the exported `Up` skips R1.3's Main check: delete it, callers use `up(…, processBinaries)` (torvalds S2)
+- [ ] R2.4 `buildTestsOnce` caches a failed build for the process: cache successes only, with a test (paranoid 4, torvalds S3)
+- [ ] R2.5 a failed removal stays cached, unlocked and half-deleted: forget the entry anyway and leave the directory to the sweep; fix the doc; R1.8's last clause changes (paranoid 3, torvalds S4)
+- [ ] R2.6 lab/doc.go still says nothing is shared between tests, "the test binaries GoTest runs once" misparses, and the doc/README "together with the lab" line is false (torvalds S5, paranoid 1)
+- [ ] R2.7 no real `THINKPOL_LAB_KEEP` run: one manual run of a failing throwaway lab test, `.kept` and binaries survive, `make lab-down` removes both; logged (torvalds S6)
+- [ ] R2.8 no test fails when `cleanup` drops `keepBinaries` or `DownCheckout` drops its sweep, or when a failed removal's entry is kept (paranoid 5, torvalds S6)
+- [ ] R2.9 R1.17 partial: errors from `tryLockMode`, `RemoveAll`, `removeIfEmpty`, `runDirLive` lack the `lab:` prefix (paranoid 6)
+- [ ] R2.10 one unremovable leftover fails every lab start: make the run's own sweep best-effort (paranoid 7)
+- [ ] R2.11 naming: one word for run/process binaries (`runDirPrefix`, `runDirLive` vs `Lab.runDir`), and `binaries` → `labInputs` since it also builds the image (torvalds N1, N2)
+- [ ] R2.12 the `if err == nil` cascade in `up` (torvalds N3)
+- [ ] R2.13 goBuild's dead "a package that lost its tests" branch (torvalds N4)
+- [ ] R2.14 `fatalTB` depends on `start` calling `Name` before `up`: say so (torvalds N5)
+- [ ] R2.15 the kept-marker check is written three times: one `keptBy` helper (torvalds N6)
+- R1.10 follow-up (per-run project identity in names and `down -tests`): a backlog ticket, filed by the orchestrator (torvalds); not in this ticket.
+
 ## Log
 - 2026-10-22 created in backlog (TP-120 out-of-scope note)
 - 2026-10-24 docs: slotted in the pre-M2 phase (wave 0)
@@ -69,3 +87,4 @@ Round 1 (paranoid, torvalds, go-style, auto second opinion, 2026-10-28): the flo
 - 2026-10-28 tests (round 1): bindir_test.go TestAKeptLabsBinariesStayUntilLabctlDown (mutations: remove ignores `.kept`; the sweep ignores `.kept`; labctl down's sweep skips kept dirs), TestRunDirectoriesWaitForTheCheckoutLock (mutations: newRunBinaries without lockBinRoot; remove without it), TestStartWithoutMainFails (mutation: no Main check in start), TestTestBinariesAreBuiltOncePerDirectory (mutation: no sync.Once), and the reworked TestRemoveRunBinariesForgetsTheRun (mutation: the entry kept) and TestRunsHaveTheirOwnBinaryDirectories (mutation: the sweep removes live dirs); each mutation fails its test. The lab test's "labctl skips its removal" check only holds when no other run from the checkout sweeps first (paranoid 6); not re-mutated this round.
 - 2026-10-28 verified (round 1): `make lint`, `make test` green; `make lab-test` LAB_P=1 (other labs running) green on 6ab102a, no lab/bin left (only lab/.run/bin.lock). Not verified: a real `THINKPOL_LAB_KEEP` failure kept with its binaries (unit-tested only); the lab test's mutations were not re-run.
 - 2026-10-28 in-progress → review
+- 2026-10-28 review → has-errors (round 2: R2.1–R2.15)
