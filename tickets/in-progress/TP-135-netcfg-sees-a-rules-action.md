@@ -51,3 +51,4 @@ Round 1 (2026-10-28): correctness (paranoid), design (torvalds) and conventions 
 - 2026-10-28 ran: `make lint`, `make test`, `make lab-gotest PKG=./internal/dataplane/netcfg/...` and the full `make lab-test` green on e70e319. Not verified: clearing the detached/unresolved flags before a re-add (no test makes a rule with a detached oif and then undoes its delete); retries for an interrupted dump drop from 5 to `dumpRules`' 3
 - 2026-10-28 in-progress → review
 - 2026-10-28 review → has-errors (round 1: R1.1–R1.11)
+- 2026-10-28 has-errors → in-progress (round 1 findings)
