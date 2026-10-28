@@ -24,6 +24,23 @@ A corrupt route record under `/private/var/db/thinkpol/netcfg` doesn't leave a d
 - [x] the same for the node's own record at start — `TestTheOwnersCorruptRecordIsSetAsideAtStart`: a crashed route table's routes and its corrupt record; the next configurator starts owning nothing, the record is set aside and reported, the leftovers are `Held`, an Apply over them fails with ErrConflict, and Close leaves the kernel unchanged
 - [x] `make lint`, `make test` pass — both exit 0 on the code commit; `make lab-test` too (Log)
 
+## Review findings
+Round 1 (2026-10-28): correctness (no defect, test gaps), design (fix first), conventions (fix first). Setting a corrupt record aside and owning nothing holds; the cross-owner set-aside buys nothing with today's wiring and makes ErrBusy lie, and health follows a file instead of the leftover routes.
+- [ ] R1.1 (design 1, 8; correctness 6) Remove the cross-owner lock and set-aside from `recordOf` (`netcfg_darwin.go` ~619-646): another owner's corrupt record holds nothing and is reported in place, never touched; its owner sets it aside at its own next start, under its own lock. Rename the surface to what is measured (`Survey.CorruptRecords`, `Status.CorruptRecords`, the counter); drop `TestACorruptRecordOfARunningOwnerIsLeftToIt` (one case now). Update the acceptance evidence and add a Log line on the changed wording ("the record is set aside" → reported in place, its routes Held; its owner sets it aside at start), the Notes' decision and the device checklist.
+- [ ] R1.2 (design 2) Health follows the real problem: degraded only while a corrupt record is seen AND routes carrying routeFlag that no record names are in the kernel (`Survey.UnownedRoutes`), not merely while a file exists. Checklist step 3 says deleting the file is an acknowledgement, not a repair.
+- [ ] R1.3 (correctness 1) A test that an earlier boot's set-aside file isn't reported (catches the boot id dropped from `setAsideName`).
+- [ ] R1.4 (conventions 1, 2, 3; design 6, 7) The symlink case in the corrupt-record definitions (`netcfg/doc.go` ~60, `record_darwin.go` ~48); the stale comments on `owned` and `thinkpolRoutes`.
+- [ ] R1.5 (design 3) A failed stat for reporting never fails the survey.
+- [ ] R1.6 (design 4) Earlier boots' set-aside files are removed at the owner's start, under its own lock.
+- [ ] R1.7 (design 5; correctness 4; conventions 5) Setting a corrupt directory aside over an earlier set-aside entry (ENOTDIR, EISDIR, ENOTEMPTY): remove the target first, or document; narrow `trusteddir.Rename`'s doc to what renameat(2) replaces.
+- [ ] R1.8 (correctness 3) A corrupt record from before this boot (mtime before kern.boottime) is set aside but not reported.
+- [ ] R1.9 (correctness 5) The log says why a record was judged corrupt.
+- [ ] R1.10 (correctness 2) The DefaultRoute test meets a corrupt file (today it runs after Survey moved it).
+- [ ] R1.11 (conventions 4) The darwin `Survey` doc names the new fields.
+- [ ] R1.12 (conventions 6) Drop "(TP-124)" from `netcfg/doc.go`.
+- [ ] R1.13 (conventions 7) The problem code's plural/singular: choose one and say why.
+- [ ] R1.14 (conventions 8) The status line shows even when the route table holds no routes.
+
 ## Notes
 - From TP-077's residual-risks research (2026-10-22); TP-108 R2.7 handed recovery to TP-102, which didn't add it.
 - **Order (owner, 2026-10-24).** In the before-M2 list (wave 1, macOS): done before the M2 lanes start. TP-108 made another owner's corrupt route record a hard connect failure, with no recovery but deleting the file by hand. The 2026-10-24 macOS device run's corrupt-record step was inconclusive; TP-144's re-run checks it again.
@@ -84,3 +101,4 @@ A corrupt route record under `/private/var/db/thinkpol/netcfg` doesn't leave a d
 - 2026-10-28 not tested: the re-read under another owner's lock (a configurator of it replacing the record between the first read and the lock) has no seam without a test hook; not verified on a device: the set-aside through the real routing socket and the service's connect (TP-144's re-run, checklist in Notes)
 - 2026-10-28 `make lint` and `make test` exit 0 on ffca479; `make lab-test` (`LAB_P=1`, other labs up; `GOFLAGS=-p=4`) exit 0 on ffca479 with `gotest: ok, 36 packages`
 - 2026-10-28 in-progress → review
+- 2026-10-28 review → has-errors (round 1: R1.1–R1.14)
