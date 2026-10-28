@@ -8,12 +8,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/vishvananda/netlink/nl"
 	"golang.org/x/sys/unix"
 )
 
 // rawRuleMsg is a rule message: a fib_rule_hdr, then attributes.
 func rawRuleMsg(family, dstLen, action byte, attrs ...[]byte) []byte {
-	b := make([]byte, unix.SizeofRtMsg)
+	b := make([]byte, fibRuleHdrLen)
 	b[0], b[1], b[4], b[7] = family, dstLen, 254, action
 	for _, a := range attrs {
 		b = append(b, a...)
@@ -65,15 +66,44 @@ func TestParseRawRule(t *testing.T) {
 	}
 }
 
-func TestDumpDone(t *testing.T) {
-	if err := dumpDone(u32(0), false); err != nil {
+// A dump's error: a kernel without the family's rules (no IPv6) has
+// none, an interrupted dump is retried, anything else fails.
+func TestDumpErr(t *testing.T) {
+	if err := dumpErr(nil); err != nil {
 		t.Fatal(err)
 	}
-	ebusy := -int32(unix.EBUSY)
-	if err := dumpDone(u32(uint32(ebusy)), false); !errors.Is(err, unix.EBUSY) {
+	if err := dumpErr(unix.EAFNOSUPPORT); err != nil {
+		t.Fatalf("a family the kernel has no rules for: %v", err)
+	}
+	if err := dumpErr(unix.EBUSY); !errors.Is(err, unix.EBUSY) {
 		t.Fatalf("a failed dump: %v", err)
 	}
-	if err := dumpDone(nil, true); !errors.Is(err, errDumpInterrupted) {
+	if err := dumpErr(nl.ErrDumpInterrupted); !errors.Is(err, errDumpInterrupted) {
 		t.Fatalf("an interrupted dump: %v", err)
+	}
+}
+
+// What netcfg adds reads back as the Rule it added, with its protocol:
+// every field a Rule has, both families, main and a table past 255.
+func TestRuleMsgReadsBackAsTheRule(t *testing.T) {
+	const proto = 86
+	for _, r := range []Rule{
+		{Family: IPv4, Priority: 5300, SuppressDefaultRoutes: true},
+		{Family: IPv6, Priority: 5300, SuppressDefaultRoutes: true},
+		{Family: IPv4, Priority: 5299, Dst: pfx("192.0.2.0/24")},
+		{Family: IPv6, Priority: 5299, Dst: pfx("2001:db8::/48")},
+		{Family: IPv4, Priority: 5298, Oif: "ovl0", SuppressDefaultRoutes: true},
+		{Family: IPv4, Priority: 5301, Table: 4242, Mark: 0x4242, Invert: true},
+		{Family: IPv6, Priority: 5301, Table: 4242, Mark: 0x4242, Invert: true, SuppressDefaultRoutes: true},
+		{Family: IPv4, Priority: 1, Table: 100},
+	} {
+		kr, err := parseRawRule(ruleMsg(r, proto))
+		if err != nil {
+			t.Fatalf("%v: %v", r, err)
+		}
+		got, ok := asRule(kr.rule)
+		if !ok || got != r || kr.protocol != proto {
+			t.Errorf("%v reads back as %v (a Rule: %v), protocol %d", r, got, ok, kr.protocol)
+		}
 	}
 }

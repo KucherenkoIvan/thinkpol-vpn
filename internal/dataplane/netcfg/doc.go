@@ -32,12 +32,23 @@
 // suppress_prefixlength 0 flags match, and it is a plain lookup: no
 // other selector, no partial mark mask, no other action (a rule turned
 // into a blackhole is not the owner's lookup). Any other such rule is
-// deleted and the wanted one added. A delete sends the dumped message
-// back, so the kernel removes exactly that rule, and its undo restores
-// it action and all. A rule keeps its protocol only since Linux 4.17:
-// the adapter checks that the rules it added came back carrying it, and
-// on an older kernel deletes them and fails with errors.ErrUnsupported
-// rather than leave rules it can't tell from anyone else's. Scoped
+// deleted and the wanted one added. Rules are added and deleted with raw
+// RTM_NEWRULE and RTM_DELRULE messages on one socket opened in the
+// namespace at construction. An add's undo sends the same message as a
+// delete; a delete sends the dumped message back, and its undo adds it
+// again, action and all. The kernel deletes the first rule in its list
+// that matches every field a delete carries (action, protocol, priority,
+// table, the selectors set) but takes a selector the message lacks as
+// any value and ignores the invert flag, so an earlier rule of the
+// owner's with the same fields and more selectors can go in its place
+// (RR53). A rule keeps its protocol only since Linux 4.17: the adapter
+// checks that the rules it added came back carrying it, and on an older
+// kernel deletes them and fails with errors.ErrUnsupported rather than
+// leave rules it can't tell from anyone else's. It also fails when one
+// it added reads back as something else (an attribute the kernel
+// reports that the reader doesn't know), rather than replace that rule
+// on every Apply. A kernel without IPv6 policy rules has none to read.
+// Scoped
 // routes are refused (errors.ErrUnsupported): Linux sockets bypass the
 // tunnel by their mark instead.
 //

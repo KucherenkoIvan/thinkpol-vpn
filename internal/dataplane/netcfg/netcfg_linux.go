@@ -14,6 +14,7 @@ import (
 	"sync"
 
 	"github.com/vishvananda/netlink"
+	"github.com/vishvananda/netlink/nl"
 	"github.com/vishvananda/netns"
 	"golang.org/x/sys/unix"
 )
@@ -28,12 +29,8 @@ func (o Owner) valid() bool { return o >= OwnerOverlay && o <= OwnerRouteTable }
 
 // isOwnerProtocol reports whether p is any owner's route protocol.
 func isOwnerProtocol(p netlink.RouteProtocol) bool {
-	for _, o := range Owners {
-		if p == o.RouteProtocol() {
-			return true
-		}
-	}
-	return false
+	_, ok := ownerOf(p)
+	return ok
 }
 
 // LockDir holds the lock files that keep one configurator per owner and
@@ -90,8 +87,9 @@ func NewInNamespace(path string, owner Owner) (Configurator, error) {
 }
 
 // newLinux makes owner's configurator for ns; current says ns is the calling
-// thread's, where the netlink socket is opened without switching
-// namespaces (netlink's switch needs /proc to find its way back).
+// thread's, where the netlink sockets are opened without switching
+// namespaces (netlink's switch needs /proc to find its way back). The
+// sockets stay in ns whatever thread uses them later.
 func newLinux(ns netns.NsHandle, name string, current bool, owner Owner) (Configurator, error) {
 	defer func() { _ = ns.Close() }()
 	if !owner.valid() {
@@ -107,28 +105,30 @@ func newLinux(ns netns.NsHandle, name string, current bool, owner Owner) (Config
 		_ = unix.Close(watchNS)
 		return nil, fmt.Errorf("netcfg: %v in %s: %w", owner, name, err)
 	}
-	var h *netlink.Handle
+	at := ns
 	if current {
-		h, err = netlink.NewHandle(unix.NETLINK_ROUTE)
-	} else {
-		h, err = netlink.NewHandleAt(ns, unix.NETLINK_ROUTE)
+		at = netns.None()
 	}
+	h, err := netlink.NewHandleAt(at, unix.NETLINK_ROUTE)
 	if err != nil {
 		_ = unix.Close(lock)
 		_ = unix.Close(watchNS)
 		return nil, fmt.Errorf("netcfg: netlink in %s: %w", name, err)
 	}
-	rulesNS := netns.NsHandle(watchNS)
-	if current {
-		rulesNS = netns.None()
+	rules, err := newRuleSocket(at)
+	if err != nil {
+		h.Close()
+		_ = unix.Close(lock)
+		_ = unix.Close(watchNS)
+		return nil, fmt.Errorf("netcfg: netlink in %s: %w", name, err)
 	}
 	return &linuxConfigurator{
-		h:       h,
-		ns:      netns.NsHandle(watchNS),
-		rulesNS: rulesNS,
-		lock:    lock,
-		proto:   owner.RouteProtocol(),
-		links:   newLedger(),
+		h:     h,
+		rules: rules,
+		ns:    netns.NsHandle(watchNS),
+		lock:  lock,
+		proto: owner.RouteProtocol(),
+		links: newLedger(),
 	}, nil
 }
 
@@ -159,16 +159,15 @@ func lockOwner(ns netns.NsHandle, owner Owner) (int, error) {
 }
 
 type linuxConfigurator struct {
-	mu     sync.Mutex
-	h      *netlink.Handle
+	mu sync.Mutex
+	h  *netlink.Handle
+	// rules is the socket for rule dumps and requests (rawrule_linux.go),
+	// opened in the namespace with h; mu serialises its use.
+	rules  *nl.SocketHandle
 	ns     netns.NsHandle // the namespace, for Watch
 	lock   int            // the owner's lock file, flocked
 	proto  netlink.RouteProtocol
 	closed bool
-
-	// rulesNS is where rule dumps and requests open their sockets: ns,
-	// or netns.None() for the current namespace, as h was opened.
-	rulesNS netns.NsHandle
 
 	// Every route with proto is ours, so routes need no records.
 	links ledger
@@ -416,7 +415,7 @@ func (c *linuxConfigurator) delKernelRoute(k routeKey, kr netlink.Route, u *undo
 func (c *linuxConfigurator) ownKernelRoutes() (map[routeKey]netlink.Route, error) {
 	out := make(map[routeKey]netlink.Route)
 	for _, fam := range []int{netlink.FAMILY_V4, netlink.FAMILY_V6} {
-		routes, err := c.listRoutes(fam, &netlink.Route{Table: unix.RT_TABLE_UNSPEC, Protocol: c.proto},
+		routes, err := listRoutes(c.h, fam, &netlink.Route{Table: unix.RT_TABLE_UNSPEC, Protocol: c.proto},
 			netlink.RT_FILTER_TABLE|netlink.RT_FILTER_PROTOCOL)
 		if err != nil {
 			return nil, err
@@ -431,7 +430,7 @@ func (c *linuxConfigurator) ownKernelRoutes() (map[routeKey]netlink.Route, error
 // kernelAddrs returns every address in the namespace by interface index.
 func (c *linuxConfigurator) kernelAddrs() (map[int][]netip.Prefix, error) {
 	var err error
-	for range 5 {
+	for range dumpRetries {
 		var addrs []netlink.Addr
 		addrs, err = c.h.AddrList(nil, netlink.FAMILY_ALL)
 		if errors.Is(err, netlink.ErrDumpInterrupted) {
@@ -470,7 +469,7 @@ func (c *linuxConfigurator) DefaultRoute(ctx context.Context, f Family) (Route, 
 	if f == IPv6 {
 		fam = netlink.FAMILY_V6
 	}
-	routes, err := c.listRoutes(fam, &netlink.Route{Table: unix.RT_TABLE_MAIN}, netlink.RT_FILTER_TABLE)
+	routes, err := listRoutes(c.h, fam, &netlink.Route{Table: unix.RT_TABLE_MAIN}, netlink.RT_FILTER_TABLE)
 	if err != nil {
 		return Route{}, err
 	}
@@ -532,6 +531,7 @@ func (c *linuxConfigurator) Close() error {
 	// configurator of the owner takes it over, as after a crash.
 	c.h.Close()
 	c.h = nil
+	c.rules.Close()
 	_ = c.ns.Close()
 	if lerr := unix.Close(c.lock); err == nil {
 		err = lerr
@@ -569,13 +569,17 @@ func (c *linuxConfigurator) removeOwned() error {
 	return errors.Join(errs...)
 }
 
-// listRoutes retries dumps the kernel interrupted because the table changed
-// underneath them.
-func (c *linuxConfigurator) listRoutes(fam int, filter *netlink.Route, mask uint64) ([]netlink.Route, error) {
+// dumpRetries is how many times a dump the kernel interrupted (what it
+// lists changed underneath it) is taken before it fails.
+const dumpRetries = 5
+
+// listRoutes lists routes through h, retrying dumps the kernel
+// interrupted.
+func listRoutes(h *netlink.Handle, fam int, filter *netlink.Route, mask uint64) ([]netlink.Route, error) {
 	var err error
-	for range 5 {
+	for range dumpRetries {
 		var routes []netlink.Route
-		routes, err = c.h.RouteListFiltered(fam, filter, mask)
+		routes, err = h.RouteListFiltered(fam, filter, mask)
 		if err == nil {
 			return routes, nil
 		}

@@ -25,7 +25,7 @@ func (c *linuxConfigurator) Survey(ctx context.Context) (Survey, error) {
 	}
 	var s Survey
 	for _, fam := range []int{netlink.FAMILY_V4, netlink.FAMILY_V6} {
-		routes, err := c.listRoutes(fam, &netlink.Route{Table: unix.RT_TABLE_MAIN, Protocol: unix.RTPROT_KERNEL},
+		routes, err := listRoutes(c.h, fam, &netlink.Route{Table: unix.RT_TABLE_MAIN, Protocol: unix.RTPROT_KERNEL},
 			netlink.RT_FILTER_TABLE|netlink.RT_FILTER_PROTOCOL)
 		if err != nil {
 			return Survey{}, err
@@ -38,12 +38,12 @@ func (c *linuxConfigurator) Survey(ctx context.Context) (Survey, error) {
 			s.OnLink = append(s.OnLink, p)
 		}
 	}
-	rules, err := dumpBothRules(c.rulesNS)
+	rules, err := dumpAllRules(c.rules)
 	if err != nil {
 		return Survey{}, err
 	}
 	for _, r := range rules {
-		if p := r.rule.Priority; p == 0 || p == 32766 || p == 32767 || isOwnerProtocol(netlink.RouteProtocol(r.protocol)) {
+		if p := r.rule.Priority; p == 0 || p == 32766 || p == 32767 || isOwnerProtocol(r.protocol) {
 			continue
 		}
 		s.ForeignRules = append(s.ForeignRules, r.rule.Priority)

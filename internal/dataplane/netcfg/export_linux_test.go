@@ -30,8 +30,9 @@ func ClearFailingClose(path string, owner Owner, link string) error {
 }
 
 // NewInNamespaceToKill is NewInNamespace, and a kill that puts /dev/null
-// in place of the configurator's netlink socket: from then on every
-// netlink request it makes fails, the first dump of a Close included.
+// in place of the configurator's netlink sockets (its handle's and its
+// rule socket): from then on every netlink request it makes fails, the
+// first dump of a Close included.
 // It tells the configurator's sockets by scanning the process's netlink
 // sockets before and after NewInNamespace, so no other goroutine may open
 // a netlink socket between the two scans.
