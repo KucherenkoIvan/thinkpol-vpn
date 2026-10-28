@@ -13,18 +13,6 @@ func TestTheExportedReadersReadAsTheGuardDoes(t *testing.T) {
 	if got, err := SkippedNames([]byte("en0\nlo (skip)\nlo0 (skip)\nutun3\n")); err != nil || !slices.Equal(got, []string{"lo", "lo0"}) {
 		t.Errorf("skipped names %q %v", got, err)
 	}
-	for stderr, missing := range map[string]bool{
-		"pfctl: DIOCGETRULES: Invalid argument\n":                                                             true,
-		"No ALTQ support in kernel\nALTQ related functions disabled\npfctl: DIOCGETRULES: Invalid argument\n": true,
-		"pfctl: Operation not permitted\n":                                                                    false,
-		"pfctl: DIOCGETRULESETS: Invalid argument\n":                                                          false,
-		"pfctl: DIOCGETRULES: Invalid argument\npfctl: DIOCGETADDRS: Invalid argument\n":                      false,
-		"": false,
-	} {
-		if got := AnchorMissing([]byte(stderr)); got != missing {
-			t.Errorf("%q read as a missing anchor: %v", stderr, got)
-		}
-	}
 	if on, err := ParsePfEnabled([]byte("Status: Disabled for 0 days 00:00:00\n")); err != nil || on {
 		t.Errorf("disabled: %v %v", on, err)
 	}

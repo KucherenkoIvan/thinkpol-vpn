@@ -22,15 +22,6 @@ func ParsePfEnabled(info []byte) (bool, error) { return parseEnabled(info) }
 // included; an error when a line too long to read cuts the listing.
 func SkippedNames(ifaces []byte) ([]string, error) { return skippedNames(ifaces) }
 
-// AnchorMissing says pfctl's stderr for `-a ANCHOR -s rules` is its
-// answer about an anchor that doesn't exist, and nothing else (ALTQ
-// chatter aside): such an anchor holds no rules. Any other failure, an
-// "Invalid argument" of another ioctl included, isn't that answer.
-func AnchorMissing(stderr []byte) bool {
-	l := lines(stderr)
-	return len(l) == 1 && l[0] == "pfctl: DIOCGETRULES: Invalid argument"
-}
-
 // GuardReferenceHeld says the guard's record in dir names a pf reference
 // taken in this boot: a missing directory or record, a record of another
 // boot, a symlink, a non-regular file or a record that doesn't parse
