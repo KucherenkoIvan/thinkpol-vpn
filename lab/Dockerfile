@@ -1,5 +1,5 @@
 # The one image every lab node runs. Binaries are not baked in: they are
-# cross-compiled on the host into lab/bin and mounted read-only.
+# cross-compiled on the host into a run's directory and mounted read-only.
 # The base is pinned by digest (a multi-platform index), so a rebuild gets
 # the same Debian.
 FROM debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587

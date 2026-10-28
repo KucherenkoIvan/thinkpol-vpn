@@ -53,8 +53,8 @@ func TestAnotherRunFromTheCheckoutBuildsItsOwnBinaries(t *testing.T) {
 	}
 	node.RunGoTests(t, pkgPattern)
 
-	// Every run directory left is a live run's: the other run removed its
-	// own.
+	// Every run directory left is a live run's or a kept lab's: the other
+	// run removed its own.
 	unlock, err := lockBinRoot(ctx, root)
 	if err != nil {
 		t.Fatal(err)
@@ -68,12 +68,11 @@ func TestAnotherRunFromTheCheckoutBuildsItsOwnBinaries(t *testing.T) {
 		if !strings.HasPrefix(e.Name(), runDirPrefix) {
 			continue
 		}
-		lock, free, err := tryLockMode(filepath.Join(binRoot(root), e.Name(), runLockName), true)
+		live, err := runDirLive(filepath.Join(binRoot(root), e.Name()))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if free {
-			_ = lock.Close()
+		if _, err := os.Stat(filepath.Join(binRoot(root), e.Name(), keptMarker)); !live && err != nil {
 			t.Errorf("%s was left behind by a run that ended", e.Name())
 		}
 	}

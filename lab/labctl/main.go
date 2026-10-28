@@ -22,7 +22,8 @@ const usage = `usage: labctl <command>
 
   up                                  start the standard topology for this checkout
   down [-tests | -stale]              remove this checkout's labs and ended runs' binaries (-tests:
-                                      only the labs tests started; -stale: every lab whose checkout is gone)
+                                      only the labs tests started; -stale: instead, every lab whose
+                                      checkout is gone, and no binaries)
   gotest [-v] [-run re] [-count n] [-timeout d] [-p n] [-perf] pkgs...
                                       run each package's tests in a fresh lab node with THINKPOL_LAB=1
                                       (-count, -timeout: the test binary's; repeat runs for stability)
@@ -40,7 +41,7 @@ func main() {
 	}
 }
 
-func run(ctx context.Context, args []string) (err error) {
+func run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
 		fmt.Fprint(os.Stderr, usage)
 		return errors.New("no command")
@@ -49,10 +50,6 @@ func run(ctx context.Context, args []string) (err error) {
 	if err != nil {
 		return err
 	}
-	// The binaries gotest built; every lab that ran them is down by now.
-	defer func() {
-		err = errors.Join(err, lab.RemoveBinaries(context.WithoutCancel(ctx), root))
-	}()
 	switch args[0] {
 	case "up":
 		ctx, cancel := context.WithTimeout(ctx, 15*time.Minute)
@@ -100,7 +97,9 @@ func down(ctx context.Context, root string, args []string) error {
 }
 
 // runGotest parses gotest's flags into the test binary's, and runs it.
-func runGotest(ctx context.Context, root string, args []string) error {
+func runGotest(ctx context.Context, root string, args []string) (err error) {
+	// The binaries its labs ran; every one of them is down by now.
+	defer func() { err = errors.Join(err, lab.RemoveRunBinaries(context.WithoutCancel(ctx))) }()
 	fs := flag.NewFlagSet("gotest", flag.ContinueOnError)
 	runRe := fs.String("run", "", "run only tests matching the regexp")
 	count := fs.Int("count", 0, "run each test n times (the test binary's -test.count)")
@@ -144,7 +143,7 @@ func up(ctx context.Context, root string) error {
 	if err != nil {
 		return err
 	}
-	l, err := lab.UpStandalone(ctx, root, checkout, lab.Standard())
+	l, err := lab.UpDetached(ctx, root, checkout, lab.Standard())
 	if err != nil {
 		if l != nil {
 			err = errors.Join(err, l.Down(context.WithoutCancel(ctx)))

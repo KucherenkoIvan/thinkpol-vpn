@@ -27,19 +27,14 @@ var (
 // preparedRun is what a process prepared for its labs of one checkout.
 type preparedRun struct {
 	img image
-	bin *runDir
+	bin *runBinaries
 }
 
-// Prepare builds the lab image (once per Dockerfile version and platform,
+// prepare builds the lab image (once per Dockerfile version and platform,
 // shared by all checkouts) and cross-compiles thinkpol, with the lab's own
 // tools (labdns, censord), into this process's binary directory under
-// root/lab/bin for the Docker VM's architecture. It returns the image
-// reference; RemoveBinaries removes the directory.
-func Prepare(ctx context.Context, root string) (string, error) {
-	p, err := prepare(ctx, root)
-	return p.img.ref, err
-}
-
+// root/lab/bin for the Docker VM's architecture; RemoveRunBinaries removes
+// the directory.
 func prepare(ctx context.Context, root string) (preparedRun, error) {
 	preparedMu.Lock()
 	defer preparedMu.Unlock()
@@ -50,12 +45,12 @@ func prepare(ctx context.Context, root string) (preparedRun, error) {
 	if err != nil {
 		return preparedRun{}, err
 	}
-	bin, err := newRunDir(ctx, root)
+	bin, err := newRunBinaries(ctx, root)
 	if err != nil {
 		return preparedRun{}, err
 	}
 	if err := buildTools(ctx, root, t, bin.path); err != nil {
-		return preparedRun{}, errors.Join(err, bin.remove(context.WithoutCancel(ctx), root))
+		return preparedRun{}, errors.Join(err, bin.remove(context.WithoutCancel(ctx)))
 	}
 	p := preparedRun{img: img, bin: bin}
 	prepared[root] = p
@@ -152,28 +147,13 @@ func buildImage(ctx context.Context, root string, t target) (image, error) {
 	return img, nil
 }
 
-// One build per output at a time in this process; across processes the
-// rename into place keeps every build whole.
-var (
-	buildLocksMu sync.Mutex
-	buildLocks   = map[string]*sync.Mutex{}
-)
-
 // goBuild runs go build or go test -c for the lab's platform, without cgo,
-// into a temporary file renamed onto out, so a running lab never sees a
-// half-written binary. go test -c writes nothing for a package without
-// tests; then out is removed and goBuild reports false.
+// into a temporary file renamed onto out. go test -c writes nothing for a
+// package without tests; then out is removed and goBuild reports false.
+// Each output has one builder, so nothing a lab runs is rebuilt under it:
+// a process's tools are built once (prepare), a detached lab's into its
+// own directory, and a package's tests once per binary directory (goTest).
 func goBuild(ctx context.Context, root string, t target, out string, args ...string) (bool, error) {
-	buildLocksMu.Lock()
-	mu, ok := buildLocks[out]
-	if !ok {
-		mu = &sync.Mutex{}
-		buildLocks[out] = mu
-	}
-	buildLocksMu.Unlock()
-	mu.Lock()
-	defer mu.Unlock()
-
 	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
 		return false, err
 	}

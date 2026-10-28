@@ -76,7 +76,9 @@ func (n *Node) goTest(ctx context.Context, w io.Writer, pkg GoPackage, env, args
 	}
 	name := testBinaryName(pkg)
 	bin := filepath.Join(n.lab.binDir, "tests", name)
-	built, err := goBuild(ctx, n.lab.root, t, bin, "test", "-c", "./"+pkg.Dir)
+	built, err := buildTestsOnce(bin, func() (bool, error) {
+		return goBuild(ctx, n.lab.root, t, bin, "test", "-c", "./"+pkg.Dir)
+	})
 	if err != nil || !built {
 		return err // !built: no tests for linux
 	}
@@ -94,6 +96,26 @@ func (n *Node) goTest(ctx context.Context, w io.Writer, pkg GoPackage, env, args
 		return fmt.Errorf("%s: tests in %s: %w", n.Name, pkg.ImportPath, err)
 	}
 	return nil
+}
+
+// builtTests holds, by output path, this process's builds of packages'
+// tests: each is built once per binary directory, never again under a lab
+// running it.
+var builtTests sync.Map // string → *testBuild
+
+type testBuild struct {
+	once  sync.Once
+	built bool // false: the package has no tests for linux
+	err   error
+}
+
+// buildTestsOnce runs build for the output bin the first time it is asked
+// for, and returns that build's result every time.
+func buildTestsOnce(bin string, build func() (bool, error)) (bool, error) {
+	b, _ := builtTests.LoadOrStore(bin, &testBuild{})
+	tb := b.(*testBuild)
+	tb.once.Do(func() { tb.built, tb.err = build() })
+	return tb.built, tb.err
 }
 
 // testBinaryName is the file GoTest builds a package's tests into, under
