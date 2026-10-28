@@ -118,12 +118,17 @@ func newLinux(ns netns.NsHandle, name string, current bool, owner Owner) (Config
 		_ = unix.Close(watchNS)
 		return nil, fmt.Errorf("netcfg: netlink in %s: %w", name, err)
 	}
+	rulesNS := netns.NsHandle(watchNS)
+	if current {
+		rulesNS = netns.None()
+	}
 	return &linuxConfigurator{
-		h:     h,
-		ns:    netns.NsHandle(watchNS),
-		lock:  lock,
-		proto: owner.RouteProtocol(),
-		links: newLedger(),
+		h:       h,
+		ns:      netns.NsHandle(watchNS),
+		rulesNS: rulesNS,
+		lock:    lock,
+		proto:   owner.RouteProtocol(),
+		links:   newLedger(),
 	}, nil
 }
 
@@ -160,6 +165,10 @@ type linuxConfigurator struct {
 	lock   int            // the owner's lock file, flocked
 	proto  netlink.RouteProtocol
 	closed bool
+
+	// rulesNS is where rule dumps and requests open their sockets: ns,
+	// or netns.None() for the current namespace, as h was opened.
+	rulesNS netns.NsHandle
 
 	// Every route with proto is ours, so routes need no records.
 	links ledger

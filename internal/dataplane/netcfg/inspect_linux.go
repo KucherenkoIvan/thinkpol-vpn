@@ -68,21 +68,19 @@ func inspectWith(h *netlink.Handle, ns netns.NsHandle, err error) Inspection {
 }
 
 // ownedRules are both families' rules carrying an owner's protocol, read
-// from one raw RTM_GETRULE dump per family: vishvananda/netlink's dump
-// doesn't read a rule's action, and pairing its rules with a second dump
-// can't be done safely (many rules share a priority and a protocol).
+// from the raw dump: vishvananda/netlink's dump doesn't read a rule's
+// action, and pairing its rules with a second dump can't be done safely
+// (many rules share a priority and a protocol).
 func ownedRules(ns netns.NsHandle) ([]HostRule, error) {
+	rules, err := dumpBothRules(ns)
+	if err != nil {
+		return nil, err
+	}
 	var out []HostRule
-	for _, fam := range []int{netlink.FAMILY_V4, netlink.FAMILY_V6} {
-		rules, err := dumpRules(ns, fam)
-		if err != nil {
-			return nil, err
-		}
-		for _, r := range rules {
-			if o, ok := ownerOf(netlink.RouteProtocol(r.protocol)); ok {
-				r.rule.Owner = o
-				out = append(out, r.rule)
-			}
+	for _, r := range rules {
+		if o, ok := ownerOf(netlink.RouteProtocol(r.protocol)); ok {
+			r.rule.Owner = o
+			out = append(out, r.rule)
 		}
 	}
 	slices.SortStableFunc(out, func(a, b HostRule) int { return a.Priority - b.Priority })
@@ -93,9 +91,27 @@ func ownedRules(ns netns.NsHandle) ([]HostRule, error) {
 type rawRule struct {
 	protocol uint8
 	rule     HostRule
+	// msg is the rule's message, to delete the rule (or add it back)
+	// exactly as the kernel holds it.
+	msg []byte
 }
 
-// ruleDumpTimeout bounds each receive of the raw dump.
+// dumpBothRules dumps both families' rules in ns (netns.None(): the
+// calling thread's), one RTM_GETRULE dump per family.
+func dumpBothRules(ns netns.NsHandle) ([]rawRule, error) {
+	var out []rawRule
+	for _, fam := range []int{netlink.FAMILY_V4, netlink.FAMILY_V6} {
+		rules, err := dumpRules(ns, fam)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, rules...)
+	}
+	return out, nil
+}
+
+// ruleDumpTimeout bounds each receive of the raw dump, and of a
+// ruleRequest.
 const ruleDumpTimeout = 5 * time.Second
 
 // dumpRules dumps fam's rules in ns. A kernel without the family (no
@@ -177,6 +193,33 @@ func dumpDone(data []byte, interrupted bool) error {
 	return nil
 }
 
+// ruleRequest sends msg, a rule's message from the dump, back to the
+// kernel in ns as typ (RTM_DELRULE, or RTM_NEWRULE with flags) and waits
+// for its answer. The kernel matches a delete on every attribute msg
+// carries, the action included. The flags the kernel only reports (a
+// detached interface, an unresolved goto) are cleared: an add would keep
+// them.
+func ruleRequest(ns netns.NsHandle, typ, flags int, msg []byte) error {
+	s, err := nl.GetNetlinkSocketAt(ns, netns.None(), unix.NETLINK_ROUTE)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	tv := unix.NsecToTimeval(ruleDumpTimeout.Nanoseconds())
+	if err := s.SetReceiveTimeout(&tv); err != nil {
+		return err
+	}
+	body := slices.Clone(msg)
+	ruleFlags := binary.NativeEndian.Uint32(body[8:12])
+	ruleFlags &^= unix.FIB_RULE_IIF_DETACHED | unix.FIB_RULE_OIF_DETACHED | unix.FIB_RULE_UNRESOLVED
+	binary.NativeEndian.PutUint32(body[8:12], ruleFlags)
+	req := nl.NewNetlinkRequest(typ, flags|unix.NLM_F_ACK)
+	req.Sockets = map[int]*nl.SocketHandle{unix.NETLINK_ROUTE: {Socket: s}}
+	req.AddRawData(body)
+	_, err = req.Execute(unix.NETLINK_ROUTE, 0)
+	return err
+}
+
 // parseRawRule reads a rule message: a fib_rule_hdr (family, dst_len,
 // src_len, tos, table, two reserved bytes, action, flags) and its
 // attributes. Only the attributes netcfg sets, or the kernel dumps for
@@ -196,7 +239,7 @@ func parseRawRule(b []byte) (rawRule, error) {
 	if err != nil {
 		return rawRule{}, fmt.Errorf("netcfg: list rules: %w", err)
 	}
-	out := rawRule{}
+	out := rawRule{msg: slices.Clone(b)}
 	for _, at := range attrs {
 		v := at.Value
 		u32 := func() uint32 {

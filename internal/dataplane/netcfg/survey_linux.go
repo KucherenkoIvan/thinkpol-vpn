@@ -37,16 +37,16 @@ func (c *linuxConfigurator) Survey(ctx context.Context) (Survey, error) {
 			}
 			s.OnLink = append(s.OnLink, p)
 		}
-		rules, err := c.listRules(fam)
-		if err != nil {
-			return Survey{}, err
+	}
+	rules, err := dumpBothRules(c.rulesNS)
+	if err != nil {
+		return Survey{}, err
+	}
+	for _, r := range rules {
+		if p := r.rule.Priority; p == 0 || p == 32766 || p == 32767 || isOwnerProtocol(netlink.RouteProtocol(r.protocol)) {
+			continue
 		}
-		for _, r := range rules {
-			if r.Priority == 0 || r.Priority == 32766 || r.Priority == 32767 || isOwnerProtocol(netlink.RouteProtocol(r.Protocol)) {
-				continue
-			}
-			s.ForeignRules = append(s.ForeignRules, r.Priority)
-		}
+		s.ForeignRules = append(s.ForeignRules, r.rule.Priority)
 	}
 	slices.SortFunc(s.OnLink, func(a, b netip.Prefix) int {
 		if c := a.Addr().Compare(b.Addr()); c != 0 {
