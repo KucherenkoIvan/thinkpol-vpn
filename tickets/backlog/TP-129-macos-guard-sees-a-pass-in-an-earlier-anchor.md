@@ -33,9 +33,11 @@ The macOS IPv6 guard reports itself not enforced while a `pass ... quick` that c
 - From TP-126's round-3 design review: `killedUnder` uses `checkBypass`'s error text as the bypass's identity. A failure to read pf counts as "the same bypass" and skips the kill. Two quick passes above the hook, or an earlier anchor's rules changing under one name, don't change the text. Since this ticket reworks the bypass check, key the kill on the findings (a list of bypasses plus an error for "couldn't read pf") instead of the text.
 - **Slot (pre-M2 phase, 2026-10-24).** Wave 1, Guard lane: after TP-127, before TP-137 (the same two pf files).
 - TP-138 review: DIOCGETRULESETS on a missing anchor needs its own exact absence check (not AnchorMissing); reuse rulesOf; the ALTQ filter is exact since TP-138.
+- TP-138 round-2 design nits to fold in: anchorsBefore should use the shared lines() reader, not its own split; parseReferences should take the whole pfOutput, so the none-held rule lives in one place; rename flush's `what` field to `modifier`; use realistic table ioctls (DIOCRCLRTABLES, DIOCRGETADDRS) in the Tables test cases, and add the doubled-answer case to TestPfctlsNoAnswersAreExact; re-wrap doc.go 336–338 and 395–397.
 
 ## Log
 - 2026-10-22 created in backlog (TP-126 review round 2)
 - 2026-10-22 docs: the mark-chain reason corrected (the mark value is public); TP-126 round 3's bypass-identity note added
 - 2026-10-24 docs: slotted in the pre-M2 phase (wave 1, Guard)
 - 2026-10-28 docs: TP-138 round 1's note (DIOCGETRULESETS absence check, rulesOf, exact ALTQ filter)
+- 2026-10-28 docs: TP-138 round 2's design nits

@@ -56,8 +56,13 @@ The pf guard on macOS treats only pfctl's missing-anchor answer as an empty anch
        sudo pfctl -a com.apple/zzz.tp138 -F Tables >"$EVID/tp138-flush.out" 2>"$EVID/tp138-flush.err"; echo "exit $?" >"$EVID/tp138-flush.exit"
        sudo pfctl -a com.apple/zzz.tp138 -t tp138 -T show >"$EVID/tp138-show.out" 2>"$EVID/tp138-show.err"; echo "exit $?" >"$EVID/tp138-show.exit"
        ```
-     - What happens: the first line loads the table into an anchor of its own; the second removes it; the third asks pf for it. Nothing else in pf changes.
+       Then check that the scratch anchor holds no table:
+       ```
+       sudo pfctl -a com.apple/zzz.tp138 -s Tables
+       ```
+     - What happens: the first line loads the table into an anchor of its own; the second removes it; the third asks pf for it; the last lists the anchor's tables. Nothing else in pf changes.
      - Expect: `tp138-flush.exit` says `exit 0`; `tp138-show.err` holds only `pfctl: Table does not exist.` (with the ALTQ lines or not) and `tp138-show.exit` a non-zero exit. Anything else (an empty listing with `exit 0`, another message) means the guard's Close fails after a successful flush on a Mac: record it as it is.
+       Finally, `sudo pfctl -a com.apple/zzz.tp138 -s Tables` lists nothing. If it lists `tp138`, run the `-F Tables` line again or reboot. Never `-F all`.
 
 ## Review findings
 Round 1 (2026-10-28: go-paranoid merge, pocket-torvalds fix first #1–#3, go-style one should-fix, cross-family merge).
