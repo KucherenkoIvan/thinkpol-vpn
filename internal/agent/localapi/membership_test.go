@@ -113,12 +113,21 @@ func TestMembershipLookupsAreBoundedAndKept(t *testing.T) {
 		return true, nil
 	})
 	hung.timeout = 20 * time.Millisecond
-	start := time.Now()
-	if ok, err := hung.IsMember(ctx, 1000, 50); ok || !errors.Is(err, context.DeadlineExceeded) {
-		t.Errorf("a lookup past its timeout: %v, %v; want not a member", ok, err)
-	}
-	if d := time.Since(start); d > 5*time.Second {
-		t.Errorf("took %v", d)
+	done := make(chan error, 1)
+	go func() {
+		ok, err := hung.IsMember(ctx, 1000, 50)
+		if ok {
+			err = errors.New("a member")
+		}
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("a lookup past its timeout: %v; want not a member, timed out", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Error("a hung lookup wasn't cut off")
 	}
 }
 

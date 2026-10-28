@@ -71,12 +71,23 @@
 // status and the spaces, control the node (Connect, Disconnect,
 // SetRulePreset) and take the diagnostics without their host parts; the
 // log is root's only, because its debug lines may quote the map. A call
-// not listed needs everything. Not yet on macOS: the
-// per-call check sees only the groups the caller's process got at login,
-// and only the first 16 of those (LOCAL_PEERCRED's xucred), so a member
-// added since, or one whose `thinkpol` group is past the first 16, is
-// refused every call though the directory's gate lets them through; see
-// TP-094. There is no read-only tier for other users: they can't reach the
+// not listed needs everything. On macOS the recorded groups are only those
+// the caller's process got at login, and only the first 16 of those
+// (LOCAL_PEERCRED's xucred), while the directory's gate asks Directory
+// Services. So when a caller other than root or the service's user lacks
+// the group in its recorded groups, [Policy.Members] asks Directory
+// Services too (`dsmemberutil checkmembership -u <uid> -g <gid>`, by
+// numbers): a member added since login, or one whose `thinkpol` group is
+// past the first 16, gets the group's rights. Each lookup is bounded by 3
+// s and runs one at a time; its answer is kept 10 s per uid, so a user
+// removed from the group keeps control that long; a lookup that fails or
+// times out, or an answer dsmemberutil doesn't word as expected, is not
+// a member and isn't kept. Linux needs none of this: SO_PEERGROUPS and
+// the file system both use the process's groups. Every refusal is logged
+// at info with the caller's uid, the level the call needed, the group it
+// was checked against and how many groups the kernel recorded (not which
+// ones), plus why Directory Services couldn't answer, if it couldn't.
+// There is no read-only tier for other users: they can't reach the
 // socket at all.
 //
 // At most [MaxConns] (32) connections and [MaxStreams] (16) calls per
