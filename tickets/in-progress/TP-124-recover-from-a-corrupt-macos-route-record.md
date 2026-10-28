@@ -102,3 +102,4 @@ Round 1 (2026-10-28): correctness (no defect, test gaps), design (fix first), co
 - 2026-10-28 `make lint` and `make test` exit 0 on ffca479; `make lab-test` (`LAB_P=1`, other labs up; `GOFLAGS=-p=4`) exit 0 on ffca479 with `gotest: ok, 36 packages`
 - 2026-10-28 in-progress → review
 - 2026-10-28 review → has-errors (round 1: R1.1–R1.14)
+- 2026-10-28 has-errors → in-progress
