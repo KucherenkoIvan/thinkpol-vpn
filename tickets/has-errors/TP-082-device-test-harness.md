@@ -286,6 +286,22 @@ Round 5 (2026-10-23): correctness, style and design: fix first; second opinion: 
 - [x] R5.28 Device run lesson: the checklist follows the owner's runbook format (every command in a code block, one linear path, each step Do / What happens / Expect, one failure section).
 - [x] R5.29 Device run lesson: Ctrl-C through sudo and tee may not reach the process: the Ctrl-C step says which window and how to confirm the stop.
 
+Round 6 (2026-10-28): correctness-only re-check (the owner's decision of round 5): no proven defect in the safety core. Two checklist problems could spoil the device run's evidence, and some frozen comments are slightly wrong. One small round fixes them before the core freezes at merge, with three cheap narrowings of the core and one test.
+- [ ] R6.1 Checklist step 7, self-test variant: a Ctrl-C after the `devicetest selftest recorded:` line came too late (the self-test ends a second or two after the cue line): run it again, rather than read "no `interrupt:` line" as Ctrl-C not reaching the run. A Ctrl-C during the decode check kills the user side's `tcpdump -r`, which shares the terminal's process group, so SELF-TEST FAILED there says nothing about the capture: tell the judge.
+- [ ] R6.2 Checklist step 6 has no NOTHING-TO-RESTORE outcome (step 4 ended UNKNOWN, and the dead-man closed the run CLEAN): the failure section loops through reboots.
+- [ ] R6.3 Checklist: "only the `left` items need action" is wrong in general: on the LEFT path the reboot instruction sits in `failed`.
+- [ ] R6.4 Checklist, for the judge: on the LEFT path Enter at the STOP ends step 2 before ops 7–8, so `cmd-007…` doesn't exist.
+- [ ] R6.5 "Never pfctl by hand" against `nextPfState`'s `sudo pfctl -e`: either the advice goes, or the checklist names the one exception; pick the safer one and say why.
+- [ ] R6.6 Frozen text: `undoText` says the undo reloads only "while pf skips other than at the baseline"; on a Mac that lists no skips it loads /etc/pf.conf with pf skipping as at the baseline.
+- [ ] R6.7 Frozen text: "a reboot … took it away" describes the run's own boot (`pfskip_darwin.go` `undo`'s doc, doc.go), where a reboot can't have happened: a reboot is the later-boot case.
+- [ ] R6.8 Frozen text: doc.go's "Only two of those change pf" leaves out an orphaned `pfctl -e` from `pfBackOn` (harmless: it turns pf on only when the baseline had it on).
+- [ ] R6.9 Frozen text, should-fix: the blind-Mac residual is understated. On a Mac that lists no skips, `pre`'s "nothing is skipped" check and R5.1's skips comparison check nothing: another app's ruleset that is the stock rules plus a skip of its own is loaded over, LEFT, never CLEAN; the doc's "the same … skips" holds always there.
+- [ ] R6.10 Narrowing: the undo loads /etc/pf.conf a second time only when the skip alone still differs after the first load; a second load can't help when rules or nat differ, and could wipe a ruleset loaded in between.
+- [ ] R6.11 The LEFT message blames "the helper stopped, or reading pf after the load failed" when the load itself failed (`pfctl -f -` exits non-zero, or /etc/pf.conf can't be read): name the real cause.
+- [ ] R6.12 The launch script's trap leaves out QUIT, which every root mode ignores: a Ctrl-\ between `mktemp` and `exec` leaves a root copy until the next reboot.
+- [ ] R6.13 No test covers a Mac that lists no skips across a reboot (the later-boot "gone" path): a mutant adding `&& !slices.Equal(a.Skips, base)` there survives every test, and would leave such a Mac's run LEFT for good.
+- [ ] R6.14 R5.2's Log line claims what Setpgid doesn't add: pfctl already inherits SIG_IGN for INT, HUP, TERM and QUIT from the helper's `signal.Ignore`. One Log line, no code change.
+
 ## Log
 - 2026-10-15 created in backlog (device run 3 and 4 findings)
 - 2026-10-15 docs: kit bugs found in device run 4 analysis
@@ -394,3 +410,4 @@ Round 5 (2026-10-23): correctness, style and design: fix first; second opinion: 
 - 2026-10-28 not verified (Mac only, on the device checklist): the debug level as Apple's `pfctl -s info` prints it (R5.27); whether an Apple pfctl marks skipped interfaces at all (the 2026-10-24 listing says it doesn't: then every TP-096 run on that Mac ends LEFT and needs a reboot, and the precise undo, DIOCCLRIFFLAG on the name, is a fix round of this ticket per the judge's line); the process groups under sudo's pty; the launch script's trap and root-restore against a really closed window; Ctrl-C reaching devicetest through sudo; and everything listed for rounds 2–4
 - 2026-10-28 lab: `make lab-test` (LAB_P=4) green on 60f5339: the core's root tests and the whole runs through the real launch script in a lab node
 - 2026-10-28 in-progress → review
+- 2026-10-28 review → has-errors (round 6: R6.1–R6.14)
