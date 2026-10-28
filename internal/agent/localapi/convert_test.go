@@ -172,20 +172,33 @@ func TestMapsRefusedReachStatusAndCLI(t *testing.T) {
 	}
 }
 
-// A route record set aside reaches the health and the CLI, with its
-// count; none, no line.
-func TestASetAsideRecordReachesStatusAndCLI(t *testing.T) {
-	for _, n := range []int{0, 1} {
-		out := statusProto(agent.Status{Connection: agent.Connected, DataPlane: &dataplane.Status{
-			RouteTable: dataplane.RouteTableStatus{Enforced: true, Routes: 9, RecordsSetAside: n}}})
+// A corrupt route record reaches the CLI with its count, whatever the
+// route table holds, and the health only while routes no record names
+// are left; none, no line.
+func TestACorruptRecordReachesStatusAndCLI(t *testing.T) {
+	for _, tc := range []struct {
+		routes, corrupt, unowned int
+		line                     string
+		flagged                  bool
+	}{
+		{9, 0, 3, "", false},
+		{9, 1, 0, "1 corrupt (the log names them and says why); none of their routes left", false},
+		{9, 1, 3, "1 corrupt (the log names them and says why); 3 routes no record names stay until reboot", true},
+		{0, 1, 3, "1 corrupt (the log names them and says why); 3 routes", true},
+	} {
+		rt := dataplane.RouteTableStatus{Enforced: true, Routes: tc.routes, CorruptRecords: tc.corrupt, UnownedRoutes: tc.unowned}
+		if tc.routes == 0 { // it failed before its first apply
+			rt.Enforced, rt.Error = false, dataplane.RouteTableApplyFailed
+		}
+		out := statusProto(agent.Status{Connection: agent.Connected, DataPlane: &dataplane.Status{RouteTable: rt}})
 		var text bytes.Buffer
 		if err := WriteStatus(&text, out, time.Now()); err != nil {
 			t.Fatal(err)
 		}
-		shown := strings.Contains(text.String(), "1 corrupt route records set aside")
-		flagged := slices.Contains(out.GetHealth().GetProblems(), "route_record_set_aside")
-		if shown != (n > 0) || flagged != (n > 0) {
-			t.Errorf("%d set aside:\n%s", n, text.String())
+		shown := strings.Contains(text.String(), "route records:")
+		flagged := slices.Contains(out.GetHealth().GetProblems(), "route_records_corrupt")
+		if shown != (tc.line != "") || !strings.Contains(text.String(), tc.line) || flagged != tc.flagged {
+			t.Errorf("%+v:\n%s", tc, text.String())
 		}
 	}
 }

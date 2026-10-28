@@ -448,12 +448,14 @@ func TestEnforcerStopsOnAnUnsupportedKernel(t *testing.T) {
 	}
 }
 
-// A route record netcfg set aside is counted in the status, and warned
-// of once, by its path, however often the table is put back.
-func TestASetAsideRecordIsCountedAndWarnedOnce(t *testing.T) {
-	const path = "/state/netcfg/overlay.routes.corrupt-boot"
+// A corrupt route record netcfg found is counted in the status with the
+// unowned routes, and warned of once, by its path and why, however often
+// the table is put back.
+func TestACorruptRecordIsCountedAndWarnedOnce(t *testing.T) {
+	const path, reason = "/state/netcfg/overlay.routes.corrupt-boot", "no boot session"
 	f := &fakeConfigurator{survey: up()}
-	f.survey.SetAside = []string{path}
+	f.survey.CorruptRecords = []netcfg.CorruptRecord{{Path: path, Reason: reason}}
+	f.survey.UnownedRoutes = 3
 	var buf lockedBuffer
 	e := routetable.OpenWithClock(f, nil, slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})), (&fakeClock{now: time.Unix(0, 0)}).read)
 	defer func() { _ = e.Close() }()
@@ -461,19 +463,19 @@ func TestASetAsideRecordIsCountedAndWarnedOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	routetable.PauseWatching(e)
-	if n := e.Status().RecordsSetAside; n != 1 {
-		t.Errorf("RecordsSetAside %d, want 1", n)
+	if st := e.Status(); st.CorruptRecords != 1 || st.UnownedRoutes != 3 {
+		t.Errorf("CorruptRecords %d, UnownedRoutes %d, want 1, 3", st.CorruptRecords, st.UnownedRoutes)
 	}
 	routetable.Reapply(t.Context(), e)
-	if w := buf.lines("set aside"); len(w) != 1 || !strings.Contains(w[0], path) {
-		t.Errorf("warns %q, want one naming %s", w, path)
+	if w := buf.lines("corrupt route record"); len(w) != 1 || !strings.Contains(w[0], path) || !strings.Contains(w[0], reason) {
+		t.Errorf("warns %q, want one naming %s and %q", w, path, reason)
 	}
 	// Removed by hand: no longer counted.
 	f.mu.Lock()
-	f.survey.SetAside = nil
+	f.survey.CorruptRecords, f.survey.UnownedRoutes = nil, 0
 	f.mu.Unlock()
 	routetable.Reapply(t.Context(), e)
-	if n := e.Status().RecordsSetAside; n != 0 {
-		t.Errorf("RecordsSetAside %d after the record went, want 0", n)
+	if st := e.Status(); st.CorruptRecords != 0 || st.UnownedRoutes != 0 {
+		t.Errorf("CorruptRecords %d, UnownedRoutes %d after the record went, want 0", st.CorruptRecords, st.UnownedRoutes)
 	}
 }

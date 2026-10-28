@@ -178,9 +178,13 @@ func writeCounters(line func(string, ...any), counters map[string]uint64) {
 		if ahead := counters["route_table.overlay_routes_ahead"]; ahead > 0 {
 			line("\t%d routes of other software take overlay addresses around the tunnel", ahead)
 		}
-		if n := counters["route_table.records_set_aside"]; n > 0 {
-			line("\t%d corrupt route records set aside; the routes they named stay until reboot (the log names the files)", n)
+	}
+	if n := counters["route_table.corrupt_records"]; n > 0 {
+		left := "none of their routes left"
+		if u := counters["route_table.unowned_routes"]; u > 0 {
+			left = fmt.Sprintf("%d routes no record names stay until reboot", u)
 		}
+		line("route records:\t%d corrupt (the log names them and says why); %s", n, left)
 	}
 	var drops []string
 	for _, name := range slices.Sorted(maps.Keys(counters)) {

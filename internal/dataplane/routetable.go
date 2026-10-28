@@ -67,10 +67,13 @@ type RouteTableStatus struct {
 	// table can't outrank (macOS): those peers' traffic leaves in the
 	// clear.
 	OverlayAhead int
-	// RecordsSetAside counts the route records found corrupt and set
-	// aside in this boot (macOS): the routes they named stay in place as
-	// foreign ones; the log names the files.
-	RecordsSetAside int
+	// CorruptRecords counts the route records found corrupt in this boot
+	// (macOS; the log names them and says why): the routes they named stay
+	// in place as foreign ones.
+	CorruptRecords int
+	// UnownedRoutes counts the routes with thinkpol's route flag that no
+	// record names (macOS): with a corrupt record, its leftovers.
+	UnownedRoutes int
 }
 
 // RouteTableError says what is wrong with the OS routing table or its

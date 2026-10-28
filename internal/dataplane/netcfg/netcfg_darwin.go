@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/sys/unix"
 
@@ -153,13 +154,15 @@ type darwinConfigurator struct {
 	mu     sync.Mutex
 	k      kernel
 	owner  Owner
-	dir    *os.File // the lock directory, opened by trusteddir
-	boot   string   // the boot session, stamped on records
+	dir    *os.File  // the lock directory, opened by trusteddir
+	boot   string    // the boot session, stamped on records
+	booted time.Time // when this boot began: older corrupt records go unreported
 	lock   *ownerLock
 	closed bool
 
 	// owned are the identities of the routes this owner has (or may
-	// have, while an Apply runs) in the kernel, as its record says.
+	// have, while an Apply runs) in the kernel; the record is its copy
+	// on disk, read only at start.
 	owned map[rkey]bool
 	// pinned are routes an Apply's undo failed to remove: they stay in
 	// the record, whatever the write-ahead's undo says.
@@ -172,7 +175,8 @@ type darwinConfigurator struct {
 // trusteddir, since the record decides which routes are deleted) and
 // returns its configurator on k. A corrupt record is set aside, and the
 // configurator starts owning nothing: the routes it named are left alone,
-// as foreign ones, never removed on a guess.
+// as foreign ones, never removed on a guess. The owner's records set
+// aside in earlier boots are removed.
 func newDarwin(owner Owner, k kernel, path string) (*darwinConfigurator, error) {
 	boot, err := trusteddir.BootSession()
 	if err != nil {
@@ -187,6 +191,7 @@ func newDarwin(owner Owner, k kernel, path string) (*darwinConfigurator, error) 
 		_ = dir.Close()
 		return nil, fmt.Errorf("netcfg: %v: %w", owner, err)
 	}
+	clearSetAside(dir, owner, boot)
 	owned, err := readRecord(dir, recordName(owner), boot)
 	if isCorrupt(err) {
 		if aerr := setAside(dir, owner, boot); aerr != nil {
@@ -201,7 +206,7 @@ func newDarwin(owner Owner, k kernel, path string) (*darwinConfigurator, error) 
 		return nil, fmt.Errorf("netcfg: reading %v's route record: %w", owner, err)
 	}
 	return &darwinConfigurator{
-		k: k, owner: owner, dir: dir, boot: boot, lock: lock, owned: owned, pinned: make(map[rkey]bool),
+		k: k, owner: owner, dir: dir, boot: boot, booted: bootTime(), lock: lock, owned: owned, pinned: make(map[rkey]bool),
 		links: newLedger(),
 	}, nil
 }
@@ -589,7 +594,7 @@ func (c *darwinConfigurator) DefaultRoute(ctx context.Context, f Family) (Route,
 	if err != nil {
 		return Route{}, err
 	}
-	thinkpol, err := c.thinkpolRoutes()
+	thinkpol, _, err := c.thinkpolRoutes()
 	if err != nil {
 		return Route{}, err
 	}
@@ -597,52 +602,40 @@ func (c *darwinConfigurator) DefaultRoute(ctx context.Context, f Family) (Route,
 }
 
 // thinkpolRoutes are the identities every owner holds: this one's as it
-// knows them, the others' as their records say (recordOf). A record that
-// can't be read is an error, not an empty one.
-func (c *darwinConfigurator) thinkpolRoutes() (map[rkey]bool, error) {
-	out := maps.Clone(c.owned)
+// knows them, the others' as their records say (recordOf: a corrupt one
+// holds nothing, and is among corrupt). Any other failure to read a
+// record is an error, not an empty record.
+func (c *darwinConfigurator) thinkpolRoutes() (out map[rkey]bool, corrupt []CorruptRecord, err error) {
+	out = maps.Clone(c.owned)
 	for _, o := range Owners {
 		if o == c.owner {
 			continue
 		}
-		rec, err := c.recordOf(o)
+		rec, why, err := c.recordOf(o)
 		if err != nil {
-			return nil, fmt.Errorf("netcfg: reading %v's route record: %w", o, err)
+			return nil, nil, fmt.Errorf("netcfg: reading %v's route record: %w", o, err)
 		}
-		for p := range rec {
-			out[p] = true
+		if why != nil {
+			if r, ok := corruptRecord(c.dir, recordName(o), c.boot, c.booted, why); ok {
+				corrupt = append(corrupt, r)
+			}
 		}
+		maps.Copy(out, rec)
 	}
-	return out, nil
+	return out, corrupt, nil
 }
 
 // recordOf is another owner's record. A corrupt one says nothing of which
-// routes are o's, so it holds nothing: o's routes count as foreign, which
-// no owner ever removes or changes. It is set aside when no configurator
-// of o runs: under o's lock, taken here, and read again under it (one may
-// have replaced it meanwhile). A running one rewrites it at its next
-// change.
-func (c *darwinConfigurator) recordOf(o Owner) (map[rkey]bool, error) {
-	rec, err := readRecord(c.dir, recordName(o), c.boot)
-	if !isCorrupt(err) {
-		return rec, err
-	}
-	l, err := lockOwner(c.dir, o)
-	if errors.Is(err, ErrBusy) {
-		return make(map[rkey]bool), nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = l.release() }()
+// routes are o's, so it holds nothing (why says why it is corrupt): o's
+// routes count as foreign, which no owner removes or changes. It is left
+// where it is, never touched: o's configurator sets it aside at its next
+// start, under its own lock, or rewrites it at its next change.
+func (c *darwinConfigurator) recordOf(o Owner) (rec map[rkey]bool, why, err error) {
 	rec, err = readRecord(c.dir, recordName(o), c.boot)
-	if !isCorrupt(err) {
-		return rec, err
+	if isCorrupt(err) {
+		return map[rkey]bool{}, err, nil
 	}
-	if aerr := setAside(c.dir, o, c.boot); aerr != nil {
-		return nil, fmt.Errorf("%w; setting it aside: %w", err, aerr)
-	}
-	return make(map[rkey]bool), nil
+	return rec, nil, err
 }
 
 func isThinkpol(r kroute, thinkpol map[rkey]bool) bool {
@@ -696,7 +689,9 @@ func routeOf(v view, r kroute) Route {
 // routes (another VPN's, a DHCP server's classless routes, static ones).
 // Loopback's routes, reject and blackhole routes (they leak nothing), the
 // kernel's clones, local and broadcast entries and ICMP redirects' host
-// routes are left out.
+// routes are left out. It also reports CorruptRecords, this boot's
+// corrupt records (set aside, or another owner's in place; a stat each),
+// and UnownedRoutes, the routes with routeFlag no record names.
 func (c *darwinConfigurator) Survey(ctx context.Context) (Survey, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -710,14 +705,17 @@ func (c *darwinConfigurator) Survey(ctx context.Context) (Survey, error) {
 	if err != nil {
 		return Survey{}, err
 	}
-	thinkpol, err := c.thinkpolRoutes()
+	thinkpol, corrupt, err := c.thinkpolRoutes()
 	if err != nil {
 		return Survey{}, err
 	}
 	s := survey(v, thinkpol)
-	if s.SetAside, err = setAsideRecords(c.dir, c.boot); err != nil {
-		return Survey{}, fmt.Errorf("netcfg: %w", err)
+	for _, o := range Owners {
+		if r, ok := corruptRecord(c.dir, setAsideName(o, c.boot), c.boot, c.booted, nil); ok {
+			s.CorruptRecords = append(s.CorruptRecords, r)
+		}
 	}
+	s.CorruptRecords = append(s.CorruptRecords, corrupt...)
 	return s, nil
 }
 
@@ -734,6 +732,9 @@ func survey(v view, thinkpol map[rkey]bool) Survey {
 	}
 	const skip = unix.RTF_REJECT | unix.RTF_BLACKHOLE | unix.RTF_LOCAL | unix.RTF_BROADCAST
 	for _, r := range v.routes {
+		if r.flags&routeFlag != 0 && !thinkpol[r.key()] {
+			s.UnownedRoutes++
+		}
 		if r.key().scope != 0 {
 			// Only sockets bound to its interface use a scoped route.
 			if !isThinkpol(r, thinkpol) {

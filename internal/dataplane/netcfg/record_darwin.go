@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"golang.org/x/sys/unix"
 
@@ -46,9 +47,9 @@ const recordHeader = "# thinkpol netcfg: routes this owner added (RTF_PROTO2); r
 // readRecord reads the record name in dir; a missing one, or one written
 // in another boot session than boot, is empty: LockDir outlives a reboot
 // and the routes don't. A record without a boot line (empty, or comments
-// only), with a line that isn't an identity, or that isn't a regular file
-// is corrupt (isCorrupt), not empty: writeRecord didn't write it. Any
-// other failure to read it is an error of its own.
+// only), with a line that isn't an identity, that isn't a regular file,
+// or that is a symlink is corrupt (isCorrupt), not empty: writeRecord
+// didn't write it. Any other failure to read it is an error of its own.
 func readRecord(dir *os.File, name string, boot string) (map[rkey]bool, error) {
 	out := make(map[rkey]bool)
 	body, err := trusteddir.ReadRecord(dir, name, boot)
@@ -95,33 +96,94 @@ func isCorrupt(err error) bool {
 }
 
 // setAsideName is where owner's corrupt record is moved in boot: kept for
-// a person to look at, and, while it is there, what Survey reports for
-// the rest of the boot (the routes the record named may still be there,
-// and are no owner's any more).
+// a person to look at for the rest of the boot (removed at the owner's
+// first start in a later one, clearSetAside), and what Survey reports
+// while it is there.
 func setAsideName(owner Owner, boot string) string { return recordName(owner) + ".corrupt-" + boot }
 
 // setAside moves owner's record in dir to setAsideName, replacing one set
-// aside earlier in boot. Only while no configurator of owner can write the
-// record: under owner's lock.
+// aside earlier in boot. renameat(2) replaces a file with a file and a
+// directory with an empty directory only, so an earlier one of the other
+// kind is removed first; a non-empty directory there stays, and the
+// record with it (its owner fails to start until someone removes it).
+// Only while no configurator of owner can write the record: under
+// owner's lock.
 func setAside(dir *os.File, owner Owner, boot string) error {
-	return trusteddir.Rename(dir, recordName(owner), setAsideName(owner, boot))
-}
-
-// setAsideRecords are the paths of the records set aside in boot in dir.
-func setAsideRecords(dir *os.File, boot string) ([]string, error) {
-	var out []string
-	for _, o := range Owners {
-		name := setAsideName(o, boot)
-		var st unix.Stat_t
-		err := unix.Fstatat(int(dir.Fd()), name, &st, unix.AT_SYMLINK_NOFOLLOW)
-		switch {
-		case err == nil:
-			out = append(out, dir.Name()+"/"+name)
-		case !errors.Is(err, unix.ENOENT):
-			return nil, &os.PathError{Op: "stat", Path: dir.Name() + "/" + name, Err: err}
+	from, to := recordName(owner), setAsideName(owner, boot)
+	err := trusteddir.Rename(dir, from, to)
+	if errors.Is(err, unix.ENOTDIR) || errors.Is(err, unix.EISDIR) || errors.Is(err, unix.ENOTEMPTY) || errors.Is(err, unix.EEXIST) {
+		if removeEntry(dir, to) == nil {
+			err = trusteddir.Rename(dir, from, to)
 		}
 	}
-	return out, nil
+	return err
+}
+
+// clearSetAside removes owner's records set aside in boots other than
+// boot: the routes they named went with those boots. Under owner's lock,
+// at its start. What it can't list or remove stays (a non-empty
+// directory, say): that costs only the space, so it never fails a start.
+func clearSetAside(dir *os.File, owner Owner, boot string) {
+	fd, err := unix.Openat(int(dir.Fd()), ".", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return
+	}
+	d := os.NewFile(uintptr(fd), dir.Name())
+	defer func() { _ = d.Close() }()
+	names, _ := d.Readdirnames(-1) // the names read before a failure still go
+	prefix, keep := recordName(owner)+".corrupt-", setAsideName(owner, boot)
+	for _, n := range names {
+		if strings.HasPrefix(n, prefix) && n != keep {
+			_ = removeEntry(dir, n)
+		}
+	}
+}
+
+// removeEntry removes the entry name in dir: a file, a symlink (never
+// followed) or an empty directory.
+func removeEntry(dir *os.File, name string) error {
+	fd := int(dir.Fd())
+	err := unix.Unlinkat(fd, name, 0)
+	if errors.Is(err, unix.EPERM) || errors.Is(err, unix.EISDIR) {
+		err = unix.Unlinkat(fd, name, unix.AT_REMOVEDIR)
+	}
+	if err != nil {
+		return &os.PathError{Op: "remove", Path: dir.Name() + "/" + name, Err: err}
+	}
+	return nil
+}
+
+// corruptRecord is the corrupt record name in dir as Survey reports it:
+// its path, and why it is corrupt (why, or else what reading it again
+// says). ok is false for one that is gone, or was last written before
+// booted: whatever it named went with that boot. A failed stat reports
+// it: reporting errs on the side of telling and never fails a survey.
+func corruptRecord(dir *os.File, name, boot string, booted time.Time, why error) (_ CorruptRecord, ok bool) {
+	var st unix.Stat_t
+	switch err := unix.Fstatat(int(dir.Fd()), name, &st, unix.AT_SYMLINK_NOFOLLOW); {
+	case errors.Is(err, unix.ENOENT):
+		return CorruptRecord{}, false
+	case err == nil && time.Unix(st.Mtim.Unix()).Before(booted):
+		return CorruptRecord{}, false
+	}
+	if why == nil {
+		_, why = readRecord(dir, name, boot)
+	}
+	r := CorruptRecord{Path: dir.Name() + "/" + name}
+	if why != nil {
+		r.Reason = strings.TrimPrefix(why.Error(), r.Path+": ")
+	}
+	return r, true
+}
+
+// bootTime is when this boot began (kern.boottime); the zero time if it
+// can't be read, so that every corrupt record is reported.
+func bootTime() time.Time {
+	tv, err := unix.SysctlTimeval("kern.boottime")
+	if err != nil {
+		return time.Time{}
+	}
+	return time.Unix(tv.Unix())
 }
 
 // writeRecord replaces the record name in dir atomically, stamped with

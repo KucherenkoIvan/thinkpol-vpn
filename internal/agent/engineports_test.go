@@ -139,9 +139,9 @@ func (s statusTable) Status() routetable.Status { return s.st }
 
 // The route table's counts reach the engine's status.
 func TestRouteTableCountsReachTheEngine(t *testing.T) {
-	st := routetable.Status{Enforced: true, Routes: 9, RulesAhead: 1, OverlayAhead: 2, RecordsSetAside: 3}
+	st := routetable.Status{Enforced: true, Routes: 9, RulesAhead: 1, OverlayAhead: 2, CorruptRecords: 3, UnownedRoutes: 4}
 	got := (&routeTable{rt: statusTable{st: st}}).Status()
-	if !got.Enforced || got.Routes != 9 || got.RulesAhead != 1 || got.OverlayAhead != 2 || got.RecordsSetAside != 3 {
+	if !got.Enforced || got.Routes != 9 || got.RulesAhead != 1 || got.OverlayAhead != 2 || got.CorruptRecords != 3 || got.UnownedRoutes != 4 {
 		t.Errorf("%+v from %+v", got, st)
 	}
 }
