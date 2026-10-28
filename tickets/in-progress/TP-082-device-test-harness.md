@@ -445,3 +445,4 @@ Round 7 (2026-10-28): correctness-only delta check of round 6: no proven defect.
 - 2026-10-28 lab: `make lab-test` (LAB_P=4) green on 4fbe34d: the core's root tests and the whole runs through the real launch script in a lab node
 - 2026-10-28 in-progress → review
 - 2026-10-28 review → has-errors (round 7: R7.1–R7.7)
+- 2026-10-28 has-errors → in-progress — round 7 findings R7.1–R7.7, owner: agent-tp-082
