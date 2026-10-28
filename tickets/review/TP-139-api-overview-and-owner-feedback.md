@@ -99,3 +99,4 @@ The owner sees the whole user-facing surface of thinkpol as it is today in one r
 - 2026-10-28 doc-only change: no lab-tested code touched, so no `make lab-test` run; `make lint` and `make test` pass
 - 2026-10-28 not verified: macOS output (paths and the launchd plist come from the code, not a run); Windows has no local API yet
 - 2026-10-28 out of scope, for the orchestrator: F19 (`dev lists build -only` miscounts "others"), F20 (`rules.local` written 0644), F16 ("re-applied 1 times", the server's uplink line misaligned) are small code fixes if the owner says change; owner session pending
+- 2026-10-28 in-progress → review
