@@ -411,3 +411,4 @@ Round 6 (2026-10-28): correctness-only re-check (the owner's decision of round 5
 - 2026-10-28 lab: `make lab-test` (LAB_P=4) green on 60f5339: the core's root tests and the whole runs through the real launch script in a lab node
 - 2026-10-28 in-progress → review
 - 2026-10-28 review → has-errors (round 6: R6.1–R6.14)
+- 2026-10-28 has-errors → in-progress — round 6 findings R6.1–R6.14, owner: agent-tp-082
