@@ -116,3 +116,4 @@ Round 1 (fact-check against the code, 2026-10-28): coverage complete; F1's premi
 - 2026-10-28 out of scope, for the orchestrator: F19 (`dev lists build -only` miscounts "others"), F20 (`rules.local` written 0644), F16 ("re-applied 1 times", the server's uplink line misaligned) are small code fixes if the owner says change; owner session pending
 - 2026-10-28 in-progress → review
 - 2026-10-28 review → has-errors (round 1: R1.1–R1.12)
+- 2026-10-28 has-errors → in-progress — round 1 findings
