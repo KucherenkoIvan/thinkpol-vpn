@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: []
 refs: []
-owner: ""
-branch: ""
+owner: "agent-claude-tp124"
+branch: "tp-124-recover-from-a-corrupt-macos-route-record"
 ---
 
 ## Goal
@@ -32,3 +32,4 @@ A corrupt route record under `/private/var/db/thinkpol/netcfg` doesn't leave a d
 - 2026-10-22 created in backlog (TP-077 out-of-scope note)
 - 2026-10-24 docs: in the before-M2 list (TP-108 made a foreign corrupt record a hard connect failure)
 - 2026-10-24 docs: slotted in the pre-M2 phase (wave 1, macOS)
+- 2026-10-28 backlog → in-progress, owner: agent-claude-tp124
