@@ -26,16 +26,14 @@ func InspectIPv6Guard(ctx context.Context) routetable.GuardReport {
 
 func (g *IPv6Guard) inspect(ctx context.Context) routetable.GuardReport {
 	r := routetable.GuardReport{Where: "pf anchor " + GuardAnchor, PF: &routetable.PFReport{}}
-	out, err := g.pf.run(ctx, nil, "-a", GuardAnchor, "-s", "rules", "-v")
+	rules, err := g.rulesOf(ctx, GuardAnchor, true) // nil, no error: no such anchor
 	switch {
 	case errors.Is(err, routetable.ErrGuardUnsupported):
 		return routetable.GuardReport{Where: r.Where, Unreadable: err.Error()}
-	case err != nil && AnchorMissing(out.stderr):
-		// No such anchor: nothing in it.
 	case err != nil:
 		r.RulesUnreadable = err.Error()
 	default:
-		r.Rules, err = parseVerboseRules(out.stdout)
+		r.Rules, err = parseVerboseRules(rules)
 		if err != nil {
 			r.Rules, r.RulesUnreadable = nil, err.Error()
 		}

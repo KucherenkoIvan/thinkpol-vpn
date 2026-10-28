@@ -329,9 +329,11 @@
 // first field is the pid, and the token is the field where the header's
 // TOKEN starts, whatever the process name (spaces included) and the
 // timestamp look like. While pf holds no reference, pfctl prints only "No
-// pf starter references held", without the header: a listing of none. A
-// listing without the header otherwise, with a line out of those
-// columns, or cut short is one the guard can't read, and a reference not
+// pf starter references held", without the header, and nothing but its
+// ALTQ chatter on stderr: a listing of none. A listing without the header
+// otherwise, a header with no reference under it, a line out of those
+// columns, one cut short, or that answer with anything else on stderr is
+// one the guard can't read, and a reference not
 // found in it proves nothing: looking a token up by pid and
 // releasing both fail, so the record stays and the next Close (or
 // routetable.Clear's) tries again. pf stays enabled on that reference
@@ -356,9 +358,9 @@
 // closed). The next start's [routetable.Clear], under the route table's
 // owner lock, closes a fresh guard, which flushes the anchor's rules and
 // table (`-F rules`, `-F Tables`: `-F all` would also flush pf's global
-// state table and statistics; a flush that fails is checked by listing
-// the anchor, and one that lists no rule and no table counts as empty,
-// whatever pfctl answered) and releases the recorded
+// state table and statistics; after each flush, whatever pfctl answered,
+// the anchor is listed: it counts as empty once it lists no rule and pf
+// answers that the guard's table doesn't exist) and releases the recorded
 // reference. A guard that applies instead takes that reference over. The
 // anchor goes before the reference, so pf is never left off with the
 // anchor still meant to be in place. A reboot takes both, and the record,
@@ -390,7 +392,9 @@
 // unreadable.
 //
 // Guard and snapshot alike, pfctl's answers of absence are each one exact
-// line, alone on stderr but for its ALTQ chatter: a missing anchor's
+// line, alone on stderr but for its ALTQ chatter (its two exact lines, "No
+// ALTQ support in kernel" and "ALTQ related functions disabled"; a rule's
+// label saying ALTQ is a rule): a missing anchor's
 // rules, `pfctl: DIOCGETRULES: Invalid argument` ([AnchorMissing]); a
 // missing table, `pfctl: Table does not exist.` (macOS answers it for a
 // missing anchor's table too) or `pfctl: Anchor or Ruleset does not

@@ -274,6 +274,8 @@ func TestHooked(t *testing.T) {
 		{"anchor \"com.apple/*\"\n", hookOK},
 		{"  anchor \"com.apple/*\" all  \n", hookOK},
 		{"No ALTQ support in kernel\nanchor \"com.apple/*\" all\n", hookOK},
+		{"pass out quick inet6 all label \"ALTQ\"\nanchor \"com.apple/*\" all\n", hookBypassed}, // a label, no chatter
+		{"ALTQ related functions disabled\npass out quick inet6 all label \"No ALTQ support in kernel\"\nanchor \"com.apple/*\" all\n", hookBypassed},
 		{"pass out all flags S/SA keep state\nanchor \"com.apple/*\" all\n", hookOK},       // no quick: our block still wins
 		{"pass in quick inet6 all\nanchor \"com.apple/*\" all\n", hookOK},                  // inbound only
 		{"pass out quick inet proto tcp all\nanchor \"com.apple/*\" all\n", hookOK},        // IPv4 only
@@ -428,8 +430,13 @@ func TestParseReferences(t *testing.T) {
 	if _, ok := byPid(refs, 1); ok {
 		t.Error("byPid: a pid not listed found")
 	}
-	if refs, understood := parseReferences([]byte("TOKENS:\nPID      Process Name                 TOKEN                 TIMESTAMP\n")); len(refs) != 0 || !understood {
-		t.Errorf("an empty listing: %v, %v", refs, understood)
+	// A Mac holding none prints answerNoReferences, not the header alone.
+	if refs, understood := parseReferences([]byte("TOKENS:\nPID      Process Name                 TOKEN                 TIMESTAMP\n")); len(refs) != 0 || understood {
+		t.Errorf("a header with no reference: %v, %v", refs, understood)
+	}
+	// A process named ALTQ is a reference, not chatter.
+	if refs, understood := parseReferences(append(listing, "4242     ALTQ                         5000000000000000001   0 days 00:00:01\n"...)); !understood || len(refs) != 3 || refs[2] != (pfReference{4242, 5000000000000000001}) {
+		t.Errorf("a process named ALTQ: %v, %v", refs, understood)
 	}
 	for _, odd := range []string{"", "token=5 by pfctl(17013)\n", "17013 pfctl\n", "pfctl 17013 5 0 days\n"} {
 		if refs, understood := parseReferences([]byte(odd)); len(refs) != 0 || understood {
@@ -824,8 +831,9 @@ func TestAFreshGuardCloseOnACleanHost(t *testing.T) {
 	}
 }
 
-// `Invalid argument` from a flush of an anchor that is there isn't an
-// empty anchor: the Close fails.
+// A flush that fails over an anchor that still lists its rules or its
+// table fails the Close: the listing after it decides, not what -F
+// answered.
 func TestAFlushThatFailsIsNoEmptyAnchor(t *testing.T) {
 	for _, key := range []string{"-F rules", "-F Tables"} {
 		r := newRig(t)
@@ -1736,7 +1744,7 @@ func TestPfctlsNoAnswersAreExact(t *testing.T) {
 		"pfctl: the table does not exist\n":                 false,
 		"":                                                  false,
 	} {
-		if got := noTable(pfOutput{stderr: []byte(stderr)}); got != none {
+		if got := noTable([]byte(stderr)); got != none {
 			t.Errorf("noTable(%.60q) = %v", stderr, got)
 		}
 	}
@@ -1757,10 +1765,10 @@ func TestPfctlsNoAnswersAreExact(t *testing.T) {
 
 // TestAnotherInvalidArgumentIsNoEmptyAnchor: pfctl failing to list an
 // anchor that is there with an "Invalid argument" that isn't the missing
-// anchor's (DIOCADDRULE here) is an error. A flush that fails and can't
-// be checked fails the Close, which keeps the anchor, the reference and
-// the record; the snapshot says the rules and the table are unreadable,
-// not absent.
+// anchor's (DIOCGETRULE here, the per-rule ioctl of a listing) is an
+// error. A flush that fails and can't be checked fails the Close, with
+// both errors, and keeps the anchor, the reference and the record; the
+// snapshot says the rules and the table are unreadable, not absent.
 func TestAnotherInvalidArgumentIsNoEmptyAnchor(t *testing.T) {
 	ctx := context.Background()
 	listing := map[string]string{
@@ -1775,21 +1783,23 @@ func TestAnotherInvalidArgumentIsNoEmptyAnchor(t *testing.T) {
 		}
 		held, record := r.pf.references(), r.record(t)
 		r.pf.failOn("-F "+what, errors.New("DIOCBEGINRULES: Invalid argument"))
-		r.pf.failOn(listing[what], errors.New("DIOCADDRULE: Invalid argument"))
+		r.pf.failOn(listing[what], errors.New("DIOCGETRULE: Invalid argument"))
 		if err := g.Close(); err == nil {
 			t.Fatalf("%s: closed over a listing that failed", what)
+		} else if !strings.Contains(err.Error(), "DIOCBEGINRULES") || !strings.Contains(err.Error(), "DIOCGETRULE:") {
+			t.Errorf("%s: the Close's error names the flush's and the listing's failures: %v", what, err)
 		}
 		if r.record(t) != record || !slices.Equal(r.pf.references(), held) || r.pf.ran("-X") != 0 {
 			t.Fatalf("%s: after a failed Close: record %q, references %v", what, r.record(t), r.pf.references())
 		}
-		if a := r.pf.anchor(GuardAnchor); what == "rules" && len(a.rules) == 0 || len(a.tables) == 0 && what == "Tables" {
+		if a := r.pf.anchor(GuardAnchor); (what == "rules" && len(a.rules) == 0) || (what == "Tables" && len(a.tables) == 0) {
 			t.Fatalf("%s: %+v", what, a)
 		}
 		got := g.inspect(ctx)
 		switch {
-		case what == "rules" && (!strings.Contains(got.RulesUnreadable, "DIOCADDRULE") || !got.PresentUnknown || got.Present):
+		case what == "rules" && (!strings.Contains(got.RulesUnreadable, "DIOCGETRULE:") || !got.PresentUnknown || got.Present):
 			t.Errorf("rules: inspect %+v", got)
-		case what == "Tables" && (!strings.Contains(got.ExemptUnreadable, "DIOCADDRULE") || got.Exempt != nil):
+		case what == "Tables" && (!strings.Contains(got.ExemptUnreadable, "DIOCGETRULE:") || got.Exempt != nil):
 			t.Errorf("Tables: inspect %+v", got)
 		}
 		r.pf.failOn("-F "+what, nil)
@@ -1830,4 +1840,94 @@ func TestCloseAfterAnOutsideReleaseRemovesTheRecord(t *testing.T) {
 	if n := r.pf.ran("-X"); n != 0 {
 		t.Errorf("%d releases of a reference pf doesn't hold", n)
 	}
+}
+
+// TestARuleLabelledALTQIsSeen: pfctl's ALTQ chatter is two exact lines; a
+// rule whose label says "ALTQ", put into the guard's anchor, is a rule
+// like any other: the anchor isn't intact, and the next Apply reloads it.
+func TestARuleLabelledALTQIsSeen(t *testing.T) {
+	ctx := context.Background()
+	injected := `pass out quick inet6 all label "ALTQ"`
+	if l := lines([]byte(altq + injected + "\n")); !slices.Equal(l, []string{injected}) {
+		t.Fatalf("lines: %q", l)
+	}
+	r := newRig(t)
+	g := r.guard()
+	if err := g.Apply(ctx, exempt(t)); err != nil {
+		t.Fatal(err)
+	}
+	r.pf.set(func(f *fakePF) {
+		a := f.anchors[GuardAnchor]
+		a.rules = append([]string{injected}, a.rules...)
+	})
+	if g.intact(ctx, g.applied) {
+		t.Fatal("intact with a rule labelled ALTQ added")
+	}
+	r.pf.forget()
+	if err := g.Apply(ctx, exempt(t)); err != nil {
+		t.Fatal(err)
+	}
+	if r.pf.ran("-f") != 1 || slices.Contains(r.pf.anchor(GuardAnchor).rules, injected) {
+		t.Errorf("not reloaded: %q", r.pf.anchor(GuardAnchor).rules)
+	}
+	r.whole(t, exempt(t))
+}
+
+// TestAFlushThatSucceedsIsChecked: a -F that answers success but leaves
+// the anchor's rules or its table fails the Close, which keeps the
+// anchor, the reference and the record.
+func TestAFlushThatSucceedsIsChecked(t *testing.T) {
+	ctx := context.Background()
+	for what, says := range map[string]string{"rules": "still lists", "Tables": "still holds"} {
+		r := newRig(t)
+		g := r.guard()
+		if err := g.Apply(ctx, exempt(t)); err != nil {
+			t.Fatal(err)
+		}
+		held, record := r.pf.references(), r.record(t)
+		r.pf.set(func(f *fakePF) { f.flushKeeps = what })
+		if err := g.Close(); err == nil || !strings.Contains(err.Error(), says) {
+			t.Fatalf("%s: Close over a flush that left it: %v", what, err)
+		}
+		if r.record(t) != record || !slices.Equal(r.pf.references(), held) || r.pf.ran("-X") != 0 {
+			t.Fatalf("%s: after a failed Close: record %q, references %v", what, r.record(t), r.pf.references())
+		}
+		r.pf.set(func(f *fakePF) { f.flushKeeps = "" })
+		if err := g.Close(); err != nil {
+			t.Fatal(err)
+		}
+		r.gone(t)
+	}
+}
+
+// TestNoReferencesWithAWarningIsUnread: "No pf starter references held"
+// on stdout with something besides ALTQ chatter on stderr isn't pfctl's
+// answer of none held: the Close keeps the record, and the snapshot says
+// the reference is unreadable.
+func TestNoReferencesWithAWarningIsUnread(t *testing.T) {
+	ctx := context.Background()
+	r := newRig(t)
+	g := r.guard()
+	if err := g.Apply(ctx, exempt(t)); err != nil {
+		t.Fatal(err)
+	}
+	record := r.record(t)
+	r.pf.set(func(f *fakePF) {
+		f.refs = nil
+		f.referencesWarn = "pfctl: DIOCGETSTARTERS: Invalid argument"
+	})
+	if ref := g.inspect(ctx).PF.Reference; ref == nil || ref.HeldUnreadable == "" {
+		t.Errorf("inspect: %+v", ref)
+	}
+	if err := g.Close(); err == nil {
+		t.Fatal("closed over a References listing with a warning")
+	}
+	if r.record(t) != record {
+		t.Fatalf("record %q, want %q", r.record(t), record)
+	}
+	r.pf.set(func(f *fakePF) { f.referencesWarn = "" })
+	if err := g.Close(); err != nil {
+		t.Fatal(err)
+	}
+	r.gone(t)
 }

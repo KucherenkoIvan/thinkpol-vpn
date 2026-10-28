@@ -314,17 +314,32 @@ func (g *IPv6Guard) load(ctx context.Context, e routetable.Exempt) (*appliedGuar
 	return &appliedGuard{exempt: e, table: table, rules: rules}, nil
 }
 
-// listRules lists the anchor's rules; an anchor that doesn't exist has
-// none (AnchorMissing), and any other failure is an error.
+// listRules lists the guard's anchor's rules; an anchor that doesn't
+// exist has none (AnchorMissing), and any other failure is an error.
 func (g *IPv6Guard) listRules(ctx context.Context) ([]string, error) {
-	out, err := g.pf.run(ctx, nil, "-a", GuardAnchor, "-s", "rules")
+	b, err := g.rulesOf(ctx, GuardAnchor, false)
+	if err != nil {
+		return nil, err
+	}
+	return readLines(b)
+}
+
+// rulesOf runs `pfctl -a anchor -s rules` (with -v if verbose): its
+// stdout, or nil for an anchor that doesn't exist (AnchorMissing). Any
+// other failure is an error.
+func (g *IPv6Guard) rulesOf(ctx context.Context, anchor string, verbose bool) ([]byte, error) {
+	args := []string{"-a", anchor, "-s", "rules"}
+	if verbose {
+		args = append(args, "-v")
+	}
+	out, err := g.pf.run(ctx, nil, args...)
 	if err != nil {
 		if AnchorMissing(out.stderr) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	return readLines(out.stdout)
+	return out.stdout, nil
 }
 
 // errNoTable: the table doesn't exist.
@@ -333,7 +348,7 @@ var errNoTable = errors.New("firewall: the guard's table doesn't exist")
 func (g *IPv6Guard) listTable(ctx context.Context, name string) ([]netip.Prefix, error) {
 	out, err := g.pf.run(ctx, nil, "-a", GuardAnchor, "-t", name, "-T", "show")
 	if err != nil {
-		if noTable(out) {
+		if noTable(out.stderr) {
 			return nil, fmt.Errorf("%w: %w", errNoTable, err)
 		}
 		return nil, err
@@ -361,13 +376,20 @@ func (g *IPv6Guard) enabled(ctx context.Context) (bool, error) {
 	return parseEnabled(out.stdout)
 }
 
-// references reads `pfctl -s References`.
+// references reads `pfctl -s References` (parseReferences). pfctl's
+// answer of none held counts only with nothing but ALTQ chatter on
+// stderr, as a Mac printed it: a warning there could be about a listing
+// that failed.
 func (g *IPv6Guard) references(ctx context.Context) ([]pfReference, bool, error) {
 	out, err := g.pf.run(ctx, nil, "-s", "References")
 	if err != nil {
 		return nil, false, fmt.Errorf("firewall: pf's references: %w", err)
 	}
 	refs, understood := parseReferences(out.stdout)
+	if understood && len(refs) == 0 {
+		said, err := readLines(out.stderr)
+		understood = err == nil && len(said) == 0
+	}
 	return refs, understood, nil
 }
 
@@ -604,31 +626,47 @@ func (g *IPv6Guard) kill(ctx context.Context, a *appliedGuard) error {
 }
 
 // flush empties the anchor: its rules, then its tables (`-F all` would
-// also flush pf's global state table and statistics). Whatever a flush
-// that fails answers (what pfctl answers for an anchor that doesn't exist
-// is unrecorded), the anchor's listings decide: no rule listed (an anchor
-// that doesn't exist lists none, AnchorMissing) and no table (noTable) is
-// empty already; anything else, a listing that fails included, fails it.
+// also flush pf's global state table and statistics). Whatever each -F
+// answered, succeeded or failed (what pfctl answers for an anchor that
+// doesn't exist is unrecorded), the anchor's listing after it decides:
+// no rule listed (an anchor that doesn't exist lists none, AnchorMissing),
+// then no guard table (noTable), is empty; anything else, a listing that
+// fails included, fails it with the -F's error and the listing's.
 func (g *IPv6Guard) flush(ctx context.Context) error {
-	for _, what := range []string{"rules", "Tables"} {
-		_, err := g.pf.run(ctx, nil, "-a", GuardAnchor, "-F", what)
-		if err == nil {
-			continue
-		}
+	for _, step := range []struct {
+		what  string
+		empty func(context.Context) error
+	}{{"rules", g.noRules}, {"Tables", g.noGuardTable}} {
+		_, err := g.pf.run(ctx, nil, "-a", GuardAnchor, "-F", step.what)
 		if errors.Is(err, routetable.ErrGuardUnsupported) {
 			return err
 		}
-		if what == "rules" {
-			if rules, lerr := g.listRules(ctx); lerr != nil || len(rules) > 0 {
-				return fmt.Errorf("firewall: remove the IPv6 guard: %w", err)
-			}
-			continue
-		}
-		if _, lerr := g.listTable(ctx, exemptTable); !errors.Is(lerr, errNoTable) {
-			return fmt.Errorf("firewall: remove the IPv6 guard: %w", err)
+		if lerr := step.empty(ctx); lerr != nil {
+			return fmt.Errorf("firewall: remove the IPv6 guard: %w", errors.Join(err, lerr))
 		}
 	}
 	return nil
+}
+
+// noRules is nil if the guard's anchor lists no rule.
+func (g *IPv6Guard) noRules(ctx context.Context) error {
+	rules, err := g.listRules(ctx)
+	if err == nil && len(rules) > 0 {
+		err = fmt.Errorf("firewall: pf still lists %d rules in the guard's anchor", len(rules))
+	}
+	return err
+}
+
+// noGuardTable is nil if pf answers that the guard's table doesn't exist.
+func (g *IPv6Guard) noGuardTable(ctx context.Context) error {
+	_, err := g.listTable(ctx, exemptTable)
+	switch {
+	case errors.Is(err, errNoTable):
+		return nil
+	case err == nil:
+		return fmt.Errorf("firewall: pf still holds the guard's table %s", exemptTable)
+	}
+	return err
 }
 
 // Close flushes the anchor's rules and table, then releases the

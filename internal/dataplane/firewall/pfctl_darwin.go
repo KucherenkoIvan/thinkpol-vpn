@@ -118,9 +118,8 @@ func detail(stderr []byte) string {
 const detailMax = 300
 
 // lines are b's non-empty lines, trimmed, without pfctl's ALTQ chatter
-// ("No ALTQ support in kernel", "ALTQ related functions disabled"),
-// whichever stream it lands on; a listing cut short by a line too long to
-// read ends there (readLines says so).
+// (altqChatter), whichever stream it lands on; a listing cut short by a
+// line too long to read ends there (readLines says so).
 func lines(b []byte) []string {
 	l, _ := readLines(b)
 	return l
@@ -133,7 +132,7 @@ func readLines(b []byte) ([]string, error) {
 	sc := bufio.NewScanner(bytes.NewReader(b))
 	sc.Buffer(nil, 1<<20)
 	for sc.Scan() {
-		if l := strings.TrimSpace(sc.Text()); l != "" && !strings.Contains(l, "ALTQ") {
+		if l := strings.TrimSpace(sc.Text()); l != "" && !altqChatter(l) {
 			out = append(out, l)
 		}
 	}
@@ -143,6 +142,30 @@ func readLines(b []byte) ([]string, error) {
 	return out, nil
 }
 
+// altqChatter says l, trimmed, is one of the two lines pfctl prints when
+// the kernel has no ALTQ, exactly: a rule's label, an anchor's or a
+// process's name may hold "ALTQ" and is no chatter.
+func altqChatter(l string) bool {
+	return l == "No ALTQ support in kernel" || l == "ALTQ related functions disabled"
+}
+
+// pfctl's answers of absence, each a line alone on its stream (ALTQ
+// chatter aside), recorded on a Mac (testdata/pfctl/recorded-*).
+const (
+	// answerNoAnchor: `-a ANCHOR -s rules` of an anchor that doesn't
+	// exist, on stderr.
+	answerNoAnchor = "pfctl: DIOCGETRULES: Invalid argument"
+	// answerNoTable: `-t TABLE -T show` of a table that doesn't exist
+	// (ESRCH), a missing anchor's included, on stderr.
+	answerNoTable = "pfctl: Table does not exist."
+	// answerNoRuleset: pfctl's words for ENOENT of a table command, on
+	// stderr (from pfctl's source; unrecorded).
+	answerNoRuleset = "pfctl: Anchor or Ruleset does not exist."
+	// answerNoReferences: all `-s References` prints while pf holds no
+	// reference, in place of its header, on stdout.
+	answerNoReferences = "No pf starter references held"
+)
+
 // onlyLine says b is the line want and nothing else, pfctl's ALTQ chatter
 // and blank lines aside; a listing cut short isn't.
 func onlyLine(b []byte, want string) bool {
@@ -150,22 +173,22 @@ func onlyLine(b []byte, want string) bool {
 	return err == nil && len(l) == 1 && l[0] == want
 }
 
-// AnchorMissing says pfctl's stderr for `-a ANCHOR -s rules` is its
+// AnchorMissing says pfctl's stderr for `-a ANCHOR -s rules` (recorded)
+// or `-a ANCHOR -s rules -v` (the same DIOCGETRULES; unrecorded) is its
 // answer about an anchor that doesn't exist, and nothing else (ALTQ
 // chatter aside): such an anchor holds no rules. Any other failure, an
 // "Invalid argument" of another ioctl included, isn't that answer.
 func AnchorMissing(stderr []byte) bool {
-	return onlyLine(stderr, "pfctl: DIOCGETRULES: Invalid argument")
+	return onlyLine(stderr, answerNoAnchor)
 }
 
-// noTable: pfctl's answer about a table that doesn't exist, and nothing
-// else (ALTQ chatter aside): "Table does not exist." (ESRCH, which macOS
-// answers for a missing anchor's table too) or "Anchor or Ruleset does
-// not exist." (ENOENT), pfctl's own words for those two errors of a table
-// command. Any other failure, an "Invalid argument" included, isn't.
-func noTable(out pfOutput) bool {
-	return onlyLine(out.stderr, "pfctl: Table does not exist.") ||
-		onlyLine(out.stderr, "pfctl: Anchor or Ruleset does not exist.")
+// noTable says pfctl's stderr for a table command is its answer about a
+// table that doesn't exist, and nothing else (ALTQ chatter aside):
+// answerNoTable (ESRCH, which macOS answers for a missing anchor's table
+// too) or answerNoRuleset (ENOENT). Any other failure, an "Invalid
+// argument" included, isn't.
+func noTable(stderr []byte) bool {
+	return onlyLine(stderr, answerNoTable) || onlyLine(stderr, answerNoRuleset)
 }
 
 // hook is what the main ruleset does for the guard's anchor.
@@ -239,9 +262,8 @@ func mainUpToHook(rules []byte) []string {
 // com.apple a line ("  com.apple/200.AirDrop"), as those whose name sorts
 // before the guard's: the hook evaluates them in name order (pf keeps
 // them sorted by path), so theirs run first, and a quick pass in one
-// ends evaluation before the guard's. It reads every line, not lines':
-// an anchor may be named anything, "ALTQ" in it included (pfctl's ALTQ
-// chatter sorts after the guard's anyway).
+// ends evaluation before the guard's. pfctl's ALTQ chatter sorts after
+// the guard's.
 func anchorsBefore(anchors []byte) []string {
 	ours := strings.TrimPrefix(GuardAnchor, appleAnchor+"/")
 	var out []string
@@ -298,10 +320,6 @@ func parseEnabled(info []byte) (bool, error) {
 	return false, errors.New("firewall: pfctl -s info: no Status line")
 }
 
-// noReferences is all `pfctl -s References` prints while pf holds no
-// reference, in place of its header.
-const noReferences = "No pf starter references held"
-
 // pfReference is one line of `pfctl -s References`.
 type pfReference struct {
 	pid   int
@@ -314,12 +332,15 @@ type pfReference struct {
 // whatever the process name (spaces included) and the timestamp look
 // like, e.g. "618      socketfilterfw               9813589183660731843
 // 0 days 00:03:31". understood says the listing is one the guard can
-// read: a header, and every line after it a reference so read; or pfctl's
-// answer while pf holds no reference, noReferences alone, without a
-// header. Not understood (no header otherwise, a line out of its columns,
-// a listing cut short), the absence of a reference proves nothing.
+// read: a header, and every line after it a reference so read, one at
+// least; or pfctl's answer while pf holds no reference,
+// answerNoReferences alone, without a header (references also wants
+// stderr quiet then). Not understood (no header otherwise, a header with
+// no reference under it, which a Mac doesn't print, a line out of its
+// columns, a listing cut short), the absence of a reference proves
+// nothing.
 func parseReferences(out []byte) (refs []pfReference, understood bool) {
-	if onlyLine(out, noReferences) {
+	if onlyLine(out, answerNoReferences) {
 		return nil, true
 	}
 	tokenAt := -1
@@ -328,7 +349,7 @@ func parseReferences(out []byte) (refs []pfReference, understood bool) {
 	for sc.Scan() {
 		l := strings.TrimRight(sc.Text(), " \t\r")
 		switch {
-		case strings.TrimSpace(l) == "" || strings.Contains(l, "ALTQ"):
+		case strings.TrimSpace(l) == "" || altqChatter(strings.TrimSpace(l)):
 		case tokenAt < 0:
 			f := strings.Fields(l)
 			if len(f) > 0 && f[0] == "PID" && slices.Contains(f, "TOKEN") {
@@ -342,7 +363,7 @@ func parseReferences(out []byte) (refs []pfReference, understood bool) {
 			refs = append(refs, r)
 		}
 	}
-	return refs, tokenAt >= 0 && sc.Err() == nil
+	return refs, tokenAt >= 0 && len(refs) > 0 && sc.Err() == nil
 }
 
 // referenceAt reads a References line: its first field the pid, the field

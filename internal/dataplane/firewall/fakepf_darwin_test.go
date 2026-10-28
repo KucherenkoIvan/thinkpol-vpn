@@ -41,6 +41,11 @@ type fakePF struct {
 	// otherwise it answers `Invalid argument` (what a Mac answers is
 	// unrecorded).
 	flushMissingOK bool
+	// flushKeeps: -F of what this names ("rules", "Tables") succeeds and
+	// leaves the anchor as it was.
+	flushKeeps string
+	// referencesWarn: -s References also says this on stderr.
+	referencesWarn string
 	// oddReferences: -s References prints a layout the guard can't read.
 	oddReferences bool
 	// loadHook, if set, changes what a load puts in place.
@@ -305,6 +310,9 @@ func (f *fakePF) run(ctx context.Context, stdin []byte, args ...string) (pfOutpu
 		}
 		fmt.Fprintf(&b, "Status: %s for 0 days 00:01:02           Debug: Urgent\n\nState Table                          Total             Rate\n  current entries                        %d\n", status, len(f.states))
 	case slices.Equal(args, []string{"-s", "References"}):
+		if f.referencesWarn != "" {
+			out.stderr = append(out.stderr, f.referencesWarn+"\n"...)
+		}
 		if f.oddReferences {
 			for _, r := range f.refs {
 				fmt.Fprintf(&b, "token=%d by %s(%d)\n", r.value, r.name, r.pid)
@@ -313,7 +321,7 @@ func (f *fakePF) run(ctx context.Context, stdin []byte, args ...string) (pfOutpu
 		}
 		if len(f.refs) == 0 {
 			// As a Mac prints it (testdata/pfctl/recorded-references-none.txt).
-			b.WriteString(noReferences + "\n")
+			b.WriteString(answerNoReferences + "\n")
 			break
 		}
 		b.WriteString("TOKENS:\nPID      Process Name                 TOKEN                 TIMESTAMP\n")
@@ -399,6 +407,7 @@ func (f *fakePF) run(ctx context.Context, stdin []byte, args ...string) (pfOutpu
 			}
 		}
 		f.anchors[anchor] = loaded
+	case anchor != "" && len(args) == 2 && args[0] == "-F" && args[1] == f.flushKeeps:
 	case anchor != "" && slices.Equal(args, []string{"-F", "rules"}):
 		if a == nil {
 			if f.flushMissingOK {

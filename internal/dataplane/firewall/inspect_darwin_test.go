@@ -134,8 +134,8 @@ func TestTheRecordedListingsParse(t *testing.T) {
 	if err := saneRules(listed, "utun4", nil); err != nil {
 		t.Errorf("saneRules: %v", err)
 	}
-	if want := fakeExpandAll(guardRules("utun4", nil)); !slices.Equal(listed, want) {
-		t.Errorf("the fake lists the guard's rules unlike a Mac:\n%s\nwant:\n%s", strings.Join(want, "\n"), strings.Join(listed, "\n"))
+	if fake := fakeExpandAll(guardRules("utun4", nil)); !slices.Equal(fake, listed) {
+		t.Errorf("the fake lists the guard's rules unlike a Mac:\n%s\nwant:\n%s", strings.Join(fake, "\n"), strings.Join(listed, "\n"))
 	}
 
 	rules, err := parseVerboseRules(fixture(t, "recorded-guard-rules-v.txt"))
@@ -174,7 +174,7 @@ func TestTheRecordedListingsParse(t *testing.T) {
 		"2001:db8:1f0b:4::/62", "fc00::/8", "fd00::/9", "fdc0::/10", "fe80::/10", "ff00::/8")) {
 		t.Errorf("table: %v, %v", table, err)
 	}
-	if !noTable(pfOutput{stderr: fixture(t, "recorded-table-missing.txt")}) {
+	if !noTable(fixture(t, "recorded-table-missing.txt")) {
 		t.Error("the missing table's answer misread")
 	}
 
