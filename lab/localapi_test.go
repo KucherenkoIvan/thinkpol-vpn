@@ -164,7 +164,7 @@ func TestLocalAPI(t *testing.T) {
 
 	t.Run("the log is root's", func(t *testing.T) {
 		res, err := cli(t, devA, as(aliceUID, apiGID, "logs"))
-		if err == nil || !strings.Contains(res.Stderr, "permission denied: ") || !strings.Contains(res.Stderr, "the log for root") {
+		if err == nil || !strings.Contains(res.Stderr, "permission denied: only root may do that") {
 			t.Fatalf("alice read the log: %v\n%s", err, res.Stdout)
 		}
 		res, err = cli(t, devA, as("", "", "logs", "-n", "1000"))
@@ -172,7 +172,7 @@ func TestLocalAPI(t *testing.T) {
 			t.Fatalf("root: %v\n%s", err, res.Stdout)
 		}
 		// The refusal above, logged with alice's uid and the group checked.
-		if !strings.Contains(res.Stdout, `msg="local API call refused"`) || !strings.Contains(res.Stdout, "uid="+aliceUID) || !strings.Contains(res.Stdout, "group="+apiGID) || !strings.Contains(res.Stdout, "needs=admin") {
+		if !strings.Contains(res.Stdout, `msg="local API call refused"`) || !strings.Contains(res.Stdout, "refusal=root_only") || !strings.Contains(res.Stdout, "uid="+aliceUID+" ") || !strings.Contains(res.Stdout, "group="+apiGID) || !strings.Contains(res.Stdout, "needs=admin") {
 			t.Fatalf("no refusal line for alice:\n%s", res.Stdout)
 		}
 	})

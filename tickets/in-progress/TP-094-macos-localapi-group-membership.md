@@ -50,7 +50,7 @@ On macOS, a member of the `thinkpol` group can do what DESIGN.md says members ma
      sudo thinkpol logs -n 200 | grep 'local API call refused'
      ```
      **What happens:** the log is root's only, so the member's call is refused and the service logs the refusal.
-     **Expect:** the first command says `permission denied: the status and the controls are for root and the local API's group, the log for root ...` and exits non-zero. The grep shows a line with `method=/thinkpol.localapi.v1.LocalService/TailLogs`, `uid=` your uid, `needs=admin`, `has=control`, `group=` the gid from step 1 and `recorded_groups=` a number (16 with 19 groups), and no refused `GetStatus` or `Diagnose` line from step 1.
+     **Expect:** the first command says `permission denied: only root may do that; the members of the local API's group get the status and the controls` and exits non-zero. The grep shows a line with `method=/thinkpol.localapi.v1.LocalService/TailLogs`, `refusal=root_only`, `uid=` your uid, `needs=admin`, `has=control`, `group=` the gid from step 1 and `recorded_groups=` a number (16 with 19 groups), and no refused `GetStatus` or `Diagnose` line from step 1.
   3. **Do:** (a fresh member, without logging out)
      ```sh
      sudo dseditgroup -o edit -d "$USER" -t user thinkpol
@@ -63,23 +63,23 @@ On macOS, a member of the `thinkpol` group can do what DESIGN.md says members ma
 
 ## Review findings
 Round 1 (paranoid: correctness; torvalds: design; go-style: conventions; the cross-family log was empty).
-- [ ] R1.1 (paranoid 1, torvalds 5, go-style 3): RR43, doc.go and membership.go say a removed user loses control within 10 s. Removal takes effect at the user's next login when their session carries the group, and within 10 s only when it never did; an open WatchStatus stream isn't re-checked until the client reconnects, on every OS. The cache is per uid and group.
-- [ ] R1.2 (torvalds 1): a Directory Services failure is reported as "permission denied". Refuse it (fail closed) as a distinct `membership_unknown` / codes.Unavailable with "try again" wording; keep a failure about 2 s so callers fail fast.
-- [ ] R1.3 (torvalds 2): the refusal points non-root users at a root-only log, and one message covers two cases. Split `root_only` (a member asking for a root call) from `permission_denied` (not root, not in the group); one phrasing shared with client.go's dial-time message, the wording in one table (TP-139 F9); `errors.Is` callers keep working (`IsPermission`).
-- [ ] R1.4 (paranoid 2, torvalds 3): no test for the one-lookup-at-a-time slot, the re-check after taking it, or a cancelled waiter; the loop that drops expired answers isn't exercised.
-- [ ] R1.5 (go-style 1): the "701" log assertion can match the timestamp's milliseconds.
-- [ ] R1.6 (go-style 2): doc.go says every refusal is logged with all fields; the no-credentials refusal logs only the method, `group` only with a group.
-- [ ] R1.7 (torvalds 6): the cache takes a bare func; make it wrap a Membership (one signature, no test adapter).
-- [ ] R1.8 (torvalds 4, paranoid 3): the membership error repeats uid and gid and drops dsmemberutil's stderr; a timeout reads "signal: killed".
-- [ ] R1.9 (torvalds 9, paranoid 3): bound the wait for a killed dsmemberutil (`cmd.WaitDelay`).
-- [ ] R1.10 (torvalds 8): two Directory Services timeouts (5 s, 3 s); one constant.
-- [ ] R1.11 (torvalds 10, paranoid 4): Diagnose asks Directory Services to rule out admin; admin is by uid (`isAdmin`), in `access` too.
-- [ ] R1.12 (torvalds 7, go-style 6, 8 and unranked): naming: `one` → `lookupSlot`; `Access` vs `access`; the `Members` field reads like a list; `keep`'s loop shadows `k`.
-- [ ] R1.13 (go-style 4, 5): NewPolicy: indent the error flow; its doc says it sets the membership lookup.
-- [ ] R1.14 (go-style 9): split the tests that test several things, or name the cases with t.Run.
-- [ ] R1.15 (paranoid 6): the lab test's uid check is a substring match.
-- [ ] R1.16 (go-style 7): the cache's comments leave out its size limit.
-- [ ] R1.17 (paranoid 5): the real Directory Services test's assumptions (the effective gid is a group DS counts, the first query answers within the timeout) are unstated.
+- [x] R1.1 (paranoid 1, torvalds 5, go-style 3): RR43, doc.go and membership.go say a removed user loses control within 10 s. Removal takes effect at the user's next login when their session carries the group, and within 10 s only when it never did; an open WatchStatus stream isn't re-checked until the client reconnects, on every OS. The cache is per uid and group. — doc.go's new paragraph, RR43 and membership.go's const comment: removal at next login while the session carries the group, within 10 s only when it never did; an open stream keeps flowing until reconnect, every OS; cache per uid and group.
+- [x] R1.2 (torvalds 1): a Directory Services failure is reported as "permission denied". Refuse it (fail closed) as a distinct `membership_unknown` / codes.Unavailable with "try again" wording; keep a failure about 2 s so callers fail fast. — `ErrMembershipUnknown` (`membership_unknown`, codes.Unavailable, "…: try again"), logged at warn; a failure is kept `membershipFailureTTL` (2 s); a lookup its caller abandoned isn't kept.
+- [x] R1.3 (torvalds 2): the refusal points non-root users at a root-only log, and one message covers two cases. Split `root_only` (a member asking for a root call) from `permission_denied` (not root, not in the group); one phrasing shared with client.go's dial-time message, the wording in one table (TP-139 F9); `errors.Is` callers keep working (`IsPermission`). — `ErrRootOnly` (`root_only`) split from `ErrPermissionDenied`; no wording points at the log; `refusalMsg` gives client.go's dial-time refusal the table's phrase; `IsPermission`; a DS failure on a root-only call is `root_only` (membership couldn't change it).
+- [x] R1.4 (paranoid 2, torvalds 3): no test for the one-lookup-at-a-time slot, the re-check after taking it, or a cancelled waiter; the loop that drops expired answers isn't exercised. — TestMembershipLookupsRunOneAtATime, TestAMembershipWaiterThatLeavesStopsWaiting, TestAFullMembershipCacheDropsTheExpired (the clock is settable through `now`).
+- [x] R1.5 (go-style 1): the "701" log assertion can match the timestamp's milliseconds. — the time attribute is stripped (`refusalLog`), and the absent gid is 987654, used nowhere else.
+- [x] R1.6 (go-style 2): doc.go says every refusal is logged with all fields; the no-credentials refusal logs only the method, `group` only with a group. — doc.go: every refusal logs its method and code; with credentials also uid, needs/has, group if any, the count.
+- [x] R1.7 (torvalds 6): the cache takes a bare func; make it wrap a Membership (one signature, no test adapter). — `newCachedMembership(inner Membership)`; `dsmemberutil` is a type with `run`; the test adapter is gone.
+- [x] R1.8 (torvalds 4, paranoid 3): the membership error repeats uid and gid and drops dsmemberutil's stderr; a timeout reads "signal: killed". — the cache returns inner's error unwrapped; dsmemberutil keeps its stderr, sanitized; a timeout reads "no answer within 3s".
+- [x] R1.9 (torvalds 9, paranoid 3): bound the wait for a killed dsmemberutil (`cmd.WaitDelay`). — `runBounded` sets `cmd.WaitDelay` (1 s), for dsmemberutil and dscl.
+- [x] R1.10 (torvalds 8): two Directory Services timeouts (5 s, 3 s); one constant. — `dsTimeout` (3 s) for both.
+- [x] R1.11 (torvalds 10, paranoid 4): Diagnose asks Directory Services to rule out admin; admin is by uid (`isAdmin`), in `access` too. — `Policy.isAdmin`, used by `access` and Diagnose; `callerAccess` removed.
+- [x] R1.12 (torvalds 7, go-style 6, 8 and unranked): naming: `one` → `lookupSlot`; `Access` vs `access`; the `Members` field reads like a list; `keep`'s loop shadows `k`. — `lookupSlot`; the public `Access` method removed (only tests used it); `Policy.Membership`; `old` in keep's loop.
+- [x] R1.13 (go-style 4, 5): NewPolicy: indent the error flow; its doc says it sets the membership lookup. — done.
+- [x] R1.14 (go-style 9): split the tests that test several things, or name the cases with t.Run. — membership_test.go split into one behaviour per test, t.Run for the cases; TestDsmemberutilFailsClosed split out.
+- [x] R1.15 (paranoid 6): the lab test's uid check is a substring match. — `"uid="+aliceUID+" "`, plus `refusal=root_only`.
+- [x] R1.16 (go-style 7): the cache's comments leave out its size limit. — the type's and the consts' comments name the cap and the clearing.
+- [x] R1.17 (paranoid 5): the real Directory Services test's assumptions (the effective gid is a group DS counts, the first query answers within the timeout) are unstated. — kept; the test's comment states both assumptions.
 
 ## Log
 - 2026-10-16 created in backlog (TP-078 device session A)
@@ -94,3 +94,6 @@ Round 1 (paranoid: correctness; torvalds: design; go-style: conventions; the cro
 - 2026-10-28 in-progress → review
 - 2026-10-28 review → has-errors (round 1: R1.1–R1.17)
 - 2026-10-28 has-errors → in-progress
+- 2026-10-28 round 1 fixed (R1.1–R1.17): refusals split into `permission_denied`, `root_only` and `membership_unknown` (codes.Unavailable, "try again"; a DS failure kept 2 s), wording in errors.go's table only and shared with the dial-time refusal, `IsPermission`; the cache wraps a Membership (`dsmemberutil` type), keeps dsmemberutil's stderr, `cmd.WaitDelay`, one `dsTimeout`; `isAdmin` for Diagnose; RR43 and doc.go: removal at next login while the session carries the group, open streams not re-checked.
+- 2026-10-28 round 1 tests: lookups one at a time; the re-check after the slot; a waiter that leaves; a full cache drops the expired; failures kept briefly; an abandoned lookup not kept; refusals say why (root_only, permission_denied, membership_unknown at warn, a root call with DS down is root_only); refusal wording (no log pointers, "try again", dial shares the phrase); stderr kept and sanitized; the log test without the time attribute. Mutations, each failing a test: no lookup slot; no re-check after the slot; a waiter ignoring its ctx; no drop of expired answers; failures not kept; failures kept the full ttl; an abandoned lookup kept; membership_unknown as permission_denied; root_only as permission_denied; membership_unknown at info; stderr dropped; stderr not sanitized; the dial wording apart from the table; IsPermission without root_only; Diagnose's host parts for everyone; the groups logged; the "try again" dropped; the refusal code not logged.
+- 2026-10-28 for the orchestrator (not done here, the design review's #11): refusal logs aren't rate-limited; a tray that retries after a refusal would fill the in-memory log. Decide in the tray ticket: rate-limit per uid and method, or the tray backs off after `permission_denied`/`root_only` (and waits ~10 s before retrying after "add me to the group").

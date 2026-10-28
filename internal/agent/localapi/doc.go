@@ -75,18 +75,35 @@
 // the caller's process got at login, and only the first 16 of those
 // (LOCAL_PEERCRED's xucred), while the directory's gate asks Directory
 // Services. So when a caller other than root or the service's user lacks
-// the group in its recorded groups, [Policy.Members] asks Directory
+// the group in its recorded groups, [Policy.Membership] asks Directory
 // Services too (`dsmemberutil checkmembership -u <uid> -g <gid>`, by
 // numbers): a member added since login, or one whose `thinkpol` group is
 // past the first 16, gets the group's rights. Each lookup is bounded by 3
-// s and runs one at a time; its answer is kept 10 s per uid, so a user
-// removed from the group keeps control that long; a lookup that fails or
-// times out, or an answer dsmemberutil doesn't word as expected, is not
-// a member and isn't kept. Linux needs none of this: SO_PEERGROUPS and
-// the file system both use the process's groups. Every refusal is logged
-// at info with the caller's uid, the level the call needed, the group it
-// was checked against and how many groups the kernel recorded (not which
-// ones), plus why Directory Services couldn't answer, if it couldn't.
+// s and runs one at a time; its answer is kept 10 s per uid and group (at
+// most 64 answers). A lookup that fails or times out, or an answer
+// dsmemberutil doesn't word as expected, is not a member, and is kept 2 s
+// so that callers are refused at once while Directory Services is down.
+// Linux needs none of this: SO_PEERGROUPS and the file system both use the
+// process's groups.
+//
+// Removal from the group takes effect at the user's next login when the
+// caller's session carries the group: both gates read the recorded groups
+// first, on every OS. Only a caller whose session never carried it (macOS,
+// found through Directory Services) loses control within the 10 s its
+// answer is kept. A stream (WatchStatus) is checked when it opens, so an
+// open one keeps flowing until the client reconnects, on every OS.
+//
+// A refusal says which case it is: permission_denied (neither root nor in
+// the group), root_only (in the group, but the call is root's) or
+// membership_unknown (the call needs the group and Directory Services
+// couldn't say; refused all the same, with codes.Unavailable, to be tried
+// again). Their wording is one table ([refusals]), which the client's
+// dial-time refusal shares. Every refusal is logged with its method and
+// code; one with credentials also has the caller's uid, the level the call
+// needed and had, the group it was checked against (if there is one) and
+// how many groups the kernel recorded (not which ones), plus why Directory
+// Services couldn't answer, if it couldn't. membership_unknown is logged
+// at warn, the others at info.
 // There is no read-only tier for other users: they can't reach the
 // socket at all.
 //
