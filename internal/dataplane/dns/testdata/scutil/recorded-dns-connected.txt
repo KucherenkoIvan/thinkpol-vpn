@@ -1,0 +1,101 @@
+DNS configuration
+
+resolver #1
+  search domain[0] : example.net
+  nameserver[0] : 198.51.100.2
+  nameserver[1] : 2001:db8:1::2
+  flags    : Supplemental, Request A records
+  reach    : 0x00030002 (Reachable,Local Address,Directly Reachable Address)
+  order    : 101400
+
+resolver #2
+  nameserver[0] : 198.51.100.2
+  if_index : 11 (en0)
+  flags    : Request A records
+  reach    : 0x00000000 (Not Reachable)
+  order    : 200000
+
+resolver #3
+  domain   : local
+  options  : mdns
+  timeout  : 5
+  flags    : Request A records
+  reach    : 0x00000000 (Not Reachable)
+  order    : 300000
+
+resolver #4
+  domain   : 254.169.in-addr.arpa
+  options  : mdns
+  timeout  : 5
+  flags    : Request A records
+  reach    : 0x00000000 (Not Reachable)
+  order    : 300200
+
+resolver #5
+  domain   : 8.e.f.ip6.arpa
+  options  : mdns
+  timeout  : 5
+  flags    : Request A records
+  reach    : 0x00000000 (Not Reachable)
+  order    : 300400
+
+resolver #6
+  domain   : 9.e.f.ip6.arpa
+  options  : mdns
+  timeout  : 5
+  flags    : Request A records
+  reach    : 0x00000000 (Not Reachable)
+  order    : 300600
+
+resolver #7
+  domain   : a.e.f.ip6.arpa
+  options  : mdns
+  timeout  : 5
+  flags    : Request A records
+  reach    : 0x00000000 (Not Reachable)
+  order    : 300800
+
+resolver #8
+  domain   : b.e.f.ip6.arpa
+  options  : mdns
+  timeout  : 5
+  flags    : Request A records
+  reach    : 0x00000000 (Not Reachable)
+  order    : 301000
+
+DNS configuration (for scoped queries)
+
+resolver #1
+  search domain[0] : example.net
+  nameserver[0] : 198.51.100.2
+  if_index : 11 (en0)
+  flags    : Scoped, Request A records
+  reach    : 0x00000000 (Not Reachable)
+
+resolver #2
+  search domain[0] : example.net
+  nameserver[0] : 2001:db8:1::2
+  if_index : 18 (utun3)
+  flags    : Scoped, Request AAAA records
+  reach    : 0x00030002 (Reachable,Local Address,Directly Reachable Address)
+
+resolver #3
+  search domain[0] : example.net
+  nameserver[0] : 2001:db8:1::2
+  if_index : 17 (utun2)
+  flags    : Scoped, Request AAAA records
+  reach    : 0x00030002 (Reachable,Local Address,Directly Reachable Address)
+
+resolver #4
+  search domain[0] : example.net
+  nameserver[0] : 2001:db8:1::2
+  if_index : 16 (utun1)
+  flags    : Scoped, Request AAAA records
+  reach    : 0x00030002 (Reachable,Local Address,Directly Reachable Address)
+
+resolver #5
+  search domain[0] : example.net
+  nameserver[0] : 2001:db8:1::2
+  if_index : 15 (utun0)
+  flags    : Scoped, Request AAAA records
+  reach    : 0x00030002 (Reachable,Local Address,Directly Reachable Address)
