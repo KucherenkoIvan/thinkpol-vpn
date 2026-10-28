@@ -44,6 +44,16 @@ Round 1 (2026-10-28): correctness (paranoid), design (torvalds) and conventions 
 - [x] R1.12 (cross-family nit #3) The rule dump's retries for an interrupted dump dropped from listRules' 5 to dumpRules' 3. Use one constant, the larger.
 - [x] R1.13 (cross-family nit #4) The lab test of action repair covers IPv4 only. Add IPv6 if cheap.
 
+Round 2 (2026-10-28): correctness (paranoid) and design (torvalds) reviews. The /0 destination is in both and is one item (R2.2).
+- [ ] R2.1 (paranoid #1) No test catches a delete that ignores the action (what R1.9 removed): `sendRule` zeroing the action on RTM_DELRULE, or `c.h.RuleDel` back in `delKernelRule`, passes every test, since the lab test deletes the lookup before adding the blackhole. Add a lab subtest with a blackhole twin added beside the lookup (same priority, fields, protocol), then Apply, expecting exactly the lookup.
+- [ ] R2.2 (paranoid #2, torvalds should-fix 2) A Rule with a /0 Dst passes Validate but the kernel keeps no destination, so since R1.4 every Apply fails with errNotReadBack (and the Enforcer retries at its debounce rate). `validateRules` refuses it, with a Validate test; check that route-table mode and netmap can never build one.
+- [ ] R2.3 (paranoid #3) `judgeAdded`'s old-kernel half is untested: `return stray, nil` and moving the errNotReadBack check ahead of the stray check survive. Add a unit case (protocol-0 read-back: one stray, errors.Is errOldKernel).
+- [ ] R2.4 (torvalds should-fix 1) `watch_linux.go` decodes RTM_DELRULE itself, with the rtmsg size instead of the rule header's. Go through `parseRawRule`; an unreadable message counts as relevant.
+- [ ] R2.5 (paranoid S1) A rule dump split over several reads may show a rule twice if the list changed between parts, and reconcile would delete our only copy. Read the kernel's rule dump: can it set NLM_F_DUMP_INTR? If a phantom duplicate is possible, never delete a byte-identical duplicate of a kept rule, with a unit test. Record the finding in Notes (and RR53 if relevant).
+- [ ] R2.6 (torvalds nits 3-8) The add's undo comment overclaims; the dump request carries an ifinfomsg, not a rule header; the action is judged by its display string, not the raw byte; short attribute values read as 0 instead of marking the rule unknown; the rule socket's failure shares the handle's error text; `rulesWith` is built twice per check.
+- [ ] R2.7 (torvalds nit 9) The lab oracle for actions is the code under test (`InspectInNamespace`); use `ip -j rule show` if cheap.
+- [ ] R2.8 (paranoid nits) errNotReadBack's text blames a kernel attribute only (a concurrent delete gives the same); RR53 names only "the next config drops the other" (a leftover rule of ours, or an undo, triggers the same wrong delete).
+
 ## Log
 - 2026-10-23 created in backlog (TP-091 review round 3)
 - 2026-10-24 docs: slotted in the pre-M2 phase (wave 1, macOS)
@@ -59,3 +69,4 @@ Round 1 (2026-10-28): correctness (paranoid), design (torvalds) and conventions 
 - 2026-10-28 ran: merged origin/rewrite (6d99046); `make lint`, `make test` and the full `make lab-test` (36 packages) green on 6d99046. Not verified: the `New` (current namespace) path in the lab (every netcfg lab test uses NewInNamespace); EAFNOSUPPORT from a real kernel without IPv6 rules (the lab kernel has them; `dumpErr` is unit-tested and the library's NLMSG_DONE handling read from source); clearing the detached/unresolved flags before a re-add
 - 2026-10-28 out of scope, for the orchestrator: a Rule with a /0 destination passes Validate but the kernel stores no destination, so since R1.4 its Apply fails with errNotReadBack (before, it was replaced on every Apply); the kernel's rule_exists ignores flags and an absent Dst, so an add can report a misleading ErrConflict for pairs Validate allows; a changed action could be repaired add-before-delete (no window without the rule)
 - 2026-10-28 in-progress → review
+- 2026-10-28 review → has-errors (round 2: R2.1–R2.8)
