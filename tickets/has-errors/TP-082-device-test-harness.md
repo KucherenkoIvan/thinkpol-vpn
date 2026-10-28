@@ -323,6 +323,17 @@ Round 7 (2026-10-28): correctness-only delta check of round 6: no proven defect.
 - [x] R7.6 Checklist step 6 lists only "NOTHING-TO-RESTORE, no run was pending"; `reportRestore` can also print "NOTHING-TO-RESTORE, run … closed: it made no change and had no baseline".
 - [x] R7.7 Suspicion, doc only: `launch.go` says the root modes "ignore them too", but Go installs its own QUIT and TERM handlers after exec, so the root copy can be killed in the window before `signal.Ignore` runs. Name the window.
 
+Round 8 (2026-10-28): design (fix first: S1, S2, nits N1–N6) and correctness (merge, nits #1, #2, untested mutant #3). The merge of TP-138 changed what the core gets from firewall's readers without a test in the frozen package; those tests, and the code fix for REBOOT's case, go in before the device run records the pin.
+- [ ] R8.1 should-fix (design S1): the core's contract with firewall's readers is pinned only in firewall's tests. Add to TestTheMacSurfacesReadPfctlAndScutil: the missing answer beside rules on exit 0, beside ALTQ chatter, beside other ALTQ text, cut short, from a pfctl that timed out; an interface named ALTQ…; a cut Interfaces listing. Each kills a named mutant (dropping `out.Err == ""`, dropping `out.Code != 0`, …).
+- [ ] R8.2 should-fix (design S2, with correctness #1): "a reboot clears either" is false for R7.1's case, where another app's skip lands after the undo's load. The undo tells "this run's skip is gone but another app's skips are there" (LEFT, nextPfOtherRuleset) apart from "the core's own change survived" (REBOOT), from the read that decided, with no extra pf read. R7.1's second case expects LEFT. REBOOT's wording everywhere: kinds.go, restore.go's `Reboot` and `verdict` doc, doc.go, the test comments and the test name.
+- [ ] R8.3 nit (design N1, N6): `SkippedNames` and `ParsePfEnabled` exported where they are defined, the wrappers deleted, listing_darwin.go reduced to `GuardReferenceHeld` and renamed; the wrapper test goes with them.
+- [ ] R8.4 nit (design N2): firewall doc.go's "exactly as the guard does" isn't exact: the core also requires a pfctl that exited.
+- [ ] R8.5 nit (design N3): "snapshot" in firewall doc.go means InspectIPv6Guard's reading; name it.
+- [ ] R8.6 nit (design N4): Notes still say TP-138 is in review.
+- [ ] R8.7 nit (design N5): one `signal.Ignore` as the first line of `rootMain` in place of three at different depths; launch.go's window shrinks to match.
+- [ ] R8.8 nit (correctness #2): a pf surface that can't be read is reported as differing in the LEFT and REBOOT texts; list unreadable surfaces apart.
+- [ ] R8.9 (correctness #3): no test for d = [pf-nat pf-skip]; the mutant `!slices.Contains(d, "pf-rules") && slices.Contains(d, "pf-skip")` in place of the `slices.Equal` survives.
+
 ## Log
 - 2026-10-15 created in backlog (device run 3 and 4 findings)
 - 2026-10-15 docs: kit bugs found in device run 4 analysis
@@ -456,3 +467,4 @@ Round 7 (2026-10-28): correctness-only delta check of round 6: no proven defect.
 - 2026-10-28 lab: not run this round: since 4fbe34d (lab green) nothing a Linux lab node compiles changed but comments (safety's doc.go, kinds.go, launch.go, restore.go; firewall's and dns's doc.go); the code changes are darwin-only (`*_darwin*.go`, testdata), and the launch script itself is unchanged
 - 2026-10-28 not verified (Mac only, on the device checklist): everything listed for rounds 2–6
 - 2026-10-28 in-progress → review
+- 2026-10-28 review → has-errors (round 8: R8.1–R8.9)
