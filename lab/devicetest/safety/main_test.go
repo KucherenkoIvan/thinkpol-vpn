@@ -19,8 +19,11 @@ import (
 )
 
 // The test binary is also the core's child processes: with childEnv set it
-// runs the mode its first argument names (as devicetest-root does), so
-// the tests drive real processes, signals and kill -9.
+// runs the mode its first argument names, a test's own or, any other,
+// through rootMain as devicetest-root does, so the tests drive real
+// processes, signals and kill -9. rootMain ignores the terminal's signals
+// first, so a test calls it only in a child: run in the test process, it
+// would leave them ignored there and in every child started after.
 const (
 	childEnv   = "TPDT_TEST_CHILD"
 	stateEnv   = "TPDT_TEST_STATE"   // the state directory
@@ -34,14 +37,14 @@ func TestMain(m *testing.M) {
 		os.Exit(m.Run())
 	}
 	switch mode := os.Args[1]; mode {
-	case "helper", "deadman", "root-restore":
-		os.Exit(rootMain(context.Background(), os.Args[1:], childState(), os.Stdin, os.Stdout, os.Stderr))
+	case "journal-child", "capture-child", "rootcheck":
+		if err := child(mode, os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "child:", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
 	}
-	if err := child(os.Args[1], os.Args[2:]); err != nil {
-		fmt.Fprintln(os.Stderr, "child:", err)
-		os.Exit(1)
-	}
-	os.Exit(0)
+	os.Exit(rootMain(context.Background(), os.Args[1:], childState(), os.Stdin, os.Stdout, os.Stderr))
 }
 
 // testTools are all a core test may run on a Mac: nothing that reads or

@@ -14,7 +14,11 @@
 // tests pass in the lab and one device self-test run (`devicetest
 // selftest`) passes before it merges. The core reads pf with package
 // firewall's readers and directories with trusteddir: a change there
-// reaches the core without moving the pin, and its review says so.
+// reaches the core without moving the pin, and its review says so; what
+// the core's verdicts depend on in firewall's readers (which pfctl
+// answers mean a missing anchor, which lines are ALTQ chatter, a cut
+// listing) is pinned by the core's own tests too
+// (TestTheMacSurfacesReadPfctlAndScutil), so such a change fails here.
 //
 // # What it guarantees
 //
@@ -34,8 +38,8 @@
 //     as root.
 //   - A normal end, or Ctrl-C (any number of them), undoes every change,
 //     newest first, then compares the host, in a fresh snapshot, with its
-//     baseline (Result). The helper ignores the terminal's signals; the
-//     user side asks it to restore.
+//     baseline (Result). Every root mode ignores the terminal's signals
+//     from its first line; the user side asks the helper to restore.
 //   - A closed terminal, or the user side killed: the helper's input ends
 //     and it restores at once.
 //   - The helper crashed, killed or hung: the dead-man, a process in a
@@ -78,21 +82,22 @@
 // REBOOT: after the pf-skip undo's loads of /etc/pf.conf, pf still lists
 // the skip this run's load left: the core's own pf change survived its
 // undo, and a reboot clears it; any other difference, whoever made it,
-// another app's skips and skips that can't be read included, is LEFT;
-// DNS and the dummynet rules are reported only. LEFT and REBOOT keep the
-// run pending. NOTHING-TO-RESTORE: no run was pending, or the run didn't start (its
-// result says why), or it was killed before it took a baseline or made a
-// change; nothing was compared. RESET-BY-REBOOT: a pending run restored
-// in a later boot, with no change of its own left in its journal (each
-// undone, or checked gone with the boot it was made in) and the host not
-// shown equal to the baseline: what differs is the new boot's. FORGOTTEN:
-// `devicetest restore -forget RUN`, the owner naming a pending run in a
-// later boot than its own: the restore's undos run first when its journal
-// reads back, so only what no undo could close is forgotten (a change of
-// its own that can't be undone), and a journal that doesn't read back is
-// closed as it is; the result shows what the undos did, what the journal
-// still says and how the host compares now, and proves nothing. CLEAN and
-// the last three close the run; only CLEAN says the host is as it was.
+// another app's skips and skips that can't be read included, is LEFT; DNS
+// and the dummynet rules are reported only. LEFT and REBOOT keep the run
+// pending. NOTHING-TO-RESTORE: no run was pending, or the run didn't start
+// (its result says why), or it was killed before it took a baseline or
+// made a change; nothing was compared. RESET-BY-REBOOT: a pending run
+// restored in a later boot, with no change of its own left in its journal
+// (each undone, or checked gone with the boot it was made in) and the host
+// not shown equal to the baseline: what differs is the new boot's.
+// FORGOTTEN: `devicetest restore -forget RUN`, the owner naming a pending
+// run in a later boot than its own: the restore's undos run first when its
+// journal reads back, so only what no undo could close is forgotten (a
+// change of its own that can't be undone), and a journal that doesn't read
+// back is closed as it is; the result shows what the undos did, what the
+// journal still says and how the host compares now, and proves nothing.
+// CLEAN and the last three close the run; only CLEAN says the host is as
+// it was.
 //
 // One run is beyond both: one whose record (run.json) or directory can't
 // be opened, which no restore can replay and nothing can tell the boot of

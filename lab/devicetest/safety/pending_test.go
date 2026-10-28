@@ -340,17 +340,19 @@ func TestASnapshotBeatsAfterEachSurface(t *testing.T) {
 // One root entry point, and an answer already sent over the protocol
 // isn't printed again.
 func TestTheRootSidePrintsAnErrorOnce(t *testing.T) {
-	var out, log strings.Builder
-	state := stateConfig{dir: filepath.Join(tempDir(t), "state"), allowNonRoot: true}
-	if code := rootMain(t.Context(), []string{"helper", "-run", "x"}, state, strings.NewReader(""), &out, &log); code != 1 {
-		t.Errorf("exit %d", code)
+	env := []string{stateEnv + "=" + filepath.Join(tempDir(t), "state"), nonRootEnv + "=1"}
+	root := func(args ...string) (code int, out, log string) {
+		var o, l strings.Builder
+		cmd := childCommand(t, env, args[0], args[1:]...)
+		cmd.Stdin, cmd.Stdout, cmd.Stderr = strings.NewReader(""), &o, &l
+		_ = cmd.Run()
+		return cmd.ProcessState.ExitCode(), o.String(), l.String()
 	}
-	if !strings.Contains(out.String(), `"err":"helper: -run`) || log.Len() != 0 {
-		t.Errorf("answered %q, printed %q", out.String(), log.String())
+	if code, out, log := root("helper", "-run", "x"); code != 1 || !strings.Contains(out, `"err":"helper: -run`) || log != "" {
+		t.Errorf("exit %d, answered %q, printed %q", code, out, log)
 	}
-	out.Reset()
-	if code := rootMain(t.Context(), []string{"no-such-mode"}, state, nil, &out, &log); code != 1 || !strings.Contains(log.String(), "no mode") {
-		t.Errorf("an unknown mode: exit %d, printed %q", code, log.String())
+	if code, _, log := root("no-such-mode"); code != 1 || !strings.Contains(log, "no mode") {
+		t.Errorf("an unknown mode: exit %d, printed %q", code, log)
 	}
 }
 

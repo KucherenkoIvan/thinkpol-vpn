@@ -19,11 +19,10 @@ import (
 // signals, Ctrl-\'s QUIT included (neither a closed window nor a key can
 // stop it between the copy and the exec). The root copy keeps only HUP and
 // INT ignored: Go installs its own QUIT and TERM handlers at start, so
-// until the root mode's signal.Ignore runs (the helper's after its flags
-// are parsed and its copy checked, the restore's first thing) a Ctrl-\ or
-// a TERM can kill it, leaving its tpdt.* directory until the next reboot:
-// a helper killed there has no journal yet, a restore leaves the run
-// pending. It checks the temporary directory is root's and sticky (not a
+// from the Go runtime's start until rootMain's first line ignores them a
+// Ctrl-\ or a TERM can kill it, leaving its tpdt.* directory until the
+// next reboot: a helper killed there has no journal yet, a restore leaves
+// the run pending. It checks the temporary directory is root's and sticky (not a
 // symlink: find doesn't follow one), copies the binary into a fresh
 // directory of root's (0700) there, checks the copy's hash against the one
 // the user side computed before asking for sudo, and runs the copy: a file

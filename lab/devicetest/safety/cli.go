@@ -39,6 +39,9 @@ func RootMain(ctx context.Context, args []string, in io.Reader, out, log io.Writ
 }
 
 func rootMain(ctx context.Context, args []string, state stateConfig, in io.Reader, out, log io.Writer) int {
+	// First, for every mode: until here Go's own QUIT and TERM handlers can
+	// kill the root copy (launchScript).
+	signal.Ignore(syscall.SIGINT, syscall.SIGHUP, syscall.SIGTERM, syscall.SIGQUIT)
 	if len(args) == 0 {
 		_, _ = fmt.Fprintln(log, "devicetest-root: started by devicetest, never by hand")
 		return 2
@@ -93,7 +96,6 @@ func helperMain(ctx context.Context, args []string, state stateConfig, in io.Rea
 }
 
 func deadmanMain(ctx context.Context, args []string, state stateConfig) error {
-	signal.Ignore(syscall.SIGINT, syscall.SIGHUP, syscall.SIGTERM, syscall.SIGQUIT)
 	fs := flag.NewFlagSet("deadman", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	run := fs.String("run", "", "the run's id")
@@ -120,7 +122,6 @@ func deadmanMain(ctx context.Context, args []string, state stateConfig) error {
 // helper, it outlives a closed terminal and a gone reader (a write error,
 // not SIGPIPE), so it always gets to remove its root copy.
 func restoreMain(ctx context.Context, args []string, state stateConfig, out io.Writer) error {
-	signal.Ignore(syscall.SIGINT, syscall.SIGHUP, syscall.SIGTERM, syscall.SIGQUIT)
 	signal.Notify(make(chan os.Signal, 1), syscall.SIGPIPE)
 	fs := flag.NewFlagSet("restore", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)

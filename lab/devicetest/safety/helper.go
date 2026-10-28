@@ -85,11 +85,10 @@ var errNotStarted = errors.New("the run didn't start")
 
 // helper runs a run's root side: it starts the run (journal, dead-man,
 // baseline), answers the user side's requests, and restores when asked or
-// when its input ends (the user side was closed or killed). It ignores
-// the terminal's signals: a Ctrl-C reaches the user side, which asks for
-// the restore, and never cuts a restore short.
+// when its input ends (the user side was closed or killed). The
+// terminal's signals are ignored (rootMain): a Ctrl-C reaches the user
+// side, which asks for the restore, and never cuts a restore short.
 func helper(ctx context.Context, cfg helperConfig) error {
-	signal.Ignore(syscall.SIGINT, syscall.SIGHUP, syscall.SIGTERM, syscall.SIGQUIT)
 	signal.Notify(make(chan os.Signal, 1), syscall.SIGPIPE) // a gone reader is a write error, not death
 	enc := json.NewEncoder(cfg.out)
 	r, err := startRun(ctx, cfg)
