@@ -62,3 +62,4 @@ Round 1 (paranoid, torvalds, go-style, auto second opinion, 2026-10-28): the flo
 - 2026-10-28 out of scope: an interrupted `go test -tags lab` still leaks its labs (as before; `labctl down -tests` removes them), and an interrupted `labctl gotest` once left an empty `lab/.run/<project>` (compose.json only) behind, likely because its `docker compose down` got the SIGINT as well.
 - 2026-10-28 in-progress → review
 - 2026-10-28 review → has-errors (round 1: R1.1–R1.20)
+- 2026-10-28 has-errors → in-progress, owner: agent-claude-tp121
