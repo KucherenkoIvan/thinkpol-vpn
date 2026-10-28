@@ -468,3 +468,4 @@ Round 8 (2026-10-28): design (fix first: S1, S2, nits N1–N6) and correctness (
 - 2026-10-28 not verified (Mac only, on the device checklist): everything listed for rounds 2–6
 - 2026-10-28 in-progress → review
 - 2026-10-28 review → has-errors (round 8: R8.1–R8.9)
+- 2026-10-28 has-errors → in-progress — round 8 findings R8.1–R8.9, owner: agent-tp-082
