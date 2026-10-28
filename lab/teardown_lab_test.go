@@ -96,7 +96,7 @@ func TestLabsBelongToTheirCheckout(t *testing.T) {
 	if err := downProject(ctx, l.Project, other); err == nil || !strings.Contains(err.Error(), "belongs to") {
 		t.Errorf("tear-down from the other checkout: %v", err)
 	}
-	if _, err := Up(ctx, other, l.Project, GoTestTopology()); err == nil || !strings.Contains(err.Error(), "belongs to") {
+	if _, err := up(ctx, other, l.Project, GoTestTopology(), "", runInputs); err == nil || !strings.Contains(err.Error(), "belongs to") {
 		t.Errorf("the other checkout started a lab under the same name: %v", err)
 	}
 	if got := l.Node("gotest").MustExec(t, "echo", "alive"); got != "alive\n" {

@@ -65,14 +65,19 @@ func TestAnotherRunFromTheCheckoutBuildsItsOwnBinaries(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, e := range entries {
-		if !strings.HasPrefix(e.Name(), runDirPrefix) {
+		if !strings.HasPrefix(e.Name(), runBinariesPrefix) {
 			continue
 		}
-		live, err := runDirLive(filepath.Join(binRoot(root), e.Name()))
+		path := filepath.Join(binRoot(root), e.Name())
+		live, err := runBinariesLive(path)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := os.Stat(filepath.Join(binRoot(root), e.Name(), keptMarker)); !live && err != nil {
+		kept, err := keptBy(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !live && len(kept) == 0 {
 			t.Errorf("%s was left behind by a run that ended", e.Name())
 		}
 	}

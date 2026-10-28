@@ -104,18 +104,28 @@ func (n *Node) goTest(ctx context.Context, w io.Writer, pkg GoPackage, env, args
 var builtTests sync.Map // string → *testBuild
 
 type testBuild struct {
-	once  sync.Once
+	mu    sync.Mutex
+	done  bool
 	built bool // false: the package has no tests for linux
-	err   error
 }
 
-// buildTestsOnce runs build for the output bin the first time it is asked
-// for, and returns that build's result every time.
+// buildTestsOnce runs build for the output bin until it succeeds once, and
+// returns that build's result from then on. A failed build renamed nothing
+// onto bin, so the next caller builds again.
 func buildTestsOnce(bin string, build func() (bool, error)) (bool, error) {
 	b, _ := builtTests.LoadOrStore(bin, &testBuild{})
 	tb := b.(*testBuild)
-	tb.once.Do(func() { tb.built, tb.err = build() })
-	return tb.built, tb.err
+	tb.mu.Lock()
+	defer tb.mu.Unlock()
+	if tb.done {
+		return tb.built, nil
+	}
+	built, err := build()
+	if err != nil {
+		return false, err
+	}
+	tb.done, tb.built = true, built
+	return built, nil
 }
 
 // testBinaryName is the file GoTest builds a package's tests into, under
@@ -188,7 +198,7 @@ func GoTestEach(ctx context.Context, root string, pkgs []GoPackage, parallel int
 }
 
 func goTestFresh(ctx context.Context, root, project string, pkg GoPackage, w io.Writer, env, args []string) (labErr, testErr error) {
-	l, err := Up(ctx, root, project, GoTestTopology())
+	l, err := up(ctx, root, project, GoTestTopology(), "", runInputs)
 	if l != nil {
 		defer func() {
 			if err := l.Down(context.WithoutCancel(ctx)); err != nil && labErr == nil {

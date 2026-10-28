@@ -149,7 +149,7 @@ func buildImage(ctx context.Context, root string, t target) (image, error) {
 
 // goBuild runs go build or go test -c for the lab's platform, without cgo,
 // into a temporary file renamed onto out. go test -c writes nothing for a
-// package without tests; then out is removed and goBuild reports false.
+// package without tests; then goBuild reports false.
 // Each output has one builder, so nothing a lab runs is rebuilt under it:
 // a process's tools are built once (prepare), a detached lab's into its
 // own directory, and a package's tests once per binary directory (goTest).
@@ -174,7 +174,6 @@ func goBuild(ctx context.Context, root string, t target, out string, args ...str
 		return false, fmt.Errorf("lab: %w", err)
 	}
 	if _, err := os.Stat(tmp.Name()); err != nil {
-		_ = os.Remove(out) // a package that lost its tests must not run old ones
 		return false, nil
 	}
 	return true, os.Rename(tmp.Name(), out)

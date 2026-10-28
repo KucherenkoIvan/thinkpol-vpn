@@ -120,7 +120,7 @@ func renderCompose(project string, topo Topology, img image, root, binDir string
 		if len(cmd) == 0 {
 			cmd = []string{"sleep", "infinity"}
 		}
-		// Nothing of the node's own runs before Up has sealed it.
+		// Nothing of the node's own runs before the harness has sealed it.
 		cmd = append([]string{"sh", "-c", `while [ ! -e ` + sealedMarker + ` ]; do sleep 0.1; done; exec "$@"`, "wait-for-seal"}, cmd...)
 		if n.Systemd {
 			cmd = systemdCommand
@@ -172,7 +172,7 @@ func renderCompose(project string, topo Topology, img image, root, binDir string
 const sealScript = "/etc/lab/seal.sh"
 
 // systemdCommand is a systemd node's main process: sealed again first
-// when the node restarts (Node.Restart), else waiting for Up to seal it,
+// when the node restarts (Node.Restart), else waiting for the harness to seal it,
 // then its cgroups made writable (Docker mounts them read-only in an
 // unprivileged container) and systemd exec'd as PID 1. In a container
 // systemd reads its arguments as the kernel's command line.
