@@ -91,8 +91,10 @@ func Remove(dir *os.File, name string) error {
 	return nil
 }
 
-// Rename renames the entry from in dir to to, replacing what to names;
-// a symlink at either name is renamed or replaced itself, never followed.
+// Rename renames the entry from in dir to to, replacing what to names as
+// renameat(2) does: a file over a file, a directory over an empty
+// directory, nothing else (ENOTDIR, EISDIR, ENOTEMPTY). A symlink at
+// either name is renamed or replaced itself, never followed.
 func Rename(dir *os.File, from, to string) error {
 	dirfd := int(dir.Fd())
 	if err := unix.Renameat(dirfd, from, dirfd, to); err != nil {

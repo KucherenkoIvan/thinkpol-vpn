@@ -58,18 +58,24 @@
 // directory outlives a reboot and the routes don't, so a record of an
 // earlier boot owns nothing (the records are void after a reboot, like
 // the routes). A corrupt record (no boot line, a line that isn't an
-// identity, not a regular file) says nothing of which routes are its
-// owner's, so it owns nothing: its routes count as foreign, which no owner
-// removes or changes, and it is set aside, renamed
-// <owner>.routes.corrupt-<boot session>, so the owner's next configurator
-// starts (TP-124). Its own owner sets it aside at start; another owner's
-// is set aside while surveying, only under that owner's lock (a running
-// owner's is left to it: it rewrites the record at its next change), and
-// read again under the lock first. [Survey.SetAside] reports this boot's
-// set-aside records for as long as they are there: the routes they named,
-// a dead predecessor's leftovers among them, stay until reboot or until
-// someone removes them. Any other failure to read a record is an error,
-// not an empty record.
+// identity, not a regular file, a symlink) says nothing of which routes
+// are its owner's, so it owns nothing: its routes count as foreign, which
+// no owner removes or changes. Only its own owner moves it, at start and
+// under its lock: renamed <owner>.routes.corrupt-<boot session>, so the
+// owner's configurator starts (removing an earlier set-aside entry of the
+// other kind, file or empty directory, that renameat(2) won't replace);
+// its set-aside records of earlier boots are removed then. Another
+// owner's corrupt record is left where it is, never touched: its owner
+// sets it aside at its next start, or rewrites it at its next change.
+// [Survey.CorruptRecords] reports this boot's corrupt records, set aside
+// or in place, each with why it is corrupt, for as long as they are there;
+// one last written before this boot (kern.boottime) is set aside but not
+// reported, since what it named went with that boot.
+// [Survey.UnownedRoutes] counts the routes with routeFlag that no record
+// names: with a corrupt record, the routes it named, a dead predecessor's
+// leftovers among them, which stay until reboot or until someone removes
+// them. Any other failure to read a record is an error, not an empty
+// record.
 //
 // A route's identity is its destination and, if scoped (RTF_IFSCOPE,
 // route(8)'s -ifscope: only sockets bound to the interface use it), its

@@ -175,12 +175,13 @@
 // anyone a route at one of our destinations, ours go more specific
 // instead (halves, and their halves), so applying never conflicts with
 // what is there. That holds for the routes of a corrupt route record
-// too, which netcfg sets aside and counts as foreign
-// ([netcfg.Survey.SetAside]): a crashed run's reject and direct routes
-// stay in place until reboot, never removed on a guess. The enforcer
-// counts this boot's set-aside records ([Status.RecordsSetAside]; health
-// `route_record_set_aside`, degraded) and warns of each once, naming the
-// file.
+// too, which netcfg counts as foreign ([netcfg.Survey.CorruptRecords]): a
+// crashed run's reject and direct routes stay in place until reboot,
+// never removed on a guess. The enforcer counts this boot's corrupt
+// records and the routes with thinkpol's flag that no record names
+// ([Status.CorruptRecords], [Status.UnownedRoutes]; health
+// `route_records_corrupt`, degraded, while both are nonzero) and warns of
+// each record once, naming it and saying why it is corrupt.
 //
 // # Direct DNS upstreams
 //
