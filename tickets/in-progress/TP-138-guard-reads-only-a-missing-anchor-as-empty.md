@@ -69,3 +69,4 @@ Round 1 (2026-10-28: go-paranoid merge, pocket-torvalds fix first #1–#3, go-st
 - 2026-10-28 TP-091's two fixture boxes ticked, with a Log line there; `make lint` and `make test` pass. No `make lab-test`: every changed line of code is in a darwin-only file (the lab runs Linux nodes), the rest are comments and fixtures. Not verified on a Mac: pfctl's exit status with `No pf starter references held`, and what `-F` answers for a missing anchor
 - 2026-10-28 in-progress → review
 - 2026-10-28 review → has-errors (round 1: R1.1–R1.13)
+- 2026-10-28 has-errors → in-progress
