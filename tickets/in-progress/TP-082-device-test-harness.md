@@ -136,7 +136,7 @@ Type your password.
 - `"verdict": "NOTHING-TO-RESTORE"` and `devicetest restore: NOTHING-TO-RESTORE, no run was pending; nothing was compared`: step 4's run was closed already (after an `UNKNOWN`, its dead-man restored it later). Note it.
 - `"verdict": "NOTHING-TO-RESTORE"` and `devicetest restore: NOTHING-TO-RESTORE, run … closed: it made no change and had no baseline to compare with`: this closes step 4's run too. Note it.
 
-Either way, go on to step 7. Anything else: [If something goes wrong](#if-something-goes-wrong).
+In each of these cases, go on to step 7. Anything else: [If something goes wrong](#if-something-goes-wrong).
 
 #### Step 7: Ctrl-C
 **Do**, in the window you type in. If step 4 ended `restore CLEAN`:
@@ -205,7 +205,7 @@ A result's `left` and `failed` items say what to do; the steps below do it (a re
   ~/devicetest-bin/devicetest restore -forget RUN
   ```
   Expect `FORGOTTEN` and what the journal and the comparison still say (never CLEAN; the next run may start). Note it and continue with the step after the one that sent you here.
-- A run that prints nothing more for minutes: wait for its dead-man (2 minutes for the self-test, 5 for TP-096, then its restore), then: if its restore says `LEFT` or `REBOOT`, go to F1 (reboot first: F3's `-forget` is refused in the run's own boot); otherwise go to F2 without rebooting.
+- A run that prints nothing more for minutes: wait for its dead-man (2 minutes for the self-test, 5 for TP-096, then its restore), then run F2's `restore` without rebooting. If it says `LEFT` or `REBOOT`, or fails, go to F1 and on from there (never straight to F3: its `-forget` is refused in the run's own boot); otherwise continue as F2 says.
 
 #### For the judge
 - Step 3: `selftest/selftest.json` and the decode beside it; pfctl's real missing-anchor answer in `snapshots/00-baseline/pf-anchor-000.thinkpol.err` (thinkpol's guard anchor, absent with no agent running), or the refusal quoting it; whether `snapshots/00-baseline/pf-dummynet.{out,err}` lists dummynet rules (`-s dummynet`, undocumented, information only until then); that `pf-limits` and `pf-timeouts` (`-s memory`, `-s timeouts`) read; that `pf-info.out` has `Debug: …` on its status line as the core reads it.
@@ -315,13 +315,13 @@ Round 6 (2026-10-28): correctness-only re-check (the owner's decision of round 5
 - [x] R6.14 R5.2's Log line claims what Setpgid doesn't add: pfctl already inherits SIG_IGN for INT, HUP, TERM and QUIT from the helper's `signal.Ignore`. One Log line, no code change.
 
 Round 7 (2026-10-28): correctness-only delta check of round 6: no proven defect. One test gap must close before the device run, since the test file is pinned by FROZEN and a later test would move the pin away from the one the run records.
-- [ ] R7.1 should-fix: no test has both the skip and the rules differing after the undo's first load (R6.10's own case): a mutant `slices.Contains(d, "pf-skip")` in place of `slices.Equal(d, []string{"pf-skip"})` survives every test and would load /etc/pf.conf over a kill switch's `set skip on utun3` ruleset. Add that case to TestTheUndoLoadsASecondTimeOnlyForTheSkipAlone: one load, REBOOT, the app's rules and skip kept.
-- [ ] R7.2 REBOOT wording (`kinds.go`, `restore.go`, doc.go "Verdicts") says the core's own pf change survived its undo; in R7.1's case the surviving skip may be another app's. Wording only.
-- [ ] R7.3 Checklist section F, the hung-run bullet: a LEFT or REBOOT there goes to F2 without rebooting, and F3's `restore -forget` is refused in the run's boot. It goes to F1.
-- [ ] R7.4 No test asserts the cause on the "reading pf after the load failed" path (`pfskip_darwin.go` `apply`): a bare `return err` there survives.
-- [ ] R7.5 optional: `nextPfState` advises "reboot, then run devicetest restore" in a later boot, where another reboot changes nothing. Harmless.
-- [ ] R7.6 Checklist step 6 lists only "NOTHING-TO-RESTORE, no run was pending"; `reportRestore` can also print "NOTHING-TO-RESTORE, run … closed: it made no change and had no baseline".
-- [ ] R7.7 Suspicion, doc only: `launch.go` says the root modes "ignore them too", but Go installs its own QUIT and TERM handlers after exec, so the root copy can be killed in the window before `signal.Ignore` runs. Name the window.
+- [x] R7.1 should-fix: no test has both the skip and the rules differing after the undo's first load (R6.10's own case): a mutant `slices.Contains(d, "pf-skip")` in place of `slices.Equal(d, []string{"pf-skip"})` survives every test and would load /etc/pf.conf over a kill switch's `set skip on utun3` ruleset. Add that case to TestTheUndoLoadsASecondTimeOnlyForTheSkipAlone: one load, REBOOT, the app's rules and skip kept.
+- [x] R7.2 REBOOT wording (`kinds.go`, `restore.go`, doc.go "Verdicts") says the core's own pf change survived its undo; in R7.1's case the surviving skip may be another app's. Wording only.
+- [x] R7.3 Checklist section F, the hung-run bullet: a LEFT or REBOOT there goes to F2 without rebooting, and F3's `restore -forget` is refused in the run's boot. It goes to F1.
+- [x] R7.4 No test asserts the cause on the "reading pf after the load failed" path (`pfskip_darwin.go` `apply`): a bare `return err` there survives.
+- [x] R7.5 optional: `nextPfState` advises "reboot, then run devicetest restore" in a later boot, where another reboot changes nothing. Harmless.
+- [x] R7.6 Checklist step 6 lists only "NOTHING-TO-RESTORE, no run was pending"; `reportRestore` can also print "NOTHING-TO-RESTORE, run … closed: it made no change and had no baseline".
+- [x] R7.7 Suspicion, doc only: `launch.go` says the root modes "ignore them too", but Go installs its own QUIT and TERM handlers after exec, so the root copy can be killed in the window before `signal.Ignore` runs. Name the window.
 
 ## Log
 - 2026-10-15 created in backlog (device run 3 and 4 findings)
@@ -447,3 +447,11 @@ Round 7 (2026-10-28): correctness-only delta check of round 6: no proven defect.
 - 2026-10-28 in-progress → review
 - 2026-10-28 review → has-errors (round 7: R7.1–R7.7)
 - 2026-10-28 has-errors → in-progress — round 7 findings R7.1–R7.7, owner: agent-tp-082
+- 2026-10-28 round 8 took over the killed fixer's uncommitted edits (fc01081, WIP) and re-read them against round 7
+- 2026-10-28 merged origin/rewrite at c9497e3 (TP-138): the merge requirement done (Notes): this branch's `AnchorMissing` and its test cases deleted from `listing_darwin.go`, firewall doc.go's TP-138 sentence replaced by "a restore reads pfctl's answers of absence exactly as the guard does"; the core reads TP-138's `AnchorMissing`, `SkippedNames` and `ParsePfEnabled`, which reach it without moving `FROZEN` (what changes for it is in Notes)
+- 2026-10-28 R7.1: TestTheUndoLoadsASecondTimeOnlyForTheSkipAlone gains the case where the app's ruleset landing after the first load carries `set skip on utun3`: one load, REBOOT naming `[pf-rules pf-skip]`, the app's rules and skip kept. Mutation caught: `slices.Contains(d, "pf-skip")` in place of `slices.Equal(d, []string{"pf-skip"})` (two loads, CLEAN, the app's ruleset wiped)
+- 2026-10-28 R7.4: TestALoadNeverJournaledIsLeftAndNothingLoaded's read-after-load case now restores and asserts the LEFT quotes "reading pf after the load failed: …" with pfctl's stderr, not a stopped helper. Mutation caught: a bare `return err` in place of `fail(...)` in `apply` (the LEFT said the helper stopped)
+- 2026-10-28 R7.2: REBOOT's docs (`errPfSurvivedReload` in kinds.go, `Reboot` in restore.go, doc.go "Verdicts") say the surviving skip is the core's own or another app's loaded after the undo's load. R7.5: `nextPfState` says that in a later boot pf's state is that boot's and nothing needs doing. R7.7: launch.go names the window (Go's own QUIT and TERM handlers until the root mode's signal.Ignore: the helper's after its flags and copy check, the restore's first thing) and what a kill there leaves (its tpdt.* directory; a helper with no journal yet, a restore with the run still pending). R7.3: the hung-run bullet runs F2's restore without rebooting and sends LEFT, REBOOT or a failure to F1, never straight to F3. R7.6: step 6 lists "NOTHING-TO-RESTORE, run … closed: it made no change and had no baseline to compare with" (run.go's text)
+- 2026-10-28 mutation rule kept: pf only through fakePf in every new case. FROZEN regenerated once for round 8; its diff from round 6's (4fbe34d) is exactly this round's core files: doc.go, kinds.go, launch.go, pf_darwin_test.go, restore.go, surfaces_darwin.go
+- 2026-10-28 lab: not run this round: since 4fbe34d (lab green) nothing a Linux lab node compiles changed but comments (safety's doc.go, kinds.go, launch.go, restore.go; firewall's and dns's doc.go); the code changes are darwin-only (`*_darwin*.go`, testdata), and the launch script itself is unchanged
+- 2026-10-28 not verified (Mac only, on the device checklist): everything listed for rounds 2–6
