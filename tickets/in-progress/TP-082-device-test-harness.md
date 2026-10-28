@@ -46,11 +46,12 @@ Per-round lessons from the kit work: stub-only tests gave false greens; bash `$B
 - Acceptance evidence: the safety core's tests run as the user on the Mac (`make test`: kill -9 of a journaling child, a cut journal line, a power loss as another boot session, the dead-man against a killed helper, a stop file, no heartbeat, a fresh one and a stale one, the helper's restore on input end and after SIGINT/SIGHUP, an unfinished run blocking the next, symlinks against the evidence writer, the root-read allowlist, the live reader and the decode check on a capture recorded in a lab node) and as root in lab nodes (`make lab-test`: the launch script's root copy and its hash check, a real tcpdump applied and undone through the journal, a whole run through the launch script, helper, dead-man and tcpdump, and a broken capture caught in 4.7 s with nothing of the plan's run).
 - Size: about 5.3k lines under `lab/devicetest` with comments and package docs, plus 3.6k lines of tests, after round 5 (round 4: 5.2k and 3.3k; round 3: 5.1k and 3.1k; round 2: 5.0k and 2.9k; round 1: 4.6k and 2.3k; the prototype: 4.5k and 1.8k; the design estimated 1.6k and 1.1k). TP-096's plan is 33 lines.
 - The merge waits for the device run: checklist steps 1–9 (steps 1–6 before round 5) from a build of this branch, judged (round 4's process note).
+- Merge requirement (TP-138): TP-138 (in review) defines `firewall.AnchorMissing` in `internal/dataplane/firewall/pfctl_darwin.go` with this branch's name and signature, but stricter: a cut-short listing doesn't count as a missing anchor. When this branch merges into `rewrite` after TP-138 has landed, delete this branch's copy of `AnchorMissing` (in `internal/dataplane/firewall/listing_darwin.go`, with its test cases; the file's other readers stay unless TP-138 brings them too) and firewall doc.go's sentence "The guard moves to [AnchorMissing] in TP-138.", and use TP-138's. The core reads pf through it, so that merge changes the core's behaviour without moving `FROZEN`: its review says so (safety/doc.go "Frozen"). Not done now: TP-138 isn't merged.
 
 ### Device checklist (the owner's first run)
 This branch merges into `rewrite` only after these steps are run from a build of it and judged: the core's own rule (a core change merges after one device self-test passes) applies to its first merge; a core change they show is needed is a fix round of this ticket.
 
-Before you start: run everything as yourself in one Terminal window, pasting each block as it is (devicetest asks for your password itself when it needs root), with no VPN and no thinkpol agent running, and Wi-Fi on. Don't pipe devicetest's output into another program: it keeps its own transcript (`harness.log`), and a pipe can keep Ctrl-C from reaching it. Each run has a dead-man that restores the Mac by itself if the run hangs or is killed: after 2 minutes for the self-test and 5 minutes for TP-096. In a restore result only the `left` items need action; `info` items are for the judge. Never load, flush or disable pf by hand: when something isn't as expected, use [If something goes wrong](#if-something-goes-wrong).
+Before you start: run everything as yourself in one Terminal window, pasting each block as it is (devicetest asks for your password itself when it needs root), with no VPN and no thinkpol agent running, and Wi-Fi on. Don't pipe devicetest's output into another program: it keeps its own transcript (`harness.log`), and a pipe can keep Ctrl-C from reaching it. Each run has a dead-man that restores the Mac by itself if the run hangs or is killed: after 2 minutes for the self-test and 5 minutes for TP-096. In a restore result, the `left` and `failed` items say what differs or failed, each with what to do; the steps here already do it (a reboot, then `restore`), so act only through them, and note any item that asks for something else (stopping another app, say). `info` items need nothing. Never load, flush, disable or enable pf by hand (no item asks you to): when something isn't as expected, use [If something goes wrong](#if-something-goes-wrong).
 
 | Step | What |
 |---|---|
@@ -130,7 +131,11 @@ Type your password.
 
 **What happens**: it reopens the pending run, checks each change of the run's is gone with the old boot, and compares the Mac with the run's baseline. It changes nothing in this boot.
 
-**Expect**: `"verdict": "RESET-BY-REBOOT"` and `devicetest restore: RESET-BY-REBOOT, run … closed: every change it made was undone or went with its boot; …`. (A `CLEAN` closes it too.) Anything else: [If something goes wrong](#if-something-goes-wrong).
+**Expect** one of:
+- `"verdict": "RESET-BY-REBOOT"` and `devicetest restore: RESET-BY-REBOOT, run … closed: every change it made was undone or went with its boot; …`. (A `CLEAN` closes it too.)
+- `"verdict": "NOTHING-TO-RESTORE"` and `devicetest restore: NOTHING-TO-RESTORE, no run was pending; nothing was compared`: step 4's run was closed already (after an `UNKNOWN`, its dead-man restored it later). Note it.
+
+Either way, go on to step 7. Anything else: [If something goes wrong](#if-something-goes-wrong).
 
 #### Step 7: Ctrl-C
 **Do**, in the window you type in. If step 4 ended `restore CLEAN`:
@@ -141,11 +146,17 @@ Otherwise:
 ```sh
 ~/devicetest-bin/devicetest selftest
 ```
-Type `yes`, then your password. As soon as the line `the helper is up: from now on Ctrl-C stops the run …` appears (for TP-096 you may wait for `step 1 stock`), press Ctrl-C twice in this same window.
+Type `yes`, then your password. As soon as the line `the helper is up: from now on Ctrl-C stops the run …` appears, press Ctrl-C twice in this same window. The self-test ends a second or two after that line, so press at once; for TP-096 you may wait for `step 1 stock`.
 
 **What happens**: the run stops after the operation running now, undoes what it changed and compares the Mac with the baseline; the second Ctrl-C doesn't stop the restore.
 
-**Expect**, within a second of the first Ctrl-C, the line `interrupt: stopping after the operation running now, then restoring`; after the second, `restoring, wait: a second Ctrl-C doesn't stop the restore`; then a last line ending `restore CLEAN -> …`. No `interrupt:` line: the Ctrl-C didn't reach the run; let it finish (it restores by itself) and note it. Anything but CLEAN: [If something goes wrong](#if-something-goes-wrong).
+**Expect**, within a second of the first Ctrl-C, the line `interrupt: stopping after the operation running now, then restoring`; after the second, `restoring, wait: a second Ctrl-C doesn't stop the restore`; then a last line ending `restore CLEAN -> …`.
+- The last line (`devicetest selftest recorded: …` or `devicetest TP-096 recorded: …`) came before your first Ctrl-C: you were too late, and the Ctrl-C went to zsh. Run the same block again, pressing sooner.
+- `interrupt:` but no `restoring, wait:` line: the run had ended before your second Ctrl-C. Note it; that's fine.
+- A `SELF-TEST FAILED` line naming the decode (`tcpdump -n -A -r`) next to the `interrupt:` line: your Ctrl-C reached the decode, which says nothing about the capture. Note it; the last line then says `selftest FAILED, restore CLEAN`.
+- No `interrupt:` line, though the last line came after your first Ctrl-C: the Ctrl-C didn't reach the run. Note it.
+
+Anything but CLEAN: [If something goes wrong](#if-something-goes-wrong).
 
 #### Step 8: a closed terminal
 **Do**: open a new Terminal window (Cmd-N) and run:
@@ -181,13 +192,13 @@ cd ~/thinkpol-evidence && for f in "$(date +%F)"-*/; do zip -qr "${f%/}.zip" "$f
 **Expect**: the zips' paths. Send them; an agent judges them. The tool says no PASS or FAIL.
 
 #### If something goes wrong
-Only the `left` items of a result need action, and never pfctl by hand.
+A result's `left` and `failed` items say what to do; the steps below do it (a reboot, then `restore`). Never pfctl by hand: no item asks you to.
 - F1. A restore says `LEFT` or `REBOOT`, or a restore fails: Apple menu → Restart.
 - F2. After the reboot, in a new Terminal window:
   ```sh
   ~/devicetest-bin/devicetest restore
   ```
-  Expect `RESET-BY-REBOOT` or `CLEAN`, then continue with the step after the one that sent you here.
+  Expect `RESET-BY-REBOOT` or `CLEAN`, or `NOTHING-TO-RESTORE` (the run was closed already), then continue with the step after the one that sent you here.
 - F3. If F2 still says `LEFT` or `REBOOT`, or fails the same way: close the run by name, typing the run id F2 named in place of `RUN`:
   ```sh
   ~/devicetest-bin/devicetest restore -forget RUN
@@ -197,8 +208,8 @@ Only the `left` items of a result need action, and never pfctl by hand.
 
 #### For the judge
 - Step 3: `selftest/selftest.json` and the decode beside it; pfctl's real missing-anchor answer in `snapshots/00-baseline/pf-anchor-000.thinkpol.err` (thinkpol's guard anchor, absent with no agent running), or the refusal quoting it; whether `snapshots/00-baseline/pf-dummynet.{out,err}` lists dummynet rules (`-s dummynet`, undocumented, information only until then); that `pf-limits` and `pf-timeouts` (`-s memory`, `-s timeouts`) read; that `pf-info.out` has `Debug: …` on its status line as the core reads it.
-- Step 4: `steps/02-skip-on-lo/cmd-002.pfctl--s-Interfaces--v.out` (the skip loaded: `lo0 (skip)`, `lo (skip)`, or no mark at all) against `cmd-007.pfctl--s-Interfaces--v.out` (after the undo), and the undo's line in the transcript (`undone: …` or the STOP line); `actions/pf-skip-*` (the stock-rules parse, the load and the reloads); in `restore/result-*.json`, that `left` names none of `pf-skip`, `pf-limits` and `pf-timeouts`; `snapshots/00-baseline` against `99-after-restore`. Record whether loading /etc/pf.conf cleared the skip, and whether pfctl marks it at all: if not, the undo needs another way (a fix round, not a ticket).
-- Steps 6–8: `restore/result-*.json` in each folder (step 8's selftest folder: `"verdict": "CLEAN"`), and the `interrupt:` line in step 7's `harness.log`.
+- Step 4: `steps/02-skip-on-lo/cmd-002.pfctl--s-Interfaces--v.out` (the skip loaded: `lo0 (skip)`, `lo (skip)`, or no mark at all) against `cmd-007.pfctl--s-Interfaces--v.out` (after the undo; on the LEFT path it doesn't exist, since Enter at the STOP ends step 2 before ops 7–8, so the STOP line and `actions/pf-skip-*.restore` show the undo), and the undo's line in the transcript (`undone: …` or the STOP line); `actions/pf-skip-*` (the stock-rules parse, the load and the reloads); in `restore/result-*.json`, that `left` names none of `pf-skip`, `pf-limits` and `pf-timeouts`; `snapshots/00-baseline` against `99-after-restore`. Record whether loading /etc/pf.conf cleared the skip, and whether pfctl marks it at all: if not, the undo needs another way (a fix round, not a ticket).
+- Steps 6–8: `restore/result-*.json` in each folder (step 8's selftest folder: `"verdict": "CLEAN"`), and the `interrupt:` line in step 7's `harness.log`. In step 7, a `SELF-TEST FAILED` naming the decode (`tcpdump -n -A -r`) next to the `interrupt:` line is the Ctrl-C killing the user side's decode, which runs in the terminal's process group: it says nothing about the capture. A step 7 run again (the first Ctrl-C came after the last line) leaves one more folder (`…-selftest-N` or `…-TP-096-N`, numbered in order): judge the later one.
 
 ## Review findings
 Round 1 (2026-10-23): correctness (fix first), style (fix first), design (fix first), second opinion (fix first). The split is right and the tests are real; the core still has holes that leave the Mac changed under a CLEAN verdict, and every one costs a ticket and the owner's approval once `FROZEN` pins it, so all of them are fixed now.
@@ -287,20 +298,20 @@ Round 5 (2026-10-23): correctness, style and design: fix first; second opinion: 
 - [x] R5.29 Device run lesson: Ctrl-C through sudo and tee may not reach the process: the Ctrl-C step says which window and how to confirm the stop.
 
 Round 6 (2026-10-28): correctness-only re-check (the owner's decision of round 5): no proven defect in the safety core. Two checklist problems could spoil the device run's evidence, and some frozen comments are slightly wrong. One small round fixes them before the core freezes at merge, with three cheap narrowings of the core and one test.
-- [ ] R6.1 Checklist step 7, self-test variant: a Ctrl-C after the `devicetest selftest recorded:` line came too late (the self-test ends a second or two after the cue line): run it again, rather than read "no `interrupt:` line" as Ctrl-C not reaching the run. A Ctrl-C during the decode check kills the user side's `tcpdump -r`, which shares the terminal's process group, so SELF-TEST FAILED there says nothing about the capture: tell the judge.
-- [ ] R6.2 Checklist step 6 has no NOTHING-TO-RESTORE outcome (step 4 ended UNKNOWN, and the dead-man closed the run CLEAN): the failure section loops through reboots.
-- [ ] R6.3 Checklist: "only the `left` items need action" is wrong in general: on the LEFT path the reboot instruction sits in `failed`.
-- [ ] R6.4 Checklist, for the judge: on the LEFT path Enter at the STOP ends step 2 before ops 7–8, so `cmd-007…` doesn't exist.
-- [ ] R6.5 "Never pfctl by hand" against `nextPfState`'s `sudo pfctl -e`: either the advice goes, or the checklist names the one exception; pick the safer one and say why.
-- [ ] R6.6 Frozen text: `undoText` says the undo reloads only "while pf skips other than at the baseline"; on a Mac that lists no skips it loads /etc/pf.conf with pf skipping as at the baseline.
-- [ ] R6.7 Frozen text: "a reboot … took it away" describes the run's own boot (`pfskip_darwin.go` `undo`'s doc, doc.go), where a reboot can't have happened: a reboot is the later-boot case.
-- [ ] R6.8 Frozen text: doc.go's "Only two of those change pf" leaves out an orphaned `pfctl -e` from `pfBackOn` (harmless: it turns pf on only when the baseline had it on).
-- [ ] R6.9 Frozen text, should-fix: the blind-Mac residual is understated. On a Mac that lists no skips, `pre`'s "nothing is skipped" check and R5.1's skips comparison check nothing: another app's ruleset that is the stock rules plus a skip of its own is loaded over, LEFT, never CLEAN; the doc's "the same … skips" holds always there.
-- [ ] R6.10 Narrowing: the undo loads /etc/pf.conf a second time only when the skip alone still differs after the first load; a second load can't help when rules or nat differ, and could wipe a ruleset loaded in between.
-- [ ] R6.11 The LEFT message blames "the helper stopped, or reading pf after the load failed" when the load itself failed (`pfctl -f -` exits non-zero, or /etc/pf.conf can't be read): name the real cause.
-- [ ] R6.12 The launch script's trap leaves out QUIT, which every root mode ignores: a Ctrl-\ between `mktemp` and `exec` leaves a root copy until the next reboot.
-- [ ] R6.13 No test covers a Mac that lists no skips across a reboot (the later-boot "gone" path): a mutant adding `&& !slices.Equal(a.Skips, base)` there survives every test, and would leave such a Mac's run LEFT for good.
-- [ ] R6.14 R5.2's Log line claims what Setpgid doesn't add: pfctl already inherits SIG_IGN for INT, HUP, TERM and QUIT from the helper's `signal.Ignore`. One Log line, no code change.
+- [x] R6.1 Checklist step 7, self-test variant: a Ctrl-C after the `devicetest selftest recorded:` line came too late (the self-test ends a second or two after the cue line): run it again, rather than read "no `interrupt:` line" as Ctrl-C not reaching the run. A Ctrl-C during the decode check kills the user side's `tcpdump -r`, which shares the terminal's process group, so SELF-TEST FAILED there says nothing about the capture: tell the judge.
+- [x] R6.2 Checklist step 6 has no NOTHING-TO-RESTORE outcome (step 4 ended UNKNOWN, and the dead-man closed the run CLEAN): the failure section loops through reboots.
+- [x] R6.3 Checklist: "only the `left` items need action" is wrong in general: on the LEFT path the reboot instruction sits in `failed`.
+- [x] R6.4 Checklist, for the judge: on the LEFT path Enter at the STOP ends step 2 before ops 7–8, so `cmd-007…` doesn't exist.
+- [x] R6.5 "Never pfctl by hand" against `nextPfState`'s `sudo pfctl -e`: either the advice goes, or the checklist names the one exception; pick the safer one and say why.
+- [x] R6.6 Frozen text: `undoText` says the undo reloads only "while pf skips other than at the baseline"; on a Mac that lists no skips it loads /etc/pf.conf with pf skipping as at the baseline.
+- [x] R6.7 Frozen text: "a reboot … took it away" describes the run's own boot (`pfskip_darwin.go` `undo`'s doc, doc.go), where a reboot can't have happened: a reboot is the later-boot case.
+- [x] R6.8 Frozen text: doc.go's "Only two of those change pf" leaves out an orphaned `pfctl -e` from `pfBackOn` (harmless: it turns pf on only when the baseline had it on).
+- [x] R6.9 Frozen text, should-fix: the blind-Mac residual is understated. On a Mac that lists no skips, `pre`'s "nothing is skipped" check and R5.1's skips comparison check nothing: another app's ruleset that is the stock rules plus a skip of its own is loaded over, LEFT, never CLEAN; the doc's "the same … skips" holds always there.
+- [x] R6.10 Narrowing: the undo loads /etc/pf.conf a second time only when the skip alone still differs after the first load; a second load can't help when rules or nat differ, and could wipe a ruleset loaded in between.
+- [x] R6.11 The LEFT message blames "the helper stopped, or reading pf after the load failed" when the load itself failed (`pfctl -f -` exits non-zero, or /etc/pf.conf can't be read): name the real cause.
+- [x] R6.12 The launch script's trap leaves out QUIT, which every root mode ignores: a Ctrl-\ between `mktemp` and `exec` leaves a root copy until the next reboot.
+- [x] R6.13 No test covers a Mac that lists no skips across a reboot (the later-boot "gone" path): a mutant adding `&& !slices.Equal(a.Skips, base)` there survives every test, and would leave such a Mac's run LEFT for good.
+- [x] R6.14 R5.2's Log line claims what Setpgid doesn't add: pfctl already inherits SIG_IGN for INT, HUP, TERM and QUIT from the helper's `signal.Ignore`. One Log line, no code change.
 
 ## Log
 - 2026-10-15 created in backlog (device run 3 and 4 findings)
@@ -412,3 +423,14 @@ Round 6 (2026-10-28): correctness-only re-check (the owner's decision of round 5
 - 2026-10-28 in-progress → review
 - 2026-10-28 review → has-errors (round 6: R6.1–R6.14)
 - 2026-10-28 has-errors → in-progress — round 6 findings R6.1–R6.14, owner: agent-tp-082
+- 2026-10-28 R6.1–R6.4 (checklist, ticket text only): step 7 says the self-test ends a second or two after the cue line, so press at once; a last line before the first Ctrl-C means too late, run it again; `interrupt:` without `restoring, wait:` is fine; a `SELF-TEST FAILED` naming the decode next to `interrupt:` is the Ctrl-C reaching the user side's `tcpdump -r`, and the judge's notes say so (and which folder to judge after a rerun). Step 6 gains NOTHING-TO-RESTORE (step 4's run closed already, after an UNKNOWN) and goes on to step 7; F2 takes it too, so nothing loops through reboots. The intro and the failure section say `left` and `failed` items say what to do and the steps here do it, `info` needs nothing. The judge's step 4 note says cmd-007 doesn't exist on the LEFT path (the STOP ends step 2 before ops 7–8) and where the undo shows instead
+- 2026-10-28 R6.5: the advice went (`surfaces_darwin.go` `nextPfState`): it now says the restore turns pf back on itself in the run's boot when the baseline had it on, else reboot, then `devicetest restore`, and never enable, disable or load pf by hand; the checklist says no item asks for pfctl. Why this one: the restore's own `pfctl -e` (`pfBackOn`) is already the one that's needed, checked, only in the run's boot and only when the baseline had it on; a hand `pfctl -e` repeats it without those checks (in a later boot it would turn on pf the baseline's boot had on, in a boot the run never touched), and an exception in the checklist would break its one rule for a step that adds nothing
+- 2026-10-28 R6.6–R6.9 (frozen text): `undoText` says the undo reloads while pf holds what the load set unless the skip it listed is gone, once more only for the skip alone, and once then LEFT for a skip never listed; the run's-boot "nothing to do" case says another app's load took the skip (a reboot would make it a later boot) in `undo`'s doc and safety/doc.go; doc.go's dead-man paragraph names three orphans that change pf, the restore's `pfctl -e` included (on only when the baseline had it on); the blind-Mac residual is a paragraph of its own in safety/doc.go and in `pfSkipAction`'s and `pre`'s docs (every skip check sees nothing there, a ruleset of another app's that is the stock rules plus a skip of its own is loaded over by the run's load or the undo's, the comparison shows neither, every run there ends LEFT and a later boot closes it RESET-BY-REBOOT); the REBOOT doc (`restore.go`, doc.go "Verdicts", `errPfSurvivedReload`) says pf still skips other than at the baseline after the undo's loads
+- 2026-10-28 R6.10: the undo loads /etc/pf.conf once, and a second time only when the read after it differs in `pf-skip` alone; the read after the last load decides, and the skip gone with rules or nat differing says how many loads and that another app may have loaded in between (`pfskip_darwin.go` `undo`). Test: TestTheUndoLoadsASecondTimeOnlyForTheSkipAlone (an app's ruleset landing right after the first load: one load, LEFT, the app's rules kept; a skip only the second load clears: two loads, CLEAN). Mutations caught: a second load for any difference, never a second load
+- 2026-10-28 R6.11: when `apply` fails before journaling what its load left (/etc/pf.conf unreadable before any load, `pfctl -f -` failing, or reading pf after the load failing) it journals why (`Failed`, through `learnt`), and the undo's LEFT quotes it in place of "the helper stopped before journaling it, or the journal write failed"; `pre` refuses a spec naming `Failed` (`pfskip_darwin.go`). Tests: TestAFailedLoadIsLeftNamingItsCause (`pfctl -f -` exits 1: the restore's LEFT names that exit and stderr, not a stopped helper, nothing loaded), TestASpecNamingALoadsOutcomeIsRefused. Mutations caught: the cause not journaled, `pre` ignoring `Failed`
+- 2026-10-28 R6.12: the launch script's trap is `trap '' HUP INT TERM QUIT` (`launch.go`). Test: TestTheLaunchScriptIgnoresTheTerminalsSignals (its hasher now sends QUIT to the group too). Mutation caught: QUIT out of the trap (the script died and left its copy, which the test removed)
+- 2026-10-28 R6.13: TestASkipPfNeverListsIsResetByTheReboot: on a Mac that lists no skips, the run's load through the engine, UndoLast LEFT in the run's boot, then after a reboot the restore marks the change gone with its boot, loads nothing and closes the run RESET-BY-REBOOT. Mutation caught: the reviewer's `&& !slices.Equal(a.Skips, base)` in the later-boot "gone" case
+- 2026-10-28 R6.14, correcting R5.2's Log line: Setpgid adds nothing against Ctrl-C, since pfctl already inherits SIG_IGN for INT, HUP, TERM and QUIT from the helper's `signal.Ignore` (Go keeps an ignored signal ignored across exec); of the terminal's signals it keeps only Ctrl-Z's SIGTSTP, which the helper doesn't ignore, from a pfctl. No code change; safety/doc.go's dead-man paragraph no longer gives the process group as the reason a Ctrl-C can't reach a pfctl
+- 2026-10-28 mutation rule kept: pf only through fakePf, every other host tool refused outside the lab; the launch-script test runs /bin/sh as the user with its own hasher. FROZEN regenerated once for round 6 (4fbe34d); its diff is exactly the files this round changed
+- 2026-10-28 not verified (Mac only, on the device checklist): how long the self-test runs after the cue line on the owner's Mac (step 7's timing); a real `pfctl -f -` failure's text; QUIT under sudo's pty; and everything listed for rounds 2–5
+- 2026-10-28 lab: `make lab-test` (LAB_P=4) green on 4fbe34d: the core's root tests and the whole runs through the real launch script in a lab node
