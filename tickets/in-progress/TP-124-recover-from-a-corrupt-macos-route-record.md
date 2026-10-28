@@ -20,66 +20,82 @@ A corrupt route record under `/private/var/db/thinkpol/netcfg` doesn't leave a d
 - Health says a record was set aside, and the log names the file.
 
 ## Acceptance
-- [x] a unit test with a corrupt record of another owner: the survey succeeds, the record is set aside, no route of that owner is removed — `TestACorruptRecordOfAnotherOwnerIsSetAside` (netcfg_darwin_test.go): a crashed overlay's routes and a corrupt overlay record; the route table's `Survey` and `DefaultRoute` answer, the record is at `overlay.routes.corrupt-<boot>`, `Survey.SetAside` names it (on the next survey too), the overlay's routes are `Held` (foreign), and after the route table's Apply and Close the kernel holds the overlay's routes unchanged. `TestACorruptRecordOfARunningOwnerIsLeftToIt`: a running owner's corrupt record isn't moved, the survey still answers, the owner rewrites it at its next Apply. `TestAnUnreadableRecordFailsTheSurvey`: a record that can't be read (mode 0) still fails the survey, nothing set aside
-- [x] the same for the node's own record at start — `TestTheOwnersCorruptRecordIsSetAsideAtStart`: a crashed route table's routes and its corrupt record; the next configurator starts owning nothing, the record is set aside and reported, the leftovers are `Held`, an Apply over them fails with ErrConflict, and Close leaves the kernel unchanged
+- [x] a unit test with a corrupt record of another owner: the survey succeeds, the record is reported in place and its routes are `Held` (its owner sets it aside at its own start), no route of that owner is removed — `TestACorruptRecordOfAnotherOwnerIsReportedInPlace` (netcfg_darwin_test.go): a crashed overlay's routes and a corrupt overlay record; the route table's `DefaultRoute` (first, over the corrupt file) and `Survey` answer, the record is untouched and not set aside, `Survey.CorruptRecords` names it with why (`no boot line`), the overlay's routes are `Held` (foreign) and counted in `UnownedRoutes` (4, the route table's own routes not among them after its Apply), and after the route table's Apply and Close the kernel holds the overlay's routes unchanged; the overlay's next start sets the record aside at `overlay.routes.corrupt-<boot>`, owning nothing, and the next survey reports that file. `TestAnUnreadableRecordFailsTheSurvey`: a record that can't be read (mode 0) still fails the survey and DefaultRoute, nothing set aside
+- [x] the same for the node's own record at start — `TestTheOwnersCorruptRecordIsSetAsideAtStart`: a crashed route table's routes and its corrupt record; the next configurator starts owning nothing, the record is set aside and reported, the leftovers are `Held` and counted in `UnownedRoutes`, an Apply over them fails with ErrConflict, and Close leaves the kernel unchanged
 - [x] `make lint`, `make test` pass — both exit 0 on the code commit; `make lab-test` too (Log)
 
 ## Review findings
 Round 1 (2026-10-28): correctness (no defect, test gaps), design (fix first), conventions (fix first). Setting a corrupt record aside and owning nothing holds; the cross-owner set-aside buys nothing with today's wiring and makes ErrBusy lie, and health follows a file instead of the leftover routes.
-- [ ] R1.1 (design 1, 8; correctness 6) Remove the cross-owner lock and set-aside from `recordOf` (`netcfg_darwin.go` ~619-646): another owner's corrupt record holds nothing and is reported in place, never touched; its owner sets it aside at its own next start, under its own lock. Rename the surface to what is measured (`Survey.CorruptRecords`, `Status.CorruptRecords`, the counter); drop `TestACorruptRecordOfARunningOwnerIsLeftToIt` (one case now). Update the acceptance evidence and add a Log line on the changed wording ("the record is set aside" → reported in place, its routes Held; its owner sets it aside at start), the Notes' decision and the device checklist.
-- [ ] R1.2 (design 2) Health follows the real problem: degraded only while a corrupt record is seen AND routes carrying routeFlag that no record names are in the kernel (`Survey.UnownedRoutes`), not merely while a file exists. Checklist step 3 says deleting the file is an acknowledgement, not a repair.
-- [ ] R1.3 (correctness 1) A test that an earlier boot's set-aside file isn't reported (catches the boot id dropped from `setAsideName`).
-- [ ] R1.4 (conventions 1, 2, 3; design 6, 7) The symlink case in the corrupt-record definitions (`netcfg/doc.go` ~60, `record_darwin.go` ~48); the stale comments on `owned` and `thinkpolRoutes`.
-- [ ] R1.5 (design 3) A failed stat for reporting never fails the survey.
-- [ ] R1.6 (design 4) Earlier boots' set-aside files are removed at the owner's start, under its own lock.
-- [ ] R1.7 (design 5; correctness 4; conventions 5) Setting a corrupt directory aside over an earlier set-aside entry (ENOTDIR, EISDIR, ENOTEMPTY): remove the target first, or document; narrow `trusteddir.Rename`'s doc to what renameat(2) replaces.
-- [ ] R1.8 (correctness 3) A corrupt record from before this boot (mtime before kern.boottime) is set aside but not reported.
-- [ ] R1.9 (correctness 5) The log says why a record was judged corrupt.
-- [ ] R1.10 (correctness 2) The DefaultRoute test meets a corrupt file (today it runs after Survey moved it).
-- [ ] R1.11 (conventions 4) The darwin `Survey` doc names the new fields.
-- [ ] R1.12 (conventions 6) Drop "(TP-124)" from `netcfg/doc.go`.
-- [ ] R1.13 (conventions 7) The problem code's plural/singular: choose one and say why.
-- [ ] R1.14 (conventions 8) The status line shows even when the route table holds no routes.
+- [x] R1.1 (design 1, 8; correctness 6) Remove the cross-owner lock and set-aside from `recordOf` (`netcfg_darwin.go` ~619-646): another owner's corrupt record holds nothing and is reported in place, never touched; its owner sets it aside at its own next start, under its own lock. Rename the surface to what is measured (`Survey.CorruptRecords`, `Status.CorruptRecords`, the counter); drop `TestACorruptRecordOfARunningOwnerIsLeftToIt` (one case now). Update the acceptance evidence and add a Log line on the changed wording ("the record is set aside" → reported in place, its routes Held; its owner sets it aside at start), the Notes' decision and the device checklist.
+- [x] R1.2 (design 2) Health follows the real problem: degraded only while a corrupt record is seen AND routes carrying routeFlag that no record names are in the kernel (`Survey.UnownedRoutes`), not merely while a file exists. Checklist step 3 says deleting the file is an acknowledgement, not a repair.
+- [x] R1.3 (correctness 1) A test that an earlier boot's set-aside file isn't reported (catches the boot id dropped from `setAsideName`).
+- [x] R1.4 (conventions 1, 2, 3; design 6, 7) The symlink case in the corrupt-record definitions (`netcfg/doc.go` ~60, `record_darwin.go` ~48); the stale comments on `owned` and `thinkpolRoutes`.
+- [x] R1.5 (design 3) A failed stat for reporting never fails the survey.
+- [x] R1.6 (design 4) Earlier boots' set-aside files are removed at the owner's start, under its own lock.
+- [x] R1.7 (design 5; correctness 4; conventions 5) Setting a corrupt directory aside over an earlier set-aside entry (ENOTDIR, EISDIR, ENOTEMPTY): remove the target first, or document; narrow `trusteddir.Rename`'s doc to what renameat(2) replaces.
+- [x] R1.8 (correctness 3) A corrupt record from before this boot (mtime before kern.boottime) is set aside but not reported.
+- [x] R1.9 (correctness 5) The log says why a record was judged corrupt.
+- [x] R1.10 (correctness 2) The DefaultRoute test meets a corrupt file (today it runs after Survey moved it).
+- [x] R1.11 (conventions 4) The darwin `Survey` doc names the new fields.
+- [x] R1.12 (conventions 6) Drop "(TP-124)" from `netcfg/doc.go`.
+- [x] R1.13 (conventions 7) The problem code's plural/singular: choose one and say why.
+- [x] R1.14 (conventions 8) The status line shows even when the route table holds no routes.
 
 ## Notes
 - From TP-077's residual-risks research (2026-10-22); TP-108 R2.7 handed recovery to TP-102, which didn't add it.
 - **Order (owner, 2026-10-24).** In the before-M2 list (wave 1, macOS): done before the M2 lanes start. TP-108 made another owner's corrupt route record a hard connect failure, with no recovery but deleting the file by hand. The 2026-10-24 macOS device run's corrupt-record step was inconclusive; TP-144's re-run checks it again.
 
-**Decision: set aside, own nothing (2026-10-28).** A record that can't be parsed says nothing of which routes are whose, so it owns nothing: its routes count as foreign, which no owner removes or changes, and routetable's layout already goes around foreign identities (`Survey.Held`, halves), so connecting works. No route is removed on a guess (the ticket's second option, "remove only routes that match a parsed record", has no parsed record to match). The record is renamed `<owner>.routes.corrupt-<boot session>` in the same directory (`trusteddir.Rename`), replacing an earlier one of the same owner and boot.
+**Decision: own nothing; only the owner sets its record aside (2026-10-28, round 1).** A record that can't be parsed says nothing of which routes are whose, so it owns nothing: its routes count as foreign, which no owner removes or changes, and routetable's layout already goes around foreign identities (`Survey.Held`, halves), so connecting works. No route is removed on a guess (the ticket's second option, "remove only routes that match a parsed record", has no parsed record to match).
 - Corrupt means: no boot line, a line after it that isn't an identity, not a regular file (a fifo, a directory), or a symlink (ELOOP). Any other read failure (EACCES, EIO) stays a hard error, as TP-108 made it: nothing is set aside on a failed read.
-- Own record: set aside at start, under the owner's lock (already held). Another owner's: set aside during `Survey`/`DefaultRoute` only if its lock can be taken (no configurator of it runs), and read again under the lock first. A running owner's corrupt record is left in place: its routes count as foreign for that survey, and the owner rewrites the record at its next change.
-- This owner's own routes in `thinkpolRoutes` now come from memory (`c.owned`), not a re-read of its own record: the record is a copy of it, and a corrupt copy must not make our own routes look foreign.
-- Health: `Survey.SetAside` lists the set-aside files of this boot (a stat per owner), so it is right whoever set the record aside (the overlay's configurator never surveys). routetable counts them (`Status.RecordsSetAside`) and warns once per file, naming it; the agent reports `route_record_set_aside` (degraded), the local API counter `route_table.records_set_aside`, and `thinkpol status` prints a line. It lasts for the boot, as long as the routes may, or until someone removes the file.
-- The cost: a crashed run's routes that the corrupt record named stay until reboot (RR53, new): a leftover host route to an old endpoint sends that address direct (counted as `policy_rules_ahead`), leftover reject routes keep IPv6 and the overlay range blocked after disconnecting. `thinkpol diag` lists them as unrecorded RTF_PROTO2 routes.
-- Brief lock contention: taking another owner's lock during a survey can make that owner's start fail with ErrBusy if it starts in the same instant; only while a corrupt record exists.
+- Own record: set aside at start, under the owner's lock (already held), renamed `<owner>.routes.corrupt-<boot session>` in the same directory (`trusteddir.Rename`), replacing an earlier one of the same owner and boot; an earlier entry of the other kind (a file or an empty directory) that renameat(2) won't replace is removed first, a non-empty directory there stays and the owner fails to start (documented). At the same start the owner removes its set-aside records of earlier boots; what it can't list or remove stays, never failing the start.
+- Another owner's corrupt record is reported in place and never touched: no lock is taken, nothing is moved (round 1 removed the cross-owner set-aside: it made `ErrBusy` lie and, with the agent opening the overlay before the route table, never ran). Its routes count as foreign for that survey; its owner sets it aside at its next start, or rewrites it at its next change.
+- This owner's own routes in `thinkpolRoutes` come from memory (`c.owned`), not a re-read of its own record: the record is a copy of it, read only at start, and a corrupt copy must not make our own routes look foreign.
+- Health follows the leftovers, not the file. `Survey.CorruptRecords` lists this boot's corrupt records, set aside or another owner's in place, each with why (a stat each; a failed stat still reports, a survey never fails on reporting); one last written before this boot (mtime before `kern.boottime`) goes unreported, since what it named went with that boot. `Survey.UnownedRoutes` counts the routes with routeFlag that no record names. routetable copies both (`Status.CorruptRecords`, `Status.UnownedRoutes`) and warns once per record, naming it and saying why; the agent reports `route_records_corrupt` (degraded) only while both are nonzero (unowned routes alone may be another program's that uses the same flag), the local API counters `route_table.corrupt_records` and `route_table.unowned_routes`, and `thinkpol status` prints a `route records:` line whenever a corrupt record is seen, whether or not the route table holds routes. The problem code is plural like its counted siblings (`policy_rules_ahead`, `overlay_routes_ahead`) and the counter: it covers any number of records.
+- The cost: a crashed run's routes that the corrupt record named stay until reboot (RR53): a leftover host route to an old endpoint sends that address direct (counted as `policy_rules_ahead`), leftover reject routes keep IPv6 and the overlay range blocked after disconnecting. `thinkpol diag` lists them as unrecorded RTF_PROTO2 routes. Removing the set-aside file acknowledges the problem (health clears), it doesn't repair it: the routes stay.
 
-**Device checklist (for TP-144's re-run).** On the Mac, the agent running as the service, the device disconnected (no configurator holds a lock).
+**Device checklist (for TP-144's re-run).** On the Mac, the agent running as the service.
 
-1. Another owner's corrupt record (the overlay's).
+1. A running owner's record corrupted (the overlay's, in place: the degraded case).
+   - Do:
+     ```sh
+     thinkpol connect
+     printf 'garbage\n' | sudo tee /private/var/db/thinkpol/netcfg/overlay.routes >/dev/null
+     sleep 70
+     thinkpol status
+     sudo thinkpol logs | grep 'corrupt route record'
+     ```
+   - What happens: the route table's next survey (the one-minute backstop, or a routing change) reads the overlay's record as corrupt: it holds nothing, the overlay's routes look foreign and unowned. Nothing moves the file.
+   - Expect: `status` has `route_records_corrupt` among the health problems (`policy_rules_ahead` or `overlay_routes_ahead` may show with it: the overlay's own routes look foreign to the route table) and the line `route records: 1 corrupt (the log names them and says why); N routes no record names stay until reboot`; the log has `route table: a corrupt route record holds no routes ...` with `record=/private/var/db/thinkpol/netcfg/overlay.routes` and `reason=` naming the bad line. If the overlay re-applies meanwhile (a map change), it rewrites the record and the line goes.
    - Do:
      ```sh
      thinkpol disconnect
+     sudo ls -l /private/var/db/thinkpol/netcfg/
+     ```
+   - Expect: the overlay removes its routes from memory and its record with them: no `overlay.routes` is left.
+2. Another owner's corrupt record at start (the overlay's, disconnected).
+   - Do:
+     ```sh
      printf 'garbage\n' | sudo tee /private/var/db/thinkpol/netcfg/overlay.routes >/dev/null
      thinkpol connect
      thinkpol status
-     sudo thinkpol logs | grep 'set aside'
+     sudo thinkpol logs | grep 'corrupt route record'
      sudo ls -l /private/var/db/thinkpol/netcfg/
      ```
-   - What happens: the overlay's configurator finds its record corrupt at start and renames it; the route table's survey sees the set-aside file and warns once.
-   - Expect: `connect` succeeds; `status` shows health `degraded: route_record_set_aside` and the line `1 corrupt route records set aside; the routes they named stay until reboot`; the log has `route table: a corrupt route record was set aside ...` with `record=/private/var/db/thinkpol/netcfg/overlay.routes.corrupt-<uuid>`; the listing has that file (its content `garbage`) and a fresh `overlay.routes` starting with the header and a `boot` line.
-2. The route table's own corrupt record.
+   - What happens: the overlay's configurator finds its record corrupt at start and renames it; the route table's survey reports the set-aside file and warns once. No route of it is left, so health stays clear.
+   - Expect: `connect` succeeds; `status` has no `route_records_corrupt` and the line `route records: 1 corrupt (the log names them and says why); none of their routes left`; the log has the warn with `record=/private/var/db/thinkpol/netcfg/overlay.routes.corrupt-<uuid>` and `reason=` saying line 1 is no boot line; the listing has that file (its content `garbage`) and a fresh `overlay.routes` starting with the header and a `boot` line.
+3. The route table's own corrupt record.
    - Do:
      ```sh
      thinkpol disconnect
      printf 'garbage\n' | sudo tee /private/var/db/thinkpol/netcfg/route-table.routes >/dev/null
      thinkpol connect
      thinkpol status
-     sudo thinkpol logs | grep 'set aside'
+     sudo thinkpol logs | grep 'corrupt route record'
      sudo ls -l /private/var/db/thinkpol/netcfg/
      ```
    - What happens: the route table's configurator sets its own record aside at start and enforces the routes as usual.
-   - Expect: `connect` succeeds, the route table is enforced (`route table: N routes`); `status` says `2 corrupt route records set aside`; a new warn names `route-table.routes.corrupt-<uuid>`; that file exists.
-3. Clean up.
+   - Expect: `connect` succeeds, the route table is enforced (`route table: N routes`); `status` says `route records: 2 corrupt ...; none of their routes left`, no `route_records_corrupt`; a new warn names `route-table.routes.corrupt-<uuid>`; that file exists.
+4. Clean up.
    - Do:
      ```sh
      sudo sh -c 'rm /private/var/db/thinkpol/netcfg/*.routes.corrupt-*'
@@ -87,8 +103,8 @@ Round 1 (2026-10-28): correctness (no defect, test gaps), design (fix first), co
      thinkpol connect
      thinkpol status
      ```
-   - What happens: no set-aside file is left for this boot.
-   - Expect: health has no `route_record_set_aside` and `status` has no set-aside line.
+   - What happens: no corrupt record is left for this boot. Removing the files is an acknowledgement, not a repair: routes a corrupt record named would stay until reboot (none are left here). After a reboot each owner's first start removes its set-aside files of earlier boots anyway.
+   - Expect: `status` has no `route records:` line and no `route_records_corrupt`.
 
 ## Log
 - 2026-10-22 created in backlog (TP-077 out-of-scope note)
@@ -103,3 +119,9 @@ Round 1 (2026-10-28): correctness (no defect, test gaps), design (fix first), co
 - 2026-10-28 in-progress → review
 - 2026-10-28 review → has-errors (round 1: R1.1–R1.14)
 - 2026-10-28 has-errors → in-progress
+- 2026-10-28 round 1 fixes (R1.1–R1.14): another owner's corrupt record is reported in place, never locked or moved (its owner sets it aside at its own start); the acceptance wording changed from "the record is set aside" to "reported in place, its routes Held; its owner sets it aside at start". `Survey.SetAside` → `Survey.CorruptRecords` (path and why) plus `Survey.UnownedRoutes` (routeFlag routes no record names) → routetable `Status.CorruptRecords`/`UnownedRoutes` (warned once per record with its reason) → health `route_records_corrupt` (degraded) only while both are nonzero, counters `route_table.corrupt_records` and `route_table.unowned_routes`, a `route records:` status line outside the routes block; earlier boots' set-aside records removed at the owner's start; a corrupt record older than `kern.boottime` set aside but unreported; a set-aside entry of the other kind removed before the rename; reporting never fails a survey; docs: netcfg (symlink in the definition, no ticket id, Survey doc), record and `owned`/`thinkpolRoutes` comments, trusteddir `Rename`, routetable and agent docs, RR53. Notes' decision and device checklist rewritten (checklist step 4: removing the file acknowledges, doesn't repair)
+- 2026-10-28 tests: `TestACorruptRecordOfAnotherOwnerIsReportedInPlace` (replaces `TestACorruptRecordOfAnotherOwnerIsSetAside`; DefaultRoute now meets the corrupt file), `TestAnEarlierBootsSetAsideRecordIsNotReported`, `TestTheOwnerRemovesEarlierBootsSetAsideRecordsAtStart`, `TestACorruptRecordFromBeforeThisBootIsNotReported`, `TestASetAsideRecordReplacesAnEarlierOneOfTheOtherKind`, `TestACorruptRecordIsCountedAndWarnedOnce`, `TestACorruptRecordReachesStatusAndCLI`, `TestHealth` (three cases), `TestRouteTableCountsReachTheEngine`; `TestACorruptRecordOfARunningOwnerIsLeftToIt` dropped (one case now)
+- 2026-10-28 mutations, each caught by a failing test: another owner's record set aside again in `recordOf`; another owner's corrupt record an error again (DefaultRoute fails); another owner's corrupt record not reported; no reason; `UnownedRoutes` never counted, or counting our own routes; the boot dropped from `setAsideName`; `clearSetAside` not called, removing this boot's, removing other owners', not removing directories; no mtime check; no remove-and-retry on the rename; health on the record alone, on unowned routes alone; the engine not copying `UnownedRoutes`; routetable not copying it, warning without the reason, warning on every survey; the status line back under the routes block; either counter missing; the leftover count missing from the line
+- 2026-10-28 not tested: a failed stat while reporting (still reported, R1.5) has no seam in a directory the test can read; the mtime check uses the host's `kern.boottime` (read only). Not verified on a device: the in-place report, the set-aside through the real routing socket and the service's connect (TP-144's re-run, checklist in Notes)
+- 2026-10-28 cross-family review (Cursor, round 1, verdict merge) concurred: its two findings, the symlink missing from the doc and the status line nested under the routes block, are R1.4 and R1.14
+- 2026-10-28 takeover after the previous fixer stopped at 235a313: re-read the branch diff against every finding; the agent side (status, health, render) was already done in 724998a; merged origin/rewrite (TP-138)
