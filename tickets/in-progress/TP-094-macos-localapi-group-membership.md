@@ -93,3 +93,4 @@ Round 1 (paranoid: correctness; torvalds: design; go-style: conventions; the cro
 - 2026-10-28 lab: TestLocalAPI's "the log is root's" now checks the new wording and the refusal's log line (uid, group, needs=admin); mutation: the refusal not logged, the lab test fails. `make lab-test` green on 0d87348 (`make lint`, `make test` green too).
 - 2026-10-28 in-progress → review
 - 2026-10-28 review → has-errors (round 1: R1.1–R1.17)
+- 2026-10-28 has-errors → in-progress
