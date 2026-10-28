@@ -506,6 +506,14 @@ func TestALoadNeverJournaledIsLeftAndNothingLoaded(t *testing.T) {
 	if _, err := e.do(t.Context(), skipSpec("lo")); err == nil || !strings.Contains(err.Error(), "never journaled") || pf.ran("-f "+pfConfPath) {
 		t.Errorf("reading pf after the load failed: %v (%v)", err, pf.calls)
 	}
+	// The restore's LEFT names that cause, not a stopped helper.
+	res := e.restore(t.Context(), "test")
+	failed := strings.Join(res.Failed, " ")
+	if res.Verdict != Left || pf.ran("-f "+pfConfPath) ||
+		!strings.Contains(failed, "never journaled (reading pf after the load failed: ") ||
+		!strings.Contains(failed, "DIOCGETRULES: Device busy") || strings.Contains(failed, "helper stopped") {
+		t.Errorf("restore after reading pf failed: %+v (%v)", res, pf.calls)
+	}
 }
 
 // A Mac whose pfctl lists no skip even right after the load (the
@@ -556,7 +564,10 @@ func TestTheReadAfterTheSecondLoadDecides(t *testing.T) {
 
 // Another app loads its ruleset between the undo's first load of pf.conf
 // and the read after it, the skip gone: the undo loads no second time
-// (that could only wipe the app's ruleset), and fails LEFT.
+// (that could only wipe the app's ruleset), and fails LEFT. When the
+// app's ruleset carries a skip of its own as well (a kill switch's `set
+// skip on utun3`), rules and skip both differ: still one load, and the
+// verdict is REBOOT, the app's rules and skip kept.
 func TestTheUndoLoadsASecondTimeOnlyForTheSkipAlone(t *testing.T) {
 	pf := newFakePf()
 	e := skipRun(t, pf)
@@ -576,6 +587,27 @@ func TestTheUndoLoadsASecondTimeOnlyForTheSkipAlone(t *testing.T) {
 	}
 	if !strings.Contains(pf.rules, "pass out quick on utun3 all") {
 		t.Errorf("the app's ruleset was replaced: %q", pf.rules)
+	}
+
+	// Rules and skip both differ after the first load.
+	pf = newFakePf()
+	e = skipRun(t, pf)
+	loads = 0
+	e.h.exec = func(ctx context.Context, argv []string, stdin []byte) output {
+		out := pf.run(ctx, argv, stdin)
+		if strings.Join(argv[1:], " ") == "-f "+pfConfPath {
+			if loads++; loads == 1 {
+				pf.run(ctx, []string{pfctlPath, "-f", "-"}, []byte("set skip on utun3\nblock drop out all\npass out quick on utun3 all\n"))
+			}
+		}
+		return out
+	}
+	res = e.restore(t.Context(), "test")
+	if res.Verdict != Reboot || loads != 1 || !strings.Contains(strings.Join(res.Failed, " "), "[pf-rules pf-skip]") {
+		t.Errorf("rules and skip after one load: %d loads: %+v", loads, res)
+	}
+	if !strings.Contains(pf.rules, "pass out quick on utun3 all") || !slices.Equal(pf.skip, []string{"utun3"}) {
+		t.Errorf("the app's ruleset was replaced: rules %q, skip %v", pf.rules, pf.skip)
 	}
 
 	// The skip alone survives the first load: the second clears it.

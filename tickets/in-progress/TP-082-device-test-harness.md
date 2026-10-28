@@ -134,6 +134,7 @@ Type your password.
 **Expect** one of:
 - `"verdict": "RESET-BY-REBOOT"` and `devicetest restore: RESET-BY-REBOOT, run … closed: every change it made was undone or went with its boot; …`. (A `CLEAN` closes it too.)
 - `"verdict": "NOTHING-TO-RESTORE"` and `devicetest restore: NOTHING-TO-RESTORE, no run was pending; nothing was compared`: step 4's run was closed already (after an `UNKNOWN`, its dead-man restored it later). Note it.
+- `"verdict": "NOTHING-TO-RESTORE"` and `devicetest restore: NOTHING-TO-RESTORE, run … closed: it made no change and had no baseline to compare with`: this closes step 4's run too. Note it.
 
 Either way, go on to step 7. Anything else: [If something goes wrong](#if-something-goes-wrong).
 
@@ -204,7 +205,7 @@ A result's `left` and `failed` items say what to do; the steps below do it (a re
   ~/devicetest-bin/devicetest restore -forget RUN
   ```
   Expect `FORGOTTEN` and what the journal and the comparison still say (never CLEAN; the next run may start). Note it and continue with the step after the one that sent you here.
-- A run that prints nothing more for minutes: wait for its dead-man (2 minutes for the self-test, 5 for TP-096, then its restore), then go to F2 without rebooting.
+- A run that prints nothing more for minutes: wait for its dead-man (2 minutes for the self-test, 5 for TP-096, then its restore), then: if its restore says `LEFT` or `REBOOT`, go to F1 (reboot first: F3's `-forget` is refused in the run's own boot); otherwise go to F2 without rebooting.
 
 #### For the judge
 - Step 3: `selftest/selftest.json` and the decode beside it; pfctl's real missing-anchor answer in `snapshots/00-baseline/pf-anchor-000.thinkpol.err` (thinkpol's guard anchor, absent with no agent running), or the refusal quoting it; whether `snapshots/00-baseline/pf-dummynet.{out,err}` lists dummynet rules (`-s dummynet`, undocumented, information only until then); that `pf-limits` and `pf-timeouts` (`-s memory`, `-s timeouts`) read; that `pf-info.out` has `Debug: …` on its status line as the core reads it.

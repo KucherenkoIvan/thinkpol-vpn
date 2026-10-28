@@ -14,7 +14,8 @@ const (
 	nextPfUnproven = "reboot (that clears any skip of the run's), then run devicetest restore; never load, flush or disable pf by hand"
 	nextPfAnchors  = "an Apple anchor changed: reboot (the system loads its anchors at boot); never flush them"
 	nextPfState    = "pf's state or debug level differs from the baseline: in the run's boot the restore turns pf back on itself " +
-		"when the baseline had it on (its notes say whether that worked); otherwise reboot, then run devicetest restore. " +
+		"when the baseline had it on (its notes say whether that worked); if it didn't, reboot, then run devicetest restore; " +
+		"in a later boot pf's state is that boot's, and nothing needs doing. " +
 		"A debug level another app set comes back when that app sets it again. Never enable, disable or load pf by hand"
 	nextPfOtherRuleset = "another app's ruleset is loaded now, with its own skips: stop that app, reboot, " +
 		"then run devicetest restore; never load, flush or disable pf by hand"

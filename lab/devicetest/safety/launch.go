@@ -17,13 +17,17 @@ import (
 
 // launchScript is the one command sudo runs. It ignores the terminal's
 // signals, Ctrl-\'s QUIT included (neither a closed window nor a key can
-// stop it between the copy and the exec, and the root modes ignore them
-// too), checks the temporary directory is root's and sticky (not a
-// symlink: find doesn't follow one), copies the binary into a fresh
-// directory of root's (0700) there, checks the copy's hash against the
-// one the user side computed before asking for sudo, and runs the copy: a
-// file the user can write is never executed as root, and a binary swapped
-// between the hash and the copy is refused.
+// stop it between the copy and the exec). The root copy keeps only HUP
+// and INT ignored: Go installs its own QUIT and TERM handlers at start,
+// so until the root mode's signal.Ignore runs (after its flags are
+// parsed) a Ctrl-\ or a TERM can kill it, leaving its tpdt.* directory,
+// with no journal yet, until the next reboot. It checks the temporary
+// directory is root's and sticky (not a symlink: find doesn't follow
+// one), copies the binary into a fresh directory of root's (0700) there,
+// checks the copy's hash against the one the user side computed before
+// asking for sudo, and runs the copy: a file the user can write is never
+// executed as root, and a binary swapped between the hash and the copy is
+// refused.
 const launchScript = `set -eu
 trap '' HUP INT TERM QUIT
 src=$1; sum=$2; base=$3; hasher=$4; shift 4

@@ -75,11 +75,11 @@
 //
 // CLEAN: every change undone and the host equal to the baseline. LEFT:
 // something differs or failed to undo, each item with what to do next.
-// REBOOT: the core's own pf change survived its undo (after the pf-skip
-// undo's loads of /etc/pf.conf, pf still skips other than at the
-// baseline); any
-// other difference, whoever made it, is LEFT; DNS and the dummynet rules
-// are reported only. LEFT and REBOOT keep the run pending.
+// REBOOT: after the pf-skip undo's loads of /etc/pf.conf, pf still skips
+// other than at the baseline: the core's own pf change survived its undo,
+// or the skip is another app's, loaded after the undo's load; any other
+// difference, whoever made it, is LEFT; DNS and the dummynet rules are
+// reported only. LEFT and REBOOT keep the run pending.
 // NOTHING-TO-RESTORE: no run was pending, or the run didn't start (its
 // result says why), or it was killed before it took a baseline or made a
 // change; nothing was compared. RESET-BY-REBOOT: a pending run restored
