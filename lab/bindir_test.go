@@ -91,16 +91,15 @@ func TestTheNextRunSweepsWhatEndedRunsLeft(t *testing.T) {
 	}
 }
 
-// A leftover the sweep can't remove doesn't stop the next run.
-func TestALeftoverTheSweepCantRemoveDoesntStopTheNextRun(t *testing.T) {
-	ctx := t.Context()
-	root := t.TempDir()
-	dead, err := newRunBinaries(ctx, root)
-	if err != nil {
-		t.Fatal(err)
+// unremovable puts a file into dir that os.RemoveAll can't delete, and
+// returns the read-only directory holding it. Root ignores the mode (a lab
+// node runs the unit tests as root), so there the test is skipped.
+func unremovable(t *testing.T, dir string) string {
+	t.Helper()
+	if os.Geteuid() == 0 {
+		t.Skip("root removes read-only directories")
 	}
-	_ = dead.lock.Close()
-	stuck := filepath.Join(dead.path, "tests")
+	stuck := filepath.Join(dir, "tests")
 	if err := os.MkdirAll(stuck, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -111,6 +110,19 @@ func TestALeftoverTheSweepCantRemoveDoesntStopTheNextRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(stuck, 0o755) })
+	return stuck
+}
+
+// A leftover the sweep can't remove doesn't stop the next run.
+func TestALeftoverTheSweepCantRemoveDoesntStopTheNextRun(t *testing.T) {
+	ctx := t.Context()
+	root := t.TempDir()
+	dead, err := newRunBinaries(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = dead.lock.Close()
+	unremovable(t, dead.path)
 
 	next, err := newRunBinaries(ctx, root)
 	if err != nil {
@@ -303,17 +315,7 @@ func TestRemoveRunBinariesForgetsADirectoryItFailedToRemove(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stuck := filepath.Join(d.path, "tests")
-	if err := os.MkdirAll(stuck, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(stuck, "x.test"), nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(stuck, 0o500); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(stuck, 0o755) })
+	stuck := unremovable(t, d.path)
 	preparedMu.Lock()
 	prepared[root] = preparedRun{bin: d}
 	preparedMu.Unlock()
