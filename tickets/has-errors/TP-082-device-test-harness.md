@@ -113,6 +113,37 @@ Round 4 (2026-10-23): correctness, style and design: fix first; second opinion: 
 - [x] R4.7 Ticket honesty: the not-verified list gains whether `pfctl -f /etc/pf.conf` clears a skip on xnu at all (if not, every TP-096 run ends REBOOT; DIOCCLRIFFLAG would be the precise undo: the device run decides, not implemented now), whether a stock reload restores limits and timeouts, and fullSync's fallback errnos on APFS as root; checklist step 3's judge checks pf-skip, pf-limits and pf-timeouts after the restore and records whether the reload cleared the skip; step 6 names `devicetest.lock`; tp096's title says the kernel applies `lo` to lo0; the Notes say the merge waits for steps 1–6.
 - [x] R4.8 Nits: an unreadable compared surface at the baseline with no journal entries is NOTHING-TO-RESTORE; after two loads with the skip gone but rules or nat different, the error says which; `forget.go`'s broken-journal branch calls settle or says why not; a missing journal file in `appendOnlyJournal` is handled or named in doc.go's manual step; fakePf's prefix rule needs a digit after the prefix, as the kernel's does.
 
+Round 5 (2026-10-23): correctness, style and design: fix first; second opinion: merge, with two suspicions (R5.10, R5.11). Owner decision (2026-10-24): one fix round with every item below, then a correctness-only re-check. The checklist items and the lessons of the 2026-10-24 device run go into the device checklist above.
+- [ ] R5.1 The pf-skip undo can still wipe another app's skip under CLEAN: journal the pf-skip set after the run's load too, and reload only while pf-rules, pf-nat and pf-skip all match what the load journaled.
+- [ ] R5.2 A Ctrl-C at the terminal reaches pfctl: only tcpdump gets its own process group. The pfctl and scutil execs in `action.go` get `Setpgid: true`, so a terminal SIGINT can't kill a pfctl in the middle of a load.
+- [ ] R5.3 root-restore can die of SIGPIPE (a closed terminal) before `removeRootCopy`: `restoreMain` ignores SIGHUP, SIGINT, SIGTERM and SIGPIPE; `cmdRestore` ignores SIGINT.
+- [ ] R5.4 The sudo launch script needs `trap '' HUP INT TERM`, so it survives a closed terminal while the root copy runs.
+- [ ] R5.5 `undoLast`'s description travels in the Response (a `Did` field), so the user side reports what was undone.
+- [ ] R5.6 A fakePf test where nat differs and the rules are equal: no reload, LEFT.
+- [ ] R5.7 `pre` refuses an empty baseline pf-rules listing.
+- [ ] R5.8 The dead-man can orphan a pfctl in the middle of a load: kill the helper's process group or children, or document it precisely.
+- [ ] R5.9 After the second pf.conf reload, read pf again and compare before deciding REBOOT or LEFT.
+- [ ] R5.10 The load succeeded but its rules were never journaled (the read or `learnt` failed, or the helper died): the undo falls back to the baseline's rules. Make this path explicit (LEFT with a clear message) and test it.
+- [ ] R5.11 The same rules text loaded by another app between the check and `-f` (a TOCTOU): a residual in doc.go; fix only if cheap.
+- [ ] R5.12 safety/doc.go "Both keep the run pending" → "LEFT and REBOOT keep the run pending".
+- [ ] R5.13 The wording of `restore.go`'s Nothing note.
+- [ ] R5.14 Delete the duplicate TestPfLimitsAndTimeoutsAreCompared (TestWhatALoadResetsIsCompared… covers it).
+- [ ] R5.15 An error string ends in "?" (Go errors don't end in punctuation).
+- [ ] R5.16 The nextDNS text says "information only…".
+- [ ] R5.17 Rewrap the comment lines that overflow.
+- [ ] R5.18 Checklist: if the baseline says it can't read a surface, skip steps 3–5 and go to the evidence step.
+- [ ] R5.19 Checklist: the dead-man's budget, 5 minutes for TP-096 and 2 for the self-test.
+- [ ] R5.20 Checklist: the Ctrl-C step uses `selftest` unless the TP-096 run ended CLEAN.
+- [ ] R5.21 Checklist: in a restore result, only `left` items need action.
+- [ ] R5.22 Checklist: `/private/tmp/tpdt.*` leftovers are not deleted by hand (they go at the next reboot); zsh's "no matches found" when there are none is fine.
+- [ ] R5.23 Checklist: no hand `pfctl -f` anywhere; the failure path is a reboot, then `restore`, then `-forget` after a reboot.
+- [ ] R5.24 Checklist: fix the cmd-002 filename reference.
+- [ ] R5.25 Checklist: closing the window, "confirm Terminate if Terminal asks".
+- [ ] R5.26 Checklist: quote the Ctrl-C lines exactly ("interrupt: stopping after…", "restoring, wait: a second Ctrl-C…") and the last line ("devicetest TP-096 recorded: …").
+- [ ] R5.27 The not-verified list gains the debug level's reading.
+- [ ] R5.28 Device run lesson: the checklist follows the owner's runbook format (every command in a code block, one linear path, each step Do / What happens / Expect, one failure section).
+- [ ] R5.29 Device run lesson: Ctrl-C through sudo and tee may not reach the process: the Ctrl-C step says which window and how to confirm the stop.
+
 ## Log
 - 2026-10-15 created in backlog (device run 3 and 4 findings)
 - 2026-10-15 docs: kit bugs found in device run 4 analysis
@@ -200,3 +231,4 @@ Round 4 (2026-10-23): correctness, style and design: fix first; second opinion: 
 - 2026-10-23 not verified (Mac only, decided by the device run): whether `pfctl -f /etc/pf.conf` clears a skip on xnu at all (an OpenBSD-4-era pfctl sets skip flags while parsing and may never clear them; if so every TP-096 run ends REBOOT, and DIOCCLRIFFLAG on the name would be the precise undo: not implemented now, step 3's judge records it); whether a stock reload brings pf-limits and pf-timeouts back to the baseline; fullSync's fallback errnos on APFS as root; and everything listed in rounds 2 and 3
 - 2026-10-23 lab: `make lab-test` (LAB_P=4) green on 4bbd13a: the core's root tests and the whole runs through the real launch script in a lab node
 - 2026-10-23 in-progress → review
+- 2026-10-28 review → has-errors (round 5: R5.1–R5.29)
