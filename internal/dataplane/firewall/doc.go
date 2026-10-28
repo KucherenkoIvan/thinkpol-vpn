@@ -328,9 +328,11 @@
 // `pfctl -s References` is read by the columns its header names: a line's
 // first field is the pid, and the token is the field where the header's
 // TOKEN starts, whatever the process name (spaces included) and the
-// timestamp look like. A listing without the header, with a line out of
-// those columns, or cut short is one the guard can't read, and a
-// reference not found in it proves nothing: looking a token up by pid and
+// timestamp look like. While pf holds no reference, pfctl prints only "No
+// pf starter references held", without the header: a listing of none. A
+// listing without the header otherwise, with a line out of those
+// columns, or cut short is one the guard can't read, and a reference not
+// found in it proves nothing: looking a token up by pid and
 // releasing both fail, so the record stays and the next Close (or
 // routetable.Clear's) tries again. pf stays enabled on that reference
 // meanwhile, rather than the guard forgetting a reference pf still holds.
@@ -354,8 +356,9 @@
 // closed). The next start's [routetable.Clear], under the route table's
 // owner lock, closes a fresh guard, which flushes the anchor's rules and
 // table (`-F rules`, `-F Tables`: `-F all` would also flush pf's global
-// state table and statistics; an anchor that doesn't exist counts as
-// empty, whatever pfctl answers for it) and releases the recorded
+// state table and statistics; a flush that fails is checked by listing
+// the anchor, and one that lists no rule and no table counts as empty,
+// whatever pfctl answered) and releases the recorded
 // reference. A guard that applies instead takes that reference over. The
 // anchor goes before the reference, so pf is never left off with the
 // anchor still meant to be in place. A reboot takes both, and the record,
@@ -384,9 +387,17 @@
 // one that isn't a regular file or can't be parsed is unreadable, said in
 // fixed words (trusteddir's errors never quote a record either). A
 // missing anchor is an empty one, and with no pfctl at all everything is
-// unreadable. The parsers are tested on listings in testdata/pfctl, built
-// from the fake pf's formats and pfctl's source until a device run
-// records real ones.
+// unreadable.
+//
+// Guard and snapshot alike, pfctl's answers of absence are each one exact
+// line, alone on stderr but for its ALTQ chatter: a missing anchor's
+// rules, `pfctl: DIOCGETRULES: Invalid argument` ([AnchorMissing]); a
+// missing table, `pfctl: Table does not exist.` (macOS answers it for a
+// missing anchor's table too) or `pfctl: Anchor or Ruleset does not
+// exist.`. Any other failure, an "Invalid argument" of another ioctl
+// included, is an error, never an empty anchor or table. The parsers are
+// tested on listings a Mac printed (testdata/pfctl/recorded-*, sanitized),
+// and on built ones for what no device has printed.
 //
 // # What the macOS guard doesn't do
 //

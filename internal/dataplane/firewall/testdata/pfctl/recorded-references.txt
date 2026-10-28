@@ -1,0 +1,4 @@
+TOKENS:
+PID      Process Name                 TOKEN                    TIMESTAMP
+32755    pfctl                        10000000000000000008     0 days 00:05:21
+659      socketfilterfw               10000000000000000015     8 days 03:34:38

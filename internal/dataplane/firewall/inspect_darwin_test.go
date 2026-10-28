@@ -14,14 +14,20 @@ import (
 )
 
 // The fixtures in testdata/pfctl are pfctl's listings as the guard reads
-// them. Nothing here ran pfctl: the rules are the guard's own as the fake
-// pf lists them (fakeExpand: one rule per list item, ICMPv6 types by
-// name, `port = 53`); the `-v` counters and "Inserted" lines are laid out
-// as pfctl's source prints them (pfctl_print_rule_counters; some versions
-// add "State Creations"); info, References, Interfaces, Anchors and the
-// table are the fake's formats, References after the transcripts TP-078's
-// review cited. TP-078 and TP-096 recorded no listing verbatim; the
-// owner's device run records real ones to replace these.
+// them; no test here runs pfctl. Those named recorded-* are a Mac's
+// (the 2026-10-24 device run), byte for byte but for what would
+// identify it: References' tokens are other values of the same width, and
+// the exempt table keeps its layout with documentation prefixes in place
+// of the real ones. The missing anchor's and the missing table's answers
+// were read with stdout and stderr together, ALTQ chatter filtered out;
+// every other listing is stdout alone (the ALTQ chatter came on stderr).
+// The rest are built for what no device has printed: a rule per kind the
+// guard can load (an upstream's included), skipped interfaces, a bypassed
+// main ruleset, References in other layouts, listings cut or out of
+// order. Their rules are the guard's own as the fake pf lists them
+// (fakeExpand: one rule per list item, ICMPv6 types by name, `port =
+// 53`), the `-v` counters and "Inserted" lines laid out as the recorded
+// ones (some pfctl versions add "State Creations").
 func fixture(t *testing.T, name string) []byte {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join("testdata", "pfctl", name))
@@ -55,7 +61,7 @@ func TestParseVerboseRules(t *testing.T) {
 		t.Errorf("the block's counters: %+v", r)
 	}
 
-	for name, n := range map[string]int{"rules-v-state-creations.txt": 3, "rules-vv-numbered.txt": 2, "rules-v-empty.txt": 0} {
+	for name, n := range map[string]int{"rules-v-state-creations.txt": 3, "rules-vv-numbered.txt": 2} {
 		rules, err := parseVerboseRules(fixture(t, name))
 		if err != nil || len(rules) != n {
 			t.Errorf("%s: %d rules, %v; want %d", name, len(rules), err, n)
@@ -95,18 +101,8 @@ func fakeExpandAll(rules []guardRule) []string {
 }
 
 // TestTheOtherFixturesParse runs the guard's other parsers over their
-// fixtures.
+// built fixtures.
 func TestTheOtherFixturesParse(t *testing.T) {
-	if on, err := parseEnabled(fixture(t, "info-enabled.txt")); err != nil || !on {
-		t.Errorf("info-enabled: %v, %v", on, err)
-	}
-	if on, err := parseEnabled(fixture(t, "info-disabled.txt")); err != nil || on {
-		t.Errorf("info-disabled: %v, %v", on, err)
-	}
-	refs, understood := parseReferences(fixture(t, "references.txt"))
-	if !understood || len(refs) != 2 || refs[1] != (pfReference{pid: 4130, token: 9000000000000000008}) {
-		t.Errorf("references: %+v, %v", refs, understood)
-	}
 	if refs, understood := parseReferences(fixture(t, "references-odd.txt")); understood || len(refs) != 0 {
 		t.Errorf("references-odd: %+v, %v", refs, understood)
 	}
@@ -114,14 +110,98 @@ func TestTheOtherFixturesParse(t *testing.T) {
 	if err != nil || !slices.Equal(table, pfxs("2001:db8:e::9/128", "2001:db8:d0::/48", "fe80::/10", "ff02::/16")) {
 		t.Errorf("table: %v, %v", table, err)
 	}
-	if hooked(fixture(t, "main-stock.txt")) != hookOK || hooked(fixture(t, "main-bypassed.txt")) != hookBypassed {
-		t.Error("main rulesets misread")
+	if hooked(fixture(t, "main-bypassed.txt")) != hookBypassed {
+		t.Error("a bypassed main ruleset misread")
 	}
 	if got := skipped(fixture(t, "interfaces-v.txt"), ""); !slices.Equal(got, []string{"utun7"}) {
 		t.Errorf("skipped %q", got)
 	}
-	if got := anchorsBefore(fixture(t, "anchors.txt")); len(got) != 0 {
-		t.Errorf("anchors before %q", got)
+}
+
+// TestTheRecordedListingsParse runs every parser of the guard and of its
+// snapshot over what a Mac printed: the guard's anchor (rules as `-s
+// rules` lists them, which saneRules accepts as the rules the guard loads,
+// and with counters, an unparseable line making them unreadable; empty;
+// missing), its table (listed; missing), `-s info` both ways, the main
+// ruleset, the anchors under com.apple with and without the guard's,
+// `-s Interfaces -v`, and References with references and without.
+func TestTheRecordedListingsParse(t *testing.T) {
+	listed, err := readLines(fixture(t, "recorded-guard-rules.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// That device's run had no IPv6 upstream.
+	if err := saneRules(listed, "utun4", nil); err != nil {
+		t.Errorf("saneRules: %v", err)
+	}
+	if want := fakeExpandAll(guardRules("utun4", nil)); !slices.Equal(listed, want) {
+		t.Errorf("the fake lists the guard's rules unlike a Mac:\n%s\nwant:\n%s", strings.Join(want, "\n"), strings.Join(listed, "\n"))
+	}
+
+	rules, err := parseVerboseRules(fixture(t, "recorded-guard-rules-v.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var texts []string
+	for _, r := range rules {
+		texts = append(texts, r.Text)
+		if !r.Counted || r.Chain != "" {
+			t.Errorf("rule %+v", r)
+		}
+	}
+	if !slices.Equal(texts, listed) {
+		t.Errorf("-v rules:\n%s\nwant:\n%s", strings.Join(texts, "\n"), strings.Join(listed, "\n"))
+	}
+	if r := rules[0]; r.Evaluations != 3468 || r.Packets != 16 || r.Bytes != 1152 || r.States != 0 {
+		t.Errorf("lo0's counters: %+v", r)
+	}
+	if r := rules[1]; r.Evaluations != 2066 || r.Packets != 10 || r.Bytes != 8142 {
+		t.Errorf("the utun's counters: %+v", r)
+	}
+	odd := append(fixture(t, "recorded-guard-rules-v.txt"), "pfctl: DIOCGETRULE: Device busy\n"...)
+	if rules, err := parseVerboseRules(odd); err == nil || !strings.Contains(err.Error(), "line 25: not a rule") || rules != nil {
+		t.Errorf("an unparseable line: %d rules, %v", len(rules), err)
+	}
+	if rules, err := parseVerboseRules(fixture(t, "recorded-guard-rules-v-empty.txt")); err != nil || len(rules) != 0 {
+		t.Errorf("an empty anchor: %v, %v", rules, err)
+	}
+	if missing := fixture(t, "recorded-anchor-missing.txt"); !AnchorMissing(missing) || !AnchorMissing(append([]byte(altq), missing...)) {
+		t.Error("the missing anchor's answer misread")
+	}
+
+	table, err := parseTable(fixture(t, "recorded-table-show.txt"))
+	if err != nil || !slices.Equal(table, pfxs("2001:db8:10::/47", "2001:db8:12::/48", "2001:db8:1f0b:1::/64", "2001:db8:1f0b:2::/63",
+		"2001:db8:1f0b:4::/62", "fc00::/8", "fd00::/9", "fdc0::/10", "fe80::/10", "ff00::/8")) {
+		t.Errorf("table: %v, %v", table, err)
+	}
+	if !noTable(pfOutput{stderr: fixture(t, "recorded-table-missing.txt")}) {
+		t.Error("the missing table's answer misread")
+	}
+
+	if on, err := parseEnabled(fixture(t, "recorded-info-enabled.txt")); err != nil || !on {
+		t.Errorf("info, enabled: %v, %v", on, err)
+	}
+	if on, err := parseEnabled(fixture(t, "recorded-info-disabled.txt")); err != nil || on {
+		t.Errorf("info, disabled: %v, %v", on, err)
+	}
+	if main := fixture(t, "recorded-main.txt"); hooked(main) != hookOK || !slices.Equal(mainUpToHook(main), stockMain) {
+		t.Errorf("the main ruleset: %v, %q", hooked(main), mainUpToHook(main))
+	}
+	for _, name := range []string{"recorded-anchors-guarded.txt", "recorded-anchors-stock.txt"} {
+		if got := anchorsBefore(fixture(t, name)); len(got) != 0 {
+			t.Errorf("%s: anchors before %q", name, got)
+		}
+	}
+	if got, err := skippedNames(fixture(t, "recorded-interfaces-v.txt")); err != nil || len(got) != 0 {
+		t.Errorf("skipped %q, %v", got, err)
+	}
+
+	refs, understood := parseReferences(fixture(t, "recorded-references.txt"))
+	if !understood || !slices.Equal(refs, []pfReference{{32755, 10000000000000000008}, {659, 10000000000000000015}}) {
+		t.Errorf("references: %+v, %v", refs, understood)
+	}
+	if refs, understood := parseReferences(fixture(t, "recorded-references-none.txt")); !understood || len(refs) != 0 {
+		t.Errorf("no references: %+v, %v", refs, understood)
 	}
 }
 
@@ -350,7 +430,7 @@ func TestParseReferencesTakesSpacedNamesAndRefusesOddLines(t *testing.T) {
 	if !understood || !slices.Equal(refs, []pfReference{{618, 9813589183660731843}, {702, 9000000000000000015}, {4130, 9000000000000000008}}) {
 		t.Fatalf("%v, %v", refs, understood)
 	}
-	odd := append(fixture(t, "references.txt"), "a line pfctl never printed\n"...)
+	odd := append(fixture(t, "recorded-references.txt"), "a line pfctl never printed\n"...)
 	if _, understood := parseReferences(odd); understood {
 		t.Fatal("a listing with a line it can't place understood")
 	}

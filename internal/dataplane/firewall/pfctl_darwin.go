@@ -143,15 +143,29 @@ func readLines(b []byte) ([]string, error) {
 	return out, nil
 }
 
-// invalidArgument: pfctl's answer about an anchor that doesn't exist
-// (`DIOCGETRULES: Invalid argument`), which holds nothing.
-func invalidArgument(out pfOutput) bool {
-	return bytes.Contains(out.stderr, []byte("Invalid argument"))
+// onlyLine says b is the line want and nothing else, pfctl's ALTQ chatter
+// and blank lines aside; a listing cut short isn't.
+func onlyLine(b []byte, want string) bool {
+	l, err := readLines(b)
+	return err == nil && len(l) == 1 && l[0] == want
 }
 
-// noTable: pfctl's answer about a table that doesn't exist.
+// AnchorMissing says pfctl's stderr for `-a ANCHOR -s rules` is its
+// answer about an anchor that doesn't exist, and nothing else (ALTQ
+// chatter aside): such an anchor holds no rules. Any other failure, an
+// "Invalid argument" of another ioctl included, isn't that answer.
+func AnchorMissing(stderr []byte) bool {
+	return onlyLine(stderr, "pfctl: DIOCGETRULES: Invalid argument")
+}
+
+// noTable: pfctl's answer about a table that doesn't exist, and nothing
+// else (ALTQ chatter aside): "Table does not exist." (ESRCH, which macOS
+// answers for a missing anchor's table too) or "Anchor or Ruleset does
+// not exist." (ENOENT), pfctl's own words for those two errors of a table
+// command. Any other failure, an "Invalid argument" included, isn't.
 func noTable(out pfOutput) bool {
-	return bytes.Contains(out.stderr, []byte("does not exist")) || invalidArgument(out)
+	return onlyLine(out.stderr, "pfctl: Table does not exist.") ||
+		onlyLine(out.stderr, "pfctl: Anchor or Ruleset does not exist.")
 }
 
 // hook is what the main ruleset does for the guard's anchor.
@@ -284,6 +298,10 @@ func parseEnabled(info []byte) (bool, error) {
 	return false, errors.New("firewall: pfctl -s info: no Status line")
 }
 
+// noReferences is all `pfctl -s References` prints while pf holds no
+// reference, in place of its header.
+const noReferences = "No pf starter references held"
+
 // pfReference is one line of `pfctl -s References`.
 type pfReference struct {
 	pid   int
@@ -296,10 +314,14 @@ type pfReference struct {
 // whatever the process name (spaces included) and the timestamp look
 // like, e.g. "618      socketfilterfw               9813589183660731843
 // 0 days 00:03:31". understood says the listing is one the guard can
-// read: a header, and every line after it a reference so read. Not
-// understood (no header, a line out of its columns, a listing cut short),
-// the absence of a reference proves nothing.
+// read: a header, and every line after it a reference so read; or pfctl's
+// answer while pf holds no reference, noReferences alone, without a
+// header. Not understood (no header otherwise, a line out of its columns,
+// a listing cut short), the absence of a reference proves nothing.
 func parseReferences(out []byte) (refs []pfReference, understood bool) {
+	if onlyLine(out, noReferences) {
+		return nil, true
+	}
 	tokenAt := -1
 	sc := bufio.NewScanner(bytes.NewReader(out))
 	sc.Buffer(nil, 1<<20)

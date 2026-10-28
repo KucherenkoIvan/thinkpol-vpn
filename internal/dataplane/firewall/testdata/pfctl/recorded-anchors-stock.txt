@@ -1,0 +1,2 @@
+  com.apple/200.AirDrop
+  com.apple/250.ApplicationFirewall

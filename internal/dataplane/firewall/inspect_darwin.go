@@ -30,7 +30,7 @@ func (g *IPv6Guard) inspect(ctx context.Context) routetable.GuardReport {
 	switch {
 	case errors.Is(err, routetable.ErrGuardUnsupported):
 		return routetable.GuardReport{Where: r.Where, Unreadable: err.Error()}
-	case err != nil && invalidArgument(out):
+	case err != nil && AnchorMissing(out.stderr):
 		// No such anchor: nothing in it.
 	case err != nil:
 		r.RulesUnreadable = err.Error()

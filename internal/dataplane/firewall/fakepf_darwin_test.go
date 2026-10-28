@@ -38,7 +38,8 @@ type fakePF struct {
 	// while off); forcedOff is pf off that way.
 	keepRefs, forcedOff bool
 	// flushMissingOK: -F of an anchor that doesn't exist succeeds;
-	// otherwise it answers `Invalid argument`, as listing one does.
+	// otherwise it answers `Invalid argument` (what a Mac answers is
+	// unrecorded).
 	flushMissingOK bool
 	// oddReferences: -s References prints a layout the guard can't read.
 	oddReferences bool
@@ -310,6 +311,11 @@ func (f *fakePF) run(ctx context.Context, stdin []byte, args ...string) (pfOutpu
 			}
 			break
 		}
+		if len(f.refs) == 0 {
+			// As a Mac prints it (testdata/pfctl/recorded-references-none.txt).
+			b.WriteString(noReferences + "\n")
+			break
+		}
 		b.WriteString("TOKENS:\nPID      Process Name                 TOKEN                 TIMESTAMP\n")
 		for _, r := range f.refs {
 			fmt.Fprintf(&b, "%-8d %-28s %-21d 0 days 00:00:05\n", r.pid, r.name, r.value)
@@ -413,10 +419,13 @@ func (f *fakePF) run(ctx context.Context, stdin []byte, args ...string) (pfOutpu
 			delete(f.anchors, anchor)
 		}
 	case anchor != "" && len(args) == 4 && args[0] == "-t" && args[2] == "-T" && args[3] == "show":
-		if a == nil {
-			return fail("pfctl: DIOCRGETADDRS: Invalid argument")
+		// A missing anchor's table is answered as a missing table, as on
+		// a Mac (testdata/pfctl/recorded-table-missing.txt).
+		var entries []string
+		ok := false
+		if a != nil {
+			entries, ok = a.tables[args[1]]
 		}
-		entries, ok := a.tables[args[1]]
 		if !ok {
 			return fail("pfctl: Table does not exist.")
 		}

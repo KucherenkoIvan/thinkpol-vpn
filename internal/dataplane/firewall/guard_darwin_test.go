@@ -1699,3 +1699,135 @@ func TestCutStateAndRuleListingsAreUnreadable(t *testing.T) {
 		t.Errorf("the anchor's rules: %v", err)
 	}
 }
+
+// TestPfctlsNoAnswersAreExact: a missing anchor, a missing table and no
+// references are each one answer of pfctl's, alone on its stream but for
+// ALTQ chatter. Anything else, another ioctl's "Invalid argument", a
+// second line or a listing cut short included, isn't that answer.
+func TestPfctlsNoAnswersAreExact(t *testing.T) {
+	cut := "\n" + strings.Repeat("x", 1<<20) + "\n"
+	for stderr, missing := range map[string]bool{
+		"pfctl: DIOCGETRULES: Invalid argument\n":          true,
+		altq + "pfctl: DIOCGETRULES: Invalid argument\n":   true,
+		"pfctl: DIOCGETRULES: Invalid argument":            true,
+		"pfctl: DIOCADDRULE: Invalid argument\n":           false,
+		"pfctl: DIOCGETRULESETS: Invalid argument\n":       false,
+		"pfctl: DIOCGETRULE: Invalid argument\n":           false,
+		"pfctl: pfctl_clear_rules: Invalid argument\n":     false,
+		"pfctl: Invalid argument.\n":                       false,
+		"DIOCGETRULES: Invalid argument\n":                 false,
+		"pfctl: DIOCGETRULES: Invalid argument\nmore\n":    false,
+		"pfctl: DIOCGETRULES: Invalid argument" + cut:      false,
+		"pfctl: DIOCGETRULES: Invalid argument (anchor)\n": false,
+		"":   false,
+		altq: false,
+	} {
+		if got := AnchorMissing([]byte(stderr)); got != missing {
+			t.Errorf("AnchorMissing(%.60q) = %v", stderr, got)
+		}
+	}
+	for stderr, none := range map[string]bool{
+		"pfctl: Table does not exist.\n":                    true,
+		altq + "pfctl: Anchor or Ruleset does not exist.\n": true,
+		"pfctl: DIOCRGETADDRS: Invalid argument\n":          false,
+		"pfctl: Invalid argument.\n":                        false,
+		"pfctl: Table does not exist.\npfctl: more\n":       false,
+		"pfctl: Table does not exist." + cut:                false,
+		"pfctl: the table does not exist\n":                 false,
+		"":                                                  false,
+	} {
+		if got := noTable(pfOutput{stderr: []byte(stderr)}); got != none {
+			t.Errorf("noTable(%.60q) = %v", stderr, got)
+		}
+	}
+	for stdout, understood := range map[string]bool{
+		"No pf starter references held\n":          true,
+		altq + "No pf starter references held\n":   true,
+		"No pf starter references held.\n":         false,
+		"No pf starter references held\nmore\n":    false,
+		"TOKENS:\nNo pf starter references held\n": false,
+		"No pf starter references held" + cut:      false,
+		"No pf references held\n":                  false,
+	} {
+		if refs, got := parseReferences([]byte(stdout)); got != understood || len(refs) != 0 {
+			t.Errorf("parseReferences(%.60q) = %v, %v", stdout, refs, got)
+		}
+	}
+}
+
+// TestAnotherInvalidArgumentIsNoEmptyAnchor: pfctl failing to list an
+// anchor that is there with an "Invalid argument" that isn't the missing
+// anchor's (DIOCADDRULE here) is an error. A flush that fails and can't
+// be checked fails the Close, which keeps the anchor, the reference and
+// the record; the snapshot says the rules and the table are unreadable,
+// not absent.
+func TestAnotherInvalidArgumentIsNoEmptyAnchor(t *testing.T) {
+	ctx := context.Background()
+	listing := map[string]string{
+		"rules":  GuardAnchor + " -s rules",
+		"Tables": GuardAnchor + " -t " + exemptTable + " -T show",
+	}
+	for _, what := range []string{"rules", "Tables"} {
+		r := newRig(t)
+		g := r.guard()
+		if err := g.Apply(ctx, exempt(t)); err != nil {
+			t.Fatal(err)
+		}
+		held, record := r.pf.references(), r.record(t)
+		r.pf.failOn("-F "+what, errors.New("DIOCBEGINRULES: Invalid argument"))
+		r.pf.failOn(listing[what], errors.New("DIOCADDRULE: Invalid argument"))
+		if err := g.Close(); err == nil {
+			t.Fatalf("%s: closed over a listing that failed", what)
+		}
+		if r.record(t) != record || !slices.Equal(r.pf.references(), held) || r.pf.ran("-X") != 0 {
+			t.Fatalf("%s: after a failed Close: record %q, references %v", what, r.record(t), r.pf.references())
+		}
+		if a := r.pf.anchor(GuardAnchor); what == "rules" && len(a.rules) == 0 || len(a.tables) == 0 && what == "Tables" {
+			t.Fatalf("%s: %+v", what, a)
+		}
+		got := g.inspect(ctx)
+		switch {
+		case what == "rules" && (!strings.Contains(got.RulesUnreadable, "DIOCADDRULE") || !got.PresentUnknown || got.Present):
+			t.Errorf("rules: inspect %+v", got)
+		case what == "Tables" && (!strings.Contains(got.ExemptUnreadable, "DIOCADDRULE") || got.Exempt != nil):
+			t.Errorf("Tables: inspect %+v", got)
+		}
+		r.pf.failOn("-F "+what, nil)
+		r.pf.failOn(listing[what], nil)
+		if err := g.Close(); err != nil {
+			t.Fatal(err)
+		}
+		r.gone(t)
+	}
+}
+
+// TestCloseAfterAnOutsideReleaseRemovesTheRecord: someone else released
+// the guard's reference (`pfctl -X` with its token), and pf holds none:
+// `-s References` prints only "No pf starter references held", as a Mac
+// does. That listing is read as no reference: the Close flushes the
+// anchor, releases nothing and removes the record, and the snapshot says
+// the record's reference isn't held.
+func TestCloseAfterAnOutsideReleaseRemovesTheRecord(t *testing.T) {
+	ctx := context.Background()
+	r := newRig(t)
+	g := r.guard()
+	if err := g.Apply(ctx, exempt(t)); err != nil {
+		t.Fatal(err)
+	}
+	r.pf.set(func(f *fakePF) { f.refs = nil })
+	out, err := r.pf.run(ctx, nil, "-s", "References")
+	if err != nil || !bytes.Equal(out.stdout, fixture(t, "recorded-references-none.txt")) {
+		t.Fatalf("the fake's References %q, %v; want the recorded listing", out.stdout, err)
+	}
+	ref := g.inspect(ctx).PF.Reference
+	if ref == nil || !ref.Recorded || ref.Held || ref.HeldUnreadable != "" {
+		t.Fatalf("inspect: %+v", ref)
+	}
+	if err := g.Close(); err != nil {
+		t.Fatal(err)
+	}
+	r.gone(t)
+	if n := r.pf.ran("-X"); n != 0 {
+		t.Errorf("%d releases of a reference pf doesn't hold", n)
+	}
+}
