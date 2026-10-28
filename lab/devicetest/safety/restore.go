@@ -27,9 +27,9 @@ const (
 	// Left: something differs or failed to undo; Result says what and
 	// what to do. The run stays pending until a restore closes it (closes).
 	Left = "LEFT"
-	// Reboot: the core's own pf change survived its undo (pf-skip's two
-	// loads of /etc/pf.conf left what that sets unlike the baseline); the
-	// core won't remove it by other means, and a reboot clears it.
+	// Reboot: the core's own pf change survived its undo (after pf-skip's
+	// loads of /etc/pf.conf, pf still skips other than at the baseline);
+	// the core won't remove it by other means, and a reboot clears it.
 	// Pending, like Left.
 	Reboot = "REBOOT"
 	// Nothing: there was nothing to restore: no run pending; a run that

@@ -16,15 +16,16 @@ import (
 )
 
 // launchScript is the one command sudo runs. It ignores the terminal's
-// signals (a closed window can't stop it between the copy and the exec,
-// and the root modes ignore them too), checks the temporary directory is
-// root's and sticky (not a symlink: find doesn't follow one), copies the
-// binary into a fresh directory of root's (0700) there, checks the copy's
-// hash against the one the user side computed before asking for sudo, and
-// runs the copy: a file the user can write is never executed as root, and
-// a binary swapped between the hash and the copy is refused.
+// signals, Ctrl-\'s QUIT included (neither a closed window nor a key can
+// stop it between the copy and the exec, and the root modes ignore them
+// too), checks the temporary directory is root's and sticky (not a
+// symlink: find doesn't follow one), copies the binary into a fresh
+// directory of root's (0700) there, checks the copy's hash against the
+// one the user side computed before asking for sudo, and runs the copy: a
+// file the user can write is never executed as root, and a binary swapped
+// between the hash and the copy is refused.
 const launchScript = `set -eu
-trap '' HUP INT TERM
+trap '' HUP INT TERM QUIT
 src=$1; sum=$2; base=$3; hasher=$4; shift 4
 umask 077
 if [ "$(/usr/bin/find "$base" -maxdepth 0 -type d -user root -perm -1000)" != "$base" ]; then

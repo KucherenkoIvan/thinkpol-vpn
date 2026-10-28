@@ -23,10 +23,11 @@ const (
 	kindPfSkip = "pf-skip"
 )
 
-// errPfSurvivedReload: the pf-skip undo loaded /etc/pf.conf twice and what
-// that sets still differs from the baseline: the core's own pf change
-// survived its undo, the one case a restore calls REBOOT.
-var errPfSurvivedReload = errors.New("pf still differs from the baseline after two loads of /etc/pf.conf")
+// errPfSurvivedReload: after the pf-skip undo's loads of /etc/pf.conf
+// (a second one when the skip alone differed after the first), pf still
+// skips other than at the baseline: the core's own pf change survived its
+// undo, the one case a restore calls REBOOT.
+var errPfSurvivedReload = errors.New("pf still skips other than at the baseline after loading /etc/pf.conf")
 
 // Spec is a change as a plan names it and the journal keeps it.
 type Spec struct {

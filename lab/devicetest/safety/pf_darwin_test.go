@@ -553,3 +553,116 @@ func TestTheReadAfterTheSecondLoadDecides(t *testing.T) {
 		t.Errorf("%+v", res)
 	}
 }
+
+// Another app loads its ruleset between the undo's first load of pf.conf
+// and the read after it, the skip gone: the undo loads no second time
+// (that could only wipe the app's ruleset), and fails LEFT.
+func TestTheUndoLoadsASecondTimeOnlyForTheSkipAlone(t *testing.T) {
+	pf := newFakePf()
+	e := skipRun(t, pf)
+	loads := 0
+	e.h.exec = func(ctx context.Context, argv []string, stdin []byte) output {
+		out := pf.run(ctx, argv, stdin)
+		if strings.Join(argv[1:], " ") == "-f "+pfConfPath {
+			if loads++; loads == 1 {
+				pf.run(ctx, []string{pfctlPath, "-f", "-"}, []byte("block drop out all\npass out quick on utun3 all\n"))
+			}
+		}
+		return out
+	}
+	res := e.restore(t.Context(), "test")
+	if res.Verdict != Left || loads != 1 || !strings.Contains(strings.Join(res.Failed, " "), "the skip is gone, but [pf-rules] differ") {
+		t.Errorf("%d loads: %+v", loads, res)
+	}
+	if !strings.Contains(pf.rules, "pass out quick on utun3 all") {
+		t.Errorf("the app's ruleset was replaced: %q", pf.rules)
+	}
+
+	// The skip alone survives the first load: the second clears it.
+	pf = newFakePf()
+	e = skipRun(t, pf)
+	pf.sticky, loads = true, 0
+	e.h.exec = func(ctx context.Context, argv []string, stdin []byte) output {
+		out := pf.run(ctx, argv, stdin)
+		if strings.Join(argv[1:], " ") == "-f "+pfConfPath {
+			loads++
+			pf.sticky = false
+		}
+		return out
+	}
+	if res := e.restore(t.Context(), "test"); res.Verdict != Clean || loads != 2 {
+		t.Errorf("the skip alone after one load: %d loads: %+v", loads, res)
+	}
+}
+
+// The run's load fails (pfctl -f - exits non-zero): the undo loads
+// nothing and fails LEFT, and the restore's LEFT names that cause, not a
+// stopped helper.
+func TestAFailedLoadIsLeftNamingItsCause(t *testing.T) {
+	pf := newFakePf()
+	h := pfHost(t, pf, "boot-a", "boot-a")
+	j, err := createJournal(h.runDir, "r", "boot-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.exec = func(ctx context.Context, argv []string, stdin []byte) output {
+		if strings.Join(argv[1:], " ") == "-f -" {
+			return output{Code: 1, Stderr: []byte("pfctl: DIOCXCOMMIT: Device busy\n")}
+		}
+		return pf.run(ctx, argv, stdin)
+	}
+	e := &engine{h: h, j: j, armed: isArmed}
+	if _, err := e.do(t.Context(), skipSpec("lo")); err == nil {
+		t.Fatal("a failed load succeeded")
+	}
+	res := e.restore(t.Context(), "test")
+	failed := strings.Join(res.Failed, " ")
+	if res.Verdict != Left || pf.ran("-f "+pfConfPath) ||
+		!strings.Contains(failed, "never journaled (the load failed: pfctl -f -: exit 1: pfctl: DIOCXCOMMIT: Device busy)") ||
+		strings.Contains(failed, "helper stopped") {
+		t.Errorf("restore: %+v (%v)", res, pf.calls)
+	}
+}
+
+// A Mac whose pfctl lists no skip, across a reboot: in the run's boot the
+// undo can't show the skip gone (LEFT); after the reboot, the skips are
+// the baseline's (as they always look there), so the change went with its
+// boot, nothing is loaded, and the run is reset by the reboot, not left
+// for -forget.
+func TestASkipPfNeverListsIsResetByTheReboot(t *testing.T) {
+	pf := newFakePf()
+	pf.unlisted = true
+	f := newPendingRun(t, surfaces(), pf.run, "an-earlier-boot")
+	f.do(skipSpec("lo"))
+	if _, err := (&engine{h: f.h, j: f.j, armed: isArmed}).undoLast(t.Context()); err == nil || !strings.Contains(err.Error(), "listed no skipped interface") {
+		t.Fatalf("UndoLast in the run's boot: %v", err)
+	}
+	f.killed()
+	pf.skip = nil                                                      // the reboot
+	pf.airdrop = "pass in quick proto tcp from any to any port 8770\n" // the new boot's
+	pf.calls = nil
+	res, err := f.restore()
+	if err != nil || res.Verdict != ResetByReboot || f.pointer(leftFile) != "" {
+		t.Fatalf("restore after the reboot: %+v %v, left %q", res, err, f.pointer(leftFile))
+	}
+	if pf.ran("-f "+pfConfPath) || pf.ran("-f -") || len(res.GoneWithReboot) != 1 {
+		t.Errorf("after the reboot: %+v (%v)", res, pf.calls)
+	}
+}
+
+// A spec naming what only apply learns (a load's outcome, or why it
+// failed) is refused before anything loads.
+func TestASpecNamingALoadsOutcomeIsRefused(t *testing.T) {
+	for _, a := range []pfSkipAction{{Iface: "lo", Loaded: true}, {Iface: "lo", Failed: "the load failed"}} {
+		pf := newFakePf()
+		h := pfHost(t, pf, "boot-a", "boot-a")
+		j, err := createJournal(h.runDir, "r", "boot-a")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = (&engine{h: h, j: j, armed: isArmed}).do(t.Context(), Spec{Kind: kindPfSkip, Params: mustJSON(a)})
+		if err == nil || !strings.Contains(err.Error(), "names no loaded rules") || pf.ran("-f -") {
+			t.Errorf("%+v: %v (%v)", a, err, pf.calls)
+		}
+	}
+}
