@@ -27,6 +27,8 @@ Each area's design is a file of its own under `docs/design/`; this file is the e
 | [Control plane](docs/design/control-plane.md) | the controller, the signed map, joining, kernel usage |
 | [Censor lab](docs/design/lab.md) | the lab and its censor modules |
 | [Milestones](docs/design/milestones.md) | the done-when checks, out of scope |
+| [API overview](docs/design/api-overview.md) | the user-facing surface as built (CLI, local API, configuration, on-disk state), the planned additions, and a consistency review (TP-139); a snapshot, not a source of truth |
+| [API overview: reference](docs/design/api-overview-reference.md) | the overview's command-by-command CLI and local API reference, with example output |
 
 ## Where the mechanism lives
 

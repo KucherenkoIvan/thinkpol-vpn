@@ -76,14 +76,17 @@ The owner sees the whole user-facing surface of thinkpol as it is today in one r
 
 ## Acceptance
 - [ ] the overview covers every surface in the inventory (checked against the code by a reviewer)
-- [ ] every example output comes from a lab run or a test, never the owner's machine
-- [ ] the consistency findings list exists in the overview
+- [x] every example output comes from a lab run or a test, never the owner's machine
+- [x] the consistency findings list exists in the overview
 - [ ] the planned part covers TP-111, TP-141, TP-133 and TP-140, and each "change" verdict on it is written into that ticket
 - [ ] the owner's session is recorded in Notes, with a verdict (keep, change, or drop) on each finding
 - [ ] follow-up tickets for the "change" verdicts are filed and named in the Log
 
 ## Notes
 - The owner's session has not been held yet. Verdicts go here, one line per finding: keep, change, or drop. Each "change" line names its follow-up ticket.
+- **Owner session pending.** The document is ready for it: docs/design/api-overview.md (summary, configuration, on-disk state, planned part, findings F1–F21 with suggested verdicts, ordered by cost after M2) and docs/design/api-overview-reference.md (the CLI and local API, command by command, with example output). The reference is a second file because one file came to 67 KB, past the design docs' 50 KB split rule (ORCHESTRATION.md "Design documents"). Both are indexed from DESIGN.md.
+- Acceptance box 1 waits on the reviewer's check against the code. Box 4's first half is done (the planned part covers all four tickets); its second half, the "change" verdicts written into those tickets, waits on the session. Boxes 5 and 6 belong to the session.
+- Inventory correction: the connect record (`connect`, `agent.ConnectRecordFile`) is not in the state directory. It sits next to the host lock in `/run/thinkpol` (macOS `/private/var/db/thinkpol`), and only when connect-on-boot is set. The overview places it there (F14).
 - **Order (owner, 2026-10-24).** In the before-M2 list (wave 0): done before the M2 lanes start, so the CLI's shape is reviewed before the kill-switch toggle and the transport settings are added to it.
 
 ## Log
@@ -91,3 +94,8 @@ The owner sees the whole user-facing surface of thinkpol as it is today in one r
 - 2026-10-24 docs: in the before-M2 list, ahead of the kill-switch and transport settings
 - 2026-10-24 docs: slotted in the pre-M2 phase (wave 0)
 - 2026-10-28 backlog → in-progress, owner: agent-claude-tp139
+- 2026-10-28 docs: docs/design/api-overview.md and api-overview-reference.md written from the code (CLI, local API, config, on-disk state, planned TP-111/141/133/140 surface, findings F1–F21); DESIGN.md indexes both
+- 2026-10-28 examples captured from this branch in throwaway tests, not committed: `make lab-gotest PKG=./cmd/thinkpol` (help, usage, errors, dev commands in a lab node) and `go test -tags lab` (status, connect, disconnect, spaces, rules preset, logs, diag as root, alice and mallory against running nodes; service install, connect-on-boot and uninstall on a systemd node); nothing was run on the host
+- 2026-10-28 doc-only change: no lab-tested code touched, so no `make lab-test` run; `make lint` and `make test` pass
+- 2026-10-28 not verified: macOS output (paths and the launchd plist come from the code, not a run); Windows has no local API yet
+- 2026-10-28 out of scope, for the orchestrator: F19 (`dev lists build -only` miscounts "others"), F20 (`rules.local` written 0644), F16 ("re-applied 1 times", the server's uplink line misaligned) are small code fixes if the owner says change; owner session pending
