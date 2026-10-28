@@ -21,8 +21,8 @@ import (
 const usage = `usage: labctl <command>
 
   up                                  start the standard topology for this checkout
-  down [-tests | -stale]              remove this checkout's labs (-tests: only the ones tests
-                                      started; -stale: every lab whose checkout is gone)
+  down [-tests | -stale]              remove this checkout's labs and ended runs' binaries (-tests:
+                                      only the labs tests started; -stale: every lab whose checkout is gone)
   gotest [-v] [-run re] [-count n] [-timeout d] [-p n] [-perf] pkgs...
                                       run each package's tests in a fresh lab node with THINKPOL_LAB=1
                                       (-count, -timeout: the test binary's; repeat runs for stability)
@@ -40,7 +40,7 @@ func main() {
 	}
 }
 
-func run(ctx context.Context, args []string) error {
+func run(ctx context.Context, args []string) (err error) {
 	if len(args) == 0 {
 		fmt.Fprint(os.Stderr, usage)
 		return errors.New("no command")
@@ -49,6 +49,10 @@ func run(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	// The binaries gotest built; every lab that ran them is down by now.
+	defer func() {
+		err = errors.Join(err, lab.RemoveBinaries(context.WithoutCancel(ctx), root))
+	}()
 	switch args[0] {
 	case "up":
 		ctx, cancel := context.WithTimeout(ctx, 15*time.Minute)
@@ -140,7 +144,7 @@ func up(ctx context.Context, root string) error {
 	if err != nil {
 		return err
 	}
-	l, err := lab.Up(ctx, root, checkout, lab.Standard())
+	l, err := lab.UpStandalone(ctx, root, checkout, lab.Standard())
 	if err != nil {
 		if l != nil {
 			err = errors.Join(err, l.Down(context.WithoutCancel(ctx)))

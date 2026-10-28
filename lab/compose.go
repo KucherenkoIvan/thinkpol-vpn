@@ -3,13 +3,13 @@ package lab
 import (
 	"encoding/json"
 	"net/netip"
-	"path/filepath"
 )
 
 // Paths inside every node.
 const (
-	// BinDir holds lab/bin, read-only: the cross-compiled thinkpol binary and
-	// the test binaries built by GoTest.
+	// BinDir holds the run's binary directory (Prepare), read-only: the
+	// cross-compiled thinkpol binary, the lab's tools and the test binaries
+	// built by GoTest.
 	BinDir = "/opt/thinkpol/bin"
 	// SrcDir holds the checkout, read-only, so tests run by GoTest find their
 	// testdata.
@@ -79,10 +79,10 @@ type image struct {
 }
 
 // renderCompose turns a topology into a Compose file. root is the checkout,
-// mounted read-only together with its lab/bin. No container names: Compose
+// mounted read-only together with binDir, the binaries the lab runs. No container names: Compose
 // names containers after the project. Subnets are the ones allocated for
 // this lab.
-func renderCompose(project string, topo Topology, img image, root string, subnets map[string]netSubnets) ([]byte, error) {
+func renderCompose(project string, topo Topology, img image, root, binDir string, subnets map[string]netSubnets) ([]byte, error) {
 	if err := topo.Validate(); err != nil {
 		return nil, err
 	}
@@ -143,7 +143,7 @@ func renderCompose(project string, topo Topology, img image, root string, subnet
 			Environment: env,
 			Labels:      labels,
 			Volumes: []string{
-				filepath.Join(root, "lab", "bin") + ":" + BinDir + ":ro",
+				binDir + ":" + BinDir + ":ro",
 				root + ":" + SrcDir + ":ro",
 			},
 			Networks: map[string]struct{}{},

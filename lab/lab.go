@@ -28,6 +28,7 @@ type Lab struct {
 	Topology Topology
 	root     string
 	runDir   string
+	binDir   string // mounted at BinDir
 	nodes    map[string]*Node
 	gateways map[string][]netip.Addr // Docker's bridge addresses, by network
 	bridges  map[string]Bridge       // by network
@@ -74,7 +75,7 @@ func start(t testing.TB, topo Topology, slotKey string) *Lab {
 	project := claimProject(testProject(checkout, cwd, t.Name()))
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
-	l, err := up(ctx, root, project, topo, slotKey)
+	l, err := up(ctx, root, project, topo, slotKey, false)
 	if l != nil {
 		t.Cleanup(func() { l.cleanup(t) })
 	}
@@ -123,11 +124,20 @@ func (l *Lab) cleanup(t testing.TB) {
 // sealed into the lab. A lab of this checkout left over under the same name
 // is removed first; another checkout's lab under that name is an error. On
 // error the returned Lab, if any, still needs Down.
+// The lab runs this process's binaries (Prepare), so it must be down
+// before the process removes them (RemoveBinaries).
 func Up(ctx context.Context, root, project string, topo Topology) (*Lab, error) {
-	return up(ctx, root, project, topo, "")
+	return up(ctx, root, project, topo, "", false)
 }
 
-func up(ctx context.Context, root, project string, topo Topology, slotKey string) (*Lab, error) {
+// UpStandalone is Up for a lab that outlives this process (make lab-up):
+// its binaries are its own, built into its directory under lab/.run, and
+// go with it (Down, or labctl down).
+func UpStandalone(ctx context.Context, root, project string, topo Topology) (*Lab, error) {
+	return up(ctx, root, project, topo, "", true)
+}
+
+func up(ctx context.Context, root, project string, topo Topology, slotKey string, standalone bool) (*Lab, error) {
 	if !strings.HasPrefix(project, ProjectPrefix) {
 		return nil, fmt.Errorf("lab: project %q doesn't start with %q", project, ProjectPrefix)
 	}
@@ -137,25 +147,42 @@ func up(ctx context.Context, root, project string, topo Topology, slotKey string
 	if err := downProject(ctx, project, root); err != nil {
 		return nil, err
 	}
-	img, err := prepare(ctx, root)
-	if err != nil {
-		return nil, err
+	runDir := filepath.Join(root, "lab", ".run", project)
+	var img image
+	var binDir string
+	if standalone {
+		var t target
+		var err error
+		if t, img, err = prepareImage(ctx, root); err != nil {
+			return nil, err
+		}
+		binDir = filepath.Join(runDir, "bin")
+		if err := buildTools(ctx, root, t, binDir); err != nil {
+			return nil, errors.Join(err, os.RemoveAll(runDir))
+		}
+	} else {
+		p, err := prepare(ctx, root)
+		if err != nil {
+			return nil, err
+		}
+		img, binDir = p.img, p.bin.path
 	}
 	release, err := acquireSlot(ctx, slotKey)
 	if err != nil {
-		return nil, err
+		return nil, errors.Join(err, os.RemoveAll(runDir)) // a standalone lab's binaries
 	}
 	l := &Lab{
 		Project:  project,
 		Topology: topo,
 		root:     root,
-		runDir:   filepath.Join(root, "lab", ".run", project),
+		runDir:   runDir,
+		binDir:   binDir,
 		nodes:    map[string]*Node{},
 		release:  release,
 	}
 	if err := os.MkdirAll(l.runDir, 0o755); err != nil {
 		l.releaseSlot()
-		return nil, err
+		return nil, errors.Join(err, os.RemoveAll(runDir))
 	}
 	if err := l.create(ctx, img); err != nil {
 		return l, err
@@ -194,7 +221,7 @@ func (l *Lab) create(ctx context.Context, img image) error {
 		if err != nil {
 			return err
 		}
-		file, err := renderCompose(l.Project, l.Topology, img, l.root, subnets)
+		file, err := renderCompose(l.Project, l.Topology, img, l.root, l.binDir, subnets)
 		if err != nil {
 			return err
 		}

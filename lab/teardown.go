@@ -2,6 +2,7 @@ package lab
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -85,19 +86,20 @@ func labProjects(ctx context.Context) (map[string]string, error) {
 
 // DownCheckout removes every lab started from the checkout at root (by its
 // LabelRoot, exactly), or with onlyTests just the labs tests and labctl
-// gotest started. It returns the
-// projects it removed.
+// gotest started, and the binaries of runs from the checkout that have
+// ended (RemoveStaleBinaries). It returns the projects it removed.
 func DownCheckout(ctx context.Context, root string, onlyTests bool) ([]string, error) {
 	checkout, err := CheckoutProject(root)
 	if err != nil {
 		return nil, err
 	}
-	return downWhere(ctx, func(project, labRoot string) bool {
+	removed, err := downWhere(ctx, func(project, labRoot string) bool {
 		if labRoot != root {
 			return false
 		}
 		return !onlyTests || startedByTests(project, checkout)
 	})
+	return removed, errors.Join(err, RemoveStaleBinaries(ctx, root))
 }
 
 // DownStale removes the labs, from any checkout, whose checkout no longer

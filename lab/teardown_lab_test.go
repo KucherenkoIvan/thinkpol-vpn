@@ -25,7 +25,7 @@ func TestDownRefusesUnlabelledResources(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	img, err := prepare(ctx, root)
+	_, img, err := prepareImage(ctx, root)
 	if err != nil {
 		t.Fatal(err)
 	}

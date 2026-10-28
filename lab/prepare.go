@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,48 +18,73 @@ import (
 const GOARCHEnv = "THINKPOL_LAB_GOARCH"
 
 // prepared caches, per checkout, what every lab of this process shares: the
-// image and the binaries, built once.
+// image and the binaries, built once into this process's own directory.
 var (
 	preparedMu sync.Mutex
-	prepared   = map[string]image{} // by checkout
+	prepared   = map[string]preparedRun{} // by checkout
 )
 
-// Prepare builds the lab image (once per Dockerfile version and platform,
-// shared by all checkouts) and cross-compiles thinkpol into root/lab/bin for
-// the Docker VM's architecture, with the lab's own tools (labdns). It
-// returns the image reference.
-func Prepare(ctx context.Context, root string) (string, error) {
-	img, err := prepare(ctx, root)
-	return img.ref, err
+// preparedRun is what a process prepared for its labs of one checkout.
+type preparedRun struct {
+	img image
+	bin *runDir
 }
 
-func prepare(ctx context.Context, root string) (image, error) {
+// Prepare builds the lab image (once per Dockerfile version and platform,
+// shared by all checkouts) and cross-compiles thinkpol, with the lab's own
+// tools (labdns, censord), into this process's binary directory under
+// root/lab/bin for the Docker VM's architecture. It returns the image
+// reference; RemoveBinaries removes the directory.
+func Prepare(ctx context.Context, root string) (string, error) {
+	p, err := prepare(ctx, root)
+	return p.img.ref, err
+}
+
+func prepare(ctx context.Context, root string) (preparedRun, error) {
 	preparedMu.Lock()
 	defer preparedMu.Unlock()
-	if img, ok := prepared[root]; ok {
-		return img, nil
+	if p, ok := prepared[root]; ok {
+		return p, nil
 	}
+	t, img, err := prepareImage(ctx, root)
+	if err != nil {
+		return preparedRun{}, err
+	}
+	bin, err := newRunDir(ctx, root)
+	if err != nil {
+		return preparedRun{}, err
+	}
+	if err := buildTools(ctx, root, t, bin.path); err != nil {
+		return preparedRun{}, errors.Join(err, bin.remove(context.WithoutCancel(ctx), root))
+	}
+	p := preparedRun{img: img, bin: bin}
+	prepared[root] = p
+	return p, nil
+}
+
+// prepareImage finds the Docker VM's platform and builds the lab image for
+// it.
+func prepareImage(ctx context.Context, root string) (target, image, error) {
 	t, err := dockerTarget(ctx)
 	if err != nil {
-		return image{}, err
+		return target{}, image{}, err
 	}
 	img, err := buildImage(ctx, root, t)
-	if err != nil {
-		return image{}, err
+	return t, img, err
+}
+
+// buildTools cross-compiles thinkpol and the lab's own tools into dir.
+func buildTools(ctx context.Context, root string, t target, dir string) error {
+	for _, tool := range []struct{ name, pkg string }{
+		{"thinkpol", "./cmd/thinkpol"},
+		{"labdns", "./lab/labdns"},   // a stand-in for resolvers out in the world
+		{"censord", "./lab/censord"}, // the lab's censor, run in the router
+	} {
+		if _, err := goBuild(ctx, root, t, filepath.Join(dir, tool.name), "build", "-trimpath", tool.pkg); err != nil {
+			return err
+		}
 	}
-	if _, err := goBuild(ctx, root, t, filepath.Join(root, "lab", "bin", "thinkpol"), "build", "-trimpath", "./cmd/thinkpol"); err != nil {
-		return image{}, err
-	}
-	// labdns: a stand-in for resolvers out in the world.
-	if _, err := goBuild(ctx, root, t, filepath.Join(root, "lab", "bin", "labdns"), "build", "-trimpath", "./lab/labdns"); err != nil {
-		return image{}, err
-	}
-	// censord: the lab's censor, run in the router.
-	if _, err := goBuild(ctx, root, t, filepath.Join(root, "lab", "bin", "censord"), "build", "-trimpath", "./lab/censord"); err != nil {
-		return image{}, err
-	}
-	prepared[root] = img
-	return img, nil
+	return nil
 }
 
 // target is the platform lab containers run on.

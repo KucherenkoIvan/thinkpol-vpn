@@ -74,9 +74,8 @@ func (n *Node) goTest(ctx context.Context, w io.Writer, pkg GoPackage, env, args
 	if err != nil {
 		return err
 	}
-	// The hash keeps a/b-c and a/b/c apart.
-	name := slug(path.Base(pkg.ImportPath), 40) + "-" + shortHash(pkg.ImportPath) + ".test"
-	bin := filepath.Join(n.lab.root, "lab", "bin", "tests", name)
+	name := testBinaryName(pkg)
+	bin := filepath.Join(n.lab.binDir, "tests", name)
 	built, err := goBuild(ctx, n.lab.root, t, bin, "test", "-c", "./"+pkg.Dir)
 	if err != nil || !built {
 		return err // !built: no tests for linux
@@ -95,6 +94,12 @@ func (n *Node) goTest(ctx context.Context, w io.Writer, pkg GoPackage, env, args
 		return fmt.Errorf("%s: tests in %s: %w", n.Name, pkg.ImportPath, err)
 	}
 	return nil
+}
+
+// testBinaryName is the file GoTest builds a package's tests into, under
+// the lab's binary directory's tests/. The hash keeps a/b-c and a/b/c apart.
+func testBinaryName(pkg GoPackage) string {
+	return slug(path.Base(pkg.ImportPath), 40) + "-" + shortHash(pkg.ImportPath) + ".test"
 }
 
 // RunGoTests is GoTest for a lab test, in this node: the package's output
