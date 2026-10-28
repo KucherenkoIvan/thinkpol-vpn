@@ -52,21 +52,21 @@ Round 1 (paranoid, torvalds, go-style, auto second opinion, 2026-10-28): the flo
 - [x] R1.20 bindir_lab_test.go copies the sweep's liveness check; share one helper (torvalds 13)
 
 Round 2 (paranoid, torvalds, 2026-10-28): the R1 fixes hold, but labctl down's sweep still takes a kept lab's binaries while the lab is up; `Up` skips R1.3's check, and the build cache keeps failures.
-- [ ] R2.1 labctl down's sweep removes kept directories whose labs are still up (another `THINKPOL_LAB_PROJECT`, Docker failing partway, two spellings of one checkout): record each kept lab's project in `.kept`, remove a kept directory only when none of its projects is up; test `DownCheckout`'s sweep with two kept projects, one still up (paranoid 1, torvalds S1)
-- [ ] R2.2 a `-timeout` hang with `THINKPOL_LAB_KEEP` leaves no `.kept`: mark at creation when KEEP is set, unmark in `remove` if no lab was kept (paranoid 2)
-- [ ] R2.3 the exported `Up` skips R1.3's Main check: delete it, callers use `up(…, processBinaries)` (torvalds S2)
-- [ ] R2.4 `buildTestsOnce` caches a failed build for the process: cache successes only, with a test (paranoid 4, torvalds S3)
-- [ ] R2.5 a failed removal stays cached, unlocked and half-deleted: forget the entry anyway and leave the directory to the sweep; fix the doc; R1.8's last clause changes (paranoid 3, torvalds S4)
-- [ ] R2.6 lab/doc.go still says nothing is shared between tests, "the test binaries GoTest runs once" misparses, and the doc/README "together with the lab" line is false (torvalds S5, paranoid 1)
-- [ ] R2.7 no real `THINKPOL_LAB_KEEP` run: one manual run of a failing throwaway lab test, `.kept` and binaries survive, `make lab-down` removes both; logged (torvalds S6)
-- [ ] R2.8 no test fails when `cleanup` drops `keepBinaries` or `DownCheckout` drops its sweep, or when a failed removal's entry is kept (paranoid 5, torvalds S6)
-- [ ] R2.9 R1.17 partial: errors from `tryLockMode`, `RemoveAll`, `removeIfEmpty`, `runDirLive` lack the `lab:` prefix (paranoid 6)
-- [ ] R2.10 one unremovable leftover fails every lab start: make the run's own sweep best-effort (paranoid 7)
-- [ ] R2.11 naming: one word for run/process binaries (`runDirPrefix`, `runDirLive` vs `Lab.runDir`), and `binaries` → `labInputs` since it also builds the image (torvalds N1, N2)
-- [ ] R2.12 the `if err == nil` cascade in `up` (torvalds N3)
-- [ ] R2.13 goBuild's dead "a package that lost its tests" branch (torvalds N4)
-- [ ] R2.14 `fatalTB` depends on `start` calling `Name` before `up`: say so (torvalds N5)
-- [ ] R2.15 the kept-marker check is written three times: one `keptBy` helper (torvalds N6)
+- [x] R2.1 labctl down's sweep removes kept directories whose labs are still up (another `THINKPOL_LAB_PROJECT`, Docker failing partway, two spellings of one checkout): record each kept lab's project in `.kept`, remove a kept directory only when none of its projects is up; test `DownCheckout`'s sweep with two kept projects, one still up (paranoid 1, torvalds S1)
+- [x] R2.2 a `-timeout` hang with `THINKPOL_LAB_KEEP` leaves no `.kept`: mark at creation when KEEP is set, unmark in `remove` if no lab was kept (paranoid 2)
+- [x] R2.3 the exported `Up` skips R1.3's Main check: delete it, callers use `up(…, processBinaries)` (torvalds S2)
+- [x] R2.4 `buildTestsOnce` caches a failed build for the process: cache successes only, with a test (paranoid 4, torvalds S3)
+- [x] R2.5 a failed removal stays cached, unlocked and half-deleted: forget the entry anyway and leave the directory to the sweep; fix the doc; R1.8's last clause changes (paranoid 3, torvalds S4)
+- [x] R2.6 lab/doc.go still says nothing is shared between tests, "the test binaries GoTest runs once" misparses, and the doc/README "together with the lab" line is false (torvalds S5, paranoid 1)
+- [x] R2.7 no real `THINKPOL_LAB_KEEP` run: one manual run of a failing throwaway lab test, `.kept` and binaries survive, `make lab-down` removes both; logged (torvalds S6)
+- [x] R2.8 no test fails when `cleanup` drops `keepBinaries` or `DownCheckout` drops its sweep, or when a failed removal's entry is kept (paranoid 5, torvalds S6)
+- [x] R2.9 R1.17 partial: errors from `tryLockMode`, `RemoveAll`, `removeIfEmpty`, `runDirLive` lack the `lab:` prefix (paranoid 6)
+- [x] R2.10 one unremovable leftover fails every lab start: make the run's own sweep best-effort (paranoid 7)
+- [x] R2.11 naming: one word for run/process binaries (`runDirPrefix`, `runDirLive` vs `Lab.runDir`), and `binaries` → `labInputs` since it also builds the image (torvalds N1, N2)
+- [x] R2.12 the `if err == nil` cascade in `up` (torvalds N3)
+- [x] R2.13 goBuild's dead "a package that lost its tests" branch (torvalds N4)
+- [x] R2.14 `fatalTB` depends on `start` calling `Name` before `up`: say so (torvalds N5)
+- [x] R2.15 the kept-marker check is written three times: one `keptBy` helper (torvalds N6)
 - R1.10 follow-up (per-run project identity in names and `down -tests`): a backlog ticket, filed by the orchestrator (torvalds); not in this ticket.
 
 ## Log
@@ -89,3 +89,9 @@ Round 2 (paranoid, torvalds, 2026-10-28): the R1 fixes hold, but labctl down's s
 - 2026-10-28 in-progress → review
 - 2026-10-28 review → has-errors (round 2: R2.1–R2.15)
 - 2026-10-28 has-errors → in-progress, owner: agent-claude-tp121
+- 2026-10-28 takeover (agent-claude-tp121, after the round-2 fixer died at fede585): re-read fede585 against R2.1–R2.15; finished R2.9 (waitLock's errors now carry `lab: <what>:`, which covers lockBinRoot) and R2.6 (doc.go's "the test binaries GoTest runs into" sentence reworded); added TestALeftoverTheSweepCantRemoveDoesntStopTheNextRun (R2.10); the two unremovable-directory tests skip as root, since a lab node runs the unit tests as root and the read-only mode doesn't stop it.
+- 2026-10-28 round 2 fixed (fede585, 630609d, f4dd95c): `.kept` lists every lab a run starts with KEEP, written before the lab starts; a run's own sweep never removes such a directory, and `labctl down` removes it only once none of the projects it lists is up on the daemon (keeps all of them if Docker can't list labs) (R2.1, R2.2, R2.15 `keptBy`). `Up` deleted; callers use `up(…, runInputs)` (R2.3). `buildTestsOnce` caches successes only (R2.4). `RemoveRunBinaries` forgets every entry, removed or not, and leaves a failed one to the sweep: R1.8's "keep an entry whose removal failed" is reversed (R2.5). Docs: lab/doc.go, README, DownCheckout (R2.6). Best-effort sweep in newRunBinaries (R2.10). Names: `runBinariesPrefix`, `runBinariesLive`, `Lab.stateDir`, `labInputs`/`runInputs`/`detachedInputs` (R2.11). `up` without the `if err == nil` cascade (R2.12), goBuild's dead branch gone (R2.13), the `fatalTB` dependency on `start` stated (R2.14).
+- 2026-10-28 tests (round 2), each mutation fails its test: TestLabctlDownKeepsTheBinariesOfKeptLabsStillUp (fake `docker` on PATH; mutations: DownCheckout without its sweep; labUp always false; the sweep ignores labUp), TestCleanupKeepsAFailedLabsBinaries (mutation: cleanup without `bins.keep()`), TestRemoveRunBinariesForgetsADirectoryItFailedToRemove (mutation: a failed entry kept), TestAFailedTestBuildIsRetried (mutation: a failed build marked done), TestALeftoverTheSweepCantRemoveDoesntStopTheNextRun (mutation: newRunBinaries fails on a sweep error) (R2.8). `start` recording the lab in `.kept` has no unit test; the manual run below covers it.
+- 2026-10-28 verified (R2.7), a throwaway failing lab test (not committed) run with `go test -tags lab` as `make lab-test` runs it: with KEEP, a failing test's lab stayed up, its run directory kept `.kept` (listing the project) and thinkpol, labdns, censord, and the node listed them in /opt/thinkpol/bin; with KEEP, a test hung past `-timeout 60s` left its lab and its directory with `.kept`; a later passing run without KEEP removed its own directory and left both kept ones (and its sweep had removed a dead pre-takeover leftover); `make lab-down` removed both labs and both directories, and lab/bin with them.
+- 2026-10-28 verified: `make lint`, `make test` green; `make lab-test` LAB_P=4 green on f4dd95c (after merging origin/rewrite with TP-138), no lab/bin left. The first run on f4dd95c failed only internal/dataplane TestTheOverlayComesBackAfterALinkBounce ("the TUN kept its IPv6 address going down: nothing to test", engine_lab_test.go:273), not TP-121 code; a run on 1e071c0 had passed it. Out of scope, for the orchestrator: that test reads the address right after `ip link set down` while a pending re-apply can put it back.
+- 2026-10-28 in-progress → review
