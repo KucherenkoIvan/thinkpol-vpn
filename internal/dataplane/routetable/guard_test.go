@@ -206,7 +206,8 @@ func TestEnforcerAppliesTheGuardWithTheRoutes(t *testing.T) {
 	}
 
 	// Routes that fail leave the routes in place, and the guard checked
-	// for them, not for the Want that failed.
+	// for no more than them and the Want that failed both exempt: here
+	// that Want's, which drops w's direct prefix.
 	f.setFail(true)
 	w2 := w
 	w2.Direct = nil
@@ -216,8 +217,8 @@ func TestEnforcerAppliesTheGuardWithTheRoutes(t *testing.T) {
 	g.mu.Lock()
 	last := g.applied[len(g.applied)-1]
 	g.mu.Unlock()
-	if !last.Equal(routetable.GuardFor(w)) {
-		t.Errorf("after the routes failed the guard was applied for %+v, want the routes in place", last)
+	if !last.Equal(routetable.GuardFor(w2)) {
+		t.Errorf("after the routes failed the guard was applied for %v, want none direct", last.Direct.Prefixes())
 	}
 	f.setFail(false)
 
@@ -286,15 +287,17 @@ func TestEnforcerStopsTheGuardWhenUnsupported(t *testing.T) {
 
 // While the routes' re-apply keeps failing, the routes last applied stay
 // in place (an Apply is all or nothing) and so must their guard: a guard
-// deleted meanwhile is put back, for those routes, and the status says
-// how that went the whole time.
+// deleted meanwhile is put back, for those routes but no wider than the
+// Want that failed (a change that drops a prefix and adds another exempts
+// only the one it keeps), and the status says how that went the whole
+// time.
 func TestTheGuardIsPutBackWhileTheRoutesFail(t *testing.T) {
 	f := &fakeConfigurator{events: make(chan struct{}), survey: up()}
 	g := newFakeGuard(f)
 	e := routetable.OpenWithGuard(f, g, nil)
 	defer func() { _ = e.Close() }()
 	ctx := context.Background()
-	w := routetable.Want{TUN: "thinkpol0", Direct: set(t, "2001:db8:d0::/48")}
+	w := routetable.Want{TUN: "thinkpol0", Direct: set(t, "2001:db8:d0::/48", "2001:db8:d2::/48")}
 	if err := e.Enforce(ctx, w); err != nil {
 		t.Fatal(err)
 	}
@@ -306,14 +309,14 @@ func TestTheGuardIsPutBackWhileTheRoutesFail(t *testing.T) {
 	f.events <- struct{}{}
 	eventually(t, "the failed re-apply", func() bool { return e.Status().Error == routetable.ErrorReapply })
 	w2 := w
-	w2.Direct = set(t, "2001:db8:d1::/48")
+	w2.Direct = set(t, "2001:db8:d1::/48", "2001:db8:d2::/48")
 	if err := e.Enforce(ctx, w2); err == nil {
 		t.Fatal("Enforce succeeded on a failing configurator")
 	}
 
 	// The guard is deleted ("nft flush ruleset"): its Apply fails once,
-	// which the status says, then works; each time for w, whose routes
-	// are the ones in place.
+	// which the status says, then works; each time for what both w,
+	// whose routes are the ones in place, and w2 exempt.
 	g.setFail(errors.New("the table is gone and nftables said no"))
 	n := g.count()
 	g.events <- struct{}{}
@@ -330,8 +333,9 @@ func TestTheGuardIsPutBackWhileTheRoutesFail(t *testing.T) {
 	g.mu.Lock()
 	last := g.applied[len(g.applied)-1]
 	g.mu.Unlock()
-	if !last.Equal(routetable.GuardFor(w)) {
-		t.Errorf("the guard put back for %+v, want the routes in place: %+v", last.Direct.Prefixes(), routetable.GuardFor(w).Direct.Prefixes())
+	kept := routetable.GuardFor(routetable.Want{TUN: "thinkpol0", Direct: set(t, "2001:db8:d2::/48")})
+	if !last.Equal(kept) {
+		t.Errorf("the guard put back for %v, want what the routes in place and w2 both exempt: %v", last.Direct.Prefixes(), kept.Direct.Prefixes())
 	}
 
 	// The routes' own retry (every RetryAfter) checks the guard too,
@@ -340,6 +344,114 @@ func TestTheGuardIsPutBackWhileTheRoutesFail(t *testing.T) {
 	eventually(t, "a route retry checking the guard", func() bool { return g.count() > n })
 	f.setFail(false)
 	eventually(t, "the routes back", func() bool { return e.Status().Enforced })
+}
+
+// lastGuard is the Exempt g was last given.
+func lastGuard(g *fakeGuard) routetable.Exempt {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.applied[len(g.applied)-1]
+}
+
+// failingRig is an Enforcer whose routes went in for old and fail from
+// then on: what the OS holds stays old's.
+func failingRig(t *testing.T, old routetable.Want) (*routetable.Enforcer, *fakeConfigurator, *fakeGuard) {
+	t.Helper()
+	f := &fakeConfigurator{events: make(chan struct{}), survey: up()}
+	g := newFakeGuard(f)
+	e := routetable.OpenWithGuard(f, g, nil)
+	t.Cleanup(func() { _ = e.Close() })
+	if err := e.Enforce(t.Context(), old); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the check after Enforce", func() bool { return e.Status().Reapplies == 1 })
+	f.setFail(true)
+	return e, f, g
+}
+
+// checkRoutesStayed fails t unless the last routes that went in are
+// old's, and nothing went in since the n-th Apply.
+func checkRoutesStayed(t *testing.T, f *fakeConfigurator, n int, old routetable.Want) {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.applies) != n || !slices.Equal(routeStrings(f.applies[n-1]), routeStrings(routetable.Config(old, up()))) {
+		t.Errorf("%d route Applies, the last %v; want %d, old's", len(f.applies), routeStrings(f.applies[len(f.applies)-1]), n)
+	}
+}
+
+// checkRepairs runs check after the routes' re-apply (the watcher's
+// check after an Enforce), then after the guard put back alone on its
+// own Watch's signal.
+func checkRepairs(t *testing.T, e *routetable.Enforcer, g *fakeGuard, check func(when string)) {
+	t.Helper()
+	r := e.Status().Reapplies
+	eventually(t, "the routes' re-apply", func() bool { return e.Status().Reapplies > r })
+	check("after the routes' re-apply")
+	k := g.count()
+	g.events <- struct{}{}
+	eventually(t, "the guard put back after its Watch", func() bool { return g.count() > k })
+	check("after the guard's Watch")
+}
+
+// A shrink that fails, and whose fallback to nothing direct fails too
+// (the engine's order: the shrink, the fallback, then the new rules),
+// leaves the old routes in place; the guard is the new, narrower set's,
+// so IPv6 to the prefixes dropped is refused rather than sent direct.
+// It stays so through the routes' retries and the guard's own repairs.
+func TestAFailedShrinkNarrowsTheGuard(t *testing.T) {
+	old := routetable.Want{TUN: "thinkpol0", Direct: set(t, "2001:db8:d0::/48", "2001:db8:d1::/48"),
+		Bypass: []netip.Addr{netip.MustParseAddr("2001:db8:7::7")}}
+	e, f, g := failingRig(t, old)
+	n := f.count()
+	shrunk := old
+	shrunk.Direct = set(t, "2001:db8:d0::/48")
+	none := old
+	none.Direct = nil
+	for _, w := range []routetable.Want{shrunk, none, shrunk} {
+		if err := e.Enforce(t.Context(), w); err == nil {
+			t.Fatal("Enforce succeeded on a failing configurator")
+		}
+	}
+	dropped := netip.MustParseAddr("2001:db8:d1::1")
+	check := func(when string) {
+		t.Helper()
+		got := lastGuard(g)
+		if !got.Equal(routetable.GuardFor(shrunk)) || got.Direct.Contains(dropped) {
+			t.Errorf("%s: the guard exempts %v, want the new set's %v", when, got.Direct.Prefixes(), routetable.GuardFor(shrunk).Direct.Prefixes())
+		}
+	}
+	check("after the failed Enforces")
+	if st := e.Status(); st.Enforced || st.Error == "" || !st.GuardEnforced {
+		t.Errorf("status %+v: want the routes failing, the guard in place", st)
+	}
+
+	checkRepairs(t, e, g, check)
+	checkRoutesStayed(t, f, n, old)
+}
+
+// A grow that fails leaves the old routes and their guard: never a guard
+// wider than the routes in place, through retries and repairs alike.
+func TestAFailedGrowHoldsTheGuardToTheRoutes(t *testing.T) {
+	old := routetable.Want{TUN: "thinkpol0", Direct: set(t, "2001:db8:d0::/48")}
+	e, f, g := failingRig(t, old)
+	n := f.count()
+	grown := old
+	grown.Direct = set(t, "2001:db8:d0::/48", "2001:db8:d1::/48")
+	if err := e.Enforce(t.Context(), grown); err == nil {
+		t.Fatal("Enforce succeeded on a failing configurator")
+	}
+	added := netip.MustParseAddr("2001:db8:d1::1")
+	check := func(when string) {
+		t.Helper()
+		got := lastGuard(g)
+		if !got.Equal(routetable.GuardFor(old)) || got.Direct.Contains(added) {
+			t.Errorf("%s: the guard exempts %v, want the routes in place's %v", when, got.Direct.Prefixes(), routetable.GuardFor(old).Direct.Prefixes())
+		}
+	}
+	check("after the failed Enforce")
+	checkRepairs(t, e, g, check)
+	checkRoutesStayed(t, f, n, old)
 }
 
 // A watcher that stops on its own (a kernel without rule protocols: no

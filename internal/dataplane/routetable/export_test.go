@@ -25,8 +25,8 @@ func OpenWithClock(c netcfg.Configurator, g Guard, log *slog.Logger, now func() 
 	return openWithClock(c, g, log, now)
 }
 
-// GuardApply is e's applyGuard.
-func GuardApply(ctx context.Context, e *Enforcer, w Want) { e.applyGuard(ctx, w) }
+// GuardApply is e's applyGuard of w's guard.
+func GuardApply(ctx context.Context, e *Enforcer, w Want) { e.applyGuard(ctx, GuardFor(w)) }
 
 // WarnEvery is how far apart a failure's warns are.
 const WarnEvery = warnEvery

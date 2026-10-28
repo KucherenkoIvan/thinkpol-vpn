@@ -162,7 +162,7 @@ func (o *osRoutes) shrink(ctx context.Context, direct *lists.Set) error {
 		o.warn("route table: removing direct routes failed; nothing goes direct until the next Apply", err)
 		return err
 	}
-	o.warn("route table: removing direct routes failed; destinations the rules no longer send direct still go direct", errors.Join(err, ferr))
+	o.warn("route table: removing direct routes failed; destinations the rules no longer send direct still go direct over IPv4, and over IPv6 without a leak guard", errors.Join(err, ferr))
 	return errors.Join(err, ferr)
 }
 
