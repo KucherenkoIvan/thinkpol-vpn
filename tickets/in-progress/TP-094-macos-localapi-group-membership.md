@@ -115,3 +115,4 @@ Round 2 (2026-10-28): paranoid (correctness), torvalds (design).
 - 2026-10-28 round 1 lab: `make lab-test` green on 0cd63f3 (TestLocalAPI checks `root_only`'s wording and the refusal line's exact uid and `refusal=root_only`); `make lint` and `make test` green. Not verified: membership_unknown and the 2 s failure cache against a real failing Directory Services, the device checklist (TP-144).
 - 2026-10-28 in-progress → review
 - 2026-10-28 review → has-errors (round 2: R2.1–R2.13)
+- 2026-10-28 has-errors → in-progress
