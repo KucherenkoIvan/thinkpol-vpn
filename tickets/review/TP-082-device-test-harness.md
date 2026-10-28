@@ -44,7 +44,7 @@ Per-round lessons from the kit work: stub-only tests gave false greens; bash `$B
 - The design is approved and stays private; its public parts are in `lab/devicetest/doc.go` (what a run guarantees, how a plan is written), `lab/devicetest/safety/doc.go` (the frozen core, the freeze rule, what is tested where) and `docs/design/lab.md` "Device testing". The migration is in `docs/design/lab.md` "Device testing": the old kit runs the phase-end run, then the exit driver, then one plan per M2 ticket.
 - Built, in the prototype scope the owner chose (the safety core, the capture self-test, the evidence folder and one plan): the safety core (`lab/devicetest/safety`, pinned by `FROZEN` and `TestTheSafetyCoreIsFrozen`), the capture self-test (`lab/devicetest/selftest.go`), the evidence folder (`lab/devicetest/evidence`), and TP-096's plan (`lab/devicetest/plans/tp096.go`). Product readers reused, not copied: firewall's pfctl readers (now exported), `trusteddir` (a new `OpenOwnedBy` for root writing the owner's evidence) and its boot session, netcfg's `DefaultInterface`, ifbind, and the lab's pcap reader (moved to `lab/pcap`). netcfg's route-record reader isn't needed: route rollback becomes `thinkpol rollback` (TP-134).
 - Acceptance evidence: the safety core's tests run as the user on the Mac (`make test`: kill -9 of a journaling child, a cut journal line, a power loss as another boot session, the dead-man against a killed helper, a stop file, no heartbeat, a fresh one and a stale one, the helper's restore on input end and after SIGINT/SIGHUP, an unfinished run blocking the next, symlinks against the evidence writer, the root-read allowlist, the live reader and the decode check on a capture recorded in a lab node) and as root in lab nodes (`make lab-test`: the launch script's root copy and its hash check, a real tcpdump applied and undone through the journal, a whole run through the launch script, helper, dead-man and tcpdump, and a broken capture caught in 4.7 s with nothing of the plan's run).
-- Size: about 5.2k lines under `lab/devicetest` with comments and package docs, plus 3.3k lines of tests, after round 4 (round 3: 5.1k and 3.1k; round 2: 5.0k and 2.9k; round 1: 4.6k and 2.3k; the prototype: 4.5k and 1.8k; the design estimated 1.6k and 1.1k). TP-096's plan is 33 lines.
+- Size: about 5.3k lines under `lab/devicetest` with comments and package docs, plus 3.6k lines of tests, after round 5 (round 4: 5.2k and 3.3k; round 3: 5.1k and 3.1k; round 2: 5.0k and 2.9k; round 1: 4.6k and 2.3k; the prototype: 4.5k and 1.8k; the design estimated 1.6k and 1.1k). TP-096's plan is 33 lines.
 - The merge waits for the device run: checklist steps 1–9 (steps 1–6 before round 5) from a build of this branch, judged (round 4's process note).
 
 ### Device checklist (the owner's first run)
@@ -110,7 +110,7 @@ Type `yes`, then your password. If a `STOP:` line asks what to do, press Enter (
 
 **Expect** one of:
 - the last line `devicetest TP-096 recorded: 2 of 2 steps, selftest ok, restore CLEAN -> …`: skip to [step 7](#step-7-ctrl-c);
-- on a Mac whose `pfctl -s Interfaces -v` marks no skipped interface (the 2026-10-24 run's did not): a `STOP:` line for the undo whose error says `pf listed no skipped interface even right after this run's load`, then, after Enter, a result with `"verdict": "LEFT"` and the last line `devicetest TP-096 recorded: 1 of 2 steps, selftest ok, restore LEFT -> …`. That is the expected answer there: go on to step 5.
+- on a Mac whose pfctl marks no skipped interface in its listing (the 2026-10-24 run's marked none): a `STOP:` line for the undo whose error says `pf listed no skipped interface even right after this run's load`, then, after Enter, a result with `"verdict": "LEFT"` and the last line `devicetest TP-096 recorded: 1 of 2 steps, selftest ok, restore LEFT -> …`. That is the expected answer there: go on to step 5.
 
 Anything else that isn't CLEAN: go on to step 5 too.
 
@@ -256,35 +256,35 @@ Round 4 (2026-10-23): correctness, style and design: fix first; second opinion: 
 - [x] R4.8 Nits: an unreadable compared surface at the baseline with no journal entries is NOTHING-TO-RESTORE; after two loads with the skip gone but rules or nat different, the error says which; `forget.go`'s broken-journal branch calls settle or says why not; a missing journal file in `appendOnlyJournal` is handled or named in doc.go's manual step; fakePf's prefix rule needs a digit after the prefix, as the kernel's does.
 
 Round 5 (2026-10-23): correctness, style and design: fix first; second opinion: merge, with two suspicions (R5.10, R5.11). Owner decision (2026-10-24): one fix round with every item below, then a correctness-only re-check. The checklist items and the lessons of the 2026-10-24 device run go into the device checklist above.
-- [ ] R5.1 The pf-skip undo can still wipe another app's skip under CLEAN: journal the pf-skip set after the run's load too, and reload only while pf-rules, pf-nat and pf-skip all match what the load journaled.
-- [ ] R5.2 A Ctrl-C at the terminal reaches pfctl: only tcpdump gets its own process group. The pfctl and scutil execs in `action.go` get `Setpgid: true`, so a terminal SIGINT can't kill a pfctl in the middle of a load.
-- [ ] R5.3 root-restore can die of SIGPIPE (a closed terminal) before `removeRootCopy`: `restoreMain` ignores SIGHUP, SIGINT, SIGTERM and SIGPIPE; `cmdRestore` ignores SIGINT.
-- [ ] R5.4 The sudo launch script needs `trap '' HUP INT TERM`, so it survives a closed terminal while the root copy runs.
-- [ ] R5.5 `undoLast`'s description travels in the Response (a `Did` field), so the user side reports what was undone.
-- [ ] R5.6 A fakePf test where nat differs and the rules are equal: no reload, LEFT.
-- [ ] R5.7 `pre` refuses an empty baseline pf-rules listing.
-- [ ] R5.8 The dead-man can orphan a pfctl in the middle of a load: kill the helper's process group or children, or document it precisely.
-- [ ] R5.9 After the second pf.conf reload, read pf again and compare before deciding REBOOT or LEFT.
-- [ ] R5.10 The load succeeded but its rules were never journaled (the read or `learnt` failed, or the helper died): the undo falls back to the baseline's rules. Make this path explicit (LEFT with a clear message) and test it.
-- [ ] R5.11 The same rules text loaded by another app between the check and `-f` (a TOCTOU): a residual in doc.go; fix only if cheap.
-- [ ] R5.12 safety/doc.go "Both keep the run pending" → "LEFT and REBOOT keep the run pending".
-- [ ] R5.13 The wording of `restore.go`'s Nothing note.
-- [ ] R5.14 Delete the duplicate TestPfLimitsAndTimeoutsAreCompared (TestWhatALoadResetsIsCompared… covers it).
-- [ ] R5.15 An error string ends in "?" (Go errors don't end in punctuation).
-- [ ] R5.16 The nextDNS text says "information only…".
-- [ ] R5.17 Rewrap the comment lines that overflow.
-- [ ] R5.18 Checklist: if the baseline says it can't read a surface, skip steps 3–5 and go to the evidence step.
-- [ ] R5.19 Checklist: the dead-man's budget, 5 minutes for TP-096 and 2 for the self-test.
-- [ ] R5.20 Checklist: the Ctrl-C step uses `selftest` unless the TP-096 run ended CLEAN.
-- [ ] R5.21 Checklist: in a restore result, only `left` items need action.
-- [ ] R5.22 Checklist: `/private/tmp/tpdt.*` leftovers are not deleted by hand (they go at the next reboot); zsh's "no matches found" when there are none is fine.
-- [ ] R5.23 Checklist: no hand `pfctl -f` anywhere; the failure path is a reboot, then `restore`, then `-forget` after a reboot.
-- [ ] R5.24 Checklist: fix the cmd-002 filename reference.
-- [ ] R5.25 Checklist: closing the window, "confirm Terminate if Terminal asks".
-- [ ] R5.26 Checklist: quote the Ctrl-C lines exactly ("interrupt: stopping after…", "restoring, wait: a second Ctrl-C…") and the last line ("devicetest TP-096 recorded: …").
-- [ ] R5.27 The not-verified list gains the debug level's reading.
-- [ ] R5.28 Device run lesson: the checklist follows the owner's runbook format (every command in a code block, one linear path, each step Do / What happens / Expect, one failure section).
-- [ ] R5.29 Device run lesson: Ctrl-C through sudo and tee may not reach the process: the Ctrl-C step says which window and how to confirm the stop.
+- [x] R5.1 The pf-skip undo can still wipe another app's skip under CLEAN: journal the pf-skip set after the run's load too, and reload only while pf-rules, pf-nat and pf-skip all match what the load journaled.
+- [x] R5.2 A Ctrl-C at the terminal reaches pfctl: only tcpdump gets its own process group. The pfctl and scutil execs in `action.go` get `Setpgid: true`, so a terminal SIGINT can't kill a pfctl in the middle of a load.
+- [x] R5.3 root-restore can die of SIGPIPE (a closed terminal) before `removeRootCopy`: `restoreMain` ignores SIGHUP, SIGINT, SIGTERM and SIGPIPE; `cmdRestore` ignores SIGINT.
+- [x] R5.4 The sudo launch script needs `trap '' HUP INT TERM`, so it survives a closed terminal while the root copy runs.
+- [x] R5.5 `undoLast`'s description travels in the Response (a `Did` field), so the user side reports what was undone.
+- [x] R5.6 A fakePf test where nat differs and the rules are equal: no reload, LEFT.
+- [x] R5.7 `pre` refuses an empty baseline pf-rules listing.
+- [x] R5.8 The dead-man can orphan a pfctl in the middle of a load: kill the helper's process group or children, or document it precisely.
+- [x] R5.9 After the second pf.conf reload, read pf again and compare before deciding REBOOT or LEFT.
+- [x] R5.10 The load succeeded but its rules were never journaled (the read or `learnt` failed, or the helper died): the undo falls back to the baseline's rules. Make this path explicit (LEFT with a clear message) and test it.
+- [x] R5.11 The same rules text loaded by another app between the check and `-f` (a TOCTOU): a residual in doc.go; fix only if cheap.
+- [x] R5.12 safety/doc.go "Both keep the run pending" → "LEFT and REBOOT keep the run pending".
+- [x] R5.13 The wording of `restore.go`'s Nothing note.
+- [x] R5.14 Delete the duplicate TestPfLimitsAndTimeoutsAreCompared (TestWhatALoadResetsIsCompared… covers it).
+- [x] R5.15 An error string ends in "?" (Go errors don't end in punctuation).
+- [x] R5.16 The nextDNS text says "information only…".
+- [x] R5.17 Rewrap the comment lines that overflow.
+- [x] R5.18 Checklist: if the baseline says it can't read a surface, skip steps 3–5 and go to the evidence step.
+- [x] R5.19 Checklist: the dead-man's budget, 5 minutes for TP-096 and 2 for the self-test.
+- [x] R5.20 Checklist: the Ctrl-C step uses `selftest` unless the TP-096 run ended CLEAN.
+- [x] R5.21 Checklist: in a restore result, only `left` items need action.
+- [x] R5.22 Checklist: `/private/tmp/tpdt.*` leftovers are not deleted by hand (they go at the next reboot); zsh's "no matches found" when there are none is fine.
+- [x] R5.23 Checklist: no hand `pfctl -f` anywhere; the failure path is a reboot, then `restore`, then `-forget` after a reboot.
+- [x] R5.24 Checklist: fix the cmd-002 filename reference.
+- [x] R5.25 Checklist: closing the window, "confirm Terminate if Terminal asks".
+- [x] R5.26 Checklist: quote the Ctrl-C lines exactly ("interrupt: stopping after…", "restoring, wait: a second Ctrl-C…") and the last line ("devicetest TP-096 recorded: …").
+- [x] R5.27 The not-verified list gains the debug level's reading.
+- [x] R5.28 Device run lesson: the checklist follows the owner's runbook format (every command in a code block, one linear path, each step Do / What happens / Expect, one failure section).
+- [x] R5.29 Device run lesson: Ctrl-C through sudo and tee may not reach the process: the Ctrl-C step says which window and how to confirm the stop.
 
 ## Log
 - 2026-10-15 created in backlog (device run 3 and 4 findings)
@@ -375,3 +375,22 @@ Round 5 (2026-10-23): correctness, style and design: fix first; second opinion: 
 - 2026-10-23 in-progress → review
 - 2026-10-28 review → has-errors (round 5: R5.1–R5.29)
 - 2026-10-28 has-errors → in-progress — round 5 findings R5.1–R5.29, owner: agent-tp-082
+- 2026-10-28 merged origin/rewrite at fecd78d (the pre-M2 tickets, and TP-096's listings from the 2026-10-24 device run); the conflict in TP-096's Log kept both lines
+- 2026-10-28 R5.1: the pf-skip load journals the skipped interfaces it left beside the rules and nat, and the undo reloads only while all three are still that (`pfskip_darwin.go` `apply`, `undo`, `pfLoaded`). Test: TestThePfSkipUndoNeverWipesAnotherAppsSkip (an app's load with the same rules and a skip of its own: no reload, LEFT, its skips kept). Mutation caught: the skips comparison removed
+- 2026-10-28 added to R5.1 from the device run (no reviewer raised it): TP-096's 2026-10-24 listings show that Mac's `pfctl -s Interfaces -v` marks no skipped interface, even right after `set skip on lo` was loaded. The pf-skip surface is blind there, and round 4's undo would have said "nothing to do" and CLEAN. Now the undo takes the skip for gone only if pf listed it after the load and lists it no longer; a skip never listed loads /etc/pf.conf once and fails LEFT, "reboot, then run devicetest restore" (`nextPfUnproven`), which a later boot closes RESET-BY-REBOOT. fakePf's `unlisted` models that Mac. Test: TestASkipPfNeverListsIsLeftNeverClean. Mutations caught: the unlisted branch removed; "nothing to do" without the journaled-skips check. Checklist step 4 expects this LEFT on that Mac, and steps 5–6 close it
+- 2026-10-28 R5.2: `run` starts every command the core runs in a process group of its own (`action.go`). Test: TestACommandRunsInAProcessGroupOfItsOwn (a /bin/sh child's process group is its own pid, not the test's). Mutation caught: Setpgid false
+- 2026-10-28 R5.3: root-restore takes SIGPIPE as a write error (`cli.go` `restoreMain`), and `devicetest restore` ignores Ctrl-C while root-restore runs (`run.go` `cmdRestore`). Test: TestRootRestoreOutlivesAGoneReader (its stdout a pipe with no reader: an exit status, no signal). Mutation caught: the SIGPIPE notify removed. The user side's ignore has no test (checked by reading)
+- 2026-10-28 R5.4: the launch script starts with `trap '' HUP INT TERM` (`launch.go`). Test: TestTheLaunchScriptIgnoresTheTerminalsSignals (a hasher that sends HUP, INT and TERM to the script's process group, then prints a wrong hash: the script reaches its hash check and removes its copy). Mutation caught: the trap removed (the script died of SIGHUP and left its copy, which the test removed)
+- 2026-10-28 R5.5: `Response.Did` carries undo_last's "seq: change: what the undo did", as the restore's Undone lines; the user side logs `undone: …`, and nothing when the undo failed (the STOP line says why) (`helper.go`, `action.go` `undoLast`, `run.go`). Test: TestUndoLastSaysWhatItsUndoDid. Mutation caught: Did never set. The transcript line has no test (checked by reading)
+- 2026-10-28 R5.6: TestThePfSkipUndoNeverWipesAnotherAppsNat; fakePf has nat rules now (a load of pf.conf clears them). Mutation caught: the nat comparison disabled
+- 2026-10-28 R5.7: `pre` refuses a baseline whose main-rules listing is empty (`pfskip_darwin.go`). Test: a new case in TestPfSkipIsRefusedWhenItsUndoWouldDropSomeonesRules. Mutation caught: the refusal removed (the mutant went on to `pfctl -n`, which the exec guard refused)
+- 2026-10-28 R5.8: documented, not fixed (safety/doc.go's dead-man paragraph, `deadman`'s comment): the dead-man kills the helper's pid alone, and a pfctl the helper started runs on in its own process group. Of those, only the skip's load (outcome not journaled: the undo fails LEFT, R5.10) and a load of /etc/pf.conf (the undo's own) change pf, so no orphan gives a false CLEAN. Killing the helper's children would mean finding them before the kill (R5.2 takes them out of its process group): disproportionate for that
+- 2026-10-28 R5.9: after the second load the undo decides on the read taken right after it; the third read, which could disagree (a LEFT naming no surface), is gone (`pfskip_darwin.go` `undo`). Test: TestTheReadAfterTheSecondLoadDecides. Mutation caught: the third read put back
+- 2026-10-28 R5.10: a pf-skip intent whose load was never journaled fails LEFT in the run's boot, nothing loaded, saying so (the helper stopped, or reading pf after the load failed); the fallback to the baseline's rules is gone (`pfskip_darwin.go` `undo`). Test: TestALoadNeverJournaledIsLeftAndNothingLoaded (an intent alone, with and without the skip listed; a read failing after the load inside `do`). Mutation caught: the case disabled
+- 2026-10-28 R5.11: documented as a residual, no fix (safety/doc.go's pf-skip paragraph, `undo`'s doc): another app that left exactly the same rules, nat and skips, or that loads between the undo's check and its reload, loses its ruleset to /etc/pf.conf's, and the comparison can say CLEAN. pf keeps no owner for a ruleset, so there is no cheap fix; after R5.1 the coincidence needs identical skips too
+- 2026-10-28 R5.12–R5.17: safety/doc.go "LEFT and REBOOT keep the run pending"; restore.go's Nothing note "nothing was changed, and no complete baseline was taken"; TestPfLimitsAndTimeoutsAreCompared deleted; the error ending in "?" now says "pf.conf may have changed since it was last loaded"; nextDNS starts "information only"; the overflowing comment lines rewrapped (doc.go, restore.go). With R5.23, the core's pf next texts no longer ask for a hand `pfctl -f` (nextPfReload, nextPfOtherRuleset and the no-baseline message say reboot, then run devicetest restore)
+- 2026-10-28 R5.18–R5.29: the device checklist is rewritten in the owner's runbook format (a navigation table, one linear path, Do / What happens / Expect, every command in a block, one failure section), with each item: a baseline that can't read a surface skips to the evidence step; the dead-man's 2 and 5 minutes; Ctrl-C with `selftest` unless step 4 ended CLEAN; only `left` items need action; `tpdt.*` leftovers left for the next reboot and zsh's "no matches found" as the good answer; no hand pfctl, the failure path a reboot, `restore`, then `-forget`; the cmd-002 and cmd-007 file names as slug makes them; "confirm Terminate"; the exact Ctrl-C lines and last lines; the debug level among what the judge reads; which window gets Ctrl-C and how to see it arrived. Found while rewriting: a reboot empties /tmp, so the binaries are built into ~/devicetest-bin, and step 4's likely LEFT (above) puts a reboot and a restore in the path (steps 5–6). The Ctrl-C step's cue is a new line the user side prints once its Ctrl-C handler is in place (`run.go`: "the helper is up: …"; before it a Ctrl-C ends the user side outright, and the helper restores on its own). No test for the cue line (checked by reading)
+- 2026-10-28 mutation rule kept: pf only through fakePf, every other host tool refused outside the lab; the launch-script test runs /bin/sh with a hasher of its own and copies /bin/echo into the temporary directory as the user, removing anything left. FROZEN regenerated once for round 5 (11300b9)
+- 2026-10-28 not verified (Mac only, on the device checklist): the debug level as Apple's `pfctl -s info` prints it (R5.27); whether an Apple pfctl marks skipped interfaces at all (the 2026-10-24 listing says it doesn't: then every TP-096 run on that Mac ends LEFT and needs a reboot, and the precise undo, DIOCCLRIFFLAG on the name, is a fix round of this ticket per the judge's line); the process groups under sudo's pty; the launch script's trap and root-restore against a really closed window; Ctrl-C reaching devicetest through sudo; and everything listed for rounds 2–4
+- 2026-10-28 lab: `make lab-test` (LAB_P=4) green on 60f5339: the core's root tests and the whole runs through the real launch script in a lab node
+- 2026-10-28 in-progress → review
