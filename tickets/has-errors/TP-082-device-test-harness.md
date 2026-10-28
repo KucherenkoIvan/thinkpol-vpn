@@ -313,6 +313,15 @@ Round 6 (2026-10-28): correctness-only re-check (the owner's decision of round 5
 - [x] R6.13 No test covers a Mac that lists no skips across a reboot (the later-boot "gone" path): a mutant adding `&& !slices.Equal(a.Skips, base)` there survives every test, and would leave such a Mac's run LEFT for good.
 - [x] R6.14 R5.2's Log line claims what Setpgid doesn't add: pfctl already inherits SIG_IGN for INT, HUP, TERM and QUIT from the helper's `signal.Ignore`. One Log line, no code change.
 
+Round 7 (2026-10-28): correctness-only delta check of round 6: no proven defect. One test gap must close before the device run, since the test file is pinned by FROZEN and a later test would move the pin away from the one the run records.
+- [ ] R7.1 should-fix: no test has both the skip and the rules differing after the undo's first load (R6.10's own case): a mutant `slices.Contains(d, "pf-skip")` in place of `slices.Equal(d, []string{"pf-skip"})` survives every test and would load /etc/pf.conf over a kill switch's `set skip on utun3` ruleset. Add that case to TestTheUndoLoadsASecondTimeOnlyForTheSkipAlone: one load, REBOOT, the app's rules and skip kept.
+- [ ] R7.2 REBOOT wording (`kinds.go`, `restore.go`, doc.go "Verdicts") says the core's own pf change survived its undo; in R7.1's case the surviving skip may be another app's. Wording only.
+- [ ] R7.3 Checklist section F, the hung-run bullet: a LEFT or REBOOT there goes to F2 without rebooting, and F3's `restore -forget` is refused in the run's boot. It goes to F1.
+- [ ] R7.4 No test asserts the cause on the "reading pf after the load failed" path (`pfskip_darwin.go` `apply`): a bare `return err` there survives.
+- [ ] R7.5 optional: `nextPfState` advises "reboot, then run devicetest restore" in a later boot, where another reboot changes nothing. Harmless.
+- [ ] R7.6 Checklist step 6 lists only "NOTHING-TO-RESTORE, no run was pending"; `reportRestore` can also print "NOTHING-TO-RESTORE, run … closed: it made no change and had no baseline".
+- [ ] R7.7 Suspicion, doc only: `launch.go` says the root modes "ignore them too", but Go installs its own QUIT and TERM handlers after exec, so the root copy can be killed in the window before `signal.Ignore` runs. Name the window.
+
 ## Log
 - 2026-10-15 created in backlog (device run 3 and 4 findings)
 - 2026-10-15 docs: kit bugs found in device run 4 analysis
@@ -435,3 +444,4 @@ Round 6 (2026-10-28): correctness-only re-check (the owner's decision of round 5
 - 2026-10-28 not verified (Mac only, on the device checklist): how long the self-test runs after the cue line on the owner's Mac (step 7's timing); a real `pfctl -f -` failure's text; QUIT under sudo's pty; and everything listed for rounds 2–5
 - 2026-10-28 lab: `make lab-test` (LAB_P=4) green on 4fbe34d: the core's root tests and the whole runs through the real launch script in a lab node
 - 2026-10-28 in-progress → review
+- 2026-10-28 review → has-errors (round 7: R7.1–R7.7)
