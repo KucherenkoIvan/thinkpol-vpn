@@ -81,6 +81,21 @@ Round 1 (paranoid: correctness; torvalds: design; go-style: conventions; the cro
 - [x] R1.16 (go-style 7): the cache's comments leave out its size limit. — the type's and the consts' comments name the cap and the clearing.
 - [x] R1.17 (paranoid 5): the real Directory Services test's assumptions (the effective gid is a group DS counts, the first query answers within the timeout) are unstated. — kept; the test's comment states both assumptions.
 
+Round 2 (2026-10-28): paranoid (correctness), torvalds (design).
+- [ ] R2.1 (torvalds S3, paranoid 1): a caller that hangs up mid-lookup is refused as `membership_unknown` (or `root_only`) and logged at warn with `membership_err="context canceled"`, which reads as a Directory Services failure. When the caller's ctx has ended, log at debug and return its error, judged by `ctx.Err() != nil` and not by `errors.Is(err, context.DeadlineExceeded)` (the real Directory Services timeout wraps that too); a test with a cancelled ctx: no warn, not `membership_unknown`.
+- [ ] R2.2 (torvalds S1, paranoid 3 and 4): a root-only call asks Directory Services though no membership grants it, so its refusal depends on Directory Services' health (`permission_denied` while it answers, `root_only` while it's down), the caller waits up to 4 s holding the lookup slot, and doc.go's "root_only: in the group" is wrong. Decide `root_only` before asking, log it without `has`; doc.go's and errors.go's definitions; a test that Directory Services isn't asked on TailLogs; device checklist step 2 without `has=control`.
+- [ ] R2.3 (paranoid 2): `membership_unknown`'s codes.Unavailable is never checked on the wire. A socket test with a failing Membership: the raw status is Unavailable, the client's error is `ErrMembershipUnknown`.
+- [ ] R2.4 (torvalds S2): the lookup runs on the caller's ctx, so a caller whose deadline is under 3 s cancels it and nothing is kept: with Directory Services hung and an impatient tray, each call forks a fresh dsmemberutil. Run the lookup on its own context bounded by the timeout, only the waiting follows the caller, and an abandoned lookup's answer is kept (R1.2's "a lookup its caller abandoned isn't kept" goes).
+- [ ] R2.5 (torvalds S4.2, paranoid 6): the start failure (client.go, "the service's log has the details", a format outside the table) and `dns_not_protected` ("the service's log says why") point group members at the root-only log; TestRefusalWording checks three rows only. Reword both, the start failure's wording into errors.go, the check over every row.
+- [ ] R2.6 (torvalds S4.3): the lab test, membership_test.go's "try again" and device checklist step 2 pin whole sentences, so an F9 rewording breaks them. Check the code and the stable `permission denied` prefix, which errors.go documents; the "try again" check structural or gone.
+- [ ] R2.7 (torvalds S4.1): `not_running` is two conditions: at dial time the service is down, per call the node isn't running; the dial-time wording is outside the table. Split `ErrServiceDown` (`service_down`), its wording in errors.go.
+- [ ] R2.8 (torvalds N1; paranoid's "kept 2 s" is the same constant): a failure is kept 2 s but a lookup may take 3 s, so a steady poller gets about 2 s of fast refusals, then 3 s of blocked calls. Keep it 5 s (more than the timeout, under the 10 s answer); doc.go.
+- [ ] R2.9 (torvalds N2): `IsPermission`'s doc: a UI that acts on the refusal tells `permission_denied` and `root_only` apart with errors.Is.
+- [ ] R2.10 (torvalds N3): a refusal without a table row goes out as codes.Unknown and nothing fails; a test that every declared refusal has a row.
+- [ ] R2.11 (torvalds N4): an unexpected dsmemberutil answer is logged at full length; cap it.
+- [ ] R2.12 (torvalds N5): desktop-client.md doesn't list the refusal codes or what each asks of the UI.
+- [ ] R2.13 (paranoid 5): runBounded's comment promises a bound on the process exiting that WaitDelay doesn't give; say it kills it again and stops reading its output after dsWaitDelay.
+
 ## Log
 - 2026-10-16 created in backlog (TP-078 device session A)
 - 2026-10-19 docs (TP-099): the 16-group xucred limit is the second cause, in Notes and Acceptance
@@ -99,3 +114,4 @@ Round 1 (paranoid: correctness; torvalds: design; go-style: conventions; the cro
 - 2026-10-28 for the orchestrator (not done here, the design review's #11): refusal logs aren't rate-limited; a tray that retries after a refusal would fill the in-memory log. Decide in the tray ticket: rate-limit per uid and method, or the tray backs off after `permission_denied`/`root_only` (and waits ~10 s before retrying after "add me to the group").
 - 2026-10-28 round 1 lab: `make lab-test` green on 0cd63f3 (TestLocalAPI checks `root_only`'s wording and the refusal line's exact uid and `refusal=root_only`); `make lint` and `make test` green. Not verified: membership_unknown and the 2 s failure cache against a real failing Directory Services, the device checklist (TP-144).
 - 2026-10-28 in-progress → review
+- 2026-10-28 review → has-errors (round 2: R2.1–R2.13)
