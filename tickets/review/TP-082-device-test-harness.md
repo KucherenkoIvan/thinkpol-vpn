@@ -455,3 +455,4 @@ Round 7 (2026-10-28): correctness-only delta check of round 6: no proven defect.
 - 2026-10-28 mutation rule kept: pf only through fakePf in every new case. FROZEN regenerated once for round 8; its diff from round 6's (4fbe34d) is exactly this round's core files: doc.go, kinds.go, launch.go, pf_darwin_test.go, restore.go, surfaces_darwin.go
 - 2026-10-28 lab: not run this round: since 4fbe34d (lab green) nothing a Linux lab node compiles changed but comments (safety's doc.go, kinds.go, launch.go, restore.go; firewall's and dns's doc.go); the code changes are darwin-only (`*_darwin*.go`, testdata), and the launch script itself is unchanged
 - 2026-10-28 not verified (Mac only, on the device checklist): everything listed for rounds 2–6
+- 2026-10-28 in-progress → review
