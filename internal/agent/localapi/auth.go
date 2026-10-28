@@ -85,22 +85,26 @@ type Policy struct {
 	// with HasGroup.
 	Group    uint32
 	HasGroup bool
-	// Members, if set, is asked about a caller whose recorded groups lack
-	// Group (macOS: Directory Services, as the file system asks); an
+	// Membership, if set, is asked about a caller whose recorded groups
+	// lack Group (macOS: Directory Services, as the file system asks); an
 	// error means not a member. nil: the recorded groups only.
-	Members Membership
+	Membership Membership
 }
 
 // NewPolicy is the policy of a service running as this process, with the
 // group named group (in /etc/group, or on macOS in Directory Services), or
 // numbered (a gid): none if group is empty or no such group exists (then
-// only root and the service's user may use the API).
+// only root and the service's user may use the API). On macOS, with a
+// group, its Membership asks Directory Services.
 func NewPolicy(group string) (Policy, error) {
 	p, err := policyFor(group)
-	if p.HasGroup {
-		p.Members = systemMembership()
+	if err != nil {
+		return Policy{}, err
 	}
-	return p, err
+	if p.HasGroup {
+		p.Membership = systemMembership()
+	}
+	return p, nil
 }
 
 func policyFor(group string) (Policy, error) {
@@ -132,26 +136,23 @@ func policyFor(group string) (Policy, error) {
 	return p, nil
 }
 
-// Access is what c may do.
-func (p Policy) Access(ctx context.Context, c Caller) Access {
-	a, _ := p.access(ctx, c)
-	return a
-}
+// isAdmin reports whether c may do everything: by its uid alone.
+func (p Policy) isAdmin(c Caller) bool { return c.UID == 0 || c.UID == p.ServiceUID }
 
-// access is what c may do, and why Members couldn't say, if it was asked
-// and failed: then c is not a member.
+// access is what c may do, and why Membership couldn't say, if it was
+// asked and failed: then c is not a member.
 func (p Policy) access(ctx context.Context, c Caller) (Access, error) {
 	switch {
-	case c.UID == 0 || c.UID == p.ServiceUID:
+	case p.isAdmin(c):
 		return AccessAdmin, nil
 	case !p.HasGroup:
 		return AccessNone, nil
 	case slices.Contains(c.GIDs, p.Group):
 		return AccessControl, nil
-	case p.Members == nil:
+	case p.Membership == nil:
 		return AccessNone, nil
 	}
-	member, err := p.Members.IsMember(ctx, c.UID, p.Group)
+	member, err := p.Membership.IsMember(ctx, c.UID, p.Group)
 	if err != nil || !member {
 		return AccessNone, err
 	}
@@ -160,7 +161,9 @@ func (p Policy) access(ctx context.Context, c Caller) (Access, error) {
 
 // allow checks the caller of method, from ctx, against the policy, and
 // logs a refusal with the caller's uid and the group it was checked
-// against (not its groups: only how many the kernel recorded).
+// against (not its groups: only how many the kernel recorded). A caller
+// whose membership the OS couldn't settle is refused as
+// ErrMembershipUnknown, unless the call is root's anyway.
 func (p Policy) allow(ctx context.Context, log *slog.Logger, method string) error {
 	need, ok := methodAccess[method]
 	if !ok {
@@ -168,32 +171,36 @@ func (p Policy) allow(ctx context.Context, log *slog.Logger, method string) erro
 	}
 	c, ok := callerFrom(ctx)
 	if !ok {
-		log.Info("local API call refused: no peer credentials", "method", method)
+		log.Info("local API call refused: no peer credentials", "method", method, "refusal", ErrPermissionDenied.Code)
 		return ErrPermissionDenied
 	}
 	got, err := p.access(ctx, c)
 	if got >= need {
 		return nil
 	}
-	attrs := []any{"method", method, "uid", c.UID, "needs", need.String(), "has", got.String(), "recorded_groups", len(c.GIDs)}
+	var refusal Error
+	switch {
+	case need == AccessAdmin && (got == AccessControl || err != nil):
+		// Membership couldn't change this one.
+		refusal = ErrRootOnly
+	case err != nil:
+		refusal = ErrMembershipUnknown
+	default:
+		refusal = ErrPermissionDenied
+	}
+	attrs := []any{"method", method, "refusal", refusal.Code, "uid", c.UID, "needs", need.String(), "has", got.String(), "recorded_groups", len(c.GIDs)}
 	if p.HasGroup {
 		attrs = append(attrs, "group", p.Group)
 	}
 	if err != nil {
 		attrs = append(attrs, "membership_err", err)
 	}
-	log.Info("local API call refused", attrs...)
-	return ErrPermissionDenied
-}
-
-// callerAccess is what the caller of ctx may do: nothing without the
-// credentials the transport recorded.
-func (p Policy) callerAccess(ctx context.Context) Access {
-	c, ok := callerFrom(ctx)
-	if !ok {
-		return AccessNone
+	level := slog.LevelInfo
+	if refusal == ErrMembershipUnknown {
+		level = slog.LevelWarn
 	}
-	return p.Access(ctx, c)
+	log.Log(ctx, level, "local API call refused", attrs...)
+	return refusal
 }
 
 // callerFrom is the caller of ctx, as the transport recorded it.

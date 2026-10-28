@@ -26,7 +26,8 @@ import (
 // Client is a local API client: the CLI's, later the tray app's. What it
 // returns is sanitized (every string disarmed for a terminal) and its
 // errors are explained for a person; errors.Is finds ErrPermissionDenied,
-// ErrNotRunning, ErrServerMode and the other refusals in them.
+// ErrRootOnly, ErrNotRunning, ErrServerMode and the other refusals in them
+// ([IsPermission] either of the first two).
 type Client struct {
 	conn *grpc.ClientConn
 	api  localapiv1.LocalServiceClient
@@ -173,7 +174,7 @@ func (e *clientError) Unwrap() error { return e.err }
 func dialError(path string, err error) error {
 	switch {
 	case errors.Is(err, fs.ErrPermission):
-		return &clientError{fmt.Sprintf("permission denied: the local API at %s is for root and the members of its group", path), ErrPermissionDenied}
+		return &clientError{fmt.Sprintf("%s (%s)", refusalMsg(ErrPermissionDenied), path), ErrPermissionDenied}
 	case errors.Is(err, fs.ErrNotExist), errors.Is(err, syscall.ECONNREFUSED):
 		return &clientError{fmt.Sprintf("the thinkpol service is not running (nothing listens at %s)", path), ErrNotRunning}
 	}

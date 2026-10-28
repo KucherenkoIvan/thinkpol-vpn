@@ -1,13 +1,17 @@
 package localapi
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent"
 )
 
 var groupName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_.-]{0,63}$`)
@@ -19,9 +23,9 @@ func systemGroup(name string) (uint32, bool) {
 	if !groupName.MatchString(name) {
 		return 0, false
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), dsTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "/usr/bin/dscl", ".", "-read", "/Groups/"+name, "PrimaryGroupID").Output()
+	out, err := runBounded(ctx, "/usr/bin/dscl", ".", "-read", "/Groups/"+name, "PrimaryGroupID")
 	if err != nil {
 		return 0, false
 	}
@@ -44,21 +48,37 @@ func parsePrimaryGroupID(out string) (uint32, bool) {
 // unlike LOCAL_PEERCRED, it isn't limited to the login's groups or to
 // their first 16.
 func systemMembership() Membership {
-	return newCachedMembership(dsmemberutil(func(ctx context.Context, name string, args ...string) ([]byte, error) {
-		return exec.CommandContext(ctx, name, args...).Output()
-	}))
+	return newCachedMembership(dsmemberutil{run: runBounded})
 }
 
-// dsmemberutil looks membership up by numbers, through run.
-func dsmemberutil(run func(ctx context.Context, name string, args ...string) ([]byte, error)) func(ctx context.Context, uid, gid uint32) (bool, error) {
-	return func(ctx context.Context, uid, gid uint32) (bool, error) {
-		out, err := run(ctx, "/usr/bin/dsmemberutil", "checkmembership",
-			"-u", strconv.FormatUint(uint64(uid), 10), "-g", strconv.FormatUint(uint64(gid), 10))
-		if err != nil {
-			return false, fmt.Errorf("dsmemberutil: %w", err)
+// runBounded runs name, killed when ctx ends, and waits at most
+// dsWaitDelay more for it to exit and close its output.
+func runBounded(ctx context.Context, name string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.WaitDelay = dsWaitDelay
+	return cmd.Output()
+}
+
+// dsWaitDelay bounds the wait for a Directory Services tool that was
+// killed at its deadline.
+const dsWaitDelay = time.Second
+
+// dsmemberutil is a [Membership] that asks dsmemberutil by numbers,
+// through run.
+type dsmemberutil struct {
+	run func(ctx context.Context, name string, args ...string) ([]byte, error)
+}
+
+func (d dsmemberutil) IsMember(ctx context.Context, uid, gid uint32) (bool, error) {
+	out, err := d.run(ctx, "/usr/bin/dsmemberutil", "checkmembership",
+		"-u", strconv.FormatUint(uint64(uid), 10), "-g", strconv.FormatUint(uint64(gid), 10))
+	if err != nil {
+		if ee := (*exec.ExitError)(nil); errors.As(err, &ee) && len(bytes.TrimSpace(ee.Stderr)) > 0 {
+			return false, fmt.Errorf("dsmemberutil: %w: %s", err, agent.Sanitize(string(bytes.TrimSpace(ee.Stderr))))
 		}
-		return parseCheckMembership(string(out))
+		return false, fmt.Errorf("dsmemberutil: %w", err)
 	}
+	return parseCheckMembership(string(out))
 }
 
 // parseCheckMembership reads dsmemberutil's answer; anything but its two
