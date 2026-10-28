@@ -88,3 +88,4 @@ Round 2 (paranoid, torvalds, 2026-10-28): the R1 fixes hold, but labctl down's s
 - 2026-10-28 verified (round 1): `make lint`, `make test` green; `make lab-test` LAB_P=1 (other labs running) green on 6ab102a, no lab/bin left (only lab/.run/bin.lock). Not verified: a real `THINKPOL_LAB_KEEP` failure kept with its binaries (unit-tested only); the lab test's mutations were not re-run.
 - 2026-10-28 in-progress → review
 - 2026-10-28 review → has-errors (round 2: R2.1–R2.15)
+- 2026-10-28 has-errors → in-progress, owner: agent-claude-tp121
