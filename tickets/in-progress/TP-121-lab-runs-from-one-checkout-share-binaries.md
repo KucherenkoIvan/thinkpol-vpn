@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: []
 refs: []
-owner: ""
-branch: ""
+owner: "agent-claude-tp121"
+branch: "tp-121-lab-runs-from-one-checkout-share-binaries"
 ---
 
 ## Goal
@@ -31,3 +31,4 @@ Two lab runs from the same checkout at the same time (two `make lab-gotest`, or 
 ## Log
 - 2026-10-22 created in backlog (TP-120 out-of-scope note)
 - 2026-10-24 docs: slotted in the pre-M2 phase (wave 0)
+- 2026-10-28 backlog → in-progress, owner: agent-claude-tp121
