@@ -434,3 +434,4 @@ Round 6 (2026-10-28): correctness-only re-check (the owner's decision of round 5
 - 2026-10-28 mutation rule kept: pf only through fakePf, every other host tool refused outside the lab; the launch-script test runs /bin/sh as the user with its own hasher. FROZEN regenerated once for round 6 (4fbe34d); its diff is exactly the files this round changed
 - 2026-10-28 not verified (Mac only, on the device checklist): how long the self-test runs after the cue line on the owner's Mac (step 7's timing); a real `pfctl -f -` failure's text; QUIT under sudo's pty; and everything listed for rounds 2–5
 - 2026-10-28 lab: `make lab-test` (LAB_P=4) green on 4fbe34d: the core's root tests and the whole runs through the real launch script in a lab node
+- 2026-10-28 in-progress → review
