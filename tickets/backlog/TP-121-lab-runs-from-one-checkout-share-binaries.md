@@ -26,6 +26,8 @@ Two lab runs from the same checkout at the same time (two `make lab-gotest`, or 
 
 ## Notes
 - Seen during TP-120 (2026-10-21) when two reviewers ran lab tests from one worktree.
+- **Slot (pre-M2 phase, 2026-10-24).** Wave 0, first in the phase.
 
 ## Log
 - 2026-10-22 created in backlog (TP-120 out-of-scope note)
+- 2026-10-24 docs: slotted in the pre-M2 phase (wave 0)

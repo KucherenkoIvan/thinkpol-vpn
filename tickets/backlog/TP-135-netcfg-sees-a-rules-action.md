@@ -26,6 +26,8 @@ The Linux configurator's check of its own policy rules notices an owner's rule t
 
 ## Notes
 - From TP-091's round-3 and round-4 design reviews (2026-10-23). Predates TP-091.
+- **Slot (pre-M2 phase, 2026-10-24).** Wave 1, macOS lane.
 
 ## Log
 - 2026-10-23 created in backlog (TP-091 review round 3)
+- 2026-10-24 docs: slotted in the pre-M2 phase (wave 1, macOS)

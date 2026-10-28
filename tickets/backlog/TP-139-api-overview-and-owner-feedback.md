@@ -21,6 +21,7 @@ The owner sees the whole user-facing surface of thinkpol as it is today in one r
    - for the local API: each call, who may call it (its access group and the permissions it needs), and the request and response shapes;
    - for config: every key, its default, and where it is documented;
    - for on-disk state: each file, its owner and mode, and who reads it.
+   - a "planned" part: the commands, settings, outputs and on-disk files that TP-111, TP-141, TP-133 and TP-140 propose, taken from their scopes and marked as not built yet, so the owner's verdicts reach those tickets before they start.
 2. A consistency pass, in the same document, as a findings list. Nothing is fixed here. The pass covers:
    - naming: verbs, flag spelling, singular and plural;
    - output formats: human versus machine-readable, and where JSON is available;
@@ -77,11 +78,15 @@ The owner sees the whole user-facing surface of thinkpol as it is today in one r
 - [ ] the overview covers every surface in the inventory (checked against the code by a reviewer)
 - [ ] every example output comes from a lab run or a test, never the owner's machine
 - [ ] the consistency findings list exists in the overview
+- [ ] the planned part covers TP-111, TP-141, TP-133 and TP-140, and each "change" verdict on it is written into that ticket
 - [ ] the owner's session is recorded in Notes, with a verdict (keep, change, or drop) on each finding
 - [ ] follow-up tickets for the "change" verdicts are filed and named in the Log
 
 ## Notes
 - The owner's session has not been held yet. Verdicts go here, one line per finding: keep, change, or drop. Each "change" line names its follow-up ticket.
+- **Order (owner, 2026-10-24).** In the before-M2 list (wave 0): done before the M2 lanes start, so the CLI's shape is reviewed before the kill-switch toggle and the transport settings are added to it.
 
 ## Log
 - 2026-10-23 created in backlog (owner: review the API's shape early, before more is built on it)
+- 2026-10-24 docs: in the before-M2 list, ahead of the kill-switch and transport settings
+- 2026-10-24 docs: slotted in the pre-M2 phase (wave 0)

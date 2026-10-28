@@ -26,6 +26,8 @@ After a crash (kill -9, power loss) `thinkpol diag` still records what the dead 
 
 ## Notes
 - Owner's answer to the device-harness questions (2026-10-23, TP-082 question 2). The harness's crash steps use it.
+- **Slot (pre-M2 phase, 2026-10-24).** Wave 1, Agent lane: after TP-141, before TP-140. Starts only after the owner's TP-139 session, whose verdicts on its planned surface go into this ticket first.
 
 ## Log
 - 2026-10-23 created in backlog (TP-082 design answers)
+- 2026-10-24 docs: slotted in the pre-M2 phase (wave 1, Agent)

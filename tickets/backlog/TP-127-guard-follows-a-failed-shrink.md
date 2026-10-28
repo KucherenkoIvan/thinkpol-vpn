@@ -26,6 +26,8 @@ When a smaller direct set fails to apply, and so does the fallback to nothing di
 
 ## Notes
 - From TP-077's round-2 design review (2026-10-22): the row had no ticket. It breaks D6 (a must), and the subset case allows a fail-closed fix.
+- **Slot (pre-M2 phase, 2026-10-24).** Wave 1, Guard lane: after TP-138, before TP-129 (the same two pf files).
 
 ## Log
 - 2026-10-22 created in backlog (TP-077 review round 2)
+- 2026-10-24 docs: slotted in the pre-M2 phase (wave 1, Guard)
