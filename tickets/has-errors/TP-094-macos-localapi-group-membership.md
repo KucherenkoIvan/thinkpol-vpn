@@ -61,6 +61,26 @@ On macOS, a member of the `thinkpol` group can do what DESIGN.md says members ma
      **What happens:** out of the group you're refused, at the socket's directory or per call; added back, Directory Services says you're a member and the service's kept answer (10 s) has expired.
      **Expect:** the first status fails with `permission denied` (exit non-zero); the second prints the status (exit 0). If the second still fails, run it again after a minute and record both: the file system may cache membership for longer.
 
+## Review findings
+Round 1 (paranoid: correctness; torvalds: design; go-style: conventions; the cross-family log was empty).
+- [ ] R1.1 (paranoid 1, torvalds 5, go-style 3): RR43, doc.go and membership.go say a removed user loses control within 10 s. Removal takes effect at the user's next login when their session carries the group, and within 10 s only when it never did; an open WatchStatus stream isn't re-checked until the client reconnects, on every OS. The cache is per uid and group.
+- [ ] R1.2 (torvalds 1): a Directory Services failure is reported as "permission denied". Refuse it (fail closed) as a distinct `membership_unknown` / codes.Unavailable with "try again" wording; keep a failure about 2 s so callers fail fast.
+- [ ] R1.3 (torvalds 2): the refusal points non-root users at a root-only log, and one message covers two cases. Split `root_only` (a member asking for a root call) from `permission_denied` (not root, not in the group); one phrasing shared with client.go's dial-time message, the wording in one table (TP-139 F9); `errors.Is` callers keep working (`IsPermission`).
+- [ ] R1.4 (paranoid 2, torvalds 3): no test for the one-lookup-at-a-time slot, the re-check after taking it, or a cancelled waiter; the loop that drops expired answers isn't exercised.
+- [ ] R1.5 (go-style 1): the "701" log assertion can match the timestamp's milliseconds.
+- [ ] R1.6 (go-style 2): doc.go says every refusal is logged with all fields; the no-credentials refusal logs only the method, `group` only with a group.
+- [ ] R1.7 (torvalds 6): the cache takes a bare func; make it wrap a Membership (one signature, no test adapter).
+- [ ] R1.8 (torvalds 4, paranoid 3): the membership error repeats uid and gid and drops dsmemberutil's stderr; a timeout reads "signal: killed".
+- [ ] R1.9 (torvalds 9, paranoid 3): bound the wait for a killed dsmemberutil (`cmd.WaitDelay`).
+- [ ] R1.10 (torvalds 8): two Directory Services timeouts (5 s, 3 s); one constant.
+- [ ] R1.11 (torvalds 10, paranoid 4): Diagnose asks Directory Services to rule out admin; admin is by uid (`isAdmin`), in `access` too.
+- [ ] R1.12 (torvalds 7, go-style 6, 8 and unranked): naming: `one` → `lookupSlot`; `Access` vs `access`; the `Members` field reads like a list; `keep`'s loop shadows `k`.
+- [ ] R1.13 (go-style 4, 5): NewPolicy: indent the error flow; its doc says it sets the membership lookup.
+- [ ] R1.14 (go-style 9): split the tests that test several things, or name the cases with t.Run.
+- [ ] R1.15 (paranoid 6): the lab test's uid check is a substring match.
+- [ ] R1.16 (go-style 7): the cache's comments leave out its size limit.
+- [ ] R1.17 (paranoid 5): the real Directory Services test's assumptions (the effective gid is a group DS counts, the first query answers within the timeout) are unstated.
+
 ## Log
 - 2026-10-16 created in backlog (TP-078 device session A)
 - 2026-10-19 docs (TP-099): the 16-group xucred limit is the second cause, in Notes and Acceptance
@@ -72,3 +92,4 @@ On macOS, a member of the `thinkpol` group can do what DESIGN.md says members ma
 - 2026-10-28 not verified: the service on a real Mac as root with a 19-group member (device checklist in Notes, for TP-144); whether the file system's own membership cache can lag behind the 10 s answer after a group change (checklist step 3 records it).
 - 2026-10-28 lab: TestLocalAPI's "the log is root's" now checks the new wording and the refusal's log line (uid, group, needs=admin); mutation: the refusal not logged, the lab test fails. `make lab-test` green on 0d87348 (`make lint`, `make test` green too).
 - 2026-10-28 in-progress → review
+- 2026-10-28 review → has-errors (round 1: R1.1–R1.17)
