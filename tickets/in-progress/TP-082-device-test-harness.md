@@ -45,18 +45,160 @@ Per-round lessons from the kit work: stub-only tests gave false greens; bash `$B
 - Built, in the prototype scope the owner chose (the safety core, the capture self-test, the evidence folder and one plan): the safety core (`lab/devicetest/safety`, pinned by `FROZEN` and `TestTheSafetyCoreIsFrozen`), the capture self-test (`lab/devicetest/selftest.go`), the evidence folder (`lab/devicetest/evidence`), and TP-096's plan (`lab/devicetest/plans/tp096.go`). Product readers reused, not copied: firewall's pfctl readers (now exported), `trusteddir` (a new `OpenOwnedBy` for root writing the owner's evidence) and its boot session, netcfg's `DefaultInterface`, ifbind, and the lab's pcap reader (moved to `lab/pcap`). netcfg's route-record reader isn't needed: route rollback becomes `thinkpol rollback` (TP-134).
 - Acceptance evidence: the safety core's tests run as the user on the Mac (`make test`: kill -9 of a journaling child, a cut journal line, a power loss as another boot session, the dead-man against a killed helper, a stop file, no heartbeat, a fresh one and a stale one, the helper's restore on input end and after SIGINT/SIGHUP, an unfinished run blocking the next, symlinks against the evidence writer, the root-read allowlist, the live reader and the decode check on a capture recorded in a lab node) and as root in lab nodes (`make lab-test`: the launch script's root copy and its hash check, a real tcpdump applied and undone through the journal, a whole run through the launch script, helper, dead-man and tcpdump, and a broken capture caught in 4.7 s with nothing of the plan's run).
 - Size: about 5.2k lines under `lab/devicetest` with comments and package docs, plus 3.3k lines of tests, after round 4 (round 3: 5.1k and 3.1k; round 2: 5.0k and 2.9k; round 1: 4.6k and 2.3k; the prototype: 4.5k and 1.8k; the design estimated 1.6k and 1.1k). TP-096's plan is 33 lines.
-- The merge waits for the device run: checklist steps 1–6 from a build of this branch, judged (round 4's process note).
+- The merge waits for the device run: checklist steps 1–9 (steps 1–6 before round 5) from a build of this branch, judged (round 4's process note).
 
 ### Device checklist (the owner's first run)
-This branch merges into `rewrite` only after these steps are run from a build of it and judged: the core's own rule (a core change merges after one device self-test passes) applies to its first merge; a core change they show is needed is a fix round of this ticket. From a checkout of branch `tp-082-device-harness` (`git fetch origin && git switch tp-082-device-harness && git pull`), as yourself, no VPN or thinkpol agent running, Wi-Fi on:
-1. Build both binaries into one directory: `mkdir -p /tmp/devicetest-bin && go build -o /tmp/devicetest-bin/ ./lab/devicetest ./lab/devicetest/devicetest-root` (the run asks sudo to start a checked copy of `devicetest-root`, which must sit beside `devicetest`). Below, `devicetest` is `/tmp/devicetest-bin/devicetest`. Then `devicetest plans TP-096`: expect 2 steps, 9 root reads, one change ("load pf's main ruleset: "set skip on lo", then /etc/pf.conf") with its undo, and a capture on your physical interface. Nothing is asked and nothing runs as root.
-2. `devicetest selftest`, type `yes`, then your sudo password. Expect `self-test ok in …` (under 10 s), then a last line `devicetest selftest recorded: 0 of 0 steps, selftest ok, restore CLEAN -> …/thinkpol-evidence/<date>-selftest`. If it says SELF-TEST FAILED, go on to step 6 and send the folder: that is what the self-test is for. If instead the helper doesn't start and names `the baseline can't read pf-anchor-…`, copy that line into your notes and send it: it quotes pfctl's real answer for an anchor that doesn't exist, which the core's reading (taken from pfctl's source) must then match; nothing was changed. Either way the judge records pfctl's real missing-anchor message from `snapshots/00-baseline/pf-anchor-000.thinkpol.err` (thinkpol's guard anchor, absent with no agent running). The judge also confirms from `snapshots/00-baseline/pf-dummynet.{out,err}` whether this Mac's pfctl lists dummynet rules (`-s dummynet`, which pfctl's man page doesn't document; recorded as information only until then), and that `pf-limits` and `pf-timeouts` (`-s memory`, `-s timeouts`) read.
-3. `devicetest run TP-096`, `yes`, password. Expect `recorded: 2 of 2 steps, selftest ok, restore CLEAN`. If a `STOP:` line asks what to do, press Enter (it restores and ends). If the restore says `REBOOT` or `LEFT`, do what each item's `next` says (for pf: one `sudo pfctl -f /etc/pf.conf`; never `pfctl -F` or `pfctl -d`), and reboot if pf still differs; then `devicetest restore`, which compares the Mac with that run's baseline again. The run stays pending, and no run starts, until a restore closes it: `CLEAN`; or, run after a reboot, `RESET-BY-REBOOT` (every change of the run's was undone or went with the reboot; what still differs is the new boot's, and the result lists it); or, if even that can't close it (it says why), `devicetest restore -forget <run>` after a reboot, typing the run id it names, which says `FORGOTTEN` and shows what the journal and the comparison still say. Neither of the last two is CLEAN; both let the next run start. The judge reads in the run's `restore/result-*.json` that `left` names none of `pf-skip`, `pf-limits` and `pf-timeouts` (they match the baseline after the restore), and records whether loading /etc/pf.conf cleared the skip: `steps/02-skip-on-lo/cmd-002.pfctl--s-Interfaces--v.out` (the skip loaded) against `cmd-007.pfctl--s-Interfaces--v.out` (after the plan's undo), and the undo's line in the step's transcript. If the reload doesn't clear it, the run ends REBOOT; reboot, then `devicetest restore` says RESET-BY-REBOOT, and the judge records that the undo needs another way (a fix round, not a ticket).
-4. Ctrl-C: run `devicetest run TP-096` again, `yes`, password, and press Ctrl-C twice as soon as `step 1 stock` appears. Expect `stopping after the operation running now, then restoring`, then `restoring, wait`, and `restore CLEAN`.
-5. A closed terminal: in a new window run `devicetest selftest`, `yes`, password, and close the window at once. In another window, after 10 s: `devicetest restore` (it asks for sudo). Usually the helper has restored by itself (its input ended with the window): expect `"verdict": "NOTHING-TO-RESTORE"` and `nothing was compared`, and the selftest's evidence folder holds `restore/result-*.json` with `"verdict": "CLEAN"`. If the restore ran only now, expect `"verdict": "CLEAN"` and `CLEAN, run … restored`. Anything else (`LEFT`, `REBOOT`, an error): do what it says, then `devicetest restore` again until it says `CLEAN`, or after a reboot `RESET-BY-REBOOT`, or with `-forget <run>` after a reboot `FORGOTTEN` (step 3).
-6. Afterwards: `sudo ls /private/var/db/thinkpol-devicetest` lists `run-…` directories (the newest 10), `devicetest.lock`, and no `active` or `left`; `ls -d /private/tmp/tpdt.*` finds nothing. Zip each `~/thinkpol-evidence/<date>-…` folder of the session and send the paths. An agent judges them; no PASS or FAIL comes from the tool.
+This branch merges into `rewrite` only after these steps are run from a build of it and judged: the core's own rule (a core change merges after one device self-test passes) applies to its first merge; a core change they show is needed is a fix round of this ticket.
 
-What the judge reads: `selftest/selftest.json` and the decode beside it; `steps/02-skip-on-lo/cmd-002…Interfaces-v.out` (`lo0 (skip)`: the kernel applies `lo` to lo0; `lo (skip)` too or instead) and `cmd-007…Interfaces-v.out` after the undo; `actions/pf-skip-*` (the stock-rules parse, the load and the reloads); `restore/result-*.json`; `snapshots/00-baseline` against `99-after-restore`.
+Before you start: run everything as yourself in one Terminal window, pasting each block as it is (devicetest asks for your password itself when it needs root), with no VPN and no thinkpol agent running, and Wi-Fi on. Don't pipe devicetest's output into another program: it keeps its own transcript (`harness.log`), and a pipe can keep Ctrl-C from reaching it. Each run has a dead-man that restores the Mac by itself if the run hangs or is killed: after 2 minutes for the self-test and 5 minutes for TP-096. In a restore result only the `left` items need action; `info` items are for the judge. Never load, flush or disable pf by hand: when something isn't as expected, use [If something goes wrong](#if-something-goes-wrong).
+
+| Step | What |
+|---|---|
+| [1](#step-1-build-the-binaries) | Build the binaries |
+| [2](#step-2-list-the-tp-096-plan) | List the TP-096 plan (nothing runs) |
+| [3](#step-3-the-self-test) | The self-test |
+| [4](#step-4-the-tp-096-run) | The TP-096 run |
+| [5](#step-5-reboot-only-if-step-4-didnt-end-clean) | Reboot (only if step 4 didn't end CLEAN) |
+| [6](#step-6-after-the-reboot-close-step-4s-run) | After the reboot, continue here: close step 4's run |
+| [7](#step-7-ctrl-c) | Ctrl-C |
+| [8](#step-8-a-closed-terminal) | A closed terminal |
+| [9](#step-9-the-evidence) | The evidence |
+| [F](#if-something-goes-wrong) | If something goes wrong (after a reboot there, continue at its step F2) |
+
+#### Step 1: build the binaries
+**Do**, in the Terminal window, from a checkout of this repository:
+```sh
+git fetch origin
+git switch tp-082-device-harness
+git pull
+mkdir -p ~/devicetest-bin
+go build -o ~/devicetest-bin/ ./lab/devicetest ./lab/devicetest/devicetest-root
+```
+**What happens**: two binaries go into `~/devicetest-bin` (outside `/tmp`, so they survive a reboot). `devicetest-root` must sit beside `devicetest`: sudo starts a checked copy of it. Nothing runs as root.
+
+**Expect**: no output from `go build`.
+
+#### Step 2: list the TP-096 plan
+**Do**:
+```sh
+~/devicetest-bin/devicetest plans TP-096
+```
+**What happens**: it prints everything the run may do. Nothing is asked, nothing runs as root, nothing changes.
+
+**Expect**: 2 steps, 9 root reads, one change (`load pf's main ruleset: "set skip on lo", then /etc/pf.conf`) with its undo, and a capture on your physical interface.
+
+#### Step 3: the self-test
+**Do**:
+```sh
+~/devicetest-bin/devicetest selftest
+```
+Type `yes`, then your password.
+
+**What happens**: a root helper starts with its dead-man, records the Mac (pf, DNS) as the baseline, writes and removes one file of its own, checks a capture on Wi-Fi with two marker packets, then compares the Mac with the baseline. pf isn't changed.
+
+**Expect**: `self-test ok in …` (under 10 s), then the last line `devicetest selftest recorded: 0 of 0 steps, selftest ok, restore CLEAN -> …/thinkpol-evidence/<date>-selftest`.
+- If it says `SELF-TEST FAILED`, or the helper doesn't start and names `the baseline can't read …`: copy that line into your notes and skip to [step 9](#step-9-the-evidence). Nothing was changed.
+
+#### Step 4: the TP-096 run
+**Do**:
+```sh
+~/devicetest-bin/devicetest run TP-096
+```
+Type `yes`, then your password. If a `STOP:` line asks what to do, press Enter (it restores and ends the run).
+
+**What happens**: the self-test again, then step 1 records pf's listings; step 2 loads `set skip on lo` before the stock rules, records the listings, undoes it (loads /etc/pf.conf), and records them again; then the restore compares the Mac with the baseline. The dead-man restores by itself after 5 minutes if the run hangs.
+
+**Expect** one of:
+- the last line `devicetest TP-096 recorded: 2 of 2 steps, selftest ok, restore CLEAN -> …`: skip to [step 7](#step-7-ctrl-c);
+- on a Mac whose `pfctl -s Interfaces -v` marks no skipped interface (the 2026-10-24 run's did not): a `STOP:` line for the undo whose error says `pf listed no skipped interface even right after this run's load`, then, after Enter, a result with `"verdict": "LEFT"` and the last line `devicetest TP-096 recorded: 1 of 2 steps, selftest ok, restore LEFT -> …`. That is the expected answer there: go on to step 5.
+
+Anything else that isn't CLEAN: go on to step 5 too.
+
+#### Step 5: reboot (only if step 4 didn't end CLEAN)
+**Do**: Apple menu → Restart.
+
+**What happens**: the reboot clears whatever the run left in pf (pf's state lives in the kernel). The run stays pending on disk, and no run starts until step 6 closes it.
+
+**Expect**: the Mac restarts.
+
+#### Step 6: after the reboot, close step 4's run
+**Do**, in a new Terminal window:
+```sh
+~/devicetest-bin/devicetest restore
+```
+Type your password.
+
+**What happens**: it reopens the pending run, checks each change of the run's is gone with the old boot, and compares the Mac with the run's baseline. It changes nothing in this boot.
+
+**Expect**: `"verdict": "RESET-BY-REBOOT"` and `devicetest restore: RESET-BY-REBOOT, run … closed: every change it made was undone or went with its boot; …`. (A `CLEAN` closes it too.) Anything else: [If something goes wrong](#if-something-goes-wrong).
+
+#### Step 7: Ctrl-C
+**Do**, in the window you type in. If step 4 ended `restore CLEAN`:
+```sh
+~/devicetest-bin/devicetest run TP-096
+```
+Otherwise:
+```sh
+~/devicetest-bin/devicetest selftest
+```
+Type `yes`, then your password. As soon as the line `the helper is up: from now on Ctrl-C stops the run …` appears (for TP-096 you may wait for `step 1 stock`), press Ctrl-C twice in this same window.
+
+**What happens**: the run stops after the operation running now, undoes what it changed and compares the Mac with the baseline; the second Ctrl-C doesn't stop the restore.
+
+**Expect**, within a second of the first Ctrl-C, the line `interrupt: stopping after the operation running now, then restoring`; after the second, `restoring, wait: a second Ctrl-C doesn't stop the restore`; then a last line ending `restore CLEAN -> …`. No `interrupt:` line: the Ctrl-C didn't reach the run; let it finish (it restores by itself) and note it. Anything but CLEAN: [If something goes wrong](#if-something-goes-wrong).
+
+#### Step 8: a closed terminal
+**Do**: open a new Terminal window (Cmd-N) and run:
+```sh
+~/devicetest-bin/devicetest selftest
+```
+Type `yes`, then your password, press Enter, and close the window at once (Cmd-W); confirm Terminate if Terminal asks. Wait 10 s, then in your first window run:
+```sh
+~/devicetest-bin/devicetest restore
+```
+Type your password.
+
+**What happens**: closing the window ends the run's user side; the root helper sees its input end and restores by itself. The restore then finds nothing pending, or closes what was.
+
+**Expect**: usually `"verdict": "NOTHING-TO-RESTORE"` and `devicetest restore: NOTHING-TO-RESTORE, no run was pending; nothing was compared`. If the restore ran only now: `"verdict": "CLEAN"` and `devicetest restore: CLEAN, run … restored; a new run may start`. Anything else: [If something goes wrong](#if-something-goes-wrong).
+
+#### Step 9: the evidence
+**Do**:
+```sh
+sudo ls /private/var/db/thinkpol-devicetest
+ls -d /private/tmp/tpdt.*
+```
+**What happens**: the first lists root's state directory; the second looks for root copies left in the temporary directory.
+
+**Expect**: `run-…` directories (the newest 10) and `devicetest.lock`, with no `active` and no `left`. The second prints `zsh: no matches found: /private/tmp/tpdt.*`, which is the good answer. If it lists directories, leave them (the next reboot removes them; don't delete them by hand) and note the names.
+
+**Do**, to pack each evidence folder of the session:
+```sh
+cd ~/thinkpol-evidence && for f in "$(date +%F)"-*/; do zip -qr "${f%/}.zip" "$f"; done; ls ~/thinkpol-evidence/*.zip
+```
+**What happens**: one zip per folder of today's runs (a session that crossed midnight: zip the earlier date's folders the same way).
+
+**Expect**: the zips' paths. Send them; an agent judges them. The tool says no PASS or FAIL.
+
+#### If something goes wrong
+Only the `left` items of a result need action, and never pfctl by hand.
+- F1. A restore says `LEFT` or `REBOOT`, or a restore fails: Apple menu → Restart.
+- F2. After the reboot, in a new Terminal window:
+  ```sh
+  ~/devicetest-bin/devicetest restore
+  ```
+  Expect `RESET-BY-REBOOT` or `CLEAN`, then continue with the step after the one that sent you here.
+- F3. If F2 still says `LEFT` or `REBOOT`, or fails the same way: close the run by name, typing the run id F2 named in place of `RUN`:
+  ```sh
+  ~/devicetest-bin/devicetest restore -forget RUN
+  ```
+  Expect `FORGOTTEN` and what the journal and the comparison still say (never CLEAN; the next run may start). Note it and continue with the step after the one that sent you here.
+- A run that prints nothing more for minutes: wait for its dead-man (2 minutes for the self-test, 5 for TP-096, then its restore), then go to F2 without rebooting.
+
+#### For the judge
+- Step 3: `selftest/selftest.json` and the decode beside it; pfctl's real missing-anchor answer in `snapshots/00-baseline/pf-anchor-000.thinkpol.err` (thinkpol's guard anchor, absent with no agent running), or the refusal quoting it; whether `snapshots/00-baseline/pf-dummynet.{out,err}` lists dummynet rules (`-s dummynet`, undocumented, information only until then); that `pf-limits` and `pf-timeouts` (`-s memory`, `-s timeouts`) read; that `pf-info.out` has `Debug: …` on its status line as the core reads it.
+- Step 4: `steps/02-skip-on-lo/cmd-002.pfctl--s-Interfaces--v.out` (the skip loaded: `lo0 (skip)`, `lo (skip)`, or no mark at all) against `cmd-007.pfctl--s-Interfaces--v.out` (after the undo), and the undo's line in the transcript (`undone: …` or the STOP line); `actions/pf-skip-*` (the stock-rules parse, the load and the reloads); in `restore/result-*.json`, that `left` names none of `pf-skip`, `pf-limits` and `pf-timeouts`; `snapshots/00-baseline` against `99-after-restore`. Record whether loading /etc/pf.conf cleared the skip, and whether pfctl marks it at all: if not, the undo needs another way (a fix round, not a ticket).
+- Steps 6–8: `restore/result-*.json` in each folder (step 8's selftest folder: `"verdict": "CLEAN"`), and the `interrupt:` line in step 7's `harness.log`.
 
 ## Review findings
 Round 1 (2026-10-23): correctness (fix first), style (fix first), design (fix first), second opinion (fix first). The split is right and the tests are real; the core still has holes that leave the Mac changed under a CLEAN verdict, and every one costs a ticket and the owner's approval once `FROZEN` pins it, so all of them are fixed now.

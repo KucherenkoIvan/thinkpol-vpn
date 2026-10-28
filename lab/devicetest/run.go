@@ -136,6 +136,7 @@ func (r *runner) run(ctx context.Context, base string) error {
 		return errReported
 	}
 	r.watchSignals()
+	ev.Logf("the helper is up: from now on Ctrl-C stops the run after the operation running now, then restores")
 	steps, err := 0, r.selfTest(ctx)
 	rec.SelfTest = "ok"
 	if err != nil {
