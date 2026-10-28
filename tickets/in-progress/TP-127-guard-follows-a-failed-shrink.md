@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: []
 refs: [docs/design/routing.md#routing-rules-and-dns]
-owner: ""
-branch: ""
+owner: "agent-claude-tp127"
+branch: "tp-127-guard-follows-a-failed-shrink"
 ---
 
 ## Goal
@@ -31,3 +31,4 @@ When a smaller direct set fails to apply, and so does the fallback to nothing di
 ## Log
 - 2026-10-22 created in backlog (TP-077 review round 2)
 - 2026-10-24 docs: slotted in the pre-M2 phase (wave 1, Guard)
+- 2026-10-28 backlog → in-progress, owner: agent-claude-tp127
