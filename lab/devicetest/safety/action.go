@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -70,7 +71,9 @@ type output struct {
 }
 
 // run runs argv (an absolute path first) with stdin (nil: none), in the C
-// locale, bounded by commandTimeout.
+// locale, bounded by commandTimeout, in a process group of its own: a
+// signal for the terminal's group (Ctrl-C, Ctrl-Z) never reaches a pfctl
+// in the middle of a load.
 func run(ctx context.Context, argv []string, stdin []byte) output {
 	if err := execGuard(argv[0]); err != nil {
 		return output{Code: -1, Err: err.Error()}
@@ -79,6 +82,7 @@ func run(ctx context.Context, argv []string, stdin []byte) output {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Env = []string{"LC_ALL=C", "PATH=/usr/bin:/bin:/usr/sbin:/sbin"}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)
 	}
@@ -166,18 +170,22 @@ func (e *engine) do(ctx context.Context, spec Spec) (int, error) {
 	return seq, e.j.mark(seq, stateApplied, nil, nil)
 }
 
-// undoLast undoes the newest change still on the host. A capture isn't a
-// plan's to undo: it ends with the run.
-func (e *engine) undoLast(ctx context.Context) error {
+// undoLast undoes the newest change still on the host and says what its
+// undo did, as a restore's Undone does. A capture isn't a plan's to undo:
+// it ends with the run.
+func (e *engine) undoLast(ctx context.Context) (string, error) {
 	p := e.j.pending()
 	if len(p) == 0 {
-		return errors.New("nothing to undo")
+		return "", errors.New("nothing to undo")
 	}
 	if p[0].Kind == kindCapture {
-		return errors.New("the newest change is a capture: a capture ends with the run")
+		return "", errors.New("the newest change is a capture: a capture ends with the run")
 	}
-	_, err := e.undo(ctx, p[0])
-	return err
+	what, err := e.undo(ctx, p[0])
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%d: %s: %s", p[0].Seq, p[0].Does, what), nil
 }
 
 func (e *engine) entry(seq int) entry {

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -37,6 +38,36 @@ func TestTheLaunchScriptRefusesATemporaryDirectoryNotRootsAndSticky(t *testing.T
 				t.Errorf("%s: a copy was made: %s", name, d)
 				_ = os.RemoveAll(d)
 			}
+		}
+	}
+}
+
+// The launch script ignores the terminal's signals: a hangup, a Ctrl-C or
+// a TERM for its process group while it copies and hashes doesn't stop
+// it. The hasher here signals the whole group, then prints a wrong hash,
+// so the script refuses the copy and removes it.
+func TestTheLaunchScriptIgnoresTheTerminalsSignals(t *testing.T) {
+	const src = "/bin/echo"
+	sum, err := fileSHA256(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hasher := filepath.Join(tempDir(t), "hasher")
+	if err := os.WriteFile(hasher, []byte("#!/bin/sh\nkill -HUP 0; kill -INT 0; kill -TERM 0\necho wrong\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := filepath.Glob(filepath.Join(rootCopyBase, "tpdt.*"))
+	cmd := exec.Command("/bin/sh", "-c", launchScript, "devicetest-launch", src, sum, rootCopyBase, hasher, "rootcheck")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	out, err := cmd.CombinedOutput()
+	if !strings.Contains(string(out), "hash is not the binary's: refused") {
+		t.Errorf("the script didn't reach its hash check: %s %v", out, err)
+	}
+	after, _ := filepath.Glob(filepath.Join(rootCopyBase, "tpdt.*"))
+	for _, d := range after {
+		if !slices.Contains(before, d) {
+			t.Errorf("a copy was left: %s", d)
+			_ = os.RemoveAll(d)
 		}
 	}
 }

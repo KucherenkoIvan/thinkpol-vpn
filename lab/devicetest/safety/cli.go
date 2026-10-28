@@ -116,9 +116,12 @@ func deadmanMain(ctx context.Context, args []string, state stateConfig) error {
 }
 
 // restoreMain restores the run pending a restore, or with -forget closes
-// it by name, and prints the result as one Response line.
+// it by name, and prints the result as one Response line. Like the
+// helper, it outlives a closed terminal and a gone reader (a write error,
+// not SIGPIPE), so it always gets to remove its root copy.
 func restoreMain(ctx context.Context, args []string, state stateConfig, out io.Writer) error {
 	signal.Ignore(syscall.SIGINT, syscall.SIGHUP, syscall.SIGTERM, syscall.SIGQUIT)
+	signal.Notify(make(chan os.Signal, 1), syscall.SIGPIPE)
 	fs := flag.NewFlagSet("restore", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	rootCopy := fs.String("root-copy", "", "the launch script's directory (it adds this)")

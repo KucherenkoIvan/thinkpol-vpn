@@ -96,15 +96,16 @@ func TestPfSkipIsRefusedWhenItsUndoWouldDropSomeonesRules(t *testing.T) {
 		return surface{name: name, argv: []string{"/bin/cat", p}, norm: catLines}
 	}
 	for _, tc := range []struct {
-		name, rulesNow, skipAtBase, skipNow, want string
+		name, rulesAtBase, rulesNow, skipAtBase, skipNow, want string
 	}{
-		{"the rules changed since the baseline", "pass quick all\n", "", "", "pf-rules differs"},
-		{"a skip loaded since the baseline", pfMainStock, "", "lo0\n", "pf-skip differs"},
-		{"a skip someone loaded before the run", pfMainStock, "lo0\n", "lo0\n", "skips [lo0] already"},
+		{"the rules changed since the baseline", pfMainStock, "pass quick all\n", "", "", "pf-rules differs"},
+		{"a skip loaded since the baseline", pfMainStock, pfMainStock, "", "lo0\n", "pf-skip differs"},
+		{"a skip someone loaded before the run", pfMainStock, pfMainStock, "lo0\n", "lo0\n", "skips [lo0] already"},
+		{"no main rules listed at the baseline", "", "", "", "", "listed nothing at the baseline"},
 	} {
 		h := &host{surfaces: []surface{file("pf-rules", tc.rulesNow), file("pf-nat", ""), file("pf-skip", tc.skipNow)}}
 		h.baseline = &snapshot{Lines: map[string][]string{
-			"pf-rules": listingLines([]byte(pfMainStock)), "pf-nat": {}, "pf-skip": listingLines([]byte(tc.skipAtBase)),
+			"pf-rules": listingLines([]byte(tc.rulesAtBase)), "pf-nat": {}, "pf-skip": listingLines([]byte(tc.skipAtBase)),
 		}}
 		err := (&pfSkipAction{Iface: "lo"}).pre(t.Context(), h)
 		if err == nil || !strings.Contains(err.Error(), tc.want) {

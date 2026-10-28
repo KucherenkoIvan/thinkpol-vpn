@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/trusteddir"
@@ -427,5 +429,27 @@ func TestABaselineWithAnUnreadableSurfaceAndNoChangeIsNothingToRestore(t *testin
 	f.killed()
 	if res, err := f.restore(); err != nil || res.Verdict != Nothing || f.pointer(leftFile) != "" {
 		t.Errorf("restore: %+v %v", res, err)
+	}
+}
+
+// root-restore whose reader is gone (a closed terminal took the user side)
+// isn't killed by SIGPIPE: it ends with a status of its own, after its
+// root copy's removal.
+func TestRootRestoreOutlivesAGoneReader(t *testing.T) {
+	d := newHelperDirs(t)
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = r.Close()
+	cmd := childCommand(t, d.env(), "root-restore")
+	cmd.Stdout = w
+	err = cmd.Run()
+	_ = w.Close()
+	var exit *exec.ExitError
+	if errors.As(err, &exit) {
+		if ws, ok := exit.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+			t.Fatalf("root-restore died of %v", ws.Signal())
+		}
 	}
 }

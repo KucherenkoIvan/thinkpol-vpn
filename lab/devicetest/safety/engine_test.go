@@ -4,8 +4,13 @@ package safety
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 func TestNothingChangesWithoutARestorePlan(t *testing.T) {
@@ -52,13 +57,13 @@ func TestAChangeThatIsThereAlreadyIsRefused(t *testing.T) {
 	if _, err := e.do(t.Context(), fileSpec("one", "other")); err == nil {
 		t.Fatal("a second write of the same file was accepted")
 	}
-	if err := e.undoLast(t.Context()); err != nil {
+	if _, err := e.undoLast(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	if present(h.runDir, "file-one") {
 		t.Error("undoLast left the file")
 	}
-	if err := e.undoLast(t.Context()); err == nil {
+	if _, err := e.undoLast(t.Context()); err == nil {
 		t.Error("undoLast with nothing left to undo")
 	}
 }
@@ -73,7 +78,7 @@ func TestUndoLastNeverEndsTheRunsCapture(t *testing.T) {
 	if _, err := j.intent(capture, mustJSON(capture)); err != nil {
 		t.Fatal(err)
 	}
-	if err := (&engine{h: h, j: j, armed: isArmed}).undoLast(t.Context()); err == nil || !strings.Contains(err.Error(), "capture") {
+	if _, err := (&engine{h: h, j: j, armed: isArmed}).undoLast(t.Context()); err == nil || !strings.Contains(err.Error(), "capture") {
 		t.Errorf("undoLast with a capture newest: %v", err)
 	}
 	if p := j.pending(); len(p) != 1 {
@@ -144,4 +149,45 @@ func TestTheVerdictTable(t *testing.T) {
 			t.Errorf("%+v, pf survived %v: %s, want %s", tc.r, tc.pfSurvived, got, tc.want)
 		}
 	}
+}
+
+// UndoLast's answer says what the undo did, as a restore's Undone does,
+// so the user side reports it.
+func TestUndoLastSaysWhatItsUndoDid(t *testing.T) {
+	h, _ := testHost(t, "boot-a")
+	j, err := createJournal(h.runDir, "r", "boot-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &runState{engine: &engine{h: h, j: j, armed: isArmed}}
+	if resp := r.serve(t.Context(), Request{ID: 1, Op: OpDo, Change: ptr(fileSpec("one", "1"))}); !resp.OK {
+		t.Fatalf("do: %+v", resp)
+	}
+	resp := r.serve(t.Context(), Request{ID: 2, Op: OpUndoLast})
+	if !resp.OK || !strings.HasPrefix(resp.Did, "1: ") || !strings.HasSuffix(resp.Did, ": removed") {
+		t.Errorf("undo_last: %+v", resp)
+	}
+}
+
+func ptr[T any](v T) *T { return &v }
+
+// Every command the core runs is in a process group of its own, so a
+// signal for the terminal's group never reaches a pfctl mid-load.
+func TestACommandRunsInAProcessGroupOfItsOwn(t *testing.T) {
+	pidFile := filepath.Join(tempDir(t), "pid")
+	done := make(chan output, 1)
+	go func() {
+		done <- run(t.Context(), []string{"/bin/sh", "-c", "echo $$ > " + pidFile + "; exec /bin/sleep 1"}, nil)
+	}()
+	var pid int
+	eventually(t, 5*time.Second, "the command's pid", func() bool {
+		b, err := os.ReadFile(pidFile)
+		pid, _ = strconv.Atoi(strings.TrimSpace(string(b)))
+		return err == nil && pid > 0
+	})
+	pgid, err := syscall.Getpgid(pid)
+	if err != nil || pgid != pid || pgid == syscall.Getpgrp() {
+		t.Errorf("pid %d in process group %d (%v); the test's is %d", pid, pgid, err, syscall.Getpgrp())
+	}
+	<-done
 }

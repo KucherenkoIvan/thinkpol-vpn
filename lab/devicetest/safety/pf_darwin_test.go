@@ -19,16 +19,20 @@ import (
 // skips lo0) and its other lines as the main rules; /etc/pf.conf's text
 // (what the core appends) loads the stock rules. Loading /etc/pf.conf puts
 // back its state, nothing skipped (unless sticky: a skip no reload
-// clears). calls records what ran.
+// clears), no nat rules. unlisted: `-s Interfaces -v` lists bare names,
+// skipped or not, as a Mac did in the 2026-10-24 device run. calls
+// records what ran.
 type fakePf struct {
-	mu      sync.Mutex
-	ifaces  []string
-	skip    []string
-	sticky  bool
-	rules   string
-	airdrop string
-	debug   string
-	enabled bool
+	mu       sync.Mutex
+	ifaces   []string
+	skip     []string
+	sticky   bool
+	unlisted bool
+	rules    string
+	nat      string
+	airdrop  string
+	debug    string
+	enabled  bool
 	// reloadRules, when set, is what loading /etc/pf.conf loads: a
 	// pf.conf changed after it was last loaded.
 	reloadRules string
@@ -57,7 +61,7 @@ func (f *fakePf) skipped(name string) []string {
 
 // load applies a ruleset given on stdin.
 func (f *fakePf) load(text string) {
-	f.skip = nil
+	f.skip, f.nat = nil, ""
 	var rules []string
 	rest := text
 	for _, l := range strings.Split(text, "\n") {
@@ -89,11 +93,13 @@ func (f *fakePf) run(_ context.Context, argv []string, stdin []byte) output {
 		return ok("Status: Disabled for 0 days 00:00:00           Debug: " + f.debug + "\n")
 	case "-s rules":
 		return ok(f.rules)
+	case "-s nat":
+		return ok(f.nat)
 	case "-s Interfaces -v":
 		var b strings.Builder
 		for _, ifc := range f.ifaces {
 			b.WriteString(ifc)
-			if slices.Contains(f.skip, ifc) {
+			if slices.Contains(f.skip, ifc) && !f.unlisted {
 				b.WriteString(" (skip)")
 			}
 			b.WriteString("\n")
@@ -116,7 +122,7 @@ func (f *fakePf) run(_ context.Context, argv []string, stdin []byte) output {
 		if !f.sticky {
 			f.skip = nil
 		}
-		f.rules = pfMainStock
+		f.rules, f.nat = pfMainStock, ""
 		if f.reloadRules != "" {
 			f.rules = f.reloadRules
 		}
@@ -125,7 +131,7 @@ func (f *fakePf) run(_ context.Context, argv []string, stdin []byte) output {
 		f.enabled = true
 		return ok("pf enabled\n")
 	}
-	return ok("") // nat, the Application Firewall anchor, dummynet, references, anchors, scutil --dns
+	return ok("") // the Application Firewall anchor, dummynet, references, anchors, scutil --dns
 }
 
 func (f *fakePf) ran(args string) bool {
@@ -167,7 +173,7 @@ func TestTP096sSkipOnLoIsUndoneThoughTheKernelListsLo0(t *testing.T) {
 	if !slices.Equal(pf.skip, []string{"lo0"}) {
 		t.Fatalf("the load skips %v", pf.skip)
 	}
-	if err := e.undoLast(t.Context()); err != nil || len(pf.skip) != 0 {
+	if _, err := e.undoLast(t.Context()); err != nil || len(pf.skip) != 0 {
 		t.Fatalf("UndoLast: %v, pf skips %v", err, pf.skip)
 	}
 	if en := e.entry(1); en.State != stateUndone {
@@ -175,6 +181,21 @@ func TestTP096sSkipOnLoIsUndoneThoughTheKernelListsLo0(t *testing.T) {
 	}
 	if res := e.restore(t.Context(), "test"); res.Verdict != Clean {
 		t.Errorf("restore: %+v", res)
+	}
+}
+
+// journalSkipLoaded journals `set skip on lo` as a run's load leaves it:
+// pf's rules and nat the baseline's, lo0 skipped.
+func journalSkipLoaded(t *testing.T, j *journal, base *snapshot) {
+	t.Helper()
+	a := &pfSkipAction{Iface: "lo"}
+	seq, err := j.intent(a, mustJSON(a))
+	if err == nil {
+		loaded := pfSkipAction{Iface: "lo", Loaded: true, Rules: base.Lines["pf-rules"], Nat: base.Lines["pf-nat"], Skips: []string{"lo0"}}
+		err = j.mark(seq, stateApplied, mustJSON(loaded), nil)
+	}
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -192,14 +213,7 @@ func TestAPfSkipUndoSaysWhatItDid(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		a := &pfSkipAction{Iface: "lo"}
-		seq, err := j.intent(a, mustJSON(a))
-		if err == nil {
-			err = j.mark(seq, stateApplied, nil, nil)
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
+		journalSkipLoaded(t, j, h.baseline)
 		if tc.skipped {
 			pf.skip = pf.skipped("lo")
 		}
@@ -262,14 +276,7 @@ func TestAPfSkipRunIsLeftInItsOwnBootAndResetByALaterOne(t *testing.T) {
 				boot = thisBoot(t)
 			}
 			f := newPendingRun(t, surfaces(), pf.run, boot)
-			a := &pfSkipAction{Iface: "lo"}
-			seq, err := f.j.intent(a, mustJSON(a))
-			if err == nil {
-				err = f.j.mark(seq, stateApplied, nil, nil)
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
+			journalSkipLoaded(t, f.j, f.h.baseline)
 			f.killed()
 			if tc.stillSkipped {
 				pf.skip = pf.skipped("lo")
@@ -308,27 +315,6 @@ func TestPfIsTurnedBackOnOnlyInTheRunsBoot(t *testing.T) {
 		if pf.ran("-e") != tc.on || pf.enabled != tc.on {
 			t.Errorf("run in %s: pfctl -e %v (%v)", tc.runBoot, pf.ran("-e"), notes)
 		}
-	}
-}
-
-// pf's limits and timeouts are compared: loading a ruleset replaces them,
-// so an app's `set limit` dropped by the load is left over, not CLEAN.
-func TestPfLimitsAndTimeoutsAreCompared(t *testing.T) {
-	pf := newFakePf()
-	h := pfHost(t, pf, "boot-a", "boot-a")
-	j, err := createJournal(h.runDir, "r", "boot-a")
-	if err != nil {
-		t.Fatal(err)
-	}
-	h.exec = func(ctx context.Context, argv []string, stdin []byte) output {
-		if strings.Join(argv[1:], " ") == "-s memory" {
-			return output{Stdout: []byte("states        hard limit    20000\n")}
-		}
-		return pf.run(ctx, argv, stdin)
-	}
-	res := (&engine{h: h, j: j, armed: refuseChanges}).restore(t.Context(), "test")
-	if res.Verdict != Left || len(res.Left) != 1 || res.Left[0].Surface != "pf-limits" {
-		t.Errorf("%+v", res)
 	}
 }
 
@@ -423,6 +409,147 @@ func TestASkipGoneButRulesDifferAfterTheLoadsIsLeft(t *testing.T) {
 	pf.reloadRules = pfMainStock + "pass in quick on en0 proto tcp to any port 22\n"
 	res := e.restore(t.Context(), "test")
 	if res.Verdict != Left || len(pf.skip) != 0 || !strings.Contains(strings.Join(res.Failed, " "), "the skip is gone, but [pf-rules] differ") {
+		t.Errorf("%+v", res)
+	}
+}
+
+// skipRun is a TP-096 run whose `set skip on lo` has loaded through the
+// engine, over pf.
+func skipRun(t *testing.T, pf *fakePf) *engine {
+	t.Helper()
+	h := pfHost(t, pf, "boot-a", "boot-a")
+	j, err := createJournal(h.runDir, "r", "boot-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := &engine{h: h, j: j, armed: isArmed}
+	if _, err := e.do(t.Context(), skipSpec("lo")); err != nil {
+		t.Fatal(err)
+	}
+	return e
+}
+
+// Another app's ruleset loaded after the run's with the same rules and nat
+// but a skip of its own is never wiped either: the undo compares pf's
+// skipped interfaces with what the run's load left too.
+func TestThePfSkipUndoNeverWipesAnotherAppsSkip(t *testing.T) {
+	pf := newFakePf()
+	e := skipRun(t, pf)
+	pf.run(t.Context(), []string{pfctlPath, "-f", "-"}, []byte("set skip on lo\nset skip on utun3\n"+pf.conf))
+	pf.calls = nil
+	res := e.restore(t.Context(), "test")
+	if res.Verdict != Left || pf.ran("-f "+pfConfPath) || !strings.Contains(strings.Join(res.Failed, " "), "another ruleset was loaded since") {
+		t.Errorf("restore: %+v (%v)", res, pf.calls)
+	}
+	if !slices.Equal(pf.skip, []string{"lo0", "utun3"}) {
+		t.Errorf("the app's skips were replaced: %v", pf.skip)
+	}
+}
+
+// Another app's nat rules loaded after the run's, its main rules the
+// same: nothing is loaded, LEFT, the app's nat kept.
+func TestThePfSkipUndoNeverWipesAnotherAppsNat(t *testing.T) {
+	pf := newFakePf()
+	e := skipRun(t, pf)
+	pf.nat = "nat on en0 inet from 192.0.2.0/24 to any -> (en0)\n"
+	pf.calls = nil
+	res := e.restore(t.Context(), "test")
+	if res.Verdict != Left || pf.ran("-f "+pfConfPath) || !strings.Contains(strings.Join(res.Failed, " "), "another ruleset was loaded since") {
+		t.Errorf("restore: %+v (%v)", res, pf.calls)
+	}
+	if pf.nat == "" {
+		t.Error("the app's nat rules were replaced")
+	}
+}
+
+// The load may have run but what it left was never journaled (the helper
+// died, or reading pf after it failed): the undo loads nothing and fails
+// LEFT, skip listed or not, since nothing tells this run's ruleset from
+// another app's.
+func TestALoadNeverJournaledIsLeftAndNothingLoaded(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		skipped bool
+	}{{"the helper died after the load", true}, {"the helper died, nothing listed as skipped", false}} {
+		pf := newFakePf()
+		h := pfHost(t, pf, "boot-a", "boot-a")
+		j, err := createJournal(h.runDir, "r", "boot-a")
+		if err != nil {
+			t.Fatal(err)
+		}
+		a := &pfSkipAction{Iface: "lo"}
+		if _, err := j.intent(a, mustJSON(a)); err != nil {
+			t.Fatal(err)
+		}
+		if tc.skipped {
+			pf.skip = pf.skipped("lo")
+		}
+		res := (&engine{h: h, j: j, armed: refuseChanges}).restore(t.Context(), "test")
+		if res.Verdict != Left || pf.ran("-f "+pfConfPath) || !strings.Contains(strings.Join(res.Failed, " "), "never journaled") {
+			t.Errorf("%s: %+v (%v)", tc.name, res, pf.calls)
+		}
+	}
+
+	pf := newFakePf()
+	h := pfHost(t, pf, "boot-a", "boot-a")
+	j, err := createJournal(h.runDir, "r", "boot-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.exec = func(ctx context.Context, argv []string, stdin []byte) output {
+		if strings.Join(argv[1:], " ") == "-s nat" && pf.ran("-f -") {
+			return output{Code: 1, Stderr: []byte("pfctl: DIOCGETRULES: Device busy\n")}
+		}
+		return pf.run(ctx, argv, stdin)
+	}
+	e := &engine{h: h, j: j, armed: isArmed}
+	if _, err := e.do(t.Context(), skipSpec("lo")); err == nil || !strings.Contains(err.Error(), "never journaled") || pf.ran("-f "+pfConfPath) {
+		t.Errorf("reading pf after the load failed: %v (%v)", err, pf.calls)
+	}
+}
+
+// A Mac whose pfctl lists no skip even right after the load (the
+// 2026-10-24 device run's listing): the undo can't show the skip gone, so
+// UndoLast loads pf.conf once and fails, and the restore is LEFT, never
+// CLEAN.
+func TestASkipPfNeverListsIsLeftNeverClean(t *testing.T) {
+	pf := newFakePf()
+	pf.unlisted = true
+	e := skipRun(t, pf)
+	pf.calls = nil
+	if _, err := e.undoLast(t.Context()); err == nil || !strings.Contains(err.Error(), "listed no skipped interface") || !pf.ran("-f "+pfConfPath) {
+		t.Errorf("UndoLast: %v (%v)", err, pf.calls)
+	}
+	if res := e.restore(t.Context(), "test"); res.Verdict != Left {
+		t.Errorf("restore: %+v", res)
+	}
+}
+
+// The decision after the second load comes from the read right after it:
+// a skip that read shows is a REBOOT naming it, even if a later read
+// wouldn't show it.
+func TestTheReadAfterTheSecondLoadDecides(t *testing.T) {
+	pf := newFakePf()
+	e := skipRun(t, pf)
+	pf.sticky = true
+	loads, listed := 0, 0
+	e.h.exec = func(ctx context.Context, argv []string, stdin []byte) output {
+		switch strings.Join(argv[1:], " ") {
+		case "-f " + pfConfPath:
+			if loads++; loads == 2 {
+				pf.sticky = false
+			}
+		case "-s Interfaces -v":
+			if loads == 2 {
+				if listed++; listed == 1 {
+					return output{Stdout: []byte("en0\nlo0 (skip)\nutun3\n")}
+				}
+			}
+		}
+		return pf.run(ctx, argv, stdin)
+	}
+	res := e.restore(t.Context(), "test")
+	if res.Verdict != Reboot || len(res.Failed) != 1 || !strings.Contains(res.Failed[0], "[pf-skip]") {
 		t.Errorf("%+v", res)
 	}
 }

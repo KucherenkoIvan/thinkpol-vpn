@@ -51,12 +51,14 @@ const (
 
 // Response is the helper's answer to a request (ID 0: to its start).
 type Response struct {
-	ID     int     `json:"id"`
-	OK     bool    `json:"ok"`
-	Err    string  `json:"err,omitempty"`
-	Code   int     `json:"code,omitempty"`
-	Seq    int     `json:"seq,omitempty"`
-	Seen   bool    `json:"seen,omitempty"`
+	ID   int    `json:"id"`
+	OK   bool   `json:"ok"`
+	Err  string `json:"err,omitempty"`
+	Code int    `json:"code,omitempty"`
+	Seq  int    `json:"seq,omitempty"`
+	Seen bool   `json:"seen,omitempty"`
+	// Did is what an undo_last's undo did.
+	Did    string  `json:"did,omitempty"`
 	Result *Result `json:"result,omitempty"`
 }
 
@@ -272,7 +274,7 @@ func (r *runState) serve(ctx context.Context, req Request) Response {
 		}
 		resp.Seq, err = r.engine.do(ctx, *req.Change)
 	case OpUndoLast:
-		err = r.engine.undoLast(ctx)
+		resp.Did, err = r.engine.undoLast(ctx)
 	case OpCaptureStart:
 		params, _ := json.Marshal(captureAction{Iface: req.Iface, Filter: req.Filter})
 		resp.Seq, err = r.engine.do(ctx, Spec{Kind: kindCapture, Params: params})

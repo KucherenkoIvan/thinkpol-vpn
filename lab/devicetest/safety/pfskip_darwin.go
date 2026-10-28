@@ -26,12 +26,14 @@ import (
 // CLEAN. It never flushes, disables or edits anything.
 type pfSkipAction struct {
 	Iface string `json:"iface"`
-	// Loaded, Rules and Nat: what the run's load left in pf's main and
-	// nat rules, journaled once it has run (learnt). The undo reloads only
-	// while they are still what pf holds.
+	// Loaded, Rules, Nat and Skips: what the run's load left in pf's main
+	// rules, nat rules and skipped interfaces, journaled once it has run
+	// (learnt). The undo reloads only while all three are still what pf
+	// holds.
 	Loaded bool     `json:"loaded,omitempty"`
 	Rules  []string `json:"rules,omitempty"`
 	Nat    []string `json:"nat,omitempty"`
+	Skips  []string `json:"skips,omitempty"`
 }
 
 func decodePfSkip(params json.RawMessage) (action, error) {
@@ -52,8 +54,8 @@ func (a *pfSkipAction) does() string {
 	return fmt.Sprintf("load pf's main ruleset: %q, then %s", a.line(), pfConfPath)
 }
 func (a *pfSkipAction) undoText() string {
-	return fmt.Sprintf("while pf skips other than at the baseline and holds the rules this load set: pfctl -f %s, "+
-		"once more if pf still differs from the baseline; never a flush", pfConfPath)
+	return fmt.Sprintf("while pf skips other than at the baseline and holds the rules, nat and skips this load set: pfctl -f %s, "+
+		"once more if pf still differs from the baseline; a skip pf never listed is LEFT; never a flush", pfConfPath)
 }
 
 // pfConfControls are the surfaces loading /etc/pf.conf sets: the undo
@@ -61,12 +63,13 @@ func (a *pfSkipAction) undoText() string {
 var pfConfControls = []string{"pf-rules", "pf-nat", "pf-skip"}
 
 // pre refuses unless the loaded rules are the baseline's, nothing is
-// skipped, and the baseline's rules are among what /etc/pf.conf loads
-// (`pfctl -n` parses it and loads nothing): otherwise the undo would
-// replace someone's rules or skips. A spec naming what a load set is
-// refused: only apply learns that.
+// skipped, and the baseline's rules, of which there is at least one, are
+// among what /etc/pf.conf loads (`pfctl -n` parses it and loads nothing):
+// otherwise the undo would replace someone's rules or skips. An empty
+// listing would make that last check prove nothing. A spec naming what a
+// load set is refused: only apply learns that.
 func (a *pfSkipAction) pre(ctx context.Context, h *host) error {
-	if a.Loaded || a.Rules != nil || a.Nat != nil {
+	if a.Loaded || a.Rules != nil || a.Nat != nil || a.Skips != nil {
 		return errors.New("pf-skip names no loaded rules before it runs")
 	}
 	if h.baseline == nil {
@@ -87,6 +90,9 @@ func (a *pfSkipAction) pre(ctx context.Context, h *host) error {
 	if skips := h.baseline.Lines["pf-skip"]; len(skips) > 0 {
 		return fmt.Errorf("pf skips %v already: loading %s back would drop it", skips, pfConfPath)
 	}
+	if len(h.baseline.Lines["pf-rules"]) == 0 {
+		return errors.New("pf's main rules listed nothing at the baseline: whether they are among what pf.conf loads can't be checked")
+	}
 	argv := []string{pfctlPath, "-n", "-v", "-f", pfConfPath}
 	out := h.run(ctx, argv, nil)
 	h.saveOutput(fmt.Sprintf("actions/pf-skip-%d.stock-parse", time.Now().UnixNano()), argv, out)
@@ -103,7 +109,9 @@ func (a *pfSkipAction) pre(ctx context.Context, h *host) error {
 }
 
 // apply loads the skip and the stock rules, then journals what the load
-// left in pf's main and nat rules (learnt).
+// left in pf's main rules, nat rules and skipped interfaces (learnt). If
+// any of that can't be read or journaled, the undo never learns it, and
+// fails LEFT.
 func (a *pfSkipAction) apply(ctx context.Context, h *host, learnt func(json.RawMessage) error) error {
 	conf, err := os.ReadFile(pfConfPath)
 	if err != nil {
@@ -115,12 +123,11 @@ func (a *pfSkipAction) apply(ctx context.Context, h *host, learnt func(json.RawM
 	if err := checked(out); err != nil {
 		return fmt.Errorf("pfctl -f -: %w", err)
 	}
-	rules, rerr := h.readSurface(ctx, "pf-rules")
-	nat, nerr := h.readSurface(ctx, "pf-nat")
-	if err := errors.Join(rerr, nerr); err != nil {
-		return fmt.Errorf("pf's rules after the load: %w", err)
+	rules, nat, skips, err := h.pfLoaded(ctx)
+	if err != nil {
+		return fmt.Errorf("pf after the load: %w", err)
 	}
-	params, err := json.Marshal(pfSkipAction{Iface: a.Iface, Loaded: true, Rules: rules, Nat: nat})
+	params, err := json.Marshal(pfSkipAction{Iface: a.Iface, Loaded: true, Rules: rules, Nat: nat, Skips: skips})
 	if err != nil {
 		return err
 	}
@@ -129,22 +136,32 @@ func (a *pfSkipAction) apply(ctx context.Context, h *host, learnt func(json.RawM
 
 // undo decides by the skipped interfaces against the baseline (which pre
 // required to be pf.conf's, with nothing skipped), never by the name: the
-// kernel's prefix rule lists `set skip on lo` as lo0. Skipped as at the
-// baseline, there is nothing to undo (a reboot, or another app's load,
-// took the skip away). In a later boot it loads nothing (that boot isn't
-// the run's to change) and fails, so the run isn't reset by the reboot.
-// In the run's boot it reloads /etc/pf.conf only while pf's main and nat
-// rules are still what the run's load set (the baseline's, before that
-// is journaled): otherwise another app has loaded its own ruleset since,
-// perhaps with its own skips, and loading pf.conf would wipe it, so it
-// fails without loading. It loads at most twice, until what pf.conf sets
-// matches the baseline; the restore's comparison judges the rest.
+// kernel's prefix rule lists `set skip on lo` as lo0. In a later boot it
+// loads nothing (that boot isn't the run's to change): skipped as at the
+// baseline, the change went with the boot; otherwise it fails, so the run
+// isn't reset by the reboot. In the run's boot it never takes the skip
+// for gone unless pf listed it after the run's load and lists it no
+// longer (a reboot, or another app's load, took it away); so it fails
+// LEFT, loading nothing, when the load's outcome was never journaled (the
+// load may have run: the helper died, or reading pf after it failed). It
+// reloads /etc/pf.conf only while pf's main rules, nat rules and skipped
+// interfaces are all still what the run's load left: otherwise another
+// app has loaded its own ruleset since, perhaps with its own skips, and
+// loading pf.conf would wipe it, so it fails without loading. A skip pf
+// never listed, even right after the load, can't be shown gone: it
+// reloads once and fails LEFT, and the reboot that clears it closes the
+// run. Otherwise it loads at most twice, until what pf.conf sets matches
+// the baseline, and decides on the read after the last load; the
+// restore's comparison judges the rest. What it can't tell from its own
+// load: another app's that left exactly the same rules, nat and skips, or
+// one that lands between its check and its reload. That ruleset is
+// replaced by pf.conf's, and the comparison can't see it went (doc.go).
 func (a *pfSkipAction) undo(ctx context.Context, h *host, laterBoot bool) (string, error) {
 	switch {
 	case h.baseline == nil && laterBoot:
 		return "", errors.New("no baseline to compare pf with, in a later boot than the run's: nothing loaded; reboot, or devicetest restore -forget")
 	case h.baseline == nil:
-		return "", errors.New("no baseline to compare pf with: run sudo pfctl -f /etc/pf.conf by hand")
+		return "", errors.New("no baseline to compare pf with: nothing loaded; reboot, then devicetest restore")
 	}
 	skips, err := h.readSurface(ctx, "pf-skip")
 	if err != nil {
@@ -152,40 +169,66 @@ func (a *pfSkipAction) undo(ctx context.Context, h *host, laterBoot bool) (strin
 	}
 	base := h.baseline.Lines["pf-skip"]
 	switch {
-	case slices.Equal(skips, base) && laterBoot:
+	case laterBoot && slices.Equal(skips, base):
 		return "gone with its boot: pf skips what it did at the baseline", nil
-	case slices.Equal(skips, base):
-		return "nothing to do: pf skips what it did at the baseline (the skip was gone already)", nil
 	case laterBoot:
 		return "", fmt.Errorf("pf skips %v, not the baseline's %v, in a later boot than the run's: nothing loaded in a boot the run never touched; reboot, or devicetest restore -forget", skips, base)
+	case !a.Loaded:
+		return "", fmt.Errorf("what the load of %q left in pf was never journaled (the helper stopped, or reading pf after the load failed), "+
+			"so this run's ruleset can't be told from another app's, nor its skip shown gone: nothing loaded; %s", a.line(), nextPfUnproven)
+	case slices.Equal(skips, base) && !slices.Equal(a.Skips, base):
+		return "nothing to do: pf skips what it did at the baseline (the skip was gone already)", nil
 	}
-	wantRules, wantNat := h.baseline.Lines["pf-rules"], h.baseline.Lines["pf-nat"]
-	if a.Loaded {
-		wantRules, wantNat = a.Rules, a.Nat
-	}
-	rules, rerr := h.readSurface(ctx, "pf-rules")
-	nat, nerr := h.readSurface(ctx, "pf-nat")
-	if err := errors.Join(rerr, nerr); err != nil {
+	rules, nat, _, err := h.pfLoaded(ctx)
+	if err != nil {
 		return "", fmt.Errorf("pf's rules: %w", err)
 	}
-	if !slices.Equal(rules, wantRules) || !slices.Equal(nat, wantNat) {
-		return "", fmt.Errorf("pf skips %v, but its rules aren't the ones this run's load set: another ruleset was loaded since, "+
+	if !slices.Equal(rules, a.Rules) || !slices.Equal(nat, a.Nat) || !slices.Equal(skips, a.Skips) {
+		return "", fmt.Errorf("pf skips %v, but its rules, nat or skips aren't the ones this run's load set: another ruleset was loaded since, "+
 			"and loading %s would wipe it, so nothing was loaded: %s", skips, pfConfPath, nextPfOtherRuleset)
 	}
+	if slices.Equal(a.Skips, base) {
+		out := h.load(ctx)
+		return "", fmt.Errorf("pf listed no skipped interface even right after this run's load of %q, so whether that skip is gone can't be read "+
+			"(loaded %s once: %v): %s", a.line(), pfConfPath, nilOr(checked(out), "ok"), nextPfUnproven)
+	}
+	var d []string
 	for range 2 {
-		argv := []string{pfctlPath, "-f", pfConfPath}
-		out := h.run(ctx, argv, nil)
-		h.saveOutput(fmt.Sprintf("actions/pf-skip-%d.restore", time.Now().UnixNano()), argv, out)
-		h.beat()
-		if d := h.differs(ctx, pfConfControls); len(d) == 0 {
+		h.load(ctx)
+		if d = h.differs(ctx, pfConfControls); len(d) == 0 {
 			return "loaded " + pfConfPath, nil
 		}
 	}
-	d := h.differs(ctx, pfConfControls)
 	if slices.Contains(d, "pf-skip") {
 		return "", fmt.Errorf("%w (%v): %s", errPfSurvivedReload, d, nextPfReload)
 	}
-	return "", fmt.Errorf("the skip is gone, but %v differ from the baseline after loading %s: was pf.conf changed after it was last loaded?", d, pfConfPath)
+	return "", fmt.Errorf("the skip is gone, but %v differ from the baseline after loading %s twice: pf.conf may have changed since it was last loaded", d, pfConfPath)
+}
+
+// load loads /etc/pf.conf, its output saved, and beats.
+func (h *host) load(ctx context.Context) output {
+	argv := []string{pfctlPath, "-f", pfConfPath}
+	out := h.run(ctx, argv, nil)
+	h.saveOutput(fmt.Sprintf("actions/pf-skip-%d.restore", time.Now().UnixNano()), argv, out)
+	h.beat()
+	return out
+}
+
+// pfLoaded reads what loading a ruleset sets that the undo goes by: pf's
+// main rules, nat rules and skipped interfaces.
+func (h *host) pfLoaded(ctx context.Context) (rules, nat, skips []string, err error) {
+	rules, rerr := h.readSurface(ctx, "pf-rules")
+	nat, nerr := h.readSurface(ctx, "pf-nat")
+	skips, serr := h.readSurface(ctx, "pf-skip")
+	return rules, nat, skips, errors.Join(rerr, nerr, serr)
+}
+
+// nilOr is err's text, or ok when err is nil.
+func nilOr(err error, ok string) string {
+	if err == nil {
+		return ok
+	}
+	return err.Error()
 }
 
 // rootFile checks path is a regular file of root's that no one else may

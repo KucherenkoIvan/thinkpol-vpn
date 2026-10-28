@@ -174,7 +174,7 @@ func TestACaptureIsUndoneThroughTheJournal(t *testing.T) {
 		t.Error("the filtered marker was seen: the filter isn't applied")
 	}
 	// A plan can't end the run's capture; the restore does.
-	if err := e.undoLast(t.Context()); err == nil {
+	if _, err := e.undoLast(t.Context()); err == nil {
 		t.Fatal("undoLast ended the capture")
 	}
 	if res := e.restore(t.Context(), "test"); res.Verdict != Clean {

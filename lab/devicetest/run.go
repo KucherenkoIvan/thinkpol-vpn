@@ -301,8 +301,10 @@ func (r *runner) op(dir string, n int, op plan.Op) error {
 		r.ev.Logf("  change %d: %s", resp.Seq, describeOp(op))
 		return err
 	case plan.OpUndoLast:
-		_, err := r.c.call(safety.Request{Op: safety.OpUndoLast})
-		r.ev.Logf("  undone: the newest change")
+		resp, err := r.c.call(safety.Request{Op: safety.OpUndoLast})
+		if err == nil {
+			r.ev.Logf("  undone: %s", resp.Did)
+		}
 		return err
 	}
 	return fmt.Errorf("operation kind %d", op.Kind)
@@ -388,6 +390,10 @@ func cmdRestore(args []string) error {
 		return err
 	}
 	cmd.Stderr = os.Stderr
+	// A Ctrl-C ends neither this side nor root-restore (it ignores it): its
+	// answer, and the removal of its root copy, never find a closed pipe.
+	signal.Ignore(os.Interrupt)
+	defer signal.Reset(os.Interrupt)
 	out, err := cmd.Output()
 	return reportRestore(os.Stdout, out, err, *forget != "")
 }
