@@ -70,3 +70,4 @@ Round 2 (2026-10-28): correctness (paranoid) and design (torvalds) reviews. The 
 - 2026-10-28 out of scope, for the orchestrator: a Rule with a /0 destination passes Validate but the kernel stores no destination, so since R1.4 its Apply fails with errNotReadBack (before, it was replaced on every Apply); the kernel's rule_exists ignores flags and an absent Dst, so an add can report a misleading ErrConflict for pairs Validate allows; a changed action could be repaired add-before-delete (no window without the rule)
 - 2026-10-28 in-progress → review
 - 2026-10-28 review → has-errors (round 2: R2.1–R2.8)
+- 2026-10-28 has-errors → in-progress (round 2 findings)
