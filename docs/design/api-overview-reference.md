@@ -128,6 +128,7 @@ The other validation messages (`Config.Validate`):
 - `egress allowed %q: want IPv4 or IPv6 prefixes like 203.0.113.0/24`
 - `DNS upstream %q: want an IP or IP:port`
 - `map poll interval %v: want at least 100ms`
+- `log level %q: want debug, info, warn or error`
 - interface name errors
 
 Later errors come from the state directory and the host, for example `another thinkpol agent is running on this host (it holds /run/thinkpol/agent.lock)`, or a `rules.local` that can't be parsed (`…; fix it or remove it (the device then follows the space's rules)`). Exit codes: 0 after a clean stop, 1 for a failure, 2 for an extra argument.
@@ -150,8 +151,9 @@ Errors that every client can print (`internal/agent/localapi/client.go`, `errors
 | the socket's directory refuses the caller | `permission denied: the local API at /run/thinkpol-api/api.sock is for root and the members of its group` |
 | a call the caller's level doesn't allow | `permission denied: only root may do that` |
 | a server refusing a device-only call | `this node is a server: it serves its spaces whenever it runs` |
-| the node isn't running its data plane yet | `the node is not running` |
+| the node has stopped (`not_running`; a call made before the node starts waits instead of failing) | `the node is not running` |
 | a data plane that failed to start | `starting the data plane failed at step "tun"; the service's log has the details` |
+| the socket can't be reached for another reason | `connecting to the local API at /run/thinkpol-api/api.sock: <err>` |
 | a code the client doesn't know (a newer service) | `refused: <code>` |
 | any other gRPC failure | `<grpc code>: <message, sanitized>` |
 
@@ -441,7 +443,7 @@ alice is in group thinkpol: the local API is theirs from their next login
 installed and started /etc/systemd/system/thinkpol.service (connect-on-boot off)
 ```
 
-The unit it writes (the whole file; nothing else configures the service):
+The unit it writes (the whole file; thinkpol writes nothing else for the service, though on Linux a systemd drop-in in `/etc/systemd/system/thinkpol.service.d/` can still add settings that thinkpol neither sees nor removes: see [F1](api-overview.md#f1-there-is-no-place-for-a-node-setting-except-the-environment-and-flags)):
 
 ```ini
 # Written by thinkpol service install; thinkpol service uninstall removes it.
@@ -473,6 +475,8 @@ Errors:
 | Situation | Message (after `thinkpol service install: `) | Exit |
 |---|---|---|
 | not root | `the service is the host's: run this as root (sudo)` | 1 |
+| Linux without systemd | `this host doesn't run systemd (no /run/systemd/system): run thinkpol up under your own service manager` | 1 |
+| macOS without `/Library/LaunchDaemons` | `no /Library/LaunchDaemons: this isn't macOS's launchd` | 1 |
 | no keys or map yet | `this node can't run yet: state directory: open /var/lib/thinkpol: no such file or directory` | 1 |
 | an agent run by hand holds the host lock | `a thinkpol agent runs outside the service (it holds the host lock): stop it, then run this again` | 1 |
 | the binary's directory is writable by others | `the service's binary would be in a directory others can change: …` | 1 |
@@ -490,7 +494,7 @@ Run as root, it does the following:
 - removes the definition and the binary;
 - clears the agent's runtime directories of locks, boot records and sockets.
 
-The group, the state directory, the keys and the map stay. It takes no flags.
+The group, the state directory, the keys and the map stay. It never compares the definition with what install writes: an edited one is removed like any other. A systemd drop-in directory (`thinkpol.service.d/`) stays. It takes no flags.
 
 ```
 $ sudo thinkpol service uninstall

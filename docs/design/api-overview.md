@@ -22,13 +22,14 @@ This is everything a person or a script sees of thinkpol today: the CLI, the loc
   - runtime locks and records under `/run/thinkpol` (macOS: `/private/var/db/thinkpol`);
   - the API's socket directory;
   - the service unit or plist;
-  - the resolver configuration the node rewrites while it runs.
+  - the resolver configuration the node rewrites while it runs;
+  - a server's cgroups under `/sys/fs/cgroup/thinkpol`.
   
   No log files.
 
 **Top 5 findings**, ordered by what they would cost to change once M2 builds on them (full list in [Consistency findings](#consistency-findings)):
 
-1. **F1. Nowhere to put a setting.** There is no node config file. The service unit carries only connect-on-boot, and it refuses any hand edit. TP-111 assumes "the root-owned file from TP-046", which was never built. TP-048's kill-switch toggle and M2's transport settings need a home too. Suggested verdict: **change**, decide the config home before TP-111 and TP-048.
+1. **F1. Nowhere to put a setting.** There is no node config file. The service definition carries only connect-on-boot. An edited one makes `service connect-on-boot` refuse to run, and `service install` writes it over. On Linux a systemd drop-in gets past this, but thinkpol neither knows about drop-ins nor removes them. macOS has only the one plist. TP-111 assumes "the root-owned file from TP-046", which was never built. TP-048's kill-switch toggle and M2's transport settings need a home too. Suggested verdict: **change**, decide the config home before TP-111 and TP-048.
 2. **F2. Three ways to change a setting.** They are flags or env on `up`, a root-only rewrite of the service definition (`service connect-on-boot`), and a local API call whose result the service stores (`rules preset`). The tray can only reach the third one. PRD D4 and D5 want tray toggles. Suggested verdict: **change**, so that member-facing toggles go through the local API.
 3. **F3. Two JSON dialects.** `status -json` uses protojson defaults: lowerCamelCase, zero values left out, 64-bit numbers as strings, `CONNECTION_CONNECTED`, no schema version. `diag` is snake_case, has every field, and is versioned. Suggested verdict: **change** `status -json` to diag's form before the harness and the kill-switch tests parse it.
 4. **F4. Exit codes say too little.** There are only 0, 1 and 2. A partial success exits 1: a rule preset that was stored but can't be built yet, and a connect that came up without DNS protection. "Not running" and "permission denied" are both 1. Suggested verdict: **change**, define codes for scripts.
@@ -54,17 +55,17 @@ There is no node config file. `up` reads the environment (`agent.LoadConfig`, wi
 | Env key | Flag | Default | Documented in |
 |---|---|---|---|
 | `THINKPOL_STATE_DIR` | `-state` | `/var/lib/thinkpol`; macOS `/private/var/lib/thinkpol` | flag help; `agent` doc (as `-state`) |
-| `THINKPOL_MAP` | `-map` | `<state>/map.bin` | flag help; runbook, `agent` doc (as `-map`) |
-| `THINKPOL_MODE` | `-mode` | `auto` | flag help; `agent` doc, server-agent.md |
+| `THINKPOL_MAP` | `-map` | `<state>/map.bin` | flag help; `agent` doc (as `-map`) |
+| `THINKPOL_MODE` | `-mode` | `auto` | flag help; `agent` doc; RESIDUAL-RISKS.md RR42 (as `-mode`) |
 | `THINKPOL_LOG_LEVEL` | `-log-level` | `info` | flag help; `agent` doc |
 | `THINKPOL_INTERFACE` | `-interface` | platform default | flag help only |
 | `THINKPOL_LINK_MTU` | `-link-mtu` | `0` (1500) | flag help only |
-| `THINKPOL_MAP_POLL` | `-map-poll` | `5s` | flag help; runbook, `agent` doc |
-| `THINKPOL_CONNECT` | `-connect` | `true` | flag help; `agent`, `localapi`, `service` docs |
+| `THINKPOL_MAP_POLL` | `-map-poll` | `5s` | flag help; runbook; `agent` doc (as `-map-poll`) |
+| `THINKPOL_CONNECT` | `-connect` | `true` | flag help; `agent` doc; `localapi` doc (as `-connect`) |
 | `THINKPOL_CONNECT_ON_BOOT` | `-connect-on-boot` | empty (the service sets `on` or `off`) | flag help; `agent`, `service` docs |
 | `THINKPOL_API_SOCKET` | `-api-socket` (`up`), `-socket` (clients) | see [Socket and gates](api-overview-reference.md#socket-and-gates) | flag help; `localapi` doc (as `-api-socket`) |
 | `THINKPOL_API_GROUP` | `-api-group` | `thinkpol` | flag help; `localapi`, `service` docs (as `-api-group`) |
-| `THINKPOL_DNS` | `-dns` | `true` | flag help; `localapi`, `dns` docs (as `-dns`) |
+| `THINKPOL_DNS` | `-dns` | `true` | flag help only |
 | `THINKPOL_DNS_UPSTREAM` | `-dns-upstream` | empty | flag help; `dns` doc (as `-dns-upstream`) |
 | `THINKPOL_EGRESS_ALLOWED` | `-egress-allowed` | empty | flag help; `dns` doc, RESIDUAL-RISKS.md (as `-egress-allowed`) |
 
@@ -142,9 +143,19 @@ A server's worker gets a private tmpfs mounted at `/run/thinkpol` inside its san
 | File | Written by | Mode | Read by |
 |---|---|---|---|
 | `/usr/local/bin/thinkpol` | `service install` | 0755 root | the service manager |
-| `/etc/systemd/system/thinkpol.service` | `service install`, `service connect-on-boot` | 0644 | systemd; `service *` (must match exactly) |
-| `/Library/LaunchDaemons/org.thinkpol.agent.plist` (macOS) | same | 0644 | launchd; `service *` |
+| `/etc/systemd/system/thinkpol.service` | `service install`, `service connect-on-boot` | 0644 | systemd; `service connect-on-boot` refuses one that isn't byte for byte what install writes; `service install` warns and writes it over; `service uninstall` removes it without comparing |
+| `/Library/LaunchDaemons/org.thinkpol.agent.plist` (macOS) | same | 0644 | launchd; `service *`, the same way |
+| `/etc/systemd/system/thinkpol.service.d/*.conf` (Linux) | no thinkpol command: only an operator, by hand | — | systemd only. thinkpol never reads, reports or removes drop-ins (F1) |
 | the `thinkpol` group | `service install` | — | the local API's policy |
+
+### Cgroups (Linux servers)
+
+| Path | Written by | Mode | Lifetime |
+|---|---|---|---|
+| `/sys/fs/cgroup/thinkpol` | a server's supervisor, on cgroup v2 with the memory and pids controllers delegated | 0755 root | removed when the supervisor closes |
+| `/sys/fs/cgroup/thinkpol/tp-space<slot>` | the supervisor, one per worker, named after the worker's link (`internal/agent/supervisor/cgroup_linux.go`) | 0755 root | removed when the worker stops; a crash leaves it behind, and the next supervisor reuses it (`Mkdir` accepts one that exists) |
+
+These live in the kernel's cgroup filesystem, not on disk. They are listed because they are paths the node creates on the host. A device makes none.
 
 ### Resolver configuration the node edits
 
@@ -179,10 +190,11 @@ The node writes no log file. The log goes to stderr and into an in-memory ring, 
 | Surface | Proposal |
 |---|---|
 | setting | a preset, `device` (the default) or `server`; within `server`, separate switches for ingress, egress (with `EgressAllowed`) and relaying |
-| where | "the root-owned file from TP-046", plus flags for the lab and development. **That file doesn't exist**: TP-046 shipped env plus flags, and a unit that must match exactly (F1) |
+| where | "the root-owned file from TP-046", plus flags for the lab and development. **That file doesn't exist**: TP-046 shipped env plus flags, and a service definition that the `service` commands compare byte for byte (F1) |
 | `-mode` / `THINKPOL_MODE` | `auto` is removed: the map's node kind no longer picks how a node runs. The default changes from `auto` to `device`, which changes an existing flag's meaning |
 | at start | a map that asks for more than the ceiling leaves the node down, with a health problem naming what was asked and what is allowed (code not named yet) |
 | while running | a map asking for more keeps the last accepted capabilities, takes the rest, and reports the refusal in health and the log. The accepted capabilities are saved, so a restart comes back to them. **Where they are saved isn't named** (a new on-disk file?) |
+| ceiling lowered | "the owner lowering the ceiling under a running map is handled the same way" (the ticket's words), so it is refused and reported in health and the log as in the row above. **Not spelled out:** what happens to capabilities already in use that the lower ceiling no longer allows |
 | macOS | a `server` preset is refused: "server nodes need Linux" |
 | docs | runbook: the operator sets the ceiling on each server |
 
@@ -198,7 +210,7 @@ Open naming questions:
 
 | Surface | Proposal |
 |---|---|
-| file | one 0600 root file holding a device agent's stderr and panic trace, "in the service's state directory", overwritten on each start. **Path not named.** `state.go` says the state directory holds nothing else (PRD S1), and on Linux `/run/thinkpol` doesn't survive a reboot |
+| file | one 0600 root file holding a device agent's stderr and panic trace, "in the service's state directory", overwritten on each start. It is 0600 root whatever the OS creates it with: a start that finds it wider fixes it or refuses, and says so. **Path not named.** `state.go` says the state directory holds nothing else (PRD S1), and on Linux `/run/thinkpol` doesn't survive a reboot |
 | service definition | a device's plist gets `StandardErrorPath`, and the unit gets a matching stderr setting. A server's is unchanged. This means the device and server definitions differ for the first time, so install has to tell them apart |
 | `diag` | shows the previous run's trace (a new field: still schema 1) |
 | `status` | a short "the last run crashed" line, or a problem (code not named) |
@@ -242,10 +254,28 @@ Nothing here is fixed by TP-139. They are ordered by what each would cost to cha
 
 ### F1. There is no place for a node setting except the environment and flags
 
-The service's definition is a fixed text with one variable (`THINKPOL_CONNECT_ON_BOOT`). `service install`, `service connect-on-boot` and `service uninstall` refuse a definition that differs by a byte ("changed by hand … install again"). So an installed node can't be given `THINKPOL_DNS_UPSTREAM`, `-mode`, a log level or an interface name without breaking connect-on-boot. TP-111 puts its ceiling in "the root-owned file from TP-046", which was never built. TP-048's kill-switch toggle, its allow-LAN option and opt-out, and M2's transport settings all need a home.
+The service's definition is a fixed text with one variable (`THINKPOL_CONNECT_ON_BOOT`). The `service` commands compare the unit file or plist, byte for byte, with the two texts install writes (`installed()`, `internal/agent/service/install.go:296-311`). Each command treats a definition that differs in its own way:
+
+| Command | An edited definition |
+|---|---|
+| `service connect-on-boot` (showing or setting) | **refused**: "the service's definition was changed by hand: … isn't what thinkpol service install writes; install again" |
+| `service install` | **written over**, after a warning: the edit is lost and connect-on-boot goes back to off unless `-connect-on-boot` says otherwise (`install.go:151`) |
+| `service uninstall` | **not compared**: stopped and removed like any other (`install.go:251-290`) |
+
+So on macOS an installed node can't keep any other setting. There is one plist and no drop-in mechanism. A key added to its `EnvironmentVariables` makes `service connect-on-boot` refuse, and the next `service install` removes it.
+
+On Linux there is a route around the check. A systemd drop-in, `/etc/systemd/system/thinkpol.service.d/<name>.conf`, can add `Environment=` lines (`THINKPOL_DNS_UPSTREAM`, `THINKPOL_MODE`, a log level, an interface) or replace `ExecStart` with flags. The check reads only the unit file, so connect-on-boot keeps working. But no part of thinkpol handles drop-ins:
+
+- no thinkpol command writes them, and no doc mentions them;
+- `status` and `diag` don't show the settings they add;
+- `service install` keeps them;
+- `service uninstall` leaves them behind, so a later install picks them up without saying so;
+- a drop-in that sets `THINKPOL_CONNECT_ON_BOOT` wins over the unit's line (systemd applies drop-ins after the unit), so `service connect-on-boot` then shows and sets a value that has no effect.
+
+The lab already uses a drop-in to hold off a restart (`lab/service_test.go`). So a setting has no designed home. macOS has none at all, and on Linux the only one is a systemd mechanism that thinkpol ignores. TP-111 puts its ceiling in "the root-owned file from TP-046", which was never built. TP-048's kill-switch toggle, its allow-LAN option and opt-out, and M2's transport settings all need a home.
 
 - Costs after M2: every M2 setting would be invented separately.
-- **Suggested verdict: change.** Decide now: one root-owned node config file, read by `up`, which the service unit points at and the exact-match check ignores, or settings the service stores, like `rules.local`. Then let TP-111 and TP-048 use it.
+- **Suggested verdict: change.** Decide now: one root-owned node config file, read by `up`, which the service definition points at and the exact-match check ignores, or settings the service stores, like `rules.local`. Then let TP-111 and TP-048 use it. Also decide on Linux drop-ins: either support them (`diag` shows them, uninstall removes them) or document them as unsupported.
 
 ### F2. Three ways to change a setting, and the tray can reach only one
 
@@ -320,7 +350,7 @@ Alice, in the group, may connect, disconnect and change the rule preset. She may
 
 ### F9. `permission denied: only root may do that` is shown for any refused call
 
-The refusal's client message is fixed text, whatever the call. On macOS, before TP-094, a group member who passes the directory gate is refused *every* call, `status` included, and is told "only root may do that", which is false and points the wrong way.
+The refusal's client message is fixed text, whatever the call. On macOS, before TP-094, the per-call check sees only the groups a process got at login, and only the first 16 of them (`LOCAL_PEERCRED`, `peercred_darwin.go:24`). So a member who was added since their login, or whose `thinkpol` group is past the first 16, gets through the directory gate and is then refused every call, `status` included. They are told "only root may do that", which is false and points the wrong way. TP-094's device evidence shows this happening in practice.
 
 - **Suggested verdict: change.** Word the message per call ("the log is root's only"), or make it generic ("your user may not do that: …").
 
@@ -354,7 +384,9 @@ Both exit 0. `thinkpol help | less` works, but `thinkpol status -h | less` doesn
 ### F14. Docs and code disagree
 
 - There is no user-facing CLI reference: README shows only `version`, and the runbook covers the dev and service commands. This file is the first complete list.
-- Five env keys appear nowhere but their flag help: `THINKPOL_STATE_DIR`, `THINKPOL_INTERFACE`, `THINKPOL_LINK_MTU`, `THINKPOL_API_SOCKET` and `THINKPOL_API_GROUP`. The `-state` and `-api-socket` flags at least are named in package docs.
+- Node keys missing from the docs. Method: every tracked `.md` outside `tickets/` (this overview and its reference left out) and every package `doc.go` was searched for `THINKPOL_<KEY>` and for `-<flag>` as a whole word.
+  - By env name, 9 of the 14 keys appear in no doc: `THINKPOL_STATE_DIR`, `THINKPOL_MAP`, `THINKPOL_INTERFACE`, `THINKPOL_LINK_MTU`, `THINKPOL_API_SOCKET`, `THINKPOL_API_GROUP`, `THINKPOL_DNS`, `THINKPOL_DNS_UPSTREAM`, `THINKPOL_EGRESS_ALLOWED`. Six of them are documented under their flag only (the table in [Node keys](#node-keys)).
+  - Counting a key as documented when either its env name or its flag appears, 3 keys appear nowhere but their flag help: `-interface` (`THINKPOL_INTERFACE`), `-link-mtu` (`THINKPOL_LINK_MTU`) and `-dns` (`THINKPOL_DNS`).
 - DESIGN.md's package table lists `cmd/thinkpol-tray` and the `admin serve` command as if they existed. Both are planned (TP-086, TP-042). AGENTS.md also names `cmd/thinkpol-tray`.
 - `up -log-level`'s help says "logs go to stderr only", but the same lines go to the ring that `thinkpol logs` reads.
 - `diag`'s summary, "(root's names entry and other public addresses)", is hard to read.
