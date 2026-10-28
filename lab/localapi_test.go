@@ -163,8 +163,10 @@ func TestLocalAPI(t *testing.T) {
 	})
 
 	t.Run("the log is root's", func(t *testing.T) {
+		// The wording may change but for its prefix; the code, in the
+		// log below, says which refusal it was.
 		res, err := cli(t, devA, as(aliceUID, apiGID, "logs"))
-		if err == nil || !strings.Contains(res.Stderr, "permission denied: only root may do that") {
+		if err == nil || !strings.Contains(res.Stderr, "permission denied") {
 			t.Fatalf("alice read the log: %v\n%s", err, res.Stdout)
 		}
 		res, err = cli(t, devA, as("", "", "logs", "-n", "1000"))

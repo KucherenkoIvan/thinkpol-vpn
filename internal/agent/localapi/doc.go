@@ -79,10 +79,13 @@
 // Services too (`dsmemberutil checkmembership -u <uid> -g <gid>`, by
 // numbers): a member added since login, or one whose `thinkpol` group is
 // past the first 16, gets the group's rights. Each lookup is bounded by 3
-// s and runs one at a time; its answer is kept 10 s per uid and group (at
-// most 64 answers). A lookup that fails or times out, or an answer
-// dsmemberutil doesn't word as expected, is not a member, and is kept 2 s
-// so that callers are refused at once while Directory Services is down.
+// s, whoever waits for it, and runs one at a time; its answer is kept 10 s
+// per uid and group (at most 64 answers), even when the caller that
+// started it has left. A lookup that fails or times out, or an answer
+// dsmemberutil doesn't word as expected, is not a member, and is kept 5 s
+// (longer than a lookup may take) so that callers are refused at once
+// while Directory Services is down. A root-only call isn't looked up: no
+// group grants it.
 // Linux needs none of this: SO_PEERGROUPS and the file system both use the
 // process's groups.
 //
@@ -94,16 +97,21 @@
 // open one keeps flowing until the client reconnects, on every OS.
 //
 // A refusal says which case it is: permission_denied (neither root nor in
-// the group), root_only (in the group, but the call is root's) or
-// membership_unknown (the call needs the group and Directory Services
-// couldn't say; refused all the same, with codes.Unavailable, to be tried
-// again). Their wording is one table ([refusals]), which the client's
-// dial-time refusal shares. Every refusal is logged with its method and
-// code; one with credentials also has the caller's uid, the level the call
-// needed and had, the group it was checked against (if there is one) and
-// how many groups the kernel recorded (not which ones), plus why Directory
-// Services couldn't answer, if it couldn't. membership_unknown is logged
-// at warn, the others at info.
+// the group), root_only (not root or the service's user, and the call is
+// root's) or membership_unknown (the call needs the group and Directory
+// Services couldn't say; refused all the same, with codes.Unavailable, to
+// be tried again). A caller that hangs up during the lookup isn't refused:
+// it gets its context's end, logged at debug. The wording is in errors.go
+// only ([refusals], and the client's own errors' beside it), which the
+// client's dial-time refusal shares, and none of it points at the log,
+// which only root may read; both permission refusals begin with
+// "permission denied". Every refusal is logged with its method and code;
+// one with credentials also has the caller's uid, the level the call
+// needed, the group it was checked against (if there is one) and how many
+// groups the kernel recorded (not which ones), plus, if the group was
+// looked up, the level the caller had and why Directory Services couldn't
+// answer, if it couldn't. membership_unknown is logged at warn, the others
+// at info.
 // There is no read-only tier for other users: they can't reach the
 // socket at all.
 //

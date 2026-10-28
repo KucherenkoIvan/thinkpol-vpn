@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"os"
@@ -138,8 +139,10 @@ func TestMembershipFailuresAreKeptBriefly(t *testing.T) {
 	if ok, err := m.IsMember(ctx, 1002, 50); !ok || err != nil || f.asked != 2 {
 		t.Errorf("after the failure's ttl: %v, %v, asked %d times; want asked again", ok, err, f.asked)
 	}
-	if m.failureTTL >= m.ttl {
-		t.Errorf("a failure kept %v, an answer %v", m.failureTTL, m.ttl)
+	// Longer than a lookup may take, so that a steady poller is mostly
+	// answered at once; shorter than an answer.
+	if m.failureTTL <= m.timeout || m.failureTTL >= m.ttl {
+		t.Errorf("a failure kept %v, an answer %v, a lookup's timeout %v", m.failureTTL, m.ttl, m.timeout)
 	}
 }
 
@@ -167,23 +170,34 @@ func TestAHungMembershipLookupIsCutOff(t *testing.T) {
 	}
 }
 
-// A caller that hangs up mid-lookup leaves nothing behind for the next.
-func TestAnAbandonedMembershipLookupIsNotKept(t *testing.T) {
+// A caller that hangs up mid-lookup stops waiting, and the lookup runs on
+// for the next caller: what Directory Services says doesn't depend on who
+// asked, and an impatient poller would otherwise never fill the cache.
+func TestAnAbandonedMembershipLookupIsKept(t *testing.T) {
 	var calls atomic.Int32
+	started, release := make(chan struct{}), make(chan struct{})
 	m := newCachedMembership(membershipFunc(func(ctx context.Context, _, _ uint32) (bool, error) {
 		if calls.Add(1) == 1 {
-			<-ctx.Done()
+			close(started)
+		}
+		select {
+		case <-release:
+			return true, nil
+		case <-ctx.Done():
 			return false, ctx.Err()
 		}
-		return true, nil
 	}))
 	ctx, cancel := context.WithCancel(context.Background())
-	time.AfterFunc(10*time.Millisecond, cancel)
+	go func() {
+		<-started
+		cancel()
+	}()
 	if ok, err := m.IsMember(ctx, 1000, 50); ok || !errors.Is(err, context.Canceled) {
 		t.Fatalf("abandoned: %v, %v", ok, err)
 	}
-	if ok, err := m.IsMember(context.Background(), 1000, 50); !ok || err != nil || calls.Load() != 2 {
-		t.Errorf("the next caller: %v, %v after %d lookups; want a fresh one", ok, err, calls.Load())
+	close(release)
+	if ok, err := m.IsMember(context.Background(), 1000, 50); !ok || err != nil || calls.Load() != 1 {
+		t.Errorf("the next caller: %v, %v after %d lookups; want the abandoned one's answer", ok, err, calls.Load())
 	}
 }
 
@@ -332,29 +346,30 @@ func TestACallWithoutCredentialsIsRefused(t *testing.T) {
 	}
 }
 
-// Each refusal says which case it is: a member asking for root's call, a
+// Each refusal says which case it is: a caller asking for root's call, a
 // stranger, or a caller the OS couldn't place.
 func TestRefusalsSayWhy(t *testing.T) {
 	down := &fakeMembership{err: errors.New("opendirectoryd is down")}
+	timedOut := &fakeMembership{err: fmt.Errorf("no answer within 3s: %w", context.DeadlineExceeded)}
 	ok := &fakeMembership{members: map[uint32]bool{1001: true}}
-	logs := localapiv1.LocalService_TailLogs_FullMethodName
 	status := localapiv1.LocalService_GetStatus_FullMethodName
 	for _, tc := range []struct {
 		name    string
 		members Membership
+		gids    []uint32
 		method  string
 		want    Error
 		inLog   []string
 	}{
-		{"a member asks for the log", ok, logs, ErrRootOnly, []string{"level=INFO", "refusal=root_only", "has=control"}},
-		{"a stranger asks for the status", &fakeMembership{}, status, ErrPermissionDenied, []string{"level=INFO", "refusal=permission_denied"}},
-		{"the OS can't say, for the status", down, status, ErrMembershipUnknown, []string{"level=WARN", "refusal=membership_unknown", "opendirectoryd is down"}},
-		{"the OS can't say, for the log", down, logs, ErrRootOnly, []string{"refusal=root_only", "opendirectoryd is down"}},
+		{"a member asks for the log", ok, []uint32{4242}, localapiv1.LocalService_TailLogs_FullMethodName, ErrRootOnly, []string{"level=INFO", "refusal=root_only", "needs=admin"}},
+		{"a stranger asks for the status", &fakeMembership{}, sixteenGroups, status, ErrPermissionDenied, []string{"level=INFO", "refusal=permission_denied", "has=none"}},
+		{"the OS can't say, for the status", down, sixteenGroups, status, ErrMembershipUnknown, []string{"level=WARN", "refusal=membership_unknown", "opendirectoryd is down"}},
+		{"the OS doesn't answer in time", timedOut, sixteenGroups, status, ErrMembershipUnknown, []string{"level=WARN", "refusal=membership_unknown", "no answer within"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var buf bytes.Buffer
 			p := Policy{ServiceUID: 990, Group: 4242, HasGroup: true, Membership: tc.members}
-			err := p.allow(callerCtx(Caller{UID: 1001, GIDs: sixteenGroups}), refusalLog(&buf), tc.method)
+			err := p.allow(callerCtx(Caller{UID: 1001, GIDs: tc.gids}), refusalLog(&buf), tc.method)
 			if !errors.Is(err, tc.want) {
 				t.Fatalf("got %v, want %v", err, tc.want)
 			}
@@ -370,17 +385,69 @@ func TestRefusalsSayWhy(t *testing.T) {
 	}
 }
 
-// The refusals a person reads point nowhere they can't go, and the
-// dial-time refusal says what the per-call one says.
-func TestRefusalWording(t *testing.T) {
-	for _, e := range []Error{ErrPermissionDenied, ErrRootOnly, ErrMembershipUnknown} {
-		msg := refusalMsg(e)
-		if msg == e.Code || strings.Contains(msg, "log says") || strings.Contains(msg, "logs") {
-			t.Errorf("%s: %q", e.Code, msg)
+// No group grants root's call, so the OS isn't asked about it, and the
+// refusal doesn't depend on whether it could answer.
+func TestARootCallIsRefusedWithoutAskingTheOS(t *testing.T) {
+	for _, members := range []*fakeMembership{{members: map[uint32]bool{1001: true}}, {}, {err: errors.New("opendirectoryd is down")}} {
+		var buf bytes.Buffer
+		p := Policy{ServiceUID: 990, Group: 4242, HasGroup: true, Membership: members}
+		err := p.allow(callerCtx(Caller{UID: 1001, GIDs: sixteenGroups}), refusalLog(&buf), localapiv1.LocalService_TailLogs_FullMethodName)
+		if !errors.Is(err, ErrRootOnly) || members.asked != 0 {
+			t.Errorf("%+v: %v, asked %d times; want root_only, not asked", members, err, members.asked)
+		}
+		if out := buf.String(); !strings.Contains(out, "refusal=root_only") || strings.Contains(out, "has=") {
+			t.Errorf("log %q: want root_only, without what wasn't looked up", out)
 		}
 	}
-	if !strings.Contains(refusalMsg(ErrMembershipUnknown), "try again") {
-		t.Errorf("membership unknown: %q", refusalMsg(ErrMembershipUnknown))
+}
+
+// A caller that hangs up while the OS is asked isn't refused, and its
+// leaving isn't logged as the OS failing.
+func TestACallerThatLeftIsNotRefused(t *testing.T) {
+	var buf bytes.Buffer
+	hung := membershipFunc(func(ctx context.Context, _, _ uint32) (bool, error) {
+		<-ctx.Done()
+		return false, ctx.Err()
+	})
+	p := Policy{ServiceUID: 990, Group: 4242, HasGroup: true, Membership: hung}
+	ctx, cancel := context.WithCancel(callerCtx(Caller{UID: 1001, GIDs: sixteenGroups}))
+	cancel()
+	err := p.allow(ctx, refusalLog(&buf), localapiv1.LocalService_GetStatus_FullMethodName)
+	if !errors.Is(err, context.Canceled) || errors.Is(err, ErrMembershipUnknown) {
+		t.Errorf("got %v; want the context's end, no refusal", err)
+	}
+	if strings.Contains(buf.String(), "level=WARN") || strings.Contains(buf.String(), "refused") {
+		t.Errorf("logged %q", buf.String())
+	}
+}
+
+// Every refusal the server sends has its wording, and none of the
+// wording points at the log, which only root may read. The permission
+// refusals keep their prefix; the dial-time refusal says what the per-call
+// one says.
+func TestRefusalWording(t *testing.T) {
+	declared := []Error{ErrPermissionDenied, ErrRootOnly, ErrMembershipUnknown, ErrServerMode, ErrNotRunning, ErrPresetUnavailable, ErrUnknownPreset, ErrDNSUnprotected}
+	if len(refusals) != len(declared) {
+		t.Errorf("%d rows for %d refusals", len(refusals), len(declared))
+	}
+	for _, e := range declared {
+		if refusalMsg(e) == e.Code {
+			t.Errorf("%s has no wording", e.Code)
+		}
+	}
+	msgs := []string{serviceDownMsg, startFailedMsg}
+	for _, r := range refusals {
+		msgs = append(msgs, r.msg)
+	}
+	for _, msg := range msgs {
+		if strings.Contains(msg, "log") {
+			t.Errorf("points at root's log: %q", msg)
+		}
+	}
+	for _, e := range []Error{ErrPermissionDenied, ErrRootOnly} {
+		if !strings.HasPrefix(refusalMsg(e), "permission denied") {
+			t.Errorf("%s: %q", e.Code, refusalMsg(e))
+		}
 	}
 	err := dialError("x.sock", &net.OpError{Op: "dial", Err: os.ErrPermission})
 	if !errors.Is(err, ErrPermissionDenied) || !strings.HasPrefix(err.Error(), refusalMsg(ErrPermissionDenied)) || !strings.Contains(err.Error(), "x.sock") {

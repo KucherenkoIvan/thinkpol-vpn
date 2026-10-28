@@ -46,8 +46,13 @@ func TestDsmemberutilFailsClosed(t *testing.T) {
 			t.Errorf("%q, %v: %v, %v; want not a member and an error", bad.out, bad.err, ok, err)
 		}
 	}
+	long := strings.Repeat("x", 10000)
+	lookup := dsmemberutil{run: func(context.Context, string, ...string) ([]byte, error) { return []byte(long), nil }}
+	if _, err := lookup.IsMember(context.Background(), 501, 701); err == nil || len(err.Error()) > 300 {
+		t.Errorf("a long answer: %.300v; want an error, cut", err)
+	}
 	exit := &exec.ExitError{ProcessState: &os.ProcessState{}, Stderr: []byte("Invalid group\x1b[2J\n")}
-	lookup := dsmemberutil{run: func(context.Context, string, ...string) ([]byte, error) { return nil, exit }}
+	lookup = dsmemberutil{run: func(context.Context, string, ...string) ([]byte, error) { return nil, exit }}
 	if _, err := lookup.IsMember(context.Background(), 501, 701); err == nil || !strings.Contains(err.Error(), "Invalid group") || strings.Contains(err.Error(), "\x1b") {
 		t.Errorf("stderr: %v; want it kept, sanitized", err)
 	}

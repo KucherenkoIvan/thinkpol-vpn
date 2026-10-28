@@ -161,9 +161,11 @@ func (p Policy) access(ctx context.Context, c Caller) (Access, error) {
 
 // allow checks the caller of method, from ctx, against the policy, and
 // logs a refusal with the caller's uid and the group it was checked
-// against (not its groups: only how many the kernel recorded). A caller
+// against (not its groups: only how many the kernel recorded). A root-only
+// call is refused as ErrRootOnly before any group is looked up; a caller
 // whose membership the OS couldn't settle is refused as
-// ErrMembershipUnknown, unless the call is root's anyway.
+// ErrMembershipUnknown; a caller that left during the lookup is refused
+// nothing, and gets its context's end.
 func (p Policy) allow(ctx context.Context, log *slog.Logger, method string) error {
 	need, ok := methodAccess[method]
 	if !ok {
@@ -174,33 +176,43 @@ func (p Policy) allow(ctx context.Context, log *slog.Logger, method string) erro
 		log.Info("local API call refused: no peer credentials", "method", method, "refusal", ErrPermissionDenied.Code)
 		return ErrPermissionDenied
 	}
+	if need == AccessAdmin && !p.isAdmin(c) {
+		// No membership grants this one: the OS isn't asked.
+		p.logRefusal(ctx, log, ErrRootOnly, method, c, need)
+		return ErrRootOnly
+	}
 	got, err := p.access(ctx, c)
 	if got >= need {
 		return nil
 	}
-	var refusal Error
-	switch {
-	case need == AccessAdmin && (got == AccessControl || err != nil):
-		// Membership couldn't change this one.
-		refusal = ErrRootOnly
-	case err != nil:
-		refusal = ErrMembershipUnknown
-	default:
-		refusal = ErrPermissionDenied
+	if err != nil && ctx.Err() != nil {
+		// Judged by ctx, not by err: a Directory Services timeout is a
+		// DeadlineExceeded too, and that one is a failure to report.
+		log.Debug("local API call abandoned during the membership lookup", "method", method, "uid", c.UID)
+		return ctx.Err()
 	}
-	attrs := []any{"method", method, "refusal", refusal.Code, "uid", c.UID, "needs", need.String(), "has", got.String(), "recorded_groups", len(c.GIDs)}
+	if err != nil {
+		p.logRefusal(ctx, log, ErrMembershipUnknown, method, c, need, "has", got.String(), "membership_err", err)
+		return ErrMembershipUnknown
+	}
+	p.logRefusal(ctx, log, ErrPermissionDenied, method, c, need, "has", got.String())
+	return ErrPermissionDenied
+}
+
+// logRefusal logs c's call of method refused as refusal, with what was
+// looked up, if anything (extra: what c has, why the OS couldn't say).
+// ErrMembershipUnknown is a warning, the others are routine.
+func (p Policy) logRefusal(ctx context.Context, log *slog.Logger, refusal Error, method string, c Caller, need Access, extra ...any) {
+	attrs := []any{"method", method, "refusal", refusal.Code, "uid", c.UID, "needs", need.String(), "recorded_groups", len(c.GIDs)}
 	if p.HasGroup {
 		attrs = append(attrs, "group", p.Group)
 	}
-	if err != nil {
-		attrs = append(attrs, "membership_err", err)
-	}
+	attrs = append(attrs, extra...)
 	level := slog.LevelInfo
 	if refusal == ErrMembershipUnknown {
 		level = slog.LevelWarn
 	}
 	log.Log(ctx, level, "local API call refused", attrs...)
-	return refusal
 }
 
 // callerFrom is the caller of ctx, as the transport recorded it.

@@ -51,8 +51,8 @@ func systemMembership() Membership {
 	return newCachedMembership(dsmemberutil{run: runBounded})
 }
 
-// runBounded runs name, killed when ctx ends, and waits at most
-// dsWaitDelay more for it to exit and close its output.
+// runBounded runs name, killed when ctx ends; dsWaitDelay after that it
+// kills it again and stops reading its output.
 func runBounded(ctx context.Context, name string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.WaitDelay = dsWaitDelay
@@ -82,13 +82,19 @@ func (d dsmemberutil) IsMember(ctx context.Context, uid, gid uint32) (bool, erro
 }
 
 // parseCheckMembership reads dsmemberutil's answer; anything but its two
-// sentences is an error.
+// sentences is an error, which quotes at most unexpectedMax bytes of it.
 func parseCheckMembership(out string) (bool, error) {
-	switch strings.TrimSpace(out) {
+	out = strings.TrimSpace(out)
+	switch out {
 	case "user is a member of the group":
 		return true, nil
 	case "user is not a member of the group":
 		return false, nil
 	}
-	return false, fmt.Errorf("dsmemberutil: unexpected answer %q", strings.TrimSpace(out))
+	if len(out) > unexpectedMax {
+		out = out[:unexpectedMax] + "…"
+	}
+	return false, fmt.Errorf("dsmemberutil: unexpected answer %q", out)
 }
+
+const unexpectedMax = 200
