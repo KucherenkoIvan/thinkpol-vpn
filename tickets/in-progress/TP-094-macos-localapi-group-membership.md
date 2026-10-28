@@ -8,8 +8,8 @@ size: S
 depends_on: []
 refs: [docs/design/desktop-client.md#the-local-api]
 needs_human: macos
-owner: ""
-branch: ""
+owner: "agent-claude-tp094"
+branch: "tp-094-macos-localapi-group-membership"
 ---
 
 ## Goal
@@ -41,3 +41,4 @@ On macOS, a member of the `thinkpol` group can do what DESIGN.md says members ma
 - 2026-10-19 docs (TP-099): the 16-group xucred limit is the second cause, in Notes and Acceptance
 - 2026-10-24 docs: device evidence from the 2026-10-24 macOS device run (refused after re-login; 19 groups, 16 read); before-M2 list
 - 2026-10-24 docs: slotted in the pre-M2 phase (wave 1, macOS)
+- 2026-10-28 backlog → in-progress, owner: agent-claude-tp094
