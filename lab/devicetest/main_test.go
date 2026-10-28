@@ -44,7 +44,7 @@ func TestTheTP096ListingIsEverythingTheRunMayDo(t *testing.T) {
 		}
 	}
 	if runtime.GOOS == "darwin" && (!strings.Contains(got, `load pf's main ruleset: "set skip on lo", then /etc/pf.conf`) ||
-		!strings.Contains(got, "undo: while pf skips other than at the baseline and holds the rules this load set: pfctl -f /etc/pf.conf")) {
+		!strings.Contains(got, "undo: while pf skips other than at the baseline and holds the rules, nat and skips this load set: pfctl -f /etc/pf.conf")) {
 		t.Errorf("the change and its undo:\n%s", got)
 	}
 	if n := strings.Count(got, "root read:"); n != 9 {

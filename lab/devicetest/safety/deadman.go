@@ -127,7 +127,9 @@ func exists(dir *os.File, name string) bool {
 
 // deadman is the dead-man process of a run: it says it is armed, watches,
 // and restores the run from its journal when it must, the helper killed
-// first if it is still the helper.
+// first if it is still the helper. It kills the helper's pid alone: a
+// pfctl the helper started runs on to its end (doc.go says why that is
+// no false CLEAN).
 func deadman(ctx context.Context, cfg stateConfig, run string, dm deadmanConfig) error {
 	runDir, err := cfg.openRun(run)
 	if err != nil {

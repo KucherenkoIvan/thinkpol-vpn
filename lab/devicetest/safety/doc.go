@@ -29,8 +29,9 @@
 //     back (for pf, what loading pf.conf sets that the precondition
 //     doesn't check, limits, timeouts and the debug level, comes out LEFT
 //     when another app had set it, never CLEAN), and an undo that checks
-//     first whether the change is there, so it is safe to repeat. Root reads are listings of the shapes the core
-//     allows; nothing else runs as root.
+//     first whether the change is there, so it is safe to repeat. Root
+//     reads are listings of the shapes the core allows; nothing else runs
+//     as root.
 //   - A normal end, or Ctrl-C (any number of them), undoes every change,
 //     newest first, then compares the host, in a fresh snapshot, with its
 //     baseline (Result). The helper ignores the terminal's signals; the
@@ -43,7 +44,15 @@
 //     gone), past the plan's budget when no restore is making progress
 //     (the heartbeat changes only when a restore makes progress, a
 //     snapshot after each surface it reads, never on a timer), or at its
-//     limit, budget + 10 min, whatever the heartbeat says. Its budget
+//     limit, budget + 10 min, whatever the heartbeat says. It kills the
+//     helper's pid alone: a pfctl the helper started runs on to its end,
+//     in a process group of its own (every command the core runs is, so a
+//     Ctrl-C at the terminal never reaches one). Only two of those change
+//     pf: the load of the run's skip, whose outcome isn't journaled yet,
+//     which the undo then never takes for gone (LEFT, closed by a reboot);
+//     or a load of /etc/pf.conf, the undo's own, the same load the
+//     dead-man's undo makes while the skip is still there. So no orphan
+//     turns into a false CLEAN. Its budget
 //     counts the larger of the monotonic and wall-clock time since it
 //     started: setting the clock back can't hold it, and a Mac asleep,
 //     whose monotonic clock stops, counts as time passed. A stop file
@@ -68,21 +77,20 @@
 // REBOOT: the core's own pf change survived its undo (the pf-skip undo's
 // two loads of /etc/pf.conf left what that sets unlike the baseline); any
 // other difference, whoever made it, is LEFT; DNS and the dummynet rules
-// are reported only.
-// Both keep the run pending. NOTHING-TO-RESTORE: no run was pending, or
-// the run didn't start (its result says why), or it was killed before it
-// took a baseline or made a change; nothing was compared. RESET-BY-REBOOT:
-// a pending run restored in a later boot, with no change of its own left
-// in its journal (each undone, or checked gone with the boot it was made
-// in) and the host not shown equal to the baseline: what differs is the
-// new boot's. FORGOTTEN: `devicetest restore -forget RUN`, the owner
-// naming a pending run in a later boot than its own: the restore's undos
-// run first when its journal reads back, so only what no undo could
-// close is forgotten (a change of its own that can't be undone), and a
-// journal that doesn't read back is closed as it is; the result shows
-// what the undos did, what the journal still says and how the host
-// compares now, and proves nothing. CLEAN and the last three close the
-// run; only CLEAN says the host is as it was.
+// are reported only. LEFT and REBOOT keep the run pending.
+// NOTHING-TO-RESTORE: no run was pending, or the run didn't start (its
+// result says why), or it was killed before it took a baseline or made a
+// change; nothing was compared. RESET-BY-REBOOT: a pending run restored
+// in a later boot, with no change of its own left in its journal (each
+// undone, or checked gone with the boot it was made in) and the host not
+// shown equal to the baseline: what differs is the new boot's. FORGOTTEN:
+// `devicetest restore -forget RUN`, the owner naming a pending run in a
+// later boot than its own: the restore's undos run first when its journal
+// reads back, so only what no undo could close is forgotten (a change of
+// its own that can't be undone), and a journal that doesn't read back is
+// closed as it is; the result shows what the undos did, what the journal
+// still says and how the host compares now, and proves nothing. CLEAN and
+// the last three close the run; only CLEAN says the host is as it was.
 //
 // One run is beyond both: one whose record (run.json) or directory can't
 // be opened, which no restore can replay and nothing can tell the boot of
@@ -124,16 +132,16 @@
 // thinkpol's guard anchor, and pf's state; `scutil --dns` without its
 // reach lines, and the dummynet rules (whether pfctl lists them is for a
 // device run to show), are compared too, a difference there reported only
-// (and the same unreadable answer at both ends is no difference). pf's references and
-// its list of anchors are recorded only. Before the comparison the restore
-// waits, in this order, for no thinkpol process (up to 60 s; an agent
-// releases its pf reference last, and that can turn pf off), then for the
-// guard's record to hold no reference of this boot (up to 30 s), and only
-// then, in the run's own boot, turns pf back on if the baseline had it on
-// and it is off (`pfctl -e`, checked): the one change a restore makes that
-// no journal entry names, since it puts back what the baseline recorded.
-// It never turns pf off, never flushes anything, never writes
-// /etc/pf.conf, DNS, routes or a Setup: key.
+// (and the same unreadable answer at both ends is no difference). pf's
+// references and its list of anchors are recorded only. Before the
+// comparison the restore waits, in this order, for no thinkpol process
+// (up to 60 s; an agent releases its pf reference last, and that can turn
+// pf off), then for the guard's record to hold no reference of this boot
+// (up to 30 s), and only then, in the run's own boot, turns pf back on if
+// the baseline had it on and it is off (`pfctl -e`, checked): the one
+// change a restore makes that no journal entry names, since it puts back
+// what the baseline recorded. It never turns pf off, never flushes
+// anything, never writes /etc/pf.conf, DNS, routes or a Setup: key.
 //
 // The changes: a file of the run's own in its run directory (the
 // self-test's harmless change); a capture, a tcpdump in a process group of
@@ -146,19 +154,32 @@
 // that tcpdump is gone, says LEFT, and the reboot that ends it closes the
 // run (RESET-BY-REBOOT). And, on macOS, `set skip on <name>` loaded before
 // the stock rules, refused unless the rules loaded now are the baseline's,
-// they are among what /etc/pf.conf loads (`pfctl -n -v -f`; a pf.conf
-// edited and not loaded yet leaves rules the baseline didn't have, LEFT,
-// never a false CLEAN), and nothing is skipped already; what its load
-// left in pf's main and nat rules is journaled. The kernel takes a name
+// they are among what /etc/pf.conf loads (`pfctl -n -v -f`, over a
+// baseline listing of at least one rule; a pf.conf edited and not loaded
+// yet leaves rules the baseline didn't have, LEFT, never a false CLEAN),
+// and nothing is skipped already; what its load left in pf's main rules,
+// nat rules and skipped interfaces is journaled. The kernel takes a name
 // ending in a letter as a prefix of names with a number after it (`lo`
 // skips lo0), so its undo goes by the skipped interfaces against the
-// baseline, never by the name: skipped as at the baseline, there is
-// nothing to do (a reboot or another app's load took the skip). Otherwise,
-// in the run's boot, it loads /etc/pf.conf, at most twice until what that
-// sets matches the baseline, but only while pf's rules are still what the
-// run's load left: another app's ruleset loaded since (a kill switch, with
-// skips of its own) is never wiped, and the undo fails LEFT instead. In a
-// later boot it loads nothing and fails.
+// baseline, never by the name. In the run's boot: a load whose outcome
+// was never journaled (the helper died, or reading pf after it failed)
+// fails LEFT, nothing loaded, since nothing tells the run's ruleset from
+// another app's; a skip pf listed after the load and no longer lists
+// leaves nothing to do (a reboot or another app's load took it).
+// Otherwise it loads /etc/pf.conf, at most twice until what that sets
+// matches the baseline, deciding on the read after the last load, but
+// only while pf's main rules, nat rules and skipped interfaces are all
+// still what the run's load left: another app's ruleset loaded since (a
+// kill switch, with skips of its own) is never wiped, and the undo fails
+// LEFT instead. A skip pf never listed, even right after the load (a Mac
+// whose `pfctl -s Interfaces -v` marks nothing), can't be shown gone: it
+// loads /etc/pf.conf once and fails LEFT, and the reboot that clears it
+// closes the run. In a later boot it loads nothing and fails unless the
+// skipped interfaces are the baseline's. What it can't tell from its own
+// load (pf keeps no owner for a ruleset): another app's that left exactly
+// the same rules, nat and skips, or one landing between the undo's check
+// and its reload; that ruleset is replaced by /etc/pf.conf's, and the
+// comparison can say CLEAN without it.
 //
 // Its tests drive real processes, kill -9 and fsync, and in lab nodes
 // real root and tcpdump; on a Mac every host tool goes through a fake

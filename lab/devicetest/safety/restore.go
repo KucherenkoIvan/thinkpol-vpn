@@ -93,7 +93,7 @@ func (e *engine) restore(ctx context.Context, by string) Result {
 	}
 	if len(e.j.entries()) == 0 && (e.h.baseline == nil || unreadableCompared(e.h.surfaceList(), e.h.baseline) != nil) {
 		res.Verdict = Nothing
-		res.Notes = append(res.Notes, "no baseline was taken and nothing was changed: nothing to compare")
+		res.Notes = append(res.Notes, "nothing was changed, and no complete baseline was taken: nothing to compare")
 		return res
 	}
 	if e.h.surfaces == nil {
@@ -243,9 +243,9 @@ type runInfo struct {
 // (only, its own run: only names it) and `devicetest restore`'s way (only
 // ""). A run of an earlier boot has its volatile changes checked gone
 // with that boot (nothing is changed in this one) and its persistent ones
-// undone; a run left not clean is compared with its baseline again. A run of an earlier boot with no
-// change of its own left pending is closed, RESET-BY-REBOOT, when it
-// isn't CLEAN.
+// undone; a run left not clean is compared with its baseline again. A
+// run of an earlier boot with no change of its own left pending is
+// closed, RESET-BY-REBOOT, when it isn't CLEAN.
 func restoreRun(ctx context.Context, cfg stateConfig, by, only string) (Result, error) {
 	state, err := cfg.open()
 	if err != nil {
