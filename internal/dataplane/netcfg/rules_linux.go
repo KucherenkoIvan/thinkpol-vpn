@@ -91,7 +91,7 @@ func (c *linuxConfigurator) checkAddedRules(added []Rule) error {
 	var errs []error
 	for _, kr := range stray {
 		if err := sendRule(c.rules, unix.RTM_DELRULE, 0, kr.msg); err != nil && !gone(err) {
-			errs = append(errs, fmt.Errorf("netcfg: remove stray rule %+v: %w", kr.rule, err))
+			errs = append(errs, fmt.Errorf("netcfg: remove stray rule %v: %w", kr.rule, err))
 		}
 	}
 	return errors.Join(append([]error{err}, errs...)...)
@@ -109,7 +109,7 @@ func judgeAdded(added []Rule, have []rawRule, proto netlink.RouteProtocol) ([]ra
 	withProto := rulesWith(have, proto)
 	for _, r := range added {
 		if !withProto[r] {
-			return nil, fmt.Errorf("%w: %+v", errNotReadBack, r)
+			return nil, fmt.Errorf("%w: %v", errNotReadBack, r)
 		}
 	}
 	return nil, nil
@@ -172,13 +172,13 @@ func (c *linuxConfigurator) addKernelRule(r Rule, u *undoLog) error {
 	msg := ruleMsg(r, c.proto)
 	if err := sendRule(c.rules, unix.RTM_NEWRULE, unix.NLM_F_CREATE|unix.NLM_F_EXCL, msg); err != nil {
 		if exists(err) {
-			return fmt.Errorf("%w: rule %+v: the same rule is there already", ErrConflict, r)
+			return fmt.Errorf("%w: rule %v: the same rule is there already", ErrConflict, r)
 		}
-		return fmt.Errorf("netcfg: add rule %+v: %w", r, err)
+		return fmt.Errorf("netcfg: add rule %v: %w", r, err)
 	}
 	u.push(func() error {
 		if err := sendRule(c.rules, unix.RTM_DELRULE, 0, msg); err != nil && !gone(err) {
-			return fmt.Errorf("netcfg: remove rule %+v: %w", r, err)
+			return fmt.Errorf("netcfg: remove rule %v: %w", r, err)
 		}
 		return nil
 	})
@@ -195,11 +195,11 @@ func (c *linuxConfigurator) delKernelRule(kr rawRule, u *undoLog) error {
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("netcfg: remove rule %+v: %w", kr.rule, err)
+		return fmt.Errorf("netcfg: remove rule %v: %w", kr.rule, err)
 	}
 	u.push(func() error {
 		if err := sendRule(c.rules, unix.RTM_NEWRULE, unix.NLM_F_CREATE|unix.NLM_F_EXCL, kr.msg); err != nil && !exists(err) {
-			return fmt.Errorf("netcfg: restore rule %+v: %w", kr.rule, err)
+			return fmt.Errorf("netcfg: restore rule %v: %w", kr.rule, err)
 		}
 		return nil
 	})

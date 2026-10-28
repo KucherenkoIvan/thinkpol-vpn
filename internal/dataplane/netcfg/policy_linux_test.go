@@ -154,41 +154,53 @@ func TestPolicyRoutingIsAppliedAndRemoved(t *testing.T) {
 // An owner's rule someone turned into a blackhole (same priority,
 // selector and protocol) is not the lookup rule the config wants: the
 // next Apply puts the lookup back (a cancelled one, the blackhole), and
-// Close leaves neither.
+// Close leaves neither. Both families.
 func TestApplyRepairsARuleWhoseActionChanged(t *testing.T) {
-	n := newTestNS(t)
-	n.dummy(t, "ovl0")
-	n.ip(t, "link", "set", "ovl0", "up")
-	c := n.configuratorFor(t, netcfg.OwnerRouteTable)
-	ctx := context.Background()
-	if err := c.Apply(ctx, policyConfig()); err != nil {
-		t.Fatal(err)
-	}
-	proto := strconv.Itoa(int(netcfg.OwnerRouteTable.RouteProtocol()))
-	n.ip(t, "rule", "del", "priority", "5299")
-	n.ip(t, "rule", "add", "priority", "5299", "to", "10.51.0.0/16", "blackhole", "protocol", proto)
-	if got := ruleActions(t, n.path, 5299); !slices.Equal(got, []string{"blackhole"}) {
-		t.Fatalf("rule 5299 before the repair: %q, want the blackhole", got)
-	}
-	// A repair cancelled once the blackhole went puts it back as it was.
-	gone := cancelWhen{ctx, func() bool { return len(ruleActions(t, n.path, 5299)) == 0 }}
-	if err := c.Apply(gone, policyConfig()); !errors.Is(err, context.Canceled) {
-		t.Fatalf("the cancelled repair: %v, want context.Canceled", err)
-	}
-	if got := ruleActions(t, n.path, 5299); !slices.Equal(got, []string{"blackhole"}) {
-		t.Fatalf("rule 5299 after the cancelled repair: %q, want the blackhole back", got)
-	}
-	if err := c.Apply(ctx, policyConfig()); err != nil {
-		t.Fatal(err)
-	}
-	if got := ruleActions(t, n.path, 5299); !slices.Equal(got, []string{"lookup"}) {
-		t.Errorf("rule 5299 after the repair: %q, want only the lookup", got)
-	}
-	if err := c.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if got := ruleActions(t, n.path, 5299); len(got) != 0 {
-		t.Errorf("rule 5299 after Close: %q", got)
+	for _, tc := range []struct {
+		fam    netcfg.Family
+		ipFlag string
+		dst    string // policyConfig's rule at 5299
+	}{
+		{netcfg.IPv4, "-4", "10.51.0.0/16"},
+		{netcfg.IPv6, "-6", "fd51::/48"},
+	} {
+		t.Run(tc.fam.String(), func(t *testing.T) {
+			n := newTestNS(t)
+			n.dummy(t, "ovl0")
+			n.ip(t, "link", "set", "ovl0", "up")
+			c := n.configuratorFor(t, netcfg.OwnerRouteTable)
+			ctx := context.Background()
+			if err := c.Apply(ctx, policyConfig()); err != nil {
+				t.Fatal(err)
+			}
+			proto := strconv.Itoa(int(netcfg.OwnerRouteTable.RouteProtocol()))
+			n.ip(t, tc.ipFlag, "rule", "del", "priority", "5299")
+			n.ip(t, tc.ipFlag, "rule", "add", "priority", "5299", "to", tc.dst, "blackhole", "protocol", proto)
+			actions := func() []string { return ruleActions(t, n.path, tc.fam, 5299) }
+			if got := actions(); !slices.Equal(got, []string{"blackhole"}) {
+				t.Fatalf("rule 5299 before the repair: %q, want the blackhole", got)
+			}
+			// A repair cancelled once the blackhole went puts it back as it was.
+			gone := cancelWhen{ctx, func() bool { return len(actions()) == 0 }}
+			if err := c.Apply(gone, policyConfig()); !errors.Is(err, context.Canceled) {
+				t.Fatalf("the cancelled repair: %v, want context.Canceled", err)
+			}
+			if got := actions(); !slices.Equal(got, []string{"blackhole"}) {
+				t.Fatalf("rule 5299 after the cancelled repair: %q, want the blackhole back", got)
+			}
+			if err := c.Apply(ctx, policyConfig()); err != nil {
+				t.Fatal(err)
+			}
+			if got := actions(); !slices.Equal(got, []string{"lookup"}) {
+				t.Errorf("rule 5299 after the repair: %q, want only the lookup", got)
+			}
+			if err := c.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if got := actions(); len(got) != 0 {
+				t.Errorf("rule 5299 after Close: %q", got)
+			}
+		})
 	}
 }
 
@@ -205,9 +217,9 @@ func (c cancelWhen) Err() error {
 	return nil
 }
 
-// ruleActions are the actions of the route-table owner's IPv4 rules at
+// ruleActions are the actions of the route-table owner's fam rules at
 // prio in the namespace at path.
-func ruleActions(t *testing.T, path string, prio int) []string {
+func ruleActions(t *testing.T, path string, fam netcfg.Family, prio int) []string {
 	t.Helper()
 	in := netcfg.InspectInNamespace(path)
 	if in.RulesUnreadable != "" {
@@ -215,7 +227,7 @@ func ruleActions(t *testing.T, path string, prio int) []string {
 	}
 	var out []string
 	for _, r := range in.Rules {
-		if r.Owner == netcfg.OwnerRouteTable && r.Family == netcfg.IPv4 && r.Priority == prio {
+		if r.Owner == netcfg.OwnerRouteTable && r.Family == fam && r.Priority == prio {
 			out = append(out, r.Action)
 		}
 	}

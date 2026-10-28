@@ -29,7 +29,7 @@ The Linux configurator's check of its own policy rules notices an owner's rule t
 - **Slot (pre-M2 phase, 2026-10-24).** Wave 1, macOS lane.
 
 ## Review findings
-Round 1 (2026-10-28): correctness (paranoid), design (torvalds) and conventions (go-style) reviews; the cross-family review was still empty and goes to round 2.
+Round 1 (2026-10-28): correctness (paranoid), design (torvalds) and conventions (go-style) reviews, and the cross-family review (Cursor), folded in late: its fix-first (New's rule dumps and deletes follow the calling thread's namespace while the handle stays in New's) is R1.2; its nits are R1.12 and R1.13.
 - [ ] R1.1 (paranoid #1, blocker) A kernel without IPv6 rules (ipv6.disable=1, CONFIG_IPV6_MULTIPLE_TABLES=n) sends EAFNOSUPPORT in the dump's NLMSG_DONE, and `dumpDone` makes it a hard error: every Apply, Close and Survey fails. Treat it as an empty family in `dumpDone`, which Inspect shares; add the TestDumpDone case.
 - [ ] R1.2 (paranoid #2, torvalds #1) Rule sockets for "the current namespace" open in whatever namespace the calling thread is in at each call, and NewInNamespace's setns on every rule operation. Open one rule socket in newLinux on the locked thread, keep it (c.mu serialises its use), close it in Close; correct the Log's "as the handle was".
 - [ ] R1.3 (paranoid #3) doc.go ("the kernel removes exactly that rule") and the request's comment ("matches a delete on every attribute") promise more than rule_find gives (zero fields are wildcards, flags and goto aren't compared, the first match in list order wins). Say what is guaranteed; a RESIDUAL-RISKS row if the residual is real for valid configs.
@@ -41,6 +41,8 @@ Round 1 (2026-10-28): correctness (paranoid), design (torvalds) and conventions 
 - [ ] R1.9 (torvalds #2, paranoid nit) The add's undo goes through `c.h.RuleDel`, which sends action 0 and deletes by selector whatever the action. Add rules raw (ruleMsg) and undo with the same bytes; `toNetlinkRule` goes; a ruleMsg round-trip unit test.
 - [ ] R1.10 (torvalds #7-#12) Nits: inspectWith's partly built configurator (rulesNS zero value is fd 0); isOwnerProtocol through ownerOf; one dumpRetries const; a fibRuleHdrLen const and a length check before the flags are cleared; Other set once, visibly; one type for the protocol.
 - [ ] R1.11 (go-style #4-#8) Nits: names (ruleDumpTimeout bounds requests too, dumpBothRules, ruleRequest); the TP-135 history comment in rules_internal_linux_test.go; one rule format (%v) in errors.
+- [ ] R1.12 (cross-family nit #3) The rule dump's retries for an interrupted dump dropped from listRules' 5 to dumpRules' 3. Use one constant, the larger.
+- [ ] R1.13 (cross-family nit #4) The lab test of action repair covers IPv4 only. Add IPv6 if cheap.
 
 ## Log
 - 2026-10-23 created in backlog (TP-091 review round 3)

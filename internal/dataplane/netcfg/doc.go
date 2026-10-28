@@ -48,9 +48,8 @@
 // it added reads back as something else (an attribute the kernel
 // reports that the reader doesn't know), rather than replace that rule
 // on every Apply. A kernel without IPv6 policy rules has none to read.
-// Scoped
-// routes are refused (errors.ErrUnsupported): Linux sockets bypass the
-// tunnel by their mark instead.
+// Scoped routes are refused (errors.ErrUnsupported): Linux sockets
+// bypass the tunnel by their mark instead.
 //
 // # macOS
 //
