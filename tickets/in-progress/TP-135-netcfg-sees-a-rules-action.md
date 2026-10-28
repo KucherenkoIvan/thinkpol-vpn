@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: [TP-091]
 refs: [docs/design/routing.md#route-table]
-owner: ""
-branch: ""
+owner: "agent-tp-135"
+branch: "tp-135-netcfg-sees-a-rules-action"
 ---
 
 ## Goal
@@ -31,3 +31,4 @@ The Linux configurator's check of its own policy rules notices an owner's rule t
 ## Log
 - 2026-10-23 created in backlog (TP-091 review round 3)
 - 2026-10-24 docs: slotted in the pre-M2 phase (wave 1, macOS)
+- 2026-10-28 backlog → in-progress, owner: agent-tp-135
