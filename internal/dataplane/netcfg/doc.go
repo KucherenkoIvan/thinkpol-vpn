@@ -24,12 +24,22 @@
 // protocol ([Owner.RouteProtocol]: 84, 85, 86), and holds an exclusive
 // flock per namespace and owner under [LockDir], so routes and rules with
 // its protocol that it finds are a dead predecessor's. Rules go in after
-// the routes they lead to, and leave before. A rule keeps its protocol
-// only since Linux 4.17: the adapter checks that the rules it added came
-// back carrying it, and on an older kernel deletes them and fails with
-// errors.ErrUnsupported rather than leave rules it can't tell from
-// anyone else's. Scoped routes are refused (errors.ErrUnsupported): Linux
-// sockets bypass the tunnel by their mark instead.
+// the routes they lead to, and leave before. The adapter reads rules
+// from a raw RTM_GETRULE dump, the reader [Inspect] uses, because
+// vishvananda/netlink's dump drops a rule's action. A rule with the
+// owner's protocol counts as a wanted [Rule] only when its family,
+// priority, destination, oif, table, mark and the invert and
+// suppress_prefixlength 0 flags match, and it is a plain lookup: no
+// other selector, no partial mark mask, no other action (a rule turned
+// into a blackhole is not the owner's lookup). Any other such rule is
+// deleted and the wanted one added. A delete sends the dumped message
+// back, so the kernel removes exactly that rule, and its undo restores
+// it action and all. A rule keeps its protocol only since Linux 4.17:
+// the adapter checks that the rules it added came back carrying it, and
+// on an older kernel deletes them and fails with errors.ErrUnsupported
+// rather than leave rules it can't tell from anyone else's. Scoped
+// routes are refused (errors.ErrUnsupported): Linux sockets bypass the
+// tunnel by their mark instead.
 //
 // # macOS
 //
