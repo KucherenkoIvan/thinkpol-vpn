@@ -227,11 +227,12 @@ func hooked(rules []byte) hook {
 	return hookMissing
 }
 
-// skippedNames reads `pfctl -s Interfaces -v`, one interface (or name
+// SkippedNames reads `pfctl -s Interfaces -v`, one interface (or name
 // `set skip on` gave) a line, "(skip)" after a skipped one, as every
-// skipped name: pf evaluates no rule for a skipped interface's packets,
-// and `-s rules` doesn't show it.
-func skippedNames(ifaces []byte) ([]string, error) {
+// skipped name, lo0 included: pf evaluates no rule for a skipped
+// interface's packets, and `-s rules` doesn't show it. A listing cut by a
+// line too long to read is an error.
+func SkippedNames(ifaces []byte) ([]string, error) {
 	ls, err := readLines(ifaces)
 	if err != nil {
 		return nil, err
@@ -300,9 +301,10 @@ func parseToken(out pfOutput) (uint64, error) {
 	return found[0], nil
 }
 
-// parseEnabled reads `pfctl -s info`: its "Status: Enabled ..." or
-// "Status: Disabled ..." line.
-func parseEnabled(info []byte) (bool, error) {
+// ParsePfEnabled reads `pfctl -s info`: whether its "Status: Enabled ..."
+// or "Status: Disabled ..." line says Enabled; an error without one, or
+// for a listing cut by a line too long to read.
+func ParsePfEnabled(info []byte) (bool, error) {
 	ls, err := readLines(info)
 	if err != nil {
 		return false, err

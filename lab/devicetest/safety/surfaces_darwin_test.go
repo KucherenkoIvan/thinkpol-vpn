@@ -17,8 +17,16 @@ const (
 	scutilDNS      = "DNS configuration\n\nresolver #1\n  nameserver[0] : 192.0.2.53\n  if_index : 4 (en0)\n  flags    : Request A records\n  reach    : 0x00020002 (Reachable,Directly Reachable Address)\n"
 )
 
+// The core's contract with firewall's readers is pinned here as well as
+// in firewall's own tests, so a change there that moves a verdict here
+// fails a test FROZEN covers: the missing anchor's answer counts only
+// from a pfctl that exited non-zero and in time, alone but for pfctl's
+// two exact ALTQ lines, and not cut short; an interface whose name holds
+// ALTQ is read; a cut Interfaces listing is unreadable.
 func TestTheMacSurfacesReadPfctlAndScutil(t *testing.T) {
 	ok := func(stdout string) output { return output{Stdout: []byte(stdout)} }
+	missing := "pfctl: DIOCGETRULES: Invalid argument\n"
+	cut := strings.Repeat("x", 1<<20) + "\n"
 	for _, tc := range []struct {
 		name string
 		norm func(output) ([]string, error)
@@ -32,7 +40,12 @@ func TestTheMacSurfacesReadPfctlAndScutil(t *testing.T) {
 		{"no skips", pfSkips, ok("en0\nutun3\n"), []string{}},
 		{"every line of the main rules, one naming ALTQ included", outputLines, ok(pfMainStock + "anchor \"ALTQ-test\" all\n"),
 			[]string{`scrub-anchor "com.apple/*" all fragment reassemble`, `anchor "com.apple/*" all`, `anchor "ALTQ-test" all`}},
-		{"an anchor that doesn't exist", pfAnchor, output{Code: 1, Stderr: []byte("pfctl: DIOCGETRULES: Invalid argument\n")}, []string{}},
+		{"an anchor that doesn't exist", pfAnchor, output{Code: 1, Stderr: []byte(missing)}, []string{}},
+		{"the missing answer beside pfctl's ALTQ chatter", pfAnchor,
+			output{Code: 1, Stderr: []byte("No ALTQ support in kernel\n" + missing + "ALTQ related functions disabled\n")}, []string{}},
+		{"a listing on exit 0 with the missing answer beside it is its rules", pfAnchor,
+			output{Stdout: []byte("block drop out all\n"), Stderr: []byte(missing)}, []string{"block drop out all"}},
+		{"an interface named with ALTQ is read", pfSkips, ok("ALTQ0 (skip)\nen0\nALTQ related functions disabled\n"), []string{"ALTQ0"}},
 		{"dns without reach", dnsWithoutReach, ok(scutilDNS),
 			[]string{"DNS configuration", "resolver #1", "nameserver[0] : 192.0.2.53", "if_index : 4 (en0)", "flags    : Request A records"}},
 	} {
@@ -51,13 +64,18 @@ func TestTheMacSurfacesReadPfctlAndScutil(t *testing.T) {
 		}
 	}
 	for name, out := range map[string]output{
-		"a failed listing":                   {Code: 1, Stderr: []byte("pfctl: Operation not permitted\n")},
-		"an anchor listing that timed out":   {Code: -1, Err: "pfctl: no answer within 30s", Stderr: []byte("Invalid argument")},
-		"an anchor listing that failed else": {Code: 1, Stderr: []byte("pfctl: Operation not permitted\n")},
+		"a failed listing":                     {Code: 1, Stderr: []byte("pfctl: Operation not permitted\n")},
+		"the missing answer, but timed out":    {Code: -1, Err: "pfctl: no answer within 30s", Stderr: []byte(missing)},
+		"an anchor listing that failed else":   {Code: 1, Stderr: []byte("pfctl: Operation not permitted\n")},
+		"the missing answer beside other ALTQ": {Code: 1, Stderr: []byte(missing + "ALTQ is off\n")},
+		"the missing answer cut short":         {Code: 1, Stderr: []byte(missing + cut)},
 	} {
 		if got, err := pfAnchor(out); err == nil {
 			t.Errorf("%s read as %q", name, got)
 		}
+	}
+	if got, err := pfSkips(ok("en0\n" + cut + "lo0 (skip)\n")); err == nil {
+		t.Errorf("a cut Interfaces listing read as %q", got)
 	}
 }
 

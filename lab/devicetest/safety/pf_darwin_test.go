@@ -224,10 +224,12 @@ func TestAPfSkipUndoSaysWhatItDid(t *testing.T) {
 	}
 }
 
-// REBOOT means the core's own pf change survived its undo, nothing else:
-// another app's rules after a run that changed no pf are LEFT; a skip
-// that two loads of pf.conf don't clear is REBOOT.
-func TestRebootIsOnlyTheCoresPfChangeSurvivingItsUndo(t *testing.T) {
+// REBOOT means pf still lists this run's skip after its undo, nothing
+// else: another app's rules after a run that changed no pf are LEFT; the
+// run's skip that two loads of pf.conf don't clear is REBOOT. (Another
+// app's skips after the undo's load are LEFT:
+// TestTheUndoLoadsASecondTimeOnlyForTheSkipAlone.)
+func TestRebootIsOnlyTheRunsOwnSkipSurvivingItsUndo(t *testing.T) {
 	pf := newFakePf()
 	h := pfHost(t, pf, "boot-a", "boot-a")
 	j, err := createJournal(h.runDir, "r", "boot-a")
@@ -566,8 +568,11 @@ func TestTheReadAfterTheSecondLoadDecides(t *testing.T) {
 // and the read after it, the skip gone: the undo loads no second time
 // (that could only wipe the app's ruleset), and fails LEFT. When the
 // app's ruleset carries a skip of its own as well (a kill switch's `set
-// skip on utun3`), rules and skip both differ: still one load, and the
-// verdict is REBOOT, the app's rules and skip kept.
+// skip on utun3`), rules and skip both differ: still one load, and LEFT
+// naming the app's skips and what to do about that app, the app's rules
+// and skip kept; the same with the stock rules and the app's skip alone,
+// where only the skip differs but it isn't the run's. With the run's skip
+// still listed and nat differing too, one load, REBOOT, the nat kept.
 func TestTheUndoLoadsASecondTimeOnlyForTheSkipAlone(t *testing.T) {
 	pf := newFakePf()
 	e := skipRun(t, pf)
@@ -603,11 +608,60 @@ func TestTheUndoLoadsASecondTimeOnlyForTheSkipAlone(t *testing.T) {
 		return out
 	}
 	res = e.restore(t.Context(), "test")
-	if res.Verdict != Reboot || loads != 1 || !strings.Contains(strings.Join(res.Failed, " "), "[pf-rules pf-skip]") {
+	failed := strings.Join(res.Failed, " ")
+	if res.Verdict != Left || loads != 1 || !strings.Contains(failed, "this run's skip [lo0] is gone, but pf skips [utun3]") ||
+		!strings.Contains(failed, "[pf-rules pf-skip] differ") || !strings.Contains(failed, nextPfOtherRuleset) {
 		t.Errorf("rules and skip after one load: %d loads: %+v", loads, res)
 	}
 	if !strings.Contains(pf.rules, "pass out quick on utun3 all") || !slices.Equal(pf.skip, []string{"utun3"}) {
 		t.Errorf("the app's ruleset was replaced: rules %q, skip %v", pf.rules, pf.skip)
+	}
+
+	// The stock rules and the app's skip alone: only the skip differs, and
+	// it isn't the run's.
+	pf = newFakePf()
+	e = skipRun(t, pf)
+	loads = 0
+	e.h.exec = func(ctx context.Context, argv []string, stdin []byte) output {
+		out := pf.run(ctx, argv, stdin)
+		if strings.Join(argv[1:], " ") == "-f "+pfConfPath {
+			if loads++; loads == 1 {
+				pf.run(ctx, []string{pfctlPath, "-f", "-"}, []byte("set skip on utun3\n"+pf.conf))
+			}
+		}
+		return out
+	}
+	res = e.restore(t.Context(), "test")
+	if res.Verdict != Left || loads != 1 || !strings.Contains(strings.Join(res.Failed, " "), nextPfOtherRuleset) {
+		t.Errorf("the app's skip alone after one load: %d loads: %+v", loads, res)
+	}
+	if !slices.Equal(pf.skip, []string{"utun3"}) {
+		t.Errorf("the app's skip was wiped: %v", pf.skip)
+	}
+
+	// The run's skip still listed, and another app's nat: d is [pf-nat
+	// pf-skip], not the skip alone.
+	pf = newFakePf()
+	e = skipRun(t, pf)
+	pf.sticky, loads = true, 0
+	appNat := "nat on en0 from 192.0.2.0/24 to any -> (en0)\n"
+	e.h.exec = func(ctx context.Context, argv []string, stdin []byte) output {
+		out := pf.run(ctx, argv, stdin)
+		if strings.Join(argv[1:], " ") == "-f "+pfConfPath {
+			if loads++; loads == 1 {
+				pf.mu.Lock()
+				pf.nat = appNat
+				pf.mu.Unlock()
+			}
+		}
+		return out
+	}
+	res = e.restore(t.Context(), "test")
+	if res.Verdict != Reboot || loads != 1 || !strings.Contains(strings.Join(res.Failed, " "), "[pf-nat pf-skip] differ") {
+		t.Errorf("nat and the run's skip after one load: %d loads: %+v", loads, res)
+	}
+	if pf.nat != appNat {
+		t.Errorf("the app's nat was wiped: %q", pf.nat)
 	}
 
 	// The skip alone survives the first load: the second clears it.
@@ -624,6 +678,43 @@ func TestTheUndoLoadsASecondTimeOnlyForTheSkipAlone(t *testing.T) {
 	}
 	if res := e.restore(t.Context(), "test"); res.Verdict != Clean || loads != 2 {
 		t.Errorf("the skip alone after one load: %d loads: %+v", loads, res)
+	}
+}
+
+// A surface that can't be read after the undo's load is named as such,
+// apart from those that differ: pf's skips unreadable are LEFT (whether
+// the run's skip is gone can't be told, a reboot clears it), never
+// REBOOT, with no second load; main rules unreadable, the skip gone, are
+// LEFT saying they can't be read, not that they differ.
+func TestWhatCantBeReadAfterTheUndosLoadIsNamedApart(t *testing.T) {
+	for _, tc := range []struct {
+		name, unreadable, want string
+	}{
+		{"pf's skips", "-s Interfaces -v", "[pf-skip] can't be read (pf-skip: "},
+		{"the main rules", "-s rules", "the skip is gone, but [pf-rules] can't be read (pf-rules: "},
+	} {
+		pf := newFakePf()
+		e := skipRun(t, pf)
+		loads := 0
+		e.h.exec = func(ctx context.Context, argv []string, stdin []byte) output {
+			args := strings.Join(argv[1:], " ")
+			if args == "-f "+pfConfPath {
+				loads++
+			}
+			if args == tc.unreadable && loads > 0 {
+				return output{Code: 1, Stderr: []byte("pfctl: Device busy\n")}
+			}
+			return pf.run(ctx, argv, stdin)
+		}
+		res := e.restore(t.Context(), "test")
+		failed := strings.Join(res.Failed, " ")
+		if res.Verdict != Left || loads != 1 || !strings.Contains(failed, tc.want) || !strings.Contains(failed, "Device busy") ||
+			strings.Contains(failed, "differ from the baseline") {
+			t.Errorf("%s: %d loads: %+v", tc.name, loads, res)
+		}
+		if tc.unreadable == "-s Interfaces -v" && !strings.Contains(failed, nextPfUnproven) {
+			t.Errorf("%s: no reboot advised: %s", tc.name, failed)
+		}
 	}
 }
 

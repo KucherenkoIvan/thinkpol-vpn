@@ -24,12 +24,13 @@ const (
 )
 
 // errPfSurvivedReload: after the pf-skip undo's loads of /etc/pf.conf
-// (a second one when the skip alone differed after the first), pf still
-// skips other than at the baseline: the core's own pf change survived its
-// undo, or another app loaded a ruleset with a skip of its own after the
-// undo's load (the rules differing too, it loads no second time). The one
-// case a restore calls REBOOT: a reboot clears either.
-var errPfSurvivedReload = errors.New("pf still skips other than at the baseline after loading /etc/pf.conf")
+// (a second one when only this run's skip still differed after the
+// first), pf still lists a skip this run's load left: the core's own pf
+// change survived its undo. The one case a restore calls REBOOT: pf loads
+// its stock rules at boot, so a reboot clears it. Skips that aren't the
+// run's (another app's, loaded after the undo's load) or that can't be
+// read are LEFT.
+var errPfSurvivedReload = errors.New("pf still lists this run's skip after loading /etc/pf.conf")
 
 // Spec is a change as a plan names it and the journal keeps it.
 type Spec struct {

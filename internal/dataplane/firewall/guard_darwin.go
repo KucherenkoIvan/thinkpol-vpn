@@ -281,7 +281,7 @@ func (g *IPv6Guard) readBypass(ctx context.Context) (bypassListing, error) {
 	if err != nil {
 		return bypassListing{}, err
 	}
-	skips, err := skippedNames(ifcs.stdout)
+	skips, err := SkippedNames(ifcs.stdout)
 	if err != nil {
 		return bypassListing{}, err
 	}
@@ -373,7 +373,7 @@ func (g *IPv6Guard) enabled(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return parseEnabled(out.stdout)
+	return ParsePfEnabled(out.stdout)
 }
 
 // references reads `pfctl -s References` (parseReferences). pfctl's

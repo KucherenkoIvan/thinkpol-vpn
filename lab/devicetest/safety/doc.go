@@ -75,12 +75,12 @@
 //
 // CLEAN: every change undone and the host equal to the baseline. LEFT:
 // something differs or failed to undo, each item with what to do next.
-// REBOOT: after the pf-skip undo's loads of /etc/pf.conf, pf still skips
-// other than at the baseline: the core's own pf change survived its undo,
-// or the skip is another app's, loaded after the undo's load; any other
-// difference, whoever made it, is LEFT; DNS and the dummynet rules are
-// reported only. LEFT and REBOOT keep the run pending.
-// NOTHING-TO-RESTORE: no run was pending, or the run didn't start (its
+// REBOOT: after the pf-skip undo's loads of /etc/pf.conf, pf still lists
+// the skip this run's load left: the core's own pf change survived its
+// undo, and a reboot clears it; any other difference, whoever made it,
+// another app's skips and skips that can't be read included, is LEFT;
+// DNS and the dummynet rules are reported only. LEFT and REBOOT keep the
+// run pending. NOTHING-TO-RESTORE: no run was pending, or the run didn't start (its
 // result says why), or it was killed before it took a baseline or made a
 // change; nothing was compared. RESET-BY-REBOOT: a pending run restored
 // in a later boot, with no change of its own left in its journal (each
@@ -170,8 +170,10 @@
 // pf listed after the load and no longer lists leaves nothing to do
 // (another app's load took it: in the run's boot, no reboot came
 // between). Otherwise it loads /etc/pf.conf once, and a second time only
-// when the skip alone still differs from the baseline, deciding on the
-// read after the last load, but only while pf's main rules, nat rules
+// when the skip alone still differs from the baseline and is still the
+// run's, deciding on the read after the last load (REBOOT while pf lists
+// the run's skip; LEFT for skips another app loaded after the undo's
+// load, or that can't be read), but only while pf's main rules, nat rules
 // and skipped interfaces are all still what the run's load left: another
 // app's ruleset loaded since (a kill switch, with skips of its own) is
 // never wiped, and the undo fails LEFT instead. A skip pf never listed,

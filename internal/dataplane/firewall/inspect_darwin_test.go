@@ -178,10 +178,10 @@ func TestTheRecordedListingsParse(t *testing.T) {
 		t.Error("the missing table's answer misread")
 	}
 
-	if on, err := parseEnabled(fixture(t, "recorded-info-enabled.txt")); err != nil || !on {
+	if on, err := ParsePfEnabled(fixture(t, "recorded-info-enabled.txt")); err != nil || !on {
 		t.Errorf("info, enabled: %v, %v", on, err)
 	}
-	if on, err := parseEnabled(fixture(t, "recorded-info-disabled.txt")); err != nil || on {
+	if on, err := ParsePfEnabled(fixture(t, "recorded-info-disabled.txt")); err != nil || on {
 		t.Errorf("info, disabled: %v, %v", on, err)
 	}
 	if main := fixture(t, "recorded-main.txt"); hooked(main) != hookOK || !slices.Equal(mainUpToHook(main), stockMain) {
@@ -192,7 +192,7 @@ func TestTheRecordedListingsParse(t *testing.T) {
 			t.Errorf("%s: anchors before %q", name, got)
 		}
 	}
-	if got, err := skippedNames(fixture(t, "recorded-interfaces-v.txt")); err != nil || len(got) != 0 {
+	if got, err := SkippedNames(fixture(t, "recorded-interfaces-v.txt")); err != nil || len(got) != 0 {
 		t.Errorf("skipped %q, %v", got, err)
 	}
 

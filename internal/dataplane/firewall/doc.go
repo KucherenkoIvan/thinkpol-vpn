@@ -391,10 +391,10 @@
 // missing anchor is an empty one, and with no pfctl at all everything is
 // unreadable.
 //
-// Guard and snapshot alike, pfctl's answers of absence are each one exact
-// line, alone on stderr but for its ALTQ chatter (its two exact lines, "No
-// ALTQ support in kernel" and "ALTQ related functions disabled"; a rule's
-// label saying ALTQ is a rule): a missing anchor's
+// Apply, Close and InspectIPv6Guard alike, pfctl's answers of absence are
+// each one exact line, alone on stderr but for its ALTQ chatter (its two
+// exact lines, "No ALTQ support in kernel" and "ALTQ related functions
+// disabled"; a rule's label saying ALTQ is a rule): a missing anchor's
 // rules, `pfctl: DIOCGETRULES: Invalid argument` ([AnchorMissing]); a
 // missing table, `pfctl: Table does not exist.` (macOS answers it for a
 // missing anchor's table too) or `pfctl: Anchor or Ruleset does not
@@ -422,6 +422,7 @@
 // and of its own record ([GuardReferenceHeld]: a record of another boot,
 // a symlink or a non-regular file holds nothing) are exported for the
 // device-test harness (lab/devicetest), which compares pf with its
-// baseline through them, so a restore reads pfctl's answers of absence
-// exactly as the guard does (above).
+// baseline through them, so a restore takes as absence only the answers
+// the guard does (above), and only from a pfctl that exited (not one cut
+// off at its timeout).
 package firewall

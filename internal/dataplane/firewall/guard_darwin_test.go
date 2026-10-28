@@ -390,7 +390,7 @@ func TestParseEnabled(t *testing.T) {
 		{"Status: Unknown\n", false, true},
 		{"Enabled\n", false, true},
 	} {
-		on, err := parseEnabled([]byte(c.info))
+		on, err := ParsePfEnabled([]byte(c.info))
 		if on != c.on || (err != nil) != c.bad {
 			t.Errorf("%q: %v, %v", c.info, on, err)
 		}
@@ -1635,7 +1635,7 @@ func TestResolveReadsNoTokenFromAListingItCantRead(t *testing.T) {
 // skipped is what checkBypass counts of a `-s Interfaces -v` listing:
 // the skipped names but lo0 and tun.
 func skipped(ifaces []byte, tun string) []string {
-	names, err := skippedNames(ifaces)
+	names, err := SkippedNames(ifaces)
 	if err != nil {
 		return []string{"unreadable: " + err.Error()}
 	}
@@ -1646,10 +1646,10 @@ func skipped(ifaces []byte, tun string) []string {
 // and none of the guard's readers takes what came before it as the whole.
 func TestCutListingsAreUnreadable(t *testing.T) {
 	cut := "\n" + strings.Repeat("x", 1<<20) + "\n"
-	if _, err := skippedNames([]byte("en0 (skip)" + cut)); err == nil {
+	if _, err := SkippedNames([]byte("en0 (skip)" + cut)); err == nil {
 		t.Error("Interfaces")
 	}
-	if _, err := parseEnabled([]byte("Status: Enabled for 0 days" + cut)); err == nil {
+	if _, err := ParsePfEnabled([]byte("Status: Enabled for 0 days" + cut)); err == nil {
 		t.Error("info")
 	}
 	if _, err := parseTable([]byte("2001:db8::/32" + cut)); err == nil {

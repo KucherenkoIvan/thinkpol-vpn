@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -63,7 +64,7 @@ func (a *pfSkipAction) does() string {
 }
 func (a *pfSkipAction) undoText() string {
 	return fmt.Sprintf("while pf holds the rules, nat and skips this load set, unless the skip pf listed after it is gone: pfctl -f %s, "+
-		"once more if the skip alone still differs from the baseline; a skip pf never listed: pfctl -f %s once, then LEFT; never a flush",
+		"once more if only this run's skip still differs from the baseline; a skip pf never listed: pfctl -f %s once, then LEFT; never a flush",
 		pfConfPath, pfConfPath)
 }
 
@@ -171,9 +172,14 @@ func (a *pfSkipAction) apply(ctx context.Context, h *host, learnt func(json.RawM
 // the load, can't be shown gone: it reloads once and fails LEFT, and the
 // reboot that clears it closes the run. Otherwise it loads once, and a
 // second time only when the skip alone still differs from the baseline
-// (with rules or nat differing too, another load can't help, and would
+// and pf still lists the run's skip (with rules or nat differing too, or
+// only another app's skips listed, another load can't help, and would
 // wipe a ruleset loaded in between), and decides on the read after the
-// last load; the restore's comparison judges the rest. What it can't tell
+// last load (pfRead, the same read): the run's skip still listed is
+// REBOOT (errPfSurvivedReload); skips of another app's, loaded after the
+// undo's load, are LEFT with what to do about that app, and skips that
+// can't be read are LEFT, a reboot clearing any of the run's; the
+// restore's comparison judges the rest. What it can't tell
 // from its own load: another app's that left exactly the same rules, nat
 // and skips (on a Mac whose pfctl marks no skipped interface, any skips
 // look the same: there it reloads once over such a ruleset and fails
@@ -221,19 +227,30 @@ func (a *pfSkipAction) undo(ctx context.Context, h *host, laterBoot bool) (strin
 			"(loaded %s once: %v): %s", a.line(), pfConfPath, nilOr(checked(out), "ok"), nextPfUnproven)
 	}
 	h.load(ctx)
-	d, times := h.differs(ctx, pfConfControls), "once"
-	if slices.Equal(d, []string{"pf-skip"}) {
+	r, times := h.readControls(ctx), "once"
+	if len(r.unreadable) == 0 && slices.Equal(r.differ, []string{"pf-skip"}) && a.ownSkipListed(r.skips, base) {
 		h.load(ctx)
-		d, times = h.differs(ctx, pfConfControls), "twice"
+		r, times = h.readControls(ctx), "twice"
 	}
 	switch {
-	case len(d) == 0:
+	case len(r.differ) == 0 && len(r.unreadable) == 0:
 		return "loaded " + pfConfPath, nil
-	case slices.Contains(d, "pf-skip"):
-		return "", fmt.Errorf("%w (%v): %s", errPfSurvivedReload, d, nextPfReload)
+	case slices.Contains(r.unreadable, "pf-skip"):
+		return "", fmt.Errorf("after loading %s %s, %s: whether this run's skip is gone can't be told: %s", pfConfPath, times, r, nextPfUnproven)
+	case a.ownSkipListed(r.skips, base):
+		return "", fmt.Errorf("%w (skips %v; %s): %s", errPfSurvivedReload, r.skips, r, nextPfReload)
+	case slices.Contains(r.differ, "pf-skip"):
+		return "", fmt.Errorf("this run's skip %v is gone, but pf skips %v after loading %s %s (%s), loaded after the undo's load: %s",
+			a.Skips, r.skips, pfConfPath, times, r, nextPfOtherRuleset)
 	}
-	return "", fmt.Errorf("the skip is gone, but %v differ from the baseline after loading %s %s: "+
-		"pf.conf may have changed since it was last loaded, or another app loaded a ruleset in between", d, pfConfPath, times)
+	return "", fmt.Errorf("the skip is gone, but %s after loading %s %s: "+
+		"pf.conf may have changed since it was last loaded, or another app loaded a ruleset in between", r, pfConfPath, times)
+}
+
+// ownSkipListed says pf, skipping now, still lists a skip this run's load
+// left that the baseline didn't have.
+func (a *pfSkipAction) ownSkipListed(now, base []string) bool {
+	return slices.ContainsFunc(a.Skips, func(s string) bool { return slices.Contains(now, s) && !slices.Contains(base, s) })
 }
 
 // load loads /etc/pf.conf, its output saved, and beats.
@@ -286,15 +303,43 @@ func (h *host) readSurface(ctx context.Context, name string) ([]string, error) {
 	return nil, fmt.Errorf("no surface %q", name)
 }
 
-// differs are those of the surfaces names that differ from the baseline
-// now (or can't be read).
-func (h *host) differs(ctx context.Context, names []string) []string {
-	var out []string
-	for _, n := range names {
+// pfRead is the undo's read of pfConfControls after a load: those that
+// differ from the baseline, those that can't be read (each with why), and
+// pf's skips as read, so the read that decides is the one it names.
+type pfRead struct {
+	differ, unreadable []string
+	why                []string
+	skips              []string
+}
+
+// readControls reads pfConfControls now, against the baseline.
+func (h *host) readControls(ctx context.Context) pfRead {
+	var r pfRead
+	for _, n := range pfConfControls {
 		now, err := h.readSurface(ctx, n)
-		if err != nil || !slices.Equal(now, h.baseline.Lines[n]) {
-			out = append(out, n)
+		switch {
+		case err != nil:
+			r.unreadable = append(r.unreadable, n)
+			r.why = append(r.why, n+": "+err.Error())
+		case !slices.Equal(now, h.baseline.Lines[n]):
+			r.differ = append(r.differ, n)
+		}
+		if n == "pf-skip" && err == nil {
+			r.skips = now
 		}
 	}
-	return out
+	return r
+}
+
+// String says what differs from the baseline, apart from what can't be
+// read.
+func (r pfRead) String() string {
+	var parts []string
+	if len(r.differ) > 0 {
+		parts = append(parts, fmt.Sprintf("%v differ from the baseline", r.differ))
+	}
+	if len(r.unreadable) > 0 {
+		parts = append(parts, fmt.Sprintf("%v can't be read (%s)", r.unreadable, strings.Join(r.why, "; ")))
+	}
+	return strings.Join(parts, ", and ")
 }

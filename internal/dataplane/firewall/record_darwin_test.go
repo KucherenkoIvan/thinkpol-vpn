@@ -3,20 +3,10 @@ package firewall
 import (
 	"os"
 	"path/filepath"
-	"slices"
 	"testing"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/trusteddir"
 )
-
-func TestTheExportedReadersReadAsTheGuardDoes(t *testing.T) {
-	if got, err := SkippedNames([]byte("en0\nlo (skip)\nlo0 (skip)\nutun3\n")); err != nil || !slices.Equal(got, []string{"lo", "lo0"}) {
-		t.Errorf("skipped names %q %v", got, err)
-	}
-	if on, err := ParsePfEnabled([]byte("Status: Disabled for 0 days 00:00:00\n")); err != nil || on {
-		t.Errorf("disabled: %v %v", on, err)
-	}
-}
 
 func TestAGuardReferenceIsHeldOnlyByThisBootsRecord(t *testing.T) {
 	boot, err := trusteddir.BootSession()

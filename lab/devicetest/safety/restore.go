@@ -27,11 +27,11 @@ const (
 	// Left: something differs or failed to undo; Result says what and
 	// what to do. The run stays pending until a restore closes it (closes).
 	Left = "LEFT"
-	// Reboot: after pf-skip's loads of /etc/pf.conf, pf still skips other
-	// than at the baseline: the core's own pf change survived its undo, or
-	// the skip is another app's, loaded after the undo's load. The core
-	// won't remove it by other means, and a reboot clears it. Pending,
-	// like Left.
+	// Reboot: after pf-skip's loads of /etc/pf.conf, pf still lists the
+	// skip this run's load left: the core's own pf change survived its
+	// undo. The core won't remove it by other means, and a reboot clears
+	// it. Another app's skips, or skips that can't be read, are Left.
+	// Pending, like Left.
 	Reboot = "REBOOT"
 	// Nothing: there was nothing to restore: no run pending; a run that
 	// didn't start; or one killed before it had a baseline it could
@@ -134,7 +134,8 @@ func (r *Result) addDiffs(ds []Difference) {
 }
 
 // verdict is REBOOT only when the core's own pf change survived its undo
-// (pfSurvived), else LEFT for anything failed or left over, else CLEAN.
+// (pfSurvived: pf still lists this run's skip), else LEFT for anything
+// failed or left over, else CLEAN.
 func verdict(r Result, pfSurvived bool) string {
 	switch {
 	case pfSurvived:

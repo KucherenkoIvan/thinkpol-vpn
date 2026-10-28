@@ -9,19 +9,6 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/trusteddir"
 )
 
-// The guard's own readings of pf and of its record, for what reads them
-// from outside the agent: the device-test harness (lab/devicetest)
-// compares pf with its baseline through these, so a listing means one
-// thing wherever it is read.
-
-// ParsePfEnabled reads `pfctl -s info`: whether its Status line says
-// Enabled; an error without one.
-func ParsePfEnabled(info []byte) (bool, error) { return parseEnabled(info) }
-
-// SkippedNames reads `pfctl -s Interfaces -v` as every name pf skips, lo0
-// included; an error when a line too long to read cuts the listing.
-func SkippedNames(ifaces []byte) ([]string, error) { return skippedNames(ifaces) }
-
 // GuardReferenceHeld says the guard's record in dir names a pf reference
 // taken in this boot: a missing directory or record, a record of another
 // boot, a symlink, a non-regular file or a record that doesn't parse
