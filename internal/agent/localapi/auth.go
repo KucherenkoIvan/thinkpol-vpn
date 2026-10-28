@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"os/user"
@@ -33,6 +34,18 @@ const (
 	AccessAdmin
 )
 
+func (a Access) String() string {
+	switch a {
+	case AccessNone:
+		return "none"
+	case AccessControl:
+		return "control"
+	case AccessAdmin:
+		return "admin"
+	}
+	return "Access(" + strconv.Itoa(int(a)) + ")"
+}
+
 // methodAccess is the level each call needs; a call not listed needs
 // AccessAdmin.
 var methodAccess = map[string]Access{
@@ -56,6 +69,12 @@ type Caller struct {
 
 func (Caller) AuthType() string { return "peer credentials" }
 
+// Membership tells whether a user is a member of a group by the OS's
+// group database, which the caller's recorded groups can fall short of.
+type Membership interface {
+	IsMember(ctx context.Context, uid, gid uint32) (bool, error)
+}
+
 // Policy decides what callers may do: root and the service's own user may
 // do everything, the group's members may control the node, and no one else
 // may do anything.
@@ -66,6 +85,10 @@ type Policy struct {
 	// with HasGroup.
 	Group    uint32
 	HasGroup bool
+	// Members, if set, is asked about a caller whose recorded groups lack
+	// Group (macOS: Directory Services, as the file system asks); an
+	// error means not a member. nil: the recorded groups only.
+	Members Membership
 }
 
 // NewPolicy is the policy of a service running as this process, with the
@@ -73,6 +96,14 @@ type Policy struct {
 // numbered (a gid): none if group is empty or no such group exists (then
 // only root and the service's user may use the API).
 func NewPolicy(group string) (Policy, error) {
+	p, err := policyFor(group)
+	if p.HasGroup {
+		p.Members = systemMembership()
+	}
+	return p, err
+}
+
+func policyFor(group string) (Policy, error) {
 	p := Policy{ServiceUID: uint32(os.Geteuid())}
 	if group == "" {
 		return p, nil
@@ -102,55 +133,92 @@ func NewPolicy(group string) (Policy, error) {
 }
 
 // Access is what c may do.
-func (p Policy) Access(c Caller) Access {
-	switch {
-	case c.UID == 0 || c.UID == p.ServiceUID:
-		return AccessAdmin
-	case p.HasGroup && slices.Contains(c.GIDs, p.Group):
-		return AccessControl
-	}
-	return AccessNone
+func (p Policy) Access(ctx context.Context, c Caller) Access {
+	a, _ := p.access(ctx, c)
+	return a
 }
 
-// allow checks the caller of method, from ctx, against the policy.
-func (p Policy) allow(ctx context.Context, method string) error {
+// access is what c may do, and why Members couldn't say, if it was asked
+// and failed: then c is not a member.
+func (p Policy) access(ctx context.Context, c Caller) (Access, error) {
+	switch {
+	case c.UID == 0 || c.UID == p.ServiceUID:
+		return AccessAdmin, nil
+	case !p.HasGroup:
+		return AccessNone, nil
+	case slices.Contains(c.GIDs, p.Group):
+		return AccessControl, nil
+	case p.Members == nil:
+		return AccessNone, nil
+	}
+	member, err := p.Members.IsMember(ctx, c.UID, p.Group)
+	if err != nil || !member {
+		return AccessNone, err
+	}
+	return AccessControl, nil
+}
+
+// allow checks the caller of method, from ctx, against the policy, and
+// logs a refusal with the caller's uid and the group it was checked
+// against (not its groups: only how many the kernel recorded).
+func (p Policy) allow(ctx context.Context, log *slog.Logger, method string) error {
 	need, ok := methodAccess[method]
 	if !ok {
 		need = AccessAdmin
 	}
-	if p.callerAccess(ctx) < need {
+	c, ok := callerFrom(ctx)
+	if !ok {
+		log.Info("local API call refused: no peer credentials", "method", method)
 		return ErrPermissionDenied
 	}
-	return nil
+	got, err := p.access(ctx, c)
+	if got >= need {
+		return nil
+	}
+	attrs := []any{"method", method, "uid", c.UID, "needs", need.String(), "has", got.String(), "recorded_groups", len(c.GIDs)}
+	if p.HasGroup {
+		attrs = append(attrs, "group", p.Group)
+	}
+	if err != nil {
+		attrs = append(attrs, "membership_err", err)
+	}
+	log.Info("local API call refused", attrs...)
+	return ErrPermissionDenied
 }
 
 // callerAccess is what the caller of ctx may do: nothing without the
 // credentials the transport recorded.
 func (p Policy) callerAccess(ctx context.Context) Access {
-	pr, ok := peer.FromContext(ctx)
+	c, ok := callerFrom(ctx)
 	if !ok {
 		return AccessNone
 	}
-	c, ok := pr.AuthInfo.(Caller)
-	if !ok {
-		return AccessNone
-	}
-	return p.Access(c)
+	return p.Access(ctx, c)
 }
 
-// serverOptions are the policy's interceptors, unary and streaming, and
-// the transport credentials that put each caller's credentials on its
-// connection.
-func (p Policy) serverOptions() []grpckit.ServerOption {
+// callerFrom is the caller of ctx, as the transport recorded it.
+func callerFrom(ctx context.Context) (Caller, bool) {
+	pr, ok := peer.FromContext(ctx)
+	if !ok {
+		return Caller{}, false
+	}
+	c, ok := pr.AuthInfo.(Caller)
+	return c, ok
+}
+
+// serverOptions are the policy's interceptors, unary and streaming, which
+// log refusals to log, and the transport credentials that put each
+// caller's credentials on its connection.
+func (p Policy) serverOptions(log *slog.Logger) []grpckit.ServerOption {
 	return []grpckit.ServerOption{
 		grpckit.WithUnaryInterceptor(func(ctx context.Context, req any, info *grpc.UnaryServerInfo, h grpc.UnaryHandler) (any, error) {
-			if err := p.allow(ctx, info.FullMethod); err != nil {
+			if err := p.allow(ctx, log, info.FullMethod); err != nil {
 				return nil, err
 			}
 			return h(ctx, req)
 		}),
 		grpckit.WithStreamInterceptor(func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, h grpc.StreamHandler) error {
-			if err := p.allow(ss.Context(), info.FullMethod); err != nil {
+			if err := p.allow(ss.Context(), log, info.FullMethod); err != nil {
 				return err
 			}
 			return h(srv, ss)

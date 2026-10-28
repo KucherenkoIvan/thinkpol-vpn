@@ -32,7 +32,7 @@ var refusals = []struct {
 	code codes.Code
 	msg  string
 }{
-	{ErrPermissionDenied, codes.PermissionDenied, "permission denied: only root may do that"},
+	{ErrPermissionDenied, codes.PermissionDenied, "permission denied: the status and the controls are for root and the local API's group, the log for root (the service's log says what it checked)"},
 	{ErrServerMode, codes.FailedPrecondition, "this node is a server: it serves its spaces whenever it runs"},
 	{ErrNotRunning, codes.Unavailable, "the node is not running"},
 	{ErrPresetUnavailable, codes.FailedPrecondition, "this space can't build that preset (no chain, or no domestic list): it is kept, and enforced failing closed"},

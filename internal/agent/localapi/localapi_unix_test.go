@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -330,11 +331,11 @@ func TestPolicy(t *testing.T) {
 		{Caller{UID: 1000, GIDs: []uint32{50}}, AccessControl},
 		{Caller{UID: 1001, GIDs: []uint32{1001, 51}}, AccessNone},
 	} {
-		if got := p.Access(tc.c); got != tc.want {
+		if got := p.Access(context.Background(), tc.c); got != tc.want {
 			t.Errorf("%+v: got %d, want %d", tc.c, got, tc.want)
 		}
 	}
-	if got := (Policy{ServiceUID: 990}).Access(Caller{UID: 1000, GIDs: []uint32{50}}); got != AccessNone {
+	if got := (Policy{ServiceUID: 990}).Access(context.Background(), Caller{UID: 1000, GIDs: []uint32{50}}); got != AccessNone {
 		t.Errorf("no group: got %d", got)
 	}
 
@@ -343,7 +344,13 @@ func TestPolicy(t *testing.T) {
 		"no-such-group-for-thinkpol": {ServiceUID: uint32(os.Geteuid())},
 		"4242":                       {ServiceUID: uint32(os.Geteuid()), Group: 4242, HasGroup: true},
 	} {
-		if got, err := NewPolicy(group); err != nil || got != want {
+		got, err := NewPolicy(group)
+		// Members is the OS's: Directory Services on macOS, none elsewhere.
+		if wantMembers := want.HasGroup && runtime.GOOS == "darwin"; (got.Members != nil) != wantMembers {
+			t.Errorf("NewPolicy(%q): members %v, want them: %v", group, got.Members, wantMembers)
+		}
+		got.Members = nil
+		if err != nil || got != want {
 			t.Errorf("NewPolicy(%q) = %+v, %v; want %+v", group, got, err, want)
 		}
 	}

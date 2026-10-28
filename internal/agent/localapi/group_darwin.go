@@ -2,6 +2,7 @@ package localapi
 
 import (
 	"context"
+	"fmt"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -36,4 +37,38 @@ func parsePrimaryGroupID(out string) (uint32, bool) {
 		}
 	}
 	return 0, false
+}
+
+// systemMembership asks Directory Services (`dsmemberutil
+// checkmembership`), which the file system's group checks also ask:
+// unlike LOCAL_PEERCRED, it isn't limited to the login's groups or to
+// their first 16.
+func systemMembership() Membership {
+	return newCachedMembership(dsmemberutil(func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		return exec.CommandContext(ctx, name, args...).Output()
+	}))
+}
+
+// dsmemberutil looks membership up by numbers, through run.
+func dsmemberutil(run func(ctx context.Context, name string, args ...string) ([]byte, error)) func(ctx context.Context, uid, gid uint32) (bool, error) {
+	return func(ctx context.Context, uid, gid uint32) (bool, error) {
+		out, err := run(ctx, "/usr/bin/dsmemberutil", "checkmembership",
+			"-u", strconv.FormatUint(uint64(uid), 10), "-g", strconv.FormatUint(uint64(gid), 10))
+		if err != nil {
+			return false, fmt.Errorf("dsmemberutil: %w", err)
+		}
+		return parseCheckMembership(string(out))
+	}
+}
+
+// parseCheckMembership reads dsmemberutil's answer; anything but its two
+// sentences is an error.
+func parseCheckMembership(out string) (bool, error) {
+	switch strings.TrimSpace(out) {
+	case "user is a member of the group":
+		return true, nil
+	case "user is not a member of the group":
+		return false, nil
+	}
+	return false, fmt.Errorf("dsmemberutil: unexpected answer %q", strings.TrimSpace(out))
 }
