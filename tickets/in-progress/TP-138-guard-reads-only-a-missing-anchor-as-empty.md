@@ -8,8 +8,8 @@ size: S
 needs_human: macos
 depends_on: []
 refs: [D6, docs/design/security.md#ipv6]
-owner: ""
-branch: ""
+owner: "agent-claude-tp138"
+branch: "tp-138-guard-reads-only-a-missing-anchor-as-empty"
 ---
 
 ## Goal
@@ -44,3 +44,4 @@ The pf guard on macOS treats only pfctl's missing-anchor answer as an empty anch
 - 2026-10-23 created in backlog (TP-082 round 2: the guard's missing-anchor check accepts any Invalid argument)
 - 2026-10-24 scope widened (2026-10-24 macOS device run): `No pf starter references held` read as an empty listing; the recorded listings committed as sanitized fixtures, closing TP-091's two fixture boxes; before-M2 list
 - 2026-10-24 docs: slotted in the pre-M2 phase (wave 1, Guard)
+- 2026-10-28 backlog → in-progress, owner: agent-claude-tp138
