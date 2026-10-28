@@ -89,6 +89,21 @@ The owner sees the whole user-facing surface of thinkpol as it is today in one r
 - Inventory correction: the connect record (`connect`, `agent.ConnectRecordFile`) is not in the state directory. It sits next to the host lock in `/run/thinkpol` (macOS `/private/var/db/thinkpol`), and only when connect-on-boot is set. The overview places it there (F14).
 - **Order (owner, 2026-10-24).** In the before-M2 list (wave 0): done before the M2 lanes start, so the CLI's shape is reviewed before the kill-switch toggle and the transport settings are added to it.
 
+## Review findings
+Round 1 (fact-check against the code, 2026-10-28): coverage complete; F1's premise and F14's count are wrong; the rest are nits.
+- [ ] R1.1 F1 (api-overview.md summary, configuration, findings): only `service connect-on-boot` refuses an edited definition; `service install` warns and rewrites it (losing the edit, resetting connect-on-boot to off); `service uninstall` never compares, it just removes.
+- [ ] R1.2 F1: on Linux a systemd drop-in (`thinkpol.service.d/*.conf`) can add `Environment=` lines without breaking the exact-match check; nothing handles drop-ins and uninstall leaves them behind; the premise holds only for macOS (one plist). Same caveat in the reference's "nothing else configures the service".
+- [ ] R1.3 F14: "five env keys appear nowhere but their flag help" fits no counting; recount (by env name, and by flag) and state the method; `-api-group` is documented.
+- [ ] R1.4 Config table "Documented in" column: `-dns` is documented nowhere; the runbook never mentions `-map`; server-agent.md never mentions `-mode`; the service doc mentions only `-connect-on-boot`, not `-connect`.
+- [ ] R1.5 Reference: `not_running` is returned once the node has stopped, not before it starts (a call before start waits).
+- [ ] R1.6 Reference validation list: add `log level %q: want debug, info, warn or error`.
+- [ ] R1.7 Reference client errors: add `connecting to the local API at <path>: <err>`.
+- [ ] R1.8 Reference `service install` errors: add the no-systemd and no-/Library/LaunchDaemons errors.
+- [ ] R1.9 On-disk state: the server supervisor's cgroups `/sys/fs/cgroup/thinkpol/<space>` (0755) are missing.
+- [ ] R1.10 F9: "is refused every call" overstates the code; a member can be refused.
+- [ ] R1.11 Planned part, TP-111: add "owner lowering the ceiling is handled the same way".
+- [ ] R1.12 Planned part, TP-141: add "a start that finds the file wider than 0600 fixes it or refuses, and says so".
+
 ## Log
 - 2026-10-23 created in backlog (owner: review the API's shape early, before more is built on it)
 - 2026-10-24 docs: in the before-M2 list, ahead of the kill-switch and transport settings
@@ -100,3 +115,4 @@ The owner sees the whole user-facing surface of thinkpol as it is today in one r
 - 2026-10-28 not verified: macOS output (paths and the launchd plist come from the code, not a run); Windows has no local API yet
 - 2026-10-28 out of scope, for the orchestrator: F19 (`dev lists build -only` miscounts "others"), F20 (`rules.local` written 0644), F16 ("re-applied 1 times", the server's uplink line misaligned) are small code fixes if the owner says change; owner session pending
 - 2026-10-28 in-progress → review
+- 2026-10-28 review → has-errors (round 1: R1.1–R1.12)
