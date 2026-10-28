@@ -67,6 +67,10 @@ type RouteTableStatus struct {
 	// table can't outrank (macOS): those peers' traffic leaves in the
 	// clear.
 	OverlayAhead int
+	// RecordsSetAside counts the route records found corrupt and set
+	// aside in this boot (macOS): the routes they named stay in place as
+	// foreign ones; the log names the files.
+	RecordsSetAside int
 }
 
 // RouteTableError says what is wrong with the OS routing table or its

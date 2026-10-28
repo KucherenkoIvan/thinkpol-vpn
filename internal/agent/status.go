@@ -338,6 +338,12 @@ const (
 	// ruleset): the device connects, but IPv6 from interface-bound
 	// sockets isn't confined.
 	ProblemGuardUnsupported Problem = "ipv6_guard_unsupported"
+	// ProblemRouteRecordSetAside: a route record of thinkpol's was found
+	// corrupt and set aside this boot (macOS; the log names the file):
+	// the routes it named stay in place as foreign ones, never removed,
+	// until reboot; a leftover host route among them sends its address
+	// around the tunnel (policy_rules_ahead).
+	ProblemRouteRecordSetAside Problem = "route_record_set_aside"
 	// ProblemDNSUnprotected: the OS may resolve names outside the node's
 	// resolver, so names may leave outside the tunnel.
 	ProblemDNSUnprotected Problem = "dns_not_protected"
@@ -452,6 +458,9 @@ func routeTableProblems(rt dataplane.RouteTableStatus, add func(HealthLevel, Pro
 	}
 	if rt.Error == "" && rt.OverlayAhead > 0 {
 		add(HealthDown, ProblemOverlayRoutesAhead)
+	}
+	if rt.RecordsSetAside > 0 {
+		add(HealthDegraded, ProblemRouteRecordSetAside)
 	}
 	switch rt.GuardError {
 	case "":

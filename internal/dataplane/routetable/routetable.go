@@ -308,6 +308,8 @@ type Enforcer struct {
 	// its own (warnLimit): the guard's apply, the routes' re-apply, and
 	// subscribing to the routes' and the guard's changes.
 	guardWarn, reapplyWarn, watchWarn, guardWatchWarn warnLimit
+	// setAsideWarned are the set-aside route records already warned of.
+	setAsideWarned map[string]bool
 }
 
 // Status is what an Enforcer reports: numbers and codes only.
@@ -342,6 +344,10 @@ type Status struct {
 	// networks that nothing outranks (macOS, Layout.OverlayAhead): a peer's
 	// traffic leaves around the tunnel.
 	OverlayAhead int
+	// RecordsSetAside counts the route records netcfg found corrupt and
+	// set aside in this boot (macOS, netcfg.Survey.SetAside), as of the
+	// last survey: the routes they named are left in place as foreign.
+	RecordsSetAside int
 }
 
 // ErrorCode is what Status.Error and Status.GuardError say is wrong: a
@@ -490,6 +496,7 @@ func (e *Enforcer) apply(ctx context.Context, w Want, again bool) error {
 	s, err := e.cfg.Survey(ctx)
 	var l Layout
 	if err == nil {
+		e.noteSetAside(s.SetAside)
 		l = LayoutOf(w, s)
 		err = e.cfg.Apply(ctx, l.Config)
 	}
@@ -539,6 +546,24 @@ func (e *Enforcer) apply(ctx context.Context, w Want, again bool) error {
 	}
 	e.status.Routes = len(l.Config.Routes)
 	return nil
+}
+
+// noteSetAside counts the route records a survey found set aside, and
+// warns of each once, by its path.
+func (e *Enforcer) noteSetAside(paths []string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.status.RecordsSetAside = len(paths)
+	for _, p := range paths {
+		if e.setAsideWarned[p] {
+			continue
+		}
+		if e.setAsideWarned == nil {
+			e.setAsideWarned = make(map[string]bool)
+		}
+		e.setAsideWarned[p] = true
+		e.log.Warn("route table: a corrupt route record was set aside; the routes it named stay in place as foreign ones until reboot", "record", p)
+	}
 }
 
 // applyGuard puts the guard for w in place and says how that went in the

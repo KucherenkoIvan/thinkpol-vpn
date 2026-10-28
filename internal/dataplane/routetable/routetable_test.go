@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/netip"
 	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -443,5 +445,35 @@ func TestEnforcerStopsOnAnUnsupportedKernel(t *testing.T) {
 	}
 	if err := e.Enforce(context.Background(), w); !errors.Is(err, errors.ErrUnsupported) {
 		t.Errorf("Enforce again: %v", err)
+	}
+}
+
+// A route record netcfg set aside is counted in the status, and warned
+// of once, by its path, however often the table is put back.
+func TestASetAsideRecordIsCountedAndWarnedOnce(t *testing.T) {
+	const path = "/state/netcfg/overlay.routes.corrupt-boot"
+	f := &fakeConfigurator{survey: up()}
+	f.survey.SetAside = []string{path}
+	var buf lockedBuffer
+	e := routetable.OpenWithClock(f, nil, slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})), (&fakeClock{now: time.Unix(0, 0)}).read)
+	defer func() { _ = e.Close() }()
+	if err := e.Enforce(t.Context(), routetable.Want{TUN: "thinkpol0"}); err != nil {
+		t.Fatal(err)
+	}
+	routetable.PauseWatching(e)
+	if n := e.Status().RecordsSetAside; n != 1 {
+		t.Errorf("RecordsSetAside %d, want 1", n)
+	}
+	routetable.Reapply(t.Context(), e)
+	if w := buf.lines("set aside"); len(w) != 1 || !strings.Contains(w[0], path) {
+		t.Errorf("warns %q, want one naming %s", w, path)
+	}
+	// Removed by hand: no longer counted.
+	f.mu.Lock()
+	f.survey.SetAside = nil
+	f.mu.Unlock()
+	routetable.Reapply(t.Context(), e)
+	if n := e.Status().RecordsSetAside; n != 0 {
+		t.Errorf("RecordsSetAside %d after the record went, want 0", n)
 	}
 }

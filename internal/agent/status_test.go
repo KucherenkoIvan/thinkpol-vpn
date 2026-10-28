@@ -516,6 +516,9 @@ func TestHealth(t *testing.T) {
 		{"overlay addresses taken around the route table", Status{Connection: Connected, DataPlane: &dataplane.Status{
 			RouteTable: dataplane.RouteTableStatus{Enforced: true, Routes: 9, OverlayAhead: 1}}},
 			Health{HealthDown, []Problem{ProblemOverlayRoutesAhead}}},
+		{"a route record set aside", Status{Connection: Connected, DataPlane: &dataplane.Status{
+			RouteTable: dataplane.RouteTableStatus{Enforced: true, Routes: 9, RecordsSetAside: 1}}},
+			Health{HealthDegraded, []Problem{ProblemRouteRecordSetAside}}},
 		{"leak guard failing, routes in place", Status{Connection: Connected, DataPlane: &dataplane.Status{
 			RouteTable: dataplane.RouteTableStatus{Enforced: true, Routes: 9, GuardError: dataplane.RouteTableGuardFailed}}},
 			Health{HealthDegraded, []Problem{ProblemGuard}}},
