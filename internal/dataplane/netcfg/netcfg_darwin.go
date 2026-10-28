@@ -170,7 +170,9 @@ type darwinConfigurator struct {
 // newDarwin takes owner's place in path (its lock and its record; the
 // directory is made if missing, and it and everything above it must pass
 // trusteddir, since the record decides which routes are deleted) and
-// returns its configurator on k.
+// returns its configurator on k. A corrupt record is set aside, and the
+// configurator starts owning nothing: the routes it named are left alone,
+// as foreign ones, never removed on a guess.
 func newDarwin(owner Owner, k kernel, path string) (*darwinConfigurator, error) {
 	boot, err := trusteddir.BootSession()
 	if err != nil {
@@ -186,6 +188,13 @@ func newDarwin(owner Owner, k kernel, path string) (*darwinConfigurator, error) 
 		return nil, fmt.Errorf("netcfg: %v: %w", owner, err)
 	}
 	owned, err := readRecord(dir, recordName(owner), boot)
+	if isCorrupt(err) {
+		if aerr := setAside(dir, owner, boot); aerr != nil {
+			err = fmt.Errorf("%w; setting it aside: %w", err, aerr)
+		} else {
+			owned, err = make(map[rkey]bool), nil
+		}
+	}
 	if err != nil {
 		_ = lock.release()
 		_ = dir.Close()
@@ -587,14 +596,16 @@ func (c *darwinConfigurator) DefaultRoute(ctx context.Context, f Family) (Route,
 	return defaultRoute(v, thinkpol, f)
 }
 
-// thinkpolRoutes are the identities every owner's record holds. A record
-// that can't be read is an error, not an empty one: with its owner's
-// identities unknown, the owner's routes must be left alone rather than
-// mistaken for foreign ones.
+// thinkpolRoutes are the identities every owner holds: this one's as it
+// knows them, the others' as their records say (recordOf). A record that
+// can't be read is an error, not an empty one.
 func (c *darwinConfigurator) thinkpolRoutes() (map[rkey]bool, error) {
-	out := make(map[rkey]bool)
+	out := maps.Clone(c.owned)
 	for _, o := range Owners {
-		rec, err := readRecord(c.dir, recordName(o), c.boot)
+		if o == c.owner {
+			continue
+		}
+		rec, err := c.recordOf(o)
 		if err != nil {
 			return nil, fmt.Errorf("netcfg: reading %v's route record: %w", o, err)
 		}
@@ -603,6 +614,35 @@ func (c *darwinConfigurator) thinkpolRoutes() (map[rkey]bool, error) {
 		}
 	}
 	return out, nil
+}
+
+// recordOf is another owner's record. A corrupt one says nothing of which
+// routes are o's, so it holds nothing: o's routes count as foreign, which
+// no owner ever removes or changes. It is set aside when no configurator
+// of o runs: under o's lock, taken here, and read again under it (one may
+// have replaced it meanwhile). A running one rewrites it at its next
+// change.
+func (c *darwinConfigurator) recordOf(o Owner) (map[rkey]bool, error) {
+	rec, err := readRecord(c.dir, recordName(o), c.boot)
+	if !isCorrupt(err) {
+		return rec, err
+	}
+	l, err := lockOwner(c.dir, o)
+	if errors.Is(err, ErrBusy) {
+		return make(map[rkey]bool), nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = l.release() }()
+	rec, err = readRecord(c.dir, recordName(o), c.boot)
+	if !isCorrupt(err) {
+		return rec, err
+	}
+	if aerr := setAside(c.dir, o, c.boot); aerr != nil {
+		return nil, fmt.Errorf("%w; setting it aside: %w", err, aerr)
+	}
+	return make(map[rkey]bool), nil
 }
 
 func isThinkpol(r kroute, thinkpol map[rkey]bool) bool {
@@ -674,7 +714,11 @@ func (c *darwinConfigurator) Survey(ctx context.Context) (Survey, error) {
 	if err != nil {
 		return Survey{}, err
 	}
-	return survey(v, thinkpol), nil
+	s := survey(v, thinkpol)
+	if s.SetAside, err = setAsideRecords(c.dir, c.boot); err != nil {
+		return Survey{}, fmt.Errorf("netcfg: %w", err)
+	}
+	return s, nil
 }
 
 func survey(v view, thinkpol map[rkey]bool) Survey {

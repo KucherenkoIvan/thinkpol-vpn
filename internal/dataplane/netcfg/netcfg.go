@@ -477,6 +477,10 @@ type Survey struct {
 	// its destination and Scope: what owners' scoped routes must not
 	// take.
 	HeldScoped []Route
+	// SetAside are the paths of the owners' route records found corrupt
+	// and set aside in this boot (macOS): the routes they named count as
+	// foreign, so no owner removes them, for the rest of the boot.
+	SetAside []string
 }
 
 // Link is an interface as Survey sees it.

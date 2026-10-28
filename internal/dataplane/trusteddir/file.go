@@ -91,6 +91,16 @@ func Remove(dir *os.File, name string) error {
 	return nil
 }
 
+// Rename renames the entry from in dir to to, replacing what to names;
+// a symlink at either name is renamed or replaced itself, never followed.
+func Rename(dir *os.File, from, to string) error {
+	dirfd := int(dir.Fd())
+	if err := unix.Renameat(dirfd, from, dirfd, to); err != nil {
+		return &os.LinkError{Op: "rename", Old: filepath.Join(dir.Name(), from), New: filepath.Join(dir.Name(), to), Err: err}
+	}
+	return nil
+}
+
 // ErrOtherBoot: the record was written in another boot session than the
 // one it was read in.
 var ErrOtherBoot = errors.New("written in another boot session")
