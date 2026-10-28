@@ -263,7 +263,9 @@
 //     the routes it added, the link endpoints' addresses among them, and
 //     the leak guard's pf enable reference (pf-guard.token). They outlive
 //     a crash on purpose, and are stamped with the boot session, so a
-//     record of an earlier boot owns nothing.
+//     record of an earlier boot owns nothing. A corrupt route record is
+//     kept, set aside, as <owner>.routes.corrupt-<boot session> (health
+//     `route_record_set_aside` during that boot); nothing removes it.
 //   - Routes and policy rules (package routetable and netcfg), and the
 //     leak guard: an nftables table on Linux; a pf anchor and an enable
 //     reference on macOS (package firewall).

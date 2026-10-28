@@ -162,6 +162,7 @@ var dataPlaneCounters = []struct {
 	{"route_table.reapplies", routeTableCounter, func(dp *dataplane.Status) uint64 { return dp.RouteTable.Reapplies }},
 	{"route_table.rules_ahead", routeTableCounter, func(dp *dataplane.Status) uint64 { return uint64(dp.RouteTable.RulesAhead) }},
 	{"route_table.overlay_routes_ahead", routeTableCounter, func(dp *dataplane.Status) uint64 { return uint64(dp.RouteTable.OverlayAhead) }},
+	{"route_table.records_set_aside", routeTableCounter, func(dp *dataplane.Status) uint64 { return uint64(dp.RouteTable.RecordsSetAside) }},
 }
 
 // idString is an id in hex, empty for the zero id.

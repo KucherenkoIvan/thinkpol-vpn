@@ -178,6 +178,9 @@ func writeCounters(line func(string, ...any), counters map[string]uint64) {
 		if ahead := counters["route_table.overlay_routes_ahead"]; ahead > 0 {
 			line("\t%d routes of other software take overlay addresses around the tunnel", ahead)
 		}
+		if n := counters["route_table.records_set_aside"]; n > 0 {
+			line("\t%d corrupt route records set aside; the routes they named stay until reboot (the log names the files)", n)
+		}
 	}
 	var drops []string
 	for _, name := range slices.Sorted(maps.Keys(counters)) {

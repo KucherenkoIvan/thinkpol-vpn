@@ -57,9 +57,19 @@
 // it was written in ([trusteddir.BootSession], kern.bootsessionuuid): the
 // directory outlives a reboot and the routes don't, so a record of an
 // earlier boot owns nothing (the records are void after a reboot, like
-// the routes). A record that can't be read is an error, not an empty one:
-// with an owner's routes unknown they are left alone rather than taken
-// for foreign ones.
+// the routes). A corrupt record (no boot line, a line that isn't an
+// identity, not a regular file) says nothing of which routes are its
+// owner's, so it owns nothing: its routes count as foreign, which no owner
+// removes or changes, and it is set aside, renamed
+// <owner>.routes.corrupt-<boot session>, so the owner's next configurator
+// starts (TP-124). Its own owner sets it aside at start; another owner's
+// is set aside while surveying, only under that owner's lock (a running
+// owner's is left to it: it rewrites the record at its next change), and
+// read again under the lock first. [Survey.SetAside] reports this boot's
+// set-aside records for as long as they are there: the routes they named,
+// a dead predecessor's leftovers among them, stay until reboot or until
+// someone removes them. Any other failure to read a record is an error,
+// not an empty record.
 //
 // A route's identity is its destination and, if scoped (RTF_IFSCOPE,
 // route(8)'s -ifscope: only sockets bound to the interface use it), its

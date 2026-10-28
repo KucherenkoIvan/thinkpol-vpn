@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"net/netip"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -167,6 +168,24 @@ func TestMapsRefusedReachStatusAndCLI(t *testing.T) {
 		}
 		if shown := strings.Contains(text.String(), "maps refused:"); shown != (n > 0) || (n > 0 && !strings.Contains(text.String(), "3 since")) {
 			t.Errorf("%d refused:\n%s", n, text.String())
+		}
+	}
+}
+
+// A route record set aside reaches the health and the CLI, with its
+// count; none, no line.
+func TestASetAsideRecordReachesStatusAndCLI(t *testing.T) {
+	for _, n := range []int{0, 1} {
+		out := statusProto(agent.Status{Connection: agent.Connected, DataPlane: &dataplane.Status{
+			RouteTable: dataplane.RouteTableStatus{Enforced: true, Routes: 9, RecordsSetAside: n}}})
+		var text bytes.Buffer
+		if err := WriteStatus(&text, out, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		shown := strings.Contains(text.String(), "1 corrupt route records set aside")
+		flagged := slices.Contains(out.GetHealth().GetProblems(), "route_record_set_aside")
+		if shown != (n > 0) || flagged != (n > 0) {
+			t.Errorf("%d set aside:\n%s", n, text.String())
 		}
 	}
 }

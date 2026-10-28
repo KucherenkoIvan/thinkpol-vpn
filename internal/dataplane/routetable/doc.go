@@ -174,7 +174,13 @@
 // ([netcfg.Survey.Held]): where another VPN has its own split routes, or
 // anyone a route at one of our destinations, ours go more specific
 // instead (halves, and their halves), so applying never conflicts with
-// what is there.
+// what is there. That holds for the routes of a corrupt route record
+// too, which netcfg sets aside and counts as foreign
+// ([netcfg.Survey.SetAside]): a crashed run's reject and direct routes
+// stay in place until reboot, never removed on a guess. The enforcer
+// counts this boot's set-aside records ([Status.RecordsSetAside]; health
+// `route_record_set_aside`, degraded) and warns of each once, naming the
+// file.
 //
 // # Direct DNS upstreams
 //
