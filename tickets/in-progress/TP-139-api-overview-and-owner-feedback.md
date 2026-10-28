@@ -8,8 +8,8 @@ size: M
 needs_human: decision
 depends_on: []
 refs: [S1, S2, docs/design/desktop-client.md#the-local-api]
-owner: ""
-branch: ""
+owner: "agent-claude-tp139"
+branch: "tp-139-api-overview"
 ---
 
 ## Goal
@@ -90,3 +90,4 @@ The owner sees the whole user-facing surface of thinkpol as it is today in one r
 - 2026-10-23 created in backlog (owner: review the API's shape early, before more is built on it)
 - 2026-10-24 docs: in the before-M2 list, ahead of the kill-switch and transport settings
 - 2026-10-24 docs: slotted in the pre-M2 phase (wave 0)
+- 2026-10-28 backlog → in-progress, owner: agent-claude-tp139
