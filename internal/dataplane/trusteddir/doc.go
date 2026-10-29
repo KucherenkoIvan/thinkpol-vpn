@@ -41,8 +41,9 @@
 // Files in a trusted directory are opened relative to its descriptor,
 // never through a symlink nor blocking on a fifo, and only if regular
 // ([ReadFile]); [WriteFile] replaces one atomically (a sibling written,
-// synced and renamed over it), and [Rename] moves an entry within the
-// directory, never following a symlink. [Lock] takes an exclusive flock,
+// synced and renamed over it), [Rename] moves an entry within the
+// directory and [RemoveEntry] removes one, never following a symlink, and
+// [Names] lists them. [Lock] takes an exclusive flock,
 // close-on-exec, so no process this one starts holds it after it.
 // [WriteRecord] and [ReadRecord] stamp a file with the boot session it
 // was written in ([BootSession]: macOS's kern.bootsessionuuid, Linux's

@@ -710,6 +710,9 @@ func (c *darwinConfigurator) Survey(ctx context.Context) (Survey, error) {
 		return Survey{}, err
 	}
 	s := survey(v, thinkpol)
+	// One record may be counted twice here, until the next survey: read in
+	// place above, then set aside by its owner's start before this stats
+	// the set-aside name. The other order would miss it instead.
 	for _, o := range Owners {
 		if r, ok := corruptRecord(c.dir, setAsideName(o, c.boot), c.boot, c.booted, nil); ok {
 			s.CorruptRecords = append(s.CorruptRecords, r)

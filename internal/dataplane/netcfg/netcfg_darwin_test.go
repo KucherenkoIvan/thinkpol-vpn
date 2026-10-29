@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -1089,8 +1090,21 @@ func TestRecordsRoundTrip(t *testing.T) {
 	if _, err := readRecord(d, "x.routes", boot); !isCorrupt(err) || !strings.Contains(err.Error(), "not a regular file") {
 		t.Errorf("a fifo: %v", err)
 	}
-	// Nor is a symlink followed.
+	// A socket can't even be opened (EOPNOTSUPP): it is corrupt too.
 	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	l, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = readRecord(d, "x.routes", boot)
+	_ = l.Close()
+	if !isCorrupt(err) || !strings.Contains(err.Error(), "not a regular file") {
+		t.Errorf("a socket: %v", err)
+	}
+	// Nor is a symlink followed.
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(filepath.Join(dir, "elsewhere"), path); err != nil {
