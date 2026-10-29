@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: []
 refs: [D6, docs/design/security.md#ipv6]
-owner: ""
-branch: ""
+owner: "agent-claude-tp137"
+branch: "tp-137-macos-guard-kills-states-without-a-token"
 ---
 
 ## Goal
@@ -31,3 +31,4 @@ When pf was turned off under the guard, the Apply that turns it back on kills th
 ## Log
 - 2026-10-23 created in backlog (TP-091 review round 5)
 - 2026-10-24 docs: slotted in the pre-M2 phase (wave 1, Guard)
+- 2026-10-29 backlog → in-progress, owner: agent-claude-tp137
