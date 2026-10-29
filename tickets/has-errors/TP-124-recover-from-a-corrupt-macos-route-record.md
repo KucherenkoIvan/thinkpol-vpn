@@ -40,6 +40,17 @@ Round 1 (2026-10-28): correctness (no defect, test gaps), design (fix first), co
 - [x] R1.12 (conventions 6) Drop "(TP-124)" from `netcfg/doc.go`.
 - [x] R1.13 (conventions 7) The problem code's plural/singular: choose one and say why.
 - [x] R1.14 (conventions 8) The status line shows even when the route table holds no routes.
+Round 2 (2026-10-29): design (fix first: S1, S2), correctness (merge, six suspicions and nits). The design holds; the user-facing text assumes a crashed owner and a set-aside file, and a repeat corruption goes unlogged.
+- [ ] R2.1 (design S1, N5) The in-place case (a live owner's record corrupted in place, no set-aside file): no text claims "until reboot" or "set-aside file" unconditionally. `render.go` status line (and its plural pronoun for one record), the routetable warn, the `status.go` problem doc, `dataplane/routetable.go`, `netcfg.go`, `agent/doc.go`, RR53. The checklist's step 1 expected string follows, and says whether `overlay_routes_ahead` (Down) is expected there, as the code does.
+- [ ] R2.2 (design S2; correctness 2) A record that goes away and comes back, or comes back with a new reason or mtime, is warned again: keep only what the latest survey saw. A test: report, clear, report again gives two warnings.
+- [ ] R2.3 (correctness 1) A socket (or another non-regular file whose open fails, EOPNOTSUPP) at the record path is corrupt, not a hard error: `fstatat` with NOFOLLOW before the open. A case in `TestRecordsRoundTrip`.
+- [ ] R2.4 (correctness 3; design N3) The mtime check is skipped when the record's boot line matched this boot; the doc says what remains of the mtime gate (a record from before this boot leaves no trace but the file).
+- [ ] R2.5 (correctness 4) A comment on the transient double count (a record reported in place, then set aside by its owner within one survey).
+- [ ] R2.6 (correctness 5) A corrupt `supervisor.routes` on darwin is never set aside (no darwin configurator): say so in the doc, or skip owners darwin can't run; choose and say why.
+- [ ] R2.7 (design N1) The raw directory work in `record_darwin.go` (`clearSetAside`, `removeEntry`) moves into trusteddir (`Names`, `RemoveEntry`).
+- [ ] R2.8 (design N2) `EEXIST` in `trusteddir.Rename`'s doc, or out of `setAside`'s retry.
+- [ ] R2.9 (design N4) A set-aside file that now parses still gets a non-empty Reason.
+- [ ] R2.10 (correctness 6) Test gaps, if cheap: a non-empty directory at the set-aside name, a symlink at an earlier boot's set-aside name, an `os.RemoveAll` mutant in `clearSetAside`.
 
 ## Notes
 - From TP-077's residual-risks research (2026-10-22); TP-108 R2.7 handed recovery to TP-102, which didn't add it.
@@ -125,3 +136,6 @@ Round 1 (2026-10-28): correctness (no defect, test gaps), design (fix first), co
 - 2026-10-28 not tested: a failed stat while reporting (still reported, R1.5) has no seam in a directory the test can read; the mtime check uses the host's `kern.boottime` (read only). Not verified on a device: the in-place report, the set-aside through the real routing socket and the service's connect (TP-144's re-run, checklist in Notes)
 - 2026-10-28 cross-family review (Cursor, round 1, verdict merge) concurred: its two findings, the symlink missing from the doc and the status line nested under the routes block, are R1.4 and R1.14
 - 2026-10-28 takeover after the previous fixer stopped at 235a313: re-read the branch diff against every finding; the agent side (status, health, render) was already done in 724998a; merged origin/rewrite (TP-138)
+- 2026-10-28 `make lint` and `make test` exit 0 on the merge c2ef087 (code unchanged in 1e2d427); `make lab-test` (`LAB_P=1`, other labs up; `GOFLAGS=-p=4`) exit 0 on 1e2d427 with `gotest: ok, 36 packages`
+- 2026-10-28 in-progress → review
+- 2026-10-29 review → has-errors (round 2: R2.1–R2.10)
