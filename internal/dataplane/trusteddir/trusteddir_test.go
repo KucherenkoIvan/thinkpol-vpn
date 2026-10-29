@@ -4,8 +4,10 @@ package trusteddir
 
 import (
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -173,6 +175,121 @@ func TestFilesAreReadAndReplacedInTheDirectory(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(path, "rec")); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("removed: %v", err)
+	}
+}
+
+// A socket can't be opened at all (EOPNOTSUPP on macOS, ENXIO on Linux):
+// it is no regular file. (A short test name: a socket's path is short.)
+func TestASocketIsRefused(t *testing.T) {
+	path := tempDir(t)
+	d, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = d.Close() }()
+	l, err := net.Listen("unix", filepath.Join(path, "s"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = l.Close() }()
+	if _, err := ReadFile(d, "s"); !errors.Is(err, ErrNotRegular) {
+		t.Errorf("a socket: %v, want ErrNotRegular", err)
+	}
+}
+
+// Names lists the directory's entries; RemoveEntry removes a file, a
+// symlink (itself, never its target) or an empty directory, and leaves a
+// non-empty one.
+func TestEntriesAreListedAndRemovedInTheDirectory(t *testing.T) {
+	path := tempDir(t)
+	d, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = d.Close() }()
+	if err := WriteFile(d, "file", []byte("x\n")); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(path, "target")
+	if err := os.WriteFile(target, []byte("kept\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(path, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(path, "empty"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(path, "full", "x"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 { // Names reads a descriptor of its own: again, the same
+		names, err := Names(d)
+		slices.Sort(names)
+		if want := []string{"empty", "file", "full", "link", "target"}; err != nil || !slices.Equal(names, want) {
+			t.Errorf("Names %v, %v, want %v", names, err, want)
+		}
+	}
+	for _, name := range []string{"file", "link", "empty"} {
+		if err := RemoveEntry(d, name); err != nil {
+			t.Errorf("RemoveEntry %s: %v", name, err)
+		}
+		if _, err := os.Lstat(filepath.Join(path, name)); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if got, err := os.ReadFile(target); err != nil || string(got) != "kept\n" {
+		t.Errorf("the symlink's target: %q, %v", got, err)
+	}
+	if err := RemoveEntry(d, "full"); err == nil || !strings.Contains(err.Error(), filepath.Join(path, "full")) {
+		t.Errorf("a non-empty directory: %v", err)
+	}
+	if err := RemoveEntry(d, "missing"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a missing entry: %v", err)
+	}
+}
+
+// Rename moves an entry within the directory, over what is there, and
+// moves a symlink itself, never its target.
+func TestRenameStaysInTheDirectory(t *testing.T) {
+	path := tempDir(t)
+	d, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = d.Close() }()
+	for name, data := range map[string]string{"rec": "new\n", "aside": "old\n"} {
+		if err := WriteFile(d, name, []byte(data)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := Rename(d, "rec", "aside"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := ReadFile(d, "aside"); err != nil || string(got) != "new\n" {
+		t.Errorf("renamed over: %q, %v", got, err)
+	}
+	if _, err := os.Lstat(filepath.Join(path, "rec")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the old name: %v", err)
+	}
+	target := filepath.Join(path, "target")
+	if err := os.WriteFile(target, []byte("kept\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(path, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := Rename(d, "link", "link.aside"); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Lstat(filepath.Join(path, "link.aside")); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("the symlink moved: %v, %v", fi, err)
+	}
+	if got, err := os.ReadFile(target); err != nil || string(got) != "kept\n" {
+		t.Errorf("the target: %q, %v", got, err)
+	}
+	if err := Rename(d, "missing", "x"); !errors.Is(err, os.ErrNotExist) || !strings.Contains(err.Error(), filepath.Join(path, "missing")) {
+		t.Errorf("a missing entry: %v", err)
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"net/netip"
+	"time"
 )
 
 var (
@@ -477,6 +478,24 @@ type Survey struct {
 	// its destination and Scope: what owners' scoped routes must not
 	// take.
 	HeldScoped []Route
+	// CorruptRecords are the owners' route records found corrupt in this
+	// boot (macOS): those set aside, and another owner's still in place
+	// (its owner sets it aside at its next start, or rewrites it at its
+	// next change). The routes they named count as foreign, so no other
+	// owner removes them; an owner already running when its record went
+	// bad still removes its own, which it knows from memory.
+	CorruptRecords []CorruptRecord
+	// UnownedRoutes counts the routes carrying thinkpol's route flag that
+	// no owner's record names (macOS): a corrupt record's leftovers, or
+	// another program's that uses the same flag.
+	UnownedRoutes int
+}
+
+// CorruptRecord is a route record found corrupt: its path, why it is
+// corrupt, and when it was last written (zero if that couldn't be read).
+type CorruptRecord struct {
+	Path, Reason string
+	Modified     time.Time
 }
 
 // Link is an interface as Survey sees it.
