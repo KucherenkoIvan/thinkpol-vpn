@@ -139,3 +139,4 @@ Round 2 (2026-10-29): design (fix first: S1, S2), correctness (merge, six suspic
 - 2026-10-28 `make lint` and `make test` exit 0 on the merge c2ef087 (code unchanged in 1e2d427); `make lab-test` (`LAB_P=1`, other labs up; `GOFLAGS=-p=4`) exit 0 on 1e2d427 with `gotest: ok, 36 packages`
 - 2026-10-28 in-progress → review
 - 2026-10-29 review → has-errors (round 2: R2.1–R2.10)
+- 2026-10-29 has-errors → in-progress
