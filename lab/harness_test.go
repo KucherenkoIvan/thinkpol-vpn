@@ -61,7 +61,7 @@ func TestRenderCompose(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := renderCompose("tplab-a", topo, image{ref: "thinkpol-lab:test", platform: "linux/arm64"}, "/checkout", subnets)
+	out, err := renderCompose("tplab-a", topo, image{ref: "thinkpol-lab:test", platform: "linux/arm64"}, "/checkout", "/checkout/lab/bin/run-x", subnets)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +102,7 @@ func TestRenderCompose(t *testing.T) {
 	if router.Devices[0] != "/dev/net/tun" || !slices.Contains(router.CapAdd, "NET_ADMIN") {
 		t.Error("router has no TUN device or NET_ADMIN")
 	}
-	if router.Volumes[0] != "/checkout/lab/bin:"+BinDir+":ro" {
+	if router.Volumes[0] != "/checkout/lab/bin/run-x:"+BinDir+":ro" {
 		t.Errorf("binaries mounted as %s", router.Volumes[0])
 	}
 	if _, ok := f.Services[DeviceA].Networks[NetServers]; ok {
