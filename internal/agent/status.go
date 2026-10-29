@@ -341,11 +341,12 @@ const (
 	// ProblemRouteRecordsCorrupt: a route record of thinkpol's was found
 	// corrupt this boot (macOS; the log names it and says why) while
 	// routes with thinkpol's route flag that no record names are in
-	// place: the routes it named, left as foreign ones, never removed,
-	// until reboot. A leftover host route among them sends its address
-	// around the tunnel (policy_rules_ahead); leftover reject routes keep
-	// blocking. Removing the set-aside file acknowledges it: the problem
-	// goes, the routes stay.
+	// place. Those are left alone as foreign ones: a dead owner's stay
+	// until reboot (a leftover host route sends its address around the
+	// tunnel, policy_rules_ahead; leftover reject routes keep blocking); a
+	// running owner rewrites its record at its next change and the
+	// problem goes. Removing a set-aside file acknowledges the problem; it
+	// does not remove the routes.
 	ProblemRouteRecordsCorrupt Problem = "route_records_corrupt"
 	// ProblemDNSUnprotected: the OS may resolve names outside the node's
 	// resolver, so names may leave outside the tunnel.

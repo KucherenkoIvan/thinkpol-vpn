@@ -177,11 +177,15 @@
 // what is there. That holds for the routes of a corrupt route record
 // too, which netcfg counts as foreign ([netcfg.Survey.CorruptRecords]): a
 // crashed run's reject and direct routes stay in place until reboot,
-// never removed on a guess. The enforcer counts this boot's corrupt
-// records and the routes with thinkpol's flag that no record names
-// ([Status.CorruptRecords], [Status.UnownedRoutes]; health
-// `route_records_corrupt`, degraded, while both are nonzero) and warns of
-// each record once, naming it and saying why it is corrupt.
+// never removed on a guess; a running owner's (the overlay's, its record
+// corrupted in place) are still its own to remove. The overlay's routes
+// are no host routes, so seen as foreign they count as nothing ahead. The
+// enforcer counts this boot's corrupt records and the routes with
+// thinkpol's flag that no record names ([Status.CorruptRecords],
+// [Status.UnownedRoutes]; health `route_records_corrupt`, degraded, while
+// both are nonzero) and warns of each record, naming it and saying why it
+// is corrupt: once while surveys find it unchanged, again when it comes
+// back after a survey without it, or with a new reason or mtime.
 //
 // # Direct DNS upstreams
 //

@@ -450,8 +450,10 @@ func TestEnforcerStopsOnAnUnsupportedKernel(t *testing.T) {
 
 // A corrupt route record netcfg found is counted in the status with the
 // unowned routes, and warned of once, by its path and why, however often
-// the table is put back.
-func TestACorruptRecordIsCountedAndWarnedOnce(t *testing.T) {
+// the table is put back while it is there unchanged; once it goes and
+// comes back, or comes back with a new reason or mtime, it is warned of
+// again.
+func TestACorruptRecordIsCountedAndWarnedOnceWhileUnchanged(t *testing.T) {
 	const path, reason = "/state/netcfg/overlay.routes.corrupt-boot", "no boot session"
 	f := &fakeConfigurator{survey: up()}
 	f.survey.CorruptRecords = []netcfg.CorruptRecord{{Path: path, Reason: reason}}
@@ -477,5 +479,20 @@ func TestACorruptRecordIsCountedAndWarnedOnce(t *testing.T) {
 	routetable.Reapply(t.Context(), e)
 	if st := e.Status(); st.CorruptRecords != 0 || st.UnownedRoutes != 0 {
 		t.Errorf("CorruptRecords %d, UnownedRoutes %d after the record went, want 0", st.CorruptRecords, st.UnownedRoutes)
+	}
+	// Corrupted again: warned again, and again for a new reason or mtime.
+	for i, r := range []netcfg.CorruptRecord{
+		{Path: path, Reason: reason},
+		{Path: path, Reason: "bad line 2 after the boot line: bad scope"},
+		{Path: path, Reason: "bad line 2 after the boot line: bad scope", Modified: time.Unix(60, 0)},
+	} {
+		f.mu.Lock()
+		f.survey.CorruptRecords = []netcfg.CorruptRecord{r}
+		f.mu.Unlock()
+		routetable.Reapply(t.Context(), e)
+		routetable.Reapply(t.Context(), e)
+		if w := buf.lines("corrupt route record"); len(w) != i+2 || !strings.Contains(w[i+1], r.Reason) {
+			t.Errorf("after %+v: warns %q, want %d", r, w, i+2)
+		}
 	}
 }

@@ -308,8 +308,9 @@ type Enforcer struct {
 	// its own (warnLimit): the guard's apply, the routes' re-apply, and
 	// subscribing to the routes' and the guard's changes.
 	guardWarn, reapplyWarn, watchWarn, guardWatchWarn warnLimit
-	// corruptWarned are the corrupt route records already warned of.
-	corruptWarned map[string]bool
+	// corruptWarned are the corrupt route records the last survey found,
+	// each warned of once.
+	corruptWarned map[corruptSeen]bool
 }
 
 // Status is what an Enforcer reports: numbers and codes only.
@@ -553,23 +554,31 @@ func (e *Enforcer) apply(ctx context.Context, w Want, again bool) error {
 	return nil
 }
 
+// corruptSeen is a corrupt route record as a survey found it: one that
+// comes back, or comes back changed, is another.
+type corruptSeen struct {
+	path, reason string
+	modified     int64
+}
+
 // noteCorrupt counts the corrupt route records and the unowned routes a
-// survey found, and warns of each record once, by its path, with why it
-// is corrupt.
+// survey found, and warns of each record by its path, with why it is
+// corrupt: once while surveys keep finding it unchanged, again once it
+// goes and comes back or comes back with a new reason or mtime (an
+// overlay's record corrupted, rewritten and corrupted again).
 func (e *Enforcer) noteCorrupt(s netcfg.Survey) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.status.CorruptRecords, e.status.UnownedRoutes = len(s.CorruptRecords), s.UnownedRoutes
+	seen := make(map[corruptSeen]bool, len(s.CorruptRecords))
 	for _, r := range s.CorruptRecords {
-		if e.corruptWarned[r.Path] {
-			continue
+		k := corruptSeen{r.Path, r.Reason, r.Modified.UnixNano()}
+		seen[k] = true
+		if !e.corruptWarned[k] {
+			e.log.Warn("route table: a corrupt route record holds no routes; the routes it named count as foreign here (a running owner still removes its own; a dead one's stay until reboot)", "record", r.Path, "reason", r.Reason)
 		}
-		if e.corruptWarned == nil {
-			e.corruptWarned = make(map[string]bool)
-		}
-		e.corruptWarned[r.Path] = true
-		e.log.Warn("route table: a corrupt route record holds no routes; the routes it named, if any are left, stay in place as foreign ones until reboot", "record", r.Path, "reason", r.Reason)
 	}
+	e.corruptWarned = seen
 }
 
 // applyGuard puts the guard for w in place and says how that went in the

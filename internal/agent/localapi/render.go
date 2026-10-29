@@ -180,11 +180,13 @@ func writeCounters(line func(string, ...any), counters map[string]uint64) {
 		}
 	}
 	if n := counters["route_table.corrupt_records"]; n > 0 {
-		left := "none of their routes left"
-		if u := counters["route_table.unowned_routes"]; u > 0 {
-			left = fmt.Sprintf("%d routes no record names stay until reboot", u)
+		left := "no route left that no record names"
+		if u := counters["route_table.unowned_routes"]; u == 1 {
+			left = "1 thinkpol route no record names (a running owner still removes its own; a dead one's stay until reboot)"
+		} else if u > 1 {
+			left = fmt.Sprintf("%d thinkpol routes no record names (a running owner still removes its own; a dead one's stay until reboot)", u)
 		}
-		line("route records:\t%d corrupt (the log names them and says why); %s", n, left)
+		line("route records:\t%d corrupt (see the log for which and why); %s", n, left)
 	}
 	var drops []string
 	for _, name := range slices.Sorted(maps.Keys(counters)) {
