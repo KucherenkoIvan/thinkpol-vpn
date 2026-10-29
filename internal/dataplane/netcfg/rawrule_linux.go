@@ -183,7 +183,7 @@ func dumpErr(err error) error {
 // field msg sets: its action, protocol, priority, table, and each
 // selector it carries. A selector msg doesn't carry (no oif, no mark, no
 // destination) matches any value, and the invert flag isn't compared, so
-// an earlier rule with the same fields and more can go instead (RR53).
+// an earlier rule with the same fields and more can go instead (RR54).
 func sendRule(s *nl.SocketHandle, typ, flags int, msg []byte) error {
 	if len(msg) < fibRuleHdrLen {
 		return errors.New("netcfg: a rule message too short")

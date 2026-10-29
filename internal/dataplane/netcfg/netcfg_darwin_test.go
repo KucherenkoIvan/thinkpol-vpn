@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 
@@ -764,29 +766,385 @@ func TestSurveyAndDefaultRoute(t *testing.T) {
 	}
 }
 
-// A corrupt record of another owner is an error, not an empty one: its
-// owner's identities are unknown, so Survey and DefaultRoute refuse to
-// answer rather than mistake the owner's routes for foreign ones.
-func TestACorruptRecordOfAnotherOwnerFailsTheSurveyAndDefaultRoute(t *testing.T) {
+// crashed is a configurator of o that applied cfg and died: its routes
+// and its record stay, its lock is gone.
+func crashed(t *testing.T, k *fakeKernel, dir string, o Owner, cfg Config) {
+	t.Helper()
+	dead, err := newDarwin(o, k, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := dead.Apply(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	_ = dead.lock.release() // the process died: the kernel drops the flock
+	_ = dead.dir.Close()
+}
+
+// corrupt overwrites o's record with what writeRecord never writes, and
+// returns its path and where it is set aside.
+func corrupt(t *testing.T, dir string, o Owner) (path, aside string) {
+	t.Helper()
+	path = filepath.Join(dir, recordName(o))
+	if err := os.WriteFile(path, []byte("garbage\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path, filepath.Join(dir, setAsideName(o, thisBoot(t)))
+}
+
+// wasSetAside checks that the record at path is gone and its content is
+// at aside.
+func wasSetAside(t *testing.T, path, aside string) {
+	t.Helper()
+	if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the corrupt record is still there: %v", err)
+	}
+	if got, err := os.ReadFile(aside); err != nil || string(got) != "garbage\n" {
+		t.Errorf("set aside: %q, %v", got, err)
+	}
+}
+
+// paths are the records' paths.
+func paths(rs []CorruptRecord) []string {
+	var out []string
+	for _, r := range rs {
+		out = append(out, r.Path)
+	}
+	return out
+}
+
+// A corrupt record of another owner says nothing of which routes are its
+// owner's: DefaultRoute and Survey still answer, the owner's routes count
+// as foreign, which nothing removes, and the record is reported, with
+// why, where it is: never touched by another owner. Its owner sets it
+// aside at its next start; then the set-aside one is reported.
+func TestACorruptRecordOfAnotherOwnerIsReportedInPlace(t *testing.T) {
 	k, dir := newFakeKernel(), tempDir(t)
 	ctx := context.Background()
+	crashed(t, k, dir, OwnerOverlay, overlayConfig)
+	overlays := k.snapshot()
+	path, aside := corrupt(t, dir, OwnerOverlay)
 	rt := newTestConfigurator(t, k, dir, OwnerRouteTable)
+	if d, err := rt.DefaultRoute(ctx, IPv4); err != nil || d.String() != "0.0.0.0/0 via 192.168.1.1 dev en0" {
+		t.Errorf("DefaultRoute over a corrupt record: %v, %v", d, err)
+	}
+	s, err := rt.Survey(ctx)
+	if err != nil {
+		t.Fatalf("Survey over a corrupt record: %v", err)
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != "garbage\n" {
+		t.Errorf("the record was touched: %q, %v", got, err)
+	}
+	if _, err := os.Lstat(aside); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("set aside by another owner: %v", err)
+	}
+	if !slices.Equal(paths(s.CorruptRecords), []string{path}) || !strings.Contains(s.CorruptRecords[0].Reason, "no boot line") {
+		t.Fatalf("CorruptRecords %+v, want %s with why", s.CorruptRecords, path)
+	}
+	if fi, err := os.Lstat(path); err != nil || !s.CorruptRecords[0].Modified.Equal(fi.ModTime()) {
+		t.Errorf("Modified %v, want the record's mtime (%v, %v)", s.CorruptRecords[0].Modified, fi, err)
+	}
+	if !slices.Contains(s.Held, pfx("100.64.0.0/11")) {
+		t.Errorf("the overlay's route isn't foreign: held %v", s.Held)
+	}
+	if s.UnownedRoutes != 4 {
+		t.Errorf("UnownedRoutes %d, want the overlay's 4", s.UnownedRoutes)
+	}
 	if err := rt.Apply(ctx, routeTableConfig); err != nil {
 		t.Fatal(err)
 	}
-	before := k.snapshot()
-	corrupt := filepath.Join(dir, recordName(OwnerOverlay))
-	if err := os.WriteFile(corrupt, []byte("garbage\n"), 0o600); err != nil {
+	if s, err := rt.Survey(ctx); err != nil || s.UnownedRoutes != 4 {
+		t.Errorf("UnownedRoutes with the route table's own routes: %d, %v", s.UnownedRoutes, err)
+	}
+	if err := rt.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := rt.Survey(ctx); err == nil || !strings.Contains(err.Error(), "overlay's route record") || !strings.Contains(err.Error(), corrupt) {
-		t.Errorf("Survey over a corrupt record: %v", err)
+	if got := k.snapshot(); got != overlays {
+		t.Errorf("the overlay's routes changed:\n%s\nwant:\n%s", got, overlays)
 	}
-	if _, err := rt.DefaultRoute(ctx, IPv4); err == nil || !strings.Contains(err.Error(), "overlay's route record") || !strings.Contains(err.Error(), corrupt) {
-		t.Errorf("DefaultRoute over a corrupt record: %v", err)
+	// Its owner starts again: it sets the record aside, owning nothing.
+	ov := newTestConfigurator(t, k, dir, OwnerOverlay)
+	wasSetAside(t, path, aside)
+	if len(ov.owned) != 0 {
+		t.Errorf("the overlay owns %v", ov.owned)
 	}
-	if k.snapshot() != before {
-		t.Error("a corrupt record changed something")
+	rt = newTestConfigurator(t, k, dir, OwnerRouteTable)
+	s, err = rt.Survey(ctx)
+	if err != nil || !slices.Equal(paths(s.CorruptRecords), []string{aside}) || !strings.Contains(s.CorruptRecords[0].Reason, "no boot line") {
+		t.Errorf("after the set-aside: %+v, %v", s.CorruptRecords, err)
+	}
+	if s.UnownedRoutes != 4 {
+		t.Errorf("UnownedRoutes %d after the set-aside, want 4", s.UnownedRoutes)
+	}
+}
+
+// A record set aside in an earlier boot is not reported: what it named
+// went with that boot.
+func TestAnEarlierBootsSetAsideRecordIsNotReported(t *testing.T) {
+	k, dir := newFakeKernel(), tempDir(t)
+	corrupt(t, dir, OwnerOverlay)
+	if err := setAside(openDir(t, dir), OwnerOverlay, "an-earlier-boot"); err != nil {
+		t.Fatal(err)
+	}
+	rt := newTestConfigurator(t, k, dir, OwnerRouteTable)
+	s, err := rt.Survey(context.Background())
+	if err != nil || len(s.CorruptRecords) != 0 {
+		t.Errorf("CorruptRecords %+v, %v", s.CorruptRecords, err)
+	}
+}
+
+// At its start an owner removes its records set aside in earlier boots,
+// files and empty directories, and keeps this boot's and other owners'.
+func TestTheOwnerRemovesEarlierBootsSetAsideRecordsAtStart(t *testing.T) {
+	dir := tempDir(t)
+	d := openDir(t, dir)
+	for _, a := range []struct {
+		o    Owner
+		boot string
+	}{{OwnerRouteTable, "an-earlier-boot"}, {OwnerRouteTable, thisBoot(t)}, {OwnerOverlay, "an-earlier-boot"}} {
+		corrupt(t, dir, a.o)
+		if err := setAside(d, a.o, a.boot); err != nil {
+			t.Fatal(err)
+		}
+	}
+	emptyDir := filepath.Join(dir, setAsideName(OwnerRouteTable, "another-earlier-boot"))
+	if err := os.Mkdir(emptyDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// A symlink is removed itself, never followed; a non-empty directory
+	// stays (only its space is lost).
+	target := filepath.Join(dir, "elsewhere")
+	if err := os.WriteFile(target, []byte("kept\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(dir, setAsideName(OwnerRouteTable, "a-linked-boot"))); err != nil {
+		t.Fatal(err)
+	}
+	full := filepath.Join(dir, setAsideName(OwnerRouteTable, "a-full-boot"))
+	if err := os.MkdirAll(filepath.Join(full, "x"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	newTestConfigurator(t, newFakeKernel(), dir, OwnerRouteTable)
+	for name, kept := range map[string]bool{
+		setAsideName(OwnerRouteTable, "an-earlier-boot"):      false,
+		setAsideName(OwnerRouteTable, "another-earlier-boot"): false,
+		setAsideName(OwnerRouteTable, "a-linked-boot"):        false,
+		setAsideName(OwnerRouteTable, "a-full-boot") + "/x":   true,
+		setAsideName(OwnerRouteTable, thisBoot(t)):            true,
+		setAsideName(OwnerOverlay, "an-earlier-boot"):         true,
+		"elsewhere": true,
+	} {
+		if _, err := os.Lstat(filepath.Join(dir, name)); (err == nil) != kept {
+			t.Errorf("%s: kept %v, want %v (%v)", name, err == nil, kept, err)
+		}
+	}
+}
+
+// A corrupt record last written before this boot is set aside, but not
+// reported: whatever it named went with that boot. One written since is.
+func TestACorruptRecordFromBeforeThisBootIsNotReported(t *testing.T) {
+	booted := bootTime()
+	if booted.IsZero() {
+		t.Fatal("kern.boottime unread")
+	}
+	k, dir := newFakeKernel(), tempDir(t)
+	ctx := context.Background()
+	own, ownAside := corrupt(t, dir, OwnerRouteTable)
+	other, _ := corrupt(t, dir, OwnerOverlay)
+	for _, p := range []string{own, other} {
+		if err := os.Chtimes(p, booted.Add(-time.Hour), booted.Add(-time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rt := newTestConfigurator(t, k, dir, OwnerRouteTable)
+	wasSetAside(t, own, ownAside)
+	if s, err := rt.Survey(ctx); err != nil || len(s.CorruptRecords) != 0 {
+		t.Errorf("CorruptRecords %+v, %v", s.CorruptRecords, err)
+	}
+	now := time.Now()
+	if err := os.Chtimes(other, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if s, err := rt.Survey(ctx); err != nil || !slices.Equal(paths(s.CorruptRecords), []string{other}) {
+		t.Errorf("CorruptRecords %+v, %v, want %s", s.CorruptRecords, err, other)
+	}
+}
+
+// A corrupt record whose boot line names this boot was corrupted in it,
+// whatever its mtime says (a restore that keeps times, a clock step): it
+// is reported, set aside or in place.
+func TestACorruptRecordOfThisBootIsReportedWhateverItsMtime(t *testing.T) {
+	booted := bootTime()
+	if booted.IsZero() {
+		t.Fatal("kern.boottime unread")
+	}
+	dir := tempDir(t)
+	data := recordHeader + "\nboot " + thisBoot(t) + "\nnot a prefix\n"
+	var ps []string
+	for _, o := range []Owner{OwnerRouteTable, OwnerOverlay} {
+		p := filepath.Join(dir, recordName(o))
+		if err := os.WriteFile(p, []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(p, booted.Add(-time.Hour), booted.Add(-time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		ps = append(ps, p)
+	}
+	rt := newTestConfigurator(t, newFakeKernel(), dir, OwnerRouteTable)
+	s, err := rt.Survey(context.Background())
+	want := []string{filepath.Join(dir, setAsideName(OwnerRouteTable, thisBoot(t))), ps[1]}
+	if err != nil || !slices.Equal(paths(s.CorruptRecords), want) {
+		t.Fatalf("CorruptRecords %+v, %v, want %v", s.CorruptRecords, err, want)
+	}
+	for _, r := range s.CorruptRecords {
+		if !strings.Contains(r.Reason, "bad line 1 after the boot line") {
+			t.Errorf("%s: reason %q", r.Path, r.Reason)
+		}
+	}
+}
+
+// A set-aside record someone has since made valid is still reported as
+// set aside, with a reason saying so.
+func TestASetAsideRecordThatReadsCleanNowStillSaysWhy(t *testing.T) {
+	dir := tempDir(t)
+	_, aside := corrupt(t, dir, OwnerRouteTable)
+	rt := newTestConfigurator(t, newFakeKernel(), dir, OwnerRouteTable)
+	if err := writeRecord(openDir(t, dir), filepath.Base(aside), thisBoot(t), map[rkey]bool{unscoped(pfx("10.0.0.0/8")): true}); err != nil {
+		t.Fatal(err)
+	}
+	s, err := rt.Survey(context.Background())
+	if err != nil || !slices.Equal(paths(s.CorruptRecords), []string{aside}) || s.CorruptRecords[0].Reason != "set aside; reads clean now" {
+		t.Errorf("CorruptRecords %+v, %v", s.CorruptRecords, err)
+	}
+}
+
+// A set-aside record that can no longer be read is still reported, with
+// why it can't be read and without its path twice.
+func TestASetAsideRecordThatCantBeReadSaysWhyOnce(t *testing.T) {
+	dir := tempDir(t)
+	_, aside := corrupt(t, dir, OwnerRouteTable)
+	rt := newTestConfigurator(t, newFakeKernel(), dir, OwnerRouteTable)
+	if err := os.Chmod(aside, 0); err != nil {
+		t.Fatal(err)
+	}
+	s, err := rt.Survey(context.Background())
+	if err != nil || !slices.Equal(paths(s.CorruptRecords), []string{aside}) || s.CorruptRecords[0].Reason != "open: permission denied" {
+		t.Errorf("CorruptRecords %+v, %v", s.CorruptRecords, err)
+	}
+}
+
+// A non-empty directory at this boot's set-aside name can't be replaced:
+// the owner fails to start, and the record stays where it is.
+func TestANonEmptyDirectoryAtTheSetAsideNameFailsTheStart(t *testing.T) {
+	dir := tempDir(t)
+	path, aside := corrupt(t, dir, OwnerRouteTable)
+	if err := os.MkdirAll(filepath.Join(aside, "x"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if c, err := newDarwin(OwnerRouteTable, newFakeKernel(), dir); err == nil || !strings.Contains(err.Error(), "setting it aside") {
+		if c != nil {
+			_ = c.Close()
+		}
+		t.Fatalf("start: %v", err)
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != "garbage\n" {
+		t.Errorf("the record: %q, %v", got, err)
+	}
+	if _, err := os.Lstat(filepath.Join(aside, "x")); err != nil {
+		t.Errorf("the directory's content: %v", err)
+	}
+}
+
+// A corrupt record replaces one set aside earlier in the boot whatever
+// either is: a directory over a file, a file over an empty directory.
+func TestASetAsideRecordReplacesAnEarlierOneOfTheOtherKind(t *testing.T) {
+	k, dir := newFakeKernel(), tempDir(t)
+	path, aside := corrupt(t, dir, OwnerRouteTable)
+	start := func(want os.FileMode) {
+		t.Helper()
+		c, err := newDarwin(OwnerRouteTable, k, dir)
+		if err != nil {
+			t.Fatalf("start: %v", err)
+		}
+		_ = c.Close()
+		if fi, err := os.Lstat(aside); err != nil || fi.Mode().Type() != want {
+			t.Errorf("set aside: %v, %v, want type %v", fi, err, want)
+		}
+	}
+	start(0)
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	start(os.ModeDir)
+	corrupt(t, dir, OwnerRouteTable)
+	start(0)
+}
+
+// A record that can't be read for another reason than its content stays
+// an error: nothing is set aside on a failed read.
+func TestAnUnreadableRecordFailsTheSurvey(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a file of mode 0")
+	}
+	k, dir := newFakeKernel(), tempDir(t)
+	ctx := context.Background()
+	rt := newTestConfigurator(t, k, dir, OwnerRouteTable)
+	path := filepath.Join(dir, recordName(OwnerOverlay))
+	if err := writeRecord(openDir(t, dir), recordName(OwnerOverlay), thisBoot(t), map[rkey]bool{unscoped(pfx("10.0.0.0/8")): true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rt.Survey(ctx); err == nil || !strings.Contains(err.Error(), "overlay's route record") || !strings.Contains(err.Error(), path) {
+		t.Errorf("Survey over an unreadable record: %v", err)
+	}
+	if _, err := rt.DefaultRoute(ctx, IPv4); err == nil || !strings.Contains(err.Error(), path) {
+		t.Errorf("DefaultRoute over an unreadable record: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(dir, setAsideName(OwnerOverlay, thisBoot(t)))); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("set aside: %v", err)
+	}
+}
+
+// The owner's own corrupt record, at start: it is set aside, the
+// configurator owns nothing, and the routes it named are foreign: an
+// Apply conflicts with them and Close leaves them.
+func TestTheOwnersCorruptRecordIsSetAsideAtStart(t *testing.T) {
+	k, dir := newFakeKernel(), tempDir(t)
+	ctx := context.Background()
+	crashed(t, k, dir, OwnerRouteTable, routeTableConfig)
+	before := k.snapshot()
+	path, aside := corrupt(t, dir, OwnerRouteTable)
+	c := newTestConfigurator(t, k, dir, OwnerRouteTable)
+	wasSetAside(t, path, aside)
+	if len(c.owned) != 0 {
+		t.Errorf("owns %v", c.owned)
+	}
+	s, err := c.Survey(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(paths(s.CorruptRecords), []string{aside}) {
+		t.Errorf("CorruptRecords %+v, want %s", s.CorruptRecords, aside)
+	}
+	if s.UnownedRoutes != len(routeTableConfig.Routes) {
+		t.Errorf("UnownedRoutes %d, want the leftovers' %d", s.UnownedRoutes, len(routeTableConfig.Routes))
+	}
+	for _, p := range []string{"::/1", "10.0.0.0/8", "203.0.113.9/32"} {
+		if !slices.Contains(s.Held, pfx(p)) {
+			t.Errorf("the leftover %s isn't foreign: held %v", p, s.Held)
+		}
+	}
+	if err := c.Apply(ctx, routeTableConfig); !errors.Is(err, ErrConflict) {
+		t.Errorf("Apply over the leftovers: %v, want ErrConflict", err)
+	}
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := k.snapshot(); got != before {
+		t.Errorf("the leftovers changed:\n%s\nwant:\n%s", got, before)
 	}
 }
 
@@ -823,7 +1181,7 @@ func TestRecordsRoundTrip(t *testing.T) {
 		if err := os.WriteFile(path, []byte(tc.data), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := readRecord(d, "x.routes", boot); err == nil || !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), tc.want) {
+		if _, err := readRecord(d, "x.routes", boot); !isCorrupt(err) || !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
@@ -834,8 +1192,34 @@ func TestRecordsRoundTrip(t *testing.T) {
 	if err := unix.Mkfifo(path, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := readRecord(d, "x.routes", boot); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+	if _, err := readRecord(d, "x.routes", boot); !isCorrupt(err) || !strings.Contains(err.Error(), "not a regular file") {
 		t.Errorf("a fifo: %v", err)
+	}
+	// A socket can't even be opened (EOPNOTSUPP): it is corrupt too.
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	l, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = readRecord(d, "x.routes", boot)
+	_ = l.Close()
+	if !isCorrupt(err) || !strings.Contains(err.Error(), "not a regular file") {
+		t.Errorf("a socket: %v", err)
+	}
+	// Nor is a symlink followed.
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(dir, "elsewhere"), path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readRecord(d, "x.routes", boot); !isCorrupt(err) || !errors.Is(err, unix.ELOOP) {
+		t.Errorf("a symlink: %v", err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
 	}
 	// The temporary file is never followed out of the directory.
 	target := filepath.Join(dir, "elsewhere")

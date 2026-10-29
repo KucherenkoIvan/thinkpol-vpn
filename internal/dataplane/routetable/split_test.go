@@ -1,6 +1,7 @@
 package routetable_test
 
 import (
+	"maps"
 	"net/netip"
 	"runtime"
 	"strings"
@@ -327,5 +328,39 @@ func TestDirectUpstreamsGetScopedRoutes(t *testing.T) {
 	o.Upstreams = nil
 	if w.Equal(o) {
 		t.Error("Wants with different upstreams are equal")
+	}
+}
+
+// A running overlay whose route record is corrupted in place: to the
+// route table its routes (the overlay's halves into the TUN) are foreign
+// ones it may not take. They are no host routes, so nothing counts as
+// ahead (no policy_rules_ahead, no overlay_routes_ahead): only the corrupt
+// record shows in health.
+func TestAnOverlaysRoutesSeenAsForeignAreNothingAhead(t *testing.T) {
+	s := home()
+	for _, p := range overlay {
+		for _, h := range netcfg.ConnectedRoutes(p) {
+			s.Routes = append(s.Routes, netcfg.Route{Dst: h, Interface: "utun7"})
+			s.Held = append(s.Held, h)
+		}
+	}
+	// As the agent wants it: the overlay goes through the TUN.
+	w := routetable.Want{TUN: "utun7", Overlay: overlay, Direct: localPlus(t).Minus(set(t, "100.64.0.0/10", "fd12:3456:789a::/48")), IPv6: true}
+	cfg := routetable.SplitRoutes(w, s)
+	darwinValid(t, cfg)
+	for _, r := range s.Routes {
+		if routes(cfg)[r.String()] {
+			t.Errorf("takes the overlay's %v", r)
+		}
+	}
+	// With the record valid, the halves are the overlay's own (no owner's
+	// routes are in a survey), already left to it: the layout is the same.
+	if valid := routes(routetable.SplitRoutes(w, home())); !maps.Equal(routes(cfg), valid) {
+		t.Errorf("the layout changes when the overlay's routes turn foreign:\n%v\nwant %v", routes(cfg), valid)
+	}
+	if runtime.GOOS == "darwin" {
+		if n, m := routetable.Ahead(w, s), routetable.OverlayAhead(w, s); n != 0 || m != 0 {
+			t.Errorf("%d routes ahead, %d overlay routes ahead, want none", n, m)
+		}
 	}
 }

@@ -23,7 +23,7 @@ type Network struct {
 
 // NodeSpec declares one container. Every node runs the lab image as root
 // with NET_ADMIN, NET_RAW and SYS_ADMIN, /dev/net/tun, and the
-// cross-compiled binaries from lab/bin on its PATH.
+// cross-compiled binaries (BinDir) on its PATH.
 type NodeSpec struct {
 	Name     string
 	Networks []string // the topology networks the node is attached to
