@@ -147,6 +147,16 @@ func (f *fakePF) anchor(name string) *fakeAnchor {
 	return a.clone()
 }
 
+// parent says an anchor of the fake's is under name. Called locked.
+func (f *fakePF) parent(name string) bool {
+	for n := range f.anchors {
+		if strings.HasPrefix(n, name+"/") {
+			return true
+		}
+	}
+	return false
+}
+
 func (f *fakePF) setAnchor(name string, a *fakeAnchor) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -269,8 +279,11 @@ func (f *fakePF) run(ctx context.Context, stdin []byte, args ...string) (pfOutpu
 			b.WriteString(l + "\n")
 		}
 	case slices.Equal(args, []string{"-s", "rules"}):
-		if a == nil {
+		if a == nil && !f.parent(anchor) {
 			return fail("pfctl: DIOCGETRULES: Invalid argument")
+		}
+		if a == nil {
+			break // a ruleset pf made on a child's path, empty
 		}
 		for _, l := range a.rules {
 			b.WriteString(l + "\n")
@@ -292,16 +305,25 @@ func (f *fakePF) run(ctx context.Context, stdin []byte, args ...string) (pfOutpu
 			}
 			b.WriteString(name + "\n")
 		}
-	case slices.Equal(args, []string{"-s", "Anchors"}) && anchor == appleAnchor:
+	case slices.Equal(args, []string{"-s", "Anchors"}) && anchor != "":
+		// An anchor exists while it holds rules or tables, or has children
+		// (pf makes the rulesets on a child's path).
 		var children []string
 		for name := range f.anchors {
-			if child, ok := strings.CutPrefix(name, appleAnchor+"/"); ok && !strings.Contains(child, "/") {
+			if child, ok := strings.CutPrefix(name, anchor+"/"); ok {
+				child, _, _ = strings.Cut(child, "/")
 				children = append(children, child)
 			}
 		}
-		slices.Sort(children)
+		children = slices.Compact(slices.Sorted(slices.Values(children)))
+		if a == nil && len(children) == 0 {
+			// pfctl's source: DIOCGETRULESETS's EINVAL said on stderr, and
+			// pfctl exits 0 (unrecorded).
+			out.stderr = append(out.stderr, answerNoAnchors(anchor)+"\n"...)
+			break
+		}
 		for _, c := range children {
-			b.WriteString("  " + appleAnchor + "/" + c + "\n")
+			b.WriteString("  " + anchor + "/" + c + "\n")
 		}
 	case slices.Equal(args, []string{"-s", "info"}):
 		status := "Disabled"

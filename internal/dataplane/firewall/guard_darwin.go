@@ -19,7 +19,8 @@ import (
 // guardPoll is how often Watch reads the guard back from pf: pf has no
 // event stream, so a flush, a disabled pf or a replaced main ruleset is
 // seen within guardPoll (and a debounce) rather than at once as on Linux.
-// Each poll runs pfctl six times.
+// Each poll runs pfctl six times, and once more for each anchor
+// checkBypass reads before the guard's (none on a stock Mac).
 const guardPoll = 10 * time.Second
 
 // IPv6Guard is routetable's Guard on macOS: it keeps IPv6 from leaving
@@ -37,8 +38,9 @@ const guardPoll = 10 * time.Second
 // health says ipv6_guard_not_enforced until the hook is there; /etc/pf.conf
 // is never edited), and
 // last, once the anchor is in place, that nothing lets IPv6 past it: a
-// quick pass above the hook, an interface pf skips, an anchor under
-// com.apple pf runs first (checkBypass: an ordinary failure,
+// quick pass above the hook or in an anchor pf evaluates before it, an
+// interface pf skips, an anchor under com.apple pf runs first
+// (checkBypass: an ordinary failure,
 // ipv6_guard_not_enforced, retried). pf is enabled by reference (`pfctl
 // -E`), so the guard neither turns off a pf someone else enabled nor
 // leaves pf on after it: the token goes to a record in the state directory
@@ -79,11 +81,11 @@ type IPv6Guard struct {
 	// killStates: pf's states still need checking against applied (after
 	// a load, an enable, or a failed Apply).
 	killStates bool
-	// killedUnder: the bypasses (checkBypass's error) under which the
-	// states were last killed, "" for none. While the same ones last, and
-	// the anchor isn't reloaded nor pf enabled anew, they aren't killed
-	// again.
-	killedUnder string
+	// killedUnder: the bypasses (checkBypass's findings) under which the
+	// states were last killed, nil for none or unknown. While the same
+	// ones last, and the anchor isn't reloaded nor pf enabled anew, they
+	// aren't killed again.
+	killedUnder []bypass
 	// failing: the last Apply failed (but for unsupported); Watch says so.
 	failing bool
 	closed  bool
@@ -187,7 +189,7 @@ func (g *IPv6Guard) Apply(ctx context.Context, e routetable.Exempt) (err error) 
 		if err != nil {
 			return err
 		}
-		g.applied, g.killStates, g.killedUnder = a, true, ""
+		g.applied, g.killStates, g.killedUnder = a, true, nil
 	}
 	// After the load, so pf comes on with the guard in place; a failure
 	// here leaves the anchor applied, and the retry only enables. A
@@ -199,22 +201,19 @@ func (g *IPv6Guard) Apply(ctx context.Context, e routetable.Exempt) (err error) 
 	}
 	// Last, so the interfaces pf does filter are guarded while something
 	// lets IPv6 past the rest.
-	bypass := g.checkBypass(ctx, main, e.TUN)
-	under := ""
-	if bypass != nil {
-		under = bypass.Error()
-	}
+	b := g.checkBypass(ctx, main, e.TUN)
 	// What a bypass lets through needs no state, and the anchor lets
 	// nothing else make one, so while the same bypasses last the retries
 	// don't kill again; any change to them (one more, one gone, or all)
-	// does, taking what the one gone let be made.
-	if g.killStates && (under == "" || under != g.killedUnder) {
+	// does, taking what the one gone let be made. A check that couldn't
+	// read pf can't tell they are the same.
+	if g.killStates && (b.err != nil || len(b.found) == 0 || !slices.Equal(b.found, g.killedUnder)) {
 		if err := g.kill(ctx, g.applied); err != nil {
 			return errors.Join(err, oldRelease)
 		}
-		g.killStates, g.killedUnder = false, under
+		g.killStates, g.killedUnder = false, b.found
 	}
-	return errors.Join(bypass, oldRelease)
+	return errors.Join(b.asError(), oldRelease)
 }
 
 // checkHook reads pf's main ruleset (`pfctl -s rules`) and fails with an
@@ -235,31 +234,189 @@ func (g *IPv6Guard) checkHook(ctx context.Context) ([]byte, error) {
 	return out.stdout, nil
 }
 
-// checkBypass fails with an ordinary error (the guard isn't enforced)
-// while pf evaluates the hook but lets outgoing IPv6 past the anchor, the
-// error naming every way it does: a quick pass above the hook (hooked
-// reads main, the main ruleset's listing); an interface but lo0 and tun
-// skipped (`set skip on`); an anchor under com.apple that sorts before the
+// bypass is one way past the guard's anchor: what the guard's error says
+// of it (why), and the rule that is it, if one, with where pf holds it
+// (rule), so that two bypasses said alike are told apart.
+type bypass struct {
+	why, rule string
+}
+
+// bypasses is what checkBypass found: every way past the anchor, in the
+// order pf meets them, or, when pf couldn't be read, err alone.
+type bypasses struct {
+	found []bypass
+	err   error
+}
+
+// asError is the guard's error for b: nil when nothing lets IPv6 past the
+// anchor, an ordinary failure naming each kind of way once otherwise.
+func (b bypasses) asError() error {
+	if b.err != nil {
+		return b.err
+	}
+	var why []string
+	for _, f := range b.found {
+		if !slices.Contains(why, f.why) {
+			why = append(why, f.why)
+		}
+	}
+	if len(why) == 0 {
+		return nil
+	}
+	return errors.New("firewall: " + strings.Join(why, "; "))
+}
+
+// checkBypass finds every way pf, evaluating the hook, lets outgoing IPv6
+// past the anchor (an ordinary failure, the guard not enforced): a pass
+// that ends evaluation (endsEvaluation) above the hook in the main
+// ruleset, main's listing, or in an anchor it evaluates there; an
+// interface but lo0 and tun skipped (`set skip on`); an anchor under
+// com.apple that sorts before the guard's, whose existence counts, and
+// whose passes are read only to tell one bypass from another. The anchors
+// are read (anchorWalk) only when main or com.apple has one before the
 // guard's.
-func (g *IPv6Guard) checkBypass(ctx context.Context, main []byte, tun string) error {
-	var found []string
-	if hooked(main) == hookBypassed {
-		found = append(found, fmt.Sprintf("a `pass ... quick` rule above `anchor %s` in pf's main ruleset lets IPv6 past the guard", appleHook))
+func (g *IPv6Guard) checkBypass(ctx context.Context, main []byte, tun string) bypasses {
+	w := &anchorWalk{g: g, seen: map[anchorWalkKey]bool{}}
+	if err := w.ruleset(ctx, "", lines(main), false); err != nil {
+		return bypasses{err: err}
 	}
 	b, err := g.readBypass(ctx)
 	if err != nil {
-		return err
+		return bypasses{err: err}
 	}
 	if s := slices.DeleteFunc(b.skipped, func(n string) bool { return n == "lo0" || n == tun }); len(s) > 0 {
-		found = append(found, fmt.Sprintf("pf skips %s (`set skip on`), so the IPv6 guard never sees its packets", strings.Join(s, ", ")))
+		w.found = append(w.found, bypass{why: fmt.Sprintf("pf skips %s (`set skip on`), so the IPv6 guard never sees its packets", strings.Join(s, ", "))})
 	}
 	if a := b.before; len(a) > 0 {
-		found = append(found, fmt.Sprintf("pf evaluates %s before the IPv6 guard's anchor: a quick pass there lets IPv6 past it", strings.Join(a, ", ")))
+		w.found = append(w.found, bypass{why: fmt.Sprintf("pf evaluates %s before the IPv6 guard's anchor: a quick pass there lets IPv6 past it", strings.Join(a, ", "))})
+		for _, name := range a {
+			if err := w.call(ctx, anchorCall{path: name}, false); err != nil {
+				return bypasses{err: err}
+			}
+		}
 	}
-	if len(found) == 0 {
-		return nil
+	return bypasses{found: w.found}
+}
+
+// maxEarlierAnchors bounds the anchors one check reads before the
+// guard's, each a pfctl run: pf nests anchors up to 64 deep.
+const maxEarlierAnchors = 16
+
+// anchorWalk reads the rulesets pf evaluates before the guard's anchor,
+// the main ruleset's down to the hook and every anchor they call, in
+// pf's order, for passes that end evaluation (endsEvaluation): each is a
+// bypass, as is an anchor rule it can't follow, and more anchors than
+// maxEarlierAnchors.
+type anchorWalk struct {
+	g     *IPv6Guard
+	read  int
+	seen  map[anchorWalkKey]bool
+	found []bypass
+}
+
+type anchorWalkKey struct {
+	anchorCall
+	quick bool
+}
+
+// ruleset reads ls, the rules of the ruleset at base ("" for the main
+// ruleset, read down to the hook), inside quick anchors if inQuick.
+func (w *anchorWalk) ruleset(ctx context.Context, base string, ls []string, inQuick bool) error {
+	where := "anchor " + base
+	if base == "" {
+		where = "pf's main ruleset"
 	}
-	return errors.New("firewall: " + strings.Join(found, "; "))
+	for _, l := range ls {
+		f := strings.Fields(l)
+		if base == "" && isHook(f) {
+			return nil
+		}
+		if endsEvaluation(f, inQuick) {
+			why := fmt.Sprintf("a pass in anchor %s, which pf evaluates before the IPv6 guard's, lets IPv6 past it", base)
+			if base == "" {
+				why = fmt.Sprintf("a `pass ... quick` rule above `anchor %s` in pf's main ruleset lets IPv6 past the guard", appleHook)
+			}
+			w.found = append(w.found, bypass{why: why, rule: where + ": " + l})
+			continue
+		}
+		name, rest, ok := anchorRule(l)
+		if !ok || !reachesIPv6Out(rest, 0) {
+			continue
+		}
+		c, ok := resolveAnchor(base, name)
+		if !ok {
+			w.found = append(w.found, bypass{
+				why:  fmt.Sprintf("%s calls an anchor the IPv6 guard can't name, before its own: a pass there could let IPv6 past it", where),
+				rule: where + ": " + l,
+			})
+			continue
+		}
+		if err := w.call(ctx, c, inQuick || slices.Contains(rest, "quick")); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// call reads the anchor c leads to, or each of its children up to the
+// guard's own: every outgoing IPv6 packet that reaches the guard's anchor
+// ends there, so the children after it are never reached that way.
+// quick: inside a quick anchor. What was read already (with quick alike)
+// isn't read again: it holds what it held.
+func (w *anchorWalk) call(ctx context.Context, c anchorCall, quick bool) error {
+	paths := []string{c.path}
+	if c.wildcard {
+		if !w.first(c, quick) || !w.budget() {
+			return nil
+		}
+		out, err := w.g.pf.run(ctx, nil, "-a", c.path, "-s", "Anchors")
+		if paths, err = childAnchors(c.path, out, err); err != nil {
+			return err
+		}
+	}
+	for _, p := range paths {
+		if p == GuardAnchor {
+			break
+		}
+		if !w.first(anchorCall{path: p}, quick) {
+			continue
+		}
+		if !w.budget() {
+			return nil
+		}
+		b, err := w.g.rulesOf(ctx, p, false)
+		if err != nil {
+			return err
+		}
+		ls, err := readLines(b)
+		if err != nil {
+			return err
+		}
+		if err := w.ruleset(ctx, p, ls, quick); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// first says c, read with quick, hasn't been read yet, and marks it read.
+func (w *anchorWalk) first(c anchorCall, quick bool) bool {
+	k := anchorWalkKey{c, quick}
+	if w.seen[k] {
+		return false
+	}
+	w.seen[k] = true
+	return true
+}
+
+// budget counts one more pfctl run; past maxEarlierAnchors it says so,
+// once, as a bypass, and refuses.
+func (w *anchorWalk) budget() bool {
+	w.read++
+	if w.read == maxEarlierAnchors+1 {
+		w.found = append(w.found, bypass{why: fmt.Sprintf("pf evaluates more than %d anchors before the IPv6 guard's, and the guard reads no further: a pass there could let IPv6 past it", maxEarlierAnchors)})
+	}
+	return w.read <= maxEarlierAnchors
 }
 
 // bypassListing is what pf lists of the ways past the anchor but the
@@ -514,7 +671,7 @@ func (g *IPv6Guard) takeReference(ctx context.Context) (oldRelease, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("firewall: enable pf: %w", err)
 	}
-	g.killStates, g.killedUnder = true, "" // states made while pf was off
+	g.killStates, g.killedUnder = true, nil // states made while pf was off
 	t := pfToken{pid: out.pid}
 	v, perr := parseToken(out)
 	if perr == nil {
@@ -772,7 +929,10 @@ func (g *IPv6Guard) broken(ctx context.Context) bool {
 		return false
 	}
 	main, err := g.checkHook(ctx)
-	if err != nil || g.checkBypass(ctx, main, g.applied.exempt.TUN) != nil || !g.intact(ctx, g.applied) {
+	if err != nil {
+		return true
+	}
+	if b := g.checkBypass(ctx, main, g.applied.exempt.TUN); b.err != nil || len(b.found) > 0 || !g.intact(ctx, g.applied) {
 		return true
 	}
 	on, err := g.enabled(ctx)

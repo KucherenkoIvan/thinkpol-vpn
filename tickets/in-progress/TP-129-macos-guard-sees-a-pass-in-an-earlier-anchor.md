@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: [TP-126]
 refs: []
-owner: ""
-branch: ""
+owner: "agent-claude-tp129"
+branch: "tp-129-macos-guard-sees-a-pass-in-an-earlier-anchor"
 ---
 
 ## Goal
@@ -41,3 +41,4 @@ The macOS IPv6 guard reports itself not enforced while a `pass ... quick` that c
 - 2026-10-24 docs: slotted in the pre-M2 phase (wave 1, Guard)
 - 2026-10-28 docs: TP-138 round 1's note (DIOCGETRULESETS absence check, rulesOf, exact ALTQ filter)
 - 2026-10-28 docs: TP-138 round 2's design nits
+- 2026-10-29 backlog → in-progress, owner: agent-claude-tp129
