@@ -827,9 +827,11 @@ func TestOnlyAFailureThatLetIPv6PastKillsAgain(t *testing.T) {
 }
 
 // What the poll sees counts as an Apply's check would: a hook missing for
-// one poll, or a bypass the poll saw, kills at the Apply its signal
-// brings, even when it is gone by then. An unchanged guard's polls don't
-// kill.
+// one poll, a bypass the poll saw, or pf off, kills at the Apply its
+// signal brings, even when it is gone by then (pf back on by someone
+// else's `pfctl -e`). pf off counts under a persistent bypass too, the
+// guard failing and its kill done under that bypass. An unchanged guard's
+// polls don't kill.
 func TestAChangeOnlyThePollSawKills(t *testing.T) {
 	ctx := context.Background()
 	r := newRig(t)
@@ -870,6 +872,30 @@ func TestAChangeOnlyThePollSawKills(t *testing.T) {
 		if slices.Contains(r.pf.stateList(), s) {
 			t.Errorf("a state made while the poll saw %s survived", c.what)
 		}
+	}
+	s := state()
+	r.pf.disable()
+	if !g.broken(ctx) {
+		t.Fatal("the poll missed pf off")
+	}
+	r.pf.set(func(f *fakePF) { f.plainOn = true })
+	if err := g.Apply(ctx, exempt(t)); err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(r.pf.stateList(), s) {
+		t.Error("a state made while the poll saw pf off survived")
+	}
+	r.pf.set(func(f *fakePF) { f.main = append([]string{"pass out quick inet6 all"}, stockMain...) })
+	notEnforced(t, g.Apply(ctx, exempt(t)), "`pass ... quick` rule above")
+	s = state()
+	r.pf.disable()
+	if !g.broken(ctx) {
+		t.Fatal("the poll missed pf off under a bypass")
+	}
+	r.pf.set(func(f *fakePF) { f.plainOn = true })
+	notEnforced(t, g.Apply(ctx, exempt(t)), "`pass ... quick` rule above")
+	if slices.Contains(r.pf.stateList(), s) {
+		t.Error("a state made while the poll saw pf off under a bypass survived")
 	}
 }
 
@@ -1450,8 +1476,12 @@ func TestAnUnreadableTokenIsNotTakenTwice(t *testing.T) {
 		r.pf.noToken, r.pf.oddReferences = true, true
 		g := r.guard()
 		for range 2 {
-			if err := g.Apply(context.Background(), exempt(t)); !errors.Is(err, errUnreadToken) {
+			err := g.Apply(context.Background(), exempt(t))
+			if !errors.Is(err, errUnreadToken) {
 				t.Fatalf("%v, want the unread token", err)
+			}
+			if !errors.Is(err, errUnreadReferences) || strings.Count(err.Error(), errUnreadToken.Error()) != 1 {
+				t.Errorf("%v: want why pf's listing didn't name it, the token told once", err)
 			}
 		}
 		refs := r.pf.references()
@@ -1503,6 +1533,122 @@ func TestAnUnreadableTokenIsNotTakenTwice(t *testing.T) {
 		}
 		r.whole(t, exempt(t))
 	})
+	t.Run("the listing failed", func(t *testing.T) {
+		r := newRig(t)
+		r.pf.noToken = true
+		r.pf.failOn("References", errFake)
+		err := r.guard().Apply(context.Background(), exempt(t))
+		if !errors.Is(err, errUnreadToken) || !errors.Is(err, errFake) {
+			t.Fatalf("%v, want the unread token and why the listing failed", err)
+		}
+	})
+}
+
+// unreadTokenRig is a guard whose pf states the test makes one by one,
+// each a state the guard refuses.
+func unreadTokenRig(t *testing.T) (*rig, *IPv6Guard, func() fakeState) {
+	r := newRig(t)
+	port := uint16(51000)
+	return r, r.guard(), func() fakeState {
+		port++
+		s := fakeState{"tcp", netip.AddrPortFrom(ownV6, port), netip.MustParseAddrPort("[2001:db8:ab::7]:443"), true}
+		r.pf.set(func(f *fakePF) { f.states = append(f.states, s) })
+		return s
+	}
+}
+
+func wantUnreadToken(t *testing.T, err error) {
+	t.Helper()
+	if !errors.Is(err, errUnreadToken) {
+		t.Fatalf("%v, want the unread token", err)
+	}
+}
+
+// pf turned off under the guard: the Apply that turns it back on kills
+// what pf passed meanwhile though the new token can't be read, and tells
+// the token after. Its retries, the token still unread, carry on too: one
+// that sees nothing change doesn't kill again, one that sees a bypass
+// tells it with the token and kills.
+func TestAnUnreadTokenStillKills(t *testing.T) {
+	ctx := context.Background()
+	r, g, state := unreadTokenRig(t)
+	if err := g.Apply(ctx, exempt(t)); err != nil {
+		t.Fatal(err)
+	}
+	r.pf.disable()
+	a := state()
+	r.pf.set(func(f *fakePF) { f.noToken, f.oddReferences = true, true })
+	wantUnreadToken(t, g.Apply(ctx, exempt(t)))
+	if !r.pf.isOn() {
+		t.Fatal("pf left off")
+	}
+	if slices.Contains(r.pf.stateList(), a) {
+		t.Error("the Apply with the token unread left a state pf passed while off")
+	}
+	b := state()
+	wantUnreadToken(t, g.Apply(ctx, exempt(t)))
+	if !slices.Contains(r.pf.stateList(), b) {
+		t.Error("a retry that saw nothing change killed again")
+	}
+	c := state()
+	r.pf.set(func(f *fakePF) { f.main = append([]string{"pass out quick inet6 all"}, stockMain...) })
+	err := g.Apply(ctx, exempt(t))
+	wantUnreadToken(t, err)
+	notEnforced(t, err, "`pass ... quick` rule above")
+	if slices.Contains(r.pf.stateList(), c) {
+		t.Error("a retry that saw a bypass appear left a state")
+	}
+}
+
+// With pf off and the guard's reference known by its pid only, the
+// Apply stops at the token: a check and a kill then would vouch for
+// states pf goes on passing. Once pf is on again (someone's `pfctl -e`),
+// the next Apply kills what pf passed while off, before that Apply and
+// after it, though the token is still unread.
+func TestAnUnreadTokenWithPfOffStopsTheApply(t *testing.T) {
+	ctx := context.Background()
+	r, g, state := unreadTokenRig(t)
+	r.pf.set(func(f *fakePF) { f.keepRefs, f.noToken, f.oddReferences = true, true, true })
+	wantUnreadToken(t, g.Apply(ctx, exempt(t)))
+	r.pf.disable()
+	a := state()
+	wantUnreadToken(t, g.Apply(ctx, exempt(t)))
+	if refs := r.pf.references(); len(refs) != 1 {
+		t.Fatalf("references %v: a second taken with the guard's unknown", refs)
+	}
+	b := state()
+	r.pf.set(func(f *fakePF) { f.forcedOff, f.plainOn = false, true })
+	wantUnreadToken(t, g.Apply(ctx, exempt(t)))
+	for _, s := range []fakeState{a, b} {
+		if slices.Contains(r.pf.stateList(), s) {
+			t.Errorf("state %v, made while pf was off, survived", s)
+		}
+	}
+}
+
+// A reference known by its pid only whose record failed to be written
+// is recorded by the next Apply, the token still unread.
+func TestAnUnreadTokenIsRecordedOnTheRetry(t *testing.T) {
+	r := newRig(t)
+	r.pf.noToken, r.pf.oddReferences = true, true
+	g := r.guard()
+	if err := os.Chmod(r.dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Apply(context.Background(), exempt(t)); err == nil {
+		t.Fatal("applied without a record")
+	}
+	if err := os.Chmod(r.dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	wantUnreadToken(t, g.Apply(context.Background(), exempt(t)))
+	refs := r.pf.references()
+	if len(refs) != 1 {
+		t.Fatalf("references %v, want the one", refs)
+	}
+	if rec := r.record(t); !strings.Contains(rec, "\ntoken unknown pid "+strconv.Itoa(refs[0].pid)+"\n") {
+		t.Errorf("record %q", rec)
+	}
 }
 
 // A Close that fails keeps what it couldn't remove, record included, and

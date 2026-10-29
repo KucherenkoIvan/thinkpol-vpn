@@ -317,7 +317,11 @@
 // rule. Killing a tunnelled connection's state is harmless the same way:
 // the anchor passes it statelessly.
 //
-// It kills them after a load, after enabling pf (states from before), and
+// It kills them after a load, after enabling pf (states from before),
+// after pf found off by an apply or a poll (pf passes anything while off,
+// and someone else may turn it back on before the guard does; the poll
+// reads pf's status first, a failing guard's too, whose 5 s retries read
+// it anyway), and
 // after an apply that failed (a quick pass above the hook keeps state by
 // default, and its states outlive it), with one exception: while the
 // same bypasses last, the retries don't kill again. What a bypass lets
@@ -354,7 +358,19 @@
 // A token `pfctl -E` doesn't print readably is looked up in `pfctl -s
 // References` by that pid; until it is found it is recorded by pid alone,
 // and the apply and the close both fail, so a reference is never held
-// unrecorded or forgotten. A reference is released (`pfctl -X`) only while
+// unrecorded or forgotten (but for a record write that fails after `-E`
+// replaced a reference pf still lists: the old one is then dropped
+// unreleased, TP-159). The apply fails last: while pf is on (by that
+// reference or another), it finishes enforcing (the bypass check, the
+// state kill), then reports the unread token, so the apply that turns pf
+// back on after a `pfctl -d` kills what pf passed while off even when the
+// new token can't be read, and a retry while the token stays unread kills
+// only as any other would (above). With pf off, the apply stops at the
+// token, before the check and the kill: they would vouch for states pf
+// goes on passing, and no second reference is taken while the guard
+// can't name the one it holds; pf stays off until `pfctl -s References`
+// names that token or no longer lists its pid, or something else turns
+// pf on (TP-160, RESIDUAL-RISKS.md RR11). A reference is released (`pfctl -X`) only while
 // `pfctl -s References` lists that token as taken by that pid: a token is
 // a kernel address's hash and a pid is reused in time, so a released
 // value can come back as someone else's; both matching is as close as pf
@@ -362,7 +378,11 @@
 // takes a new reference first, then releases the old one if pf still
 // lists it; if that release fails, the Apply finishes enforcing (the
 // bypass check, the state kill), then says so (the record names the new
-// reference, and the old one is left to pf).
+// reference, and the old one is left to pf). While pf is on, the
+// reference the guard knows is kept without reading whether pf still
+// lists it, by the apply and the poll alike: a `pfctl -d` and someone's
+// `pfctl -e` between two polls leave pf on by theirs alone, the states
+// made meanwhile unkilled (TP-161).
 //
 // `pfctl -s References` is read by the columns its header names: a line's
 // first field is the pid, and the token is the field where the header's
@@ -380,10 +400,13 @@
 //
 // # macOS: polling
 //
-// pf has no event stream, so [IPv6Guard.Watch] polls every 10 s: the hook,
-// what bypasses it (the skipped interfaces, the anchors under com.apple),
-// the anchor's rules and table, and pf enabled (six pfctl runs, each
-// bounded at 15 s), and whether its last apply failed, so a retry is due.
+// pf has no event stream, so [IPv6Guard.Watch] polls every 10 s: pf
+// enabled, then the hook, what bypasses it (the skipped interfaces, the
+// anchors under com.apple) and the anchor's rules and table (six pfctl
+// runs, each bounded at 15 s), and whether its last apply failed, so a
+// retry is due. pf found off ends the poll; so does a failed apply, after
+// pf's status alone (one run), which is read first so that pf seen off
+// marks the states for killing whatever else is wrong.
 // A main ruleset that calls anchors above the hook, or an anchor under
 // com.apple before the guard's, costs one more run per anchor read (and
 // per wildcard's listing), up to 16 more; a stock Mac's costs none. The
