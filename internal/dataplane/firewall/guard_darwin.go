@@ -44,14 +44,14 @@ const guardPoll = 10 * time.Second
 // retried). pf is enabled by reference (`pfctl -E`), so the guard neither
 // turns off a pf someone else enabled nor leaves pf on after it: the token
 // goes to a record in the state directory first thing (by the pfctl's pid
-// if its token can't be read, and then Apply fails until `pfctl -s
-// References` names it), and Close releases it (`pfctl -X`), but only
-// while that listing has it as taken by the pfctl the record names. States
-// pf already holds would pass without a rule (pf's state policy is
-// floating): after a load, an enable, or a failed Apply (a quick pass
-// above the hook may have made some meanwhile), Apply kills the IPv6 ones
-// whose other end isn't in the exempt table; while the same bypasses last,
-// only once.
+// if its token can't be read, and then Apply, enforcing first while pf is
+// on, fails until `pfctl -s References` names it), and Close releases it
+// (`pfctl -X`), but only while that listing has it as taken by the pfctl
+// the record names. States pf already holds would pass without a rule
+// (pf's state policy is floating): after a load, an enable, pf seen off,
+// or a failed Apply (a quick pass above the hook may have made some
+// meanwhile), Apply kills the IPv6 ones whose other end isn't in the
+// exempt table; while the same bypasses last, only once.
 //
 // The anchor and the reference stay when the process dies: a crash leaves
 // IPv6 confined, as the route table's rejects do. The next start's
@@ -200,13 +200,14 @@ func (g *IPv6Guard) Apply(ctx context.Context, e routetable.Exempt) (err error) 
 		g.applied = a
 		g.statesStale()
 	}
-	// What doesn't stop enforcing is told at the end (later): a failed
-	// release of a reference held before (oldRelease).
+	// What doesn't stop enforcing is told at the end (later): what enable
+	// tells after (a failed release of a reference held before, a token
+	// pf is on by that can't be read).
 	var later []error
 	// After the load, so pf comes on with the guard in place; a failure
 	// here leaves the anchor applied, and the retry only enables.
-	oldRelease, err := g.enable(ctx)
-	later = append(later, oldRelease)
+	after, err := g.enable(ctx)
+	later = append(later, after)
 	if err == nil {
 		// Last, so the interfaces pf does filter are guarded while
 		// something lets IPv6 past the rest.
@@ -218,8 +219,8 @@ func (g *IPv6Guard) Apply(ctx context.Context, e routetable.Exempt) (err error) 
 
 // statesStale says pf's states need checking against the anchor, and
 // that under which bypasses they were last killed no longer holds: after
-// a load, an enable, pf evaluating without the hook, or a check that saw
-// the bypasses change (sawBypasses).
+// a load, an enable, pf seen off, pf evaluating without the hook, or a
+// check that saw the bypasses change (sawBypasses).
 func (g *IPv6Guard) statesStale() {
 	g.killStates, g.killedUnder.valid = true, false
 }
@@ -643,7 +644,8 @@ func (g *IPv6Guard) references(ctx context.Context) ([]pfReference, bool, error)
 
 // errUnreadToken: pfctl -E took a reference whose token neither its
 // output nor pf's listing gives; it is recorded by pid, and Apply and
-// Close fail until the token is known or the reference is gone.
+// Close fail until the token is known or the reference is gone. While pf
+// is on, Apply enforces first (enable's after).
 var errUnreadToken = errors.New("firewall: pf's enable token is unknown")
 
 // resolve finds the token of t, a reference known by its pid only: the
@@ -674,18 +676,29 @@ var errUnreadReferences = errors.New("firewall: pf's references listed in a form
 // record names it: kept while pf is on; taken over from the record (a
 // crashed run's, this boot); taken anew when the guard has none, or when
 // pf is off (someone ran `pfctl -d`), the old one then released if pf
-// still lists it. oldRelease is that release's failure, which leaves pf
-// on and the guard's reference recorded: the caller goes on enforcing
-// and tells it after.
-func (g *IPv6Guard) enable(ctx context.Context) (oldRelease, err error) {
+// still lists it. after is what leaves pf on and the guard's reference
+// recorded, which the caller goes on enforcing through and tells after:
+// that release's failure, and errUnreadToken while pf is on (by the new
+// reference, or with the one known by pid only). With pf off, an
+// unread token is err: the bypass check and the kill would vouch for
+// states pf goes on passing.
+func (g *IPv6Guard) enable(ctx context.Context) (after, err error) {
 	on, err := g.enabled(ctx)
 	if err != nil {
 		return nil, err
+	}
+	if !on {
+		// What pf passed while off needs checking once it is on again,
+		// whatever stops this Apply first.
+		g.statesStale()
 	}
 	if err := g.adoptRecord(); err != nil {
 		return nil, err
 	}
 	if err := g.resolveToken(ctx); err != nil {
+		if on && errors.Is(err, errUnreadToken) {
+			return err, g.recordToken()
+		}
 		return nil, err
 	}
 	if on && g.token != nil {
@@ -757,9 +770,10 @@ func (g *IPv6Guard) recordToken() error {
 }
 
 // takeReference turns pf on with a new reference (`pfctl -E`) and
-// records it, then releases the one the guard held, if pf still lists it:
-// that release's failure is oldRelease, apart from err.
-func (g *IPv6Guard) takeReference(ctx context.Context) (oldRelease, err error) {
+// records it, then releases the one the guard held, if pf still lists it.
+// Once pf is on, what fails but leaves the reference recorded is after,
+// apart from err: that release's failure, the new token unread.
+func (g *IPv6Guard) takeReference(ctx context.Context) (after, err error) {
 	old := g.token
 	out, err := g.pf.run(ctx, nil, "-E")
 	if err != nil {
@@ -784,13 +798,13 @@ func (g *IPv6Guard) takeReference(ctx context.Context) (oldRelease, err error) {
 		// listing it can't read) is told after, not dropped: the record
 		// now names the new reference only.
 		if err := g.release(ctx, *old); err != nil {
-			oldRelease = fmt.Errorf("firewall: pf enabled anew, but releasing the reference it held before failed (pid %d): %w", old.pid, err)
+			after = fmt.Errorf("firewall: pf enabled anew, but releasing the reference it held before failed (pid %d): %w", old.pid, err)
 		}
 	}
 	if t.value == 0 {
-		return oldRelease, fmt.Errorf("%w (pfctl pid %d): %w", errUnreadToken, t.pid, perr)
+		after = errors.Join(after, fmt.Errorf("%w (pfctl pid %d): %w", errUnreadToken, t.pid, perr))
 	}
-	return oldRelease, nil
+	return after, nil
 }
 
 // release lets go of t, a reference with a known token: `pfctl -X` if pf
@@ -1032,5 +1046,8 @@ func (g *IPv6Guard) broken(ctx context.Context) bool {
 		return true
 	}
 	on, err := g.enabled(ctx)
+	if err == nil && !on {
+		g.statesStale() // pf passes anything while off
+	}
 	return err != nil || !on
 }

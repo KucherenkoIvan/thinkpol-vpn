@@ -317,7 +317,9 @@
 // rule. Killing a tunnelled connection's state is harmless the same way:
 // the anchor passes it statelessly.
 //
-// It kills them after a load, after enabling pf (states from before), and
+// It kills them after a load, after enabling pf (states from before),
+// after pf found off by an apply or a poll (pf passes anything while off,
+// and someone else may turn it back on before the guard does), and
 // after an apply that failed (a quick pass above the hook keeps state by
 // default, and its states outlive it), with one exception: while the
 // same bypasses last, the retries don't kill again. What a bypass lets
@@ -354,7 +356,17 @@
 // A token `pfctl -E` doesn't print readably is looked up in `pfctl -s
 // References` by that pid; until it is found it is recorded by pid alone,
 // and the apply and the close both fail, so a reference is never held
-// unrecorded or forgotten. A reference is released (`pfctl -X`) only while
+// unrecorded or forgotten. The apply fails last: while pf is on (by that
+// reference or another), it finishes enforcing (the bypass check, the
+// state kill), then reports the unread token, so the apply that turns pf
+// back on after a `pfctl -d` kills what pf passed while off even when the
+// new token can't be read, and a retry while the token stays unread kills
+// only as any other would (above). With pf off, the apply stops at the
+// token, before the check and the kill: they would vouch for states pf
+// goes on passing, and no second reference is taken while the guard
+// can't name the one it holds; pf stays off until `pfctl -s References`
+// names that token or no longer lists its pid, or something else turns
+// pf on. A reference is released (`pfctl -X`) only while
 // `pfctl -s References` lists that token as taken by that pid: a token is
 // a kernel address's hash and a pid is reused in time, so a released
 // value can come back as someone else's; both matching is as close as pf
