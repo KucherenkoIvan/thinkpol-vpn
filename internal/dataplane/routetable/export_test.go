@@ -3,6 +3,7 @@ package routetable
 import (
 	"context"
 	"log/slog"
+	"net/netip"
 	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
@@ -25,8 +26,15 @@ func OpenWithClock(c netcfg.Configurator, g Guard, log *slog.Logger, now func() 
 	return openWithClock(c, g, log, now)
 }
 
-// GuardApply is e's applyGuard.
-func GuardApply(ctx context.Context, e *Enforcer, w Want) { e.applyGuard(ctx, w) }
+// GuardApply is e's applyGuard of w's guard.
+func GuardApply(ctx context.Context, e *Enforcer, w Want) { e.applyGuard(ctx, GuardFor(w)) }
+
+// GuardBetween is guardFor: the guard for the routes in place (held)
+// and the rules (want).
+func GuardBetween(held, want Want) Exempt { return guardFor(held, want) }
+
+// IntersectUpstreams is intersectUpstreams.
+func IntersectUpstreams(a, b []netip.AddrPort) []netip.AddrPort { return intersectUpstreams(a, b) }
 
 // WarnEvery is how far apart a failure's warns are.
 const WarnEvery = warnEvery
