@@ -1612,9 +1612,13 @@ func TestAnUnreadTokenWithPfOffStopsTheApply(t *testing.T) {
 	wantUnreadToken(t, g.Apply(ctx, exempt(t)))
 	r.pf.disable()
 	a := state()
+	r.pf.forget()
 	wantUnreadToken(t, g.Apply(ctx, exempt(t)))
 	if refs := r.pf.references(); len(refs) != 1 {
 		t.Fatalf("references %v: a second taken with the guard's unknown", refs)
+	}
+	if !slices.Contains(r.pf.stateList(), a) || r.pf.ran("-k") != 0 || r.pf.ran("Interfaces") != 0 {
+		t.Fatalf("the Apply with pf off went on: states %v, %d kills, %d bypass checks", r.pf.stateList(), r.pf.ran("-k"), r.pf.ran("Interfaces"))
 	}
 	b := state()
 	r.pf.set(func(f *fakePF) { f.forcedOff, f.plainOn = false, true })
