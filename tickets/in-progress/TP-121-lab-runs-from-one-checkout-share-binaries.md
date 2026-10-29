@@ -107,3 +107,4 @@ Round 3 (2026-10-29, paranoid, torvalds): the R2 fixes hold; labctl down still a
 - 2026-10-28 verified: `make lint`, `make test` green; `make lab-test` LAB_P=4 green on f4dd95c (after merging origin/rewrite with TP-138), no lab/bin left. The first run on f4dd95c failed only internal/dataplane TestTheOverlayComesBackAfterALinkBounce ("the TUN kept its IPv6 address going down: nothing to test", engine_lab_test.go:273), not TP-121 code; a run on 1e071c0 had passed it. Out of scope, for the orchestrator: that test reads the address right after `ip link set down` while a pending re-apply can put it back.
 - 2026-10-28 in-progress → review
 - 2026-10-29 review → has-errors (round 3: R3.1–R3.9)
+- 2026-10-29 has-errors → in-progress, owner: agent-claude-tp121
