@@ -70,14 +70,14 @@ func TestJudgeAddedFailsARuleThatDoesNotReadBack(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stray, err := judgeAdded([]Rule{r}, []rawRule{added}, proto); stray != nil || err != nil {
+	if stray, err := judgeAdded([]Rule{r}, []rawRule{added}, nil, proto); stray != nil || err != nil {
 		t.Fatalf("a rule read back as added: %v, %v", stray, err)
 	}
 	other, err := parseRawRule(append(slices.Clone(msg), rta(250, u32(1))...))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stray, err := judgeAdded([]Rule{r}, []rawRule{other}, proto); stray != nil || !errors.Is(err, errNotReadBack) {
+	if stray, err := judgeAdded([]Rule{r}, []rawRule{other}, nil, proto); stray != nil || !errors.Is(err, errNotReadBack) {
 		t.Fatalf("a rule read back with an unknown attribute: %v, %v", stray, err)
 	}
 	// A kernel before 4.17 holds it without the protocol: a stray to
@@ -86,9 +86,19 @@ func TestJudgeAddedFailsARuleThatDoesNotReadBack(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stray, err := judgeAdded([]Rule{r}, []rawRule{old}, proto)
+	stray, err := judgeAdded([]Rule{r}, []rawRule{old}, nil, proto)
 	if len(stray) != 1 || !bytes.Equal(stray[0].msg, old.msg) || !errors.Is(err, errOldKernel) {
 		t.Fatalf("a rule read back without its protocol: %v, %v", stray, err)
+	}
+	// Rules someone kept changing through the dumps: the adds stand,
+	// unjudged. Any other dump failure fails them.
+	disagree := fmt.Errorf("%w (family 2)", errDumpsDisagree)
+	if stray, err := judgeAdded([]Rule{r}, nil, disagree, proto); stray != nil || err != nil {
+		t.Fatalf("dumps that never agreed: %v, %v; want the adds to stand", stray, err)
+	}
+	failed := errors.New("a failed dump")
+	if stray, err := judgeAdded([]Rule{r}, nil, failed, proto); stray != nil || !errors.Is(err, failed) {
+		t.Fatalf("a failed dump: %v, %v", stray, err)
 	}
 }
 
@@ -108,8 +118,9 @@ func TestSurplusRules(t *testing.T) {
 	keptOif := Rule{Family: IPv4, Priority: 5298, Oif: "ovl0", SuppressDefaultRoutes: true}
 	unwanted := Rule{Family: IPv4, Priority: 5300, SuppressDefaultRoutes: true}
 	msg := ruleMsg(kept, proto)
-	// keptOif's repeat in a split dump, its oif gone between the two
-	// parts: the kernel flags it detached, but it is the same rule.
+	// keptOif twice, once flagged detached (should such a pair get past
+	// dumpRules): the flag is the kernel's report, not the rule, so it is
+	// one message to surplusRules, as to sendRule.
 	detached := ruleMsg(keptOif, proto)
 	binary.NativeEndian.PutUint32(detached[8:12], unix.FIB_RULE_OIF_DETACHED)
 	blackhole := slices.Clone(msg)
@@ -136,6 +147,70 @@ func TestSurplusRules(t *testing.T) {
 	}
 	if len(surplus) == 3 && !bytes.Equal(surplus[2].msg, twin) {
 		t.Errorf("the last surplus rule is not the twin: %v", surplus[2].msg)
+	}
+}
+
+// Close deletes our rules from single dumps until one shows none: a
+// repeated rule is deleted twice (the second finds it gone), a skipped
+// one in the next round, and a failed dump doesn't end it.
+func TestRemoveOwnRules(t *testing.T) {
+	const proto = 86
+	rule := func(prio int) rawRule {
+		return rawRule{msg: ruleMsg(Rule{Family: IPv4, Priority: prio}, proto)}
+	}
+	a, b := rule(5299), rule(5300)
+	failed := errors.New("a failed dump")
+	// The kernel's rules of ours; each dump is scripted, and a delete
+	// removes the rule from what is left (a second delete finds it gone).
+	run := func(dumps []func(left []rawRule) ([]rawRule, error), left []rawRule, delErr error) (n int, deleted []rawRule, err error) {
+		dumpOwn := func() ([]rawRule, error) {
+			i := min(n, len(dumps)-1)
+			n++
+			return dumps[i](left)
+		}
+		del := func(kr rawRule) error {
+			deleted = append(deleted, kr)
+			if delErr != nil {
+				return delErr
+			}
+			left = slices.DeleteFunc(left, func(r rawRule) bool { return bytes.Equal(r.msg, kr.msg) })
+			return nil
+		}
+		err = removeOwnRules(dumpOwn, del)
+		return n, deleted, err
+	}
+	asIs := func(left []rawRule) ([]rawRule, error) { return left, nil }
+	prios := func(rules []rawRule) []int {
+		var out []int
+		for _, r := range rules {
+			kr, err := parseRawRule(r.msg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out = append(out, kr.rule.Priority)
+		}
+		return out
+	}
+
+	// The first dump repeats a and skips b.
+	split := func([]rawRule) ([]rawRule, error) { return []rawRule{a, a}, nil }
+	n, deleted, err := run([]func([]rawRule) ([]rawRule, error){split, asIs}, []rawRule{a, b}, nil)
+	if err != nil || n != 3 || !slices.Equal(prios(deleted), []int{5299, 5299, 5300}) {
+		t.Errorf("a split dump: %v after %d dumps, deleted %v; want nil after 3, [5299 5299 5300]", err, n, prios(deleted))
+	}
+	fail := func([]rawRule) ([]rawRule, error) { return nil, failed }
+	n, deleted, err = run([]func([]rawRule) ([]rawRule, error){fail, asIs}, []rawRule{a}, nil)
+	if err != nil || n != 3 || !slices.Equal(prios(deleted), []int{5299}) {
+		t.Errorf("a failed dump first: %v after %d dumps, deleted %v; want nil after 3, [5299]", err, n, prios(deleted))
+	}
+	n, _, err = run([]func([]rawRule) ([]rawRule, error){fail}, []rawRule{a}, nil)
+	if !errors.Is(err, failed) || errors.Is(err, errRulesLeft) || n != dumpRetries {
+		t.Errorf("every dump failing: %v after %d dumps; want the dump's error after %d", err, n, dumpRetries)
+	}
+	refused := errors.New("a refused delete")
+	n, _, err = run([]func([]rawRule) ([]rawRule, error){asIs}, []rawRule{a}, refused)
+	if !errors.Is(err, refused) || !errors.Is(err, errRulesLeft) || n != dumpRetries {
+		t.Errorf("a delete that keeps failing: %v after %d dumps; want it and errRulesLeft after %d", err, n, dumpRetries)
 	}
 }
 

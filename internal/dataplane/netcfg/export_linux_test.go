@@ -86,3 +86,7 @@ func netlinkFDs() (map[int]bool, error) {
 	}
 	return out, nil
 }
+
+// ErrDumpsDisagree is rule dumps that never agreed: the rules kept
+// changing while they were read.
+var ErrDumpsDisagree = errDumpsDisagree

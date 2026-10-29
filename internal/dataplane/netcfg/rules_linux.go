@@ -12,9 +12,14 @@ import (
 )
 
 // ownKernelRules dumps both families' rules carrying our protocol (rules
-// take one since Linux 4.17, which netcfg needs for them).
+// take one since Linux 4.17, which netcfg needs for them), each family's
+// as dumpRules takes it (until two dumps in a row agree).
 func (c *linuxConfigurator) ownKernelRules() ([]rawRule, error) {
-	rules, err := dumpAllRules(c.rules)
+	return c.own(dumpAllRules(c.rules))
+}
+
+// own keeps the rules carrying our protocol.
+func (c *linuxConfigurator) own(rules []rawRule, err error) ([]rawRule, error) {
 	if err != nil {
 		return nil, err
 	}
@@ -26,6 +31,38 @@ func (c *linuxConfigurator) ownKernelRules() ([]rawRule, error) {
 	}
 	return out, nil
 }
+
+// removeOwnRules deletes all our rules, for Close: it takes one dump of
+// our rules (dumpOwn) and deletes each rule in it (del), until a dump
+// shows none, at most dumpRetries dumps. It needs no two dumps that
+// agree, so others' rule changes can't stop it. A rule a dump repeats
+// is deleted twice: the second delete finds it gone (ENOENT, which del
+// takes as done) or takes another rule of ours (a delete carries our
+// protocol), which goes anyway. One a dump skips shows in the next. It
+// returns the last dump's error, or its deletes' errors and
+// errRulesLeft.
+func removeOwnRules(dumpOwn func() ([]rawRule, error), del func(rawRule) error) error {
+	var errs []error
+	for range dumpRetries {
+		rules, err := dumpOwn()
+		if err != nil {
+			errs = []error{err}
+			continue
+		}
+		if len(rules) == 0 {
+			return nil
+		}
+		errs = []error{fmt.Errorf("%w after %d dumps", errRulesLeft, dumpRetries)}
+		for _, kr := range rules {
+			if err := del(kr); err != nil {
+				errs = append(errs, err)
+			}
+		}
+	}
+	return errors.Join(errs...)
+}
+
+var errRulesLeft = errors.New("netcfg: remove rules: rules of ours still listed")
 
 // reconcileRules makes our rules exactly want: those the kernel has that
 // want doesn't (or that a Rule can't express: another selector or
@@ -62,12 +99,15 @@ func (c *linuxConfigurator) reconcileRules(ctx context.Context, want []Rule, hav
 
 // surplusRules sorts our rules the kernel has (have) against want:
 // present are the wanted ones it holds, kept once each; surplus are the
-// rest, to delete. Each distinct message gets one decision: a repeated
-// message (dumpRules says how a dump can repeat one, and why it takes
-// two dumps that agree) is kept once or deleted once, never deleted
-// twice, since a second delete of a message already gone removes the
-// next rule it matches, which can be a kept one with more selectors. A
-// real exact twin of a kept rule stays, harmless, until Close.
+// rest, to delete. Each distinct message (as sendRule sends it) gets one
+// decision, never two deletes: a second delete of a message already gone
+// removes the next rule it matches, which can be a kept one with more
+// selectors (RR54). dumpRules filters out a split dump's repeats, so a
+// repeat here is a real kernel duplicate (an add without NLM_F_EXCL) or
+// two races giving the same wrong dump twice. One copy of a real
+// duplicate stays: a kept rule's until Close, a surplus one's until the
+// next Apply (deleting the first copy, a rule of ours, makes Watch bring
+// one).
 func surplusRules(want []Rule, have []rawRule) (present map[Rule]bool, surplus []rawRule) {
 	wanted := make(map[Rule]bool, len(want))
 	for _, r := range want {
@@ -105,10 +145,7 @@ var errNotReadBack = errors.New("netcfg: a rule just added doesn't read back as 
 // deleted.
 func (c *linuxConfigurator) checkAddedRules(added []Rule) error {
 	have, err := dumpAllRules(c.rules)
-	if err != nil {
-		return err
-	}
-	stray, err := judgeAdded(added, have, c.proto)
+	stray, err := judgeAdded(added, have, err, c.proto)
 	var errs []error
 	for _, kr := range stray {
 		if err := sendRule(c.rules, unix.RTM_DELRULE, 0, kr.msg); err != nil && !gone(err) {
@@ -119,11 +156,26 @@ func (c *linuxConfigurator) checkAddedRules(added []Rule) error {
 }
 
 // judgeAdded says what the kernel made of the rules just added, from a
-// dump (have) taken after: nil when each reads back as added, with proto.
-// On a kernel that drops rule protocols they come back without it: those
-// are returned to delete, with errOldKernel. A rule held with proto that
-// doesn't read as added is errNotReadBack.
-func judgeAdded(added []Rule, have []rawRule, proto netlink.RouteProtocol) ([]rawRule, error) {
+// dump (have, or its error dumpErr) taken after: nil when each reads back
+// as added, with proto. On a kernel that drops rule protocols they come
+// back without it: those are returned to delete, with errOldKernel. A
+// rule held with proto that doesn't read as added is errNotReadBack.
+//
+// Rules someone kept changing through the dumps (errDumpsDisagree) leave
+// the adds unjudged: nil, since the adds succeeded and failing would undo
+// a whole Apply for others' churn (and the undo's deletes of our rules
+// bring another Apply through Watch, TP-148). The next Apply that adds a
+// rule judges again. Until then, on a kernel before 4.17 the rules stay
+// without our protocol, and the next Apply, not seeing them as ours, fails
+// with ErrConflict; a rule that doesn't read back is replaced by the next
+// Apply.
+func judgeAdded(added []Rule, have []rawRule, dumpErr error, proto netlink.RouteProtocol) ([]rawRule, error) {
+	if errors.Is(dumpErr, errDumpsDisagree) {
+		return nil, nil
+	}
+	if dumpErr != nil {
+		return nil, dumpErr
+	}
 	withProto := rulesWith(have, proto)
 	if stray := strayRules(added, have, withProto, proto); len(stray) > 0 {
 		return stray, errOldKernel

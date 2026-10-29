@@ -439,6 +439,92 @@ func (n *testNS) ipOut(t *testing.T, args ...string) string {
 	return string(out)
 }
 
+// Someone changing rules all the time makes no two rule dumps agree:
+// Survey and Apply fail rather than act on a dump that may repeat or miss
+// a rule, but Close still removes every rule and route of the owner and
+// restores its link.
+func TestCloseRemovesEverythingWhileRulesChurn(t *testing.T) {
+	n := newTestNS(t)
+	n.dummy(t, "ovl0")
+	before := snapshot(t, n.h)
+	c := n.configuratorFor(t, netcfg.OwnerRouteTable)
+	cfg := policyConfig()
+	cfg.Interfaces = []netcfg.Interface{{Name: "ovl0", Addrs: []netip.Prefix{pfx("100.64.0.7/10")}, MTU: 1380, Up: true}}
+	ctx := context.Background()
+	if err := c.Apply(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	applied := snapshot(t, n.h)
+
+	stop := n.churnRules(t)
+	if _, err := c.Survey(ctx); !errors.Is(err, netcfg.ErrDumpsDisagree) {
+		stop()
+		t.Fatalf("Survey while rules churn: %v, want ErrDumpsDisagree (or the churn is too slow to test with)", err)
+	}
+	if err := c.Apply(ctx, cfg); !errors.Is(err, netcfg.ErrDumpsDisagree) {
+		stop()
+		t.Fatalf("Apply while rules churn: %v, want ErrDumpsDisagree", err)
+	}
+	err := c.Close()
+	stop()
+	if err != nil {
+		t.Fatalf("Close while rules churn: %v", err)
+	}
+	if got := ownRules(t, n.h, netcfg.OwnerRouteTable); len(got) != 0 {
+		t.Errorf("rules left after Close: %q (applied: %q)", got, applied)
+	}
+	requireSame(t, "namespace after Close", before, snapshot(t, n.h))
+}
+
+// churnRules adds an IPv4 rule at a new priority and deletes the one
+// added eight before, without pause, until stop, which deletes what is
+// left: someone else's rules that never hold still. Each change is one
+// netlink round trip, so dumps a millisecond apart never see the same
+// rules.
+func (n *testNS) churnRules(t *testing.T) (stop func()) {
+	t.Helper()
+	h, err := netlink.NewHandleAt(n.ns)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rule := func(prio int) *netlink.Rule {
+		r := netlink.NewRule()
+		r.Family, r.Priority, r.Table = netlink.FAMILY_V4, prio, 100
+		return r
+	}
+	const first, window = 20000, 8
+	var quit atomic.Bool
+	done := make(chan error, 1)
+	next := first
+	go func() {
+		for ; !quit.Load(); next++ {
+			if err := h.RuleAdd(rule(next)); err != nil {
+				done <- err
+				return
+			}
+			if next-window >= first {
+				if err := h.RuleDel(rule(next - window)); err != nil {
+					done <- err
+					return
+				}
+			}
+		}
+		done <- nil
+	}()
+	return func() {
+		quit.Store(true)
+		if err := <-done; err != nil {
+			t.Errorf("churning rules: %v", err)
+		}
+		for p := max(first, next-window); p < next; p++ {
+			if err := h.RuleDel(rule(p)); err != nil {
+				t.Errorf("delete churned rule %d: %v", p, err)
+			}
+		}
+		h.Close()
+	}
+}
+
 func TestSurveyFindsOnLinkSubnetsAndForeignRules(t *testing.T) {
 	n := newTestNS(t)
 	n.dummy(t, "eth0")

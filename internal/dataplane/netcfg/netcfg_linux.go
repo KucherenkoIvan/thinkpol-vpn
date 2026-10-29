@@ -540,7 +540,11 @@ func (c *linuxConfigurator) Close() error {
 }
 
 // removeOwned removes every rule, route and address of the owner and
-// restores every interface it changed, going on past failures.
+// restores every interface it changed, going on past failures to remove
+// one. Rules never hold up the rest: they go by removeOwnRules, whose
+// failure (someone's rule churn can't cause it) is returned with the
+// others'. A failure to list the routes or the links leaves everything to
+// the owner's next configurator, as after a crash.
 func (c *linuxConfigurator) removeOwned() error {
 	kroutes, err := c.ownKernelRoutes()
 	if err != nil {
@@ -550,15 +554,11 @@ func (c *linuxConfigurator) removeOwned() error {
 	if err != nil {
 		return err
 	}
-	krules, err := c.ownKernelRules()
-	if err != nil {
-		return err
-	}
 	var errs []error
-	for _, kr := range krules {
-		if err := c.delKernelRule(kr, nil); err != nil {
-			errs = append(errs, err)
-		}
+	// Rules leave before the routes they lead to.
+	dumpOwn := func() ([]rawRule, error) { return c.own(dumpFamilies(c.rules, dumpRulesOnce)) }
+	if err := removeOwnRules(dumpOwn, func(kr rawRule) error { return c.delKernelRule(kr, nil) }); err != nil {
+		errs = append(errs, err)
 	}
 	for k, kr := range kroutes {
 		if err := c.delKernelRoute(k, kr, nil); err != nil {
@@ -570,8 +570,9 @@ func (c *linuxConfigurator) removeOwned() error {
 }
 
 // dumpRetries is how many times a dump the kernel interrupted (what it
-// lists changed underneath it) is taken before it fails, and how many
-// rule dumps dumpRules takes at most to find two in a row that agree.
+// lists changed underneath it) is taken before it fails, how many rule
+// dumps dumpRules takes at most to find two in a row that agree, and how
+// many removeOwnRules takes at most to see none of ours.
 const dumpRetries = 5
 
 // listRoutes lists routes through h, retrying dumps the kernel

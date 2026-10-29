@@ -63,12 +63,17 @@ func newRuleSocket(ns netns.NsHandle) (*nl.SocketHandle, error) {
 	return &nl.SocketHandle{Socket: s}, nil
 }
 
-// dumpAllRules dumps both families' rules, one RTM_GETRULE dump per
-// family.
+// dumpAllRules dumps both families' rules, each family's as dumpRules
+// takes it (until two dumps in a row agree).
 func dumpAllRules(s *nl.SocketHandle) ([]rawRule, error) {
+	return dumpFamilies(s, dumpRules)
+}
+
+// dumpFamilies dumps both families' rules with dump.
+func dumpFamilies(s *nl.SocketHandle, dump func(*nl.SocketHandle, int) ([]rawRule, error)) ([]rawRule, error) {
 	var out []rawRule
 	for _, fam := range []int{netlink.FAMILY_V4, netlink.FAMILY_V6} {
-		rules, err := dumpRules(s, fam)
+		rules, err := dump(s, fam)
 		if err != nil {
 			return nil, err
 		}
@@ -84,11 +89,13 @@ func dumpAllRules(s *nl.SocketHandle) ([]rawRule, error) {
 // point between two parts repeats the rule at the boundary, and one
 // deleted ahead skips a rule, without a word. A single dump can therefore
 // show one of our rules twice (deleting both copies deletes the only
-// rule) or miss one (Close would leave it behind). Two dumps that agree
-// mean no such change raced them, unless two changes produced the same
-// error twice in a row.
+// rule) or miss one (an Apply would add it again and fail with
+// ErrConflict). Two dumps that agree mean no such change raced them,
+// unless two changes produced the same error twice in a row (RR55). The
+// price: rules that someone keeps changing through all five dumps (15
+// ms of pauses between them) fail them with errDumpsDisagree.
 func dumpRules(s *nl.SocketHandle, fam int) ([]rawRule, error) {
-	rules, err := dumpUntilAgreed(func() ([]rawRule, error) { return dumpRulesOnce(s, fam) })
+	rules, err := dumpUntilAgreed(func() ([]rawRule, error) { return dumpRulesOnce(s, fam) }, time.Sleep)
 	if err != nil {
 		return nil, fmt.Errorf("%w (family %d)", err, fam)
 	}
@@ -96,13 +103,21 @@ func dumpRules(s *nl.SocketHandle, fam int) ([]rawRule, error) {
 }
 
 // dumpUntilAgreed takes dumps until two in a row hold the same rule
-// messages, order ignored, and returns the last. An interrupted dump
-// (should a kernel flag one) agrees with nothing. After dumpRetries dumps
-// without agreement it fails with errDumpsDisagree.
-func dumpUntilAgreed(dump func() ([]rawRule, error)) ([]rawRule, error) {
+// messages and returns the last. Order is ignored: what callers act on
+// is the set of rules, and a rule moved among equal priorities changes
+// nothing they decide. So are the flags the kernel only reports (a link
+// going away or coming back flips them, the rule is the same). An
+// interrupted dump (should a kernel flag one) agrees with nothing.
+// Before each dump but the first it sleeps a growing while (1, 2, 4, 8
+// ms), so that a burst of someone else's changes can end. After
+// dumpRetries dumps without agreement it fails with errDumpsDisagree.
+func dumpUntilAgreed(dump func() ([]rawRule, error), sleep func(time.Duration)) ([]rawRule, error) {
 	var prev []string // the last whole dump's messages, sorted
 	havePrev := false
-	for range dumpRetries {
+	for i := range dumpRetries {
+		if i > 0 {
+			sleep(time.Millisecond << (i - 1))
+		}
 		rules, err := dump()
 		if errors.Is(err, errDumpInterrupted) {
 			havePrev = false
@@ -113,7 +128,7 @@ func dumpUntilAgreed(dump func() ([]rawRule, error)) ([]rawRule, error) {
 		}
 		msgs := make([]string, len(rules))
 		for i, r := range rules {
-			msgs[i] = string(r.msg)
+			msgs[i] = string(withoutReportedFlags(r.msg))
 		}
 		slices.Sort(msgs)
 		if havePrev && slices.Equal(prev, msgs) {

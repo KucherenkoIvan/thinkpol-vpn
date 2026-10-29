@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/vishvananda/netlink/nl"
 	"golang.org/x/sys/unix"
@@ -94,9 +95,10 @@ func TestDumpErr(t *testing.T) {
 	}
 }
 
-// Rule dumps are taken until two in a row hold the same messages, order
-// aside: a split dump's repeat is not taken, and rules that never stop
-// changing fail.
+// Rule dumps are taken, with a growing pause between them, until two in
+// a row hold the same messages, order and the kernel's report-only flags
+// aside: a split dump's repeat or miss is not taken, and rules that never
+// stop changing fail.
 func TestDumpUntilAgreed(t *testing.T) {
 	const proto = 86
 	rule := func(prio int) rawRule {
@@ -104,8 +106,10 @@ func TestDumpUntilAgreed(t *testing.T) {
 	}
 	a, b := rule(5299), rule(5300)
 	var dumps int
+	var waits []time.Duration
+	sleep := func(d time.Duration) { waits = append(waits, d) }
 	from := func(seq ...[]rawRule) func() ([]rawRule, error) {
-		dumps = 0
+		dumps, waits = 0, nil
 		return func() ([]rawRule, error) {
 			i := min(dumps, len(seq)-1)
 			dumps++
@@ -124,15 +128,30 @@ func TestDumpUntilAgreed(t *testing.T) {
 		return out
 	}
 
-	got, err := dumpUntilAgreed(from([]rawRule{a, b, b}, []rawRule{a, b}, []rawRule{a, b}))
+	got, err := dumpUntilAgreed(from([]rawRule{a, b, b}, []rawRule{a, b}, []rawRule{a, b}), sleep)
 	if err != nil || !slices.Equal(prios(got), []int{5299, 5300}) || dumps != 3 {
 		t.Errorf("a repeat, then two alike: %v, %v after %d dumps; want [5299 5300] after 3", prios(got), err, dumps)
 	}
-	got, err = dumpUntilAgreed(from([]rawRule{a, b}, []rawRule{b, a}))
+	got, err = dumpUntilAgreed(from([]rawRule{a, b}, []rawRule{b, a}), sleep)
 	if err != nil || len(got) != 2 || dumps != 2 {
 		t.Errorf("two alike but for the order: %v, %v after %d dumps; want both rules after 2", prios(got), err, dumps)
 	}
-	got, err = dumpUntilAgreed(from([]rawRule{}, []rawRule{}))
+	// Two dumps as long as each other, but not the same rules: a rule
+	// skipped in the first, another gone by the second.
+	got, err = dumpUntilAgreed(from([]rawRule{a}, []rawRule{b}, []rawRule{b}), sleep)
+	if err != nil || !slices.Equal(prios(got), []int{5300}) || dumps != 3 {
+		t.Errorf("one rule, then another, then the same: %v, %v after %d dumps; want [5300] after 3", prios(got), err, dumps)
+	}
+	// The flags the kernel only reports don't count: oif's link went
+	// away between the dumps.
+	oif := rawRule{msg: ruleMsg(Rule{Family: IPv4, Priority: 5298, Oif: "ovl0"}, proto)}
+	detached := rawRule{msg: slices.Clone(oif.msg)}
+	binary.NativeEndian.PutUint32(detached.msg[8:12], unix.FIB_RULE_OIF_DETACHED)
+	got, err = dumpUntilAgreed(from([]rawRule{oif}, []rawRule{detached}, []rawRule{detached}), sleep)
+	if err != nil || len(got) != 1 || dumps != 2 {
+		t.Errorf("a rule, then the same flagged detached: %v, %v after %d dumps; want it after 2", prios(got), err, dumps)
+	}
+	got, err = dumpUntilAgreed(from([]rawRule{}, []rawRule{}), sleep)
 	if err != nil || len(got) != 0 || dumps != 2 {
 		t.Errorf("no rules twice: %v, %v after %d dumps", prios(got), err, dumps)
 	}
@@ -143,9 +162,14 @@ func TestDumpUntilAgreed(t *testing.T) {
 		}
 		return []rawRule{a, a}, nil
 	}
-	dumps = 0
-	if got, err := dumpUntilAgreed(alternating); !errors.Is(err, errDumpsDisagree) || got != nil || dumps != dumpRetries {
+	dumps, waits = 0, nil
+	if got, err := dumpUntilAgreed(alternating, sleep); !errors.Is(err, errDumpsDisagree) || got != nil || dumps != dumpRetries {
 		t.Errorf("dumps that never agree: %v, %v after %d dumps; want errDumpsDisagree after %d", prios(got), err, dumps, dumpRetries)
+	}
+	// A growing pause before each dump but the first, so a burst of
+	// changes can end.
+	if want := []time.Duration{time.Millisecond, 2 * time.Millisecond, 4 * time.Millisecond, 8 * time.Millisecond}; !slices.Equal(waits, want) {
+		t.Errorf("waits between dumps that never agree: %v, want %v", waits, want)
 	}
 	// An interrupted dump between two alike breaks the pair: the dump
 	// before it doesn't count.
@@ -157,11 +181,11 @@ func TestDumpUntilAgreed(t *testing.T) {
 		return []rawRule{a}, nil
 	}
 	dumps = 0
-	if got, err := dumpUntilAgreed(interrupted); err != nil || len(got) != 1 || dumps != 4 {
+	if got, err := dumpUntilAgreed(interrupted, sleep); err != nil || len(got) != 1 || dumps != 4 {
 		t.Errorf("a dump, an interrupted one, then two alike: %v, %v after %d dumps; want [5299] after 4", prios(got), err, dumps)
 	}
 	failed := errors.New("a failed dump")
-	if _, err := dumpUntilAgreed(func() ([]rawRule, error) { return nil, failed }); !errors.Is(err, failed) {
+	if _, err := dumpUntilAgreed(func() ([]rawRule, error) { return nil, failed }, sleep); !errors.Is(err, failed) {
 		t.Errorf("a failed dump: %v", err)
 	}
 }
