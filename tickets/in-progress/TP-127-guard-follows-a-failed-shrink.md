@@ -20,8 +20,8 @@ When a smaller direct set fails to apply, and so does the fallback to nothing di
 - Health keeps saying the routes failed. Once this lands, the residual-risks row for a failed shrink (TP-077's RESIDUAL-RISKS.md) drops D6 and names this ticket for IPv6.
 
 ## Acceptance
-- [ ] a test where removing direct prefixes fails and so does the fallback: the guard installed is the new, narrower set's, and the routes are the old ones. Mutation: holding the guard to the old routes fails it
-- [ ] a test that a failed *grow* still holds the guard to the routes in place (no wider guard than the routes)
+- [x] a test where removing direct prefixes fails and so does the fallback: the guard installed is the new, narrower set's, and the routes are the old ones. Mutation: holding the guard to the old routes fails it
+- [x] a test that a failed *grow* still holds the guard to the routes in place (no wider guard than the routes)
 - [ ] `make lint`, `make test`, `make lab-test` pass
 
 ## Notes
@@ -34,3 +34,4 @@ When a smaller direct set fails to apply, and so does the fallback to nothing di
 - 2026-10-24 docs: slotted in the pre-M2 phase (wave 1, Guard)
 - 2026-10-28 backlog → in-progress, owner: agent-claude-tp127
 - 2026-10-29 takeover (agent-claude-tp127b): WIP 0e0b488 re-read against the ticket; docs say forwarded IPv6 still follows the old routes (RR14 keeps D6 for it only), guardWhileFailing's doc scopes "never wider than the rules" to Direct
+- 2026-10-29 tests: TestAFailedShrinkNarrowsTheGuard, TestAFailedGrowHoldsTheGuardToTheRoutes, and TestTheGuardIsPutBackWhileTheRoutesFail/TestEnforcerAppliesTheGuardWithTheRoutes updated (mixed change, fallback). Mutants, each killed: apply's failure branch holding the guard to the old routes (GuardFor(held): the shrink test and AppliesTheGuard fail); following the failed Want (GuardFor(w): the grow test fails); reapplyGuard ignoring failing (the shrink test after the guard's Watch, and PutBack, fail); guardWhileFailing without the intersection (w's Direct: PutBack and the grow test fail)
