@@ -276,12 +276,13 @@ func TestTheHelperRestoresOnInputEndOrRequestNeverOnSignals(t *testing.T) {
 		}
 		assertClosed(t, h)
 	})
-	t.Run("after SIGINT and SIGHUP, only when asked", func(t *testing.T) {
+	t.Run("after the terminal's signals, only when asked", func(t *testing.T) {
 		d := newHelperDirs(t)
 		h, _ := startHelper(t, d, runName())
 		h.do(fileSpec("one", "1"))
-		_ = h.cmd.Process.Signal(syscall.SIGINT)
-		_ = h.cmd.Process.Signal(syscall.SIGHUP)
+		for _, sig := range []syscall.Signal{syscall.SIGINT, syscall.SIGHUP, syscall.SIGTERM, syscall.SIGQUIT} {
+			_ = h.cmd.Process.Signal(sig)
+		}
 		h.do(fileSpec("two", "2"))
 		if !present(h.runDir(), "file-one") {
 			t.Fatal("the signals undid the change")

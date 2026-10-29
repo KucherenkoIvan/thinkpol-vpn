@@ -685,16 +685,22 @@ func TestTheUndoLoadsASecondTimeOnlyForTheSkipAlone(t *testing.T) {
 // apart from those that differ: pf's skips unreadable are LEFT (whether
 // the run's skip is gone can't be told, a reboot clears it), never
 // REBOOT, with no second load; main rules unreadable, the skip gone, are
-// LEFT saying they can't be read, not that they differ.
+// LEFT saying they can't be read, not that they differ; main rules
+// unreadable with the run's skip alone still differing get no second load
+// either (it could wipe a ruleset that can't be seen), and are REBOOT.
 func TestWhatCantBeReadAfterTheUndosLoadIsNamedApart(t *testing.T) {
 	for _, tc := range []struct {
-		name, unreadable, want string
+		name, unreadable, want, verdict string
+		sticky                          bool
 	}{
-		{"pf's skips", "-s Interfaces -v", "[pf-skip] can't be read (pf-skip: "},
-		{"the main rules", "-s rules", "the skip is gone, but [pf-rules] can't be read (pf-rules: "},
+		{"pf's skips", "-s Interfaces -v", "[pf-skip] can't be read (pf-skip: ", Left, false},
+		{"the main rules", "-s rules", "the skip is gone, but [pf-rules] can't be read (pf-rules: ", Left, false},
+		{"the main rules, the run's skip still listed", "-s rules",
+			"[pf-skip] differ from the baseline, and [pf-rules] can't be read (pf-rules: ", Reboot, true},
 	} {
 		pf := newFakePf()
 		e := skipRun(t, pf)
+		pf.sticky = tc.sticky
 		loads := 0
 		e.h.exec = func(ctx context.Context, argv []string, stdin []byte) output {
 			args := strings.Join(argv[1:], " ")
@@ -708,8 +714,8 @@ func TestWhatCantBeReadAfterTheUndosLoadIsNamedApart(t *testing.T) {
 		}
 		res := e.restore(t.Context(), "test")
 		failed := strings.Join(res.Failed, " ")
-		if res.Verdict != Left || loads != 1 || !strings.Contains(failed, tc.want) || !strings.Contains(failed, "Device busy") ||
-			strings.Contains(failed, "differ from the baseline") {
+		if res.Verdict != tc.verdict || loads != 1 || !strings.Contains(failed, tc.want) || !strings.Contains(failed, "Device busy") ||
+			!tc.sticky && strings.Contains(failed, "differ from the baseline") {
 			t.Errorf("%s: %d loads: %+v", tc.name, loads, res)
 		}
 		if tc.unreadable == "-s Interfaces -v" && !strings.Contains(failed, nextPfUnproven) {
