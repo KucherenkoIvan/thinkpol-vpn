@@ -449,25 +449,27 @@ type pfReference struct {
 	token uint64
 }
 
-// parseReferences reads `pfctl -s References` by the columns its header
-// names ("PID  Process Name  TOKEN  TIMESTAMP"): each line after it is a
-// pid in the first field and the token where the header's TOKEN starts,
-// whatever the process name (spaces included) and the timestamp look
-// like, e.g. "618      socketfilterfw               9813589183660731843
+// parseReferences reads `pfctl -s References`, out, by the columns its
+// header names ("PID  Process Name  TOKEN  TIMESTAMP"): each line after
+// it is a pid in the first field and the token where the header's TOKEN
+// starts, whatever the process name (spaces included) and the timestamp
+// look like, e.g. "618      socketfilterfw               9813589183660731843
 // 0 days 00:03:31". understood says the listing is one the guard can
 // read: a header, and every line after it a reference so read, one at
 // least; or pfctl's answer while pf holds no reference,
-// answerNoReferences alone, without a header (references also wants
-// stderr quiet then). Not understood (no header otherwise, a header with
-// no reference under it, which a Mac doesn't print, a line out of its
-// columns, a listing cut short), the absence of a reference proves
-// nothing.
-func parseReferences(out []byte) (refs []pfReference, understood bool) {
-	if onlyLine(out, answerNoReferences) {
-		return nil, true
+// answerNoReferences alone on stdout, without a header, and nothing but
+// ALTQ chatter on stderr (as a Mac printed it: a warning there could be
+// about a listing that failed). Not understood (no header otherwise, a
+// header with no reference under it, which a Mac doesn't print, a line
+// out of its columns, a listing cut short), the absence of a reference
+// proves nothing.
+func parseReferences(out pfOutput) (refs []pfReference, understood bool) {
+	if onlyLine(out.stdout, answerNoReferences) {
+		said, err := readLines(out.stderr)
+		return nil, err == nil && len(said) == 0
 	}
 	tokenAt := -1
-	sc := bufio.NewScanner(bytes.NewReader(out))
+	sc := bufio.NewScanner(bytes.NewReader(out.stdout))
 	sc.Buffer(nil, 1<<20)
 	for sc.Scan() {
 		l := strings.TrimRight(sc.Text(), " \t\r")

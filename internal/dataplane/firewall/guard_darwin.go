@@ -533,20 +533,13 @@ func (g *IPv6Guard) enabled(ctx context.Context) (bool, error) {
 	return parseEnabled(out.stdout)
 }
 
-// references reads `pfctl -s References` (parseReferences). pfctl's
-// answer of none held counts only with nothing but ALTQ chatter on
-// stderr, as a Mac printed it: a warning there could be about a listing
-// that failed.
+// references reads `pfctl -s References` (parseReferences).
 func (g *IPv6Guard) references(ctx context.Context) ([]pfReference, bool, error) {
 	out, err := g.pf.run(ctx, nil, "-s", "References")
 	if err != nil {
 		return nil, false, fmt.Errorf("firewall: pf's references: %w", err)
 	}
-	refs, understood := parseReferences(out.stdout)
-	if understood && len(refs) == 0 {
-		said, err := readLines(out.stderr)
-		understood = err == nil && len(said) == 0
-	}
+	refs, understood := parseReferences(out)
 	return refs, understood, nil
 }
 
@@ -791,10 +784,10 @@ func (g *IPv6Guard) kill(ctx context.Context, a *appliedGuard) error {
 // fails included, fails it with the -F's error and the listing's.
 func (g *IPv6Guard) flush(ctx context.Context) error {
 	for _, step := range []struct {
-		what  string
-		empty func(context.Context) error
+		modifier string
+		empty    func(context.Context) error
 	}{{"rules", g.noRules}, {"Tables", g.noGuardTable}} {
-		_, err := g.pf.run(ctx, nil, "-a", GuardAnchor, "-F", step.what)
+		_, err := g.pf.run(ctx, nil, "-a", GuardAnchor, "-F", step.modifier)
 		if errors.Is(err, routetable.ErrGuardUnsupported) {
 			return err
 		}

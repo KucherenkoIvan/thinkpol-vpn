@@ -249,7 +249,9 @@ func TestAChangeTheErrorDoesntShowStillKills(t *testing.T) {
 	if apply("a retry") != said || !alive(a) {
 		t.Fatal("the retry under the same bypasses killed, or said otherwise")
 	}
-	r.pf.set(func(f *fakePF) { f.main = mainWith([]string{"pass out quick on en0 all", "pass out quick on en1 all", `anchor "vpn" all`}) })
+	r.pf.set(func(f *fakePF) {
+		f.main = mainWith([]string{"pass out quick on en0 all", "pass out quick on en1 all", `anchor "vpn" all`})
+	})
 	if apply("another quick pass above the hook") != said || alive(a) {
 		t.Error("a second quick pass above the hook, said alike, didn't kill")
 	}
