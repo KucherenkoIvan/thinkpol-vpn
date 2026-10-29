@@ -12,7 +12,8 @@ import (
 // Guard is the firewall half of enforcement, a port the agent fills
 // (firewall.IPv6Guard: nftables on Linux, pf on macOS): it refuses on the physical interfaces
 // what routing can't keep in the tunnel. An Enforcer opened with one
-// applies it after the routes, with the same Want (GuardFor), on every
+// applies it after the routes, for the routes in place and the last Want
+// (guardFor; GuardFor of that Want once its routes are in), on every
 // Apply and re-apply, re-applies it when Watch says it may have been
 // removed, and closes it (removing it) before the routes on Close. A
 // fresh Guard's Close removes what a crashed run's left (Clear).

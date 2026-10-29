@@ -33,7 +33,7 @@
 //	aggregate: Builder.Build() → *Set, Stats (prefix counts before/after)
 //	encode:    Set.Blob() → bytes; sha256 of those names the blob
 //	read:      Decode(blob) → *Set (canonical only); Set.Contains, Set.Prefixes
-//	combine:   Builder.AddSet (union), Set.Minus (difference)
+//	combine:   Builder.AddSet (union), Set.Minus (difference), Set.Intersect
 //	built in:  Local (the local ranges), All (every address)
 //
 // # Built-in sets

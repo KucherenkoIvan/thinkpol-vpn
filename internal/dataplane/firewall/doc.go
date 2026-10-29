@@ -15,16 +15,17 @@
 // enforcement for IPv6, the [routetable.Guard] the agent hands the route
 // table's [routetable.Enforcer]. It refuses IPv6 a process of the device
 // sends out of any interface but the TUN and loopback, except what
-// [routetable.Exempt] lets out, which [routetable.GuardFor] derives from
-// the same Want as the routes: the direct destinations and the links'
-// endpoints (exactly what the route table throws, endpoints as whole
-// addresses), link-local unicast and multicast ([routetable.LinkScoped]),
-// the links' marked sockets ([routetable.Mark]) and the direct DNS
-// upstreams. So whether IPv6 goes into the TUN (an exit with NAT66), meets
-// an unreachable route (an overlay without IPv6) or is refused by an exit
-// without IPv6, the device's own IPv6 leaves a physical interface only to
-// direct destinations and entries, on the link, or from the links' own
-// sockets.
+// [routetable.Exempt] lets out, which the Enforcer picks for the routes
+// in place and the last Want (what [routetable.GuardFor] of both
+// exempts; the routetable doc's "One rule picks the guard"): the direct
+// destinations and the links' endpoints (exactly what the route table
+// throws, endpoints as whole addresses), link-local unicast and
+// multicast ([routetable.LinkScoped]), the links' marked sockets
+// ([routetable.Mark]) and the direct DNS upstreams. So whether IPv6 goes
+// into the TUN (an exit with NAT66), meets an unreachable route (an
+// overlay without IPv6) or is refused by an exit without IPv6, the
+// device's own IPv6 leaves a physical interface only to direct
+// destinations and entries, on the link, or from the links' own sockets.
 //
 // Only IPv6 is the guard's: IPv4's interface-bound sockets still leave by
 // the main table's default route until the kill switch (TP-048), a
