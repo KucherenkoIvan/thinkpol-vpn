@@ -59,6 +59,16 @@ func TestParseRawRule(t *testing.T) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
+	// A known attribute too short for its value is not read as 0.
+	for name, a := range map[string][]byte{
+		"a table of two bytes":    rta(unix.FRA_TABLE, []byte{0, 0}),
+		"a protocol of two bytes": rta(unix.FRA_PROTOCOL, []byte{86, 0}),
+	} {
+		r, err = parseRawRule(rawRuleMsg(unix.AF_INET, 0, unix.FR_ACT_TO_TBL, a))
+		if err != nil || !r.rule.Other {
+			t.Errorf("%s: %+v, %v", name, r, err)
+		}
+	}
 	// A partial mark mask is a selector netcfg never sets.
 	r, err = parseRawRule(rawRuleMsg(unix.AF_INET, 0, unix.FR_ACT_TO_TBL, rta(unix.FRA_FWMARK, u32(0x10)), rta(unix.FRA_FWMASK, u32(0xf0))))
 	if err != nil || !r.rule.Other {
