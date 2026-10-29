@@ -405,13 +405,22 @@ func TestARootCallIsRefusedWithoutAskingTheOS(t *testing.T) {
 // leaving isn't logged as the OS failing.
 func TestACallerThatLeftIsNotRefused(t *testing.T) {
 	var buf bytes.Buffer
-	hung := membershipFunc(func(ctx context.Context, _, _ uint32) (bool, error) {
-		<-ctx.Done()
-		return false, ctx.Err()
-	})
+	asked, release := make(chan struct{}), make(chan struct{})
+	defer close(release)
+	hung := newCachedMembership(membershipFunc(func(ctx context.Context, _, _ uint32) (bool, error) {
+		close(asked)
+		select {
+		case <-release:
+		case <-ctx.Done():
+		}
+		return false, errors.New("opendirectoryd is down")
+	}))
 	p := Policy{ServiceUID: 990, Group: 4242, HasGroup: true, Membership: hung}
 	ctx, cancel := context.WithCancel(callerCtx(Caller{UID: 1001, GIDs: sixteenGroups}))
-	cancel()
+	go func() {
+		<-asked
+		cancel()
+	}()
 	err := p.allow(ctx, refusalLog(&buf), localapiv1.LocalService_GetStatus_FullMethodName)
 	if !errors.Is(err, context.Canceled) || errors.Is(err, ErrMembershipUnknown) {
 		t.Errorf("got %v; want the context's end, no refusal", err)
