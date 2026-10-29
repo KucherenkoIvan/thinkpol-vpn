@@ -45,7 +45,8 @@ const guardPoll = 10 * time.Second
 // turns off a pf someone else enabled nor leaves pf on after it: the token
 // goes to a record in the state directory first thing (by the pfctl's pid
 // if its token can't be read, and then Apply, enforcing first while pf is
-// on, fails until `pfctl -s References` names it), and Close releases it
+// on, fails until `pfctl -s References` names it or no longer lists its
+// pid), and Close releases it
 // (`pfctl -X`), but only while that listing has it as taken by the pfctl
 // the record names. States pf already holds would pass without a rule
 // (pf's state policy is floating): after a load, an enable, pf seen off,
@@ -78,9 +79,8 @@ type IPv6Guard struct {
 	// pid only. recorded says the record has it as it is.
 	token    *pfToken
 	recorded bool
-	// killStates: pf's states still need checking against applied (after
-	// a load, an enable, a failed Apply, or a check, an Apply's or the
-	// poll's, that saw the bypasses change).
+	// killStates: pf's states still need checking against applied
+	// (statesStale, or a failed Apply).
 	killStates bool
 	// killedUnder: what checkBypass read and found when the states were
 	// last killed; valid while every check since, an Apply's or the
@@ -200,21 +200,18 @@ func (g *IPv6Guard) Apply(ctx context.Context, e routetable.Exempt) (err error) 
 		g.applied = a
 		g.statesStale()
 	}
-	// What doesn't stop enforcing is told at the end (later): what enable
-	// tells after (a failed release of a reference held before, a token
-	// pf is on by that can't be read).
-	var later []error
 	// After the load, so pf comes on with the guard in place; a failure
-	// here leaves the anchor applied, and the retry only enables.
+	// here leaves the anchor applied, and the retry only enables. after
+	// (a failed release of an older reference, an unread token with pf
+	// on) doesn't stop enforcing: it is told at the end.
 	after, err := g.enable(ctx)
-	later = append(later, after)
 	if err == nil {
 		// Last, so the interfaces pf does filter are guarded while
 		// something lets IPv6 past the rest.
 		b := g.checkBypass(ctx, main, e.TUN)
 		err = errors.Join(g.killIfDue(ctx, b), b.asError())
 	}
-	return errors.Join(append([]error{err}, later...)...)
+	return errors.Join(err, after)
 }
 
 // statesStale says pf's states need checking against the anchor, and
@@ -695,17 +692,18 @@ func (g *IPv6Guard) enable(ctx context.Context) (after, err error) {
 	if err := g.adoptRecord(); err != nil {
 		return nil, err
 	}
-	if err := g.resolveToken(ctx); err != nil {
-		if on && errors.Is(err, errUnreadToken) {
-			return err, g.recordToken()
+	if rerr := g.resolveToken(ctx); rerr != nil {
+		if on && errors.Is(rerr, errUnreadToken) {
+			// pf is on: enforce, then tell the token.
+			return rerr, g.recordToken()
 		}
-		return nil, err
+		return nil, rerr
 	}
 	if on && g.token != nil {
 		return nil, g.recordToken()
 	}
-	// pf was off, or on by someone else's reference: states it holds from
-	// then need checking.
+	// pf on by someone else's reference (pf off was marked above): states
+	// it holds from then need checking.
 	g.statesStale()
 	return g.takeReference(ctx)
 }
@@ -771,8 +769,9 @@ func (g *IPv6Guard) recordToken() error {
 
 // takeReference turns pf on with a new reference (`pfctl -E`) and
 // records it, then releases the one the guard held, if pf still lists it.
-// Once pf is on, what fails but leaves the reference recorded is after,
-// apart from err: that release's failure, the new token unread.
+// after: what went wrong once pf is on by the new, recorded reference (the
+// old one's release, the new token unread); err: pf not enabled, or the
+// reference not recorded.
 func (g *IPv6Guard) takeReference(ctx context.Context) (after, err error) {
 	old := g.token
 	out, err := g.pf.run(ctx, nil, "-E")
@@ -781,10 +780,13 @@ func (g *IPv6Guard) takeReference(ctx context.Context) (after, err error) {
 	}
 	t := pfToken{pid: out.pid}
 	v, perr := parseToken(out)
+	var rerr error
 	if perr == nil {
 		t.value = v
-	} else if v, ok, _ := g.resolve(ctx, t); ok {
+	} else if v, ok, err := g.resolve(ctx, t); ok {
 		t.value = v
+	} else {
+		rerr = err
 	}
 	g.token, g.recorded = &t, false
 	if err := g.recordToken(); err != nil {
@@ -802,9 +804,23 @@ func (g *IPv6Guard) takeReference(ctx context.Context) (after, err error) {
 		}
 	}
 	if t.value == 0 {
-		after = errors.Join(after, fmt.Errorf("%w (pfctl pid %d): %w", errUnreadToken, t.pid, perr))
+		after = errors.Join(after, unreadToken(t.pid, perr, rerr))
 	}
 	return after, nil
+}
+
+// unreadToken is errUnreadToken for the reference pfctl pid took, with
+// why neither its output (perr) nor pf's listing (rerr; nil: the listing,
+// readable, has no reference of that pid) gave the token. resolve's
+// errUnreadToken names the pid already.
+func unreadToken(pid int, perr, rerr error) error {
+	switch {
+	case errors.Is(rerr, errUnreadToken):
+		return fmt.Errorf("%w; %w", rerr, perr)
+	case rerr != nil:
+		return fmt.Errorf("%w (pfctl pid %d): %w; %w", errUnreadToken, pid, perr, rerr)
+	}
+	return fmt.Errorf("%w (pfctl pid %d): %w", errUnreadToken, pid, perr)
 }
 
 // release lets go of t, a reference with a known token: `pfctl -X` if pf
@@ -1022,18 +1038,23 @@ func (g *IPv6Guard) Watch(ctx context.Context) (<-chan struct{}, error) {
 }
 
 // broken reports whether the guard isn't whole now; reading it back
-// failing counts as not whole.
+// failing counts as not whole. It reads pf's status first, failing or
+// not: pf passes anything while off, and someone else may turn it back
+// on before the next Apply reads it (a persistent bypass keeps the guard
+// failing, its states killed under that bypass), so pf seen off marks
+// the states stale.
 func (g *IPv6Guard) broken(ctx context.Context) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.closed || ctx.Err() != nil {
+	if g.closed || ctx.Err() != nil || (g.applied == nil && !g.failing) {
 		return false
 	}
-	if g.failing {
+	on, onErr := g.enabled(ctx)
+	if onErr == nil && !on {
+		g.statesStale()
+	}
+	if g.failing || (onErr == nil && !on) {
 		return true
-	}
-	if g.applied == nil {
-		return false
 	}
 	main, err := g.checkHook(ctx)
 	if err != nil {
@@ -1042,12 +1063,5 @@ func (g *IPv6Guard) broken(ctx context.Context) bool {
 	}
 	b := g.checkBypass(ctx, main, g.applied.exempt.TUN)
 	g.sawBypasses(b)
-	if b.err != nil || len(b.found) > 0 || !g.intact(ctx, g.applied) {
-		return true
-	}
-	on, err := g.enabled(ctx)
-	if err == nil && !on {
-		g.statesStale() // pf passes anything while off
-	}
-	return err != nil || !on
+	return onErr != nil || b.err != nil || len(b.found) > 0 || !g.intact(ctx, g.applied)
 }

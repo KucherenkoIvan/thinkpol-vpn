@@ -829,7 +829,9 @@ func TestOnlyAFailureThatLetIPv6PastKillsAgain(t *testing.T) {
 // What the poll sees counts as an Apply's check would: a hook missing for
 // one poll, a bypass the poll saw, or pf off, kills at the Apply its
 // signal brings, even when it is gone by then (pf back on by someone
-// else's `pfctl -e`). An unchanged guard's polls don't kill.
+// else's `pfctl -e`). pf off counts under a persistent bypass too, the
+// guard failing and its kill done under that bypass. An unchanged guard's
+// polls don't kill.
 func TestAChangeOnlyThePollSawKills(t *testing.T) {
 	ctx := context.Background()
 	r := newRig(t)
@@ -882,6 +884,18 @@ func TestAChangeOnlyThePollSawKills(t *testing.T) {
 	}
 	if slices.Contains(r.pf.stateList(), s) {
 		t.Error("a state made while the poll saw pf off survived")
+	}
+	r.pf.set(func(f *fakePF) { f.main = append([]string{"pass out quick inet6 all"}, stockMain...) })
+	notEnforced(t, g.Apply(ctx, exempt(t)), "`pass ... quick` rule above")
+	s = state()
+	r.pf.disable()
+	if !g.broken(ctx) {
+		t.Fatal("the poll missed pf off under a bypass")
+	}
+	r.pf.set(func(f *fakePF) { f.plainOn = true })
+	notEnforced(t, g.Apply(ctx, exempt(t)), "`pass ... quick` rule above")
+	if slices.Contains(r.pf.stateList(), s) {
+		t.Error("a state made while the poll saw pf off under a bypass survived")
 	}
 }
 
@@ -1462,8 +1476,12 @@ func TestAnUnreadableTokenIsNotTakenTwice(t *testing.T) {
 		r.pf.noToken, r.pf.oddReferences = true, true
 		g := r.guard()
 		for range 2 {
-			if err := g.Apply(context.Background(), exempt(t)); !errors.Is(err, errUnreadToken) {
+			err := g.Apply(context.Background(), exempt(t))
+			if !errors.Is(err, errUnreadToken) {
 				t.Fatalf("%v, want the unread token", err)
+			}
+			if !errors.Is(err, errUnreadReferences) || strings.Count(err.Error(), errUnreadToken.Error()) != 1 {
+				t.Errorf("%v: want why pf's listing didn't name it, the token told once", err)
 			}
 		}
 		refs := r.pf.references()
@@ -1514,6 +1532,15 @@ func TestAnUnreadableTokenIsNotTakenTwice(t *testing.T) {
 			t.Fatal(err)
 		}
 		r.whole(t, exempt(t))
+	})
+	t.Run("the listing failed", func(t *testing.T) {
+		r := newRig(t)
+		r.pf.noToken = true
+		r.pf.failOn("References", errFake)
+		err := r.guard().Apply(context.Background(), exempt(t))
+		if !errors.Is(err, errUnreadToken) || !errors.Is(err, errFake) {
+			t.Fatalf("%v, want the unread token and why the listing failed", err)
+		}
 	})
 }
 
