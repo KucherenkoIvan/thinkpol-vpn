@@ -74,10 +74,11 @@ func (n *Node) goTest(ctx context.Context, w io.Writer, pkg GoPackage, env, args
 	if err != nil {
 		return err
 	}
-	// The hash keeps a/b-c and a/b/c apart.
-	name := slug(path.Base(pkg.ImportPath), 40) + "-" + shortHash(pkg.ImportPath) + ".test"
-	bin := filepath.Join(n.lab.root, "lab", "bin", "tests", name)
-	built, err := goBuild(ctx, n.lab.root, t, bin, "test", "-c", "./"+pkg.Dir)
+	name := testBinaryName(pkg)
+	bin := filepath.Join(n.lab.binDir, "tests", name)
+	built, err := buildTestsOnce(bin, func() (bool, error) {
+		return goBuild(ctx, n.lab.root, t, bin, "test", "-c", "./"+pkg.Dir)
+	})
 	if err != nil || !built {
 		return err // !built: no tests for linux
 	}
@@ -95,6 +96,42 @@ func (n *Node) goTest(ctx context.Context, w io.Writer, pkg GoPackage, env, args
 		return fmt.Errorf("%s: tests in %s: %w", n.Name, pkg.ImportPath, err)
 	}
 	return nil
+}
+
+// builtTests holds, by output path, this process's builds of packages'
+// tests: each is built once per binary directory, never again under a lab
+// running it.
+var builtTests sync.Map // string → *testBuild
+
+type testBuild struct {
+	mu    sync.Mutex
+	done  bool
+	built bool // false: the package has no tests for linux
+}
+
+// buildTestsOnce runs build for the output bin until it succeeds once, and
+// returns that build's result from then on. A failed build renamed nothing
+// onto bin, so the next caller builds again.
+func buildTestsOnce(bin string, build func() (bool, error)) (bool, error) {
+	b, _ := builtTests.LoadOrStore(bin, &testBuild{})
+	tb := b.(*testBuild)
+	tb.mu.Lock()
+	defer tb.mu.Unlock()
+	if tb.done {
+		return tb.built, nil
+	}
+	built, err := build()
+	if err != nil {
+		return false, err
+	}
+	tb.done, tb.built = true, built
+	return built, nil
+}
+
+// testBinaryName is the file GoTest builds a package's tests into, under
+// the lab's binary directory's tests/. The hash keeps a/b-c and a/b/c apart.
+func testBinaryName(pkg GoPackage) string {
+	return slug(path.Base(pkg.ImportPath), 40) + "-" + shortHash(pkg.ImportPath) + ".test"
 }
 
 // RunGoTests is GoTest for a lab test, in this node: the package's output
@@ -122,7 +159,8 @@ func (n *Node) RunGoTests(t testing.TB, pkgPattern string, args ...string) {
 // another left behind. Each package's output goes to w in one piece, in the
 // order the packages finish. env (NAME=value) is added to the test
 // binaries' environment. It returns the packages that failed; err is for
-// the lab itself failing.
+// the lab itself failing. Its labs run this process's binaries: the caller
+// removes them with RemoveRunBinaries once GoTestEach returns.
 func GoTestEach(ctx context.Context, root string, pkgs []GoPackage, parallel int, w io.Writer, env []string, args ...string) (failed []string, err error) {
 	checkout, err := CheckoutProject(root)
 	if err != nil {
@@ -161,7 +199,7 @@ func GoTestEach(ctx context.Context, root string, pkgs []GoPackage, parallel int
 }
 
 func goTestFresh(ctx context.Context, root, project string, pkg GoPackage, w io.Writer, env, args []string) (labErr, testErr error) {
-	l, err := Up(ctx, root, project, GoTestTopology())
+	l, err := up(ctx, root, project, GoTestTopology(), "", runInputs)
 	if l != nil {
 		defer func() {
 			if err := l.Down(context.WithoutCancel(ctx)); err != nil && labErr == nil {

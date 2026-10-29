@@ -27,7 +27,8 @@ type Lab struct {
 	Project  string
 	Topology Topology
 	root     string
-	runDir   string
+	stateDir string // lab/.run/<project>: its Compose file, a detached lab's binaries
+	binDir   string // mounted at BinDir
 	nodes    map[string]*Node
 	gateways map[string][]netip.Addr // Docker's bridge addresses, by network
 	bridges  map[string]Bridge       // by network
@@ -62,6 +63,9 @@ func StartOwnSlot(t testing.TB, topo Topology) *Lab {
 
 func start(t testing.TB, topo Topology, slotKey string) *Lab {
 	t.Helper()
+	if !mainInstalled.Load() {
+		t.Fatal("lab: this package's TestMain must call lab.Main(m), or the binaries its labs run are never removed")
+	}
 	root, err := Root()
 	if err != nil {
 		t.Fatal(err)
@@ -74,9 +78,25 @@ func start(t testing.TB, topo Topology, slotKey string) *Lab {
 	project := claimProject(testProject(checkout, cwd, t.Name()))
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
-	l, err := up(ctx, root, project, topo, slotKey)
+	// The run's directory, for .kept; up gets the same one.
+	p, err := prepare(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// With KeepEnv set, the lab may outlive the run (kept, or left up by a
+	// -timeout panic): .kept lists it before it starts, so its binaries stay
+	// until labctl down finds it down (except for one accepted gap, see
+	// sweepBinRoot). Without KeepEnv, a lab the run leaves up loses its
+	// binaries to the next sweep; labctl down -tests removes it.
+	keep := os.Getenv(KeepEnv) != ""
+	if keep {
+		if err := p.bin.recordLab(project); err != nil {
+			t.Fatal(err)
+		}
+	}
+	l, err := up(ctx, root, project, topo, slotKey, runInputs)
 	if l != nil {
-		t.Cleanup(func() { l.cleanup(t) })
+		t.Cleanup(func() { l.cleanup(t, p.bin, keep) })
 	}
 	if err != nil {
 		t.Fatal(err)
@@ -100,17 +120,23 @@ func claimProject(project string) string {
 	return project
 }
 
-func (l *Lab) cleanup(t testing.TB) {
+// cleanup tears the lab down, or with keep (KeepEnv) keeps a failed
+// test's lab and the run directory bins it mounts.
+func (l *Lab) cleanup(t testing.TB, bins *runBinaries, keep bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	if t.Failed() {
 		if res, err := runEnv(ctx, nil, environWithoutCompose(), "docker", "compose", "-f", l.ComposeFile(), "-p", l.Project, "logs", "--no-color", "--timestamps"); err == nil {
 			t.Logf("lab %s logs:\n%s", l.Project, res.Stdout)
 		}
-		if os.Getenv(KeepEnv) != "" {
-			t.Logf("lab %s kept: docker compose -p %s exec <node> bash; make lab-down removes it", l.Project, l.Project)
-			l.releaseSlot()
-			return
+		if keep {
+			err := bins.keep(l.Project)
+			if err == nil {
+				t.Logf("lab %s kept: docker compose -p %s exec <node> bash; make lab-down removes it", l.Project, l.Project)
+				l.releaseSlot()
+				return
+			}
+			t.Errorf("lab %s: can't keep it, tearing it down: %v", l.Project, err)
 		}
 	}
 	if err := l.Down(ctx); err != nil {
@@ -118,16 +144,44 @@ func (l *Lab) cleanup(t testing.TB) {
 	}
 }
 
-// Up brings up a topology as the Compose project named project (which must
+// UpDetached brings up a topology, for a lab that outlives this process
+// (make lab-up), as the Compose project named project (see up). Its
+// binaries are its own, built into its directory under lab/.run, and go
+// with it (Down, or labctl down).
+func UpDetached(ctx context.Context, root, project string, topo Topology) (*Lab, error) {
+	return up(ctx, root, project, topo, "", detachedInputs)
+}
+
+// labInputs builds the image and the binaries a lab runs, and returns the
+// directory it mounts at BinDir; stateDir is the lab's lab/.run/<project>.
+type labInputs func(ctx context.Context, root, stateDir string) (image, string, error)
+
+// runInputs are this run's, shared by its labs (prepare): such a lab must
+// be down, or kept, before the run removes them (RemoveRunBinaries).
+func runInputs(ctx context.Context, root, _ string) (image, string, error) {
+	p, err := prepare(ctx, root)
+	if err != nil {
+		return image{}, "", err
+	}
+	return p.img, p.bin.path, nil
+}
+
+// detachedInputs are the lab's own, in stateDir/bin.
+func detachedInputs(ctx context.Context, root, stateDir string) (image, string, error) {
+	t, img, err := prepareImage(ctx, root)
+	if err != nil {
+		return image{}, "", err
+	}
+	dir := filepath.Join(stateDir, "bin")
+	return img, dir, buildTools(ctx, root, t, dir)
+}
+
+// up brings up a topology as the Compose project named project (which must
 // start with ProjectPrefix), and returns once every node is running and
 // sealed into the lab. A lab of this checkout left over under the same name
 // is removed first; another checkout's lab under that name is an error. On
 // error the returned Lab, if any, still needs Down.
-func Up(ctx context.Context, root, project string, topo Topology) (*Lab, error) {
-	return up(ctx, root, project, topo, "")
-}
-
-func up(ctx context.Context, root, project string, topo Topology, slotKey string) (*Lab, error) {
+func up(ctx context.Context, root, project string, topo Topology, slotKey string, inputs labInputs) (*Lab, error) {
 	if !strings.HasPrefix(project, ProjectPrefix) {
 		return nil, fmt.Errorf("lab: project %q doesn't start with %q", project, ProjectPrefix)
 	}
@@ -137,25 +191,28 @@ func up(ctx context.Context, root, project string, topo Topology, slotKey string
 	if err := downProject(ctx, project, root); err != nil {
 		return nil, err
 	}
-	img, err := prepare(ctx, root)
+	// Until the lab is created nothing of it is up: on error its state
+	// directory goes, a detached lab's binaries with it.
+	stateDir := filepath.Join(root, "lab", ".run", project)
+	img, binDir, err := inputs(ctx, root, stateDir)
 	if err != nil {
-		return nil, err
+		return nil, errors.Join(err, os.RemoveAll(stateDir))
+	}
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		return nil, errors.Join(fmt.Errorf("lab: %w", err), os.RemoveAll(stateDir))
 	}
 	release, err := acquireSlot(ctx, slotKey)
 	if err != nil {
-		return nil, err
+		return nil, errors.Join(err, os.RemoveAll(stateDir))
 	}
 	l := &Lab{
 		Project:  project,
 		Topology: topo,
 		root:     root,
-		runDir:   filepath.Join(root, "lab", ".run", project),
+		stateDir: stateDir,
+		binDir:   binDir,
 		nodes:    map[string]*Node{},
 		release:  release,
-	}
-	if err := os.MkdirAll(l.runDir, 0o755); err != nil {
-		l.releaseSlot()
-		return nil, err
 	}
 	if err := l.create(ctx, img); err != nil {
 		return l, err
@@ -194,7 +251,7 @@ func (l *Lab) create(ctx context.Context, img image) error {
 		if err != nil {
 			return err
 		}
-		file, err := renderCompose(l.Project, l.Topology, img, l.root, subnets)
+		file, err := renderCompose(l.Project, l.Topology, img, l.root, l.binDir, subnets)
 		if err != nil {
 			return err
 		}
@@ -215,7 +272,7 @@ func (l *Lab) create(ctx context.Context, img image) error {
 }
 
 // ComposeFile is the generated Compose file, under lab/.run.
-func (l *Lab) ComposeFile() string { return filepath.Join(l.runDir, "compose.json") }
+func (l *Lab) ComposeFile() string { return filepath.Join(l.stateDir, "compose.json") }
 
 // Down removes the lab's containers and networks.
 func (l *Lab) Down(ctx context.Context) error {
@@ -223,7 +280,7 @@ func (l *Lab) Down(ctx context.Context) error {
 	if err := downProject(ctx, l.Project, l.root); err != nil {
 		return err
 	}
-	return os.RemoveAll(l.runDir)
+	return os.RemoveAll(l.stateDir)
 }
 
 func (l *Lab) releaseSlot() {

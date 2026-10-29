@@ -37,7 +37,7 @@ func waitLockMode(ctx context.Context, what string, exclusive bool, paths ...str
 		for _, p := range paths {
 			f, ok, err := tryLockMode(p, exclusive)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("lab: %s: %w", what, err)
 			}
 			if ok {
 				return func() { _ = f.Close() }, nil
