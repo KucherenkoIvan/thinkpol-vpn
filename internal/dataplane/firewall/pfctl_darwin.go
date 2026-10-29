@@ -132,8 +132,8 @@ func readLines(b []byte) ([]string, error) {
 	return scanLines(b, true)
 }
 
-// rawLines is readLines with only each line's "\n" taken off: a name a
-// listing ends in white space (a `\r` included) keeps it.
+// rawLines is readLines with only each line's "\n" taken off: a line
+// keeps the white space it ends in, a `\r` included.
 func rawLines(b []byte) ([]string, error) {
 	return scanLines(b, false)
 }
