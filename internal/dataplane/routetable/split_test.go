@@ -1,6 +1,7 @@
 package routetable_test
 
 import (
+	"maps"
 	"net/netip"
 	"runtime"
 	"strings"
@@ -351,6 +352,11 @@ func TestAnOverlaysRoutesSeenAsForeignAreNothingAhead(t *testing.T) {
 		if routes(cfg)[r.String()] {
 			t.Errorf("takes the overlay's %v", r)
 		}
+	}
+	// With the record valid, the halves are the overlay's own (no owner's
+	// routes are in a survey), already left to it: the layout is the same.
+	if valid := routes(routetable.SplitRoutes(w, home())); !maps.Equal(routes(cfg), valid) {
+		t.Errorf("the layout changes when the overlay's routes turn foreign:\n%v\nwant %v", routes(cfg), valid)
 	}
 	if runtime.GOOS == "darwin" {
 		if n, m := routetable.Ahead(w, s), routetable.OverlayAhead(w, s); n != 0 || m != 0 {

@@ -183,8 +183,8 @@ func TestACorruptRecordReachesStatusAndCLI(t *testing.T) {
 	}{
 		{9, 0, 3, "", false},
 		{9, 1, 0, "1 corrupt (see the log for which and why); no route left that no record names", false},
-		{9, 2, 3, "2 corrupt (see the log for which and why); 3 thinkpol routes no record names (a running owner still removes its own; a dead one's stay until reboot)", true},
-		{0, 1, 1, "1 corrupt (see the log for which and why); 1 thinkpol route no record names (", true},
+		{9, 2, 3, "2 corrupt (see the log for which and why); 3 thinkpol routes no record names (an owner already running when its record went bad still removes its own; the rest stay until reboot, unless they went with their owner's interface)", true},
+		{0, 1, 1, "1 corrupt (see the log for which and why); 1 thinkpol route no record names (an owner already running when its record went bad still removes its own; otherwise it stays until reboot, unless it went with its owner's interface)", true},
 	} {
 		rt := dataplane.RouteTableStatus{Enforced: true, Routes: tc.routes, CorruptRecords: tc.corrupt, UnownedRoutes: tc.unowned}
 		if tc.routes == 0 { // it failed before its first apply

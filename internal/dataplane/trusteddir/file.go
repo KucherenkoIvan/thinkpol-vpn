@@ -20,10 +20,12 @@ var ErrNotRegular = errors.New("not a regular file")
 
 // openRegular opens the file name in dir with flags (perm if it creates
 // it), close-on-exec, never through a symlink (ELOOP) nor blocking on a
-// fifo, and only if it is a regular file (ErrNotRegular otherwise). The
-// entry is looked at before the open too: a socket can't be opened at
-// all (EOPNOTSUPP on macOS, ENXIO on Linux), and is no regular file
-// either way. A symlink is left to the open's ELOOP.
+// fifo nor becoming a controlling terminal, and only if it is a regular
+// file (ErrNotRegular otherwise). The entry is looked at before the open
+// too: a socket can't be opened at all (EOPNOTSUPP on macOS, ENXIO on
+// Linux), and is no regular file either way. A symlink is left to the
+// open's ELOOP. Those errors from the open itself (a socket swapped in
+// after the look) are ErrNotRegular too.
 func openRegular(dir *os.File, name string, flags int, perm uint32) (*os.File, error) {
 	path := filepath.Join(dir.Name(), name)
 	var pre unix.Stat_t
@@ -32,7 +34,10 @@ func openRegular(dir *os.File, name string, flags int, perm uint32) (*os.File, e
 			return nil, fmt.Errorf("%s: %w", path, ErrNotRegular)
 		}
 	}
-	fd, err := unix.Openat(int(dir.Fd()), name, flags|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, perm)
+	fd, err := unix.Openat(int(dir.Fd()), name, flags|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_NOCTTY|unix.O_CLOEXEC, perm)
+	if errors.Is(err, unix.EOPNOTSUPP) || errors.Is(err, unix.ENXIO) {
+		return nil, fmt.Errorf("%s: %w", path, ErrNotRegular)
+	}
 	if err != nil {
 		return nil, &os.PathError{Op: "open", Path: path, Err: err}
 	}
@@ -115,12 +120,16 @@ func Rename(dir *os.File, from, to string) error {
 }
 
 // RemoveEntry removes the entry name in dir: a file, a symlink (never
-// followed) or an empty directory. A missing one is an error.
+// followed) or an empty directory. A missing one is an error. Where the
+// retry as a directory finds none (a file macOS refuses to unlink, EPERM:
+// an immutable flag), the first error is the one returned.
 func RemoveEntry(dir *os.File, name string) error {
 	fd := int(dir.Fd())
 	err := unix.Unlinkat(fd, name, 0)
 	if errors.Is(err, unix.EPERM) || errors.Is(err, unix.EISDIR) { // a directory: macOS, Linux
-		err = unix.Unlinkat(fd, name, unix.AT_REMOVEDIR)
+		if rerr := unix.Unlinkat(fd, name, unix.AT_REMOVEDIR); !errors.Is(rerr, unix.ENOTDIR) {
+			err = rerr
+		}
 	}
 	if err != nil {
 		return &os.PathError{Op: "remove", Path: filepath.Join(dir.Name(), name), Err: err}

@@ -482,8 +482,8 @@ type Survey struct {
 	// boot (macOS): those set aside, and another owner's still in place
 	// (its owner sets it aside at its next start, or rewrites it at its
 	// next change). The routes they named count as foreign, so no other
-	// owner removes them; a running owner still removes its own, which it
-	// knows from memory.
+	// owner removes them; an owner already running when its record went
+	// bad still removes its own, which it knows from memory.
 	CorruptRecords []CorruptRecord
 	// UnownedRoutes counts the routes carrying thinkpol's route flag that
 	// no owner's record names (macOS): a corrupt record's leftovers, or

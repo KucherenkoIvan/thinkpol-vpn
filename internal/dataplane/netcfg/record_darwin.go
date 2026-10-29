@@ -172,9 +172,20 @@ func corruptRecord(dir *os.File, name, boot string, booted time.Time, why error)
 	}
 	r.Reason = "set aside; reads clean now"
 	if why != nil {
-		r.Reason = strings.TrimPrefix(why.Error(), r.Path+": ")
+		r.Reason = reason(why, r.Path)
 	}
 	return r, true
+}
+
+// reason is why's text without the record's path, which the report
+// carries already: "open: permission denied" for a file that can't be
+// read, not "open <path>: permission denied".
+func reason(why error, path string) string {
+	var pe *fs.PathError
+	if errors.As(why, &pe) && pe.Path == path && why.Error() == pe.Error() {
+		return pe.Op + ": " + pe.Err.Error()
+	}
+	return strings.TrimPrefix(why.Error(), path+": ")
 }
 
 // bootTime is when this boot began (kern.boottime); the zero time if it

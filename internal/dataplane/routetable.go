@@ -69,7 +69,8 @@ type RouteTableStatus struct {
 	OverlayAhead int
 	// CorruptRecords counts the route records found corrupt in this boot
 	// (macOS; the log names each and says why): the routes they named
-	// count as foreign (a running owner still removes its own).
+	// count as foreign (an owner already running when its record went bad
+	// still removes its own).
 	CorruptRecords int
 	// UnownedRoutes counts the routes with thinkpol's route flag that no
 	// record names (macOS): with a corrupt record, its leftovers.

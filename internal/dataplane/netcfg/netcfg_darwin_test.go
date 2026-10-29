@@ -1019,6 +1019,21 @@ func TestASetAsideRecordThatReadsCleanNowStillSaysWhy(t *testing.T) {
 	}
 }
 
+// A set-aside record that can no longer be read is still reported, with
+// why it can't be read and without its path twice.
+func TestASetAsideRecordThatCantBeReadSaysWhyOnce(t *testing.T) {
+	dir := tempDir(t)
+	_, aside := corrupt(t, dir, OwnerRouteTable)
+	rt := newTestConfigurator(t, newFakeKernel(), dir, OwnerRouteTable)
+	if err := os.Chmod(aside, 0); err != nil {
+		t.Fatal(err)
+	}
+	s, err := rt.Survey(context.Background())
+	if err != nil || !slices.Equal(paths(s.CorruptRecords), []string{aside}) || s.CorruptRecords[0].Reason != "open: permission denied" {
+		t.Errorf("CorruptRecords %+v, %v", s.CorruptRecords, err)
+	}
+}
+
 // A non-empty directory at this boot's set-aside name can't be replaced:
 // the owner fails to start, and the record stays where it is.
 func TestANonEmptyDirectoryAtTheSetAsideNameFailsTheStart(t *testing.T) {

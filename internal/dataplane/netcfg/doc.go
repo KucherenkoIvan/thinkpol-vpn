@@ -64,27 +64,32 @@
 // moves it, at start and under its lock: renamed
 // <owner>.routes.corrupt-<boot session>, so the owner's configurator
 // starts (removing an earlier set-aside entry of the other kind, file or
-// empty directory, that renameat(2) won't replace); its set-aside records
-// of earlier boots are removed then. Another owner's corrupt record is left where it is, never
-// touched: its owner sets it aside at its next start, or, still running,
-// rewrites it at its next change (its own routes it knows from memory, and
-// removes at Close). There is no darwin supervisor, so a corrupt
-// supervisor.routes is never set aside: it is reported in place until
-// someone removes it. Only a person makes one on a Mac; the report says
-// where it is, and skipping the owner instead would also change what a
-// valid one means (its routes from thinkpol's to foreign).
+// empty directory, that renameat(2) won't replace); its set-aside
+// records of earlier boots are removed then. Another owner's corrupt
+// record is left where it is, never touched: its owner sets it aside at
+// its next start, or, still running, rewrites it at its next change (its
+// own routes it knows from memory, and removes at Close). There is no
+// darwin supervisor, so a corrupt supervisor.routes is never set aside:
+// it is reported in place until someone removes it or the Mac reboots.
+// Only a person makes one on a Mac; the report says where it is, and
+// skipping the owner instead would also change what a valid one means
+// (its routes from thinkpol's to foreign).
 // [Survey.CorruptRecords] reports this boot's corrupt records, set aside
 // or in place, each with why it is corrupt and when it was last written,
 // for as long as they are there. One whose content proves nothing of its
 // boot (no boot line, not a regular file, a symlink) and was last written
-// before this boot (kern.boottime) is set aside but not reported, since
-// what it named went with that boot: it leaves no trace but the file, no
-// log line and no health problem. One whose boot line names this boot is
-// reported whatever its mtime. [Survey.UnownedRoutes] counts the routes
-// with routeFlag that no record names: with a corrupt record, the routes
-// it named. A running owner's are still removed by that owner; a dead
-// one's stay until reboot or until someone removes them. Any other failure
-// to read a record is an error, not an empty record.
+// before this boot (kern.boottime) goes unreported (and is set aside if
+// its owner starts), since what it named went with that boot: it leaves
+// no trace but the file, no log line and no health problem. One whose
+// boot line names this boot is reported whatever its mtime.
+// [Survey.UnownedRoutes] counts the routes with routeFlag that no record
+// names: with a corrupt record, the routes it named. An owner already
+// running when its record was corrupted in place still removes its own;
+// the rest (a dead owner's, or a set-aside record's: its owner restarted
+// owning nothing) stay until reboot or until someone removes them, unless
+// they went with their owner's interface (the overlay's go with its
+// utun). Any other failure to read a record is an error, not an empty
+// record.
 //
 // A route's identity is its destination and, if scoped (RTF_IFSCOPE,
 // route(8)'s -ifscope: only sockets bound to the interface use it), its

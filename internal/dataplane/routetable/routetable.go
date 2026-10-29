@@ -575,7 +575,7 @@ func (e *Enforcer) noteCorrupt(s netcfg.Survey) {
 		k := corruptSeen{r.Path, r.Reason, r.Modified.UnixNano()}
 		seen[k] = true
 		if !e.corruptWarned[k] {
-			e.log.Warn("route table: a corrupt route record holds no routes; the routes it named count as foreign here (a running owner still removes its own; a dead one's stay until reboot)", "record", r.Path, "reason", r.Reason)
+			e.log.Warn("route table: a corrupt route record holds no routes; the routes it named count as foreign here (an owner already running when its record went bad still removes its own; the rest stay until reboot, unless they went with their owner's interface)", "record", r.Path, "reason", r.Reason)
 		}
 	}
 	e.corruptWarned = seen
