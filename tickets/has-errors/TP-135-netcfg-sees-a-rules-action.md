@@ -55,6 +55,14 @@ Round 2 (2026-10-28): correctness (paranoid) and design (torvalds) reviews. The 
 - [x] R2.7 (torvalds nit 9) The lab oracle for actions is the code under test (`InspectInNamespace`); use `ip -j rule show` if cheap.
 - [x] R2.8 (paranoid nits) errNotReadBack's text blames a kernel attribute only (a concurrent delete gives the same); RR53 names only "the next config drops the other" (a leftover rule of ours, or an undo, triggers the same wrong delete).
 
+Round 3 (2026-10-29): design (torvalds, fix first) and correctness (paranoid, merge) reviews. Paranoid nit 2 (kernel-set flags in the kept key) folds into R3.2.
+- [ ] R3.1 (torvalds should-fix 3, option b) A split rule dump can repeat or skip a rule and the kernel never flags it, in every caller (Apply, Close's removeOwned, Survey, Inspect, the stray check). `dumpRules` takes dumps until two in a row agree (byte-identical rule sets, order ignored), up to `dumpRetries`, and fails with a wrapped error if they never do; unit test with an injectable dump (a repeat, then agreement; never agreeing).
+- [ ] R3.2 (torvalds should-fix 1, paranoid nit 2) `surplusRules` dedups only kept rules: a repeated surplus message is deleted twice, and the second delete can remove a more specific kept rule. One decision per distinct message, keyed with the kernel-set detached/unresolved flags cleared as `sendRule` clears them; kept as defence in depth after R3.1; a TestSurplusRules case (an unwanted message twice gives one surplus).
+- [ ] R3.3 (torvalds should-fix 2) The split-dump explanation sits in `surplusRules`; `dumpRules`' doc claims a retry that never fires for rules. Move it to `dumpRules`' doc; `surplusRules` and doc.go point to it.
+- [ ] R3.4 (torvalds should-fix 3) Notes say "the next Watch-triggered Apply recovers" a skip, and leave out Close. Correct them to match R3.1.
+- [ ] R3.5 (torvalds nit 4) TestSurplusRules' "twin" (no oif, detached flag) can't come from a kernel: give it a realistic difference or explain it.
+- [ ] R3.6 (paranoid nit 1) `Watch` accepts a batch from any sender, and a malformed RTM_DELRULE from a non-kernel sender can panic `ParseRouteAttr`. Drop batches with `from.Pid != 0`, with a test if the receive path allows one.
+
 ## Log
 - 2026-10-23 created in backlog (TP-091 review round 3)
 - 2026-10-24 docs: slotted in the pre-M2 phase (wave 1, macOS)
@@ -77,3 +85,4 @@ Round 2 (2026-10-28): correctness (paranoid) and design (torvalds) reviews. The 
 - 2026-10-29 out of scope: paranoid S2 and S3 are already filed as TP-148 and TP-149 (merged from rewrite); a rule dump's phantom miss (Notes) is left as is
 - 2026-10-29 ran: merged origin/rewrite (6434217); `make lint`, `make test` and the full `make lab-test` (36 packages) green on 557a17c. Not verified: a rule dump really split over several parts with a rule inserted between them (reasoned from netlink semantics, no kernel source at hand; `surplusRules` is unit-tested); the `New` (current namespace) path in the lab; EAFNOSUPPORT from a real kernel without IPv6 rules
 - 2026-10-29 in-progress → review
+- 2026-10-29 review → has-errors (round 3: R3.1–R3.6)
