@@ -147,6 +147,19 @@ func TestDumpUntilAgreed(t *testing.T) {
 	if got, err := dumpUntilAgreed(alternating); !errors.Is(err, errDumpsDisagree) || got != nil || dumps != dumpRetries {
 		t.Errorf("dumps that never agree: %v, %v after %d dumps; want errDumpsDisagree after %d", prios(got), err, dumps, dumpRetries)
 	}
+	// An interrupted dump between two alike breaks the pair: the dump
+	// before it doesn't count.
+	interrupted := func() ([]rawRule, error) {
+		dumps++
+		if dumps == 2 {
+			return nil, errDumpInterrupted
+		}
+		return []rawRule{a}, nil
+	}
+	dumps = 0
+	if got, err := dumpUntilAgreed(interrupted); err != nil || len(got) != 1 || dumps != 4 {
+		t.Errorf("a dump, an interrupted one, then two alike: %v, %v after %d dumps; want [5299] after 4", prios(got), err, dumps)
+	}
 	failed := errors.New("a failed dump")
 	if _, err := dumpUntilAgreed(func() ([]rawRule, error) { return nil, failed }); !errors.Is(err, failed) {
 		t.Errorf("a failed dump: %v", err)
