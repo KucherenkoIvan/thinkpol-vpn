@@ -193,7 +193,10 @@
 //     An anchor it can't name (an anonymous `anchor { ... }`, which pfctl
 //     is taken to list without a name: unverified, TP-096), a name with a
 //     `*` in it but a trailing `/*` wildcard (pfctl's -a would take a
-//     trailing `*` off and read another anchor), a listing pf refuses or
+//     trailing `*` off and read another anchor), one with a `"` in it
+//     (pfctl prints it as it is, so the name's end can't be found) or
+//     ending in white space (which `-s Anchors` can't tell from its
+//     layout), a listing pf refuses or
 //     the guard can't read, and more to read than 16 pfctl runs leave it
 //     not enforced: what it can't read it can't clear. An anchor after the
 //     hook is never reached, and isn't read;
@@ -207,9 +210,11 @@
 //   - an anchor under com.apple whose name sorts before the guard's
 //     (`pfctl -a com.apple -s Anchors`): pf keeps anchors sorted by path,
 //     so it runs first, and a quick pass in it ends evaluation there. Its
-//     existence alone is the bypass (TP-126's decision); its rules are
-//     read only so that a change to them kills states (below). A stock Mac
-//     is expected to have only Apple's two (TP-096 checks).
+//     existence alone is the bypass (TP-126's decision). Its rules are
+//     walked like any earlier anchor's, within the same 16 runs: what they
+//     hold is reported too and is part of the kill's identity (below), and
+//     one the guard can't read leaves pf unreadable. A stock Mac is
+//     expected to have only Apple's two (TP-096 checks).
 //
 // These are checked last in every apply, after the load and the enable,
 // so what pf does filter stays guarded meanwhile, and in every poll. The
@@ -316,19 +321,23 @@
 // same bypasses last, the retries don't kill again. What a bypass lets
 // through needs no state, and the anchor lets nothing outgoing make one,
 // so a kill would only take what the bypass makes anew. "The same" is
-// what the check found and every rule it read up to the hook, each with
-// the anchor calls that led to it and whether a quick anchor holds it,
-// not its error's words: any change to them kills, taking what the one
-// gone let be made: a second quick pass above the hook, an earlier
-// anchor's rules changing under the same name, a call narrowed to an
-// interface or made quick, a block put above a pass. So does a check that
-// saw otherwise in between without killing, one that couldn't read pf
-// (it can't tell they are the same), and a main ruleset without the hook
-// (pf ran no anchor meanwhile). None found is known, not unknown: a retry
-// after a failure that let nothing past the anchor (pf's status
-// unreadable a while) doesn't kill again. A bypass that comes and goes
-// between two polls is seen by no apply, and its states live on
-// (RESIDUAL-RISKS.md RR11).
+// what the check found and the text of every rule it read up to the hook,
+// each with the anchor calls that led to it and whether a quick anchor
+// holds it, not its error's words: any change to them kills, taking what
+// the one gone let be made: a second quick pass above the hook, an
+// earlier anchor's rules changing under the same name, a call narrowed to
+// an interface or made quick, a block put above a pass. So does a check,
+// an apply's or a poll's, that saw otherwise in between without killing,
+// one that couldn't read pf (it can't tell they are the same), and a main
+// ruleset without the hook, seen by either (pf ran no anchor meanwhile).
+// None found is known, not unknown: a retry after a failure that let
+// nothing past the anchor (pf's status unreadable a while) doesn't kill
+// again. The identity is the rules' text, not what they refer to: a
+// bypass narrowed through a table's contents (`to <t>`, the table
+// flushed) or an interface's addresses changing under the same rules
+// doesn't kill, and its states live on, though the guard keeps saying it
+// isn't enforced. Nor does a bypass that comes and goes between two
+// polls, seen by no check (RESIDUAL-RISKS.md RR11).
 //
 // # macOS: enabling pf by reference
 //
