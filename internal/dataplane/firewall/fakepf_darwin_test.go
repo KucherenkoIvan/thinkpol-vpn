@@ -147,8 +147,8 @@ func (f *fakePF) anchor(name string) *fakeAnchor {
 	return a.clone()
 }
 
-// parent says an anchor of the fake's is under name. Called locked.
-func (f *fakePF) parent(name string) bool {
+// hasChildren says an anchor of the fake's is under name. Called locked.
+func (f *fakePF) hasChildren(name string) bool {
 	for n := range f.anchors {
 		if strings.HasPrefix(n, name+"/") {
 			return true
@@ -279,7 +279,7 @@ func (f *fakePF) run(ctx context.Context, stdin []byte, args ...string) (pfOutpu
 			b.WriteString(l + "\n")
 		}
 	case slices.Equal(args, []string{"-s", "rules"}):
-		if a == nil && !f.parent(anchor) {
+		if a == nil && !f.hasChildren(anchor) {
 			return fail("pfctl: DIOCGETRULES: Invalid argument")
 		}
 		if a == nil {

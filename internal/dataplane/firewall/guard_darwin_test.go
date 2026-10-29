@@ -321,23 +321,30 @@ func TestSkipped(t *testing.T) {
 	}
 }
 
-// The hook evaluates the anchors under com.apple in name order: any that
-// sorts before the guard's runs first.
+// The hook evaluates the anchors under com.apple in path order: any that
+// sorts before the guard's runs first. The listing is read as any
+// wildcard's (childAnchors): com.apple missing lists none, and a line
+// that isn't one of its children is an error.
 func TestAnchorsBefore(t *testing.T) {
 	for _, c := range []struct {
-		anchors string
-		want    []string
+		stdout, stderr string
+		want           []string
+		ok             bool
 	}{
-		{"  com.apple/000.thinkpol\n  com.apple/200.AirDrop\n  com.apple/250.ApplicationFirewall\n", nil},
-		{"", nil},
-		{"  com.apple/000.thinkpol\n  com.apple/100.other\n  com.apple/zz\n  com.apple/ALTQ\n", nil},
-		{"  com.apple/0.first\n  com.apple/000.thinkpol\n", []string{"com.apple/0.first"}},
-		{"  com.apple/000\n  com.apple/000.thinkpo\n  com.apple/-ALTQ\n", []string{"com.apple/000", "com.apple/000.thinkpo", "com.apple/-ALTQ"}},
-		{"  com.apple/000.thinkpol/0.nested\n", nil}, // the guard's anchor evaluates no anchor
-		{"0.relative\n", []string{"0.relative"}},
+		{"  com.apple/000.thinkpol\n  com.apple/200.AirDrop\n  com.apple/250.ApplicationFirewall\n", altq, nil, true},
+		{"", altq, nil, true},
+		{"", altq + "Anchor 'com.apple' not found.\n", nil, true},
+		{"  com.apple/000.thinkpol\n  com.apple/100.other\n  com.apple/zz\n  com.apple/ALTQ\n", "", nil, true},
+		{"  com.apple/0.first\n  com.apple/000.thinkpol\n", "", []string{"com.apple/0.first"}, true},
+		{"  com.apple/-ALTQ\n  com.apple/000\n  com.apple/000.thinkpo\n", "", []string{"com.apple/-ALTQ", "com.apple/000", "com.apple/000.thinkpo"}, true},
+		{"  com.apple/0 a\n", "", []string{"com.apple/0 a"}, true},
+		{"  com.apple/000.thinkpol/0.nested\n", "", nil, false},
+		{"0.relative\n", "", nil, false},
+		{"  com.apple/0.first\n", "a warning\n", nil, false},
 	} {
-		if got := anchorsBefore([]byte(c.anchors)); !slices.Equal(got, c.want) {
-			t.Errorf("%q: %q, want %q", c.anchors, got, c.want)
+		got, err := anchorsBefore(pfOutput{stdout: []byte(c.stdout), stderr: []byte(c.stderr)}, nil)
+		if !slices.Equal(got, c.want) || (err == nil) != c.ok {
+			t.Errorf("%q / %q: %q, %v", c.stdout, c.stderr, got, err)
 		}
 	}
 }
@@ -775,6 +782,50 @@ func TestStatesMadeWhileTheGuardFailedAreKilled(t *testing.T) {
 	}
 }
 
+// No bypass is known, not unknown: a retry after a failure that let
+// nothing past the anchor (pf's status unreadable a while) doesn't kill
+// again. A main ruleset without the hook lets anything past, so the
+// Apply after the hook is back kills.
+func TestOnlyAFailureThatLetIPv6PastKillsAgain(t *testing.T) {
+	ctx := context.Background()
+	r := newRig(t)
+	g := r.guard()
+	if err := g.Apply(ctx, exempt(t)); err != nil {
+		t.Fatal(err)
+	}
+	port := uint16(51000)
+	state := func() fakeState {
+		port++
+		s := fakeState{"tcp", netip.AddrPortFrom(ownV6, port), netip.MustParseAddrPort("[2001:db8:ab::7]:443"), true}
+		r.pf.set(func(f *fakePF) { f.states = append(f.states, s) })
+		return s
+	}
+	a := state()
+	r.pf.failOn("info", errFake)
+	if err := g.Apply(ctx, exempt(t)); err == nil {
+		t.Fatal("applied with pf's status unreadable")
+	}
+	r.pf.failOn("info", nil)
+	if err := g.Apply(ctx, exempt(t)); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(r.pf.stateList(), a) {
+		t.Error("the retry after a failure that let nothing past killed again")
+	}
+	b := state()
+	r.pf.set(func(f *fakePF) { f.main = stockMain[:1] })
+	if err := g.Apply(ctx, exempt(t)); err == nil {
+		t.Fatal("applied without the hook")
+	}
+	r.pf.set(func(f *fakePF) { f.main = stockMain })
+	if err := g.Apply(ctx, exempt(t)); err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(r.pf.stateList(), b) {
+		t.Error("a state made while the hook was missing survived")
+	}
+}
+
 func TestCloseRemovesTheGuardAndItsReference(t *testing.T) {
 	r := newRig(t)
 	g := r.guard()
@@ -1040,9 +1091,9 @@ func TestAQuickPassAboveTheHookIsNotEnforced(t *testing.T) {
 // once pf skips only lo0 and the utun.
 //
 // While the same bypass lasts, the retries leave states alone (what it
-// lets through needs none, and the anchor lets nothing outgoing make one); a change to
-// the bypasses (another one coming, then going) kills them, and so does
-// the Apply after the last one ends.
+// lets through needs none, and the anchor lets nothing outgoing make
+// one); a change to the bypasses (another one coming, then going) kills
+// them, and so does the Apply after the last one ends.
 func TestASkippedInterfaceIsNotEnforced(t *testing.T) {
 	r := newRig(t)
 	r.pf.skip = []string{"en0", "lo0"}
@@ -1775,9 +1826,10 @@ func TestPfctlsNoAnswersAreExact(t *testing.T) {
 // TestAnotherInvalidArgumentIsNoEmptyAnchor: pfctl failing to list an
 // anchor that is there with an "Invalid argument" that isn't the missing
 // anchor's (DIOCGETRULE, the per-rule ioctl of a rules listing;
-// DIOCRGETADDRS, a table's) is an error. A flush that fails and can't be checked fails the Close, with
-// both errors, and keeps the anchor, the reference and the record; the
-// snapshot says the rules and the table are unreadable, not absent.
+// DIOCRGETADDRS, a table's) is an error. A flush that fails and can't be
+// checked fails the Close, with both errors, and keeps the anchor, the
+// reference and the record; the snapshot says the rules and the table are
+// unreadable, not absent.
 func TestAnotherInvalidArgumentIsNoEmptyAnchor(t *testing.T) {
 	ctx := context.Background()
 	listing := map[string]string{

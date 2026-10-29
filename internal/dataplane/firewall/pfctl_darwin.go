@@ -167,6 +167,13 @@ const (
 	answerNoReferences = "No pf starter references held"
 )
 
+// answerNoAnchors is what `-a PATH -s Anchors` answers on stderr for an
+// anchor that doesn't exist (DIOCGETRULESETS's EINVAL), the path as given.
+// From pfctl's source, which then exits 0; both unrecorded (TP-096).
+func answerNoAnchors(path string) string {
+	return "Anchor '" + path + "' not found."
+}
+
 // onlyLine says b is the line want and nothing else, pfctl's ALTQ chatter
 // and blank lines aside; a listing cut short isn't.
 func onlyLine(b []byte, want string) bool {
@@ -201,6 +208,11 @@ const (
 	hookOK
 )
 
+// Only InspectIPv6Guard's GuardCheck tells hookBypassed from hookOK (and
+// says nothing of the anchors above the hook, TP-151). checkHook needs
+// hookMissing alone: whether something gets past the hook is checkBypass's,
+// which reads those anchors too.
+
 // hooked reads the main ruleset's rules (`pfctl -s rules`): the anchor is
 // evaluated for every outgoing IPv6 packet if a line `anchor
 // "com.apple/*"`, alone or with `all` (as pfctl prints the stock
@@ -233,9 +245,22 @@ func isHook(f []string) bool {
 
 // reachesIPv6Out says a rule could match an outgoing IPv6 packet: its
 // direction, which pfctl prints at f[at] (after the action, or after an
-// anchor's name), isn't `in`, and it isn't `inet` only.
+// anchor's name), isn't `in`, and it isn't `inet` only. pfctl prints the
+// family before the protocol and the addresses (`proto`, `from`, `to`,
+// `all`); a word after them (an unquoted `tag inet`) is no family.
 func reachesIPv6Out(f []string, at int) bool {
-	return (len(f) <= at || f[at] != "in") && (!slices.Contains(f, "inet") || slices.Contains(f, "inet6"))
+	if len(f) > at && f[at] == "in" {
+		return false
+	}
+	for _, w := range f {
+		switch w {
+		case "inet":
+			return false
+		case "inet6", "proto", "from", "to", "all":
+			return true
+		}
+	}
+	return true
 }
 
 // endsEvaluation says f, a rule's fields, is a pass that ends pf's
@@ -280,8 +305,8 @@ type anchorCall struct {
 // that ruleset (one `../` per level up), or absolute after a `/`, with
 // `/*` (`*` alone below the main ruleset) when the rule evaluates the
 // children (OpenBSD's pf_anchor_copyout, which XNU's pf has; unverified on
-// a Mac, TP-096). ok is false for a name it can't place: no name, an
-// empty or dotted component, `../` above the main ruleset, `*` in it.
+// a Mac, TP-096). ok is false for a name it can't place: no name, `../`
+// above the main ruleset, or a path that isn't nameable.
 func resolveAnchor(base, name string) (c anchorCall, ok bool) {
 	if name == "*" && base != "" {
 		name, c.wildcard = "", true
@@ -306,19 +331,23 @@ func resolveAnchor(base, name string) (c anchorCall, ok bool) {
 		}
 		c.path = strings.Trim(base+"/"+name, "/")
 	}
-	for _, part := range strings.Split(c.path, "/") {
-		if part == "" || part == "." || part == ".." || part == "*" {
-			return anchorCall{}, false
-		}
+	if !nameable(c.path) {
+		return anchorCall{}, false
 	}
 	return c, true
 }
 
-// answerNoAnchors is what `-a PATH -s Anchors` answers on stderr for an
-// anchor that doesn't exist (DIOCGETRULESETS's EINVAL), the path as given.
-// From pfctl's source, which then exits 0; both unrecorded (TP-096).
-func answerNoAnchors(path string) string {
-	return "Anchor '" + path + "' not found."
+// nameable says `pfctl -a path` reads the anchor at path: no component is
+// empty or dotted, and none holds a `*`. pf's names may (only a trailing
+// `/*` is a wildcard), but pfctl takes a trailing `*` off -a's name and
+// reads another anchor.
+func nameable(path string) bool {
+	for _, part := range strings.Split(path, "/") {
+		if part == "" || part == "." || part == ".." || strings.Contains(part, "*") {
+			return false
+		}
+	}
+	return true
 }
 
 // childAnchors reads `pfctl -a PATH -s Anchors`, out: the anchors under
@@ -326,7 +355,8 @@ func answerNoAnchors(path string) string {
 // them (sorted by path). pfctl's answer for an anchor that doesn't exist
 // (answerNoAnchors, alone, whatever the exit status) is none; any other
 // failure, a line that isn't one of path's children, or anything else on
-// stderr is an error.
+// stderr is an error. A child's name may hold spaces, and a `*` the walk
+// can't read (nameable): it is listed as it is, for the walk to judge.
 func childAnchors(path string, out pfOutput, runErr error) ([]string, error) {
 	listed, err := readLines(out.stdout)
 	if err == nil && len(listed) == 0 && onlyLine(out.stderr, answerNoAnchors(path)) {
@@ -339,12 +369,12 @@ func childAnchors(path string, out pfOutput, runErr error) ([]string, error) {
 		return nil, err
 	}
 	if said, err := readLines(out.stderr); err != nil || len(said) > 0 {
-		return nil, fmt.Errorf("firewall: pfctl -a %s -s Anchors: unexpected%s", path, detail(out.stderr))
+		return nil, fmt.Errorf("firewall: pfctl -a %s -s Anchors: unexpected stderr%s", path, detail(out.stderr))
 	}
 	var children []string
 	for _, l := range listed {
 		child, ok := strings.CutPrefix(l, path+"/")
-		if !ok || child == "" || strings.ContainsAny(child, "/ \t") {
+		if !ok || child == "" || strings.Contains(child, "/") {
 			return nil, fmt.Errorf("firewall: pfctl -a %s -s Anchors lists %q, not an anchor under it", path, l)
 		}
 		children = append(children, l)
@@ -383,21 +413,17 @@ func mainUpToHook(rules []byte) []string {
 	return ls
 }
 
-// anchorsBefore reads `pfctl -a com.apple -s Anchors`, the anchors under
-// com.apple a line ("  com.apple/200.AirDrop"), as those whose name sorts
-// before the guard's: the hook evaluates them in name order (pf keeps
-// them sorted by path), so theirs run first, and a quick pass in one
-// ends evaluation before the guard's.
-func anchorsBefore(anchors []byte) []string {
-	ours := strings.TrimPrefix(GuardAnchor, appleAnchor+"/")
-	var out []string
-	for _, l := range lines(anchors) {
-		name := strings.TrimPrefix(l, appleAnchor+"/")
-		if name != "" && !strings.Contains(name, "/") && name < ours {
-			out = append(out, l)
-		}
+// anchorsBefore reads `pfctl -a com.apple -s Anchors` (childAnchors) as
+// the anchors under com.apple whose path sorts before the guard's: the
+// hook evaluates them in that order (pf keeps them sorted by path), so
+// theirs run first, and a quick pass in one ends evaluation before the
+// guard's.
+func anchorsBefore(out pfOutput, runErr error) ([]string, error) {
+	children, err := childAnchors(appleAnchor, out, runErr)
+	if err != nil {
+		return nil, err
 	}
-	return out
+	return slices.DeleteFunc(children, func(c string) bool { return c >= GuardAnchor }), nil
 }
 
 // tokenLine is how `pfctl -E` prints the reference it took.

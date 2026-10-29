@@ -73,7 +73,7 @@ func TestAQuickPassInAnEarlierAnchorIsNotEnforced(t *testing.T) {
 // to the anchor holding the rule (`../`), an absolute one. A pass that
 // ends evaluation at any depth before the hook counts; an anchor that is
 // called but missing, or only inbound or IPv4, isn't read.
-func TestAQuickPassInANestedAnchorIsNotEnforced(t *testing.T) {
+func TestNestedAnchorsAreFollowedAsPfEvaluatesThem(t *testing.T) {
 	ctx := context.Background()
 	for _, c := range []struct {
 		name    string
@@ -97,6 +97,8 @@ func TestAQuickPassInANestedAnchorIsNotEnforced(t *testing.T) {
 			map[string][]string{"vpn": {`anchor "../vpn" all`, `anchor "/vpn" all`, "block out all"}}, ""},
 		{"a nested inbound call", []string{`anchor "vpn" all`},
 			map[string][]string{"vpn": {`anchor "inner" in all`}, "vpn/inner": {"pass quick all"}}, ""},
+		{"a child's name with spaces", []string{`anchor "vpn/*" all`},
+			map[string][]string{"vpn/a b": {"pass out quick all"}}, "vpn/a b"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			r := newRig(t)
@@ -133,8 +135,20 @@ func TestAnyPassInAQuickAnchorIsNotEnforced(t *testing.T) {
 	notEnforced(t, g.Apply(ctx, exempt(t)), "vpn/inner")
 }
 
+// An anchor read once outside a quick anchor holds the same rules inside
+// one, but there any pass in it ends evaluation: the second call is read
+// again.
+func TestAnAnchorCalledAgainWithQuickIsReadAgain(t *testing.T) {
+	r := newRig(t)
+	r.pf.main = mainWith([]string{`anchor "vpn" all`, `anchor "vpn" quick all`})
+	r.pf.setAnchor("vpn", &fakeAnchor{rules: []string{"pass out inet6 all"}})
+	notEnforced(t, r.guard().Apply(context.Background(), exempt(t)), "anchor vpn")
+	r.whole(t, exempt(t))
+}
+
 // An anchor after the hook runs after the guard's block: no bypass, and
-// not even read, so a stock main ruleset costs the poll no pfctl run.
+// not even read, so anchors after the hook cost the poll no extra pfctl
+// run.
 func TestAnAnchorAfterTheHookIsNoBypass(t *testing.T) {
 	ctx := context.Background()
 	r := newRig(t)
@@ -176,30 +190,36 @@ func TestAnEarlierCallOfTheGuardsAnchorStopsThere(t *testing.T) {
 }
 
 // What the guard can't follow it can't clear: an anchor without a name it
-// can place, pf refusing to list an earlier anchor's rules or children,
-// a listing it can't read, more anchors than it reads. Each leaves the
-// guard not enforced.
+// can place or read (a `*` pfctl's -a would take off), pf refusing to
+// list an earlier anchor's rules or children, a child a listing named
+// that reads as missing (a name pf prints otherwise than the guard reads
+// it), more than it reads. Each leaves the guard not enforced.
 func TestAnEarlierAnchorTheGuardCantReadIsNotEnforced(t *testing.T) {
 	ctx := context.Background()
 	chain := map[string][]string{}
 	name := "deep"
-	for range 2 * maxEarlierAnchors {
+	for range 2 * maxEarlierReads {
 		chain[name] = []string{`anchor "next" all`}
 		name += "/next"
 	}
 	for _, c := range []struct {
-		name    string
-		main    []string
-		anchors map[string][]string
-		fail    string
-		want    string
+		name          string
+		main          []string
+		anchors       map[string][]string
+		fail, failErr string
+		want          string
 	}{
-		{"anonymous", []string{"anchor out all"}, nil, "", "can't name"},
-		{"anonymous inside", []string{`anchor "vpn" all`}, map[string][]string{"vpn": {"anchor all"}}, "", "anchor vpn calls"},
-		{"above the main ruleset", []string{`anchor "../x" all`}, nil, "", "can't name"},
-		{"rules refused", []string{`anchor "vpn" all`}, map[string][]string{"vpn": {"block all"}}, "vpn -s rules", "DIOCGETRULE"},
-		{"children refused", []string{`anchor "vpn/*" all`}, map[string][]string{"vpn/a": nil}, "vpn -s Anchors", "DIOCGETRULE"},
-		{"too many", []string{`anchor "deep" all`}, chain, "", "more than"},
+		{"anonymous", []string{"anchor out all"}, nil, "", "", "can't name"},
+		{"anonymous inside", []string{`anchor "vpn" all`}, map[string][]string{"vpn": {"anchor all"}}, "", "", "anchor vpn calls"},
+		{"above the main ruleset", []string{`anchor "../x" all`}, nil, "", "", "can't name"},
+		{"a star in a called name", []string{`anchor "vpn/a*" all`}, map[string][]string{"vpn/a": nil}, "", "", "can't name"},
+		{"a star in a listed name", []string{`anchor "vpn/*" all`},
+			map[string][]string{"vpn/a": nil, "vpn/a*": {"pass out quick all"}}, "", "", `can't read, "vpn/a*"`},
+		{"a listed child reads as missing", []string{`anchor "vpn/*" all`},
+			map[string][]string{"vpn/a": {"pass out quick all"}}, "vpn/a -s rules", "DIOCGETRULES: Invalid argument", "vpn/a, but it reads as missing"},
+		{"rules refused", []string{`anchor "vpn" all`}, map[string][]string{"vpn": {"block all"}}, "vpn -s rules", "DIOCGETRULES: Operation not permitted", "DIOCGETRULES"},
+		{"children refused", []string{`anchor "vpn/*" all`}, map[string][]string{"vpn/a": nil}, "vpn -s Anchors", "DIOCGETRULESETS: Operation not permitted", "DIOCGETRULESETS"},
+		{"too many", []string{`anchor "deep" all`}, chain, "", "", "at most 16 pfctl listings"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			r := newRig(t)
@@ -208,28 +228,29 @@ func TestAnEarlierAnchorTheGuardCantReadIsNotEnforced(t *testing.T) {
 				r.pf.setAnchor(name, &fakeAnchor{rules: rules})
 			}
 			if c.fail != "" {
-				r.pf.failOn(c.fail, errors.New("DIOCGETRULE: Operation not permitted"))
+				r.pf.failOn(c.fail, errors.New(c.failErr))
 			}
 			notEnforced(t, r.guard().Apply(ctx, exempt(t)), c.want)
 			r.whole(t, exempt(t))
 			n := 0
-			for _, c := range r.pf.calls {
-				if len(c) > 1 && c[0] == "-a" && (strings.HasPrefix(c[1], "deep") || strings.HasPrefix(c[1], "vpn")) {
+			for _, call := range r.pf.calls {
+				if len(call) > 1 && call[0] == "-a" && (strings.HasPrefix(call[1], "deep") || strings.HasPrefix(call[1], "vpn")) {
 					n++
 				}
 			}
-			if n > maxEarlierAnchors {
-				t.Errorf("read %d earlier anchors, want at most %d", n, maxEarlierAnchors)
+			if n > maxEarlierReads {
+				t.Errorf("ran pfctl %d times on earlier anchors, want at most %d", n, maxEarlierReads)
 			}
 		})
 	}
 }
 
 // The retries under the same bypasses leave states alone, and a change to
-// them kills, even one the error words alike: a second quick pass above
-// the hook, an earlier anchor's rules changing under its name, a check
-// that couldn't read pf.
-func TestAChangeTheErrorDoesntShowStillKills(t *testing.T) {
+// them, or to any rule read up to the hook, kills, even one the error
+// words alike: a second quick pass above the hook, an earlier anchor's
+// rules changing under its name, a call narrowed to an interface or made
+// quick, a block above the pass, a check that couldn't read pf.
+func TestABypassChangeKillsEvenWhenTheErrorReadsAlike(t *testing.T) {
 	ctx := context.Background()
 	r := newRig(t)
 	g := r.guard()
@@ -268,6 +289,26 @@ func TestAChangeTheErrorDoesntShowStillKills(t *testing.T) {
 	if apply("the earlier anchor's rules changed") != said || alive(b) {
 		t.Error("an earlier anchor's rules changing under its name didn't kill")
 	}
+	// What the bypass is narrowed: pf's state policy is floating, so a
+	// state made over en0 would outlive a call now only on en1.
+	narrowed := []struct{ when, call string }{
+		{"the call narrowed to an interface", `anchor "vpn" on en1 all`},
+		{"the call made quick", `anchor "vpn" quick all`},
+	}
+	for _, n := range narrowed {
+		s := state()
+		r.pf.set(func(f *fakePF) {
+			f.main = mainWith([]string{"pass out quick on en0 all", "pass out quick on en1 all", n.call})
+		})
+		if apply(n.when) != said || alive(s) {
+			t.Errorf("%s didn't kill", n.when)
+		}
+	}
+	s := state()
+	r.pf.setAnchor("vpn", &fakeAnchor{rules: []string{"block out quick proto tcp all", "pass out quick inet6 to 2001:db8:cd::/48"}})
+	if apply("a block above the pass") != said || alive(s) {
+		t.Error("a block above the pass didn't kill")
+	}
 	c := state()
 	r.pf.failOn("Interfaces", errFake)
 	apply("pf unreadable")
@@ -292,8 +333,8 @@ func TestAChangeTheErrorDoesntShowStillKills(t *testing.T) {
 
 func TestEndsEvaluation(t *testing.T) {
 	for _, c := range []struct {
-		rule           string
-		inQuick, wants bool
+		rule          string
+		inQuick, want bool
 	}{
 		{"pass out quick inet6 all", false, true},
 		{"pass quick all", false, true},
@@ -304,8 +345,15 @@ func TestEndsEvaluation(t *testing.T) {
 		{"pass out inet6 all # inet", true, true},
 		{"block return out quick inet6 all", true, false},
 		{`anchor "vpn" quick all`, true, false},
+		// The family comes before proto, from, to and all; the same word
+		// after them is something else's (an unquoted tag).
+		{"pass out quick all tag inet", false, true},
+		{"pass out quick proto tcp from any to any tagged inet", false, true},
+		{`pass out quick all label "inet"`, false, true},
+		{"pass out quick inet all tag inet6", false, false},
+		{"pass out quick on en0 inet6 proto udp all", false, true},
 	} {
-		if got := endsEvaluation(strings.Fields(c.rule), c.inQuick); got != c.wants {
+		if got := endsEvaluation(strings.Fields(c.rule), c.inQuick); got != c.want {
 			t.Errorf("%q (in a quick anchor %v): %v", c.rule, c.inQuick, got)
 		}
 	}
@@ -361,6 +409,13 @@ func TestResolveAnchor(t *testing.T) {
 		{"", "a/./b", anchorCall{}, false},
 		{"vpn", "..", anchorCall{}, false},
 		{"", "a/*/b", anchorCall{}, false},
+		// pf names may hold a `*` (only a trailing `/*` is a wildcard),
+		// but pfctl takes a trailing one off -a's name.
+		{"", "vpn/a*", anchorCall{}, false},
+		{"vpn", "a*", anchorCall{}, false},
+		{"vpn", "/fw*/x", anchorCall{}, false},
+		{"", "vpn*/*", anchorCall{}, false},
+		{"", "a b", anchorCall{"a b", false}, true},
 	} {
 		got, ok := resolveAnchor(c.base, c.name)
 		if got != c.want || ok != c.ok {
@@ -396,6 +451,8 @@ func TestChildAnchors(t *testing.T) {
 		{"  vpnx/a\n", "", nil, nil, false},
 		{"  vpn/\n", "", nil, nil, false},
 		{"  vpn/a" + strings.Repeat("x", 1<<20) + "\n", "", nil, nil, false},
+		// Listed as they are: the walk judges a name it can't read.
+		{"  vpn/a b\n  vpn/a*\n", "", nil, []string{"vpn/a b", "vpn/a*"}, true},
 	} {
 		got, err := childAnchors("vpn", pfOutput{stdout: []byte(c.stdout), stderr: []byte(c.stderr)}, c.runErr)
 		if !slices.Equal(got, c.want) || (err == nil) != c.ok {

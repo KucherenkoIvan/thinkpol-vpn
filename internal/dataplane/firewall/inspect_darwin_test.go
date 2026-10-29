@@ -188,8 +188,8 @@ func TestTheRecordedListingsParse(t *testing.T) {
 		t.Errorf("the main ruleset: %v, %q", hooked(main), mainUpToHook(main))
 	}
 	for _, name := range []string{"recorded-anchors-guarded.txt", "recorded-anchors-stock.txt"} {
-		if got := anchorsBefore(fixture(t, name)); len(got) != 0 {
-			t.Errorf("%s: anchors before %q", name, got)
+		if got, err := anchorsBefore(pfOutput{stdout: fixture(t, name)}, nil); err != nil || len(got) != 0 {
+			t.Errorf("%s: anchors before %q, %v", name, got, err)
 		}
 	}
 	if got, err := skippedNames(fixture(t, "recorded-interfaces-v.txt")); err != nil || len(got) != 0 {
