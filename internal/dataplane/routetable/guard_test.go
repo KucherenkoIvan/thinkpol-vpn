@@ -205,9 +205,9 @@ func TestEnforcerAppliesTheGuardWithTheRoutes(t *testing.T) {
 		t.Errorf("the guard's event re-applied the routes (%d Applies, want %d)", f.count(), routes)
 	}
 
-	// Routes that fail leave the routes in place, and the guard checked
-	// for no more than them and the Want that failed both exempt: here
-	// that Want's, which drops w's direct prefix.
+	// Routes that fail leave the routes in place, and the guard is
+	// applied for only what they and the failed Want both exempt: here
+	// the failed Want's, which drops w's direct prefix.
 	f.setFail(true)
 	w2 := w
 	w2.Direct = nil
@@ -375,8 +375,12 @@ func checkRoutesStayed(t *testing.T, f *fakeConfigurator, n int, old routetable.
 	t.Helper()
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if len(f.applies) != n || !slices.Equal(routeStrings(f.applies[n-1]), routeStrings(routetable.Config(old, up()))) {
-		t.Errorf("%d route Applies, the last %v; want %d, old's", len(f.applies), routeStrings(f.applies[len(f.applies)-1]), n)
+	if n == 0 || len(f.applies) != n {
+		t.Errorf("%d route Applies, want %d (> 0)", len(f.applies), n)
+		return
+	}
+	if got := routeStrings(f.applies[n-1]); !slices.Equal(got, routeStrings(routetable.Config(old, up()))) {
+		t.Errorf("the last route Apply %v, want old's", got)
 	}
 }
 
@@ -408,16 +412,18 @@ func TestAFailedShrinkNarrowsTheGuard(t *testing.T) {
 	shrunk.Direct = set(t, "2001:db8:d0::/48")
 	none := old
 	none.Direct = nil
-	for _, w := range []routetable.Want{shrunk, none, shrunk} {
+	for i, w := range []routetable.Want{shrunk, none, shrunk} {
 		if err := e.Enforce(t.Context(), w); err == nil {
 			t.Fatal("Enforce succeeded on a failing configurator")
 		}
+		if i == 1 && !lastGuard(g).Equal(routetable.GuardFor(none)) {
+			t.Errorf("after the failed fallback the guard exempts %v, want the endpoints alone", lastGuard(g).Direct.Prefixes())
+		}
 	}
-	dropped := netip.MustParseAddr("2001:db8:d1::1")
 	check := func(when string) {
 		t.Helper()
 		got := lastGuard(g)
-		if !got.Equal(routetable.GuardFor(shrunk)) || got.Direct.Contains(dropped) {
+		if !got.Equal(routetable.GuardFor(shrunk)) {
 			t.Errorf("%s: the guard exempts %v, want the new set's %v", when, got.Direct.Prefixes(), routetable.GuardFor(shrunk).Direct.Prefixes())
 		}
 	}
@@ -441,17 +447,123 @@ func TestAFailedGrowHoldsTheGuardToTheRoutes(t *testing.T) {
 	if err := e.Enforce(t.Context(), grown); err == nil {
 		t.Fatal("Enforce succeeded on a failing configurator")
 	}
-	added := netip.MustParseAddr("2001:db8:d1::1")
 	check := func(when string) {
 		t.Helper()
 		got := lastGuard(g)
-		if !got.Equal(routetable.GuardFor(old)) || got.Direct.Contains(added) {
+		if !got.Equal(routetable.GuardFor(old)) {
 			t.Errorf("%s: the guard exempts %v, want the routes in place's %v", when, got.Direct.Prefixes(), routetable.GuardFor(old).Direct.Prefixes())
 		}
 	}
 	check("after the failed Enforce")
 	checkRepairs(t, e, g, check)
 	checkRoutesStayed(t, f, n, old)
+}
+
+// Once a Want's routes go in after failures, the guard is that Want's,
+// on its Apply and on the guard's own repairs alike: narrowed by a failed
+// shrink, held by a failed grow, then widened back to the recovered
+// set's.
+func TestTheGuardFollowsTheRoutesBackAfterFailures(t *testing.T) {
+	ep := netip.MustParseAddr("2001:db8:7::7")
+	old := routetable.Want{TUN: "thinkpol0", Direct: set(t, "2001:db8:d0::/48", "2001:db8:d1::/48"), Bypass: []netip.Addr{ep}}
+	e, f, g := failingRig(t, old)
+	shrunk := old
+	shrunk.Direct = set(t, "2001:db8:d0::/48")
+	grown := old
+	grown.Direct = set(t, "2001:db8:d0::/48", "2001:db8:d1::/48", "2001:db8:d2::/48")
+	for _, w := range []routetable.Want{shrunk, grown} {
+		if err := e.Enforce(t.Context(), w); err == nil {
+			t.Fatal("Enforce succeeded on a failing configurator")
+		}
+	}
+
+	// The shrink goes in: its guard, also after the guard's own Watch.
+	f.setFail(false)
+	if err := e.Enforce(t.Context(), shrunk); err != nil {
+		t.Fatal(err)
+	}
+	checkGuard := func(when string, want routetable.Want) {
+		t.Helper()
+		if got := lastGuard(g); !got.Equal(routetable.GuardFor(want)) {
+			t.Errorf("%s: the guard exempts %v, want %v", when, got.Direct.Prefixes(), routetable.GuardFor(want).Direct.Prefixes())
+		}
+	}
+	checkRepairs(t, e, g, func(when string) { checkGuard("the shrink in, "+when, shrunk) })
+
+	// A grow fails (the guard stays the shrink's), then goes in: the
+	// guard widens to the grown set's, on its Apply and its repairs.
+	f.setFail(true)
+	if err := e.Enforce(t.Context(), grown); err == nil {
+		t.Fatal("Enforce succeeded on a failing configurator")
+	}
+	checkGuard("the grow failing", shrunk)
+	f.setFail(false)
+	if err := e.Enforce(t.Context(), grown); err != nil {
+		t.Fatal(err)
+	}
+	checkGuard("the grow in", grown)
+	checkRepairs(t, e, g, func(when string) { checkGuard("the grow in, "+when, grown) })
+	if st := e.Status(); !st.Enforced || !st.GuardEnforced {
+		t.Errorf("status %+v: want the routes and the guard in place", st)
+	}
+}
+
+// The guard for the routes in place and the rules is exactly what both
+// exempt: never wider than either, and no narrower; TUN and Mark are the
+// routes in place's.
+func TestTheGuardIsTheIntersection(t *testing.T) {
+	ep7, ep8 := netip.MustParseAddr("2001:db8:7::7"), netip.MustParseAddr("2001:db8:7::8")
+	up1, up2 := netip.MustParseAddrPort("[2001:db8:53::1]:53"), netip.MustParseAddrPort("[2001:db8:53::2]:53")
+	with := func(tun string, direct []string, eps []netip.Addr, ups []netip.AddrPort) routetable.Want {
+		w := routetable.Want{TUN: tun, Bypass: eps, Upstreams: ups}
+		if direct != nil {
+			w.Direct = set(t, direct...)
+		}
+		return w
+	}
+	for _, c := range []struct {
+		name       string
+		held, want routetable.Want
+	}{
+		{"shrink", with("thinkpol0", []string{"2001:db8:d0::/48", "2001:db8:d1::/48"}, nil, nil), with("thinkpol0", []string{"2001:db8:d0::/48"}, nil, nil)},
+		{"grow", with("thinkpol0", []string{"2001:db8:d0::/48"}, nil, nil), with("thinkpol0", []string{"2001:db8:d0::/48", "2001:db8:d1::/48"}, nil, nil)},
+		{"partial overlap", with("thinkpol0", []string{"2001:db8::/32"}, nil, nil), with("thinkpol0", []string{"2001:db8:d0::/48", "2001:db9::/32"}, nil, nil)},
+		{"partial overlap, the other way", with("thinkpol0", []string{"2001:db8:d0::/48", "2001:db9::/32"}, nil, nil), with("thinkpol0", []string{"2001:db8::/32"}, nil, nil)},
+		{"to nothing", with("thinkpol0", []string{"2001:db8::/32", "198.51.100.0/24"}, []netip.Addr{ep7}, nil), with("thinkpol0", nil, []netip.Addr{ep7}, nil)},
+		{"endpoints swapped", with("thinkpol0", nil, []netip.Addr{ep7}, nil), with("thinkpol0", nil, []netip.Addr{ep8}, nil)},
+		{"endpoint inside a dropped prefix", with("thinkpol0", []string{"2001:db8:7::/48"}, nil, nil), with("thinkpol0", nil, []netip.Addr{ep7}, nil)},
+		{"upstreams swapped", with("thinkpol0", nil, nil, []netip.AddrPort{up1}), with("thinkpol0", nil, nil, []netip.AddrPort{up2})},
+		{"an upstream added", with("thinkpol0", nil, nil, []netip.AddrPort{up1}), with("thinkpol0", nil, nil, []netip.AddrPort{up2, up1})},
+		{"another TUN", with("thinkpol0", []string{"2001:db8:d0::/48"}, nil, nil), with("thinkpol1", []string{"2001:db8:d0::/48"}, nil, nil)},
+		{"same", with("thinkpol0", []string{"2001:db8:d0::/48"}, []netip.Addr{ep7}, []netip.AddrPort{up1}), with("thinkpol0", []string{"2001:db8:d0::/48"}, []netip.Addr{ep7}, []netip.AddrPort{up1})},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got := routetable.GuardBetween(c.held, c.want)
+			h, w := routetable.GuardFor(c.held), routetable.GuardFor(c.want)
+			if !got.Direct.Minus(h.Direct).IsEmpty() || !got.Direct.Minus(w.Direct).IsEmpty() {
+				t.Errorf("exempts %v: wider than the routes %v or the Want %v", got.Direct.Prefixes(), h.Direct.Prefixes(), w.Direct.Prefixes())
+			}
+			// No narrower: every address both exempt is exempt.
+			if missed := h.Direct.Minus(h.Direct.Minus(w.Direct)).Minus(got.Direct); !missed.IsEmpty() {
+				t.Errorf("exempts %v: misses %v, which both exempt", got.Direct.Prefixes(), missed.Prefixes())
+			}
+			var both []netip.AddrPort
+			for _, ap := range h.Upstreams {
+				if slices.Contains(w.Upstreams, ap) {
+					both = append(both, ap)
+				}
+			}
+			if !slices.Equal(got.Upstreams, both) {
+				t.Errorf("upstreams %v, want those both exempt: %v", got.Upstreams, both)
+			}
+			if got.TUN != h.TUN || got.Mark != h.Mark {
+				t.Errorf("TUN/Mark %q/%#x, want the routes in place's %q/%#x", got.TUN, got.Mark, h.TUN, h.Mark)
+			}
+			if c.held.Equal(c.want) && !got.Equal(h) {
+				t.Errorf("held == want: %+v, want GuardFor(held)", got)
+			}
+		})
+	}
 }
 
 // A watcher that stops on its own (a kernel without rule protocols: no
@@ -761,6 +873,7 @@ func TestAGuardSuccessSaysHowManyFailuresWereHeldBack(t *testing.T) {
 // guardWarnRig is an Enforcer whose guard fails as told (an empty
 // message: succeeds), its watcher paused, on a clock the test moves.
 func guardWarnRig(t *testing.T) (fail func(msg string), buf *lockedBuffer, clock *fakeClock) {
+	t.Helper()
 	f := &fakeConfigurator{}
 	g := newFakeGuard(f)
 	buf = &lockedBuffer{}

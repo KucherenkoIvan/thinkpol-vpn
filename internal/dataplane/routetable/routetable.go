@@ -267,9 +267,8 @@ func PolicyRouting(w Want, s netcfg.Survey) netcfg.Config {
 // subnets, the physical gateway, someone removing a route or rule of
 // ours), every Backstop anyway, and every RetryAfter while that fails.
 // Close removes everything. With a Guard, the guard follows the routes at
-// each step, never wider than the last Want (guardWhileFailing), with a
-// status of its own: its failure never undoes the routes or fails an
-// Enforce.
+// each step, never wider than the last Want (guardFor), with a status of
+// its own: its failure never undoes the routes or fails an Enforce.
 type Enforcer struct {
 	cfg   netcfg.Configurator
 	guard Guard // nil: routes only
@@ -291,9 +290,10 @@ type Enforcer struct {
 	// Apply.
 	mu   sync.Mutex
 	want *Want // last given
-	// applied is the last Want whose routes went in: what the OS holds
-	// while want's fail (an Apply is all or nothing), and what the guard
-	// must never be wider than meanwhile (guardWhileFailing).
+	// applied is the last Want whose routes went in: what the last
+	// successful Apply put in place, which stays while want's fail (an
+	// Apply is all or nothing). The guard is never wider than it nor
+	// than want (guardFor).
 	applied *Want
 	failing bool // the last Apply or re-Apply of want's routes failed
 	// unsupported: the OS can't enforce the table at all (a kernel without
@@ -320,9 +320,10 @@ type Status struct {
 	// ErrorUnsupported or ErrorTUNDown (then Enforced is false too); empty
 	// otherwise.
 	Error ErrorCode
-	// GuardEnforced says the leak guard for the last Want is in place:
-	// false without a Guard, before the first Enforce, and while applying
-	// it fails.
+	// GuardEnforced says the leak guard is in place for the routes in
+	// place and the last Want (guardFor: what both exempt; the last
+	// Want's own once its routes are in): false without a Guard, before
+	// the first Enforce, and while applying it fails.
 	GuardEnforced bool
 	// GuardError says what is wrong with the guard: ErrorGuard or
 	// ErrorGuardUnsupported; empty otherwise (no Guard included).
@@ -482,11 +483,10 @@ func (e *Enforcer) Enforce(ctx context.Context, w Want) error {
 	return e.apply(ctx, w, false)
 }
 
-// apply puts w in place against the OS's routing as it is now, then the
-// guard: w's if its routes went in, else guardWhileFailing's for the last
-// applied Want, whose routes an Apply that failed left in place. The
-// watcher is paused or apply runs on it. Only the routes' failure is
-// returned.
+// apply puts w in place against the OS's routing as it is now, records
+// it as the last Want (and the last applied one if its routes went in),
+// then puts the guard for that state in place (guardFor). The watcher is
+// paused or apply runs on it. Only the routes' failure is returned.
 func (e *Enforcer) apply(ctx context.Context, w Want, again bool) error {
 	start := time.Now()
 	s, err := e.cfg.Survey(ctx)
@@ -496,22 +496,18 @@ func (e *Enforcer) apply(ctx context.Context, w Want, again bool) error {
 		err = e.cfg.Apply(ctx, l.Config)
 	}
 	took := time.Since(start)
-	if err == nil {
-		e.applyGuard(ctx, GuardFor(w))
-	} else {
-		e.mu.Lock()
-		held := e.applied
-		e.mu.Unlock()
-		if held != nil {
-			e.applyGuard(ctx, guardWhileFailing(*held, w))
-		}
-	}
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	e.want = &w
 	if err == nil {
 		e.applied = &w
 	}
+	held := e.applied
+	e.mu.Unlock()
+	if held != nil {
+		e.applyGuard(ctx, guardFor(*held, w))
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	e.failing = err != nil
 	e.status.Enforced = err == nil
 	if again {
@@ -543,18 +539,33 @@ func (e *Enforcer) apply(ctx context.Context, w Want, again bool) error {
 	return nil
 }
 
-// guardWhileFailing is the guard while w's routes fail to go in and
-// held's stay in place: held's, its Direct cut to what w's guard
-// exempts too. Never wider than the routes in place (held's), and its
-// Direct never wider than the rules (w's): a failed shrink narrows it, a
-// failed grow keeps held's, and a change that adds some prefixes and
-// drops others exempts only those it keeps. What held routes direct and the guard no longer exempts is
-// refused, never leaked: the device's IPv6 that goes direct by routing
-// still leaves through a physical interface, where the guard refuses it.
-func guardWhileFailing(held, w Want) Exempt {
-	g := GuardFor(held)
-	g.Direct = g.Direct.Minus(g.Direct.Minus(GuardFor(w).Direct))
+// guardFor is the one rule for the guard: for the routes in place
+// (held, the last applied Want) and the rules (want, the last given), it
+// is held's, its Direct and Upstreams cut to what want's guard exempts
+// too; TUN and Mark are held's. Never wider than either; once want's
+// routes are in, held == want and it is GuardFor(want). While they fail,
+// a failed shrink narrows it, a failed grow keeps held's, and a change
+// that adds some prefixes and drops others exempts only those it keeps.
+// What held routes direct and the guard no longer exempts is refused,
+// never leaked: the device's IPv6 that goes direct by routing still
+// leaves through a physical interface, where the guard refuses it.
+func guardFor(held, want Want) Exempt {
+	g, w := GuardFor(held), GuardFor(want)
+	g.Direct = g.Direct.Intersect(w.Direct)
+	g.Upstreams = intersectUpstreams(g.Upstreams, w.Upstreams)
 	return g
+}
+
+// intersectUpstreams are the upstreams in both a and b, each sorted and
+// compacted (upstreams).
+func intersectUpstreams(a, b []netip.AddrPort) []netip.AddrPort {
+	var out []netip.AddrPort
+	for _, ap := range a {
+		if _, ok := slices.BinarySearchFunc(b, ap, netip.AddrPort.Compare); ok {
+			out = append(out, ap)
+		}
+	}
+	return out
 }
 
 // applyGuard puts guard x in place and says how that went in the
@@ -779,23 +790,19 @@ func (e *Enforcer) reapply(ctx context.Context) {
 	}
 }
 
-// reapplyGuard puts the guard back alone, for the routes in place (the
-// last applied Want's), whether or not the routes' latest Apply failed:
-// a failed Apply leaves the previous routes in place, and they need
-// their guard, narrowed to the last Want's while that fails
-// (guardWhileFailing).
+// reapplyGuard puts the guard back alone, by the same rule as apply
+// (guardFor), for the routes in place (the last applied Want's) and the
+// last Want, whether or not the routes' latest Apply failed: a failed
+// Apply leaves the previous routes in place, and they need their guard,
+// cut to what the last Want's guard exempts too.
 func (e *Enforcer) reapplyGuard(ctx context.Context) {
 	e.mu.Lock()
-	held, want, failing := e.applied, e.want, e.failing
+	held, want := e.applied, e.want
 	e.mu.Unlock()
 	if held == nil || ctx.Err() != nil {
 		return // no routes in place yet: nothing to guard
 	}
-	x := GuardFor(*held)
-	if failing {
-		x = guardWhileFailing(*held, *want)
-	}
-	e.applyGuard(ctx, x)
+	e.applyGuard(ctx, guardFor(*held, *want))
 	e.mu.Lock()
 	e.status.Reapplies++
 	e.mu.Unlock()

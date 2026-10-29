@@ -275,6 +275,9 @@ func (s *Set) Minus(t *Set) *Set {
 	return out
 }
 
+// Intersect returns the addresses in both s and t.
+func (s *Set) Intersect(t *Set) *Set { return s.Minus(s.Minus(t)) }
+
 // IsEmpty reports whether s holds no address.
 func (s *Set) IsEmpty() bool {
 	return s == nil || len(s.spans[fam4]) == 0 && len(s.spans[fam6]) == 0

@@ -235,24 +235,37 @@
 // Watch says it may have changed from outside, the Enforcer puts it back
 // alone, a debounce later.
 //
-// While a Want's routes fail to go in, the routes in place stay those of
-// the last Want that went in (an Apply is all or nothing), and the guard
-// follows them, but never past the Want that failed: its Direct exempts
-// only what both Wants' guards exempt (TUN, Mark and Upstreams stay the
-// routes in place's). A guard wider than the routes in place is never
-// installed; one narrower can only refuse, never leak, since the device's
-// own IPv6 the routes still send direct leaves through a physical
-// interface, where the guard refuses what it doesn't exempt. So a failed
-// grow keeps the old guard, and a failed shrink narrows it to the new
-// set: the device's IPv6 to the prefixes dropped is refused until an
-// Apply works, while IPv4 to them, and IPv6 the device forwards (which
-// isn't the guard's), still go direct by the old routes (RR14; IPv4 is
-// the kill switch's, TP-048). A change that drops some prefixes and adds
-// others exempts only those it keeps: neither an added one, whose routes
-// aren't in, nor a dropped one, which the rules now tunnel. The engine's
-// fallback to nothing direct after a failed shrink narrows the guard the
-// same way, to the endpoints alone, until it is given the new rules' Want
-// (the next step of its change), whose guard then holds.
+// One rule picks the guard, on every Apply, re-apply and repair alike:
+// it is the guard for the routes in place (the last Want that went in)
+// cut to what the last Want's guard exempts too, Direct and Upstreams
+// both (TUN and Mark are the routes in place's). Once the last Want's
+// routes are in, that is its own guard. While they fail to go in, the
+// routes in place stay the previous ones (an Apply is all or nothing),
+// and the guard follows them, but never past the Want that failed. A
+// guard wider than the routes in place is never installed; one narrower
+// can only refuse, never leak, since the device's own IPv6 the routes
+// still send direct leaves through a physical interface, where the guard
+// refuses what it doesn't exempt. So a failed grow keeps the old guard,
+// and a failed shrink narrows it to the new set: the device's IPv6 to
+// the prefixes dropped is refused until an Apply works (where the guard
+// is enforced), while IPv4 to them still goes direct by the old routes
+// (RR14; IPv4 is the kill switch's, TP-048), and so, on Linux, does IPv6
+// the device forwards: the nftables guard hooks only the device's own
+// output. macOS's pf filters forwarded packets on their way out too, so
+// it probably refuses them; that is unverified (TP-096). A change that
+// drops some prefixes and adds others exempts only those it keeps:
+// neither an added one, whose routes aren't in, nor a dropped one, which
+// the rules now tunnel; likewise an upstream. The engine's fallback to
+// nothing direct after a failed shrink narrows the guard the same way, to
+// the endpoints alone, until it is given the new rules' Want (the next
+// step of its change), which widens it to what the old and the new
+// direct set both hold.
+//
+// Until a Want's routes first go in, no guard is applied and
+// [Status.GuardEnforced] stays false: there are no routes to guard yet,
+// and a guard for nothing direct would refuse IPv6 to the links'
+// endpoints too, which macOS, with no socket marks, exempts only by
+// address.
 //
 // The guard has a status of its own ([Status.GuardEnforced],
 // [Status.GuardError]): its failure never fails the routes or an Enforce.

@@ -142,12 +142,11 @@ func (o *osRoutes) shrink(ctx context.Context, direct *lists.Set) error {
 		return nil
 	}
 	old := o.want.Direct
-	gone := old.Minus(direct)
-	if gone.IsEmpty() {
+	if old.Minus(direct).IsEmpty() {
 		return nil
 	}
 	w := *o.want
-	w.Direct = old.Minus(gone)
+	w.Direct = old.Intersect(direct)
 	err := o.enforce(ctx, w)
 	if err == nil {
 		o.want = &w
@@ -162,7 +161,7 @@ func (o *osRoutes) shrink(ctx context.Context, direct *lists.Set) error {
 		o.warn("route table: removing direct routes failed; nothing goes direct until the next Apply", err)
 		return err
 	}
-	o.warn("route table: removing direct routes failed; destinations the rules no longer send direct still go direct over IPv4, and over IPv6 a leak guard doesn't hold", errors.Join(err, ferr))
+	o.warn("route table: removing direct routes failed; destinations the rules no longer send direct still go direct over IPv4, for IPv6 forwarded on Linux, and for the device's own IPv6 where the leak guard isn't enforced", errors.Join(err, ferr))
 	return errors.Join(err, ferr)
 }
 
