@@ -457,13 +457,30 @@ func TestCloseRemovesEverythingWhileRulesChurn(t *testing.T) {
 	applied := snapshot(t, n.h)
 
 	stop := n.churnRules(t)
-	if _, err := c.Survey(ctx); !errors.Is(err, netcfg.ErrDumpsDisagree) {
-		stop()
-		t.Fatalf("Survey while rules churn: %v, want ErrDumpsDisagree (or the churn is too slow to test with)", err)
+	// The churn must make the dumps disagree, or Close isn't tested. A
+	// busy machine can pause the churner long enough for two dumps to
+	// agree now and then: that's a dump as good as an idle one's.
+	var surveyFailed, applyFailed bool
+	for range 10 {
+		if _, err := c.Survey(ctx); errors.Is(err, netcfg.ErrDumpsDisagree) {
+			surveyFailed = true
+		} else if err != nil {
+			stop()
+			t.Fatalf("Survey while rules churn: %v", err)
+		}
+		if err := c.Apply(ctx, cfg); errors.Is(err, netcfg.ErrDumpsDisagree) {
+			applyFailed = true
+		} else if err != nil {
+			stop()
+			t.Fatalf("Apply while rules churn: %v", err)
+		}
+		if surveyFailed && applyFailed {
+			break
+		}
 	}
-	if err := c.Apply(ctx, cfg); !errors.Is(err, netcfg.ErrDumpsDisagree) {
+	if !surveyFailed || !applyFailed {
 		stop()
-		t.Fatalf("Apply while rules churn: %v, want ErrDumpsDisagree", err)
+		t.Fatalf("Survey and Apply while rules churn: ErrDumpsDisagree %v and %v in 10 tries, want both (the churn is too slow to test with)", surveyFailed, applyFailed)
 	}
 	err := c.Close()
 	stop()
@@ -479,8 +496,8 @@ func TestCloseRemovesEverythingWhileRulesChurn(t *testing.T) {
 // churnRules adds an IPv4 rule at a new priority and deletes the one
 // added eight before, without pause, until stop, which deletes what is
 // left: someone else's rules that never hold still. Each change is one
-// netlink round trip, so dumps a millisecond apart never see the same
-// rules.
+// netlink round trip, so dumps a millisecond apart see the same rules
+// only if the churner is held up. It returns once the churn is going.
 func (n *testNS) churnRules(t *testing.T) (stop func()) {
 	t.Helper()
 	h, err := netlink.NewHandleAt(n.ns)
@@ -494,6 +511,7 @@ func (n *testNS) churnRules(t *testing.T) (stop func()) {
 	}
 	const first, window = 20000, 8
 	var quit atomic.Bool
+	var made atomic.Int64
 	done := make(chan error, 1)
 	next := first
 	go func() {
@@ -508,10 +526,11 @@ func (n *testNS) churnRules(t *testing.T) (stop func()) {
 					return
 				}
 			}
+			made.Add(1)
 		}
 		done <- nil
 	}()
-	return func() {
+	stop = func() {
 		quit.Store(true)
 		if err := <-done; err != nil {
 			t.Errorf("churning rules: %v", err)
@@ -523,6 +542,13 @@ func (n *testNS) churnRules(t *testing.T) (stop func()) {
 		}
 		h.Close()
 	}
+	for deadline := time.Now().Add(5 * time.Second); made.Load() < 2*window; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			stop()
+			t.Fatal("the rule churn didn't start")
+		}
+	}
+	return stop
 }
 
 func TestSurveyFindsOnLinkSubnetsAndForeignRules(t *testing.T) {
