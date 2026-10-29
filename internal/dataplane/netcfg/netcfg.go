@@ -180,7 +180,8 @@ type Rule struct {
 	// 32766.
 	Priority int
 	// Dst, when valid, matches only packets to this prefix (`to`), of
-	// the rule's family.
+	// the rule's family; never a /0 (leave it unset for every
+	// destination).
 	Dst netip.Prefix
 	// Oif, when set, matches only lookups for this outgoing interface
 	// (`oif`): sockets bound to it, and the kernel resolving the gateway
@@ -375,6 +376,11 @@ func validateRules(rs []Rule) error {
 		}
 		if r.Dst.IsValid() && (r.Dst != r.Dst.Masked() || FamilyOf(r.Dst.Addr()) != r.Family || r.Dst.Addr().Is4In6()) {
 			return fmt.Errorf("netcfg: rule %v: destination must be a masked prefix of the rule's family", r)
+		}
+		// The kernel keeps no destination for a /0, so the rule would not
+		// read back as added.
+		if r.Dst.IsValid() && r.Dst.Bits() == 0 {
+			return fmt.Errorf("netcfg: rule %v: a /0 destination is every destination; leave Dst unset", r)
 		}
 		if rules[r] {
 			return fmt.Errorf("netcfg: rule %v listed twice", r)
