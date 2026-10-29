@@ -22,7 +22,7 @@ When a smaller direct set fails to apply, and so does the fallback to nothing di
 ## Acceptance
 - [x] a test where removing direct prefixes fails and so does the fallback: the guard installed is the new, narrower set's, and the routes are the old ones. Mutation: holding the guard to the old routes fails it
 - [x] a test that a failed *grow* still holds the guard to the routes in place (no wider guard than the routes)
-- [ ] `make lint`, `make test`, `make lab-test` pass
+- [x] `make lint`, `make test`, `make lab-test` pass
 
 ## Notes
 - From TP-077's round-2 design review (2026-10-22): the row had no ticket. It breaks D6 (a must), and the subset case allows a fail-closed fix.
@@ -35,3 +35,5 @@ When a smaller direct set fails to apply, and so does the fallback to nothing di
 - 2026-10-28 backlog → in-progress, owner: agent-claude-tp127
 - 2026-10-29 takeover (agent-claude-tp127b): WIP 0e0b488 re-read against the ticket; docs say forwarded IPv6 still follows the old routes (RR14 keeps D6 for it only), guardWhileFailing's doc scopes "never wider than the rules" to Direct
 - 2026-10-29 tests: TestAFailedShrinkNarrowsTheGuard, TestAFailedGrowHoldsTheGuardToTheRoutes, and TestTheGuardIsPutBackWhileTheRoutesFail/TestEnforcerAppliesTheGuardWithTheRoutes updated (mixed change, fallback). Mutants, each killed: apply's failure branch holding the guard to the old routes (GuardFor(held): the shrink test and AppliesTheGuard fail); following the failed Want (GuardFor(w): the grow test fails); reapplyGuard ignoring failing (the shrink test after the guard's Watch, and PutBack, fail); guardWhileFailing without the intersection (w's Direct: PutBack and the grow test fail)
+- 2026-10-29 make lint, make test green; make lab-test green on b0061e1 (lab 379.7 s, gotest ok in 36 packages). origin/rewrite merged after it (d29e45c: tickets only, no code change). Not verified: the pf adapter's reload on a narrowed Exempt on a real macOS (unit and lab tests use the fake guard and nftables)
+- 2026-10-29 in-progress → review
