@@ -33,7 +33,8 @@ const DiagSchemaVersion = 1
 // Diagnose serves the snapshot: whole to root and the service's user, to
 // the group without the parts that name public addresses.
 func (s *server) Diagnose(ctx context.Context, _ *localapiv1.DiagnoseRequest) (*localapiv1.DiagnoseResponse, error) {
-	d := s.node.Diagnose(ctx, s.policy.callerAccess(ctx) >= AccessAdmin)
+	c, ok := callerFrom(ctx)
+	d := s.node.Diagnose(ctx, ok && s.policy.isAdmin(c))
 	return &localapiv1.DiagnoseResponse{Diagnostics: diagnosticsProto(d, time.Now(), s.version)}, nil
 }
 
