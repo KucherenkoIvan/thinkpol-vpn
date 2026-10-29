@@ -35,6 +35,28 @@ The macOS IPv6 guard reports itself not enforced while a `pass ... quick` that c
 - TP-138 review: DIOCGETRULESETS on a missing anchor needs its own exact absence check (not AnchorMissing); reuse rulesOf; the ALTQ filter is exact since TP-138.
 - TP-138 round-2 design nits to fold in: anchorsBefore should use the shared lines() reader, not its own split; parseReferences should take the whole pfOutput, so the none-held rule lives in one place; rename flush's `what` field to `modifier`; use realistic table ioctls (DIOCRCLRTABLES, DIOCRGETADDRS) in the Tables test cases, and add the doubled-answer case to TestPfctlsNoAnswersAreExact; re-wrap doc.go 336–338 and 395–397.
 
+## Review findings
+Round 1 (2026-10-29): correctness (paranoid: fix first), design (torvalds: fix first), style (go-style: fix first), second opinion (Cursor: fix first). No blockers; the walk holds. Decisions by the orchestrator (2026-10-29).
+- [ ] R1.1 (paranoid #1) An anchor name with `*` inside a path component (`vpn/a*`) makes pfctl read another anchor (`-a` strips a trailing `*`), so a pass is missed. Any `*` in a path component except a trailing `/*` wildcard is a name the guard can't read: a bypass. In resolveAnchor and childAnchors, with cases in TestResolveAnchor and TestChildAnchors.
+- [ ] R1.2 (paranoid #2; torvalds nit on RR11) The kill identity is only `where: line` of each pass, so narrowing a bypass (the call gets `on en1`, `quick`, a protocol, a block above the pass) doesn't kill, against doc.go's "any change kills". Build it from everything read up to the hook: each walked ruleset's lines with the anchor-call chain and quick flag. Keep doc.go's claim true; RR11 says "sees the bypasses change" to match.
+- [ ] R1.3 (paranoid #3) No test kills the `anchorWalkKey` without-quick mutant: an anchor called without quick, then with quick, holding a non-quick pass. Add it.
+- [ ] R1.4 (torvalds 1 = Cursor 3) Two readers of `-a com.apple -s Anchors`: anchorsBefore accepts any line and takes the absence answer as "none". anchorsBefore goes through childAnchors; readBypass's comment ("no answer isn't 'none'") fixed.
+- [ ] R1.5 (torvalds 2 = go-style 2 = Cursor 1 "not its rules") doc.go says an earlier com.apple anchor's "existence counts, not its rules" and elsewhere that its rules are read. Keep TP-126's decision: its existence is the bypass; its rules are read only for the kill identity; the doc says so in one place, and guard_darwin.go's comment agrees.
+- [ ] R1.6 (torvalds 3) killedUnder uses nil for both "none" and "unknown", so an Apply failing for a non-bypass reason re-kills every retry (TP-137 adds one). killedUnder gets a `valid` flag, set false on reload/enable through one `statesStale()` helper.
+- [ ] R1.7 (torvalds 4) Apply has three `errors.Join(..., oldRelease)` exits; use one `later []error` ending so TP-137 is a one-line change. Move the kill bookkeeping out of takeReference.
+- [ ] R1.8 (torvalds 5) childAnchors rejects a child name with a space, anchorRule accepts one: allow spaces in child names.
+- [ ] R1.9 (torvalds 6 = go-style 1 = Cursor 1) doc.go "three things still let IPv6 past the anchor" lists four: "four things".
+- [ ] R1.10 (torvalds 7 = Cursor 6; paranoid accepted) InspectIPv6Guard's GuardCheck says "hooked" while health says not enforced for an earlier anchor's pass. Filed as TP-151: name it in the Log and doc.go's "not covered" text.
+- [ ] R1.11 (go-style 4; paranoid accepted) RR12's `nat pass`/`binat pass` case has no reason or ticket. Filed as TP-152: name it in RR12's Ticket column and doc.go.
+- [ ] R1.12 (Cursor 2) RR12 says only "a `pass quick` in an anchor it calls"; any pass inside a quick anchor counts too. Reword.
+- [ ] R1.13 (Cursor 4) If a Mac lists a nested name rooted without `/`, the walk reads a missing anchor and finds nothing (fail open). A wildcard child the listing named that then reads as missing is a bypass, never empty. Named calls to a missing anchor are normal pf (an empty anchor): document that, with the TP-096 device check.
+- [ ] R1.14 (paranoid nit = Cursor 5) reachesIPv6Out takes any `inet` field as IPv4-only, so `tag inet`/`label inet` hides a pass. Look for the family only in the fields before proto/from/to/all; cases for `tag inet` and `label`.
+- [ ] R1.15 (go-style 3; torvalds nit) maxEarlierAnchors counts pfctl runs (listings too): rename maxEarlierReads, say "pfctl runs" in its comment, error text and doc; drop the "64 deep" remark.
+- [ ] R1.16 (go-style 5) TestAQuickPassInANestedAnchorIsNotEnforced has enforced cases: rename after the behaviour.
+- [ ] R1.17 (paranoid nit, torvalds nit, go-style nit) The poll-cost comment (guard_darwin.go ~22) leaves out wildcard listings; doc.go's polling section says the worst case (22 runs under g.mu, each bounded at 15 s).
+- [ ] R1.18 (go-style nits) the guard comment's wrap (~39-43) and two overlong test comment lines; the garbled checkBypass phrase; `first` → `markRead`, `budget` → `spend`; fake `parent` → `hasChildren`; `wants` → `want`; `children refused` with DIOCGETRULESETS; the shadowed `c`; the "stock main ruleset" test comment; TestAChangeTheErrorDoesntShowStillKills renamed; "unexpected stderr%s".
+- [ ] R1.19 (torvalds nits) `bypass.rule` → `at`; anchorWalk holds `pf pfctl`, rulesOf a function of pfctl; answerNoAnchors next to the other answers of absence; the anonymous-anchor claim marked "(unverified, TP-096)"; a note on hookBypassed that only inspect uses it.
+
 ## Log
 - 2026-10-22 created in backlog (TP-126 review round 2)
 - 2026-10-22 docs: the mark-chain reason corrected (the mark value is public); TP-126 round 3's bypass-identity note added
@@ -52,3 +74,4 @@ The macOS IPv6 guard reports itself not enforced while a `pass ... quick` that c
 - 2026-10-29 not covered: InspectIPv6Guard's snapshot doesn't show what the anchors above the hook hold (GuardCheck stays hooked's verdict; it needs a localapi proto field), only their lines in MainRules; `nat pass`/`binat pass` aren't read (now in RR12 and doc.go)
 - 2026-10-29 make lint, make test green; make lab-test (LAB_P=1, other labs up) green on 19f3711: Linux only, so it runs the firewall package's Linux tests and the rest of the lab; none of this ticket's darwin code or tests run there
 - 2026-10-29 in-progress → review
+- 2026-10-29 review → has-errors (round 1: paranoid, torvalds, go-style, Cursor; findings R1.1–R1.19)
