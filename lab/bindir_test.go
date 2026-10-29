@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -34,7 +35,7 @@ func TestRunsHaveTheirOwnBinaryDirectories(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := removeStaleBinaries(ctx, root, noLabUp); err != nil {
+	if err := removeStaleBinaries(ctx, root, noLabsUp); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(bin); err != nil {
@@ -131,7 +132,8 @@ func TestALeftoverTheSweepCantRemoveDoesntStopTheNextRun(t *testing.T) {
 	_ = next.remove(ctx)
 }
 
-func noLabUp(string) bool { return false }
+// noLabsUp is a Docker daemon with no lab up.
+func noLabsUp(context.Context) (map[string]string, error) { return nil, nil }
 
 // A kept lab's binaries outlive its run and the next run's sweep, and go
 // with labctl down's once the lab is down.
@@ -146,10 +148,9 @@ func TestAKeptLabsBinariesStayUntilLabctlDown(t *testing.T) {
 	if err := os.WriteFile(bin, nil, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := kept.recordLab("tplab-x-t-kept"); err != nil {
+	if err := kept.keep("tplab-x-t-kept"); err != nil {
 		t.Fatal(err)
 	}
-	kept.keep()
 	if err := kept.remove(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +169,7 @@ func TestAKeptLabsBinariesStayUntilLabctlDown(t *testing.T) {
 		t.Fatalf("the kept lab's binary after the next run: %v", err)
 	}
 
-	if err := removeStaleBinaries(ctx, root, noLabUp); err != nil {
+	if err := removeStaleBinaries(ctx, root, noLabsUp); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(binRoot(root)); !errors.Is(err, fs.ErrNotExist) {
@@ -179,17 +180,46 @@ func TestAKeptLabsBinariesStayUntilLabctlDown(t *testing.T) {
 // fakeDocker puts a docker on PATH that lists labs (lines of "project\t
 // checkout") to labProjects' queries and answers everything else with
 // nothing: no test here reaches the real one.
-func fakeDocker(t *testing.T, labs ...string) {
+func fakeDocker(t *testing.T, labs ...string) { fakeDockerFailing(t, "", labs...) }
+
+// fakeDockerFailing is fakeDocker that fails every call whose arguments
+// contain fail (every call for "*").
+func fakeDockerFailing(t *testing.T, fail string, labs ...string) {
 	t.Helper()
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "labs"), []byte(strings.Join(labs, "\n")), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	script := "#!/bin/sh\ncase \"$*\" in *\"label=" + LabelLab + "=1\"*) cat \"$(dirname \"$0\")/labs\" ;; esac\n"
+	script := "#!/bin/sh\ncase \"$*\" in\n"
+	switch fail {
+	case "":
+	case "*":
+		script += "*) echo fake docker fails >&2; exit 1 ;;\n"
+	default:
+		script += "*\"" + fail + "\"*) echo fake docker fails >&2; exit 1 ;;\n"
+	}
+	script += "*\"label=" + LabelLab + "=1\"*) cat \"$(dirname \"$0\")/labs\" ;;\nesac\n"
 	if err := os.WriteFile(filepath.Join(dir, "docker"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// endedRun is the directory of a run from the checkout at root that listed
+// the labs kept in .kept and has ended.
+func endedRun(t *testing.T, root string, kept ...string) *runBinaries {
+	t.Helper()
+	d, err := newRunBinaries(t.Context(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range kept {
+		if err := d.recordLab(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = d.lock.Close() // the run has ended
+	return d
 }
 
 // labctl down -tests removes an ended run's directory, and a kept one only
@@ -199,22 +229,9 @@ func TestLabctlDownKeepsTheBinariesOfKeptLabsStillUp(t *testing.T) {
 	ctx := t.Context()
 	root := t.TempDir()
 	fakeDocker(t, "tplab-b-t-up\t"+root+"-elsewhere")
-	newDir := func(kept ...string) *runBinaries {
-		d, err := newRunBinaries(ctx, root)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, p := range kept {
-			if err := d.recordLab(p); err != nil {
-				t.Fatal(err)
-			}
-		}
-		_ = d.lock.Close() // the run has ended
-		return d
-	}
-	stillUp := newDir("tplab-a-t-down", "tplab-b-t-up")
-	allDown := newDir("tplab-a-t-down")
-	ended := newDir()
+	stillUp := endedRun(t, root, "tplab-a-t-down", "tplab-b-t-up")
+	allDown := endedRun(t, root, "tplab-a-t-down")
+	ended := endedRun(t, root)
 
 	if _, err := DownCheckout(ctx, root, true); err != nil {
 		t.Fatal(err)
@@ -226,6 +243,62 @@ func TestLabctlDownKeepsTheBinariesOfKeptLabsStillUp(t *testing.T) {
 		if _, err := os.Stat(d.path); !errors.Is(err, fs.ErrNotExist) {
 			t.Errorf("%s after labctl down: %v", filepath.Base(d.path), err)
 		}
+	}
+}
+
+// When Docker can't list the labs, labctl down keeps every kept lab's
+// directory, since any of them may be up, and says so; an ended run's
+// directory, which no lab may mount, goes all the same.
+func TestLabctlDownKeepsKeptBinariesWhenDockerCantListLabs(t *testing.T) {
+	ctx := t.Context()
+	root := t.TempDir()
+	fakeDockerFailing(t, "label="+LabelLab+"=1")
+	kept := endedRun(t, root, "tplab-a-t-kept")
+	ended := endedRun(t, root)
+
+	if _, err := DownCheckout(ctx, root, true); err == nil {
+		t.Error("labctl down without a list of labs reported no error")
+	}
+	if _, err := os.Stat(kept.path); err != nil {
+		t.Errorf("labctl down without a list of labs took a kept lab's directory: %v", err)
+	}
+	if _, err := os.Stat(ended.path); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("an ended run's directory after labctl down: %v", err)
+	}
+}
+
+// labctl down asks Docker which labs are up only after it has found which
+// runs ended: a run alive until then, whose kept lab Docker doesn't list
+// yet, keeps its directory, even if it ends while Docker answers.
+func TestLabctlDownAsksDockerAfterFindingTheEndedRuns(t *testing.T) {
+	ctx := t.Context()
+	root := t.TempDir()
+	alive, err := newRunBinaries(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := alive.recordLab("tplab-a-t-starting"); err != nil {
+		t.Fatal(err)
+	}
+	down := endedRun(t, root, "tplab-b-t-down")
+	asked := false
+	labsUp := func(context.Context) (map[string]string, error) {
+		asked = true
+		_ = alive.lock.Close() // the run dies; its lab comes up after Docker answered
+		return nil, nil
+	}
+
+	if err := removeStaleBinaries(ctx, root, labsUp); err != nil {
+		t.Fatal(err)
+	}
+	if !asked {
+		t.Fatal("the sweep didn't ask Docker about an ended run's kept lab")
+	}
+	if _, err := os.Stat(alive.path); err != nil {
+		t.Errorf("the sweep took the directory of a run alive when it asked Docker: %v", err)
+	}
+	if _, err := os.Stat(down.path); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("an ended run's directory whose kept lab is down: %v", err)
 	}
 }
 
@@ -242,37 +315,117 @@ func (c *cleanupTB) Errorf(format string, args ...any) {
 	c.errs = append(c.errs, fmt.Sprintf(format, args...))
 }
 
-// With KeepEnv, a failed test's lab keeps the run's directory past the
-// run's removal; a passed test's lab goes down and leaves the directory to
-// the removal, though .kept lists it.
+// With keep, a failed test's lab keeps the run's directory past the run's
+// removal and the next run's sweep, listed in .kept; a passed test's lab,
+// or a failed one without keep, goes down and leaves the directory to the
+// removal.
 func TestCleanupKeepsAFailedLabsBinaries(t *testing.T) {
 	ctx := t.Context()
-	t.Setenv(KeepEnv, "1")
 	fakeDocker(t)
-	for _, failed := range []bool{true, false} {
-		d, err := newRunBinaries(ctx, t.TempDir())
+	for _, c := range []struct{ failed, keep, kept bool }{
+		{failed: true, keep: true, kept: true},
+		{failed: false, keep: true},
+		{failed: true, keep: false},
+	} {
+		root := t.TempDir()
+		d, err := newRunBinaries(ctx, root)
 		if err != nil {
 			t.Fatal(err)
 		}
 		l := &Lab{Project: "tplab-x-t-cleanup", stateDir: t.TempDir(), binDir: d.path}
-		if err := d.recordLab(l.Project); err != nil {
-			t.Fatal(err)
-		}
-		tb := &cleanupTB{failed: failed}
-		l.cleanup(tb, d)
+		tb := &cleanupTB{failed: c.failed}
+		l.cleanup(tb, d, c.keep)
 		if len(tb.errs) > 0 {
-			t.Fatalf("failed %v: cleanup: %v", failed, tb.errs)
+			t.Fatalf("%+v: cleanup: %v", c, tb.errs)
 		}
 		if err := d.remove(ctx); err != nil {
 			t.Fatal(err)
 		}
+		next, err := newRunBinaries(ctx, root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := next.remove(ctx); err != nil {
+			t.Fatal(err)
+		}
 		_, err = os.Stat(d.path)
-		if failed && err != nil {
-			t.Errorf("a kept lab's binaries after the run's removal: %v", err)
+		if c.kept {
+			if err != nil {
+				t.Errorf("%+v: a kept lab's binaries after the run's removal and the next run: %v", c, err)
+			}
+			if kept, err := keptBy(d.path); err != nil || !slices.Equal(kept, []string{l.Project}) {
+				t.Errorf("%+v: .kept lists %v, %v; want the kept lab", c, kept, err)
+			}
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("%+v: the run directory after the removal: %v", c, err)
 		}
-		if !failed && !errors.Is(err, fs.ErrNotExist) {
-			t.Errorf("a passed test's run directory after the removal: %v", err)
-		}
+	}
+}
+
+// startTB is a lab test as start sees it, run in its own goroutine: Fatal
+// records the message and stops there like testing.T does.
+type startTB struct {
+	testing.TB
+	fatal string
+}
+
+func (s *startTB) Helper()           {}
+func (s *startTB) Name() string      { return "TestKept" }
+func (s *startTB) Fatal(args ...any) { s.fatal = fmt.Sprint(args...); runtime.Goexit() }
+
+// With KeepEnv, start lists the lab in the run directory's .kept before it
+// starts the lab, so a run that dies with the lab up (a -timeout panic)
+// leaves the lab its binaries. Here the lab fails to start at its first
+// Docker call: .kept lists it all the same.
+func TestStartListsAKeptLabBeforeItStarts(t *testing.T) {
+	ctx := t.Context()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	root, err := Root() // as start finds it: the temporary directory may be a symlink
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(KeepEnv, "1")
+	t.Setenv(ProjectEnv, "")
+	fakeDockerFailing(t, "*")
+	if !mainInstalled.Load() {
+		mainInstalled.Store(true)
+		t.Cleanup(func() { mainInstalled.Store(false) })
+	}
+	d, err := newRunBinaries(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	preparedMu.Lock()
+	prepared[root] = preparedRun{bin: d}
+	preparedMu.Unlock()
+	t.Cleanup(func() {
+		preparedMu.Lock()
+		delete(prepared, root)
+		preparedMu.Unlock()
+		_ = d.remove(context.Background())
+	})
+
+	s := &startTB{}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		start(s, GoTestTopology(), "")
+	}()
+	<-done
+	if !strings.Contains(s.fatal, "fake docker fails") {
+		t.Fatalf("start with a failing docker: %q", s.fatal)
+	}
+	checkout, err := CheckoutProject(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kept, err := keptBy(d.path)
+	if err != nil || len(kept) != 1 || !strings.HasPrefix(kept[0], checkout+"-t-testkept-") {
+		t.Errorf(".kept lists %v, %v; want the lab start was starting", kept, err)
 	}
 }
 
@@ -332,7 +485,7 @@ func TestRemoveRunBinariesForgetsADirectoryItFailedToRemove(t *testing.T) {
 	if err := os.Chmod(stuck, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := removeStaleBinaries(ctx, root, noLabUp); err != nil {
+	if err := removeStaleBinaries(ctx, root, noLabsUp); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(d.path); !errors.Is(err, fs.ErrNotExist) {

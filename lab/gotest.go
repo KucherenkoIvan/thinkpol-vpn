@@ -159,7 +159,8 @@ func (n *Node) RunGoTests(t testing.TB, pkgPattern string, args ...string) {
 // another left behind. Each package's output goes to w in one piece, in the
 // order the packages finish. env (NAME=value) is added to the test
 // binaries' environment. It returns the packages that failed; err is for
-// the lab itself failing.
+// the lab itself failing. Its labs run this process's binaries: the caller
+// removes them with RemoveRunBinaries once GoTestEach returns.
 func GoTestEach(ctx context.Context, root string, pkgs []GoPackage, parallel int, w io.Writer, env []string, args ...string) (failed []string, err error) {
 	checkout, err := CheckoutProject(root)
 	if err != nil {

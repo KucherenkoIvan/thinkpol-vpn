@@ -36,6 +36,17 @@ func TestAnotherRunFromTheCheckoutBuildsItsOwnBinaries(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Run directories already there are other runs' (live, or dead and
+	// not yet swept): only the ones created from here on are checked.
+	existing := map[string]bool{}
+	entries, err := os.ReadDir(binRoot(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		existing[e.Name()] = true
+	}
+
 	// Its own project name: labs of this checkout's other runs (make
 	// lab-test's node phase tests this package too) keep theirs.
 	other := exec.CommandContext(ctx, "go", "-C", root, "run", "./lab/labctl", "gotest", pkgPattern)
@@ -53,19 +64,19 @@ func TestAnotherRunFromTheCheckoutBuildsItsOwnBinaries(t *testing.T) {
 	}
 	node.RunGoTests(t, pkgPattern)
 
-	// Every run directory left is a live run's or a kept lab's: the other
-	// run removed its own.
+	// Every run directory created since is a live run's or a kept lab's:
+	// the other run removed its own.
 	unlock, err := lockBinRoot(ctx, root)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer unlock()
-	entries, err := os.ReadDir(binRoot(root))
+	entries, err = os.ReadDir(binRoot(root))
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, e := range entries {
-		if !strings.HasPrefix(e.Name(), runBinariesPrefix) {
+		if existing[e.Name()] || !strings.HasPrefix(e.Name(), runBinariesPrefix) {
 			continue
 		}
 		path := filepath.Join(binRoot(root), e.Name())

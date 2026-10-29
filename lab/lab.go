@@ -78,20 +78,24 @@ func start(t testing.TB, topo Topology, slotKey string) *Lab {
 	project := claimProject(testProject(checkout, cwd, t.Name()))
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
+	// The run's directory, for .kept; up gets the same one.
 	p, err := prepare(ctx, root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The lab may outlive the run (kept, or left up by a -timeout panic):
-	// its binaries stay until it is down.
-	if os.Getenv(KeepEnv) != "" {
+	// With KeepEnv set, the lab may outlive the run (kept, or left up by a
+	// -timeout panic): .kept lists it before it starts, so its binaries stay
+	// until labctl down finds it down. Without KeepEnv, a lab the run leaves
+	// up loses its binaries to the next sweep; labctl down -tests removes it.
+	keep := os.Getenv(KeepEnv) != ""
+	if keep {
 		if err := p.bin.recordLab(project); err != nil {
 			t.Fatal(err)
 		}
 	}
 	l, err := up(ctx, root, project, topo, slotKey, runInputs)
 	if l != nil {
-		t.Cleanup(func() { l.cleanup(t, p.bin) })
+		t.Cleanup(func() { l.cleanup(t, p.bin, keep) })
 	}
 	if err != nil {
 		t.Fatal(err)
@@ -115,20 +119,23 @@ func claimProject(project string) string {
 	return project
 }
 
-// cleanup tears the lab down, or with KeepEnv keeps a failed test's lab
-// and the run directory bins it mounts.
-func (l *Lab) cleanup(t testing.TB, bins *runBinaries) {
+// cleanup tears the lab down, or with keep (KeepEnv) keeps a failed
+// test's lab and the run directory bins it mounts.
+func (l *Lab) cleanup(t testing.TB, bins *runBinaries, keep bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	if t.Failed() {
 		if res, err := runEnv(ctx, nil, environWithoutCompose(), "docker", "compose", "-f", l.ComposeFile(), "-p", l.Project, "logs", "--no-color", "--timestamps"); err == nil {
 			t.Logf("lab %s logs:\n%s", l.Project, res.Stdout)
 		}
-		if os.Getenv(KeepEnv) != "" {
-			t.Logf("lab %s kept: docker compose -p %s exec <node> bash; make lab-down removes it", l.Project, l.Project)
-			bins.keep()
-			l.releaseSlot()
-			return
+		if keep {
+			err := bins.keep(l.Project)
+			if err == nil {
+				t.Logf("lab %s kept: docker compose -p %s exec <node> bash; make lab-down removes it", l.Project, l.Project)
+				l.releaseSlot()
+				return
+			}
+			t.Errorf("lab %s: can't keep it, tearing it down: %v", l.Project, err)
 		}
 	}
 	if err := l.Down(ctx); err != nil {
