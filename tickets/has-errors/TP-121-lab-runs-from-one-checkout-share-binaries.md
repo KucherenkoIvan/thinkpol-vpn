@@ -69,6 +69,17 @@ Round 2 (paranoid, torvalds, 2026-10-28): the R1 fixes hold, but labctl down's s
 - [x] R2.15 the kept-marker check is written three times: one `keptBy` helper (torvalds N6)
 - R1.10 follow-up (per-run project identity in names and `down -tests`): a backlog ticket, filed by the orchestrator (torvalds); not in this ticket.
 
+Round 3 (2026-10-29, paranoid, torvalds): the R2 fixes hold; labctl down still asks Docker before it checks which runs are alive, and "kept" has two sources of truth.
+- [ ] R3.1 labctl down asks Docker which labs are up before it takes the lab/bin lock and checks which runs are alive: a run that dies in that gap, its lab brought up by an orphaned `docker compose` child, loses its kept lab's binaries; under the lock, collect the ended runs' directories first, then ask Docker; keep a directory while `lab/.run/<project>` exists for a project its `.kept` lists if that holds up, else document the orphaned-compose gap as accepted (paranoid 1)
+- [ ] R3.2 no test for DownCheckout's fallback when Docker can't list labs (keep every kept directory): a fake docker failing the label query; DownCheckout errors, keeps the kept directory, removes an ended unkept one (paranoid 2)
+- [ ] R3.3 `KeepEnv` is read twice (start's `.kept` line, cleanup's `keep`), two sources of truth for "kept": read it once in start and pass `keep` to cleanup; a kept lab always has its `.kept` line by construction; TestCleanupKeepsAFailedLabsBinaries stops writing `.kept` itself and checks the kept directory survives a later sweep; a test fails when start drops its `recordLab` (paranoid 3, torvalds S2)
+- [ ] R3.4 start's comment says a lab left up by a `-timeout` panic keeps its binaries, which holds only with `KeepEnv` (torvalds S1)
+- [ ] R3.5 `GoTestEach`'s doc doesn't say its caller removes the binaries with `RemoveRunBinaries` (torvalds S3)
+- [ ] R3.6 the R1.10 follow-up's ticket id is missing from the Log and README Gotchas: TP-146 (torvalds S4)
+- [ ] R3.7 `runBinariesLive` returns the `lock.Close` error without the `lab:` prefix (paranoid 4)
+- [ ] R3.8 bindir_lab_test.go fails when another run from the checkout dies during it: check only the directories created after it started (paranoid 5)
+- [ ] R3.9 nits: lab/doc.go's line wrap; start's `prepare` call reads as a second build; DownCheckout's doc is one 60-word sentence (torvalds N1–N3)
+
 ## Log
 - 2026-10-22 created in backlog (TP-120 out-of-scope note)
 - 2026-10-24 docs: slotted in the pre-M2 phase (wave 0)
@@ -95,3 +106,4 @@ Round 2 (paranoid, torvalds, 2026-10-28): the R1 fixes hold, but labctl down's s
 - 2026-10-28 verified (R2.7), a throwaway failing lab test (not committed) run with `go test -tags lab` as `make lab-test` runs it: with KEEP, a failing test's lab stayed up, its run directory kept `.kept` (listing the project) and thinkpol, labdns, censord, and the node listed them in /opt/thinkpol/bin; with KEEP, a test hung past `-timeout 60s` left its lab and its directory with `.kept`; a later passing run without KEEP removed its own directory and left both kept ones (and its sweep had removed a dead pre-takeover leftover); `make lab-down` removed both labs and both directories, and lab/bin with them.
 - 2026-10-28 verified: `make lint`, `make test` green; `make lab-test` LAB_P=4 green on f4dd95c (after merging origin/rewrite with TP-138), no lab/bin left. The first run on f4dd95c failed only internal/dataplane TestTheOverlayComesBackAfterALinkBounce ("the TUN kept its IPv6 address going down: nothing to test", engine_lab_test.go:273), not TP-121 code; a run on 1e071c0 had passed it. Out of scope, for the orchestrator: that test reads the address right after `ip link set down` while a pending re-apply can put it back.
 - 2026-10-28 in-progress → review
+- 2026-10-29 review → has-errors (round 3: R3.1–R3.9)
