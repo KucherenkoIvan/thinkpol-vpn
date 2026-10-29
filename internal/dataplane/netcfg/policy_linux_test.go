@@ -468,7 +468,7 @@ func TestCloseRemovesEverythingWhileRulesChurn(t *testing.T) {
 	err := c.Close()
 	stop()
 	if err != nil {
-		t.Fatalf("Close while rules churn: %v", err)
+		t.Errorf("Close while rules churn: %v", err)
 	}
 	if got := ownRules(t, n.h, netcfg.OwnerRouteTable); len(got) != 0 {
 		t.Errorf("rules left after Close: %q (applied: %q)", got, applied)
