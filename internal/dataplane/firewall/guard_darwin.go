@@ -702,8 +702,9 @@ func (g *IPv6Guard) enable(ctx context.Context) (after, err error) {
 	if on && g.token != nil {
 		return nil, g.recordToken()
 	}
-	// pf on by someone else's reference (pf off was marked above): states
-	// it holds from then need checking.
+	// pf off (marked above), or on without a reference of the guard's
+	// (someone else's, or a plain `pfctl -e`): states it holds from then
+	// need checking.
 	g.statesStale()
 	return g.takeReference(ctx)
 }
