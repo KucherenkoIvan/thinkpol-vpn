@@ -93,6 +93,8 @@ func TestAQuickPassInANestedAnchorIsNotEnforced(t *testing.T) {
 		{"called but missing", []string{`anchor "vpn" all`}, map[string][]string{"vpn": {`anchor "gone" all`}}, ""},
 		{"inbound only", []string{`anchor "vpn" in all`}, map[string][]string{"vpn": {"pass quick all"}}, ""},
 		{"IPv4 only", []string{`anchor "vpn" out inet all`}, map[string][]string{"vpn": {"pass quick all"}}, ""},
+		{"a loop", []string{`anchor "vpn" all`},
+			map[string][]string{"vpn": {`anchor "../vpn" all`, `anchor "/vpn" all`, "block out all"}}, ""},
 		{"a nested inbound call", []string{`anchor "vpn" all`},
 			map[string][]string{"vpn": {`anchor "inner" in all`}, "vpn/inner": {"pass quick all"}}, ""},
 	} {
@@ -181,7 +183,7 @@ func TestAnEarlierAnchorTheGuardCantReadIsNotEnforced(t *testing.T) {
 	ctx := context.Background()
 	chain := map[string][]string{}
 	name := "deep"
-	for range maxEarlierAnchors + 1 {
+	for range 2 * maxEarlierAnchors {
 		chain[name] = []string{`anchor "next" all`}
 		name += "/next"
 	}
@@ -210,8 +212,14 @@ func TestAnEarlierAnchorTheGuardCantReadIsNotEnforced(t *testing.T) {
 			}
 			notEnforced(t, r.guard().Apply(ctx, exempt(t)), c.want)
 			r.whole(t, exempt(t))
-			if n := r.pf.ran("-s rules") + r.pf.ran("Anchors"); n > maxEarlierAnchors+8 {
-				t.Errorf("pfctl listed %d times", n)
+			n := 0
+			for _, c := range r.pf.calls {
+				if len(c) > 1 && c[0] == "-a" && (strings.HasPrefix(c[1], "deep") || strings.HasPrefix(c[1], "vpn")) {
+					n++
+				}
+			}
+			if n > maxEarlierAnchors {
+				t.Errorf("read %d earlier anchors, want at most %d", n, maxEarlierAnchors)
 			}
 		})
 	}

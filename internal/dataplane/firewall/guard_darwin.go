@@ -206,8 +206,8 @@ func (g *IPv6Guard) Apply(ctx context.Context, e routetable.Exempt) (err error) 
 	// nothing else make one, so while the same bypasses last the retries
 	// don't kill again; any change to them (one more, one gone, or all)
 	// does, taking what the one gone let be made. A check that couldn't
-	// read pf can't tell they are the same.
-	if g.killStates && (b.err != nil || len(b.found) == 0 || !slices.Equal(b.found, g.killedUnder)) {
+	// read pf finds none: it can't tell they are the same.
+	if g.killStates && (len(b.found) == 0 || !slices.Equal(b.found, g.killedUnder)) {
 		if err := g.kill(ctx, g.applied); err != nil {
 			return errors.Join(err, oldRelease)
 		}
