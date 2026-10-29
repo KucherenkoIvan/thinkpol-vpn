@@ -54,6 +54,17 @@ Round 1 (2026-10-29): go-paranoid no proven defect, should-fix 1–2; pocket-tor
 - [x] R1.20 (go-style 9, pre-existing): `guardWarnRig` doesn't call `t.Helper()`. Done: `t.Helper()` added.
 - Out of scope, pre-existing (paranoid): after a crash takeover, a first Apply that fails skips the guard (`held == nil`), so the crashed run's guard stays as it was, possibly wider than the new rules (RR14 at startup). Logged for the orchestrator; not fixed here.
 
+Round 2 (2026-10-29): pocket-torvalds merge (should-fix 1–2, nits); go-paranoid merge (nits 1–4). The cross-family review (Cursor) failed to connect twice in round 2; its round-1 run, which got through after round 1's findings were filed, concurred with the Claude reviews: no leak path; its points (the engine warning's IPv6 split, an untested recovery, Upstreams while failing, endpoints on one side only) are covered by R1.10 and R2.8, R1.5, R1.3–R1.4, and the property test's "endpoints swapped". Orchestrator: fold all of it into one round and merge with no further review.
+- [x] R2.1 (torvalds should-fix 1): `apply` saved its state in two steps, so during the guard's Apply it read "new want, old failing". Done: `want`, `failing` and `applied` are written in one locked section before the guard; the second section writes only status (and `unsupported`, terminal).
+- [x] R2.2 (torvalds should-fix 2): `reapplyGuard` dereferenced `want` on an unwritten invariant. Done: the `applied` doc says "Non-nil only with want", and `reapplyGuard` returns on `want == nil` too.
+- [x] R2.3 (torvalds nit; paranoid 4): `intersectUpstreams` binary-searches `b`, so it relied on sorted, compacted input. Done: its doc states the precondition, and the function puts both arguments through `upstreams` itself; `TestIntersectUpstreamsTakesThemInAnyOrder`.
+- [x] R2.4 (torvalds nit): the property test's "no narrower" still used `Minus(Minus(...))`. Done: one check, `got.Direct.Equal(h.Direct.Intersect(w.Direct))` (`Intersect` has its own test, TestIntersect).
+- [x] R2.5 (torvalds nit): the Enforcer doc says "never wider than the last Want". Done: "never wider than the routes in place nor the last Want (guardFor)".
+- [x] R2.6 (torvalds nit): RR14's Breaks column. Done: "D6 (forwarded IPv6, Linux; macOS unverified), R2".
+- [x] R2.7 (paranoid 1): guard.go and firewall/doc.go said the guard comes from the routes' own Want. Done: guard.go says "for the routes in place and the last Want (guardFor; GuardFor of that Want once its routes are in)"; firewall/doc.go says the Enforcer picks it for the routes in place and the last Want, pointing to the routetable doc's "One rule picks the guard".
+- [x] R2.8 (paranoid 2): the engine warning left out macOS. Done: "…for forwarded IPv6 (Linux; macOS unverified)…".
+- [x] R2.9 (paranoid 3, pre-existing gap): nothing pinned the engine's `old.Intersect(direct)`. Done: `TestAMixedChangeShrinksToWhatBothHold` (one prefix kept, one dropped, one added) asserts the first Enforce's Direct is old ∩ new.
+
 ## Log
 - 2026-10-22 created in backlog (TP-077 review round 2)
 - 2026-10-24 docs: slotted in the pre-M2 phase (wave 1, Guard)

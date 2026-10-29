@@ -267,8 +267,9 @@ func PolicyRouting(w Want, s netcfg.Survey) netcfg.Config {
 // subnets, the physical gateway, someone removing a route or rule of
 // ours), every Backstop anyway, and every RetryAfter while that fails.
 // Close removes everything. With a Guard, the guard follows the routes at
-// each step, never wider than the last Want (guardFor), with a status of
-// its own: its failure never undoes the routes or fails an Enforce.
+// each step, never wider than the routes in place nor the last Want
+// (guardFor), with a status of its own: its failure never undoes the
+// routes or fails an Enforce.
 type Enforcer struct {
 	cfg   netcfg.Configurator
 	guard Guard // nil: routes only
@@ -293,7 +294,7 @@ type Enforcer struct {
 	// applied is the last Want whose routes went in: what the last
 	// successful Apply put in place, which stays while want's fail (an
 	// Apply is all or nothing). The guard is never wider than it nor
-	// than want (guardFor).
+	// than want (guardFor). Non-nil only with want.
 	applied *Want
 	failing bool // the last Apply or re-Apply of want's routes failed
 	// unsupported: the OS can't enforce the table at all (a kernel without
@@ -498,6 +499,7 @@ func (e *Enforcer) apply(ctx context.Context, w Want, again bool) error {
 	took := time.Since(start)
 	e.mu.Lock()
 	e.want = &w
+	e.failing = err != nil
 	if err == nil {
 		e.applied = &w
 	}
@@ -508,7 +510,6 @@ func (e *Enforcer) apply(ctx context.Context, w Want, again bool) error {
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.failing = err != nil
 	e.status.Enforced = err == nil
 	if again {
 		e.status.Reapplies++
@@ -556,11 +557,14 @@ func guardFor(held, want Want) Exempt {
 	return g
 }
 
-// intersectUpstreams are the upstreams in both a and b, each sorted and
-// compacted (upstreams).
+// intersectUpstreams are the upstreams in both a and b. b is
+// binary-searched, so it must be as upstreams leaves it (sorted,
+// compacted), and a too, or its duplicates would repeat: both are put
+// through upstreams here rather than trusted to be.
 func intersectUpstreams(a, b []netip.AddrPort) []netip.AddrPort {
+	b = upstreams(b)
 	var out []netip.AddrPort
-	for _, ap := range a {
+	for _, ap := range upstreams(a) {
 		if _, ok := slices.BinarySearchFunc(b, ap, netip.AddrPort.Compare); ok {
 			out = append(out, ap)
 		}
@@ -799,7 +803,7 @@ func (e *Enforcer) reapplyGuard(ctx context.Context) {
 	e.mu.Lock()
 	held, want := e.applied, e.want
 	e.mu.Unlock()
-	if held == nil || ctx.Err() != nil {
+	if held == nil || want == nil || ctx.Err() != nil {
 		return // no routes in place yet: nothing to guard
 	}
 	e.applyGuard(ctx, guardFor(*held, *want))

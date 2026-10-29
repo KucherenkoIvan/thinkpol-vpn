@@ -540,12 +540,8 @@ func TestTheGuardIsTheIntersection(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			got := routetable.GuardBetween(c.held, c.want)
 			h, w := routetable.GuardFor(c.held), routetable.GuardFor(c.want)
-			if !got.Direct.Minus(h.Direct).IsEmpty() || !got.Direct.Minus(w.Direct).IsEmpty() {
-				t.Errorf("exempts %v: wider than the routes %v or the Want %v", got.Direct.Prefixes(), h.Direct.Prefixes(), w.Direct.Prefixes())
-			}
-			// No narrower: every address both exempt is exempt.
-			if missed := h.Direct.Minus(h.Direct.Minus(w.Direct)).Minus(got.Direct); !missed.IsEmpty() {
-				t.Errorf("exempts %v: misses %v, which both exempt", got.Direct.Prefixes(), missed.Prefixes())
+			if both := h.Direct.Intersect(w.Direct); !got.Direct.Equal(both) {
+				t.Errorf("exempts %v, want what both exempt: %v", got.Direct.Prefixes(), both.Prefixes())
 			}
 			var both []netip.AddrPort
 			for _, ap := range h.Upstreams {
@@ -563,6 +559,16 @@ func TestTheGuardIsTheIntersection(t *testing.T) {
 				t.Errorf("held == want: %+v, want GuardFor(held)", got)
 			}
 		})
+	}
+}
+
+// The upstreams both exempt come out sorted and once each, whatever
+// order or repeats either side comes in.
+func TestIntersectUpstreamsTakesThemInAnyOrder(t *testing.T) {
+	up1, up2, up3 := netip.MustParseAddrPort("[2001:db8:53::1]:53"), netip.MustParseAddrPort("[2001:db8:53::2]:53"), netip.MustParseAddrPort("[2001:db8:53::3]:53")
+	got := routetable.IntersectUpstreams([]netip.AddrPort{up2, up1, up2, up3}, []netip.AddrPort{up3, up2, up1})
+	if want := []netip.AddrPort{up1, up2, up3}; !slices.Equal(got, want) {
+		t.Errorf("got %v, want %v", got, want)
 	}
 }
 

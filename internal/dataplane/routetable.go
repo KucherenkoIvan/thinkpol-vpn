@@ -161,7 +161,7 @@ func (o *osRoutes) shrink(ctx context.Context, direct *lists.Set) error {
 		o.warn("route table: removing direct routes failed; nothing goes direct until the next Apply", err)
 		return err
 	}
-	o.warn("route table: removing direct routes failed; destinations the rules no longer send direct still go direct over IPv4, for IPv6 forwarded on Linux, and for the device's own IPv6 where the leak guard isn't enforced", errors.Join(err, ferr))
+	o.warn("route table: removing direct routes failed; destinations the rules no longer send direct still go direct over IPv4, for forwarded IPv6 (Linux; macOS unverified), and for the device's own IPv6 where the leak guard isn't enforced", errors.Join(err, ferr))
 	return errors.Join(err, ferr)
 }
 
