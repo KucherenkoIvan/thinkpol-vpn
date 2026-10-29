@@ -346,6 +346,9 @@ func TestPolicy(t *testing.T) {
 		t.Errorf("no group: got %d", got)
 	}
 
+	if testing.Short() {
+		t.Skip("NewPolicy asks the real Directory Services (dscl) on macOS")
+	}
 	for group, want := range map[string]Policy{
 		"":                           {ServiceUID: uint32(os.Geteuid())},
 		"no-such-group-for-thinkpol": {ServiceUID: uint32(os.Geteuid())},

@@ -60,6 +60,7 @@ On macOS, a member of the `thinkpol` group can do what DESIGN.md says members ma
      ```
      **What happens:** out of the group you're refused, at the socket's directory or per call; added back, Directory Services says you're a member and the service's kept answer (10 s) has expired.
      **Expect:** the first status fails with `permission denied` (exit non-zero); the second prints the status (exit 0). If the second still fails, run it again after a minute and record both: the file system may cache membership for longer.
+- **The real Directory Services tests stay on in `make test` (orchestrator, 2026-10-29).** `TestDirectoryServicesAnswers` (the real `dsmemberutil`) and `TestPolicy`'s `NewPolicy` path (the real `dscl`) run by default on a Mac and skip under `-short`; AGENTS.md's test conventions say so. Paranoid (round 3) wanted `TestDirectoryServicesAnswers` opt-in behind an env var: `dsmemberutil` walks the whole directory search path, so a Mac bound to AD or LDAP, offline, or slow after wake can fail `make test` for reasons unrelated to the code; it would keep `TestPolicy`'s local-node `dscl` on. Torvalds (round 3) wanted both on: read-only and time-limited, not what `THINKPOL_LAB` gates; with no CI a test behind an env var is a test nobody runs, and it is the only thing that catches a macOS update changing `dsmemberutil`'s wording or exit codes before a device run does; `-short` for a hermetic run, and AGENTS.md saying what `make test` runs.
 
 ## Review findings
 Round 1 (paranoid: correctness; torvalds: design; go-style: conventions; the cross-family log was empty).
@@ -95,6 +96,15 @@ Round 2 (2026-10-28): paranoid (correctness), torvalds (design).
 - [x] R2.11 (torvalds N4): an unexpected dsmemberutil answer is logged at full length; cap it. — `parseCheckMembership` quotes at most 200 bytes (`unexpectedMax`); TestDsmemberutilFailsClosed's long answer.
 - [x] R2.12 (torvalds N5): desktop-client.md doesn't list the refusal codes or what each asks of the UI. — desktop-client.md's local API section lists `permission_denied`, `root_only`, `membership_unknown`, `service_down`, `not_running` and what the tray does on each.
 - [x] R2.13 (paranoid 5): runBounded's comment promises a bound on the process exiting that WaitDelay doesn't give; say it kills it again and stops reading its output after dsWaitDelay. — done.
+
+Round 3 (2026-10-29): both reviews merge; nits folded in before merge.
+- [x] R3.1 (paranoid N1, torvalds N2): doc.go says a caller that left is logged at debug, which is only the whole story for a cancel: a caller's own deadline also shows grpckit's warn "rpc deadline exceeded". — doc.go's sentence says so.
+- [x] R3.2 (paranoid N2): no test lets a caller's deadline expire mid-lookup through `allow`, so judging the left caller by `errors.Is(ctx.Err(), context.Canceled)` survives. — TestACallerThatLeftIsNotRefused's "its deadline passes" (a 20 ms caller deadline through the real cache: DeadlineExceeded, not `membership_unknown`, no warn) beside "it hangs up".
+- [x] R3.3 (paranoid N3): the lookup's goroutine is outside grpckit's panic recovery. — `lookup`'s comment says `inner` must not panic, and why.
+- [x] R3.4 (torvalds N1): the lab test pins `serviceDownMsg`'s whole sentence, and its comment calls it "not running". — errors.go documents the stable prefix "the thinkpol service"; the lab test checks "thinkpol status: " plus that prefix (the CLI prints a command's error after "thinkpol <command>: ", not "thinkpol: " as the review's snippet had it); the comment says `service_down`.
+- [x] R3.5 (torvalds N3): dsmemberutil's stderr isn't capped like its stdout. — `clip` cuts both to `unexpectedMax`; TestDsmemberutilFailsClosed's long stderr.
+- [x] R3.6 (torvalds N4, N5): `refusalByCode`; `logRefusal`'s typed parameters. — skipped by the orchestrator (cosmetic at this size).
+- [x] R3.7 (paranoid's ticket claim; open question (a)): "`make test` passes" held only with `TestDirectoryServicesAnswers` skipped. — the real Directory Services tests stay on by default and skip under `-short` (decision and both views in Notes); AGENTS.md's test conventions say `make test` on a Mac runs read-only Directory Services queries; `make test` run with no skips.
 
 ## Log
 - 2026-10-16 created in backlog (TP-078 device session A)

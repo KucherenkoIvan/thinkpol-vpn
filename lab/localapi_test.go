@@ -100,10 +100,12 @@ func TestLocalAPI(t *testing.T) {
 	t.Run("an API that can't serve leaves the VPN up", func(t *testing.T) {
 		waitLog(t, up["device-b"], `level=ERROR msg="the local API is down`)
 		ping(t, devB, s4)
-		// Only the CLI's own "not running" shows nothing serves there.
+		// Only the CLI's own service_down shows nothing serves there; the
+		// CLI prints it after "thinkpol status: ", and its wording begins
+		// with the prefix errors.go documents.
 		if res, err := cli(t, devB, as("", "", "status", "-socket", "/run/foreign-api/api.sock")); err == nil {
 			t.Fatal("status from an API that can't serve")
-		} else if res.ExitCode != 1 || !strings.Contains(res.Stderr, "the thinkpol service is not running") {
+		} else if res.ExitCode != 1 || !strings.Contains(res.Stderr, "thinkpol status: the thinkpol service") {
 			t.Fatalf("status from an API that can't serve: %v\n%s%s", err, res.Stdout, res.Stderr)
 		}
 	})

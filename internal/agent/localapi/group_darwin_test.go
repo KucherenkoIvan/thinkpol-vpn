@@ -30,7 +30,8 @@ func TestDsmemberutilIsAskedByNumbers(t *testing.T) {
 }
 
 // Anything but dsmemberutil's two sentences, with exit status 0, is not a
-// member, and the error keeps what dsmemberutil said on stderr.
+// member, and the error keeps what dsmemberutil said on stderr; a long
+// answer or stderr is cut.
 func TestDsmemberutilFailsClosed(t *testing.T) {
 	for _, bad := range []struct {
 		out string
@@ -56,6 +57,11 @@ func TestDsmemberutilFailsClosed(t *testing.T) {
 	if _, err := lookup.IsMember(context.Background(), 501, 701); err == nil || !strings.Contains(err.Error(), "Invalid group") || strings.Contains(err.Error(), "\x1b") {
 		t.Errorf("stderr: %v; want it kept, sanitized", err)
 	}
+	exit = &exec.ExitError{ProcessState: &os.ProcessState{}, Stderr: []byte(long)}
+	lookup = dsmemberutil{run: func(context.Context, string, ...string) ([]byte, error) { return nil, exit }}
+	if _, err := lookup.IsMember(context.Background(), 501, 701); err == nil || len(err.Error()) > 300 {
+		t.Errorf("a long stderr: %.300v; want an error, cut", err)
+	}
 }
 
 // The real Directory Services, read only: this user is in its own primary
@@ -63,6 +69,9 @@ func TestDsmemberutilFailsClosed(t *testing.T) {
 // is one Directory Services counts the user in (the usual primary group,
 // staff), and that its first query answers within dsTimeout.
 func TestDirectoryServicesAnswers(t *testing.T) {
+	if testing.Short() {
+		t.Skip("asks the real Directory Services")
+	}
 	m := systemMembership()
 	uid, gid := uint32(os.Geteuid()), uint32(os.Getegid())
 	if ok, err := m.IsMember(context.Background(), uid, gid); !ok || err != nil {

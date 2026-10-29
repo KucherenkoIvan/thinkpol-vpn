@@ -401,32 +401,51 @@ func TestARootCallIsRefusedWithoutAskingTheOS(t *testing.T) {
 	}
 }
 
-// A caller that hangs up while the OS is asked isn't refused, and its
-// leaving isn't logged as the OS failing.
+// A caller that hangs up, or whose own deadline passes, while the OS is
+// asked isn't refused, and its leaving isn't logged as the OS failing.
 func TestACallerThatLeftIsNotRefused(t *testing.T) {
-	var buf bytes.Buffer
-	asked, release := make(chan struct{}), make(chan struct{})
-	defer close(release)
-	hung := newCachedMembership(membershipFunc(func(ctx context.Context, _, _ uint32) (bool, error) {
-		close(asked)
-		select {
-		case <-release:
-		case <-ctx.Done():
-		}
-		return false, errors.New("opendirectoryd is down")
-	}))
-	p := Policy{ServiceUID: 990, Group: 4242, HasGroup: true, Membership: hung}
-	ctx, cancel := context.WithCancel(callerCtx(Caller{UID: 1001, GIDs: sixteenGroups}))
-	go func() {
-		<-asked
-		cancel()
-	}()
-	err := p.allow(ctx, refusalLog(&buf), localapiv1.LocalService_GetStatus_FullMethodName)
-	if !errors.Is(err, context.Canceled) || errors.Is(err, ErrMembershipUnknown) {
-		t.Errorf("got %v; want the context's end, no refusal", err)
-	}
-	if strings.Contains(buf.String(), "level=WARN") || strings.Contains(buf.String(), "refused") {
-		t.Errorf("logged %q", buf.String())
+	for _, tc := range []struct {
+		name  string
+		leave func(parent context.Context, asked <-chan struct{}) (context.Context, context.CancelFunc)
+		want  error
+	}{
+		{"it hangs up", func(parent context.Context, asked <-chan struct{}) (context.Context, context.CancelFunc) {
+			ctx, cancel := context.WithCancel(parent)
+			go func() {
+				<-asked
+				cancel()
+			}()
+			return ctx, cancel
+		}, context.Canceled},
+		// A deadline isn't a cancel: judging by context.Canceled would
+		// report this one as the OS failing.
+		{"its deadline passes", func(parent context.Context, _ <-chan struct{}) (context.Context, context.CancelFunc) {
+			return context.WithTimeout(parent, 20*time.Millisecond)
+		}, context.DeadlineExceeded},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			asked, release := make(chan struct{}), make(chan struct{})
+			defer close(release)
+			hung := newCachedMembership(membershipFunc(func(ctx context.Context, _, _ uint32) (bool, error) {
+				close(asked)
+				select {
+				case <-release:
+				case <-ctx.Done():
+				}
+				return false, errors.New("opendirectoryd is down")
+			}))
+			p := Policy{ServiceUID: 990, Group: 4242, HasGroup: true, Membership: hung}
+			ctx, cancel := tc.leave(callerCtx(Caller{UID: 1001, GIDs: sixteenGroups}), asked)
+			defer cancel()
+			err := p.allow(ctx, refusalLog(&buf), localapiv1.LocalService_GetStatus_FullMethodName)
+			if !errors.Is(err, tc.want) || errors.Is(err, ErrMembershipUnknown) {
+				t.Errorf("got %v; want %v, no refusal", err, tc.want)
+			}
+			if strings.Contains(buf.String(), "level=WARN") || strings.Contains(buf.String(), "refused") {
+				t.Errorf("logged %q", buf.String())
+			}
+		})
 	}
 }
 

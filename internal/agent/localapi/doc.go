@@ -101,7 +101,9 @@
 // root's) or membership_unknown (the call needs the group and Directory
 // Services couldn't say; refused all the same, with codes.Unavailable, to
 // be tried again). A caller that hangs up during the lookup isn't refused:
-// it gets its context's end, logged at debug. The wording is in errors.go
+// it gets its context's end, logged at debug; when that end is the
+// caller's own deadline, grpckit also logs "rpc deadline exceeded" at
+// warn. The wording is in errors.go
 // only ([refusals], and the client's own errors' beside it), which the
 // client's dial-time refusal shares, and none of it points at the log,
 // which only root may read; both permission refusals begin with

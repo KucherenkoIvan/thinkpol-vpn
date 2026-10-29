@@ -74,7 +74,7 @@ func (d dsmemberutil) IsMember(ctx context.Context, uid, gid uint32) (bool, erro
 		"-u", strconv.FormatUint(uint64(uid), 10), "-g", strconv.FormatUint(uint64(gid), 10))
 	if err != nil {
 		if ee := (*exec.ExitError)(nil); errors.As(err, &ee) && len(bytes.TrimSpace(ee.Stderr)) > 0 {
-			return false, fmt.Errorf("dsmemberutil: %w: %s", err, agent.Sanitize(string(bytes.TrimSpace(ee.Stderr))))
+			return false, fmt.Errorf("dsmemberutil: %w: %s", err, clip(agent.Sanitize(string(bytes.TrimSpace(ee.Stderr)))))
 		}
 		return false, fmt.Errorf("dsmemberutil: %w", err)
 	}
@@ -91,10 +91,16 @@ func parseCheckMembership(out string) (bool, error) {
 	case "user is not a member of the group":
 		return false, nil
 	}
-	if len(out) > unexpectedMax {
-		out = out[:unexpectedMax] + "…"
+	return false, fmt.Errorf("dsmemberutil: unexpected answer %q", clip(out))
+}
+
+// clip cuts what dsmemberutil printed to unexpectedMax bytes, so an error
+// quoting it stays one log line.
+func clip(s string) string {
+	if len(s) > unexpectedMax {
+		return s[:unexpectedMax] + "…"
 	}
-	return false, fmt.Errorf("dsmemberutil: unexpected answer %q", out)
+	return s
 }
 
 const unexpectedMax = 200

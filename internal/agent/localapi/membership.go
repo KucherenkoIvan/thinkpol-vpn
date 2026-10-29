@@ -91,7 +91,8 @@ func (m *cachedMembership) IsMember(ctx context.Context, uid, gid uint32) (bool,
 
 // lookup asks inner about k, bounded by timeout, and keeps the answer.
 // What Directory Services says doesn't depend on who asked, so the lookup
-// doesn't end with its caller.
+// doesn't end with its caller. inner must not panic: lookup runs on its
+// own goroutine, which grpckit's panic recovery doesn't cover.
 func (m *cachedMembership) lookup(k membershipKey) membershipAnswer {
 	ctx, cancel := context.WithTimeout(context.Background(), m.timeout)
 	defer cancel()

@@ -81,7 +81,8 @@ func IsPermission(err error) bool {
 var ErrServiceDown = Error{Code: "service_down"}
 
 // What the client tells a person of its own errors: [ErrServiceDown], and
-// [ErrStartFailed] at a step.
+// [ErrStartFailed] at a step. serviceDownMsg begins "the thinkpol
+// service", which stays (the lab checks it); the rest may change.
 const (
 	serviceDownMsg = "the thinkpol service is not running"
 	startFailedMsg = "starting the data plane failed at step %q"
