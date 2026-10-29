@@ -839,7 +839,10 @@ func TestACorruptRecordOfAnotherOwnerIsReportedInPlace(t *testing.T) {
 		t.Errorf("set aside by another owner: %v", err)
 	}
 	if !slices.Equal(paths(s.CorruptRecords), []string{path}) || !strings.Contains(s.CorruptRecords[0].Reason, "no boot line") {
-		t.Errorf("CorruptRecords %+v, want %s with why", s.CorruptRecords, path)
+		t.Fatalf("CorruptRecords %+v, want %s with why", s.CorruptRecords, path)
+	}
+	if fi, err := os.Lstat(path); err != nil || !s.CorruptRecords[0].Modified.Equal(fi.ModTime()) {
+		t.Errorf("Modified %v, want the record's mtime (%v, %v)", s.CorruptRecords[0].Modified, fi, err)
 	}
 	if !slices.Contains(s.Held, pfx("100.64.0.0/11")) {
 		t.Errorf("the overlay's route isn't foreign: held %v", s.Held)
@@ -908,12 +911,28 @@ func TestTheOwnerRemovesEarlierBootsSetAsideRecordsAtStart(t *testing.T) {
 	if err := os.Mkdir(emptyDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	// A symlink is removed itself, never followed; a non-empty directory
+	// stays (only its space is lost).
+	target := filepath.Join(dir, "elsewhere")
+	if err := os.WriteFile(target, []byte("kept\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(dir, setAsideName(OwnerRouteTable, "a-linked-boot"))); err != nil {
+		t.Fatal(err)
+	}
+	full := filepath.Join(dir, setAsideName(OwnerRouteTable, "a-full-boot"))
+	if err := os.MkdirAll(filepath.Join(full, "x"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	newTestConfigurator(t, newFakeKernel(), dir, OwnerRouteTable)
 	for name, kept := range map[string]bool{
 		setAsideName(OwnerRouteTable, "an-earlier-boot"):      false,
 		setAsideName(OwnerRouteTable, "another-earlier-boot"): false,
+		setAsideName(OwnerRouteTable, "a-linked-boot"):        false,
+		setAsideName(OwnerRouteTable, "a-full-boot") + "/x":   true,
 		setAsideName(OwnerRouteTable, thisBoot(t)):            true,
 		setAsideName(OwnerOverlay, "an-earlier-boot"):         true,
+		"elsewhere": true,
 	} {
 		if _, err := os.Lstat(filepath.Join(dir, name)); (err == nil) != kept {
 			t.Errorf("%s: kept %v, want %v (%v)", name, err == nil, kept, err)
@@ -948,6 +967,77 @@ func TestACorruptRecordFromBeforeThisBootIsNotReported(t *testing.T) {
 	}
 	if s, err := rt.Survey(ctx); err != nil || !slices.Equal(paths(s.CorruptRecords), []string{other}) {
 		t.Errorf("CorruptRecords %+v, %v, want %s", s.CorruptRecords, err, other)
+	}
+}
+
+// A corrupt record whose boot line names this boot was corrupted in it,
+// whatever its mtime says (a restore that keeps times, a clock step): it
+// is reported, set aside or in place.
+func TestACorruptRecordOfThisBootIsReportedWhateverItsMtime(t *testing.T) {
+	booted := bootTime()
+	if booted.IsZero() {
+		t.Fatal("kern.boottime unread")
+	}
+	dir := tempDir(t)
+	data := recordHeader + "\nboot " + thisBoot(t) + "\nnot a prefix\n"
+	var ps []string
+	for _, o := range []Owner{OwnerRouteTable, OwnerOverlay} {
+		p := filepath.Join(dir, recordName(o))
+		if err := os.WriteFile(p, []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(p, booted.Add(-time.Hour), booted.Add(-time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		ps = append(ps, p)
+	}
+	rt := newTestConfigurator(t, newFakeKernel(), dir, OwnerRouteTable)
+	s, err := rt.Survey(context.Background())
+	want := []string{filepath.Join(dir, setAsideName(OwnerRouteTable, thisBoot(t))), ps[1]}
+	if err != nil || !slices.Equal(paths(s.CorruptRecords), want) {
+		t.Fatalf("CorruptRecords %+v, %v, want %v", s.CorruptRecords, err, want)
+	}
+	for _, r := range s.CorruptRecords {
+		if !strings.Contains(r.Reason, "bad line 1 after the boot line") {
+			t.Errorf("%s: reason %q", r.Path, r.Reason)
+		}
+	}
+}
+
+// A set-aside record someone has since made valid is still reported as
+// set aside, with a reason saying so.
+func TestASetAsideRecordThatReadsCleanNowStillSaysWhy(t *testing.T) {
+	dir := tempDir(t)
+	_, aside := corrupt(t, dir, OwnerRouteTable)
+	rt := newTestConfigurator(t, newFakeKernel(), dir, OwnerRouteTable)
+	if err := writeRecord(openDir(t, dir), filepath.Base(aside), thisBoot(t), map[rkey]bool{unscoped(pfx("10.0.0.0/8")): true}); err != nil {
+		t.Fatal(err)
+	}
+	s, err := rt.Survey(context.Background())
+	if err != nil || !slices.Equal(paths(s.CorruptRecords), []string{aside}) || s.CorruptRecords[0].Reason != "set aside; reads clean now" {
+		t.Errorf("CorruptRecords %+v, %v", s.CorruptRecords, err)
+	}
+}
+
+// A non-empty directory at this boot's set-aside name can't be replaced:
+// the owner fails to start, and the record stays where it is.
+func TestANonEmptyDirectoryAtTheSetAsideNameFailsTheStart(t *testing.T) {
+	dir := tempDir(t)
+	path, aside := corrupt(t, dir, OwnerRouteTable)
+	if err := os.MkdirAll(filepath.Join(aside, "x"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if c, err := newDarwin(OwnerRouteTable, newFakeKernel(), dir); err == nil || !strings.Contains(err.Error(), "setting it aside") {
+		if c != nil {
+			_ = c.Close()
+		}
+		t.Fatalf("start: %v", err)
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != "garbage\n" {
+		t.Errorf("the record: %q, %v", got, err)
+	}
+	if _, err := os.Lstat(filepath.Join(aside, "x")); err != nil {
+		t.Errorf("the directory's content: %v", err)
 	}
 }
 
