@@ -121,3 +121,4 @@ Round 5 (2026-10-29): correctness (paranoid, fix first) review.
 - 2026-10-29 ran: `make lint`, `make test` and the full `make lab-test` (LAB_P=1, another lab up; lab phase ok, 36 packages in the node) green on 81ac4c5. Not verified: churn from a real program (NetworkManager, wg-quick) rather than the test's goroutine; a real split rule dump; the `New` (current namespace) path in the lab; EAFNOSUPPORT from a kernel without IPv6 rules
 - 2026-10-29 in-progress → review
 - 2026-10-29 review → has-errors (round 5: R5.1–R5.4)
+- 2026-10-29 has-errors → in-progress (round 5 findings)
