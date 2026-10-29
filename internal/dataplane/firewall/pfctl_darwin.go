@@ -133,7 +133,8 @@ func readLines(b []byte) ([]string, error) {
 }
 
 // rawLines is readLines with only each line's "\n" taken off: a line
-// keeps the white space it ends in, a `\r` included.
+// keeps the white space it ends in, a `\r` included (a "\n" in what
+// pfctl printed ends a line all the same).
 func rawLines(b []byte) ([]string, error) {
 	return scanLines(b, false)
 }
@@ -311,8 +312,10 @@ func endsEvaluation(f []string, inQuick bool) bool {
 // prints a name between `"`s as it is, a `"` in it included (`anchor
 // 'a"b'` lists as `anchor "a"b" all`), and nothing quoted after it: a
 // closing `"` not followed by a space, or a `"` in a later field, is a
-// name the guard can't read (a label's, too: that fails closed). Other
-// kinds (`scrub-anchor`, `nat-anchor`) evaluate no pass.
+// name the guard can't read. So is an anchor call with a label (`label
+// "x"`), which fails closed (whether Apple's pfctl prints a label on an
+// anchor call is unverified). Other kinds (`scrub-anchor`, `nat-anchor`)
+// evaluate no pass.
 func anchorRule(l string) (name string, rest []string, ok bool) {
 	after, ok := strings.CutPrefix(l, "anchor")
 	if !ok || after != "" && after[0] != ' ' && after[0] != '\t' {
@@ -400,9 +403,13 @@ func nameable(path string) bool {
 // (answerNoAnchors, alone, whatever the exit status) is none; any other
 // failure, a line that isn't one of path's children after pfctl's
 // two-space indent, or anything else on stderr is an error. Only the
-// indent and the line's end come off: a child's name may hold spaces, end
-// in white space, or hold a `*`, which the walk can't read (nameable): it
-// is listed as it is, for the walk to judge.
+// indent and the line's "\n" come off: a child's name may hold spaces, end
+// in other white space, or hold a `*`, which the walk can't read
+// (nameable): it is listed as it is, for the walk to judge. A newline in
+// a name can't be kept: it ends the line, and what follows reads as a
+// blank line, ALTQ chatter (both dropped) or a line not under path (an
+// error). So a child is listed as it is, twice included, and the walk
+// takes a repeat as a name it can't read (listed).
 func childAnchors(path string, out pfOutput, runErr error) ([]string, error) {
 	listed, err := rawLines(out.stdout)
 	if err == nil && len(listed) == 0 && onlyLine(out.stderr, answerNoAnchors(path)) {

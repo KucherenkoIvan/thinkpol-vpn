@@ -432,11 +432,19 @@ func (w *anchorWalk) call(ctx context.Context, via string, c anchorCall, quick b
 
 // listed reads each anchor a listing named, in order, up to the guard's
 // own: every outgoing IPv6 packet that reaches the guard's anchor ends
-// there, so the ones after it are never reached that way.
+// there, so the ones after it are never reached that way. pf's names are
+// unique, so a name listed twice is one whose newline broke the
+// listing's layout (`a\n` lists as `a` and a blank line, right after a
+// real `a`): a name the guard can't read, so a bypass, not a listing
+// error, which would fail every retry the same way.
 func (w *anchorWalk) listed(ctx context.Context, via string, paths []string, quick bool) error {
-	for _, p := range paths {
+	for i, p := range paths {
 		if p == GuardAnchor {
 			break
+		}
+		if slices.Contains(paths[:i], p) {
+			w.found = append(w.found, bypass{why: fmt.Sprintf("pf lists anchor %s twice, so another anchor's name holds a newline the IPv6 guard can't read: a pass there could let IPv6 past it", p), at: "anchor " + chain(via, p)})
+			continue
 		}
 		if err := w.anchor(ctx, via, p, quick, true); err != nil {
 			return err

@@ -194,12 +194,14 @@
 //     is taken to list without a name: unverified, TP-096), a name with a
 //     `*` in it but a trailing `/*` wildcard (pfctl's -a would take a
 //     trailing `*` off and read another anchor), one with a `"` in it
-//     (pfctl prints it as it is, so the name's end can't be found) or
+//     (pfctl prints it as it is, so the name's end can't be found),
 //     ending in white space (which `-s Anchors` can't tell from its
-//     layout), a listing pf refuses or
-//     the guard can't read, and more to read than 16 pfctl runs leave it
-//     not enforced: what it can't read it can't clear. An anchor after the
-//     hook is never reached, and isn't read;
+//     layout) or holding a newline (a listing names its sibling twice:
+//     pf's names are unique), an anchor call with a label (taken as a
+//     name it can't read: whether Apple's pfctl prints one is unverified),
+//     a listing pf refuses or the guard can't read, and more to read than
+//     16 pfctl runs leave it not enforced: what it can't read it can't
+//     clear. An anchor after the hook is never reached, and isn't read;
 //   - an interface pf skips (`set skip on`) but lo0 and the utun, which
 //     the anchor passes anyway: pf evaluates no rule for its packets, and
 //     `-s rules` doesn't show it; `pfctl -s Interfaces -v` lists it as

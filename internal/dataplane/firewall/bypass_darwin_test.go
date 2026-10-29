@@ -225,6 +225,12 @@ func TestAnEarlierAnchorTheGuardCantReadIsNotEnforced(t *testing.T) {
 			map[string][]string{"vpn": {`anchor "x" in "y" all`}, `vpn/x" in "y`: {"pass out quick all"}}, "", "", "anchor vpn calls"},
 		{"a listed name ending in a space", []string{`anchor "vpn/*" all`},
 			map[string][]string{"vpn/a": nil, "vpn/a ": {"pass out quick all"}}, "", "", `can't read, "vpn/a "`},
+		// pf sorts `a\n` right after `a`, and lists it as `a` and a blank
+		// line, or as `a` and ALTQ chatter when that follows the newline.
+		{"a newline in a listed name", []string{`anchor "vpn/*" all`},
+			map[string][]string{"vpn/a": nil, "vpn/a\n": {"pass out quick all"}}, "", "", "lists anchor vpn/a twice"},
+		{"a newline and ALTQ chatter in a listed name", []string{`anchor "vpn/*" all`},
+			map[string][]string{"vpn/a": nil, "vpn/a\n" + strings.TrimSuffix(altq, "\n"): {"pass out quick all"}}, "", "", "lists anchor vpn/a twice"},
 		{"too many", []string{`anchor "deep" all`}, chain, "", "", "at most 16 pfctl runs"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -386,6 +392,8 @@ func TestAnchorRule(t *testing.T) {
 		{`anchor "a"b" all`, "", nil, true},
 		{`anchor "x" in "y" all`, "", nil, true},
 		{`anchor "x"`, "x", nil, true},
+		// A label's `"`s read alike: a name it can't read (fails closed).
+		{`anchor "vpn" all label "x"`, "", nil, true},
 		{`scrub-anchor "com.apple/*" all fragment reassemble`, "", nil, false},
 		{`nat-anchor "vpn" all`, "", nil, false},
 		{`anchors "vpn"`, "", nil, false},
@@ -475,6 +483,9 @@ func TestChildAnchors(t *testing.T) {
 		{"  vpn/a b\n  vpn/a*\n", "", nil, []string{"vpn/a b", "vpn/a*"}, true},
 		{"  vpn/a \n  vpn/b\r\n", "", nil, []string{"vpn/a ", "vpn/b\r"}, true},
 		{"vpn/a\n", "", nil, nil, false},
+		// A newline in a name (`a\n`) lists its sibling twice: the walk,
+		// not the listing, judges it, so a retry doesn't fail alike.
+		{"  vpn/a\n  vpn/a\n\n", "", nil, []string{"vpn/a", "vpn/a"}, true},
 	} {
 		got, err := childAnchors("vpn", pfOutput{stdout: []byte(c.stdout), stderr: []byte(c.stderr)}, c.runErr)
 		if !slices.Equal(got, c.want) || (err == nil) != c.ok {
