@@ -237,21 +237,22 @@
 //
 // While a Want's routes fail to go in, the routes in place stay those of
 // the last Want that went in (an Apply is all or nothing), and the guard
-// follows them, but never past the Want that failed: it exempts only what
-// both Wants' guards exempt. A guard wider than the routes in place is
-// never installed; one narrower can only refuse, never leak, since the
-// device's own IPv6 the routes still send direct leaves through a
-// physical interface, where the guard refuses what it doesn't exempt
-// (forwarded traffic isn't the guard's: it follows the routes in place). So a failed grow keeps the
-// old guard, and a failed shrink narrows it to the new set: IPv6 to the
-// prefixes dropped is refused until an Apply works, while IPv4 to them
-// still goes direct by the old routes (the kill switch's, TP-048). A
-// change that drops some prefixes and adds others exempts only those it
-// keeps: neither an added one, whose routes aren't in, nor a dropped one,
-// which the rules now tunnel. The engine's fallback to nothing direct
-// after a failed shrink narrows the guard the same way, to the endpoints
-// alone, until it is given the new rules' Want (the next step of its
-// change), whose guard then holds.
+// follows them, but never past the Want that failed: its Direct exempts
+// only what both Wants' guards exempt (TUN, Mark and Upstreams stay the
+// routes in place's). A guard wider than the routes in place is never
+// installed; one narrower can only refuse, never leak, since the device's
+// own IPv6 the routes still send direct leaves through a physical
+// interface, where the guard refuses what it doesn't exempt. So a failed
+// grow keeps the old guard, and a failed shrink narrows it to the new
+// set: the device's IPv6 to the prefixes dropped is refused until an
+// Apply works, while IPv4 to them, and IPv6 the device forwards (which
+// isn't the guard's), still go direct by the old routes (RR14; IPv4 is
+// the kill switch's, TP-048). A change that drops some prefixes and adds
+// others exempts only those it keeps: neither an added one, whose routes
+// aren't in, nor a dropped one, which the rules now tunnel. The engine's
+// fallback to nothing direct after a failed shrink narrows the guard the
+// same way, to the endpoints alone, until it is given the new rules' Want
+// (the next step of its change), whose guard then holds.
 //
 // The guard has a status of its own ([Status.GuardEnforced],
 // [Status.GuardError]): its failure never fails the routes or an Enforce.

@@ -544,11 +544,11 @@ func (e *Enforcer) apply(ctx context.Context, w Want, again bool) error {
 }
 
 // guardWhileFailing is the guard while w's routes fail to go in and
-// held's stay in place: held's, exempting only what w's guard would too.
-// Never wider than the routes in place (held's), nor than the rules
-// (w's): a failed shrink narrows it, a failed grow keeps held's, and a
-// change that adds some prefixes and drops others exempts only those it
-// keeps. What held routes direct and the guard no longer exempts is
+// held's stay in place: held's, its Direct cut to what w's guard
+// exempts too. Never wider than the routes in place (held's), and its
+// Direct never wider than the rules (w's): a failed shrink narrows it, a
+// failed grow keeps held's, and a change that adds some prefixes and
+// drops others exempts only those it keeps. What held routes direct and the guard no longer exempts is
 // refused, never leaked: the device's IPv6 that goes direct by routing
 // still leaves through a physical interface, where the guard refuses it.
 func guardWhileFailing(held, w Want) Exempt {
