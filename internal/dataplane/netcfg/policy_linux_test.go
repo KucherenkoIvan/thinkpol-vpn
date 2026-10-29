@@ -4,16 +4,21 @@ package netcfg_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/netip"
 	"os/exec"
 	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/vishvananda/netlink"
+	"github.com/vishvananda/netlink/nl"
+	"github.com/vishvananda/netns"
+	"golang.org/x/sys/unix"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 )
@@ -150,6 +155,145 @@ func TestPolicyRoutingIsAppliedAndRemoved(t *testing.T) {
 	requireSame(t, "namespace after Close", before, snapshot(t, n.h))
 }
 
+// An owner's rule someone turned into a blackhole (same priority,
+// selector and protocol) is not the lookup rule the config wants: the
+// next Apply puts the lookup back (a cancelled one, the blackhole), and
+// Close leaves neither. Both families.
+func TestApplyRepairsARuleWhoseActionChanged(t *testing.T) {
+	for _, tc := range []struct {
+		fam    netcfg.Family
+		ipFlag string
+		dst    string // policyConfig's rule at 5299
+	}{
+		{netcfg.IPv4, "-4", "10.51.0.0/16"},
+		{netcfg.IPv6, "-6", "fd51::/48"},
+	} {
+		t.Run(tc.fam.String(), func(t *testing.T) {
+			n := newTestNS(t)
+			n.dummy(t, "ovl0")
+			n.ip(t, "link", "set", "ovl0", "up")
+			c := n.configuratorFor(t, netcfg.OwnerRouteTable)
+			ctx := context.Background()
+			if err := c.Apply(ctx, policyConfig()); err != nil {
+				t.Fatal(err)
+			}
+			proto := strconv.Itoa(int(netcfg.OwnerRouteTable.RouteProtocol()))
+			n.ip(t, tc.ipFlag, "rule", "del", "priority", "5299")
+			n.ip(t, tc.ipFlag, "rule", "add", "priority", "5299", "to", tc.dst, "blackhole", "protocol", proto)
+			actions := func() []string { return ruleActions(t, n, tc.fam, 5299) }
+			if got := actions(); !slices.Equal(got, []string{"blackhole"}) {
+				t.Fatalf("rule 5299 before the repair: %q, want the blackhole", got)
+			}
+			// A repair cancelled once the blackhole went puts it back as it was.
+			gone := cancelWhen{ctx, func() bool { return len(actions()) == 0 }}
+			if err := c.Apply(gone, policyConfig()); !errors.Is(err, context.Canceled) {
+				t.Fatalf("the cancelled repair: %v, want context.Canceled", err)
+			}
+			if got := actions(); !slices.Equal(got, []string{"blackhole"}) {
+				t.Fatalf("rule 5299 after the cancelled repair: %q, want the blackhole back", got)
+			}
+			if err := c.Apply(ctx, policyConfig()); err != nil {
+				t.Fatal(err)
+			}
+			if got := actions(); !slices.Equal(got, []string{"lookup"}) {
+				t.Errorf("rule 5299 after the repair: %q, want only the lookup", got)
+			}
+			if err := c.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if got := actions(); len(got) != 0 {
+				t.Errorf("rule 5299 after Close: %q", got)
+			}
+		})
+	}
+}
+
+// A blackhole twin added beside an owner's lookup rule (same priority,
+// selector and protocol, so after it in the list) goes, and the lookup
+// stays: the delete names the blackhole's action, where one without an
+// action would remove the first match, the lookup.
+func TestApplyRemovesABlackholeBesideTheLookup(t *testing.T) {
+	for _, tc := range []struct {
+		fam    netcfg.Family
+		ipFlag string
+		dst    string // policyConfig's rule at 5299
+	}{
+		{netcfg.IPv4, "-4", "10.51.0.0/16"},
+		{netcfg.IPv6, "-6", "fd51::/48"},
+	} {
+		t.Run(tc.fam.String(), func(t *testing.T) {
+			n := newTestNS(t)
+			n.dummy(t, "ovl0")
+			n.ip(t, "link", "set", "ovl0", "up")
+			c := n.configuratorFor(t, netcfg.OwnerRouteTable)
+			ctx := context.Background()
+			if err := c.Apply(ctx, policyConfig()); err != nil {
+				t.Fatal(err)
+			}
+			proto := strconv.Itoa(int(netcfg.OwnerRouteTable.RouteProtocol()))
+			n.ip(t, tc.ipFlag, "rule", "add", "priority", "5299", "to", tc.dst, "blackhole", "protocol", proto)
+			if got := ruleActions(t, n, tc.fam, 5299); !slices.Equal(got, []string{"lookup", "blackhole"}) {
+				t.Fatalf("rule 5299 before Apply: %q, want the lookup, then the blackhole", got)
+			}
+			if err := c.Apply(ctx, policyConfig()); err != nil {
+				t.Fatal(err)
+			}
+			if got := ruleActions(t, n, tc.fam, 5299); !slices.Equal(got, []string{"lookup"}) {
+				t.Errorf("rule 5299 after Apply: %q, want only the lookup", got)
+			}
+		})
+	}
+}
+
+// cancelWhen is cancelled from the first Err that finds done true.
+type cancelWhen struct {
+	context.Context
+	done func() bool
+}
+
+func (c cancelWhen) Err() error {
+	if c.done() {
+		return context.Canceled
+	}
+	return nil
+}
+
+// ruleActions are the actions of n's fam rules at prio, in list order, as
+// iproute2 reads them (not netcfg's own reader, which is under test).
+func ruleActions(t *testing.T, n *testNS, fam netcfg.Family, prio int) []string {
+	t.Helper()
+	flag := "-4"
+	if fam == netcfg.IPv6 {
+		flag = "-6"
+	}
+	// A rule's action is the key iproute2 prints it under: "action" (a
+	// blackhole...), "goto" or "nop", none for a lookup.
+	var rules []map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(n.ipOut(t, "-j", flag, "rule", "show")), &rules); err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, r := range rules {
+		var p int
+		if err := json.Unmarshal(r["priority"], &p); err != nil || p != prio {
+			continue
+		}
+		action := "lookup"
+		if v, ok := r["action"]; ok {
+			if err := json.Unmarshal(v, &action); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, k := range []string{"goto", "nop"} {
+			if _, ok := r[k]; ok {
+				action = k
+			}
+		}
+		out = append(out, action)
+	}
+	return out
+}
+
 func TestCancelledPolicyApplyLeavesNothing(t *testing.T) {
 	n := newTestNS(t)
 	n.dummy(t, "ovl0")
@@ -210,7 +354,7 @@ func TestWatchSeesGatewayChangesAndOwnRemovals(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expect := func(what string, want bool, args ...string) {
+	expectAfter := func(what string, want bool, act func()) {
 		t.Helper()
 		// Drain what came before.
 		for drained := false; !drained; {
@@ -220,7 +364,7 @@ func TestWatchSeesGatewayChangesAndOwnRemovals(t *testing.T) {
 				drained = true
 			}
 		}
-		n.ip(t, args...)
+		act()
 		select {
 		case <-ch:
 			if !want {
@@ -231,6 +375,10 @@ func TestWatchSeesGatewayChangesAndOwnRemovals(t *testing.T) {
 				t.Errorf("%s: not signalled", what)
 			}
 		}
+	}
+	expect := func(what string, want bool, args ...string) {
+		t.Helper()
+		expectAfter(what, want, func() { n.ip(t, args...) })
 	}
 	expect("unrelated route", false, "route", "add", "10.9.0.0/16", "dev", "eth0")
 	expect("a default route comes", true, "route", "add", "default", "via", "192.0.2.1")
@@ -243,6 +391,9 @@ func TestWatchSeesGatewayChangesAndOwnRemovals(t *testing.T) {
 	expect("a link comes up", true, "link", "set", "eth0", "up")
 	expect("an address's on-link route comes", true, "addr", "add", "192.0.3.2/24", "dev", "eth0")
 	expect("a link comes", true, "link", "add", "dummy9", "type", "dummy")
+	expectAfter("our rule's delete sent by a process", false, func() {
+		n.sendRuleEvent(t, netcfg.OwnerRouteTable.RouteProtocol(), 5297)
+	})
 	cancel()
 	select {
 	case _, open := <-ch:
@@ -251,6 +402,29 @@ func TestWatchSeesGatewayChangesAndOwnRemovals(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("the channel is still open after ctx ended")
+	}
+}
+
+// sendRuleEvent sends, from a process's socket in the namespace, an
+// RTM_DELRULE for an IPv4 rule at prio with proto to the IPv4 rule group,
+// as the kernel's event of that delete would read. The kernel takes it as
+// a request too, and refuses it if no such rule exists.
+func (n *testNS) sendRuleEvent(t *testing.T, proto netlink.RouteProtocol, prio uint32) {
+	t.Helper()
+	s, err := nl.GetNetlinkSocketAt(n.ns, netns.None(), unix.NETLINK_ROUTE)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	req := nl.NewNetlinkRequest(unix.RTM_DELRULE, 0)
+	hdr := make([]byte, 12) // struct fib_rule_hdr
+	hdr[0], hdr[4], hdr[7] = unix.AF_INET, unix.RT_TABLE_MAIN, unix.FR_ACT_TO_TBL
+	req.AddRawData(hdr)
+	req.AddData(nl.NewRtAttr(unix.FRA_PRIORITY, nl.Uint32Attr(prio)))
+	req.AddData(nl.NewRtAttr(unix.FRA_PROTOCOL, []byte{uint8(proto)}))
+	to := &unix.SockaddrNetlink{Family: unix.AF_NETLINK, Groups: 1 << (unix.RTNLGRP_IPV4_RULE - 1)}
+	if err := unix.Sendto(s.GetFd(), req.Serialize(), 0, to); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -263,6 +437,156 @@ func (n *testNS) ipOut(t *testing.T, args ...string) string {
 		t.Fatalf("ip %s: %v: %s", strings.Join(args, " "), err, out)
 	}
 	return string(out)
+}
+
+// Someone changing rules all the time makes no two rule dumps agree:
+// Survey and Apply fail rather than act on a dump that may repeat or miss
+// a rule, but Close still removes every rule and route of the owner and
+// restores its link.
+func TestCloseRemovesEverythingWhileRulesChurn(t *testing.T) {
+	n := newTestNS(t)
+	n.dummy(t, "ovl0")
+	before := snapshot(t, n.h)
+	c := n.configuratorFor(t, netcfg.OwnerRouteTable)
+	cfg := policyConfig()
+	cfg.Interfaces = []netcfg.Interface{{Name: "ovl0", Addrs: []netip.Prefix{pfx("100.64.0.7/10")}, MTU: 1380, Up: true}}
+	ctx := context.Background()
+	if err := c.Apply(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	applied := snapshot(t, n.h)
+
+	stop := n.churnRules(t)
+	// The churn must make the dumps disagree, or Close isn't tested. A
+	// busy machine can pause the churner long enough for two dumps to
+	// agree now and then: that's a dump as good as an idle one's.
+	var surveyFailed, applyFailed bool
+	for range 10 {
+		if _, err := c.Survey(ctx); errors.Is(err, netcfg.ErrDumpsDisagree) {
+			surveyFailed = true
+		} else if err != nil {
+			stop()
+			t.Fatalf("Survey while rules churn: %v", err)
+		}
+		if err := c.Apply(ctx, cfg); errors.Is(err, netcfg.ErrDumpsDisagree) {
+			applyFailed = true
+		} else if err != nil {
+			stop()
+			t.Fatalf("Apply while rules churn: %v", err)
+		}
+		if surveyFailed && applyFailed {
+			break
+		}
+	}
+	if !surveyFailed || !applyFailed {
+		stop()
+		t.Fatalf("Survey and Apply while rules churn: ErrDumpsDisagree %v and %v in 10 tries, want both (the churn is too slow to test with)", surveyFailed, applyFailed)
+	}
+	err := c.Close()
+	stop()
+	if err != nil {
+		t.Errorf("Close while rules churn: %v", err)
+	}
+	if got := ownRules(t, n.h, netcfg.OwnerRouteTable); len(got) != 0 {
+		t.Errorf("rules left after Close: %q (applied: %q)", got, applied)
+	}
+	requireSame(t, "namespace after Close", before, snapshot(t, n.h))
+}
+
+// Close deletes rules from single dumps, never agreeing ones, which churn
+// can deny it. The churn test catches agreeing dumps only when its churn
+// keeps up.
+func TestCloseTakesSingleRuleDumps(t *testing.T) {
+	n := newTestNS(t)
+	if c := n.configurator(t); !netcfg.ClosesWithSingleDumps(c) {
+		t.Error("Close's rule dump is not dumpRulesOnce")
+	}
+}
+
+// Close goes on past a failing rules step: the routes, the address and
+// the interface it changed are put back, the rules (whose dumps all
+// failed) stay, and the rules step's error is returned.
+func TestCloseGoesOnWhenItsRulesFail(t *testing.T) {
+	n := newTestNS(t)
+	n.dummy(t, "ovl0")
+	before := snapshot(t, n.h)
+	c := n.configuratorFor(t, netcfg.OwnerRouteTable)
+	cfg := policyConfig()
+	cfg.Interfaces = []netcfg.Interface{{Name: "ovl0", Addrs: []netip.Prefix{pfx("100.64.0.7/10")}, MTU: 1380, Up: true}}
+	if err := c.Apply(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	applied := ownRules(t, n.h, netcfg.OwnerRouteTable)
+	failed := errors.New("a failed rule dump")
+	netcfg.FailCloseRuleDumps(c, failed)
+	if err := c.Close(); !errors.Is(err, failed) {
+		t.Errorf("Close with failing rule dumps: %v, want the dumps' error", err)
+	}
+	if got := ownRules(t, n.h, netcfg.OwnerRouteTable); !slices.Equal(got, applied) {
+		t.Errorf("rules after Close: %q, want them as applied: %q", got, applied)
+	}
+	notRules := func(lines []string) []string {
+		return slices.DeleteFunc(lines, func(l string) bool { return strings.HasPrefix(l, "rule ") })
+	}
+	requireSame(t, "namespace after Close, rules aside", notRules(before), notRules(snapshot(t, n.h)))
+}
+
+// churnRules adds an IPv4 rule at a new priority and deletes the one
+// added eight before, without pause, until stop, which deletes what is
+// left: someone else's rules that never hold still. Each change is one
+// netlink round trip, so dumps a millisecond apart see the same rules
+// only if the churner is held up. It returns once the churn is going.
+func (n *testNS) churnRules(t *testing.T) (stop func()) {
+	t.Helper()
+	h, err := netlink.NewHandleAt(n.ns)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rule := func(prio int) *netlink.Rule {
+		r := netlink.NewRule()
+		r.Family, r.Priority, r.Table = netlink.FAMILY_V4, prio, 100
+		return r
+	}
+	const first, window = 20000, 8
+	var quit atomic.Bool
+	var made atomic.Int64
+	done := make(chan error, 1)
+	next := first
+	go func() {
+		for ; !quit.Load(); next++ {
+			if err := h.RuleAdd(rule(next)); err != nil {
+				done <- err
+				return
+			}
+			if next-window >= first {
+				if err := h.RuleDel(rule(next - window)); err != nil {
+					done <- err
+					return
+				}
+			}
+			made.Add(1)
+		}
+		done <- nil
+	}()
+	stop = func() {
+		quit.Store(true)
+		if err := <-done; err != nil {
+			t.Errorf("churning rules: %v", err)
+		}
+		for p := max(first, next-window); p < next; p++ {
+			if err := h.RuleDel(rule(p)); err != nil {
+				t.Errorf("delete churned rule %d: %v", p, err)
+			}
+		}
+		h.Close()
+	}
+	for deadline := time.Now().Add(5 * time.Second); made.Load() < 2*window; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			stop()
+			t.Fatal("the rule churn didn't start")
+		}
+	}
+	return stop
 }
 
 func TestSurveyFindsOnLinkSubnetsAndForeignRules(t *testing.T) {

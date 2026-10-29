@@ -48,7 +48,7 @@ func (c *linuxConfigurator) Watch(ctx context.Context) (<-chan struct{}, error) 
 		defer stop()
 		defer sock.Close()
 		for {
-			msgs, _, err := sock.Receive()
+			msgs, from, err := sock.Receive()
 			if ctx.Err() != nil {
 				return
 			}
@@ -58,6 +58,12 @@ func (c *linuxConfigurator) Watch(ctx context.Context) (<-chan struct{}, error) 
 			}
 			if err != nil {
 				return
+			}
+			// Only the kernel's events count: a process with CAP_NET_ADMIN
+			// can send to the groups too, and a malformed rule message
+			// would panic the attribute parser.
+			if from == nil || from.Pid != 0 {
+				continue
 			}
 			for _, m := range msgs {
 				if c.relevant(m) {
@@ -81,6 +87,9 @@ func (c *linuxConfigurator) relevant(m syscall.NetlinkMessage) bool {
 	case unix.RTM_NEWLINK:
 		// Wireless events and statistics come with no flag changed.
 		return len(m.Data) >= unix.SizeofIfInfomsg && nl.DeserializeIfInfomsg(m.Data).Change != 0
+	case unix.RTM_DELRULE:
+		r, err := parseRawRule(m.Data)
+		return err != nil || r.protocol == c.proto // unreadable: assume it mattered
 	}
 	if len(m.Data) < unix.SizeofRtMsg {
 		return false
@@ -98,16 +107,6 @@ func (c *linuxConfigurator) relevant(m syscall.NetlinkMessage) bool {
 		}
 		return h.Protocol == unix.RTPROT_KERNEL ||
 			h.Dst_len == 0 && !isOwnerProtocol(netlink.RouteProtocol(h.Protocol))
-	case unix.RTM_DELRULE:
-		attrs, err := nl.ParseRouteAttr(m.Data[unix.SizeofRtMsg:])
-		if err != nil {
-			return true
-		}
-		for _, a := range attrs {
-			if a.Attr.Type == nl.FRA_PROTOCOL && len(a.Value) > 0 {
-				return a.Value[0] == uint8(c.proto)
-			}
-		}
 	}
 	return false
 }

@@ -4,8 +4,10 @@ package netcfg
 
 import (
 	"os"
+	"reflect"
 	"strconv"
 
+	"github.com/vishvananda/netlink/nl"
 	"golang.org/x/sys/unix"
 )
 
@@ -30,8 +32,9 @@ func ClearFailingClose(path string, owner Owner, link string) error {
 }
 
 // NewInNamespaceToKill is NewInNamespace, and a kill that puts /dev/null
-// in place of the configurator's netlink socket: from then on every
-// netlink request it makes fails, the first dump of a Close included.
+// in place of the configurator's netlink sockets (its handle's and its
+// rule socket): from then on every netlink request it makes fails, the
+// first dump of a Close included.
 // It tells the configurator's sockets by scanning the process's netlink
 // sockets before and after NewInNamespace, so no other goroutine may open
 // a netlink socket between the two scans.
@@ -84,4 +87,21 @@ func netlinkFDs() (map[int]bool, error) {
 		}
 	}
 	return out, nil
+}
+
+// ErrDumpsDisagree is rule dumps that never agreed: the rules kept
+// changing while they were read.
+var ErrDumpsDisagree = errDumpsDisagree
+
+// FailCloseRuleDumps makes the rule dumps of c's Close fail with err, so
+// its rules step fails.
+func FailCloseRuleDumps(c Configurator, err error) {
+	c.(*linuxConfigurator).closeDump = func(*nl.SocketHandle, int) ([]rawRule, error) { return nil, err }
+}
+
+// ClosesWithSingleDumps says whether c's Close takes its rule dumps with
+// dumpRulesOnce, as newLinux sets it.
+func ClosesWithSingleDumps(c Configurator) bool {
+	got := reflect.ValueOf(c.(*linuxConfigurator).closeDump).Pointer()
+	return got == reflect.ValueOf(dumpRulesOnce).Pointer()
 }
