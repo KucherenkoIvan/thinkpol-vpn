@@ -26,7 +26,7 @@ func InspectIPv6Guard(ctx context.Context) routetable.GuardReport {
 
 func (g *IPv6Guard) inspect(ctx context.Context) routetable.GuardReport {
 	r := routetable.GuardReport{Where: "pf anchor " + GuardAnchor, PF: &routetable.PFReport{}}
-	rules, err := g.rulesOf(ctx, GuardAnchor, true) // nil, no error: no such anchor
+	rules, _, err := rulesOf(ctx, g.pf, GuardAnchor, true) // nil, no error: no such anchor
 	switch {
 	case errors.Is(err, routetable.ErrGuardUnsupported):
 		return routetable.GuardReport{Where: r.Where, Unreadable: err.Error()}

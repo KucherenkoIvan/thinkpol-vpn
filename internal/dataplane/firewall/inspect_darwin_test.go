@@ -103,7 +103,7 @@ func fakeExpandAll(rules []guardRule) []string {
 // TestTheOtherFixturesParse runs the guard's other parsers over their
 // built fixtures.
 func TestTheOtherFixturesParse(t *testing.T) {
-	if refs, understood := parseReferences(fixture(t, "references-odd.txt")); understood || len(refs) != 0 {
+	if refs, understood := parseReferences(pfOutput{stdout: fixture(t, "references-odd.txt")}); understood || len(refs) != 0 {
 		t.Errorf("references-odd: %+v, %v", refs, understood)
 	}
 	table, err := parseTable(fixture(t, "table-show.txt"))
@@ -188,19 +188,19 @@ func TestTheRecordedListingsParse(t *testing.T) {
 		t.Errorf("the main ruleset: %v, %q", hooked(main), mainUpToHook(main))
 	}
 	for _, name := range []string{"recorded-anchors-guarded.txt", "recorded-anchors-stock.txt"} {
-		if got := anchorsBefore(fixture(t, name)); len(got) != 0 {
-			t.Errorf("%s: anchors before %q", name, got)
+		if got, err := anchorsBefore(pfOutput{stdout: fixture(t, name)}, nil); err != nil || len(got) != 0 {
+			t.Errorf("%s: anchors before %q, %v", name, got, err)
 		}
 	}
 	if got, err := skippedNames(fixture(t, "recorded-interfaces-v.txt")); err != nil || len(got) != 0 {
 		t.Errorf("skipped %q, %v", got, err)
 	}
 
-	refs, understood := parseReferences(fixture(t, "recorded-references.txt"))
+	refs, understood := parseReferences(pfOutput{stdout: fixture(t, "recorded-references.txt")})
 	if !understood || !slices.Equal(refs, []pfReference{{32755, 10000000000000000008}, {659, 10000000000000000015}}) {
 		t.Errorf("references: %+v, %v", refs, understood)
 	}
-	if refs, understood := parseReferences(fixture(t, "recorded-references-none.txt")); !understood || len(refs) != 0 {
+	if refs, understood := parseReferences(pfOutput{stdout: fixture(t, "recorded-references-none.txt")}); !understood || len(refs) != 0 {
 		t.Errorf("no references: %+v, %v", refs, understood)
 	}
 }
@@ -426,12 +426,12 @@ func TestInspectReferenceByPidAlone(t *testing.T) {
 }
 
 func TestParseReferencesTakesSpacedNamesAndRefusesOddLines(t *testing.T) {
-	refs, understood := parseReferences(fixture(t, "references-spaced.txt"))
+	refs, understood := parseReferences(pfOutput{stdout: fixture(t, "references-spaced.txt")})
 	if !understood || !slices.Equal(refs, []pfReference{{618, 9813589183660731843}, {702, 9000000000000000015}, {4130, 9000000000000000008}}) {
 		t.Fatalf("%v, %v", refs, understood)
 	}
 	odd := append(fixture(t, "recorded-references.txt"), "a line pfctl never printed\n"...)
-	if _, understood := parseReferences(odd); understood {
+	if _, understood := parseReferences(pfOutput{stdout: odd}); understood {
 		t.Fatal("a listing with a line it can't place understood")
 	}
 }
@@ -445,7 +445,7 @@ func TestACutOrOverflowingListingIsUnreadable(t *testing.T) {
 	if _, err := parseVerboseRules([]byte(over)); err == nil || !strings.Contains(err.Error(), "doesn't fit") {
 		t.Errorf("a counter past uint64: %v", err)
 	}
-	if _, understood := parseReferences([]byte("TOKENS:\nPID TOKEN\n" + strings.Repeat("y", 1<<20) + "\n")); understood {
+	if _, understood := parseReferences(pfOutput{stdout: []byte("TOKENS:\nPID TOKEN\n" + strings.Repeat("y", 1<<20) + "\n")}); understood {
 		t.Error("a cut References listing understood")
 	}
 }
