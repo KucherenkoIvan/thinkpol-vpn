@@ -92,10 +92,8 @@ func TestJudgeAddedFailsARuleThatDoesNotReadBack(t *testing.T) {
 	}
 }
 
-// Our rules against a config: each wanted one is kept once, the rest go,
-// but a copy of a kept rule's exact message stays (a dump split while
-// the list changed shows a rule twice; deleting the second would delete
-// the only one).
+// Our rules sorted against want: one decision per distinct message, the
+// flags the kernel only reports aside.
 func TestSurplusRules(t *testing.T) {
 	const proto = 86
 	read := func(msg []byte) rawRule {
@@ -107,18 +105,27 @@ func TestSurplusRules(t *testing.T) {
 		return kr
 	}
 	kept := Rule{Family: IPv4, Priority: 5299, Dst: pfx("192.0.2.0/24")}
+	keptOif := Rule{Family: IPv4, Priority: 5298, Oif: "ovl0", SuppressDefaultRoutes: true}
 	unwanted := Rule{Family: IPv4, Priority: 5300, SuppressDefaultRoutes: true}
 	msg := ruleMsg(kept, proto)
-	// The same Rule, but not the same message: the kernel flagged its
-	// (absent) oif detached, which netcfg doesn't read.
-	twin := slices.Clone(msg)
-	binary.NativeEndian.PutUint32(twin[8:12], unix.FIB_RULE_OIF_DETACHED)
+	// keptOif's repeat in a split dump, its oif gone between the two
+	// parts: the kernel flags it detached, but it is the same rule.
+	detached := ruleMsg(keptOif, proto)
+	binary.NativeEndian.PutUint32(detached[8:12], unix.FIB_RULE_OIF_DETACHED)
 	blackhole := slices.Clone(msg)
 	blackhole[7] = unix.FR_ACT_BLACKHOLE
-	have := []rawRule{read(blackhole), read(msg), read(ruleMsg(unwanted, proto)), read(msg), read(twin)}
-	present, surplus := surplusRules([]Rule{kept}, have)
-	if !present[kept] || len(present) != 1 {
-		t.Errorf("present: %v, want only %v", present, kept)
+	// A second message that reads as kept, another rule as far as the
+	// bytes go. A kernel writes attributes in one order, so its dump
+	// can't hold this pair; it stands for any such pair. Deleting it is
+	// harmless: the delete may take either copy, and the one left reads
+	// as kept.
+	twin := rawRuleMsg(unix.AF_INET, 24, unix.FR_ACT_TO_TBL, rta(unix.FRA_PROTOCOL, []byte{proto}),
+		rta(unix.FRA_DST, []byte{192, 0, 2, 0}), rta(unix.FRA_TABLE, u32(unix.RT_TABLE_MAIN)), rta(unix.FRA_PRIORITY, u32(5299)))
+	have := []rawRule{read(blackhole), read(msg), read(ruleMsg(unwanted, proto)), read(ruleMsg(keptOif, proto)),
+		read(msg), read(detached), read(ruleMsg(unwanted, proto)), read(twin)}
+	present, surplus := surplusRules([]Rule{kept, keptOif}, have)
+	if !present[kept] || !present[keptOif] || len(present) != 2 {
+		t.Errorf("present: %v, want only %v and %v", present, kept, keptOif)
 	}
 	var got []string
 	for _, kr := range surplus {

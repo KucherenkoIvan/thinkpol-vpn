@@ -5,6 +5,7 @@ package netcfg
 import (
 	"encoding/binary"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -90,6 +91,65 @@ func TestDumpErr(t *testing.T) {
 	}
 	if err := dumpErr(nl.ErrDumpInterrupted); !errors.Is(err, errDumpInterrupted) {
 		t.Fatalf("an interrupted dump: %v", err)
+	}
+}
+
+// Rule dumps are taken until two in a row hold the same messages, order
+// aside: a split dump's repeat is not taken, and rules that never stop
+// changing fail.
+func TestDumpUntilAgreed(t *testing.T) {
+	const proto = 86
+	rule := func(prio int) rawRule {
+		return rawRule{msg: ruleMsg(Rule{Family: IPv4, Priority: prio}, proto)}
+	}
+	a, b := rule(5299), rule(5300)
+	var dumps int
+	from := func(seq ...[]rawRule) func() ([]rawRule, error) {
+		dumps = 0
+		return func() ([]rawRule, error) {
+			i := min(dumps, len(seq)-1)
+			dumps++
+			return seq[i], nil
+		}
+	}
+	prios := func(rules []rawRule) []int {
+		var out []int
+		for _, r := range rules {
+			kr, err := parseRawRule(r.msg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out = append(out, kr.rule.Priority)
+		}
+		return out
+	}
+
+	got, err := dumpUntilAgreed(from([]rawRule{a, b, b}, []rawRule{a, b}, []rawRule{a, b}))
+	if err != nil || !slices.Equal(prios(got), []int{5299, 5300}) || dumps != 3 {
+		t.Errorf("a repeat, then two alike: %v, %v after %d dumps; want [5299 5300] after 3", prios(got), err, dumps)
+	}
+	got, err = dumpUntilAgreed(from([]rawRule{a, b}, []rawRule{b, a}))
+	if err != nil || len(got) != 2 || dumps != 2 {
+		t.Errorf("two alike but for the order: %v, %v after %d dumps; want both rules after 2", prios(got), err, dumps)
+	}
+	got, err = dumpUntilAgreed(from([]rawRule{}, []rawRule{}))
+	if err != nil || len(got) != 0 || dumps != 2 {
+		t.Errorf("no rules twice: %v, %v after %d dumps", prios(got), err, dumps)
+	}
+	alternating := func() ([]rawRule, error) {
+		dumps++
+		if dumps%2 == 1 {
+			return []rawRule{a}, nil
+		}
+		return []rawRule{a, a}, nil
+	}
+	dumps = 0
+	if got, err := dumpUntilAgreed(alternating); !errors.Is(err, errDumpsDisagree) || got != nil || dumps != dumpRetries {
+		t.Errorf("dumps that never agree: %v, %v after %d dumps; want errDumpsDisagree after %d", prios(got), err, dumps, dumpRetries)
+	}
+	failed := errors.New("a failed dump")
+	if _, err := dumpUntilAgreed(func() ([]rawRule, error) { return nil, failed }); !errors.Is(err, failed) {
+		t.Errorf("a failed dump: %v", err)
 	}
 }
 

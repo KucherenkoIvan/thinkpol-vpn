@@ -77,21 +77,57 @@ func dumpAllRules(s *nl.SocketHandle) ([]rawRule, error) {
 	return out, nil
 }
 
-// dumpRules dumps fam's rules; a dump the kernel interrupted (the rules
-// changed meanwhile) is taken again, up to dumpRetries times.
+// dumpRules dumps fam's rules until two dumps in a row agree
+// (dumpUntilAgreed). A dump that spans several reads is not consistent:
+// the kernel resumes each part at an index into the rule list and never
+// sets NLM_F_DUMP_INTR for rules, so a rule inserted ahead of the resume
+// point between two parts repeats the rule at the boundary, and one
+// deleted ahead skips a rule, without a word. A single dump can therefore
+// show one of our rules twice (deleting both copies deletes the only
+// rule) or miss one (Close would leave it behind). Two dumps that agree
+// mean no such change raced them, unless two changes produced the same
+// error twice in a row.
 func dumpRules(s *nl.SocketHandle, fam int) ([]rawRule, error) {
-	var err error
-	for range dumpRetries {
-		var rules []rawRule
-		rules, err = dumpRulesOnce(s, fam)
-		if !errors.Is(err, errDumpInterrupted) {
-			return rules, err
-		}
+	rules, err := dumpUntilAgreed(func() ([]rawRule, error) { return dumpRulesOnce(s, fam) })
+	if err != nil {
+		return nil, fmt.Errorf("%w (family %d)", err, fam)
 	}
-	return nil, err
+	return rules, nil
 }
 
-var errDumpInterrupted = errors.New("netcfg: list rules: the dump was interrupted (the rules changed while they were read)")
+// dumpUntilAgreed takes dumps until two in a row hold the same rule
+// messages, order ignored, and returns the last. An interrupted dump
+// (should a kernel flag one) agrees with nothing. After dumpRetries dumps
+// without agreement it fails with errDumpsDisagree.
+func dumpUntilAgreed(dump func() ([]rawRule, error)) ([]rawRule, error) {
+	var prev []string // the last whole dump's messages, sorted
+	havePrev := false
+	for range dumpRetries {
+		rules, err := dump()
+		if errors.Is(err, errDumpInterrupted) {
+			havePrev = false
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		msgs := make([]string, len(rules))
+		for i, r := range rules {
+			msgs[i] = string(r.msg)
+		}
+		slices.Sort(msgs)
+		if havePrev && slices.Equal(prev, msgs) {
+			return rules, nil
+		}
+		prev, havePrev = msgs, true
+	}
+	return nil, fmt.Errorf("%w: %d dumps", errDumpsDisagree, dumpRetries)
+}
+
+var (
+	errDumpInterrupted = errors.New("netcfg: list rules: the dump was interrupted (the rules changed while they were read)")
+	errDumpsDisagree   = errors.New("netcfg: list rules: no two dumps in a row agreed (the rules kept changing while they were read)")
+)
 
 // dumpRulesOnce dumps fam's rules once. The request is matched to its
 // answer by sequence number, so a reply left on the socket by an earlier
@@ -152,15 +188,23 @@ func sendRule(s *nl.SocketHandle, typ, flags int, msg []byte) error {
 	if len(msg) < fibRuleHdrLen {
 		return errors.New("netcfg: a rule message too short")
 	}
+	req := nl.NewNetlinkRequest(typ, flags|unix.NLM_F_ACK)
+	req.Sockets = map[int]*nl.SocketHandle{unix.NETLINK_ROUTE: s}
+	req.AddRawData(withoutReportedFlags(msg))
+	_, err := req.Execute(unix.NETLINK_ROUTE, 0)
+	return err
+}
+
+// withoutReportedFlags is a copy of msg, a rule message at least
+// fibRuleHdrLen long, without the flags the kernel only reports (a
+// detached iif or oif, an unresolved goto): the message as sendRule sends
+// it.
+func withoutReportedFlags(msg []byte) []byte {
 	body := slices.Clone(msg)
 	ruleFlags := binary.NativeEndian.Uint32(body[8:12])
 	ruleFlags &^= unix.FIB_RULE_IIF_DETACHED | unix.FIB_RULE_OIF_DETACHED | unix.FIB_RULE_UNRESOLVED
 	binary.NativeEndian.PutUint32(body[8:12], ruleFlags)
-	req := nl.NewNetlinkRequest(typ, flags|unix.NLM_F_ACK)
-	req.Sockets = map[int]*nl.SocketHandle{unix.NETLINK_ROUTE: s}
-	req.AddRawData(body)
-	_, err := req.Execute(unix.NETLINK_ROUTE, 0)
-	return err
+	return body
 }
 
 // ruleMsg is r as netcfg adds it, with proto: the fields parseRawRule

@@ -32,11 +32,11 @@
 // suppress_prefixlength 0 flags match, and it is a plain lookup: no
 // other selector, no partial mark mask, no other action (a rule turned
 // into a blackhole is not the owner's lookup). Any other such rule is
-// deleted and the wanted one added, but an exact copy of a kept rule's
-// message stays: the kernel resumes each part of a rule dump at a list
-// index and never marks a dump the list changed under, so a part can
-// repeat the rule the last one ended with, and deleting that copy
-// would delete the only one. Rules are added and deleted with raw
+// deleted and the wanted one added. A rule dump that spans several reads
+// can repeat or skip a rule without the kernel flagging it (dumpRules
+// says how), so the adapter takes rule dumps until two in a row agree,
+// and still decides once per distinct message, never deleting one twice.
+// Rules are added and deleted with raw
 // RTM_NEWRULE and RTM_DELRULE messages on one socket opened in the
 // namespace at construction. An add's undo sends the same message as a
 // delete; a delete sends the dumped message back, and its undo adds it

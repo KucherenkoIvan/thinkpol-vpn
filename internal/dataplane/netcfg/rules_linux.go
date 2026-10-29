@@ -62,28 +62,30 @@ func (c *linuxConfigurator) reconcileRules(ctx context.Context, want []Rule, hav
 
 // surplusRules sorts our rules the kernel has (have) against want:
 // present are the wanted ones it holds, kept once each; surplus are the
-// rest, to delete. A copy of a kept rule's exact message is neither: the
-// kernel's rule dump resumes each part at a list index and never flags a
-// dump the list changed under, so a rule inserted ahead between two parts
-// shows the rule at the boundary twice, and deleting that phantom would
-// delete the only copy. A real exact twin stays too, harmless, until
-// Close.
+// rest, to delete. Each distinct message gets one decision: a repeated
+// message (dumpRules says how a dump can repeat one, and why it takes
+// two dumps that agree) is kept once or deleted once, never deleted
+// twice, since a second delete of a message already gone removes the
+// next rule it matches, which can be a kept one with more selectors. A
+// real exact twin of a kept rule stays, harmless, until Close.
 func surplusRules(want []Rule, have []rawRule) (present map[Rule]bool, surplus []rawRule) {
 	wanted := make(map[Rule]bool, len(want))
 	for _, r := range want {
 		wanted[r] = true
 	}
 	present = make(map[Rule]bool, len(have))
-	kept := make(map[string]bool, len(have))
+	seen := make(map[string]bool, len(have))
 	for _, kr := range have {
-		r, ok := asRule(kr)
-		switch {
-		case ok && wanted[r] && !present[r]:
-			present[r] = true
-			kept[string(kr.msg)] = true
-		case !kept[string(kr.msg)]:
-			surplus = append(surplus, kr)
+		key := string(withoutReportedFlags(kr.msg))
+		if seen[key] {
+			continue
 		}
+		seen[key] = true
+		if r, ok := asRule(kr); ok && wanted[r] && !present[r] {
+			present[r] = true
+			continue
+		}
+		surplus = append(surplus, kr)
 	}
 	return present, surplus
 }

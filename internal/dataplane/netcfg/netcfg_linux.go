@@ -570,7 +570,8 @@ func (c *linuxConfigurator) removeOwned() error {
 }
 
 // dumpRetries is how many times a dump the kernel interrupted (what it
-// lists changed underneath it) is taken before it fails.
+// lists changed underneath it) is taken before it fails, and how many
+// rule dumps dumpRules takes at most to find two in a row that agree.
 const dumpRetries = 5
 
 // listRoutes lists routes through h, retrying dumps the kernel

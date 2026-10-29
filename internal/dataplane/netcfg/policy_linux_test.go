@@ -16,6 +16,9 @@ import (
 	"time"
 
 	"github.com/vishvananda/netlink"
+	"github.com/vishvananda/netlink/nl"
+	"github.com/vishvananda/netns"
+	"golang.org/x/sys/unix"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 )
@@ -351,7 +354,7 @@ func TestWatchSeesGatewayChangesAndOwnRemovals(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expect := func(what string, want bool, args ...string) {
+	expectAfter := func(what string, want bool, act func()) {
 		t.Helper()
 		// Drain what came before.
 		for drained := false; !drained; {
@@ -361,7 +364,7 @@ func TestWatchSeesGatewayChangesAndOwnRemovals(t *testing.T) {
 				drained = true
 			}
 		}
-		n.ip(t, args...)
+		act()
 		select {
 		case <-ch:
 			if !want {
@@ -372,6 +375,10 @@ func TestWatchSeesGatewayChangesAndOwnRemovals(t *testing.T) {
 				t.Errorf("%s: not signalled", what)
 			}
 		}
+	}
+	expect := func(what string, want bool, args ...string) {
+		t.Helper()
+		expectAfter(what, want, func() { n.ip(t, args...) })
 	}
 	expect("unrelated route", false, "route", "add", "10.9.0.0/16", "dev", "eth0")
 	expect("a default route comes", true, "route", "add", "default", "via", "192.0.2.1")
@@ -384,6 +391,9 @@ func TestWatchSeesGatewayChangesAndOwnRemovals(t *testing.T) {
 	expect("a link comes up", true, "link", "set", "eth0", "up")
 	expect("an address's on-link route comes", true, "addr", "add", "192.0.3.2/24", "dev", "eth0")
 	expect("a link comes", true, "link", "add", "dummy9", "type", "dummy")
+	expectAfter("our rule's delete sent by a process", false, func() {
+		n.sendRuleEvent(t, netcfg.OwnerRouteTable.RouteProtocol(), 5297)
+	})
 	cancel()
 	select {
 	case _, open := <-ch:
@@ -392,6 +402,29 @@ func TestWatchSeesGatewayChangesAndOwnRemovals(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("the channel is still open after ctx ended")
+	}
+}
+
+// sendRuleEvent sends, from a process's socket in the namespace, an
+// RTM_DELRULE for an IPv4 rule at prio with proto to the IPv4 rule group,
+// as the kernel's event of that delete would read. The kernel takes it as
+// a request too, and refuses it if no such rule exists.
+func (n *testNS) sendRuleEvent(t *testing.T, proto netlink.RouteProtocol, prio uint32) {
+	t.Helper()
+	s, err := nl.GetNetlinkSocketAt(n.ns, netns.None(), unix.NETLINK_ROUTE)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	req := nl.NewNetlinkRequest(unix.RTM_DELRULE, 0)
+	hdr := make([]byte, 12) // struct fib_rule_hdr
+	hdr[0], hdr[4], hdr[7] = unix.AF_INET, unix.RT_TABLE_MAIN, unix.FR_ACT_TO_TBL
+	req.AddRawData(hdr)
+	req.AddData(nl.NewRtAttr(unix.FRA_PRIORITY, nl.Uint32Attr(prio)))
+	req.AddData(nl.NewRtAttr(unix.FRA_PROTOCOL, []byte{uint8(proto)}))
+	to := &unix.SockaddrNetlink{Family: unix.AF_NETLINK, Groups: 1 << (unix.RTNLGRP_IPV4_RULE - 1)}
+	if err := unix.Sendto(s.GetFd(), req.Serialize(), 0, to); err != nil {
+		t.Fatal(err)
 	}
 }
 

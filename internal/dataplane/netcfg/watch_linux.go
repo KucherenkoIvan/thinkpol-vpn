@@ -48,7 +48,7 @@ func (c *linuxConfigurator) Watch(ctx context.Context) (<-chan struct{}, error) 
 		defer stop()
 		defer sock.Close()
 		for {
-			msgs, _, err := sock.Receive()
+			msgs, from, err := sock.Receive()
 			if ctx.Err() != nil {
 				return
 			}
@@ -58,6 +58,12 @@ func (c *linuxConfigurator) Watch(ctx context.Context) (<-chan struct{}, error) 
 			}
 			if err != nil {
 				return
+			}
+			// Only the kernel's events count: a process with CAP_NET_ADMIN
+			// can send to the groups too, and a malformed rule message
+			// would panic the attribute parser.
+			if from == nil || from.Pid != 0 {
+				continue
 			}
 			for _, m := range msgs {
 				if c.relevant(m) {
