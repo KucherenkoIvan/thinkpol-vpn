@@ -120,7 +120,7 @@ func newLinux(ns netns.NsHandle, name string, current bool, owner Owner) (Config
 		h.Close()
 		_ = unix.Close(lock)
 		_ = unix.Close(watchNS)
-		return nil, fmt.Errorf("netcfg: netlink in %s: %w", name, err)
+		return nil, fmt.Errorf("netcfg: rule socket in %s: %w", name, err)
 	}
 	return &linuxConfigurator{
 		h:     h,

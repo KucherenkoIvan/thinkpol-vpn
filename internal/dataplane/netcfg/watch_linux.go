@@ -81,6 +81,9 @@ func (c *linuxConfigurator) relevant(m syscall.NetlinkMessage) bool {
 	case unix.RTM_NEWLINK:
 		// Wireless events and statistics come with no flag changed.
 		return len(m.Data) >= unix.SizeofIfInfomsg && nl.DeserializeIfInfomsg(m.Data).Change != 0
+	case unix.RTM_DELRULE:
+		r, err := parseRawRule(m.Data)
+		return err != nil || r.protocol == c.proto // unreadable: assume it mattered
 	}
 	if len(m.Data) < unix.SizeofRtMsg {
 		return false
@@ -98,16 +101,6 @@ func (c *linuxConfigurator) relevant(m syscall.NetlinkMessage) bool {
 		}
 		return h.Protocol == unix.RTPROT_KERNEL ||
 			h.Dst_len == 0 && !isOwnerProtocol(netlink.RouteProtocol(h.Protocol))
-	case unix.RTM_DELRULE:
-		attrs, err := nl.ParseRouteAttr(m.Data[unix.SizeofRtMsg:])
-		if err != nil {
-			return true
-		}
-		for _, a := range attrs {
-			if a.Attr.Type == nl.FRA_PROTOCOL && len(a.Value) > 0 {
-				return a.Value[0] == uint8(c.proto)
-			}
-		}
 	}
 	return false
 }

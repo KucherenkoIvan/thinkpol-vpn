@@ -101,7 +101,7 @@ func TestRuleMsgReadsBackAsTheRule(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%v: %v", r, err)
 		}
-		got, ok := asRule(kr.rule)
+		got, ok := asRule(kr)
 		if !ok || got != r || kr.protocol != proto {
 			t.Errorf("%v reads back as %v (a Rule: %v), protocol %d", r, got, ok, kr.protocol)
 		}

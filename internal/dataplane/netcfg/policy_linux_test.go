@@ -4,6 +4,7 @@ package netcfg_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/netip"
 	"os/exec"
@@ -176,7 +177,7 @@ func TestApplyRepairsARuleWhoseActionChanged(t *testing.T) {
 			proto := strconv.Itoa(int(netcfg.OwnerRouteTable.RouteProtocol()))
 			n.ip(t, tc.ipFlag, "rule", "del", "priority", "5299")
 			n.ip(t, tc.ipFlag, "rule", "add", "priority", "5299", "to", tc.dst, "blackhole", "protocol", proto)
-			actions := func() []string { return ruleActions(t, n.path, tc.fam, 5299) }
+			actions := func() []string { return ruleActions(t, n, tc.fam, 5299) }
 			if got := actions(); !slices.Equal(got, []string{"blackhole"}) {
 				t.Fatalf("rule 5299 before the repair: %q, want the blackhole", got)
 			}
@@ -204,6 +205,43 @@ func TestApplyRepairsARuleWhoseActionChanged(t *testing.T) {
 	}
 }
 
+// A blackhole twin added beside an owner's lookup rule (same priority,
+// selector and protocol, so after it in the list) goes, and the lookup
+// stays: the delete names the blackhole's action, where one without an
+// action would remove the first match, the lookup.
+func TestApplyRemovesABlackholeBesideTheLookup(t *testing.T) {
+	for _, tc := range []struct {
+		fam    netcfg.Family
+		ipFlag string
+		dst    string // policyConfig's rule at 5299
+	}{
+		{netcfg.IPv4, "-4", "10.51.0.0/16"},
+		{netcfg.IPv6, "-6", "fd51::/48"},
+	} {
+		t.Run(tc.fam.String(), func(t *testing.T) {
+			n := newTestNS(t)
+			n.dummy(t, "ovl0")
+			n.ip(t, "link", "set", "ovl0", "up")
+			c := n.configuratorFor(t, netcfg.OwnerRouteTable)
+			ctx := context.Background()
+			if err := c.Apply(ctx, policyConfig()); err != nil {
+				t.Fatal(err)
+			}
+			proto := strconv.Itoa(int(netcfg.OwnerRouteTable.RouteProtocol()))
+			n.ip(t, tc.ipFlag, "rule", "add", "priority", "5299", "to", tc.dst, "blackhole", "protocol", proto)
+			if got := ruleActions(t, n, tc.fam, 5299); !slices.Equal(got, []string{"lookup", "blackhole"}) {
+				t.Fatalf("rule 5299 before Apply: %q, want the lookup, then the blackhole", got)
+			}
+			if err := c.Apply(ctx, policyConfig()); err != nil {
+				t.Fatal(err)
+			}
+			if got := ruleActions(t, n, tc.fam, 5299); !slices.Equal(got, []string{"lookup"}) {
+				t.Errorf("rule 5299 after Apply: %q, want only the lookup", got)
+			}
+		})
+	}
+}
+
 // cancelWhen is cancelled from the first Err that finds done true.
 type cancelWhen struct {
 	context.Context
@@ -217,19 +255,38 @@ func (c cancelWhen) Err() error {
 	return nil
 }
 
-// ruleActions are the actions of the route-table owner's fam rules at
-// prio in the namespace at path.
-func ruleActions(t *testing.T, path string, fam netcfg.Family, prio int) []string {
+// ruleActions are the actions of n's fam rules at prio, in list order, as
+// iproute2 reads them (not netcfg's own reader, which is under test).
+func ruleActions(t *testing.T, n *testNS, fam netcfg.Family, prio int) []string {
 	t.Helper()
-	in := netcfg.InspectInNamespace(path)
-	if in.RulesUnreadable != "" {
-		t.Fatal(in.RulesUnreadable)
+	flag := "-4"
+	if fam == netcfg.IPv6 {
+		flag = "-6"
+	}
+	// A rule's action is the key iproute2 prints it under: "action" (a
+	// blackhole...), "goto" or "nop", none for a lookup.
+	var rules []map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(n.ipOut(t, "-j", flag, "rule", "show")), &rules); err != nil {
+		t.Fatal(err)
 	}
 	var out []string
-	for _, r := range in.Rules {
-		if r.Owner == netcfg.OwnerRouteTable && r.Family == fam && r.Priority == prio {
-			out = append(out, r.Action)
+	for _, r := range rules {
+		var p int
+		if err := json.Unmarshal(r["priority"], &p); err != nil || p != prio {
+			continue
 		}
+		action := "lookup"
+		if v, ok := r["action"]; ok {
+			if err := json.Unmarshal(v, &action); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, k := range []string{"goto", "nop"} {
+			if _, ok := r[k]; ok {
+				action = k
+			}
+		}
+		out = append(out, action)
 	}
 	return out
 }

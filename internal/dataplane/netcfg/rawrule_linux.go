@@ -31,7 +31,9 @@ const fibRuleHdrLen = 12
 // rawRule is a rule as the raw dump gives it.
 type rawRule struct {
 	protocol netlink.RouteProtocol
-	rule     HostRule
+	// action is the header's (FR_ACT_*): rule.Action is its display name.
+	action uint8
+	rule   HostRule
 	// msg is the rule's message, to delete the rule (or add it back)
 	// with every field the kernel holds.
 	msg []byte
@@ -97,7 +99,9 @@ var errDumpInterrupted = errors.New("netcfg: list rules: the dump was interrupte
 func dumpRulesOnce(s *nl.SocketHandle, fam int) ([]rawRule, error) {
 	req := nl.NewNetlinkRequest(unix.RTM_GETRULE, unix.NLM_F_DUMP)
 	req.Sockets = map[int]*nl.SocketHandle{unix.NETLINK_ROUTE: s}
-	req.AddData(nl.NewIfInfomsg(fam))
+	hdr := make([]byte, fibRuleHdrLen)
+	hdr[0] = byte(fam)
+	req.AddRawData(hdr)
 	var out []rawRule
 	var perr error
 	err := req.ExecuteIter(unix.NETLINK_ROUTE, unix.RTM_NEWRULE, func(m []byte) bool {
@@ -200,8 +204,8 @@ func ruleMsg(r Rule, proto netlink.RouteProtocol) []byte {
 // Only the attributes netcfg sets, or the kernel dumps for every rule,
 // are read; any other (a source, an iif, ports, a DSCP of a newer
 // kernel...) marks the rule Other, as do a source prefix or TOS in the
-// header and anything plainRule refuses. A destination that can't be read
-// fails the read.
+// header, a known attribute too short for its value, and anything
+// plainRule refuses. A destination that can't be read fails the read.
 func parseRawRule(b []byte) (rawRule, error) {
 	if len(b) < fibRuleHdrLen {
 		return rawRule{}, errors.New("netcfg: list rules: a rule message too short")
@@ -216,11 +220,12 @@ func parseRawRule(b []byte) (rawRule, error) {
 	if err != nil {
 		return rawRule{}, fmt.Errorf("netcfg: list rules: %w", err)
 	}
-	out := rawRule{msg: slices.Clone(b)}
+	out := rawRule{action: b[7], msg: slices.Clone(b)}
 	for _, at := range attrs {
 		v := at.Value
 		u32 := func() uint32 {
 			if len(v) < 4 {
+				unknown = true
 				return 0
 			}
 			return binary.NativeEndian.Uint32(v)
@@ -249,9 +254,11 @@ func parseRawRule(b []byte) (rawRule, error) {
 		case unix.FRA_SUPPRESS_PREFIXLEN:
 			r.SuppressPrefixlen = int(int32(u32()))
 		case unix.FRA_PROTOCOL:
-			if len(v) == 1 {
-				out.protocol = netlink.RouteProtocol(v[0])
+			if len(v) != 1 {
+				unknown = true
+				break
 			}
+			out.protocol = netlink.RouteProtocol(v[0])
 		default:
 			unknown = true
 		}

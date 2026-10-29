@@ -31,17 +31,8 @@ func (c *linuxConfigurator) ownKernelRules() ([]rawRule, error) {
 // want doesn't (or that a Rule can't express: another selector or
 // action) are deleted, the missing ones added.
 func (c *linuxConfigurator) reconcileRules(ctx context.Context, want []Rule, have []rawRule, u *undoLog) error {
-	wanted := make(map[Rule]bool, len(want))
-	for _, r := range want {
-		wanted[r] = true
-	}
-	present := make(map[Rule]bool, len(have))
-	for _, kr := range have {
-		r, ok := asRule(kr.rule)
-		if ok && wanted[r] && !present[r] {
-			present[r] = true
-			continue
-		}
+	present, surplus := surplusRules(want, have)
+	for _, kr := range surplus {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -69,15 +60,43 @@ func (c *linuxConfigurator) reconcileRules(ctx context.Context, want []Rule, hav
 	return c.checkAddedRules(added)
 }
 
+// surplusRules sorts our rules the kernel has (have) against want:
+// present are the wanted ones it holds, kept once each; surplus are the
+// rest, to delete. A copy of a kept rule's exact message is neither: the
+// kernel's rule dump resumes each part at a list index and never flags a
+// dump the list changed under, so a rule inserted ahead between two parts
+// shows the rule at the boundary twice, and deleting that phantom would
+// delete the only copy. A real exact twin stays too, harmless, until
+// Close.
+func surplusRules(want []Rule, have []rawRule) (present map[Rule]bool, surplus []rawRule) {
+	wanted := make(map[Rule]bool, len(want))
+	for _, r := range want {
+		wanted[r] = true
+	}
+	present = make(map[Rule]bool, len(have))
+	kept := make(map[string]bool, len(have))
+	for _, kr := range have {
+		r, ok := asRule(kr)
+		switch {
+		case ok && wanted[r] && !present[r]:
+			present[r] = true
+			kept[string(kr.msg)] = true
+		case !kept[string(kr.msg)]:
+			surplus = append(surplus, kr)
+		}
+	}
+	return present, surplus
+}
+
 // errOldKernel is a kernel that drops a rule's protocol (before Linux
 // 4.17): its rules can't be told from anyone else's.
 var errOldKernel = fmt.Errorf("netcfg: policy rules need Linux 4.17 or later (rule protocols): %w", errors.ErrUnsupported)
 
-// errNotReadBack is a rule just added that the kernel holds, with our
-// protocol, as something netcfg doesn't add: an attribute this kernel
-// reports that parseRawRule doesn't read, or the rule changed meanwhile.
-// Taken as is, every Apply would replace that rule.
-var errNotReadBack = errors.New("netcfg: a rule just added doesn't read back as added (an attribute this kernel reports that netcfg doesn't read?)")
+// errNotReadBack is a rule just added that the kernel doesn't hold, with
+// our protocol, as netcfg added it: an attribute this kernel reports that
+// parseRawRule doesn't read, or someone changed or deleted the rule
+// meanwhile. Taken as is, every Apply would replace that rule.
+var errNotReadBack = errors.New("netcfg: a rule just added doesn't read back as added (changed or deleted meanwhile, or an attribute this kernel reports that netcfg doesn't read)")
 
 // checkAddedRules dumps the rules again and judges the ones just added
 // (judgeAdded); the strays of a kernel that dropped our protocol are
@@ -103,10 +122,10 @@ func (c *linuxConfigurator) checkAddedRules(added []Rule) error {
 // are returned to delete, with errOldKernel. A rule held with proto that
 // doesn't read as added is errNotReadBack.
 func judgeAdded(added []Rule, have []rawRule, proto netlink.RouteProtocol) ([]rawRule, error) {
-	if stray := strayRules(added, have, proto); len(stray) > 0 {
+	withProto := rulesWith(have, proto)
+	if stray := strayRules(added, have, withProto, proto); len(stray) > 0 {
 		return stray, errOldKernel
 	}
-	withProto := rulesWith(have, proto)
 	for _, r := range added {
 		if !withProto[r] {
 			return nil, fmt.Errorf("%w: %v", errNotReadBack, r)
@@ -119,7 +138,7 @@ func judgeAdded(added []Rule, have []rawRule, proto netlink.RouteProtocol) ([]ra
 func rulesWith(have []rawRule, proto netlink.RouteProtocol) map[Rule]bool {
 	out := make(map[Rule]bool)
 	for _, kr := range have {
-		if r, ok := asRule(kr.rule); ok && kr.protocol == proto {
+		if r, ok := asRule(kr); ok && kr.protocol == proto {
 			out[r] = true
 		}
 	}
@@ -127,10 +146,10 @@ func rulesWith(have []rawRule, proto netlink.RouteProtocol) map[Rule]bool {
 }
 
 // strayRules are the kernel's rules that are one of added but without
-// proto, for each added rule the kernel doesn't hold with proto: what a
-// kernel that drops rule protocols made of them.
-func strayRules(added []Rule, have []rawRule, proto netlink.RouteProtocol) []rawRule {
-	withProto := rulesWith(have, proto)
+// proto, for each added rule the kernel doesn't hold with proto (not in
+// withProto, rulesWith(have, proto)): what a kernel that drops rule
+// protocols made of them.
+func strayRules(added []Rule, have []rawRule, withProto map[Rule]bool, proto netlink.RouteProtocol) []rawRule {
 	missing := make(map[Rule]bool)
 	for _, r := range added {
 		if !withProto[r] {
@@ -139,7 +158,7 @@ func strayRules(added []Rule, have []rawRule, proto netlink.RouteProtocol) []raw
 	}
 	var out []rawRule
 	for _, kr := range have {
-		if r, ok := asRule(kr.rule); ok && kr.protocol != proto && missing[r] {
+		if r, ok := asRule(kr); ok && kr.protocol != proto && missing[r] {
 			out = append(out, kr)
 			delete(missing, r) // one each: a foreign twin may be someone else's
 		}
@@ -149,7 +168,8 @@ func strayRules(added []Rule, have []rawRule, proto netlink.RouteProtocol) []raw
 
 // asRule reads a kernel rule as a Rule; false if it isn't one netcfg
 // could have added: one parseRawRule marked Other, or not a lookup.
-func asRule(hr HostRule) (Rule, bool) {
+func asRule(kr rawRule) (Rule, bool) {
+	hr := kr.rule
 	r := Rule{
 		Family:                hr.Family,
 		Priority:              hr.Priority,
@@ -163,11 +183,11 @@ func asRule(hr HostRule) (Rule, bool) {
 	if r.Table == unix.RT_TABLE_MAIN {
 		r.Table = 0
 	}
-	return r, !hr.Other && hr.Action == "lookup"
+	return r, !hr.Other && kr.action == unix.FR_ACT_TO_TBL
 }
 
-// addKernelRule adds r; its undo deletes it with the same message, so
-// only a lookup with r's fields and our protocol can go.
+// addKernelRule adds r; its undo deletes it with the same message: a
+// lookup of ours with at least r's fields (sendRule says which can match).
 func (c *linuxConfigurator) addKernelRule(r Rule, u *undoLog) error {
 	msg := ruleMsg(r, c.proto)
 	if err := sendRule(c.rules, unix.RTM_NEWRULE, unix.NLM_F_CREATE|unix.NLM_F_EXCL, msg); err != nil {
