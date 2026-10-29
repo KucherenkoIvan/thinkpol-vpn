@@ -80,6 +80,15 @@ Round 3 (2026-10-29, paranoid, torvalds): the R2 fixes hold; labctl down still a
 - [x] R3.8 bindir_lab_test.go fails when another run from the checkout dies during it: check only the directories created after it started (paranoid 5)
 - [x] R3.9 nits: lab/doc.go's line wrap; start's `prepare` call reads as a second build; DownCheckout's doc is one 60-word sentence (torvalds N1–N3)
 
+Round 4 (2026-10-29): paranoid and torvalds: merge, no blockers; the README and start's comment still state the kept-binaries rule without the accepted orphaned-compose gap; one test gap; nits. Folded in one round, merged without another review.
+- [x] R4.1 lab/README.md and start's comment (lab.go) promise a kept lab's binaries stay with no exception: name the accepted orphaned-compose gap in both (torvalds S1, paranoid 5)
+- [x] R4.2 sweepBinRoot's comment judges liveness when Docker answers; it is judged at each run's lock check (torvalds N1)
+- [x] R4.3 the `labsUp` signature is spelled out twice: a named `labLister` type (torvalds N2)
+- [x] R4.4 `startTB` embeds a nil `testing.TB`: a `Cleanup` that records the call and fails the test, and a comment listing the TB methods start may call (torvalds N3, paranoid 4)
+- [x] R4.5 no test fails when the sweep drops a failed Docker query's error (DownCheckout's own query fails first): a unit test of removeStaleBinaries with a failing labsUp (paranoid 1)
+- [x] R4.6 a short write to `.kept` glues the next project onto the fragment: recordLab writes a leading newline, with a test (paranoid 2)
+- [x] R4.7 bindir_lab_test.go's comment doesn't say where the snapshot is taken or that its mutant may survive a concurrent sweep (paranoid 3)
+
 ## Log
 - 2026-10-22 created in backlog (TP-120 out-of-scope note)
 - 2026-10-24 docs: slotted in the pre-M2 phase (wave 0)

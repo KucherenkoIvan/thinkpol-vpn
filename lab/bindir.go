@@ -87,12 +87,14 @@ func newRunBinaries(ctx context.Context, root string) (*runBinaries, error) {
 
 // recordLab adds project to the labs that mount the directory and may be
 // kept (keptMarker). One append per call: parallel tests' lines don't mix.
+// The leading newline ends whatever a short write left before it, so the
+// fragment can't glue onto project; keptBy skips the blank lines.
 func (d *runBinaries) recordLab(project string) error {
 	f, err := os.OpenFile(filepath.Join(d.path, keptMarker), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return fmt.Errorf("lab: %w", err)
 	}
-	_, err = f.WriteString(project + "\n")
+	_, err = f.WriteString("\n" + project + "\n")
 	if err = errors.Join(err, f.Close()); err != nil {
 		return fmt.Errorf("lab: %w", err)
 	}
@@ -158,16 +160,20 @@ func runBinariesLive(path string) (bool, error) {
 	return false, nil
 }
 
+// labLister lists the labs up on the daemon, by project (see labProjects).
+type labLister func(context.Context) (map[string]string, error)
+
 // sweepBinRoot removes the directories of runs that ended without removing
 // them (their lock is free), then lab/bin itself if that leaves it empty.
 // A directory kept labs may mount (keptBy) stays: with labsUp nil always,
-// otherwise while labsUp lists one of them, or fails. labsUp is asked
-// only once the ended runs are known, so a run alive until Docker answers
-// keeps its directory: a run that ended can't start a lab. Not covered: a
-// docker compose up that a dying run left running and that hasn't created
-// the lab yet when Docker answers; that lab comes up without binaries. The
-// caller holds lockBinRoot.
-func sweepBinRoot(ctx context.Context, root string, labsUp func(context.Context) (map[string]string, error)) error {
+// otherwise while labsUp lists one of them, or fails. labsUp is asked only
+// after every run's lock is checked: a run alive at its check keeps its
+// directory this sweep, even if it dies before Docker answers, and a run
+// already dead can't start a lab, so Docker lists every lab a dead run's
+// .kept may name. Not covered: a docker compose up that a dying run left
+// running and that hasn't created the lab yet when Docker answers; that lab
+// comes up without binaries. The caller holds lockBinRoot.
+func sweepBinRoot(ctx context.Context, root string, labsUp labLister) error {
 	entries, err := os.ReadDir(binRoot(root))
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
@@ -260,7 +266,7 @@ func RemoveRunBinaries(ctx context.Context) error {
 // removeStaleBinaries removes, in the checkout at root, the binary
 // directories of runs that have ended without removing them, and those of
 // kept labs once labsUp lists none of their labs (see sweepBinRoot).
-func removeStaleBinaries(ctx context.Context, root string, labsUp func(context.Context) (map[string]string, error)) error {
+func removeStaleBinaries(ctx context.Context, root string, labsUp labLister) error {
 	unlock, err := lockBinRoot(ctx, root)
 	if err != nil {
 		return err

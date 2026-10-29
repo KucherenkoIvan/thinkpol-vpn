@@ -37,7 +37,11 @@ func TestAnotherRunFromTheCheckoutBuildsItsOwnBinaries(t *testing.T) {
 	}
 
 	// Run directories already there are other runs' (live, or dead and
-	// not yet swept): only the ones created from here on are checked.
+	// not yet swept): only the ones created from here on, just before the
+	// other run starts, are checked. A third run from the checkout that
+	// creates its directory in the meantime and dies there fails this test
+	// falsely; and a sweep by any run in that window removes what the other
+	// run left, so the mutant "labctl skips RemoveRunBinaries" may survive.
 	existing := map[string]bool{}
 	entries, err := os.ReadDir(binRoot(root))
 	if err != nil {

@@ -302,6 +302,48 @@ func TestLabctlDownAsksDockerAfterFindingTheEndedRuns(t *testing.T) {
 	}
 }
 
+// When Docker answers labctl down's own query for the labs but fails the
+// sweep's, the sweep keeps every kept directory and reports the failure;
+// an ended run's directory, which no lab may mount, goes all the same.
+func TestTheSweepReportsAFailedListOfLabs(t *testing.T) {
+	ctx := t.Context()
+	root := t.TempDir()
+	kept := endedRun(t, root, "tplab-a-t-kept")
+	ended := endedRun(t, root)
+	failing := func(context.Context) (map[string]string, error) {
+		return nil, errors.New("docker failed")
+	}
+
+	if err := removeStaleBinaries(ctx, root, failing); err == nil {
+		t.Error("a sweep without a list of labs reported no error")
+	}
+	if _, err := os.Stat(kept.path); err != nil {
+		t.Errorf("a sweep without a list of labs took a kept lab's directory: %v", err)
+	}
+	if _, err := os.Stat(ended.path); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("an ended run's directory after the sweep: %v", err)
+	}
+}
+
+// A short write to .kept leaves a fragment without a newline; the next
+// lab recorded stays a project of its own, not glued onto it.
+func TestRecordLabStartsOnALineOfItsOwn(t *testing.T) {
+	d, err := newRunBinaries(t.Context(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.remove(context.Background()) })
+	if err := os.WriteFile(filepath.Join(d.path, keptMarker), []byte("tplab-a-t-short"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.recordLab("tplab-b-t-next"); err != nil {
+		t.Fatal(err)
+	}
+	if kept, err := keptBy(d.path); err != nil || !slices.Contains(kept, "tplab-b-t-next") {
+		t.Errorf(".kept lists %v, %v; want the lab recorded after a short write", kept, err)
+	}
+}
+
 // cleanupTB is a test as Lab.cleanup sees it.
 type cleanupTB struct {
 	testing.TB
@@ -363,15 +405,19 @@ func TestCleanupKeepsAFailedLabsBinaries(t *testing.T) {
 }
 
 // startTB is a lab test as start sees it, run in its own goroutine: Fatal
-// records the message and stops there like testing.T does.
+// records the message and stops there like testing.T does. start may call
+// Helper, Name, Fatal and Cleanup on it; any other TB method dereferences
+// the nil TB and panics: add it here.
 type startTB struct {
 	testing.TB
-	fatal string
+	fatal    string
+	cleanups int
 }
 
 func (s *startTB) Helper()           {}
 func (s *startTB) Name() string      { return "TestKept" }
 func (s *startTB) Fatal(args ...any) { s.fatal = fmt.Sprint(args...); runtime.Goexit() }
+func (s *startTB) Cleanup(func())    { s.cleanups++ }
 
 // With KeepEnv, start lists the lab in the run directory's .kept before it
 // starts the lab, so a run that dies with the lab up (a -timeout panic)
@@ -418,6 +464,9 @@ func TestStartListsAKeptLabBeforeItStarts(t *testing.T) {
 	<-done
 	if !strings.Contains(s.fatal, "fake docker fails") {
 		t.Fatalf("start with a failing docker: %q", s.fatal)
+	}
+	if s.cleanups > 0 {
+		t.Errorf("start with a failing docker registered %d clean-ups: it got a lab", s.cleanups)
 	}
 	checkout, err := CheckoutProject(root)
 	if err != nil {

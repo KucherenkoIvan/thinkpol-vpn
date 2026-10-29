@@ -85,8 +85,9 @@ func start(t testing.TB, topo Topology, slotKey string) *Lab {
 	}
 	// With KeepEnv set, the lab may outlive the run (kept, or left up by a
 	// -timeout panic): .kept lists it before it starts, so its binaries stay
-	// until labctl down finds it down. Without KeepEnv, a lab the run leaves
-	// up loses its binaries to the next sweep; labctl down -tests removes it.
+	// until labctl down finds it down (except for one accepted gap, see
+	// sweepBinRoot). Without KeepEnv, a lab the run leaves up loses its
+	// binaries to the next sweep; labctl down -tests removes it.
 	keep := os.Getenv(KeepEnv) != ""
 	if keep {
 		if err := p.bin.recordLab(project); err != nil {
