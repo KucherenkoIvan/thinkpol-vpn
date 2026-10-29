@@ -62,3 +62,4 @@ Round 1 (2026-10-29): go-paranoid no proven defect, should-fix 1–2; pocket-tor
 - 2026-10-29 make lint, make test green; make lab-test green on b0061e1 (lab 379.7 s, gotest ok in 36 packages). origin/rewrite merged after it (d29e45c: tickets only, no code change). Not verified: the pf adapter's reload on a narrowed Exempt on a real macOS (unit and lab tests use the fake guard and nftables)
 - 2026-10-29 in-progress → review
 - 2026-10-29 review → has-errors (round 1: torvalds, paranoid, go-style; R1.1–R1.20; cross-family review failed to connect, runs in round 2)
+- 2026-10-29 has-errors → in-progress, owner: agent-claude-tp127
