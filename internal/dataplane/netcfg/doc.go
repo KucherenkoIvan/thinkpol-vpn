@@ -24,12 +24,47 @@
 // protocol ([Owner.RouteProtocol]: 84, 85, 86), and holds an exclusive
 // flock per namespace and owner under [LockDir], so routes and rules with
 // its protocol that it finds are a dead predecessor's. Rules go in after
-// the routes they lead to, and leave before. A rule keeps its protocol
-// only since Linux 4.17: the adapter checks that the rules it added came
-// back carrying it, and on an older kernel deletes them and fails with
-// errors.ErrUnsupported rather than leave rules it can't tell from
-// anyone else's. Scoped routes are refused (errors.ErrUnsupported): Linux
-// sockets bypass the tunnel by their mark instead.
+// the routes they lead to, and leave before. The adapter reads rules from
+// a raw RTM_GETRULE dump, the reader [Inspect] uses, because
+// vishvananda/netlink's dump drops a rule's action. A rule with the
+// owner's protocol counts as a wanted [Rule] only when its family,
+// priority, destination, oif, table, mark and the invert and
+// suppress_prefixlength 0 flags match, and it is a plain lookup: no other
+// selector, no partial mark mask, no other action (a rule turned into a
+// blackhole is not the owner's lookup). Any other such rule is deleted and
+// the wanted one added. A rule dump that spans several reads can repeat or
+// skip a rule without the kernel flagging it (dumpRules says how), so the
+// adapter takes rule dumps, a few milliseconds apart, until two in a row
+// agree, and still decides once per distinct message, never deleting one
+// twice. Two dumps can still agree and both be wrong, given changes in
+// step with them (RR55). Rules someone keeps changing through all five
+// dumps fail Apply, before it changes anything, and Survey; their caller
+// retries (route-table enforcement every 5 s). When the check of the rules
+// an Apply just added meets such churn it is skipped and the adds stand,
+// but only once a check has seen the kernel keep the owner's protocol on
+// rules; before that the churn fails the Apply too, since on a kernel that
+// drops the protocol unjudged rules would stay, no one's, until reboot.
+// Close needs no two dumps that agree: it deletes the owner's rules from
+// single dumps until two in a row show none (or, at the last dump, one),
+// and goes on with routes and interfaces whatever happens to the rules.
+// Rules are added and deleted with raw RTM_NEWRULE and RTM_DELRULE
+// messages on one socket opened in the namespace at construction. An add's
+// undo sends the same message as a delete; a delete sends the dumped
+// message back, and its undo adds it again, action and all. The kernel
+// deletes the first rule in its list that matches every field a delete
+// carries (action, protocol, priority, table, the selectors set) but takes
+// a selector the message lacks as any value and ignores the invert flag,
+// so an earlier rule of the owner's with the same fields and more
+// selectors can go in its place (RR54). A rule keeps its protocol only
+// since Linux 4.17: the adapter checks that the rules it added came back
+// carrying it, and on an older kernel deletes them and fails with
+// errors.ErrUnsupported rather than leave rules it can't tell from anyone
+// else's. It also fails when one it added doesn't read back as added (an
+// attribute the kernel reports that the reader doesn't know, or the rule
+// changed or deleted meanwhile), rather than replace that rule on every
+// Apply. A kernel without IPv6 policy rules has none to read. Scoped
+// routes are refused (errors.ErrUnsupported): Linux sockets bypass the
+// tunnel by their mark instead.
 //
 // # macOS
 //
