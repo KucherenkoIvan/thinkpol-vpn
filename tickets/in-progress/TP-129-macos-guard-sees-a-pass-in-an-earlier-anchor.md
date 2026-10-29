@@ -75,3 +75,4 @@ Round 1 (2026-10-29): correctness (paranoid: fix first), design (torvalds: fix f
 - 2026-10-29 make lint, make test green; make lab-test (LAB_P=1, other labs up) green on 19f3711: Linux only, so it runs the firewall package's Linux tests and the rest of the lab; none of this ticket's darwin code or tests run there
 - 2026-10-29 in-progress → review
 - 2026-10-29 review → has-errors (round 1: paranoid, torvalds, go-style, Cursor; findings R1.1–R1.19)
+- 2026-10-29 has-errors → in-progress (round 1 fixes), owner: agent-claude-tp129
