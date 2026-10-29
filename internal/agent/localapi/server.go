@@ -37,7 +37,7 @@ type Options struct {
 	Node  Node
 	// Logs is the agent's in-memory log.
 	Logs *logring.Ring
-	// Log gets the API's own events: refused calls at debug, failures.
+	// Log gets the API's own events: refused calls (at info), failures.
 	Log *slog.Logger
 	// RetryAfter is how long to wait before serving again after the API
 	// failed; 0 is DefaultRetryAfter.
@@ -100,7 +100,11 @@ const MaxStreams = 16
 // ends: streams end then too, so a stop doesn't wait out their grace
 // period.
 func NewGRPCServer(shutdown context.Context, o Options, p Policy) *grpc.Server {
-	opts := append([]grpckit.ServerOption(nil), p.serverOptions()...)
+	log := o.Log
+	if log == nil {
+		log = slog.New(slog.DiscardHandler)
+	}
+	opts := append([]grpckit.ServerOption(nil), p.serverOptions(log)...)
 	opts = append(opts, grpckit.WithGRPCOptions(grpc.MaxConcurrentStreams(MaxStreams)))
 	if o.Log != nil {
 		opts = append(opts, grpckit.WithLogger(o.Log))
