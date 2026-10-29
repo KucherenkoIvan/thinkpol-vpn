@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/netip"
 	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -443,5 +445,54 @@ func TestEnforcerStopsOnAnUnsupportedKernel(t *testing.T) {
 	}
 	if err := e.Enforce(context.Background(), w); !errors.Is(err, errors.ErrUnsupported) {
 		t.Errorf("Enforce again: %v", err)
+	}
+}
+
+// A corrupt route record netcfg found is counted in the status with the
+// unowned routes, and warned of once, by its path and why, however often
+// the table is put back while it is there unchanged; once it goes and
+// comes back, or comes back with a new reason or mtime, it is warned of
+// again.
+func TestACorruptRecordIsCountedAndWarnedOnceWhileUnchanged(t *testing.T) {
+	const path, reason = "/state/netcfg/overlay.routes.corrupt-boot", "no boot session"
+	f := &fakeConfigurator{survey: up()}
+	f.survey.CorruptRecords = []netcfg.CorruptRecord{{Path: path, Reason: reason}}
+	f.survey.UnownedRoutes = 3
+	var buf lockedBuffer
+	e := routetable.OpenWithClock(f, nil, slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})), (&fakeClock{now: time.Unix(0, 0)}).read)
+	defer func() { _ = e.Close() }()
+	if err := e.Enforce(t.Context(), routetable.Want{TUN: "thinkpol0"}); err != nil {
+		t.Fatal(err)
+	}
+	routetable.PauseWatching(e)
+	if st := e.Status(); st.CorruptRecords != 1 || st.UnownedRoutes != 3 {
+		t.Errorf("CorruptRecords %d, UnownedRoutes %d, want 1, 3", st.CorruptRecords, st.UnownedRoutes)
+	}
+	routetable.Reapply(t.Context(), e)
+	if w := buf.lines("corrupt route record"); len(w) != 1 || !strings.Contains(w[0], path) || !strings.Contains(w[0], reason) {
+		t.Errorf("warns %q, want one naming %s and %q", w, path, reason)
+	}
+	// Removed by hand: no longer counted.
+	f.mu.Lock()
+	f.survey.CorruptRecords, f.survey.UnownedRoutes = nil, 0
+	f.mu.Unlock()
+	routetable.Reapply(t.Context(), e)
+	if st := e.Status(); st.CorruptRecords != 0 || st.UnownedRoutes != 0 {
+		t.Errorf("CorruptRecords %d, UnownedRoutes %d after the record went, want 0", st.CorruptRecords, st.UnownedRoutes)
+	}
+	// Corrupted again: warned again, and again for a new reason or mtime.
+	for i, r := range []netcfg.CorruptRecord{
+		{Path: path, Reason: reason},
+		{Path: path, Reason: "bad line 2 after the boot line: bad scope"},
+		{Path: path, Reason: "bad line 2 after the boot line: bad scope", Modified: time.Unix(60, 0)},
+	} {
+		f.mu.Lock()
+		f.survey.CorruptRecords = []netcfg.CorruptRecord{r}
+		f.mu.Unlock()
+		routetable.Reapply(t.Context(), e)
+		routetable.Reapply(t.Context(), e)
+		if w := buf.lines("corrupt route record"); len(w) != i+2 || !strings.Contains(w[i+1], r.Reason) {
+			t.Errorf("after %+v: warns %q, want %d", r, w, i+2)
+		}
 	}
 }
