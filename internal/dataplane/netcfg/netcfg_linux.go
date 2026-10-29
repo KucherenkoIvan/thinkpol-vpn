@@ -123,12 +123,13 @@ func newLinux(ns netns.NsHandle, name string, current bool, owner Owner) (Config
 		return nil, fmt.Errorf("netcfg: rule socket in %s: %w", name, err)
 	}
 	return &linuxConfigurator{
-		h:     h,
-		rules: rules,
-		ns:    netns.NsHandle(watchNS),
-		lock:  lock,
-		proto: owner.RouteProtocol(),
-		links: newLedger(),
+		h:         h,
+		rules:     rules,
+		ns:        netns.NsHandle(watchNS),
+		lock:      lock,
+		proto:     owner.RouteProtocol(),
+		closeDump: dumpRulesOnce,
+		links:     newLedger(),
 	}, nil
 }
 
@@ -168,6 +169,12 @@ type linuxConfigurator struct {
 	lock   int            // the owner's lock file, flocked
 	proto  netlink.RouteProtocol
 	closed bool
+	// protoKept: a check of added rules (judgeAdded) has seen them come
+	// back with proto, so this kernel keeps rule protocols.
+	protoKept bool
+	// closeDump is the rule dump Close's rules step takes, dumpRulesOnce;
+	// a field so a test can make that step fail.
+	closeDump func(*nl.SocketHandle, int) ([]rawRule, error)
 
 	// Every route with proto is ours, so routes need no records.
 	links ledger
@@ -556,7 +563,7 @@ func (c *linuxConfigurator) removeOwned() error {
 	}
 	var errs []error
 	// Rules leave before the routes they lead to.
-	dumpOwn := func() ([]rawRule, error) { return c.own(dumpFamilies(c.rules, dumpRulesOnce)) }
+	dumpOwn := func() ([]rawRule, error) { return c.own(dumpFamilies(c.rules, c.closeDump)) }
 	if err := removeOwnRules(dumpOwn, func(kr rawRule) error { return c.delKernelRule(kr, nil) }); err != nil {
 		errs = append(errs, err)
 	}
@@ -572,7 +579,7 @@ func (c *linuxConfigurator) removeOwned() error {
 // dumpRetries is how many times a dump the kernel interrupted (what it
 // lists changed underneath it) is taken before it fails, how many rule
 // dumps dumpRules takes at most to find two in a row that agree, and how
-// many removeOwnRules takes at most to see none of ours.
+// many rounds of deletes removeOwnRules makes room for.
 const dumpRetries = 5
 
 // listRoutes lists routes through h, retrying dumps the kernel

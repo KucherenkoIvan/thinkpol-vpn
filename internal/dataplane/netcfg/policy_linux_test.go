@@ -493,6 +493,34 @@ func TestCloseRemovesEverythingWhileRulesChurn(t *testing.T) {
 	requireSame(t, "namespace after Close", before, snapshot(t, n.h))
 }
 
+// Close goes on past a failing rules step: the routes, the address and
+// the interface it changed are put back, the rules (whose dumps all
+// failed) stay, and the rules step's error is returned.
+func TestCloseGoesOnWhenItsRulesFail(t *testing.T) {
+	n := newTestNS(t)
+	n.dummy(t, "ovl0")
+	before := snapshot(t, n.h)
+	c := n.configuratorFor(t, netcfg.OwnerRouteTable)
+	cfg := policyConfig()
+	cfg.Interfaces = []netcfg.Interface{{Name: "ovl0", Addrs: []netip.Prefix{pfx("100.64.0.7/10")}, MTU: 1380, Up: true}}
+	if err := c.Apply(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	applied := ownRules(t, n.h, netcfg.OwnerRouteTable)
+	failed := errors.New("a failed rule dump")
+	netcfg.FailCloseRuleDumps(c, failed)
+	if err := c.Close(); !errors.Is(err, failed) {
+		t.Errorf("Close with failing rule dumps: %v, want the dumps' error", err)
+	}
+	if got := ownRules(t, n.h, netcfg.OwnerRouteTable); !slices.Equal(got, applied) {
+		t.Errorf("rules after Close: %q, want them as applied: %q", got, applied)
+	}
+	notRules := func(lines []string) []string {
+		return slices.DeleteFunc(lines, func(l string) bool { return strings.HasPrefix(l, "rule ") })
+	}
+	requireSame(t, "namespace after Close, rules aside", notRules(before), notRules(snapshot(t, n.h)))
+}
+
 // churnRules adds an IPv4 rule at a new priority and deletes the one
 // added eight before, without pause, until stop, which deletes what is
 // left: someone else's rules that never hold still. Each change is one

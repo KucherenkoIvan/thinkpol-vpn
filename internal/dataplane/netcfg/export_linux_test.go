@@ -6,6 +6,7 @@ import (
 	"os"
 	"strconv"
 
+	"github.com/vishvananda/netlink/nl"
 	"golang.org/x/sys/unix"
 )
 
@@ -90,3 +91,9 @@ func netlinkFDs() (map[int]bool, error) {
 // ErrDumpsDisagree is rule dumps that never agreed: the rules kept
 // changing while they were read.
 var ErrDumpsDisagree = errDumpsDisagree
+
+// FailCloseRuleDumps makes the rule dumps of c's Close fail with err, so
+// its rules step fails.
+func FailCloseRuleDumps(c Configurator, err error) {
+	c.(*linuxConfigurator).closeDump = func(*nl.SocketHandle, int) ([]rawRule, error) { return nil, err }
+}

@@ -41,8 +41,11 @@
 // all five dumps fail Apply, before it changes anything, and Survey;
 // their caller retries (route-table enforcement every 5 s). When the
 // check of the rules an Apply just added meets such churn it is skipped
-// and the adds stand. Close needs no two dumps that agree: it deletes the
-// owner's rules from single dumps until one shows none, and goes on with
+// and the adds stand, but only once a check has seen the kernel keep the
+// owner's protocol on rules; before that the churn fails the Apply too,
+// since on a kernel that drops the protocol unjudged rules would stay,
+// no one's, until reboot. Close needs no two dumps that agree: it deletes the owner's
+// rules from single dumps until two in a row show none, and goes on with
 // routes and interfaces whatever happens to the rules. Rules are added
 // and deleted with raw RTM_NEWRULE and RTM_DELRULE messages on one socket
 // opened in the namespace at construction. An add's undo sends the same

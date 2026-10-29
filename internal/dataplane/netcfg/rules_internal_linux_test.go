@@ -70,14 +70,14 @@ func TestJudgeAddedFailsARuleThatDoesNotReadBack(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stray, err := judgeAdded([]Rule{r}, []rawRule{added}, nil, proto); stray != nil || err != nil {
+	if stray, err := (&linuxConfigurator{proto: proto}).judgeAdded([]Rule{r}, []rawRule{added}, nil); stray != nil || err != nil {
 		t.Fatalf("a rule read back as added: %v, %v", stray, err)
 	}
 	other, err := parseRawRule(append(slices.Clone(msg), rta(250, u32(1))...))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stray, err := judgeAdded([]Rule{r}, []rawRule{other}, nil, proto); stray != nil || !errors.Is(err, errNotReadBack) {
+	if stray, err := (&linuxConfigurator{proto: proto}).judgeAdded([]Rule{r}, []rawRule{other}, nil); stray != nil || !errors.Is(err, errNotReadBack) {
 		t.Fatalf("a rule read back with an unknown attribute: %v, %v", stray, err)
 	}
 	// A kernel before 4.17 holds it without the protocol: a stray to
@@ -86,19 +86,59 @@ func TestJudgeAddedFailsARuleThatDoesNotReadBack(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stray, err := judgeAdded([]Rule{r}, []rawRule{old}, nil, proto)
+	stray, err := (&linuxConfigurator{proto: proto}).judgeAdded([]Rule{r}, []rawRule{old}, nil)
 	if len(stray) != 1 || !bytes.Equal(stray[0].msg, old.msg) || !errors.Is(err, errOldKernel) {
 		t.Fatalf("a rule read back without its protocol: %v, %v", stray, err)
 	}
-	// Rules someone kept changing through the dumps: the adds stand,
-	// unjudged. Any other dump failure fails them.
+	failed := errors.New("a failed dump")
+	if stray, err := (&linuxConfigurator{proto: proto}).judgeAdded([]Rule{r}, nil, failed); stray != nil || !errors.Is(err, failed) {
+		t.Fatalf("a failed dump: %v, %v", stray, err)
+	}
+}
+
+// Rules someone kept changing through the dumps leave the adds unjudged
+// only once a check has seen our protocol come back: before, on a kernel
+// that may drop it, the dumps' error fails them.
+func TestJudgeAddedSkipsDisagreeingDumpsOnlyOnceTheProtocolCameBack(t *testing.T) {
+	const proto = 86
+	r := Rule{Family: IPv4, Priority: 5299, Dst: pfx("192.0.2.0/24")}
+	read := func(msg []byte) []rawRule {
+		t.Helper()
+		kr, err := parseRawRule(msg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return []rawRule{kr}
+	}
 	disagree := fmt.Errorf("%w (family 2)", errDumpsDisagree)
-	if stray, err := judgeAdded([]Rule{r}, nil, disagree, proto); stray != nil || err != nil {
-		t.Fatalf("dumps that never agreed: %v, %v; want the adds to stand", stray, err)
+	judge := func(c *linuxConfigurator) error {
+		_, err := c.judgeAdded([]Rule{r}, nil, disagree)
+		return err
+	}
+
+	c := &linuxConfigurator{proto: proto}
+	if err := judge(c); !errors.Is(err, errDumpsDisagree) {
+		t.Fatalf("dumps that never agreed, the protocol never seen back: %v, want errDumpsDisagree", err)
+	}
+	// Checks that didn't see our protocol on every add don't count.
+	if _, err := c.judgeAdded([]Rule{r}, read(ruleMsg(r, 0)), nil); !errors.Is(err, errOldKernel) {
+		t.Fatalf("a rule read back without its protocol: %v", err)
+	}
+	if _, err := c.judgeAdded([]Rule{r}, read(append(ruleMsg(r, proto), rta(250, u32(1))...)), nil); !errors.Is(err, errNotReadBack) {
+		t.Fatalf("a rule read back with an unknown attribute: %v", err)
+	}
+	if err := judge(c); !errors.Is(err, errDumpsDisagree) {
+		t.Fatalf("dumps that never agreed after failed checks: %v, want errDumpsDisagree", err)
+	}
+	if _, err := c.judgeAdded([]Rule{r}, read(ruleMsg(r, proto)), nil); err != nil {
+		t.Fatalf("a rule read back as added: %v", err)
+	}
+	if err := judge(c); err != nil {
+		t.Fatalf("dumps that never agreed, the protocol seen back: %v; want the adds to stand", err)
 	}
 	failed := errors.New("a failed dump")
-	if stray, err := judgeAdded([]Rule{r}, nil, failed, proto); stray != nil || !errors.Is(err, failed) {
-		t.Fatalf("a failed dump: %v, %v", stray, err)
+	if _, err := c.judgeAdded([]Rule{r}, nil, failed); !errors.Is(err, failed) {
+		t.Fatalf("a failed dump, the protocol seen back: %v", err)
 	}
 }
 
@@ -150,9 +190,10 @@ func TestSurplusRules(t *testing.T) {
 	}
 }
 
-// Close deletes our rules from single dumps until one shows none: a
-// repeated rule is deleted twice (the second finds it gone), a skipped
-// one in the next round, and a failed dump doesn't end it.
+// Close deletes our rules from single dumps until two in a row show none:
+// a repeated rule is deleted twice (the second finds it gone), a skipped
+// one in a later round, and a failed dump doesn't end it. The last dump
+// only looks, and every error before it is kept.
 func TestRemoveOwnRules(t *testing.T) {
 	const proto = 86
 	rule := func(prio int) rawRule {
@@ -160,9 +201,11 @@ func TestRemoveOwnRules(t *testing.T) {
 	}
 	a, b := rule(5299), rule(5300)
 	failed := errors.New("a failed dump")
-	// The kernel's rules of ours; each dump is scripted, and a delete
-	// removes the rule from what is left (a second delete finds it gone).
-	run := func(dumps []func(left []rawRule) ([]rawRule, error), left []rawRule, delErr error) (n int, deleted []rawRule, err error) {
+	type dump = func(left []rawRule) ([]rawRule, error)
+	// The kernel's rules of ours; each dump is scripted (the last script
+	// repeats), and a delete removes the rule from what is left (a second
+	// delete finds it gone).
+	run := func(dumps []dump, left []rawRule, delErr error) (n int, deleted []rawRule, err error) {
 		dumpOwn := func() ([]rawRule, error) {
 			i := min(n, len(dumps)-1)
 			n++
@@ -180,6 +223,7 @@ func TestRemoveOwnRules(t *testing.T) {
 		return n, deleted, err
 	}
 	asIs := func(left []rawRule) ([]rawRule, error) { return left, nil }
+	fail := func([]rawRule) ([]rawRule, error) { return nil, failed }
 	prios := func(rules []rawRule) []int {
 		var out []int
 		for _, r := range rules {
@@ -194,23 +238,40 @@ func TestRemoveOwnRules(t *testing.T) {
 
 	// The first dump repeats a and skips b.
 	split := func([]rawRule) ([]rawRule, error) { return []rawRule{a, a}, nil }
-	n, deleted, err := run([]func([]rawRule) ([]rawRule, error){split, asIs}, []rawRule{a, b}, nil)
-	if err != nil || n != 3 || !slices.Equal(prios(deleted), []int{5299, 5299, 5300}) {
-		t.Errorf("a split dump: %v after %d dumps, deleted %v; want nil after 3, [5299 5299 5300]", err, n, prios(deleted))
+	n, deleted, err := run([]dump{split, asIs}, []rawRule{a, b}, nil)
+	if err != nil || n != 4 || !slices.Equal(prios(deleted), []int{5299, 5299, 5300}) {
+		t.Errorf("a split dump: %v after %d dumps, deleted %v; want nil after 4, [5299 5299 5300]", err, n, prios(deleted))
 	}
-	fail := func([]rawRule) ([]rawRule, error) { return nil, failed }
-	n, deleted, err = run([]func([]rawRule) ([]rawRule, error){fail, asIs}, []rawRule{a}, nil)
-	if err != nil || n != 3 || !slices.Equal(prios(deleted), []int{5299}) {
-		t.Errorf("a failed dump first: %v after %d dumps, deleted %v; want nil after 3, [5299]", err, n, prios(deleted))
+	// The first dump skips our only rule: one empty dump doesn't end it.
+	skip := func([]rawRule) ([]rawRule, error) { return nil, nil }
+	n, deleted, err = run([]dump{skip, asIs}, []rawRule{a}, nil)
+	if err != nil || n != 4 || !slices.Equal(prios(deleted), []int{5299}) {
+		t.Errorf("a dump that skips our only rule: %v after %d dumps, deleted %v; want nil after 4, [5299]", err, n, prios(deleted))
 	}
-	n, _, err = run([]func([]rawRule) ([]rawRule, error){fail}, []rawRule{a}, nil)
-	if !errors.Is(err, failed) || errors.Is(err, errRulesLeft) || n != dumpRetries {
-		t.Errorf("every dump failing: %v after %d dumps; want the dump's error after %d", err, n, dumpRetries)
+	n, deleted, err = run([]dump{fail, asIs}, []rawRule{a}, nil)
+	if err != nil || n != 4 || !slices.Equal(prios(deleted), []int{5299}) {
+		t.Errorf("a failed dump first: %v after %d dumps, deleted %v; want nil after 4, [5299]", err, n, prios(deleted))
+	}
+	n, _, err = run([]dump{fail}, []rawRule{a}, nil)
+	if !errors.Is(err, failed) || errors.Is(err, errRulesLeft) || n != removeDumps {
+		t.Errorf("every dump failing: %v after %d dumps; want the dump's error after %d", err, n, removeDumps)
+	}
+	// Failed dumps until the one before last, which shows a rule deleted
+	// then: the last dump sees none left, so nothing is reported.
+	late := slices.Repeat([]dump{fail}, removeDumps-2)
+	n, deleted, err = run(append(late, asIs), []rawRule{a}, nil)
+	if err != nil || n != removeDumps || !slices.Equal(prios(deleted), []int{5299}) {
+		t.Errorf("rules seen and deleted by the dump before last: %v after %d dumps, deleted %v; want nil after %d, [5299]", err, n, prios(deleted), removeDumps)
 	}
 	refused := errors.New("a refused delete")
-	n, _, err = run([]func([]rawRule) ([]rawRule, error){asIs}, []rawRule{a}, refused)
-	if !errors.Is(err, refused) || !errors.Is(err, errRulesLeft) || n != dumpRetries {
-		t.Errorf("a delete that keeps failing: %v after %d dumps; want it and errRulesLeft after %d", err, n, dumpRetries)
+	n, deleted, err = run([]dump{asIs}, []rawRule{a}, refused)
+	if !errors.Is(err, refused) || !errors.Is(err, errRulesLeft) || n != removeDumps || len(deleted) != removeDumps-1 {
+		t.Errorf("a delete that keeps failing: %v after %d dumps, %d deletes; want it and errRulesLeft after %d dumps, %d deletes", err, n, len(deleted), removeDumps, removeDumps-1)
+	}
+	// A delete refused, then dumps failing: both are reported.
+	n, _, err = run([]dump{asIs, fail}, []rawRule{a}, refused)
+	if !errors.Is(err, refused) || !errors.Is(err, failed) || errors.Is(err, errRulesLeft) || n != removeDumps {
+		t.Errorf("a refused delete, then failed dumps: %v after %d dumps; want both errors after %d", err, n, removeDumps)
 	}
 }
 

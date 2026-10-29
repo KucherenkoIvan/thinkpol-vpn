@@ -33,26 +33,37 @@ func (c *linuxConfigurator) own(rules []rawRule, err error) ([]rawRule, error) {
 }
 
 // removeOwnRules deletes all our rules, for Close: it takes one dump of
-// our rules (dumpOwn) and deletes each rule in it (del), until a dump
-// shows none, at most dumpRetries dumps. It needs no two dumps that
-// agree, so others' rule changes can't stop it. A rule a dump repeats
-// is deleted twice: the second delete finds it gone (ENOENT, which del
-// takes as done) or takes another rule of ours (a delete carries our
-// protocol), which goes anyway. One a dump skips shows in the next. It
-// returns the last dump's error, or its deletes' errors and
-// errRulesLeft.
+// our rules (dumpOwn) and deletes each rule in it (del), until two dumps
+// in a row show none, at most removeDumps dumps. It needs no two dumps
+// that agree, so others' rule changes can't stop it. A rule a dump
+// repeats is deleted twice: the second delete finds it gone (ENOENT,
+// which del takes as done) or takes another rule of ours (a delete
+// carries our protocol), which goes anyway. One a dump skips shows in the
+// next, hence the second empty dump. The last dump only looks: when it
+// shows rules of ours, they are reported (errRulesLeft) with every delete
+// and dump error before it; when it shows none, nothing is left and
+// earlier errors no longer matter.
 func removeOwnRules(dumpOwn func() ([]rawRule, error), del func(rawRule) error) error {
 	var errs []error
-	for range dumpRetries {
+	empty := 0
+	for i := range removeDumps {
 		rules, err := dumpOwn()
 		if err != nil {
-			errs = []error{err}
+			errs = append(errs, err)
+			empty = 0
 			continue
 		}
 		if len(rules) == 0 {
-			return nil
+			if empty++; empty == 2 || i == removeDumps-1 {
+				return nil
+			}
+			continue
 		}
-		errs = []error{fmt.Errorf("%w after %d dumps", errRulesLeft, dumpRetries)}
+		empty = 0
+		if i == removeDumps-1 {
+			errs = append(errs, fmt.Errorf("%w after %d dumps", errRulesLeft, removeDumps))
+			break
+		}
 		for _, kr := range rules {
 			if err := del(kr); err != nil {
 				errs = append(errs, err)
@@ -61,6 +72,10 @@ func removeOwnRules(dumpOwn func() ([]rawRule, error), del func(rawRule) error) 
 	}
 	return errors.Join(errs...)
 }
+
+// removeDumps bounds removeOwnRules' dumps: room for dumpRetries rounds
+// of deletes and the two empty dumps that end them.
+const removeDumps = dumpRetries + 2
 
 var errRulesLeft = errors.New("netcfg: remove rules: rules of ours still listed")
 
@@ -145,7 +160,7 @@ var errNotReadBack = errors.New("netcfg: a rule just added doesn't read back as 
 // deleted.
 func (c *linuxConfigurator) checkAddedRules(added []Rule) error {
 	have, err := dumpAllRules(c.rules)
-	stray, err := judgeAdded(added, have, err, c.proto)
+	stray, err := c.judgeAdded(added, have, err)
 	var errs []error
 	for _, kr := range stray {
 		if err := sendRule(c.rules, unix.RTM_DELRULE, 0, kr.msg); err != nil && !gone(err) {
@@ -157,27 +172,31 @@ func (c *linuxConfigurator) checkAddedRules(added []Rule) error {
 
 // judgeAdded says what the kernel made of the rules just added, from a
 // dump (have, or its error dumpErr) taken after: nil when each reads back
-// as added, with proto. On a kernel that drops rule protocols they come
-// back without it: those are returned to delete, with errOldKernel. A
-// rule held with proto that doesn't read as added is errNotReadBack.
+// as added, with our protocol, which also sets protoKept. On a kernel
+// that drops rule protocols they come back without it: those are
+// returned to delete, with errOldKernel. A rule held with our protocol
+// that doesn't read as added is errNotReadBack.
 //
 // Rules someone kept changing through the dumps (errDumpsDisagree) leave
-// the adds unjudged: nil, since the adds succeeded and failing would undo
-// a whole Apply for others' churn (and the undo's deletes of our rules
-// bring another Apply through Watch, TP-148). The next Apply that adds a
-// rule judges again. Until then, on a kernel before 4.17 the rules stay
-// without our protocol, and the next Apply, not seeing them as ours, fails
-// with ErrConflict; a rule that doesn't read back is replaced by the next
-// Apply.
-func judgeAdded(added []Rule, have []rawRule, dumpErr error, proto netlink.RouteProtocol) ([]rawRule, error) {
-	if errors.Is(dumpErr, errDumpsDisagree) {
+// the adds unjudged once protoKept is set: nil, since the adds succeeded
+// and failing would undo a whole Apply for others' churn (and the undo's
+// deletes of our rules bring another Apply through Watch, TP-148). This
+// kernel has kept our protocol, so the check could only have found a
+// rule that doesn't read back, which the next Apply replaces (as surplus,
+// then added and judged again). Until protoKept is set, the dump error
+// fails the Apply and its undo deletes the adds: on a kernel before 4.17
+// rules left unjudged would stay without our protocol, Close would not
+// see them as ours, and every later Apply would fail adding them again
+// (ErrConflict), so nothing would ever judge them.
+func (c *linuxConfigurator) judgeAdded(added []Rule, have []rawRule, dumpErr error) ([]rawRule, error) {
+	if c.protoKept && errors.Is(dumpErr, errDumpsDisagree) {
 		return nil, nil
 	}
 	if dumpErr != nil {
 		return nil, dumpErr
 	}
-	withProto := rulesWith(have, proto)
-	if stray := strayRules(added, have, withProto, proto); len(stray) > 0 {
+	withProto := rulesWith(have, c.proto)
+	if stray := strayRules(added, have, withProto, c.proto); len(stray) > 0 {
 		return stray, errOldKernel
 	}
 	for _, r := range added {
@@ -185,6 +204,7 @@ func judgeAdded(added []Rule, have []rawRule, dumpErr error, proto netlink.Route
 			return nil, fmt.Errorf("%w: %v", errNotReadBack, r)
 		}
 	}
+	c.protoKept = true
 	return nil, nil
 }
 
