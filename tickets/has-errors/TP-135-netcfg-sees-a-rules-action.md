@@ -73,6 +73,12 @@ Round 4 (2026-10-29): correctness (paranoid, fix first) and design (torvalds, me
 - [x] R4.7 (torvalds nits 1–5) `dumpAllRules`' comment ("one dump per family"); `surplusRules`' comment (the suggested text, adjusted to R4.5); `TestSurplusRules`' comment on the detached copy; doc.go:35-54 re-wrapped as one paragraph; the reason order is ignored in `dumpUntilAgreed` (keep the sort).
 - [x] R4.8 (paranoid #1 fix) doc.go says nothing about the failure mode of rule churn during dumps: one sentence.
 
+Round 5 (2026-10-29): correctness (paranoid, fix first) review.
+- [ ] R5.1 (paranoid #1) On Linux 4.11–4.16 a skipped stray check (R4.3) leaves our rules stored with protocol 0: nothing judges them again (the next add of the same rule gets EEXIST, so ErrConflict and a rollback before the check), Close doesn't see them as ours, and every later Apply fails until reboot. Allow the skip only after this configurator has seen its protocol come back once (`protoKept`, set when `judgeAdded` passes with every added rule carrying our protocol); while unset, `errDumpsDisagree` in the stray check fails the Apply as before. doc.go:55-58 and `judgeAdded`'s doc ("judges again") match; unit tests for both states.
+- [ ] R5.2 (paranoid #2, #3) No test fails if `removeOwned` returns at a rule failure again (`if err := removeOwnRules(...); err != nil { return err }` survives), and the agreeing-dumps mutant is caught by the lab only with high probability. `removeOwned` takes its rules step through a seam set in `newLinux`; a unit test makes it fail and asserts routes, addresses and links are still handled and the error returned.
+- [ ] R5.3 (paranoid #4) Close's rules loop stops at the first dump that shows none of ours, so one skipped rule at a part boundary ends it early. End only after two empty dumps in a row; fix the doc sentence ("One a dump skips shows in the next").
+- [ ] R5.4 (paranoid #5) `errRulesLeft` is reported when the last round deleted everything, and a dump error replaces earlier rounds' delete errors. Take one dump after the last round's deletes before reporting `errRulesLeft`; append dump errors. Unit tests for both.
+
 ## Log
 - 2026-10-23 created in backlog (TP-091 review round 3)
 - 2026-10-24 docs: slotted in the pre-M2 phase (wave 1, macOS)
@@ -114,3 +120,4 @@ Round 4 (2026-10-29): correctness (paranoid, fix first) and design (torvalds, me
 - 2026-10-29 the full `make lab-test` (LAB_P=4, no other lab up) on c0b1f03 failed in netcfg only: TestCloseRemovesEverythingWhileRulesChurn, "Survey while rules churn: <nil>": under the full run's load, two of Survey's dumps agreed (the churner goroutine not started yet, or held up). The test now waits until the churner has made 16 changes, and gives Survey and Apply up to 10 tries each to fail with ErrDumpsDisagree (it fails if either never does, so Close is never tested without churn). Re-run: the churn test 30 times in a row in a lab gotest, all passed; `removeOwned` back to round 3 and `removeOwnRules` fed agreeing dumps, each caught again (Close fails with errDumpsDisagree, rules of ours left, namespace differs)
 - 2026-10-29 ran: `make lint`, `make test` and the full `make lab-test` (LAB_P=1, another lab up; lab phase ok, 36 packages in the node) green on 81ac4c5. Not verified: churn from a real program (NetworkManager, wg-quick) rather than the test's goroutine; a real split rule dump; the `New` (current namespace) path in the lab; EAFNOSUPPORT from a kernel without IPv6 rules
 - 2026-10-29 in-progress → review
+- 2026-10-29 review → has-errors (round 5: R5.1–R5.4)
