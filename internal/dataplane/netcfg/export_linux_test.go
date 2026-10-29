@@ -4,6 +4,7 @@ package netcfg
 
 import (
 	"os"
+	"reflect"
 	"strconv"
 
 	"github.com/vishvananda/netlink/nl"
@@ -96,4 +97,11 @@ var ErrDumpsDisagree = errDumpsDisagree
 // its rules step fails.
 func FailCloseRuleDumps(c Configurator, err error) {
 	c.(*linuxConfigurator).closeDump = func(*nl.SocketHandle, int) ([]rawRule, error) { return nil, err }
+}
+
+// ClosesWithSingleDumps says whether c's Close takes its rule dumps with
+// dumpRulesOnce, as newLinux sets it.
+func ClosesWithSingleDumps(c Configurator) bool {
+	got := reflect.ValueOf(c.(*linuxConfigurator).closeDump).Pointer()
+	return got == reflect.ValueOf(dumpRulesOnce).Pointer()
 }

@@ -252,6 +252,12 @@ func TestRemoveOwnRules(t *testing.T) {
 	if err != nil || n != 4 || !slices.Equal(prios(deleted), []int{5299}) {
 		t.Errorf("a failed dump first: %v after %d dumps, deleted %v; want nil after 4, [5299]", err, n, prios(deleted))
 	}
+	// Two empty dumps with a failed one between are not two in a row: the
+	// next dump shows the rule both skipped.
+	n, deleted, err = run([]dump{skip, fail, skip, asIs}, []rawRule{a}, nil)
+	if err != nil || n != 6 || !slices.Equal(prios(deleted), []int{5299}) {
+		t.Errorf("empty, failed, empty: %v after %d dumps, deleted %v; want nil after 6, [5299]", err, n, prios(deleted))
+	}
 	n, _, err = run([]dump{fail}, []rawRule{a}, nil)
 	if !errors.Is(err, failed) || errors.Is(err, errRulesLeft) || n != removeDumps {
 		t.Errorf("every dump failing: %v after %d dumps; want the dump's error after %d", err, n, removeDumps)

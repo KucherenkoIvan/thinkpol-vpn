@@ -39,7 +39,9 @@ func (c *linuxConfigurator) own(rules []rawRule, err error) ([]rawRule, error) {
 // repeats is deleted twice: the second delete finds it gone (ENOENT,
 // which del takes as done) or takes another rule of ours (a delete
 // carries our protocol), which goes anyway. One a dump skips shows in the
-// next, hence the second empty dump. The last dump only looks: when it
+// next, hence the second empty dump; a failed dump between the two
+// breaks the run, since a failure says nothing of the rules and costs one
+// more dump within the same bound. The last dump only looks: when it
 // shows rules of ours, they are reported (errRulesLeft) with every delete
 // and dump error before it; when it shows none, nothing is left and
 // earlier errors no longer matter.

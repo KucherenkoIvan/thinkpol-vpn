@@ -493,6 +493,16 @@ func TestCloseRemovesEverythingWhileRulesChurn(t *testing.T) {
 	requireSame(t, "namespace after Close", before, snapshot(t, n.h))
 }
 
+// Close deletes rules from single dumps, never agreeing ones, which churn
+// can deny it. The churn test catches agreeing dumps only when its churn
+// keeps up.
+func TestCloseTakesSingleRuleDumps(t *testing.T) {
+	n := newTestNS(t)
+	if c := n.configurator(t); !netcfg.ClosesWithSingleDumps(c) {
+		t.Error("Close's rule dump is not dumpRulesOnce")
+	}
+}
+
 // Close goes on past a failing rules step: the routes, the address and
 // the interface it changed are put back, the rules (whose dumps all
 // failed) stay, and the rules step's error is returned.

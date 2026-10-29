@@ -28,6 +28,7 @@ Close removes what it can of each kind (rules, routes, addresses and links) even
 
 ## Notes
 - Source: TP-135 round-4 fixer (its Log's out-of-scope line).
+- 2026-10-29, from TP-135's round-6 correctness check: Close's rule step has the same coupling inside it. `dumpFamilies` (rawrule_linux.go) returns nothing when either family's dump fails, so an IPv6 rule dump that keeps failing stops Close deleting the IPv4 rules too. Each family's dump could fail alone, its error joined, the other family's rules still deleted.
 
 ## Log
 - 2026-10-29 created in backlog (TP-135 round-4 fixer report)

@@ -80,6 +80,11 @@ Round 5 (2026-10-29): correctness (paranoid, fix first) review.
 - [x] R5.3 (paranoid #4) Close's rules loop stops at the first dump that shows none of ours, so one skipped rule at a part boundary ends it early. End only after two empty dumps in a row; fix the doc sentence ("One a dump skips shows in the next").
 - [x] R5.4 (paranoid #5) `errRulesLeft` is reported when the last round deleted everything, and a dump error replaces earlier rounds' delete errors. Take one dump after the last round's deletes before reporting `errRulesLeft`; append dump errors. Unit tests for both.
 
+Round 6 (2026-10-29): merge; nits folded in. Correctness (paranoid) check.
+- [x] R6.1 (paranoid nit 1) doc.go and RR55 said Close stops only at two empty dumps in a row; it also stops at a single empty dump when that is the last one. Both say "or, at the last dump, one".
+- [x] R6.2 (paranoid nit 2) No test pins newLinux's `closeDump` to `dumpRulesOnce`: the mutant `closeDump: dumpRules` was caught only by the churn lab test, and only when its churn kept up. A test compares the two with reflect's Pointer.
+- [x] R6.3 (paranoid nit 3) No test pins whether a failed dump between two empty ones breaks the run (`empty = 0`). `TestRemoveOwnRules` gains empty, failed, empty; the reset stays (see the Log).
+
 ## Log
 - 2026-10-23 created in backlog (TP-091 review round 3)
 - 2026-10-24 docs: slotted in the pre-M2 phase (wave 1, macOS)
