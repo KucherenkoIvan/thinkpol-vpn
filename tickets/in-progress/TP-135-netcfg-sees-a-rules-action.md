@@ -86,3 +86,4 @@ Round 3 (2026-10-29): design (torvalds, fix first) and correctness (paranoid, me
 - 2026-10-29 ran: merged origin/rewrite (6434217); `make lint`, `make test` and the full `make lab-test` (36 packages) green on 557a17c. Not verified: a rule dump really split over several parts with a rule inserted between them (reasoned from netlink semantics, no kernel source at hand; `surplusRules` is unit-tested); the `New` (current namespace) path in the lab; EAFNOSUPPORT from a real kernel without IPv6 rules
 - 2026-10-29 in-progress → review
 - 2026-10-29 review → has-errors (round 3: R3.1–R3.6)
+- 2026-10-29 has-errors → in-progress (round 3 findings)
