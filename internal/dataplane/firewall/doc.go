@@ -170,7 +170,7 @@
 // in place: only interface-bound IPv6 is unconfined until the hook is
 // there, where waiting to connect would send everything direct.
 //
-// With the hook there, three things still let IPv6 past the anchor, and
+// With the hook there, four things still let IPv6 past the anchor, and
 // while one lasts the guard isn't enforced (`ipv6_guard_not_enforced`,
 // retried):
 //
@@ -184,14 +184,19 @@
 //     it: `pfctl -a <name> -s rules`, a wildcard's children by `pfctl -a
 //     <name> -s Anchors`, down through the anchors those call (a name
 //     relative to the anchor holding the rule, `../` a level up, or
-//     absolute after a `/`), up to 16 anchors; an anchor that doesn't exist
-//     holds nothing, and a wildcard stops at the guard's own anchor, which
-//     ends evaluation for every outgoing IPv6 packet that reaches it. An
-//     anchor it can't name (an anonymous `anchor { ... }`, which pfctl
-//     lists without a name), a listing pf refuses or the guard can't read,
-//     and more anchors than 16 leave it not enforced: what it can't read it
-//     can't clear. An anchor after the hook is never reached, and isn't
-//     read;
+//     absolute after a `/`), up to 16 pfctl runs; a wildcard stops at the
+//     guard's own anchor, which ends evaluation for every outgoing IPv6
+//     packet that reaches it. An anchor a rule names that doesn't exist
+//     holds nothing, as pf runs it; but one a listing named that reads as
+//     missing is read by another name than pf's (pfctl printing a nested
+//     name otherwise than assumed, TP-096 checks), and counts as a bypass.
+//     An anchor it can't name (an anonymous `anchor { ... }`, which pfctl
+//     is taken to list without a name: unverified, TP-096), a name with a
+//     `*` in it but a trailing `/*` wildcard (pfctl's -a would take a
+//     trailing `*` off and read another anchor), a listing pf refuses or
+//     the guard can't read, and more to read than 16 pfctl runs leave it
+//     not enforced: what it can't read it can't clear. An anchor after the
+//     hook is never reached, and isn't read;
 //   - an interface pf skips (`set skip on`) but lo0 and the utun, which
 //     the anchor passes anyway: pf evaluates no rule for its packets, and
 //     `-s rules` doesn't show it; `pfctl -s Interfaces -v` lists it as
@@ -202,8 +207,9 @@
 //   - an anchor under com.apple whose name sorts before the guard's
 //     (`pfctl -a com.apple -s Anchors`): pf keeps anchors sorted by path,
 //     so it runs first, and a quick pass in it ends evaluation there. Its
-//     existence counts, not its rules; a stock Mac is expected to have
-//     only Apple's two (TP-096 checks).
+//     existence alone is the bypass (TP-126's decision); its rules are
+//     read only so that a change to them kills states (below). A stock Mac
+//     is expected to have only Apple's two (TP-096 checks).
 //
 // These are checked last in every apply, after the load and the enable,
 // so what pf does filter stays guarded meanwhile, and in every poll. The
@@ -304,19 +310,23 @@
 // rule. Killing a tunnelled connection's state is harmless the same way:
 // the anchor passes it statelessly.
 //
-// It kills them after a load and after enabling pf (states from before),
-// and after an apply that failed (a quick pass above the hook keeps state
-// by default, and its states outlive it), with one exception: while the
+// It kills them after a load, after enabling pf (states from before), and
+// after an apply that failed (a quick pass above the hook keeps state by
+// default, and its states outlive it), with one exception: while the
 // same bypasses last, the retries don't kill again. What a bypass lets
 // through needs no state, and the anchor lets nothing outgoing make one,
-// so a kill would only take what the bypass makes anew. The bypasses are
-// checkBypass's findings, each with the rule that is it and where pf
-// holds it, not its error's words: any change kills them, taking what the
-// one gone let be made, a second quick pass above the hook and an earlier
-// anchor's rules changing under the same name included (an anchor under
-// com.apple before the guard's counts by its name, and its rules are read
-// to tell it from itself changed). A check that couldn't read pf can't
-// tell the bypasses are the same, and kills. A bypass that comes and goes
+// so a kill would only take what the bypass makes anew. "The same" is
+// what the check found and every rule it read up to the hook, each with
+// the anchor calls that led to it and whether a quick anchor holds it,
+// not its error's words: any change to them kills, taking what the one
+// gone let be made: a second quick pass above the hook, an earlier
+// anchor's rules changing under the same name, a call narrowed to an
+// interface or made quick, a block put above a pass. So does a check that
+// saw otherwise in between without killing, one that couldn't read pf
+// (it can't tell they are the same), and a main ruleset without the hook
+// (pf ran no anchor meanwhile). None found is known, not unknown: a retry
+// after a failure that let nothing past the anchor (pf's status
+// unreadable a while) doesn't kill again. A bypass that comes and goes
 // between two polls is seen by no apply, and its states live on
 // (RESIDUAL-RISKS.md RR11).
 //
@@ -365,7 +375,9 @@
 // bounded at 15 s), and whether its last apply failed, so a retry is due.
 // A main ruleset that calls anchors above the hook, or an anchor under
 // com.apple before the guard's, costs one more run per anchor read (and
-// per wildcard's listing), up to 16; a stock Mac's costs none.
+// per wildcard's listing), up to 16 more; a stock Mac's costs none. The
+// poll holds the guard's lock throughout, so at worst (22 runs, each
+// hung until its 15 s bound) an Apply waits about 5.5 minutes behind it.
 // The Enforcer then puts back what changed: `pfctl -d`, a flush, an entry
 // added, a replaced main ruleset that still has the hook are undone within
 // about 10 s, not a second as on Linux; a bypass is reported within as
@@ -400,8 +412,10 @@
 // Creations"), the exempt table, `-s info`'s Status line, and what the
 // guard's check reads (readBypass, shared with checkBypass): its verdict on
 // the main ruleset with the lines up to the hook as evidence, every name pf
-// skips, the anchors before the guard's (not what the anchors above the
-// hook hold: the main ruleset's lines name them). Then the record's
+// skips, the anchors before the guard's. Not what the anchors above the
+// hook hold (the main ruleset's lines name them): GuardCheck is the main
+// ruleset's verdict alone, and can say `hooked` while the guard reports a
+// pass in such an anchor (TP-151). Then the record's
 // reference, by its pid, with whether `-s References` lists it as taken by
 // that pid; the token stays in the record. A listing with a line it can't
 // read (no rule, counters out of place, unreadable or past uint64, a rule
@@ -432,7 +446,8 @@
 //   - Match MLD's hop limit (above).
 //   - See a `nat pass` (or `binat pass`) that matches outgoing IPv6: pf
 //     passes what it translates without the filter rules, and `-s rules`
-//     doesn't list translation rules.
+//     doesn't list translation rules (TP-152).
+//   - Show in diagnostics what the anchors above the hook hold (TP-151).
 //   - Undo what lets IPv6 past it (above): it reports it.
 //   - Confine IPv4: that is the kill switch's (TP-048).
 //   - Confine interface-bound IPv6 while the main ruleset has no hook (at
