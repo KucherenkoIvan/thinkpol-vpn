@@ -95,3 +95,4 @@ Round 2 (2026-10-29): correctness (paranoid: fix first), design (torvalds: merge
 - 2026-10-29 merged origin/rewrite (tickets only: TP-151…TP-158 filed); make lint, make test green; make lab-test (LAB_P=4) green on a3cc366: Linux only, so it runs the firewall package's Linux tests and the rest of the lab; none of this ticket's darwin code or tests run there. Not verified on a Mac: pfctl's nested and listed names, the anonymous anchor's listing, `-s Anchors` of a missing anchor (TP-096)
 - 2026-10-29 in-progress → review
 - 2026-10-29 review → has-errors (round 2: paranoid, torvalds; findings R2.1–R2.10)
+- 2026-10-29 has-errors → in-progress (round 2 fixes), owner: agent-claude-tp129
