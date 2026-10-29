@@ -16,7 +16,7 @@ branch: ""
 What RESIDUAL-RISKS.md says about a skipped interface on macOS is true. Either the guard really sees `set skip on` and reports it, or the claim is corrected and the gap is named.
 
 ## Scope
-- On the device `pfctl -s Interfaces -v` printed bare names, with no `(skip)` and no counters, even after `set skip on lo`. The guard's `skippedNames` (`internal/dataplane/firewall/pfctl_darwin.go` ~196–209) matches only `<name> (skip)`, so it may never see a skip on this macOS.
+- On the device `pfctl -s Interfaces -v` printed bare names, with no `(skip)` and no counters, even after `set skip on lo`. The guard's `SkippedNames` (`internal/dataplane/firewall/pfctl_darwin.go` ~230–248) matches only `<name> (skip)`, so it may never see a skip on this macOS.
 - Find out: TP-144's device re-run loads `set skip on lo0` too (the real interface, not only the `lo` group name) and records `pfctl -s Interfaces -v` and health.
 - If pfctl never shows a skip, read the skip set some other way (another pfctl listing, `-s info`, an ioctl through pfctl's own output; no cgo) and test it on the recorded listing.
 - Or, if there is no way to read it, correct RESIDUAL-RISKS.md RR12 and `firewall/doc.go` (~181), which claim a skipped interface is reported within about 10 s, and say the skip is unseen, as RR12 already does for a quick pass inside an earlier anchor.

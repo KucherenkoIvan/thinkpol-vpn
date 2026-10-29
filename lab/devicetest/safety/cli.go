@@ -40,8 +40,11 @@ func RootMain(ctx context.Context, args []string, in io.Reader, out, log io.Writ
 
 func rootMain(ctx context.Context, args []string, state stateConfig, in io.Reader, out, log io.Writer) int {
 	// First, for every mode: until here Go's own QUIT and TERM handlers can
-	// kill the root copy (launchScript).
+	// kill the root copy (launchScript). A gone reader is a write error,
+	// not death by SIGPIPE, so the helper and root-restore always get to
+	// remove their root copy.
 	signal.Ignore(syscall.SIGINT, syscall.SIGHUP, syscall.SIGTERM, syscall.SIGQUIT)
+	signal.Notify(make(chan os.Signal, 1), syscall.SIGPIPE)
 	if len(args) == 0 {
 		_, _ = fmt.Fprintln(log, "devicetest-root: started by devicetest, never by hand")
 		return 2
@@ -119,10 +122,9 @@ func deadmanMain(ctx context.Context, args []string, state stateConfig) error {
 
 // restoreMain restores the run pending a restore, or with -forget closes
 // it by name, and prints the result as one Response line. Like the
-// helper, it outlives a closed terminal and a gone reader (a write error,
-// not SIGPIPE), so it always gets to remove its root copy.
+// helper, it outlives a closed terminal and a gone reader (rootMain), so
+// it always gets to remove its root copy.
 func restoreMain(ctx context.Context, args []string, state stateConfig, out io.Writer) error {
-	signal.Notify(make(chan os.Signal, 1), syscall.SIGPIPE)
 	fs := flag.NewFlagSet("restore", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	rootCopy := fs.String("root-copy", "", "the launch script's directory (it adds this)")

@@ -251,7 +251,9 @@ func TestRebootIsOnlyTheRunsOwnSkipSurvivingItsUndo(t *testing.T) {
 		t.Fatal(err)
 	}
 	pf.sticky = true
-	if res := e.restore(t.Context(), "test"); res.Verdict != Reboot || len(res.Failed) != 1 {
+	if res := e.restore(t.Context(), "test"); res.Verdict != Reboot || len(res.Failed) != 1 ||
+		!strings.Contains(res.Failed[0], "after loading /etc/pf.conf twice (ok, then ok); pf skips [lo0]") ||
+		strings.Contains(res.Failed[0], "restore -forget") {
 		t.Errorf("a skip two loads don't clear: %+v", res)
 	}
 }
@@ -410,7 +412,10 @@ func TestASkipGoneButRulesDifferAfterTheLoadsIsLeft(t *testing.T) {
 	}
 	pf.reloadRules = pfMainStock + "pass in quick on en0 proto tcp to any port 22\n"
 	res := e.restore(t.Context(), "test")
-	if res.Verdict != Left || len(pf.skip) != 0 || !strings.Contains(strings.Join(res.Failed, " "), "the skip is gone, but [pf-rules] differ") {
+	failed := strings.Join(res.Failed, " ")
+	if res.Verdict != Left || len(pf.skip) != 0 ||
+		!strings.Contains(failed, "the skip is gone, but [pf-rules] differ from the baseline after loading /etc/pf.conf once (ok)") ||
+		!strings.Contains(failed, nextPfReload) {
 		t.Errorf("%+v", res)
 	}
 }
@@ -572,7 +577,10 @@ func TestTheReadAfterTheSecondLoadDecides(t *testing.T) {
 // naming the app's skips and what to do about that app, the app's rules
 // and skip kept; the same with the stock rules and the app's skip alone,
 // where only the skip differs but it isn't the run's. With the run's skip
-// still listed and nat differing too, one load, REBOOT, the nat kept.
+// still listed and nat differing too, one load, REBOOT, the nat kept, the
+// REBOOT saying what to do if the reboot doesn't clear the skip (it may
+// be the app's); and with the run's skip listed beside another app's, one
+// load, REBOOT, the app's skip kept.
 func TestTheUndoLoadsASecondTimeOnlyForTheSkipAlone(t *testing.T) {
 	pf := newFakePf()
 	e := skipRun(t, pf)
@@ -657,11 +665,44 @@ func TestTheUndoLoadsASecondTimeOnlyForTheSkipAlone(t *testing.T) {
 		return out
 	}
 	res = e.restore(t.Context(), "test")
-	if res.Verdict != Reboot || loads != 1 || !strings.Contains(strings.Join(res.Failed, " "), "[pf-nat pf-skip] differ") {
+	failed = strings.Join(res.Failed, " ")
+	if res.Verdict != Reboot || loads != 1 || !strings.Contains(failed, "[pf-nat pf-skip] differ") ||
+		!strings.Contains(failed, nextPfReload+"; if the restore after the reboot still lists this skip, another app loads it: devicetest restore -forget") {
 		t.Errorf("nat and the run's skip after one load: %d loads: %+v", loads, res)
 	}
 	if pf.nat != appNat {
 		t.Errorf("the app's nat was wiped: %q", pf.nat)
+	}
+
+	// The run's skip survives the first load, and another app's skip lands
+	// beside it, the rules and nat the stock ones (a kernel that keeps a
+	// skip through one load but not the next): only the skip differs and
+	// the run's is listed, but so is a skip that is neither the baseline's
+	// nor the run's, so no second load, REBOOT, the app's skip kept.
+	pf = newFakePf()
+	e = skipRun(t, pf)
+	pf.sticky, loads = true, 0
+	e.h.exec = func(ctx context.Context, argv []string, stdin []byte) output {
+		if strings.Join(argv[1:], " ") != "-f "+pfConfPath {
+			return pf.run(ctx, argv, stdin)
+		}
+		if loads++; loads == 2 {
+			pf.sticky = false
+		}
+		out := pf.run(ctx, argv, stdin)
+		if loads == 1 {
+			pf.mu.Lock()
+			pf.skip = append(pf.skip, "utun3")
+			pf.mu.Unlock()
+		}
+		return out
+	}
+	res = e.restore(t.Context(), "test")
+	if res.Verdict != Reboot || loads != 1 || !strings.Contains(strings.Join(res.Failed, " "), "pf skips [lo0 utun3]") {
+		t.Errorf("the run's skip and another app's after one load: %d loads: %+v", loads, res)
+	}
+	if !slices.Contains(pf.skip, "utun3") {
+		t.Errorf("the app's skip was wiped: %v", pf.skip)
 	}
 
 	// The skip alone survives the first load: the second clears it.
@@ -721,6 +762,89 @@ func TestWhatCantBeReadAfterTheUndosLoadIsNamedApart(t *testing.T) {
 		if tc.unreadable == "-s Interfaces -v" && !strings.Contains(failed, nextPfUnproven) {
 			t.Errorf("%s: no reboot advised: %s", tc.name, failed)
 		}
+	}
+}
+
+// The undo's reads of pf before any load name each surface that can't be
+// read, load nothing, and say what to do: in the run's boot a reboot
+// clears any skip of the run's; in a later boot, a reboot or -forget.
+func TestTheUndosReadsBeforeAnyLoadNameEachSurface(t *testing.T) {
+	busy := output{Code: 1, Stderr: []byte("pfctl: Device busy\n")}
+	for _, tc := range []struct{ name, unreadable, want string }{
+		{"pf's nat rules", "-s nat", "pf can't be read before any load (pf-nat: exit 1: pfctl: Device busy): nothing loaded; " + nextPfUnproven},
+		{"pf's skips", "-s Interfaces -v", "pf can't be read before any load (pf-skip: exit 1: pfctl: Device busy): nothing loaded; " + nextPfUnproven},
+	} {
+		pf := newFakePf()
+		e := skipRun(t, pf)
+		pf.calls = nil
+		e.h.exec = func(ctx context.Context, argv []string, stdin []byte) output {
+			if strings.Join(argv[1:], " ") == tc.unreadable {
+				return busy
+			}
+			return pf.run(ctx, argv, stdin)
+		}
+		res := e.restore(t.Context(), "test")
+		if res.Verdict != Left || pf.ran("-f "+pfConfPath) || !strings.Contains(strings.Join(res.Failed, " "), tc.want) {
+			t.Errorf("%s: %+v (%v)", tc.name, res, pf.calls)
+		}
+	}
+
+	pf := newFakePf()
+	h := pfHost(t, pf, "boot-b", "boot-a")
+	j, err := createJournal(h.runDir, "r", "boot-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	journalSkipLoaded(t, j, h.baseline)
+	h.exec = func(ctx context.Context, argv []string, stdin []byte) output {
+		if strings.Join(argv[1:], " ") == "-s Interfaces -v" {
+			return busy
+		}
+		return pf.run(ctx, argv, stdin)
+	}
+	res := (&engine{h: h, j: j, armed: refuseChanges}).restore(t.Context(), "test")
+	if res.Verdict != Left || pf.ran("-f "+pfConfPath) || !strings.Contains(strings.Join(res.Failed, " "),
+		"pf can't be read before any load (pf-skip: exit 1: pfctl: Device busy), in a later boot than the run's: nothing loaded; reboot, or devicetest restore -forget") {
+		t.Errorf("a later boot: %+v (%v)", res, pf.calls)
+	}
+}
+
+// Each load of pf.conf that fails says so in the undo's failure: both
+// loads failing with the run's skip still listed is a REBOOT saying they
+// failed; a load that exits non-zero having loaded a changed pf.conf is a
+// LEFT saying it failed.
+func TestTheUndoSaysWhetherEachLoadFailed(t *testing.T) {
+	busy := output{Code: 1, Stderr: []byte("pfctl: DIOCXCOMMIT: Device busy\n")}
+	pf := newFakePf()
+	e := skipRun(t, pf)
+	loads := 0
+	e.h.exec = func(ctx context.Context, argv []string, stdin []byte) output {
+		if strings.Join(argv[1:], " ") == "-f "+pfConfPath {
+			loads++
+			return busy
+		}
+		return pf.run(ctx, argv, stdin)
+	}
+	res := e.restore(t.Context(), "test")
+	if res.Verdict != Reboot || loads != 2 || !strings.Contains(strings.Join(res.Failed, " "),
+		"after loading /etc/pf.conf twice (failed: exit 1: pfctl: DIOCXCOMMIT: Device busy, then failed: exit 1: pfctl: DIOCXCOMMIT: Device busy)") {
+		t.Errorf("both loads failed: %d loads: %+v", loads, res)
+	}
+
+	pf = newFakePf()
+	e = skipRun(t, pf)
+	pf.reloadRules = pfMainStock + "pass in quick on en0 proto tcp to any port 22\n"
+	e.h.exec = func(ctx context.Context, argv []string, stdin []byte) output {
+		out := pf.run(ctx, argv, stdin)
+		if strings.Join(argv[1:], " ") == "-f "+pfConfPath {
+			return busy
+		}
+		return out
+	}
+	res = e.restore(t.Context(), "test")
+	if res.Verdict != Left || !strings.Contains(strings.Join(res.Failed, " "),
+		"[pf-rules] differ from the baseline after loading /etc/pf.conf once (failed: exit 1: pfctl: DIOCXCOMMIT: Device busy)") {
+		t.Errorf("a failed load that loaded: %+v", res)
 	}
 }
 

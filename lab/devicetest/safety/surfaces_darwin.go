@@ -17,7 +17,7 @@ const (
 		"when the baseline had it on (its notes say whether that worked); if it didn't, reboot, then run devicetest restore; " +
 		"in a later boot pf's state is that boot's, and nothing needs doing. " +
 		"A debug level another app set comes back when that app sets it again. Never enable, disable or load pf by hand"
-	nextPfOtherRuleset = "another app's ruleset is loaded now, with its own skips: stop that app, reboot, " +
+	nextPfOtherRuleset = "another app's ruleset is loaded now (perhaps with skips of its own): stop that app, reboot, " +
 		"then run devicetest restore; never load, flush or disable pf by hand"
 	nextGuard = "thinkpol's guard anchor holds rules: a reboot clears it; or start thinkpol and stop it again " +
 		"(thinkpol up -connect=false, then stop it), which removes its guard; never pfctl -X a reference that isn't thinkpol's"

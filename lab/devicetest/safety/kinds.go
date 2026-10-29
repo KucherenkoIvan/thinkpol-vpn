@@ -29,7 +29,8 @@ const (
 // change survived its undo. The one case a restore calls REBOOT: pf loads
 // its stock rules at boot, so a reboot clears it. Skips that aren't the
 // run's (another app's, loaded after the undo's load) or that can't be
-// read are LEFT.
+// read are LEFT; pf keeps no owner for a skip, so another app's on the
+// run's interface reads as the run's (doc.go).
 var errPfSurvivedReload = errors.New("pf still lists this run's skip after loading /etc/pf.conf")
 
 // Spec is a change as a plan names it and the journal keeps it.

@@ -17,7 +17,8 @@
 // reaches the core without moving the pin, and its review says so; what
 // the core's verdicts depend on in firewall's readers (which pfctl
 // answers mean a missing anchor, which lines are ALTQ chatter, a cut
-// listing) is pinned by the core's own tests too
+// listing, each for the anchors, the skips and pf's status) is pinned by
+// the core's own tests too
 // (TestTheMacSurfacesReadPfctlAndScutil), so such a change fails here.
 //
 // # What it guarantees
@@ -175,10 +176,11 @@
 // pf listed after the load and no longer lists leaves nothing to do
 // (another app's load took it: in the run's boot, no reboot came
 // between). Otherwise it loads /etc/pf.conf once, and a second time only
-// when the skip alone still differs from the baseline and is still the
-// run's, deciding on the read after the last load (REBOOT while pf lists
-// the run's skip; LEFT for skips another app loaded after the undo's
-// load, or that can't be read), but only while pf's main rules, nat rules
+// when the skip alone still differs from the baseline, is still the run's
+// and no other skip is listed beside it, deciding on the read after the
+// last load (REBOOT while pf lists the run's skip; LEFT for skips another
+// app loaded after the undo's load, or that can't be read; each saying
+// whether each load failed), but only while pf's main rules, nat rules
 // and skipped interfaces are all still what the run's load left: another
 // app's ruleset loaded since (a kill switch, with skips of its own) is
 // never wiped, and the undo fails LEFT instead. A skip pf never listed,
@@ -186,11 +188,16 @@
 // nothing), can't be shown gone: it loads /etc/pf.conf once and fails
 // LEFT, and the reboot that clears it closes the run. In a later boot it
 // loads nothing and fails unless the skipped interfaces are the
-// baseline's. What it can't tell from its own load (pf keeps no owner for
-// a ruleset): another app's that left exactly the same rules, nat and
-// skips, or one landing between the undo's check and its reload; that
-// ruleset is replaced by /etc/pf.conf's, and the comparison can say CLEAN
-// without it.
+// baseline's. A read of pf before any load that fails names each surface
+// and loads nothing. What it can't tell from its own load (pf keeps no
+// owner for a ruleset or a skip): another app's that left exactly the
+// same rules, nat and skips, or one landing between the undo's check and
+// its reload, is replaced by /etc/pf.conf's, and the comparison can say
+// CLEAN without it; another app's skip on the run's interface, with rules
+// or nat of its own, loaded after the undo's load, reads as the run's
+// skip surviving, REBOOT, and if the restore after the reboot still lists
+// it, that app loads it (the REBOOT says so): `devicetest restore
+// -forget` closes the run.
 //
 // On a Mac whose pfctl marks no skipped interface (the one in the first
 // device run), every skip check sees nothing: the precondition's

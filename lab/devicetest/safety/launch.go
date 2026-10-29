@@ -21,13 +21,14 @@ import (
 // INT ignored: Go installs its own QUIT and TERM handlers at start, so
 // from the Go runtime's start until rootMain's first line ignores them a
 // Ctrl-\ or a TERM can kill it, leaving its tpdt.* directory until the
-// next reboot: a helper killed there has no journal yet, a restore leaves
-// the run pending. It checks the temporary directory is root's and sticky (not a
-// symlink: find doesn't follow one), copies the binary into a fresh
-// directory of root's (0700) there, checks the copy's hash against the one
-// the user side computed before asking for sudo, and runs the copy: a file
-// the user can write is never executed as root, and a binary swapped
-// between the hash and the copy is refused.
+// next reboot; a helper killed there has no journal yet, and a
+// root-restore killed there leaves the pending run as it was. It checks
+// the temporary directory is root's and sticky (not a symlink: find
+// doesn't follow one), copies the binary into a fresh directory of root's
+// (0700) there, checks the copy's hash against the one the user side
+// computed before asking for sudo, and runs the copy: a file the user can
+// write is never executed as root, and a binary swapped between the hash
+// and the copy is refused.
 const launchScript = `set -eu
 trap '' HUP INT TERM QUIT
 src=$1; sum=$2; base=$3; hasher=$4; shift 4

@@ -21,8 +21,8 @@ const (
 // in firewall's own tests, so a change there that moves a verdict here
 // fails a test FROZEN covers: the missing anchor's answer counts only
 // from a pfctl that exited non-zero and in time, alone but for pfctl's
-// two exact ALTQ lines, and not cut short; an interface whose name holds
-// ALTQ is read; a cut Interfaces listing is unreadable.
+// two exact ALTQ lines, and not cut short; an interface or a status line
+// holding ALTQ is read; a cut Interfaces or info listing is unreadable.
 func TestTheMacSurfacesReadPfctlAndScutil(t *testing.T) {
 	ok := func(stdout string) output { return output{Stdout: []byte(stdout)} }
 	missing := "pfctl: DIOCGETRULES: Invalid argument\n"
@@ -36,6 +36,7 @@ func TestTheMacSurfacesReadPfctlAndScutil(t *testing.T) {
 		{"enabled, its debug level kept", pfStatus, ok(pfInfoEnabled), []string{"Status: Enabled", "Debug: Urgent"}},
 		{"disabled", pfStatus, ok(pfInfoDisabled), []string{"Status: Disabled", "Debug: Urgent"}},
 		{"no debug level printed", pfStatus, ok("Status: Enabled for 0 days 00:00:01\n"), []string{"Status: Enabled"}},
+		{"a status line naming ALTQ is read", pfStatus, ok("Status: Enabled for 0 days 00:00:01  ALTQ\n"), []string{"Status: Enabled"}},
 		{"skips, lo0 included", pfSkips, ok(pfInterfaces), []string{"lo", "lo0"}},
 		{"no skips", pfSkips, ok("en0\nutun3\n"), []string{}},
 		{"every line of the main rules, one naming ALTQ included", outputLines, ok(pfMainStock + "anchor \"ALTQ-test\" all\n"),
@@ -58,6 +59,7 @@ func TestTheMacSurfacesReadPfctlAndScutil(t *testing.T) {
 		"pfctl failed":      {Code: 1, Stderr: []byte("pfctl: Operation not permitted\n")},
 		"no status line":    {Stdout: []byte("State Table\n")},
 		"no answer in time": {Code: -1, Err: "pfctl -s info: no answer within 30s"},
+		"cut short":         {Stdout: []byte("Status: Enabled for 0 days 00:00:01\n" + cut)},
 	} {
 		if got, err := pfStatus(out); err == nil {
 			t.Errorf("%s: %q", name, got)
@@ -66,7 +68,6 @@ func TestTheMacSurfacesReadPfctlAndScutil(t *testing.T) {
 	for name, out := range map[string]output{
 		"a failed listing":                     {Code: 1, Stderr: []byte("pfctl: Operation not permitted\n")},
 		"the missing answer, but timed out":    {Code: -1, Err: "pfctl: no answer within 30s", Stderr: []byte(missing)},
-		"an anchor listing that failed else":   {Code: 1, Stderr: []byte("pfctl: Operation not permitted\n")},
 		"the missing answer beside other ALTQ": {Code: 1, Stderr: []byte(missing + "ALTQ is off\n")},
 		"the missing answer cut short":         {Code: 1, Stderr: []byte(missing + cut)},
 	} {
