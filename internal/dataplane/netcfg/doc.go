@@ -38,20 +38,20 @@
 // two in a row agree, and still decides once per distinct message, never
 // deleting one twice. Two dumps can still agree and both be wrong, given
 // changes in step with them (RR55). Rules someone keeps changing through
-// all five dumps fail Apply, before it changes anything, and Survey;
-// their caller retries (route-table enforcement every 5 s). When the
-// check of the rules an Apply just added meets such churn it is skipped
-// and the adds stand, but only once a check has seen the kernel keep the
-// owner's protocol on rules; before that the churn fails the Apply too,
-// since on a kernel that drops the protocol unjudged rules would stay,
-// no one's, until reboot. Close needs no two dumps that agree: it deletes the owner's
-// rules from single dumps until two in a row show none, and goes on with
-// routes and interfaces whatever happens to the rules. Rules are added
-// and deleted with raw RTM_NEWRULE and RTM_DELRULE messages on one socket
-// opened in the namespace at construction. An add's undo sends the same
-// message as a delete; a delete sends the dumped message back, and its
-// undo adds it again, action and all. The kernel deletes the first rule
-// in its list that matches every field a delete carries (action,
+// all five dumps fail Apply, before it changes anything, and Survey; their
+// caller retries (route-table enforcement every 5 s). When the check of
+// the rules an Apply just added meets such churn it is skipped and the
+// adds stand, but only once a check has seen the kernel keep the owner's
+// protocol on rules; before that the churn fails the Apply too, since on a
+// kernel that drops the protocol unjudged rules would stay, no one's,
+// until reboot. Close needs no two dumps that agree: it deletes the
+// owner's rules from single dumps until two in a row show none, and goes
+// on with routes and interfaces whatever happens to the rules. Rules are
+// added and deleted with raw RTM_NEWRULE and RTM_DELRULE messages on one
+// socket opened in the namespace at construction. An add's undo sends the
+// same message as a delete; a delete sends the dumped message back, and
+// its undo adds it again, action and all. The kernel deletes the first
+// rule in its list that matches every field a delete carries (action,
 // protocol, priority, table, the selectors set) but takes a selector the
 // message lacks as any value and ignores the invert flag, so an earlier
 // rule of the owner's with the same fields and more selectors can go in
@@ -59,10 +59,10 @@
 // adapter checks that the rules it added came back carrying it, and on an
 // older kernel deletes them and fails with errors.ErrUnsupported rather
 // than leave rules it can't tell from anyone else's. It also fails when
-// one it added doesn't read back as added (an attribute the kernel
-// reports that the reader doesn't know, or the rule changed or deleted
-// meanwhile), rather than replace that rule on every Apply. A kernel
-// without IPv6 policy rules has none to read. Scoped routes are refused
+// one it added doesn't read back as added (an attribute the kernel reports
+// that the reader doesn't know, or the rule changed or deleted meanwhile),
+// rather than replace that rule on every Apply. A kernel without IPv6
+// policy rules has none to read. Scoped routes are refused
 // (errors.ErrUnsupported): Linux sockets bypass the tunnel by their mark
 // instead.
 //
