@@ -105,3 +105,4 @@ Round 4 (2026-10-29): correctness (paranoid, fix first) and design (torvalds, me
 - 2026-10-29 ran: `make lint`, `make test` and the full `make lab-test` (LAB_P=1, another lab up; lab phase ok, 36 packages in the node) green on 6c6e170, the merge. An earlier full lab-test on e41af0c (before the merge) was green too. Not verified, as before: a real split rule dump with a rule inserted between parts; the `New` (current namespace) path in the lab; EAFNOSUPPORT from a kernel without IPv6 rules
 - 2026-10-29 in-progress → review
 - 2026-10-29 review → has-errors (round 4: R4.1–R4.8)
+- 2026-10-29 has-errors → in-progress (round 4 findings)
