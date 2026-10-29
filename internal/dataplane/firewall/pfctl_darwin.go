@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/lists"
@@ -128,11 +129,28 @@ func lines(b []byte) []string {
 // readLines is lines, and an error if a line was too long to read: the
 // listing is cut there.
 func readLines(b []byte) ([]string, error) {
+	return scanLines(b, true)
+}
+
+// rawLines is readLines with only each line's "\n" taken off: a name a
+// listing ends in white space (a `\r` included) keeps it.
+func rawLines(b []byte) ([]string, error) {
+	return scanLines(b, false)
+}
+
+// scanLines reads b's lines, but blank ones and ALTQ chatter, each
+// trimmed if trim.
+func scanLines(b []byte, trim bool) ([]string, error) {
 	var out []string
 	sc := bufio.NewScanner(bytes.NewReader(b))
 	sc.Buffer(nil, 1<<20)
+	sc.Split(scanLF)
 	for sc.Scan() {
-		if l := strings.TrimSpace(sc.Text()); l != "" && !altqChatter(l) {
+		l := sc.Text()
+		if t := strings.TrimSpace(l); t != "" && !altqChatter(t) {
+			if trim {
+				l = t
+			}
 			out = append(out, l)
 		}
 	}
@@ -140,6 +158,17 @@ func readLines(b []byte) ([]string, error) {
 		return out, fmt.Errorf("firewall: pfctl's listing cut at line %d: %w", len(out)+1, err)
 	}
 	return out, nil
+}
+
+// scanLF is bufio.ScanLines without its dropping a `\r` before the "\n".
+func scanLF(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	if i := bytes.IndexByte(data, '\n'); i >= 0 {
+		return i + 1, data[:i], nil
+	}
+	if atEOF && len(data) > 0 {
+		return len(data), data, nil
+	}
+	return 0, nil, nil
 }
 
 // altqChatter says l, trimmed, is one of the two lines pfctl prints when
@@ -203,15 +232,14 @@ func noTable(stderr []byte) bool {
 type hook int
 
 const (
-	hookMissing  hook = iota // no `anchor "com.apple/*"` that every outgoing packet reaches
-	hookBypassed             // a `pass ... quick` above it can end evaluation first
+	hookMissing hook = iota // no `anchor "com.apple/*"` that every outgoing packet reaches
+	// hookBypassed: a `pass ... quick` above it can end evaluation first.
+	// Only InspectIPv6Guard's GuardCheck tells it from hookOK, and says
+	// nothing of the anchors above the hook (TP-151); checkBypass judges
+	// what gets past the hook.
+	hookBypassed
 	hookOK
 )
-
-// Only InspectIPv6Guard's GuardCheck tells hookBypassed from hookOK (and
-// says nothing of the anchors above the hook, TP-151). checkHook needs
-// hookMissing alone: whether something gets past the hook is checkBypass's,
-// which reads those anchors too.
 
 // hooked reads the main ruleset's rules (`pfctl -s rules`): the anchor is
 // evaluated for every outgoing IPv6 packet if a line `anchor
@@ -247,18 +275,23 @@ func isHook(f []string) bool {
 // direction, which pfctl prints at f[at] (after the action, or after an
 // anchor's name), isn't `in`, and it isn't `inet` only. pfctl prints the
 // family before the protocol and the addresses (`proto`, `from`, `to`,
-// `all`); a word after them (an unquoted `tag inet`) is no family.
+// `all`); a word after them (an unquoted `tag inet`), or inside
+// parentheses before them (`log (all, to pflog1)`), is no family.
 func reachesIPv6Out(f []string, at int) bool {
 	if len(f) > at && f[at] == "in" {
 		return false
 	}
+	depth := 0
 	for _, w := range f {
-		switch w {
-		case "inet":
-			return false
-		case "inet6", "proto", "from", "to", "all":
-			return true
+		if depth == 0 {
+			switch w {
+			case "inet":
+				return false
+			case "inet6", "proto", "from", "to", "all":
+				return true
+			}
 		}
+		depth += strings.Count(w, "(") - strings.Count(w, ")")
 	}
 	return true
 }
@@ -274,8 +307,12 @@ func endsEvaluation(f []string, inQuick bool) bool {
 // anchorRule reads l, a rule as pfctl lists it, as an anchor rule (`anchor
 // "name" out quick all`): the name as pfctl prints it, "" for an anonymous
 // anchor (printed without one) or a name the guard can't read, and the
-// rule's fields after the name. Other kinds (`scrub-anchor`,
-// `nat-anchor`) evaluate no pass.
+// rule's fields after the name (none for a name it can't read). pfctl
+// prints a name between `"`s as it is, a `"` in it included (`anchor
+// 'a"b'` lists as `anchor "a"b" all`), and nothing quoted after it: a
+// closing `"` not followed by a space, or a `"` in a later field, is a
+// name the guard can't read (a label's, too: that fails closed). Other
+// kinds (`scrub-anchor`, `nat-anchor`) evaluate no pass.
 func anchorRule(l string) (name string, rest []string, ok bool) {
 	after, ok := strings.CutPrefix(l, "anchor")
 	if !ok || after != "" && after[0] != ' ' && after[0] != '\t' {
@@ -287,10 +324,14 @@ func anchorRule(l string) (name string, rest []string, ok bool) {
 		return "", strings.Fields(after), true
 	}
 	name, tail, closed := strings.Cut(quoted, `"`)
-	if !closed {
+	if !closed || tail != "" && tail[0] != ' ' && tail[0] != '\t' {
 		return "", nil, true
 	}
-	return name, strings.Fields(tail), true
+	rest = strings.Fields(tail)
+	if slices.ContainsFunc(rest, func(w string) bool { return strings.Contains(w, `"`) }) {
+		return "", nil, true
+	}
+	return name, rest, true
 }
 
 // anchorCall is where an anchor rule leads: the anchor at path (absolute,
@@ -338,12 +379,15 @@ func resolveAnchor(base, name string) (c anchorCall, ok bool) {
 }
 
 // nameable says `pfctl -a path` reads the anchor at path: no component is
-// empty or dotted, and none holds a `*`. pf's names may (only a trailing
-// `/*` is a wildcard), but pfctl takes a trailing `*` off -a's name and
-// reads another anchor.
+// empty or dotted, holds a `*`, or ends in white space. pf's names may
+// (only a trailing `/*` is a wildcard), but pfctl takes a trailing `*`
+// off -a's name and reads another anchor; and `-s Anchors` ends a line
+// right after the name, so white space there may be the name's or the
+// listing's, which the guard can't tell apart.
 func nameable(path string) bool {
 	for _, part := range strings.Split(path, "/") {
-		if part == "" || part == "." || part == ".." || strings.Contains(part, "*") {
+		if part == "" || part == "." || part == ".." || strings.Contains(part, "*") ||
+			strings.TrimRightFunc(part, unicode.IsSpace) != part {
 			return false
 		}
 	}
@@ -354,11 +398,13 @@ func nameable(path string) bool {
 // path, a line each ("  PATH/child"), in the order pf keeps and evaluates
 // them (sorted by path). pfctl's answer for an anchor that doesn't exist
 // (answerNoAnchors, alone, whatever the exit status) is none; any other
-// failure, a line that isn't one of path's children, or anything else on
-// stderr is an error. A child's name may hold spaces, and a `*` the walk
-// can't read (nameable): it is listed as it is, for the walk to judge.
+// failure, a line that isn't one of path's children after pfctl's
+// two-space indent, or anything else on stderr is an error. Only the
+// indent and the line's end come off: a child's name may hold spaces, end
+// in white space, or hold a `*`, which the walk can't read (nameable): it
+// is listed as it is, for the walk to judge.
 func childAnchors(path string, out pfOutput, runErr error) ([]string, error) {
-	listed, err := readLines(out.stdout)
+	listed, err := rawLines(out.stdout)
 	if err == nil && len(listed) == 0 && onlyLine(out.stderr, answerNoAnchors(path)) {
 		return nil, nil
 	}
@@ -373,11 +419,12 @@ func childAnchors(path string, out pfOutput, runErr error) ([]string, error) {
 	}
 	var children []string
 	for _, l := range listed {
-		child, ok := strings.CutPrefix(l, path+"/")
-		if !ok || child == "" || strings.Contains(child, "/") {
+		p, indented := strings.CutPrefix(l, "  ")
+		child, ok := strings.CutPrefix(p, path+"/")
+		if !indented || !ok || child == "" || strings.Contains(child, "/") {
 			return nil, fmt.Errorf("firewall: pfctl -a %s -s Anchors lists %q, not an anchor under it", path, l)
 		}
-		children = append(children, l)
+		children = append(children, p)
 	}
 	return children, nil
 }

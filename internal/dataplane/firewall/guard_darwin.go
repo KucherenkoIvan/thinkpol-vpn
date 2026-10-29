@@ -79,13 +79,14 @@ type IPv6Guard struct {
 	token    *pfToken
 	recorded bool
 	// killStates: pf's states still need checking against applied (after
-	// a load, an enable, or a failed Apply).
+	// a load, an enable, a failed Apply, or a check, an Apply's or the
+	// poll's, that saw the bypasses change).
 	killStates bool
 	// killedUnder: what checkBypass read and found when the states were
-	// last killed; valid while every Apply's check since has read and
-	// found the same (false: never killed, statesStale, or a check that
-	// saw otherwise or couldn't read pf). While valid, they aren't killed
-	// again.
+	// last killed; valid while every check since, an Apply's or the
+	// poll's, has read and found the same (false: never killed,
+	// statesStale, or a check that saw otherwise or couldn't read pf).
+	// While valid, they aren't killed again.
 	killedUnder struct {
 		seen  bypasses
 		valid bool
@@ -210,32 +211,40 @@ func (g *IPv6Guard) Apply(ctx context.Context, e routetable.Exempt) (err error) 
 		// Last, so the interfaces pf does filter are guarded while
 		// something lets IPv6 past the rest.
 		b := g.checkBypass(ctx, main, e.TUN)
-		if err = g.killIfDue(ctx, b); err == nil {
-			err = b.asError()
-		}
+		err = errors.Join(g.killIfDue(ctx, b), b.asError())
 	}
 	return errors.Join(append([]error{err}, later...)...)
 }
 
 // statesStale says pf's states need checking against the anchor, and
 // that under which bypasses they were last killed no longer holds: after
-// a load, an enable, or pf evaluating without the hook.
+// a load, an enable, pf evaluating without the hook, or a check that saw
+// the bypasses change (sawBypasses).
 func (g *IPv6Guard) statesStale() {
 	g.killStates, g.killedUnder.valid = true, false
 }
 
+// sawBypasses records what a check saw: one that couldn't read pf, or saw
+// otherwise than the states were last killed under, leaves them stale.
+// An Apply's check and the poll's both report here, so a change the poll
+// saw kills at the next Apply even if it is gone by then.
+func (g *IPv6Guard) sawBypasses(b bypasses) {
+	if b.err != nil || !b.same(g.killedUnder.seen) {
+		g.statesStale()
+	}
+}
+
 // killIfDue kills the states the anchor would refuse (kill) when they
 // need checking (killStates), unless every check since they were last
-// killed saw the same bypasses: what a bypass lets through needs no
-// state, and the anchor lets nothing else make one, so the retries while
-// it lasts don't kill again. Any change to what checkBypass read up to
-// the hook, or to what it found, kills (a bypass gone takes what it let be
-// made), even one seen by an Apply that didn't kill, and so does a check
-// that couldn't read pf: it can't tell they are the same.
+// killed saw the same bypasses (sawBypasses): what a bypass lets through
+// needs no state, and the anchor lets nothing else make one, so the
+// retries while it lasts don't kill again. Any change to the rules'
+// text checkBypass read up to the hook, or to what it found, kills (a
+// bypass gone takes what it let be made), even one seen by an Apply that
+// didn't kill or by a poll, and so does a check that couldn't read pf:
+// it can't tell they are the same.
 func (g *IPv6Guard) killIfDue(ctx context.Context, b bypasses) error {
-	if b.err != nil || !b.same(g.killedUnder.seen) {
-		g.killedUnder.valid = false
-	}
+	g.sawBypasses(b)
 	if !g.killStates || g.killedUnder.valid {
 		return nil
 	}
@@ -310,9 +319,9 @@ func (b bypasses) asError() error {
 // ruleset or in an anchor it calls there; an interface but lo0 and tun
 // skipped (`set skip on`); an anchor under com.apple that sorts before
 // the guard's. Such an anchor is a bypass by its existence (TP-126's
-// decision): its rules are read only so that a change to them kills
-// states (killIfDue). The anchors are read (anchorWalk) only when main or
-// com.apple has one before the guard's.
+// decision); its rules are walked as well, which adds what they hold to
+// the findings and to the kill's identity (killIfDue). The anchors are
+// read (anchorWalk) only when main or com.apple has one before the guard's.
 func (g *IPv6Guard) checkBypass(ctx context.Context, main []byte, tun string) bypasses {
 	w := &anchorWalk{pf: g.pf, seen: map[anchorWalkKey]bool{}}
 	if err := w.ruleset(ctx, "", "", lines(main), false); err != nil {
@@ -493,7 +502,7 @@ func (w *anchorWalk) markRead(c anchorCall, quick bool) bool {
 func (w *anchorWalk) spend() bool {
 	w.runs++
 	if w.runs == maxEarlierReads+1 {
-		w.found = append(w.found, bypass{why: fmt.Sprintf("the IPv6 guard reads at most %d pfctl listings of what pf evaluates before its anchor, and there is more: a pass there could let IPv6 past it", maxEarlierReads)})
+		w.found = append(w.found, bypass{why: fmt.Sprintf("the IPv6 guard spends at most %d pfctl runs on what pf evaluates before its anchor, and there is more: a pass there could let IPv6 past it", maxEarlierReads)})
 	}
 	return w.runs <= maxEarlierReads
 }
@@ -1006,9 +1015,12 @@ func (g *IPv6Guard) broken(ctx context.Context) bool {
 	}
 	main, err := g.checkHook(ctx)
 	if err != nil {
+		g.statesStale() // pf may run no hook meanwhile
 		return true
 	}
-	if b := g.checkBypass(ctx, main, g.applied.exempt.TUN); b.err != nil || len(b.found) > 0 || !g.intact(ctx, g.applied) {
+	b := g.checkBypass(ctx, main, g.applied.exempt.TUN)
+	g.sawBypasses(b)
+	if b.err != nil || len(b.found) > 0 || !g.intact(ctx, g.applied) {
 		return true
 	}
 	on, err := g.enabled(ctx)

@@ -826,6 +826,87 @@ func TestOnlyAFailureThatLetIPv6PastKillsAgain(t *testing.T) {
 	}
 }
 
+// What the poll sees counts as an Apply's check would: a hook missing for
+// one poll, or a bypass the poll saw, kills at the Apply its signal
+// brings, even when it is gone by then. An unchanged guard's polls don't
+// kill.
+func TestAChangeOnlyThePollSawKills(t *testing.T) {
+	ctx := context.Background()
+	r := newRig(t)
+	g := r.guard()
+	if err := g.Apply(ctx, exempt(t)); err != nil {
+		t.Fatal(err)
+	}
+	port := uint16(51000)
+	state := func() fakeState {
+		port++
+		s := fakeState{"tcp", netip.AddrPortFrom(ownV6, port), netip.MustParseAddrPort("[2001:db8:ab::7]:443"), true}
+		r.pf.set(func(f *fakePF) { f.states = append(f.states, s) })
+		return s
+	}
+	a := state()
+	if g.broken(ctx) {
+		t.Fatal("the poll broke an intact guard")
+	}
+	if err := g.Apply(ctx, exempt(t)); err != nil || !slices.Contains(r.pf.stateList(), a) {
+		t.Fatalf("after a quiet poll: %v, killed %v", err, !slices.Contains(r.pf.stateList(), a))
+	}
+	for _, c := range []struct {
+		what string
+		main []string
+	}{
+		{"a hook missing", stockMain[:1]},
+		{"a quick pass above the hook", append([]string{"pass out quick inet6 all"}, stockMain...)},
+	} {
+		s := state()
+		r.pf.set(func(f *fakePF) { f.main = c.main })
+		if !g.broken(ctx) {
+			t.Fatalf("the poll missed %s", c.what)
+		}
+		r.pf.set(func(f *fakePF) { f.main = stockMain })
+		if err := g.Apply(ctx, exempt(t)); err != nil {
+			t.Fatal(err)
+		}
+		if slices.Contains(r.pf.stateList(), s) {
+			t.Errorf("a state made while the poll saw %s survived", c.what)
+		}
+	}
+}
+
+// A kill that fails fails the Apply, and the bypass it checked is told
+// too.
+func TestAFailedKillStillTellsTheBypass(t *testing.T) {
+	r := newRig(t)
+	r.pf.main = append([]string{"pass out quick inet6 all"}, stockMain...)
+	r.pf.states = []fakeState{{"tcp", netip.AddrPortFrom(ownV6, 51000), netip.MustParseAddrPort("[2001:db8:ab::7]:443"), true}}
+	r.pf.failOn("-k", errFake)
+	err := r.guard().Apply(context.Background(), exempt(t))
+	notEnforced(t, err, "-k", "`pass ... quick` rule above")
+}
+
+// A check that couldn't read pf kills, but can't vouch for what it killed
+// under: the next one that reads pf kills again, though it finds what an
+// empty check would (a main ruleset of the hook alone, no bypass).
+func TestAStateMadeWhilePfWasUnreadableIsKilled(t *testing.T) {
+	ctx := context.Background()
+	r := newRig(t)
+	r.pf.main = stockMain[1:]
+	r.pf.failOn("Interfaces", errFake)
+	g := r.guard()
+	if err := g.Apply(ctx, exempt(t)); err == nil {
+		t.Fatal("applied with pf unreadable")
+	}
+	s := fakeState{"tcp", netip.AddrPortFrom(ownV6, 51000), netip.MustParseAddrPort("[2001:db8:ab::7]:443"), true}
+	r.pf.set(func(f *fakePF) { f.states = append(f.states, s) })
+	r.pf.failOn("Interfaces", nil)
+	if err := g.Apply(ctx, exempt(t)); err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(r.pf.stateList(), s) {
+		t.Error("a state made while pf was unreadable survived")
+	}
+}
+
 func TestCloseRemovesTheGuardAndItsReference(t *testing.T) {
 	r := newRig(t)
 	g := r.guard()

@@ -219,7 +219,13 @@ func TestAnEarlierAnchorTheGuardCantReadIsNotEnforced(t *testing.T) {
 			map[string][]string{"vpn/a": {"pass out quick all"}}, "vpn/a -s rules", "DIOCGETRULES: Invalid argument", "vpn/a, but it reads as missing"},
 		{"rules refused", []string{`anchor "vpn" all`}, map[string][]string{"vpn": {"block all"}}, "vpn -s rules", "DIOCGETRULES: Operation not permitted", "DIOCGETRULES"},
 		{"children refused", []string{`anchor "vpn/*" all`}, map[string][]string{"vpn/a": nil}, "vpn -s Anchors", "DIOCGETRULESETS: Operation not permitted", "DIOCGETRULESETS"},
-		{"too many", []string{`anchor "deep" all`}, chain, "", "", "at most 16 pfctl listings"},
+		{"a quote in a called name", []string{`anchor "vpn" all`},
+			map[string][]string{"vpn": {`anchor "a"b" all`}, `vpn/a"b`: {"pass out quick all"}}, "", "", "anchor vpn calls"},
+		{"a quote in a called name, its tail read as inbound", []string{`anchor "vpn" all`},
+			map[string][]string{"vpn": {`anchor "x" in "y" all`}, `vpn/x" in "y`: {"pass out quick all"}}, "", "", "anchor vpn calls"},
+		{"a listed name ending in a space", []string{`anchor "vpn/*" all`},
+			map[string][]string{"vpn/a": nil, "vpn/a ": {"pass out quick all"}}, "", "", `can't read, "vpn/a "`},
+		{"too many", []string{`anchor "deep" all`}, chain, "", "", "at most 16 pfctl runs"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			r := newRig(t)
@@ -352,6 +358,10 @@ func TestEndsEvaluation(t *testing.T) {
 		{`pass out quick all label "inet"`, false, true},
 		{"pass out quick inet all tag inet6", false, false},
 		{"pass out quick on en0 inet6 proto udp all", false, true},
+		// pfctl prints log options in parentheses before the family: a
+		// `to` there is no address.
+		{"pass out log (all, to pflog1) quick inet proto tcp all", false, false},
+		{"pass out log (all, to pflog1) quick inet6 proto tcp all", false, true},
 	} {
 		if got := endsEvaluation(strings.Fields(c.rule), c.inQuick); got != c.want {
 			t.Errorf("%q (in a quick anchor %v): %v", c.rule, c.inQuick, got)
@@ -372,6 +382,10 @@ func TestAnchorRule(t *testing.T) {
 		{"anchor out all", "", []string{"out", "all"}, true},
 		{"anchor", "", nil, true},
 		{`anchor "unclosed all`, "", nil, true},
+		// pfctl prints a `"` in a name as it is: the name can't be read.
+		{`anchor "a"b" all`, "", nil, true},
+		{`anchor "x" in "y" all`, "", nil, true},
+		{`anchor "x"`, "x", nil, true},
 		{`scrub-anchor "com.apple/*" all fragment reassemble`, "", nil, false},
 		{`nat-anchor "vpn" all`, "", nil, false},
 		{`anchors "vpn"`, "", nil, false},
@@ -416,6 +430,11 @@ func TestResolveAnchor(t *testing.T) {
 		{"vpn", "/fw*/x", anchorCall{}, false},
 		{"", "vpn*/*", anchorCall{}, false},
 		{"", "a b", anchorCall{"a b", false}, true},
+		// White space a listing's line ends in can't be told from the
+		// name's.
+		{"vpn", "/fw/a ", anchorCall{}, false},
+		{"", "vpn/a\t/b", anchorCall{}, false},
+		{"", "vpn/ a", anchorCall{"vpn/ a", false}, true},
 	} {
 		got, ok := resolveAnchor(c.base, c.name)
 		if got != c.want || ok != c.ok {
@@ -451,8 +470,11 @@ func TestChildAnchors(t *testing.T) {
 		{"  vpnx/a\n", "", nil, nil, false},
 		{"  vpn/\n", "", nil, nil, false},
 		{"  vpn/a" + strings.Repeat("x", 1<<20) + "\n", "", nil, nil, false},
-		// Listed as they are: the walk judges a name it can't read.
+		// Listed as they are, only pfctl's indent and the line's end off:
+		// the walk judges a name it can't read.
 		{"  vpn/a b\n  vpn/a*\n", "", nil, []string{"vpn/a b", "vpn/a*"}, true},
+		{"  vpn/a \n  vpn/b\r\n", "", nil, []string{"vpn/a ", "vpn/b\r"}, true},
+		{"vpn/a\n", "", nil, nil, false},
 	} {
 		got, err := childAnchors("vpn", pfOutput{stdout: []byte(c.stdout), stderr: []byte(c.stderr)}, c.runErr)
 		if !slices.Equal(got, c.want) || (err == nil) != c.ok {
