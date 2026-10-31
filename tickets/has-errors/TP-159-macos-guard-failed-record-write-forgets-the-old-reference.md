@@ -36,6 +36,12 @@ A record write that fails after `pfctl -E` never loses the reference the guard h
 - Read the code with `git show origin/tp-137-macos-guard-kills-states-without-a-token:internal/dataplane/firewall/guard_darwin.go` until TP-137 merges.
 - Fix chosen: the pending-release slot (`IPv6Guard.owed`). takeReference adds the old reference to it right after `-E`, before the record write; `releaseOwed` runs once the record names the new reference (in takeReference, or in enable's later record retry), and Close releases owed references after the guard's own one. One difference from the slot as scoped: an Apply's release that fails (unreadable References) is told after and dropped, as takeReference's release failure already was (doc: "left to pf"); only Close keeps retrying until it succeeds. Owed references live in memory only: a crash before the write succeeds leaves the old one to pf, as it leaves the new one unrecorded.
 
+## Review findings
+- [ ] R1.1 doc.go:383-384 and the Notes describe a crash backwards: the record write is atomic, so a failed write leaves the record naming the old reference T1, and the next start's Clear releases T1; the reference left with pf after a crash is the new, unrecorded T2. Correct both texts.
+- [ ] R1.2 guard_darwin.go:824-833: releaseOwed empties g.owed even when a release fails (unreadable References listing, pfctl timeout, cancelled ctx). Keep the entries whose release fails, so a later Apply or Close retries them, as the Scope says. Update the test at guard_darwin_test.go:~1997 and add a failed release followed by a successful retry.
+- [ ] R1.3 adoptRecord (guard_darwin.go:725-739, with :714) can adopt a reference already in g.owed, and releaseOwed then releases the guard's own token. Skip owed tokens, with a test: write fails with T1 owed; the guard's token disappears; -E fails; pf is on from elsewhere; the next Apply.
+- [ ] R1.4 Close releases its own reference before the owed ones (guard_darwin.go:1013-1023). Release the owed references first, so pf can never turn off while an owed -X is pending. Test: Close with a failing owed release keeps it, and a second Close retries it.
+
 ## Log
 - 2026-10-29 created in backlog (TP-137 round-1 review)
 - 2026-10-31 backlog → in-progress, owner: agent-tp-159
@@ -44,3 +50,4 @@ A record write that fails after `pfctl -E` never loses the reference the guard h
 - 2026-10-31 make lint, make test green on 9c9358b. No lab run: darwin-only change, the lab runs Linux. Not verified: whether XNU keeps references listed after pfctl -d (device check, out of scope)
 - 2026-10-31 out of scope: an Apply's failed release of the old reference still drops it (told, "left to pf"); doc.go now says so, but it is the same forgetting class this ticket closed for the write path; a follow-up could keep it owed until Close
 - 2026-10-31 in-progress → review
+- 2026-10-31 review → has-errors (round 1: 4 should-fix)
