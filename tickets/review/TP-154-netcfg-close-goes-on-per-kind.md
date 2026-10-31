@@ -31,8 +31,8 @@ Close removes what it can of each kind (rules, routes, addresses and links) even
 - 2026-10-29, from TP-135's round-6 correctness check: Close's rule step has the same coupling inside it. `dumpFamilies` (rawrule_linux.go) returns nothing when either family's dump fails, so an IPv6 rule dump that keeps failing stops Close deleting the IPv4 rules too. Each family's dump could fail alone, its error joined, the other family's rules still deleted.
 
 ## Review findings
-- [ ] R1.1 doc.go and netcfg_linux.go Close comments: say per kind what a failed Close leaves and who can remove it (addresses and links are not removed by the owner's next configurator)
-- [ ] R1.2 Log: the dumpFamilies follow-up is filed by the orchestrator
+- [x] R1.1 doc.go and netcfg_linux.go Close comments: say per kind what a failed Close leaves and who can remove it (addresses and links are not removed by the owner's next configurator)
+- [x] R1.2 Log: the dumpFamilies follow-up is filed by the orchestrator
 
 ## Log
 - 2026-10-29 created in backlog (TP-135 round-4 fixer report)
@@ -44,3 +44,6 @@ Close removes what it can of each kind (rules, routes, addresses and links) even
 - 2026-10-31 in-progress → review
 - 2026-10-31 review → has-errors (round 1: 1 should-fix docs, 1 follow-up)
 - 2026-10-31 has-errors → in-progress, owner: agent-tp-154-fix1
+- 2026-10-31 R1.1: doc.go, Close's comment and removeOwned's comment now say per kind what a failed Close leaves: rules and routes carry the owner's protocol and the owner's next configurator (or Clear) removes them; addresses and MTU/up changes carry nothing, the ledger goes with Close, so they stay until the interface goes. R1.2: Log line says the dumpFamilies follow-up ticket is filed by the orchestrator. Nit: Acceptance says "a lab test". go-style's seam-rename nit (closeRoutes/closeLinks) not done: outside the touched lines
+- 2026-10-31 make lint, make test pass; no lab run: comment and ticket changes only
+- 2026-10-31 in-progress → review
