@@ -7,7 +7,7 @@ repo: thinkpol-vpn
 size: S
 depends_on: [TP-137]
 refs: [RR11]
-owner: "agent-tp-159"
+owner: "agent-tp-159-fix1"
 branch: "tp-159-macos-guard-failed-record-write-forgets-the-old-reference"
 ---
 
@@ -34,7 +34,7 @@ A record write that fails after `pfctl -E` never loses the reference the guard h
 ## Notes
 - Source: TP-137 round-1 reviews and implementer, 2026-10-29.
 - Read the code with `git show origin/tp-137-macos-guard-kills-states-without-a-token:internal/dataplane/firewall/guard_darwin.go` until TP-137 merges.
-- Fix chosen: the pending-release slot (`IPv6Guard.owed`). takeReference adds the old reference to it right after `-E`, before the record write; `releaseOwed` runs once the record names the new reference (in takeReference, or in enable's later record retry), and Close releases owed references after the guard's own one. One difference from the slot as scoped: an Apply's release that fails (unreadable References) is told after and dropped, as takeReference's release failure already was (doc: "left to pf"); only Close keeps retrying until it succeeds. Owed references live in memory only: a crash before the write succeeds leaves the old one to pf, as it leaves the new one unrecorded.
+- Fix chosen: the pending-release slot (`IPv6Guard.owed`). takeReference adds the old reference to it right after `-E`, before the record write; `releaseOwed` runs once the record names the new reference (in takeReference, or in enable's later record retry), and Close releases owed references after the guard's own one. A release that fails (unreadable References, pfctl failing, ctx cancelled) is told after and keeps the reference owed, for the next Apply or Close (round 1, R1.2). Close releases owed references before its own, so pf stays on by the guard's reference while they go (R1.4). adoptRecord never takes an owed reference over as the guard's own (R1.3). Owed references live in memory only. The record is replaced atomically, so a failed write leaves it naming the old reference: after a crash the next start's routetable.Clear releases the old one through the record, and the new, unrecorded reference stays with pf (as do older owed ones after more than one failed write).
 
 ## Review findings
 - [ ] R1.1 doc.go:383-384 and the Notes describe a crash backwards: the record write is atomic, so a failed write leaves the record naming the old reference T1, and the next start's Clear releases T1; the reference left with pf after a crash is the new, unrecorded T2. Correct both texts.
@@ -52,3 +52,9 @@ A record write that fails after `pfctl -E` never loses the reference the guard h
 - 2026-10-31 in-progress → review
 - 2026-10-31 review → has-errors (round 1: 4 should-fix)
 - 2026-10-31 has-errors → in-progress, owner: agent-tp-159-fix1
+- 2026-10-31 R1.1: doc.go "enabling pf by reference" and Notes now say a failed write leaves the record naming the old reference (atomic replace), so after a crash Clear releases the old one and the new one stays with pf unrecorded. Closing that leak is not trivial (the record can't name a reference before -E returns it); not built
+- 2026-10-31 R1.2: releaseOwed keeps references whose release fails; TestAFailedReleaseOfTheOldReferenceIsTold now clears the fault, re-Applies (old released, guard whole) and Closes (gone). Mutation: g.owed = nil restored fails it
+- 2026-10-31 R1.3: adoptRecord skips a record that names an owed reference; TestAnOwedReferenceIsNotTakenOverFromTheRecord (failed write with noToken+oddReferences, the new pid-only reference removed, -E fails, another program's reference, then Apply: guard whole beside theirs, the owed one released, Close leaves theirs only). Mutation: the owed case removed fails it
+- 2026-10-31 R1.4: Close releases owed references before its own; TestCloseKeepsAnOwedReferenceItCantRelease (-X of the owed token fails: Close fails with both references listed; second Close leaves none). Mutations, each fails it: own reference released first; Close dropping the owed entry before checking the release error
+- 2026-10-31 failedRecordWrite helper shared by the new tests and TestAFailedRecordWriteKeepsTheOldReferenceOwed; it also checks the record still names the old reference after the failed write. Nits: re-wrapped the long lines at doc.go and the Close comment
+- 2026-10-31 make lint, make test green. No lab run: darwin-only change, the lab runs Linux

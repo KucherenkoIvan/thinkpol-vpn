@@ -375,17 +375,21 @@
 // lets anyone tell. If the guard finds pf off (someone ran `pfctl -d`), it
 // takes a new reference first, records it, then releases the old one if
 // pf still lists it; if that release fails, the Apply finishes enforcing
-// (the bypass check, the state kill), then says so (the record names the
-// new reference, and the old one is left to pf). If the record write
+// (the bypass check, the state kill), then says so, and the old reference
+// stays owed: the next Apply or Close retries it. If the record write
 // fails, the Apply fails and the guard keeps the old reference owed: the
 // Apply whose write succeeds releases it as above, and a Close before
-// that releases it with the new one (failing, and kept for the next
-// Close, while it can't). Only this run knows it: a crash then leaves the
-// old reference to pf, as it leaves the new one unrecorded. While pf is on, the
-// reference the guard knows is kept without reading whether pf still
-// lists it, by the apply and the poll alike: a `pfctl -d` and someone's
-// `pfctl -e` between two polls leave pf on by theirs alone, the states
-// made meanwhile unkilled (TP-161).
+// that releases it, then the new one (failing, and kept for the next
+// Close in this run, while it can't). The record is replaced whole or
+// not at all, so a failed write leaves it naming the old reference, and
+// the guard never takes it over again as its own. Only this run knows
+// the new reference: after a crash the next start's routetable.Clear
+// releases the old one through the record, and the new one stays with pf
+// unrecorded (as do older owed ones, after more than one failed write).
+// While pf is on, the reference the guard knows is kept without reading
+// whether pf still lists it, by the apply and the poll alike: a `pfctl
+// -d` and someone's `pfctl -e` between two polls leave pf on by theirs
+// alone, the states made meanwhile unkilled (TP-161).
 //
 // `pfctl -s References` is read by the columns its header names: a line's
 // first field is the pid, and the token is the field where the header's
