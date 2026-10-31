@@ -531,6 +531,73 @@ func TestCloseGoesOnWhenItsRulesFail(t *testing.T) {
 	requireSame(t, "namespace after Close, rules aside", notRules(before), notRules(snapshot(t, n.h)))
 }
 
+// Close removes each kind on its own: a failure to list the owner's
+// routes skips only the route deletes, and a failure to build its link
+// ops (the address dump) only the addresses and interfaces. The rules go
+// whatever fails, and every failure is returned.
+func TestCloseGoesOnWhenListingRoutesOrLinksFails(t *testing.T) {
+	routesFailed := errors.New("a failed route listing")
+	linksFailed := errors.New("a failed link listing")
+	for _, tc := range []struct {
+		name                  string
+		failRoutes, failLinks bool
+	}{
+		{name: "routes", failRoutes: true},
+		{name: "links", failLinks: true},
+		{name: "both", failRoutes: true, failLinks: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			n := newTestNS(t)
+			n.dummy(t, "ovl0")
+			linksOf := func(lines []string) []string {
+				return slices.DeleteFunc(lines, func(l string) bool {
+					return !strings.HasPrefix(l, "link ") && !strings.HasPrefix(l, "addr ")
+				})
+			}
+			before := linksOf(snapshot(t, n.h))
+			c := n.configuratorFor(t, netcfg.OwnerRouteTable)
+			cfg := policyConfig()
+			cfg.Interfaces = []netcfg.Interface{{Name: "ovl0", Addrs: []netip.Prefix{pfx("100.64.0.7/10")}, MTU: 1380, Up: true}}
+			if err := c.Apply(context.Background(), cfg); err != nil {
+				t.Fatal(err)
+			}
+			applied := linksOf(snapshot(t, n.h))
+			if tc.failRoutes {
+				netcfg.FailCloseRouteListing(c, routesFailed)
+			}
+			if tc.failLinks {
+				netcfg.FailCloseLinkListing(c, linksFailed)
+			}
+			err := c.Close()
+			if got, want := errors.Is(err, routesFailed), tc.failRoutes; got != want {
+				t.Errorf("Close: %v; carries the route listing's error: %v, want %v", err, got, want)
+			}
+			if got, want := errors.Is(err, linksFailed), tc.failLinks; got != want {
+				t.Errorf("Close: %v; carries the link listing's error: %v, want %v", err, got, want)
+			}
+			if got := ownRules(t, n.h, netcfg.OwnerRouteTable); len(got) != 0 {
+				t.Errorf("rules left after Close: %q", got)
+			}
+			routes := ownerRoutes(t, n.h, netcfg.OwnerRouteTable)
+			if tc.failRoutes {
+				// Routes into ovl0 may go with its address; these don't.
+				for _, r := range []string{"unreachable 4242 default metric 2048", "throw 4242 10.50.0.0/16 metric 0", "throw 4242 fd50::/48 metric 1024"} {
+					if !slices.Contains(routes, r) {
+						t.Errorf("routes after Close: %q, want %q kept for the owner's next", routes, r)
+					}
+				}
+			} else if len(routes) != 0 {
+				t.Errorf("routes left after Close: %q", routes)
+			}
+			want := before
+			if tc.failLinks {
+				want = applied
+			}
+			requireSame(t, "links and addresses after Close", want, linksOf(snapshot(t, n.h)))
+		})
+	}
+}
+
 // churnRules adds an IPv4 rule at a new priority and deletes the one
 // added eight before, without pause, until stop, which deletes what is
 // left: someone else's rules that never hold still. Each change is one
