@@ -196,9 +196,9 @@ node whose clock is off by more cannot link to its peers.
   nodes on the same map version. Compare the clocks of both ends
   (`date -u` on each, `chronyc tracking` on Linux), fix the one that is
   off, and leave the map alone; no restart is needed. A smaller error
-  shows only right after a node's agent starts: a peer whose clock runs
-  behind the node's gets no link for as long as it is behind (at most
-  five minutes; RESIDUAL-RISKS.md RR34).
+  shows only right after a node's agent starts: a peer dialing it whose
+  clock runs behind the node's gets no link for as long as it is behind
+  (at most five minutes; RESIDUAL-RISKS.md RR34).
 
 ## When something is wrong
 
