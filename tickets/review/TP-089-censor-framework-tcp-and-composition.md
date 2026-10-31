@@ -54,8 +54,8 @@ The censor framework can inspect multi-segment TCP handshakes, link reverse flow
 - [x] R1.6 IPv6 later fragment: the walk parses fragment data as headers
 - [x] R1.7 lab RST test checks the RST arrived, not that the connection was torn down
 - [x] R1.8 throttle polices one direction only; police both or document
-- [ ] R2.1 doc.go Limits and the R1.5 Log line say a new connection on a 4-tuple is judged anew; a pinned Drop/Reset outlives it
-- [ ] R2.2 a UDP restart replaces one direction; the reverse's throttle is pinned back onto it and ping-pongs
+- [x] R2.1 doc.go Limits and the R1.5 Log line say a new connection on a 4-tuple is judged anew; a pinned Drop/Reset outlives it
+- [x] R2.2 a UDP restart replaces one direction; the reverse's throttle is pinned back onto it and ping-pongs
 
 ## Log
 - 2026-10-15 created in backlog (split from TP-024 review)
@@ -92,3 +92,5 @@ The censor framework can inspect multi-segment TCP handshakes, link reverse flow
 - 2026-10-31 R2.1: doc.go Limits now say a pinned Drop or Reset outlives later connections on its tuple (the new SYN is dropped or reset, no SYN-ACK restarts the flow), deliberate, so it acts as residual censorship; other verdicts end with their connection. The R1.5 Log line above is corrected to match
 - 2026-10-31 R2.2: a UDP flow starts over only when both directions have been silent for 120 s (conntrack's timeout counts either direction), and then both at once: the reverse's summary is logged and it is removed from the table, so its next packet starts it as new and no old throttle is pinned back across. Restarting flows (UDP and TCP) also drops a flag waiting for the old flow (nit 3). Test TestEngineUDPStartsOverBothWays (throttled both ways, idle, either side speaking first; one side still talking; a pending flag). Mutations, each seen failing then restored: reverse not forgotten (both orders throttled after the idle); reverse's Last ignored (the still-talking case loses its throttle); flags kept on restart (the flag drops the new flow)
 - 2026-10-31 nits 4-6: doc.go Limits name the out-of-order tree shape deciding between differing overlapping copies, and urgent data staying in the censor's stream; verdictlog.go says a summary is also written when a flow starts over
+- 2026-10-31 make lint, make test, make lab-gotest PKG=./lab/censor/... green; full make lab-test green on c1f1d2f (LAB_P=4, no other lab running): lab/ ok, 36 packages in nodes ok; RESULTS.md unchanged
+- 2026-10-31 in-progress → review
