@@ -8,8 +8,8 @@ size: M
 depends_on: [TP-024]
 split_from: TP-024
 refs: [C4, docs/design/lab.md#censor-lab]
-owner: ""
-branch: ""
+owner: agent-tp-089
+branch: tp-089-censor-framework-tcp-and-composition
 ---
 
 ## Goal
@@ -49,3 +49,4 @@ The censor framework can inspect multi-segment TCP handshakes, link reverse flow
 - 2026-10-15 created in backlog (split from TP-024 review)
 - 2026-10-15 docs (TP-024 round 3): acceptance for payload retention, passive-plus-active modules, composition, RSTs to both ends and the upstream-tell topology; out of scope corrected to what TP-024 delivers
 - 2026-10-16 docs(board): two acceptance items from TP-024 round-3 merge check (matrix one-family leak scoring; userspace IPv6 ext-header walk)
+- 2026-10-31 backlog → in-progress, owner: agent-tp-089
