@@ -59,3 +59,4 @@ A record write that fails after `pfctl -E` never loses the reference the guard h
 - 2026-10-31 failedRecordWrite helper shared by the new tests and TestAFailedRecordWriteKeepsTheOldReferenceOwed; it also checks the record still names the old reference after the failed write. Nits: re-wrapped the long lines at doc.go and the Close comment
 - 2026-10-31 make lint, make test green. No lab run: darwin-only change, the lab runs Linux
 - 2026-10-31 in-progress → review
+- 2026-10-31 review → done, merged into rewrite (round 1: 4 should-fix fixed; final check: merge, two nits left for a follow-up: adoptRecord's owed check is exact-match, so a pid-only record of an owed reference can still be adopted; a release that keeps failing keeps the guard failing on every Apply, undocumented)

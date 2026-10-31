@@ -47,3 +47,4 @@ Close removes what it can of each kind (rules, routes, addresses and links) even
 - 2026-10-31 R1.1: doc.go, Close's comment and removeOwned's comment now say per kind what a failed Close leaves: rules and routes carry the owner's protocol and the owner's next configurator (or Clear) removes them; addresses and MTU/up changes carry nothing, the ledger goes with Close, so they stay until the interface goes. R1.2: Log line says the dumpFamilies follow-up ticket is filed by the orchestrator. Nit: Acceptance says "a lab test". go-style's seam-rename nit (closeRoutes/closeLinks) not done: outside the touched lines
 - 2026-10-31 make lint, make test pass; no lab run: comment and ticket changes only
 - 2026-10-31 in-progress → review
+- 2026-10-31 review → done, merged into rewrite (round 1: go-paranoid fix first (docs), go-style merge; R1.1 fixed, R1.2 follow-up filed by the orchestrator; comment-only delta checked by the orchestrator)

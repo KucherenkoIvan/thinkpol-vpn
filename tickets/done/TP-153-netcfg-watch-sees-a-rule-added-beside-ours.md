@@ -41,3 +41,4 @@ A rule carrying our protocol that someone else adds beside ours (e.g. a blackhol
 - 2026-10-31 not verified: the lab test drives Apply from the signal itself, not through the route-table Enforcer's debounce (routetable is off limits while TP-157 runs); an Enforcer-level check would be a line in routetable's TestEnforcesInANamespace
 - 2026-10-31 make lint, make test, make lab-gotest PKG=./internal/dataplane/netcfg/... green; full make lab-test green on 77eaa97 (36 packages)
 - 2026-10-31 in-progress → review
+- 2026-10-31 review → done, merged into rewrite (round 1: go-paranoid merge, go-style merge; left for TP-157's round or a follow-up: routetable/doc.go:220-227 and routetable.go:264-268 still say the Enforcer re-applies only when its routes or rules are removed, now also when a rule with its protocol is added)

@@ -55,3 +55,4 @@ branch: "tp-158-lab-flake-forged-icmp-errors-conntrack-flow-expires"
 - 2026-10-31 `make lab-gotest PKG=./internal/agent/supervisor/... RUN=TestForgedICMPErrorsAreRefused/bound=true COUNT=12` (LAB_P=1, another lab of 10 to 19 tplab containers up): 12/12 pass
 - 2026-10-31 make lint, make test green; full make lab-test (LAB_P=1, other labs up) green on 02cca36 (36 packages)
 - 2026-10-31 in-progress → review
+- 2026-10-31 review → done, merged into rewrite (round 1: go-paranoid merge, go-style fix first; R1.1–R1.4 fixed, R1.5 skipped; fix delta checked by the orchestrator)
