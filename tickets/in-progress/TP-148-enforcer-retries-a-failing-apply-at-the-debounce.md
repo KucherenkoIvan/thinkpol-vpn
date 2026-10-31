@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: []
 refs: []
-owner: ""
-branch: ""
+owner: "agent-tp-148"
+branch: "tp-148-enforcer-retries-a-failing-apply-at-the-debounce"
 ---
 
 ## Goal
@@ -33,3 +33,4 @@ While Apply keeps failing, the route-table Enforcer retries every `RetryAfter` (
 
 ## Log
 - 2026-10-29 created in backlog (TP-135 round-2 review, S2)
+- 2026-10-31 backlog → in-progress, owner: agent-tp-148
