@@ -123,13 +123,15 @@ func newLinux(ns netns.NsHandle, name string, current bool, owner Owner) (Config
 		return nil, fmt.Errorf("netcfg: rule socket in %s: %w", name, err)
 	}
 	return &linuxConfigurator{
-		h:         h,
-		rules:     rules,
-		ns:        netns.NsHandle(watchNS),
-		lock:      lock,
-		proto:     owner.RouteProtocol(),
-		closeDump: dumpRulesOnce,
-		links:     newLedger(),
+		h:           h,
+		rules:       rules,
+		ns:          netns.NsHandle(watchNS),
+		lock:        lock,
+		proto:       owner.RouteProtocol(),
+		closeDump:   dumpRulesOnce,
+		closeRoutes: (*linuxConfigurator).ownKernelRoutes,
+		closeLinks:  (*linuxConfigurator).newNetlinkOps,
+		links:       newLedger(),
 	}, nil
 }
 
@@ -175,6 +177,11 @@ type linuxConfigurator struct {
 	// closeDump is the rule dump Close's rules step takes, dumpRulesOnce;
 	// a field so a test can make that step fail.
 	closeDump func(*nl.SocketHandle, int) ([]rawRule, error)
+	// closeRoutes and closeLinks are Close's listings of the owner's
+	// routes (ownKernelRoutes) and of the links' addresses
+	// (newNetlinkOps); fields so a test can make either fail.
+	closeRoutes func(*linuxConfigurator) (map[routeKey]netlink.Route, error)
+	closeLinks  func(*linuxConfigurator) (*netlinkOps, error)
 
 	// Every route with proto is ours, so routes need no records.
 	links ledger
@@ -548,31 +555,33 @@ func (c *linuxConfigurator) Close() error {
 
 // removeOwned removes every rule, route and address of the owner and
 // restores every interface it changed, going on past failures to remove
-// one. Rules never hold up the rest: they go by removeOwnRules, whose
-// failure (someone's rule churn can't cause it) is returned with the
-// others'. A failure to list the routes or the links leaves everything to
-// the owner's next configurator, as after a crash.
+// one. Each kind stands alone: rules go by removeOwnRules, whose failure
+// (someone's rule churn can't cause it) skips nothing else; a failure to
+// list the routes skips only the route deletes, and one to build the link
+// ops (the address dump) only the addresses and interfaces. What a
+// failure skips stays, carrying the owner's protocol, for the owner's
+// next configurator, as after a crash. Every error is returned, joined.
 func (c *linuxConfigurator) removeOwned() error {
-	kroutes, err := c.ownKernelRoutes()
-	if err != nil {
-		return err
-	}
-	ops, err := c.newNetlinkOps()
-	if err != nil {
-		return err
-	}
 	var errs []error
 	// Rules leave before the routes they lead to.
 	dumpOwn := func() ([]rawRule, error) { return c.own(dumpFamilies(c.rules, c.closeDump)) }
 	if err := removeOwnRules(dumpOwn, func(kr rawRule) error { return c.delKernelRule(kr, nil) }); err != nil {
 		errs = append(errs, err)
 	}
-	for k, kr := range kroutes {
-		if err := c.delKernelRoute(k, kr, nil); err != nil {
-			errs = append(errs, err)
+	if kroutes, err := c.closeRoutes(c); err != nil {
+		errs = append(errs, err)
+	} else {
+		for k, kr := range kroutes {
+			if err := c.delKernelRoute(k, kr, nil); err != nil {
+				errs = append(errs, err)
+			}
 		}
 	}
-	errs = append(errs, c.links.closeAll(ops)...)
+	if ops, err := c.closeLinks(c); err != nil {
+		errs = append(errs, err)
+	} else {
+		errs = append(errs, c.links.closeAll(ops)...)
+	}
 	return errors.Join(errs...)
 }
 
