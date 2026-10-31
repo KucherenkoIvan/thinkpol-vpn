@@ -42,6 +42,12 @@ Outcome (review round 1): the scenario is already closed by the failed start's u
 - The start-up guard the first round added (`guardFor(nil, w)`: endpoints, upstreams and mark) is reverted: it bought nothing at the agent level, and each failed start retry (every 5 s) would put it in and take it out again, resetting the device's live direct IPv6 flows (Linux's tcp-reset rule; macOS's state kill after an anchor load). `apply` again skips the guard until routes went in, `guardFor` takes `held, want Want` again, and `reapplyGuard` returns while nothing went in.
 - What the branch does instead: `TestAFailedFirstEnforcesCloseRemovesACrashedRunsGuard` (routetable) and the "first enforce" case of `TestAFailedStartUndoesWhatItOpened` (agent) pin the real protection; doc.go and the Enforcer's comments say it; RR20 names the crashed run's guard; and the TP-148 leftovers (Also list) stay.
 
+## Review findings
+- [x] R1.1 RR14, doc.go, routing.md:38 and the Notes promise a start-up refusal the agent never keeps: a failed first Apply fails the start, whose Close removes the guard and routes (RR20)
+- [x] R1.2 revert the start-up guard in apply (each failed start retry resets live direct IPv6 connections); pin with a test that a failed first Enforce's Close removes the crashed run's guard
+- [x] R1.3 routetable.go comments (:272, :296, :332, :477) and doc.go:265 match the code after R1.2
+- [x] R1.4 doc.go and routetable.go: the Enforcer also re-applies when a rule with its protocol is added (TP-153)
+
 ## Log
 - 2026-10-29 created in backlog (TP-127 round-1 review)
 - 2026-10-31 backlog → in-progress, owner: agent-tp-157
