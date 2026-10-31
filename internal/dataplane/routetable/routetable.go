@@ -523,9 +523,7 @@ func (e *Enforcer) apply(ctx context.Context, w Want, again bool) error {
 	}
 	held := e.applied
 	e.mu.Unlock()
-	if held != nil {
-		e.applyGuard(ctx, guardFor(*held, w))
-	}
+	e.applyGuard(ctx, guardFor(held, w))
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.status.Enforced = err == nil
@@ -568,8 +566,20 @@ func (e *Enforcer) apply(ctx context.Context, w Want, again bool) error {
 // What held routes direct and the guard no longer exempts is refused,
 // never leaked: the device's IPv6 that goes direct by routing still
 // leaves through a physical interface, where the guard refuses it.
-func guardFor(held, want Want) Exempt {
-	g, w := GuardFor(held), GuardFor(want)
+//
+// A nil held (no Want's routes went in yet) is taken as want with
+// nothing direct: the routes in place are none of ours, or a crashed
+// run's, whose guard is still there and may exempt more than want (a
+// takeover's first Apply failing). That guard exempts want's endpoints,
+// upstreams and mark alone, so the links still connect and nothing the
+// old rules sent direct stays exempt.
+func guardFor(held *Want, want Want) Exempt {
+	h := want
+	h.Direct = nil
+	if held != nil {
+		h = *held
+	}
+	g, w := GuardFor(h), GuardFor(want)
 	g.Direct = g.Direct.Intersect(w.Direct)
 	g.Upstreams = intersectUpstreams(g.Upstreams, w.Upstreams)
 	return g
@@ -878,10 +888,10 @@ func (e *Enforcer) reapplyGuard(ctx context.Context) {
 	e.mu.Lock()
 	held, want := e.applied, e.want
 	e.mu.Unlock()
-	if held == nil || want == nil || ctx.Err() != nil {
-		return // no routes in place yet: nothing to guard
+	if want == nil || ctx.Err() != nil {
+		return // nothing given yet: nothing to guard
 	}
-	e.applyGuard(ctx, guardFor(*held, *want))
+	e.applyGuard(ctx, guardFor(held, *want))
 	e.mu.Lock()
 	e.status.Reapplies++
 	e.mu.Unlock()

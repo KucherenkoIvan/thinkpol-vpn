@@ -538,7 +538,7 @@ func TestTheGuardIsTheIntersection(t *testing.T) {
 		{"same", with("thinkpol0", []string{"2001:db8:d0::/48"}, []netip.Addr{ep7}, []netip.AddrPort{up1}), with("thinkpol0", []string{"2001:db8:d0::/48"}, []netip.Addr{ep7}, []netip.AddrPort{up1})},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			got := routetable.GuardBetween(c.held, c.want)
+			got := routetable.GuardBetween(&c.held, c.want)
 			h, w := routetable.GuardFor(c.held), routetable.GuardFor(c.want)
 			if both := h.Direct.Intersect(w.Direct); !got.Direct.Equal(both) {
 				t.Errorf("exempts %v, want what both exempt: %v", got.Direct.Prefixes(), both.Prefixes())
@@ -559,6 +559,51 @@ func TestTheGuardIsTheIntersection(t *testing.T) {
 				t.Errorf("held == want: %+v, want GuardFor(held)", got)
 			}
 		})
+	}
+}
+
+// After a crash the crashed run's routes and guard are still in place.
+// A takeover whose first Apply fails must not leave that guard: it may
+// exempt what the new rules tunnel. The guard put in instead exempts
+// nothing the new Want doesn't, nor anything it routes direct but that
+// isn't in yet, and still lets the links' endpoints and upstreams out.
+func TestAFailedFirstApplyReplacesACrashedRunsGuard(t *testing.T) {
+	ep := netip.MustParseAddr("2001:db8:7::7")
+	up1 := netip.MustParseAddrPort("[2001:db8:53::1]:53")
+	crashed := routetable.GuardFor(routetable.Want{TUN: "thinkpol0", Direct: set(t, "2001:db8:d0::/48", "2001:db8:d1::/48"), Bypass: []netip.Addr{ep}, Upstreams: []netip.AddrPort{up1}})
+	f := &fakeConfigurator{events: make(chan struct{}), survey: up(), fail: true}
+	g := newFakeGuard(f)
+	g.applied = []routetable.Exempt{crashed} // what the crashed run's guard holds
+	e := routetable.OpenWithGuard(f, g, nil)
+	defer e.Close()
+	w := routetable.Want{TUN: "thinkpol0", Direct: set(t, "2001:db8:d0::/48"), Bypass: []netip.Addr{ep}, Upstreams: []netip.AddrPort{up1}}
+	if err := e.Enforce(context.Background(), w); err == nil {
+		t.Fatal("Enforce succeeded with failing routes")
+	}
+	g.mu.Lock()
+	got := g.applied[len(g.applied)-1]
+	g.mu.Unlock()
+	if extra := got.Direct.Minus(routetable.GuardFor(w).Direct); !extra.IsEmpty() {
+		t.Errorf("the guard exempts %v, which the new Want doesn't", extra.Prefixes())
+	}
+	if want := (routetable.Exempt{TUN: "thinkpol0", Mark: routetable.Mark, Direct: set(t, "2001:db8:7::7/128"), Upstreams: []netip.AddrPort{up1}}); !got.Equal(want) {
+		t.Errorf("guard %+v, want the endpoints, upstreams and mark alone: %+v", got, want)
+	}
+	if st := e.Status(); st.Enforced || !st.GuardEnforced || st.GuardError != "" {
+		t.Errorf("status %+v, want the routes failing and the guard in place", st)
+	}
+}
+
+// With no routes of ours in yet, the guard is the Want's with nothing
+// direct: its endpoints, upstreams and mark.
+func TestTheGuardBeforeAnyRoutesWentIn(t *testing.T) {
+	ep := netip.MustParseAddr("2001:db8:7::7")
+	up1 := netip.MustParseAddrPort("[2001:db8:53::1]:53")
+	w := routetable.Want{TUN: "thinkpol0", Direct: set(t, "2001:db8:d0::/48", "198.51.100.0/24"), Bypass: []netip.Addr{ep}, Upstreams: []netip.AddrPort{up1}}
+	got := routetable.GuardBetween(nil, w)
+	want := routetable.GuardFor(routetable.Want{TUN: w.TUN, Bypass: w.Bypass, Upstreams: w.Upstreams})
+	if !got.Equal(want) {
+		t.Errorf("guard %+v, want %+v", got, want)
 	}
 }
 
