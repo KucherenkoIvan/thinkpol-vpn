@@ -281,25 +281,26 @@ func TestRemoveOwnRules(t *testing.T) {
 	}
 }
 
-// A rule deleted matters when it carried our protocol, or can't be read.
-func TestRelevantRuleDeletes(t *testing.T) {
+// A rule added or deleted matters when it carries our protocol, or can't
+// be read; another protocol's never does.
+func TestRelevantRuleEvents(t *testing.T) {
 	const proto = 86
 	c := &linuxConfigurator{proto: proto}
 	r := Rule{Family: IPv4, Priority: 5299, Dst: pfx("192.0.2.0/24")}
-	del := func(data []byte) syscall.NetlinkMessage {
-		return syscall.NetlinkMessage{Header: syscall.NlMsghdr{Type: unix.RTM_DELRULE}, Data: data}
-	}
-	for name, tc := range map[string]struct {
-		data []byte
-		want bool
-	}{
-		"ours":       {ruleMsg(r, proto), true},
-		"another's":  {ruleMsg(r, proto+1), false},
-		"unreadable": {rawRuleMsg(unix.AF_INET, 24, unix.FR_ACT_TO_TBL, rta(unix.FRA_DST, []byte{192, 0, 2})), true},
-		"too short":  {[]byte{unix.AF_INET, 0, 0, 0}, true},
-	} {
-		if got := c.relevant(del(tc.data)); got != tc.want {
-			t.Errorf("%s: relevant %v, want %v", name, got, tc.want)
+	for _, typ := range []uint16{unix.RTM_NEWRULE, unix.RTM_DELRULE} {
+		for name, tc := range map[string]struct {
+			data []byte
+			want bool
+		}{
+			"ours":       {ruleMsg(r, proto), true},
+			"another's":  {ruleMsg(r, proto+1), false},
+			"unreadable": {rawRuleMsg(unix.AF_INET, 24, unix.FR_ACT_TO_TBL, rta(unix.FRA_DST, []byte{192, 0, 2})), true},
+			"too short":  {[]byte{unix.AF_INET, 0, 0, 0}, true},
+		} {
+			m := syscall.NetlinkMessage{Header: syscall.NlMsghdr{Type: typ}, Data: tc.data}
+			if got := c.relevant(m); got != tc.want {
+				t.Errorf("type %d, %s: relevant %v, want %v", typ, name, got, tc.want)
+			}
 		}
 	}
 }

@@ -78,8 +78,12 @@ func (c *linuxConfigurator) Watch(ctx context.Context) (<-chan struct{}, error) 
 // relevant reports whether an event may call for an Apply: a link that
 // came, went or changed flags (a TUN going down takes its routes along
 // without a word for IPv4), a main-table default route of no owner or an
-// on-link route of the kernel's that changed, or our routes or rules
-// deleted.
+// on-link route of the kernel's that changed, our routes deleted, or a
+// rule with our protocol added or deleted (a twin someone added beside
+// ours, which an Apply removes). A rule event that can't be read counts;
+// another protocol's rule never does, so other software's rule churn
+// drives no Apply. Our own adds count too: a re-Apply that adds rules
+// brings one more, which finds nothing to do.
 func (c *linuxConfigurator) relevant(m syscall.NetlinkMessage) bool {
 	switch m.Header.Type {
 	case unix.RTM_DELLINK:
@@ -87,7 +91,7 @@ func (c *linuxConfigurator) relevant(m syscall.NetlinkMessage) bool {
 	case unix.RTM_NEWLINK:
 		// Wireless events and statistics come with no flag changed.
 		return len(m.Data) >= unix.SizeofIfInfomsg && nl.DeserializeIfInfomsg(m.Data).Change != 0
-	case unix.RTM_DELRULE:
+	case unix.RTM_NEWRULE, unix.RTM_DELRULE:
 		r, err := parseRawRule(m.Data)
 		return err != nil || r.protocol == c.proto // unreadable: assume it mattered
 	}

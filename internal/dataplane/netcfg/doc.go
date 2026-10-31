@@ -180,8 +180,13 @@
 // an Apply. On Linux (rtnetlink): a link that came, went or changed flags
 // (a TUN going down takes its routes along without a word for IPv4), an
 // on-link route of the kernel's in main that came or went, a main-table
-// default route of no owner that came or went, and a route or rule of
-// this owner deleted. On macOS (the routing socket): an interface or its
+// default route of no owner that came or went, a route of this owner
+// deleted, and a rule with this owner's protocol added or deleted (one
+// added beside the owner's own, which the next Apply removes); a rule
+// event that can't be read counts, another protocol's rule never does.
+// The owner's own rule adds count as well, so an Apply that adds rules
+// while a watch runs brings one more, which finds nothing to do (an
+// Apply's own deletes did so already). On macOS (the routing socket): an interface or its
 // addresses changed, an unscoped route came, went or changed (but for
 // thinkpol's own adds), and a scoped route of thinkpol's went; the
 // kernel's clones never count. A lost burst (ENOBUFS) signals too.
