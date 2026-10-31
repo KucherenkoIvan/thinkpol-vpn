@@ -7,7 +7,7 @@ repo: thinkpol-vpn
 size: S
 depends_on: []
 refs: []
-owner: "agent-tp-148"
+owner: "agent-tp-148-fix1"
 branch: "tp-148-enforcer-retries-a-failing-apply-at-the-debounce"
 ---
 
@@ -49,3 +49,4 @@ Round 1 (2026-10-31: go-paranoid, pocket-torvalds, go-style; 5 should-fix).
 - 2026-10-31 out of scope: while only the guard fails, a `gch`/`regwatch` event still restarts the `RetryAfter` backstop timer (pre-existing). While the routes fail, the deadline is now measured from the last attempt, so events no longer push it back.
 - 2026-10-31 in-progress → review
 - 2026-10-31 review → has-errors (round 1: 5 should-fix)
+- 2026-10-31 has-errors → in-progress, owner: agent-tp-148-fix1
