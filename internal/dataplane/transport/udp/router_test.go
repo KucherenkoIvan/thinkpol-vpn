@@ -310,3 +310,41 @@ func TestRouterRoutesAndRejects(t *testing.T) {
 		t.Fatalf("a replay after the secret left and came back: %v", v)
 	}
 }
+
+// A new Router, which a supervisor restart makes, refuses what its
+// predecessor routed: a tap's replay doesn't reach a worker while it could
+// still be fresh. What is sealed in the second the Router started in, or
+// later, routes as before, so the dialer carries on with the same sender
+// (TP-069).
+func TestANewRouterRefusesWhatWasSealedBeforeIt(t *testing.T) {
+	c := &clock{}
+	tr := New(Options{Now: c.now})
+	p := transporttest.SymmetricPeer()
+	table := transport.NewPeerTable(p.PeerLink)
+	sender := newSenderID(c.now())
+	datagram := func(counter uint64) []byte {
+		at := c.now()
+		return seal(nil, newAEAD(p.Credential, toListener), connIDFor(p.Credential, toListener, epochOf(at)), sender, at, counter, []byte("packet"), transport.Padding{})
+	}
+	before := tr.PacketRouter(table)
+	captured := [][]byte{datagram(0), datagram(1)}
+	for _, d := range captured {
+		if id, v := before.RouteDatagram(d); v != transport.Routed || id != p.Peer {
+			t.Fatalf("the first router: %v for %s", v, id)
+		}
+	}
+
+	c.advance(time.Second) // the restart ends in a later second than the capture
+	after := tr.PacketRouter(table).(*Router)
+	for _, d := range captured {
+		if id, v := after.RouteDatagram(d); v != transport.Stale || id != p.Peer {
+			t.Fatalf("a replay to the new router: %v for %s, want stale", v, id)
+		}
+	}
+	if got := after.Counters().StaleTimestamp; got != uint64(len(captured)) {
+		t.Errorf("counted %d stale timestamps, want %d", got, len(captured))
+	}
+	if id, v := after.RouteDatagram(datagram(2)); v != transport.Routed || id != p.Peer {
+		t.Fatalf("the dialer's next datagram: %v for %s", v, id)
+	}
+}

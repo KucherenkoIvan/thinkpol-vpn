@@ -14,6 +14,17 @@ import (
 // the packets itself.
 type admitLadder struct {
 	counters counters
+	// A table receiver refuses datagrams sealed before the Unix second it
+	// started in: its memory of senders starts empty, and those could be
+	// a passive tap's replays of what its predecessor took (the package
+	// doc, "What a receiver accepts"). The dialer's ladder has no start.
+	started    uint32
+	hasStarted bool
+}
+
+// startedAt is the ladder of a table receiver started at now.
+func startedAt(now time.Time) admitLadder {
+	return admitLadder{started: uint32(now.Unix()), hasStarted: true} // wraps in 2106, as the sealed send time does
 }
 
 // admit runs the ladder over a datagram of a table receiver (a Listener
@@ -47,7 +58,7 @@ func (a *admitLadder) admitOne(dst []byte, s *senders, recv cipher.AEAD, d []byt
 	case err != nil:
 		a.counters.unauthenticated.Add(1)
 		return opened{}, dropUnauthenticated
-	case !o.fresh(now):
+	case !o.fresh(now), a.hasStarted && later(a.started, o.sent):
 		a.counters.staleTimestamp.Add(1)
 		return opened{}, dropStaleTimestamp
 	}

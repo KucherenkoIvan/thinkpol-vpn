@@ -50,14 +50,15 @@ type flow struct {
 
 func newListener(t *Transport, pc net.PacketConn, peers transport.Peers, camouflage transport.Camouflage) *Listener {
 	l := &Listener{
-		t:       t,
-		pc:      pc,
-		peers:   peers,
-		camo:    transport.OrDrop(camouflage),
-		accept:  transport.NewInbox[*serverLink](acceptQueue),
-		table:   newSenderHistories(),
-		flows:   make(map[string]*flow),
-		scratch: make([]byte, 0, maxDatagram),
+		t:           t,
+		pc:          pc,
+		peers:       peers,
+		camo:        transport.OrDrop(camouflage),
+		accept:      transport.NewInbox[*serverLink](acceptQueue),
+		admitLadder: startedAt(t.now()),
+		table:       newSenderHistories(),
+		flows:       make(map[string]*flow),
+		scratch:     make([]byte, 0, maxDatagram),
 	}
 	links, changed := peers.Snapshot()
 	l.reindex(links)
