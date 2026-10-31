@@ -30,6 +30,8 @@ device-a, device-b ── [devices] ── router ── [servers] ── server
 
 `lab.Standard()`: networks `devices` and `servers` (dual-stack), the `router` on both with forwarding on, devices and servers routing through it, `internet` (the target for egress and "direct" traffic) on the servers side. Servers have forwarding on too (relays, exits). Everything between the two sides crosses the router: that is where packets are captured, and where the censor sits.
 
+`lab.Upstream()` adds a `camouflage` node on a network of its own, `world`, joined by the router: a server's connection to it crosses the router too, where the censor sees it (the prober's upstream tell, [lab.md](../docs/design/lab.md#censor-lab)).
+
 ## Writing a lab test
 
 Lab tests drive containers from the host, so they need Docker: put them in `lab/` behind the `lab` build tag. `make test` doesn't run them; `make lab-test` does. Every test gets its own lab, torn down when it ends, so tests can be `t.Parallel()`.

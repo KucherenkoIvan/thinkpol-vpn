@@ -24,7 +24,8 @@ import (
 // (PRD C4, success metric 1) and regenerates lab/RESULTS.md. Every cell is
 // probed in its own lab, and a transport's censored cells run in parallel:
 // a transport passes when its data crossed the censor in the lab router
-// over IPv4 and over IPv6, and fails when it crossed over neither. A cell
+// over IPv4 and over IPv6, fails when it crossed over neither, and is
+// partial when only one family crossed, which no cell expects. A cell
 // whose outcome contradicts what its censor means to produce fails the
 // test, and a cell whose censor can't be trusted (censord died, the kernel
 // dropped queued packets, the verdict log doesn't show the probe's flows)
@@ -148,16 +149,44 @@ type matrixCell struct {
 // crossed is what a probe found: whether data crossed over each family.
 type crossed struct{ v4, v6 bool }
 
+// score is a cell's result: pass when data crossed over both families,
+// fail when it crossed over neither, and partial when only one did, which
+// no censor case expects: a blocking censor that one family slips past
+// leaks, and a transport that loses a family doesn't pass.
 func score(c crossed) (result, detail string) {
 	switch {
 	case c.v4 && c.v6:
 		return "pass", ""
 	case c.v4:
-		return "fail", "only IPv4 crossed"
+		return "partial", "only IPv4 crossed"
 	case c.v6:
-		return "fail", "only IPv6 crossed"
+		return "partial", "only IPv6 crossed"
 	}
 	return "fail", "neither IPv4 nor IPv6 crossed"
+}
+
+// TestScore: a cell meant to block, where one family still crossed, is
+// not the fail it expects, and neither is a cell meant to pass.
+func TestScore(t *testing.T) {
+	for _, c := range []struct {
+		crossed crossed
+		want    string
+	}{
+		{crossed{v4: true, v6: true}, "pass"},
+		{crossed{}, "fail"},
+		{crossed{v4: true}, "partial"},
+		{crossed{v6: true}, "partial"},
+	} {
+		if got, _ := score(c.crossed); got != c.want {
+			t.Errorf("%+v scored %s, want %s", c.crossed, got, c.want)
+		}
+	}
+	blocking := censorCase{expect: map[string]string{rowPlainTCP: "fail"}}
+	for _, leak := range []crossed{{v4: true}, {v6: true}} {
+		if got, _ := score(leak); got == blocking.want(rowPlainTCP) {
+			t.Errorf("a one-family leak %+v scores %s, what a blocking cell expects", leak, got)
+		}
+	}
 }
 
 type censorCase struct {

@@ -14,8 +14,10 @@ The test suite, and the definition of "done" for a transport. Docker Compose wit
 - whitelist mode: everything whose destination address isn't listed is dropped first, then the name in the handshake is checked; UDP is dropped even to listed addresses; variants throttle the rest (to about 14 kb/s), reset it, or let it time out. A name-only check, still seen on some lines, is a separate, weaker module
 - volume-based throttling
 
+The censor sees streams, not only packets: each direction of a TCP connection is reassembled in order, linked to its reverse, and its first bytes kept for active modules to replay; a passive module can tag a flow as suspect for an active one, and one module can be both. Verdicts compose by one rule: only blocking verdicts (drop, reset, throttle) are terminal, so one module letting a flow through never stops another, or the prober, from blocking it, and a flow's verdict only gives way to a more severe one. Reset sends RSTs to both ends of the connection; throttling polices each flow to a rate and never holds packets. The camouflage site sits behind the censor on a network of its own (`lab.Upstream`), so an entry's connection to it crosses the censor as a client's does: the prober's upstream tell is visible there. The package doc of `lab/censor` has the mechanism.
+
 Besides censor modules, the lab runs two non-censor checks:
 - **Isolation:** two spaces share an entry, and every attempt to reach across fails.
 - **Seizure:** a snapshot of a node's disk and memory is searched for member IPs, names and destinations.
 
-`make lab` runs every transport against every module and regenerates a pass/fail matrix committed as `lab/RESULTS.md`. A cell passes only when data crossed over IPv4 and IPv6, and a cell whose censor can't be trusted is an error, never a pass: the matrix is honest or not written.
+`make lab` runs every transport against every module and regenerates a pass/fail matrix committed as `lab/RESULTS.md`. A cell passes only when data crossed over IPv4 and IPv6 and fails only when it crossed over neither: one family alone is partial, which no cell expects, so a censor one family slips past never scores as blocking. A cell whose censor can't be trusted is an error, never a pass: the matrix is honest or not written.

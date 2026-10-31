@@ -12,35 +12,78 @@
 // decides each packet with the modules the test picked in the JSON [Config]
 // censord starts with ([Build]: a module name nobody registered is an
 // error, since a test asking for a censor that doesn't exist must not
-// silently censor less). The engine tracks per-flow state ([Flow]: counts,
-// and a verdict pinned to the flow) and writes every decision, with its
-// module and reason, to a verdict log, one JSON [LogEntry] per line, that
-// the tests read.
+// silently censor less), and writes what it decided to a verdict log the
+// tests read (see "The verdict log").
+//
+// # Flows and streams
+//
+// A [Flow] is one direction of a connection ([FlowKey]); the engine links
+// it to the other direction once it sees a reply ([Flow.Reverse]), so a
+// module reading a server's hello finds the client's (JA3S, TP-026). A
+// TCP flow carries a [Stream]: the sender's bytes in order, reassembled
+// from segments that arrive out of order, overlap or repeat, with wrapping
+// sequence numbers. The stream keeps its first 16 KiB as a prefix (a
+// ClientHello split over two segments is one prefix once the second
+// arrives) and, for each packet, the bytes it made readable in order
+// ([Stream.Fresh]), past the prefix too, so a module can follow a whole
+// stream over time (TLS record sizes, say) while the censor keeps only the
+// prefix. Out-of-order bytes wait in at most 16 KiB; past that the stream
+// breaks and delivers no more. A UDP flow keeps its first datagram
+// instead. That retained payload ([Flow.Payload]) is what active modules
+// get to replay. Flows also carry what a flow-level classifier times:
+// when the flow started, its latest packet, its packet and byte counts.
 //
 // # Modules
 //
 // Modules register from init ([RegisterPassive], [RegisterActive]), like
-// cmd/thinkpol's commands, and are either:
+// cmd/thinkpol's commands, and are passive, active or both:
 //
-//   - [Passive]: shown every packet until one of them decides, and
-//     returning a [Decision]: accept, drop, reset or throttle. Reset is an
-//     RST the censor sends itself toward the packet's sender, with a
-//     sequence number that sender believes, and the packet is dropped; it
-//     is TCP's only, and on any other protocol the engine drops instead.
-//     Throttle today holds the packet for a while (500 ms unless the module
-//     says otherwise) and then accepts or drops it; TP-089 replaces the
-//     hold with marks or a policer. A module may pin its verdict to the
-//     flow, and later packets of the flow are decided the same way without
-//     the modules seeing them again.
-//   - [Active]: acting on their own (the prober, TP-026). They are fed each
-//     new flow the censor sees, may probe and flag flows ([FlagFunc]), and
-//     give no per-packet verdict of their own; a flagged flow's verdict is
-//     applied like a passive module's pinned one. Feeding them never makes
-//     the queue wait: a new flow an active module has no room for is
-//     counted ([Engine.Unnoticed]) and skipped.
+//   - [Passive]: shown packets in config order and returning a [Decision]:
+//     accept, drop, reset or throttle, optionally pinned to the flow, and
+//     optionally a tag that hands the flow to the active modules as
+//     suspect. Reset drops the packet and sends RSTs the censor builds
+//     itself, from raw sockets: one to the packet's sender with a sequence
+//     number it believes, and, when the packet carries an ACK (the
+//     receiver has a connection to break), one to its receiver at the
+//     dropped packet's sequence number, the one RST a receiver acts on at
+//     once. It is TCP's only; on any other protocol the engine drops
+//     instead. Throttle is a policer: a token bucket per flow at the
+//     decision's rate (about 14 kbit/s unless the module says otherwise)
+//     accepts or drops each packet with payload at once; nothing is held,
+//     and a packet without payload always passes.
+//   - [Active]: acting on their own (the prober, TP-026). They are fed a
+//     snapshot of each new flow the censor sees and of each flow a passive
+//     module tags, with its retained payload, and may probe and flag flows
+//     ([FlagFunc]); a flag is pinned from the flow's next packet on.
+//     Feeding them never makes the queue wait: a snapshot an active module
+//     has no room for is counted ([Engine.Unnoticed]) and skipped.
+//   - both: a module built by [RegisterPassive] that also implements
+//     [Active] is run as both, one value, so its passive half can tag what
+//     its active half acts on.
 //
-// New modules join by registering themselves. block-ip decides packets by
-// destination: it is what proves the framework end to end.
+// Verdicts compose by one rule: only blocking verdicts (drop, reset,
+// throttle) are terminal. The first passive module to block decides the
+// packet; pinned, its verdict decides every later packet of the flow
+// before any module looks. A pinned Accept is the module's alone: that
+// module sees the flow no more, and the modules after it, and active
+// modules' flags, may still block it. A flow's pinned verdict only ever
+// gives way to a more severe one (drop and reset over throttle), so a flag
+// never lifts a block and an Accept flag changes nothing.
+//
+// New modules join by registering themselves. Two modules prove the
+// framework, and are not censors of their own: block-ip decides packets
+// by destination (optionally only those with payload, so a handshake
+// completes first), and replay, passive and active at once, tags a TCP
+// flow to its destinations once its stream holds a whole TLS record and
+// replays the retained bytes to the flow's destination from the router.
+//
+// # The verdict log
+//
+// One JSON [LogEntry] per line, buffered and flushed every 100 ms and when
+// the censor stops, never synced: a flow's first decision, every later one
+// that changes its verdict or module, each tag and flag, and, when the
+// censor stops, one summary per flow with its packets by what the queue
+// did with them. A flow of a million packets is a handful of lines.
 //
 // # Whole datagrams
 //
@@ -49,7 +92,8 @@
 // families, before the forward hook, so a module sees a datagram the
 // sender fragmented in one piece. A fragment that still reaches the censor
 // escaped reassembly and is dropped, never passed unjudged: its later
-// fragments carry no ports. Any other packet the censor can't parse (a
+// fragments carry no ports. The censor finds an IPv6 fragment header past
+// any extension headers before it, AH included. Any other packet the censor can't parse (a
 // malformed header) is accepted: no module can judge it, and the receiver
 // discards it anyway.
 //
@@ -59,7 +103,9 @@
 // setup and regenerates lab/RESULTS.md. New transports join it by adding a
 // probe: bring the transport up between device-a and server-1 through the
 // router, and report whether data crossed over IPv4 and over IPv6. A cell
-// passes only when both did. A transport's cell without a censor runs
+// passes only when both did and fails only when neither did: one family
+// alone is partial, which no cell expects, so a blocking censor one
+// family slips past is caught. A transport's cell without a censor runs
 // first, and its censored cells are judged only once that one passed.
 // Every cell is probed, and one whose censor can't be trusted (censord
 // died, the kernel dropped queued packets ([QueueStats]), the verdict log
@@ -70,11 +116,8 @@
 //
 // # Limits
 //
-// The framework judges packets, not streams: it doesn't reassemble TCP,
-// so a module sees a handshake split across segments only in pieces; a
-// [FlowKey] is one direction, so nothing links a flow to its replies; no
-// payload is kept past the packet; a module is passive or active, never
-// both; and verdicts don't compose: the first passive module that decides
-// wins. Modules that need any of these (stream fingerprints, the prober's
-// follow-ups) wait for them (TP-089).
+// Verdicts are per direction: a pinned verdict or a flag decides the flow
+// it names, not its reverse. The flow table keeps every flow until the
+// censor stops (a lab test's few thousand at most). A module learns of a
+// flow's end only from the packets themselves (FIN, RST).
 package censor
