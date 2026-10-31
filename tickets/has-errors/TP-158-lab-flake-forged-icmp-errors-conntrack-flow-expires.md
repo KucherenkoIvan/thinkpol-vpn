@@ -31,6 +31,13 @@ branch: "tp-158-lab-flake-forged-icmp-errors-conntrack-flow-expires"
 - Source: full lab run, 2026-10-29.
 - Fix direction: keep the flow alive. The root's socket writes once a second while the two drop waits run (nothing answers the flow, so each write resets its 30 s unreplied timeout). Such a write would consume a forged error from the socket (sk_err), so a failing write fails the test as a forged error that reached the root. Raising the namespace's UDP timeout would only move the bound; shortening the waits would make them load-sensitive.
 
+## Review findings
+- [ ] R1.1 (should-fix) stop the refresh goroutine in a defer on every exit path, before root.Close
+- [ ] R1.2 (nit) fail if the gap since the previous refresh write ever exceeds ~20 s
+- [ ] R1.3 (nit) fix the comment on a failed write ("the refresh reports it", not "fails the test here")
+- [ ] R1.4 (nit) "(30 s)" → "(30 s by default)"
+- [ ] R1.5 (nit, optional) ticket Log move-line format per tickets/README.md
+
 ## Log
 - 2026-10-29 created in backlog (lab flake seen in a full run)
 - 2026-10-31 backlog → in-progress, owner: agent-tp-158
@@ -40,3 +47,4 @@ branch: "tp-158-lab-flake-forged-icmp-errors-conntrack-flow-expires"
 - 2026-10-31 `make lab-gotest PKG=./internal/agent/supervisor/... RUN=TestForgedICMPErrorsAreRefused/bound=true COUNT=20`: 20/20 pass on an idle host, and 20/20 again with 27 other tplab containers up and `go test ./...` looping on the host
 - 2026-10-31 make lint, make test green; full make lab-test (LAB_P=4, no other labs) green on 547bbb2
 - 2026-10-31 in-progress → review
+- 2026-10-31 review → has-errors (round 1: 1 should-fix, 4 nits)
