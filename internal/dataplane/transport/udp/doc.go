@@ -99,9 +99,10 @@
 // wall clock, the current time less the monotonic time since the start,
 // so a step of the wall clock after the start (an NTP sync) moves it
 // along: it neither refuses every dialer for as long as a step back nor
-// lets in what was sealed in the gap a step forward skips. (A suspended
-// node's monotonic clock stops, which only moves it later.) Five minutes
-// after the start the freshness check refuses everything the rule would.
+// lets in what was sealed in the gap a step forward skips. (Where a
+// suspended node's monotonic clock stops, that only moves it later.) Five
+// minutes after the start the freshness check refuses everything the rule
+// would.
 // The start's own second is taken: the sealed send time has a one-second
 // resolution, and refusing that second would refuse genuine traffic for up
 // to a second after every start, and every test on a real clock.
@@ -140,13 +141,12 @@
 //     its first NTP sync), until a step corrects the clock; or one sealed
 //     less far before the start than a step back after it moved the clock
 //     (an attacker who can spoof NTP to the node can make that step). It
-//     opens a link (to the replayer's
-//     address, until the real dialer's next datagram moves it back) and
-//     delivers its packets once more, to a fresh WireGuard device that
-//     answers a replayed handshake initiation (RESIDUAL-RISKS.md RR34). A
-//     listener restarted behind a Router that keeps running (a server's
-//     worker under its supervisor) loses nothing: the Router still drops
-//     the replays;
+//     opens a link (to the replayer's address, until the real dialer's
+//     next datagram moves it back) and delivers its packets once more, to
+//     a fresh WireGuard device that answers a replayed handshake
+//     initiation (RESIDUAL-RISKS.md RR34). A listener restarted behind a
+//     Router that keeps running (a server's worker under its supervisor)
+//     loses nothing: the Router still drops the replays;
 //   - an on-path attacker can hold back the newest datagram the listener
 //     never saw and show it later: ahead of the original, or, from an
 //     older sender, once the current sender has been quiet for 30 seconds

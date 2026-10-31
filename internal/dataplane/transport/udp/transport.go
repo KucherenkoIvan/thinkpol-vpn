@@ -35,9 +35,9 @@ type Options struct {
 type Transport struct {
 	control func(network, address string, c syscall.RawConn) error
 	now     func() time.Time
-	// elapsed is the time from start to now, two readings of now: by the
-	// monotonic clock when both carry its reading, as time.Now's do, so a
-	// step of the wall clock doesn't count. A test stands in for such a
+	// elapsed is the time from start to now, two readings of the clock:
+	// by its monotonic reading when both carry one, as time.Now's do, so
+	// a step of the wall clock doesn't count. A test stands in for such a
 	// step with it.
 	elapsed func(start, now time.Time) time.Duration
 }
