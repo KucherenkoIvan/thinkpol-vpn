@@ -3,6 +3,7 @@
 package censor
 
 import (
+	"errors"
 	"fmt"
 	"net/netip"
 	"syscall"
@@ -40,20 +41,26 @@ func openRaw(family, proto, hdrinclLevel, hdrincl int) (int, error) {
 	return fd, nil
 }
 
-// send sends the RST that answers p toward the packet's source (the peer
-// that sent it through the censor).
+// send sends the RSTs that answer p: one toward the packet's source (the
+// peer that sent it through the censor) and, when the receiver has a
+// connection to break, one toward its destination.
 func (s *rstSender) send(p *Packet) error {
-	if p.Dst.Is4() {
-		return sendRaw(s.v4, buildRST(p), p.Src)
-	}
-	if s.v6 < 0 {
-		fd, err := openRaw(unix.AF_INET6, unix.IPPROTO_RAW, unix.IPPROTO_IPV6, unix.IPV6_HDRINCL)
-		if err != nil {
-			return err
+	fd := s.v4
+	if !p.Dst.Is4() {
+		if s.v6 < 0 {
+			v6, err := openRaw(unix.AF_INET6, unix.IPPROTO_RAW, unix.IPPROTO_IPV6, unix.IPV6_HDRINCL)
+			if err != nil {
+				return err
+			}
+			s.v6 = v6
 		}
-		s.v6 = fd
+		fd = s.v6
 	}
-	return sendRaw(s.v6, buildRST(p), p.Src)
+	err := sendRaw(fd, rstToSender(p), p.Src)
+	if rst, ok := rstToReceiver(p); ok {
+		err = errors.Join(err, sendRaw(fd, rst, p.Dst))
+	}
+	return err
 }
 
 func sendRaw(fd int, b []byte, to netip.Addr) error {

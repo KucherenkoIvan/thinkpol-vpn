@@ -68,3 +68,46 @@ func TestDecodeIPv6LaterFragmentBehindOptions(t *testing.T) {
 		t.Errorf("decoded %+v", h)
 	}
 }
+
+// TestDecodeIPv6FragmentBehindAH walks past an AH header, whose length
+// counts 4-byte units, and a mobility header to the fragment header.
+func TestDecodeIPv6FragmentBehindAH(t *testing.T) {
+	ip := make([]byte, 40+16+8+8+3)
+	ip[0] = 0x60
+	binary.BigEndian.PutUint16(ip[4:], uint16(len(ip)-40))
+	ip[6] = 51
+	ip[40], ip[41] = 135, 2 // AH: (2+2)*4 = 16 bytes, then mobility
+	ip[56], ip[57] = 44, 0  // mobility: 8 bytes, then the fragment header
+	ip[64] = 17             // fragment, then UDP
+	binary.BigEndian.PutUint16(ip[66:], 0x0001)
+
+	h, ok := Decode(ip)
+	if !ok {
+		t.Fatal("ipv6 not decoded")
+	}
+	if !h.Fragment || h.LaterFragment || h.Proto != 17 {
+		t.Errorf("first fragment behind AH: %+v", h)
+	}
+	binary.BigEndian.PutUint16(ip[66:], 8)
+	if h, ok := Decode(ip); !ok || !h.Fragment || !h.LaterFragment {
+		t.Errorf("later fragment behind AH: ok=%v %+v", ok, h)
+	}
+}
+
+// TestDecodeIPv6LaterFragmentDataIsNotHeaders: a later fragment's data
+// is never walked as extension headers, even when the fragment header
+// names one next and the data would not parse as it.
+func TestDecodeIPv6LaterFragmentDataIsNotHeaders(t *testing.T) {
+	ip := make([]byte, 40+8+16)
+	ip[0] = 0x60
+	binary.BigEndian.PutUint16(ip[4:], uint16(len(ip)-40))
+	ip[6] = 44
+	ip[40] = 60                             // fragment, then destination options
+	binary.BigEndian.PutUint16(ip[42:], 16) // offset 2: a later fragment
+	ip[49] = 0xff                           // as options: 2048 bytes, past the packet
+
+	h, ok := Decode(ip)
+	if !ok || !h.Fragment || !h.LaterFragment || len(h.Payload) != 16 {
+		t.Errorf("later fragment naming destination options: ok=%v %+v", ok, h)
+	}
+}

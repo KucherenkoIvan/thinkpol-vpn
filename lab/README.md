@@ -28,7 +28,9 @@ make lab-perf     # performance gates, alone on the host (see "Performance gates
 device-a, device-b ── [devices] ── router ── [servers] ── server-1, server-2, internet
 ```
 
-`lab.Standard()`: networks `devices` and `servers` (dual-stack), the `router` on both with forwarding on, devices and servers routing through it, `internet` (the target for egress and "direct" traffic) on the servers side. Servers have forwarding on too (relays, exits). Everything between the two sides crosses the router: that is where packets are captured, and where the censor sits.
+`lab.Standard()`: networks `devices` and `servers` (dual-stack), the `router` on both with forwarding on, devices and servers routing through it, `internet` (the target for egress and "direct" traffic) on the servers side. Servers have forwarding on too (relays, exits). Everything between the two sides crosses the router: that is where packets are captured, and where the censor sits. The censor reads each TCP connection as a Linux receiver would (what it still reads differently, and so what evades it, is in the Limits of `lab/censor`'s package doc).
+
+`lab.Upstream()` adds a `camouflage` node on a network of its own, `world`, joined by the router: a server's connection to it crosses the router too, where the censor sees it (the prober's upstream tell, [lab.md](../docs/design/lab.md#censor-lab)).
 
 ## Writing a lab test
 

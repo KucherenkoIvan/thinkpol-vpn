@@ -5,10 +5,11 @@ import (
 	"net/netip"
 )
 
-// buildRST answers a TCP packet with the RST a censor sends to break the
-// connection: an RST in the other direction, with a sequence number the
-// peer believes for its own connection (RFC 793's reset rules).
-func buildRST(p *Packet) []byte {
+// rstToSender answers a TCP packet with the RST a censor sends its sender
+// to break the connection: an RST in the other direction, from the
+// packet's destination, with a sequence number the sender believes for its
+// own connection (RFC 793's reset rules).
+func rstToSender(p *Packet) []byte {
 	rst := make([]byte, 20)
 	binary.BigEndian.PutUint16(rst, p.DstPort)
 	binary.BigEndian.PutUint16(rst[2:], p.SrcPort)
@@ -32,6 +33,33 @@ func buildRST(p *Packet) []byte {
 		return buildTCP4(p.Dst, p.Src, rst)
 	}
 	return buildTCP6(p.Dst, p.Src, rst)
+}
+
+// rstToReceiver is the RST a censor sends the packet's receiver, from the
+// packet's source: the packet itself is dropped, so the receiver still
+// expects its sequence number, the one RST a receiver acts on at once
+// (RFC 5961). Only a packet with ACK has a receiver with a connection to
+// break: a SYN's never saw one. A SYN-ACK's receiver is in SYN-SENT, where
+// only an RST acknowledging its SYN counts (RFC 793): it gets RST|ACK with
+// the SYN-ACK's acknowledgement number.
+func rstToReceiver(p *Packet) ([]byte, bool) {
+	if p.Flags&Ack == 0 {
+		return nil, false
+	}
+	rst := make([]byte, 20)
+	binary.BigEndian.PutUint16(rst, p.SrcPort)
+	binary.BigEndian.PutUint16(rst[2:], p.DstPort)
+	binary.BigEndian.PutUint32(rst[4:], p.Seq)
+	rst[12] = 5 << 4
+	rst[13] = Rst
+	if p.Flags&Syn != 0 {
+		rst[13] |= Ack
+		binary.BigEndian.PutUint32(rst[8:], p.Ack)
+	}
+	if p.Dst.Is4() {
+		return buildTCP4(p.Src, p.Dst, rst), true
+	}
+	return buildTCP6(p.Src, p.Dst, rst), true
 }
 
 // synOrFin is 1 when the packet opens or closes the connection, since

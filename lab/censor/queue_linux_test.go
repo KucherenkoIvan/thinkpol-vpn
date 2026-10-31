@@ -111,6 +111,56 @@ table inet %s {
 		}
 	})
 
+	// A throttled flow is policed: a burst far past the rate loses most
+	// of its datagrams at once, where a hold would deliver them all late.
+	// The bucket holds two datagrams and refills one every half second,
+	// so under half get through unless sending forty takes nine seconds.
+	t.Run("polices what a module throttles", func(t *testing.T) {
+		logPath := startCensor(t, "censor-test-throttle", 203,
+			`{"destinations": ["127.0.0.2"], "verdict": "throttle", "rate": 1000, "burst": 1000}`)
+		c, err := net.DialUDP("udp", nil, udpAddr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = c.Close() }()
+		drain(udp) // the accept case may have left extra hellos
+		const sent = 40
+		datagram := make([]byte, 500)
+		for i := 0; i < sent; i++ {
+			if _, err := c.Write(datagram); err != nil {
+				t.Fatal(err)
+			}
+		}
+		got := 0
+		buf := make([]byte, 1024)
+		for {
+			_ = udp.SetReadDeadline(time.Now().Add(2 * time.Second))
+			if _, _, err := udp.ReadFromUDP(buf); err != nil {
+				break
+			}
+			got++
+		}
+		if got < 2 || got >= sent/2 {
+			t.Errorf("%d of %d datagrams crossed a 1000 B/s throttle, want the burst's 2 and few more", got, sent)
+		}
+		if entry := verdictFor(t, logPath, func(e *LogEntry) bool {
+			return e.Verdict == Throttle && e.Rate == 1000 && strings.Contains(e.Flow, "127.0.0.2")
+		}); entry == nil {
+			t.Fatal("no throttle in the verdict log")
+		}
+	})
+
+}
+
+// drain discards what waits on the socket.
+func drain(c *net.UDPConn) {
+	buf := make([]byte, 2048)
+	for {
+		_ = c.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+		if _, _, err := c.ReadFromUDP(buf); err != nil {
+			return
+		}
+	}
 }
 
 // verdictFor reads the verdict log until an entry matches, briefly.
