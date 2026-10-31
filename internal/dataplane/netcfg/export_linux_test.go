@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strconv"
 
+	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netlink/nl"
 	"golang.org/x/sys/unix"
 )
@@ -104,4 +105,16 @@ func FailCloseRuleDumps(c Configurator, err error) {
 func ClosesWithSingleDumps(c Configurator) bool {
 	got := reflect.ValueOf(c.(*linuxConfigurator).closeDump).Pointer()
 	return got == reflect.ValueOf(dumpRulesOnce).Pointer()
+}
+
+// FailCloseRouteListing makes c's Close fail to list the owner's routes
+// with err, so its routes step fails.
+func FailCloseRouteListing(c Configurator, err error) {
+	c.(*linuxConfigurator).closeRoutes = func(*linuxConfigurator) (map[routeKey]netlink.Route, error) { return nil, err }
+}
+
+// FailCloseLinkListing makes c's Close fail to build its link ops (the
+// address dump) with err, so its addresses and interfaces step fails.
+func FailCloseLinkListing(c Configurator, err error) {
+	c.(*linuxConfigurator).closeLinks = func(*linuxConfigurator) (*netlinkOps, error) { return nil, err }
 }
