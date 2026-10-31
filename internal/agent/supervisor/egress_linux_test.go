@@ -608,9 +608,37 @@ func TestForgedICMPErrorsAreRefused(t *testing.T) {
 				})
 				return
 			}
+			// Nothing answers the root's flow, so it expires
+			// nf_conntrack_udp_timeout (30 s) after its last packet, and
+			// under load the two waits below can together take longer:
+			// a write each second refreshes it. A write that fails is a
+			// socket error, which only a forged error can set, and the
+			// write consumes it, so it fails the test here.
+			stopRefresh, refreshErr := make(chan struct{}), make(chan error, 1)
+			go func() {
+				tick := time.NewTicker(time.Second)
+				defer tick.Stop()
+				for {
+					select {
+					case <-stopRefresh:
+						refreshErr <- nil
+						return
+					case <-tick.C:
+					}
+					if _, err := root.Write([]byte("root")); err != nil {
+						refreshErr <- err
+						return
+					}
+				}
+			}()
 			awaitDrops(t, "input", inputDrops, 20)
 			awaitDrops(t, "space_accept", acceptDrops, 10)
-			if !rootFlowTracked() {
+			tracked := rootFlowTracked()
+			close(stopRefresh)
+			if err := <-refreshErr; err != nil {
+				t.Fatalf("a forged ICMP error reached the root's socket: %v", err)
+			}
+			if !tracked {
 				t.Fatal("the root's conntrack flow expired before the forged errors were counted: the test proves nothing")
 			}
 			for range 5 {
