@@ -79,6 +79,11 @@ type IPv6Guard struct {
 	// pid only. recorded says the record has it as it is.
 	token    *pfToken
 	recorded bool
+	// owed are references the guard held before takeReference replaced
+	// them, still listed for all it knows: their release waits for the
+	// record to name the new one (owed past takeReference when that write
+	// failed), a failed release keeps them, and Close releases them too.
+	owed []pfToken
 	// killStates: pf's states still need checking against applied
 	// (statesStale, or a failed Apply).
 	killStates bool
@@ -695,12 +700,18 @@ func (g *IPv6Guard) enable(ctx context.Context) (after, err error) {
 	if rerr := g.resolveToken(ctx); rerr != nil {
 		if on && errors.Is(rerr, errUnreadToken) {
 			// pf is on: enforce, then tell the token.
-			return rerr, g.recordToken()
+			if err := g.recordToken(); err != nil {
+				return nil, err
+			}
+			return errors.Join(rerr, g.releaseOwed(ctx)), nil
 		}
 		return nil, rerr
 	}
 	if on && g.token != nil {
-		return nil, g.recordToken()
+		if err := g.recordToken(); err != nil {
+			return nil, err
+		}
+		return g.releaseOwed(ctx), nil
 	}
 	// pf off (marked above), or on without a reference of the guard's
 	// (someone else's, or a plain `pfctl -e`): states it holds from then
@@ -710,7 +721,8 @@ func (g *IPv6Guard) enable(ctx context.Context) (after, err error) {
 }
 
 // adoptRecord takes over the reference the record names (a crashed
-// run's, this boot) when the guard holds none, and removes a stale record.
+// run's, this boot) when the guard holds none and doesn't owe it, and
+// removes a stale record.
 func (g *IPv6Guard) adoptRecord() error {
 	if g.token != nil {
 		return nil
@@ -719,6 +731,10 @@ func (g *IPv6Guard) adoptRecord() error {
 	switch {
 	case err != nil:
 		return err
+	case state == recordHeld && slices.Contains(g.owed, t):
+		// A failed write left the record naming a reference this guard
+		// replaced: owed, not held. The next write replaces the record.
+		return nil
 	case state == recordHeld:
 		g.token, g.recorded = &t, true
 	case state == recordStale:
@@ -769,15 +785,18 @@ func (g *IPv6Guard) recordToken() error {
 }
 
 // takeReference turns pf on with a new reference (`pfctl -E`) and
-// records it, then releases the one the guard held, if pf still lists it.
-// after: what went wrong once pf is on by the new, recorded reference (the
-// old one's release, the new token unread); err: pf not enabled, or the
-// reference not recorded.
+// records it, then releases the one the guard held, if pf still lists it
+// (releaseOwed). after: what went wrong once pf is on by the new, recorded
+// reference (the old one's release, the new token unread); err: pf not
+// enabled, or the reference not recorded, the old one then owed still.
 func (g *IPv6Guard) takeReference(ctx context.Context) (after, err error) {
 	old := g.token
 	out, err := g.pf.run(ctx, nil, "-E")
 	if err != nil {
 		return nil, fmt.Errorf("firewall: enable pf: %w", err)
+	}
+	if old != nil {
+		g.owed = append(g.owed, *old)
 	}
 	t := pfToken{pid: out.pid}
 	v, perr := parseToken(out)
@@ -793,21 +812,31 @@ func (g *IPv6Guard) takeReference(ctx context.Context) (after, err error) {
 	if err := g.recordToken(); err != nil {
 		return nil, err
 	}
-	if old != nil {
-		// pf was off although the guard held a reference. If pfctl -d
-		// left it listed, release it now that pf is on again (pf refuses
-		// -X while off); best effort: the new one is the record's, and
-		// enforcing goes on first. A release that fails (a References
-		// listing it can't read) is told after, not dropped: the record
-		// now names the new reference only.
-		if err := g.release(ctx, *old); err != nil {
-			after = fmt.Errorf("firewall: pf enabled anew, but releasing the reference it held before failed (pid %d): %w", old.pid, err)
-		}
-	}
+	after = g.releaseOwed(ctx)
 	if t.value == 0 {
 		after = errors.Join(after, unreadToken(t.pid, perr, rerr))
 	}
 	return after, nil
+}
+
+// releaseOwed releases the references the guard held before pf was
+// enabled anew (owed), now that the record names the new one: pf was off
+// although the guard held them. If pfctl -d left them listed, they go now
+// that pf is on again (pf refuses -X while off); best effort: enforcing
+// goes on first. A release that fails (a References listing it can't
+// read, pfctl failing or cut short) is told after, and that reference
+// stays owed: the next Apply or Close retries it.
+func (g *IPv6Guard) releaseOwed(ctx context.Context) error {
+	var errs []error
+	var kept []pfToken
+	for _, old := range g.owed {
+		if err := g.release(ctx, old); err != nil {
+			kept = append(kept, old)
+			errs = append(errs, fmt.Errorf("firewall: pf enabled anew, but releasing the reference it held before failed (pid %d): %w", old.pid, err))
+		}
+	}
+	g.owed = kept
+	return errors.Join(errs...)
 }
 
 // unreadToken is errUnreadToken for the reference pfctl pid took, with
@@ -951,10 +980,13 @@ func (g *IPv6Guard) noGuardTable(ctx context.Context) error {
 }
 
 // Close flushes the anchor's rules and table, then releases the
-// reference the guard holds, or the one its record holds from this boot
-// (a fresh guard's Close is how a crashed run's guard goes), and removes
-// the record. A failure, a reference whose token can't be found included,
-// leaves the guard and its record in place for the next run's
+// references the guard still owes (a record write or a release failed
+// after pf was enabled anew), then the one it holds, or the one its
+// record holds from this boot (a fresh guard's Close is how a crashed
+// run's guard goes), and removes the record. The owed go first: pf stays
+// on by the guard's own reference while they are released (pf refuses
+// -X while off). A failure, a reference whose token can't be found
+// included, leaves the guard and its record in place for the next run's
 // routetable.Clear, under the route table's owner lock; the anchor goes
 // before the reference, so pf is never left off with the anchor still
 // meant to be in place. With no pfctl at all there is nothing to remove.
@@ -987,6 +1019,12 @@ func (g *IPv6Guard) Close() error {
 	if err != nil {
 		return err
 	}
+	for len(g.owed) > 0 {
+		if err := g.release(ctx, g.owed[0]); err != nil {
+			return err
+		}
+		g.owed = g.owed[1:]
+	}
 	if t != nil {
 		if err := g.release(ctx, *t); err != nil {
 			return err
@@ -1000,7 +1038,7 @@ func (g *IPv6Guard) forget() error {
 	if err := g.tokens.remove(); err != nil {
 		return err
 	}
-	g.token, g.recorded, g.closed = nil, false, true
+	g.token, g.recorded, g.owed, g.closed = nil, false, nil, true
 	return nil
 }
 
