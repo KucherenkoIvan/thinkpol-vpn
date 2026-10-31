@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: [TP-135]
 refs: []
-owner: ""
-branch: ""
+owner: "agent-tp-154"
+branch: "tp-154-netcfg-close-goes-on-per-kind"
 ---
 
 ## Goal
@@ -32,3 +32,4 @@ Close removes what it can of each kind (rules, routes, addresses and links) even
 
 ## Log
 - 2026-10-29 created in backlog (TP-135 round-4 fixer report)
+- 2026-10-31 backlog → in-progress, owner: agent-tp-154
