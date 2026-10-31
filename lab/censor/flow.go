@@ -246,6 +246,14 @@ func (t *flowTable) flag(key FlowKey, r rule) {
 	}
 }
 
+// forget removes a flow, and any flag waiting for it, from the table.
+func (t *flowTable) forget(key FlowKey) {
+	delete(t.flows, key)
+	t.flagsMu.Lock()
+	defer t.flagsMu.Unlock()
+	delete(t.flags, key)
+}
+
 // takeFlag hands over the flag waiting for a flow, if any.
 func (t *flowTable) takeFlag(key FlowKey) (rule, bool) {
 	t.flagsMu.Lock()

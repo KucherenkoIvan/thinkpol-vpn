@@ -23,7 +23,8 @@ const (
 	// kept out of the flow's stream (or first datagram) for a reason, the
 	// receiver discarding it: once per flow and reason.
 	EventIgnore = "ignore"
-	// EventSummary is a flow's totals, one per flow when the censor stops.
+	// EventSummary is a flow's totals, one per flow when it starts over
+	// ([Engine.Handle]) or the censor stops.
 	EventSummary = "summary"
 )
 

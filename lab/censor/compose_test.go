@@ -476,3 +476,70 @@ func TestEngineNewConnectionStartsOver(t *testing.T) {
 		t.Errorf("a UDP flow after %v idle: %+v, want its new first datagram judged", udpIdle, a)
 	}
 }
+
+// throttleJudge pins a throttle on a flow whose payload says "slow".
+type throttleJudge struct{}
+
+func (throttleJudge) Name() string { return "slow" }
+
+func (throttleJudge) Inspect(_ *Packet, f *Flow) Decision {
+	if bytes.Contains(f.Payload(), []byte("slow")) {
+		return Decision{Verdict: Throttle, Flow: true, Rate: 1000, Burst: 1000}
+	}
+	return Decision{Verdict: Accept}
+}
+
+// TestEngineUDPStartsOverBothWays: a UDP flow throttled both ways, silent
+// past udpIdle, starts over in both directions, so neither direction's
+// old throttle comes back onto the other, whichever speaks first; one
+// direction still talking keeps the other's state; a flag waiting for the
+// old flow is dropped with it.
+func TestEngineUDPStartsOverBothWays(t *testing.T) {
+	for _, clientFirst := range []bool{true, false} {
+		clock := time.Unix(1000, 0)
+		eng := NewEngine([]Passive{throttleJudge{}}, nil, nil)
+		eng.now = func() time.Time { return clock }
+		up := func(s string) *Packet { return udpPacket(clientAddr, serverAddr, 1, 2, []byte(s)) }
+		down := func(s string) *Packet { return udpPacket(serverAddr, clientAddr, 2, 1, []byte(s)) }
+		if a := eng.Handle(up("slow")); !a.Throttled {
+			t.Fatalf("the first datagram: %+v, want throttled", a)
+		}
+		if a := eng.Handle(down("fine")); !a.Throttled {
+			t.Fatalf("the reply: %+v, want throttled", a)
+		}
+		clock = clock.Add(udpIdle + time.Second)
+		first, second := up, down
+		if !clientFirst {
+			first, second = down, up
+		}
+		for i, p := range []*Packet{first("fine"), second("fine"), first("fine"), second("fine")} {
+			if a := eng.Handle(p); a.Throttled {
+				t.Errorf("client first %v: datagram %d after the idle: %+v, want not throttled", clientFirst, i, a)
+			}
+		}
+	}
+
+	// One direction still talking: the other's silence restarts nothing.
+	clock := time.Unix(1000, 0)
+	eng := NewEngine([]Passive{throttleJudge{}}, nil, nil)
+	eng.now = func() time.Time { return clock }
+	eng.Handle(udpPacket(clientAddr, serverAddr, 1, 2, []byte("slow")))
+	clock = clock.Add(udpIdle / 2)
+	eng.Handle(udpPacket(serverAddr, clientAddr, 2, 1, []byte("fine")))
+	clock = clock.Add(udpIdle/2 + time.Second)
+	if a := eng.Handle(udpPacket(clientAddr, serverAddr, 1, 2, []byte("fine"))); !a.Throttled {
+		t.Errorf("the client after %v while the server spoke: %+v, want still throttled", udpIdle, a)
+	}
+
+	// A flag for the old flow doesn't land on the new one.
+	key := FlowKey{ProtoUDP, clientAddr, serverAddr, 1, 2}
+	clock = time.Unix(1000, 0)
+	eng = NewEngine([]Passive{throttleJudge{}}, nil, nil)
+	eng.now = func() time.Time { return clock }
+	eng.Handle(udpPacket(clientAddr, serverAddr, 1, 2, []byte("fine")))
+	eng.flagFunc("prober")(key, Drop, "probed")
+	clock = clock.Add(udpIdle + time.Second)
+	if a := eng.Handle(udpPacket(clientAddr, serverAddr, 1, 2, []byte("fine"))); a.Verdict != Accept {
+		t.Errorf("the new flow after a flag for the old one: %+v, want accepted", a)
+	}
+}

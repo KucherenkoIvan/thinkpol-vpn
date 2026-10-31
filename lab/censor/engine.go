@@ -151,11 +151,13 @@ const udpIdle = 120 * time.Second
 
 // restart starts a flow over when its addresses and ports carry a new
 // connection, so a new connection's first bytes are read and judged, never
-// an old one's state (a retired module, a pinned verdict, a stream) taken
-// for its: a UDP flow idle past udpIdle; a TCP connection once the reply
-// to a SYN with a new sequence number accepts it (a SYN-ACK acknowledging
-// it), both directions. A SYN alone restarts nothing, since a receiver
-// with the connection open ignores it. It returns the packet's flow and
+// an old one's state (a retired module, a pinned verdict, a stream, a
+// waiting flag) taken for its, both directions at once: a UDP flow once
+// neither direction has had a packet for udpIdle (the reverse is
+// forgotten, so its next packet starts it as new); a TCP connection once
+// the reply to a SYN with a new sequence number accepts it (a SYN-ACK
+// acknowledging it). A SYN alone restarts nothing, since a receiver with
+// the connection open ignores it. It returns the packet's flow and
 // whether it is new.
 func (e *Engine) restart(f *Flow, isNew bool, p *Packet, now time.Time) (*Flow, bool) {
 	if p.BadChecksum {
@@ -163,10 +165,15 @@ func (e *Engine) restart(f *Flow, isNew bool, p *Packet, now time.Time) (*Flow, 
 	}
 	switch {
 	case f.Key.Proto == ProtoUDP:
-		if !isNew && now.Sub(f.Last) > udpIdle {
-			e.summary(f, now)
-			return e.flows.fresh(f.Key, now), true
+		r := f.reverse
+		if isNew || now.Sub(f.Last) <= udpIdle || r != nil && now.Sub(r.Last) <= udpIdle {
+			break
 		}
+		if r != nil {
+			e.summary(r, now)
+			e.flows.forget(r.Key)
+		}
+		return e.startOver(f, now), true
 	case p.Flags&(Syn|Ack) == Syn:
 		if !isNew && f.Stream.newConnection(p.Seq) {
 			f.offer, f.offered = p.Seq, true
@@ -176,18 +183,24 @@ func (e *Engine) restart(f *Flow, isNew bool, p *Packet, now time.Time) (*Flow, 
 		if c == nil || !c.offered || p.Ack != c.offer+1 {
 			break
 		}
-		e.summary(c, now)
-		nc := e.flows.fresh(c.Key, now)
+		nc := e.startOver(c, now)
 		nc.Stream.add(c.offer, Syn, nil)
 		if len(e.flows.events) > 0 {
 			e.flows.publish(nc.snapshot("", ""))
 		}
 		if !isNew {
-			e.summary(f, now)
-			f, isNew = e.flows.fresh(f.Key, now), true
+			f, isNew = e.startOver(f, now), true
 		}
 	}
 	return f, isNew
+}
+
+// startOver logs a flow's summary and puts a fresh one in its place,
+// dropping any flag waiting for the old one.
+func (e *Engine) startOver(f *Flow, now time.Time) *Flow {
+	e.summary(f, now)
+	e.flows.forget(f.Key)
+	return e.flows.fresh(f.Key, now)
 }
 
 // ignore counts a packet whose payload the flow kept out, and logs the

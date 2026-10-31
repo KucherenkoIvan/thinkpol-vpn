@@ -52,14 +52,15 @@
 // counts.
 //
 // A flow starts over, everything about it forgotten (stream, verdicts,
-// retired modules, tags), when its addresses and ports carry a new
+// retired modules, tags, a flag not yet applied), when its addresses and ports carry a new
 // connection, so a new connection is read and judged from its own first
 // byte: TCP once a SYN with a new sequence number is accepted by the
 // SYN-ACK acknowledging it, both directions at once (a SYN alone restarts
 // nothing, since a receiver with the connection open ignores it, so it
-// can't shake off a pinned verdict); UDP after 120 s without a packet,
-// Linux conntrack's timeout for a UDP flow with replies. The old flow's
-// summary is logged then.
+// can't shake off a pinned verdict); UDP after 120 s without a packet in
+// either direction, Linux conntrack's timeout for a UDP flow with
+// replies, also both directions at once. The old flows' summaries are
+// logged then.
 //
 // # Modules
 //
@@ -159,10 +160,15 @@
 // a flag, decides the flow it names, not its reverse. The flow table keeps
 // every flow until the censor stops (a lab test's few thousand at most). A
 // module learns of a flow's end only from the packets themselves (FIN,
-// RST). A blocked connection's verdict ends with it: a new connection on
-// its addresses and ports is judged anew, and a UDP flow silent for 120 s
-// is judged again from its next datagram; blocking an address and port
-// for a while after (residual censorship) is a module's own business.
+// RST). A pinned Drop or Reset outlives the connection it blocked: a new
+// SYN on the same addresses and ports is decided by it (dropped, or reset
+// with an RST|ACK), so no SYN-ACK ever accepts the new connection and the
+// flow never starts over; the ports stay blocked until the censor stops.
+// That is deliberate (a fake SYN must not lift a pin), and it makes a
+// pinned Drop or Reset residual censorship of its addresses and ports.
+// Other verdicts end with their connection: a new connection on the same
+// addresses and ports is judged anew, and a UDP flow silent for 120 s both
+// ways is judged again from its next datagram.
 //
 // The stream reads a connection as a Linux receiver does for the cases
 // above, not for every one. These still evade it, so a transport that
@@ -179,6 +185,11 @@
 //   - Linux merges out-of-order neighbours only while a buffer has
 //     fragment slots and memory to spare; the censor always merges, which
 //     changes which copy wins only for a copy starting at their joint;
+//     which of two overlapping copies with different bytes Linux keeps
+//     also depends on the shape of its out-of-order tree, which the
+//     censor doesn't model;
+//   - urgent data (URG) is read in the stream; a Linux receiver without
+//     SO_OOBINLINE takes its last byte out of the stream;
 //   - a receiver with TCP Fast Open on reads data on a SYN, which the
 //     censor keeps out;
 //   - past 16 KiB waiting out of order, the censor drops the farthest
