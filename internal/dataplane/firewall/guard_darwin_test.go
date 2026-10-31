@@ -1702,6 +1702,49 @@ func TestTheRecordIsWrittenOnTheRetry(t *testing.T) {
 	r.whole(t, exempt(t))
 }
 
+// A record write that fails after pf was found off and enabled anew
+// keeps the reference the guard held before: pf still lists it, and the
+// Apply that records the new one, or Close, releases it.
+func TestAFailedRecordWriteKeepsTheOldReferenceOwed(t *testing.T) {
+	for _, then := range []string{"Apply", "Close"} {
+		t.Run(then, func(t *testing.T) {
+			r := newRig(t)
+			r.pf.set(func(f *fakePF) { f.keepRefs = true })
+			g := r.guard()
+			if err := g.Apply(context.Background(), exempt(t)); err != nil {
+				t.Fatal(err)
+			}
+			old := r.pf.references()[0]
+			r.pf.disable()
+			if err := os.Chmod(r.dir, 0o500); err != nil {
+				t.Fatal(err)
+			}
+			if err := g.Apply(context.Background(), exempt(t)); err == nil {
+				t.Fatal("applied without a record")
+			}
+			if err := os.Chmod(r.dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if refs := r.pf.references(); len(refs) != 2 || refs[0] != old {
+				t.Fatalf("references %v after -E, want %v and a new one", refs, old)
+			}
+			if then == "Apply" {
+				if err := g.Apply(context.Background(), exempt(t)); err != nil {
+					t.Fatal(err)
+				}
+				r.whole(t, exempt(t))
+				if slices.Contains(r.pf.references(), old) {
+					t.Fatalf("the old reference %v is still listed", old)
+				}
+			}
+			if err := g.Close(); err != nil {
+				t.Fatal(err)
+			}
+			r.gone(t)
+		})
+	}
+}
+
 func TestWatchSignalsWhenTheGuardBreaks(t *testing.T) {
 	r := newRig(t)
 	g := newIPv6Guard(r.pf, r.store(), 10*time.Millisecond, ownAddrs)
