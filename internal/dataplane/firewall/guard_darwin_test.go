@@ -1702,6 +1702,119 @@ func TestTheRecordIsWrittenOnTheRetry(t *testing.T) {
 	r.whole(t, exempt(t))
 }
 
+// A record write that fails after pf was found off and enabled anew
+// keeps the reference the guard held before: pf still lists it, and the
+// Apply that records the new one, or Close, releases it.
+func TestAFailedRecordWriteKeepsTheOldReferenceOwed(t *testing.T) {
+	for _, then := range []string{"Apply", "Close"} {
+		t.Run(then, func(t *testing.T) {
+			r := newRig(t)
+			g := r.guard()
+			old := failedRecordWrite(t, r, g, func() {})
+			if then == "Apply" {
+				if err := g.Apply(context.Background(), exempt(t)); err != nil {
+					t.Fatal(err)
+				}
+				r.whole(t, exempt(t))
+				if slices.Contains(r.pf.references(), old) {
+					t.Fatalf("the old reference %v is still listed", old)
+				}
+			}
+			if err := g.Close(); err != nil {
+				t.Fatal(err)
+			}
+			r.gone(t)
+		})
+	}
+}
+
+// failedRecordWrite turns pf off with the guard's reference kept listed,
+// then has the Apply that enables pf anew fail to write the record: the
+// reference held before (returned) is owed, the record still names it.
+// during sets the fake up for that Apply.
+func failedRecordWrite(t *testing.T, r *rig, g *IPv6Guard, during func()) pfToken {
+	t.Helper()
+	r.pf.set(func(f *fakePF) { f.keepRefs = true })
+	if err := g.Apply(context.Background(), exempt(t)); err != nil {
+		t.Fatal(err)
+	}
+	old := r.pf.references()[0]
+	r.pf.disable()
+	if err := os.Chmod(r.dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	during()
+	if err := g.Apply(context.Background(), exempt(t)); err == nil {
+		t.Fatal("applied without a record")
+	}
+	if err := os.Chmod(r.dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if refs := r.pf.references(); len(refs) != 2 || refs[0] != old {
+		t.Fatalf("references %v after -E, want %v and a new one", refs, old)
+	}
+	if rec := r.record(t); !strings.Contains(rec, fmt.Sprintf("\ntoken %d pid %d\n", old.value, old.pid)) {
+		t.Fatalf("record %q, want the old reference %v still", rec, old)
+	}
+	return old
+}
+
+// The record a failed write left names a reference the guard owes: when
+// the guard has lost its own (pf no longer lists the pid it knew it by,
+// and taking a new one failed), the next Apply doesn't take the owed one
+// over as its own and release it, but takes a new one.
+func TestAnOwedReferenceIsNotTakenOverFromTheRecord(t *testing.T) {
+	r := newRig(t)
+	g := r.guard()
+	old := failedRecordWrite(t, r, g, func() {
+		r.pf.set(func(f *fakePF) { f.noToken, f.oddReferences = true, true })
+	})
+	// Someone releases the guard's new reference, known by pid only.
+	r.pf.set(func(f *fakePF) {
+		f.noToken, f.oddReferences = false, false
+		f.refs = slices.DeleteFunc(f.refs, func(ref fakeRef) bool { return ref.pfToken != old })
+	})
+	r.pf.failOn("-E", errFake)
+	if err := g.Apply(context.Background(), exempt(t)); err == nil {
+		t.Fatal("applied with -E failing")
+	}
+	r.pf.failOn("-E", nil)
+	theirs := r.pf.takeRef()
+	if err := g.Apply(context.Background(), exempt(t)); err != nil {
+		t.Fatal(err)
+	}
+	r.whole(t, exempt(t), theirs)
+	if slices.Contains(r.pf.references(), old) {
+		t.Fatalf("the owed reference %v is still listed", old)
+	}
+	if err := g.Close(); err != nil {
+		t.Fatal(err)
+	}
+	r.gone(t, theirs)
+}
+
+// Close releases the references the guard owes before its own, so pf
+// stays on by its own while they go; one whose release fails stays owed,
+// with the guard's own, and the next Close releases both.
+func TestCloseKeepsAnOwedReferenceItCantRelease(t *testing.T) {
+	r := newRig(t)
+	g := r.guard()
+	old := failedRecordWrite(t, r, g, func() {})
+	refs := r.pf.references()
+	r.pf.failOn(fmt.Sprintf("-X %d", old.value), errFake)
+	if err := g.Close(); err == nil {
+		t.Fatal("closed with the owed reference unreleased")
+	}
+	if got := r.pf.references(); !slices.Equal(got, refs) {
+		t.Fatalf("references %v after the failed Close, want %v: the owed one first", got, refs)
+	}
+	r.pf.failOn(fmt.Sprintf("-X %d", old.value), nil)
+	if err := g.Close(); err != nil {
+		t.Fatal(err)
+	}
+	r.gone(t)
+}
+
 func TestWatchSignalsWhenTheGuardBreaks(t *testing.T) {
 	r := newRig(t)
 	g := newIPv6Guard(r.pf, r.store(), 10*time.Millisecond, ownAddrs)
@@ -1976,6 +2089,20 @@ func TestAFailedReleaseOfTheOldReferenceIsTold(t *testing.T) {
 	if len(refs) != 2 || refs[0] != old || !strings.Contains(r.record(t), fmt.Sprintf("token %d pid %d", refs[1].value, refs[1].pid)) {
 		t.Fatalf("references %v, record %q", refs, r.record(t))
 	}
+	// The failed release kept it owed: once pf's listing reads again, the
+	// next Apply releases it.
+	r.pf.set(func(f *fakePF) { f.oddReferences = false })
+	if err := g.Apply(context.Background(), exempt(t)); err != nil {
+		t.Fatal(err)
+	}
+	r.whole(t, exempt(t))
+	if slices.Contains(r.pf.references(), old) {
+		t.Fatalf("the old reference %v is still listed", old)
+	}
+	if err := g.Close(); err != nil {
+		t.Fatal(err)
+	}
+	r.gone(t)
 }
 
 func TestCutStateAndRuleListingsAreUnreadable(t *testing.T) {
