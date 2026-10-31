@@ -363,3 +363,110 @@ func TestEngineLogBoundedPerFlow(t *testing.T) {
 		t.Errorf("summary: %+v", e)
 	}
 }
+
+// TestEngineIgnoresWhatReceiverDiscards: a decoy with a bad checksum at
+// the ClientHello's sequence number, which the server discards, stays out
+// of the stream, so the module reads the real ClientHello sent after it;
+// the verdict log says so once, and the summary counts both decoys.
+func TestEngineIgnoresWhatReceiverDiscards(t *testing.T) {
+	ch := clientHello(t)
+	var buf bytes.Buffer
+	w := &prefixWatcher{}
+	eng := NewEngine([]Passive{w}, nil, &buf)
+	seq := handshake(eng)
+	for i := 0; i < 2; i++ {
+		decoy := tcpPacket(clientAddr, serverAddr, 40000, 443, seq, 5001, Ack|Psh, bytes.Repeat([]byte("d"), len(ch)))
+		decoy.BadChecksum = true
+		eng.Handle(decoy)
+	}
+	eng.Handle(tcpPacket(clientAddr, serverAddr, 40000, 443, seq, 5001, Ack|Psh, ch))
+	if got := w.prefixes[len(w.prefixes)-1]; !bytes.Equal(got, ch) {
+		t.Errorf("the module read %d bytes, want the real %d-byte ClientHello", len(got), len(ch))
+	}
+	eng.Shutdown()
+	var ignores int
+	var summary LogEntry
+	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		var e LogEntry
+		if err := json.Unmarshal([]byte(line), &e); err != nil {
+			t.Fatal(err)
+		}
+		switch {
+		case e.Event == EventIgnore && e.Reason == ignoreBadChecksum:
+			ignores++
+		case e.Event == EventSummary && e.Flow == "tcp 192.0.2.1:40000->203.0.113.9:443":
+			summary = e
+		}
+	}
+	if ignores != 1 || summary.Ignored[ignoreBadChecksum] != 2 {
+		t.Errorf("%d ignore entries (want 1), summary ignored %v (want 2 bad checksums):\n%s", ignores, summary.Ignored, buf.String())
+	}
+}
+
+// nameJudge pins Drop on a flow whose retained payload names "blocked"
+// and Accept on one naming "allowed", as an SNI module would.
+type nameJudge struct{}
+
+func (nameJudge) Name() string { return "names" }
+
+func (nameJudge) Inspect(_ *Packet, f *Flow) Decision {
+	switch {
+	case bytes.Contains(f.Payload(), []byte("blocked")):
+		return Decision{Verdict: Drop, Flow: true}
+	case bytes.Contains(f.Payload(), []byte("allowed")):
+		return Decision{Verdict: Accept, Flow: true}
+	}
+	return Decision{Verdict: Accept}
+}
+
+// TestEngineNewConnectionStartsOver: a new TCP connection on an old one's
+// addresses and ports, once the server's SYN-ACK accepts it, is read and
+// judged from its own first byte, not by the old one's retired module and
+// stream; a SYN the server never accepts (or a SYN-ACK the client
+// discards) changes nothing, so it can't shake off a pinned drop; a UDP flow starts over after udpIdle.
+func TestEngineNewConnectionStartsOver(t *testing.T) {
+	data := func(seq uint32, s string) *Packet {
+		return tcpPacket(clientAddr, serverAddr, 40000, 443, seq, 5001, Ack|Psh, []byte(s))
+	}
+	eng := NewEngine([]Passive{nameJudge{}}, nil, nil)
+	seq := handshake(eng)
+	if a := eng.Handle(data(seq, "allowed")); a.Verdict != Accept {
+		t.Fatalf("the first connection: %+v", a)
+	}
+	eng.Handle(tcpPacket(clientAddr, serverAddr, 40000, 443, seq+7, 5001, Fin|Ack, nil))
+	eng.Handle(tcpPacket(clientAddr, serverAddr, 40000, 443, 900000, 0, Syn, nil))
+	eng.Handle(tcpPacket(serverAddr, clientAddr, 443, 40000, 70000, 900001, Syn|Ack, nil))
+	eng.Handle(tcpPacket(clientAddr, serverAddr, 40000, 443, 900001, 70001, Ack, nil))
+	if a := eng.Handle(data(900001, "blocked")); a.Verdict != Drop || a.Module != "names" {
+		t.Errorf("a new connection on the same ports: %+v, want its own ClientHello dropped", a)
+	}
+	client := eng.flows.flows[FlowKey{ProtoTCP, clientAddr, serverAddr, 40000, 443}]
+	server := eng.flows.flows[FlowKey{ProtoTCP, serverAddr, clientAddr, 443, 40000}]
+	// The SYN counts in the old client flow, which it reached first.
+	if client.Reverse() != server || server.Reverse() != client || client.Packets != 2 || server.Packets != 1 {
+		t.Errorf("new connection's flows: client %d packets, server %d, linked %v", client.Packets, server.Packets, client.Reverse() == server && server.Reverse() == client)
+	}
+
+	// A SYN alone, which the server would ignore, lifts no pinned drop;
+	// nor does a SYN-ACK with a bad checksum, which the client discards.
+	eng = NewEngine([]Passive{nameJudge{}}, nil, nil)
+	seq = handshake(eng)
+	eng.Handle(data(seq, "blocked"))
+	eng.Handle(tcpPacket(clientAddr, serverAddr, 40000, 443, 900000, 0, Syn, nil))
+	fake := tcpPacket(serverAddr, clientAddr, 443, 40000, 70000, 900001, Syn|Ack, nil)
+	fake.BadChecksum = true
+	eng.Handle(fake)
+	if a := eng.Handle(data(seq, "blocked")); a.Verdict != Drop {
+		t.Errorf("after a SYN nobody accepted: %+v, want the pinned drop", a)
+	}
+
+	// UDP: a flow silent past udpIdle starts over.
+	clock := time.Unix(1000, 0)
+	eng = NewEngine([]Passive{nameJudge{}}, nil, nil)
+	eng.now = func() time.Time { return clock }
+	eng.Handle(udpPacket(clientAddr, serverAddr, 1, 2, []byte("allowed")))
+	clock = clock.Add(udpIdle + time.Second)
+	if a := eng.Handle(udpPacket(clientAddr, serverAddr, 1, 2, []byte("blocked"))); a.Verdict != Drop {
+		t.Errorf("a UDP flow after %v idle: %+v, want its new first datagram judged", udpIdle, a)
+	}
+}
