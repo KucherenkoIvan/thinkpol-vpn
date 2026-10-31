@@ -39,6 +39,12 @@ After a crash takeover, the IPv6 guard is never wider than the new rules, even w
 - Option picked: neither of the first two, a third. With no Want's routes in yet, `guardFor` takes the routes in place as the new Want with nothing direct, so the guard is the Want's endpoints, upstreams and mark alone. Why: Survey reports only foreign routes, and the Guard port can't read a guard back, so options 1 and 2 would each need a new netcfg or firewall-adapter read (per OS) for a narrower result. This one never widens past the new Want, keeps the links reachable (endpoints exempt by address on macOS), and stays inside `guardFor` (its `held` is now `*Want`; nil is "none of ours in yet"). Cost: the device's own IPv6 to direct destinations is refused until the first Apply works.
 - Behaviour change beyond the crash case: a fresh start whose first Apply fails (no crash) now applies that endpoints-only guard where it applied none, so the device's own IPv6 is refused but for endpoints, upstreams and link-scoped until the routes go in. Stricter, never wider; that includes a kernel without rule protocols (ErrorUnsupported), where the guard (nftables) may still go in.
 
+## Review findings
+- [ ] R1.1 RR14, doc.go, routing.md:38 and the Notes promise a start-up refusal the agent never keeps: a failed first Apply fails the start, whose Close removes the guard and routes (RR20)
+- [ ] R1.2 revert the start-up guard in apply (each failed start retry resets live direct IPv6 connections); pin with a test that a failed first Enforce's Close removes the crashed run's guard
+- [ ] R1.3 routetable.go comments (:272, :296, :332, :477) and doc.go:265 match the code after R1.2
+- [ ] R1.4 doc.go and routetable.go: the Enforcer also re-applies when a rule with its protocol is added (TP-153)
+
 ## Log
 - 2026-10-29 created in backlog (TP-127 round-1 review)
 - 2026-10-31 backlog → in-progress, owner: agent-tp-157
@@ -47,3 +53,4 @@ After a crash takeover, the IPv6 guard is never wider than the new rules, even w
 - 2026-10-31 make lint, make test green on the Mac; the first fix commit went in before make lint (an errcheck on `defer e.Close()`, fixed in the next commit).
 - 2026-10-31 make lab-test (full, LAB_P=1) green on 13c53bb: 36 packages, routetable's lab tests included. Not verified: a real crash takeover on a device (the macOS pf anchor replaced by a failing first Apply), and the startup guard with an unsupported kernel; both by reasoning and the fakes only.
 - 2026-10-31 in-progress → review
+- 2026-10-31 review → has-errors (round 1: 3 should-fix + 1 doc from TP-153)
