@@ -265,10 +265,11 @@ func PolicyRouting(w Want, s netcfg.Survey) netcfg.Config {
 // OwnerRouteTable: it applies each Want it is given, and applies it again
 // when Watch reports a change (an interface going down or up, its
 // subnets, the physical gateway, someone removing a route or rule of
-// ours), every Backstop anyway, and every RetryAfter while that fails:
-// while the routes fail, events wait for that retry, RetryAfter after the
-// last attempt, rather than re-applying a debounce later (a failing
-// Apply's undo is itself an event). Close removes everything. With a
+// ours or adding a rule with our protocol), every Backstop anyway, and
+// every RetryAfter while that fails: while the routes fail, events wait
+// for that retry, RetryAfter after the last attempt, rather than
+// re-applying a debounce later (a failing Apply's undo is itself an
+// event). Close removes everything, a crashed run's included. With a
 // Guard, the guard follows the routes at each step, never wider than the
 // routes in place nor the last Want (guardFor), with a status of its own:
 // its failure never undoes the routes or fails an Enforce.
@@ -474,8 +475,9 @@ func (e *Enforcer) pauseWatching() {
 
 // Enforce puts w's routes in place, all or nothing: on failure what was
 // in place stays, Enforce fails, and the watcher tries w again every
-// RetryAfter. The guard, if any, follows routes that went in; its own
-// failure doesn't fail Enforce (Status.GuardError says it, and the
+// RetryAfter. The guard, if any, follows routes that went in: none
+// before the first (a crashed run's stays until Close removes it); its
+// own failure doesn't fail Enforce (Status.GuardError says it, and the
 // watcher retries it).
 func (e *Enforcer) Enforce(ctx context.Context, w Want) error {
 	if w.TUN == "" {
@@ -523,7 +525,12 @@ func (e *Enforcer) apply(ctx context.Context, w Want, again bool) error {
 	}
 	held := e.applied
 	e.mu.Unlock()
-	e.applyGuard(ctx, guardFor(held, w))
+	// None before the first routes go in: a first Apply that fails fails
+	// the agent's start, whose Close removes any guard, a crashed run's
+	// too (TP-157). One here would only reset IPv6 flows on each retry.
+	if held != nil {
+		e.applyGuard(ctx, guardFor(*held, w))
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.status.Enforced = err == nil
@@ -566,20 +573,8 @@ func (e *Enforcer) apply(ctx context.Context, w Want, again bool) error {
 // What held routes direct and the guard no longer exempts is refused,
 // never leaked: the device's IPv6 that goes direct by routing still
 // leaves through a physical interface, where the guard refuses it.
-//
-// A nil held (no Want's routes went in yet) is taken as want with
-// nothing direct: the routes in place are none of ours, or a crashed
-// run's, whose guard is still there and may exempt more than want (a
-// takeover's first Apply failing). That guard exempts want's endpoints,
-// upstreams and mark alone, so the links still connect and nothing the
-// old rules sent direct stays exempt.
-func guardFor(held *Want, want Want) Exempt {
-	h := want
-	h.Direct = nil
-	if held != nil {
-		h = *held
-	}
-	g, w := GuardFor(h), GuardFor(want)
+func guardFor(held, want Want) Exempt {
+	g, w := GuardFor(held), GuardFor(want)
 	g.Direct = g.Direct.Intersect(w.Direct)
 	g.Upstreams = intersectUpstreams(g.Upstreams, w.Upstreams)
 	return g
@@ -888,10 +883,10 @@ func (e *Enforcer) reapplyGuard(ctx context.Context) {
 	e.mu.Lock()
 	held, want := e.applied, e.want
 	e.mu.Unlock()
-	if want == nil || ctx.Err() != nil {
-		return // nothing given yet: nothing to guard
+	if held == nil || want == nil || ctx.Err() != nil {
+		return // no routes in place yet: nothing to guard
 	}
-	e.applyGuard(ctx, guardFor(held, *want))
+	e.applyGuard(ctx, guardFor(*held, *want))
 	e.mu.Lock()
 	e.status.Reapplies++
 	e.mu.Unlock()

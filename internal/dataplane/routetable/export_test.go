@@ -29,9 +29,9 @@ func OpenWithClock(c netcfg.Configurator, g Guard, log *slog.Logger, now func() 
 // GuardApply is e's applyGuard of w's guard.
 func GuardApply(ctx context.Context, e *Enforcer, w Want) { e.applyGuard(ctx, GuardFor(w)) }
 
-// GuardBetween is guardFor: the guard for the routes in place (held;
-// nil: none of ours went in yet) and the rules (want).
-func GuardBetween(held *Want, want Want) Exempt { return guardFor(held, want) }
+// GuardBetween is guardFor: the guard for the routes in place (held)
+// and the rules (want).
+func GuardBetween(held, want Want) Exempt { return guardFor(held, want) }
 
 // IntersectUpstreams is intersectUpstreams.
 func IntersectUpstreams(a, b []netip.AddrPort) []netip.AddrPort { return intersectUpstreams(a, b) }

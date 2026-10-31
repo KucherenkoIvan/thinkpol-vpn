@@ -6,13 +6,15 @@ area: dataplane/routetable
 repo: thinkpol-vpn
 size: S
 depends_on: []
-refs: [RR14]
+refs: [RR14, RR20]
 owner: "agent-tp-157-fix1"
 branch: "tp-157-guard-after-a-crash-takeover-and-a-failed-first-apply"
 ---
 
 ## Goal
 After a crash takeover, the IPv6 guard is never wider than the new rules, even when the first Apply fails.
+
+Outcome (review round 1): the scenario is already closed by the failed start's undo, which removes the crashed run's guard and routes (Notes). The branch delivers tests that pin that, docs that say it, and the TP-148 leftovers; the start-up guard it first added is reverted.
 
 ## Scope
 - `apply` (internal/dataplane/routetable/routetable.go) applies the guard only when `held` (`e.applied`) is set, so a first Apply that fails applies none (routetable doc.go: "Until a Want's routes first go in, no guard is applied"). After a crash, the guard's table (Linux) or anchor (macOS) and the crashed run's routes are still in place, so the crashed run's guard keeps exempting what the old rules routed direct, possibly more than the new Want does, until an Apply succeeds.
@@ -30,20 +32,15 @@ After a crash takeover, the IPv6 guard is never wider than the new rules, even w
 - The retry interval while failing: TP-148.
 
 ## Acceptance
-- [x] a unit test with the fake configurator and guard: a guard and routes left by a crash, then a first Apply with a narrower Want that fails; the guard after it exempts nothing the new Want doesn't. Mutation: `held == nil` skipping the guard again fails it
-- [x] routetable doc.go's "no guard until" paragraph and RR14 say what happens at startup
+- [x] ~~a unit test: a failed first Apply after a crash leaves a guard no wider than the new Want~~ superseded in round 1 (R1.2): a unit test that a failed first Enforce applies no guard and its Close removes the crashed run's guard and routes, and an agent test that a start failing at the route table's first Enforce closes the route table; each mutation-checked
+- [x] routetable doc.go's "no guard until" paragraph says what happens at startup after a crash (RR14 unchanged; RR20 names the crashed run's guard)
 - [x] `make lint`, `make test` pass
 
 ## Notes
 - Source: TP-127 round-1 correctness review (pre-existing, logged out of scope there).
-- Option picked: neither of the first two, a third. With no Want's routes in yet, `guardFor` takes the routes in place as the new Want with nothing direct, so the guard is the Want's endpoints, upstreams and mark alone. Why: Survey reports only foreign routes, and the Guard port can't read a guard back, so options 1 and 2 would each need a new netcfg or firewall-adapter read (per OS) for a narrower result. This one never widens past the new Want, keeps the links reachable (endpoints exempt by address on macOS), and stays inside `guardFor` (its `held` is now `*Want`; nil is "none of ours in yet"). Cost: the device's own IPv6 to direct destinations is refused until the first Apply works.
-- Behaviour change beyond the crash case: a fresh start whose first Apply fails (no crash) now applies that endpoints-only guard where it applied none, so the device's own IPv6 is refused but for endpoints, upstreams and link-scoped until the routes go in. Stricter, never wider; that includes a kernel without rule protocols (ErrorUnsupported), where the guard (nftables) may still go in.
-
-## Review findings
-- [ ] R1.1 RR14, doc.go, routing.md:38 and the Notes promise a start-up refusal the agent never keeps: a failed first Apply fails the start, whose Close removes the guard and routes (RR20)
-- [ ] R1.2 revert the start-up guard in apply (each failed start retry resets live direct IPv6 connections); pin with a test that a failed first Enforce's Close removes the crashed run's guard
-- [ ] R1.3 routetable.go comments (:272, :296, :332, :477) and doc.go:265 match the code after R1.2
-- [ ] R1.4 doc.go and routetable.go: the Enforcer also re-applies when a rule with its protocol is added (TP-153)
+- Round 1 (R1.2, decided): the scenario isn't reachable through the agent. A first `Enforce` that fails fails `grow`, so `engine.Apply` fails (internal/dataplane/routetable.go `grow`) and `runner.start` runs its undo (internal/agent/dataplane.go, after `engine.Apply`): `engine.Close` closes the route table, and `Enforcer.Close` closes the guard, then the configurator. Both firewall guards' Close remove the guard by name whether or not they applied it (Linux: `removeGuard` deletes the table; macOS: `flush` of the anchor and release of the crashed run's reference from its record), and the configurator's Close removes every route and rule with the owner's protocol. So the crashed guard lasts until the same start's undo, milliseconds, and RR20 applies while the start is retried. `Enforce` is used only through that path (cmd/thinkpol/platform.go → the engine), so no Enforcer outlives a failed first Enforce.
+- The start-up guard the first round added (`guardFor(nil, w)`: endpoints, upstreams and mark) is reverted: it bought nothing at the agent level, and each failed start retry (every 5 s) would put it in and take it out again, resetting the device's live direct IPv6 flows (Linux's tcp-reset rule; macOS's state kill after an anchor load). `apply` again skips the guard until routes went in, `guardFor` takes `held, want Want` again, and `reapplyGuard` returns while nothing went in.
+- What the branch does instead: `TestAFailedFirstEnforcesCloseRemovesACrashedRunsGuard` (routetable) and the "first enforce" case of `TestAFailedStartUndoesWhatItOpened` (agent) pin the real protection; doc.go and the Enforcer's comments say it; RR20 names the crashed run's guard; and the TP-148 leftovers (Also list) stay.
 
 ## Log
 - 2026-10-29 created in backlog (TP-127 round-1 review)
@@ -55,3 +52,6 @@ After a crash takeover, the IPv6 guard is never wider than the new rules, even w
 - 2026-10-31 in-progress → review
 - 2026-10-31 review → has-errors (round 1: 3 should-fix + 1 doc from TP-153)
 - 2026-10-31 has-errors → in-progress, owner: agent-tp-157-fix1
+- 2026-10-31 round 1 fix (R1.2): the start-up guard in `apply` reverted (`guardFor(held, want Want)`, `apply` and `reapplyGuard` skip the guard until routes went in), with a comment saying why; `TestAFailedFirstApplyReplacesACrashedRunsGuard` and `TestTheGuardBeforeAnyRoutesWentIn` removed with it. New: `TestAFailedFirstEnforcesCloseRemovesACrashedRunsGuard` (fake guard seeded with a crashed guard, failing configurator: no guard applied, GuardEnforced false, Close closes guard and configurator) and the "first enforce" case of agent `TestAFailedStartUndoesWhatItOpened` (route table's first Enforce fails: StepRouteTable, the table, TUN and configurator closed once). Mutations run: Close skipping `guard.Close` when nothing was applied fails the first (guard removed false); the start-up guard put back in `apply` fails it too (one guard applied, GuardEnforced true); `runner.start` skipping the undo at StepRouteTable fails the agent case (TUN, configurator, route table closed 0 times). All restored.
+- 2026-10-31 docs (R1.1, R1.3, R1.4): RR14 back to its pre-TP-157 text; RR20 says a failed start's undo removes a crashed run's routes and guard too; routing.md's start-up sentence removed and its two "up to 5 s while the routes fail" made "about 5 s, more while retries keep failing"; doc.go's "until a Want's routes first go in" and "after a crash" paragraphs say the failed start's Close removes the crashed guard; doc.go and the Enforcer's comment say a rule added with our protocol brings a re-apply (TP-153); the Enforce comment says no guard before the first routes. Merged origin/rewrite first (f511b2c).
+- 2026-10-31 not done (round-1 nits): no test of a failing first Enforce followed by a good one ending in `GuardFor(w)` (true by construction, as before TP-157); the retry-timing wording doesn't count a slow guard Apply (pfctl timeout) in "the Apply".
