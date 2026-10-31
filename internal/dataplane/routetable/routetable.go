@@ -265,8 +265,10 @@ func PolicyRouting(w Want, s netcfg.Survey) netcfg.Config {
 // OwnerRouteTable: it applies each Want it is given, and applies it again
 // when Watch reports a change (an interface going down or up, its
 // subnets, the physical gateway, someone removing a route or rule of
-// ours), every Backstop anyway, and every RetryAfter while that fails.
-// Close removes everything. With a Guard, the guard follows the routes at
+// ours), every Backstop anyway, and every RetryAfter while that fails:
+// while the routes fail, events wait for that retry, RetryAfter after the
+// last attempt, rather than re-applying a debounce later (a failing
+// Apply's undo is itself an event). Close removes everything. With a Guard, the guard follows the routes at
 // each step, never wider than the routes in place nor the last Want
 // (guardFor), with a status of its own: its failure never undoes the
 // routes or fails an Enforce.
@@ -297,6 +299,9 @@ type Enforcer struct {
 	// than want (guardFor). Non-nil only with want.
 	applied *Want
 	failing bool // the last Apply or re-Apply of want's routes failed
+	// attempted is when the last Apply or re-Apply of the routes ended:
+	// while failing, the next comes RetryAfter later (retryIn).
+	attempted time.Time
 	// unsupported: the OS can't enforce the table at all (a kernel without
 	// rule protocols); nothing is retried.
 	unsupported bool
@@ -512,7 +517,7 @@ func (e *Enforcer) apply(ctx context.Context, w Want, again bool) error {
 	took := time.Since(start)
 	e.mu.Lock()
 	e.want = &w
-	e.failing = err != nil
+	e.failing, e.attempted = err != nil, time.Now()
 	if err == nil {
 		e.applied = &w
 	}
@@ -679,7 +684,10 @@ func (e *Enforcer) Close() error {
 
 // watch re-applies the last Want after each burst of changes Watch
 // reports, every Backstop, and every RetryAfter while that fails; and the
-// guard alone after each burst of the guard's own Watch.
+// guard alone after each burst of the guard's own Watch. While the routes
+// fail, a burst (and the check) is held until RetryAfter has passed since
+// the last attempt: a failing Apply's undo removes rules of ours, an
+// event, which would otherwise retry it every debounce.
 func (e *Enforcer) watch(ctx context.Context, check bool) {
 	var w watches
 	e.subscribe(ctx, &w)
@@ -690,7 +698,9 @@ func (e *Enforcer) watch(ctx context.Context, check bool) {
 		if !e.settle(ctx, w.ch) {
 			return
 		}
-		e.reapply(ctx)
+		if e.retryIn() == 0 {
+			e.reapply(ctx)
+		}
 	}
 	for {
 		wait, unsupported := e.backstop()
@@ -730,6 +740,9 @@ func (e *Enforcer) watch(ctx context.Context, check bool) {
 			}
 			if !e.settle(ctx, w.ch) {
 				return
+			}
+			if e.retryIn() > 0 {
+				continue // the timer retries, RetryAfter after the last attempt
 			}
 		}
 		e.reapply(ctx)
@@ -787,16 +800,36 @@ func (e *Enforcer) subscribeGuard(ctx context.Context, w *watches) {
 }
 
 // backstop is how long watch waits for a change before it re-applies
-// anyway: RetryAfter while the routes or the guard fail, else Backstop;
+// anyway: while the routes fail, until RetryAfter after the last attempt
+// (retryIn); RetryAfter while the guard alone fails; else Backstop.
 // unsupported once the table can't be held at all.
 func (e *Enforcer) backstop() (wait time.Duration, unsupported bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	wait = Backstop
-	if e.failing || e.guardFailing {
+	switch {
+	case e.failing:
+		wait = e.retryInLocked()
+	case e.guardFailing:
 		wait = RetryAfter
+	default:
+		wait = Backstop
 	}
 	return wait, e.unsupported
+}
+
+// retryIn is how long until the routes may be re-applied: while they
+// fail, what is left of RetryAfter since the last attempt; else 0.
+func (e *Enforcer) retryIn() time.Duration {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.retryInLocked()
+}
+
+func (e *Enforcer) retryInLocked() time.Duration {
+	if !e.failing {
+		return 0
+	}
+	return max(0, RetryAfter-time.Since(e.attempted))
 }
 
 // settle waits until ch is quiet for debounce; false if ctx ended.

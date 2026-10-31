@@ -240,6 +240,8 @@ type fakeConfigurator struct {
 	order   *[]string // what was closed, in order
 	// watchErr: what Watch returns; nil: it watches.
 	watchErr error
+	// attempts: when each Apply was called, failed ones included.
+	attempts []time.Time
 }
 
 // setFailErr makes Apply fail with err.
@@ -258,6 +260,7 @@ func (f *fakeConfigurator) setWatchErr(err error) {
 func (f *fakeConfigurator) Apply(_ context.Context, cfg netcfg.Config) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.attempts = append(f.attempts, time.Now())
 	if f.fail {
 		if f.failErr != nil {
 			return f.failErr
@@ -422,6 +425,67 @@ func TestEnforcerAppliesChangesAndReappliesOnEvents(t *testing.T) {
 	}
 	if err := e.Enforce(ctx, w); !errors.Is(err, netcfg.ErrClosed) {
 		t.Errorf("Enforce after Close: %v", err)
+	}
+}
+
+// While the routes fail, events don't retry them every debounce: a failing
+// Apply's undo removes rules of ours, itself an event, so a Watch fires
+// after every attempt. The retries come RetryAfter apart; once the routes
+// are in, an event re-applies a debounce later again.
+func TestAFailingApplyIsRetriedAtRetryAfterNotOnEachEvent(t *testing.T) {
+	t.Parallel()
+	f := &fakeConfigurator{events: make(chan struct{}), survey: up()}
+	e := routetable.Open(f, nil)
+	t.Cleanup(func() {
+		if err := e.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := e.Enforce(ctx, routetable.Want{TUN: "thinkpol0"}); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the check after Enforce", func() bool { return e.Status().Reapplies == 1 })
+	attempts := func() []time.Time {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		return slices.Clone(f.attempts)
+	}
+	// Not failing: an event re-applies a debounce later, well before
+	// RetryAfter.
+	n, sent := len(attempts()), time.Now()
+	f.events <- struct{}{}
+	eventually(t, "a re-Apply on an event", func() bool { return len(attempts()) > n })
+	if took := time.Since(sent); took >= routetable.RetryAfter/2 {
+		t.Errorf("an event while not failing re-applied %v later", took)
+	}
+
+	// Failing: events keep coming, as the undo of each attempt makes them.
+	f.setFail(true)
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case f.events <- struct{}{}:
+				time.Sleep(20 * time.Millisecond)
+			}
+		}
+	}()
+	eventually(t, "a failed re-Apply", func() bool { return e.Status().Error == routetable.ErrorReapply })
+	time.Sleep(routetable.RetryAfter + 2*time.Second)
+	cancel()
+	all := attempts()
+	failed := all[n+1:] // the first failed attempt on
+	if len(failed) < 2 {
+		t.Fatalf("%d attempts while failing over more than RetryAfter, want a retry", len(failed))
+	}
+	for i := 1; i < len(failed); i++ {
+		if gap := failed[i].Sub(failed[i-1]); gap < routetable.RetryAfter-10*time.Millisecond {
+			t.Errorf("attempt %d came %v after the one before, want RetryAfter (%v): %d attempts in all", i, gap, routetable.RetryAfter, len(failed))
+			break
+		}
 	}
 }
 
