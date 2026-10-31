@@ -45,8 +45,12 @@
 // rules; before that the churn fails the Apply too, since on a kernel that
 // drops the protocol unjudged rules would stay, no one's, until reboot.
 // Close needs no two dumps that agree: it deletes the owner's rules from
-// single dumps until two in a row show none (or, at the last dump, one),
-// and goes on with routes and interfaces whatever happens to the rules.
+// single dumps until two in a row show none (or, at the last dump, one).
+// Each kind Close removes stands alone: whatever happens to the rules, it
+// goes on with the routes; a failure to list the owner's routes skips
+// only the route deletes, and one to dump the addresses only the addresses
+// and interfaces. What a failure skips stays, with the owner's protocol,
+// for the owner's next configurator, and every failure is returned.
 // Rules are added and deleted with raw RTM_NEWRULE and RTM_DELRULE
 // messages on one socket opened in the namespace at construction. An add's
 // undo sends the same message as a delete; a delete sends the dumped
