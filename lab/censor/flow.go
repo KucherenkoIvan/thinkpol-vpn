@@ -82,7 +82,8 @@ func parseHostPort(s string) (netip.Addr, uint16, error) {
 type Flow struct {
 	Key     FlowKey
 	Started time.Time
-	// Last is when the censor saw the flow's latest packet.
+	// Last is when the censor saw the flow's latest packet with a good
+	// checksum: one the receiver discards keeps no flow alive.
 	Last time.Time
 	// Packets and Bytes (payload bytes) count what the censor saw in this
 	// direction, the triggering packet included.
@@ -147,10 +148,11 @@ func (f *Flow) retire(i, n int) {
 func (f *Flow) observe(p *Packet, now time.Time) string {
 	f.Packets++
 	f.Bytes += uint64(len(p.Payload))
+	if p.BadChecksum {
+		return ignoreBadChecksum
+	}
 	f.Last = now
 	switch {
-	case p.BadChecksum:
-		return ignoreBadChecksum
 	case f.Stream != nil:
 		return f.Stream.add(p.Seq, p.Flags, p.Payload)
 	case f.FirstDatagram == nil && len(p.Payload) > 0:

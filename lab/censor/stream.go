@@ -11,10 +11,11 @@ import (
 const retainBytes = 16 << 10
 
 // windowBound is the farthest past the next in-order byte a segment may
-// start and still be read: 32 MiB, the largest receive buffer Linux's
-// default tcp_rmem allows on any kernel the lab runs (6 MiB on older
-// ones), so no window a lab receiver advertises reaches past it. A segment
-// starting beyond it is one the receiver discards as outside its window.
+// start and still be read: 32 MiB, several times the 6 MiB receive buffer
+// Linux's long-standing default tcp_rmem allows at most, so it stays past
+// any window a lab receiver advertises even if a newer kernel raises that
+// default. A segment starting beyond it is one the receiver discards as
+// outside its window.
 const windowBound = 32 << 20
 
 // Why a stream keeps a segment's payload out: the receiver (Linux, without

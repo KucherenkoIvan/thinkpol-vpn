@@ -33,7 +33,7 @@
 // bad TCP checksum, data without ACK, data on an RST, data on a SYN (lab
 // servers don't enable TCP Fast Open), and a segment starting more than 32
 // MiB past the next byte to read, further than any window a lab receiver
-// advertises. The queue hands packets over with full checksums (without
+// advertises with Linux's default buffers (6 MiB at most). The queue hands packets over with full checksums (without
 // NFQA_CFG_F_GSO the kernel completes an offloaded one first), so checking
 // them is sound. The verdict log names each reason a flow kept payload out
 // once ([EventIgnore]), and the flow's summary counts them.

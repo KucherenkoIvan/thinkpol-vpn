@@ -423,7 +423,8 @@ func (nameJudge) Inspect(_ *Packet, f *Flow) Decision {
 // addresses and ports, once the server's SYN-ACK accepts it, is read and
 // judged from its own first byte, not by the old one's retired module and
 // stream; a SYN the server never accepts (or a SYN-ACK the client
-// discards) changes nothing, so it can't shake off a pinned drop; a UDP flow starts over after udpIdle.
+// discards) changes nothing, so it can't shake off a pinned drop; a UDP
+// flow starts over after udpIdle without a datagram the receiver accepts.
 func TestEngineNewConnectionStartsOver(t *testing.T) {
 	data := func(seq uint32, s string) *Packet {
 		return tcpPacket(clientAddr, serverAddr, 40000, 443, seq, 5001, Ack|Psh, []byte(s))
@@ -465,7 +466,12 @@ func TestEngineNewConnectionStartsOver(t *testing.T) {
 	eng = NewEngine([]Passive{nameJudge{}}, nil, nil)
 	eng.now = func() time.Time { return clock }
 	eng.Handle(udpPacket(clientAddr, serverAddr, 1, 2, []byte("allowed")))
-	clock = clock.Add(udpIdle + time.Second)
+	// Datagrams the receiver discards keep nothing alive.
+	clock = clock.Add(udpIdle - time.Second)
+	junk := udpPacket(clientAddr, serverAddr, 1, 2, []byte("junk"))
+	junk.BadChecksum = true
+	eng.Handle(junk)
+	clock = clock.Add(2 * time.Second)
 	if a := eng.Handle(udpPacket(clientAddr, serverAddr, 1, 2, []byte("blocked"))); a.Verdict != Drop {
 		t.Errorf("a UDP flow after %v idle: %+v, want its new first datagram judged", udpIdle, a)
 	}
