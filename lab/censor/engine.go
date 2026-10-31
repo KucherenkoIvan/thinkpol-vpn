@@ -64,16 +64,21 @@ func (e *Engine) Shutdown() {
 	}
 	now := e.now()
 	for _, f := range e.flows.flows {
-		applied := map[string]uint64{}
-		for v, n := range f.applied {
-			applied[v.String()] = n
-		}
-		e.log.write(LogEntry{
-			Time: now, Event: EventSummary, Flow: f.Key.String(), Packets: f.Packets, Bytes: f.Bytes,
-			Module: f.last.module, Verdict: f.last.verdict, Applied: applied,
-		})
+		e.summary(f, now)
 	}
 	e.log.close()
+}
+
+// summary logs a flow's totals.
+func (e *Engine) summary(f *Flow, now time.Time) {
+	applied := map[string]uint64{}
+	for v, n := range f.applied {
+		applied[v.String()] = n
+	}
+	e.logEntry(LogEntry{
+		Time: now, Event: EventSummary, Flow: f.Key.String(), Packets: f.Packets, Bytes: f.Bytes,
+		Module: f.last.module, Verdict: f.last.verdict, Applied: applied, Ignored: f.ignored,
+	})
 }
 
 // Unnoticed is how many times a snapshot (a new flow, a tag) was not
@@ -93,7 +98,10 @@ func (e *Engine) Unnoticed() uint64 { return e.flows.unnoticed.Load() }
 func (e *Engine) Handle(p *Packet) Action {
 	now := e.now()
 	f, isNew := e.flows.flow(FlowKey{p.Proto, p.Src, p.Dst, p.SrcPort, p.DstPort}, now)
-	f.observe(p, now)
+	f, isNew = e.restart(f, isNew, p, now)
+	if why := f.observe(p, now); why != "" {
+		e.ignore(f, why, now)
+	}
 	if isNew && len(e.flows.events) > 0 {
 		e.flows.publish(f.snapshot("", ""))
 	}
@@ -134,6 +142,66 @@ func (e *Engine) Handle(p *Packet) Action {
 		}
 	}
 	return e.apply(f, p, best, now)
+}
+
+// udpIdle is how long a UDP flow may go without a packet before the next
+// one starts it over: Linux conntrack's timeout for a UDP flow with
+// replies.
+const udpIdle = 120 * time.Second
+
+// restart starts a flow over when its addresses and ports carry a new
+// connection, so a new connection's first bytes are read and judged, never
+// an old one's state (a retired module, a pinned verdict, a stream) taken
+// for its: a UDP flow idle past udpIdle; a TCP connection once the reply
+// to a SYN with a new sequence number accepts it (a SYN-ACK acknowledging
+// it), both directions. A SYN alone restarts nothing, since a receiver
+// with the connection open ignores it. It returns the packet's flow and
+// whether it is new.
+func (e *Engine) restart(f *Flow, isNew bool, p *Packet, now time.Time) (*Flow, bool) {
+	if p.BadChecksum {
+		return f, isNew
+	}
+	switch {
+	case f.Key.Proto == ProtoUDP:
+		if !isNew && now.Sub(f.Last) > udpIdle {
+			e.summary(f, now)
+			return e.flows.fresh(f.Key, now), true
+		}
+	case p.Flags&(Syn|Ack) == Syn:
+		if !isNew && f.Stream.newConnection(p.Seq) {
+			f.offer, f.offered = p.Seq, true
+		}
+	case p.Flags&(Syn|Ack) == Syn|Ack:
+		c := f.reverse
+		if c == nil || !c.offered || p.Ack != c.offer+1 {
+			break
+		}
+		e.summary(c, now)
+		nc := e.flows.fresh(c.Key, now)
+		nc.Stream.add(c.offer, Syn, nil)
+		if len(e.flows.events) > 0 {
+			e.flows.publish(nc.snapshot("", ""))
+		}
+		if !isNew {
+			e.summary(f, now)
+			f, isNew = e.flows.fresh(f.Key, now), true
+		}
+	}
+	return f, isNew
+}
+
+// ignore counts a packet whose payload the flow kept out, and logs the
+// first for each reason.
+func (e *Engine) ignore(f *Flow, why string, now time.Time) {
+	if f.ignored == nil {
+		f.ignored = map[string]uint64{}
+	}
+	f.ignored[why]++
+	if f.ignored[why] == 1 {
+		e.logEntry(LogEntry{
+			Time: now, Event: EventIgnore, Flow: f.Key.String(), Packets: f.Packets, Bytes: f.Bytes, Reason: why,
+		})
+	}
 }
 
 // pin makes r the flow's verdict unless a verdict as severe is pinned, and

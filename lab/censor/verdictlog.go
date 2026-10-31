@@ -19,6 +19,10 @@ const (
 	EventTag = "tag"
 	// EventFlag is an active module flagging a flow.
 	EventFlag = "flag"
+	// EventIgnore is the first packet of a flow whose payload the censor
+	// kept out of the flow's stream (or first datagram) for a reason, the
+	// receiver discarding it: once per flow and reason.
+	EventIgnore = "ignore"
 	// EventSummary is a flow's totals, one per flow when the censor stops.
 	EventSummary = "summary"
 )
@@ -41,6 +45,9 @@ type LogEntry struct {
 	// Applied is a summary's: the flow's packets by what the queue did
 	// with them (accept, drop, reset).
 	Applied map[string]uint64 `json:"applied,omitempty"`
+	// Ignored is a summary's: the flow's packets whose payload the censor
+	// kept out, by why (EventIgnore).
+	Ignored map[string]uint64 `json:"ignored,omitempty"`
 }
 
 // flushEvery is how stale the log file may be behind the censor: tests

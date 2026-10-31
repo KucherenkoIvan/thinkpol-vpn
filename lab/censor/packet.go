@@ -49,6 +49,10 @@ type Packet struct {
 	// Flags are the TCP header flags, 0 for other protocols.
 	Flags   uint8
 	Payload []byte
+	// BadChecksum is set when the TCP or UDP checksum is wrong: the
+	// receiver discards the packet, so the censor reads none of it into a
+	// stream or a first datagram, nor takes it for a new connection.
+	BadChecksum bool
 }
 
 // Clone returns a packet whose payload the module may keep.
@@ -92,7 +96,46 @@ func decodePacket(b []byte) (Packet, bool) {
 		}
 		pkt.Payload = h.Payload[off:]
 	}
+	pkt.BadChecksum = !transportChecksumOK(pkt.Src, pkt.Dst, pkt.Proto, h.Payload)
 	return pkt, true
+}
+
+// transportChecksumOK verifies a TCP or UDP checksum over the pseudo-header
+// and seg, the transport header and its data. The queue gets packets
+// checksummed: without NFQA_CFG_F_GSO the kernel completes an offloaded
+// checksum before it copies the packet out. A UDP datagram without a
+// checksum (0) is fine over IPv4, discarded over IPv6, as Linux does.
+func transportChecksumOK(src, dst netip.Addr, proto Proto, seg []byte) bool {
+	if proto != ProtoTCP && proto != ProtoUDP {
+		return true
+	}
+	if proto == ProtoUDP && src.Is4() && binary.BigEndian.Uint16(seg[6:]) == 0 {
+		return true
+	}
+	sum := uint32(proto) + uint32(len(seg)>>16) + uint32(len(seg)&0xffff)
+	sum = sumWords(sum, src.AsSlice())
+	sum = sumWords(sum, dst.AsSlice())
+	sum = sumWords(sum, seg)
+	for sum > 0xffff {
+		sum = (sum >> 16) + (sum & 0xffff)
+	}
+	return sum == 0xffff
+}
+
+// sumWords adds b to an internet checksum's running sum as big-endian
+// 16-bit words, an odd last byte padded with zero.
+func sumWords(sum uint32, b []byte) uint32 {
+	for len(b) >= 2 {
+		sum += uint32(b[0])<<8 | uint32(b[1])
+		b = b[2:]
+		if sum > 0xffff {
+			sum = (sum >> 16) + (sum & 0xffff)
+		}
+	}
+	if len(b) == 1 {
+		sum += uint32(b[0]) << 8
+	}
+	return sum
 }
 
 // isFragment reports whether b is an IP fragment, first or later, IPv4 or

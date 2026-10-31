@@ -112,6 +112,13 @@ type Flow struct {
 	logged  map[ruleKey]bool
 	last    ruleKey
 	applied map[Verdict]uint64
+	// ignored counts the packets whose payload the flow kept out, by why.
+	ignored map[string]uint64
+	// offer is the sequence number of a SYN that may open a new connection
+	// on the flow's addresses and ports, offered while the reply to it
+	// hasn't come.
+	offer   uint32
+	offered bool
 }
 
 // Reverse is the flow of the replies, nil until the censor has seen one
@@ -135,17 +142,21 @@ func (f *Flow) retire(i, n int) {
 	f.done[i] = true
 }
 
-// observe counts a packet of the flow and adds its payload.
-func (f *Flow) observe(p *Packet, now time.Time) {
+// observe counts a packet of the flow and adds its payload, and returns
+// why it kept the payload out, "" when it didn't.
+func (f *Flow) observe(p *Packet, now time.Time) string {
 	f.Packets++
 	f.Bytes += uint64(len(p.Payload))
 	f.Last = now
 	switch {
+	case p.BadChecksum:
+		return ignoreBadChecksum
 	case f.Stream != nil:
-		f.Stream.add(p.Seq, p.Flags, p.Payload)
+		return f.Stream.add(p.Seq, p.Flags, p.Payload)
 	case f.FirstDatagram == nil && len(p.Payload) > 0:
 		f.FirstDatagram = append([]byte(nil), p.Payload[:min(len(p.Payload), retainBytes)]...)
 	}
+	return ""
 }
 
 func (f *Flow) snapshot(tagger, tag string) FlowSnapshot {
@@ -206,6 +217,12 @@ func (t *flowTable) flow(key FlowKey, now time.Time) (*Flow, bool) {
 	if f, ok := t.flows[key]; ok {
 		return f, false
 	}
+	return t.fresh(key, now), true
+}
+
+// fresh puts a new flow in the table for key, in place of any old one,
+// linked to the reverse the table has.
+func (t *flowTable) fresh(key FlowKey, now time.Time) *Flow {
 	f := &Flow{Key: key, Started: now, logged: map[ruleKey]bool{}, applied: map[Verdict]uint64{}}
 	if key.Proto == ProtoTCP {
 		f.Stream = &Stream{}
@@ -214,7 +231,7 @@ func (t *flowTable) flow(key FlowKey, now time.Time) (*Flow, bool) {
 		f.reverse, r.reverse = r, f
 	}
 	t.flows[key] = f
-	return f, true
+	return f
 }
 
 // flag keeps an active module's verdict for the flow's next packet; of

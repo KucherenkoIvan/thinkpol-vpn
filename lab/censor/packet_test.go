@@ -165,3 +165,59 @@ func TestIsFragment(t *testing.T) {
 func tcpPacket(src, dst netip.Addr, sport, dport uint16, seq, ack uint32, flags uint8, payload []byte) *Packet {
 	return &Packet{Src: src, Dst: dst, Proto: ProtoTCP, SrcPort: sport, DstPort: dport, Seq: seq, Ack: ack, Flags: flags, Payload: payload}
 }
+
+// TestDecodePacketChecksum flags a TCP or UDP checksum the receiver
+// rejects, both families: a valid one passes, one changed byte fails, and a
+// UDP datagram without a checksum passes over IPv4 only.
+func TestDecodePacketChecksum(t *testing.T) {
+	for _, pair := range [][2]string{{"192.0.2.1", "198.51.100.2"}, {"2001:db8::1", "2001:db8::2"}} {
+		src, dst := netip.MustParseAddr(pair[0]), netip.MustParseAddr(pair[1])
+		seg := make([]byte, 20, 20+5)
+		binary.BigEndian.PutUint16(seg, 40000)
+		binary.BigEndian.PutUint16(seg[2:], 443)
+		seg[12], seg[13] = 5<<4, Ack|Psh
+		seg = append(seg, "hello"...)
+		b := buildTCP4(src, dst, seg)
+		if src.Is6() {
+			b = buildTCP6(src, dst, seg)
+		}
+		if p, ok := decodePacket(b); !ok || p.BadChecksum {
+			t.Errorf("%s: a valid TCP checksum: ok=%v %+v", src, ok, p)
+		}
+		b[len(b)-1] ^= 1
+		if p, ok := decodePacket(b); !ok || !p.BadChecksum {
+			t.Errorf("%s: one changed byte: ok=%v %+v", src, ok, p)
+		}
+
+		udp := []byte{0x9c, 0x40, 0x11, 0x94, 0, 13, 0, 0, 'h', 'e', 'l', 'l', 'o'}
+		var ipb []byte
+		if src.Is4() {
+			ipb = make([]byte, 20)
+			ipb[0] = 0x45
+			binary.BigEndian.PutUint16(ipb[2:], uint16(20+len(udp)))
+			ipb[9] = byte(ProtoUDP)
+			copy(ipb[12:], src.AsSlice())
+			copy(ipb[16:], dst.AsSlice())
+		} else {
+			ipb = make([]byte, 40)
+			ipb[0] = 0x60
+			binary.BigEndian.PutUint16(ipb[4:], uint16(len(udp)))
+			ipb[6] = byte(ProtoUDP)
+			copy(ipb[8:], src.AsSlice())
+			copy(ipb[24:], dst.AsSlice())
+		}
+		p, ok := decodePacket(append(ipb, udp...))
+		if !ok || p.BadChecksum != src.Is6() {
+			t.Errorf("%s: UDP without a checksum: ok=%v bad=%v, want bad only over IPv6", src, ok, p.BadChecksum)
+		}
+		pseudo := append(append(append([]byte(nil), src.AsSlice()...), dst.AsSlice()...), 0, byte(ProtoUDP), 0, byte(len(udp)))
+		binary.BigEndian.PutUint16(udp[6:], checksum(append(pseudo, udp...)))
+		if p, ok := decodePacket(append(ipb, udp...)); !ok || p.BadChecksum {
+			t.Errorf("%s: a valid UDP checksum: ok=%v %+v", src, ok, p)
+		}
+		udp[len(udp)-1] ^= 1
+		if p, ok := decodePacket(append(ipb, udp...)); !ok || !p.BadChecksum {
+			t.Errorf("%s: a UDP datagram with one changed byte: ok=%v %+v", src, ok, p)
+		}
+	}
+}
