@@ -575,7 +575,7 @@ func TestAFailedFirstApplyReplacesACrashedRunsGuard(t *testing.T) {
 	g := newFakeGuard(f)
 	g.applied = []routetable.Exempt{crashed} // what the crashed run's guard holds
 	e := routetable.OpenWithGuard(f, g, nil)
-	defer e.Close()
+	t.Cleanup(func() { _ = e.Close() })
 	w := routetable.Want{TUN: "thinkpol0", Direct: set(t, "2001:db8:d0::/48"), Bypass: []netip.Addr{ep}, Upstreams: []netip.AddrPort{up1}}
 	if err := e.Enforce(context.Background(), w); err == nil {
 		t.Fatal("Enforce succeeded with failing routes")

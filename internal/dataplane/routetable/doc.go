@@ -227,11 +227,14 @@
 // own, every [Backstop] (a minute) anyway, and every [RetryAfter] (5 s)
 // while that fails. While the routes fail, events don't re-apply a
 // debounce later: they wait for the next retry, [RetryAfter] after the
-// last attempt (the check after a failed Enforce too). A failing Apply's
-// undo removes rules of its own, itself an event, so retrying on events
-// would retry every debounce; an event that is the fix (the TUN coming
-// up) is taken at most [RetryAfter] later. A failing guard alone doesn't
-// hold events back. A re-apply that finds everything in place changes
+// last attempt ended (the check after a failed Enforce too). A failing
+// Apply's undo removes rules of its own, itself an event, so retrying on
+// events would retry every debounce. An event that is the fix (the TUN
+// coming up) is taken by that retry, or a debounce after the event if
+// that is later: at most [RetryAfter] after the event, plus what was left
+// of the Apply under way when it came (one that comes during an Apply
+// that fails waits for [RetryAfter] after that Apply ends). A failing
+// guard alone doesn't hold events back. A re-apply that finds everything in place changes
 // nothing. [Status] says when the table isn't enforced (the TUN down
 // included: [ErrorTUNDown]) and the agent's health then says
 // `route_table_not_enforced` (down).
@@ -278,11 +281,19 @@
 // step of its change), which widens it to what the old and the new
 // direct set both hold.
 //
-// Until a Want's routes first go in, no guard is applied and
-// [Status.GuardEnforced] stays false: there are no routes to guard yet,
-// and a guard for nothing direct would refuse IPv6 to the links'
-// endpoints too, which macOS, with no socket marks, exempts only by
-// address.
+// Until a Want's routes first go in, the routes in place are none of
+// ours or, after a crash, the crashed run's, whose guard (its nftables
+// table on Linux, its pf anchor on macOS) is still in place and exempts
+// what the old rules sent direct, maybe more than the new rules do. The
+// guard is then the Want's with nothing direct: its endpoints, its
+// upstreams and the links' mark alone. So the first Apply, the failing
+// one of a takeover included, replaces the crashed run's guard with one
+// that exempts nothing the new rules don't, and the links still connect:
+// a guard for nothing at all would refuse IPv6 to the endpoints too,
+// which macOS, with no socket marks, exempts only by address. The
+// device's own IPv6 to the direct destinations is refused until the
+// routes go in, while IPv4 to them follows whatever routes are in place
+// (a crashed run's: RR14).
 //
 // The guard has a status of its own ([Status.GuardEnforced],
 // [Status.GuardError]): its failure never fails the routes or an Enforce.
@@ -317,6 +328,8 @@
 //
 // After a crash IPv6 stays unreachable but for direct destinations until
 // the agent starts again, bound sockets included (the guard stays too);
-// IPv4 flows, as with the kill switch off. That is the M1 behaviour; the
+// IPv4 flows, as with the kill switch off. The next start's first Apply
+// takes the guard over with the new rules', even when its routes fail
+// (the leak guard, above). That is the M1 behaviour; the
 // decided posture is stricter (docs/design/security.md "Kill switch").
 package routetable
