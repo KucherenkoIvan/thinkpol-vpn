@@ -268,10 +268,10 @@ func PolicyRouting(w Want, s netcfg.Survey) netcfg.Config {
 // ours), every Backstop anyway, and every RetryAfter while that fails:
 // while the routes fail, events wait for that retry, RetryAfter after the
 // last attempt, rather than re-applying a debounce later (a failing
-// Apply's undo is itself an event). Close removes everything. With a Guard, the guard follows the routes at
-// each step, never wider than the routes in place nor the last Want
-// (guardFor), with a status of its own: its failure never undoes the
-// routes or fails an Enforce.
+// Apply's undo is itself an event). Close removes everything. With a
+// Guard, the guard follows the routes at each step, never wider than the
+// routes in place nor the last Want (guardFor), with a status of its own:
+// its failure never undoes the routes or fails an Enforce.
 type Enforcer struct {
 	cfg   netcfg.Configurator
 	guard Guard // nil: routes only
@@ -299,9 +299,9 @@ type Enforcer struct {
 	// than want (guardFor). Non-nil only with want.
 	applied *Want
 	failing bool // the last Apply or re-Apply of want's routes failed
-	// attempted is when the last Apply or re-Apply of the routes ended:
+	// lastAttempt is when the last Apply or re-Apply of the routes ended:
 	// while failing, the next comes RetryAfter later (retryIn).
-	attempted time.Time
+	lastAttempt time.Time
 	// unsupported: the OS can't enforce the table at all (a kernel without
 	// rule protocols); nothing is retried.
 	unsupported bool
@@ -517,7 +517,7 @@ func (e *Enforcer) apply(ctx context.Context, w Want, again bool) error {
 	took := time.Since(start)
 	e.mu.Lock()
 	e.want = &w
-	e.failing, e.attempted = err != nil, time.Now()
+	e.failing, e.lastAttempt = err != nil, time.Now()
 	if err == nil {
 		e.applied = &w
 	}
@@ -829,10 +829,12 @@ func (e *Enforcer) retryInLocked() time.Duration {
 	if !e.failing {
 		return 0
 	}
-	return max(0, RetryAfter-time.Since(e.attempted))
+	return max(0, RetryAfter-time.Since(e.lastAttempt))
 }
 
-// settle waits until ch is quiet for debounce; false if ctx ended.
+// settle waits out debounce from the first event of a burst (a fixed
+// window: further events don't restart it, so a steady stream can't starve
+// the retry); false if ctx ended.
 func (e *Enforcer) settle(ctx context.Context, ch <-chan struct{}) bool {
 	timer := time.NewTimer(debounce)
 	defer timer.Stop()
