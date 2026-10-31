@@ -8,7 +8,7 @@ size: M
 depends_on: [TP-024]
 split_from: TP-024
 refs: [C4, docs/design/lab.md#censor-lab]
-owner: agent-tp-089
+owner: agent-tp-089-fix1
 branch: tp-089-censor-framework-tcp-and-composition
 ---
 
@@ -71,3 +71,4 @@ The censor framework can inspect multi-segment TCP handshakes, link reverse flow
 - 2026-10-31 out of scope, for the orchestrator: the RESULTS.md header the matrix writes still says "fail when it didn't"; `partial` never reaches a written file (a partial cell fails the run), so the header was left as generated
 - 2026-10-31 in-progress → review
 - 2026-10-31 review → has-errors (round 1: 1 blocker, 7 should-fix)
+- 2026-10-31 has-errors → in-progress, owner: agent-tp-089-fix1
