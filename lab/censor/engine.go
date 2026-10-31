@@ -97,6 +97,9 @@ func (e *Engine) Handle(p *Packet) Action {
 	if isNew && len(e.flows.events) > 0 {
 		e.flows.publish(f.snapshot("", ""))
 	}
+	if isNew && f.reverse != nil && f.reverse.throttle != nil {
+		e.pin(f, reverseThrottle(*f.reverse.throttle))
+	}
 	if r, ok := e.flows.takeFlag(f.Key); ok && e.pin(f, r) {
 		// flagFunc logged the flag already.
 		f.logged[ruleKey{r.verdict, r.module}] = true
@@ -182,6 +185,14 @@ func (e *Engine) apply(f *Flow, p *Packet, r rule, now time.Time) Action {
 		if f.bucket == nil {
 			f.bucket = newTokenBucket(r.rate, r.burst, now)
 		}
+		if f.throttle == nil {
+			// The connection is throttled, not one direction of it: the
+			// replies are policed from their next packet on.
+			f.throttle = &r
+			if f.reverse != nil {
+				e.pin(f.reverse, reverseThrottle(r))
+			}
+		}
 		a.Throttled, a.Verdict = true, Drop
 		if f.bucket.pass(len(p.Payload), now) {
 			a.Verdict = Accept
@@ -205,6 +216,13 @@ func (e *Engine) apply(f *Flow, p *Packet, r rule, now time.Time) Action {
 		e.logEntry(entry)
 	}
 	return a
+}
+
+// reverseThrottle is the rule a throttled flow pins on its reverse: the
+// same module and rate, each direction with a bucket of its own.
+func reverseThrottle(r rule) rule {
+	r.why = fmt.Sprintf("the other direction is throttled: %s", r.why)
+	return r
 }
 
 func (e *Engine) logEntry(entry LogEntry) {

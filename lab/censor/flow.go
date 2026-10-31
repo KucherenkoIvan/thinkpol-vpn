@@ -103,6 +103,9 @@ type Flow struct {
 	// tagged holds the modules that tagged the flow already.
 	tagged map[string]bool
 	bucket *tokenBucket
+	// throttle is the first Throttle applied to the flow, which its
+	// reverse is then pinned to as well.
+	throttle *rule
 	// logged holds every verdict and module the flow's decision entries
 	// named, last the latest; applied counts its packets by what the
 	// queue did.

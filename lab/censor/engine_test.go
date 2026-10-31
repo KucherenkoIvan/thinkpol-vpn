@@ -92,6 +92,43 @@ func TestEngineThrottlePolices(t *testing.T) {
 	}
 }
 
+// TestEngineThrottlePolicesBothDirections: block-ip throttles by
+// destination, the client's packets to the server, and the server's
+// replies are policed at the same rate from then on, each direction with
+// its own bucket; a reply flow the censor first sees after the throttle
+// is policed too.
+func TestEngineThrottlePolicesBothDirections(t *testing.T) {
+	for _, replyFirst := range []bool{true, false} {
+		m, err := newBlockIP([]byte(`{"destinations": ["203.0.113.9"], "verdict": "throttle", "rate": 1000, "burst": 1000}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		eng := NewEngine([]Passive{m}, nil, nil)
+		eng.now = func() time.Time { return time.Unix(1000, 0) }
+		up := udpPacket(clientAddr, serverAddr, 1, 2, make([]byte, 600))
+		down := udpPacket(serverAddr, clientAddr, 2, 1, make([]byte, 600))
+		if replyFirst {
+			if a := eng.Handle(down); a.Verdict != Accept || a.Throttled {
+				t.Fatalf("a reply before any throttle: %+v", a)
+			}
+		}
+		if a := eng.Handle(up); !a.Throttled {
+			t.Fatalf("reply first %v: the client's packet %+v, want throttled", replyFirst, a)
+		}
+		var got []Verdict
+		for i := 0; i < 3; i++ {
+			a := eng.Handle(down)
+			if !a.Throttled || a.Module != "block-ip" {
+				t.Fatalf("reply first %v: reply %d %+v, want policed by block-ip", replyFirst, i, a)
+			}
+			got = append(got, a.Verdict)
+		}
+		if want := []Verdict{Accept, Accept, Drop}; !slices.Equal(got, want) {
+			t.Errorf("reply first %v: replies %v, want %v at 1000 B/s", replyFirst, got, want)
+		}
+	}
+}
+
 // TestEngineFlowVerdictSticks checks a module's flow verdict: later packets
 // of the flow are decided without the modules seeing them again.
 func TestEngineFlowVerdictSticks(t *testing.T) {
