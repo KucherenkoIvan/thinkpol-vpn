@@ -32,6 +32,15 @@ While Apply keeps failing, the route-table Enforcer retries every `RetryAfter` (
 - Source: TP-135 round-2 correctness review, suspicion S2.
 - Picked rate-limiting, not ignoring: an event while failing may be the fix (the TUN coming up), so it is held, not dropped. `apply` records when the attempt ended (`attempted`, in the same locked section as `failing`). While `failing`, the watcher's timer is what is left of `RetryAfter` since then (`retryIn`). A settled route event goes back to that timer, and so does the check after a failed Enforce. A guard-only failure (`guardFailing`) still re-applies on events at the debounce, and the guard's own Watch (`gch`) is untouched.
 
+## Review findings
+Round 1 (2026-10-31: go-paranoid, pocket-torvalds, go-style; 5 should-fix).
+- [ ] R1.1 (paranoid #1): RESIDUAL-RISKS.md RR22 and RR19 don't say that, while the routes fail, events (a hostile on-link route, a TUN drop) are held up to RetryAfter (5 s) before the re-apply, where they used to be taken at the 200 ms debounce. Make both rows accurate and consistent; check the PRD requirement their Breaks column names.
+- [ ] R1.2 (paranoid #2): the hold on the watcher's check after a failed Enforce (routetable.go:701) is untested; dropping `if e.retryIn() == 0` passes every test.
+- [ ] R1.3 (paranoid #3): that events on the other paths (`gch`, regwatch/rewatch) don't push the retry deadline back (`backstop`, routetable.go:810-811) is untested; reverting `backstop` to `wait = RetryAfter` passes every test.
+- [ ] R1.4 (pocket-torvalds S1): doc.go:232-233 promises a fix-carrying event while failing is taken within RetryAfter; no test bounds it (a `RetryAfter + retryInLocked()` mutation passes).
+- [ ] R1.5 (pocket-torvalds S2): the open point is wrong: TestEnforcerAppliesChangesAndReappliesOnEvents already took about 5 s for its retry step on rewrite; correct Notes/Log.
+- Nit: rewrap the Enforcer comment at routetable.go:271.
+
 ## Log
 - 2026-10-29 created in backlog (TP-135 round-2 review, S2)
 - 2026-10-31 backlog → in-progress, owner: agent-tp-148
@@ -39,3 +48,4 @@ While Apply keeps failing, the route-table Enforcer retries every `RetryAfter` (
 - 2026-10-31 `make lint`, `make test` green; `make lab-test` green on dc304af (36 packages). Not verified: on a real kernel, that the undo's RTM_DELRULE events are the ones the hold absorbs (that loop was not reproduced in the lab).
 - 2026-10-31 out of scope: while only the guard fails, a `gch`/`regwatch` event still restarts the `RetryAfter` backstop timer (pre-existing). While the routes fail, the deadline is now measured from the last attempt, so events no longer push it back.
 - 2026-10-31 in-progress → review
+- 2026-10-31 review → has-errors (round 1: 5 should-fix)
