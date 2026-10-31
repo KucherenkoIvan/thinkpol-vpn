@@ -33,6 +33,15 @@ After a supervisor restart, datagram replays within the freshness window do not 
 - **Independent review (2026-10-15):** replays pass for five minutes after every supervisor restart; a fresh WireGuard device answers them — the active-probing oracle docs/design/server-agent.md rules out. References: `supervisor_linux.go:859`, `sandbox_linux.go:75`, `shared.go:284-290`, `udp/router.go:24-26`. No test covered a restart before this ticket.
 - **TP-063:** replay and sender state live wherever the pre-auth filter lives after the gatekeeper move; coordinate tests with TP-070 so they are re-homed, not duplicated.
 
+## Review findings
+Round 1 reviews (correctness, design, style), orchestrator's list; nothing blocking, five should-fix.
+
+- [ ] R1.1 The start cutoff follows the wall clock: derive it at admission as now minus the monotonic time since the start, so an NTP step after a start neither refuses every dialer nor lets captures from the gap through. Test it with a wall step after the start. Fix the runbook's clock advice if it's now wrong.
+- [ ] R1.2 No start rule in a forwarded Listener (ListenForwarded): the Router in front is the gate; behind it the rule only refuses a lagging dialer after each worker restart or listener reopen and drops queued datagrams. Test: a forwarded Listener opened after a datagram was sealed still accepts it; "a worker restart loses nothing" true again.
+- [ ] R1.3 server-agent.md doesn't overclaim "across restarts": state the rule, its residual (the start's own second, a sender clock ahead) and its cost.
+- [ ] R1.4 RR34 names the clock dependence: a node that starts behind before NTP syncs is open; what a clock step (spoofed NTP included) does and doesn't do after R1.1.
+- [ ] R1.5 Keep accepting the start's own second, with the real reason (genuine traffic in the first second after a start, the real-clock tests and conformance suite), and say a restart that finishes within a second leaves that second's captures open.
+
 ## Log
 - 2026-10-15 created in backlog
 - 2026-10-15 docs: board fix-ups (log order, refs, parked notes)
@@ -45,3 +54,4 @@ After a supervisor restart, datagram replays within the freshness window do not 
 - 2026-10-31 not verified: a replayed WireGuard initiation across a real supervisor process restart in the lab (the supervisor test drives the shared listener with a fake worker; the datagram never reaches a worker, so no WireGuard device sees it)
 - 2026-10-31 make lint, make test green; make lab-test green on 4510855 (LAB_P=1); only this ticket file changes after it
 - 2026-10-31 in-progress → review
+- 2026-10-31 review → has-errors (round 1: 5 should-fix)
