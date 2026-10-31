@@ -176,6 +176,33 @@ func TestEngineCompositionSeverity(t *testing.T) {
 	}
 }
 
+// TestEngineCompositionThrottleIsNotTerminal: a Throttle, pinned or not,
+// never stops a later module from dropping or resetting the flow; in
+// either config order the drop wins once it comes, and the throttle
+// polices the packets before it.
+func TestEngineCompositionThrottleIsNotTerminal(t *testing.T) {
+	p := udpPacket(clientAddr, serverAddr, 1, 2, []byte("x"))
+	for _, pinned := range []bool{false, true} {
+		for _, throttleFirst := range []bool{true, false} {
+			throttle := &fixed{Decision{Verdict: Throttle, Flow: pinned}}
+			late := &dropAfter{n: 2}
+			mods := []Passive{throttle, late}
+			if !throttleFirst {
+				mods = []Passive{late, throttle}
+			}
+			eng := NewEngine(mods, nil, nil)
+			if a := eng.Handle(p); a.Verdict != Accept || !a.Throttled {
+				t.Errorf("pinned %v, throttle first %v: the first packet %+v, want throttled and within the rate", pinned, throttleFirst, a)
+			}
+			for i := 2; i <= 3; i++ {
+				if a := eng.Handle(p); a.Verdict != Drop || a.Module != "late-block" {
+					t.Errorf("pinned %v, throttle first %v: packet %d %+v, want late-block's drop", pinned, throttleFirst, i, a)
+				}
+			}
+		}
+	}
+}
+
 // TestEngineFlagsMergeBySeverity: of two flags waiting for a flow's next
 // packet, the more severe one is applied, whatever their order.
 func TestEngineFlagsMergeBySeverity(t *testing.T) {

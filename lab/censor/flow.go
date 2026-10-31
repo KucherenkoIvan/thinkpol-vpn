@@ -97,8 +97,8 @@ type Flow struct {
 	reverse *Flow
 	// pinned is the flow's terminal verdict, nil while none is.
 	pinned *rule
-	// done marks the passive modules (by index) that pinned Accept: they
-	// see the flow no more, the others still do.
+	// done marks the passive modules (by index) that pinned a verdict:
+	// they see the flow no more, the others still do.
 	done []bool
 	// tagged holds the modules that tagged the flow already.
 	tagged map[string]bool
@@ -122,6 +122,14 @@ func (f *Flow) Payload() []byte {
 		return f.Stream.Prefix()
 	}
 	return f.FirstDatagram
+}
+
+// retire stops passive module i of n seeing the flow.
+func (f *Flow) retire(i, n int) {
+	if f.done == nil {
+		f.done = make([]bool, n)
+	}
+	f.done[i] = true
 }
 
 // observe counts a packet of the flow and adds its payload.

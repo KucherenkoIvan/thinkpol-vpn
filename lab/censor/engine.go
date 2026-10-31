@@ -83,11 +83,13 @@ func (e *Engine) Unnoticed() uint64 { return e.flows.unnoticed.Load() }
 
 // Handle decides one packet.
 //
-// Composition: a flow's pinned blocking verdict decides it before any
-// module looks; otherwise the passive modules that haven't pinned Accept
-// on the flow see the packet in config order, and the first blocking
-// verdict decides it (and, pinned, the flow). Accept, pinned or not, never
-// ends the walk.
+// Composition: only Drop and Reset end the walk. A flow whose pinned
+// verdict is one of them is decided before any module looks; otherwise
+// the passive modules that haven't retired from the flow see the packet
+// in config order, and the most severe verdict among a pinned Throttle
+// and theirs decides it, the first module to give it winning a tie. A
+// Throttle, pinned or not, never stops a later module from dropping or
+// resetting the packet; Accept, pinned or not, never stops anything.
 func (e *Engine) Handle(p *Packet) Action {
 	now := e.now()
 	f, isNew := e.flows.flow(FlowKey{p.Proto, p.Src, p.Dst, p.SrcPort, p.DstPort}, now)
@@ -95,14 +97,16 @@ func (e *Engine) Handle(p *Packet) Action {
 	if isNew && len(e.flows.events) > 0 {
 		e.flows.publish(f.snapshot("", ""))
 	}
-	if r, ok := e.flows.takeFlag(f.Key); ok {
-		e.pin(f, r)
+	if r, ok := e.flows.takeFlag(f.Key); ok && e.pin(f, r) {
 		// flagFunc logged the flag already.
-		f.last = ruleKey{r.verdict, r.module}
-		f.logged[f.last] = true
+		f.logged[ruleKey{r.verdict, r.module}] = true
 	}
+	best := rule{verdict: Accept}
 	if f.pinned != nil {
-		return e.apply(f, p, *f.pinned, now)
+		if f.pinned.severity() == 2 {
+			return e.apply(f, p, *f.pinned, now)
+		}
+		best = *f.pinned
 	}
 	for i, m := range e.passives {
 		if f.done != nil && f.done[i] {
@@ -113,31 +117,30 @@ func (e *Engine) Handle(p *Packet) Action {
 			e.tag(f, m.Name(), d.Tag, now)
 		}
 		r := ruleOf(d, m.Name())
-		if r.severity() == 0 {
-			if d.Flow {
-				if f.done == nil {
-					f.done = make([]bool, len(e.passives))
-				}
-				f.done[i] = true
-			}
-			continue
-		}
 		if d.Flow {
+			// A module that pinned its verdict has said all it will about
+			// the flow.
+			f.retire(i, len(e.passives))
 			e.pin(f, r)
 		}
-		return e.apply(f, p, r, now)
+		if r.severity() == 2 {
+			return e.apply(f, p, r, now)
+		}
+		if r.severity() > best.severity() {
+			best = r
+		}
 	}
-	return e.apply(f, p, rule{verdict: Accept}, now)
+	return e.apply(f, p, best, now)
 }
 
-// pin makes r the flow's verdict unless a verdict as severe is pinned.
-func (e *Engine) pin(f *Flow, r rule) {
-	if r.severity() == 0 {
-		return
+// pin makes r the flow's verdict unless a verdict as severe is pinned, and
+// reports whether it did.
+func (e *Engine) pin(f *Flow, r rule) bool {
+	if r.severity() == 0 || f.pinned != nil && r.severity() <= f.pinned.severity() {
+		return false
 	}
-	if f.pinned == nil || r.severity() > f.pinned.severity() {
-		f.pinned = &r
-	}
+	f.pinned = &r
+	return true
 }
 
 // tag hands the flow to the active modules, once per tagging module.
