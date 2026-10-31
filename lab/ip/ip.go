@@ -12,7 +12,7 @@ import (
 type Packet struct {
 	Src, Dst netip.Addr
 	// Proto is the protocol of Payload: for IPv6, the next header past the
-	// extension headers.
+	// extension headers; for a later IPv6 fragment, the fragment header's.
 	Proto uint8
 	// Fragment is set for any fragment, first or later.
 	Fragment bool
@@ -20,7 +20,7 @@ type Packet struct {
 	// transport header.
 	LaterFragment bool
 	// Payload is what follows the IP header (and IPv6 extension headers):
-	// the transport header and its data.
+	// the transport header and its data, or a later fragment's data.
 	Payload []byte
 	// Bytes is the packet, trimmed to the length its header declares.
 	Bytes []byte
@@ -89,6 +89,10 @@ func Decode(b []byte) (Packet, bool) {
 				h.Fragment = true
 				h.LaterFragment = binary.BigEndian.Uint16(rest[2:])&0xfff8 != 0
 				next, rest = rest[0], rest[8:]
+				if h.LaterFragment {
+					// The rest is fragment data, not headers.
+					break exts
+				}
 			default: // a transport, ESP (opaque past here) or no next header
 				break exts
 			}
