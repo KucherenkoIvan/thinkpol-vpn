@@ -7,7 +7,7 @@ repo: thinkpol-vpn
 size: S
 depends_on: []
 refs: [RR14]
-owner: "agent-tp-157"
+owner: "agent-tp-157-fix1"
 branch: "tp-157-guard-after-a-crash-takeover-and-a-failed-first-apply"
 ---
 
@@ -54,3 +54,4 @@ After a crash takeover, the IPv6 guard is never wider than the new rules, even w
 - 2026-10-31 make lab-test (full, LAB_P=1) green on 13c53bb: 36 packages, routetable's lab tests included. Not verified: a real crash takeover on a device (the macOS pf anchor replaced by a failing first Apply), and the startup guard with an unsupported kernel; both by reasoning and the fakes only.
 - 2026-10-31 in-progress → review
 - 2026-10-31 review → has-errors (round 1: 3 should-fix + 1 doc from TP-153)
+- 2026-10-31 has-errors → in-progress, owner: agent-tp-157-fix1
