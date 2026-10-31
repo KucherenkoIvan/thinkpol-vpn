@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: M
 depends_on: []
 refs: [C1, C3, C6, docs/design/transports.md#transports]
-owner: ""
-branch: ""
+owner: "agent-tp-069"
+branch: "tp-069-replays-after-supervisor-restart"
 ---
 
 ## Goal
@@ -37,3 +37,4 @@ After a supervisor restart, datagram replays within the freshness window do not 
 - 2026-10-15 created in backlog
 - 2026-10-15 docs: board fix-ups (log order, refs, parked notes)
 - 2026-10-15 docs (backlog grooming): Pdeathsig cite fixed; note on TP-063 filter location
+- 2026-10-31 backlog → in-progress, owner: agent-tp-069
