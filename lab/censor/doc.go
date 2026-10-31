@@ -80,8 +80,8 @@
 // # The verdict log
 //
 // One JSON [LogEntry] per line, buffered and flushed every 100 ms and when
-// the censor stops, never synced: a flow's first decision, every later one
-// that changes its verdict or module, each tag and flag, and, when the
+// the censor stops, never synced: the first packet of a flow to get each
+// verdict from each module, each tag and flag, and, when the
 // censor stops, one summary per flow with its packets by what the queue
 // did with them. A flow of a million packets is a handful of lines.
 //

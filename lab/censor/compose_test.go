@@ -289,15 +289,29 @@ func TestReplayIsPassiveAndActive(t *testing.T) {
 	}
 }
 
-// TestEngineLogBoundedPerFlow: a long flow logs its first decision, one
-// entry per change, and a summary at shutdown, however many packets it
-// has.
+// TestEngineLogBoundedPerFlow: a long flow logs one entry per verdict and
+// module it gets, and a summary at shutdown, however many packets it has
+// and however often its verdict alternates.
 func TestEngineLogBoundedPerFlow(t *testing.T) {
 	var buf bytes.Buffer
 	eng := NewEngine([]Passive{&dropAfter{n: 501}}, nil, &buf)
 	p := udpPacket(clientAddr, serverAddr, 1, 2, []byte("x"))
 	for i := 0; i < 1000; i++ {
 		eng.Handle(p)
+	}
+	// Data dropped, empty packets accepted, alternating.
+	m, err := newBlockIP([]byte(`{"destinations": ["203.0.113.9"], "data": true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var altBuf bytes.Buffer
+	alternating := NewEngine([]Passive{m}, nil, &altBuf)
+	for i := 0; i < 1000; i++ {
+		alternating.Handle(tcpPacket(clientAddr, serverAddr, 3, 4, uint32(i), 1, Ack, []byte("x")[:i%2]))
+	}
+	alternating.Shutdown()
+	if n := strings.Count(altBuf.String(), "\n"); n != 3 {
+		t.Errorf("a flow alternating accept and drop logged %d lines, want 3:\n%s", n, altBuf.String())
 	}
 	eng.Shutdown()
 

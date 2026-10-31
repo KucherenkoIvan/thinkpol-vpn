@@ -70,7 +70,7 @@ func (e *Engine) Shutdown() {
 		}
 		e.log.write(LogEntry{
 			Time: now, Event: EventSummary, Flow: f.Key.String(), Packets: f.Packets, Bytes: f.Bytes,
-			Module: f.logged.module, Verdict: f.logged.verdict, Applied: applied,
+			Module: f.last.module, Verdict: f.last.verdict, Applied: applied,
 		})
 	}
 	e.log.close()
@@ -97,9 +97,9 @@ func (e *Engine) Handle(p *Packet) Action {
 	}
 	if r, ok := e.flows.takeFlag(f.Key); ok {
 		e.pin(f, r)
-		// flagFunc logged the flag: the flow's next entry is a change
-		// from it.
-		f.logged = ruleKey{r.verdict, r.module}
+		// flagFunc logged the flag already.
+		f.last = ruleKey{r.verdict, r.module}
+		f.logged[f.last] = true
 	}
 	if f.pinned != nil {
 		return e.apply(f, p, *f.pinned, now)
@@ -152,7 +152,7 @@ func (e *Engine) tag(f *Flow, module, why string, now time.Time) {
 	e.flows.publish(f.snapshot(module, why))
 	e.logEntry(LogEntry{
 		Time: now, Event: EventTag, Flow: f.Key.String(), Packets: f.Packets, Bytes: f.Bytes,
-		Module: module, Verdict: f.logged.verdict, Reason: why,
+		Module: module, Verdict: f.last.verdict, Reason: why,
 	})
 }
 
@@ -165,8 +165,8 @@ func (e *Engine) flagFunc(module string) FlagFunc {
 }
 
 // apply turns a rule into the packet's action, counts it and logs the
-// flow's decision when it changed: Reset needs TCP, Throttle asks the
-// flow's policer.
+// flow's decision the first time the flow gets that verdict from that
+// module: Reset needs TCP, Throttle asks the flow's policer.
 func (e *Engine) apply(f *Flow, p *Packet, r rule, now time.Time) Action {
 	a := Action{Verdict: r.verdict, Module: r.module, Reason: r.why}
 	switch r.verdict {
@@ -189,8 +189,9 @@ func (e *Engine) apply(f *Flow, p *Packet, r rule, now time.Time) Action {
 	if a.Throttled {
 		logged.verdict = Throttle
 	}
-	if f.Packets == 1 || logged != f.logged {
-		f.logged = logged
+	f.last = logged
+	if !f.logged[logged] {
+		f.logged[logged] = true
 		entry := LogEntry{
 			Time: now, Event: EventDecision, Flow: f.Key.String(), Packets: f.Packets, Bytes: f.Bytes,
 			Module: a.Module, Verdict: logged.verdict, Reason: a.Reason,

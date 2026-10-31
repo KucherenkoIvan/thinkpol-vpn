@@ -103,9 +103,11 @@ type Flow struct {
 	// tagged holds the modules that tagged the flow already.
 	tagged map[string]bool
 	bucket *tokenBucket
-	// logged is the verdict and module of the flow's latest decision
-	// entry; applied counts its packets by what the queue did.
-	logged  ruleKey
+	// logged holds every verdict and module the flow's decision entries
+	// named, last the latest; applied counts its packets by what the
+	// queue did.
+	logged  map[ruleKey]bool
+	last    ruleKey
 	applied map[Verdict]uint64
 }
 
@@ -193,7 +195,7 @@ func (t *flowTable) flow(key FlowKey, now time.Time) (*Flow, bool) {
 	if f, ok := t.flows[key]; ok {
 		return f, false
 	}
-	f := &Flow{Key: key, Started: now, applied: map[Verdict]uint64{}}
+	f := &Flow{Key: key, Started: now, logged: map[ruleKey]bool{}, applied: map[Verdict]uint64{}}
 	if key.Proto == ProtoTCP {
 		f.Stream = &Stream{}
 	}
