@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: [TP-135]
 refs: []
-owner: ""
-branch: ""
+owner: "agent-tp-153"
+branch: "tp-153-netcfg-watch-sees-a-rule-added-beside-ours"
 ---
 
 ## Goal
@@ -34,3 +34,4 @@ A rule carrying our protocol that someone else adds beside ours (e.g. a blackhol
 
 ## Log
 - 2026-10-29 created in backlog (TP-135 round-3 review)
+- 2026-10-31 backlog → in-progress, owner: agent-tp-153
