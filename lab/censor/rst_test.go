@@ -111,4 +111,15 @@ func TestRSTToReceiver(t *testing.T) {
 	if _, ok := rstToReceiver(syn); ok {
 		t.Error("an RST for a SYN's receiver, which has no connection")
 	}
+	// A SYN-ACK's receiver, in SYN-SENT, takes only an RST acknowledging
+	// its SYN.
+	synAck := tcpPacket(netip.MustParseAddr("198.51.100.2"), netip.MustParseAddr("192.0.2.1"), 443, 40000, 5000, 101, Syn|Ack, nil)
+	rst, ok := rstToReceiver(synAck)
+	if !ok {
+		t.Fatal("no RST for a SYN-ACK's receiver")
+	}
+	h, _ := ip.Decode(rst)
+	if tcp := h.Payload; tcp[13] != Rst|Ack || binary.BigEndian.Uint32(tcp[8:]) != 101 || checksum(pseudo4(h.Src, h.Dst, tcp)) != 0 {
+		t.Errorf("RST for a SYN-ACK: flags %#x ack %d, want RST|ACK acknowledging 101", tcp[13], binary.BigEndian.Uint32(tcp[8:]))
+	}
 }

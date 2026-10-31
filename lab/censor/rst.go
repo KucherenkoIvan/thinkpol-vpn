@@ -39,7 +39,9 @@ func rstToSender(p *Packet) []byte {
 // packet's source: the packet itself is dropped, so the receiver still
 // expects its sequence number, the one RST a receiver acts on at once
 // (RFC 5961). Only a packet with ACK has a receiver with a connection to
-// break: a SYN's never saw one.
+// break: a SYN's never saw one. A SYN-ACK's receiver is in SYN-SENT, where
+// only an RST acknowledging its SYN counts (RFC 793): it gets RST|ACK with
+// the SYN-ACK's acknowledgement number.
 func rstToReceiver(p *Packet) ([]byte, bool) {
 	if p.Flags&Ack == 0 {
 		return nil, false
@@ -50,6 +52,10 @@ func rstToReceiver(p *Packet) ([]byte, bool) {
 	binary.BigEndian.PutUint32(rst[4:], p.Seq)
 	rst[12] = 5 << 4
 	rst[13] = Rst
+	if p.Flags&Syn != 0 {
+		rst[13] |= Ack
+		binary.BigEndian.PutUint32(rst[8:], p.Ack)
+	}
 	if p.Dst.Is4() {
 		return buildTCP4(p.Src, p.Dst, rst), true
 	}

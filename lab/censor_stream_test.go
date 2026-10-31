@@ -24,7 +24,11 @@ import (
 // data segment): the censor's RST reaches device-a, from server-1's
 // address, and server-1, from device-a's, over both families; both have
 // the hop limit the router sends with, so neither was forwarded from the
-// other end; and the data itself never reaches server-1.
+// other end; each end acts on its RST, the connection gone from server-1
+// at once and neither end sending another packet on it (an RST at a
+// sequence number the end doesn't expect draws a challenge ACK, or is
+// ignored and leaves the connection open); and the data itself never
+// reaches server-1.
 func TestTCPResetReachesBothEnds(t *testing.T) {
 	t.Parallel()
 	l := lab.Start(t, lab.Standard())
@@ -42,23 +46,52 @@ func TestTCPResetReachesBothEnds(t *testing.T) {
 
 	filter := fmt.Sprintf("tcp port %d", tcpProbePort)
 	devCap, serverCap := dev.Capture(t, filter), server.Capture(t, filter)
+	censorRST := func(p lab.Packet, from netip.Addr) bool {
+		flags, ok := tcpFlags(p)
+		return ok && !p.Outgoing && p.Src == from && flags&censor.Rst != 0 && hopLimit(p) == 64
+	}
 	for _, dst := range serverAddrs(server) {
 		src := devAddrFor(dev, dst)
 		// The handshake completes, then one line of data; nc's exit says
 		// nothing the captures don't.
 		_, _ = execRead(dev, 30*time.Second, "sh", "-c",
 			fmt.Sprintf("{ sleep 1; echo hello; sleep 2; } | nc -w 5 %s %d || true", dst, tcpProbePort))
-		devCap.WaitFor(t, 10*time.Second, func(p lab.Packet) bool {
-			flags, ok := tcpFlags(p)
-			return ok && !p.Outgoing && p.Src == dst && p.SrcPort == tcpProbePort && flags&censor.Rst != 0 && hopLimit(p) == 64
-		})
-		serverCap.WaitFor(t, 10*time.Second, func(p lab.Packet) bool {
-			flags, ok := tcpFlags(p)
-			return ok && !p.Outgoing && p.Src == src && p.DstPort == tcpProbePort && flags&censor.Rst != 0 && hopLimit(p) == 64
+		devCap.WaitFor(t, 10*time.Second, func(p lab.Packet) bool { return censorRST(p, dst) && p.SrcPort == tcpProbePort })
+		serverCap.WaitFor(t, 10*time.Second, func(p lab.Packet) bool { return censorRST(p, src) && p.DstPort == tcpProbePort })
+		lab.Eventually(t, 5*time.Second, func() error {
+			out, err := execRead(server, pollTimeout, "ss", "-Htn", "state", "established", fmt.Sprintf("sport = :%d", tcpProbePort))
+			if err != nil {
+				return err
+			}
+			if strings.TrimSpace(out) != "" {
+				return fmt.Errorf("server-1 kept the connection the censor reset: %q", out)
+			}
+			return nil
 		})
 	}
-	if err := serverCap.Complete(); err != nil {
-		t.Fatal(err)
+	for _, end := range []struct {
+		name string
+		cap  *lab.Capture
+		peer func(netip.Addr) netip.Addr
+	}{
+		{"device-a", devCap, func(dst netip.Addr) netip.Addr { return dst }},
+		{"server-1", serverCap, func(dst netip.Addr) netip.Addr { return devAddrFor(dev, dst) }},
+	} {
+		if err := end.cap.Complete(); err != nil {
+			t.Fatal(err)
+		}
+		for _, dst := range serverAddrs(server) {
+			peer, reset := end.peer(dst), false
+			for _, p := range end.cap.Packets() {
+				switch {
+				case censorRST(p, peer):
+					reset = true
+				case reset && p.Outgoing && p.Dst == peer:
+					flags, _ := tcpFlags(p)
+					t.Errorf("%s sent flags %#x to %s after the censor's RST: an end that acts on its RST sends nothing more on the connection", end.name, flags, peer)
+				}
+			}
+		}
 	}
 	for _, p := range serverCap.Packets() {
 		if !p.Outgoing && len(p.Payload) > 0 {
