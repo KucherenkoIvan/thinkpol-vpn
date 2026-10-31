@@ -274,8 +274,10 @@
 // supervisor, so a restarted supervisor starts both afresh. Its Routers
 // refuse every datagram sealed before the second they started in, so a
 // tap's capture of the old supervisor's traffic reaches no worker; what
-// still gets in (a capture sealed in that second, or by a sender whose
-// clock ran ahead) is the udp package's residual (RESIDUAL-RISKS.md RR34).
+// still gets in (a capture sealed in that second, by a sender whose clock
+// ran ahead, or while the node's clock was behind or stepped back) is the
+// udp package's residual (RESIDUAL-RISKS.md RR34). The workers' Listeners
+// have no start rule of their own, so a worker restart costs nothing.
 //
 // # Streams
 //
