@@ -7,7 +7,7 @@ repo: thinkpol-vpn
 size: M
 depends_on: []
 refs: [C1, C3, C6, docs/design/transports.md#transports]
-owner: "agent-tp-069"
+owner: "agent-tp-069-fix1"
 branch: "tp-069-replays-after-supervisor-restart"
 ---
 
@@ -55,3 +55,4 @@ Round 1 reviews (correctness, design, style), orchestrator's list; nothing block
 - 2026-10-31 make lint, make test green; make lab-test green on 4510855 (LAB_P=1); only this ticket file changes after it
 - 2026-10-31 in-progress → review
 - 2026-10-31 review → has-errors (round 1: 5 should-fix)
+- 2026-10-31 has-errors → in-progress, owner: agent-tp-069-fix1
