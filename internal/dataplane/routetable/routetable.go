@@ -265,10 +265,11 @@ func PolicyRouting(w Want, s netcfg.Survey) netcfg.Config {
 // OwnerRouteTable: it applies each Want it is given, and applies it again
 // when Watch reports a change (an interface going down or up, its
 // subnets, the physical gateway, someone removing a route or rule of
-// ours), every Backstop anyway, and every RetryAfter while that fails:
-// while the routes fail, events wait for that retry, RetryAfter after the
-// last attempt, rather than re-applying a debounce later (a failing
-// Apply's undo is itself an event). Close removes everything. With a
+// ours or adding a rule with our protocol), every Backstop anyway, and
+// every RetryAfter while that fails: while the routes fail, events wait
+// for that retry, RetryAfter after the last attempt, rather than
+// re-applying a debounce later (a failing Apply's undo is itself an
+// event). Close removes everything, a crashed run's included. With a
 // Guard, the guard follows the routes at each step, never wider than the
 // routes in place nor the last Want (guardFor), with a status of its own:
 // its failure never undoes the routes or fails an Enforce.
@@ -474,8 +475,9 @@ func (e *Enforcer) pauseWatching() {
 
 // Enforce puts w's routes in place, all or nothing: on failure what was
 // in place stays, Enforce fails, and the watcher tries w again every
-// RetryAfter. The guard, if any, follows routes that went in; its own
-// failure doesn't fail Enforce (Status.GuardError says it, and the
+// RetryAfter. The guard, if any, follows routes that went in: none
+// before the first (a crashed run's stays until Close removes it); its
+// own failure doesn't fail Enforce (Status.GuardError says it, and the
 // watcher retries it).
 func (e *Enforcer) Enforce(ctx context.Context, w Want) error {
 	if w.TUN == "" {
@@ -523,6 +525,9 @@ func (e *Enforcer) apply(ctx context.Context, w Want, again bool) error {
 	}
 	held := e.applied
 	e.mu.Unlock()
+	// None before the first routes go in: a first Apply that fails fails
+	// the agent's start, whose Close removes any guard, a crashed run's
+	// too (TP-157). One here would only reset IPv6 flows on each retry.
 	if held != nil {
 		e.applyGuard(ctx, guardFor(*held, w))
 	}

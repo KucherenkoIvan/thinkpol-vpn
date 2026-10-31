@@ -562,6 +562,43 @@ func TestTheGuardIsTheIntersection(t *testing.T) {
 	}
 }
 
+// After a crash the crashed run's routes and guard are still in place,
+// and the guard may exempt what the new rules tunnel. A takeover whose
+// first Enforce fails applies no guard of its own (it would only be
+// undone), and the Close that undoes the failed start removes the
+// crashed run's guard and routes, though this Enforcer never applied
+// them.
+func TestAFailedFirstEnforcesCloseRemovesACrashedRunsGuard(t *testing.T) {
+	ep := netip.MustParseAddr("2001:db8:7::7")
+	crashed := routetable.GuardFor(routetable.Want{TUN: "thinkpol0", Direct: set(t, "2001:db8:d0::/48", "2001:db8:d1::/48"), Bypass: []netip.Addr{ep}})
+	f := &fakeConfigurator{events: make(chan struct{}), survey: up(), fail: true}
+	g := newFakeGuard(f)
+	g.applied = []routetable.Exempt{crashed} // what the crashed run's guard holds
+	e := routetable.OpenWithGuard(f, g, nil)
+	w := routetable.Want{TUN: "thinkpol0", Direct: set(t, "2001:db8:d0::/48"), Bypass: []netip.Addr{ep}}
+	if err := e.Enforce(context.Background(), w); err == nil {
+		t.Fatal("Enforce succeeded with failing routes")
+	}
+	if n := g.count(); n != 1 {
+		t.Errorf("%d guards applied before any routes went in, want none", n-1)
+	}
+	if st := e.Status(); st.Enforced || st.GuardEnforced {
+		t.Errorf("status %+v, want neither the routes nor a guard enforced", st)
+	}
+	if err := e.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	g.mu.Lock()
+	removed := g.closed
+	g.mu.Unlock()
+	f.mu.Lock()
+	routesRemoved := f.closed
+	f.mu.Unlock()
+	if !removed || !routesRemoved {
+		t.Errorf("after Close: the crashed run's guard removed %v, its routes %v; want both", removed, routesRemoved)
+	}
+}
+
 // The upstreams both exempt come out sorted and once each, whatever
 // order or repeats either side comes in.
 func TestIntersectUpstreamsTakesThemInAnyOrder(t *testing.T) {

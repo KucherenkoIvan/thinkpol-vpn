@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: []
 refs: []
-owner: ""
-branch: ""
+owner: "agent-tp-147"
+branch: "tp-147-link-bounce-test-races-a-pending-re-apply"
 ---
 
 ## Goal
@@ -32,3 +32,5 @@ branch: ""
 
 ## Log
 - 2026-10-29 created in backlog (lab flake seen 2026-10-28)
+- 2026-10-31 backlog → in-progress, owner: agent-tp-147
+- 2026-10-31 review → done, merged into rewrite (go-paranoid: merge; nit left: the address monitor's stderr is discarded, so a monitor that exits gives no reason)
