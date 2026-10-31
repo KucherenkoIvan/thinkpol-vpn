@@ -14,6 +14,8 @@ type Packet struct {
 	// Proto is the protocol of Payload: for IPv6, the next header past the
 	// extension headers.
 	Proto uint8
+	// Fragment is set for any fragment, first or later.
+	Fragment bool
 	// LaterFragment is set for a fragment past the first, which carries no
 	// transport header.
 	LaterFragment bool
@@ -48,6 +50,9 @@ func Decode(b []byte) (Packet, bool) {
 		// The offset alone: a first fragment still carries the transport
 		// header.
 		h.LaterFragment = binary.BigEndian.Uint16(b[6:])&0x1fff != 0
+		// More fragments or an offset; DF and the reserved bit don't
+		// count.
+		h.Fragment = binary.BigEndian.Uint16(b[6:])&0x3fff != 0
 		h.Payload = b[ihl:]
 	case 6:
 		if len(b) < 40 {
@@ -64,18 +69,27 @@ func Decode(b []byte) (Packet, bool) {
 	exts:
 		for {
 			switch next {
-			case 0, 43, 60: // hop-by-hop, routing, destination options
+			// Hop-by-hop, routing, destination options, mobility, HIP,
+			// shim6 and the two experimental types: RFC 6564's uniform
+			// format, length in 8-byte units past the first 8.
+			case 0, 43, 60, 135, 139, 140, 253, 254:
 				if len(rest) < 8 || len(rest) < 8+int(rest[1])*8 {
 					return Packet{}, false
 				}
 				next, rest = rest[0], rest[8+int(rest[1])*8:]
+			case 51: // AH: length in 4-byte units, minus 2
+				if len(rest) < 8 || len(rest) < (int(rest[1])+2)*4 {
+					return Packet{}, false
+				}
+				next, rest = rest[0], rest[(int(rest[1])+2)*4:]
 			case 44: // fragment
 				if len(rest) < 8 {
 					return Packet{}, false
 				}
+				h.Fragment = true
 				h.LaterFragment = binary.BigEndian.Uint16(rest[2:])&0xfff8 != 0
 				next, rest = rest[0], rest[8:]
-			default:
+			default: // a transport, ESP (opaque past here) or no next header
 				break exts
 			}
 		}

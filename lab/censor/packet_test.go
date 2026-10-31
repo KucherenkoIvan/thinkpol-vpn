@@ -151,6 +151,9 @@ func TestIsFragment(t *testing.T) {
 		{"ipv6 later fragment", v6(181, 44), true},
 		{"ipv6 later fragment behind hop-by-hop", v6(181, 0, 44), true},
 		{"ipv6 destination options only", v6(0, 60), false},
+		{"ipv6 later fragment behind AH", v6(181, 51, 44), true},
+		{"ipv6 first fragment behind AH and routing", v6(0, 51, 43, 44), true},
+		{"ipv6 AH only", v6(0, 51), false},
 		{"junk", []byte{0x01}, false},
 	} {
 		if got := isFragment(c.ip); got != c.want {

@@ -96,37 +96,13 @@ func decodePacket(b []byte) (Packet, bool) {
 }
 
 // isFragment reports whether b is an IP fragment, first or later, IPv4 or
-// IPv6. The router reassembles datagrams before the censor sees them (see
-// installQueueRule), so a fragment that still reaches the queue escaped
-// reassembly: its later fragments carry no ports, and accepting them would
-// let a blocked datagram's bytes through. The queue adapter drops them.
+// IPv6, whatever extension headers (AH included) precede an IPv6 fragment
+// header. The router reassembles datagrams before the censor sees them
+// (see installQueueRule), so a fragment that still reaches the queue
+// escaped reassembly: its later fragments carry no ports, and accepting
+// them would let a blocked datagram's bytes through. The queue adapter
+// drops them.
 func isFragment(b []byte) bool {
-	if len(b) < 1 {
-		return false
-	}
-	switch b[0] >> 4 {
-	case 4:
-		// More fragments, or a fragment offset; DF and the reserved bit
-		// don't count.
-		return len(b) >= 20 && binary.BigEndian.Uint16(b[6:])&0x3fff != 0
-	case 6:
-		if len(b) < 40 {
-			return false
-		}
-		next, rest := b[6], b[40:]
-		for {
-			switch next {
-			case 44:
-				return true
-			case 0, 43, 60:
-				if len(rest) < 8 || len(rest) < 8+int(rest[1])*8 {
-					return false
-				}
-				next, rest = rest[0], rest[8+int(rest[1])*8:]
-			default:
-				return false
-			}
-		}
-	}
-	return false
+	h, ok := ip.Decode(b)
+	return ok && h.Fragment
 }

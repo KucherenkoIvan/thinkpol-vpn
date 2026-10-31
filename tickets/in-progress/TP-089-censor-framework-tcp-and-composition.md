@@ -50,3 +50,4 @@ The censor framework can inspect multi-segment TCP handshakes, link reverse flow
 - 2026-10-15 docs (TP-024 round 3): acceptance for payload retention, passive-plus-active modules, composition, RSTs to both ends and the upstream-tell topology; out of scope corrected to what TP-024 delivers
 - 2026-10-16 docs(board): two acceptance items from TP-024 round-3 merge check (matrix one-family leak scoring; userspace IPv6 ext-header walk)
 - 2026-10-31 backlog → in-progress, owner: agent-tp-089
+- 2026-10-31 isFragment now reads lab/ip.Decode's new Fragment flag; Decode walks AH (4-byte units) and every RFC 6564 extension header (mutation: AH case renamed away, TestDecodeIPv6FragmentBehindAH and TestIsFragment's AH cases fail)
