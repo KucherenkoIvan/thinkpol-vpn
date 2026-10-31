@@ -22,7 +22,8 @@ func ruleOf(d Decision, module string) rule {
 }
 
 // severity orders the verdicts for composition: a flow's verdict is only
-// ever replaced by a more severe one.
+// ever replaced by a more severe one, and only the most severe (2) ends
+// the module walk.
 func (r rule) severity() int {
 	switch r.verdict {
 	case Drop, Reset:

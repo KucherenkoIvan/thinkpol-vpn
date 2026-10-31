@@ -17,8 +17,8 @@ const (
 	// Reset answers a TCP packet with an RST and discards it. On other
 	// protocols the engine drops instead: only TCP has resets.
 	Reset
-	// Throttle polices the flow to Decision.Rate: a packet over the rate
-	// is dropped, the rest pass. Nothing is held.
+	// Throttle polices the connection, both directions, to Decision.Rate:
+	// a packet over the rate is dropped, the rest pass. Nothing is held.
 	Throttle
 )
 
@@ -62,11 +62,12 @@ func (v *Verdict) UnmarshalJSON(b []byte) error {
 // Decision is what a passive module returns for one packet.
 type Decision struct {
 	Verdict Verdict
-	// Flow pins the verdict to the flow. A blocking verdict (Drop, Reset,
-	// Throttle) is then the flow's: every later packet is decided the
-	// same way without any module seeing it again. A pinned Accept is the
-	// module's alone: it sees the flow no more, and the modules after it
-	// still do.
+	// Flow pins the verdict to the flow, and the module sees the flow no
+	// more. A pinned Drop or Reset is then the flow's: every later packet
+	// is decided the same way without any module seeing it. A pinned
+	// Throttle is the flow's too, but the other modules still see its
+	// packets and may drop or reset them. A pinned Accept is the module's
+	// alone: the modules after it still see the flow.
 	Flow bool
 	// Rate and Burst are Throttle's: the bytes per second of payload the
 	// flow may send, and how many it may send at once (both defaulted
@@ -83,9 +84,11 @@ type Decision struct {
 
 // Passive is a module that decides each packet it is shown: a blocklist, a
 // fingerprint, a heuristic. Its Inspect runs, in config order, for every
-// packet until a module gives a blocking verdict, and for every packet of
-// a flow until a blocking verdict is pinned to it or the module pins
-// Accept. It must not keep Packet or Flow's buffers beyond the call
+// packet until a module drops or resets it, and for every packet of a flow
+// until a Drop or Reset is pinned to it or the module pins a verdict. A
+// module judging content reads the flow's stream ([Flow.Payload],
+// [Stream]), not Packet.Payload: the stream leaves out what the receiver
+// discards. It must not keep Packet or Flow's buffers beyond the call
 // without cloning what it needs, and per-flow state is its own business,
 // keyed by FlowKey.
 type Passive interface {
