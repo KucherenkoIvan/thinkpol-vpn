@@ -3,6 +3,7 @@
 package dataplane_test
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -42,6 +43,65 @@ func namespace(t *testing.T, prefix string) string {
 
 func inNamespace(ns string, args ...string) ([]byte, error) {
 	return exec.Command("ip", append([]string{"netns", "exec", ns}, args...)...).CombinedOutput()
+}
+
+// addressEvents follows ns's address changes (ip -o monitor address) from
+// the moment it returns until the test ends: one line per event.
+func addressEvents(t *testing.T, ns string) <-chan string {
+	t.Helper()
+	cmd := exec.Command("ip", "netns", "exec", ns, "ip", "-o", "monitor", "address")
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	lines := make(chan string, 64)
+	go func() {
+		defer close(lines)
+		for sc := bufio.NewScanner(out); sc.Scan(); {
+			lines <- sc.Text()
+		}
+	}()
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		for range lines {
+		}
+		_ = cmd.Wait()
+	})
+	// ip prints nothing once it listens: an address it must report says
+	// it does.
+	const marker = "192.0.2.147/32"
+	if out, err := inNamespace(ns, "ip", "addr", "add", marker, "dev", "lo"); err != nil {
+		t.Fatalf("ip addr add %s: %v\n%s", marker, err, out)
+	}
+	waitForLine(t, lines, func(l string) bool { return strings.Contains(l, marker) }, "the monitor reporting "+marker)
+	if out, err := inNamespace(ns, "ip", "addr", "del", marker, "dev", "lo"); err != nil {
+		t.Fatalf("ip addr del %s: %v\n%s", marker, err, out)
+	}
+	return lines
+}
+
+// waitForLine reads lines until one matches, failing the test after wait.
+func waitForLine(t *testing.T, lines <-chan string, match func(string) bool, what string) {
+	t.Helper()
+	timeout := time.After(wait)
+	var seen []string
+	for {
+		select {
+		case l, ok := <-lines:
+			if !ok {
+				t.Fatalf("waiting for %s: the monitor ended; it reported:\n%s", what, strings.Join(seen, "\n"))
+			}
+			if match(l) {
+				return
+			}
+			seen = append(seen, l)
+		case <-timeout:
+			t.Fatalf("waiting for %s: not seen in %v; the monitor reported:\n%s", what, wait, strings.Join(seen, "\n"))
+		}
+	}
 }
 
 // overlayInterface is netcfg's configurator as the engine's interface
@@ -268,10 +328,15 @@ func TestTheOverlayComesBackAfterALinkBounce(t *testing.T) {
 		}
 	}
 
+	// The kernel's removal of the address is the event to wait for, not
+	// its absence: a re-apply already under way when the link goes down
+	// (a link event from the setup, at most one per cooldown) may put it
+	// back on the down link right after.
+	events := addressEvents(t, a.ns)
 	ipLink("down")
-	if strings.Contains(addrs(), a.v6.String()) {
-		t.Fatal("the TUN kept its IPv6 address going down: nothing to test")
-	}
+	waitForLine(t, events, func(l string) bool {
+		return strings.HasPrefix(l, "Deleted ") && strings.Contains(l, " "+tun.DefaultName+" ") && strings.Contains(l, a.v6.String()+"/48")
+	}, "the TUN losing "+a.v6.String()+" going down")
 	ipLink("mtu", "1400")
 	ipLink("up")
 	// Wait for both: a re-apply already pending when the link went down may
