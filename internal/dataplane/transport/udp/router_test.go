@@ -66,7 +66,11 @@ func (s *supervisor) worker(tr *Transport, space *transport.SpaceID, peers trans
 		s.workers[*space] = fc
 	}
 	s.mu.Unlock()
-	return tr.ListenOn(fc, transport.Admission{Peers: peers, Camouflage: camo})
+	l, err := tr.ListenForwarded(fc, transport.Admission{Peers: peers, Camouflage: camo})
+	if err != nil {
+		panic(err)
+	}
+	return l.(*Listener)
 }
 
 type forwarded struct {
@@ -309,4 +313,133 @@ func TestRouterRoutesAndRejects(t *testing.T) {
 	if _, v := r.RouteDatagram(replay); v != transport.Replayed {
 		t.Fatalf("a replay after the secret left and came back: %v", v)
 	}
+}
+
+// A new Router, which a supervisor restart makes, refuses what its
+// predecessor routed: a tap's replay doesn't reach a worker while it could
+// still be fresh. What is sealed in the second the Router started in, or
+// later, routes as before, so the dialer carries on with the same sender
+// (TP-069).
+func TestANewRouterRefusesWhatWasSealedBeforeIt(t *testing.T) {
+	c := &clock{}
+	tr := New(Options{Now: c.now})
+	p := transporttest.SymmetricPeer()
+	table := transport.NewPeerTable(p.PeerLink)
+	sender := newSenderID(c.now())
+	datagram := func(counter uint64) []byte {
+		at := c.now()
+		return seal(nil, newAEAD(p.Credential, toListener), connIDFor(p.Credential, toListener, epochOf(at)), sender, at, counter, []byte("packet"), transport.Padding{})
+	}
+	before := tr.PacketRouter(table)
+	captured := [][]byte{datagram(0), datagram(1)}
+	for _, d := range captured {
+		if id, v := before.RouteDatagram(d); v != transport.Routed || id != p.Peer {
+			t.Fatalf("the first router: %v for %s", v, id)
+		}
+	}
+
+	c.advance(time.Second) // the restart ends in a later second than the capture
+	after := tr.PacketRouter(table).(*Router)
+	for _, d := range captured {
+		if id, v := after.RouteDatagram(d); v != transport.Stale || id != p.Peer {
+			t.Fatalf("a replay to the new router: %v for %s, want stale", v, id)
+		}
+	}
+	if got := after.Counters().StaleTimestamp; got != uint64(len(captured)) {
+		t.Errorf("counted %d stale timestamps, want %d", got, len(captured))
+	}
+	if id, v := after.RouteDatagram(datagram(2)); v != transport.Routed || id != p.Peer {
+		t.Fatalf("the dialer's next datagram: %v for %s", v, id)
+	}
+}
+
+// A Router takes what was sealed in the second it started in, and refuses
+// what was sealed in the second before: the sealed send time has a
+// one-second resolution, and refusing the start's own second would refuse
+// genuine traffic for up to a second after every start (TP-069).
+func TestARouterTakesTheSecondItStartedIn(t *testing.T) {
+	c := &clock{}
+	tr := New(Options{Now: c.now})
+	p := transporttest.SymmetricPeer()
+	r := tr.PacketRouter(transport.NewPeerTable(p.PeerLink)).(*Router)
+	second := r.start.at.Truncate(time.Second)
+	for _, tc := range []struct {
+		at   time.Time
+		want transport.Verdict
+	}{
+		{second.Add(-time.Nanosecond), transport.Stale},
+		{second, transport.Routed},
+	} {
+		d := seal(nil, newAEAD(p.Credential, toListener), connIDFor(p.Credential, toListener, epochOf(tc.at)), newSenderID(tc.at), tc.at, 0, []byte("packet"), transport.Padding{})
+		if _, v := r.RouteDatagram(d); v != tc.want {
+			t.Errorf("sealed %v from the start: %v, want %v", tc.at.Sub(r.start.at), v, tc.want)
+		}
+	}
+}
+
+// The start rule reads the second a Router started in on today's wall
+// clock, so an NTP step after the start moves it along: a node that
+// started ahead and stepped back still takes a dialer with the right
+// time, and one that started behind and stepped forward still refuses a
+// capture sealed before it started (TP-069).
+func TestTheStartRuleFollowsAClockStep(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		behind time.Duration // how far the node's wall clock was off when the Router started
+	}{
+		{"ahead, then stepped back", -time.Hour},
+		{"behind, then stepped forward", time.Minute},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &clock{off: -tc.behind}
+			tr := New(Options{Now: c.now})
+			tr.elapsed = c.elapsed
+			p := transporttest.SymmetricPeer()
+			r := tr.PacketRouter(transport.NewPeerTable(p.PeerLink)).(*Router)
+			started := time.Now() // the right time, a moment after the Router started
+			c.step(tc.behind)
+			sender := newSenderID(started)
+			datagram := func(at time.Time, counter uint64) []byte {
+				return seal(nil, newAEAD(p.Credential, toListener), connIDFor(p.Credential, toListener, epochOf(at)), sender, at, counter, []byte("packet"), transport.Padding{})
+			}
+			if _, v := r.RouteDatagram(datagram(started.Add(-30*time.Second), 0)); v != transport.Stale {
+				t.Errorf("a capture sealed before the start: %v, want stale", v)
+			}
+			if _, v := r.RouteDatagram(datagram(time.Now(), 1)); v != transport.Routed {
+				t.Errorf("a dialer with the right time: %v, want routed", v)
+			}
+		})
+	}
+}
+
+// A worker's Listener, behind a Router that started before it, has no
+// start rule of its own: a worker restart costs a dialer whose clock runs
+// behind nothing, and the Router still refuses the replays (TP-069).
+func TestAWorkerStartedAfterItsRouterTakesALaggingDialer(t *testing.T) {
+	c := &clock{}
+	tr := New(Options{Now: c.now})
+	p := transporttest.SymmetricPeer()
+	table := transport.NewPeerTable(p.PeerLink)
+	s := newSupervisor(t, tr, "127.0.0.1:0", table, nil)
+	defer func() { _ = s.public.Close() }()
+
+	c.advance(10 * time.Second) // the worker restarts later
+	w := s.worker(tr, nil, table, nil)
+	defer func() { _ = w.Close() }()
+	lagging := New(Options{Now: func() time.Time { return c.now().Add(-5 * time.Second) }})
+	client, err := lagging.Dial(context.Background(), s.public.LocalAddr().String(), transport.DialConfig{Credential: p.Credential})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = client.Close() }()
+	if err := client.WritePacket([]byte("behind by 5 s")); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), wait)
+	defer cancel()
+	l, _, err := w.Accept(ctx)
+	if err != nil {
+		t.Fatalf("the worker took no link: %v; counters %+v", err, w.Counters())
+	}
+	expectPacket(t, reads(l), []byte("behind by 5 s"))
 }

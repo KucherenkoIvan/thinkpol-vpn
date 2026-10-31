@@ -269,7 +269,8 @@ type SharedCounters struct {
 	ForwardedBytes uint64 `json:"forwarded_bytes"`
 	Streams        uint64 `json:"streams"`
 	// Stale and Replayed count the space's authenticated datagrams dropped
-	// as too old (clock window, replaced sender) or seen before.
+	// as too old (clock window, sealed before the router started, replaced
+	// sender) or seen before.
 	Stale    uint64 `json:"stale"`
 	Replayed uint64 `json:"replayed"`
 	// NoWorker counts datagrams dropped while no worker could take them
