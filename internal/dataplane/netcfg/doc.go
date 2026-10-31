@@ -49,8 +49,14 @@
 // Each kind Close removes stands alone: whatever happens to the rules, it
 // goes on with the routes; a failure to list the owner's routes skips
 // only the route deletes, and one to dump the addresses only the addresses
-// and interfaces. What a failure skips stays, with the owner's protocol,
-// for the owner's next configurator, and every failure is returned.
+// and interfaces. Every failure is returned. Rules and routes Close
+// leaves carry the owner's protocol, so the owner's next configurator (or
+// [Clear]) removes them, as after a crash. Addresses carry no protocol and
+// the record of what was added and changed lives only in memory: an
+// address Close leaves, and an MTU or up state it doesn't restore, stay
+// until the interface goes, since a later configurator takes such an
+// address as there already, used but not owned, and finds the interface
+// as it wants it.
 // Rules are added and deleted with raw RTM_NEWRULE and RTM_DELRULE
 // messages on one socket opened in the namespace at construction. An add's
 // undo sends the same message as a delete; a delete sends the dumped

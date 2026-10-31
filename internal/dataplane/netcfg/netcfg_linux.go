@@ -540,9 +540,10 @@ func (c *linuxConfigurator) Close() error {
 	}
 	c.closed = true
 	err := c.removeOwned()
-	// Whatever happens, the owner's place is freed: what is left carries
-	// the owner's protocol (and the ledger forgets it), so the next
-	// configurator of the owner takes it over, as after a crash.
+	// Whatever happens, the owner's place is freed. Rules and routes left
+	// carry the owner's protocol, so the owner's next configurator removes
+	// them, as after a crash; addresses and interface changes left go with
+	// the ledger's memory of them and stay until the interface goes.
 	c.h.Close()
 	c.h = nil
 	c.rules.Close()
@@ -558,9 +559,11 @@ func (c *linuxConfigurator) Close() error {
 // one. Each kind stands alone: rules go by removeOwnRules, whose failure
 // (someone's rule churn can't cause it) skips nothing else; a failure to
 // list the routes skips only the route deletes, and one to build the link
-// ops (the address dump) only the addresses and interfaces. What a
-// failure skips stays, carrying the owner's protocol, for the owner's
-// next configurator, as after a crash. Every error is returned, joined.
+// ops (the address dump) only the addresses and interfaces. Rules and
+// routes a failure leaves carry the owner's protocol, for the owner's
+// next configurator to remove, as after a crash; addresses and interface
+// changes it leaves carry nothing and stay until the interface goes (see
+// doc.go). Every error is returned, joined.
 func (c *linuxConfigurator) removeOwned() error {
 	var errs []error
 	// Rules leave before the routes they lead to.

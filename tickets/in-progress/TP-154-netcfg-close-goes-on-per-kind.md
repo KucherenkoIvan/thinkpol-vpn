@@ -23,7 +23,7 @@ Close removes what it can of each kind (rules, routes, addresses and links) even
 - Rule dumps during Close: done in TP-135 (`removeOwnRules`).
 
 ## Acceptance
-- [x] a unit test with a seam for each listing: routes failing still removes rules and restores links; links failing still removes rules and routes; both errors returned. Mutation: returning on either failure again fails it
+- [x] a lab test with a seam for each listing: routes failing still removes rules and restores links; links failing still removes rules and routes; both errors returned. Mutation: returning on either failure again fails it
 - [x] `make lint`, `make test`, `make lab-gotest PKG=./internal/dataplane/netcfg/...` pass
 
 ## Notes
@@ -40,7 +40,7 @@ Close removes what it can of each kind (rules, routes, addresses and links) even
 - 2026-10-31 removeOwned: each kind stands alone. Rules first (unchanged), then routes via the closeRoutes seam (a listing failure skips only the route deletes), then links via the closeLinks seam (a failure to build the link ops skips only closeAll); every error joined. removeOwned's comment and doc.go say what each failure skips. Test: TestCloseGoesOnWhenListingRoutesOrLinksFails (routes / links / both), seams FailCloseRouteListing and FailCloseLinkListing
 - 2026-10-31 mutations, run in the lab: returning on a route listing failure before the rules step fails the routes and both cases (rules left, links not restored, link error missing); the same for the link listing fails the links and both cases (rules and routes left, route error missing)
 - 2026-10-31 make lint, make test, make lab-gotest PKG=./internal/dataplane/netcfg/... pass; full make lab-test passes on 6629ee8
-- 2026-10-31 out of scope (not done): the Notes' dumpFamilies coupling. An IPv6 rule dump that keeps failing still stops Close deleting the IPv4 rules. Left for a follow-up because Scope lists routes and links only, and dumpFamilies is shared with Apply's dumpAllRules, where failing fast is right
+- 2026-10-31 out of scope (not done): the Notes' dumpFamilies coupling. An IPv6 rule dump that keeps failing still stops Close deleting the IPv4 rules. Left for a follow-up ticket (filed by the orchestrator) because Scope lists routes and links only, and dumpFamilies is shared with Apply's dumpAllRules, where failing fast is right
 - 2026-10-31 in-progress → review
 - 2026-10-31 review → has-errors (round 1: 1 should-fix docs, 1 follow-up)
 - 2026-10-31 has-errors → in-progress, owner: agent-tp-154-fix1
