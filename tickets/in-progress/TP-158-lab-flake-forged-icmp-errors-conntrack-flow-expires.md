@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: []
 refs: []
-owner: ""
-branch: ""
+owner: "agent-tp-158"
+branch: "tp-158-lab-flake-forged-icmp-errors-conntrack-flow-expires"
 ---
 
 ## Goal
@@ -32,3 +32,4 @@ branch: ""
 
 ## Log
 - 2026-10-29 created in backlog (lab flake seen in a full run)
+- 2026-10-31 backlog → in-progress, owner: agent-tp-158
