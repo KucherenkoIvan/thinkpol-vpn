@@ -45,6 +45,16 @@ The censor framework can inspect multi-segment TCP handshakes, link reverse flow
 ## Notes
 - TP-024 round-3 merge check (Grok): the two acceptance items above are leftovers from TP-024 review, not gaps in TP-024's delivered scope.
 
+## Review findings
+- [ ] R1.1 (blocker) Throttle ends the module walk; a later Drop/Reset must still win, pinned or not
+- [ ] R1.2 insertion: bad-checksum, no-ACK and SYN-data segments enter the stream though the receiver discards them
+- [ ] R1.3 far-future segments break the stream; ignore beyond a receive-window bound, log them
+- [ ] R1.4 same-offset out-of-order overlap keeps the newest copy; Linux keeps the first
+- [ ] R1.5 a reused 4-tuple inherits the old flow (stream, retired modules, pinned Accept)
+- [ ] R1.6 IPv6 later fragment: the walk parses fragment data as headers
+- [ ] R1.7 lab RST test checks the RST arrived, not that the connection was torn down
+- [ ] R1.8 throttle polices one direction only; police both or document
+
 ## Log
 - 2026-10-15 created in backlog (split from TP-024 review)
 - 2026-10-15 docs (TP-024 round 3): acceptance for payload retention, passive-plus-active modules, composition, RSTs to both ends and the upstream-tell topology; out of scope corrected to what TP-024 delivers
@@ -60,3 +70,4 @@ The censor framework can inspect multi-segment TCP handshakes, link reverse flow
 - 2026-10-31 make lint and make test green; full make lab-test green on 53d0f5a (rewrite merged in at a0ab02c; LAB_P=1 beside other runs): lab/ ok, 36 packages in nodes ok
 - 2026-10-31 out of scope, for the orchestrator: the RESULTS.md header the matrix writes still says "fail when it didn't"; `partial` never reaches a written file (a partial cell fails the run), so the header was left as generated
 - 2026-10-31 in-progress → review
+- 2026-10-31 review → has-errors (round 1: 1 blocker, 7 should-fix)
