@@ -20,10 +20,10 @@ import (
 // Its sender history is per credential and outlives table changes, as a
 // Listener's does. One Router serves every socket of the transport (the
 // supervisor keeps one per transport, across its listeners' reopens), so a
-// datagram replayed to another listener is still a replay. Only a new
-// Router (a supervisor restart) routes replays of datagrams sent in the
-// last ten minutes once more — five, if the sender's clock was right —
-// which the worker's Listener, if it kept running, still drops.
+// datagram replayed to another listener is still a replay. A new Router (a
+// supervisor restart) starts with no history, so it refuses whatever was
+// sealed before the second it started in; what that still lets in is in
+// the package doc (RESIDUAL-RISKS.md RR34).
 // A Router is safe for concurrent use.
 type Router struct {
 	t     *Transport

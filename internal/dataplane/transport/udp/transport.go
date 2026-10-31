@@ -157,7 +157,7 @@ type Counters struct {
 	Delivered       uint64 // packets
 	Cover           uint64 // authenticated datagrams that carried no packet
 	Unauthenticated uint64 // unknown connection id, bad tag, malformed
-	StaleTimestamp  uint64 // sent more than five minutes from our clock
+	StaleTimestamp  uint64 // sent more than five minutes from our clock, or before the receiver started
 	StaleSender     uint64 // an older sender while a newer one is active
 	Replayed        uint64 // a counter seen before, or behind the window
 	NoLink          uint64 // no link is open, and the datagram opens none
