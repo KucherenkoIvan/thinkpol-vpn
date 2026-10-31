@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: []
 refs: [RR14]
-owner: ""
-branch: ""
+owner: "agent-tp-157"
+branch: "tp-157-guard-after-a-crash-takeover-and-a-failed-first-apply"
 ---
 
 ## Goal
@@ -35,3 +35,4 @@ After a crash takeover, the IPv6 guard is never wider than the new rules, even w
 
 ## Log
 - 2026-10-29 created in backlog (TP-127 round-1 review)
+- 2026-10-31 backlog → in-progress, owner: agent-tp-157
