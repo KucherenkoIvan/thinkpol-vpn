@@ -358,9 +358,7 @@
 // A token `pfctl -E` doesn't print readably is looked up in `pfctl -s
 // References` by that pid; until it is found it is recorded by pid alone,
 // and the apply and the close both fail, so a reference is never held
-// unrecorded or forgotten (but for a record write that fails after `-E`
-// replaced a reference pf still lists: the old one is then dropped
-// unreleased, TP-159). The apply fails last: while pf is on (by that
+// unrecorded or forgotten. The apply fails last: while pf is on (by that
 // reference or another), it finishes enforcing (the bypass check, the
 // state kill), then reports the unread token, so the apply that turns pf
 // back on after a `pfctl -d` kills what pf passed while off even when the
@@ -375,14 +373,23 @@
 // a kernel address's hash and a pid is reused in time, so a released
 // value can come back as someone else's; both matching is as close as pf
 // lets anyone tell. If the guard finds pf off (someone ran `pfctl -d`), it
-// takes a new reference first, then releases the old one if pf still
-// lists it; if that release fails, the Apply finishes enforcing (the
-// bypass check, the state kill), then says so (the record names the new
-// reference, and the old one is left to pf). While pf is on, the
-// reference the guard knows is kept without reading whether pf still
-// lists it, by the apply and the poll alike: a `pfctl -d` and someone's
-// `pfctl -e` between two polls leave pf on by theirs alone, the states
-// made meanwhile unkilled (TP-161).
+// takes a new reference first, records it, then releases the old one if
+// pf still lists it; if that release fails, the Apply finishes enforcing
+// (the bypass check, the state kill), then says so, and the old reference
+// stays owed: the next Apply or Close retries it. If the record write
+// fails, the Apply fails and the guard keeps the old reference owed: the
+// Apply whose write succeeds releases it as above, and a Close before
+// that releases it, then the new one (failing, and kept for the next
+// Close in this run, while it can't). The record is replaced whole or
+// not at all, so a failed write leaves it naming the old reference, and
+// the guard never takes it over again as its own. Only this run knows
+// the new reference: after a crash the next start's routetable.Clear
+// releases the old one through the record, and the new one stays with pf
+// unrecorded (as do older owed ones, after more than one failed write).
+// While pf is on, the reference the guard knows is kept without reading
+// whether pf still lists it, by the apply and the poll alike: a `pfctl
+// -d` and someone's `pfctl -e` between two polls leave pf on by theirs
+// alone, the states made meanwhile unkilled (TP-161).
 //
 // `pfctl -s References` is read by the columns its header names: a line's
 // first field is the pid, and the token is the field where the header's
