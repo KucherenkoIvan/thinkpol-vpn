@@ -14,17 +14,38 @@ import (
 // the packets itself.
 type admitLadder struct {
 	counters counters
-	// A table receiver refuses datagrams sealed before the Unix second it
-	// started in: its memory of senders starts empty, and those could be
-	// a passive tap's replays of what its predecessor took (the package
-	// doc, "What a receiver accepts"). The dialer's ladder has no start.
-	started    uint32
-	hasStarted bool
+	start    startRule
 }
 
-// startedAt is the ladder of a table receiver started at now.
-func startedAt(now time.Time) admitLadder {
-	return admitLadder{started: uint32(now.Unix()), hasStarted: true} // wraps in 2106, as the sealed send time does
+// startRule is a receiver's start rule: a Router, or a Listener of its
+// own socket, refuses datagrams sealed before the Unix second it started
+// in. Its memory of senders starts empty, and those could be a passive
+// tap's replays of what its predecessor took (the package doc, "What a
+// receiver accepts"). The zero startRule refuses nothing: the dialer's,
+// and that of a Listener behind a Router.
+type startRule struct {
+	at      time.Time // with the clock's monotonic reading
+	elapsed func(start, now time.Time) time.Duration
+}
+
+// startedAt is the start rule of a receiver started now.
+func startedAt(t *Transport) startRule {
+	return startRule{at: t.now(), elapsed: t.elapsed}
+}
+
+// refuses reports whether a datagram sealed at sent was sealed before the
+// second the receiver started in, that second read on today's wall
+// clock: now less the monotonic time since the start. A wall clock step
+// since the start (an NTP sync) moves it along with the clock, so a step
+// back doesn't refuse every dialer for as long as the step, and a step
+// forward doesn't let in what was sealed in the gap. Five minutes after
+// the start, the freshness check refuses everything the rule would.
+func (r startRule) refuses(sent uint32, now time.Time) bool {
+	if r.elapsed == nil {
+		return false
+	}
+	started := now.Add(-r.elapsed(r.at, now))
+	return later(uint32(started.Unix()), sent) // wraps in 2106, as the sealed send time does
 }
 
 // admit runs the ladder over a datagram of a table receiver (a Listener
@@ -58,7 +79,7 @@ func (a *admitLadder) admitOne(dst []byte, s *senders, recv cipher.AEAD, d []byt
 	case err != nil:
 		a.counters.unauthenticated.Add(1)
 		return opened{}, dropUnauthenticated
-	case !o.fresh(now), a.hasStarted && later(a.started, o.sent):
+	case !o.fresh(now), a.start.refuses(o.sent, now):
 		a.counters.staleTimestamp.Add(1)
 		return opened{}, dropStaleTimestamp
 	}

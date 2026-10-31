@@ -41,7 +41,7 @@ type Router struct {
 var _ transport.PacketRouter = (*Router)(nil)
 
 func newRouter(t *Transport, peers transport.Peers) *Router {
-	return &Router{t: t, peers: peers, admitLadder: startedAt(t.now()), table: newSenderHistories(), scratch: make([]byte, 0, maxDatagram)}
+	return &Router{t: t, peers: peers, admitLadder: admitLadder{start: startedAt(t)}, table: newSenderHistories(), scratch: make([]byte, 0, maxDatagram)}
 }
 
 // RouteDatagram implements transport.PacketRouter.

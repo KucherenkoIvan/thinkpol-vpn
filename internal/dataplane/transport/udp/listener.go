@@ -48,14 +48,14 @@ type flow struct {
 	link  *serverLink // nil until a datagram opens one
 }
 
-func newListener(t *Transport, pc net.PacketConn, peers transport.Peers, camouflage transport.Camouflage) *Listener {
+func newListener(t *Transport, pc net.PacketConn, peers transport.Peers, camouflage transport.Camouflage, start startRule) *Listener {
 	l := &Listener{
 		t:           t,
 		pc:          pc,
 		peers:       peers,
 		camo:        transport.OrDrop(camouflage),
 		accept:      transport.NewInbox[*serverLink](acceptQueue),
-		admitLadder: startedAt(t.now()),
+		admitLadder: admitLadder{start: start},
 		table:       newSenderHistories(),
 		flows:       make(map[string]*flow),
 		scratch:     make([]byte, 0, maxDatagram),
