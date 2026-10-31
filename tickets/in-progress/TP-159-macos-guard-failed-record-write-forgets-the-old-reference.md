@@ -51,3 +51,4 @@ A record write that fails after `pfctl -E` never loses the reference the guard h
 - 2026-10-31 out of scope: an Apply's failed release of the old reference still drops it (told, "left to pf"); doc.go now says so, but it is the same forgetting class this ticket closed for the write path; a follow-up could keep it owed until Close
 - 2026-10-31 in-progress → review
 - 2026-10-31 review → has-errors (round 1: 4 should-fix)
+- 2026-10-31 has-errors → in-progress, owner: agent-tp-159-fix1
