@@ -7,7 +7,7 @@ repo: thinkpol-vpn
 size: S
 depends_on: []
 refs: []
-owner: "agent-tp-158"
+owner: "agent-tp-158-fix1"
 branch: "tp-158-lab-flake-forged-icmp-errors-conntrack-flow-expires"
 ---
 
@@ -48,3 +48,4 @@ branch: "tp-158-lab-flake-forged-icmp-errors-conntrack-flow-expires"
 - 2026-10-31 make lint, make test green; full make lab-test (LAB_P=4, no other labs) green on 547bbb2
 - 2026-10-31 in-progress → review
 - 2026-10-31 review → has-errors (round 1: 1 should-fix, 4 nits)
+- 2026-10-31 has-errors → in-progress, owner: agent-tp-158-fix1
