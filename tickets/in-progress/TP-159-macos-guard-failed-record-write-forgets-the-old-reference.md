@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: [TP-137]
 refs: [RR11]
-owner: ""
-branch: ""
+owner: "agent-tp-159"
+branch: "tp-159-macos-guard-failed-record-write-forgets-the-old-reference"
 ---
 
 ## Goal
@@ -37,3 +37,4 @@ A record write that fails after `pfctl -E` never loses the reference the guard h
 
 ## Log
 - 2026-10-29 created in backlog (TP-137 round-1 review)
+- 2026-10-31 backlog → in-progress, owner: agent-tp-159
