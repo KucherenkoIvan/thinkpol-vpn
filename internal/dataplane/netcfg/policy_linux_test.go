@@ -245,6 +245,47 @@ func TestApplyRemovesABlackholeBesideTheLookup(t *testing.T) {
 	}
 }
 
+// A blackhole someone adds beside an owner's rule, with the owner's
+// protocol, is an event of its own: the Apply it brings removes it, with
+// no other change to the namespace.
+func TestWatchBringsTheApplyThatRemovesATwin(t *testing.T) {
+	n := newTestNS(t)
+	n.dummy(t, "ovl0")
+	n.ip(t, "link", "set", "ovl0", "up")
+	c := n.configuratorFor(t, netcfg.OwnerRouteTable)
+	if err := c.Apply(context.Background(), policyConfig()); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch, err := c.Watch(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Nothing changes the namespace after the Apply but the blackhole, so
+	// any signal is the blackhole's; wait out stragglers first.
+	for quiet := false; !quiet; {
+		select {
+		case <-ch:
+		case <-time.After(300 * time.Millisecond):
+			quiet = true
+		}
+	}
+	proto := strconv.Itoa(int(netcfg.OwnerRouteTable.RouteProtocol()))
+	n.ip(t, "-4", "rule", "add", "priority", "5299", "to", "10.51.0.0/16", "blackhole", "protocol", proto)
+	select {
+	case <-ch:
+	case <-time.After(time.Second):
+		t.Fatal("the blackhole with our protocol brought no signal")
+	}
+	if err := c.Apply(ctx, policyConfig()); err != nil {
+		t.Fatal(err)
+	}
+	if got := ruleActions(t, n, netcfg.IPv4, 5299); !slices.Equal(got, []string{"lookup"}) {
+		t.Errorf("rule 5299 after the Apply the signal brought: %q, want only the lookup", got)
+	}
+}
+
 // cancelWhen is cancelled from the first Err that finds done true.
 type cancelWhen struct {
 	context.Context
@@ -385,6 +426,8 @@ func TestWatchSeesGatewayChangesAndOwnRemovals(t *testing.T) {
 	expect("the gateway changes", true, "route", "replace", "default", "via", "192.0.2.3")
 	expect("our route deleted", true, "route", "del", "10.51.0.0/16")
 	expect("our rule deleted", true, "rule", "del", "priority", "5300")
+	expect("a rule of ours added", true, "rule", "add", "priority", "6001", "blackhole", "protocol",
+		strconv.Itoa(int(netcfg.OwnerRouteTable.RouteProtocol())))
 	expect("a foreign rule added", false, "rule", "add", "priority", "6000", "table", "100")
 	expect("the default route goes", true, "route", "del", "default")
 	expect("a link goes down", true, "link", "set", "eth0", "down")
