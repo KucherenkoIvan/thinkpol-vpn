@@ -32,11 +32,11 @@ branch: "tp-158-lab-flake-forged-icmp-errors-conntrack-flow-expires"
 - Fix direction: keep the flow alive. The root's socket writes once a second while the two drop waits run (nothing answers the flow, so each write resets its 30 s unreplied timeout). Such a write would consume a forged error from the socket (sk_err), so a failing write fails the test as a forged error that reached the root. Raising the namespace's UDP timeout would only move the bound; shortening the waits would make them load-sensitive.
 
 ## Review findings
-- [ ] R1.1 (should-fix) stop the refresh goroutine in a defer on every exit path, before root.Close
-- [ ] R1.2 (nit) fail if the gap since the previous refresh write ever exceeds ~20 s
-- [ ] R1.3 (nit) fix the comment on a failed write ("the refresh reports it", not "fails the test here")
-- [ ] R1.4 (nit) "(30 s)" → "(30 s by default)"
-- [ ] R1.5 (nit, optional) ticket Log move-line format per tickets/README.md
+- [x] R1.1 (should-fix) stop the refresh goroutine in a defer on every exit path, before root.Close
+- [x] R1.2 (nit) fail if the gap since the previous refresh write ever exceeds ~20 s
+- [x] R1.3 (nit) fix the comment on a failed write ("the refresh reports it", not "fails the test here")
+- [x] R1.4 (nit) "(30 s)" → "(30 s by default)"
+- [ ] R1.5 (nit, optional) ticket Log move-line format per tickets/README.md (skipped: recent tickets use the comma form)
 
 ## Log
 - 2026-10-29 created in backlog (lab flake seen in a full run)
@@ -49,3 +49,9 @@ branch: "tp-158-lab-flake-forged-icmp-errors-conntrack-flow-expires"
 - 2026-10-31 in-progress → review
 - 2026-10-31 review → has-errors (round 1: 1 should-fix, 4 nits)
 - 2026-10-31 has-errors → in-progress, owner: agent-tp-158-fix1
+- 2026-10-31 merged origin/rewrite (TP-159)
+- 2026-10-31 fix round 1 in egress_linux_test.go, commit 02cca36: R1.1 the refresh stops via a sync.OnceValue that a defer also calls (it runs before root.Close's defer); R1.2 the refresh fails the test ("the root's flow went … without a write") when more than 20 s pass since the previous write, counted from the write before SetSpaces and checked on each tick and at stop; R1.3/R1.4 comment fixed; R1.5 skipped
+- 2026-10-31 mutations, lab, bound=true: (a) a forced t.Fatal after the first awaitDrops plus a Cleanup that prints whether the goroutine had exited: exited=false with the deferred stop removed, exited=true with it in place; (b) a 21 s sleep in the goroutine before its loop fails with "the root's flow went 21.014s without a write (limit 20s)"
+- 2026-10-31 `make lab-gotest PKG=./internal/agent/supervisor/... RUN=TestForgedICMPErrorsAreRefused/bound=true COUNT=12` (LAB_P=1, another lab of 10 to 19 tplab containers up): 12/12 pass
+- 2026-10-31 make lint, make test green; full make lab-test (LAB_P=1, other labs up) green on 02cca36 (36 packages)
+- 2026-10-31 in-progress → review
