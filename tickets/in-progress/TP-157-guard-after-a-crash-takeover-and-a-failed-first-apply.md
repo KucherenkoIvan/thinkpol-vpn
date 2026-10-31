@@ -30,9 +30,9 @@ After a crash takeover, the IPv6 guard is never wider than the new rules, even w
 - The retry interval while failing: TP-148.
 
 ## Acceptance
-- [ ] a unit test with the fake configurator and guard: a guard and routes left by a crash, then a first Apply with a narrower Want that fails; the guard after it exempts nothing the new Want doesn't. Mutation: `held == nil` skipping the guard again fails it
-- [ ] routetable doc.go's "no guard until" paragraph and RR14 say what happens at startup
-- [ ] `make lint`, `make test` pass
+- [x] a unit test with the fake configurator and guard: a guard and routes left by a crash, then a first Apply with a narrower Want that fails; the guard after it exempts nothing the new Want doesn't. Mutation: `held == nil` skipping the guard again fails it
+- [x] routetable doc.go's "no guard until" paragraph and RR14 say what happens at startup
+- [x] `make lint`, `make test` pass
 
 ## Notes
 - Source: TP-127 round-1 correctness review (pre-existing, logged out of scope there).
@@ -42,3 +42,6 @@ After a crash takeover, the IPv6 guard is never wider than the new rules, even w
 ## Log
 - 2026-10-29 created in backlog (TP-127 round-1 review)
 - 2026-10-31 backlog → in-progress, owner: agent-tp-157
+- 2026-10-31 `guardFor(held *Want, want)`: a nil held (no Want's routes in yet) is taken as want with nothing direct, so `apply` and `reapplyGuard` always apply a guard once a Want is given; a takeover's failing first Apply replaces the crashed run's guard with the new Want's endpoints, upstreams and mark (Notes: option picked and why). Tests: `TestAFailedFirstApplyReplacesACrashedRunsGuard` (fake guard seeded with a crashed guard, failing configurator, narrower Want) and `TestTheGuardBeforeAnyRoutesWentIn` (guardFor with nil held). Mutations run: `if held != nil` skipping the guard in apply again fails the first (exempts 2001:db8:d1::/48, GuardEnforced false); dropping `h.Direct = nil` (nil held → want's full guard) fails both.
+- 2026-10-31 docs: doc.go's "until a Want's routes first go in" paragraph and "Ownership and crashes" say what happens at a start; RR14 (When, What leaks, Ticket) and routing.md's guard bullet likewise. Also list done: the fix-while-failing slack widened to 1 s, the not-failing bound loosened to 2.5 s, and doc.go/RR19/RR22 retry timing made exact (RetryAfter after the attempt ends, or a debounce after the event if later: up to about 5.2 s). routing.md's "up to 5 s while the routes fail" (two bullets) left as is: a summary pointing at RR19/RR22.
+- 2026-10-31 make lint, make test green on the Mac; the first fix commit went in before make lint (an errcheck on `defer e.Close()`, fixed in the next commit).

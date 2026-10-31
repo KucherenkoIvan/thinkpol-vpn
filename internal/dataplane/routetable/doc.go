@@ -234,10 +234,10 @@
 // that is later: at most [RetryAfter] after the event, plus what was left
 // of the Apply under way when it came (one that comes during an Apply
 // that fails waits for [RetryAfter] after that Apply ends). A failing
-// guard alone doesn't hold events back. A re-apply that finds everything in place changes
-// nothing. [Status] says when the table isn't enforced (the TUN down
-// included: [ErrorTUNDown]) and the agent's health then says
-// `route_table_not_enforced` (down).
+// guard alone doesn't hold events back. A re-apply that finds everything
+// in place changes nothing. [Status] says when the table isn't enforced
+// (the TUN down included: [ErrorTUNDown]) and the agent's health then
+// says `route_table_not_enforced` (down).
 //
 // # The leak guard
 //
@@ -330,6 +330,6 @@
 // the agent starts again, bound sockets included (the guard stays too);
 // IPv4 flows, as with the kill switch off. The next start's first Apply
 // takes the guard over with the new rules', even when its routes fail
-// (the leak guard, above). That is the M1 behaviour; the
-// decided posture is stricter (docs/design/security.md "Kill switch").
+// (the leak guard, above). That is the M1 behaviour; the decided posture
+// is stricter (docs/design/security.md "Kill switch").
 package routetable
