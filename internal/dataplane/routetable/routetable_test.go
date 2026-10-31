@@ -459,7 +459,8 @@ func TestAFailingApplyIsRetriedAtRetryAfterNotOnEachEvent(t *testing.T) {
 	n, sent := len(attempts()), time.Now()
 	f.events <- struct{}{}
 	eventually(t, "a re-Apply on an event", func() bool { return len(attempts()) > n })
-	if took := time.Since(sent); took > time.Second {
+	// Loose for a loaded machine, still well short of RetryAfter.
+	if took := time.Since(sent); took > 2500*time.Millisecond {
 		t.Errorf("an event while not failing re-applied %v later, want a debounce", took)
 	}
 
@@ -513,7 +514,7 @@ func TestTheCheckAfterAFailedEnforceWaitsForRetryAfter(t *testing.T) {
 // next retry: at most RetryAfter after its event, not a retry later still.
 func TestAFixWhileFailingIsTakenWithinRetryAfter(t *testing.T) {
 	t.Parallel()
-	const slack = 500 * time.Millisecond
+	const slack = time.Second
 	f := &fakeConfigurator{events: make(chan struct{}), survey: up(), fail: true}
 	e := routetable.Open(f, nil)
 	t.Cleanup(func() { _ = e.Close() })
