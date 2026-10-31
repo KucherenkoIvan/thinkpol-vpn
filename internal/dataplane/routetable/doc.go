@@ -225,7 +225,13 @@
 // change, when its own routes or rules are removed (on macOS, when any
 // foreign route comes, goes or changes), once after each change of its
 // own, every [Backstop] (a minute) anyway, and every [RetryAfter] (5 s)
-// while that fails. A re-apply that finds everything in place changes
+// while that fails. While the routes fail, events don't re-apply a
+// debounce later: they wait for the next retry, [RetryAfter] after the
+// last attempt (the check after a failed Enforce too). A failing Apply's
+// undo removes rules of its own, itself an event, so retrying on events
+// would retry every debounce; an event that is the fix (the TUN coming
+// up) is taken at most [RetryAfter] later. A failing guard alone doesn't
+// hold events back. A re-apply that finds everything in place changes
 // nothing. [Status] says when the table isn't enforced (the TUN down
 // included: [ErrorTUNDown]) and the agent's health then says
 // `route_table_not_enforced` (down).

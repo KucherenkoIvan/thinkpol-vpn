@@ -384,9 +384,9 @@ func checkRoutesStayed(t *testing.T, f *fakeConfigurator, n int, old routetable.
 	}
 }
 
-// checkRepairs runs check after the routes' re-apply (the watcher's
-// check after an Enforce), then after the guard put back alone on its
-// own Watch's signal.
+// checkRepairs runs check after the routes' re-apply (after a failed
+// Enforce, the watcher's retry RetryAfter later), then after the guard
+// put back alone on its own Watch's signal.
 func checkRepairs(t *testing.T, e *routetable.Enforcer, g *fakeGuard, check func(when string)) {
 	t.Helper()
 	r := e.Status().Reapplies
