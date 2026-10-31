@@ -70,15 +70,26 @@ func addressEvents(t *testing.T, ns string) <-chan string {
 		}
 		_ = cmd.Wait()
 	})
-	// ip prints nothing once it listens: an address it must report says
-	// it does.
+	// ip prints nothing once it listens, so an address it reports says
+	// it does; one added before it listened goes unreported, and is added
+	// again.
 	const marker = "192.0.2.147/32"
-	if out, err := inNamespace(ns, "ip", "addr", "add", marker, "dev", "lo"); err != nil {
-		t.Fatalf("ip addr add %s: %v\n%s", marker, err, out)
+	ip := func(args ...string) {
+		t.Helper()
+		if out, err := inNamespace(ns, args...); err != nil {
+			t.Fatalf("%v: %v\n%s", args, err, out)
+		}
 	}
-	waitForLine(t, lines, func(l string) bool { return strings.Contains(l, marker) }, "the monitor reporting "+marker)
-	if out, err := inNamespace(ns, "ip", "addr", "del", marker, "dev", "lo"); err != nil {
-		t.Fatalf("ip addr del %s: %v\n%s", marker, err, out)
+	for deadline := time.Now().Add(wait); ; {
+		ip("ip", "addr", "add", marker, "dev", "lo")
+		seen, _, ended := lineWithin(lines, func(l string) bool { return strings.Contains(l, marker) }, 200*time.Millisecond)
+		ip("ip", "addr", "del", marker, "dev", "lo")
+		if seen {
+			break
+		}
+		if ended || time.Now().After(deadline) {
+			t.Fatalf("the address monitor never reported %s", marker)
+		}
 	}
 	return lines
 }
@@ -86,20 +97,32 @@ func addressEvents(t *testing.T, ns string) <-chan string {
 // waitForLine reads lines until one matches, failing the test after wait.
 func waitForLine(t *testing.T, lines <-chan string, match func(string) bool, what string) {
 	t.Helper()
-	timeout := time.After(wait)
-	var seen []string
+	found, seen, ended := lineWithin(lines, match, wait)
+	switch {
+	case ended:
+		t.Fatalf("waiting for %s: the monitor ended; it reported:\n%s", what, strings.Join(seen, "\n"))
+	case !found:
+		t.Fatalf("waiting for %s: not seen in %v; the monitor reported:\n%s", what, wait, strings.Join(seen, "\n"))
+	}
+}
+
+// lineWithin reads lines until one matches (found), within passes, or
+// lines ends; seen are the lines read that didn't match.
+func lineWithin(lines <-chan string, match func(string) bool, within time.Duration) (found bool, seen []string, ended bool) {
+	timeout := time.NewTimer(within)
+	defer timeout.Stop()
 	for {
 		select {
 		case l, ok := <-lines:
 			if !ok {
-				t.Fatalf("waiting for %s: the monitor ended; it reported:\n%s", what, strings.Join(seen, "\n"))
+				return false, seen, true
 			}
 			if match(l) {
-				return
+				return true, seen, false
 			}
 			seen = append(seen, l)
-		case <-timeout:
-			t.Fatalf("waiting for %s: not seen in %v; the monitor reported:\n%s", what, wait, strings.Join(seen, "\n"))
+		case <-timeout.C:
+			return false, seen, false
 		}
 	}
 }
