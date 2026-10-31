@@ -245,6 +245,47 @@ func TestApplyRemovesABlackholeBesideTheLookup(t *testing.T) {
 	}
 }
 
+// A blackhole someone adds beside an owner's rule, with the owner's
+// protocol, is an event of its own: the Apply it brings removes it, with
+// no other change to the namespace.
+func TestWatchBringsTheApplyThatRemovesATwin(t *testing.T) {
+	n := newTestNS(t)
+	n.dummy(t, "ovl0")
+	n.ip(t, "link", "set", "ovl0", "up")
+	c := n.configuratorFor(t, netcfg.OwnerRouteTable)
+	if err := c.Apply(context.Background(), policyConfig()); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch, err := c.Watch(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Nothing changes the namespace after the Apply but the blackhole, so
+	// any signal is the blackhole's; wait out stragglers first.
+	for quiet := false; !quiet; {
+		select {
+		case <-ch:
+		case <-time.After(300 * time.Millisecond):
+			quiet = true
+		}
+	}
+	proto := strconv.Itoa(int(netcfg.OwnerRouteTable.RouteProtocol()))
+	n.ip(t, "-4", "rule", "add", "priority", "5299", "to", "10.51.0.0/16", "blackhole", "protocol", proto)
+	select {
+	case <-ch:
+	case <-time.After(time.Second):
+		t.Fatal("the blackhole with our protocol brought no signal")
+	}
+	if err := c.Apply(ctx, policyConfig()); err != nil {
+		t.Fatal(err)
+	}
+	if got := ruleActions(t, n, netcfg.IPv4, 5299); !slices.Equal(got, []string{"lookup"}) {
+		t.Errorf("rule 5299 after the Apply the signal brought: %q, want only the lookup", got)
+	}
+}
+
 // cancelWhen is cancelled from the first Err that finds done true.
 type cancelWhen struct {
 	context.Context
@@ -385,6 +426,8 @@ func TestWatchSeesGatewayChangesAndOwnRemovals(t *testing.T) {
 	expect("the gateway changes", true, "route", "replace", "default", "via", "192.0.2.3")
 	expect("our route deleted", true, "route", "del", "10.51.0.0/16")
 	expect("our rule deleted", true, "rule", "del", "priority", "5300")
+	expect("a rule of ours added", true, "rule", "add", "priority", "6001", "blackhole", "protocol",
+		strconv.Itoa(int(netcfg.OwnerRouteTable.RouteProtocol())))
 	expect("a foreign rule added", false, "rule", "add", "priority", "6000", "table", "100")
 	expect("the default route goes", true, "route", "del", "default")
 	expect("a link goes down", true, "link", "set", "eth0", "down")
@@ -529,6 +572,73 @@ func TestCloseGoesOnWhenItsRulesFail(t *testing.T) {
 		return slices.DeleteFunc(lines, func(l string) bool { return strings.HasPrefix(l, "rule ") })
 	}
 	requireSame(t, "namespace after Close, rules aside", notRules(before), notRules(snapshot(t, n.h)))
+}
+
+// Close removes each kind on its own: a failure to list the owner's
+// routes skips only the route deletes, and a failure to build its link
+// ops (the address dump) only the addresses and interfaces. The rules go
+// whatever fails, and every failure is returned.
+func TestCloseGoesOnWhenListingRoutesOrLinksFails(t *testing.T) {
+	routesFailed := errors.New("a failed route listing")
+	linksFailed := errors.New("a failed link listing")
+	for _, tc := range []struct {
+		name                  string
+		failRoutes, failLinks bool
+	}{
+		{name: "routes", failRoutes: true},
+		{name: "links", failLinks: true},
+		{name: "both", failRoutes: true, failLinks: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			n := newTestNS(t)
+			n.dummy(t, "ovl0")
+			linksOf := func(lines []string) []string {
+				return slices.DeleteFunc(lines, func(l string) bool {
+					return !strings.HasPrefix(l, "link ") && !strings.HasPrefix(l, "addr ")
+				})
+			}
+			before := linksOf(snapshot(t, n.h))
+			c := n.configuratorFor(t, netcfg.OwnerRouteTable)
+			cfg := policyConfig()
+			cfg.Interfaces = []netcfg.Interface{{Name: "ovl0", Addrs: []netip.Prefix{pfx("100.64.0.7/10")}, MTU: 1380, Up: true}}
+			if err := c.Apply(context.Background(), cfg); err != nil {
+				t.Fatal(err)
+			}
+			applied := linksOf(snapshot(t, n.h))
+			if tc.failRoutes {
+				netcfg.FailCloseRouteListing(c, routesFailed)
+			}
+			if tc.failLinks {
+				netcfg.FailCloseLinkListing(c, linksFailed)
+			}
+			err := c.Close()
+			if got, want := errors.Is(err, routesFailed), tc.failRoutes; got != want {
+				t.Errorf("Close: %v; carries the route listing's error: %v, want %v", err, got, want)
+			}
+			if got, want := errors.Is(err, linksFailed), tc.failLinks; got != want {
+				t.Errorf("Close: %v; carries the link listing's error: %v, want %v", err, got, want)
+			}
+			if got := ownRules(t, n.h, netcfg.OwnerRouteTable); len(got) != 0 {
+				t.Errorf("rules left after Close: %q", got)
+			}
+			routes := ownerRoutes(t, n.h, netcfg.OwnerRouteTable)
+			if tc.failRoutes {
+				// Routes into ovl0 may go with its address; these don't.
+				for _, r := range []string{"unreachable 4242 default metric 2048", "throw 4242 10.50.0.0/16 metric 0", "throw 4242 fd50::/48 metric 1024"} {
+					if !slices.Contains(routes, r) {
+						t.Errorf("routes after Close: %q, want %q kept for the owner's next", routes, r)
+					}
+				}
+			} else if len(routes) != 0 {
+				t.Errorf("routes left after Close: %q", routes)
+			}
+			want := before
+			if tc.failLinks {
+				want = applied
+			}
+			requireSame(t, "links and addresses after Close", want, linksOf(snapshot(t, n.h)))
+		})
+	}
 }
 
 // churnRules adds an IPv4 rule at a new priority and deletes the one

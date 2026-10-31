@@ -45,8 +45,18 @@
 // rules; before that the churn fails the Apply too, since on a kernel that
 // drops the protocol unjudged rules would stay, no one's, until reboot.
 // Close needs no two dumps that agree: it deletes the owner's rules from
-// single dumps until two in a row show none (or, at the last dump, one),
-// and goes on with routes and interfaces whatever happens to the rules.
+// single dumps until two in a row show none (or, at the last dump, one).
+// Each kind Close removes stands alone: whatever happens to the rules, it
+// goes on with the routes; a failure to list the owner's routes skips
+// only the route deletes, and one to dump the addresses only the addresses
+// and interfaces. Every failure is returned. Rules and routes Close
+// leaves carry the owner's protocol, so the owner's next configurator (or
+// [Clear]) removes them, as after a crash. Addresses carry no protocol and
+// the record of what was added and changed lives only in memory: an
+// address Close leaves, and an MTU or up state it doesn't restore, stay
+// until the interface goes, since a later configurator takes such an
+// address as there already, used but not owned, and finds the interface
+// as it wants it.
 // Rules are added and deleted with raw RTM_NEWRULE and RTM_DELRULE
 // messages on one socket opened in the namespace at construction. An add's
 // undo sends the same message as a delete; a delete sends the dumped
@@ -170,8 +180,13 @@
 // an Apply. On Linux (rtnetlink): a link that came, went or changed flags
 // (a TUN going down takes its routes along without a word for IPv4), an
 // on-link route of the kernel's in main that came or went, a main-table
-// default route of no owner that came or went, and a route or rule of
-// this owner deleted. On macOS (the routing socket): an interface or its
+// default route of no owner that came or went, a route of this owner
+// deleted, and a rule with this owner's protocol added or deleted (one
+// added beside the owner's own, which the next Apply removes); a rule
+// event that can't be read counts, another protocol's rule never does.
+// The owner's own rule adds count as well, so an Apply that adds rules
+// while a watch runs brings one more, which finds nothing to do (an
+// Apply's own deletes did so already). On macOS (the routing socket): an interface or its
 // addresses changed, an unscoped route came, went or changed (but for
 // thinkpol's own adds), and a scoped route of thinkpol's went; the
 // kernel's clones never count. A lost burst (ENOBUFS) signals too.

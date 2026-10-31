@@ -60,8 +60,8 @@
 // # What a receiver accepts
 //
 // A datagram is delivered only if it authenticates under a credential in
-// the table, was sent within five minutes of the receiver's clock, and
-// passes the sender rules:
+// the table, was sent within five minutes of the receiver's clock, passes
+// the start rule below, and passes the sender rules:
 //
 //   - each of the last 8 senders of a credential has a sliding replay
 //     window of 1984 counters (a bitmap ring, as in RFC 6479); a counter
@@ -89,27 +89,64 @@
 //     link's reply address; an older counter of the current sender is
 //     delivered on an open link and dropped otherwise.
 //
+// The start rule: a receiver's memory of senders is per process and
+// starts empty, so a Router, and a Listener of its own socket, refuse
+// what was sealed before the Unix second they started in. Sealed before
+// the start and still fresh, a datagram is a predecessor's, replayed by a
+// passive tap, or a genuine one from a dialer whose clock runs behind: the
+// rule refuses that dialer for as long as it is behind after a start, at
+// most the five minutes it may be. The start second is read on today's
+// wall clock, the current time less the monotonic time since the start,
+// so a step of the wall clock after the start (an NTP sync) moves it
+// along: it neither refuses every dialer for as long as a step back nor
+// lets in what was sealed in the gap a step forward skips. (Where a
+// suspended node's monotonic clock stops, that only moves it later.) Five
+// minutes after the start the freshness check refuses everything the rule
+// would.
+// The start's own second is taken: the sealed send time has a one-second
+// resolution, and refusing that second would refuse genuine traffic for up
+// to a second after every start, and every test on a real clock.
+//
+// A Listener behind a Router ([Transport.ListenForwarded], a server's
+// worker) has no start rule: the Router started before it and refuses
+// what was sealed before then, so the rule there would refuse no replay
+// the Router lets through, only a dialer whose clock runs behind, again
+// after every worker restart or listener reopen, and the datagrams the
+// Router queued for the Listener before it opened. The dialer has none
+// either: it would refuse a listener whose clock runs behind for that long
+// after every dial, and its socket is connected to the endpoint and
+// answers only there, so a replay to it can't make it answer anyone else.
+//
 // Everything else goes to the camouflage, and is counted: stale timestamps
-// apart from the rest, so a clock that is off is easy to spot, and
-// datagrams no link could take apart from theirs. Nodes' clocks must agree
-// within five minutes.
+// (a sealed send time outside the five minutes, or before the receiver
+// started) apart from the rest, so a clock that is off is easy to spot,
+// and datagrams no link could take apart from theirs. Nodes' clocks must
+// agree within five minutes.
 //
 // The guarantee: a datagram's sealed send time is dead everywhere five
 // minutes after it — up to ten minutes after it was sent, if the sender's
 // clock was a full skew ahead — and within one listener's lifetime a
 // datagram it has seen, or a sender it has seen, never delivers twice or
 // moves a link. What remains:
-//   - the receiver's memory is per process. A listener restarted behind a
+//   - the receiver's memory is per process, the start rule has the
+//     sealed send time's one-second resolution, and it trusts the node's
+//     clock. Where the memory goes with the process that holds the
+//     WireGuard devices too (a supervisor restart, whose workers die with
+//     it, or a node in device mode restarting), a fresh capture the start
+//     rule takes for one sealed after the start still gets in: one sent
+//     in the start's own second (a restart that took less than a second);
+//     one from a sender whose clock ran ahead of the node's by more than
+//     the time from the capture to the start; one sealed less far before
+//     the start than the node's clock was behind when it started (before
+//     its first NTP sync), until a step corrects the clock; or one sealed
+//     less far before the start than a step back after it moved the clock
+//     (an attacker who can spoof NTP to the node can make that step). It
+//     opens a link (to the replayer's address, until the real dialer's
+//     next datagram moves it back) and delivers its packets once more, to
+//     a fresh WireGuard device that answers a replayed handshake
+//     initiation (RESIDUAL-RISKS.md RR34). A listener restarted behind a
 //     Router that keeps running (a server's worker under its supervisor)
-//     loses nothing: the Router still drops the replays. Where the memory
-//     goes with the process that holds the WireGuard devices too (a
-//     supervisor restart, whose workers die with it, or a node in device
-//     mode restarting), a replay of datagrams sent in the last ten minutes
-//     (five, if the sender's clock was right) opens a link (to the
-//     replayer's address, until the real dialer's next datagram moves it
-//     back) and delivers each of their packets once more, to a fresh
-//     WireGuard device that answers a replayed handshake initiation
-//     (RESIDUAL-RISKS.md RR34; TP-069);
+//     loses nothing: the Router still drops the replays;
 //   - an on-path attacker can hold back the newest datagram the listener
 //     never saw and show it later: ahead of the original, or, from an
 //     older sender, once the current sender has been quiet for 30 seconds
@@ -142,9 +179,9 @@
 // anyone with a passive tap can send, never reaches a worker or costs its
 // space anything while that supervisor runs. The supervisor keeps one
 // Router per transport, for all its sockets and across their reopens, so a
-// datagram replayed to another listener is still a replay. A new Router (a supervisor restart)
-// routes replays of the last ten minutes (five, if the sender's clock was
-// right) once more; the worker's Listener, if it kept running, would
-// still drop them, but workers die with the supervisor, so today they are
-// delivered and answered (not yet handled; see TP-069).
+// datagram replayed to another listener is still a replay. A new Router (a
+// supervisor restart) refuses what was sealed before it started; the
+// worker's Listener has no start rule, so a worker restart or a listener
+// reopen behind a running Router costs nothing; what a supervisor restart
+// still lets in is the first residual above.
 package udp

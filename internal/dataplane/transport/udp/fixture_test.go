@@ -19,8 +19,9 @@ const (
 
 // clock is a test clock: real time moved by an offset.
 type clock struct {
-	mu  sync.Mutex
-	off time.Duration
+	mu      sync.Mutex
+	off     time.Duration
+	stepped time.Duration // the part of off that step made
 }
 
 func (c *clock) now() time.Time {
@@ -33,6 +34,23 @@ func (c *clock) advance(d time.Duration) {
 	c.mu.Lock()
 	c.off += d
 	c.mu.Unlock()
+}
+
+// step moves the wall clock alone, as an NTP sync does: advance moves the
+// monotonic reading of now's times too, so elapsed takes the steps back
+// out. Transport.elapsed set to it holds for receivers started before the
+// first step.
+func (c *clock) step(d time.Duration) {
+	c.mu.Lock()
+	c.off += d
+	c.stepped += d
+	c.mu.Unlock()
+}
+
+func (c *clock) elapsed(start, now time.Time) time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return now.Sub(start) - c.stepped
 }
 
 // tap is a man in the middle on loopback for one dialer at a time: it
