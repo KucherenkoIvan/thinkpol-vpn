@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/netip"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -29,6 +30,7 @@ func TestEngineAppliesModules(t *testing.T) {
 	if a := eng.Handle(free); a.Verdict != Accept || a.Module != "" {
 		t.Errorf("free: %+v", a)
 	}
+	eng.Shutdown() // flushes the log
 
 	mr, _ := newBlockIP([]byte(`{"destinations": ["203.0.113.9"], "verdict": "reset"}`))
 	eng = NewEngine([]Passive{mr}, nil, nil)
@@ -39,7 +41,7 @@ func TestEngineAppliesModules(t *testing.T) {
 		t.Errorf("reset on tcp: %+v", a)
 	}
 
-	// The log has one JSONL line per decision.
+	// The log has the flows' decisions.
 	for _, want := range []string{
 		`"flow":"udp 192.0.2.1:1->203.0.113.9:2"`, `"verdict":"drop"`, `"module":"block-ip"`, `"verdict":"accept"`,
 	} {
@@ -49,18 +51,44 @@ func TestEngineAppliesModules(t *testing.T) {
 	}
 }
 
-// TestEngineThrottles checks the throttle decision the queue adapter
-// applies: a hold and what the packet becomes after it.
-func TestEngineThrottles(t *testing.T) {
-	m, err := newBlockIP([]byte(`{"destinations": ["203.0.113.9"], "verdict": "throttle"}`))
+// TestEngineThrottlePolices checks a throttled flow is policed, not held:
+// each packet is accepted or dropped at once, by a token bucket that
+// refills at the rate.
+func TestEngineThrottlePolices(t *testing.T) {
+	m, err := newBlockIP([]byte(`{"destinations": ["203.0.113.9"], "verdict": "throttle", "rate": 1000, "burst": 1000}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	eng := NewEngine([]Passive{m}, nil, nil)
-	p := udpPacket(netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("203.0.113.9"), 1, 2, []byte("x"))
-	a := eng.Handle(p)
-	if a.Verdict != Throttle || a.Hold <= 0 || a.Held != Accept {
-		t.Errorf("throttle: %+v", a)
+	clock := time.Unix(1000, 0)
+	eng.now = func() time.Time { return clock }
+	p := udpPacket(netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("203.0.113.9"), 1, 2, make([]byte, 600))
+
+	var got []Verdict
+	for i := 0; i < 3; i++ {
+		a := eng.Handle(p)
+		if !a.Throttled || a.Module != "block-ip" {
+			t.Fatalf("packet %d: %+v", i, a)
+		}
+		got = append(got, a.Verdict)
+	}
+	// 1000 tokens: 600 pass (400 left), 600 pass (-200), then empty.
+	if want := []Verdict{Accept, Accept, Drop}; !slices.Equal(got, want) {
+		t.Errorf("a burst of three: %v, want %v", got, want)
+	}
+	clock = clock.Add(100 * time.Millisecond) // +100 tokens: still -100
+	if a := eng.Handle(p); a.Verdict != Drop {
+		t.Errorf("before the debt is paid: %+v", a)
+	}
+	clock = clock.Add(time.Second)
+	if a := eng.Handle(p); a.Verdict != Accept {
+		t.Errorf("a second later: %+v", a)
+	}
+	empty := udpPacket(p.Src, p.Dst, 1, 2, nil)
+	for i := 0; i < 3; i++ {
+		if a := eng.Handle(empty); a.Verdict != Accept {
+			t.Errorf("a packet without payload on an empty bucket: %+v", a)
+		}
 	}
 }
 
@@ -84,18 +112,20 @@ func TestEngineFlowVerdictSticks(t *testing.T) {
 	}
 }
 
-// TestEnginePinnedThrottle keeps Hold and Held on a pinned flow verdict.
+// TestEnginePinnedThrottle polices a pinned throttle at the module's rate.
 func TestEnginePinnedThrottle(t *testing.T) {
-	m := &throttlePinModule{hold: 2 * time.Second, held: Drop}
+	m := &throttlePinModule{rate: 100, burst: 100}
 	eng := NewEngine([]Passive{m}, nil, nil)
-	p := udpPacket(netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("198.51.100.2"), 1, 2, []byte("x"))
-	a := eng.Handle(p)
-	if a.Verdict != Throttle || a.Hold != 2*time.Second || a.Held != Drop {
+	eng.now = func() time.Time { return time.Unix(1000, 0) }
+	p := udpPacket(netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("198.51.100.2"), 1, 2, make([]byte, 150))
+	if a := eng.Handle(p); a.Verdict != Accept || !a.Throttled {
 		t.Fatalf("first: %+v", a)
 	}
-	a = eng.Handle(p)
-	if a.Verdict != Throttle || a.Hold != 2*time.Second || a.Held != Drop {
-		t.Errorf("pinned: %+v", a)
+	if a := eng.Handle(p); a.Verdict != Drop || !a.Throttled || a.Module != "throttle-pin" {
+		t.Errorf("pinned, over the rate: %+v", a)
+	}
+	if m.saw != 1 {
+		t.Errorf("the module saw %d packets of a pinned flow", m.saw)
 	}
 }
 
@@ -210,14 +240,14 @@ func TestEngineHandleAfterShutdown(t *testing.T) {
 	eng.Shutdown() // a second Shutdown is harmless too
 }
 
-// TestEngineThrottleDefaults: a throttle with neither a hold nor a sane
-// after-hold verdict gets both defaults, not just the first.
+// TestEngineThrottleDefaults: a throttle with no rate gets the default
+// rate and burst.
 func TestEngineThrottleDefaults(t *testing.T) {
-	m := &throttlePinModule{held: Reset}
-	eng := NewEngine([]Passive{m}, nil, nil)
-	a := eng.Handle(udpPacket(netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("198.51.100.2"), 1, 2, []byte("x")))
-	if a.Verdict != Throttle || a.Hold <= 0 || a.Held != Accept {
-		t.Errorf("throttle without hold or held: %+v, want a default hold and held accept", a)
+	eng := NewEngine([]Passive{&throttlePinModule{}}, nil, nil)
+	eng.Handle(udpPacket(netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("198.51.100.2"), 1, 2, []byte("x")))
+	f := eng.flows.flows[FlowKey{ProtoUDP, netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("198.51.100.2"), 1, 2}]
+	if f == nil || f.bucket == nil || f.bucket.rate != defaultRate || f.bucket.burst != defaultBurst {
+		t.Errorf("throttle without rate or burst: %+v", f)
 	}
 }
 
@@ -233,14 +263,15 @@ func (m *countingModule) Inspect(p *Packet, f *Flow) Decision {
 }
 
 type throttlePinModule struct {
-	hold time.Duration
-	held Verdict
+	rate, burst int
+	saw         int
 }
 
 func (m *throttlePinModule) Name() string { return "throttle-pin" }
 
 func (m *throttlePinModule) Inspect(p *Packet, f *Flow) Decision {
-	return Decision{Verdict: Throttle, Flow: true, Hold: m.hold, Held: m.held}
+	m.saw++
+	return Decision{Verdict: Throttle, Flow: true, Rate: m.rate, Burst: m.burst}
 }
 
 type proberModule struct {

@@ -18,6 +18,11 @@ type FlowKey struct {
 	SrcPort, DstPort uint16
 }
 
+// Reverse is the key of the replies.
+func (k FlowKey) Reverse() FlowKey {
+	return FlowKey{Proto: k.Proto, Src: k.Dst, Dst: k.Src, SrcPort: k.DstPort, DstPort: k.SrcPort}
+}
+
 func (k FlowKey) String() string {
 	return fmt.Sprintf("%s %s:%d->%s:%d", k.Proto, k.Src, k.SrcPort, k.Dst, k.DstPort)
 }
@@ -70,39 +75,102 @@ func parseHostPort(s string) (netip.Addr, uint16, error) {
 	return netip.Addr{}, 0, fmt.Errorf("host:port %q", s)
 }
 
-// Flow is the censor's state of one flow, given to the modules with every
-// packet of it. Modules keep their own per-flow state, keyed by FlowKey.
+// Flow is the censor's state of one direction of a flow, given to the
+// passive modules with every packet of it. It is only ever touched from
+// the queue's serial callback, so a module reads it without locking; per-
+// flow state of a module's own is the module's business, keyed by FlowKey.
 type Flow struct {
 	Key     FlowKey
 	Started time.Time
-	// Packets and Bytes count what the censor saw in this direction, the
-	// triggering packet included.
+	// Last is when the censor saw the flow's latest packet.
+	Last time.Time
+	// Packets and Bytes (payload bytes) count what the censor saw in this
+	// direction, the triggering packet included.
 	Packets uint64
 	Bytes   uint64
+	// Stream is a TCP flow's bytes in order; nil for UDP.
+	Stream *Stream
+	// FirstDatagram is a UDP flow's first datagram with payload, up to
+	// retainBytes; nil for TCP.
+	FirstDatagram []byte
 
-	verdict *flowVerdict
+	reverse *Flow
+	// pinned is the flow's terminal verdict, nil while none is.
+	pinned *rule
+	// done marks the passive modules (by index) that pinned Accept: they
+	// see the flow no more, the others still do.
+	done []bool
+	// tagged holds the modules that tagged the flow already.
+	tagged map[string]bool
+	bucket *tokenBucket
+	// logged is the verdict and module of the flow's latest decision
+	// entry; applied counts its packets by what the queue did.
+	logged  ruleKey
+	applied map[Verdict]uint64
 }
 
-type flowVerdict struct {
-	action Action
+// Reverse is the flow of the replies, nil until the censor has seen one
+// of them. Both directions link each other.
+func (f *Flow) Reverse() *Flow { return f.reverse }
+
+// Payload is what the censor retained of the flow: a TCP stream's prefix,
+// a UDP flow's first datagram. A module that keeps it clones it.
+func (f *Flow) Payload() []byte {
+	if f.Stream != nil {
+		return f.Stream.Prefix()
+	}
+	return f.FirstDatagram
 }
 
-// FlowSnapshot is a copy of a flow handed to active modules so they never
-// share the flow table's mutable Flow.
+// observe counts a packet of the flow and adds its payload.
+func (f *Flow) observe(p *Packet, now time.Time) {
+	f.Packets++
+	f.Bytes += uint64(len(p.Payload))
+	f.Last = now
+	switch {
+	case f.Stream != nil:
+		f.Stream.add(p.Seq, p.Flags, p.Payload)
+	case f.FirstDatagram == nil && len(p.Payload) > 0:
+		f.FirstDatagram = append([]byte(nil), p.Payload[:min(len(p.Payload), retainBytes)]...)
+	}
+}
+
+func (f *Flow) snapshot(tagger, tag string) FlowSnapshot {
+	return FlowSnapshot{
+		Key: f.Key, Started: f.Started, Packets: f.Packets, Bytes: f.Bytes,
+		Payload: append([]byte(nil), f.Payload()...), Tagger: tagger, Tag: tag,
+	}
+}
+
+// FlowSnapshot is a copy of a flow handed to active modules, so they
+// never share the flow table's Flow: once when the censor sees the flow's
+// first packet, and once for each passive module that tags it.
 type FlowSnapshot struct {
 	Key     FlowKey
 	Started time.Time
 	Packets uint64
 	Bytes   uint64
+	// Payload is a copy of what the censor retained of the flow
+	// (Flow.Payload) when the snapshot was taken.
+	Payload []byte
+	// Tagger and Tag are the passive module that tagged the flow and why;
+	// both "" when the snapshot is of a new flow.
+	Tagger, Tag string
 }
 
 // The flow table is unbounded: a censor runs for one lab test, whose
-// traffic is a few thousand flows at most.
+// traffic is a few thousand flows at most. Each flow keeps at most
+// retainBytes of each kind of payload.
 type flowTable struct {
-	mu    sync.Mutex
-	flows map[FlowKey]*Flow
+	flows map[FlowKey]*Flow // the queue callback's alone
+
+	// flags holds verdicts active modules pinned, from their own
+	// goroutines, until the flow's next packet takes them.
+	flagsMu sync.Mutex
+	flags   map[FlowKey]rule
+
 	// events has one channel per active module. publish runs in the
-	// queue's serial callback, so it never waits: a new flow the channel
+	// queue's serial callback, so it never waits: a snapshot the channel
 	// has no room for is counted in unnoticed and not published, and the
 	// module still sees the later ones once it has caught up.
 	events    []chan FlowSnapshot
@@ -112,58 +180,55 @@ type flowTable struct {
 }
 
 func newFlowTable(active int) *flowTable {
-	t := &flowTable{flows: map[FlowKey]*Flow{}}
+	t := &flowTable{flows: map[FlowKey]*Flow{}, flags: map[FlowKey]rule{}}
 	for i := 0; i < active; i++ {
 		t.events = append(t.events, make(chan FlowSnapshot, 256))
 	}
 	return t
 }
 
-// flow finds the flow of a packet, creating it when new.
-func (t *flowTable) flow(key FlowKey, now time.Time, bytes uint64) (*Flow, bool) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	f, ok := t.flows[key]
-	isNew := !ok
-	if !ok {
-		f = &Flow{Key: key, Started: now}
-		t.flows[key] = f
+// flow finds the flow of a packet, creating it, linked to its reverse,
+// when new.
+func (t *flowTable) flow(key FlowKey, now time.Time) (*Flow, bool) {
+	if f, ok := t.flows[key]; ok {
+		return f, false
 	}
-	f.Packets++
-	f.Bytes += bytes
-	return f, isNew
+	f := &Flow{Key: key, Started: now, applied: map[Verdict]uint64{}}
+	if key.Proto == ProtoTCP {
+		f.Stream = &Stream{}
+	}
+	if r, ok := t.flows[key.Reverse()]; ok {
+		f.reverse, r.reverse = r, f
+	}
+	t.flows[key] = f
+	return f, true
 }
 
-// flag pins an action to a flow, whether or not it is running.
-func (t *flowTable) flag(key FlowKey, a Action) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	f, ok := t.flows[key]
-	if !ok {
-		f = &Flow{Key: key, Started: time.Now()}
-		t.flows[key] = f
+// flag keeps an active module's verdict for the flow's next packet; of
+// two flags, the more severe stays.
+func (t *flowTable) flag(key FlowKey, r rule) {
+	t.flagsMu.Lock()
+	defer t.flagsMu.Unlock()
+	if old, ok := t.flags[key]; !ok || r.severity() > old.severity() {
+		t.flags[key] = r
 	}
-	f.verdict = &flowVerdict{action: a}
 }
 
-// flagged is the action pinned to a flow, if any.
-func (t *flowTable) flagged(key FlowKey) *Action {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	f := t.flows[key]
-	if f == nil || f.verdict == nil {
-		return nil
-	}
-	return &f.verdict.action
+// takeFlag hands over the flag waiting for a flow, if any.
+func (t *flowTable) takeFlag(key FlowKey) (rule, bool) {
+	t.flagsMu.Lock()
+	defer t.flagsMu.Unlock()
+	r, ok := t.flags[key]
+	delete(t.flags, key)
+	return r, ok
 }
 
-// publish hands a new flow to every active module that has room for it,
+// publish hands a snapshot to every active module that has room for it,
 // without waiting; after closeEvents it does nothing.
-func (t *flowTable) publish(f *Flow) {
+func (t *flowTable) publish(snap FlowSnapshot) {
 	if len(t.events) == 0 {
 		return
 	}
-	snap := FlowSnapshot{Key: f.Key, Started: f.Started, Packets: f.Packets, Bytes: f.Bytes}
 	t.eventsMu.Lock()
 	defer t.eventsMu.Unlock()
 	if t.closed {

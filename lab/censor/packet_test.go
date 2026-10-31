@@ -161,3 +161,7 @@ func TestIsFragment(t *testing.T) {
 		}
 	}
 }
+
+func tcpPacket(src, dst netip.Addr, sport, dport uint16, seq, ack uint32, flags uint8, payload []byte) *Packet {
+	return &Packet{Src: src, Dst: dst, Proto: ProtoTCP, SrcPort: sport, DstPort: dport, Seq: seq, Ack: ack, Flags: flags, Payload: payload}
+}

@@ -4,7 +4,6 @@ import (
 	"net/netip"
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestBlockIPDropsByDestination(t *testing.T) {
@@ -33,9 +32,8 @@ func TestBlockIPSettings(t *testing.T) {
 		"no destinations": {`{}`, "no destinations"},
 		"bad destination": {`{"destinations": ["999.1.1.1"]}`, "destination"},
 		"bad verdict":     {`{"destinations": ["203.0.113.9"], "verdict": "poison"}`, "verdict"},
-		"bad hold":        {`{"destinations": ["203.0.113.9"], "verdict": "throttle", "hold": "soon"}`, "hold"},
-		"bad held":        {`{"destinations": ["203.0.113.9"], "held": "reset"}`, "held"},
-		"good throttle":   {`{"destinations": ["203.0.113.9"], "verdict": "throttle", "hold": "200ms"}`, ""},
+		"negative rate":   {`{"destinations": ["203.0.113.9"], "verdict": "throttle", "rate": -1}`, "rate"},
+		"good throttle":   {`{"destinations": ["203.0.113.9"], "verdict": "throttle", "rate": 1750}`, ""},
 		"good prefix":     {`{"destinations": ["203.0.113.0/24"]}`, ""},
 	} {
 		m, err := newBlockIP([]byte(tc.settings))
@@ -54,14 +52,30 @@ func TestBlockIPSettings(t *testing.T) {
 	}
 }
 
-func TestBlockIPThrottleHolds(t *testing.T) {
-	m, err := newBlockIP([]byte(`{"destinations": ["203.0.113.9"], "verdict": "throttle", "hold": "50ms"}`))
+func TestBlockIPThrottleRate(t *testing.T) {
+	m, err := newBlockIP([]byte(`{"destinations": ["203.0.113.9"], "verdict": "throttle", "rate": 500, "burst": 900}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	p := udpPacket(netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("203.0.113.9"), 1, 2, []byte("x"))
 	d := m.Inspect(p, &Flow{})
-	if d.Verdict != Throttle || d.Hold != 50*time.Millisecond || d.Held != Accept {
+	if d.Verdict != Throttle || d.Rate != 500 || d.Burst != 900 {
 		t.Errorf("throttle decision %+v", d)
+	}
+}
+
+// TestBlockIPDataOnly: with data, a packet without payload (the handshake)
+// passes and the first one with payload is decided.
+func TestBlockIPDataOnly(t *testing.T) {
+	m, err := newBlockIP([]byte(`{"destinations": ["203.0.113.9"], "verdict": "reset", "data": true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, dst := netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("203.0.113.9")
+	if d := m.Inspect(tcpPacket(src, dst, 1, 2, 100, 0, Syn, nil), &Flow{}); d.Verdict != Accept {
+		t.Errorf("SYN: %+v", d)
+	}
+	if d := m.Inspect(tcpPacket(src, dst, 1, 2, 101, 9, Ack|Psh, []byte("hi")), &Flow{}); d.Verdict != Reset {
+		t.Errorf("data: %+v", d)
 	}
 }

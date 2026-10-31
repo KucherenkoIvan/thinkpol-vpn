@@ -111,27 +111,19 @@ func serveQueue(ctx context.Context, cfg Config, eng *Engine) error {
 	return err
 }
 
-// decide applies the engine's action: mostly a verdict for the kernel,
-// once a RST the censor sends itself first, once a held packet whose
-// verdict comes later from another goroutine, which the netlink conn
-// tolerates.
+// decide applies the engine's action: a verdict for the kernel, after
+// the RSTs the censor sends itself for Reset. Nothing waits: a throttled
+// packet is already accepted or dropped by its flow's policer.
 func decide(eng *Engine, rst *rstSender, p *Packet, setVerdict func(Verdict)) {
 	a := eng.Handle(p)
-	switch a.Verdict {
-	case Reset:
+	if a.Verdict == Reset {
 		if err := rst.send(p); err != nil {
 			log.Printf("censor: %s: RST: %v", p, err)
 		}
 		setVerdict(Drop)
-	case Throttle:
-		held, hold := a.Held, a.Hold
-		go func() {
-			time.Sleep(hold)
-			setVerdict(held)
-		}()
-	default:
-		setVerdict(a.Verdict)
+		return
 	}
+	setVerdict(a.Verdict)
 }
 
 func setVerdict(nf *nfqueue.Nfqueue, id uint32, v Verdict) {
