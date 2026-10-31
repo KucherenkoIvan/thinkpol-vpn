@@ -558,6 +558,7 @@ func TestForgedICMPErrorsAreRefused(t *testing.T) {
 			if _, err := root.Write([]byte("root")); err != nil {
 				t.Fatal(err)
 			}
+			rootWritten := time.Now()
 			if err := s.SetSpaces([]supervisor.Space{
 				{ID: victim, Egress: grant, Config: []byte(internet4.String() + "#flow")},
 				{ID: forger, Egress: grant, Config: []byte(strings.Join(forged, "\n"))},
@@ -609,34 +610,54 @@ func TestForgedICMPErrorsAreRefused(t *testing.T) {
 				return
 			}
 			// Nothing answers the root's flow, so it expires
-			// nf_conntrack_udp_timeout (30 s) after its last packet, and
-			// under load the two waits below can together take longer:
-			// a write each second refreshes it. A write that fails is a
-			// socket error, which only a forged error can set, and the
-			// write consumes it, so it fails the test here.
+			// nf_conntrack_udp_timeout (30 s by default) after its last
+			// packet, and under load the two waits below can together
+			// take longer: a write each second refreshes it. A write
+			// that fails is a socket error, which only a forged error
+			// can set, and the write consumes it, so the refresh
+			// reports it. Each write can also create a new flow, so a
+			// gap between writes longer than the timeout would let the
+			// flow expire, the drops be counted untracked, and a later
+			// write recreate it for rootFlowTracked: a gap over
+			// maxRefreshGap fails the test instead.
+			const maxRefreshGap = 20 * time.Second
 			stopRefresh, refreshErr := make(chan struct{}), make(chan error, 1)
+			stopRefreshing := sync.OnceValue(func() error {
+				close(stopRefresh)
+				return <-refreshErr
+			})
+			defer func() { _ = stopRefreshing() }()
 			go func() {
 				tick := time.NewTicker(time.Second)
 				defer tick.Stop()
+				last := rootWritten
 				for {
+					var stop bool
 					select {
 					case <-stopRefresh:
-						refreshErr <- nil
-						return
+						stop = true
 					case <-tick.C:
 					}
-					if _, err := root.Write([]byte("root")); err != nil {
-						refreshErr <- err
+					if gap := time.Since(last); gap > maxRefreshGap {
+						refreshErr <- fmt.Errorf("the root's flow went %v without a write (limit %v): it may have expired and been recreated, so the drops may not have tested the binding", gap.Round(time.Millisecond), maxRefreshGap)
 						return
 					}
+					if stop {
+						refreshErr <- nil
+						return
+					}
+					if _, err := root.Write([]byte("root")); err != nil {
+						refreshErr <- fmt.Errorf("a forged ICMP error reached the root's socket: %w", err)
+						return
+					}
+					last = time.Now()
 				}
 			}()
 			awaitDrops(t, "input", inputDrops, 20)
 			awaitDrops(t, "space_accept", acceptDrops, 10)
 			tracked := rootFlowTracked()
-			close(stopRefresh)
-			if err := <-refreshErr; err != nil {
-				t.Fatalf("a forged ICMP error reached the root's socket: %v", err)
+			if err := stopRefreshing(); err != nil {
+				t.Fatal(err)
 			}
 			if !tracked {
 				t.Fatal("the root's conntrack flow expired before the forged errors were counted: the test proves nothing")
