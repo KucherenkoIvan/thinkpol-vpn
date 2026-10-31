@@ -43,3 +43,4 @@ Close removes what it can of each kind (rules, routes, addresses and links) even
 - 2026-10-31 out of scope (not done): the Notes' dumpFamilies coupling. An IPv6 rule dump that keeps failing still stops Close deleting the IPv4 rules. Left for a follow-up because Scope lists routes and links only, and dumpFamilies is shared with Apply's dumpAllRules, where failing fast is right
 - 2026-10-31 in-progress → review
 - 2026-10-31 review → has-errors (round 1: 1 should-fix docs, 1 follow-up)
+- 2026-10-31 has-errors → in-progress, owner: agent-tp-154-fix1
