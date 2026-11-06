@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: []
 refs: []
-owner: ""
-branch: ""
+owner: "agent-tp-176"
+branch: "tp-176-lab-gotest-skips-lab-tagged-tests"
 ---
 
 ## Goal
@@ -37,3 +37,4 @@ branch: ""
 
 ## Log
 - 2026-11-07 created in backlog
+- 2026-11-07 backlog → in-progress, owner: agent-tp-176
