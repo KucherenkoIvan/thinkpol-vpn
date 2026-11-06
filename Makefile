@@ -148,8 +148,8 @@ lab-perf: ## performance gates, alone on the host: waits for every other lab run
 	$(LABCTL) gotest -perf -v -p 1 -run '$(LAB_PERF_RUN)' $(LAB_PERF_PKGS)
 
 lab-gotest: export LAB_RUN = $(RUN)
-lab-gotest: ## run PKG's tests inside a lab node with THINKPOL_LAB=1 (PKG=./internal/... RUN=regexp COUNT=n)
-	$(LABCTL) gotest -v -run "$$LAB_RUN" $(if $(COUNT),-count $(COUNT) -timeout 60m) $(or $(PKG),./...)
+lab-gotest: ## run PKG's tests inside a lab node with THINKPOL_LAB=1, its lab-tagged tests on the host; fails if all skip (PKG=./internal/... RUN=regexp COUNT=n)
+	$(LABCTL) gotest -v -tagged -fail-skipped -run "$$LAB_RUN" $(if $(COUNT),-count $(COUNT) -timeout 60m) $(or $(PKG),./...)
 
 lab-down: ## remove every lab this checkout started
 	$(LABCTL) down
