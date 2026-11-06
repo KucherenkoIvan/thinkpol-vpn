@@ -122,6 +122,7 @@ Made by the project owner after the macOS device run of the consolidation phase.
   - TP-046's hook-retry box is closed by accepting the fake-pfctl tests.
   - TP-111 keeps its 2026-10-18 decisions.
 - **No M2 feature ticket starts until this phase ends.**
+  - Amended (owner, 2026-11-07): M2 work that runs only in the lab (the censor modules, the WireGuard rhythm check, `reality`, lab tooling) may run alongside the phase's end; M2 work that touches a device, the kill switch or the code the phase's tickets change still waits.
 
 ## MVP cut (owner, 2026-11-07)
 
