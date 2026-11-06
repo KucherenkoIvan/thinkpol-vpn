@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: [TP-128]
 refs: []
-owner: ""
-branch: ""
+owner: "agent-tp-130"
+branch: "tp-130-resolvconf-failed-uplink-read-on-a-change-never-heals"
 ---
 
 ## Goal
@@ -30,3 +30,4 @@ On the resolv.conf path, a read of resolved's uplink file that fails on the tick
 
 ## Log
 - 2026-10-22 created in backlog (TP-128 review round 1)
+- 2026-11-07 backlog → in-progress, owner: agent-tp-130
