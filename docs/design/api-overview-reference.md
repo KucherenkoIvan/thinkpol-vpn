@@ -264,7 +264,7 @@ Other lines appear when they apply:
 }
 ```
 
-The health problem vocabulary (`internal/agent/status.go`): `disconnected`, `removed_from_space`, `starting`, `retrying`, `apply_failed`, `no_link_up`, `neighbor_down`, `entries_skipped`, `worker_down`, `worker_restarted`, `links_rejected`, `rule_preset_unavailable`, `route_table_not_enforced`, `policy_rules_ahead`, `overlay_routes_ahead`, `ipv6_guard_not_enforced`, `ipv6_guard_unsupported`, `dns_not_protected`, `dns_upstreams_stale`, `dns_upstream_refused`.
+The health problem vocabulary (`internal/agent/status.go`): `disconnected`, `removed_from_space`, `starting`, `retrying`, `apply_failed`, `no_link_up`, `neighbor_down`, `entries_skipped`, `worker_down`, `worker_restarted`, `links_rejected`, `rule_preset_unavailable`, `route_table_not_enforced`, `policy_rules_ahead`, `overlay_routes_ahead`, `ipv6_guard_not_enforced`, `ipv6_guard_unsupported`, `dns_not_protected`, `dns_upstreams_stale`, `dns_upstream_refused`, `dns_no_upstream`. `no_link_up` also covers a dialed node that never linked within the path layer's dead interval (6 s): it is listed as a neighbor, down, from then on.
 
 #### `connect` and `disconnect`
 

@@ -56,6 +56,7 @@ func (r *runner) newResolver() *dns.Server {
 		}
 	}
 	r.upstreams = slices.Clone(upstreams)
+	r.directUpstreams.Store(int64(len(upstreams)))
 	o := dns.Options{Upstreams: upstreams, Port: r.dp.tuning.dnsPort, Log: r.dp.Log}
 	if r.follow.section.Node.Kind == netmap.NodeDevice {
 		o.TunnelControl = dns.BindToInterface(r.tun)
@@ -82,7 +83,19 @@ func (r *runner) setUpstreams(ups []netip.AddrPort) {
 	}
 	r.resolver.SetUpstreams(ups)
 	r.upstreams = slices.Clone(ups)
+	r.directUpstreams.Store(int64(len(ups)))
 	r.dp.Log.Info("DNS: the resolver's upstreams changed", "upstreams", len(ups))
+}
+
+// noUpstream is what a device's status reads to say its running
+// resolver has no direct upstream to ask; nil without one. A worker's
+// resolver reports its upstreams as dns_upstream_refused instead.
+func (r *runner) noUpstream() func() bool {
+	if r.resolver == nil || r.dp.inWorker() {
+		return nil
+	}
+	count := &r.directUpstreams
+	return func() bool { return count.Load() == 0 }
 }
 
 // dnsGuard is a device's OS resolver configuration while it should
@@ -143,7 +156,7 @@ func (r *runner) systemConfig() (dns.SystemConfig, bool) {
 	}
 	if len(r.dp.DNSUpstreams) == 0 {
 		srv, own, log := r.resolver, []netip.Addr{r.follow.section.Node.IPv4, r.follow.section.Node.IPv6}, r.dp.Log
-		routes, unknown := r.routes, &r.upstreamsUnknown
+		routes, unknown, count := r.routes, &r.upstreamsUnknown, &r.directUpstreams
 		c.UpstreamsUnknown = unknown.Load()
 		c.Upstreams = func(host []netip.Addr) {
 			unknown.Store(false)
@@ -154,6 +167,7 @@ func (r *runner) systemConfig() (dns.SystemConfig, bool) {
 				}
 			}
 			srv.SetUpstreams(ups)
+			count.Store(int64(len(ups)))
 			if routes != nil {
 				if err := routes.SetDirectUpstreams(context.Background(), ups); err != nil {
 					log.Warn("DNS: keeping the direct upstreams reachable failed", "err", path.RedactError(err))

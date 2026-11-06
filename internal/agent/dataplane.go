@@ -240,6 +240,9 @@ type runner struct {
 	// configuration tells them at its first good read
 	// (dns.SystemConfig.UpstreamsUnknown), from its own goroutine.
 	upstreamsUnknown atomic.Bool
+	// directUpstreams is how many direct upstreams the resolver asks now,
+	// stored wherever they are set, read by the status from any goroutine.
+	directUpstreams atomic.Int64
 	// tun is the running TUN's name (Interface until one runs).
 	tun string
 	// guard is the OS's resolver configuration while it should point at
@@ -488,6 +491,7 @@ func (r *runner) publish() {
 	r.dp.report.set(func(p *report) {
 		p.engine, p.version, p.removed, p.retrying, p.listeners, p.conn, p.dns =
 			r.engine, r.follow.cur.Header().Version, r.follow.removed, !r.retryAt.IsZero(), n, r.conn.state, r.guard.problem
+		p.dnsNoUpstream = r.noUpstream()
 	})
 	// What Status says of them (DNSUnprotected; DataPlane.RouteTable's
 	// Error): the route table recovers and fails again on its own, the

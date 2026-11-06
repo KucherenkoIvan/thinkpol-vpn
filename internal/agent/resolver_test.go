@@ -887,3 +887,54 @@ func resolverAnswer(port uint16) (netip.Addr, error) {
 	}
 	return a.Unmap(), nil
 }
+
+// A device whose resolver has no direct upstream says dns_no_upstream;
+// upstreams the OS configuration tells clear it.
+func TestNoDirectUpstreamIsAProblem(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	startNode(t, reg, s.a, s.verified(t, 1))
+	sys := &fakeSystem{}
+	b := startDevice(t, s, reg, true, deviceOpt{
+		prepare: func(c *Config, p *Platform) {
+			c.DNS = true
+			p.SetSystemDNS = sys.Set
+			p.SystemUpstreams = func([]netip.Addr) ([]netip.Addr, error) { return nil, nil }
+		},
+		tuning: func(t *tuning) { t.dnsPort = 5353 },
+	})
+	b.connection(t, Connected)
+	eventually(t, func() bool { n, _ := sys.counts(); return n == 1 })
+	if st := b.node.Status(); !st.DNSNoUpstream || !slices.Contains(st.Health().Problems, ProblemDNSNoUpstream) {
+		t.Fatalf("no upstream: status %+v, health %+v", st, st.Health())
+	}
+	sys.mu.Lock()
+	first := sys.set[0]
+	sys.mu.Unlock()
+	first.Upstreams([]netip.Addr{netip.MustParseAddr("192.0.2.53")})
+	if st := b.node.Status(); st.DNSNoUpstream || slices.Contains(st.Health().Problems, ProblemDNSNoUpstream) {
+		t.Fatalf("an upstream told: health %+v", st.Health())
+	}
+}
+
+// A configured upstream is one to ask.
+func TestAConfiguredUpstreamIsNoProblem(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	startNode(t, reg, s.a, s.verified(t, 1))
+	sys := &fakeSystem{}
+	b := startDevice(t, s, reg, true, deviceOpt{
+		prepare: func(c *Config, p *Platform) {
+			c.DNS = true
+			c.DNSUpstream = "192.0.2.53"
+			p.SetSystemDNS = sys.Set
+			p.SystemUpstreams = func([]netip.Addr) ([]netip.Addr, error) { return nil, nil }
+		},
+		tuning: func(t *tuning) { t.dnsPort = 5353 },
+	})
+	b.connection(t, Connected)
+	eventually(t, func() bool { n, _ := sys.counts(); return n == 1 })
+	if st := b.node.Status(); st.DNSNoUpstream || slices.Contains(st.Health().Problems, ProblemDNSNoUpstream) {
+		t.Fatalf("a configured upstream: health %+v", st.Health())
+	}
+}

@@ -58,7 +58,10 @@
 // 6 s, by default), proof that both directions work. A link without proof
 // for DeadAfter is closed, and a dialed link is redialed through its
 // endpoints in priority order with a backoff ([Options.RedialMin],
-// [Options.RedialMax]). Probe tokens are random, and a reply counts only if
+// [Options.RedialMax]). [Node.Neighbors] lists a node dialed for
+// DeadAfter that never gave a link (every dial failed, as with no route)
+// as down, so a dial that never succeeds reads like a link that died;
+// before that it isn't listed. Probe tokens are random, and a reply counts only if
 // it answers a probe still awaited. Its round trip is an upper bound: a
 // transport that shapes may hold each probe and each reply up to
 // transport.MaxControlHold, which DeadAfter must leave room for. Latency

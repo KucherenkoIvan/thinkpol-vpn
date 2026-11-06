@@ -59,6 +59,10 @@ type Status struct {
 	// ones read before, so `direct` names may not resolve. The OS still
 	// resolves through the node, so on its own it is not DNSUnprotected.
 	DNSUpstreamsStale bool
+	// DNSNoUpstream is set while a connected device's resolver has no
+	// direct upstream to ask (none configured, none read from the OS):
+	// `direct` names don't resolve.
+	DNSNoUpstream bool
 	// DNSUpstreamsRefused is an exit's: how many of the resolver
 	// upstreams the worker's egress refuses, so the resolver doesn't use
 	// them (each is logged with its address).
@@ -174,6 +178,9 @@ type report struct {
 	preset string
 	// dns says why a device's OS may resolve outside its resolver.
 	dns func() error
+	// dnsNoUpstream says a device's resolver has no direct upstream (nil
+	// while none runs).
+	dnsNoUpstream func() bool
 	// dnsUpstreamsRefused is an exit's count of resolver upstreams the
 	// worker's egress refuses (Status.DNSUpstreamsRefused).
 	dnsUpstreamsRefused int
@@ -250,6 +257,7 @@ func (p *report) statusWith(dp *dataplane.Status) Status {
 		// Read once: both flags come from the same Problem.
 		s.DNSUnprotected = dns.Unprotected(problem)
 		s.DNSUpstreamsStale = errors.Is(problem, dns.ErrUpstreamsStale)
+		s.DNSNoUpstream = p.dnsNoUpstream != nil && p.dnsNoUpstream()
 	}
 	if p.workers != nil {
 		for _, w := range p.workers.Workers() {
@@ -362,6 +370,9 @@ const (
 	// the resolver asks the rest, and with none left tunnel-bound names
 	// fail.
 	ProblemDNSUpstreamRefused Problem = "dns_upstream_refused"
+	// ProblemDNSNoUpstream: a device's resolver has no direct upstream to
+	// ask, so `direct` names don't resolve (Status.DNSNoUpstream).
+	ProblemDNSNoUpstream Problem = "dns_no_upstream"
 )
 
 // Health grades the status.
@@ -451,6 +462,9 @@ func (s Status) dataPlaneProblems(add func(HealthLevel, Problem)) {
 	}
 	if s.DNSUpstreamsStale {
 		add(HealthDegraded, ProblemDNSUpstreamsStale)
+	}
+	if s.DNSNoUpstream {
+		add(HealthDegraded, ProblemDNSNoUpstream)
 	}
 }
 

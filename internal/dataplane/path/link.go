@@ -497,6 +497,7 @@ func (l *link) probeReply(f []byte, now int64) {
 type dialLoop struct {
 	endpoints []Endpoint
 	cancel    context.CancelFunc
+	started   int64 // n.now() when the loop started
 }
 
 func (d *dialLoop) stop() { d.cancel() }
@@ -507,7 +508,7 @@ func (d *dialLoop) stop() { d.cancel() }
 // tries the next endpoint, after a backoff.
 func (n *Node) startDial(id NodeID, eps []Endpoint) *dialLoop {
 	ctx, cancel := context.WithCancel(n.ctx)
-	d := &dialLoop{endpoints: eps, cancel: cancel}
+	d := &dialLoop{endpoints: eps, cancel: cancel, started: n.now()}
 	n.spawn(func() {
 		backoff, next, failures := n.opts.RedialMin, 0, 0
 		for ctx.Err() == nil {

@@ -710,3 +710,29 @@ func TestAStartWhileDisconnectedClearsACrashedRunsRoutes(t *testing.T) {
 		}
 	}
 }
+
+// A device whose only exit it can't dial says no_link_up once it has
+// dialed for the path layer's DeadAfter, not before; the link coming up
+// clears it.
+func TestADialThatNeverLinkedIsNoLinkUp(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	const deadAfter = 2 * time.Second
+	b := startDevice(t, s, reg, true, deviceOpt{tuning: func(t *tuning) { t.path.DeadAfter = deadAfter }})
+	connected := time.Now()
+	st := b.connection(t, Connected)
+	if h := st.Health(); slices.Contains(h.Problems, ProblemNoLinkUp) {
+		if time.Since(connected) < deadAfter/2 {
+			t.Fatalf("no_link_up before DeadAfter: %+v", h)
+		}
+		t.Skip("the machine is too slow to see the status before DeadAfter")
+	}
+	var h Health
+	eventually(t, func() bool { h = b.node.Status().Health(); return slices.Contains(h.Problems, ProblemNoLinkUp) })
+	if h.Level != HealthDown {
+		t.Fatalf("a dial that never linked: health %+v, want down", h)
+	}
+
+	startNode(t, reg, s.a, s.verified(t, 1))
+	eventually(t, func() bool { h = b.node.Status().Health(); return h.Level == HealthOK })
+}

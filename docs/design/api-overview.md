@@ -43,7 +43,7 @@ This is everything a person or a script sees of thinkpol today: the CLI, the loc
 | [Local API](api-overview-reference.md#local-api) (reference file) | the socket, the two gates, every call with its access and its shapes, refusals |
 | [Configuration](#configuration) | every key, its default and where it is documented; input files; lab variables |
 | [On-disk state](#on-disk-state) | every file the node, the service and the dev tools write or read |
-| [Planned, not built](#planned-not-built) | what TP-111, TP-141, TP-133 and TP-140 propose |
+| [Planned, not built](#planned-not-built) | what TP-111, TP-141 and TP-133 propose, and what TP-140 built |
 | [Consistency findings](#consistency-findings) | F1–F21 with suggested verdicts |
 | [Verdicts (owner, 2026-11-07)](#verdicts-owner-2026-11-07) | the decided conventions: configuration levels, status versus diag, exit codes, naming |
 
@@ -239,15 +239,15 @@ Open questions:
 - the `agent` field's values;
 - the exit code when it falls back (F4).
 
-### TP-140: health counts dials that never linked (planned, not built)
+### TP-140: health counts dials that never linked (built)
 
-| Surface | Proposal |
+| Surface | Behaviour |
 |---|---|
-| health | a dialed node never linked past a deadline raises a problem: `no_link_up`, or a new code |
-| health | no DNS upstream to ask raises a problem (a new code) |
-| `status`, `diag` | show them with the existing rendering |
+| health | a node dialed for the path layer's dead interval (6 s) with no link is a neighbor, down: with no other neighbor up, `no_link_up` (down), else `neighbor_down` (degraded). The code is reused: the case reads the same, no adjacent node answers |
+| health | a device's resolver with no direct upstream to ask: `dns_no_upstream` (degraded) |
+| `status`, `diag` | show them with the existing rendering; the never-linked node is listed under neighbors as `down` with no links |
 
-Open questions: reuse `no_link_up` or add a code, and the codes' names (F5).
+Answered (F5): `no_link_up` is reused; the new code is snake_case.
 
 ## Consistency findings
 
