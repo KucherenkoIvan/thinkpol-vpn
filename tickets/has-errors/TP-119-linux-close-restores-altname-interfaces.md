@@ -26,6 +26,12 @@ An interface the config names by one of its alternative names gets its MTU and u
 ## Notes
 - Found by TP-102's implementer; filed after TP-102's round-1 review (2026-10-21).
 
+## Review findings
+Round 1, accepted by the orchestrator.
+- [ ] R1.1 (should-fix, regression from this branch) ledger.go release with restoreLink: a config that switches an interface between its altname and its kernel name (either way, or one altname to another) between Applies makes release restore the interface while the config still wants it (Apply {overlay-alt, 1380, Up}; Apply {ovl0, 1380, Up} ends 1500 and down). Judge "left the config" by interface index; lab test for both directions.
+- [ ] R1.2 (should-fix) configureLink and updateLinkChange never refresh the recorded kernel name: Apply {overlay-alt, 1380}; down; rename ovl0 to ovl1; Apply again; Close leaves 1380. Refresh kname when configureLink re-finds the same index under the config's name (undone by a failed Apply); lab test; doc.go states the rename limit precisely.
+- [ ] R1.3 (nit) netcfg_linux_test.go: TestAnAltnameKeepsItsChanges' comment covers the restore on leaving the config and on Close; TestARenamedInterfaceKeepsItsChanges becomes TestARenamedInterfaceIsLeftAlone with a comment claiming only what it checks.
+
 ## Log
 - 2026-10-21 created in backlog (TP-102 review round 1)
 - 2026-11-07 backlog → in-progress, owner: agent-tp-119
@@ -38,3 +44,4 @@ An interface the config names by one of its alternative names gets its MTU and u
 - 2026-11-07 finisher: merged rewrite 7852af8 (head c66ccc8) in as 4c1bfef; make lint green (vulncheck clean after TP-175), make test green
 - 2026-11-07 finisher: full make lab-test passed on 4c1bfef (LAB_P=4, run alone): lab/ packages ok, gotest ok for 36 packages, netcfg included; second acceptance box ticked
 - 2026-11-07 in-progress → review
+- 2026-11-07 review → has-errors (round 1 findings R1.1-R1.3)
