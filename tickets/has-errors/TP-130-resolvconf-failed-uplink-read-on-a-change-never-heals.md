@@ -28,6 +28,10 @@ On the resolv.conf path, a read of resolved's uplink file that fails on the tick
 - [x] a test of the scenario: the failed tick reports stale, and the next tick with a good uplink tells the new upstreams. Mutation: dropping the owed read fails it
 - [x] `make lint`, `make test` pass
 
+## Review findings
+- [ ] R1.1 (should-fix) the read owed after a failed read on a change is told with the first-read rule: an uplink that reads but names no server (resolved's header-only file) tells upstreams(nil), dropping the known direct upstreams with no warning. It must keep the previous upstreams, clear the owed state and log the -dns-upstream hint; nil is told only when the first read is owed (startsUntold)
+- [ ] R1.2 (nit) doc.go: the resolv.conf section splits an unreadable uplink (previous upstreams kept, stale until a read works) from one that reads but names no server (kept, the log says to set -dns-upstream); the general paragraph says a failed read on a change is stale too
+
 ## Log
 - 2026-10-22 created in backlog (TP-128 review round 1)
 - 2026-11-07 backlog → in-progress, owner: agent-tp-130
@@ -36,3 +40,4 @@ On the resolv.conf path, a read of resolved's uplink file that fails on the tick
 - 2026-11-07 finisher: merged rewrite 7852af8 (head c66ccc8) in as 6b05454; make lint green, make test green
 - 2026-11-07 finisher: full make lab-test passed on 6b05454 (LAB_P=4, run alone): lab/ packages ok, gotest ok for 36 packages
 - 2026-11-07 in-progress → review
+- 2026-11-07 review → has-errors (round 1 findings R1.x)
