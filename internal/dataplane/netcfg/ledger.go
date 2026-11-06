@@ -258,8 +258,12 @@ func (l *ledger) restoreLink(ops linkOps, name string, u *undoLog) error {
 
 // adoptLinkChange files what the ledger has of the interface at s's index
 // under name, with s's kernel name: the config may name the interface by
-// another of its names than before (kernel name or altname), and it may
-// have been renamed since, so the record follows the index, not a name.
+// another of its names than before (kernel name or altname), and under
+// the same name it may have been renamed since. A record under another
+// name moves only while the kernel name is the recorded one: otherwise
+// the index may have gone to a new interface, and the record is dropped
+// unrestored, as restoreLink would. Its undo moves the record back and
+// restores only the kernel name, keeping what a failed revert left.
 func (l *ledger) adoptLinkChange(name string, s linkState, u *undoLog) {
 	from, found := name, false
 	if ch, ok := l.changed[name]; ok && ch.index == s.index {
@@ -276,17 +280,27 @@ func (l *ledger) adoptLinkChange(name string, s linkState, u *undoLog) {
 		return
 	}
 	ch := l.changed[from]
-	if from == name && ch.kname == s.name {
+	if ch.kname == s.name && from == name {
 		return
 	}
-	prevFrom := ch
-	prevTo, hadTo := l.changed[name]
+	if from != name && ch.kname != s.name {
+		l.dropLinkChange(from, u)
+		return
+	}
+	// configureLink dropped any record under name at another index, so
+	// from != name means nothing is filed under name.
+	oldKname := ch.kname
 	delete(l.changed, from)
 	ch.kname = s.name
 	l.changed[name] = ch
 	u.push(func() error {
-		l.restoreLinkChange(name, prevTo, hadTo)
-		l.changed[from] = prevFrom
+		cur, ok := l.changed[name]
+		if !ok {
+			return nil
+		}
+		delete(l.changed, name)
+		cur.kname = oldKname
+		l.changed[from] = cur
 		return nil
 	})
 }

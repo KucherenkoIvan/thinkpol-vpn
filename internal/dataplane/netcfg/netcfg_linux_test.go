@@ -1295,3 +1295,36 @@ func (n *testNS) wantLink(t *testing.T, name string, mtu int, up bool, when stri
 		t.Fatalf("%s after %s: mtu %d, flags %v; want mtu %d, up %v", name, when, l.Attrs().MTU, l.Attrs().Flags, mtu, up)
 	}
 }
+
+// A new interface that takes the index of a deleted one the configurator
+// changed is not taken for it: Close leaves what the new one had before
+// any Apply, and restores to that what an Apply changes on it.
+func TestANewInterfaceAtAReusedIndexIsNotTheOldOne(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mtu  int
+		up   bool
+	}{{"already_as_wanted", 1380, true}, {"changed_by_the_apply", 9000, false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			n := newTestNS(t)
+			index := n.dummy(t, "ovl0").Attrs().Index
+			c := n.configurator(t)
+			if err := c.Apply(context.Background(), netcfg.Config{Interfaces: []netcfg.Interface{{Name: "ovl0", MTU: 1380, Up: true}}}); err != nil {
+				t.Fatal(err)
+			}
+			n.ip(t, "link", "del", "dev", "ovl0")
+			n.ip(t, "link", "add", "name", "ovl1", "index", strconv.Itoa(index), "mtu", strconv.Itoa(tc.mtu), "type", "dummy")
+			if tc.up {
+				n.ip(t, "link", "set", "dev", "ovl1", "up")
+			}
+			if err := c.Apply(context.Background(), netcfg.Config{Interfaces: []netcfg.Interface{{Name: "ovl1", MTU: 1380, Up: true}}}); err != nil {
+				t.Fatal(err)
+			}
+			n.wantLink(t, "ovl1", 1380, true, "Apply")
+			if err := c.Close(); err != nil {
+				t.Fatal(err)
+			}
+			n.wantLink(t, "ovl1", tc.mtu, tc.up, "Close")
+		})
+	}
+}
