@@ -78,7 +78,6 @@ From the orchestrator's review, not decided:
 - How to show a setting's effective value and the source it came from.
 - Per-space settings on a node that serves several spaces, and a shared node owner's ceiling over a guest space.
 - Per-link transport settings living in the map.
-- Secrets never in config files.
 - A schema version for the files, and unknown-key handling (EX_CONFIG naming the key).
 - A network-level minimum the admin can require (e.g. the kill switch on) that a member can't turn off.
 - The initial settings an invite carries.
