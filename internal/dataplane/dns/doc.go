@@ -302,8 +302,9 @@
 // call here, through one runner), configd's resolvers as mDNSResponder
 // uses them, scoped ones apart, with their match domains, interface,
 // order, flags and reach. A `scutil --dns` line it can't place makes the
-// listing unreadable, naming the line. The scutil parser is tested on listings in
-// testdata/scutil laid out as TP-019's device checklist describes them.
+// listing unreadable, naming the line. The scutil parser is tested on
+// listings a Mac printed (testdata/scutil/recorded-*, sanitized), and on
+// built ones for what no device has printed.
 //
 // # Protection is checked, never assumed
 //

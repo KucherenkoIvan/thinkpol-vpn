@@ -253,10 +253,10 @@
 // then the supervisor forwards it, untouched, to the space's current
 // worker over the worker's data socket without blocking: a full socket
 // drops the datagram (counted as WorkerFull), so a stuck worker stalls
-// only its own space. A replay needs only a passive tap to capture, so
-// within one supervisor's lifetime it is dropped before it reaches a
-// worker or costs its space anything (RESIDUAL-RISKS.md RR34). The worker
-// decrypts and filters again.
+// only its own space. A replay needs only a passive tap to capture, so it
+// is dropped before it reaches a worker or costs its space anything,
+// within one supervisor's lifetime and, but for RESIDUAL-RISKS.md RR34,
+// across its restarts. The worker decrypts and filters again.
 //
 // The worker's replies come back over the same socket and leave through
 // the public socket it names, but only to a source address that one of the
@@ -270,10 +270,14 @@
 // displace another's. A worker can answer its peers, never use the node's
 // public address to reach anyone else, whatever egress its space has.
 //
-// Not after a supervisor restart: Routers and reply addresses live in
-// memory, the workers die with the supervisor, and a replay of datagrams
-// sent in the last five minutes (ten, if the sender's clock ran ahead) is
-// routed and answered again (RESIDUAL-RISKS.md RR34; TP-069).
+// Routers and reply addresses live in memory, and the workers die with the
+// supervisor, so a restarted supervisor starts both afresh. Its Routers
+// refuse every datagram sealed before the second they started in, so a
+// tap's capture of the old supervisor's traffic reaches no worker; what
+// still gets in (a capture sealed in that second, by a sender whose clock
+// ran ahead, or while the node's clock was behind or stepped back) is the
+// udp package's residual (RESIDUAL-RISKS.md RR34). The workers' Listeners
+// have no start rule of their own, so a worker restart costs nothing.
 //
 // # Streams
 //

@@ -166,7 +166,7 @@ type verdict int
 
 const (
 	dropUnauthenticated verdict = iota // open failed: not under the credential's key
-	dropStaleTimestamp                 // sealed too far from the receiver's clock
+	dropStaleTimestamp                 // sealed too far from the receiver's clock, or before it started
 	dropReplay                         // a counter seen before or behind the window
 	dropStale                          // a sender older than the current one, or forgotten
 	deliver                            // deliver, but don't move the reply address

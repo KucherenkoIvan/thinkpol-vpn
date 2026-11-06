@@ -9,11 +9,15 @@ import (
 	"testing"
 )
 
-// The fixtures in testdata/scutil are `scutil --dns` as the checklists of
-// TP-019 describe it on a connected Mac (the node's resolver as a
-// supplemental one at order 100000 without an if_index, the primary
-// service's overridden), a home network's, and another VPN's
-// supplemental resolver; no test runs scutil.
+// The fixtures in testdata/scutil are `scutil --dns` listings; no test
+// runs scutil. Those named recorded-* are a Mac's (the 2026-10-24 device
+// run), byte for byte but for the addresses and names, replaced by
+// documentation ones (the router's resolver 192.0.2.1, the
+// node's resolver 198.51.100.2 and 2001:db8:1::2, the overlay's domain
+// example.net): before connecting, connected, and connected by the
+// service right after a boot. The rest are built for what no device has
+// printed: another VPN's supplemental resolver, no resolver at all, a
+// line the parser can't place.
 func scutilFixture(t *testing.T, name string) []byte {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join("testdata", "scutil", name))
@@ -37,12 +41,44 @@ func TestParseScutilDNS(t *testing.T) {
 		name string
 		want []string
 	}{
-		{"dns-connected.txt", []string{
-			`scoped=false if="en0" servers=[100.64.0.2 fd00:1:2::2] domains=[] search=[lab.internal] order=200000 options=[] flags="Request A records, Request AAAA records" reach="0x00000002 (Reachable)"`,
-			`scoped=false if="" servers=[100.64.0.2 fd00:1:2::2] domains=[] search=[lab.internal] order=100000 options=[] flags="Supplemental, Request A records, Request AAAA records" reach="0x00000002 (Reachable)"`,
-			`scoped=false if="" servers=[] domains=[local] search=[] order=300000 options=[mdns] flags="Request A records, Request AAAA records" reach="0x00000000 (Not Reachable)"`,
-			`scoped=false if="" servers=[] domains=[254.169.in-addr.arpa] search=[] order=300200 options=[mdns] flags="Request A records, Request AAAA records" reach="0x00000000 (Not Reachable)"`,
-			`scoped=true if="en0" servers=[100.64.0.2 fd00:1:2::2] domains=[] search=[lab.internal] order=0 options=[] flags="Scoped, Request A records, Request AAAA records" reach="0x00000002 (Reachable)"`,
+		{"recorded-dns-baseline.txt", []string{
+			`scoped=false if="en0" servers=[192.0.2.1] domains=[] search=[] order=0 options=[] flags="Request A records" reach="0x00020002 (Reachable,Directly Reachable Address)"`,
+			`scoped=false if="" servers=[] domains=[local] search=[] order=300000 options=[mdns] flags="Request A records" reach="0x00000000 (Not Reachable)"`,
+			`scoped=false if="" servers=[] domains=[254.169.in-addr.arpa] search=[] order=300200 options=[mdns] flags="Request A records" reach="0x00000000 (Not Reachable)"`,
+			`scoped=false if="" servers=[] domains=[8.e.f.ip6.arpa] search=[] order=300400 options=[mdns] flags="Request A records" reach="0x00000000 (Not Reachable)"`,
+			`scoped=false if="" servers=[] domains=[9.e.f.ip6.arpa] search=[] order=300600 options=[mdns] flags="Request A records" reach="0x00000000 (Not Reachable)"`,
+			`scoped=false if="" servers=[] domains=[a.e.f.ip6.arpa] search=[] order=300800 options=[mdns] flags="Request A records" reach="0x00000000 (Not Reachable)"`,
+			`scoped=false if="" servers=[] domains=[b.e.f.ip6.arpa] search=[] order=301000 options=[mdns] flags="Request A records" reach="0x00000000 (Not Reachable)"`,
+			`scoped=true if="en0" servers=[192.0.2.1] domains=[] search=[] order=0 options=[] flags="Scoped, Request A records" reach="0x00020002 (Reachable,Directly Reachable Address)"`,
+		}},
+		{"recorded-dns-connected.txt", []string{
+			`scoped=false if="" servers=[198.51.100.2 2001:db8:1::2] domains=[] search=[example.net] order=101400 options=[] flags="Supplemental, Request A records" reach="0x00030002 (Reachable,Local Address,Directly Reachable Address)"`,
+			`scoped=false if="en0" servers=[198.51.100.2] domains=[] search=[] order=200000 options=[] flags="Request A records" reach="0x00000000 (Not Reachable)"`,
+			`scoped=false if="" servers=[] domains=[local] search=[] order=300000 options=[mdns] flags="Request A records" reach="0x00000000 (Not Reachable)"`,
+			`scoped=false if="" servers=[] domains=[254.169.in-addr.arpa] search=[] order=300200 options=[mdns] flags="Request A records" reach="0x00000000 (Not Reachable)"`,
+			`scoped=false if="" servers=[] domains=[8.e.f.ip6.arpa] search=[] order=300400 options=[mdns] flags="Request A records" reach="0x00000000 (Not Reachable)"`,
+			`scoped=false if="" servers=[] domains=[9.e.f.ip6.arpa] search=[] order=300600 options=[mdns] flags="Request A records" reach="0x00000000 (Not Reachable)"`,
+			`scoped=false if="" servers=[] domains=[a.e.f.ip6.arpa] search=[] order=300800 options=[mdns] flags="Request A records" reach="0x00000000 (Not Reachable)"`,
+			`scoped=false if="" servers=[] domains=[b.e.f.ip6.arpa] search=[] order=301000 options=[mdns] flags="Request A records" reach="0x00000000 (Not Reachable)"`,
+			`scoped=true if="en0" servers=[198.51.100.2] domains=[] search=[example.net] order=0 options=[] flags="Scoped, Request A records" reach="0x00000000 (Not Reachable)"`,
+			`scoped=true if="utun3" servers=[2001:db8:1::2] domains=[] search=[example.net] order=0 options=[] flags="Scoped, Request AAAA records" reach="0x00030002 (Reachable,Local Address,Directly Reachable Address)"`,
+			`scoped=true if="utun2" servers=[2001:db8:1::2] domains=[] search=[example.net] order=0 options=[] flags="Scoped, Request AAAA records" reach="0x00030002 (Reachable,Local Address,Directly Reachable Address)"`,
+			`scoped=true if="utun1" servers=[2001:db8:1::2] domains=[] search=[example.net] order=0 options=[] flags="Scoped, Request AAAA records" reach="0x00030002 (Reachable,Local Address,Directly Reachable Address)"`,
+			`scoped=true if="utun0" servers=[2001:db8:1::2] domains=[] search=[example.net] order=0 options=[] flags="Scoped, Request AAAA records" reach="0x00030002 (Reachable,Local Address,Directly Reachable Address)"`,
+		}},
+		// An empty flags line ("flags    : "), as the mDNS resolvers had it then.
+		{"recorded-dns-connected-at-boot.txt", []string{
+			`scoped=false if="" servers=[198.51.100.2 2001:db8:1::2] domains=[] search=[] order=0 options=[] flags="Supplemental" reach="0x00030002 (Reachable,Local Address,Directly Reachable Address)"`,
+			`scoped=false if="" servers=[] domains=[local] search=[] order=300000 options=[mdns] flags="" reach="0x00000000 (Not Reachable)"`,
+			`scoped=false if="" servers=[] domains=[254.169.in-addr.arpa] search=[] order=300200 options=[mdns] flags="" reach="0x00000000 (Not Reachable)"`,
+			`scoped=false if="" servers=[] domains=[8.e.f.ip6.arpa] search=[] order=300400 options=[mdns] flags="" reach="0x00000000 (Not Reachable)"`,
+			`scoped=false if="" servers=[] domains=[9.e.f.ip6.arpa] search=[] order=300600 options=[mdns] flags="" reach="0x00000000 (Not Reachable)"`,
+			`scoped=false if="" servers=[] domains=[a.e.f.ip6.arpa] search=[] order=300800 options=[mdns] flags="" reach="0x00000000 (Not Reachable)"`,
+			`scoped=false if="" servers=[] domains=[b.e.f.ip6.arpa] search=[] order=301000 options=[mdns] flags="" reach="0x00000000 (Not Reachable)"`,
+			`scoped=true if="utun1" servers=[2001:db8:1::2] domains=[] search=[example.net] order=0 options=[] flags="Scoped, Request AAAA records" reach="0x00030002 (Reachable,Local Address,Directly Reachable Address)"`,
+			`scoped=true if="utun3" servers=[2001:db8:1::2] domains=[] search=[example.net] order=0 options=[] flags="Scoped, Request AAAA records" reach="0x00030002 (Reachable,Local Address,Directly Reachable Address)"`,
+			`scoped=true if="utun2" servers=[2001:db8:1::2] domains=[] search=[example.net] order=0 options=[] flags="Scoped, Request AAAA records" reach="0x00030002 (Reachable,Local Address,Directly Reachable Address)"`,
+			`scoped=true if="utun4" servers=[2001:db8:1::2] domains=[] search=[example.net] order=0 options=[] flags="Scoped, Request AAAA records" reach="0x00030002 (Reachable,Local Address,Directly Reachable Address)"`,
 		}},
 		{"dns-other-vpn.txt", []string{
 			`scoped=false if="" servers=[100.64.0.2] domains=[] search=[lab.internal] order=100000 options=[] flags="Supplemental, Request A records, Request AAAA records" reach="0x00000002 (Reachable)"`,
@@ -58,9 +94,6 @@ func TestParseScutilDNS(t *testing.T) {
 		if got := resolverLines(rs); got != strings.Join(tc.want, "\n") {
 			t.Errorf("%s:\n%s\nwant:\n%s", tc.name, got, strings.Join(tc.want, "\n"))
 		}
-	}
-	if rs, err := parseScutilDNS(scutilFixture(t, "dns-baseline.txt")); err != nil || len(rs) != 3 || rs[0].Servers[0] != "192.0.2.1" || !rs[2].Scoped {
-		t.Errorf("baseline: %v, %v", resolverLines(rs), err)
 	}
 
 	for in, want := range map[string]string{

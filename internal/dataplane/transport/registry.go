@@ -118,7 +118,8 @@ const (
 	// Routed is authenticated, fresh and not seen before: forward it.
 	Routed
 	// Stale is authenticated but too old to deliver (sent outside the
-	// clock window, or by a sender a newer one replaced): drop it.
+	// clock window or before the router started, or by a sender a newer
+	// one replaced): drop it.
 	Stale
 	// Replayed is authenticated but delivered before: drop it, so a replay
 	// costs its space nothing.

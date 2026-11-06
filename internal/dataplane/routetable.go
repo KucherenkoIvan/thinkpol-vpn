@@ -67,6 +67,14 @@ type RouteTableStatus struct {
 	// table can't outrank (macOS): those peers' traffic leaves in the
 	// clear.
 	OverlayAhead int
+	// CorruptRecords counts the route records found corrupt in this boot
+	// (macOS; the log names each and says why): the routes they named
+	// count as foreign (an owner already running when its record went bad
+	// still removes its own).
+	CorruptRecords int
+	// UnownedRoutes counts the routes with thinkpol's route flag that no
+	// record names (macOS): with a corrupt record, its leftovers.
+	UnownedRoutes int
 }
 
 // RouteTableError says what is wrong with the OS routing table or its
@@ -142,12 +150,11 @@ func (o *osRoutes) shrink(ctx context.Context, direct *lists.Set) error {
 		return nil
 	}
 	old := o.want.Direct
-	gone := old.Minus(direct)
-	if gone.IsEmpty() {
+	if old.Minus(direct).IsEmpty() {
 		return nil
 	}
 	w := *o.want
-	w.Direct = old.Minus(gone)
+	w.Direct = old.Intersect(direct)
 	err := o.enforce(ctx, w)
 	if err == nil {
 		o.want = &w
@@ -162,7 +169,7 @@ func (o *osRoutes) shrink(ctx context.Context, direct *lists.Set) error {
 		o.warn("route table: removing direct routes failed; nothing goes direct until the next Apply", err)
 		return err
 	}
-	o.warn("route table: removing direct routes failed; destinations the rules no longer send direct still go direct", errors.Join(err, ferr))
+	o.warn("route table: removing direct routes failed; destinations the rules no longer send direct still go direct over IPv4, for forwarded IPv6 (Linux; macOS unverified), and for the device's own IPv6 where the leak guard isn't enforced", errors.Join(err, ferr))
 	return errors.Join(err, ferr)
 }
 

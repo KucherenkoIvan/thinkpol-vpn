@@ -35,10 +35,10 @@ branch: "tp-091-device-diagnostics-snapshot"
 
 ## Acceptance
 - [x] `thinkpol diag` on Linux in the lab: the guard table, routes, rules and resolvers match what `nft`/`ip` report, in a test (lab `TestDiagShowsWhatTheHostHolds`: `ip -j route`/`rule`, `nft -j`, `resolvectl`, resolv.conf)
-- [ ] macOS: the pf parts are parsed from `pfctl` output by functions tested on recorded fixtures, including an unparseable line (→ `unreadable`) and an empty anchor (built fixtures pass: `TestParseVerboseRules`, `TestInspectReadsTheGuardAsPfListsIt` on `firewall/testdata/pfctl`, from the fake pf's formats and pfctl's source; recorded ones wait on the device run in Notes)
-  - device 2026-10-24: pfctl listings were recorded and the snapshot matched them (guard rules and counters, exempt table, references; steps 1-4) / still open: the recorded listings are not yet committed as fixtures
-- [ ] macOS: `scutil --dns` is parsed by a function tested on recorded listings (built fixtures pass: `TestParseScutilDNS`, `TestInspectRunsScutilDNS` on `dns/testdata/scutil`; recorded ones wait on the device run)
-  - device 2026-10-24: the `scutil --dns` listing was recorded and the snapshot's resolvers matched it (steps 1-4) / still open: the recorded listing is not yet committed as a fixture
+- [x] macOS: the pf parts are parsed from `pfctl` output by functions tested on recorded fixtures, including an unparseable line (→ `unreadable`) and an empty anchor (built fixtures pass: `TestParseVerboseRules`, `TestInspectReadsTheGuardAsPfListsIt` on `firewall/testdata/pfctl`, from the fake pf's formats and pfctl's source; recorded ones wait on the device run in Notes)
+  - device 2026-10-24: pfctl listings were recorded and the snapshot matched them (guard rules and counters, exempt table, references; steps 1-4) / closed by TP-138 (6ef4cd1): committed sanitized as `firewall/testdata/pfctl/recorded-*`; `TestTheRecordedListingsParse` runs every pf parser on them, an unparseable line appended to the recorded `-s rules -v` (unreadable, naming line 25) and the recorded empty and missing anchor included
+- [x] macOS: `scutil --dns` is parsed by a function tested on recorded listings (built fixtures pass: `TestParseScutilDNS`, `TestInspectRunsScutilDNS` on `dns/testdata/scutil`; recorded ones wait on the device run)
+  - device 2026-10-24: the `scutil --dns` listing was recorded and the snapshot's resolvers matched it (steps 1-4) / closed by TP-138 (6ef4cd1): three recorded listings (before connecting, connected, connected at boot) committed sanitized as `dns/testdata/scutil/recorded-*`; `TestParseScutilDNS` checks every resolver of each
 - [x] a test checks that no secret field from the config or status reaches the snapshot (`TestDiagnosticsHoldNoSecret`, `TestTheSnapshotHasNoSecretField`, and the lab test's key check)
 - [x] the snapshot carries a schema version; docs/design/desktop-client.md "The local API" describes it (`schema_version` 1, `localapi.DiagSchemaVersion`; its one line points to the localapi package doc, which holds the mechanism)
 
@@ -139,3 +139,4 @@ Round 4 (2026-10-23): correctness (merge), design (fix first), second opinion (m
 - 2026-10-23 in-progress → review
 - 2026-10-23 review → done: round 5 clean (correctness, design, second opinion: merge); the owner agreed to merge before the device run (2026-10-23): the two macOS boxes stay open until its listings are recorded
 - 2026-10-24: macOS device run; ticked nothing; still open: pf-fixtures box and scutil-fixtures box (fixtures not yet committed).
+- 2026-10-28 TP-138 (6ef4cd1): the 2026-10-24 run's pfctl and `scutil --dns` listings committed as sanitized fixtures (recorded-*) and the parsers tested on them; the pf-fixtures and scutil-fixtures boxes ticked

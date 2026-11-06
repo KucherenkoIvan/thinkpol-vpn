@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,48 +18,68 @@ import (
 const GOARCHEnv = "THINKPOL_LAB_GOARCH"
 
 // prepared caches, per checkout, what every lab of this process shares: the
-// image and the binaries, built once.
+// image and the binaries, built once into this process's own directory.
 var (
 	preparedMu sync.Mutex
-	prepared   = map[string]image{} // by checkout
+	prepared   = map[string]preparedRun{} // by checkout
 )
 
-// Prepare builds the lab image (once per Dockerfile version and platform,
-// shared by all checkouts) and cross-compiles thinkpol into root/lab/bin for
-// the Docker VM's architecture, with the lab's own tools (labdns). It
-// returns the image reference.
-func Prepare(ctx context.Context, root string) (string, error) {
-	img, err := prepare(ctx, root)
-	return img.ref, err
+// preparedRun is what a process prepared for its labs of one checkout.
+type preparedRun struct {
+	img image
+	bin *runBinaries
 }
 
-func prepare(ctx context.Context, root string) (image, error) {
+// prepare builds the lab image (once per Dockerfile version and platform,
+// shared by all checkouts) and cross-compiles thinkpol, with the lab's own
+// tools (labdns, censord), into this process's binary directory under
+// root/lab/bin for the Docker VM's architecture; RemoveRunBinaries removes
+// the directory.
+func prepare(ctx context.Context, root string) (preparedRun, error) {
 	preparedMu.Lock()
 	defer preparedMu.Unlock()
-	if img, ok := prepared[root]; ok {
-		return img, nil
+	if p, ok := prepared[root]; ok {
+		return p, nil
 	}
+	t, img, err := prepareImage(ctx, root)
+	if err != nil {
+		return preparedRun{}, err
+	}
+	bin, err := newRunBinaries(ctx, root)
+	if err != nil {
+		return preparedRun{}, err
+	}
+	if err := buildTools(ctx, root, t, bin.path); err != nil {
+		return preparedRun{}, errors.Join(err, bin.remove(context.WithoutCancel(ctx)))
+	}
+	p := preparedRun{img: img, bin: bin}
+	prepared[root] = p
+	return p, nil
+}
+
+// prepareImage finds the Docker VM's platform and builds the lab image for
+// it.
+func prepareImage(ctx context.Context, root string) (target, image, error) {
 	t, err := dockerTarget(ctx)
 	if err != nil {
-		return image{}, err
+		return target{}, image{}, err
 	}
 	img, err := buildImage(ctx, root, t)
-	if err != nil {
-		return image{}, err
+	return t, img, err
+}
+
+// buildTools cross-compiles thinkpol and the lab's own tools into dir.
+func buildTools(ctx context.Context, root string, t target, dir string) error {
+	for _, tool := range []struct{ name, pkg string }{
+		{"thinkpol", "./cmd/thinkpol"},
+		{"labdns", "./lab/labdns"},   // a stand-in for resolvers out in the world
+		{"censord", "./lab/censord"}, // the lab's censor, run in the router
+	} {
+		if _, err := goBuild(ctx, root, t, filepath.Join(dir, tool.name), "build", "-trimpath", tool.pkg); err != nil {
+			return err
+		}
 	}
-	if _, err := goBuild(ctx, root, t, filepath.Join(root, "lab", "bin", "thinkpol"), "build", "-trimpath", "./cmd/thinkpol"); err != nil {
-		return image{}, err
-	}
-	// labdns: a stand-in for resolvers out in the world.
-	if _, err := goBuild(ctx, root, t, filepath.Join(root, "lab", "bin", "labdns"), "build", "-trimpath", "./lab/labdns"); err != nil {
-		return image{}, err
-	}
-	// censord: the lab's censor, run in the router.
-	if _, err := goBuild(ctx, root, t, filepath.Join(root, "lab", "bin", "censord"), "build", "-trimpath", "./lab/censord"); err != nil {
-		return image{}, err
-	}
-	prepared[root] = img
-	return img, nil
+	return nil
 }
 
 // target is the platform lab containers run on.
@@ -126,28 +147,13 @@ func buildImage(ctx context.Context, root string, t target) (image, error) {
 	return img, nil
 }
 
-// One build per output at a time in this process; across processes the
-// rename into place keeps every build whole.
-var (
-	buildLocksMu sync.Mutex
-	buildLocks   = map[string]*sync.Mutex{}
-)
-
 // goBuild runs go build or go test -c for the lab's platform, without cgo,
-// into a temporary file renamed onto out, so a running lab never sees a
-// half-written binary. go test -c writes nothing for a package without
-// tests; then out is removed and goBuild reports false.
+// into a temporary file renamed onto out. go test -c writes nothing for a
+// package without tests; then goBuild reports false.
+// Each output has one builder, so nothing a lab runs is rebuilt under it:
+// a process's tools are built once (prepare), a detached lab's into its
+// own directory, and a package's tests once per binary directory (goTest).
 func goBuild(ctx context.Context, root string, t target, out string, args ...string) (bool, error) {
-	buildLocksMu.Lock()
-	mu, ok := buildLocks[out]
-	if !ok {
-		mu = &sync.Mutex{}
-		buildLocks[out] = mu
-	}
-	buildLocksMu.Unlock()
-	mu.Lock()
-	defer mu.Unlock()
-
 	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
 		return false, err
 	}
@@ -168,7 +174,6 @@ func goBuild(ctx context.Context, root string, t target, out string, args ...str
 		return false, fmt.Errorf("lab: %w", err)
 	}
 	if _, err := os.Stat(tmp.Name()); err != nil {
-		_ = os.Remove(out) // a package that lost its tests must not run old ones
 		return false, nil
 	}
 	return true, os.Rename(tmp.Name(), out)

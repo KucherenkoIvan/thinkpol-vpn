@@ -98,6 +98,7 @@ func (t *routeTable) Status() dataplane.RouteTableStatus {
 		Enforced: st.Enforced, Error: routeTableError(st.Error), GuardEnforced: st.GuardEnforced, GuardError: routeTableError(st.GuardError),
 		Routes: st.Routes, LastApply: st.LastApply,
 		Reapplies: st.Reapplies, RulesAhead: st.RulesAhead, OverlayAhead: st.OverlayAhead,
+		CorruptRecords: st.CorruptRecords, UnownedRoutes: st.UnownedRoutes,
 	}
 }
 

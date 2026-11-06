@@ -1,4 +1,0 @@
-Status: Enabled for 0 days 00:01:02           Debug: Urgent
-
-State Table                          Total             Rate
-  current entries                        0

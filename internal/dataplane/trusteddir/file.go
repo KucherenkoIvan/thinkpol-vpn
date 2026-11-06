@@ -14,15 +14,30 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// ErrNotRegular: the file is not a regular one (a fifo, a directory).
+// ErrNotRegular: the file is not a regular one (a fifo, a directory, a
+// socket).
 var ErrNotRegular = errors.New("not a regular file")
 
 // openRegular opens the file name in dir with flags (perm if it creates
 // it), close-on-exec, never through a symlink (ELOOP) nor blocking on a
-// fifo, and only if it is a regular file (ErrNotRegular otherwise).
+// fifo nor becoming a controlling terminal, and only if it is a regular
+// file (ErrNotRegular otherwise). The entry is looked at before the open
+// too: a socket can't be opened at all (EOPNOTSUPP on macOS, ENXIO on
+// Linux), and is no regular file either way. A symlink is left to the
+// open's ELOOP. Those errors from the open itself (a socket swapped in
+// after the look) are ErrNotRegular too.
 func openRegular(dir *os.File, name string, flags int, perm uint32) (*os.File, error) {
 	path := filepath.Join(dir.Name(), name)
-	fd, err := unix.Openat(int(dir.Fd()), name, flags|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, perm)
+	var pre unix.Stat_t
+	if err := unix.Fstatat(int(dir.Fd()), name, &pre, unix.AT_SYMLINK_NOFOLLOW); err == nil {
+		if t := pre.Mode & unix.S_IFMT; t != unix.S_IFREG && t != unix.S_IFLNK {
+			return nil, fmt.Errorf("%s: %w", path, ErrNotRegular)
+		}
+	}
+	fd, err := unix.Openat(int(dir.Fd()), name, flags|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_NOCTTY|unix.O_CLOEXEC, perm)
+	if errors.Is(err, unix.EOPNOTSUPP) || errors.Is(err, unix.ENXIO) {
+		return nil, fmt.Errorf("%s: %w", path, ErrNotRegular)
+	}
 	if err != nil {
 		return nil, &os.PathError{Op: "open", Path: path, Err: err}
 	}
@@ -89,6 +104,50 @@ func Remove(dir *os.File, name string) error {
 		return &os.PathError{Op: "remove", Path: filepath.Join(dir.Name(), name), Err: err}
 	}
 	return nil
+}
+
+// Rename renames the entry from in dir to to, replacing what to names as
+// renameat(2) does: a file over a file, a directory over an empty
+// directory, nothing else (ENOTDIR, EISDIR; ENOTEMPTY or EEXIST over a
+// non-empty directory, which POSIX allows either). A symlink at either
+// name is renamed or replaced itself, never followed.
+func Rename(dir *os.File, from, to string) error {
+	dirfd := int(dir.Fd())
+	if err := unix.Renameat(dirfd, from, dirfd, to); err != nil {
+		return &os.LinkError{Op: "rename", Old: filepath.Join(dir.Name(), from), New: filepath.Join(dir.Name(), to), Err: err}
+	}
+	return nil
+}
+
+// RemoveEntry removes the entry name in dir: a file, a symlink (never
+// followed) or an empty directory. A missing one is an error. Where the
+// retry as a directory finds none (a file macOS refuses to unlink, EPERM:
+// an immutable flag), the first error is the one returned.
+func RemoveEntry(dir *os.File, name string) error {
+	fd := int(dir.Fd())
+	err := unix.Unlinkat(fd, name, 0)
+	if errors.Is(err, unix.EPERM) || errors.Is(err, unix.EISDIR) { // a directory: macOS, Linux
+		if rerr := unix.Unlinkat(fd, name, unix.AT_REMOVEDIR); !errors.Is(rerr, unix.ENOTDIR) {
+			err = rerr
+		}
+	}
+	if err != nil {
+		return &os.PathError{Op: "remove", Path: filepath.Join(dir.Name(), name), Err: err}
+	}
+	return nil
+}
+
+// Names lists dir's entries; the names read before a failure are returned
+// with it. It reads a descriptor of its own, so dir's offset is left
+// alone.
+func Names(dir *os.File) ([]string, error) {
+	fd, err := unix.Openat(int(dir.Fd()), ".", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, &os.PathError{Op: "open", Path: dir.Name(), Err: err}
+	}
+	d := os.NewFile(uintptr(fd), dir.Name())
+	defer func() { _ = d.Close() }()
+	return d.Readdirnames(-1)
 }
 
 // ErrOtherBoot: the record was written in another boot session than the

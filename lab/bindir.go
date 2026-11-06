@@ -1,0 +1,292 @@
+package lab
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"sync/atomic"
+	"testing"
+)
+
+// runBinariesPrefix starts the name of every run's directory in lab/bin.
+const runBinariesPrefix = "run-"
+
+// runLockName is the lock file a run holds inside its directory.
+const runLockName = ".lock"
+
+// keptMarker, in a run's directory, lists the projects, one per line, of
+// the labs that mount it and may be kept (KeepEnv): every lab a run starts
+// with KeepEnv set, written before the lab starts, and every lab it keeps
+// (keep). A run that kept a lab, or died, leaves the directory behind; no
+// run's sweep removes it, and labctl down only once none of those labs is
+// up.
+const keptMarker = ".kept"
+
+// binRoot is the checkout's lab/bin, the parent of every run's directory.
+func binRoot(root string) string { return filepath.Join(root, "lab", "bin") }
+
+// runBinaries is this process's binary directory, lab/bin/run-*, locked
+// while the process holds it.
+type runBinaries struct {
+	root string // the checkout
+	path string
+	lock *os.File
+	kept atomic.Bool // a lab that mounts it was kept: remove leaves it
+}
+
+// lockBinRoot serializes creating, sweeping and removing run directories of
+// one checkout, so a sweep never takes a directory between its creation and
+// its lock, and lab/bin is never removed under a run creating its
+// directory. The lock file is the checkout's own, in lab/.run, not in
+// lab/bin, which goes once empty.
+func lockBinRoot(ctx context.Context, root string) (func(), error) {
+	dir := filepath.Join(root, "lab", ".run")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, fmt.Errorf("lab: %w", err)
+	}
+	return waitLock(ctx, "the lab/bin lock", filepath.Join(dir, "bin.lock"))
+}
+
+// newRunBinaries sweeps away what ended runs left in lab/bin and creates
+// this run's directory, locked.
+func newRunBinaries(ctx context.Context, root string) (*runBinaries, error) {
+	unlock, err := lockBinRoot(ctx, root)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	// Best effort: a leftover this run can't remove doesn't stop it, and
+	// labctl down reports it.
+	_ = sweepBinRoot(ctx, root, nil)
+	if err := os.MkdirAll(binRoot(root), 0o755); err != nil {
+		return nil, fmt.Errorf("lab: run directory: %w", err)
+	}
+	path, err := os.MkdirTemp(binRoot(root), runBinariesPrefix)
+	if err != nil {
+		return nil, fmt.Errorf("lab: run directory: %w", err)
+	}
+	// MkdirTemp makes it 0700; the nodes' root reads it through the mount,
+	// which on Linux hosts keeps the owner.
+	if err := os.Chmod(path, 0o755); err != nil {
+		return nil, errors.Join(fmt.Errorf("lab: run directory: %w", err), os.RemoveAll(path))
+	}
+	lock, ok, err := tryLockMode(filepath.Join(path, runLockName), true)
+	if err == nil && !ok {
+		err = errors.New("a fresh run directory is locked already")
+	}
+	if err != nil {
+		return nil, errors.Join(fmt.Errorf("lab: run directory: %w", err), os.RemoveAll(path))
+	}
+	return &runBinaries{root: root, path: path, lock: lock}, nil
+}
+
+// recordLab adds project to the labs that mount the directory and may be
+// kept (keptMarker). One append per call: parallel tests' lines don't mix.
+// The leading newline ends whatever a short write left before it, so the
+// fragment can't glue onto project; keptBy skips the blank lines.
+func (d *runBinaries) recordLab(project string) error {
+	f, err := os.OpenFile(filepath.Join(d.path, keptMarker), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return fmt.Errorf("lab: %w", err)
+	}
+	_, err = f.WriteString("\n" + project + "\n")
+	if err = errors.Join(err, f.Close()); err != nil {
+		return fmt.Errorf("lab: %w", err)
+	}
+	return nil
+}
+
+// keep says the lab project, which mounts the directory, was kept: it is
+// listed in keptMarker (again, if start listed it), and remove leaves the
+// directory.
+func (d *runBinaries) keep(project string) error {
+	if err := d.recordLab(project); err != nil {
+		return err
+	}
+	d.kept.Store(true)
+	return nil
+}
+
+// keptBy lists the labs that mount the run directory at path and may be
+// kept; none when it has no keptMarker.
+func keptBy(path string) ([]string, error) {
+	b, err := os.ReadFile(filepath.Join(path, keptMarker))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("lab: %w", err)
+	}
+	return strings.Fields(string(b)), nil
+}
+
+// remove deletes the run's directory, and lab/bin when no other run has
+// one there; a kept lab's directory stays, unlocked, for labctl down.
+func (d *runBinaries) remove(ctx context.Context) error {
+	unlock, err := lockBinRoot(ctx, d.root)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	defer func() { _ = d.lock.Close() }()
+	if d.kept.Load() {
+		return nil
+	}
+	if err := errors.Join(os.RemoveAll(d.path), removeIfEmpty(binRoot(d.root))); err != nil {
+		return fmt.Errorf("lab: remove binaries: %w", err)
+	}
+	return nil
+}
+
+// runBinariesLive reports whether a live run holds the run directory at
+// path. The caller holds lockBinRoot, so a run that has ended can't come
+// back.
+func runBinariesLive(path string) (bool, error) {
+	lock, free, err := tryLockMode(filepath.Join(path, runLockName), true)
+	if err != nil {
+		return false, fmt.Errorf("lab: %w", err)
+	}
+	if !free {
+		return true, nil
+	}
+	if err := lock.Close(); err != nil {
+		return false, fmt.Errorf("lab: %w", err)
+	}
+	return false, nil
+}
+
+// labLister lists the labs up on the daemon, by project (see labProjects).
+type labLister func(context.Context) (map[string]string, error)
+
+// sweepBinRoot removes the directories of runs that ended without removing
+// them (their lock is free), then lab/bin itself if that leaves it empty.
+// A directory kept labs may mount (keptBy) stays: with labsUp nil always,
+// otherwise while labsUp lists one of them, or fails. labsUp is asked only
+// after every run's lock is checked: a run alive at its check keeps its
+// directory this sweep, even if it dies before Docker answers, and a run
+// already dead can't start a lab, so Docker lists every lab a dead run's
+// .kept may name. Not covered: a docker compose up that a dying run left
+// running and that hasn't created the lab yet when Docker answers; that lab
+// comes up without binaries. The caller holds lockBinRoot.
+func sweepBinRoot(ctx context.Context, root string, labsUp labLister) error {
+	entries, err := os.ReadDir(binRoot(root))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("lab: %w", err)
+	}
+	type endedRun struct {
+		path string
+		kept []string
+	}
+	var (
+		ended   []endedRun
+		anyKept bool
+		errs    []error
+	)
+	for _, e := range entries {
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), runBinariesPrefix) {
+			continue
+		}
+		path := filepath.Join(binRoot(root), e.Name())
+		live, err := runBinariesLive(path)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if live {
+			continue
+		}
+		kept, err := keptBy(path)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		ended = append(ended, endedRun{path, kept})
+		anyKept = anyKept || len(kept) > 0
+	}
+	keepAll := labsUp == nil
+	var up map[string]string
+	if !keepAll && anyKept {
+		if up, err = labsUp(ctx); err != nil {
+			errs = append(errs, err)
+			keepAll = true
+		}
+	}
+	isUp := func(project string) bool { _, ok := up[project]; return ok }
+	for _, r := range ended {
+		if len(r.kept) > 0 && (keepAll || slices.ContainsFunc(r.kept, isUp)) {
+			continue
+		}
+		if err := os.RemoveAll(r.path); err != nil {
+			errs = append(errs, fmt.Errorf("lab: %w", err))
+		}
+	}
+	if err := removeIfEmpty(binRoot(root)); err != nil {
+		errs = append(errs, fmt.Errorf("lab: %w", err))
+	}
+	return errors.Join(errs...)
+}
+
+// removeIfEmpty removes dir if it exists and is empty.
+func removeIfEmpty(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil || len(entries) > 0 {
+		return err
+	}
+	return os.Remove(dir)
+}
+
+// RemoveRunBinaries removes every binary directory this process built; the
+// labs that run them must be down, or kept (KeepEnv: their directories
+// stay for labctl down). The process forgets each one, removed or not: a
+// directory it failed to remove is left, unlocked, to a later sweep, and a
+// later lab of the process builds into a new one.
+func RemoveRunBinaries(ctx context.Context) error {
+	preparedMu.Lock()
+	defer preparedMu.Unlock()
+	var errs []error
+	for root, p := range prepared {
+		errs = append(errs, p.bin.remove(ctx))
+		delete(prepared, root)
+	}
+	builtTests.Clear()
+	return errors.Join(errs...)
+}
+
+// removeStaleBinaries removes, in the checkout at root, the binary
+// directories of runs that have ended without removing them, and those of
+// kept labs once labsUp lists none of their labs (see sweepBinRoot).
+func removeStaleBinaries(ctx context.Context, root string, labsUp labLister) error {
+	unlock, err := lockBinRoot(ctx, root)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	return sweepBinRoot(ctx, root, labsUp)
+}
+
+// mainInstalled says the test binary runs its tests through Main.
+var mainInstalled atomic.Bool
+
+// Main runs a package's lab tests and then removes the binaries they
+// built. Every package with tests that start labs calls it from TestMain,
+// as the last thing TestMain does: a lab started without it fails its
+// test. A run that dies first (interrupted, killed, a -timeout panic)
+// leaves its binaries to the next run's sweep, or to labctl down.
+func Main(m *testing.M) {
+	mainInstalled.Store(true)
+	m.Run() // TestMain may return; the test binary exits with m.Run's code
+	if err := RemoveRunBinaries(context.Background()); err != nil {
+		fmt.Fprintln(os.Stderr, "lab: remove binaries:", err)
+	}
+}

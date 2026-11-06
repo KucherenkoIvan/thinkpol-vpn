@@ -277,3 +277,40 @@ func TestDirectRoutesShrinkBeforeTheRouterChangesAndGrowAfter(t *testing.T) {
 	// Growing: the router sends it direct before the OS table does.
 	set(rules.Local{}, during{sentDirect, true})
 }
+
+// A change that drops some direct prefixes and adds others first narrows
+// the OS table to what the old and the new direct set both hold, while
+// the router still routes the old rules: an added prefix goes direct only
+// once the router does, and a dropped one stops first.
+func TestAMixedChangeShrinksToWhatBothHold(t *testing.T) {
+	net := memory.NewNetwork(memory.Datagram)
+	a, s, _ := m0()
+	withChain(t, a, s, "cidr:198.51.100.0/24 -> direct", "cidr:2001:db8:d0::/48 -> direct", "default -> chain:nl")
+	a.section.Presets = netmap.RulePresets{Chain: "nl"}
+	rt := &fakeRouteTable{}
+	a.routes = rt
+	s.start(t, net)
+	a.start(t, net)
+	calls, n := rt.since(0)
+	if len(calls) != 1 {
+		t.Fatalf("%d Enforce calls for the first Apply, want 1", len(calls))
+	}
+	old := calls[0].Direct
+
+	withChain(t, a, s, "cidr:198.51.100.0/24 -> direct", "cidr:2001:db8:d1::/48 -> direct", "default -> chain:nl")
+	if err := a.engine.Apply(context.Background(), a.section); err != nil {
+		t.Fatal(err)
+	}
+	calls, _ = rt.since(n)
+	if len(calls) != 2 {
+		t.Fatalf("a mixed change enforced %d wants, want 2 (the shrink, then the new set): %v", len(calls), calls)
+	}
+	shrunk, final := calls[0].Direct, calls[1].Direct
+	kept, dropped, added := netip.MustParseAddr("198.51.100.7"), netip.MustParseAddr("2001:db8:d0::7"), netip.MustParseAddr("2001:db8:d1::7")
+	if !final.Contains(kept) || !final.Contains(added) || final.Contains(dropped) {
+		t.Fatalf("the new set %v", final.Prefixes())
+	}
+	if !shrunk.Contains(kept) || shrunk.Contains(dropped) || shrunk.Contains(added) || !shrunk.Equal(old.Intersect(final)) {
+		t.Errorf("the shrink enforced %v, want what the old %v and the new %v both hold", shrunk.Prefixes(), old.Prefixes(), final.Prefixes())
+	}
+}

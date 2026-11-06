@@ -708,6 +708,89 @@ func TestReplaysCostNothing(t *testing.T) {
 	}
 }
 
+// A supervisor restart, which starts the transport's router afresh while
+// a tap's capture is still fresh, doesn't let the capture through: replayed
+// to the new supervisor it reaches no worker, costs its space nothing and
+// gives the worker no address to answer, while the dialer, sending on with
+// the same sender, is forwarded at once (TP-069).
+func TestReplaysAfterARestartCostNothing(t *testing.T) {
+	var ahead atomic.Int64 // the test's clock: real time, moved forward by the restart
+	now := func() time.Time { return time.Now().Add(time.Duration(ahead.Load())) }
+	p := transporttest.SymmetricPeer()
+	space := randomSpace()
+	start := func() (*shared, *meter, *fakeWorker, string) {
+		m := &meter{allow: true, charged: map[transport.SpaceID]int{}}
+		s := newTestShared(t, m, udp.New(udp.Options{Now: now}))
+		address := listenUDP(t, s, nil)
+		s.setSpaces(map[transport.SpaceID]map[string][]transport.PeerLink{space: {udp.Name: {p.PeerLink}}})
+		w := newFakeWorker(s, space)
+		s.attach(space, w.sockets())
+		return s, m, w, address
+	}
+
+	// The dialer sends through a passive tap, which keeps a copy.
+	capture, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = capture.Close() }()
+	client, err := udp.New(udp.Options{Now: now}).Dial(context.Background(), capture.LocalAddr().String(), transport.DialConfig{Credential: p.Credential})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = client.Close() }()
+	captureNext := func() []byte {
+		t.Helper()
+		if err := client.WritePacket(make([]byte, 1000)); err != nil {
+			t.Fatal(err)
+		}
+		buf := make([]byte, 2048)
+		_ = capture.SetReadDeadline(time.Now().Add(wait))
+		n, _, err := capture.ReadFrom(buf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return buf[:n]
+	}
+	send := func(address string, d []byte) net.Conn {
+		t.Helper()
+		c, err := net.Dial("udp", address)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = c.Close() })
+		if _, err := c.Write(d); err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+
+	first, _, w, address := start()
+	genuine := captureNext()
+	send(address, genuine)
+	eventually(t, "the genuine datagram forwarded", func() bool { return w.got.Load() == 1 })
+	first.close()
+
+	ahead.Store(int64(time.Second)) // the restart ends in a later second than the capture
+	s, m, w, address := start()
+	replayer := send(address, genuine)
+	eventually(t, "the replay counted", func() bool { return s.counters(space).Stale == 1 })
+	if w.got.Load() != 0 || m.of(space) != 0 {
+		t.Fatalf("forwarded %d, charged %d: want nothing", w.got.Load(), m.of(space))
+	}
+	if remotes := (*s.routes.Load())[space].remotesForTest(); len(remotes) != 0 {
+		t.Fatalf("remembered %v, want no address", remotes)
+	}
+	listener := s.ipcListeners()[0].ID
+	s.reply(space, ipc.DatagramHeader{Listener: listener, Remote: netip.MustParseAddrPort(replayer.LocalAddr().String())}, []byte("x"))
+	if c := s.counters(space); c.RepliesNotAllowed != 1 || c.Replies != 0 {
+		t.Fatalf("a reply to the replayer: %+v", c)
+	}
+
+	send(address, captureNext())
+	eventually(t, "the dialer's next datagram forwarded", func() bool { return w.got.Load() == 1 })
+}
+
 // remotesForTest lists the remote ends the space may answer.
 func (r *route) remotesForTest() map[replyKey]netip.AddrPort {
 	r.peers.mu.Lock()

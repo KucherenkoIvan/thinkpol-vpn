@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -119,13 +120,20 @@ type served struct {
 
 func serve(t *testing.T, p Policy) *served {
 	t.Helper()
+	return serveGated(t, p, p)
+}
+
+// serveGated is serve with the socket's directory made for gate: for a
+// call policy whose group the test can't give a directory to.
+func serveGated(t *testing.T, p, gate Policy) *served {
+	t.Helper()
 	s := &served{
 		socket: filepath.Join(shortTempDir(t), "api", "api.sock"),
 		node:   &fakeNode{st: agent.Status{Mode: agent.ModeDevice, Space: netmap.SpaceID{0xab, 1}, MapVersion: 7}},
 		logs:   logring.New(1 << 16),
 		done:   make(chan error, 1),
 	}
-	l, err := Listen(s.socket, p)
+	l, err := Listen(s.socket, gate)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -330,20 +338,29 @@ func TestPolicy(t *testing.T) {
 		{Caller{UID: 1000, GIDs: []uint32{50}}, AccessControl},
 		{Caller{UID: 1001, GIDs: []uint32{1001, 51}}, AccessNone},
 	} {
-		if got := p.Access(tc.c); got != tc.want {
+		if got, _ := p.access(context.Background(), tc.c); got != tc.want {
 			t.Errorf("%+v: got %d, want %d", tc.c, got, tc.want)
 		}
 	}
-	if got := (Policy{ServiceUID: 990}).Access(Caller{UID: 1000, GIDs: []uint32{50}}); got != AccessNone {
+	if got, _ := (Policy{ServiceUID: 990}).access(context.Background(), Caller{UID: 1000, GIDs: []uint32{50}}); got != AccessNone {
 		t.Errorf("no group: got %d", got)
 	}
 
+	if testing.Short() {
+		t.Skip("NewPolicy asks the real Directory Services (dscl) on macOS")
+	}
 	for group, want := range map[string]Policy{
 		"":                           {ServiceUID: uint32(os.Geteuid())},
 		"no-such-group-for-thinkpol": {ServiceUID: uint32(os.Geteuid())},
 		"4242":                       {ServiceUID: uint32(os.Geteuid()), Group: 4242, HasGroup: true},
 	} {
-		if got, err := NewPolicy(group); err != nil || got != want {
+		got, err := NewPolicy(group)
+		// Membership is the OS's: Directory Services on macOS, none elsewhere.
+		if wantMembership := want.HasGroup && runtime.GOOS == "darwin"; (got.Membership != nil) != wantMembership {
+			t.Errorf("NewPolicy(%q): membership %v, want one: %v", group, got.Membership, wantMembership)
+		}
+		got.Membership = nil
+		if err != nil || got != want {
 			t.Errorf("NewPolicy(%q) = %+v, %v; want %+v", group, got, err, want)
 		}
 	}
@@ -362,7 +379,7 @@ func TestCallersAreCheckedByTheirCredentials(t *testing.T) {
 		t.Fatalf("stranger's status: %v", err)
 	}
 	err := c.TailLogs(ctx, 1, false, func([]string, uint64) error { return nil })
-	if !errors.Is(err, ErrPermissionDenied) {
+	if !errors.Is(err, ErrRootOnly) {
 		t.Fatalf("stranger's logs: %v", err)
 	}
 
@@ -383,8 +400,26 @@ func TestCallersAreCheckedByTheirCredentials(t *testing.T) {
 		t.Fatal("a member was given the host parts")
 	}
 	err = c.TailLogs(ctx, 1, false, func([]string, uint64) error { return nil })
-	if !errors.Is(err, ErrPermissionDenied) {
+	if !errors.Is(err, ErrRootOnly) || !IsPermission(err) {
 		t.Fatalf("member's logs: %v", err)
+	}
+}
+
+// A caller the OS couldn't place goes out as Unavailable, which a client
+// may try again, and the client finds ErrMembershipUnknown in it.
+func TestAnUnknownMembershipIsUnavailable(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root may do everything")
+	}
+	down := &fakeMembership{err: errors.New("opendirectoryd is down")}
+	s := serveGated(t, Policy{ServiceUID: uint32(os.Geteuid()) + 1, Group: 4242424, HasGroup: true, Membership: down}, me())
+	c := dial(t, s.socket)
+	ctx := context.Background()
+	if _, raw := c.api.GetStatus(ctx, &localapiv1.GetStatusRequest{}); status.Code(raw) != codes.Unavailable {
+		t.Fatalf("raw status: %v, want %s", raw, codes.Unavailable)
+	}
+	if _, err := c.Status(ctx); !errors.Is(err, ErrMembershipUnknown) || IsPermission(err) {
+		t.Fatalf("status: %v, want ErrMembershipUnknown", err)
 	}
 }
 
@@ -486,7 +521,7 @@ func TestListenOwnsItsDirectory(t *testing.T) {
 }
 
 func TestDialExplainsWhyNot(t *testing.T) {
-	if _, err := Dial(filepath.Join(shortTempDir(t), "none.sock")); !errors.Is(err, ErrNotRunning) {
+	if _, err := Dial(filepath.Join(shortTempDir(t), "none.sock")); !errors.Is(err, ErrServiceDown) || errors.Is(err, ErrNotRunning) {
 		t.Fatalf("no service: %v", err)
 	}
 	if os.Geteuid() == 0 {

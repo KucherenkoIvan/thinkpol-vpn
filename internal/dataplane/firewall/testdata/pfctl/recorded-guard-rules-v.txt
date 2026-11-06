@@ -1,0 +1,24 @@
+pass out quick on lo0 inet6 all no state
+  [ Evaluations: 3468      Packets: 16        Bytes: 1152        States: 0     ]
+  [ Inserted: uid 0 pid 32975 ]
+pass out quick on utun4 inet6 all no state
+  [ Evaluations: 2066      Packets: 10        Bytes: 8142        States: 0     ]
+  [ Inserted: uid 0 pid 32975 ]
+pass out quick inet6 from any to <thinkpol_exempt6> no state
+  [ Evaluations: 1191      Packets: 1         Bytes: 116         States: 0     ]
+  [ Inserted: uid 0 pid 32975 ]
+pass out quick inet6 proto ipv6-icmp from any to ff00::/8 icmp6-type groupqry no state
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Inserted: uid 0 pid 32975 ]
+pass out quick inet6 proto ipv6-icmp from any to ff00::/8 icmp6-type grouprep no state
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Inserted: uid 0 pid 32975 ]
+pass out quick inet6 proto ipv6-icmp from any to ff00::/8 icmp6-type groupterm no state
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Inserted: uid 0 pid 32975 ]
+pass out quick inet6 proto ipv6-icmp from any to ff00::/8 icmp6-type 143 no state
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Inserted: uid 0 pid 32975 ]
+block return out quick inet6 all
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Inserted: uid 0 pid 32975 ]

@@ -26,7 +26,8 @@ import (
 // Client is a local API client: the CLI's, later the tray app's. What it
 // returns is sanitized (every string disarmed for a terminal) and its
 // errors are explained for a person; errors.Is finds ErrPermissionDenied,
-// ErrNotRunning, ErrServerMode and the other refusals in them.
+// ErrRootOnly, ErrNotRunning, ErrServerMode and the other refusals in them
+// ([IsPermission] either of the first two), and Dial's ErrServiceDown.
 type Client struct {
 	conn *grpc.ClientConn
 	api  localapiv1.LocalServiceClient
@@ -173,9 +174,9 @@ func (e *clientError) Unwrap() error { return e.err }
 func dialError(path string, err error) error {
 	switch {
 	case errors.Is(err, fs.ErrPermission):
-		return &clientError{fmt.Sprintf("permission denied: the local API at %s is for root and the members of its group", path), ErrPermissionDenied}
+		return &clientError{fmt.Sprintf("%s (%s)", refusalMsg(ErrPermissionDenied), path), ErrPermissionDenied}
 	case errors.Is(err, fs.ErrNotExist), errors.Is(err, syscall.ECONNREFUSED):
-		return &clientError{fmt.Sprintf("the thinkpol service is not running (nothing listens at %s)", path), ErrNotRunning}
+		return &clientError{fmt.Sprintf("%s (nothing listens at %s)", serviceDownMsg, path), ErrServiceDown}
 	}
 	return fmt.Errorf("connecting to the local API at %s: %w", path, err)
 }
@@ -189,7 +190,7 @@ func (c *Client) explain(err error) error {
 	var remote *grpckit.RemoteDomainError
 	if errors.As(err, &remote) {
 		if step, ok := strings.CutPrefix(remote.Code, startFailedPrefix); ok {
-			return &clientError{fmt.Sprintf("starting the data plane failed at step %q; the service's log has the details", agent.Sanitize(step)), ErrStartFailed}
+			return &clientError{fmt.Sprintf(startFailedMsg, agent.Sanitize(step)), ErrStartFailed}
 		}
 		for _, r := range refusals {
 			if remote.Code == r.err.Code {

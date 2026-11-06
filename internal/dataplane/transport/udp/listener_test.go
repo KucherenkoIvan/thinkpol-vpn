@@ -285,9 +285,47 @@ func TestListenerFollowsARebindingDialer(t *testing.T) {
 	expectPacket(t, fromServer, []byte("found you"))
 }
 
+// A listener restarted while a tap's capture is still fresh, as a node in
+// device mode restarts, refuses what was sealed before it started: the
+// capture opens no link and reaches only the camouflage, and the dialer,
+// sending on with the same sender, gets through at once (TP-069).
+func TestRestartThenReplayWithinTheWindow(t *testing.T) {
+	f := newFixture(t)
+	client := f.dial()
+	fromServer := reads(client)
+	write(t, client, "before the restart")
+	expectPacket(t, reads(f.accept()), []byte("before the restart"))
+	old, _ := f.tap.captured()
+
+	f.clock.advance(time.Second) // the restart ends in a later second than the capture
+	f.restart()
+	f.tap.rebind() // the attacker's own address
+	before := f.camo.Calls()
+	for _, d := range old {
+		f.tap.inject(d)
+	}
+	waitFor(t, "every replay counted", func() bool { return f.listener.Counters().StaleTimestamp >= uint64(len(old)) })
+	f.expectNoAccept()
+	if c := f.listener.Counters(); c.StaleTimestamp != uint64(len(old)) || c.Delivered != 0 {
+		t.Fatalf("counters %+v for %d replays, want them all stale", c, len(old))
+	}
+	if got := f.camo.Calls() - before; got != int64(len(old)) {
+		t.Errorf("%d replays reached the camouflage, want %d", got, len(old))
+	}
+
+	f.tap.rebind()
+	write(t, client, "after the restart")
+	server := f.accept()
+	expectPacket(t, reads(server), []byte("after the restart"))
+	write(t, server, "still yours")
+	expectPacket(t, fromServer, []byte("still yours"))
+}
+
 func TestConnIDsChangeAcrossTheHour(t *testing.T) {
 	now := time.Now()
-	boundary := now.Truncate(connIDPeriod).Add(connIDPeriod)
+	// An hour at least 3 s away: the dialer, 2 s before it, mustn't seal
+	// before the second the listener started in.
+	boundary := now.Add(3 * time.Second).Truncate(connIDPeriod).Add(connIDPeriod)
 	f := newFixture(t)
 	// The listener is just past the hour, the dialer just before it.
 	f.clock.advance(boundary.Add(2 * time.Second).Sub(now))

@@ -274,6 +274,8 @@ func TestHooked(t *testing.T) {
 		{"anchor \"com.apple/*\"\n", hookOK},
 		{"  anchor \"com.apple/*\" all  \n", hookOK},
 		{"No ALTQ support in kernel\nanchor \"com.apple/*\" all\n", hookOK},
+		{"pass out quick inet6 all label \"ALTQ\"\nanchor \"com.apple/*\" all\n", hookBypassed}, // a label, no chatter
+		{"ALTQ related functions disabled\npass out quick inet6 all label \"No ALTQ support in kernel\"\nanchor \"com.apple/*\" all\n", hookBypassed},
 		{"pass out all flags S/SA keep state\nanchor \"com.apple/*\" all\n", hookOK},       // no quick: our block still wins
 		{"pass in quick inet6 all\nanchor \"com.apple/*\" all\n", hookOK},                  // inbound only
 		{"pass out quick inet proto tcp all\nanchor \"com.apple/*\" all\n", hookOK},        // IPv4 only
@@ -319,23 +321,30 @@ func TestSkipped(t *testing.T) {
 	}
 }
 
-// The hook evaluates the anchors under com.apple in name order: any that
-// sorts before the guard's runs first.
+// The hook evaluates the anchors under com.apple in path order: any that
+// sorts before the guard's runs first. The listing is read as any
+// wildcard's (childAnchors): com.apple missing lists none, and a line
+// that isn't one of its children is an error.
 func TestAnchorsBefore(t *testing.T) {
 	for _, c := range []struct {
-		anchors string
-		want    []string
+		stdout, stderr string
+		want           []string
+		ok             bool
 	}{
-		{"  com.apple/000.thinkpol\n  com.apple/200.AirDrop\n  com.apple/250.ApplicationFirewall\n", nil},
-		{"", nil},
-		{"  com.apple/000.thinkpol\n  com.apple/100.other\n  com.apple/zz\n  com.apple/ALTQ\n", nil},
-		{"  com.apple/0.first\n  com.apple/000.thinkpol\n", []string{"com.apple/0.first"}},
-		{"  com.apple/000\n  com.apple/000.thinkpo\n  com.apple/-ALTQ\n", []string{"com.apple/000", "com.apple/000.thinkpo", "com.apple/-ALTQ"}},
-		{"  com.apple/000.thinkpol/0.nested\n", nil}, // the guard's anchor evaluates no anchor
-		{"0.relative\n", []string{"0.relative"}},
+		{"  com.apple/000.thinkpol\n  com.apple/200.AirDrop\n  com.apple/250.ApplicationFirewall\n", altq, nil, true},
+		{"", altq, nil, true},
+		{"", altq + "Anchor 'com.apple' not found.\n", nil, true},
+		{"  com.apple/000.thinkpol\n  com.apple/100.other\n  com.apple/zz\n  com.apple/ALTQ\n", "", nil, true},
+		{"  com.apple/0.first\n  com.apple/000.thinkpol\n", "", []string{"com.apple/0.first"}, true},
+		{"  com.apple/-ALTQ\n  com.apple/000\n  com.apple/000.thinkpo\n", "", []string{"com.apple/-ALTQ", "com.apple/000", "com.apple/000.thinkpo"}, true},
+		{"  com.apple/0 a\n", "", []string{"com.apple/0 a"}, true},
+		{"  com.apple/000.thinkpol/0.nested\n", "", nil, false},
+		{"0.relative\n", "", nil, false},
+		{"  com.apple/0.first\n", "a warning\n", nil, false},
 	} {
-		if got := anchorsBefore([]byte(c.anchors)); !slices.Equal(got, c.want) {
-			t.Errorf("%q: %q, want %q", c.anchors, got, c.want)
+		got, err := anchorsBefore(pfOutput{stdout: []byte(c.stdout), stderr: []byte(c.stderr)}, nil)
+		if !slices.Equal(got, c.want) || (err == nil) != c.ok {
+			t.Errorf("%q / %q: %q, %v", c.stdout, c.stderr, got, err)
 		}
 	}
 }
@@ -400,7 +409,7 @@ func TestParseReferences(t *testing.T) {
 	listing := []byte(altq + "TOKENS:\nPID      Process Name                 TOKEN                 TIMESTAMP\n" +
 		"618      socketfilterfw               9813589183660731843   0 days 00:03:31\n" +
 		"17013    pfctl                        18446743524308110600  0 days 01:05:50\n")
-	refs, understood := parseReferences(listing)
+	refs, understood := parseReferences(pfOutput{stdout: listing})
 	want := []pfReference{{618, 9813589183660731843}, {17013, 18446743524308110600}}
 	if !understood || !slices.Equal(refs, want) {
 		t.Fatalf("%v, %v", refs, understood)
@@ -428,11 +437,16 @@ func TestParseReferences(t *testing.T) {
 	if _, ok := byPid(refs, 1); ok {
 		t.Error("byPid: a pid not listed found")
 	}
-	if refs, understood := parseReferences([]byte("TOKENS:\nPID      Process Name                 TOKEN                 TIMESTAMP\n")); len(refs) != 0 || !understood {
-		t.Errorf("an empty listing: %v, %v", refs, understood)
+	// A Mac holding none prints answerNoReferences, not the header alone.
+	if refs, understood := parseReferences(pfOutput{stdout: []byte("TOKENS:\nPID      Process Name                 TOKEN                 TIMESTAMP\n")}); len(refs) != 0 || understood {
+		t.Errorf("a header with no reference: %v, %v", refs, understood)
+	}
+	// A process named ALTQ is a reference, not chatter.
+	if refs, understood := parseReferences(pfOutput{stdout: append(listing, "4242     ALTQ                         5000000000000000001   0 days 00:00:01\n"...)}); !understood || len(refs) != 3 || refs[2] != (pfReference{4242, 5000000000000000001}) {
+		t.Errorf("a process named ALTQ: %v, %v", refs, understood)
 	}
 	for _, odd := range []string{"", "token=5 by pfctl(17013)\n", "17013 pfctl\n", "pfctl 17013 5 0 days\n"} {
-		if refs, understood := parseReferences([]byte(odd)); len(refs) != 0 || understood {
+		if refs, understood := parseReferences(pfOutput{stdout: []byte(odd)}); len(refs) != 0 || understood {
 			t.Errorf("%q: %v, %v", odd, refs, understood)
 		}
 	}
@@ -768,6 +782,157 @@ func TestStatesMadeWhileTheGuardFailedAreKilled(t *testing.T) {
 	}
 }
 
+// No bypass is known, not unknown: a retry after a failure that let
+// nothing past the anchor (pf's status unreadable a while) doesn't kill
+// again. A main ruleset without the hook lets anything past, so the
+// Apply after the hook is back kills.
+func TestOnlyAFailureThatLetIPv6PastKillsAgain(t *testing.T) {
+	ctx := context.Background()
+	r := newRig(t)
+	g := r.guard()
+	if err := g.Apply(ctx, exempt(t)); err != nil {
+		t.Fatal(err)
+	}
+	port := uint16(51000)
+	state := func() fakeState {
+		port++
+		s := fakeState{"tcp", netip.AddrPortFrom(ownV6, port), netip.MustParseAddrPort("[2001:db8:ab::7]:443"), true}
+		r.pf.set(func(f *fakePF) { f.states = append(f.states, s) })
+		return s
+	}
+	a := state()
+	r.pf.failOn("info", errFake)
+	if err := g.Apply(ctx, exempt(t)); err == nil {
+		t.Fatal("applied with pf's status unreadable")
+	}
+	r.pf.failOn("info", nil)
+	if err := g.Apply(ctx, exempt(t)); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(r.pf.stateList(), a) {
+		t.Error("the retry after a failure that let nothing past killed again")
+	}
+	b := state()
+	r.pf.set(func(f *fakePF) { f.main = stockMain[:1] })
+	if err := g.Apply(ctx, exempt(t)); err == nil {
+		t.Fatal("applied without the hook")
+	}
+	r.pf.set(func(f *fakePF) { f.main = stockMain })
+	if err := g.Apply(ctx, exempt(t)); err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(r.pf.stateList(), b) {
+		t.Error("a state made while the hook was missing survived")
+	}
+}
+
+// What the poll sees counts as an Apply's check would: a hook missing for
+// one poll, a bypass the poll saw, or pf off, kills at the Apply its
+// signal brings, even when it is gone by then (pf back on by someone
+// else's `pfctl -e`). pf off counts under a persistent bypass too, the
+// guard failing and its kill done under that bypass. An unchanged guard's
+// polls don't kill.
+func TestAChangeOnlyThePollSawKills(t *testing.T) {
+	ctx := context.Background()
+	r := newRig(t)
+	g := r.guard()
+	if err := g.Apply(ctx, exempt(t)); err != nil {
+		t.Fatal(err)
+	}
+	port := uint16(51000)
+	state := func() fakeState {
+		port++
+		s := fakeState{"tcp", netip.AddrPortFrom(ownV6, port), netip.MustParseAddrPort("[2001:db8:ab::7]:443"), true}
+		r.pf.set(func(f *fakePF) { f.states = append(f.states, s) })
+		return s
+	}
+	a := state()
+	if g.broken(ctx) {
+		t.Fatal("the poll broke an intact guard")
+	}
+	if err := g.Apply(ctx, exempt(t)); err != nil || !slices.Contains(r.pf.stateList(), a) {
+		t.Fatalf("after a quiet poll: %v, killed %v", err, !slices.Contains(r.pf.stateList(), a))
+	}
+	for _, c := range []struct {
+		what string
+		main []string
+	}{
+		{"a hook missing", stockMain[:1]},
+		{"a quick pass above the hook", append([]string{"pass out quick inet6 all"}, stockMain...)},
+	} {
+		s := state()
+		r.pf.set(func(f *fakePF) { f.main = c.main })
+		if !g.broken(ctx) {
+			t.Fatalf("the poll missed %s", c.what)
+		}
+		r.pf.set(func(f *fakePF) { f.main = stockMain })
+		if err := g.Apply(ctx, exempt(t)); err != nil {
+			t.Fatal(err)
+		}
+		if slices.Contains(r.pf.stateList(), s) {
+			t.Errorf("a state made while the poll saw %s survived", c.what)
+		}
+	}
+	s := state()
+	r.pf.disable()
+	if !g.broken(ctx) {
+		t.Fatal("the poll missed pf off")
+	}
+	r.pf.set(func(f *fakePF) { f.plainOn = true })
+	if err := g.Apply(ctx, exempt(t)); err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(r.pf.stateList(), s) {
+		t.Error("a state made while the poll saw pf off survived")
+	}
+	r.pf.set(func(f *fakePF) { f.main = append([]string{"pass out quick inet6 all"}, stockMain...) })
+	notEnforced(t, g.Apply(ctx, exempt(t)), "`pass ... quick` rule above")
+	s = state()
+	r.pf.disable()
+	if !g.broken(ctx) {
+		t.Fatal("the poll missed pf off under a bypass")
+	}
+	r.pf.set(func(f *fakePF) { f.plainOn = true })
+	notEnforced(t, g.Apply(ctx, exempt(t)), "`pass ... quick` rule above")
+	if slices.Contains(r.pf.stateList(), s) {
+		t.Error("a state made while the poll saw pf off under a bypass survived")
+	}
+}
+
+// A kill that fails fails the Apply, and the bypass it checked is told
+// too.
+func TestAFailedKillStillTellsTheBypass(t *testing.T) {
+	r := newRig(t)
+	r.pf.main = append([]string{"pass out quick inet6 all"}, stockMain...)
+	r.pf.states = []fakeState{{"tcp", netip.AddrPortFrom(ownV6, 51000), netip.MustParseAddrPort("[2001:db8:ab::7]:443"), true}}
+	r.pf.failOn("-k", errFake)
+	err := r.guard().Apply(context.Background(), exempt(t))
+	notEnforced(t, err, "-k", "`pass ... quick` rule above")
+}
+
+// A check that couldn't read pf kills, but can't vouch for what it killed
+// under: the next one that reads pf kills again, though it finds what an
+// empty check would (a main ruleset of the hook alone, no bypass).
+func TestAStateMadeWhilePfWasUnreadableIsKilled(t *testing.T) {
+	ctx := context.Background()
+	r := newRig(t)
+	r.pf.main = stockMain[1:]
+	r.pf.failOn("Interfaces", errFake)
+	g := r.guard()
+	if err := g.Apply(ctx, exempt(t)); err == nil {
+		t.Fatal("applied with pf unreadable")
+	}
+	s := fakeState{"tcp", netip.AddrPortFrom(ownV6, 51000), netip.MustParseAddrPort("[2001:db8:ab::7]:443"), true}
+	r.pf.set(func(f *fakePF) { f.states = append(f.states, s) })
+	r.pf.failOn("Interfaces", nil)
+	if err := g.Apply(ctx, exempt(t)); err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(r.pf.stateList(), s) {
+		t.Error("a state made while pf was unreadable survived")
+	}
+}
+
 func TestCloseRemovesTheGuardAndItsReference(t *testing.T) {
 	r := newRig(t)
 	g := r.guard()
@@ -824,8 +989,9 @@ func TestAFreshGuardCloseOnACleanHost(t *testing.T) {
 	}
 }
 
-// `Invalid argument` from a flush of an anchor that is there isn't an
-// empty anchor: the Close fails.
+// A flush that fails over an anchor that still lists its rules or its
+// table fails the Close: the listing after it decides, not what -F
+// answered.
 func TestAFlushThatFailsIsNoEmptyAnchor(t *testing.T) {
 	for _, key := range []string{"-F rules", "-F Tables"} {
 		r := newRig(t)
@@ -1032,9 +1198,9 @@ func TestAQuickPassAboveTheHookIsNotEnforced(t *testing.T) {
 // once pf skips only lo0 and the utun.
 //
 // While the same bypass lasts, the retries leave states alone (what it
-// lets through needs none, and the anchor lets nothing outgoing make one); a change to
-// the bypasses (another one coming, then going) kills them, and so does
-// the Apply after the last one ends.
+// lets through needs none, and the anchor lets nothing outgoing make
+// one); a change to the bypasses (another one coming, then going) kills
+// them, and so does the Apply after the last one ends.
 func TestASkippedInterfaceIsNotEnforced(t *testing.T) {
 	r := newRig(t)
 	r.pf.skip = []string{"en0", "lo0"}
@@ -1310,8 +1476,12 @@ func TestAnUnreadableTokenIsNotTakenTwice(t *testing.T) {
 		r.pf.noToken, r.pf.oddReferences = true, true
 		g := r.guard()
 		for range 2 {
-			if err := g.Apply(context.Background(), exempt(t)); !errors.Is(err, errUnreadToken) {
+			err := g.Apply(context.Background(), exempt(t))
+			if !errors.Is(err, errUnreadToken) {
 				t.Fatalf("%v, want the unread token", err)
+			}
+			if !errors.Is(err, errUnreadReferences) || strings.Count(err.Error(), errUnreadToken.Error()) != 1 {
+				t.Errorf("%v: want why pf's listing didn't name it, the token told once", err)
 			}
 		}
 		refs := r.pf.references()
@@ -1363,6 +1533,126 @@ func TestAnUnreadableTokenIsNotTakenTwice(t *testing.T) {
 		}
 		r.whole(t, exempt(t))
 	})
+	t.Run("the listing failed", func(t *testing.T) {
+		r := newRig(t)
+		r.pf.noToken = true
+		r.pf.failOn("References", errFake)
+		err := r.guard().Apply(context.Background(), exempt(t))
+		if !errors.Is(err, errUnreadToken) || !errors.Is(err, errFake) {
+			t.Fatalf("%v, want the unread token and why the listing failed", err)
+		}
+	})
+}
+
+// unreadTokenRig is a guard whose pf states the test makes one by one,
+// each a state the guard refuses.
+func unreadTokenRig(t *testing.T) (*rig, *IPv6Guard, func() fakeState) {
+	r := newRig(t)
+	port := uint16(51000)
+	return r, r.guard(), func() fakeState {
+		port++
+		s := fakeState{"tcp", netip.AddrPortFrom(ownV6, port), netip.MustParseAddrPort("[2001:db8:ab::7]:443"), true}
+		r.pf.set(func(f *fakePF) { f.states = append(f.states, s) })
+		return s
+	}
+}
+
+func wantUnreadToken(t *testing.T, err error) {
+	t.Helper()
+	if !errors.Is(err, errUnreadToken) {
+		t.Fatalf("%v, want the unread token", err)
+	}
+}
+
+// pf turned off under the guard: the Apply that turns it back on kills
+// what pf passed meanwhile though the new token can't be read, and tells
+// the token after. Its retries, the token still unread, carry on too: one
+// that sees nothing change doesn't kill again, one that sees a bypass
+// tells it with the token and kills.
+func TestAnUnreadTokenStillKills(t *testing.T) {
+	ctx := context.Background()
+	r, g, state := unreadTokenRig(t)
+	if err := g.Apply(ctx, exempt(t)); err != nil {
+		t.Fatal(err)
+	}
+	r.pf.disable()
+	a := state()
+	r.pf.set(func(f *fakePF) { f.noToken, f.oddReferences = true, true })
+	wantUnreadToken(t, g.Apply(ctx, exempt(t)))
+	if !r.pf.isOn() {
+		t.Fatal("pf left off")
+	}
+	if slices.Contains(r.pf.stateList(), a) {
+		t.Error("the Apply with the token unread left a state pf passed while off")
+	}
+	b := state()
+	wantUnreadToken(t, g.Apply(ctx, exempt(t)))
+	if !slices.Contains(r.pf.stateList(), b) {
+		t.Error("a retry that saw nothing change killed again")
+	}
+	c := state()
+	r.pf.set(func(f *fakePF) { f.main = append([]string{"pass out quick inet6 all"}, stockMain...) })
+	err := g.Apply(ctx, exempt(t))
+	wantUnreadToken(t, err)
+	notEnforced(t, err, "`pass ... quick` rule above")
+	if slices.Contains(r.pf.stateList(), c) {
+		t.Error("a retry that saw a bypass appear left a state")
+	}
+}
+
+// With pf off and the guard's reference known by its pid only, the
+// Apply stops at the token: a check and a kill then would vouch for
+// states pf goes on passing. Once pf is on again (someone's `pfctl -e`),
+// the next Apply kills what pf passed while off, before that Apply and
+// after it, though the token is still unread.
+func TestAnUnreadTokenWithPfOffStopsTheApply(t *testing.T) {
+	ctx := context.Background()
+	r, g, state := unreadTokenRig(t)
+	r.pf.set(func(f *fakePF) { f.keepRefs, f.noToken, f.oddReferences = true, true, true })
+	wantUnreadToken(t, g.Apply(ctx, exempt(t)))
+	r.pf.disable()
+	a := state()
+	r.pf.forget()
+	wantUnreadToken(t, g.Apply(ctx, exempt(t)))
+	if refs := r.pf.references(); len(refs) != 1 {
+		t.Fatalf("references %v: a second taken with the guard's unknown", refs)
+	}
+	if !slices.Contains(r.pf.stateList(), a) || r.pf.ran("-k") != 0 || r.pf.ran("Interfaces") != 0 {
+		t.Fatalf("the Apply with pf off went on: states %v, %d kills, %d bypass checks", r.pf.stateList(), r.pf.ran("-k"), r.pf.ran("Interfaces"))
+	}
+	b := state()
+	r.pf.set(func(f *fakePF) { f.forcedOff, f.plainOn = false, true })
+	wantUnreadToken(t, g.Apply(ctx, exempt(t)))
+	for _, s := range []fakeState{a, b} {
+		if slices.Contains(r.pf.stateList(), s) {
+			t.Errorf("state %v, made while pf was off, survived", s)
+		}
+	}
+}
+
+// A reference known by its pid only whose record failed to be written
+// is recorded by the next Apply, the token still unread.
+func TestAnUnreadTokenIsRecordedOnTheRetry(t *testing.T) {
+	r := newRig(t)
+	r.pf.noToken, r.pf.oddReferences = true, true
+	g := r.guard()
+	if err := os.Chmod(r.dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Apply(context.Background(), exempt(t)); err == nil {
+		t.Fatal("applied without a record")
+	}
+	if err := os.Chmod(r.dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	wantUnreadToken(t, g.Apply(context.Background(), exempt(t)))
+	refs := r.pf.references()
+	if len(refs) != 1 {
+		t.Fatalf("references %v, want the one", refs)
+	}
+	if rec := r.record(t); !strings.Contains(rec, "\ntoken unknown pid "+strconv.Itoa(refs[0].pid)+"\n") {
+		t.Errorf("record %q", rec)
+	}
 }
 
 // A Close that fails keeps what it couldn't remove, record included, and
@@ -1410,6 +1700,119 @@ func TestTheRecordIsWrittenOnTheRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.whole(t, exempt(t))
+}
+
+// A record write that fails after pf was found off and enabled anew
+// keeps the reference the guard held before: pf still lists it, and the
+// Apply that records the new one, or Close, releases it.
+func TestAFailedRecordWriteKeepsTheOldReferenceOwed(t *testing.T) {
+	for _, then := range []string{"Apply", "Close"} {
+		t.Run(then, func(t *testing.T) {
+			r := newRig(t)
+			g := r.guard()
+			old := failedRecordWrite(t, r, g, func() {})
+			if then == "Apply" {
+				if err := g.Apply(context.Background(), exempt(t)); err != nil {
+					t.Fatal(err)
+				}
+				r.whole(t, exempt(t))
+				if slices.Contains(r.pf.references(), old) {
+					t.Fatalf("the old reference %v is still listed", old)
+				}
+			}
+			if err := g.Close(); err != nil {
+				t.Fatal(err)
+			}
+			r.gone(t)
+		})
+	}
+}
+
+// failedRecordWrite turns pf off with the guard's reference kept listed,
+// then has the Apply that enables pf anew fail to write the record: the
+// reference held before (returned) is owed, the record still names it.
+// during sets the fake up for that Apply.
+func failedRecordWrite(t *testing.T, r *rig, g *IPv6Guard, during func()) pfToken {
+	t.Helper()
+	r.pf.set(func(f *fakePF) { f.keepRefs = true })
+	if err := g.Apply(context.Background(), exempt(t)); err != nil {
+		t.Fatal(err)
+	}
+	old := r.pf.references()[0]
+	r.pf.disable()
+	if err := os.Chmod(r.dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	during()
+	if err := g.Apply(context.Background(), exempt(t)); err == nil {
+		t.Fatal("applied without a record")
+	}
+	if err := os.Chmod(r.dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if refs := r.pf.references(); len(refs) != 2 || refs[0] != old {
+		t.Fatalf("references %v after -E, want %v and a new one", refs, old)
+	}
+	if rec := r.record(t); !strings.Contains(rec, fmt.Sprintf("\ntoken %d pid %d\n", old.value, old.pid)) {
+		t.Fatalf("record %q, want the old reference %v still", rec, old)
+	}
+	return old
+}
+
+// The record a failed write left names a reference the guard owes: when
+// the guard has lost its own (pf no longer lists the pid it knew it by,
+// and taking a new one failed), the next Apply doesn't take the owed one
+// over as its own and release it, but takes a new one.
+func TestAnOwedReferenceIsNotTakenOverFromTheRecord(t *testing.T) {
+	r := newRig(t)
+	g := r.guard()
+	old := failedRecordWrite(t, r, g, func() {
+		r.pf.set(func(f *fakePF) { f.noToken, f.oddReferences = true, true })
+	})
+	// Someone releases the guard's new reference, known by pid only.
+	r.pf.set(func(f *fakePF) {
+		f.noToken, f.oddReferences = false, false
+		f.refs = slices.DeleteFunc(f.refs, func(ref fakeRef) bool { return ref.pfToken != old })
+	})
+	r.pf.failOn("-E", errFake)
+	if err := g.Apply(context.Background(), exempt(t)); err == nil {
+		t.Fatal("applied with -E failing")
+	}
+	r.pf.failOn("-E", nil)
+	theirs := r.pf.takeRef()
+	if err := g.Apply(context.Background(), exempt(t)); err != nil {
+		t.Fatal(err)
+	}
+	r.whole(t, exempt(t), theirs)
+	if slices.Contains(r.pf.references(), old) {
+		t.Fatalf("the owed reference %v is still listed", old)
+	}
+	if err := g.Close(); err != nil {
+		t.Fatal(err)
+	}
+	r.gone(t, theirs)
+}
+
+// Close releases the references the guard owes before its own, so pf
+// stays on by its own while they go; one whose release fails stays owed,
+// with the guard's own, and the next Close releases both.
+func TestCloseKeepsAnOwedReferenceItCantRelease(t *testing.T) {
+	r := newRig(t)
+	g := r.guard()
+	old := failedRecordWrite(t, r, g, func() {})
+	refs := r.pf.references()
+	r.pf.failOn(fmt.Sprintf("-X %d", old.value), errFake)
+	if err := g.Close(); err == nil {
+		t.Fatal("closed with the owed reference unreleased")
+	}
+	if got := r.pf.references(); !slices.Equal(got, refs) {
+		t.Fatalf("references %v after the failed Close, want %v: the owed one first", got, refs)
+	}
+	r.pf.failOn(fmt.Sprintf("-X %d", old.value), nil)
+	if err := g.Close(); err != nil {
+		t.Fatal(err)
+	}
+	r.gone(t)
 }
 
 func TestWatchSignalsWhenTheGuardBreaks(t *testing.T) {
@@ -1577,9 +1980,9 @@ func TestCloseKeepsAReferenceItCantSeeListed(t *testing.T) {
 // line out of those columns, or no header, is a listing not understood.
 func TestParseReferencesByTheHeadersColumns(t *testing.T) {
 	head := "TOKENS:\nPID      Process Name                 TOKEN                 TIMESTAMP\n"
-	refs, understood := parseReferences([]byte(head +
+	refs, understood := parseReferences(pfOutput{stdout: []byte(head +
 		"618      Network Filter Daemon 2      9813589183660731843   Thu Oct 22 12:00:01 2026\n" +
-		"4130     pfctl                        9000000000000000008   5s\n"))
+		"4130     pfctl                        9000000000000000008   5s\n")})
 	if !understood || !slices.Equal(refs, []pfReference{{618, 9813589183660731843}, {4130, 9000000000000000008}}) {
 		t.Fatalf("%v, %v", refs, understood)
 	}
@@ -1593,11 +1996,11 @@ func TestParseReferencesByTheHeadersColumns(t *testing.T) {
 		"a token off its column": "702      pfctl                         9000000000000000015  0 days\n",
 		"no pid":                 "         pfctl                        9000000000000000015   0 days\n",
 	} {
-		if _, understood := parseReferences([]byte(head + l)); understood {
+		if _, understood := parseReferences(pfOutput{stdout: []byte(head + l)}); understood {
 			t.Errorf("%s: understood", name)
 		}
 	}
-	if _, understood := parseReferences([]byte("618 socketfilterfw 9813589183660731843 0 days 00:03:31\n")); understood {
+	if _, understood := parseReferences(pfOutput{stdout: []byte("618 socketfilterfw 9813589183660731843 0 days 00:03:31\n")}); understood {
 		t.Error("no header: understood")
 	}
 }
@@ -1686,6 +2089,20 @@ func TestAFailedReleaseOfTheOldReferenceIsTold(t *testing.T) {
 	if len(refs) != 2 || refs[0] != old || !strings.Contains(r.record(t), fmt.Sprintf("token %d pid %d", refs[1].value, refs[1].pid)) {
 		t.Fatalf("references %v, record %q", refs, r.record(t))
 	}
+	// The failed release kept it owed: once pf's listing reads again, the
+	// next Apply releases it.
+	r.pf.set(func(f *fakePF) { f.oddReferences = false })
+	if err := g.Apply(context.Background(), exempt(t)); err != nil {
+		t.Fatal(err)
+	}
+	r.whole(t, exempt(t))
+	if slices.Contains(r.pf.references(), old) {
+		t.Fatalf("the old reference %v is still listed", old)
+	}
+	if err := g.Close(); err != nil {
+		t.Fatal(err)
+	}
+	r.gone(t)
 }
 
 func TestCutStateAndRuleListingsAreUnreadable(t *testing.T) {
@@ -1698,4 +2115,242 @@ func TestCutStateAndRuleListingsAreUnreadable(t *testing.T) {
 	if _, err := r.guard().listRules(context.Background()); err == nil || !strings.Contains(err.Error(), "cut") {
 		t.Errorf("the anchor's rules: %v", err)
 	}
+}
+
+// TestPfctlsNoAnswersAreExact: a missing anchor, a missing table and no
+// references are each one answer of pfctl's, alone on its stream but for
+// ALTQ chatter. Anything else, another ioctl's "Invalid argument", a
+// second line or a listing cut short included, isn't that answer.
+func TestPfctlsNoAnswersAreExact(t *testing.T) {
+	cut := "\n" + strings.Repeat("x", 1<<20) + "\n"
+	for stderr, missing := range map[string]bool{
+		"pfctl: DIOCGETRULES: Invalid argument\n":                                        true,
+		altq + "pfctl: DIOCGETRULES: Invalid argument\n":                                 true,
+		"pfctl: DIOCGETRULES: Invalid argument":                                          true,
+		"pfctl: DIOCADDRULE: Invalid argument\n":                                         false,
+		"pfctl: DIOCGETRULESETS: Invalid argument\n":                                     false,
+		"pfctl: DIOCGETRULE: Invalid argument\n":                                         false,
+		"pfctl: pfctl_clear_rules: Invalid argument\n":                                   false,
+		"pfctl: Invalid argument.\n":                                                     false,
+		"DIOCGETRULES: Invalid argument\n":                                               false,
+		"pfctl: DIOCGETRULES: Invalid argument\nmore\n":                                  false,
+		"pfctl: DIOCGETRULES: Invalid argument" + cut:                                    false,
+		"pfctl: DIOCGETRULES: Invalid argument (anchor)\n":                               false,
+		"pfctl: DIOCGETRULES: Invalid argument\npfctl: DIOCGETRULES: Invalid argument\n": false,
+		"":   false,
+		altq: false,
+	} {
+		if got := AnchorMissing([]byte(stderr)); got != missing {
+			t.Errorf("AnchorMissing(%.60q) = %v", stderr, got)
+		}
+	}
+	for stderr, none := range map[string]bool{
+		"pfctl: Table does not exist.\n":                               true,
+		altq + "pfctl: Anchor or Ruleset does not exist.\n":            true,
+		"pfctl: DIOCRGETADDRS: Invalid argument\n":                     false,
+		"pfctl: Invalid argument.\n":                                   false,
+		"pfctl: Table does not exist.\npfctl: more\n":                  false,
+		"pfctl: Table does not exist." + cut:                           false,
+		"pfctl: the table does not exist\n":                            false,
+		"pfctl: Table does not exist.\npfctl: Table does not exist.\n": false,
+		"": false,
+	} {
+		if got := noTable([]byte(stderr)); got != none {
+			t.Errorf("noTable(%.60q) = %v", stderr, got)
+		}
+	}
+	for stdout, understood := range map[string]bool{
+		"No pf starter references held\n":                                true,
+		altq + "No pf starter references held\n":                         true,
+		"No pf starter references held.\n":                               false,
+		"No pf starter references held\nmore\n":                          false,
+		"TOKENS:\nNo pf starter references held\n":                       false,
+		"No pf starter references held" + cut:                            false,
+		"No pf references held\n":                                        false,
+		"No pf starter references held\nNo pf starter references held\n": false,
+	} {
+		if refs, got := parseReferences(pfOutput{stdout: []byte(stdout), stderr: []byte(altq)}); got != understood || len(refs) != 0 {
+			t.Errorf("parseReferences(%.60q) = %v, %v", stdout, refs, got)
+		}
+	}
+	// The answer of none held counts only with a quiet stderr.
+	for _, stderr := range []string{"pfctl: a warning\n", answerNoReferences + "\n", altq + "x" + strings.Repeat("y", 1<<20) + "\n"} {
+		if _, got := parseReferences(pfOutput{stdout: []byte(answerNoReferences + "\n"), stderr: []byte(stderr)}); got {
+			t.Errorf("parseReferences with stderr %.60q understood", stderr)
+		}
+	}
+}
+
+// TestAnotherInvalidArgumentIsNoEmptyAnchor: pfctl failing to list an
+// anchor that is there with an "Invalid argument" that isn't the missing
+// anchor's (DIOCGETRULE, the per-rule ioctl of a rules listing;
+// DIOCRGETADDRS, a table's) is an error. A flush that fails and can't be
+// checked fails the Close, with both errors, and keeps the anchor, the
+// reference and the record; the snapshot says the rules and the table are
+// unreadable, not absent.
+func TestAnotherInvalidArgumentIsNoEmptyAnchor(t *testing.T) {
+	ctx := context.Background()
+	listing := map[string]string{
+		"rules":  GuardAnchor + " -s rules",
+		"Tables": GuardAnchor + " -t " + exemptTable + " -T show",
+	}
+	// What each fails with: the flush's ioctl and the listing's per-item
+	// one, as pfctl names them.
+	flushIoctl := map[string]string{"rules": "DIOCBEGINRULES", "Tables": "DIOCRCLRTABLES"}
+	listIoctl := map[string]string{"rules": "DIOCGETRULE", "Tables": "DIOCRGETADDRS"}
+	for _, what := range []string{"rules", "Tables"} {
+		r := newRig(t)
+		g := r.guard()
+		if err := g.Apply(ctx, exempt(t)); err != nil {
+			t.Fatal(err)
+		}
+		held, record := r.pf.references(), r.record(t)
+		r.pf.failOn("-F "+what, errors.New(flushIoctl[what]+": Invalid argument"))
+		r.pf.failOn(listing[what], errors.New(listIoctl[what]+": Invalid argument"))
+		if err := g.Close(); err == nil {
+			t.Fatalf("%s: closed over a listing that failed", what)
+		} else if !strings.Contains(err.Error(), flushIoctl[what]+":") || !strings.Contains(err.Error(), listIoctl[what]+":") {
+			t.Errorf("%s: the Close's error names the flush's and the listing's failures: %v", what, err)
+		}
+		if r.record(t) != record || !slices.Equal(r.pf.references(), held) || r.pf.ran("-X") != 0 {
+			t.Fatalf("%s: after a failed Close: record %q, references %v", what, r.record(t), r.pf.references())
+		}
+		if a := r.pf.anchor(GuardAnchor); (what == "rules" && len(a.rules) == 0) || (what == "Tables" && len(a.tables) == 0) {
+			t.Fatalf("%s: %+v", what, a)
+		}
+		got := g.inspect(ctx)
+		switch {
+		case what == "rules" && (!strings.Contains(got.RulesUnreadable, "DIOCGETRULE:") || !got.PresentUnknown || got.Present):
+			t.Errorf("rules: inspect %+v", got)
+		case what == "Tables" && (!strings.Contains(got.ExemptUnreadable, "DIOCRGETADDRS:") || got.Exempt != nil):
+			t.Errorf("Tables: inspect %+v", got)
+		}
+		r.pf.failOn("-F "+what, nil)
+		r.pf.failOn(listing[what], nil)
+		if err := g.Close(); err != nil {
+			t.Fatal(err)
+		}
+		r.gone(t)
+	}
+}
+
+// TestCloseAfterAnOutsideReleaseRemovesTheRecord: someone else released
+// the guard's reference (`pfctl -X` with its token), and pf holds none:
+// `-s References` prints only "No pf starter references held", as a Mac
+// does. That listing is read as no reference: the Close flushes the
+// anchor, releases nothing and removes the record, and the snapshot says
+// the record's reference isn't held.
+func TestCloseAfterAnOutsideReleaseRemovesTheRecord(t *testing.T) {
+	ctx := context.Background()
+	r := newRig(t)
+	g := r.guard()
+	if err := g.Apply(ctx, exempt(t)); err != nil {
+		t.Fatal(err)
+	}
+	r.pf.set(func(f *fakePF) { f.refs = nil })
+	out, err := r.pf.run(ctx, nil, "-s", "References")
+	if err != nil || !bytes.Equal(out.stdout, fixture(t, "recorded-references-none.txt")) {
+		t.Fatalf("the fake's References %q, %v; want the recorded listing", out.stdout, err)
+	}
+	ref := g.inspect(ctx).PF.Reference
+	if ref == nil || !ref.Recorded || ref.Held || ref.HeldUnreadable != "" {
+		t.Fatalf("inspect: %+v", ref)
+	}
+	if err := g.Close(); err != nil {
+		t.Fatal(err)
+	}
+	r.gone(t)
+	if n := r.pf.ran("-X"); n != 0 {
+		t.Errorf("%d releases of a reference pf doesn't hold", n)
+	}
+}
+
+// TestARuleLabelledALTQIsSeen: pfctl's ALTQ chatter is two exact lines; a
+// rule whose label says "ALTQ", put into the guard's anchor, is a rule
+// like any other: the anchor isn't intact, and the next Apply reloads it.
+func TestARuleLabelledALTQIsSeen(t *testing.T) {
+	ctx := context.Background()
+	injected := `pass out quick inet6 all label "ALTQ"`
+	if l := lines([]byte(altq + injected + "\n")); !slices.Equal(l, []string{injected}) {
+		t.Fatalf("lines: %q", l)
+	}
+	r := newRig(t)
+	g := r.guard()
+	if err := g.Apply(ctx, exempt(t)); err != nil {
+		t.Fatal(err)
+	}
+	r.pf.set(func(f *fakePF) {
+		a := f.anchors[GuardAnchor]
+		a.rules = append([]string{injected}, a.rules...)
+	})
+	if g.intact(ctx, g.applied) {
+		t.Fatal("intact with a rule labelled ALTQ added")
+	}
+	r.pf.forget()
+	if err := g.Apply(ctx, exempt(t)); err != nil {
+		t.Fatal(err)
+	}
+	if r.pf.ran("-f") != 1 || slices.Contains(r.pf.anchor(GuardAnchor).rules, injected) {
+		t.Errorf("not reloaded: %q", r.pf.anchor(GuardAnchor).rules)
+	}
+	r.whole(t, exempt(t))
+}
+
+// TestAFlushThatSucceedsIsChecked: a -F that answers success but leaves
+// the anchor's rules or its table fails the Close, which keeps the
+// anchor, the reference and the record.
+func TestAFlushThatSucceedsIsChecked(t *testing.T) {
+	ctx := context.Background()
+	for what, says := range map[string]string{"rules": "still lists", "Tables": "still holds"} {
+		r := newRig(t)
+		g := r.guard()
+		if err := g.Apply(ctx, exempt(t)); err != nil {
+			t.Fatal(err)
+		}
+		held, record := r.pf.references(), r.record(t)
+		r.pf.set(func(f *fakePF) { f.flushKeeps = what })
+		if err := g.Close(); err == nil || !strings.Contains(err.Error(), says) {
+			t.Fatalf("%s: Close over a flush that left it: %v", what, err)
+		}
+		if r.record(t) != record || !slices.Equal(r.pf.references(), held) || r.pf.ran("-X") != 0 {
+			t.Fatalf("%s: after a failed Close: record %q, references %v", what, r.record(t), r.pf.references())
+		}
+		r.pf.set(func(f *fakePF) { f.flushKeeps = "" })
+		if err := g.Close(); err != nil {
+			t.Fatal(err)
+		}
+		r.gone(t)
+	}
+}
+
+// TestNoReferencesWithAWarningIsUnread: "No pf starter references held"
+// on stdout with something besides ALTQ chatter on stderr isn't pfctl's
+// answer of none held: the Close keeps the record, and the snapshot says
+// the reference is unreadable.
+func TestNoReferencesWithAWarningIsUnread(t *testing.T) {
+	ctx := context.Background()
+	r := newRig(t)
+	g := r.guard()
+	if err := g.Apply(ctx, exempt(t)); err != nil {
+		t.Fatal(err)
+	}
+	record := r.record(t)
+	r.pf.set(func(f *fakePF) {
+		f.refs = nil
+		f.referencesWarn = "pfctl: DIOCGETSTARTERS: Invalid argument"
+	})
+	if ref := g.inspect(ctx).PF.Reference; ref == nil || ref.HeldUnreadable == "" {
+		t.Errorf("inspect: %+v", ref)
+	}
+	if err := g.Close(); err == nil {
+		t.Fatal("closed over a References listing with a warning")
+	}
+	if r.record(t) != record {
+		t.Fatalf("record %q, want %q", r.record(t), record)
+	}
+	r.pf.set(func(f *fakePF) { f.referencesWarn = "" })
+	if err := g.Close(); err != nil {
+		t.Fatal(err)
+	}
+	r.gone(t)
 }

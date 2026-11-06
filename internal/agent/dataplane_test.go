@@ -582,12 +582,15 @@ func TestAFailedStartUndoesWhatItOpened(t *testing.T) {
 		name string
 		step dataplane.Step
 		// tableOpens: the route table opens (and must be closed);
-		// applyFails: the first Apply fails at the interface.
-		tableOpens, applyFails bool
-		wantClear              bool
+		// applyFails: the first Apply fails at the interface;
+		// enforceFails: the route table's first Enforce fails (its
+		// Close then removes a crashed run's routes and guard: TP-157).
+		tableOpens, applyFails, enforceFails bool
+		wantClear                            bool
 	}{
-		{"route table", dataplane.StepRouteTable, false, false, true},
-		{"first apply", dataplane.StepInterface, true, true, false},
+		{"route table", dataplane.StepRouteTable, false, false, false, true},
+		{"first apply", dataplane.StepInterface, true, true, false, false},
+		{"first enforce", dataplane.StepRouteTable, true, false, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := newTestSpace(t)
@@ -605,6 +608,9 @@ func TestAFailedStartUndoesWhatItOpened(t *testing.T) {
 			}
 			dp.Device.ClearConfig = func(netcfg.Owner) error { cleared.Add(1); return nil }
 			table := &wantsTable{}
+			if tc.enforceFails {
+				table.failing = 1
+			}
 			dp.Device.NewRouteTable = func(*slog.Logger, routetable.Guard) (RouteEnforcer, error) {
 				if !tc.tableOpens {
 					return nil, errors.New("no route table today")

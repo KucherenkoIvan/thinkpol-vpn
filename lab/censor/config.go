@@ -53,6 +53,8 @@ func register[T any](mu *sync.Mutex, into map[string]func(json.RawMessage) (T, e
 
 // Build builds the config's modules. An unknown name is an error: a test
 // asking for a censor that does not exist must not silently censor less.
+// A passive module that also implements Active is in both lists, one
+// value.
 func Build(cfg Config) (builtPassives []Passive, builtActives []Active, err error) {
 	registryMu.Lock()
 	defer registryMu.Unlock()
@@ -63,6 +65,9 @@ func Build(cfg Config) (builtPassives []Passive, builtActives []Active, err erro
 				return nil, nil, fmt.Errorf("censor: module %s: %w", mc.Name, err)
 			}
 			builtPassives = append(builtPassives, m)
+			if a, ok := m.(Active); ok {
+				builtActives = append(builtActives, a)
+			}
 		} else if build, ok := actives[mc.Name]; ok {
 			m, err := build(mc.Settings)
 			if err != nil {

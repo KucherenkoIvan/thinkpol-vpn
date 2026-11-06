@@ -1,0 +1,25 @@
+Status: Enabled for 8 days 03:34:38           Debug: Urgent
+
+State Table                          Total             Rate
+  current entries                        0               
+  searches                       209142069          297.0/s
+  inserts                                0            0.0/s
+  removals                             724            0.0/s
+Counters
+  match                           88517011          125.7/s
+  bad-offset                             0            0.0/s
+  fragment                               0            0.0/s
+  short                                  0            0.0/s
+  normalize                              0            0.0/s
+  memory                                 2            0.0/s
+  bad-timestamp                          0            0.0/s
+  congestion                             0            0.0/s
+  ip-option                           8017            0.0/s
+  proto-cksum                            0            0.0/s
+  state-mismatch                         0            0.0/s
+  state-insert                           0            0.0/s
+  state-limit                            0            0.0/s
+  src-limit                              0            0.0/s
+  synproxy                               0            0.0/s
+  dummynet                               0            0.0/s
+  invalid-port                           0            0.0/s

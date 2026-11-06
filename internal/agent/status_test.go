@@ -516,6 +516,15 @@ func TestHealth(t *testing.T) {
 		{"overlay addresses taken around the route table", Status{Connection: Connected, DataPlane: &dataplane.Status{
 			RouteTable: dataplane.RouteTableStatus{Enforced: true, Routes: 9, OverlayAhead: 1}}},
 			Health{HealthDown, []Problem{ProblemOverlayRoutesAhead}}},
+		{"a corrupt route record, its routes left", Status{Connection: Connected, DataPlane: &dataplane.Status{
+			RouteTable: dataplane.RouteTableStatus{Enforced: true, Routes: 9, CorruptRecords: 1, UnownedRoutes: 3}}},
+			Health{HealthDegraded, []Problem{ProblemRouteRecordsCorrupt}}},
+		{"a corrupt route record, no routes left", Status{Connection: Connected, DataPlane: &dataplane.Status{
+			RouteTable: dataplane.RouteTableStatus{Enforced: true, Routes: 9, CorruptRecords: 1}}},
+			Health{HealthOK, nil}},
+		{"unowned routes without a corrupt record (another program's)", Status{Connection: Connected, DataPlane: &dataplane.Status{
+			RouteTable: dataplane.RouteTableStatus{Enforced: true, Routes: 9, UnownedRoutes: 3}}},
+			Health{HealthOK, nil}},
 		{"leak guard failing, routes in place", Status{Connection: Connected, DataPlane: &dataplane.Status{
 			RouteTable: dataplane.RouteTableStatus{Enforced: true, Routes: 9, GuardError: dataplane.RouteTableGuardFailed}}},
 			Health{HealthDegraded, []Problem{ProblemGuard}}},

@@ -38,8 +38,14 @@ type fakePF struct {
 	// while off); forcedOff is pf off that way.
 	keepRefs, forcedOff bool
 	// flushMissingOK: -F of an anchor that doesn't exist succeeds;
-	// otherwise it answers `Invalid argument`, as listing one does.
+	// otherwise it answers `Invalid argument` (what a Mac answers is
+	// unrecorded).
 	flushMissingOK bool
+	// flushKeeps: -F of what this names ("rules", "Tables") succeeds and
+	// leaves the anchor as it was.
+	flushKeeps string
+	// referencesWarn: -s References also says this on stderr.
+	referencesWarn string
 	// oddReferences: -s References prints a layout the guard can't read.
 	oddReferences bool
 	// loadHook, if set, changes what a load puts in place.
@@ -139,6 +145,16 @@ func (f *fakePF) anchor(name string) *fakeAnchor {
 		return &fakeAnchor{tables: map[string][]string{}, consts: map[string]bool{}}
 	}
 	return a.clone()
+}
+
+// hasChildren says an anchor of the fake's is under name. Called locked.
+func (f *fakePF) hasChildren(name string) bool {
+	for n := range f.anchors {
+		if strings.HasPrefix(n, name+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func (f *fakePF) setAnchor(name string, a *fakeAnchor) {
@@ -263,8 +279,11 @@ func (f *fakePF) run(ctx context.Context, stdin []byte, args ...string) (pfOutpu
 			b.WriteString(l + "\n")
 		}
 	case slices.Equal(args, []string{"-s", "rules"}):
-		if a == nil {
+		if a == nil && !f.hasChildren(anchor) {
 			return fail("pfctl: DIOCGETRULES: Invalid argument")
+		}
+		if a == nil {
+			break // a ruleset pf made on a child's path, empty
 		}
 		for _, l := range a.rules {
 			b.WriteString(l + "\n")
@@ -286,16 +305,25 @@ func (f *fakePF) run(ctx context.Context, stdin []byte, args ...string) (pfOutpu
 			}
 			b.WriteString(name + "\n")
 		}
-	case slices.Equal(args, []string{"-s", "Anchors"}) && anchor == appleAnchor:
+	case slices.Equal(args, []string{"-s", "Anchors"}) && anchor != "":
+		// An anchor exists while it holds rules or tables, or has children
+		// (pf makes the rulesets on a child's path).
 		var children []string
 		for name := range f.anchors {
-			if child, ok := strings.CutPrefix(name, appleAnchor+"/"); ok && !strings.Contains(child, "/") {
+			if child, ok := strings.CutPrefix(name, anchor+"/"); ok {
+				child, _, _ = strings.Cut(child, "/")
 				children = append(children, child)
 			}
 		}
-		slices.Sort(children)
+		children = slices.Compact(slices.Sorted(slices.Values(children)))
+		if a == nil && len(children) == 0 {
+			// pfctl's source: DIOCGETRULESETS's EINVAL said on stderr, and
+			// pfctl exits 0 (unrecorded).
+			out.stderr = append(out.stderr, answerNoAnchors(anchor)+"\n"...)
+			break
+		}
 		for _, c := range children {
-			b.WriteString("  " + appleAnchor + "/" + c + "\n")
+			b.WriteString("  " + anchor + "/" + c + "\n")
 		}
 	case slices.Equal(args, []string{"-s", "info"}):
 		status := "Disabled"
@@ -304,10 +332,18 @@ func (f *fakePF) run(ctx context.Context, stdin []byte, args ...string) (pfOutpu
 		}
 		fmt.Fprintf(&b, "Status: %s for 0 days 00:01:02           Debug: Urgent\n\nState Table                          Total             Rate\n  current entries                        %d\n", status, len(f.states))
 	case slices.Equal(args, []string{"-s", "References"}):
+		if f.referencesWarn != "" {
+			out.stderr = append(out.stderr, f.referencesWarn+"\n"...)
+		}
 		if f.oddReferences {
 			for _, r := range f.refs {
 				fmt.Fprintf(&b, "token=%d by %s(%d)\n", r.value, r.name, r.pid)
 			}
+			break
+		}
+		if len(f.refs) == 0 {
+			// As a Mac prints it (testdata/pfctl/recorded-references-none.txt).
+			b.WriteString(answerNoReferences + "\n")
 			break
 		}
 		b.WriteString("TOKENS:\nPID      Process Name                 TOKEN                 TIMESTAMP\n")
@@ -393,6 +429,7 @@ func (f *fakePF) run(ctx context.Context, stdin []byte, args ...string) (pfOutpu
 			}
 		}
 		f.anchors[anchor] = loaded
+	case anchor != "" && len(args) == 2 && args[0] == "-F" && args[1] == f.flushKeeps:
 	case anchor != "" && slices.Equal(args, []string{"-F", "rules"}):
 		if a == nil {
 			if f.flushMissingOK {
@@ -413,10 +450,13 @@ func (f *fakePF) run(ctx context.Context, stdin []byte, args ...string) (pfOutpu
 			delete(f.anchors, anchor)
 		}
 	case anchor != "" && len(args) == 4 && args[0] == "-t" && args[2] == "-T" && args[3] == "show":
-		if a == nil {
-			return fail("pfctl: DIOCRGETADDRS: Invalid argument")
+		// A missing anchor's table is answered as a missing table, as on
+		// a Mac (testdata/pfctl/recorded-table-missing.txt).
+		var entries []string
+		ok := false
+		if a != nil {
+			entries, ok = a.tables[args[1]]
 		}
-		entries, ok := a.tables[args[1]]
 		if !ok {
 			return fail("pfctl: Table does not exist.")
 		}

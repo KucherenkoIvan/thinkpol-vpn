@@ -71,12 +71,50 @@
 // status and the spaces, control the node (Connect, Disconnect,
 // SetRulePreset) and take the diagnostics without their host parts; the
 // log is root's only, because its debug lines may quote the map. A call
-// not listed needs everything. Not yet on macOS: the
-// per-call check sees only the groups the caller's process got at login,
-// and only the first 16 of those (LOCAL_PEERCRED's xucred), so a member
-// added since, or one whose `thinkpol` group is past the first 16, is
-// refused every call though the directory's gate lets them through; see
-// TP-094. There is no read-only tier for other users: they can't reach the
+// not listed needs everything. On macOS the recorded groups are only those
+// the caller's process got at login, and only the first 16 of those
+// (LOCAL_PEERCRED's xucred), while the directory's gate asks Directory
+// Services. So when a caller other than root or the service's user lacks
+// the group in its recorded groups, [Policy.Membership] asks Directory
+// Services too (`dsmemberutil checkmembership -u <uid> -g <gid>`, by
+// numbers): a member added since login, or one whose `thinkpol` group is
+// past the first 16, gets the group's rights. Each lookup is bounded by 3
+// s, whoever waits for it, and runs one at a time; its answer is kept 10 s
+// per uid and group (at most 64 answers), even when the caller that
+// started it has left. A lookup that fails or times out, or an answer
+// dsmemberutil doesn't word as expected, is not a member, and is kept 5 s
+// (longer than a lookup may take) so that callers are refused at once
+// while Directory Services is down. A root-only call isn't looked up: no
+// group grants it.
+// Linux needs none of this: SO_PEERGROUPS and the file system both use the
+// process's groups.
+//
+// Removal from the group takes effect at the user's next login when the
+// caller's session carries the group: both gates read the recorded groups
+// first, on every OS. Only a caller whose session never carried it (macOS,
+// found through Directory Services) loses control within the 10 s its
+// answer is kept. A stream (WatchStatus) is checked when it opens, so an
+// open one keeps flowing until the client reconnects, on every OS.
+//
+// A refusal says which case it is: permission_denied (neither root nor in
+// the group), root_only (not root or the service's user, and the call is
+// root's) or membership_unknown (the call needs the group and Directory
+// Services couldn't say; refused all the same, with codes.Unavailable, to
+// be tried again). A caller that hangs up during the lookup isn't refused:
+// it gets its context's end, logged at debug; when that end is the
+// caller's own deadline, grpckit also logs "rpc deadline exceeded" at
+// warn. The wording is in errors.go
+// only ([refusals], and the client's own errors' beside it), which the
+// client's dial-time refusal shares, and none of it points at the log,
+// which only root may read; both permission refusals begin with
+// "permission denied". Every refusal is logged with its method and code;
+// one with credentials also has the caller's uid, the level the call
+// needed, the group it was checked against (if there is one) and how many
+// groups the kernel recorded (not which ones), plus, if the group was
+// looked up, the level the caller had and why Directory Services couldn't
+// answer, if it couldn't. membership_unknown is logged at warn, the others
+// at info.
+// There is no read-only tier for other users: they can't reach the
 // socket at all.
 //
 // At most [MaxConns] (32) connections and [MaxStreams] (16) calls per

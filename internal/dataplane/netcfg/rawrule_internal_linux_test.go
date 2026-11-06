@@ -5,15 +5,18 @@ package netcfg
 import (
 	"encoding/binary"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/vishvananda/netlink/nl"
 	"golang.org/x/sys/unix"
 )
 
 // rawRuleMsg is a rule message: a fib_rule_hdr, then attributes.
 func rawRuleMsg(family, dstLen, action byte, attrs ...[]byte) []byte {
-	b := make([]byte, unix.SizeofRtMsg)
+	b := make([]byte, fibRuleHdrLen)
 	b[0], b[1], b[4], b[7] = family, dstLen, 254, action
 	for _, a := range attrs {
 		b = append(b, a...)
@@ -58,6 +61,16 @@ func TestParseRawRule(t *testing.T) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
+	// A known attribute too short for its value is not read as 0.
+	for name, a := range map[string][]byte{
+		"a table of two bytes":    rta(unix.FRA_TABLE, []byte{0, 0}),
+		"a protocol of two bytes": rta(unix.FRA_PROTOCOL, []byte{86, 0}),
+	} {
+		r, err = parseRawRule(rawRuleMsg(unix.AF_INET, 0, unix.FR_ACT_TO_TBL, a))
+		if err != nil || !r.rule.Other {
+			t.Errorf("%s: %+v, %v", name, r, err)
+		}
+	}
 	// A partial mark mask is a selector netcfg never sets.
 	r, err = parseRawRule(rawRuleMsg(unix.AF_INET, 0, unix.FR_ACT_TO_TBL, rta(unix.FRA_FWMARK, u32(0x10)), rta(unix.FRA_FWMASK, u32(0xf0))))
 	if err != nil || !r.rule.Other {
@@ -65,15 +78,139 @@ func TestParseRawRule(t *testing.T) {
 	}
 }
 
-func TestDumpDone(t *testing.T) {
-	if err := dumpDone(u32(0), false); err != nil {
+// A dump's error: a kernel without the family's rules (no IPv6) has
+// none, an interrupted dump is retried, anything else fails.
+func TestDumpErr(t *testing.T) {
+	if err := dumpErr(nil); err != nil {
 		t.Fatal(err)
 	}
-	ebusy := -int32(unix.EBUSY)
-	if err := dumpDone(u32(uint32(ebusy)), false); !errors.Is(err, unix.EBUSY) {
+	if err := dumpErr(unix.EAFNOSUPPORT); err != nil {
+		t.Fatalf("a family the kernel has no rules for: %v", err)
+	}
+	if err := dumpErr(unix.EBUSY); !errors.Is(err, unix.EBUSY) {
 		t.Fatalf("a failed dump: %v", err)
 	}
-	if err := dumpDone(nil, true); !errors.Is(err, errDumpInterrupted) {
+	if err := dumpErr(nl.ErrDumpInterrupted); !errors.Is(err, errDumpInterrupted) {
 		t.Fatalf("an interrupted dump: %v", err)
+	}
+}
+
+// Rule dumps are taken, with a growing pause between them, until two in
+// a row hold the same messages, order and the kernel's report-only flags
+// aside: a split dump's repeat or miss is not taken, and rules that never
+// stop changing fail.
+func TestDumpUntilAgreed(t *testing.T) {
+	const proto = 86
+	rule := func(prio int) rawRule {
+		return rawRule{msg: ruleMsg(Rule{Family: IPv4, Priority: prio}, proto)}
+	}
+	a, b := rule(5299), rule(5300)
+	var dumps int
+	var waits []time.Duration
+	sleep := func(d time.Duration) { waits = append(waits, d) }
+	from := func(seq ...[]rawRule) func() ([]rawRule, error) {
+		dumps, waits = 0, nil
+		return func() ([]rawRule, error) {
+			i := min(dumps, len(seq)-1)
+			dumps++
+			return seq[i], nil
+		}
+	}
+	prios := func(rules []rawRule) []int {
+		var out []int
+		for _, r := range rules {
+			kr, err := parseRawRule(r.msg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out = append(out, kr.rule.Priority)
+		}
+		return out
+	}
+
+	got, err := dumpUntilAgreed(from([]rawRule{a, b, b}, []rawRule{a, b}, []rawRule{a, b}), sleep)
+	if err != nil || !slices.Equal(prios(got), []int{5299, 5300}) || dumps != 3 {
+		t.Errorf("a repeat, then two alike: %v, %v after %d dumps; want [5299 5300] after 3", prios(got), err, dumps)
+	}
+	got, err = dumpUntilAgreed(from([]rawRule{a, b}, []rawRule{b, a}), sleep)
+	if err != nil || len(got) != 2 || dumps != 2 {
+		t.Errorf("two alike but for the order: %v, %v after %d dumps; want both rules after 2", prios(got), err, dumps)
+	}
+	// Two dumps as long as each other, but not the same rules: a rule
+	// skipped in the first, another gone by the second.
+	got, err = dumpUntilAgreed(from([]rawRule{a}, []rawRule{b}, []rawRule{b}), sleep)
+	if err != nil || !slices.Equal(prios(got), []int{5300}) || dumps != 3 {
+		t.Errorf("one rule, then another, then the same: %v, %v after %d dumps; want [5300] after 3", prios(got), err, dumps)
+	}
+	// The flags the kernel only reports don't count: oif's link went
+	// away between the dumps.
+	oif := rawRule{msg: ruleMsg(Rule{Family: IPv4, Priority: 5298, Oif: "ovl0"}, proto)}
+	detached := rawRule{msg: slices.Clone(oif.msg)}
+	binary.NativeEndian.PutUint32(detached.msg[8:12], unix.FIB_RULE_OIF_DETACHED)
+	got, err = dumpUntilAgreed(from([]rawRule{oif}, []rawRule{detached}, []rawRule{detached}), sleep)
+	if err != nil || len(got) != 1 || dumps != 2 {
+		t.Errorf("a rule, then the same flagged detached: %v, %v after %d dumps; want it after 2", prios(got), err, dumps)
+	}
+	got, err = dumpUntilAgreed(from([]rawRule{}, []rawRule{}), sleep)
+	if err != nil || len(got) != 0 || dumps != 2 {
+		t.Errorf("no rules twice: %v, %v after %d dumps", prios(got), err, dumps)
+	}
+	alternating := func() ([]rawRule, error) {
+		dumps++
+		if dumps%2 == 1 {
+			return []rawRule{a}, nil
+		}
+		return []rawRule{a, a}, nil
+	}
+	dumps, waits = 0, nil
+	if got, err := dumpUntilAgreed(alternating, sleep); !errors.Is(err, errDumpsDisagree) || got != nil || dumps != dumpRetries {
+		t.Errorf("dumps that never agree: %v, %v after %d dumps; want errDumpsDisagree after %d", prios(got), err, dumps, dumpRetries)
+	}
+	// A growing pause before each dump but the first, so a burst of
+	// changes can end.
+	if want := []time.Duration{time.Millisecond, 2 * time.Millisecond, 4 * time.Millisecond, 8 * time.Millisecond}; !slices.Equal(waits, want) {
+		t.Errorf("waits between dumps that never agree: %v, want %v", waits, want)
+	}
+	// An interrupted dump between two alike breaks the pair: the dump
+	// before it doesn't count.
+	interrupted := func() ([]rawRule, error) {
+		dumps++
+		if dumps == 2 {
+			return nil, errDumpInterrupted
+		}
+		return []rawRule{a}, nil
+	}
+	dumps = 0
+	if got, err := dumpUntilAgreed(interrupted, sleep); err != nil || len(got) != 1 || dumps != 4 {
+		t.Errorf("a dump, an interrupted one, then two alike: %v, %v after %d dumps; want [5299] after 4", prios(got), err, dumps)
+	}
+	failed := errors.New("a failed dump")
+	if _, err := dumpUntilAgreed(func() ([]rawRule, error) { return nil, failed }, sleep); !errors.Is(err, failed) {
+		t.Errorf("a failed dump: %v", err)
+	}
+}
+
+// What netcfg adds reads back as the Rule it added, with its protocol:
+// every field a Rule has, both families, main and a table past 255.
+func TestRuleMsgReadsBackAsTheRule(t *testing.T) {
+	const proto = 86
+	for _, r := range []Rule{
+		{Family: IPv4, Priority: 5300, SuppressDefaultRoutes: true},
+		{Family: IPv6, Priority: 5300, SuppressDefaultRoutes: true},
+		{Family: IPv4, Priority: 5299, Dst: pfx("192.0.2.0/24")},
+		{Family: IPv6, Priority: 5299, Dst: pfx("2001:db8::/48")},
+		{Family: IPv4, Priority: 5298, Oif: "ovl0", SuppressDefaultRoutes: true},
+		{Family: IPv4, Priority: 5301, Table: 4242, Mark: 0x4242, Invert: true},
+		{Family: IPv6, Priority: 5301, Table: 4242, Mark: 0x4242, Invert: true, SuppressDefaultRoutes: true},
+		{Family: IPv4, Priority: 1, Table: 100},
+	} {
+		kr, err := parseRawRule(ruleMsg(r, proto))
+		if err != nil {
+			t.Fatalf("%v: %v", r, err)
+		}
+		got, ok := asRule(kr)
+		if !ok || got != r || kr.protocol != proto {
+			t.Errorf("%v reads back as %v (a Rule: %v), protocol %d", r, got, ok, kr.protocol)
+		}
 	}
 }

@@ -1,0 +1,8 @@
+pass out quick on lo0 inet6 all no state
+pass out quick on utun4 inet6 all no state
+pass out quick inet6 from any to <thinkpol_exempt6> no state
+pass out quick inet6 proto ipv6-icmp from any to ff00::/8 icmp6-type groupqry no state
+pass out quick inet6 proto ipv6-icmp from any to ff00::/8 icmp6-type grouprep no state
+pass out quick inet6 proto ipv6-icmp from any to ff00::/8 icmp6-type groupterm no state
+pass out quick inet6 proto ipv6-icmp from any to ff00::/8 icmp6-type 143 no state
+block return out quick inet6 all

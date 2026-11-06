@@ -6,64 +6,87 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
-	"net/netip"
 
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 )
 
 // ownKernelRules dumps both families' rules carrying our protocol (rules
-// take one since Linux 4.17, which netcfg needs for them).
-func (c *linuxConfigurator) ownKernelRules() ([]netlink.Rule, error) {
-	var out []netlink.Rule
-	for _, fam := range []int{netlink.FAMILY_V4, netlink.FAMILY_V6} {
-		rules, err := c.listRules(fam)
-		if err != nil {
-			return nil, err
-		}
-		for _, r := range rules {
-			if r.Protocol == uint8(c.proto) {
-				out = append(out, r)
-			}
+// take one since Linux 4.17, which netcfg needs for them), each family's
+// as dumpRules takes it (until two dumps in a row agree).
+func (c *linuxConfigurator) ownKernelRules() ([]rawRule, error) {
+	return c.own(dumpAllRules(c.rules))
+}
+
+// own keeps the rules carrying our protocol.
+func (c *linuxConfigurator) own(rules []rawRule, err error) ([]rawRule, error) {
+	if err != nil {
+		return nil, err
+	}
+	var out []rawRule
+	for _, r := range rules {
+		if r.protocol == c.proto {
+			out = append(out, r)
 		}
 	}
 	return out, nil
 }
 
-func (c *linuxConfigurator) listRules(fam int) ([]netlink.Rule, error) {
-	var err error
-	for range 5 {
-		var rules []netlink.Rule
-		rules, err = c.h.RuleList(fam)
-		if err == nil {
-			return rules, nil
-		}
-		if errors.Is(err, unix.EAFNOSUPPORT) {
-			return nil, nil // a kernel without IPv6: no IPv6 rules to own
-		}
-		if !errors.Is(err, netlink.ErrDumpInterrupted) {
-			break
-		}
-	}
-	return nil, fmt.Errorf("netcfg: list rules: %w", err)
-}
-
-// reconcileRules makes our rules exactly want: those the kernel has that
-// want doesn't (or that hold selectors a Rule can't express) are deleted,
-// the missing ones added.
-func (c *linuxConfigurator) reconcileRules(ctx context.Context, want []Rule, have []netlink.Rule, u *undoLog) error {
-	wanted := make(map[Rule]bool, len(want))
-	for _, r := range want {
-		wanted[r] = true
-	}
-	present := make(map[Rule]bool, len(have))
-	for _, kr := range have {
-		r, ok := ruleOf(kr)
-		if ok && wanted[r] && !present[r] {
-			present[r] = true
+// removeOwnRules deletes all our rules, for Close: it takes one dump of
+// our rules (dumpOwn) and deletes each rule in it (del), until two dumps
+// in a row show none, at most removeDumps dumps. It needs no two dumps
+// that agree, so others' rule changes can't stop it. A rule a dump
+// repeats is deleted twice: the second delete finds it gone (ENOENT,
+// which del takes as done) or takes another rule of ours (a delete
+// carries our protocol), which goes anyway. One a dump skips shows in the
+// next, hence the second empty dump; a failed dump between the two
+// breaks the run, since a failure says nothing of the rules and costs one
+// more dump within the same bound. The last dump only looks: when it
+// shows rules of ours, they are reported (errRulesLeft) with every delete
+// and dump error before it; when it shows none, nothing is left and
+// earlier errors no longer matter.
+func removeOwnRules(dumpOwn func() ([]rawRule, error), del func(rawRule) error) error {
+	var errs []error
+	empty := 0
+	for i := range removeDumps {
+		rules, err := dumpOwn()
+		if err != nil {
+			errs = append(errs, err)
+			empty = 0
 			continue
 		}
+		if len(rules) == 0 {
+			if empty++; empty == 2 || i == removeDumps-1 {
+				return nil
+			}
+			continue
+		}
+		empty = 0
+		if i == removeDumps-1 {
+			errs = append(errs, fmt.Errorf("%w after %d dumps", errRulesLeft, removeDumps))
+			break
+		}
+		for _, kr := range rules {
+			if err := del(kr); err != nil {
+				errs = append(errs, err)
+			}
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// removeDumps bounds removeOwnRules' dumps: room for dumpRetries rounds
+// of deletes and the two empty dumps that end them.
+const removeDumps = dumpRetries + 2
+
+var errRulesLeft = errors.New("netcfg: remove rules: rules of ours still listed")
+
+// reconcileRules makes our rules exactly want: those the kernel has that
+// want doesn't (or that a Rule can't express: another selector or
+// action) are deleted, the missing ones added.
+func (c *linuxConfigurator) reconcileRules(ctx context.Context, want []Rule, have []rawRule, u *undoLog) error {
+	present, surplus := surplusRules(want, have)
+	for _, kr := range surplus {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -88,65 +111,130 @@ func (c *linuxConfigurator) reconcileRules(ctx context.Context, want []Rule, hav
 	if len(added) == 0 {
 		return nil
 	}
-	return c.checkRuleProtocol(added)
+	return c.checkAddedRules(added)
+}
+
+// surplusRules sorts our rules the kernel has (have) against want:
+// present are the wanted ones it holds, kept once each; surplus are the
+// rest, to delete. Each distinct message (as sendRule sends it) gets one
+// decision, never two deletes: a second delete of a message already gone
+// removes the next rule it matches, which can be a kept one with more
+// selectors (RR54). dumpRules filters out a split dump's repeats, so a
+// repeat here is a real kernel duplicate (an add without NLM_F_EXCL) or
+// two races giving the same wrong dump twice. One copy of a real
+// duplicate stays: a kept rule's until Close, a surplus one's until the
+// next Apply (deleting the first copy, a rule of ours, makes Watch bring
+// one).
+func surplusRules(want []Rule, have []rawRule) (present map[Rule]bool, surplus []rawRule) {
+	wanted := make(map[Rule]bool, len(want))
+	for _, r := range want {
+		wanted[r] = true
+	}
+	present = make(map[Rule]bool, len(have))
+	seen := make(map[string]bool, len(have))
+	for _, kr := range have {
+		key := string(withoutReportedFlags(kr.msg))
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		if r, ok := asRule(kr); ok && wanted[r] && !present[r] {
+			present[r] = true
+			continue
+		}
+		surplus = append(surplus, kr)
+	}
+	return present, surplus
 }
 
 // errOldKernel is a kernel that drops a rule's protocol (before Linux
 // 4.17): its rules can't be told from anyone else's.
 var errOldKernel = fmt.Errorf("netcfg: policy rules need Linux 4.17 or later (rule protocols): %w", errors.ErrUnsupported)
 
-// checkRuleProtocol makes sure the rules just added came back carrying our
-// protocol; on a kernel that dropped it, it deletes them (exactly as the
-// kernel holds them) and fails.
-func (c *linuxConfigurator) checkRuleProtocol(added []Rule) error {
-	have, err := c.ownAndForeignRules()
-	if err != nil {
-		return err
-	}
-	stray := strayRules(added, have, uint8(c.proto))
-	if len(stray) == 0 {
-		return nil
-	}
+// errNotReadBack is a rule just added that the kernel doesn't hold, with
+// our protocol, as netcfg added it: an attribute this kernel reports that
+// parseRawRule doesn't read, or someone changed or deleted the rule
+// meanwhile. Taken as is, every Apply would replace that rule.
+var errNotReadBack = errors.New("netcfg: a rule just added doesn't read back as added (changed or deleted meanwhile, or an attribute this kernel reports that netcfg doesn't read)")
+
+// checkAddedRules dumps the rules again and judges the ones just added
+// (judgeAdded); the strays of a kernel that dropped our protocol are
+// deleted.
+func (c *linuxConfigurator) checkAddedRules(added []Rule) error {
+	have, err := dumpAllRules(c.rules)
+	stray, err := c.judgeAdded(added, have, err)
 	var errs []error
 	for _, kr := range stray {
-		if err := c.h.RuleDel(&kr); err != nil && !gone(err) {
-			errs = append(errs, err)
+		if err := sendRule(c.rules, unix.RTM_DELRULE, 0, kr.msg); err != nil && !gone(err) {
+			errs = append(errs, fmt.Errorf("netcfg: remove stray rule %v: %w", kr.rule, err))
 		}
 	}
-	return errors.Join(append([]error{errOldKernel}, errs...)...)
+	return errors.Join(append([]error{err}, errs...)...)
 }
 
-func (c *linuxConfigurator) ownAndForeignRules() ([]netlink.Rule, error) {
-	var out []netlink.Rule
-	for _, fam := range []int{netlink.FAMILY_V4, netlink.FAMILY_V6} {
-		rules, err := c.listRules(fam)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, rules...)
+// judgeAdded says what the kernel made of the rules just added, from a
+// dump (have, or its error dumpErr) taken after: nil when each reads back
+// as added, with our protocol, which also sets protoKept. On a kernel
+// that drops rule protocols they come back without it: those are
+// returned to delete, with errOldKernel. A rule held with our protocol
+// that doesn't read as added is errNotReadBack.
+//
+// Rules someone kept changing through the dumps (errDumpsDisagree) leave
+// the adds unjudged once protoKept is set: nil, since the adds succeeded
+// and failing would undo a whole Apply for others' churn (and the undo's
+// deletes of our rules bring another Apply through Watch, TP-148). This
+// kernel has kept our protocol, so the check could only have found a
+// rule that doesn't read back, which the next Apply replaces (as surplus,
+// then added and judged again). Until protoKept is set, the dump error
+// fails the Apply and its undo deletes the adds: on a kernel before 4.17
+// rules left unjudged would stay without our protocol, Close would not
+// see them as ours, and every later Apply would fail adding them again
+// (ErrConflict), so nothing would ever judge them.
+func (c *linuxConfigurator) judgeAdded(added []Rule, have []rawRule, dumpErr error) ([]rawRule, error) {
+	if c.protoKept && errors.Is(dumpErr, errDumpsDisagree) {
+		return nil, nil
 	}
-	return out, nil
+	if dumpErr != nil {
+		return nil, dumpErr
+	}
+	withProto := rulesWith(have, c.proto)
+	if stray := strayRules(added, have, withProto, c.proto); len(stray) > 0 {
+		return stray, errOldKernel
+	}
+	for _, r := range added {
+		if !withProto[r] {
+			return nil, fmt.Errorf("%w: %v", errNotReadBack, r)
+		}
+	}
+	c.protoKept = true
+	return nil, nil
+}
+
+// rulesWith are the kernel's rules carrying proto that read as a Rule.
+func rulesWith(have []rawRule, proto netlink.RouteProtocol) map[Rule]bool {
+	out := make(map[Rule]bool)
+	for _, kr := range have {
+		if r, ok := asRule(kr); ok && kr.protocol == proto {
+			out[r] = true
+		}
+	}
+	return out
 }
 
 // strayRules are the kernel's rules that are one of added but without
-// proto, for each added rule the kernel doesn't hold with proto: what a
-// kernel that drops rule protocols made of them.
-func strayRules(added []Rule, have []netlink.Rule, proto uint8) []netlink.Rule {
-	withProto := make(map[Rule]bool)
-	for _, kr := range have {
-		if r, ok := ruleOf(kr); ok && kr.Protocol == proto {
-			withProto[r] = true
-		}
-	}
+// proto, for each added rule the kernel doesn't hold with proto (not in
+// withProto, rulesWith(have, proto)): what a kernel that drops rule
+// protocols made of them.
+func strayRules(added []Rule, have []rawRule, withProto map[Rule]bool, proto netlink.RouteProtocol) []rawRule {
 	missing := make(map[Rule]bool)
 	for _, r := range added {
 		if !withProto[r] {
 			missing[r] = true
 		}
 	}
-	var out []netlink.Rule
+	var out []rawRule
 	for _, kr := range have {
-		if r, ok := ruleOf(kr); ok && kr.Protocol != proto && missing[r] {
+		if r, ok := asRule(kr); ok && kr.protocol != proto && missing[r] {
 			out = append(out, kr)
 			delete(missing, r) // one each: a foreign twin may be someone else's
 		}
@@ -154,80 +242,38 @@ func strayRules(added []Rule, have []netlink.Rule, proto uint8) []netlink.Rule {
 	return out
 }
 
-// ruleOf reads a kernel rule as a Rule; false if it has more to it than a
-// Rule says (another selector, mask or action).
-func ruleOf(kr netlink.Rule) (Rule, bool) {
+// asRule reads a kernel rule as a Rule; false if it isn't one netcfg
+// could have added: one parseRawRule marked Other, or not a lookup.
+func asRule(kr rawRule) (Rule, bool) {
+	hr := kr.rule
 	r := Rule{
-		Priority:              kr.Priority,
-		Table:                 kr.Table,
-		Mark:                  kr.Mark,
-		Invert:                kr.Invert,
-		SuppressDefaultRoutes: kr.SuppressPrefixlen == 0,
-		Oif:                   kr.OifName,
-	}
-	switch kr.Family {
-	case netlink.FAMILY_V4:
-		r.Family = IPv4
-	case netlink.FAMILY_V6:
-		r.Family = IPv6
-	default:
-		return Rule{}, false
+		Family:                hr.Family,
+		Priority:              hr.Priority,
+		Dst:                   hr.Dst,
+		Oif:                   hr.Oif,
+		Table:                 hr.Table,
+		Mark:                  hr.Mark,
+		Invert:                hr.Invert,
+		SuppressDefaultRoutes: hr.SuppressPrefixlen == 0,
 	}
 	if r.Table == unix.RT_TABLE_MAIN {
 		r.Table = 0
 	}
-	if kr.Dst != nil {
-		a, ok := netip.AddrFromSlice(kr.Dst.IP)
-		ones, _ := kr.Dst.Mask.Size()
-		if !ok {
-			return Rule{}, false
-		}
-		if r.Family == IPv4 {
-			a = a.Unmap()
-		}
-		r.Dst = netip.PrefixFrom(a, ones)
-	}
-	hr := HostRule{Mark: kr.Mark, SuppressPrefixlen: kr.SuppressPrefixlen,
-		Other: kr.Src != nil || kr.IifName != "" || kr.Tos != 0 || kr.TunID != 0 || kr.Goto >= 0 || kr.Flow >= 0 ||
-			kr.IPProto != 0 || kr.Dport != nil || kr.Sport != nil || kr.UIDRange != nil || kr.SuppressIfgroup >= 0}
-	if kr.Mask != nil {
-		hr.Mask = *kr.Mask
-	}
-	return r, plainRule(hr, "")
+	return r, !hr.Other && kr.action == unix.FR_ACT_TO_TBL
 }
 
-func (c *linuxConfigurator) toNetlinkRule(r Rule) *netlink.Rule {
-	nr := netlink.NewRule()
-	nr.Family = netlink.FAMILY_V4
-	if r.Family == IPv6 {
-		nr.Family = netlink.FAMILY_V6
-	}
-	nr.Priority = r.Priority
-	if r.Dst.IsValid() {
-		nr.Dst = ipNet(r.Dst)
-	}
-	nr.OifName = r.Oif
-	nr.Table = kernelTable(r.Table)
-	nr.Mark = r.Mark
-	nr.Invert = r.Invert
-	if r.SuppressDefaultRoutes {
-		nr.SuppressPrefixlen = 0
-	}
-	nr.Protocol = uint8(c.proto)
-	return nr
-}
-
-// addKernelRule adds r; its undo deletes it.
+// addKernelRule adds r; its undo deletes it with the same message: a
+// lookup of ours with at least r's fields (sendRule says which can match).
 func (c *linuxConfigurator) addKernelRule(r Rule, u *undoLog) error {
-	nr := c.toNetlinkRule(r)
-	if err := c.h.RuleAdd(nr); err != nil {
+	msg := ruleMsg(r, c.proto)
+	if err := sendRule(c.rules, unix.RTM_NEWRULE, unix.NLM_F_CREATE|unix.NLM_F_EXCL, msg); err != nil {
 		if exists(err) {
 			return fmt.Errorf("%w: rule %v: the same rule is there already", ErrConflict, r)
 		}
 		return fmt.Errorf("netcfg: add rule %v: %w", r, err)
 	}
 	u.push(func() error {
-		if err := c.h.RuleDel(nr); err != nil && !gone(err) {
+		if err := sendRule(c.rules, unix.RTM_DELRULE, 0, msg); err != nil && !gone(err) {
 			return fmt.Errorf("netcfg: remove rule %v: %w", r, err)
 		}
 		return nil
@@ -235,31 +281,23 @@ func (c *linuxConfigurator) addKernelRule(r Rule, u *undoLog) error {
 	return nil
 }
 
-// delKernelRule deletes exactly the kernel's rule kr; its undo adds it
-// back.
-func (c *linuxConfigurator) delKernelRule(kr netlink.Rule, u *undoLog) error {
-	err := c.h.RuleDel(&kr)
+// delKernelRule deletes the kernel's rule kr by sending its message back;
+// its undo adds it back, action and all. An undo that finds such a rule
+// there again (EEXIST: one with its selectors, table and action, whoever
+// added it) is done.
+func (c *linuxConfigurator) delKernelRule(kr rawRule, u *undoLog) error {
+	err := sendRule(c.rules, unix.RTM_DELRULE, 0, kr.msg)
 	if gone(err) {
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("netcfg: remove rule %v: %w", kr, err)
+		return fmt.Errorf("netcfg: remove rule %v: %w", kr.rule, err)
 	}
-	u.push(func() error { return c.h.RuleAdd(&kr) })
+	u.push(func() error {
+		if err := sendRule(c.rules, unix.RTM_NEWRULE, unix.NLM_F_CREATE|unix.NLM_F_EXCL, kr.msg); err != nil && !exists(err) {
+			return fmt.Errorf("netcfg: restore rule %v: %w", kr.rule, err)
+		}
+		return nil
+	})
 	return nil
-}
-
-// plainRule says whether r is a rule netcfg could have added: no selector
-// it never sets (r.Other), suppress_prefixlength none or 0, a mark set
-// whole (mask 0xffffffff) or none, and a lookup ("" when the reader can't
-// tell the action: the configurator, until TP-135). The configurator's
-// reconcile and diagnostics share it for the mask, suppress and action
-// rules only: which selectors count as never set (r.Other) is still each
-// reader's own list, ruleOf's netlink.Rule fields and parseRawRule's
-// attribute switch, until TP-135 moves the configurator onto the raw dump
-// and the list exists once.
-func plainRule(r HostRule, action string) bool {
-	return !r.Other && (action == "" || action == "lookup") &&
-		(r.SuppressPrefixlen == -1 || r.SuppressPrefixlen == 0) &&
-		(r.Mark == 0 && r.Mask == 0 || r.Mark != 0 && r.Mask == math.MaxUint32)
 }

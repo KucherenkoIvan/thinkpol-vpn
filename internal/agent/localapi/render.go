@@ -179,6 +179,15 @@ func writeCounters(line func(string, ...any), counters map[string]uint64) {
 			line("\t%d routes of other software take overlay addresses around the tunnel", ahead)
 		}
 	}
+	if n := counters["route_table.corrupt_records"]; n > 0 {
+		left := "no route left that no record names"
+		if u := counters["route_table.unowned_routes"]; u == 1 {
+			left = "1 thinkpol route no record names (an owner already running when its record went bad still removes its own; otherwise it stays until reboot, unless it went with its owner's interface)"
+		} else if u > 1 {
+			left = fmt.Sprintf("%d thinkpol routes no record names (an owner already running when its record went bad still removes its own; the rest stay until reboot, unless they went with their owner's interface)", u)
+		}
+		line("route records:\t%d corrupt (see the log for which and why); %s", n, left)
+	}
 	var drops []string
 	for _, name := range slices.Sorted(maps.Keys(counters)) {
 		if v := counters[name]; v > 0 && counterKinds[name] == dropCounter {
