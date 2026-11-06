@@ -93,7 +93,7 @@ type DataPlane struct {
 	requests <-chan connectRequest
 	remember func(connect bool)
 	events   emitter
-	// Rules are the device's own rule choice (LocalRulesFile), and
+	// Rules are the device's own rule choice (DeviceFile), and
 	// rulesRequests replace them while it runs.
 	Rules         rules.Local
 	rulesRequests <-chan rulesRequest

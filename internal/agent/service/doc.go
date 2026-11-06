@@ -1,6 +1,6 @@
 // Package service installs the node agent as the host's service (PRD D2,
 // D5): a systemd unit on Linux, a launchd daemon on macOS (`thinkpol
-// service install`, `uninstall`, `connect-on-boot`). The Windows service
+// service install`, `uninstall`). The Windows service
 // is TP-047's. It changes the host only through the [Installer]'s paths
 // and its service manager's tools ([System]: [Systemd], [Launchd]), so
 // tests run it against a temporary root and a fake manager.
@@ -68,20 +68,24 @@
 // no such service (exit status 113) fails the stop rather than read as
 // gone, so nothing is removed from under a daemon launchd still has.
 //
-// Installing again replaces the binary and restarts the agent, keeping
-// connect-on-boot unless -connect-on-boot on|off says otherwise. The
-// agent comes back as the member left it, since a start in the same boot
+// Installing again replaces the binary and restarts the agent. The agent
+// comes back as the member left it, since a start in the same boot
 // follows the boot's recorded connect choice (package agent, "A device's
 // connection"). A definition that isn't what install writes (edited by
-// hand, or unreadable) is replaced with a warning, connect-on-boot off
-// unless -connect-on-boot says otherwise.
+// hand, or unreadable) is replaced with a warning. One written before
+// connect-on-boot became the member's toggle (it carries
+// THINKPOL_CONNECT_ON_BOOT) is replaced with a note saying where the
+// setting went: the device file, off until a member turns it on. The
+// setting it carried is not carried over.
 //
 // # The definitions
 //
-// Both run `thinkpol up` with the node's defaults and one setting,
-// THINKPOL_CONNECT_ON_BOOT: off unless the member turns it on (PRD D5).
-// Set, it also has a device keep its connect choice for the boot, so a
-// start in the same boot (after a crash, a restart) comes back as the
+// Both run `thinkpol up -service` and set nothing else: the node's
+// settings are in its node file (agent.NodeFile), the member's, connect-on-
+// boot among them, in the device file (agent.DeviceFile). -service has the
+// device's connect-on-boot decide a boot's first start (off unless the
+// member turns it on, PRD D5) and keep its connect choice for the boot,
+// so a start in the same boot (after a crash, a restart) comes back as the
 // device was left, whatever connect-on-boot says (package agent, "A
 // device's connection"). Both restart the agent whenever it exits, after
 // [RestartAfterSeconds] seconds, without a limit (crash posture:
@@ -111,15 +115,20 @@
 // the agent's stderr goes nowhere on disk (PRD S2); its log is the local
 // API's. Under systemd stderr is the journal (RESIDUAL-RISKS.md RR40).
 //
-// # Connect-on-boot
+// # Connect-on-boot and drop-ins
 //
-// `thinkpol service connect-on-boot on|off` rewrites the definition with
-// the other THINKPOL_CONNECT_ON_BOOT and has the manager take it at the
-// next start (systemd's daemon-reload; launchd reads the plist when it
-// boots), without restarting the agent: only a boot's first start reads
-// it. Without an argument it prints the setting. No definition is
-// [ErrNotInstalled]; one that isn't exactly what install writes (edited by
-// hand) is [ErrDefinitionChanged]: install again.
+// Connect-on-boot is no longer the definition's: a member of the group
+// sets it through the local API (`thinkpol connect-on-boot on|off`, no
+// root), the service stores it in the device file, and the definition
+// never changes. `thinkpol service connect-on-boot` and `service install
+// -connect-on-boot` are refused with a message naming the new command.
+//
+// systemd drop-ins for the unit (thinkpol.service.d/*.conf) are
+// unsupported, since one can set THINKPOL_* variables behind the node
+// file's back (docs/design/configuration.md "File formats"). Install
+// neither reads nor removes them; [HostDropIns] lists those in systemd's
+// unit directories (/etc, /run, /usr/local/lib, /usr/lib, /lib, a
+// directory reached twice through a link once) for `thinkpol diag`.
 //
 // # What uninstall leaves
 //
@@ -153,8 +162,9 @@
 //
 // The lab runs a device under systemd (lab TestServiceUnderSystemd):
 // install, a reinstall over the running connected agent, a crash
-// restarted and back as the member left it, connect-on-boot off then on
-// across reboots, uninstall right after a crash (the restart held off)
+// restarted and back as the member left it, connect-on-boot set by a
+// member of the group (not root) off, on and off again across reboots, a
+// drop-in shown by diag, uninstall right after a crash (the restart held off)
 // leaving nothing, before and after a reboot. launchd is tested as files
 // and with a fake launchctl here; the install, reboot and uninstall on a
 // Mac are the owner's device steps (TP-046's checklist).

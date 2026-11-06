@@ -1,6 +1,6 @@
 # thinkpol-vpn — Configuration design
 
-Where a setting lives, who may change it, and which value wins. Decided in the owner's session on the API overview's findings F1, F2 and F8 ([verdicts](api-overview.md#verdicts-owner-2026-11-07)). Most of it is not built yet: today a node reads only its environment and flags, and the rule preset is the one setting the service stores (TP-166 builds the rest). The entry point is [DESIGN.md](../../DESIGN.md); `RRn` are rows of [RESIDUAL-RISKS.md](../../RESIDUAL-RISKS.md).
+Where a setting lives, who may change it, and which value wins. Decided in the owner's session on the API overview's findings F1, F2 and F8 ([verdicts](api-overview.md#verdicts-owner-2026-11-07)). TP-166 built the node file and the device file; the capability ceiling (TP-183) and the kill switch's toggles (TP-048) are still to come. The mechanism is in the `agent` package doc ("Configuration and logs", "A device's connection"). The entry point is [DESIGN.md](../../DESIGN.md); `RRn` are rows of [RESIDUAL-RISKS.md](../../RESIDUAL-RISKS.md).
 
 ## Three levels
 
@@ -24,13 +24,36 @@ Operator settings, in one file (owner, 2026-11-07):
 - the capability ceiling of TP-183 (after the MVP);
 - the kill switch's defaults.
 
-The file is root-owned, 0600, in the 0700 state directory. It holds operating settings only: nothing about members, no history (S1). `up` reads it at start. Its name is TP-166's to choose.
+The file is root-owned, 0600, in the 0700 state directory. It holds operating settings only: nothing about members, no history (S1). `up` reads it at start. It is **`node.json`** in the state directory (TP-166), written by hand or by provisioning, never by the agent. Its keys, each optional, are `up`'s flags in snake_case:
+
+| Key | Type | Flag | Default |
+|---|---|---|---|
+| `mode` | `"auto"`, `"device"` or `"server"` | `-mode` | `"auto"` |
+| `interface` | string, a TUN name | `-interface` | the platform's |
+| `link_mtu` | whole number, 576 to 65535; 0 is the default | `-link-mtu` | 1500 |
+| `log_level` | `"debug"`, `"info"`, `"warn"` or `"error"` | `-log-level` | `"info"` |
+| `map_poll` | duration string, at least `"100ms"` | `-map-poll` | `"5s"` |
+| `dns` | true or false | `-dns` | true |
+| `dns_upstream` | list of `"IP"` or `"IP:port"` | `-dns-upstream` | a device: what the OS used; an exit: public resolvers |
+| `egress_allowed` | list of prefixes | `-egress-allowed` | none |
+
+What says where the node's files are (`-state`, `-map`, `-api-socket`, `-api-group`) or how it is run (`-service`, `-connect`) is not in the file.
 
 ### Device level
 
-The member's toggles on a device-type node (owner, 2026-11-07): connect-on-boot, the kill switch, allow-LAN, pause and the rule preset. A member of the access group changes them through the local API, from the tray or the CLI, and the service stores them in a small file next to the node file. That file replaces today's `rules.local`, and the first start after the change carries the stored preset over.
+The member's toggles on a device-type node (owner, 2026-11-07): connect-on-boot, the kill switch, allow-LAN, pause and the rule preset. A member of the access group changes them through the local API, from the tray or the CLI, and the service stores them in a small file next to the node file. That file replaced `rules.local` (TP-166), and the first start after the change carries the stored preset over.
 
 **Connect-on-boot is a member's toggle** (owner, 2026-11-07). The service always starts at boot, and the stored toggle decides whether it connects. Changing it needs no root, and no longer rewrites the service definition.
+
+The file is **`device.json`** in the state directory (TP-166), 0600, written atomically by the service with every key, and by nothing else:
+
+| Key | Type | Set by | Default |
+|---|---|---|---|
+| `connect_on_boot` | true or false | `thinkpol connect-on-boot on\|off` (local API `SetConnectOnBoot`) | false (PRD D5) |
+| `rule_preset` | `"space"`, `"everything"` or `"all-but-domestic"` | `thinkpol rules preset` (`SetRulePreset`) | `"space"` |
+| `rules` | list of the device's own rules, `"match -> action"` | not yet settable through the API | none |
+
+The service definition runs `thinkpol up -service` and carries no setting. `service connect-on-boot` and `service install -connect-on-boot` are refused with a message naming `thinkpol connect-on-boot`; an install over a definition that still carries `THINKPOL_CONNECT_ON_BOOT` says the setting moved and is off until a member turns it on. The first start that finds a `rules.local` (and no `device.json`) writes its preset and rules into `device.json`, removes `rules.local` and logs it. A `device.json` that can't be read or parsed stops the node from starting, as `rules.local` did.
 
 ## Precedence and narrowing
 
@@ -41,6 +64,8 @@ For a node setting the first source that sets it wins (owner, 2026-11-07):
 3. the node file;
 4. the built-in default.
 
+A flag given its default value, or a variable set to the empty string, still counts as set (TP-166). A bad value in the node file stops `up` even when a flag or a variable overrides it: the file is the operator's, and a mistake in it is never passed over.
+
 The levels then combine by narrowing:
 
 - **The map can only narrow what the node allows.** A map that asks for more than the node's ceiling is refused, as TP-111 decided, built in TP-183 (PRD Decisions, "The node's own configuration caps the map").
@@ -49,17 +74,17 @@ The levels then combine by narrowing:
 ## File formats
 
 - **One format, JSON,** for the node file and the device file alike (owner, 2026-11-07). Nesting is expected (TP-111's ceiling holds lists, a node that serves several spaces needs settings per space, allow-LAN takes prefixes), and one format is simpler than two. JSON has no comments, so the CLI reference lists every key and its default (TP-167).
-- **An unknown key is an error** (TP-166): `up` exits with EX_CONFIG (78) and names the key, so a typo never reads as a default.
-- **Linux systemd drop-ins are unsupported** (owner, 2026-11-07). `diag` reports one if it finds it, since a drop-in can set `THINKPOL_*` variables behind the node file's back.
+- **An unknown key is an error** (TP-166): `up` exits with EX_CONFIG (78) and names the key, so a typo never reads as a default. So are a key given twice (encoding/json would keep the last), a key of another case (encoding/json would match it), a value of the wrong type or out of range, invalid JSON, more than one object, and an empty file (`{}` is a file without settings). The same strict reading applies to `device.json`, where a mistake stops the node from starting.
+- **Linux systemd drop-ins are unsupported** (owner, 2026-11-07). `diag` reports one if it finds it, since a drop-in can set `THINKPOL_*` variables behind the node file's back: `service_drop_ins.paths` lists every `thinkpol.service.d/*.conf` in systemd's unit directories (TP-166), to the group too.
 
 ## When a change takes effect
 
 | Setting | Level | Takes effect |
 |---|---|---|
 | rule preset | device | at once (as today) |
-| connect-on-boot | device | at the next boot |
+| connect-on-boot | device | at the next boot; a start later in the same boot, and the running node, are left as they are |
 | kill switch, allow-LAN, pause | device | to be decided per setting (TP-048) |
-| node file settings | node | at the next start of `up`; whether any is reloaded while running is to be decided per setting |
+| node file settings | node | at the next start of `up` (TP-166: none is reloaded while running; SIGHUP re-reads only the map) |
 | capability ceiling lowered under a running map | node | refused and reported, as TP-183 handles a map asking for more |
 
 ## Node groups (proposal)
@@ -77,7 +102,7 @@ From the orchestrator's review, not decided:
 - How to show a setting's effective value and the source it came from.
 - Per-space settings on a node that serves several spaces, and a shared node owner's ceiling over a guest space.
 - Per-link transport settings living in the map.
-- A schema version for the files, and unknown-key handling (EX_CONFIG naming the key).
+- A schema version for the files (unknown keys are refused, TP-166).
 - A network-level minimum the admin can require (e.g. the kill switch on) that a member can't turn off.
 - The initial settings an invite carries.
 - Settings per OS user versus per device on a shared computer.

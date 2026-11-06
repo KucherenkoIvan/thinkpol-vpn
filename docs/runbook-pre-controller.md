@@ -19,7 +19,27 @@ A **node** (server or device) holds only:
   space.pub                 # the space's id and public keys: what every map is verified against
   map.bin                   # the latest map; the node can open only its own section
   blobs/                    # GeoIP list blobs, files named by their SHA-256
+  node.json                 # optional: the operator's settings (0600), see below
+  device.json               # a device's member toggles, written by the service only (0600)
 ```
+
+A node's settings go in `node.json`, one JSON object, root's, 0600. Every
+key is optional; a flag on `up` or a `THINKPOL_*` variable wins over it.
+For example, a server whose network has a smaller MTU, logging at debug:
+
+```json
+{"mode": "server", "link_mtu": 1400, "log_level": "debug"}
+```
+
+The keys are `mode`, `interface`, `link_mtu`, `log_level`, `map_poll`,
+`dns`, `dns_upstream` and `egress_allowed` (the last two are lists of
+strings); docs/design/configuration.md "Node level" has their types and
+defaults. An unknown key, a key given twice, a wrong type or a bad value
+stops `up` with exit status 78 and a message naming the file and the key.
+`up` reads the file at start: restart the service after changing it
+(`systemctl restart thinkpol`). Don't put settings in a systemd drop-in
+(`thinkpol.service.d/`): drop-ins are unsupported, and `thinkpol diag`
+lists any it finds.
 
 The **admin's build machine** holds the `keys/` directory from
 `thinkpol dev keygen space` and `thinkpol dev keygen node`: `space.key`
@@ -45,7 +65,10 @@ and starts the agent. It starts at every boot, and systemd starts it again
 alone, which re-reads the map at once; the per-space workers it runs don't
 handle SIGHUP, so never signal the whole unit. `thinkpol service uninstall`
 stops it, undoes what a crashed agent left, and removes the unit and the
-binary; the `thinkpol` group and the state directory stay. Both refuse
+binary; the `thinkpol` group and the state directory stay. On a device,
+whether the service connects at boot is the member's choice: `thinkpol
+connect-on-boot on|off`, run by a member of the `thinkpol` group without
+root, from the next boot (off by default). Both refuse
 while an agent you started by hand holds the host lock: stop it first. Package `agent/service` has the unit and why it is so.
 
 When systemd captures the agent's stderr, journald stores it on disk;

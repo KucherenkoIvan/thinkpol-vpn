@@ -29,11 +29,14 @@
 // the step its start failed at; a device connected while its OS may
 // resolve names outside the node's resolver hears `dns_not_protected`.
 // `thinkpol up -connect=false` starts a device disconnected; under the
-// service connect-on-boot decides a boot's first start, and a later start
+// service the device's connect-on-boot decides a boot's first start
+// (SetConnectOnBoot sets it, from the next boot; `thinkpol
+// connect-on-boot on|off`, GetStatus shows it), and a later start
 // in the same boot comes back as the last Connect or Disconnect left it
 // ([agent.ConnectRecord]). A server
 // serves its spaces whenever it runs: it reports its workers and public
-// listeners and refuses Connect, Disconnect and SetRulePreset.
+// listeners and refuses Connect, Disconnect, SetRulePreset and
+// SetConnectOnBoot.
 //
 // # Where the socket is
 //
@@ -68,8 +71,8 @@
 // recorded at connect time (SO_PEERCRED and SO_PEERGROUPS on Linux,
 // LOCAL_PEERCRED on macOS), against the call's level ([Policy]): root and
 // the service's own user may do everything; members of the group see the
-// status and the spaces, control the node (Connect, Disconnect,
-// SetRulePreset) and take the diagnostics without their host parts; the
+// status and the spaces, control the node (Connect, Disconnect), set the
+// member's toggles (SetRulePreset, SetConnectOnBoot) and take the diagnostics without their host parts; the
 // log is root's only, because its debug lines may quote the map. A call
 // not listed needs everything. On macOS the recorded groups are only those
 // the caller's process got at login, and only the first 16 of those
@@ -131,11 +134,11 @@
 // # Rule presets
 //
 // A preset chosen through SetRulePreset is stored by the service in the
-// device's state directory ([agent.LocalRulesFile], rules.local, next to
-// the device's own rules), then handed to the engine; nothing else writes
-// it (see [agent.Node.SetRulePreset]). It is read like the node's other
-// files, and one that can't be read or parsed stops the node from starting
-// rather than reading as no rules. A preset the map can't build is kept
+// device file ([agent.DeviceFile], device.json, with the device's own
+// rules and connect-on-boot), then handed to the engine; nothing else
+// writes it (see [agent.Node.SetRulePreset]). It is read like the node's
+// other files, and one that can't be read or parsed stops the node from
+// starting rather than reading as no settings. A preset the map can't build is kept
 // and enforced failing closed, and the API says so
 // (`rule_preset_unavailable`, and the status).
 //
@@ -182,7 +185,11 @@
 //     pf still holds it;
 //   - the resolvers the host uses, for the overlay's names and the rest
 //     ([dns.Inspect]): resolv.conf and systemd-resolved's links on Linux,
-//     `scutil --dns` on macOS.
+//     `scutil --dns` on macOS;
+//   - `service_drop_ins`: drop-ins for the service's systemd unit
+//     (thinkpol.service.d/*.conf), by path, unsupported and reported
+//     ([agent.DropInReport]); none on macOS. Not a host part: paths only,
+//     the group gets them too.
 //
 // The routes, rules, guard and resolvers are read from the host whatever
 // the data plane's state, so a snapshot after a crash or a stop shows
