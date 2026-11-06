@@ -34,6 +34,14 @@ branch: "tp-132-uninstall-after-a-server-crash"
 ## Notes
 - From TP-046's round-2 reviews (2026-10-23).
 
+## Review findings
+- [ ] R1.1 docs: api-overview-reference.md service uninstall section (synopsis, -force, sample output with the "undid what a crashed agent left" lines, the stop-on-failure error); api-overview.md install.go line range
+- [ ] R1.2 tests check IPv6 forwarding (and accept_ra the test set from 1) after the clear, in lab/service_server_test.go and leftovers_linux_test.go
+- [ ] R1.3 subtest: forwarding still on (ip_forward=0 refused) keeps the isolation tables and ClearLeftovers errors
+- [ ] R1.4 a failed ClearHost with nothing left on disk is a warning and uninstall exits 0 (onDisk returns ""); unit test
+- [ ] R1.5 delete only the tables isolationTables() lists, report its listing error; unit test for nothing listed → nothing touched
+- [ ] R1.6 nits: install.go comment wrap; name the families still forwarding; ClearHost doc matches the veth-error path; service doc.go lists the per-space cgroup dirs left after a crash
+
 ## Log
 - 2026-10-23 created in backlog (TP-046 review round 2)
 - 2026-11-07 backlog → in-progress, owner: agent-tp-132
@@ -41,3 +49,4 @@ branch: "tp-132-uninstall-after-a-server-crash"
 - 2026-11-07 finisher: merged rewrite 7852af8 (head c66ccc8) in as cc7d3d1; make lint green, make test green (TestUninstallStopsOnAFailedClearAndForceCompletesIt passes)
 - 2026-11-07 finisher: full make lab-test passed on cc7d3d1 (LAB_P=4, run alone): lab/ packages ok (TestServiceUninstallAfterAServerCrash included, no skip path), gotest ok for 36 packages
 - 2026-11-07 in-progress → review
+- 2026-11-07 review → has-errors (round 1 findings R1.1–R1.6)
