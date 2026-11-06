@@ -52,11 +52,11 @@ type Node struct {
 	// tuning is a device's data plane's (DataPlane.tuning): tests set it.
 	tuning tuning
 
-	// rulesMu serializes SetRulePreset; local is the device's last good
-	// rules, as LocalRulesFile holds them (read by run while it builds
-	// the data plane, under rulesMu).
-	rulesMu       sync.Mutex
-	local         rules.Local
+	// settingsMu serializes the changes to device, the member's toggles
+	// as DeviceFile holds them (read by run while it builds the data
+	// plane, under settingsMu).
+	settingsMu    sync.Mutex
+	device        DeviceSettings
 	rulesRequests chan rulesRequest
 }
 
@@ -95,15 +95,15 @@ func Prepare(cfg Config, logs Logs, plat Platform) (*Node, error) {
 		cfg: cfg, state: st, logs: logs, plat: plat, dnsUpstreams: upstreams,
 		requests: make(chan connectRequest), stopped: make(chan struct{}), rulesRequests: make(chan rulesRequest),
 	}
-	connect, recorded := startConnected(cfg, plat.ConnectRecord, logs)
+	connect, recorded := startConnected(cfg, st.Device.ConnectOnBoot, plat.ConnectRecord, logs)
 	n.conn, n.bootChoice = newConnection(connect, st.Removed), !recorded && keepsConnect(cfg)
-	n.local = st.LocalRules
+	n.device = st.Device
 	mode := cfg.Mode
 	if !st.Removed {
 		mode = n.resolveMode()
 	}
 	n.report = report{mode: mode, space: st.Trust.SpaceID, version: st.Map.Header().Version, removed: st.Removed,
-		conn: n.conn.state, preset: n.local.Preset.String()}
+		conn: n.conn.state, preset: n.device.Rules.Preset.String(), connectOnBoot: n.device.ConnectOnBoot}
 	if mode == ModeDevice && !cfg.Connect && cfg.APISocket == "" {
 		return nil, errors.New("a device that starts disconnected needs the local API to connect: set an API socket")
 	}
@@ -111,23 +111,21 @@ func Prepare(cfg Config, logs Logs, plat Platform) (*Node, error) {
 }
 
 // keepsConnect is whether the node keeps its connect choice for the boot:
-// the service's connect-on-boot is set (Validate refuses it without a
-// local API).
-func keepsConnect(cfg Config) bool { return cfg.ConnectOnBoot != "" }
+// it runs as the service (Validate refuses that without a local API).
+func keepsConnect(cfg Config) bool { return cfg.Service }
 
-// startConnected is whether a device starts connected: when it keeps its
-// choice, as recorded in this boot (recorded true), else as
-// connect-on-boot says; run by hand, as Config.Connect says. A record
-// that can't be read is logged and connect-on-boot decides.
-func startConnected(cfg Config, rec ConnectRecord, logs Logs) (connect, recorded bool) {
+// startConnected is whether a device starts connected: under the service,
+// as recorded in this boot (recorded true), else as the device's
+// connect-on-boot (onBoot) says; run by hand, as Config.Connect says. A
+// record that can't be read is logged and connect-on-boot decides.
+func startConnected(cfg Config, onBoot bool, rec ConnectRecord, logs Logs) (connect, recorded bool) {
 	if !keepsConnect(cfg) {
 		return cfg.Connect, false
 	}
-	onBoot := cfg.ConnectOnBoot == ConnectOnBootOn
 	connect, ok, err := rec.Load()
 	switch {
 	case err != nil:
-		logs.Warn("the connect choice of this boot can't be read: starting as connect-on-boot says", "connect_on_boot", cfg.ConnectOnBoot, "err", err)
+		logs.Warn("the connect choice of this boot can't be read: starting as connect-on-boot says", "connect_on_boot", onOff(onBoot), "err", err)
 		return onBoot, false
 	case !ok:
 		return onBoot, false
@@ -176,7 +174,7 @@ func (n *Node) Disconnect(ctx context.Context) error { return n.request(ctx, fal
 
 // SetRulePreset switches a device's rules to preset ("space",
 // "everything", "all-but-domestic"), keeping its own rules: the choice is
-// stored in LocalRulesFile (only the service writes it), then enforced.
+// stored in DeviceFile (only the service writes it), then enforced.
 // ErrUnknownPreset for another name; ErrPresetUnavailable when the
 // space's map can't build the preset, which is then kept and enforced
 // failing closed (see rules.PresetRules); ErrServerMode on a server.
@@ -188,28 +186,18 @@ func (n *Node) SetRulePreset(ctx context.Context, preset string) error {
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrUnknownPreset, err)
 	}
-	n.rulesMu.Lock()
-	defer n.rulesMu.Unlock()
-	next := n.local
-	next.Preset = p
-	data, err := next.MarshalText()
-	if err != nil {
+	n.settingsMu.Lock()
+	defer n.settingsMu.Unlock()
+	next := n.device
+	next.Rules.Preset = p
+	if err := n.storeDevice(next); err != nil {
 		return err
 	}
-	d, err := openTrustedDir(n.cfg.StateDir)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = d.Close() }()
-	if err := d.write(LocalRulesFile, data, 0o644); err != nil {
-		return err
-	}
-	n.local = next
 	n.report.set(func(r *report) { r.preset = p.String() })
 	n.logs.Info("rule preset set", "preset", p)
 	done := make(chan error, 1)
 	select {
-	case n.rulesRequests <- rulesRequest{rules: next, done: done}:
+	case n.rulesRequests <- rulesRequest{rules: next.Rules, done: done}:
 	case <-n.stopped:
 		return nil // stored: the next start takes it
 	case <-ctx.Done():
@@ -221,6 +209,76 @@ func (n *Node) SetRulePreset(ctx context.Context, preset string) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+// SetConnectOnBoot sets a device's connect-on-boot, stored in DeviceFile
+// (only the service writes it). It takes effect at the next boot: under
+// the service, a boot's first start connects only if it is on; a start
+// later in the same boot, and the running node, are left as they are.
+// ErrServerMode on a server, which serves its spaces whenever it runs.
+func (n *Node) SetConnectOnBoot(on bool) error {
+	if n.Mode() == ModeServer {
+		return ErrServerMode
+	}
+	n.settingsMu.Lock()
+	defer n.settingsMu.Unlock()
+	next := n.device
+	next.ConnectOnBoot = on
+	if err := n.storeDevice(next); err != nil {
+		return err
+	}
+	n.report.set(func(r *report) { r.connectOnBoot = on })
+	n.logs.Info("connect-on-boot set: from the next boot", "connect_on_boot", onOff(on))
+	return nil
+}
+
+// storeDevice writes s to DeviceFile, 0600, then keeps it as the device's
+// settings; on an error nothing changed. The caller holds settingsMu.
+func (n *Node) storeDevice(s DeviceSettings) error {
+	data, err := s.marshal()
+	if err != nil {
+		return err
+	}
+	d, err := openTrustedDir(n.cfg.StateDir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = d.Close() }()
+	if err := d.write(DeviceFile, data, 0o600); err != nil {
+		return err
+	}
+	n.device = s
+	return nil
+}
+
+// carryLocalRules moves a LocalRulesFile into DeviceFile, once: the
+// device's preset and own rules, as read at Prepare, are written to
+// DeviceFile, then rules.local is removed, and the log says so. A
+// directory holding both had the move stopped after the write: rules.local
+// is only removed.
+func (n *Node) carryLocalRules() error {
+	if !n.state.hasLocalRules {
+		return nil
+	}
+	n.settingsMu.Lock()
+	defer n.settingsMu.Unlock()
+	if !n.state.hasDeviceFile {
+		if err := n.storeDevice(n.device); err != nil {
+			return fmt.Errorf("carrying %s over into %s: %w", LocalRulesFile, DeviceFile, err)
+		}
+		n.state.hasDeviceFile = true
+	}
+	d, err := openTrustedDir(n.cfg.StateDir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = d.Close() }()
+	if err := d.remove(LocalRulesFile, false); err != nil {
+		return fmt.Errorf("%s is carried over into %s, removing it: %w", LocalRulesFile, DeviceFile, err)
+	}
+	n.state.hasLocalRules = false
+	n.logs.Info("the device's rules moved from rules.local into device.json; rules.local is removed", "preset", n.device.Rules.Preset, "own_rules", len(n.device.Rules.Rules))
+	return nil
 }
 
 func (n *Node) request(ctx context.Context, connect bool) error {
@@ -298,6 +356,11 @@ func (n *Node) Adapters(reload <-chan os.Signal) ([]app.Adapter, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Under the host lock, so two starts never carry it over at once.
+	if err := n.carryLocalRules(); err != nil {
+		unlock()
+		return nil, err
+	}
 	reg, err := n.plat.Transports(true)
 	if err != nil {
 		unlock()
@@ -363,9 +426,9 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 		events:        n.emit,
 		rulesRequests: n.rulesRequests,
 	}
-	n.rulesMu.Lock()
-	dp.Rules = n.local
-	n.rulesMu.Unlock()
+	n.settingsMu.Lock()
+	dp.Rules = n.device.Rules
+	n.settingsMu.Unlock()
 	dp.tuning = n.tuning
 	return RunDataPlane(ctx, dp)
 }

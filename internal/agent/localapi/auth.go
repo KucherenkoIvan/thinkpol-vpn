@@ -27,8 +27,9 @@ type Access uint8
 const (
 	// AccessNone: nothing.
 	AccessNone Access = iota
-	// AccessControl: the status, the spaces, connect and disconnect, rule
-	// presets, the diagnostics' parts without public addresses.
+	// AccessControl: the status, the spaces, connect and disconnect, the
+	// member's toggles (rule preset, connect-on-boot), the diagnostics'
+	// parts without public addresses.
 	AccessControl
 	// AccessAdmin: everything, the agent's log too.
 	AccessAdmin
@@ -49,14 +50,15 @@ func (a Access) String() string {
 // methodAccess is the level each call needs; a call not listed needs
 // AccessAdmin.
 var methodAccess = map[string]Access{
-	localapiv1.LocalService_GetStatus_FullMethodName:     AccessControl,
-	localapiv1.LocalService_WatchStatus_FullMethodName:   AccessControl,
-	localapiv1.LocalService_ListSpaces_FullMethodName:    AccessControl,
-	localapiv1.LocalService_Connect_FullMethodName:       AccessControl,
-	localapiv1.LocalService_Disconnect_FullMethodName:    AccessControl,
-	localapiv1.LocalService_SetRulePreset_FullMethodName: AccessControl,
-	localapiv1.LocalService_Diagnose_FullMethodName:      AccessControl,
-	localapiv1.LocalService_TailLogs_FullMethodName:      AccessAdmin,
+	localapiv1.LocalService_GetStatus_FullMethodName:        AccessControl,
+	localapiv1.LocalService_WatchStatus_FullMethodName:      AccessControl,
+	localapiv1.LocalService_ListSpaces_FullMethodName:       AccessControl,
+	localapiv1.LocalService_Connect_FullMethodName:          AccessControl,
+	localapiv1.LocalService_Disconnect_FullMethodName:       AccessControl,
+	localapiv1.LocalService_SetRulePreset_FullMethodName:    AccessControl,
+	localapiv1.LocalService_SetConnectOnBoot_FullMethodName: AccessControl,
+	localapiv1.LocalService_Diagnose_FullMethodName:         AccessControl,
+	localapiv1.LocalService_TailLogs_FullMethodName:         AccessAdmin,
 }
 
 // Caller is a local API client's process by its credentials, as the

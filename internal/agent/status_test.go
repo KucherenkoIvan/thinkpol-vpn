@@ -583,7 +583,7 @@ func TestRulePresetIsStoredByTheService(t *testing.T) {
 	b := startDevice(t, s, reg, true)
 	ctx := context.Background()
 	dir := b.node.cfg.StateDir
-	file := filepath.Join(dir, LocalRulesFile)
+	file := filepath.Join(dir, DeviceFile)
 	st := b.connection(t, Connected)
 	if st.RulePreset != "space" || !st.RulesEnforced || st.PresetUnavailable {
 		t.Fatalf("status %+v", st)
@@ -599,10 +599,10 @@ func TestRulePresetIsStoredByTheService(t *testing.T) {
 	if err := b.node.SetRulePreset(ctx, "everything"); !errors.Is(err, ErrPresetUnavailable) {
 		t.Fatalf("got %v, want ErrPresetUnavailable", err)
 	}
-	if got, err := os.ReadFile(file); err != nil || string(got) != "preset everything\n" {
+	if got, err := os.ReadFile(file); err != nil || !strings.Contains(string(got), `"rule_preset": "everything"`) {
 		t.Fatalf("file %q, %v", got, err)
 	}
-	if fi, _ := os.Lstat(file); fi.Mode().Perm() != 0o644 {
+	if fi, _ := os.Lstat(file); runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
 		t.Fatalf("mode %v", fi.Mode())
 	}
 	st = b.node.Status()
@@ -630,20 +630,20 @@ func TestRulePresetIsStoredByTheService(t *testing.T) {
 func TestTheDevicesOwnRulesAreKept(t *testing.T) {
 	s := newTestSpace(t)
 	dir := s.stateDir(t, s.b, 1)
-	writeFile(t, filepath.Join(dir, LocalRulesFile), []byte("# mine\ncidr:192.0.2.0/24 -> direct\n"), 0o644)
+	writeFile(t, filepath.Join(dir, DeviceFile), []byte(`{"rules": ["cidr:192.0.2.0/24 -> direct"]}`), 0o600)
 	n, err := Prepare(testConfig(dir), Logs{}, testPlatform())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(n.local.Rules) != 1 || n.Status().RulePreset != "space" {
-		t.Fatalf("read %+v", n.local)
+	if len(n.device.Rules.Rules) != 1 || n.Status().RulePreset != "space" {
+		t.Fatalf("read %+v", n.device)
 	}
 	close(n.stopped) // not running: the choice is only stored
 	if err := n.SetRulePreset(context.Background(), "all-but-domestic"); err != nil {
 		t.Fatal(err)
 	}
-	got, err := os.ReadFile(filepath.Join(dir, LocalRulesFile))
-	if err != nil || !strings.HasPrefix(string(got), "preset all-but-domestic\n") || !strings.Contains(string(got), "192.0.2.0/24") {
+	got, err := os.ReadFile(filepath.Join(dir, DeviceFile))
+	if err != nil || !strings.Contains(string(got), `"rule_preset": "all-but-domestic"`) || !strings.Contains(string(got), `"cidr:192.0.2.0/24 -> direct"`) {
 		t.Fatalf("file %q, %v", got, err)
 	}
 }

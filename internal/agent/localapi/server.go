@@ -24,6 +24,7 @@ type Node interface {
 	Connect(ctx context.Context) error
 	Disconnect(ctx context.Context) error
 	SetRulePreset(ctx context.Context, preset string) error
+	SetConnectOnBoot(on bool) error
 	Diagnose(ctx context.Context, host bool) agent.Diagnostics
 }
 
@@ -222,6 +223,13 @@ func (s *server) SetRulePreset(ctx context.Context, req *localapiv1.SetRulePrese
 		return nil, nodeError(err)
 	}
 	return &localapiv1.SetRulePresetResponse{Status: statusProto(s.node.Status())}, nil
+}
+
+func (s *server) SetConnectOnBoot(_ context.Context, req *localapiv1.SetConnectOnBootRequest) (*localapiv1.SetConnectOnBootResponse, error) {
+	if err := s.node.SetConnectOnBoot(req.GetOn()); err != nil {
+		return nil, nodeError(err)
+	}
+	return &localapiv1.SetConnectOnBootResponse{Status: statusProto(s.node.Status())}, nil
 }
 
 func (s *server) TailLogs(req *localapiv1.TailLogsRequest, stream grpc.ServerStreamingServer[localapiv1.TailLogsResponse]) error {

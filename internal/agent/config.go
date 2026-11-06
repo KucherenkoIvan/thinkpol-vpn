@@ -30,9 +30,10 @@ const (
 	ModeServer Mode = "server"
 )
 
-// Config is what `thinkpol up` runs with: environment variables, which the
-// command's flags override. The flag: and help: tags are the flags
-// (config.BindFlags), so a setting is named in one place.
+// Config is what `thinkpol up` runs with: the flags, then the environment,
+// then the node file (ApplyNodeFile), then the defaults. The flag: and
+// help: tags are the flags (config.BindFlags), so a setting is named in
+// one place.
 type Config struct {
 	// StateDir holds the node's keys and its map (see LoadState).
 	StateDir string `env:"THINKPOL_STATE_DIR" flag:"state" help:"state directory: node.key, space.pub and map.bin"`
@@ -52,16 +53,15 @@ type Config struct {
 	// checks it at once.
 	MapPoll time.Duration `env:"THINKPOL_MAP_POLL" default:"5s" flag:"map-poll" help:"how often to check the map file for a change; SIGHUP checks at once"`
 	// Connect brings a device's data plane up when the node starts;
-	// otherwise it waits for the local API's Connect. Not read when
-	// ConnectOnBoot is set. A server always serves its spaces.
-	Connect bool `env:"THINKPOL_CONNECT" default:"true" flag:"connect" help:"a device connects when it starts; otherwise it waits for thinkpol connect (not read with -connect-on-boot)"`
-	// ConnectOnBoot is the service's setting (ConnectOnBootOn, Off), empty
-	// for a node run by hand. Set, a device keeps its connect choice for
-	// the boot (ConnectRecord): the boot's first start connects if it is
-	// on and records that, and a later start in the same boot comes back
-	// connected or disconnected as the device was left. It needs the
-	// local API, without which nothing could change the choice.
-	ConnectOnBoot string `env:"THINKPOL_CONNECT_ON_BOOT" flag:"connect-on-boot" help:"on or off: the service's connect-on-boot; a later start in the same boot comes back as the device was left; empty (by hand): -connect decides every start"`
+	// otherwise it waits for the local API's Connect. Not read with
+	// Service. A server always serves its spaces.
+	Connect bool `env:"THINKPOL_CONNECT" default:"true" flag:"connect" help:"a device connects when it starts; otherwise it waits for thinkpol connect (not read with -service)"`
+	// Service is set by the service's definition: the device keeps its
+	// connect choice for the boot (ConnectRecord), and the device's
+	// connect-on-boot (DeviceFile, a member's toggle) decides the boot's
+	// first start. It needs the local API, without which nothing could
+	// change the choice.
+	Service bool `env:"THINKPOL_SERVICE" flag:"service" help:"run as the host's service: the device's connect-on-boot decides a boot's first start, a later start in the same boot comes back as the device was left"`
 	// APISocket is the local API's Unix socket, in a directory of its own;
 	// empty serves no local API.
 	APISocket string `env:"THINKPOL_API_SOCKET" flag:"api-socket" help:"the local API's socket, in a directory of its own; empty: no local API"`
@@ -86,12 +86,6 @@ type Config struct {
 	EgressAllowed string `env:"THINKPOL_EGRESS_ALLOWED" flag:"egress-allowed" help:"comma-separated private prefixes an exit's spaces may still reach"`
 }
 
-// ConnectOnBoot's values.
-const (
-	ConnectOnBootOn  = "on"
-	ConnectOnBootOff = "off"
-)
-
 // EgressAllowedPrefixes parses EgressAllowed.
 func (c Config) EgressAllowedPrefixes() ([]netip.Prefix, error) {
 	var out []netip.Prefix
@@ -109,8 +103,9 @@ func (c Config) EgressAllowedPrefixes() ([]netip.Prefix, error) {
 }
 
 // LoadConfig reads the configuration from the environment and the default:
-// tags. Unlike go-kernel's usual setup it reads no .env files: a node's
-// configuration is its environment and its flags. It doesn't validate, and
+// tags. Unlike go-kernel's usual setup it reads no .env files: the node's
+// own file is NodeFile, which ApplyNodeFile reads once the flags are
+// parsed, since -state says where it is. It doesn't validate, and
 // StateDir and APISocket stay empty when unset: their defaults vary by OS
 // (DefaultStateDir, DefaultAPISocket), which a tag can't.
 func LoadConfig() (Config, error) {
@@ -157,37 +152,23 @@ func (c Config) MapPath() string {
 	return filepath.Join(c.StateDir, MapFileName)
 }
 
-// Validate rejects a configuration `thinkpol up` can't run with. It is
-// go-kernel config's validation hook (config.Validate).
+// Validate rejects a configuration `thinkpol up` can't run with, as a
+// *ConfigError. It is go-kernel config's validation hook (config.Validate).
 func (c Config) Validate() error {
 	var errs []error
 	if c.StateDir == "" {
 		errs = append(errs, errors.New("no state directory"))
 	}
-	switch c.Mode {
-	case ModeAuto, ModeDevice, ModeServer:
-	default:
-		errs = append(errs, fmt.Errorf("mode %q: want %s, %s or %s", c.Mode, ModeAuto, ModeDevice, ModeServer))
-	}
+	errs = append(errs, checkMode(c.Mode))
 	if _, err := ParseLevel(c.LogLevel); err != nil {
 		errs = append(errs, err)
 	}
 	if c.Interface != "" {
-		if err := checkInterfaceName(c.Interface); err != nil {
-			errs = append(errs, err)
-		}
+		errs = append(errs, checkInterfaceName(c.Interface))
 	}
-	// Below 576 plus a link's overhead nothing fits.
-	if c.LinkMTU != 0 && (c.LinkMTU < 576 || c.LinkMTU > 65535) {
-		errs = append(errs, fmt.Errorf("link MTU %d: want 576 to 65535, or 0 for the default", c.LinkMTU))
-	}
-	switch c.ConnectOnBoot {
-	case "", ConnectOnBootOn, ConnectOnBootOff:
-	default:
-		errs = append(errs, fmt.Errorf("connect-on-boot %q: want %s, %s or empty", c.ConnectOnBoot, ConnectOnBootOn, ConnectOnBootOff))
-	}
-	if c.ConnectOnBoot != "" && c.APISocket == "" {
-		errs = append(errs, errors.New("connect-on-boot keeps the device's connect choice, which only the local API changes: set an API socket"))
+	errs = append(errs, checkLinkMTU(c.LinkMTU))
+	if c.Service && c.APISocket == "" {
+		errs = append(errs, errors.New("the service keeps the device's connect choice, which only the local API changes: set an API socket"))
 	}
 	if c.Mode == ModeDevice && !c.Connect && c.APISocket == "" {
 		errs = append(errs, errors.New("a device that starts disconnected needs the local API to connect: set an API socket"))
@@ -201,10 +182,34 @@ func (c Config) Validate() error {
 	if _, err := ParseUpstreams(c.DNSUpstream); err != nil {
 		errs = append(errs, err)
 	}
-	if c.MapPoll < 100*time.Millisecond {
-		errs = append(errs, fmt.Errorf("map poll interval %v: want at least 100ms", c.MapPoll))
+	errs = append(errs, checkMapPoll(c.MapPoll))
+	if err := errors.Join(errs...); err != nil {
+		return &ConfigError{err}
 	}
-	return errors.Join(errs...)
+	return nil
+}
+
+func checkMode(m Mode) error {
+	switch m {
+	case ModeAuto, ModeDevice, ModeServer:
+		return nil
+	}
+	return fmt.Errorf("mode %q: want %s, %s or %s", m, ModeAuto, ModeDevice, ModeServer)
+}
+
+// checkLinkMTU: below 576 plus a link's overhead nothing fits.
+func checkLinkMTU(mtu int) error {
+	if mtu != 0 && (mtu < 576 || mtu > 65535) {
+		return fmt.Errorf("link MTU %d: want 576 to 65535, or 0 for the default", mtu)
+	}
+	return nil
+}
+
+func checkMapPoll(d time.Duration) error {
+	if d < 100*time.Millisecond {
+		return fmt.Errorf("map poll interval %v: want at least 100ms", d)
+	}
+	return nil
 }
 
 // checkInterfaceName accepts what Linux takes as a link name: 1 to 15

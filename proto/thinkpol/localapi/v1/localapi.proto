@@ -35,12 +35,17 @@ service LocalService {
   rpc ListSpaces(ListSpacesRequest) returns (ListSpacesResponse);
   // SetRulePreset switches the device's routing rules to a preset
   // ("space", the space's own rules; "everything"; "all-but-domestic")
-  // and stores the choice in the device's local rules file, which only
-  // the service writes. INVALID_ARGUMENT "unknown_rule_preset" for
+  // and stores the choice in the device's settings file, which only the
+  // service writes. INVALID_ARGUMENT "unknown_rule_preset" for
   // another name; FAILED_PRECONDITION "rule_preset_unavailable" when the
   // space can't build it (the choice is kept, enforced failing closed),
   // "server_mode" on a server.
   rpc SetRulePreset(SetRulePresetRequest) returns (SetRulePresetResponse);
+  // SetConnectOnBoot sets whether the service connects the device at a
+  // boot's first start, stored in the device's settings file, which only
+  // the service writes; it takes effect at the next boot (GetStatus shows
+  // it). FAILED_PRECONDITION "server_mode" on a server.
+  rpc SetConnectOnBoot(SetConnectOnBootRequest) returns (SetConnectOnBootResponse);
   // TailLogs sends the agent's in-memory log: the last lines, then, when
   // following, every new line until the client goes away or the service
   // stops. Root only: debug lines may quote the map.
@@ -90,6 +95,14 @@ message SetRulePresetRequest {
 }
 
 message SetRulePresetResponse {
+  Status status = 1;
+}
+
+message SetConnectOnBootRequest {
+  bool on = 1;
+}
+
+message SetConnectOnBootResponse {
   Status status = 1;
 }
 
@@ -151,6 +164,16 @@ message Diagnostics {
   // it reports them (Linux: resolv.conf and systemd-resolved; macOS:
   // scutil --dns). A host part.
   DiagDns dns = 12;
+  // Drop-ins for the service's systemd unit (thinkpol.service.d/*.conf):
+  // unsupported, since one can set THINKPOL_* variables behind the node
+  // file's back. None on macOS, where launchd has no drop-ins.
+  DiagDropIns service_drop_ins = 13;
+}
+
+// The drop-in files found, by path.
+message DiagDropIns {
+  string unreadable = 1;
+  repeated string paths = 2;
 }
 
 // An interface as the host reports it.
@@ -424,6 +447,9 @@ message Status {
   // isn't counted). One that keeps growing is someone handing it maps it
   // refuses.
   uint64 maps_refused = 15;
+  // A device's connect-on-boot, from its settings file: whether the
+  // service connects it at a boot's first start.
+  bool connect_on_boot = 16;
 }
 
 // Uplink is a server's way to the internet, for its spaces that allow

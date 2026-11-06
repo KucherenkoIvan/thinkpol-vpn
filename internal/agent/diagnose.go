@@ -33,6 +33,18 @@ type Diagnostics struct {
 	// DNS is the resolvers the host uses, for the overlay's names and the
 	// rest.
 	DNS dns.HostReport
+	// DropIns are the service's systemd drop-ins: unsupported, reported.
+	DropIns DropInReport
+}
+
+// DropInReport lists drop-ins for the service's systemd unit
+// (thinkpol.service.d/*.conf), which are unsupported: one can set
+// THINKPOL_* variables behind the node file's back
+// (docs/design/configuration.md "File formats"). Unreadable says why they
+// couldn't be listed.
+type DropInReport struct {
+	Unreadable string
+	Paths      []string
 }
 
 // Why a part of Diagnostics is unreadable, when the agent says so itself
@@ -70,6 +82,8 @@ type Inspector struct {
 	Guard func(ctx context.Context) routetable.GuardReport
 	// DNS reads the host's resolvers (dns.Inspect).
 	DNS func(ctx context.Context) dns.HostReport
+	// DropIns lists the service's systemd drop-ins (service.HostDropIns).
+	DropIns func() DropInReport
 }
 
 // Diagnose takes the node's diagnostics, with the host parts only when
@@ -79,7 +93,8 @@ type Inspector struct {
 // between shows as a TUN that can't be read.
 func (n *Node) Diagnose(ctx context.Context, withHostParts bool) Diagnostics {
 	st, tun, last := n.report.forDiagnostics()
-	d := Diagnostics{Status: st, TUN: netcfg.InterfaceReport{Unreadable: UnreadableNoTUN}, LastApply: ApplyReport{Unreadable: UnreadableNoApply}}
+	d := Diagnostics{Status: st, TUN: netcfg.InterfaceReport{Unreadable: UnreadableNoTUN}, LastApply: ApplyReport{Unreadable: UnreadableNoApply},
+		DropIns: n.plat.Inspect.DropIns()}
 	switch {
 	case st.Mode == ModeServer:
 		d.TUN.Unreadable, d.LastApply.Unreadable = UnreadableServer, UnreadableServer

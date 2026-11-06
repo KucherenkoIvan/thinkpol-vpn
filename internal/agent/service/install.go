@@ -34,9 +34,6 @@ type System interface {
 	// Start loads the definition just written and (re)starts the service;
 	// an agent it ran before has exited first.
 	Start(ctx context.Context, run Runner) error
-	// Reload has the manager take a changed definition at the service's
-	// next start, without restarting it.
-	Reload(ctx context.Context, run Runner) error
 	// Stop stops the service, keeping it enabled (it starts at boot), and
 	// returns once its agent has exited (or the stop timed out, an
 	// error).
@@ -87,9 +84,6 @@ type Installer struct {
 
 // Options are install's choices.
 type Options struct {
-	// ConnectOnBoot sets connect-on-boot; nil keeps what an installed
-	// service has, or off.
-	ConnectOnBoot *bool
 	// User is added to Group, so it may use the local API; "" adds no
 	// one.
 	User string
@@ -101,6 +95,9 @@ var (
 	// ErrDefinitionChanged: a definition that isn't what install writes
 	// (edited by hand).
 	ErrDefinitionChanged = errors.New("the service's definition was changed by hand")
+	// errOldDefinition: a definition from before connect-on-boot moved to
+	// the device's settings.
+	errOldDefinition = errors.New("the service's definition carries connect-on-boot")
 	// errAgentRuns: an agent holds the host lock where none may run.
 	errAgentRuns = errors.New("a thinkpol agent runs outside the service (it holds the host lock): stop it, then run this again")
 )
@@ -115,8 +112,7 @@ func (in Installer) say(format string, args ...any) {
 
 // Install copies the binary, makes the group (adding opts.User), writes
 // the definition and (re)starts the service. Run again, it replaces the
-// binary and restarts the service, keeping connect-on-boot unless opts
-// sets it. The binary directory's trust check, the group steps, then the
+// binary and restarts the service. The binary directory's trust check, the group steps, then the
 // binary, then the definition, all run before anything is stopped: a
 // failure there leaves the installed service running as it was (a
 // failure after the binary leaves the new binary for the old definition's
@@ -141,17 +137,11 @@ func (in Installer) Install(ctx context.Context, opts Options) error {
 			return err
 		}
 	}
-	connect := false
-	d, err := in.installed()
-	switch {
-	case err == nil:
-		connect = d.ConnectOnBoot
-	case errors.Is(err, ErrNotInstalled):
-	default:
-		in.say("warning: %v; installing anew, connect-on-boot off unless -connect-on-boot says otherwise", err)
-	}
-	if opts.ConnectOnBoot != nil {
-		connect = *opts.ConnectOnBoot
+	switch err := in.installed(); {
+	case errors.Is(err, errOldDefinition):
+		in.say("connect-on-boot is no longer in the service's definition: it is the device's setting now, off until a member turns it on (thinkpol connect-on-boot on)")
+	case err != nil && !errors.Is(err, ErrNotInstalled):
+		in.say("warning: %v; installing anew", err)
 	}
 	if err := in.binaryDirTrusted(); err != nil {
 		return err
@@ -168,7 +158,7 @@ func (in Installer) Install(ctx context.Context, opts Options) error {
 	if err := in.installBinary(); err != nil {
 		return err
 	}
-	if err := in.writeDefinition(Definition{Binary: BinaryPath, ConnectOnBoot: connect}); err != nil {
+	if err := in.writeDefinition(Definition{Binary: BinaryPath}); err != nil {
 		return err
 	}
 	if defined {
@@ -182,7 +172,7 @@ func (in Installer) Install(ctx context.Context, opts Options) error {
 	if err := in.System.Start(ctx, in.Run); err != nil {
 		return fmt.Errorf("%s; starting it failed: %w", in.leftAfter(ctx, defined), err)
 	}
-	in.say("installed and started %s (connect-on-boot %s)", in.System.DefinitionPath(), OnOff(connect))
+	in.say("installed and started %s", in.System.DefinitionPath())
 	return nil
 }
 
@@ -214,31 +204,6 @@ func (in Installer) noAgent() error {
 		return err
 	}
 	unlock()
-	return nil
-}
-
-// ConnectOnBoot is the installed service's connect-on-boot.
-func (in Installer) ConnectOnBoot() (bool, error) {
-	d, err := in.installed()
-	return d.ConnectOnBoot, err
-}
-
-// SetConnectOnBoot rewrites the installed definition with connect-on-boot
-// on or off. The running agent isn't restarted: the setting is read at
-// the boot's first start only.
-func (in Installer) SetConnectOnBoot(ctx context.Context, on bool) error {
-	d, err := in.installed()
-	if err != nil {
-		return err
-	}
-	d.ConnectOnBoot = on
-	if err := in.writeDefinition(d); err != nil {
-		return err
-	}
-	if err := in.System.Reload(ctx, in.Run); err != nil {
-		return err
-	}
-	in.say("connect-on-boot %s: from the next boot", OnOff(on))
 	return nil
 }
 
@@ -290,25 +255,30 @@ func (in Installer) Uninstall(ctx context.Context) error {
 	return nil
 }
 
-// installed reads the installed definition: exactly what install writes,
-// connect-on-boot on or off; none is ErrNotInstalled, anything else
+// installed checks the installed definition is exactly what install
+// writes: none is ErrNotInstalled, one written before connect-on-boot
+// moved to the device's settings errOldDefinition, anything else
 // ErrDefinitionChanged.
-func (in Installer) installed() (Definition, error) {
+func (in Installer) installed() error {
 	data, err := os.ReadFile(in.path(in.System.DefinitionPath()))
 	if errors.Is(err, fs.ErrNotExist) {
-		return Definition{}, ErrNotInstalled
+		return ErrNotInstalled
 	}
 	if err != nil {
-		return Definition{}, err
+		return err
 	}
-	for _, on := range []bool{false, true} {
-		d := Definition{Binary: BinaryPath, ConnectOnBoot: on}
-		if bytes.Equal(data, in.System.Render(d)) {
-			return d, nil
-		}
+	switch {
+	case bytes.Equal(data, in.System.Render(Definition{Binary: BinaryPath})):
+		return nil
+	case bytes.Contains(data, []byte(oldConnectOnBootVariable)):
+		return errOldDefinition
 	}
-	return Definition{}, fmt.Errorf("%w: %s isn't what thinkpol service install writes; install again", ErrDefinitionChanged, in.System.DefinitionPath())
+	return fmt.Errorf("%w: %s isn't what thinkpol service install writes; install again", ErrDefinitionChanged, in.System.DefinitionPath())
 }
+
+// oldConnectOnBootVariable is how definitions carried connect-on-boot
+// before it moved to the device's settings (agent.DeviceFile).
+const oldConnectOnBootVariable = "THINKPOL_CONNECT_ON_BOOT"
 
 // writeDefinition replaces the definition atomically, 0644.
 func (in Installer) writeDefinition(d Definition) error {

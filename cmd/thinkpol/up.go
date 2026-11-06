@@ -19,7 +19,7 @@ func init() {
 	register(command{
 		path:        "up",
 		args:        "[-state dir] [-map file] [-mode auto|device|server] [flags]",
-		summary:     "run this node from the keys and map in its state directory (environment: THINKPOL_*)",
+		summary:     "run this node from the keys and map in its state directory (settings: flags, THINKPOL_*, node.json)",
 		ownsSignals: true,
 		run:         runUp,
 	})
@@ -40,6 +40,9 @@ func runUp(ctx context.Context, e env, args []string) error {
 	}
 	if fs.NArg() > 0 {
 		return errUsage
+	}
+	if err := agent.ApplyNodeFile(&cfg, fs); err != nil {
+		return err
 	}
 	if err := config.Validate(&cfg); err != nil {
 		return err

@@ -198,10 +198,40 @@ func TestUpFlagsOverrideTheEnvironment(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("THINKPOL_LINK_MTU", "100")
-	if code, _, stderr := runCLI(t, "up", "-state", state); code != 1 || !strings.Contains(stderr, "link MTU 100") {
+	if code, _, stderr := runCLI(t, "up", "-state", state); code != exitConfig || !strings.Contains(stderr, "link MTU 100") {
 		t.Fatalf("an invalid variable must fail validation: exit %d, stderr %q", code, stderr)
 	}
 	if code, _, stderr := runCLI(t, "up", "-state", state, "-link-mtu", "1500"); code != 1 || !strings.Contains(stderr, "is not a valid map") {
 		t.Fatalf("the flag must override the variable before validation: exit %d, stderr %q", code, stderr)
+	}
+}
+
+// A node file `up` can't take stops it with EX_CONFIG (78), naming the
+// file and the key or the value. A flag that sets the same key doesn't
+// hide the mistake: the file is the operator's, and wrong.
+func TestUpRefusesABadNodeFile(t *testing.T) {
+	unsetTHINKPOL(t)
+	state, _ := m0State(t, "device-a")
+	for name, tc := range map[string]struct {
+		file string
+		args []string
+		want string
+	}{
+		"unknown key":                {`{"link_mut": 1400}`, nil, `unknown key "link_mut"`},
+		"bad value":                  {`{"link_mtu": 100}`, nil, `key "link_mtu": link MTU 100`},
+		"bad value, flag set":        {`{"link_mtu": 100}`, []string{"-link-mtu", "1400"}, `key "link_mtu": link MTU 100`},
+		"bad mode":                   {`{"mode": "exit"}`, nil, `key "mode": mode "exit"`},
+		"wrong type":                 {`{"dns": "yes"}`, nil, `key "dns": want true or false, not string`},
+		"duplicate key":              {`{"mode": "device", "mode": "server"}`, nil, `key "mode" given twice`},
+		"invalid JSON":               {`{"mode": "device",}`, nil, "invalid JSON"},
+		"an upstream that isn't one": {`{"dns_upstream": ["192.0.2.53:0"]}`, nil, `key "dns_upstream": DNS upstream "192.0.2.53:0"`},
+	} {
+		if err := os.WriteFile(filepath.Join(state, agent.NodeFile), []byte(tc.file), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		code, _, stderr := runCLI(t, append([]string{"up", "-state", state}, tc.args...)...)
+		if code != exitConfig || !strings.Contains(stderr, tc.want) || !strings.Contains(stderr, filepath.Join(state, agent.NodeFile)) {
+			t.Errorf("%s: exit %d, stderr %q", name, code, stderr)
+		}
 	}
 }

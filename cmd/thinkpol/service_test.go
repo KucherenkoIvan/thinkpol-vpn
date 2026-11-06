@@ -5,16 +5,28 @@ import (
 	"testing"
 )
 
-// connect-on-boot is on or off, the same word everywhere; anything else
-// is a usage error, before anything looks at the host.
-func TestServiceConnectOnBootIsOnOrOff(t *testing.T) {
+// connect-on-boot is the device's setting now: the service's command and
+// install's flag say what replaced them, before anything looks at the host.
+func TestTheServicesConnectOnBootSaysWhatReplacedIt(t *testing.T) {
 	for _, args := range [][]string{
-		{"service", "install", "-connect-on-boot", "yes"},
-		{"service", "install", "-connect-on-boot", "true"},
-		{"service", "connect-on-boot", "true"},
+		{"service", "install", "-connect-on-boot", "on"},
+		{"service", "connect-on-boot"},
+		{"service", "connect-on-boot", "on"},
 	} {
 		code, _, stderr := runCLI(t, args...)
-		if code != 2 || !strings.Contains(stderr, "on|off") {
+		if code != 1 || !strings.Contains(stderr, "thinkpol connect-on-boot [on|off]") {
+			t.Errorf("%v: exit %d\n%s", args, code, stderr)
+		}
+	}
+}
+
+// The member's connect-on-boot takes on or off, nothing else, before the
+// local API is dialed.
+func TestConnectOnBootIsOnOrOff(t *testing.T) {
+	for _, values := range [][]string{{"yes"}, {"true"}, {"on", "off"}} {
+		args := append([]string{"connect-on-boot", "-socket", "/nonexistent/api.sock"}, values...)
+		code, _, stderr := runCLI(t, args...)
+		if code != 2 || !strings.Contains(stderr, "[on|off]") {
 			t.Errorf("%v: exit %d\n%s", args, code, stderr)
 		}
 	}

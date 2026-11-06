@@ -74,6 +74,16 @@ func (n *fakeNode) SetRulePreset(_ context.Context, preset string) error {
 	return nil
 }
 
+func (n *fakeNode) SetConnectOnBoot(on bool) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.st.Mode == agent.ModeServer {
+		return agent.ErrServerMode
+	}
+	n.st.ConnectOnBoot = on
+	return nil
+}
+
 func (n *fakeNode) Status() agent.Status {
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -206,6 +216,28 @@ func TestTheCLIControlsTheNode(t *testing.T) {
 	if _, err := c.SetRulePreset(ctx, "nope"); !errors.Is(err, ErrUnknownPreset) {
 		t.Fatalf("got %v, want ErrUnknownPreset", err)
 	}
+	for _, on := range []bool{true, false} {
+		st, err := c.SetConnectOnBoot(ctx, on)
+		if err != nil || st.GetConnectOnBoot() != on {
+			t.Fatalf("connect-on-boot %v: %v, %v", on, st, err)
+		}
+		out.Reset()
+		if err := WriteStatus(&out, st, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		if want := "connect-on-boot: +" + map[bool]string{true: "on", false: "off"}[on] + "\n"; !regexp.MustCompile(want).MatchString(out.String()) {
+			t.Errorf("no %q in\n%s", want, out.String())
+		}
+	}
+	s.node.mu.Lock()
+	s.node.st.Mode = agent.ModeServer
+	s.node.mu.Unlock()
+	if _, err := c.SetConnectOnBoot(ctx, true); !errors.Is(err, ErrServerMode) {
+		t.Fatalf("connect-on-boot on a server: %v, want ErrServerMode", err)
+	}
+	s.node.mu.Lock()
+	s.node.st.Mode = agent.ModeDevice
+	s.node.mu.Unlock()
 
 	s.node.mu.Lock()
 	s.node.connectErr = &agent.StartError{Step: agent.StepTUN, Err: errors.New("detail 192.0.2.1 for the log only")}
