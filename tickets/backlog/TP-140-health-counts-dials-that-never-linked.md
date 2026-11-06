@@ -35,7 +35,9 @@ A device whose dialed exit never linked says so in its health, instead of `conne
 - **Device evidence (the 2026-10-24 macOS device run, the connect-on-boot reboot).** Wi-Fi had no link during that boot. The agent logged `dial failed … netcfg: no default route (IPv4)` and `DNS: no upstream to ask`, the peer showed `no path yet  no handshake  rx 0 B`, the exit saw no handshake, and `thinkpol status` said `connected, health: ok`.
 - The same logic was in place before the consolidation phase, so this isn't a regression; it was never seen because the link always came up.
 - TP-144's device re-run checks the fix on the Mac (the connect-on-boot reboot with no link).
+- **TP-139 verdicts (TP-139 owner session, 2026-11-07; docs/design/api-overview.md "Verdicts", docs/design/configuration.md).** Problem codes are snake_case (F5). Reuse `no_link_up` where the case reads the same, add a code where it doesn't, and name it per the naming rules. F16's fourth item (`health: ok` with a peer at `no path yet`) is this ticket's.
 
 ## Log
 - 2026-10-24 created in backlog (2026-10-24 macOS device run and code-health review: before-M2 list)
 - 2026-10-24 docs: slotted in the pre-M2 phase (wave 1, Agent)
+- 2026-11-07 TP-139 verdicts noted

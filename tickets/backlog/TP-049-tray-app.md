@@ -22,6 +22,7 @@ Members use thinkpol from a tray icon, never a terminal.
 
 ## Notes
 - 2026-10-29 from the TP-094 reviews (local-API access by group membership): the service should rate-limit its local-API refusal log lines; the tray should back off after a `permission_denied`; on its first run right after the user was added to the group, the tray should wait about 10 s before reporting a refusal; and the tray should tell `service_down` apart from `not_running`.
+- **TP-139 verdicts (TP-139 owner session, 2026-11-07; docs/design/api-overview.md "Verdicts", docs/design/configuration.md).** Tray toggles (connect-on-boot, kill switch, allow-LAN, pause, rule preset) go through the local API, as device-level settings the service stores (TP-166); the tray needs no root for any of them. It reads `status` in TP-168's JSON convention and acts on codes, not wording.
 
 ## Log
 - 2026-10-10 created in backlog
@@ -29,3 +30,4 @@ Members use thinkpol from a tray icon, never a terminal.
 - 2026-10-15 docs (backlog grooming, review fixes): removed redundant split note
 - 2026-10-15 docs: depends on TP-086 (frontend stack revisit)
 - 2026-10-29 docs: notes from the TP-094 reviews
+- 2026-11-07 TP-139 verdicts noted

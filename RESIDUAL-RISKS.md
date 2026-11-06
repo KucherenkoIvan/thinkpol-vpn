@@ -91,6 +91,7 @@ Columns: **When** says the conditions; **What leaks** says what an observer lear
 | RR46 | Rollback through the disk | Until nodes write the maps they take | Whoever can write `map.bin` chooses the map a node starts with | — | The file is owner-only, and a running node refuses an older map | TP-037 | [`agent`](internal/agent/doc.go) |
 | RR47 | No key rotation | A stolen signing key | It can't be rotated away, and maps never expire | A11 | Recovery records need the controller's tooling to make them and nodes that verify them; both come with M4 | TP-036 | [`netmap`](internal/netmap/doc.go) |
 | RR48 | A break past the first hop | Until end-to-end probes | The peer's traffic is lost, with no failover | R6 | Failover follows a node's own links; end-to-end probes come with hop groups | TP-031 | [`path`](internal/dataplane/path/doc.go) |
+| RR56 | A seized node's keys stay valid | A node, server or device, in the censor's hands, until someone builds a map without it and it reaches the other nodes | Its holder passes as that node: its peers keep its links, and a device's grants still work | — | Rotating a node's keys and revoking a seized node through the map need the controller's tooling; the owner decided to document key management now and build it after the concept is proven (2026-11-07). Until then revocation is a map built by hand. RR52 says what the device itself gives away | TP-169 | [`agent`](internal/agent/doc.go) |
 
 ## Not defended (see Threat model)
 
