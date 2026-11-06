@@ -25,9 +25,9 @@ A device whose dialed exit never linked says so in its health, instead of `conne
 - Redialing on a network change: TP-085.
 
 ## Acceptance
-- [ ] a unit test: a dial with no link past the deadline raises the problem; before the deadline it doesn't; a link that comes up clears it
-- [ ] a unit test: no DNS upstream raises its problem; one configured clears it
-- [ ] lab: a device whose only exit drops every packet reports the problem in `thinkpol status`, and `health` isn't ok
+- [x] a unit test: a dial with no link past the deadline raises the problem; before the deadline it doesn't; a link that comes up clears it
+- [x] a unit test: no DNS upstream raises its problem; one configured clears it
+- [x] lab: a device whose only exit drops every packet reports the problem in `thinkpol status`, and `health` isn't ok
 - [ ] `make lint`, `make test`, `make lab-test` pass
 
 ## Notes
@@ -36,9 +36,16 @@ A device whose dialed exit never linked says so in its health, instead of `conne
 - The same logic was in place before the consolidation phase, so this isn't a regression; it was never seen because the link always came up.
 - TP-144's device re-run checks the fix on the Mac (the connect-on-boot reboot with no link).
 - **TP-139 verdicts (TP-139 owner session, 2026-11-07; docs/design/api-overview.md "Verdicts", docs/design/configuration.md).** Problem codes are snake_case (F5). Reuse `no_link_up` where the case reads the same, add a code where it doesn't, and name it per the naming rules. F16's fourth item (`health: ok` with a peer at `no path yet`) is this ticket's.
+- **Codes (implementation, 2026-11-07).** A dial with no link is reused as `no_link_up` (down; `neighbor_down`, degraded, when another neighbor is up): it reads the same, no adjacent node answers. Deadline: the path layer's `DeadAfter` (6 s), the interval after which an unproven link is closed. No DNS upstream is a new code, `dns_no_upstream` (degraded), device only; a worker's upstreams stay `dns_upstream_refused`.
 
 ## Log
 - 2026-10-24 created in backlog (2026-10-24 macOS device run and code-health review: before-M2 list)
 - 2026-10-24 docs: slotted in the pre-M2 phase (wave 1, Agent)
 - 2026-11-07 TP-139 verdicts noted
 - 2026-11-07 backlog → in-progress, owner: agent-tp-140
+- 2026-11-07 done (2129a23): path.Node.Neighbors lists a node dialed for DeadAfter with no link as down (dialLoop.started), so health raises no_link_up/neighbor_down; health dns_no_upstream from runner.directUpstreams; docs: path doc.go, routing.md, api-overview.md, api-overview-reference.md
+- 2026-11-07 tests: path TestNeighborsListADialThatNeverLinkedPastDeadAfter, agent TestADialThatNeverLinkedIsNoLinkUp, TestNoDirectUpstreamIsAProblem, TestAConfiguredUpstreamIsNoProblem, lab TestHealthWithNoLinkUp (packet drop, every dial fails)
+- 2026-11-07 mutations, each failed its test: Neighbors deadline dropped (listed before DeadAfter: path + agent tests), never-linked dial never listed (path + agent tests, and lab "every dial fails" timed out on no_link_up), health ignores DNSNoUpstream, OS-told upstreams not counted, configured upstreams not counted
+- 2026-11-07 the lab "every dial fails" subtest is the regression guard: the udp transport's Dial only opens a socket (no handshake), so a server that drops every packet still gives an unproven link, listed down, and that case raised no_link_up before this branch (read from the code, not re-run without the fix)
+- 2026-11-07 merged origin/rewrite (TP-130); make lint, make test green; lab TestHealthWithNoLinkUp passed
+- 2026-11-07 not verifiable here: the macOS connect-on-boot case (TP-144's device re-run); lab devices read `nameserver 127.0.0.1` as an upstream, so dns_no_upstream is unit-tested only
