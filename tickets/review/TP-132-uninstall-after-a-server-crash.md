@@ -27,9 +27,9 @@ branch: "tp-132-uninstall-after-a-server-crash"
   - **Fix:** report the error, say what was left, and offer `-force` to remove the definition and binary anyway. Name the concrete failure that motivated it, e.g. a DNS backup record `readBackup` rejects.
 
 ## Acceptance
-- [ ] lab: a connected server SIGKILLed, then uninstalled at once (with the restart held off, as TP-046's test does), leaves no supervisor table, forwarding sysctl it set, veth or route
-- [ ] a unit test: a ClearHost error makes uninstall report and stop; `-force` completes it
-- [ ] `make lint`, `make test`, `make lab-test` pass
+- [x] lab: a connected server SIGKILLed, then uninstalled at once (with the restart held off, as TP-046's test does), leaves no supervisor table, forwarding sysctl it set, veth or route
+- [x] a unit test: a ClearHost error makes uninstall report and stop; `-force` completes it
+- [x] `make lint`, `make test`, `make lab-test` pass
 
 ## Notes
 - From TP-046's round-2 reviews (2026-10-23).
@@ -37,3 +37,7 @@ branch: "tp-132-uninstall-after-a-server-crash"
 ## Log
 - 2026-10-23 created in backlog (TP-046 review round 2)
 - 2026-11-07 backlog → in-progress, owner: agent-tp-132
+- 2026-11-07 finisher: branch has the fix (9e6a61c: ClearHost also runs supervisor.ClearLeftovers under the supervisor role and reports what it undid; uninstall stops on a failed clear, saying what is left on disk, and -force completes it) and tests (64eb4f3: lab TestServiceUninstallAfterAServerCrash; TestUninstallStopsOnAFailedClearAndForceCompletesIt, systemd and launchd; TestClearLeftovers*)
+- 2026-11-07 finisher: merged rewrite 7852af8 (head c66ccc8) in as cc7d3d1; make lint green, make test green (TestUninstallStopsOnAFailedClearAndForceCompletesIt passes)
+- 2026-11-07 finisher: full make lab-test passed on cc7d3d1 (LAB_P=4, run alone): lab/ packages ok (TestServiceUninstallAfterAServerCrash included, no skip path), gotest ok for 36 packages
+- 2026-11-07 in-progress → review
