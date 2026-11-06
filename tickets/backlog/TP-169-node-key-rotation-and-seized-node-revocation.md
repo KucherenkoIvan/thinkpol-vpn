@@ -1,7 +1,7 @@
 ---
 id: TP-169
 title: "Node key rotation and revocation of a seized node"
-milestone: M4
+milestone: later
 area: control-plane
 repo: thinkpol-vpn
 size: L
@@ -37,3 +37,4 @@ An admin can rotate a node's keys, and revoke a seized node so that its keys sto
 
 ## Log
 - 2026-11-07 created in backlog
+- 2026-11-07 milestone → later (owner's MVP cut: owner: security after the concept is proven)

@@ -1,7 +1,7 @@
 ---
 id: TP-080
 title: "Links declared dead while traffic is still arriving"
-milestone: M2
+milestone: later
 area: dataplane/path
 repo: thinkpol-vpn
 size: M
@@ -36,3 +36,4 @@ The path package doc (internal/dataplane/path/doc.go) has the 6 s dead interval;
 - 2026-10-15 docs (backlog grooming): split — this ticket keeps inbound-data proof of life; TP-084/TP-085 for the other triggers
 - 2026-10-15 docs (backlog grooming, review fixes): depends_on TP-019 for device checklist
 - 2026-10-23 docs: waits for the `reality` transport (TP-087): the owner doesn't want plain `udp` load on the network for speed tests (TP-082 question 6)
+- 2026-11-07 milestone → later (owner's MVP cut: robustness; re-check once reality runs)

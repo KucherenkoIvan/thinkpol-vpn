@@ -1,7 +1,7 @@
 ---
 id: TP-096
 title: "macOS pf guard on a network with native IPv6"
-milestone: M2
+milestone: later
 area: dataplane/firewall
 repo: thinkpol-vpn
 size: S
@@ -75,3 +75,4 @@ log had no warns, and the restore with `sudo pfctl -f /etc/pf.conf` was clean.
 - 2026-10-24: macOS device run; ticked pfctl-listings box (steps 6, 20: no skip line shown, health ok); still open: native-IPv6 steps (no IPv6 network), lint/test box (not run).
 - 2026-10-29 TP-129: an acceptance item for the anchors read above the hook (nested names as pfctl lists them, the missing anchor answer of `-s Anchors`)
 - 2026-10-29 TP-129 round 1: the anchors item also saves `-a tp129 -s Anchors` (children by full path) and how an anonymous anchor is listed
+- 2026-11-07 milestone → later (owner's MVP cut: needs a network with native IPv6; the PRD already defers the macOS proof)

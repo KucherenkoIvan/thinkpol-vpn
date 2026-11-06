@@ -1,7 +1,7 @@
 ---
 id: TP-163
 title: "netcfg Close: a failing IPv6 rule dump stops the IPv4 rule deletes"
-milestone: M2
+milestone: later
 area: dataplane/netcfg
 repo: thinkpol-vpn
 size: S
@@ -35,3 +35,4 @@ During Close, a rule dump that keeps failing for one family doesn't stop the oth
 
 ## Log
 - 2026-10-31 created in backlog (TP-154 out-of-scope note)
+- 2026-11-07 milestone → later (owner's MVP cut: cleanup edge case)
