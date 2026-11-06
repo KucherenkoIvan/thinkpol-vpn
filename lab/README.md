@@ -11,6 +11,8 @@ make lab-down     # remove every lab this checkout started
 make lab-perf     # performance gates, alone on the host (see "Performance gates")
 ```
 
+**Censor modules** are `lab/censor`'s (its package doc lists them and how they compose); the matrix runs every transport against each, one module per cell, and new ones join it as a row of `censorCases` in `results_test.go`. `wireguard-rhythm` blocks a TLS connection whose records show WireGuard's rekey pair or keepalives; it is judged from the records alone, so a cell against it says something only when its probe runs for minutes.
+
 **M0 acceptance** (device ↔ server and relayed device ↔ device pings, the relay proof, no WireGuard at the router) is `TestM0`; what it runs and proves is in [M0.md](M0.md).
 
 ## How it is built

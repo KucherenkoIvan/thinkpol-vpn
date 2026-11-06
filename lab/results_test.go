@@ -222,6 +222,13 @@ var censorCases = []censorCase{
 	// Reset is TCP's; on udp the engine drops instead.
 	{name: "block-ip reset (entry)", expect: map[string]string{rowUDP: "fail", rowPlainTCP: "fail"},
 		modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig { return entryBlockSettings(t, l, "reset") }},
+	// An M2 gate check (docs/design/milestones.md): no row carries
+	// WireGuard in TLS yet, so every row passes. A TLS-shaped transport's
+	// pass means something only when its probe runs long enough for the
+	// rhythm to show: past a rekey, or three idle keepalives.
+	{name: "wireguard-rhythm", modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig {
+		return []censor.ModuleConfig{{Name: "wireguard-rhythm", Settings: json.RawMessage(`{}`)}}
+	}},
 }
 
 // probeTarget is what a probe sends to: overlay addresses for a transport,

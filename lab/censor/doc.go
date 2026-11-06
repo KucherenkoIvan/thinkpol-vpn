@@ -116,6 +116,19 @@
 // flow to its destinations once its stream holds a whole TLS record and
 // replays the retained bytes to the flow's destination from the router.
 //
+// wireguard-rhythm is a censor of its own, one of the M2 gate's checks
+// (docs/design/milestones.md): it frames each TCP stream's TLS records and
+// blocks a connection, both ways, whose application-data records show
+// WireGuard's rhythm. A transport carrying each WireGuard message in a
+// record adds the same overhead to each, so a record and one 56 bytes
+// shorter the other way within 2 s are a handshake pair (initiation,
+// response) and give the overhead away; two pairs of one overhead a rekey
+// period apart (2 minutes to half as much again), or a pair and three
+// keepalive-sized records (32 bytes and the overhead), are the rhythm.
+// Flow shape beyond that is not judged. A stream it can't frame from its
+// first byte (not TLS, joined midstream, or with bytes it wasn't shown
+// because a module before it dropped their packet) is never judged.
+//
 // # The verdict log
 //
 // One JSON [LogEntry] per line, buffered and flushed every 100 ms and when
