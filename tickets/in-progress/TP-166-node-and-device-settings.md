@@ -8,8 +8,8 @@ size: L
 needs_human: macos
 depends_on: []
 refs: [D4, D5, S1, docs/design/configuration.md#three-levels, docs/design/configuration.md#precedence-and-narrowing]
-owner: ""
-branch: ""
+owner: "agent-tp-166"
+branch: "tp-166-node-and-device-settings"
 ---
 
 ## Goal
@@ -51,3 +51,4 @@ Every setting has one designed home. An operator's settings live in one root-own
 - 2026-11-07 file format is JSON for both files (owner)
 - 2026-11-07 notes: the ceiling is TP-183 now (split from TP-111, owner's MVP cut)
 - 2026-11-07 parser box rewritten for JSON (owner signed off the acceptance with this correction)
+- 2026-11-07 backlog → in-progress, owner: agent-tp-166
