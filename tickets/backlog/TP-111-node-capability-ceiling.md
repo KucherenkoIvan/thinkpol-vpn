@@ -5,7 +5,7 @@ milestone: M2
 area: agent
 repo: thinkpol-vpn
 size: M
-depends_on: [TP-046]
+depends_on: [TP-046, TP-166]
 refs: [docs/design/overlay.md#node-agent]
 owner: ""
 branch: ""
@@ -41,7 +41,9 @@ A node does only what it was allowed to on the machine itself. The space's signe
 - Owner decisions 2026-10-18: default `device`, opted into locally (Tailscale's model); a mismatch at start brings the node down; a mismatch at runtime keeps the last accepted capabilities and reports, never blocking the rest of the map (refusing a whole map would also refuse revocations and key rotations).
 - Found through TP-098's review: a server section run with `-mode device` had no upstreams and logged a false reason.
 - **Slot (pre-M2 phase, 2026-10-24).** Wave 1, Agent lane: after TP-140. Starts only after the owner's TP-139 session, whose verdicts on its planned surface go into this ticket first. Keeps its 2026-10-18 decisions.
+- **TP-139 verdicts (TP-139 owner session, 2026-11-07; docs/design/api-overview.md "Verdicts", docs/design/configuration.md).** The ceiling lives in the node file that TP-166 builds (root-owned, 0600, `key = value`), with flags over env over the file over defaults; the map can only narrow it. Depends on TP-166. Its problem code is snake_case (F5); its switches are `on|off` toggles and its setting has the `<setting> [value]` shape (F6, F7); a bad value exits EX_CONFIG (78). Where accepted capabilities are kept stays this ticket's to decide (the node file holds operating settings only, no history).
 
 ## Log
 - 2026-10-18 created in backlog (owner decision: the node's configuration caps the map)
 - 2026-10-24 docs: slotted in the pre-M2 phase (wave 1, Agent)
+- 2026-11-07 TP-139 verdicts noted

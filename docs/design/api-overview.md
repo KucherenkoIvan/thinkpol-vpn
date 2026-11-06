@@ -45,6 +45,7 @@ This is everything a person or a script sees of thinkpol today: the CLI, the loc
 | [On-disk state](#on-disk-state) | every file the node, the service and the dev tools write or read |
 | [Planned, not built](#planned-not-built) | what TP-111, TP-141, TP-133 and TP-140 propose |
 | [Consistency findings](#consistency-findings) | F1–F21 with suggested verdicts |
+| [Verdicts (owner, 2026-11-07)](#verdicts-owner-2026-11-07) | the decided conventions: configuration levels, status versus diag, exit codes, naming |
 
 ## Configuration
 
@@ -441,3 +442,54 @@ Each of the four planned tickets needs a code, a path or a flag name that F1, F4
 - TP-140: reuse `no_link_up` or add codes.
 
 - **Suggested verdict: change.** Settle F1, F4, F5 and F7 in the owner's session, then write the answers into those four tickets before they start.
+
+## Verdicts (owner, 2026-11-07)
+
+The owner's session on the findings above. The findings stay as they were found: they are the record. This section states the conventions decided, and TP-139's Notes give one line per finding with the ticket it went to. Configuration's design is in [configuration](configuration.md).
+
+### Configuration (F1, F2, F8)
+
+- **Three levels.** Network: the signed map, each node getting only its own part. Node: operator settings (mode, interface, MTU, DNS upstream, TP-111's capability ceiling, kill-switch defaults) in one root-owned file in the state directory, 0600 in a 0700 directory, operating settings only, read by `up`. Device: a member's toggles on a device (connect-on-boot, kill switch, allow-LAN, pause, rule preset), changed through the local API by a member of the access group and stored by the service in a small file next to the node file, replacing `rules.local`.
+- **Precedence:** flags, then env, then the node file, then defaults. The map can only narrow what the node allows; device toggles choose within what the node and the map allow.
+- **Connect-on-boot** is a member's toggle: the service always starts at boot, and the stored toggle decides whether it connects. No root needed.
+- **File format:** flat settings are `key = value` lines (ini/.cfg style), readable by a person. JSON only where nesting is really needed.
+- **Linux systemd drop-ins** are unsupported; `diag` reports one if present.
+- **Keys** stay as designed. Rotating a node's keys, revoking a seized node through the map, and later sealing device keys in the OS keystore are documented now and built after the concept is proven; ephemeral nodes stay after the MVP ([security](security.md#node-safety)).
+- Node groups carrying settings: a proposal, not confirmed ([configuration](configuration.md#node-groups-proposal)).
+
+### `status` and `diag` (F3, F12)
+
+- **`status`** prints the service's local state: interface, spaces, links and their state, health, toggles. Fast, with no network access.
+- **`diag`** diagnoses deeper and reaches over the network: DNS through the tunnel, peers, path MTU, a leak check, the guard. Its report reveals no private information, so it can be shared. It includes a status snapshot as one section rather than computing the same thing a second way.
+- **Machine output:** one convention for both: snake_case field names, every field, `schema_version`. Opt-in with `-json`, which every command that prints a status or a list gets. Human output stays text.
+- After the MVP, to be decided: user-defined diag scripts over an SDK.
+
+### Exit codes (F4)
+
+BSD `sysexits.h`. Anything short of the requested state is not 0.
+
+| Code | Name | When |
+|---|---|---|
+| 0 | — | success: the requested state was reached |
+| 1 | — | failure: not reached, even when it failed closed; the status is still printed |
+| 64 | EX_USAGE | bad arguments; Go's flag default of 2 maps to 64 |
+| 66 | EX_NOINPUT | a named input, such as a map or a file, is missing |
+| 69 | EX_UNAVAILABLE | the service isn't running |
+| 75 | EX_TEMPFAIL | busy, try again (e.g. the host lock is held) |
+| 77 | EX_NOPERM | permission denied |
+| 78 | EX_CONFIG | bad configuration |
+
+For example, `connect` that comes up without DNS protection exits 1, prints the status, and names the machine code on stderr.
+
+### Naming (F5, F6, F7)
+
+Easy to redesign later, in the owner's words.
+
+- **Machine codes and enumerated values** are snake_case everywhere (`route_table`, `inbound_link`). Human text uses words. What people type, presets and flags, is kebab-case.
+- **Every setting has the shape `<setting> [value]`:** no value shows it, a value sets it (`rules preset`, `kill-switch on`).
+- **Toggles take `on|off`.** Plain booleans only for output switches (`-json`, `-f`).
+- **One socket flag, `-socket`, everywhere**; `up` keeps `-api-socket` as an alias. **`-out` everywhere**, with `-o` kept as an alias.
+
+### The other findings (F9–F21)
+
+The suggested verdicts stand: the orchestrator proposed them and the owner didn't object. F13 keep, but `Connect` and `SetRulePreset` return the status together with the warning. F15 keep (RR40). F17 keep exit 0, and print the group line only when the group exists. F18 keep. All others change as suggested. F21 is settled by the above; the answers are written into TP-111, TP-141, TP-133 and TP-140.

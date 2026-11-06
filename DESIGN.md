@@ -27,6 +27,7 @@ Each area's design is a file of its own under `docs/design/`; this file is the e
 | [Control plane](docs/design/control-plane.md) | the controller, the signed map, joining, kernel usage |
 | [Censor lab](docs/design/lab.md) | the lab and its censor modules |
 | [Milestones](docs/design/milestones.md) | the done-when checks, out of scope |
+| [Configuration](docs/design/configuration.md) | the three levels (network, node, device), what lives where, precedence and narrowing, file formats |
 | [API overview](docs/design/api-overview.md) | the user-facing surface as built (CLI, local API, configuration, on-disk state), the planned additions, and a consistency review (TP-139); a snapshot, not a source of truth |
 | [API overview: reference](docs/design/api-overview-reference.md) | the overview's command-by-command CLI and local API reference, with example output |
 
@@ -36,8 +37,8 @@ Each package's `doc.go` holds its mechanism; this table is the way in.
 
 | Package | Role |
 |---|---|
-| `cmd/thinkpol` | the one binary (`up`, CLI, `admin serve`, dev tools); composition roots |
-| `cmd/thinkpol-tray` | the tray app, a local API client |
+| `cmd/thinkpol` | the one binary (`up`, CLI, dev tools; `admin serve` planned, TP-042); composition roots |
+| `cmd/thinkpol-tray` | planned (TP-049, its stack TP-086): the tray app, a local API client |
 | [`agent`](internal/agent/doc.go) | the node agent: maps, modes, host lock, connection, events, what a node keeps |
 | [`agent/service`](internal/agent/service/doc.go) | installing the agent as the host's service: the systemd unit, the launchd daemon, connect-on-boot |
 | [`agent/supervisor`](internal/agent/supervisor/doc.go) | servers: shared listeners, isolation, egress; the planned gatekeeper |

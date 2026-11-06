@@ -60,7 +60,9 @@ On disk a node keeps its state directory: its keys, the space's public keys, the
 
 Telemetry records are aggregates per link and per device id (rates, byte counts, path and transport in use, handshake failures), **never public IP addresses or destinations**. History lives only on the controller.
 
-Later: **ephemeral nodes** keep nothing on disk but the binary. After a reboot they are blank, and the node owner's controller re-provisions them over SSH.
+**Key management comes after the concept is proven** (owner, 2026-11-07). Keys stay as designed: generated on the node, kept in the root-only state directory, never copied off. Rotating a node's keys and revoking a seized node through the map (TP-169), and, as a later should, sealing a device's keys in the OS keystore (Keychain, DPAPI; TP-170), are documented now and built once the concept is proven to work. Until then a seized node's keys stay valid until it is revoked by hand, with a new map built without it (RR56).
+
+Later, after the MVP (owner, 2026-11-07): **ephemeral nodes** keep nothing on disk but the binary. After a reboot they are blank, and the node owner's controller re-provisions them over SSH.
 
 ## Elsewhere
 
