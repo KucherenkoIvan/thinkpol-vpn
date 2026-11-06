@@ -21,7 +21,7 @@ The signed map, as designed. Each node opens only its own section (S1). Nothing 
 Operator settings, in one file (owner, 2026-11-07):
 
 - the mode, the interface, the link MTU, the DNS upstream;
-- the capability ceiling of TP-111;
+- the capability ceiling of TP-183 (after the MVP);
 - the kill switch's defaults.
 
 The file is root-owned, 0600, in the 0700 state directory. It holds operating settings only: nothing about members, no history (S1). `up` reads it at start. Its name is TP-166's to choose.
@@ -43,7 +43,7 @@ For a node setting the first source that sets it wins (owner, 2026-11-07):
 
 The levels then combine by narrowing:
 
-- **The map can only narrow what the node allows.** A map that asks for more than the node's ceiling is refused, as TP-111 decided (PRD Decisions, "The node's own configuration caps the map").
+- **The map can only narrow what the node allows.** A map that asks for more than the node's ceiling is refused, as TP-111 decided, built in TP-183 (PRD Decisions, "The node's own configuration caps the map").
 - **Device toggles choose within what the node and the map allow** (owner, 2026-11-07).
 
 ## File formats
@@ -60,7 +60,7 @@ The levels then combine by narrowing:
 | connect-on-boot | device | at the next boot |
 | kill switch, allow-LAN, pause | device | to be decided per setting (TP-048) |
 | node file settings | node | at the next start of `up`; whether any is reloaded while running is to be decided per setting |
-| capability ceiling lowered under a running map | node | refused and reported, as TP-111 handles a map asking for more |
+| capability ceiling lowered under a running map | node | refused and reported, as TP-183 handles a map asking for more |
 
 ## Node groups (proposal)
 
