@@ -452,7 +452,7 @@ The owner's session on the findings above. The findings stay as they were found:
 - **Three levels.** Network: the signed map, each node getting only its own part. Node: operator settings (mode, interface, MTU, DNS upstream, TP-111's capability ceiling, kill-switch defaults) in one root-owned file in the state directory, 0600 in a 0700 directory, operating settings only, read by `up`. Device: a member's toggles on a device (connect-on-boot, kill switch, allow-LAN, pause, rule preset), changed through the local API by a member of the access group and stored by the service in a small file next to the node file, replacing `rules.local`.
 - **Precedence:** flags, then env, then the node file, then defaults. The map can only narrow what the node allows; device toggles choose within what the node and the map allow.
 - **Connect-on-boot** is a member's toggle: the service always starts at boot, and the stored toggle decides whether it connects. No root needed.
-- **File format:** flat settings are `key = value` lines (ini/.cfg style), readable by a person. JSON only where nesting is really needed.
+- **File format:** JSON, one format for both files (owner, 2026-11-07; this revises the session's first answer, `key = value` lines, because nesting is expected).
 - **Linux systemd drop-ins** are unsupported; `diag` reports one if present.
 - **Keys** stay as designed. Rotating a node's keys, revoking a seized node through the map, and later sealing device keys in the OS keystore are documented now and built after the concept is proven; ephemeral nodes stay after the MVP ([security](security.md#node-safety)).
 - Node groups carrying settings: a proposal, not confirmed ([configuration](configuration.md#node-groups-proposal)).

@@ -48,8 +48,7 @@ The levels then combine by narrowing:
 
 ## File formats
 
-- **Flat settings use `key = value` lines** (ini or `.cfg` style), readable and editable by a person (owner, 2026-11-07). The node file and the device file are both flat.
-- **JSON only where nesting is really needed.**
+- **One format, JSON,** for the node file and the device file alike (owner, 2026-11-07). Nesting is expected (TP-111's ceiling holds lists, a node that serves several spaces needs settings per space, allow-LAN takes prefixes), and one format is simpler than two. JSON has no comments, so the CLI reference lists every key and its default (TP-167).
 - **An unknown key is an error** (TP-166): `up` exits with EX_CONFIG (78) and names the key, so a typo never reads as a default.
 - **Linux systemd drop-ins are unsupported** (owner, 2026-11-07). `diag` reports one if it finds it, since a drop-in can set `THINKPOL_*` variables behind the node file's back.
 
