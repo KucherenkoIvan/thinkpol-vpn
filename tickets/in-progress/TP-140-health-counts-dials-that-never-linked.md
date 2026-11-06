@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: []
 refs: [N2, docs/design/overlay.md#data-plane-every-node-one-binary]
-owner: ""
-branch: ""
+owner: "agent-tp-140"
+branch: "tp-140-health-counts-dials-that-never-linked"
 ---
 
 ## Goal
@@ -41,3 +41,4 @@ A device whose dialed exit never linked says so in its health, instead of `conne
 - 2026-10-24 created in backlog (2026-10-24 macOS device run and code-health review: before-M2 list)
 - 2026-10-24 docs: slotted in the pre-M2 phase (wave 1, Agent)
 - 2026-11-07 TP-139 verdicts noted
+- 2026-11-07 backlog → in-progress, owner: agent-tp-140
