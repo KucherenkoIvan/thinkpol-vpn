@@ -188,11 +188,11 @@ func TestLocalAPI(t *testing.T) {
 		if err == nil || !strings.Contains(res.Stderr, "enforced failing closed") {
 			t.Fatalf("preset: %v\n%s%s", err, res.Stdout, res.Stderr)
 		}
-		if got := devA.MustExec(t, "stat", "-c", "%a %U", stateDir+"/rules.local"); got != "644 root\n" {
-			t.Errorf("rules.local: %q", got)
+		if got := devA.MustExec(t, "stat", "-c", "%a %U", stateDir+"/device.json"); got != "600 root\n" {
+			t.Errorf("device.json: %q", got)
 		}
-		if got := devA.MustExec(t, "cat", stateDir+"/rules.local"); got != "preset everything\n" {
-			t.Errorf("rules.local holds %q", got)
+		if got := devA.MustExec(t, "cat", stateDir+"/device.json"); !strings.Contains(got, `"rule_preset": "everything"`) {
+			t.Errorf("device.json holds %q", got)
 		}
 		res, err = cli(t, devA, as(aliceUID, apiGID, "status"))
 		if err != nil || !regexp.MustCompile(`rule preset: +everything \(unavailable in this space: failing closed\)`).MatchString(res.Stdout) {
