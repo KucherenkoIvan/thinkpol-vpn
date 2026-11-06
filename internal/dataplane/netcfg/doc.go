@@ -57,11 +57,16 @@
 // until the interface goes, since a later configurator takes such an
 // address as there already, used but not owned, and finds the interface
 // as it wants it.
-// An MTU or up state is restored on the interface at the index it was
-// set on, and only while that interface keeps the kernel name it had
-// then, so one the config names by an altname is restored like any other;
-// a renamed interface can't be told from a new one at a reused index, and
-// keeps what was set.
+// What was set on an interface is recorded by its index and kernel name,
+// under the name the config gives: an Apply that finds the same index
+// under that name or another of the interface's names (the kernel name or
+// an altname) moves the record there and takes the kernel name afresh, so
+// the interface counts as leaving the config only when no name it wants
+// resolves to it. An MTU or up state is restored on the interface at the
+// recorded index, and only while it has the recorded kernel name: one the
+// config names by an altname is restored like any other, but a rename the
+// configurator never re-finds can't be told from a new interface at a
+// reused index, and keeps what was set.
 // Rules are added and deleted with raw RTM_NEWRULE and RTM_DELRULE
 // messages on one socket opened in the namespace at construction. An add's
 // undo sends the same message as a delete; a delete sends the dumped

@@ -118,6 +118,7 @@ func (l *ledger) configureLink(ops linkOps, s linkState, ifc Interface, u *undoL
 	if ch, ok := l.changed[name]; ok && ch.index != s.index {
 		l.dropLinkChange(name, u) // a recreated interface: earlier changes went with the old one
 	}
+	l.adoptLinkChange(name, s, u)
 	if ifc.MTU != 0 && s.mtu != ifc.MTU {
 		old := s.mtu
 		if err := ops.setMTU(s, ifc.MTU); err != nil {
@@ -253,6 +254,41 @@ func (l *ledger) restoreLink(ops linkOps, name string, u *undoLog) error {
 	}
 	l.dropLinkChange(name, u)
 	return nil
+}
+
+// adoptLinkChange files what the ledger has of the interface at s's index
+// under name, with s's kernel name: the config may name the interface by
+// another of its names than before (kernel name or altname), and it may
+// have been renamed since, so the record follows the index, not a name.
+func (l *ledger) adoptLinkChange(name string, s linkState, u *undoLog) {
+	from, found := name, false
+	if ch, ok := l.changed[name]; ok && ch.index == s.index {
+		found = true
+	} else {
+		for n, ch := range l.changed {
+			if ch.index == s.index {
+				from, found = n, true
+				break
+			}
+		}
+	}
+	if !found {
+		return
+	}
+	ch := l.changed[from]
+	if from == name && ch.kname == s.name {
+		return
+	}
+	prevFrom := ch
+	prevTo, hadTo := l.changed[name]
+	delete(l.changed, from)
+	ch.kname = s.name
+	l.changed[name] = ch
+	u.push(func() error {
+		l.restoreLinkChange(name, prevTo, hadTo)
+		l.changed[from] = prevFrom
+		return nil
+	})
 }
 
 // updateLinkChange notes a change made to a link in l.changed. Its undo
