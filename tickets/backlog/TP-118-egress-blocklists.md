@@ -1,7 +1,7 @@
 ---
 id: TP-118
 title: "Exit egress: nothing blocked by default; configurable blocklists"
-milestone: M2
+milestone: later
 area: agent
 repo: thinkpol-vpn
 size: M
@@ -64,3 +64,4 @@ An exit lets its spaces reach any destination by default. What it refuses is the
 - 2026-10-21 created in backlog (TP-112 review round 2)
 - 2026-10-23 docs: rescoped to the owner's decision: nothing blocked by default, configurable blocklists (presets and arbitrary prefixes); renamed
 - 2026-10-23 docs: the owner wants classic blocklists (domain names and IP subnets in list files), not presets; example lists instead of presets; domain entries enforced at the exit's resolver
+- 2026-11-07 milestone → later (owner's MVP cut: feature, no done-when)

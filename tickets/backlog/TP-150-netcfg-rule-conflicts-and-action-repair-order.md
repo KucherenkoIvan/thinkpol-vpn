@@ -1,7 +1,7 @@
 ---
 id: TP-150
 title: "netcfg (Linux rules): an honest conflict error, and action repair that adds first"
-milestone: M2
+milestone: later
 area: dataplane/netcfg
 repo: thinkpol-vpn
 size: S
@@ -33,3 +33,4 @@ Two rough edges of netcfg's Linux rules after TP-135: an add that the kernel ref
 
 ## Log
 - 2026-10-29 created in backlog (TP-135 round-1 fixer report)
+- 2026-11-07 milestone → later (owner's MVP cut: rough edges)

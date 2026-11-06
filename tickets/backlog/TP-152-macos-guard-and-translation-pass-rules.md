@@ -1,7 +1,7 @@
 ---
 id: TP-152
 title: "macOS guard: `nat pass`, `binat pass` and `rdr pass` skip it unseen"
-milestone: M2
+milestone: later
 area: dataplane/firewall
 repo: thinkpol-vpn
 size: M
@@ -35,3 +35,4 @@ A translation rule with `pass` that lets outgoing IPv6 around the guard is eithe
 
 ## Log
 - 2026-10-29 created in backlog (TP-129 implementer and reviews)
+- 2026-11-07 milestone → later (owner's MVP cut: third-party pf rule)

@@ -1,7 +1,7 @@
 ---
 id: TP-155
 title: "netcfg (Linux): diagnostics while the rules keep changing"
-milestone: M2
+milestone: later
 area: dataplane/netcfg
 repo: thinkpol-vpn
 size: S
@@ -34,3 +34,4 @@ branch: ""
 
 ## Log
 - 2026-10-29 created in backlog (TP-135 round-4 fixer report)
+- 2026-11-07 milestone → later (owner's MVP cut: diagnostics)
