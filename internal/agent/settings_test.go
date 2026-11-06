@@ -262,6 +262,10 @@ func TestTheDeviceFileReadsBackWhatIsWritten(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%v\n%s", err, data)
 		}
+		// A person reading the file sees a rule as `status` shows it.
+		if len(s.Rules.Rules) > 0 && !bytes.Contains(data, []byte(`"cidr:192.0.2.0/24 -> direct"`)) {
+			t.Fatalf("the rule isn't written as is:\n%s", data)
+		}
 		a, _ := got.Rules.MarshalText()
 		b, _ := s.Rules.MarshalText()
 		if got.ConnectOnBoot != s.ConnectOnBoot || !bytes.Equal(a, b) {
