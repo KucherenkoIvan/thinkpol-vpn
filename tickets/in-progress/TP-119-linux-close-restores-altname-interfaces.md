@@ -20,7 +20,7 @@ An interface the config names by one of its alternative names gets its MTU and u
 - Extend `TestAnAltnameKeepsItsChanges` (lab) to assert the MTU and state come back after `Close`.
 
 ## Acceptance
-- [ ] the lab test fails on today's code and passes with the fix
+- [x] the lab test fails on today's code and passes with the fix
 - [ ] `make lint`, `make test`, `make lab-test` pass
 
 ## Notes
@@ -29,3 +29,9 @@ An interface the config names by one of its alternative names gets its MTU and u
 ## Log
 - 2026-10-21 created in backlog (TP-102 review round 1)
 - 2026-11-07 backlog → in-progress, owner: agent-tp-119
+- 2026-11-07 fix (2db04ab): a link change records the kernel name with the index; restoreLink takes the interface at that index as the same one while it keeps that name, so an altname-configured interface is restored on Close and when it leaves the config. doc.go says so; export_linux_test.go's ClearFailingClose sets the new field
+- 2026-11-07 TestAnAltnameKeepsItsChanges now asserts MTU 1500 and down after the interface leaves the config and after Close: on 56ce3a2's ledger it fails (leaving the config), and with the release half cut it fails at Close; passes with the fix. New TestARenamedInterfaceKeepsItsChanges: a renamed interface keeps the MTU set
+- 2026-11-07 mutations (lab): compare the config name again → altname test fails at leaving the config (and at Close with that half cut); drop the name check → rename test fails (mtu 1500, want 1380); all restored
+- 2026-11-07 make test green; make lint green up to its last step, vulncheck, which fails on GO-2026-6888 (brotli) and GO-2026-6865 (klauspost/compress), the same on rewrite e6aeb54: pre-existing, out of scope (needs a dependency bump)
+- 2026-11-07 make lab-gotest PKG=./internal/dataplane/netcfg/... at 0d08238: 48 pass. Full make lab-test at 0d08238 did not finish: stopped by the agent's 30 min run limit while other tickets' labs ran; by then TestRouteTableSendsOnlyDirectAroundTheTunnel, TestAnotherRunFromTheCheckoutBuildsItsOwnBinaries and TestTCPThroughCensorDrop (lab/) had failed on 600 s timeouts, outside netcfg. Second acceptance box stays open
+- 2026-11-07 handoff: stays in in-progress; to finish, run make lab-test on a quiet Docker (no other tplab labs) and get vulncheck green on rewrite, then tick the box and move to review
