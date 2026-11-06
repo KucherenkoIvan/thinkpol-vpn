@@ -25,9 +25,14 @@ On the resolv.conf path, a read of resolved's uplink file that fails on the tick
 - Fix: keep "a read is owed" after a failed read on a change, so the next good read is told, and report `ErrUpstreamsStale` meanwhile. Extend `TestARewrittenResolvConfFiltersStubUpstreams` with the recovery step.
 
 ## Acceptance
-- [ ] a test of the scenario: the failed tick reports stale, and the next tick with a good uplink tells the new upstreams. Mutation: dropping the owed read fails it
-- [ ] `make lint`, `make test` pass
+- [x] a test of the scenario: the failed tick reports stale, and the next tick with a good uplink tells the new upstreams. Mutation: dropping the owed read fails it
+- [x] `make lint`, `make test` pass
 
 ## Log
 - 2026-10-22 created in backlog (TP-128 review round 1)
 - 2026-11-07 backlog → in-progress, owner: agent-tp-130
+- 2026-11-07 finisher: fix ef81a44 (a failed read on a change sets untold while Upstreams is set; doc.go says so); TestARewrittenResolvConfFiltersStubUpstreams now checks stale after the failed tick and the owed read told when the uplink is back; new TestResolvConfAFailedReadOnAChangeWithoutUpstreamsIsNeverStale
+- 2026-11-07 finisher: mutation, the `read && changed` case dropped: TestARewrittenResolvConfFiltersStubUpstreams fails (problem <nil>, want stale; never told the owed read); restored, passes
+- 2026-11-07 finisher: merged rewrite 7852af8 (head c66ccc8) in as 6b05454; make lint green, make test green
+- 2026-11-07 finisher: full make lab-test passed on 6b05454 (LAB_P=4, run alone): lab/ packages ok, gotest ok for 36 packages
+- 2026-11-07 in-progress → review
