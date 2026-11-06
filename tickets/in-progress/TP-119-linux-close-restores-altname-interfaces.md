@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: [TP-102]
 refs: [docs/design/routing.md#routing-rules-and-dns]
-owner: ""
-branch: ""
+owner: "agent-tp-119"
+branch: "tp-119-linux-close-restores-altname-interfaces"
 ---
 
 ## Goal
@@ -28,3 +28,4 @@ An interface the config names by one of its alternative names gets its MTU and u
 
 ## Log
 - 2026-10-21 created in backlog (TP-102 review round 1)
+- 2026-11-07 backlog → in-progress, owner: agent-tp-119
