@@ -26,11 +26,11 @@ Two lab runs from one checkout at once (`make lab-gotest` beside `make lab-test`
 - Runs from different checkouts: their names already differ by the checkout's hash.
 
 ## Acceptance
-- [ ] `make lab-gotest PKG=<a package in lab-test's node phase>` started during `make lab-test` from the same checkout: both pass, and neither run's clean-up removes the other's labs
-- [ ] two `make lab-gotest` of one package started together from one checkout both pass
+- [x] `make lab-gotest PKG=<a package in lab-test's node phase>` started during `make lab-test` from the same checkout: both pass, and neither run's clean-up removes the other's labs
+- [x] two `make lab-gotest` of one package started together from one checkout both pass
 - [ ] `labctl down` still removes every lab of the checkout, kept ones included
-- [ ] lab/README.md Gotchas no longer says to set `THINKPOL_LAB_PROJECT` for a second run
-- [ ] `make lint`, `make test`, `make lab-test` pass
+- [x] lab/README.md Gotchas no longer says to set `THINKPOL_LAB_PROJECT` for a second run
+- [x] `make lint`, `make test`, `make lab-test` pass
 
 ## Notes
 - Follow-up to TP-121 review finding R1.10 (paranoid 3): TP-121 documented the collision as out of scope, and its round-2 reviewer (torvalds) asked for this ticket.
@@ -39,3 +39,10 @@ Two lab runs from one checkout at once (`make lab-gotest` beside `make lab-test`
 ## Log
 - 2026-10-29 created in backlog (TP-121 R1.10 follow-up)
 - 2026-11-07 backlog → in-progress, owner: agent-tp-146
+- 2026-11-07 finisher: branch has the change (72ec24f: run id THINKPOL_LAB_RUN in test and gotest project names, labctl run-id, make lab-test's clean-up is labctl down -run; README Gotchas no longer says to set THINKPOL_LAB_PROJECT; tests TestRunProjectNames, TestLongestProjectNames, TestRunIDs, lab TestDownRunRemovesOnlyItsRun)
+- 2026-11-07 finisher: merged rewrite 7852af8 (head c66ccc8) in as 7c4984a; make lint green, make test green
+- 2026-11-07 finisher: full make lab-test passed on 7c4984a (LAB_P=4, run alone): lab/ packages ok (TestDownRunRemovesOnlyItsRun included), gotest ok for 36 packages
+- 2026-11-07 finisher: two make lab-gotest PKG=./internal/dataplane/netcfg/... started 2 s apart from this checkout overlapped for about a minute; both passed (47 tests each)
+- 2026-11-07 finisher: a second full make lab-test on 7c4984a with make lab-gotest PKG=./internal/dataplane/netcfg/... COUNT=3 started 450 s in: both passed (lab-gotest 141 passes); the lab-gotest ran through lab-test's last half minute, its clean-up included (the two ended within seconds); TestDownRunRemovesOnlyItsRun shows the clean-up leaving another run's running lab
+- 2026-11-07 finisher: `labctl down` box left open: not run, since make lab-down here would also remove an earlier run's leftover gotest lab of this checkout that the finisher didn't create; DownCheckout is unchanged by the branch
+- 2026-11-07 in-progress → review
