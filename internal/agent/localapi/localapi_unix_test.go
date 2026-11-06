@@ -418,11 +418,18 @@ func TestCallersAreCheckedByTheirCredentials(t *testing.T) {
 	if _, err := c.Diagnose(ctx); !errors.Is(err, ErrPermissionDenied) {
 		t.Fatalf("stranger's diagnostics: %v", err)
 	}
+	if _, err := c.SetConnectOnBoot(ctx, true); !errors.Is(err, ErrPermissionDenied) {
+		t.Fatalf("stranger's connect-on-boot: %v", err)
+	}
 
 	member := serve(t, Policy{ServiceUID: uint32(os.Geteuid()) + 1, Group: uint32(os.Getegid()), HasGroup: true})
 	c = dial(t, member.socket)
 	if _, err := c.Connect(ctx); err != nil {
 		t.Fatalf("member's connect: %v", err)
+	}
+	// The member's own toggle, no root needed.
+	if st, err := c.SetConnectOnBoot(ctx, true); err != nil || !st.GetConnectOnBoot() {
+		t.Fatalf("member's connect-on-boot: %v, %v", st, err)
 	}
 	if d, err := c.Diagnose(ctx); err != nil || d.GetSchemaVersion() != DiagSchemaVersion {
 		t.Fatalf("member's diagnostics: %v, %v", d, err)
