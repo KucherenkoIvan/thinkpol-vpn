@@ -8,13 +8,15 @@ Roughly in order of how hard they are to catch:
 
 | Transport | Shape | Notes |
 |---|---|---|
-| `udp` | sealed datagrams | the baseline; trivially profiled (RR30) |
+| `udp` | sealed datagrams | the baseline and the node-to-node transport in the MVP; trivially profiled (RR30) |
 | `tls` | TLS 1.3 with a browser fingerprint (uTLS), probe fallback to a real site | after the MVP, node-to-node links (TP-028) |
 | `ws` | WebSocket over TLS | can sit behind a CDN, which hides the node's IP |
 | `reality` | REALITY's handshake: a browser ClientHello that seals the client's id; failed auth is spliced to a real site | the disguised transport for client → entry (M2, TP-087); no certificate of our own |
 | `obfs-udp` | obfuscated datagrams | direct device-to-device paths, where TCP hole punching is impractical |
 
 Stream transports carry TCP inside TCP and degrade under loss; datagram transports are the first thing throttled under whitelists. Hence **transports are chosen per link**. How stream transports authenticate and treat replays is in [`transport`](../../internal/dataplane/transport/doc.go); what a server's own hello still tells a censor is RR31. A "bridge" node type (a VLESS ingress routed into the overlay) was considered and set aside as too complex for now.
+
+**Node-to-node links stay on plain `udp` in the MVP** (owner, 2026-11-07). The main risk, a server node's address getting blocked as a VPN server, is accepted as a small cost (RR30). Infrastructure choices are made when needed.
 
 **A link's seal authenticates the link, not which end sent it.** Each `udp` link has one secret, held by its two ends (and whoever built the map), so a sealed datagram proves "one of the link's holders"; inside the tunnel, WireGuard authenticates the peer. Decided with no signature per datagram: it would add a second public-key layer, an estimated 15–30× the seal's CPU and 64 bytes less MTU on every datagram, and still not stop a stolen device, which holds the key (RR33).
 

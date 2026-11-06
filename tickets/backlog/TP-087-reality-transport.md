@@ -38,8 +38,10 @@ The disguised transport for client → entry links: thinkpol speaks REALITY's ha
 ## Notes
 - Findings and wire format: TP-064 Notes. Decision: PRD "Decisions" (2026-10-15), docs/design/transports.md.
 - From TP-101's review (2026-10-19): the five-minute skew window (`maxClockSkew`) and the wrap-safe `sentFresh` live in udp/wire.go; move them to the transport port before building reality's replay checks on copies of them.
+- At M2, `reality` must pass the lab's handshake-level checks and show no WireGuard rhythm (2-minute rekey pair, fixed-size keepalive records inside TLS); flow shape beyond that is not tested at M2 (owner, 2026-11-07). If it fails TP-188's check with default settings, the fix is a minimal padding/batching default, not a full shaping module.
 
 ## Log
 - 2026-10-15 created in backlog (TP-064 findings)
 - 2026-10-19 Notes: move udp's skew window and sentFresh to the port first (TP-101 review round 2)
 - 2026-11-07 docs: scope: only the public transport contract; the boundary counts as the wire (owner, 2026-11-07)
+- 2026-11-07 notes: what passing the M2 gate means (owner, 2026-11-07)

@@ -27,6 +27,7 @@ The lab catches traffic that looks like random bytes and servers that don't beha
 
 ## Notes
 - The JA3S/JA4S server-hello comparison is on the MVP path only if D6 requires it (open, 2026-11-07).
+- Resolved (owner, 2026-11-07): the server-hello comparison is one of the M2 gate's handshake-level checks, so it stays on the MVP path.
 
 ## Log
 - 2026-10-10 created in backlog
@@ -34,3 +35,4 @@ The lab catches traffic that looks like random bytes and servers that don't beha
 - 2026-10-15 docs (backlog grooming): owns server JA3S/JA4S computation (TP-032 keeps client fingerprints and whitelist)
 - 2026-10-15 depends_on TP-089 (split from TP-024 review)
 - 2026-11-07 notes (owner's MVP cut): the JA3S/JA4S comparison's place on the MVP path is open
+- 2026-11-07 notes: the server-hello comparison stays on the MVP path (owner, 2026-11-07)
