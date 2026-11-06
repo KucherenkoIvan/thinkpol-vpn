@@ -130,24 +130,40 @@
 // agent still holds it (one run by hand, one the stop didn't end)
 // uninstall refuses before it touches a lock or a record, since removing
 // them would let the next agent lock a fresh inode beside the running one.
-// Holding the lock, it undoes what a crashed device agent left (the
-// agent's start-time cleanup without a connect: the route table's routes
-// and leak guard, the overlay's routes, the resolver configuration, a
-// missing resolv.conf being nothing to put back; a stop that timed out
-// leaves them too), and only then removes the definition (systemd forgets
-// the unit), the binary, and in the agent's runtime directories (its
-// lock's directory, the local API's) the locks, the boot's connect record
-// and stale sockets, then the directories left empty. It removes
-// agent.lock while it holds it: the service can't start an agent in
-// between (systemd's is disabled and stopped, launchd's booted out), and
-// one started by hand afterwards makes a fresh lock with nothing to share.
-// Anything else there is reported and left: on macOS a crashed run's route
-// or pf records; on a server, the supervisor's forwarding.json. A server's
-// crash leftovers (the supervisor's nftables tables and the forwarding it
-// turned on) stay until a reboot: uninstall runs a device's cleanup only
-// (TP-132). The group stays: it may be older than the service, or
-// someone's group for other reasons; remove it by hand if nothing uses it.
-// So does the node's state directory, its keys and map.
+// Holding the lock, it undoes what a crashed agent left, as the agent's
+// own next start would, since there is no next start once the binary is
+// gone (agent.Platform.ClearHost): a device's (the start-time cleanup
+// without a connect: the route table's routes and leak guard, the
+// overlay's routes, the resolver configuration, a missing resolv.conf
+// being nothing to put back) and a server's (the supervisor's start-time
+// cleanup, supervisor.ClearLeftovers: the spaces' veths and the routes its
+// configurator recorded, the root's forwarding it turned on and recorded
+// in forwarding.json, put back where it still holds what it wrote, then
+// its nftables tables, which stay while that forwarding can't be turned
+// off). A stop that timed out leaves them too. It says what the server's
+// cleanup undid.
+//
+// A cleanup that fails stops uninstall there, saying what failed and what
+// is left: the service stopped and disabled (launchd's booted out, but
+// loaded again from its plist at the next boot), its definition and
+// binary on disk, so the binary is there to try again. Some failures come
+// back on every try: on macOS, a resolver backup record the cleanup can't
+// read (readBackup rejects it), which only a hand can fix. -force goes on
+// past the failure, reporting it as left on the host, and removes the
+// service as below.
+//
+// Then it removes the definition (systemd forgets the unit), the binary,
+// and in the agent's runtime directories (its lock's directory, the local
+// API's) the locks, the boot's connect record and stale sockets, then the
+// directories left empty. It removes agent.lock while it holds it: the
+// service can't start an agent in between (systemd's is disabled and
+// stopped, launchd's booted out), and one started by hand afterwards makes
+// a fresh lock with nothing to share. Anything else there is reported and
+// left: on macOS a crashed run's route or pf records; on a server, a
+// forwarding.json whose forwarding couldn't be put back. The group stays:
+// it may be older than the service, or someone's group for other reasons;
+// remove it by hand if nothing uses it. So does the node's state
+// directory, its keys and map.
 //
 // # Where it is proven
 //
@@ -155,7 +171,10 @@
 // install, a reinstall over the running connected agent, a crash
 // restarted and back as the member left it, connect-on-boot off then on
 // across reboots, uninstall right after a crash (the restart held off)
-// leaving nothing, before and after a reboot. launchd is tested as files
+// leaving nothing, before and after a reboot; and a server under systemd
+// (lab TestServiceUninstallAfterAServerCrash): killed while it serves a
+// space's egress, uninstalled at once, leaving none of its supervisor's
+// forwarding, tables, veths or routes. launchd is tested as files
 // and with a fake launchctl here; the install, reboot and uninstall on a
 // Mac are the owner's device steps (TP-046's checklist).
 package service
