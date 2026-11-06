@@ -2,7 +2,7 @@
 
 A self-hosted virtual network for people behind a censor. Your devices and a few VPS nodes form one private network, traffic between them is disguised so no VPN fingerprint reaches the wire, and internet traffic can leave through a chain of hops. Managed like Tailscale, without depending on anyone's servers.
 
-Work in progress: the project is being rewritten from scratch.
+A research project, work in progress: a prototype and a lab for studying censorship and how to get past it. The project is being rewritten from scratch.
 
 - [PRD.md](PRD.md): what it must do
 - [DESIGN.md](DESIGN.md): how it works (the entry point and index; the design files it indexes hold the model, and each package's `doc.go` its mechanism)
