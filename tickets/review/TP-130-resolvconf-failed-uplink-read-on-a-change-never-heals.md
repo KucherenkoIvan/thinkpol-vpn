@@ -29,8 +29,8 @@ On the resolv.conf path, a read of resolved's uplink file that fails on the tick
 - [x] `make lint`, `make test` pass
 
 ## Review findings
-- [ ] R1.1 (should-fix) the read owed after a failed read on a change is told with the first-read rule: an uplink that reads but names no server (resolved's header-only file) tells upstreams(nil), dropping the known direct upstreams with no warning. It must keep the previous upstreams, clear the owed state and log the -dns-upstream hint; nil is told only when the first read is owed (startsUntold)
-- [ ] R1.2 (nit) doc.go: the resolv.conf section splits an unreadable uplink (previous upstreams kept, stale until a read works) from one that reads but names no server (kept, the log says to set -dns-upstream); the general paragraph says a failed read on a change is stale too
+- [x] R1.1 (should-fix) the read owed after a failed read on a change is told with the first-read rule: an uplink that reads but names no server (resolved's header-only file) tells upstreams(nil), dropping the known direct upstreams with no warning. It must keep the previous upstreams, clear the owed state and log the -dns-upstream hint; nil is told only when the first read is owed (startsUntold)
+- [x] R1.2 (nit) doc.go: the resolv.conf section splits an unreadable uplink (previous upstreams kept, stale until a read works) from one that reads but names no server (kept, the log says to set -dns-upstream); the general paragraph says a failed read on a change is stale too
 
 ## Log
 - 2026-10-22 created in backlog (TP-128 review round 1)
@@ -41,3 +41,9 @@ On the resolv.conf path, a read of resolved's uplink file that fails on the tick
 - 2026-11-07 finisher: full make lab-test passed on 6b05454 (LAB_P=4, run alone): lab/ packages ok, gotest ok for 36 packages
 - 2026-11-07 in-progress → review
 - 2026-11-07 review → has-errors (round 1 findings R1.x)
+- 2026-11-07 fix round 1: R1.1 fixed in 61b23c1: the read owed after a failed change is its own state (owed), separate from the first read's (untold); an owed read that names no server keeps the previous upstreams, clears the owed state and logs the -dns-upstream hint; nil is told only for the first read. New TestResolvConfAnOwedReadThatNamesNoServerKeepsTheUpstreams (stale after the failed change; a header-only uplink tells nothing, Problem nil, the hint logged)
+- 2026-11-07 fix round 1: mutation, the owed read told with the first-read rule (case firstGoodRead || owedRead): the new test fails (told []); mutation, a good read not clearing owed: it fails (problem stale, no hint logged); both restored, pass
+- 2026-11-07 fix round 1: R1.2 doc.go: the resolv.conf section splits an unreadable uplink (kept, stale until a read works) from one that names no server (kept, the log says -dns-upstream); the general paragraph says a failed read of a change is stale too
+- 2026-11-07 fix round 1: merged rewrite 4ca1958 in as 0e8a447; make lint green, make test green; full make lab-test passed on 0e8a447 (LAB_P=4, run alone): lab/ packages ok, gotest ok for 36 packages
+- 2026-11-07 fix round 1: note: unlike round 1's head, an owed read no longer re-reads a dangling original link's target (linkedOriginal stays first-read only, as before this ticket)
+- 2026-11-07 has-errors → review
