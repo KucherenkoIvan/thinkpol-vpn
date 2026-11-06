@@ -263,9 +263,12 @@ type resolvConf struct {
 	original []byte // the last original seen
 	seen     bool   // original is set
 	err      error  // the last apply's
-	// untold: a good read is owed, told whatever it finds: the first
-	// (startsUntold), or the one after a change whose read failed.
-	untold  bool
+	// untold: the first good read is still owed (startsUntold), told
+	// whatever it finds.
+	untold bool
+	// owed: a change's read failed and a good read is owed; one that
+	// names no server keeps the previous upstreams, as on a change.
+	owed    bool
 	stop    chan struct{}
 	stopped chan struct{}
 }
@@ -389,27 +392,29 @@ func (r *resolvConf) recordOriginal(original []byte, read bool) (tell func()) {
 		ok = uerr == nil
 	}
 	// Upstreams is told when the original changed, and at the first good
-	// read while one is owed (untold). Behind the stub, an unreadable or
-	// empty uplink file is a failed read: no answer was had, so while
-	// untold it clears nothing, and on a change it makes a read owed: the
-	// changed original is recorded below, so no later tick sees it change.
+	// read while one is owed (untold, owed). Behind the stub, an
+	// unreadable or empty uplink file is a failed read: no answer was had,
+	// so while untold it clears nothing, and on a change it makes a read
+	// owed: the changed original is recorded below, so no later tick sees
+	// it change.
 	firstGoodRead := read && ok && r.untold
+	owedRead := read && ok && r.owed
 	changed := r.seen && !originalEqual(r.original, original)
 	switch {
 	case read && ok:
-		r.untold = false
+		r.untold, r.owed = false, false
 	case read && changed && r.cfg.Upstreams != nil:
-		r.untold = true
+		r.owed = true
 	}
 	r.original, r.seen = original, true
 	upstreams := r.cfg.Upstreams
-	if upstreams != nil && (changed || firstGoodRead) {
+	if upstreams != nil && (changed || firstGoodRead || owedRead) {
 		switch {
 		case len(ups) > 0:
 			tell = func() { upstreams(ups) }
 		case firstGoodRead:
 			tell = func() { upstreams(nil) }
-		case r.cfg.Log != nil && !r.untold:
+		case r.cfg.Log != nil && !r.untold && !r.owed:
 			log := r.cfg.Log
 			tell = func() { log.Warn("DNS: no upstream to ask; set one with -dns-upstream") }
 		}
@@ -473,7 +478,7 @@ func (r *resolvConf) Problem() error {
 	if r.err != nil {
 		errs = append(errs, fmt.Errorf("%w: rewriting %s: %v", ErrUnprotected, r.path, r.err))
 	}
-	if err := staleUpstreams(r.untold); err != nil {
+	if err := staleUpstreams(r.untold || r.owed); err != nil {
 		errs = append(errs, err)
 	}
 	return errors.Join(errs...)

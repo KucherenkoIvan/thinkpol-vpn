@@ -169,7 +169,9 @@
 // read keeps the previous upstreams. A failed first read (before the OS
 // is pointed, [SystemConfig.UpstreamsUnknown]) leaves none, and is
 // [ErrUpstreamsStale] (`dns_upstreams_stale`) until a read works; that
-// first good read is told whether or not it changed anything.
+// first good read is told whether or not it changed anything. On the
+// /etc/resolv.conf path, a failed read of a change is stale too, until
+// a read works.
 // `dns_upstreams_stale` is degraded, not `dns_not_protected`: the OS
 // still resolves through the node, only `direct` names may not resolve.
 //
@@ -220,9 +222,11 @@
 // the stub, a read of the OS's resolvers is a read of the uplink file;
 // a missing uplink file, a dangling link or an empty file is a failed
 // read. A rewrite whose read fails is still the new original, so no
-// later check sees it change: it keeps the previous upstreams and owes
-// a read, [ErrUpstreamsStale] until one works, and that read is told
-// whatever it finds, as a failed first read's is.
+// later check sees it change; a read is owed instead. While the uplink
+// can't be read, the previous upstreams are kept and reported stale
+// ([ErrUpstreamsStale]) until a read works. An uplink that reads but
+// names no server keeps them too, and the log says to set
+// `-dns-upstream`.
 //
 // # macOS: configd's dynamic store
 //
