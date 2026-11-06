@@ -22,6 +22,7 @@ The disguised transport for client → entry links: thinkpol speaks REALITY's ha
 - Path frames inside the TLS records, with C6 shaping, or the link is refused.
 - Settings in the map: messages in `proto/thinkpol/transport/v1/` (listener: X25519 private key, target IP:port, server names, time window; device endpoint: SNI, server public key, fingerprint; credential: the short id).
 - A five-minute skew window; replays are spliced to the target like any failed auth.
+- `reality` uses only the public transport contract (docs/design/transports.md, Plugins); the transport boundary counts as the wire.
 
 ## Out of scope
 - VLESS and Vision: stock VLESS clients and servers are not supported.
@@ -41,3 +42,4 @@ The disguised transport for client → entry links: thinkpol speaks REALITY's ha
 ## Log
 - 2026-10-15 created in backlog (TP-064 findings)
 - 2026-10-19 Notes: move udp's skew window and sentFresh to the port first (TP-101 review round 2)
+- 2026-11-07 docs: scope: only the public transport contract; the boundary counts as the wire (owner, 2026-11-07)

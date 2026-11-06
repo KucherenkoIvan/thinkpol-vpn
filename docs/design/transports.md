@@ -27,3 +27,26 @@ Stream transports carry TCP inside TCP and degrade under loss; datagram transpor
 - **Rollout:** refusing is safe only if the controller never asks a node for what it can't do. So it puts a shaping (or a new shaping field or value) into a link only once both ends' nodes reported supporting it, in the version and capabilities agents report when they register and update; until then the link goes unshaped or keeps its old shaping.
 
 The lab measures how much shaping is enough per transport and tunes the defaults (none, until it says otherwise).
+
+## Plugins (after the MVP)
+
+(owner, 2026-11-07)
+
+**In M2 only `reality` lands,** built on the in-process transport contract that exists: the `Transport` interface, the registry, opaque per-transport settings in the map, and `transporttest` as the conformance suite ([`transport`](../../internal/dataplane/transport/doc.go)). The rule from now on: built-in transports use only that public contract, never the engine's internals.
+
+**The transport boundary counts as the wire.** The core trusts nothing a transport hands it more than a packet from the internet.
+
+**Out-of-process plugins, after the MVP.** Transports as separate processes in any language, in the style of hashicorp/go-plugin; Tor's Pluggable Transports spec is one possible adapter (obfs4, webtunnel, Snowflake). Written down now so the contract doesn't close the door:
+
+- Control goes over gRPC on a private channel. Packets go over an anonymous socket pair handed to the plugin at start: no path, no port. go-plugin's Windows TCP fallback is acceptable for control, with mutual TLS, never for packets.
+- A plugin runs as its own unprivileged user and is non-dumpable.
+- WireGuard authenticates every packet, so a plugin injecting packets can only flood: queues are bounded and drop on overflow.
+- A plugin's claims about which link a packet came on are advisory.
+- A transport's secrets reach the plugin only over the private control channel.
+- A dead or misbehaving plugin takes its link down, and the kill switch holds.
+- The map names plugins by hash; they are delivered signed (TP-044).
+- Separate plugin processes don't fit Android, so mobile builds compile their transports in.
+
+**Per-space variation, after the MVP.** The controller picks the built-in transports' settings per space within safe ranges (padding and batching buckets, timing, record sizes, cover traffic, the imitated site, ports), so deployments don't share one shape. Variation alone isn't the defence: generic "fully encrypted / unknown protocol" classifiers flag rare protocols however they vary. Imitating common traffic is the main defence.
+
+Ticket: TP-187.
