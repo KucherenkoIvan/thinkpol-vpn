@@ -31,7 +31,7 @@ Every setting has one designed home. An operator's settings live in one root-own
 - Node groups: a proposal (TP-035).
 
 ## Acceptance
-- [ ] unit tests: the node file parser (comments, blank lines, quoting if any, duplicate keys, unknown keys, bad values) and precedence (flag over env over file over default), each case a table row
+- [ ] unit tests: the node file and the device store are JSON; parser cases (invalid JSON, a duplicate key, an unknown key, a wrong type or bad value, an empty file) and precedence (flag over env over file over default), each case a table row
 - [ ] unit tests: an unknown key or a bad value makes `up` exit 78 and the message names it
 - [ ] unit test: a state directory with `rules.local` and no device store starts with the same preset, the store written 0600, `rules.local` gone
 - [ ] lab (Linux): a node started with only a node file runs with its settings; the same key given as env or flag wins over it (`thinkpol status` shows the result)
@@ -50,3 +50,4 @@ Every setting has one designed home. An operator's settings live in one root-own
 - 2026-11-07 created in backlog
 - 2026-11-07 file format is JSON for both files (owner)
 - 2026-11-07 notes: the ceiling is TP-183 now (split from TP-111, owner's MVP cut)
+- 2026-11-07 parser box rewritten for JSON (owner signed off the acceptance with this correction)

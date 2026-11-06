@@ -72,14 +72,14 @@ var ErrUnprotected = errors.New("dns: names may be resolved outside the node")
 // and an untagged part is unprotected.
 var ErrUpstreamsStale = errors.New("dns: the direct upstreams may be stale")
 
-// staleUpstreams is the Problem while no read of the OS's own resolvers
-// has worked since the first one failed (UpstreamsUnknown); nil once one
-// has.
+// staleUpstreams is the Problem while a good read of the OS's own
+// resolvers is owed: the first one failed (UpstreamsUnknown) or, on the
+// resolv.conf path, the read of a change failed; nil once one has worked.
 func staleUpstreams(untold bool) error {
 	if !untold {
 		return nil
 	}
-	return fmt.Errorf("%w: no read of the system's resolvers has worked since the first one failed", ErrUpstreamsStale)
+	return fmt.Errorf("%w: no read of the system's resolvers has worked since one failed", ErrUpstreamsStale)
 }
 
 // startsUntold says a new configuration starts untold: the caller's own
@@ -263,8 +263,12 @@ type resolvConf struct {
 	original []byte // the last original seen
 	seen     bool   // original is set
 	err      error  // the last apply's
-	// untold: the first good read is still owed (startsUntold).
-	untold  bool
+	// untold: the first good read is still owed (startsUntold), told
+	// whatever it finds.
+	untold bool
+	// owed: a change's read failed and a good read is owed; one that
+	// names no server keeps the previous upstreams, as on a change.
+	owed    bool
 	stop    chan struct{}
 	stopped chan struct{}
 }
@@ -388,23 +392,29 @@ func (r *resolvConf) recordOriginal(original []byte, read bool) (tell func()) {
 		ok = uerr == nil
 	}
 	// Upstreams is told when the original changed, and at the first good
-	// read while the caller has none (untold). Behind the stub, an
-	// unreadable or empty uplink file is a failed read: no answer was
-	// had, so while untold it clears nothing.
+	// read while one is owed (untold, owed). Behind the stub, an
+	// unreadable or empty uplink file is a failed read: no answer was had,
+	// so while untold it clears nothing, and on a change it makes a read
+	// owed: the changed original is recorded below, so no later tick sees
+	// it change.
 	firstGoodRead := read && ok && r.untold
+	owedRead := read && ok && r.owed
 	changed := r.seen && !originalEqual(r.original, original)
-	if read && ok {
-		r.untold = false
+	switch {
+	case read && ok:
+		r.untold, r.owed = false, false
+	case read && changed && r.cfg.Upstreams != nil:
+		r.owed = true
 	}
 	r.original, r.seen = original, true
 	upstreams := r.cfg.Upstreams
-	if upstreams != nil && (changed || firstGoodRead) {
+	if upstreams != nil && (changed || firstGoodRead || owedRead) {
 		switch {
 		case len(ups) > 0:
 			tell = func() { upstreams(ups) }
 		case firstGoodRead:
 			tell = func() { upstreams(nil) }
-		case r.cfg.Log != nil && !r.untold:
+		case r.cfg.Log != nil && !r.untold && !r.owed:
 			log := r.cfg.Log
 			tell = func() { log.Warn("DNS: no upstream to ask; set one with -dns-upstream") }
 		}
@@ -468,7 +478,7 @@ func (r *resolvConf) Problem() error {
 	if r.err != nil {
 		errs = append(errs, fmt.Errorf("%w: rewriting %s: %v", ErrUnprotected, r.path, r.err))
 	}
-	if err := staleUpstreams(r.untold); err != nil {
+	if err := staleUpstreams(r.untold || r.owed); err != nil {
 		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
