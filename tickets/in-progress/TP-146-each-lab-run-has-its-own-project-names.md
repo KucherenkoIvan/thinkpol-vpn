@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: M
 depends_on: [TP-121]
 refs: []
-owner: ""
-branch: ""
+owner: "agent-tp-146"
+branch: "tp-146-each-lab-run-has-its-own-project-names"
 ---
 
 ## Goal
@@ -38,3 +38,4 @@ Two lab runs from one checkout at once (`make lab-gotest` beside `make lab-test`
 
 ## Log
 - 2026-10-29 created in backlog (TP-121 R1.10 follow-up)
+- 2026-11-07 backlog → in-progress, owner: agent-tp-146
