@@ -99,8 +99,8 @@ type Platform struct {
 // forwarding it turned on, its tables and routes). The three are each
 // tried, though a step that fails within the server's stops the server's
 // steps after it (ClearLeftovers); it returns what the server's undid (a
-// device's can't tell), and as the error what failed. The caller holds the host's agent lock, so no
-// running agent's state is taken.
+// device's can't tell), and as the error what failed. The caller holds
+// the host's agent lock, so no running agent's state is taken.
 func (p Platform) ClearHost() ([]string, error) {
 	undone, err := supervisor.ClearLeftovers(supervisor.Options{
 		NewRoot: func() (netcfg.Configurator, error) { return p.NewConfigurator(netcfg.OwnerSupervisor) },
