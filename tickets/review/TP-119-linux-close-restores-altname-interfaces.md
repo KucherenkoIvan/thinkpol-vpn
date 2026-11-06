@@ -28,9 +28,9 @@ An interface the config names by one of its alternative names gets its MTU and u
 
 ## Review findings
 Round 1, accepted by the orchestrator.
-- [ ] R1.1 (should-fix, regression from this branch) ledger.go release with restoreLink: a config that switches an interface between its altname and its kernel name (either way, or one altname to another) between Applies makes release restore the interface while the config still wants it (Apply {overlay-alt, 1380, Up}; Apply {ovl0, 1380, Up} ends 1500 and down). Judge "left the config" by interface index; lab test for both directions.
-- [ ] R1.2 (should-fix) configureLink and updateLinkChange never refresh the recorded kernel name: Apply {overlay-alt, 1380}; down; rename ovl0 to ovl1; Apply again; Close leaves 1380. Refresh kname when configureLink re-finds the same index under the config's name (undone by a failed Apply); lab test; doc.go states the rename limit precisely.
-- [ ] R1.3 (nit) netcfg_linux_test.go: TestAnAltnameKeepsItsChanges' comment covers the restore on leaving the config and on Close; TestARenamedInterfaceKeepsItsChanges becomes TestARenamedInterfaceIsLeftAlone with a comment claiming only what it checks.
+- [x] R1.1 (should-fix, regression from this branch) ledger.go release with restoreLink: a config that switches an interface between its altname and its kernel name (either way, or one altname to another) between Applies makes release restore the interface while the config still wants it (Apply {overlay-alt, 1380, Up}; Apply {ovl0, 1380, Up} ends 1500 and down). Judge "left the config" by interface index; lab test for both directions.
+- [x] R1.2 (should-fix) configureLink and updateLinkChange never refresh the recorded kernel name: Apply {overlay-alt, 1380}; down; rename ovl0 to ovl1; Apply again; Close leaves 1380. Refresh kname when configureLink re-finds the same index under the config's name (undone by a failed Apply); lab test; doc.go states the rename limit precisely.
+- [x] R1.3 (nit) netcfg_linux_test.go: TestAnAltnameKeepsItsChanges' comment covers the restore on leaving the config and on Close; TestARenamedInterfaceKeepsItsChanges becomes TestARenamedInterfaceIsLeftAlone with a comment claiming only what it checks.
 
 ## Log
 - 2026-10-21 created in backlog (TP-102 review round 1)
@@ -45,3 +45,8 @@ Round 1, accepted by the orchestrator.
 - 2026-11-07 finisher: full make lab-test passed on 4c1bfef (LAB_P=4, run alone): lab/ packages ok, gotest ok for 36 packages, netcfg included; second acceptance box ticked
 - 2026-11-07 in-progress → review
 - 2026-11-07 review → has-errors (round 1 findings R1.1-R1.3)
+- 2026-11-07 fix round 1 (2ba3949): configureLink's new adoptLinkChange files the record of the interface at the found index under the config's name, moving it from another of its names and taking the kernel name afresh (undone by a failed Apply), so a name switch no longer restores a wanted interface (R1.1) and a renamed interface re-found through an altname is restored on Close (R1.2); doc.go states the rename limit as "a rename the configurator never re-finds keeps what was set"
+- 2026-11-07 tests (lab): new TestAnInterfaceKeepsItsChangesUnderAnotherName (overlay-alt→ovl0, ovl0→overlay-alt, overlay-alt→overlay-alt2: stays 1380 and up, Close gives 1500 and down) and TestARenamedInterfaceFoundAgainIsRestored (down, rename ovl0→ovl1, Apply again: Close gives 1500 and down); TestAnAltnameKeepsItsChanges' comment covers leaving the config and Close; TestARenamedInterfaceKeepsItsChanges renamed TestARenamedInterfaceIsLeftAlone with a comment claiming only the MTU it checks (R1.3)
+- 2026-11-07 mutations (lab): drop the adoptLinkChange call → both new tests fail; skip the search under other names → the name-switch test fails (all three cases, mtu 1500 after the second Apply); skip the kname refresh → the re-found rename test fails (ovl1 keeps 1380 and up after Close); all restored. The undo of the move in a failed Apply has no test of its own
+- 2026-11-07 merged rewrite as c955f12; make lint and make test green there; make lab-gotest netcfg green at 2ba3949; full make lab-test passed on c955f12 (LAB_P=4, run alone): lab/ packages ok, gotest ok for 36 packages
+- 2026-11-07 has-errors → review
