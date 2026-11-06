@@ -75,8 +75,9 @@ type Installer struct {
 	// agent.ErrAnotherAgent while an agent holds it.
 	LockHost func() (func(), error)
 	// ClearHost undoes what a crashed agent left on the host
-	// (agent.Platform.ClearHost), under the host lock.
-	ClearHost func() error
+	// (agent.Platform.ClearHost), under the host lock, and says what it
+	// undid.
+	ClearHost func() ([]string, error)
 	// RuntimeDirs are where the agent keeps its locks and boot records
 	// (the agent's lock directory, the local API's): uninstall removes
 	// what a stopped agent leaves there.
@@ -244,11 +245,18 @@ func (in Installer) SetConnectOnBoot(ctx context.Context, on bool) error {
 
 // Uninstall stops the service (the agent takes its data plane down as it
 // stops), then, holding the host lock (refused while an agent still holds
-// it), undoes what a crashed agent left on the host (ClearHost), removes
-// the definition, the binary, and what the stopped agent left in its
-// runtime directories. The group stays (it may be older than the
-// service); so does the node's state directory, its keys and map.
-func (in Installer) Uninstall(ctx context.Context) error {
+// it), undoes what a crashed agent left on the host (ClearHost: a
+// device's and a server's), removes the definition, the binary, and what
+// the stopped agent left in its runtime directories. The group stays (it
+// may be older than the service); so does the node's state directory,
+// its keys and map.
+//
+// A ClearHost that fails stops it there, the service stopped and disabled
+// but its definition and binary on disk, so the binary is there to try
+// again (launchd loads a definition left on disk at the next boot); force goes on, the failure reported as what is left on the host
+// (a record the cleanup can't read, such as a DNS backup readBackup
+// rejects on macOS, fails every try).
+func (in Installer) Uninstall(ctx context.Context, force bool) error {
 	_, err := os.Lstat(in.path(in.System.DefinitionPath()))
 	defined := err == nil
 	if err := in.System.Remove(ctx, in.Run); err != nil && defined {
@@ -262,8 +270,15 @@ func (in Installer) Uninstall(ctx context.Context) error {
 		return err
 	}
 	defer unlock()
-	if err := in.ClearHost(); err != nil {
-		return fmt.Errorf("undoing what a crashed agent left: %w", err)
+	undone, err := in.ClearHost()
+	for _, u := range undone {
+		in.say("undid what a crashed agent left: %s", u)
+	}
+	if err != nil {
+		if !force {
+			return fmt.Errorf("undoing what a crashed agent left failed: %w\n%s; run this again once that is fixed, or with -force to remove them anyway and leave this on the host", err, in.onDisk(defined))
+		}
+		in.say("warning: left on the host, undo it yourself: %v", err)
 	}
 	if defined {
 		if err := os.Remove(in.path(in.System.DefinitionPath())); err != nil {
@@ -288,6 +303,26 @@ func (in Installer) Uninstall(ctx context.Context) error {
 	}
 	in.say("the group %s stays; remove it yourself if nothing else uses it", Group)
 	return nil
+}
+
+// onDisk says what an uninstall stopped after the service's removal
+// leaves of it.
+func (in Installer) onDisk(defined bool) string {
+	var left []string
+	if defined {
+		left = append(left, fmt.Sprintf("its definition (%s)", in.System.DefinitionPath()))
+	}
+	if _, err := os.Lstat(in.path(BinaryPath)); err == nil {
+		left = append(left, fmt.Sprintf("its binary (%s)", BinaryPath))
+	}
+	if len(left) == 0 {
+		return "the service is stopped"
+	}
+	verb := "is"
+	if len(left) > 1 {
+		verb = "are"
+	}
+	return fmt.Sprintf("the service is stopped, but %s %s still on disk", strings.Join(left, " and "), verb)
 }
 
 // installed reads the installed definition: exactly what install writes,
