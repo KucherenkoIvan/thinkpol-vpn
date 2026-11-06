@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -301,6 +302,81 @@ func TestARewrittenResolvConfFiltersStubUpstreams(t *testing.T) {
 	if !slices.Equal(lastUpstreams, wantKept) {
 		t.Errorf("stub-only without uplink: upstreams %v, want previous %v kept", lastUpstreams, wantKept)
 	}
+	// The failed read was on a change, so a read is owed: stale until one
+	// works, and the next tick that reads the uplink tells it, though
+	// resolv.conf hasn't changed since.
+	if p := r.Problem(); !errors.Is(p, ErrUpstreamsStale) || Unprotected(p) {
+		t.Errorf("stub-only without uplink: problem %v, want stale only", p)
+	}
+	writeFileAtomic(t, uplink, "nameserver 203.0.113.53\n")
+	select {
+	case got := <-upstreams:
+		want := []netip.Addr{netip.MustParseAddr("203.0.113.53")}
+		if !slices.Equal(got, want) {
+			t.Errorf("uplink back: upstreams %v, want %v", got, want)
+		}
+	case <-time.After(3 * resolvConfCheck):
+		t.Fatal("uplink back: never told the owed read")
+	}
+	if p := r.Problem(); p != nil {
+		t.Errorf("uplink back: problem %v", p)
+	}
+}
+
+// The read owed after a failed change is told as a change's: an uplink
+// that reads but names no server (resolved's header-only file) keeps the
+// previous upstreams and says to set -dns-upstream, as a change straight
+// to it would; only the first read's is told whatever it finds.
+func TestResolvConfAnOwedReadThatNamesNoServerKeepsTheUpstreams(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "resolv.conf")
+	uplink := filepath.Join(dir, "uplink.conf") // missing until the last phase
+	if err := os.WriteFile(path, []byte(isp), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var log lockedBuffer
+	told := make(chan []netip.Addr, 8)
+	c := testSystem
+	c.Upstreams = func(a []netip.Addr) { told <- a }
+	c.Log = slog.New(slog.NewTextHandler(&log, nil))
+	r, err := setResolvConf(path, uplink, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = r.Restore() })
+	writeFileAtomic(t, path, "nameserver 127.0.0.53\n")
+	applyOnce(t, r)
+	if p := r.Problem(); !errors.Is(p, ErrUpstreamsStale) || Unprotected(p) {
+		t.Errorf("stub-only without uplink: problem %v, want stale only", p)
+	}
+	writeFileAtomic(t, uplink, "# managed by systemd-resolved\n")
+	applyOnce(t, r)
+	toldNothing(t, told)
+	if p := r.Problem(); p != nil {
+		t.Errorf("header-only uplink: problem %v", p)
+	}
+	if !strings.Contains(log.String(), "no upstream to ask") {
+		t.Errorf("header-only uplink: no -dns-upstream hint logged:\n%s", log.String())
+	}
+}
+
+// lockedBuffer is a log sink the watch goroutine may write to while the
+// test reads it.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 // Behind the stub, an unreadable uplink file is a failed read: a failed
@@ -844,6 +920,26 @@ func TestResolvConfUpstreamsUnknownWithoutUpstreamsIsNeverStale(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = r.Restore() })
+	if p := r.Problem(); p != nil {
+		t.Errorf("problem without Upstreams: %v", p)
+	}
+}
+
+// Without Upstreams to tell, a failed read on a change owes nothing
+// either: no stale problem.
+func TestResolvConfAFailedReadOnAChangeWithoutUpstreamsIsNeverStale(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "resolv.conf")
+	if err := os.WriteFile(path, []byte(isp), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r, err := setResolvConf(path, filepath.Join(dir, "uplink.conf"), testSystem) // the uplink stays missing
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = r.Restore() })
+	writeFileAtomic(t, path, "nameserver 127.0.0.53\n")
+	applyOnce(t, r)
 	if p := r.Problem(); p != nil {
 		t.Errorf("problem without Upstreams: %v", p)
 	}
