@@ -1,7 +1,7 @@
 ---
 id: TP-122
 title: "Code comments that contradict the code"
-milestone: M2
+milestone: later
 area: docs
 repo: thinkpol-vpn
 size: S
@@ -31,3 +31,4 @@ Found while TP-077 checked the moved mechanism against the code. Fix each commen
 ## Log
 - 2026-10-22 created in backlog (TP-077 out-of-scope note)
 - 2026-10-31 docs: udp/router.go bullet dropped, fixed by TP-069
+- 2026-11-07 milestone → later (owner's MVP cut: hygiene)

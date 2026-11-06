@@ -13,10 +13,10 @@ branch: ""
 ---
 
 ## Goal
-Every setting has one designed home. An operator's settings live in one root-owned node file that `up` reads; a member's toggles on a device live in a small file the service writes through the local API. Connect-on-boot becomes a member's toggle, so the tray and the CLI can change it without root. TP-111's ceiling and TP-048's kill switch then build on these instead of inventing their own (TP-139 findings F1, F2, F8).
+Every setting has one designed home. An operator's settings live in one root-owned node file that `up` reads; a member's toggles on a device live in a small file the service writes through the local API. Connect-on-boot becomes a member's toggle, so the tray and the CLI can change it without root. TP-111's `device` default, TP-183's ceiling and TP-048's kill switch then build on these instead of inventing their own (TP-139 findings F1, F2, F8).
 
 ## Scope
-- **The node file** ([configuration](../../docs/design/configuration.md#node-level)): one root-owned file in the state directory, 0600 in the 0700 directory, JSON. It holds operating settings only (mode, interface, link MTU, DNS upstream, and the keys TP-111 and TP-048 add), nothing about members, no history. `up` reads it at start. Name the file and its keys, and document them in the `agent` package doc and the runbook.
+- **The node file** ([configuration](../../docs/design/configuration.md#node-level)): one root-owned file in the state directory, 0600 in the 0700 directory, JSON. It holds operating settings only (mode, interface, link MTU, DNS upstream, and the keys TP-111, TP-183 and TP-048 add), nothing about members, no history. `up` reads it at start. Name the file and its keys, and document them in the `agent` package doc and the runbook.
 - **Precedence:** flags, then env, then the node file, then defaults. The map can only narrow what the node allows.
 - **Unknown keys and bad values:** `up` exits with EX_CONFIG (78) and names the key or the value. The exit-code table is TP-167's; if it hasn't landed, use 78 here and TP-167 takes it over.
 - **The device settings store** ([configuration](../../docs/design/configuration.md#device-level)): a small file next to the node file, written only by the service, 0600, JSON. It replaces `rules.local`: the first start that finds `rules.local` carries its preset over and removes it, and says so in the log. A store that can't be read stops the node from starting, as `rules.local` does today.
@@ -26,12 +26,12 @@ Every setting has one designed home. An operator's settings live in one root-own
 
 ## Out of scope
 - The kill switch, allow-LAN and pause toggles themselves: TP-048 adds them to the device store this ticket builds.
-- The capability ceiling: TP-111 adds it to the node file.
+- The capability ceiling: TP-183 adds it to the node file.
 - Showing a setting's effective value and its source, per-space settings, a network-level minimum: open questions in docs/design/configuration.md.
 - Node groups: a proposal (TP-035).
 
 ## Acceptance
-- [ ] unit tests: the node file parser (comments, blank lines, quoting if any, duplicate keys, unknown keys, bad values) and precedence (flag over env over file over default), each case a table row
+- [ ] unit tests: the node file and the device store are JSON; parser cases (invalid JSON, a duplicate key, an unknown key, a wrong type or bad value, an empty file) and precedence (flag over env over file over default), each case a table row
 - [ ] unit tests: an unknown key or a bad value makes `up` exit 78 and the message names it
 - [ ] unit test: a state directory with `rules.local` and no device store starts with the same preset, the store written 0600, `rules.local` gone
 - [ ] lab (Linux): a node started with only a node file runs with its settings; the same key given as env or flag wins over it (`thinkpol status` shows the result)
@@ -49,3 +49,5 @@ Every setting has one designed home. An operator's settings live in one root-own
 ## Log
 - 2026-11-07 created in backlog
 - 2026-11-07 file format is JSON for both files (owner)
+- 2026-11-07 notes: the ceiling is TP-183 now (split from TP-111, owner's MVP cut)
+- 2026-11-07 parser box rewritten for JSON (owner signed off the acceptance with this correction)

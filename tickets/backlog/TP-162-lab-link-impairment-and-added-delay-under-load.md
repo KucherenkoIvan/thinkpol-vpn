@@ -1,7 +1,7 @@
 ---
 id: TP-162
 title: "Lab: link impairment (loss, delay, jitter) and an added-delay-under-load measurement"
-milestone: M2
+milestone: later
 area: lab
 repo: thinkpol-vpn
 size: M
@@ -43,3 +43,4 @@ The lab can impair a link with netem (loss, delay, jitter, reordering), per link
 
 ## Log
 - 2026-10-31 created in backlog (PRD Performance requirement checked against the lab)
+- 2026-11-07 milestone → later (owner's MVP cut: NFR measurement; a one-off `make lab-perf` before the M5 gate instead)

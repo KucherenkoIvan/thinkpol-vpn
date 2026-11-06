@@ -1,7 +1,7 @@
 ---
 id: TP-165
 title: "udp start rule: pin the clock handling"
-milestone: M2
+milestone: later
 area: dataplane/transport
 repo: thinkpol-vpn
 size: S
@@ -39,3 +39,4 @@ Files: internal/dataplane/transport/udp/admit.go, internal/dataplane/transport/u
 
 ## Log
 - 2026-10-31 created in backlog (TP-069 final check and fix round)
+- 2026-11-07 milestone → later (owner's MVP cut: tests only)

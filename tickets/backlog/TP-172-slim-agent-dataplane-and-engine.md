@@ -1,7 +1,7 @@
 ---
 id: TP-172
 title: "Split `agent/dataplane.go` and `dataplane/engine.go` by responsibility"
-milestone: M2
+milestone: later
 area: agent
 repo: thinkpol-vpn
 size: M
@@ -34,3 +34,4 @@ The two files M2's features land on are split by responsibility before those fea
 
 ## Log
 - 2026-11-07 created in backlog
+- 2026-11-07 milestone → later (owner's MVP cut: refactor)

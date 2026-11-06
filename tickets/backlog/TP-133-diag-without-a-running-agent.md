@@ -1,7 +1,7 @@
 ---
 id: TP-133
 title: "`thinkpol diag` as root without a running agent"
-milestone: M2
+milestone: later
 area: agent
 repo: thinkpol-vpn
 size: S
@@ -33,3 +33,4 @@ After a crash (kill -9, power loss) `thinkpol diag` still records what the dead 
 - 2026-10-23 created in backlog (TP-082 design answers)
 - 2026-10-24 docs: slotted in the pre-M2 phase (wave 1, Agent)
 - 2026-11-07 TP-139 verdicts noted
+- 2026-11-07 milestone → later (owner's MVP cut: diag without an agent: no done-when needs it)

@@ -1,7 +1,7 @@
 ---
 id: TP-093
 title: "macOS: the device's resolver behind the Application Firewall"
-milestone: M2
+milestone: later
 area: dataplane/dns
 repo: thinkpol-vpn
 size: M
@@ -34,3 +34,4 @@ DNS through the tunnel works on a Mac with the Application Firewall on, Block-al
 
 ## Log
 - 2026-10-16 created in backlog (TP-078 device session A)
+- 2026-11-07 milestone → later (owner's MVP cut: Mac edge case)

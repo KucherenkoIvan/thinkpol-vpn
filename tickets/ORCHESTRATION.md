@@ -110,9 +110,9 @@ Made by the project owner after the macOS device run of the consolidation phase.
     - The owner's session is held early, and its verdicts go into those tickets before they start.
   - wave 1: parallel lanes, at most 4 implementers at a time. Each lane owns separate files.
     - Guard: TP-138 → TP-127 → TP-129 → TP-137 (the same two pf files).
-    - Agent: TP-141 → TP-133 → TP-140, then TP-111. Starts only after the owner's TP-139 session.
+    - Agent: TP-141 → ~~TP-133~~ → TP-140, then TP-111. (TP-133 left the phase: [MVP cut](#mvp-cut-owner-2026-11-07).) Starts only after the owner's TP-139 session.
     - macOS: TP-094, TP-124, TP-135.
-    - Hygiene: TP-145, after TP-141 touches the config.
+    - ~~Hygiene: TP-145, after TP-141 touches the config.~~ Left the phase: [MVP cut](#mvp-cut-owner-2026-11-07).
     - Harness: TP-082 round 6 (one fix round, then a correctness-only re-check), on its own branch.
   - wave 2: a full lab-test on the result. Then kit fixes and a runbook in the owner's format (navigation table, one linear path, Do / What happens / Expect, every command in a code block). Then the owner runs TP-144, with TP-082's first run folded in if it is ready. Analysis only afterwards.
   - wave 3: TP-142 and TP-143 from the re-run's results; TP-082 merges if its harness passed.
@@ -122,6 +122,17 @@ Made by the project owner after the macOS device run of the consolidation phase.
   - TP-046's hook-retry box is closed by accepting the fake-pfctl tests.
   - TP-111 keeps its 2026-10-18 decisions.
 - **No M2 feature ticket starts until this phase ends.**
+  - Amended (owner, 2026-11-07): M2 work that runs only in the lab (the censor modules, the WireGuard rhythm check, `reality`, lab tooling) may run alongside the phase's end; M2 work that touches a device, the kill switch or the code the phase's tickets change still waits.
+
+## MVP cut (owner, 2026-11-07)
+
+The owner wants the MVP (M5, v1.0.0) as soon as possible, with service enhancements after it.
+
+- **Only MVP-path and safety tickets start until v1.0.0.** Everything else is milestone `later` and starts only on the owner's go. Tickets that mixed the two were split: the MVP part stayed, the rest went to a new `later` ticket.
+- **The pre-M2 gate no longer includes TP-133 and TP-145.**
+- **The device-test harness (TP-082) stays on the path.** Device runs on the way to the MVP are expected to be frequent. The orchestrator's call; the owner may overrule it.
+- **Whitelist mode is deferred** (TP-177, TP-178): research is ongoing. M3's "done when" no longer includes it (docs/design/milestones.md).
+- **Security hardening is documented now and built after the concept is proven** (e.g. the gatekeeper, node key rotation, OS keystore, transport plugins: docs/design/transports.md "Plugins (after the MVP)").
 
 ## Code health between milestones (2026-10-18)
 
