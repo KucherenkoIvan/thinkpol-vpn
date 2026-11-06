@@ -472,8 +472,12 @@ func TestStartListsAKeptLabBeforeItStarts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	run, err := runID()
+	if err != nil {
+		t.Fatal(err)
+	}
 	kept, err := keptBy(d.path)
-	if err != nil || len(kept) != 1 || !strings.HasPrefix(kept[0], checkout+"-t-testkept-") {
+	if err != nil || len(kept) != 1 || !strings.HasPrefix(kept[0], checkout+"-t-"+run+"-testkept-") {
 		t.Errorf(".kept lists %v, %v; want the lab start was starting", kept, err)
 	}
 }
