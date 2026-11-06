@@ -36,6 +36,13 @@ Two lab runs from one checkout at once (`make lab-gotest` beside `make lab-test`
 - Follow-up to TP-121 review finding R1.10 (paranoid 3): TP-121 documented the collision as out of scope, and its round-2 reviewer (torvalds) asked for this ticket.
 - Compose project names have a length limit and `overridePattern` caps the override at 40 characters; check that the longest name (override, `-gotest-`, run id, hash) still fits.
 
+## Review findings
+- [ ] R1.1 (should-fix) `labctl down -run ""` (an unset `$THINKPOL_LAB_RUN`) becomes a plain `labctl down` and removes every lab of the checkout: a given -run is validated, an empty or invalid id is an error; unit test
+- [ ] R1.2 (should-fix) no unit test pins `DownRun` (a mutant dropping `removeStaleBinaries` passes): fakeDocker test of DownRun (this run's lab and ended binaries only, not run r12's or the checkout's) and DownCheckout(root, false) on the same fixture (removes all three; settles acceptance box 3)
+- [ ] R1.3 (should-fix) docs/design/api-overview.md "Lab variables" lacks `THINKPOL_LAB_RUN`; lab/README.md should say not to export it
+- [ ] R1.4 (should-fix, minimal) labs a killed run leaked are no longer removed by the next `make lab-test`: lab/README.md says to run `make lab-down` after an interrupted run
+- [ ] R1.5 (nit) stale comments: harness_test.go (TestLongestProjectNameStarts, TestLongestProjectNames' claim), bindir_lab_test.go override reason, lab.go and bindir_test.go still describing `down -tests` at the end of lab-test
+
 ## Log
 - 2026-10-29 created in backlog (TP-121 R1.10 follow-up)
 - 2026-11-07 backlog → in-progress, owner: agent-tp-146
@@ -46,3 +53,4 @@ Two lab runs from one checkout at once (`make lab-gotest` beside `make lab-test`
 - 2026-11-07 finisher: a second full make lab-test on 7c4984a with make lab-gotest PKG=./internal/dataplane/netcfg/... COUNT=3 started 450 s in: both passed (lab-gotest 141 passes); the lab-gotest ran through lab-test's last half minute, its clean-up included (the two ended within seconds); TestDownRunRemovesOnlyItsRun shows the clean-up leaving another run's running lab
 - 2026-11-07 finisher: `labctl down` box left open: not run, since make lab-down here would also remove an earlier run's leftover gotest lab of this checkout that the finisher didn't create; DownCheckout is unchanged by the branch
 - 2026-11-07 in-progress → review
+- 2026-11-07 review → has-errors (round 1 findings R1.x)
