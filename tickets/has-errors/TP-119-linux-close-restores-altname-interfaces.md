@@ -32,6 +32,10 @@ Round 1, accepted by the orchestrator.
 - [x] R1.2 (should-fix) configureLink and updateLinkChange never refresh the recorded kernel name: Apply {overlay-alt, 1380}; down; rename ovl0 to ovl1; Apply again; Close leaves 1380. Refresh kname when configureLink re-finds the same index under the config's name (undone by a failed Apply); lab test; doc.go states the rename limit precisely.
 - [x] R1.3 (nit) netcfg_linux_test.go: TestAnAltnameKeepsItsChanges' comment covers the restore on leaving the config and on Close; TestARenamedInterfaceKeepsItsChanges becomes TestARenamedInterfaceIsLeftAlone with a comment claiming only what it checks.
 
+Round 2, accepted by the orchestrator (delta check of round 1).
+- [ ] R2.1 (should-fix, regression from round 1) ledger.go adoptLinkChange moves a record to whatever name now sits at the same index, so a new interface at a reused index takes over a dead interface's record (Apply {a, 1380, Up}; delete a; create b at the same index, already 1380 and up; Apply {b, 1380, Up}: Close sets b to 1500 and down). Adopt a record from another name only if its recorded kernel name equals the interface's current kernel name, else drop it without restoring; lab test with a new interface at the reused index.
+- [ ] R2.2 (nit) adoptLinkChange's undo restores a snapshot, overwriting the note a failed revert keeps: move whatever is under the new name back to the old name and restore only the old kernel name.
+
 ## Log
 - 2026-10-21 created in backlog (TP-102 review round 1)
 - 2026-11-07 backlog → in-progress, owner: agent-tp-119
@@ -50,3 +54,4 @@ Round 1, accepted by the orchestrator.
 - 2026-11-07 mutations (lab): drop the adoptLinkChange call → both new tests fail; skip the search under other names → the name-switch test fails (all three cases, mtu 1500 after the second Apply); skip the kname refresh → the re-found rename test fails (ovl1 keeps 1380 and up after Close); all restored. The undo of the move in a failed Apply has no test of its own
 - 2026-11-07 merged rewrite as c955f12; make lint and make test green there; make lab-gotest netcfg green at 2ba3949; full make lab-test passed on c955f12 (LAB_P=4, run alone): lab/ packages ok, gotest ok for 36 packages
 - 2026-11-07 has-errors → review
+- 2026-11-07 review → has-errors (round 2 findings R2.1-R2.2)
