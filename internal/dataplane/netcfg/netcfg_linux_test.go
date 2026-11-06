@@ -1191,9 +1191,47 @@ func TestAnAltnameKeepsItsChanges(t *testing.T) {
 			t.Fatalf("ovl0 after Apply: mtu %d, flags %v; want 1380, up", l.Attrs().MTU, l.Attrs().Flags)
 		}
 	}
-	// Close succeeds; what it doesn't do yet is restore an interface
-	// named by an altname (TP-119), so its MTU and state aren't checked.
+	restored := func(when string) {
+		t.Helper()
+		l, err := n.h.LinkByName("ovl0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if l.Attrs().MTU != 1500 || l.Attrs().Flags&net.FlagUp != 0 {
+			t.Fatalf("ovl0 after %s: mtu %d, flags %v; want 1500, down", when, l.Attrs().MTU, l.Attrs().Flags)
+		}
+	}
+	if err := c.Apply(context.Background(), netcfg.Config{}); err != nil {
+		t.Fatal(err)
+	}
+	restored("leaving the config")
+	if err := c.Apply(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
 	if err := c.Close(); err != nil {
 		t.Fatal(err)
+	}
+	restored("Close")
+}
+
+// TestARenamedInterfaceKeepsItsChanges: the ledger can't tell a renamed
+// interface from another one at the same index, so Close leaves both alone.
+func TestARenamedInterfaceKeepsItsChanges(t *testing.T) {
+	n := newTestNS(t)
+	n.dummy(t, "ovl0")
+	c := n.configurator(t)
+	if err := c.Apply(context.Background(), netcfg.Config{Interfaces: []netcfg.Interface{{Name: "ovl0", MTU: 1380}}}); err != nil {
+		t.Fatal(err)
+	}
+	n.ip(t, "link", "set", "dev", "ovl0", "name", "ovl1")
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	l, err := n.h.LinkByName("ovl1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l.Attrs().MTU != 1380 {
+		t.Fatalf("ovl1 after Close: mtu %d; want 1380, left alone", l.Attrs().MTU)
 	}
 }

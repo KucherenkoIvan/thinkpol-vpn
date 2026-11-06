@@ -64,8 +64,9 @@ type ledger struct {
 
 type linkChange struct {
 	index   int
-	origMTU int // before our first change
-	mtu     int // what we set; 0: MTU untouched
+	kname   string // the kernel's name for index then; the config's may be an altname
+	origMTU int    // before our first change
+	mtu     int    // what we set; 0: MTU untouched
 	setUp   bool
 }
 
@@ -122,7 +123,7 @@ func (l *ledger) configureLink(ops linkOps, s linkState, ifc Interface, u *undoL
 		if err := ops.setMTU(s, ifc.MTU); err != nil {
 			return fmt.Errorf("netcfg: MTU %d on %s: %w", ifc.MTU, name, err)
 		}
-		l.updateLinkChange(name, s.index, func(ch *linkChange) {
+		l.updateLinkChange(name, s, func(ch *linkChange) {
 			if ch.mtu == 0 {
 				ch.origMTU = old
 			}
@@ -133,7 +134,7 @@ func (l *ledger) configureLink(ops linkOps, s linkState, ifc Interface, u *undoL
 		if err := ops.setUp(s, true); err != nil {
 			return fmt.Errorf("netcfg: bring %s up: %w", name, err)
 		}
-		l.updateLinkChange(name, s.index, func(ch *linkChange) { ch.setUp = true },
+		l.updateLinkChange(name, s, func(ch *linkChange) { ch.setUp = true },
 			u, func() error { return ops.setUp(s, false) })
 	}
 	return nil
@@ -223,11 +224,13 @@ func (l *ledger) closeAll(ops linkOps) []error {
 }
 
 // restoreLink undoes our MTU and state changes on an interface, each only if
-// it still is what we set.
+// it still is what we set. The interface is the one at the recorded index
+// while it keeps the kernel name it had; renamed, or another one at that
+// index, it is left alone.
 func (l *ledger) restoreLink(ops linkOps, name string, u *undoLog) error {
 	ch := l.changed[name]
 	s, err := ops.linkByIndex(ch.index)
-	if gone(err) || (err == nil && s.name != name) {
+	if gone(err) || (err == nil && s.name != ch.kname) {
 		l.dropLinkChange(name, u)
 		return nil
 	}
@@ -238,14 +241,14 @@ func (l *ledger) restoreLink(ops linkOps, name string, u *undoLog) error {
 		if err := ops.setMTU(s, ch.origMTU); err != nil && !gone(err) {
 			return fmt.Errorf("netcfg: restore MTU of %s: %w", name, err)
 		}
-		l.updateLinkChange(name, ch.index, func(ch *linkChange) { ch.mtu, ch.origMTU = 0, 0 },
+		l.updateLinkChange(name, s, func(ch *linkChange) { ch.mtu, ch.origMTU = 0, 0 },
 			u, func() error { return ops.setMTU(s, s.mtu) })
 	}
 	if ch.setUp && s.up {
 		if err := ops.setUp(s, false); err != nil && !gone(err) {
 			return fmt.Errorf("netcfg: bring %s down: %w", name, err)
 		}
-		l.updateLinkChange(name, ch.index, func(ch *linkChange) { ch.setUp = false },
+		l.updateLinkChange(name, s, func(ch *linkChange) { ch.setUp = false },
 			u, func() error { return ops.setUp(s, true) })
 	}
 	l.dropLinkChange(name, u)
@@ -254,11 +257,11 @@ func (l *ledger) restoreLink(ops linkOps, name string, u *undoLog) error {
 
 // updateLinkChange notes a change made to a link in l.changed. Its undo
 // reverts the change and only then the note, so a failed revert keeps it.
-func (l *ledger) updateLinkChange(name string, index int, change func(*linkChange), u *undoLog, revert func() error) {
+func (l *ledger) updateLinkChange(name string, s linkState, change func(*linkChange), u *undoLog, revert func() error) {
 	prev, had := l.changed[name]
 	ch := prev
 	if !had {
-		ch = linkChange{index: index}
+		ch = linkChange{index: s.index, kname: s.name}
 	}
 	change(&ch)
 	l.changed[name] = ch
