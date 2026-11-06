@@ -1,7 +1,7 @@
 ---
 id: TP-088
 title: "Gatekeeper learns `reality`"
-milestone: M2
+milestone: later
 area: agent
 repo: thinkpol-vpn
 size: M
@@ -30,3 +30,4 @@ The `reality` transport's pre-authentication parsing runs in the gatekeeper, not
 
 ## Log
 - 2026-10-15 created in backlog (TP-064 findings)
+- 2026-11-07 milestone → later (owner's MVP cut: follows TP-063)

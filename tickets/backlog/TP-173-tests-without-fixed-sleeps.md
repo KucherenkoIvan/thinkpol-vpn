@@ -1,7 +1,7 @@
 ---
 id: TP-173
 title: "Tests wait on sync points, not fixed sleeps, and assert state"
-milestone: M2
+milestone: later
 area: tests
 repo: thinkpol-vpn
 size: M
@@ -35,3 +35,4 @@ Tests stop guessing how long something takes. A fixed `time.Sleep` makes a test 
 
 ## Log
 - 2026-11-07 created in backlog
+- 2026-11-07 milestone → later (owner's MVP cut: flake hygiene)

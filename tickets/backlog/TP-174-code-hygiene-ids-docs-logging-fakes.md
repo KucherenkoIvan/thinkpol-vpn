@@ -1,7 +1,7 @@
 ---
 id: TP-174
 title: "Hygiene: ticket ids in comments, missing doc.go, lab logging, shared fakes"
-milestone: M2
+milestone: later
 area: repo
 repo: thinkpol-vpn
 size: M
@@ -37,3 +37,4 @@ Small cleanups that keep the code readable on its own: comments state the constr
 
 ## Log
 - 2026-11-07 created in backlog
+- 2026-11-07 milestone → later (owner's MVP cut: hygiene)

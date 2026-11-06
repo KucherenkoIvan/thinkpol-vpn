@@ -1,7 +1,7 @@
 ---
 id: TP-063
 title: "Gatekeeper: pre-auth parsing out of the supervisor"
-milestone: M2
+milestone: later
 area: agent
 repo: thinkpol-vpn
 size: L
@@ -42,3 +42,4 @@ Everything that parses unauthenticated, attacker-controlled bytes runs in an unp
 - 2026-10-15 docs (backlog grooming): TP-069/TP-070 test re-home named in Notes
 - 2026-10-15 docs (backlog grooming, review fixes): split note shortened
 - 2026-10-15 docs (board op): rescoped to `udp` for M2 (decision 2026-10-15); TP-028 dropped from depends_on; `reality` → TP-088, `tls` part → TP-028
+- 2026-11-07 milestone → later (owner's MVP cut: gatekeeper hardening: security after the concept)

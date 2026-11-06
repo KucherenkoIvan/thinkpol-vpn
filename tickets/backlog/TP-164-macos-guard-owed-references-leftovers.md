@@ -1,7 +1,7 @@
 ---
 id: TP-164
 title: "macOS guard: owed references, the leftovers"
-milestone: M2
+milestone: later
 area: dataplane/firewall
 repo: thinkpol-vpn
 size: S
@@ -36,3 +36,4 @@ The owed-reference slot TP-159 added never releases the guard's own reference, a
 
 ## Log
 - 2026-10-31 created in backlog (TP-159 final check)
+- 2026-11-07 milestone → later (owner's MVP cut: follow-up of a follow-up)

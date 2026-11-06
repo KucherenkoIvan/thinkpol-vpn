@@ -1,7 +1,7 @@
 ---
 id: TP-160
 title: "macOS guard: pf off, a pid-only reference and an unreadable References listing keep IPv6 unguarded"
-milestone: M2
+milestone: later
 area: dataplane/firewall
 repo: thinkpol-vpn
 size: M
@@ -38,3 +38,4 @@ The owner decides what happens when pf is found off while the guard knows its re
 
 ## Log
 - 2026-10-29 created in backlog (TP-137 round-1 review)
+- 2026-11-07 milestone → later (owner's MVP cut: owner: if capacity)

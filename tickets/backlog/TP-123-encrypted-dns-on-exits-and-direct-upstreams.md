@@ -1,7 +1,7 @@
 ---
 id: TP-123
 title: "Decide: encrypted DNS on exits and on direct upstreams"
-milestone: M3
+milestone: later
 area: dataplane
 repo: thinkpol-vpn
 size: S
@@ -27,3 +27,4 @@ A recorded decision on plain DNS: whether exits ask their public resolvers over 
 
 ## Log
 - 2026-10-22 created in backlog (TP-077 out-of-scope note)
+- 2026-11-07 milestone → later (owner's MVP cut: research)

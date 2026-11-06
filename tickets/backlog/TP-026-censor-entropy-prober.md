@@ -25,8 +25,14 @@ The lab catches traffic that looks like random bytes and servers that don't beha
 - [ ] the prober tells a naive echo server from nginx
 - [ ] the prober reports the server hello's JA3S/JA4S, extension order and ALPN against the camouflage site's, and detects an entry that opens an upstream connection to the camouflage target on every probe; the results are shown honestly in the matrix
 
+## Notes
+- The JA3S/JA4S server-hello comparison is on the MVP path only if D6 requires it (open, 2026-11-07).
+- Resolved (owner, 2026-11-07): the server-hello comparison is one of the M2 gate's handshake-level checks, so it stays on the MVP path.
+
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-13 docs (TP-062): prober covers the server-side fingerprint and the upstream-connection tell
 - 2026-10-15 docs (backlog grooming): owns server JA3S/JA4S computation (TP-032 keeps client fingerprints and whitelist)
 - 2026-10-15 depends_on TP-089 (split from TP-024 review)
+- 2026-11-07 notes (owner's MVP cut): the JA3S/JA4S comparison's place on the MVP path is open
+- 2026-11-07 notes: the server-hello comparison stays on the MVP path (owner, 2026-11-07)

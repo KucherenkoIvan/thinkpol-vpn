@@ -1,7 +1,7 @@
 ---
 id: TP-170
 title: "Device keys sealed in the OS keystore (should)"
-milestone: M5
+milestone: later
 area: agent
 repo: thinkpol-vpn
 size: M
@@ -37,3 +37,4 @@ A should, not a must: a device's private keys are sealed in the OS keystore (Key
 
 ## Log
 - 2026-11-07 created in backlog
+- 2026-11-07 milestone → later (owner's MVP cut: owner: security later)
