@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: [TP-089]
 refs: [C1, C4, C6, docs/design/milestones.md#milestones, docs/design/lab.md#censor-lab]
-owner: ""
-branch: ""
+owner: "agent-tp-188"
+branch: "tp-188-censor-wireguard-rhythm"
 ---
 
 ## Goal
@@ -34,3 +34,4 @@ The lab catches a TLS flow that carries WireGuard with its rhythm showing: the 2
 
 ## Log
 - 2026-11-07 created in backlog
+- 2026-11-07 backlog → in-progress, owner: agent-tp-188
