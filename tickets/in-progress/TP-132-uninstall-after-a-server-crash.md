@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: [TP-046]
 refs: [docs/design/security.md#node-safety]
-owner: ""
-branch: ""
+owner: "agent-tp-132"
+branch: "tp-132-uninstall-after-a-server-crash"
 ---
 
 ## Goal
@@ -36,3 +36,4 @@ branch: ""
 
 ## Log
 - 2026-10-23 created in backlog (TP-046 review round 2)
+- 2026-11-07 backlog → in-progress, owner: agent-tp-132
