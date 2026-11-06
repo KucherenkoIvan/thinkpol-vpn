@@ -5,7 +5,7 @@ milestone: M2
 area: lab
 repo: thinkpol-vpn
 size: S
-depends_on: [TP-025, TP-026, TP-087]
+depends_on: [TP-025, TP-026, TP-087, TP-188]
 refs: [C1, C2, C4]
 owner: ""
 branch: ""
@@ -20,7 +20,11 @@ M2's "done when": the matrix shows `udp` getting caught and `reality` passing.
 ## Acceptance
 - [ ] `lab/RESULTS.md` committed with the M2 matrix
 
+## Notes
+- What "`reality` passes" means (owner, 2026-11-07): the handshake-level checks (blocklists, VPN fingerprints, entropy, the active prober, the server-hello fingerprint) and no WireGuard rhythm (TP-188). Flow shape beyond that is not tested at M2. See docs/design/milestones.md.
+
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-15 deps (board op): TP-028 → TP-087, `reality` is the M2 disguised transport
 - 2026-10-15 docs (board op): Goal and Scope say `reality` instead of `tls`
+- 2026-11-07 notes and deps: the M2 gate's meaning (owner, 2026-11-07); depends on TP-188 (WireGuard-rhythm check)
