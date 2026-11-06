@@ -28,7 +28,7 @@ Two lab runs from one checkout at once (`make lab-gotest` beside `make lab-test`
 ## Acceptance
 - [x] `make lab-gotest PKG=<a package in lab-test's node phase>` started during `make lab-test` from the same checkout: both pass, and neither run's clean-up removes the other's labs
 - [x] two `make lab-gotest` of one package started together from one checkout both pass
-- [ ] `labctl down` still removes every lab of the checkout, kept ones included
+- [x] `labctl down` still removes every lab of the checkout, kept ones included
 - [x] lab/README.md Gotchas no longer says to set `THINKPOL_LAB_PROJECT` for a second run
 - [x] `make lint`, `make test`, `make lab-test` pass
 
@@ -37,11 +37,11 @@ Two lab runs from one checkout at once (`make lab-gotest` beside `make lab-test`
 - Compose project names have a length limit and `overridePattern` caps the override at 40 characters; check that the longest name (override, `-gotest-`, run id, hash) still fits.
 
 ## Review findings
-- [ ] R1.1 (should-fix) `labctl down -run ""` (an unset `$THINKPOL_LAB_RUN`) becomes a plain `labctl down` and removes every lab of the checkout: a given -run is validated, an empty or invalid id is an error; unit test
-- [ ] R1.2 (should-fix) no unit test pins `DownRun` (a mutant dropping `removeStaleBinaries` passes): fakeDocker test of DownRun (this run's lab and ended binaries only, not run r12's or the checkout's) and DownCheckout(root, false) on the same fixture (removes all three; settles acceptance box 3)
-- [ ] R1.3 (should-fix) docs/design/api-overview.md "Lab variables" lacks `THINKPOL_LAB_RUN`; lab/README.md should say not to export it
-- [ ] R1.4 (should-fix, minimal) labs a killed run leaked are no longer removed by the next `make lab-test`: lab/README.md says to run `make lab-down` after an interrupted run
-- [ ] R1.5 (nit) stale comments: harness_test.go (TestLongestProjectNameStarts, TestLongestProjectNames' claim), bindir_lab_test.go override reason, lab.go and bindir_test.go still describing `down -tests` at the end of lab-test
+- [x] R1.1 (should-fix) `labctl down -run ""` (an unset `$THINKPOL_LAB_RUN`) becomes a plain `labctl down` and removes every lab of the checkout: a given -run is validated, an empty or invalid id is an error; unit test
+- [x] R1.2 (should-fix) no unit test pins `DownRun` (a mutant dropping `removeStaleBinaries` passes): fakeDocker test of DownRun (this run's lab and ended binaries only, not run r12's or the checkout's) and DownCheckout(root, false) on the same fixture (removes all three; settles acceptance box 3)
+- [x] R1.3 (should-fix) docs/design/api-overview.md "Lab variables" lacks `THINKPOL_LAB_RUN`; lab/README.md should say not to export it
+- [x] R1.4 (should-fix, minimal) labs a killed run leaked are no longer removed by the next `make lab-test`: lab/README.md says to run `make lab-down` after an interrupted run
+- [x] R1.5 (nit) stale comments: harness_test.go (TestLongestProjectNameStarts, TestLongestProjectNames' claim), bindir_lab_test.go override reason, lab.go and bindir_test.go still describing `down -tests` at the end of lab-test
 
 ## Log
 - 2026-10-29 created in backlog (TP-121 R1.10 follow-up)
@@ -54,3 +54,7 @@ Two lab runs from one checkout at once (`make lab-gotest` beside `make lab-test`
 - 2026-11-07 finisher: `labctl down` box left open: not run, since make lab-down here would also remove an earlier run's leftover gotest lab of this checkout that the finisher didn't create; DownCheckout is unchanged by the branch
 - 2026-11-07 in-progress → review
 - 2026-11-07 review → has-errors (round 1 findings R1.x)
+- 2026-11-07 fix round 1: R1.1 labctl down tracks -run with fs.Visit, so a given -run always goes to DownRun, which rejects an empty or invalid id before asking Docker (lab/labctl/main_test.go TestDownRunRejectsABadIDBeforeDocker; mutation "case *run != \"\"" instead of runGiven: fails, the fake docker is called)
+- 2026-11-07 fix round 1: R1.2 TestDownRunRemovesItsRunsLabAndBinaries (lab/bindir_test.go, fakeDocker): DownRun(root, "r1") removes only run r1's lab and the ended run directory, not run r12's or the checkout's; DownCheckout(root, false) removes all three (ticks acceptance box 3). Mutations: DownRun without removeStaleBinaries fails; startedByRun's gotest match without the trailing "-" fails (r12 removed); DownCheckout always tests-only fails
+- 2026-11-07 fix round 1: R1.3 THINKPOL_LAB_RUN row in docs/design/api-overview.md "Lab variables"; lab/README.md Environment says not to export it. R1.4 lab/README.md Gotchas: make lab-down after an interrupted run. R1.5 stale comments fixed (harness_test.go, bindir_lab_test.go, lab.go, bindir_test.go)
+- 2026-11-07 fix round 1: make lint and make test green

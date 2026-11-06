@@ -139,7 +139,7 @@ Several checkouts, and several runs from one checkout, can run `make lab-test` (
 | Variable | Effect |
 |---|---|
 | `THINKPOL_LAB_PROJECT` | replaces the checkout part of project names |
-| `THINKPOL_LAB_RUN` | the run id in test and gotest labs' names (`[a-z0-9]`, at most 8 characters); `make lab-test` sets a fresh one, unset a process makes up its own |
+| `THINKPOL_LAB_RUN` | the run id in test and gotest labs' names (`[a-z0-9]`, at most 8 characters); `make lab-test` sets a fresh one, unset a process makes up its own. Don't export it: a process started from that environment joins the run, sharing its labs' names and its clean-up |
 | `THINKPOL_LAB_KEEP` | a failed test's lab stays up; `make lab-test` skips its final clean-up |
 | `THINKPOL_LAB_MAX_LABS` | lab slots at once per `TMPDIR` (default 12; one per top-level test, one per subtest for `lab.StartOwnSlot`) |
 | `THINKPOL_LAB_SUBNET_POOL` | IPv4 range for lab networks (default `172.16.0.0/16`) |
@@ -148,7 +148,7 @@ Several checkouts, and several runs from one checkout, can run `make lab-test` (
 
 ## Gotchas
 
-- A run's clean-up removes only its own labs, so the labs a killed run left up (Ctrl-C during `make lab-test` leaks the labs its tests had running) stay until `make lab-down`: another run's clean-up, the next `make lab-test`'s included, leaves them.
+- A run's clean-up removes only its own labs, so the labs a killed run left up (Ctrl-C during `make lab-test` leaks the labs its tests had running) stay until `make lab-down`: another run's clean-up, the next `make lab-test`'s included, leaves them. After an interrupted run, run `make lab-down` (once no other run from the checkout is going: it removes all of the checkout's labs).
 - Lab networks are not Docker `internal` networks on purpose: Docker drops forwarded IPv4 between internal networks, which would break the router. The sealing above keeps the lab closed instead.
 - `getent hosts <node>` prefers IPv6; use `getent ahostsv4` for the IPv4 address.
 - The image's tags accumulate as the Dockerfile changes; remove old ones with `docker image rm thinkpol-lab:<tag>`.

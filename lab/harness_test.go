@@ -223,7 +223,7 @@ func TestRunProjectNames(t *testing.T) {
 // longestOverride, longestRunID and longestTestProject make the longest
 // project names the harness can give: the longest override and run id, a
 // test name past the slug's cap, and claimProject's number. Docker
-// accepting them is TestLongestProjectNameStarts (a lab test).
+// accepting them is TestDownRunRemovesOnlyItsRun (a lab test).
 var (
 	longestOverride = strings.Repeat("a", 40)
 	longestRunID    = strings.Repeat("9", 8)
@@ -233,6 +233,8 @@ func longestTestProject(checkout, run string) string {
 	return testProject(checkout, run, "/x/lab", strings.Repeat("T", 100)) + "-99"
 }
 
+// The longest names are valid project names of their run. Their length
+// can't be checked here: Docker's acceptance is proven by the lab test.
 func TestLongestProjectNames(t *testing.T) {
 	t.Setenv(ProjectEnv, longestOverride)
 	checkout, err := CheckoutProject("/x")

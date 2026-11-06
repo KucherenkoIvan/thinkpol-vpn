@@ -87,7 +87,11 @@ func down(ctx context.Context, root string, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if n := btoi(*onlyTests) + btoi(*run != "") + btoi(*stale); n > 1 {
+	// -run given at all means one run's labs, even with an empty or invalid
+	// id (an unset variable): never the whole checkout's.
+	runGiven := false
+	fs.Visit(func(f *flag.Flag) { runGiven = runGiven || f.Name == "run" })
+	if n := btoi(*onlyTests) + btoi(runGiven) + btoi(*stale); n > 1 {
 		return errors.New("down: -tests, -run and -stale don't combine")
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
@@ -97,7 +101,7 @@ func down(ctx context.Context, root string, args []string) error {
 	switch {
 	case *stale:
 		removed, err = lab.DownStale(ctx)
-	case *run != "":
+	case runGiven:
 		removed, err = lab.DownRun(ctx, root, *run)
 	default:
 		removed, err = lab.DownCheckout(ctx, root, *onlyTests)

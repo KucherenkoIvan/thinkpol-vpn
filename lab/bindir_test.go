@@ -223,8 +223,9 @@ func endedRun(t *testing.T, root string, kept ...string) *runBinaries {
 }
 
 // labctl down -tests removes an ended run's directory, and a kept one only
-// once none of the labs it lists is up: another run's kept lab, which its
-// clean-up skips (another THINKPOL_LAB_PROJECT), keeps its binaries.
+// once none of the labs it lists is up: a kept lab the clean-up skips (here
+// another checkout's; for make lab-test's, also another run's) keeps its
+// binaries.
 func TestLabctlDownKeepsTheBinariesOfKeptLabsStillUp(t *testing.T) {
 	ctx := t.Context()
 	root := t.TempDir()
@@ -243,6 +244,39 @@ func TestLabctlDownKeepsTheBinariesOfKeptLabsStillUp(t *testing.T) {
 		if _, err := os.Stat(d.path); !errors.Is(err, fs.ErrNotExist) {
 			t.Errorf("%s after labctl down: %v", filepath.Base(d.path), err)
 		}
+	}
+}
+
+// make lab-test's clean-up (DownRun) removes its run's lab and its ended
+// run directories' binaries, and leaves another run's lab (whose id extends
+// this one's) and the checkout's own; labctl down (DownCheckout) removes
+// all three.
+func TestDownRunRemovesItsRunsLabAndBinaries(t *testing.T) {
+	ctx := t.Context()
+	root := t.TempDir()
+	checkout, err := CheckoutProject(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mine := testProject(checkout, "r1", filepath.Join(root, "lab"), "TestX")
+	theirs := goTestPackageProject(checkout, "r12", "example.net/x")
+	labs := []string{mine + "\t" + root, theirs + "\t" + root, checkout + "\t" + root}
+	fakeDocker(t, labs...)
+	ended := endedRun(t, root)
+
+	removed, err := DownRun(ctx, root, "r1")
+	if err != nil || len(removed) != 1 || removed[0] != mine {
+		t.Errorf("DownRun removed %v, %v; want just %s", removed, err, mine)
+	}
+	if _, err := os.Stat(ended.path); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("an ended run's directory after DownRun: %v", err)
+	}
+
+	removed, err = DownCheckout(ctx, root, false)
+	want := []string{checkout, mine, theirs}
+	slices.Sort(want)
+	if err != nil || !slices.Equal(removed, want) {
+		t.Errorf("DownCheckout removed %v, %v; want %v", removed, err, want)
 	}
 }
 
