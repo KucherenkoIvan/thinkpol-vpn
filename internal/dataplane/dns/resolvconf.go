@@ -72,14 +72,14 @@ var ErrUnprotected = errors.New("dns: names may be resolved outside the node")
 // and an untagged part is unprotected.
 var ErrUpstreamsStale = errors.New("dns: the direct upstreams may be stale")
 
-// staleUpstreams is the Problem while no read of the OS's own resolvers
-// has worked since the first one failed (UpstreamsUnknown); nil once one
-// has.
+// staleUpstreams is the Problem while a good read of the OS's own
+// resolvers is owed: the first one failed (UpstreamsUnknown) or, on the
+// resolv.conf path, the read of a change failed; nil once one has worked.
 func staleUpstreams(untold bool) error {
 	if !untold {
 		return nil
 	}
-	return fmt.Errorf("%w: no read of the system's resolvers has worked since the first one failed", ErrUpstreamsStale)
+	return fmt.Errorf("%w: no read of the system's resolvers has worked since one failed", ErrUpstreamsStale)
 }
 
 // startsUntold says a new configuration starts untold: the caller's own
@@ -263,7 +263,8 @@ type resolvConf struct {
 	original []byte // the last original seen
 	seen     bool   // original is set
 	err      error  // the last apply's
-	// untold: the first good read is still owed (startsUntold).
+	// untold: a good read is owed, told whatever it finds: the first
+	// (startsUntold), or the one after a change whose read failed.
 	untold  bool
 	stop    chan struct{}
 	stopped chan struct{}
@@ -388,13 +389,17 @@ func (r *resolvConf) recordOriginal(original []byte, read bool) (tell func()) {
 		ok = uerr == nil
 	}
 	// Upstreams is told when the original changed, and at the first good
-	// read while the caller has none (untold). Behind the stub, an
-	// unreadable or empty uplink file is a failed read: no answer was
-	// had, so while untold it clears nothing.
+	// read while one is owed (untold). Behind the stub, an unreadable or
+	// empty uplink file is a failed read: no answer was had, so while
+	// untold it clears nothing, and on a change it makes a read owed: the
+	// changed original is recorded below, so no later tick sees it change.
 	firstGoodRead := read && ok && r.untold
 	changed := r.seen && !originalEqual(r.original, original)
-	if read && ok {
+	switch {
+	case read && ok:
 		r.untold = false
+	case read && changed && r.cfg.Upstreams != nil:
+		r.untold = true
 	}
 	r.original, r.seen = original, true
 	upstreams := r.cfg.Upstreams

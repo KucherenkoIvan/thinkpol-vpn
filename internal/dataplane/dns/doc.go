@@ -219,7 +219,10 @@
 // upstreams are kept (and the log says to set `-dns-upstream`). Behind
 // the stub, a read of the OS's resolvers is a read of the uplink file;
 // a missing uplink file, a dangling link or an empty file is a failed
-// read.
+// read. A rewrite whose read fails is still the new original, so no
+// later check sees it change: it keeps the previous upstreams and owes
+// a read, [ErrUpstreamsStale] until one works, and that read is told
+// whatever it finds, as a failed first read's is.
 //
 // # macOS: configd's dynamic store
 //
