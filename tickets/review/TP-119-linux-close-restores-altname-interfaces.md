@@ -21,7 +21,7 @@ An interface the config names by one of its alternative names gets its MTU and u
 
 ## Acceptance
 - [x] the lab test fails on today's code and passes with the fix
-- [ ] `make lint`, `make test`, `make lab-test` pass
+- [x] `make lint`, `make test`, `make lab-test` pass
 
 ## Notes
 - Found by TP-102's implementer; filed after TP-102's round-1 review (2026-10-21).
@@ -35,3 +35,6 @@ An interface the config names by one of its alternative names gets its MTU and u
 - 2026-11-07 make test green; make lint green up to its last step, vulncheck, which fails on GO-2026-6888 (brotli) and GO-2026-6865 (klauspost/compress), the same on rewrite e6aeb54: pre-existing, out of scope (needs a dependency bump)
 - 2026-11-07 make lab-gotest PKG=./internal/dataplane/netcfg/... at 0d08238: 48 pass. Full make lab-test at 0d08238 did not finish: stopped by the agent's 30 min run limit while other tickets' labs ran; by then TestRouteTableSendsOnlyDirectAroundTheTunnel, TestAnotherRunFromTheCheckoutBuildsItsOwnBinaries and TestTCPThroughCensorDrop (lab/) had failed on 600 s timeouts, outside netcfg. Second acceptance box stays open
 - 2026-11-07 handoff: stays in in-progress; to finish, run make lab-test on a quiet Docker (no other tplab labs) and get vulncheck green on rewrite, then tick the box and move to review
+- 2026-11-07 finisher: merged rewrite 7852af8 (head c66ccc8) in as 4c1bfef; make lint green (vulncheck clean after TP-175), make test green
+- 2026-11-07 finisher: full make lab-test passed on 4c1bfef (LAB_P=4, run alone): lab/ packages ok, gotest ok for 36 packages, netcfg included; second acceptance box ticked
+- 2026-11-07 in-progress → review
