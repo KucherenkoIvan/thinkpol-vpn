@@ -160,7 +160,10 @@
 // stopped, launchd's booted out), and one started by hand afterwards makes
 // a fresh lock with nothing to share. Anything else there is reported and
 // left: on macOS a crashed run's route or pf records; on a server, a
-// forwarding.json whose forwarding couldn't be put back. The group stays:
+// forwarding.json whose forwarding couldn't be put back. A crashed
+// server's per-space cgroup directories under /sys/fs/cgroup/thinkpol/
+// stay too: empty once their workers are gone, and gone at the next boot
+// (cgroupfs isn't on disk). The group stays:
 // it may be older than the service, or someone's group for other reasons;
 // remove it by hand if nothing uses it. So does the node's state
 // directory, its keys and map.

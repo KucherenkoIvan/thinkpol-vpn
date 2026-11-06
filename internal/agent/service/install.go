@@ -253,9 +253,11 @@ func (in Installer) SetConnectOnBoot(ctx context.Context, on bool) error {
 //
 // A ClearHost that fails stops it there, the service stopped and disabled
 // but its definition and binary on disk, so the binary is there to try
-// again (launchd loads a definition left on disk at the next boot); force goes on, the failure reported as what is left on the host
-// (a record the cleanup can't read, such as a DNS backup readBackup
-// rejects on macOS, fails every try).
+// again (launchd loads a definition left on disk at the next boot); force
+// goes on, the failure reported as what is left on the host (a record the
+// cleanup can't read, such as a DNS backup readBackup rejects on macOS,
+// fails every try). With neither on disk there is nothing to keep, so it
+// goes on as force does.
 func (in Installer) Uninstall(ctx context.Context, force bool) error {
 	_, err := os.Lstat(in.path(in.System.DefinitionPath()))
 	defined := err == nil
@@ -275,8 +277,8 @@ func (in Installer) Uninstall(ctx context.Context, force bool) error {
 		in.say("undid what a crashed agent left: %s", u)
 	}
 	if err != nil {
-		if !force {
-			return fmt.Errorf("undoing what a crashed agent left failed: %w\n%s; run this again once that is fixed, or with -force to remove them anyway and leave this on the host", err, in.onDisk(defined))
+		if left := in.onDisk(defined); left != "" && !force {
+			return fmt.Errorf("undoing what a crashed agent left failed: %w\nthe service is stopped, but %s; run this again once that is fixed, or with -force to remove them anyway and leave this on the host", err, left)
 		}
 		in.say("warning: left on the host, undo it yourself: %v", err)
 	}
@@ -306,7 +308,7 @@ func (in Installer) Uninstall(ctx context.Context, force bool) error {
 }
 
 // onDisk says what an uninstall stopped after the service's removal
-// leaves of it.
+// leaves of it on disk, "" for nothing.
 func (in Installer) onDisk(defined bool) string {
 	var left []string
 	if defined {
@@ -316,13 +318,13 @@ func (in Installer) onDisk(defined bool) string {
 		left = append(left, fmt.Sprintf("its binary (%s)", BinaryPath))
 	}
 	if len(left) == 0 {
-		return "the service is stopped"
+		return ""
 	}
 	verb := "is"
 	if len(left) > 1 {
 		verb = "are"
 	}
-	return fmt.Sprintf("the service is stopped, but %s %s still on disk", strings.Join(left, " and "), verb)
+	return fmt.Sprintf("%s %s still on disk", strings.Join(left, " and "), verb)
 }
 
 // installed reads the installed definition: exactly what install writes,

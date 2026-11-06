@@ -5,6 +5,7 @@ package lab_test
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -32,8 +33,10 @@ paths:
 // a node that runs systemd and doesn't forward of its own, has device-a
 // connect through it, kills it, and uninstalls it at once, before systemd
 // restarts it: what the dead supervisor left in the root namespace (the
-// forwarding it turned on, its tables, the spaces' veths and routes) is
-// undone, and nothing of the service is left.
+// forwarding of both families it turned on, the uplink's accept_ra, its
+// tables, the spaces' veths) is undone, and nothing of the service is
+// left. The supervisor applies no routes of its own, so none of its are
+// looked for beyond the spaces' links.
 func TestServiceUninstallAfterAServerCrash(t *testing.T) {
 	t.Parallel()
 	topo := lab.Topology{
@@ -61,6 +64,13 @@ func TestServiceUninstallAfterAServerCrash(t *testing.T) {
 	// A systemd node boots forwarding (the lab's own setup); a host that
 	// doesn't is the one whose forwarding the supervisor turns on.
 	server.MustExec(t, "sysctl", "-qw", "net.ipv4.ip_forward=0", "net.ipv6.conf.all.forwarding=0")
+	// The lab's IPv6 is unique local, which isn't an uplink's IPv6: a
+	// global address makes it one, so the supervisor turns IPv6
+	// forwarding on too, and the uplink's accept_ra 1 to 2 before it.
+	uplink := server.Interface(lab.NetServers)
+	acceptRA := "net.ipv6.conf." + uplink + ".accept_ra"
+	server.MustExec(t, "ip", "-6", "addr", "add", "2001:db8:132::2/64", "dev", uplink, "nodad")
+	server.MustExec(t, "sysctl", "-qw", acceptRA+"=1")
 
 	space := newM0Space(t, inet, server)
 	inet.WriteFile(t, "/tmp/m0/server-egress.yaml", []byte(serverEgressSpec))
@@ -77,7 +87,7 @@ func TestServiceUninstallAfterAServerCrash(t *testing.T) {
 	leftovers := func() (string, error) {
 		var b strings.Builder
 		for _, cmd := range [][]string{
-			{"sysctl", "-n", "net.ipv4.ip_forward"},
+			{"sysctl", "net.ipv4.ip_forward", "net.ipv6.conf.all.forwarding", acceptRA},
 			{"nft", "list", "tables"},
 			{"ip", "-o", "link", "show"},
 			{"ip", "route", "show", "table", "all"},
@@ -91,23 +101,29 @@ func TestServiceUninstallAfterAServerCrash(t *testing.T) {
 		}
 		return b.String(), nil
 	}
+	set := []string{"net.ipv4.ip_forward = 1\n", "net.ipv6.conf.all.forwarding = 1\n", acceptRA + " = 2\n"}
 	ours := func(state string) []string {
 		var found []string
-		if strings.HasPrefix(state, "1\n") {
-			found = append(found, "net.ipv4.ip_forward 1")
-		}
-		for _, line := range strings.Split(state, "\n") {
-			if strings.Contains(line, "thinkpol-supervisor") || strings.Contains(line, "tp-space") {
-				found = append(found, line)
+		for _, line := range strings.SplitAfter(state, "\n") {
+			if slices.Contains(set, line) || strings.Contains(line, "thinkpol-supervisor") || strings.Contains(line, "tp-space") {
+				found = append(found, strings.TrimSuffix(line, "\n"))
 			}
 		}
 		return found
+	}
+	setUp := func(state string) bool {
+		for _, s := range append(set, "inet thinkpol-supervisor\n") {
+			if !strings.Contains(state, s) {
+				return false
+			}
+		}
+		return true
 	}
 	serving, err := leftovers()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(serving, "1\n") || !strings.Contains(serving, "inet thinkpol-supervisor\n") || !strings.Contains(serving, "arp thinkpol-supervisor-arp\n") {
+	if !setUp(serving) || !strings.Contains(serving, "arp thinkpol-supervisor-arp\n") {
 		t.Fatalf("the serving supervisor hasn't set up its forwarding and tables: the uninstall below proves nothing:\n%s", serving)
 	}
 
@@ -127,13 +143,13 @@ func TestServiceUninstallAfterAServerCrash(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("left by the kill: %q", ours(crashed))
-	if !strings.HasPrefix(crashed, "1\n") || !strings.Contains(crashed, "inet thinkpol-supervisor\n") {
+	if !setUp(crashed) {
 		t.Fatalf("the kill left no forwarding or tables: the uninstall below proves nothing:\n%s", crashed)
 	}
 
 	out := server.MustExec(t, "thinkpol", "service", "uninstall")
 	t.Logf("uninstall:\n%s", out)
-	for _, want := range []string{"net.ipv4.ip_forward", "inet thinkpol-supervisor", "arp thinkpol-supervisor-arp"} {
+	for _, want := range []string{"net.ipv4.ip_forward", "net.ipv6.conf.all.forwarding", "inet thinkpol-supervisor", "arp thinkpol-supervisor-arp"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("uninstall doesn't say it undid %s", want)
 		}
@@ -143,6 +159,9 @@ func TestServiceUninstallAfterAServerCrash(t *testing.T) {
 	after, err := leftovers()
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !strings.Contains(after, "net.ipv4.ip_forward = 0\nnet.ipv6.conf.all.forwarding = 0\n"+acceptRA+" = 1\n") {
+		t.Errorf("the forwarding sysctls aren't as they were before the install:\n%s", after)
 	}
 	if left := ours(after); len(left) > 0 {
 		t.Errorf("left of the supervisor after the uninstall: %q\n%s", left, after)

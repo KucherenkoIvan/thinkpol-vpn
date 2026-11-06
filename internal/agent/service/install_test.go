@@ -582,6 +582,16 @@ func TestUninstallStopsOnAFailedClearAndForceCompletesIt(t *testing.T) {
 			if _, err := in.ConnectOnBoot(); !errors.Is(err, ErrNotInstalled) {
 				t.Fatalf("connect-on-boot after a forced uninstall: %v", err)
 			}
+
+			// Nothing on disk: nothing for -force to keep, so uninstall
+			// stays idempotent, the failure a warning.
+			out.Reset()
+			if err := in.Uninstall(ctx, false); err != nil {
+				t.Fatalf("with nothing installed: %v", err)
+			}
+			if !strings.Contains(out.String(), "warning: left on the host") || !strings.Contains(out.String(), stuck.Error()) {
+				t.Errorf("what is left on the host isn't reported:\n%s", out)
+			}
 		})
 	}
 }

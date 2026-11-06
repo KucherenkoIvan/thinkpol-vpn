@@ -96,9 +96,10 @@ type Platform struct {
 // start that doesn't connect does (the routing, clearNetwork, and the OS's
 // resolver configuration), and a server's, as its supervisor's next start
 // would (supervisor.ClearLeftovers: the spaces' veths, the root's
-// forwarding it turned on, its tables and routes). All are tried; it
-// returns what the server's undid (a device's can't tell), and as the
-// error what failed. The caller holds the host's agent lock, so no
+// forwarding it turned on, its tables and routes). The three are each
+// tried, though a step that fails within the server's stops the server's
+// steps after it (ClearLeftovers); it returns what the server's undid (a
+// device's can't tell), and as the error what failed. The caller holds the host's agent lock, so no
 // running agent's state is taken.
 func (p Platform) ClearHost() ([]string, error) {
 	undone, err := supervisor.ClearLeftovers(supervisor.Options{
