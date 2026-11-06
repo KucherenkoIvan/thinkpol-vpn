@@ -5,7 +5,7 @@ milestone: M2
 area: dataplane/firewall
 repo: thinkpol-vpn
 size: L
-depends_on: [TP-046, TP-021, TP-078, TP-091]
+depends_on: [TP-046, TP-021, TP-078, TP-091, TP-166]
 refs: [D4]
 needs_human: macos
 owner: ""
@@ -35,6 +35,7 @@ With the kill switch on, nothing leaves the device when the tunnel is down.
 - **From TP-021 (IPv6 leak guard, Linux; corrected in its review):** the kill switch is a separate owner from the IPv6 leak guard and shares only the shape of `routetable.Exempt` (TUN, Mark, Direct, Upstreams). The guard is the route table's: `firewall.IPv6Guard`, table `inet thinkpol-guard`, applied by the Enforcer with the routes and removed with them, so it lives and dies with the connection. The kill switch gets its own table (`inet thinkpol-killswitch`) with its own `exempt4`/`exempt6` sets, applied by the agent from the toggle and the preset, and it survives a disconnect (and, per the crash posture below, a crash). Its chain must also sit late in output (the guard hooks at NF_IP6_PRI_LAST so no route chain re-marks after it), exempt neighbour discovery and MLD only with their hop limits (255, 1) on Linux (pf can't match a hop limit, so on macOS the exemption is by ICMPv6 type and destination, as the IPv6 guard's is: say what that lets through), and, on macOS, exempt the direct DNS upstreams by address (no socket mark there). `TestGatewaysOnLinksAndBoundSockets` still shows IPv4 bound sockets leaving by main's default route.
 - macOS (TP-138 review, 2026-10-28): lift the guard's `rulesOf` to a free function over pfctl and reuse `AnchorMissing`, `noTable`, `onlyLine` and `readLines`; don't copy them.
 - macOS (TP-138 review, 2026-10-28): the guard's Close flushes rules before Tables, so a Close whose Tables step fails leaves the anchor without rules (IPv6 unconfined) while keeping the record. Don't assume a failed guard Close stays confined. Flushing Tables first may fail closed instead; this needs a device check before anyone relies on it.
+- **TP-139 verdicts (TP-139 owner session, 2026-11-07; docs/design/api-overview.md "Verdicts", docs/design/configuration.md).** The kill switch, allow-LAN and pause are device-level settings: a member of the access group changes them through the local API, and the service stores them in the device store TP-166 builds. Their node defaults live in the node file. Toggles take `on|off` and have the `<setting> [value]` shape (`kill-switch on`). Depends on TP-166.
 
 ## Log
 - 2026-10-10 created in backlog
@@ -49,3 +50,4 @@ With the kill switch on, nothing leaves the device when the tunnel is down.
 - 2026-10-16 docs (device testing rethink): depends on TP-091, whose `diag` snapshot is the evidence for its device run
 - 2026-10-22 docs (TP-077 residual-risks research): the hop-limit exemption for ND/MLD is Linux-only; pf can't express it
 - 2026-10-28 docs (TP-138 review): notes on reusing the guard's pfctl readers and on a failed guard Close
+- 2026-11-07 TP-139 verdicts noted
