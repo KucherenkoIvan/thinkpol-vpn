@@ -24,9 +24,11 @@ Hop groups, chains and rule sets live in the controller with their invariants en
 
 ## Notes
 - **From TP-013 (ingress/egress):** topology policy works with `NodeSettings.AllowIngress`/`AllowEgress` (servers only, both off by default). Turning ingress off removes every link between the server and devices from both sides of the map (Build refuses anything else); devices then reach that server only through relays that allow ingress. Never leave device links on an ingress-off server for the node to filter: a node on an older reader would keep admitting them.
+- **TP-139 verdicts (TP-139 owner session, 2026-11-07; docs/design/api-overview.md "Verdicts", docs/design/configuration.md).** Proposal from the orchestrator, not confirmed by the owner: node groups may carry settings; groups are a controller-side abstraction (space defaults, then group, then node) compiled into each node's part of the map, and nodes never see groups, only resolved values (docs/design/configuration.md "Node groups (proposal)").
 
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-12 docs (TP-013 review): notes from the ingress and egress settings
 - 2026-10-15 docs (backlog grooming): acceptance for hop groups and rule-set policy
 - 2026-10-15 docs (backlog grooming, review fixes): hop-group acceptance cites DESIGN/PRD R6
+- 2026-11-07 TP-139 verdicts noted

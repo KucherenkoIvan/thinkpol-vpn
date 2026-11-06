@@ -41,7 +41,9 @@ When a device's agent dies under the service (a panic, a runtime fatal error), i
 - Under KeepAlive launchd restarts the agent within ThrottleInterval (5 s), so the read-then-overwrite order matters: overwrite first and the trace is gone before anyone looks.
 - If the agent's log handler also writes to stderr, the file holds the whole run's log, not only the trace. The decision allows the agent's stderr; say in Notes what lands there and whether it needs a size cap.
 - TP-133 (`diag` without a running agent) is the other half of crash evidence; the two don't depend on each other.
+- **TP-139 verdicts (TP-139 owner session, 2026-11-07; docs/design/api-overview.md "Verdicts", docs/design/configuration.md).** The trace file goes in the state or runtime directory (pick one and say why: `/run/thinkpol` doesn't survive a reboot on Linux, and the state directory holds what the node needs, PRD S1). Its `diag` field and its problem code follow the naming rules: snake_case (F5), and the field follows TP-168's JSON convention. F15 (keep, RR40): the S2 amendment says the systemd journal is a separate, known gap.
 
 ## Log
 - 2026-10-24 created in backlog (2026-10-24 macOS device run; owner decision on a device crash trace and PRD S2)
 - 2026-10-24 docs: slotted in the pre-M2 phase (wave 1, Agent)
+- 2026-11-07 TP-139 verdicts noted
