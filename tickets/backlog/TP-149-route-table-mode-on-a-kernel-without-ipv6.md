@@ -1,7 +1,7 @@
 ---
 id: TP-149
 title: "Route table: route-table mode on a Linux kernel without IPv6"
-milestone: M2
+milestone: later
 area: dataplane/routetable
 repo: thinkpol-vpn
 size: M
@@ -37,3 +37,4 @@ Route-table mode works on a Linux host booted with `ipv6.disable=1`: it applies 
 
 ## Log
 - 2026-10-29 created in backlog (TP-135 round-2 review, S3)
+- 2026-11-07 milestone → later (owner's MVP cut: rare kernel)

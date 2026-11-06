@@ -1,49 +1,43 @@
 ---
 id: TP-111
-title: "The node's own configuration caps the map"
+title: "`up`'s `-mode` defaults to `device`"
 milestone: M2
 area: agent
 repo: thinkpol-vpn
-size: M
+size: S
 depends_on: [TP-046, TP-166]
-refs: [docs/design/overlay.md#node-agent]
+refs: [A4, docs/design/overlay.md#node-agent]
 owner: ""
 branch: ""
 ---
 
 ## Goal
-A node does only what it was allowed to on the machine itself. The space's signed map acts within that ceiling and can never widen it (PRD Decisions, "The node's own configuration caps the map").
+A node starts as a device: it forwards nothing unless its node file allows it (PRD A4: a node starts with ingress and egress off). The map's node kind no longer picks how a node runs.
 
 ## Scope
-- The ceiling, in the node's local configuration (the root-owned file from TP-046; flags for the lab and development): a preset, `device` (the default) or `server`, and within `server` each capability on its own: ingress, egress (with `EgressAllowed`), relaying. `auto` goes: the map's node kind no longer picks how a node runs.
-- The node checks what the map asks of it against the ceiling:
-  - at start, a map that asks for more leaves the node down: a health problem says what was asked and what is allowed, and it carries no traffic;
-  - while running, a newer map that asks for more: the node keeps its last accepted capabilities, takes the rest of the map (peers, keys, revocations, routes), and reports the refusal in health and in the log; it saves only what it accepted, so a restart comes back to that;
-  - the owner lowering the ceiling under a running map is handled the same way.
-- A `device` node never answers names as an exit, never listens publicly and never forwards: the half-state of a server section run in device mode is gone.
-- macOS: a `server` preset is refused with "server nodes need Linux", with no suggestion to run as a device.
-- docs/runbook-pre-controller.md: the operator sets the ceiling on each server.
-- Lab: TestDNSFollowsTheRules and TestASecondAgentChangesNothing run their exits in server mode (TP-098 made server-mode exits resolve); the blob-tampering test needs another way to stage a tampered peer, since it relies on a server section run in device mode today (corrupt the peer's seed only if the server serves without checking it; otherwise a stand-in inside the worker's namespace).
+- `up`'s `-mode` defaults to `device`: no forwarding unless the node file allows it. `auto` goes.
+- The mode is read from the node file TP-166 builds (flags over env over the file over defaults); a bad value exits EX_CONFIG (78).
+- Lab: tests that ran their exits under `auto` set server mode.
 
 ## Out of scope
+- The capability-ceiling file mechanism (per-capability opt-in, the map checked against the ceiling at start and while running): TP-183 (after the MVP).
 - Nodes advertising their ceiling to the controller, and the builder refusing to publish a map that asks for more: M4 (TP-034, TP-038).
 - Devices as exits or as routers into a home network: after the MVP (docs/design/milestones.md, Out of scope).
 
 ## Acceptance
-- [ ] lab: a node whose map asks for more than its ceiling at start is down, with the health problem, and carries no traffic
-- [ ] lab: a running node given a newer map that asks for more keeps its capabilities, takes the map's other changes (a revoked peer is refused), reports the refusal, and comes back to the same state after a restart
-- [ ] lab: the owner lowering the ceiling under a running map is refused the same way
-- [ ] unit tests: the preset defaults to `device`; each capability is checked on its own
-- [ ] docs/design/overlay.md's "planned, TP-111" on the ceiling is removed
+- [ ] unit test: with no `-mode` and no node-file setting, `up` runs in device mode and forwards nothing
+- [ ] lab: a node whose map makes it an exit, started without the node file allowing server mode, carries no forwarded traffic
 - [ ] `make lint`, `make test`, `make lab-test` pass
 
 ## Notes
-- Owner decisions 2026-10-18: default `device`, opted into locally (Tailscale's model); a mismatch at start brings the node down; a mismatch at runtime keeps the last accepted capabilities and reports, never blocking the rest of the map (refusing a whole map would also refuse revocations and key rotations).
+- Owner decisions 2026-10-18: default `device`, opted into locally (Tailscale's model). The decisions on mismatches between the map and the ceiling are TP-183's.
 - Found through TP-098's review: a server section run with `-mode device` had no upstreams and logged a false reason.
 - **Slot (pre-M2 phase, 2026-10-24).** Wave 1, Agent lane: after TP-140. Starts only after the owner's TP-139 session, whose verdicts on its planned surface go into this ticket first. Keeps its 2026-10-18 decisions.
-- **TP-139 verdicts (TP-139 owner session, 2026-11-07; docs/design/api-overview.md "Verdicts", docs/design/configuration.md).** The ceiling lives in the node file that TP-166 builds (root-owned, 0600, `key = value`), with flags over env over the file over defaults; the map can only narrow it. Depends on TP-166. Its problem code is snake_case (F5); its switches are `on|off` toggles and its setting has the `<setting> [value]` shape (F6, F7); a bad value exits EX_CONFIG (78). Where accepted capabilities are kept stays this ticket's to decide (the node file holds operating settings only, no history).
+- **TP-139 verdicts (TP-139 owner session, 2026-11-07; docs/design/api-overview.md "Verdicts", docs/design/configuration.md).** The mode lives in the node file that TP-166 builds (root-owned, 0600), with flags over env over the file over defaults. Depends on TP-166. A bad value exits EX_CONFIG (78).
+- Split 2026-11-07 (owner's MVP cut): the capability-ceiling file mechanism moved to TP-183. Until it lands, RR42 holds for a node run in server mode.
 
 ## Log
 - 2026-10-18 created in backlog (owner decision: the node's configuration caps the map)
 - 2026-10-24 docs: slotted in the pre-M2 phase (wave 1, Agent)
 - 2026-11-07 TP-139 verdicts noted
+- 2026-11-07 split (owner's MVP cut): only the `device` default stays (PRD A4); the ceiling mechanism → TP-183

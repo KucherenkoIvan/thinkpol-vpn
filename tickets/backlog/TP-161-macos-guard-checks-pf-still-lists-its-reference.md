@@ -1,7 +1,7 @@
 ---
 id: TP-161
 title: "macOS guard: check that pf still lists the guard's reference while pf is on"
-milestone: M2
+milestone: later
 area: dataplane/firewall
 repo: thinkpol-vpn
 size: M
@@ -41,3 +41,4 @@ When pf is on and the guard's reference has vanished from pf's list, the guard n
 
 ## Log
 - 2026-10-29 created in backlog (TP-137 round-1 review)
+- 2026-11-07 milestone → later (owner's MVP cut: owner: if capacity)

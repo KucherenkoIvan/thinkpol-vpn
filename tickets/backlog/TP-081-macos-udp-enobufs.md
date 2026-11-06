@@ -1,7 +1,7 @@
 ---
 id: TP-081
 title: "UDP send backpressure on macOS (ENOBUFS)"
-milestone: M2
+milestone: later
 area: dataplane/transport
 repo: thinkpol-vpn
 size: S
@@ -33,3 +33,4 @@ On darwin, set a larger `SO_SNDBUF` on the link socket (check what is set today)
 - 2026-10-15 docs: ENOBUFS count corrected
 - 2026-10-15 docs (backlog grooming): depends on TP-019 for the device acceptance box
 - 2026-10-23 docs: waits for the `reality` transport (TP-087): the owner doesn't want plain `udp` load on the network for speed tests (TP-082 question 6)
+- 2026-11-07 milestone → later (owner's MVP cut: udp-only issue)

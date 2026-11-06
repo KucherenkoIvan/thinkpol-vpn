@@ -1,7 +1,7 @@
 ---
 id: TP-080
 title: "Links declared dead while traffic is still arriving"
-milestone: M2
+milestone: later
 area: dataplane/path
 repo: thinkpol-vpn
 size: M
@@ -26,7 +26,7 @@ Implement so a link must not be declared dead while it is still receiving authen
 
 ## Notes
 The path package doc (internal/dataplane/path/doc.go) has the 6 s dead interval; check that the change agrees with it, and update it in the same branch.
-- **Split (backlog grooming 2026-10-15):** NAT rebind / source-port change → TP-084; fast redial on network change → TP-085.
+- **Split (backlog grooming 2026-10-15):** NAT rebind / source-port change → TP-084; fast redial on network change → TP-085 (since 2026-11-07: TP-179).
 - **Run 4 itself:** the link stayed up through the speed test (status `links_up=1` before and after on both sides).
 
 ## Log
@@ -36,3 +36,5 @@ The path package doc (internal/dataplane/path/doc.go) has the 6 s dead interval;
 - 2026-10-15 docs (backlog grooming): split — this ticket keeps inbound-data proof of life; TP-084/TP-085 for the other triggers
 - 2026-10-15 docs (backlog grooming, review fixes): depends_on TP-019 for device checklist
 - 2026-10-23 docs: waits for the `reality` transport (TP-087): the owner doesn't want plain `udp` load on the network for speed tests (TP-082 question 6)
+- 2026-11-07 milestone → later (owner's MVP cut: robustness; re-check once reality runs)
+- 2026-11-07 notes: fast redial is TP-179 now (split from TP-085)

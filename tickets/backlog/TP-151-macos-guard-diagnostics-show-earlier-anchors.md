@@ -1,7 +1,7 @@
 ---
 id: TP-151
 title: "macOS guard diagnostics: show what the anchors before the hook hold"
-milestone: M2
+milestone: later
 area: dataplane/firewall
 repo: thinkpol-vpn
 size: M
@@ -35,3 +35,4 @@ branch: ""
 
 ## Log
 - 2026-10-29 created in backlog (TP-129 implementer report)
+- 2026-11-07 milestone → later (owner's MVP cut: diagnostics)
