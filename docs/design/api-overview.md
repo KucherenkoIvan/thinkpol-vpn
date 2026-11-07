@@ -207,8 +207,8 @@ The node file `node.json` and the device file `device.json` exist, `rules.local`
 
 | Surface | Behaviour |
 |---|---|
-| `-mode` / `THINKPOL_MODE` / node file `mode` | `device` (the default) or `server`; flags over the environment over the node file over the default. `auto` is gone: the map's node kind no longer picks how a node runs (PRD A4). `auto`, or any other value, exits 78 (`mode "auto" is gone: want device or server (a server sets server)`) |
-| a server section run as a device | forwards nothing; one that allows egress logs that it is no exit, and how to run it as a server |
+| `-mode` / `THINKPOL_MODE` / node file `mode` | `device` (the default) or `server`; flags over the environment over the node file over the default. `auto` is gone: the map's node kind no longer picks how a node runs (PRD A4). `auto`, or any other value, exits 78 (`mode "auto" is gone: want device or server (a server sets mode server)`) |
+| a server section run as a device | runs nothing of the map: no listener, link, relay or egress, and the host's network is left alone; status shows `mode_mismatch`, and the log says to set `"mode": "server"` in `node.json` (or `-mode server`) and restart. A map that makes a running device a server stops its data plane the same way |
 | `service install` | a node file without `mode` is installed as a device only while the map shows the node as one; otherwise a server's definition (no crash trace), warning that a server sets `"mode": "server"` |
 | upgrade | a server that relied on `auto` needs `"mode": "server"` in `node.json` (or `-mode server`) before it runs the new binary (runbook, "Updating a binary over SSH") |
 
@@ -372,7 +372,7 @@ The refusal's client message is fixed text, whatever the call. On macOS, before 
 
 ### F10. Usage errors don't say what was wrong
 
-`logs -n 0`, `service install -connect-on-boot maybe`, `service connect-on-boot maybe`, `rules preset` without an argument and `worker` without `-space` print only the synopsis. `up -mode bogus`, though, says `mode "bogus": want auto, device or server`. Its message also carries the go-kernel prefix `config: validation:`.
+`logs -n 0`, `service install -connect-on-boot maybe`, `service connect-on-boot maybe`, `rules preset` without an argument and `worker` without `-space` print only the synopsis. `up -mode bogus`, though, says `mode "bogus": want device or server`. Its message also carries the go-kernel prefix `config: validation:`.
 
 - **Suggested verdict: change (cheap).** Print one line of why before the synopsis, and drop the prefix.
 

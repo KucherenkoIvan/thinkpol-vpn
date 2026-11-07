@@ -95,7 +95,7 @@ func (n *runningNode) dataPlane(reg *transport.Registry, keys NodeKeys, m *netma
 	h.NewTUN = n.virtualTUN(nil)
 	h.Transports = func(bool) (*transport.Registry, error) { return reg, nil }
 	n.conn = newConnection(true, false)
-	return DataPlane{
+	dp := DataPlane{
 		Keys: keys, Map: m, Maps: n.maps, Registry: reg, Inbound: DirectInbound(reg),
 		Log:       slog.New(slog.NewTextHandler(n.log, &slog.HandlerOptions{Level: slog.LevelDebug})),
 		Namespace: h.WorkerHost,
@@ -105,6 +105,12 @@ func (n *runningNode) dataPlane(reg *transport.Registry, keys NodeKeys, m *netma
 		report:    &n.report,
 		events:    n.events.add,
 	}
+	if sec, err := openSection(m, keys); err == nil && sec.Node.Kind == netmap.NodeServer {
+		// A server's section runs as in a worker, without a device's
+		// host: device mode runs none.
+		dp.Device = nil
+	}
+	return dp
 }
 
 // noRefusals fails t if the data plane's connection refused a move; call
@@ -548,7 +554,7 @@ func TestAFailedStartClearsACrashedRunsRouteTable(t *testing.T) {
 	s := newTestSpace(t)
 	_, reg := memoryRegistry(t)
 	n := newRunningNode()
-	dp := n.dataPlane(reg, s.a, s.verified(t, 1))
+	dp := n.dataPlane(reg, s.b, s.verified(t, 1))
 	dp.RouteTable = true
 	var cleared atomic.Int32
 	dp.Device.ClearConfig = func(netcfg.Owner) error { cleared.Add(1); return nil }
@@ -598,7 +604,7 @@ func TestAFailedStartUndoesWhatItOpened(t *testing.T) {
 			n := newRunningNode()
 			ifc := &failingConfigurator{}
 			n.ifc = ifc
-			dp := n.dataPlane(reg, s.a, s.verified(t, 1))
+			dp := n.dataPlane(reg, s.b, s.verified(t, 1))
 			dp.RouteTable = true
 			var tunCloses, cleared atomic.Int32
 			virtual := dp.Namespace.NewTUN

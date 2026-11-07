@@ -212,7 +212,7 @@ func checkMode(m Mode) error {
 	case ModeDevice, ModeServer:
 		return nil
 	case "auto":
-		return fmt.Errorf("mode %q is gone: want %s or %s (a server sets %s)", m, ModeDevice, ModeServer, ModeServer)
+		return fmt.Errorf("mode %q is gone: want %s or %s (a server sets mode %s)", m, ModeDevice, ModeServer, ModeServer)
 	}
 	return fmt.Errorf("mode %q: want %s or %s", m, ModeDevice, ModeServer)
 }

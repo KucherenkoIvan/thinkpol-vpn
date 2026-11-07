@@ -31,9 +31,9 @@ func serverConfig(dir string) Config {
 // The service is installed for the node file's mode; a node file that
 // sets none leaves the node a device, installed as one only while its map
 // shows it as one: one the map makes a server or doesn't hold is
-// installed for a server, which keeps no crash trace, and said not known.
-// A state directory the node can't run from, or a node file asking for
-// the gone auto, is an error.
+// installed for a server, which keeps no crash trace, with why. A state
+// directory the node can't run from, or a node file asking for the gone
+// auto, is an error. Crash tracing (knownDevice) follows the same rule.
 func TestServiceModeIsTheNodesMode(t *testing.T) {
 	s := newTestSpace(t)
 	withMode := func(dir, mode string) string {
@@ -45,21 +45,24 @@ func TestServiceModeIsTheNodesMode(t *testing.T) {
 		return dir
 	}
 	for name, tc := range map[string]struct {
-		dir   string
-		mode  Mode
-		known bool
+		dir  string
+		mode Mode
+		why  ModeUnknown
 	}{
-		"a server set to server":        {withMode(s.stateDir(t, s.a, 1), "server"), ModeServer, true},
-		"a server, no mode":             {s.stateDir(t, s.a, 1), ModeServer, false},
-		"a device, no mode":             {s.stateDir(t, s.b, 1), ModeDevice, true},
-		"a server set to device":        {withMode(s.stateDir(t, s.a, 1), "device"), ModeDevice, true},
-		"a device set to server":        {withMode(s.stateDir(t, s.b, 1), "server"), ModeServer, true},
-		"a device missing from the map": {removed(s.stateDir(t, s.b, 1), s.b), ModeServer, false},
-		"one missing, set to device":    {withMode(removed(s.stateDir(t, s.b, 1), s.b), "device"), ModeDevice, true},
+		"a server set to server":        {withMode(s.stateDir(t, s.a, 1), "server"), ModeServer, ModeKnown},
+		"a server, no mode":             {s.stateDir(t, s.a, 1), ModeServer, UnknownMapShowsServer},
+		"a device, no mode":             {s.stateDir(t, s.b, 1), ModeDevice, ModeKnown},
+		"a server set to device":        {withMode(s.stateDir(t, s.a, 1), "device"), ModeDevice, ModeKnown},
+		"a device set to server":        {withMode(s.stateDir(t, s.b, 1), "server"), ModeServer, ModeKnown},
+		"a device missing from the map": {removed(s.stateDir(t, s.b, 1), s.b), ModeServer, UnknownNotInMap},
+		"one missing, set to device":    {withMode(removed(s.stateDir(t, s.b, 1), s.b), "device"), ModeDevice, ModeKnown},
 	} {
-		mode, known, err := ServiceMode(tc.dir)
-		if err != nil || mode != tc.mode || known != tc.known {
-			t.Errorf("%s: %q, known %v, %v", name, mode, known, err)
+		mode, why, err := ServiceMode(tc.dir)
+		if err != nil || mode != tc.mode || why != tc.why {
+			t.Errorf("%s: %q, why %d, %v", name, mode, why, err)
+		}
+		if device := tc.mode == ModeDevice && tc.why == ModeKnown; knownDevice(tc.dir) != device {
+			t.Errorf("%s: known to be a device %v", name, !device)
 		}
 	}
 	empty := filepath.Join(tempDir(t), "state")

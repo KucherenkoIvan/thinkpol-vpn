@@ -67,12 +67,11 @@ type Installer struct {
 	Executable string
 	// Ready says whether the node can run (its state directory), checked
 	// before anything is installed, and which mode the service is
-	// installed for (agent.ServiceMode; known false: the node file sets no
-	// mode and the map doesn't show a device, and it is installed as a
-	// server): a device's definition sends
-	// the agent's stderr to CrashTrace, a server's sends it nowhere on
-	// disk.
-	Ready func() (mode agent.Mode, known bool, err error)
+	// installed for (agent.ServiceMode; with why the node's mode isn't
+	// known, it is installed as a server, and told why): a device's
+	// definition sends the agent's stderr to CrashTrace, a server's sends
+	// it nowhere on disk.
+	Ready func() (mode agent.Mode, why agent.ModeUnknown, err error)
 	// CrashTrace is the device's crash trace file (agent.CrashTracePath),
 	// as the definition names it. A device's install makes it anew, 0600,
 	// before the service starts (agent.CreateCrashTrace); a server's
@@ -138,12 +137,15 @@ func (in Installer) Install(ctx context.Context, opts Options) error {
 	if err := in.System.Present(in.Root); err != nil {
 		return err
 	}
-	mode, known, err := in.Ready()
+	mode, why, err := in.Ready()
 	if err != nil {
 		return fmt.Errorf("this node can't run yet: %w", err)
 	}
-	if !known {
-		in.say("warning: the node file sets no mode and the map doesn't show this node as a device: installing a definition that keeps no crash trace. A server sets \"mode\": \"server\" in node.json (until then it runs as a device and forwards nothing); a device installs again once a map includes it")
+	switch why {
+	case agent.UnknownMapShowsServer:
+		in.say("warning: the map makes this node a server, but node.json sets no mode, so it runs as a device, which runs no server: it carries nothing until node.json sets \"mode\": \"server\" (installing a server's definition, which keeps no crash trace)")
+	case agent.UnknownNotInMap:
+		in.say("warning: node.json sets no mode and the map doesn't include this node yet: installing a definition that keeps no crash trace; a device installs again once a map includes it, or sets \"mode\": \"device\" in node.json")
 	}
 	def := in.definition(mode)
 	_, err = os.Lstat(in.path(in.System.DefinitionPath()))

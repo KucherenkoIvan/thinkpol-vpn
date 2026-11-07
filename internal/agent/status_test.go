@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/supervisor"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/path"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
@@ -720,14 +722,34 @@ func TestADeviceStartingDisconnectedNeedsTheAPI(t *testing.T) {
 	}
 }
 
+// hostTouches counts what a node does to its host's network through the
+// platform: TUNs, configurators, route tables, resolver configuration
+// and the clean-ups of a crashed run's.
+type hostTouches struct{ n atomic.Int32 }
+
+func (h *hostTouches) count(plat *Platform) {
+	tun, cfg, table := plat.NewTUN, plat.NewConfigurator, plat.NewRouteTable
+	plat.NewTUN = func(name string, mtu int) (wgtun.Device, error) { h.n.Add(1); return tun(name, mtu) }
+	plat.NewConfigurator = func(o netcfg.Owner) (netcfg.Configurator, error) { h.n.Add(1); return cfg(o) }
+	plat.NewRouteTable = func(l *slog.Logger, g routetable.Guard) (RouteEnforcer, error) { h.n.Add(1); return table(l, g) }
+	plat.ClearConfig = func(netcfg.Owner) error { h.n.Add(1); return nil }
+	plat.ClearRouteTable = func(routetable.Guard) error { h.n.Add(1); return nil }
+	plat.SetSystemDNS = func(dns.SystemConfig) (dns.System, error) { h.n.Add(1); return nil, errors.New("not here") }
+	plat.RestoreDNS = func() error { h.n.Add(1); return nil }
+}
+
 // With no mode set anywhere (environment, node file), a node whose map
-// makes it an exit runs as a device (PRD A4): its data plane forwards
-// nothing, and its log says why.
-func TestAnExitWithNoModeSetForwardsNothing(t *testing.T) {
+// makes it an exit (and a server devices link to) runs in device mode,
+// which runs no server's section (PRD A4): it opens no listener, so the
+// device that links to it gets no link and nothing is relayed or
+// forwarded, and it leaves the host alone: no TUN, route, resolver or
+// clean-up. Its status and log say why and what to set.
+func TestAServerWithNoModeSetRunsNothing(t *testing.T) {
 	unsetTHINKPOL(t)
 	s := newTestSpace(t)
-	_, reg := memoryRegistry(t)
-	a := startDevice(t, s, reg, true, deviceOpt{prepare: func(c *Config, _ *Platform) {
+	net, reg := memoryRegistry(t)
+	var host hostTouches
+	a := startDevice(t, s, reg, true, deviceOpt{prepare: func(c *Config, plat *Platform) {
 		dir := s.stateDir(t, s.a, 1)
 		writeFile(t, filepath.Join(dir, MapFileName), s.buildEditing(t, 1, s.a, func(sec *netmap.Section) { sec.Node.AllowEgress = true }), 0o644)
 		loaded, err := LoadConfig()
@@ -739,12 +761,54 @@ func TestAnExitWithNoModeSetForwardsNothing(t *testing.T) {
 			t.Fatal(err)
 		}
 		c.StateDir, c.Mode = dir, loaded.Mode
+		host.count(plat)
 	}})
-	st := a.connection(t, Connected)
-	if st.Mode != ModeDevice || st.DataPlane == nil || st.DataPlane.Exit {
+	var st Status
+	eventually(t, func() bool { st = a.node.Status(); return st.ModeMismatch })
+	if h := st.Health(); st.Mode != ModeDevice || st.DataPlane != nil || st.Listeners != 0 || st.Removed ||
+		h.Level != HealthDown || !slices.Equal(h.Problems, []Problem{ProblemModeMismatch}) {
+		t.Fatalf("status %+v, health %+v", st, h)
+	}
+	eventually(t, func() bool { return strings.Contains(a.log.String(), `in node.json (or -mode server) and restart`) })
+	if _, err := net.Dial(context.Background(), s.listen.String(), transport.DialConfig{Credential: s.secret}); err == nil ||
+		!strings.Contains(err.Error(), "connection refused") {
+		t.Fatalf("its listener: %v", err)
+	}
+
+	b := startNode(t, reg, s.b, s.verified(t, 1))
+	eventually(t, func() bool { return slices.Contains(b.status().Health().Problems, ProblemNoLinkUp) })
+	if dp := b.status().DataPlane; dp == nil || len(dp.Neighbors) != 1 || dp.Neighbors[0].Up {
+		t.Fatalf("the device's links: %+v", dp)
+	}
+	if n := host.n.Load(); n != 0 || a.tuns.Load() != 0 {
+		t.Fatalf("the host was touched %d times, %d TUNs", n, a.tuns.Load())
+	}
+}
+
+// A device the map makes a server stops its data plane, as on a removal,
+// says so (mode_mismatch), and starts again once the map makes it a
+// device again.
+func TestADeviceTheMapMakesAServerStops(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	startNode(t, reg, s.a, s.verified(t, 1))
+	b := startDevice(t, s, reg, true)
+	b.connection(t, Connected)
+	b.maps <- s.buildBoth(t, 2, func(a, b *netmap.Section) { b.Node.Kind, a.Inbound[0].PeerKind = netmap.NodeServer, netmap.NodeServer })
+	var st Status
+	eventually(t, func() bool { st = b.node.Status(); return st.ModeMismatch })
+	if h := st.Health(); st.DataPlane != nil || st.Listeners != 0 || st.Connection != Connecting || st.MapVersion != 2 ||
+		!slices.Equal(h.Problems, []Problem{ProblemModeMismatch}) {
+		t.Fatalf("status %+v, health %+v", st, h)
+	}
+	if !strings.Contains(b.log.String(), `in node.json (or -mode server) and restart`) {
+		t.Fatalf("log:\n%s", b.log)
+	}
+	b.maps <- s.build(t, 3)
+	st = b.connection(t, Connected)
+	if st.ModeMismatch || st.DataPlane == nil || slices.Contains(st.Health().Problems, ProblemModeMismatch) {
 		t.Fatalf("status %+v", st)
 	}
-	eventually(t, func() bool { return strings.Contains(a.log.String(), "not an exit here") })
 }
 
 // A device that starts disconnected (after a crash: `thinkpol up
