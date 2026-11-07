@@ -26,15 +26,15 @@ const serverName = "www.example.net"
 
 // target is a local TLS 1.3 site, the camouflage target REALITY imitates:
 // it answers any ClientHello for serverName with a self-signed certificate,
-// records the first bytes of every connection, and answers "site" to a
-// line of input after the handshake.
+// records every byte each connection sends it (reading on after a failed
+// handshake, until the far end closes), and answers "site" to a line of
+// input after the handshake.
 type target struct {
 	ln   net.Listener
 	cert *x509.Certificate
 
-	mu     sync.Mutex
-	starts [][]byte // each connection's first bytes, up to the ClientHello
-	conns  int
+	mu    sync.Mutex
+	conns []*recorder
 }
 
 var (
@@ -49,7 +49,10 @@ func theTarget(t testing.TB) *target {
 	return sharedTarget
 }
 
-func newTarget(t testing.TB) *target {
+func newTarget(t testing.TB) *target { return newTargetAt(t, "127.0.0.1:0") }
+
+// newTargetAt starts a target listening on address.
+func newTargetAt(t testing.TB, address string) *target {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -65,7 +68,7 @@ func newTarget(t testing.TB) *target {
 		t.Fatal(err)
 	}
 	cert, _ := x509.ParseCertificate(der)
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := net.Listen("tcp", address)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,16 +91,15 @@ func newTarget(t testing.TB) *target {
 }
 
 func (tg *target) serve(c net.Conn, cfg *tls.Config) {
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	_ = c.SetDeadline(time.Now().Add(10 * time.Second))
 	rec := &recorder{Conn: c}
-	tc := tls.Server(rec, cfg)
-	err := tc.Handshake()
 	tg.mu.Lock()
-	tg.conns++
-	tg.starts = append(tg.starts, rec.first())
+	tg.conns = append(tg.conns, rec)
 	tg.mu.Unlock()
-	if err != nil {
+	tc := tls.Server(rec, cfg)
+	if err := tc.Handshake(); err != nil {
+		_, _ = io.Copy(io.Discard, rec)
 		return
 	}
 	buf := make([]byte, 64)
@@ -108,14 +110,34 @@ func (tg *target) serve(c net.Conn, cfg *tls.Config) {
 
 func (tg *target) addr() string { return tg.ln.Addr().String() }
 
-// seen reports the starts of the connections the target has had so far.
-func (tg *target) seen() [][]byte {
+// received reports what each connection the target has had so far sent
+// it.
+func (tg *target) received() [][]byte {
 	tg.mu.Lock()
 	defer tg.mu.Unlock()
-	return append([][]byte(nil), tg.starts...)
+	out := make([][]byte, len(tg.conns))
+	for i, r := range tg.conns {
+		out[i] = r.bytes()
+	}
+	return out
 }
 
-// recorder keeps the first bytes read from a connection.
+// receivedExactly waits for a connection to the target to have sent it
+// exactly stream, and reports whether one did.
+func (tg *target) receivedExactly(stream []byte) bool {
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, b := range tg.received() {
+			if bytes.Equal(b, stream) {
+				return true
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return false
+}
+
+// recorder keeps what was read from a connection.
 type recorder struct {
 	net.Conn
 	mu  sync.Mutex
@@ -132,14 +154,9 @@ func (r *recorder) Read(p []byte) (int, error) {
 	return n, err
 }
 
-func (r *recorder) first() []byte {
+func (r *recorder) bytes() []byte {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if len(r.buf) >= recordHeaderSize {
-		if n := recordHeaderSize + int(r.buf[3])<<8 | int(r.buf[4]); n <= len(r.buf) {
-			return bytes.Clone(r.buf[:n])
-		}
-	}
 	return bytes.Clone(r.buf)
 }
 
@@ -179,17 +196,23 @@ func shortIDs() (credential, verifier []byte) {
 	return id, id
 }
 
-// interpose puts a TCP tap in front of address for the suite's Replay
-// test: replay sends each connection's client bytes again, whole, on a new
-// connection.
-func interpose(t *testing.T, address string) (string, func()) {
+// tap is a TCP man in the middle in front of an address: it passes
+// connections through and keeps what each dialer sent.
+type tap struct {
+	ln      net.Listener
+	address string
+
+	mu      sync.Mutex
+	streams []*bytes.Buffer
+}
+
+func newTap(t *testing.T, address string) *tap {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = ln.Close() })
-	var mu sync.Mutex
-	var captured []*bytes.Buffer
+	tp := &tap{ln: ln, address: address}
 	go func() {
 		for {
 			c, err := ln.Accept()
@@ -202,32 +225,51 @@ func interpose(t *testing.T, address string) (string, func()) {
 				continue
 			}
 			buf := &bytes.Buffer{}
-			mu.Lock()
-			captured = append(captured, buf)
-			mu.Unlock()
+			tp.mu.Lock()
+			tp.streams = append(tp.streams, buf)
+			tp.mu.Unlock()
 			go func() {
-				_, _ = io.Copy(io.MultiWriter(up, lockedWriter{&mu, buf}), c)
+				_, _ = io.Copy(io.MultiWriter(up, lockedWriter{&tp.mu, buf}), c)
 				_ = up.Close()
 			}()
 			go func() { _, _ = io.Copy(c, up); _ = c.Close() }()
 		}
 	}()
-	return ln.Addr().String(), func() {
-		mu.Lock()
-		streams := make([][]byte, len(captured))
-		for i, b := range captured {
-			streams[i] = bytes.Clone(b.Bytes())
-		}
-		mu.Unlock()
-		for _, s := range streams {
-			c, err := net.Dial("tcp", address)
-			if err != nil {
-				t.Fatal(err)
-			}
-			_, _ = c.Write(s)
-			t.Cleanup(func() { _ = c.Close() })
-		}
+	return tp
+}
+
+func (tp *tap) addr() string { return tp.ln.Addr().String() }
+
+// captured is what each dialer sent through the tap so far.
+func (tp *tap) captured() [][]byte {
+	tp.mu.Lock()
+	defer tp.mu.Unlock()
+	out := make([][]byte, len(tp.streams))
+	for i, b := range tp.streams {
+		out[i] = bytes.Clone(b.Bytes())
 	}
+	return out
+}
+
+// replay sends each stream captured so far again, whole, on a new
+// connection to the address, and returns them.
+func (tp *tap) replay(t *testing.T) [][]byte {
+	streams := tp.captured()
+	for _, s := range streams {
+		c, err := net.Dial("tcp", tp.address)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = c.Write(s)
+		t.Cleanup(func() { _ = c.Close() })
+	}
+	return streams
+}
+
+// interpose is the suite's Interpose: a tap whose replay is the suite's.
+func interpose(t *testing.T, address string) (string, func()) {
+	tp := newTap(t, address)
+	return tp.addr(), func() { tp.replay(t) }
 }
 
 type lockedWriter struct {

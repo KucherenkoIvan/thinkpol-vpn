@@ -2,7 +2,6 @@ package reality
 
 import (
 	"context"
-	"crypto/cipher"
 	"crypto/ecdh"
 	"crypto/ed25519"
 	"crypto/hmac"
@@ -66,26 +65,10 @@ func (t *Transport) handshake(ctx context.Context, tcp net.Conn, ds dialSettings
 	if err := uc.BuildHandshakeState(); err != nil {
 		return nil, fmt.Errorf("reality: build the ClientHello: %w", err)
 	}
-	hello := uc.HandshakeState.Hello
-	if len(hello.Raw) < sessionIDOffset+sessionIDSize || hello.Raw[sessionIDOffset-1] != sessionIDSize {
-		return nil, errors.New("reality: the ClientHello has no 32-byte session id")
+	var err error
+	if authKey, err = sealHello(uc, ds.serverKey, id, uint32(t.now().Unix())); err != nil {
+		return nil, err
 	}
-	priv := clientShare(uc)
-	if priv == nil {
-		return nil, errors.New("reality: the ClientHello has no X25519 key share")
-	}
-	shared, err := priv.ECDH(ds.serverKey)
-	if err != nil {
-		return nil, fmt.Errorf("reality: %w", err)
-	}
-	var aead cipher.AEAD
-	if authKey, aead, err = sealKey(shared, hello.Random); err != nil {
-		return nil, fmt.Errorf("reality: %w", err)
-	}
-	clear(hello.Raw[sessionIDOffset : sessionIDOffset+sessionIDSize])
-	seal(aead, hello.Raw, hello.Random, id, uint32(t.now().Unix()))
-	hello.SessionId = hello.Raw[sessionIDOffset : sessionIDOffset+sessionIDSize]
-
 	if err := uc.HandshakeContext(ctx); err != nil {
 		return nil, fmt.Errorf("reality: TLS handshake: %w", err)
 	}
@@ -94,6 +77,32 @@ func (t *Transport) handshake(ctx context.Context, tcp net.Conn, ds dialSettings
 		return nil, ErrNotAuthenticated
 	}
 	return uc, nil
+}
+
+// sealHello seals id and sent into the session id of uc's ClientHello,
+// built but not yet sent, and returns the auth key the listener's
+// certificate must prove.
+func sealHello(uc *utls.UConn, serverKey *ecdh.PublicKey, id shortID, sent uint32) ([]byte, error) {
+	hello := uc.HandshakeState.Hello
+	if len(hello.Raw) < sessionIDOffset+sessionIDSize || hello.Raw[sessionIDOffset-1] != sessionIDSize {
+		return nil, errors.New("reality: the ClientHello has no 32-byte session id")
+	}
+	priv := clientShare(uc)
+	if priv == nil {
+		return nil, errors.New("reality: the ClientHello has no X25519 key share")
+	}
+	shared, err := priv.ECDH(serverKey)
+	if err != nil {
+		return nil, fmt.Errorf("reality: %w", err)
+	}
+	authKey, aead, err := sealKey(shared, hello.Random)
+	if err != nil {
+		return nil, fmt.Errorf("reality: %w", err)
+	}
+	clear(hello.Raw[sessionIDOffset : sessionIDOffset+sessionIDSize])
+	seal(aead, hello.Raw, hello.Random, id, sent)
+	hello.SessionId = hello.Raw[sessionIDOffset : sessionIDOffset+sessionIDSize]
+	return authKey, nil
 }
 
 // clientShare is the private half of the share the seal is keyed with,

@@ -52,6 +52,7 @@ Each package's `doc.go` holds its mechanism; this table is the way in.
 | [`dataplane/path`](internal/dataplane/path/doc.go) | destination routing, liveness, failover |
 | [`dataplane/transport`](internal/dataplane/transport/doc.go), [`shaping`](internal/shaping/doc.go) | the transport port, shaping, planned stream transports |
 | [`dataplane/transport/udp`](internal/dataplane/transport/udp/doc.go) | `udp`: wire format, replay rules, bounds |
+| [`dataplane/transport/reality`](internal/dataplane/transport/reality/doc.go) | `reality`: the seal, the splice, frames |
 | [`dataplane/rules`](internal/dataplane/rules/doc.go) | matchers, presets, compilation into prefixes |
 | [`dataplane/routetable`](internal/dataplane/routetable/doc.go), [`dataplane/netcfg`](internal/dataplane/netcfg/doc.go) | route-table mode on Linux and macOS; routes and rules |
 | [`dataplane/ifbind`](internal/dataplane/ifbind/doc.go), [`dataplane/trusteddir`](internal/dataplane/trusteddir/doc.go), [`dataplane/nsthread`](internal/dataplane/nsthread/doc.go) | socket binding; trusted directories; namespace threads |

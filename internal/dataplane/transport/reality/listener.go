@@ -19,6 +19,10 @@ const (
 	// helloTimeout bounds reading the ClientHello. What doesn't arrive in
 	// time goes to the camouflage with whatever did.
 	helloTimeout = 10 * time.Second
+	// handshakeTimeout bounds REALITY's handshake, which has no deadline
+	// of its own, once the ClientHello authenticated: a dialer holding a
+	// credential that stalls there would hold the connection for good.
+	handshakeTimeout = 15 * time.Second
 	// detectWait bounds how long Listen waits for REALITY to learn the
 	// target's post-handshake records.
 	detectWait = 10 * time.Second
@@ -267,11 +271,13 @@ func (l *listener) serve(conn net.Conn) {
 		l.camo.Stream(conn, record)
 		return
 	}
+	_ = conn.SetDeadline(time.Now().Add(handshakeTimeout))
 	tlsConn, err := xreality.Server(context.Background(), &replayConn{Conn: conn, prefix: record}, l.realityConfig(id))
 	l.untrack(conn)
 	if err != nil {
 		return // REALITY spliced the connection to the target or closed it
 	}
+	_ = conn.SetDeadline(time.Time{})
 	l.admit(tlsConn, conn, id, peer)
 }
 
@@ -404,5 +410,5 @@ func (c *replayConn) CloseWrite() error {
 	if cw, ok := c.Conn.(interface{ CloseWrite() error }); ok {
 		return cw.CloseWrite()
 	}
-	return c.Conn.Close()
+	return c.Close()
 }

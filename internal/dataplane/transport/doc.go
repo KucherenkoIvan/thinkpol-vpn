@@ -71,7 +71,7 @@
 // the tunnel. Transports may rely on clocks: nodes' clocks must agree
 // within five minutes ([MaxClockSkew]), and a transport that seals a send
 // time checks it with [FreshUnix] (udp drops datagrams sealed further than
-// that from its own clock).
+// that from its own clock), or with [FreshWithin] for a narrower window.
 //
 // # Traffic shape
 //
@@ -134,12 +134,12 @@
 // listener (ListenStream) and gives the worker a [HandoffListener] for the
 // connections passed to it.
 //
-// # Stream transports (planned)
+// # Stream transports
 //
-// No stream transport exists yet; what follows is the design the port's
-// stream side ([StreamRoutable], [StreamRouter], [HandoffListener]) is
-// shaped for, and what TP-087 (`reality`, M2) and TP-028 (`tls`, after the
-// MVP) build to.
+// `reality` (package reality, TP-087) is the first stream transport; it
+// doesn't sit behind a server node's shared listener yet. `tls` (TP-028)
+// comes after the MVP. What follows is the design the port's stream side
+// ([StreamRoutable], [StreamRouter], [HandoffListener]) is shaped for.
 //
 // `tls` is TLS 1.3 with a browser fingerprint (uTLS), for node-to-node
 // links. The client's auth token rides in the ClientHello, so a server
@@ -205,7 +205,8 @@
 // is still ours (REALITY's stack, not the target's), so the first tell
 // remains for a censor that compares members' sessions with the site's;
 // and every failed probe still dials the target, the same upstream tell as
-// `tls`'s proxying. What it removes is a certificate of our own to manage.
+// `tls`'s proxying (REALITY dials it for authenticated connections too, to
+// imitate its ServerHello). What it removes is a certificate of our own to manage.
 // The lab's prober measures both tells (TP-026, TP-032), for `reality`
 // too, and the matrix shows them.
 package transport
