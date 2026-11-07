@@ -82,7 +82,7 @@ func TestCensorMatrix(t *testing.T) {
 			}
 		}
 		if want == "fail" {
-			how, err := blockedBy(t, l, c)
+			how, err := blockedBy(t, l, c, cc.blocker)
 			if err != nil {
 				t.Error(err)
 			} else if cell.result == "fail" {
@@ -195,6 +195,9 @@ type censorCase struct {
 	// a transport not in it must pass.
 	expect  map[string]string
 	modules func(t *testing.T, l *lab.Lab) []censor.ModuleConfig // nil: no censord
+	// blocker is the module a cell expected to fail must find blocking
+	// in the verdict log.
+	blocker string
 }
 
 func (cc censorCase) want(transport string) string {
@@ -204,24 +207,56 @@ func (cc censorCase) want(transport string) string {
 	return "pass"
 }
 
-// Row names. The plain-tcp row is no transport: it is the control that TCP
-// on the underlay, what a TLS-shaped transport rides, crosses the censor.
+// Row names. The control rows are no transports: plain TCP and HTTPS on
+// the underlay, what a TLS-shaped transport rides, cross the censor. The
+// reference rows are real WireGuard and OpenVPN, what the fingerprint
+// modules must block.
 const (
-	rowUDP      = "udp"
-	rowPlainTCP = "plain-tcp (control)"
+	rowUDP        = "udp"
+	rowPlainTCP   = "plain-tcp (control)"
+	rowHTTPS      = "https (control)"
+	rowWireGuard  = "wireguard (reference)"
+	rowOpenVPNUDP = "openvpn-udp (reference)"
+	rowOpenVPNTCP = "openvpn-tcp (reference)"
 )
+
+// allFail expects every row to fail.
+func allFail() map[string]string {
+	m := map[string]string{}
+	for _, tr := range transports {
+		m[tr.name] = "fail"
+	}
+	return m
+}
 
 var censorCases = []censorCase{
 	{name: "off"},
-	{name: "block-ip (elsewhere)", modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig {
-		return []censor.ModuleConfig{{Name: "block-ip", Settings: json.RawMessage(
-			`{"destinations": ["203.0.113.9", "2001:db8::9"]}`)}}
+	// Lists that name neither server-1 nor the https row's site: plain
+	// HTTPS to an unlisted site passes, and so does everything else.
+	{name: "blocklists (elsewhere)", modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig {
+		return []censor.ModuleConfig{
+			{Name: "ip-blocklist", Settings: json.RawMessage(`{"addresses": ["203.0.113.9", "2001:db8::/32"]}`)},
+			{Name: "sni-blocklist", Settings: json.RawMessage(`{"names": ["blocked.example.net"]}`)},
+		}
 	}},
-	{name: "block-ip (entry)", expect: map[string]string{rowUDP: "fail", rowPlainTCP: "fail"},
-		modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig { return entryBlockSettings(t, l, "drop") }},
-	// Reset is TCP's; on udp the engine drops instead.
-	{name: "block-ip reset (entry)", expect: map[string]string{rowUDP: "fail", rowPlainTCP: "fail"},
-		modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig { return entryBlockSettings(t, l, "reset") }},
+	{name: "ip-blocklist (entry)", expect: allFail(), blocker: "ip-blocklist",
+		modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig { return entryIPBlocklist(t, l) }},
+	// Reset, its default: plain TCP, OpenVPN over TCP and the rest name
+	// no site.
+	{name: "sni-blocklist (entry)", expect: map[string]string{rowHTTPS: "fail"}, blocker: "sni-blocklist",
+		modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig {
+			return []censor.ModuleConfig{{Name: "sni-blocklist", Settings: json.RawMessage(`{"names": ["` + httpsName + `"]}`)}}
+		}},
+	// thinkpol's udp carries WireGuard, but nothing on its wire looks like
+	// it (C1, TestM0): it passes.
+	{name: "wireguard-fingerprint", expect: map[string]string{rowWireGuard: "fail"}, blocker: "wireguard-fingerprint",
+		modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig {
+			return []censor.ModuleConfig{{Name: "wireguard-fingerprint", Settings: json.RawMessage(`{}`)}}
+		}},
+	{name: "openvpn-fingerprint", expect: map[string]string{rowOpenVPNUDP: "fail", rowOpenVPNTCP: "fail"}, blocker: "openvpn-fingerprint",
+		modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig {
+			return []censor.ModuleConfig{{Name: "openvpn-fingerprint", Settings: json.RawMessage(`{}`)}}
+		}},
 	// An M2 gate check (docs/design/milestones.md): no row carries
 	// WireGuard in TLS yet, so every row passes. A TLS-shaped transport's
 	// pass means something only when its probe runs long enough for the
@@ -230,6 +265,19 @@ var censorCases = []censorCase{
 	{name: "wireguard-rhythm", modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig {
 		return []censor.ModuleConfig{{Name: "wireguard-rhythm", Settings: json.RawMessage(`{}`)}}
 	}},
+}
+
+// entryIPBlocklist lists server-1's addresses.
+func entryIPBlocklist(t *testing.T, l *lab.Lab) []censor.ModuleConfig {
+	t.Helper()
+	b, err := json.Marshal(map[string][]string{"addresses": {
+		l.Node(lab.Server1).IPv4(lab.NetServers).String(),
+		l.Node(lab.Server1).IPv6(lab.NetServers).String(),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return []censor.ModuleConfig{{Name: "ip-blocklist", Settings: b}}
 }
 
 // probeTarget is what a probe sends to: overlay addresses for a transport,
@@ -249,7 +297,11 @@ type transport struct {
 
 var transports = []transport{
 	{rowPlainTCP, setupPlainTCP, probePlainTCP, sawPlainTCP},
+	{rowHTTPS, setupHTTPS, probeHTTPS, sawHTTPS},
 	{rowUDP, setupUDP, probeUDP, sawUDP},
+	{rowWireGuard, setupWireGuard, probeUDP, sawWireGuard},
+	{rowOpenVPNUDP, openVPN{"udp"}.setup, openVPN{"udp"}.probe, openVPN{"udp"}.sawFlows},
+	{rowOpenVPNTCP, openVPN{"tcp"}.setup, openVPN{"tcp"}.probe, openVPN{"tcp"}.sawFlows},
 }
 
 // probeWindow is how long a probe retries a family that should cross; one
@@ -336,23 +388,25 @@ func sawUDP(t *testing.T, l *lab.Lab, c *censorRun) error {
 	return nil
 }
 
-// blockedBy checks the verdict log blamed block-ip for the blocked cell:
-// it dropped or reset packets to server-1. It returns which.
-func blockedBy(t *testing.T, l *lab.Lab, c *censorRun) (string, error) {
+// blockedBy checks the verdict log blamed the case's blocker for the
+// blocked cell: it dropped or reset packets to or from server-1. It
+// returns which.
+func blockedBy(t *testing.T, l *lab.Lab, c *censorRun, blocker string) (string, error) {
 	if c == nil {
 		return "", fmt.Errorf("a blocking cell without a censor")
 	}
 	server := l.Node(lab.Server1)
+	isServer := func(a netip.Addr) bool { return a == server.IPv4(lab.NetServers) || a == server.IPv6(lab.NetServers) }
 	var verdicts []string
 	for _, v := range []censor.Verdict{censor.Drop, censor.Reset} {
 		if c.logged(t, func(e verdictLine) bool {
-			return e.Verdict == v && e.Module == "block-ip" && (e.Key.Dst == server.IPv4(lab.NetServers) || e.Key.Dst == server.IPv6(lab.NetServers))
+			return e.Verdict == v && e.Module == blocker && (isServer(e.Key.Dst) || isServer(e.Key.Src))
 		}) {
 			verdicts = append(verdicts, map[censor.Verdict]string{censor.Drop: "dropped", censor.Reset: "reset"}[v])
 		}
 	}
 	if len(verdicts) == 0 {
-		return "", fmt.Errorf("the transport stopped, but the verdict log has no block-ip drop or reset to server-1")
+		return "", fmt.Errorf("the transport stopped, but the verdict log has no %s drop or reset of server-1's traffic", blocker)
 	}
 	return strings.Join(verdicts, " and "), nil
 }
@@ -567,7 +621,8 @@ func writeResults(t *testing.T, cells []matrixCell, expected int) {
 	b.WriteString("Did a transport's data cross the censor in the lab router, device-a to server-1: " +
 		"pass when it crossed over IPv4 and over IPv6, fail when it crossed over neither " +
 		"(one family alone is partial, which no cell expects: the run fails and this file is not written). Every cell is probed. " +
-		"`plain-tcp (control)` is not a transport: it shows that plain TCP on the underlay crosses the censor, and that the censor sees it.\n\n")
+		"The `(control)` rows are not transports: they show that plain TCP and HTTPS on the underlay cross the censor, and that the censor sees them. " +
+		"The `(reference)` rows are real WireGuard and OpenVPN, which the fingerprint modules must block.\n\n")
 	b.WriteString("| transport | censor | result | detail |\n|---|---|---|---|\n")
 	for _, c := range cells {
 		fmt.Fprintf(&b, "| %s | %s | %s | %s |\n", c.transport, c.censor, c.result, strings.ReplaceAll(c.detail, "|", `\|`))

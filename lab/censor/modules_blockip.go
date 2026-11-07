@@ -11,8 +11,8 @@ func init() {
 }
 
 // blockIP is the framework's end-to-end proof: it decides every packet
-// whose destination is on one of its networks, and nothing else. Real
-// blocklist modules (TP-025) replace it in the matrix.
+// whose destination is on one of its networks, and nothing else. The
+// matrix's address blocklist is ip-blocklist.
 type blockIP struct {
 	dests       []netip.Prefix
 	verdict     Verdict

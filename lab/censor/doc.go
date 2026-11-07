@@ -112,9 +112,45 @@
 // New modules join by registering themselves. Two modules prove the
 // framework, and are not censors of their own: block-ip decides packets
 // by destination (optionally only those with payload, so a handshake
-// completes first), and replay, passive and active at once, tags a TCP
+// completes first; the matrix's address blocklist is ip-blocklist), and replay, passive and active at once, tags a TCP
 // flow to its destinations once its stream holds a whole TLS record and
 // replays the retained bytes to the flow's destination from the router.
+//
+// The blocklists and the VPN fingerprints are what real censors block
+// first (docs/design/lab.md "Censor lab"), each pinning its verdict to the
+// flows it blocks and retiring from the flows it has judged otherwise:
+//
+//   - ip-blocklist blocks every packet to or from a listed address or
+//     network, either end of a connection, both families (drop by
+//     default). A list of any length costs one map lookup per prefix
+//     length it uses.
+//   - sni-blocklist blocks a TCP connection whose ClientHello asks for a
+//     listed name or a name under one (reset by default). It reads the
+//     ClientHello from the stream, so one split over segments, out of
+//     order, or over TLS records is read whole; its packets pass until
+//     it is, and the packet that completes it meets the verdict. A stream
+//     that starts otherwise, is joined midstream, or whose ClientHello
+//     outgrows the prefix is not judged; a ClientHello without a name
+//     passes, and so does ECH's inner name, which it can't read.
+//   - wireguard-fingerprint blocks a UDP flow on its first datagram that
+//     looks like a WireGuard message, on any port: a type from 1 to 4
+//     and three zero bytes, at the type's size (148-byte initiations,
+//     92-byte responses, 64-byte cookie replies, transport data of 32
+//     bytes or more in 16-byte steps; drop by default). Transport data
+//     alone matches, so a tunnel up before the censor is caught too.
+//     thinkpol's udp transport carries WireGuard, but nothing on its
+//     wire looks like it (PRD C1, lab TestM0), so it passes.
+//   - openvpn-fingerprint blocks an OpenVPN connection, over UDP or TCP
+//     (each packet behind its length), on any port, by its handshake's
+//     opcodes (Xue et al., USENIX Security 2022): the client's first
+//     packet a hard reset (opcode 7, or 10 with tls-crypt-v2), the
+//     server's first its answer (8), the client's next a control or ack
+//     packet (4, 5 or 11) with its reset's session id, all of key id 0.
+//     The client's second packet and the connection after it, both ways,
+//     meet the verdict (drop by default). tls-auth and tls-crypt leave
+//     these bytes in the clear; a connection past its handshake when the
+//     censor started passes, and so does one that strays from the
+//     pattern (an obfuscating patch, a static key).
 //
 // wireguard-rhythm is a censor of its own, one of the M2 gate's checks
 // (docs/design/milestones.md): it frames each TCP stream's TLS records and
@@ -227,9 +263,13 @@
 // Every cell is probed, and one whose censor can't be trusted (censord
 // died, the kernel dropped queued packets ([QueueStats]), the verdict log
 // lacks the probe's flows) is an error, which keeps lab/RESULTS.md from
-// being written. A plain-tcp (control) row checks that plain TCP on the
-// underlay, what TLS-shaped transports ride, crosses the censor and is
-// seen by it.
+// being written, and a blocked cell fails unless the verdict log blames
+// the module its case names. Control rows check that plain TCP and HTTPS to an
+// unlisted site on the underlay, what TLS-shaped transports ride, cross
+// the censor and are seen by it; reference rows run real WireGuard
+// (kernel) and OpenVPN (UDP and TCP), one tunnel per underlay family,
+// their handshakes starting once the censor is up, so the fingerprint
+// modules are judged on the real thing.
 //
 // # Limits
 //
