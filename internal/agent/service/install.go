@@ -223,8 +223,9 @@ func (in Installer) noAgent() error {
 // Uninstall stops the service (the agent takes its data plane down as it
 // stops), then, holding the host lock (refused while an agent still holds
 // it), undoes what a crashed agent left on the host (ClearHost: a
-// device's and a server's), removes the definition, the binary, and what
-// the stopped agent left in its runtime directories. The group stays (it
+// device's and a server's), removes the definition, the binary, the
+// device's crash trace, and what the stopped agent left in its runtime
+// directories. The group stays (it
 // may be older than the service); so does the node's state directory,
 // its keys and map.
 //

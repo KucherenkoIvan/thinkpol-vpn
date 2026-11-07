@@ -19,6 +19,7 @@ import (
 //	blobs/     blobs the map names, each in a file named by its SHA-256 (hex)
 //	node.json  the operator's settings (NodeFile), if any
 //	device.json  a member's toggles on a device (DeviceFile), once one was set
+//	crash-trace  a device's service's stderr: its last run's crash (CrashTraceFile)
 //
 // `thinkpol up` writes nothing there but device.json, when the local API
 // changes a toggle (or a start carries rules.local, LocalRulesFile, over
@@ -27,8 +28,10 @@ import (
 // map changes once the successor is verified (diskBlobs). A server only
 // reads blobs/, its seeds, when the supervisor sends them to a worker:
 // what it fetches stays in its workers' memory. Every blob is checked
-// against the map before use, wherever it was read. No pid, lock or log
-// file there or anywhere else on disk (the agent's, netcfg's and the local
+// against the map before use, wherever it was read. The service manager
+// writes crash-trace, a device's only, which `up` reads and empties
+// (TakeCrashTrace). No pid, lock or log file there or anywhere else on
+// disk (the agent's, netcfg's and the local
 // API's locks are on /run, a tmpfs; macOS has none: /private/var/db).
 //
 // The directory, the key files, the map and the map's directory must be

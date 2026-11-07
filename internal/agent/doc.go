@@ -95,7 +95,27 @@
 // but under systemd stderr is the journal, which keeps it on disk unless
 // the journal is volatile: nothing sets that yet (provisioning will,
 // TP-038; RESIDUAL-RISKS.md RR40). The local API serves the ring to root
-// only, since debug lines may quote the map. A server's workers log at the
+// only, since debug lines may quote the map.
+//
+// A device's crash trace is PRD S2's one exception: under a device's
+// service, stderr is [CrashTraceFile] in the state directory, which the
+// service manager opens for each run, appending (package service, "The
+// definitions"). `up` first thing, before anything of the run writes to
+// stderr, reads what the previous run left there ([TakeCrashTrace]: the
+// head, up to [CrashTraceLimit]), empties the file, and makes it root's
+// and 0600 whatever the manager created it with (0644 as a rule), and
+// says so in the log; one it can't fix or empty stops the start. The
+// agent's log then goes only to the ring, so the file holds what the
+// runtime writes there (a panic's trace, a fatal error's, SIGQUIT's
+// goroutine dump) and the error `up` exits with: nothing on a clean stop,
+// and nothing from a kill. Emptied at every start, it holds one run at
+// most. Status says the last run crashed (Status.LastRunCrashed) and
+// Diagnostics has the trace, root's only ([Node.KeepLastRun]). A stderr
+// that isn't the file (a terminal, the journal, a server's service)
+// leaves it alone, and the log goes to stderr as ever. It survives a
+// reboot, unlike the runtime directory (/run on Linux), so a crash just
+// before one is still there, and the manager can open it before the agent
+// has made any directory of its own. A server's workers log at the
 // node's level; only the node owner's space's worker output joins the
 // node's log, line by line, prefixed with its space and sanitized
 // ([Sanitize]), while a guest space's stays in its own ring in the
