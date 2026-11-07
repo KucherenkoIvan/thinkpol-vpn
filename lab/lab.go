@@ -74,8 +74,12 @@ func start(t testing.TB, topo Topology, slotKey string) *Lab {
 	if err != nil {
 		t.Fatal(err)
 	}
+	run, err := runID()
+	if err != nil {
+		t.Fatal(err)
+	}
 	cwd, _ := os.Getwd()
-	project := claimProject(testProject(checkout, cwd, t.Name()))
+	project := claimProject(testProject(checkout, run, cwd, t.Name()))
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	// The run's directory, for .kept; up gets the same one.
@@ -87,7 +91,8 @@ func start(t testing.TB, topo Topology, slotKey string) *Lab {
 	// -timeout panic): .kept lists it before it starts, so its binaries stay
 	// until labctl down finds it down (except for one accepted gap, see
 	// sweepBinRoot). Without KeepEnv, a lab the run leaves up loses its
-	// binaries to the next sweep; labctl down -tests removes it.
+	// binaries to the next sweep; its run's clean-up (labctl down -run,
+	// at the end of make lab-test) or make lab-down removes it.
 	keep := os.Getenv(KeepEnv) != ""
 	if keep {
 		if err := p.bin.recordLab(project); err != nil {
