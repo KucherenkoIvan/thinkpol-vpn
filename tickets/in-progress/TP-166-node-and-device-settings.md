@@ -82,3 +82,4 @@ A Mac with this branch's `thinkpol` installed as a service (`sudo thinkpol servi
 - 2026-11-07 not verified: the macOS device checklist (Notes; the owner's, in a later Mac session); launchd's plist runs `up -service` only as files and fake launchctl here
 - 2026-11-07 in-progress → review
 - 2026-11-07 review → has-errors (round 1 findings R1.x)
+- 2026-11-07 has-errors → in-progress, owner: agent-tp-166 (round 1 fixes)
