@@ -42,9 +42,9 @@ Two lab runs from one checkout at once (`make lab-gotest` beside `make lab-test`
 - [x] R1.3 (should-fix) docs/design/api-overview.md "Lab variables" lacks `THINKPOL_LAB_RUN`; lab/README.md should say not to export it
 - [x] R1.4 (should-fix, minimal) labs a killed run leaked are no longer removed by the next `make lab-test`: lab/README.md says to run `make lab-down` after an interrupted run
 - [x] R1.5 (nit) stale comments: harness_test.go (TestLongestProjectNameStarts, TestLongestProjectNames' claim), bindir_lab_test.go override reason, lab.go and bindir_test.go still describing `down -tests` at the end of lab-test
-- [ ] R2.1 (should-fix) `labctl down r1 -run r1` or `labctl down r1` stops flag parsing at the positional argument, so runGiven stays false and DownCheckout removes every lab of the checkout: `labctl down` rejects positional arguments with a usage error; unit test before any Docker call
-- [ ] R2.2 (should-fix, test gap) TestDownRunRemovesItsRunsLabAndBinaries has no lab of the same project name under another root, so a DownRun without its labRoot == root filter passes: add one and assert DownRun leaves it
-- [ ] R2.3 (nit, test oracle) the fixture ticks acceptance box 3 without a kept lab, and the stateless fake docker never shows compose down was asked: add a kept lab (in the run directory's .kept) and assert through the fake's recorded calls that compose down ran for each project DownCheckout reports removed, and that DownRun asked for no others
+- [x] R2.1 (should-fix) `labctl down r1 -run r1` or `labctl down r1` stops flag parsing at the positional argument, so runGiven stays false and DownCheckout removes every lab of the checkout: `labctl down` rejects positional arguments with a usage error; unit test before any Docker call
+- [x] R2.2 (should-fix, test gap) TestDownRunRemovesItsRunsLabAndBinaries has no lab of the same project name under another root, so a DownRun without its labRoot == root filter passes: add one and assert DownRun leaves it
+- [x] R2.3 (nit, test oracle) the fixture ticks acceptance box 3 without a kept lab, and the stateless fake docker never shows compose down was asked: add a kept lab (in the run directory's .kept) and assert through the fake's recorded calls that compose down ran for each project DownCheckout reports removed, and that DownRun asked for no others
 
 ## Log
 - 2026-10-29 created in backlog (TP-121 R1.10 follow-up)
@@ -67,3 +67,7 @@ Two lab runs from one checkout at once (`make lab-gotest` beside `make lab-test`
 - 2026-11-07 fix round 1: re-run of the full make lab-test on a65939e under the exclusive CPU lock (LAB_P=4) passed: lab/ packages ok, gotest ok for 37 packages
 - 2026-11-07 has-errors → review
 - 2026-11-07 review → has-errors (round 2 findings R2.x)
+- 2026-11-07 fix round 2: R2.1 labctl down rejects positional arguments with a usage error before asking Docker (lab/labctl/main.go; lab/labctl/main_test.go TestDownRejectsPositionalArgumentsBeforeDocker: down r1, down r1 -run r1, down -tests r1). Mutation: the fs.NArg() check disabled: fails
+- 2026-11-07 fix round 2: R2.2 and R2.3 TestDownRunRemovesItsRunsLabAndBinaries (lab/bindir_test.go) adds a lab named as run r1's under another checkout's root and a kept lab of run r2 listed in an ended run directory's .kept; the fake docker records its calls and the test checks the projects compose down was asked for: DownRun only r1's lab (the kept lab's directory stays while it is up), DownCheckout every lab of the checkout, the kept one included, never the other checkout's. Mutations: DownRun without labRoot == root: fails (other checkout's lab removed); compose ps instead of compose down in downProject: fails; DownCheckout skipping run r2's labs: fails
+- 2026-11-07 fix round 2: make lint and make test green on 765840a's tree; no make lab-test this round (labctl argument checking and unit tests only, per the round's brief); rewrite unchanged at b1930a9
+- 2026-11-07 has-errors → review
