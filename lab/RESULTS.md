@@ -10,7 +10,9 @@ Did a transport's data cross the censor in the lab router, device-a to server-1:
 | plain-tcp (control) | block-ip (entry) | fail | neither IPv4 nor IPv6 crossed; the censor dropped them |
 | plain-tcp (control) | block-ip reset (entry) | fail | neither IPv4 nor IPv6 crossed; the censor reset them |
 | plain-tcp (control) | off | pass |  |
+| plain-tcp (control) | wireguard-rhythm | pass |  |
 | udp | block-ip (elsewhere) | pass |  |
 | udp | block-ip (entry) | fail | neither IPv4 nor IPv6 crossed; the censor dropped them |
 | udp | block-ip reset (entry) | fail | neither IPv4 nor IPv6 crossed; the censor dropped them |
 | udp | off | pass |  |
+| udp | wireguard-rhythm | pass |  |
