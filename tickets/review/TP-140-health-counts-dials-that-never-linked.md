@@ -28,7 +28,7 @@ A device whose dialed exit never linked says so in its health, instead of `conne
 - [x] a unit test: a dial with no link past the deadline raises the problem; before the deadline it doesn't; a link that comes up clears it
 - [x] a unit test: no DNS upstream raises its problem; one configured clears it
 - [x] lab: a device whose only exit drops every packet reports the problem in `thinkpol status`, and `health` isn't ok
-- [ ] `make lint`, `make test`, `make lab-test` pass
+- [x] `make lint`, `make test`, `make lab-test` pass
 
 ## Notes
 - **Order (owner, 2026-10-24).** In the before-M2 list (wave 1, Agent): done before the M2 lanes (disguise, censor lab, kill switch) start. M2's job is links that censors break, so health that says ok with no link makes every lab verdict unreliable.
@@ -49,3 +49,5 @@ A device whose dialed exit never linked says so in its health, instead of `conne
 - 2026-11-07 the lab "every dial fails" subtest is the regression guard: the udp transport's Dial only opens a socket (no handshake), so a server that drops every packet still gives an unproven link, listed down, and that case raised no_link_up before this branch (read from the code, not re-run without the fix)
 - 2026-11-07 merged origin/rewrite (TP-130); make lint, make test green; lab TestHealthWithNoLinkUp passed
 - 2026-11-07 not verifiable here: the macOS connect-on-boot case (TP-144's device re-run); lab devices read `nameserver 127.0.0.1` as an upstream, so dns_no_upstream is unit-tested only
+- 2026-11-07 make lab-test green on e0b30da (lab, lab/censor, lab/ip, lab/prototypes/reality ok; 36 packages in a lab node ok); an earlier full run was cut off by a session time limit, not by a failure
+- 2026-11-07 in-progress → review
