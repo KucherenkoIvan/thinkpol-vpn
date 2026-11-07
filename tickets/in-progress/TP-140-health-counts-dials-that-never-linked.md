@@ -60,3 +60,4 @@ A device whose dialed exit never linked says so in its health, instead of `conne
 - 2026-11-07 make lab-test green on e0b30da (lab, lab/censor, lab/ip, lab/prototypes/reality ok; 36 packages in a lab node ok); an earlier full run was cut off by a session time limit, not by a failure
 - 2026-11-07 in-progress → review
 - 2026-11-07 review → has-errors (round 1 findings R1.1–R1.6)
+- 2026-11-07 has-errors → in-progress, owner: agent-tp-140 (fix round 1)
