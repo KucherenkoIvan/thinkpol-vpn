@@ -134,6 +134,55 @@ The owner wants the MVP (M5, v1.0.0) as soon as possible, with service enhanceme
 - **Whitelist mode is deferred** (TP-177, TP-178): research is ongoing. M3's "done when" no longer includes it (docs/design/milestones.md).
 - **Security hardening is documented now and built after the concept is proven** (e.g. the gatekeeper, node key rotation, OS keystore, transport plugins: docs/design/transports.md "Plugins (after the MVP)").
 
+## Streams (owner, 2026-11-07)
+
+The project is also read as five development streams. A stream is a lens on the one board, set by each ticket's `stream:` key (README.md).
+
+- `core`: the node runtime: agent, data plane, paths and relays, health, kill switch, config, per-OS network code, the local API's server side, the CLI's code.
+- `transports`: transports and anti-censorship on the wire: udp, reality, tls, shaping, plugins and per-space variation.
+- `administration`: controller, the map and its schema, signing, spaces, invites, grants, provisioning, hosting, the admin panel, key rotation and revocation.
+- `clients`: what a member uses: the tray, the CLI's surface (names, flags, exit codes, JSON output), installers' user side, mobile later.
+- `verification`: the labs, the device-test kit and harness, CI, test hygiene, the release and signing pipeline, measurements.
+
+The contracts between streams:
+
+- The local API: core and clients.
+- The map: administration and core.
+- The transport contract and its conformance suite: transports and core.
+- The lab matrix and the gate judges: verification and all the others.
+
+Rules:
+
+- Streams are a lens on one board. Milestones and gates stay as planned (owner: stick to the original plan; no early client stream).
+- At most about one agent per active stream at a time (machine limit).
+- A change to a contract (the local API, the map schema, the transport contract) names the streams it touches in its ticket.
+
+### Current MVP path by stream
+
+Milestones M2 to M5, from `python3 tickets/board.py --streams` on 2026-11-08. TP-087 (transports), TP-111 and TP-195 (core) and TP-025 (verification) are not listed: they are tagged when their branches merge.
+
+```
+core (42)
+  M2: TP-048, TP-085, TP-117, TP-134, TP-142, TP-143, TP-197
+  M3: TP-030, TP-031, TP-066
+  M5: TP-047, TP-076
+
+transports (9)
+
+administration (16)
+  M4: TP-034, TP-035, TP-036, TP-037, TP-038, TP-039, TP-040, TP-041, TP-042, TP-043, TP-086, TP-184, TP-185, TP-186, TP-199
+
+clients (5)
+  M2: TP-167, TP-168
+  M5: TP-049, TP-050
+
+verification (21)
+  M2: TP-026, TP-029, TP-082, TP-097, TP-144, TP-200
+  M3: TP-032, TP-033
+  M4: TP-045
+  M5: TP-051
+```
+
 ## Code health between milestones (2026-10-18)
 
 - **At every milestone tag,** the owner holds a code-health review session. The orchestrator brings a factual brief: lab suite time, lint gates, the longest functions, code that exists in more than one copy, and the code the next milestone's tickets will touch. The session's findings come to the orchestrator, who files them; what the next milestone needs first becomes a consolidation phase before its features start.
