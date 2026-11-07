@@ -63,8 +63,9 @@ const (
 //     period after that: wgRekeys occurrences in all.
 //   - keepalive: an idle run, records of one size each sent after wgQuiet
 //     with no record either way, none answered by a record the other way
-//     within wgPairWindow, at one steady interval: keepalives records once
-//     the connection has carried an exchange in the band, two more without.
+//     within wgPairWindow, at one steady interval: at least `keepalives`
+//     (3) of them once the connection has carried an exchange in the band,
+//     two more without.
 //
 // Flow shape beyond that (size distributions, bursts) is not its business
 // (owner, 2026-11-07). A stream it can't frame as TLS from its first byte
@@ -144,9 +145,9 @@ type wgIdleRun struct {
 //	{"verdict": "drop", "rekey": "120s", "keepalives": 3}
 //
 // verdict is drop (default) or reset; rekey is WireGuard's rekey period
-// (tests shorten it to see three rekeys quickly); keepalives is how long
-// an idle run must be to show the rhythm once the connection has carried
-// an exchange in the handshake band (without one, two more).
+// (tests shorten it to see three rekeys quickly); keepalives is how many
+// records an idle run needs to show the rhythm once the connection has
+// carried an exchange in the handshake band (without one, two more).
 func newWGRhythm(settings json.RawMessage) (Passive, error) {
 	var s struct {
 		Verdict    string `json:"verdict"`
