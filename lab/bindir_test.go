@@ -179,18 +179,21 @@ func TestAKeptLabsBinariesStayUntilLabctlDown(t *testing.T) {
 
 // fakeDocker puts a docker on PATH that lists labs (lines of "project\t
 // checkout") to labProjects' queries and answers everything else with
-// nothing: no test here reaches the real one.
-func fakeDocker(t *testing.T, labs ...string) { fakeDockerFailing(t, "", labs...) }
+// nothing: no test here reaches the real one. It returns the projects that
+// docker compose down was asked to remove so far, in order.
+func fakeDocker(t *testing.T, labs ...string) func() []string {
+	return fakeDockerFailing(t, "", labs...)
+}
 
 // fakeDockerFailing is fakeDocker that fails every call whose arguments
 // contain fail (every call for "*").
-func fakeDockerFailing(t *testing.T, fail string, labs ...string) {
+func fakeDockerFailing(t *testing.T, fail string, labs ...string) func() []string {
 	t.Helper()
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "labs"), []byte(strings.Join(labs, "\n")), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	script := "#!/bin/sh\ncase \"$*\" in\n"
+	script := "#!/bin/sh\necho \"$*\" >>\"$(dirname \"$0\")/calls\"\ncase \"$*\" in\n"
 	switch fail {
 	case "":
 	case "*":
@@ -203,6 +206,23 @@ func fakeDockerFailing(t *testing.T, fail string, labs ...string) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return func() []string {
+		b, err := os.ReadFile(filepath.Join(dir, "calls"))
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			t.Fatal(err)
+		}
+		var downs []string
+		for _, call := range strings.Split(string(b), "\n") {
+			f := strings.Fields(call)
+			if len(f) == 0 || f[0] != "compose" || !slices.Contains(f, "down") {
+				continue
+			}
+			if i := slices.Index(f, "-p"); i >= 0 && i+1 < len(f) {
+				downs = append(downs, f[i+1])
+			}
+		}
+		return downs
+	}
 }
 
 // endedRun is the directory of a run from the checkout at root that listed
@@ -249,8 +269,11 @@ func TestLabctlDownKeepsTheBinariesOfKeptLabsStillUp(t *testing.T) {
 
 // make lab-test's clean-up (DownRun) removes its run's lab and its ended
 // run directories' binaries, and leaves another run's lab (whose id extends
-// this one's) and the checkout's own; labctl down (DownCheckout) removes
-// all three.
+// this one's), another run's kept lab, the checkout's own, and a lab named
+// as this run's but started from another checkout (one that shares
+// THINKPOL_LAB_PROJECT and the run id); labctl down (DownCheckout) removes
+// every lab of the checkout, the kept one included, and still not the other
+// checkout's.
 func TestDownRunRemovesItsRunsLabAndBinaries(t *testing.T) {
 	ctx := t.Context()
 	root := t.TempDir()
@@ -260,23 +283,40 @@ func TestDownRunRemovesItsRunsLabAndBinaries(t *testing.T) {
 	}
 	mine := testProject(checkout, "r1", filepath.Join(root, "lab"), "TestX")
 	theirs := goTestPackageProject(checkout, "r12", "example.net/x")
-	labs := []string{mine + "\t" + root, theirs + "\t" + root, checkout + "\t" + root}
-	fakeDocker(t, labs...)
+	kept := testProject(checkout, "r2", filepath.Join(root, "lab"), "TestKept")
+	elsewhere := testProject(checkout, "r1", filepath.Join(root, "lab"), "TestY")
+	labs := []string{
+		mine + "\t" + root, theirs + "\t" + root, kept + "\t" + root, checkout + "\t" + root,
+		elsewhere + "\t" + root + "-elsewhere",
+	}
+	composeDowns := fakeDocker(t, labs...)
 	ended := endedRun(t, root)
+	keptRun := endedRun(t, root, kept)
 
 	removed, err := DownRun(ctx, root, "r1")
-	if err != nil || len(removed) != 1 || removed[0] != mine {
+	if err != nil || !slices.Equal(removed, []string{mine}) {
 		t.Errorf("DownRun removed %v, %v; want just %s", removed, err, mine)
+	}
+	if downs := composeDowns(); !slices.Equal(downs, []string{mine}) {
+		t.Errorf("DownRun asked compose down for %v; want just %s", downs, mine)
 	}
 	if _, err := os.Stat(ended.path); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("an ended run's directory after DownRun: %v", err)
 	}
+	if _, err := os.Stat(keptRun.path); err != nil {
+		t.Errorf("DownRun took the directory of a kept lab still up: %v", err)
+	}
 
 	removed, err = DownCheckout(ctx, root, false)
-	want := []string{checkout, mine, theirs}
+	want := []string{checkout, mine, theirs, kept}
 	slices.Sort(want)
 	if err != nil || !slices.Equal(removed, want) {
 		t.Errorf("DownCheckout removed %v, %v; want %v", removed, err, want)
+	}
+	downs := composeDowns()[1:]
+	slices.Sort(downs)
+	if !slices.Equal(downs, want) {
+		t.Errorf("DownCheckout asked compose down for %v; want %v", downs, want)
 	}
 }
 

@@ -87,6 +87,12 @@ func down(ctx context.Context, root string, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	// Parsing stops at the first argument that isn't a flag: "down r1 -run
+	// r1" would leave -run unseen and remove the whole checkout's labs.
+	if fs.NArg() > 0 {
+		fmt.Fprint(os.Stderr, usage)
+		return fmt.Errorf("down: unexpected argument %q", fs.Arg(0))
+	}
 	// -run given at all means one run's labs, even with an empty or invalid
 	// id (an unset variable): never the whole checkout's.
 	runGiven := false
