@@ -93,6 +93,7 @@ These are not user-facing. They are read by the lab tooling and by tests, never 
 |---|---|---|
 | `THINKPOL_LAB` | tests | set in lab nodes; tests that need root or namespaces skip without it |
 | `THINKPOL_LAB_PROJECT` | lab | replaces the checkout part of Compose project names |
+| `THINKPOL_LAB_RUN` | lab, Makefile | the run id in test and gotest labs' names; `make lab-test` sets one |
 | `THINKPOL_LAB_KEEP` | lab, Makefile | a failed test's lab stays up |
 | `THINKPOL_LAB_MAX_LABS` | lab | lab slots at once (default 12) |
 | `THINKPOL_LAB_SUBNET_POOL` | lab | IPv4 range for lab networks |
@@ -255,13 +256,13 @@ Nothing here is fixed by TP-139. They are ordered by what each would cost to cha
 
 ### F1. There is no place for a node setting except the environment and flags
 
-The service's definition is a fixed text with one variable (`THINKPOL_CONNECT_ON_BOOT`). The `service` commands compare the unit file or plist, byte for byte, with the two texts install writes (`installed()`, `internal/agent/service/install.go:296-311`). Each command treats a definition that differs in its own way:
+The service's definition is a fixed text with one variable (`THINKPOL_CONNECT_ON_BOOT`). The `service` commands compare the unit file or plist, byte for byte, with the two texts install writes (`installed()`, `internal/agent/service/install.go:333-348`). Each command treats a definition that differs in its own way:
 
 | Command | An edited definition |
 |---|---|
 | `service connect-on-boot` (showing or setting) | **refused**: "the service's definition was changed by hand: … isn't what thinkpol service install writes; install again" |
 | `service install` | **written over**, after a warning: the edit is lost and connect-on-boot goes back to off unless `-connect-on-boot` says otherwise (`install.go:151`) |
-| `service uninstall` | **not compared**: stopped and removed like any other (`install.go:251-290`) |
+| `service uninstall` | **not compared**: stopped and removed like any other (`install.go:261-308`) |
 
 So on macOS an installed node can't keep any other setting. There is one plist and no drop-in mechanism. A key added to its `EnvironmentVariables` makes `service connect-on-boot` refuse, and the next `service install` removes it.
 

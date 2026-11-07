@@ -104,6 +104,24 @@ func DownCheckout(ctx context.Context, root string, onlyTests bool) ([]string, e
 	return removed, errors.Join(err, removeStaleBinaries(ctx, root, labProjects))
 }
 
+// DownRun removes the test and gotest labs that the run run started from
+// the checkout at root (make lab-test's clean-up), then sweeps the
+// checkout's run directories as DownCheckout does. Other runs' labs stay,
+// even ones still running from the same checkout.
+func DownRun(ctx context.Context, root, run string) ([]string, error) {
+	if err := ValidateRunID(run); err != nil {
+		return nil, err
+	}
+	checkout, err := CheckoutProject(root)
+	if err != nil {
+		return nil, err
+	}
+	removed, err := downWhere(ctx, func(project, labRoot string) bool {
+		return labRoot == root && startedByRun(project, checkout, run)
+	})
+	return removed, errors.Join(err, removeStaleBinaries(ctx, root, labProjects))
+}
+
 // DownStale removes the labs, from any checkout, whose checkout no longer
 // exists: a deleted worktree's leftovers.
 func DownStale(ctx context.Context) ([]string, error) {

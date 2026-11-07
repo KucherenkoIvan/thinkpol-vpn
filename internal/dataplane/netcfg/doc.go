@@ -57,6 +57,22 @@
 // until the interface goes, since a later configurator takes such an
 // address as there already, used but not owned, and finds the interface
 // as it wants it.
+// What was set on an interface is recorded by its index and kernel name,
+// under the name the config gives: an Apply that finds the same index
+// under that name takes the kernel name afresh (kept when the Apply
+// fails), and one that finds it
+// under another of the interface's names (the kernel name or an altname)
+// moves the record there while the kernel name is the recorded one, so
+// the interface counts as leaving the config only when no name it wants
+// resolves to it. Found under another name with another kernel name, the
+// index may belong to a new interface (macOS reuses a freed index), and
+// the record is dropped without restoring anything; so a rename that a
+// config naming the interface by another name re-finds keeps what was set
+// too. An MTU or up state is restored on the interface at the recorded
+// index, and only while it has the recorded kernel name: one the config
+// names by an altname is restored like any other, but a rename the
+// configurator never re-finds can't be told from a new interface at a
+// reused index, and keeps what was set.
 // Rules are added and deleted with raw RTM_NEWRULE and RTM_DELRULE
 // messages on one socket opened in the namespace at construction. An add's
 // undo sends the same message as a delete; a delete sends the dumped

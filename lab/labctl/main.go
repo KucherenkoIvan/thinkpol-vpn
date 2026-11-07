@@ -22,9 +22,10 @@ import (
 const usage = `usage: labctl <command>
 
   up                                  start the standard topology for this checkout
-  down [-tests | -stale]              remove this checkout's labs and ended runs' binaries (-tests:
-                                      only the labs tests started; -stale: instead, every lab whose
-                                      checkout is gone, and no binaries)
+  down [-tests | -run id | -stale]    remove this checkout's labs and ended runs' binaries (-tests:
+                                      only the labs tests started; -run: only those the run id
+                                      started; -stale: instead, every lab whose checkout is gone,
+                                      and no binaries)
   gotest [-v] [-run re] [-count n] [-timeout d] [-p n] [-perf] [-tagged] [-fail-skipped] pkgs...
                                       run each package's tests in a fresh lab node with THINKPOL_LAB=1
                                       (-count, -timeout: the test binary's; repeat runs for stability)
@@ -34,6 +35,7 @@ const usage = `usage: labctl <command>
                                       (-fail-skipped: implies -v; fail a package whose tests all
                                       skipped, and a run in which no test ran: make lab-gotest)
   project                             print this checkout's project prefix
+  run-id                              print a fresh run id, for ` + lab.RunEnv + `
 `
 
 func main() {
@@ -71,34 +73,61 @@ func run(ctx context.Context, args []string) error {
 		}
 		fmt.Println(checkout)
 		return nil
+	case "run-id":
+		fmt.Println(lab.NewRunID())
+		return nil
 	default:
 		fmt.Fprint(os.Stderr, usage)
 		return fmt.Errorf("unknown command %q", args[0])
 	}
 }
 
-// down removes this checkout's labs (or only its tests', or every stale
-// one) and prints what it removed.
+// down removes this checkout's labs (or only its tests', or one run's, or
+// every stale one) and prints what it removed.
 func down(ctx context.Context, root string, args []string) error {
 	fs := flag.NewFlagSet("down", flag.ContinueOnError)
 	onlyTests := fs.Bool("tests", false, "only remove labs started by tests")
+	run := fs.String("run", "", "only remove labs the run with this id started ("+lab.RunEnv+")")
 	stale := fs.Bool("stale", false, "remove every lab whose checkout no longer exists")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	// Parsing stops at the first argument that isn't a flag: "down r1 -run
+	// r1" would leave -run unseen and remove the whole checkout's labs.
+	if fs.NArg() > 0 {
+		fmt.Fprint(os.Stderr, usage)
+		return fmt.Errorf("down: unexpected argument %q", fs.Arg(0))
+	}
+	// -run given at all means one run's labs, even with an empty or invalid
+	// id (an unset variable): never the whole checkout's.
+	runGiven := false
+	fs.Visit(func(f *flag.Flag) { runGiven = runGiven || f.Name == "run" })
+	if n := btoi(*onlyTests) + btoi(runGiven) + btoi(*stale); n > 1 {
+		return errors.New("down: -tests, -run and -stale don't combine")
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 	var removed []string
 	var err error
-	if *stale {
+	switch {
+	case *stale:
 		removed, err = lab.DownStale(ctx)
-	} else {
+	case runGiven:
+		removed, err = lab.DownRun(ctx, root, *run)
+	default:
 		removed, err = lab.DownCheckout(ctx, root, *onlyTests)
 	}
 	for _, p := range removed {
 		fmt.Println("removed", p)
 	}
 	return err
+}
+
+func btoi(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // runGotest parses gotest's flags into the test binary's, and runs it.

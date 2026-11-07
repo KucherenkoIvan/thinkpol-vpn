@@ -102,7 +102,7 @@ func New(opts Options) (*Supervisor, error) {
 	if err := root.Apply(context.Background(), netcfg.Config{}); err != nil {
 		return fail(err)
 	}
-	if err := removeStaleLinks(s.log); err != nil {
+	if _, err := removeStaleLinks(s.log); err != nil {
 		return fail(err)
 	}
 	s.refreshUplink()
@@ -123,23 +123,26 @@ func New(opts Options) (*Supervisor, error) {
 	return s, nil
 }
 
-// removeStaleLinks deletes veths named like a space's: only a dead
-// supervisor can have left them, since this one holds the node's role.
-func removeStaleLinks(log *slog.Logger) error {
+// removeStaleLinks deletes veths named like a space's, and returns their
+// names: only a dead supervisor can have left them, since the caller
+// holds the node's supervisor role.
+func removeStaleLinks(log *slog.Logger) ([]string, error) {
 	links, err := linkList()
 	if err != nil {
-		return fmt.Errorf("list links: %w", err)
+		return nil, fmt.Errorf("list links: %w", err)
 	}
+	var removed []string
 	for _, l := range links {
 		if !strings.HasPrefix(l.Attrs().Name, LinkPrefix) {
 			continue
 		}
 		log.Warn("removing a dead supervisor's leftover link", "link", l.Attrs().Name)
 		if err := netlink.LinkDel(l); err != nil && !errors.Is(err, unix.ENODEV) {
-			return fmt.Errorf("remove stale %s: %w", l.Attrs().Name, err)
+			return removed, fmt.Errorf("remove stale %s: %w", l.Attrs().Name, err)
 		}
+		removed = append(removed, l.Attrs().Name)
 	}
-	return nil
+	return removed, nil
 }
 
 // linkList lists the root namespace's links, again when a change raced the

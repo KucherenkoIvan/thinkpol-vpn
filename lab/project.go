@@ -1,6 +1,7 @@
 package lab
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 )
 
 // ProjectPrefix starts every lab's Compose project name. Nothing can remove
@@ -16,13 +18,46 @@ import (
 // aren't the lab's are out of reach.
 const ProjectPrefix = "tplab-"
 
-// ProjectEnv overrides the checkout's part of the project name, e.g. to run
-// two labs from one checkout at once. It is validated, and ProjectPrefix is
-// still prepended.
+// ProjectEnv overrides the checkout's part of the project name. It is
+// validated, and ProjectPrefix is still prepended.
 const ProjectEnv = "THINKPOL_LAB_PROJECT"
 
 // overridePattern is what ProjectEnv may hold.
 var overridePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,39}$`)
+
+// RunEnv names the run a process's test and gotest labs belong to: make
+// lab-test sets one for both its phases, so its clean-up (labctl down
+// -run) removes their labs and no other run's. Unset, the process is a run
+// of its own (NewRunID).
+const RunEnv = "THINKPOL_LAB_RUN"
+
+// runIDPattern is what a run id may be. No dash: startedByRun matches a
+// run's projects by prefix, and "-" ends the id there.
+var runIDPattern = regexp.MustCompile(`^[a-z0-9]{1,8}$`)
+
+// NewRunID returns a fresh run id: 30 random bits, so runs at once
+// practically never share one.
+func NewRunID() string { return strings.ToLower(rand.Text()[:6]) }
+
+// runID is this process's run id: RunEnv's, or a fresh one.
+var runID = sync.OnceValues(func() (string, error) {
+	v := os.Getenv(RunEnv)
+	if v == "" {
+		return NewRunID(), nil
+	}
+	if err := ValidateRunID(v); err != nil {
+		return "", err
+	}
+	return v, nil
+})
+
+// ValidateRunID checks that id can name a run.
+func ValidateRunID(id string) error {
+	if !runIDPattern.MatchString(id) {
+		return fmt.Errorf("lab: run id %q: want %s", id, runIDPattern)
+	}
+	return nil
+}
 
 // Root finds the checkout: the nearest directory at or above the working
 // directory that holds go.mod.
@@ -61,16 +96,22 @@ func CheckoutProject(root string) (string, error) {
 	return ProjectPrefix + name + "-" + shortHash(root), nil
 }
 
-// testProject is the Compose project of one test's lab. The package
-// directory is hashed in because packages are tested in parallel and may
-// share test names.
-func testProject(checkout, pkgDir, testName string) string {
-	return checkout + "-t-" + slug(testName, 24) + "-" + shortHash(pkgDir+"\x00"+testName)
+// testProject is the Compose project of one test's lab in the run run. The
+// package directory is hashed in because packages are tested in parallel
+// and may share test names.
+func testProject(checkout, run, pkgDir, testName string) string {
+	return checkout + "-t-" + run + "-" + slug(testName, 24) + "-" + shortHash(pkgDir+"\x00"+testName)
 }
 
 // GoTestProject is the Compose project prefix of the labs that run packages'
 // tests in a node (labctl gotest).
 func GoTestProject(checkout string) string { return checkout + "-gotest" }
+
+// goTestPackageProject is the Compose project of the lab that runs a
+// package's tests in a node, in the run run.
+func goTestPackageProject(checkout, run, importPath string) string {
+	return GoTestProject(checkout) + "-" + run + "-" + shortHash(importPath)
+}
 
 // belongsTo reports whether a Compose project was started from the checkout
 // whose prefix is checkout.
@@ -82,6 +123,12 @@ func belongsTo(project, checkout string) bool {
 // labctl gotest started, as opposed to make lab-up's.
 func startedByTests(project, checkout string) bool {
 	return strings.HasPrefix(project, checkout+"-t-") || belongsTo(project, GoTestProject(checkout))
+}
+
+// startedByRun reports whether a checkout's project is a test or gotest lab
+// of the run run.
+func startedByRun(project, checkout, run string) bool {
+	return strings.HasPrefix(project, checkout+"-t-"+run+"-") || strings.HasPrefix(project, GoTestProject(checkout)+"-"+run+"-")
 }
 
 // slug lowercases s and keeps [a-z0-9-], as Compose project names require.

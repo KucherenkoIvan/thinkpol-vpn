@@ -17,3 +17,6 @@ func (*Supervisor) Workers() []WorkerInfo          { return nil }
 func (*Supervisor) Output(netmap.SpaceID) []string { return nil }
 func (*Supervisor) Close() error                   { return nil }
 func (*Supervisor) Egress() EgressInfo             { return EgressInfo{Err: EgressUnsupported} }
+
+// ClearLeftovers has nothing to undo where no supervisor runs.
+func ClearLeftovers(Options) ([]string, error) { return nil, nil }

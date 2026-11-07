@@ -1172,7 +1172,8 @@ func TestIPv6GoesAndComesBackWithTheMTU(t *testing.T) {
 
 // An interface the config names by an altname keeps what Apply set: the
 // change is recorded under the config's name, so the same Apply never
-// takes it for an interface that left the config.
+// takes it for an interface that left the config. Once it leaves the
+// config, and on Close, its MTU and state come back.
 func TestAnAltnameKeepsItsChanges(t *testing.T) {
 	n := newTestNS(t)
 	n.dummy(t, "ovl0")
@@ -1191,9 +1192,139 @@ func TestAnAltnameKeepsItsChanges(t *testing.T) {
 			t.Fatalf("ovl0 after Apply: mtu %d, flags %v; want 1380, up", l.Attrs().MTU, l.Attrs().Flags)
 		}
 	}
-	// Close succeeds; what it doesn't do yet is restore an interface
-	// named by an altname (TP-119), so its MTU and state aren't checked.
+	restored := func(when string) {
+		t.Helper()
+		l, err := n.h.LinkByName("ovl0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if l.Attrs().MTU != 1500 || l.Attrs().Flags&net.FlagUp != 0 {
+			t.Fatalf("ovl0 after %s: mtu %d, flags %v; want 1500, down", when, l.Attrs().MTU, l.Attrs().Flags)
+		}
+	}
+	if err := c.Apply(context.Background(), netcfg.Config{}); err != nil {
+		t.Fatal(err)
+	}
+	restored("leaving the config")
+	if err := c.Apply(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
 	if err := c.Close(); err != nil {
 		t.Fatal(err)
+	}
+	restored("Close")
+}
+
+// An interface the config goes on wanting under another of its names
+// (kernel name or altname) keeps what the earlier Apply set, and gets its
+// MTU and state back on Close.
+func TestAnInterfaceKeepsItsChangesUnderAnotherName(t *testing.T) {
+	for _, names := range [][2]string{{"overlay-alt", "ovl0"}, {"ovl0", "overlay-alt"}, {"overlay-alt", "overlay-alt2"}} {
+		t.Run(names[0]+"_to_"+names[1], func(t *testing.T) {
+			n := newTestNS(t)
+			n.dummy(t, "ovl0")
+			n.ip(t, "link", "property", "add", "dev", "ovl0", "altname", "overlay-alt")
+			n.ip(t, "link", "property", "add", "dev", "ovl0", "altname", "overlay-alt2")
+			c := n.configurator(t)
+			for _, name := range names {
+				if err := c.Apply(context.Background(), netcfg.Config{Interfaces: []netcfg.Interface{{Name: name, MTU: 1380, Up: true}}}); err != nil {
+					t.Fatal(err)
+				}
+				n.wantLink(t, "ovl0", 1380, true, "Apply "+name)
+			}
+			if err := c.Close(); err != nil {
+				t.Fatal(err)
+			}
+			n.wantLink(t, "ovl0", 1500, false, "Close")
+		})
+	}
+}
+
+// An interface renamed between Applies that the next Apply finds again
+// through the altname the config names is restored under its new name.
+func TestARenamedInterfaceFoundAgainIsRestored(t *testing.T) {
+	n := newTestNS(t)
+	n.dummy(t, "ovl0")
+	n.ip(t, "link", "property", "add", "dev", "ovl0", "altname", "overlay-alt")
+	c := n.configurator(t)
+	cfg := netcfg.Config{Interfaces: []netcfg.Interface{{Name: "overlay-alt", MTU: 1380, Up: true}}}
+	if err := c.Apply(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	n.ip(t, "link", "set", "dev", "ovl0", "down")
+	n.ip(t, "link", "set", "dev", "ovl0", "name", "ovl1")
+	if err := c.Apply(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	n.wantLink(t, "ovl1", 1380, true, "the second Apply")
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	n.wantLink(t, "ovl1", 1500, false, "Close")
+}
+
+// Close leaves an interface renamed since the Apply that changed it (and
+// not found again by a later one) with the MTU that Apply set.
+func TestARenamedInterfaceIsLeftAlone(t *testing.T) {
+	n := newTestNS(t)
+	n.dummy(t, "ovl0")
+	c := n.configurator(t)
+	if err := c.Apply(context.Background(), netcfg.Config{Interfaces: []netcfg.Interface{{Name: "ovl0", MTU: 1380}}}); err != nil {
+		t.Fatal(err)
+	}
+	n.ip(t, "link", "set", "dev", "ovl0", "name", "ovl1")
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	l, err := n.h.LinkByName("ovl1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l.Attrs().MTU != 1380 {
+		t.Fatalf("ovl1 after Close: mtu %d; want 1380, left alone", l.Attrs().MTU)
+	}
+}
+
+func (n *testNS) wantLink(t *testing.T, name string, mtu int, up bool, when string) {
+	t.Helper()
+	l, err := n.h.LinkByName(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l.Attrs().MTU != mtu || (l.Attrs().Flags&net.FlagUp != 0) != up {
+		t.Fatalf("%s after %s: mtu %d, flags %v; want mtu %d, up %v", name, when, l.Attrs().MTU, l.Attrs().Flags, mtu, up)
+	}
+}
+
+// A new interface that takes the index of a deleted one the configurator
+// changed is not taken for it: Close leaves what the new one had before
+// any Apply, and restores to that what an Apply changes on it.
+func TestANewInterfaceAtAReusedIndexIsNotTheOldOne(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mtu  int
+		up   bool
+	}{{"already_as_wanted", 1380, true}, {"changed_by_the_apply", 9000, false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			n := newTestNS(t)
+			index := n.dummy(t, "ovl0").Attrs().Index
+			c := n.configurator(t)
+			if err := c.Apply(context.Background(), netcfg.Config{Interfaces: []netcfg.Interface{{Name: "ovl0", MTU: 1380, Up: true}}}); err != nil {
+				t.Fatal(err)
+			}
+			n.ip(t, "link", "del", "dev", "ovl0")
+			n.ip(t, "link", "add", "name", "ovl1", "index", strconv.Itoa(index), "mtu", strconv.Itoa(tc.mtu), "type", "dummy")
+			if tc.up {
+				n.ip(t, "link", "set", "dev", "ovl1", "up")
+			}
+			if err := c.Apply(context.Background(), netcfg.Config{Interfaces: []netcfg.Interface{{Name: "ovl1", MTU: 1380, Up: true}}}); err != nil {
+				t.Fatal(err)
+			}
+			n.wantLink(t, "ovl1", 1380, true, "Apply")
+			if err := c.Close(); err != nil {
+				t.Fatal(err)
+			}
+			n.wantLink(t, "ovl1", tc.mtu, tc.up, "Close")
+		})
 	}
 }
