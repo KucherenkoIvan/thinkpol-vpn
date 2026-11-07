@@ -894,7 +894,7 @@ func TestResolvConfAFailedFirstReadIsStaleUntilAGoodReadTellsIt(t *testing.T) {
 
 // The first good read is told whatever it found: a resolv.conf with no
 // nameservers tells an empty answer and clears the staleness all the
-// same.
+// same, leaving only that the OS names none.
 func TestResolvConfAFailedFirstReadThenEmptyTellsAnEmptyAnswer(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "resolv.conf") // missing: the first read fails
 	told := make(chan []netip.Addr, 8)
@@ -918,8 +918,8 @@ func TestResolvConfAFailedFirstReadThenEmptyTellsAnEmptyAnswer(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("never told the first good read")
 	}
-	if p := r.Problem(); p != nil {
-		t.Errorf("problem after a good read: %v", p)
+	if p := r.Problem(); errors.Is(p, ErrUpstreamsStale) || !errors.Is(p, ErrNoSystemUpstream) || Unprotected(p) {
+		t.Errorf("problem after a good read naming none: %v, want no system upstream only", p)
 	}
 }
 
