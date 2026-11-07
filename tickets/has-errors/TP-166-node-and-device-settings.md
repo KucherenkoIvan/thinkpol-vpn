@@ -59,6 +59,15 @@ A Mac with this branch's `thinkpol` installed as a service (`sudo thinkpol servi
 6. Do: `thinkpol service connect-on-boot on`. Expect: exit 1, "connect-on-boot is the device's setting now … thinkpol connect-on-boot [on|off]".
 7. Record the outputs of steps 2, 4 and 5 here, under "macOS results".
 
+## Review findings
+- [ ] R1.1 (should-fix) an old service definition run by the new binary connects at every start (nothing reads THINKPOL_CONNECT_ON_BOOT, the old definition runs `up` without -service, -connect defaults to true): `up` refuses to start when THINKPOL_CONNECT_ON_BOOT is in its environment, a ConfigError (exit 78) telling the operator to run `thinkpol service install`; unit row
+- [ ] R1.2 (should-fix, owner's decision) node.json must be root-owned 0600; it is read with private=false, so 0644/0640 and a non-root owner are accepted: enforce it with a message about settings, not keys; rows for 0644 and a non-root owner; fix the NodeFile comment that says the whole directory is 0600
+- [ ] R1.3 (should-fix) the same kind of fault exits 1 or 78: LoadConfig's parse error (THINKPOL_LINK_MTU=abc, THINKPOL_DNS=yes) and Prepare's "a device that starts disconnected needs the local API" are plain errors: make both ConfigErrors; rows
+- [ ] R1.4 (should-fix) diag's drop-in report misses part of systemd's search path (system.control, transient, generator*, system.attached, the type-level service.d/): add them in systemd's order; rows for system.control and service.d; dedupe only on a successful EvalSymlinks; rename `real`
+- [ ] R1.5 (should-fix, small) checkJSONKeys accepts null for a key, which reads as the default: refuse it naming the key; rows for node.json and device.json
+- [ ] R1.6 (should-fix, small) SetRulePreset holds settingsMu while it waits on the unbuffered rulesRequests channel, which run() reads only after taking settingsMu: copy under the lock, unlock, then select; test if practical
+- [ ] R1.7 (nits) carryLocalRules writes device.json on a server; NodeSettings' doc misses -api-group; definition_test.go comment names a closed ticket; `thinkpol connect-on-boot` on a server prints "off" instead of server_mode; installed(): a hand-edited old unit with THINKPOL_CONNECT_ON_BOOT also gets the "changed by hand" warning; configuration.md: an older binary refuses a device.json with unknown keys, and an old definition's connect-on-boot "on" is not carried over on install
+
 ## Log
 - 2026-11-07 created in backlog
 - 2026-11-07 file format is JSON for both files (owner)
@@ -72,3 +81,4 @@ A Mac with this branch's `thinkpol` installed as a service (`sudo thinkpol servi
 - 2026-11-07 merged origin/rewrite (TP-130) at cef3dc7; `make lint` and `make test` green there; full `make lab-test` passes on 1628035 (code as cef3dc7): lab, lab/censor, lab/ip, lab/prototypes/reality ok, every package's lab gotest PASS (an earlier full run was stopped while it waited for the lock, its leftovers removed)
 - 2026-11-07 not verified: the macOS device checklist (Notes; the owner's, in a later Mac session); launchd's plist runs `up -service` only as files and fake launchctl here
 - 2026-11-07 in-progress → review
+- 2026-11-07 review → has-errors (round 1 findings R1.x)
