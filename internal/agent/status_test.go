@@ -19,10 +19,12 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/supervisor"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/packettest"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/path"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport/memory"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/wg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
 
@@ -532,6 +534,12 @@ func TestHealth(t *testing.T) {
 		{"no nf_tables: connected, a loud warning", Status{Connection: Connected, DataPlane: &dataplane.Status{
 			RouteTable: dataplane.RouteTableStatus{Enforced: true, Routes: 9, GuardError: dataplane.RouteTableGuardUnsupported}}},
 			Health{HealthDegraded, []Problem{ProblemGuardUnsupported}}},
+		{"the only exit unanswered", Status{Connection: Connected, ExitsUnanswered: 1, DataPlane: &dataplane.Status{
+			Neighbors: []path.NeighborStatus{up}, Peers: []dataplane.PeerStatus{{Exit: true}, {}}}},
+			Health{HealthDown, []Problem{ProblemExitNoHandshake}}},
+		{"one exit of two unanswered", Status{Connection: Connected, ExitsUnanswered: 1, DataPlane: &dataplane.Status{
+			Neighbors: []path.NeighborStatus{up}, Peers: []dataplane.PeerStatus{{Exit: true}, {Exit: true}}}},
+			Health{HealthDegraded, []Problem{ProblemExitNoHandshake}}},
 		{"server", Status{Connection: Serving, Workers: []WorkerStatus{{Ready: true, Starts: 1}}}, Health{}},
 		{"server worker down", Status{Connection: Serving, Workers: []WorkerStatus{{Ready: true, Starts: 3}, {}},
 			PublicListeners: []PublicListenerStatus{{Rejected: 1}}},
@@ -797,5 +805,89 @@ func TestADialThatFailedBesideALinkIsNeighborDown(t *testing.T) {
 	}
 	if up != 1 || down != 1 {
 		t.Fatalf("neighbors %+v, want the linked exit up and the other listed down with no links", st.DataPlane.Neighbors)
+	}
+}
+
+// An exit counts as unanswered once its oldest unanswered initiation is
+// the deadline old; a peer that isn't an exit, or has none pending, never
+// does.
+func TestExitsUnansweredPastTheDeadline(t *testing.T) {
+	now := time.Now()
+	const deadline = ExitHandshakeDeadline
+	for _, tc := range []struct {
+		name string
+		peer dataplane.PeerStatus
+		want int
+	}{
+		{"an exit pending for the deadline", dataplane.PeerStatus{Exit: true, HandshakePendingSince: now.Add(-deadline)}, 1},
+		{"an exit pending for less", dataplane.PeerStatus{Exit: true, HandshakePendingSince: now.Add(-deadline + time.Second)}, 0},
+		{"an exit with nothing pending, its handshake old", dataplane.PeerStatus{Exit: true, LastHandshake: now.Add(-time.Hour)}, 0},
+		{"a device peer pending for long", dataplane.PeerStatus{HandshakePendingSince: now.Add(-time.Hour)}, 0},
+	} {
+		if got := exitsUnanswered([]dataplane.PeerStatus{tc.peer}, now, deadline); got != tc.want {
+			t.Errorf("%s: %d unanswered, want %d", tc.name, got, tc.want)
+		}
+	}
+}
+
+// A device whose only exit is linked but whose WireGuard doesn't answer
+// (the exit's map doesn't list the device) says exit_no_handshake once
+// traffic to the internet waits past the deadline; the exit taking the
+// device into its map, and the handshake that follows, clear it.
+func TestAnExitThatNeverHandshakesIsExitNoHandshake(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	s.deviceChains, s.serverEgress = []netmap.Chain{{Name: "nl", Exit: s.a.ID}}, true
+	r, err := netmap.ParseRule("default -> chain:nl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.deviceRules = []netmap.Rule{r}
+	deaf, err := netmap.Verify(s.buildEditing(t, 1, s.a, func(sec *netmap.Section) { sec.Peers = nil }), s.trust())
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := startNode(t, reg, s.a, deaf)
+	b := startDevice(t, s, reg, true, deviceOpt{tuning: func(t *tuning) { t.exitDeadline = time.Second }})
+	b.connection(t, Connected)
+
+	b4, _ := overlay(2)
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		for seq := uint16(1); ; seq++ {
+			if ch := b.ch.Load(); ch != nil {
+				select {
+				case ch.Outbound <- packettest.Echo(b4, netip.MustParseAddr("192.0.2.80"), 1, seq, nil):
+				case <-stop:
+					return
+				}
+			}
+			select {
+			case <-time.After(100 * time.Millisecond):
+			case <-stop:
+				return
+			}
+		}
+	}()
+	var st Status
+	eventually(t, func() bool {
+		st = b.node.Status()
+		return slices.Contains(st.Health().Problems, ProblemExitNoHandshake)
+	})
+	if h := st.Health(); h.Level != HealthDown || slices.Contains(h.Problems, ProblemNoLinkUp) || st.ExitsUnanswered != 1 {
+		t.Fatalf("the exit linked, its WireGuard deaf: health %+v, status %+v", h, st)
+	}
+
+	a.maps <- s.build(t, 2)
+	// WireGuard initiates again RekeyTimeout after the last one.
+	for deadline := time.Now().Add(wg.RekeyTimeout + 10*time.Second); ; time.Sleep(20 * time.Millisecond) {
+		st = b.node.Status()
+		if st.Health().Level == HealthOK {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("still %+v after the exit took the device in: %+v", st.Health(), st.DataPlane.Peers)
+		}
 	}
 }

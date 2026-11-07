@@ -259,6 +259,74 @@ func TestPathlessPeersDoNotFloodTheLog(t *testing.T) {
 	}
 }
 
+// A peer whose WireGuard doesn't answer (it doesn't know A's key) has a
+// handshake pending since A's first initiation, under steady traffic and
+// without a log; its first completed handshake clears that.
+func TestAnUnansweredHandshakeStaysPendingUntilOneCompletes(t *testing.T) {
+	net := memory.NewNetwork(memory.Datagram)
+	a, x := newNode(t, net, "A"), newNode(t, net, "X")
+	dial(net, a, x)
+	ch := tuntest.NewChannelTUN()
+	aKey := netmap.GenerateWireGuardKey()
+	dev := wg.New("exit", ch.TUN(), a.NewBind(), nil)
+	t.Cleanup(func() { _ = dev.Close() })
+	xEnd := newEnd(t, x)
+	setPeers(t, a, map[*path.Bind][]path.Peer{dev.Bind(): {{ID: id("X"), FirstHops: []path.NodeID{id("X")}}}})
+	setPeers(t, x, map[*path.Bind][]path.Peer{xEnd.dev.Bind(): {{ID: id("A"), FirstHops: []path.NodeID{id("A")}}}})
+	configure(t, dev, aKey, wg.Peer{Key: xEnd.key.Public(), Node: id("X"), AllowedIPs: []netip.Prefix{prefix("0.0.0.0/0")}})
+	configure(t, xEnd.dev, xEnd.key)
+
+	peer := func() wg.PeerStatus {
+		t.Helper()
+		peers, err := dev.Peers()
+		if err != nil || len(peers) != 1 {
+			t.Fatalf("peers %+v, %v", peers, err)
+		}
+		return peers[0]
+	}
+	if p := peer(); !p.HandshakePendingSince.IsZero() {
+		t.Fatalf("pending before anything was sent: %+v", p)
+	}
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		for seq := uint16(1); ; seq++ {
+			select {
+			case ch.Outbound <- packettest.Echo(addr("100.64.0.1"), addr("192.0.2.80"), 1, seq, nil):
+			case <-stop:
+				return
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+	}()
+	waitFor := func(what string, ok func(wg.PeerStatus) bool) wg.PeerStatus {
+		t.Helper()
+		deadline := time.Now().Add(wait + wg.RekeyTimeout)
+		for {
+			p := peer()
+			if ok(p) {
+				return p
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("%s: %+v", what, p)
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	p := waitFor("never pending", func(p wg.PeerStatus) bool { return !p.HandshakePendingSince.IsZero() })
+	first := p.HandshakePendingSince
+	// WireGuard initiates again every RekeyTimeout: the first one stays.
+	time.Sleep(wg.RekeyTimeout + time.Second)
+	if p := peer(); p.HandshakePendingSince != first || !p.LastHandshake.IsZero() {
+		t.Fatalf("pending since %v, then %+v", first, p)
+	}
+
+	configure(t, xEnd.dev, xEnd.key, wg.Peer{Key: aKey.Public(), Node: id("A"), AllowedIPs: []netip.Prefix{prefix("100.64.0.1/32")}})
+	waitFor("still pending after a handshake", func(p wg.PeerStatus) bool {
+		return p.HandshakePendingSince.IsZero() && !p.LastHandshake.IsZero()
+	})
+}
+
 // The name the log's handshake tracking computes for a peer is the one
 // WireGuard's own messages carry, so a removed peer is forgotten.
 func TestPeerNamesAreWireGuards(t *testing.T) {

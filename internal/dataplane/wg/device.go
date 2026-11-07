@@ -26,6 +26,11 @@ import (
 // the path layer's message budget less this.
 const Overhead = device.MessageTransportSize
 
+// RekeyTimeout is how long WireGuard waits for a handshake's answer before
+// it sends the next initiation (device.RekeyTimeout, plus up to a third of
+// a second of jitter).
+const RekeyTimeout = device.RekeyTimeout
+
 // ErrClosed is returned by a closed device.
 var ErrClosed = errors.New("wg: device closed")
 
@@ -45,8 +50,16 @@ type PeerStatus struct {
 	Key           netmap.WireGuardKey
 	Node          path.NodeID
 	LastHandshake time.Time // zero before the first
-	RxBytes       uint64
-	TxBytes       uint64
+	// HandshakePendingSince is when WireGuard sent the peer the first
+	// handshake initiation that is still unanswered: zero once a handshake
+	// with the peer completes (either side's initiation). WireGuard
+	// initiates when it has data for a peer without a fresh session, when
+	// a session stopped hearing back after data was sent, and to rekey; a
+	// peer nothing is sent to has none pending, however old its last
+	// handshake.
+	HandshakePendingSince time.Time
+	RxBytes               uint64
+	TxBytes               uint64
 }
 
 // Device is one WireGuard device (wireguard-go): it reads its TUN, a router
@@ -57,7 +70,7 @@ type Device struct {
 	dev  *device.Device
 	bind *path.Bind
 
-	hs *handshakeLog // nil without a log
+	hs *handshakeLog
 
 	mu     sync.Mutex
 	key    netmap.WireGuardPrivateKey
@@ -79,7 +92,9 @@ type Device struct {
 // that (info), so a log at info level explains a drop.
 func New(name string, t tun.Device, b *path.Bind, log *slog.Logger) *Device {
 	logger := &device.Logger{Verbosef: device.DiscardLogf, Errorf: device.DiscardLogf}
-	var hs *handshakeLog
+	// Peers' HandshakePendingSince comes from the same messages, log or not.
+	hs := &handshakeLog{late: make(map[string]bool), pending: make(map[string]time.Time)}
+	logger.Verbosef = hs.verbosef
 	if log != nil {
 		log = log.With("wireguard", name)
 		logger.Errorf = func(format string, args ...any) {
@@ -89,8 +104,7 @@ func New(name string, t tun.Device, b *path.Bind, log *slog.Logger) *Device {
 			}
 			log.Log(context.Background(), level, fmt.Sprintf(format, args...))
 		}
-		hs = &handshakeLog{log: log, late: make(map[string]bool)}
-		logger.Verbosef = hs.verbosef
+		hs.log = log
 	}
 	return &Device{
 		name:   name,
@@ -105,11 +119,25 @@ func New(name string, t tun.Device, b *path.Bind, log *slog.Logger) *Device {
 // handshakeLog sorts WireGuard's verbose messages: the first handshake of
 // a peer that timed out goes to the info level (WireGuard's retries after
 // it to debug), and so does the next handshake of that peer done, ending
-// the outage; everything else is debug.
+// the outage; everything else is debug. It also keeps each peer's first
+// unanswered initiation (PeerStatus.HandshakePendingSince): WireGuard's
+// "did not complete" message can't say that, since every packet sent
+// without a session re-initiates (at most once per RekeyTimeout) and
+// pushes the retry timer that logs it back.
 type handshakeLog struct {
-	log  *slog.Logger
+	log  *slog.Logger // nil: nothing is logged
 	mu   sync.Mutex
 	late map[string]bool // peers (as WireGuard names them) whose handshake timed out, until one is done
+	// pending is when each peer's first initiation still unanswered was
+	// sent.
+	pending map[string]time.Time
+}
+
+// pendingSince is PeerStatus.HandshakePendingSince for the peer of key k.
+func (h *handshakeLog) pendingSince(k netmap.WireGuardKey) time.Time {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.pending[peerName(k)]
 }
 
 // keep forgets the peers not in keys, so peers the map took away while
@@ -117,7 +145,7 @@ type handshakeLog struct {
 func (h *handshakeLog) keep(keys map[netmap.WireGuardKey]Peer) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if len(h.late) == 0 {
+	if len(h.late) == 0 && len(h.pending) == 0 {
 		return
 	}
 	names := make(map[string]bool, len(keys))
@@ -127,6 +155,11 @@ func (h *handshakeLog) keep(keys map[netmap.WireGuardKey]Peer) {
 	for p := range h.late {
 		if !names[p] {
 			delete(h.late, p)
+		}
+	}
+	for p := range h.pending {
+		if !names[p] {
+			delete(h.pending, p)
 		}
 	}
 }
@@ -146,17 +179,24 @@ func (h *handshakeLog) verbosef(format string, args ...any) {
 	level := slog.LevelDebug
 	h.mu.Lock()
 	switch {
+	case strings.Contains(format, "Sending handshake initiation"):
+		if _, ok := h.pending[peer]; !ok {
+			h.pending[peer] = time.Now()
+		}
 	case strings.Contains(format, "Handshake did not complete") || strings.Contains(format, "stopped hearing back"):
 		if !h.late[peer] {
 			h.late[peer] = true
 			level = slog.LevelInfo
 		}
-	case h.late[peer] && (strings.Contains(format, "Received handshake response") || strings.Contains(format, "Sending handshake response")):
-		delete(h.late, peer)
-		level = slog.LevelInfo
+	case strings.Contains(format, "Received handshake response") || strings.Contains(format, "Sending handshake response"):
+		delete(h.pending, peer)
+		if h.late[peer] {
+			delete(h.late, peer)
+			level = slog.LevelInfo
+		}
 	}
 	h.mu.Unlock()
-	if h.log.Enabled(context.Background(), level) {
+	if h.log != nil && h.log.Enabled(context.Background(), level) {
 		h.log.Log(context.Background(), level, fmt.Sprintf(format, args...))
 	}
 }
@@ -230,9 +270,7 @@ func (d *Device) Configure(key netmap.WireGuardPrivateKey, peers []Peer) error {
 		}
 	}
 	d.key, d.peers, d.synced = key, next, true
-	if d.hs != nil {
-		d.hs.keep(next)
-	}
+	d.hs.keep(next)
 	if !d.up {
 		if err := d.dev.Up(); err != nil {
 			return fmt.Errorf("wg: device %s: up: %w", d.name, err)
@@ -349,6 +387,9 @@ func (d *Device) Peers() ([]PeerStatus, error) {
 		return nil, fmt.Errorf("wg: device %s: status: %w", d.name, err)
 	}
 	flush()
+	for i := range out {
+		out[i].HandshakePendingSince = d.hs.pendingSince(out[i].Key)
+	}
 	slices.SortFunc(out, func(a, b PeerStatus) int { return strings.Compare(string(a.Key[:]), string(b.Key[:])) })
 	return out, nil
 }

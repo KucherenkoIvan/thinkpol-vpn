@@ -8,6 +8,7 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/supervisor"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/wg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
 
@@ -78,7 +79,24 @@ type Status struct {
 	// upstreams the worker's egress refuses, so the resolver doesn't use
 	// them (each is logged with its address).
 	DNSUpstreamsRefused int
+	// ExitsUnanswered counts a connected device's exits (DataPlane.Peers
+	// with Exit set) that have left a WireGuard handshake initiation
+	// unanswered for ExitHandshakeDeadline or longer: directly or behind a
+	// relay, the traffic sent through them is lost. An exit nothing was
+	// sent to isn't counted, however old its last handshake.
+	ExitsUnanswered int
 }
+
+// ExitHandshakeDeadline is how long a handshake initiation to an exit may
+// go unanswered before health says so (Status.ExitsUnanswered). WireGuard
+// initiates again every RekeyTimeout (5 s) while it has data for the
+// exit, so this is three initiations in a row unanswered: one lost
+// packet doesn't flip health. It is also how long WireGuard itself waits
+// on a session that stopped hearing back before it re-initiates
+// (KeepaliveTimeout + RekeyTimeout). The age of the last handshake can't
+// be the test (REJECT_AFTER_TIME, 180 s): no persistent keepalive is set,
+// so an idle exit's last handshake grows old on a healthy device.
+const ExitHandshakeDeadline = 3 * wg.RekeyTimeout
 
 // Connection is whether a node carries traffic.
 type Connection uint8
@@ -200,6 +218,8 @@ type report struct {
 	// dnsUpstreamsRefused is an exit's count of resolver upstreams the
 	// worker's egress refuses (Status.DNSUpstreamsRefused).
 	dnsUpstreamsRefused int
+	// exitDeadline is ExitHandshakeDeadline, or the tests' (tuning).
+	exitDeadline time.Duration
 }
 
 // workerReporter is what a server's status comes from: the supervisor.
@@ -284,6 +304,11 @@ func (p *report) statusWith(dp *dataplane.Status) Status {
 		// Unknown upstreams (stale) aren't absent ones: one cause, one code.
 		s.DNSNoUpstream = !s.DNSUpstreamsStale &&
 			(errors.Is(problem, dns.ErrNoSystemUpstream) || p.dnsNoUpstream != nil && p.dnsNoUpstream())
+		deadline := p.exitDeadline
+		if deadline == 0 {
+			deadline = ExitHandshakeDeadline
+		}
+		s.ExitsUnanswered = exitsUnanswered(st.Peers, time.Now(), deadline)
 	}
 	if p.workers != nil {
 		for _, w := range p.workers.Workers() {
@@ -302,6 +327,18 @@ func (p *report) statusWith(dp *dataplane.Status) Status {
 		}
 	}
 	return s
+}
+
+// exitsUnanswered counts the exits among peers whose oldest unanswered
+// handshake initiation is deadline old or older at now.
+func exitsUnanswered(peers []dataplane.PeerStatus, now time.Time, deadline time.Duration) int {
+	n := 0
+	for _, p := range peers {
+		if p.Exit && !p.HandshakePendingSince.IsZero() && now.Sub(p.HandshakePendingSince) >= deadline {
+			n++
+		}
+	}
+	return n
 }
 
 // HealthLevel grades a node's health.
@@ -399,6 +436,11 @@ const (
 	// ProblemDNSNoUpstream: a device's resolver has no direct upstream to
 	// ask, so `direct` names don't resolve (Status.DNSNoUpstream).
 	ProblemDNSNoUpstream Problem = "dns_no_upstream"
+	// ProblemExitNoHandshake: an exit the device routes through,
+	// directly or behind a relay, doesn't answer WireGuard's handshake
+	// (Status.ExitsUnanswered): down when no exit answers, degraded when
+	// another does.
+	ProblemExitNoHandshake Problem = "exit_no_handshake"
 )
 
 // Health grades the status.
@@ -475,6 +517,19 @@ func (s Status) dataPlaneProblems(add func(HealthLevel, Problem)) {
 		add(HealthDown, ProblemNoLinkUp)
 	case up < len(dp.Neighbors):
 		add(HealthDegraded, ProblemNeighborDown)
+	}
+	if s.ExitsUnanswered > 0 {
+		exits := 0
+		for _, p := range dp.Peers {
+			if p.Exit {
+				exits++
+			}
+		}
+		if s.ExitsUnanswered >= exits {
+			add(HealthDown, ProblemExitNoHandshake)
+		} else {
+			add(HealthDegraded, ProblemExitNoHandshake)
+		}
 	}
 	if len(dp.Skipped) > 0 {
 		add(HealthDegraded, ProblemSkipped)
