@@ -342,8 +342,10 @@ func TestWGRhythmFlagsTheRhythm(t *testing.T) {
 		// alone, and an initiation shares a record with the keepalive that
 		// triggered it: a record of one size each time.
 		{"batched, keepalives", batched(wgTimeline(true), 20*time.Millisecond), wgKeepaliveAt + 20*time.Millisecond, "of 51 bytes", false},
-		{"batched, rekey after a keepalive", batched(wgRekeyTimeline(keepaliveTrigger, 125*s, 190*s), 20*time.Millisecond),
-			wgLateRekeyAt + 20*time.Millisecond, "records of 201 and 111 bytes", false},
+		// The first handshake has no trigger: the third of one size is the
+		// fourth.
+		{"batched, rekey after a keepalive", batched(wgRekeyTimeline(keepaliveTrigger, 125*s, 190*s, 125*s), 20*time.Millisecond),
+			440*s + 35*time.Millisecond, "records of 201 and 111 bytes exchanged 3 times", false},
 		{"length prefixed, keepalives", lengthPrefixed(wgTimeline(true)), wgKeepaliveAt, "of 19 bytes", false},
 		{"length prefixed, rekey", lengthPrefixed(wgTimeline(false)), wgRekeyAt, "records of 165 and 109 bytes", false},
 	} {

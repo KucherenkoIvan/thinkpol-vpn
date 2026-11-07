@@ -58,8 +58,9 @@ const (
 //
 //   - rekey: an exchange (a record in the handshake size band one way and
 //     one in the band the other way within wgPairWindow) that stands out,
-//     its two sizes not exchanged in the rekey period before it or its
-//     first record sent after wgQuiet with no band record either way, and
+//     each of its two sizes new to its direction over the rekey period
+//     before it, or its first record sent after wgQuiet with no band
+//     record either way, and
 //     recurs standing out a rekey period after the latest time it did, up
 //     to half as much again plus wgRekeySlack past it (WireGuard rekeys on
 //     the first packet after 2 minutes when it sends, after 165 s when it
@@ -125,13 +126,17 @@ type wgDirection struct {
 	// for wgPairWindow: by age, not count, so a burst of data around a
 	// handshake never pushes it out.
 	band map[int]wgBandRecord
+	// seen holds when the latest record of each size in the band ended,
+	// for good: at most one entry a size.
+	seen map[int]time.Time
 }
 
 type wgBandRecord struct {
 	end time.Time
 	// afterQuiet is set when no band record either way came within wgQuiet
-	// before it.
-	afterQuiet bool
+	// before it; fresh when none of its size came its way within the rekey
+	// period before it.
+	afterQuiet, fresh bool
 }
 
 type wgRecord struct {
@@ -242,7 +247,9 @@ func (m *wgRhythm) conn(f *Flow) (*wgConn, int) {
 	// Whatever state either key still has is of an older connection.
 	delete(m.conns, f.Key.Reverse())
 	c := &wgConn{exchanges: map[[2]int]*wgExchange{}}
-	c.dirs[0].band, c.dirs[1].band = map[int]wgBandRecord{}, map[int]wgBandRecord{}
+	for i := range c.dirs {
+		c.dirs[i].band, c.dirs[i].seen = map[int]wgBandRecord{}, map[int]time.Time{}
+	}
 	c.flows[0] = f
 	m.conns[f.Key] = c
 	return c, 0
@@ -300,18 +307,21 @@ func (m *wgRhythm) record(c *wgConn, dir int, d *wgDirection, end time.Time) {
 		c.pending = nil // answered: not a keepalive
 	}
 	if r.size >= wgBandMin && r.size <= wgBandMax {
+		seen, ok := d.seen[r.size]
+		fresh := !ok || end.Sub(seen) >= m.rekey
+		d.seen[r.size] = end
 		for size, b := range c.dirs[1-dir].band {
 			if end.Sub(b.end) > wgPairWindow {
 				delete(c.dirs[1-dir].band, size)
 				continue
 			}
 			c.exchanged = true
-			if m.exchange(c, [2]int{size, r.size}, b.afterQuiet, end) {
+			if m.exchange(c, [2]int{size, r.size}, b.afterQuiet || b.fresh && fresh, end) {
 				return
 			}
 		}
 		quiet := c.bandLast.IsZero() || end.Sub(c.bandLast) >= wgQuiet
-		d.band[r.size] = wgBandRecord{end, quiet}
+		d.band[r.size] = wgBandRecord{end, quiet, fresh}
 		c.bandLast = end
 	}
 	idle := !c.last.IsZero() && end.Sub(c.last) >= wgQuiet
@@ -343,11 +353,11 @@ func (m *wgRhythm) settle(c *wgConn, now time.Time) {
 	}
 }
 
-// exchange notes an occurrence of the exchange of sizes, its first record
-// sent after a quiet band or not, the answer ending at end, and flags the
-// connection when it stands out the wgRekeys-th time in a row a rekey
-// period after the time before. It reports whether it flagged.
-func (m *wgRhythm) exchange(c *wgConn, sizes [2]int, afterQuiet bool, end time.Time) bool {
+// exchange notes an occurrence of the exchange of sizes, standing out or
+// not, the answer ending at end, and flags the connection when it stands
+// out the wgRekeys-th time in a row a rekey period after the time before.
+// It reports whether it flagged.
+func (m *wgRhythm) exchange(c *wgConn, sizes [2]int, stands bool, end time.Time) bool {
 	window := m.rekey*3/2 + wgRekeySlack
 	if end.Sub(c.pruned) >= window {
 		for k, e := range c.exchanges {
@@ -367,7 +377,6 @@ func (m *wgRhythm) exchange(c *wgConn, sizes [2]int, afterQuiet bool, end time.T
 		e.seen = end
 		return false
 	}
-	stands := e.seen.IsZero() || end.Sub(e.seen) >= m.rekey || afterQuiet
 	e.seen = end
 	if !stands {
 		return false
