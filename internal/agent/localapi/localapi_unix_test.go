@@ -221,6 +221,9 @@ func TestTheCLIControlsTheNode(t *testing.T) {
 		if err != nil || st.GetConnectOnBoot() != on {
 			t.Fatalf("connect-on-boot %v: %v, %v", on, st, err)
 		}
+		if got, err := c.ConnectOnBoot(ctx); err != nil || got != on {
+			t.Fatalf("connect-on-boot shown: %v, %v; want %v", got, err, on)
+		}
 		out.Reset()
 		if err := WriteStatus(&out, st, time.Now()); err != nil {
 			t.Fatal(err)
@@ -234,6 +237,9 @@ func TestTheCLIControlsTheNode(t *testing.T) {
 	s.node.mu.Unlock()
 	if _, err := c.SetConnectOnBoot(ctx, true); !errors.Is(err, ErrServerMode) {
 		t.Fatalf("connect-on-boot on a server: %v, want ErrServerMode", err)
+	}
+	if on, err := c.ConnectOnBoot(ctx); !errors.Is(err, ErrServerMode) || err.Error() != refusalMsg(ErrServerMode) {
+		t.Fatalf("connect-on-boot shown on a server: %v, %v; want ErrServerMode", on, err)
 	}
 	s.node.mu.Lock()
 	s.node.st.Mode = agent.ModeDevice

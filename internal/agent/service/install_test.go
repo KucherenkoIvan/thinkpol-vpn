@@ -326,24 +326,41 @@ func TestInstallUnderSystemd(t *testing.T) {
 
 // A definition written before connect-on-boot moved to the device's
 // settings is replaced, and install says where the setting went.
+// An old definition, as the older install wrote it or changed by hand
+// too, is told where connect-on-boot went; one changed by hand is also
+// warned about.
 func TestInstallOverAnOldDefinitionSaysWhereConnectOnBootWent(t *testing.T) {
-	h := newFakeHost(t)
-	in, out := h.installer(Systemd{})
-	old := []byte("[Service]\nExecStart=" + BinaryPath + " up\nEnvironment=THINKPOL_CONNECT_ON_BOOT=on\n")
-	if err := os.MkdirAll(filepath.Dir(filepath.Join(h.root, UnitPath)), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(h.root, UnitPath), old, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := in.Install(context.Background(), Options{}); err != nil {
-		t.Fatal(err)
-	}
-	if unit, _, _ := h.file(UnitPath); !bytes.Equal(unit, SystemdUnit(Definition{Binary: BinaryPath})) {
-		t.Fatalf("the unit:\n%s", unit)
-	}
-	if !strings.Contains(out.String(), "thinkpol connect-on-boot on") || strings.Contains(out.String(), "warning: ") {
-		t.Fatalf("said:\n%s", out)
+	for name, tc := range map[string]struct {
+		sys     System
+		old     []byte
+		warning bool
+	}{
+		"systemd, as written":      {Systemd{}, oldSystemdUnit(BinaryPath, "on"), false},
+		"launchd, as written":      {Launchd{}, oldLaunchdPlist(BinaryPath, "off"), false},
+		"systemd, changed by hand": {Systemd{}, []byte("[Service]\nExecStart=" + BinaryPath + " up\nEnvironment=THINKPOL_CONNECT_ON_BOOT=on\n"), true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newFakeHost(t)
+			in, out := h.installer(tc.sys)
+			path := filepath.Join(h.root, tc.sys.DefinitionPath())
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, tc.old, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := in.Install(context.Background(), Options{}); err != nil {
+				t.Fatal(err)
+			}
+			if def, _, _ := h.file(tc.sys.DefinitionPath()); !bytes.Equal(def, tc.sys.Render(Definition{Binary: BinaryPath})) {
+				t.Fatalf("the definition:\n%s", def)
+			}
+			said := out.String()
+			if !strings.Contains(said, "thinkpol connect-on-boot on") || strings.Contains(said, "warning: ") != tc.warning ||
+				tc.warning && !strings.Contains(said, "changed by hand") {
+				t.Fatalf("said:\n%s", said)
+			}
+		})
 	}
 }
 

@@ -75,8 +75,18 @@
 // [*ConfigError] naming the file and the key or the value, which the CLI
 // exits with as EX_CONFIG (78). A bad value is refused even when a flag or
 // a variable overrides it: the file is the operator's, and a mistake in it
-// is never passed over. None is fine: every setting has its default. It is
-// read once, at start: a change takes effect at the next start.
+// is never passed over. So is a null (leave the key out for the default),
+// and a file that isn't the service's user's (root's) or that others may
+// read: 0600 is enforced, the message saying what to chmod or chown. None
+// is fine: every setting has its default. It is read once, at start: a
+// change takes effect at the next start.
+//
+// `up` refuses to start, with a [*ConfigError], while
+// THINKPOL_CONNECT_ON_BOOT is in its environment ([CheckEnvironment]): only
+// a service definition older than the binary sets it, and such a
+// definition, run without -service, would connect at every start. A
+// variable that doesn't parse (THINKPOL_LINK_MTU=abc) is a *ConfigError
+// too, as is a device that would start disconnected without the local API.
 //
 // The agent's log ([NewLogs]) is observability's text logger, writing to
 // stderr and to an in-memory [logring.Ring] of [LogRingSize], at the

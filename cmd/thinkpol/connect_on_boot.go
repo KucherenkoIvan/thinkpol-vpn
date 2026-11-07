@@ -28,11 +28,11 @@ func runConnectOnBoot(ctx context.Context, e env, args []string) error {
 	}
 	defer func() { _ = c.Close() }()
 	if cmd.NArg() == 0 {
-		st, err := c.Status(ctx)
+		on, err := c.ConnectOnBoot(ctx)
 		if err != nil {
 			return err
 		}
-		_, err = fmt.Fprintf(e.stdout, "connect-on-boot: %s\n", onOff(st.GetConnectOnBoot()))
+		_, err = fmt.Fprintf(e.stdout, "connect-on-boot: %s\n", onOff(on))
 		return err
 	}
 	st, err := c.SetConnectOnBoot(ctx, cmd.Arg(0) == "on")

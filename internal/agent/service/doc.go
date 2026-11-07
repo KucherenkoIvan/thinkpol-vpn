@@ -123,12 +123,16 @@
 // never changes. `thinkpol service connect-on-boot` and `service install
 // -connect-on-boot` are refused with a message naming the new command.
 //
-// systemd drop-ins for the unit (thinkpol.service.d/*.conf) are
-// unsupported, since one can set THINKPOL_* variables behind the node
-// file's back (docs/design/configuration.md "File formats"). Install
-// neither reads nor removes them; [HostDropIns] lists those in systemd's
-// unit directories (/etc, /run, /usr/local/lib, /usr/lib, /lib, a
-// directory reached twice through a link once) for `thinkpol diag`.
+// systemd drop-ins for the unit (thinkpol.service.d/*.conf, and every
+// service's service.d/*.conf) are unsupported, since one can set
+// THINKPOL_* variables behind the node file's back
+// (docs/design/configuration.md "File formats"). Install neither reads
+// nor removes them; [HostDropIns] lists those on systemd's whole system
+// unit search path, in its order (systemd.unit(5): system.control,
+// transient, the generators' directories, /etc, system.attached, /run,
+// /usr/local/lib, /usr/lib, /lib; a directory reached twice through a
+// link once), for `thinkpol diag`. `systemctl set-property` writes one
+// under /etc/systemd/system.control.
 //
 // # What uninstall leaves
 //

@@ -14,8 +14,9 @@ import (
 // pointer to a struct of json-tagged fields. Stricter than encoding/json,
 // so a typo never reads as a default: the file must hold one JSON object,
 // and an unknown key (keys match exactly, where encoding/json ignores
-// case), a key given twice (at any depth) or a value of the wrong type is
-// an error naming the key. An empty file is an error too: `{}` is a file
+// case), a key given twice (at any depth), a null (encoding/json reads it
+// as the default) or a value of the wrong type is an error naming the
+// key. An empty file is an error too: `{}` is a file
 // with no settings.
 func decodeSettings(data []byte, v any) error {
 	if len(bytes.TrimSpace(data)) == 0 {
@@ -48,6 +49,7 @@ func checkJSONKeys(data []byte, typ reflect.Type) error {
 	type level struct {
 		object    bool
 		keys      map[string]bool
+		lastKey   string
 		expectKey bool
 		typ       reflect.Type
 		elem      reflect.Type
@@ -77,6 +79,7 @@ func checkJSONKeys(data []byte, typ reflect.Type) error {
 					return fmt.Errorf("key %q given twice", key)
 				}
 				top.keys[key] = true
+				top.lastKey = key
 				top.expectKey = false
 				top.elem = nil
 				if top.typ != nil && top.typ.Kind() == reflect.Struct {
@@ -96,6 +99,16 @@ func checkJSONKeys(data []byte, typ reflect.Type) error {
 			t = top.elem
 			if top.object {
 				top.expectKey = true
+			}
+		}
+		if tok == nil {
+			if top.object {
+				return fmt.Errorf("key %q: null: leave the key out for the default", top.lastKey)
+			}
+			for i := len(stack) - 1; i >= 0; i-- {
+				if stack[i].object {
+					return fmt.Errorf("key %q: null in a list", stack[i].lastKey)
+				}
 			}
 		}
 		switch tok {

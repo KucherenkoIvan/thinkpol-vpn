@@ -13,9 +13,8 @@ import (
 )
 
 // NodeFile, in the state directory, is the operator's settings for this
-// node (docs/design/configuration.md "Node level"): JSON, root's, 0600 like
-// the rest of the directory, written by hand or by provisioning, never by
-// the agent. `thinkpol up` reads it at start (ApplyNodeFile); a setting
+// node (docs/design/configuration.md "Node level"): JSON, root's, 0600,
+// written by hand or by provisioning, never by the agent. `thinkpol up` reads it at start (ApplyNodeFile); a setting
 // given as a flag or in the environment wins over it. None is fine: every
 // setting has its default.
 const NodeFile = "node.json"
@@ -26,8 +25,9 @@ const nodeFileLimit = 64 << 10
 // NodeSettings is NodeFile's keys: the node's operating settings, nothing
 // about members or history (PRD S1). Each is a pointer, so a key left out
 // is told from one set to its zero value. The flags and variables that
-// say where the node's own files are (-state, -map, -api-socket) or how
-// it is run (-service, -connect) are not in it.
+// say where the node's own files are and who may reach them (-state,
+// -map, -api-socket, -api-group) or how it is run (-service, -connect)
+// are not in it.
 type NodeSettings struct {
 	Mode          *Mode     `json:"mode"`
 	Interface     *string   `json:"interface"`
@@ -100,9 +100,9 @@ func ApplyNodeFile(cfg *Config, flags *flag.FlagSet) error {
 	return nil
 }
 
-// ReadNodeFile reads and checks NodeFile in dir, as the state directory's
-// other files are read (owned by the node's user or root, writable by no
-// one else, no symlink); none is no settings. Every error but a state
+// ReadNodeFile reads and checks NodeFile in dir: a regular file (no
+// symlink) of the service's user (root), readable by no one else
+// (checkNodeFileOwnerMode); none is no settings. Every error but a state
 // directory that can't be opened is a *ConfigError naming the file.
 func ReadNodeFile(dir string) (NodeSettings, error) {
 	var s NodeSettings
@@ -112,12 +112,17 @@ func ReadNodeFile(dir string) (NodeSettings, error) {
 		return s, fmt.Errorf("state directory: %w", err)
 	}
 	defer func() { _ = d.Close() }()
-	data, _, err := d.read(NodeFile, false, nodeFileLimit)
+	data, fi, err := d.read(NodeFile, false, nodeFileLimit)
 	if errors.Is(err, fs.ErrNotExist) {
 		return s, nil
 	}
 	if err != nil {
 		return s, &ConfigError{err}
+	}
+	if uid, ok := fileOwner(fi); ok {
+		if err := checkNodeFileOwnerMode(path, uid, os.Geteuid(), fi.Mode().Perm()); err != nil {
+			return s, &ConfigError{err}
+		}
 	}
 	if err := decodeSettings(data, &s); err != nil {
 		return s, &ConfigError{fmt.Errorf("%s: %w", path, err)}
@@ -126,6 +131,25 @@ func ReadNodeFile(dir string) (NodeSettings, error) {
 		return s, &ConfigError{fmt.Errorf("%s: %w", path, err)}
 	}
 	return s, nil
+}
+
+// checkNodeFileOwnerMode refuses a node file that isn't the agent's
+// user's (euid: root, as the service runs) or that others may read:
+// the operator's settings are root's alone, 0600. A non-root agent (a
+// test) can't read a root file of 0600, so its own uid stands in for
+// root.
+func checkNodeFileOwnerMode(path string, uid, euid int, perm fs.FileMode) error {
+	if uid != euid {
+		want := "root's (chown root it)"
+		if euid != 0 {
+			want = fmt.Sprintf("uid %d's", euid)
+		}
+		return fmt.Errorf("%s: owned by uid %d: want %s", path, uid, want)
+	}
+	if perm&0o077 != 0 {
+		return fmt.Errorf("%s: mode %04o: want 0600 (chmod 600 it)", path, perm)
+	}
+	return nil
 }
 
 // check checks each value as Config.Validate would, naming its key.

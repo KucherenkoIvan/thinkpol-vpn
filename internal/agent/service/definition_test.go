@@ -56,7 +56,7 @@ func (v plistValue) strings() []string {
 }
 
 // Both definitions run `up -service` and set nothing else: no
-// environment, so connect-on-boot is only the device's (TP-166).
+// environment, so connect-on-boot is only the device's.
 func TestTheLaunchdPlistRunsTheAgentAndRestartsIt(t *testing.T) {
 	d := plistDict(t, LaunchdPlist(Definition{Binary: BinaryPath}))
 	want := map[string]string{

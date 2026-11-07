@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -72,6 +73,8 @@ func TestTheNodeFileIsStrictJSON(t *testing.T) {
 		{"a string as a bool", `{"dns": "on"}`, `key "dns": want true or false, not string`},
 		{"a string for a list", `{"dns_upstream": "192.0.2.53"}`, `key "dns_upstream": want a list, not string`},
 		{"a number in a list", `{"egress_allowed": [10]}`, `want a string, not number`},
+		{"null", `{"link_mtu": null}`, `key "link_mtu": null: leave the key out for the default`},
+		{"null in a list", `{"dns_upstream": [null]}`, `key "dns_upstream": null in a list`},
 		{"a bad mode", `{"mode": "exit"}`, `key "mode": mode "exit"`},
 		{"a bad interface", `{"interface": "a/b"}`, `key "interface": interface name "a/b"`},
 		{"a link MTU too small", `{"link_mtu": 100}`, `key "link_mtu": link MTU 100`},
@@ -99,6 +102,41 @@ func TestTheNodeFileIsStrictJSON(t *testing.T) {
 		}
 		if !errors.As(err, new(*ConfigError)) {
 			t.Errorf("%s: %v is no ConfigError", tc.name, err)
+		}
+	}
+}
+
+// The node file is root's alone, 0600: one others can read, or another
+// user's, is refused as a ConfigError, saying what to fix.
+func TestTheNodeFileIsRootsAlone(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no owners or modes here yet (TP-047)")
+	}
+	for _, perm := range []os.FileMode{0o644, 0o640, 0o604} {
+		dir := settingsDir(t, NodeFile, []byte("{}"))
+		path := filepath.Join(dir, NodeFile)
+		if err := os.Chmod(path, perm); err != nil {
+			t.Fatal(err)
+		}
+		_, err := ReadNodeFile(dir)
+		want := fmt.Sprintf("%s: mode %04o: want 0600 (chmod 600 it)", path, perm)
+		if err == nil || err.Error() != want || !errors.As(err, new(*ConfigError)) {
+			t.Errorf("mode %04o: got %v, want %q", perm, err, want)
+		}
+	}
+	// Chowning needs root: the owner rule is checked on its own.
+	for _, tc := range []struct {
+		uid, euid int
+		want      string
+	}{
+		{0, 0, ""},
+		{1000, 0, "node.json: owned by uid 1000: want root's (chown root it)"},
+		{0, 1000, "node.json: owned by uid 0: want uid 1000's"},
+		{1000, 1000, ""},
+	} {
+		err := checkNodeFileOwnerMode("node.json", tc.uid, tc.euid, 0o600)
+		if tc.want == "" && err != nil || tc.want != "" && (err == nil || err.Error() != tc.want) {
+			t.Errorf("uid %d, agent's %d: got %v, want %q", tc.uid, tc.euid, err, tc.want)
 		}
 	}
 }
@@ -231,6 +269,8 @@ func TestTheDeviceFileIsStrictJSON(t *testing.T) {
 		{"on for true", `{"connect_on_boot": "on"}`, `key "connect_on_boot": want true or false, not string`},
 		{"a bad preset", `{"rule_preset": "sometimes"}`, `key "rule_preset"`},
 		{"a bad rule", `{"rules": ["nonsense"]}`, `key "rules", rule 1`},
+		{"null", `{"connect_on_boot": null}`, `key "connect_on_boot": null: leave the key out for the default`},
+		{"null in a list", `{"rules": [null]}`, `key "rules": null in a list`},
 	} {
 		dir := s.stateDir(t, s.b, 1)
 		writeFile(t, filepath.Join(dir, DeviceFile), []byte(tc.file), 0o600)
@@ -327,5 +367,21 @@ func TestRulesLocalIsCarriedOverIntoTheDeviceFile(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(dir, LocalRulesFile)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("rules.local is left: %v", err)
+	}
+	// A server has no rules of its own: nothing is carried over.
+	server := s.stateDir(t, s.a, 1)
+	writeFile(t, filepath.Join(server, LocalRulesFile), []byte("preset everything\n"), 0o644)
+	a, err := Prepare(testConfig(server), logs, testPlatform())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.carryLocalRules(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(server, DeviceFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a server wrote a device file: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(server, LocalRulesFile)); err != nil {
+		t.Fatalf("a server removed rules.local: %v", err)
 	}
 }

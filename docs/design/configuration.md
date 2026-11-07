@@ -24,7 +24,7 @@ Operator settings, in one file (owner, 2026-11-07):
 - the capability ceiling of TP-183 (after the MVP);
 - the kill switch's defaults.
 
-The file is root-owned, 0600, in the 0700 state directory. It holds operating settings only: nothing about members, no history (S1). `up` reads it at start. It is **`node.json`** in the state directory (TP-166), written by hand or by provisioning, never by the agent. Its keys, each optional, are `up`'s flags in snake_case:
+The file is root-owned, 0600, in the 0700 state directory; `up` refuses (exit 78) one others may read or another user owns. It holds operating settings only: nothing about members, no history (S1). `up` reads it at start. It is **`node.json`** in the state directory (TP-166), written by hand or by provisioning, never by the agent. Its keys, each optional, are `up`'s flags in snake_case:
 
 | Key | Type | Flag | Default |
 |---|---|---|---|
@@ -53,7 +53,7 @@ The file is **`device.json`** in the state directory (TP-166), 0600, written ato
 | `rule_preset` | `"space"`, `"everything"` or `"all-but-domestic"` | `thinkpol rules preset` (`SetRulePreset`) | `"space"` |
 | `rules` | list of the device's own rules, `"match -> action"` | not yet settable through the API | none |
 
-The service definition runs `thinkpol up -service` and carries no setting. `service connect-on-boot` and `service install -connect-on-boot` are refused with a message naming `thinkpol connect-on-boot`; an install over a definition that still carries `THINKPOL_CONNECT_ON_BOOT` says the setting moved and is off until a member turns it on. The first start that finds a `rules.local` (and no `device.json`) writes its preset and rules into `device.json`, removes `rules.local` and logs it. A `device.json` that can't be read or parsed stops the node from starting, as `rules.local` did.
+The service definition runs `thinkpol up -service` and carries no setting. `service connect-on-boot` and `service install -connect-on-boot` are refused with a message naming `thinkpol connect-on-boot`; an install over a definition that still carries `THINKPOL_CONNECT_ON_BOOT` says the setting moved and is off until a member turns it on: an old definition's "on" is not carried over (owner, 2026-11-07); turn it on again with `thinkpol connect-on-boot on`. `up` refuses to start (exit 78) while `THINKPOL_CONNECT_ON_BOOT` is in its environment, which only an older definition sets: run `thinkpol service install` to replace it. The first start that finds a `rules.local` (and no `device.json`) writes its preset and rules into `device.json`, removes `rules.local` and logs it. A `device.json` that can't be read or parsed stops the node from starting, as `rules.local` did; so an older binary refuses a `device.json` holding keys it doesn't know, and a rollback needs the file removed (or the newer binary installed again).
 
 ## Precedence and narrowing
 
@@ -74,8 +74,8 @@ The levels then combine by narrowing:
 ## File formats
 
 - **One format, JSON,** for the node file and the device file alike (owner, 2026-11-07). Nesting is expected (TP-111's ceiling holds lists, a node that serves several spaces needs settings per space, allow-LAN takes prefixes), and one format is simpler than two. JSON has no comments, so the CLI reference lists every key and its default (TP-167).
-- **An unknown key is an error** (TP-166): `up` exits with EX_CONFIG (78) and names the key, so a typo never reads as a default. So are a key given twice (encoding/json would keep the last), a key of another case (encoding/json would match it), a value of the wrong type or out of range, invalid JSON, more than one object, and an empty file (`{}` is a file without settings). The same strict reading applies to `device.json`, where a mistake stops the node from starting.
-- **Linux systemd drop-ins are unsupported** (owner, 2026-11-07). `diag` reports one if it finds it, since a drop-in can set `THINKPOL_*` variables behind the node file's back: `service_drop_ins.paths` lists every `thinkpol.service.d/*.conf` in systemd's unit directories (TP-166), to the group too.
+- **An unknown key is an error** (TP-166): `up` exits with EX_CONFIG (78) and names the key, so a typo never reads as a default. So are a key given twice (encoding/json would keep the last), a key of another case (encoding/json would match it), a null (encoding/json would read it as the default: leave the key out instead), a value of the wrong type or out of range, invalid JSON, more than one object, and an empty file (`{}` is a file without settings). The same strict reading applies to `device.json`, where a mistake stops the node from starting.
+- **Linux systemd drop-ins are unsupported** (owner, 2026-11-07). `diag` reports one if it finds it, since a drop-in can set `THINKPOL_*` variables behind the node file's back: `service_drop_ins.paths` lists every `thinkpol.service.d/*.conf` and `service.d/*.conf` on systemd's system unit search path, in its order (`systemctl set-property` writes under `/etc/systemd/system.control`) (TP-166), to the group too.
 
 ## When a change takes effect
 

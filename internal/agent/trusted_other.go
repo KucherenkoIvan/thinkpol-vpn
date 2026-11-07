@@ -71,3 +71,6 @@ func (d *trustedDir) mkdir(name string) error {
 }
 
 func (d *trustedDir) remove(name string, _ bool) error { return os.Remove(filepath.Join(d.path, name)) }
+
+// fileOwner: none here (see trustedDir).
+func fileOwner(os.FileInfo) (int, bool) { return 0, false }

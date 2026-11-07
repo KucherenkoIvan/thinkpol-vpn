@@ -137,10 +137,11 @@ func (in Installer) Install(ctx context.Context, opts Options) error {
 			return err
 		}
 	}
-	switch err := in.installed(); {
-	case errors.Is(err, errOldDefinition):
+	err = in.installed()
+	if errors.Is(err, errOldDefinition) {
 		in.say("connect-on-boot is no longer in the service's definition: it is the device's setting now, off until a member turns it on (thinkpol connect-on-boot on)")
-	case err != nil && !errors.Is(err, ErrNotInstalled):
+	}
+	if errors.Is(err, ErrDefinitionChanged) || err != nil && !errors.Is(err, errOldDefinition) && !errors.Is(err, ErrNotInstalled) {
 		in.say("warning: %v; installing anew", err)
 	}
 	if err := in.binaryDirTrusted(); err != nil {
@@ -257,8 +258,9 @@ func (in Installer) Uninstall(ctx context.Context) error {
 
 // installed checks the installed definition is exactly what install
 // writes: none is ErrNotInstalled, one written before connect-on-boot
-// moved to the device's settings errOldDefinition, anything else
-// ErrDefinitionChanged.
+// moved to the device's settings errOldDefinition (and also
+// ErrDefinitionChanged when it isn't what the older install wrote either),
+// anything else ErrDefinitionChanged.
 func (in Installer) installed() error {
 	data, err := os.ReadFile(in.path(in.System.DefinitionPath()))
 	if errors.Is(err, fs.ErrNotExist) {
@@ -267,14 +269,27 @@ func (in Installer) installed() error {
 	if err != nil {
 		return err
 	}
-	switch {
-	case bytes.Equal(data, in.System.Render(Definition{Binary: BinaryPath})):
+	if bytes.Equal(data, in.System.Render(Definition{Binary: BinaryPath})) {
 		return nil
-	case bytes.Contains(data, []byte(oldConnectOnBootVariable)):
-		return errOldDefinition
 	}
-	return fmt.Errorf("%w: %s isn't what thinkpol service install writes; install again", ErrDefinitionChanged, in.System.DefinitionPath())
+	changed := fmt.Errorf("%w: %s isn't what thinkpol service install writes; install again", ErrDefinitionChanged, in.System.DefinitionPath())
+	if !bytes.Contains(data, []byte(oldConnectOnBootVariable)) {
+		return changed
+	}
+	for _, old := range oldDefinitions(in.System) {
+		if bytes.Equal(data, old) {
+			return errOldDefinition
+		}
+	}
+	return &oldChangedError{changed}
 }
+
+// oldChangedError is an old definition (errOldDefinition) that was also
+// changed by hand (ErrDefinitionChanged, its message).
+type oldChangedError struct{ changed error }
+
+func (e *oldChangedError) Error() string   { return e.changed.Error() }
+func (e *oldChangedError) Unwrap() []error { return []error{errOldDefinition, e.changed} }
 
 // oldConnectOnBootVariable is how definitions carried connect-on-boot
 // before it moved to the device's settings (agent.DeviceFile).

@@ -626,6 +626,38 @@ func TestRulePresetIsStoredByTheService(t *testing.T) {
 	}
 }
 
+// A preset set before the node's data plane runs is taken once it does:
+// the request never holds up the run that would take it.
+func TestARulePresetSetBeforeTheNodeRunsIsTaken(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	startNode(t, reg, s.a, s.verified(t, 1))
+	set := make(chan error, 1)
+	b := startDevice(t, s, reg, true, deviceOpt{node: func(n *Node) {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		go func() {
+			defer cancel()
+			set <- n.SetRulePreset(ctx, "all-but-domestic")
+		}()
+		// Stored: the request now waits for the data plane.
+		eventually(t, func() bool {
+			got, err := os.ReadFile(filepath.Join(n.cfg.StateDir, DeviceFile))
+			return err == nil && strings.Contains(string(got), `"rule_preset": "all-but-domestic"`)
+		})
+	}})
+	select {
+	case err := <-set:
+		if err != nil && !errors.Is(err, ErrPresetUnavailable) {
+			t.Fatalf("SetRulePreset: %v", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("SetRulePreset never returned")
+	}
+	if st := b.connection(t, Connected); st.RulePreset != "all-but-domestic" {
+		t.Fatalf("status %+v", st)
+	}
+}
+
 // The device's own rules stay when the preset changes.
 func TestTheDevicesOwnRulesAreKept(t *testing.T) {
 	s := newTestSpace(t)

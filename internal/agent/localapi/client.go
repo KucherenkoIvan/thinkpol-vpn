@@ -133,6 +133,19 @@ func (c *Client) SetRulePreset(ctx context.Context, preset string) (*localapiv1.
 	return sanitized(resp).GetStatus(), nil
 }
 
+// ConnectOnBoot is the device's connect-on-boot, from its status;
+// ErrServerMode on a server, as SetConnectOnBoot refuses there.
+func (c *Client) ConnectOnBoot(ctx context.Context) (bool, error) {
+	st, err := c.Status(ctx)
+	if err != nil {
+		return false, err
+	}
+	if st.GetMode() == localapiv1.Mode_MODE_SERVER {
+		return false, &clientError{refusalMsg(ErrServerMode), ErrServerMode}
+	}
+	return st.GetConnectOnBoot(), nil
+}
+
 // SetConnectOnBoot sets the device's connect-on-boot and returns its
 // status.
 func (c *Client) SetConnectOnBoot(ctx context.Context, on bool) (*localapiv1.Status, error) {

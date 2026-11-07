@@ -38,7 +38,7 @@ type Diagnostics struct {
 }
 
 // DropInReport lists drop-ins for the service's systemd unit
-// (thinkpol.service.d/*.conf), which are unsupported: one can set
+// (thinkpol.service.d/*.conf and service.d/*.conf), which are unsupported: one can set
 // THINKPOL_* variables behind the node file's back
 // (docs/design/configuration.md "File formats"). Unreadable says why they
 // couldn't be listed.

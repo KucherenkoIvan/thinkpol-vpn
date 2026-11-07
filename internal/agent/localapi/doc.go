@@ -187,7 +187,7 @@
 //     ([dns.Inspect]): resolv.conf and systemd-resolved's links on Linux,
 //     `scutil --dns` on macOS;
 //   - `service_drop_ins`: drop-ins for the service's systemd unit
-//     (thinkpol.service.d/*.conf), by path, unsupported and reported
+//     (thinkpol.service.d/*.conf and service.d/*.conf), by path, unsupported and reported
 //     ([agent.DropInReport]); none on macOS. Not a host part: paths only,
 //     the group gets them too.
 //

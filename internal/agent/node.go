@@ -55,8 +55,12 @@ type Node struct {
 	// settingsMu serializes the changes to device, the member's toggles
 	// as DeviceFile holds them (read by run while it builds the data
 	// plane, under settingsMu).
-	settingsMu    sync.Mutex
-	device        DeviceSettings
+	settingsMu sync.Mutex
+	device     DeviceSettings
+	// presetMu keeps SetRulePreset's store and its request to the data
+	// plane in one order. Never held with settingsMu while it waits: run
+	// takes settingsMu before it reads rulesRequests.
+	presetMu      sync.Mutex
 	rulesRequests chan rulesRequest
 }
 
@@ -186,11 +190,14 @@ func (n *Node) SetRulePreset(ctx context.Context, preset string) error {
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrUnknownPreset, err)
 	}
+	n.presetMu.Lock()
+	defer n.presetMu.Unlock()
 	n.settingsMu.Lock()
-	defer n.settingsMu.Unlock()
 	next := n.device
 	next.Rules.Preset = p
-	if err := n.storeDevice(next); err != nil {
+	err = n.storeDevice(next)
+	n.settingsMu.Unlock()
+	if err != nil {
 		return err
 	}
 	n.report.set(func(r *report) { r.preset = p.String() })
@@ -255,9 +262,10 @@ func (n *Node) storeDevice(s DeviceSettings) error {
 // device's preset and own rules, as read at Prepare, are written to
 // DeviceFile, then rules.local is removed, and the log says so. A
 // directory holding both had the move stopped after the write: rules.local
-// is only removed.
+// is only removed. A server has no rules of its own: it leaves the file
+// alone.
 func (n *Node) carryLocalRules() error {
-	if !n.state.hasLocalRules {
+	if !n.state.hasLocalRules || n.Mode() == ModeServer {
 		return nil
 	}
 	n.settingsMu.Lock()
