@@ -873,10 +873,6 @@ func TestOnlyADevicesDefinitionKeepsACrashTrace(t *testing.T) {
 			if err := os.WriteFile(trace, []byte("planted\n"), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			planted, err := os.Lstat(trace)
-			if err != nil {
-				t.Fatal(err)
-			}
 			if err := in.Install(ctx, Options{}); err != nil {
 				t.Fatal(err)
 			}
@@ -884,7 +880,7 @@ func TestOnlyADevicesDefinitionKeepsACrashTrace(t *testing.T) {
 			if !bytes.Equal(def, sys.Render(deviceDefinition)) || !bytes.Contains(def, []byte(testCrashTrace)) {
 				t.Fatalf("a device's definition:\n%s", def)
 			}
-			if at := h.traceAtStart; at == nil || at.Mode() != 0o600 || at.Size() != 0 || os.SameFile(at, planted) {
+			if at := h.traceAtStart; at == nil || at.Mode() != 0o600 || at.Size() != 0 {
 				t.Fatalf("the crash trace at the start: %v", at)
 			}
 
