@@ -60,11 +60,11 @@ const (
 //     one in the band the other way within wgPairWindow) that stands out,
 //     each of its two sizes new to its direction over the rekey period
 //     before it, or its first record sent after wgQuiet with no band
-//     record either way, and
-//     recurs standing out a rekey period after the latest time it did, up
-//     to half as much again plus wgRekeySlack past it (WireGuard rekeys on
-//     the first packet after 2 minutes when it sends, after 165 s when it
-//     only receives), and again a period after that: wgRekeys in all.
+//     record either way, and stands out again a rekey period after the
+//     latest time it did, up to half as much again plus wgRekeySlack past
+//     it (WireGuard rekeys on the first packet after 2 minutes when it
+//     sends, after 165 s when it only receives), and again a period after
+//     that: wgRekeys in all.
 //   - keepalive: an idle run, records of one size each sent after wgQuiet
 //     with no record either way, none answered by a record the other way
 //     within wgPairWindow, at one steady interval: at least `keepalives`

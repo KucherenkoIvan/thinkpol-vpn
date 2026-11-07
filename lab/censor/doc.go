@@ -126,9 +126,9 @@
 //   - rekey: an exchange, a record one way answered within 2 s by one the
 //     other way, both 92 to 404 bytes (a handshake message with any
 //     plausible overhead, padding to a 256-byte bucket included), that
-//     stands out: its two sizes not exchanged in the rekey period before
-//     it, or its first record sent after 5 s with no record of the band
-//     either way. It shows the rhythm when it stands out three times in a
+//     stands out: each of its two sizes new to its direction over the
+//     rekey period before it, or its first record sent after 5 s with no
+//     record of the band either way. It shows the rhythm when it stands out three times in a
 //     row, each 2 minutes to 3.5 minutes after the one before: WireGuard
 //     rekeys on the first packet past 2 minutes when it sends, past 165 s
 //     when it only receives, so with a 25 s keepalive the gaps run from
@@ -145,7 +145,11 @@
 // steady stream of records in the band (thinkpol's own 2 s path probes
 // under 256-byte padding, a ping, an interactive or TURN stream), whatever
 // its sizes and rate, and a request repeated at any interval shorter than
-// 2 minutes never show the rhythm. The price: a handshake pair hidden
+// 2 minutes never show the rhythm. Sizes must be new on their own, not
+// only as a pair: random sizes at a few records a second make nearly every
+// pair new, and pairs then chain by chance within 5 minutes. Measured: 6 minutes of
+// random band sizes, from one exchange every 10 s to 50 a second, none
+// flagged in 100 seeds at any rate. The price: a handshake pair hidden
 // among identical records exchanged steadily (padded to one bucket, say)
 // stands out only after 5 s quiet in the band, and is invisible while the
 // tunnel carries such records. The keepalive signal has blind spots of its
