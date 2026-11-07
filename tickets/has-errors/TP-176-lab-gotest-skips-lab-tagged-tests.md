@@ -37,6 +37,13 @@ branch: "tp-176-lab-gotest-skips-lab-tagged-tests"
 - Chose failure over a warning (2026-11-07): a warning scrolls past while the exit status stays green, and the green exit status is what a ticket cites as evidence. Fixed by building with the tag, not by refusing the PKG: `labctl gotest -tagged` also runs packages with lab-tagged tests on the host (`go test -tags lab`, as `make lab-test`'s lab phase does), since a node has no Docker to start the labs those tests need. `-fail-skipped` (implies `-v`) fails a package whose tests all skipped over both runs, and a run in which no test ran. `make lab-gotest` passes both flags; `make lab-test` passes neither.
 - `RUN` applies to both runs, so an in-node test that a lab test drives is reached through the lab test: `RUN=TestRealityPrototype`, not `RUN=TestRealityClientInterop` (that one now fails loudly; lab/README.md says so).
 
+## Review findings
+- [ ] R1.1 (should-fix) `lab/gotest.go` `GoTestLabTagged` runs `go test` with no process group, Cancel or WaitDelay: on cancel only `go` dies, the test binary keeps the output pipe, so `cmd.Run` waits up to its `-test.timeout`, and if that timeout panics its `t.Cleanup` never runs and labs stay up. Run the child in its own process group, signal the group on cancel, set WaitDelay; unit test if practical.
+- [ ] R1.2 (should-fix) `Makefile` `lab-gotest` with PKG unset defaults to `./...`, which with `-fail-skipped` is red by construction and runs the whole `./lab` suite on the host under one 60m limit. Require PKG (a make error naming it) and say so in lab/README.md (`make lab-test` runs everything).
+- [ ] R1.3 (should-fix, docs) `lab/doc.go` says lab-tagged tests run through `make lab-test`; `make lab-gotest` now runs them too for the packages it's given. Update it.
+- [ ] R1.4 (should-fix, small) `ListLabTaggedPackages` compares test-file counts, so a `//go:build !lab` file paired with a `//go:build lab` file is missed. Compare file names; add a `!lab`/`lab` pair to the test module.
+- [ ] R1.5 (nits) `lab/gotest_test.go`: the same GOWORK/GOFLAGS environment for the listing test and `TestGoTestLabTagged…`; `labctl` `-timeout` help's default; lab/README.md: COUNT also repeats the host lab tests; `lab: ` prefix on the `lab tests in …` error; unit tests for the "no packages with tests" `-fail-skipped` branch and for `GoTestEach` keeping its tally (or say in the Log they're covered only by the manual run).
+
 ## Log
 - 2026-11-07 created in backlog
 - 2026-11-07 backlog → in-progress, owner: agent-tp-176
@@ -48,3 +55,4 @@ branch: "tp-176-lab-gotest-skips-lab-tagged-tests"
 - 2026-11-07 8224638: the go-command tests skip when `go` is not in PATH (checked: they skip with PATH emptied, pass on the host); `make lint`, `make test` green
 - 2026-11-07 full `make lab-test` (LAB_P=4, exclusive CPU lock) on 8224638: exit 0, no FAIL
 - 2026-11-07 in-progress → review
+- 2026-11-07 review → has-errors (round 1 findings R1.x)
