@@ -28,3 +28,4 @@ The lab blocks what real censors block first: listed IPs and SNIs, WireGuard and
 - 2026-10-10 created in backlog
 - 2026-10-15 depends_on TP-089 (split from TP-024 review)
 - 2026-11-07 backlog → in-progress, owner: agent-tp-025
+- 2026-11-07 mutation checks, each seen to fail its test and restored: ClientHello read from one record only (TestClientHelloServerName, TestSNIBlocklistSplitClientHello); ip-blocklist checks the destination only (TestIPBlocklistEitherEnd); sni-blocklist matches exact names only, and retires on an incomplete ClientHello (TestSNIBlocklistSplitClientHello); wireguard-fingerprint without the 16-byte step, and without transport data (TestWireGuardFingerprint); openvpn-fingerprint without the session id check, and without the server's reset check (TestOpenVPNFingerprintStrays), and without retransmission dedup (TestOpenVPNFingerprintUDP)

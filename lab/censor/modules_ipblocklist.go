@@ -38,7 +38,7 @@ func newIPBlocklist(settings json.RawMessage) (Passive, error) {
 	if err != nil {
 		return nil, err
 	}
-	b, err := s.blockSettings.parse(Drop)
+	b, err := s.parse(Drop)
 	if err != nil {
 		return nil, err
 	}

@@ -52,7 +52,7 @@ func newSNIBlocklist(settings json.RawMessage) (Passive, error) {
 		return nil, fmt.Errorf("no names")
 	}
 	var err error
-	if m.block, err = s.blockSettings.parse(Reset); err != nil {
+	if m.block, err = s.parse(Reset); err != nil {
 		return nil, err
 	}
 	return m, nil
