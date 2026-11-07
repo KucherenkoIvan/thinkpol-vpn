@@ -69,7 +69,8 @@ func testPlatform() Platform {
 			Guard: func(context.Context) routetable.GuardReport {
 				return routetable.GuardReport{Unreadable: "no guard in this test"}
 			},
-			DNS: func(context.Context) dns.HostReport { return dns.HostReport{Unreadable: "no resolvers in this test"} },
+			DNS:     func(context.Context) dns.HostReport { return dns.HostReport{Unreadable: "no resolvers in this test"} },
+			DropIns: func() DropInReport { return DropInReport{Unreadable: "no service in this test"} },
 		},
 	}
 }

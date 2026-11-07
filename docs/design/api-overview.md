@@ -1,6 +1,6 @@
 # thinkpol-vpn — API overview
 
-This is everything a person or a script sees of thinkpol today: the CLI, the local API, the configuration, and the files on disk. It also lists the surface that three pre-M2 tickets plan to add and what TP-140 added since, and ends with a consistency review. It describes the `rewrite` branch as built (TP-139). The command-by-command CLI and local API reference is in a second file, [API overview: reference](api-overview-reference.md), to keep each design file under 50 KB. The entry point is [DESIGN.md](../../DESIGN.md). Where this file and the code disagree, the code wins: this is a snapshot for review, not a source of truth.
+This is everything a person or a script sees of thinkpol today: the CLI, the local API, the configuration, and the files on disk. It also lists the surface that three pre-M2 tickets plan to add and what TP-140 and TP-166 added since, and ends with a consistency review. It describes the `rewrite` branch as built (TP-139). The command-by-command CLI and local API reference is in a second file, [API overview: reference](api-overview-reference.md), to keep each design file under 50 KB. The entry point is [DESIGN.md](../../DESIGN.md). Where this file and the code disagree, the code wins: this is a snapshot for review, not a source of truth.
 
 **Where the examples come from.** Every example output here and in the reference was captured on 2026-10-28 from this branch, in two ways. Commands that need no running node ran inside a lab node, through `run()` in a throwaway test (`make lab-gotest`). Commands that need one ran against `thinkpol up` in a lab topology (`go test -tags lab`): the M0 space, `device-a` started with `-connect=false`, `server-1` serving, and a systemd node for `service`. Neither capture test is committed. Users: `root`; `alice`, in the `thinkpol` group; `mallory`, in neither. Ids, versions and timings are random per run. The dev map uses `192.0.2.10` and `2001:db8::10` as the server's address. No output shown here names a lab address.
 
@@ -43,7 +43,7 @@ This is everything a person or a script sees of thinkpol today: the CLI, the loc
 | [Local API](api-overview-reference.md#local-api) (reference file) | the socket, the two gates, every call with its access and its shapes, refusals |
 | [Configuration](#configuration) | every key, its default and where it is documented; input files; lab variables |
 | [On-disk state](#on-disk-state) | every file the node, the service and the dev tools write or read |
-| [Built since the snapshot](#built-since-the-snapshot) | what TP-140 added |
+| [Built since the snapshot](#built-since-the-snapshot) | what TP-140 and TP-166 added |
 | [Planned, not built](#planned-not-built) | what TP-111, TP-141 and TP-133 propose |
 | [Consistency findings](#consistency-findings) | F1–F21 with suggested verdicts |
 | [Verdicts (owner, 2026-11-07)](#verdicts-owner-2026-11-07) | the decided conventions: configuration levels, status versus diag, exit codes, naming |
@@ -197,6 +197,10 @@ The node writes no log file. The log goes to stderr and into an in-memory ring, 
 Answered (F5): `no_link_up` is reused; the new code is snake_case.
 
 **What `health: ok` covers.** The neighbor check is about the first hop only. A device whose entry link is up while the exit behind it never answers, or whose direct exit's link is proven while the WireGuard handshake never completes, still reads `health: ok` (RR48).
+
+### TP-166: node.json, device.json and connect-on-boot
+
+The node file `node.json` and the device file `device.json` exist, `rules.local` is carried into `device.json` and removed, connect-on-boot is the member's toggle (`thinkpol connect-on-boot on|off`, local API `SetConnectOnBoot`), the service runs `up -service` with no `THINKPOL_CONNECT_ON_BOOT`, `service connect-on-boot` and `service install -connect-on-boot` are refused, a bad configuration exits 78, and `diag` reports systemd drop-ins. [Configuration](configuration.md) is current; the rest of this file, the reference and the findings are not updated for TP-166.
 
 ## Planned, not built
 

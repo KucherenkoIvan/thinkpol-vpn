@@ -295,8 +295,6 @@ func (h *fakeHost) file(p string) ([]byte, os.FileMode, bool) {
 	return data, fi.Mode(), true
 }
 
-var on, off = true, false
-
 func TestInstallUnderSystemd(t *testing.T) {
 	h := newFakeHost(t)
 	in, _ := h.installer(Systemd{})
@@ -309,9 +307,6 @@ func TestInstallUnderSystemd(t *testing.T) {
 	if !ok || mode.Perm() != 0o644 || !bytes.Equal(unit, SystemdUnit(Definition{Binary: BinaryPath})) {
 		t.Fatalf("the unit (%v, %v):\n%s", ok, mode, unit)
 	}
-	if !bytes.Contains(unit, []byte("Environment=THINKPOL_CONNECT_ON_BOOT=off\n")) {
-		t.Fatalf("connect-on-boot isn't off by default:\n%s", unit)
-	}
 	bin, mode, ok := h.file(BinaryPath)
 	if !ok || mode.Perm() != 0o755 || string(bin) != "the thinkpol binary" {
 		t.Fatalf("the binary: %v %v %q", ok, mode, bin)
@@ -320,32 +315,52 @@ func TestInstallUnderSystemd(t *testing.T) {
 	if !h.enabled || !bytes.Equal(h.unitLoaded, unit) || !bytes.Equal(h.unitRunning, unit) || !slices.Equal(h.groups[Group], []string{"alice"}) {
 		t.Fatalf("enabled %v, loaded %q, running %q, group %v", h.enabled, h.unitLoaded, h.unitRunning, h.groups)
 	}
-	if c, err := in.ConnectOnBoot(); err != nil || c {
-		t.Fatalf("connect-on-boot: %v %v", c, err)
-	}
-
-	// The toggle: systemd has the new unit for the next start, the running
-	// agent isn't restarted.
-	if err := in.SetConnectOnBoot(ctx, true); err != nil {
-		t.Fatal(err)
-	}
-	toggled, _, _ := h.file(UnitPath)
-	if c, err := in.ConnectOnBoot(); err != nil || !c || !bytes.Equal(h.unitLoaded, toggled) || !bytes.Equal(h.unitRunning, unit) {
-		t.Fatalf("connect-on-boot %v %v, loaded %q, running %q", c, err, h.unitLoaded, h.unitRunning)
-	}
-	// Installed again (a new binary): restarted on the unit, the toggle
-	// kept unless the install sets it.
+	// Installed again (a new binary): restarted on the same unit.
 	if err := in.Install(ctx, Options{User: "alice"}); err != nil {
 		t.Fatal(err)
 	}
-	if c, _ := in.ConnectOnBoot(); !c || !bytes.Equal(h.unitRunning, toggled) || !slices.Equal(h.groups[Group], []string{"alice"}) {
-		t.Fatalf("after a reinstall: connect-on-boot %v, running %q, group %v", c, h.unitRunning, h.groups)
+	if !bytes.Equal(h.unitRunning, unit) || !slices.Equal(h.groups[Group], []string{"alice"}) {
+		t.Fatalf("after a reinstall: running %q, group %v", h.unitRunning, h.groups)
 	}
-	if err := in.Install(ctx, Options{ConnectOnBoot: &off}); err != nil {
-		t.Fatal(err)
-	}
-	if c, _ := in.ConnectOnBoot(); c {
-		t.Fatal("install -connect-on-boot=false left it on")
+}
+
+// A definition written before connect-on-boot moved to the device's
+// settings is replaced, and install says where the setting went.
+// An old definition, as the older install wrote it or changed by hand
+// too, is told where connect-on-boot went; one changed by hand is also
+// warned about.
+func TestInstallOverAnOldDefinitionSaysWhereConnectOnBootWent(t *testing.T) {
+	for name, tc := range map[string]struct {
+		sys     System
+		old     []byte
+		warning bool
+	}{
+		"systemd, as written":      {Systemd{}, oldSystemdUnit(BinaryPath, "on"), false},
+		"launchd, as written":      {Launchd{}, oldLaunchdPlist(BinaryPath, "off"), false},
+		"systemd, changed by hand": {Systemd{}, []byte("[Service]\nExecStart=" + BinaryPath + " up\nEnvironment=THINKPOL_CONNECT_ON_BOOT=on\n"), true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newFakeHost(t)
+			in, out := h.installer(tc.sys)
+			path := filepath.Join(h.root, tc.sys.DefinitionPath())
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, tc.old, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := in.Install(context.Background(), Options{}); err != nil {
+				t.Fatal(err)
+			}
+			if def, _, _ := h.file(tc.sys.DefinitionPath()); !bytes.Equal(def, tc.sys.Render(Definition{Binary: BinaryPath})) {
+				t.Fatalf("the definition:\n%s", def)
+			}
+			said := out.String()
+			if !strings.Contains(said, "thinkpol connect-on-boot on") || strings.Contains(said, "warning: ") != tc.warning ||
+				tc.warning && !strings.Contains(said, "changed by hand") {
+				t.Fatalf("said:\n%s", said)
+			}
+		})
 	}
 }
 
@@ -355,7 +370,7 @@ func TestUninstallLeavesNothingOfTheService(t *testing.T) {
 			h := newFakeHost(t)
 			in, out := h.installer(sys)
 			ctx := context.Background()
-			if err := in.Install(ctx, Options{User: "alice", ConnectOnBoot: &on}); err != nil {
+			if err := in.Install(ctx, Options{User: "alice"}); err != nil {
 				t.Fatal(err)
 			}
 			// What a stopped agent leaves, and what it doesn't: a crashed
@@ -396,8 +411,8 @@ func TestUninstallLeavesNothingOfTheService(t *testing.T) {
 				t.Fatalf("group %v, launchd loaded %v override %v, systemd running %q enabled %v loaded %q",
 					h.groups, h.loaded, h.overridden, h.unitRunning, h.enabled, h.unitLoaded)
 			}
-			if _, err := in.ConnectOnBoot(); !errors.Is(err, ErrNotInstalled) {
-				t.Fatalf("connect-on-boot after uninstall: %v", err)
+			if err := in.installed(); !errors.Is(err, ErrNotInstalled) {
+				t.Fatalf("the definition after uninstall: %v", err)
 			}
 			// Uninstalling again finds nothing to do.
 			if err := in.Uninstall(ctx, false); err != nil {
@@ -488,7 +503,7 @@ func TestAFailedReinstallLeavesTheServiceAsItWas(t *testing.T) {
 			t.Fatal(err)
 		}
 		h.failNext["usermod -a"] = 1
-		if err := in.Install(ctx, Options{User: "nosuchuser", ConnectOnBoot: &on}); err == nil {
+		if err := in.Install(ctx, Options{User: "nosuchuser"}); err == nil {
 			t.Fatal("installed")
 		}
 		if !h.enabled || !bytes.Equal(h.unitRunning, running) {
@@ -509,7 +524,7 @@ func TestAFailedReinstallLeavesTheServiceAsItWas(t *testing.T) {
 		loaded := h.loadedFrom
 		h.groups[Group] = nil
 		h.failNext["dseditgroup -o"] = 2 // the group calls fail
-		if err := in.Install(ctx, Options{User: "nosuchuser", ConnectOnBoot: &on}); err == nil {
+		if err := in.Install(ctx, Options{User: "nosuchuser"}); err == nil {
 			t.Fatal("installed")
 		}
 		if !h.loaded || !bytes.Equal(h.loadedFrom, loaded) {
@@ -579,8 +594,8 @@ func TestUninstallStopsOnAFailedClearAndForceCompletesIt(t *testing.T) {
 			if !strings.Contains(out.String(), "warning: left on the host") || !strings.Contains(out.String(), stuck.Error()) {
 				t.Errorf("what is left on the host isn't reported:\n%s", out)
 			}
-			if _, err := in.ConnectOnBoot(); !errors.Is(err, ErrNotInstalled) {
-				t.Fatalf("connect-on-boot after a forced uninstall: %v", err)
+			if err := in.installed(); !errors.Is(err, ErrNotInstalled) {
+				t.Fatalf("the definition after a forced uninstall: %v", err)
 			}
 
 			// Nothing on disk: nothing for -force to keep, so uninstall
@@ -611,13 +626,6 @@ func TestInstallUnderLaunchd(t *testing.T) {
 	if !h.loaded || !bytes.Equal(h.loadedFrom, plist) || h.overridden || !slices.Equal(h.groups[Group], []string{"alice"}) {
 		t.Fatalf("loaded %v, override %v, group %v", h.loaded, h.overridden, h.groups)
 	}
-	// The toggle is for the next boot: the loaded daemon keeps its plist.
-	if err := in.SetConnectOnBoot(ctx, true); err != nil {
-		t.Fatal(err)
-	}
-	if c, err := in.ConnectOnBoot(); err != nil || !c || !bytes.Equal(h.loadedFrom, plist) {
-		t.Fatalf("connect-on-boot %v %v", c, err)
-	}
 	// Installed again over the running daemon, which launchd still shows
 	// for a while after the bootout: Start waits, then loads the new plist.
 	// alice, a member already, isn't added twice.
@@ -625,7 +633,7 @@ func TestInstallUnderLaunchd(t *testing.T) {
 	if err := in.Install(ctx, Options{User: "alice"}); err != nil {
 		t.Fatal(err)
 	}
-	if !h.loaded || !bytes.Contains(h.loadedFrom, []byte("<string>on</string>")) || !slices.Equal(h.groups[Group], []string{"alice"}) {
+	if !h.loaded || !bytes.Equal(h.loadedFrom, plist) || !slices.Equal(h.groups[Group], []string{"alice"}) {
 		t.Fatalf("reinstalled: loaded %v, group %v, from\n%s", h.loaded, h.groups, h.loadedFrom)
 	}
 	// A daemon someone disabled is enabled again.
@@ -804,26 +812,23 @@ func TestADefinitionChangedByHandIsReported(t *testing.T) {
 	h := newFakeHost(t)
 	in, out := h.installer(Systemd{})
 	ctx := context.Background()
-	if err := in.Install(ctx, Options{ConnectOnBoot: &on}); err != nil {
-		t.Fatal(err)
-	}
-	unit, _, _ := h.file(UnitPath)
-	edited := bytes.Replace(unit, []byte("up\n"), []byte("up -log-level debug\n"), 1)
-	if err := os.WriteFile(filepath.Join(h.root, UnitPath), edited, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := in.SetConnectOnBoot(ctx, true); !errors.Is(err, ErrDefinitionChanged) {
-		t.Fatalf("got %v", err)
-	}
-	if now, _, _ := h.file(UnitPath); !bytes.Equal(now, edited) {
-		t.Fatal("the edited unit was rewritten")
-	}
-	// Installed over it: anew, with a warning that connect-on-boot is off.
 	if err := in.Install(ctx, Options{}); err != nil {
 		t.Fatal(err)
 	}
-	if c, err := in.ConnectOnBoot(); err != nil || c || !strings.Contains(out.String(), "warning: ") {
-		t.Fatalf("connect-on-boot %v %v, said\n%s", c, err, out)
+	unit, _, _ := h.file(UnitPath)
+	edited := bytes.Replace(unit, []byte("up -service\n"), []byte("up -service -log-level debug\n"), 1)
+	if err := os.WriteFile(filepath.Join(h.root, UnitPath), edited, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := in.installed(); !errors.Is(err, ErrDefinitionChanged) {
+		t.Fatalf("got %v", err)
+	}
+	// Installed over it: anew, with a warning.
+	if err := in.Install(ctx, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if now, _, _ := h.file(UnitPath); !bytes.Equal(now, unit) || !strings.Contains(out.String(), "warning: ") {
+		t.Fatalf("the unit:\n%s\nsaid\n%s", now, out)
 	}
 }
 
@@ -838,22 +843,6 @@ func TestTheGroupIsTheLocalAPIsDefault(t *testing.T) {
 	}
 	if cfg.APIGroup != Group {
 		t.Fatalf("the agent's default group %q, install's %q", cfg.APIGroup, Group)
-	}
-}
-
-func TestConnectOnBootIsSpelledOnOrOff(t *testing.T) {
-	for in, want := range map[string]string{"": "nil", "on": "true", "off": "false", "yes": "error", "true": "error", "ON": "error"} {
-		got, err := ParseOnOff(in)
-		s := "error"
-		switch {
-		case err == nil && got == nil:
-			s = "nil"
-		case err == nil:
-			s = fmt.Sprint(*got)
-		}
-		if s != want {
-			t.Errorf("%q: %s, want %s", in, s, want)
-		}
 	}
 }
 

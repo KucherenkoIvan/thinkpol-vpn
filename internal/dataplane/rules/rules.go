@@ -81,8 +81,8 @@ type Local struct {
 	Rules  []netmap.Rule
 }
 
-// maxLocalRules bounds the local file.
-const maxLocalRules = 1024
+// MaxLocalRules bounds a device's own rules.
+const MaxLocalRules = 1024
 
 // MarshalText writes the local file: a `preset <name>` line (left out for
 // PresetSpace), then one rule per line in netmap.ParseRule's form.
@@ -130,8 +130,8 @@ func (l *Local) UnmarshalText(text []byte) error {
 		if err != nil {
 			return fmt.Errorf("line %d: %w", n, err)
 		}
-		if len(out.Rules) == maxLocalRules {
-			return fmt.Errorf("line %d: more than %d rules", n, maxLocalRules)
+		if len(out.Rules) == MaxLocalRules {
+			return fmt.Errorf("line %d: more than %d rules", n, MaxLocalRules)
 		}
 		out.Rules = append(out.Rules, r)
 	}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/netip"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -27,6 +28,7 @@ type inspected struct {
 	routes    netcfg.Inspection
 	guard     routetable.GuardReport
 	dns       dns.HostReport
+	dropIns   DropInReport
 }
 
 func (i *inspected) inspector() Inspector {
@@ -59,6 +61,7 @@ func (i *inspected) inspector() Inspector {
 			i.hostReads++
 			return i.dns
 		},
+		DropIns: func() DropInReport { return i.dropIns },
 	}
 }
 
@@ -79,6 +82,8 @@ func TestTheHostPartsAreRoots(t *testing.T) {
 		routes: netcfg.Inspection{Routes: []netcfg.HostRoute{{Owner: netcfg.OwnerRouteTable, Family: netcfg.IPv6, Dst: netip.MustParsePrefix("::/0"), Type: "unreachable"}}},
 		guard:  routetable.GuardReport{Where: "test", Present: true, Exempt: []netip.Prefix{netip.MustParsePrefix("2001:db8:d0::/48")}},
 		dns:    dns.HostReport{Sources: []dns.HostSource{{Name: "resolv.conf", Present: true, Resolvers: []dns.HostResolver{{Servers: []string{"192.0.2.53"}}}}}},
+		// Not a host part: paths only, the group sees them too.
+		dropIns: DropInReport{Paths: []string{"/etc/systemd/system/thinkpol.service.d/override.conf"}},
 	}
 	b := startDevice(t, s, reg, false, withInspector(insp))
 	b.connection(t, Disconnected)
@@ -88,6 +93,9 @@ func TestTheHostPartsAreRoots(t *testing.T) {
 	if insp.reads() != 0 || d.HostParts || d.Routes.RoutesUnreadable != UnreadableRootOnly || d.Routes.RulesUnreadable != UnreadableRootOnly ||
 		d.Routes.Routes != nil || d.Guard.Unreadable != UnreadableRootOnly || d.Guard.Present || d.DNS.Unreadable != UnreadableRootOnly || d.DNS.Sources != nil {
 		t.Fatalf("not root: %d reads, %+v, %+v", insp.reads(), d.Routes, d.Guard)
+	}
+	if !slices.Equal(d.DropIns.Paths, insp.dropIns.Paths) {
+		t.Fatalf("not root: drop-ins %+v", d.DropIns)
 	}
 	// Disconnected, what is left on the host still shows: a crash's.
 	d = b.node.Diagnose(ctx, true)

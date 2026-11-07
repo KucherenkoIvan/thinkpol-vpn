@@ -107,10 +107,6 @@ func disabled(out string) bool {
 	return false
 }
 
-// Reload does nothing: launchd reads the plist when it bootstraps the
-// system domain, at the next boot.
-func (Launchd) Reload(context.Context, Runner) error { return nil }
-
 // Stop boots the daemon out (SIGTERM to the agent, SIGKILL after
 // ExitTimeOut) and waits until launchd no longer has it, whatever bootout
 // said: it may return before the job is gone, or fail with a slow exit

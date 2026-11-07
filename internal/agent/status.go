@@ -42,13 +42,16 @@ type Status struct {
 	PublicListeners []PublicListenerStatus
 	// Egress is a server's (nil on a device).
 	Egress *supervisor.EgressInfo
-	// RulePreset is a device's rule preset (LocalRulesFile; "space" when it
+	// RulePreset is a device's rule preset (DeviceFile; "space" when it
 	// chose none); RulesEnforced is set while its data plane runs them, and
 	// PresetUnavailable when the map can't build the preset, which is then
 	// enforced failing closed.
 	RulePreset        string
 	RulesEnforced     bool
 	PresetUnavailable bool
+	// ConnectOnBoot is a device's connect-on-boot (DeviceFile): whether
+	// the service connects it at a boot's first start.
+	ConnectOnBoot bool
 	// DNSUnprotected is set while a connected device's OS may resolve
 	// names outside the node's resolver (pointing it failed, or another
 	// link's domains in systemd-resolved): names may leave outside the
@@ -176,8 +179,10 @@ type report struct {
 	listeners int
 	// workers is a server's supervisor, while it runs.
 	workers workerReporter
-	// preset is a device's rule preset (Status.RulePreset).
-	preset string
+	// preset is a device's rule preset (Status.RulePreset), and
+	// connectOnBoot its connect-on-boot.
+	preset        string
+	connectOnBoot bool
 	// dns says why a device's OS may resolve outside its resolver.
 	dns func() error
 	// dnsNoUpstream says a device's resolver has no direct upstream (nil
@@ -233,7 +238,7 @@ func (p *report) statusLocked() Status { return p.statusWith(nil) }
 func (p *report) statusWith(dp *dataplane.Status) Status {
 	s := Status{Mode: p.mode, Space: p.space, MapVersion: p.version, MapsRefused: p.mapsRefused, Removed: p.removed, Retrying: p.retrying, Listeners: p.listeners, DNSUpstreamsRefused: p.dnsUpstreamsRefused}
 	if p.mode != ModeServer {
-		s.RulePreset = p.preset
+		s.RulePreset, s.ConnectOnBoot = p.preset, p.connectOnBoot
 	}
 	switch {
 	case p.mode == ModeServer:

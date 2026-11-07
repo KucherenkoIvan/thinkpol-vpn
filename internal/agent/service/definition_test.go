@@ -55,78 +55,71 @@ func (v plistValue) strings() []string {
 	return out
 }
 
+// Both definitions run `up -service` and set nothing else: no
+// environment, so connect-on-boot is only the device's.
 func TestTheLaunchdPlistRunsTheAgentAndRestartsIt(t *testing.T) {
-	for _, on := range []bool{false, true} {
-		d := plistDict(t, LaunchdPlist(Definition{Binary: BinaryPath, ConnectOnBoot: on}))
-		want := map[string]string{
-			"Label": "string:" + Label, "RunAtLoad": "true:", "KeepAlive": "true:",
-			"ThrottleInterval": "integer:5", "ExitTimeOut": "integer:60",
+	d := plistDict(t, LaunchdPlist(Definition{Binary: BinaryPath}))
+	want := map[string]string{
+		"Label": "string:" + Label, "RunAtLoad": "true:", "KeepAlive": "true:",
+		"ThrottleInterval": "integer:5", "ExitTimeOut": "integer:60",
+	}
+	for k, w := range want {
+		if got := d[k].XMLName.Local + ":" + strings.TrimSpace(d[k].Text); got != w {
+			t.Errorf("%s: %s, want %s", k, got, w)
 		}
-		for k, w := range want {
-			if got := d[k].XMLName.Local + ":" + strings.TrimSpace(d[k].Text); got != w {
-				t.Errorf("%s: %s, want %s", k, got, w)
-			}
+	}
+	if got := strings.Join(d["ProgramArguments"].strings(), " "); got != "string:"+BinaryPath+" string:up string:-service" {
+		t.Errorf("ProgramArguments: %s", got)
+	}
+	if _, ok := d["EnvironmentVariables"]; ok {
+		t.Error("EnvironmentVariables is set")
+	}
+	// The agent writes no log to disk (PRD S2).
+	for _, k := range []string{"StandardOutPath", "StandardErrorPath"} {
+		if _, ok := d[k]; ok {
+			t.Errorf("%s is set", k)
 		}
-		if got := strings.Join(d["ProgramArguments"].strings(), " "); got != "string:"+BinaryPath+" string:up" {
-			t.Errorf("ProgramArguments: %s", got)
-		}
-		wantEnv := "key:THINKPOL_CONNECT_ON_BOOT string:off"
-		if on {
-			wantEnv = "key:THINKPOL_CONNECT_ON_BOOT string:on"
-		}
-		if got := strings.Join(d["EnvironmentVariables"].strings(), " "); got != wantEnv {
-			t.Errorf("EnvironmentVariables: %s, want %s", got, wantEnv)
-		}
-		// The agent writes no log to disk (PRD S2).
-		for _, k := range []string{"StandardOutPath", "StandardErrorPath"} {
-			if _, ok := d[k]; ok {
-				t.Errorf("%s is set", k)
-			}
-		}
-		if len(d) != len(want)+2 {
-			t.Errorf("keys %v", d)
-		}
+	}
+	if len(d) != len(want)+1 {
+		t.Errorf("keys %v", d)
 	}
 }
 
 func TestTheSystemdUnitRunsTheAgentAndRestartsIt(t *testing.T) {
-	for _, on := range []bool{false, true} {
-		unit := string(SystemdUnit(Definition{Binary: BinaryPath, ConnectOnBoot: on}))
-		sections := map[string]map[string]string{}
-		var cur map[string]string
-		for _, l := range strings.Split(unit, "\n") {
-			switch {
-			case l == "" || strings.HasPrefix(l, "#"):
-			case strings.HasPrefix(l, "[") && strings.HasSuffix(l, "]"):
-				cur = map[string]string{}
-				sections[l] = cur
-			default:
-				k, v, ok := strings.Cut(l, "=")
-				if !ok || cur == nil {
-					t.Fatalf("line %q", l)
-				}
-				cur[k] = v
+	unit := string(SystemdUnit(Definition{Binary: BinaryPath}))
+	sections := map[string]map[string]string{}
+	var cur map[string]string
+	for _, l := range strings.Split(unit, "\n") {
+		switch {
+		case l == "" || strings.HasPrefix(l, "#"):
+		case strings.HasPrefix(l, "[") && strings.HasSuffix(l, "]"):
+			cur = map[string]string{}
+			sections[l] = cur
+		default:
+			k, v, ok := strings.Cut(l, "=")
+			if !ok || cur == nil {
+				t.Fatalf("line %q", l)
+			}
+			cur[k] = v
+		}
+	}
+	want := map[string]map[string]string{
+		"[Unit]":    {"StartLimitIntervalSec": "0"},
+		"[Service]": {"ExecStart": BinaryPath + " up -service", "ExecReload": "/bin/kill -HUP $MAINPID", "Restart": "always", "RestartSec": "5", "KillMode": "mixed"},
+		"[Install]": {"WantedBy": "multi-user.target"},
+	}
+	for s, kv := range want {
+		for k, v := range kv {
+			if got := sections[s][k]; got != v {
+				t.Errorf("%s %s=%q, want %q", s, k, got, v)
 			}
 		}
-		want := map[string]map[string]string{
-			"[Unit]": {"StartLimitIntervalSec": "0"},
-			"[Service]": {"ExecStart": BinaryPath + " up", "ExecReload": "/bin/kill -HUP $MAINPID", "Restart": "always", "RestartSec": "5", "KillMode": "mixed",
-				"Environment": "THINKPOL_CONNECT_ON_BOOT=" + map[bool]string{true: "on", false: "off"}[on]},
-			"[Install]": {"WantedBy": "multi-user.target"},
-		}
-		for s, kv := range want {
-			for k, v := range kv {
-				if got := sections[s][k]; got != v {
-					t.Errorf("%s %s=%q, want %q", s, k, got, v)
-				}
-			}
-		}
-		// The agent makes /run/thinkpol itself: systemd's would delete
-		// the host lock's inode when the unit stops (package agent).
-		for _, k := range []string{"RuntimeDirectory", "RuntimeDirectoryPreserve"} {
-			if _, ok := sections["[Service]"][k]; ok {
-				t.Errorf("[Service] sets %s", k)
-			}
+	}
+	// The agent makes /run/thinkpol itself: systemd's would delete
+	// the host lock's inode when the unit stops (package agent).
+	for _, k := range []string{"RuntimeDirectory", "RuntimeDirectoryPreserve", "Environment", "EnvironmentFile"} {
+		if _, ok := sections["[Service]"][k]; ok {
+			t.Errorf("[Service] sets %s", k)
 		}
 	}
 }

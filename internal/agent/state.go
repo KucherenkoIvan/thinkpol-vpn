@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"slices"
 
-	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/rules"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
 
@@ -18,10 +17,12 @@ import (
 //	space.pub  the space's id and public keys: what every map is verified against
 //	map.bin    the latest map of the space: only the node's own section is readable
 //	blobs/     blobs the map names, each in a file named by its SHA-256 (hex)
-//	rules.local  a device's own routing choice (LocalRulesFile), if it made one
+//	node.json  the operator's settings (NodeFile), if any
+//	device.json  a member's toggles on a device (DeviceFile), once one was set
 //
-// `thinkpol up` writes nothing there but rules.local, when the local API
-// changes the device's rules, and blobs/ on a device: the lists its rules
+// `thinkpol up` writes nothing there but device.json, when the local API
+// changes a toggle (or a start carries rules.local, LocalRulesFile, over
+// into it, and removes that), and blobs/ on a device: the lists its rules
 // use, fetched from peers, with an index of their names, replaced when the
 // map changes once the successor is verified (diskBlobs). A server only
 // reads blobs/, its seeds, when the supervisor sends them to a worker:
@@ -72,10 +73,14 @@ type State struct {
 	// OwnMapUnused is set when MapPath is elsewhere but the state
 	// directory holds a map.bin too.
 	OwnMapUnused bool
-	// LocalRules is the device's LocalRulesFile; zero (the space's rules)
-	// when there is none. One that can't be read or parsed fails LoadState,
-	// never reads as none.
-	LocalRules rules.Local
+	// Device is the member's toggles: DeviceFile's, else what a
+	// LocalRulesFile left from before it holds, else the defaults. A file
+	// that can't be read or parsed fails LoadState, never reads as none.
+	Device DeviceSettings
+	// hasDeviceFile and hasLocalRules say which of the two the directory
+	// holds: a LocalRulesFile is carried over into DeviceFile at the start
+	// (Node.Adapters).
+	hasDeviceFile, hasLocalRules bool
 }
 
 // LoadState reads and checks a node's state: the keys in dir, the trust in
@@ -95,15 +100,11 @@ func LoadState(dir, mapPath string) (State, error) {
 	}
 	for _, name := range names {
 		switch {
-		case name == NodeKeyFile, name == TrustFile, name == BlobDir:
+		case name == NodeKeyFile, name == TrustFile, name == BlobDir, name == NodeFile:
+		case name == DeviceFile:
+			st.hasDeviceFile = true
 		case name == LocalRulesFile:
-			data, _, err := d.read(LocalRulesFile, false, localRulesLimit)
-			if err == nil {
-				st.LocalRules, err = parseLocalRules(data)
-			}
-			if err != nil {
-				return st, fmt.Errorf("%s: %w; fix it or remove it (the device then follows the space's rules)", filepath.Join(dir, LocalRulesFile), err)
-			}
+			st.hasLocalRules = true
 		case name == MapFileName:
 			st.OwnMapUnused = !samePath(filepath.Join(dir, MapFileName), mapPath)
 		case slices.Contains(neverOnANode, name):
@@ -111,6 +112,9 @@ func LoadState(dir, mapPath string) (State, error) {
 		default:
 			st.Unexpected = append(st.Unexpected, name)
 		}
+	}
+	if err := st.loadDevice(d); err != nil {
+		return st, err
 	}
 
 	data, _, err := d.read(NodeKeyFile, true, keyFileLimit)
@@ -147,6 +151,32 @@ func LoadState(dir, mapPath string) (State, error) {
 		return st, fmt.Errorf("%s: %w", mapPath, err)
 	}
 	return st, nil
+}
+
+// loadDevice reads the member's toggles: DeviceFile, else LocalRulesFile,
+// which a device kept its rules in before DeviceFile. With both, DeviceFile
+// is what a start carried rules.local over into (one that stopped before
+// removing it): rules.local is not read.
+func (st *State) loadDevice(d *trustedDir) error {
+	switch {
+	case st.hasDeviceFile:
+		data, _, err := d.read(DeviceFile, false, deviceFileLimit)
+		if err == nil {
+			st.Device, err = parseDeviceSettings(data)
+		}
+		if err != nil {
+			return &ConfigError{fmt.Errorf("%s: %w; fix it or remove it (every toggle is then at its default)", filepath.Join(d.path, DeviceFile), err)}
+		}
+	case st.hasLocalRules:
+		data, _, err := d.read(LocalRulesFile, false, deviceFileLimit)
+		if err == nil {
+			st.Device.Rules, err = parseLocalRules(data)
+		}
+		if err != nil {
+			return &ConfigError{fmt.Errorf("%s: %w; fix it or remove it (the device then follows the space's rules)", filepath.Join(d.path, LocalRulesFile), err)}
+		}
+	}
+	return nil
 }
 
 func samePath(a, b string) bool {

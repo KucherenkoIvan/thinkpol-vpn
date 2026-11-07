@@ -15,12 +15,14 @@ import (
 
 // TestServiceUnderSystemd installs device-a as a service in a node that
 // runs systemd, and checks what PRD D5 and the crash posture ask of it:
-// it starts at boot, connect-on-boot is off until turned on, a reinstall
+// it starts at boot, connect-on-boot is off until alice, a member of the
+// group and not root, turns it on (and off again), a reinstall
 // over the running agent and a crash both come back as the member left it
 // in that boot, and uninstall, right after a crash, leaves nothing of the
 // service but its group, also across a reboot. A reboot is the node's
 // restart: a fresh /run, systemd booting again (the kernel's boot id is
-// the Docker VM's and stays), the node checked sealed again.
+// the Docker VM's and stays), the node checked sealed again. A drop-in for
+// the unit, unsupported, shows in diag.
 func TestServiceUnderSystemd(t *testing.T) {
 	t.Parallel()
 	topo := lab.Topology{
@@ -75,7 +77,7 @@ func TestServiceUnderSystemd(t *testing.T) {
 	out := dev.MustExec(t, "env", "SUDO_USER=alice", "/opt/thinkpol/bin/thinkpol", "service", "install")
 	t.Logf("install:\n%s", out)
 	unit := dev.MustExec(t, "cat", "/etc/systemd/system/thinkpol.service")
-	if !strings.Contains(unit, "Environment=THINKPOL_CONNECT_ON_BOOT=off\n") || !strings.Contains(unit, "ExecStart=/usr/local/bin/thinkpol up\n") {
+	if strings.Contains(unit, "THINKPOL_") || !strings.Contains(unit, "ExecStart=/usr/local/bin/thinkpol up -service\n") {
 		t.Fatalf("the unit:\n%s", unit)
 	}
 	if got := dev.MustExec(t, "systemctl", "is-enabled", "thinkpol.service"); got != "enabled\n" {
@@ -83,9 +85,6 @@ func TestServiceUnderSystemd(t *testing.T) {
 	}
 	if got := dev.MustExec(t, "stat", "-c", "%a %U", "/usr/local/bin/thinkpol"); got != "755 root\n" {
 		t.Fatalf("the binary: %q", got)
-	}
-	if got := dev.MustExec(t, "thinkpol", "service", "connect-on-boot"); got != "connect-on-boot: off\n" {
-		t.Fatalf("connect-on-boot: %q", got)
 	}
 	// A reload is SIGHUP to the agent: it reads the map again, and runs on.
 	dev.MustExec(t, "systemctl", "reload", "thinkpol.service")
@@ -114,6 +113,18 @@ func TestServiceUnderSystemd(t *testing.T) {
 	}
 	state("disconnected")
 	noPing(t, dev, "-c", "2", "-W", "1", s4.String())
+	// alice's toggle, through the local API: off until she turns it on.
+	onBoot := func(args ...string) string {
+		t.Helper()
+		res, err := execResult(dev, execTimeout, asAlice(append([]string{"connect-on-boot"}, args...)...)...)
+		if err != nil {
+			t.Fatalf("connect-on-boot %v: %v\n%s%s", args, err, res.Stdout, res.Stderr)
+		}
+		return res.Stdout
+	}
+	if got := onBoot(); got != "connect-on-boot: off\n" {
+		t.Fatalf("connect-on-boot: %q", got)
+	}
 	if res, err := execResult(dev, execTimeout, asAlice("connect")...); err != nil {
 		t.Fatalf("connect: %v\n%s%s", err, res.Stdout, res.Stderr)
 	}
@@ -167,14 +178,51 @@ func TestServiceUnderSystemd(t *testing.T) {
 	state("disconnected")
 	noPing(t, dev, "-c", "2", "-W", "1", s4.String())
 
-	// The toggle: connected from the next boot on.
-	dev.MustExec(t, "thinkpol", "service", "connect-on-boot", "on")
-	if got := dev.MustExec(t, "thinkpol", "service", "connect-on-boot"); got != "connect-on-boot: on\n" {
+	// alice's toggle, without root: connected from the next boot on. The
+	// service stores it in device.json; the unit doesn't change.
+	if out := onBoot("on"); !regexp.MustCompile(`connect-on-boot: +on\n`).MatchString(out) {
+		t.Fatalf("connect-on-boot on:\n%s", out)
+	}
+	if got := onBoot(); got != "connect-on-boot: on\n" {
 		t.Fatalf("connect-on-boot: %q", got)
+	}
+	if got := dev.MustExec(t, "stat", "-c", "%a %U", stateDir+"/device.json"); got != "600 root\n" {
+		t.Fatalf("device.json: %q", got)
+	}
+	if got := dev.MustExec(t, "cat", "/etc/systemd/system/thinkpol.service"); got != unit {
+		t.Fatalf("the unit changed:\n%s", got)
 	}
 	state("disconnected") // not before it
 	reboot()
 	state("connected")
+	ping(t, dev, s4)
+	// Off again: the next boot stays down.
+	onBoot("off")
+	state("connected") // not before it
+	reboot()
+	state("disconnected")
+	noPing(t, dev, "-c", "2", "-W", "1", s4.String())
+	if got := onBoot(); got != "connect-on-boot: off\n" {
+		t.Fatalf("connect-on-boot after the reboot: %q", got)
+	}
+
+	// A drop-in for the unit is unsupported: diag reports it, to the
+	// group too.
+	dropIn := "/etc/systemd/system/thinkpol.service.d/lab-diag.conf"
+	dev.WriteFile(t, dropIn, []byte("[Service]\nEnvironment=THINKPOL_LOG_LEVEL=debug\n"))
+	res, err := execResult(dev, execTimeout, asAlice("diag")...)
+	if err != nil || !regexp.MustCompile(`"service_drop_ins":\s*\{\s*"unreadable":\s*"",\s*"paths":\s*\[\s*"`+regexp.QuoteMeta(dropIn)+`"\s*\]`).MatchString(res.Stdout) {
+		t.Fatalf("diag: %v\n%s%s", err, res.Stdout, res.Stderr)
+	}
+	dev.MustExec(t, "rm", "-r", "/etc/systemd/system/thinkpol.service.d")
+	if res, err := execResult(dev, execTimeout, asAlice("diag")...); err != nil || !regexp.MustCompile(`"service_drop_ins":\s*\{\s*"unreadable":\s*"",\s*"paths":\s*\[\]`).MatchString(res.Stdout) {
+		t.Fatalf("diag without the drop-in: %v\n%s%s", err, res.Stdout, res.Stderr)
+	}
+
+	// Connected for the uninstall below, which meets what a crash left.
+	if res, err := execResult(dev, execTimeout, asAlice("connect")...); err != nil {
+		t.Fatalf("connect: %v\n%s%s", err, res.Stdout, res.Stderr)
+	}
 	ping(t, dev, s4)
 
 	// Uninstalled at once after a crash, before systemd restarts the

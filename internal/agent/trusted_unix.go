@@ -71,6 +71,15 @@ func (d *trustedDir) read(name string, private bool, limit int64) ([]byte, os.Fi
 	return b, fi, nil
 }
 
+// fileOwner is the uid owning the file fi describes.
+func fileOwner(fi os.FileInfo) (int, bool) {
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, false
+	}
+	return int(st.Uid), true
+}
+
 // trusted checks an open file's owner and mode.
 func trusted(path string, fi os.FileInfo, private bool) error {
 	st, ok := fi.Sys().(*syscall.Stat_t)
