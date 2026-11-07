@@ -2,6 +2,7 @@ package lab
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -76,12 +77,22 @@ const (
 	taggedFail   = "//go:build lab\n\npackage %s\n\nimport \"testing\"\n\nfunc TestSetsUp(t *testing.T) { t.Fatal(\"broken\") }\n"
 )
 
+// needGoTool skips a test that runs the go command where it can't: under
+// -short, and in a lab node, which has test binaries but no toolchain.
+func needGoTool(t *testing.T) {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("runs the go command")
+	}
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("no go command here")
+	}
+}
+
 func pkgFile(format, pkg string) string { return strings.Replace(format, "%s", pkg, 1) }
 
 func TestListLabTaggedPackagesFindsPackagesWithLabTaggedTests(t *testing.T) {
-	if testing.Short() {
-		t.Skip("runs go list")
-	}
+	needGoTool(t)
 	root := writeModule(t, map[string]string{
 		"plain/plain_test.go":   pkgFile(untaggedSkip, "plain"),
 		"both/both_test.go":     pkgFile(untaggedSkip, "both"),
@@ -103,9 +114,7 @@ func TestListLabTaggedPackagesFindsPackagesWithLabTaggedTests(t *testing.T) {
 }
 
 func TestGoTestLabTaggedRunsTheTaggedTests(t *testing.T) {
-	if testing.Short() {
-		t.Skip("runs go test")
-	}
+	needGoTool(t)
 	root := writeModule(t, map[string]string{
 		"pass/pass_test.go":     pkgFile(untaggedSkip, "pass"),
 		"pass/pass_lab_test.go": pkgFile(taggedPass, "pass"),
