@@ -68,11 +68,11 @@ When a device's agent dies under the service (a panic, a runtime fatal error), i
 - [x] R1.6 "nothing after a clean stop" unchecked on the real service: check after the clean restart in lab/service_test.go; a clean SIGTERM stop writes nothing to stderr
 - [x] R1.7 grpclog writes to os.Stderr past slog: route it to the agent's logger; a regular-file stderr under `up -service` that isn't the trace sends the log to io.Discard
 - [x] R1.8 nits: remove the trace after the old service stops; no line per restart loop when the file can't be fixed; an unreadable trace is its own state in status text; stale docs (agent doc.go, api-overview, api-overview-reference, definition.go); systemd < 240 ignores append:; lab dumps `thinkpol logs` for a device
-- [ ] R2.1 a server under a device's definition whose start fails before KeepLastRun (Validate, Prepare, a panic) appends each start's error to crash-trace: right after TakeCrashTrace, detach unless the node is a known device (the node file's or flag's mode, else agent.ServiceMode); unit test: a server-mode start failing in Prepare leaves no file
-- [ ] R2.2 Detach on a device removes the file, so the manager recreates it 0644: on a device recreate it with CreateCrashTrace (a server still removes it)
-- [ ] R2.3 keepNoTrace removes a server's file without emptying it: truncate before removing
-- [ ] R2.4 grpcLogger.fatal logs only to the agent's logger: also write the message to os.Stderr before exiting
-- [ ] R2.5 nothing tests up.go's RouteGRPCLog call or LogOutput's cfg.Service: a test through runUp (or the smallest seam)
+- [x] R2.1 a server under a device's definition whose start fails before KeepLastRun (Validate, Prepare, a panic) appends each start's error to crash-trace: right after TakeCrashTrace, detach unless the node is a known device (the node file's or flag's mode, else agent.ServiceMode); unit test: a server-mode start failing in Prepare leaves no file
+- [x] R2.2 Detach on a device removes the file, so the manager recreates it 0644: on a device recreate it with CreateCrashTrace (a server still removes it)
+- [x] R2.3 keepNoTrace removes a server's file without emptying it: truncate before removing
+- [x] R2.4 grpcLogger.fatal logs only to the agent's logger: also write the message to os.Stderr before exiting
+- [x] R2.5 nothing tests up.go's RouteGRPCLog call or LogOutput's cfg.Service: a test through runUp (or the smallest seam)
 
 ## Log
 - 2026-10-24 created in backlog (2026-10-24 macOS device run; owner decision on a device crash trace and PRD S2)
@@ -93,3 +93,10 @@ When a device's agent dies under the service (a panic, a runtime fatal error), i
 - 2026-11-07 not verified: launchd on a Mac (device box open; checklist in Notes); systemd < 240 not run
 - 2026-11-07 has-errors → review
 - 2026-11-07 review → has-errors (round 2 findings R2.x)
+- 2026-11-07 round 2 fixed: R2.1 up reads its config right after TakeCrashTrace (upConfig) and calls CrashTrace.KeepOnlyOnADevice: kept only when the mode (env, flag, node file) is device, or auto and ServiceMode says a known device; otherwise detached before Prepare (a config that wasn't read is judged by the trace's directory); R2.2 Detach on a known device makes the file anew (CreateCrashTrace), a server's still removes it; R2.3 a server's detach (keepNoTrace, KeepOnlyOnADevice, Take's failures) empties the file before removing it; R2.4 grpcLogger.fatal also writes to os.Stderr; R2.5 tests through runUp (crashTracePath seam); agent doc.go and api-overview updated
+- 2026-11-07 trade-off: a device on auto whose map or node file can't be read is no longer known to be a device, so its failed start detaches and the previous trace is gone (R2.1 as specified); a device by its mode keeps it
+- 2026-11-07 tests added: cmd/thinkpol TestOnlyAKnownDevicesFailedStartKeepsTheTrace (server by flag, by node file, unknown kind: file gone after a Prepare failure; device by flag, by node file: trace kept), TestUpRoutesItsLog (grpc's log reaches the agent's; a regular-file stderr gets the log without -service, nothing under it); agent TestOnlyAKnownDeviceKeepsTracing, TestADeviceDetachedMakesTheFileAnew, TestAServersTraceIsEmptiedBeforeItIsRemoved (skipped as root); localapi TestGRPCFatalWritesToStderr (subprocess)
+- 2026-11-07 mutations (all killed): KeepOnlyOnADevice call dropped from up.go; unknown kind taken for a device; a device's detach removes instead of recreating; a server's detach not emptied; grpc fatal not written to stderr; RouteGRPCLog call dropped; LogOutput passed false for cfg.Service
+- 2026-11-07 ran: make lint, make test green; make lab-gotest PKG=./internal/agent/ ./internal/agent/service/ ./internal/agent/localapi/ ./cmd/thinkpol/ (root) green on 6f96d6a; full make lab-test not run this round (brief: the last full lab passed on 797e52c, the change is local to start-up and covered by unit tests)
+- 2026-11-07 not verified: launchd on a Mac (device box open; checklist in Notes); systemd < 240 not run; full lab on this round's commit
+- 2026-11-07 has-errors → review
