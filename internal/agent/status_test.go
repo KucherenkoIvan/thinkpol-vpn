@@ -22,6 +22,7 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/path"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport/memory"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
 
@@ -708,5 +709,61 @@ func TestAStartWhileDisconnectedClearsACrashedRunsRoutes(t *testing.T) {
 		case <-time.After(10 * time.Second):
 			t.Fatal("a disconnected start cleared nothing")
 		}
+	}
+}
+
+// A device whose only exit refuses its dial says no_link_up at once, long
+// before DeadAfter: a failed dial is not a dial still waiting for an
+// answer. The link coming up clears it.
+func TestADialThatFailedIsNoLinkUp(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	const deadAfter = time.Minute
+	b := startDevice(t, s, reg, true, deviceOpt{tuning: func(t *tuning) { t.path.DeadAfter = deadAfter }})
+	b.connection(t, Connected)
+	var h Health
+	eventually(t, func() bool { h = b.node.Status().Health(); return slices.Contains(h.Problems, ProblemNoLinkUp) })
+	if h.Level != HealthDown {
+		t.Fatalf("a dial that failed: health %+v, want down", h)
+	}
+
+	startNode(t, reg, s.a, s.verified(t, 1))
+	eventually(t, func() bool { h = b.node.Status().Health(); return h.Level == HealthOK })
+}
+
+// A device with two exits, one linked and one whose dials fail, is
+// degraded with neighbor_down, not down: the other exit still answers.
+func TestADialThatFailedBesideALinkIsNeighborDown(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	startNode(t, reg, s.a, s.verified(t, 1))
+	other := netmap.NodeID{0, 0, 0, 0, 0, 0, 0, 3}
+	env := s.buildEditing(t, 1, s.b, func(sec *netmap.Section) {
+		sec.Links = append(sec.Links, netmap.Link{Peer: other, Endpoints: []netmap.Endpoint{{
+			Transport: memory.Name, Address: netip.MustParseAddrPort("192.0.2.3:4500"), Credential: s.secret}}})
+	})
+	b := startDevice(t, s, reg, true, deviceOpt{prepare: func(c *Config, _ *Platform) {
+		writeFile(t, filepath.Join(c.StateDir, MapFileName), env, 0o644)
+	}})
+	b.connection(t, Connected)
+	var st Status
+	eventually(t, func() bool {
+		st = b.node.Status()
+		return slices.Contains(st.Health().Problems, ProblemNeighborDown)
+	})
+	if h := st.Health(); h.Level != HealthDegraded || slices.Contains(h.Problems, ProblemNoLinkUp) {
+		t.Fatalf("one exit up, one never linked: health %+v, want degraded, neighbor_down", h)
+	}
+	up, down := 0, 0
+	for _, n := range st.DataPlane.Neighbors {
+		switch {
+		case n.Up:
+			up++
+		case n.Node == path.NodeID(other) && len(n.Links) == 0:
+			down++
+		}
+	}
+	if up != 1 || down != 1 {
+		t.Fatalf("neighbors %+v, want the linked exit up and the other listed down with no links", st.DataPlane.Neighbors)
 	}
 }

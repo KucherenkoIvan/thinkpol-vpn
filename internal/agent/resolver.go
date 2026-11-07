@@ -85,6 +85,17 @@ func (r *runner) setUpstreams(ups []netip.AddrPort) {
 	r.dp.Log.Info("DNS: the resolver's upstreams changed", "upstreams", len(ups))
 }
 
+// noUpstream is what a device's status reads to say its running
+// resolver has no direct upstream to ask; nil without one. A worker's
+// resolver reports its upstreams as dns_upstream_refused instead.
+func (r *runner) noUpstream() func() bool {
+	if r.resolver == nil || r.dp.inWorker() {
+		return nil
+	}
+	srv := r.resolver
+	return func() bool { return !srv.HasUpstreams() }
+}
+
 // dnsGuard is a device's OS resolver configuration while it should
 // resolve through the node, and why it may not: read by the status from
 // any goroutine.

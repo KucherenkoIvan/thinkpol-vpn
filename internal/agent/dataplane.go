@@ -488,6 +488,7 @@ func (r *runner) publish() {
 	r.dp.report.set(func(p *report) {
 		p.engine, p.version, p.removed, p.retrying, p.listeners, p.conn, p.dns =
 			r.engine, r.follow.cur.Header().Version, r.follow.removed, !r.retryAt.IsZero(), n, r.conn.state, r.guard.problem
+		p.dnsNoUpstream = r.noUpstream()
 	})
 	// What Status says of them (DNSUnprotected; DataPlane.RouteTable's
 	// Error): the route table recovers and fails again on its own, the

@@ -887,3 +887,148 @@ func resolverAnswer(port uint16) (netip.Addr, error) {
 	}
 	return a.Unmap(), nil
 }
+
+// A device whose resolver has no direct upstream says dns_no_upstream;
+// upstreams the OS configuration tells clear it.
+func TestNoDirectUpstreamIsAProblem(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	startNode(t, reg, s.a, s.verified(t, 1))
+	sys := &fakeSystem{}
+	b := startDevice(t, s, reg, true, deviceOpt{
+		prepare: func(c *Config, p *Platform) {
+			c.DNS = true
+			p.SetSystemDNS = sys.Set
+			p.SystemUpstreams = func([]netip.Addr) ([]netip.Addr, error) { return nil, nil }
+		},
+		tuning: func(t *tuning) { t.dnsPort = 5353 },
+	})
+	b.connection(t, Connected)
+	eventually(t, func() bool { n, _ := sys.counts(); return n == 1 })
+	if st := b.node.Status(); !st.DNSNoUpstream || !slices.Contains(st.Health().Problems, ProblemDNSNoUpstream) {
+		t.Fatalf("no upstream: status %+v, health %+v", st, st.Health())
+	}
+	sys.mu.Lock()
+	first := sys.set[0]
+	sys.mu.Unlock()
+	first.Upstreams([]netip.Addr{netip.MustParseAddr("192.0.2.53")})
+	if st := b.node.Status(); st.DNSNoUpstream || slices.Contains(st.Health().Problems, ProblemDNSNoUpstream) {
+		t.Fatalf("an upstream told: health %+v", st.Health())
+	}
+}
+
+// A configured upstream is one to ask.
+func TestAConfiguredUpstreamIsNoProblem(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	startNode(t, reg, s.a, s.verified(t, 1))
+	sys := &fakeSystem{}
+	b := startDevice(t, s, reg, true, deviceOpt{
+		prepare: func(c *Config, p *Platform) {
+			c.DNS = true
+			c.DNSUpstream = "192.0.2.53"
+			p.SetSystemDNS = sys.Set
+			p.SystemUpstreams = func([]netip.Addr) ([]netip.Addr, error) { return nil, nil }
+		},
+		tuning: func(t *tuning) { t.dnsPort = 5353 },
+	})
+	b.connection(t, Connected)
+	eventually(t, func() bool { n, _ := sys.counts(); return n == 1 })
+	if st := b.node.Status(); st.DNSNoUpstream || slices.Contains(st.Health().Problems, ProblemDNSNoUpstream) {
+		t.Fatalf("a configured upstream: health %+v", st.Health())
+	}
+}
+
+// A device's resolver that starts with no upstream says so until a later
+// config gives it one (setUpstreams): read from the resolver itself.
+func TestALaterConfigsUpstreamClearsNoUpstream(t *testing.T) {
+	s := newTestSpace(t)
+	section, err := openSection(s.verified(t, 1), s.a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &runner{
+		dp: DataPlane{DNS: true, tuning: tuning{dnsPort: freePort(t)}, Log: slog.New(slog.DiscardHandler),
+			Device: &DeviceHost{SystemUpstreams: func([]netip.Addr) ([]netip.Addr, error) { return nil, nil }}},
+		follow: mapFollower{cur: s.verified(t, 1), section: section},
+	}
+	r.resolver = r.newResolver()
+	t.Cleanup(func() { _ = r.resolver.Close() })
+	noUpstream := r.noUpstream()
+	if noUpstream == nil || !noUpstream() {
+		t.Fatal("a device's resolver with no upstream doesn't say so")
+	}
+	r.setUpstreams([]netip.AddrPort{netip.MustParseAddrPort("192.0.2.53:53")})
+	if noUpstream() {
+		t.Error("an upstream from a later config doesn't clear it")
+	}
+}
+
+// A failed first read of the OS's resolvers is stale upstreams, unknown
+// rather than absent: dns_upstreams_stale alone, not dns_no_upstream too.
+// The first good read naming none is dns_no_upstream.
+func TestAFailedFirstReadIsStaleNotNoUpstream(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	startNode(t, reg, s.a, s.verified(t, 1))
+	sys := &fakeSystem{problem: fmt.Errorf("%w: no read has worked", dns.ErrUpstreamsStale)}
+	b := startDevice(t, s, reg, true, deviceOpt{
+		prepare: func(c *Config, p *Platform) {
+			c.DNS = true
+			p.SetSystemDNS = sys.Set
+			p.SystemUpstreams = func([]netip.Addr) ([]netip.Addr, error) { return nil, errors.New("unreadable") }
+		},
+		tuning: func(t *tuning) { t.dnsPort = 5353 },
+	})
+	b.connection(t, Connected)
+	eventually(t, func() bool { n, _ := sys.counts(); return n == 1 })
+	if st := b.node.Status(); !st.DNSUpstreamsStale || st.DNSNoUpstream ||
+		!slices.Contains(st.Health().Problems, ProblemDNSUpstreamsStale) || slices.Contains(st.Health().Problems, ProblemDNSNoUpstream) {
+		t.Fatalf("a failed first read: health %+v, want dns_upstreams_stale only", st.Health())
+	}
+	sys.mu.Lock()
+	sys.problem = nil
+	first := sys.set[0]
+	sys.mu.Unlock()
+	first.Upstreams(nil)
+	if st := b.node.Status(); !slices.Contains(st.Health().Problems, ProblemDNSNoUpstream) {
+		t.Fatalf("a good read naming none: health %+v, want dns_no_upstream", st.Health())
+	}
+}
+
+// The OS naming no server while the resolver keeps its previous upstreams
+// (dns.ErrNoSystemUpstream) is dns_no_upstream, degraded, not
+// unprotected; it clears once the OS names one again.
+func TestTheOSNamingNoServerIsNoUpstream(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	startNode(t, reg, s.a, s.verified(t, 1))
+	sys := &fakeSystem{}
+	b := startDevice(t, s, reg, true, deviceOpt{
+		prepare: func(c *Config, p *Platform) {
+			c.DNS = true
+			p.SetSystemDNS = sys.Set
+			p.SystemUpstreams = func([]netip.Addr) ([]netip.Addr, error) {
+				return []netip.Addr{netip.MustParseAddr("192.0.2.53")}, nil
+			}
+		},
+		tuning: func(t *tuning) { t.dnsPort = 5353 },
+	})
+	b.connection(t, Connected)
+	eventually(t, func() bool { n, _ := sys.counts(); return n == 1 })
+	eventually(t, func() bool { return b.node.Status().Health().Level == HealthOK })
+	sys.mu.Lock()
+	sys.problem = fmt.Errorf("%w: the last read named none", dns.ErrNoSystemUpstream)
+	sys.mu.Unlock()
+	st := b.node.Status()
+	if h := st.Health(); !st.DNSNoUpstream || st.DNSUnprotected || h.Level != HealthDegraded ||
+		!slices.Equal(h.Problems, []Problem{ProblemDNSNoUpstream}) {
+		t.Fatalf("the OS names no server: status %+v, health %+v, want degraded, dns_no_upstream", st, h)
+	}
+	sys.mu.Lock()
+	sys.problem = nil
+	sys.mu.Unlock()
+	if st := b.node.Status(); st.DNSNoUpstream {
+		t.Errorf("the OS names one again: health %+v", st.Health())
+	}
+}
