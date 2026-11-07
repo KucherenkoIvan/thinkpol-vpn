@@ -31,12 +31,12 @@ Every setting has one designed home. An operator's settings live in one root-own
 - Node groups: a proposal (TP-035).
 
 ## Acceptance
-- [ ] unit tests: the node file and the device store are JSON; parser cases (invalid JSON, a duplicate key, an unknown key, a wrong type or bad value, an empty file) and precedence (flag over env over file over default), each case a table row
-- [ ] unit tests: an unknown key or a bad value makes `up` exit 78 and the message names it
-- [ ] unit test: a state directory with `rules.local` and no device store starts with the same preset, the store written 0600, `rules.local` gone
-- [ ] lab (Linux): a node started with only a node file runs with its settings; the same key given as env or flag wins over it (`thinkpol status` shows the result)
-- [ ] lab (Linux): `alice`, in the group, sets connect-on-boot through the CLI without root; after a service restart that counts as a boot, the node connects or stays down as she set it
-- [ ] lab (Linux): a drop-in under `thinkpol.service.d/` appears in `diag`
+- [x] unit tests: the node file and the device store are JSON; parser cases (invalid JSON, a duplicate key, an unknown key, a wrong type or bad value, an empty file) and precedence (flag over env over file over default), each case a table row
+- [x] unit tests: an unknown key or a bad value makes `up` exit 78 and the message names it
+- [x] unit test: a state directory with `rules.local` and no device store starts with the same preset, the store written 0600, `rules.local` gone
+- [x] lab (Linux): a node started with only a node file runs with its settings; the same key given as env or flag wins over it (`thinkpol status` shows the result)
+- [x] lab (Linux): `alice`, in the group, sets connect-on-boot through the CLI without root; after a service restart that counts as a boot, the node connects or stays down as she set it
+- [x] lab (Linux): a drop-in under `thinkpol.service.d/` appears in `diag`
 - [ ] macOS device checklist: a member of the group (not root) turns connect-on-boot on with the CLI; after a reboot the node connects; off, and after a reboot it stays down (results recorded in Notes)
 - [ ] `make lint`, `make test`, `make lab-test` pass
 
@@ -45,6 +45,19 @@ Every setting has one designed home. An operator's settings live in one root-own
 - Owner decisions (2026-11-07): three levels; node file root-owned 0600 in a 0700 directory, operating settings only; precedence flags > env > file > defaults; the map only narrows; device toggles through the local API by a member of the access group, stored next to the node file, replacing `rules.local`; connect-on-boot a member's toggle; JSON for both files (owner, 2026-11-07); drop-ins unsupported, reported by `diag`.
 - TP-111 and TP-048 depend on this ticket. TP-167's F20 item (`rules.local` written 0600) is moot if this ticket lands first.
 - Which settings take effect at once and which at the next start is to be decided per setting; record each decision in docs/design/configuration.md "When a change takes effect".
+- Built (agent-tp-166): the node file is `node.json`, the device file `device.json`, both in the state directory; keys and defaults in docs/design/configuration.md. The service runs `thinkpol up -service`; connect-on-boot is `thinkpol connect-on-boot [on|off]` (local API `SetConnectOnBoot`, the group). `service connect-on-boot` and `service install -connect-on-boot` are refused with a message naming the new command. An install over an old definition says connect-on-boot moved and is off: an old "on" is not carried over (the owner turns it on again with the new command).
+
+### macOS device checklist (owner, a later Mac session)
+
+A Mac with this branch's `thinkpol` installed as a service (`sudo thinkpol service install -user <you>`), the node provisioned, and you (not root) in the `thinkpol` group (log out and in after the install).
+
+1. Do: `thinkpol connect-on-boot`. Expect: `connect-on-boot: off`.
+2. Do: `thinkpol connect-on-boot on` (no sudo). Expect: the status, with `connect-on-boot: on`; `sudo cat /Library/LaunchDaemons/org.thinkpol.agent.plist` unchanged (`up`, `-service`, no `EnvironmentVariables`).
+3. Do: `sudo ls -l /private/var/lib/thinkpol/device.json`. Expect: `-rw-------  root`.
+4. Do: reboot, log in, `thinkpol status`. Expect: `state: connected` without running `thinkpol connect`.
+5. Do: `thinkpol connect-on-boot off` (no sudo), reboot, log in, `thinkpol status`. Expect: `state: disconnected`, `connect-on-boot: off`.
+6. Do: `thinkpol service connect-on-boot on`. Expect: exit 1, "connect-on-boot is the device's setting now … thinkpol connect-on-boot [on|off]".
+7. Record the outputs of steps 2, 4 and 5 here, under "macOS results".
 
 ## Log
 - 2026-11-07 created in backlog
@@ -52,3 +65,7 @@ Every setting has one designed home. An operator's settings live in one root-own
 - 2026-11-07 notes: the ceiling is TP-183 now (split from TP-111, owner's MVP cut)
 - 2026-11-07 parser box rewritten for JSON (owner signed off the acceptance with this correction)
 - 2026-11-07 backlog → in-progress, owner: agent-tp-166
+- 2026-11-07 built (44c313d, a stopped agent's WIP, verified and kept): node.json (agent.NodeFile, ApplyNodeFile: flag > env > file > default; strict JSON, decodeSettings), device.json (agent.DeviceFile: connect_on_boot, rule_preset, rules; rules.local carried over at start and removed), local API SetConnectOnBoot (the group) and `thinkpol connect-on-boot`, the service runs `up -service` without THINKPOL_CONNECT_ON_BOOT, `service connect-on-boot` and `service install -connect-on-boot` refused naming the replacement, a bad configuration exits 78 (agent.ConfigError), diag's `service_drop_ins` (service.HostDropIns)
+- 2026-11-07 added: lab TestTheNodeFileSetsUp, alice's connect-on-boot (on, off) across reboots and a drop-in in diag in TestServiceUnderSystemd, device.json 0600 in TestLocalAPI; unit TestDropInsAreListed, a member's and a stranger's SetConnectOnBoot in TestCallersAreCheckedByTheirCredentials, the rule's unescaped arrow in TestTheDeviceFileReadsBackWhatIsWritten; docs: configuration.md (files, keys, precedence details, when a change takes effect), agent/service/localapi package docs, the runbook, a dated note on the two API overview snapshots
+- 2026-11-07 mutations, each killed: duplicate-key check off, exact-key check off, empty file accepted (TestTheNodeFileIsStrictJSON, TestSettingsKeysAreCheckedAtEveryDepth, TestTheDeviceFileIsStrictJSON); env or flag ignored in ApplyNodeFile (TestNodeSettingsPrecedence); node value check off, no exit 78 (TestUpRefusesABadNodeFile); rules.local not removed, not read, device.json 0644 (TestRulesLocalIsCarriedOverIntoTheDeviceFile); arrow escaped (TestTheDeviceFileReadsBackWhatIsWritten); onBoot ignored, connect-on-boot not stored (TestConnectOnBootIsTheDevicesToggle); drop-in dedupe off, any suffix, unreadable hidden (TestDropInsAreListed); diag without drop-ins (TestTheHostPartsAreRoots); unit keeps the variable (TestTheSystemdUnitRunsTheAgentAndRestartsIt); old definition not told (TestInstallOverAnOldDefinitionSaysWhereConnectOnBootWent); SetConnectOnBoot left out of the group's calls (TestCallersAreCheckedByTheirCredentials); status without connect-on-boot (TestTheCLIControlsTheNode); `service install -connect-on-boot` accepted (TestTheServicesConnectOnBootSaysWhatReplacedIt); lab: env ignored (TestTheNodeFileSetsUp: file and env both 1228), boot ignoring the stored toggle (TestServiceUnderSystemd failed; its failing line wasn't captured)
+- 2026-11-07 lab, targeted, on 4892e9f's tree: TestTheNodeFileSetsUp, TestServiceUnderSystemd, TestLocalAPI pass
