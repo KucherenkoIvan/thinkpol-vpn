@@ -1,6 +1,9 @@
 package main
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -44,5 +47,37 @@ func TestGotestVerdict(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestGotestWithNoPackagesWithTests(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs the go command")
+	}
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("no go command here") // a lab node has test binaries but no toolchain
+	}
+	t.Setenv("GOWORK", "off")
+	t.Setenv("GOFLAGS", "-mod=mod")
+	root := t.TempDir()
+	for name, body := range map[string]string{
+		"go.mod":         "module example.net/notests\n\ngo 1.26\n",
+		"plain/plain.go": "package plain\n",
+	} {
+		p := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	patterns := []string{"./..."}
+	if err := gotest(t.Context(), root, gotestOptions{tagged: true}, nil, nil, patterns); err != nil {
+		t.Errorf("without -fail-skipped: %v, want nil", err)
+	}
+	err := gotest(t.Context(), root, gotestOptions{tagged: true, failSkipped: true}, nil, nil, patterns)
+	if err == nil || !strings.Contains(err.Error(), "no packages with tests") {
+		t.Errorf("with -fail-skipped: %v, want a no-packages error", err)
 	}
 }

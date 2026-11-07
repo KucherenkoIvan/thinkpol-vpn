@@ -89,12 +89,23 @@ func needGoTool(t *testing.T) {
 	}
 }
 
+// isolateGoEnv keeps the go command in a test's module from a workspace
+// or module flags set around the test run.
+func isolateGoEnv(t *testing.T) {
+	t.Setenv("GOWORK", "off")
+	t.Setenv("GOFLAGS", "-mod=mod")
+}
+
 func pkgFile(format, pkg string) string { return strings.Replace(format, "%s", pkg, 1) }
 
 func TestListLabTaggedPackagesFindsPackagesWithLabTaggedTests(t *testing.T) {
 	needGoTool(t)
+	isolateGoEnv(t)
 	root := writeModule(t, map[string]string{
-		"plain/plain_test.go":   pkgFile(untaggedSkip, "plain"),
+		"plain/plain_test.go": pkgFile(untaggedSkip, "plain"),
+		// One test file either way: the same count with and without the tag.
+		"pair/pair_test.go":     "//go:build !lab\n\n" + pkgFile(untaggedSkip, "pair"),
+		"pair/pair_lab_test.go": pkgFile(taggedPass, "pair"),
 		"both/both_test.go":     pkgFile(untaggedSkip, "both"),
 		"both/both_lab_test.go": pkgFile(taggedPass, "both"),
 		"only/only_lab_test.go": pkgFile(taggedPass, "only"),
@@ -107,6 +118,7 @@ func TestListLabTaggedPackagesFindsPackagesWithLabTaggedTests(t *testing.T) {
 	want := []GoPackage{
 		{ImportPath: "example.net/tagged/both", Dir: "both"},
 		{ImportPath: "example.net/tagged/only", Dir: "only"},
+		{ImportPath: "example.net/tagged/pair", Dir: "pair"},
 	}
 	if !slices.Equal(pkgs, want) {
 		t.Errorf("ListLabTaggedPackages = %+v, want %+v", pkgs, want)
@@ -121,10 +133,10 @@ func TestGoTestLabTaggedRunsTheTaggedTests(t *testing.T) {
 		"fail/fail_test.go":     pkgFile(untaggedSkip, "fail"),
 		"fail/fail_lab_test.go": pkgFile(taggedFail, "fail"),
 	})
-	env := []string{"GOWORK=off", "GOFLAGS=-mod=mod"}
+	isolateGoEnv(t)
 
 	var out syncBuffer
-	res, err := GoTestLabTagged(t.Context(), root, GoPackage{ImportPath: "example.net/tagged/pass", Dir: "pass"}, &out, env, "-test.v")
+	res, err := GoTestLabTagged(t.Context(), root, GoPackage{ImportPath: "example.net/tagged/pass", Dir: "pass"}, &out, nil, "-test.v")
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out.String())
 	}
@@ -133,7 +145,7 @@ func TestGoTestLabTaggedRunsTheTaggedTests(t *testing.T) {
 	}
 
 	out = syncBuffer{}
-	res, err = GoTestLabTagged(t.Context(), root, GoPackage{ImportPath: "example.net/tagged/fail", Dir: "fail"}, &out, env, "-test.v")
+	res, err = GoTestLabTagged(t.Context(), root, GoPackage{ImportPath: "example.net/tagged/fail", Dir: "fail"}, &out, nil, "-test.v")
 	if err == nil || !res.Failed || res.Tests.Failed != 1 {
 		t.Errorf("fail: result %+v, err %v; want a failure\n%s", res, err, out.String())
 	}

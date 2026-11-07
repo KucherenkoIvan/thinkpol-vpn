@@ -246,11 +246,12 @@ func ListLabTaggedPackages(ctx context.Context, root string, patterns ...string)
 		return nil, err
 	}
 	var out []GoPackage
+	// Names, not counts: a !lab test file can pair with a lab one.
 	for _, p := range tagged {
-		if p.testFiles <= untagged[p.ImportPath].testFiles {
-			continue
+		plain := untagged[p.ImportPath].testFiles
+		if slices.ContainsFunc(p.testFiles, func(f string) bool { return !slices.Contains(plain, f) }) {
+			out = append(out, p.GoPackage)
 		}
-		out = append(out, p.GoPackage)
 	}
 	slices.SortFunc(out, func(a, b GoPackage) int { return strings.Compare(a.ImportPath, b.ImportPath) })
 	return out, nil
@@ -258,7 +259,7 @@ func ListLabTaggedPackages(ctx context.Context, root string, patterns ...string)
 
 type listedPackage struct {
 	GoPackage
-	testFiles int
+	testFiles []string
 }
 
 func listTestFiles(ctx context.Context, root string, flags, patterns []string) (map[string]listedPackage, error) {
@@ -284,7 +285,7 @@ func listTestFiles(ctx context.Context, root string, flags, patterns []string) (
 		}
 		out[p.ImportPath] = listedPackage{
 			GoPackage: GoPackage{ImportPath: p.ImportPath, Dir: filepath.ToSlash(rel)},
-			testFiles: len(p.TestGoFiles) + len(p.XTestGoFiles),
+			testFiles: slices.Concat(p.TestGoFiles, p.XTestGoFiles),
 		}
 	}
 	return out, nil
@@ -295,12 +296,17 @@ func listTestFiles(ctx context.Context, root string, flags, patterns []string) (
 // LAB_TIMEOUT.
 const DefaultLabTestTimeout = "20m"
 
+// labTestWaitDelay bounds how long GoTestLabTagged waits for the output
+// pipe to close once its go test has exited or been killed.
+const labTestWaitDelay = 10 * time.Second
+
 // GoTestLabTagged runs a package's tests on this machine with the lab build
 // tag, as make lab-test runs ./lab/...: its lab tests start their own labs
 // and run in-node tests there, and its tests without the tag run too. args
 // are test binary flags (-test.v, -test.run, ...); env (NAME=value) is
 // added to the environment. Output is streamed to w; the error is non-nil
-// when the tests fail.
+// when the tests fail. Cancelling ctx kills go test and every process it
+// started; the labs its tests started stay up (make lab-down removes them).
 func GoTestLabTagged(ctx context.Context, root string, pkg GoPackage, w io.Writer, env []string, args ...string) (GoTestResult, error) {
 	if !slices.ContainsFunc(args, func(a string) bool { return strings.HasPrefix(strings.TrimLeft(a, "-"), "test.timeout") }) {
 		args = append([]string{"-test.timeout=" + DefaultLabTestTimeout}, args...)
@@ -309,13 +315,16 @@ func GoTestLabTagged(ctx context.Context, root string, pkg GoPackage, w io.Write
 	// either way the result is never served from the test cache.
 	cmd := exec.CommandContext(ctx, "go", append([]string{"-C", root, "test", "-tags=lab", "-count=1", "./" + pkg.Dir}, args...)...)
 	cmd.Env = append(os.Environ(), env...)
+	killGroupOnCancel(cmd)
+	// A process that left the group may still hold the output pipe.
+	cmd.WaitDelay = labTestWaitDelay
 	var out syncBuffer
 	cmd.Stdout = io.MultiWriter(w, &out)
 	cmd.Stderr = cmd.Stdout
 	err := cmd.Run()
 	res := GoTestResult{ImportPath: pkg.ImportPath, Failed: err != nil, Tests: TallyTests([]byte(out.String()))}
 	if err != nil {
-		return res, fmt.Errorf("lab tests in %s: %w", pkg.ImportPath, err)
+		return res, fmt.Errorf("lab: lab tests in %s: %w", pkg.ImportPath, err)
 	}
 	return res, nil
 }

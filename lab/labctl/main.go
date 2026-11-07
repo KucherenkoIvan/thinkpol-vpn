@@ -108,7 +108,7 @@ func runGotest(ctx context.Context, root string, args []string) (err error) {
 	fs := flag.NewFlagSet("gotest", flag.ContinueOnError)
 	runRe := fs.String("run", "", "run only tests matching the regexp")
 	count := fs.Int("count", 0, "run each test n times (the test binary's -test.count)")
-	timeout := fs.String("timeout", "", "the test binary's -test.timeout (default "+lab.DefaultTestTimeout+")")
+	timeout := fs.String("timeout", "", "the test binary's -test.timeout (default "+lab.DefaultTestTimeout+" in a node, "+lab.DefaultLabTestTimeout+" on the host with -tagged)")
 	verbose := fs.Bool("v", false, "verbose test output")
 	parallel := fs.Int("p", 4, "packages tested at once")
 	perf := fs.Bool("perf", false, "a perf run: wait until no other lab runs, keep others from starting, set "+lab.PerfEnv+"=1")
