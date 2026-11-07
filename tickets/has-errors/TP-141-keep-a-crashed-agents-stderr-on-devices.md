@@ -57,6 +57,16 @@ When a device's agent dies under the service (a panic, a runtime fatal error), i
   5. `sudo stat -f '%Sp %Su %z' /private/var/lib/thinkpol/crash-trace`. Expect `-rw------- root 0`.
   6. `sudo launchctl kickstart -k system/org.thinkpol.agent` (a clean restart), then `thinkpol status`. Expect no `last run:` line.
 
+## Review findings
+- [ ] R1.1 a node of unknown kind gets the device's definition at install; `up` keeps tracing when the node runs (or switches to) server mode: unknown kind → the server's definition; a server under a device's definition stops tracing (fd 2 → /dev/null, file removed, warns to reinstall); tests for both; the state directory doesn't take crash-trace as normal on a server
+- [ ] R1.2 the manager creates crash-trace 0644, fixed only after start: a device's install creates it root's 0600 (O_CREAT|O_EXCL|O_NOFOLLOW) before starting the service; refuse a link count other than 1; tests
+- [ ] R1.3 a trace that isn't valid UTF-8 breaks root's Diagnose: cut at a rune boundary, make it valid UTF-8; test 'panic: \xff' through Diagnose and a cut mid-character
+- [ ] R1.4 the file is emptied at the start of up, the trace kept only at KeepLastRun: a start failing in between loses it; keep it until handed over, bounded; test
+- [ ] R1.5 nothing tests install's mode choice: test nodeReady for the node file's mode, a server kind, a device kind, a node missing from the map
+- [ ] R1.6 "nothing after a clean stop" unchecked on the real service: check after the clean restart in lab/service_test.go; a clean SIGTERM stop writes nothing to stderr
+- [ ] R1.7 grpclog writes to os.Stderr past slog: route it to the agent's logger; a regular-file stderr under `up -service` that isn't the trace sends the log to io.Discard
+- [ ] R1.8 nits: remove the trace after the old service stops; no line per restart loop when the file can't be fixed; an unreadable trace is its own state in status text; stale docs (agent doc.go, api-overview, api-overview-reference, definition.go); systemd < 240 ignores append:; lab dumps `thinkpol logs` for a device
+
 ## Log
 - 2026-10-24 created in backlog (2026-10-24 macOS device run; owner decision on a device crash trace and PRD S2)
 - 2026-10-24 docs: slotted in the pre-M2 phase (wave 1, Agent)
@@ -68,3 +78,4 @@ When a device's agent dies under the service (a panic, a runtime fatal error), i
 - 2026-11-07 ran: make lint, make test green; make lab-gotest PKG=./internal/agent/ (root) green; full make lab-test green on 86c829e (merge of origin/rewrite)
 - 2026-11-07 not verified: launchd on a Mac (device box open; checklist in Notes, the owner's later session/TP-144)
 - 2026-11-07 in-progress → review
+- 2026-11-07 review → has-errors (round 1 findings R1.x)
