@@ -8,8 +8,8 @@ size: S
 needs_human: macos
 depends_on: []
 refs: [S2, docs/design/security.md#node-safety]
-owner: ""
-branch: ""
+owner: "agent-tp-141"
+branch: "tp-141-keep-a-crashed-agents-stderr-on-devices"
 ---
 
 ## Goal
@@ -47,3 +47,4 @@ When a device's agent dies under the service (a panic, a runtime fatal error), i
 - 2026-10-24 created in backlog (2026-10-24 macOS device run; owner decision on a device crash trace and PRD S2)
 - 2026-10-24 docs: slotted in the pre-M2 phase (wave 1, Agent)
 - 2026-11-07 TP-139 verdicts noted
+- 2026-11-07 backlog → in-progress, owner: agent-tp-141
