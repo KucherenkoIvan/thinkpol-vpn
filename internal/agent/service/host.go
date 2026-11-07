@@ -68,8 +68,12 @@ func InstallingUser() string {
 }
 
 // nodeReady checks the node's default state directory as `thinkpol up`
-// would read it: without keys and a map the service would only restart.
+// would read it: without keys and a map, or with a node file it refuses,
+// the service would only restart.
 func nodeReady() error {
+	if _, err := agent.ReadNodeFile(agent.DefaultStateDir); err != nil {
+		return err
+	}
 	_, err := agent.LoadState(agent.DefaultStateDir, filepath.Join(agent.DefaultStateDir, agent.MapFileName))
 	return err
 }

@@ -41,18 +41,19 @@ func (s *server) Diagnose(ctx context.Context, _ *localapiv1.DiagnoseRequest) (*
 // diagnosticsProto is d on the wire, taken at now by an agent of version.
 func diagnosticsProto(d agent.Diagnostics, now time.Time, version string) *localapiv1.Diagnostics {
 	return &localapiv1.Diagnostics{
-		SchemaVersion: DiagSchemaVersion,
-		TakenAt:       timestamppb.New(now),
-		Os:            runtime.GOOS,
-		AgentVersion:  version,
-		HostParts:     d.HostParts,
-		Status:        statusProto(d.Status),
-		Tun:           interfaceProto(d.TUN),
-		LastApply:     applyProto(d.LastApply),
-		Routes:        routesProto(d.Routes),
-		PolicyRules:   rulesProto(d.Routes),
-		Guard:         guardProto(d.Guard),
-		Dns:           dnsProto(d.DNS),
+		SchemaVersion:  DiagSchemaVersion,
+		TakenAt:        timestamppb.New(now),
+		Os:             runtime.GOOS,
+		AgentVersion:   version,
+		HostParts:      d.HostParts,
+		Status:         statusProto(d.Status),
+		Tun:            interfaceProto(d.TUN),
+		LastApply:      applyProto(d.LastApply),
+		Routes:         routesProto(d.Routes),
+		PolicyRules:    rulesProto(d.Routes),
+		Guard:          guardProto(d.Guard),
+		Dns:            dnsProto(d.DNS),
+		ServiceDropIns: &localapiv1.DiagDropIns{Unreadable: d.DropIns.Unreadable, Paths: d.DropIns.Paths},
 	}
 }
 

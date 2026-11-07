@@ -34,6 +34,7 @@
 // its own, in lab/.run/<project>/bin, and go with it.
 //
 // The helpers build without tags so lint and unit tests cover them; the tests
-// that need Docker carry the lab build tag and run through make lab-test. See
-// lab/README.md.
+// that need Docker carry the lab build tag and run on the host through make
+// lab-test, or make lab-gotest for the packages it is given (labctl gotest
+// -tagged, GoTestLabTagged). See lab/README.md.
 package lab

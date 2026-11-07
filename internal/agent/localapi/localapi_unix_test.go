@@ -74,6 +74,16 @@ func (n *fakeNode) SetRulePreset(_ context.Context, preset string) error {
 	return nil
 }
 
+func (n *fakeNode) SetConnectOnBoot(on bool) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.st.Mode == agent.ModeServer {
+		return agent.ErrServerMode
+	}
+	n.st.ConnectOnBoot = on
+	return nil
+}
+
 func (n *fakeNode) Status() agent.Status {
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -206,6 +216,34 @@ func TestTheCLIControlsTheNode(t *testing.T) {
 	if _, err := c.SetRulePreset(ctx, "nope"); !errors.Is(err, ErrUnknownPreset) {
 		t.Fatalf("got %v, want ErrUnknownPreset", err)
 	}
+	for _, on := range []bool{true, false} {
+		st, err := c.SetConnectOnBoot(ctx, on)
+		if err != nil || st.GetConnectOnBoot() != on {
+			t.Fatalf("connect-on-boot %v: %v, %v", on, st, err)
+		}
+		if got, err := c.ConnectOnBoot(ctx); err != nil || got != on {
+			t.Fatalf("connect-on-boot shown: %v, %v; want %v", got, err, on)
+		}
+		out.Reset()
+		if err := WriteStatus(&out, st, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		if want := "connect-on-boot: +" + map[bool]string{true: "on", false: "off"}[on] + "\n"; !regexp.MustCompile(want).MatchString(out.String()) {
+			t.Errorf("no %q in\n%s", want, out.String())
+		}
+	}
+	s.node.mu.Lock()
+	s.node.st.Mode = agent.ModeServer
+	s.node.mu.Unlock()
+	if _, err := c.SetConnectOnBoot(ctx, true); !errors.Is(err, ErrServerMode) {
+		t.Fatalf("connect-on-boot on a server: %v, want ErrServerMode", err)
+	}
+	if on, err := c.ConnectOnBoot(ctx); !errors.Is(err, ErrServerMode) || err.Error() != refusalMsg(ErrServerMode) {
+		t.Fatalf("connect-on-boot shown on a server: %v, %v; want ErrServerMode", on, err)
+	}
+	s.node.mu.Lock()
+	s.node.st.Mode = agent.ModeDevice
+	s.node.mu.Unlock()
 
 	s.node.mu.Lock()
 	s.node.connectErr = &agent.StartError{Step: agent.StepTUN, Err: errors.New("detail 192.0.2.1 for the log only")}
@@ -386,11 +424,18 @@ func TestCallersAreCheckedByTheirCredentials(t *testing.T) {
 	if _, err := c.Diagnose(ctx); !errors.Is(err, ErrPermissionDenied) {
 		t.Fatalf("stranger's diagnostics: %v", err)
 	}
+	if _, err := c.SetConnectOnBoot(ctx, true); !errors.Is(err, ErrPermissionDenied) {
+		t.Fatalf("stranger's connect-on-boot: %v", err)
+	}
 
 	member := serve(t, Policy{ServiceUID: uint32(os.Geteuid()) + 1, Group: uint32(os.Getegid()), HasGroup: true})
 	c = dial(t, member.socket)
 	if _, err := c.Connect(ctx); err != nil {
 		t.Fatalf("member's connect: %v", err)
+	}
+	// The member's own toggle, no root needed.
+	if st, err := c.SetConnectOnBoot(ctx, true); err != nil || !st.GetConnectOnBoot() {
+		t.Fatalf("member's connect-on-boot: %v, %v", st, err)
 	}
 	if d, err := c.Diagnose(ctx); err != nil || d.GetSchemaVersion() != DiagSchemaVersion {
 		t.Fatalf("member's diagnostics: %v, %v", d, err)

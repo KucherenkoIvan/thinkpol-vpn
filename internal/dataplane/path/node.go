@@ -642,13 +642,17 @@ type LinkStatus struct {
 	QueueFull  uint64
 }
 
-// Neighbors reports every adjacent node the node knows of.
+// Neighbors reports every adjacent node the node knows of: each one it
+// has or had a link to, and each one it dials without ever getting a link
+// (down, with no links) once a dial attempt has failed or it has been
+// dialed for DeadAfter. A first dial still waiting for an answer isn't
+// listed yet: it gets its chance.
 func (n *Node) Neighbors() []NeighborStatus {
 	now := n.now()
 	n.mu.Lock()
-	dialed := make(map[NodeID]bool, len(n.dials))
-	for id := range n.dials {
-		dialed[id] = true
+	dialing := make(map[NodeID]*dialLoop, len(n.dials))
+	for id, d := range n.dials {
+		dialing[id] = d
 	}
 	n.mu.Unlock()
 	n.nmu.RLock()
@@ -657,13 +661,22 @@ func (n *Node) Neighbors() []NeighborStatus {
 		nbs = append(nbs, nb)
 	}
 	n.nmu.RUnlock()
-	out := make([]NeighborStatus, 0, len(nbs))
+	out := make([]NeighborStatus, 0, len(nbs)+len(dialing))
 	for _, nb := range nbs {
 		c := Candidate{Hop: nb.id}
 		nb.describe(&c, now)
+		_, dialed := dialing[nb.id]
 		out = append(out, NeighborStatus{
-			Node: nb.id, Up: c.Up, UpFor: c.UpFor, RTT: c.RTT, Dialed: dialed[nb.id], Links: nb.status(now),
+			Node: nb.id, Up: c.Up, UpFor: c.UpFor, RTT: c.RTT, Dialed: dialed, Links: nb.status(now),
 		})
+		delete(dialing, nb.id)
+	}
+	// A dialed node keeps its neighbor once it had a link (pruning spares
+	// dialed nodes), so what is left never linked since its dial started.
+	for id, d := range dialing {
+		if d.failed.Load() || now-d.started >= int64(n.opts.DeadAfter) {
+			out = append(out, NeighborStatus{Node: id, Dialed: true})
+		}
 	}
 	slices.SortFunc(out, func(a, b NeighborStatus) int { return bytes.Compare(a.Node[:], b.Node[:]) })
 	return out

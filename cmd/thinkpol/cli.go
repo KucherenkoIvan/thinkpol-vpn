@@ -54,6 +54,10 @@ func register(c command) {
 	commands[c.path] = c
 }
 
+// exitConfig is EX_CONFIG (sysexits.h): a configuration the command can't
+// run with (an *agent.ConfigError). The table of exit codes is TP-167's.
+const exitConfig = 78
+
 var (
 	// errUsage from a command makes run print the command's synopsis and
 	// exit with status 2.
@@ -159,6 +163,9 @@ func run(ctx context.Context, e env, args []string) int {
 		case errors.Is(err, errUsage):
 			synopsis(e.stderr, c.path)
 			return 2
+		case errors.As(err, new(*agent.ConfigError)):
+			_, _ = fmt.Fprintf(e.stderr, "thinkpol %s: %v\n", c.path, err)
+			return exitConfig
 		default:
 			_, _ = fmt.Fprintf(e.stderr, "thinkpol %s: %v\n", c.path, err)
 			return 1

@@ -450,7 +450,7 @@ func TestLocalFile(t *testing.T) {
 		"unknown preset": "preset most",
 		"bad rule":       "preset everything\ncidr:10.0.0.1/8 -> direct",
 		"not a rule":     "everything",
-		"too many rules": strings.Repeat("default -> block\n", maxLocalRules+1),
+		"too many rules": strings.Repeat("default -> block\n", MaxLocalRules+1),
 	} {
 		var l Local
 		err := l.UnmarshalText([]byte(bad))

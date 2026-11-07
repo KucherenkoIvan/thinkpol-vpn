@@ -41,13 +41,52 @@
 // `thinkpol up` uses go-kernel's config, app and observability (and the
 // local API, grpckit and ddd). Its environment variables (THINKPOL_*) and
 // flags come from one tagged struct, [Config]: [LoadConfig] reads the
-// environment and the defaults and no .env files (a node's configuration
-// is its environment and its flags), [ApplyOSDefaults] fills the defaults
-// that vary by OS (which a tag can't), config.BindFlags makes the flags
-// from the same tags, and the result is validated once, after the flags
-// ([Config.Validate]). app.RunWith runs the adapters with the agent's
-// logger; a first SIGINT or SIGTERM shuts the node down, a second one
-// force-quits a hung shutdown.
+// environment and the defaults and no .env files, [ApplyOSDefaults] fills
+// the defaults that vary by OS (which a tag can't), config.BindFlags makes
+// the flags from the same tags, [ApplyNodeFile] then takes what the node
+// file sets and neither a flag nor a variable did, and the result is
+// validated once ([Config.Validate]). For each setting the first source
+// that sets it wins: a flag, the environment (a variable set, even empty),
+// the node file, the default (docs/design/configuration.md "Precedence and
+// narrowing"). app.RunWith runs the adapters with the agent's logger; a
+// first SIGINT or SIGTERM shuts the node down, a second one force-quits a
+// hung shutdown.
+//
+// The node file ([NodeFile], node.json in the state directory) is the
+// operator's settings: one JSON object, root's, 0600, written by hand or
+// by provisioning, never by the agent ([ReadNodeFile]). Its keys, each
+// optional, are the flags' settings in snake_case:
+//
+//	mode            "auto", "device" or "server" (-mode)
+//	interface       the TUN's name (-interface)
+//	link_mtu        the MTU under the links, 576 to 65535; 0: 1500 (-link-mtu)
+//	log_level       "debug", "info", "warn" or "error" (-log-level)
+//	map_poll        how often to check the map file, a duration like "5s" (-map-poll)
+//	dns             whether a device runs its resolver, true or false (-dns)
+//	dns_upstream    a list of resolvers, each "IP" or "IP:port" (-dns-upstream)
+//	egress_allowed  a list of private prefixes an exit's spaces may reach (-egress-allowed)
+//
+// What says where the node's files are (-state, -map, -api-socket,
+// -api-group) or how it is run (-service, -connect) is not in it. The file
+// is strict ([decodeSettings], shared with [DeviceFile]): keys match
+// exactly (encoding/json alone ignores case), a key given twice, an
+// unknown key, a value of the wrong type or a bad value, invalid JSON and
+// an empty file (`{}` is a file without settings) each stop `up` with a
+// [*ConfigError] naming the file and the key or the value, which the CLI
+// exits with as EX_CONFIG (78). A bad value is refused even when a flag or
+// a variable overrides it: the file is the operator's, and a mistake in it
+// is never passed over. So is a null (leave the key out for the default),
+// and a file that isn't the service's user's (root's) or that others may
+// read: 0600 is enforced, the message saying what to chmod or chown. None
+// is fine: every setting has its default. It is read once, at start: a
+// change takes effect at the next start.
+//
+// `up` refuses to start, with a [*ConfigError], while
+// THINKPOL_CONNECT_ON_BOOT is in its environment ([CheckEnvironment]): only
+// a service definition older than the binary sets it, and such a
+// definition, run without -service, would connect at every start. A
+// variable that doesn't parse (THINKPOL_LINK_MTU=abc) is a *ConfigError
+// too, as is a device that would start disconnected without the local API.
 //
 // The agent's log ([NewLogs]) is observability's text logger, writing to
 // stderr and to an in-memory [logring.Ring] of [LogRingSize], at the
@@ -160,9 +199,11 @@
 // refuses both ([ErrServerMode]). A device whose node returned (stopped,
 // or its first start failed) reads disconnected.
 //
-// The service sets -connect-on-boot (THINKPOL_CONNECT_ON_BOOT, on or
-// off; PRD D5: off unless the member turns it on). With it a device keeps
-// its connect choice for the boot ([ConnectRecord]: [ConnectRecordFile]
+// The service runs `up -service` ([Config.Service], THINKPOL_SERVICE).
+// Connect-on-boot is the member's toggle in the device file ([DeviceFile]),
+// set through the local API ([Node.SetConnectOnBoot]; PRD D5: off unless
+// the member turns it on); it takes effect at the next boot. Under the
+// service a device keeps its connect choice for the boot ([ConnectRecord]: [ConnectRecordFile]
 // next to the host's agent lock, stamped with the boot session): the
 // first start of a boot (no record, or one of an earlier boot) connects
 // if connect-on-boot is on and records that; each Connect and Disconnect
@@ -170,17 +211,32 @@
 // device down, records it down again. A later start in the same boot
 // follows the record: a crash and the service's restart neither drop a
 // connected member (whose traffic would go direct) nor undo their
-// disconnect, whatever connect-on-boot says by then. Connect-on-boot needs
-// the local API, without which nothing could change the choice (Validate
+// disconnect, whatever connect-on-boot says by then. -service needs the
+// local API, without which nothing could change the choice (Validate
 // refuses it). Run by hand, without it, -connect decides every start and
 // nothing is recorded. A record that can't be written is logged and the
 // node goes ahead; one that can't be read is logged and connect-on-boot
 // decides.
 //
 // A rule preset chosen through the local API ([Node.SetRulePreset]) is
-// stored in [LocalRulesFile] in the state directory, then handed to the
-// engine ([dataplane.Engine.SetRules]); every start takes it as
+// stored in [DeviceFile], then handed to the engine
+// ([dataplane.Engine.SetRules]) at once; every start takes it as
 // [dataplane.EngineConfig.Rules].
+//
+// The device file ([DeviceFile], device.json in the state directory) is
+// the member's toggles ([DeviceSettings]), as strict as the node file, 0600:
+//
+//	connect_on_boot  true or false: the service connects at a boot's first start
+//	rule_preset      "space", "everything" or "all-but-domestic"
+//	rules            the device's own rules, ahead of the preset's, each "match -> action"
+//
+// Only the service writes it, atomically, every key, when a member of the
+// API group changes a toggle; a key left out is its default. A device kept
+// its rules in rules.local ([LocalRulesFile]) before: the first start that
+// finds one (under the host lock, [Node.Adapters]) writes its preset and
+// own rules into the device file, removes rules.local and logs it; a
+// directory holding both (a start stopped between the two) keeps the
+// device file and only removes rules.local.
 //
 // # Events
 //
@@ -211,9 +267,11 @@
 //     updates the node puts it there (-map names another file). Not yet:
 //     the node replacing it atomically whenever it takes a newer map from
 //     the network (TP-037);
-//   - rules.local ([LocalRulesFile]), on a device that chose one: its rule
-//     preset and its own rules, written atomically by the service when the
-//     local API changes them, and by nothing else;
+//   - node.json ([NodeFile]), if the operator wrote one: the node's
+//     settings (above), never written by the agent;
+//   - device.json ([DeviceFile]), once a member set a toggle: the
+//     member's toggles, written atomically by the service when the local
+//     API changes them, and by nothing else;
 //   - blobs/ ([BlobDir]): files named by their SHA-256.
 //
 // A server only reads blobs/: the seeds of its space's lists that
@@ -236,9 +294,9 @@
 // older signed map for the node's next start (a running node refuses
 // anything older than what it has; a starting one has only the file). A
 // space's private key found there (space.key, recovery.key) stops the node;
-// anything else unexpected is reported and not used. A rules.local that
-// can't be read or parsed stops the node from starting rather than reading
-// as no rules.
+// anything else unexpected is reported and not used. A device file (or a
+// rules.local still to carry over) that can't be read or parsed stops the
+// node from starting rather than reading as no settings.
 //
 // `thinkpol up` writes nothing else there (a device's blobs/ aside). A
 // server's workers get their keys and map from the supervisor over their
@@ -255,7 +313,7 @@
 //     they are under /run (/run/thinkpol, /run/thinkpol-api), a tmpfs; on
 //     macOS, which has none, under /private/var/db (thinkpol,
 //     thinkpol-api), on disk.
-//   - Under the service (-connect-on-boot), a device's connect choice for
+//   - Under the service (-service), a device's connect choice for
 //     the boot ([ConnectRecordFile], above), next to the agent's lock,
 //     stamped with the boot session.
 //   - On macOS, records under /private/var/db/thinkpol: netcfg's route

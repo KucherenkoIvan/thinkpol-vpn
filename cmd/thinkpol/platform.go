@@ -4,6 +4,7 @@ import (
 	"log/slog"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/service"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
@@ -38,6 +39,7 @@ func platform() agent.Platform {
 			Routes:    netcfg.Inspect,
 			Guard:     inspectGuard,
 			DNS:       dns.Inspect,
+			DropIns:   service.HostDropIns,
 		},
 	}
 }

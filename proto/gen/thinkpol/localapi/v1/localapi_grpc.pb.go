@@ -30,14 +30,15 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	LocalService_GetStatus_FullMethodName     = "/thinkpol.localapi.v1.LocalService/GetStatus"
-	LocalService_WatchStatus_FullMethodName   = "/thinkpol.localapi.v1.LocalService/WatchStatus"
-	LocalService_Connect_FullMethodName       = "/thinkpol.localapi.v1.LocalService/Connect"
-	LocalService_Disconnect_FullMethodName    = "/thinkpol.localapi.v1.LocalService/Disconnect"
-	LocalService_ListSpaces_FullMethodName    = "/thinkpol.localapi.v1.LocalService/ListSpaces"
-	LocalService_SetRulePreset_FullMethodName = "/thinkpol.localapi.v1.LocalService/SetRulePreset"
-	LocalService_TailLogs_FullMethodName      = "/thinkpol.localapi.v1.LocalService/TailLogs"
-	LocalService_Diagnose_FullMethodName      = "/thinkpol.localapi.v1.LocalService/Diagnose"
+	LocalService_GetStatus_FullMethodName        = "/thinkpol.localapi.v1.LocalService/GetStatus"
+	LocalService_WatchStatus_FullMethodName      = "/thinkpol.localapi.v1.LocalService/WatchStatus"
+	LocalService_Connect_FullMethodName          = "/thinkpol.localapi.v1.LocalService/Connect"
+	LocalService_Disconnect_FullMethodName       = "/thinkpol.localapi.v1.LocalService/Disconnect"
+	LocalService_ListSpaces_FullMethodName       = "/thinkpol.localapi.v1.LocalService/ListSpaces"
+	LocalService_SetRulePreset_FullMethodName    = "/thinkpol.localapi.v1.LocalService/SetRulePreset"
+	LocalService_SetConnectOnBoot_FullMethodName = "/thinkpol.localapi.v1.LocalService/SetConnectOnBoot"
+	LocalService_TailLogs_FullMethodName         = "/thinkpol.localapi.v1.LocalService/TailLogs"
+	LocalService_Diagnose_FullMethodName         = "/thinkpol.localapi.v1.LocalService/Diagnose"
 )
 
 // LocalServiceClient is the client API for LocalService service.
@@ -63,12 +64,17 @@ type LocalServiceClient interface {
 	ListSpaces(ctx context.Context, in *ListSpacesRequest, opts ...grpc.CallOption) (*ListSpacesResponse, error)
 	// SetRulePreset switches the device's routing rules to a preset
 	// ("space", the space's own rules; "everything"; "all-but-domestic")
-	// and stores the choice in the device's local rules file, which only
-	// the service writes. INVALID_ARGUMENT "unknown_rule_preset" for
+	// and stores the choice in the device's settings file, which only the
+	// service writes. INVALID_ARGUMENT "unknown_rule_preset" for
 	// another name; FAILED_PRECONDITION "rule_preset_unavailable" when the
 	// space can't build it (the choice is kept, enforced failing closed),
 	// "server_mode" on a server.
 	SetRulePreset(ctx context.Context, in *SetRulePresetRequest, opts ...grpc.CallOption) (*SetRulePresetResponse, error)
+	// SetConnectOnBoot sets whether the service connects the device at a
+	// boot's first start, stored in the device's settings file, which only
+	// the service writes; it takes effect at the next boot (GetStatus shows
+	// it). FAILED_PRECONDITION "server_mode" on a server.
+	SetConnectOnBoot(ctx context.Context, in *SetConnectOnBootRequest, opts ...grpc.CallOption) (*SetConnectOnBootResponse, error)
 	// TailLogs sends the agent's in-memory log: the last lines, then, when
 	// following, every new line until the client goes away or the service
 	// stops. Root only: debug lines may quote the map.
@@ -157,6 +163,16 @@ func (c *localServiceClient) SetRulePreset(ctx context.Context, in *SetRulePrese
 	return out, nil
 }
 
+func (c *localServiceClient) SetConnectOnBoot(ctx context.Context, in *SetConnectOnBootRequest, opts ...grpc.CallOption) (*SetConnectOnBootResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetConnectOnBootResponse)
+	err := c.cc.Invoke(ctx, LocalService_SetConnectOnBoot_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *localServiceClient) TailLogs(ctx context.Context, in *TailLogsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[TailLogsResponse], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	stream, err := c.cc.NewStream(ctx, &LocalService_ServiceDesc.Streams[1], LocalService_TailLogs_FullMethodName, cOpts...)
@@ -209,12 +225,17 @@ type LocalServiceServer interface {
 	ListSpaces(context.Context, *ListSpacesRequest) (*ListSpacesResponse, error)
 	// SetRulePreset switches the device's routing rules to a preset
 	// ("space", the space's own rules; "everything"; "all-but-domestic")
-	// and stores the choice in the device's local rules file, which only
-	// the service writes. INVALID_ARGUMENT "unknown_rule_preset" for
+	// and stores the choice in the device's settings file, which only the
+	// service writes. INVALID_ARGUMENT "unknown_rule_preset" for
 	// another name; FAILED_PRECONDITION "rule_preset_unavailable" when the
 	// space can't build it (the choice is kept, enforced failing closed),
 	// "server_mode" on a server.
 	SetRulePreset(context.Context, *SetRulePresetRequest) (*SetRulePresetResponse, error)
+	// SetConnectOnBoot sets whether the service connects the device at a
+	// boot's first start, stored in the device's settings file, which only
+	// the service writes; it takes effect at the next boot (GetStatus shows
+	// it). FAILED_PRECONDITION "server_mode" on a server.
+	SetConnectOnBoot(context.Context, *SetConnectOnBootRequest) (*SetConnectOnBootResponse, error)
 	// TailLogs sends the agent's in-memory log: the last lines, then, when
 	// following, every new line until the client goes away or the service
 	// stops. Root only: debug lines may quote the map.
@@ -251,6 +272,9 @@ func (UnimplementedLocalServiceServer) ListSpaces(context.Context, *ListSpacesRe
 }
 func (UnimplementedLocalServiceServer) SetRulePreset(context.Context, *SetRulePresetRequest) (*SetRulePresetResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetRulePreset not implemented")
+}
+func (UnimplementedLocalServiceServer) SetConnectOnBoot(context.Context, *SetConnectOnBootRequest) (*SetConnectOnBootResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetConnectOnBoot not implemented")
 }
 func (UnimplementedLocalServiceServer) TailLogs(*TailLogsRequest, grpc.ServerStreamingServer[TailLogsResponse]) error {
 	return status.Error(codes.Unimplemented, "method TailLogs not implemented")
@@ -380,6 +404,24 @@ func _LocalService_SetRulePreset_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func _LocalService_SetConnectOnBoot_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetConnectOnBootRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LocalServiceServer).SetConnectOnBoot(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LocalService_SetConnectOnBoot_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LocalServiceServer).SetConnectOnBoot(ctx, req.(*SetConnectOnBootRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _LocalService_TailLogs_Handler(srv interface{}, stream grpc.ServerStream) error {
 	m := new(TailLogsRequest)
 	if err := stream.RecvMsg(m); err != nil {
@@ -435,6 +477,10 @@ var LocalService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SetRulePreset",
 			Handler:    _LocalService_SetRulePreset_Handler,
+		},
+		{
+			MethodName: "SetConnectOnBoot",
+			Handler:    _LocalService_SetConnectOnBoot_Handler,
 		},
 		{
 			MethodName: "Diagnose",

@@ -42,13 +42,16 @@ type Status struct {
 	PublicListeners []PublicListenerStatus
 	// Egress is a server's (nil on a device).
 	Egress *supervisor.EgressInfo
-	// RulePreset is a device's rule preset (LocalRulesFile; "space" when it
+	// RulePreset is a device's rule preset (DeviceFile; "space" when it
 	// chose none); RulesEnforced is set while its data plane runs them, and
 	// PresetUnavailable when the map can't build the preset, which is then
 	// enforced failing closed.
 	RulePreset        string
 	RulesEnforced     bool
 	PresetUnavailable bool
+	// ConnectOnBoot is a device's connect-on-boot (DeviceFile): whether
+	// the service connects it at a boot's first start.
+	ConnectOnBoot bool
 	// DNSUnprotected is set while a connected device's OS may resolve
 	// names outside the node's resolver (pointing it failed, or another
 	// link's domains in systemd-resolved): names may leave outside the
@@ -59,6 +62,12 @@ type Status struct {
 	// ones read before, so `direct` names may not resolve. The OS still
 	// resolves through the node, so on its own it is not DNSUnprotected.
 	DNSUpstreamsStale bool
+	// DNSNoUpstream is set while a connected device's resolver has no
+	// direct upstream to ask (none configured, none read from the OS), or
+	// the OS names none now (its previous ones are still asked,
+	// dns.ErrNoSystemUpstream): `direct` names may not resolve. Not while
+	// DNSUpstreamsStale: those upstreams are unknown, not absent.
+	DNSNoUpstream bool
 	// DNSUpstreamsRefused is an exit's: how many of the resolver
 	// upstreams the worker's egress refuses, so the resolver doesn't use
 	// them (each is logged with its address).
@@ -170,10 +179,15 @@ type report struct {
 	listeners int
 	// workers is a server's supervisor, while it runs.
 	workers workerReporter
-	// preset is a device's rule preset (Status.RulePreset).
-	preset string
+	// preset is a device's rule preset (Status.RulePreset), and
+	// connectOnBoot its connect-on-boot.
+	preset        string
+	connectOnBoot bool
 	// dns says why a device's OS may resolve outside its resolver.
 	dns func() error
+	// dnsNoUpstream says a device's resolver has no direct upstream (nil
+	// while none runs).
+	dnsNoUpstream func() bool
 	// dnsUpstreamsRefused is an exit's count of resolver upstreams the
 	// worker's egress refuses (Status.DNSUpstreamsRefused).
 	dnsUpstreamsRefused int
@@ -224,7 +238,7 @@ func (p *report) statusLocked() Status { return p.statusWith(nil) }
 func (p *report) statusWith(dp *dataplane.Status) Status {
 	s := Status{Mode: p.mode, Space: p.space, MapVersion: p.version, MapsRefused: p.mapsRefused, Removed: p.removed, Retrying: p.retrying, Listeners: p.listeners, DNSUpstreamsRefused: p.dnsUpstreamsRefused}
 	if p.mode != ModeServer {
-		s.RulePreset = p.preset
+		s.RulePreset, s.ConnectOnBoot = p.preset, p.connectOnBoot
 	}
 	switch {
 	case p.mode == ModeServer:
@@ -250,6 +264,9 @@ func (p *report) statusWith(dp *dataplane.Status) Status {
 		// Read once: both flags come from the same Problem.
 		s.DNSUnprotected = dns.Unprotected(problem)
 		s.DNSUpstreamsStale = errors.Is(problem, dns.ErrUpstreamsStale)
+		// Unknown upstreams (stale) aren't absent ones: one cause, one code.
+		s.DNSNoUpstream = !s.DNSUpstreamsStale &&
+			(errors.Is(problem, dns.ErrNoSystemUpstream) || p.dnsNoUpstream != nil && p.dnsNoUpstream())
 	}
 	if p.workers != nil {
 		for _, w := range p.workers.Workers() {
@@ -362,6 +379,9 @@ const (
 	// the resolver asks the rest, and with none left tunnel-bound names
 	// fail.
 	ProblemDNSUpstreamRefused Problem = "dns_upstream_refused"
+	// ProblemDNSNoUpstream: a device's resolver has no direct upstream to
+	// ask, so `direct` names don't resolve (Status.DNSNoUpstream).
+	ProblemDNSNoUpstream Problem = "dns_no_upstream"
 )
 
 // Health grades the status.
@@ -451,6 +471,9 @@ func (s Status) dataPlaneProblems(add func(HealthLevel, Problem)) {
 	}
 	if s.DNSUpstreamsStale {
 		add(HealthDegraded, ProblemDNSUpstreamsStale)
+	}
+	if s.DNSNoUpstream {
+		add(HealthDegraded, ProblemDNSNoUpstream)
 	}
 }
 

@@ -5,9 +5,9 @@ package agent
 const ConnectRecordFile = "connect"
 
 // ConnectRecord keeps a device's connect choice for the boot it was made
-// in, under the service (Config.ConnectOnBoot): the first start's (as
-// connect-on-boot says), then each request through the local API and a
-// failed Connect's down. A later start in the same boot (a crash and the
+// in, under the service (Config.Service): the first start's (as the
+// device's connect-on-boot says), then each request through the local API
+// and a failed Connect's down. A later start in the same boot (a crash and the
 // service manager's restart) follows it, so it neither drops a connected
 // member nor undoes their disconnect.
 type ConnectRecord interface {

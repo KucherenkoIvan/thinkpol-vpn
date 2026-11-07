@@ -52,7 +52,8 @@ type System interface {
 	// Problem says why names may still be resolved outside the node's
 	// resolver (another link's domains in systemd-resolved, a rewrite that
 	// failed), nil when the OS resolves through it only. It may also
-	// report ErrUpstreamsStale, which is not unprotected.
+	// report ErrUpstreamsStale or ErrNoSystemUpstream, which are not
+	// unprotected.
 	Problem() error
 	// Restore puts back what was there before.
 	Restore() error
@@ -71,6 +72,12 @@ var ErrUnprotected = errors.New("dns: names may be resolved outside the node")
 // Problem. Wrap a cause in it with %v: a %w'd cause is a part of its own,
 // and an untagged part is unprotected.
 var ErrUpstreamsStale = errors.New("dns: the direct upstreams may be stale")
+
+// ErrNoSystemUpstream marks a Problem where the last good read of the
+// OS's own resolvers named none: the resolver keeps asking the previous
+// direct upstreams, which the OS no longer names. Like ErrUpstreamsStale
+// it is not unprotected.
+var ErrNoSystemUpstream = errors.New("dns: the system names no resolver")
 
 // staleUpstreams is the Problem while a good read of the OS's own
 // resolvers is owed: the first one failed (UpstreamsUnknown) or, on the
@@ -94,7 +101,7 @@ func startsUntold(c SystemConfig) bool {
 // node's resolver: an ErrUnprotected problem, or anything else — a
 // System that reports a problem it doesn't name must read as
 // unprotected, never as protected. Only nil and a problem whose every
-// part is ErrUpstreamsStale are not: a joined problem is unprotected if
+// part is ErrUpstreamsStale or ErrNoSystemUpstream are not: a joined problem is unprotected if
 // any of its parts is, so an untagged part beside a stale one isn't
 // hidden by it.
 func Unprotected(problem error) bool {
@@ -124,7 +131,7 @@ func Unprotected(problem error) bool {
 			return Unprotected(inner)
 		}
 	}
-	return !errors.Is(problem, ErrUpstreamsStale)
+	return !errors.Is(problem, ErrUpstreamsStale) && !errors.Is(problem, ErrNoSystemUpstream)
 }
 
 // A resolv.conf the node manages starts with resolvConfHeader and keeps
@@ -268,9 +275,12 @@ type resolvConf struct {
 	untold bool
 	// owed: a change's read failed and a good read is owed; one that
 	// names no server keeps the previous upstreams, as on a change.
-	owed    bool
-	stop    chan struct{}
-	stopped chan struct{}
+	owed bool
+	// noServer: the last good read named no server (with Upstreams set),
+	// so the previous upstreams are kept though the OS names none.
+	noServer bool
+	stop     chan struct{}
+	stopped  chan struct{}
 }
 
 // resolvConfCheck is how often a managed resolv.conf is checked for
@@ -403,6 +413,7 @@ func (r *resolvConf) recordOriginal(original []byte, read bool) (tell func()) {
 	switch {
 	case read && ok:
 		r.untold, r.owed = false, false
+		r.noServer = r.cfg.Upstreams != nil && len(ups) == 0
 	case read && changed && r.cfg.Upstreams != nil:
 		r.owed = true
 	}
@@ -480,6 +491,9 @@ func (r *resolvConf) Problem() error {
 	}
 	if err := staleUpstreams(r.untold || r.owed); err != nil {
 		errs = append(errs, err)
+	}
+	if r.noServer && r.cfg.Upstreams != nil {
+		errs = append(errs, fmt.Errorf("%w: the last read of %s named none", ErrNoSystemUpstream, r.path))
 	}
 	return errors.Join(errs...)
 }

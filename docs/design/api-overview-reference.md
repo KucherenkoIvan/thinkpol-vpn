@@ -1,5 +1,7 @@
 # thinkpol-vpn — API overview: CLI and local API reference
 
+> **Since this snapshot (TP-166):** the node file `node.json` and the device file `device.json` exist, `rules.local` is carried into `device.json` and removed, connect-on-boot is the member's toggle (`thinkpol connect-on-boot on|off`, local API `SetConnectOnBoot`), the service runs `up -service` with no `THINKPOL_CONNECT_ON_BOOT`, `service connect-on-boot` and `service install -connect-on-boot` are refused, a bad configuration exits 78, and `diag` reports systemd drop-ins. [Configuration](configuration.md) is current; what follows is not updated.
+
 The CLI and local API half of the [API overview](api-overview.md) (TP-139), split out to keep each file under the design docs' 50 KB limit. The overview has the summary, the configuration, the on-disk state, the planned surface and the consistency findings (`Fn` below). Where the examples come from: [API overview](api-overview.md), first paragraphs. As there, the code wins where this file disagrees with it.
 
 ## CLI
@@ -264,7 +266,7 @@ Other lines appear when they apply:
 }
 ```
 
-The health problem vocabulary (`internal/agent/status.go`): `disconnected`, `removed_from_space`, `starting`, `retrying`, `apply_failed`, `no_link_up`, `neighbor_down`, `entries_skipped`, `worker_down`, `worker_restarted`, `links_rejected`, `rule_preset_unavailable`, `route_table_not_enforced`, `policy_rules_ahead`, `overlay_routes_ahead`, `ipv6_guard_not_enforced`, `ipv6_guard_unsupported`, `dns_not_protected`, `dns_upstreams_stale`, `dns_upstream_refused`.
+The health problem vocabulary (`internal/agent/status.go`): `disconnected`, `removed_from_space`, `starting`, `retrying`, `apply_failed`, `no_link_up`, `neighbor_down`, `entries_skipped`, `worker_down`, `worker_restarted`, `links_rejected`, `rule_preset_unavailable`, `route_table_not_enforced`, `policy_rules_ahead`, `overlay_routes_ahead`, `ipv6_guard_not_enforced`, `ipv6_guard_unsupported`, `dns_not_protected`, `dns_upstreams_stale`, `dns_upstream_refused`, `dns_no_upstream`. A dialed node that never linked is listed as a neighbor, down, once a dial attempt has failed or the path layer's dead interval (6 s) has passed since the dial started: `no_link_up` when no other neighbor is up, `neighbor_down` when another one is. `dns_no_upstream` also covers an OS that names no DNS server now (the resolver keeps asking the previous ones), and isn't raised beside `dns_upstreams_stale`. Health covers first hops only: an exit behind an up entry that never answers, or an exit link up with no WireGuard handshake, still reads ok (RR48).
 
 #### `connect` and `disconnect`
 
