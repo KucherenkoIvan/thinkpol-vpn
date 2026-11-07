@@ -319,17 +319,20 @@ func forwardingOff(t *testing.T) {
 }
 
 // servingWithEgress is a supervisor that turned the root's IPv4 forwarding
-// on for a space's egress.
+// on for a space's egress (and IPv6's, given an uplink with IPv6 in
+// opts.Uplink).
 func servingWithEgress(t *testing.T, opts Options) *Supervisor {
 	t.Helper()
 	opts.NewRoot = testNewRoot
 	opts.Command = []string{"/bin/true"}
-	opts.Uplink = func() (egress.Uplink, error) { return egress.Uplink{Name: "lo", IPv4: true}, nil }
+	if opts.Uplink == nil {
+		opts.Uplink = func() (egress.Uplink, error) { return egress.Uplink{Name: "lo", IPv4: true}, nil }
+	}
 	s, err := New(opts)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetSpaces([]Space{{ID: netmap.NewSpaceID(), Egress: EgressGrant{IPv4: true}}}); err != nil {
+	if err := s.SetSpaces([]Space{{ID: netmap.NewSpaceID(), Egress: EgressGrant{IPv4: true, IPv6: true}}}); err != nil {
 		_ = s.Close()
 		t.Fatal(err)
 	}

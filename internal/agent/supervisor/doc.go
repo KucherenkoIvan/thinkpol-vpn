@@ -219,6 +219,13 @@
 // record, so the root still forwards nothing else and the next start tries
 // again.
 //
+// A service uninstall leaves no next start, so [ClearLeftovers] does a
+// dead supervisor's cleanup there and then: holding the node's supervisor
+// role (so never a live one's), it removes the spaces' veths and the
+// routes its configurator recorded, puts back the forwarding its record
+// names, then removes its tables, which stay, as on Close, while that
+// forwarding can't be turned off or the record can't be read.
+//
 // # Shared listeners
 //
 // The supervisor owns the node's public address, the scarce resource, and

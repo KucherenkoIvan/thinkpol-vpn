@@ -17,6 +17,7 @@ func init() {
 
 func runServiceUninstall(ctx context.Context, e env, args []string) error {
 	fs := flag.NewFlagSet("service uninstall", flag.ContinueOnError)
+	force := fs.Bool("force", false, "remove the service and its binary even if undoing what a crashed agent left fails (what is left is reported)")
 	if err := parseFlags(fs, e, args); err != nil {
 		return err
 	}
@@ -30,5 +31,5 @@ func runServiceUninstall(ctx context.Context, e env, args []string) error {
 	if err != nil {
 		return err
 	}
-	return in.Uninstall(ctx)
+	return in.Uninstall(ctx, *force)
 }
