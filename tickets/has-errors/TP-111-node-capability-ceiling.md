@@ -36,6 +36,16 @@ A node starts as a device: it forwards nothing unless its node file allows it (P
 - **TP-139 verdicts (TP-139 owner session, 2026-11-07; docs/design/api-overview.md "Verdicts", docs/design/configuration.md).** The mode lives in the node file that TP-166 builds (root-owned, 0600), with flags over env over the file over defaults. Depends on TP-166. A bad value exits EX_CONFIG (78).
 - Split 2026-11-07 (owner's MVP cut): the capability-ceiling file mechanism moved to TP-183. Until it lands, RR42 holds for a node run in server mode.
 
+## Review findings
+- [ ] R1.1 (blocker) device mode + a server-kind section still runs as a server (listeners, admission, relay): fail closed, no data plane and no host changes, status problem mode_mismatch, same on a map change to server kind; lab tests that ran a server section as a device's peer → -mode server; RR42, security.md rule 7, agent doc.go, configuration.md, runbook upgrade step
+- [ ] R1.2 device-only behaviour keyed on the map's kind (engine.go LocalSourcesOnly, agent/resolver.go): key on the mode, or log why unreachable
+- [ ] R1.3 TestAnExitWithNoModeSetForwardsNothing and the lab egress restart check listeners, admitted links and relayed packets, not only egress
+- [ ] R1.4 tests: THINKPOL_MODE=auto (78, "gone"), "gone" in the flag case, flag over env precedence
+- [ ] R1.5 stale text: localapi.proto MODE_UNSPECIFIED, api-overview-reference.md, keepNoTrace comment, install_test wording, TP-183 credit in configuration.md and settings_test.go, api-overview.md:375, mapfollower comments, crashtrace.go and doc.go "a service's definition gives neither", RR42 When
+- [ ] R1.6 one function holds the known-device rule; ServiceMode adds the can-it-run check and says why, install prints the matching hint
+- [ ] R1.7 Node.Mode() without report.mu, awaitSection without a local mode copy
+- [ ] R1.8 nits: config.go "gone" message and api-overview.md:210, crashtrace test case name, rewrapped comments, dataplane.go:713 warning folded into R1.1
+
 ## Log
 - 2026-10-18 created in backlog (owner decision: the node's configuration caps the map)
 - 2026-10-24 docs: slotted in the pre-M2 phase (wave 1, Agent)
@@ -48,3 +58,4 @@ A node starts as a device: it forwards nothing unless its node file allows it (P
 - 2026-11-07 make lint, make test green; full make lab-test green on 7fc726d (LAB_P=4, exclusive CPU lock)
 - 2026-11-07 not verified: a real upgrade of a server from a pre-TP-111 binary (runbook step written, not run); the cmd-level failed-start trace test can't tell the map-kind mutation (its state can't read a map), the agent-level test does
 - 2026-11-07 in-progress → review
+- 2026-11-07 review → has-errors (round 1 findings R1.x)
