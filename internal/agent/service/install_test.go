@@ -58,6 +58,12 @@ type fakeHost struct {
 	cleared, heldWhileCleared int
 }
 
+// testCrashTrace is the fake host's crash trace file, and
+// deviceDefinition what install writes for a device on it.
+const testCrashTrace = "/var/lib/thinkpol/crash-trace"
+
+var deviceDefinition = Definition{Binary: BinaryPath, CrashTrace: testCrashTrace}
+
 func newFakeHost(t *testing.T) *fakeHost {
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
@@ -263,8 +269,9 @@ func (h *fakeHost) installer(sys System) (Installer, *bytes.Buffer) {
 	}
 	var out bytes.Buffer
 	return Installer{
-		Root: h.root, System: sys, Run: h.run, Executable: exe, Ready: func() error { return nil },
-		LockHost: h.lock,
+		Root: h.root, System: sys, Run: h.run, Executable: exe, Ready: func() (agent.Mode, error) { return agent.ModeDevice, nil },
+		CrashTrace: testCrashTrace,
+		LockHost:   h.lock,
 		ClearHost: func() ([]string, error) {
 			h.cleared++
 			unlock, err := h.lock()
@@ -304,7 +311,7 @@ func TestInstallUnderSystemd(t *testing.T) {
 	}
 
 	unit, mode, ok := h.file(UnitPath)
-	if !ok || mode.Perm() != 0o644 || !bytes.Equal(unit, SystemdUnit(Definition{Binary: BinaryPath})) {
+	if !ok || mode.Perm() != 0o644 || !bytes.Equal(unit, SystemdUnit(deviceDefinition)) {
 		t.Fatalf("the unit (%v, %v):\n%s", ok, mode, unit)
 	}
 	bin, mode, ok := h.file(BinaryPath)
@@ -352,7 +359,7 @@ func TestInstallOverAnOldDefinitionSaysWhereConnectOnBootWent(t *testing.T) {
 			if err := in.Install(context.Background(), Options{}); err != nil {
 				t.Fatal(err)
 			}
-			if def, _, _ := h.file(tc.sys.DefinitionPath()); !bytes.Equal(def, tc.sys.Render(Definition{Binary: BinaryPath})) {
+			if def, _, _ := h.file(tc.sys.DefinitionPath()); !bytes.Equal(def, tc.sys.Render(deviceDefinition)) {
 				t.Fatalf("the definition:\n%s", def)
 			}
 			said := out.String()
@@ -376,7 +383,7 @@ func TestUninstallLeavesNothingOfTheService(t *testing.T) {
 			// What a stopped agent leaves, and what it doesn't: a crashed
 			// run's route record stays, and is reported.
 			for _, f := range []string{"/run/thinkpol/agent.lock", "/run/thinkpol/" + agent.ConnectRecordFile, "/run/thinkpol/netcfg/overlay.lock",
-				"/run/thinkpol-api/api.lock", "/run/thinkpol/netcfg/overlay.routes", "/var/lib/thinkpol/node.key"} {
+				"/run/thinkpol-api/api.lock", "/run/thinkpol/netcfg/overlay.routes", "/var/lib/thinkpol/node.key", testCrashTrace} {
 				if err := os.MkdirAll(filepath.Join(h.root, filepath.Dir(f)), 0o700); err != nil {
 					t.Fatal(err)
 				}
@@ -389,7 +396,7 @@ func TestUninstallLeavesNothingOfTheService(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, p := range []string{sys.DefinitionPath(), BinaryPath, "/run/thinkpol-api", "/run/thinkpol/agent.lock",
-				"/run/thinkpol/" + agent.ConnectRecordFile, "/run/thinkpol/netcfg/overlay.lock"} {
+				"/run/thinkpol/" + agent.ConnectRecordFile, "/run/thinkpol/netcfg/overlay.lock", testCrashTrace} {
 				if _, _, ok := h.file(p); ok {
 					t.Errorf("%s is left", p)
 				}
@@ -619,7 +626,7 @@ func TestInstallUnderLaunchd(t *testing.T) {
 		t.Fatal(err)
 	}
 	plist, mode, ok := h.file(PlistPath)
-	if !ok || mode.Perm() != 0o644 || !bytes.Equal(plist, LaunchdPlist(Definition{Binary: BinaryPath})) {
+	if !ok || mode.Perm() != 0o644 || !bytes.Equal(plist, LaunchdPlist(deviceDefinition)) {
 		t.Fatalf("the plist (%v, %v):\n%s", ok, mode, plist)
 	}
 	// Loaded from the plist, and no override written on a clean host.
@@ -699,7 +706,7 @@ func TestLaunchdWaitsForTheDaemonToGo(t *testing.T) {
 func TestInstallRefusesBeforeChangingAnything(t *testing.T) {
 	for name, change := range map[string]func(*fakeHost, *Installer){
 		"a node that can't run": func(_ *fakeHost, in *Installer) {
-			in.Ready = func() error { return errors.New("no node.key") }
+			in.Ready = func() (agent.Mode, error) { return "", errors.New("no node.key") }
 		},
 		"a host without systemd": func(h *fakeHost, _ *Installer) {
 			if err := os.Remove(filepath.Join(h.root, "run/systemd/system")); err != nil {
@@ -832,6 +839,59 @@ func TestADefinitionChangedByHandIsReported(t *testing.T) {
 	}
 }
 
+// A device's definition names its crash trace, a server's none, and a
+// server's install removes a trace a device left (PRD S2). A node whose
+// mode changed is installed anew without a warning: its definition
+// wasn't changed by hand.
+func TestOnlyADevicesDefinitionKeepsACrashTrace(t *testing.T) {
+	for name, sys := range map[string]System{"systemd": Systemd{}, "launchd": Launchd{}} {
+		t.Run(name, func(t *testing.T) {
+			h := newFakeHost(t)
+			in, out := h.installer(sys)
+			ctx := context.Background()
+			if err := in.Install(ctx, Options{}); err != nil {
+				t.Fatal(err)
+			}
+			def, _, _ := h.file(sys.DefinitionPath())
+			if !bytes.Equal(def, sys.Render(deviceDefinition)) || !bytes.Contains(def, []byte(testCrashTrace)) {
+				t.Fatalf("a device's definition:\n%s", def)
+			}
+			// The device's agent crashed and left its trace.
+			trace := filepath.Join(h.root, testCrashTrace)
+			if err := os.MkdirAll(filepath.Dir(trace), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(trace, []byte("panic: boom\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			in.Ready = func() (agent.Mode, error) { return agent.ModeServer, nil }
+			if err := in.Install(ctx, Options{}); err != nil {
+				t.Fatal(err)
+			}
+			def, _, _ = h.file(sys.DefinitionPath())
+			if !bytes.Equal(def, sys.Render(Definition{Binary: BinaryPath})) || bytes.Contains(def, []byte(testCrashTrace)) {
+				t.Fatalf("a server's definition:\n%s", def)
+			}
+			if _, _, ok := h.file(testCrashTrace); ok {
+				t.Error("a server's install left the crash trace")
+			}
+			if strings.Contains(out.String(), "warning: ") || !strings.Contains(out.String(), "removed the crash trace") {
+				t.Errorf("said:\n%s", out)
+			}
+
+			in.Ready = func() (agent.Mode, error) { return agent.ModeDevice, nil }
+			out.Reset()
+			if err := in.Install(ctx, Options{}); err != nil {
+				t.Fatal(err)
+			}
+			if def, _, _ = h.file(sys.DefinitionPath()); !bytes.Equal(def, sys.Render(deviceDefinition)) || strings.Contains(out.String(), "warning: ") {
+				t.Fatalf("a device's definition again:\n%s\nsaid\n%s", def, out)
+			}
+		})
+	}
+}
+
 // The group install makes is the one the agent's local API admits.
 func TestTheGroupIsTheLocalAPIsDefault(t *testing.T) {
 	if _, ok := os.LookupEnv("THINKPOL_API_GROUP"); ok {
@@ -853,7 +913,7 @@ func TestTheGroupIsTheLocalAPIsDefault(t *testing.T) {
 // stopped. A stop that fails otherwise still stops the install.
 func TestANeverLoadedUnitCountsAsStopped(t *testing.T) {
 	ctx := context.Background()
-	unit := SystemdUnit(Definition{Binary: BinaryPath})
+	unit := SystemdUnit(deviceDefinition)
 	for _, old := range []bool{false, true} {
 		h := newFakeHost(t)
 		h.oldSystemd = old
@@ -933,7 +993,7 @@ func TestAFailedStartSaysWhatItLeft(t *testing.T) {
 		// daemon-reload fails: not enabled, and not said to be.
 		h = newFakeHost(t)
 		in, _ = h.installer(Systemd{})
-		if err := os.WriteFile(filepath.Join(h.root, UnitPath), SystemdUnit(Definition{Binary: BinaryPath}), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(h.root, UnitPath), SystemdUnit(deviceDefinition), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		h.failNext["systemctl daemon-reload"] = 1

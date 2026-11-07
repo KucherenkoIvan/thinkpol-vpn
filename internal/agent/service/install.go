@@ -66,8 +66,14 @@ type Installer struct {
 	// BinaryPath.
 	Executable string
 	// Ready says whether the node can run (its state directory), checked
-	// before anything is installed.
-	Ready func() error
+	// before anything is installed, and in which mode the service will run
+	// it (agent.ResolveMode): a device's definition sends the agent's
+	// stderr to CrashTrace, a server's sends it nowhere.
+	Ready func() (agent.Mode, error)
+	// CrashTrace is the device's crash trace file (agent.CrashTracePath),
+	// as the definition names it. A server's install, and uninstall,
+	// remove it.
+	CrashTrace string
 	// LockHost takes the host's agent lock (agent.HostLock), failing with
 	// agent.ErrAnotherAgent while an agent holds it.
 	LockHost func() (func(), error)
@@ -128,10 +134,12 @@ func (in Installer) Install(ctx context.Context, opts Options) error {
 	if err := in.System.Present(in.Root); err != nil {
 		return err
 	}
-	if err := in.Ready(); err != nil {
+	mode, err := in.Ready()
+	if err != nil {
 		return fmt.Errorf("this node can't run yet: %w", err)
 	}
-	_, err := os.Lstat(in.path(in.System.DefinitionPath()))
+	def := in.definition(mode)
+	_, err = os.Lstat(in.path(in.System.DefinitionPath()))
 	defined := err == nil
 	if !defined {
 		if err := in.noAgent(); err != nil {
@@ -160,8 +168,11 @@ func (in Installer) Install(ctx context.Context, opts Options) error {
 	if err := in.installBinary(); err != nil {
 		return err
 	}
-	if err := in.writeDefinition(Definition{Binary: BinaryPath}); err != nil {
+	if err := in.writeDefinition(def); err != nil {
 		return err
+	}
+	if def.CrashTrace == "" {
+		in.removeCrashTrace()
 	}
 	if defined {
 		if err := in.System.Stop(ctx, in.Run); err != nil {
@@ -260,6 +271,7 @@ func (in Installer) Uninstall(ctx context.Context, force bool) error {
 	if err := os.Remove(in.path(BinaryPath)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
+	in.removeCrashTrace()
 	for _, dir := range in.RuntimeDirs {
 		left, err := clearRuntimeDir(in.path(dir))
 		if err != nil {
@@ -306,8 +318,11 @@ func (in Installer) installed() error {
 	if err != nil {
 		return err
 	}
-	if bytes.Equal(data, in.System.Render(Definition{Binary: BinaryPath})) {
-		return nil
+	// Either mode's: the node's mode may have changed since.
+	for _, mode := range []agent.Mode{agent.ModeDevice, agent.ModeServer} {
+		if bytes.Equal(data, in.System.Render(in.definition(mode))) {
+			return nil
+		}
 	}
 	changed := fmt.Errorf("%w: %s isn't what thinkpol service install writes; install again", ErrDefinitionChanged, in.System.DefinitionPath())
 	if !bytes.Contains(data, []byte(oldConnectOnBootVariable)) {
@@ -331,6 +346,31 @@ func (e *oldChangedError) Unwrap() []error { return []error{errOldDefinition, e.
 // oldConnectOnBootVariable is how definitions carried connect-on-boot
 // before it moved to the device's settings (agent.DeviceFile).
 const oldConnectOnBootVariable = "THINKPOL_CONNECT_ON_BOOT"
+
+// definition is what install writes for a node that runs in mode.
+func (in Installer) definition(mode agent.Mode) Definition {
+	d := Definition{Binary: BinaryPath}
+	if mode != agent.ModeServer {
+		d.CrashTrace = in.CrashTrace
+	}
+	return d
+}
+
+// removeCrashTrace removes the crash trace file, if there is one: a
+// server keeps none, and the service's is gone with it. One that can't be
+// removed is said.
+func (in Installer) removeCrashTrace() {
+	if in.CrashTrace == "" {
+		return
+	}
+	err := os.Remove(in.path(in.CrashTrace))
+	switch {
+	case err == nil:
+		in.say("removed the crash trace %s", in.CrashTrace)
+	case !errors.Is(err, fs.ErrNotExist):
+		in.say("warning: the crash trace %s stays: %v", in.CrashTrace, err)
+	}
+}
 
 // writeDefinition replaces the definition atomically, 0644.
 func (in Installer) writeDefinition(d Definition) error {

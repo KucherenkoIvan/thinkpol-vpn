@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -26,6 +27,17 @@ func init() {
 }
 
 func runUp(ctx context.Context, e env, args []string) error {
+	// First: under a device's service stderr is the crash trace file, still
+	// holding the previous run's trace until this reads and empties it.
+	errFile, _ := e.stderr.(*os.File)
+	trace, err := agent.TakeCrashTrace(agent.CrashTracePath(), errFile)
+	if err != nil {
+		return err
+	}
+	logOut := e.stderr
+	if trace.Tracing {
+		logOut = io.Discard
+	}
 	if err := agent.CheckEnvironment(); err != nil {
 		return err
 	}
@@ -50,7 +62,7 @@ func runUp(ctx context.Context, e env, args []string) error {
 	if err := config.Validate(&cfg); err != nil {
 		return err
 	}
-	logs, err := agent.NewLogs(cfg.LogLevel, e.stderr)
+	logs, err := agent.NewLogs(cfg.LogLevel, logOut)
 	if err != nil {
 		return err
 	}
@@ -60,6 +72,7 @@ func runUp(ctx context.Context, e env, args []string) error {
 	if err != nil {
 		return err
 	}
+	node.KeepLastRun(trace)
 	reload := make(chan os.Signal, 1)
 	signal.Notify(reload, syscall.SIGHUP)
 	defer signal.Stop(reload)

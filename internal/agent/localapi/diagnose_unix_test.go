@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -28,6 +30,63 @@ import (
 )
 
 const testVersion = "v0.0.0-test"
+
+// The previous run's trace is the snapshot's last_run, and the status
+// says the last run crashed, in its JSON and in its text; nothing shows
+// after a clean stop.
+func TestThePreviousRunsTraceIsServed(t *testing.T) {
+	s := serve(t, me())
+	c := dial(t, s.socket)
+	ctx := context.Background()
+	render := func(st *localapiv1.Status) string {
+		t.Helper()
+		var out bytes.Buffer
+		if err := WriteStatus(&out, st, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		return out.String()
+	}
+
+	d, err := c.Diagnose(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(d.GetLastRun().GetLines()) != 0 || d.GetStatus().GetLastRunCrashed() || strings.Contains(render(d.GetStatus()), "last run") {
+		t.Fatalf("a clean stop: %v", d)
+	}
+
+	s.node.mu.Lock()
+	s.node.st.LastRunCrashed = true
+	s.node.diag.LastRun = agent.LastRun{Trace: "panic: boom\n\ngoroutine 1 [running]:\n", Truncated: true}
+	s.node.mu.Unlock()
+	if d, err = c.Diagnose(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := WriteDiagnostics(&out, d); err != nil {
+		t.Fatal(err)
+	}
+	var parsed struct {
+		Status struct {
+			LastRunCrashed bool `json:"last_run_crashed"`
+		} `json:"status"`
+		LastRun struct {
+			Unreadable *string  `json:"unreadable"`
+			Lines      []string `json:"lines"`
+			Truncated  bool     `json:"truncated"`
+		} `json:"last_run"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if r := parsed.LastRun; !parsed.Status.LastRunCrashed || !slices.Equal(r.Lines, []string{"panic: boom", "", "goroutine 1 [running]:"}) || !r.Truncated ||
+		r.Unreadable == nil || *r.Unreadable != "" {
+		t.Fatalf("JSON:\n%s", out.String())
+	}
+	if !strings.Contains(render(d.GetStatus()), "last run:") {
+		t.Fatalf("status text:\n%s", render(d.GetStatus()))
+	}
+}
 
 func TestDiagnoseServesAVersionedSnapshot(t *testing.T) {
 	s := serve(t, me())
@@ -72,7 +131,7 @@ func TestDiagnoseServesAVersionedSnapshot(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &parsed); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"schema_version", "taken_at", "os", "agent_version", "host_parts", "status", "tun", "last_apply", "routes", "policy_rules", "guard", "dns"} {
+	for _, key := range []string{"schema_version", "taken_at", "os", "agent_version", "host_parts", "status", "tun", "last_apply", "routes", "policy_rules", "guard", "dns", "last_run"} {
 		if _, ok := parsed[key]; !ok {
 			t.Errorf("no %q in\n%s", key, out.String())
 		}

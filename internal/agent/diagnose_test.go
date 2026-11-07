@@ -105,6 +105,37 @@ func TestTheHostPartsAreRoots(t *testing.T) {
 	}
 }
 
+// The previous run's trace shows in the snapshot, root's only, and the
+// status says the last run crashed; a run that stopped cleanly shows
+// nothing.
+func TestThePreviousRunsTraceShows(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	startNode(t, reg, s.a, s.verified(t, 1))
+	b := startDevice(t, s, reg, false, withInspector(&inspected{}))
+	b.connection(t, Disconnected)
+	ctx := context.Background()
+
+	b.node.KeepLastRun(CrashTrace{Tracing: true})
+	for _, root := range []bool{true, false} {
+		if d := b.node.Diagnose(ctx, root); d.LastRun != (LastRun{}) || d.Status.LastRunCrashed || b.node.Status().LastRunCrashed {
+			t.Fatalf("a clean stop, root %v: %+v, crashed %v", root, d.LastRun, d.Status.LastRunCrashed)
+		}
+	}
+
+	trace := "panic: boom\n\ngoroutine 1 [running]:\n"
+	b.node.KeepLastRun(CrashTrace{Tracing: true, LastRun: LastRun{Trace: trace, Truncated: true}})
+	if !b.node.Status().LastRunCrashed {
+		t.Fatal("the status doesn't say the last run crashed")
+	}
+	if d := b.node.Diagnose(ctx, true); d.LastRun.Trace != trace || !d.LastRun.Truncated || d.LastRun.Unreadable != "" || !d.Status.LastRunCrashed {
+		t.Fatalf("root: %+v", d.LastRun)
+	}
+	if d := b.node.Diagnose(ctx, false); d.LastRun != (LastRun{Unreadable: UnreadableRootOnly}) || !d.Status.LastRunCrashed {
+		t.Fatalf("not root: %+v", d.LastRun)
+	}
+}
+
 func (i *inspected) names() []string {
 	i.mu.Lock()
 	defer i.mu.Unlock()

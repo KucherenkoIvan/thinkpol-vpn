@@ -100,7 +100,7 @@ func LoadState(dir, mapPath string) (State, error) {
 	}
 	for _, name := range names {
 		switch {
-		case name == NodeKeyFile, name == TrustFile, name == BlobDir, name == NodeFile:
+		case name == NodeKeyFile, name == TrustFile, name == BlobDir, name == NodeFile, name == CrashTraceFile:
 		case name == DeviceFile:
 			st.hasDeviceFile = true
 		case name == LocalRulesFile:

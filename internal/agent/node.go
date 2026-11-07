@@ -152,11 +152,16 @@ func (n *Node) remember(connect bool) {
 
 // resolveMode is the node's mode, ModeAuto decided by its kind in its
 // section.
-func (n *Node) resolveMode() Mode {
+func (n *Node) resolveMode() Mode { return ResolveMode(n.cfg.Mode, n.state) }
+
+// ResolveMode is the mode a node configured with mode runs in on st:
+// ModeAuto decided by its kind in its section, a device's when st has
+// none (Removed).
+func ResolveMode(mode Mode, st State) Mode {
 	switch {
-	case n.cfg.Mode != ModeAuto:
-		return n.cfg.Mode
-	case n.state.Section.Node.Kind == netmap.NodeServer:
+	case mode != ModeAuto:
+		return mode
+	case st.Section.Node.Kind == netmap.NodeServer:
 		return ModeServer
 	}
 	return ModeDevice
@@ -315,6 +320,19 @@ func (n *Node) Mode() Mode {
 	n.report.mu.Lock()
 	defer n.report.mu.Unlock()
 	return n.report.mode
+}
+
+// KeepLastRun keeps what TakeCrashTrace found for Status and Diagnose,
+// and logs it: what was fixed of the file, and that the previous run
+// crashed. Call it before the node runs.
+func (n *Node) KeepLastRun(ct CrashTrace) {
+	if ct.Fixed != "" {
+		n.logs.Warn("the crash trace file was wider than root's 0600; fixed", "file", CrashTraceFile, "fixed", ct.Fixed)
+	}
+	if ct.LastRun.Crashed() {
+		n.logs.Warn("the previous run crashed or exited with an error; thinkpol diag shows its trace (root only)")
+	}
+	n.report.set(func(p *report) { p.lastRun = ct.LastRun })
 }
 
 // Subscribe has f hear the node's events, each once Status shows what it

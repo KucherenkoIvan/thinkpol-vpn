@@ -35,6 +35,11 @@ type Diagnostics struct {
 	DNS dns.HostReport
 	// DropIns are the service's systemd drop-ins: unsupported, reported.
 	DropIns DropInReport
+	// LastRun is what the previous run under a device's service left on
+	// its stderr (KeepLastRun), none otherwise. Taken only for root, like
+	// the host parts: a panic's message or the error a run exited with
+	// may name a public address.
+	LastRun LastRun
 }
 
 // DropInReport lists drop-ins for the service's systemd unit
@@ -108,8 +113,12 @@ func (n *Node) Diagnose(ctx context.Context, withHostParts bool) Diagnostics {
 		d.Routes = netcfg.Inspection{RoutesUnreadable: UnreadableRootOnly, RulesUnreadable: UnreadableRootOnly}
 		d.Guard = routetable.GuardReport{Unreadable: UnreadableRootOnly}
 		d.DNS = dns.HostReport{Unreadable: UnreadableRootOnly}
+		if d.Status.LastRunCrashed {
+			d.LastRun = LastRun{Unreadable: UnreadableRootOnly}
+		}
 		return d
 	}
+	d.LastRun = n.report.lastRunTrace()
 	d.HostParts = true
 	d.Routes = n.plat.Inspect.Routes()
 	d.Guard = n.plat.Inspect.Guard(ctx)

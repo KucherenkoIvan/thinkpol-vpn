@@ -38,6 +38,10 @@ const (
 type Definition struct {
 	// Binary is the thinkpol binary's absolute path.
 	Binary string
+	// CrashTrace is where a device's agent's stderr goes, appended to
+	// (agent.CrashTraceFile, which the agent empties at each start once it
+	// has read it); "" for a server, whose stderr goes nowhere on disk.
+	CrashTrace string
 }
 
 // SystemdUnit is the definition as a systemd unit.
@@ -60,16 +64,27 @@ Restart=always
 RestartSec=%d
 KillMode=mixed
 TimeoutStopSec=%d
-
+%s
 [Install]
 WantedBy=multi-user.target
-`, d.Binary, RestartAfterSeconds, StopTimeoutSeconds)
+`, d.Binary, RestartAfterSeconds, StopTimeoutSeconds, systemdStderr(d.CrashTrace))
 	return b.Bytes()
 }
 
+// systemdStderr is the unit's stderr setting: a device's goes to its crash
+// trace, appended (truncate: would empty it before the agent reads it);
+// a server's stays the journal (RESIDUAL-RISKS.md RR40).
+func systemdStderr(crashTrace string) string {
+	if crashTrace == "" {
+		return ""
+	}
+	return "# The crash trace: the agent reads the previous run's, then empties it.\nStandardError=append:" + crashTrace + "\n"
+}
+
 // LaunchdPlist is the definition as a launchd daemon's property list. It
-// sets no StandardOutPath or StandardErrorPath: the agent writes no log
-// to disk (PRD S2), and its log is the local API's.
+// sets no StandardOutPath, and StandardErrorPath (launchd appends) only
+// for a device's crash trace: the agent writes no log to disk (PRD S2),
+// and its log is the local API's.
 func LaunchdPlist(d Definition) []byte {
 	var b bytes.Buffer
 	b.WriteString(`<?xml version="1.0" encoding="UTF-8"?>
@@ -94,7 +109,13 @@ func LaunchdPlist(d Definition) []byte {
 	<integer>` + strconv.Itoa(RestartAfterSeconds) + `</integer>
 	<key>ExitTimeOut</key>
 	<integer>` + strconv.Itoa(StopTimeoutSeconds) + `</integer>
-</dict>
+`)
+	if d.CrashTrace != "" {
+		b.WriteString(`	<key>StandardErrorPath</key>
+	<string>` + escape(d.CrashTrace) + `</string>
+`)
+	}
+	b.WriteString(`</dict>
 </plist>
 `)
 	return b.Bytes()

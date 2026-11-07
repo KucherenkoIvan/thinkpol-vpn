@@ -27,7 +27,7 @@ func statusProto(st agent.Status) *localapiv1.Status {
 		Retrying:   st.Retrying,
 		Health:     &localapiv1.Health{Level: healthProto(h.Level), Problems: problemCodes(h.Problems)},
 		RulePreset: st.RulePreset, RulesEnforced: st.RulesEnforced, RulePresetUnavailable: st.PresetUnavailable,
-		ConnectOnBoot: st.ConnectOnBoot,
+		ConnectOnBoot: st.ConnectOnBoot, LastRunCrashed: st.LastRunCrashed,
 	}
 	if dp := st.DataPlane; dp != nil {
 		out.DataPlane = dataPlaneProto(dp, st.Listeners)
