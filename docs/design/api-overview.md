@@ -43,8 +43,8 @@ This is everything a person or a script sees of thinkpol today: the CLI, the loc
 | [Local API](api-overview-reference.md#local-api) (reference file) | the socket, the two gates, every call with its access and its shapes, refusals |
 | [Configuration](#configuration) | every key, its default and where it is documented; input files; lab variables |
 | [On-disk state](#on-disk-state) | every file the node, the service and the dev tools write or read |
-| [Built since the snapshot](#built-since-the-snapshot) | what TP-140 and TP-166 added |
-| [Planned, not built](#planned-not-built) | what TP-111, TP-141 and TP-133 propose |
+| [Built since the snapshot](#built-since-the-snapshot) | what TP-140, TP-166 and TP-141 added |
+| [Planned, not built](#planned-not-built) | what TP-111 and TP-133 propose |
 | [Consistency findings](#consistency-findings) | F1–F21 with suggested verdicts |
 | [Verdicts (owner, 2026-11-07)](#verdicts-owner-2026-11-07) | the decided conventions: configuration levels, status versus diag, exit codes, naming |
 
@@ -120,6 +120,7 @@ The operator creates it, or the dev runbook does. It must be owned by root or th
 | `blobs/` | node (a device: lists fetched from peers) | dir 0700, files 0600 | node (a server only reads its seeds) |
 | `blobs/index` | node | 0600 | node, after a restart |
 | `rules.local` | node, when the local API sets a preset | 0644 root | node at start; a file that can't be parsed stops the node |
+| `crash-trace` | a device's `service install`, created 0600 before the service starts; then its service manager: the agent's stderr (TP-141) | 0600 root (the agent fixes a wider one) | node at start, which empties it once it has the trace; removed by a server's `service install` (after the stop), by `service uninstall`, and by an agent that runs as a server under a device's definition |
 
 ### Runtime directory: `/run/thinkpol` (`/private/var/db/thinkpol`)
 
@@ -182,7 +183,7 @@ These live in the kernel's cgroup filesystem, not on disk. They are listed becau
 
 ### Logs
 
-The node writes no log file. The log goes to stderr and into an in-memory ring, which `thinkpol logs` reads (PRD S2). Under launchd, stderr goes nowhere. Under systemd, stderr goes to the journal, which is on disk unless the journal is volatile (RR40). `service install` doesn't make it volatile: PRD S2 gives that to provisioning, at M4.
+The node writes no log file. The log goes to stderr and into an in-memory ring, which `thinkpol logs` reads (PRD S2); grpc's own log joins it. Under a device's service stderr is the crash trace (TP-141, below), and the log goes only to the ring, as it does under `up -service` whenever stderr is a regular file. Under launchd, a server's stderr goes nowhere. Under systemd, a server's stderr goes to the journal, which is on disk unless the journal is volatile (RR40). `service install` doesn't make it volatile: PRD S2 gives that to provisioning, at M4.
 
 ## Built since the snapshot
 
@@ -202,9 +203,20 @@ Answered (F5): `no_link_up` is reused; the new code is snake_case.
 
 The node file `node.json` and the device file `device.json` exist, `rules.local` is carried into `device.json` and removed, connect-on-boot is the member's toggle (`thinkpol connect-on-boot on|off`, local API `SetConnectOnBoot`), the service runs `up -service` with no `THINKPOL_CONNECT_ON_BOOT`, `service connect-on-boot` and `service install -connect-on-boot` are refused, a bad configuration exits 78, and `diag` reports systemd drop-ins. [Configuration](configuration.md) is current; the rest of this file, the reference and the findings are not updated for TP-166.
 
+### TP-141: a device's crash trace
+
+| Surface | Behaviour |
+|---|---|
+| file | `crash-trace` in the state directory, chosen over the runtime directory because it survives a reboot (`/run` is a tmpfs on Linux) and exists before the agent makes any directory, so the manager can open it. A device's `service install` creates it 0600 root (exclusively, not through a symlink) before the service starts. A start that finds it wider, or someone else's, fixes it and logs what it fixed; one with another link isn't read (emptied, removed, the run's stderr sent to the null device); one it can't fix, cut or empty stops the start without writing to it. Holds what the runtime writes to stderr and the error `up` exits with, never the log (which then goes only to the ring) and nothing on a clean stop. A start reads its head (64 KiB, kept in memory as valid UTF-8) and cuts the file to it; the node empties it once it has the trace, so a start that fails before keeps the trace and adds its error |
+| service definition | a device's plist gets `StandardErrorPath`, its unit `StandardError=append:` (systemd 240+; an older one ignores the line and keeps no trace); a server's is unchanged. `service install` picks one by the mode the node will run in: the node file's, else the node's kind in the map; a node of unknown kind gets a server's, with a warning. An agent that runs as a server under a device's definition detaches from the file and removes it, and warns to reinstall; right after reading it, before anything else can fail, unless the node is known to be a device (its mode, else its kind in the map), so a failing start of a server or a node of unknown kind adds nothing to it |
+| `diag` | `last_run`: `unreadable`, `lines` (the trace's head, line by line) and `truncated`. Root only: the group's snapshot has it unreadable, "root only", when there is one. Still schema 1 |
+| `status` | `last_run_crashed` and `last_run_unreadable` (`-json`), and a `last run:` line in the text for each. No health problem: health is the node's state now, and a code would hold until the next restart |
+
+Answered: the path (`crash-trace`), the field names (`last_run`, `last_run_crashed`, `last_run_unreadable`, F5), no problem code, and the file's size bound: its head and one run's output, never the log.
+
 ## Planned, not built
 
-**Planned, not built.** These come from the three tickets' scopes. Each needs the owner's verdict before it starts (ORCHESTRATION.md, "Pre-M2 phase"). The open naming questions are listed last in each part, and the findings they touch are named.
+**Planned, not built.** These come from the tickets' scopes. Each needs the owner's verdict before it starts (ORCHESTRATION.md, "Pre-M2 phase"). The open naming questions are listed last in each part, and the findings they touch are named.
 
 ### TP-111: the node's capability ceiling (planned, not built)
 
@@ -226,23 +238,6 @@ Open naming questions:
 - the problem code (F5);
 - the file name and location (F1);
 - where accepted capabilities are kept.
-
-### TP-141: a crashed agent's stderr on devices (planned, not built)
-
-| Surface | Proposal |
-|---|---|
-| file | one 0600 root file holding a device agent's stderr and panic trace, "in the service's state directory", overwritten on each start. It is 0600 root whatever the OS creates it with: a start that finds it wider fixes it or refuses, and says so. **Path not named.** `state.go` says the state directory holds nothing else (PRD S1), and on Linux `/run/thinkpol` doesn't survive a reboot |
-| service definition | a device's plist gets `StandardErrorPath`, and the unit gets a matching stderr setting. A server's is unchanged. This means the device and server definitions differ for the first time, so install has to tell them apart |
-| `diag` | shows the previous run's trace (a new field: still schema 1) |
-| `status` | a short "the last run crashed" line, or a problem (code not named) |
-| PRD S2 | amended: no logs on disk except a device's crash trace |
-
-Open questions:
-
-- the path;
-- the field name in `diag`;
-- the problem code (F5);
-- whether the file holds the whole run's log (the log handler writes to stderr too) and needs a size cap.
 
 ### TP-133: `diag` without a running agent (planned, not built)
 

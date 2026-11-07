@@ -51,6 +51,9 @@ type Node struct {
 	stopped chan struct{}
 	// tuning is a device's data plane's (DataPlane.tuning): tests set it.
 	tuning tuning
+	// crashTrace is the trace file stderr goes to (KeepLastRun), until
+	// the node runs as a server.
+	crashTrace *CrashTrace
 
 	// settingsMu serializes the changes to device, the member's toggles
 	// as DeviceFile holds them (read by run while it builds the data
@@ -152,14 +155,46 @@ func (n *Node) remember(connect bool) {
 
 // resolveMode is the node's mode, ModeAuto decided by its kind in its
 // section.
-func (n *Node) resolveMode() Mode {
+func (n *Node) resolveMode() Mode { return ResolveMode(n.cfg.Mode, n.state) }
+
+// ResolveMode is the mode a node configured with mode runs in on st:
+// ModeAuto decided by its kind in its section, a device's when st has
+// none (Removed).
+func ResolveMode(mode Mode, st State) Mode {
 	switch {
-	case n.cfg.Mode != ModeAuto:
-		return n.cfg.Mode
-	case n.state.Section.Node.Kind == netmap.NodeServer:
+	case mode != ModeAuto:
+		return mode
+	case st.Section.Node.Kind == netmap.NodeServer:
 		return ModeServer
 	}
 	return ModeDevice
+}
+
+// ServiceMode reads the node's state directory as `thinkpol up` would
+// (an error: the node can't run yet), and says which mode its service is
+// installed for: the node file's mode, else its kind in the map. A node
+// whose kind isn't known (removed from its space, or not in the map yet)
+// is taken for a server, whose definition keeps no crash trace (PRD S2);
+// its agent, should it turn out a device, runs without one.
+func ServiceMode(dir string) (mode Mode, known bool, err error) {
+	s, err := ReadNodeFile(dir)
+	if err != nil {
+		return "", false, err
+	}
+	st, err := LoadState(dir, filepath.Join(dir, MapFileName))
+	if err != nil {
+		return "", false, err
+	}
+	switch {
+	case s.Mode != nil && *s.Mode != ModeAuto:
+		return *s.Mode, true, nil
+	case st.Removed:
+	case st.Section.Node.Kind == netmap.NodeDevice:
+		return ModeDevice, true, nil
+	case st.Section.Node.Kind == netmap.NodeServer:
+		return ModeServer, true, nil
+	}
+	return ModeServer, false, nil
 }
 
 // Status reports the node's state; safe to call from any goroutine.
@@ -315,6 +350,47 @@ func (n *Node) Mode() Mode {
 	n.report.mu.Lock()
 	defer n.report.mu.Unlock()
 	return n.report.mode
+}
+
+// KeepLastRun keeps what TakeCrashTrace found for Status and Diagnose,
+// and logs it: what was fixed of the file, and that the previous run
+// crashed. Then the file is the node's to empty (CrashTrace.Release), or,
+// for a server, to stop writing to (keepNoTrace). Call it before the node
+// runs; a file it can't empty fails the start, stderr detached.
+func (n *Node) KeepLastRun(ct *CrashTrace) error {
+	if ct.Fixed != "" {
+		n.logs.Warn("the crash trace file was wider than root's 0600; fixed", "file", CrashTraceFile, "fixed", ct.Fixed)
+	}
+	switch {
+	case ct.LastRun.Crashed():
+		n.logs.Warn("the previous run crashed or exited with an error; thinkpol diag shows its trace (root only)")
+	case ct.LastRun.Unreadable != "":
+		n.logs.Warn("the previous run's crash trace wasn't read", "why", ct.LastRun.Unreadable)
+	}
+	n.report.set(func(p *report) { p.lastRun = ct.LastRun })
+	n.crashTrace = ct
+	if n.Mode() == ModeServer {
+		n.keepNoTrace()
+		return nil
+	}
+	return ct.Release()
+}
+
+// keepNoTrace stops a server's stderr going to a crash trace (PRD S2: a
+// server keeps no logs on disk): under a device's definition, which a
+// node of unknown kind may have been installed with, the file is emptied
+// and removed, and stderr goes nowhere. A trace file left in the state directory is
+// warned about.
+func (n *Node) keepNoTrace() {
+	if ct := n.crashTrace; ct != nil && ct.Tracing {
+		if err := ct.detach(false); err != nil {
+			n.logs.Error("a server's stderr still goes to the crash trace file", "err", err)
+		}
+		n.logs.Warn("a server under a device's service definition: run thinkpol service install; its stderr goes nowhere and the crash trace file is removed")
+	}
+	if _, err := os.Lstat(filepath.Join(n.cfg.StateDir, CrashTraceFile)); err == nil {
+		n.logs.Warn("the state directory holds a crash trace, which a server keeps none of; it is not used (thinkpol service install removes it)", "entry", CrashTraceFile)
+	}
 }
 
 // Subscribe has f hear the node's events, each once Status shows what it
@@ -504,6 +580,9 @@ func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
 			}
 			n.state.Map, n.state.Section, n.state.Removed = f.cur, f.section, false
 			mode = n.resolveMode()
+			if mode == ModeServer {
+				n.keepNoTrace()
+			}
 			if mode != ModeServer && n.conn.state == connRemoved {
 				logRefused(n.logs.Logger, n.conn.resume())
 			}

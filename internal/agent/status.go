@@ -52,6 +52,12 @@ type Status struct {
 	// ConnectOnBoot is a device's connect-on-boot (DeviceFile): whether
 	// the service connects it at a boot's first start.
 	ConnectOnBoot bool
+	// LastRunCrashed: the previous run under a device's service left a
+	// trace on its stderr (LastRun.Crashed); Diagnostics has it.
+	LastRunCrashed bool
+	// LastRunUnreadable: the service's crash trace file was there but
+	// wasn't read (LastRun.Unreadable); Diagnostics says why.
+	LastRunUnreadable bool
 	// DNSUnprotected is set while a connected device's OS may resolve
 	// names outside the node's resolver (pointing it failed, or another
 	// link's domains in systemd-resolved): names may leave outside the
@@ -183,6 +189,9 @@ type report struct {
 	// connectOnBoot its connect-on-boot.
 	preset        string
 	connectOnBoot bool
+	// lastRun is what the previous run left in the crash trace file
+	// (Node.KeepLastRun).
+	lastRun LastRun
 	// dns says why a device's OS may resolve outside its resolver.
 	dns func() error
 	// dnsNoUpstream says a device's resolver has no direct upstream (nil
@@ -231,12 +240,20 @@ func (p *report) forDiagnostics() (Status, string, *dataplane.ApplyTrace) {
 	return p.statusWith(&st), p.engine.TUNName(), last
 }
 
+// lastRunTrace is what the previous run left (report.lastRun).
+func (p *report) lastRunTrace() LastRun {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.lastRun
+}
+
 func (p *report) statusLocked() Status { return p.statusWith(nil) }
 
 // statusWith is the status, with dp as the engine's if it was read
 // already (nil: read it now).
 func (p *report) statusWith(dp *dataplane.Status) Status {
-	s := Status{Mode: p.mode, Space: p.space, MapVersion: p.version, MapsRefused: p.mapsRefused, Removed: p.removed, Retrying: p.retrying, Listeners: p.listeners, DNSUpstreamsRefused: p.dnsUpstreamsRefused}
+	s := Status{Mode: p.mode, Space: p.space, MapVersion: p.version, MapsRefused: p.mapsRefused, Removed: p.removed, Retrying: p.retrying, Listeners: p.listeners, DNSUpstreamsRefused: p.dnsUpstreamsRefused,
+		LastRunCrashed: p.lastRun.Crashed(), LastRunUnreadable: p.lastRun.Unreadable != ""}
 	if p.mode != ModeServer {
 		s.RulePreset, s.ConnectOnBoot = p.preset, p.connectOnBoot
 	}

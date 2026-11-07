@@ -470,7 +470,7 @@ TimeoutStopSec=60
 WantedBy=multi-user.target
 ```
 
-The launchd plist carries the same settings: `ProgramArguments` `up`, `EnvironmentVariables` with only `THINKPOL_CONNECT_ON_BOOT`, `RunAtLoad`, `KeepAlive`, `ThrottleInterval` 5 and `ExitTimeOut` 60. It has no `StandardOutPath` or `StandardErrorPath`.
+The launchd plist carries the same settings: `ProgramArguments` `up`, `EnvironmentVariables` with only `THINKPOL_CONNECT_ON_BOOT`, `RunAtLoad`, `KeepAlive`, `ThrottleInterval` 5 and `ExitTimeOut` 60. It has no `StandardOutPath`; since TP-141 a device's has `StandardErrorPath`, its crash trace (a device's unit `StandardError=append:`), and a server's has none ([API overview](api-overview.md#tp-141-a-devices-crash-trace)).
 
 Errors:
 

@@ -189,7 +189,17 @@
 //   - `service_drop_ins`: drop-ins for the service's systemd unit
 //     (thinkpol.service.d/*.conf and service.d/*.conf), by path, unsupported and reported
 //     ([agent.DropInReport]); none on macOS. Not a host part: paths only,
-//     the group gets them too.
+//     the group gets them too;
+//   - `last_run`: what the previous run under a device's service left on
+//     its stderr ([agent.LastRun]: a panic's or a fatal error's trace, or
+//     the error it exited with), its head line by line, up to 64 KiB
+//     (`truncated` says there was more); empty after a clean stop and on a
+//     server. Root's, like the host parts: a panic's message may name a
+//     public address, so the group's snapshot has it unreadable, "root
+//     only", when there is one. The status's `last_run_crashed` says
+//     there is one, to the group too (`status` prints a "last run" line),
+//     and `last_run_unreadable` that there was a file it didn't read
+//     (`unreadable` says why, to root).
 //
 // The routes, rules, guard and resolvers are read from the host whatever
 // the data plane's state, so a snapshot after a crash or a stop shows

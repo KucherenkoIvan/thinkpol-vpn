@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -28,6 +30,119 @@ import (
 )
 
 const testVersion = "v0.0.0-test"
+
+// The previous run's trace is the snapshot's last_run, and the status
+// says the last run crashed, in its JSON and in its text; nothing shows
+// after a clean stop.
+func TestThePreviousRunsTraceIsServed(t *testing.T) {
+	s := serve(t, me())
+	c := dial(t, s.socket)
+	ctx := context.Background()
+	render := func(st *localapiv1.Status) string {
+		t.Helper()
+		var out bytes.Buffer
+		if err := WriteStatus(&out, st, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		return out.String()
+	}
+
+	d, err := c.Diagnose(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(d.GetLastRun().GetLines()) != 0 || d.GetStatus().GetLastRunCrashed() || strings.Contains(render(d.GetStatus()), "last run") {
+		t.Fatalf("a clean stop: %v", d)
+	}
+
+	s.node.mu.Lock()
+	s.node.st.LastRunCrashed = true
+	s.node.diag.LastRun = agent.LastRun{Trace: "panic: boom\n\ngoroutine 1 [running]:\n", Truncated: true}
+	s.node.mu.Unlock()
+	if d, err = c.Diagnose(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := WriteDiagnostics(&out, d); err != nil {
+		t.Fatal(err)
+	}
+	var parsed struct {
+		Status struct {
+			LastRunCrashed bool `json:"last_run_crashed"`
+		} `json:"status"`
+		LastRun struct {
+			Unreadable *string  `json:"unreadable"`
+			Lines      []string `json:"lines"`
+			Truncated  bool     `json:"truncated"`
+		} `json:"last_run"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if r := parsed.LastRun; !parsed.Status.LastRunCrashed || !slices.Equal(r.Lines, []string{"panic: boom", "", "goroutine 1 [running]:"}) || !r.Truncated ||
+		r.Unreadable == nil || *r.Unreadable != "" {
+		t.Fatalf("JSON:\n%s", out.String())
+	}
+	if !strings.Contains(render(d.GetStatus()), "last run:") {
+		t.Fatalf("status text:\n%s", render(d.GetStatus()))
+	}
+}
+
+// A trace that isn't UTF-8 (a panic may print any bytes) still reaches
+// Diagnose and its JSON, read from the file as a start reads it; an
+// unreadable trace is a status line of its own.
+func TestATraceOfAnyBytesIsServed(t *testing.T) {
+	path := filepath.Join(t.TempDir(), agent.CrashTraceFile)
+	if err := os.WriteFile(path, []byte("panic: \xff\xfe raw\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stderr, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = stderr.Close() }()
+	ct, err := agent.TakeCrashTrace(path, stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s := serve(t, me())
+	c := dial(t, s.socket)
+	ctx := context.Background()
+	s.node.mu.Lock()
+	s.node.st.LastRunCrashed = true
+	s.node.diag.LastRun = ct.LastRun
+	s.node.mu.Unlock()
+	d, err := c.Diagnose(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lines := d.GetLastRun().GetLines(); len(lines) != 1 || !strings.HasPrefix(lines[0], "panic: ") || !strings.HasSuffix(lines[0], " raw") {
+		t.Fatalf("lines %q", lines)
+	}
+	var out bytes.Buffer
+	if err := WriteDiagnostics(&out, d); err != nil {
+		t.Fatal(err)
+	}
+	if !json.Valid(out.Bytes()) {
+		t.Fatalf("JSON:\n%s", out.String())
+	}
+
+	s.node.mu.Lock()
+	s.node.st.LastRunCrashed, s.node.st.LastRunUnreadable = false, true
+	s.node.mu.Unlock()
+	st, err := c.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var text bytes.Buffer
+	if err := WriteStatus(&text, st, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(text.String(), "its crash trace wasn't read") || strings.Contains(text.String(), "crashed, or exited") {
+		t.Fatalf("status text:\n%s", text.String())
+	}
+}
 
 func TestDiagnoseServesAVersionedSnapshot(t *testing.T) {
 	s := serve(t, me())
@@ -72,7 +187,7 @@ func TestDiagnoseServesAVersionedSnapshot(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &parsed); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"schema_version", "taken_at", "os", "agent_version", "host_parts", "status", "tun", "last_apply", "routes", "policy_rules", "guard", "dns"} {
+	for _, key := range []string{"schema_version", "taken_at", "os", "agent_version", "host_parts", "status", "tun", "last_apply", "routes", "policy_rules", "guard", "dns", "last_run"} {
 		if _, ok := parsed[key]; !ok {
 			t.Errorf("no %q in\n%s", key, out.String())
 		}

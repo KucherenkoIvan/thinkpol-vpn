@@ -47,8 +47,9 @@
 //     it. A member gets the group from their next login
 //     (RESIDUAL-RISKS.md RR43 for macOS);
 //   - writes the definition ([SystemdUnit] at [UnitPath], [LaunchdPlist]
-//     at [PlistPath]), 0644, replaced atomically: the manager reads it
-//     only when started below;
+//     at [PlistPath]), a device's or a server's (see "The definitions"),
+//     0644, replaced atomically: the manager reads it only when started
+//     below;
 //   - stops an installed service, checks the host lock, and (re)starts
 //     it: `systemctl daemon-reload`, `enable` and `restart`; `launchctl
 //     bootstrap`. launchd may refuse a bootstrap with EIO just after the
@@ -111,9 +112,39 @@
 //     so stops before them, with the network still there to undo its
 //     routes and resolver configuration against.
 //
-// The launchd daemon sets no StandardOutPath or StandardErrorPath, so
-// the agent's stderr goes nowhere on disk (PRD S2); its log is the local
-// API's. Under systemd stderr is the journal (RESIDUAL-RISKS.md RR40).
+// A device's and a server's definitions differ in one thing: a device's
+// sends the agent's stderr to its crash trace, agent.CrashTraceFile in
+// the state directory, appended to (launchd's StandardErrorPath; systemd's
+// StandardError=append:, never truncate:, which would empty it before the
+// agent reads the previous run's trace). systemd older than 240 doesn't
+// know append: and ignores the line, so the agent's stderr is the journal
+// there and no trace is kept. The agent reads the file at each start,
+// makes it root's 0600 and empties it once the node has the trace, and
+// logs only to its ring there (package agent), so the file holds the
+// last run's crash, nothing more (PRD S2's device exception). A server's
+// sets no stderr: launchd's goes nowhere on disk, systemd's to the
+// journal (RESIDUAL-RISKS.md RR40). Neither sets stdout (StandardOutPath,
+// StandardOutput): the agent writes nothing there. Install picks the
+// definition by the mode the node will run in ([Installer].Ready,
+// agent.ServiceMode: the node file's mode, else the node's kind in the
+// map), and a definition of the other mode isn't taken for one changed by
+// hand, so a node whose mode changed is installed anew without a warning.
+// A node whose kind isn't known (removed from its space, or not in the
+// map yet) gets a server's definition, with a warning to install again
+// once a map includes it: a server must never keep a trace, and a device
+// installed so only lacks one. Should a server run under a device's
+// definition all the same (its node file changed since, or a removed node
+// back as a server), its agent detaches from the file and removes it
+// (package agent).
+//
+// A device's install makes the file anew before it starts the service,
+// root's and 0600 (agent.CreateCrashTrace: whatever was at the path
+// removed first, created exclusively, not through a symlink), so the
+// manager opens it as it is instead of creating it with its own mode,
+// which another user could open in the moment before the agent fixes it;
+// a trace left from before the install is gone with it. A server's
+// install removes the file, after the installed service is stopped, so an
+// agent crashing on the way out doesn't leave one behind.
 //
 // # Connect-on-boot and drop-ins
 //
@@ -168,7 +199,8 @@
 // Then it removes the definition (systemd forgets the unit), the binary,
 // and in the agent's runtime directories (its lock's directory, the local
 // API's) the locks, the boot's connect record and stale sockets, then the
-// directories left empty. It removes agent.lock while it holds it: the
+// directories left empty, and the device's crash trace: the service whose
+// stderr it was is gone. It removes agent.lock while it holds it: the
 // service can't start an agent in between (systemd's is disabled and
 // stopped, launchd's booted out), and one started by hand afterwards makes
 // a fresh lock with nothing to share. Anything else there is reported and
@@ -185,13 +217,17 @@
 //
 // The lab runs a device under systemd (lab TestServiceUnderSystemd):
 // install, a reinstall over the running connected agent, a crash
-// restarted and back as the member left it, connect-on-boot set by a
+// restarted and back as the member left it, a Go crash (SIGQUIT) whose
+// trace the restarted agent shows (root's diag, the group's status) with
+// the file root's 0600 and emptied, connect-on-boot set by a
 // member of the group (not root) off, on and off again across reboots, a
 // drop-in shown by diag, uninstall right after a crash (the restart held off)
 // leaving nothing, before and after a reboot; and a server under systemd
 // (lab TestServiceUninstallAfterAServerCrash): killed while it serves a
 // space's egress, uninstalled at once, leaving none of its supervisor's
 // forwarding, tables, veths or routes. launchd is tested as files
-// and with a fake launchctl here; the install, reboot and uninstall on a
-// Mac are the owner's device steps (TP-046's checklist).
+// and with a fake launchctl here (plutil reads a device's plist, its
+// StandardErrorPath included); the install, reboot and uninstall on a
+// Mac are the owner's device steps (TP-046's checklist), and a crash's
+// trace under launchd is TP-141's (its Notes).
 package service
