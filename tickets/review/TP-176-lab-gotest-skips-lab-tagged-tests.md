@@ -38,11 +38,11 @@ branch: "tp-176-lab-gotest-skips-lab-tagged-tests"
 - `RUN` applies to both runs, so an in-node test that a lab test drives is reached through the lab test: `RUN=TestRealityPrototype`, not `RUN=TestRealityClientInterop` (that one now fails loudly; lab/README.md says so).
 
 ## Review findings
-- [ ] R1.1 (should-fix) `lab/gotest.go` `GoTestLabTagged` runs `go test` with no process group, Cancel or WaitDelay: on cancel only `go` dies, the test binary keeps the output pipe, so `cmd.Run` waits up to its `-test.timeout`, and if that timeout panics its `t.Cleanup` never runs and labs stay up. Run the child in its own process group, signal the group on cancel, set WaitDelay; unit test if practical.
-- [ ] R1.2 (should-fix) `Makefile` `lab-gotest` with PKG unset defaults to `./...`, which with `-fail-skipped` is red by construction and runs the whole `./lab` suite on the host under one 60m limit. Require PKG (a make error naming it) and say so in lab/README.md (`make lab-test` runs everything).
-- [ ] R1.3 (should-fix, docs) `lab/doc.go` says lab-tagged tests run through `make lab-test`; `make lab-gotest` now runs them too for the packages it's given. Update it.
-- [ ] R1.4 (should-fix, small) `ListLabTaggedPackages` compares test-file counts, so a `//go:build !lab` file paired with a `//go:build lab` file is missed. Compare file names; add a `!lab`/`lab` pair to the test module.
-- [ ] R1.5 (nits) `lab/gotest_test.go`: the same GOWORK/GOFLAGS environment for the listing test and `TestGoTestLabTagged…`; `labctl` `-timeout` help's default; lab/README.md: COUNT also repeats the host lab tests; `lab: ` prefix on the `lab tests in …` error; unit tests for the "no packages with tests" `-fail-skipped` branch and for `GoTestEach` keeping its tally (or say in the Log they're covered only by the manual run).
+- [x] R1.1 (should-fix) `lab/gotest.go` `GoTestLabTagged` runs `go test` with no process group, Cancel or WaitDelay: on cancel only `go` dies, the test binary keeps the output pipe, so `cmd.Run` waits up to its `-test.timeout`, and if that timeout panics its `t.Cleanup` never runs and labs stay up. Run the child in its own process group, signal the group on cancel, set WaitDelay; unit test if practical.
+- [x] R1.2 (should-fix) `Makefile` `lab-gotest` with PKG unset defaults to `./...`, which with `-fail-skipped` is red by construction and runs the whole `./lab` suite on the host under one 60m limit. Require PKG (a make error naming it) and say so in lab/README.md (`make lab-test` runs everything).
+- [x] R1.3 (should-fix, docs) `lab/doc.go` says lab-tagged tests run through `make lab-test`; `make lab-gotest` now runs them too for the packages it's given. Update it.
+- [x] R1.4 (should-fix, small) `ListLabTaggedPackages` compares test-file counts, so a `//go:build !lab` file paired with a `//go:build lab` file is missed. Compare file names; add a `!lab`/`lab` pair to the test module.
+- [x] R1.5 (nits) `lab/gotest_test.go`: the same GOWORK/GOFLAGS environment for the listing test and `TestGoTestLabTagged…`; `labctl` `-timeout` help's default; lab/README.md: COUNT also repeats the host lab tests; `lab: ` prefix on the `lab tests in …` error; unit tests for the "no packages with tests" `-fail-skipped` branch and for `GoTestEach` keeping its tally (or say in the Log they're covered only by the manual run).
 
 ## Log
 - 2026-11-07 created in backlog
@@ -56,3 +56,12 @@ branch: "tp-176-lab-gotest-skips-lab-tagged-tests"
 - 2026-11-07 full `make lab-test` (LAB_P=4, exclusive CPU lock) on 8224638: exit 0, no FAIL
 - 2026-11-07 in-progress → review
 - 2026-11-07 review → has-errors (round 1 findings R1.x)
+- 2026-11-07 R1.1: `GoTestLabTagged` starts `go test` in its own process group (lab/procgroup_unix.go), cancel SIGKILLs the group (a test binary has no signal handler, so no gentler signal lets its cleanups run), WaitDelay 10s for a process that left the group; doc says a cancelled run leaves its labs, `make lab-down` removes them. Test `TestGoTestLabTaggedCancelKillsTheTestBinary` (lab/gotest_unix_test.go); mutation: no `killGroupOnCancel` call → "test binary … still alive after cancel". WaitDelay alone has no test (with the group kill a test can't tell it apart)
+- 2026-11-07 R1.2: `make lab-gotest` without PKG stops with a make error naming PKG and pointing to `make lab-test`; lab/README.md says why. Checked by hand: `make lab-gotest` → "lab-gotest needs PKG …"
+- 2026-11-07 R1.3: lab/doc.go says make lab-gotest runs the lab-tagged tests of the packages it's given (labctl gotest -tagged)
+- 2026-11-07 R1.4: `ListLabTaggedPackages` compares test file names; test module gained a `//go:build !lab` / `//go:build lab` pair; mutation: back to comparing counts → TestListLabTagged… fails (pair missed)
+- 2026-11-07 R1.5: both go-command tests use `isolateGoEnv` (GOWORK=off, GOFLAGS=-mod=mod via t.Setenv); `-timeout` help names both defaults; README: COUNT also repeats the host lab tests; error is `lab: lab tests in …`; new `TestGotestWithNoPackagesWithTests` (labctl), mutation: drop the `-fail-skipped` branch → "want a no-packages error". `GoTestEach` keeping its tally needs Docker: covered only by the manual `make lab-gotest` runs, no unit test
+- 2026-11-07 merged origin/rewrite (76a1359; conflicts in lab/gotest.go, lab/labctl/main.go, lab/labctl/main_test.go with TP-146's run ids, kept both sides); `make lint`, `make test` green on 76a1359
+- 2026-11-07 `make lab-gotest PKG=./lab/prototypes/reality` on 76a1359: exit 0, in-node `--- PASS: TestRealityClientInterop` (3 subtests) inside `--- PASS: TestRealityPrototype`, `gotest: ok`
+- 2026-11-07 full `make lab-test` (LAB_P=1, another lab was up when it queued; exclusive CPU lock) on 76a1359: exit 0, no FAIL. Not required this round, run anyway on the final code commit
+- 2026-11-07 has-errors → review
