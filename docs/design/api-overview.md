@@ -94,6 +94,7 @@ These are not user-facing. They are read by the lab tooling and by tests, never 
 |---|---|---|
 | `THINKPOL_LAB` | tests | set in lab nodes; tests that need root or namespaces skip without it |
 | `THINKPOL_LAB_PROJECT` | lab | replaces the checkout part of Compose project names |
+| `THINKPOL_LAB_RUN` | lab, Makefile | the run id in test and gotest labs' names; `make lab-test` sets one |
 | `THINKPOL_LAB_KEEP` | lab, Makefile | a failed test's lab stays up |
 | `THINKPOL_LAB_MAX_LABS` | lab | lab slots at once (default 12) |
 | `THINKPOL_LAB_SUBNET_POOL` | lab | IPv4 range for lab networks |

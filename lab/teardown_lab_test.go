@@ -31,7 +31,7 @@ func TestDownRefusesUnlabelledResources(t *testing.T) {
 	}
 
 	// A throwaway project of our own that only looks like a lab.
-	foreign := testProject(checkout, "foreign", t.Name())
+	foreign := testProject(checkout, "foreign", "foreign", t.Name())
 	file := filepath.Join(t.TempDir(), "compose.json")
 	compose, _ := json.Marshal(map[string]any{
 		"name": foreign,
@@ -101,5 +101,48 @@ func TestLabsBelongToTheirCheckout(t *testing.T) {
 	}
 	if got := l.Node("gotest").MustExec(t, "echo", "alive"); got != "alive\n" {
 		t.Errorf("the lab after the other checkout's attempts: %q", got)
+	}
+}
+
+// make lab-test's clean-up (DownRun) removes its run's labs and no other
+// run's: another run's lab from the same checkout keeps running. The run's
+// lab has the longest name the harness gives, which Docker must accept.
+func TestDownRunRemovesOnlyItsRun(t *testing.T) {
+	ctx := t.Context()
+	root, err := Root()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(ProjectEnv, longestOverride[:34]+shortHash(root))
+	checkout, err := CheckoutProject(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Fresh ids: no other run's lab can match them.
+	mine, other := NewRunID()+"99", NewRunID()
+	labs := map[string]*Lab{}
+	for run, project := range map[string]string{
+		mine:  longestTestProject(checkout, mine),
+		other: goTestPackageProject(checkout, other, "example.net/x"),
+	} {
+		l, err := up(ctx, root, project, GoTestTopology(), "test:"+t.Name(), runInputs)
+		if l != nil {
+			t.Cleanup(func() { _ = l.Down(context.WithoutCancel(ctx)) })
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		labs[run] = l
+	}
+
+	removed, err := DownRun(ctx, root, mine)
+	if err != nil || len(removed) != 1 || removed[0] != labs[mine].Project {
+		t.Errorf("the run's clean-up removed %v, %v; want just %s", removed, err, labs[mine].Project)
+	}
+	if res, err := docker(ctx, "ps", "-aq", "--filter", "label=com.docker.compose.project="+labs[mine].Project); err != nil || strings.TrimSpace(res.Stdout) != "" {
+		t.Errorf("the run's lab is still there: %q, %v", res.Stdout, err)
+	}
+	if got := labs[other].Node("gotest").MustExec(t, "echo", "alive"); got != "alive\n" {
+		t.Errorf("the other run's lab after the clean-up: %q", got)
 	}
 }

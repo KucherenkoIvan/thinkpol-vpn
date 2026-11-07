@@ -27,7 +27,7 @@ func ClearFailingClose(path string, owner Owner, link string) error {
 			_ = c.Close()
 			return nil, err
 		}
-		lc.links.changed[link] = linkChange{index: l.Attrs().Index, origMTU: -1, mtu: l.Attrs().MTU}
+		lc.links.changed[link] = linkChange{index: l.Attrs().Index, kname: l.Attrs().Name, origMTU: -1, mtu: l.Attrs().MTU}
 		return c, nil
 	}, nil)
 }
