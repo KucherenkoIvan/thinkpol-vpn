@@ -47,8 +47,9 @@ func (f *fakeLinkOps) delAddr(int, netip.Prefix) error   { return nil }
 
 // A failed Apply that re-filed the interface's record (under another of
 // its names, or with a fresh kernel name after a rename) and whose MTU
-// revert fails gives the record back as it was but for the MTU the
-// interface is left at, so a later restore still recognises it.
+// revert fails leaves the record under its old name, with the MTU the
+// interface is left at and the kernel name the interface has now, so a
+// later restore still recognises it.
 func TestAFailedRevertKeepsItsNoteWhenTheRecordMovesBack(t *testing.T) {
 	for _, tc := range []struct{ name, config, kname string }{
 		{"another_name", "overlay-alt", "ovl0"},
@@ -65,7 +66,7 @@ func TestAFailedRevertKeepsItsNoteWhenTheRecordMovesBack(t *testing.T) {
 			if err := u.run(); err == nil {
 				t.Fatal("the undo succeeded; the test wants the MTU revert to fail")
 			}
-			want := map[string]linkChange{"ovl0": {index: 7, kname: tc.kname, origMTU: 1500, mtu: 1400}}
+			want := map[string]linkChange{"ovl0": {index: 7, kname: "ovl0", origMTU: 1500, mtu: 1400}}
 			if !reflect.DeepEqual(l.changed, want) || ops.link.mtu != 1400 {
 				t.Errorf("after the failed Apply: ledger %+v, interface MTU %d; want %+v, MTU 1400", l.changed, ops.link.mtu, want)
 			}

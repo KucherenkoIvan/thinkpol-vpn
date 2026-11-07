@@ -59,7 +59,8 @@
 // as it wants it.
 // What was set on an interface is recorded by its index and kernel name,
 // under the name the config gives: an Apply that finds the same index
-// under that name takes the kernel name afresh, and one that finds it
+// under that name takes the kernel name afresh (kept when the Apply
+// fails), and one that finds it
 // under another of the interface's names (the kernel name or an altname)
 // moves the record there while the kernel name is the recorded one, so
 // the interface counts as leaving the config only when no name it wants
