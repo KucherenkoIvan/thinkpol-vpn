@@ -304,8 +304,10 @@ func (m *wgRhythm) record(c *wgConn, dir int, d *wgDirection, end time.Time) {
 		need += 2
 	}
 	if n := c.run.with(r); n >= need {
-		c.flagged = fmt.Sprintf("WireGuard keepalives: %d idle records of %d bytes, %s apart",
-			n, r.size, end.Sub(c.run.last).Round(time.Second))
+		c.flagged = fmt.Sprintf("WireGuard keepalives: %d idle records of %d bytes", n, r.size)
+		if n > 1 {
+			c.flagged += fmt.Sprintf(", %s apart", end.Sub(c.run.last).Round(time.Second))
+		}
 		return
 	}
 	c.pending = &r

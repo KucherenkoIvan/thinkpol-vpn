@@ -119,15 +119,40 @@
 // wireguard-rhythm is a censor of its own, one of the M2 gate's checks
 // (docs/design/milestones.md): it frames each TCP stream's TLS records and
 // blocks a connection, both ways, whose application-data records show
-// WireGuard's rhythm. A transport carrying each WireGuard message in a
-// record adds the same overhead to each, so a record and one 56 bytes
-// shorter the other way within 2 s are a handshake pair (initiation,
-// response) and give the overhead away; two pairs of one overhead a rekey
-// period apart (2 minutes to half as much again), or a pair and three
-// keepalive-sized records (32 bytes and the overhead), are the rhythm.
-// Flow shape beyond that is not judged. A stream it can't frame from its
-// first byte (not TLS, joined midstream, or with bytes it wasn't shown
-// because a module before it dropped their packet) is never judged.
+// WireGuard's rhythm. It reads recurrence, not WireGuard's exact sizes, so
+// padding to small buckets or a different overhead each way doesn't hide
+// it. Two signals each show the rhythm:
+//
+//   - rekey: an exchange, a record one way answered within 2 s by one the
+//     other way, both 92 to 404 bytes (a handshake message with any
+//     plausible overhead, padding to a 256-byte bucket included), whose
+//     two sizes are exchanged again a rekey period later (2 minutes to half
+//     as much again) and again a period after that: three in all, so it
+//     needs about 4 minutes of a connection.
+//   - keepalive: an idle run, records of one size each sent after 5 s with
+//     no record either way and not answered within 2 s, at one steady
+//     interval (within 1 s): three of them once the connection has carried
+//     an exchange of that band, five without.
+//
+// Records are kept by age, not count, so a burst of data around a rekey
+// doesn't hide it. Records coalesced or split by the transport: a batching
+// window leaves idle keepalives and handshakes alone in their records, and
+// a length written as a record of its own is a record like any other, so
+// both still show; but a handshake message batched with data while the
+// tunnel is busy leaves the band, and that rekey is missed (the idle
+// keepalives, if any, still show). Measured false-positive risks on
+// ordinary TLS, flagged by design: an identical request and response, both
+// in the band, repeated for 4 minutes at any interval up to 3 minutes
+// (HTTP/1.1 polling every 2 minutes or every 30 s), and a server
+// heartbeat, one unanswered record of one size at a steady idle interval
+// (a server-sent events comment line). HTTP/2 browsing with idle PINGs, a
+// gRPC stream with keepalive PINGs (answered), a bulk download and HTTP/2
+// polling (its indexed request is below the band) pass. Flow shape beyond
+// that is not judged. A stream it can't frame from its first byte (not
+// TLS, joined midstream, or with bytes it wasn't shown because a module
+// before it dropped their packet) is never judged, and is tagged once,
+// "wireguard-rhythm: stream not framed", so a pass for that reason shows
+// in the verdict log.
 //
 // # The verdict log
 //

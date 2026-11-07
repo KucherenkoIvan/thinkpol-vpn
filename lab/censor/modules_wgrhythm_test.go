@@ -651,7 +651,7 @@ func TestWGRhythmSettings(t *testing.T) {
 
 	r = newWGRun(t, `{"keepalives": 1}`, 1400)
 	r.carry(eachInRecord(append(quick[:2:2], wgMessage{25 * s, true, wgKeepalive}), withOverhead(wgTLSOverhead)))
-	if a, blocked := r.firstBlocked(); !blocked || a.at != 25*s {
+	if a, blocked := r.firstBlocked(); !blocked || a.at != 25*s || a.Reason != "WireGuard keepalives: 1 idle records of 51 bytes" {
 		t.Errorf("keepalives 1: first blocked %+v (blocked %v), want a drop at the first keepalive", a, blocked)
 	}
 
