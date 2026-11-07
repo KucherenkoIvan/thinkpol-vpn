@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"log/slog"
 	"os"
@@ -25,36 +26,22 @@ func init() {
 	})
 }
 
+// crashTracePath is the device's crash trace file (a test's own).
+var crashTracePath = agent.CrashTracePath
+
 func runUp(ctx context.Context, e env, args []string) error {
 	// First: under a device's service stderr is the crash trace file,
 	// holding the previous run's trace until the node has it.
 	errFile, _ := e.stderr.(*os.File)
-	trace, err := agent.TakeCrashTrace(agent.CrashTracePath(), errFile)
+	trace, err := agent.TakeCrashTrace(crashTracePath(), errFile)
 	if err != nil {
 		return err
 	}
-	if err := agent.CheckEnvironment(); err != nil {
-		return err
+	cfg, err := upConfig(e, args)
+	if derr := trace.KeepOnlyOnADevice(cfg); derr != nil {
+		return errors.Join(err, derr)
 	}
-	cfg, err := agent.LoadConfig()
 	if err != nil {
-		return err
-	}
-	agent.ApplyOSDefaults(&cfg)
-	fs := flag.NewFlagSet("up", flag.ContinueOnError)
-	if err := config.BindFlags(fs, &cfg); err != nil {
-		return err
-	}
-	if err := parseFlags(fs, e, args); err != nil {
-		return err
-	}
-	if fs.NArg() > 0 {
-		return errUsage
-	}
-	if err := agent.ApplyNodeFile(&cfg, fs); err != nil {
-		return err
-	}
-	if err := config.Validate(&cfg); err != nil {
 		return err
 	}
 	logs, err := agent.NewLogs(cfg.LogLevel, trace.LogOutput(e.stderr, cfg.Service))
@@ -86,4 +73,32 @@ func runUp(ctx context.Context, e env, args []string) error {
 		}))
 	}
 	return agent.CleanStop(app.RunWith(ctx, app.Options{Logger: logs.Logger}, adapters...))
+}
+
+// upConfig is up's configuration: the environment's, the flags' and the
+// node file's, validated; the zero Config when the environment's can't be
+// read.
+func upConfig(e env, args []string) (agent.Config, error) {
+	if err := agent.CheckEnvironment(); err != nil {
+		return agent.Config{}, err
+	}
+	cfg, err := agent.LoadConfig()
+	if err != nil {
+		return cfg, err
+	}
+	agent.ApplyOSDefaults(&cfg)
+	fs := flag.NewFlagSet("up", flag.ContinueOnError)
+	if err := config.BindFlags(fs, &cfg); err != nil {
+		return cfg, err
+	}
+	if err := parseFlags(fs, e, args); err != nil {
+		return cfg, err
+	}
+	if fs.NArg() > 0 {
+		return cfg, errUsage
+	}
+	if err := agent.ApplyNodeFile(&cfg, fs); err != nil {
+		return cfg, err
+	}
+	return cfg, config.Validate(&cfg)
 }

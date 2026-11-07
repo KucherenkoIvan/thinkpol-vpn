@@ -61,6 +61,8 @@ type CrashTrace struct {
 	file   os.FileInfo
 	// emptied: Release ran.
 	emptied bool
+	// device: the node is known to be a device (KeepOnlyOnADevice).
+	device bool
 }
 
 // TakeCrashTrace reads what the runs before left in the trace file at
@@ -75,9 +77,9 @@ type CrashTrace struct {
 // the journal, a server's service) leaves the file alone and reports
 // Tracing false.
 //
-// A file with more than one link isn't read or written to: it is
-// emptied, removed, and stderr goes to the null device for this run
-// (Detach), LastRun saying why. When the file can't be fixed or cut, stderr
+// A file with more than one link isn't read: it is emptied, removed, and
+// stderr goes to the null device for this run (Detach), LastRun saying
+// why. When the file can't be fixed or cut, stderr
 // is detached the same way before the error is returned, so the error a
 // failed start prints, and every restart's after it, lands nowhere
 // instead of growing the file.
@@ -97,7 +99,6 @@ func TakeCrashTrace(path string, stderr *os.File) (*CrashTrace, error) {
 	ct.Tracing, ct.file = true, errStat
 	if n := linkCount(errStat); n != 1 {
 		ct.LastRun.Unreadable = fmt.Sprintf("the trace file had %d links, not read: this run's stderr goes nowhere", n)
-		_ = stderr.Truncate(0)
 		return ct, ct.Detach()
 	}
 	// Through stderr itself, so what is read, fixed and cut is the file
@@ -145,23 +146,69 @@ func (ct *CrashTrace) Release() error {
 	return nil
 }
 
+// KeepOnlyOnADevice detaches stderr from the trace file (Detach) unless
+// cfg's node is known to be a device: by its mode (the environment's, a
+// flag's or the node file's), else, under auto, by its kind in the map
+// of its state directory (ServiceMode). A server, a node of unknown kind
+// and a state directory that can't be read keep no trace (PRD S2), so
+// call it as soon as cfg is read, before anything that can fail or
+// panic: a server under a device's definition otherwise adds each failed
+// start's error to the file. A cfg that couldn't be read is the zero
+// Config: the trace file's directory is taken for the state directory.
+func (ct *CrashTrace) KeepOnlyOnADevice(cfg Config) error {
+	if ct == nil || !ct.Tracing {
+		return nil
+	}
+	switch cfg.Mode {
+	case ModeDevice:
+		ct.device = true
+	case ModeServer:
+	default:
+		dir := cfg.StateDir
+		if dir == "" {
+			dir = filepath.Dir(ct.path)
+		}
+		mode, known, err := ServiceMode(dir)
+		ct.device = err == nil && known && mode == ModeDevice
+	}
+	if ct.device {
+		return nil
+	}
+	return ct.Detach()
+}
+
 // Detach stops tracing: stderr's descriptor is pointed at the null
-// device, and the trace file is removed while its name is still that
-// file. A server keeps no trace (Node.KeepLastRun): its service's next
-// start opens a new file, which it detaches from again until the
-// service is installed anew with a server's definition.
-func (ct *CrashTrace) Detach() error {
+// device, and the trace file, while its name is still that file, is
+// emptied and removed; on a node known to be a device
+// (KeepOnlyOnADevice) it is made anew instead (CreateCrashTrace), so the
+// service manager's next start doesn't create it with its own mode. A
+// server keeps no trace (Node.KeepLastRun): its service's next start
+// opens a new file, which it detaches from again until the service is
+// installed anew with a server's definition.
+func (ct *CrashTrace) Detach() error { return ct.detach(ct.device) }
+
+func (ct *CrashTrace) detach(device bool) error {
 	if ct == nil || !ct.Tracing {
 		return nil
 	}
 	ct.Tracing = false
-	err := detachStderr(ct.stderr)
-	if fi, lerr := os.Lstat(ct.path); lerr == nil && os.SameFile(fi, ct.file) {
-		if rerr := os.Remove(ct.path); rerr != nil {
-			err = errors.Join(err, rerr)
+	var errs []error
+	if !device {
+		// A file Remove can't remove (an append-only flag, a read-only
+		// file system) must not keep the trace either.
+		if err := ct.stderr.Truncate(0); err != nil {
+			errs = append(errs, fmt.Errorf("emptying it: %w", err))
 		}
 	}
-	if err != nil {
+	errs = append(errs, detachStderr(ct.stderr))
+	if fi, err := os.Lstat(ct.path); err == nil && os.SameFile(fi, ct.file) {
+		if device {
+			errs = append(errs, CreateCrashTrace(ct.path))
+		} else if err := os.Remove(ct.path); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if err := errors.Join(errs...); err != nil {
 		return fmt.Errorf("crash trace %s: detaching stderr: %w", ct.path, err)
 	}
 	return nil

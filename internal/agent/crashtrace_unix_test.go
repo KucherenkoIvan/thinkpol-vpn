@@ -440,3 +440,98 @@ func TestTheTraceIsMadeRoots(t *testing.T) {
 		t.Fatalf("uid %d gid %d mode %v", st.Uid, st.Gid, fi.Mode())
 	}
 }
+
+// A start keeps tracing only on a node known to be a device: by its
+// mode, else by its kind in the map; a server, a node of unknown kind and
+// a state directory that can't be read stop tracing at once.
+func TestOnlyAKnownDeviceKeepsTracing(t *testing.T) {
+	s := newTestSpace(t)
+	removed := s.stateDir(t, s.b, 1)
+	writeFile(t, filepath.Join(removed, MapFileName), s.buildWithout(t, 1, s.b), 0o644)
+	for name, tc := range map[string]struct {
+		cfg  Config
+		kept bool
+	}{
+		"a device by its mode":      {Config{Mode: ModeDevice, StateDir: s.stateDir(t, s.a, 1)}, true},
+		"a server by its mode":      {Config{Mode: ModeServer, StateDir: s.stateDir(t, s.b, 1)}, false},
+		"a device by its kind":      {Config{Mode: ModeAuto, StateDir: s.stateDir(t, s.b, 1)}, true},
+		"a server by its kind":      {Config{Mode: ModeAuto, StateDir: s.stateDir(t, s.a, 1)}, false},
+		"of unknown kind":           {Config{Mode: ModeAuto, StateDir: removed}, false},
+		"a config that wasn't read": {Config{}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), CrashTraceFile)
+			if err := os.WriteFile(path, []byte("panic: boom\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			stderr := openAsStderr(t, path, true)
+			ct, err := TakeCrashTrace(path, stderr)
+			if err != nil || !ct.Tracing {
+				t.Fatalf("took %+v, %v", ct, err)
+			}
+			if err := ct.KeepOnlyOnADevice(tc.cfg); err != nil {
+				t.Fatal(err)
+			}
+			_, lerr := os.Lstat(path)
+			if ct.Tracing != tc.kept || (lerr == nil) != tc.kept {
+				t.Fatalf("tracing %v, file %v", ct.Tracing, lerr)
+			}
+			if !tc.kept {
+				detached(t, stderr)
+			}
+		})
+	}
+}
+
+// A device that stops tracing makes the file anew, root's 0600 and empty,
+// instead of leaving the service manager to create it with its own mode.
+func TestADeviceDetachedMakesTheFileAnew(t *testing.T) {
+	path := filepath.Join(t.TempDir(), CrashTraceFile)
+	if err := os.WriteFile(path, []byte("panic: boom\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stderr := openAsStderr(t, path, true)
+	ct, err := TakeCrashTrace(path, stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ct.KeepOnlyOnADevice(Config{Mode: ModeDevice}); err != nil || !ct.Tracing {
+		t.Fatalf("tracing %v, %v", ct.Tracing, err)
+	}
+	if err := ct.Detach(); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Lstat(path)
+	if err != nil || fi.Size() != 0 || fi.Mode().Perm() != 0o600 || ct.Tracing {
+		t.Fatalf("tracing %v, file %v, %v", ct.Tracing, fi, err)
+	}
+	detached(t, stderr)
+}
+
+// A server's trace file that can't be removed is emptied all the same.
+func TestAServersTraceIsEmptiedBeforeItIsRemoved(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root removes from a read-only directory")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, CrashTraceFile)
+	if err := os.WriteFile(path, []byte("panic: boom\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stderr := openAsStderr(t, path, true)
+	ct, err := TakeCrashTrace(path, stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	if err := ct.KeepOnlyOnADevice(Config{Mode: ModeServer}); err == nil {
+		t.Fatal("removed from a read-only directory")
+	}
+	if got, err := os.ReadFile(path); err != nil || len(got) != 0 {
+		t.Fatalf("file %q, %v", got, err)
+	}
+	detached(t, stderr)
+}

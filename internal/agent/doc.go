@@ -123,10 +123,19 @@
 // (a signal's cancellation is no error, [CleanStop]), and nothing from a
 // kill. Status says the last run crashed (Status.LastRunCrashed), or that
 // its trace wasn't read (Status.LastRunUnreadable), and Diagnostics has
-// the trace, or why, root's only. A server keeps no trace: a node that
-// runs as one, at its start or back in its space, detaches stderr from
-// the file and removes it, warning that a device's definition runs it,
-// and warns of a crash-trace it finds in its state directory otherwise.
+// the trace, or why, root's only. A server keeps no trace: right after
+// reading the file, before anything else that can fail, `up` detaches
+// stderr from it (emptied, removed, stderr to the null device) unless the
+// node is known to be a device: by the mode its environment, flags or
+// node file give, else by its kind in the map ([CrashTrace.KeepOnlyOnADevice]);
+// a node of unknown kind, or whose state directory can't be read, keeps
+// none, even of the start's own error. A node that turns out a server
+// back in its space detaches the same way, warning that a device's
+// definition runs it, and warns of a crash-trace it finds in its state
+// directory otherwise. A device that detaches (a file it couldn't empty)
+// makes the file anew, root's 0600, so its manager's next start doesn't
+// create it with its own mode. grpc's fatal errors are written to stderr
+// as well as the log, so the trace says why the agent exited.
 // A stderr that isn't the file (a terminal, the journal, a server's
 // service) leaves it alone, and the log goes to stderr as ever. It survives a
 // reboot, unlike the runtime directory (/run on Linux), so a crash just

@@ -37,8 +37,11 @@ func (g grpcLogger) Fatalf(format string, args ...any)   { g.fatal(fmt.Sprintf(f
 // V is grpc's verbosity: 0, its default.
 func (g grpcLogger) V(l int) bool { return l <= 0 }
 
+// fatal also writes msg to stderr: under a device's service the agent's
+// log isn't there, and the crash trace must say why the agent exited.
 func (g grpcLogger) fatal(msg string) {
 	g.log.Error(msg)
+	_, _ = fmt.Fprintln(os.Stderr, "grpc: fatal: "+msg)
 	os.Exit(1)
 }
 

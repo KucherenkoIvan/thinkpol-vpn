@@ -378,12 +378,12 @@ func (n *Node) KeepLastRun(ct *CrashTrace) error {
 
 // keepNoTrace stops a server's stderr going to a crash trace (PRD S2: a
 // server keeps no logs on disk): under a device's definition, which a
-// node of unknown kind may have been installed with, the file is removed
-// and stderr goes nowhere. A trace file left in the state directory is
+// node of unknown kind may have been installed with, the file is emptied
+// and removed, and stderr goes nowhere. A trace file left in the state directory is
 // warned about.
 func (n *Node) keepNoTrace() {
 	if ct := n.crashTrace; ct != nil && ct.Tracing {
-		if err := ct.Detach(); err != nil {
+		if err := ct.detach(false); err != nil {
 			n.logs.Error("a server's stderr still goes to the crash trace file", "err", err)
 		}
 		n.logs.Warn("a server under a device's service definition: run thinkpol service install; its stderr goes nowhere and the crash trace file is removed")
