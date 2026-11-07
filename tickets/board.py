@@ -189,7 +189,7 @@ def check(tickets):
         if "stream" in t:
             if t["stream"] not in STREAMS:
                 problems.append(f"{t['id']}: stream must be one of {STREAMS}")
-        elif t["column"] != "done" and t["id"] not in STREAM_PENDING:
+        elif t["id"] not in STREAM_PENDING:
             problems.append(f"{t['id']}: missing stream")
         if "needs_human" in t and t["needs_human"] not in NEEDS_HUMAN:
             problems.append(f"{t['id']}: needs_human must be one of {sorted(NEEDS_HUMAN)}")
