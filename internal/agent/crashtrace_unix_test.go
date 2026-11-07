@@ -462,15 +462,15 @@ func TestOnlyAKnownDeviceKeepsTracing(t *testing.T) {
 		cfg  Config
 		kept bool
 	}{
-		"a device by its node file": {Config{Mode: ModeDevice, StateDir: withMode(s.stateDir(t, s.a, 1), ModeDevice)}, true},
-		"a server by its node file": {Config{Mode: ModeServer, StateDir: withMode(s.stateDir(t, s.b, 1), ModeServer)}, false},
-		"a server by its flag":      {Config{Mode: ModeServer, StateDir: s.stateDir(t, s.b, 1)}, false},
-		"a device by its kind":      {Config{Mode: ModeDevice, StateDir: s.stateDir(t, s.b, 1)}, true},
-		"a server's kind, no mode":  {Config{Mode: ModeDevice, StateDir: s.stateDir(t, s.a, 1)}, false},
-		"of unknown kind":           {Config{Mode: ModeDevice, StateDir: removed}, false},
-		"a device flag over a server's file":      {Config{Mode: ModeDevice, StateDir: withMode(s.stateDir(t, s.b, 1), ModeServer)}, false},
-		"a config that wasn't read": {Config{}, false},
-		"a device's, unread config": {Config{StateDir: s.stateDir(t, s.b, 1)}, true},
+		"a device by its node file":          {Config{Mode: ModeDevice, StateDir: withMode(s.stateDir(t, s.a, 1), ModeDevice)}, true},
+		"a server by its node file":          {Config{Mode: ModeServer, StateDir: withMode(s.stateDir(t, s.b, 1), ModeServer)}, false},
+		"a server by its flag":               {Config{Mode: ModeServer, StateDir: s.stateDir(t, s.b, 1)}, false},
+		"a device by its kind":               {Config{Mode: ModeDevice, StateDir: s.stateDir(t, s.b, 1)}, true},
+		"a server's kind, no mode":           {Config{Mode: ModeDevice, StateDir: s.stateDir(t, s.a, 1)}, false},
+		"of unknown kind":                    {Config{Mode: ModeDevice, StateDir: removed}, false},
+		"a device flag over a server's file": {Config{Mode: ModeDevice, StateDir: withMode(s.stateDir(t, s.b, 1), ModeServer)}, false},
+		"a config that wasn't read":          {Config{}, false},
+		"a device's, unread config":          {Config{StateDir: s.stateDir(t, s.b, 1)}, true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), CrashTraceFile)
