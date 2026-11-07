@@ -25,9 +25,9 @@ A node starts as a device: it forwards nothing unless its node file allows it (P
 - Devices as exits or as routers into a home network: after the MVP (docs/design/milestones.md, Out of scope).
 
 ## Acceptance
-- [ ] unit test: with no `-mode` and no node-file setting, `up` runs in device mode and forwards nothing
-- [ ] lab: a node whose map makes it an exit, started without the node file allowing server mode, carries no forwarded traffic
-- [ ] `make lint`, `make test`, `make lab-test` pass
+- [x] unit test: with no `-mode` and no node-file setting, `up` runs in device mode and forwards nothing
+- [x] lab: a node whose map makes it an exit, started without the node file allowing server mode, carries no forwarded traffic
+- [x] `make lint`, `make test`, `make lab-test` pass
 
 ## Notes
 - Owner decisions 2026-10-18: default `device`, opted into locally (Tailscale's model). The decisions on mismatches between the map and the ceiling are TP-183's.
@@ -42,3 +42,9 @@ A node starts as a device: it forwards nothing unless its node file allows it (P
 - 2026-11-07 TP-139 verdicts noted
 - 2026-11-07 split (owner's MVP cut): only the `device` default stays (PRD A4); the ceiling mechanism → TP-183
 - 2026-11-07 backlog → in-progress, owner: agent-tp-111
+- 2026-11-07 done: `-mode` defaults to `device`, `auto` is gone (EX_CONFIG 78, "is gone"); the mode comes from flag over env over node.json over the default, never the map's kind; ResolveMode removed; crash trace kept only when node.json says device, or sets no mode and the map shows a device (servers stay trace-free); service install warns a node file without a mode; lab exits run with `-mode server`; docs (agent and service doc.go, configuration.md, api-overview, overlay.md, security.md, RR42, runbook upgrade step for servers that relied on auto)
+- 2026-11-07 tests: TestUpRunsANodeAsADeviceUnlessToldOtherwise, TestUpRefusesABadMode, TestAnExitWithNoModeSetForwardsNothing, TestOnlyAKnownDeviceKeepsTracing cases, TestServiceModeIsTheNodesMode cases, lab TestEgressThroughAnExit no-mode restart
+- 2026-11-07 mutations: default:"server" fails TestUpRunsANodeAsADeviceUnlessToldOtherwise, TestLoadConfig, TestAnExitWithNoModeSetForwardsNothing; checkMode accepting auto fails TestUpRefusesABadMode, TestPrepareChecksTheConfig, TestServiceModeIsTheNodesMode; knownDevice ignoring the map fails TestOnlyAKnownDeviceKeepsTracing; lab restart with -mode server fails TestEgressThroughAnExit on mode=device and, with the log waits removed, on the fetch getting through
+- 2026-11-07 make lint, make test green; full make lab-test green on 7fc726d (LAB_P=4, exclusive CPU lock)
+- 2026-11-07 not verified: a real upgrade of a server from a pre-TP-111 binary (runbook step written, not run); the cmd-level failed-start trace test can't tell the map-kind mutation (its state can't read a map), the agent-level test does
+- 2026-11-07 in-progress → review
