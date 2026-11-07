@@ -306,7 +306,7 @@ func TestAServersSnapshotSaysItIsOne(t *testing.T) {
 	plat := testPlatform()
 	insp := &inspected{}
 	plat.Inspect = insp.inspector()
-	n, err := Prepare(testConfig(s.stateDir(t, s.a, 1)), Logs{}, plat)
+	n, err := Prepare(serverConfig(s.stateDir(t, s.a, 1)), Logs{}, plat)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -711,7 +711,7 @@ func (r *runner) applied() {
 		attrs = append(attrs, serverSettings(n)...)
 		attrs = append(attrs, "exit", onOff(st.Exit))
 		if n.AllowEgress && !st.Exit {
-			r.dp.Log.Warn("the map allows egress, but a server forwards its space's internet traffic only in server mode: not an exit here")
+			r.dp.Log.Warn("the map allows egress, but this node runs in device mode, which forwards nothing: not an exit here (a server sets \"mode\": \"server\" in node.json, or -mode server)")
 		}
 	}
 	if st.RouteTable.Enforced {

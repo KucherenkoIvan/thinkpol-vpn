@@ -65,7 +65,7 @@ func (f *mapFollower) take(envelope []byte) (taken, removed, back bool) {
 	// to). Kind 0 is no kind held yet, a follower that starts while the
 	// node is out of its space.
 	if f.section.Node.Kind != 0 && section.Node.Kind != f.section.Node.Kind {
-		f.log.Warn("the map changes this node's kind; restart the node to change its mode", "kind", section.Node.Kind)
+		f.log.Warn("the map changes this node's kind; the node's mode is its own (-mode, node.json) and doesn't follow it", "kind", section.Node.Kind)
 	}
 	back = f.removed
 	f.cur, f.section, f.removed = m, section, false

@@ -920,7 +920,7 @@ func TestOnlyADevicesDefinitionKeepsACrashTrace(t *testing.T) {
 			if err := in.Install(ctx, Options{}); err != nil {
 				t.Fatal(err)
 			}
-			if def, _, _ = h.file(sys.DefinitionPath()); !bytes.Equal(def, sys.Render(Definition{Binary: BinaryPath})) || !strings.Contains(out.String(), "kind isn't known") {
+			if def, _, _ = h.file(sys.DefinitionPath()); !bytes.Equal(def, sys.Render(Definition{Binary: BinaryPath})) || !strings.Contains(out.String(), "doesn't show this node as a device") {
 				t.Fatalf("an unknown kind's definition:\n%s\nsaid\n%s", def, out)
 			}
 		})

@@ -67,8 +67,9 @@ type Installer struct {
 	Executable string
 	// Ready says whether the node can run (its state directory), checked
 	// before anything is installed, and which mode the service is
-	// installed for (agent.ServiceMode; known false: the node's kind isn't
-	// known, and it is installed as a server): a device's definition sends
+	// installed for (agent.ServiceMode; known false: the node file sets no
+	// mode and the map doesn't show a device, and it is installed as a
+	// server): a device's definition sends
 	// the agent's stderr to CrashTrace, a server's sends it nowhere on
 	// disk.
 	Ready func() (mode agent.Mode, known bool, err error)
@@ -142,7 +143,7 @@ func (in Installer) Install(ctx context.Context, opts Options) error {
 		return fmt.Errorf("this node can't run yet: %w", err)
 	}
 	if !known {
-		in.say("warning: this node's kind isn't known (it isn't in its map): installing a server's definition, which keeps no crash trace; install again once a map includes it")
+		in.say("warning: the node file sets no mode and the map doesn't show this node as a device: installing a definition that keeps no crash trace. A server sets \"mode\": \"server\" in node.json (until then it runs as a device and forwards nothing); a device installs again once a map includes it")
 	}
 	def := in.definition(mode)
 	_, err = os.Lstat(in.path(in.System.DefinitionPath()))

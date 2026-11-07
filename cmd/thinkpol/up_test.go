@@ -45,18 +45,62 @@ func m0State(t *testing.T, node string) (state, keys string) {
 }
 
 // `thinkpol up` reads what `dev keygen` and `dev map build` write, and
-// picks each node's mode from its kind.
-func TestUpReadsTheDevTooling(t *testing.T) {
-	for node, mode := range map[string]agent.Mode{"server-1": agent.ModeServer, "device-a": agent.ModeDevice} {
-		state, _ := m0State(t, node)
-		cfg := agent.Config{StateDir: state, Mode: agent.ModeAuto, LogLevel: "info", Interface: "thinkpol0", LinkMTU: 1500, MapPoll: 5e9, Connect: true}
-		n, err := agent.Prepare(cfg, agent.Logs{}, platform())
-		if err != nil {
-			t.Fatal(err)
+// runs each node in its own mode: with no -mode and no node file
+// setting, a device, even the node the map makes a server; -mode server,
+// THINKPOL_MODE or the node file's "mode" run it as a server.
+func TestUpRunsANodeAsADeviceUnlessToldOtherwise(t *testing.T) {
+	for _, tc := range []struct {
+		name, node, file string
+		env, args        []string
+		want             agent.Mode
+	}{
+		{"a server, no mode", "server-1", "", nil, nil, agent.ModeDevice},
+		{"a device, no mode", "device-a", "", nil, nil, agent.ModeDevice},
+		{"a server by its node file", "server-1", `{"mode": "server"}`, nil, nil, agent.ModeServer},
+		{"a server by the environment", "server-1", "", []string{"THINKPOL_MODE", "server"}, nil, agent.ModeServer},
+		{"a server by its flag", "server-1", "", nil, []string{"-mode", "server"}, agent.ModeServer},
+		{"a flag over the node file", "server-1", `{"mode": "server"}`, nil, []string{"-mode", "device"}, agent.ModeDevice},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			unsetTHINKPOL(t)
+			state, _ := m0State(t, tc.node)
+			if tc.file != "" {
+				if err := os.WriteFile(filepath.Join(state, agent.NodeFile), []byte(tc.file), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.env != nil {
+				t.Setenv(tc.env[0], tc.env[1])
+			}
+			cfg, err := upConfig(env{}, append([]string{"-state", state, "-api-socket", ""}, tc.args...))
+			if err != nil {
+				t.Fatal(err)
+			}
+			n, err := agent.Prepare(cfg, agent.Logs{}, platform())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if n.Mode() != tc.want {
+				t.Errorf("runs in %s mode, want %s", n.Mode(), tc.want)
+			}
+		})
+	}
+}
+
+// A mode up can't run with exits EX_CONFIG, auto among them: it is gone.
+func TestUpRefusesABadMode(t *testing.T) {
+	unsetTHINKPOL(t)
+	state, _ := m0State(t, "server-1")
+	for _, args := range [][]string{{"-mode", "auto"}, {"-mode", "client"}} {
+		if code, _, stderr := runCLI(t, append([]string{"up", "-state", state}, args...)...); code != exitConfig {
+			t.Errorf("%v: exit %d: %s", args, code, stderr)
 		}
-		if n.Mode() != mode {
-			t.Errorf("%s runs in %s mode, want %s", node, n.Mode(), mode)
-		}
+	}
+	if err := os.WriteFile(filepath.Join(state, agent.NodeFile), []byte(`{"mode": "auto"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, stderr := runCLI(t, "up", "-state", state); code != exitConfig || !strings.Contains(stderr, "gone") {
+		t.Errorf("a node file asking for auto: exit %d: %s", code, stderr)
 	}
 }
 
@@ -85,7 +129,7 @@ func TestUpAppliesThePlatformDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	agent.ApplyOSDefaults(&cfg)
-	want := agent.Config{StateDir: agent.DefaultStateDir, Mode: agent.ModeAuto, LogLevel: "info", MapPoll: 5 * time.Second,
+	want := agent.Config{StateDir: agent.DefaultStateDir, Mode: agent.ModeDevice, LogLevel: "info", MapPoll: 5 * time.Second,
 		Connect: true, APISocket: agent.DefaultAPISocket(), APIGroup: "thinkpol", DNS: true}
 	if cfg != want {
 		t.Fatalf("defaults %+v", cfg)
@@ -143,7 +187,12 @@ func TestUpRefusesAnUnsupportedHost(t *testing.T) {
 	}
 	for _, node := range nodes {
 		state, keys := m0State(t, node)
-		code, stdout, stderr := runCLI(t, "up", "-state", state)
+		args := []string{"up", "-state", state}
+		if node == "server-1" {
+			// Without it, a device: one that would run here.
+			args = append(args, "-mode", "server")
+		}
+		code, stdout, stderr := runCLI(t, args...)
 		if code != 1 || !strings.Contains(stderr, refusal) {
 			t.Fatalf("%s: exit %d, stdout %q, stderr %q", node, code, stdout, stderr)
 		}

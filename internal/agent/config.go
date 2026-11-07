@@ -19,11 +19,8 @@ import (
 type Mode string
 
 const (
-	// ModeAuto runs a server node in ModeServer and a device in ModeDevice,
-	// by the node's kind in its own section of the map.
-	ModeAuto Mode = "auto"
-	// ModeDevice runs one space's engine in-process, on the node's own TUN
-	// and sockets.
+	// ModeDevice, the default, runs one space's engine in-process, on
+	// the node's own TUN and sockets.
 	ModeDevice Mode = "device"
 	// ModeServer runs a supervisor that owns the public listeners and one
 	// sandboxed worker per space (docs/design/server-agent.md "Server agent").
@@ -39,7 +36,10 @@ type Config struct {
 	StateDir string `env:"THINKPOL_STATE_DIR" flag:"state" help:"state directory: node.key, space.pub and map.bin"`
 	// MapFile is the map's path; empty means map.bin in StateDir.
 	MapFile string `env:"THINKPOL_MAP" flag:"map" help:"the map file, if not map.bin in the state directory"`
-	Mode    Mode   `env:"THINKPOL_MODE" default:"auto" flag:"mode" help:"auto (by the node's kind in the map), device or server"`
+	// Mode is the node's own: the map's node kind never picks it (PRD
+	// A4: a node forwards nothing unless its operator runs it as a
+	// server).
+	Mode Mode `env:"THINKPOL_MODE" default:"device" flag:"mode" help:"device (forwards nothing) or server"`
 	// LogLevel is debug, info, warn or error. Logs go to stderr and an
 	// in-memory ring, never to a file (PRD S2).
 	LogLevel string `env:"THINKPOL_LOG_LEVEL" default:"info" flag:"log-level" help:"debug, info, warn or error; logs go to stderr only"`
@@ -209,10 +209,12 @@ func (c Config) Validate() error {
 
 func checkMode(m Mode) error {
 	switch m {
-	case ModeAuto, ModeDevice, ModeServer:
+	case ModeDevice, ModeServer:
 		return nil
+	case "auto":
+		return fmt.Errorf("mode %q is gone: want %s or %s (a server sets %s)", m, ModeDevice, ModeServer, ModeServer)
 	}
-	return fmt.Errorf("mode %q: want %s, %s or %s", m, ModeAuto, ModeDevice, ModeServer)
+	return fmt.Errorf("mode %q: want %s or %s", m, ModeDevice, ModeServer)
 }
 
 // checkLinkMTU: below 576 plus a link's overhead nothing fits.

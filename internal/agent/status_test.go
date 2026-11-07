@@ -267,7 +267,7 @@ func TestARemovedDeviceConnectsOnceBack(t *testing.T) {
 		writeFile(t, filepath.Join(c.StateDir, MapFileName), s.buildWithout(t, 1, s.b), 0o644)
 	}})
 	ctx := context.Background()
-	if st := b.node.Status(); !st.Removed || st.Mode != ModeAuto {
+	if st := b.node.Status(); !st.Removed || st.Mode != ModeDevice {
 		t.Fatalf("status %+v", st)
 	}
 	if err := b.node.Connect(ctx); err != nil {
@@ -453,7 +453,7 @@ func TestAPanickingSubscriberDoesNotStopTheNode(t *testing.T) {
 
 func TestAServerRefusesConnect(t *testing.T) {
 	s := newTestSpace(t)
-	n, err := Prepare(testConfig(s.stateDir(t, s.a, 1)), Logs{}, testPlatform())
+	n, err := Prepare(serverConfig(s.stateDir(t, s.a, 1)), Logs{}, testPlatform())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -622,7 +622,7 @@ func TestRulePresetIsStoredByTheService(t *testing.T) {
 		t.Fatalf("status %+v", st)
 	}
 	// A server has no rules of its own.
-	if a, err := Prepare(testConfig(s.stateDir(t, s.a, 1)), Logs{}, testPlatform()); err != nil || !errors.Is(a.SetRulePreset(ctx, "everything"), ErrServerMode) {
+	if a, err := Prepare(serverConfig(s.stateDir(t, s.a, 1)), Logs{}, testPlatform()); err != nil || !errors.Is(a.SetRulePreset(ctx, "everything"), ErrServerMode) {
 		t.Fatalf("server: %v", err)
 	}
 }
@@ -718,6 +718,33 @@ func TestADeviceStartingDisconnectedNeedsTheAPI(t *testing.T) {
 	if _, err := Prepare(cfg, Logs{}, testPlatform()); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// With no mode set anywhere (environment, node file), a node whose map
+// makes it an exit runs as a device (PRD A4): its data plane forwards
+// nothing, and its log says why.
+func TestAnExitWithNoModeSetForwardsNothing(t *testing.T) {
+	unsetTHINKPOL(t)
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	a := startDevice(t, s, reg, true, deviceOpt{prepare: func(c *Config, _ *Platform) {
+		dir := s.stateDir(t, s.a, 1)
+		writeFile(t, filepath.Join(dir, MapFileName), s.buildEditing(t, 1, s.a, func(sec *netmap.Section) { sec.Node.AllowEgress = true }), 0o644)
+		loaded, err := LoadConfig()
+		if err != nil {
+			t.Fatal(err)
+		}
+		loaded.StateDir = dir
+		if err := ApplyNodeFile(&loaded, nil); err != nil {
+			t.Fatal(err)
+		}
+		c.StateDir, c.Mode = dir, loaded.Mode
+	}})
+	st := a.connection(t, Connected)
+	if st.Mode != ModeDevice || st.DataPlane == nil || st.DataPlane.Exit {
+		t.Fatalf("status %+v", st)
+	}
+	eventually(t, func() bool { return strings.Contains(a.log.String(), "not an exit here") })
 }
 
 // A device that starts disconnected (after a crash: `thinkpol up

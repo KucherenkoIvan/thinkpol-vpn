@@ -290,9 +290,9 @@ func TestACleanStopIsNoError(t *testing.T) {
 }
 
 // A server keeps no trace: under a device's definition it stops writing
-// to the file at its start, and so does a node that comes back into its
-// space as a server; a device writes on. A trace file a server finds
-// otherwise is warned about.
+// to the file at its start, removed from its space or not (its mode is
+// its own, known before any map has it); a device writes on. A trace
+// file a server finds otherwise is warned about.
 func TestAServerKeepsNoTrace(t *testing.T) {
 	s := newTestSpace(t)
 	prepare := func(t *testing.T, k NodeKeys, removed bool) (*Node, *bytes.Buffer, string) {
@@ -306,7 +306,11 @@ func TestAServerKeepsNoTrace(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		n, err := Prepare(testConfig(dir), logs, testPlatform())
+		cfg := testConfig(dir)
+		if k == s.a {
+			cfg = serverConfig(dir)
+		}
+		n, err := Prepare(cfg, logs, testPlatform())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -347,15 +351,16 @@ func TestAServerKeepsNoTrace(t *testing.T) {
 			t.Fatalf("tracing %v, file %v %v, log:\n%s", ct.Tracing, fi, err, out)
 		}
 	})
-	t.Run("back as a server", func(t *testing.T) {
+	t.Run("a removed server", func(t *testing.T) {
 		n, out, path := prepare(t, s.a, true)
 		ct, stderr := take(t, path)
 		if err := n.KeepLastRun(ct); err != nil {
 			t.Fatal(err)
 		}
-		if !ct.Tracing {
-			t.Fatal("a node of unknown mode stopped tracing")
+		if _, err := os.Lstat(path); err == nil || ct.Tracing {
+			t.Fatalf("a removed server keeps tracing:\n%s", out)
 		}
+		detached(t, stderr)
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		maps := make(chan []byte, 1)
@@ -363,10 +368,9 @@ func TestAServerKeepsNoTrace(t *testing.T) {
 		if !n.awaitSection(ctx, maps) {
 			t.Fatalf("gave up:\n%s", out)
 		}
-		if _, err := os.Lstat(path); err == nil || ct.Tracing || !strings.Contains(out.String(), reinstall) {
-			t.Fatalf("tracing %v, log:\n%s", ct.Tracing, out)
+		if strings.Count(out.String(), reinstall) != 1 {
+			t.Fatalf("log:\n%s", out)
 		}
-		detached(t, stderr)
 	})
 	t.Run("a file left", func(t *testing.T) {
 		n, out, path := prepare(t, s.a, false)
@@ -441,23 +445,32 @@ func TestTheTraceIsMadeRoots(t *testing.T) {
 	}
 }
 
-// A start keeps tracing only on a node known to be a device: by its
-// mode, else by its kind in the map; a server, a node of unknown kind and
-// a state directory that can't be read stop tracing at once.
+// A start keeps tracing only on a node known to be a device: by its node
+// file's mode, else, with none set, by its kind in the map; a server, a
+// node the map makes a server that runs as a device by default, one the
+// map doesn't hold and a state directory that can't be read stop tracing
+// at once, and so does a device mode the node file doesn't give.
 func TestOnlyAKnownDeviceKeepsTracing(t *testing.T) {
 	s := newTestSpace(t)
 	removed := s.stateDir(t, s.b, 1)
 	writeFile(t, filepath.Join(removed, MapFileName), s.buildWithout(t, 1, s.b), 0o644)
+	withMode := func(dir string, mode Mode) string {
+		writeFile(t, filepath.Join(dir, NodeFile), []byte(`{"mode": "`+string(mode)+`"}`), 0o600)
+		return dir
+	}
 	for name, tc := range map[string]struct {
 		cfg  Config
 		kept bool
 	}{
-		"a device by its mode":      {Config{Mode: ModeDevice, StateDir: s.stateDir(t, s.a, 1)}, true},
-		"a server by its mode":      {Config{Mode: ModeServer, StateDir: s.stateDir(t, s.b, 1)}, false},
-		"a device by its kind":      {Config{Mode: ModeAuto, StateDir: s.stateDir(t, s.b, 1)}, true},
-		"a server by its kind":      {Config{Mode: ModeAuto, StateDir: s.stateDir(t, s.a, 1)}, false},
-		"of unknown kind":           {Config{Mode: ModeAuto, StateDir: removed}, false},
+		"a device by its node file": {Config{Mode: ModeDevice, StateDir: withMode(s.stateDir(t, s.a, 1), ModeDevice)}, true},
+		"a server by its node file": {Config{Mode: ModeServer, StateDir: withMode(s.stateDir(t, s.b, 1), ModeServer)}, false},
+		"a server by its flag":      {Config{Mode: ModeServer, StateDir: s.stateDir(t, s.b, 1)}, false},
+		"a device by its kind":      {Config{Mode: ModeDevice, StateDir: s.stateDir(t, s.b, 1)}, true},
+		"a server's kind, no mode":  {Config{Mode: ModeDevice, StateDir: s.stateDir(t, s.a, 1)}, false},
+		"of unknown kind":           {Config{Mode: ModeDevice, StateDir: removed}, false},
+		"a file over its flag":      {Config{Mode: ModeDevice, StateDir: withMode(s.stateDir(t, s.b, 1), ModeServer)}, false},
 		"a config that wasn't read": {Config{}, false},
+		"a device's, unread config": {Config{StateDir: s.stateDir(t, s.b, 1)}, true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), CrashTraceFile)
@@ -486,6 +499,7 @@ func TestOnlyAKnownDeviceKeepsTracing(t *testing.T) {
 // A device that stops tracing makes the file anew, root's 0600 and empty,
 // instead of leaving the service manager to create it with its own mode.
 func TestADeviceDetachedMakesTheFileAnew(t *testing.T) {
+	s := newTestSpace(t)
 	path := filepath.Join(t.TempDir(), CrashTraceFile)
 	if err := os.WriteFile(path, []byte("panic: boom\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -495,7 +509,7 @@ func TestADeviceDetachedMakesTheFileAnew(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := ct.KeepOnlyOnADevice(Config{Mode: ModeDevice}); err != nil || !ct.Tracing {
+	if err := ct.KeepOnlyOnADevice(Config{Mode: ModeDevice, StateDir: s.stateDir(t, s.b, 1)}); err != nil || !ct.Tracing {
 		t.Fatalf("tracing %v, %v", ct.Tracing, err)
 	}
 	if err := ct.Detach(); err != nil {

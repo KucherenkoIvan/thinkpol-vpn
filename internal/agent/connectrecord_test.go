@@ -224,7 +224,7 @@ func TestConnectOnBootIsTheDevicesToggle(t *testing.T) {
 	}
 
 	// A server serves whenever it runs.
-	a, err := Prepare(testConfig(s.stateDir(t, s.a, 1)), Logs{}, testPlatform())
+	a, err := Prepare(serverConfig(s.stateDir(t, s.a, 1)), Logs{}, testPlatform())
 	if err != nil {
 		t.Fatal(err)
 	}
