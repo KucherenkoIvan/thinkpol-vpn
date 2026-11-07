@@ -3,6 +3,7 @@ id: TP-061
 title: "Security hardening from the independent code review (2026-10-13)"
 milestone: M1
 area: security
+stream: core
 repo: thinkpol-vpn
 size: M
 depends_on: []

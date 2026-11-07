@@ -3,6 +3,7 @@ id: TP-127
 title: "IPv6 guard: a failed shrink of the direct set still narrows the guard"
 milestone: M2
 area: dataplane
+stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: []

@@ -3,6 +3,7 @@ id: TP-075
 title: "Agent layer cleanup, part 1"
 milestone: M2
 area: agent
+stream: core
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-019]

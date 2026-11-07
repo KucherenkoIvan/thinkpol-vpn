@@ -3,6 +3,7 @@ id: TP-020
 title: "DNS resolver"
 milestone: M1
 area: dataplane/dns
+stream: core
 repo: thinkpol-vpn
 size: L
 depends_on: [TP-011, TP-015]

@@ -3,6 +3,7 @@ id: TP-062
 title: "Design decisions from the independent design review (2026-10-13)"
 milestone: M1
 area: docs
+stream: verification
 repo: thinkpol-vpn
 size: M
 depends_on: []

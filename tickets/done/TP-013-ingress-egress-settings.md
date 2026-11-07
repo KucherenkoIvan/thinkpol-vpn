@@ -3,6 +3,7 @@ id: TP-013
 title: "Allow-ingress and allow-egress node settings"
 milestone: M1
 area: netmap
+stream: administration
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-003, TP-010]

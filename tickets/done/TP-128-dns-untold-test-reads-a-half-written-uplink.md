@@ -3,6 +3,7 @@ id: TP-128
 title: "dns: an untold resolv.conf test reads a half-written uplink file"
 milestone: M2
 area: tests
+stream: verification
 repo: thinkpol-vpn
 size: S
 depends_on: []

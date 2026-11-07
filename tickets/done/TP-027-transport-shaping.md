@@ -3,6 +3,7 @@ id: TP-027
 title: "Transport shaping contract"
 milestone: M2
 area: dataplane/transport
+stream: transports
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-005]

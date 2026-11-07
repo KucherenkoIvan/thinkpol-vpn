@@ -3,6 +3,7 @@ id: TP-135
 title: "netcfg: the configurator sees a policy rule's action"
 milestone: M2
 area: dataplane
+stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-091]

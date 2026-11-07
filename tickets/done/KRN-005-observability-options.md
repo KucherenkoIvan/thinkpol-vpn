@@ -3,6 +3,7 @@ id: KRN-005
 title: "observability: writer, level and format options"
 milestone: M1
 area: observability
+stream: core
 repo: go-kernel
 size: S
 depends_on: []

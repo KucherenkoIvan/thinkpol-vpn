@@ -3,6 +3,7 @@ id: TP-046
 title: "Service install and connect-on-boot"
 milestone: M2
 area: agent
+stream: core
 repo: thinkpol-vpn
 size: L
 depends_on: [TP-022, TP-075]

@@ -3,6 +3,7 @@ id: TP-176
 title: "Lab: `make lab-gotest` silently skips lab-tagged tests"
 milestone: M2
 area: lab
+stream: verification
 repo: thinkpol-vpn
 size: S
 depends_on: []

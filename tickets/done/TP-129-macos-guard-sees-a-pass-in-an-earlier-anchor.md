@@ -3,6 +3,7 @@ id: TP-129
 title: "macOS guard: a quick pass inside an anchor evaluated before the hook"
 milestone: M2
 area: dataplane
+stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-126]

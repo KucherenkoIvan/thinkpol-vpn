@@ -3,6 +3,7 @@ id: TP-124
 title: "macOS: recover from a corrupt route record"
 milestone: M2
 area: dataplane
+stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: []

@@ -3,6 +3,7 @@ id: TP-158
 title: "Lab flake: the forged ICMP errors test loses the root's conntrack flow under load"
 milestone: M2
 area: agent/supervisor
+stream: verification
 repo: thinkpol-vpn
 size: S
 depends_on: []
