@@ -36,6 +36,9 @@ Round 2, accepted by the orchestrator (delta check of round 1).
 - [x] R2.1 (should-fix, regression from round 1) ledger.go adoptLinkChange moves a record to whatever name now sits at the same index, so a new interface at a reused index takes over a dead interface's record (Apply {a, 1380, Up}; delete a; create b at the same index, already 1380 and up; Apply {b, 1380, Up}: Close sets b to 1500 and down). Adopt a record from another name only if its recorded kernel name equals the interface's current kernel name, else drop it without restoring; lab test with a new interface at the reused index.
 - [x] R2.2 (nit) adoptLinkChange's undo restores a snapshot, overwriting the note a failed revert keeps: move whatever is under the new name back to the old name and restore only the old kernel name.
 
+Round 3, accepted by the orchestrator (delta check of round 2).
+- [ ] R3.1 (should-fix) ledger.go adoptLinkChange's undo, rename-only case (same name, new kernel name): it puts the old kernel name back, so after a failed Apply whose MTU revert fails Close sees the current name differ from the recorded one, drops the record and leaves the MTU set forever. The undo keeps the refreshed kernel name and only moves the record back when the names differ; the internal test's renamed case expects the refreshed kname.
+
 ## Log
 - 2026-10-21 created in backlog (TP-102 review round 1)
 - 2026-11-07 backlog → in-progress, owner: agent-tp-119
@@ -62,3 +65,4 @@ Round 2, accepted by the orchestrator (delta check of round 1).
 - 2026-11-07 full make lab-test at 88d530c (LAB_P=1, machine loaded, other labs running) stopped at the 30 min limit: lab/ packages ok, node gotest ok through netcfg, then internal/dataplane/path failed TestBindDropsWhatWireGuardCantHold and TestTrafficSticksToOneLinkPerNeighbour (delivery timeouts; this branch doesn't touch path); re-run under the exclusive CPU lock
 - 2026-11-07 full make lab-test re-run at dcce1b9 under the exclusive CPU lock (LAB_P=4): lab/ packages ok, gotest ok for 36 packages (path included, so the earlier failures were load); this re-run was backgrounded by the harness after 10 min and waited on, not polled
 - 2026-11-07 has-errors → review
+- 2026-11-07 review → has-errors (round 3 finding R3.1)
