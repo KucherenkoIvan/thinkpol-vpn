@@ -225,8 +225,8 @@ var censorCases = []censorCase{
 	// An M2 gate check (docs/design/milestones.md): no row carries
 	// WireGuard in TLS yet, so every row passes. A TLS-shaped transport's
 	// pass means something only when its probe runs long enough for the
-	// rhythm to show: three rekeys (up to 7 minutes), or three idle
-	// keepalives.
+	// rhythm to show: three rekeys (up to 7 minutes, up to about 10
+	// minutes when batched), or three idle keepalives.
 	{name: "wireguard-rhythm", modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig {
 		return []censor.ModuleConfig{{Name: "wireguard-rhythm", Settings: json.RawMessage(`{}`)}}
 	}},

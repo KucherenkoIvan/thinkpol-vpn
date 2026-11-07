@@ -128,12 +128,17 @@
 //     plausible overhead, padding to a 256-byte bucket included), that
 //     stands out: each of its two sizes new to its direction over the
 //     rekey period before it, or its first record sent after 5 s with no
-//     record of the band either way. It shows the rhythm when it stands out three times in a
-//     row, each 2 minutes to 3.5 minutes after the one before: WireGuard
+//     record of the band either way. A record of the size of one sent its
+//     way within 2 s before it takes on that one's standing out: WireGuard
+//     sends an initiation right after the packet that triggered it, and
+//     padded to one bucket the two are one size. It shows the rhythm when
+//     it stands out three times in a row, each 2 minutes to 3.5 minutes
+//     after the one before; an exchange answered more than once within
+//     2 s is one occurrence, standing out if any answer does. WireGuard
 //     rekeys on the first packet past 2 minutes when it sends, past 165 s
 //     when it only receives, so with a 25 s keepalive the gaps run from
 //     120 s to about 190 s, and three rekeys can take up to 7 minutes of a
-//     connection.
+//     connection, up to about 10 minutes when batched (below).
 //   - keepalive: an idle run, records of one size each sent after 5 s with
 //     no record either way and not answered within 2 s, at one steady
 //     interval (within 1 s): three of them once the connection has carried
@@ -168,9 +173,11 @@
 // length written as a record of its own is a record like any other, so
 // both still show. But WireGuard sends an initiation right after the
 // packet that triggered it, so through a batching window the two share a
-// record: a keepalive-triggered rekey still shows (the record has one size
-// each time), while a rekey triggered by data, or sent while the tunnel is
-// busy, leaves the pair's sizes changing or the band, and is missed
+// record. Of batched rekeys only a keepalive-triggered one still shows:
+// the record has one size each time, but the first handshake had no
+// trigger, so the third of that size is the fourth handshake, up to about
+// 10 minutes in. A batched rekey triggered by data, or sent while the
+// tunnel is busy, leaves the pair's sizes changing or the band, and is missed
 // whenever the tunnel is in use at the 2-minute mark (the idle keepalives,
 // if any, still show). Measured false-positive risks on ordinary TLS,
 // flagged by design: an identical request and response, both in the band,

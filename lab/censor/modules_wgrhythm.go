@@ -60,11 +60,13 @@ const (
 //     one in the band the other way within wgPairWindow) that stands out,
 //     each of its two sizes new to its direction over the rekey period
 //     before it, or its first record sent after wgQuiet with no band
-//     record either way, and stands out again a rekey period after the
-//     latest time it did, up to half as much again plus wgRekeySlack past
-//     it (WireGuard rekeys on the first packet after 2 minutes when it
-//     sends, after 165 s when it only receives), and again a period after
-//     that: wgRekeys in all.
+//     record either way (a record takes on the standing out of one of its
+//     size sent its way within wgPairWindow before it, as an initiation
+//     padded to its trigger's size), and stands out again a rekey period
+//     after the latest time it did, up to half as much again plus
+//     wgRekeySlack past it (WireGuard rekeys on the first packet after 2
+//     minutes when it sends, after 165 s when it only receives), and
+//     again a period after that: wgRekeys in all.
 //   - keepalive: an idle run, records of one size each sent after wgQuiet
 //     with no record either way, none answered by a record the other way
 //     within wgPairWindow, at one steady interval: at least `keepalives`
@@ -145,14 +147,16 @@ type wgRecord struct {
 	end  time.Time
 }
 
-// wgExchange is one exchange's history: when its answer last ended, and
-// the latest time it stood out, with how many times in a row it had then
-// stood out a rekey period after the time before, and that gap.
+// wgExchange is one exchange's history: when its answer last ended,
+// whether that occurrence stood out, and the latest time it stood out,
+// with how many times in a row it had then stood out a rekey period after
+// the time before, and that gap.
 type wgExchange struct {
-	seen  time.Time
-	stood time.Time
-	chain int
-	gap   time.Duration
+	seen     time.Time
+	standing bool
+	stood    time.Time
+	chain    int
+	gap      time.Duration
 }
 
 // wgIdleRun is the connection's latest idle run: n unanswered idle records of
@@ -321,6 +325,12 @@ func (m *wgRhythm) record(c *wgConn, dir int, d *wgDirection, end time.Time) {
 			}
 		}
 		quiet := c.bandLast.IsZero() || end.Sub(c.bandLast) >= wgQuiet
+		// A record of this size just before (a trigger padded to its
+		// initiation's size) leaves this one neither fresh nor after
+		// quiet; the two are one record to answer, so it keeps that one's.
+		if b, ok := d.band[r.size]; ok && end.Sub(b.end) <= wgPairWindow {
+			quiet, fresh = quiet || b.afterQuiet, fresh || b.fresh
+		}
 		d.band[r.size] = wgBandRecord{end, quiet, fresh}
 		c.bandLast = end
 	}
@@ -373,11 +383,14 @@ func (m *wgRhythm) exchange(c *wgConn, sizes [2]int, stands bool, end time.Time)
 		e = &wgExchange{}
 		c.exchanges[sizes] = e
 	} else if end.Sub(e.seen) <= wgPairWindow {
-		// More answers to one record are one occurrence.
+		// More answers to one record are one occurrence, which stands out
+		// if any of them does.
 		e.seen = end
-		return false
+		if !stands || e.standing {
+			return false
+		}
 	}
-	e.seen = end
+	e.seen, e.standing = end, stands
 	if !stands {
 		return false
 	}

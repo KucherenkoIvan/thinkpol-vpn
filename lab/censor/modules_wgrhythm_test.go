@@ -338,6 +338,12 @@ func TestWGRhythmFlagsTheRhythm(t *testing.T) {
 			wgLateRekeyAt, "records of 167 and 111 bytes exchanged 3 times, the last 3m10s apart", true},
 		{"rekey after data, 125 s and 190 s apart", eachInRecord(wgRekeyTimeline(dataTrigger, 125*s, 190*s), plain),
 			wgLateRekeyAt, "records of 167 and 111 bytes", false},
+		// Padded to 256 the trigger is the initiation's size: the two are
+		// one band record that stands out.
+		{"sizes hidden, rekey after a keepalive, 125 s and 190 s apart", eachInRecord(wgRekeyTimeline(keepaliveTrigger, 125*s, 190*s), paddedTo(256)),
+			wgLateRekeyAt, "records of 273 and 273 bytes exchanged 3 times, the last 3m10s apart", true},
+		{"sizes hidden, rekey after data, 125 s and 190 s apart", eachInRecord(wgRekeyTimeline(dataTrigger, 125*s, 190*s), paddedTo(256)),
+			wgLateRekeyAt, "records of 273 and 273 bytes exchanged 3 times", false},
 		// Through a 20 ms batching window idle keepalives still travel
 		// alone, and an initiation shares a record with the keepalive that
 		// triggered it: a record of one size each time.
@@ -374,6 +380,85 @@ func TestWGRhythmFlagsTheRhythm(t *testing.T) {
 				t.Errorf("%s, mss %d: after the flag, %d packets to the server and %d to the client passed", c.name, mss, accepted[0], accepted[1])
 			}
 		}
+	}
+}
+
+// TestWGRhythmStandsOutLateInAnOccurrence: an exchange's occurrence that
+// didn't stand out at its first answer stands out when a later answer
+// within wgPairWindow does. Each time, the server's 200 bytes are answered
+// by the client's 300, neither new, and 700 µs later the client's 200,
+// new, by the server's 300, new: one occurrence of the 200/300 exchange,
+// standing out at its second answer, three times 130 s apart. The other
+// records keep the 200/300 records from following quiet and answer the
+// idle ones.
+func TestWGRhythmStandsOutLateInAnOccurrence(t *testing.T) {
+	ms := time.Millisecond
+	var recs []wireRecord
+	for _, at := range []time.Duration{20 * time.Second, 150 * time.Second, 280 * time.Second} {
+		recs = append(recs,
+			wireRecord{at - 10000*ms, false, 200},
+			wireRecord{at - 9900*ms, true, 1000},
+			wireRecord{at - 4500*ms, true, 300},
+			wireRecord{at - 4400*ms, false, 1000},
+			wireRecord{at - 1000*ms, false, 200},
+			wireRecord{at - 500*ms, true, 300},
+			wireRecord{at - 300*ms, true, 200},
+			wireRecord{at, false, 300})
+	}
+	r := newWGRun(t, `{}`, 1400)
+	r.carry(recs)
+	a, blocked := r.firstBlocked()
+	if !blocked || a.at != 280*time.Second || !strings.Contains(a.Reason, "records of 200 and 300 bytes exchanged 3 times") {
+		t.Errorf("first blocked %+v (blocked %v), want a drop at 4m40s for the 200/300 exchange", a, blocked)
+	}
+}
+
+// TestWGRhythmPaddedTriggerAfterBandTraffic: a padded rekey whose trigger
+// is the initiation's size and follows other band traffic within wgQuiet
+// stands out by freshness alone, which the initiation takes from the
+// trigger: a client record of 150 bytes (answered out of the band) 3 s
+// before each trigger, rekeys 125 s and 190 s apart.
+func TestWGRhythmPaddedTriggerAfterBandTraffic(t *testing.T) {
+	ms := time.Millisecond
+	var recs []wireRecord
+	for _, at := range []time.Duration{10 * time.Second, 135 * time.Second, 325 * time.Second} {
+		recs = append(recs,
+			wireRecord{at - 3000*ms, true, 150},
+			wireRecord{at - 2900*ms, false, 1000},
+			wireRecord{at - ms/2, true, 273},
+			wireRecord{at, true, 273},
+			wireRecord{at + 15*ms, false, 273})
+	}
+	r := newWGRun(t, `{}`, 1400)
+	r.carry(recs)
+	want := 325*time.Second + 15*ms
+	a, blocked := r.firstBlocked()
+	if !blocked || a.at != want || !strings.Contains(a.Reason, "records of 273 and 273 bytes exchanged 3 times") {
+		t.Errorf("first blocked %+v (blocked %v), want a drop at %s for the 273/273 exchange", a, blocked, want)
+	}
+}
+
+// TestWGRhythmStaleBandRecordLendsNothing: only a record of the same size
+// within wgPairWindow lends its standing out. Each 130 s the client's 200
+// bytes follow quiet 60 s before its 200-byte exchange, which is neither
+// new nor after quiet (a 300-byte record 3 s before it): no rekey. The
+// out-of-band records answer the idle ones.
+func TestWGRhythmStaleBandRecordLendsNothing(t *testing.T) {
+	ms := time.Millisecond
+	var recs []wireRecord
+	for at := 70 * time.Second; at < 600*time.Second; at += 130 * time.Second {
+		recs = append(recs,
+			wireRecord{at - 60000*ms, true, 200},
+			wireRecord{at - 59900*ms, false, 1000},
+			wireRecord{at - 3000*ms, true, 300},
+			wireRecord{at - 2900*ms, false, 1000},
+			wireRecord{at - 500*ms, true, 200},
+			wireRecord{at, false, 200})
+	}
+	r := newWGRun(t, `{}`, 1400)
+	r.carry(recs)
+	if a, blocked := r.firstBlocked(); blocked {
+		t.Errorf("blocked at %s: %+v", a.at, a)
 	}
 }
 
