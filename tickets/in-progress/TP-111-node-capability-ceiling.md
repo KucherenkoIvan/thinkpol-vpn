@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: [TP-046, TP-166]
 refs: [A4, docs/design/overlay.md#node-agent]
-owner: ""
-branch: ""
+owner: "agent-tp-111"
+branch: "tp-111-mode-defaults-to-device"
 ---
 
 ## Goal
@@ -41,3 +41,4 @@ A node starts as a device: it forwards nothing unless its node file allows it (P
 - 2026-10-24 docs: slotted in the pre-M2 phase (wave 1, Agent)
 - 2026-11-07 TP-139 verdicts noted
 - 2026-11-07 split (owner's MVP cut): only the `device` default stays (PRD A4); the ceiling mechanism → TP-183
+- 2026-11-07 backlog → in-progress, owner: agent-tp-111
