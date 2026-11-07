@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: L
 depends_on: [TP-064, TP-010, TP-027, TP-101]
 refs: [C2, C6, docs/design/transports.md#transports]
-owner: ""
-branch: ""
+owner: "agent-tp-087"
+branch: "tp-087-reality-transport"
 ---
 
 ## Goal
@@ -48,3 +48,4 @@ The disguised transport for client → entry links: thinkpol speaks REALITY's ha
 - 2026-11-07 notes: what passing the M2 gate means (owner, 2026-11-07)
 - 2026-11-07 rhythm-cell probe length added (from TP-188's reviews)
 - 2026-11-07 rhythm probe length corrected after TP-188 merged
+- 2026-11-07 backlog → in-progress, owner: agent-tp-087
