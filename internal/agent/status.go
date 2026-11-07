@@ -16,8 +16,7 @@ import (
 // S1, S4): nodes are the space's opaque ids, addresses are the overlay's,
 // and whatever failed is named from fixed vocabularies.
 type Status struct {
-	// Mode is the node's mode; ModeAuto while it is removed from its space
-	// and its kind unknown.
+	// Mode is the node's mode (Config.Mode), removed from its space or not.
 	Mode  Mode
 	Space netmap.SpaceID
 	// MapVersion is the version of the map the node follows.
