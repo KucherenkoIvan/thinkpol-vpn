@@ -2940,8 +2940,11 @@ type Status struct {
 	// The previous run under a device's service crashed or exited with an
 	// error: it left a trace on its stderr, which Diagnose's last_run has.
 	LastRunCrashed bool `protobuf:"varint,17,opt,name=last_run_crashed,json=lastRunCrashed,proto3" json:"last_run_crashed,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// The service's crash trace file was there but wasn't read: Diagnose's
+	// last_run says why.
+	LastRunUnreadable bool `protobuf:"varint,18,opt,name=last_run_unreadable,json=lastRunUnreadable,proto3" json:"last_run_unreadable,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *Status) Reset() {
@@ -3089,6 +3092,13 @@ func (x *Status) GetConnectOnBoot() bool {
 func (x *Status) GetLastRunCrashed() bool {
 	if x != nil {
 		return x.LastRunCrashed
+	}
+	return false
+}
+
+func (x *Status) GetLastRunUnreadable() bool {
+	if x != nil {
+		return x.LastRunUnreadable
 	}
 	return false
 }
@@ -4244,7 +4254,7 @@ const file_thinkpol_localapi_v1_localapi_proto_rawDesc = "" +
 	" \x01(\bR\vnodeWritten\"/\n" +
 	"\x05Space\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x16\n" +
-	"\x06active\x18\x02 \x01(\bR\x06active\"\x96\x06\n" +
+	"\x06active\x18\x02 \x01(\bR\x06active\"\xc6\x06\n" +
 	"\x06Status\x12.\n" +
 	"\x04mode\x18\x01 \x01(\x0e2\x1a.thinkpol.localapi.v1.ModeR\x04mode\x12\x19\n" +
 	"\bspace_id\x18\x02 \x01(\tR\aspaceId\x12\x1f\n" +
@@ -4268,7 +4278,8 @@ const file_thinkpol_localapi_v1_localapi_proto_rawDesc = "" +
 	"\x06uplink\x18\x0e \x01(\v2\x1c.thinkpol.localapi.v1.UplinkR\x06uplink\x12!\n" +
 	"\fmaps_refused\x18\x0f \x01(\x04R\vmapsRefused\x12&\n" +
 	"\x0fconnect_on_boot\x18\x10 \x01(\bR\rconnectOnBoot\x12(\n" +
-	"\x10last_run_crashed\x18\x11 \x01(\bR\x0elastRunCrashed\"\xa8\x01\n" +
+	"\x10last_run_crashed\x18\x11 \x01(\bR\x0elastRunCrashed\x12.\n" +
+	"\x13last_run_unreadable\x18\x12 \x01(\bR\x11lastRunUnreadable\"\xa8\x01\n" +
 	"\x06Uplink\x12\x1c\n" +
 	"\tinterface\x18\x01 \x01(\tR\tinterface\x12\x12\n" +
 	"\x04ipv4\x18\x02 \x01(\bR\x04ipv4\x12\x12\n" +

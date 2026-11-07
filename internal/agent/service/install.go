@@ -66,13 +66,16 @@ type Installer struct {
 	// BinaryPath.
 	Executable string
 	// Ready says whether the node can run (its state directory), checked
-	// before anything is installed, and in which mode the service will run
-	// it (agent.ResolveMode): a device's definition sends the agent's
-	// stderr to CrashTrace, a server's sends it nowhere.
-	Ready func() (agent.Mode, error)
+	// before anything is installed, and which mode the service is
+	// installed for (agent.ServiceMode; known false: the node's kind isn't
+	// known, and it is installed as a server): a device's definition sends
+	// the agent's stderr to CrashTrace, a server's sends it nowhere on
+	// disk.
+	Ready func() (mode agent.Mode, known bool, err error)
 	// CrashTrace is the device's crash trace file (agent.CrashTracePath),
-	// as the definition names it. A server's install, and uninstall,
-	// remove it.
+	// as the definition names it. A device's install makes it anew, 0600,
+	// before the service starts (agent.CreateCrashTrace); a server's
+	// install, and uninstall, remove it, once the service is stopped.
 	CrashTrace string
 	// LockHost takes the host's agent lock (agent.HostLock), failing with
 	// agent.ErrAnotherAgent while an agent holds it.
@@ -134,9 +137,12 @@ func (in Installer) Install(ctx context.Context, opts Options) error {
 	if err := in.System.Present(in.Root); err != nil {
 		return err
 	}
-	mode, err := in.Ready()
+	mode, known, err := in.Ready()
 	if err != nil {
 		return fmt.Errorf("this node can't run yet: %w", err)
+	}
+	if !known {
+		in.say("warning: this node's kind isn't known (it isn't in its map): installing a server's definition, which keeps no crash trace; install again once a map includes it")
 	}
 	def := in.definition(mode)
 	_, err = os.Lstat(in.path(in.System.DefinitionPath()))
@@ -171,9 +177,6 @@ func (in Installer) Install(ctx context.Context, opts Options) error {
 	if err := in.writeDefinition(def); err != nil {
 		return err
 	}
-	if def.CrashTrace == "" {
-		in.removeCrashTrace()
-	}
 	if defined {
 		if err := in.System.Stop(ctx, in.Run); err != nil {
 			return fmt.Errorf("the new binary and definition are on disk; stopping the installed service failed: %w", err)
@@ -181,6 +184,12 @@ func (in Installer) Install(ctx context.Context, opts Options) error {
 		if err := in.noAgent(); err != nil {
 			return fmt.Errorf("%s: %w", in.leftAfter(ctx, true), err)
 		}
+	}
+	// After the stop: an agent crashing before it would write the file anew.
+	if def.CrashTrace == "" {
+		in.removeCrashTrace()
+	} else if err := agent.CreateCrashTrace(in.path(def.CrashTrace)); err != nil {
+		return fmt.Errorf("%s; making the crash trace %s failed: %w", in.leftAfter(ctx, defined), def.CrashTrace, err)
 	}
 	if err := in.System.Start(ctx, in.Run); err != nil {
 		return fmt.Errorf("%s; starting it failed: %w", in.leftAfter(ctx, defined), err)

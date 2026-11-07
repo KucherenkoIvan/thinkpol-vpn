@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"flag"
-	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -27,16 +26,12 @@ func init() {
 }
 
 func runUp(ctx context.Context, e env, args []string) error {
-	// First: under a device's service stderr is the crash trace file, still
-	// holding the previous run's trace until this reads and empties it.
+	// First: under a device's service stderr is the crash trace file,
+	// holding the previous run's trace until the node has it.
 	errFile, _ := e.stderr.(*os.File)
 	trace, err := agent.TakeCrashTrace(agent.CrashTracePath(), errFile)
 	if err != nil {
 		return err
-	}
-	logOut := e.stderr
-	if trace.Tracing {
-		logOut = io.Discard
 	}
 	if err := agent.CheckEnvironment(); err != nil {
 		return err
@@ -62,17 +57,21 @@ func runUp(ctx context.Context, e env, args []string) error {
 	if err := config.Validate(&cfg); err != nil {
 		return err
 	}
-	logs, err := agent.NewLogs(cfg.LogLevel, logOut)
+	logs, err := agent.NewLogs(cfg.LogLevel, trace.LogOutput(e.stderr, cfg.Service))
 	if err != nil {
 		return err
 	}
-	// What logs through slog's default (nsthread) reaches the node's log too.
+	// What logs through slog's default (nsthread) or grpc's reaches the
+	// node's log too.
 	slog.SetDefault(logs.Logger)
+	localapi.RouteGRPCLog(logs.Logger)
 	node, err := agent.Prepare(cfg, logs, platform())
 	if err != nil {
 		return err
 	}
-	node.KeepLastRun(trace)
+	if err := node.KeepLastRun(trace); err != nil {
+		return err
+	}
 	reload := make(chan os.Signal, 1)
 	signal.Notify(reload, syscall.SIGHUP)
 	defer signal.Stop(reload)
@@ -86,5 +85,5 @@ func runUp(ctx context.Context, e env, args []string) error {
 			Log: logs.With("component", "local API"), Version: resolveVersion(),
 		}))
 	}
-	return app.RunWith(ctx, app.Options{Logger: logs.Logger}, adapters...)
+	return agent.CleanStop(app.RunWith(ctx, app.Options{Logger: logs.Logger}, adapters...))
 }

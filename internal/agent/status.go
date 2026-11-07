@@ -55,6 +55,9 @@ type Status struct {
 	// LastRunCrashed: the previous run under a device's service left a
 	// trace on its stderr (LastRun.Crashed); Diagnostics has it.
 	LastRunCrashed bool
+	// LastRunUnreadable: the service's crash trace file was there but
+	// wasn't read (LastRun.Unreadable); Diagnostics says why.
+	LastRunUnreadable bool
 	// DNSUnprotected is set while a connected device's OS may resolve
 	// names outside the node's resolver (pointing it failed, or another
 	// link's domains in systemd-resolved): names may leave outside the
@@ -250,7 +253,7 @@ func (p *report) statusLocked() Status { return p.statusWith(nil) }
 // already (nil: read it now).
 func (p *report) statusWith(dp *dataplane.Status) Status {
 	s := Status{Mode: p.mode, Space: p.space, MapVersion: p.version, MapsRefused: p.mapsRefused, Removed: p.removed, Retrying: p.retrying, Listeners: p.listeners, DNSUpstreamsRefused: p.dnsUpstreamsRefused,
-		LastRunCrashed: p.lastRun.Crashed()}
+		LastRunCrashed: p.lastRun.Crashed(), LastRunUnreadable: p.lastRun.Unreadable != ""}
 	if p.mode != ModeServer {
 		s.RulePreset, s.ConnectOnBoot = p.preset, p.connectOnBoot
 	}

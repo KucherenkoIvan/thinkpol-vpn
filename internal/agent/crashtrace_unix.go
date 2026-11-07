@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 const noFollow = syscall.O_NOFOLLOW
@@ -31,4 +33,22 @@ func fixCrashTraceFile(f *os.File, fi os.FileInfo) (string, error) {
 		fixed += fmt.Sprintf("mode %#o made 0600", perm)
 	}
 	return fixed, nil
+}
+
+// linkCount is the file's number of hard links.
+func linkCount(fi os.FileInfo) uint64 {
+	if st, ok := fi.Sys().(*syscall.Stat_t); ok {
+		return uint64(st.Nlink)
+	}
+	return 1
+}
+
+// detachStderr points f's descriptor at the null device.
+func detachStderr(f *os.File) error {
+	null, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = null.Close() }()
+	return unix.Dup2(int(null.Fd()), int(f.Fd()))
 }

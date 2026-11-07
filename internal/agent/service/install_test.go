@@ -45,6 +45,11 @@ type fakeHost struct {
 	// progress") though the teardown goes on; printFails: print fails
 	// for another reason than no such service.
 	bootoutFails, printFails bool
+	// traceAtStart is the crash trace file as the manager found it at the
+	// last start (nil: none); crashOnStop: the stopped agent writes a
+	// trace as it dies.
+	traceAtStart os.FileInfo
+	crashOnStop  bool
 	// bootstrapEIO: bootstraps refused with launchd's EIO before one is
 	// taken; bootstrapEIOLoaded: ones that say EIO but load the job.
 	bootstrapEIO, bootstrapEIOLoaded int
@@ -79,6 +84,17 @@ func (h *fakeHost) run(_ context.Context, tool string, args ...string) (string, 
 	if h.failNext[key] > 0 {
 		h.failNext[key]--
 		return "", fmt.Errorf("%s: failing on purpose", key)
+	}
+	trace := filepath.Join(h.root, testCrashTrace)
+	switch key {
+	case "systemctl restart", "launchctl bootstrap":
+		h.traceAtStart, _ = os.Lstat(trace)
+	case "systemctl stop", "launchctl bootout":
+		if h.crashOnStop {
+			if err := os.WriteFile(trace, []byte("panic: on the way out\n"), 0o644); err != nil {
+				h.t.Error(err)
+			}
+		}
 	}
 	switch tool {
 	case "systemctl":
@@ -259,7 +275,7 @@ func (h *fakeHost) installer(sys System) (Installer, *bytes.Buffer) {
 	exe := filepath.Join(h.root, "home", "thinkpol")
 	// The host has its manager, and somewhere to copy from.
 	for _, dir := range []string{filepath.Dir(exe), filepath.Join(h.root, filepath.Dir(sys.DefinitionPath())),
-		filepath.Join(h.root, "run/systemd/system")} {
+		filepath.Join(h.root, "run/systemd/system"), filepath.Join(h.root, filepath.Dir(testCrashTrace))} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			h.t.Fatal(err)
 		}
@@ -269,7 +285,7 @@ func (h *fakeHost) installer(sys System) (Installer, *bytes.Buffer) {
 	}
 	var out bytes.Buffer
 	return Installer{
-		Root: h.root, System: sys, Run: h.run, Executable: exe, Ready: func() (agent.Mode, error) { return agent.ModeDevice, nil },
+		Root: h.root, System: sys, Run: h.run, Executable: exe, Ready: func() (agent.Mode, bool, error) { return agent.ModeDevice, true, nil },
 		CrashTrace: testCrashTrace,
 		LockHost:   h.lock,
 		ClearHost: func() ([]string, error) {
@@ -706,7 +722,7 @@ func TestLaunchdWaitsForTheDaemonToGo(t *testing.T) {
 func TestInstallRefusesBeforeChangingAnything(t *testing.T) {
 	for name, change := range map[string]func(*fakeHost, *Installer){
 		"a node that can't run": func(_ *fakeHost, in *Installer) {
-			in.Ready = func() (agent.Mode, error) { return "", errors.New("no node.key") }
+			in.Ready = func() (agent.Mode, bool, error) { return "", false, errors.New("no node.key") }
 		},
 		"a host without systemd": func(h *fakeHost, _ *Installer) {
 			if err := os.Remove(filepath.Join(h.root, "run/systemd/system")); err != nil {
@@ -839,16 +855,28 @@ func TestADefinitionChangedByHandIsReported(t *testing.T) {
 	}
 }
 
-// A device's definition names its crash trace, a server's none, and a
-// server's install removes a trace a device left (PRD S2). A node whose
-// mode changed is installed anew without a warning: its definition
-// wasn't changed by hand.
+// A device's definition names its crash trace, which its install makes
+// anew, empty and 0600, before the service starts; a server's names none,
+// and its install removes a trace a device left (PRD S2), after the old
+// service stopped (its agent may write one as it dies). A node whose mode
+// changed is installed anew without a warning: its definition wasn't
+// changed by hand. A node of unknown kind is installed as a server, and
+// told.
 func TestOnlyADevicesDefinitionKeepsACrashTrace(t *testing.T) {
 	for name, sys := range map[string]System{"systemd": Systemd{}, "launchd": Launchd{}} {
 		t.Run(name, func(t *testing.T) {
 			h := newFakeHost(t)
 			in, out := h.installer(sys)
 			ctx := context.Background()
+			trace := filepath.Join(h.root, testCrashTrace)
+			// Someone else's file, world-readable, is there before.
+			if err := os.WriteFile(trace, []byte("planted\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			planted, err := os.Lstat(trace)
+			if err != nil {
+				t.Fatal(err)
+			}
 			if err := in.Install(ctx, Options{}); err != nil {
 				t.Fatal(err)
 			}
@@ -856,16 +884,17 @@ func TestOnlyADevicesDefinitionKeepsACrashTrace(t *testing.T) {
 			if !bytes.Equal(def, sys.Render(deviceDefinition)) || !bytes.Contains(def, []byte(testCrashTrace)) {
 				t.Fatalf("a device's definition:\n%s", def)
 			}
-			// The device's agent crashed and left its trace.
-			trace := filepath.Join(h.root, testCrashTrace)
-			if err := os.MkdirAll(filepath.Dir(trace), 0o700); err != nil {
-				t.Fatal(err)
+			if at := h.traceAtStart; at == nil || at.Mode() != 0o600 || at.Size() != 0 || os.SameFile(at, planted) {
+				t.Fatalf("the crash trace at the start: %v", at)
 			}
+
+			// The device's agent crashed and left its trace; it crashes
+			// again as the server's install stops it.
 			if err := os.WriteFile(trace, []byte("panic: boom\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-
-			in.Ready = func() (agent.Mode, error) { return agent.ModeServer, nil }
+			h.crashOnStop = true
+			in.Ready = func() (agent.Mode, bool, error) { return agent.ModeServer, true, nil }
 			if err := in.Install(ctx, Options{}); err != nil {
 				t.Fatal(err)
 			}
@@ -873,20 +902,30 @@ func TestOnlyADevicesDefinitionKeepsACrashTrace(t *testing.T) {
 			if !bytes.Equal(def, sys.Render(Definition{Binary: BinaryPath})) || bytes.Contains(def, []byte(testCrashTrace)) {
 				t.Fatalf("a server's definition:\n%s", def)
 			}
-			if _, _, ok := h.file(testCrashTrace); ok {
+			if _, _, ok := h.file(testCrashTrace); ok || h.traceAtStart != nil {
 				t.Error("a server's install left the crash trace")
 			}
 			if strings.Contains(out.String(), "warning: ") || !strings.Contains(out.String(), "removed the crash trace") {
 				t.Errorf("said:\n%s", out)
 			}
+			h.crashOnStop = false
 
-			in.Ready = func() (agent.Mode, error) { return agent.ModeDevice, nil }
+			in.Ready = func() (agent.Mode, bool, error) { return agent.ModeDevice, true, nil }
 			out.Reset()
 			if err := in.Install(ctx, Options{}); err != nil {
 				t.Fatal(err)
 			}
 			if def, _, _ = h.file(sys.DefinitionPath()); !bytes.Equal(def, sys.Render(deviceDefinition)) || strings.Contains(out.String(), "warning: ") {
 				t.Fatalf("a device's definition again:\n%s\nsaid\n%s", def, out)
+			}
+
+			in.Ready = func() (agent.Mode, bool, error) { return agent.ModeServer, false, nil }
+			out.Reset()
+			if err := in.Install(ctx, Options{}); err != nil {
+				t.Fatal(err)
+			}
+			if def, _, _ = h.file(sys.DefinitionPath()); !bytes.Equal(def, sys.Render(Definition{Binary: BinaryPath})) || !strings.Contains(out.String(), "kind isn't known") {
+				t.Fatalf("an unknown kind's definition:\n%s\nsaid\n%s", def, out)
 			}
 		})
 	}

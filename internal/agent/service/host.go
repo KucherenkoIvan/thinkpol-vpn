@@ -70,23 +70,9 @@ func InstallingUser() string {
 
 // nodeReady checks the node's default state directory as `thinkpol up`
 // would read it: without keys and a map, or with a node file it refuses,
-// the service would only restart. It returns the mode the service's agent
-// will run in: the node file's, else the node's kind in the map.
-func nodeReady() (agent.Mode, error) {
-	s, err := agent.ReadNodeFile(agent.DefaultStateDir)
-	if err != nil {
-		return "", err
-	}
-	st, err := agent.LoadState(agent.DefaultStateDir, filepath.Join(agent.DefaultStateDir, agent.MapFileName))
-	if err != nil {
-		return "", err
-	}
-	mode := agent.ModeAuto
-	if s.Mode != nil {
-		mode = *s.Mode
-	}
-	return agent.ResolveMode(mode, st), nil
-}
+// the service would only restart. It returns the mode the service is
+// installed for (agent.ServiceMode).
+func nodeReady() (agent.Mode, bool, error) { return agent.ServiceMode(agent.DefaultStateDir) }
 
 func runTool(ctx context.Context, tool string, args ...string) (string, error) {
 	path, err := findTool(tool)

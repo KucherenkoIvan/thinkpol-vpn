@@ -4,11 +4,17 @@ package agent
 
 import (
 	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
+	"time"
+	"unicode/utf8"
 )
 
 // openAsStderr opens path as a service manager opens a definition's
@@ -63,6 +69,13 @@ func TestAStartReadsThePreviousTraceThenOverwritesIt(t *testing.T) {
 			if !strings.Contains(ct.Fixed, "0644") {
 				t.Errorf("fixed %q", ct.Fixed)
 			}
+			// Kept until the node has it.
+			if got, _ := os.ReadFile(path); string(got) != previous {
+				t.Fatalf("the file before the release holds %q", got)
+			}
+			if err := ct.Release(); err != nil {
+				t.Fatal(err)
+			}
 			fi, err := os.Stat(path)
 			if err != nil {
 				t.Fatal(err)
@@ -105,6 +118,262 @@ func TestALongTraceKeepsItsHead(t *testing.T) {
 	if err != nil || !ct.LastRun.Truncated || len(ct.LastRun.Trace) != CrashTraceLimit || !strings.HasPrefix(ct.LastRun.Trace, "panic: first line\n") {
 		t.Fatalf("took %d bytes, truncated %v, %v", len(ct.LastRun.Trace), ct.LastRun.Truncated, err)
 	}
+	// The file is cut to that head until the release.
+	if fi, err := os.Stat(path); err != nil || fi.Size() != CrashTraceLimit {
+		t.Fatalf("the file: %v, %v", fi.Size(), err)
+	}
+}
+
+// A start that fails before the node has the trace adds its error after
+// the trace instead of losing it, and the next start reads both.
+func TestAFailedStartKeepsTheTrace(t *testing.T) {
+	path := filepath.Join(t.TempDir(), CrashTraceFile)
+	if err := os.WriteFile(path, []byte("panic: boom\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, appending := range []bool{true, false} {
+		stderr := openAsStderr(t, path, appending)
+		if _, err := TakeCrashTrace(path, stderr); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := stderr.WriteString("thinkpol up: no map\n"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ct, err := TakeCrashTrace(path, openAsStderr(t, path, true))
+	if err != nil || ct.LastRun.Trace != "panic: boom\nthinkpol up: no map\nthinkpol up: no map\n" {
+		t.Fatalf("took %+v, %v", ct, err)
+	}
+}
+
+// What is kept is valid UTF-8, whatever bytes the run wrote, and the cut
+// at the limit doesn't split a character.
+func TestTheTraceIsUTF8(t *testing.T) {
+	for name, tc := range map[string]struct {
+		file, want string
+	}{
+		"raw bytes": {"panic: \xff\n", "panic: \uFFFD\n"},
+		"cut mid-character": {
+			strings.Repeat("a", CrashTraceLimit-1) + "é and more",
+			strings.Repeat("a", CrashTraceLimit-1),
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), CrashTraceFile)
+			if err := os.WriteFile(path, []byte(tc.file), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			ct, err := TakeCrashTrace(path, openAsStderr(t, path, true))
+			if err != nil || ct.LastRun.Trace != tc.want || !utf8.ValidString(ct.LastRun.Trace) {
+				t.Fatalf("took %q, %v", ct.LastRun.Trace, err)
+			}
+		})
+	}
+}
+
+// A trace file with another link (someone kept a name for it) isn't read
+// or written to: it is emptied and removed, and stderr goes nowhere.
+func TestAHardLinkedTraceIsRefused(t *testing.T) {
+	dir := t.TempDir()
+	path, other := filepath.Join(dir, CrashTraceFile), filepath.Join(dir, "kept")
+	if err := os.WriteFile(path, []byte("panic: boom\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(path, other); err != nil {
+		t.Fatal(err)
+	}
+	stderr := openAsStderr(t, path, true)
+	ct, err := TakeCrashTrace(path, stderr)
+	if err != nil || ct.Tracing || ct.LastRun.Crashed() || !strings.Contains(ct.LastRun.Unreadable, "2 links") {
+		t.Fatalf("took %+v, %v", ct, err)
+	}
+	if _, err := stderr.WriteString("this run's\n"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(other); err != nil || len(got) != 0 {
+		t.Fatalf("the other link holds %q, %v", got, err)
+	}
+	if _, err := os.Lstat(path); err == nil {
+		t.Fatal("the trace file stays")
+	}
+	detached(t, stderr)
+}
+
+// detached checks that stderr's descriptor is the null device's.
+func detached(t *testing.T, stderr *os.File) {
+	t.Helper()
+	fi, err := stderr.Stat()
+	null, nerr := os.Stat(os.DevNull)
+	if err != nil || nerr != nil || !os.SameFile(fi, null) {
+		t.Fatalf("stderr is %v (%v, %v)", fi, err, nerr)
+	}
+}
+
+// install's file replaces whatever was at the path, a symlink too, and
+// is the caller's, 0600 and empty.
+func TestCreateCrashTraceReplacesWhatWasThere(t *testing.T) {
+	dir := t.TempDir()
+	path, target := filepath.Join(dir, CrashTraceFile), filepath.Join(dir, "target")
+	if err := os.WriteFile(target, []byte("someone's\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, path); err != nil {
+		t.Fatal(err)
+	}
+	if err := CreateCrashTrace(path); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Lstat(path)
+	if err != nil || !fi.Mode().IsRegular() || fi.Mode().Perm() != 0o600 || fi.Size() != 0 || int(fi.Sys().(*syscall.Stat_t).Uid) != os.Geteuid() {
+		t.Fatalf("the file: %v, %v", fi, err)
+	}
+	if got, _ := os.ReadFile(target); string(got) != "someone's\n" {
+		t.Fatalf("the symlink's target holds %q", got)
+	}
+}
+
+// The log goes nowhere while stderr is the trace, or any regular file
+// under the service; to stderr otherwise.
+func TestTheLogStaysOffTheDisk(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, CrashTraceFile)
+	trace := openAsStderr(t, path, true)
+	ct, err := TakeCrashTrace(path, trace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ct.LogOutput(trace, false) != io.Discard {
+		t.Error("the log goes to the trace")
+	}
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = r.Close(), w.Close() }()
+	file := openAsStderr(t, filepath.Join(dir, "elsewhere"), true)
+	none := &CrashTrace{}
+	for _, tc := range []struct {
+		stderr  io.Writer
+		service bool
+		want    io.Writer
+	}{{file, true, io.Discard}, {file, false, file}, {w, true, w}, {&bytes.Buffer{}, true, nil}} {
+		want := tc.want
+		if want == nil {
+			want = tc.stderr
+		}
+		if got := none.LogOutput(tc.stderr, tc.service); got != want {
+			t.Errorf("%T, service %v: the log goes to %T", tc.stderr, tc.service, got)
+		}
+	}
+}
+
+// A stop by a signal is no error, so a device's trace gets nothing.
+func TestACleanStopIsNoError(t *testing.T) {
+	real := errors.New("listener: address in use")
+	for err, want := range map[error]bool{
+		nil: false,
+		context.Canceled: false,
+		errors.Join(fmt.Errorf("local API: %w", context.Canceled), nil): false,
+		errors.Join(fmt.Errorf("node: %w", context.Canceled), real):     true,
+		real: true,
+	} {
+		if got := CleanStop(err); (got != nil) != want {
+			t.Errorf("CleanStop(%v) = %v", err, got)
+		}
+	}
+}
+
+// A server keeps no trace: under a device's definition it stops writing
+// to the file at its start, and so does a node that comes back into its
+// space as a server; a device writes on. A trace file a server finds
+// otherwise is warned about.
+func TestAServerKeepsNoTrace(t *testing.T) {
+	s := newTestSpace(t)
+	prepare := func(t *testing.T, k NodeKeys, removed bool) (*Node, *bytes.Buffer, string) {
+		t.Helper()
+		dir := s.stateDir(t, k, 1)
+		if removed {
+			writeFile(t, filepath.Join(dir, MapFileName), s.buildWithout(t, 1, k), 0o644)
+		}
+		var out bytes.Buffer
+		logs, err := NewLogs("info", &out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		n, err := Prepare(testConfig(dir), logs, testPlatform())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n, &out, filepath.Join(dir, CrashTraceFile)
+	}
+	take := func(t *testing.T, path string) (*CrashTrace, *os.File) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte("panic: boom\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		stderr := openAsStderr(t, path, true)
+		ct, err := TakeCrashTrace(path, stderr)
+		if err != nil || !ct.Tracing {
+			t.Fatalf("took %+v, %v", ct, err)
+		}
+		return ct, stderr
+	}
+	const reinstall = "a server under a device's service definition"
+
+	t.Run("a server", func(t *testing.T) {
+		n, out, path := prepare(t, s.a, false)
+		ct, stderr := take(t, path)
+		if err := n.KeepLastRun(ct); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Lstat(path); err == nil || ct.Tracing || !n.Status().LastRunCrashed || !strings.Contains(out.String(), reinstall) {
+			t.Fatalf("tracing %v, crashed %v, log:\n%s", ct.Tracing, n.Status().LastRunCrashed, out)
+		}
+		detached(t, stderr)
+	})
+	t.Run("a device", func(t *testing.T) {
+		n, out, path := prepare(t, s.b, false)
+		ct, _ := take(t, path)
+		if err := n.KeepLastRun(ct); err != nil {
+			t.Fatal(err)
+		}
+		if fi, err := os.Lstat(path); err != nil || fi.Size() != 0 || !ct.Tracing || strings.Contains(out.String(), reinstall) {
+			t.Fatalf("tracing %v, file %v %v, log:\n%s", ct.Tracing, fi, err, out)
+		}
+	})
+	t.Run("back as a server", func(t *testing.T) {
+		n, out, path := prepare(t, s.a, true)
+		ct, stderr := take(t, path)
+		if err := n.KeepLastRun(ct); err != nil {
+			t.Fatal(err)
+		}
+		if !ct.Tracing {
+			t.Fatal("a node of unknown mode stopped tracing")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		maps := make(chan []byte, 1)
+		maps <- s.build(t, 2)
+		if !n.awaitSection(ctx, maps) {
+			t.Fatalf("gave up:\n%s", out)
+		}
+		if _, err := os.Lstat(path); err == nil || ct.Tracing || !strings.Contains(out.String(), reinstall) {
+			t.Fatalf("tracing %v, log:\n%s", ct.Tracing, out)
+		}
+		detached(t, stderr)
+	})
+	t.Run("a file left", func(t *testing.T) {
+		n, out, path := prepare(t, s.a, false)
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := n.KeepLastRun(&CrashTrace{}); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(out.String(), "holds a crash trace, which a server keeps none of") || strings.Contains(out.String(), reinstall) {
+			t.Fatalf("log:\n%s", out)
+		}
+	})
 }
 
 // A stderr that isn't the trace file (a terminal, the journal, a server's

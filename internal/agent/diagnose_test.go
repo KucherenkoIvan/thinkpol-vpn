@@ -116,7 +116,9 @@ func TestThePreviousRunsTraceShows(t *testing.T) {
 	b.connection(t, Disconnected)
 	ctx := context.Background()
 
-	b.node.KeepLastRun(CrashTrace{Tracing: true})
+	if err := b.node.KeepLastRun(&CrashTrace{}); err != nil {
+		t.Fatal(err)
+	}
 	for _, root := range []bool{true, false} {
 		if d := b.node.Diagnose(ctx, root); d.LastRun != (LastRun{}) || d.Status.LastRunCrashed || b.node.Status().LastRunCrashed {
 			t.Fatalf("a clean stop, root %v: %+v, crashed %v", root, d.LastRun, d.Status.LastRunCrashed)
@@ -124,7 +126,9 @@ func TestThePreviousRunsTraceShows(t *testing.T) {
 	}
 
 	trace := "panic: boom\n\ngoroutine 1 [running]:\n"
-	b.node.KeepLastRun(CrashTrace{Tracing: true, LastRun: LastRun{Trace: trace, Truncated: true}})
+	if err := b.node.KeepLastRun(&CrashTrace{LastRun: LastRun{Trace: trace, Truncated: true}}); err != nil {
+		t.Fatal(err)
+	}
 	if !b.node.Status().LastRunCrashed {
 		t.Fatal("the status doesn't say the last run crashed")
 	}
@@ -133,6 +137,20 @@ func TestThePreviousRunsTraceShows(t *testing.T) {
 	}
 	if d := b.node.Diagnose(ctx, false); d.LastRun != (LastRun{Unreadable: UnreadableRootOnly}) || !d.Status.LastRunCrashed {
 		t.Fatalf("not root: %+v", d.LastRun)
+	}
+
+	// A trace that wasn't read isn't a crash, and why is root's too.
+	if err := b.node.KeepLastRun(&CrashTrace{LastRun: LastRun{Unreadable: "hard-linked"}}); err != nil {
+		t.Fatal(err)
+	}
+	if st := b.node.Status(); st.LastRunCrashed || !st.LastRunUnreadable {
+		t.Fatalf("an unread trace: %+v", st)
+	}
+	if d := b.node.Diagnose(ctx, false); d.LastRun != (LastRun{Unreadable: UnreadableRootOnly}) {
+		t.Fatalf("not root: %+v", d.LastRun)
+	}
+	if d := b.node.Diagnose(ctx, true); d.LastRun.Unreadable != "hard-linked" {
+		t.Fatalf("root: %+v", d.LastRun)
 	}
 }
 

@@ -113,7 +113,7 @@ func (n *Node) Diagnose(ctx context.Context, withHostParts bool) Diagnostics {
 		d.Routes = netcfg.Inspection{RoutesUnreadable: UnreadableRootOnly, RulesUnreadable: UnreadableRootOnly}
 		d.Guard = routetable.GuardReport{Unreadable: UnreadableRootOnly}
 		d.DNS = dns.HostReport{Unreadable: UnreadableRootOnly}
-		if d.Status.LastRunCrashed {
+		if d.Status.LastRunCrashed || d.Status.LastRunUnreadable {
 			d.LastRun = LastRun{Unreadable: UnreadableRootOnly}
 		}
 		return d

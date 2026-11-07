@@ -468,6 +468,9 @@ message Status {
   // The previous run under a device's service crashed or exited with an
   // error: it left a trace on its stderr, which Diagnose's last_run has.
   bool last_run_crashed = 17;
+  // The service's crash trace file was there but wasn't read: Diagnose's
+  // last_run says why.
+  bool last_run_unreadable = 18;
 }
 
 // Uplink is a server's way to the internet, for its spaces that allow

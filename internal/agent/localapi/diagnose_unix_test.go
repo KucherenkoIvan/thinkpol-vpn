@@ -88,6 +88,62 @@ func TestThePreviousRunsTraceIsServed(t *testing.T) {
 	}
 }
 
+// A trace that isn't UTF-8 (a panic may print any bytes) still reaches
+// Diagnose and its JSON, read from the file as a start reads it; an
+// unreadable trace is a status line of its own.
+func TestATraceOfAnyBytesIsServed(t *testing.T) {
+	path := filepath.Join(t.TempDir(), agent.CrashTraceFile)
+	if err := os.WriteFile(path, []byte("panic: \xff\xfe raw\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stderr, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = stderr.Close() }()
+	ct, err := agent.TakeCrashTrace(path, stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s := serve(t, me())
+	c := dial(t, s.socket)
+	ctx := context.Background()
+	s.node.mu.Lock()
+	s.node.st.LastRunCrashed = true
+	s.node.diag.LastRun = ct.LastRun
+	s.node.mu.Unlock()
+	d, err := c.Diagnose(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lines := d.GetLastRun().GetLines(); len(lines) != 1 || !strings.HasPrefix(lines[0], "panic: ") || !strings.HasSuffix(lines[0], " raw") {
+		t.Fatalf("lines %q", lines)
+	}
+	var out bytes.Buffer
+	if err := WriteDiagnostics(&out, d); err != nil {
+		t.Fatal(err)
+	}
+	if !json.Valid(out.Bytes()) {
+		t.Fatalf("JSON:\n%s", out.String())
+	}
+
+	s.node.mu.Lock()
+	s.node.st.LastRunCrashed, s.node.st.LastRunUnreadable = false, true
+	s.node.mu.Unlock()
+	st, err := c.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var text bytes.Buffer
+	if err := WriteStatus(&text, st, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(text.String(), "its crash trace wasn't read") || strings.Contains(text.String(), "crashed, or exited") {
+		t.Fatalf("status text:\n%s", text.String())
+	}
+}
+
 func TestDiagnoseServesAVersionedSnapshot(t *testing.T) {
 	s := serve(t, me())
 	c := dial(t, s.socket)
