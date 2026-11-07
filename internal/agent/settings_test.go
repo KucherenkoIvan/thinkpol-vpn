@@ -141,7 +141,7 @@ func TestTheNodeFileIsRootsAlone(t *testing.T) {
 	}
 }
 
-// Keys are checked at every depth (TP-111's ceiling and TP-048's toggles
+// Keys are checked at every depth (TP-183's ceiling and TP-048's toggles
 // will nest): exactly, and once per object.
 func TestSettingsKeysAreCheckedAtEveryDepth(t *testing.T) {
 	type nested struct {

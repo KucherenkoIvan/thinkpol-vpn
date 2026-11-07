@@ -129,15 +129,16 @@
 // node is known to be a device: its node file says "device" (whatever
 // its map), or sets no mode and its map shows the node as a device
 // ([CrashTrace.KeepOnlyOnADevice]). A device mode given only by a flag or
-// the environment isn't enough (a service's definition gives neither, and
-// the default can't be told from one given), and a node the map makes a
-// server or doesn't hold, or whose state directory or node file can't be
-// read, keeps none, even of the start's own error. A server's start
-// detaches the same way once the node is prepared ([Node.KeepLastRun]),
-// warning that a device's definition runs it, and warns of a crash-trace
-// it finds in its state directory otherwise. A device that detaches (a file it couldn't empty)
-// makes the file anew, root's 0600, so its manager's next start doesn't
-// create it with its own mode. grpc's fatal errors are written to stderr
+// the environment isn't enough (the default can't be told from one
+// given: a device that wants one set node.json's "mode"), and a node the
+// map makes a server or doesn't hold, or whose state directory or node
+// file can't be read, keeps none, even of the start's own error. A
+// server's start detaches the same way once the node is prepared
+// ([Node.KeepLastRun]), warning that a device's definition runs it, and
+// warns of a crash-trace it finds in its state directory otherwise. A
+// device that detaches (a file it couldn't empty) makes the file anew,
+// root's 0600, so its manager's next start doesn't create it with its
+// own mode. grpc's fatal errors are written to stderr
 // as well as the log, so the trace says why the agent exited.
 // A stderr that isn't the file (a terminal, the journal, a server's
 // service) leaves it alone, and the log goes to stderr as ever. It survives a
@@ -182,17 +183,28 @@
 // sets "mode": "server" in its node file (or runs with -mode server); a
 // value other than device or server, the gone "auto" among them, exits
 // EX_CONFIG. A node that starts removed from its space runs in its mode
-// all the same, and a newer map that changes its kind is logged and
-// changes nothing of the mode. A server section run in device mode
-// forwards nothing: one that allows egress is no exit, and its log says
-// so and how to run it as a server; its resolver still serves the
-// space's overlay like an exit's.
+// all the same, and a newer map that changes its kind changes nothing of
+// the mode.
+//
+// Device mode runs no server's section (kind server, an entry or an exit
+// alike): it would open the map's public listeners, admit links and relay
+// other nodes' packets. A node in device mode whose map makes it a server
+// (a server whose node file lost its mode, say after an upgrade from when
+// the map's kind picked it) is handled like a removed one: no listener,
+// link, relay or egress, and the host's network left alone (no TUN,
+// route, resolver configuration or firewall, not even a crashed run's
+// clean-up: the box is a server's). The agent stays up following the
+// space's maps, the local API answers, Status has ModeMismatch (health
+// problem mode_mismatch), and the log says to set "mode": "server" in
+// node.json (or -mode server) and restart. A newer map that makes a
+// running device a server stops its data plane the same way; one that
+// makes it a device again starts it.
 //
 // Planned (TP-183): the node's own configuration as a ceiling over what
-// the map asks of it (docs/design/overlay.md "Node agent").
-// Until it exists, a signed map alone decides the role of a node run in
-// server mode (RESIDUAL-RISKS.md RR42). The ceiling is a preset, device or server,
-// and within server each capability on its own: ingress (public
+// the map asks of it (docs/design/overlay.md "Node agent"). Until it
+// exists, a signed map alone decides the role of a node run in server
+// mode (RESIDUAL-RISKS.md RR42). The ceiling is a preset, device or
+// server, and within server each capability on its own: ingress (public
 // listeners), egress (forwarding to the internet, with EgressAllowed) and
 // relaying; later, serving guest spaces and their caps. A fresh install
 // is a device; anything more is opted into locally (provisioning does it

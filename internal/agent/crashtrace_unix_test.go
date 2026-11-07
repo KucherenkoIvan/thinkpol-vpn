@@ -468,7 +468,7 @@ func TestOnlyAKnownDeviceKeepsTracing(t *testing.T) {
 		"a device by its kind":      {Config{Mode: ModeDevice, StateDir: s.stateDir(t, s.b, 1)}, true},
 		"a server's kind, no mode":  {Config{Mode: ModeDevice, StateDir: s.stateDir(t, s.a, 1)}, false},
 		"of unknown kind":           {Config{Mode: ModeDevice, StateDir: removed}, false},
-		"a file over its flag":      {Config{Mode: ModeDevice, StateDir: withMode(s.stateDir(t, s.b, 1), ModeServer)}, false},
+		"a device flag over a server's file":      {Config{Mode: ModeDevice, StateDir: withMode(s.stateDir(t, s.b, 1), ModeServer)}, false},
 		"a config that wasn't read": {Config{}, false},
 		"a device's, unread config": {Config{StateDir: s.stateDir(t, s.b, 1)}, true},
 	} {

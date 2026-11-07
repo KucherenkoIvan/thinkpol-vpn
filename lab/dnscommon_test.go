@@ -54,16 +54,6 @@ func osResolvConf(resolver netip.Addr) []byte {
 	return []byte("nameserver " + resolver.String() + "\nsearch direct.test\noptions timeout:2 attempts:3\n")
 }
 
-// startDeviceExit starts server as a device-mode exit: its resolver's
-// own queries leave from the node itself, without a worker's egress (the
-// server-mode case is startServerExit).
-func startDeviceExit(t *testing.T, server *lab.Node, upstream netip.Addr, version string) *lab.Process {
-	t.Helper()
-	exit := server.Start(t, "thinkpol", "up", "-mode", "device", "-dns-upstream", upstream.String()+":5353")
-	waitLog(t, exit, applied(version))
-	return exit
-}
-
 // startServerExit starts server as a server-mode exit: its resolver runs
 // in the worker and asks upstream's :5353. The lab's addresses are
 // private, which the worker's egress refuses unless egressAllowed covers

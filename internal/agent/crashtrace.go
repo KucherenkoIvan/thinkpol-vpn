@@ -151,14 +151,15 @@ func (ct *CrashTrace) Release() error {
 // node file of its state directory says so (whatever its map), or,
 // setting no mode, leaves the node a device by default while its map
 // shows it as one (knownDevice). A device mode given only by the
-// environment or a flag isn't enough: a service's definition gives
-// neither, and the default can't be told from one given. A server, a
-// node the map makes a server or doesn't hold, and a state directory or
-// node file that can't be read keep no trace (PRD S2), so call it as soon as cfg is read, before anything
-// that can fail or panic: a server under a device's definition otherwise
-// adds each failed start's error to the file. A cfg that couldn't be
-// read is the zero Config: the trace file's directory is taken for the
-// state directory.
+// environment or a flag isn't enough: the default can't be told from one
+// given, so a device that wants its trace whatever its map sets "mode":
+// "device" in node.json. A server, a node the map makes a server or
+// doesn't hold, and a state directory or node file that can't be read
+// keep no trace (PRD S2), so call it as soon as cfg is read, before
+// anything that can fail or panic: a server under a device's definition
+// otherwise adds each failed start's error to the file. A cfg that
+// couldn't be read is the zero Config: the trace file's directory is
+// taken for the state directory.
 func (ct *CrashTrace) KeepOnlyOnADevice(cfg Config) error {
 	if ct == nil || !ct.Tracing {
 		return nil

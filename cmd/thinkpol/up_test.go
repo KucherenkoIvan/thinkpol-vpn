@@ -60,6 +60,8 @@ func TestUpRunsANodeAsADeviceUnlessToldOtherwise(t *testing.T) {
 		{"a server by the environment", "server-1", "", []string{"THINKPOL_MODE", "server"}, nil, agent.ModeServer},
 		{"a server by its flag", "server-1", "", nil, []string{"-mode", "server"}, agent.ModeServer},
 		{"a flag over the node file", "server-1", `{"mode": "server"}`, nil, []string{"-mode", "device"}, agent.ModeDevice},
+		{"a flag over the environment", "server-1", "", []string{"THINKPOL_MODE", "server"}, []string{"-mode", "device"}, agent.ModeDevice},
+		{"the environment over the node file", "server-1", `{"mode": "device"}`, []string{"THINKPOL_MODE", "server"}, nil, agent.ModeServer},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			unsetTHINKPOL(t)
@@ -92,10 +94,16 @@ func TestUpRefusesABadMode(t *testing.T) {
 	unsetTHINKPOL(t)
 	state, _ := m0State(t, "server-1")
 	for _, args := range [][]string{{"-mode", "auto"}, {"-mode", "client"}} {
-		if code, _, stderr := runCLI(t, append([]string{"up", "-state", state}, args...)...); code != exitConfig {
+		code, _, stderr := runCLI(t, append([]string{"up", "-state", state}, args...)...)
+		if code != exitConfig || strings.Contains(stderr, "gone") != (args[1] == "auto") {
 			t.Errorf("%v: exit %d: %s", args, code, stderr)
 		}
 	}
+	t.Setenv("THINKPOL_MODE", "auto")
+	if code, _, stderr := runCLI(t, "up", "-state", state); code != exitConfig || !strings.Contains(stderr, `mode "auto" is gone`) {
+		t.Errorf("THINKPOL_MODE=auto: exit %d: %s", code, stderr)
+	}
+	unsetTHINKPOL(t)
 	if err := os.WriteFile(filepath.Join(state, agent.NodeFile), []byte(`{"mode": "auto"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}

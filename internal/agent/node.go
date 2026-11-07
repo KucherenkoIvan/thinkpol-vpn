@@ -393,10 +393,10 @@ func (n *Node) KeepLastRun(ct *CrashTrace) error {
 }
 
 // keepNoTrace stops a server's stderr going to a crash trace (PRD S2: a
-// server keeps no logs on disk): under a device's definition, which a
-// node of unknown kind may have been installed with, the file is emptied
-// and removed, and stderr goes nowhere. A trace file left in the state directory is
-// warned about.
+// server keeps no logs on disk): under a device's definition (its node
+// file set device mode when it was installed), the file is emptied and
+// removed, and stderr goes nowhere. A trace file left in the state
+// directory is warned about.
 func (n *Node) keepNoTrace() {
 	if ct := n.crashTrace; ct != nil && ct.Tracing {
 		if err := ct.detach(false); err != nil {

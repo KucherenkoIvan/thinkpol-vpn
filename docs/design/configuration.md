@@ -28,7 +28,7 @@ The file is root-owned, 0600, in the 0700 state directory; `up` refuses (exit 78
 
 | Key | Type | Flag | Default |
 |---|---|---|---|
-| `mode` | `"device"` or `"server"`; never the map's node kind (TP-111) | `-mode` | `"device"` |
+| `mode` | `"device"` or `"server"`; never the map's node kind (TP-111). A device runs no server's section: one whose map makes it a server carries nothing and leaves the host alone (`mode_mismatch`) | `-mode` | `"device"` |
 | `interface` | string, a TUN name | `-interface` | the platform's |
 | `link_mtu` | whole number, 576 to 65535; 0 is the default | `-link-mtu` | 1500 |
 | `log_level` | `"debug"`, `"info"`, `"warn"` or `"error"` | `-log-level` | `"info"` |
@@ -68,12 +68,12 @@ A flag given its default value, or a variable set to the empty string, still cou
 
 The levels then combine by narrowing:
 
-- **The map can only narrow what the node allows.** A map that asks for more than the node's ceiling is refused, as TP-111 decided, built in TP-183 (PRD Decisions, "The node's own configuration caps the map").
+- **The map can only narrow what the node allows.** A map that asks for more than the node's ceiling is refused, as the owner decided (2026-10-18), built in TP-183 (PRD Decisions, "The node's own configuration caps the map").
 - **Device toggles choose within what the node and the map allow** (owner, 2026-11-07).
 
 ## File formats
 
-- **One format, JSON,** for the node file and the device file alike (owner, 2026-11-07). Nesting is expected (TP-111's ceiling holds lists, a node that serves several spaces needs settings per space, allow-LAN takes prefixes), and one format is simpler than two. JSON has no comments, so the CLI reference lists every key and its default (TP-167).
+- **One format, JSON,** for the node file and the device file alike (owner, 2026-11-07). Nesting is expected (TP-183's ceiling holds lists, a node that serves several spaces needs settings per space, allow-LAN takes prefixes), and one format is simpler than two. JSON has no comments, so the CLI reference lists every key and its default (TP-167).
 - **An unknown key is an error** (TP-166): `up` exits with EX_CONFIG (78) and names the key, so a typo never reads as a default. So are a key given twice (encoding/json would keep the last), a key of another case (encoding/json would match it), a null (encoding/json would read it as the default: leave the key out instead), a value of the wrong type or out of range, invalid JSON, more than one object, and an empty file (`{}` is a file without settings). The same strict reading applies to `device.json`, where a mistake stops the node from starting.
 - **Linux systemd drop-ins are unsupported** (owner, 2026-11-07). `diag` reports one if it finds it, since a drop-in can set `THINKPOL_*` variables behind the node file's back: `service_drop_ins.paths` lists every `thinkpol.service.d/*.conf` and `service.d/*.conf` on systemd's system unit search path, in its order (`systemctl set-property` writes under `/etc/systemd/system.control`) (TP-166), to the group too.
 

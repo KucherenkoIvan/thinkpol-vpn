@@ -38,8 +38,7 @@ func TestASecondAgentChangesNothing(t *testing.T) {
 		space.install(t, n, name, envelope)
 	}
 	s4, _ := space.overlay(1)
-	exit := server.Start(t, "thinkpol", "up", "-mode", "device", "-dns-upstream", inetIP.String()+":5353")
-	waitLog(t, exit, applied(v1))
+	startServerExit(t, server, inetIP, v1, netip.PrefixFrom(inetIP, 24).Masked())
 
 	t.Run("resolv.conf", func(t *testing.T) {
 		devA.WriteFile(t, "/etc/resolv.conf", []byte("nameserver "+inetIP.String()+"\noptions timeout:2 attempts:3\n"))
