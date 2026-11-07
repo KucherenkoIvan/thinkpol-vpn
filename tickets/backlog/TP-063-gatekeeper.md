@@ -3,6 +3,7 @@ id: TP-063
 title: "Gatekeeper: pre-auth parsing out of the supervisor"
 milestone: later
 area: agent
+stream: core
 repo: thinkpol-vpn
 size: L
 depends_on: []

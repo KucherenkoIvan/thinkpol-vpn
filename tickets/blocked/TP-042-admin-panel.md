@@ -3,6 +3,7 @@ id: TP-042
 title: "Admin panel and dashboards"
 milestone: M4
 area: features
+stream: administration
 repo: thinkpol-vpn
 size: L
 depends_on: [TP-035, TP-041, TP-086, TP-186]

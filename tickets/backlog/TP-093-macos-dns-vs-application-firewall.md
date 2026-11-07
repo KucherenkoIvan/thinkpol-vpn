@@ -3,6 +3,7 @@ id: TP-093
 title: "macOS: the device's resolver behind the Application Firewall"
 milestone: later
 area: dataplane/dns
+stream: core
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-019]

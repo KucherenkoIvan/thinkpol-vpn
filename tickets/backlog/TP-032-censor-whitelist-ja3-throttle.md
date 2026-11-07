@@ -3,6 +3,7 @@ id: TP-032
 title: "Censor modules: TLS fingerprints, throttling"
 milestone: M3
 area: lab/censor
+stream: verification
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-024, TP-026, TP-064, TP-089]

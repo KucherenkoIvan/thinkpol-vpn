@@ -3,6 +3,7 @@ id: TP-165
 title: "udp start rule: pin the clock handling"
 milestone: later
 area: dataplane/transport
+stream: transports
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-069]

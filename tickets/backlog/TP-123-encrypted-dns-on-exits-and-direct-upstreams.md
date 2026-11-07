@@ -3,6 +3,7 @@ id: TP-123
 title: "Decide: encrypted DNS on exits and on direct upstreams"
 milestone: later
 area: dataplane
+stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-077]

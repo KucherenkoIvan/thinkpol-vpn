@@ -3,6 +3,7 @@ id: TP-144
 title: "Device re-run: the boot trace and the pf skip listing"
 milestone: M2
 area: tests
+stream: verification
 repo: thinkpol-vpn
 size: S
 needs_human: macos

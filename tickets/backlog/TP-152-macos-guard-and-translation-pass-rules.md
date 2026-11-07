@@ -3,6 +3,7 @@ id: TP-152
 title: "macOS guard: `nat pass`, `binat pass` and `rdr pass` skip it unseen"
 milestone: later
 area: dataplane/firewall
+stream: core
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-129]

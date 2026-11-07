@@ -3,6 +3,7 @@ id: TP-149
 title: "Route table: route-table mode on a Linux kernel without IPv6"
 milestone: later
 area: dataplane/routetable
+stream: core
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-135]

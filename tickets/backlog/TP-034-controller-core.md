@@ -3,9 +3,10 @@ id: TP-034
 title: "Controller skeleton and core features"
 milestone: M4
 area: features
+stream: administration
 repo: thinkpol-vpn
 size: epic
-depends_on: [TP-023]
+depends_on: [TP-023, TP-199]
 refs: [A1, A2, A6, docs/design/control-plane.md#control-plane-the-controller-on-go-kernel]
 owner: ""
 branch: ""
@@ -27,3 +28,4 @@ The controller exists as a go-kernel service with spaces, members and nodes.
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-12 docs (TP-013 review): notes from the ingress and egress settings
+- 2026-11-08 depends_on gains TP-199 (the map schema is versioned first)

@@ -3,6 +3,7 @@ id: TP-051
 title: "M5 acceptance"
 milestone: M5
 area: release
+stream: verification
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-047, TP-048, TP-049, TP-050, TP-076]

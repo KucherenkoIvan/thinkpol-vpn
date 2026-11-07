@@ -3,6 +3,7 @@ id: TP-096
 title: "macOS pf guard on a network with native IPv6"
 milestone: later
 area: dataplane/firewall
+stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-078, TP-092]
