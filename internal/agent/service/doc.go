@@ -115,20 +115,36 @@
 // A device's and a server's definitions differ in one thing: a device's
 // sends the agent's stderr to its crash trace, agent.CrashTraceFile in
 // the state directory, appended to (launchd's StandardErrorPath; systemd's
-// StandardError=append:, systemd 240 or later, never truncate:, which
-// would empty it before the agent reads the previous run's trace). The
-// agent reads it, empties it and makes it root's 0600 at each start, and
-// logs only to its ring there (package agent), so the file holds the last
-// run's crash, nothing more (PRD S2's device exception). A server's sets
-// no stderr: launchd's goes nowhere on disk, systemd's to the journal
-// (RESIDUAL-RISKS.md RR40). Neither sets stdout (StandardOutPath,
+// StandardError=append:, never truncate:, which would empty it before the
+// agent reads the previous run's trace). systemd older than 240 doesn't
+// know append: and ignores the line, so the agent's stderr is the journal
+// there and no trace is kept. The agent reads the file at each start,
+// makes it root's 0600 and empties it once the node has the trace, and
+// logs only to its ring there (package agent), so the file holds the
+// last run's crash, nothing more (PRD S2's device exception). A server's
+// sets no stderr: launchd's goes nowhere on disk, systemd's to the
+// journal (RESIDUAL-RISKS.md RR40). Neither sets stdout (StandardOutPath,
 // StandardOutput): the agent writes nothing there. Install picks the
-// definition by the mode the node will run in ([Installer].Ready: the
-// node file's mode, else the node's kind in the map; a node removed from
-// its space, its kind unknown, is taken for a device), and a definition of
-// the other mode isn't taken for one changed by hand, so a node whose
-// mode changed is installed anew without a warning. A server's install
-// removes a crash trace left from when the node was a device.
+// definition by the mode the node will run in ([Installer].Ready,
+// agent.ServiceMode: the node file's mode, else the node's kind in the
+// map), and a definition of the other mode isn't taken for one changed by
+// hand, so a node whose mode changed is installed anew without a warning.
+// A node whose kind isn't known (removed from its space, or not in the
+// map yet) gets a server's definition, with a warning to install again
+// once a map includes it: a server must never keep a trace, and a device
+// installed so only lacks one. Should a server run under a device's
+// definition all the same (its node file changed since, or a removed node
+// back as a server), its agent detaches from the file and removes it
+// (package agent).
+//
+// A device's install makes the file anew before it starts the service,
+// root's and 0600 (agent.CreateCrashTrace: whatever was at the path
+// removed first, created exclusively, not through a symlink), so the
+// manager opens it as it is instead of creating it with its own mode,
+// which another user could open in the moment before the agent fixes it;
+// a trace left from before the install is gone with it. A server's
+// install removes the file, after the installed service is stopped, so an
+// agent crashing on the way out doesn't leave one behind.
 //
 // # Connect-on-boot and drop-ins
 //

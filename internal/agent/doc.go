@@ -91,28 +91,44 @@
 // The agent's log ([NewLogs]) is observability's text logger, writing to
 // stderr and to an in-memory [logring.Ring] of [LogRingSize], at the
 // node's own level ([Config.LogLevel]: -log-level, THINKPOL_LOG_LEVEL),
-// never go-kernel's LOG_LEVEL. The agent writes it to no file (PRD S2),
-// but under systemd stderr is the journal, which keeps it on disk unless
-// the journal is volatile: nothing sets that yet (provisioning will,
-// TP-038; RESIDUAL-RISKS.md RR40). The local API serves the ring to root
-// only, since debug lines may quote the map.
+// never go-kernel's LOG_LEVEL. grpc's own log joins it
+// (localapi.RouteGRPCLog) instead of going to stderr. The agent writes it
+// to no file (PRD S2): under a device's service stderr is the crash trace
+// and the log goes only to the ring ([CrashTrace.LogOutput]), as it does
+// under `up -service` whenever stderr is any other regular file. Under
+// systemd a server's stderr is the journal, which keeps the log on disk
+// unless the journal is volatile: nothing sets that yet (provisioning
+// will, TP-038; RESIDUAL-RISKS.md RR40). The local API serves the ring to
+// root only, since debug lines may quote the map.
 //
 // A device's crash trace is PRD S2's one exception: under a device's
 // service, stderr is [CrashTraceFile] in the state directory, which the
 // service manager opens for each run, appending (package service, "The
 // definitions"). `up` first thing, before anything of the run writes to
-// stderr, reads what the previous run left there ([TakeCrashTrace]: the
-// head, up to [CrashTraceLimit]), empties the file, and makes it root's
-// and 0600 whatever the manager created it with (0644 as a rule), and
-// says so in the log; one it can't fix or empty stops the start. The
-// agent's log then goes only to the ring, so the file holds what the
+// stderr, makes the file root's and 0600 whatever the manager created it
+// with (service install creates it so; a wider one is fixed and said in
+// the log), and reads what the runs before left there ([TakeCrashTrace]:
+// the head, up to [CrashTraceLimit], as valid UTF-8, cut at a character),
+// cutting the file to that head. The node empties it only once it has the
+// trace ([Node.KeepLastRun], [CrashTrace.Release]): a start that fails
+// before that adds its error after the trace, and the next start reads
+// both, so a crash followed by failing starts isn't lost; the file stays
+// bounded by its head and one run's output. A file with another link isn't
+// read: it is emptied and removed, and the run's stderr goes to the null
+// device ([CrashTrace.Detach]); so does it, without writing to the file,
+// when the file can't be fixed, cut or emptied, which stops the start.
+// The agent's log goes only to the ring, so the file holds what the
 // runtime writes there (a panic's trace, a fatal error's, SIGQUIT's
-// goroutine dump) and the error `up` exits with: nothing on a clean stop,
-// and nothing from a kill. Emptied at every start, it holds one run at
-// most. Status says the last run crashed (Status.LastRunCrashed) and
-// Diagnostics has the trace, root's only ([Node.KeepLastRun]). A stderr
-// that isn't the file (a terminal, the journal, a server's service)
-// leaves it alone, and the log goes to stderr as ever. It survives a
+// goroutine dump) and the error `up` exits with: nothing on a clean stop
+// (a signal's cancellation is no error, [CleanStop]), and nothing from a
+// kill. Status says the last run crashed (Status.LastRunCrashed), or that
+// its trace wasn't read (Status.LastRunUnreadable), and Diagnostics has
+// the trace, or why, root's only. A server keeps no trace: a node that
+// runs as one, at its start or back in its space, detaches stderr from
+// the file and removes it, warning that a device's definition runs it,
+// and warns of a crash-trace it finds in its state directory otherwise.
+// A stderr that isn't the file (a terminal, the journal, a server's
+// service) leaves it alone, and the log goes to stderr as ever. It survives a
 // reboot, unlike the runtime directory (/run on Linux), so a crash just
 // before one is still there, and the manager can open it before the agent
 // has made any directory of its own. A server's workers log at the

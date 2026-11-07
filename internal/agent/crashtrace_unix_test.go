@@ -133,6 +133,12 @@ func TestAFailedStartKeepsTheTrace(t *testing.T) {
 	}
 	for _, appending := range []bool{true, false} {
 		stderr := openAsStderr(t, path, appending)
+		if !appending {
+			// At its start, as a manager may open it.
+			if _, err := stderr.Seek(0, io.SeekStart); err != nil {
+				t.Fatal(err)
+			}
+		}
 		if _, err := TakeCrashTrace(path, stderr); err != nil {
 			t.Fatal(err)
 		}
@@ -271,7 +277,7 @@ func TestTheLogStaysOffTheDisk(t *testing.T) {
 func TestACleanStopIsNoError(t *testing.T) {
 	real := errors.New("listener: address in use")
 	for err, want := range map[error]bool{
-		nil: false,
+		nil:              false,
 		context.Canceled: false,
 		errors.Join(fmt.Errorf("local API: %w", context.Canceled), nil): false,
 		errors.Join(fmt.Errorf("node: %w", context.Canceled), real):     true,

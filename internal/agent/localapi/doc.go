@@ -197,7 +197,9 @@
 //     server. Root's, like the host parts: a panic's message may name a
 //     public address, so the group's snapshot has it unreadable, "root
 //     only", when there is one. The status's `last_run_crashed` says
-//     there is one, to the group too (`status` prints a "last run" line).
+//     there is one, to the group too (`status` prints a "last run" line),
+//     and `last_run_unreadable` that there was a file it didn't read
+//     (`unreadable` says why, to root).
 //
 // The routes, rules, guard and resolvers are read from the host whatever
 // the data plane's state, so a snapshot after a crash or a stop shows

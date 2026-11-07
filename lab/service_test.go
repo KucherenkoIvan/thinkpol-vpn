@@ -44,7 +44,11 @@ func TestServiceUnderSystemd(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		if t.Failed() {
-			res, _ := execResult(dev, execTimeout, "journalctl", "-u", "thinkpol.service", "--no-pager", "-o", "short-precise")
+			// A device's agent under the service logs only to its ring; the
+			// journal has systemd's lines.
+			res, _ := execResult(dev, execTimeout, "thinkpol", "logs", "-n", "500")
+			t.Logf("device-a's agent log:\n%s%s", res.Stdout, res.Stderr)
+			res, _ = execResult(dev, execTimeout, "journalctl", "-u", "thinkpol.service", "--no-pager", "-o", "short-precise")
 			t.Logf("device-a's journal for thinkpol.service:\n%s", res.Stdout)
 		}
 	})
@@ -207,6 +211,10 @@ func TestServiceUnderSystemd(t *testing.T) {
 	crash()
 	state("disconnected")
 	lastRun(false)
+	// A clean stop (systemd's SIGTERM) writes nothing on stderr either.
+	dev.MustExec(t, "systemctl", "restart", "thinkpol.service")
+	state("disconnected")
+	lastRun(false)
 
 	// A reboot starts the service, disconnected: connect-on-boot is off,
 	// whatever alice did before it.
@@ -221,6 +229,7 @@ func TestServiceUnderSystemd(t *testing.T) {
 	}
 	reboot()
 	state("disconnected")
+	lastRun(false) // the stop at the reboot was clean
 	noPing(t, dev, "-c", "2", "-W", "1", s4.String())
 
 	// alice's toggle, without root: connected from the next boot on. The

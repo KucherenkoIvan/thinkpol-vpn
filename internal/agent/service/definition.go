@@ -40,7 +40,8 @@ type Definition struct {
 	Binary string
 	// CrashTrace is where a device's agent's stderr goes, appended to
 	// (agent.CrashTraceFile, which the agent empties at each start once it
-	// has read it); "" for a server, whose stderr goes nowhere on disk.
+	// has read it); "" for a server, whose stderr is the manager's: nowhere
+	// under launchd, the journal under systemd (RESIDUAL-RISKS.md RR40).
 	CrashTrace string
 }
 

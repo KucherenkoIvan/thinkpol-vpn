@@ -120,7 +120,7 @@ The operator creates it, or the dev runbook does. It must be owned by root or th
 | `blobs/` | node (a device: lists fetched from peers) | dir 0700, files 0600 | node (a server only reads its seeds) |
 | `blobs/index` | node | 0600 | node, after a restart |
 | `rules.local` | node, when the local API sets a preset | 0644 root | node at start; a file that can't be parsed stops the node |
-| `crash-trace` | a device's service manager: the agent's stderr (TP-141) | 0600 root (the agent fixes the manager's 0644) | node at start, which then empties it; removed by a server's `service install` and by `service uninstall` |
+| `crash-trace` | a device's `service install`, created 0600 before the service starts; then its service manager: the agent's stderr (TP-141) | 0600 root (the agent fixes a wider one) | node at start, which empties it once it has the trace; removed by a server's `service install` (after the stop), by `service uninstall`, and by an agent that runs as a server under a device's definition |
 
 ### Runtime directory: `/run/thinkpol` (`/private/var/db/thinkpol`)
 
@@ -183,7 +183,7 @@ These live in the kernel's cgroup filesystem, not on disk. They are listed becau
 
 ### Logs
 
-The node writes no log file. The log goes to stderr and into an in-memory ring, which `thinkpol logs` reads (PRD S2). Under launchd, stderr goes nowhere. Under systemd, stderr goes to the journal, which is on disk unless the journal is volatile (RR40). `service install` doesn't make it volatile: PRD S2 gives that to provisioning, at M4.
+The node writes no log file. The log goes to stderr and into an in-memory ring, which `thinkpol logs` reads (PRD S2); grpc's own log joins it. Under a device's service stderr is the crash trace (TP-141, below), and the log goes only to the ring, as it does under `up -service` whenever stderr is a regular file. Under launchd, a server's stderr goes nowhere. Under systemd, a server's stderr goes to the journal, which is on disk unless the journal is volatile (RR40). `service install` doesn't make it volatile: PRD S2 gives that to provisioning, at M4.
 
 ## Built since the snapshot
 
@@ -207,12 +207,12 @@ The node file `node.json` and the device file `device.json` exist, `rules.local`
 
 | Surface | Behaviour |
 |---|---|
-| file | `crash-trace` in the state directory, chosen over the runtime directory because it survives a reboot (`/run` is a tmpfs on Linux) and exists before the agent makes any directory, so the manager can open it. 0600 root: a start that finds it wider, or someone else's, fixes it and logs what it fixed; one it can't fix or empty stops the start. Holds what the runtime writes to stderr and the error `up` exits with, never the log (which then goes only to the ring); emptied at each start once read, so one run at most. 64 KiB of its head is kept in memory |
-| service definition | a device's plist gets `StandardErrorPath`, its unit `StandardError=append:` (systemd 240+); a server's is unchanged. `service install` picks one by the mode the node will run in: the node file's, else the node's kind in the map |
+| file | `crash-trace` in the state directory, chosen over the runtime directory because it survives a reboot (`/run` is a tmpfs on Linux) and exists before the agent makes any directory, so the manager can open it. A device's `service install` creates it 0600 root (exclusively, not through a symlink) before the service starts. A start that finds it wider, or someone else's, fixes it and logs what it fixed; one with another link isn't read (emptied, removed, the run's stderr sent to the null device); one it can't fix, cut or empty stops the start without writing to it. Holds what the runtime writes to stderr and the error `up` exits with, never the log (which then goes only to the ring) and nothing on a clean stop. A start reads its head (64 KiB, kept in memory as valid UTF-8) and cuts the file to it; the node empties it once it has the trace, so a start that fails before keeps the trace and adds its error |
+| service definition | a device's plist gets `StandardErrorPath`, its unit `StandardError=append:` (systemd 240+; an older one ignores the line and keeps no trace); a server's is unchanged. `service install` picks one by the mode the node will run in: the node file's, else the node's kind in the map; a node of unknown kind gets a server's, with a warning. An agent that runs as a server under a device's definition detaches from the file and removes it, and warns to reinstall |
 | `diag` | `last_run`: `unreadable`, `lines` (the trace's head, line by line) and `truncated`. Root only: the group's snapshot has it unreadable, "root only", when there is one. Still schema 1 |
-| `status` | `last_run_crashed` (`-json`), and a `last run:` line in the text. No health problem: health is the node's state now, and a code would hold until the next restart |
+| `status` | `last_run_crashed` and `last_run_unreadable` (`-json`), and a `last run:` line in the text for each. No health problem: health is the node's state now, and a code would hold until the next restart |
 
-Answered: the path (`crash-trace`), the field names (`last_run`, `last_run_crashed`, F5), no problem code, and no size cap on the file, which holds no log.
+Answered: the path (`crash-trace`), the field names (`last_run`, `last_run_crashed`, `last_run_unreadable`, F5), no problem code, and the file's size bound: its head and one run's output, never the log.
 
 ## Planned, not built
 

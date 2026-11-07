@@ -30,7 +30,7 @@ import (
 // what it fetches stays in its workers' memory. Every blob is checked
 // against the map before use, wherever it was read. The service manager
 // writes crash-trace, a device's only, which `up` reads and empties
-// (TakeCrashTrace). No pid, lock or log file there or anywhere else on
+// (TakeCrashTrace); a server warns of one (Node.KeepLastRun). No pid, lock or log file there or anywhere else on
 // disk (the agent's, netcfg's and the local
 // API's locks are on /run, a tmpfs; macOS has none: /private/var/db).
 //
