@@ -43,20 +43,9 @@ func decodeSettings(data []byte, v any) error {
 func checkJSONKeys(data []byte, typ reflect.Type) error {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.UseNumber()
-	// One per open object or array. An object's keys seen so far, and
-	// whether a key comes next; typ is what it decodes into (a struct's
-	// keys are checked; nil: anything), elem what its values decode into.
-	type level struct {
-		object    bool
-		keys      map[string]bool
-		lastKey   string
-		expectKey bool
-		typ       reflect.Type
-		elem      reflect.Type
-	}
-	var stack []*level
+	var stack []*jsonLevel
 	open := func(object bool, t reflect.Type) {
-		stack = append(stack, &level{object: object, keys: map[string]bool{}, expectKey: object, typ: deref(t)})
+		stack = append(stack, &jsonLevel{object: object, keys: map[string]bool{}, expectKey: object, typ: deref(t)})
 	}
 	for first := true; ; first = false {
 		tok, err := dec.Token()
@@ -69,7 +58,7 @@ func checkJSONKeys(data []byte, typ reflect.Type) error {
 		if first && tok != json.Delim('{') {
 			return errors.New("want a JSON object ({...})")
 		}
-		var top *level
+		var top *jsonLevel
 		if len(stack) > 0 {
 			top = stack[len(stack)-1]
 		}
@@ -102,14 +91,7 @@ func checkJSONKeys(data []byte, typ reflect.Type) error {
 			}
 		}
 		if tok == nil {
-			if top.object {
-				return fmt.Errorf("key %q: null: leave the key out for the default", top.lastKey)
-			}
-			for i := len(stack) - 1; i >= 0; i-- {
-				if stack[i].object {
-					return fmt.Errorf("key %q: null in a list", stack[i].lastKey)
-				}
-			}
+			return nullError(stack)
 		}
 		switch tok {
 		case json.Delim('{'):
@@ -128,6 +110,35 @@ func checkJSONKeys(data []byte, typ reflect.Type) error {
 			}
 		}
 	}
+}
+
+// jsonLevel is checkJSONKeys' open object or array: an object's keys seen
+// so far, the last, and whether a key comes next; typ is what it decodes
+// into (a struct's keys are checked; nil: anything), elem what its values
+// decode into.
+type jsonLevel struct {
+	object    bool
+	keys      map[string]bool
+	lastKey   string
+	expectKey bool
+	typ       reflect.Type
+	elem      reflect.Type
+}
+
+// nullError refuses a null inside the open levels (the file's own null
+// fails as not an object before): encoding/json would read it as the
+// default.
+func nullError(stack []*jsonLevel) error {
+	top := stack[len(stack)-1]
+	if top.object {
+		return fmt.Errorf("key %q: null: leave the key out for the default", top.lastKey)
+	}
+	for i := len(stack) - 2; i >= 0; i-- {
+		if stack[i].object {
+			return fmt.Errorf("key %q: null in a list", stack[i].lastKey)
+		}
+	}
+	return errors.New("null in a list")
 }
 
 // fieldByJSONKey is the type of the field of struct t tagged json:"key".
