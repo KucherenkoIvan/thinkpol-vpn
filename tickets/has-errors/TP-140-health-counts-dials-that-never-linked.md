@@ -38,6 +38,14 @@ A device whose dialed exit never linked says so in its health, instead of `conne
 - **TP-139 verdicts (TP-139 owner session, 2026-11-07; docs/design/api-overview.md "Verdicts", docs/design/configuration.md).** Problem codes are snake_case (F5). Reuse `no_link_up` where the case reads the same, add a code where it doesn't, and name it per the naming rules. F16's fourth item (`health: ok` with a peer at `no path yet`) is this ticket's.
 - **Codes (implementation, 2026-11-07).** A dial with no link is reused as `no_link_up` (down; `neighbor_down`, degraded, when another neighbor is up): it reads the same, no adjacent node answers. Deadline: the path layer's `DeadAfter` (6 s), the interval after which an unproven link is closed. No DNS upstream is a new code, `dns_no_upstream` (degraded), device only; a worker's upstreams stay `dns_upstream_refused`.
 
+## Review findings
+- [ ] R1.1 (should-fix) a dial that already FAILED reads `health: ok` for up to DeadAfter (6 s), so `connect` prints `connected, health: ok` with the peer at `no path yet`: list a dialed node with no link as down after its first failed dial or after DeadAfter, whichever comes first (a dial still waiting for an answer keeps its grace); fake-clock test; path/doc.go says the deadline counts from the latest dial start (a map change of the node's endpoints restarts it)
+- [ ] R1.2 (should-fix) `directUpstreams` copies the resolver's upstream count in three places, not atomically with the resolver (a false `dns_no_upstream` or a false ok); drop the copy and read the count from the dns.Server at status time; test: no upstream, then one through setUpstreams (config reload), clears the problem
+- [ ] R1.3 (should-fix) a failed first read of the OS's resolvers raises both `dns_upstreams_stale` and `dns_no_upstream`: the upstreams are unknown, not absent; don't raise `dns_no_upstream` with `dns_upstreams_stale`; test row for the failed read
+- [ ] R1.4 (should-fix) Linux: a resolv.conf (or resolved uplink) naming no server keeps the previous upstreams (TP-130, stays) and only logs; health must also report `dns_no_upstream` while the OS names no server, and clear when it names one again; unit test on the Linux path
+- [ ] R1.5 (should-fix, docs) health ok is not end-to-end (entry up, exit never answering; a direct exit's link proven but its WireGuard handshake never completing): say so in Notes, RESIDUAL-RISKS.md and api-overview.md's F16 item 4 / TP-140 text
+- [ ] R1.6 (nits) status_test: a no_link_up before DeadAfter fails, the clearing assertion is never skipped, a two-exit variant (degraded + neighbor_down); lab/health_test: drop the healthOK checks that can't be true after `health: down` matched; api-overview.md: move TP-140 out of "Planned, not built" and update its rows; api-overview-reference.md: the code is neighbor_down when another neighbour is up; fix the Log line that swaps the two lab subtests
+
 ## Log
 - 2026-10-24 created in backlog (2026-10-24 macOS device run and code-health review: before-M2 list)
 - 2026-10-24 docs: slotted in the pre-M2 phase (wave 1, Agent)
@@ -51,3 +59,4 @@ A device whose dialed exit never linked says so in its health, instead of `conne
 - 2026-11-07 not verifiable here: the macOS connect-on-boot case (TP-144's device re-run); lab devices read `nameserver 127.0.0.1` as an upstream, so dns_no_upstream is unit-tested only
 - 2026-11-07 make lab-test green on e0b30da (lab, lab/censor, lab/ip, lab/prototypes/reality ok; 36 packages in a lab node ok); an earlier full run was cut off by a session time limit, not by a failure
 - 2026-11-07 in-progress → review
+- 2026-11-07 review → has-errors (round 1 findings R1.1–R1.6)
