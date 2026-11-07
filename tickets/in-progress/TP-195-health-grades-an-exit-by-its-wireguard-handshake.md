@@ -30,5 +30,5 @@ None named.
 
 ## Log
 - 2026-11-07 created in backlog
-
 - 2026-11-07 backlog → in-progress, owner: agent-tp-195
+- 2026-11-07 unit tests: TestExitsUnansweredPastTheDeadline, TestAnExitThatNeverHandshakesIsExitNoHandshake, TestHealth (two exit cases), wg TestAnUnansweredHandshakeStaysPendingUntilOneCompletes; mutations, each caught: pending reset on every initiation, a response not clearing pending, `>=` deadline → `>`, the Exit check dropped, all-exits-down graded degraded, the engine's Exit flag always false
