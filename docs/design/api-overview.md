@@ -43,7 +43,7 @@ This is everything a person or a script sees of thinkpol today: the CLI, the loc
 | [Local API](api-overview-reference.md#local-api) (reference file) | the socket, the two gates, every call with its access and its shapes, refusals |
 | [Configuration](#configuration) | every key, its default and where it is documented; input files; lab variables |
 | [On-disk state](#on-disk-state) | every file the node, the service and the dev tools write or read |
-| [Built since the snapshot](#built-since-the-snapshot) | what TP-140, TP-166 and TP-141 added |
+| [Built since the snapshot](#built-since-the-snapshot) | what TP-140, TP-166, TP-141 and TP-195 added |
 | [Planned, not built](#planned-not-built) | what TP-111 and TP-133 propose |
 | [Consistency findings](#consistency-findings) | F1–F21 with suggested verdicts |
 | [Verdicts (owner, 2026-11-07)](#verdicts-owner-2026-11-07) | the decided conventions: configuration levels, status versus diag, exit codes, naming |
@@ -197,7 +197,7 @@ The node writes no log file. The log goes to stderr and into an in-memory ring, 
 
 Answered (F5): `no_link_up` is reused; the new code is snake_case.
 
-**What `health: ok` covers.** The neighbor check is about the first hop only. A device whose entry link is up while the exit behind it never answers, or whose direct exit's link is proven while the WireGuard handshake never completes, still reads `health: ok` (RR48).
+**What `health: ok` covers.** The neighbor check is about the first hop only; TP-195 grades the exits behind it.
 
 ### TP-166: node.json, device.json and connect-on-boot
 
@@ -213,6 +213,15 @@ The node file `node.json` and the device file `device.json` exist, `rules.local`
 | `status` | `last_run_crashed` and `last_run_unreadable` (`-json`), and a `last run:` line in the text for each. No health problem: health is the node's state now, and a code would hold until the next restart |
 
 Answered: the path (`crash-trace`), the field names (`last_run`, `last_run_crashed`, `last_run_unreadable`, F5), no problem code, and the file's size bound: its head and one run's output, never the log.
+
+### TP-195: health grades an exit by its WireGuard handshake
+
+| Surface | Behaviour |
+|---|---|
+| health | an exit the device routes through (the exit of a chain its rules use), directly or behind a relay, that has left a WireGuard handshake initiation unanswered for 15 s: `exit_no_handshake`, down when no exit answers, degraded when another does. A completed handshake clears it |
+| `status`, `diag` | show it with the existing rendering |
+
+The deadline is three of WireGuard's initiations in a row, which it sends 5 s apart (REKEY_TIMEOUT) while it has traffic for the exit, so one lost packet doesn't flip health; it is also how long WireGuard waits on a session that stopped hearing back (KEEPALIVE_TIMEOUT + REKEY_TIMEOUT). The age of the last handshake is no test: no persistent keepalive is set, so an idle exit's last handshake grows old on a healthy device. That is also what still reads ok: an exit nothing was sent to, and a device peer behind a relay (RR48).
 
 ## Planned, not built
 
@@ -411,7 +420,7 @@ Under systemd the agent's stderr goes to the journal, which is on disk unless vo
 - On a server, `uplink:` lines up with the workers' columns and lands far to the right.
 - Two `udp` public listeners (IPv4 and IPv6) look the same.
 - `health: ok` with a peer at `no path yet` (TP-140's case for exits; for a device peer it's expected).
-- **Suggested verdict: change (cheap)** for the first three. The fourth is TP-140's, built: a first hop that never linked is `no_link_up` or `neighbor_down`; a first hop that is up with the exit behind it silent, or an exit link up with no WireGuard handshake, still reads ok (RR48).
+- **Suggested verdict: change (cheap)** for the first three. The fourth is TP-140's, built: a first hop that never linked is `no_link_up` or `neighbor_down`; an exit, direct or behind a relay, that leaves WireGuard's initiations unanswered is `exit_no_handshake` (TP-195); an exit nothing was sent to still reads ok (RR48).
 
 ### F17. `service uninstall` with nothing installed
 

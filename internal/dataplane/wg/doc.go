@@ -18,4 +18,13 @@
 // so sessions survive map updates, and a peer that stays keeps the
 // endpoint WireGuard last adopted for it, which tells the Bind the path the
 // peer chose.
+//
+// A peer's status says when its oldest unanswered handshake initiation was
+// sent (PeerStatus.HandshakePendingSince), read from WireGuard's verbose
+// messages: wireguard-go reports no such thing, and its "did not complete"
+// message is no substitute, since every packet sent without a session
+// re-initiates (at most once per RekeyTimeout) and pushes back the retry
+// timer that logs it. No persistent keepalive is set, so WireGuard
+// initiates only for traffic: a peer nothing is sent to has nothing
+// pending.
 package wg
