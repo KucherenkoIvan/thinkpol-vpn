@@ -23,3 +23,11 @@ func TestFreshUnix(t *testing.T) {
 		}
 	}
 }
+
+func TestFreshWithin(t *testing.T) {
+	at := time.Unix(1_800_000_000, 0)
+	sent := uint32(at.Unix())
+	if !FreshWithin(sent, at.Add(-time.Minute), time.Minute) || FreshWithin(sent, at.Add(61*time.Second), time.Minute) {
+		t.Error("a one-minute window doesn't end at a minute")
+	}
+}

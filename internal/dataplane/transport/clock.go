@@ -12,7 +12,11 @@ const MaxClockSkew = 5 * time.Minute
 // could still be fresh at now: within MaxClockSkew either way. uint32
 // seconds wrap in 2106; the distance is taken mod 2^32 and read as signed,
 // so it holds across the wrap (for any skew under 68 years).
-func FreshUnix(sent uint32, now time.Time) bool {
+func FreshUnix(sent uint32, now time.Time) bool { return FreshWithin(sent, now, MaxClockSkew) }
+
+// FreshWithin is FreshUnix for a transport whose window is narrower than
+// MaxClockSkew.
+func FreshWithin(sent uint32, now time.Time, window time.Duration) bool {
 	d := time.Duration(int32(uint32(now.Unix())-sent)) * time.Second
-	return d <= MaxClockSkew && d >= -MaxClockSkew
+	return d <= window && d >= -window
 }
