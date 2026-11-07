@@ -108,12 +108,30 @@ func (c Config) EgressAllowedPrefixes() ([]netip.Prefix, error) {
 // parsed, since -state says where it is. It doesn't validate, and
 // StateDir and APISocket stay empty when unset: their defaults vary by OS
 // (DefaultStateDir, DefaultAPISocket), which a tag can't.
+//
+// A value that doesn't parse (THINKPOL_LINK_MTU=abc) is a *ConfigError,
+// as Validate's are.
 func LoadConfig() (Config, error) {
 	c, err := config.LoadWith[Config](config.WithoutEnvFiles(), config.DeferValidate())
 	if err != nil {
-		return Config{}, err
+		return Config{}, &ConfigError{err}
 	}
 	return *c, nil
+}
+
+// oldConnectOnBootVariable is what service definitions set before
+// connect-on-boot moved to DeviceFile.
+const oldConnectOnBootVariable = "THINKPOL_CONNECT_ON_BOOT"
+
+// CheckEnvironment refuses, as a *ConfigError, an environment only an
+// older service definition sets: such a definition runs `up` without
+// -service, and -connect's default would connect at every start, a
+// member's disconnect undone by the next restart (PRD D5).
+func CheckEnvironment() error {
+	if _, ok := os.LookupEnv(oldConnectOnBootVariable); ok {
+		return &ConfigError{fmt.Errorf("%s is set: the service's definition is older than this binary; run thinkpol service install to replace it (connect-on-boot is now thinkpol connect-on-boot on|off)", oldConnectOnBootVariable)}
+	}
+	return nil
 }
 
 // ApplyOSDefaults fills what the environment left unset (LoadConfig) with

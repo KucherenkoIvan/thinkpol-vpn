@@ -235,3 +235,35 @@ func TestUpRefusesABadNodeFile(t *testing.T) {
 		}
 	}
 }
+
+// A bad environment, or a configuration only Prepare can tell is bad,
+// exits 78 as a bad node file does; so does the variable only an older
+// service definition sets, which would have the node connect at every
+// start.
+func TestUpRefusesABadEnvironment(t *testing.T) {
+	unsetTHINKPOL(t)
+	state, _ := m0State(t, "device-a")
+	for name, tc := range map[string]struct {
+		env  map[string]string
+		args []string
+		want string
+	}{
+		// The relative socket stops `up` short of running on this host
+		// should the check ever be lost.
+		"an older service definition":                 {map[string]string{"THINKPOL_CONNECT_ON_BOOT": "off"}, []string{"-api-socket", "api.sock"}, "thinkpol service install"},
+		"an MTU that isn't a number":                  {map[string]string{"THINKPOL_LINK_MTU": "abc"}, nil, "abc"},
+		"an MTU out of range":                         {map[string]string{"THINKPOL_LINK_MTU": "100"}, nil, "link MTU 100"},
+		"a bool that isn't one":                       {map[string]string{"THINKPOL_DNS": "yes"}, nil, "yes"},
+		"a device disconnected without the local API": {nil, []string{"-connect=false", "-api-socket", ""}, "needs the local API"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			code, _, stderr := runCLI(t, append([]string{"up", "-state", state}, tc.args...)...)
+			if code != exitConfig || !strings.Contains(stderr, tc.want) {
+				t.Errorf("exit %d, stderr %q", code, stderr)
+			}
+		})
+	}
+}

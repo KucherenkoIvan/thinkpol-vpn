@@ -105,7 +105,7 @@ func Prepare(cfg Config, logs Logs, plat Platform) (*Node, error) {
 	n.report = report{mode: mode, space: st.Trust.SpaceID, version: st.Map.Header().Version, removed: st.Removed,
 		conn: n.conn.state, preset: n.device.Rules.Preset.String(), connectOnBoot: n.device.ConnectOnBoot}
 	if mode == ModeDevice && !cfg.Connect && cfg.APISocket == "" {
-		return nil, errors.New("a device that starts disconnected needs the local API to connect: set an API socket")
+		return nil, &ConfigError{errors.New("a device that starts disconnected needs the local API to connect: set an API socket")}
 	}
 	return n, nil
 }

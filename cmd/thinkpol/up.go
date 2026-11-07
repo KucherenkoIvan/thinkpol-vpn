@@ -26,6 +26,9 @@ func init() {
 }
 
 func runUp(ctx context.Context, e env, args []string) error {
+	if err := agent.CheckEnvironment(); err != nil {
+		return err
+	}
 	cfg, err := agent.LoadConfig()
 	if err != nil {
 		return err
