@@ -51,8 +51,9 @@ func TestAnotherRunFromTheCheckoutBuildsItsOwnBinaries(t *testing.T) {
 		existing[e.Name()] = true
 	}
 
-	// Its own project name: labs of this checkout's other runs (make
-	// lab-test's node phase tests this package too) keep theirs.
+	// Its own project name: under make lab-test the child inherits
+	// THINKPOL_LAB_RUN, so its lab would take the name of the node phase's
+	// lab of this package.
 	other := exec.CommandContext(ctx, "go", "-C", root, "run", "./lab/labctl", "gotest", pkgPattern)
 	other.Env = append(os.Environ(), fmt.Sprintf("%s=bindir-%d", ProjectEnv, os.Getpid()))
 	if out, err := other.CombinedOutput(); err != nil {
