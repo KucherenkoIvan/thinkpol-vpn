@@ -240,9 +240,6 @@ type runner struct {
 	// configuration tells them at its first good read
 	// (dns.SystemConfig.UpstreamsUnknown), from its own goroutine.
 	upstreamsUnknown atomic.Bool
-	// directUpstreams is how many direct upstreams the resolver asks now,
-	// stored wherever they are set, read by the status from any goroutine.
-	directUpstreams atomic.Int64
 	// tun is the running TUN's name (Interface until one runs).
 	tun string
 	// guard is the OS's resolver configuration while it should point at

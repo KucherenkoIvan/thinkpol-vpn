@@ -171,6 +171,11 @@ func (s *Server) SetUpstreams(u []netip.AddrPort) {
 	}
 }
 
+// HasUpstreams says whether the server has a direct upstream to ask now.
+func (s *Server) HasUpstreams() bool {
+	return len(*s.upstreams.Load()) > 0
+}
+
 // takeClient counts a forwarded query of src, false if it has too many.
 func (s *Server) takeClient(src netip.Addr) bool {
 	s.clientsMu.Lock()

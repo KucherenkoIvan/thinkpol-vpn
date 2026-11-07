@@ -224,9 +224,10 @@
 // read. A rewrite whose read fails is still the new original, so no
 // later check sees it change; a read is owed instead. While the uplink
 // can't be read, the previous upstreams are kept and reported stale
-// ([ErrUpstreamsStale]) until a read works. An uplink that reads but
-// names no server keeps them too, and the log says to set
-// `-dns-upstream`.
+// ([ErrUpstreamsStale]) until a read works. A file or an uplink that
+// reads but names no server keeps them too, the log says to set
+// `-dns-upstream`, and Problem reports [ErrNoSystemUpstream] (not
+// unprotected) until a read names one again.
 //
 // # macOS: configd's dynamic store
 //
@@ -318,7 +319,8 @@
 // [System.Problem] says why names may still be resolved outside the
 // node's resolver ([ErrUnprotected]), and [Unprotected] reads it: any
 // problem the OS adapter reports without naming it counts as unprotected,
-// and only a problem whose every part is [ErrUpstreamsStale] doesn't. In
+// and only a problem whose every part is [ErrUpstreamsStale] or
+// [ErrNoSystemUpstream] doesn't. In
 // systemd-resolved, a domain on another link or a global one (search or
 // routing, where there are servers to send its names to) beats the TUN's
 // `~.` for the names under it, and another `~.` shares every name;

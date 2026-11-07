@@ -264,7 +264,7 @@ Other lines appear when they apply:
 }
 ```
 
-The health problem vocabulary (`internal/agent/status.go`): `disconnected`, `removed_from_space`, `starting`, `retrying`, `apply_failed`, `no_link_up`, `neighbor_down`, `entries_skipped`, `worker_down`, `worker_restarted`, `links_rejected`, `rule_preset_unavailable`, `route_table_not_enforced`, `policy_rules_ahead`, `overlay_routes_ahead`, `ipv6_guard_not_enforced`, `ipv6_guard_unsupported`, `dns_not_protected`, `dns_upstreams_stale`, `dns_upstream_refused`, `dns_no_upstream`. `no_link_up` also covers a dialed node that never linked within the path layer's dead interval (6 s): it is listed as a neighbor, down, from then on.
+The health problem vocabulary (`internal/agent/status.go`): `disconnected`, `removed_from_space`, `starting`, `retrying`, `apply_failed`, `no_link_up`, `neighbor_down`, `entries_skipped`, `worker_down`, `worker_restarted`, `links_rejected`, `rule_preset_unavailable`, `route_table_not_enforced`, `policy_rules_ahead`, `overlay_routes_ahead`, `ipv6_guard_not_enforced`, `ipv6_guard_unsupported`, `dns_not_protected`, `dns_upstreams_stale`, `dns_upstream_refused`, `dns_no_upstream`. A dialed node that never linked is listed as a neighbor, down, once a dial attempt has failed or the path layer's dead interval (6 s) has passed since the dial started: `no_link_up` when no other neighbor is up, `neighbor_down` when another one is. `dns_no_upstream` also covers an OS that names no DNS server now (the resolver keeps asking the previous ones), and isn't raised beside `dns_upstreams_stale`. Health covers first hops only: an exit behind an up entry that never answers, or an exit link up with no WireGuard handshake, still reads ok (RR48).
 
 #### `connect` and `disconnect`
 

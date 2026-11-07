@@ -60,8 +60,10 @@ type Status struct {
 	// resolves through the node, so on its own it is not DNSUnprotected.
 	DNSUpstreamsStale bool
 	// DNSNoUpstream is set while a connected device's resolver has no
-	// direct upstream to ask (none configured, none read from the OS):
-	// `direct` names don't resolve.
+	// direct upstream to ask (none configured, none read from the OS), or
+	// the OS names none now (its previous ones are still asked,
+	// dns.ErrNoSystemUpstream): `direct` names may not resolve. Not while
+	// DNSUpstreamsStale: those upstreams are unknown, not absent.
 	DNSNoUpstream bool
 	// DNSUpstreamsRefused is an exit's: how many of the resolver
 	// upstreams the worker's egress refuses, so the resolver doesn't use
@@ -257,7 +259,9 @@ func (p *report) statusWith(dp *dataplane.Status) Status {
 		// Read once: both flags come from the same Problem.
 		s.DNSUnprotected = dns.Unprotected(problem)
 		s.DNSUpstreamsStale = errors.Is(problem, dns.ErrUpstreamsStale)
-		s.DNSNoUpstream = p.dnsNoUpstream != nil && p.dnsNoUpstream()
+		// Unknown upstreams (stale) aren't absent ones: one cause, one code.
+		s.DNSNoUpstream = !s.DNSUpstreamsStale &&
+			(errors.Is(problem, dns.ErrNoSystemUpstream) || p.dnsNoUpstream != nil && p.dnsNoUpstream())
 	}
 	if p.workers != nil {
 		for _, w := range p.workers.Workers() {

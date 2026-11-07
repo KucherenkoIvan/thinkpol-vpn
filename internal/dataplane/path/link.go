@@ -497,7 +497,8 @@ func (l *link) probeReply(f []byte, now int64) {
 type dialLoop struct {
 	endpoints []Endpoint
 	cancel    context.CancelFunc
-	started   int64 // n.now() when the loop started
+	started   int64       // n.now() when the loop started
+	failed    atomic.Bool // a dial attempt has failed since started
 }
 
 func (d *dialLoop) stop() { d.cancel() }
@@ -536,6 +537,7 @@ func (n *Node) startDial(id NodeID, eps []Endpoint) *dialLoop {
 				if ctx.Err() != nil {
 					return
 				}
+				d.failed.Store(true)
 				// The first failure of a run says why at info level; the
 				// rest go to debug until a link comes up again.
 				level := slog.LevelDebug

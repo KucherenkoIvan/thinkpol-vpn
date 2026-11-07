@@ -1,6 +1,6 @@
 # thinkpol-vpn — API overview
 
-This is everything a person or a script sees of thinkpol today: the CLI, the local API, the configuration, and the files on disk. It also lists the surface that four pre-M2 tickets plan to add, and ends with a consistency review. It describes the `rewrite` branch as built (TP-139). The command-by-command CLI and local API reference is in a second file, [API overview: reference](api-overview-reference.md), to keep each design file under 50 KB. The entry point is [DESIGN.md](../../DESIGN.md). Where this file and the code disagree, the code wins: this is a snapshot for review, not a source of truth.
+This is everything a person or a script sees of thinkpol today: the CLI, the local API, the configuration, and the files on disk. It also lists the surface that three pre-M2 tickets plan to add and what TP-140 added since, and ends with a consistency review. It describes the `rewrite` branch as built (TP-139). The command-by-command CLI and local API reference is in a second file, [API overview: reference](api-overview-reference.md), to keep each design file under 50 KB. The entry point is [DESIGN.md](../../DESIGN.md). Where this file and the code disagree, the code wins: this is a snapshot for review, not a source of truth.
 
 **Where the examples come from.** Every example output here and in the reference was captured on 2026-10-28 from this branch, in two ways. Commands that need no running node ran inside a lab node, through `run()` in a throwaway test (`make lab-gotest`). Commands that need one ran against `thinkpol up` in a lab topology (`go test -tags lab`): the M0 space, `device-a` started with `-connect=false`, `server-1` serving, and a systemd node for `service`. Neither capture test is committed. Users: `root`; `alice`, in the `thinkpol` group; `mallory`, in neither. Ids, versions and timings are random per run. The dev map uses `192.0.2.10` and `2001:db8::10` as the server's address. No output shown here names a lab address.
 
@@ -43,7 +43,8 @@ This is everything a person or a script sees of thinkpol today: the CLI, the loc
 | [Local API](api-overview-reference.md#local-api) (reference file) | the socket, the two gates, every call with its access and its shapes, refusals |
 | [Configuration](#configuration) | every key, its default and where it is documented; input files; lab variables |
 | [On-disk state](#on-disk-state) | every file the node, the service and the dev tools write or read |
-| [Planned, not built](#planned-not-built) | what TP-111, TP-141 and TP-133 propose, and what TP-140 built |
+| [Built since the snapshot](#built-since-the-snapshot) | what TP-140 added |
+| [Planned, not built](#planned-not-built) | what TP-111, TP-141 and TP-133 propose |
 | [Consistency findings](#consistency-findings) | F1–F21 with suggested verdicts |
 | [Verdicts (owner, 2026-11-07)](#verdicts-owner-2026-11-07) | the decided conventions: configuration levels, status versus diag, exit codes, naming |
 
@@ -182,9 +183,23 @@ These live in the kernel's cgroup filesystem, not on disk. They are listed becau
 
 The node writes no log file. The log goes to stderr and into an in-memory ring, which `thinkpol logs` reads (PRD S2). Under launchd, stderr goes nowhere. Under systemd, stderr goes to the journal, which is on disk unless the journal is volatile (RR40). `service install` doesn't make it volatile: PRD S2 gives that to provisioning, at M4.
 
+## Built since the snapshot
+
+### TP-140: health counts dials that never linked
+
+| Surface | Behaviour |
+|---|---|
+| health | a node the device dials with no link is a neighbor, down, once a dial attempt has failed (no route, refused) or the path layer's dead interval (6 s) has passed since the dial started, whichever comes first; a first dial still waiting for an answer isn't listed before that. With no other neighbor up it is `no_link_up` (down), else `neighbor_down` (degraded). The code is reused: the case reads the same, no adjacent node answers |
+| health | a device's resolver with no direct upstream to ask, or an OS that names no DNS server now (its previous upstreams are still asked): `dns_no_upstream` (degraded). Not raised beside `dns_upstreams_stale`: unknown upstreams aren't absent ones |
+| `status`, `diag` | show them with the existing rendering; the never-linked node is listed under neighbors as `down` with no links |
+
+Answered (F5): `no_link_up` is reused; the new code is snake_case.
+
+**What `health: ok` covers.** The neighbor check is about the first hop only. A device whose entry link is up while the exit behind it never answers, or whose direct exit's link is proven while the WireGuard handshake never completes, still reads `health: ok` (RR48).
+
 ## Planned, not built
 
-**Planned, not built.** These come from the four tickets' scopes. Each needs the owner's verdict before it starts (ORCHESTRATION.md, "Pre-M2 phase"). The open naming questions are listed last in each part, and the findings they touch are named.
+**Planned, not built.** These come from the three tickets' scopes. Each needs the owner's verdict before it starts (ORCHESTRATION.md, "Pre-M2 phase"). The open naming questions are listed last in each part, and the findings they touch are named.
 
 ### TP-111: the node's capability ceiling (planned, not built)
 
@@ -238,16 +253,6 @@ Open questions:
 - whether the fallback is automatic or needs a flag (e.g. `-offline`): automatic hides an API that is down for another reason;
 - the `agent` field's values;
 - the exit code when it falls back (F4).
-
-### TP-140: health counts dials that never linked (built)
-
-| Surface | Behaviour |
-|---|---|
-| health | a node dialed for the path layer's dead interval (6 s) with no link is a neighbor, down: with no other neighbor up, `no_link_up` (down), else `neighbor_down` (degraded). The code is reused: the case reads the same, no adjacent node answers |
-| health | a device's resolver with no direct upstream to ask: `dns_no_upstream` (degraded) |
-| `status`, `diag` | show them with the existing rendering; the never-linked node is listed under neighbors as `down` with no links |
-
-Answered (F5): `no_link_up` is reused; the new code is snake_case.
 
 ## Consistency findings
 
@@ -406,7 +411,7 @@ Under systemd the agent's stderr goes to the journal, which is on disk unless vo
 - On a server, `uplink:` lines up with the workers' columns and lands far to the right.
 - Two `udp` public listeners (IPv4 and IPv6) look the same.
 - `health: ok` with a peer at `no path yet` (TP-140's case for exits; for a device peer it's expected).
-- **Suggested verdict: change (cheap)** for the first three. The fourth is TP-140's.
+- **Suggested verdict: change (cheap)** for the first three. The fourth is TP-140's, built: a first hop that never linked is `no_link_up` or `neighbor_down`; a first hop that is up with the exit behind it silent, or an exit link up with no WireGuard handshake, still reads ok (RR48).
 
 ### F17. `service uninstall` with nothing installed
 
@@ -439,7 +444,7 @@ Each of the four planned tickets needs a code, a path or a flag name that F1, F4
 - TP-111: the ceiling file, the problem code, and the change of `-mode`'s default from `auto` to `device`;
 - TP-141: the trace file's path, its `diag` field and its problem code;
 - TP-133: the new `agent` field, and automatic versus explicit fallback;
-- TP-140: reuse `no_link_up` or add codes.
+- TP-140: reuse `no_link_up` or add codes (answered and built: `no_link_up` is reused, `dns_no_upstream` is new).
 
 - **Suggested verdict: change.** Settle F1, F4, F5 and F7 in the owner's session, then write the answers into those four tickets before they start.
 

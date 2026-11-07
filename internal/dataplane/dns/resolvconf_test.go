@@ -53,6 +53,9 @@ func TestUnprotectedSortsProblems(t *testing.T) {
 	if Unprotected(errors.Join(nil, nil)) {
 		t.Error("a join of nothing is unprotected")
 	}
+	if Unprotected(errors.Join(stale, fmt.Errorf("%w: named none", ErrNoSystemUpstream))) {
+		t.Error("stale upstreams with no system upstream are unprotected")
+	}
 }
 
 var testSystem = SystemConfig{
@@ -352,11 +355,51 @@ func TestResolvConfAnOwedReadThatNamesNoServerKeepsTheUpstreams(t *testing.T) {
 	writeFileAtomic(t, uplink, "# managed by systemd-resolved\n")
 	applyOnce(t, r)
 	toldNothing(t, told)
-	if p := r.Problem(); p != nil {
-		t.Errorf("header-only uplink: problem %v", p)
+	if p := r.Problem(); !errors.Is(p, ErrNoSystemUpstream) || errors.Is(p, ErrUpstreamsStale) || Unprotected(p) {
+		t.Errorf("header-only uplink: problem %v, want no system upstream only", p)
 	}
 	if !strings.Contains(log.String(), "no upstream to ask") {
 		t.Errorf("header-only uplink: no -dns-upstream hint logged:\n%s", log.String())
+	}
+}
+
+// A rewrite naming no server keeps the previous upstreams (nothing told)
+// and says the OS names none, not unprotected; a rewrite naming one tells
+// it and clears that.
+func TestResolvConfARewriteNamingNoServerIsNoSystemUpstream(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "resolv.conf")
+	if err := os.WriteFile(path, []byte(isp), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	told := make(chan []netip.Addr, 8)
+	c := testSystem
+	c.Upstreams = func(a []netip.Addr) { told <- a }
+	r, err := setResolvConf(path, "", c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = r.Restore() })
+	if p := r.Problem(); p != nil {
+		t.Fatalf("at setup: problem %v", p)
+	}
+	writeFileAtomic(t, path, "search lan\n")
+	applyOnce(t, r)
+	toldNothing(t, told)
+	if p := r.Problem(); !errors.Is(p, ErrNoSystemUpstream) || Unprotected(p) {
+		t.Errorf("no nameserver: problem %v, want no system upstream, protected", p)
+	}
+	writeFileAtomic(t, path, "nameserver 192.0.2.99\n")
+	applyOnce(t, r)
+	select {
+	case got := <-told:
+		if !slices.Equal(got, []netip.Addr{netip.MustParseAddr("192.0.2.99")}) {
+			t.Errorf("told %v", got)
+		}
+	case <-time.After(time.Second):
+		t.Error("a server named again isn't told")
+	}
+	if p := r.Problem(); p != nil {
+		t.Errorf("a server named again: problem %v", p)
 	}
 }
 

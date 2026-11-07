@@ -30,12 +30,11 @@ func TestHealthWithNoLinkUp(t *testing.T) {
 	noLinkUp := regexp.MustCompile(`(?m)^health: +down: .*no_link_up`)
 	healthOK := regexp.MustCompile(`(?m)^health: +ok$`)
 	status := func() (string, error) { return execRead(dev, pollTimeout, "thinkpol", "status") }
-	waitStatus := func(t *testing.T, re *regexp.Regexp) string {
+	waitStatus := func(t *testing.T, re *regexp.Regexp) {
 		t.Helper()
-		var out string
 		lab.Eventually(t, 60*time.Second, func() error {
-			var err error
-			if out, err = status(); err != nil {
+			out, err := status()
+			if err != nil {
 				return err
 			}
 			if !re.MatchString(out) {
@@ -43,7 +42,6 @@ func TestHealthWithNoLinkUp(t *testing.T) {
 			}
 			return nil
 		})
-		return out
 	}
 
 	t.Run("the server drops every packet", func(t *testing.T) {
@@ -52,10 +50,7 @@ func TestHealthWithNoLinkUp(t *testing.T) {
 		}`)
 		up := dev.Start(t, "thinkpol", "up")
 		waitLog(t, up, "mode=device")
-		out := waitStatus(t, noLinkUp)
-		if healthOK.MatchString(out) {
-			t.Fatalf("health ok with no link:\n%s", out)
-		}
+		waitStatus(t, noLinkUp)
 		server.MustExec(t, "nft", "delete", "table", "inet", "tp140")
 		waitStatus(t, healthOK)
 		if err := up.Stop(); err != nil {
@@ -68,10 +63,7 @@ func TestHealthWithNoLinkUp(t *testing.T) {
 		dev.MustExec(t, "ip", "-6", "route", "add", "unreachable", s6.String()+"/128")
 		up := dev.Start(t, "thinkpol", "up")
 		waitLog(t, up, `msg="dial failed"`)
-		out := waitStatus(t, noLinkUp)
-		if healthOK.MatchString(out) {
-			t.Fatalf("health ok with no link:\n%s", out)
-		}
+		waitStatus(t, noLinkUp)
 		dev.MustExec(t, "ip", "route", "del", "unreachable", s4.String()+"/32")
 		dev.MustExec(t, "ip", "-6", "route", "del", "unreachable", s6.String()+"/128")
 		waitStatus(t, healthOK)
