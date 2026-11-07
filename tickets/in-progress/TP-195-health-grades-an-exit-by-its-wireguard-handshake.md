@@ -32,3 +32,4 @@ None named.
 - 2026-11-07 created in backlog
 - 2026-11-07 backlog → in-progress, owner: agent-tp-195
 - 2026-11-07 unit tests: TestExitsUnansweredPastTheDeadline, TestAnExitThatNeverHandshakesIsExitNoHandshake, TestHealth (two exit cases), wg TestAnUnansweredHandshakeStaysPendingUntilOneCompletes; mutations, each caught: pending reset on every initiation, a response not clearing pending, `>=` deadline → `>`, the Exit check dropped, all-exits-down graded degraded, the engine's Exit flag always false
+- 2026-11-07 `make lint`, `make test` green on 746b0c8; lab TestHealthWithAnExitThatNeverHandshakes passes (device-a → server-1 → server-2, server-2's handshake initiations dropped: `health: down: exit_no_handshake`, then ok once they pass); mutation, caught: the engine's Exit flag always false (no exit_no_handshake within 90 s)
