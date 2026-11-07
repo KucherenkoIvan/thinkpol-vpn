@@ -37,7 +37,7 @@ Round 2, accepted by the orchestrator (delta check of round 1).
 - [x] R2.2 (nit) adoptLinkChange's undo restores a snapshot, overwriting the note a failed revert keeps: move whatever is under the new name back to the old name and restore only the old kernel name.
 
 Round 3, accepted by the orchestrator (delta check of round 2).
-- [ ] R3.1 (should-fix) ledger.go adoptLinkChange's undo, rename-only case (same name, new kernel name): it puts the old kernel name back, so after a failed Apply whose MTU revert fails Close sees the current name differ from the recorded one, drops the record and leaves the MTU set forever. The undo keeps the refreshed kernel name and only moves the record back when the names differ; the internal test's renamed case expects the refreshed kname.
+- [x] R3.1 (should-fix) ledger.go adoptLinkChange's undo, rename-only case (same name, new kernel name): it puts the old kernel name back, so after a failed Apply whose MTU revert fails Close sees the current name differ from the recorded one, drops the record and leaves the MTU set forever. The undo keeps the refreshed kernel name and only moves the record back when the names differ; the internal test's renamed case expects the refreshed kname.
 
 ## Log
 - 2026-10-21 created in backlog (TP-102 review round 1)
@@ -66,3 +66,7 @@ Round 3, accepted by the orchestrator (delta check of round 2).
 - 2026-11-07 full make lab-test re-run at dcce1b9 under the exclusive CPU lock (LAB_P=4): lab/ packages ok, gotest ok for 36 packages (path included, so the earlier failures were load); this re-run was backgrounded by the harness after 10 min and waited on, not polled
 - 2026-11-07 has-errors → review
 - 2026-11-07 review → has-errors (round 3 finding R3.1)
+- 2026-11-07 fix round 3 (d6c9f18): adoptLinkChange's undo no longer touches the kernel name; with the same name (a rename refresh) it pushes no undo at all and the refreshed kernel name stays after a failed Apply, and with another name it only moves the record back (R3.1). doc.go says the fresh kernel name is kept when the Apply fails
+- 2026-11-07 test: TestAFailedRevertKeepsItsNoteWhenTheRecordMovesBack's renamed case now expects kname ovl0 (the refreshed one), comment updated; mutation: an undo restoring the old kernel name (old0) in the rename-only case → the renamed case fails; restored
+- 2026-11-07 make lint and make test green at d6c9f18; make lab-gotest PKG=./internal/dataplane/netcfg/... green at d6c9f18. No full make lab-test this round, as the brief allows: the change is a few lines in an undo path covered by unit tests, and the last full lab passed at dcce1b9
+- 2026-11-07 has-errors → review
