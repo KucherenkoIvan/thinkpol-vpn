@@ -168,6 +168,21 @@ message Diagnostics {
   // unsupported, since one can set THINKPOL_* variables behind the node
   // file's back. None on macOS, where launchd has no drop-ins.
   DiagDropIns service_drop_ins = 13;
+  // What the previous run under a device's service left on its stderr
+  // (the crash trace file, emptied at each start once read): a panic's or
+  // a fatal error's trace, or the error it exited with. Empty when it left
+  // nothing (it stopped cleanly) and on a server, which keeps no trace.
+  // Root only, like the host parts: the group's snapshot has it
+  // unreadable when there is one.
+  DiagLastRun last_run = 14;
+}
+
+// The head of the previous run's stderr, line by line.
+message DiagLastRun {
+  string unreadable = 1;
+  repeated string lines = 2;
+  // The trace was longer than what is kept (64 KiB).
+  bool truncated = 3;
 }
 
 // The drop-in files found, by path.
@@ -450,6 +465,12 @@ message Status {
   // A device's connect-on-boot, from its settings file: whether the
   // service connects it at a boot's first start.
   bool connect_on_boot = 16;
+  // The previous run under a device's service crashed or exited with an
+  // error: it left a trace on its stderr, which Diagnose's last_run has.
+  bool last_run_crashed = 17;
+  // The service's crash trace file was there but wasn't read: Diagnose's
+  // last_run says why.
+  bool last_run_unreadable = 18;
 }
 
 // Uplink is a server's way to the internet, for its spaces that allow

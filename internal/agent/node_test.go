@@ -19,6 +19,47 @@ func testConfig(dir string) Config {
 		Connect: true, APISocket: "/run/thinkpol-api/api.sock"}
 }
 
+// The service is installed for the node file's mode, else the node's
+// kind in its map; a node the map doesn't hold is taken for a server,
+// which keeps no crash trace, and said to be of unknown kind. A state
+// directory the node can't run from is an error.
+func TestServiceModeIsTheNodesMode(t *testing.T) {
+	s := newTestSpace(t)
+	withMode := func(dir, mode string) string {
+		writeFile(t, filepath.Join(dir, NodeFile), []byte(`{"mode": "`+mode+`"}`), 0o600)
+		return dir
+	}
+	removed := func(dir string, k NodeKeys) string {
+		writeFile(t, filepath.Join(dir, MapFileName), s.buildWithout(t, 1, k), 0o644)
+		return dir
+	}
+	for name, tc := range map[string]struct {
+		dir   string
+		mode  Mode
+		known bool
+	}{
+		"a server":                      {s.stateDir(t, s.a, 1), ModeServer, true},
+		"a device":                      {s.stateDir(t, s.b, 1), ModeDevice, true},
+		"a server, auto":                {withMode(s.stateDir(t, s.a, 1), "auto"), ModeServer, true},
+		"a server set to device":        {withMode(s.stateDir(t, s.a, 1), "device"), ModeDevice, true},
+		"a device set to server":        {withMode(s.stateDir(t, s.b, 1), "server"), ModeServer, true},
+		"a device missing from the map": {removed(s.stateDir(t, s.b, 1), s.b), ModeServer, false},
+		"one missing, set to device":    {withMode(removed(s.stateDir(t, s.b, 1), s.b), "device"), ModeDevice, true},
+	} {
+		mode, known, err := ServiceMode(tc.dir)
+		if err != nil || mode != tc.mode || known != tc.known {
+			t.Errorf("%s: %q, known %v, %v", name, mode, known, err)
+		}
+	}
+	empty := filepath.Join(tempDir(t), "state")
+	if err := os.Mkdir(empty, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ServiceMode(empty); err == nil {
+		t.Error("a node without keys can run")
+	}
+}
+
 func TestPrepareTakesTheModeFromTheNodesKind(t *testing.T) {
 	s := newTestSpace(t)
 	var out bytes.Buffer

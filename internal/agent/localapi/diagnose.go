@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"google.golang.org/protobuf/encoding/protojson"
@@ -54,7 +55,16 @@ func diagnosticsProto(d agent.Diagnostics, now time.Time, version string) *local
 		Guard:          guardProto(d.Guard),
 		Dns:            dnsProto(d.DNS),
 		ServiceDropIns: &localapiv1.DiagDropIns{Unreadable: d.DropIns.Unreadable, Paths: d.DropIns.Paths},
+		LastRun:        &localapiv1.DiagLastRun{Unreadable: d.LastRun.Unreadable, Lines: traceLines(d.LastRun.Trace), Truncated: d.LastRun.Truncated},
 	}
+}
+
+// traceLines is a trace's lines, without the newline that ends the last.
+func traceLines(trace string) []string {
+	if trace == "" {
+		return nil
+	}
+	return strings.Split(strings.TrimSuffix(trace, "\n"), "\n")
 }
 
 func applyProto(a agent.ApplyReport) *localapiv1.DiagApply {

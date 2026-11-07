@@ -35,6 +35,8 @@ func TestLoadStateReportsUnexpectedEntries(t *testing.T) {
 	s := newTestSpace(t)
 	dir := s.stateDir(t, s.b, 1)
 	writeFile(t, filepath.Join(dir, "notes.txt"), []byte("x"), 0o600)
+	// A device's crash trace is the node's: not reported.
+	writeFile(t, filepath.Join(dir, CrashTraceFile), []byte("panic: boom\n"), 0o600)
 	st, err := LoadState(dir, filepath.Join(dir, MapFileName))
 	if err != nil {
 		t.Fatal(err)

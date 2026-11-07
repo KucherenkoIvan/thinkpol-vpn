@@ -133,7 +133,7 @@ Milestones as in [Release plan](#release-plan). Priority: **must** for the MVP, 
 | ID | Requirement | Pri | M |
 |---|---|---|---|
 | S1 | Nodes keep only what they need to run: their own keys and their own part of the map. No member names, no other nodes' credentials, no rules they don't enforce; servers know devices by opaque ids | must | M0 for the map format, M4 complete |
-| S2 | No logs on disk: agent logs stay in memory; provisioning makes the system journal volatile | must | M4 |
+| S2 | No logs on disk: agent logs stay in memory; provisioning makes the system journal volatile. One exception, on devices only: a device's crash trace, one root-only (0600) file in the state directory holding what the agent's last run under the service wrote to stderr (a panic's trace, the error it exited with), overwritten at each start once read. Servers and entry nodes keep none. The journal is a separate, known gap until provisioning makes it volatile (RR40) | must | M4 |
 | S3 | Telemetry is buffered on nodes only in memory, bounded (minutes, kilobytes), encrypted to the space's key as it's recorded; oldest dropped first when full, everything lost on reboot | must | M4 |
 | S4 | Telemetry holds aggregates per link and per device id; never public IP addresses or destinations | must | M4 |
 | S5 | Ephemeral nodes: nothing on disk but the binary; after a reboot, the node owner's controller re-provisions them | later | — |

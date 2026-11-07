@@ -42,6 +42,7 @@ func HostInstaller(out io.Writer, plat agent.Platform) (Installer, error) {
 		Run:         runTool,
 		Executable:  exe,
 		Ready:       nodeReady,
+		CrashTrace:  agent.CrashTracePath(),
 		LockHost:    plat.LockHost,
 		ClearHost:   plat.ClearHost,
 		RuntimeDirs: []string{agent.HostLockDir(), filepath.Dir(agent.DefaultAPISocket())},
@@ -69,14 +70,9 @@ func InstallingUser() string {
 
 // nodeReady checks the node's default state directory as `thinkpol up`
 // would read it: without keys and a map, or with a node file it refuses,
-// the service would only restart.
-func nodeReady() error {
-	if _, err := agent.ReadNodeFile(agent.DefaultStateDir); err != nil {
-		return err
-	}
-	_, err := agent.LoadState(agent.DefaultStateDir, filepath.Join(agent.DefaultStateDir, agent.MapFileName))
-	return err
-}
+// the service would only restart. It returns the mode the service is
+// installed for (agent.ServiceMode).
+func nodeReady() (agent.Mode, bool, error) { return agent.ServiceMode(agent.DefaultStateDir) }
 
 func runTool(ctx context.Context, tool string, args ...string) (string, error) {
 	path, err := findTool(tool)

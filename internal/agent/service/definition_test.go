@@ -55,71 +55,104 @@ func (v plistValue) strings() []string {
 	return out
 }
 
+// trace is a device's crash trace file, with a character XML escapes.
+const trace = "/var/lib/thinkpol/crash&trace"
+
 // Both definitions run `up -service` and set nothing else: no
-// environment, so connect-on-boot is only the device's.
+// environment, so connect-on-boot is only the device's. A device's sends
+// the agent's stderr to its crash trace; a server's keeps no file.
 func TestTheLaunchdPlistRunsTheAgentAndRestartsIt(t *testing.T) {
-	d := plistDict(t, LaunchdPlist(Definition{Binary: BinaryPath}))
-	want := map[string]string{
-		"Label": "string:" + Label, "RunAtLoad": "true:", "KeepAlive": "true:",
-		"ThrottleInterval": "integer:5", "ExitTimeOut": "integer:60",
-	}
-	for k, w := range want {
-		if got := d[k].XMLName.Local + ":" + strings.TrimSpace(d[k].Text); got != w {
-			t.Errorf("%s: %s, want %s", k, got, w)
-		}
-	}
-	if got := strings.Join(d["ProgramArguments"].strings(), " "); got != "string:"+BinaryPath+" string:up string:-service" {
-		t.Errorf("ProgramArguments: %s", got)
-	}
-	if _, ok := d["EnvironmentVariables"]; ok {
-		t.Error("EnvironmentVariables is set")
-	}
-	// The agent writes no log to disk (PRD S2).
-	for _, k := range []string{"StandardOutPath", "StandardErrorPath"} {
-		if _, ok := d[k]; ok {
-			t.Errorf("%s is set", k)
-		}
-	}
-	if len(d) != len(want)+1 {
-		t.Errorf("keys %v", d)
+	for _, tc := range []struct {
+		name       string
+		crashTrace string
+	}{{"device", trace}, {"server", ""}} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := plistDict(t, LaunchdPlist(Definition{Binary: BinaryPath, CrashTrace: tc.crashTrace}))
+			want := map[string]string{
+				"Label": "string:" + Label, "RunAtLoad": "true:", "KeepAlive": "true:",
+				"ThrottleInterval": "integer:5", "ExitTimeOut": "integer:60",
+			}
+			if tc.crashTrace != "" {
+				want["StandardErrorPath"] = "string:" + tc.crashTrace
+			}
+			for k, w := range want {
+				if got := d[k].XMLName.Local + ":" + strings.TrimSpace(d[k].Text); got != w {
+					t.Errorf("%s: %s, want %s", k, got, w)
+				}
+			}
+			if got := strings.Join(d["ProgramArguments"].strings(), " "); got != "string:"+BinaryPath+" string:up string:-service" {
+				t.Errorf("ProgramArguments: %s", got)
+			}
+			if _, ok := d["EnvironmentVariables"]; ok {
+				t.Error("EnvironmentVariables is set")
+			}
+			// The agent writes no log to disk (PRD S2): stdout goes
+			// nowhere, stderr only to a device's crash trace.
+			if _, ok := d["StandardOutPath"]; ok {
+				t.Error("StandardOutPath is set")
+			}
+			if _, ok := d["StandardErrorPath"]; ok && tc.crashTrace == "" {
+				t.Error("a server's StandardErrorPath is set")
+			}
+			if len(d) != len(want)+1 {
+				t.Errorf("keys %v", d)
+			}
+		})
 	}
 }
 
 func TestTheSystemdUnitRunsTheAgentAndRestartsIt(t *testing.T) {
-	unit := string(SystemdUnit(Definition{Binary: BinaryPath}))
-	sections := map[string]map[string]string{}
-	var cur map[string]string
-	for _, l := range strings.Split(unit, "\n") {
-		switch {
-		case l == "" || strings.HasPrefix(l, "#"):
-		case strings.HasPrefix(l, "[") && strings.HasSuffix(l, "]"):
-			cur = map[string]string{}
-			sections[l] = cur
-		default:
-			k, v, ok := strings.Cut(l, "=")
-			if !ok || cur == nil {
-				t.Fatalf("line %q", l)
+	for _, tc := range []struct {
+		name       string
+		crashTrace string
+	}{{"device", trace}, {"server", ""}} {
+		t.Run(tc.name, func(t *testing.T) {
+			unit := string(SystemdUnit(Definition{Binary: BinaryPath, CrashTrace: tc.crashTrace}))
+			sections := map[string]map[string]string{}
+			var cur map[string]string
+			for _, l := range strings.Split(unit, "\n") {
+				switch {
+				case l == "" || strings.HasPrefix(l, "#"):
+				case strings.HasPrefix(l, "[") && strings.HasSuffix(l, "]"):
+					cur = map[string]string{}
+					sections[l] = cur
+				default:
+					k, v, ok := strings.Cut(l, "=")
+					if !ok || cur == nil {
+						t.Fatalf("line %q", l)
+					}
+					cur[k] = v
+				}
 			}
-			cur[k] = v
-		}
-	}
-	want := map[string]map[string]string{
-		"[Unit]":    {"StartLimitIntervalSec": "0"},
-		"[Service]": {"ExecStart": BinaryPath + " up -service", "ExecReload": "/bin/kill -HUP $MAINPID", "Restart": "always", "RestartSec": "5", "KillMode": "mixed"},
-		"[Install]": {"WantedBy": "multi-user.target"},
-	}
-	for s, kv := range want {
-		for k, v := range kv {
-			if got := sections[s][k]; got != v {
-				t.Errorf("%s %s=%q, want %q", s, k, got, v)
+			want := map[string]map[string]string{
+				"[Unit]":    {"StartLimitIntervalSec": "0"},
+				"[Service]": {"ExecStart": BinaryPath + " up -service", "ExecReload": "/bin/kill -HUP $MAINPID", "Restart": "always", "RestartSec": "5", "KillMode": "mixed"},
+				"[Install]": {"WantedBy": "multi-user.target"},
 			}
-		}
-	}
-	// The agent makes /run/thinkpol itself: systemd's would delete
-	// the host lock's inode when the unit stops (package agent).
-	for _, k := range []string{"RuntimeDirectory", "RuntimeDirectoryPreserve", "Environment", "EnvironmentFile"} {
-		if _, ok := sections["[Service]"][k]; ok {
-			t.Errorf("[Service] sets %s", k)
-		}
+			// Appended: truncate: would empty it before the agent reads the
+			// previous run's trace.
+			if tc.crashTrace != "" {
+				want["[Service]"]["StandardError"] = "append:" + tc.crashTrace
+			}
+			for s, kv := range want {
+				for k, v := range kv {
+					if got := sections[s][k]; got != v {
+						t.Errorf("%s %s=%q, want %q", s, k, got, v)
+					}
+				}
+			}
+			// The agent makes /run/thinkpol itself: systemd's would delete
+			// the host lock's inode when the unit stops (package agent). A
+			// server's stderr stays the journal (RR40), stdout everyone's.
+			unset := []string{"RuntimeDirectory", "RuntimeDirectoryPreserve", "Environment", "EnvironmentFile", "StandardOutput"}
+			if tc.crashTrace == "" {
+				unset = append(unset, "StandardError")
+			}
+			for _, k := range unset {
+				if _, ok := sections["[Service]"][k]; ok {
+					t.Errorf("[Service] sets %s", k)
+				}
+			}
+		})
 	}
 }

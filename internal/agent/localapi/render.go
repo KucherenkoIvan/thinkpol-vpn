@@ -53,6 +53,12 @@ func WriteStatus(w io.Writer, st *localapiv1.Status, now time.Time) error {
 	if st.GetMode() != localapiv1.Mode_MODE_SERVER {
 		line("connect-on-boot:\t%s", onOff(st.GetConnectOnBoot()))
 	}
+	if st.GetLastRunCrashed() {
+		line("last run:\tcrashed, or exited with an error (thinkpol diag shows its trace, as root)")
+	}
+	if st.GetLastRunUnreadable() {
+		line("last run:\tits crash trace wasn't read (thinkpol diag says why, as root)")
+	}
 	if st.GetRetrying() {
 		line("retrying:\tyes, see the service's log")
 	}

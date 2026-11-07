@@ -91,11 +91,56 @@
 // The agent's log ([NewLogs]) is observability's text logger, writing to
 // stderr and to an in-memory [logring.Ring] of [LogRingSize], at the
 // node's own level ([Config.LogLevel]: -log-level, THINKPOL_LOG_LEVEL),
-// never go-kernel's LOG_LEVEL. The agent writes it to no file (PRD S2),
-// but under systemd stderr is the journal, which keeps it on disk unless
-// the journal is volatile: nothing sets that yet (provisioning will,
-// TP-038; RESIDUAL-RISKS.md RR40). The local API serves the ring to root
-// only, since debug lines may quote the map. A server's workers log at the
+// never go-kernel's LOG_LEVEL. grpc's own log joins it
+// (localapi.RouteGRPCLog) instead of going to stderr. The agent writes it
+// to no file (PRD S2): under a device's service stderr is the crash trace
+// and the log goes only to the ring ([CrashTrace.LogOutput]), as it does
+// under `up -service` whenever stderr is any other regular file. Under
+// systemd a server's stderr is the journal, which keeps the log on disk
+// unless the journal is volatile: nothing sets that yet (provisioning
+// will, TP-038; RESIDUAL-RISKS.md RR40). The local API serves the ring to
+// root only, since debug lines may quote the map.
+//
+// A device's crash trace is PRD S2's one exception: under a device's
+// service, stderr is [CrashTraceFile] in the state directory, which the
+// service manager opens for each run, appending (package service, "The
+// definitions"). `up` first thing, before anything of the run writes to
+// stderr, makes the file root's and 0600 whatever the manager created it
+// with (service install creates it so; a wider one is fixed and said in
+// the log), and reads what the runs before left there ([TakeCrashTrace]:
+// the head, up to [CrashTraceLimit], as valid UTF-8, cut at a character),
+// cutting the file to that head. The node empties it only once it has the
+// trace ([Node.KeepLastRun], [CrashTrace.Release]): a start that fails
+// before that adds its error after the trace, and the next start reads
+// both, so a crash followed by failing starts isn't lost; the file stays
+// bounded by its head and one run's output. A file with another link isn't
+// read: it is emptied and removed, and the run's stderr goes to the null
+// device ([CrashTrace.Detach]); so does it, without writing to the file,
+// when the file can't be fixed, cut or emptied, which stops the start.
+// The agent's log goes only to the ring, so the file holds what the
+// runtime writes there (a panic's trace, a fatal error's, SIGQUIT's
+// goroutine dump) and the error `up` exits with: nothing on a clean stop
+// (a signal's cancellation is no error, [CleanStop]), and nothing from a
+// kill. Status says the last run crashed (Status.LastRunCrashed), or that
+// its trace wasn't read (Status.LastRunUnreadable), and Diagnostics has
+// the trace, or why, root's only. A server keeps no trace: right after
+// reading the file, before anything else that can fail, `up` detaches
+// stderr from it (emptied, removed, stderr to the null device) unless the
+// node is known to be a device: by the mode its environment, flags or
+// node file give, else by its kind in the map ([CrashTrace.KeepOnlyOnADevice]);
+// a node of unknown kind, or whose state directory can't be read, keeps
+// none, even of the start's own error. A node that turns out a server
+// back in its space detaches the same way, warning that a device's
+// definition runs it, and warns of a crash-trace it finds in its state
+// directory otherwise. A device that detaches (a file it couldn't empty)
+// makes the file anew, root's 0600, so its manager's next start doesn't
+// create it with its own mode. grpc's fatal errors are written to stderr
+// as well as the log, so the trace says why the agent exited.
+// A stderr that isn't the file (a terminal, the journal, a server's
+// service) leaves it alone, and the log goes to stderr as ever. It survives a
+// reboot, unlike the runtime directory (/run on Linux), so a crash just
+// before one is still there, and the manager can open it before the agent
+// has made any directory of its own. A server's workers log at the
 // node's level; only the node owner's space's worker output joins the
 // node's log, line by line, prefixed with its space and sanitized
 // ([Sanitize]), while a guest space's stays in its own ring in the
