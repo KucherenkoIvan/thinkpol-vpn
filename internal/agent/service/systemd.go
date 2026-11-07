@@ -163,9 +163,9 @@ func HostDropIns() agent.DropInReport { return dropIns("/") }
 
 // dropIns lists the *.conf files systemd applies to the service's unit,
 // under root: in each unit directory, thinkpol.service.d's, then
-// service.d's (every service's: `systemctl set-property` and
-// distributions write there too). A directory that can't be read (but for
-// a missing one) makes the report unreadable.
+// service.d's (every service's; distributions ship some there). A
+// directory that can't be read (but for a missing one) makes the report
+// unreadable.
 func dropIns(root string) agent.DropInReport {
 	var r agent.DropInReport
 	var unreadable []string

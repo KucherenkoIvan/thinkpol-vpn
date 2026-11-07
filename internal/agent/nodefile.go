@@ -14,9 +14,9 @@ import (
 
 // NodeFile, in the state directory, is the operator's settings for this
 // node (docs/design/configuration.md "Node level"): JSON, root's, 0600,
-// written by hand or by provisioning, never by the agent. `thinkpol up` reads it at start (ApplyNodeFile); a setting
-// given as a flag or in the environment wins over it. None is fine: every
-// setting has its default.
+// written by hand or by provisioning, never by the agent. `thinkpol up`
+// reads it at start (ApplyNodeFile); a setting given as a flag or in the
+// environment wins over it. None is fine: every setting has its default.
 const NodeFile = "node.json"
 
 // nodeFileLimit bounds the file.
