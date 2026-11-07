@@ -492,19 +492,37 @@ A failed stop or start says what is left: whether the installed service was stop
 Run as root, it does the following:
 
 - stops the service; the agent takes its data plane down as it stops;
-- undoes what a crashed agent left, holding the host lock;
+- undoes what a crashed agent left, holding the host lock: a device's routing, guard and DNS, and a server's (what its supervisor's next start would undo: the spaces' veths, the forwarding sysctls it turned on and its isolation tables), printing an `undid what a crashed agent left: …` line for each of the server's;
 - removes the definition and the binary;
 - clears the agent's runtime directories of locks, boot records and sockets.
 
-The group, the state directory, the keys and the map stay. It never compares the definition with what install writes: an edited one is removed like any other. A systemd drop-in directory (`thinkpol.service.d/`) stays. It takes no flags.
+The group, the state directory, the keys and the map stay. It never compares the definition with what install writes: an edited one is removed like any other. A systemd drop-in directory (`thinkpol.service.d/`) stays. Synopsis: `thinkpol service uninstall [-force]`.
+
+| Flag | Meaning |
+|---|---|
+| `-force` | remove the definition and the binary even if undoing what a crashed agent left fails; the failure is printed as `warning: left on the host, undo it yourself: …` and it exits 0 |
 
 ```
 $ sudo thinkpol service uninstall
+undid what a crashed agent left: the space link tp-space0
+undid what a crashed agent left: the root's IPv4 forwarding (net.ipv4.ip_forward) and what turning it on changed
+undid what a crashed agent left: the nftables table inet thinkpol-supervisor
+undid what a crashed agent left: the nftables table arp thinkpol-supervisor-arp
 stopped and removed /etc/systemd/system/thinkpol.service
 the group thinkpol stays; remove it yourself if nothing else uses it
 ```
 
-With nothing installed it still exits 0 and prints the group line alone. If something other than locks and records is left in a runtime directory, it prints `left in /run/thinkpol, not the agent's locks or boot records: …`. Errors: not root, and an agent run by hand holding the lock, with the same messages as install.
+The `undid` lines appear only after a server crashed; a clean uninstall prints the last two lines. With nothing installed it still exits 0 and prints the group line alone. If something other than locks and records is left in a runtime directory, it prints `left in /run/thinkpol, not the agent's locks or boot records: …`.
+
+If undoing what a crashed agent left fails, uninstall stops there, after the service is stopped and disabled, so the binary is still there to try again:
+
+```
+$ sudo thinkpol service uninstall
+thinkpol service uninstall: undoing what a crashed agent left failed: supervisor: IPv4 (net.ipv4.ip_forward) forwarding still on: the isolation tables stay
+the service is stopped, but its definition (/etc/systemd/system/thinkpol.service) and its binary (/usr/local/bin/thinkpol) are still on disk; run this again once that is fixed, or with -force to remove them anyway and leave this on the host
+```
+
+It exits 1. With neither the definition nor the binary on disk there is nothing for `-force` to keep, so the failure is the `warning: left on the host` line and it exits 0, as with nothing installed. Other errors: not root, and an agent run by hand holding the lock, with the same messages as install.
 
 ### `service connect-on-boot`
 

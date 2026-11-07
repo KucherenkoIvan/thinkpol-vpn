@@ -265,7 +265,7 @@ func (h *fakeHost) installer(sys System) (Installer, *bytes.Buffer) {
 	return Installer{
 		Root: h.root, System: sys, Run: h.run, Executable: exe, Ready: func() error { return nil },
 		LockHost: h.lock,
-		ClearHost: func() error {
+		ClearHost: func() ([]string, error) {
 			h.cleared++
 			unlock, err := h.lock()
 			switch {
@@ -274,7 +274,7 @@ func (h *fakeHost) installer(sys System) (Installer, *bytes.Buffer) {
 			case err == nil:
 				unlock()
 			}
-			return nil
+			return nil, nil
 		},
 		RuntimeDirs: []string{"/run/thinkpol", "/run/thinkpol-api"}, Out: &out,
 	}, &out
@@ -385,7 +385,7 @@ func TestUninstallLeavesNothingOfTheService(t *testing.T) {
 				}
 			}
 
-			if err := in.Uninstall(ctx); err != nil {
+			if err := in.Uninstall(ctx, false); err != nil {
 				t.Fatal(err)
 			}
 			for _, p := range []string{sys.DefinitionPath(), BinaryPath, "/run/thinkpol-api", "/run/thinkpol/agent.lock",
@@ -415,7 +415,7 @@ func TestUninstallLeavesNothingOfTheService(t *testing.T) {
 				t.Fatalf("the definition after uninstall: %v", err)
 			}
 			// Uninstalling again finds nothing to do.
-			if err := in.Uninstall(ctx); err != nil {
+			if err := in.Uninstall(ctx, false); err != nil {
 				t.Fatal(err)
 			}
 		})
@@ -450,7 +450,7 @@ func TestNothingIsTakenFromARunningAgent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := in.Uninstall(ctx); !errors.Is(err, errAgentRuns) {
+	if err := in.Uninstall(ctx, false); !errors.Is(err, errAgentRuns) {
 		t.Fatalf("uninstall: %v", err)
 	}
 	if _, _, ok := h.file("/run/thinkpol/agent.lock"); !ok || h.cleared != 0 {
@@ -550,20 +550,64 @@ func TestLaunchdRetriesABootstrapRefusedWithEIO(t *testing.T) {
 }
 
 // A ClearHost that fails stops uninstall before it removes the binary
-// that could clear the host again.
-func TestUninstallKeepsTheBinaryWhileTheHostIsntClear(t *testing.T) {
-	h := newFakeHost(t)
-	in, _ := h.installer(Systemd{})
-	ctx := context.Background()
-	if err := in.Install(ctx, Options{}); err != nil {
-		t.Fatal(err)
-	}
-	in.ClearHost = func() error { return errors.New("routes stuck") }
-	if err := in.Uninstall(ctx); err == nil || !strings.Contains(err.Error(), "routes stuck") {
-		t.Fatalf("got %v", err)
-	}
-	if _, _, ok := h.file(BinaryPath); !ok {
-		t.Fatal("the binary was removed")
+// that could clear the host again, saying what is left of the service and
+// what cleared; -force then completes it, reporting what stays on the
+// host.
+func TestUninstallStopsOnAFailedClearAndForceCompletesIt(t *testing.T) {
+	for _, sys := range []System{Systemd{}, Launchd{}} {
+		t.Run(fmt.Sprintf("%T", sys), func(t *testing.T) {
+			h := newFakeHost(t)
+			in, out := h.installer(sys)
+			ctx := context.Background()
+			if err := in.Install(ctx, Options{}); err != nil {
+				t.Fatal(err)
+			}
+			// What macOS's resolver cleanup hits on every try: a backup
+			// record readBackup rejects.
+			stuck := errors.New("dns: the store's backup: illegal base64 data at input byte 4")
+			in.ClearHost = func() ([]string, error) {
+				return []string{"the space link tp-space0"}, stuck
+			}
+			err := in.Uninstall(ctx, false)
+			if !errors.Is(err, stuck) || !strings.Contains(err.Error(), sys.DefinitionPath()) ||
+				!strings.Contains(err.Error(), BinaryPath) || !strings.Contains(err.Error(), "-force") {
+				t.Fatalf("got %v", err)
+			}
+			for _, p := range []string{sys.DefinitionPath(), BinaryPath} {
+				if _, _, ok := h.file(p); !ok {
+					t.Fatalf("%s was removed", p)
+				}
+			}
+			if !strings.Contains(out.String(), "tp-space0") {
+				t.Errorf("what was undone isn't reported:\n%s", out)
+			}
+
+			out.Reset()
+			if err := in.Uninstall(ctx, true); err != nil {
+				t.Fatal(err)
+			}
+			for _, p := range []string{sys.DefinitionPath(), BinaryPath} {
+				if _, _, ok := h.file(p); ok {
+					t.Errorf("%s is left", p)
+				}
+			}
+			if !strings.Contains(out.String(), "warning: left on the host") || !strings.Contains(out.String(), stuck.Error()) {
+				t.Errorf("what is left on the host isn't reported:\n%s", out)
+			}
+			if err := in.installed(); !errors.Is(err, ErrNotInstalled) {
+				t.Fatalf("the definition after a forced uninstall: %v", err)
+			}
+
+			// Nothing on disk: nothing for -force to keep, so uninstall
+			// stays idempotent, the failure a warning.
+			out.Reset()
+			if err := in.Uninstall(ctx, false); err != nil {
+				t.Fatalf("with nothing installed: %v", err)
+			}
+			if !strings.Contains(out.String(), "warning: left on the host") || !strings.Contains(out.String(), stuck.Error()) {
+				t.Errorf("what is left on the host isn't reported:\n%s", out)
+			}
+		})
 	}
 }
 
@@ -624,7 +668,7 @@ func TestLaunchdWaitsForTheDaemonToGo(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.failNext["launchctl bootout"] = 1
-	if err := in.Uninstall(ctx); err == nil || !strings.Contains(err.Error(), "bootout") {
+	if err := in.Uninstall(ctx, false); err == nil || !strings.Contains(err.Error(), "bootout") {
 		t.Fatalf("got %v", err)
 	}
 	if _, _, ok := h.file(PlistPath); !ok {
@@ -641,7 +685,7 @@ func TestLaunchdWaitsForTheDaemonToGo(t *testing.T) {
 	// A print that fails for another reason isn't "gone": the stop fails,
 	// and uninstall leaves the plist and the binary.
 	h.bootoutFails, h.printFails = false, true
-	if err := in.Uninstall(ctx); err == nil || !strings.Contains(err.Error(), "not permitted") {
+	if err := in.Uninstall(ctx, false); err == nil || !strings.Contains(err.Error(), "not permitted") {
 		t.Fatalf("got %v", err)
 	}
 	if _, _, ok := h.file(PlistPath); !ok {
@@ -830,7 +874,7 @@ func TestANeverLoadedUnitCountsAsStopped(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(h.root, UnitPath), unit, 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if err := in.Uninstall(ctx); err != nil {
+		if err := in.Uninstall(ctx, false); err != nil {
 			t.Fatalf("old systemd %v: %v", old, err)
 		}
 		if _, _, ok := h.file(UnitPath); ok {

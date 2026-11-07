@@ -65,9 +65,12 @@ and starts the agent. It starts at every boot, and systemd starts it again
 5 s after any exit. `systemctl reload thinkpol` sends SIGHUP to the agent
 alone, which re-reads the map at once; the per-space workers it runs don't
 handle SIGHUP, so never signal the whole unit. `thinkpol service uninstall`
-stops it, undoes what a crashed agent left, and removes the unit and the
-binary; the `thinkpol` group and the state directory stay. On a device,
-whether the service connects at boot is the member's choice: `thinkpol
+stops it, undoes what a crashed agent left (a server's forwarding, firewall
+tables and veths included), and removes the unit and the binary; the
+`thinkpol` group and the state directory stay. If undoing fails it stops
+with the unit and binary still on disk and says what is left; fix that and
+run it again, or add `-force` to remove them anyway. On a device, whether
+the service connects at boot is the member's choice: `thinkpol
 connect-on-boot on|off`, run by a member of the `thinkpol` group without
 root, from the next boot (off by default). Both refuse
 while an agent you started by hand holds the host lock: stop it first. Package `agent/service` has the unit and why it is so.
