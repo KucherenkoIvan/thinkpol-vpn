@@ -37,12 +37,13 @@ const (
 	// wgSteadyJitter is how far apart two intervals of an idle run may be
 	// and still be one steady interval: timers, not people, send these.
 	wgSteadyJitter = time.Second
-	// wgRekeys is how many times an exchange must occur, each a rekey
+	// wgRekeys is how many times an exchange must recur, each a rekey
 	// period after the one before, to be WireGuard's rekey.
 	wgRekeys = 3
-	// wgExchangesKept bounds the distinct exchanges a connection keeps
-	// before the stale ones are dropped.
-	wgExchangesKept = 1024
+	// wgRekeySlack widens the rekey window past half a period again:
+	// WireGuard rekeys on the first packet after its deadline, so the gap
+	// grows by up to a persistent keepalive interval (25 s) and more.
+	wgRekeySlack = 30 * time.Second
 )
 
 // wgRhythm flags a TLS connection that carries WireGuard with its rhythm
@@ -56,16 +57,19 @@ const (
 // signal:
 //
 //   - rekey: an exchange (a record in the handshake size band one way and
-//     one in the band the other way within wgPairWindow) whose two sizes
-//     occur again as an exchange a rekey period later, from the period to
-//     half as much again past it (WireGuard rekeys after 2 minutes when it
-//     sends, and up to 45 s later when it only receives), and again a
-//     period after that: wgRekeys occurrences in all.
+//     one in the band the other way within wgPairWindow) that stands out,
+//     its two sizes not exchanged in the rekey period before it or its
+//     first record sent after wgQuiet with no band record either way, and
+//     recurs standing out a rekey period after the latest time it did, up
+//     to half as much again plus wgRekeySlack past it (WireGuard rekeys on
+//     the first packet after 2 minutes when it sends, after 165 s when it
+//     only receives), and again a period after that: wgRekeys in all.
 //   - keepalive: an idle run, records of one size each sent after wgQuiet
 //     with no record either way, none answered by a record the other way
 //     within wgPairWindow, at one steady interval: at least `keepalives`
 //     (3) of them once the connection has carried an exchange in the band,
-//     two more without.
+//     two more without. A record counts once its wgPairWindow has passed,
+//     judged on the connection's next packet either way.
 //
 // Flow shape beyond that (size distributions, bursts) is not its business
 // (owner, 2026-11-07). A stream it can't frame as TLS from its first byte
@@ -89,9 +93,15 @@ type wgConn struct {
 	dirs  [2]wgDirection
 	// last is when the latest application-data record either way ended.
 	last time.Time
-	// exchanges holds each exchange's occurrences within the last
-	// rekey*3/2, by the sizes of its two records.
-	exchanges map[[2]int][]wgOccurrence
+	// exchanges holds each exchange seen within the rekey window, by the
+	// sizes of its two records; pruned is when stale ones were last
+	// dropped, at most once a window so a record's work stays bounded;
+	// prunes counts the walks.
+	exchanges map[[2]int]*wgExchange
+	pruned    time.Time
+	prunes    int
+	// bandLast is when the latest band record either way ended.
+	bandLast time.Time
 	// exchanged is set once any exchange in the band has occurred.
 	exchanged bool
 	// pending is the latest idle record while it may still be answered.
@@ -111,10 +121,17 @@ type wgDirection struct {
 	// a stream joined midstream, or stream bytes the module never saw.
 	unframed bool
 	consumed uint64 // stream bytes framed so far
-	// band holds when the latest record of each size in the handshake
-	// band ended, for wgPairWindow: by age, not count, so a burst of data
-	// around a handshake never pushes it out.
-	band map[int]time.Time
+	// band holds the latest record of each size in the handshake band,
+	// for wgPairWindow: by age, not count, so a burst of data around a
+	// handshake never pushes it out.
+	band map[int]wgBandRecord
+}
+
+type wgBandRecord struct {
+	end time.Time
+	// afterQuiet is set when no band record either way came within wgQuiet
+	// before it.
+	afterQuiet bool
 }
 
 type wgRecord struct {
@@ -123,11 +140,12 @@ type wgRecord struct {
 	end  time.Time
 }
 
-// wgOccurrence is one occurrence of an exchange: when its answer ended,
-// how many occurrences a rekey period apart end with it, and the gap to
-// the one before it in that chain.
-type wgOccurrence struct {
-	at    time.Time
+// wgExchange is one exchange's history: when its answer last ended, and
+// the latest time it stood out, with how many times in a row it had then
+// stood out a rekey period after the time before, and that gap.
+type wgExchange struct {
+	seen  time.Time
+	stood time.Time
 	chain int
 	gap   time.Duration
 }
@@ -193,6 +211,9 @@ func (m *wgRhythm) Inspect(p *Packet, f *Flow) Decision {
 		return Decision{Verdict: Accept}
 	}
 	c, dir := m.conn(f)
+	if c.flagged == "" {
+		m.settle(c, f.Last)
+	}
 	if c.flagged == "" && m.read(c, dir, f) {
 		return Decision{Verdict: Accept, Tag: "wireguard-rhythm: stream not framed"}
 	}
@@ -220,8 +241,8 @@ func (m *wgRhythm) conn(f *Flow) (*wgConn, int) {
 	}
 	// Whatever state either key still has is of an older connection.
 	delete(m.conns, f.Key.Reverse())
-	c := &wgConn{exchanges: map[[2]int][]wgOccurrence{}}
-	c.dirs[0].band, c.dirs[1].band = map[int]time.Time{}, map[int]time.Time{}
+	c := &wgConn{exchanges: map[[2]int]*wgExchange{}}
+	c.dirs[0].band, c.dirs[1].band = map[int]wgBandRecord{}, map[int]wgBandRecord{}
 	c.flows[0] = f
 	m.conns[f.Key] = c
 	return c, 0
@@ -275,79 +296,95 @@ func (m *wgRhythm) record(c *wgConn, dir int, d *wgDirection, end time.Time) {
 		return
 	}
 	r := wgRecord{dir, d.size, end}
-	if p := c.pending; p != nil {
-		switch {
-		case r.dir != p.dir && end.Sub(p.end) <= wgPairWindow:
-			c.pending = nil // answered: not a keepalive
-		case end.Sub(p.end) > wgPairWindow:
-			c.run.add(*p)
-			c.pending = nil
-		}
+	if p := c.pending; p != nil && r.dir != p.dir && end.Sub(p.end) <= wgPairWindow {
+		c.pending = nil // answered: not a keepalive
 	}
 	if r.size >= wgBandMin && r.size <= wgBandMax {
-		for size, at := range c.dirs[1-dir].band {
-			if end.Sub(at) > wgPairWindow {
+		for size, b := range c.dirs[1-dir].band {
+			if end.Sub(b.end) > wgPairWindow {
 				delete(c.dirs[1-dir].band, size)
 				continue
 			}
 			c.exchanged = true
-			m.exchange(c, [2]int{size, r.size}, end)
+			if m.exchange(c, [2]int{size, r.size}, b.afterQuiet, end) {
+				return
+			}
 		}
-		d.band[r.size] = end
+		quiet := c.bandLast.IsZero() || end.Sub(c.bandLast) >= wgQuiet
+		d.band[r.size] = wgBandRecord{end, quiet}
+		c.bandLast = end
 	}
 	idle := !c.last.IsZero() && end.Sub(c.last) >= wgQuiet
 	c.last = end
-	if c.flagged != "" || !idle {
+	if idle {
+		c.pending = &r
+	}
+}
+
+// settle counts the pending idle record into the idle run once its answer
+// window has passed by now, and flags the connection when the run shows
+// the rhythm.
+func (m *wgRhythm) settle(c *wgConn, now time.Time) {
+	p := c.pending
+	if p == nil || now.Sub(p.end) <= wgPairWindow {
 		return
 	}
+	c.pending = nil
+	c.run.add(*p)
 	need := m.keepalives
 	if !c.exchanged {
 		need += 2
 	}
-	if n := c.run.with(r); n >= need {
-		c.flagged = fmt.Sprintf("WireGuard keepalives: %d idle records of %d bytes", n, r.size)
-		if n > 1 {
-			c.flagged += fmt.Sprintf(", %s apart", end.Sub(c.run.last).Round(time.Second))
+	if c.run.n >= need {
+		c.flagged = fmt.Sprintf("WireGuard keepalives: %d idle records of %d bytes", c.run.n, c.run.size)
+		if c.run.n > 1 {
+			c.flagged += fmt.Sprintf(", %s apart", c.run.last.Sub(c.run.prev).Round(time.Second))
 		}
-		return
 	}
-	c.pending = &r
 }
 
-// exchange notes an occurrence of the exchange of sizes, the answer
-// ending at end, and flags the connection at the wgRekeys-th a rekey
-// period after the one before.
-func (m *wgRhythm) exchange(c *wgConn, sizes [2]int, end time.Time) {
-	keep := m.rekey * 3 / 2
-	if len(c.exchanges) > wgExchangesKept {
-		for k, occ := range c.exchanges {
-			if end.Sub(occ[len(occ)-1].at) > keep {
+// exchange notes an occurrence of the exchange of sizes, its first record
+// sent after a quiet band or not, the answer ending at end, and flags the
+// connection when it stands out the wgRekeys-th time in a row a rekey
+// period after the time before. It reports whether it flagged.
+func (m *wgRhythm) exchange(c *wgConn, sizes [2]int, afterQuiet bool, end time.Time) bool {
+	window := m.rekey*3/2 + wgRekeySlack
+	if end.Sub(c.pruned) >= window {
+		for k, e := range c.exchanges {
+			if end.Sub(e.seen) > window {
 				delete(c.exchanges, k)
 			}
 		}
+		c.pruned = end
+		c.prunes++
 	}
-	occ := c.exchanges[sizes]
-	for len(occ) > 0 && end.Sub(occ[0].at) > keep {
-		occ = occ[1:]
+	e := c.exchanges[sizes]
+	if e == nil {
+		e = &wgExchange{}
+		c.exchanges[sizes] = e
+	} else if end.Sub(e.seen) <= wgPairWindow {
+		// More answers to one record are one occurrence.
+		e.seen = end
+		return false
 	}
-	o := wgOccurrence{at: end, chain: 1}
-	for _, e := range occ {
-		if gap := end.Sub(e.at); gap >= m.rekey && e.chain+1 > o.chain {
-			o.chain, o.gap = e.chain+1, gap
-		}
+	stands := e.seen.IsZero() || end.Sub(e.seen) >= m.rekey || afterQuiet
+	e.seen = end
+	if !stands {
+		return false
 	}
-	if o.chain >= wgRekeys {
-		c.flagged = fmt.Sprintf("WireGuard rekey: records of %d and %d bytes exchanged %d times, the last %s apart",
-			sizes[0], sizes[1], o.chain, o.gap.Round(time.Second))
-		return
-	}
-	// More answers to one record are one occurrence.
-	if n := len(occ); n > 0 && end.Sub(occ[n-1].at) <= wgPairWindow {
-		occ[n-1].chain = max(occ[n-1].chain, o.chain)
+	gap := end.Sub(e.stood)
+	if e.chain > 0 && gap >= m.rekey && gap <= window {
+		e.chain++
 	} else {
-		occ = append(occ, o)
+		e.chain, gap = 1, 0
 	}
-	c.exchanges[sizes] = occ
+	e.stood, e.gap = end, gap
+	if e.chain < wgRekeys {
+		return false
+	}
+	c.flagged = fmt.Sprintf("WireGuard rekey: records of %d and %d bytes exchanged %d times, the last %s apart",
+		sizes[0], sizes[1], e.chain, e.gap.Round(time.Second))
+	return true
 }
 
 // with is how long the run would be with r, an idle record, in it.

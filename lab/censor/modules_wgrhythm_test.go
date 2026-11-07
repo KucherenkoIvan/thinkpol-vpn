@@ -3,6 +3,7 @@ package censor
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"math/rand/v2"
 	"slices"
 	"strings"
@@ -36,33 +37,64 @@ type wireRecord struct {
 // every 25 s while idle, a rekey 121 s in and again 121 s later.
 func wgTimeline(keepalives bool) []wgMessage {
 	var msgs []wgMessage
-	handshake := func(at time.Duration) {
-		msgs = append(msgs,
-			wgMessage{at, true, wgInitiation},
-			wgMessage{at + 15*time.Millisecond, false, wgResponse})
-	}
-	burst := func(from, to time.Duration) {
-		for at, i := from, 0; at < to; at, i = at+time.Second, i+1 {
-			msgs = append(msgs,
-				wgMessage{at, true, wgKeepalive + 16*(1+i%60)},
-				wgMessage{at + 20*time.Millisecond, false, wgKeepalive + 16*(1+(i*7)%80)})
-		}
-	}
 	idle := func(from, to time.Duration) {
 		for at := from + 25*time.Second; keepalives && at < to; at += 25 * time.Second {
 			msgs = append(msgs, wgMessage{at, true, wgKeepalive})
 		}
 	}
-	handshake(0)
-	burst(time.Second, 11*time.Second)
+	msgs = append(msgs, wgHandshake(0)...)
+	msgs = append(msgs, wgBurst(time.Second, 11*time.Second, 0)...)
 	idle(10*time.Second, 121*time.Second)
-	handshake(121 * time.Second)
-	burst(122*time.Second, 131*time.Second)
+	msgs = append(msgs, wgHandshake(121*time.Second)...)
+	msgs = append(msgs, wgBurst(122*time.Second, 131*time.Second, 0)...)
 	idle(130*time.Second, 242*time.Second)
-	handshake(242 * time.Second)
-	burst(243*time.Second, 260*time.Second)
+	msgs = append(msgs, wgHandshake(242*time.Second)...)
+	msgs = append(msgs, wgBurst(243*time.Second, 260*time.Second, 0)...)
 	return msgs
 }
+
+// wgHandshake is a handshake the client starts at at.
+func wgHandshake(at time.Duration) []wgMessage {
+	return []wgMessage{{at, true, wgInitiation}, {at + 15*time.Millisecond, false, wgResponse}}
+}
+
+// wgBurst is data each way every second from from to to, its sizes picked
+// from shift on.
+func wgBurst(from, to time.Duration, shift int) []wgMessage {
+	var msgs []wgMessage
+	for at, i := from, shift; at < to; at, i = at+time.Second, i+1 {
+		msgs = append(msgs,
+			wgMessage{at, true, wgKeepalive + 16*(1+i%60)},
+			wgMessage{at + 20*time.Millisecond, false, wgKeepalive + 16*(1+(i*7)%80)})
+	}
+	return msgs
+}
+
+// wgRekeyTimeline is a tunnel that rekeys as WireGuard does, on the first
+// packet it sends past the deadline: the first handshake, then after each
+// gap a message of the size trigger gives (a keepalive or data) and, 500
+// µs later, the initiation; a burst of data after each handshake, of other
+// sizes each time; no idle keepalives.
+func wgRekeyTimeline(trigger func(i int) int, gaps ...time.Duration) []wgMessage {
+	msgs := slices.Concat(wgHandshake(0), wgBurst(time.Second, 11*time.Second, 0))
+	at := time.Duration(0)
+	for i, gap := range gaps {
+		at += gap
+		msgs = append(msgs, wgMessage{at - 500*time.Microsecond, true, trigger(i)})
+		msgs = append(msgs, wgHandshake(at)...)
+		msgs = append(msgs, wgBurst(at+time.Second, at+11*time.Second, 11*(i+1))...)
+	}
+	return msgs
+}
+
+// keepaliveTrigger and dataTrigger are what the client sends just before
+// each rekey's initiation: a keepalive, or data of another size each time.
+func keepaliveTrigger(int) int { return wgKeepalive }
+func dataTrigger(i int) int    { return wgKeepalive + 16*(3+5*i) }
+
+// wgLateRekeyAt is when the third handshake of a rekey timeline 125 s and
+// 190 s apart is answered.
+const wgLateRekeyAt = 315*time.Second + 15*time.Millisecond
 
 // busy adds to msgs a tunnel busy sending around each initiation the
 // client sends: 1200-byte messages every 250 µs from 100 ms before it to
@@ -175,7 +207,7 @@ type wgAction struct {
 	Action
 }
 
-func newWGRun(t *testing.T, settings string, mss int) *wgRun {
+func newWGRun(t testing.TB, settings string, mss int) *wgRun {
 	t.Helper()
 	r := newWGEngine(t, settings, mss)
 	r.eng.Handle(tcpPacket(clientAddr, serverAddr, 40000, 443, 1000, 0, Syn, nil))
@@ -190,7 +222,7 @@ func newWGRun(t *testing.T, settings string, mss int) *wgRun {
 
 // newWGEngine is an engine with only the rhythm module, and no
 // connection yet.
-func newWGEngine(t *testing.T, settings string, mss int) *wgRun {
+func newWGEngine(t testing.TB, settings string, mss int) *wgRun {
 	t.Helper()
 	passives, _, err := Build(Config{Modules: []ModuleConfig{{Name: "wireguard-rhythm", Settings: json.RawMessage(settings)}}})
 	if err != nil {
@@ -266,20 +298,24 @@ func (r *wgRun) tags(t *testing.T) map[string][]string {
 }
 
 const (
-	wgRekeyAt     = 242*time.Second + 15*time.Millisecond // the third handshake's response
-	wgKeepaliveAt = 85 * time.Second                      // the third idle keepalive
+	wgRekeyAt = 242*time.Second + 15*time.Millisecond // the third handshake's response
+	// the fourth idle keepalive: the first packet after the third's answer
+	// window closed
+	wgKeepaliveAt = 110 * time.Second
 )
 
 // TestWGRhythmFlagsTheRhythm: udp-in-TLS-like traffic with WireGuard's
-// rhythm is blocked, both ways, once it shows: on the third idle
-// keepalive, or, without keepalives, on the third handshake a rekey period
-// after the one before. Neither signal reads WireGuard's exact sizes: it
+// rhythm is blocked, both ways, once it shows: on the first packet after
+// the third idle keepalive's answer window, or, without keepalives, on the
+// third handshake a rekey period after the one before, a rekey triggered by
+// a packet too, gaps of 125 s and 190 s too. Neither signal reads WireGuard's exact sizes: it
 // holds through padding to 16 or 256 bytes (sizes hidden, rhythm kept),
 // another overhead each way, a busy tunnel around each rekey, a batching
 // window, and lengths written as records of their own. Each framing
 // holds: records whole in a segment, and records and their headers split
 // over segments.
 func TestWGRhythmFlagsTheRhythm(t *testing.T) {
+	s := time.Second
 	plain := withOverhead(wgTLSOverhead)
 	for _, c := range []struct {
 		name       string
@@ -298,10 +334,16 @@ func TestWGRhythmFlagsTheRhythm(t *testing.T) {
 		{"sizes hidden, rekey kept", eachInRecord(wgTimeline(false), paddedTo(256)), wgRekeyAt, "records of 273 and 273 bytes", false},
 		{"overhead per direction", eachInRecord(wgTimeline(false), perDirection(19, 40)), wgRekeyAt, "records of 167 and 132 bytes", false},
 		{"busy around each rekey", eachInRecord(busy(wgTimeline(false)), plain), wgRekeyAt, "records of 167 and 111 bytes", false},
-		// Through a 20 ms batching window idle messages still travel
-		// alone.
+		{"rekey after a keepalive, 125 s and 190 s apart", eachInRecord(wgRekeyTimeline(keepaliveTrigger, 125*s, 190*s), plain),
+			wgLateRekeyAt, "records of 167 and 111 bytes exchanged 3 times, the last 3m10s apart", true},
+		{"rekey after data, 125 s and 190 s apart", eachInRecord(wgRekeyTimeline(dataTrigger, 125*s, 190*s), plain),
+			wgLateRekeyAt, "records of 167 and 111 bytes", false},
+		// Through a 20 ms batching window idle keepalives still travel
+		// alone, and an initiation shares a record with the keepalive that
+		// triggered it: a record of one size each time.
 		{"batched, keepalives", batched(wgTimeline(true), 20*time.Millisecond), wgKeepaliveAt + 20*time.Millisecond, "of 51 bytes", false},
-		{"batched, rekey", batched(wgTimeline(false), 20*time.Millisecond), wgRekeyAt + 20*time.Millisecond, "records of 167 and 111 bytes", false},
+		{"batched, rekey after a keepalive", batched(wgRekeyTimeline(keepaliveTrigger, 125*s, 190*s), 20*time.Millisecond),
+			wgLateRekeyAt + 20*time.Millisecond, "records of 201 and 111 bytes", false},
 		{"length prefixed, keepalives", lengthPrefixed(wgTimeline(true)), wgKeepaliveAt, "of 19 bytes", false},
 		{"length prefixed, rekey", lengthPrefixed(wgTimeline(false)), wgRekeyAt, "records of 165 and 109 bytes", false},
 	} {
@@ -333,15 +375,23 @@ func TestWGRhythmFlagsTheRhythm(t *testing.T) {
 	}
 }
 
-// TestWGRhythmCoalescedHandshakeUnderLoad pins a known miss (lab/censor's
-// package doc): through a batching window, a handshake message sent while
-// the tunnel is busy shares a record with data, leaves the handshake band,
-// and the rekey goes unseen. Idle keepalives would still show.
+// TestWGRhythmCoalescedHandshakeUnderLoad pins known misses (lab/censor's
+// package doc): through a batching window an initiation shares a record
+// with the packet that triggered it, so when that is data of another size
+// each time, or the tunnel is busy, the rekey goes unseen. Idle keepalives
+// would still show.
 func TestWGRhythmCoalescedHandshakeUnderLoad(t *testing.T) {
-	r := newWGRun(t, `{}`, 1400)
-	r.carry(batched(busy(wgTimeline(false)), 20*time.Millisecond))
-	if a, blocked := r.firstBlocked(); blocked {
-		t.Errorf("blocked at %s: %+v; if the module now sees this, update the package doc", a.at, a)
+	s := time.Second
+	for name, msgs := range map[string][]wgMessage{
+		"busy":                           busy(wgTimeline(false)),
+		"triggered by data":              wgRekeyTimeline(dataTrigger, 125*s, 190*s),
+		"triggered by a keepalive, busy": busy(wgRekeyTimeline(keepaliveTrigger, 125*s, 190*s)),
+	} {
+		r := newWGRun(t, `{}`, 1400)
+		r.carry(batched(msgs, 20*time.Millisecond))
+		if a, blocked := r.firstBlocked(); blocked {
+			t.Errorf("%s: blocked at %s: %+v; if the module now sees this, update the package doc", name, a.at, a)
+		}
 	}
 }
 
@@ -424,7 +474,8 @@ func TestWGRhythmRemovedPasses(t *testing.T) {
 }
 
 // TestWGRhythmSteadyIdlePeriodAlone: without any exchange in the
-// handshake band, an idle run shows the rhythm at its fifth record.
+// handshake band, an idle run shows the rhythm at its fifth record, once
+// its answer window has passed: on the sixth.
 func TestWGRhythmSteadyIdlePeriodAlone(t *testing.T) {
 	r := newWGRun(t, `{}`, 1400)
 	var msgs []wgMessage
@@ -432,8 +483,8 @@ func TestWGRhythmSteadyIdlePeriodAlone(t *testing.T) {
 		msgs = append(msgs, wgMessage{at, true, wgKeepalive})
 	}
 	r.carry(eachInRecord(msgs, withOverhead(wgTLSOverhead)))
-	if a, blocked := r.firstBlocked(); !blocked || a.at != 125*time.Second || !strings.Contains(a.Reason, "5 idle records") {
-		t.Errorf("first blocked %+v (blocked %v), want a drop at the fifth keepalive, 125 s", a, blocked)
+	if a, blocked := r.firstBlocked(); !blocked || a.at != 150*time.Second || !strings.Contains(a.Reason, "5 idle records") {
+		t.Errorf("first blocked %+v (blocked %v), want a drop for five keepalives at the sixth, 150 s", a, blocked)
 	}
 }
 
@@ -520,13 +571,16 @@ func TestWGRhythmOrdinaryTLS(t *testing.T) {
 		{"gRPC stream with keepalive PINGs", grpc, 0},
 		{"bulk download", download, 0},
 		{"HTTP/2 poll every 2 minutes", h2Poll, 0},
-		// Risk: an identical request and response, both in the handshake
-		// band, repeated for four minutes at any interval up to three.
+		// An identical request and response, both in the handshake band,
+		// at a steady interval shorter than a rekey period never stands
+		// out a rekey period after it last did.
+		{"HTTP/1.1 poll every 30 s", poll(30*s, 260, 380), 0},
+		// Risk: the same at an interval within the rekey window.
 		{"HTTP/1.1 poll every 2 minutes", poll(120*s, 260, 380), -1},
-		{"HTTP/1.1 poll every 30 s", poll(30*s, 260, 380), -1},
 		// Risk: a server heartbeat, one unanswered record of one size at a
-		// steady idle interval (a server-sent events comment line).
-		{"server-sent events heartbeat", sse, 45 * s},
+		// steady idle interval (a server-sent events comment line), flagged
+		// at the record after the third.
+		{"server-sent events heartbeat", sse, 60 * s},
 	} {
 		recs := slices.Clone(c.recs)
 		slices.SortStableFunc(recs, func(a, b wireRecord) int { return int(a.at - b.at) })
@@ -628,10 +682,10 @@ func TestWGRhythmNewConnection(t *testing.T) {
 	// Its own pair and keepalives still show the rhythm.
 	r.carry(eachInRecord([]wgMessage{
 		{80 * s, false, wgInitiation}, {80*s + 15*time.Millisecond, true, wgResponse},
-		{100 * s, true, wgKeepalive}, {125 * s, false, wgKeepalive}, {150 * s, true, wgKeepalive},
+		{100 * s, true, wgKeepalive}, {125 * s, false, wgKeepalive}, {150 * s, true, wgKeepalive}, {175 * s, true, wgKeepalive},
 	}, withOverhead(wgTLSOverhead)))
-	if a, blocked := r.firstBlocked(); !blocked || a.at != 150*s {
-		t.Errorf("the new connection's own rhythm: first blocked %+v (blocked %v), want at its third keepalive", a, blocked)
+	if a, blocked := r.firstBlocked(); !blocked || a.at != 175*s {
+		t.Errorf("the new connection's own rhythm: first blocked %+v (blocked %v), want at the record after its third keepalive", a, blocked)
 	}
 }
 
@@ -650,9 +704,16 @@ func TestWGRhythmSettings(t *testing.T) {
 	}
 
 	r = newWGRun(t, `{"keepalives": 1}`, 1400)
-	r.carry(eachInRecord(append(quick[:2:2], wgMessage{25 * s, true, wgKeepalive}), withOverhead(wgTLSOverhead)))
-	if a, blocked := r.firstBlocked(); !blocked || a.at != 25*s || a.Reason != "WireGuard keepalives: 1 idle records of 51 bytes" {
-		t.Errorf("keepalives 1: first blocked %+v (blocked %v), want a drop at the first keepalive", a, blocked)
+	r.carry(eachInRecord(append(quick[:2:2], wgMessage{25 * s, true, wgKeepalive}, wgMessage{50 * s, true, wgKeepalive}), withOverhead(wgTLSOverhead)))
+	if a, blocked := r.firstBlocked(); !blocked || a.at != 50*s || a.Reason != "WireGuard keepalives: 1 idle records of 51 bytes" {
+		t.Errorf("keepalives 1: first blocked %+v (blocked %v), want a drop for the first keepalive at the next", a, blocked)
+	}
+	// A record answered within the window, one HTTP/2 PING, is no
+	// keepalive, even as the last record before the answer.
+	r = newWGRun(t, `{"keepalives": 1}`, 1400)
+	r.carry(eachInRecord(append(quick[:2:2], wgMessage{25 * s, true, wgKeepalive}, wgMessage{25*s + 1500*time.Millisecond, false, wgKeepalive}), withOverhead(wgTLSOverhead)))
+	if a, blocked := r.firstBlocked(); blocked {
+		t.Errorf("keepalives 1, a PING answered in 1.5 s: blocked at %s: %+v", a.at, a)
 	}
 
 	for settings, wantErr := range map[string]string{
@@ -702,4 +763,112 @@ func (m *dropNth) Inspect(*Packet, *Flow) Decision {
 		return Decision{Verdict: Drop}
 	}
 	return Decision{Verdict: Accept}
+}
+
+// steadyStream is two-way traffic at rate records a second each way for
+// d: each client record answered 20 ms later (or half the interval, if
+// shorter), sizes from size.
+func steadyStream(rate int, d time.Duration, size func() (client, server int)) []wireRecord {
+	every := time.Second / time.Duration(rate)
+	answer := min(20*time.Millisecond, every/2)
+	var out []wireRecord
+	for at := time.Duration(0); at < d; at += every {
+		c, s := size()
+		out = append(out, wireRecord{at, true, c}, wireRecord{at + answer, false, s})
+	}
+	return out
+}
+
+// TestWGRhythmSteadyStreams: a steady two-way stream of records in the
+// handshake band never stands out, whatever its rate, so it is never taken
+// for a rekey: equal sizes, random sizes, and request/reply probes every 2 s
+// under 256-byte bucket padding, each for 6 minutes.
+func TestWGRhythmSteadyStreams(t *testing.T) {
+	s := time.Second
+	for _, rate := range []int{1, 10, 50} {
+		equal := func() (int, int) { return 273, 273 }
+		cases := map[string][]wireRecord{fmt.Sprintf("equal sizes, %d/s", rate): steadyStream(rate, 360*s, equal)}
+		for seed := range uint64(5) {
+			rng := rand.New(rand.NewPCG(seed, 188))
+			band := func() int { return wgBandMin + rng.IntN(wgBandMax-wgBandMin+1) }
+			cases[fmt.Sprintf("random sizes, %d/s, seed %d", rate, seed)] = steadyStream(rate, 360*s, func() (int, int) { return band(), band() })
+		}
+		for name, recs := range cases {
+			r := newWGRun(t, `{}`, 1400)
+			r.carry(recs)
+			if a, blocked := r.firstBlocked(); blocked {
+				t.Errorf("%s: blocked at %s: %+v", name, a.at, a)
+			}
+		}
+	}
+	var probes []wireRecord
+	for at := time.Duration(0); at < 360*s; at += 2 * s {
+		probes = append(probes, wireRecord{at, true, 273}, wireRecord{at + 30*time.Millisecond, false, 273})
+	}
+	r := newWGRun(t, `{}`, 1400)
+	r.carry(probes)
+	if a, blocked := r.firstBlocked(); blocked {
+		t.Errorf("path probes every 2 s, padded to 256: blocked at %s: %+v", a.at, a)
+	}
+}
+
+// TestWGRhythmCrossedKeepalives pins a known blind spot (lab/censor's
+// package doc): when both peers send persistent keepalives in step, each
+// answers the other within the window, so the keepalive signal never
+// fires and the rekey is the only one.
+func TestWGRhythmCrossedKeepalives(t *testing.T) {
+	s := time.Second
+	msgs := wgTimeline(false)
+	for at := 25 * s; at < 260*s; at += 25 * s {
+		msgs = append(msgs, wgMessage{at, true, wgKeepalive}, wgMessage{at + 20*time.Millisecond, false, wgKeepalive})
+	}
+	slices.SortStableFunc(msgs, func(a, b wgMessage) int { return int(a.at - b.at) })
+	twoRekeys := slices.DeleteFunc(slices.Clone(msgs), func(m wgMessage) bool { return m.at >= 242*s })
+	r := newWGRun(t, `{}`, 1400)
+	r.carry(eachInRecord(twoRekeys, withOverhead(wgTLSOverhead)))
+	if a, blocked := r.firstBlocked(); blocked {
+		t.Errorf("crossed keepalives, two rekeys: blocked at %s: %+v; if the module now sees this, update the package doc", a.at, a)
+	}
+	r = newWGRun(t, `{}`, 1400)
+	r.carry(eachInRecord(msgs, withOverhead(wgTLSOverhead)))
+	if a, blocked := r.firstBlocked(); !blocked || a.at != wgRekeyAt || !strings.Contains(a.Reason, "rekey") {
+		t.Errorf("crossed keepalives, three rekeys: first blocked %+v (blocked %v), want a drop for the rekey at %s", a, blocked, wgRekeyAt)
+	}
+}
+
+// randomInBand is 6 minutes of 50 records a second each way of random
+// sizes in the handshake band: nearly every pair of sizes exchanged.
+func randomInBand() []wireRecord {
+	rng := rand.New(rand.NewPCG(7, 188))
+	band := func() int { return wgBandMin + rng.IntN(wgBandMax-wgBandMin+1) }
+	return steadyStream(50, 360*time.Second, func() (int, int) { return band(), band() })
+}
+
+// TestWGRhythmPruneBounded: however many exchanges a connection carries,
+// it drops the stale ones at most once a rekey window, so the work per
+// record stays bounded by the band, never by the exchanges kept.
+func TestWGRhythmPruneBounded(t *testing.T) {
+	r := newWGRun(t, `{}`, 1400)
+	r.carry(randomInBand())
+	m := r.eng.passives[0].(*wgRhythm)
+	if len(m.conns) != 1 {
+		t.Fatalf("%d connections, want 1", len(m.conns))
+	}
+	for _, c := range m.conns {
+		// 360 s with a window of 210 s: at the first exchange and once after.
+		if c.prunes > 2 || len(c.exchanges) < 10_000 {
+			t.Errorf("%d walks over up to %d exchanges, want at most 2 walks over more than 10000", c.prunes, len(c.exchanges))
+		}
+	}
+}
+
+func BenchmarkWGRhythmRandomInBand(b *testing.B) {
+	recs := randomInBand()
+	for b.Loop() {
+		b.StopTimer()
+		r := newWGRun(b, `{}`, 1400)
+		b.StartTimer()
+		r.carry(recs)
+	}
+	b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N*len(recs)), "ns/record")
 }
