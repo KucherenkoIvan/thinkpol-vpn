@@ -7,8 +7,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: [TP-140]
 refs: []
-owner: ""
-branch: ""
+owner: "agent-tp-195"
+branch: "tp-195-exit-handshake-health"
 ---
 
 ## Goal
@@ -31,3 +31,4 @@ None named.
 ## Log
 - 2026-11-07 created in backlog
 
+- 2026-11-07 backlog → in-progress, owner: agent-tp-195
