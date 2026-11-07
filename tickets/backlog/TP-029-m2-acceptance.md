@@ -19,7 +19,7 @@ M2's "done when": the matrix shows `udp` getting caught and `reality` passing.
 
 ## Acceptance
 - [ ] `lab/RESULTS.md` committed with the M2 matrix
-- [ ] the wireguard-rhythm cell's probe runs for at least two WireGuard rekey periods (≥ 5 minutes) with the transport's default settings, so a pass means the rhythm was looked for (a ~30 s probe passes trivially)
+- [ ] the wireguard-rhythm cell's probe runs for at least two WireGuard rekey periods (up to about 7 minutes; up to about 10 minutes when the transport batches records; see lab/censor/doc.go) with the transport's default settings, so a pass means the rhythm was looked for (a ~30 s probe passes trivially)
 
 ## Notes
 - What "`reality` passes" means (owner, 2026-11-07): the handshake-level checks (blocklists, VPN fingerprints, entropy, the active prober, the server-hello fingerprint) and no WireGuard rhythm (TP-188). Flow shape beyond that is not tested at M2. See docs/design/milestones.md.
@@ -31,3 +31,4 @@ M2's "done when": the matrix shows `udp` getting caught and `reality` passing.
 - 2026-10-15 docs (board op): Goal and Scope say `reality` instead of `tls`
 - 2026-11-07 notes and deps: the M2 gate's meaning (owner, 2026-11-07); depends on TP-188 (WireGuard-rhythm check)
 - 2026-11-07 rhythm-cell probe length added (from TP-188's reviews)
+- 2026-11-07 rhythm probe length corrected after TP-188 merged
