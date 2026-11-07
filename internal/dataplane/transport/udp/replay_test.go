@@ -4,6 +4,8 @@ import (
 	"encoding/binary"
 	"testing"
 	"time"
+
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 )
 
 // senderIDFor builds a sender id created at the given Unix nanoseconds, so
@@ -35,14 +37,14 @@ func TestAnEvictedSenderKeepsRefreshingItsMemory(t *testing.T) {
 	// seals its newest datagram thirty seconds plus a skew past the
 	// eviction.
 	at30 := base.Add(30 * time.Second)
-	sealed := uint32(at30.Add(maxClockSkew).Unix())
+	sealed := uint32(at30.Add(transport.MaxClockSkew).Unix())
 	if v := s.admit(senderIDFor(1), 1, sealed, at30); v != dropStale {
 		t.Fatalf("the evicted sender's verdict is %v, want %v", v, dropStale)
 	}
 	// Measured from the eviction alone, the memory would forget the id
 	// ten minutes after it; its newest datagram is fresh until thirty
 	// seconds plus two skews.
-	replayAt := base.Add(2*maxClockSkew + 15*time.Second)
+	replayAt := base.Add(2*transport.MaxClockSkew + 15*time.Second)
 	if v := s.admit(senderIDFor(maxSenders+2), 0, uint32(replayAt.Unix()), replayAt); v != deliverNewest {
 		t.Fatalf("the newcomer's verdict is %v", v)
 	}
@@ -61,7 +63,7 @@ func TestAnEvictedSenderKeepsRefreshingItsMemory(t *testing.T) {
 func TestTheMemoryExpiresExactlyWhenFreshnessDoes(t *testing.T) {
 	var s senders
 	at := time.Unix(1_800_000_000, 500_000_000)
-	sealed := uint32(at.Add(maxClockSkew).Unix())
+	sealed := uint32(at.Add(transport.MaxClockSkew).Unix())
 	id := senderIDFor(1)
 	if v := s.admit(id, 0, sealed, at); v != deliverNewest {
 		t.Fatalf("the first sender's verdict is %v", v)
@@ -71,14 +73,14 @@ func TestTheMemoryExpiresExactlyWhenFreshnessDoes(t *testing.T) {
 			t.Fatalf("sender %d's verdict is %v", i, v)
 		}
 	}
-	t1 := at.Add(2*maxClockSkew + 300*time.Millisecond)
+	t1 := at.Add(2*transport.MaxClockSkew + 300*time.Millisecond)
 	if v := s.admit(id, 1, sealed, t1); v != dropStale {
 		t.Fatal("forgotten while a datagram sealed as it was evicted is still fresh")
 	}
 	if senderInSlot(&s, id) {
 		t.Fatal("forgotten while a datagram sealed as it was evicted is still fresh")
 	}
-	t2 := at.Add(2*maxClockSkew + 1200*time.Millisecond)
+	t2 := at.Add(2*transport.MaxClockSkew + 1200*time.Millisecond)
 	if v := s.admit(senderIDFor(maxSenders+2), 0, uint32(t2.Unix()), t2); v != deliverNewest {
 		t.Fatalf("the newcomer's verdict is %v", v)
 	}

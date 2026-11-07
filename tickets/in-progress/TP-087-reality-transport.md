@@ -56,3 +56,4 @@ The disguised transport for client → entry links: thinkpol speaks REALITY's ha
 - 2026-11-07 rhythm probe length corrected after TP-188 merged
 - 2026-11-07 backlog → in-progress, owner: agent-tp-087
 - 2026-11-07 decision recorded: depend on XTLS/REALITY unmodified, pinned at 8cdf7bf (newest go 1.24 commit; later ones need Go 1.27)
+- 2026-11-07 udp's maxClockSkew and sentFresh moved to the port as transport.MaxClockSkew and transport.FreshUnix, no behaviour change; new TestFreshUnix (mutations: the lower bound widened to 2×skew, the mod-2^32 distance read unsigned: both fail it); make lint and make test green

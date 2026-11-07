@@ -69,8 +69,9 @@
 // Endpoints and listener addresses in the map are IP literals: the
 // controller resolves names, and nodes never ask DNS at dial time, past
 // the tunnel. Transports may rely on clocks: nodes' clocks must agree
-// within five minutes (udp drops datagrams sealed further than that from
-// its own clock).
+// within five minutes ([MaxClockSkew]), and a transport that seals a send
+// time checks it with [FreshUnix] (udp drops datagrams sealed further than
+// that from its own clock).
 //
 // # Traffic shape
 //
