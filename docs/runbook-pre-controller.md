@@ -34,7 +34,11 @@ For example, a server whose network has a smaller MTU, logging at debug:
 The keys are `mode`, `interface`, `link_mtu`, `log_level`, `map_poll`,
 `dns`, `dns_upstream` and `egress_allowed` (the last two are lists of
 strings); docs/design/configuration.md "Node level" has their types and
-defaults. An unknown key, a key given twice, a null, a wrong type or a bad value
+defaults. **A server needs `"mode": "server"`**: a node runs as a device
+unless its node file (or `-mode server`, or `THINKPOL_MODE=server`) says
+otherwise, whatever its kind in the map, and a device runs no workers and
+forwards no one's internet traffic: it is no exit. `"auto"` is no longer a mode.
+An unknown key, a key given twice, a null, a wrong type or a bad value
 stops `up` with exit status 78 and a message naming the file and the key;
 so does a file that isn't root's or isn't 0600 (`chmod 600` it).
 `up` reads the file at start: restart the service after changing it
@@ -184,6 +188,21 @@ Signed updates distributed through the network arrive with the controller
    scp bin/thinkpol root@<node>:"$staging/thinkpol"
    ssh root@<node> "\"$staging/thinkpol\" version"
    ```
+
+   A binary from before TP-111 picked a server's mode by its kind in the
+   map. Updating a server from one: first make sure its `node.json` has
+   `"mode": "server"` (create the file, root's, 0600, if there is none),
+   and that no drop-in or definition sets `THINKPOL_MODE=auto` or
+   `-mode auto`, which now stop `up` with exit status 78:
+
+   ```sh
+   ssh root@<node> 'cd /var/lib/thinkpol && if [ -e node.json ]; then cat node.json; else (umask 077 && printf "{\"mode\": \"server\"}\n" >node.json); fi'
+   ```
+
+   With no file it writes `{"mode": "server"}` (root's, 0600). If it
+   printed a file without `"mode": "server"`, add that key to it. Without
+   it the server comes back as a device (no workers, no exit), and
+   `service install` warns that the node file sets no mode.
 
 2. Install the staged binary as the service: it copies itself over
    `/usr/local/bin/thinkpol` with a rename (an agent restarted mid-copy

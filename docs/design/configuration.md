@@ -28,7 +28,7 @@ The file is root-owned, 0600, in the 0700 state directory; `up` refuses (exit 78
 
 | Key | Type | Flag | Default |
 |---|---|---|---|
-| `mode` | `"auto"`, `"device"` or `"server"` | `-mode` | `"auto"` |
+| `mode` | `"device"` or `"server"`; never the map's node kind (TP-111) | `-mode` | `"device"` |
 | `interface` | string, a TUN name | `-interface` | the platform's |
 | `link_mtu` | whole number, 576 to 65535; 0 is the default | `-link-mtu` | 1500 |
 | `log_level` | `"debug"`, `"info"`, `"warn"` or `"error"` | `-log-level` | `"info"` |

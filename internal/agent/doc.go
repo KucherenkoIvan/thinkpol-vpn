@@ -57,7 +57,7 @@
 // by provisioning, never by the agent ([ReadNodeFile]). Its keys, each
 // optional, are the flags' settings in snake_case:
 //
-//	mode            "auto", "device" or "server" (-mode)
+//	mode            "device" (the default) or "server" (-mode)
 //	interface       the TUN's name (-interface)
 //	link_mtu        the MTU under the links, 576 to 65535; 0: 1500 (-link-mtu)
 //	log_level       "debug", "info", "warn" or "error" (-log-level)
@@ -126,13 +126,16 @@
 // the trace, or why, root's only. A server keeps no trace: right after
 // reading the file, before anything else that can fail, `up` detaches
 // stderr from it (emptied, removed, stderr to the null device) unless the
-// node is known to be a device: by the mode its environment, flags or
-// node file give, else by its kind in the map ([CrashTrace.KeepOnlyOnADevice]);
-// a node of unknown kind, or whose state directory can't be read, keeps
-// none, even of the start's own error. A node that turns out a server
-// back in its space detaches the same way, warning that a device's
-// definition runs it, and warns of a crash-trace it finds in its state
-// directory otherwise. A device that detaches (a file it couldn't empty)
+// node is known to be a device: its node file says "device" (whatever
+// its map), or sets no mode and its map shows the node as a device
+// ([CrashTrace.KeepOnlyOnADevice]). A device mode given only by a flag or
+// the environment isn't enough (a service's definition gives neither, and
+// the default can't be told from one given), and a node the map makes a
+// server or doesn't hold, or whose state directory or node file can't be
+// read, keeps none, even of the start's own error. A server's start
+// detaches the same way once the node is prepared ([Node.KeepLastRun]),
+// warning that a device's definition runs it, and warns of a crash-trace
+// it finds in its state directory otherwise. A device that detaches (a file it couldn't empty)
 // makes the file anew, root's 0600, so its manager's next start doesn't
 // create it with its own mode. grpc's fatal errors are written to stderr
 // as well as the log, so the trace says why the agent exited.
@@ -173,21 +176,22 @@
 // plane with the supervisor's shared listeners as its inbound; it needs
 // Linux, and on macOS the node refuses to start in it.
 //
-// The mode is -mode (THINKPOL_MODE): [ModeAuto], the default, picks it by
-// the node's kind in its own section of the map (a server runs in server
-// mode, anything else in device mode), and device or server overrides
-// that either way. A node that starts removed from its space has no kind
-// yet: it picks its mode when a map includes it again. A newer map that
-// changes the running node's kind is logged; the mode changes only with a
-// restart. The map's kind picks how a node runs and -mode overrides it
-// either way: a server section that allows egress, run in device mode, is
-// no exit (it forwards nothing, and says so in the log), yet its resolver
-// serves the space's overlay like an exit's.
+// The mode is the node's own, never its kind in the map (PRD A4: a node
+// starts with ingress and egress off): -mode, THINKPOL_MODE or the node
+// file's "mode", in that order, and device when none sets it. A server
+// sets "mode": "server" in its node file (or runs with -mode server); a
+// value other than device or server, the gone "auto" among them, exits
+// EX_CONFIG. A node that starts removed from its space runs in its mode
+// all the same, and a newer map that changes its kind is logged and
+// changes nothing of the mode. A server section run in device mode
+// forwards nothing: one that allows egress is no exit, and its log says
+// so and how to run it as a server; its resolver still serves the
+// space's overlay like an exit's.
 //
-// Planned (TP-111): the node's own configuration as a ceiling over what
+// Planned (TP-183): the node's own configuration as a ceiling over what
 // the map asks of it (docs/design/overlay.md "Node agent").
-// Until it exists, a signed map alone decides a node's role
-// (RESIDUAL-RISKS.md RR42). The ceiling is a preset, device or server,
+// Until it exists, a signed map alone decides the role of a node run in
+// server mode (RESIDUAL-RISKS.md RR42). The ceiling is a preset, device or server,
 // and within server each capability on its own: ingress (public
 // listeners), egress (forwarding to the internet, with EgressAllowed) and
 // relaying; later, serving guest spaces and their caps. A fresh install

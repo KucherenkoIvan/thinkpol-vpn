@@ -18,7 +18,11 @@ func TestOnlyADeviceRunsOnMacOS(t *testing.T) {
 	}
 	seen := map[Mode]bool{}
 	for _, k := range []NodeKeys{s.a, s.b} {
-		n, err := Prepare(modeConfig(s.stateDir(t, k, 1), k == s.a), logs, testPlatform())
+		cfg := testConfig(s.stateDir(t, k, 1))
+		if k == s.a {
+			cfg = serverConfig(cfg.StateDir)
+		}
+		n, err := Prepare(cfg, logs, testPlatform())
 		if err != nil {
 			t.Fatal(err)
 		}

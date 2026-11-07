@@ -70,7 +70,7 @@ func startDeviceExit(t *testing.T, server *lab.Node, upstream netip.Addr, versio
 // them; the zero Prefix covers none.
 func startServerExit(t *testing.T, server *lab.Node, upstream netip.Addr, version string, egressAllowed netip.Prefix) *lab.Process {
 	t.Helper()
-	args := []string{"thinkpol", "up", "-dns-upstream", upstream.String() + ":5353"}
+	args := []string{"thinkpol", "up", "-mode", "server", "-dns-upstream", upstream.String() + ":5353"}
 	if egressAllowed.IsValid() {
 		args = append(args, "-egress-allowed", egressAllowed.String())
 	}

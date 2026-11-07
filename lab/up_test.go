@@ -78,6 +78,17 @@ func (s *m0Space) install(t *testing.T, n *lab.Node, name string, envelope []byt
 	putMap(t, n, envelope)
 }
 
+// upFor is `thinkpol up` with args for the node called name: a server-*
+// in server mode, which a node runs in only when told to, whatever its
+// kind in the map (TP-111).
+func upFor(name string, args ...string) []string {
+	cmd := []string{"thinkpol", "up"}
+	if strings.HasPrefix(name, "server-") {
+		cmd = append(cmd, "-mode", "server")
+	}
+	return append(cmd, args...)
+}
+
 // putMap replaces a node's map the way a map arrives: written aside, then
 // renamed over the old one.
 func putMap(t *testing.T, n *lab.Node, envelope []byte) {
@@ -135,7 +146,7 @@ func TestUpRunsTheM0Space(t *testing.T) {
 	}
 
 	up := map[string]*lab.Process{
-		"server-1": server.Start(t, "thinkpol", "up", "-map-poll", "1s"),
+		"server-1": server.Start(t, "thinkpol", "up", "-mode", "server", "-map-poll", "1s"),
 		"device-a": devA.Start(t, "thinkpol", "up", "-map-poll", "1s"),
 		// device-b takes new maps on SIGHUP only.
 		"device-b": devB.Start(t, "thinkpol", "up", "-map-poll", "1h"),

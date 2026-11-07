@@ -95,7 +95,7 @@ func TestBlobDistribution(t *testing.T) {
 		return err
 	})
 
-	up1 := server1.Start(t, "thinkpol", "up")
+	up1 := server1.Start(t, "thinkpol", "up", "-mode", "server")
 	up2 := server2.Start(t, "thinkpol", "up", "-mode", "device")
 	waitLog(t, up1, `worker space=\S+ .*`+applied(version[1]))
 	waitLog(t, up2, applied(version[1]))

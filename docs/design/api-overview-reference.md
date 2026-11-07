@@ -92,7 +92,7 @@ Runs the node from its state directory: a device's data plane, or a server's sup
 |---|---|---|---|
 | `-state` | `THINKPOL_STATE_DIR` | `/var/lib/thinkpol` (macOS `/private/var/lib/thinkpol`) | state directory: `node.key`, `space.pub`, `map.bin` |
 | `-map` | `THINKPOL_MAP` | empty: `map.bin` in the state directory | the map file |
-| `-mode` | `THINKPOL_MODE` | `auto` | `auto` (by the node's kind in the map), `device`, `server` |
+| `-mode` | `THINKPOL_MODE` | `device` | `device` (forwards nothing) or `server`; never picked by the node's kind in the map (TP-111) |
 | `-log-level` | `THINKPOL_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 | `-interface` | `THINKPOL_INTERFACE` | empty: the platform's default (`thinkpol0` on Linux) | the overlay TUN's name, 1–15 printable ASCII characters |
 | `-link-mtu` | `THINKPOL_LINK_MTU` | `0` (1500) | MTU under the links, 576–65535 |
@@ -105,7 +105,7 @@ Runs the node from its state directory: a device's data plane, or a server's sup
 | `-dns-upstream` | `THINKPOL_DNS_UPSTREAM` | empty: a device asks what the OS used, an exit asks Quad9, then Cloudflare | IPs or IP:ports, comma-separated |
 | `-egress-allowed` | `THINKPOL_EGRESS_ALLOWED` | empty | private prefixes an exit's spaces may still reach |
 
-Synopsis: `thinkpol up [-state dir] [-map file] [-mode auto|device|server] [flags]`. `-h` prints every flag with its variable. The `-api-socket` line, for example:
+Synopsis: `thinkpol up [-state dir] [-map file] [-mode device|server] [flags]`. `-h` prints every flag with its variable. The `-api-socket` line, for example:
 
 ```
   -api-socket value
@@ -116,7 +116,7 @@ Validation errors are collected and printed together, prefixed `config: validati
 
 ```
 $ thinkpol up -mode bogus -state /tmp/x
-thinkpol up: config: validation: mode "bogus": want auto, device or server
+thinkpol up: config: validation: mode "bogus": want device or server
 ```
 
 The other validation messages (`Config.Validate`):

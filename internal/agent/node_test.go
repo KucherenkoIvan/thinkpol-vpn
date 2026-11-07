@@ -28,14 +28,6 @@ func serverConfig(dir string) Config {
 	return c
 }
 
-// modeConfig is serverConfig when server, else testConfig.
-func modeConfig(dir string, server bool) Config {
-	if server {
-		return serverConfig(dir)
-	}
-	return testConfig(dir)
-}
-
 // The service is installed for the node file's mode; a node file that
 // sets none leaves the node a device, installed as one only while its map
 // shows it as one: one the map makes a server or doesn't hold is

@@ -22,7 +22,9 @@ import (
 // an IPv6 uplink, server-2 refuses IPv6 at once (ICMPv6 no route) and
 // leaks none; with its egress off, it forwards nothing while the overlay
 // through it still works. device-a keeps an older map (same link secrets)
-// that still sends its internet traffic to server-2.
+// that still sends its internet traffic to server-2. Last, server-2 is
+// the exit again but restarted with no mode set: a device, which forwards
+// none of it (TP-111).
 func TestEgressThroughAnExit(t *testing.T) {
 	t.Parallel()
 	l := lab.Start(t, lab.Standard())
@@ -58,7 +60,7 @@ func TestEgressThroughAnExit(t *testing.T) {
 	}
 	up := map[string]*lab.Process{}
 	for name, n := range nodes {
-		up[name] = n.Start(t, "thinkpol", "up", "-map-poll", "1s", "-egress-allowed", servers)
+		up[name] = n.Start(t, upFor(name, "-map-poll", "1s", "-egress-allowed", servers)...)
 	}
 	uplink := regexp.QuoteMeta(s2.Interface(lab.NetServers))
 	waitLog(t, up["server-2"], `msg="map applied" .*version=`+version1+` .*egress=on uplink=`+uplink+` egress_ipv4=on egress_ipv6=on`)
@@ -169,6 +171,35 @@ func TestEgressThroughAnExit(t *testing.T) {
 	}
 	if leaked := web.Stop(); len(leaked) > 0 {
 		t.Fatalf("%d packets reached the internet with egress off, the first from %s", len(leaked), leaked[0].Src)
+	}
+
+	// No mode set (TP-111): server-2, its map making it the exit again,
+	// restarted with no -mode and no node file runs as a device. It is
+	// linked (the overlay through server-1 reaches it), yet carries none
+	// of device-a's internet traffic, and its log says why.
+	settings("true", "server-2")
+	v4, version4 := space.build(t)
+	putMap(t, s1, v4)
+	if err := up["server-2"].Stop(); err != nil {
+		t.Fatalf("server-2: thinkpol up exited with %v:\n%s", err, up["server-2"].Output())
+	}
+	putMap(t, s2, v4)
+	s2.MustExec(t, "sh", "-ec", "! test -e "+stateDir+"/node.json")
+	up["server-2"] = s2.Start(t, "thinkpol", "up", "-map-poll", "1s", "-egress-allowed", servers)
+	waitLog(t, up["server-2"], `mode=device`)
+	waitLog(t, up["server-2"], `msg="map applied" .*version=`+version4+` .*egress=on exit=off`)
+	waitLog(t, up["server-2"], `not an exit here`)
+	waitLog(t, up["server-1"], applied(version4))
+	ping(t, devA, server2)
+	web = inet.Capture(t, "tcp port 80 or icmp")
+	for range 3 {
+		noFetch(url4, 3*time.Second) // through server-2, run as a device
+	}
+	if err := web.Complete(); err != nil {
+		t.Fatal(err)
+	}
+	if leaked := web.Stop(); len(leaked) > 0 {
+		t.Fatalf("%d packets reached the internet through an exit run as a device, the first from %s", len(leaked), leaked[0].Src)
 	}
 
 	for name, p := range up {
