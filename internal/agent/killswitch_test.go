@@ -253,3 +253,47 @@ func TestAFailingKillSwitchIsReportedAndRetried(t *testing.T) {
 	inPlace(t, host, "connected")
 	eventually(t, func() bool { return b.node.Status().KillSwitch.Enforced })
 }
+
+// The node file's kill switch keys are the defaults until a member sets a
+// toggle; the device file keeps a member's toggles, and writes them only
+// once set.
+func TestKillSwitchSettingsComeFromTheNodeThenTheMember(t *testing.T) {
+	s := newTestSpace(t)
+	dir := s.stateDir(t, s.b, 1)
+	writeFile(t, filepath.Join(dir, NodeFile), []byte(`{"kill_switch": true, "allow_lan": true, "fail_closed_after_crash": false}`), 0o600)
+	cfg := testConfig(dir)
+	cfg.FailClosedAfterCrash = true
+	if err := ApplyNodeFile(&cfg, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.KillSwitch || !cfg.AllowLAN || cfg.FailClosedAfterCrash {
+		t.Fatalf("config %+v", cfg)
+	}
+	n, err := Prepare(cfg, Logs{}, testPlatform())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ks := n.killSwitchSettings(); !ks.on || !ks.allowLAN || ks.failClosed {
+		t.Errorf("before a member set anything: %+v", ks)
+	}
+	if st := n.Status().KillSwitch; !st.On || !st.AllowLAN {
+		t.Errorf("status before a member set anything: %+v", st)
+	}
+	data, err := n.device.marshal()
+	if err != nil || strings.Contains(string(data), "kill_switch") || strings.Contains(string(data), "allow_lan") {
+		t.Errorf("unset toggles written: %s, %v", data, err)
+	}
+	if err := n.SetKillSwitch(false); err != nil {
+		t.Fatal(err)
+	}
+	if ks := n.killSwitchSettings(); ks.on || !ks.allowLAN {
+		t.Errorf("after the member turned it off: %+v", ks)
+	}
+	n2, err := Prepare(cfg, Logs{}, testPlatform())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ks := n2.killSwitchSettings(); ks.on || !ks.allowLAN {
+		t.Errorf("the next start: %+v, want the member's off and the node's allow-LAN", ks)
+	}
+}
