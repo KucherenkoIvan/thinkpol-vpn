@@ -3,6 +3,7 @@ id: TP-076
 title: "Kill switch (Windows)"
 milestone: M5
 area: dataplane/firewall
+stream: core
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-047, TP-048]

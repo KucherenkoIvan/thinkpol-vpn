@@ -3,6 +3,7 @@ id: TP-114
 title: "Supervisor: the ARP filter sits on the output hook"
 milestone: M2
 area: agent
+stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-103]

@@ -3,6 +3,7 @@ id: TP-160
 title: "macOS guard: pf off, a pid-only reference and an unreadable References listing keep IPv6 unguarded"
 milestone: later
 area: dataplane/firewall
+stream: core
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-137]

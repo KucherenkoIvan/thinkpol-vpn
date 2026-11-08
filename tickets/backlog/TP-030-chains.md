@@ -3,6 +3,7 @@ id: TP-030
 title: "Chains"
 milestone: M3
 area: dataplane
+stream: core
 repo: thinkpol-vpn
 size: L
 depends_on: [TP-015, TP-023]

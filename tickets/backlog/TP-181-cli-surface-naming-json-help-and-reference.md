@@ -3,6 +3,7 @@ id: TP-181
 title: "CLI surface: naming, -json everywhere, help, the remaining F-items, CLI reference"
 milestone: later
 area: cmd
+stream: clients
 repo: thinkpol-vpn
 size: L
 depends_on: [TP-167]

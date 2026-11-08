@@ -3,6 +3,7 @@ id: TP-036
 title: "Publishing, recovery key and backups"
 milestone: M4
 area: features/publishing
+stream: administration
 repo: thinkpol-vpn
 size: L
 depends_on: [TP-035, TP-003]

@@ -3,6 +3,7 @@ id: TP-190
 title: "agent: `sameSystem` ignores `Upstreams`"
 milestone: later
 area: agent
+stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: []

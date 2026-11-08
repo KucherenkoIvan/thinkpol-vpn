@@ -3,6 +3,7 @@ id: TP-157
 title: "Route table: a failed first Apply after a crash takeover leaves the crashed run's guard"
 milestone: M2
 area: dataplane/routetable
+stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: []

@@ -3,6 +3,7 @@ id: TP-115
 title: "Linux DNS: a failed first read of the system's resolvers stays silent"
 milestone: M2
 area: dataplane
+stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-108]

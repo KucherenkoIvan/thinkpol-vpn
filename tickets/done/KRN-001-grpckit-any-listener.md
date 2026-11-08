@@ -3,6 +3,7 @@ id: KRN-001
 title: "grpckit: serve on any listener"
 milestone: M1
 area: grpckit
+stream: core
 repo: go-kernel
 size: S
 depends_on: []

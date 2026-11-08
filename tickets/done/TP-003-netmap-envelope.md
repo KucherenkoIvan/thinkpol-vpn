@@ -3,6 +3,7 @@ id: TP-003
 title: "Network map envelope v1"
 milestone: M0
 area: netmap
+stream: administration
 repo: thinkpol-vpn
 size: L
 depends_on: [TP-001]

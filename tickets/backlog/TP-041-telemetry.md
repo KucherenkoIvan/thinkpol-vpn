@@ -3,6 +3,7 @@ id: TP-041
 title: "Telemetry"
 milestone: M4
 area: features/telemetry
+stream: administration
 repo: thinkpol-vpn
 size: L
 depends_on: [TP-034, TP-011]

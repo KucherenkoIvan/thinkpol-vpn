@@ -3,6 +3,7 @@ id: TP-168
 title: "`status -json` with `schema_version`"
 milestone: M2
 area: cmd
+stream: clients
 repo: thinkpol-vpn
 size: S
 depends_on: []

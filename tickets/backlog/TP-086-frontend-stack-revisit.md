@@ -3,6 +3,7 @@ id: TP-086
 title: "Revisit frontend design and stack: admin panel and client apps"
 milestone: M4
 area: ui
+stream: administration
 repo: thinkpol-vpn
 size: M
 depends_on: []

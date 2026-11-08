@@ -3,6 +3,7 @@ id: TP-015
 title: "Routing rule engine"
 milestone: M1
 area: dataplane/router
+stream: core
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-008]

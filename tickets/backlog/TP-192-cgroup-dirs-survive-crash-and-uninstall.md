@@ -3,6 +3,7 @@ id: TP-192
 title: "Supervisor: per-space cgroup directories survive a crash and uninstall"
 milestone: later
 area: agent
+stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: []

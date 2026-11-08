@@ -3,6 +3,7 @@ id: TP-185
 title: "Access grants: chains per member, device reachability"
 milestone: M4
 area: features
+stream: administration
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-035]

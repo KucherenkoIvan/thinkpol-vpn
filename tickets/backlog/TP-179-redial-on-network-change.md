@@ -3,6 +3,7 @@ id: TP-179
 title: "Redial at once on a network change"
 milestone: later
 area: dataplane/path
+stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-085]

@@ -3,6 +3,7 @@ id: KRN-004
 title: "app: second signal kills, injectable logger"
 milestone: M1
 area: app
+stream: core
 repo: go-kernel
 size: S
 depends_on: []

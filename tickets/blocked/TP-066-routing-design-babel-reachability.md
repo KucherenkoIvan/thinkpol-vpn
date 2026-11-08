@@ -3,6 +3,7 @@ id: TP-066
 title: "Routing design: Babel-style reachability within signed paths"
 milestone: M3
 area: dataplane/path
+stream: core
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-006]

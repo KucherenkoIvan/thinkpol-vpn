@@ -3,6 +3,7 @@ id: TP-099
 title: "M1 acceptance: test and doc follow-ups"
 milestone: M2
 area: lab
+stream: verification
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-023]

@@ -3,6 +3,7 @@ id: TP-097
 title: "(cancelled) VM device labs for macOS and Windows"
 milestone: M2
 area: lab
+stream: verification
 repo: thinkpol-vpn
 size: L
 depends_on: []

@@ -3,6 +3,7 @@ id: TP-108
 title: "Darwin: two dropped errors"
 milestone: M2
 area: dataplane
+stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: []

@@ -3,6 +3,7 @@ id: TP-077
 title: "Split DESIGN.md into model and package docs"
 milestone: M2
 area: docs
+stream: verification
 repo: thinkpol-vpn
 size: L
 depends_on: [TP-023]

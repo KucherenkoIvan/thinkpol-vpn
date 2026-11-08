@@ -3,6 +3,7 @@ id: TP-088
 title: "Gatekeeper learns `reality`"
 milestone: later
 area: agent
+stream: transports
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-087, TP-063]

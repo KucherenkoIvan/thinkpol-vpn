@@ -3,6 +3,7 @@ id: TP-186
 title: "Admin panel: organisation, authentication and authorization (design)"
 milestone: M4
 area: control-plane
+stream: administration
 repo: thinkpol-vpn
 size: S
 depends_on: []

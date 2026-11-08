@@ -3,6 +3,7 @@ id: TP-100
 title: "Faster full lab suite"
 milestone: M2
 area: lab
+stream: verification
 repo: thinkpol-vpn
 size: S
 depends_on: []

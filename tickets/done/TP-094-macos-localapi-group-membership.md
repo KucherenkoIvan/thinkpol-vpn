@@ -3,6 +3,7 @@ id: TP-094
 title: "macOS local API: group membership as the file system sees it"
 milestone: M2
 area: agent
+stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: []

@@ -3,6 +3,7 @@ id: TP-155
 title: "netcfg (Linux): diagnostics while the rules keep changing"
 milestone: later
 area: dataplane/netcfg
+stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-135]

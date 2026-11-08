@@ -3,6 +3,7 @@ id: TP-134
 title: "`thinkpol rollback`: undo what a dead agent left, as a product command"
 milestone: M2
 area: agent
+stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: []

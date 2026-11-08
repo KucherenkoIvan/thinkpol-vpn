@@ -3,6 +3,7 @@ id: TP-132
 title: "service uninstall: clean up after a crashed server, and never get stuck"
 milestone: M2
 area: agent
+stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-046]

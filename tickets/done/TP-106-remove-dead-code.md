@@ -3,6 +3,7 @@ id: TP-106
 title: "Remove dead code"
 milestone: M2
 area: dataplane
+stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: []

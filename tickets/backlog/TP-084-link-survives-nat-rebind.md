@@ -3,6 +3,7 @@ id: TP-084
 title: "Link survives a NAT rebind or source-port change"
 milestone: later
 area: dataplane/path
+stream: transports
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-019, TP-080]

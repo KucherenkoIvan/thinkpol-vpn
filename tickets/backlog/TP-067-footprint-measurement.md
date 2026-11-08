@@ -3,6 +3,7 @@ id: TP-067
 title: "Resource footprint and system requirements"
 milestone: later
 area: lab
+stream: verification
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-012]

@@ -3,6 +3,7 @@ id: TP-085
 title: "macOS DNS-leak capture (PRD R4)"
 milestone: M2
 area: dataplane/path
+stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-019]

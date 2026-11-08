@@ -3,6 +3,7 @@ id: TP-044
 title: "Signed agent updates"
 milestone: later
 area: agent
+stream: core
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-037, TP-017]

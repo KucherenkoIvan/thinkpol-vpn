@@ -3,6 +3,7 @@ id: TP-172
 title: "Split `agent/dataplane.go` and `dataplane/engine.go` by responsibility"
 milestone: later
 area: agent
+stream: core
 repo: thinkpol-vpn
 size: M
 depends_on: []
