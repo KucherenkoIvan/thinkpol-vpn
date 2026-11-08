@@ -691,8 +691,8 @@ func writeResults(t *testing.T, cells []matrixCell, expected int) {
 		"pass when it crossed over IPv4 and over IPv6, fail when it crossed over neither " +
 		"(one family alone is partial, which no cell expects: the run fails and this file is not written). Every cell is probed. " +
 		"The `(control)` rows are not transports: they show that plain TCP and HTTPS on the underlay cross the censor, and that the censor sees them. " +
-		"The `(reference)` rows are real WireGuard and OpenVPN, which the fingerprint modules must block, "+
-		"and random-tcp, a naive echo server fed random bytes (what a fully encrypted proxy looks like), which fully-encrypted and the prober must block. "+
+		"The `(reference)` rows are real WireGuard and OpenVPN, which the fingerprint modules must block, " +
+		"and random-tcp, a naive echo server fed random bytes (what a fully encrypted proxy looks like), which fully-encrypted and the prober must block. " +
 		"A cell of the active prober or server-hello quotes the module's verdict on the row's first connection to server-1.\n\n")
 	b.WriteString("| transport | censor | result | detail |\n|---|---|---|---|\n")
 	for _, c := range cells {

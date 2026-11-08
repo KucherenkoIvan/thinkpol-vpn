@@ -13,7 +13,7 @@ import (
 func buildServerHello(legacy, cipher uint16, exts ...[]byte) []byte {
 	body := binary.BigEndian.AppendUint16(nil, legacy)
 	body = append(body, bytes.Repeat([]byte{7}, 32)...) // random
-	body = append(body, 32)                              // session id echo
+	body = append(body, 32)                             // session id echo
 	body = append(body, bytes.Repeat([]byte{9}, 32)...)
 	body = binary.BigEndian.AppendUint16(body, cipher)
 	body = append(body, 0) // compression

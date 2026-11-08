@@ -235,6 +235,86 @@
 // "wireguard-rhythm: stream not framed", so a pass for that reason shows
 // in the verdict log.
 //
+// # Fully encrypted traffic, the prober and the server hello
+//
+// Three more of the M2 gate's checks judge what a disguised transport
+// looks like: its first bytes, how its server answers strangers, and its
+// server's hello. They tell a connection's client from its server by
+// [Flow.Initiator]: for TCP the side that sent the SYN, for UDP the
+// direction the censor saw first (the server's, for a flow already
+// running when the censor started).
+//
+// fully-encrypted is the Great Firewall's passive detector (Wu et al.,
+// USENIX Security 2023), on the first data a connection's client sends:
+// over TCP the stream's first bytes as the server reads them (the first
+// segment, with what an out-of-order segment joined to it), over UDP the
+// first datagram, which Wu et al. didn't see judged and the lab judges
+// anyway. It blocks (drop by default, pinned) unless an exemption applies:
+// at most 3.4 or at least 4.6 set bits per byte (random bytes average 4);
+// the first six bytes printable ASCII; more than half printable; a run of
+// more than 20 printable; a TLS record header (handshake or application
+// data) or an HTTP method. The server's direction and a connection joined
+// midstream are not judged. The Great Firewall blocks only a fraction of
+// such connections, to some address ranges; the lab blocks every one. A
+// client that sends a first segment an exemption passes (six printable
+// bytes, say) and the rest later passes too, as it does past the Great
+// Firewall. With tagOnly it tags instead of blocking, for the prober.
+//
+// prober is the active prober: given a suspect TCP connection, it probes
+// the connection's server, once per server address and port, from the
+// router, and compares each answer with the reference's, the real site an
+// entry would pretend to be (the camouflage target, a setting so the
+// matrix can point it at any site). Suspects are what fully-encrypted
+// tags and, with destinations set, every TCP connection to one once its
+// client sent data; a UDP suspect is flagged Accept, "not probed". The
+// probes: the suspect's first bytes replayed, random bytes of 3, 16, 49,
+// 221 and 1000 bytes, and, when the suspect's ClientHello names the
+// reference, a TLS handshake of the censor's own that reads the server
+// hello's JA3S, JA4S, extensions in order and the negotiated ALPN (which
+// TLS 1.3 sends encrypted, out of the ServerHello). A reaction is what
+// came back (nothing, an echo, a TLS alert or handshake, an HTTP response,
+// other bytes) and how the connection ended (closed, reset, or open at the
+// timeout); a server whose reaction to any probe differs from the
+// reference's, whose handshake differs, or that shows the upstream tell is
+// flagged, its suspect connections blocked both ways and every later
+// connection to or from it dropped, as the Great Firewall blocks a server
+// its prober confirmed. A clean server is flagged Accept, the probes'
+// results in the reason, so the verdict log says what was compared either
+// way. Timing is reported (when each first answer came) and not judged:
+// lab round trips are under a millisecond, too close for a relay's extra
+// hop to stand out from noise.
+//
+// The upstream tell: an entry that relays what it doesn't recognize to the
+// real site opens a connection of its own to the site for each probe.
+// REALITY does so by design, on every connection, so the check may flag
+// it: the matrix reports it as it is. The censor sees the entry's
+// connection only from a vantage on the entry's uplink to the site. In
+// the lab that is lab.Upstream, the camouflage target behind the router,
+// where the entry's connection crosses the censor as a client's does; a
+// real censor has it when the entry and the site are on different sides
+// of it, never when both are beyond it. The tell is a connection from the
+// probed address to a reference address starting during each probe, or
+// within half a second after it, every probe of at least two; the servers
+// of one address are probed one at a time so as not to blame one for
+// another's connections, but a connection the entry's real clients cause
+// during a probe still counts for it. An entry whose connection leaves
+// from another address than the one probed (an IPv4 uplink for an IPv6
+// probe) isn't matched.
+//
+// server-hello compares a real connection's server hello with the site's:
+// on a TCP connection whose ClientHello names a listed site (the sites
+// setting maps a name to the site's address, standing in for the DNS a
+// real censor resolves it with), it reads the server's ServerHello, then
+// sends the client's ClientHello, byte for byte, to the site and reads the
+// site's: JA3S, JA4S, version, cipher, extensions in order and the ALPN
+// the hello carries (TLS 1.2 and earlier). A difference flags the
+// connection, both ways, and blocks the server, by address and port; a
+// match is flagged Accept with both fingerprints. A server that relays a
+// stranger's ClientHello to the site answers with the site's own hello and
+// passes; this check is for the hello a server sends its own clients.
+// What follows the ServerHello is not compared (TLS 1.3 encrypts it), nor
+// is a server that answers with no ServerHello.
+//
 // # The verdict log
 //
 // One JSON [LogEntry] per line, buffered and flushed every 100 ms and when
@@ -275,7 +355,14 @@
 // seen by it; reference rows run real WireGuard (kernel) and OpenVPN (UDP
 // and TCP), one tunnel per underlay family, on ports other than their
 // defaults, their handshakes starting once the censor is up, so the
-// fingerprint modules are judged on the real thing, on any port.
+// fingerprint modules are judged on the real thing, on any port, and
+// random-tcp, a naive echo server fed random bytes, is what a fully
+// encrypted proxy looks like to fully-encrypted and the prober. A case
+// with an active module probes twice and scores the second probe, once
+// every flow of server-1 a passive module tagged has a flag: the prober
+// judges a connection only after it crossed. Cases that compare with the
+// camouflage site run in lab.Upstream, nginx serving it, and quote the
+// module's verdict on the row's first connection in the cell.
 //
 // # Limits
 //

@@ -256,9 +256,13 @@ func TestProberUpstreamTell(t *testing.T) {
 		flows, flags := runProber(t, p)
 		var entry netip.AddrPort
 		entry = listen(t, relay(ref, func() {
+			// Unseen, the censor still sees other hosts connect to the
+			// site, which say nothing about the entry.
+			src := netip.MustParseAddr("192.0.2.77")
 			if seen {
-				flows <- FlowSnapshot{Key: FlowKey{Proto: ProtoTCP, Src: entry.Addr(), Dst: ref.Addr(), SrcPort: 50000, DstPort: ref.Port()}, Started: time.Now()}
+				src = entry.Addr()
 			}
+			flows <- FlowSnapshot{Key: FlowKey{Proto: ProtoTCP, Src: src, Dst: ref.Addr(), SrcPort: 50000, DstPort: ref.Port()}, Started: time.Now()}
 		}))
 		s := suspectTo(entry, 40020, helloFor(t, siteName))
 		flows <- s
