@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/netip"
 	"sync"
+	"syscall"
 	"time"
 
 	xreality "github.com/xtls/reality"
@@ -47,7 +48,7 @@ func (t *Transport) Listen(ctx context.Context, cfg transport.ListenConfig, admi
 	if err != nil {
 		return nil, err
 	}
-	if err := detect(ctx, ls.target.String(), ls.names, detectWait); err != nil {
+	if err := detect(ctx, ls.target.String(), ls.names, detectWait, t.control); err != nil {
 		return nil, err
 	}
 	lc := net.ListenConfig{Control: t.control}
@@ -62,6 +63,7 @@ func (t *Transport) Listen(ctx context.Context, cfg transport.ListenConfig, admi
 		peers:    admission.Peers,
 		camo:     admission.Camouflage,
 		replay:   newReplayCache(ls.window),
+		linger:   spliceLinger,
 		accepted: make(chan accepted),
 		closed:   make(chan struct{}),
 		links:    map[shortID]*link{},
@@ -81,6 +83,7 @@ type listener struct {
 	peers    transport.Peers
 	camo     transport.Camouflage // nil: the mirror and splice to the target
 	replay   *replayCache
+	linger   time.Duration
 
 	accepted  chan accepted
 	closed    chan struct{}
@@ -285,15 +288,15 @@ func (l *listener) serve(conn net.Conn) {
 		return // Close closed conn
 	}
 	defer l.untrack(conn, target)
-	m := newMirror(conn, target)
+	m := newMirror(conn, target, l.linger)
 	var id shortID
 	var peer transport.Identity
-	record, handedOff, rerr := m.gather(func(record []byte) bool {
+	record, authenticated, rerr := m.gather(func(record []byte) bool {
 		var ok bool
 		id, peer, ok = l.authenticate(record)
 		return ok
 	})
-	if !handedOff {
+	if !authenticated {
 		m.splice(rerr)
 		return
 	}
@@ -409,14 +412,25 @@ func (l *listener) realityConfig(id shortID, dial func(ctx context.Context, netw
 }
 
 // detect has REALITY learn the target's post-handshake records, which its
-// handshake imitates, and waits up to wait for it. It fails unless it
-// learned them for every server name: REALITY's cache is per process, and
-// left unlearned it either imitates no records at all (it stores an empty
-// list when its detection fails) or holds every authenticated handshake in
-// 5-second sleeps for good (the target stalled). A failure is forgotten, so
-// a later Listen detects again. REALITY dials the target for this itself,
-// without the Control hook.
-func detect(ctx context.Context, dest string, names map[string]bool, wait time.Duration) error {
+// handshake imitates, and waits up to wait for it. REALITY keeps what it
+// learned per process; it fails unless the target can be reached and
+// REALITY's detection ended for every server name: left pending (the
+// target stalled), REALITY would hold every authenticated handshake in
+// 5-second sleeps for good. A pending detection is forgotten, so a later
+// Listen detects again. REALITY dials the target for this with a plain
+// net.Dial, so the reachability check is ours, through control.
+//
+// A detection whose handshake failed (a certificate the node doesn't
+// trust, say) ends with no records, as one that found none does: REALITY
+// stores the same empty list for both, so a target REALITY can't verify
+// is imitated without post-handshake records.
+func detect(ctx context.Context, dest string, names map[string]bool, wait time.Duration, control func(network, address string, c syscall.RawConn) error) error {
+	d := net.Dialer{Control: control, Timeout: wait}
+	c, err := d.DialContext(ctx, "tcp", dest)
+	if err != nil {
+		return fmt.Errorf("reality: target: %w", err)
+	}
+	_ = c.Close()
 	xreality.DetectPostHandshakeRecordsLens(&xreality.Config{Type: "tcp", Dest: dest, ServerNames: names})
 	deadline := time.Now().Add(wait)
 	for name := range names {
@@ -427,13 +441,8 @@ func detect(ctx context.Context, dest string, names map[string]bool, wait time.D
 				if !ok {
 					return fmt.Errorf("reality: REALITY keeps no records under %q: its key format changed", key)
 				}
-				// A failed detection stores an empty list, one that found
-				// no records a nil one.
-				if lens, done := v.([]int); done && (lens == nil || len(lens) > 0) {
+				if _, done := v.([]int); done {
 					break
-				} else if done {
-					xreality.GlobalPostHandshakeRecordsLens.CompareAndDelete(key, v)
-					return fmt.Errorf("reality: target %s: no TLS handshake for %q", dest, name)
 				}
 				if time.Now().After(deadline) || ctx.Err() != nil {
 					xreality.GlobalPostHandshakeRecordsLens.CompareAndDelete(key, v)

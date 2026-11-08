@@ -89,14 +89,18 @@ func TestASpliceEndsOnceTheTargetClosedAndTheClientStaysSilent(t *testing.T) {
 	linger := spliceLinger
 	spliceLinger = 200 * time.Millisecond
 	t.Cleanup(func() { spliceLinger = linger })
-	tg := newIdleTarget(t, 300*time.Millisecond, true)
+	tg := newIdleTarget(t, time.Minute, true)
 	l := listenTo(t, New(Options{}), tg, newKeys(t))
-	drain(tg.ended)
 
-	c := probe(t, l.Addr().String(), nil)
-	closedWithin(t, c, 5*time.Second) // the target's FIN
+	sent := []byte("GET / HTTP/1.1\r\n\r\n")
+	c := probe(t, l.Addr().String(), sent)
+	closedWithin(t, c, 5*time.Second) // the target's FIN; c stays open and silent
+	conn := tg.connWith(sent)
+	if conn == nil {
+		t.Fatal("the probe wasn't spliced to the target")
+	}
 	select {
-	case <-tg.ended:
+	case <-conn.done:
 	case <-time.After(3 * time.Second):
 		t.Fatal("the splice still holds the target's connection")
 	}
@@ -113,16 +117,6 @@ func TestClosingTheListenerEndsItsSplices(t *testing.T) {
 	}
 	_ = l.Close()
 	closedWithin(t, c, 3*time.Second)
-}
-
-func drain(ch chan struct{}) {
-	for {
-		select {
-		case <-ch:
-		default:
-			return
-		}
-	}
 }
 
 // closedPort is a loopback address nothing listens on.
@@ -178,7 +172,7 @@ func TestListenFailsUnlessTheTargetsRecordsAreLearned(t *testing.T) {
 				t.Cleanup(func() { _ = c.Close() })
 			}
 		}()
-		if err := detect(t.Context(), ln.Addr().String(), names, 300*time.Millisecond); err == nil {
+		if err := detect(t.Context(), ln.Addr().String(), names, 300*time.Millisecond, nil); err == nil {
 			t.Fatal("detected the records of a target that never answers")
 		}
 		// Forgotten: the next Listen detects again.
@@ -187,7 +181,7 @@ func TestListenFailsUnlessTheTargetsRecordsAreLearned(t *testing.T) {
 		}
 	})
 	t.Run("a site", func(t *testing.T) {
-		if err := detect(t.Context(), theTarget(t).addr(), names, detectWait); err != nil {
+		if err := detect(t.Context(), theTarget(t).addr(), names, detectWait, nil); err != nil {
 			t.Fatal(err)
 		}
 	})

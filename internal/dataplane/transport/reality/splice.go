@@ -9,7 +9,8 @@ import (
 
 // spliceLinger is how long a splice whose one direction ended waits on the
 // other: a client that stays silent once the target closed would otherwise
-// hold its connection, and the target's, for good.
+// hold its connection, and the target's, for good. A listener reads it at
+// Listen.
 var spliceLinger = 5 * time.Second
 
 // mirror is a connection whose target was dialled at accept, before the
@@ -21,6 +22,7 @@ var spliceLinger = 5 * time.Second
 // handed to REALITY, or the mirror becomes a splice.
 type mirror struct {
 	client, target net.Conn
+	linger         time.Duration
 
 	mu    sync.Mutex
 	state mirrorState
@@ -37,8 +39,8 @@ const (
 	handedOff                    // the hello authenticated: REALITY's
 )
 
-func newMirror(client, target net.Conn) *mirror {
-	m := &mirror{client: client, target: target, fromTarget: make(chan struct{})}
+func newMirror(client, target net.Conn, linger time.Duration) *mirror {
+	m := &mirror{client: client, target: target, linger: linger, fromTarget: make(chan struct{})}
 	go m.copyFromTarget()
 	return m
 }
@@ -135,12 +137,12 @@ func (m *mirror) splice(rerr error) {
 
 // endDirection ends the direction writing to dst. A clean end of its
 // source half-closes dst, so each side's FIN reaches the other, and gives
-// the other direction, which reads from dst, spliceLinger more; an error
+// the other direction, which reads from dst, m.linger more; an error
 // closes both ways.
 func (m *mirror) endDirection(dst net.Conn, err error) {
 	if cw, ok := dst.(interface{ CloseWrite() error }); ok && err == nil {
 		_ = cw.CloseWrite()
-		_ = dst.SetReadDeadline(time.Now().Add(spliceLinger))
+		_ = dst.SetReadDeadline(time.Now().Add(m.linger))
 		return
 	}
 	m.closeBoth()

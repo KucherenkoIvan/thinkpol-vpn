@@ -8,10 +8,10 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
-	"errors"
 	"io"
 	"math/big"
 	"net"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -30,8 +30,8 @@ const serverName = "www.example.net"
 // records every byte each connection sends it (reading on after a failed
 // handshake, until the far end closes), and answers "site" to a line of
 // input after the handshake. A connection idle for its idle timeout is
-// closed, or, with halfClose, closed for writing only, the target reading
-// on until the far end closes.
+// closed; with halfClose, a connection whose handshake failed is closed
+// for writing only, the target reading on until the far end closes.
 type target struct {
 	ln        net.Listener
 	cert      *x509.Certificate
@@ -40,7 +40,6 @@ type target struct {
 
 	mu    sync.Mutex
 	conns []*recorder
-	ended chan struct{} // gets a value each time a connection ends
 }
 
 var (
@@ -106,7 +105,7 @@ func startTarget(address string, idle time.Duration, halfClose bool) (*target, e
 	if err != nil {
 		return nil, err
 	}
-	tg := &target{ln: ln, cert: cert, idle: idle, halfClose: halfClose, ended: make(chan struct{}, 64)}
+	tg := &target{ln: ln, cert: cert, idle: idle, halfClose: halfClose}
 	cfg := &tls.Config{
 		MinVersion:   tls.VersionTLS13,
 		Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}},
@@ -125,22 +124,18 @@ func startTarget(address string, idle time.Duration, halfClose bool) (*target, e
 }
 
 func (tg *target) serve(c net.Conn, cfg *tls.Config) {
+	rec := &recorder{Conn: c, done: make(chan struct{})}
 	defer func() {
 		_ = c.Close()
-		select {
-		case tg.ended <- struct{}{}:
-		default:
-		}
+		close(rec.done)
 	}()
 	_ = c.SetDeadline(time.Now().Add(tg.idle))
-	rec := &recorder{Conn: c}
 	tg.mu.Lock()
 	tg.conns = append(tg.conns, rec)
 	tg.mu.Unlock()
 	tc := tls.Server(rec, cfg)
 	if err := tc.Handshake(); err != nil {
-		var ne net.Error
-		if tg.halfClose && errors.As(err, &ne) && ne.Timeout() {
+		if tg.halfClose {
 			_ = c.(*net.TCPConn).CloseWrite()
 			_ = c.SetDeadline(time.Time{})
 		}
@@ -182,11 +177,30 @@ func (tg *target) receivedExactly(stream []byte) bool {
 	return false
 }
 
+// connWith waits for a connection to the target to have sent it exactly
+// stream, and returns it, or nil.
+func (tg *target) connWith(stream []byte) *recorder {
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		tg.mu.Lock()
+		conns := slices.Clone(tg.conns)
+		tg.mu.Unlock()
+		for _, r := range conns {
+			if bytes.Equal(r.bytes(), stream) {
+				return r
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return nil
+}
+
 // recorder keeps what was read from a connection.
 type recorder struct {
 	net.Conn
-	mu  sync.Mutex
-	buf []byte
+	mu   sync.Mutex
+	buf  []byte
+	done chan struct{} // closed once the target is done with the connection
 }
 
 func (r *recorder) Read(p []byte) (int, error) {

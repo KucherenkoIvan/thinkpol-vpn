@@ -65,10 +65,14 @@
 //
 // Listen first has REALITY learn the target's post-handshake records and
 // waits for that, up to 10 s; REALITY dials the target for that without
-// the Control hook. Listen fails if it didn't learn them (the target can't
-// be reached, doesn't complete a handshake, or stalls): REALITY keeps what
-// it learned per process, and would otherwise imitate no records or hold
-// every authenticated handshake for good.
+// the Control hook. Listen fails if the target can't be reached (checked
+// with a dial of its own, through Control) or REALITY's detection didn't
+// end (the target stalled): REALITY keeps what it learned per process, and
+// would otherwise hold every authenticated handshake for good. A detection
+// whose handshake failed, e.g. on a certificate the node's roots don't
+// verify (a lab target), ends with no records, which REALITY can't tell
+// from a site that sends none: such a target is imitated without
+// post-handshake records.
 //
 // The dialer checks the certificate the same way. Anything else (a real
 // certificate: the connection was spliced, or a man in the middle
