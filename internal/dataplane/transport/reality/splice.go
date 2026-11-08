@@ -195,7 +195,7 @@ type idleConn struct {
 
 func (c *idleConn) Read(p []byte) (int, error) {
 	if d := time.Duration(c.timeout.Load()); d > 0 {
-		_ = c.Conn.SetReadDeadline(time.Now().Add(d))
+		_ = c.SetReadDeadline(time.Now().Add(d))
 	}
 	return c.Conn.Read(p)
 }
@@ -204,7 +204,7 @@ func (c *idleConn) Read(p []byte) (int, error) {
 // to d without data.
 func (c *idleConn) idleAfter(d time.Duration) {
 	c.timeout.Store(int64(d))
-	_ = c.Conn.SetReadDeadline(time.Now().Add(d))
+	_ = c.SetReadDeadline(time.Now().Add(d))
 }
 
 func (m *mirror) closeBoth() {
