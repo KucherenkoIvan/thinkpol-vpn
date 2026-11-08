@@ -11,13 +11,6 @@ func init() {
 	RegisterPassive("wireguard-rhythm", newWGRhythm)
 }
 
-// WireGuard's handshake message sizes (the WireGuard paper, section 5.4):
-// an initiation and its response.
-const (
-	wgInitiation = 148
-	wgResponse   = 92
-)
-
 const (
 	// wgMaxOverhead bounds what a transport adds to a handshake message in
 	// its record, padding included: TLS 1.3's tag and content type, framing
@@ -181,10 +174,8 @@ func newWGRhythm(settings json.RawMessage) (Passive, error) {
 		Rekey      string `json:"rekey"`
 		Keepalives *int   `json:"keepalives"`
 	}
-	if len(settings) > 0 {
-		if err := json.Unmarshal(settings, &s); err != nil {
-			return nil, err
-		}
+	if err := unmarshalSettings(settings, &s); err != nil {
+		return nil, err
 	}
 	m := &wgRhythm{rekey: 120 * time.Second, keepalives: 3, conns: map[FlowKey]*wgConn{}}
 	switch s.Verdict {

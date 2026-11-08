@@ -36,7 +36,9 @@ The crash on the agent's first start at boot, with connect-on-boot on, is found 
 - **Device evidence (the 2026-10-24 macOS device run, the connect-on-boot reboot).** launchctl showed `runs = 2`, `last exit code = 2`. The first start (about 25 s after boot) took the pf reference and crashed after the guard's `enable`, so its Close never ran; the second start, ThrottleInterval (5 s) later, adopted the token. Wi-Fi had no link during that boot (`dial failed … no default route (IPv4)`), which may be part of the trigger.
 - `up` returns 2 only for usage errors (`cmd/thinkpol/cli.go`), so a Go panic or runtime fatal error is the likely cause. The plist's arguments are fixed.
 - Depends on TP-141 (the trace) and TP-144 (the run that records it).
+- Owner, 2026-11-09: the device evidence comes from the Mac session in the M2 acceptance run (TP-029); a defect found there is fixed before M2 closes, possibly with a second short session.
 
 ## Log
 - 2026-10-24 created in backlog (2026-10-24 macOS device run, connect-on-boot reboot: before-M2 list)
 - 2026-10-24 docs: slotted in the pre-M2 phase (wave 3)
+- 2026-11-09 notes: device evidence comes from the M2 acceptance session (owner)

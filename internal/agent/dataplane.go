@@ -131,6 +131,8 @@ type tuning struct {
 	// node's overlay addresses and clients.
 	dnsPort   uint16
 	dnsListen netip.Addr
+	// exitDeadline replaces dataplane.ExitHandshakeDeadline (0: it).
+	exitDeadline time.Duration
 }
 
 // RetryAfter is how long a data plane waits before retrying an Apply, a
@@ -152,6 +154,9 @@ func RunDataPlane(ctx context.Context, dp DataPlane) error {
 	}
 	if dp.tuning.retryAfter == 0 {
 		dp.tuning.retryAfter = RetryAfter
+	}
+	if dp.tuning.exitDeadline == 0 {
+		dp.tuning.exitDeadline = dataplane.ExitHandshakeDeadline
 	}
 	if dp.Log == nil {
 		dp.Log = slog.New(slog.DiscardHandler)
@@ -531,6 +536,7 @@ func (r *runner) publish() {
 			r.engine, r.follow.cur.Header().Version, r.follow.removed, !r.retryAt.IsZero(), n, r.conn.state, r.guard.problem
 		p.mismatch = r.follow.mismatch
 		p.dnsNoUpstream = r.noUpstream()
+		p.exitDeadline = r.dp.tuning.exitDeadline
 	})
 	// What Status says of them (DNSUnprotected; DataPlane.RouteTable's
 	// Error): the route table recovers and fails again on its own, the

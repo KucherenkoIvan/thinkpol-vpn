@@ -30,6 +30,7 @@ The macOS DNS-leak evidence PRD R4 asks for (docs/design/milestones.md M1): a ca
 - Split from TP-080 (backlog grooming 2026-10-15).
 - Carries R4's macOS DNS-leak evidence (PRD R4, docs/design/milestones.md M1): the agent checks afterwards that the direct name's query appears in the physical-interface capture (proving the capture saw DNS) and the tunnel-bound name's does not.
 - Split 2026-11-07 (owner's MVP cut): the redial-without-the-6 s-wait work, its device checks and the carried-over TP-019 Wi-Fi-change items moved to TP-179.
+- Owner, 2026-11-09: the device evidence comes from the Mac session in the M2 acceptance run (TP-029); a defect found there is fixed before M2 closes, possibly with a second short session.
 
 ## Log
 - 2026-10-15 created in backlog (split from TP-080, backlog grooming)
@@ -40,3 +41,4 @@ The macOS DNS-leak evidence PRD R4 asks for (docs/design/milestones.md M1): a ca
 - 2026-10-19 docs (TP-099 round 4): the DNS-leak box recorded, not judged; Notes carry R4's macOS capture
 - 2026-10-19 docs (TP-099 rounds 3–5): the DNS-leak box records; Notes say what the agent checks
 - 2026-11-07 split (owner's MVP cut): only R4's DNS-leak capture stays; redial → TP-179
+- 2026-11-09 notes: device evidence comes from the M2 acceptance session (owner)
