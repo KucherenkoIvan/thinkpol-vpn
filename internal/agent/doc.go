@@ -200,6 +200,15 @@
 // running device a server stops its data plane the same way; one that
 // makes it a device again starts it.
 //
+// Failing closed costs this: a device that crashed while connected and
+// comes back on a map that makes it a server keeps what the crashed run
+// left (its resolver configuration, the route table's rules) until a map
+// makes it a device again, or `thinkpol service uninstall` clears the
+// host ([Platform.ClearHost]); `thinkpol disconnect` in that state
+// clears neither. A mismatch is told to no subscriber: no event says it
+// starts or ends (nothing subscribes in production yet), only Status and
+// the log.
+//
 // Planned (TP-183): the node's own configuration as a ceiling over what
 // the map asks of it (docs/design/overlay.md "Node agent"). Until it
 // exists, a signed map alone decides the role of a node run in server

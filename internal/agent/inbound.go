@@ -37,8 +37,8 @@ type Listener struct {
 	Done <-chan struct{}
 }
 
-// DirectInbound opens the listeners the node's section names on the node's
-// own sockets: a device, or a server run in device mode.
+// DirectInbound opens the listeners the node's section names on the
+// node's own sockets: a device's.
 func DirectInbound(reg *transport.Registry) Inbound { return directInbound{reg} }
 
 type directInbound struct{ reg *transport.Registry }

@@ -46,6 +46,10 @@ A node starts as a device: it forwards nothing unless its node file allows it (P
 - [x] R1.6 one function holds the known-device rule; ServiceMode adds the can-it-run check and says why, install prints the matching hint
 - [x] R1.7 Node.Mode() without report.mu, awaitSection without a local mode copy
 - [x] R1.8 nits: config.go "gone" message and api-overview.md:210, crashtrace test case name, rewrapped comments, dataplane.go:713 warning folded into R1.1
+- [x] R2.1 (should-fix) test: a device-mode node that starts on a server-kind section and later gets a device map runs (Connected, no ModeMismatch) and restores the host once; mutation-checked against the old `!back` guard in awaitSection and without the post-await restoreHost
+- [x] R2.2 nits: inbound.go DirectInbound "or a server run in device mode"; resolver_test.go TestAServerSectionInDeviceModeFallsBackToTheSystemResolvers tests an unreachable setup
+- [x] R2.3 nit: RR42 "until server mode is set" → "or a map makes it a device"
+- [x] R2.4 docs: what failing closed costs (a crashed connected device on a server-kind section keeps its resolver configuration and route-table rules; disconnect doesn't clear them), and that a mismatch emits no event
 
 ## Log
 - 2026-10-18 created in backlog (owner decision: the node's configuration caps the map)
@@ -72,3 +76,9 @@ A node starts as a device: it forwards nothing unless its node file allows it (P
 - 2026-11-09 full make lab-test green on d13f856 (exclusive CPU lock, GOFLAGS=-p=2, LAB_P=1); R1.1–R1.8 ticked after re-reading the diff
 - 2026-11-09 not verified: a real upgrade of a server from a pre-TP-111 binary (runbook step written, not run); on macOS a device-mode node with a server section isn't exercised beyond the unit tests (servers are Linux-only)
 - 2026-11-09 has-errors → review
+- 2026-11-09 delta check: R2.1–R2.4
+- 2026-11-09 R2.1: TestADeviceStartedAsAServerRunsOnceTheMapMakesItADevice (connect and disconnected cases: mode_mismatch with no host touch, then a device map: Connected / Disconnected at version 2, no mismatch, the resolver restored once, and the routing cleared once only when disconnected). Mutations: (a) the old `if !back { publish(); continue }` guard back in awaitSection fails both cases (never Connected; restored 0 times); (b) `if mismatch { n.restoreHost() }` deleted fails both cases (restored 0 times, routing cleared 0 times)
+- 2026-11-09 R2.2: DirectInbound's comment says a device's; TestAServerSectionInDeviceModeFallsBackToTheSystemResolvers rewritten to a reachable setup as TestADeviceWithNoUpstreamFallsBackToTheSystemResolvers (a device's own section; also checks its overlay addresses are excluded)
+- 2026-11-09 R2.3: RR42 says "until server mode is set or a map makes it a device"
+- 2026-11-09 R2.4: agent doc.go says what failing closed costs (a crashed run's resolver configuration and route-table rules stay until a device map or `thinkpol service uninstall`; `thinkpol disconnect` clears neither) and that no event tells a mismatch
+- 2026-11-09 make lint, make test green (one exclusive CPU lock, GOFLAGS=-p=2); no lab run (unit tests and docs only); R2.1–R2.4 ticked after re-reading the diff

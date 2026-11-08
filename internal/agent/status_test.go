@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/netip"
 	"os"
@@ -808,6 +809,59 @@ func TestADeviceTheMapMakesAServerStops(t *testing.T) {
 	st = b.connection(t, Connected)
 	if st.ModeMismatch || st.DataPlane == nil || slices.Contains(st.Health().Problems, ProblemModeMismatch) {
 		t.Fatalf("status %+v", st)
+	}
+}
+
+// A device-mode node that starts on a map making it a server runs once a
+// map makes it a device, and only then puts back what a crashed run left
+// on the host, once: the resolver configuration, and the routing when it
+// starts disconnected (connecting takes that over).
+func TestADeviceStartedAsAServerRunsOnceTheMapMakesItADevice(t *testing.T) {
+	for _, tc := range []struct {
+		connect             bool
+		want                Connection
+		restored, routesCut int32
+	}{
+		{true, Connected, 1, 0},
+		{false, Disconnected, 1, 1},
+	} {
+		t.Run(fmt.Sprint("connect=", tc.connect), func(t *testing.T) {
+			s := newTestSpace(t)
+			_, reg := memoryRegistry(t)
+			startNode(t, reg, s.a, s.verified(t, 1))
+			var restored, overlayCut, tableCut atomic.Int32
+			b := startDevice(t, s, reg, tc.connect, deviceOpt{prepare: func(c *Config, plat *Platform) {
+				writeFile(t, filepath.Join(c.StateDir, MapFileName), s.buildBoth(t, 1, func(a, b *netmap.Section) {
+					b.Node.Kind, a.Inbound[0].PeerKind = netmap.NodeServer, netmap.NodeServer
+				}), 0o644)
+				plat.RestoreDNS = func() error { restored.Add(1); return nil }
+				plat.ClearConfig = func(o netcfg.Owner) error {
+					if o == netcfg.OwnerOverlay {
+						overlayCut.Add(1)
+					}
+					return nil
+				}
+				plat.ClearRouteTable = func(routetable.Guard) error { tableCut.Add(1); return nil }
+			}})
+			eventually(t, func() bool { return b.node.Status().ModeMismatch })
+			if n := restored.Load() + overlayCut.Load() + tableCut.Load(); n != 0 {
+				t.Fatalf("the host was touched %d times while mismatched", n)
+			}
+
+			b.maps <- s.build(t, 2)
+			var st Status
+			eventually(t, func() bool { st = b.node.Status(); return st.MapVersion == 2 && st.Connection == tc.want })
+			if st.ModeMismatch || slices.Contains(st.Health().Problems, ProblemModeMismatch) {
+				t.Fatalf("status %+v", st)
+			}
+			if tc.connect && st.DataPlane == nil {
+				t.Fatalf("no data plane: %+v", st)
+			}
+			if r, o, rt := restored.Load(), overlayCut.Load(), tableCut.Load(); r != tc.restored || o != tc.routesCut || rt != tc.routesCut {
+				t.Fatalf("resolver restored %d times, overlay routes cleared %d, route table %d; want %d, %d, %d",
+					r, o, rt, tc.restored, tc.routesCut, tc.routesCut)
+			}
+		})
 	}
 }
 
