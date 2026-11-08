@@ -126,16 +126,19 @@
 // journal (RESIDUAL-RISKS.md RR40). Neither sets stdout (StandardOutPath,
 // StandardOutput): the agent writes nothing there. Install picks the
 // definition by the mode the node will run in ([Installer].Ready,
-// agent.ServiceMode: the node file's mode, else the node's kind in the
-// map), and a definition of the other mode isn't taken for one changed by
-// hand, so a node whose mode changed is installed anew without a warning.
-// A node whose kind isn't known (removed from its space, or not in the
-// map yet) gets a server's definition, with a warning to install again
-// once a map includes it: a server must never keep a trace, and a device
-// installed so only lacks one. Should a server run under a device's
-// definition all the same (its node file changed since, or a removed node
-// back as a server), its agent detaches from the file and removes it
-// (package agent).
+// agent.ServiceMode: the node file's mode; with none, device, the
+// default), and a definition of the other mode isn't taken for one
+// changed by hand, so a node whose mode changed is installed anew without
+// a warning. A node whose node file sets no mode is installed as a device
+// only while its map shows it as one: one the map makes a server (a
+// server whose node file lacks "mode": "server", say after an upgrade
+// from when the map's kind picked the mode) or doesn't hold yet gets a
+// server's definition, with a warning to set the server's mode or to
+// install again once a map includes it: a server must never keep a
+// trace, and a device installed so only lacks one. Should a server run
+// under a device's definition all the same (its node file changed
+// since), its agent detaches from the file and removes it (package
+// agent).
 //
 // A device's install makes the file anew before it starts the service,
 // root's and 0600 (agent.CreateCrashTrace: whatever was at the path

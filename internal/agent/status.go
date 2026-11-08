@@ -16,8 +16,7 @@ import (
 // S1, S4): nodes are the space's opaque ids, addresses are the overlay's,
 // and whatever failed is named from fixed vocabularies.
 type Status struct {
-	// Mode is the node's mode; ModeAuto while it is removed from its space
-	// and its kind unknown.
+	// Mode is the node's mode (Config.Mode), removed from its space or not.
 	Mode  Mode
 	Space netmap.SpaceID
 	// MapVersion is the version of the map the node follows.
@@ -27,8 +26,11 @@ type Status struct {
 	// the map it follows (the same file read again) isn't counted.
 	MapsRefused uint64
 	// Removed is set while the map has no section for the node.
-	Removed    bool
-	Connection Connection
+	Removed bool
+	// ModeMismatch is set while the map makes a node run in device mode a
+	// server: it runs nothing of the map, as while removed.
+	ModeMismatch bool
+	Connection   Connection
 	// Retrying is set while a start, an Apply or (on a server) serving the
 	// map failed and waits to be retried.
 	Retrying bool
@@ -174,6 +176,8 @@ type report struct {
 	// mapsRefused counts the maps the node's followers refused.
 	mapsRefused uint64
 	removed     bool
+	// mismatch: the map makes a device-mode node a server.
+	mismatch bool
 	// conn is a device's connection.
 	conn connState
 	// retrying: a start, an Apply (a connected device's too) or a
@@ -252,7 +256,7 @@ func (p *report) statusLocked() Status { return p.statusWith(nil) }
 // statusWith is the status, with dp as the engine's if it was read
 // already (nil: read it now).
 func (p *report) statusWith(dp *dataplane.Status) Status {
-	s := Status{Mode: p.mode, Space: p.space, MapVersion: p.version, MapsRefused: p.mapsRefused, Removed: p.removed, Retrying: p.retrying, Listeners: p.listeners, DNSUpstreamsRefused: p.dnsUpstreamsRefused,
+	s := Status{Mode: p.mode, Space: p.space, MapVersion: p.version, MapsRefused: p.mapsRefused, Removed: p.removed, ModeMismatch: p.mismatch, Retrying: p.retrying, Listeners: p.listeners, DNSUpstreamsRefused: p.dnsUpstreamsRefused,
 		LastRunCrashed: p.lastRun.Crashed(), LastRunUnreadable: p.lastRun.Unreadable != ""}
 	if p.mode != ModeServer {
 		s.RulePreset, s.ConnectOnBoot = p.preset, p.connectOnBoot
@@ -338,8 +342,11 @@ type Problem string
 
 // The problems Health names.
 const (
-	ProblemDisconnected   Problem = "disconnected"
-	ProblemRemoved        Problem = "removed_from_space"
+	ProblemDisconnected Problem = "disconnected"
+	ProblemRemoved      Problem = "removed_from_space"
+	// ProblemModeMismatch: the map makes a node run in device mode a
+	// server; it carries nothing until its operator sets server mode.
+	ProblemModeMismatch   Problem = "mode_mismatch"
 	ProblemStarting       Problem = "starting"
 	ProblemRetrying       Problem = "retrying"
 	ProblemApplyFailed    Problem = "apply_failed"    // the last Apply failed; DataPlane.LastApplyError says where
@@ -411,13 +418,16 @@ func (s Status) Health() Health {
 	if s.Removed {
 		add(HealthDown, ProblemRemoved)
 	}
+	if s.ModeMismatch {
+		add(HealthDown, ProblemModeMismatch)
+	}
 	switch s.Connection {
 	case Disconnected:
 		add(HealthDown, ProblemDisconnected)
 	case Connecting:
 		if s.Retrying {
 			add(HealthDown, ProblemRetrying)
-		} else if !s.Removed {
+		} else if !s.Removed && !s.ModeMismatch {
 			add(HealthDown, ProblemStarting)
 		}
 	case Serving:

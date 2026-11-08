@@ -72,7 +72,9 @@ func InstallingUser() string {
 // would read it: without keys and a map, or with a node file it refuses,
 // the service would only restart. It returns the mode the service is
 // installed for (agent.ServiceMode).
-func nodeReady() (agent.Mode, bool, error) { return agent.ServiceMode(agent.DefaultStateDir) }
+func nodeReady() (agent.Mode, agent.ModeUnknown, error) {
+	return agent.ServiceMode(agent.DefaultStateDir)
+}
 
 func runTool(ctx context.Context, tool string, args ...string) (string, error) {
 	path, err := findTool(tool)

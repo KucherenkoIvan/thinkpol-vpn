@@ -490,7 +490,7 @@ message Uplink {
 }
 
 enum Mode {
-  MODE_UNSPECIFIED = 0; // removed from its space, kind unknown
+  MODE_UNSPECIFIED = 0; // not set: an agent never reports it
   MODE_DEVICE = 1;
   MODE_SERVER = 2;
 }

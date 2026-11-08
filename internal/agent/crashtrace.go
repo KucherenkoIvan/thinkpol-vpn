@@ -147,29 +147,29 @@ func (ct *CrashTrace) Release() error {
 }
 
 // KeepOnlyOnADevice detaches stderr from the trace file (Detach) unless
-// cfg's node is known to be a device: by its mode (the environment's, a
-// flag's or the node file's), else, under auto, by its kind in the map
-// of its state directory (ServiceMode). A server, a node of unknown kind
-// and a state directory that can't be read keep no trace (PRD S2), so
-// call it as soon as cfg is read, before anything that can fail or
-// panic: a server under a device's definition otherwise adds each failed
-// start's error to the file. A cfg that couldn't be read is the zero
-// Config: the trace file's directory is taken for the state directory.
+// cfg's node is known to be a device: it runs in device mode, and the
+// node file of its state directory says so (whatever its map), or,
+// setting no mode, leaves the node a device by default while its map
+// shows it as one (knownDevice). A device mode given only by the
+// environment or a flag isn't enough: the default can't be told from one
+// given, so a device that wants its trace whatever its map sets "mode":
+// "device" in node.json. A server, a node the map makes a server or
+// doesn't hold, and a state directory or node file that can't be read
+// keep no trace (PRD S2), so call it as soon as cfg is read, before
+// anything that can fail or panic: a server under a device's definition
+// otherwise adds each failed start's error to the file. A cfg that
+// couldn't be read is the zero Config: the trace file's directory is
+// taken for the state directory.
 func (ct *CrashTrace) KeepOnlyOnADevice(cfg Config) error {
 	if ct == nil || !ct.Tracing {
 		return nil
 	}
-	switch cfg.Mode {
-	case ModeDevice:
-		ct.device = true
-	case ModeServer:
-	default:
+	if cfg.Mode != ModeServer {
 		dir := cfg.StateDir
 		if dir == "" {
 			dir = filepath.Dir(ct.path)
 		}
-		mode, known, err := ServiceMode(dir)
-		ct.device = err == nil && known && mode == ModeDevice
+		ct.device = knownDevice(dir)
 	}
 	if ct.device {
 		return nil

@@ -97,12 +97,19 @@ func (s *testSpace) buildEditing(t *testing.T, version uint64, who NodeKeys, edi
 	if who != s.a && who != s.b {
 		t.Fatalf("the edited node %v is neither of the space's two", who.ID)
 	}
+	return s.buildBoth(t, version, func(a, b *netmap.Section) {
+		if who == s.b {
+			a = b
+		}
+		edit(a)
+	})
+}
+
+// buildBoth signs a map at version whose sections are changed by edit.
+func (s *testSpace) buildBoth(t *testing.T, version uint64, edit func(a, b *netmap.Section)) []byte {
+	t.Helper()
 	a, b := s.sections()
-	edited := &a
-	if who == s.b {
-		edited = &b
-	}
-	edit(edited)
+	edit(&a, &b)
 	env, err := netmap.Build(s.signing, netmap.Contents{
 		SpaceID: s.id, Version: version, RecoveryKey: s.recovery, Blobs: s.blobs,
 		Recipients: []netmap.Recipient{{Key: s.a.Map.Public(), Section: a}, {Key: s.b.Map.Public(), Section: b}},

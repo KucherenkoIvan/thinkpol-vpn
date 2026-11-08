@@ -57,7 +57,7 @@ func TestServiceUnderSystemd(t *testing.T) {
 	envelope, _ := space.build(t)
 	space.install(t, server, "server-1", envelope)
 	space.install(t, dev, "device-a", envelope)
-	up := server.Start(t, "thinkpol", "up")
+	up := server.Start(t, "thinkpol", "up", "-mode", "server")
 	waitLog(t, up, `worker space=\S+ .*msg="map applied"`)
 	s4, _ := space.overlay(1)
 	dev.MustExec(t, "useradd", "-M", "-u", aliceUID, "alice")
