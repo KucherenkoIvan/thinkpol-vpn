@@ -11,13 +11,12 @@ func init() {
 }
 
 // blockIP is the framework's end-to-end proof: it decides every packet
-// whose destination is on one of its networks, and nothing else. Real
-// blocklist modules (TP-025) replace it in the matrix.
+// whose destination is on one of its networks, and nothing else. The
+// matrix's address blocklist is ip-blocklist.
 type blockIP struct {
-	dests       []netip.Prefix
-	verdict     Verdict
-	rate, burst int
-	data        bool
+	dests []netip.Prefix
+	block blocking
+	data  bool
 }
 
 // newBlockIP builds the module from its settings:
@@ -25,60 +24,28 @@ type blockIP struct {
 //	{"destinations": ["203.0.113.9", "2001:db8::/32"], "verdict": "drop",
 //	 "rate": 1750, "burst": 3000, "data": false}
 //
-// verdict is drop (default), reset or throttle; rate and burst are
-// throttle's, in bytes (Decision). With data, only packets that carry
-// payload are decided: a TCP handshake completes, and the first data
-// segment meets the verdict.
+// with blockSettings' verdict (drop by default), rate and burst. With
+// data, only packets that carry payload are decided: a TCP handshake
+// completes, and the first data segment meets the verdict. Each packet is
+// decided on its own, never pinned to its flow.
 func newBlockIP(settings json.RawMessage) (Passive, error) {
 	var s struct {
 		Destinations []string `json:"destinations"`
-		Verdict      string   `json:"verdict"`
-		Rate         int      `json:"rate"`
-		Burst        int      `json:"burst"`
 		Data         bool     `json:"data"`
+		blockSettings
 	}
-	if err := json.Unmarshal(settings, &s); err != nil {
+	if err := unmarshalSettings(settings, &s); err != nil {
 		return nil, err
 	}
-	dests, err := parseDestinations(s.Destinations)
+	dests, err := parsePrefixes("destination", s.Destinations)
 	if err != nil {
 		return nil, err
 	}
-	m := &blockIP{dests: dests, rate: s.Rate, burst: s.Burst, data: s.Data}
-	switch s.Verdict {
-	case "", "drop":
-		m.verdict = Drop
-	case "reset":
-		m.verdict = Reset
-	case "throttle":
-		m.verdict = Throttle
-	default:
-		return nil, fmt.Errorf("verdict %q: want drop, reset or throttle", s.Verdict)
+	b, err := s.parse(Drop)
+	if err != nil {
+		return nil, err
 	}
-	if s.Rate < 0 || s.Burst < 0 {
-		return nil, fmt.Errorf("rate %d, burst %d: want positive or 0 for the default", s.Rate, s.Burst)
-	}
-	return m, nil
-}
-
-// parseDestinations reads addresses and prefixes; there must be one.
-func parseDestinations(in []string) ([]netip.Prefix, error) {
-	var dests []netip.Prefix
-	for _, d := range in {
-		p, err := netip.ParsePrefix(d)
-		if err != nil {
-			a, err := netip.ParseAddr(d)
-			if err != nil {
-				return nil, fmt.Errorf("destination %q: %v", d, err)
-			}
-			p = netip.PrefixFrom(a, a.BitLen())
-		}
-		dests = append(dests, p)
-	}
-	if len(dests) == 0 {
-		return nil, fmt.Errorf("no destinations")
-	}
-	return dests, nil
+	return &blockIP{dests: dests, block: b, data: s.Data}, nil
 }
 
 func contains(dests []netip.Prefix, a netip.Addr) bool {
@@ -96,5 +63,5 @@ func (m *blockIP) Inspect(p *Packet, _ *Flow) Decision {
 	if !contains(m.dests, p.Dst) || m.data && len(p.Payload) == 0 {
 		return Decision{Verdict: Accept}
 	}
-	return Decision{Verdict: m.verdict, Rate: m.rate, Burst: m.burst, Reason: fmt.Sprintf("destination %s", p.Dst)}
+	return m.block.decidePacket(fmt.Sprintf("destination %s", p.Dst))
 }
