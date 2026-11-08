@@ -32,14 +32,14 @@ None named.
 - Grading: a chain has one exit (netmap.Chain.Exit), so R1.1's "none of the default chain's exits is live while one is unanswered" is that exit unanswered; "live" isn't computed. If chains get several exits, exitHandshakes needs it.
 
 ## Review findings
-- [ ] R1.1 grading: an exit is unanswered (pending past the deadline), live (a handshake within RejectAfterTime) or neither, computed in one function called from statusWith; down when the default route goes through a chain and none of that chain's exits is live while one is unanswered, any other unanswered exit degraded; table tests; ProblemExitNoHandshake comment and both api-overview files say exactly this
-- [ ] R1.2 docs say a flag stays until a later handshake completes, even if the device goes idle (wg/doc.go, HandshakePendingSince comment, api-overview-reference.md, api-overview.md, RR48)
-- [ ] R1.3 a real-wireguard-go test of the responder-side clear (Sending handshake response)
-- [ ] R1.4 the deadline constant in internal/dataplane, no wg import in agent; test-knob plumbing simplified where natural
-- [ ] R1.5 wg/doc.go names the three wireguard-go log strings this depends on and the test guarding them
-- [ ] R1.6 a peer removed, or re-added with another Node, forgets its pending time; tested
-- [ ] R1.7 no exit_no_handshake while the exit's first hop is down; the deadline restarts when the link returns; tested
-- [ ] R1.8 nits: handshakeLog → handshakes with a constructor; comment wording (deadline ~30 s to notice a dead session, RR48, api-overview.md:200, dataPlaneProblems); a steady-traffic test over several deadlines stays ok
+- [x] R1.1 grading: an exit is unanswered (pending past the deadline), live (a handshake within RejectAfterTime) or neither, computed in one function called from statusWith; down when the default route goes through a chain and none of that chain's exits is live while one is unanswered, any other unanswered exit degraded; table tests; ProblemExitNoHandshake comment and both api-overview files say exactly this
+- [x] R1.2 docs say a flag stays until a later handshake completes, even if the device goes idle (wg/doc.go, HandshakePendingSince comment, api-overview-reference.md, api-overview.md, RR48)
+- [x] R1.3 a real-wireguard-go test of the responder-side clear (Sending handshake response)
+- [x] R1.4 the deadline constant in internal/dataplane, no wg import in agent; test-knob plumbing simplified where natural
+- [x] R1.5 wg/doc.go names the three wireguard-go log strings this depends on and the test guarding them
+- [x] R1.6 a peer removed, or re-added with another Node, forgets its pending time; tested
+- [x] R1.7 no exit_no_handshake while the exit's first hop is down; the deadline restarts when the link returns; tested
+- [x] R1.8 nits: handshakeLog → handshakes with a constructor; comment wording (deadline ~30 s to notice a dead session, RR48, api-overview.md:200, dataPlaneProblems); a steady-traffic test over several deadlines stays ok
 
 ## Log
 - 2026-11-07 created in backlog
@@ -49,3 +49,8 @@ None named.
 - 2026-11-07 full `make lab-test` green on 8a657d2 (GOFLAGS=-p=2, LAB_P=1, under the CPU lock); not verified: a real device (macOS/Android) showing exit_no_handshake in the tray
 - 2026-11-07 in-progress → review
 - 2026-11-07 review → has-errors (round 1 findings R1.x)
+- 2026-11-09 handoff taken over after the previous agent hit a usage limit; its uncommitted R1.1/R1.4 edits kept (checked, committed as d0a3ca5)
+- 2026-11-09 R1.1 exitHandshakes (status.go) is the one grading function: an exit unanswered past the deadline counts, and the default rule's exit (rules.Table.Default → RuleStatus.DefaultExit) unanswered is down, any other degraded; a chain has one exit, so "live" isn't computed (Notes). R1.4 ExitHandshakeDeadline in internal/dataplane, agent no longer imports wg; the tuning knob kept, defaulted in RunDataPlane. R1.6 wg forgets a peer's handshakes when Configure removes it or re-adds it with another Node (reset on replace_peers). R1.7 the deadline counts from the later of the first initiation and the first hop's UpFor; no up first hop, no exit_no_handshake. R1.8 handshakeLog → handshakes with newHandshakes; comments and docs (wg/doc.go, device.go, api-overview*.md, RR48) per R1.2, R1.5, R1.8
+- 2026-11-09 tests: TestExitsAreGradedByTheirHandshakes (table: default direct + dead chain degraded; default nl dead + de idle down; nl dead + de live down; nl live + de dead degraded; all live ok; first hop down, back for less than and for the deadline; relayed; device peer), TestDefaultIsTheDefaultRulesAction, TestRulesRouteThroughTheChainsExit's DefaultExit, wg TestAPeersInitiationClearsAPendingOne (real wireguard-go, X initiates while A's pending), TestAnUnansweredHandshakeStaysPendingUntilOneCompletes (re-added through another Node starts afresh), TestAnExitThatNeverHandshakesIsExitNoHandshake (stays ok 4 s, four deadlines, under steady traffic)
+- 2026-11-09 mutations, each caught: "Sending handshake response" not clearing; forget(removed) dropped; every unanswered exit graded as the default's; the first hop ignored; the deadline not restarted when the link returns; grading by the last handshake's age (steady-traffic phase); the last default rule winning; DefaultExit never set
+- 2026-11-09 merged origin/rewrite (stream: core added); `make lint`, `make test` green on a0e16cf
