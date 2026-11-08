@@ -9,8 +9,8 @@ size: L
 depends_on: [TP-046, TP-021, TP-078, TP-091, TP-166]
 refs: [D4]
 needs_human: macos
-owner: ""
-branch: ""
+owner: "agent-tp-048"
+branch: "tp-048-kill-switch"
 ---
 
 ## Goal
@@ -52,3 +52,4 @@ With the kill switch on, nothing leaves the device when the tunnel is down.
 - 2026-10-22 docs (TP-077 residual-risks research): the hop-limit exemption for ND/MLD is Linux-only; pf can't express it
 - 2026-10-28 docs (TP-138 review): notes on reusing the guard's pfctl readers and on a failed guard Close
 - 2026-11-07 TP-139 verdicts noted
+- 2026-11-09 backlog → in-progress, owner: agent-tp-048
