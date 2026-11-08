@@ -86,5 +86,5 @@
 //
 // reality doesn't sit behind a server node's shared listener yet (no
 // transport.StreamRoutable): the short id selecting the space, and the
-// handoff of the connection to the space's worker, are still to come.
+// handoff of the connection to the space's worker, are TP-201.
 package reality
