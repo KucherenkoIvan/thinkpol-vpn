@@ -105,7 +105,7 @@ func TestRulesRouteThroughTheChainsExit(t *testing.T) {
 	if devices[s.id] != exitOf(s) || devices[b.id] != dataplane.OverlayDevice || len(st.Egresses) != 2 {
 		t.Fatalf("status %+v: the exit belongs on a device of its own", st)
 	}
-	if st.Rules.Preset != rules.PresetSpace || st.Rules.Direct4 == 0 || st.Rules.Direct6 == 0 || len(st.Rules.Skipped) != 0 {
+	if st.Rules.Preset != rules.PresetSpace || st.Rules.Direct4 == 0 || st.Rules.Direct6 == 0 || len(st.Rules.Skipped) != 0 || st.Rules.DefaultExits != [2]netmap.NodeID{s.id, s.id} {
 		t.Fatalf("rule status %+v", st.Rules)
 	}
 
@@ -310,6 +310,21 @@ func TestRulesFollowListsAndLocalChoices(t *testing.T) {
 	}
 }
 
+// The default exits are what carries each family's background route, not
+// the default rule's chain: with every address claimed for nl before it,
+// the default rule (direct) gets nothing, and nl's exit carries all.
+func TestDefaultExitsCarryTheBackgroundRoutes(t *testing.T) {
+	net := memory.NewNetwork(memory.Datagram)
+	a, s, b := m0()
+	withChain(t, a, s, "cidr:0.0.0.0/0 -> chain:nl", "cidr:::/0 -> chain:nl", "default -> direct")
+	for _, nd := range []*node{s, a, b} {
+		nd.start(t, net)
+	}
+	if got := a.engine.Status().Rules.DefaultExits; got != [2]netmap.NodeID{s.id, s.id} {
+		t.Fatalf("default exits %v, want nl's exit %v for both families", got, s.id)
+	}
+}
+
 // A chain whose exit isn't a usable peer can't carry traffic: its
 // destinations are blocked, never sent direct, and the exit stays where
 // it was.
@@ -322,7 +337,7 @@ func TestAChainWithoutItsExitBlocks(t *testing.T) {
 		nd.start(t, net)
 	}
 	st := a.engine.Status()
-	if len(st.Egresses) != 1 || !slices.Contains(st.Rules.Skipped, rules.Skip{Origin: rules.OriginSpace, Index: 1, Reason: rules.ReasonNoChain}) {
+	if len(st.Egresses) != 1 || !slices.Contains(st.Rules.Skipped, rules.Skip{Origin: rules.OriginSpace, Index: 1, Reason: rules.ReasonNoChain}) || st.Rules.DefaultExits != [2]netmap.NodeID{} {
 		t.Fatalf("status %+v", st)
 	}
 	if got := routeOf(t, a, netip.MustParseAddr("192.0.2.80")); got != sentBlocked {

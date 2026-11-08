@@ -32,6 +32,10 @@ type testSpace struct {
 	blobs, deviceBlobs []netmap.BlobRef
 	// deviceRules are b's routing rules.
 	deviceRules []netmap.Rule
+	// deviceChains are the chains b's rules may use; a chain's exit must
+	// be a, with serverEgress set.
+	deviceChains []netmap.Chain
+	serverEgress bool
 }
 
 var (
@@ -81,6 +85,8 @@ func (s *testSpace) sections() (a, b netmap.Section) {
 	b.Peers = []netmap.Peer{{ID: s.a.ID, WireGuardKey: s.a.WireGuard.Public(), Addresses: []netip.Addr{a4, a6}, Paths: []netmap.Path{{FirstHop: s.a.ID}}}}
 	b.Blobs = s.deviceBlobs
 	b.Rules = s.deviceRules
+	b.Chains = s.deviceChains
+	a.Node.AllowEgress = s.serverEgress
 	return a, b
 }
 

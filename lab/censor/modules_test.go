@@ -1,6 +1,7 @@
 package censor
 
 import (
+	"fmt"
 	"net/netip"
 	"strings"
 	"testing"
@@ -14,7 +15,7 @@ func TestBlockIPDropsByDestination(t *testing.T) {
 	for _, dst := range []string{"203.0.113.9", "2001:db8::42"} {
 		p := udpPacket(netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr(dst), 1, 2, []byte("x"))
 		d := m.Inspect(p, &Flow{})
-		if d.Verdict != Drop || !strings.Contains(d.Reason, dst) {
+		if d.Verdict != Drop || d.Flow || !strings.Contains(d.Reason, dst) {
 			t.Errorf("%s: %+v", dst, d)
 		}
 	}
@@ -29,7 +30,7 @@ func TestBlockIPSettings(t *testing.T) {
 		settings string
 		wantErr  string
 	}{
-		"no destinations": {`{}`, "no destinations"},
+		"no destinations": {`{}`, "no destination listed"},
 		"bad destination": {`{"destinations": ["999.1.1.1"]}`, "destination"},
 		"bad verdict":     {`{"destinations": ["203.0.113.9"], "verdict": "poison"}`, "verdict"},
 		"negative rate":   {`{"destinations": ["203.0.113.9"], "verdict": "throttle", "rate": -1}`, "rate"},
@@ -77,5 +78,24 @@ func TestBlockIPDataOnly(t *testing.T) {
 	}
 	if d := m.Inspect(tcpPacket(src, dst, 1, 2, 101, 9, Ack|Psh, []byte("hi")), &Flow{}); d.Verdict != Reset {
 		t.Errorf("data: %+v", d)
+	}
+}
+
+// TestModulesWithoutSettings: every module reads no settings at all as {}:
+// built either way, it builds or fails alike.
+func TestModulesWithoutSettings(t *testing.T) {
+	for name, build := range passives {
+		_, errNil := build(nil)
+		_, errEmpty := build([]byte(`{}`))
+		if fmt.Sprint(errNil) != fmt.Sprint(errEmpty) {
+			t.Errorf("%s: without settings %v, with {} %v", name, errNil, errEmpty)
+		}
+	}
+	for name, build := range actives {
+		_, errNil := build(nil)
+		_, errEmpty := build([]byte(`{}`))
+		if fmt.Sprint(errNil) != fmt.Sprint(errEmpty) {
+			t.Errorf("%s: without settings %v, with {} %v", name, errNil, errEmpty)
+		}
 	}
 }
