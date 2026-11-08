@@ -3,6 +3,7 @@ id: TP-064
 title: "Reality transport: Xray REALITY wire compatibility and using existing VLESS/Reality servers"
 milestone: M2
 area: dataplane/transport
+stream: transports
 repo: thinkpol-vpn
 size: L
 depends_on: []

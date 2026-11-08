@@ -3,6 +3,7 @@ id: TP-182
 title: "`diag` checks over the network; a redacted report"
 milestone: later
 area: cmd
+stream: core
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-168]

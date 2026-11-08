@@ -3,6 +3,7 @@ id: TP-163
 title: "netcfg Close: a failing IPv6 rule dump stops the IPv4 rule deletes"
 milestone: later
 area: dataplane/netcfg
+stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-154]

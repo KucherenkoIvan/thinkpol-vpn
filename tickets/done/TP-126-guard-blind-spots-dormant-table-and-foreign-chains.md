@@ -3,6 +3,7 @@ id: TP-126
 title: "IPv6 guard: a dormant table or a foreign chain goes unrepaired"
 milestone: M2
 area: dataplane
+stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: []

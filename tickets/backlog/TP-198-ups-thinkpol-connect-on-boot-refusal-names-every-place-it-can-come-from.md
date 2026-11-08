@@ -3,6 +3,7 @@ id: TP-198
 title: "up's THINKPOL_CONNECT_ON_BOOT refusal names every place it can come from"
 milestone: later
 area: agent
+stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-166]

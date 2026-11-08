@@ -3,6 +3,7 @@ id: TP-023
 title: "M1 acceptance"
 milestone: M1
 area: lab
+stream: verification
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-013, TP-014, TP-017, TP-019, TP-020, TP-021, TP-022, TP-078, TP-079, TP-092]

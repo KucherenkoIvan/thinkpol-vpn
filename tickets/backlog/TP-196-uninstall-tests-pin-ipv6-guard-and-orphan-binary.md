@@ -3,6 +3,7 @@ id: TP-196
 title: "uninstall tests: pin the IPv6 forwarding guard and a binary left without its definition"
 milestone: later
 area: agent
+stream: verification
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-132]

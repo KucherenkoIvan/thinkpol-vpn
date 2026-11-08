@@ -3,6 +3,7 @@ id: KRN-003
 title: "config: optional env files and flag binding"
 milestone: M1
 area: config
+stream: core
 repo: go-kernel
 size: S
 depends_on: []

@@ -3,6 +3,7 @@ id: TP-065
 title: "On-device VPN detection: what local apps can observe and mitigations"
 milestone: later
 area: research
+stream: core
 repo: thinkpol-vpn
 size: M
 depends_on: []

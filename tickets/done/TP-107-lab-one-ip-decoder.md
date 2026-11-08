@@ -3,6 +3,7 @@ id: TP-107
 title: "lab: one IP decoder"
 milestone: M3
 area: lab
+stream: verification
 repo: thinkpol-vpn
 size: S
 depends_on: []

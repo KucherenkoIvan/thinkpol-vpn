@@ -3,6 +3,7 @@ id: TP-012
 title: "M0 acceptance in the lab"
 milestone: M0
 area: lab
+stream: verification
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-002, TP-011]

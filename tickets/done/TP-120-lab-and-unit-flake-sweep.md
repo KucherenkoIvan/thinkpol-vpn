@@ -3,6 +3,7 @@ id: TP-120
 title: "Flake sweep: tests that fail under load"
 milestone: M2
 area: tests
+stream: verification
 repo: thinkpol-vpn
 size: M
 depends_on: []

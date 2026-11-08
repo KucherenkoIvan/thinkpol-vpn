@@ -3,6 +3,7 @@ id: TP-058
 title: "Router Delivered counter counts bytes on Linux TUN"
 milestone: M1
 area: dataplane/router
+stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-008]

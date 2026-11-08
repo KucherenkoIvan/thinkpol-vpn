@@ -3,6 +3,7 @@ id: TP-056
 title: "Data plane stop publishes a whole status, never a mixed one"
 milestone: M1
 area: agent
+stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-020]

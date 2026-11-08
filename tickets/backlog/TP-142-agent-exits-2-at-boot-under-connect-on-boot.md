@@ -3,6 +3,7 @@ id: TP-142
 title: "macOS: the agent exits 2 on its first start at boot under connect-on-boot"
 milestone: M2
 area: agent
+stream: core
 repo: thinkpol-vpn
 size: M
 needs_human: macos

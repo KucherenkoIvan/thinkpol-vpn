@@ -3,6 +3,7 @@ id: TP-116
 title: "Go toolchain past GO-2026-6809"
 milestone: M2
 area: deps
+stream: verification
 repo: thinkpol-vpn
 size: S
 depends_on: []

@@ -3,6 +3,7 @@ id: TP-008
 title: "TUN, WireGuard and the overlay router"
 milestone: M0
 area: dataplane
+stream: core
 repo: thinkpol-vpn
 size: L
 depends_on: [TP-006, TP-007]

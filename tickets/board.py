@@ -7,6 +7,7 @@
                                       on this checkout and on every local and remote branch
   python3 tickets/board.py --check    validate frontmatter and dependencies
   python3 tickets/board.py --waves    unfinished tickets grouped by dependency depth
+  python3 tickets/board.py --streams  open tickets grouped by stream, then milestone
 """
 
 import argparse
@@ -19,6 +20,9 @@ ROOT = pathlib.Path(__file__).resolve().parent
 COLUMNS = ["backlog", "in-progress", "blocked", "review", "has-errors", "done"]
 REQUIRED = ["id", "title", "milestone", "area", "repo", "size", "depends_on"]
 SIZES = {"S", "M", "L", "epic"}
+STREAMS = ["core", "transports", "administration", "clients", "verification"]
+# tagged when their branches merge (2026-11-08)
+STREAM_PENDING = {"TP-087", "TP-111", "TP-025", "TP-195"}
 NEEDS_HUMAN = {"decision", "macos", "windows", "person"}
 DESIGN_REF = re.compile(r"(.+)#([\w-]+)$")
 RESIDUALS = "RESIDUAL-RISKS.md"
@@ -182,6 +186,11 @@ def check(tickets):
                 problems.append(f"{t['id']}: missing {key}")
         if t.get("size") not in SIZES:
             problems.append(f"{t['id']}: size must be one of {sorted(SIZES)}")
+        if "stream" in t:
+            if t["stream"] not in STREAMS:
+                problems.append(f"{t['id']}: stream must be one of {STREAMS}")
+        elif t["id"] not in STREAM_PENDING:
+            problems.append(f"{t['id']}: missing stream")
         if "needs_human" in t and t["needs_human"] not in NEEDS_HUMAN:
             problems.append(f"{t['id']}: needs_human must be one of {sorted(NEEDS_HUMAN)}")
         if not t["path"].name.startswith(t["id"] + "-"):
@@ -235,6 +244,20 @@ def waves(tickets):
     return [grouped[k] for k in sorted(grouped)]
 
 
+def streams(tickets):
+    """Open tickets grouped by stream, then milestone; `later` comes last."""
+    def order(m):
+        return (m == "later", m)
+
+    for stream in STREAMS:
+        items = [t for t in tickets.values() if t["column"] != "done" and t.get("stream") == stream]
+        print(f"\n{stream} ({len(items)})")
+        for m in sorted({t["milestone"] for t in items}, key=order):
+            mine = sorted((t for t in items if t["milestone"] == m), key=lambda t: t["id"])
+            mark = " (not planned yet)" if m == "later" else ""
+            print(f"  {m}{mark}: " + ", ".join(t["id"] for t in mine))
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("-m", "--milestone")
@@ -242,6 +265,7 @@ def main():
                         help="next free id of the series (TP by default; KRN ids are separate)")
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--waves", action="store_true")
+    parser.add_argument("--streams", action="store_true")
     args = parser.parse_args()
 
     tickets = load()
@@ -252,6 +276,10 @@ def main():
                 f"{t['id']}{'*' if t['column'] == 'blocked' else ''}{'!' if t.get('needs_human') else ''}"
                 for t in sorted(wave, key=lambda t: t["id"])))
         print("(* = blocked, ! = needs a human)")
+        return 0
+
+    if args.streams:
+        streams(tickets)
         return 0
 
     if args.next_id:

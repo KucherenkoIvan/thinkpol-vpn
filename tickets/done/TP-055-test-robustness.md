@@ -3,6 +3,7 @@ id: TP-055
 title: "Make tests robust under parallel lab load"
 milestone: M1
 area: lab
+stream: verification
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-002, TP-012]

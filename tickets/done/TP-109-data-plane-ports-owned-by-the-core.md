@@ -3,6 +3,7 @@ id: TP-109
 title: "Data-plane ports owned by the core"
 milestone: M2
 area: dataplane
+stream: core
 repo: thinkpol-vpn
 size: L
 depends_on: [TP-075]

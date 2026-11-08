@@ -3,6 +3,7 @@ id: TP-162
 title: "Lab: link impairment (loss, delay, jitter) and an added-delay-under-load measurement"
 milestone: later
 area: lab
+stream: verification
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-089]

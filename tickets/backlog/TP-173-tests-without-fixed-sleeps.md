@@ -3,6 +3,7 @@ id: TP-173
 title: "Tests wait on sync points, not fixed sleeps, and assert state"
 milestone: later
 area: tests
+stream: verification
 repo: thinkpol-vpn
 size: M
 depends_on: []

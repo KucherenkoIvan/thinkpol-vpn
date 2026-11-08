@@ -3,6 +3,7 @@ id: TP-059
 title: "Overlay interface re-applied after TUN link bounce"
 milestone: M1
 area: dataplane
+stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-018]

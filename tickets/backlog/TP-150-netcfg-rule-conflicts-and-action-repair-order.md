@@ -3,6 +3,7 @@ id: TP-150
 title: "netcfg (Linux rules): an honest conflict error, and action repair that adds first"
 milestone: later
 area: dataplane/netcfg
+stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-135]

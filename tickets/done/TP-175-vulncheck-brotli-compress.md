@@ -3,6 +3,7 @@ id: TP-175
 title: "Dependencies: vulncheck is clean again (brotli, compress via utls)"
 milestone: M2
 area: repo
+stream: verification
 repo: thinkpol-vpn
 size: S
 depends_on: []

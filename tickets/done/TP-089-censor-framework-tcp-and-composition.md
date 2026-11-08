@@ -3,6 +3,7 @@ id: TP-089
 title: "Censor framework: TCP reassembly and composition"
 milestone: M2
 area: lab/censor
+stream: verification
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-024]

@@ -3,6 +3,7 @@ id: TP-001
 title: "Clean slate and project skeleton"
 milestone: M0
 area: repo
+stream: verification
 repo: thinkpol-vpn
 size: M
 depends_on: []

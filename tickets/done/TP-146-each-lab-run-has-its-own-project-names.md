@@ -3,6 +3,7 @@ id: TP-146
 title: "Lab: each run has its own Compose project names"
 milestone: M2
 area: lab
+stream: verification
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-121]

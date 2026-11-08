@@ -3,6 +3,7 @@ id: TP-189
 title: "dns: a change to resolved's uplink file alone is never told"
 milestone: later
 area: dataplane
+stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: []

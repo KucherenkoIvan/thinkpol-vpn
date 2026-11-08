@@ -3,6 +3,7 @@ id: TP-054
 title: "Namespace leak in supervisor helpers; lab sealing test race"
 milestone: M0
 area: agent
+stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-009, TP-002]

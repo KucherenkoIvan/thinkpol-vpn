@@ -3,6 +3,7 @@ id: TP-011
 title: "`thinkpol up`: composing a node"
 milestone: M0
 area: cmd
+stream: core
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-004, TP-008, TP-010]

@@ -3,6 +3,7 @@ id: TP-022
 title: "Local service API and CLI"
 milestone: M1
 area: cmd
+stream: core
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-011, KRN-001]

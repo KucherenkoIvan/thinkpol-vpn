@@ -3,6 +3,7 @@ id: TP-045
 title: "M4 acceptance: isolation and seizure checks"
 milestone: M4
 area: lab
+stream: verification
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-037, TP-038, TP-040, TP-041, TP-042]

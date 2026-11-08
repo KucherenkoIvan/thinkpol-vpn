@@ -3,6 +3,7 @@ id: TP-125
 title: "Decide: sealed datagrams authenticate only the recipient"
 milestone: M2
 area: transport
+stream: transports
 repo: thinkpol-vpn
 size: S
 depends_on: []

@@ -3,6 +3,7 @@ id: TP-170
 title: "Device keys sealed in the OS keystore (should)"
 milestone: later
 area: agent
+stream: core
 repo: thinkpol-vpn
 size: M
 needs_human: macos

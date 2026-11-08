@@ -3,6 +3,7 @@ id: TP-014
 title: "Egress on Linux"
 milestone: M1
 area: dataplane/egress
+stream: core
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-009, TP-013]

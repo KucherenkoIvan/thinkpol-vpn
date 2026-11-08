@@ -3,6 +3,7 @@ id: TP-026
 title: "Censor modules: fully-encrypted heuristics and active prober"
 milestone: M2
 area: lab/censor
+stream: verification
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-024, TP-064, TP-089]

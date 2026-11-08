@@ -3,6 +3,7 @@ id: TP-057
 title: "Route table: close LocalNet and overlay TunnelVision paths"
 milestone: M1
 area: dataplane/routetable
+stream: core
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-018]

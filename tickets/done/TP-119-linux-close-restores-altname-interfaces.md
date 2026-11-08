@@ -3,6 +3,7 @@ id: TP-119
 title: "Linux netcfg: Close restores an interface configured by an altname"
 milestone: M2
 area: dataplane
+stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-102]
