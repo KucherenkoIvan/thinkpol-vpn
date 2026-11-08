@@ -120,6 +120,17 @@ Run on the owner's Mac with thinkpol installed as the service (`sudo thinkpol se
 | 10 | `thinkpol disconnect`; `sudo pfctl -a com.apple/001.thinkpol-killswitch -s rules`; `sudo pfctl -s References`; `curl -m 5 https://example.net` | no rules (`pfctl: DIOCGETRULES: Invalid argument` or an empty listing), the kill switch's reference gone, curl works: a deliberate disconnect with the switch off removes it (box 4) |
 | 11 | `thinkpol kill-switch on`; `sudo thinkpol service uninstall`; repeat 10 | the anchor flushed, the reference released, `/private/var/db/thinkpol/pf-killswitch.token` gone, traffic flows |
 
+## Review findings
+- [ ] R1.1 (blocker, leak) Linux: the kill switch hooks only output, so forwarded traffic (container bridges, VM NAT, a hotspot) never meets it; add a forward chain with the same sets; firewall/doc.go's claim that routing keeps forwarded traffic in the tunnel is false while it is down. Lab test with a forwarding namespace; macOS: device check row for forwarded traffic
+- [ ] R1.2 the re-apply period is 20 s, not 10 s (reapplyAt measured after the tick is handled, so the next tick is skipped); direct sets renewed 10–20 s apart against a 30 s timeout. Re-apply every 10 s for real, consider a longer direct timeout, state the real numbers. Lab tests: a direct destination stays reachable after 45 s connected; `nft flush ruleset` → table back within 11 s
+- [ ] R1.3 after a crash restoreHost (RestoreDNS) runs before startKillSwitch, so on macOS the crashed run's anchor passes DNS to the upstreams while the OS points at them; start the kill switch before restoring the host on both OSes; unit test on the order
+- [ ] R1.4 a first start that keeps failing under the crash posture can only be escaped by uninstalling: `thinkpol disconnect` can't reach the node; Disconnect records the choice even when the node can't act on it, and the next run honours it. Test
+- [ ] R1.5 boot window undocumented: neither the table nor the anchor survives a reboot; RR row, and on Linux order the unit before network-pre.target (or say why not)
+- [ ] R1.6 a stop leaves the kill switch (or the crash posture) in place: log a Warn when the agent stops with it in place, saying only entries leave until the agent runs again and how to stop with traffic direct; the same sentence in `kill-switch`'s help. Semantics unchanged (owner decision pending)
+- [ ] R1.7 the shared pf code speaks only for the guard (errNoTable, errUnreadReferences, pfEnabler's docs, the kill switch translating routetable.ErrGuardUnsupported): move pfEnabler and the free helpers into pf_darwin.go with an owner string, add errNoPfctl that each owner wraps into its own unsupported error
+- [ ] R1.8 box 2's Linux half lacks the stop path: lab test `systemctl stop` → down shape in place and traffic confined, `systemctl start` → back
+- [ ] R1.9 nits: DHCP exemptions restricted (or an RR row); mode mismatch documented, SetKillSwitch's promise exact; typed KillSwitchStatus error codes and remove_failed; errKillSwitchClosed once; guardChain/guardPriority → outputChain/lastPriority; onOffArgs beside newAPICommand; firewall.LAN documented as the agent's definition; bounded shutdown/awaitSection contexts; status text "while the connection is meant up"; TP-021 note amended; pause out of Scope (own ticket, filed at merge)
+
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-12 docs (TP-014 review): notes from egress on Linux
@@ -144,3 +155,4 @@ Run on the owner's Mac with thinkpol installed as the service (`sudo thinkpol se
 - 2026-11-09 not verified: everything on macOS (the anchor, its reference, pfctl's listing of the new rules, IPv4 in `-s states`, skipped interfaces): the device checks in Notes, for the M2 acceptance run (TP-029); the four boxes stay open for them, their Linux halves proven
 - 2026-11-09 proposed split: the captive-portal pause as its own ticket (in Scope, in no box). Out of scope, for the board: `diag` doesn't show the kill switch's table, and the guard's counters miss what the kill switch's chain refuses first
 - 2026-11-09 in-progress → review
+- 2026-11-09 review → has-errors (round 1 findings R1.x)
