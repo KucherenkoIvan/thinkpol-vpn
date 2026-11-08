@@ -22,7 +22,7 @@ REQUIRED = ["id", "title", "milestone", "area", "repo", "size", "depends_on"]
 SIZES = {"S", "M", "L", "epic"}
 STREAMS = ["core", "transports", "administration", "clients", "verification"]
 # tagged when their branches merge (2026-11-08)
-STREAM_PENDING = {"TP-087", "TP-025", "TP-195"}
+STREAM_PENDING = {"TP-087", "TP-195"}
 NEEDS_HUMAN = {"decision", "macos", "windows", "person"}
 DESIGN_REF = re.compile(r"(.+)#([\w-]+)$")
 RESIDUALS = "RESIDUAL-RISKS.md"
