@@ -361,7 +361,10 @@ func TestDiagShowsWhatTheHostHolds(t *testing.T) {
 	startResolved(t, dev, internet.IPv4(lab.NetServers))
 
 	srv := server.Start(t, "thinkpol", "up", "-mode", "server", "-map-poll", "1s")
-	up := dev.Start(t, "thinkpol", "up", "-map-poll", "1s")
+	// The crash posture (TP-048) would put the kill switch in place under
+	// "all but domestic", and its chain would refuse the guard's test
+	// ping before the guard's counts it: both are last at output.
+	up := dev.Start(t, "thinkpol", "up", "-map-poll", "1s", "-fail-closed-after-crash=false")
 	waitLog(t, srv, `worker space=\S+ .*`+applied(v1))
 	waitLog(t, up, applied(v1)+`.*route_table_routes=`)
 	waitLog(t, up, `msg="blob fetched" .*name=dm`)
