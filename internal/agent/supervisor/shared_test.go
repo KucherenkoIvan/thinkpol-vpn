@@ -1174,8 +1174,10 @@ func (c *closingWorker) Close() error {
 }
 
 // lineTransport is a stream transport for the handoff's tests: a
-// connection starts with its credential and a newline.
-type lineTransport struct{}
+// connection starts with its credential and a newline. With a target, an
+// authenticated connection is handed over with a connection to it, as
+// reality hands over its target, and "early" as read from it.
+type lineTransport struct{ target string }
 
 func (lineTransport) Name() string                                     { return "line" }
 func (lineTransport) Dialer() transport.Dialer                         { return nil }
@@ -1199,11 +1201,14 @@ type lineListener struct{ net.Listener }
 
 func (lineListener) HandoffSettings() []byte          { return []byte("line settings") }
 func (lineListener) Camouflage() transport.Camouflage { return transport.Drop{} }
-func (lineTransport) StreamRouter(peers transport.Peers) transport.StreamRouter {
-	return lineRouter{peers}
+func (lt lineTransport) StreamRouter(peers transport.Peers) transport.StreamRouter {
+	return lineRouter{peers, lt.target}
 }
 
-type lineRouter struct{ peers transport.Peers }
+type lineRouter struct {
+	peers  transport.Peers
+	target string
+}
 
 func (lineRouter) Rejected() []transport.PeerError { return nil }
 
@@ -1227,7 +1232,15 @@ func (r lineRouter) RouteStream(ln transport.StreamListener, conn net.Conn, serv
 	links, _ := r.peers.Snapshot()
 	for _, pl := range links {
 		if bytes.Equal(pl.Verifier, bytes.TrimSuffix(line, []byte("\n"))) && serves(pl.Peer) {
-			return transport.StreamHandoff{Peer: pl.Peer, Conn: conn, Consumed: line}, true
+			h := transport.StreamHandoff{Peer: pl.Peer, Conn: conn, Consumed: line}
+			if r.target != "" {
+				var err error
+				if h.Target, err = net.Dial("tcp", r.target); err != nil {
+					return turnAway(line)
+				}
+				h.TargetRead = []byte("early")
+			}
+			return h, true
 		}
 	}
 	return turnAway(line)
@@ -1244,10 +1257,16 @@ func (c streamCamouflage) Stream(conn net.Conn, consumed []byte) {
 }
 
 // A stream connection goes, descriptor and consumed bytes, to its space's
-// worker, which talks to the dialer on it; an unauthenticated one goes
-// whole to the camouflage.
+// worker, which talks to the dialer on it, with the target connection its
+// router opened (descriptor and what it read) and the listener's handoff
+// settings; an unauthenticated one goes whole to the camouflage.
 func TestStreamsAreHandedOver(t *testing.T) {
-	s := newTestShared(t, nil, lineTransport{})
+	target, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = target.Close() }()
+	s := newTestShared(t, nil, lineTransport{target: target.Addr().String()})
 	camo := streamCamouflage{got: make(chan []byte, 4)}
 	if _, err := s.setListeners(context.Background(), []Listener{{Transport: "line", Address: "127.0.0.1:0", Camouflage: camo}}); err != nil {
 		t.Fatal(err)
@@ -1284,6 +1303,26 @@ func TestStreamsAreHandedOver(t *testing.T) {
 	defer func() { _ = hs.conn.Close() }()
 	if string(hs.consumed) != "bravo\n" || hs.listener != s.ipcListeners()[0].ID {
 		t.Fatalf("handed over listener %d with %q", hs.listener, hs.consumed)
+	}
+	if got := string(s.ipcListeners()[0].Handoff); got != "line settings" {
+		t.Fatalf("the workers are told handoff settings %q", got)
+	}
+	if hs.target == nil || string(hs.targetRead) != "early" {
+		t.Fatalf("handed over target %v with %q read", hs.target, hs.targetRead)
+	}
+	defer func() { _ = hs.target.Close() }()
+	far, err := target.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = far.Close() }()
+	if _, err := hs.target.Write([]byte("to the target")); err != nil {
+		t.Fatal(err)
+	}
+	got := make([]byte, 13)
+	_ = far.SetReadDeadline(time.Now().Add(wait))
+	if _, err := io.ReadFull(far, got); err != nil || string(got) != "to the target" {
+		t.Fatalf("the target read %q, %v", got, err)
 	}
 	// The worker reads on where the router stopped, and answers.
 	buf := make([]byte, 5)

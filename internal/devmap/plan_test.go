@@ -138,8 +138,16 @@ func TestSectionsHoldOnlyWhatTheirNodeNeeds(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if want := len(links); len(holders) != want {
-			t.Errorf("%d link secrets, want one per link: %d", len(holders), want)
+		want := 0
+		for _, l := range links {
+			transports := map[string]bool{}
+			for _, e := range f.spec.Nodes[l.To].Endpoints {
+				transports[e.Transport] = true
+			}
+			want += len(transports)
+		}
+		if len(holders) != want {
+			t.Errorf("%d link secrets, want one per link and transport the dialed node has: %d", len(holders), want)
 		}
 	}
 }
