@@ -286,6 +286,21 @@ func TestANilStatusIsAnEmptyDocument(t *testing.T) {
 	}
 }
 
+// An untyped nil has no schema: it is an empty document with the
+// client's schema_version, not a panic.
+func TestAnUntypedNilIsAnEmptyDocument(t *testing.T) {
+	for name, write := range map[string]func(io.Writer, proto.Message) error{"WriteJSON": WriteJSON, "WriteJSONLine": WriteJSONLine} {
+		var out bytes.Buffer
+		if err := write(&out, nil); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		var got map[string]any
+		if err := json.Unmarshal(out.Bytes(), &got); err != nil || len(got) != 1 || got["schema_version"] != float64(SchemaVersion) {
+			t.Errorf("%s: %v:\n%s", name, err, out.String())
+		}
+	}
+}
+
 // One line per document, for line readers.
 func TestWriteJSONLineIsOneLine(t *testing.T) {
 	var out bytes.Buffer

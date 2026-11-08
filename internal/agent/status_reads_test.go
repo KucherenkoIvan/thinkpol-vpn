@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/netip"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -19,9 +20,10 @@ import (
 )
 
 // hostCalls records every call a node makes into its host's network
-// through the platform (TUNs, the interface's configurator, the route
-// table, the OS's resolver configuration and upstreams) and every dial
-// of its transports.
+// through the platform (TUNs and the device each returns, the
+// interface's configurator, the route table and its leak guard, the
+// OS's resolver configuration and upstreams, the host reads Diagnose
+// makes) and every dial of its transports.
 type hostCalls struct {
 	mu    sync.Mutex
 	calls []string
@@ -42,7 +44,27 @@ func (h *hostCalls) list() []string {
 // record makes plat's host ports and reg's dials go through h.
 func (h *hostCalls) record(plat *Platform) {
 	tun := plat.NewTUN
-	plat.NewTUN = func(name string, mtu int) (wgtun.Device, error) { h.add("NewTUN"); return tun(name, mtu) }
+	plat.NewTUN = func(name string, mtu int) (wgtun.Device, error) {
+		h.add("NewTUN")
+		dev, err := tun(name, mtu)
+		if err != nil {
+			return nil, err
+		}
+		return recordedTUN{Device: dev, h: h}, nil
+	}
+	guard := plat.NewGuard
+	plat.NewGuard = func() routetable.Guard { h.add("NewGuard"); return guard() }
+	insp := plat.Inspect
+	plat.Inspect = Inspector{
+		Interface: func(name string) netcfg.InterfaceReport { h.add("Inspect.Interface"); return insp.Interface(name) },
+		Routes:    func() netcfg.Inspection { h.add("Inspect.Routes"); return insp.Routes() },
+		Guard: func(ctx context.Context) routetable.GuardReport {
+			h.add("Inspect.Guard")
+			return insp.Guard(ctx)
+		},
+		DNS:     func(ctx context.Context) dns.HostReport { h.add("Inspect.DNS"); return insp.DNS(ctx) },
+		DropIns: func() DropInReport { h.add("Inspect.DropIns"); return insp.DropIns() },
+	}
 	plat.NewConfigurator = func(netcfg.Owner) (netcfg.Configurator, error) {
 		h.add("NewConfigurator")
 		return recordedConfigurator{h: h, c: &failingConfigurator{}}, nil
@@ -63,6 +85,26 @@ func (h *hostCalls) record(plat *Platform) {
 	}
 	plat.RestoreDNS = func() error { h.add("RestoreDNS"); return nil }
 }
+
+// recordedTUN records the device's calls that ask the OS (on a real TUN,
+// MTU and Name are ioctls). Read and Write are the packet path, which
+// runs while Status is called, so they aren't recorded.
+type recordedTUN struct {
+	wgtun.Device
+	h *hostCalls
+}
+
+func (r recordedTUN) File() *os.File { r.h.add("TUN.File"); return r.Device.File() }
+
+func (r recordedTUN) MTU() (int, error) { r.h.add("TUN.MTU"); return r.Device.MTU() }
+
+func (r recordedTUN) Name() (string, error) { r.h.add("TUN.Name"); return r.Device.Name() }
+
+func (r recordedTUN) Events() <-chan wgtun.Event { r.h.add("TUN.Events"); return r.Device.Events() }
+
+func (r recordedTUN) BatchSize() int { r.h.add("TUN.BatchSize"); return r.Device.BatchSize() }
+
+func (r recordedTUN) Close() error { r.h.add("TUN.Close"); return r.Device.Close() }
 
 type recordedConfigurator struct {
 	h *hostCalls
@@ -124,8 +166,10 @@ func (d dialRecorder) Dial(ctx context.Context, endpoint string, cfg transport.D
 }
 
 // A connected device's Status reads its state and nothing else: it asks
-// no host port for anything (TUN, interface, route table, the OS's
-// resolver configuration or upstreams) and its transports dial nothing.
+// no host port for anything (TUN or the device it made, interface,
+// route table or leak guard, the OS's resolver configuration or
+// upstreams, the host reads Diagnose makes) and its transports dial
+// nothing.
 // What this can't see: a status that reached the network or the host
 // around the node's ports and transports (a bare net.Dial, say).
 func TestStatusAsksTheHostAndTheNetworkNothing(t *testing.T) {
@@ -160,7 +204,12 @@ func TestStatusAsksTheHostAndTheNetworkNothing(t *testing.T) {
 		t.Errorf("Status called the host or the network: %v", after[len(before):])
 	}
 	if !slices.ContainsFunc(before, func(c string) bool { return strings.HasPrefix(c, "Dial ") }) ||
-		!slices.Contains(before, "RouteTable.Enforce") || !slices.Contains(before, "SetSystemDNS") {
+		!slices.Contains(before, "RouteTable.Enforce") || !slices.Contains(before, "SetSystemDNS") ||
+		!slices.Contains(before, "TUN.Name") || !slices.Contains(before, "NewGuard") {
 		t.Fatalf("connecting recorded %v: the recorders aren't in place", before)
+	}
+	b.node.Diagnose(t.Context(), true)
+	if !slices.Contains(h.list()[len(after):], "Inspect.Routes") {
+		t.Fatalf("Diagnose recorded %v: the host reads' recorder isn't in place", h.list()[len(after):])
 	}
 }

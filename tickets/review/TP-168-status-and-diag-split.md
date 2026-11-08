@@ -28,7 +28,7 @@ branch: "tp-168-status-and-diag-split"
 
 ## Acceptance
 - [x] unit test: `status -json` has snake_case field names, zero values present and `schema_version` set (`TestStatusJSONHasEveryFieldBySchemaName`, `TestEveryJSONDocumentSaysTheClientsSchema`, `TestJSONIsByteStable`)
-- [x] unit test: `status` asks the service for the status only (`TestStatusJSONHasEveryFieldBySchemaName`: the fake node fails the test on any other call, `Diagnose` included), and the agent's `Status()` on a connected device makes no call into its host ports (TUN, interface, route table, the OS's resolver configuration and upstreams) and no transport dial (`TestStatusAsksTheHostAndTheNetworkNothing`); not proven: a call around those ports, such as a bare `net.Dial`
+- [x] unit test: `status` asks the service for the status only (`TestStatusJSONHasEveryFieldBySchemaName`: the fake node fails the test on any other call, `Diagnose` included), and the agent's `Status()` on a connected device makes no call into its host ports (the TUN and the device it returns, `MTU`/`Name`/`File`/`Events`/`BatchSize`/`Close`; interface; route table and leak guard; the OS's resolver configuration and upstreams; the host reads `Diagnose` makes, `Platform.Inspect`) and no transport dial (`TestStatusAsksTheHostAndTheNetworkNothing`); not proven: a call around those ports, such as a bare `net.Dial`, or the TUN's packet path (`Read`/`Write`, which runs throughout)
 - [x] `make lint`, `make test`, `make lab-test` pass
 
 ## Notes
@@ -57,6 +57,9 @@ branch: "tp-168-status-and-diag-split"
 - [x] R1.6 duration examples in doc.go and api-overview-reference.md as protojson writes them (0/3/6/9 fractional digits), with the rule.
 - [x] R1.7 `status -watch -json` prints one compact object per line (NDJSON); doc and test.
 - [x] R1.8 nits: nil status guard; error string; test name; cli.go env comment; MkdirTemp comment; convert.go dataPlaneProto takes the interface; drop the constant check and the CLI byte-equality check; Notes on version 2 and tray/CLI spelling; a comment on why the ordered JSON codec stays.
+- [x] R2.1 (should-fix) the status-reads test records the TUN's returned device (MTU/Name/File/Events/BatchSize/Close), Platform.Inspect and NewGuard; acceptance box says exactly what is proven. Mutations: Status calls Inspect; the engine's status calls the TUN's MTU().
+- [x] R2.2 (nit) localapi doc.go: GetStatus no longer claims the JSON schema's version; it is the CLI's, in its JSON only.
+- [x] R2.3 (nit) WriteJSON/WriteJSONLine with an untyped nil write an empty document with `schema_version`, with a test.
 ## Log
 - 2026-11-07 created in backlog
 - 2026-11-07 split (owner's MVP cut): `status -json` stays; the network-reaching diag and the redacted report → TP-182
@@ -72,3 +75,5 @@ branch: "tp-168-status-and-diag-split"
 - 2026-11-09 full `make lab-test` on 0e36669 passes: the lab phase (lab ok in 227 s, the localapi JSON regex and diag's schema 2 / `connected` among it) and the node phase (38 packages). Not verified: macOS (`status -json` there runs only in `make test`'s fakes). No lab file needed changing: no lab test reads `-watch -json` or Status's `schema_version`
 - 2026-11-09 has-errors → in-progress
 - 2026-11-09 in-progress → review
+- 2026-11-09 delta check: R2.1–R2.3
+- 2026-11-09 R2.1–R2.3 fixed. R2.1: `TestStatusAsksTheHostAndTheNetworkNothing` also records the device NewTUN returns (MTU, Name, File, Events, BatchSize, Close; Read/Write are the packet path and not recorded), NewGuard and every Platform.Inspect read, checks the TUN and guard recorders saw the connect and the Inspect recorder sees Diagnose; acceptance box reworded. Mutations, each caught: Node.Status calling Inspect.Routes; the engine's statusLocked calling the TUN's MTU(). R2.2: localapi doc.go's GetStatus line says the schema version is the CLI's, in its JSON only. R2.3: an untyped nil is written as an empty document with `schema_version` (`TestAnUntypedNilIsAnEmptyDocument`, WriteJSON and WriteJSONLine; mutation: the nil check disabled → panics). Targeted go test of internal/agent/... and cmd/thinkpol, `make lint`, `make test` pass. No lab run: test and doc changes plus a nil case no lab test reaches

@@ -11,6 +11,7 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 // SchemaVersion is the schema of the JSON the CLI writes (`status -json`,
@@ -54,8 +55,12 @@ func WriteJSONLine(w io.Writer, m proto.Message) error {
 // names, every field present, enum values as enumValueName spells them,
 // and the top-level `schema_version` this client's SchemaVersion. The
 // version goes into the JSON, not the message, so a nil message (a
-// response without its status) is written whole, as an empty one.
+// response without its status) is written whole, as an empty one; an
+// untyped nil, which has no schema, is an empty document.
 func conventionJSON(m proto.Message) ([]byte, error) {
+	if m == nil {
+		m = &emptypb.Empty{}
+	}
 	b, err := protojson.MarshalOptions{UseProtoNames: true, EmitUnpopulated: true}.Marshal(m)
 	if err != nil {
 		return nil, err

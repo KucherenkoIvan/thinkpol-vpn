@@ -9,7 +9,8 @@
 //   - GetStatus, and WatchStatus as a stream: the node's mode and
 //     connection, its space and map version, whether it was removed from
 //     the space, its health and problems, its rule preset and
-//     connect-on-boot, and the JSON schema's version; a running data
+//     connect-on-boot (the JSON schema's version is the CLI's, in its
+//     JSON only: "JSON" below); a running data
 //     plane's TUN, MTU and IPv6 state (and why IPv6 is off), the last Apply's
 //     failed step, its counters, its peers with the entry each one's
 //     packets leave through, its neighbors and their links, its egresses,
