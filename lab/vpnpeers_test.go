@@ -242,8 +242,9 @@ func familyAddr(v6 bool) netip.Addr {
 // censor, and pings server-1 through each. Until a client's tun is up its
 // overlay has no route: ping sends nothing and fails with "Network is
 // unreachable", which counts as no reply (pingNoReplyOrRoute). A blocked
-// cell still needs the verdict log to blame the handshake (blockedBy), so
-// a tunnel that never came up for another reason isn't scored blocked.
+// cell still needs the verdict log to blame the handshake (blockedBy), which
+// accepts a drop in either IP family, so a tunnel that never came up for
+// another reason isn't scored blocked, for the whole cell and not per family.
 func (o openVPN) probe(t *testing.T, l *lab.Lab, to probeTarget, wantPass bool) crossed {
 	dev, server := l.Node(lab.DeviceA), l.Node(lab.Server1)
 	for _, v6 := range []bool{false, true} {

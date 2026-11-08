@@ -139,7 +139,11 @@
 //     92-byte responses, 64-byte cookie replies, transport data of 32
 //     bytes or more; drop by default). Transport data alone matches,
 //     full-MTU packets the kernel can't pad to 16 bytes included, so a
-//     tunnel up before the censor is caught by its next packet.
+//     tunnel up before the censor is caught by its next packet. Random
+//     bytes match the header about once in a billion datagrams, but
+//     structured UDP does not: an iterative DNS query (flags 0x0000) with
+//     query ID 0x0400 starts with 04 00 00 00 and is 32 bytes or more,
+//     about 1 in 65,536 such queries, and the flow's drop is pinned.
 //     thinkpol's udp transport carries WireGuard, but nothing on its
 //     wire looks like it (PRD C1, lab TestM0), so it passes.
 //   - openvpn-fingerprint blocks an OpenVPN connection, over UDP or TCP

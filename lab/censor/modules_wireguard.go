@@ -16,7 +16,10 @@ func init() {
 // of at least 32 bytes). The first such datagram blocks its flow (drop by
 // default). Transport data alone is enough, so a tunnel that came up
 // before the censor did is caught by its next packet; random bytes match
-// the header about once in a billion datagrams, the size aside.
+// the header about once in a billion datagrams, the size aside, but
+// structured UDP does not: an iterative DNS query (flags 0x0000) with query
+// ID 0x0400 starts with 04 00 00 00 and is 32 bytes or more, about 1 in
+// 65,536 such queries, and the flow's drop is pinned.
 type wireGuardFingerprint struct {
 	block blocking
 }

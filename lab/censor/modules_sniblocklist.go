@@ -45,7 +45,8 @@ func newSNIBlocklist(settings json.RawMessage) (Passive, error) {
 	for _, raw := range s.Names {
 		n := canonicalName(raw)
 		// A leading dot or an empty label would never match a name.
-		if n == "" || strings.HasPrefix(n, ".") || strings.Contains(n, "..") {
+		// canonicalName trims one dot, so a second one is still there.
+		if n == "" || strings.HasPrefix(n, ".") || strings.HasSuffix(n, ".") || strings.Contains(n, "..") {
 			return nil, fmt.Errorf("name %q: want a domain name", raw)
 		}
 		m.names[n] = true

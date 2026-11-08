@@ -251,11 +251,12 @@ func TestSNIBlocklistMidstream(t *testing.T) {
 
 func TestSNIBlocklistSettings(t *testing.T) {
 	for settings, wantErr := range map[string]string{
-		`{}`:                               "no names",
-		`{"names": ["."]}`:                 `name ".": want a domain name`,
-		`{"names": ["A..B."]}`:             `name "A..B.": want a domain name`,
-		`{"names": [".example.net"]}`:      `name ".example.net": want a domain name`,
-		`{"names": ["a"], "verdict": "x"}`: "verdict",
+		`{}`:                                   "no names",
+		`{"names": ["."]}`:                     `name ".": want a domain name`,
+		`{"names": ["A..B."]}`:                 `name "A..B.": want a domain name`,
+		`{"names": [".example.net"]}`:          `name ".example.net": want a domain name`,
+		`{"names": ["blocked.example.net.."]}`: `name "blocked.example.net..": want a domain name`,
+		`{"names": ["a"], "verdict": "x"}`:     "verdict",
 	} {
 		if _, err := newSNIBlocklist([]byte(settings)); err == nil || !strings.Contains(err.Error(), wantErr) {
 			t.Errorf("%s: err %v, want %q", settings, err, wantErr)

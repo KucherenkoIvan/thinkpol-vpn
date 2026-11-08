@@ -35,6 +35,9 @@ The lab blocks what real censors block first: listed IPs and SNIs, WireGuard and
 - [x] R1.7 modules_sniblocklist.go comment: an ECH ClientHello is judged by its outer name.
 - [x] R1.8 pin the OpenVPN package version in lab/Dockerfile; ping's 'Network is unreachable' before the tun exists counts as no reply (or a comment says why not).
 - [x] R1.9 nits: leading-dot sni names rejected; sni name errors print the raw name and a reason; tests for the key id and retainBytes OpenVPN/sni mutations; clienthello.go version comment; vector8/vector16; ovpnConn state field plus reason; retire → retired; curl exit 35 blocked only on a reset; doc.go Limits names openvpn-fingerprint's per-connection state; doc.go long lines rewrapped.
+- [x] R2.1 sni-blocklist: canonicalName trims one trailing dot, so "blocked.example.net.." built as "blocked.example.net." and never matched; a name still ending in "." after canonicalising is a settings error. Settings test case added.
+- [x] R2.2 wireguard-fingerprint's false-positive estimate (modules_wireguard.go, doc.go) now says structured UDP matches far more often than random bytes: an iterative DNS query with ID 0x0400, about 1 in 65,536; the rule is unchanged.
+- [x] R2.3 vpnpeers_test.go probe comment: blockedBy accepts a drop in either IP family, so the "not scored blocked" guarantee holds for the whole cell, not per family.
 
 ## Log
 - 2026-10-10 created in backlog
@@ -53,3 +56,4 @@ The lab blocks what real censors block first: listed IPs and SNIs, WireGuard and
 - 2026-11-09 merged origin/rewrite (TP-111); make lint, make test green on 1879d37
 - 2026-11-09 full make lab-test green on 1879d37 (GOFLAGS=-p=2, LAB_P=1): the lab image rebuilt with the pinned openvpn=2.6.14-0+deb12u2; TestCensorMatrix ran complete with WireGuard on 443/4443 and OpenVPN on 8443/9443, the R1.5 blocker check, R1.8's ping rule and the curl exit 35 rule, and regenerated lab/RESULTS.md unchanged (no row moved: the reference rows still fail only their fingerprint module and the ip-blocklist, https (control) still passes both fingerprints). Still not mutation-run: the R1.5 blocker check and the ping and curl exit 35 rules
 - 2026-11-09 in-progress → review
+- 2026-11-09 delta check: R2.1–R2.3 (nits); R2.1 mutation: dropping the trailing-dot check fails TestSNIBlocklistSettings; go test ./lab/censor/... and make lint green
