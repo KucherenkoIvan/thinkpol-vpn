@@ -396,7 +396,7 @@ func TestDiagShowsWhatTheHostHolds(t *testing.T) {
 		if err := json.Unmarshal([]byte(out), &d); err != nil {
 			t.Fatalf("diag's JSON: %v\n%s", err, out)
 		}
-		if d.SchemaVersion != 1 || d.Os != "linux" || d.Status.Connection != "CONNECTION_CONNECTED" || d.HostParts != !slices.Contains(args, "setpriv") {
+		if d.SchemaVersion != 2 || d.Os != "linux" || d.Status.Connection != "connected" || d.HostParts != !slices.Contains(args, "setpriv") {
 			t.Fatalf("diag: %+v", d)
 		}
 		return d, out

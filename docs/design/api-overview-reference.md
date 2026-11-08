@@ -238,20 +238,20 @@ Other lines appear when they apply:
 
 - the schema's own field names, snake_case, the same as the local API's `Status`, so the tray reading the API and a script reading the CLI see the same names;
 - every field present: an unset one as its zero value, or `null` for a message (`data_plane` while the data plane is down, `uplink` on a device, a peer's `last_handshake` before the first);
-- `schema_version` (1), the CLI's own: bumped when a field is removed or renamed or changes type or meaning, not when one is added. Enumerated values (enums, health problems) may grow without a bump, and counters come and go (a missing one is 0);
-- protojson's value spelling: enums by their full names (`CONNECTION_CONNECTED`), 64-bit integers as strings, timestamps in RFC 3339 UTC, durations as seconds (`"3.2s"`);
+- `schema_version` (2), the CLI's own: bumped when a field is removed or renamed or changes type or meaning, not when one is added. Enumerated values (enums, health problems) may grow without a bump, and counters come and go (a missing one is 0);
+- enum values in lower snake_case without their type's prefix, as the text view spells them (`connected`, `ok`, `device`; the zero value is `unspecified`); otherwise protojson's value spelling: 64-bit integers as strings, timestamps in RFC 3339 UTC, durations as seconds (`"3.2s"`);
 - two-space indent, the same bytes for the same state; with `-watch`, one object after another.
 
 ```json
 {
-  "mode": "MODE_DEVICE",
+  "mode": "device",
   "space_id": "740e402e696b17850eebc1d43a451bd1",
   "map_version": "1793188210",
   "removed": false,
-  "connection": "CONNECTION_CONNECTED",
+  "connection": "connected",
   "retrying": false,
   "health": {
-    "level": "HEALTH_LEVEL_OK",
+    "level": "ok",
     "problems": []
   },
   "data_plane": {
@@ -315,7 +315,7 @@ Other lines appear when they apply:
   "connect_on_boot": false,
   "last_run_crashed": false,
   "last_run_unreadable": false,
-  "schema_version": 1
+  "schema_version": 2
 }
 ```
 
@@ -423,16 +423,16 @@ Writes a JSON snapshot of the node's state and of what it changed on the host. I
 |---|---|---|
 | `-o` | `-` | write to this file, mode 0600, written beside it and renamed over it; `-` (or empty) prints it |
 
-The JSON is the v1 contract (`schema_version: 1`), in the same convention as `status -json` (above): the schema's snake_case names, every field present, an unset one as its zero value or null, the same bytes for the same state; its `status` is the service's, with the service's `schema_version`. A part the agent couldn't read has only `unreadable` set. Root and the service's user get everything. The group gets `host_parts: false`, with the routes, policy rules, guard and DNS marked unreadable. The group's snapshot, abridged:
+The JSON is part of the v1 contract, at `schema_version` 2 (2 spelled the enum values in diag's `status` the text view's way, `connected` and no longer `CONNECTION_CONNECTED`), in the same convention as `status -json` (above): the schema's snake_case names, every field present, an unset one as its zero value or null, the same bytes for the same state; its `status` is the service's, with the service's `schema_version`. A part the agent couldn't read has only `unreadable` set. Root and the service's user get everything. The group gets `host_parts: false`, with the routes, policy rules, guard and DNS marked unreadable. The group's snapshot, abridged:
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "taken_at": "2026-10-28T11:50:23.009313333Z",
   "os": "linux",
   "agent_version": "dev",
   "host_parts": false,
-  "status": { "mode": "MODE_DEVICE", "space_id": "740e402e696b17850eebc1d43a451bd1", "map_version": "1793188210", "connection": "CONNECTION_CONNECTED", "…": "…" },
+  "status": { "mode": "device", "space_id": "740e402e696b17850eebc1d43a451bd1", "map_version": "1793188210", "connection": "connected", "…": "…" },
   "tun": { "unreadable": "", "name": "thinkpol0", "index": 11, "mtu": 1328, "up": true, "running": true,
             "addresses": ["100.64.0.2/10", "fded:8bed:923::2/48", "fe80::21e2:a03c:5b23:ce92/64"] },
   "last_apply": {
@@ -776,16 +776,16 @@ Refusals travel as go-kernel domain error codes over gRPC status codes. The clie
 
 `Status` is the shape that `status`, `connect`, `disconnect` and `rules preset` render, and it is inside `Diagnostics`. Fields:
 
-- `mode`: `MODE_DEVICE` or `MODE_SERVER` (`MODE_UNSPECIFIED`, not set, is never reported);
+- `mode`: `device` or `server` (`unspecified`, not set, is never reported);
 - `space_id`, `map_version`, `removed`;
-- `connection`: `DISCONNECTED`, `CONNECTING`, `CONNECTED` or `SERVING`;
+- `connection`: `disconnected`, `connecting`, `connected` or `serving`;
 - `retrying`;
-- `health`: a level (`OK`, `DEGRADED`, `DOWN`) and its problems;
+- `health`: a level (`ok`, `degraded`, `down`) and its problems;
 - `data_plane`: MTU, IPv6 and why it is off, last Apply error, peers, neighbors and their links, egresses, skipped entries, listeners, and counters by name;
 - `workers`, `public_listeners`, `uplink`: on a server;
 - `rule_preset`, `rules_enforced`, `rule_preset_unavailable`, `connect_on_boot`: a device's toggles (TP-048 adds the kill switch, allow-LAN and pause here);
 - `maps_refused`, `last_run_crashed`, `last_run_unreadable`;
-- `schema_version`: the JSON's schema, 1 (the localapi package doc's "JSON").
+- `schema_version`: the JSON's schema, 2 (the localapi package doc's "JSON").
 
 `data_plane` also has `interface`, the TUN's name.
 
@@ -793,4 +793,4 @@ Nothing in it is a public address, a key or a secret. Nodes and spaces are opaqu
 
 ### `Diagnostics`
 
-`schema_version` (1), `taken_at`, `os`, `agent_version`, `host_parts`, `status`, `tun`, `last_apply`, `routes`, `policy_rules`, `guard`, `dns`. The last four are host parts: root's only, because they name public addresses. The schema version is bumped when a field is removed or renamed or changes type or meaning. An added field doesn't bump it.
+`schema_version` (2), `taken_at`, `os`, `agent_version`, `host_parts`, `status`, `tun`, `last_apply`, `routes`, `policy_rules`, `guard`, `dns`. The last four are host parts: root's only, because they name public addresses. The schema version is bumped when a field is removed or renamed or changes type or meaning. An added field doesn't bump it.

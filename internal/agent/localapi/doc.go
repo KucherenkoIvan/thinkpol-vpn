@@ -239,11 +239,16 @@
 //     every document. `status -json` writes the CLI's own version (the
 //     JSON has the fields its schema knows, whatever the service's); the
 //     status inside `diag` has the service's;
-//   - protojson's spelling of values: an enum by its full name
-//     (`CONNECTION_CONNECTED`, `MODE_DEVICE`, `HEALTH_LEVEL_OK`), a 64-bit
-//     integer as a string (`"map_version": "1793188210"`), a timestamp as
-//     RFC 3339 in UTC, a duration as seconds (`"1.5s"`); health problems
-//     and other codes are snake_case strings;
+//   - an enum value in lower snake_case without its type's prefix, as the
+//     text view spells it: `connected`, `device`, `ok`, not protojson's
+//     `CONNECTION_CONNECTED`, `MODE_DEVICE`, `HEALTH_LEVEL_OK`; the zero
+//     value is `unspecified`. Every enum field the schema has is spelled
+//     so, nested, in a list or as a map's value, so a new enum follows it
+//     with no code. Health problems and other codes are snake_case
+//     strings too;
+//   - otherwise protojson's spelling of values: a 64-bit integer as a
+//     string (`"map_version": "1793188210"`), a timestamp as
+//     RFC 3339 in UTC, a duration as seconds (`"1.5s"`);
 //   - one object, indented by two spaces, then a newline, the same bytes
 //     for the same state (protojson's own whitespace is randomized per
 //     build, so it is re-indented); `status -json -watch` writes one
@@ -256,7 +261,8 @@
 // other free text are not part of it, and enumerated values (an enum, a
 // health problem, a route's type, an Apply's step) may grow without a
 // bump. Counters' names (`data_plane.counters`) may come and go: a reader
-// takes a missing one as 0.
+// takes a missing one as 0. Version 2 spelled the enum values as above;
+// version 1 had protojson's full names, in diag's status.
 //
 // # What it reports
 //

@@ -146,7 +146,7 @@ func TestLocalAPI(t *testing.T) {
 		}
 		clean(t, "device-a's status", res.Stdout)
 		res, err = cli(t, devA, as("", "", "status", "-json"))
-		if err != nil || !regexp.MustCompile(`"connection":\s+"CONNECTION_CONNECTED"`).MatchString(res.Stdout) {
+		if err != nil || !regexp.MustCompile(`"connection":\s+"connected"`).MatchString(res.Stdout) {
 			t.Fatalf("json: %v\n%s", err, res.Stdout)
 		}
 		clean(t, "device-a's JSON status", res.Stdout)
