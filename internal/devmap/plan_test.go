@@ -240,7 +240,7 @@ func TestPlanNeedsEveryNodesKeys(t *testing.T) {
 
 func TestReferenceIsTheFormat(t *testing.T) {
 	// Every field the parser knows appears in the reference spec.
-	for _, field := range []string{"space:", "ipv4:", "ipv6:", "lists:", "file:", "nodes:", "name:", "kind:", "endpoints:", "listen:", "ingress:", "egress:", "paths:", "rules:", "chains:", "exit:", "presets:", "domestic:", "chain:"} {
+	for _, field := range []string{"space:", "ipv4:", "ipv6:", "lists:", "file:", "nodes:", "name:", "kind:", "endpoints:", "listen:", "reality:", "target:", "server_names:", "ingress:", "egress:", "paths:", "rules:", "chains:", "exit:", "presets:", "domestic:", "chain:"} {
 		if !bytes.Contains([]byte(Reference), []byte("\n"+field)) && !bytes.Contains([]byte(Reference), []byte(" "+field)) {
 			t.Errorf("reference spec lacks %s", field)
 		}

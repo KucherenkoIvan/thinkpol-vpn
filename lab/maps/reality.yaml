@@ -1,0 +1,28 @@
+# The lab's reality map (TP-201): device-a and device-b reach server-1
+# over reality, server-1 serving it through its shared listener with the
+# lab's camouflage site (lab.StartCamouflage) as its target. Development
+# tooling; the format is in `thinkpol dev map spec`.
+#
+# Docker assigns the addresses once the lab is up: set SERVER_1_IPV4 and
+# SERVER_1_IPV6 to server-1's on the servers network, and CAMOUFLAGE_IPV4
+# to the camouflage node's on the world network (lab.Upstream).
+
+nodes:
+  - name: server-1
+    kind: server
+    endpoints:
+      - reality://${SERVER_1_IPV4}:443
+      - reality://[${SERVER_1_IPV6}]:443
+    reality:
+      target: ${CAMOUFLAGE_IPV4}:443
+      server_names: [camouflage.example.net]
+    ingress: true
+  - name: device-a
+    kind: device
+  - name: device-b
+    kind: device
+
+paths:
+  - [device-a, server-1]
+  - [device-b, server-1]
+  - [device-a, server-1, device-b]

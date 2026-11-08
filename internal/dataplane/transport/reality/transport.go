@@ -78,7 +78,7 @@ type dialTarget struct {
 func checkDial(endpoint string, cfg transport.DialConfig) (dialTarget, error) {
 	var d dialTarget
 	var err error
-	if d.addr, err = parseAddrPort(endpoint); err != nil {
+	if d.addr, err = transport.ParseEndpoint(endpoint); err != nil {
 		return d, invalid("endpoint: %v", err)
 	}
 	if d.id, err = parseShortID(cfg.Credential); err != nil {

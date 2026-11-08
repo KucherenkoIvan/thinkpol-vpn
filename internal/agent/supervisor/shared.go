@@ -35,7 +35,8 @@ type Listener struct {
 	// Settings is the transport's own settings message for the listener.
 	Settings []byte
 	// Camouflage gets whatever fails authentication, or is too old or
-	// replayed; nil drops it. It must not block for long: a datagram
+	// replayed; nil is the transport's own default (udp drops it, reality
+	// splices it to its target). It must not block for long: a datagram
 	// listener reads on only after it returns.
 	Camouflage transport.Camouflage
 }
@@ -168,10 +169,10 @@ type publicListener struct {
 	// A datagram transport's socket and router, or a stream transport's.
 	udp     *net.UDPConn
 	packets transport.PacketRouter
-	ln      net.Listener
+	ln      transport.StreamListener
 	streams transport.StreamRouter
-	camo    atomic.Pointer[transport.Camouflage]
-	ctx     context.Context // ends when the listener closes
+	camo    atomic.Pointer[transport.Camouflage] // as configured: nil is the transport's default
+	ctx     context.Context                      // ends when the listener closes
 	cancel  context.CancelFunc
 	closing sync.Once
 	wg      sync.WaitGroup
@@ -353,12 +354,24 @@ func (s *shared) open(ctx context.Context, l Listener) (*publicListener, error) 
 	return pl, nil
 }
 
-func (pl *publicListener) setCamouflage(c transport.Camouflage) {
-	c = transport.OrDrop(c)
-	pl.camo.Store(&c)
-}
+func (pl *publicListener) setCamouflage(c transport.Camouflage) { pl.camo.Store(&c) }
 
-func (pl *publicListener) camouflage() transport.Camouflage { return *pl.camo.Load() }
+// configuredCamouflage is the listener's camouflage, nil for the
+// transport's own default.
+func (pl *publicListener) configuredCamouflage() transport.Camouflage { return *pl.camo.Load() }
+
+// camouflage is where the listener sends what it turns away itself: the
+// configured camouflage, else the transport's default (a stream
+// listener's own, silence for datagrams).
+func (pl *publicListener) camouflage() transport.Camouflage {
+	if c := pl.configuredCamouflage(); c != nil {
+		return c
+	}
+	if pl.ln != nil {
+		return transport.OrDrop(pl.ln.Camouflage())
+	}
+	return transport.Drop{}
+}
 
 // close stops the listener and waits for its goroutines.
 func (pl *publicListener) close() {
@@ -390,7 +403,11 @@ func (s *shared) ipcListeners() []ipc.Listener {
 	byID := *s.byID.Load()
 	out := make([]ipc.Listener, 0, len(byID))
 	for _, pl := range byID {
-		out = append(out, ipc.Listener{ID: pl.id, Transport: pl.cfg.Transport, Stream: pl.ln != nil, Address: pl.cfg.Address})
+		l := ipc.Listener{ID: pl.id, Transport: pl.cfg.Transport, Stream: pl.ln != nil, Address: pl.cfg.Address}
+		if pl.ln != nil {
+			l.Handoff = pl.ln.HandoffSettings()
+		}
+		out = append(out, l)
 	}
 	slices.SortFunc(out, func(a, b ipc.Listener) int { return cmp.Compare(a.ID, b.ID) })
 	return out
@@ -551,48 +568,76 @@ func (s *shared) serveStreams(pl *publicListener) {
 	}
 }
 
-// routeStream lets the router read the start of conn, then hands conn (its
-// descriptor and the bytes the router consumed) to its space's worker, or
-// all of it to the camouflage.
+// routeStream lets the router read the start of conn and decide it: what
+// it hands over (descriptors and the bytes it read) goes to its space's
+// worker; what it turns away it sends to the camouflage itself.
 func (s *shared) routeStream(pl *publicListener, conn net.Conn) {
 	_ = conn.SetReadDeadline(s.now().Add(streamRouteTimeout))
 	stop := context.AfterFunc(pl.ctx, func() { _ = conn.SetReadDeadline(time.Unix(1, 0)) })
-	peer, consumed, ok := pl.streams.RouteStream(conn)
-	stop()
-	_ = conn.SetReadDeadline(time.Time{})
 	var r *route
-	if ok {
+	unserved := false
+	serves := func(peer transport.Identity) bool {
 		r = (*s.routes.Load())[peer.Space]
+		unserved = r == nil
+		return r != nil
 	}
+	h, ok := pl.streams.RouteStream(pl.ln, conn, serves, pl.configuredCamouflage())
+	stop()
 	switch {
+	case !ok && unserved:
+		pl.noSpace.Add(1)
+		return
 	case !ok:
 		pl.unauthenticated.Add(1)
-	case r == nil:
-		pl.noSpace.Add(1)
-	}
-	if r == nil {
-		pl.camouflage().Stream(conn, consumed)
 		return
 	}
+	_ = h.Conn.SetReadDeadline(time.Time{})
 	pl.routed.Add(1)
-	defer func() { _ = conn.Close() }() // the worker has its own descriptor
+	defer h.Close() // the worker has its own descriptors
 	ws := r.end.Load()
 	if ws == nil {
 		r.counters.streamsRefused.Add(1)
 		return
 	}
-	f, err := fileOf(conn)
+	files, err := filesOf(h)
 	if err != nil {
 		r.counters.streamsRefused.Add(1)
 		s.log.Warn("handing over a connection", "err", err)
 		return
 	}
-	defer func() { _ = f.Close() }()
-	if err := ws.control.TrySend(ipc.StreamMessage(pl.id, f, consumed)); err != nil {
+	defer func() {
+		for _, f := range files {
+			_ = f.Close()
+		}
+	}()
+	var target *os.File
+	if len(files) == 2 {
+		target = files[1]
+	}
+	m := ipc.StreamMessage(ipc.Stream{Listener: pl.id, Consumed: h.Consumed, TargetRead: h.TargetRead}, files[0], target)
+	if err := ws.control.TrySend(m); err != nil {
 		r.counters.streamsRefused.Add(1)
 		return
 	}
 	r.counters.streams.Add(1)
+}
+
+// filesOf duplicates a handoff's descriptors (its connection's, then its
+// target's, if any) for passing to a worker.
+func filesOf(h transport.StreamHandoff) ([]*os.File, error) {
+	f, err := fileOf(h.Conn)
+	if err != nil {
+		return nil, err
+	}
+	if h.Target == nil {
+		return []*os.File{f}, nil
+	}
+	tf, err := fileOf(h.Target)
+	if err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	return []*os.File{f, tf}, nil
 }
 
 // fileOf duplicates a connection's descriptor for passing to a worker.

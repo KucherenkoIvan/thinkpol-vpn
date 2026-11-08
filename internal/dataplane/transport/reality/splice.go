@@ -1,6 +1,7 @@
 package reality
 
 import (
+	"errors"
 	"io"
 	"net"
 	"sync"
@@ -95,6 +96,12 @@ func (m *mirror) gather(authenticate func(record []byte) bool) (record []byte, a
 		}
 		switch {
 		case m.state != gathering:
+		case isTimeout(rerr):
+			// The read deadline of whoever routes the connection: the
+			// hello can no longer authenticate, and the connection stays
+			// the target's, whose own timeouts end it.
+			m.state = spliced
+			rerr = nil
 		case rerr != nil:
 			m.state = spliced
 		case whole:
@@ -215,10 +222,24 @@ func (m *mirror) closeBoth() {
 // handOff stops the target → client direction for a hello that
 // authenticated and returns the target as REALITY must see it.
 func (m *mirror) handOff(hello []byte) *handedTarget {
+	target, held := m.stop()
+	return &handedTarget{Conn: target, held: held, skip: len(hello) - heldBack}
+}
+
+// stop stops the target → client direction for a hello that
+// authenticated and returns the target connection, which has all of the
+// hello but its held-back tail, and what the target sent after the
+// hand-off, not yet passed on.
+func (m *mirror) stop() (net.Conn, []byte) {
 	_ = m.target.SetReadDeadline(time.Now())
 	<-m.fromTarget
 	_ = m.target.SetReadDeadline(time.Time{})
-	return &handedTarget{Conn: m.target.Conn, held: m.held, skip: len(hello) - heldBack}
+	return m.target.Conn, m.held
+}
+
+func isTimeout(err error) bool {
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout()
 }
 
 // handedTarget is the target connection REALITY's server gets from its

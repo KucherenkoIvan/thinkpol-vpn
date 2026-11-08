@@ -26,11 +26,14 @@ type SharedListener struct {
 	Stream    bool
 	// Address is the public address the supervisor listens on.
 	Address string
+	// Handoff is a stream transport's handoff settings for the listener,
+	// from the supervisor's public listener.
+	Handoff []byte
 	// Done is closed when the supervisor no longer has the listener.
 	Done <-chan struct{}
 
-	packets *forwardedConn // a datagram transport's
-	streams chan Stream    // a stream transport's
+	packets *forwardedConn               // a datagram transport's
+	streams chan transport.StreamHandoff // a stream transport's
 }
 
 // Listen is the transport's listener for what the supervisor forwards on
@@ -54,7 +57,7 @@ func (l SharedListener) Listen(reg *transport.Registry, admission transport.Admi
 	if !ok {
 		return nil, fmt.Errorf("worker: shared listener %d: %s isn't a stream transport behind a shared listener", l.ID, l.Transport)
 	}
-	hl, err := st.Handoff(admission)
+	hl, err := st.Handoff(l.Handoff, admission)
 	if err != nil {
 		return nil, err
 	}
@@ -65,7 +68,7 @@ func (l SharedListener) Listen(reg *transport.Registry, admission transport.Admi
 				_ = hl.Close()
 				return
 			case s := <-l.streams:
-				hl.ServeStream(s.Conn, s.Consumed)
+				hl.ServeStream(s)
 			}
 		}
 	}()
@@ -80,13 +83,6 @@ type SharedDrops struct {
 	// UnknownListener counts those for a listener the worker doesn't have
 	// (any more), or of the wrong kind.
 	UnknownListener uint64
-}
-
-// Stream is a connection the supervisor routed to this worker, with the
-// bytes its router already read from it.
-type Stream struct {
-	Conn     net.Conn
-	Consumed []byte
 }
 
 const (
@@ -117,7 +113,7 @@ type sharedListeners struct {
 type sharedEntry struct {
 	l       SharedListener
 	packets *forwardedConn
-	streams chan Stream
+	streams chan transport.StreamHandoff
 	done    chan struct{}
 	closing sync.Once
 }
@@ -155,9 +151,9 @@ func (s *sharedListeners) update(ls []ipc.Listener) []SharedListener {
 
 func newSharedEntry(l ipc.Listener, send replySender, queueFull *atomic.Uint64) *sharedEntry {
 	e := &sharedEntry{done: make(chan struct{})}
-	e.l = SharedListener{ID: l.ID, Transport: l.Transport, Stream: l.Stream, Address: l.Address, Done: e.done}
+	e.l = SharedListener{ID: l.ID, Transport: l.Transport, Stream: l.Stream, Address: l.Address, Handoff: l.Handoff, Done: e.done}
 	if l.Stream {
-		e.streams = make(chan Stream, streamQueue)
+		e.streams = make(chan transport.StreamHandoff, streamQueue)
 		e.l.streams = e.streams
 	} else {
 		e.packets = newForwardedConn(l, send, e.done, queueFull)
@@ -188,23 +184,23 @@ func (s *sharedListeners) datagram(payload []byte) error {
 	return nil
 }
 
-// stream takes over a connection the supervisor handed over; it is closed
-// if nobody can take it.
-func (s *sharedListeners) stream(listener uint32, conn net.Conn, consumed []byte) {
+// stream takes over a connection the supervisor handed over; its
+// connections are closed if nobody can take it.
+func (s *sharedListeners) stream(listener uint32, h transport.StreamHandoff) {
 	e := (*s.byID.Load())[listener]
 	if e == nil || e.streams == nil {
 		s.unknownListener.Add(1)
-		_ = conn.Close()
+		h.Close()
 		return
 	}
 	select {
 	case <-e.done:
 		s.unknownListener.Add(1)
-		_ = conn.Close()
-	case e.streams <- Stream{Conn: conn, Consumed: consumed}:
+		h.Close()
+	case e.streams <- h:
 	default:
 		s.queueFull.Add(1)
-		_ = conn.Close()
+		h.Close()
 	}
 }
 

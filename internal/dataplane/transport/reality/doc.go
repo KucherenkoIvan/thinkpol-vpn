@@ -145,9 +145,44 @@
 // RealityInboundSettings, empty. The target is an IP literal: nodes never
 // resolve names.
 //
-// # Not yet
+// # Behind a shared listener
 //
-// reality doesn't sit behind a server node's shared listener yet (no
-// transport.StreamRoutable): the short id selecting the space, and the
-// handoff of the connection to the space's worker, are TP-201.
+// On a server node the supervisor owns the public address
+// (transport.StreamRoutable). ListenStream opens it after the same checks
+// as Listen (the target's certificate, then REALITY's detection of its
+// records), and reads what REALITY learned of the records out of its
+// per-process store into the listener's handoff settings (its address,
+// its settings and the records, JSON: the supervisor and its workers are
+// one binary). One StreamRouter serves every reality listener of the
+// supervisor, over the merged table of every space served: it holds the
+// replay cache (per short id, remembered for five minutes whatever each
+// listener's window), and decides each connection as a standalone
+// listener does up to the decision: the target dialled at accept, the
+// hello mirrored to it but its last byte, the seal opened with the
+// listener's key, the short id found in the table, its space served (the
+// supervisor's callback), the time within the listener's window, the hello
+// admitted once. What fails is spliced to the target there, on a goroutine
+// the public listener's Close ends, or goes to the supervisor's
+// camouflage when it has one (the hello then read whole first). The
+// supervisor's routing deadline (10 s) passing before the hello was whole
+// ends the routing, not the connection: it stays spliced to the target,
+// whose own timeouts end it, as a standalone listener's would. What
+// authenticates is handed over with the target connection, which has all
+// of the hello but its last byte, and anything the target sent before the
+// mirror stopped (the supervisor passes both descriptors to the space's
+// worker).
+//
+// The worker's Handoff first puts the records from the handoff settings
+// into its own process's store, where REALITY's server reads them: the
+// worker's sandbox has no CA bundle, so REALITY's detection there could
+// never verify the target, and a guest space's worker can't reach the
+// node owner's target at all. Then each connection is served as a
+// standalone listener serves one that authenticated: the seal opened
+// again and the short id looked up in the worker's own table (not the
+// replay cache: the router admitted the hello once), and REALITY's
+// handshake run on the handed-over target connection (it never dials).
+// A hello the worker's table doesn't list (its map changed in between) is
+// spliced to the target, the held-back byte sent then. Every worker behind
+// a listener holds its private key, which REALITY's server needs
+// (RESIDUAL-RISKS.md RR57).
 package reality

@@ -45,32 +45,52 @@ const (
 // certificate verifies for every server name and REALITY learned the
 // target's post-handshake records first.
 func (t *Transport) Listen(ctx context.Context, cfg transport.ListenConfig, admission transport.Admission) (transport.Listener, error) {
-	addr, err := netip.ParseAddrPort(cfg.Address)
-	if err != nil || !addr.Addr().IsValid() {
-		return nil, invalid("listen address %q: an IP literal and port", cfg.Address)
-	}
-	ls, err := parseListen(cfg.Settings)
+	ln, ls, err := t.openListener(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
+	l := newListener(t, ln, ln.Addr(), ls, admission, newReplayCache(ls.window))
+	go l.acceptLoop()
+	return l, nil
+}
+
+// openListener checks a listener of the map and its target (the target's
+// certificate, then REALITY's detection of its records), then listens.
+func (t *Transport) openListener(ctx context.Context, cfg transport.ListenConfig) (net.Listener, listenSettings, error) {
+	addr, err := netip.ParseAddrPort(cfg.Address)
+	if err != nil || !addr.Addr().IsValid() {
+		return nil, listenSettings{}, invalid("listen address %q: an IP literal and port", cfg.Address)
+	}
+	ls, err := parseListen(cfg.Settings)
+	if err != nil {
+		return nil, ls, err
+	}
 	if err := verifyTarget(ctx, ls.target.String(), ls.names, t.targetRoots, detectWait, t.control); err != nil {
-		return nil, err
+		return nil, ls, err
 	}
 	if err := detect(ctx, upstreamRecords{}, ls.target.String(), ls.names, detectWait); err != nil {
-		return nil, err
+		return nil, ls, err
 	}
 	lc := net.ListenConfig{Control: t.control}
 	ln, err := lc.Listen(ctx, "tcp", addr.String())
 	if err != nil {
-		return nil, fmt.Errorf("reality: %w", err)
+		return nil, ls, fmt.Errorf("reality: %w", err)
 	}
+	return ln, ls, nil
+}
+
+// newListener is a listener on ln (nil for a worker's Handoff, which is
+// handed its connections) at addr, with replay its replay cache (nil: the
+// supervisor's router admitted each hello once already).
+func newListener(t *Transport, ln net.Listener, addr net.Addr, ls listenSettings, admission transport.Admission, replay *replayCache) *listener {
 	l := &listener{
 		t:        t,
 		ln:       ln,
+		addr:     addr,
 		settings: ls,
 		peers:    admission.Peers,
 		camo:     admission.Camouflage,
-		replay:   newReplayCache(ls.window),
+		replay:   replay,
 		linger:   spliceLinger,
 		accepted: make(chan accepted),
 		closed:   make(chan struct{}),
@@ -80,29 +100,27 @@ func (t *Transport) Listen(ctx context.Context, cfg transport.ListenConfig, admi
 	links, changed := l.peers.Snapshot()
 	l.apply(links)
 	go l.watch(changed)
-	go l.acceptLoop()
-	return l, nil
+	return l
 }
 
 type listener struct {
 	t        *Transport
-	ln       net.Listener
+	ln       net.Listener // nil behind a shared listener
+	addr     net.Addr
 	settings listenSettings
 	peers    transport.Peers
 	camo     transport.Camouflage // nil: the mirror and splice to the target
-	replay   *replayCache
+	replay   *replayCache         // nil behind a shared listener
 	linger   time.Duration
 
 	accepted  chan accepted
 	closed    chan struct{}
 	closeOnce sync.Once
 
-	mu       sync.Mutex
-	table    map[shortID]transport.PeerLink
-	refused  map[shortID]error // credentials in the table whose entry reality refuses
-	rejected []transport.PeerError
-	links    map[shortID]*link
-	live     map[io.Closer]struct{} // connections not yet a link, splices, their targets
+	mu    sync.Mutex
+	table table
+	links map[shortID]*link
+	live  map[io.Closer]struct{} // connections not yet a link, splices, their targets
 }
 
 type accepted struct {
@@ -121,13 +139,15 @@ func (l *listener) Accept(ctx context.Context) (transport.Link, transport.Identi
 	}
 }
 
-func (l *listener) Addr() net.Addr { return l.ln.Addr() }
+func (l *listener) Addr() net.Addr { return l.addr }
 
 func (l *listener) Close() error {
 	var err error
 	l.closeOnce.Do(func() {
 		close(l.closed)
-		err = l.ln.Close()
+		if l.ln != nil {
+			err = l.ln.Close()
+		}
 		l.mu.Lock()
 		links := make([]*link, 0, len(l.links))
 		for _, lk := range l.links {
@@ -150,7 +170,7 @@ func (l *listener) Close() error {
 func (l *listener) Rejected() []transport.PeerError {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return l.rejected
+	return l.table.rejected
 }
 
 func (l *listener) watch(changed <-chan struct{}) {
@@ -170,53 +190,19 @@ func (l *listener) watch(changed <-chan struct{}) {
 // (ErrRevoked), links whose entry is now refused close
 // (ErrSettingsRefused), the rest pick up their new shaping.
 func (l *listener) apply(links []transport.PeerLink) {
-	table := make(map[shortID]transport.PeerLink, len(links))
-	refused := map[shortID]error{}
-	shared := map[shortID]bool{}
-	var rejected []transport.PeerError
-	errShared := invalid("a short id another peer link has too")
-	for _, pl := range links {
-		id, err := parseShortID(pl.Verifier)
-		if err == nil {
-			err = l.t.CheckInbound(pl)
-		}
-		if err != nil {
-			if len(pl.Verifier) == ShortIDSize {
-				refused[id] = err
-			}
-			rejected = append(rejected, transport.PeerError{Peer: pl.Peer, Err: err})
-			continue
-		}
-		if first, ok := table[id]; ok {
-			shared[id] = true
-			delete(table, id)
-			rejected = append(rejected, transport.PeerError{Peer: first.Peer, Err: errShared})
-		}
-		if shared[id] {
-			rejected = append(rejected, transport.PeerError{Peer: pl.Peer, Err: errShared})
-			continue
-		}
-		table[id] = pl
-	}
-	for id := range refused {
-		if pl, ok := table[id]; ok {
-			delete(table, id)
-			rejected = append(rejected, transport.PeerError{Peer: pl.Peer, Err: errShared})
-		}
-	}
-
+	tab := newTable(l.t, links)
 	type closing struct {
 		link  *link
 		cause error
 	}
 	var toClose []closing
 	l.mu.Lock()
-	l.table, l.refused, l.rejected = table, refused, rejected
+	l.table = tab
 	for id, lk := range l.links {
-		pl, ok := table[id]
+		pl, ok := tab.links[id]
 		switch {
-		case refused[id] != nil:
-			toClose = append(toClose, closing{lk, fmt.Errorf("%w: %w", transport.ErrSettingsRefused, refused[id])})
+		case tab.refused[id] != nil:
+			toClose = append(toClose, closing{lk, fmt.Errorf("%w: %w", transport.ErrSettingsRefused, tab.refused[id])})
 		case !ok || pl.Peer != lk.peer:
 			toClose = append(toClose, closing{lk, transport.ErrRevoked})
 		default:
@@ -349,29 +335,47 @@ func (l *listener) handshake(conn net.Conn, record []byte, id shortID, peer tran
 	l.admit(tlsConn, conn, id, peer)
 }
 
+// authenticate checks a whole hello: its seal opens under the listener's
+// key and names a short id in the table, sealed within the window on the
+// listener's clock and, with a replay cache, not seen before.
 func (l *listener) authenticate(record []byte) (shortID, transport.Identity, bool) {
-	h, err := parseHello(record)
-	if err != nil || !l.settings.names[h.serverName] {
-		return shortID{}, transport.Identity{}, false
-	}
-	s, err := open(l.settings.key, h)
-	if err != nil {
+	h, s, ok := l.settings.openHello(record)
+	if !ok {
 		return shortID{}, transport.Identity{}, false
 	}
 	l.mu.Lock()
-	pl, ok := l.table[s.shortID]
+	pl, ok := l.table.links[s.shortID]
 	l.mu.Unlock()
-	if !ok || !l.replay.admit(s.shortID, h.sessionID, s.sent, l.t.now()) {
+	if !ok {
+		return shortID{}, transport.Identity{}, false
+	}
+	now := l.t.now()
+	if l.replay == nil && !transport.FreshWithin(s.sent, now, l.settings.window) ||
+		l.replay != nil && !l.replay.admit(s.shortID, h.sessionID, s.sent, now) {
 		return shortID{}, transport.Identity{}, false
 	}
 	return s.shortID, pl.Peer, true
+}
+
+// openHello opens a whole hello's seal: one ClientHello for one of the
+// server names, whose seal opens under the listener's key.
+func (ls listenSettings) openHello(record []byte) (*clientHello, sealedHello, bool) {
+	h, err := parseHello(record)
+	if err != nil || !ls.names[h.serverName] {
+		return nil, sealedHello{}, false
+	}
+	s, err := open(ls.key, h)
+	if err != nil {
+		return nil, sealedHello{}, false
+	}
+	return h, s, true
 }
 
 // admit makes an established connection a link: it replaces the
 // credential's link, if any, and waits for Accept.
 func (l *listener) admit(tlsConn, tcp net.Conn, id shortID, peer transport.Identity) {
 	l.mu.Lock()
-	pl, ok := l.table[id]
+	pl, ok := l.table.links[id]
 	select {
 	case <-l.closed:
 		ok = false

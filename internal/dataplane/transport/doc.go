@@ -131,13 +131,18 @@
 // transport opens the public socket for the supervisor (ListenPacket) and
 // listens, in the worker, on what the supervisor forwards
 // (ListenForwarded); a [StreamRoutable] stream transport opens the public
-// listener (ListenStream) and gives the worker a [HandoffListener] for the
-// connections passed to it.
+// listener (ListenStream, a [StreamListener] whose handoff settings go to
+// the workers as they are) and gives the worker a [HandoffListener] for
+// the connections passed to it ([StreamHandoff]: the connection, what the
+// router read, and a connection the router opened for it, reality's
+// target). A stream router turns away what it doesn't hand over itself,
+// to the supervisor's camouflage or its transport's own (reality splices
+// to its target), so the timing a prober meets is the transport's.
 //
 // # Stream transports
 //
-// `reality` (package reality, TP-087) is the first stream transport; it
-// doesn't sit behind a server node's shared listener yet. `tls` (TP-028)
+// `reality` (package reality, TP-087) is the first stream transport, and
+// sits behind a server node's shared listener (TP-201). `tls` (TP-028)
 // comes after the MVP. What follows is the design the port's stream side
 // ([StreamRoutable], [StreamRouter], [HandoffListener]) is shaped for.
 //

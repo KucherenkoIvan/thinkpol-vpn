@@ -11,6 +11,7 @@ import (
 	"maps"
 	"net"
 	"net/netip"
+	"reflect"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -73,9 +74,11 @@ type forwardedDatagram struct {
 }
 
 type handedStream struct {
-	listener uint32
-	conn     net.Conn
-	consumed []byte
+	listener   uint32
+	conn       net.Conn
+	consumed   []byte
+	target     net.Conn // nil unless the router handed one over
+	targetRead []byte
 }
 
 func newFakeWorker(s *shared, space transport.SpaceID) *fakeWorker {
@@ -101,7 +104,7 @@ func (w *fakeWorker) TrySendDatagram(h ipc.DatagramHeader, d []byte) error {
 }
 
 func (w *fakeWorker) TrySend(m ipc.Message) error {
-	id, f, consumed, err := ipc.DecodeStream(m)
+	st, f, tf, err := ipc.DecodeStream(m)
 	if err != nil {
 		return err
 	}
@@ -109,7 +112,13 @@ func (w *fakeWorker) TrySend(m ipc.Message) error {
 	if err != nil {
 		return err
 	}
-	w.streams <- handedStream{id, conn, bytes.Clone(consumed)}
+	hs := handedStream{listener: st.Listener, conn: conn, consumed: bytes.Clone(st.Consumed), targetRead: bytes.Clone(st.TargetRead)}
+	if tf != nil {
+		if hs.target, err = net.FileConn(tf); err != nil {
+			return err
+		}
+	}
+	w.streams <- hs
 	return nil
 }
 
@@ -1067,7 +1076,7 @@ func TestSetListenersKeepsWhatStays(t *testing.T) {
 	if changed, err := s.setListeners(context.Background(), []Listener{keep}); err != nil || changed {
 		t.Fatalf("the same set: changed %v, %v", changed, err)
 	}
-	if again := s.ipcListeners(); len(again) != 1 || again[0] != first[0] {
+	if again := s.ipcListeners(); len(again) != 1 || !reflect.DeepEqual(again, first) {
 		t.Fatalf("listeners %v, then %v", first, again)
 	}
 	changed, err := s.setListeners(context.Background(), []Listener{keep, {Transport: "carrier-pigeon", Address: "127.0.0.1:0"}})
@@ -1177,13 +1186,19 @@ func (lineTransport) CheckInbound(transport.PeerLink) error            { return 
 func (lineTransport) Listen(context.Context, transport.ListenConfig, transport.Admission) (transport.Listener, error) {
 	return nil, errors.ErrUnsupported
 }
-func (lineTransport) ListenStream(ctx context.Context, cfg transport.ListenConfig) (net.Listener, error) {
+func (lineTransport) ListenStream(ctx context.Context, cfg transport.ListenConfig) (transport.StreamListener, error) {
 	var lc net.ListenConfig
-	return lc.Listen(ctx, "tcp", cfg.Address)
+	ln, err := lc.Listen(ctx, "tcp", cfg.Address)
+	return lineListener{ln}, err
 }
-func (lineTransport) Handoff(transport.Admission) (transport.HandoffListener, error) {
+func (lineTransport) Handoff([]byte, transport.Admission) (transport.HandoffListener, error) {
 	return nil, errors.ErrUnsupported
 }
+
+type lineListener struct{ net.Listener }
+
+func (lineListener) HandoffSettings() []byte          { return []byte("line settings") }
+func (lineListener) Camouflage() transport.Camouflage { return transport.Drop{} }
 func (lineTransport) StreamRouter(peers transport.Peers) transport.StreamRouter {
 	return lineRouter{peers}
 }
@@ -1192,23 +1207,30 @@ type lineRouter struct{ peers transport.Peers }
 
 func (lineRouter) Rejected() []transport.PeerError { return nil }
 
-func (r lineRouter) RouteStream(conn net.Conn) (transport.Identity, []byte, bool) {
+func (r lineRouter) RouteStream(ln transport.StreamListener, conn net.Conn, serves func(transport.Identity) bool, camo transport.Camouflage) (transport.StreamHandoff, bool) {
+	turnAway := func(line []byte) (transport.StreamHandoff, bool) {
+		if camo == nil {
+			camo = ln.Camouflage()
+		}
+		camo.Stream(conn, line)
+		return transport.StreamHandoff{}, false
+	}
 	// Byte by byte: whatever is read is consumed and must be reported.
 	var line []byte
 	b := make([]byte, 1)
 	for len(line) < 64 && !bytes.HasSuffix(line, []byte("\n")) {
 		if _, err := conn.Read(b); err != nil {
-			return transport.Identity{}, line, false
+			return turnAway(line)
 		}
 		line = append(line, b[0])
 	}
 	links, _ := r.peers.Snapshot()
 	for _, pl := range links {
-		if bytes.Equal(pl.Verifier, bytes.TrimSuffix(line, []byte("\n"))) {
-			return pl.Peer, line, true
+		if bytes.Equal(pl.Verifier, bytes.TrimSuffix(line, []byte("\n"))) && serves(pl.Peer) {
+			return transport.StreamHandoff{Peer: pl.Peer, Conn: conn, Consumed: line}, true
 		}
 	}
-	return transport.Identity{}, line, false
+	return turnAway(line)
 }
 
 type streamCamouflage struct {

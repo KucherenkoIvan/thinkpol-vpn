@@ -56,7 +56,11 @@ func TestCensorMatrix(t *testing.T) {
 		cell := matrixCell{transport: tr.name, censor: cc.name, result: "error"}
 		defer func() { record(cell) }()
 
-		l := lab.StartOwnSlot(t, lab.Standard())
+		topology := lab.Standard()
+		if tr.upstream {
+			topology = lab.Upstream()
+		}
+		l := lab.StartOwnSlot(t, topology)
 		target, err := tr.setup(t, l)
 		if err != nil {
 			cell.detail = "setup failed"
@@ -68,8 +72,26 @@ func TestCensorMatrix(t *testing.T) {
 		}
 
 		want := cc.want(tr.name)
+		held := cc.hold > 0 && tr.hold != nil
+		if held {
+			tr.hold(t, l, target, cc.hold)
+		}
 		crossed := tr.probe(t, l, target, want == "pass")
 		cell.result, cell.detail = score(crossed)
+		if held {
+			// The probe after the hold crosses on a redialled connection
+			// even if the censor cut the one it held: what it blocked
+			// during the hold is the cell's verdict.
+			if how, err := blockedBy(t, l, c, cc.watch); err == nil {
+				cell.result, cell.detail = "fail", fmt.Sprintf("the censor %s the connection held for %v", how, cc.hold)
+			} else if cell.result == "pass" {
+				cell.detail += fmt.Sprintf("; held %v first", cc.hold)
+			}
+			if err := judgedFromTheStart(t, l, c, cc.watch); err != nil {
+				cell.result, cell.detail = "error", "the censor didn't frame the held connection"
+				t.Fatal(err)
+			}
+		}
 
 		if c != nil {
 			if err := c.healthy(t); err != nil {
@@ -203,6 +225,11 @@ type censorCase struct {
 	// blocker is the module a cell expected to fail must find blocking
 	// in the verdict log.
 	blocker string
+	// hold keeps the tunnel of a row with a hold (a TLS-shaped transport)
+	// in use this long before the probe, and the cell fails if watch, a
+	// module of the case, blocked its connection meanwhile.
+	hold  time.Duration
+	watch string
 }
 
 func (cc censorCase) want(transport string) string {
@@ -262,14 +289,16 @@ var censorCases = []censorCase{
 		modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig {
 			return []censor.ModuleConfig{{Name: "openvpn-fingerprint", Settings: json.RawMessage(`{}`)}}
 		}},
-	// An M2 gate check (docs/design/milestones.md): no row carries
-	// WireGuard in TLS yet, so every row passes. A TLS-shaped transport's
-	// pass means something only when its probe runs long enough for the
-	// rhythm to show: three rekeys (up to 7 minutes, up to about 10
-	// minutes when batched), or three idle keepalives.
-	{name: "wireguard-rhythm", modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig {
-		return []censor.ModuleConfig{{Name: "wireguard-rhythm", Settings: json.RawMessage(`{}`)}}
-	}},
+	// An M2 gate check (docs/design/milestones.md). A TLS-shaped
+	// transport's pass means something only when its probe runs long
+	// enough for the rhythm to show: three rekeys (up to 7 minutes, up to
+	// about 10 minutes when batched), or three idle keepalives. So reality,
+	// which doesn't batch, holds its tunnel in use for 7.5 minutes first,
+	// with its default settings; the other rows aren't TLS and pass.
+	{name: "wireguard-rhythm", hold: 450 * time.Second, watch: "wireguard-rhythm",
+		modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig {
+			return []censor.ModuleConfig{{Name: "wireguard-rhythm", Settings: json.RawMessage(`{}`)}}
+		}},
 }
 
 // entryIPBlocklist lists server-1's addresses.
@@ -298,15 +327,22 @@ type transport struct {
 	// sawFlows checks the verdict log has the probe's flows on the
 	// underlay: the censor saw what it judged.
 	sawFlows func(t *testing.T, l *lab.Lab, c *censorRun) error
+	// upstream runs the row's cells in lab.Upstream: the camouflage site
+	// behind the router.
+	upstream bool
+	// hold, if set, keeps the transport in use for a while (a case's
+	// hold) before the probe.
+	hold func(t *testing.T, l *lab.Lab, to probeTarget, d time.Duration)
 }
 
 var transports = []transport{
-	{rowPlainTCP, setupPlainTCP, probePlainTCP, sawPlainTCP},
-	{rowHTTPS, setupHTTPS, probeHTTPS, sawHTTPS},
-	{rowUDP, setupUDP, probeUDP, sawUDP},
-	{rowWireGuard, setupWireGuard, probeUDP, sawWireGuard},
-	{rowOpenVPNUDP, openVPN{"udp"}.setup, openVPN{"udp"}.probe, openVPN{"udp"}.sawFlows},
-	{rowOpenVPNTCP, openVPN{"tcp"}.setup, openVPN{"tcp"}.probe, openVPN{"tcp"}.sawFlows},
+	{name: rowPlainTCP, setup: setupPlainTCP, probe: probePlainTCP, sawFlows: sawPlainTCP},
+	{name: rowHTTPS, setup: setupHTTPS, probe: probeHTTPS, sawFlows: sawHTTPS},
+	{name: rowUDP, setup: setupUDP, probe: probeUDP, sawFlows: sawUDP},
+	{name: rowWireGuard, setup: setupWireGuard, probe: probeUDP, sawFlows: sawWireGuard},
+	{name: rowOpenVPNUDP, setup: openVPN{"udp"}.setup, probe: openVPN{"udp"}.probe, sawFlows: openVPN{"udp"}.sawFlows},
+	{name: rowOpenVPNTCP, setup: openVPN{"tcp"}.setup, probe: openVPN{"tcp"}.probe, sawFlows: openVPN{"tcp"}.sawFlows},
+	realityRow,
 }
 
 // probeWindow is how long a probe retries a family that should cross; one
