@@ -43,7 +43,7 @@ This is everything a person or a script sees of thinkpol today: the CLI, the loc
 | [Local API](api-overview-reference.md#local-api) (reference file) | the socket, the two gates, every call with its access and its shapes, refusals |
 | [Configuration](#configuration) | every key, its default and where it is documented; input files; lab variables |
 | [On-disk state](#on-disk-state) | every file the node, the service and the dev tools write or read |
-| [Built since the snapshot](#built-since-the-snapshot) | what TP-140, TP-166 and TP-141 added |
+| [Built since the snapshot](#built-since-the-snapshot) | what TP-140, TP-166, TP-141, TP-111 and TP-195 added |
 | [Planned, not built](#planned-not-built) | what TP-183 and TP-133 propose |
 | [Consistency findings](#consistency-findings) | F1–F21 with suggested verdicts |
 | [Verdicts (owner, 2026-11-07)](#verdicts-owner-2026-11-07) | the decided conventions: configuration levels, status versus diag, exit codes, naming |
@@ -197,7 +197,7 @@ The node writes no log file. The log goes to stderr and into an in-memory ring, 
 
 Answered (F5): `no_link_up` is reused; the new code is snake_case.
 
-**What `health: ok` covers.** The neighbor check is about the first hop only. A device whose entry link is up while the exit behind it never answers, or whose direct exit's link is proven while the WireGuard handshake never completes, still reads `health: ok` (RR48).
+**What `health: ok` covers.** The neighbor check is about the first hop only; TP-195 grades exits, direct or behind it, by their WireGuard handshake.
 
 ### TP-166: node.json, device.json and connect-on-boot
 
@@ -222,6 +222,15 @@ The node file `node.json` and the device file `device.json` exist, `rules.local`
 | `status` | `last_run_crashed` and `last_run_unreadable` (`-json`), and a `last run:` line in the text for each. No health problem: health is the node's state now, and a code would hold until the next restart |
 
 Answered: the path (`crash-trace`), the field names (`last_run`, `last_run_crashed`, `last_run_unreadable`, F5), no problem code, and the file's size bound: its head and one run's output, never the log.
+
+### TP-195: health grades an exit by its WireGuard handshake
+
+| Surface | Behaviour |
+|---|---|
+| health | an exit the device routes through (the exit of a chain its rules use), directly or behind a relay, that has left a WireGuard handshake initiation unanswered for 15 s while its first hop was up: `exit_no_handshake`. Down when the exit of the chain carrying either address family's background (`/0`) route is unanswered (a chain has one exit, so none of its exits answers): that family's destinations no other route names are lost. The background route is the action with the most addresses in the family, which may not be the default rule's: `cidr:0.0.0.0/0 -> chain:de`, `cidr:::/0 -> chain:de`, `default -> chain:nl` puts everything through de. Degraded for any other exit unanswered, including every exit when the background routes go direct. Only a completed handshake clears it, even if the device goes idle. While the exit's first hop is down only `no_link_up` or `neighbor_down` is raised, and the 15 s start over when it comes back; an exit sent no initiation since its first hop came up (WireGuard gave up retrying for want of traffic) isn't graded until one is |
+| `status`, `diag` | show it with the existing rendering |
+
+The deadline is three of WireGuard's initiations in a row, which it sends 5 s apart (REKEY_TIMEOUT) while it has traffic for the exit, so one lost packet doesn't flip health; it is also how long WireGuard waits on a session that stopped hearing back (KEEPALIVE_TIMEOUT + REKEY_TIMEOUT). A session that dies under traffic is noticed after about 30 s: WireGuard re-initiates once it has heard nothing back for 15 s, then the deadline runs. The age of the last handshake is no test: no persistent keepalive is set, so an idle exit's last handshake grows old on a healthy device. That is also what still reads ok: an exit nothing was sent to, and every peer that isn't an exit, direct or relayed (RR48). An exit once flagged stays flagged after traffic stops, until a handshake completes: reading ok for an exit that went silent would be the worse mistake.
 
 ## Planned, not built
 
@@ -421,7 +430,7 @@ Under systemd the agent's stderr goes to the journal, which is on disk unless vo
 - On a server, `uplink:` lines up with the workers' columns and lands far to the right.
 - Two `udp` public listeners (IPv4 and IPv6) look the same.
 - `health: ok` with a peer at `no path yet` (TP-140's case for exits; for a device peer it's expected).
-- **Suggested verdict: change (cheap)** for the first three. The fourth is TP-140's, built: a first hop that never linked is `no_link_up` or `neighbor_down`; a first hop that is up with the exit behind it silent, or an exit link up with no WireGuard handshake, still reads ok (RR48).
+- **Suggested verdict: change (cheap)** for the first three. The fourth is TP-140's, built: a first hop that never linked is `no_link_up` or `neighbor_down`; an exit, direct or behind a relay, that leaves WireGuard's initiations unanswered is `exit_no_handshake` (TP-195), down for the exit carrying a background route and degraded for another, and stays so until a handshake completes; an exit nothing was sent to still reads ok (RR48).
 
 ### F17. `service uninstall` with nothing installed
 
