@@ -434,6 +434,13 @@ const (
 	// ruleset): the device connects, but IPv6 from interface-bound
 	// sockets isn't confined.
 	ProblemGuardUnsupported Problem = "ipv6_guard_unsupported"
+	// ProblemKillSwitch: a device's kill switch isn't as meant (putting
+	// it in place or removing it failed; retried every 10 s): while it
+	// should be in, traffic may leave around the tunnel when it is down.
+	ProblemKillSwitch Problem = "kill_switch_not_enforced"
+	// ProblemKillSwitchUnsupported: the OS can't hold the kill switch
+	// (Linux: no nf_tables; macOS: no pfctl) while it should be in.
+	ProblemKillSwitchUnsupported Problem = "kill_switch_unsupported"
 	// ProblemRouteRecordsCorrupt: a route record of thinkpol's was found
 	// corrupt this boot (macOS; the log names it and says why) while
 	// routes with thinkpol's route flag that no record names are in
@@ -503,6 +510,13 @@ func (s Status) Health() Health {
 	}
 	if s.DataPlane != nil {
 		s.dataPlaneProblems(add)
+	}
+	switch s.KillSwitch.Error {
+	case "":
+	case "unsupported":
+		add(HealthDegraded, ProblemKillSwitchUnsupported)
+	default:
+		add(HealthDegraded, ProblemKillSwitch)
 	}
 	return h
 }

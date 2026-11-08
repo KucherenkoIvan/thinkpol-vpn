@@ -444,14 +444,21 @@ func (r *runner) shutdown() {
 	// A stop is no deliberate disconnect: the kill switch is left as a
 	// crash would leave it, narrowed to the down shape (an update that
 	// fails to start leaks nothing). The node's context is done.
-	r.enforceKillSwitch(context.Background(), meantUp)
+	r.keepKillSwitch(context.Background(), meantUp)
 	r.publish()
 }
 
-// enforceKillSwitch has the node keep its kill switch for the runner's
-// state: meantUp, the entries of its section, and, while the data plane
-// is up, the route table's exemptions.
-func (r *runner) enforceKillSwitch(ctx context.Context, meantUp bool) {
+// enforceKillSwitch keeps the kill switch for the runner's state.
+func (r *runner) enforceKillSwitch(ctx context.Context) {
+	if r.dp.killSwitch != nil {
+		r.keepKillSwitch(ctx, !r.conn.disconnected())
+	}
+}
+
+// keepKillSwitch has the node keep its kill switch (a device's; a worker
+// has none) for meantUp, the entries of its section, and, while the data
+// plane is up, the route table's exemptions.
+func (r *runner) keepKillSwitch(ctx context.Context, meantUp bool) {
 	if r.dp.killSwitch == nil {
 		return
 	}
@@ -481,7 +488,7 @@ func (r *runner) loop(ctx context.Context) error {
 			r.listeners.reconcile(ctx, r.dp.Inbound.Listeners(r.follow.section))
 			ended = r.listeners.ended
 		}
-		r.enforceKillSwitch(ctx, !r.conn.disconnected())
+		r.enforceKillSwitch(ctx)
 		r.publish()
 		if at, ok := r.nextRetry(); ok {
 			retry.Reset(time.Until(at))
@@ -507,7 +514,7 @@ func (r *runner) loop(ctx context.Context) error {
 			r.logStatus()
 		case <-reapply.C:
 		case done := <-r.dp.killSwitchRequests:
-			r.enforceKillSwitch(ctx, !r.conn.disconnected())
+			r.enforceKillSwitch(ctx)
 			r.publish()
 			close(done)
 		case req := <-r.dp.requests:

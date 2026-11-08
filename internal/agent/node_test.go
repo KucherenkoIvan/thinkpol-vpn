@@ -146,7 +146,7 @@ func TestLoadConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := Config{Mode: ModeDevice, LogLevel: "info", MapPoll: 5 * time.Second, Connect: true, APIGroup: "thinkpol", DNS: true}
+	want := Config{Mode: ModeDevice, LogLevel: "info", MapPoll: 5 * time.Second, Connect: true, APIGroup: "thinkpol", DNS: true, FailClosedAfterCrash: true}
 	if cfg != want {
 		t.Fatalf("defaults %+v", cfg)
 	}

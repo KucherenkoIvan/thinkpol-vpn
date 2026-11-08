@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -252,6 +253,9 @@ func TestAFailingKillSwitchIsReportedAndRetried(t *testing.T) {
 	b := startDevice(t, s, reg, true, withKillSwitch(host, func(c *Config) { c.KillSwitch = true }))
 	b.connection(t, Connected)
 	eventually(t, func() bool { st := b.node.Status().KillSwitch; return !st.Enforced && st.Error == "apply_failed" })
+	if h := b.node.Status().Health(); !slices.Contains(h.Problems, ProblemKillSwitch) {
+		t.Errorf("health %+v, want %s", h, ProblemKillSwitch)
+	}
 	host.failWith(nil)
 	if err := b.node.SetAllowLAN(context.Background(), false); err != nil { // any change retries at once
 		t.Fatal(err)
