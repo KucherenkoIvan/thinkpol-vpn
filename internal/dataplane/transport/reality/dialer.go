@@ -23,19 +23,16 @@ var ErrNotAuthenticated = errors.New("reality: the server didn't authenticate")
 
 // Dial implements transport.Dialer.
 func (t *Transport) Dial(ctx context.Context, endpoint string, cfg transport.DialConfig) (transport.Link, error) {
-	if err := t.CheckEndpoint(endpoint, cfg); err != nil {
+	dt, err := checkDial(endpoint, cfg)
+	if err != nil {
 		return nil, err
 	}
-	ap, _ := parseAddrPort(endpoint)
-	ds, _ := parseDial(cfg.Settings)
-	id, _ := parseShortID(cfg.Credential)
-
 	d := net.Dialer{Control: t.control}
-	tcp, err := d.DialContext(ctx, "tcp", ap.String())
+	tcp, err := d.DialContext(ctx, "tcp", dt.addr.String())
 	if err != nil {
 		return nil, fmt.Errorf("reality: %w", err)
 	}
-	tlsConn, err := t.handshake(ctx, tcp, ds, id)
+	tlsConn, err := t.handshake(ctx, tcp, dt.settings, dt.id)
 	if err != nil {
 		_ = tcp.Close()
 		return nil, err

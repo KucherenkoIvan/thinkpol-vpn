@@ -7,7 +7,6 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"slices"
 	"strconv"
 	"sync"
@@ -167,19 +166,7 @@ var plainPool = sync.Pool{New: func() any { b := make([]byte, 0, maxDatagram); r
 var support = transport.ShapingSupport{Padding: true}
 
 func checkShaping(s transport.Shaping) error {
-	if err := support.Check(s); err != nil {
-		return fmt.Errorf("udp: %w", err)
-	}
-	p := s.Padding
-	if int(p.Max) > MaxRandomPadding {
-		return fmt.Errorf("udp: %w: random padding up to %d bytes, udp adds at most %d", transport.ErrUnsupportedShaping, p.Max, MaxRandomPadding)
-	}
-	for _, b := range p.Buckets {
-		if int(b) > maxDatagram {
-			return fmt.Errorf("udp: %w: a bucket of %d bytes, udp sends at most %d", transport.ErrUnsupportedShaping, b, maxDatagram)
-		}
-	}
-	return nil
+	return support.CheckBounds(Name, s, MaxRandomPadding, maxDatagram)
 }
 
 // seal appends the datagram carrying packet, padded as padding says, to

@@ -39,7 +39,7 @@ type shortID [ShortIDSize]byte
 func parseShortID(b []byte) (shortID, error) {
 	var id shortID
 	if len(b) != ShortIDSize {
-		return id, invalid("a short id is %d bytes, not %d", ShortIDSize, len(b))
+		return id, invalid("a short id is %d bytes, not %d", len(b), ShortIDSize)
 	}
 	copy(id[:], b)
 	return id, nil

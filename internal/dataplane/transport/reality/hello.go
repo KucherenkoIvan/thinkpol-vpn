@@ -12,12 +12,6 @@ import (
 	"golang.org/x/crypto/cryptobyte"
 )
 
-// The session id seal, REALITY's wire format (TP-064's Notes):
-//
-//	session id [32] = AES-256-GCM(key, nonce = Random[20:32],
-//	    version [3] | 0 | Unix seconds [4] | short id [8],
-//	    additional data = the ClientHello handshake message, session id zeroed)
-//	key = HKDF-SHA256(X25519(client share, listener key), salt = Random[:20], info "REALITY")
 const (
 	recordHeaderSize = 5
 	handshakeHeader  = 4
@@ -202,7 +196,8 @@ type sealedHello struct {
 	sent    uint32 // Unix seconds, wraps in 2106
 }
 
-// open authenticates h's session id with the listener's key.
+// open authenticates h's session id with the listener's key: the seal
+// below, undone.
 func open(key *ecdh.PrivateKey, h *clientHello) (sealedHello, error) {
 	var s sealedHello
 	pub, err := ecdh.X25519().NewPublicKey(h.share)
@@ -233,7 +228,13 @@ func open(key *ecdh.PrivateKey, h *clientHello) (sealedHello, error) {
 }
 
 // seal writes the session id into msg, a ClientHello handshake message
-// whose session id is still zero.
+// whose session id is still zero. The seal is REALITY's wire format
+// (TP-064's Notes):
+//
+//	session id [32] = AES-256-GCM(key, nonce = Random[20:32],
+//	    version [3] | 0 | Unix seconds [4] | short id [8],
+//	    additional data = the ClientHello handshake message, session id zeroed)
+//	key = HKDF-SHA256(X25519(client share, listener key), salt = Random[:20], info "REALITY")
 func seal(aead cipher.AEAD, msg, random []byte, id shortID, sent uint32) {
 	plain := make([]byte, 0, sealedSize)
 	plain = append(plain, sealedVersion[:]...)

@@ -1,7 +1,7 @@
 package reality
 
 import (
-	"fmt"
+	"net/netip"
 	"syscall"
 	"time"
 
@@ -10,12 +10,16 @@ import (
 
 // Options configure the adapter.
 type Options struct {
-	// Control, if set, is called on every socket before it is bound or
-	// connected (the dialer's, the listener's, the listener's to its
-	// target), e.g. to set a firewall mark so it bypasses the tunnel.
+	// Control, if set, is called on the adapter's own sockets before they
+	// are bound or connected, e.g. to set a firewall mark so they bypass
+	// the tunnel: the dialer's, the listener's, and the listener's dial to
+	// its target for each connection. REALITY's detection of the target's
+	// records at Listen dials with a plain net.Dial, without it.
 	Control func(network, address string, c syscall.RawConn) error
 	// Now is the clock; nil means time.Now. Nodes' clocks must agree within
-	// the listener's time window.
+	// the listener's time window. It drives the dialer's seal and the
+	// listener's own freshness check; REALITY's check behind it uses the
+	// real clock.
 	Now func() time.Time
 }
 
@@ -53,16 +57,30 @@ func (t *Transport) SendStats() transport.SendStats { return t.sent.Stats() }
 
 // CheckEndpoint implements transport.Transport.
 func (t *Transport) CheckEndpoint(endpoint string, cfg transport.DialConfig) error {
-	if _, err := parseAddrPort(endpoint); err != nil {
-		return invalid("endpoint: %v", err)
+	_, err := checkDial(endpoint, cfg)
+	return err
+}
+
+// dialTarget is a checked dial entry.
+type dialTarget struct {
+	addr     netip.AddrPort
+	settings dialSettings
+	id       shortID
+}
+
+func checkDial(endpoint string, cfg transport.DialConfig) (dialTarget, error) {
+	var d dialTarget
+	var err error
+	if d.addr, err = parseAddrPort(endpoint); err != nil {
+		return d, invalid("endpoint: %v", err)
 	}
-	if _, err := parseShortID(cfg.Credential); err != nil {
-		return err
+	if d.id, err = parseShortID(cfg.Credential); err != nil {
+		return d, err
 	}
-	if _, err := parseDial(cfg.Settings); err != nil {
-		return err
+	if d.settings, err = parseDial(cfg.Settings); err != nil {
+		return d, err
 	}
-	return checkShaping(cfg.Shaping)
+	return d, checkShaping(cfg.Shaping)
 }
 
 // CheckInbound implements transport.Transport.
@@ -81,17 +99,5 @@ func (t *Transport) CheckInbound(pl transport.PeerLink) error {
 var support = transport.ShapingSupport{Padding: true}
 
 func checkShaping(s transport.Shaping) error {
-	if err := support.Check(s); err != nil {
-		return fmt.Errorf("reality: %w", err)
-	}
-	p := s.Padding
-	if int(p.Max) > MaxRandomPadding {
-		return fmt.Errorf("reality: %w: random padding up to %d bytes, reality adds at most %d", transport.ErrUnsupportedShaping, p.Max, MaxRandomPadding)
-	}
-	for _, b := range p.Buckets {
-		if int(b) > maxUnit {
-			return fmt.Errorf("reality: %w: a bucket of %d bytes, reality writes records of at most %d", transport.ErrUnsupportedShaping, b, maxUnit)
-		}
-	}
-	return nil
+	return support.CheckBounds(Name, s, MaxRandomPadding, maxUnit)
 }

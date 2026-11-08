@@ -15,7 +15,7 @@ require (
 	github.com/refraction-networking/utls v1.8.2
 	github.com/vishvananda/netlink v1.3.1
 	github.com/vishvananda/netns v0.0.5
-	github.com/xtls/reality v0.0.0-20260908062103-8cdf7bf9c7f0
+	github.com/xtls/reality v0.0.0-20260908062103-8cdf7bf9c7f0 // the newest commit whose go.mod says go 1.24: move the toolchain to Go 1.27 before moving it
 	golang.org/x/crypto v0.58.0
 	golang.org/x/net v0.61.0
 	golang.org/x/sys v0.49.0

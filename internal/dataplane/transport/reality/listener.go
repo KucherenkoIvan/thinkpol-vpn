@@ -16,8 +16,13 @@ import (
 )
 
 const (
-	// helloTimeout bounds reading the ClientHello. What doesn't arrive in
-	// time goes to the camouflage with whatever did.
+	// targetDialTimeout bounds the dial to the target at accept. A target
+	// that can't be reached closes the connection.
+	targetDialTimeout = 10 * time.Second
+	// helloTimeout bounds reading the ClientHello when an
+	// Admission.Camouflage takes what fails: what doesn't arrive in time
+	// goes to it with whatever did. With reality's own splice, the target's
+	// timeouts are the only ones.
 	helloTimeout = 10 * time.Second
 	// handshakeTimeout bounds REALITY's handshake, which has no deadline
 	// of its own, once the ClientHello authenticated: a dialer holding a
@@ -29,8 +34,10 @@ const (
 )
 
 // Listen implements transport.Transport. Whatever fails authentication
-// goes to the admission's camouflage; without one, it is spliced to the
-// listener's target, raw and whole, which is reality's disguise.
+// goes to the admission's camouflage; without one, the connection is
+// mirrored to the listener's target from accept and spliced to it, raw and
+// whole, which is reality's disguise. Listen fails unless REALITY learned
+// the target's post-handshake records first.
 func (t *Transport) Listen(ctx context.Context, cfg transport.ListenConfig, admission transport.Admission) (transport.Listener, error) {
 	addr, err := netip.ParseAddrPort(cfg.Address)
 	if err != nil || !addr.Addr().IsValid() {
@@ -40,30 +47,28 @@ func (t *Transport) Listen(ctx context.Context, cfg transport.ListenConfig, admi
 	if err != nil {
 		return nil, err
 	}
+	if err := detect(ctx, ls.target.String(), ls.names, detectWait); err != nil {
+		return nil, err
+	}
 	lc := net.ListenConfig{Control: t.control}
 	ln, err := lc.Listen(ctx, "tcp", addr.String())
 	if err != nil {
 		return nil, fmt.Errorf("reality: %w", err)
-	}
-	camo := admission.Camouflage
-	if camo == nil {
-		camo = &splice{t: t, target: ls.target}
 	}
 	l := &listener{
 		t:        t,
 		ln:       ln,
 		settings: ls,
 		peers:    admission.Peers,
-		camo:     camo,
+		camo:     admission.Camouflage,
 		replay:   newReplayCache(ls.window),
 		accepted: make(chan accepted),
 		closed:   make(chan struct{}),
 		links:    map[shortID]*link{},
-		pending:  map[net.Conn]struct{}{},
+		live:     map[io.Closer]struct{}{},
 	}
 	links, changed := l.peers.Snapshot()
 	l.apply(links)
-	t.detect(ctx, ls)
 	go l.watch(changed)
 	go l.acceptLoop()
 	return l, nil
@@ -74,7 +79,7 @@ type listener struct {
 	ln       net.Listener
 	settings listenSettings
 	peers    transport.Peers
-	camo     transport.Camouflage
+	camo     transport.Camouflage // nil: the mirror and splice to the target
 	replay   *replayCache
 
 	accepted  chan accepted
@@ -86,7 +91,7 @@ type listener struct {
 	refused  map[shortID]error // credentials in the table whose entry reality refuses
 	rejected []transport.PeerError
 	links    map[shortID]*link
-	pending  map[net.Conn]struct{} // connections not yet a link
+	live     map[io.Closer]struct{} // connections not yet a link, splices, their targets
 }
 
 type accepted struct {
@@ -117,7 +122,7 @@ func (l *listener) Close() error {
 		for _, lk := range l.links {
 			links = append(links, lk)
 		}
-		for c := range l.pending {
+		for c := range l.live {
 			_ = c.Close()
 		}
 		l.mu.Unlock()
@@ -129,8 +134,8 @@ func (l *listener) Close() error {
 }
 
 // Rejected lists the peer links of the table the listener can't use: ones
-// reality refuses, and every one sharing a short id with another (both
-// are dropped, not one guessed).
+// reality refuses, and every one sharing a short id with another, refused
+// or not (all are dropped, not one guessed).
 func (l *listener) Rejected() []transport.PeerError {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -158,12 +163,12 @@ func (l *listener) apply(links []transport.PeerLink) {
 	refused := map[shortID]error{}
 	shared := map[shortID]bool{}
 	var rejected []transport.PeerError
+	errShared := invalid("a short id another peer link has too")
 	for _, pl := range links {
 		id, err := parseShortID(pl.Verifier)
 		if err == nil {
 			err = l.t.CheckInbound(pl)
 		}
-		errShared := invalid("a short id another peer link has too")
 		if err != nil {
 			if len(pl.Verifier) == ShortIDSize {
 				refused[id] = err
@@ -181,6 +186,12 @@ func (l *listener) apply(links []transport.PeerLink) {
 			continue
 		}
 		table[id] = pl
+	}
+	for id := range refused {
+		if pl, ok := table[id]; ok {
+			delete(table, id)
+			rejected = append(rejected, transport.PeerError{Peer: pl.Peer, Err: errShared})
+		}
 	}
 
 	type closing struct {
@@ -231,7 +242,9 @@ func (l *listener) acceptLoop() {
 	}
 }
 
-func (l *listener) track(conn net.Conn) bool {
+// track has Close close c; it reports false, and leaves c to the caller,
+// once the listener is closed.
+func (l *listener) track(c io.Closer) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	select {
@@ -239,22 +252,59 @@ func (l *listener) track(conn net.Conn) bool {
 		return false
 	default:
 	}
-	l.pending[conn] = struct{}{}
+	l.live[c] = struct{}{}
 	return true
 }
 
-func (l *listener) untrack(conn net.Conn) {
+func (l *listener) untrack(cs ...io.Closer) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	delete(l.pending, conn)
+	for _, c := range cs {
+		delete(l.live, c)
+	}
 }
 
 // serve authenticates one connection: its ClientHello, read before
 // anything is answered, must carry a sealed short id in the table, fresh
-// and not seen before. Anything else goes to the camouflage, raw and
-// whole. An authenticated connection's TLS handshake is REALITY's, which
-// imitates the target's.
+// and not seen before. An authenticated connection's TLS handshake is
+// REALITY's, which imitates the target's.
 func (l *listener) serve(conn net.Conn) {
+	if l.camo != nil {
+		l.serveCamouflaged(conn)
+		return
+	}
+	d := net.Dialer{Control: l.t.control, Timeout: targetDialTimeout}
+	target, err := d.Dial("tcp", l.settings.target.String())
+	if err != nil {
+		l.untrack(conn)
+		_ = conn.Close()
+		return
+	}
+	if !l.track(target) {
+		_ = target.Close()
+		return // Close closed conn
+	}
+	defer l.untrack(conn, target)
+	m := newMirror(conn, target)
+	var id shortID
+	var peer transport.Identity
+	record, handedOff, rerr := m.gather(func(record []byte) bool {
+		var ok bool
+		id, peer, ok = l.authenticate(record)
+		return ok
+	})
+	if !handedOff {
+		m.splice(rerr)
+		return
+	}
+	ht := m.handOff(record)
+	l.handshake(conn, record, id, peer, func(context.Context, string, string) (net.Conn, error) { return ht, nil })
+}
+
+// serveCamouflaged is serve with an Admission.Camouflage: the hello is
+// read whole, or for helloTimeout, before anything is dialled, and what
+// fails goes to the camouflage.
+func (l *listener) serveCamouflaged(conn net.Conn) {
 	_ = conn.SetReadDeadline(time.Now().Add(helloTimeout))
 	record, err := readRecord(conn)
 	_ = conn.SetReadDeadline(time.Time{})
@@ -271,9 +321,16 @@ func (l *listener) serve(conn net.Conn) {
 		l.camo.Stream(conn, record)
 		return
 	}
+	defer l.untrack(conn)
+	d := &net.Dialer{Control: l.t.control, Timeout: targetDialTimeout}
+	l.handshake(conn, record, id, peer, d.DialContext)
+}
+
+// handshake runs REALITY's server on conn, whose ClientHello, record,
+// authenticated, with dial giving it the target, and admits the result.
+func (l *listener) handshake(conn net.Conn, record []byte, id shortID, peer transport.Identity, dial func(ctx context.Context, network, address string) (net.Conn, error)) {
 	_ = conn.SetDeadline(time.Now().Add(handshakeTimeout))
-	tlsConn, err := xreality.Server(context.Background(), &replayConn{Conn: conn, prefix: record}, l.realityConfig(id))
-	l.untrack(conn)
+	tlsConn, err := xreality.Server(context.Background(), &replayConn{Conn: conn, prefix: record}, l.realityConfig(id, dial))
 	if err != nil {
 		return // REALITY spliced the connection to the target or closed it
 	}
@@ -293,7 +350,7 @@ func (l *listener) authenticate(record []byte) (shortID, transport.Identity, boo
 	l.mu.Lock()
 	pl, ok := l.table[s.shortID]
 	l.mu.Unlock()
-	if !ok || !l.replay.admit(h.sessionID, s.sent, l.t.now()) {
+	if !ok || !l.replay.admit(s.shortID, h.sessionID, s.sent, l.t.now()) {
 		return shortID{}, transport.Identity{}, false
 	}
 	return s.shortID, pl.Peer, true
@@ -337,10 +394,9 @@ func (l *listener) forget(id shortID, lk *link) {
 	}
 }
 
-func (l *listener) realityConfig(id shortID) *xreality.Config {
-	d := &net.Dialer{Control: l.t.control, Timeout: helloTimeout}
+func (l *listener) realityConfig(id shortID, dial func(ctx context.Context, network, address string) (net.Conn, error)) *xreality.Config {
 	return &xreality.Config{
-		DialContext:                 d.DialContext,
+		DialContext:                 dial,
 		Type:                        "tcp",
 		Dest:                        l.settings.target.String(),
 		ServerNames:                 l.settings.names,
@@ -353,24 +409,52 @@ func (l *listener) realityConfig(id shortID) *xreality.Config {
 }
 
 // detect has REALITY learn the target's post-handshake records, which its
-// handshake imitates, and waits for it: until it knows, REALITY holds
-// every authenticated handshake in 5-second sleeps.
-func (t *Transport) detect(ctx context.Context, ls listenSettings) {
-	cfg := &xreality.Config{Type: "tcp", Dest: ls.target.String(), ServerNames: ls.names}
-	xreality.DetectPostHandshakeRecordsLens(cfg)
-	deadline := time.Now().Add(detectWait)
-	for name := range ls.names {
-		for alpn := range 3 {
-			key := fmt.Sprintf("%s %s %d", cfg.Dest, name, alpn)
+// handshake imitates, and waits up to wait for it. It fails unless it
+// learned them for every server name: REALITY's cache is per process, and
+// left unlearned it either imitates no records at all (it stores an empty
+// list when its detection fails) or holds every authenticated handshake in
+// 5-second sleeps for good (the target stalled). A failure is forgotten, so
+// a later Listen detects again. REALITY dials the target for this itself,
+// without the Control hook.
+func detect(ctx context.Context, dest string, names map[string]bool, wait time.Duration) error {
+	xreality.DetectPostHandshakeRecordsLens(&xreality.Config{Type: "tcp", Dest: dest, ServerNames: names})
+	deadline := time.Now().Add(wait)
+	for name := range names {
+		for alpn := range detectedALPNs {
+			key := recordsKey(dest, name, alpn)
 			for {
-				v, _ := xreality.GlobalPostHandshakeRecordsLens.Load(key)
-				if _, done := v.([]int); done || time.Now().After(deadline) || ctx.Err() != nil {
+				v, ok := xreality.GlobalPostHandshakeRecordsLens.Load(key)
+				if !ok {
+					return fmt.Errorf("reality: REALITY keeps no records under %q: its key format changed", key)
+				}
+				// A failed detection stores an empty list, one that found
+				// no records a nil one.
+				if lens, done := v.([]int); done && (lens == nil || len(lens) > 0) {
 					break
+				} else if done {
+					xreality.GlobalPostHandshakeRecordsLens.CompareAndDelete(key, v)
+					return fmt.Errorf("reality: target %s: no TLS handshake for %q", dest, name)
+				}
+				if time.Now().After(deadline) || ctx.Err() != nil {
+					xreality.GlobalPostHandshakeRecordsLens.CompareAndDelete(key, v)
+					return fmt.Errorf("reality: target %s didn't complete a TLS handshake for %q in %v", dest, name, wait)
 				}
 				time.Sleep(10 * time.Millisecond)
 			}
 		}
 	}
+	return nil
+}
+
+// detectedALPNs is how many ALPN cases REALITY detects per server name: no
+// ALPN, http/1.1, h2.
+const detectedALPNs = 3
+
+// recordsKey is REALITY's key for a target's records in
+// GlobalPostHandshakeRecordsLens, as record_detect.go builds it at the
+// pinned commit; TestRecordsKeyIsREALITYs fails if it changes.
+func recordsKey(dest, serverName string, alpn int) string {
+	return fmt.Sprintf("%s %s %d", dest, serverName, alpn)
 }
 
 // readRecord reads one TLS record of at most maxHelloRecord bytes; on

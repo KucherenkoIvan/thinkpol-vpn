@@ -204,9 +204,9 @@
 // as a probe proxied by `tls` did; an authenticated session's ServerHello
 // is still ours (REALITY's stack, not the target's), so the first tell
 // remains for a censor that compares members' sessions with the site's;
-// and every failed probe still dials the target, the same upstream tell as
-// `tls`'s proxying (REALITY dials it for authenticated connections too, to
-// imitate its ServerHello). What it removes is a certificate of our own to manage.
-// The lab's prober measures both tells (TP-026, TP-032), for `reality`
-// too, and the matrix shows them.
+// and every connection still dials the target, the same upstream tell as
+// `tls`'s proxying (at accept, authenticated ones too, as REALITY's own
+// server does, so a probe's timing is the target's). What it removes is a
+// certificate of our own to manage. The lab's prober measures both tells
+// (TP-026, TP-032), for `reality` too, and the matrix shows them.
 package transport

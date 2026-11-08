@@ -262,6 +262,25 @@ func (sup ShapingSupport) Check(s Shaping) error {
 	return nil
 }
 
+// CheckBounds is Check for the adapter called name, which adds at most
+// maxRandom bytes of random padding and sends units of at most maxUnit
+// bytes, so no bucket may be larger. Errors start with name.
+func (sup ShapingSupport) CheckBounds(name string, s Shaping, maxRandom, maxUnit int) error {
+	if err := sup.Check(s); err != nil {
+		return fmt.Errorf("%s: %w", name, err)
+	}
+	p := s.Padding
+	if int(p.Max) > maxRandom {
+		return fmt.Errorf("%s: %w: random padding up to %d bytes, %s adds at most %d", name, ErrUnsupportedShaping, p.Max, name, maxRandom)
+	}
+	for _, b := range p.Buckets {
+		if int(b) > maxUnit {
+			return fmt.Errorf("%s: %w: a bucket of %d bytes, %s sends units of at most %d", name, ErrUnsupportedShaping, b, name, maxUnit)
+		}
+	}
+	return nil
+}
+
 // ParseShaping decodes the map's thinkpol.transport.v1.Shaping; empty
 // bytes are no shaping. It rejects fields it doesn't know
 // (ErrUnsupportedShaping), so a node too old for a setting refuses the link

@@ -50,7 +50,7 @@ Each package's `doc.go` holds its mechanism; this table is the way in.
 | [`dataplane/router`](internal/dataplane/router/doc.go) | classifying packets by destination; local reflection on macOS |
 | [`dataplane/wg`](internal/dataplane/wg/doc.go) | the WireGuard devices, one per egress |
 | [`dataplane/path`](internal/dataplane/path/doc.go) | destination routing, liveness, failover |
-| [`dataplane/transport`](internal/dataplane/transport/doc.go), [`shaping`](internal/shaping/doc.go) | the transport port, shaping, planned stream transports |
+| [`dataplane/transport`](internal/dataplane/transport/doc.go), [`shaping`](internal/shaping/doc.go) | the transport port, shaping, stream transports |
 | [`dataplane/transport/udp`](internal/dataplane/transport/udp/doc.go) | `udp`: wire format, replay rules, bounds |
 | [`dataplane/transport/reality`](internal/dataplane/transport/reality/doc.go) | `reality`: the seal, the splice, frames |
 | [`dataplane/rules`](internal/dataplane/rules/doc.go) | matchers, presets, compilation into prefixes |

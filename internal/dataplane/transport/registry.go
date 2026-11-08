@@ -21,7 +21,9 @@ type ListenConfig struct {
 // goes.
 type Admission struct {
 	Peers      Peers
-	Camouflage Camouflage // nil drops everything unauthenticated
+	// Camouflage gets what fails authentication; nil is the adapter's own
+	// default (udp drops it, reality splices it to its target).
+	Camouflage Camouflage
 }
 
 // Transport is one adapter, as the engine sees it: the map names it, and

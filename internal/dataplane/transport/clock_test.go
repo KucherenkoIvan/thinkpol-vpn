@@ -24,7 +24,8 @@ func TestFreshUnix(t *testing.T) {
 	}
 }
 
-func TestFreshWithin(t *testing.T) {
+// A narrower window ends where it says, either way round.
+func TestFreshWithinEndsAtItsWindow(t *testing.T) {
 	at := time.Unix(1_800_000_000, 0)
 	sent := uint32(at.Unix())
 	if !FreshWithin(sent, at.Add(-time.Minute), time.Minute) || FreshWithin(sent, at.Add(61*time.Second), time.Minute) {

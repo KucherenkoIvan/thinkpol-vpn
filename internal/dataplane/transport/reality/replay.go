@@ -7,50 +7,81 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 )
 
-// maxRemembered bounds the replay cache: a hello that would grow it past
-// that goes to the camouflage, like any other it can't vouch for. Only
-// authenticated hellos enter it, so filling it takes a credential.
-const maxRemembered = 1 << 16
+const (
+	// maxRemembered bounds the replay cache: a hello that would grow it
+	// past that goes to the camouflage, like any other it can't vouch for.
+	// Only authenticated hellos enter it, so filling it takes credentials:
+	// at least maxRemembered/replayShare of them.
+	maxRemembered = 1 << 16
+	// replayShare is the most one short id has remembered at once: a
+	// credential that dials faster than that fills its own share only.
+	// A legitimate dialer needs a few per window.
+	replayShare = 1 << 10
+)
 
-// replayCache remembers the sealed session ids of authenticated hellos
-// while they could still be fresh, so each is admitted once. An entry
-// expires once its sealed time leaves the window; entries go in the order
-// they arrived, so one sealed earlier than the entry before it waits for
-// that one (remembered longer, never shorter).
+// replayCache remembers the sealed session ids of authenticated hellos,
+// per short id, while they could still be fresh, so each is admitted once.
+// An entry is forgotten once its own sealed time leaves the window,
+// whatever else is remembered (a hello sealed ahead of the clock holds
+// only itself).
 type replayCache struct {
 	mu     sync.Mutex
-	seen   map[[sessionIDSize]byte]struct{}
-	queue  []remembered
 	window time.Duration
-}
-
-type remembered struct {
-	id   [sessionIDSize]byte
-	sent uint32
+	byID   map[shortID]map[[sessionIDSize]byte]uint32 // sealed time by session id
+	total  int
 }
 
 func newReplayCache(window time.Duration) *replayCache {
-	return &replayCache{seen: make(map[[sessionIDSize]byte]struct{}), window: window}
+	return &replayCache{window: window, byID: map[shortID]map[[sessionIDSize]byte]uint32{}}
 }
 
-// admit reports whether a hello whose session id is sessionID, sealed at
-// sent, is fresh and new, and remembers it if so.
-func (c *replayCache) admit(sessionID []byte, sent uint32, now time.Time) bool {
+// admit reports whether a hello from id whose session id is sessionID,
+// sealed at sent, is fresh and new, and remembers it if so.
+func (c *replayCache) admit(id shortID, sessionID []byte, sent uint32, now time.Time) bool {
 	if !transport.FreshWithin(sent, now, c.window) {
 		return false
 	}
-	var id [sessionIDSize]byte
-	copy(id[:], sessionID)
+	var sid [sessionIDSize]byte
+	copy(sid[:], sessionID)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for len(c.queue) > 0 && !transport.FreshWithin(c.queue[0].sent, now, c.window) {
-		delete(c.seen, c.queue[0].id)
-		c.queue = c.queue[1:]
-	}
-	if _, ok := c.seen[id]; ok || len(c.queue) >= maxRemembered {
+	seen := c.byID[id]
+	if _, ok := seen[sid]; ok {
 		return false
 	}
-	c.seen[id] = struct{}{}
-	c.queue = append(c.queue, remembered{id: id, sent: sent})
+	if len(seen) >= replayShare {
+		if c.forget(id, now); len(c.byID[id]) >= replayShare {
+			return false
+		}
+	}
+	if c.total >= maxRemembered {
+		for other := range c.byID {
+			c.forget(other, now)
+		}
+		if c.total >= maxRemembered {
+			return false
+		}
+	}
+	seen = c.byID[id] // forget may have dropped it
+	if seen == nil {
+		seen = map[[sessionIDSize]byte]uint32{}
+		c.byID[id] = seen
+	}
+	seen[sid] = sent
+	c.total++
 	return true
+}
+
+// forget drops id's entries that left the window.
+func (c *replayCache) forget(id shortID, now time.Time) {
+	seen := c.byID[id]
+	for sid, sent := range seen {
+		if !transport.FreshWithin(sent, now, c.window) {
+			delete(seen, sid)
+			c.total--
+		}
+	}
+	if len(seen) == 0 {
+		delete(c.byID, id)
+	}
 }

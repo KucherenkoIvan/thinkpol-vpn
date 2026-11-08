@@ -42,6 +42,8 @@ branch: ""
 - The router's open is ours (TP-087's Notes): same rules as REALITY's server (key-share choice, HKDF, AES-GCM), and only then is the connection handed to `reality.Server` in the worker. Both say no → both splice. `reality.Server` type-asserts `CloseWrite` on its connection, so a wrapper replaying bytes already read must implement it.
 - The lab never reaches the internet at test time: the camouflage target is a lab container, and any image is pinned by version and digest and built or pulled under the Docker lock.
 - TP-087's lab check covers our dialer against stock Xray only; our listener is checked against our dialer, not a stock Xray client.
+- From TP-087 review round 1: cut serve at the router/handoff line: the replay cache is admitted only in the router (a worker re-checking the handed-off hello would reject it as a replay); detect runs where REALITY's Server runs (the worker), not in the supervisor; apply splits into the router's short-id table and the listener's live links; endpoint validation moves into the port so udp and reality agree (reality rejects port 0 and unspecified addresses, udp accepts them).
 
 ## Log
 - 2026-11-08 created in backlog (split from TP-087, owner-approved)
+- 2026-11-08 notes: where to cut serve, from TP-087 review round 1

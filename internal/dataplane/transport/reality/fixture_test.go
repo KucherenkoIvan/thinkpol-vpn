@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"io"
 	"math/big"
 	"net"
@@ -28,34 +29,64 @@ const serverName = "www.example.net"
 // it answers any ClientHello for serverName with a self-signed certificate,
 // records every byte each connection sends it (reading on after a failed
 // handshake, until the far end closes), and answers "site" to a line of
-// input after the handshake.
+// input after the handshake. A connection idle for its idle timeout is
+// closed, or, with halfClose, closed for writing only, the target reading
+// on until the far end closes.
 type target struct {
-	ln   net.Listener
-	cert *x509.Certificate
+	ln        net.Listener
+	cert      *x509.Certificate
+	idle      time.Duration
+	halfClose bool
 
 	mu    sync.Mutex
 	conns []*recorder
+	ended chan struct{} // gets a value each time a connection ends
 }
 
 var (
 	sharedTarget     *target
+	sharedTargetErr  error
 	sharedTargetOnce sync.Once
 )
 
 // theTarget is one target for the whole test binary: REALITY learns a
 // target's records once per process.
 func theTarget(t testing.TB) *target {
-	sharedTargetOnce.Do(func() { sharedTarget = newTarget(t) })
+	t.Helper()
+	sharedTargetOnce.Do(func() { sharedTarget, sharedTargetErr = startTarget("127.0.0.1:0", 10*time.Second, false) })
+	if sharedTargetErr != nil {
+		t.Fatal(sharedTargetErr)
+	}
 	return sharedTarget
 }
 
-func newTarget(t testing.TB) *target { return newTargetAt(t, "127.0.0.1:0") }
-
 // newTargetAt starts a target listening on address.
 func newTargetAt(t testing.TB, address string) *target {
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	t.Helper()
+	tg, err := startTarget(address, 10*time.Second, false)
 	if err != nil {
 		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = tg.ln.Close() })
+	return tg
+}
+
+// newIdleTarget starts a target on loopback whose connections end after
+// idle, as halfClose says.
+func newIdleTarget(t testing.TB, idle time.Duration, halfClose bool) *target {
+	t.Helper()
+	tg, err := startTarget("127.0.0.1:0", idle, halfClose)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = tg.ln.Close() })
+	return tg
+}
+
+func startTarget(address string, idle time.Duration, halfClose bool) (*target, error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, err
 	}
 	tmpl := &x509.Certificate{
 		SerialNumber: big.NewInt(1),
@@ -65,14 +96,17 @@ func newTargetAt(t testing.TB, address string) *target {
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	if err != nil {
-		t.Fatal(err)
+		return nil, err
 	}
-	cert, _ := x509.ParseCertificate(der)
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		return nil, err
+	}
 	ln, err := net.Listen("tcp", address)
 	if err != nil {
-		t.Fatal(err)
+		return nil, err
 	}
-	tg := &target{ln: ln, cert: cert}
+	tg := &target{ln: ln, cert: cert, idle: idle, halfClose: halfClose, ended: make(chan struct{}, 64)}
 	cfg := &tls.Config{
 		MinVersion:   tls.VersionTLS13,
 		Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}},
@@ -87,18 +121,29 @@ func newTargetAt(t testing.TB, address string) *target {
 			go tg.serve(c, cfg)
 		}
 	}()
-	return tg
+	return tg, nil
 }
 
 func (tg *target) serve(c net.Conn, cfg *tls.Config) {
-	defer func() { _ = c.Close() }()
-	_ = c.SetDeadline(time.Now().Add(10 * time.Second))
+	defer func() {
+		_ = c.Close()
+		select {
+		case tg.ended <- struct{}{}:
+		default:
+		}
+	}()
+	_ = c.SetDeadline(time.Now().Add(tg.idle))
 	rec := &recorder{Conn: c}
 	tg.mu.Lock()
 	tg.conns = append(tg.conns, rec)
 	tg.mu.Unlock()
 	tc := tls.Server(rec, cfg)
 	if err := tc.Handshake(); err != nil {
+		var ne net.Error
+		if tg.halfClose && errors.As(err, &ne) && ne.Timeout() {
+			_ = c.(*net.TCPConn).CloseWrite()
+			_ = c.SetDeadline(time.Time{})
+		}
 		_, _ = io.Copy(io.Discard, rec)
 		return
 	}
@@ -164,6 +209,7 @@ func (r *recorder) bytes() []byte {
 type keys struct{ private, public []byte }
 
 func newKeys(t testing.TB) keys {
+	t.Helper()
 	k, err := ecdh.X25519().GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -172,6 +218,7 @@ func newKeys(t testing.TB) keys {
 }
 
 func mustMarshal(t testing.TB, m proto.Message) []byte {
+	t.Helper()
 	b, err := proto.Marshal(m)
 	if err != nil {
 		t.Fatal(err)
@@ -180,12 +227,14 @@ func mustMarshal(t testing.TB, m proto.Message) []byte {
 }
 
 func listenSettingsFor(t testing.TB, k keys, tg *target, window uint32) []byte {
+	t.Helper()
 	return mustMarshal(t, &transportv1.RealityListenSettings{
 		PrivateKey: k.private, Target: tg.addr(), ServerNames: []string{serverName}, TimeWindowS: window,
 	})
 }
 
 func dialSettingsFor(t testing.TB, k keys) []byte {
+	t.Helper()
 	return mustMarshal(t, &transportv1.RealityDialSettings{ServerName: serverName, PublicKey: k.public})
 }
 
@@ -207,6 +256,7 @@ type tap struct {
 }
 
 func newTap(t *testing.T, address string) *tap {
+	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -254,6 +304,7 @@ func (tp *tap) captured() [][]byte {
 // replay sends each stream captured so far again, whole, on a new
 // connection to the address, and returns them.
 func (tp *tap) replay(t *testing.T) [][]byte {
+	t.Helper()
 	streams := tp.captured()
 	for _, s := range streams {
 		c, err := net.Dial("tcp", tp.address)
@@ -268,6 +319,7 @@ func (tp *tap) replay(t *testing.T) [][]byte {
 
 // interpose is the suite's Interpose: a tap whose replay is the suite's.
 func interpose(t *testing.T, address string) (string, func()) {
+	t.Helper()
 	tp := newTap(t, address)
 	return tp.addr(), func() { tp.replay(t) }
 }
@@ -284,10 +336,12 @@ func (w lockedWriter) Write(p []byte) (int, error) {
 }
 
 func harness(t *testing.T, tr *Transport, s transport.Shaping) transporttest.Harness {
+	t.Helper()
 	tg := theTarget(t)
 	k := newKeys(t)
 	return transporttest.Harness{
 		Listen: func(t *testing.T, addr string, peers transport.Peers, camouflage transport.Camouflage) (transport.Listener, transporttest.Endpoint) {
+			t.Helper()
 			if addr == "" {
 				addr = "127.0.0.1:0"
 			}

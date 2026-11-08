@@ -132,8 +132,9 @@ func TestReplayIsSplicedToTheTarget(t *testing.T) {
 	expectNoAccept(t, l)
 }
 
-// The listener's time window bounds the sealed time.
-func TestTimeWindow(t *testing.T) {
+// A hello sealed outside the listener's time window is refused; one inside
+// it is taken.
+func TestAHelloSealedOutsideTheTimeWindowIsRefused(t *testing.T) {
 	k := newKeys(t)
 	id, _ := shortIDs()
 	l := listenFor(t, New(Options{}), k, 60, peerLink(id))
@@ -215,7 +216,9 @@ func helloRecord(t *testing.T, listener *ecdh.PrivateKey, id shortID, sent uint3
 	return append(rec, raw...)
 }
 
-func TestSealOpens(t *testing.T) {
+// The seal opens under the listener's key only, and only for the hello it
+// was sealed into.
+func TestTheSealOpensOnlyUnderTheListenersKey(t *testing.T) {
 	key, err := ecdh.X25519().GenerateKey(nil)
 	if err != nil {
 		t.Fatal(err)
@@ -260,7 +263,7 @@ func TestSealOpens(t *testing.T) {
 
 // Padding frames bring a record to its bucket exactly, and the receiver
 // reads the packets back from the stream alone.
-func TestPaddingFrames(t *testing.T) {
+func TestPaddingFramesFillTheBucketAndReadBackFromTheStream(t *testing.T) {
 	packet := []byte("a packet")
 	unpadded := frameHeader + len(packet) + recordOverhead
 	var stream []byte
@@ -284,39 +287,87 @@ func TestPaddingFrames(t *testing.T) {
 	}
 }
 
-// The replay cache forgets what left the window, so a full cache admits
-// again once time moves on.
-func TestReplayCache(t *testing.T) {
+func sessionIDOf(i int) []byte {
+	b := make([]byte, sessionIDSize)
+	binary.BigEndian.PutUint32(b, uint32(i))
+	return b
+}
+
+// The replay cache admits a session id once, forgets what left the
+// window, and so admits again once time moves on.
+func TestTheReplayCacheAdmitsOnceAndForgetsWhatLeftTheWindow(t *testing.T) {
 	const window = time.Minute
 	c := newReplayCache(window)
 	at := time.Unix(1_800_000_000, 0)
 	sent := uint32(at.Unix())
-	id := func(i int) []byte {
-		b := make([]byte, sessionIDSize)
-		binary.BigEndian.PutUint32(b, uint32(i))
-		return b
-	}
-	if !c.admit(id(0), sent, at) || c.admit(id(0), sent, at) {
+	id := shortID{1}
+	if !c.admit(id, sessionIDOf(0), sent, at) || c.admit(id, sessionIDOf(0), sent, at) {
 		t.Fatal("a session id admitted other than once")
 	}
-	if c.admit(id(1), sent-uint32(window/time.Second)-1, at) {
+	if c.admit(id, sessionIDOf(1), sent-uint32(window/time.Second)-1, at) {
 		t.Error("a hello sealed before the window admitted")
 	}
-	for i := 1; i < maxRemembered; i++ {
-		c.admit(id(i), sent, at)
+	for i := 1; i < replayShare; i++ {
+		c.admit(id, sessionIDOf(i), sent, at)
 	}
-	if c.admit(id(maxRemembered), sent, at) {
+	if c.admit(id, sessionIDOf(replayShare), sent, at) {
+		t.Fatal("a full share admitted")
+	}
+	later := at.Add(window + time.Second)
+	if !c.admit(id, sessionIDOf(replayShare), uint32(later.Unix()), later) {
+		t.Error("a full share still refuses once its entries left the window")
+	}
+}
+
+// One short id dialling as fast as it can fills its own share of the
+// replay cache, never the cache: another short id is still admitted.
+func TestOneShortIDFillsOnlyItsOwnReplayShare(t *testing.T) {
+	c := newReplayCache(time.Minute)
+	at := time.Unix(1_800_000_000, 0)
+	sent := uint32(at.Unix())
+	flood, other := shortID{1}, shortID{2}
+	admitted := 0
+	for i := range maxRemembered {
+		if c.admit(flood, sessionIDOf(i), sent, at) {
+			admitted++
+		}
+	}
+	if admitted != replayShare {
+		t.Errorf("one short id admitted %d hellos, want its share, %d", admitted, replayShare)
+	}
+	if !c.admit(other, sessionIDOf(0), sent, at) {
+		t.Error("another short id's fresh hello refused")
+	}
+}
+
+// Hellos sealed ahead of the clock hold only themselves: once the rest of
+// a full cache left the window, a new short id is admitted.
+func TestASealAheadOfTheClockHoldsOnlyItself(t *testing.T) {
+	const window = time.Minute
+	c := newReplayCache(window)
+	at := time.Unix(1_800_000_000, 0)
+	ahead := uint32(at.Add(window).Unix())
+	for n := range maxRemembered / replayShare {
+		id := shortID{byte(n), byte(n >> 8), 1}
+		if !c.admit(id, sessionIDOf(0), ahead, at) {
+			t.Fatalf("short id %d: a hello sealed at the window's edge refused", n)
+		}
+		for i := 1; i < replayShare; i++ {
+			c.admit(id, sessionIDOf(i), uint32(at.Unix()), at)
+		}
+	}
+	if c.admit(shortID{9}, sessionIDOf(0), uint32(at.Unix()), at) {
 		t.Fatal("a full cache admitted")
 	}
 	later := at.Add(window + time.Second)
-	if !c.admit(id(maxRemembered), uint32(later.Unix()), later) {
-		t.Error("a full cache still refuses once its entries left the window")
+	if !c.admit(shortID{9}, sessionIDOf(0), uint32(later.Unix()), later) {
+		t.Error("a full cache still refuses once all but the hellos sealed ahead left the window")
 	}
 }
 
 // Only a certificate whose signature is the HMAC of its key under the auth
 // key proves the listener's key; a real certificate never does.
-func TestProvesKey(t *testing.T) {
+func TestOnlyREALITYsCertificateProvesTheKey(t *testing.T) {
 	pub, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatal(err)
