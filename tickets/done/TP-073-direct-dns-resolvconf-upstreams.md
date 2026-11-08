@@ -3,6 +3,7 @@ id: TP-073
 title: "Direct DNS upstreams from a rewritten resolv.conf are not filtered"
 milestone: M2
 area: dataplane/dns
+stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: []

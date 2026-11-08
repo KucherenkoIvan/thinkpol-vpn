@@ -3,6 +3,7 @@ id: TP-159
 title: "macOS guard: a failed record write in takeReference forgets the old reference"
 milestone: M2
 area: dataplane/firewall
+stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-137]

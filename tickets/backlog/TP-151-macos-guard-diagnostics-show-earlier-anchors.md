@@ -3,6 +3,7 @@ id: TP-151
 title: "macOS guard diagnostics: show what the anchors before the hook hold"
 milestone: later
 area: dataplane/firewall
+stream: core
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-129]

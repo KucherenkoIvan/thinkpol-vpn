@@ -3,6 +3,7 @@ id: TP-156
 title: "netcfg (macOS): a valid supervisor.routes is trusted, though no darwin supervisor exists"
 milestone: later
 area: dataplane/netcfg
+stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: []

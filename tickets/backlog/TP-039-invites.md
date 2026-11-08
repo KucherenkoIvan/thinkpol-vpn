@@ -3,6 +3,7 @@ id: TP-039
 title: "Invites"
 milestone: M4
 area: features/invites
+stream: administration
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-034]

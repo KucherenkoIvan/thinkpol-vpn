@@ -3,6 +3,7 @@ id: TP-074
 title: "Manual operations before the controller"
 milestone: M2
 area: ops
+stream: administration
 repo: thinkpol-vpn
 size: M
 depends_on: []

@@ -3,6 +3,7 @@ id: TP-078
 title: "IPv6 leak guard on macOS (pf)"
 milestone: M1
 area: dataplane/firewall
+stream: core
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-019, TP-021]

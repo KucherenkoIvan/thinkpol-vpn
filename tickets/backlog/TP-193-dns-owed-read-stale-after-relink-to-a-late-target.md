@@ -3,6 +3,7 @@ id: TP-193
 title: "dns: an owed read stays stale when resolv.conf is re-linked to a target that appears later"
 milestone: later
 area: dataplane
+stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-130]

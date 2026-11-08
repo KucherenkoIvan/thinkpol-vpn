@@ -3,6 +3,7 @@ id: TP-069
 title: "Replays accepted after a supervisor restart"
 milestone: M2
 area: dataplane/transport
+stream: transports
 repo: thinkpol-vpn
 size: M
 depends_on: []

@@ -3,6 +3,7 @@ id: TP-019
 title: "macOS data plane"
 milestone: M1
 area: dataplane
+stream: core
 repo: thinkpol-vpn
 size: L
 depends_on: [TP-008, TP-018]

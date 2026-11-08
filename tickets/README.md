@@ -12,7 +12,7 @@ tickets/
   done/          reviewed and merged into the `rewrite` branch
 ```
 
-`python3 tickets/board.py` prints the board, the tickets that need a human, and the tickets that are ready to start. `--next-id` prints the next free TP id, counting ids that exist only on local or remote branches (`--next-id KRN` does the same for the separate KRN series); `--check` validates frontmatter and dependencies; `--waves` groups unfinished tickets by what can run in parallel. Suggestions for running several tickets at once are in [ORCHESTRATION.md](ORCHESTRATION.md).
+`python3 tickets/board.py` prints the board, the tickets that need a human, and the tickets that are ready to start. `--next-id` prints the next free TP id, counting ids that exist only on local or remote branches (`--next-id KRN` does the same for the separate KRN series); `--check` validates frontmatter and dependencies; `--waves` groups unfinished tickets by what can run in parallel; `--streams` groups open tickets by stream, then milestone. Suggestions for running several tickets at once are in [ORCHESTRATION.md](ORCHESTRATION.md).
 
 ## Ticket files
 
@@ -24,6 +24,7 @@ id: TP-005
 title: Transport port and udp transport
 milestone: M0
 area: dataplane/transport
+stream: transports       # core | transports | administration | clients | verification
 repo: thinkpol-vpn        # or go-kernel
 size: M                   # S | M | L | epic
 depends_on: [TP-001]
@@ -43,6 +44,8 @@ branch: ""                # set when moved to in-progress
 ```
 
 **Sizes.** `S`: a small change. `M`: one focused branch. `L`: several days of work but still one coherent change. `epic`: too big to start; split it first (see below).
+
+**`stream`** says which development stream the ticket belongs to: a lens on the one board, not a separate plan. `core`: the node runtime (agent, data plane, paths, health, kill switch, config, per-OS network code, the local API's server side, the CLI's code). `transports`: transports and anti-censorship on the wire. `administration`: controller, map and its schema, signing, spaces, invites, grants, provisioning, hosting, the admin panel, key rotation. `clients`: what a member uses (tray, the CLI's surface, installers' user side). `verification`: the labs, device-test kit, CI, test hygiene, release pipeline, measurements. One stream per ticket: where most of the work lands. `--check` rejects other values and requires `stream` on every ticket, `done/` included.
 
 **`needs_human`** (optional) marks a ticket that can't be finished by agents alone. `board.py` lists such unfinished tickets in a separate NEEDS HUMAN section and marks them with `!` in `--waves`; `--check` rejects other values.
 

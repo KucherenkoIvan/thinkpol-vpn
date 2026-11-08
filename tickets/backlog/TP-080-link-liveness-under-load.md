@@ -3,6 +3,7 @@ id: TP-080
 title: "Links declared dead while traffic is still arriving"
 milestone: later
 area: dataplane/path
+stream: transports
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-019, TP-087]

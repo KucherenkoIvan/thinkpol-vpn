@@ -3,6 +3,7 @@ id: TP-183
 title: "The node's own configuration caps the map"
 milestone: later
 area: agent
+stream: core
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-111]

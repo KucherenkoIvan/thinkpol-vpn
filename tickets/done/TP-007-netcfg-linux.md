@@ -3,6 +3,7 @@ id: TP-007
 title: "Network config port and Linux adapter"
 milestone: M0
 area: dataplane/netcfg
+stream: core
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-001]

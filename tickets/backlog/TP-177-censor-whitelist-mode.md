@@ -3,6 +3,7 @@ id: TP-177
 title: "Censor module: whitelist mode"
 milestone: later
 area: lab/censor
+stream: verification
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-032]

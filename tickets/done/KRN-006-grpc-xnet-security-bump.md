@@ -3,6 +3,7 @@ id: KRN-006
 title: "Bump grpc and x/net past published vulnerabilities"
 milestone: M1
 area: deps
+stream: core
 repo: go-kernel
 size: S
 depends_on: []

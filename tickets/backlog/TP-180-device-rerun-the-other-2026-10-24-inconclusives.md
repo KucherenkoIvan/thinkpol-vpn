@@ -3,6 +3,7 @@ id: TP-180
 title: "Device re-run: the other 2026-10-24 inconclusives"
 milestone: later
 area: tests
+stream: verification
 repo: thinkpol-vpn
 size: M
 needs_human: macos

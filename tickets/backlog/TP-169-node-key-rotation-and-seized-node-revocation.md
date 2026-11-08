@@ -3,6 +3,7 @@ id: TP-169
 title: "Node key rotation and revocation of a seized node"
 milestone: later
 area: control-plane
+stream: administration
 repo: thinkpol-vpn
 size: L
 depends_on: []

@@ -3,6 +3,7 @@ id: TP-098
 title: "Exits resolve through public resolvers by default"
 milestone: M2
 area: dataplane/dns
+stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: []

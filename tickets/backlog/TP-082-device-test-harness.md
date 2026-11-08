@@ -3,6 +3,7 @@ id: TP-082
 title: "Device-test harness as a first-class tool"
 milestone: M2
 area: tooling
+stream: verification
 repo: thinkpol-vpn
 size: L
 depends_on: []

@@ -3,6 +3,7 @@ id: TP-091
 title: "Device diagnostics snapshot (`thinkpol diag`)"
 milestone: M2
 area: agent
+stream: core
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-078]

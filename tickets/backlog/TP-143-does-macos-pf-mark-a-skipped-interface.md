@@ -3,6 +3,7 @@ id: TP-143
 title: "macOS guard: does pf mark a skipped interface at all?"
 milestone: M2
 area: dataplane/firewall
+stream: core
 repo: thinkpol-vpn
 size: S
 needs_human: macos

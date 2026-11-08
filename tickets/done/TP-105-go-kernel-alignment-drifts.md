@@ -3,6 +3,7 @@ id: TP-105
 title: "go-kernel alignment drifts"
 milestone: M2
 area: agent
+stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: []

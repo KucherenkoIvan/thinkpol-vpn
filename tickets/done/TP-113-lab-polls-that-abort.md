@@ -3,6 +3,7 @@ id: TP-113
 title: "lab: polls that abort instead of retrying"
 milestone: M2
 area: lab
+stream: verification
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-099]

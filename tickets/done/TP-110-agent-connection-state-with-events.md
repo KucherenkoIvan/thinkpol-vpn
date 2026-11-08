@@ -3,6 +3,7 @@ id: TP-110
 title: "Agent: the connection as a state type with events"
 milestone: M2
 area: agent
+stream: core
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-075]

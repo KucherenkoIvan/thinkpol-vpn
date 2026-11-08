@@ -3,6 +3,7 @@ id: TP-130
 title: "dns: a failed uplink read on the tick resolv.conf changes is never retried"
 milestone: M2
 area: dataplane
+stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-128]

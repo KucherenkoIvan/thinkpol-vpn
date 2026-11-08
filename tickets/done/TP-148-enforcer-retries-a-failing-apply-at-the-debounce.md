@@ -3,6 +3,7 @@ id: TP-148
 title: "Route table: a failing Apply is retried at the debounce, not RetryAfter"
 milestone: M2
 area: dataplane/routetable
+stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: []

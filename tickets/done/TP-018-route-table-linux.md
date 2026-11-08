@@ -3,6 +3,7 @@ id: TP-018
 title: "Route-table enforcement on Linux"
 milestone: M1
 area: dataplane/netcfg
+stream: core
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-007, TP-015, TP-016]

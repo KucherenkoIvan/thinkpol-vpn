@@ -3,6 +3,7 @@ id: TP-009
 title: "Server agent: supervisor and per-space workers"
 milestone: M0
 area: agent
+stream: core
 repo: thinkpol-vpn
 size: L
 depends_on: [TP-001, TP-007]

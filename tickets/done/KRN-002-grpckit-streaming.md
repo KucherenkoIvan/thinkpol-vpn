@@ -3,6 +3,7 @@ id: KRN-002
 title: "grpckit: streaming interceptors"
 milestone: M4
 area: grpckit
+stream: core
 repo: go-kernel
 size: M
 depends_on: []

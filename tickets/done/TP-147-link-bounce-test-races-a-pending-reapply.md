@@ -3,6 +3,7 @@ id: TP-147
 title: "Lab flake: the link-bounce test races a pending re-apply"
 milestone: M2
 area: dataplane
+stream: verification
 repo: thinkpol-vpn
 size: S
 depends_on: []

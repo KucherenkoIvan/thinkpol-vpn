@@ -3,6 +3,7 @@ id: TP-079
 title: "macOS: reflected packets to the node's own IPv6 fail the checksum"
 milestone: M1
 area: dataplane/router
+stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-019]
