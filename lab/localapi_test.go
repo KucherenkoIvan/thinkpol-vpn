@@ -88,7 +88,7 @@ func TestLocalAPI(t *testing.T) {
 	devA.MustExec(t, "install", "-d", "-m", "2777", "/run/thinkpol-api")
 	devB.MustExec(t, "install", "-d", "-m", "755", "-o", malloryUID, "/run/foreign-api")
 	up := map[string]*lab.Process{
-		"server-1": server.Start(t, "thinkpol", "up"),
+		"server-1": server.Start(t, "thinkpol", "up", "-mode", "server"),
 		"device-a": devA.Start(t, "thinkpol", "up", "-connect=false"),
 		"device-b": devB.Start(t, "env", "THINKPOL_API_SOCKET=/run/foreign-api/api.sock", "thinkpol", "up"),
 	}

@@ -297,7 +297,7 @@ func setupUDP(t *testing.T, l *lab.Lab) (probeTarget, error) {
 	space.install(t, dev, "device-a", envelope)
 	space.install(t, server, "server-1", envelope)
 	upDev := dev.Start(t, "thinkpol", "up")
-	upSrv := server.Start(t, "thinkpol", "up")
+	upSrv := server.Start(t, "thinkpol", "up", "-mode", "server")
 	applied := applied(version)
 	if err := waitOutput(upSrv, applied, 60*time.Second); err != nil {
 		return probeTarget{}, fmt.Errorf("server-1: %w", err)

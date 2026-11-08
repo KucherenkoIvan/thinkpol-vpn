@@ -112,7 +112,9 @@ func TestTransportsMarkSocketsPerMode(t *testing.T) {
 			var asks markAsks
 			plat := testPlatform()
 			plat.Transports = asks.transports(reg)
-			n, err := Prepare(testConfig(s.stateDir(t, tc.keys, 1)), Logs{}, plat)
+			cfg := testConfig(s.stateDir(t, tc.keys, 1))
+			cfg.Mode = tc.mode
+			n, err := Prepare(cfg, Logs{}, plat)
 			if err != nil {
 				t.Fatal(err)
 			}

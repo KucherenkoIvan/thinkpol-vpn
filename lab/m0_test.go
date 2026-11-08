@@ -67,7 +67,7 @@ func testM0(t *testing.T, ipv6 bool) {
 
 	up := map[string]*lab.Process{}
 	for name, n := range nodes {
-		up[name] = n.Start(t, "thinkpol", "up")
+		up[name] = n.Start(t, upFor(name)...)
 	}
 	waitLog(t, up["server-1"], `worker space=\S+ .*`+applied(version))
 	waitLog(t, up["device-a"], applied(version))

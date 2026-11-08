@@ -285,7 +285,7 @@ func (h *fakeHost) installer(sys System) (Installer, *bytes.Buffer) {
 	}
 	var out bytes.Buffer
 	return Installer{
-		Root: h.root, System: sys, Run: h.run, Executable: exe, Ready: func() (agent.Mode, bool, error) { return agent.ModeDevice, true, nil },
+		Root: h.root, System: sys, Run: h.run, Executable: exe, Ready: func() (agent.Mode, agent.ModeUnknown, error) { return agent.ModeDevice, agent.ModeKnown, nil },
 		CrashTrace: testCrashTrace,
 		LockHost:   h.lock,
 		ClearHost: func() ([]string, error) {
@@ -722,7 +722,7 @@ func TestLaunchdWaitsForTheDaemonToGo(t *testing.T) {
 func TestInstallRefusesBeforeChangingAnything(t *testing.T) {
 	for name, change := range map[string]func(*fakeHost, *Installer){
 		"a node that can't run": func(_ *fakeHost, in *Installer) {
-			in.Ready = func() (agent.Mode, bool, error) { return "", false, errors.New("no node.key") }
+			in.Ready = func() (agent.Mode, agent.ModeUnknown, error) { return "", agent.ModeKnown, errors.New("no node.key") }
 		},
 		"a host without systemd": func(h *fakeHost, _ *Installer) {
 			if err := os.Remove(filepath.Join(h.root, "run/systemd/system")); err != nil {
@@ -860,8 +860,8 @@ func TestADefinitionChangedByHandIsReported(t *testing.T) {
 // and its install removes a trace a device left (PRD S2), after the old
 // service stopped (its agent may write one as it dies). A node whose mode
 // changed is installed anew without a warning: its definition wasn't
-// changed by hand. A node of unknown kind is installed as a server, and
-// told.
+// changed by hand. A node whose mode isn't known is installed as a
+// server, and told why.
 func TestOnlyADevicesDefinitionKeepsACrashTrace(t *testing.T) {
 	for name, sys := range map[string]System{"systemd": Systemd{}, "launchd": Launchd{}} {
 		t.Run(name, func(t *testing.T) {
@@ -890,7 +890,7 @@ func TestOnlyADevicesDefinitionKeepsACrashTrace(t *testing.T) {
 				t.Fatal(err)
 			}
 			h.crashOnStop = true
-			in.Ready = func() (agent.Mode, bool, error) { return agent.ModeServer, true, nil }
+			in.Ready = func() (agent.Mode, agent.ModeUnknown, error) { return agent.ModeServer, agent.ModeKnown, nil }
 			if err := in.Install(ctx, Options{}); err != nil {
 				t.Fatal(err)
 			}
@@ -906,7 +906,7 @@ func TestOnlyADevicesDefinitionKeepsACrashTrace(t *testing.T) {
 			}
 			h.crashOnStop = false
 
-			in.Ready = func() (agent.Mode, bool, error) { return agent.ModeDevice, true, nil }
+			in.Ready = func() (agent.Mode, agent.ModeUnknown, error) { return agent.ModeDevice, agent.ModeKnown, nil }
 			out.Reset()
 			if err := in.Install(ctx, Options{}); err != nil {
 				t.Fatal(err)
@@ -915,13 +915,19 @@ func TestOnlyADevicesDefinitionKeepsACrashTrace(t *testing.T) {
 				t.Fatalf("a device's definition again:\n%s\nsaid\n%s", def, out)
 			}
 
-			in.Ready = func() (agent.Mode, bool, error) { return agent.ModeServer, false, nil }
-			out.Reset()
-			if err := in.Install(ctx, Options{}); err != nil {
-				t.Fatal(err)
-			}
-			if def, _, _ = h.file(sys.DefinitionPath()); !bytes.Equal(def, sys.Render(Definition{Binary: BinaryPath})) || !strings.Contains(out.String(), "kind isn't known") {
-				t.Fatalf("an unknown kind's definition:\n%s\nsaid\n%s", def, out)
+			for why, hint := range map[agent.ModeUnknown]string{
+				agent.UnknownMapShowsServer: `until node.json sets "mode": "server"`,
+				agent.UnknownNotInMap:       "a device installs again once a map includes it",
+			} {
+				in.Ready = func() (agent.Mode, agent.ModeUnknown, error) { return agent.ModeServer, why, nil }
+				out.Reset()
+				if err := in.Install(ctx, Options{}); err != nil {
+					t.Fatal(err)
+				}
+				if def, _, _ = h.file(sys.DefinitionPath()); !bytes.Equal(def, sys.Render(Definition{Binary: BinaryPath})) ||
+					!strings.Contains(out.String(), hint) || strings.Count(out.String(), "warning: ") != 1 {
+					t.Fatalf("an unknown mode's definition (%d):\n%s\nsaid\n%s", why, def, out)
+				}
 			}
 		})
 	}

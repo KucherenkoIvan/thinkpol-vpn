@@ -92,7 +92,7 @@ Runs the node from its state directory: a device's data plane, or a server's sup
 |---|---|---|---|
 | `-state` | `THINKPOL_STATE_DIR` | `/var/lib/thinkpol` (macOS `/private/var/lib/thinkpol`) | state directory: `node.key`, `space.pub`, `map.bin` |
 | `-map` | `THINKPOL_MAP` | empty: `map.bin` in the state directory | the map file |
-| `-mode` | `THINKPOL_MODE` | `auto` | `auto` (by the node's kind in the map), `device`, `server` |
+| `-mode` | `THINKPOL_MODE` | `device` | `device` (forwards nothing) or `server`; never picked by the node's kind in the map (TP-111) |
 | `-log-level` | `THINKPOL_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 | `-interface` | `THINKPOL_INTERFACE` | empty: the platform's default (`thinkpol0` on Linux) | the overlay TUN's name, 1–15 printable ASCII characters |
 | `-link-mtu` | `THINKPOL_LINK_MTU` | `0` (1500) | MTU under the links, 576–65535 |
@@ -105,7 +105,7 @@ Runs the node from its state directory: a device's data plane, or a server's sup
 | `-dns-upstream` | `THINKPOL_DNS_UPSTREAM` | empty: a device asks what the OS used, an exit asks Quad9, then Cloudflare | IPs or IP:ports, comma-separated |
 | `-egress-allowed` | `THINKPOL_EGRESS_ALLOWED` | empty | private prefixes an exit's spaces may still reach |
 
-Synopsis: `thinkpol up [-state dir] [-map file] [-mode auto|device|server] [flags]`. `-h` prints every flag with its variable. The `-api-socket` line, for example:
+Synopsis: `thinkpol up [-state dir] [-map file] [-mode device|server] [flags]`. `-h` prints every flag with its variable. The `-api-socket` line, for example:
 
 ```
   -api-socket value
@@ -116,7 +116,7 @@ Validation errors are collected and printed together, prefixed `config: validati
 
 ```
 $ thinkpol up -mode bogus -state /tmp/x
-thinkpol up: config: validation: mode "bogus": want auto, device or server
+thinkpol up: config: validation: mode "bogus": want device or server
 ```
 
 The other validation messages (`Config.Validate`):
@@ -266,7 +266,7 @@ Other lines appear when they apply:
 }
 ```
 
-The health problem vocabulary (`internal/agent/status.go`): `disconnected`, `removed_from_space`, `starting`, `retrying`, `apply_failed`, `no_link_up`, `neighbor_down`, `entries_skipped`, `worker_down`, `worker_restarted`, `links_rejected`, `rule_preset_unavailable`, `route_table_not_enforced`, `policy_rules_ahead`, `overlay_routes_ahead`, `ipv6_guard_not_enforced`, `ipv6_guard_unsupported`, `dns_not_protected`, `dns_upstreams_stale`, `dns_upstream_refused`, `dns_no_upstream`. A dialed node that never linked is listed as a neighbor, down, once a dial attempt has failed or the path layer's dead interval (6 s) has passed since the dial started: `no_link_up` when no other neighbor is up, `neighbor_down` when another one is. `dns_no_upstream` also covers an OS that names no DNS server now (the resolver keeps asking the previous ones), and isn't raised beside `dns_upstreams_stale`. Health covers first hops only: an exit behind an up entry that never answers, or an exit link up with no WireGuard handshake, still reads ok (RR48).
+The health problem vocabulary (`internal/agent/status.go`): `disconnected`, `removed_from_space`, `mode_mismatch` (the map makes a node run in device mode a server: it runs nothing of the map), `starting`, `retrying`, `apply_failed`, `no_link_up`, `neighbor_down`, `entries_skipped`, `worker_down`, `worker_restarted`, `links_rejected`, `rule_preset_unavailable`, `route_table_not_enforced`, `policy_rules_ahead`, `overlay_routes_ahead`, `ipv6_guard_not_enforced`, `ipv6_guard_unsupported`, `dns_not_protected`, `dns_upstreams_stale`, `dns_upstream_refused`, `dns_no_upstream`. A dialed node that never linked is listed as a neighbor, down, once a dial attempt has failed or the path layer's dead interval (6 s) has passed since the dial started: `no_link_up` when no other neighbor is up, `neighbor_down` when another one is. `dns_no_upstream` also covers an OS that names no DNS server now (the resolver keeps asking the previous ones), and isn't raised beside `dns_upstreams_stale`. Health covers first hops only: an exit behind an up entry that never answers, or an exit link up with no WireGuard handshake, still reads ok (RR48).
 
 #### `connect` and `disconnect`
 
@@ -721,7 +721,7 @@ Refusals travel as go-kernel domain error codes over gRPC status codes. The clie
 
 `Status` is the shape that `status`, `connect`, `disconnect` and `rules preset` render, and it is inside `Diagnostics`. Fields:
 
-- `mode`: `MODE_DEVICE`, `MODE_SERVER`, or `MODE_UNSPECIFIED` when the node was removed and its kind is unknown;
+- `mode`: `MODE_DEVICE` or `MODE_SERVER` (`MODE_UNSPECIFIED`, not set, is never reported);
 - `space_id`, `map_version`, `removed`;
 - `connection`: `DISCONNECTED`, `CONNECTING`, `CONNECTED` or `SERVING`;
 - `retrying`;
