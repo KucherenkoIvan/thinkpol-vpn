@@ -8,8 +8,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: []
 refs: [S1, docs/design/api-overview.md#verdicts-owner-2026-11-07, docs/design/desktop-client.md#the-local-api]
-owner: ""
-branch: ""
+owner: "agent-tp-168"
+branch: "tp-168-status-and-diag-split"
 ---
 
 ## Goal
@@ -42,3 +42,4 @@ branch: ""
 ## Log
 - 2026-11-07 created in backlog
 - 2026-11-07 split (owner's MVP cut): `status -json` stays; the network-reaching diag and the redacted report → TP-182
+- 2026-11-09 backlog → in-progress, owner: agent-tp-168
