@@ -9,6 +9,7 @@ depends_on: [TP-046, TP-166]
 refs: [A4, docs/design/overlay.md#node-agent]
 owner: "agent-tp-111"
 branch: "tp-111-mode-defaults-to-device"
+stream: core
 ---
 
 ## Goal
@@ -59,3 +60,7 @@ A node starts as a device: it forwards nothing unless its node file allows it (P
 - 2026-11-07 not verified: a real upgrade of a server from a pre-TP-111 binary (runbook step written, not run); the cmd-level failed-start trace test can't tell the map-kind mutation (its state can't read a map), the agent-level test does
 - 2026-11-07 in-progress → review
 - 2026-11-07 review → has-errors (round 1 findings R1.x)
+- 2026-11-08 handoff found: the first round-2 agent stopped (2026-11-07) on a usage limit after 15b8410 (WIP 744f0e9, 2fe7624, 15b8410: R1.1 device mode runs no server's section, R1.6 knownMode, lab servers in server mode, docs, R1.8); nothing ticked, lint/test/lab not run on them
+- 2026-11-08 round 2 resumed (agent-tp-111): tree clean at 15b8410; merged origin/rewrite (board streams; `stream: core` added); every WIP change re-read against R1.1–R1.8
+- 2026-11-08 R1.1: device mode never runs a server's section: Prepare and run (modeMismatch) start such a node in awaitSection with no restoreHost (no TUN, route, resolver or crashed-run clean-up), the connection held as on a removal; the runner's follower (device = Device set) stops the data plane on a map that makes a running device a server (conn.remove, stop, blobs emptied) and restarts it when a map makes it a device again; Status.ModeMismatch, health problem mode_mismatch, the log says set "mode": "server" in node.json (or -mode server) and restart; dataplane.go's "not an exit here" warning removed (subsumed). Listeners, admission and relaying can't reach device mode otherwise: netmap refuses a device section with listeners, ingress or egress (section.go)
+- 2026-11-08 R1.2: no change needed, unreachable wrongly: in device mode a server-kind section never runs (R1.1), so the kind-keyed branches see only device sections there and kind = mode. In server mode a device-kind section runs in a worker (Device nil): engine LocalSourcesOnly (kind device) and resolver.go:60's TunnelControl only narrow it (no OS traffic forwarded, tunnel queries bound to the worker's TUN), engine.go:391 makes no exit of it, and resolver.go:145 checks Device == nil first, so the OS resolver is never pointed from a worker. Keying them on the mode would widen what a map that narrows a server to a device gets
