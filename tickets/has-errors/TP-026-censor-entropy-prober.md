@@ -31,6 +31,19 @@ The lab catches traffic that looks like random bytes and servers that don't beha
 - Resolved (owner, 2026-11-07): the server-hello comparison is one of the M2 gate's handshake-level checks, so it stays on the MVP path.
 - The lab camouflage target the prober and the server-hello comparison point at is built in TP-201 (split from TP-087, 2026-11-08): a lab container reality's listener splices to.
 
+## Review findings
+- [ ] R1.1 (blocker) the prober tags a flow on its first data segment, so a ClientHello spanning two segments (a post-quantum key share, ~1.8 KB) skips the TLS comparison with a false reason and the replay probe sends half a hello: wait for the whole hello (or not a hello, or retainBytes) before tagging; an incomplete hello gets its own reason
+- [ ] R1.2 server-hello's "not compared" (site unreachable, name not in sites, no ServerHello) scores pass: a cell whose case expects a comparison and gets "not compared" or no flag is an error
+- [ ] R1.3 a suspect whose server is the reference returns without a flag, breaking settled(): flag Accept "not probed: the reference itself"; settled() logs accurately when nothing was tagged
+- [ ] R1.4 the "varies" cell checks the blocker per server, not per family: check it per family
+- [ ] R1.5 connEnd compares err.Error() (with addresses and ports), so identical failures never compare alike: compare by errno
+- [ ] R1.6 the upstream tell can't be turned off: module setting upstreamTell "flag" (default) or "report", documented in doc.go
+- [ ] R1.7 "varies" docs (lab.md, results_test.go, RESULTS.md header) still say partial fails; a varies key on a non-"(reference)" row is fatal; doc.go: udp's exemption chance is per link-hour
+- [ ] R1.8 the matrix never shows the prober's TLS comparison or the upstream tell
+- [ ] R1.9 a dropped new-flow snapshot silently clears an entry of the tell: censorRun.healthy fails on any unnoticed snapshot
+- [ ] R1.10 the OpenVPN probe keeps state in a package-level map keyed by a formatted pointer: read the node's state
+- [ ] R1.11 nits: probe helpers into probe.go, parseTimeout placement, endpoints.go → blockedservers.go, Flow.initiator comment, slice expression, nginx packages in lab/Dockerfile, split TestProberSettings, JA3S GREASE comment
+
 ## Log
 - 2026-10-10 created in backlog
 - 2026-10-13 docs (TP-062): prober covers the server-side fingerprint and the upstream-connection tell
@@ -53,3 +66,4 @@ The lab catches traffic that looks like random bytes and servers that don't beha
 - 2026-11-09 lab commit 4f8531c: full make lab-test (GOFLAGS=-p=2 LAB_P=1, exclusive CPU lock): the lab/ phase passed, TestCensorMatrix complete, lab/RESULTS.md regenerated (wireguard × fully-encrypted failed this run, labelled varies); the node phase failed once in TP-087's internal/dataplane/transport/reality TestConformance/ShapingRefused/2 ("reality: TLS handshake: EOF"), which passed 3 of 3 re-run alone (make lab-gotest PKG=./internal/dataplane/transport/reality RUN=TestConformance COUNT=3): a flake in code this ticket doesn't touch, reported, not fixed here
 - 2026-11-09 not verified: reality's rows (TP-201) against these modules; RESULTS.md quotes lab-internal addresses, which change every run
 - 2026-11-09 in-progress → review
+- 2026-11-09 review → has-errors (round 1 findings R1.x)
