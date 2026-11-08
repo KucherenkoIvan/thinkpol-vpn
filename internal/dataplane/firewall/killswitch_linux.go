@@ -22,6 +22,8 @@ const (
 	KillSwitchTable = "thinkpol-killswitch"
 	killSwitchSet4  = "allow4"
 	killSwitchSet6  = "allow6"
+	directSet4      = "direct4"
+	directSet6      = "direct6"
 )
 
 // KillSwitch keeps everything but KillSwitchRules from leaving the
@@ -30,12 +32,16 @@ const (
 //	table inet thinkpol-killswitch {
 //	  set allow4 { type ipv4_addr; flags interval; elements = <Allow's IPv4> }
 //	  set allow6 { type ipv6_addr; flags interval; elements = <Allow's IPv6> }
+//	  set direct4 { type ipv4_addr; flags interval,timeout; timeout 30s; elements = <Direct's IPv4> }
+//	  set direct6 { type ipv6_addr; flags interval,timeout; timeout 30s; elements = <Direct's IPv6> }
 //	  chain output { type filter hook output priority 2147483647; policy accept;
 //	    oifname "lo" accept
 //	    oifname <TUN> accept                                 (connected only)
 //	    meta mark <Mark> accept
 //	    meta nfproto ipv4 ip daddr @allow4 accept
 //	    meta nfproto ipv6 ip6 daddr @allow6 accept
+//	    meta nfproto ipv4 ip daddr @direct4 accept
+//	    meta nfproto ipv6 ip6 daddr @direct6 accept
 //	    meta nfproto ipv4 udp sport 68 udp dport 67 accept   (DHCPv4)
 //	    meta nfproto ipv6 udp sport 546 udp dport 547 accept (DHCPv6)
 //	    icmpv6 type 133-137 ip6 hoplimit 255 accept          (neighbour discovery)
@@ -46,7 +52,10 @@ const (
 //	}
 //
 // Hooked last at output, as the guard's chain is; a packet must pass
-// both, an accept ending only its own chain. The table stays when the
+// both, an accept ending only its own chain. The direct sets' elements
+// expire DirectTimeout after they were put in: every Apply puts them in
+// again, so a dead agent's direct destinations go within DirectTimeout
+// and only the entries (and the LAN) are left. The table stays when the
 // process dies (the crash posture) and when Close isn't called; Close
 // removes it, a fresh kill switch's Close a previous run's.
 type KillSwitch struct {
@@ -111,31 +120,31 @@ func (k *KillSwitch) Apply(ctx context.Context, r KillSwitchRules) error {
 	if err := k.probe(c); err != nil {
 		return err
 	}
-	v4, v6 := intervals(ranges(r.Allow, false)), intervals(ranges(r.Allow, true))
-	if k.applied != nil && k.applied.Equal(r) && wholeTable(c, KillSwitchTable, killSwitchRules(r, 0, 0),
-		wantSet{killSwitchSet4, nftables.TypeIPAddr, v4}, wantSet{killSwitchSet6, nftables.TypeIP6Addr, v6}) {
+	table := &nftables.Table{Family: nftables.TableFamilyINet, Name: KillSwitchTable}
+	sets := killSwitchSets(table, r)
+	if k.applied != nil && k.applied.Equal(r) && wholeTable(c, KillSwitchTable, killSwitchRules(r, 0, 0, 0, 0), wants(sets)...) {
+		// Put the direct sets' elements in again, their timeouts anew.
+		for _, s := range sets[2:] {
+			c.FlushSet(s.set)
+			if err := addElements(c, s.set, s.elems); err != nil {
+				return err
+			}
+		}
+		if err := c.Flush(); err != nil {
+			return fmt.Errorf("firewall: renew the kill switch's direct destinations: %w", err)
+		}
 		return nil
 	}
 	k.applied = nil
-	table := &nftables.Table{Family: nftables.TableFamilyINet, Name: KillSwitchTable}
 	c.AddTable(table)
 	c.DelTable(table)
 	c.AddTable(table)
-	set4 := &nftables.Set{Table: table, Name: killSwitchSet4, KeyType: nftables.TypeIPAddr, Interval: true}
-	set6 := &nftables.Set{Table: table, Name: killSwitchSet6, KeyType: nftables.TypeIP6Addr, Interval: true}
-	for _, s := range []struct {
-		set   *nftables.Set
-		elems []nftables.SetElement
-	}{{set4, v4}, {set6, v6}} {
+	for _, s := range sets {
 		if err := c.AddSet(s.set, nil); err != nil {
 			return fmt.Errorf("firewall: kill switch set: %w", err)
 		}
-		for elems := s.elems; len(elems) > 0; {
-			n := min(len(elems), elementsPerMessage)
-			if err := c.SetAddElements(s.set, elems[:n]); err != nil {
-				return fmt.Errorf("firewall: kill switch set: %w", err)
-			}
-			elems = elems[n:]
+		if err := addElements(c, s.set, s.elems); err != nil {
+			return err
 		}
 	}
 	accept := nftables.ChainPolicyAccept
@@ -144,7 +153,7 @@ func (k *KillSwitch) Apply(ctx context.Context, r KillSwitchRules) error {
 		Name: guardChain, Table: table, Type: nftables.ChainTypeFilter,
 		Hooknum: nftables.ChainHookOutput, Priority: &prio, Policy: &accept,
 	})
-	for _, exprs := range killSwitchRules(r, set4.ID, set6.ID) {
+	for _, exprs := range killSwitchRules(r, sets[0].set.ID, sets[1].set.ID, sets[2].set.ID, sets[3].set.ID) {
 		c.AddRule(&nftables.Rule{Table: table, Chain: chain, Exprs: exprs})
 	}
 	if err := c.Flush(); err != nil {
@@ -188,6 +197,51 @@ func (k *KillSwitch) Close() error {
 	return nil
 }
 
+// ksSet is one of the kill switch's sets and its elements.
+type ksSet struct {
+	set   *nftables.Set
+	elems []nftables.SetElement
+}
+
+// killSwitchSets are the sets for r: allow4, allow6, then the expiring
+// direct4 and direct6.
+func killSwitchSets(table *nftables.Table, r KillSwitchRules) []ksSet {
+	set := func(name string, key nftables.SetDatatype, expire bool) *nftables.Set {
+		s := &nftables.Set{Table: table, Name: name, KeyType: key, Interval: true}
+		if expire {
+			s.HasTimeout, s.Timeout = true, DirectTimeout
+		}
+		return s
+	}
+	return []ksSet{
+		{set(killSwitchSet4, nftables.TypeIPAddr, false), intervals(ranges(r.Allow, false))},
+		{set(killSwitchSet6, nftables.TypeIP6Addr, false), intervals(ranges(r.Allow, true))},
+		{set(directSet4, nftables.TypeIPAddr, true), intervals(ranges(r.Direct, false))},
+		{set(directSet6, nftables.TypeIP6Addr, true), intervals(ranges(r.Direct, true))},
+	}
+}
+
+// wants are sets as wholeTable checks them.
+func wants(sets []ksSet) []wantSet {
+	out := make([]wantSet, len(sets))
+	for i, s := range sets {
+		out[i] = wantSet{s.set.Name, s.set.KeyType, s.elems}
+	}
+	return out
+}
+
+// addElements adds elems to set in messages of elementsPerMessage.
+func addElements(c *nftables.Conn, set *nftables.Set, elems []nftables.SetElement) error {
+	for len(elems) > 0 {
+		n := min(len(elems), elementsPerMessage)
+		if err := c.SetAddElements(set, elems[:n]); err != nil {
+			return fmt.Errorf("firewall: kill switch set %s: %w", set.Name, err)
+		}
+		elems = elems[n:]
+	}
+	return nil
+}
+
 // ranges are s's ranges of one family.
 func ranges(s *lists.Set, v6 bool) []lists.Range {
 	var out []lists.Range
@@ -201,7 +255,7 @@ func ranges(s *lists.Set, v6 bool) []lists.Range {
 
 // killSwitchRules are the output chain's rules, in order (see
 // KillSwitch), looking the sets up by name and batch id.
-func killSwitchRules(r KillSwitchRules, set4, set6 uint32) [][]expr.Any {
+func killSwitchRules(r KillSwitchRules, set4, set6, direct4, direct6 uint32) [][]expr.Any {
 	accept := &expr.Verdict{Kind: expr.VerdictAccept}
 	rules := [][]expr.Any{append(oifname("lo"), accept)}
 	if r.TUN != "" {
@@ -222,6 +276,14 @@ func killSwitchRules(r KillSwitchRules, set4, set6 uint32) [][]expr.Any {
 		append(nfproto(unix.NFPROTO_IPV6),
 			&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 24, Len: 16},
 			&expr.Lookup{SourceRegister: 1, SetName: killSwitchSet6, SetID: set6},
+			accept),
+		append(nfproto(unix.NFPROTO_IPV4),
+			&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 16, Len: 4},
+			&expr.Lookup{SourceRegister: 1, SetName: directSet4, SetID: direct4},
+			accept),
+		append(nfproto(unix.NFPROTO_IPV6),
+			&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 24, Len: 16},
+			&expr.Lookup{SourceRegister: 1, SetName: directSet6, SetID: direct6},
 			accept),
 		append(udpPorts(unix.NFPROTO_IPV4, 68, 67), accept),
 		append(udpPorts(unix.NFPROTO_IPV6, 546, 547), accept),

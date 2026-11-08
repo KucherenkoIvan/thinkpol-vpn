@@ -166,6 +166,18 @@ func TestKillSwitchUnderSystemd(t *testing.T) {
 			}
 		}
 	}
+	// expired waits for a dead agent's direct destinations to expire
+	// (firewall.DirectTimeout): the lab's networks are private, so every
+	// preset sends them direct while connected.
+	expired := func(when string) {
+		t.Helper()
+		lab.Eventually(t, 60*time.Second, func() error {
+			if reaches(foreign[0], false) {
+				return fmt.Errorf("%s: %v still answers", when, foreign[0])
+			}
+			return nil
+		})
+	}
 	// crashHeld kills the agent with systemd's restart held off, runs
 	// check while it is dead, then lets systemd start it again.
 	crashHeld := func(check func()) {
@@ -218,6 +230,7 @@ func TestKillSwitchUnderSystemd(t *testing.T) {
 	ping(t, dev, s4)
 	crashHeld(func() {
 		wantTable("on, crashed", true, true)
+		expired("on, crashed")
 		confined("on, crashed", false)
 	})
 	state("connected")
@@ -239,6 +252,7 @@ func TestKillSwitchUnderSystemd(t *testing.T) {
 	wantTable("everything, connected", true, true)
 	crashHeld(func() {
 		wantTable("everything, crashed", true, true)
+		expired("everything, crashed")
 		confined("everything, crashed", false)
 	})
 	state("connected")

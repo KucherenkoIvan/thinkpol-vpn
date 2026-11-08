@@ -65,9 +65,10 @@ type Node struct {
 	// takes settingsMu before it reads rulesRequests.
 	presetMu      sync.Mutex
 	rulesRequests chan rulesRequest
-	// settingsChanged wakes the node's goroutine after a kill switch
-	// toggle changed (SetKillSwitch, SetAllowLAN).
-	settingsChanged chan struct{}
+	// killSwitchRequests asks the node's goroutine to act on a kill
+	// switch toggle stored (SetKillSwitch, SetAllowLAN); it closes the
+	// channel sent once it did.
+	killSwitchRequests chan chan struct{}
 	// ks keeps a device's kill switch, on the node's goroutine.
 	ks killSwitchKeeper
 }
@@ -106,8 +107,8 @@ func Prepare(cfg Config, logs Logs, plat Platform) (*Node, error) {
 	n := &Node{
 		cfg: cfg, state: st, logs: logs, plat: plat, dnsUpstreams: upstreams,
 		requests: make(chan connectRequest), stopped: make(chan struct{}), rulesRequests: make(chan rulesRequest),
-		settingsChanged: make(chan struct{}, 1),
-		ks:              killSwitchKeeper{newKS: plat.NewKillSwitch, log: logs.Logger},
+		killSwitchRequests: make(chan chan struct{}),
+		ks:                 killSwitchKeeper{newKS: plat.NewKillSwitch, log: logs.Logger},
 	}
 	connect, recorded := startConnected(cfg, st.Device.ConnectOnBoot, plat.ConnectRecord, logs)
 	mismatch := modeMismatch(cfg.Mode, st)
@@ -536,8 +537,8 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 		events:        n.emit,
 		rulesRequests: n.rulesRequests,
 
-		killSwitch:      n.enforceKillSwitch,
-		settingsChanged: n.settingsChanged,
+		killSwitch:         n.enforceKillSwitch,
+		killSwitchRequests: n.killSwitchRequests,
 	}
 	n.settingsMu.Lock()
 	dp.Rules = n.device.Rules
@@ -629,8 +630,10 @@ func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
 			return false
 		case <-reapply.C:
 			keepKillSwitch(ctx, !n.conn.disconnected())
-		case <-n.settingsChanged:
+		case done := <-n.killSwitchRequests:
 			keepKillSwitch(ctx, !n.conn.disconnected())
+			publish()
+			close(done)
 		case req := <-n.rulesRequests:
 			// Stored already: the data plane starts with them.
 			keepKillSwitch(ctx, !n.conn.disconnected())

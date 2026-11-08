@@ -45,7 +45,8 @@ func downRules(t *testing.T) KillSwitchRules {
 func upRules(t *testing.T) KillSwitchRules {
 	return KillSwitchRules{
 		TUN: "utun7", Mark: routetable.Mark,
-		Allow:     set(t, "203.0.113.50/32", "2001:db8:e::50/128", "198.51.100.0/24", "2001:db8:d0::/48"),
+		Allow:     set(t, "203.0.113.50/32", "2001:db8:e::50/128"),
+		Direct:    set(t, "198.51.100.0/24", "2001:db8:d0::/48"),
 		Upstreams: aps("[2001:db8:53::1]:53", "192.0.2.53:53", "[fe80::1%en0]:53"),
 	}
 }
@@ -129,6 +130,9 @@ func TestKillSwitchConnectedShape(t *testing.T) {
 	k := r.killSwitch()
 	if err := k.Apply(context.Background(), upRules(t)); err != nil {
 		t.Fatal(err)
+	}
+	if got := strings.Join(r.pf.anchors[KillSwitchAnchor].tables[killSwitchTable], " "); got != "198.51.100.0/24 203.0.113.50/32 2001:db8:e::50/128 2001:db8:d0::/48" {
+		t.Errorf("the table holds %s, want the entries and the direct destinations", got)
 	}
 	rules := strings.Join(r.pf.anchors[KillSwitchAnchor].rules, "\n")
 	for _, w := range []string{

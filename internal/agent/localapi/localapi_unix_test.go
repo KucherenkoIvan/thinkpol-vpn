@@ -84,7 +84,7 @@ func (n *fakeNode) SetConnectOnBoot(on bool) error {
 	return nil
 }
 
-func (n *fakeNode) SetKillSwitch(on bool) error {
+func (n *fakeNode) SetKillSwitch(_ context.Context, on bool) error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if n.st.Mode == agent.ModeServer {
@@ -94,7 +94,7 @@ func (n *fakeNode) SetKillSwitch(on bool) error {
 	return nil
 }
 
-func (n *fakeNode) SetAllowLAN(on bool) error {
+func (n *fakeNode) SetAllowLAN(_ context.Context, on bool) error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if n.st.Mode == agent.ModeServer {

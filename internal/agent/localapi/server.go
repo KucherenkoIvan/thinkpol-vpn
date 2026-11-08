@@ -25,8 +25,8 @@ type Node interface {
 	Disconnect(ctx context.Context) error
 	SetRulePreset(ctx context.Context, preset string) error
 	SetConnectOnBoot(on bool) error
-	SetKillSwitch(on bool) error
-	SetAllowLAN(on bool) error
+	SetKillSwitch(ctx context.Context, on bool) error
+	SetAllowLAN(ctx context.Context, on bool) error
 	Diagnose(ctx context.Context, host bool) agent.Diagnostics
 }
 
@@ -234,15 +234,15 @@ func (s *server) SetConnectOnBoot(_ context.Context, req *localapiv1.SetConnectO
 	return &localapiv1.SetConnectOnBootResponse{Status: statusProto(s.node.Status())}, nil
 }
 
-func (s *server) SetKillSwitch(_ context.Context, req *localapiv1.SetKillSwitchRequest) (*localapiv1.SetKillSwitchResponse, error) {
-	if err := s.node.SetKillSwitch(req.GetOn()); err != nil {
+func (s *server) SetKillSwitch(ctx context.Context, req *localapiv1.SetKillSwitchRequest) (*localapiv1.SetKillSwitchResponse, error) {
+	if err := s.node.SetKillSwitch(ctx, req.GetOn()); err != nil {
 		return nil, nodeError(err)
 	}
 	return &localapiv1.SetKillSwitchResponse{Status: statusProto(s.node.Status())}, nil
 }
 
-func (s *server) SetAllowLAN(_ context.Context, req *localapiv1.SetAllowLANRequest) (*localapiv1.SetAllowLANResponse, error) {
-	if err := s.node.SetAllowLAN(req.GetOn()); err != nil {
+func (s *server) SetAllowLAN(ctx context.Context, req *localapiv1.SetAllowLANRequest) (*localapiv1.SetAllowLANResponse, error) {
+	if err := s.node.SetAllowLAN(ctx, req.GetOn()); err != nil {
 		return nil, nodeError(err)
 	}
 	return &localapiv1.SetAllowLANResponse{Status: statusProto(s.node.Status())}, nil

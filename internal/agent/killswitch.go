@@ -86,11 +86,10 @@ func (s killSwitchSettings) rules(v killSwitchView) firewall.KillSwitchRules {
 		}
 	}
 	r := firewall.KillSwitchRules{Mark: routetable.Mark}
-	if v.connected != nil {
-		b.AddSet(v.connected.Direct)
-		r.TUN, r.Upstreams = v.tun, slices.Clone(v.connected.Upstreams)
-	}
 	r.Allow, _ = b.Build()
+	if v.connected != nil {
+		r.TUN, r.Direct, r.Upstreams = v.tun, v.connected.Direct, slices.Clone(v.connected.Upstreams)
+	}
 	return r
 }
 
@@ -227,22 +226,23 @@ func (n *Node) enforceKillSwitch(ctx context.Context, v killSwitchView) {
 }
 
 // SetKillSwitch sets a device's kill switch toggle, stored in DeviceFile
-// (only the service writes it), and puts it in effect at once.
-// ErrServerMode on a server.
-func (n *Node) SetKillSwitch(on bool) error {
-	return n.setToggle(func(s *DeviceSettings) { s.KillSwitch = &on }, "kill switch set", "kill_switch", on)
+// (only the service writes it), and returns once the node acted on it
+// (Status shows what it did). ErrServerMode on a server.
+func (n *Node) SetKillSwitch(ctx context.Context, on bool) error {
+	return n.setToggle(ctx, func(s *DeviceSettings) { s.KillSwitch = &on }, "kill switch set", "kill_switch", on)
 }
 
 // SetAllowLAN sets whether a device's kill switch lets the LAN out
-// (firewall.LAN), stored in DeviceFile, in effect at once. ErrServerMode
-// on a server.
-func (n *Node) SetAllowLAN(on bool) error {
-	return n.setToggle(func(s *DeviceSettings) { s.AllowLAN = &on }, "allow-LAN set", "allow_lan", on)
+// (firewall.LAN), stored in DeviceFile, and returns once the node acted
+// on it. ErrServerMode on a server.
+func (n *Node) SetAllowLAN(ctx context.Context, on bool) error {
+	return n.setToggle(ctx, func(s *DeviceSettings) { s.AllowLAN = &on }, "allow-LAN set", "allow_lan", on)
 }
 
-// setToggle stores a toggle set changes, then has the node's goroutine
-// act on it.
-func (n *Node) setToggle(set func(*DeviceSettings), msg, key string, on bool) error {
+// setToggle stores the toggle set changes, then has the node's goroutine
+// act on it and waits for that; a node that stopped takes it at its next
+// start.
+func (n *Node) setToggle(ctx context.Context, set func(*DeviceSettings), msg, key string, on bool) error {
 	if n.Mode() == ModeServer {
 		return ErrServerMode
 	}
@@ -257,9 +257,18 @@ func (n *Node) setToggle(set func(*DeviceSettings), msg, key string, on bool) er
 	s := n.killSwitchSettings()
 	n.report.set(func(p *report) { p.killSwitch.On, p.killSwitch.AllowLAN = s.on, s.allowLAN })
 	n.logs.Info(msg, key, onOff(on))
+	done := make(chan struct{})
 	select {
-	case n.settingsChanged <- struct{}{}:
-	default:
+	case n.killSwitchRequests <- done:
+	case <-n.stopped:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
-	return nil
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }

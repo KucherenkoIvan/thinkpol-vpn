@@ -50,10 +50,13 @@ func TestKillSwitchSettingsDecide(t *testing.T) {
 		t.Errorf("down shape %+v %v", down, down.Allow.Prefixes())
 	}
 	conn := killSwitchSettings{allowLAN: true}.rules(killSwitchView{entries: []netip.Addr{entry}, connected: up, tun: "thinkpol0"})
-	for _, a := range []string{"203.0.113.50", "198.51.100.7", "2001:db8:d0::7", "10.1.2.3", "fe80::1", "ff02::fb"} {
+	for _, a := range []string{"203.0.113.50", "10.1.2.3", "fe80::1", "ff02::fb"} {
 		if !conn.Allow.Contains(netip.MustParseAddr(a)) {
 			t.Errorf("the connected shape with allow-LAN doesn't let %s out", a)
 		}
+	}
+	if !conn.Direct.Equal(direct) || conn.Allow.Contains(netip.MustParseAddr("198.51.100.7")) {
+		t.Errorf("the direct destinations aren't the connected shape's Direct alone: %v, %v", conn.Direct.Prefixes(), conn.Allow.Prefixes())
 	}
 	if conn.Allow.Contains(netip.MustParseAddr("203.0.113.7")) || conn.TUN != "thinkpol0" || len(conn.Upstreams) != 1 {
 		t.Errorf("connected shape %+v %v", conn, conn.Allow.Prefixes())
@@ -122,7 +125,7 @@ func TestTheKillSwitchFollowsItsToggle(t *testing.T) {
 	if host.rules() != nil {
 		t.Fatal("a kill switch in place with the toggle off, disconnected")
 	}
-	if err := b.node.SetKillSwitch(true); err != nil {
+	if err := b.node.SetKillSwitch(ctx, true); err != nil {
 		t.Fatal(err)
 	}
 	down := inPlace(t, host, "down")
@@ -138,15 +141,18 @@ func TestTheKillSwitchFollowsItsToggle(t *testing.T) {
 	if up := inPlace(t, host, "connected"); !up.Allow.Contains(s.listen.Addr()) {
 		t.Errorf("connected shape %+v", up)
 	}
-	if err := b.node.SetAllowLAN(true); err != nil {
+	if err := b.node.SetAllowLAN(ctx, true); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, func() bool { r := host.rules(); return r != nil && r.Allow.Contains(netip.MustParseAddr("192.168.1.1")) })
+	eventually(t, func() bool {
+		r := host.rules()
+		return r != nil && r.Allow.Contains(netip.MustParseAddr("192.168.1.1"))
+	})
 	if err := b.node.Disconnect(ctx); err != nil {
 		t.Fatal(err)
 	}
 	inPlace(t, host, "down")
-	if err := b.node.SetKillSwitch(false); err != nil {
+	if err := b.node.SetKillSwitch(ctx, false); err != nil {
 		t.Fatal(err)
 	}
 	inPlace(t, host, "none")
@@ -247,7 +253,7 @@ func TestAFailingKillSwitchIsReportedAndRetried(t *testing.T) {
 	b.connection(t, Connected)
 	eventually(t, func() bool { st := b.node.Status().KillSwitch; return !st.Enforced && st.Error == "apply_failed" })
 	host.failWith(nil)
-	if err := b.node.SetAllowLAN(false); err != nil { // any change retries at once
+	if err := b.node.SetAllowLAN(context.Background(), false); err != nil { // any change retries at once
 		t.Fatal(err)
 	}
 	inPlace(t, host, "connected")
@@ -283,7 +289,13 @@ func TestKillSwitchSettingsComeFromTheNodeThenTheMember(t *testing.T) {
 	if err != nil || strings.Contains(string(data), "kill_switch") || strings.Contains(string(data), "allow_lan") {
 		t.Errorf("unset toggles written: %s, %v", data, err)
 	}
-	if err := n.SetKillSwitch(false); err != nil {
+	off := false
+	n.settingsMu.Lock()
+	next := n.device
+	next.KillSwitch = &off
+	err = n.storeDevice(next)
+	n.settingsMu.Unlock()
+	if err != nil {
 		t.Fatal(err)
 	}
 	if ks := n.killSwitchSettings(); ks.on || !ks.allowLAN {

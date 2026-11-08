@@ -208,7 +208,7 @@ func TestKillSwitchLetsOutOnlyEntriesWhileDown(t *testing.T) {
 	check("down, allow-LAN", downProbes(true))
 
 	// Connected: the TUN and the direct destinations too.
-	up := firewall.KillSwitchRules{TUN: "thinkpol0", Mark: routetable.Mark, Allow: set(t, entry4+"/32", entry6+"/128", domestic6+"/128")}
+	up := firewall.KillSwitchRules{TUN: "thinkpol0", Mark: routetable.Mark, Allow: set(t, entry4+"/32", entry6+"/128"), Direct: set(t, domestic6+"/128")}
 	if err := k.Apply(ctx, up); err != nil {
 		t.Fatal(err)
 	}
@@ -232,7 +232,7 @@ func TestKillSwitchLetsOutOnlyEntriesWhileDown(t *testing.T) {
 	if after := p.ksHandles(t); after != before {
 		t.Errorf("applying the same rules rebuilt the chain: handles %s, then %s", before, after)
 	}
-	p.nft(t, "delete", "element", "inet", firewall.KillSwitchTable, "allow6", "{", domestic6, "}")
+	p.nft(t, "delete", "element", "inet", firewall.KillSwitchTable, "direct6", "{", domestic6, "}")
 	if err := k.Apply(ctx, up); err != nil {
 		t.Fatal(err)
 	}
@@ -264,6 +264,39 @@ func TestKillSwitchLetsOutOnlyEntriesWhileDown(t *testing.T) {
 	}
 	if err := fresh.Apply(ctx, up); err == nil {
 		t.Error("Apply after Close succeeded")
+	}
+}
+
+// The direct destinations expire DirectTimeout after the last Apply: a
+// dead agent's kill switch lets out only the entries; an Apply in time
+// renews them.
+func TestKillSwitchDirectDestinationsExpireWithoutTheAgent(t *testing.T) {
+	p := ksPair(t)
+	k := p.killSwitch(t)
+	ctx := context.Background()
+	up := firewall.KillSwitchRules{TUN: "thinkpol0", Mark: routetable.Mark, Allow: set(t, entry6+"/128"), Direct: set(t, domestic6+"/128")}
+	if err := k.Apply(ctx, up); err != nil {
+		t.Fatal(err)
+	}
+	// Renewed halfway: still there past the first deadline.
+	time.Sleep(firewall.DirectTimeout / 2)
+	if err := k.Apply(ctx, up); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(firewall.DirectTimeout/2 + 5*time.Second)
+	if !p.ping(t, domestic6) {
+		t.Fatal("a renewed direct destination expired")
+	}
+	// No Apply since (the agent died): gone within DirectTimeout.
+	deadline := time.Now().Add(firewall.DirectTimeout)
+	for p.ping(t, domestic6) {
+		if time.Now().After(deadline) {
+			t.Fatal("the direct destination didn't expire")
+		}
+		time.Sleep(time.Second)
+	}
+	if !p.ping(t, entry6) || !strings.Contains(p.table(t), firewall.KillSwitchTable) {
+		t.Error("the entry went with the direct destinations")
 	}
 }
 

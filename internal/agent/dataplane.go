@@ -102,11 +102,11 @@ type DataPlane struct {
 	// the data plane runs (serveSpace); latest-wins. Nil without one.
 	dnsUpstreams <-chan []netip.AddrPort
 	// killSwitch keeps a device's kill switch for the data plane's state
-	// (Node.enforceKillSwitch; nil in a worker), at every change, when
-	// settingsChanged says its toggles changed, and every
-	// killSwitchReapply.
-	killSwitch      func(ctx context.Context, v killSwitchView)
-	settingsChanged <-chan struct{}
+	// (Node.enforceKillSwitch; nil in a worker), at every change, every
+	// killSwitchReapply, and when killSwitchRequests asks after a toggle
+	// changed (closing the channel it sent once done).
+	killSwitch         func(ctx context.Context, v killSwitchView)
+	killSwitchRequests <-chan chan struct{}
 
 	// tuning is what tests change; production leaves it zero.
 	tuning tuning
@@ -506,7 +506,10 @@ func (r *runner) loop(ctx context.Context) error {
 		case <-status.C:
 			r.logStatus()
 		case <-reapply.C:
-		case <-r.dp.settingsChanged:
+		case done := <-r.dp.killSwitchRequests:
+			r.enforceKillSwitch(ctx, !r.conn.disconnected())
+			r.publish()
+			close(done)
 		case req := <-r.dp.requests:
 			r.request(ctx, req)
 		case ups := <-r.dp.dnsUpstreams:

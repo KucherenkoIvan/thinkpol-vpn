@@ -12,6 +12,7 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/trusteddir"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/lists"
 )
 
 // The kill switch's pf objects: an anchor under Apple's hook that sorts
@@ -127,7 +128,11 @@ func (k *KillSwitch) Apply(ctx context.Context, r KillSwitchRules) (err error) {
 // load loads r's anchor and reads it back: the rules checked for their
 // words (checkListed), the table entry for entry.
 func (k *KillSwitch) load(ctx context.Context, r KillSwitchRules) (*appliedKillSwitch, error) {
-	table, upstreams := r.Allow.Prefixes(), killSwitchUpstreams(r.Upstreams)
+	var b lists.Builder
+	b.AddSet(r.Allow)
+	b.AddSet(r.Direct)
+	all, _ := b.Build()
+	table, upstreams := all.Prefixes(), killSwitchUpstreams(r.Upstreams)
 	rules := killSwitchRules(r.TUN, upstreams)
 	if _, err := k.pf.run(ctx, []byte(tableText(killSwitchTable, table, rules)), "-a", KillSwitchAnchor, "-f", "-", "-o", "none"); err != nil {
 		return nil, fmt.Errorf("firewall: load the kill switch: %w", err)
