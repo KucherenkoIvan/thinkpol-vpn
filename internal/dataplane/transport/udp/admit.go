@@ -3,6 +3,8 @@ package udp
 import (
 	"crypto/cipher"
 	"time"
+
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 )
 
 // admitLadder is the authenticate-and-admit ladder the package doc describes
@@ -133,7 +135,7 @@ func (t *senderHistories) historyOf(secret []byte) *senders {
 // forgotten.
 func (t *senderHistories) follow(set *peerSet, now time.Time) {
 	for key, s := range t.retired {
-		if !sentFresh(s.newest, now) {
+		if !transport.FreshUnix(s.newest, now) {
 			delete(t.retired, key)
 		}
 	}

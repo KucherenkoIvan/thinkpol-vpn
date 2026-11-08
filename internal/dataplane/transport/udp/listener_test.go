@@ -472,9 +472,9 @@ func TestNoncesNeverRepeat(t *testing.T) {
 // until the freshness check would reject that time.
 func TestNineRedialsThenQuietThenOldest(t *testing.T) {
 	f := newFixture(t)
-	// Nodes' clocks may be off by maxClockSkew; the worst case for the
+	// Nodes' clocks may be off by transport.MaxClockSkew; the worst case for the
 	// replay memory is a sender at the full skew ahead.
-	skewed := New(Options{Now: (&clock{off: maxClockSkew}).now})
+	skewed := New(Options{Now: (&clock{off: transport.MaxClockSkew}).now})
 	var server transport.Link
 	var got <-chan []byte
 	for i := range 9 {
@@ -492,7 +492,7 @@ func TestNineRedialsThenQuietThenOldest(t *testing.T) {
 
 	// Past one skew the oldest would be forgotten if the memory ran on
 	// the receiver's clock alone; its datagram is fresh until two.
-	f.clock.advance(senderTakeover + maxClockSkew + 15*time.Second)
+	f.clock.advance(senderTakeover + transport.MaxClockSkew + 15*time.Second)
 	f.tap.rebind()
 	before := f.listener.Counters()
 	for _, d := range up {
@@ -659,7 +659,7 @@ func TestAnEvictedSenderThatKeepsSendingStaysRemembered(t *testing.T) {
 	// The sender's clock is ahead by the full allowed skew, and moves
 	// with the fixture's, so its sealed send times advance as the
 	// listener's clock is moved forward.
-	skewed := New(Options{Now: func() time.Time { return f.clock.now().Add(maxClockSkew) }})
+	skewed := New(Options{Now: func() time.Time { return f.clock.now().Add(transport.MaxClockSkew) }})
 	first := f.dialWith(skewed)
 	write(t, first, "first")
 	server := f.accept()
@@ -694,7 +694,7 @@ func TestAnEvictedSenderThatKeepsSendingStaysRemembered(t *testing.T) {
 	// Forgotten ten minutes after the eviction, the id comes back while
 	// the captured datagram — sealed thirty seconds later on a clock a
 	// skew ahead — is fresh for another skew yet.
-	f.clock.advance(2*maxClockSkew - 15*time.Second)
+	f.clock.advance(2*transport.MaxClockSkew - 15*time.Second)
 	f.tap.rebind()
 	extra := f.dialWith(skewed)
 	write(t, extra, "extra")

@@ -187,7 +187,7 @@ func TestSealOpenAndTamper(t *testing.T) {
 	if err != nil || o.sender != sender || o.counter != 7 || o.packets != 1 || !bytes.Equal(firstFrame(o), packet) || o.sent != uint32(now.Unix()) {
 		t.Fatalf("open: %+v %v", o, err)
 	}
-	if !o.fresh(now.Add(maxClockSkew)) || o.fresh(now.Add(maxClockSkew+2*time.Second)) || o.fresh(now.Add(-maxClockSkew-2*time.Second)) {
+	if !o.fresh(now.Add(transport.MaxClockSkew)) || o.fresh(now.Add(transport.MaxClockSkew+2*time.Second)) || o.fresh(now.Add(-transport.MaxClockSkew-2*time.Second)) {
 		t.Error("freshness doesn't follow the five-minute bound")
 	}
 	again := seal(nil, newAEAD(secret, toListener), id, sender, now, 7, packet, transport.Padding{})
@@ -345,12 +345,12 @@ func TestFreshnessHoldsAcrossTheWrap(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, skew := range []time.Duration{0, 20 * time.Second, -20 * time.Second, maxClockSkew, -maxClockSkew} {
+		for _, skew := range []time.Duration{0, 20 * time.Second, -20 * time.Second, transport.MaxClockSkew, -transport.MaxClockSkew} {
 			if !o.fresh(sent.Add(skew)) {
 				t.Errorf("sent %v, received %v later: stale", sent.UTC(), skew)
 			}
 		}
-		for _, skew := range []time.Duration{maxClockSkew + 2*time.Second, -maxClockSkew - 2*time.Second, 24 * time.Hour} {
+		for _, skew := range []time.Duration{transport.MaxClockSkew + 2*time.Second, -transport.MaxClockSkew - 2*time.Second, 24 * time.Hour} {
 			if o.fresh(sent.Add(skew)) {
 				t.Errorf("sent %v, received %v later: fresh", sent.UTC(), skew)
 			}

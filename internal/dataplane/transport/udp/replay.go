@@ -1,6 +1,10 @@
 package udp
 
-import "time"
+import (
+	"time"
+
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
+)
 
 // replayWindow accepts each counter at most once, and none older than the
 // window behind the highest seen (a bitmap ring, as in RFC 6479). Only
@@ -121,7 +125,7 @@ func (e *evictedSenders) expire(now time.Time) {
 	// entry behind a fresh head lingers until the head ages past it: at
 	// most maxEvicted entries, each forgotten once no datagram sealed at
 	// its newest send time could still be fresh.
-	for e.size > 0 && !sentFresh(e.ring[e.head].sent, now) {
+	for e.size > 0 && !transport.FreshUnix(e.ring[e.head].sent, now) {
 		e.pop()
 	}
 }

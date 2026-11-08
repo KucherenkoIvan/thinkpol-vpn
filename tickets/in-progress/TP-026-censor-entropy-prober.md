@@ -29,6 +29,7 @@ The lab catches traffic that looks like random bytes and servers that don't beha
 ## Notes
 - The JA3S/JA4S server-hello comparison is on the MVP path only if D6 requires it (open, 2026-11-07).
 - Resolved (owner, 2026-11-07): the server-hello comparison is one of the M2 gate's handshake-level checks, so it stays on the MVP path.
+- The lab camouflage target the prober and the server-hello comparison point at is built in TP-201 (split from TP-087, 2026-11-08): a lab container reality's listener splices to.
 
 ## Log
 - 2026-10-10 created in backlog
@@ -37,6 +38,7 @@ The lab catches traffic that looks like random bytes and servers that don't beha
 - 2026-10-15 depends_on TP-089 (split from TP-024 review)
 - 2026-11-07 notes (owner's MVP cut): the JA3S/JA4S comparison's place on the MVP path is open
 - 2026-11-07 notes: the server-hello comparison stays on the MVP path (owner, 2026-11-07)
+- 2026-11-08 notes: the lab camouflage target the prober and server-hello comparison point at is built in TP-201
 - 2026-11-09 backlog → in-progress, owner: agent-tp-026
 - 2026-11-09 impl: lab/censor gains fully-encrypted (Wu et al.'s five exemptions on a connection's client's first data, TCP stream start and UDP first datagram; drop pinned, or tagOnly for the prober), prober (passive+active: replayed, random 3/16/49/221/1000-byte and own-TLS-handshake probes compared with a reference site; the upstream tell; a found-out server blocked by address and port; UDP suspects flagged Accept "not probed") and server-hello (JA3S, JA4S, version, cipher, extension order, ALPN of a connection's ServerHello against the site's answer to the same ClientHello, the site by name from a sites setting); Flow.Initiator; helloMessage reads ServerHellos too
 - 2026-11-09 matrix: cases fully-encrypted, active prober and server-hello (the last two in lab.Upstream with nginx as the camouflage site; cells with an active module probe twice and score the probe after its verdicts, censorCase.settle; their cells quote the module's verdict); reference row random-tcp (socat echo fed random bytes); the https control row now serves nginx (same server and settings as the camouflage site); lab/Dockerfile pins nginx 1.22.1-9+deb12u10 and adds socat
