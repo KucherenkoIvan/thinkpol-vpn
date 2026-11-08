@@ -112,7 +112,7 @@ func TestHealthWithAnExitThatNeverHandshakes(t *testing.T) {
 	servers := netip.PrefixFrom(inet4, 24).Masked().String()
 	for name, n := range nodes {
 		space.install(t, n, name, envelope)
-		up[name] = n.Start(t, "thinkpol", "up", "-egress-allowed", servers)
+		up[name] = n.Start(t, upFor(name, "-egress-allowed", servers)...)
 	}
 	waitLog(t, up["device-a"], applied(version))
 

@@ -64,3 +64,4 @@ None named.
 - 2026-11-09 tests: TestExitsAreGradedByTheirHandshakes (+ no initiation since the hop came up → ok; given up while the hop stayed up → down; both families via de, de dead → down; IPv6 via de, de dead → down), TestDefaultExitsCarryTheBackgroundRoutes (dataplane), TestBackgroundIsWhatTakesTheMostAddresses (rules), TestTheLastInitiationMovesWithEachOne (wg). Mutations, each caught: the last-initiation check dropped; DefaultExits from the default rule's action; LastInitiation set only once; Background as the default rule's action
 - 2026-11-09 `make lint`, `make test` green (GOFLAGS=-p=2, under the CPU lock); no lab run: only the grading and status changed, not lab-tested behaviour
 - 2026-11-09 review → done (merged)
+- 2026-11-09 lab fix on rewrite: the health test's servers start in server mode (TP-111 fallout, found by TP-168's lab)
