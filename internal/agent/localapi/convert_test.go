@@ -137,7 +137,7 @@ func TestEveryCounterHasAName(t *testing.T) {
 		}
 	}
 	dp.InterfaceReapplies = n + 1
-	got := dataPlaneProto(&dp, 0).GetCounters()
+	got := dataPlaneProto(&dp, 0, "").GetCounters()
 	seen := map[uint64]bool{}
 	for _, v := range got {
 		seen[v] = true
@@ -148,7 +148,7 @@ func TestEveryCounterHasAName(t *testing.T) {
 		}
 	}
 	dp.RouteTable.Enforced = false
-	for name := range dataPlaneProto(&dp, 0).GetCounters() {
+	for name := range dataPlaneProto(&dp, 0, "").GetCounters() {
 		if strings.HasPrefix(name, "route_table.") {
 			t.Errorf("%s outside route-table mode", name)
 		}
