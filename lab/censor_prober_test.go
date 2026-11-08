@@ -395,14 +395,17 @@ func (c *censorRun) settled(t *testing.T, l *lab.Lab) error {
 	}
 }
 
-// judged is module's first flag of a flow of server-1, its reason, "" for
-// none.
+// judged is module's first flag of a flow between device-a and server-1,
+// its reason, "" for none: not of server-1's own connections (a relay's
+// to the site, which the prober's probes cause too).
 func (c *censorRun) judged(t *testing.T, l *lab.Lab, module string) string {
 	t.Helper()
-	isServer := isServer1(l)
+	isServer, dev := isServer1(l), l.Node(lab.DeviceA)
+	isDevice := func(a netip.Addr) bool { return a == dev.IPv4(lab.NetDevices) || a == dev.IPv6(lab.NetDevices) }
 	var why string
 	c.logged(t, func(e verdictLine) bool {
-		if e.Event == censor.EventFlag && e.Module == module && (isServer(e.Key.Src) || isServer(e.Key.Dst)) {
+		if e.Event == censor.EventFlag && e.Module == module &&
+			(isServer(e.Key.Src) && isDevice(e.Key.Dst) || isDevice(e.Key.Src) && isServer(e.Key.Dst)) {
 			why = fmt.Sprintf("%s, %s", e.Verdict, e.Reason)
 			return true
 		}

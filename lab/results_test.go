@@ -253,8 +253,8 @@ type censorCase struct {
 	// settle probes twice, the cell scoring the second, once the active
 	// modules have flagged every flow of server-1 a module tagged.
 	settle bool
-	// report names the module whose first flag of a connection to
-	// server-1 the cell's detail quotes.
+	// report names the module whose first flag of a connection from
+	// device-a to server-1 the cell's detail quotes.
 	report string
 	// verdictSays holds the rows whose report verdict must say something,
 	// the comparison the cell is for: a verdict without it ("not
