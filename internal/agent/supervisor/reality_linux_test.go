@@ -171,10 +171,12 @@ func (c recordingConn) Read(p []byte) (int, error) {
 }
 
 // receivedWhole waits for a connection of the target's to have received
-// exactly stream.
-func (tg *realityTarget) receivedWhole(stream []byte) bool {
+// exactly what stream returns (read again each time: a tap may still be
+// passing its last bytes on).
+func (tg *realityTarget) receivedWhole(stream func() []byte) bool {
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
+		stream := stream()
 		tg.mu.Lock()
 		for _, b := range tg.conns {
 			if len(stream) > 0 && bytes.Equal(b.Bytes(), stream) {
@@ -374,7 +376,7 @@ func TestRealitySpacesShareAListener(t *testing.T) {
 	if _, err := dial(tp.ln.Addr().String(), wrong); !errors.Is(err, reality.ErrNotAuthenticated) {
 		t.Fatalf("a wrong short id: %v, want %v", err, reality.ErrNotAuthenticated)
 	}
-	if !tg.receivedWhole(tp.captured()) {
+	if !tg.receivedWhole(tp.captured) {
 		t.Error("the wrong short id's connection didn't reach the target raw and whole")
 	}
 	// A replay: a1's authenticated connection, captured and sent again.
@@ -397,7 +399,7 @@ func TestRealitySpacesShareAListener(t *testing.T) {
 	if _, err := replay.Write(captured); err != nil {
 		t.Fatal(err)
 	}
-	if !tg.receivedWhole(captured) {
+	if !tg.receivedWhole(func() []byte { return captured }) {
 		t.Error("the replay didn't reach the target raw and whole")
 	}
 	eventually(t, 5*time.Second, "the strangers counted", func() error {
