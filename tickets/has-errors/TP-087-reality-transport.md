@@ -65,6 +65,14 @@ Round 1 (2026-11-07):
 - [x] R1.7 a refused entry sharing a short id with a valid one leaves the valid one in the table.
 - [x] R1.8 tests: t.Helper in fixture helpers, theTarget fails each caller on a setup error, behaviour-sentence test names, a test telling our freshness gate apart from REALITY's MaxTimeDiff; nits.
 
+Round 2 (2026-11-09):
+- [ ] R2.1 (blocker) ordering: the whole hello reaches the target before REALITY decides, so a fast target's ServerHello can reach REALITY's target → client goroutine in MirrorConn.Read's unlock window: it sees the connection unauthenticated and splices the target's real ServerHello to an authenticated client (the dial fails, the replay entry is spent). Hold back the hello's last byte until authenticate decides; on success REALITY's own MirrorConn writes it under its mutex. Tests: a target answering instantly still lets the authenticated dial succeed, repeatedly; the target sees the hello exactly once.
+- [ ] R2.2 the half-close linger is a fixed 5 s deadline, cutting a long download after a probe's shutdown(SHUT_WR): make it an idle timeout.
+- [ ] R2.3 pre-hello closes differ from upstream: target closes first → upstream fully closes the client; client sends a partial hello then FIN → upstream fully closes the target. Match upstream before authentication, keep the half-close linger for an established splice; record any remaining difference in doc.go.
+- [ ] R2.4 detect: on a timeout delete every pending key (all names × three ALPNs), guard against an orphaned detection storing an empty result over a fresh one, and tell a key deleted by a concurrent Listen apart from a changed key format.
+- [ ] R2.5 a target whose certificate the system roots don't verify is imitated with no post-handshake records: Listen verifies the target's certificate itself and fails on one that doesn't verify; a test-only Options root pool; TP-201 note for the lab target.
+- [ ] R2.6 (nit) replay.go's full-cache scan under the lock: a comment saying why it's acceptable.
+
 ## Log
 - 2026-10-15 created in backlog (TP-064 findings)
 - 2026-10-19 Notes: move udp's skew window and sentFresh to the port first (TP-101 review round 2)
@@ -99,3 +107,4 @@ Round 1 (2026-11-07):
 - 2026-11-08 lab: full make lab-test (GOFLAGS=-p=2, LAB_P=1) green on 09ea88e; the first run failed in TestCensorMatrix and TestM0/underlay=ipv6 on Docker errors ("container ... is not running", "No such exec instance") with every reality package passing, and the re-run under the same locks passed. Unit-level only: R1.1's probe timing and R1.3's splice end are unit tests against an in-process target with a short idle timeout, not a lab container (TP-201 owns the lab camouflage target)
 - 2026-11-08 not verified here: our listener against a stock Xray client (unchanged); detection against a target whose certificate the node's roots verify (no internet in tests: every test target is self-signed, so REALITY's detection ends with no records there)
 - 2026-11-08 has-errors → review
+- 2026-11-09 review → has-errors (round 2 findings R2.x)
