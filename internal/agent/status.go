@@ -8,7 +8,6 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/supervisor"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
-	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/wg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
 
@@ -81,22 +80,14 @@ type Status struct {
 	DNSUpstreamsRefused int
 	// ExitsUnanswered counts a connected device's exits (DataPlane.Peers
 	// with Exit set) that have left a WireGuard handshake initiation
-	// unanswered for ExitHandshakeDeadline or longer: directly or behind a
-	// relay, the traffic sent through them is lost. An exit nothing was
-	// sent to isn't counted, however old its last handshake.
-	ExitsUnanswered int
+	// unanswered for dataplane.ExitHandshakeDeadline while their first hop
+	// was up (exitHandshakes): directly or behind a relay, the traffic
+	// sent through them is lost. DefaultExitUnanswered says one of them is
+	// the exit of the chain the default rule uses (Rules.DefaultExit), so
+	// the internet no other rule names is lost.
+	ExitsUnanswered       int
+	DefaultExitUnanswered bool
 }
-
-// ExitHandshakeDeadline is how long a handshake initiation to an exit may
-// go unanswered before health says so (Status.ExitsUnanswered). WireGuard
-// initiates again every RekeyTimeout (5 s) while it has data for the
-// exit, so this is three initiations in a row unanswered: one lost
-// packet doesn't flip health. It is also how long WireGuard itself waits
-// on a session that stopped hearing back before it re-initiates
-// (KeepaliveTimeout + RekeyTimeout). The age of the last handshake can't
-// be the test (REJECT_AFTER_TIME, 180 s): no persistent keepalive is set,
-// so an idle exit's last handshake grows old on a healthy device.
-const ExitHandshakeDeadline = 3 * wg.RekeyTimeout
 
 // Connection is whether a node carries traffic.
 type Connection uint8
@@ -218,7 +209,8 @@ type report struct {
 	// dnsUpstreamsRefused is an exit's count of resolver upstreams the
 	// worker's egress refuses (Status.DNSUpstreamsRefused).
 	dnsUpstreamsRefused int
-	// exitDeadline is ExitHandshakeDeadline, or the tests' (tuning).
+	// exitDeadline is dataplane.ExitHandshakeDeadline, or the tests'
+	// (tuning).
 	exitDeadline time.Duration
 }
 
@@ -304,11 +296,7 @@ func (p *report) statusWith(dp *dataplane.Status) Status {
 		// Unknown upstreams (stale) aren't absent ones: one cause, one code.
 		s.DNSNoUpstream = !s.DNSUpstreamsStale &&
 			(errors.Is(problem, dns.ErrNoSystemUpstream) || p.dnsNoUpstream != nil && p.dnsNoUpstream())
-		deadline := p.exitDeadline
-		if deadline == 0 {
-			deadline = ExitHandshakeDeadline
-		}
-		s.ExitsUnanswered = exitsUnanswered(st.Peers, time.Now(), deadline)
+		s.ExitsUnanswered, s.DefaultExitUnanswered = exitHandshakes(&st, time.Now(), p.exitDeadline)
 	}
 	if p.workers != nil {
 		for _, w := range p.workers.Workers() {
@@ -329,16 +317,35 @@ func (p *report) statusWith(dp *dataplane.Status) Status {
 	return s
 }
 
-// exitsUnanswered counts the exits among peers whose oldest unanswered
-// handshake initiation is deadline old or older at now.
-func exitsUnanswered(peers []dataplane.PeerStatus, now time.Time, deadline time.Duration) int {
-	n := 0
-	for _, p := range peers {
-		if p.Exit && !p.HandshakePendingSince.IsZero() && now.Sub(p.HandshakePendingSince) >= deadline {
-			n++
+// exitHandshakes grades the exits among st.Peers at now: how many are
+// unanswered, and whether the default rule's exit is one of them. An exit
+// is unanswered once its oldest unanswered handshake initiation is
+// deadline old, counted from when its first hop came up if that is later:
+// while the first hop is down that is the neighbor's problem (one cause,
+// one code), and WireGuard's initiations can't get through. An exit
+// nothing was sent to has none pending; one flagged stays so until a
+// handshake completes, even if traffic to it stops. A chain has one exit,
+// so the default rule's exit unanswered is the internet lost, whatever
+// the other exits do.
+func exitHandshakes(st *dataplane.Status, now time.Time, deadline time.Duration) (unanswered int, defaultUnanswered bool) {
+	upFor := make(map[netmap.NodeID]time.Duration, len(st.Neighbors))
+	for _, n := range st.Neighbors {
+		if n.Up {
+			upFor[netmap.NodeID(n.Node)] = n.UpFor
 		}
 	}
-	return n
+	for _, p := range st.Peers {
+		if !p.Exit || p.HandshakePendingSince.IsZero() {
+			continue
+		}
+		up, ok := upFor[p.FirstHop]
+		if !ok || min(now.Sub(p.HandshakePendingSince), up) < deadline {
+			continue
+		}
+		unanswered++
+		defaultUnanswered = defaultUnanswered || p.ID == st.Rules.DefaultExit
+	}
+	return unanswered, defaultUnanswered
 }
 
 // HealthLevel grades a node's health.
@@ -437,9 +444,11 @@ const (
 	// ask, so `direct` names don't resolve (Status.DNSNoUpstream).
 	ProblemDNSNoUpstream Problem = "dns_no_upstream"
 	// ProblemExitNoHandshake: an exit the device routes through,
-	// directly or behind a relay, doesn't answer WireGuard's handshake
-	// (Status.ExitsUnanswered): down when no exit answers, degraded when
-	// another does.
+	// directly or behind a relay, has left WireGuard's handshake
+	// unanswered past the deadline while its first hop was up
+	// (Status.ExitsUnanswered): down when it is the exit of the chain the
+	// default rule uses (the internet no other rule names is lost),
+	// degraded for any other exit.
 	ProblemExitNoHandshake Problem = "exit_no_handshake"
 )
 
@@ -500,7 +509,7 @@ func (s Status) serverProblems(add func(HealthLevel, Problem)) {
 }
 
 // dataPlaneProblems adds a running data plane's problems: its map, links,
-// rules, route table and DNS.
+// exits, rules, route table and DNS.
 func (s Status) dataPlaneProblems(add func(HealthLevel, Problem)) {
 	dp := s.DataPlane
 	if dp.LastApplyError != "" {
@@ -518,18 +527,11 @@ func (s Status) dataPlaneProblems(add func(HealthLevel, Problem)) {
 	case up < len(dp.Neighbors):
 		add(HealthDegraded, ProblemNeighborDown)
 	}
-	if s.ExitsUnanswered > 0 {
-		exits := 0
-		for _, p := range dp.Peers {
-			if p.Exit {
-				exits++
-			}
-		}
-		if s.ExitsUnanswered >= exits {
-			add(HealthDown, ProblemExitNoHandshake)
-		} else {
-			add(HealthDegraded, ProblemExitNoHandshake)
-		}
+	switch {
+	case s.DefaultExitUnanswered:
+		add(HealthDown, ProblemExitNoHandshake)
+	case s.ExitsUnanswered > 0:
+		add(HealthDegraded, ProblemExitNoHandshake)
 	}
 	if len(dp.Skipped) > 0 {
 		add(HealthDegraded, ProblemSkipped)

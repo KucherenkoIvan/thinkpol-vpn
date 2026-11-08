@@ -692,3 +692,29 @@ func BenchmarkCompileCountry(b *testing.B) {
 	b.ReportMetric(float64(len(tab.Routes())), "routes")
 	b.ReportMetric(float64(len(tab.Direct().Prefixes())), "direct")
 }
+
+// Default is the first default rule's action as enforced, whatever rules
+// ahead of it take, and without one what the rest gets.
+func TestDefaultIsTheDefaultRulesAction(t *testing.T) {
+	for _, tc := range []struct {
+		name, rules string
+		chains      []string
+		want        netmap.Action
+	}{
+		{"a chain", "local -> direct\ngeoip:ru -> direct\ndefault -> chain:nl", nil, nl},
+		{"direct, with a chain ahead of it", "cidr:8.8.8.0/24 -> chain:de\ndefault -> direct", nil, netmap.Direct},
+		{"the first default rule", "default -> chain:de\ndefault -> chain:nl", nil, de},
+		{"a chain that can't carry traffic blocks", "default -> chain:nl", []string{"de"}, netmap.Block},
+		{"a direct default after an unknown list is skipped", "geoip:xx -> chain:de\ndefault -> direct", nil, netmap.Block},
+		{"no default rule blocks the rest", "cidr:10.0.0.0/8 -> direct", nil, netmap.Block},
+		{"no rules at all go direct", "", nil, netmap.Direct},
+	} {
+		o := Options{Overlay: overlay, GeoIP: geoip(t, map[string][]string{"ru": ruList})}
+		if tc.chains != nil {
+			o.Chain = onlyChains(tc.chains...)
+		}
+		if got := Compile(entriesOf(mustRules(t, tc.rules), OriginSpace), o).Default(); got != tc.want {
+			t.Errorf("%s: default %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}

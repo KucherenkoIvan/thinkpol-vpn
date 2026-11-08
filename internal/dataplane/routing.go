@@ -26,6 +26,10 @@ type RuleStatus struct {
 	Direct4, Direct6 int
 	// Skipped are the rules not enforced as written, and why.
 	Skipped []rules.Skip
+	// DefaultExit is the exit of the chain the default rule sends to
+	// (rules.Table.Default): what carries the internet no other rule
+	// names. Zero when that goes direct or is blocked.
+	DefaultExit netmap.NodeID
 }
 
 // exitDevice names the WireGuard device (and router egress) of a chain's
@@ -141,6 +145,9 @@ func (e *Engine) compileRules(s *ruleInput, networks []netip.Prefix) error {
 		e.usedExits[e.chainExit[c]] = true
 	}
 	e.ruleStatus = RuleStatus{Preset: e.ownRules.Preset, PresetUnavailable: err != nil, Skipped: slices.Clone(t.Skipped())}
+	if d := t.Default(); d.Kind == netmap.ActionChain {
+		e.ruleStatus.DefaultExit = e.chainExit[d.Chain]
+	}
 	for _, p := range t.Direct().Prefixes() {
 		if p.Addr().Is4() {
 			e.ruleStatus.Direct4++

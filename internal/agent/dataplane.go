@@ -124,7 +124,7 @@ type tuning struct {
 	// node's overlay addresses and clients.
 	dnsPort   uint16
 	dnsListen netip.Addr
-	// exitDeadline replaces ExitHandshakeDeadline (0: it).
+	// exitDeadline replaces dataplane.ExitHandshakeDeadline (0: it).
 	exitDeadline time.Duration
 }
 
@@ -147,6 +147,9 @@ func RunDataPlane(ctx context.Context, dp DataPlane) error {
 	}
 	if dp.tuning.retryAfter == 0 {
 		dp.tuning.retryAfter = RetryAfter
+	}
+	if dp.tuning.exitDeadline == 0 {
+		dp.tuning.exitDeadline = dataplane.ExitHandshakeDeadline
 	}
 	if dp.Log == nil {
 		dp.Log = slog.New(slog.DiscardHandler)

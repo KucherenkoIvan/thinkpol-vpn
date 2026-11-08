@@ -105,7 +105,7 @@ func TestRulesRouteThroughTheChainsExit(t *testing.T) {
 	if devices[s.id] != exitOf(s) || devices[b.id] != dataplane.OverlayDevice || len(st.Egresses) != 2 {
 		t.Fatalf("status %+v: the exit belongs on a device of its own", st)
 	}
-	if st.Rules.Preset != rules.PresetSpace || st.Rules.Direct4 == 0 || st.Rules.Direct6 == 0 || len(st.Rules.Skipped) != 0 {
+	if st.Rules.Preset != rules.PresetSpace || st.Rules.Direct4 == 0 || st.Rules.Direct6 == 0 || len(st.Rules.Skipped) != 0 || st.Rules.DefaultExit != s.id {
 		t.Fatalf("rule status %+v", st.Rules)
 	}
 
@@ -322,7 +322,7 @@ func TestAChainWithoutItsExitBlocks(t *testing.T) {
 		nd.start(t, net)
 	}
 	st := a.engine.Status()
-	if len(st.Egresses) != 1 || !slices.Contains(st.Rules.Skipped, rules.Skip{Origin: rules.OriginSpace, Index: 1, Reason: rules.ReasonNoChain}) {
+	if len(st.Egresses) != 1 || !slices.Contains(st.Rules.Skipped, rules.Skip{Origin: rules.OriginSpace, Index: 1, Reason: rules.ReasonNoChain}) || !st.Rules.DefaultExit.IsZero() {
 		t.Fatalf("status %+v", st)
 	}
 	if got := routeOf(t, a, netip.MustParseAddr("192.0.2.80")); got != sentBlocked {

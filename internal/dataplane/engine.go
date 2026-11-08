@@ -512,6 +512,17 @@ type PeerStatus struct {
 	RxBytes, TxBytes      uint64
 }
 
+// ExitHandshakeDeadline is how long a handshake initiation to an exit may
+// go unanswered before health says so. WireGuard initiates again every
+// RekeyTimeout (5 s) while it has data for the exit, so this is three
+// initiations in a row unanswered: one lost packet doesn't flip health. A
+// session that dies under traffic is noticed after about 30 s: WireGuard
+// re-initiates once it has heard nothing back for 15 s (KeepaliveTimeout
+// + RekeyTimeout), then this deadline runs. The age of the last
+// handshake can't be the test: no persistent keepalive is set, so an idle
+// exit's last handshake grows old on a healthy device.
+const ExitHandshakeDeadline = 3 * wg.RekeyTimeout
+
 // Status reports the engine's state.
 func (e *Engine) Status() Status {
 	e.mu.Lock()

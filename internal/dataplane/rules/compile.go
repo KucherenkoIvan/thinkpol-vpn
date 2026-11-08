@@ -72,9 +72,12 @@ type Route struct {
 
 // Table is a compiled rule list.
 type Table struct {
-	routes  []Route // the /0 routes (nzero of them), then the others in address order
-	nzero   int
-	chains  []string
+	routes []Route // the /0 routes (nzero of them), then the others in address order
+	nzero  int
+	chains []string
+	// def is the default rule's action (Default); set says it was given.
+	def     netmap.Action
+	defSet  bool
 	overlay *lists.Set
 	direct  *lists.Set
 	skipped []Skip
@@ -91,6 +94,9 @@ func Compile(entries []Entry, o Options) *Table {
 		rest = netmap.Direct
 	}
 	p.claim(rest, lists.All())
+	if !t.defSet {
+		t.def = rest
+	}
 
 	// Per family, the action with the most prefixes becomes a /0 route,
 	// and the other actions' prefixes, disjoint, override it. A
@@ -192,6 +198,9 @@ func (t *Table) claimRules(entries []Entry, o Options, p *partition) {
 		case action == netmap.Direct && unknown:
 			skip(ReasonAfterUnknown)
 			continue
+		}
+		if r.Match.Kind == netmap.MatchDefault && !t.defSet {
+			t.def, t.defSet = action, true
 		}
 		if p.claim(action, set) && action == netmap.Direct {
 			for _, i := range byName {
@@ -352,6 +361,12 @@ func (t *Table) Lookup(a netip.Addr) (netmap.Action, bool) {
 // Direct is every address that goes around the tunnel: what route-table
 // mode installs as routes through the physical gateway.
 func (t *Table) Direct() *lists.Set { return t.direct }
+
+// Default is what the destinations no rule names get: the first default
+// rule's action as enforced (block for a chain that can't carry traffic),
+// or, with none, what Compile gives the rest. Rules ahead of it may leave
+// it no destinations at all.
+func (t *Table) Default() netmap.Action { return t.def }
 
 // Chains are the chains some destination goes through, in rule order.
 func (t *Table) Chains() []string { return t.chains }
