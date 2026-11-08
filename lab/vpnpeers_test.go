@@ -48,7 +48,8 @@ func probeHTTPS(t *testing.T, l *lab.Lab, to probeTarget, wantPass bool) crossed
 
 // httpsFetches says whether one HTTPS request to httpsName at a got a 200.
 // "Doesn't cross" is curl failing to connect, timing out, or having the
-// connection reset or closed under it; any other failure is an error.
+// connection reset or closed under it, its TLS handshake included; any
+// other failure is an error.
 func httpsFetches(dev *lab.Node, a netip.Addr) (bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -64,8 +65,12 @@ func httpsFetches(dev *lab.Node, a netip.Addr) (bool, error) {
 	case err == nil:
 		return false, fmt.Errorf("https to %s: status %q", a, res.Stdout)
 	}
-	switch res.ExitCode {
-	case 7, 28, 35, 52, 56: // connect failed, timed out, TLS handshake failed, empty reply, reset
+	switch {
+	case res.ExitCode == 7, res.ExitCode == 28, res.ExitCode == 52, res.ExitCode == 56: // connect failed, timed out, empty reply, reset
+		return false, nil
+	case res.ExitCode == 35 && strings.Contains(res.Stderr, "reset by peer"):
+		// A TLS handshake failure is a block only when the connection was
+		// reset under it; a handshake that failed otherwise is broken.
 		return false, nil
 	}
 	return false, fmt.Errorf("https to %s: %w\n%s", a, err, res.Stderr)
@@ -110,10 +115,11 @@ func waitSockets(t *testing.T, node *lab.Node, kind string, port, n int) {
 }
 
 // The reference tunnels' ports and overlay addresses, by underlay family:
-// server-1 is .1 and device-a .2 of each /24.
+// server-1 is .1 and device-a .2 of each /24. The ports are not WireGuard's
+// and OpenVPN's defaults: the fingerprints must match on any port.
 const (
-	wgPort4, wgPort6     = 51820, 51821
-	ovpnPort4, ovpnPort6 = 1194, 1195
+	wgPort4, wgPort6     = 443, 4443
+	ovpnPort4, ovpnPort6 = 8443, 9443
 )
 
 var (
@@ -233,7 +239,11 @@ func familyAddr(v6 bool) netip.Addr {
 }
 
 // probe starts device-a's OpenVPN clients, the handshake crossing the
-// censor, and pings server-1 through each.
+// censor, and pings server-1 through each. Until a client's tun is up its
+// overlay has no route: ping sends nothing and fails with "Network is
+// unreachable", which counts as no reply (pingNoReplyOrRoute). A blocked
+// cell still needs the verdict log to blame the handshake (blockedBy), so
+// a tunnel that never came up for another reason isn't scored blocked.
 func (o openVPN) probe(t *testing.T, l *lab.Lab, to probeTarget, wantPass bool) crossed {
 	dev, server := l.Node(lab.DeviceA), l.Node(lab.Server1)
 	for _, v6 := range []bool{false, true} {
@@ -247,8 +257,8 @@ func (o openVPN) probe(t *testing.T, l *lab.Lab, to probeTarget, wantPass bool) 
 			"--ifconfig", ovpnOverlay[v6]+".2", ovpnOverlay[v6]+".1", "--connect-retry", "1", "1", "--verb", "3")
 	}
 	return crossed{
-		v4: mustProbe(t)(pingCrosses(dev, to.v4, window(wantPass))),
-		v6: mustProbe(t)(pingCrosses(dev, to.v6, window(wantPass))),
+		v4: mustProbe(t)(pingCrosses(dev, to.v4, window(wantPass), pingNoReplyOrRoute)),
+		v6: mustProbe(t)(pingCrosses(dev, to.v6, window(wantPass), pingNoReplyOrRoute)),
 	}
 }
 

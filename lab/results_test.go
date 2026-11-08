@@ -103,6 +103,11 @@ func TestCensorMatrix(t *testing.T) {
 		if cc.modules == nil {
 			t.Fatalf("censor case %q has no censor: only censorCases[0] may be off", cc.name)
 		}
+		for tr, want := range cc.expect {
+			if want == "fail" && cc.blocker == "" {
+				t.Fatalf("censor case %q expects %s to fail but names no blocker", cc.name, tr)
+			}
+		}
 	}
 	for _, tr := range transports {
 		t.Run(tr.name, func(t *testing.T) {
@@ -369,8 +374,8 @@ func setupUDP(t *testing.T, l *lab.Lab) (probeTarget, error) {
 func probeUDP(t *testing.T, l *lab.Lab, to probeTarget, wantPass bool) crossed {
 	dev := l.Node(lab.DeviceA)
 	return crossed{
-		v4: mustProbe(t)(pingCrosses(dev, to.v4, window(wantPass))),
-		v6: mustProbe(t)(pingCrosses(dev, to.v6, window(wantPass))),
+		v4: mustProbe(t)(pingCrosses(dev, to.v4, window(wantPass), pingNoReply)),
+		v6: mustProbe(t)(pingCrosses(dev, to.v6, window(wantPass), pingNoReply)),
 	}
 }
 
@@ -426,8 +431,9 @@ func waitOutput(p *lab.Process, pattern string, timeout time.Duration) error {
 }
 
 // pingCrosses pings until a reply comes or within runs out (untilAnswer):
-// "doesn't cross" is only ping's own "no reply".
-func pingCrosses(from *lab.Node, to netip.Addr, within time.Duration) (bool, error) {
+// "doesn't cross" is a failed ping noReply accepts (pingNoReply: only
+// ping's own "no reply"), any other failure an error.
+func pingCrosses(from *lab.Node, to netip.Addr, within time.Duration, noReply func(lab.Result) bool) (bool, error) {
 	return untilAnswer(within, func() (bool, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -435,7 +441,7 @@ func pingCrosses(from *lab.Node, to netip.Addr, within time.Duration) (bool, err
 		switch {
 		case err == nil:
 			return true, nil
-		case pingNoReply(res):
+		case noReply(res):
 			return false, nil
 		}
 		return false, fmt.Errorf("ping %s from %s: %w\n%s", to, from.Name, err, res.Stdout)

@@ -280,17 +280,16 @@
 // every flow until the censor stops (a lab test's few thousand at most),
 // and so does openvpn-fingerprint its state per connection (a few packet
 // heads each), replaced only when the connection's addresses and ports
-// carry a new one. A
-// module learns of a flow's end only from the packets themselves (FIN,
-// RST). A pinned Drop or Reset outlives the connection it blocked: a new
-// SYN on the same addresses and ports is decided by it (dropped, or reset
-// with an RST|ACK), so no SYN-ACK ever accepts the new connection and the
-// flow never starts over; the ports stay blocked until the censor stops.
-// That is deliberate (a fake SYN must not lift a pin), and it makes a
-// pinned Drop or Reset residual censorship of its addresses and ports.
-// Other verdicts end with their connection: a new connection on the same
-// addresses and ports is judged anew, and a UDP flow silent for 120 s both
-// ways is judged again from its next datagram.
+// carry a new one. A module learns of a flow's end only from the packets
+// themselves (FIN, RST). A pinned Drop or Reset outlives the connection it
+// blocked: a new SYN on the same addresses and ports is decided by it
+// (dropped, or reset with an RST|ACK), so no SYN-ACK ever accepts the new
+// connection and the flow never starts over; the ports stay blocked until
+// the censor stops. That is deliberate (a fake SYN must not lift a pin),
+// and it makes a pinned Drop or Reset residual censorship of its addresses
+// and ports. Other verdicts end with their connection: a new connection on
+// the same addresses and ports is judged anew, and a UDP flow silent for
+// 120 s both ways is judged again from its next datagram.
 //
 // The stream reads a connection as a Linux receiver does for the cases
 // above, not for every one. These still evade it, so a transport that
