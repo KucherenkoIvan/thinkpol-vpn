@@ -75,12 +75,15 @@
 // connection REALITY refuses and splices, so a legitimate hello at the
 // window's edge that REALITY refuses is cut after 15 s (known).
 //
-// Listen first completes a TLS handshake with the target for each server
-// name, through Control, within 10 s, and fails, naming the target and the
-// reason, unless the target's certificate verifies against the system
-// roots: REALITY's detection of the target's records stores the same empty
-// result for a certificate it can't verify as for a site that sends no
-// records, and the target would be imitated without them.
+// Listen first completes a TLS 1.3 handshake with the target for each
+// server name, through Control, within 10 s, and fails, naming the target
+// and the reason, unless the target's certificate verifies against the
+// system roots: REALITY's detection of the target's records stores the
+// same empty result for a certificate it can't verify as for a site that
+// sends no records, and the target would be imitated without them. A
+// target that doesn't speak TLS 1.3 fails too, the error saying so:
+// REALITY imitates only a TLS 1.3 ServerHello, so every authenticated
+// handshake would fail.
 // Options.TrustTargetRoots replaces the system roots for tests and the lab
 // only; REALITY's detection still uses the system roots, so a target
 // trusted that way is imitated without post-handshake records.
@@ -94,7 +97,14 @@
 // would store an empty result over a later detection's pending one, so
 // detections of a target are serialized: a later Listen fails while the
 // earlier detection still runs, then forgets every result it left and
-// detects again.
+// detects again. A result isn't that detection's last write (having
+// stored the records it read, it closes its connection, then checks the
+// key once more), so a result it left is forgotten only once it has stood
+// for a second. A detection whose target accepted the connection and then
+// stays silent never ends: its keys stay pending, and every later Listen
+// for that target fails until the process restarts. A caller retrying
+// Listen should know that a failure naming an earlier detection won't
+// clear on retry while the target stays silent.
 //
 // The dialer checks the certificate the same way. Anything else (a real
 // certificate: the connection was spliced, or a man in the middle

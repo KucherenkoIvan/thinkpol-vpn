@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -55,7 +56,7 @@ func (t *Transport) Listen(ctx context.Context, cfg transport.ListenConfig, admi
 	if err := verifyTarget(ctx, ls.target.String(), ls.names, t.targetRoots, detectWait, t.control); err != nil {
 		return nil, err
 	}
-	if err := detect(ctx, ls.target.String(), ls.names, detectWait); err != nil {
+	if err := detect(ctx, upstreamRecords{}, ls.target.String(), ls.names, detectWait); err != nil {
 		return nil, err
 	}
 	lc := net.ListenConfig{Control: t.control}
@@ -418,21 +419,28 @@ func (l *listener) realityConfig(id shortID, dial func(ctx context.Context, netw
 	}
 }
 
-// verifyTarget completes a TLS handshake with the target for each server
-// name, through control, within wait, and fails unless its certificate
-// verifies against roots (nil: the system roots). REALITY's own detection
-// stores the same empty result for a target whose certificate doesn't
-// verify as for one that can't be reached, and the target would then be
-// imitated without its post-handshake records.
+// verifyTarget completes a TLS 1.3 handshake with the target for each
+// server name, through control, within wait, and fails unless its
+// certificate verifies against roots (nil: the system roots). REALITY's
+// own detection stores the same empty result for a target whose
+// certificate doesn't verify as for one that can't be reached, and the
+// target would then be imitated without its post-handshake records; and
+// REALITY imitates only a target's TLS 1.3 ServerHello, so with a target
+// that doesn't speak TLS 1.3 every authenticated handshake would fail.
 func verifyTarget(ctx context.Context, dest string, names map[string]bool, roots *x509.CertPool, wait time.Duration, control func(network, address string, c syscall.RawConn) error) error {
 	ctx, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
 	for name := range names {
 		d := tls.Dialer{
 			NetDialer: &net.Dialer{Control: control},
-			Config:    &tls.Config{ServerName: name, RootCAs: roots},
+			Config:    &tls.Config{ServerName: name, RootCAs: roots, MinVersion: tls.VersionTLS13},
 		}
 		c, err := d.DialContext(ctx, "tcp", dest)
+		// crypto/tls has no typed error for a version mismatch; both its
+		// own and the target's (an alert) say "protocol version".
+		if err != nil && strings.Contains(err.Error(), "protocol version") {
+			return fmt.Errorf("reality: target %s for %q doesn't speak TLS 1.3: %w", dest, name, err)
+		}
 		if err != nil {
 			return fmt.Errorf("reality: target %s for %q: %w", dest, name, err)
 		}
@@ -454,7 +462,15 @@ func verifyTarget(ctx context.Context, dest string, names map[string]bool, roots
 // left pending and marked stale: a later detect waits for that earlier
 // detection to end (failing while it runs), then forgets its result and
 // detects again.
-func detect(ctx context.Context, dest string, names map[string]bool, wait time.Duration) error {
+//
+// A result on a stale key isn't yet the detection's last write: one that
+// read the target's records stores them, then closes its connection and
+// only then checks for a pending key, and that check, run on a fresh
+// detection's pending key, would store an empty result over it. So a
+// stale key's result is forgotten only once it has stood for staleGrace;
+// only detect deletes keys, so a result seen twice that far apart is the
+// same one.
+func detect(ctx context.Context, store recordsStore, dest string, names map[string]bool, wait time.Duration) error {
 	dd := detectionOf(dest)
 	dd.mu.Lock()
 	defer dd.mu.Unlock()
@@ -465,23 +481,29 @@ func detect(ctx context.Context, dest string, names map[string]bool, wait time.D
 		}
 	}
 	cfg := &xreality.Config{Type: "tcp", Dest: dest, ServerNames: names}
-	xreality.DetectPostHandshakeRecordsLens(cfg)
+	store.detect(cfg)
 	deadline := time.Now().Add(wait)
 	for {
 		var pending []string
 		redetect := false
+		now := time.Now()
 		for _, key := range keys {
-			v, ok := xreality.GlobalPostHandshakeRecordsLens.Load(key)
+			v, ok := store.load(key)
 			if !ok {
 				// Only detect deletes keys, holding dd.mu, and
-				// DetectPostHandshakeRecordsLens ran since.
+				// store.detect ran since.
 				return fmt.Errorf("%w: nothing under %q", errRecordsKeyFormat, key)
 			}
 			_, done := v.([]int)
+			stale, wasStale := dd.stale[key]
 			switch {
-			case done && dd.stale[key]:
-				// A result is REALITY's last write to its key.
-				xreality.GlobalPostHandshakeRecordsLens.Delete(key)
+			case done && wasStale && stale.IsZero():
+				dd.stale[key] = now
+				pending = append(pending, key)
+			case done && wasStale && now.Sub(stale) < staleGrace:
+				pending = append(pending, key)
+			case done && wasStale:
+				store.delete(key)
 				delete(dd.stale, key)
 				redetect = true
 				pending = append(pending, key)
@@ -493,16 +515,19 @@ func detect(ctx context.Context, dest string, names map[string]bool, wait time.D
 			return nil
 		}
 		if redetect {
-			xreality.DetectPostHandshakeRecordsLens(cfg)
+			store.detect(cfg)
 		}
 		if time.Now().After(deadline) || ctx.Err() != nil {
 			earlier := false
 			for _, key := range pending {
-				earlier = earlier || dd.stale[key]
-				dd.stale[key] = true
+				if _, wasStale := dd.stale[key]; wasStale {
+					earlier = true
+				} else {
+					dd.stale[key] = time.Time{}
+				}
 			}
 			if earlier {
-				return fmt.Errorf("reality: target %s: a detection of its records from an earlier Listen is still running", dest)
+				return fmt.Errorf("reality: target %s: a detection of its records from an earlier Listen hasn't finished", dest)
 			}
 			return fmt.Errorf("reality: target %s didn't complete a TLS handshake for every server name in %v", dest, wait)
 		}
@@ -510,15 +535,40 @@ func detect(ctx context.Context, dest string, names map[string]bool, wait time.D
 	}
 }
 
+// staleGrace is how long a result on a stale key stands before detect
+// forgets it: far longer than REALITY's detection takes from storing its
+// result to its last check of the key.
+const staleGrace = time.Second
+
+// recordsStore is where REALITY's detection keeps a target's records:
+// upstreamRecords, or a fake in tests.
+type recordsStore interface {
+	detect(cfg *xreality.Config)
+	load(key string) (any, bool)
+	delete(key string)
+}
+
+// upstreamRecords is REALITY's own detection and its per-process store.
+type upstreamRecords struct{}
+
+func (upstreamRecords) detect(cfg *xreality.Config) { xreality.DetectPostHandshakeRecordsLens(cfg) }
+
+func (upstreamRecords) load(key string) (any, bool) {
+	return xreality.GlobalPostHandshakeRecordsLens.Load(key)
+}
+
+func (upstreamRecords) delete(key string) { xreality.GlobalPostHandshakeRecordsLens.Delete(key) }
+
 // errRecordsKeyFormat is detect finding nothing where REALITY keeps a
 // target's records: the pinned module's key format changed.
 var errRecordsKeyFormat = errors.New("reality: REALITY's records key format changed")
 
 // targetDetection serializes detect for one target and keeps the keys
-// whose detection detect gave up on.
+// whose detection detect gave up on, each with when a result was first
+// seen on it (zero: not yet).
 type targetDetection struct {
 	mu    sync.Mutex
-	stale map[string]bool
+	stale map[string]time.Time
 }
 
 var detections = struct {
@@ -531,7 +581,7 @@ func detectionOf(dest string) *targetDetection {
 	defer detections.mu.Unlock()
 	dd := detections.byDest[dest]
 	if dd == nil {
-		dd = &targetDetection{stale: map[string]bool{}}
+		dd = &targetDetection{stale: map[string]time.Time{}}
 		detections.byDest[dest] = dd
 	}
 	return dd

@@ -206,7 +206,11 @@
 // remains for a censor that compares members' sessions with the site's;
 // and every connection still dials the target, the same upstream tell as
 // `tls`'s proxying (at accept, authenticated ones too, as REALITY's own
-// server does, so a probe's timing is the target's). What it removes is a
-// certificate of our own to manage. The lab's prober measures both tells
-// (TP-026, TP-032), for `reality` too, and the matrix shows them.
+// server does, so a probe's timing is the target's). Unlike REALITY's own
+// server, which passes a hello on as it reads it, ours writes a hello to
+// the target in at least three writes, Nagle off: the 5-byte record
+// header, the rest but one byte (as it arrives), then that byte once the
+// listener decided. What it removes is a certificate of our own to
+// manage. The lab's prober measures both tells (TP-026, TP-032), for
+// `reality` too, and the matrix shows them.
 package transport

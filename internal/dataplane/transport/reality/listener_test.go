@@ -3,6 +3,7 @@ package reality
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"errors"
 	"io"
 	"net"
@@ -250,12 +251,12 @@ func TestListenFailsUnlessTheTargetsRecordsAreLearned(t *testing.T) {
 	})
 	t.Run("stalled", func(t *testing.T) {
 		f := newFront(t)
-		if err := detect(t.Context(), f.addr(), names, 300*time.Millisecond); err == nil {
+		if err := detect(t.Context(), upstreamRecords{}, f.addr(), names, 300*time.Millisecond); err == nil {
 			t.Fatal("detected the records of a target that never answers")
 		}
 	})
 	t.Run("a site", func(t *testing.T) {
-		if err := detect(t.Context(), theTarget(t).addr(), names, detectWait); err != nil {
+		if err := detect(t.Context(), upstreamRecords{}, theTarget(t).addr(), names, detectWait); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -277,6 +278,165 @@ func TestListenFailsOnATargetCertificateTheRootsDontVerify(t *testing.T) {
 		t.Fatalf("listen trusting the target's certificate: %v", err)
 	}
 	_ = l.Close()
+}
+
+// Listen fails on a target that doesn't speak TLS 1.3, saying so: REALITY
+// imitates only a TLS 1.3 ServerHello, and every authenticated handshake
+// would fail.
+func TestListenFailsOnATargetWithoutTLS13(t *testing.T) {
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{
+		MaxVersion:   tls.VersionTLS12,
+		Certificates: []tls.Certificate{targetCert},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer func() { _ = c.Close() }()
+				_ = c.SetDeadline(time.Now().Add(10 * time.Second))
+				_, _ = io.Copy(io.Discard, c)
+			}()
+		}
+	}()
+	settings := mustMarshal(t, &transportv1.RealityListenSettings{
+		PrivateKey: newKeys(t).private, Target: ln.Addr().String(), ServerNames: []string{serverName},
+	})
+	l, err := newTransport(Options{}).Listen(t.Context(), transport.ListenConfig{Address: "127.0.0.1:0", Settings: settings}, transport.Admission{Peers: transport.NewPeerTable()})
+	if err == nil {
+		_ = l.Close()
+	}
+	if err == nil || !strings.Contains(err.Error(), "doesn't speak TLS 1.3") {
+		t.Fatalf("listen with a TLS 1.2-only target: %v, want an error saying it doesn't speak TLS 1.3", err)
+	}
+}
+
+// The target's certificate check dials through the Control hook, as every
+// other connection of the listener does.
+func TestTheTargetsCertificateCheckDialsThroughControl(t *testing.T) {
+	tg := theTarget(t)
+	var mu sync.Mutex
+	var dialled []string
+	errRefused := errors.New("refused by control")
+	control := func(_, address string, _ syscall.RawConn) error {
+		mu.Lock()
+		defer mu.Unlock()
+		dialled = append(dialled, address)
+		return errRefused
+	}
+	err := verifyTarget(t.Context(), tg.addr(), map[string]bool{serverName: true}, targetRoots, detectWait, control)
+	if !errors.Is(err, errRefused) {
+		t.Errorf("certificate check with a control refusing every dial: %v, want %v", err, errRefused)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !slices.Contains(dialled, tg.addr()) {
+		t.Errorf("control saw %v, want the target %s", dialled, tg.addr())
+	}
+}
+
+// fakeRecords is REALITY's detection store with detections the test
+// drives: each key newly detected is stored pending (false) and handed to
+// started.
+type fakeRecords struct {
+	mu      sync.Mutex
+	m       map[string]any
+	started func(key string)
+}
+
+func (f *fakeRecords) detect(cfg *xreality.Config) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for name := range cfg.ServerNames {
+		for alpn := range detectedALPNs {
+			key := recordsKey(cfg.Dest, name, alpn)
+			if _, ok := f.m[key]; !ok {
+				f.m[key] = false
+				if f.started != nil {
+					go f.started(key)
+				}
+			}
+		}
+	}
+}
+
+func (f *fakeRecords) load(key string) (any, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	v, ok := f.m[key]
+	return v, ok
+}
+
+func (f *fakeRecords) delete(key string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.m, key)
+}
+
+func (f *fakeRecords) store(key string, v any) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.m[key] = v
+}
+
+// finish is REALITY's detection ending as upstream's does once it read
+// the target's records: they are stored, and only later, its connection
+// closed, does it check the key and store an empty result over a pending
+// one.
+func (f *fakeRecords) finish(key string, records []int, last time.Duration) {
+	f.store(key, records)
+	time.Sleep(last)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, pending := f.m[key].(bool); pending {
+		f.m[key] = []int{}
+	}
+}
+
+func asRecords(v any) []int {
+	r, _ := v.([]int)
+	return r
+}
+
+// A detection given up on that stored its records hasn't made its last
+// write yet: detect waits before forgetting them, so that write can't land
+// on a fresh detection's pending key and end it with an empty result.
+func TestADetectionGivenUpOnIsForgottenOnlyOnceItsLastWriteIsDone(t *testing.T) {
+	dest := "fake-target:" + t.Name()
+	names := map[string]bool{serverName: true}
+	f := &fakeRecords{m: map[string]any{}}
+	if err := detect(t.Context(), f, dest, names, 100*time.Millisecond); err == nil {
+		t.Fatal("detected the records of a detection that never ends")
+	}
+
+	fresh := []int{42}
+	f.mu.Lock()
+	f.started = func(key string) {
+		time.Sleep(500 * time.Millisecond)
+		f.finish(key, fresh, 0)
+	}
+	var orphans []string
+	for key := range f.m {
+		orphans = append(orphans, key)
+	}
+	f.mu.Unlock()
+	for _, key := range orphans {
+		go f.finish(key, []int{7}, 200*time.Millisecond)
+	}
+	if err := detect(t.Context(), f, dest, names, 5*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range orphans {
+		if v, _ := f.load(key); !slices.Equal(asRecords(v), fresh) {
+			t.Errorf("%q holds %v once detect ended, want the fresh detection's %v", key, v, fresh)
+		}
+	}
 }
 
 // front is a TCP front for theTarget that holds every connection, silent,
@@ -363,12 +523,12 @@ func (f *front) connections() int {
 func TestADetectionGivenUpOnIsAwaitedThenDoneAgain(t *testing.T) {
 	names := map[string]bool{serverName: true, "other.example.net": true}
 	f := newFront(t)
-	if err := detect(t.Context(), f.addr(), names, 300*time.Millisecond); err == nil {
+	if err := detect(t.Context(), upstreamRecords{}, f.addr(), names, 300*time.Millisecond); err == nil {
 		t.Fatal("detected the records of a target that never answers")
 	}
 
 	f.answer()
-	if err := detect(t.Context(), f.addr(), names, 300*time.Millisecond); err == nil {
+	if err := detect(t.Context(), upstreamRecords{}, f.addr(), names, 300*time.Millisecond); err == nil {
 		t.Fatal("detected again while the detection given up on still runs")
 	}
 
@@ -389,7 +549,7 @@ func TestADetectionGivenUpOnIsAwaitedThenDoneAgain(t *testing.T) {
 		}
 	}
 	before := f.connections()
-	if err := detect(t.Context(), f.addr(), names, detectWait); err != nil {
+	if err := detect(t.Context(), upstreamRecords{}, f.addr(), names, detectWait); err != nil {
 		t.Fatal(err)
 	}
 	// REALITY's detection dials twice per server name and ALPN.
