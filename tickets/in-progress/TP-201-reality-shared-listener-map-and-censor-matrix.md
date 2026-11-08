@@ -8,8 +8,8 @@ repo: thinkpol-vpn
 size: L
 depends_on: [TP-087]
 refs: [C2, C4, docs/design/transports.md#transports, docs/design/server-agent.md#server-agent-one-worker-per-space]
-owner: ""
-branch: ""
+owner: "agent-tp-201"
+branch: "tp-201-reality-shared-listener"
 ---
 
 ## Goal
@@ -49,3 +49,4 @@ branch: ""
 - 2026-11-08 created in backlog (split from TP-087, owner-approved)
 - 2026-11-08 notes: where to cut serve, from TP-087 review round 1
 - 2026-11-09 notes: the lab target needs Options.TrustTargetRoots or a lab CA, from TP-087 review round 2
+- 2026-11-09 backlog → in-progress, owner: agent-tp-201
