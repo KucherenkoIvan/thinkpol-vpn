@@ -23,9 +23,13 @@ With the kill switch on, nothing leaves the device when the tunnel is down.
 
 ## Acceptance
 - [ ] with the service from TP-046, a simulated agent crash keeps traffic fail-closed until the restarted agent is back (macOS and Linux)
+  - Linux: proven in the lab on ea51a26 (`TestKillSwitchUnderSystemd`: SIGKILL with the restart held off, then the restart; `TestKillSwitchDirectDestinationsExpireWithoutTheAgent`). macOS: device checks 8–9 below.
 - [ ] killing the service with the kill switch on leaves no traffic flowing except to entries, on macOS and Linux
+  - Linux: proven in the lab on ea51a26 (`TestKillSwitchUnderSystemd` "on, crashed": ping, TCP and a curl bound to eth0, both families; the entries answer). A stop leaves the down shape (`TestTheCrashPostureHoldsWhileMeantUp`). macOS: device check 8.
 - [ ] after the agent crashes (killed, not stopped) with the "everything" or "all but domestic" preset and the kill switch off, nothing leaves except traffic to entries (and LAN with allow-LAN) until the agent starts and connects again, on macOS and Linux; opt-out is a setting
+  - Linux: proven in the lab on ea51a26 (`TestKillSwitchUnderSystemd` "everything, crashed"; allow-LAN in "on, disconnected, allow-LAN"; the opt-out `fail_closed_after_crash: false` in node.json: "opted out, crashed"). macOS: device check 9; pf can't expire the direct destinations (RR18).
 - [ ] a deliberate disconnect with the kill switch off removes the guard and traffic flows direct; with the switch on it stays
+  - Linux: proven in the lab on ea51a26 (`TestKillSwitchUnderSystemd` "off, disconnected", "everything, disconnected", "on, after a disconnect"). macOS: device checks 7 and 10.
 
 ## Notes
 - A pf guard for macOS doesn't exist yet; it comes with TP-078 (split from TP-021).
@@ -131,3 +135,12 @@ Run on the owner's Mac with thinkpol installed as the service (`sudo thinkpol se
 - 2026-10-28 docs (TP-138 review): notes on reusing the guard's pfctl readers and on a failed guard Close
 - 2026-11-07 TP-139 verdicts noted
 - 2026-11-09 backlog → in-progress, owner: agent-tp-048
+- 2026-11-09 design in Notes; built: `firewall.KillSwitch` (Linux `inet thinkpol-killswitch`; macOS anchor `com.apple/001.thinkpol-killswitch` with its own pf enable reference: the guard's reference handling moved into a shared `pfEnabler`, its readers, flush and state kill shared, not copied), the agent's keeper (toggle, crash posture, a stop keeps it, uninstall removes it, re-applied every 10 s), local API `SetKillSwitch`/`SetAllowLAN` and `Status.kill_switch`, CLI `kill-switch [on|off]` and `allow-lan [on|off]`, node.json `kill_switch`/`allow_lan`/`fail_closed_after_crash`, device.json `kill_switch`/`allow_lan`, health `kill_switch_not_enforced`/`kill_switch_unsupported`; docs: firewall, agent and localapi package docs, security.md "Kill switch", configuration.md, api-overview.md (TP-048 section), RR17–RR21 narrowed, RR57–RR58 added
+- 2026-11-09 found in the lab: a SIGKILLed agent's connected shape let everything out (the M0 map has no rules, so all is direct, and the lab's networks are private); the direct destinations now sit in expiring sets on Linux (30 s, renewed by every apply); pf can't expire an entry, so macOS keeps them until the restarted agent narrows them (RR18)
+- 2026-11-09 mutations, unit (all caught): darwin state kill IPv6 only, no upstream rules, Close keeping the reference, no hook check, the listing unchecked, IPv4 `addr:port` not cut; agent opt-out ignored, no entries in the down shape, a stop removing it, no start narrowing, a failure reported as enforced, the member's toggle ignored; CLI kill-switch taking any argument; status text without "(in place)"
+- 2026-11-09 mutations, lab (all caught): the final reject rule removed (`TestKillSwitchLetsOutOnlyEntriesWhileDown`), the direct sets not renewed (`TestKillSwitchDirectDestinationsExpireWithoutTheAgent`), the kill switch's table named as the guard's (`TestKillSwitchAndGuardAreSeparateOwners`), the direct sets without a timeout (`TestKillSwitchUnderSystemd`)
+- 2026-11-09 the full lab failed `TestDiagShowsWhatTheHostHolds` once: under all-but-domestic the crash posture's chain refuses the guard's test ping before the guard's counts it (both are last at output); that test now runs with `-fail-closed-after-crash=false`
+- 2026-11-09 make lint, make test and make lab-test green on ea51a26 (origin/rewrite at 44079f8 merged)
+- 2026-11-09 not verified: everything on macOS (the anchor, its reference, pfctl's listing of the new rules, IPv4 in `-s states`, skipped interfaces): the device checks in Notes, for the M2 acceptance run (TP-029); the four boxes stay open for them, their Linux halves proven
+- 2026-11-09 proposed split: the captive-portal pause as its own ticket (in Scope, in no box). Out of scope, for the board: `diag` doesn't show the kill switch's table, and the guard's counters miss what the kill switch's chain refuses first
+- 2026-11-09 in-progress → review
