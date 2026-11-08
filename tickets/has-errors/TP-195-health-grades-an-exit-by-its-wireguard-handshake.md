@@ -3,6 +3,7 @@ id: TP-195
 title: "Health grades an exit by its WireGuard handshake"
 milestone: M2
 area: agent
+stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-140]
