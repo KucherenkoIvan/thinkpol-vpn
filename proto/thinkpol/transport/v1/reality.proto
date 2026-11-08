@@ -1,0 +1,38 @@
+syntax = "proto3";
+
+package thinkpol.transport.v1;
+
+// Settings of a reality listener, an entry node's public TCP listener. A
+// device's credential on it is its short id: exactly 8 bytes, a shared
+// secret, carried as the link's credential and verifier, not here.
+message RealityListenSettings {
+  // The listener's X25519 private key, 32 bytes. Devices dial with its
+  // public key.
+  bytes private_key = 1;
+  // The camouflage target, an IP literal and port: whatever fails
+  // authentication is spliced to it, raw and whole, and every connection's
+  // handshake imitates it. Chosen per node, never fleet-wide.
+  string target = 2;
+  // The server names (SNI) a ClientHello may carry; the target serves
+  // them. At least one.
+  repeated string server_names = 3;
+  // How far a ClientHello's sealed time may be from the listener's clock,
+  // in seconds, which is also how long a sealed session id is remembered
+  // against replays. 0 means the default, five minutes, which is also the
+  // most.
+  uint32 time_window_s = 4;
+}
+
+// Settings of the dialing end of a reality link: a device's endpoint.
+message RealityDialSettings {
+  // The server name (SNI) the ClientHello carries: one of the listener's.
+  string server_name = 1;
+  // The listener's X25519 public key, 32 bytes.
+  bytes public_key = 2;
+  // The browser whose ClientHello the dialer imitates. "chrome", the
+  // default when empty, is the only one so far.
+  string fingerprint = 3;
+}
+
+// Settings of the listening end of a reality link. None yet.
+message RealityInboundSettings {}

@@ -7,7 +7,6 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"slices"
 	"strconv"
 	"sync"
@@ -49,10 +48,6 @@ const (
 	// datagram udp sends or accepts, and the largest bucket it pads to.
 	minDatagram = clearSize + innerSize + tagSize
 	maxDatagram = Overhead + transport.MaxPacketSize + MaxRandomPadding
-
-	// maxClockSkew is how far a datagram's sealed send time may be from the
-	// receiver's clock.
-	maxClockSkew = 5 * time.Minute
 	// connIDPeriod is how often connection ids change.
 	connIDPeriod = time.Hour
 )
@@ -171,19 +166,7 @@ var plainPool = sync.Pool{New: func() any { b := make([]byte, 0, maxDatagram); r
 var support = transport.ShapingSupport{Padding: true}
 
 func checkShaping(s transport.Shaping) error {
-	if err := support.Check(s); err != nil {
-		return fmt.Errorf("udp: %w", err)
-	}
-	p := s.Padding
-	if int(p.Max) > MaxRandomPadding {
-		return fmt.Errorf("udp: %w: random padding up to %d bytes, udp adds at most %d", transport.ErrUnsupportedShaping, p.Max, MaxRandomPadding)
-	}
-	for _, b := range p.Buckets {
-		if int(b) > maxDatagram {
-			return fmt.Errorf("udp: %w: a bucket of %d bytes, udp sends at most %d", transport.ErrUnsupportedShaping, b, maxDatagram)
-		}
-	}
-	return nil
+	return support.CheckBounds(Name, s, MaxRandomPadding, maxDatagram)
 }
 
 // seal appends the datagram carrying packet, padded as padding says, to
@@ -225,23 +208,14 @@ type opened struct {
 	packets int    // in frames; none is a cover datagram
 }
 
-// sentFresh reports whether a datagram sealed at the Unix second sent
-// could still be fresh at now: the arithmetic opened.fresh uses, shared
-// with the receiver's memory so the two never disagree.
-func sentFresh(sent uint32, now time.Time) bool {
-	d := time.Duration(int32(uint32(now.Unix())-sent)) * time.Second
-	return d <= maxClockSkew && d >= -maxClockSkew
-}
-
 // later reports whether the sealed send time a is after b, both uint32
 // Unix seconds that wrap in 2106.
 func later(a, b uint32) bool { return int32(a-b) > 0 }
 
-// fresh reports whether the datagram was sent within maxClockSkew of now.
-// The send time is uint32 Unix seconds, which wraps in 2106: the distance
-// is taken mod 2^32 and read as signed, so it holds across the wrap (for
-// any skew under 68 years).
-func (o opened) fresh(now time.Time) bool { return sentFresh(o.sent, now) }
+// fresh reports whether the datagram was sent within the clock skew of
+// now, by the arithmetic the receiver's memory of senders uses too
+// (transport.FreshUnix), so the two never disagree.
+func (o opened) fresh(now time.Time) bool { return transport.FreshUnix(o.sent, now) }
 
 // open authenticates datagram d and appends its plaintext to dst. dst must
 // not overlap d unless it is exactly d's ciphertext: on failure Open may
