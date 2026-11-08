@@ -137,7 +137,8 @@ message Diagnostics {
   // The schema. Bumped when a field is removed or renamed or its type or
   // meaning changes; not when a field is added. `unreadable` texts are
   // free-form, and the values of enumerated strings (a route's type, an
-  // Apply's step) may grow without a bump.
+  // Apply's step) may grow without a bump. This is the service's; the
+  // CLI's JSON carries the CLI's own (the localapi package doc's "JSON").
   uint32 schema_version = 1;
   google.protobuf.Timestamp taken_at = 2;
   // The agent's OS ("linux", "darwin") and version.
@@ -545,6 +546,8 @@ message DataPlane {
   // the rules, and how often the overlay interface was re-applied after its
   // link came up ("interface.reapplies").
   map<string, uint64> counters = 10;
+  // The overlay's TUN, by the name the OS gave it.
+  string interface = 11;
 }
 
 // A WireGuard peer.
