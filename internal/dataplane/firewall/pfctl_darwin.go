@@ -652,7 +652,7 @@ func parseTableOf(show []byte, both bool) ([]netip.Prefix, error) {
 				p = netip.PrefixFrom(a, a.BitLen())
 			}
 		}
-		if err != nil || !p.IsValid() || !(p.Addr().Is6() || both) || p.Addr().Is4In6() || p != p.Masked() {
+		if err != nil || !p.IsValid() || !p.Addr().Is6() && !both || p.Addr().Is4In6() || p != p.Masked() {
 			return nil, fmt.Errorf("firewall: the guard's table holds %q", l)
 		}
 		out = append(out, p)

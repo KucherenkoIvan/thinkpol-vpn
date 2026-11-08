@@ -599,13 +599,7 @@ func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
 			p.version, p.removed, p.mismatch, p.conn = f.cur.Header().Version, f.removed, f.mismatch, n.conn.state
 		})
 	}
-	// Removed (not a server's section): the kill switch lets out no entry,
-	// as the device has none.
-	keepKillSwitch := func(ctx context.Context, meantUp bool) {
-		if n.Mode() == ModeDevice && !f.mismatch {
-			n.enforceKillSwitch(ctx, killSwitchView{meantUp: meantUp})
-		}
-	}
+	keepKillSwitch := func(ctx context.Context, meantUp bool) { n.keepRemovedKillSwitch(ctx, f.mismatch, meantUp) }
 	reapply := time.NewTicker(killSwitchReapply)
 	defer reapply.Stop()
 	publish()
@@ -621,11 +615,7 @@ func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
 		case <-ctx.Done():
 			// The node returns: its connection is down; its kill switch
 			// stays as a crash would leave it (runner.shutdown).
-			meantUp := !n.conn.disconnected()
-			if meantUp {
-				logRefused(n.logs.Logger, n.conn.disconnect())
-			}
-			keepKillSwitch(context.Background(), meantUp)
+			keepKillSwitch(context.Background(), n.dropConnection())
 			publish()
 			return false
 		case <-reapply.C:
@@ -679,6 +669,25 @@ func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
 			return true
 		}
 	}
+}
+
+// keepRemovedKillSwitch keeps a device's kill switch while it waits for a
+// section (awaitSection): removed, it lets out no entry, as the device has
+// none; made a server by its map (mismatch), the host is left alone.
+func (n *Node) keepRemovedKillSwitch(ctx context.Context, mismatch, meantUp bool) {
+	if n.Mode() == ModeDevice && !mismatch {
+		n.enforceKillSwitch(ctx, killSwitchView{meantUp: meantUp})
+	}
+}
+
+// dropConnection takes a waiting node's connection down as it returns,
+// and says whether it was meant up.
+func (n *Node) dropConnection() bool {
+	meantUp := !n.conn.disconnected()
+	if meantUp {
+		logRefused(n.logs.Logger, n.conn.disconnect())
+	}
+	return meantUp
 }
 
 // serverRemovedMsg completes the removal warning for a server's spaces:

@@ -41,21 +41,7 @@ func WriteStatus(w io.Writer, st *localapiv1.Status, now time.Time) error {
 		line("maps refused:\t%d since the node started (the service's log says why)", n)
 	}
 	line("mode:\t%s", displayName(st.GetMode()))
-	if p := st.GetRulePreset(); p != "" {
-		switch {
-		case st.GetRulePresetUnavailable():
-			p += " (unavailable in this space: failing closed)"
-		case !st.GetRulesEnforced():
-			p += " (applies once connected)"
-		}
-		line("rule preset:\t%s", p)
-	}
-	if st.GetMode() != localapiv1.Mode_MODE_SERVER {
-		line("connect-on-boot:\t%s", onOff(st.GetConnectOnBoot()))
-		if k := st.GetKillSwitch(); k != nil {
-			line("kill switch:\t%s", KillSwitchText(k))
-		}
-	}
+	writeDeviceSettings(line, st)
 	if st.GetLastRunCrashed() {
 		line("last run:\tcrashed, or exited with an error (thinkpol diag shows its trace, as root)")
 	}
@@ -312,6 +298,25 @@ func byteCount(n uint64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
+}
+
+// writeDeviceSettings writes a device's rule preset and toggles.
+func writeDeviceSettings(line func(string, ...any), st *localapiv1.Status) {
+	if p := st.GetRulePreset(); p != "" {
+		switch {
+		case st.GetRulePresetUnavailable():
+			p += " (unavailable in this space: failing closed)"
+		case !st.GetRulesEnforced():
+			p += " (applies once connected)"
+		}
+		line("rule preset:\t%s", p)
+	}
+	if st.GetMode() != localapiv1.Mode_MODE_SERVER {
+		line("connect-on-boot:\t%s", onOff(st.GetConnectOnBoot()))
+		if k := st.GetKillSwitch(); k != nil {
+			line("kill switch:\t%s", KillSwitchText(k))
+		}
+	}
 }
 
 // KillSwitchText says what the kill switch does now: its toggles, and
