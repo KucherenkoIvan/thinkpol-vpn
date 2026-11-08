@@ -22,9 +22,9 @@ The lab catches traffic that looks like random bytes and servers that don't beha
 - The prober also flags the **upstream tell**, an entry that opens a connection to the camouflage target on every probe (independent design review, 2026-10-13).
 
 ## Acceptance
-- [ ] a Shadowsocks-like random stream is flagged; HTTPS is not
-- [ ] the prober tells a naive echo server from nginx
-- [ ] the prober reports the server hello's JA3S/JA4S, extension order and ALPN against the camouflage site's, and detects an entry that opens an upstream connection to the camouflage target on every probe; the results are shown honestly in the matrix
+- [x] a Shadowsocks-like random stream is flagged; HTTPS is not
+- [x] the prober tells a naive echo server from nginx
+- [x] the prober reports the server hello's JA3S/JA4S, extension order and ALPN against the camouflage site's, and detects an entry that opens an upstream connection to the camouflage target on every probe; the results are shown honestly in the matrix
 
 ## Notes
 - The JA3S/JA4S server-hello comparison is on the MVP path only if D6 requires it (open, 2026-11-07).
@@ -48,3 +48,8 @@ The lab catches traffic that looks like random bytes and servers that don't beha
 - 2026-11-09 lab runs (make lab-gotest PKG=./lab): the three lab tests pass; TestCensorMatrix's new cells (every row × off, fully-encrypted, active prober, server-hello) all as expected: udp, wireguard and random-tcp fail fully-encrypted, openvpn udp/tcp and https pass it; random-tcp and openvpn-tcp fail the prober, https passes it (nginx answers every probe and handshake as the camouflage site's does); every row passes server-hello (https matches the site)
 - 2026-11-09 make lint, make test green
 - 2026-11-09 out of scope: TP-087's branch edits this ticket's backlog copy (a Notes line on TP-201's target), so merging it after this one conflicts on the ticket's path; nginx 1.22 leaves TLS 1.3 out unless ssl_protocols says so, which TP-201's camouflage target needs (startNginx sets it); the prober attributes an upstream connection by the probed source address only, so an entry whose uplink leaves by the other family isn't matched (doc.go)
+- 2026-11-09 full make lab-test on 89fe9eb caught wireguard × fully-encrypted partial (IPv6 crossed): a WireGuard initiation ends in mac2's 16 zero bytes, about 3.47 set bits per byte, and Wu et al.'s first exemption passes about one in four (TestFullyEncryptedWireGuardInitiationByChance: 557 of 2000); the censor is unchanged, the matrix gained censorCase.varies (any result accepted and labelled with why, a blocked family still blamed on the blocker), doc.go says so; thinkpol udp's first datagram is exempt only by six printable bytes first, about 1 in 400
+- 2026-11-09 merged origin/rewrite (TP-087 in; this ticket's backlog copy deleted, its Notes and Log line carried over); make lint, make test green on 4f8531c
+- 2026-11-09 lab commit 4f8531c: full make lab-test (GOFLAGS=-p=2 LAB_P=1, exclusive CPU lock): the lab/ phase passed, TestCensorMatrix complete, lab/RESULTS.md regenerated (wireguard × fully-encrypted failed this run, labelled varies); the node phase failed once in TP-087's internal/dataplane/transport/reality TestConformance/ShapingRefused/2 ("reality: TLS handshake: EOF"), which passed 3 of 3 re-run alone (make lab-gotest PKG=./internal/dataplane/transport/reality RUN=TestConformance COUNT=3): a flake in code this ticket doesn't touch, reported, not fixed here
+- 2026-11-09 not verified: reality's rows (TP-201) against these modules; RESULTS.md quotes lab-internal addresses, which change every run
+- 2026-11-09 in-progress → review
