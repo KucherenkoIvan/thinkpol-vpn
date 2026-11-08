@@ -220,8 +220,8 @@
 //
 // # JSON
 //
-// What the CLI prints for a script, `status -json` ([WriteStatusJSON])
-// and `diag` ([WriteDiagnostics]), follows one convention, opt-in with
+// What the CLI prints for a script, `status -json` ([WriteJSON]) and
+// `diag` ([WriteDiagnostics]), follows one convention, opt-in with
 // `-json` (`diag` has no text form yet); a person's output stays text.
 // TP-181 gives the other commands `-json` in it, and every field added
 // to the status (TP-048's kill switch, allow-LAN and pause toggles, say)
@@ -236,23 +236,30 @@
 //     data plane is down, `uplink` on a device, a peer's `last_handshake`
 //     before the first);
 //   - a top-level `schema_version`, [SchemaVersion], the one number for
-//     every document. `status -json` writes the CLI's own version (the
-//     JSON has the fields its schema knows, whatever the service's); the
-//     status inside `diag` has the service's;
+//     every document, and always the CLI's: the CLI decides the JSON's
+//     names and spellings, so the version is the CLI's whatever the
+//     service sent (Diagnostics' own field, the service's, is
+//     overwritten; Status has none on the wire). The gap: with a service
+//     older than the CLI, a field that service never sends reads as its
+//     zero value under the CLI's version;
 //   - an enum value in lower snake_case without its type's prefix, as the
 //     text view spells it: `connected`, `device`, `ok`, not protojson's
 //     `CONNECTION_CONNECTED`, `MODE_DEVICE`, `HEALTH_LEVEL_OK`; the zero
 //     value is `unspecified`. Every enum field the schema has is spelled
 //     so, nested, in a list or as a map's value, so a new enum follows it
-//     with no code. Health problems and other codes are snake_case
-//     strings too;
+//     with no code. A value the CLI's schema doesn't know (a newer
+//     service's) is `unknown`, as in the text view, never a number.
+//     The prefix is the zero value's name without `UNSPECIFIED`.
+//     Health problems and other codes are snake_case strings too;
 //   - otherwise protojson's spelling of values: a 64-bit integer as a
 //     string (`"map_version": "1793188210"`), a timestamp as
-//     RFC 3339 in UTC, a duration as seconds (`"1.5s"`);
+//     RFC 3339 in UTC, a duration as seconds with 0, 3, 6 or 9
+//     fractional digits (`"2s"`, `"1.500s"`, `"0.027600s"`);
 //   - one object, indented by two spaces, then a newline, the same bytes
 //     for the same state (protojson's own whitespace is randomized per
 //     build, so it is re-indented); `status -json -watch` writes one
-//     object after another.
+//     compact object per line ([WriteJSONLine], NDJSON), for line
+//     readers.
 //
 // The v1 contract is the field names, their types and their meaning in
 // Status and Diagnostics. [SchemaVersion] is bumped when a field is

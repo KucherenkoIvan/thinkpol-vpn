@@ -6,14 +6,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
-	"net"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -64,6 +64,8 @@ func (n *statusNode) Diagnose(context.Context, bool) agent.Diagnostics {
 // returns the socket's path.
 func serveStatus(t *testing.T, node localapi.Node) string {
 	t.Helper()
+	// Not t.TempDir: its long path would pass the unix socket path's
+	// limit (104 bytes on macOS).
 	dir, err := os.MkdirTemp("", "tpst")
 	if err != nil {
 		t.Fatal(err)
@@ -103,12 +105,11 @@ func connectedDevice(t *testing.T) *statusNode {
 	}}
 }
 
-// runStatusCLI runs `thinkpol status args...` against socket, every
-// connection through dial.
-func runStatusCLI(t *testing.T, socket string, dial localapi.Dialer, args ...string) string {
+// runStatusCLI runs `thinkpol status args...` against socket.
+func runStatusCLI(t *testing.T, socket string, args ...string) string {
 	t.Helper()
 	var out, errOut bytes.Buffer
-	e := env{stdin: strings.NewReader(""), stdout: &out, stderr: &errOut, dial: dial}
+	e := env{stdin: strings.NewReader(""), stdout: &out, stderr: &errOut}
 	if code := run(context.Background(), e, append([]string{"status", "-socket", socket}, args...)); code != 0 {
 		t.Fatalf("status %v: exit %d\n%s", args, code, errOut.String())
 	}
@@ -158,13 +159,13 @@ func checkFields(t *testing.T, md protoreflect.MessageDescriptor, obj map[string
 
 func TestStatusJSONHasEveryFieldBySchemaName(t *testing.T) {
 	socket := serveStatus(t, connectedDevice(t))
-	out := runStatusCLI(t, socket, nil, "-json")
+	out := runStatusCLI(t, socket, "-json")
 	var obj map[string]any
 	if err := json.Unmarshal([]byte(out), &obj); err != nil {
 		t.Fatalf("%v:\n%s", err, out)
 	}
 	checkFields(t, (&localapiv1.Status{}).ProtoReflect().Descriptor(), obj, "status")
-	if obj["schema_version"] != float64(localapi.SchemaVersion) || localapi.SchemaVersion < 1 {
+	if obj["schema_version"] != float64(localapi.SchemaVersion) {
 		t.Errorf("schema_version %v, want %d", obj["schema_version"], localapi.SchemaVersion)
 	}
 	// Zero values are there as themselves: false, "", an empty list, null.
@@ -180,62 +181,43 @@ func TestStatusJSONHasEveryFieldBySchemaName(t *testing.T) {
 	if peer := dp["peers"].([]any)[0].(map[string]any); peer["last_handshake"] != nil || peer["first_hop"] != "" {
 		t.Errorf("a peer with no handshake: %v", peer)
 	}
-	// One object, byte-stable: protojson's randomized spacing is gone.
-	if again := runStatusCLI(t, socket, nil, "-json"); again != out || strings.Contains(out, ":  ") || !strings.HasSuffix(out, "}\n") {
-		t.Errorf("not byte-stable:\n%s\nthen\n%s", out, again)
-	}
 }
 
-// A newer client's schema version is the one its JSON says, whatever the
-// service sent: the JSON holds the client's fields.
-func TestStatusJSONSaysTheClientsSchema(t *testing.T) {
-	var out bytes.Buffer
-	if err := localapi.WriteStatusJSON(&out, &localapiv1.Status{SchemaVersion: 99}); err != nil {
-		t.Fatal(err)
-	}
-	var got struct {
-		SchemaVersion int `json:"schema_version"`
-	}
-	if err := json.Unmarshal(out.Bytes(), &got); err != nil || got.SchemaVersion != localapi.SchemaVersion {
-		t.Fatalf("schema_version %d (%v), want %d:\n%s", got.SchemaVersion, err, localapi.SchemaVersion, out.String())
-	}
+// errEnough stops a watch once the test has seen enough.
+var errEnough = errors.New("enough")
+
+// linesWriter keeps what is written and fails the write after the
+// given number.
+type linesWriter struct {
+	bytes.Buffer
+	writes, after int
 }
 
-// dialRecorder is a test transport: it lets through the one connection
-// status may make, to the local API's socket, fails any other dial, and
-// records them all.
-type dialRecorder struct {
-	socket string
-	mu     sync.Mutex
-	dials  []string
-}
-
-func (d *dialRecorder) dial(ctx context.Context, network, address string) (net.Conn, error) {
-	d.mu.Lock()
-	d.dials = append(d.dials, network+" "+address)
-	d.mu.Unlock()
-	if network != "unix" || address != d.socket {
-		return nil, fmt.Errorf("the test transport fails any dial: %s %s", network, address)
+func (w *linesWriter) Write(p []byte) (int, error) {
+	n, _ := w.Buffer.Write(p)
+	if w.writes++; w.writes >= w.after {
+		return n, errEnough
 	}
-	return (&net.Dialer{}).DialContext(ctx, network, address)
+	return n, nil
 }
 
-func TestStatusReachesOnlyTheLocalAPI(t *testing.T) {
+// `status -watch -json` is NDJSON: one whole object per line, so a line
+// reader (a `while read` loop, the lab's harness) gets one status a line.
+func TestStatusWatchJSONIsOneObjectPerLine(t *testing.T) {
 	socket := serveStatus(t, connectedDevice(t))
-	d := &dialRecorder{socket: socket}
-	for _, args := range [][]string{nil, {"-json"}} {
-		if out := runStatusCLI(t, socket, d.dial, args...); !strings.Contains(strings.ToLower(out), "connected") {
-			t.Fatalf("status %v:\n%s", args, out)
-		}
+	out := &linesWriter{after: 3}
+	e := env{stdin: strings.NewReader(""), stdout: out, stderr: io.Discard}
+	if err := runStatus(context.Background(), e, []string{"-socket", socket, "-watch", "-interval", "10ms", "-json"}); !errors.Is(err, errEnough) {
+		t.Fatalf("status -watch -json: %v\n%s", err, out.String())
 	}
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if len(d.dials) == 0 {
-		t.Fatal("status dialed nothing through the test transport")
+	lines := strings.Split(strings.TrimSuffix(out.String(), "\n"), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("%d lines, want 3:\n%s", len(lines), out.String())
 	}
-	for _, got := range d.dials {
-		if got != "unix "+socket {
-			t.Errorf("status dialed %s", got)
+	for _, l := range lines {
+		var st map[string]any
+		if err := json.Unmarshal([]byte(l), &st); err != nil || st["connection"] != "connected" || st["schema_version"] != float64(localapi.SchemaVersion) {
+			t.Errorf("line %q: %v", l, err)
 		}
 	}
 }

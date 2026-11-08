@@ -248,29 +248,11 @@ func WriteLogLines(w io.Writer, lines []string, missed uint64) error {
 	return nil
 }
 
-// displayNames are what WriteStatus calls the status's enum values.
-var displayNames = map[protoreflect.Enum]string{
-	localapiv1.Connection_CONNECTION_UNSPECIFIED:    "unspecified",
-	localapiv1.Connection_CONNECTION_DISCONNECTED:   "disconnected",
-	localapiv1.Connection_CONNECTION_CONNECTING:     "connecting",
-	localapiv1.Connection_CONNECTION_CONNECTED:      "connected",
-	localapiv1.Connection_CONNECTION_SERVING:        "serving",
-	localapiv1.HealthLevel_HEALTH_LEVEL_UNSPECIFIED: "unspecified",
-	localapiv1.HealthLevel_HEALTH_LEVEL_OK:          "ok",
-	localapiv1.HealthLevel_HEALTH_LEVEL_DEGRADED:    "degraded",
-	localapiv1.HealthLevel_HEALTH_LEVEL_DOWN:        "down",
-	localapiv1.Mode_MODE_UNSPECIFIED:                "unspecified",
-	localapiv1.Mode_MODE_DEVICE:                     "device",
-	localapiv1.Mode_MODE_SERVER:                     "server",
-}
-
-// displayName is e's display name; a value the table doesn't know (a
-// newer service's) is "unknown".
+// displayName is e's name as WriteStatus prints it, the JSON's
+// spelling: a value the schema doesn't know (a newer service's) is
+// "unknown".
 func displayName(e protoreflect.Enum) string {
-	if name, ok := displayNames[e]; ok {
-		return name
-	}
-	return "unknown"
+	return enumValueName(e.Descriptor(), e.Number())
 }
 
 func ago(t *timestamppb.Timestamp, now time.Time) string {

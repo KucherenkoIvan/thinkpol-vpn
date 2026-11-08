@@ -184,8 +184,7 @@ func TestTheCLIControlsTheNode(t *testing.T) {
 		t.Fatal(err)
 	}
 	if st.GetConnection() != localapiv1.Connection_CONNECTION_DISCONNECTED || st.GetMapVersion() != 7 ||
-		st.GetSpaceId() != (netmap.SpaceID{0xab, 1}).String() || st.GetHealth().GetLevel() != localapiv1.HealthLevel_HEALTH_LEVEL_DOWN ||
-		st.GetSchemaVersion() != SchemaVersion {
+		st.GetSpaceId() != (netmap.SpaceID{0xab, 1}).String() || st.GetHealth().GetLevel() != localapiv1.HealthLevel_HEALTH_LEVEL_DOWN {
 		t.Fatalf("status %v", st)
 	}
 	if st, err = c.Connect(ctx); err != nil || st.GetConnection() != localapiv1.Connection_CONNECTION_CONNECTED || st.GetDataPlane().GetMtu() != 1328 {

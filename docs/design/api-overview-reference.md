@@ -238,9 +238,9 @@ Other lines appear when they apply:
 
 - the schema's own field names, snake_case, the same as the local API's `Status`, so the tray reading the API and a script reading the CLI see the same names;
 - every field present: an unset one as its zero value, or `null` for a message (`data_plane` while the data plane is down, `uplink` on a device, a peer's `last_handshake` before the first);
-- `schema_version` (2), the CLI's own: bumped when a field is removed or renamed or changes type or meaning, not when one is added. Enumerated values (enums, health problems) may grow without a bump, and counters come and go (a missing one is 0);
-- enum values in lower snake_case without their type's prefix, as the text view spells them (`connected`, `ok`, `device`; the zero value is `unspecified`); otherwise protojson's value spelling: 64-bit integers as strings, timestamps in RFC 3339 UTC, durations as seconds (`"3.2s"`);
-- two-space indent, the same bytes for the same state; with `-watch`, one object after another.
+- `schema_version` (2), the CLI's own, in every document whatever the service sent: bumped when a field is removed or renamed or changes type or meaning, not when one is added. Enumerated values (enums, health problems) may grow without a bump, and counters come and go (a missing one is 0). With a service older than the CLI, a field the service never sends reads as its zero value under the CLI's version;
+- enum values in lower snake_case without their type's prefix, as the text view spells them (`connected`, `ok`, `device`; the zero value is `unspecified`); otherwise protojson's value spelling: 64-bit integers as strings, timestamps in RFC 3339 UTC, durations as seconds with 0, 3, 6 or 9 fractional digits, as protojson writes them (`"3s"`, `"3.200s"`, `"0.027600s"`); an enum value the CLI's schema doesn't know (a newer service's) is `unknown`, as in the text view;
+- two-space indent, the same bytes for the same state; with `-watch`, one compact object per line (NDJSON), for line readers.
 
 ```json
 {
@@ -423,7 +423,7 @@ Writes a JSON snapshot of the node's state and of what it changed on the host. I
 |---|---|---|
 | `-o` | `-` | write to this file, mode 0600, written beside it and renamed over it; `-` (or empty) prints it |
 
-The JSON is part of the v1 contract, at `schema_version` 2 (2 spelled the enum values in diag's `status` the text view's way, `connected` and no longer `CONNECTION_CONNECTED`), in the same convention as `status -json` (above): the schema's snake_case names, every field present, an unset one as its zero value or null, the same bytes for the same state; its `status` is the service's, with the service's `schema_version`. A part the agent couldn't read has only `unreadable` set. Root and the service's user get everything. The group gets `host_parts: false`, with the routes, policy rules, guard and DNS marked unreadable. The group's snapshot, abridged:
+The JSON is part of the v1 contract, at `schema_version` 2 (2 spelled the enum values in diag's `status` the text view's way, `connected` and no longer `CONNECTION_CONNECTED`), in the same convention as `status -json` (above): the schema's snake_case names, every field present, an unset one as its zero value or null, the same bytes for the same state; its `status` is the service's, and the top-level `schema_version` is the CLI's, as in `status -json`. A part the agent couldn't read has only `unreadable` set. Root and the service's user get everything. The group gets `host_parts: false`, with the routes, policy rules, guard and DNS marked unreadable. The group's snapshot, abridged:
 
 ```json
 {
@@ -785,7 +785,7 @@ Refusals travel as go-kernel domain error codes over gRPC status codes. The clie
 - `workers`, `public_listeners`, `uplink`: on a server;
 - `rule_preset`, `rules_enforced`, `rule_preset_unavailable`, `connect_on_boot`: a device's toggles (TP-048 adds the kill switch, allow-LAN and pause here);
 - `maps_refused`, `last_run_crashed`, `last_run_unreadable`;
-- `schema_version`: the JSON's schema, 2 (the localapi package doc's "JSON").
+- no `schema_version` on the wire: the CLI's JSON adds its own (the localapi package doc's "JSON").
 
 `data_plane` also has `interface`, the TUN's name.
 
@@ -793,4 +793,4 @@ Nothing in it is a public address, a key or a secret. Nodes and spaces are opaqu
 
 ### `Diagnostics`
 
-`schema_version` (2), `taken_at`, `os`, `agent_version`, `host_parts`, `status`, `tun`, `last_apply`, `routes`, `policy_rules`, `guard`, `dns`. The last four are host parts: root's only, because they name public addresses. The schema version is bumped when a field is removed or renamed or changes type or meaning. An added field doesn't bump it.
+`schema_version` (2, the service's; `diag`'s JSON says the CLI's), `taken_at`, `os`, `agent_version`, `host_parts`, `status`, `tun`, `last_apply`, `routes`, `policy_rules`, `guard`, `dns`. The last four are host parts: root's only, because they name public addresses. The schema version is bumped when a field is removed or renamed or changes type or meaning. An added field doesn't bump it.

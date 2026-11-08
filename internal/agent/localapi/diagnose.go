@@ -238,7 +238,7 @@ func (c *Client) Diagnose(ctx context.Context) (*localapiv1.Diagnostics, error) 
 // v1 form: JSON with the schema's own field names (snake_case) and every
 // field present, an unset one as its zero value or null.
 func WriteDiagnostics(w io.Writer, d *localapiv1.Diagnostics) error {
-	return writeJSON(w, d)
+	return WriteJSON(w, d)
 }
 
 // ErrNotAFile: -o names something there that isn't a regular file (a

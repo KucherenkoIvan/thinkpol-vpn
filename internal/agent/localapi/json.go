@@ -5,45 +5,31 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
-
-	localapiv1 "github.com/KucherenkoIvan/thinkpol-vpn/proto/gen/thinkpol/localapi/v1"
 )
 
 // SchemaVersion is the schema of the JSON the CLI writes (`status -json`,
-// `diag`): Status.schema_version and Diagnostics.schema_version. It is
-// bumped when a field is removed or renamed or its type or meaning
-// changes, not when one is added; `unreadable` texts are free-form, and
-// enumerated string values (a health problem, a route's type, an Apply's
-// step) may grow without a bump.
+// `diag`), its top-level `schema_version`. It is bumped when a field is
+// removed or renamed or its type or meaning changes, not when one is
+// added; `unreadable` texts are free-form, and enumerated string values
+// (a health problem, a route's type, an Apply's step) may grow without a
+// bump.
 //
 // 2: enum values are spelled lower snake_case without their type's
 // prefix (`connected`, not `CONNECTION_CONNECTED`), as the text view
 // spells them; diag's status was 1's only enum-bearing part.
 const SchemaVersion = 2
 
-// WriteStatusJSON writes st in the JSON convention, stamped with this
-// client's SchemaVersion: the JSON has the fields this client's schema
-// knows, whatever the service's.
-func WriteStatusJSON(w io.Writer, st *localapiv1.Status) error {
-	st = proto.CloneOf(st)
-	st.SchemaVersion = SchemaVersion
-	return writeJSON(w, st)
-}
-
-// writeJSON writes m in the local API's JSON convention (the package
-// doc's "JSON"): the schema's own names, every field present, enum values
-// in lower snake_case (enumValues), one object and a newline.
-func writeJSON(w io.Writer, m proto.Message) error {
-	b, err := protojson.MarshalOptions{UseProtoNames: true, EmitUnpopulated: true}.Marshal(m)
+// WriteJSON writes m in the JSON convention (the package doc's "JSON"),
+// indented, for a person or a script reading a whole document.
+func WriteJSON(w io.Writer, m proto.Message) error {
+	b, err := conventionJSON(m)
 	if err != nil {
-		return err
-	}
-	if b, err = enumValues(b, m.ProtoReflect().Descriptor()); err != nil {
 		return err
 	}
 	if b, err = stableJSON(b); err != nil {
@@ -53,18 +39,43 @@ func writeJSON(w io.Writer, m proto.Message) error {
 	return err
 }
 
-// enumValues rewrites every enum value in b, protojson's encoding of a
-// message described by md, from its full name to enumValueName's
-// spelling, keeping the fields' order. The schema says which strings are
-// enums: a string field may hold anything, an enum's name included.
-func enumValues(b []byte, md protoreflect.MessageDescriptor) ([]byte, error) {
+// WriteJSONLine writes m in the JSON convention as one line, for a stream
+// of documents (`status -watch -json`) that line readers split.
+func WriteJSONLine(w io.Writer, m proto.Message) error {
+	b, err := conventionJSON(m)
+	if err != nil {
+		return err
+	}
+	_, err = w.Write(append(b, '\n'))
+	return err
+}
+
+// conventionJSON is m in the JSON convention, compact: the schema's own
+// names, every field present, enum values as enumValueName spells them,
+// and the top-level `schema_version` this client's SchemaVersion. A nil
+// message is written as an empty one.
+func conventionJSON(m proto.Message) ([]byte, error) {
+	if !m.ProtoReflect().IsValid() {
+		m = m.ProtoReflect().Type().New().Interface()
+	}
+	b, err := protojson.MarshalOptions{UseProtoNames: true, EmitUnpopulated: true}.Marshal(m)
+	if err != nil {
+		return nil, err
+	}
+	// Decoded into an ordered tree, not a map[string]any: the fields keep
+	// the schema's order, which is what a person reading it expects.
 	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.UseNumber()
 	v, err := decodeOrdered(dec)
 	if err != nil {
 		return nil, err
 	}
-	rewriteMessage(v, md)
+	rewriteMessage(v, m.ProtoReflect().Descriptor())
+	if obj, ok := v.(*object); ok {
+		// The JSON has the fields this client's schema knows, whatever
+		// version the message came from.
+		obj.set("schema_version", json.Number(strconv.Itoa(SchemaVersion)))
+	}
 	var out bytes.Buffer
 	if err := encodeOrdered(&out, v); err != nil {
 		return nil, err
@@ -72,31 +83,47 @@ func enumValues(b []byte, md protoreflect.MessageDescriptor) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
-// enumValueName is an enum value's JSON spelling: its name in lower case
-// without the prefix its type's name gives it (HealthLevel's
-// HEALTH_LEVEL_OK is `ok`, the zero value `unspecified`).
-func enumValueName(ed protoreflect.EnumDescriptor, name string) string {
-	return strings.ToLower(strings.TrimPrefix(name, enumPrefix(string(ed.Name()))))
+// enumValueName is the name of value n of enum ed as the JSON and the
+// text view spell it: lower case without the prefix the type gives its
+// values (HealthLevel's HEALTH_LEVEL_OK is `ok`, the zero value
+// `unspecified`). A number the schema doesn't know (a newer service's) is
+// `unknown`.
+func enumValueName(ed protoreflect.EnumDescriptor, n protoreflect.EnumNumber) string {
+	v := ed.Values().ByNumber(n)
+	if v == nil {
+		return "unknown"
+	}
+	return strings.ToLower(strings.TrimPrefix(string(v.Name()), enumPrefix(ed)))
 }
 
-// enumPrefix is the SCREAMING_SNAKE prefix of an enum named name:
-// "HealthLevel" gives "HEALTH_LEVEL_".
-func enumPrefix(name string) string {
-	var p strings.Builder
-	for i, r := range name {
-		if i > 0 && r >= 'A' && r <= 'Z' {
-			p.WriteByte('_')
-		}
-		p.WriteString(strings.ToUpper(string(r)))
+// enumPrefix is the prefix ed's values share: its zero value's name
+// without UNSPECIFIED (buf lint has every zero value end so), which
+// splitting the type's CamelCase name can't give for acronyms
+// (IPv6State's values start IPV6_STATE_).
+func enumPrefix(ed protoreflect.EnumDescriptor) string {
+	zero := ed.Values().ByNumber(0)
+	if zero == nil {
+		return ""
 	}
-	p.WriteByte('_')
-	return p.String()
+	prefix, ok := strings.CutSuffix(string(zero.Name()), "UNSPECIFIED")
+	if !ok {
+		return ""
+	}
+	return prefix
 }
 
 // object is a JSON object with its keys in order.
 type object struct {
 	keys []string
 	vals map[string]any
+}
+
+// set sets key to v, in its place if it is there, else last.
+func (o *object) set(key string, v any) {
+	if _, ok := o.vals[key]; !ok {
+		o.keys = append(o.keys, key)
+	}
+	o.vals[key] = v
 }
 
 func rewriteMessage(v any, md protoreflect.MessageDescriptor) {
@@ -138,8 +165,18 @@ func rewriteMessage(v any, md protoreflect.MessageDescriptor) {
 func rewriteValue(v any, fd protoreflect.FieldDescriptor) any {
 	switch fd.Kind() {
 	case protoreflect.EnumKind:
-		if s, ok := v.(string); ok && fd.Enum().FullName() != "google.protobuf.NullValue" {
-			return enumValueName(fd.Enum(), s)
+		ed := fd.Enum()
+		if ed.FullName() == "google.protobuf.NullValue" {
+			return v
+		}
+		switch v := v.(type) {
+		case string:
+			if ev := ed.Values().ByName(protoreflect.Name(v)); ev != nil {
+				return enumValueName(ed, ev.Number())
+			}
+		case json.Number:
+			// protojson writes a number the schema doesn't know as itself.
+			return "unknown"
 		}
 	case protoreflect.MessageKind, protoreflect.GroupKind:
 		rewriteMessage(v, fd.Message())
@@ -162,7 +199,7 @@ func decodeOrdered(dec *json.Decoder) (any, error) {
 			}
 			k, ok := kt.(string)
 			if !ok {
-				return nil, fmt.Errorf("json: object key %v", kt)
+				return nil, fmt.Errorf("localapi: json object key %v", kt)
 			}
 			v, err := decodeOrdered(dec)
 			if err != nil {
