@@ -436,7 +436,7 @@ func TestRecordsArePaddedToMinRecordByDefault(t *testing.T) {
 			stream := tp.captured()[0]
 			var sizes []int
 			for len(stream) >= recordHeaderSize {
-				size := recordHeaderSize + int(stream[3])<<8 | int(stream[4])
+				size := recordHeaderSize + (int(stream[3])<<8 | int(stream[4]))
 				if size > len(stream) {
 					break
 				}
