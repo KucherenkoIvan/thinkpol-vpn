@@ -38,14 +38,14 @@ A node starts as a device: it forwards nothing unless its node file allows it (P
 - Split 2026-11-07 (owner's MVP cut): the capability-ceiling file mechanism moved to TP-183. Until it lands, RR42 holds for a node run in server mode.
 
 ## Review findings
-- [ ] R1.1 (blocker) device mode + a server-kind section still runs as a server (listeners, admission, relay): fail closed, no data plane and no host changes, status problem mode_mismatch, same on a map change to server kind; lab tests that ran a server section as a device's peer → -mode server; RR42, security.md rule 7, agent doc.go, configuration.md, runbook upgrade step
-- [ ] R1.2 device-only behaviour keyed on the map's kind (engine.go LocalSourcesOnly, agent/resolver.go): key on the mode, or log why unreachable
-- [ ] R1.3 TestAnExitWithNoModeSetForwardsNothing and the lab egress restart check listeners, admitted links and relayed packets, not only egress
-- [ ] R1.4 tests: THINKPOL_MODE=auto (78, "gone"), "gone" in the flag case, flag over env precedence
-- [ ] R1.5 stale text: localapi.proto MODE_UNSPECIFIED, api-overview-reference.md, keepNoTrace comment, install_test wording, TP-183 credit in configuration.md and settings_test.go, api-overview.md:375, mapfollower comments, crashtrace.go and doc.go "a service's definition gives neither", RR42 When
-- [ ] R1.6 one function holds the known-device rule; ServiceMode adds the can-it-run check and says why, install prints the matching hint
-- [ ] R1.7 Node.Mode() without report.mu, awaitSection without a local mode copy
-- [ ] R1.8 nits: config.go "gone" message and api-overview.md:210, crashtrace test case name, rewrapped comments, dataplane.go:713 warning folded into R1.1
+- [x] R1.1 (blocker) device mode + a server-kind section still runs as a server (listeners, admission, relay): fail closed, no data plane and no host changes, status problem mode_mismatch, same on a map change to server kind; lab tests that ran a server section as a device's peer → -mode server; RR42, security.md rule 7, agent doc.go, configuration.md, runbook upgrade step
+- [x] R1.2 device-only behaviour keyed on the map's kind (engine.go LocalSourcesOnly, agent/resolver.go): key on the mode, or log why unreachable
+- [x] R1.3 TestAnExitWithNoModeSetForwardsNothing and the lab egress restart check listeners, admitted links and relayed packets, not only egress
+- [x] R1.4 tests: THINKPOL_MODE=auto (78, "gone"), "gone" in the flag case, flag over env precedence
+- [x] R1.5 stale text: localapi.proto MODE_UNSPECIFIED, api-overview-reference.md, keepNoTrace comment, install_test wording, TP-183 credit in configuration.md and settings_test.go, api-overview.md:375, mapfollower comments, crashtrace.go and doc.go "a service's definition gives neither", RR42 When
+- [x] R1.6 one function holds the known-device rule; ServiceMode adds the can-it-run check and says why, install prints the matching hint
+- [x] R1.7 Node.Mode() without report.mu, awaitSection without a local mode copy
+- [x] R1.8 nits: config.go "gone" message and api-overview.md:210, crashtrace test case name, rewrapped comments, dataplane.go:713 warning folded into R1.1
 
 ## Log
 - 2026-10-18 created in backlog (owner decision: the node's configuration caps the map)
@@ -69,3 +69,6 @@ A node starts as a device: it forwards nothing unless its node file allows it (P
 - 2026-11-08 R1.5–R1.8 checked against the code: proto (make proto output committed), api-overview(-reference), keepNoTrace, install_test, TP-183 credits, mapfollower comments, crashtrace.go and doc.go clause, RR42 When; knownMode holds the one rule, ServiceMode adds the can-it-run check and returns why (ModeUnknown), install prints the matching hint; Node.Mode() reads cfg.Mode without report.mu, awaitSection has no mode copy; config.go "is gone" message and api-overview.md:210; crash-trace case renamed; no comment line over 80 columns added on the branch
 - 2026-11-08 mutations: device mode reporting mode_mismatch but running the section (out() ignoring mismatch, no await, no early stop) fails TestAServerWithNoModeSetRunsNothing (its listener answers), TestADeviceTheMapMakesAServerStops (data plane still up) and lab TestEgressThroughAnExit (server-1 listens, device-a's ping to server-2 answered, the fetch gets through); mismatch never set fails both unit tests; restoreHost on a mismatch fails TestAServerWithNoModeSetRunsNothing (host touched 3 times); the runner ignoring a map that makes it a server fails TestADeviceTheMapMakesAServerStops; THINKPOL_MODE re-applied over the flags fails "a flag over the environment"; the node file over the environment fails "the environment over the node file"; the message without "is gone" fails TestUpRefusesABadMode (flag, env and file cases); knownMode calling a removed node UnknownMapShowsServer fails TestServiceModeIsTheNodesMode; install not hinting UnknownMapShowsServer fails TestOnlyADevicesDefinitionKeepsACrashTrace
 - 2026-11-08 make lint, make test green on 1e743af (exclusive CPU lock, GOFLAGS=-p=2)
+- 2026-11-09 full make lab-test green on d13f856 (exclusive CPU lock, GOFLAGS=-p=2, LAB_P=1); R1.1–R1.8 ticked after re-reading the diff
+- 2026-11-09 not verified: a real upgrade of a server from a pre-TP-111 binary (runbook step written, not run); on macOS a device-mode node with a server section isn't exercised beyond the unit tests (servers are Linux-only)
+- 2026-11-09 has-errors → review
