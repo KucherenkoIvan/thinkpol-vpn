@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/netip"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,16 +25,12 @@ import (
 // httpsName is the name the https row's ClientHello asks for.
 const httpsName = "site.example.net"
 
+// setupHTTPS runs nginx on server-1 as an ordinary site for httpsName, the
+// same server and settings as the camouflage site (startCamouflage): what
+// the prober and server-hello must not flag.
 func setupHTTPS(t *testing.T, l *lab.Lab) (probeTarget, error) {
 	server := l.Node(lab.Server1)
-	server.MustExec(t, "sh", "-ec", "mkdir -p /tmp/https && cd /tmp/https && "+
-		"openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 2 "+
-		"-keyout key.pem -out cert.pem -subj /CN="+httpsName+" -addext subjectAltName=DNS:"+httpsName+" 2>/dev/null")
-	for _, a := range serverAddrs(server) {
-		server.Start(t, "openssl", "s_server", "-quiet", "-www", "-accept", netip.AddrPortFrom(a, 443).String(),
-			"-cert", "/tmp/https/cert.pem", "-key", "/tmp/https/key.pem")
-	}
-	waitSockets(t, server, "-lnt", 443, 2)
+	startNginx(t, server, "/tmp/https", httpsName, 443, serverAddrs(server))
 	return probeTarget{server.IPv4(lab.NetServers), server.IPv6(lab.NetServers)}, nil
 }
 
@@ -247,6 +244,12 @@ func familyAddr(v6 bool) netip.Addr {
 // another reason isn't scored blocked, for the whole cell and not per family.
 func (o openVPN) probe(t *testing.T, l *lab.Lab, to probeTarget, wantPass bool) crossed {
 	dev, server := l.Node(lab.DeviceA), l.Node(lab.Server1)
+	// A cell may probe twice (censorCase.settle): the clients start once.
+	key := fmt.Sprintf("%p %s", l, o.proto)
+	if _, again := openVPNClients.LoadOrStore(key, true); again {
+		return o.ping(t, l, to, wantPass)
+	}
+	t.Cleanup(func() { openVPNClients.Delete(key) })
 	for _, v6 := range []bool{false, true} {
 		ifname, port := "ovpn4", ovpnPort4
 		if v6 {
@@ -257,6 +260,15 @@ func (o openVPN) probe(t *testing.T, l *lab.Lab, to probeTarget, wantPass bool) 
 			"--tls-client", "--ca", "/tmp/ovpn/ca.crt", "--cert", "/tmp/ovpn/client.crt", "--key", "/tmp/ovpn/client.key",
 			"--ifconfig", ovpnOverlay[v6]+".2", ovpnOverlay[v6]+".1", "--connect-retry", "1", "1", "--verb", "3")
 	}
+	return o.ping(t, l, to, wantPass)
+}
+
+// openVPNClients marks the labs whose OpenVPN clients a probe started, by
+// lab and protocol.
+var openVPNClients sync.Map
+
+func (o openVPN) ping(t *testing.T, l *lab.Lab, to probeTarget, wantPass bool) crossed {
+	dev := l.Node(lab.DeviceA)
 	return crossed{
 		v4: mustProbe(t)(pingCrosses(dev, to.v4, window(wantPass), pingNoReplyOrRoute)),
 		v6: mustProbe(t)(pingCrosses(dev, to.v6, window(wantPass), pingNoReplyOrRoute)),

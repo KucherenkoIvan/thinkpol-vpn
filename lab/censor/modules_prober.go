@@ -64,7 +64,11 @@ func init() {
 // router (lab.Upstream) and the entry's connection to it crosses the
 // censor. A new connection from the probed address to a reference address
 // starting during a probe, or within upstreamGrace after it, counts for
-// that probe; every probe counted, at least two, is the tell.
+// that probe; every probe counted, at least two, is the tell. The servers
+// of one address are probed one at a time, so another service of the
+// entry's that connects to the site isn't counted for this one's probes;
+// a connection to the site an entry's real clients cause during a probe
+// still is.
 type prober struct {
 	refName string
 	refs    []netip.AddrPort
@@ -80,6 +84,9 @@ type prober struct {
 
 	mu      sync.Mutex
 	servers map[netip.AddrPort]*probedServer
+	// probing serializes the probing of the servers of one address, so
+	// one's upstream connections are never counted for another's probes.
+	probing map[netip.Addr]*sync.Mutex
 	// upstream holds the recent connections to a reference address the
 	// censor saw, for the upstream tell.
 	upstream []upstreamConn
@@ -136,7 +143,7 @@ func newProber(settings json.RawMessage) (Passive, error) {
 	if err := unmarshalSettings(settings, &s); err != nil {
 		return nil, err
 	}
-	m := &prober{refName: s.Reference.Name, suspects: map[string]bool{}, servers: map[netip.AddrPort]*probedServer{}, grace: upstreamGrace}
+	m := &prober{refName: s.Reference.Name, suspects: map[string]bool{}, servers: map[netip.AddrPort]*probedServer{}, probing: map[netip.Addr]*sync.Mutex{}, grace: upstreamGrace}
 	for _, a := range s.Reference.Addresses {
 		ap, err := netip.ParseAddrPort(a)
 		if err != nil {
@@ -270,9 +277,16 @@ func (m *prober) suspect(ctx context.Context, f FlowSnapshot, flag FlagFunc) {
 	}
 	s = &probedServer{waiting: []FlowKey{f.Key}}
 	m.servers[server] = s
+	host, ok := m.probing[server.Addr()]
+	if !ok {
+		host = &sync.Mutex{}
+		m.probing[server.Addr()] = host
+	}
 	m.mu.Unlock()
 	go func() {
+		host.Lock()
 		verdict, why := m.examine(ctx, server, f.Payload)
+		host.Unlock()
 		if ctx.Err() != nil {
 			return
 		}

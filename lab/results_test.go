@@ -56,7 +56,11 @@ func TestCensorMatrix(t *testing.T) {
 		cell := matrixCell{transport: tr.name, censor: cc.name, result: "error"}
 		defer func() { record(cell) }()
 
-		l := lab.StartOwnSlot(t, lab.Standard())
+		topology := lab.Standard()
+		if cc.upstream {
+			topology = lab.Upstream()
+		}
+		l := lab.StartOwnSlot(t, topology)
 		target, err := tr.setup(t, l)
 		if err != nil {
 			cell.detail = "setup failed"
@@ -68,6 +72,16 @@ func TestCensorMatrix(t *testing.T) {
 		}
 
 		want := cc.want(tr.name)
+		if cc.settle {
+			// An active module judges a connection after it has crossed:
+			// the first probe shows it the transport, the cell is the
+			// probe after its verdicts.
+			tr.probe(t, l, target, false)
+			if err := c.settled(t, l); err != nil {
+				cell.result, cell.detail = "error", "the active modules didn't settle"
+				t.Fatal(err)
+			}
+		}
 		crossed := tr.probe(t, l, target, want == "pass")
 		cell.result, cell.detail = score(crossed)
 
@@ -87,6 +101,11 @@ func TestCensorMatrix(t *testing.T) {
 				t.Error(err)
 			} else if cell.result == "fail" {
 				cell.detail += "; the censor " + how + " them"
+			}
+		}
+		if cc.report != "" {
+			if why := c.judged(t, l, cc.report); why != "" {
+				cell.detail = strings.TrimPrefix(cell.detail+"; "+cc.report+": "+why, "; ")
 			}
 		}
 		if cell.result != want {
@@ -203,6 +222,15 @@ type censorCase struct {
 	// blocker is the module a cell expected to fail must find blocking
 	// in the verdict log.
 	blocker string
+	// upstream runs the cell in lab.Upstream: the camouflage site behind
+	// the router.
+	upstream bool
+	// settle probes twice, the cell scoring the second, once the active
+	// modules have flagged every flow of server-1 a module tagged.
+	settle bool
+	// report names the module whose first flag of a connection to
+	// server-1 the cell's detail quotes.
+	report string
 }
 
 func (cc censorCase) want(transport string) string {
@@ -223,6 +251,7 @@ const (
 	rowWireGuard  = "wireguard (reference)"
 	rowOpenVPNUDP = "openvpn-udp (reference)"
 	rowOpenVPNTCP = "openvpn-tcp (reference)"
+	rowRandomTCP  = "random-tcp (reference)"
 )
 
 // allFail expects every row to fail.
@@ -270,6 +299,39 @@ var censorCases = []censorCase{
 	{name: "wireguard-rhythm", modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig {
 		return []censor.ModuleConfig{{Name: "wireguard-rhythm", Settings: json.RawMessage(`{}`)}}
 	}},
+	// M2 gate checks (docs/design/milestones.md). Wu et al.'s exemptions
+	// on each connection's first data, UDP's first datagram too: thinkpol's
+	// udp and WireGuard send random-looking bytes first; OpenVPN's first
+	// packet is mostly zeros, and HTTPS starts with a TLS record.
+	{name: "fully-encrypted", expect: map[string]string{rowUDP: "fail", rowWireGuard: "fail", rowRandomTCP: "fail"},
+		blocker: "fully-encrypted",
+		modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig {
+			return []censor.ModuleConfig{{Name: "fully-encrypted", Settings: json.RawMessage(`{}`)}}
+		}},
+	// The prober probes every TCP server-1 serves data on, and what
+	// fully-encrypted finds suspect (its UDP suspects it doesn't probe),
+	// against nginx on the camouflage node: the https row's nginx answers
+	// as it does; the echo server and OpenVPN don't.
+	{name: "active prober", expect: map[string]string{rowRandomTCP: "fail", rowOpenVPNTCP: "fail"}, blocker: "prober",
+		upstream: true, settle: true, report: "prober",
+		modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig {
+			camouflage := startCamouflage(t, l)
+			return []censor.ModuleConfig{
+				{Name: "fully-encrypted", Settings: json.RawMessage(`{"tagOnly": true}`)},
+				{Name: "prober", Settings: proberSettings(t, l, camouflage)},
+			}
+		}},
+	// The https row's ClientHello names httpsName: its server hello is
+	// compared with the camouflage site's answer to the same ClientHello.
+	{name: "server-hello", upstream: true, settle: true, report: "server-hello",
+		modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig {
+			camouflage := startCamouflage(t, l)
+			b, err := json.Marshal(map[string]map[string]string{"sites": {httpsName: camouflage[0].String()}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return []censor.ModuleConfig{{Name: "server-hello", Settings: b}}
+		}},
 }
 
 // entryIPBlocklist lists server-1's addresses.
@@ -307,6 +369,7 @@ var transports = []transport{
 	{rowWireGuard, setupWireGuard, probeUDP, sawWireGuard},
 	{rowOpenVPNUDP, openVPN{"udp"}.setup, openVPN{"udp"}.probe, openVPN{"udp"}.sawFlows},
 	{rowOpenVPNTCP, openVPN{"tcp"}.setup, openVPN{"tcp"}.probe, openVPN{"tcp"}.sawFlows},
+	{rowRandomTCP, setupRandom, probeRandom, sawRandom},
 }
 
 // probeWindow is how long a probe retries a family that should cross; one
@@ -628,7 +691,9 @@ func writeResults(t *testing.T, cells []matrixCell, expected int) {
 		"pass when it crossed over IPv4 and over IPv6, fail when it crossed over neither " +
 		"(one family alone is partial, which no cell expects: the run fails and this file is not written). Every cell is probed. " +
 		"The `(control)` rows are not transports: they show that plain TCP and HTTPS on the underlay cross the censor, and that the censor sees them. " +
-		"The `(reference)` rows are real WireGuard and OpenVPN, which the fingerprint modules must block.\n\n")
+		"The `(reference)` rows are real WireGuard and OpenVPN, which the fingerprint modules must block, "+
+		"and random-tcp, a naive echo server fed random bytes (what a fully encrypted proxy looks like), which fully-encrypted and the prober must block. "+
+		"A cell of the active prober or server-hello quotes the module's verdict on the row's first connection to server-1.\n\n")
 	b.WriteString("| transport | censor | result | detail |\n|---|---|---|---|\n")
 	for _, c := range cells {
 		fmt.Fprintf(&b, "| %s | %s | %s | %s |\n", c.transport, c.censor, c.result, strings.ReplaceAll(c.detail, "|", `\|`))
