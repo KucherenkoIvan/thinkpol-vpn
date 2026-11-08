@@ -72,3 +72,6 @@ The adapter: the client, a standalone listener, the conformance suite and a lab 
 - 2026-11-07 matrix rows not done: they need reality behind the shared listener, map and registry support and a lab target container; proposed split in Notes (TP-087b)
 - 2026-11-08 merged origin/rewrite; split approved by the owner: Scope and Acceptance narrowed to the adapter, the censor-matrix box moved to TP-201; stream: transports
 - 2026-11-08 listener and dialer box ticked on f28d41e + board edits: TestWrongShortIDIsSplicedToTheTarget, TestReplayIsSplicedToTheTarget, TestTimeWindow, TestProvesKey, TestConformance, TestConformanceShaped pass (go test -count=1 ./internal/dataplane/transport/reality/; mutations in the 2026-11-07 lines); make lint and make test green
+- 2026-11-08 lab: make lab-gotest PKG=./lab RUN=TestRealityStockXray passes (both in-node subtests, right and wrong short id, passed); full make lab-test (GOFLAGS=-p=2, LAB_P=1) green on b5b30df
+- 2026-11-08 not verified here: our listener against a stock Xray client (dialer-side only, see Notes); everything behind the shared listener and the matrix is TP-201
+- 2026-11-08 in-progress → review
