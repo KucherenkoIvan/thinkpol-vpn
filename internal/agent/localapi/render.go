@@ -52,6 +52,9 @@ func WriteStatus(w io.Writer, st *localapiv1.Status, now time.Time) error {
 	}
 	if st.GetMode() != localapiv1.Mode_MODE_SERVER {
 		line("connect-on-boot:\t%s", onOff(st.GetConnectOnBoot()))
+		if k := st.GetKillSwitch(); k != nil {
+			line("kill switch:\t%s", KillSwitchText(k))
+		}
 	}
 	if st.GetLastRunCrashed() {
 		line("last run:\tcrashed, or exited with an error (thinkpol diag shows its trace, as root)")
@@ -309,6 +312,26 @@ func byteCount(n uint64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
+}
+
+// KillSwitchText says what the kill switch does now: its toggles, and
+// whether its rules are in place as meant.
+func KillSwitchText(k *localapiv1.KillSwitch) string {
+	s := onOff(k.GetOn())
+	if k.GetAllowLan() {
+		s += ", allow-LAN on"
+	} else {
+		s += ", allow-LAN off"
+	}
+	switch {
+	case !k.GetEnforced():
+		s += " (not enforced: " + k.GetError() + ", retrying)"
+	case k.GetActive() && !k.GetOn():
+		s += " (held by the crash posture while connecting or connected)"
+	case k.GetActive():
+		s += " (in place)"
+	}
+	return s
 }
 
 func onOff(on bool) string {

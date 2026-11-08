@@ -54,6 +54,9 @@ type Status struct {
 	// ConnectOnBoot is a device's connect-on-boot (DeviceFile): whether
 	// the service connects it at a boot's first start.
 	ConnectOnBoot bool
+	// KillSwitch is a device's kill switch: its toggles and whether it is
+	// in place as meant.
+	KillSwitch KillSwitchStatus
 	// LastRunCrashed: the previous run under a device's service left a
 	// trace on its stderr (LastRun.Crashed); Diagnostics has it.
 	LastRunCrashed bool
@@ -193,6 +196,8 @@ type report struct {
 	// connectOnBoot its connect-on-boot.
 	preset        string
 	connectOnBoot bool
+	// killSwitch is a device's kill switch (Status.KillSwitch).
+	killSwitch KillSwitchStatus
 	// lastRun is what the previous run left in the crash trace file
 	// (Node.KeepLastRun).
 	lastRun LastRun
@@ -260,6 +265,7 @@ func (p *report) statusWith(dp *dataplane.Status) Status {
 		LastRunCrashed: p.lastRun.Crashed(), LastRunUnreadable: p.lastRun.Unreadable != ""}
 	if p.mode != ModeServer {
 		s.RulePreset, s.ConnectOnBoot = p.preset, p.connectOnBoot
+		s.KillSwitch = p.killSwitch
 	}
 	switch {
 	case p.mode == ModeServer:

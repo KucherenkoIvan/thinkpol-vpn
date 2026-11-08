@@ -46,6 +46,15 @@ service LocalService {
   // the service writes; it takes effect at the next boot (GetStatus shows
   // it). FAILED_PRECONDITION "server_mode" on a server.
   rpc SetConnectOnBoot(SetConnectOnBootRequest) returns (SetConnectOnBootResponse);
+  // SetKillSwitch turns the device's kill switch on or off, stored in the
+  // device's settings file, in effect at once: while it is on and the
+  // tunnel is down, nothing leaves but traffic to the entries (and the
+  // LAN with allow-LAN). FAILED_PRECONDITION "server_mode" on a server.
+  rpc SetKillSwitch(SetKillSwitchRequest) returns (SetKillSwitchResponse);
+  // SetAllowLAN sets whether the kill switch lets the LAN out (private,
+  // link-local and multicast addresses), stored and in effect as
+  // SetKillSwitch. FAILED_PRECONDITION "server_mode" on a server.
+  rpc SetAllowLAN(SetAllowLANRequest) returns (SetAllowLANResponse);
   // TailLogs sends the agent's in-memory log: the last lines, then, when
   // following, every new line until the client goes away or the service
   // stops. Root only: debug lines may quote the map.
@@ -103,6 +112,22 @@ message SetConnectOnBootRequest {
 }
 
 message SetConnectOnBootResponse {
+  Status status = 1;
+}
+
+message SetKillSwitchRequest {
+  bool on = 1;
+}
+
+message SetKillSwitchResponse {
+  Status status = 1;
+}
+
+message SetAllowLANRequest {
+  bool on = 1;
+}
+
+message SetAllowLANResponse {
   Status status = 1;
 }
 
@@ -471,6 +496,24 @@ message Status {
   // The service's crash trace file was there but wasn't read: Diagnose's
   // last_run says why.
   bool last_run_unreadable = 18;
+  // A device's kill switch.
+  KillSwitch kill_switch = 19;
+}
+
+// KillSwitch is a device's kill switch.
+message KillSwitch {
+  // The toggles in effect: the device's settings file's, else the node's
+  // defaults.
+  bool on = 1;
+  bool allow_lan = 2;
+  // The rules are meant to be in place now: the toggle is on, or the
+  // connection is meant up under the "everything" or "all-but-domestic"
+  // preset (the crash posture).
+  bool active = 3;
+  // The host holds what is meant (in place, or rightly not); error says
+  // why not: "apply_failed", "unsupported".
+  bool enforced = 4;
+  string error = 5;
 }
 
 // Uplink is a server's way to the internet, for its spaces that allow

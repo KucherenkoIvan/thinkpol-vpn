@@ -101,6 +101,12 @@ type DataPlane struct {
 	// dnsUpstreams delivers a later config's changed upstream list while
 	// the data plane runs (serveSpace); latest-wins. Nil without one.
 	dnsUpstreams <-chan []netip.AddrPort
+	// killSwitch keeps a device's kill switch for the data plane's state
+	// (Node.enforceKillSwitch; nil in a worker), at every change, when
+	// settingsChanged says its toggles changed, and every
+	// killSwitchReapply.
+	killSwitch      func(ctx context.Context, v killSwitchView)
+	settingsChanged <-chan struct{}
 
 	// tuning is what tests change; production leaves it zero.
 	tuning tuning
@@ -425,11 +431,35 @@ func (r *runner) stop() {
 // shutdown takes the data plane down as the node stops: its connection
 // goes with it, disconnected (a node's next start reads Config.Connect).
 func (r *runner) shutdown() {
-	if !r.conn.disconnected() {
+	meantUp := !r.conn.disconnected()
+	if meantUp {
 		logRefused(r.dp.Log, r.conn.disconnect())
 	}
 	r.stop()
+	// A stop is no deliberate disconnect: the kill switch is left as a
+	// crash would leave it, narrowed to the down shape (an update that
+	// fails to start leaks nothing). The node's context is done.
+	r.enforceKillSwitch(context.Background(), meantUp)
 	r.publish()
+}
+
+// enforceKillSwitch has the node keep its kill switch for the runner's
+// state: meantUp, the entries of its section, and, while the data plane
+// is up, the route table's exemptions.
+func (r *runner) enforceKillSwitch(ctx context.Context, meantUp bool) {
+	if r.dp.killSwitch == nil {
+		return
+	}
+	v := killSwitchView{meantUp: meantUp, tun: r.tun}
+	if !r.follow.out() {
+		v.entries = entries(r.follow.section)
+	}
+	if r.engine != nil && r.routes != nil {
+		if e, ok := r.routes.exempt(); ok {
+			v.connected = &e
+		}
+	}
+	r.dp.killSwitch(ctx, v)
 }
 
 func (r *runner) loop(ctx context.Context) error {
@@ -438,12 +468,15 @@ func (r *runner) loop(ctx context.Context) error {
 	defer retry.Stop()
 	status := time.NewTicker(statusEvery)
 	defer status.Stop()
+	reapply := time.NewTicker(killSwitchReapply)
+	defer reapply.Stop()
 	for {
 		var ended <-chan struct{}
 		if r.listeners != nil {
 			r.listeners.reconcile(ctx, r.dp.Inbound.Listeners(r.follow.section))
 			ended = r.listeners.ended
 		}
+		r.enforceKillSwitch(ctx, !r.conn.disconnected())
 		r.publish()
 		if at, ok := r.nextRetry(); ok {
 			retry.Reset(time.Until(at))
@@ -467,6 +500,8 @@ func (r *runner) loop(ctx context.Context) error {
 			r.reloadRules()
 		case <-status.C:
 			r.logStatus()
+		case <-reapply.C:
+		case <-r.dp.settingsChanged:
 		case req := <-r.dp.requests:
 			r.request(ctx, req)
 		case ups := <-r.dp.dnsUpstreams:

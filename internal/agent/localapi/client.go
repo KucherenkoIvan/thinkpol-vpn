@@ -156,6 +156,39 @@ func (c *Client) SetConnectOnBoot(ctx context.Context, on bool) (*localapiv1.Sta
 	return sanitized(resp).GetStatus(), nil
 }
 
+// KillSwitch is the device's kill switch, from its status; ErrServerMode
+// on a server, as SetKillSwitch refuses there.
+func (c *Client) KillSwitch(ctx context.Context) (*localapiv1.KillSwitch, error) {
+	st, err := c.Status(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if st.GetMode() == localapiv1.Mode_MODE_SERVER {
+		return nil, &clientError{refusalMsg(ErrServerMode), ErrServerMode}
+	}
+	return st.GetKillSwitch(), nil
+}
+
+// SetKillSwitch turns the device's kill switch on or off and returns its
+// status.
+func (c *Client) SetKillSwitch(ctx context.Context, on bool) (*localapiv1.Status, error) {
+	resp, err := c.api.SetKillSwitch(ctx, &localapiv1.SetKillSwitchRequest{On: on})
+	if err != nil {
+		return nil, c.explain(err)
+	}
+	return sanitized(resp).GetStatus(), nil
+}
+
+// SetAllowLAN sets whether the device's kill switch lets the LAN out and
+// returns its status.
+func (c *Client) SetAllowLAN(ctx context.Context, on bool) (*localapiv1.Status, error) {
+	resp, err := c.api.SetAllowLAN(ctx, &localapiv1.SetAllowLANRequest{On: on})
+	if err != nil {
+		return nil, c.explain(err)
+	}
+	return sanitized(resp).GetStatus(), nil
+}
+
 // TailLogs calls fn with the agent's last lines (0: the service's
 // default), then, when following, with new lines as they come, until ctx
 // ends (nil), fn fails, or the service stops. missed counts lines the ring

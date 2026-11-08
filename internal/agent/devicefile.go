@@ -36,14 +36,21 @@ type DeviceSettings struct {
 	// "Routing rules and DNS"): the preset its rules start from and its
 	// own rules ahead of it.
 	Rules rules.Local
+	// KillSwitch and AllowLAN are the kill switch's toggles, nil until a
+	// member set them: the node's defaults hold until then
+	// (Config.KillSwitch, Config.AllowLAN).
+	KillSwitch, AllowLAN *bool
 }
 
 // deviceSettingsJSON is DeviceFile's keys. A key left out is its default;
-// the service writes every key.
+// the service writes every key, but the kill switch's until a member set
+// them (the node's defaults hold until then).
 type deviceSettingsJSON struct {
 	ConnectOnBoot *bool     `json:"connect_on_boot"`
 	RulePreset    *string   `json:"rule_preset"`
 	Rules         *[]string `json:"rules"`
+	KillSwitch    *bool     `json:"kill_switch,omitempty"`
+	AllowLAN      *bool     `json:"allow_lan,omitempty"`
 }
 
 // parseDeviceSettings reads DeviceFile.
@@ -56,6 +63,7 @@ func parseDeviceSettings(data []byte) (DeviceSettings, error) {
 	if j.ConnectOnBoot != nil {
 		s.ConnectOnBoot = *j.ConnectOnBoot
 	}
+	s.KillSwitch, s.AllowLAN = j.KillSwitch, j.AllowLAN
 	if j.RulePreset != nil {
 		p, err := rules.ParsePreset(*j.RulePreset)
 		if err != nil {
@@ -96,7 +104,7 @@ func (s DeviceSettings) marshal() ([]byte, error) {
 	// A rule reads "match -> action": keep its ">" as is.
 	enc.SetEscapeHTML(false)
 	enc.SetIndent("", "  ")
-	if err := enc.Encode(deviceSettingsJSON{ConnectOnBoot: &s.ConnectOnBoot, RulePreset: &preset, Rules: &own}); err != nil {
+	if err := enc.Encode(deviceSettingsJSON{ConnectOnBoot: &s.ConnectOnBoot, RulePreset: &preset, Rules: &own, KillSwitch: s.KillSwitch, AllowLAN: s.AllowLAN}); err != nil {
 		return nil, err
 	}
 	return b.Bytes(), nil

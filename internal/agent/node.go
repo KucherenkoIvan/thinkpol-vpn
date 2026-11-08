@@ -65,6 +65,11 @@ type Node struct {
 	// takes settingsMu before it reads rulesRequests.
 	presetMu      sync.Mutex
 	rulesRequests chan rulesRequest
+	// settingsChanged wakes the node's goroutine after a kill switch
+	// toggle changed (SetKillSwitch, SetAllowLAN).
+	settingsChanged chan struct{}
+	// ks keeps a device's kill switch, on the node's goroutine.
+	ks killSwitchKeeper
 }
 
 // Prepare reads and checks what a node runs from (LoadState): a node
@@ -101,6 +106,8 @@ func Prepare(cfg Config, logs Logs, plat Platform) (*Node, error) {
 	n := &Node{
 		cfg: cfg, state: st, logs: logs, plat: plat, dnsUpstreams: upstreams,
 		requests: make(chan connectRequest), stopped: make(chan struct{}), rulesRequests: make(chan rulesRequest),
+		settingsChanged: make(chan struct{}, 1),
+		ks:              killSwitchKeeper{newKS: plat.NewKillSwitch, log: logs.Logger},
 	}
 	connect, recorded := startConnected(cfg, st.Device.ConnectOnBoot, plat.ConnectRecord, logs)
 	mismatch := modeMismatch(cfg.Mode, st)
@@ -108,6 +115,9 @@ func Prepare(cfg Config, logs Logs, plat Platform) (*Node, error) {
 	n.device = st.Device
 	n.report = report{mode: cfg.Mode, space: st.Trust.SpaceID, version: st.Map.Header().Version, removed: st.Removed,
 		mismatch: mismatch, conn: n.conn.state, preset: n.device.Rules.Preset.String(), connectOnBoot: n.device.ConnectOnBoot}
+	if ks := n.killSwitchSettings(); cfg.Mode != ModeServer {
+		n.report.killSwitch = KillSwitchStatus{On: ks.on, AllowLAN: ks.allowLAN, Enforced: true}
+	}
 	return n, nil
 }
 
@@ -490,12 +500,14 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 	mismatch := modeMismatch(n.Mode(), n.state)
 	if !mismatch {
 		n.restoreHost()
+		n.startKillSwitch(ctx)
 	}
 	if (n.state.Removed || mismatch) && !n.awaitSection(ctx, maps) {
 		return nil
 	}
 	if mismatch {
 		n.restoreHost()
+		n.startKillSwitch(ctx)
 	}
 	if n.Mode() == ModeServer {
 		return n.runServer(ctx, reg, maps)
@@ -523,12 +535,29 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 		remember:      n.remember,
 		events:        n.emit,
 		rulesRequests: n.rulesRequests,
+
+		killSwitch:      n.enforceKillSwitch,
+		settingsChanged: n.settingsChanged,
 	}
 	n.settingsMu.Lock()
 	dp.Rules = n.device.Rules
 	n.settingsMu.Unlock()
 	dp.tuning = n.tuning
 	return RunDataPlane(ctx, dp)
+}
+
+// startKillSwitch puts a device's kill switch as it starts: a crashed or
+// stopped run's is narrowed to the down shape (or removed, if not meant)
+// before anything connects.
+func (n *Node) startKillSwitch(ctx context.Context) {
+	if n.Mode() == ModeServer {
+		return
+	}
+	v := killSwitchView{meantUp: !n.conn.disconnected()}
+	if !n.state.Removed {
+		v.entries = entries(n.state.Section)
+	}
+	n.enforceKillSwitch(ctx, v)
 }
 
 // restoreHost puts back what a crashed run left on the host.
@@ -569,6 +598,15 @@ func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
 			p.version, p.removed, p.mismatch, p.conn = f.cur.Header().Version, f.removed, f.mismatch, n.conn.state
 		})
 	}
+	// Removed (not a server's section): the kill switch lets out no entry,
+	// as the device has none.
+	keepKillSwitch := func(ctx context.Context, meantUp bool) {
+		if n.Mode() == ModeDevice && !f.mismatch {
+			n.enforceKillSwitch(ctx, killSwitchView{meantUp: meantUp})
+		}
+	}
+	reapply := time.NewTicker(killSwitchReapply)
+	defer reapply.Stop()
 	publish()
 	if f.removed {
 		emitter(n.emit).emit(EventRemovedFromSpace, f.cur.Header().Version)
@@ -580,14 +618,22 @@ func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
 	for {
 		select {
 		case <-ctx.Done():
-			// The node returns: its connection is down.
-			if !n.conn.disconnected() {
+			// The node returns: its connection is down; its kill switch
+			// stays as a crash would leave it (runner.shutdown).
+			meantUp := !n.conn.disconnected()
+			if meantUp {
 				logRefused(n.logs.Logger, n.conn.disconnect())
 			}
+			keepKillSwitch(context.Background(), meantUp)
 			publish()
 			return false
+		case <-reapply.C:
+			keepKillSwitch(ctx, !n.conn.disconnected())
+		case <-n.settingsChanged:
+			keepKillSwitch(ctx, !n.conn.disconnected())
 		case req := <-n.rulesRequests:
 			// Stored already: the data plane starts with them.
+			keepKillSwitch(ctx, !n.conn.disconnected())
 			req.done <- nil
 		case req := <-n.requests:
 			// Kept for when the node runs its section.
@@ -600,6 +646,7 @@ func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
 				err = n.conn.disconnect()
 			}
 			logRefused(n.logs.Logger, err)
+			keepKillSwitch(ctx, !n.conn.disconnected())
 			publish()
 			req.done <- err
 		case env, ok := <-maps:

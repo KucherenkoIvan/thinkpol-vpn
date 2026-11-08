@@ -84,6 +84,26 @@ func (n *fakeNode) SetConnectOnBoot(on bool) error {
 	return nil
 }
 
+func (n *fakeNode) SetKillSwitch(on bool) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.st.Mode == agent.ModeServer {
+		return agent.ErrServerMode
+	}
+	n.st.KillSwitch.On, n.st.KillSwitch.Active, n.st.KillSwitch.Enforced = on, on, true
+	return nil
+}
+
+func (n *fakeNode) SetAllowLAN(on bool) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.st.Mode == agent.ModeServer {
+		return agent.ErrServerMode
+	}
+	n.st.KillSwitch.AllowLAN = on
+	return nil
+}
+
 func (n *fakeNode) Status() agent.Status {
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -232,9 +252,39 @@ func TestTheCLIControlsTheNode(t *testing.T) {
 			t.Errorf("no %q in\n%s", want, out.String())
 		}
 	}
+	// The kill switch's toggles: set through the API, shown in the status.
+	if st, err := c.SetKillSwitch(ctx, true); err != nil || !st.GetKillSwitch().GetOn() {
+		t.Fatalf("kill switch on: %v, %v", st, err)
+	}
+	st, err = c.SetAllowLAN(ctx, true)
+	if err != nil || !st.GetKillSwitch().GetAllowLan() || !st.GetKillSwitch().GetOn() {
+		t.Fatalf("allow-LAN on: %v, %v", st, err)
+	}
+	if k, err := c.KillSwitch(ctx); err != nil || !k.GetOn() || !k.GetAllowLan() || !k.GetEnforced() {
+		t.Fatalf("kill switch shown: %v, %v", k, err)
+	}
+	out.Reset()
+	if err := WriteStatus(&out, st, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if want := "kill switch: +on, allow-LAN on \\(in place\\)\n"; !regexp.MustCompile(want).MatchString(out.String()) {
+		t.Errorf("no %q in\n%s", want, out.String())
+	}
 	s.node.mu.Lock()
 	s.node.st.Mode = agent.ModeServer
 	s.node.mu.Unlock()
+	if _, err := c.SetKillSwitch(ctx, true); !errors.Is(err, ErrServerMode) {
+		t.Fatalf("kill switch on a server: %v, want ErrServerMode", err)
+	}
+	if _, err := c.SetAllowLAN(ctx, true); !errors.Is(err, ErrServerMode) {
+		t.Fatalf("allow-LAN on a server: %v, want ErrServerMode", err)
+	}
+	if _, err := c.KillSwitch(ctx); !errors.Is(err, ErrServerMode) {
+		t.Fatalf("kill switch shown on a server: %v, want ErrServerMode", err)
+	}
+	if st, err := c.Status(ctx); err != nil || st.GetKillSwitch() != nil {
+		t.Fatalf("a server's status has a kill switch: %v, %v", st.GetKillSwitch(), err)
+	}
 	if _, err := c.SetConnectOnBoot(ctx, true); !errors.Is(err, ErrServerMode) {
 		t.Fatalf("connect-on-boot on a server: %v, want ErrServerMode", err)
 	}

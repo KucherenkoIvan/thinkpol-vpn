@@ -37,6 +37,8 @@ const (
 	LocalService_ListSpaces_FullMethodName       = "/thinkpol.localapi.v1.LocalService/ListSpaces"
 	LocalService_SetRulePreset_FullMethodName    = "/thinkpol.localapi.v1.LocalService/SetRulePreset"
 	LocalService_SetConnectOnBoot_FullMethodName = "/thinkpol.localapi.v1.LocalService/SetConnectOnBoot"
+	LocalService_SetKillSwitch_FullMethodName    = "/thinkpol.localapi.v1.LocalService/SetKillSwitch"
+	LocalService_SetAllowLAN_FullMethodName      = "/thinkpol.localapi.v1.LocalService/SetAllowLAN"
 	LocalService_TailLogs_FullMethodName         = "/thinkpol.localapi.v1.LocalService/TailLogs"
 	LocalService_Diagnose_FullMethodName         = "/thinkpol.localapi.v1.LocalService/Diagnose"
 )
@@ -75,6 +77,15 @@ type LocalServiceClient interface {
 	// the service writes; it takes effect at the next boot (GetStatus shows
 	// it). FAILED_PRECONDITION "server_mode" on a server.
 	SetConnectOnBoot(ctx context.Context, in *SetConnectOnBootRequest, opts ...grpc.CallOption) (*SetConnectOnBootResponse, error)
+	// SetKillSwitch turns the device's kill switch on or off, stored in the
+	// device's settings file, in effect at once: while it is on and the
+	// tunnel is down, nothing leaves but traffic to the entries (and the
+	// LAN with allow-LAN). FAILED_PRECONDITION "server_mode" on a server.
+	SetKillSwitch(ctx context.Context, in *SetKillSwitchRequest, opts ...grpc.CallOption) (*SetKillSwitchResponse, error)
+	// SetAllowLAN sets whether the kill switch lets the LAN out (private,
+	// link-local and multicast addresses), stored and in effect as
+	// SetKillSwitch. FAILED_PRECONDITION "server_mode" on a server.
+	SetAllowLAN(ctx context.Context, in *SetAllowLANRequest, opts ...grpc.CallOption) (*SetAllowLANResponse, error)
 	// TailLogs sends the agent's in-memory log: the last lines, then, when
 	// following, every new line until the client goes away or the service
 	// stops. Root only: debug lines may quote the map.
@@ -173,6 +184,26 @@ func (c *localServiceClient) SetConnectOnBoot(ctx context.Context, in *SetConnec
 	return out, nil
 }
 
+func (c *localServiceClient) SetKillSwitch(ctx context.Context, in *SetKillSwitchRequest, opts ...grpc.CallOption) (*SetKillSwitchResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetKillSwitchResponse)
+	err := c.cc.Invoke(ctx, LocalService_SetKillSwitch_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *localServiceClient) SetAllowLAN(ctx context.Context, in *SetAllowLANRequest, opts ...grpc.CallOption) (*SetAllowLANResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetAllowLANResponse)
+	err := c.cc.Invoke(ctx, LocalService_SetAllowLAN_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *localServiceClient) TailLogs(ctx context.Context, in *TailLogsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[TailLogsResponse], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	stream, err := c.cc.NewStream(ctx, &LocalService_ServiceDesc.Streams[1], LocalService_TailLogs_FullMethodName, cOpts...)
@@ -236,6 +267,15 @@ type LocalServiceServer interface {
 	// the service writes; it takes effect at the next boot (GetStatus shows
 	// it). FAILED_PRECONDITION "server_mode" on a server.
 	SetConnectOnBoot(context.Context, *SetConnectOnBootRequest) (*SetConnectOnBootResponse, error)
+	// SetKillSwitch turns the device's kill switch on or off, stored in the
+	// device's settings file, in effect at once: while it is on and the
+	// tunnel is down, nothing leaves but traffic to the entries (and the
+	// LAN with allow-LAN). FAILED_PRECONDITION "server_mode" on a server.
+	SetKillSwitch(context.Context, *SetKillSwitchRequest) (*SetKillSwitchResponse, error)
+	// SetAllowLAN sets whether the kill switch lets the LAN out (private,
+	// link-local and multicast addresses), stored and in effect as
+	// SetKillSwitch. FAILED_PRECONDITION "server_mode" on a server.
+	SetAllowLAN(context.Context, *SetAllowLANRequest) (*SetAllowLANResponse, error)
 	// TailLogs sends the agent's in-memory log: the last lines, then, when
 	// following, every new line until the client goes away or the service
 	// stops. Root only: debug lines may quote the map.
@@ -275,6 +315,12 @@ func (UnimplementedLocalServiceServer) SetRulePreset(context.Context, *SetRulePr
 }
 func (UnimplementedLocalServiceServer) SetConnectOnBoot(context.Context, *SetConnectOnBootRequest) (*SetConnectOnBootResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetConnectOnBoot not implemented")
+}
+func (UnimplementedLocalServiceServer) SetKillSwitch(context.Context, *SetKillSwitchRequest) (*SetKillSwitchResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetKillSwitch not implemented")
+}
+func (UnimplementedLocalServiceServer) SetAllowLAN(context.Context, *SetAllowLANRequest) (*SetAllowLANResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetAllowLAN not implemented")
 }
 func (UnimplementedLocalServiceServer) TailLogs(*TailLogsRequest, grpc.ServerStreamingServer[TailLogsResponse]) error {
 	return status.Error(codes.Unimplemented, "method TailLogs not implemented")
@@ -422,6 +468,42 @@ func _LocalService_SetConnectOnBoot_Handler(srv interface{}, ctx context.Context
 	return interceptor(ctx, in, info, handler)
 }
 
+func _LocalService_SetKillSwitch_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetKillSwitchRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LocalServiceServer).SetKillSwitch(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LocalService_SetKillSwitch_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LocalServiceServer).SetKillSwitch(ctx, req.(*SetKillSwitchRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _LocalService_SetAllowLAN_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetAllowLANRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LocalServiceServer).SetAllowLAN(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LocalService_SetAllowLAN_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LocalServiceServer).SetAllowLAN(ctx, req.(*SetAllowLANRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _LocalService_TailLogs_Handler(srv interface{}, stream grpc.ServerStream) error {
 	m := new(TailLogsRequest)
 	if err := stream.RecvMsg(m); err != nil {
@@ -481,6 +563,14 @@ var LocalService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SetConnectOnBoot",
 			Handler:    _LocalService_SetConnectOnBoot_Handler,
+		},
+		{
+			MethodName: "SetKillSwitch",
+			Handler:    _LocalService_SetKillSwitch_Handler,
+		},
+		{
+			MethodName: "SetAllowLAN",
+			Handler:    _LocalService_SetAllowLAN_Handler,
 		},
 		{
 			MethodName: "Diagnose",
