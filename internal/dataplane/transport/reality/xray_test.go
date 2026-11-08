@@ -36,7 +36,7 @@ func TestStockXray(t *testing.T) {
 	}
 	tg := newTargetAt(t, cfg.Target)
 	k := keys{public: cfg.PublicKey}
-	tr := New(Options{})
+	tr := newTransport(Options{})
 
 	t.Run("right short id", func(t *testing.T) {
 		if _, err := dial(t, tr, cfg.Server, k, cfg.ShortID); err != nil {

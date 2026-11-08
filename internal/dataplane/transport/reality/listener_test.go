@@ -1,10 +1,15 @@
 package reality
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"io"
 	"net"
 	"slices"
+	"strings"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -60,8 +65,8 @@ func closedWithin(t *testing.T, c net.Conn, within time.Duration) time.Duration 
 // it arrives.
 func TestAStallingProbeIsClosedWhenTheTargetClosesIt(t *testing.T) {
 	const idle = 500 * time.Millisecond
-	tg := newIdleTarget(t, idle, false)
-	l := listenTo(t, New(Options{}), tg, newKeys(t))
+	tg := newIdleTarget(t, idle, nil)
+	l := listenTo(t, newTransport(Options{}), tg, newKeys(t))
 	partial := append([]byte{recordTypeHandshake, 3, 1, 0x02, 0x05}, make([]byte, 300)...) // 517 bytes announced, 300 sent
 	for _, tc := range []struct {
 		name string
@@ -83,14 +88,28 @@ func TestAStallingProbeIsClosedWhenTheTargetClosesIt(t *testing.T) {
 	}
 }
 
-// Once the target closed its side, a splice gives a client that stays
-// silent spliceLinger, then closes both connections.
-func TestASpliceEndsOnceTheTargetClosedAndTheClientStaysSilent(t *testing.T) {
+// setLinger sets spliceLinger for one test.
+func setLinger(t *testing.T, d time.Duration) {
 	linger := spliceLinger
-	spliceLinger = 200 * time.Millisecond
+	spliceLinger = d
 	t.Cleanup(func() { spliceLinger = linger })
-	tg := newIdleTarget(t, time.Minute, true)
-	l := listenTo(t, New(Options{}), tg, newKeys(t))
+}
+
+// badRequest is a target answering a connection whose handshake failed
+// with a line and its FIN, reading on until the far end closes.
+func badRequest(c *net.TCPConn, r io.Reader) {
+	_, _ = c.Write([]byte("HTTP/1.1 400 Bad Request\r\n\r\n"))
+	_ = c.CloseWrite()
+	_ = c.SetDeadline(time.Time{})
+	_, _ = io.Copy(io.Discard, r)
+}
+
+// Once the target answered and closed its side, a splice gives a client
+// that stays silent spliceLinger, then closes both connections.
+func TestASpliceEndsOnceTheTargetClosedAndTheClientStaysSilent(t *testing.T) {
+	setLinger(t, 200*time.Millisecond)
+	tg := newIdleTarget(t, time.Minute, badRequest)
+	l := listenTo(t, newTransport(Options{}), tg, newKeys(t))
 
 	sent := []byte("GET / HTTP/1.1\r\n\r\n")
 	c := probe(t, l.Addr().String(), sent)
@@ -106,10 +125,82 @@ func TestASpliceEndsOnceTheTargetClosedAndTheClientStaysSilent(t *testing.T) {
 	}
 }
 
+// After the client's FIN the target's answer flows on for as long as it
+// keeps coming, past spliceLinger: the linger is an idle timeout.
+func TestAnAnswerAfterTheClientsFINFlowsOnPastTheLinger(t *testing.T) {
+	const linger, gap, chunks = 500 * time.Millisecond, 200 * time.Millisecond, 5
+	setLinger(t, linger)
+	tg := newIdleTarget(t, time.Minute, func(c *net.TCPConn, r io.Reader) {
+		_, _ = io.Copy(io.Discard, r) // until the client's FIN
+		for i := range chunks {
+			if i > 0 {
+				time.Sleep(gap)
+			}
+			if _, err := c.Write([]byte("chunk\n")); err != nil {
+				return
+			}
+		}
+	})
+	l := listenTo(t, newTransport(Options{}), tg, newKeys(t))
+	c := probe(t, l.Addr().String(), []byte("GET /large HTTP/1.1\r\n\r\n"))
+	_ = c.(*net.TCPConn).CloseWrite()
+	_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
+	got, err := io.ReadAll(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := bytes.Repeat([]byte("chunk\n"), chunks); !bytes.Equal(got, want) {
+		t.Errorf("the client got %q, want %q", got, want)
+	}
+}
+
+// Before the hello is decided, the target closing without a word closes
+// the client whole, as REALITY's server does: a prober writing after the
+// FIN is reset.
+func TestBeforeTheHelloTheTargetsCloseClosesTheClientWhole(t *testing.T) {
+	tg := newIdleTarget(t, 300*time.Millisecond, nil)
+	l := listenTo(t, newTransport(Options{}), tg, newKeys(t))
+	c := probe(t, l.Addr().String(), []byte{recordTypeHandshake, 3, 1, 0x02})
+	closedWithin(t, c, 5*time.Second)
+	if _, err := c.Write([]byte("after the FIN")); err != nil {
+		return // reset already
+	}
+	time.Sleep(100 * time.Millisecond)
+	_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := c.Read(make([]byte, 64)); !errors.Is(err, syscall.ECONNRESET) {
+		t.Errorf("read after writing past the FIN: %v, want %v", err, syscall.ECONNRESET)
+	}
+}
+
+// Before the hello is decided, the client's FIN closes the target whole,
+// as REALITY's server does: what the target sends after it doesn't reach
+// the client.
+func TestBeforeTheHelloTheClientsFINClosesTheTargetWhole(t *testing.T) {
+	tg := newIdleTarget(t, time.Minute, func(c *net.TCPConn, r io.Reader) {
+		_, _ = io.Copy(io.Discard, r) // until the client's FIN
+		_, _ = c.Write([]byte("after the client's FIN"))
+	})
+	l := listenTo(t, newTransport(Options{}), tg, newKeys(t))
+	partial := append([]byte{recordTypeHandshake, 3, 1, 0x02, 0x05}, make([]byte, 300)...)
+	c := probe(t, l.Addr().String(), partial)
+	if !tg.receivedExactly(partial) {
+		t.Fatal("the target didn't receive the partial hello")
+	}
+	_ = c.(*net.TCPConn).CloseWrite()
+	_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
+	got, err := io.ReadAll(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) > 0 {
+		t.Errorf("the client got %q after its FIN", got)
+	}
+}
+
 // Closing the listener ends its live splices.
 func TestClosingTheListenerEndsItsSplices(t *testing.T) {
-	tg := newIdleTarget(t, time.Minute, false)
-	l := listenTo(t, New(Options{}), tg, newKeys(t))
+	tg := newIdleTarget(t, time.Minute, nil)
+	l := listenTo(t, newTransport(Options{}), tg, newKeys(t))
 	sent := []byte("GET / HTTP/1.1\r\n\r\n")
 	c := probe(t, l.Addr().String(), sent)
 	if !tg.receivedExactly(sent) {
@@ -152,45 +243,165 @@ func TestListenFailsUnlessTheTargetsRecordsAreLearned(t *testing.T) {
 		settings := mustMarshal(t, &transportv1.RealityListenSettings{
 			PrivateKey: newKeys(t).private, Target: closedPort(t), ServerNames: []string{serverName},
 		})
-		_, err := New(Options{}).Listen(t.Context(), transport.ListenConfig{Address: "127.0.0.1:0", Settings: settings}, transport.Admission{Peers: transport.NewPeerTable()})
+		_, err := newTransport(Options{}).Listen(t.Context(), transport.ListenConfig{Address: "127.0.0.1:0", Settings: settings}, transport.Admission{Peers: transport.NewPeerTable()})
 		if err == nil {
 			t.Fatal("listening with an unreachable target")
 		}
 	})
 	t.Run("stalled", func(t *testing.T) {
-		ln, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { _ = ln.Close() })
-		go func() {
-			for {
-				c, err := ln.Accept()
-				if err != nil {
-					return
-				}
-				t.Cleanup(func() { _ = c.Close() })
-			}
-		}()
-		if err := detect(t.Context(), ln.Addr().String(), names, 300*time.Millisecond, nil); err == nil {
+		f := newFront(t)
+		if err := detect(t.Context(), f.addr(), names, 300*time.Millisecond); err == nil {
 			t.Fatal("detected the records of a target that never answers")
-		}
-		// Forgotten: the next Listen detects again.
-		if _, ok := xreality.GlobalPostHandshakeRecordsLens.Load(recordsKey(ln.Addr().String(), serverName, 0)); ok {
-			t.Error("a failed detection is still cached")
 		}
 	})
 	t.Run("a site", func(t *testing.T) {
-		if err := detect(t.Context(), theTarget(t).addr(), names, detectWait, nil); err != nil {
+		if err := detect(t.Context(), theTarget(t).addr(), names, detectWait); err != nil {
 			t.Fatal(err)
 		}
 	})
 }
 
+// Listen fails on a target whose certificate its roots don't verify,
+// naming the target: REALITY would imitate it without its post-handshake
+// records.
+func TestListenFailsOnATargetCertificateTheRootsDontVerify(t *testing.T) {
+	tg := theTarget(t)
+	settings := listenSettingsFor(t, newKeys(t), tg, 0)
+	cfg := transport.ListenConfig{Address: "127.0.0.1:0", Settings: settings}
+	_, err := New(Options{}).Listen(t.Context(), cfg, transport.Admission{Peers: transport.NewPeerTable()})
+	if err == nil || !strings.Contains(err.Error(), tg.addr()) {
+		t.Fatalf("listen with a self-signed target and the system roots: %v, want an error naming %s", err, tg.addr())
+	}
+	l, err := newTransport(Options{}).Listen(t.Context(), cfg, transport.Admission{Peers: transport.NewPeerTable()})
+	if err != nil {
+		t.Fatalf("listen trusting the target's certificate: %v", err)
+	}
+	_ = l.Close()
+}
+
+// front is a TCP front for theTarget that holds every connection, silent,
+// until answer; from then on new connections are passed through to
+// theTarget, and release closes the held ones.
+type front struct {
+	t  *testing.T
+	ln net.Listener
+
+	mu        sync.Mutex
+	answering bool
+	held      []net.Conn
+	accepted  int
+}
+
+func newFront(t *testing.T) *front {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &front{t: t, ln: ln}
+	t.Cleanup(func() { _ = ln.Close(); f.release() })
+	tg := theTarget(t)
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			f.mu.Lock()
+			f.accepted++
+			answering := f.answering
+			if !answering {
+				f.held = append(f.held, c)
+			}
+			f.mu.Unlock()
+			if answering {
+				go passThrough(c, tg.addr())
+			}
+		}
+	}()
+	return f
+}
+
+func passThrough(c net.Conn, address string) {
+	defer func() { _ = c.Close() }()
+	up, err := net.Dial("tcp", address)
+	if err != nil {
+		return
+	}
+	defer func() { _ = up.Close() }()
+	go func() { _, _ = io.Copy(up, c); _ = up.Close() }()
+	_, _ = io.Copy(c, up)
+}
+
+func (f *front) addr() string { return f.ln.Addr().String() }
+
+func (f *front) answer() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.answering = true
+}
+
+func (f *front) release() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, c := range f.held {
+		_ = c.Close()
+	}
+	f.held = nil
+}
+
+func (f *front) connections() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.accepted
+}
+
+// REALITY's detection runs on after detect gave up on it: a later detect
+// fails while that one runs, then forgets every result it left and
+// detects again, so a detection given up on never stands in for a fresh
+// one.
+func TestADetectionGivenUpOnIsAwaitedThenDoneAgain(t *testing.T) {
+	names := map[string]bool{serverName: true, "other.example.net": true}
+	f := newFront(t)
+	if err := detect(t.Context(), f.addr(), names, 300*time.Millisecond); err == nil {
+		t.Fatal("detected the records of a target that never answers")
+	}
+
+	f.answer()
+	if err := detect(t.Context(), f.addr(), names, 300*time.Millisecond); err == nil {
+		t.Fatal("detected again while the detection given up on still runs")
+	}
+
+	f.release()
+	deadline := time.Now().Add(5 * time.Second)
+	for name := range names {
+		for alpn := range detectedALPNs {
+			for {
+				v, _ := xreality.GlobalPostHandshakeRecordsLens.Load(recordsKey(f.addr(), name, alpn))
+				if _, done := v.([]int); done {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("the detection given up on didn't end once its connections closed")
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+		}
+	}
+	before := f.connections()
+	if err := detect(t.Context(), f.addr(), names, detectWait); err != nil {
+		t.Fatal(err)
+	}
+	// REALITY's detection dials twice per server name and ALPN.
+	if want := 2 * len(names) * detectedALPNs; f.connections()-before < want {
+		t.Errorf("detected again with %d connections, want %d", f.connections()-before, want)
+	}
+}
+
 // A refused entry sharing a short id with a valid one drops the short id:
 // neither is taken, and both are reported.
 func TestARefusedEntryDropsItsShortID(t *testing.T) {
-	tr := New(Options{})
+	tr := newTransport(Options{})
 	k := newKeys(t)
 	id, _ := shortIDs()
 	valid := peerLink(id)
@@ -216,14 +427,68 @@ func TestARefusedEntryDropsItsShortID(t *testing.T) {
 func TestTheListenersClockRefusesAStaleSealBeforeREALITY(t *testing.T) {
 	k := newKeys(t)
 	id, _ := shortIDs()
-	ahead := New(Options{Now: func() time.Time { return time.Now().Add(2 * time.Minute) }})
+	ahead := newTransport(Options{Now: func() time.Time { return time.Now().Add(2 * time.Minute) }})
 	l := listenFor(t, ahead, k, 60, peerLink(id))
-	if _, err := dial(t, New(Options{}), l.Addr().String(), k, id); !errors.Is(err, ErrNotAuthenticated) {
+	if _, err := dial(t, newTransport(Options{}), l.Addr().String(), k, id); !errors.Is(err, ErrNotAuthenticated) {
 		t.Errorf("dial sealed now through a 1-minute window 2 minutes ahead: %v, want %v", err, ErrNotAuthenticated)
 	}
-	ok := New(Options{Now: func() time.Time { return time.Now().Add(30 * time.Second) }})
+	ok := newTransport(Options{Now: func() time.Time { return time.Now().Add(30 * time.Second) }})
 	l = listenFor(t, ok, k, 60, peerLink(id))
-	if _, err := dial(t, New(Options{}), l.Addr().String(), k, id); err != nil {
+	if _, err := dial(t, newTransport(Options{}), l.Addr().String(), k, id); err != nil {
 		t.Errorf("dial sealed now through a 1-minute window 30 s ahead: %v", err)
+	}
+}
+
+// slowClock is a listener clock that takes d to read: a node loaded enough
+// that authenticating a hello takes longer than the target takes to answer
+// it.
+func slowClock(d time.Duration) func() time.Time {
+	return func() time.Time {
+		time.Sleep(d)
+		return time.Now()
+	}
+}
+
+// A target that answers the hello before the listener decided can't reach
+// an authenticated client: the hello's tail reaches the target only from
+// REALITY, under its lock, so REALITY has taken the connection before the
+// target can answer.
+func TestATargetAnsweringBeforeTheListenerDecidedDoesntReachAnAuthenticatedClient(t *testing.T) {
+	tg := newIdleTarget(t, time.Minute, nil)
+	k := newKeys(t)
+	id, _ := shortIDs()
+	l := listenTo(t, newTransport(Options{Now: slowClock(20 * time.Millisecond)}), tg, k, peerLink(id))
+	for i := range 20 {
+		if _, err := dial(t, newTransport(Options{}), l.Addr().String(), k, id); err != nil {
+			t.Fatalf("dial %d: %v", i, err)
+		}
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+		_, _, err := l.Accept(ctx)
+		cancel()
+		if err != nil {
+			t.Fatalf("accept %d: %v", i, err)
+		}
+	}
+}
+
+// On an authenticated connection the target sees the client's hello once,
+// byte for byte, as from REALITY's own listener.
+func TestTheTargetSeesAnAuthenticatedHelloOnce(t *testing.T) {
+	tg := newIdleTarget(t, time.Minute, nil)
+	k := newKeys(t)
+	id, _ := shortIDs()
+	l := listenTo(t, newTransport(Options{}), tg, k, peerLink(id))
+	tp := newTap(t, l.Addr().String())
+	if _, err := dial(t, newTransport(Options{}), tp.addr(), k, id); err != nil {
+		t.Fatal(err)
+	}
+	streams := tp.captured()
+	if len(streams) != 1 || len(streams[0]) < recordHeaderSize {
+		t.Fatalf("captured %d streams, want 1 starting with a record", len(streams))
+	}
+	s := streams[0]
+	hello := s[:recordHeaderSize+(int(s[3])<<8|int(s[4]))]
+	if !tg.receivedExactly(hello) {
+		t.Errorf("the target received %d streams, none exactly the %d-byte hello", len(tg.received()), len(hello))
 	}
 }

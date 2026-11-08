@@ -79,7 +79,7 @@ func splicedWhole(tg *target, tp *tap) bool {
 // A wrong short id is spliced to the target, raw and whole, and the dialer
 // meets the target's real certificate, which fails the dial.
 func TestWrongShortIDIsSplicedToTheTarget(t *testing.T) {
-	tr := New(Options{})
+	tr := newTransport(Options{})
 	k := newKeys(t)
 	right, _ := shortIDs()
 	wrong, _ := shortIDs()
@@ -98,7 +98,7 @@ func TestWrongShortIDIsSplicedToTheTarget(t *testing.T) {
 // A replayed connection, an authenticated one sent again byte for byte,
 // is spliced to the target like any failed authentication.
 func TestReplayIsSplicedToTheTarget(t *testing.T) {
-	tr := New(Options{})
+	tr := newTransport(Options{})
 	k := newKeys(t)
 	id, _ := shortIDs()
 	l := listenFor(t, tr, k, 0, peerLink(id))
@@ -137,9 +137,9 @@ func TestReplayIsSplicedToTheTarget(t *testing.T) {
 func TestAHelloSealedOutsideTheTimeWindowIsRefused(t *testing.T) {
 	k := newKeys(t)
 	id, _ := shortIDs()
-	l := listenFor(t, New(Options{}), k, 60, peerLink(id))
+	l := listenFor(t, newTransport(Options{}), k, 60, peerLink(id))
 	skewed := func(d time.Duration) *Transport {
-		return New(Options{Now: func() time.Time { return time.Now().Add(d) }})
+		return newTransport(Options{Now: func() time.Time { return time.Now().Add(d) }})
 	}
 	if _, err := dial(t, skewed(-2*time.Minute), l.Addr().String(), k, id); !errors.Is(err, ErrNotAuthenticated) {
 		t.Errorf("dial sealed 2 minutes ago through a 1-minute window: %v, want %v", err, ErrNotAuthenticated)

@@ -1,6 +1,7 @@
 package reality
 
 import (
+	"crypto/x509"
 	"net/netip"
 	"syscall"
 	"time"
@@ -12,29 +13,35 @@ import (
 type Options struct {
 	// Control, if set, is called on the adapter's own sockets before they
 	// are bound or connected, e.g. to set a firewall mark so they bypass
-	// the tunnel: the dialer's, the listener's, and the listener's dial to
-	// its target for each connection. REALITY's detection of the target's
-	// records at Listen dials with a plain net.Dial, without it.
+	// the tunnel: the dialer's, the listener's, Listen's check of the
+	// target's certificate, and the listener's dial to its target for each
+	// connection. REALITY's detection of the target's records at Listen
+	// dials with a plain net.Dial, without it.
 	Control func(network, address string, c syscall.RawConn) error
 	// Now is the clock; nil means time.Now. Nodes' clocks must agree within
 	// the listener's time window. It drives the dialer's seal and the
 	// listener's own freshness check; REALITY's check behind it uses the
 	// real clock.
 	Now func() time.Time
+	// TrustTargetRoots, for tests and the lab only, replaces the system
+	// roots Listen verifies the target's certificate against. Settings
+	// never set it.
+	TrustTargetRoots *x509.CertPool
 }
 
 // Transport is the reality adapter.
 type Transport struct {
-	control func(network, address string, c syscall.RawConn) error
-	now     func() time.Time
-	sent    *transport.SendMeter
+	control     func(network, address string, c syscall.RawConn) error
+	now         func() time.Time
+	targetRoots *x509.CertPool // nil: the system roots
+	sent        *transport.SendMeter
 }
 
 var _ transport.Transport = (*Transport)(nil)
 
 // New returns the reality adapter.
 func New(o Options) *Transport {
-	t := &Transport{control: o.Control, now: o.Now, sent: &transport.SendMeter{}}
+	t := &Transport{control: o.Control, now: o.Now, targetRoots: o.TrustTargetRoots, sent: &transport.SendMeter{}}
 	if t.now == nil {
 		t.now = time.Now
 	}

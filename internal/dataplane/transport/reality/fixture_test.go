@@ -26,17 +26,17 @@ import (
 const serverName = "www.example.net"
 
 // target is a local TLS 1.3 site, the camouflage target REALITY imitates:
-// it answers any ClientHello for serverName with a self-signed certificate,
-// records every byte each connection sends it (reading on after a failed
-// handshake, until the far end closes), and answers "site" to a line of
-// input after the handshake. A connection idle for its idle timeout is
-// closed; with halfClose, a connection whose handshake failed is closed
-// for writing only, the target reading on until the far end closes.
+// it answers any ClientHello for serverName with the self-signed
+// targetCert, records every byte each connection sends it, and answers
+// "site" to a line of input after the handshake. A connection idle for its
+// idle timeout is closed. What follows a failed handshake is failed's,
+// given the connection and a reader that records; nil reads on until the
+// far end closes.
 type target struct {
-	ln        net.Listener
-	cert      *x509.Certificate
-	idle      time.Duration
-	halfClose bool
+	ln     net.Listener
+	cert   *x509.Certificate
+	idle   time.Duration
+	failed func(c *net.TCPConn, r io.Reader)
 
 	mu    sync.Mutex
 	conns []*recorder
@@ -52,7 +52,7 @@ var (
 // target's records once per process.
 func theTarget(t testing.TB) *target {
 	t.Helper()
-	sharedTargetOnce.Do(func() { sharedTarget, sharedTargetErr = startTarget("127.0.0.1:0", 10*time.Second, false) })
+	sharedTargetOnce.Do(func() { sharedTarget, sharedTargetErr = startTarget("127.0.0.1:0", 10*time.Second, nil) })
 	if sharedTargetErr != nil {
 		t.Fatal(sharedTargetErr)
 	}
@@ -62,7 +62,7 @@ func theTarget(t testing.TB) *target {
 // newTargetAt starts a target listening on address.
 func newTargetAt(t testing.TB, address string) *target {
 	t.Helper()
-	tg, err := startTarget(address, 10*time.Second, false)
+	tg, err := startTarget(address, 10*time.Second, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,10 +71,10 @@ func newTargetAt(t testing.TB, address string) *target {
 }
 
 // newIdleTarget starts a target on loopback whose connections end after
-// idle, as halfClose says.
-func newIdleTarget(t testing.TB, idle time.Duration, halfClose bool) *target {
+// idle, failed handling those whose handshake failed.
+func newIdleTarget(t testing.TB, idle time.Duration, failed func(c *net.TCPConn, r io.Reader)) *target {
 	t.Helper()
-	tg, err := startTarget("127.0.0.1:0", idle, halfClose)
+	tg, err := startTarget("127.0.0.1:0", idle, failed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,10 +82,12 @@ func newIdleTarget(t testing.TB, idle time.Duration, halfClose bool) *target {
 	return tg
 }
 
-func startTarget(address string, idle time.Duration, halfClose bool) (*target, error) {
+// targetCert is every target's certificate, self-signed for serverName;
+// targetRoots trusts it (Options.TrustTargetRoots).
+var targetCert, targetRoots = func() (tls.Certificate, *x509.CertPool) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		return nil, err
+		panic(err)
 	}
 	tmpl := &x509.Certificate{
 		SerialNumber: big.NewInt(1),
@@ -95,20 +97,32 @@ func startTarget(address string, idle time.Duration, halfClose bool) (*target, e
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	if err != nil {
-		return nil, err
+		panic(err)
 	}
 	cert, err := x509.ParseCertificate(der)
 	if err != nil {
-		return nil, err
+		panic(err)
 	}
+	roots := x509.NewCertPool()
+	roots.AddCert(cert)
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key, Leaf: cert}, roots
+}()
+
+// newTransport is New trusting the targets' certificate.
+func newTransport(o Options) *Transport {
+	o.TrustTargetRoots = targetRoots
+	return New(o)
+}
+
+func startTarget(address string, idle time.Duration, failed func(c *net.TCPConn, r io.Reader)) (*target, error) {
 	ln, err := net.Listen("tcp", address)
 	if err != nil {
 		return nil, err
 	}
-	tg := &target{ln: ln, cert: cert, idle: idle, halfClose: halfClose}
+	tg := &target{ln: ln, cert: targetCert.Leaf, idle: idle, failed: failed}
 	cfg := &tls.Config{
 		MinVersion:   tls.VersionTLS13,
-		Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}},
+		Certificates: []tls.Certificate{targetCert},
 		NextProtos:   []string{"h2", "http/1.1"},
 	}
 	go func() {
@@ -135,9 +149,9 @@ func (tg *target) serve(c net.Conn, cfg *tls.Config) {
 	tg.mu.Unlock()
 	tc := tls.Server(rec, cfg)
 	if err := tc.Handshake(); err != nil {
-		if tg.halfClose {
-			_ = c.(*net.TCPConn).CloseWrite()
-			_ = c.SetDeadline(time.Time{})
+		if tg.failed != nil {
+			tg.failed(c.(*net.TCPConn), rec)
+			return
 		}
 		_, _ = io.Copy(io.Discard, rec)
 		return

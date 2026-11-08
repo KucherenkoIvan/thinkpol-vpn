@@ -2,6 +2,8 @@ package reality
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -29,16 +31,18 @@ const (
 	// of its own, once the ClientHello authenticated: a dialer holding a
 	// credential that stalls there would hold the connection for good.
 	handshakeTimeout = 15 * time.Second
-	// detectWait bounds how long Listen waits for REALITY to learn the
-	// target's post-handshake records.
+	// detectWait bounds Listen's check of the target's certificate, and
+	// how long it waits for REALITY to learn the target's post-handshake
+	// records.
 	detectWait = 10 * time.Second
 )
 
 // Listen implements transport.Transport. Whatever fails authentication
 // goes to the admission's camouflage; without one, the connection is
 // mirrored to the listener's target from accept and spliced to it, raw and
-// whole, which is reality's disguise. Listen fails unless REALITY learned
-// the target's post-handshake records first.
+// whole, which is reality's disguise. Listen fails unless the target's
+// certificate verifies for every server name and REALITY learned the
+// target's post-handshake records first.
 func (t *Transport) Listen(ctx context.Context, cfg transport.ListenConfig, admission transport.Admission) (transport.Listener, error) {
 	addr, err := netip.ParseAddrPort(cfg.Address)
 	if err != nil || !addr.Addr().IsValid() {
@@ -48,7 +52,10 @@ func (t *Transport) Listen(ctx context.Context, cfg transport.ListenConfig, admi
 	if err != nil {
 		return nil, err
 	}
-	if err := detect(ctx, ls.target.String(), ls.names, detectWait, t.control); err != nil {
+	if err := verifyTarget(ctx, ls.target.String(), ls.names, t.targetRoots, detectWait, t.control); err != nil {
+		return nil, err
+	}
+	if err := detect(ctx, ls.target.String(), ls.names, detectWait); err != nil {
 		return nil, err
 	}
 	lc := net.ListenConfig{Control: t.control}
@@ -411,48 +418,123 @@ func (l *listener) realityConfig(id shortID, dial func(ctx context.Context, netw
 	}
 }
 
-// detect has REALITY learn the target's post-handshake records, which its
-// handshake imitates, and waits up to wait for it. REALITY keeps what it
-// learned per process; it fails unless the target can be reached and
-// REALITY's detection ended for every server name: left pending (the
-// target stalled), REALITY would hold every authenticated handshake in
-// 5-second sleeps for good. A pending detection is forgotten, so a later
-// Listen detects again. REALITY dials the target for this with a plain
-// net.Dial, so the reachability check is ours, through control.
-//
-// A detection whose handshake failed (a certificate the node doesn't
-// trust, say) ends with no records, as one that found none does: REALITY
-// stores the same empty list for both, so a target REALITY can't verify
-// is imitated without post-handshake records.
-func detect(ctx context.Context, dest string, names map[string]bool, wait time.Duration, control func(network, address string, c syscall.RawConn) error) error {
-	d := net.Dialer{Control: control, Timeout: wait}
-	c, err := d.DialContext(ctx, "tcp", dest)
-	if err != nil {
-		return fmt.Errorf("reality: target: %w", err)
-	}
-	_ = c.Close()
-	xreality.DetectPostHandshakeRecordsLens(&xreality.Config{Type: "tcp", Dest: dest, ServerNames: names})
-	deadline := time.Now().Add(wait)
+// verifyTarget completes a TLS handshake with the target for each server
+// name, through control, within wait, and fails unless its certificate
+// verifies against roots (nil: the system roots). REALITY's own detection
+// stores the same empty result for a target whose certificate doesn't
+// verify as for one that can't be reached, and the target would then be
+// imitated without its post-handshake records.
+func verifyTarget(ctx context.Context, dest string, names map[string]bool, roots *x509.CertPool, wait time.Duration, control func(network, address string, c syscall.RawConn) error) error {
+	ctx, cancel := context.WithTimeout(ctx, wait)
+	defer cancel()
 	for name := range names {
-		for alpn := range detectedALPNs {
-			key := recordsKey(dest, name, alpn)
-			for {
-				v, ok := xreality.GlobalPostHandshakeRecordsLens.Load(key)
-				if !ok {
-					return fmt.Errorf("reality: REALITY keeps no records under %q: its key format changed", key)
-				}
-				if _, done := v.([]int); done {
-					break
-				}
-				if time.Now().After(deadline) || ctx.Err() != nil {
-					xreality.GlobalPostHandshakeRecordsLens.CompareAndDelete(key, v)
-					return fmt.Errorf("reality: target %s didn't complete a TLS handshake for %q in %v", dest, name, wait)
-				}
-				time.Sleep(10 * time.Millisecond)
-			}
+		d := tls.Dialer{
+			NetDialer: &net.Dialer{Control: control},
+			Config:    &tls.Config{ServerName: name, RootCAs: roots},
 		}
+		c, err := d.DialContext(ctx, "tcp", dest)
+		if err != nil {
+			return fmt.Errorf("reality: target %s for %q: %w", dest, name, err)
+		}
+		_ = c.Close()
 	}
 	return nil
+}
+
+// detect has REALITY learn the target's post-handshake records, which its
+// handshake imitates, and waits up to wait for it. REALITY keeps what it
+// learned per process; detect fails unless REALITY's detection ended for
+// every server name and ALPN: left pending (the target stalled), REALITY
+// would hold every authenticated handshake in 5-second sleeps for good.
+//
+// REALITY's detection runs on with no deadline of its own once detect
+// gave up, and stores an empty result when it ends if its key still holds
+// a pending one, so it would overwrite a later detection's pending key.
+// Detections of a target are serialized, and a key detect gave up on is
+// left pending and marked stale: a later detect waits for that earlier
+// detection to end (failing while it runs), then forgets its result and
+// detects again.
+func detect(ctx context.Context, dest string, names map[string]bool, wait time.Duration) error {
+	dd := detectionOf(dest)
+	dd.mu.Lock()
+	defer dd.mu.Unlock()
+	var keys []string
+	for name := range names {
+		for alpn := range detectedALPNs {
+			keys = append(keys, recordsKey(dest, name, alpn))
+		}
+	}
+	cfg := &xreality.Config{Type: "tcp", Dest: dest, ServerNames: names}
+	xreality.DetectPostHandshakeRecordsLens(cfg)
+	deadline := time.Now().Add(wait)
+	for {
+		var pending []string
+		redetect := false
+		for _, key := range keys {
+			v, ok := xreality.GlobalPostHandshakeRecordsLens.Load(key)
+			if !ok {
+				// Only detect deletes keys, holding dd.mu, and
+				// DetectPostHandshakeRecordsLens ran since.
+				return fmt.Errorf("%w: nothing under %q", errRecordsKeyFormat, key)
+			}
+			_, done := v.([]int)
+			switch {
+			case done && dd.stale[key]:
+				// A result is REALITY's last write to its key.
+				xreality.GlobalPostHandshakeRecordsLens.Delete(key)
+				delete(dd.stale, key)
+				redetect = true
+				pending = append(pending, key)
+			case !done:
+				pending = append(pending, key)
+			}
+		}
+		if len(pending) == 0 {
+			return nil
+		}
+		if redetect {
+			xreality.DetectPostHandshakeRecordsLens(cfg)
+		}
+		if time.Now().After(deadline) || ctx.Err() != nil {
+			earlier := false
+			for _, key := range pending {
+				earlier = earlier || dd.stale[key]
+				dd.stale[key] = true
+			}
+			if earlier {
+				return fmt.Errorf("reality: target %s: a detection of its records from an earlier Listen is still running", dest)
+			}
+			return fmt.Errorf("reality: target %s didn't complete a TLS handshake for every server name in %v", dest, wait)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// errRecordsKeyFormat is detect finding nothing where REALITY keeps a
+// target's records: the pinned module's key format changed.
+var errRecordsKeyFormat = errors.New("reality: REALITY's records key format changed")
+
+// targetDetection serializes detect for one target and keeps the keys
+// whose detection detect gave up on.
+type targetDetection struct {
+	mu    sync.Mutex
+	stale map[string]bool
+}
+
+var detections = struct {
+	mu     sync.Mutex
+	byDest map[string]*targetDetection
+}{byDest: map[string]*targetDetection{}}
+
+func detectionOf(dest string) *targetDetection {
+	detections.mu.Lock()
+	defer detections.mu.Unlock()
+	dd := detections.byDest[dest]
+	if dd == nil {
+		dd = &targetDetection{stale: map[string]bool{}}
+		detections.byDest[dest] = dd
+	}
+	return dd
 }
 
 // detectedALPNs is how many ALPN cases REALITY detects per server name: no

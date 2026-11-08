@@ -55,6 +55,8 @@ func (c *replayCache) admit(id shortID, sessionID []byte, sent uint32, now time.
 		}
 	}
 	if c.total >= maxRemembered {
+		// A scan of the whole cache under the lock: reaching it takes
+		// maxRemembered/replayShare (64) credentials filling their shares.
 		for other := range c.byID {
 			c.forget(other, now)
 		}

@@ -14,11 +14,11 @@ var shapings = map[string]transport.Shaping{
 }
 
 func TestConformance(t *testing.T) {
-	transporttest.Run(t, harness(t, New(Options{}), transport.Shaping{}))
+	transporttest.Run(t, harness(t, newTransport(Options{}), transport.Shaping{}))
 }
 
 func TestConformanceShaped(t *testing.T) {
-	tr := New(Options{})
+	tr := newTransport(Options{})
 	for name, s := range shapings {
 		t.Run(name, func(t *testing.T) {
 			transporttest.Run(t, harness(t, tr, s))
