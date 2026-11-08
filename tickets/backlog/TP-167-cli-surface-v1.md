@@ -3,6 +3,7 @@ id: TP-167
 title: "CLI surface v1: exit codes and the setting shape"
 milestone: M2
 area: cmd
+stream: clients
 repo: thinkpol-vpn
 size: M
 depends_on: []

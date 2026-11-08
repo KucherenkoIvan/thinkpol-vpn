@@ -3,6 +3,7 @@ id: TP-141
 title: "Keep a crashed agent's stderr on devices"
 milestone: M2
 area: agent
+stream: core
 repo: thinkpol-vpn
 size: S
 needs_human: macos

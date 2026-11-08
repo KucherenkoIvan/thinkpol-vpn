@@ -3,6 +3,7 @@ id: TP-161
 title: "macOS guard: check that pf still lists the guard's reference while pf is on"
 milestone: later
 area: dataplane/firewall
+stream: core
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-137]

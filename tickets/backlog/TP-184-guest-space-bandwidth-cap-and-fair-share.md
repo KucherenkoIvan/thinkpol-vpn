@@ -3,6 +3,7 @@ id: TP-184
 title: "Bandwidth cap per guest space and fair share on a shared node"
 milestone: M4
 area: features/hosting
+stream: administration
 repo: thinkpol-vpn
 size: L
 depends_on: [TP-040]

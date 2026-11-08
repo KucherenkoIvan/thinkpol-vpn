@@ -3,6 +3,7 @@ id: TP-137
 title: "macOS guard: kill the states pf passed while off even when the new token can't be read"
 milestone: M2
 area: dataplane
+stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: []

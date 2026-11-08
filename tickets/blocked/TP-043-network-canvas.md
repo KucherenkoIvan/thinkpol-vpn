@@ -3,6 +3,7 @@ id: TP-043
 title: "Network canvas"
 milestone: M4
 area: features/topology
+stream: administration
 repo: thinkpol-vpn
 size: epic
 depends_on: [TP-042, TP-086, TP-186]

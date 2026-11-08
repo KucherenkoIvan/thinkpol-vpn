@@ -3,6 +3,7 @@ id: TP-092
 title: "macOS pf guard: load without pfctl's rule optimizer"
 milestone: M1
 area: dataplane/firewall
+stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-078]

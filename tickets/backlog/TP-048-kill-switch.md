@@ -3,6 +3,7 @@ id: TP-048
 title: "Kill switch (macOS and Linux)"
 milestone: M2
 area: dataplane/firewall
+stream: core
 repo: thinkpol-vpn
 size: L
 depends_on: [TP-046, TP-021, TP-078, TP-091, TP-166]

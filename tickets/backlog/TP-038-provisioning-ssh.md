@@ -3,6 +3,7 @@ id: TP-038
 title: "Provisioning over SSH"
 milestone: M4
 area: features/provisioning
+stream: administration
 repo: thinkpol-vpn
 size: L
 depends_on: [TP-034]

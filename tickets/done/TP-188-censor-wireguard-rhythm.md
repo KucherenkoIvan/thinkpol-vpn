@@ -3,6 +3,7 @@ id: TP-188
 title: "Censor module: WireGuard rhythm inside TLS"
 milestone: M2
 area: lab
+stream: verification
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-089]

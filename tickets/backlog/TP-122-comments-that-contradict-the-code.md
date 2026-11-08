@@ -3,6 +3,7 @@ id: TP-122
 title: "Code comments that contradict the code"
 milestone: later
 area: docs
+stream: verification
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-077]

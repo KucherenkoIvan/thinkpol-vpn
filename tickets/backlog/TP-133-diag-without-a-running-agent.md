@@ -3,6 +3,7 @@ id: TP-133
 title: "`thinkpol diag` as root without a running agent"
 milestone: later
 area: agent
+stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-091]

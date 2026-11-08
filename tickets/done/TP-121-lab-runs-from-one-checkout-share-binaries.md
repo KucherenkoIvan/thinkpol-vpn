@@ -3,6 +3,7 @@ id: TP-121
 title: "Lab: two runs from one checkout don't rebuild each other's binaries"
 milestone: M2
 area: tests
+stream: verification
 repo: thinkpol-vpn
 size: S
 depends_on: []

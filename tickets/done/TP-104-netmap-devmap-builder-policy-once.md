@@ -3,6 +3,7 @@ id: TP-104
 title: "netmap/devmap: builder policy validated once"
 milestone: M2
 area: netmap
+stream: administration
 repo: thinkpol-vpn
 size: M
 depends_on: []

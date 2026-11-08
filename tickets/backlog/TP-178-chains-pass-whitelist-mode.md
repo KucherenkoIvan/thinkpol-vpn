@@ -3,6 +3,7 @@ id: TP-178
 title: "Chains pass the lab's whitelist mode through an allowlisted entry"
 milestone: later
 area: lab
+stream: verification
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-033, TP-177]

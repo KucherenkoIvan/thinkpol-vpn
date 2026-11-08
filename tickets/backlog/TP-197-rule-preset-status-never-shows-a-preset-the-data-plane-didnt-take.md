@@ -3,6 +3,7 @@ id: TP-197
 title: "Rule preset: status never shows a preset the data plane didn't take"
 milestone: M2
 area: agent
+stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-166]

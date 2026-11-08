@@ -3,6 +3,7 @@ id: TP-136
 title: "service install: recover a never-loaded unit, and say what a failed start leaves"
 milestone: M2
 area: agent
+stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-046]

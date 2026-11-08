@@ -3,6 +3,7 @@ id: TP-131
 title: "Split DESIGN.md: security in its own file, design by feature, DESIGN.md links them"
 milestone: M2
 area: docs
+stream: verification
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-077]

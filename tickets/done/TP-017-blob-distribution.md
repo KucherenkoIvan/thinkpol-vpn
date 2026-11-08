@@ -3,6 +3,7 @@ id: TP-017
 title: "Blob distribution through the overlay"
 milestone: M1
 area: dataplane/blobs
+stream: core
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-011, TP-016]

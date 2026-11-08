@@ -3,6 +3,7 @@ id: TP-118
 title: "Exit egress: nothing blocked by default; configurable blocklists"
 milestone: later
 area: agent
+stream: core
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-112]

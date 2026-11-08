@@ -3,6 +3,7 @@ id: TP-138
 title: "macOS guard: only a missing anchor's answer reads as an empty anchor"
 milestone: M2
 area: dataplane
+stream: core
 repo: thinkpol-vpn
 size: S
 needs_human: macos

@@ -3,6 +3,7 @@ id: TP-040
 title: "Hosting grants and shared nodes"
 milestone: M4
 area: features/hosting
+stream: administration
 repo: thinkpol-vpn
 size: epic
 depends_on: [TP-036, TP-010]

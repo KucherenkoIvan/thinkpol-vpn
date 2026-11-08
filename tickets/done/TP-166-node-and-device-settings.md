@@ -3,6 +3,7 @@ id: TP-166
 title: "Node and device settings: the node file and the member's toggles"
 milestone: M2
 area: agent
+stream: core
 repo: thinkpol-vpn
 size: L
 needs_human: macos

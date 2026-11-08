@@ -3,6 +3,7 @@ id: TP-060
 title: "A second `thinkpol up` must not undo a running agent's DNS (Linux)"
 milestone: M1
 area: agent
+stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-020, TP-022]

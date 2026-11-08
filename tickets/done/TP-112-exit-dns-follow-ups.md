@@ -3,6 +3,7 @@ id: TP-112
 title: "Exit DNS: follow-ups from TP-098's review"
 milestone: M2
 area: agent
+stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-098]

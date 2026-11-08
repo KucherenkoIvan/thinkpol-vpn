@@ -3,6 +3,7 @@ id: TP-154
 title: "netcfg (Linux): Close goes on when listing our routes or links fails"
 milestone: M2
 area: dataplane/netcfg
+stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-135]

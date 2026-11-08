@@ -3,6 +3,7 @@ id: TP-103
 title: "supervisor: split the file, no test globals in production"
 milestone: M2
 area: agent
+stream: core
 repo: thinkpol-vpn
 size: M
 depends_on: []

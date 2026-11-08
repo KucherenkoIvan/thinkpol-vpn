@@ -3,6 +3,7 @@ id: TP-117
 title: "Linux DNS: an in-place writer of resolv.conf loses its lines"
 milestone: M2
 area: dataplane
+stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-115]

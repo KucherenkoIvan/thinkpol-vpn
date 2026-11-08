@@ -3,6 +3,7 @@ id: TP-153
 title: "netcfg (Linux): Watch sees a rule with our protocol added by someone else"
 milestone: M2
 area: dataplane/netcfg
+stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-135]

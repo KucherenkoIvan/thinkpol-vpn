@@ -3,6 +3,7 @@ id: TP-174
 title: "Hygiene: ticket ids in comments, missing doc.go, lab logging, shared fakes"
 milestone: later
 area: repo
+stream: verification
 repo: thinkpol-vpn
 size: M
 depends_on: []

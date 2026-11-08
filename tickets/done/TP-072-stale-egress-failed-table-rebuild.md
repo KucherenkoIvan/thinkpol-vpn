@@ -3,6 +3,7 @@ id: TP-072
 title: "Stale egress after a failed table rebuild"
 milestone: M2
 area: agent/supervisor
+stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: []

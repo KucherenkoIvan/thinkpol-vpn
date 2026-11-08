@@ -3,6 +3,7 @@ id: TP-191
 title: "Lab: reap labs of interrupted runs"
 milestone: later
 area: lab
+stream: verification
 repo: thinkpol-vpn
 size: S
 depends_on: []

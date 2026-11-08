@@ -3,6 +3,7 @@ id: TP-194
 title: "netcfg ledger: undo paths keep what a failed revert left"
 milestone: later
 area: dataplane
+stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-119]

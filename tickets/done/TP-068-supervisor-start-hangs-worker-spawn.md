@@ -3,6 +3,7 @@ id: TP-068
 title: "Supervisor start hangs when a worker fails to spawn"
 milestone: M2
 area: agent/supervisor
+stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: []

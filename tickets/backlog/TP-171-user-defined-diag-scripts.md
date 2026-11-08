@@ -3,6 +3,7 @@ id: TP-171
 title: "User-defined diag scripts over an SDK (to be decided)"
 milestone: later
 area: cmd
+stream: core
 repo: thinkpol-vpn
 size: epic
 needs_human: decision
