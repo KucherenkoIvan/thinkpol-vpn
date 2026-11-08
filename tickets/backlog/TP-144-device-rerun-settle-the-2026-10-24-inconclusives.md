@@ -50,8 +50,10 @@ One short owner session on the Mac produces the evidence TP-142 and TP-143 need:
   - the connect-on-boot reboot had no Wi-Fi link, unnoticed, and the agent crashed once (exit 2).
 - Evidence stays private: Notes name steps and results, never local paths, hostnames or addresses.
 - Split 2026-11-07 (owner's MVP cut): the other 2026-10-24 inconclusives (the stop, exit-address checks, the corrupt route record, the quick pass, health with no link, the overlay ping, the second network, TP-082's first run) and their kit prerequisites moved to TP-180.
+- Owner, 2026-11-09: the device evidence comes from the Mac session in the M2 acceptance run (TP-029); a defect found there is fixed before M2 closes, possibly with a second short session.
 
 ## Log
 - 2026-10-24 created in backlog (2026-10-24 macOS device run and code-health review: before-M2 list)
 - 2026-10-24 docs: slotted in the pre-M2 phase (wave 2)
 - 2026-11-07 split (owner's MVP cut): only TP-142's boot trace and TP-143's pfctl listing stay; the rest → TP-180
+- 2026-11-09 notes: device evidence comes from the M2 acceptance session (owner)
