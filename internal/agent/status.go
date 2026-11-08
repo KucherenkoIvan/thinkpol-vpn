@@ -40,6 +40,8 @@ type Status struct {
 	DataPlane *dataplane.Status
 	// Listeners counts the listeners a device's data plane serves.
 	Listeners int
+	// Interface is the name of a device's TUN while its data plane runs.
+	Interface string
 	// Workers and PublicListeners are a server's.
 	Workers         []WorkerStatus
 	PublicListeners []PublicListenerStatus
@@ -295,7 +297,7 @@ func (p *report) statusWith(dp *dataplane.Status) Status {
 			dp = &st
 		}
 		st := *dp
-		s.DataPlane = &st
+		s.DataPlane, s.Interface = &st, p.engine.TUNName()
 		s.RulesEnforced, s.PresetUnavailable = true, st.Rules.PresetUnavailable
 		var problem error
 		if p.dns != nil {

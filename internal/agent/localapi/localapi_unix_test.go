@@ -487,7 +487,7 @@ func TestCallersAreCheckedByTheirCredentials(t *testing.T) {
 	if st, err := c.SetConnectOnBoot(ctx, true); err != nil || !st.GetConnectOnBoot() {
 		t.Fatalf("member's connect-on-boot: %v, %v", st, err)
 	}
-	if d, err := c.Diagnose(ctx); err != nil || d.GetSchemaVersion() != DiagSchemaVersion {
+	if d, err := c.Diagnose(ctx); err != nil || d.GetSchemaVersion() != SchemaVersion {
 		t.Fatalf("member's diagnostics: %v, %v", d, err)
 	}
 	// Without the parts that name public addresses: those are root's.

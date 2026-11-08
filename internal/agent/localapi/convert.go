@@ -34,7 +34,7 @@ func statusProto(st agent.Status) *localapiv1.Status {
 		out.KillSwitch = &localapiv1.KillSwitch{On: k.On, AllowLan: k.AllowLAN, Active: k.Active, Enforced: k.Enforced, Error: k.Error}
 	}
 	if dp := st.DataPlane; dp != nil {
-		out.DataPlane = dataPlaneProto(dp, st.Listeners)
+		out.DataPlane = dataPlaneProto(dp, st.Listeners, st.Interface)
 	}
 	for _, w := range st.Workers {
 		out.Workers = append(out.Workers, &localapiv1.Worker{
@@ -66,11 +66,11 @@ func problemCodes(ps []agent.Problem) []string {
 	return out
 }
 
-func dataPlaneProto(dp *dataplane.Status, listeners int) *localapiv1.DataPlane {
+func dataPlaneProto(dp *dataplane.Status, listeners int, iface string) *localapiv1.DataPlane {
 	out := &localapiv1.DataPlane{
 		Mtu: uint32(dp.MTU), Ipv6: dp.IPv6, Ipv6Off: string(dp.IPv6Off), LastApplyError: string(dp.LastApplyError),
-		Listeners: uint32(listeners),
-		Counters:  map[string]uint64{},
+		Listeners: uint32(listeners), Interface: agent.Sanitize(iface),
+		Counters: map[string]uint64{},
 	}
 	routeTable := dp.RouteTable.Enforced || dp.RouteTable.Error != ""
 	for _, c := range dataPlaneCounters {

@@ -166,32 +166,37 @@ Shows the node's state. Synopsis: `thinkpol status [-socket path] [-json] [-watc
 | Flag | Default | Meaning |
 |---|---|---|
 | `-socket` | see above | the local API's socket |
-| `-json` | false | print the status as JSON (protojson defaults; see F3) |
+| `-json` | false | print the status as JSON, in the local API's JSON convention (below) |
 | `-watch` | false | keep printing until interrupted: a blank line between statuses, or one JSON object after another |
 | `-interval` | `1s` | how often with `-watch`; the service clamps it to at least 250ms |
+
+`status` reads the service's state only: it asks the local API over its socket and nothing else, and the service answers from what it holds, with no network access and no look at the host (that is `diag`).
 
 A device, disconnected (alice):
 
 ```
 $ thinkpol status
-state:        disconnected
-health:       down: disconnected
-space:        740e402e696b17850eebc1d43a451bd1, map version 1793188210
-mode:         device
-rule preset:  space (applies once connected)
+state:            disconnected
+health:           down: disconnected
+space:            740e402e696b17850eebc1d43a451bd1, map version 1793188210
+mode:             device
+rule preset:      space (applies once connected)
+connect-on-boot:  off
 ```
 
 A device, connected, a few seconds later:
 
 ```
 $ thinkpol status
-state:        connected
-health:       ok
-space:        740e402e696b17850eebc1d43a451bd1, map version 1793188210
-mode:         device
-rule preset:  space
-overlay:      mtu 1328, ipv6 on, 0 listeners
-egresses:     overlay (mtu 1328)
+state:            connected
+health:           ok
+space:            740e402e696b17850eebc1d43a451bd1, map version 1793188210
+mode:             device
+rule preset:      space
+connect-on-boot:  off
+interface:        tun0
+overlay:          mtu 1328, ipv6 on, 0 listeners
+egresses:         overlay (mtu 1328)
 peers:
   3c9da4619392d106  100.64.0.3 fded:8bed:923::3  no path yet  no handshake      rx 0 B    tx 0 B
   431756c42f1667bf  100.64.0.1 fded:8bed:923::1  direct       handshake 2s ago  rx 220 B  tx 276 B
@@ -229,40 +234,88 @@ Other lines appear when they apply:
 
 `dropped:` lists only drop counters that are nonzero; `status -json` has every counter.
 
-`status -json` (the same device, abridged; the double space after each colon is protojson's own, see F3):
+`status -json` (the same device, abridged: the counters, and most of the zero values). The convention is the localapi package doc's "JSON", the same as `diag`'s:
+
+- the schema's own field names, snake_case, the same as the local API's `Status`, so the tray reading the API and a script reading the CLI see the same names;
+- every field present: an unset one as its zero value, or `null` for a message (`data_plane` while the data plane is down, `uplink` on a device, a peer's `last_handshake` before the first);
+- `schema_version` (2), the CLI's own, in every document whatever the service sent: bumped when a field is removed or renamed or changes type or meaning, not when one is added. Enumerated values (enums, health problems) may grow without a bump, and counters come and go (a missing one is 0). With a service older than the CLI, a field the service never sends reads as its zero value under the CLI's version;
+- enum values in lower snake_case without their type's prefix, as the text view spells them (`connected`, `ok`, `device`; the zero value is `unspecified`); otherwise protojson's value spelling: 64-bit integers as strings, timestamps in RFC 3339 UTC, durations as seconds with 0, 3, 6 or 9 fractional digits, as protojson writes them (`"3s"`, `"3.200s"`, `"0.027600s"`); an enum value the CLI's schema doesn't know (a newer service's) is `unknown`, as in the text view;
+- two-space indent, the same bytes for the same state; with `-watch`, one compact object per line (NDJSON), for line readers.
 
 ```json
 {
-  "mode":  "MODE_DEVICE",
-  "spaceId":  "740e402e696b17850eebc1d43a451bd1",
-  "mapVersion":  "1793188210",
-  "connection":  "CONNECTION_CONNECTED",
-  "health":  {
-    "level":  "HEALTH_LEVEL_OK"
+  "mode": "device",
+  "space_id": "740e402e696b17850eebc1d43a451bd1",
+  "map_version": "1793188210",
+  "removed": false,
+  "connection": "connected",
+  "retrying": false,
+  "health": {
+    "level": "ok",
+    "problems": []
   },
-  "dataPlane":  {
-    "mtu":  1328,
-    "ipv6":  true,
-    "peers":  [
+  "data_plane": {
+    "mtu": 1328,
+    "ipv6": true,
+    "ipv6_off": "",
+    "last_apply_error": "",
+    "peers": [
       {
-        "nodeId":  "431756c42f1667bf",
-        "device":  "overlay",
-        "addresses":  ["100.64.0.1", "fded:8bed:923::1"],
-        "firstHop":  "431756c42f1667bf",
-        "lastHandshake":  "2026-10-28T11:50:15.085267719Z",
-        "rxBytes":  "220",
-        "txBytes":  "276"
+        "node_id": "431756c42f1667bf",
+        "device": "overlay",
+        "addresses": ["100.64.0.1", "fded:8bed:923::1"],
+        "first_hop": "431756c42f1667bf",
+        "last_handshake": "2026-10-28T11:50:15.085267719Z",
+        "rx_bytes": "220",
+        "tx_bytes": "276"
       }
     ],
-    "counters":  {
-      "interface.reapplies":  "1",
-      "path.delivered":  "2",
-      "route_table.routes":  "159",
-      "router.foreign_source":  "1"
-    }
+    "neighbors": [
+      {
+        "node_id": "431756c42f1667bf",
+        "up": true,
+        "up_for": "3.200s",
+        "rtt": "0.027600s",
+        "dialed": true,
+        "links": [
+          {
+            "transport": "udp",
+            "dialed": true,
+            "endpoint": 0,
+            "active": true,
+            "up": true,
+            "up_for": "3.200s",
+            "rtt": "0.027600s",
+            "packets_in": "4",
+            "packets_out": "5",
+            "bytes_in": "412",
+            "bytes_out": "530",
+            "queue_full": "0"
+          }
+        ]
+      }
+    ],
+    "egresses": [ ... ],
+    "skipped": [],
+    "listeners": 0,
+    "counters": {
+      "route_table.routes": "159",
+      "router.foreign_source": "1",
+      ...
+    },
+    "interface": "tun0"
   },
-  "rulePreset":  "space",
-  "rulesEnforced":  true
+  "workers": [],
+  "public_listeners": [],
+  "rule_preset": "space",
+  "rules_enforced": true,
+  "rule_preset_unavailable": false,
+  "uplink": null,
+  "maps_refused": "0",
+  "connect_on_boot": false,
+  "last_run_crashed": false,
+  "last_run_unreadable": false,
+  "schema_version": 2
 }
 ```
 
@@ -274,13 +327,15 @@ Bring a device's data plane up or down. The service keeps running and keeps foll
 
 ```
 $ thinkpol connect
-state:        connected
-health:       ok
-space:        740e402e696b17850eebc1d43a451bd1, map version 1793188210
-mode:         device
-rule preset:  space
-overlay:      mtu 1328, ipv6 on, 0 listeners
-egresses:     overlay (mtu 1328)
+state:            connected
+health:           ok
+space:            740e402e696b17850eebc1d43a451bd1, map version 1793188210
+mode:             device
+rule preset:      space
+connect-on-boot:  off
+interface:        tun0
+overlay:          mtu 1328, ipv6 on, 0 listeners
+egresses:         overlay (mtu 1328)
 peers:
   3c9da4619392d106  100.64.0.3 fded:8bed:923::3  no path yet  no handshake  rx 0 B  tx 0 B
   431756c42f1667bf  100.64.0.1 fded:8bed:923::1  no path yet  no handshake  rx 0 B  tx 0 B
@@ -368,47 +423,47 @@ Writes a JSON snapshot of the node's state and of what it changed on the host. I
 |---|---|---|
 | `-o` | `-` | write to this file, mode 0600, written beside it and renamed over it; `-` (or empty) prints it |
 
-The JSON is the v1 contract (`schema_version: 1`). It uses the schema's snake_case names and has every field present, with an unset one as its zero value or null. A part the agent couldn't read has only `unreadable` set. Root and the service's user get everything. The group gets `host_parts: false`, with the routes, policy rules, guard and DNS marked unreadable. The group's snapshot, abridged:
+The JSON is part of the v1 contract, at `schema_version` 2 (2 spelled the enum values in diag's `status` the text view's way, `connected` and no longer `CONNECTION_CONNECTED`), in the same convention as `status -json` (above): the schema's snake_case names, every field present, an unset one as its zero value or null, the same bytes for the same state; its `status` is the service's, and the top-level `schema_version` is the CLI's, as in `status -json`. A part the agent couldn't read has only `unreadable` set. Root and the service's user get everything. The group gets `host_parts: false`, with the routes, policy rules, guard and DNS marked unreadable. The group's snapshot, abridged:
 
 ```json
 {
-  "schema_version":  1,
-  "taken_at":  "2026-10-28T11:50:23.009313333Z",
-  "os":  "linux",
-  "agent_version":  "dev",
-  "host_parts":  false,
-  "status":  { "mode":  "MODE_DEVICE", "space_id":  "740e402e696b17850eebc1d43a451bd1", "map_version":  "1793188210", "connection":  "CONNECTION_CONNECTED", "…": "…" },
-  "tun":  { "unreadable":  "", "name":  "thinkpol0", "index":  11, "mtu":  1328, "up":  true, "running":  true,
-            "addresses":  ["100.64.0.2/10", "fded:8bed:923::2/48", "fe80::21e2:a03c:5b23:ce92/64"] },
-  "last_apply":  {
-    "unreadable":  "",
-    "started":  "2026-10-28T11:50:14.679812760Z",
-    "took":  "0.085776458s",
-    "failed":  "",
-    "steps":  [ { "step":  "section", "took":  "0.014132875s", "failed":  false }, "…" ]
+  "schema_version": 2,
+  "taken_at": "2026-10-28T11:50:23.009313333Z",
+  "os": "linux",
+  "agent_version": "dev",
+  "host_parts": false,
+  "status": { "mode": "device", "space_id": "740e402e696b17850eebc1d43a451bd1", "map_version": "1793188210", "connection": "connected", "…": "…" },
+  "tun": { "unreadable": "", "name": "thinkpol0", "index": 11, "mtu": 1328, "up": true, "running": true,
+            "addresses": ["100.64.0.2/10", "fded:8bed:923::2/48", "fe80::21e2:a03c:5b23:ce92/64"] },
+  "last_apply": {
+    "unreadable": "",
+    "started": "2026-10-28T11:50:14.679812760Z",
+    "took": "0.085776458s",
+    "failed": "",
+    "steps": [ { "step": "section", "took": "0.014132875s", "failed": false }, "…" ]
   },
-  "routes":  { "unreadable":  "root only: it names public addresses", "routes":  [], "unrecorded_proto2":  [] },
-  "policy_rules":  { "unreadable":  "root only: it names public addresses", "rules":  [] },
-  "guard":  { "unreadable":  "root only: it names public addresses", "where":  "", "rules":  null, "exempt":  null, "nftables":  null, "pf":  null },
-  "dns":  { "unreadable":  "root only: it names public addresses", "sources":  [] }
+  "routes": { "unreadable": "root only: it names public addresses", "routes": [], "unrecorded_proto2": [] },
+  "policy_rules": { "unreadable": "root only: it names public addresses", "rules": [] },
+  "guard": { "unreadable": "root only: it names public addresses", "where": "", "rules": null, "exempt": null, "nftables": null, "pf": null },
+  "dns": { "unreadable": "root only: it names public addresses", "sources": [] }
 }
 ```
 
 Root's snapshot fills those four parts. An excerpt from the same run:
 
 ```json
-  "guard":  {
-    "unreadable":  "",
-    "where":  "nftables table inet thinkpol-guard",
-    "present":  true,
-    "rules":  { "unreadable":  "", "rules":  [
-      { "chain":  "output", "text":  "meta oifname \"lo\" accept", "counted":  false, "packets":  "0", "bytes":  "0", "evaluations":  "0", "states":  "0" },
+  "guard": {
+    "unreadable": "",
+    "where": "nftables table inet thinkpol-guard",
+    "present": true,
+    "rules": { "unreadable": "", "rules": [
+      { "chain": "output", "text": "meta oifname \"lo\" accept", "counted": false, "packets": "0", "bytes": "0", "evaluations": "0", "states": "0" },
       "…" ] },
-  "dns":  { "unreadable":  "", "sources":  [
-      { "name":  "resolv.conf", "unreadable":  "", "present":  true, "resolvers":  [
-          { "interface":  "", "scoped":  false, "servers":  ["100.64.0.2", "fded:8bed:923::2"], "domains":  [], "search":  [],
-            "order":  0, "flags":  "", "reach":  "", "options":  ["timeout:1", "attempts:1"], "node_written":  true } ] },
-      { "name":  "systemd-resolved", "unreadable":  "", "present":  false, "resolvers":  [] } ] }
+  "dns": { "unreadable": "", "sources": [
+      { "name": "resolv.conf", "unreadable": "", "present": true, "resolvers": [
+          { "interface": "", "scoped": false, "servers": ["100.64.0.2", "fded:8bed:923::2"], "domains": [], "search": [],
+            "order": 0, "flags": "", "reach": "", "options": ["timeout:1", "attempts:1"], "node_written": true } ] },
+      { "name": "systemd-resolved", "unreadable": "", "present": false, "resolvers": [] } ] }
 ```
 
 The full schema is the `Diagnostics` message in `proto/thinkpol/localapi/v1/localapi.proto`.
@@ -721,18 +776,21 @@ Refusals travel as go-kernel domain error codes over gRPC status codes. The clie
 
 `Status` is the shape that `status`, `connect`, `disconnect` and `rules preset` render, and it is inside `Diagnostics`. Fields:
 
-- `mode`: `MODE_DEVICE` or `MODE_SERVER` (`MODE_UNSPECIFIED`, not set, is never reported);
+- `mode`: `device` or `server` (`unspecified`, not set, is never reported);
 - `space_id`, `map_version`, `removed`;
-- `connection`: `DISCONNECTED`, `CONNECTING`, `CONNECTED` or `SERVING`;
+- `connection`: `disconnected`, `connecting`, `connected` or `serving`;
 - `retrying`;
-- `health`: a level (`OK`, `DEGRADED`, `DOWN`) and its problems;
+- `health`: a level (`ok`, `degraded`, `down`) and its problems;
 - `data_plane`: MTU, IPv6 and why it is off, last Apply error, peers, neighbors and their links, egresses, skipped entries, listeners, and counters by name;
 - `workers`, `public_listeners`, `uplink`: on a server;
-- `rule_preset`, `rules_enforced`, `rule_preset_unavailable`;
-- `maps_refused`.
+- `rule_preset`, `rules_enforced`, `rule_preset_unavailable`, `connect_on_boot`: a device's toggles (TP-048 adds the kill switch, allow-LAN and pause here);
+- `maps_refused`, `last_run_crashed`, `last_run_unreadable`;
+- no `schema_version` on the wire: the CLI's JSON adds its own (the localapi package doc's "JSON").
+
+`data_plane` also has `interface`, the TUN's name.
 
 Nothing in it is a public address, a key or a secret. Nodes and spaces are opaque hex ids, and the addresses are the overlay's. Every string is sanitized by the server and again by the client.
 
 ### `Diagnostics`
 
-`schema_version` (1), `taken_at`, `os`, `agent_version`, `host_parts`, `status`, `tun`, `last_apply`, `routes`, `policy_rules`, `guard`, `dns`. The last four are host parts: root's only, because they name public addresses. The schema version is bumped when a field is removed or renamed or changes type or meaning. An added field doesn't bump it.
+`schema_version` (2, the service's; `diag`'s JSON says the CLI's), `taken_at`, `os`, `agent_version`, `host_parts`, `status`, `tun`, `last_apply`, `routes`, `policy_rules`, `guard`, `dns`. The last four are host parts: root's only, because they name public addresses. The schema version is bumped when a field is removed or renamed or changes type or meaning. An added field doesn't bump it.

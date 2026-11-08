@@ -1153,7 +1153,8 @@ type Diagnostics struct {
 	// The schema. Bumped when a field is removed or renamed or its type or
 	// meaning changes; not when a field is added. `unreadable` texts are
 	// free-form, and the values of enumerated strings (a route's type, an
-	// Apply's step) may grow without a bump.
+	// Apply's step) may grow without a bump. This is the service's; the
+	// CLI's JSON carries the CLI's own (the localapi package doc's "JSON").
 	SchemaVersion uint32                 `protobuf:"varint,1,opt,name=schema_version,json=schemaVersion,proto3" json:"schema_version,omitempty"`
 	TakenAt       *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=taken_at,json=takenAt,proto3" json:"taken_at,omitempty"`
 	// The agent's OS ("linux", "darwin") and version.
@@ -3543,7 +3544,9 @@ type DataPlane struct {
 	// "route_table.reapplies", "route_table.rules_ahead") while it enforces
 	// the rules, and how often the overlay interface was re-applied after its
 	// link came up ("interface.reapplies").
-	Counters      map[string]uint64 `protobuf:"bytes,10,rep,name=counters,proto3" json:"counters,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
+	Counters map[string]uint64 `protobuf:"bytes,10,rep,name=counters,proto3" json:"counters,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
+	// The overlay's TUN, by the name the OS gave it.
+	Interface     string `protobuf:"bytes,11,opt,name=interface,proto3" json:"interface,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3646,6 +3649,13 @@ func (x *DataPlane) GetCounters() map[string]uint64 {
 		return x.Counters
 	}
 	return nil
+}
+
+func (x *DataPlane) GetInterface() string {
+	if x != nil {
+		return x.Interface
+	}
+	return ""
 }
 
 // A WireGuard peer.
@@ -4575,7 +4585,7 @@ const file_thinkpol_localapi_v1_localapi_proto_rawDesc = "" +
 	"\x05error\x18\x06 \x01(\tR\x05error\"]\n" +
 	"\x06Health\x127\n" +
 	"\x05level\x18\x01 \x01(\x0e2!.thinkpol.localapi.v1.HealthLevelR\x05level\x12\x1a\n" +
-	"\bproblems\x18\x02 \x03(\tR\bproblems\"\xfc\x03\n" +
+	"\bproblems\x18\x02 \x03(\tR\bproblems\"\x9a\x04\n" +
 	"\tDataPlane\x12\x10\n" +
 	"\x03mtu\x18\x01 \x01(\rR\x03mtu\x12\x12\n" +
 	"\x04ipv6\x18\x02 \x01(\bR\x04ipv6\x12\x19\n" +
@@ -4587,7 +4597,8 @@ const file_thinkpol_localapi_v1_localapi_proto_rawDesc = "" +
 	"\askipped\x18\b \x03(\v2\x1a.thinkpol.localapi.v1.SkipR\askipped\x12\x1c\n" +
 	"\tlisteners\x18\t \x01(\rR\tlisteners\x12I\n" +
 	"\bcounters\x18\n" +
-	" \x03(\v2-.thinkpol.localapi.v1.DataPlane.CountersEntryR\bcounters\x1a;\n" +
+	" \x03(\v2-.thinkpol.localapi.v1.DataPlane.CountersEntryR\bcounters\x12\x1c\n" +
+	"\tinterface\x18\v \x01(\tR\tinterface\x1a;\n" +
 	"\rCountersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\x04R\x05value:\x028\x01\"\xeb\x01\n" +

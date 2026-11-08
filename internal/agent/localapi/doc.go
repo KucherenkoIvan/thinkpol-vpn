@@ -8,8 +8,10 @@
 //
 //   - GetStatus, and WatchStatus as a stream: the node's mode and
 //     connection, its space and map version, whether it was removed from
-//     the space, its health and problems, its rule preset; a running data
-//     plane's MTU and IPv6 state (and why IPv6 is off), the last Apply's
+//     the space, its health and problems, its rule preset and
+//     connect-on-boot (the JSON schema's version is the CLI's, in its
+//     JSON only: "JSON" below); a running data
+//     plane's TUN, MTU and IPv6 state (and why IPv6 is off), the last Apply's
 //     failed step, its counters, its peers with the entry each one's
 //     packets leave through, its neighbors and their links, its egresses,
 //     and what the map held that the node skipped; on a server, its
@@ -157,16 +159,10 @@
 // and "couldn't look" stay apart. It records; it doesn't judge: the
 // guard's own check of pf comes with its evidence.
 //
-// Its JSON is the v1 contract ([WriteDiagnostics]; `status -json` is
-// not): the schema's own field names (snake_case: `schema_version`,
-// `last_apply`) and every field present, an unset one as its zero value
-// or null; only a guard's `present` is left out, when it couldn't be told
-// (protojson omits an unset proto3 optional field even then).
-// [DiagSchemaVersion] is bumped when a field is removed or renamed or its
-// type or meaning changes, not when one is added; `unreadable` texts are
-// free-form, and enumerated string values (a route's type, an Apply's
-// step) may grow without a bump. Taking it changes nothing on the host.
-// It holds:
+// Its JSON ([WriteDiagnostics]) is in the convention below, and part of
+// the v1 contract; only a guard's `present` is left out, when it couldn't
+// be told (protojson omits an unset proto3 optional field even then).
+// Taking it changes nothing on the host. It holds:
 //
 //   - the schema version, when it was taken, the agent's OS and version,
 //     and `host_parts`: whether the caller got the host parts;
@@ -228,6 +224,59 @@
 // (/dev/stdout is a link through /proc/self/fd/1 to whatever stdout is,
 // a file included), so root writing into a directory others can write to
 // never follows or replaces their link. `-o -` prints it.
+//
+// # JSON
+//
+// What the CLI prints for a script, `status -json` ([WriteJSON]) and
+// `diag` ([WriteDiagnostics]), follows one convention, opt-in with
+// `-json` (`diag` has no text form yet); a person's output stays text.
+// TP-181 gives the other commands `-json` in it, and every field added
+// to the status (TP-048's kill switch, allow-LAN and pause toggles, say)
+// follows it:
+//
+//   - the schema's own field names, snake_case (`space_id`,
+//     `schema_version`), so the JSON says what the local API's message
+//     says: a tray reading the API and a script reading the CLI see the
+//     same names;
+//   - every field present: an unset one as its zero value (`false`, `0`,
+//     `""`, `[]`, `{}`) or, a message's, `null` (`data_plane` while the
+//     data plane is down, `uplink` on a device, a peer's `last_handshake`
+//     before the first);
+//   - a top-level `schema_version`, [SchemaVersion], the one number for
+//     every document, and always the CLI's: the CLI decides the JSON's
+//     names and spellings, so the version is the CLI's whatever the
+//     service sent (Diagnostics' own field, the service's, is
+//     overwritten; Status has none on the wire). The gap: with a service
+//     older than the CLI, a field that service never sends reads as its
+//     zero value under the CLI's version;
+//   - an enum value in lower snake_case without its type's prefix, as the
+//     text view spells it: `connected`, `device`, `ok`, not protojson's
+//     `CONNECTION_CONNECTED`, `MODE_DEVICE`, `HEALTH_LEVEL_OK`; the zero
+//     value is `unspecified`. Every enum field the schema has is spelled
+//     so, nested, in a list or as a map's value, so a new enum follows it
+//     with no code. A value the CLI's schema doesn't know (a newer
+//     service's) is `unknown`, as in the text view, never a number.
+//     The prefix is the zero value's name without `UNSPECIFIED`.
+//     Health problems and other codes are snake_case strings too;
+//   - otherwise protojson's spelling of values: a 64-bit integer as a
+//     string (`"map_version": "1793188210"`), a timestamp as
+//     RFC 3339 in UTC, a duration as seconds with 0, 3, 6 or 9
+//     fractional digits (`"2s"`, `"1.500s"`, `"0.027600s"`);
+//   - one object, indented by two spaces, then a newline, the same bytes
+//     for the same state (protojson's own whitespace is randomized per
+//     build, so it is re-indented); `status -json -watch` writes one
+//     compact object per line ([WriteJSONLine], NDJSON), for line
+//     readers.
+//
+// The v1 contract is the field names, their types and their meaning in
+// Status and Diagnostics. [SchemaVersion] is bumped when a field is
+// removed or renamed or its type or meaning changes, not when one is
+// added (a reader ignores fields it doesn't know); `unreadable` texts and
+// other free text are not part of it, and enumerated values (an enum, a
+// health problem, a route's type, an Apply's step) may grow without a
+// bump. Counters' names (`data_plane.counters`) may come and go: a reader
+// takes a missing one as 0. Version 2 spelled the enum values as above;
+// version 1 had protojson's full names, in diag's status.
 //
 // # What it reports
 //
