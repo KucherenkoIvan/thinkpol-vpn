@@ -163,3 +163,33 @@ func TestFullyEncryptedTagOnly(t *testing.T) {
 		t.Error("a bad verdict is accepted")
 	}
 }
+
+// TestFullyEncryptedWireGuardInitiationByChance measures why the matrix's
+// WireGuard cell varies: an initiation is 128 random bytes behind a type
+// and three zero bytes, with mac2's 16 zero bytes at its end (no cookie),
+// about 3.47 set bits per byte, so the first exemption (at most 3.4)
+// passes about one in four. thinkpol's udp sends no zero runs: its first
+// datagram, all random, is exempt only when its first six bytes happen to
+// be printable, about one in 400.
+func TestFullyEncryptedWireGuardInitiationByChance(t *testing.T) {
+	const n = 2000
+	exempt, udpExempt := 0, 0
+	for seed := uint64(0); seed < n; seed++ {
+		init := randomBytes(seed, wgInitiation)
+		copy(init, []byte{wgTypeInitiation, 0, 0, 0})
+		clear(init[wgInitiation-16:])
+		if looksFullyEncrypted(init) == "" {
+			exempt++
+		}
+		if looksFullyEncrypted(randomBytes(seed+n, wgInitiation)) == "" {
+			udpExempt++
+		}
+	}
+	if exempt < n/8 || exempt > n/2 {
+		t.Errorf("%d of %d WireGuard initiations exempt, want about a quarter", exempt, n)
+	}
+	if udpExempt > n/100 {
+		t.Errorf("%d of %d random datagrams exempt, want almost none", udpExempt, n)
+	}
+	t.Logf("exempt: %d of %d WireGuard initiations, %d of %d random datagrams", exempt, n, udpExempt, n)
+}

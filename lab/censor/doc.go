@@ -259,6 +259,11 @@
 // client that sends a first segment an exemption passes (six printable
 // bytes, say) and the rest later passes too, as it does past the Great
 // Firewall. With tagOnly it tags instead of blocking, for the prober.
+// Random bytes are exempt only by chance, their first six bytes printable,
+// about one stream in 400; a WireGuard initiation, ending in 16 zero bytes
+// (mac2, without a cookie), averages about 3.47 set bits per byte and is
+// exempt about one in four, its tunnel with it, since a flow is judged
+// once.
 //
 // prober is the active prober: given a suspect TCP connection, it probes
 // the connection's server, once per server address and port, from the
@@ -362,7 +367,10 @@
 // every flow of server-1 a passive module tagged has a flag: the prober
 // judges a connection only after it crossed. Cases that compare with the
 // camouflage site run in lab.Upstream, nginx serving it, and quote the
-// module's verdict on the row's first connection in the cell.
+// module's verdict on the row's first connection in the cell. A cell
+// whose result is chance by nature (WireGuard against fully-encrypted)
+// varies: any result is accepted and shown, with why, and a family that
+// didn't cross must still be the module's doing.
 //
 // # Limits
 //

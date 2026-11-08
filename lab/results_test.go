@@ -95,13 +95,17 @@ func TestCensorMatrix(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		if want == "fail" {
+		if want == "fail" || want == "varies" && cell.result != "pass" {
 			how, err := blockedBy(t, l, c, cc.blocker)
 			if err != nil {
 				t.Error(err)
-			} else if cell.result == "fail" {
+			} else if cell.result != "pass" {
 				cell.detail += "; the censor " + how + " them"
 			}
+		}
+		if want == "varies" {
+			cell.detail = strings.TrimPrefix(cell.detail+"; varies: "+cc.varies[tr.name], "; ")
+			want = cell.result
 		}
 		if cc.report != "" {
 			if why := c.judged(t, l, cc.report); why != "" {
@@ -126,6 +130,9 @@ func TestCensorMatrix(t *testing.T) {
 			if want == "fail" && cc.blocker == "" {
 				t.Fatalf("censor case %q expects %s to fail but names no blocker", cc.name, tr)
 			}
+		}
+		if len(cc.varies) > 0 && cc.blocker == "" {
+			t.Fatalf("censor case %q has rows that vary but names no blocker", cc.name)
 		}
 	}
 	for _, tr := range transports {
@@ -219,6 +226,9 @@ type censorCase struct {
 	// a transport not in it must pass.
 	expect  map[string]string
 	modules func(t *testing.T, l *lab.Lab) []censor.ModuleConfig // nil: no censord
+	// varies holds the rows whose result is chance, with why: any result
+	// is accepted, and a family that didn't cross must be the blocker's.
+	varies map[string]string
 	// blocker is the module a cell expected to fail must find blocking
 	// in the verdict log.
 	blocker string
@@ -234,6 +244,9 @@ type censorCase struct {
 }
 
 func (cc censorCase) want(transport string) string {
+	if _, ok := cc.varies[transport]; ok {
+		return "varies"
+	}
 	if w, ok := cc.expect[transport]; ok {
 		return w
 	}
@@ -301,9 +314,13 @@ var censorCases = []censorCase{
 	}},
 	// M2 gate checks (docs/design/milestones.md). Wu et al.'s exemptions
 	// on each connection's first data, UDP's first datagram too: thinkpol's
-	// udp and WireGuard send random-looking bytes first; OpenVPN's first
-	// packet is mostly zeros, and HTTPS starts with a TLS record.
-	{name: "fully-encrypted", expect: map[string]string{rowUDP: "fail", rowWireGuard: "fail", rowRandomTCP: "fail"},
+	// udp sends random bytes first (exempt by chance about once in 400
+	// tunnels: six printable bytes first); OpenVPN's first packet is mostly
+	// zeros, and HTTPS starts with a TLS record. A WireGuard initiation
+	// ends in 16 zero bytes, and is exempt about one time in four.
+	{name: "fully-encrypted", expect: map[string]string{rowUDP: "fail", rowRandomTCP: "fail"},
+		varies: map[string]string{rowWireGuard: "a WireGuard initiation (mac2's 16 zero bytes) averages about 3.47 set bits per byte, " +
+			"and Wu et al.'s first exemption (3.4 or fewer) passes about one in four, its tunnel with it"},
 		blocker: "fully-encrypted",
 		modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig {
 			return []censor.ModuleConfig{{Name: "fully-encrypted", Settings: json.RawMessage(`{}`)}}
@@ -693,7 +710,8 @@ func writeResults(t *testing.T, cells []matrixCell, expected int) {
 		"The `(control)` rows are not transports: they show that plain TCP and HTTPS on the underlay cross the censor, and that the censor sees them. " +
 		"The `(reference)` rows are real WireGuard and OpenVPN, which the fingerprint modules must block, " +
 		"and random-tcp, a naive echo server fed random bytes (what a fully encrypted proxy looks like), which fully-encrypted and the prober must block. " +
-		"A cell of the active prober or server-hello quotes the module's verdict on the row's first connection to server-1.\n\n")
+		"A cell of the active prober or server-hello quotes the module's verdict on the row's first connection to server-1. " +
+		"A cell whose detail says `varies` is chance by nature, and says why: it shows what this run got.\n\n")
 	b.WriteString("| transport | censor | result | detail |\n|---|---|---|---|\n")
 	for _, c := range cells {
 		fmt.Fprintf(&b, "| %s | %s | %s | %s |\n", c.transport, c.censor, c.result, strings.ReplaceAll(c.detail, "|", `\|`))
