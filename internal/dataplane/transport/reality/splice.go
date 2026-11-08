@@ -67,8 +67,9 @@ const heldBack = 1
 // read, except the last heldBack bytes of a whole record. Once the record
 // is whole, authenticate decides: true hands the connection off, the tail
 // still held back; anything else forwards the tail and splices it. It
-// returns the bytes read and the client's read error, if that is what
-// ended it; the target speaking or closing first splices too.
+// returns the bytes read and the error that ended it, if any (reading
+// from the client or writing to the target); the target speaking or
+// closing first splices too.
 func (m *mirror) gather(authenticate func(record []byte) bool) (record []byte, authenticated bool, err error) {
 	buf := make([]byte, recordHeaderSize+maxHelloRecord)
 	have, need := 0, recordHeaderSize

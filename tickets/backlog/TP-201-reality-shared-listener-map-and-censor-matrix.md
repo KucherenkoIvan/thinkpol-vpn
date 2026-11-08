@@ -43,7 +43,9 @@ branch: ""
 - The lab never reaches the internet at test time: the camouflage target is a lab container, and any image is pinned by version and digest and built or pulled under the Docker lock.
 - TP-087's lab check covers our dialer against stock Xray only; our listener is checked against our dialer, not a stock Xray client.
 - From TP-087 review round 1: cut serve at the router/handoff line: the replay cache is admitted only in the router (a worker re-checking the handed-off hello would reject it as a replay); detect runs where REALITY's Server runs (the worker), not in the supervisor; apply splits into the router's short-id table and the listener's live links; endpoint validation moves into the port so udp and reality agree (reality rejects port 0 and unspecified addresses, udp accepts them).
+- From TP-087 review round 2: reality's Listen fails on a target whose certificate the node's roots don't verify (a TLS dial per server name, through Control). The lab camouflage-target container needs `reality.Options.TrustTargetRoots` plumbed for lab nodes (a test/lab-only field the map never sets), or a lab CA in the node image. With the pool only, REALITY's own detection still verifies against the system roots, so the lab target is imitated without post-handshake records; a lab CA in the node image avoids that.
 
 ## Log
 - 2026-11-08 created in backlog (split from TP-087, owner-approved)
 - 2026-11-08 notes: where to cut serve, from TP-087 review round 1
+- 2026-11-09 notes: the lab target needs Options.TrustTargetRoots or a lab CA, from TP-087 review round 2

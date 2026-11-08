@@ -33,12 +33,23 @@
 // reading anything, and passes each chunk of the hello on as it arrives:
 // whatever the target answers, and its closing, reach the client as they
 // happen, so a prober that stalls is closed when the site would close it.
-// A target that can't be reached closes the connection. Once one direction
-// of a splice ended cleanly, the other gets 5 more seconds (a client that
-// stays silent after the site closed would hold both connections for
-// good), and closing the listener ends its splices. With an
-// Admission.Camouflage, the hello is read whole (for at most 10 s) before
-// anything is dialled, and what fails goes to the camouflage.
+// Only the last byte of a whole hello waits until the listener decided:
+// on a hello that fails it follows at once; on one that authenticates
+// REALITY sends it under its own lock, so the target can't answer before
+// REALITY took the connection (a target answering first would have its
+// real ServerHello spliced to the authenticated client).
+//
+// A target that can't be reached closes the connection. Before the hello
+// is decided either side closing closes both whole, as REALITY's server
+// does: the target closing before it sent anything closes the client, and
+// the client's FIN before its hello was whole closes the target. Once
+// spliced, each side's FIN is passed on as a half-close, and the other
+// direction ends once it was idle for 5 s, which REALITY's server doesn't
+// do (a client that stays silent after the site closed would hold both
+// connections for good; an answer that keeps flowing isn't cut). Closing
+// the listener ends its splices. With an Admission.Camouflage, the hello
+// is read whole (for at most 10 s) before anything is dialled, and what
+// fails goes to the camouflage.
 //
 // Replays are remembered by sealed session id while their sealed time is
 // in the window, in memory per listener (a capture replayed after a
@@ -52,8 +63,9 @@
 // An authenticated connection's TLS handshake is REALITY's server
 // (github.com/xtls/reality, an unmodified MPL-2.0 module dependency, see
 // TP-087's Notes), given the ClientHello again and the target connection
-// dialled at accept, which already has the hello (REALITY forwards it
-// again; those bytes are dropped): it imitates the target's ServerHello
+// dialled at accept, which has all of the hello but its last byte
+// (REALITY forwards the hello again; all of it but that byte is dropped):
+// it imitates the target's ServerHello
 // and post-handshake records, and answers with a certificate of its own,
 // an Ed25519 key whose signature is HMAC-SHA512(auth key, public key), the
 // auth key being the seal's key. It checks the seal again, with its time
@@ -63,16 +75,26 @@
 // connection REALITY refuses and splices, so a legitimate hello at the
 // window's edge that REALITY refuses is cut after 15 s (known).
 //
-// Listen first has REALITY learn the target's post-handshake records and
+// Listen first completes a TLS handshake with the target for each server
+// name, through Control, within 10 s, and fails, naming the target and the
+// reason, unless the target's certificate verifies against the system
+// roots: REALITY's detection of the target's records stores the same empty
+// result for a certificate it can't verify as for a site that sends no
+// records, and the target would be imitated without them.
+// Options.TrustTargetRoots replaces the system roots for tests and the lab
+// only; REALITY's detection still uses the system roots, so a target
+// trusted that way is imitated without post-handshake records.
+//
+// Then Listen has REALITY learn the target's post-handshake records and
 // waits for that, up to 10 s; REALITY dials the target for that without
-// the Control hook. Listen fails if the target can't be reached (checked
-// with a dial of its own, through Control) or REALITY's detection didn't
-// end (the target stalled): REALITY keeps what it learned per process, and
-// would otherwise hold every authenticated handshake for good. A detection
-// whose handshake failed, e.g. on a certificate the node's roots don't
-// verify (a lab target), ends with no records, which REALITY can't tell
-// from a site that sends none: such a target is imitated without
-// post-handshake records.
+// the Control hook. Listen fails if REALITY's detection didn't end (the
+// target stalled): REALITY keeps what it learned per process, and would
+// otherwise hold every authenticated handshake for good. REALITY's
+// detection runs on after Listen gave up on it, with no deadline, and
+// would store an empty result over a later detection's pending one, so
+// detections of a target are serialized: a later Listen fails while the
+// earlier detection still runs, then forgets every result it left and
+// detects again.
 //
 // The dialer checks the certificate the same way. Anything else (a real
 // certificate: the connection was spliced, or a man in the middle
