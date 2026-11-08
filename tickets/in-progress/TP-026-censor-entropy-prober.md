@@ -8,8 +8,8 @@ repo: thinkpol-vpn
 size: M
 depends_on: [TP-024, TP-064, TP-089]
 refs: [C4]
-owner: ""
-branch: ""
+owner: agent-tp-026
+branch: tp-026-censor-entropy-prober
 ---
 
 ## Goal
@@ -37,3 +37,4 @@ The lab catches traffic that looks like random bytes and servers that don't beha
 - 2026-10-15 depends_on TP-089 (split from TP-024 review)
 - 2026-11-07 notes (owner's MVP cut): the JA3S/JA4S comparison's place on the MVP path is open
 - 2026-11-07 notes: the server-hello comparison stays on the MVP path (owner, 2026-11-07)
+- 2026-11-09 backlog → in-progress, owner: agent-tp-026
