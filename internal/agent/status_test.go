@@ -807,9 +807,11 @@ func TestADialThatFailedBesideALinkIsNeighborDown(t *testing.T) {
 	}
 }
 
-// Exits are graded by their WireGuard handshakes: the default rule's exit
+// Exits are graded by their WireGuard handshakes: a default exit
 // unanswered past the deadline is down, any other exit unanswered is
-// degraded, and the deadline runs only while the exit's first hop is up.
+// degraded, and the deadline runs only while the exit's first hop is up
+// and an initiation went out since it came up. The default exits are what
+// carries each family's background route.
 // A chain has one exit (netmap.Chain), so "none of the default chain's
 // exits answers" is that exit unanswered, whatever the others do.
 func TestExitsAreGradedByTheirHandshakes(t *testing.T) {
@@ -822,7 +824,13 @@ func TestExitsAreGradedByTheirHandshakes(t *testing.T) {
 	}
 	downNeighbor := path.NeighborStatus{Node: path.NodeID(nl)}
 	pendingFor := func(n, hop netmap.NodeID, d time.Duration) dataplane.PeerStatus {
-		return dataplane.PeerStatus{ID: n, Exit: true, FirstHop: hop, HandshakePendingSince: now.Add(-d), LastHandshake: now.Add(-time.Minute)}
+		return dataplane.PeerStatus{ID: n, Exit: true, FirstHop: hop, HandshakePendingSince: now.Add(-d), LastInitiation: now, LastHandshake: now.Add(-time.Minute)}
+	}
+	// WireGuard gave up retrying d ago, without traffic since.
+	gaveUp := func(n netmap.NodeID, d time.Duration) dataplane.PeerStatus {
+		p := pendingFor(n, n, time.Hour)
+		p.LastInitiation = now.Add(-d)
+		return p
 	}
 	dead := func(n netmap.NodeID) dataplane.PeerStatus { return pendingFor(n, n, deadline) }
 	live := func(n netmap.NodeID) dataplane.PeerStatus {
@@ -834,33 +842,40 @@ func TestExitsAreGradedByTheirHandshakes(t *testing.T) {
 	both := []path.NeighborStatus{upFor(nl, time.Hour), upFor(de, time.Hour)}
 	exitDown := Health{HealthDown, []Problem{ProblemExitNoHandshake}}
 	exitDegraded := Health{HealthDegraded, []Problem{ProblemExitNoHandshake}}
+	defNL, defDE := [2]netmap.NodeID{nl, nl}, [2]netmap.NodeID{de, de}
 	for _, tc := range []struct {
 		name      string
 		neighbors []path.NeighborStatus
 		peers     []dataplane.PeerStatus
-		def       netmap.NodeID // the default rule's exit; zero: direct
+		def       [2]netmap.NodeID // the default exits (IPv4, IPv6); zero: direct
 		want      Health
 	}{
-		{"default direct, a chain's exit dead", both, []dataplane.PeerStatus{dead(nl), live(de)}, netmap.NodeID{}, exitDegraded},
-		{"default nl dead, de idle", both, []dataplane.PeerStatus{dead(nl), idle(de)}, nl, exitDown},
-		{"default nl dead, de live", both, []dataplane.PeerStatus{dead(nl), live(de)}, nl, exitDown},
-		{"default nl live, de dead", both, []dataplane.PeerStatus{live(nl), dead(de)}, nl, exitDegraded},
-		{"all live under steady traffic", both, []dataplane.PeerStatus{live(nl), live(de)}, nl, Health{}},
-		{"all idle", both, []dataplane.PeerStatus{idle(nl), idle(de)}, nl, Health{}},
-		{"default nl pending for less than the deadline", both, []dataplane.PeerStatus{pendingFor(nl, nl, deadline-time.Second)}, nl, Health{}},
-		{"default nl dead behind a relay", []path.NeighborStatus{upFor(relay, time.Hour)}, []dataplane.PeerStatus{pendingFor(nl, relay, time.Hour)}, nl, exitDown},
+		{"default direct, a chain's exit dead", both, []dataplane.PeerStatus{dead(nl), live(de)}, [2]netmap.NodeID{}, exitDegraded},
+		{"default nl dead, de idle", both, []dataplane.PeerStatus{dead(nl), idle(de)}, defNL, exitDown},
+		{"default nl dead, de live", both, []dataplane.PeerStatus{dead(nl), live(de)}, defNL, exitDown},
+		{"default nl live, de dead", both, []dataplane.PeerStatus{live(nl), dead(de)}, defNL, exitDegraded},
+		{"all live under steady traffic", both, []dataplane.PeerStatus{live(nl), live(de)}, defNL, Health{}},
+		{"all idle", both, []dataplane.PeerStatus{idle(nl), idle(de)}, defNL, Health{}},
+		{"default nl pending for less than the deadline", both, []dataplane.PeerStatus{pendingFor(nl, nl, deadline-time.Second)}, defNL, Health{}},
+		{"default nl dead behind a relay", []path.NeighborStatus{upFor(relay, time.Hour)}, []dataplane.PeerStatus{pendingFor(nl, relay, time.Hour)}, defNL, exitDown},
 		{"default nl's first hop down: the neighbor's problem only", []path.NeighborStatus{downNeighbor},
-			[]dataplane.PeerStatus{pendingFor(nl, netmap.NodeID{}, time.Hour)}, nl, Health{HealthDown, []Problem{ProblemNoLinkUp}}},
+			[]dataplane.PeerStatus{pendingFor(nl, netmap.NodeID{}, time.Hour)}, defNL, Health{HealthDown, []Problem{ProblemNoLinkUp}}},
 		{"default nl's first hop down, its last hop kept", []path.NeighborStatus{downNeighbor, upFor(de, time.Hour)},
-			[]dataplane.PeerStatus{dead(nl), live(de)}, nl, Health{HealthDegraded, []Problem{ProblemNeighborDown}}},
+			[]dataplane.PeerStatus{dead(nl), live(de)}, defNL, Health{HealthDegraded, []Problem{ProblemNeighborDown}}},
 		{"default nl's first hop back for less than the deadline", []path.NeighborStatus{upFor(nl, deadline-time.Second)},
-			[]dataplane.PeerStatus{pendingFor(nl, nl, time.Hour)}, nl, Health{}},
+			[]dataplane.PeerStatus{pendingFor(nl, nl, time.Hour)}, defNL, Health{}},
 		{"default nl's first hop back for the deadline", []path.NeighborStatus{upFor(nl, deadline)},
-			[]dataplane.PeerStatus{pendingFor(nl, nl, time.Hour)}, nl, exitDown},
+			[]dataplane.PeerStatus{pendingFor(nl, nl, time.Hour)}, defNL, exitDown},
+		{"default nl's first hop back for the deadline, no initiation since", []path.NeighborStatus{upFor(nl, time.Hour)},
+			[]dataplane.PeerStatus{gaveUp(nl, time.Hour+time.Second)}, defNL, Health{}},
+		{"default nl given up on while its first hop stayed up", []path.NeighborStatus{upFor(nl, time.Hour)},
+			[]dataplane.PeerStatus{gaveUp(nl, time.Hour-time.Second)}, defNL, exitDown},
+		{"both families' background through de, de dead, nl idle", both, []dataplane.PeerStatus{idle(nl), dead(de)}, defDE, exitDown},
+		{"IPv6's background through de, de dead, nl live", both, []dataplane.PeerStatus{live(nl), dead(de)}, [2]netmap.NodeID{nl, de}, exitDown},
 		{"a device peer pending for long", []path.NeighborStatus{upFor(dev, time.Hour)},
-			[]dataplane.PeerStatus{{ID: dev, FirstHop: dev, HandshakePendingSince: now.Add(-time.Hour)}}, nl, Health{}},
+			[]dataplane.PeerStatus{{ID: dev, FirstHop: dev, HandshakePendingSince: now.Add(-time.Hour)}}, defNL, Health{}},
 	} {
-		dp := &dataplane.Status{Neighbors: tc.neighbors, Peers: tc.peers, Rules: dataplane.RuleStatus{DefaultExit: tc.def}}
+		dp := &dataplane.Status{Neighbors: tc.neighbors, Peers: tc.peers, Rules: dataplane.RuleStatus{DefaultExits: tc.def}}
 		s := Status{Connection: Connected, DataPlane: dp}
 		s.ExitsUnanswered, s.DefaultExitUnanswered = exitHandshakes(dp, now, deadline)
 		if got := s.Health(); got.Level != tc.want.Level || !slices.Equal(got.Problems, tc.want.Problems) {

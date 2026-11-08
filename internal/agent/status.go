@@ -2,6 +2,7 @@ package agent
 
 import (
 	"errors"
+	"slices"
 	"sync"
 	"time"
 
@@ -82,9 +83,9 @@ type Status struct {
 	// with Exit set) that have left a WireGuard handshake initiation
 	// unanswered for dataplane.ExitHandshakeDeadline while their first hop
 	// was up (exitHandshakes): directly or behind a relay, the traffic
-	// sent through them is lost. DefaultExitUnanswered says one of them is
-	// the exit of the chain the default rule uses (Rules.DefaultExit), so
-	// the internet no other rule names is lost.
+	// sent through them is lost. DefaultExitUnanswered says one of them
+	// carries an address family's background route (Rules.DefaultExits):
+	// the destinations of that family no other route names are lost.
 	ExitsUnanswered       int
 	DefaultExitUnanswered bool
 }
@@ -323,10 +324,14 @@ func (p *report) statusWith(dp *dataplane.Status) Status {
 // deadline old, counted from when its first hop came up if that is later:
 // while the first hop is down that is the neighbor's problem (one cause,
 // one code), and WireGuard's initiations can't get through. An exit
-// nothing was sent to has none pending; one flagged stays so until a
-// handshake completes, even if traffic to it stops. A chain has one exit,
-// so the default rule's exit unanswered is the internet lost, whatever
-// the other exits do.
+// nothing was sent to has none pending, and neither counts one whose last
+// initiation went out before its first hop came up: WireGuard gives up
+// retrying after 90 s without traffic, so nothing has tested the link
+// since it returned. One flagged while its first hop stayed up stays so
+// until a handshake completes, even if traffic to it stops. A chain has
+// one exit, so a default exit unanswered (RuleStatus.DefaultExits: what
+// carries either family's background route) is the internet lost,
+// whatever the other exits do.
 func exitHandshakes(st *dataplane.Status, now time.Time, deadline time.Duration) (unanswered int, defaultUnanswered bool) {
 	upFor := make(map[netmap.NodeID]time.Duration, len(st.Neighbors))
 	for _, n := range st.Neighbors {
@@ -339,11 +344,11 @@ func exitHandshakes(st *dataplane.Status, now time.Time, deadline time.Duration)
 			continue
 		}
 		up, ok := upFor[p.FirstHop]
-		if !ok || min(now.Sub(p.HandshakePendingSince), up) < deadline {
+		if !ok || min(now.Sub(p.HandshakePendingSince), up) < deadline || p.LastInitiation.Before(now.Add(-up)) {
 			continue
 		}
 		unanswered++
-		defaultUnanswered = defaultUnanswered || p.ID == st.Rules.DefaultExit
+		defaultUnanswered = defaultUnanswered || slices.Contains(st.Rules.DefaultExits[:], p.ID)
 	}
 	return unanswered, defaultUnanswered
 }
@@ -446,11 +451,15 @@ const (
 	// ProblemExitNoHandshake: an exit the device routes through,
 	// directly or behind a relay, has left WireGuard's handshake
 	// unanswered past the deadline while its first hop was up
-	// (Status.ExitsUnanswered). Down when the default rule goes through a
-	// chain and that chain's exit is unanswered (a chain has one exit, so
-	// none of its exits answers): the destinations no other rule names
-	// are lost. Degraded for any other exit unanswered. Only a completed
-	// handshake clears it, even if the device goes idle.
+	// (Status.ExitsUnanswered). Down when the exit of the chain carrying
+	// either family's background (/0) route is unanswered (a chain has one
+	// exit, so none of its exits answers): that family's destinations no
+	// other route names are lost. The background route is the action with
+	// the most addresses, which may not be the default rule's (rules
+	// before it can take every address). Degraded for any other exit
+	// unanswered. Only a completed handshake clears it, even if the device
+	// goes idle; an exit sent no initiation since its first hop came up
+	// isn't counted.
 	ProblemExitNoHandshake Problem = "exit_no_handshake"
 )
 

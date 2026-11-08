@@ -693,6 +693,24 @@ func BenchmarkCompileCountry(b *testing.B) {
 	b.ReportMetric(float64(len(tab.Direct().Prefixes())), "direct")
 }
 
+// Background is each family's /0 route's action, whichever rule gave it
+// its addresses: not the default rule's when rules before it take them.
+func TestBackgroundIsWhatTakesTheMostAddresses(t *testing.T) {
+	for _, tc := range []struct {
+		name, rules string
+		want        [2]netmap.Action
+	}{
+		{"the default rule", "local -> direct\ndefault -> chain:nl", [2]netmap.Action{nl, nl}},
+		{"both families before the default", "cidr:0.0.0.0/0 -> chain:de\ncidr:::/0 -> chain:de\ndefault -> chain:nl", [2]netmap.Action{de, de}},
+		{"one family before the default", "cidr:0.0.0.0/0 -> chain:de\ndefault -> chain:nl", [2]netmap.Action{de, nl}},
+	} {
+		o := Options{Overlay: overlay}
+		if got := Compile(entriesOf(mustRules(t, tc.rules), OriginSpace), o).Background(); got != tc.want {
+			t.Errorf("%s: background %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
 // Default is the first default rule's action as enforced, whatever rules
 // ahead of it take, and without one what the rest gets.
 func TestDefaultIsTheDefaultRulesAction(t *testing.T) {

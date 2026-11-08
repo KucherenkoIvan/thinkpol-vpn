@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
@@ -60,7 +61,28 @@ func TestRemovedPeersAreForgotten(t *testing.T) {
 	if len(h.late) != 1 || !h.late[peerName(kept)] {
 		t.Errorf("late %v", h.late)
 	}
-	if len(h.pending) != 1 || h.pendingSince(kept).IsZero() {
-		t.Errorf("pending %v", h.pending)
+	if pending, last := h.of(kept); len(h.pending) != 1 || len(h.initiated) != 1 || pending.IsZero() || last.IsZero() {
+		t.Errorf("pending %v, initiated %v", h.pending, h.initiated)
+	}
+}
+
+// The last initiation moves with every one sent, while the pending time
+// stays at the first unanswered one; a completed handshake clears only
+// the pending time.
+func TestTheLastInitiationMovesWithEachOne(t *testing.T) {
+	h := newHandshakes(nil)
+	var k netmap.WireGuardKey
+	k[0] = 1
+	h.verbosef("%v - Sending handshake initiation", fakePeer(peerName(k)))
+	first, _ := h.of(k)
+	time.Sleep(10 * time.Millisecond)
+	h.verbosef("%v - Sending handshake initiation", fakePeer(peerName(k)))
+	pending, last := h.of(k)
+	if pending != first || !last.After(first) {
+		t.Fatalf("pending %v (first %v), last initiation %v", pending, first, last)
+	}
+	h.verbosef("%v - Received handshake response", fakePeer(peerName(k)))
+	if p, l := h.of(k); !p.IsZero() || l != last {
+		t.Errorf("after the response: pending %v, last initiation %v (was %v)", p, l, last)
 	}
 }

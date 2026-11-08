@@ -509,7 +509,10 @@ type PeerStatus struct {
 	// HandshakePendingSince is when the first initiation to the peer
 	// still unanswered was sent (wg.PeerStatus.HandshakePendingSince).
 	HandshakePendingSince time.Time
-	RxBytes, TxBytes      uint64
+	// LastInitiation is when the last initiation to the peer was sent
+	// (wg.PeerStatus.LastInitiation).
+	LastInitiation   time.Time
+	RxBytes, TxBytes uint64
 }
 
 // ExitHandshakeDeadline is how long a handshake initiation to an exit may
@@ -570,7 +573,7 @@ func (e *Engine) statusLocked() Status {
 			r := reported[p.Key]
 			ps := PeerStatus{
 				ID: p.ID, Device: name, Addresses: slices.Clone(p.Addresses), Exit: name == exitDevice(p.ID),
-				LastHandshake: r.LastHandshake, HandshakePendingSince: r.HandshakePendingSince, RxBytes: r.RxBytes, TxBytes: r.TxBytes,
+				LastHandshake: r.LastHandshake, HandshakePendingSince: r.HandshakePendingSince, LastInitiation: r.LastInitiation, RxBytes: r.RxBytes, TxBytes: r.TxBytes,
 			}
 			if hop, _, ok := d.wg.Bind().Current(path.NodeID(p.ID)); ok {
 				ps.FirstHop = netmap.NodeID(hop)

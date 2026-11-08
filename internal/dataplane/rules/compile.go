@@ -74,7 +74,9 @@ type Route struct {
 type Table struct {
 	routes []Route // the /0 routes (nzero of them), then the others in address order
 	nzero  int
-	chains []string
+	// background is the action of each family's /0 route (Background).
+	background [2]netmap.Action
+	chains     []string
 	// def is the default rule's action (Default); set says it was given.
 	def     netmap.Action
 	defSet  bool
@@ -111,6 +113,11 @@ func Compile(entries []Entry, o Options) *Table {
 	sets, counts := p.build()
 	t.direct = sets[netmap.Direct]
 	zero, background := backgroundRoutes(p.actions, counts)
+	for f, a := range background {
+		if a != nil {
+			t.background[f] = *a
+		}
+	}
 	t.routes = zero
 	specific := specificRoutes(p.actions, sets, background)
 	t.nzero = len(t.routes)
@@ -365,8 +372,14 @@ func (t *Table) Direct() *lists.Set { return t.direct }
 // Default is what the destinations no rule names get: the first default
 // rule's action as enforced (block for a chain that can't carry traffic),
 // or, with none, what Compile gives the rest. Rules ahead of it may leave
-// it no destinations at all.
+// it no destinations at all (`cidr:0.0.0.0/0` and `cidr:::/0` before it),
+// so it isn't what carries the bulk of the traffic: Background is.
 func (t *Table) Default() netmap.Action { return t.def }
+
+// Background is the action of each family's /0 route (IPv4, IPv6): the
+// one with the most addresses there, whichever rules gave them. The zero
+// Action for a family with no route.
+func (t *Table) Background() [2]netmap.Action { return t.background }
 
 // Chains are the chains some destination goes through, in rule order.
 func (t *Table) Chains() []string { return t.chains }
